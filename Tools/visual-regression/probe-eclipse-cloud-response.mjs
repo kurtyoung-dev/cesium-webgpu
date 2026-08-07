@@ -142,6 +142,7 @@ import {
 } from "./lib/weather-probe-pinning.mjs";
 import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
 import {
+  DECK_AERIAL_SHARE_CROSS_RUN,
   ECLIPSE_CLOUD_BANDS,
   ECLIPSE_CLOUD_EXIT,
   ECLIPSE_CLOUD_GATE_PREDICATES,
@@ -589,6 +590,13 @@ const RUN_CLOUD_LANES = async (cfg) => {
         cloudDensity: 0.5,
         cloudLayerBottom: 1500,
         cloudLayerTop: 4000,
+        // CO-19: the aerial dial is re-pinned to its shipped default on EVERY
+        // configure, not just restored after the diagnostic leg. The dials live
+        // on a persistent `CloudVolumetrics` object, so a leg that zeroes float
+        // 91 and forgets to put it back silently re-scores every later capture
+        // — and the harness round-trip-verifies each key, so pinning it here
+        // also makes the default itself a read-back rather than an assumption.
+        cloudAerialStrength: 1.0,
         ...cfg.determinismDials,
         ...(extra.dials ?? {}),
       },
@@ -846,6 +854,52 @@ const RUN_CLOUD_LANES = async (cfg) => {
       captureLabelled(`A${index}-eclipseOn-cloudsOff`, julian, false),
     );
 
+    // ── LANE A DIAGNOSTIC LEG (CO-19), deepest rung only: cloudAerialStrength
+    // = 0. Pre-registered by CO-17 as the ONE number that pins the deck's
+    // display transform without a cross-run input.
+    //
+    // `ProceduralClouds.wgsl:2557` composites the deck as
+    // `mix(toneMapped, cloud.aerialColor, aerial)`, and float 91 is the
+    // `aerial` scale (`config.cloudAerialStrength ?? 1.0`,
+    // `WebGPUProceduralCloudRenderer.ts:2273`). Zeroing it sets the tint
+    // fraction to exactly 0, so this leg's own `cloudsOn - cloudsOff` ratio IS
+    // the pure deck ratio rho = F(1+e)/(1+F*e) and `e` reads off ONE
+    // measurement. PRE-REGISTERED: the deepest rung reads 0.635 +/- 0.01.
+    //
+    // TWO captures, not four: the dial scales a term INSIDE the cloud shader,
+    // so the clouds-OFF frames are aerial-independent by construction and the
+    // same instant's already-captured `aOffBare` / `aOnBare` are the correct
+    // background to subtract. Capturing them again would cost two more settles
+    // to re-measure a number the dial cannot move.
+    let aerialZero = null;
+    if (deepest) {
+      const aerialZeroDials = { cloudAerialStrength: 0.0 };
+      setEclipse(false);
+      configure({ enableVolumetric: true, dials: aerialZeroDials });
+      await pin.settle(julian, cfg.settleMs);
+      const zOffClouds = skyBand(
+        captureLabelled(`A${index}-aerial0-eclipseOff-cloudsOn`, julian, false),
+      );
+      setEclipse(true);
+      configure({ enableVolumetric: true, dials: aerialZeroDials });
+      await pin.settle(julian, cfg.settleMs);
+      const zOnClouds = skyBand(
+        captureLabelled(`A${index}-aerial0-eclipseOn-cloudsOn`, julian, false),
+      );
+      aerialZero = {
+        aerialStrength: 0.0,
+        offClouds: zOffClouds.mean,
+        onClouds: zOnClouds.mean,
+        offBare: aOffBare.mean,
+        onBare: aOnBare.mean,
+        offContribution: zOffClouds.mean - aOffBare.mean,
+        onContribution: zOnClouds.mean - aOnBare.mean,
+        samples: zOffClouds.samples,
+      };
+      // The dial goes back on the very next `configure`, which re-pins it to
+      // 1.0 unconditionally — see the `configure` helper.
+    }
+
     // The engine's published state for THIS instant, read in the same task as
     // the render that produced it.
     setEclipse(true);
@@ -959,6 +1013,20 @@ const RUN_CLOUD_LANES = async (cfg) => {
     const footprintOff = shadowFootprintTelemetry();
 
     setEclipse(true);
+    // ── THE DECK-FREE ECLIPSE-ON TWIN (CO-19), at the SAME instant as
+    // `bOffNoCloud` and with the identical configuration apart from the eclipse
+    // toggle. CO-17 derived that the published laws require the deck-free
+    // ground band to dim by exactly F; `onNoCloud / offNoCloud` is the only
+    // measurement that says whether it does, and therefore whether the ~12.6%
+    // under-dim CO-17 measured with the deck ON belongs to the globe's own
+    // light path or to the cloud subsystem. See
+    // `deckFreeGroundDimTolerance` in the gate module for the tolerance and
+    // both verdict shapes.
+    configure({ enableVolumetric: false, dials: groundDials });
+    await pin.settle(julian, cfg.settleMs);
+    const bOnNoCloud = groundBand(
+      captureLabelled(`B${index}-eclipseOn-cloudsOff`, julian, false),
+    );
     configure({
       enableVolumetric: true,
       dials: { ...groundDials, cloudCastShadows: false },
@@ -1002,12 +1070,18 @@ const RUN_CLOUD_LANES = async (cfg) => {
         onContribution: aOnClouds.mean - aOnBare.mean,
         samples: aOffClouds.samples,
       },
+      // CO-19: the `cloudAerialStrength = 0` leg, deepest rung only. `null`
+      // everywhere else, and the gate reads it off the deepest rung.
+      deckAerialZero: aerialZero,
       shadow: {
         // The DECK-FREE ground, i.e. what the band would read with no cloud in
         // the scene at all. `offNoShadow / offNoCloud` is then the fraction of
         // the ground band the deck did NOT take over, which is the precondition
         // the second run silently failed.
         offNoCloud: bOffNoCloud.mean,
+        // CO-19: the eclipse-ON twin of the same deck-free control, captured at
+        // the same instant. `onNoCloud / offNoCloud` is the attribution.
+        onNoCloud: bOnNoCloud.mean,
         offNoShadow: bOffNoShadow.mean,
         offShadow: bOffShadow.mean,
         onNoShadow: bOnNoShadow.mean,
@@ -1758,6 +1832,34 @@ async function resolveFeatureRendererKeys(page) {
         `band inside footprint ${t.footprint?.allInside ?? "?"}, texelSpan ${r3(t.footprint?.texelSpan)}; ` +
         `groundOnly ${r3(t.groundOnly)}, retention ${r3(t.groundRetention)} ` +
         `@ ${t.cameraHeight} m / ${t.pitchDegrees} deg`,
+    );
+    // CO-19 INSTRUMENT TELL, printed UNROUNDED and in full. The fourth run's
+    // four `offNoCloud` reads were bit-identical (0.2750603921572111) across
+    // instants 54 minutes apart while `offNoShadow` moved +3.3%; four identical
+    // f64s here is the tell that the deck-free control is not being re-captured
+    // per rung. Reported only — if it reads false again it becomes its own
+    // instrument investigation, not a product verdict.
+    console.log(
+      `SHADOW deck-free series: offNoCloud [${(t.offNoCloudSeries ?? []).join(", ")}] ` +
+        `spread ${t.offNoCloudSpread}, offNoShadow spread ${t.offNoShadowSpread}; ` +
+        `offNoCloudVariesWithSun ${t.offNoCloudVariesWithSun} ` +
+        `(false = four identical f64s, the tell); ` +
+        `deck-free dim at deepest ${r3(t.deckFreeExcessAtDeepest)}x F ` +
+        `(1.0 exonerates the globe light path and makes the CO-17 residue CLOUD-DRIVEN; ` +
+        `>1 indicts the globe path)`,
+    );
+  }
+  // The CO-19 deck leg, on its own line: the pure deck ratio and the `e` it
+  // implies, with no cross-run input anywhere in the chain.
+  {
+    const fit = verdicts.deckTonemapFit ?? {};
+    console.log(
+      `DECK aerial-zero leg: pure ratio ${verdicts.deckPureRatio} ` +
+        `(pre-registered 0.635 +/- 0.01, band [${ECLIPSE_CLOUD_BANDS.deckPureDeckRatio.lo}, ${ECLIPSE_CLOUD_BANDS.deckPureDeckRatio.hi}]) ` +
+        `-> e ${verdicts.deckTonemapEntryFromPureLeg}; ` +
+        `single-run aerial share ${verdicts.deckAerialShareSingleRun} ` +
+        `(cross-run constant ${DECK_AERIAL_SHARE_CROSS_RUN}); ` +
+        `fit source: ${fit.aerialShareSource}`,
     );
   }
   // INVALID is printed as INVALID with its reason. The first run printed

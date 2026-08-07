@@ -401,6 +401,82 @@ export function extractShadowableDimming(shadow) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// THE DECK-FREE GROUND ATTRIBUTION LEG — `onNoCloud / offNoCloud` vs F
+// (C13-41-SHADOW-CONTRAST-ECLIPSE-EXCESS, CO-19; pre-registered by CO-17)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// CO-17 derived that the published laws require BOTH scored ground bands to dim
+// by exactly F, and measured 1.126x and 1.182x of F instead. It could not say
+// WHOSE residue that is, because every band it had was captured with the deck
+// ON. Lane B already flew a DECK-FREE control in the eclipse-OFF position
+// (`offNoCloud`); the eclipse-ON twin at the same instant is the one number that
+// splits the candidates:
+//
+//   onNoCloud / offNoCloud == F   the globe's own light path dims correctly, so
+//                                 the residue is CLOUD-DRIVEN — which the
+//                                 existing numbers already point at, since
+//                                 turning the deck on ADDS 13.7% to the ground
+//                                 band at rung 0 (offNoShadow/offNoCloud =
+//                                 1.1589) even though the lane flies at 1400 m
+//                                 BELOW a 1500 m deck floor and no downward ray
+//                                 reaches the deck. Suspects then are the
+//                                 cloud-driven post-process addends
+//                                 (WebGPUAerialPerspectiveEffect,
+//                                 WebGPUVolumetricFogRenderer) and the filed
+//                                 C13-41-ENV-GROUND-INSCATTER-ADDEND-UNDIMMED.
+//   onNoCloud / offNoCloud >  F   the globe's own light path carries an
+//                                 under-dimmed term and the cloud subsystem is
+//                                 EXONERATED.
+//
+// THE TOLERANCE IS PROPAGATED, NOT CHOSEN. The comparison is a ratio of two
+// captured band means, each resolvable to one eight-bit code
+// (`BAND_MEAN_CAPTURE_DELTA`, the same quantity `determinismDelta` bounds). For
+// r = U_on / U_off:
+//
+//   |dr| <= d*|dr/dU_on| + d*|dr/dU_off|
+//         = d/U_off + d*U_on/U_off^2
+//         = (d / U_off) * (1 + r)
+//
+// At the fourth run's own deck-free band (U_off = 0.27506) and r ~ F = 0.4642
+// that is (0.004/0.27506) * 1.4642 = 0.02129 — and the under-dim the reframing
+// predicts if the globe path were the carrier is 1.1261*F - F = 0.0585, i.e.
+// 2.75x the tolerance. The instrument can resolve the answer either way.
+//
+// AND IT IS BOUNDED ABOVE BY CONSTRUCTION. The tolerance grows as the band
+// darkens, but `shadowGroundIsBright` blinds the whole `shadow` domain below
+// U_off = SHADOW_GROUND_BRIGHTNESS_FLOOR, and a ratio above 1 means the eclipse
+// BRIGHTENED the ground (a failure on its own terms), so the loosest tolerance
+// this predicate can ever be scored with is
+// (0.004/0.15)*(1+1) = 0.05333 — `deckFreeGroundDimToleranceCap`. A derived
+// tolerance is clamped to that cap so a dark band can never buy itself a wider
+// gate than the structural floor already allows.
+
+/**
+ * The propagated tolerance for one rung's `onNoCloud / offNoCloud` against the
+ * published factor. See the block above for the derivation; the result is
+ * clamped to `deckFreeGroundDimToleranceCap` so it can only ever tighten.
+ *
+ * @param {number} deckFreeBandMean The eclipse-OFF deck-free ground band mean.
+ * @param {number} measuredRatio The measured `onNoCloud / offNoCloud`.
+ * @returns {number|null}
+ */
+export function deckFreeGroundDimTolerance(deckFreeBandMean, measuredRatio) {
+  if (
+    !Number.isFinite(deckFreeBandMean) ||
+    !Number.isFinite(measuredRatio) ||
+    !(deckFreeBandMean > 0) ||
+    !(measuredRatio >= 0)
+  ) {
+    return null;
+  }
+  const propagated =
+    (BAND_MEAN_CAPTURE_DELTA / deckFreeBandMean) * (1 + measuredRatio);
+  const cap =
+    (BAND_MEAN_CAPTURE_DELTA / SHADOW_GROUND_BRIGHTNESS_FLOOR) * (1 + 1);
+  return Math.min(propagated, cap);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // THE DECK'S DISPLAY TRANSFORM — re-derived from the fourth run
 // (C13-41-CLOUD-DECK-TONEMAP-SWALLOWS-THE-DIM, CO-17)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -558,6 +634,51 @@ export function fitDeckTonemapEntry(factor, ratio, aerialShare = 0) {
 }
 
 /**
+ * The aerial tint's share of the un-eclipsed displayed deck from ONE run, using
+ * the `cloudAerialStrength = 0` diagnostic leg (CO-19). Zeroing float 91 sets
+ * the tint fraction `a` to exactly 0, so that leg's own displayed ratio IS the
+ * pure deck ratio `rho`, and the composited ratio measured at the same instant
+ * gives the share by subtraction with nothing fitted:
+ *
+ *   R = (1 - s)*rho + s*F   =>   s = (rho - R) / (rho - F)
+ *
+ * This is the single-run replacement for {@link DECK_AERIAL_SHARE_CROSS_RUN}.
+ * It returns `null` rather than a number whenever the subtraction is degenerate
+ * (rho == F, i.e. a deck with no compression at all, where the share is not
+ * identifiable) or lands outside [0, 1), because a share at or above 1 makes
+ * {@link fitDeckTonemapEntry} unsolvable and a negative one is not a share.
+ *
+ * @param {number} factor The eclipse factor F at that instant.
+ * @param {number} ratioComposited The normal leg's displayed deck ratio R.
+ * @param {number} ratioPureDeck The `cloudAerialStrength = 0` leg's ratio rho.
+ * @returns {number|null}
+ */
+export function fitDeckAerialShareFromPureDeck(
+  factor,
+  ratioComposited,
+  ratioPureDeck,
+) {
+  if (
+    !Number.isFinite(factor) ||
+    !Number.isFinite(ratioComposited) ||
+    !Number.isFinite(ratioPureDeck)
+  ) {
+    return null;
+  }
+  const denominator = ratioPureDeck - factor;
+  // A pure-deck ratio indistinguishable from the linear factor carries no
+  // information about the split — the two terms coincide and any share fits.
+  if (!(Math.abs(denominator) > 1e-6)) {
+    return null;
+  }
+  const share = (ratioPureDeck - ratioComposited) / denominator;
+  if (!(share >= 0) || !(share < 1)) {
+    return null;
+  }
+  return share;
+}
+
+/**
  * Counts LEVEL CHANGES in a committed-bucket series, which is what an
  * environment refresh count is: the managers commit the bucket only inside the
  * branch that actually re-fills, so one transition is one fill. A series that
@@ -638,6 +759,24 @@ export function maxBucketStep(series) {
   return worst;
 }
 
+/**
+ * One eight-bit code value on a band mean — the smallest difference this
+ * instrument can resolve at all. NAMED rather than repeated, because two bands
+ * are derived from it (`determinismDelta` is it verbatim, and
+ * `deckFreeGroundDimToleranceCap` is its propagation through a ratio) and a
+ * literal written twice drifts once.
+ */
+export const BAND_MEAN_CAPTURE_DELTA = 0.004;
+
+/**
+ * The dimmest deck-free ground band lane B may score at all — the floor of
+ * `shadowGroundBrightness`. It is named here because it BOUNDS the propagated
+ * tolerance of every ratio taken against that band: below it the lane is blind
+ * and nothing downstream is scored, so no derived tolerance can be looser than
+ * the one this floor admits.
+ */
+export const SHADOW_GROUND_BRIGHTNESS_FLOOR = 0.15;
+
 const band = (lo, hi, why) => Object.freeze({ lo, hi, why, status: "DERIVED" });
 
 /**
@@ -652,6 +791,18 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
     0.44,
     0.7,
     "prediction (i) verbatim: the PRE-tonemap ratio is exactly 0.4642 and the row states the DISPLAYED ratio lands between 0.46 and ~0.63, never above ~0.7. The upper bound is the row's own ceiling. The lower bound is 0.4642 minus a 5% relative allowance (0.0232) for 8-bit quantization on a DIFFERENCE image (deck = cloudsOn - cloudsOff, so two quantized band means are subtracted before the ratio is taken); a compressive tonemap can only push the displayed ratio ABOVE the linear value, so the lower bound is measurement slack rather than physics",
+  ),
+
+  deckPureDeckRatio: band(
+    0.625,
+    0.645,
+    "CO-17's PRE-REGISTRATION VERBATIM for the fifth run's `cloudAerialStrength = 0` diagnostic leg: 'the deepest rung reads 0.635 +/- 0.01'. With the tint removed the leg's displayed ratio IS the pure deck ratio rho = F(1+e)/(1+F*e), so this band is a band on `e` in disguise: [0.625, 0.645] at F = 0.464228 maps to e in [0.9235, 1.0969]. It is deliberately TIGHTER than `deckDisplayedRatio`'s 5% relative allowance, because its job is to DISCRIMINATE rather than to admit — it brackets the cross-run per-rung spread e = [1.0033, 1.0127] with ~9x margin while excluding both e = 0 (a linear deck; rho = 0.464228, 17 half-widths below) and the third pass's e = 7.70 (rho = 0.882880, 24.8 half-widths above). A miss REFUTES the cross-run subtraction that produced e = 1.01 and is a finding against that fit, NOT a band to widen: the whole point of a single-run leg is that it can disagree with the cross-run number",
+  ),
+
+  deckFreeGroundDimToleranceCap: band(
+    0,
+    (BAND_MEAN_CAPTURE_DELTA / SHADOW_GROUND_BRIGHTNESS_FLOOR) * (1 + 1),
+    "NOT the tolerance — the CAP on it. `deckFreeGroundDimsByFactor` compares `onNoCloud/offNoCloud` against the published F with a tolerance PROPAGATED per rung from the band mean it was measured on, (d/U_off)*(1+r) with d = BAND_MEAN_CAPTURE_DELTA (see `deckFreeGroundDimTolerance`). A propagated tolerance widens as the band darkens, so it needs a ceiling that is not a choice: `shadowGroundIsBright` blinds the whole shadow domain below U_off = 0.15 and a ratio above 1 fails on its own terms, so (0.004/0.15)*(1+1) = 0.05333 is the loosest tolerance this predicate can EVER be scored with. At the fourth run's own deck-free band (0.27506) the propagated tolerance is 0.02129, and the under-dim the globe-path branch predicts (1.1261*F - F = 0.0585) is 2.75x it",
   ),
 
   shadowContrastRatio: band(
@@ -692,7 +843,7 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
 
   determinismDelta: band(
     0,
-    0.004,
+    BAND_MEAN_CAPTURE_DELTA,
     "the repeat bracket: the first scored configuration re-captured at the end of the lane. 0.004 is ~1 eight-bit code value on a band mean — the smallest difference distinguishable at all. Set strictly INSIDE the tightest scored margin (lane B's +/-3% of a ~0.35 contrast is 0.0105), so a control PASS means residual capture noise cannot flip an assertion",
   ),
 
@@ -727,7 +878,7 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
   ),
 
   shadowGroundBrightness: band(
-    0.15,
+    SHADOW_GROUND_BRIGHTNESS_FLOOR,
     1,
     "the DECK-FREE ground band mean, i.e. the brightness of the surface the cast shadow has to darken. This is a PRECONDITION, and it exists because the second Edge run's lane B was vacuous for a reason the ceiling above cannot express. The offline pin removes every imagery layer, so the globe renders `GlobeSurfaceTileProvider.baseColor`, whose default `new Color(0, 0, 0.5, 1)` has a Rec.709 luma of 0.036 BEFORE the Lambert term. The cast shadow floors the ground at `max(exp(-tau*0.04), 0.35)`, so it can remove at most 65% of whatever the ground contributes: at 0.036 that is 0.023 of a full band and the 0.98 ceiling is unreachable by construction. 0.15 is the floor at which a fully-shadowed ground band moves the contrast by 0.65*0.15 = 0.0975, 4.875x the 0.02 the ceiling asks for. STRUCTURAL, not a product failure",
   ),
@@ -763,6 +914,8 @@ export const ECLIPSE_CLOUD_GATE_PREDICATES = Object.freeze([
   "factorMatchesSecondImplementation",
   "deckRatioInBand",
   "deckRatioMonotone",
+  // Lane A diagnostic leg — the pure deck ratio at `cloudAerialStrength = 0`
+  "deckPureRatioInBand",
   // Lane B — cloud shadow (prediction ii)
   "shadowGroundIsBright",
   "shadowGroundNotOccluded",
@@ -772,6 +925,8 @@ export const ECLIPSE_CLOUD_GATE_PREDICATES = Object.freeze([
   "shadowContrastInvariant",
   "shadowContrastRejectsAlternativeDesign",
   "shadowContrastModelIsBoundedByDirectional",
+  // Lane B attribution leg — the deck-free ground's own dimming law
+  "deckFreeGroundDimsByFactor",
   // Lane C — IBL dim, refresh cadence, recovery (prediction iii)
   "predictedRefreshCountExact",
   "rampNeverSkipsABucket",
@@ -819,6 +974,16 @@ export const ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES = Object.freeze([
   // against a PREVIOUS run — a cross-run input has no place in a gate. The
   // fifth run's `cloudAerialStrength = 0` leg makes it a single-run number.
   "deckTonemapEntryWithinDesignEnvelopeReportedOnly",
+  // CO-19. THE INSTRUMENT TELL, and it is reported-only on purpose. The fourth
+  // run's `offNoCloud` read bit-identical 0.2750603921572111 at ALL FOUR rungs,
+  // across instants 54 minutes apart, while `offNoShadow` at the same instants
+  // moved +3.3%. The lane's camera is sun-locked in HEADING only, so the local
+  // sun ELEVATION does change and a deck-free ground band should move with it.
+  // Either it is genuinely invariant for a reason worth knowing or it is not
+  // being re-captured per rung — and a fifth run that still reads four
+  // identical f64s becomes its own instrument investigation rather than a
+  // product verdict, which is exactly why this does not gate.
+  "offNoCloudVariesWithSun",
 ]);
 
 /**
@@ -875,6 +1040,13 @@ export const ECLIPSE_CLOUD_PREDICATE_LANES = Object.freeze({
   factorMatchesSecondImplementation: "cloud-page",
   deckRatioInBand: "deck",
   deckRatioMonotone: "deck",
+  // The `cloudAerialStrength = 0` leg is a DECK measurement — it is the same
+  // difference image with one shader term removed, so everything that blinds
+  // the deck blinds it too. A leg that is simply ABSENT is deliberately NOT
+  // structural: the probe captures it unconditionally, so a null here is an
+  // instrument defect and must surface as a named FAIL rather than quietly
+  // quarantining the deck lane's other verdicts.
+  deckPureRatioInBand: "deck",
   // Lane B — cloud shadow (prediction ii)
   shadowGroundIsBright: "shadow",
   shadowGroundNotOccluded: "shadow",
@@ -887,6 +1059,11 @@ export const ECLIPSE_CLOUD_PREDICATE_LANES = Object.freeze({
   // published laws with no run input, so it is never quarantined — the same
   // domain, and for the same reason, as `predictedRefreshCountExact`.
   shadowContrastModelIsBoundedByDirectional: "gate-arithmetic",
+  // The deck-free attribution leg reads lane B's own ground band, and its
+  // precondition (`shadowGroundIsBright`, the band mean the tolerance is
+  // propagated from) lives in the same domain. Scoring an attribution over a
+  // band too dark to carry one certifies nothing.
+  deckFreeGroundDimsByFactor: "shadow",
   // Lane C — IBL dim, refresh cadence, recovery (prediction iii)
   predictedRefreshCountExact: "gate-arithmetic",
   rampNeverSkipsABucket: "ibl-page",
@@ -1330,6 +1507,39 @@ export function judgeEclipseCloudResponse(run) {
         predictFactor(deepest?.published?.moonObscuration ?? 0),
     ) <= 0.02;
 
+  // ── THE `cloudAerialStrength = 0` DIAGNOSTIC LEG (CO-19) ─────────────────
+  // Pre-registered by CO-17 as the one measurement that pins the deck's display
+  // transform with NO cross-run input. Zeroing float 91 removes the aerial tint
+  // entirely, so that leg's own `cloudsOn - cloudsOff` difference IS the pure
+  // deck ratio rho = F(1+e)/(1+F*e) — the exact quantity `deckDisplayedRatio`'s
+  // [0.44, 0.70] window was derived for — and `e` reads off ONE measurement.
+  //
+  // The tint's share then falls out of the SAME run by subtraction against the
+  // composited ratio measured at the same instant, s = (rho - R)/(rho - F). The
+  // derivation lives HERE rather than in the lane because `page.evaluate`
+  // cannot import this module, and a formula duplicated across the
+  // serialization boundary is a drift this fleet has already paid for once. An
+  // explicit `cloudLanes.deckAerialShare` still wins, so a lane (or a fixture)
+  // that supplies its own share is not locked out.
+  const aerialZero = deepest?.deckAerialZero ?? null;
+  v.deckPureRatio = ratio(
+    aerialZero?.onContribution,
+    aerialZero?.offContribution,
+  );
+  v.deckPureRatioInBand = inBand(v.deckPureRatio, B.deckPureDeckRatio);
+  v.deckAerialShareSingleRun = fitDeckAerialShareFromPureDeck(
+    deepest?.published?.factor,
+    v.deckRatioAtDeepest,
+    v.deckPureRatio,
+  );
+  // `e` straight off the tint-free leg, with no share involved at all — the
+  // number the pre-registration is really about.
+  v.deckTonemapEntryFromPureLeg = fitDeckTonemapEntry(
+    deepest?.published?.factor,
+    v.deckPureRatio,
+    0,
+  );
+
   // ── Lane B: prediction (ii), and its refutation control ──────────────────
   v.offShadowStrengthExactlyOne = rungs.every(
     (rung) => rung.publishedOff?.shadowStrength === 1,
@@ -1367,6 +1577,66 @@ export function judgeEclipseCloudResponse(run) {
   // The extension is an arithmetic property of the model, not of this run.
   v.shadowContrastModelIsBoundedByDirectional =
     shadowContrastModelIsBoundedByDirectional();
+
+  // ── THE DECK-FREE ATTRIBUTION LEG (CO-19) ────────────────────────────────
+  // `onNoCloud / offNoCloud` against the published factor, per rung. See the
+  // derivation above `deckFreeGroundDimTolerance` for what each verdict means:
+  // == F exonerates the globe's own light path and makes CO-17's under-dimming
+  // residue CLOUD-DRIVEN; > F indicts the globe path and exonerates the cloud
+  // subsystem. The tolerance is PROPAGATED from the band mean each ratio was
+  // measured on, not chosen.
+  v.deckFreeGroundDim = rungs.map((rung) => {
+    const off = rung.shadow?.offNoCloud;
+    const on = rung.shadow?.onNoCloud;
+    const factor = rung.published?.factor;
+    const measured = ratio(on, off);
+    const tolerance = deckFreeGroundDimTolerance(off, measured);
+    const delta =
+      Number.isFinite(measured) && Number.isFinite(factor)
+        ? measured - factor
+        : null;
+    return {
+      obscuration: rung.published?.moonObscuration ?? null,
+      factor: factor ?? null,
+      offNoCloud: Number.isFinite(off) ? off : null,
+      onNoCloud: Number.isFinite(on) ? on : null,
+      measured,
+      tolerance,
+      delta,
+      // The headline: what fraction of F the deck-free band actually retained.
+      // 1.0 is the published law; CO-17 measured 1.126 with the deck ON.
+      overFactor: ratio(measured, factor),
+      withinTolerance:
+        delta !== null &&
+        Number.isFinite(tolerance) &&
+        Math.abs(delta) <= tolerance,
+    };
+  });
+  v.deckFreeGroundDimsByFactor =
+    v.deckFreeGroundDim.length > 0 &&
+    v.deckFreeGroundDim.every((entry) => entry.withinTolerance === true);
+  v.deckFreeGroundExcessAtDeepest =
+    v.deckFreeGroundDim[v.deckFreeGroundDim.length - 1]?.overFactor ?? null;
+
+  // ── THE INSTRUMENT TELL, reported not gated (CO-19) ──────────────────────
+  // The fourth run's `offNoCloud` read bit-identical at all four rungs across
+  // instants 54 minutes apart while `offNoShadow` moved +3.3% over the same
+  // span. Both series are published so the comparison is on the page rather
+  // than in a reader's head, and `offNoCloudVariesWithSun` is the tell in one
+  // boolean: four identical f64s cannot be four independent captures of a
+  // sun-lit band at four different sun elevations.
+  const finite = (series) => series.filter((value) => Number.isFinite(value));
+  const spread = (series) => {
+    const values = finite(series);
+    return values.length > 0 ? Math.max(...values) - Math.min(...values) : null;
+  };
+  v.offNoCloudSeries = rungs.map((rung) => rung.shadow?.offNoCloud ?? null);
+  v.offNoShadowSeries = rungs.map((rung) => rung.shadow?.offNoShadow ?? null);
+  v.offNoCloudSpread = spread(v.offNoCloudSeries);
+  v.offNoShadowSpread = spread(v.offNoShadowSeries);
+  v.offNoCloudVariesWithSun =
+    finite(v.offNoCloudSeries).length > 1 &&
+    new Set(finite(v.offNoCloudSeries)).size > 1;
 
   // ── THE AMBIENT/DIRECT SPLIT, per rung — reported, not gated (CO-17) ──────
   // See the derivation block above `predictShadowContrastRatio`. Three columns
@@ -1435,17 +1705,27 @@ export function judgeEclipseCloudResponse(run) {
   const laneShare = Number.isFinite(cloud.deckAerialShare)
     ? cloud.deckAerialShare
     : null;
-  const fittedShare = laneShare ?? DECK_AERIAL_SHARE_CROSS_RUN;
+  // CO-19: the `cloudAerialStrength = 0` leg makes the share a SINGLE-RUN
+  // number, so it outranks the cross-run constant whenever the leg ran. The
+  // precedence is explicit rather than incidental — an explicitly supplied
+  // share still wins over both, because a caller that states one is asserting
+  // something the leg cannot contradict.
+  const singleRunShare = v.deckAerialShareSingleRun ?? null;
+  const fittedShare =
+    laneShare ?? singleRunShare ?? DECK_AERIAL_SHARE_CROSS_RUN;
   v.deckTonemapFit = {
     aerialShare: fittedShare,
     aerialShareSource:
-      laneShare === null
-        ? `cross-run subtraction, ${DECK_AERIAL_SHARE_CROSS_RUN_PROVENANCE}`
-        : "lane-supplied (a cloudAerialStrength = 0 diagnostic leg)",
+      laneShare !== null
+        ? "lane-supplied (a cloudAerialStrength = 0 diagnostic leg)"
+        : singleRunShare !== null
+          ? `single-run subtraction against this run's own cloudAerialStrength = 0 leg: s = (rho - R)/(rho - F) = (${v.deckPureRatio} - ${v.deckRatioAtDeepest})/(${v.deckPureRatio} - ${deepest?.published?.factor})`
+          : `cross-run subtraction, ${DECK_AERIAL_SHARE_CROSS_RUN_PROVENANCE}`,
     // The scaffolding half: a lane that runs the tint-free leg hands its own
     // share in and this stops being a cross-run number. Kept reachable rather
     // than assumed absent — Principle 7.
     laneSuppliedShare: laneShare,
+    singleRunShare,
     entries: rungs.map((rung) => {
       const factor = rung.published?.factor;
       const measured = ratio(
@@ -1498,6 +1778,14 @@ export function judgeEclipseCloudResponse(run) {
     footprint: rungs[0]?.shadow?.footprintOff ?? null,
     groundOnly: v.shadowGroundOnly,
     groundRetention: v.shadowGroundRetentionRatio,
+    // CO-19: the four per-rung deck-free reads, printed in full so the tell is
+    // visible in the console line rather than three levels down in the JSON.
+    // Four identical f64s IS the finding.
+    offNoCloudSeries: v.offNoCloudSeries,
+    offNoCloudSpread: v.offNoCloudSpread,
+    offNoShadowSpread: v.offNoShadowSpread,
+    offNoCloudVariesWithSun: v.offNoCloudVariesWithSun,
+    deckFreeExcessAtDeepest: v.deckFreeGroundExcessAtDeepest,
     cameraHeight: rungs[0]?.shadow?.cameraHeight ?? null,
     pitchDegrees: rungs[0]?.shadow?.pitchDegrees ?? null,
   };

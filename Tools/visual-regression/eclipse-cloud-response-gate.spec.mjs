@@ -33,6 +33,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  BAND_MEAN_CAPTURE_DELTA,
   CLOUD_SHADOW_BEER_FLOOR,
   DECK_AERIAL_SHARE_CROSS_RUN,
   DECK_TONEMAP_ENTRY_CEILING,
@@ -46,16 +47,19 @@ import {
   ECLIPSE_RADIOMETRIC_FLOOR,
   ENV_REFRESH_STEPS,
   REFRESH_COST_MIN_SEGMENTS_PER_LEG,
+  SHADOW_GROUND_BRIGHTNESS_FLOOR,
   SWEEP_FRAMES,
   SWEEP_PEAK_OBSCURATION,
   SWEEP_RISING_FRAMES,
   computeRefreshCost,
   countBucketChanges,
   deckDisplayedRatio,
+  deckFreeGroundDimTolerance,
   eclipseCloudExitCode,
   eclipseCloudGateLabel,
   extractShadowableDimming,
   fitDeckAerialShare,
+  fitDeckAerialShareFromPureDeck,
   fitDeckTonemapEntry,
   idealSweepBuckets,
   judgeEclipseCloudResponse,
@@ -335,22 +339,54 @@ test("C6 the engine refresh band's CEILING is the arithmetic maximum", () => {
 // D. The fold — every gating predicate must be able to FAIL
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The re-derived deck the reference fixture models (CO-17): a compressive
+ * Reinhard core at tonemap entry `e` plus an aerial tint that is exactly linear
+ * in F. Until CO-19 the fixture's deck was LINEAR, which made the
+ * `cloudAerialStrength = 0` leg unrepresentable — with rho == R the share is
+ * 0/0 and the pre-registered 0.635 is unreachable — so the fixture now carries
+ * the shape the fourth run actually measured.
+ */
+const REFERENCE_DECK_TONEMAP_ENTRY = 1.01;
+
 /** A run in which every gate passes. Mutants below break exactly one thing. */
 function passingRun() {
-  const rungs = ECLIPSE_CLOUD_BANDS.ladderTargets.map((target) => {
+  const rungs = ECLIPSE_CLOUD_BANDS.ladderTargets.map((target, rungIndex) => {
     const factor = predictFactor(target);
     const directional = predictDirectional(target);
     // Deck: the un-eclipsed contribution is 0.20; the eclipsed one is the
-    // linear factor times it (a display transform would lift this, and the
-    // band admits that, but the linear value is the honest stand-in).
+    // TWO-TERM display model CO-17 derived — (1-s)*rho + s*F with
+    // e = 1.01 and s = DECK_AERIAL_SHARE_CROSS_RUN — because that is the shape
+    // the fourth Edge run measured and the shape the CO-19 legs decompose.
+    // `pureRatio` is the same deck with the tint dial at 0, i.e. what the
+    // diagnostic leg reads.
     const offContribution = 0.2;
-    const onContribution = offContribution * factor;
+    const pureRatio = deckDisplayedRatio(
+      factor,
+      REFERENCE_DECK_TONEMAP_ENTRY,
+      0,
+    );
+    const onContribution =
+      offContribution *
+      deckDisplayedRatio(
+        factor,
+        REFERENCE_DECK_TONEMAP_ENTRY,
+        DECK_AERIAL_SHARE_CROSS_RUN,
+      );
     // Ground: unshadowed 0.5; shadowed = unshadowed * mix(1, 0.35, strength).
     // The eclipse scales BOTH bands by `factor`, which cancels in the ratio.
     // `offNoCloud` is the DECK-FREE ground: lane B now flies below the deck
     // floor, so turning the deck on leaves the ground band essentially
-    // untouched and the retention ratio sits at ~1.
-    const offNoCloud = 0.51;
+    // untouched and the retention ratio sits at ~1. `onNoCloud` is CO-19's
+    // eclipse-ON twin of it, and under the published laws it is exactly
+    // `offNoCloud * factor` — the globe's own light path dimming correctly.
+    // The four rungs are 54 minutes apart and the lane's camera is sun-locked
+    // in HEADING only, so the local sun ELEVATION does change and a deck-free
+    // ground band must move with it. The fixture makes it move, because a
+    // fixture that repeated one value would model the very defect
+    // `offNoCloudVariesWithSun` exists to detect (CO-19).
+    const offNoCloud = 0.51 + 0.01 * rungIndex;
+    const onNoCloud = offNoCloud * factor;
     const offNoShadow = 0.5;
     const offShadow = offNoShadow * shadowContrast(1.0);
     const onNoShadow = offNoShadow * factor;
@@ -384,8 +420,21 @@ function passingRun() {
         onContribution,
         samples: 20000,
       },
+      // CO-19's lane-A diagnostic leg, deepest rung only — the same difference
+      // image with the aerial tint dial at 0, so its ratio IS the pure deck
+      // ratio rho and the share falls out of this one run by subtraction.
+      deckAerialZero:
+        target === SWEEP_PEAK_OBSCURATION
+          ? {
+              aerialStrength: 0,
+              offContribution,
+              onContribution: offContribution * pureRatio,
+              samples: 20000,
+            }
+          : null,
       shadow: {
         offNoCloud,
+        onNoCloud,
         offNoShadow,
         offShadow,
         onNoShadow,
@@ -488,7 +537,12 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
   // Membership is pinned so a gate cannot be added or removed by accident.
   // 25 -> 26 at CO-17: `shadowContrastModelIsBoundedByDirectional`, the
   // arithmetic property that keeps the shadow invariant from moving outward.
-  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 26);
+  // 26 -> 28 at CO-19: the two pre-registered fifth-run legs,
+  // `deckPureRatioInBand` (lane A's tint-free deck ratio) and
+  // `deckFreeGroundDimsByFactor` (lane B's deck-free attribution).
+  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 28);
+  // 4 -> 5 at CO-19: `offNoCloudVariesWithSun`, the instrument tell.
+  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 5);
   assert.equal(ECLIPSE_CLOUD_PARITY_PREDICATES.length, 2);
   // Nothing is scored without a declared blindness domain — an unmapped
   // predicate would be silently unquarantinable.
@@ -932,6 +986,7 @@ test("H1 the first run's EXACT shape — shadow-blind + deck out of band — is 
       "shadowNonVacuous",
       "shadowContrastInvariant",
       "shadowContrastRejectsAlternativeDesign",
+      "deckFreeGroundDimsByFactor",
     ].sort(),
     "ONLY the shadow lane's own predicates may be quarantined",
   );
@@ -963,6 +1018,7 @@ test("H2 a blind DECK lane leaves the shadow and IBL lanes gating", () => {
       "deckRatioInBand",
       "deckRatioMonotone",
       "deckBackgroundIsDark",
+      "deckPureRatioInBand",
     ].sort(),
   );
   assert.deepEqual(verdict.failedPredicates, ["iblRecovers"]);
@@ -1370,6 +1426,47 @@ test("F5 lane B publishes the producer / consumer / footprint telemetry", () => 
   assert.match(probe, /SHADOW telemetry: producerActive off\/on/);
 });
 
+test("F6 the probe runs BOTH CO-19 legs and prints the tell unrounded", () => {
+  const probe = fs
+    .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+
+  // Lane B's eclipse-ON deck-free twin, at the same instant and over the same
+  // dials as the OFF control it is compared against.
+  assert.match(probe, /const bOnNoCloud = groundBand\(/);
+  assert.match(probe, /B\$\{index\}-eclipseOn-cloudsOff/);
+  assert.match(probe, /onNoCloud: bOnNoCloud\.mean,/);
+
+  // Lane A's `cloudAerialStrength = 0` leg, at the deepest rung, over the dial
+  // the shader actually reads.
+  assert.match(
+    probe,
+    /const aerialZeroDials = \{ cloudAerialStrength: 0\.0 \};/,
+  );
+  assert.match(probe, /A\$\{index\}-aerial0-eclipseOn-cloudsOn/);
+  assert.match(probe, /deckAerialZero: aerialZero,/);
+  assert.match(
+    readEngine("Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts"),
+    /config\.cloudAerialStrength \?\? 1\.0; \/\/ 91 aerialStrength/,
+  );
+  assert.match(
+    readEngine("Scene/CloudVolumetrics.js"),
+    /this\.cloudAerialStrength = options\.cloudAerialStrength \?\? 1\.0;/,
+  );
+  // The dial is RE-PINNED on every configure, so the diagnostic leg cannot leak
+  // into the captures that follow it — the dials live on a persistent object.
+  assert.match(
+    probe,
+    /cloudAerialStrength: 1\.0,\n\s*\.\.\.cfg\.determinismDials,/,
+  );
+
+  // The tell is printed UNROUNDED: four identical f64s IS the discriminator,
+  // and `r3()` would erase it.
+  assert.match(probe, /SHADOW deck-free series: offNoCloud/);
+  assert.match(probe, /\(t\.offNoCloudSeries \?\? \[\]\)\.join\(", "\)/);
+  assert.match(probe, /DECK aerial-zero leg: pure ratio/);
+});
+
 test("F4 the probe's cost legs are interleaved and both pay a warm-up", () => {
   const probe = fs
     .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
@@ -1749,6 +1846,13 @@ test("J7 a run whose residue UNDER-DIMS fails only the contrast gate, and the mo
     rung.shadow.onShadow =
       ((1 - strength * (1 - beer)) * litOn + floorOn) * scale;
     rung.shadow.offNoCloud = rung.shadow.offNoShadow / 1.02;
+    // CO-19: this fixture models the CLOUD-DRIVEN branch of the attribution —
+    // the residue appears only once the deck is in the scene, so the DECK-FREE
+    // band still dims by exactly F and `deckFreeGroundDimsByFactor` stays
+    // green. L3 injects the other branch (a globe-path residue) and requires
+    // the new gate to catch it, which is what makes this one an attribution
+    // rather than a restatement of the contrast fail.
+    rung.shadow.onNoCloud = rung.shadow.offNoCloud * factor;
   }
   const verdict = judgeEclipseCloudResponse(run);
   assert.deepEqual(verdict.structuralReasons, []);
@@ -1893,14 +1997,44 @@ test("K4 the fold publishes the re-fit, reported-only, with its provenance", () 
     ),
     "a cross-run input must never gate",
   );
+  // CO-19: the reference run now RUNS the `cloudAerialStrength = 0` leg, so
+  // the share is a SINGLE-RUN number and the cross-run constant has become the
+  // FALLBACK it was always meant to be. Both paths are pinned, each on a run
+  // that actually takes it — the scaffolding half of this test is now the
+  // shipped half.
   const verdict = judgeEclipseCloudResponse(passingRun());
-  assert.equal(verdict.deckTonemapFit.aerialShare, DECK_AERIAL_SHARE_CROSS_RUN);
+  assert.ok(
+    Math.abs(verdict.deckTonemapFit.aerialShare - DECK_AERIAL_SHARE_CROSS_RUN) <
+      1e-9,
+    "the single-run leg must REPRODUCE the cross-run number it replaces",
+  );
   assert.equal(verdict.deckTonemapFit.laneSuppliedShare, null);
   assert.ok(
-    verdict.deckTonemapFit.aerialShareSource.includes("cross-run subtraction"),
+    verdict.deckTonemapFit.aerialShareSource.includes("single-run subtraction"),
   );
-  // The scaffolding half: a lane that runs its own `cloudAerialStrength = 0`
-  // leg overrides the cross-run number and the fit stops being cross-run.
+
+  // The cross-run FALLBACK, on a run whose leg did not happen.
+  const noLeg = clone(passingRun());
+  for (const rung of noLeg.cloudLanes.rungs) {
+    rung.deckAerialZero = null;
+  }
+  const noLegVerdict = judgeEclipseCloudResponse(noLeg);
+  assert.equal(
+    noLegVerdict.deckTonemapFit.aerialShare,
+    DECK_AERIAL_SHARE_CROSS_RUN,
+  );
+  assert.equal(noLegVerdict.deckTonemapFit.singleRunShare, null);
+  assert.ok(
+    noLegVerdict.deckTonemapFit.aerialShareSource.includes(
+      "cross-run subtraction",
+    ),
+  );
+  // ...and a leg that simply did not run is a NAMED FAIL, not a silent
+  // quarantine. The probe captures it unconditionally, so a null here is an
+  // instrument defect and must be actionable rather than absorbed.
+  assert.deepEqual(noLegVerdict.failedPredicates, ["deckPureRatioInBand"]);
+
+  // An explicitly supplied share still outranks both.
   const supplied = clone(passingRun());
   supplied.cloudLanes.deckAerialShare = 0;
   const suppliedVerdict = judgeEclipseCloudResponse(supplied);
@@ -1908,21 +2042,475 @@ test("K4 the fold publishes the re-fit, reported-only, with its provenance", () 
   assert.ok(
     suppliedVerdict.deckTonemapFit.aerialShareSource.includes("lane-supplied"),
   );
-  // The reference fixture's deck is exactly LINEAR in the factor (no tonemap),
-  // so with the share removed the inversion returns the entry a linear deck
-  // has: ZERO. `e = 0` is Reinhard's own linear limit, not a fabrication.
+
+  // A LINEAR deck — built explicitly now that the fixture carries the two-term
+  // shape — inverts to ZERO with the share removed. `e = 0` is Reinhard's own
+  // linear limit, not a fabrication.
+  const linear = clone(passingRun());
+  linear.cloudLanes.deckAerialShare = 0;
+  for (const rung of linear.cloudLanes.rungs) {
+    rung.deck.onContribution =
+      rung.deck.offContribution * rung.published.factor;
+  }
   assert.ok(
-    Math.abs(suppliedVerdict.deckTonemapFit.entries[3].tonemapEntry) < 1e-12,
+    Math.abs(
+      judgeEclipseCloudResponse(linear).deckTonemapFit.entries[3].tonemapEntry,
+    ) < 1e-12,
     "a linear deck must invert to e = 0",
   );
   // Below the linear factor there is no compressive entry at all, and the
   // inversion says so rather than returning a negative one.
-  const belowLinear = clone(passingRun());
-  belowLinear.cloudLanes.deckAerialShare = 0;
+  const belowLinear = clone(linear);
   belowLinear.cloudLanes.rungs[3].deck.onContribution *= 0.9;
   assert.equal(
     judgeEclipseCloudResponse(belowLinear).deckTonemapFit.entries[3]
       .tonemapEntry,
     null,
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L. THE TWO PRE-REGISTERED FIFTH-RUN LEGS (CO-19)
+//
+// CO-17 discharged both fourth-run deferrals by derivation and pre-registered
+// exactly two probe legs for the fifth Edge run, plus one instrument tell:
+//
+//   1. `onNoCloud` — the eclipse-ON twin of lane B's deck-free ground control,
+//      at the same instant per rung. It ATTRIBUTES the under-dimming residue
+//      CO-17 measured: == F exonerates the globe's own light path and makes the
+//      residue cloud-driven, > F indicts the globe path and exonerates the
+//      cloud subsystem. Neither branch was measurable before, because every
+//      band the fourth run had was captured with the deck ON.
+//   2. `cloudAerialStrength = 0` on lane A — the tint dial zeroed for one extra
+//      deepest-rung capture pair, so the displayed ratio IS the pure deck ratio
+//      rho and `e` reads off a SINGLE run with no cross-run input.
+//      Pre-registered: 0.635 +/- 0.01.
+//   3. the tell — `offNoCloud` read bit-identical at all four rungs, 54 minutes
+//      apart, while `offNoShadow` moved +3.3%. Reported, never gating.
+//
+// These tests pin both tolerance derivations, the attribution arithmetic, and
+// the mutants: a tolerance loose enough to admit the globe-path excess must
+// differ from the shipped one, and a fit that IGNORES the leg's share must not
+// reproduce `e`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Rebuilds one run's ground bands with CO-17's measured residue — a term worth
+ * 50.7% of the band that dims as F^0.708 instead of F. `alsoDeckFree` chooses
+ * WHICH branch of the attribution the fixture models: false puts the residue
+ * only in the deck-lit bands (cloud-driven), true puts it in the deck-free
+ * control as well (the globe's own light path).
+ */
+function injectUnderDimmingResidue(run, { alsoDeckFree }) {
+  const beer = CLOUD_SHADOW_BEER_FLOOR;
+  const residueShare = 0.507493;
+  const direct = 1 - residueShare;
+  for (const rung of run.cloudLanes.rungs) {
+    const factor = rung.published.factor;
+    const strength = rung.published.shadowStrength;
+    const litOff = direct;
+    const litOn = direct * factor;
+    const floorOff = residueShare;
+    const floorOn = residueShare * Math.pow(factor, 0.708);
+    const scale = 0.5 / (litOff + floorOff);
+    rung.shadow.offNoShadow = (litOff + floorOff) * scale;
+    rung.shadow.offShadow = (beer * litOff + floorOff) * scale;
+    rung.shadow.onNoShadow = (litOn + floorOn) * scale;
+    rung.shadow.onShadow =
+      ((1 - strength * (1 - beer)) * litOn + floorOn) * scale;
+    rung.shadow.offNoCloud = rung.shadow.offNoShadow / 1.02;
+    rung.shadow.onNoCloud = alsoDeckFree
+      ? (rung.shadow.offNoCloud * (litOn + floorOn)) / (litOff + floorOff)
+      : rung.shadow.offNoCloud * factor;
+  }
+}
+
+test("L1 the deck-free tolerance is PROPAGATED from the band it was measured on", () => {
+  // A second implementation, written from the partial derivatives rather than
+  // from the factored form the module ships.
+  const secondImplementation = (uOff, uOn) =>
+    BAND_MEAN_CAPTURE_DELTA * (1 / uOff) +
+    BAND_MEAN_CAPTURE_DELTA * (uOn / (uOff * uOff));
+  for (const uOff of [0.2, 0.2750603921572111, 0.4, 0.75]) {
+    for (const r of [0.2, 0.464228, 0.88791, 1.0]) {
+      assert.ok(
+        Math.abs(
+          deckFreeGroundDimTolerance(uOff, r) -
+            secondImplementation(uOff, uOff * r),
+        ) < 1e-12,
+        `two implementations disagree at U_off=${uOff}, r=${r}`,
+      );
+    }
+  }
+
+  // The fourth run's OWN deck-free band, and the number the attribution has to
+  // resolve there: 1.126131*F - F = 0.0585, i.e. 2.75x the tolerance.
+  const F = predictFactor(SWEEP_PEAK_OBSCURATION);
+  const tol = deckFreeGroundDimTolerance(0.2750603921572111, F);
+  assert.equal(Number(tol.toFixed(5)), 0.02129);
+  assert.ok((1.126131 * F - F) / tol > 2.5);
+
+  // The CAP is not a choice — it is the loosest tolerance the structural floor
+  // can ever admit, and the band records exactly that arithmetic.
+  const cap = ECLIPSE_CLOUD_BANDS.deckFreeGroundDimToleranceCap.hi;
+  assert.equal(
+    cap,
+    (BAND_MEAN_CAPTURE_DELTA / SHADOW_GROUND_BRIGHTNESS_FLOOR) * 2,
+  );
+  assert.equal(Number(cap.toFixed(5)), 0.05333);
+  assert.equal(
+    deckFreeGroundDimTolerance(0.0001, 1),
+    cap,
+    "a band below the vacuity floor must not buy itself a wider gate",
+  );
+
+  // Degenerate inputs return null rather than a plausible-looking number.
+  assert.equal(deckFreeGroundDimTolerance(0, 0.5), null);
+  assert.equal(deckFreeGroundDimTolerance(0.3, Number.NaN), null);
+
+  // Both constants the derivation stands on ARE the ones the bands use, so the
+  // tolerance and the bands bounding it cannot drift apart.
+  assert.equal(
+    ECLIPSE_CLOUD_BANDS.determinismDelta.hi,
+    BAND_MEAN_CAPTURE_DELTA,
+  );
+  assert.equal(
+    ECLIPSE_CLOUD_BANDS.shadowGroundBrightness.lo,
+    SHADOW_GROUND_BRIGHTNESS_FLOOR,
+  );
+});
+
+test("L2 MUTANT — a tolerance that admits the globe-path excess is required to differ", () => {
+  const run = clone(passingRun());
+  // CO-17's measured residue law, applied to the DECK-FREE band: the globe's
+  // own light path retaining ~12.6% too much brightness at the deepest rung.
+  for (const rung of run.cloudLanes.rungs) {
+    const F = rung.published.factor;
+    rung.shadow.onNoCloud =
+      rung.shadow.offNoCloud * (0.492507 * F + 0.507493 * Math.pow(F, 0.708));
+  }
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.deepEqual(verdict.structuralReasons, []);
+  assert.deepEqual(verdict.failedPredicates, ["deckFreeGroundDimsByFactor"]);
+  const deepest =
+    verdict.deckFreeGroundDim[verdict.deckFreeGroundDim.length - 1];
+  assert.ok(
+    deepest.overFactor > 1.12 && deepest.overFactor < 1.14,
+    `the injected excess must reproduce the fourth run's 1.126: ${deepest.overFactor}`,
+  );
+
+  // THE MUTANT: the same comparison with a hand-picked 10% tolerance. It ADMITS
+  // the excess, which is what makes the propagated tolerance load-bearing
+  // rather than decorative.
+  assert.ok(
+    Math.abs(deepest.delta) <= 0.1,
+    "the mutant tolerance must admit what the shipped gate rejects",
+  );
+  assert.ok(Math.abs(deepest.delta) > deepest.tolerance);
+
+  // ...and the tolerance cannot simply be REMOVED either: a run perturbed by a
+  // single eight-bit code — capture noise the instrument cannot even resolve —
+  // must still pass.
+  const noisy = clone(passingRun());
+  for (const rung of noisy.cloudLanes.rungs) {
+    rung.shadow.onNoCloud += BAND_MEAN_CAPTURE_DELTA;
+  }
+  const noisyVerdict = judgeEclipseCloudResponse(noisy);
+  assert.equal(
+    noisyVerdict.deckFreeGroundDimsByFactor,
+    true,
+    "one code of capture noise must not fail the attribution",
+  );
+  assert.ok(noisyVerdict.deckFreeGroundDim.every((entry) => entry.delta !== 0));
+});
+
+test("L3 the leg SPLITS the candidates — cloud-driven vs globe-driven differ by exactly one gate", () => {
+  // (a) CLOUD-DRIVEN: the residue appears only once the deck is in the scene,
+  //     so the deck-free band still dims by exactly F.
+  const cloudDriven = clone(passingRun());
+  injectUnderDimmingResidue(cloudDriven, { alsoDeckFree: false });
+  const cloudVerdict = judgeEclipseCloudResponse(cloudDriven);
+  assert.deepEqual(cloudVerdict.structuralReasons, []);
+  assert.deepEqual(cloudVerdict.failedPredicates, ["shadowContrastInvariant"]);
+  assert.equal(cloudVerdict.deckFreeGroundDimsByFactor, true);
+  assert.ok(
+    Math.abs(cloudVerdict.deckFreeGroundExcessAtDeepest - 1) < 1e-9,
+    "the globe's own light path is exonerated",
+  );
+
+  // (b) GLOBE-DRIVEN: the SAME residue also carried by the deck-free control.
+  const globeDriven = clone(passingRun());
+  injectUnderDimmingResidue(globeDriven, { alsoDeckFree: true });
+  const globeVerdict = judgeEclipseCloudResponse(globeDriven);
+  assert.deepEqual(globeVerdict.structuralReasons, []);
+  assert.deepEqual(globeVerdict.failedPredicates.sort(), [
+    "deckFreeGroundDimsByFactor",
+    "shadowContrastInvariant",
+  ]);
+  assert.ok(globeVerdict.deckFreeGroundExcessAtDeepest > 1.12);
+
+  // THE ATTRIBUTION: two runs whose SCORED shadow bands are bit-identical, told
+  // apart by exactly one predicate. Before this leg they returned one verdict.
+  for (const key of ["offNoShadow", "offShadow", "onNoShadow", "onShadow"]) {
+    assert.equal(
+      cloudDriven.cloudLanes.rungs[3].shadow[key],
+      globeDriven.cloudLanes.rungs[3].shadow[key],
+      `${key} must be identical between the two branches`,
+    );
+  }
+  assert.equal(
+    cloudVerdict.shadowContrastRatioAtDeepest,
+    globeVerdict.shadowContrastRatioAtDeepest,
+  );
+  assert.deepEqual(
+    globeVerdict.failedPredicates.filter(
+      (name) => !cloudVerdict.failedPredicates.includes(name),
+    ),
+    ["deckFreeGroundDimsByFactor"],
+  );
+});
+
+test("L4 four bit-identical deck-free reads set the TELL, and it never gates", () => {
+  assert.ok(
+    ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.includes("offNoCloudVariesWithSun"),
+  );
+  assert.ok(
+    !ECLIPSE_CLOUD_GATE_PREDICATES.includes("offNoCloudVariesWithSun"),
+    "an instrument investigation is not a product verdict",
+  );
+
+  // A lane that DOES re-capture per rung reads true.
+  const healthy = judgeEclipseCloudResponse(passingRun());
+  assert.equal(healthy.offNoCloudVariesWithSun, true);
+  assert.ok(healthy.offNoCloudSpread > 0);
+
+  // The fourth run VERBATIM: the deck-free control bit-identical at all four
+  // rungs while the deck-lit band moved +3.3% over the same 54 minutes.
+  const run = clone(passingRun());
+  const stale = 0.2750603921572111;
+  const moving = [0.31877, 0.3221, 0.3257, 0.32925];
+  run.cloudLanes.rungs.forEach((rung, index) => {
+    rung.shadow.offNoCloud = stale;
+    rung.shadow.onNoCloud = stale * rung.published.factor;
+    rung.shadow.offNoShadow = moving[index];
+    rung.shadow.offShadow = moving[index] * shadowContrast(1);
+    rung.shadow.onNoShadow = moving[index] * rung.published.factor;
+    rung.shadow.onShadow =
+      rung.shadow.onNoShadow * shadowContrast(rung.published.shadowStrength);
+  });
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.equal(
+    verdict.offNoCloudVariesWithSun,
+    false,
+    "four identical f64s is the tell",
+  );
+  assert.equal(verdict.offNoCloudSpread, 0);
+  assert.ok(
+    verdict.offNoShadowSpread > 0.01,
+    "the comparison series must move, or the tell means nothing",
+  );
+  assert.equal(
+    Number((moving[3] / moving[0]).toFixed(3)),
+    1.033,
+    "the fourth run's +3.3%",
+  );
+
+  // It is REPORTED, so the run still certifies everything it can — including
+  // the attribution the same four captures feed.
+  assert.ok(!verdict.failedPredicates.includes("offNoCloudVariesWithSun"));
+  assert.deepEqual(verdict.failedPredicates, []);
+
+  // ...and all four values reach the source the console line prints from.
+  assert.deepEqual(verdict.shadowTelemetry.offNoCloudSeries, [
+    stale,
+    stale,
+    stale,
+    stale,
+  ]);
+  assert.equal(verdict.shadowTelemetry.offNoCloudVariesWithSun, false);
+});
+
+test("L5 the aerial share and e fall out of ONE run via the cloudAerialStrength = 0 leg", () => {
+  const F = predictFactor(SWEEP_PEAK_OBSCURATION);
+  // R = (1-s)*rho + s*F  =>  s = (rho - R)/(rho - F), exactly, for every
+  // admissible (s, e) — no fitting and no cross-run input.
+  for (const s of [0, 0.25, 0.5, DECK_AERIAL_SHARE_CROSS_RUN, 0.95]) {
+    for (const e of [0.1, 1.01, 1.6]) {
+      const rho = deckDisplayedRatio(F, e, 0);
+      const R = deckDisplayedRatio(F, e, s);
+      assert.ok(
+        Math.abs(fitDeckAerialShareFromPureDeck(F, R, rho) - s) < 1e-9,
+        `share round trip failed at s=${s}, e=${e}`,
+      );
+      // ...and the tonemap entry reads off the tint-free leg ALONE, with no
+      // share involved at any point.
+      assert.ok(Math.abs(fitDeckTonemapEntry(F, rho, 0) - e) < 1e-9);
+    }
+  }
+
+  // A deck with no compression has rho == F, where the split is not
+  // identifiable at all — null, not a fabricated number.
+  assert.equal(fitDeckAerialShareFromPureDeck(F, F, F), null);
+  assert.equal(
+    fitDeckAerialShareFromPureDeck(F, 0.45, 0.6),
+    null,
+    "a share at or above 1 makes the tonemap inversion unsolvable",
+  );
+  assert.equal(
+    fitDeckAerialShareFromPureDeck(F, 0.7, 0.6),
+    null,
+    "a negative share is not a share",
+  );
+
+  // On the reference run the SINGLE-run number reproduces the cross-run
+  // constant it replaces, and the leg's own entry is the fixture's entry.
+  const verdict = judgeEclipseCloudResponse(passingRun());
+  assert.ok(
+    Math.abs(verdict.deckAerialShareSingleRun - DECK_AERIAL_SHARE_CROSS_RUN) <
+      1e-9,
+  );
+  assert.ok(
+    Math.abs(
+      verdict.deckTonemapEntryFromPureLeg - REFERENCE_DECK_TONEMAP_ENTRY,
+    ) < 1e-9,
+  );
+  assert.ok(
+    Math.abs(
+      verdict.deckTonemapFit.entries[3].tonemapEntry -
+        REFERENCE_DECK_TONEMAP_ENTRY,
+    ) < 1e-9,
+  );
+});
+
+test("L6 the pure-deck band IS CO-17's pre-registration, and it is a band on e", () => {
+  const b = ECLIPSE_CLOUD_BANDS.deckPureDeckRatio;
+  assert.equal(b.lo, 0.625);
+  assert.equal(b.hi, 0.645);
+  assert.equal(
+    Number(((b.lo + b.hi) / 2).toFixed(3)),
+    0.635,
+    "the pre-registered centre, verbatim",
+  );
+
+  const F = predictFactor(SWEEP_PEAK_OBSCURATION);
+  const entryAt = (rho) => fitDeckTonemapEntry(F, rho, 0);
+  assert.equal(Number(entryAt(b.lo).toFixed(4)), 0.9235);
+  assert.equal(Number(entryAt(b.hi).toFixed(4)), 1.0969);
+
+  // It brackets the cross-run per-rung spread e = [1.0033, 1.0045, 1.0127]...
+  for (const e of [1.0033, 1.0045, 1.0127]) {
+    const rho = deckDisplayedRatio(F, e, 0);
+    assert.ok(rho >= b.lo && rho <= b.hi, `e = ${e} must land in the band`);
+  }
+
+  // ...while excluding BOTH rival readings by a wide margin: a linear deck
+  // (e = 0) and the third pass's e = 7.70.
+  const halfWidth = (b.hi - b.lo) / 2;
+  const centre = (b.hi + b.lo) / 2;
+  const linear = deckDisplayedRatio(F, 0, 0);
+  const thirdPass = deckDisplayedRatio(F, 7.7, 0);
+  assert.equal(Number(linear.toFixed(6)), 0.464228);
+  assert.equal(Number(thirdPass.toFixed(6)), 0.88288);
+  assert.ok((centre - linear) / halfWidth > 17);
+  assert.ok((thirdPass - centre) / halfWidth > 24);
+
+  // And it REFINES the composited band rather than contradicting it.
+  const outer = ECLIPSE_CLOUD_BANDS.deckDisplayedRatio;
+  assert.ok(b.lo > outer.lo && b.hi < outer.hi);
+});
+
+test("L7 MUTANT — a fit that IGNORES the leg's share re-derives the WRONG entry", () => {
+  const verdict = judgeEclipseCloudResponse(passingRun());
+  const F = predictFactor(SWEEP_PEAK_OBSCURATION);
+  const measured = verdict.deckTonemapFit.entries[3].measured;
+
+  // The shipped fit consumes the share the leg produced.
+  assert.ok(
+    Math.abs(verdict.deckTonemapFit.aerialShare - DECK_AERIAL_SHARE_CROSS_RUN) <
+      1e-9,
+  );
+  assert.ok(
+    Math.abs(
+      verdict.deckTonemapFit.entries[3].tonemapEntry -
+        REFERENCE_DECK_TONEMAP_ENTRY,
+    ) < 1e-9,
+  );
+
+  // THE MUTANT: the same inversion with the share DROPPED — the third pass's
+  // single-term form. It must not reproduce the entry.
+  const mutant = fitDeckTonemapEntry(F, measured, 0);
+  assert.ok(
+    Math.abs(mutant - REFERENCE_DECK_TONEMAP_ENTRY) > 0.2,
+    `the share must be load-bearing, the mutant read ${mutant}`,
+  );
+  // It is reported alongside, so the difference is visible rather than lost.
+  assert.ok(
+    Math.abs(
+      verdict.deckTonemapFit.entries[3].tonemapEntrySingleTerm - mutant,
+    ) < 1e-12,
+  );
+
+  // The pure-deck ratio the pre-registered band scores comes from the LEG, and
+  // the mutant's entry cannot reproduce it — which is why the band gates the
+  // leg rather than the fit.
+  assert.ok(
+    Math.abs(
+      verdict.deckTonemapFit.entries[3].pureDeckRatio - verdict.deckPureRatio,
+    ) < 1e-9,
+  );
+  assert.ok(
+    Math.abs(deckDisplayedRatio(F, mutant, 0) - verdict.deckPureRatio) > 0.05,
+  );
+});
+
+test("L8 both CO-19 gates can FAIL in isolation, each scoped to its own lane", () => {
+  assert.equal(ECLIPSE_CLOUD_PREDICATE_LANES.deckPureRatioInBand, "deck");
+  assert.equal(
+    ECLIPSE_CLOUD_PREDICATE_LANES.deckFreeGroundDimsByFactor,
+    "shadow",
+  );
+
+  // (a) the leg reads a LINEAR deck — e = 0, rho = 0.4642, 17 half-widths below.
+  expectFailure(
+    (run) => {
+      const deepest = run.cloudLanes.rungs[run.cloudLanes.rungs.length - 1];
+      deepest.deckAerialZero.onContribution =
+        deepest.deckAerialZero.offContribution * deepest.published.factor;
+    },
+    ["deckPureRatioInBand"],
+  );
+
+  // (b) the leg reproduces the third pass's e ~ 7.70 — 24 half-widths above.
+  expectFailure(
+    (run) => {
+      const deepest = run.cloudLanes.rungs[run.cloudLanes.rungs.length - 1];
+      deepest.deckAerialZero.onContribution =
+        deepest.deckAerialZero.offContribution *
+        deckDisplayedRatio(deepest.published.factor, 7.7, 0);
+    },
+    ["deckPureRatioInBand"],
+  );
+
+  // (c) the deck-free ground UNDER-dims — the globe light path indicted.
+  expectFailure(
+    (run) => {
+      for (const rung of run.cloudLanes.rungs) {
+        rung.shadow.onNoCloud =
+          rung.shadow.offNoCloud * Math.min(1, rung.published.factor * 1.12);
+      }
+    },
+    ["deckFreeGroundDimsByFactor"],
+  );
+
+  // (d) ...and OVER-dims. The gate is two-sided: an eclipse that removes too
+  //     much light is a different defect, not a pass.
+  expectFailure(
+    (run) => {
+      for (const rung of run.cloudLanes.rungs) {
+        rung.shadow.onNoCloud =
+          rung.shadow.offNoCloud * rung.published.factor * 0.85;
+      }
+    },
+    ["deckFreeGroundDimsByFactor"],
   );
 });
