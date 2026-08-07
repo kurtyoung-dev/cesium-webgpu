@@ -2247,6 +2247,15 @@ fn sampleCloudGroundShadow(worldPos: vec3<f32>) -> f32 {
 // Enhanced Day/Night Rendering
 // ═══════════════════════════════════════════════════════════════════════
 
+// CALLER CONTRACT (NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE, CO-15): `normalEC`
+// MUST be the analytic geocentric surface normal in eye space
+// (`dayNightNormalEC` in `fragmentMain`), never the interpolated mesh normal
+// `input.v_normalEC` — which is a CONSTANT on normal-less terrain and made this
+// whole term globally uniform. See the block above the call site.
+// STILL DIVERGENT (CLT-B4, unfixed here and MEASURABLE for the first time now
+// that the normal varies): the `+ 0.5` below centres the ramp ON the
+// terminator, where GLSL's `1 - clamp(N·L*5, 0, 1)` ramps entirely on the DAY
+// side — 0.5 vs 1.0 night alpha at N·L = 0.
 // Matches the GLSL path: czm_getLambertDiffuse * 5.0 gives a sharp
 // terminator. The 0.3 minimum keeps the night side from going pitch black
 // without city light imagery. The result is a 0..1 day factor.
@@ -4196,6 +4205,71 @@ fn fragmentMain(
   let normal = normalEC;
   let sunDir = normalize(camera.sunDirectionEC);
 
+  // ─── NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE (CO-15) ───────────────────
+  // The day/night FAMILY — the imagery day/night alpha (`dayFade`), the
+  // night-lights emission gate (`nightBlend`), the DAYNIGHT_SHADING Lambert
+  // term and `computeTerminatorGlow` — reads the ANALYTIC GEOCENTRIC surface
+  // normal recomputed here per fragment, NOT the interpolated mesh normal
+  // `input.v_normalEC`.
+  //
+  // WHY. `v_normalEC` is `octDecode(encodedNormal)` pushed through the view
+  // 3×3 (line ~1526). On terrain with no vertex normals the encoded normal is
+  // not a normal at all: `vertexMain` reads it from the `.z` of a
+  // `float32x2`-declared attribute (`WebGPUGlobeSurfacePipelines.ts:270-289`),
+  // so it is the WebGPU default 0.0 and `octDecode(0.0)` = (0, 0, -1); the
+  // quantized+webMercatorT entry point passes the literal 32896.0 = (0, 0, +1)
+  // purely to keep faces from being culled. Both are CONSTANT model-space
+  // vectors along the spin axis, so `dot(N, L)` was ONE number for the whole
+  // globe and every day/night term was globally uniform. Every provider this
+  // fork can stand up offline reports `hasVertexNormals === false`
+  // (`EllipsoidTerrainProvider.js:154`, `CustomHeightmapTerrainProvider.js:216`,
+  // `ArcGISTiledElevationTerrainProvider.js:425`), i.e. this was the DEFAULT
+  // path. Pixel-confirmed by `probe-daynight-terminator-law.mjs`'s first run
+  // (tip 6e9c997287, Batch 915): lane A measured a day-fade slope of 0.000
+  // across the fit window and returned STRUCTURAL rather than confirming the
+  // recorded `+0.5` mechanism.
+  //
+  // WEBGL'S LAW, PER TERRAIN KIND — and why this is UNCONDITIONAL.
+  // `GlobeSurfaceShaderSet.js:435-442` emits `ENABLE_VERTEX_LIGHTING` and
+  // `ENABLE_DAYNIGHT_SHADING` as MUTUALLY EXCLUSIVE arms of
+  // `if (hasVertexNormals)`. So on WebGL:
+  //   • no vertex normals → `ENABLE_DAYNIGHT_SHADING`, and `GlobeFS.glsl:595-597`
+  //     computes `normalMC = czm_geodeticSurfaceNormal(v_positionMC, vec3(0),
+  //     vec3(1))` — which with `oneOverRadiiSquared = (1,1,1)` is exactly
+  //     `normalize(v_positionMC)` — then `normalEC = czm_normal3D * normalMC`,
+  //     PER FRAGMENT. The day/night alpha at `:600` and the day/night diffuse
+  //     both consume that analytic normal.
+  //   • vertex normals → `ENABLE_VERTEX_LIGHTING`, and the day/night term does
+  //     not exist at all: `GlobeFS.glsl:600`'s `#if defined(APPLY_DAY_NIGHT_ALPHA)
+  //     && defined(ENABLE_DAYNIGHT_SHADING)` fails, so `nightBlend = 0.0`.
+  // The mesh normal is therefore NEVER the source of WebGL's day/night term on
+  // EITHER terrain kind — there is no arm of WebGL's law for which
+  // `v_normalEC` is the right answer. Recomputing analytically without a gate
+  // is the faithful shape, and it needs no new `ShaderDefine` bit: the
+  // expression sits at `//>>ifdef` depth 0 and expands identically under every
+  // define set, so no `//>>else` arm moved.
+  //   Residual, deliberately NOT closed here: WebGPU still APPLIES the ramp on
+  //   vertex-normal terrain where WebGL gates it off entirely. That is CLT-B1
+  //   finding (c) (`CLT-B1-VERTEX-NORMAL-LANE-NEEDS-A-NETWORK-LANE`), whose
+  //   render half needs a `hasVertexNormals === true` provider. Feeding the
+  //   analytic normal on that path keeps the remaining divergence to a single
+  //   axis — "the term exists at all" — instead of compounding it with a normal
+  //   WebGL never computes. The VERTEX_LIGHTING Lambert below keeps `normal`,
+  //   because THAT term really is WebGL's mesh-normal term.
+  //
+  // SPACE. `camera.modifiedModelView`'s upper-3×3 is the view rotation (RTE
+  // only offsets the translation column), so a `w = 0` transform reproduces
+  // `czm_normal3D` for the identity-model globe — the same reduction the ocean
+  // path documents at its `sphereNormalMC` derivation below, and the same 3×3
+  // the vertex stage already uses to build `v_normalEC`. `sunDir` is eye-space
+  // (`camera.sunDirectionEC`), so both operands share a frame. `v_positionMC`
+  // is the absolute ECEF position in every scene mode (the vertex stage assigns
+  // it from `position3DWC`), matching GLSL's `v_positionMC` exactly.
+  let dayNightNormalEC = normalize(
+    (camera.modifiedModelView *
+      vec4<f32>(normalize(input.v_positionMC), 0.0)).xyz,
+  );
+
   // Day/night fade factor: 0 = night, 1 = day.
   // Batch 54 — gate on `camera.enableLighting`. The WebGL GlobeFS
   // applies day/night shading inside `#ifdef ENABLE_DAYNIGHT_SHADING`,
@@ -4210,7 +4284,7 @@ fn fragmentMain(
   var dayFade: f32;
   var nightBlend: f32;
   if (camera.enableLighting > 0.5) {
-    dayFade = computeDayNightFade(normal, sunDir);
+    dayFade = computeDayNightFade(dayNightNormalEC, sunDir);
     nightBlend = 1.0 - dayFade;
   } else {
     dayFade = 1.0;
@@ -4690,7 +4764,7 @@ fn fragmentMain(
   // │   GLSL: Shaders/GlobeFS.glsl ~lines 515-524 (lighting); shadows are  │
   // │         injected by the WebGL pipeline cache via                      │
   // │         `ShadowMapShader.js`, not present in GlobeFS.glsl source.    │
-  // │ Last lockstep audit: 2026-05-19, Batch 74                            │
+  // │ Last lockstep audit: 2026-08-07, Batch 919 (CO-15 normal source)     │
   // └─────────────────────────────────────────────────────────────────────┘
   // Any change to this block MUST land with a matching change in the
   // GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
@@ -4743,6 +4817,17 @@ fn fragmentMain(
   //    The architectural difference is forced by the pipeline-cache
   //    model: WebGL injects per-config GLSL strings; WebGPU uses a
   //    fixed shader with runtime gates.
+  // 6b. **Normal source — RESOLVED, no longer a divergence (CO-15,
+  //    Batch 919).** Both backends now feed the day/night term the ANALYTIC
+  //    geocentric normal recomputed per fragment, and both feed the
+  //    VERTEX_LIGHTING term the interpolated MESH normal. Before CO-15 the
+  //    WGSL fed `input.v_normalEC` to BOTH, which on normal-less terrain is
+  //    the constant `octDecode(0.0)` = (0,0,-1) — a globally uniform
+  //    day/night term with no terminator. See the
+  //    NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE block at `dayNightNormalEC`.
+  //    STILL DIVERGENT and tracked separately: the `+0.5` ramp offset
+  //    (CLT-B4) and the vertex-normal gating split (CLT-B1 finding (c)).
+  //
   // 6. **Vertex-lighting customization.** GLSL ENABLE_VERTEX_LIGHTING
   //    path uses `u_lambertDiffuseMultiplier` and
   //    `u_vertexShadowDarkness` uniforms for tile-provider-driven
@@ -4770,7 +4855,13 @@ fn fragmentMain(
 
   // ─── Lambert diffuse lighting + shadow receive ───
   if (camera.enableLighting > 0.5) {
+    // Two N·L values, because WebGL's two lighting arms read two different
+    // normals (see the NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE block above):
+    // ENABLE_VERTEX_LIGHTING is the mesh-normal term, ENABLE_DAYNIGHT_SHADING
+    // is the analytic-normal term. Each branch below takes the one its WebGL
+    // twin takes.
     let NdotL = max(dot(normal, sunDir), 0.0);
+    let dayNightNdotL = max(dot(dayNightNormalEC, sunDir), 0.0);
     var diffuse: f32;
     if (camera.lighting.z > 0.5) {
       // Batch 77 — VERTEX_LIGHTING path: terrain has vertex normals.
@@ -4792,7 +4883,9 @@ fn fragmentMain(
       // transition, brighter ambient, separate night ambient).
       let ambient = 0.12;
       // Shadow applied to the final color below, not the Lambert term.
-      let dayDiffuse = NdotL * 0.88 + ambient;
+      // `dayNightNdotL` — WebGL's ENABLE_DAYNIGHT_SHADING diffuse reads the
+      // per-fragment analytic normal (GlobeFS.glsl:595-597), not v_normalEC.
+      let dayDiffuse = dayNightNdotL * 0.88 + ambient;
       let nightAmbient = 0.025;
       diffuse = mix(nightAmbient, dayDiffuse, dayFade);
     }
@@ -4815,7 +4908,13 @@ fn fragmentMain(
     );
 
     // The additive terminator glow contains no S2-scaled light quantity.
-    color += computeTerminatorGlow(normal, sunDir) * eclipseAbsolute;
+    // It peaks at N·L ≈ 0 — a TERMINATOR band — and the terminator is defined
+    // by the geocentric normal, not by local terrain slope, so it takes the
+    // analytic normal on both terrain kinds. (This term is WebGPU-only and has
+    // no GLSL twin to match; it is CLT-B3's audit subject. Before CO-15 it
+    // inherited the constant mesh normal and so was a uniform globe-wide tint
+    // on normal-less terrain rather than a band.)
+    color += computeTerminatorGlow(dayNightNormalEC, sunDir) * eclipseAbsolute;
   } else {
     // Raw imagery/ocean surface: S2 never reached it.
     color = color * eclipseAbsolute;
