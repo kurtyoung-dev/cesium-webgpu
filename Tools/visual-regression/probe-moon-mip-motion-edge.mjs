@@ -39,6 +39,18 @@ import {
   errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
 
+// Machine-safety watchdog (Batch 861+ fleet sweep). A probe that wedges holds a
+// headless Edge + GPU process alive indefinitely; `unref` keeps the timer from
+// extending a healthy run.
+const WATCHDOG_MS = 900_000;
+const watchdog = setTimeout(() => {
+  console.error(
+    `[probe-moon-mip-motion-edge] watchdog fired after ${WATCHDOG_MS} ms`,
+  );
+  process.exit(2);
+}, WATCHDOG_MS);
+watchdog.unref?.();
+
 export const FIXED_TIME_ISO = "2026-07-02T16:22:00Z";
 export const EXIT_CODES = Object.freeze({ PASS: 0, FAIL: 1, INCONCLUSIVE: 2 });
 export const MOON_MIP_CONTROL_MODES = Object.freeze(["normal", "force-lod0"]);

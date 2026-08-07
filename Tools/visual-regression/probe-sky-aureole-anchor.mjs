@@ -49,6 +49,18 @@ import { chromium } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 
+// Machine-safety watchdog (Batch 861+ fleet sweep). A probe that wedges holds a
+// headless Edge + GPU process alive indefinitely; `unref` keeps the timer from
+// extending a healthy run.
+const WATCHDOG_MS = 600_000;
+const watchdog = setTimeout(() => {
+  console.error(
+    `[probe-sky-aureole-anchor] watchdog fired after ${WATCHDOG_MS} ms`,
+  );
+  process.exit(2);
+}, WATCHDOG_MS);
+watchdog.unref?.();
+
 const BASE = "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
 const DAY_TIME = process.env.AUREOLE_DAY_TIME ?? "2026-06-21T15:00:00Z";

@@ -36,6 +36,18 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Machine-safety watchdog (Batch 861+ fleet sweep). A probe that wedges holds a
+// headless Edge + GPU process alive indefinitely; `unref` keeps the timer from
+// extending a healthy run.
+const WATCHDOG_MS = 600_000;
+const watchdog = setTimeout(() => {
+  console.error(
+    `[probe-webgpu-model-shadow-command-graph] watchdog fired after ${WATCHDOG_MS} ms`,
+  );
+  process.exit(2);
+}, WATCHDOG_MS);
+watchdog.unref?.();
+
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = join(dirname(fileURLToPath(import.meta.url)), "output");
 const REPORT_PATH = join(

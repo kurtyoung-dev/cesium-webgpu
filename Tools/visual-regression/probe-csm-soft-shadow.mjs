@@ -28,11 +28,52 @@
 //   - B.penumbra > A.penumbra              (PCF actually softens the edge)
 //   - B has a real shadow (umbra pixels exist → not peter-panned away)
 //   - A has a real shadow too (no acne wiping it / no full-lit)
+//   - B has a real shadow RELATIVE TO WEBGL (see below)
 //   - B.penumbra within [0.4x, 3.0x] of C.penumbra (parity ballpark)
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// UMBRA GUARD REPAIR (Batch 861+), landing the fix Batch 849 stated but did not
+// apply. Batch 849's own message:
+//
+//   "CSM ratio 0.88 versus single-map ratio 0.031, a 32x deficit that sat under
+//    that probe's ABSOLUTE umbraPx > 200 floor and shipped green for weeks.
+//    That floor should become a WebGL-relative ratio."
+//
+// It was never landed and never filed in DEFERRED_WORK, so at window end the
+// gate was still `umbraPixels > 200` on both WebGPU cells with no reference to
+// cell C at all. An absolute pixel floor cannot distinguish "the shadow is
+// there" from "the shadow is 3% of the area WebGL draws" — which is exactly
+// what shipped green. Cell C (WebGL, same scene, same sun, same ROI) is the
+// reference the deficit was measured against, so the floor is now a ratio
+// against it, with the absolute floors RETAINED as additional conjuncts.
+// A reference cell that has no shadow of its own makes the ratio meaningless,
+// so that case reports STRUCTURAL (exit 3) rather than a verdict.
+//
+// Exit: 0 PASS | 1 product FAIL | 2 watchdog or exception | 3 STRUCTURAL
 
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
+
+// Cross-backend umbra-area band. Same shape and the same rationale as the
+// existing `parityBallpark` band this probe already accepts for penumbra
+// density: backends differ in shadow-map resolution and tonemapping, so a wide
+// band. It admits the healthy 0.88 recorded on 2026-07-18 with ~4.5x margin and
+// rejects the 0.031 single-map deficit by ~8x.
+const UMBRA_RATIO_MIN = 0.25;
+const UMBRA_RATIO_MAX = 4.0;
+// The reference cell must itself have a shadow before a ratio against it means
+// anything. Same absolute floor the WebGPU cells carry.
+const REFERENCE_UMBRA_MIN = 200;
+
+const WATCHDOG_MS = 600_000;
+const watchdog = setTimeout(() => {
+  console.error(
+    `[probe-csm-soft-shadow] watchdog fired after ${WATCHDOG_MS} ms`,
+  );
+  process.exit(2);
+}, WATCHDOG_MS);
+watchdog.unref?.();
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";
 const OUT_DIR = "Tools/visual-regression/output";
@@ -57,7 +98,7 @@ const LIT_LUM = 110; // fallback >= this → fully lit
 const UMBRA_LUM = 70; // fallback <= this → fully shadowed
 // pixels in (UMBRA_LUM, LIT_LUM) → penumbra (the soft gradient)
 
-async function capture(label, { renderer, useCsm, csmSoft, webglSoft }) {
+async function capture(label, options) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
@@ -68,6 +109,18 @@ async function capture(label, { renderer, useCsm, csmSoft, webglSoft }) {
       "--disable-cache",
     ],
   });
+  try {
+    return await captureWith(browser, label, options);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function captureWith(
+  browser,
+  label,
+  { renderer, useCsm, csmSoft, webglSoft },
+) {
   const page = await browser.newPage({
     viewport: { width: 1280, height: 720 },
   });
@@ -320,7 +373,6 @@ async function capture(label, { renderer, useCsm, csmSoft, webglSoft }) {
   await page.waitForTimeout(500);
   const out = path.join(OUT_DIR, `csm-soft-${label}.png`);
   await page.screenshot({ path: out });
-  await browser.close();
   return { label, out, diagnostics, deviceErrors, messages };
 }
 
@@ -331,6 +383,14 @@ async function capture(label, { renderer, useCsm, csmSoft, webglSoft }) {
 // as probe-saved-view / probe-contact-shadows.
 async function diffPngsMasked(a, b, roi) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
+  try {
+    return await diffPngsMaskedWith(browser, a, b, roi);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function diffPngsMaskedWith(browser, a, b, roi) {
   const page = await browser.newPage();
   await page.setContent("<html><body></body></html>");
   const ba = fs.readFileSync(a).toString("base64");
@@ -371,7 +431,6 @@ async function diffPngsMasked(a, b, roi) {
     },
     { ba, bb, roi },
   );
-  await browser.close();
   return result;
 }
 
@@ -446,6 +505,20 @@ async function diffPngsMasked(a, b, roi) {
   const pcfChangesOutput = abDiff.mismatchPct > 0.05; // % of ROI pixels
   const bHasShadow = B.umbraPixels > 200; // not peter-panned away
   const aHasShadow = A.umbraPixels > 200; // not acne-wiped / fully lit
+  // WebGL-RELATIVE umbra area — the guard Batch 849 named. An absolute floor
+  // passes a WebGPU shadow that covers 3% of the area WebGL draws; this does
+  // not. Cell C is the same scene, sun and ROI, so the areas are comparable.
+  const umbraRatioB =
+    Cc.umbraPixels > 0 ? B.umbraPixels / Cc.umbraPixels : Infinity;
+  const umbraRatioA =
+    Cc.umbraPixels > 0 ? A.umbraPixels / Cc.umbraPixels : Infinity;
+  const umbraParityB =
+    umbraRatioB >= UMBRA_RATIO_MIN && umbraRatioB <= UMBRA_RATIO_MAX;
+  const umbraParityA =
+    umbraRatioA >= UMBRA_RATIO_MIN && umbraRatioA <= UMBRA_RATIO_MAX;
+  // A reference with no shadow of its own cannot anchor a ratio: that is an
+  // instrument/scene problem, not a WebGPU defect.
+  const referenceHasShadow = Cc.umbraPixels > REFERENCE_UMBRA_MIN;
   // B's soft-edge density should be in the same ballpark as WebGL's PCF
   // soft edge (C). Backends differ in resolution/tonemap, so allow a wide
   // band.
@@ -467,20 +540,40 @@ async function diffPngsMasked(a, b, roi) {
     `  A.umbraPx(${A.umbraPixels}) > 200 → hard shadow present (no acne wipe): ${aHasShadow ? "PASS" : "FAIL"}`,
   );
   console.log(
+    `  B.umbraPx/C.umbraPx=${umbraRatioB.toFixed(3)} in [${UMBRA_RATIO_MIN}, ${UMBRA_RATIO_MAX}] → soft shadow AREA tracks WebGL: ${umbraParityB ? "PASS" : "FAIL"}`,
+  );
+  console.log(
+    `  A.umbraPx/C.umbraPx=${umbraRatioA.toFixed(3)} in [${UMBRA_RATIO_MIN}, ${UMBRA_RATIO_MAX}] → hard shadow AREA tracks WebGL: ${umbraParityA ? "PASS" : "FAIL"}`,
+  );
+  console.log(
     `  B.perEdge/C.perEdge=${ratioVsWebGL.toFixed(2)} in [0.25, 4.0] → WebGL softness parity ballpark: ${parityBallpark ? "PASS" : "FAIL"}`,
   );
   console.log(
     `  total device errors=${errAll} → ${errAll === 0 ? "PASS" : "FAIL"}`,
   );
 
+  const structural = [];
+  if (!referenceHasShadow) {
+    structural.push(
+      `reference cell C (WebGL) has umbraPx=${Cc.umbraPixels} <= ${REFERENCE_UMBRA_MIN} — the WebGL-relative umbra ratios have no anchor, so this run cannot certify or refute the WebGPU shadow area`,
+    );
+  }
+
   const pass =
     pcfChangesOutput &&
     softerThanHard &&
     bHasShadow &&
     aHasShadow &&
+    umbraParityB &&
+    umbraParityA &&
     parityBallpark &&
     errAll === 0;
-  console.log(`\n  OVERALL: ${pass ? "PASS ✓" : "FAIL ✗"}`);
+  console.log(
+    `\n  OVERALL: ${structural.length ? "STRUCTURAL ▲" : pass ? "PASS ✓" : "FAIL ✗"}`,
+  );
+  for (const s of structural) {
+    console.log(`  STRUCTURAL: ${s}`);
+  }
 
   const reportPath = path.join(OUT_DIR, "csm-soft-shadow-report.json");
   fs.writeFileSync(
@@ -503,9 +596,15 @@ async function diffPngsMasked(a, b, roi) {
           softerThanHard,
           bHasShadow,
           aHasShadow,
+          umbraRatioB,
+          umbraRatioA,
+          umbraParityB,
+          umbraParityA,
+          referenceHasShadow,
           parityBallpark,
           ratioVsWebGL,
           totalDeviceErrors: errAll,
+          structural,
           pass,
         },
       },
@@ -514,5 +613,10 @@ async function diffPngsMasked(a, b, roi) {
     ),
   );
   console.log(`  report: ${reportPath}`);
-  process.exitCode = pass ? 0 : 1;
-})();
+  clearTimeout(watchdog);
+  process.exitCode = structural.length ? 3 : pass ? 0 : 1;
+})().catch((error) => {
+  clearTimeout(watchdog);
+  console.error(`ERROR: ${error?.stack ?? error}`);
+  process.exitCode = 2;
+});

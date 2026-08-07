@@ -723,6 +723,7 @@ async function run() {
     dials: result.dials,
     captures: labelled,
     applied: result.applied,
+    globeReadiness: { setup: result.readiness.globeReady },
     brightThreshold: PIN.brightThreshold,
   });
 

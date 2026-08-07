@@ -124,6 +124,74 @@ Filed by the C13-41 worker. All surfaced rather than routed around (Principle
   clock scrub, the grid is the dial to coarsen — but it must not be coarsened on
   speculation. **Effort: S** (one probe leg).
 
+## New findings — weather/shadow/misc instrument-repair worker, 2026-08-07
+
+Filed while landing the audit's weather/shadow/misc instrument repairs. All are
+surfaced rather than routed around (Principle 9); none blocks that batch.
+
+- **`NEW-CSM-SOFT-SHADOW-ABSOLUTE-UMBRA-FLOOR` — FILED AND RESOLVED in the same
+  pass (2026-08-07).** Batch 849 (`c7365d80f7`) identified this in its own commit
+  message — *"CSM ratio 0.88 versus single-map ratio 0.031, a 32x deficit that sat
+  under that probe's ABSOLUTE `umbraPx > 200` floor and shipped green for weeks.
+  That floor should become a WebGL-relative ratio."* — and then **neither landed
+  it nor filed it**, contrary to Principle 9. Confirmed still absent at
+  `58af0d1819`: `probe-csm-soft-shadow.mjs` scored `B.umbraPixels > 200` and
+  `A.umbraPixels > 200` with no reference to cell C (the WebGL reference the
+  deficit was measured against) anywhere in the pass expression, and
+  `grep -i 'umbraPx\|cross-backend ratio'` over `DEFERRED_WORK.md` returned
+  nothing. Landed here: `A.umbraPx / C.umbraPx` and `B.umbraPx / C.umbraPx` must
+  both fall in **[0.25, 4.0]** — the same band and rationale the probe already
+  accepted for penumbra density — which admits the healthy 0.88 with ~4.5x margin
+  and rejects 0.031 by ~8x. The absolute floors are RETAINED as additional
+  conjuncts; nothing was widened. A cell C with no shadow of its own leaves the
+  ratios unanchored and reports STRUCTURAL (exit 3) rather than a WebGPU verdict.
+  **Not yet run in a browser** — the band edges are derived from the recorded
+  0.88/0.031 pair, not measured on a current build, and the first run should
+  record the measured ratios and tighten if they land far from the edges.
+- **Machine-safety sweep (2026-08-07) — 11 of the 34 probes added in
+  `47a940eed9..a6d4b1763a` shipped with NO watchdog, 5 of them also closing the
+  browser outside any `try/finally`.** Reproduced exactly; all 11 now carry an
+  `unref`-ed watchdog that exits 2, and all 5 have their `browser.close()` inside
+  a `finally`. This is the rule the loop-review memory and `DEBUGGING_GUIDE`'s
+  "Batch-744 probe rules" already state and CLAUDE.md's campaign block enforces
+  ("Do NOT run the new cloud probes until their watchdogs land") — the gap was
+  that nothing MECHANICALLY checks it at authoring time. **Recorded as the real
+  residual:** the sweep was manual, so the next batch of probes can reintroduce
+  it. A source-anchor spec over `Tools/visual-regression/probe-*.mjs` requiring
+  both constructs would close it permanently. **Effort: XS.** Also recorded, from
+  the audit's own refutation work: Playwright registers a process `exit` handler
+  that reaps the browser, so the missing `finally` leaks nothing PAST process
+  exit and a `finally` cannot run while its own `try` body is suspended — **the
+  watchdog is the load-bearing half of this fix, not the `finally`.** The
+  `finally` is worth having for the throw-path, not the hang-path.
+
+- **`probe-weather-map.mjs` is NOT a new finding** — checked before filing. It is
+  already classified SUSCEPTIBLE (worst of three) under
+  `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE-TAIL`, with its repair scoped there.
+  Two facts that entry does not carry, added by this pass: it has **neither a
+  watchdog nor a `finally` around `browser.close()`** (`grep -c` returns 0 for
+  both), and it now has a `DEBUGGING_GUIDE.md` row — the row Batch 862 flagged as
+  missing — which states the unpinned status inline so a green from it cannot be
+  quoted as determinism-grade evidence. It was outside this batch's assigned fix
+  list; the mechanical repair (route it through `lib/weather-probe-pinning.mjs`,
+  exactly as `probe-cloud-shadows-polar.mjs` was here) stays owned by the TAIL
+  entry.
+- **`NEW-PROBE-MOON-LOLA-LANE2-EXPECTED-RED`** — **Status: OPEN / MEDIUM,
+  awaiting a re-run.** `probe-moon-lola-relief.mjs` Lane 2 now enforces the
+  relative criterion its header always documented (`onOffDiffPct(full) <
+  onOffDiffPct(half)`), which the pre-repair `Math.max(3.0, half)` floor
+  dissolved unconditionally. The Batch-813 run that CERTIFIED C12-25 recorded
+  **half 1.30% / full 1.46%** — full EXCEEDS half — so on numbers of that shape
+  the repaired probe FAILS. Two readings are open and the re-run decides between
+  them: (a) the pixel-COUNT metric is the wrong instrument for "nearly
+  invisible" — `QUEUE_2026-07-19_CAMPAIGN12.md:592` already argues the predicted
+  ~1.6% whole-disc brightness movement hovers at the diff threshold across the
+  entire lit disc, inflating the COUNT while the visible change is small; or
+  (b) the normal map genuinely perturbs the fully-lit disc more than the
+  terminator, which is the wrong-sign / unclamped-strength class Lane 2 exists to
+  catch. **Do not "fix" this by restoring the floor.** If (a) is confirmed, the
+  correct repair is a magnitude-weighted Lane 2 metric plus a header correction
+  saying why the count metric was retired — not a bar that cannot fail.
 
 ## New findings — C12-27 / C12-14 / C12-13 worker, 2026-08-06
 
@@ -654,6 +722,49 @@ picking the wrong one produces a confidently-wrong verdict rather than a silent
 one. Both new rules are pinned by `celestial-g1-gate.spec.mjs` (49 tests, 20
 mutants), including the two OVER-corrections — treating any single zero as
 blindness, and reporting a blind certifying mode as PASS.
+#### STATUS 2026-08-07 — repair items 2 and 3 LANDED; 1, 4 and 5 still OPEN
+
+Both BLOCKING vacuous probes from the sweep table are repaired. **Item 1
+(`probe-env-skybox-stars.mjs`) remains a LIVE FALSE GREEN at HEAD**, and items 4
+and 5 are untouched — the three-false-greens warning above now reads as ONE.
+
+- **Item 2 `probe-cold-optics-hq.mjs` — RESOLVED (2026-08-07).** `twoHalos`
+  (`radial.peaks.length >= 2`) and `pillarTall` (`aspect >= 1.8 &&
+  verticalExtentPx >= 20`) are now `pass` conjuncts at their ORIGINAL
+  thresholds; the `// Verdict.` banner was kept and made true rather than
+  deleted. Added a STRUCTURAL tier (exit 3) for the preconditions those numbers
+  are only meaningful under — the sun must project to a screen point and sit
+  above the horizon in each capture set, `coldOpticsEnabled`/`coldOpticsAdvanced`
+  must READ BACK as driven in all four legs, and the advanced-minus-legacy
+  difference must be non-empty (an A/B in which no pixel moved is a dead toggle,
+  not an absent halo). Exit contract is now 0/1/2/3; `browser.close()` moved into
+  a `finally`; 420 s unref watchdog. **Not yet run in a browser** — the repair is
+  source-level and the orchestrator owes the first execution.
+- **Item 3 `probe-logdepth-payoff.mjs` — RESOLVED (2026-08-07), exactly as
+  prescribed.** The OFF leg now drives BOTH halves (`context
+  ._logDepthWriteEnabled = false` AND `scene.logarithmicDepthBuffer = false`),
+  each leg READS BACK `writeEnabled && useLogDepth` — the literal
+  `isWebGPULogDepthActive` predicate — after a real render, and the two legs'
+  `active` states MUST DIFFER or the run reports STRUCTURAL. That last clause is
+  load-bearing beyond the recorded finding: `Scene`'s `logarithmicDepthBuffer`
+  setter ANDs the request with `context.fragmentDepth`, so a silently-dropped
+  request would otherwise reproduce the null A/B under a different cause. The
+  probe now has a gate (ON far-UR variance `>= 0.25 x` ON near-LL, i.e. the
+  checkerboard pattern is present in the artifact corner) and the 0/1/2/3
+  contract, plus a near-LL non-vacuity floor, an `onerror` + 30 s deadline on the
+  in-page image decode, `browser.close()` in a `finally`, and a 420 s watchdog.
+  **The 0.25 fraction and the 100 near-corner floor are FIRST-PASS values derived
+  from the material contrast, not measurements** — the first real run must record
+  the measured pair and re-baseline if the healthy ON leg lands near the bar
+  rather than far above it. Until that run, the row still cannot be cited; what
+  changed is that it can now be REACHED.
+- **Fleet-wide gap, partially closed.** The exit-3 contract the section above
+  records as implemented by "exactly two probes" is now implemented by
+  **seven**: `probe-celestial-gates`, `probe-sun-shadow-gate`,
+  `probe-c11-205-lifecycle-v2`, plus `probe-cloud-shadows-polar`,
+  `probe-scene-snap`, `probe-csm-soft-shadow`, `probe-cold-optics-hq` and
+  `probe-logdepth-payoff` from this batch. The rest of the fleet still runs the
+  older 0/1/2 convention.
 
 ---
 
@@ -1153,6 +1264,91 @@ absolute number the pinned probes now produce. Gates run: `node --check`,
    weather probes that are NOT Gate-B legs - `probe-weather-inspector`,
    `probe-weather-map`, `probe-weather-presets`. They were not classified here
    and must not be cited as evidence for anything until they are. **Effort:** S.
+   *(Discharged by `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE-TAIL`, which classified
+   all three; the pinning itself is still owed.)*
+
+### UPDATE 2026-08-07 - the glob missed one, and the enforcement layer never gated ITSELF
+
+Two repairs to this class, both landed. Neither widened, lowered or removed any
+scored threshold.
+
+**(a) `probe-cloud-shadows-polar.mjs` PINNED - the sixth susceptible probe, missed
+because the sweep was scoped by FILENAME.** The Batch-855 remediation selected its
+targets with the `probe-weather-*` glob. `probe-cloud-shadows-polar.mjs` is the
+same instrument shape and was never touched: `git log --follow` on it returns
+exactly one commit (`e748181065`), and `grep -l weather-probe-pinning` over
+`Tools/visual-regression/*.mjs` returned only the six `probe-weather-*` files
+plus one spec. **The lesson is the selector, not the probe** - this class must be
+swept by SHAPE (does the scored quantity read pixels from a globe that can stream,
+under a clock the probe does not own?), and the same question is owed of
+`probe-cloud-*` and `probe-confirm-inspector-sky` before Gate B's cloud evidence
+is re-banked.
+
+All four contaminants reproduce from the bytes: `?renderer=webgpu` with no
+`offline` (Ion imagery + world terrain stream straight into the scored ground
+band, which is the lower 40% of frame); 121 bare `s.render()` calls per capture,
+which `Scene.js` fills with `JulianDate.now()`; `cloudWindSpeed` at 15.0 m/s with
+`cloud.time` reaching the density field as `windDirection * windSpeed * time`;
+and `cloudQuality` at the 64 tier path. `requestRenderMode: true` does NOT
+neutralize the clock: `maximumRenderTimeChange` defaults to 0 and the pinned
+2026-06-21 date differs from wall-clock now by ~46 days, so `shouldRender` is
+unconditionally true and the wall clock is stamped onto `frameState.time` every
+frame. Capture order was `warmup(ON), on(ON), off(OFF)` - **OFF last**, ~4 s of
+tile arrival and wind advection after ON, scored as an unpaired absolute
+difference `off.mean - on.mean > 0.5` with no control leg.
+
+Now: P1-P8 + P10 through the shared module with full read-back; legs ordered
+**onA -> off -> onB** so the ON bracket bounds every drift across the interval the
+scored difference spans (tolerance 0.1, one fifth of the 0.5 bar); the SUBJECT
+dial declared via the new `subjectDials` option and asserted per leg by the probe
+itself; exit codes 0/1/2/3; watchdog + `finally`. **The 0.5 bar is unchanged.**
+**The recorded landing figure (ON 23.6 / OFF 60.8, delta 37.2) is NOT a baseline
+for the pinned probe** - see the C13-06 ledger caveat in
+`QUEUE_2026-07-23_CAMPAIGN13.md`. Note the honest limit recorded by the audit that
+found this: at 82N on 2026-06-21 near local noon the ~31.4 deg solar elevation
+gives a ~4.5 km slant path through a 1200-3500 m deck at density 1.0 / coverage
+0.7, so a 61% darkening is physically consistent with a genuine cast shadow - the
+INSTRUMENT was unsound, the historical verdict probably was not. That is why the
+C13-06 promotion is caveated rather than reversed.
+
+**(b) P10 READINESS NON-VACUITY - `lib/weather-probe-pinning.mjs` never gated its
+own read-back.** `awaitGlobeReady` burns its 90 s budget and then RETURNS
+`{ binnedGlobeCommands: 0, firstBinnedMs: null }` when the globe never bins a
+`Pass.GLOBE` command; it does not throw. All six pinned probes printed that number
+inside a `console.log` template and `collectPinStructural` had **no parameter for
+it** - so a run in which the WebGPU globe pipeline was still cooking past the
+budget produced a product verdict (RED) over frames that were entirely the clear
+colour, with the one number that would have explained it computed, logged and
+gated by nothing. Same shape as the `M2e` finding repaired one file over in
+`lib/celestial-g1-gate.mjs`, and the race is already named in this repo:
+`env-background-clear.spec.mjs` test E5 requires the sibling globe lane to gate on
+`tilesLoaded && globeCommandCount() > 0` precisely because "`tilesLoaded` is TRUE
+while the WebGPU globe pipeline is still cooking - that is the race that produced
+the original finding, and the `C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO` false
+positive before it." The weather fleet's copy was strictly WEAKER than the sibling
+it derived from (it also dropped the `tilesLoaded` conjunct).
+
+`collectGlobeReadinessStructural` is the enforcement; **`globeReadiness` is now a
+REQUIRED option of `collectPinStructural`** and all six probes pass it. Making
+ABSENCE structural is the load-bearing half - a read-back a caller can forget to
+hand in is not enforcement, and that is the exact failure being repaired. It gates
+`binnedGlobeCommands`, never `elapsedMs` (slow is not blind). Verified none of the
+six holds a private copy of the readiness read: `grep -n "const awaitGlobeReady ="`
+matches only `probe-cloud-genus-morphology`, `probe-env-background-clear`,
+`probe-sun-shadow-gate` and `probe-vector-draping`, none of which consume this
+module; a spec anchor now forbids a private copy reappearing in any of the six.
+`weather-probe-headroom.spec.mjs` grew 11 tests (27 -> 38) including mutants M10
+(gates `elapsedMs` instead of the binned count), M11 (an absent report is clean -
+the pre-repair behaviour verbatim), M12 (`>= 0` instead of `> 0`) and M13
+(truthiness), plus a reach test that deleting the wiring from
+`collectPinStructural` must break. **Mutation-proved:** removing the P10 block
+from `collectPinStructural` takes the spec from 38/38 to 37/38.
+
+**NOT verified - no browser was run in this pass.** Everything above is
+source-traced. The pinned `probe-cloud-shadows-polar.mjs` has never executed; its
+first run is owed, and its `CONTROL` tolerance of 0.1 is a derived bound
+(one fifth of the scored bar), not a measurement. If the first runs measure a
+residual spread far under 0.1, tighten it rather than leave slack.
 
 ## 2026-08-06 - WebGPU globe does not receive sun shadows AT ALL
 

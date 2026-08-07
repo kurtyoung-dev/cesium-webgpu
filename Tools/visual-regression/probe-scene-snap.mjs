@@ -21,7 +21,23 @@
 // Scene: CesiumMilkTruck glTF from the repo's sample data, 100 m above the
 // ellipsoid at a fixed lon/lat, offline-friendly camera 300 m out. Edge only.
 //
+// STRUCTURAL tier (added Batch 861+). The probe previously had only
+// `process.exit(pass ? 0 : 1)`, with no try/catch and no `.catch()` on either
+// top-level `await run(...)`. A missing `CesiumMilkTruck.glb`, a dev server on
+// the wrong port, or any in-page rejection therefore surfaced as a non-zero
+// exit indistinguishable from "C11-212 Scene.snap acceptance FAILED" — a
+// phantom product defect over a run in which snap was never exercised, with the
+// Edge process left unclosed. Three preconditions now route to exit 3 instead:
+//   - the model never reached `ready`, so no gate could see its subject;
+//   - the WebGPU lane did not resolve the WebGPU backend (Gate C's `_snapEnabled`
+//     latch does not exist on WebGL, so the run certifies nothing about WebGPU);
+//   - any thrown error becomes exit 2 with its stack, never a product verdict.
+// The four gate thresholds are UNCHANGED.
+//
 // Usage: node Tools/visual-regression/probe-scene-snap.mjs
+// Exit:
+//   0 PASS | 1 a real product FAIL | 2 watchdog or exception
+//   3 STRUCTURAL — a precondition failed, so acceptance is INCOMPLETE
 
 import { chromium } from "playwright";
 
@@ -29,12 +45,27 @@ const BASE = process.env.PROBE_BASE ?? "http://localhost:8080";
 const VIEW = { width: 1024, height: 768 };
 const MODEL_URL = "/Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb";
 
+const WATCHDOG_MS = 420_000;
+const watchdog = setTimeout(() => {
+  console.error(`[probe-scene-snap] watchdog fired after ${WATCHDOG_MS} ms`);
+  process.exit(2);
+}, WATCHDOG_MS);
+watchdog.unref?.();
+
 async function run(renderer) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
+  try {
+    return await runWith(browser, renderer);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function runWith(browser, renderer) {
   const page = await browser.newPage({ viewport: VIEW });
   const errs = [];
   page.on("console", (m) => {
@@ -120,6 +151,9 @@ async function run(renderer) {
       }
 
       return {
+        rendererType: String(
+          s.context?.rendererType ?? (s.context?.isWebGPU ? "webgpu" : "webgl"),
+        ).toLowerCase(),
         modelReady: model.ready,
         hitFound: !!hit,
         hitCalls: calls,
@@ -134,12 +168,23 @@ async function run(renderer) {
     { modelUrl: MODEL_URL, view: VIEW },
   );
 
-  await browser.close();
   return { ...result, consoleErrs: errs };
 }
 
-const gl = await run("webgl");
-const gpu = await run("webgpu");
+let gl;
+let gpu;
+try {
+  gl = await run("webgl");
+  gpu = await run("webgpu");
+} catch (error) {
+  clearTimeout(watchdog);
+  // An in-page rejection (missing .glb, wrong port, Cesium import failure) is
+  // an INSTRUMENT error. Reporting it as exit 1 would file a Scene.snap defect
+  // against an engine the probe never reached.
+  console.error(`ERROR: ${error?.stack ?? error}`);
+  console.log("\nGATE ERROR — nothing about Scene.snap was exercised");
+  process.exit(2);
+}
 
 console.log("=== C11-212 Scene.snap acceptance ===");
 for (const [name, r] of [
@@ -175,6 +220,40 @@ console.log(
 if (!gateD) {
   console.log(allErrs.slice(0, 8).join("\n"));
 }
+
+// ── STRUCTURAL preconditions. A lane that could not see its subject reports
+// exit 3; it must never be scored as a product verdict in either direction.
+const structural = [];
+for (const [name, r] of [
+  ["WebGL", gl],
+  ["WebGPU", gpu],
+]) {
+  if (r.modelReady !== true) {
+    structural.push(
+      `${name}: the CesiumMilkTruck model never reached ready — no snap gate could see its subject (check ${MODEL_URL} is served by ${BASE})`,
+    );
+  }
+}
+if (gpu.rendererType !== "webgpu") {
+  structural.push(
+    `WebGPU lane resolved rendererType="${gpu.rendererType}" — Gate C's _snapEnabled latch does not exist on WebGL, so this run certifies nothing about the WebGPU snap path`,
+  );
+}
+
 const pass = gateA && gateB && gateC && gateD;
+clearTimeout(watchdog);
+if (structural.length > 0) {
+  console.log("\nSTRUCTURAL");
+  for (const s of structural) {
+    console.log("  STRUCTURAL: " + s);
+  }
+  if (!pass) {
+    console.log("  (gate failures printed for diagnosis only, see above)");
+  }
+  console.log(
+    "\nGATE STRUCTURAL — acceptance INCOMPLETE. This probe certifies nothing in this state.",
+  );
+  process.exit(3);
+}
 console.log(`\nGATE ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);

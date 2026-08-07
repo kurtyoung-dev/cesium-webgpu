@@ -26,7 +26,34 @@
 // Earth->moon line 20,000 km short (disc ~190 px), center crop decoded in a
 // scratch page. Edge only (Playwright Firefox has no WebGPU).
 //
+// ─────────────────────────────────────────────────────────────────────────────
+// GATE REPAIR (Batch 861+) — two of the four lanes did not enforce what this
+// header documents. Read this before quoting a PASS from before that repair.
+// ─────────────────────────────────────────────────────────────────────────────
+//   LANE 2 carried an ABSOLUTE FLOOR that dissolved its relative comparison:
+//   `fullGl.diffPct < Math.max(3.0, halfGl.diffPct) && ... && fullGl.diffPct <
+//   3.0`. Since `Math.max(3.0, H) >= 3.0` for every H, the later `< 3.0`
+//   conjunct implies the first one UNCONDITIONALLY — the two `Math.max` clauses
+//   could not change the verdict for any (full, half) pair, so the documented
+//   `onOffDiffPct(full) < onOffDiffPct(half)` was never enforced anywhere.
+//   The trigger is not hypothetical: the Batch-813 acceptance run that
+//   CERTIFIED C12-25 recorded half 1.30% and full 1.46% — full EXCEEDS half,
+//   the documented gate is FALSE, and the probe printed GATE PASS.
+//   The floor is now gone and the relative form is enforced as documented.
+//   **CONSEQUENCE, stated up front: on numbers of the recorded shape this probe
+//   now FAILS.** That failure is the finding — a lunar normal map that
+//   perturbs the fully-lit disc more than the terminator is precisely the
+//   wrong-sign / unclamped-strength class Lane 2 advertises catching, and the
+//   absolute-only 3% bound cannot distinguish it from the blessed baseline.
+//
+//   LANE 4 was implemented as the same absolute `parityOff.diffPct < 15` as
+//   Lane 3, and `parityOn` was never referenced in it, so "must not exceed the
+//   ON diff by more than noise" was not implemented at all. It now enforces
+//   `parityOff <= parityOn + PARITY_IDENTITY_NOISE_PCT`, and keeps the absolute
+//   < 15 bound as well — nothing was widened or dropped.
+//
 // Usage: node Tools/visual-regression/probe-moon-lola-relief.mjs
+// Exit: 0 PASS | 1 product FAIL | 2 watchdog or exception
 
 import { chromium } from "playwright";
 import fs from "fs";
@@ -37,6 +64,28 @@ const ISO_HALF = "2026-07-08T12:00:00Z"; // ~half phase — terminator bisects d
 const ISO_FULL = "2026-07-02T16:22:00Z"; // near-full (illumFrac ~0.94)
 const CROP = 420;
 const VIEW = { width: 1280, height: 720 };
+/**
+ * Lane 4's "by more than noise". The OFF path zeroes the strength uniform on
+ * both backends, so the two OFF frames are the pre-C12-25 look and their
+ * cross-backend diff must not be materially WORSE than the ON pair's. Measured
+ * at Batch 813: parityOn 0.00%, parityOff 0.00%.
+ */
+const PARITY_IDENTITY_NOISE_PCT = 1.0;
+/** Lane 2/3/4 absolute bounds — UNCHANGED from the pre-repair probe. */
+const FULL_PHASE_MAX_PCT = 3.0;
+const PARITY_MAX_PCT = 15;
+const TERMINATOR_MIN_PCT = 0.4;
+/** In-page image decode budget. `page.evaluate` accepts no timeout of its own. */
+const DECODE_TIMEOUT_MS = 30_000;
+
+const WATCHDOG_MS = 900_000;
+const watchdog = setTimeout(() => {
+  console.error(
+    `[probe-moon-lola-relief] watchdog fired after ${WATCHDOG_MS} ms — 14 browser launches did not complete`,
+  );
+  process.exit(2);
+}, WATCHDOG_MS);
+watchdog.unref?.();
 
 async function capture(renderer, iso, reliefOn, tag) {
   const browser = await chromium.launch({
@@ -44,6 +93,14 @@ async function capture(renderer, iso, reliefOn, tag) {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
+  try {
+    return await captureWith(browser, renderer, iso, reliefOn, tag);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function captureWith(browser, renderer, iso, reliefOn, tag) {
   const page = await browser.newPage({ viewport: VIEW });
   const errs = [];
   page.on("console", (m) => {
@@ -144,21 +201,47 @@ async function capture(renderer, iso, reliefOn, tag) {
 
   const canvas = await page.$("canvas");
   const png = await canvas.screenshot({ type: "png" });
+  if (!png || png.length === 0) {
+    throw new Error(`capture ${tag}: canvas screenshot returned no bytes`);
+  }
   fs.writeFileSync(`${OUT_DIR}/moon-lola-${tag}.png`, png);
-  await browser.close();
   return { png, stats, errs };
 }
 
 // Decode two PNGs in a scratch page and diff their center crops.
 async function diffCrops(pngA, pngB) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
+  try {
+    return await diffCropsWith(browser, pngA, pngB);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function diffCropsWith(browser, pngA, pngB) {
   const page = await browser.newPage();
   const result = await page.evaluate(
-    async ({ a, b, crop }) => {
+    async ({ a, b, crop, decodeTimeoutMs }) => {
+      // `page.evaluate` has no timeout of its own, so an undecodable data URL
+      // with an onload-only promise hangs the whole run holding a browser. Both
+      // failure paths are wired: onerror rejects, and a deadline rejects if the
+      // decoder simply never calls back.
       async function load(durl) {
-        return await new Promise((resolve) => {
+        return await new Promise((resolve, reject) => {
           const img = new Image();
-          img.onload = () => resolve(img);
+          const timer = setTimeout(
+            () =>
+              reject(new Error(`image decode exceeded ${decodeTimeoutMs} ms`)),
+            decodeTimeoutMs,
+          );
+          img.onload = () => {
+            clearTimeout(timer);
+            resolve(img);
+          };
+          img.onerror = () => {
+            clearTimeout(timer);
+            reject(new Error("image decode failed (onerror)"));
+          };
           img.src = durl;
         });
       }
@@ -193,9 +276,9 @@ async function diffCrops(pngA, pngB) {
       a: `data:image/png;base64,${pngA.toString("base64")}`,
       b: `data:image/png;base64,${pngB.toString("base64")}`,
       crop: CROP,
+      decodeTimeoutMs: DECODE_TIMEOUT_MS,
     },
   );
-  await browser.close();
   return result;
 }
 
@@ -244,31 +327,62 @@ const parityOff = await diffCrops(
 
 console.log("\n=== C12-25 LOLA relief gates ===");
 console.log(
-  `Lane 1 terminator ON-vs-OFF: WebGL ${halfGl.diffPct.toFixed(2)}%  WebGPU ${halfGpu.diffPct.toFixed(2)}%  (need >= 0.4 both)`,
+  `Lane 1 terminator ON-vs-OFF: WebGL ${halfGl.diffPct.toFixed(2)}%  WebGPU ${halfGpu.diffPct.toFixed(2)}%  (need >= ${TERMINATOR_MIN_PCT} both)`,
 );
 console.log(
-  `Lane 2 full-phase ON-vs-OFF: WebGL ${fullGl.diffPct.toFixed(2)}%  WebGPU ${fullGpu.diffPct.toFixed(2)}%  (need < half-phase and < 3.0)`,
+  `Lane 2 full-phase ON-vs-OFF: WebGL ${fullGl.diffPct.toFixed(2)}% (< half ${halfGl.diffPct.toFixed(2)}%)  ` +
+    `WebGPU ${fullGpu.diffPct.toFixed(2)}% (< half ${halfGpu.diffPct.toFixed(2)}%)  (need < half-phase AND < ${FULL_PHASE_MAX_PCT})`,
 );
 console.log(
-  `Lane 3 parity (half, ON):  ${parityOn.diffPct.toFixed(2)}%  (need < 15)`,
+  `Lane 3 parity (half, ON):  ${parityOn.diffPct.toFixed(2)}%  (need < ${PARITY_MAX_PCT})`,
 );
 console.log(
-  `Lane 4 identity (half, OFF): ${parityOff.diffPct.toFixed(2)}%  (need < 15)`,
+  `Lane 4 identity (half, OFF): ${parityOff.diffPct.toFixed(2)}%  ` +
+    `(need <= ON ${parityOn.diffPct.toFixed(2)}% + ${PARITY_IDENTITY_NOISE_PCT} noise, AND < ${PARITY_MAX_PCT})`,
 );
 const allErrs = Object.values(runs).flatMap((r) => [
   ...r.errs,
   ...(r.stats.deviceErrs ?? []),
 ]);
+
+// Lane 2 as DOCUMENTED: strictly less visible at full phase than at the
+// terminator, AND under the absolute bound. The former is the physical claim
+// ("N·L is flat at the sub-solar disc"); the latter alone cannot distinguish a
+// wrong-sign / unclamped normal map from the blessed baseline. No `Math.max`
+// floor — a floor at or above the absolute bound erases the comparison.
+const lane2Gl = fullGl.diffPct < halfGl.diffPct;
+const lane2Gpu = fullGpu.diffPct < halfGpu.diffPct;
+// Lane 4 as DOCUMENTED: relative to the ON pair, plus the absolute bound.
+const lane4Relative =
+  parityOff.diffPct <= parityOn.diffPct + PARITY_IDENTITY_NOISE_PCT;
+
 const pass =
-  halfGl.diffPct >= 0.4 &&
-  halfGpu.diffPct >= 0.4 &&
-  fullGl.diffPct < Math.max(3.0, halfGl.diffPct) &&
-  fullGpu.diffPct < Math.max(3.0, halfGpu.diffPct) &&
-  fullGl.diffPct < 3.0 &&
-  fullGpu.diffPct < 3.0 &&
-  parityOn.diffPct < 15 &&
-  parityOff.diffPct < 15 &&
+  halfGl.diffPct >= TERMINATOR_MIN_PCT &&
+  halfGpu.diffPct >= TERMINATOR_MIN_PCT &&
+  lane2Gl &&
+  lane2Gpu &&
+  fullGl.diffPct < FULL_PHASE_MAX_PCT &&
+  fullGpu.diffPct < FULL_PHASE_MAX_PCT &&
+  parityOn.diffPct < PARITY_MAX_PCT &&
+  lane4Relative &&
+  parityOff.diffPct < PARITY_MAX_PCT &&
   allErrs.length === 0;
+
+if (!lane2Gl || !lane2Gpu) {
+  console.log(
+    `  Lane 2 RELATIVE clause FAILED (WebGL ${lane2Gl}, WebGPU ${lane2Gpu}) — the toggle moved MORE ` +
+      `pixels at full phase than at the terminator. This is the clause the pre-repair ` +
+      `Math.max(3.0, half) floor dissolved; the Batch-813 certifying run (half 1.30 / full 1.46) ` +
+      `also violated it and printed PASS.`,
+  );
+}
+if (!lane4Relative) {
+  console.log(
+    `  Lane 4 RELATIVE clause FAILED — OFF parity ${parityOff.diffPct.toFixed(2)}% exceeds ON ` +
+      `${parityOn.diffPct.toFixed(2)}% by more than ${PARITY_IDENTITY_NOISE_PCT}%; the OFF path is ` +
+      `supposed to be the identical pre-C12-25 look on both backends.`,
+  );
+}
 console.log(`errors: ${allErrs.length}`);
 if (allErrs.length > 0) {
   console.log(allErrs.slice(0, 6).join("\n"));
@@ -276,4 +390,5 @@ if (allErrs.length > 0) {
 console.log(
   `\nGATE ${pass ? "PASS" : "FAIL"} — READ the PNGs: moon-lola-{half,full}-{webgl,webgpu}-{ON,OFF}.png`,
 );
+clearTimeout(watchdog);
 process.exit(pass ? 0 : 1);

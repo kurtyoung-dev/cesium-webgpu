@@ -454,6 +454,7 @@ async function run() {
     dials: result.dials,
     captures: labelled,
     applied: result.applied,
+    globeReadiness: { setup: result.readiness.globeReady },
     expectedChannelStrength: 1,
   });
 

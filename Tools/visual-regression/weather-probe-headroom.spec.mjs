@@ -24,6 +24,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  collectGlobeReadinessStructural,
   collectHeadroomStructural,
   collectPinStructural,
   collectRepeatStructural,
@@ -113,6 +114,21 @@ const healthyDials = (over = {}) => ({
   cloudCastShadows: false,
   cloudContributesIBL: false,
   ...over,
+});
+
+/** A globe that rendered: an `awaitGlobeReady` report with binned commands. */
+const healthyReadiness = (over = {}) => ({
+  binnedGlobeCommands: 96,
+  firstBinnedMs: 412,
+  elapsedMs: 3011,
+  ...over,
+});
+
+/** The report `awaitGlobeReady` actually returns when the budget expires. */
+const deadReadiness = () => ({
+  binnedGlobeCommands: 0,
+  firstBinnedMs: null,
+  elapsedMs: 90000,
 });
 
 // ---------------------------------------------------------------------------
@@ -647,6 +663,7 @@ test("collectPinStructural — a healthy channels-shaped report is clean", () =>
   const out = collectPinStructural({
     pins: healthyPins(),
     dials: healthyDials(),
+    globeReadiness: { setup: healthyReadiness() },
     captures: [
       { ...capture(-170), expectedChannelStrength: 1 },
       { ...capture(150), expectedChannelStrength: 1 },
@@ -670,6 +687,7 @@ test("collectPinStructural — the checks the private copy lacked now fire", () 
   const base = {
     captures: [{ ...capture(-170), expectedChannelStrength: 1 }],
     applied: { rich: { ok: true } },
+    globeReadiness: { setup: healthyReadiness() },
     brightThreshold: 120,
   };
   const cases = [
@@ -695,6 +713,297 @@ test("collectPinStructural — the checks the private copy lacked now fire", () 
     const out = collectPinStructural({ ...base, pins, dials });
     assert.ok(out.length > 0, `${name} must produce a STRUCTURAL reason`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// RULES — P10 readiness non-vacuity
+//
+// `awaitGlobeReady` RETURNS `{ binnedGlobeCommands: 0, firstBinnedMs: null }`
+// when the budget expires with no globe; it does not throw. Before this clause
+// existed the six pinned probes printed that number and nothing read it, so a
+// WebGPU globe pipeline still cooking past the 90 s budget produced a RED
+// product verdict over frames that were entirely the clear colour. Each rule is
+// run against the real implementation AND against the mutants below.
+// ---------------------------------------------------------------------------
+
+const readinessRules = [
+  [
+    "G1 a zero-binned report is STRUCTURAL",
+    (check) => {
+      const out = check({ readiness: deadReadiness() });
+      assert.ok(
+        out.length > 0,
+        "a globe that never binned a Pass.GLOBE command certifies nothing",
+      );
+    },
+  ],
+  [
+    "G2 a healthy report is clean",
+    (check) => {
+      assert.deepEqual(
+        check({ readiness: healthyReadiness() }),
+        [],
+        "a globe that rendered must not be STRUCTURAL",
+      );
+    },
+  ],
+  [
+    "G3 an ABSENT report is STRUCTURAL — the vacuity that named the clause",
+    (check) => {
+      // A read-back a caller can simply forget to hand in is not enforcement.
+      for (const readiness of [undefined, null]) {
+        assert.ok(
+          check({ readiness }).length > 0,
+          `readiness=${String(readiness)} must be STRUCTURAL, not clean`,
+        );
+      }
+    },
+  ],
+  [
+    "G4 a non-finite binned count is STRUCTURAL, not silently truthy",
+    (check) => {
+      for (const binnedGlobeCommands of [NaN, undefined, "96", null]) {
+        assert.ok(
+          check({ readiness: healthyReadiness({ binnedGlobeCommands }) })
+            .length > 0,
+          `binnedGlobeCommands=${String(binnedGlobeCommands)} must be STRUCTURAL`,
+        );
+      }
+    },
+  ],
+  [
+    "G5 binned>0 with a null firstBinnedMs is an inconsistent report",
+    (check) => {
+      assert.ok(
+        check({ readiness: healthyReadiness({ firstBinnedMs: null }) }).length >
+          0,
+        "a report that counts commands but never recorded when they arrived is not a proof",
+      );
+    },
+  ],
+  [
+    "G6 a long but SUCCESSFUL wait is not STRUCTURAL",
+    (check) => {
+      // Slow is not blind. Gating on elapsedMs instead of the binned count
+      // would fail this and pass G1 — which is the whole mutation.
+      assert.deepEqual(
+        check({
+          readiness: {
+            binnedGlobeCommands: 12,
+            firstBinnedMs: 86_400,
+            elapsedMs: 89_900,
+          },
+        }),
+        [],
+      );
+    },
+  ],
+];
+
+for (const [name, rule] of readinessRules) {
+  test(`collectGlobeReadinessStructural — ${name}`, () => {
+    rule(({ readiness }) =>
+      collectGlobeReadinessStructural({ label: "setup", readiness }),
+    );
+  });
+}
+
+/** M10 — gates the BUDGET instead of the binned count (the classic proxy). */
+const mutantReadinessElapsedOnly = ({ readiness }) =>
+  (readiness?.elapsedMs ?? 0) >= 90_000 ? ["budget expired"] : [];
+
+/** M11 — an absent report is treated as clean (the pre-repair behaviour). */
+const mutantReadinessAbsentOk = ({ readiness }) =>
+  readiness === undefined || readiness === null
+    ? []
+    : collectGlobeReadinessStructural({ label: "setup", readiness });
+
+/** M12 — `>= 0` instead of `> 0`, so zero binned commands passes. */
+const mutantReadinessNonNegative = ({ readiness }) =>
+  (readiness?.binnedGlobeCommands ?? -1) >= 0 ? [] : ["negative"];
+
+/** M13 — truthiness test, so NaN and "96" and 0 all misclassify. */
+const mutantReadinessTruthy = ({ readiness }) =>
+  readiness && readiness.binnedGlobeCommands ? [] : ["no readiness"];
+
+const READINESS_MUTANTS = [
+  ["M10 gates elapsedMs, not the binned count", mutantReadinessElapsedOnly],
+  ["M11 an absent report is clean", mutantReadinessAbsentOk],
+  ["M12 accepts binned === 0", mutantReadinessNonNegative],
+  ["M13 truthiness instead of a finite positive count", mutantReadinessTruthy],
+];
+
+test("collectGlobeReadinessStructural — mutant rejection (every mutant caught)", () => {
+  for (const [mutantName, mutant] of READINESS_MUTANTS) {
+    let caught = false;
+    for (const [, rule] of readinessRules) {
+      try {
+        rule(mutant);
+      } catch {
+        caught = true;
+        break;
+      }
+    }
+    assert.ok(caught, `${mutantName} survived every rule — the spec is blind`);
+  }
+});
+
+test("collectPinStructural — the P10 clause is REACHED, not merely exported", () => {
+  // M14, the mutation that matters most: a perfectly enforced standalone helper
+  // that `collectPinStructural` never calls is the defect verbatim. Everything
+  // else in this report is healthy, so only the readiness clause can speak.
+  const healthy = {
+    pins: healthyPins(),
+    dials: healthyDials(),
+    captures: [{ ...capture(-170), expectedChannelStrength: 1 }],
+    applied: { rich: { ok: true } },
+    brightThreshold: 120,
+  };
+  const dead = collectPinStructural({
+    ...healthy,
+    globeReadiness: { setup: deadReadiness() },
+  });
+  assert.ok(
+    dead.some((reason) => /binned a Pass\.GLOBE command/.test(reason)),
+    `a zero-binned globe must reach collectPinStructural's output, got ${JSON.stringify(dead)}`,
+  );
+
+  // An omitted key must not be silently clean either.
+  assert.ok(
+    collectPinStructural(healthy).length > 0,
+    "an omitted globeReadiness must be STRUCTURAL",
+  );
+  assert.ok(
+    collectPinStructural({ ...healthy, globeReadiness: {} }).length > 0,
+    "an empty globeReadiness map asserts nothing and must be STRUCTURAL",
+  );
+});
+
+test("every pinned weather probe hands its readiness to the enforcement layer", () => {
+  // The lib can only enforce what the probes pass it. This is the anchor that
+  // stops a future probe from printing `readiness` and gating nothing again.
+  for (const name of [
+    "channels",
+    "edr-mock",
+    "ingest",
+    "metar",
+    "seam-poles",
+    "wcs",
+  ]) {
+    const source = stripComments(
+      readNormalized(`Tools/visual-regression/probe-weather-${name}.mjs`),
+    );
+    assert.match(
+      source,
+      /globeReadiness:\s*\{[^}]*globeReady[^}]*\}/,
+      `probe-weather-${name}.mjs must pass globeReadiness to collectPinStructural`,
+    );
+    // And it must not have grown a private copy of the readiness loop.
+    assert.ok(
+      !/const\s+awaitGlobeReady\s*=/.test(source),
+      `probe-weather-${name}.mjs holds a private awaitGlobeReady copy — the shared fix cannot reach it`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// RULES — `subjectDials`, the ONLY sanctioned way to be exempt from a pin
+//
+// A probe whose SUBJECT is a determinism dial (probe-cloud-shadows-polar toggles
+// `cloudCastShadows`) must be able to say so. That is a loosening path, so it is
+// spelled out here: what it exempts, what it does NOT exempt, and that the
+// default behaviour is unchanged when it is absent.
+// ---------------------------------------------------------------------------
+
+test("subjectDials — an exemptible dial declared as the subject is not STRUCTURAL", () => {
+  const base = {
+    pins: healthyPins(),
+    captures: [capture(-170)],
+    applied: { rich: { ok: true } },
+    globeReadiness: { setup: healthyReadiness() },
+  };
+  assert.deepEqual(
+    collectPinStructural({
+      ...base,
+      dials: healthyDials({ cloudCastShadows: true }),
+      subjectDials: ["cloudCastShadows"],
+    }),
+    [],
+  );
+});
+
+test("subjectDials — absent, the pin still fires (the exemption is opt-in only)", () => {
+  const base = {
+    pins: healthyPins(),
+    captures: [capture(-170)],
+    applied: { rich: { ok: true } },
+    globeReadiness: { setup: healthyReadiness() },
+  };
+  assert.ok(
+    collectPinStructural({
+      ...base,
+      dials: healthyDials({ cloudCastShadows: true }),
+    }).length > 0,
+    "without a declaration, a cast-shadow pin that did not take must be STRUCTURAL",
+  );
+});
+
+test("subjectDials — declaring one dial does not exempt the other", () => {
+  const out = collectPinStructural({
+    pins: healthyPins(),
+    dials: healthyDials({ cloudCastShadows: true, cloudContributesIBL: true }),
+    captures: [capture(-170)],
+    applied: { rich: { ok: true } },
+    globeReadiness: { setup: healthyReadiness() },
+    subjectDials: ["cloudCastShadows"],
+  });
+  assert.ok(
+    out.some((reason) => /cloudContributesIBL/.test(reason)),
+    `the undeclared dial must still fire, got ${JSON.stringify(out)}`,
+  );
+  assert.ok(
+    !out.some((reason) => /cloudCastShadows pin did not take/.test(reason)),
+    "the declared dial must not fire",
+  );
+});
+
+test("subjectDials — wind and the tier escape are NOT exemptible", () => {
+  for (const name of ["cloudWindSpeed", "cloudQuality", "requestRenderMode"]) {
+    const out = collectPinStructural({
+      pins: healthyPins(),
+      dials: healthyDials(),
+      captures: [capture(-170)],
+      applied: { rich: { ok: true } },
+      globeReadiness: { setup: healthyReadiness() },
+      subjectDials: [name],
+    });
+    assert.ok(
+      out.some((reason) => reason.includes("not exemptible")),
+      `${name} must be rejected as a subject dial`,
+    );
+  }
+});
+
+test("cloud-shadows-polar consumes the shared pinning module and declares its subject", () => {
+  // The probe was missed by the Batch-855 sweep because that sweep selected by
+  // the `probe-weather-*` FILENAME glob rather than by instrument shape. This
+  // anchor is what stops it drifting back off the shared module.
+  const source = stripComments(
+    readNormalized("Tools/visual-regression/probe-cloud-shadows-polar.mjs"),
+  );
+  assert.match(source, /from\s+"\.\/lib\/weather-probe-pinning\.mjs"/);
+  assert.match(source, /installWeatherPinHarnessOnPage\(page\)/);
+  assert.match(source, /renderer=webgpu&offline=true/);
+  assert.match(source, /globeReadiness:\s*\{[^}]*globeReady[^}]*\}/);
+  assert.match(source, /subjectDials:\s*\["cloudCastShadows"\]/);
+  assert.match(source, /collectRepeatStructural\(/);
+  // The scored bar is UNCHANGED by the pinning pass.
+  assert.match(source, /delta\s*>\s*0\.5/);
+  // No bare `s.render()` may survive: that is what substitutes JulianDate.now().
+  assert.ok(
+    !/\bs\.render\(\)/.test(source) && !/\bscene\.render\(\)/.test(source),
+    "a bare render() reintroduces the wall clock the pinning removed",
+  );
 });
 
 test("collectRepeatStructural — a bracketing control catches a drifting leg", () => {

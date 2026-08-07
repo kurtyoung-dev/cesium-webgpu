@@ -20,6 +20,18 @@
 import fs from "node:fs";
 import { chromium } from "playwright";
 
+// Machine-safety watchdog (Batch 861+ fleet sweep). A probe that wedges holds a
+// headless Edge + GPU process alive indefinitely; `unref` keeps the timer from
+// extending a healthy run.
+const WATCHDOG_MS = 420_000;
+const watchdog = setTimeout(() => {
+  console.error(
+    `[probe-snap-multifrustum] watchdog fired after ${WATCHDOG_MS} ms`,
+  );
+  process.exit(2);
+}, WATCHDOG_MS);
+watchdog.unref?.();
+
 const BASE = process.env.PROBE_BASE ?? "http://localhost:8080";
 const RENDERERS = (process.env.PROBE_RENDERERS ?? "webgpu,webgl")
   .split(",")

@@ -119,281 +119,304 @@ const browser = await chromium.launch({
   headless: true,
   args: ["--enable-unsafe-webgpu"],
 });
-const page = await browser.newPage({ viewport: { width: 1024, height: 700 } });
+// Machine-safety watchdog (Batch 861+ fleet sweep). A probe that wedges holds a
+// headless Edge + GPU process alive indefinitely; `unref` keeps the timer from
+// extending a healthy run.
+const WATCHDOG_MS = 420_000;
+const watchdog = setTimeout(() => {
+  console.error(
+    `[probe-pipeline-key-aliasing] watchdog fired after ${WATCHDOG_MS} ms`,
+  );
+  process.exit(2);
+}, WATCHDOG_MS);
+watchdog.unref?.();
+
 const errors = [];
-page.on("console", (m) => {
-  if (m.type() === "error") errors.push(m.text());
-});
-page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-
-await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-  waitUntil: "networkidle",
-});
-await page.waitForFunction(() => !!window.viewer);
-
-const out = await page.evaluate(async (stripMarkers) => {
-  // Helpers are defined INSIDE page.evaluate — the function is serialized, its
-  // closure is not.
-  const C = await import("/Build/CesiumUnminified/index.js");
-  const v = window.viewer;
-  const scene = v.scene;
-  v.clock.shouldAnimate = false;
-
-  const frame = () =>
-    new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  const render = async (n) => {
-    for (let i = 0; i < n; i++) {
-      scene.requestRender();
-      await frame(); // a real frame yield, not a busy wait
-    }
-  };
-  const label = (m) => (m ? m.label || "(unlabelled)" : "(none)");
-
-  const ctx = scene.context;
-  const cache = ctx.webgpuPipelineCache;
-  if (!cache) return { fatal: "no webgpuPipelineCache on the context" };
-  if (typeof cache.generateCacheKey !== "function") {
-    return { fatal: "generateCacheKey is not reachable at runtime" };
-  }
-  if (!(cache.cache instanceof Map)) {
-    return { fatal: "cache.cache is not a Map at runtime" };
-  }
-  // The engine-side counter this probe cross-checks against (Batch 795). Its
-  // ABSENCE is fatal, not a silently-skipped comparison: without it the
-  // cross-check would pass vacuously and this probe would be the only detector.
-  if (typeof cache.getStats !== "function") {
-    return { fatal: "cache.getStats() is not reachable at runtime" };
-  }
-  const statsProbe = cache.getStats();
-  if (typeof statsProbe.wrongModuleHits !== "number") {
-    return {
-      fatal:
-        "getStats().wrongModuleHits is missing — the engine-side aliasing counter " +
-        "(Batch 795) is gone or unwired, so the cross-check cannot run",
-    };
-  }
-
-  const collisions = [];
-  const seenNames = new Set();
-  let observedCalls = 0;
-  let cacheHits = 0;
-  let wrongModuleHits = 0;
-
-  // NEGATIVE CONTROL — reproduce the pre-fix key by stripping the log markers
-  // from the name before hashing.
-  const realKey = cache.generateCacheKey.bind(cache);
-  // One shared stand-in for EVERY module, so the `sh:` fold degenerates to a
-  // constant and the key reverts to its pre-2026-08-06 discriminating power.
-  const foldNeutralizer = { __preFixModuleStandIn: true };
-  const keyOf = stripMarkers
-    ? (desc, variant) => {
-        const stripped = {
-          ...desc,
-          name: String(desc.name)
-            .replace(/, ld=1/g, "")
-            .replace(/\/ld=\d+/g, "")
-            .replace(/ \[ld\]/g, "")
-            .replace(/\|ld=\d+/g, ""),
-          vertex: desc.vertex
-            ? { ...desc.vertex, module: foldNeutralizer }
-            : desc.vertex,
-          fragment: desc.fragment
-            ? { ...desc.fragment, module: foldNeutralizer }
-            : desc.fragment,
-        };
-        // `defines`, when a producer declares it, is the other post-fix
-        // discriminator on this axis — drop it too so the control reproduces
-        // the pre-fix key rather than a half-folded hybrid.
-        delete stripped.defines;
-        delete stripped.definesHi;
-        return realKey(stripped, variant);
-      }
-    : realKey;
-
-  // In `--expect-collisions` mode the synthesised keys no longer exist in the
-  // ENGINE's map (the engine stores real, module-folded keys), so the control
-  // keeps its own shadow index of pre-fix key -> first descriptor seen under it.
-  // Before the fold the stripped ON-state name collapsed onto the OFF-state's
-  // REAL key and the engine map alone sufficed; that shortcut died with the
-  // fold. In `detect` mode nothing changes — the engine's own map is read.
-  const shadow = stripMarkers ? new Map() : null;
-
-  const wrap = (methodName) => {
-    const orig = cache[methodName];
-    if (typeof orig !== "function") return;
-    cache[methodName] = function (desc, variant) {
-      try {
-        observedCalls++;
-        if (desc && desc.name) seenNames.add(String(desc.name));
-        const k = keyOf(desc, variant);
-        const prior = shadow ? shadow.get(k) : this.cache.get(k);
-        if (prior) cacheHits++;
-        else if (shadow && desc) shadow.set(k, { descriptor: desc });
-        if (
-          prior &&
-          desc &&
-          (prior.descriptor.vertex?.module !== desc.vertex?.module ||
-            prior.descriptor.fragment?.module !== desc.fragment?.module ||
-            prior.descriptor.vertex?.entryPoint !== desc.vertex?.entryPoint)
-        ) {
-          wrongModuleHits++;
-          collisions.push({
-            key: k,
-            method: methodName,
-            cachedName: prior.descriptor.name,
-            incomingName: desc.name,
-            cachedVertexModule: label(prior.descriptor.vertex?.module),
-            incomingVertexModule: label(desc.vertex?.module),
-            cachedFragmentModule: label(prior.descriptor.fragment?.module),
-            incomingFragmentModule: label(desc.fragment?.module),
-            cachedEntryPoint: prior.descriptor.vertex?.entryPoint,
-            incomingEntryPoint: desc.vertex?.entryPoint,
-          });
-        }
-      } catch (e) {
-        collisions.push({ key: "(detector-error)", error: String(e) });
-      }
-      return orig.apply(this, arguments);
-    };
-  };
-  wrap("getPipeline");
-  wrap("getPipelineSync");
-
-  // Add a GroundPrimitive so the terrain-classification lane is genuinely live
-  // rather than silently unexercised.
-  scene.primitives.add(
-    new C.GroundPrimitive({
-      geometryInstances: new C.GeometryInstance({
-        geometry: new C.RectangleGeometry({
-          rectangle: C.Rectangle.fromDegrees(-100, 30, -90, 40),
-        }),
-        attributes: {
-          color: C.ColorGeometryInstanceAttribute.fromColor(
-            C.Color.RED.withAlpha(0.5),
-          ),
-        },
-      }),
-    }),
-  );
-
-  // Add a glTF Model so the `WebGPUModelPipelineCache` lane is live. Its COLOR
-  // pipeline is the ONE model descriptor that routes through the central cache,
-  // and `maybeUpdateForLogDepth` wipes `_pipelines` on the same
-  // `isWebGPULogDepthActive` flip the orthographic / morph triggers drive — so
-  // without a model on screen that lane would be silently unexercised.
-  try {
-    const model = await C.Model.fromGltfAsync({
-      url: "/Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb",
-      modelMatrix: C.Transforms.eastNorthUpToFixedFrame(
-        C.Cartesian3.fromDegrees(-95, 35, 0),
-      ),
-      scale: 5000,
-    });
-    scene.primitives.add(model);
-  } catch (e) {
-    // Recorded, not thrown — the coverage map below reports a zero model count
-    // so a missing asset shows up as an unexercised lane rather than a silent pass.
-    seenNames.add(`(model load failed: ${e})`);
-  }
-
-  scene.camera.setView({
-    destination: C.Cartesian3.fromDegrees(-95, 35, 900000),
+let out;
+try {
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 700 },
   });
+  page.on("console", (m) => {
+    if (m.type() === "error") errors.push(m.text());
+  });
+  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
 
-  // READINESS IS A GATE, not a recorded field: do not proceed until the globe
-  // has actually materialized pipelines.
-  let ready = false;
-  for (let i = 0; i < 200 && !ready; i++) {
-    await render(1);
-    ready = cache.cache.size > 0 && scene.globe.tilesLoaded;
-  }
-  if (!ready) return { fatal: "readiness gate never satisfied" };
-  await render(20);
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
+    waitUntil: "networkidle",
+  });
+  await page.waitForFunction(() => !!window.viewer);
 
-  // Engine counter baseline is taken AFTER warm-up so the delta covers exactly
-  // the trigger phases, matching what the probe's own wrapper counts there.
-  const engineWrongBefore = cache.getStats().wrongModuleHits;
-  const probeWrongBefore = wrongModuleHits;
+  out = await page.evaluate(async (stripMarkers) => {
+    // Helpers are defined INSIDE page.evaluate — the function is serialized, its
+    // closure is not.
+    const C = await import("/Build/CesiumUnminified/index.js");
+    const v = window.viewer;
+    const scene = v.scene;
+    v.clock.shouldAnimate = false;
 
-  const callsAfterWarmup = observedCalls;
-  const phases = [];
-  const runPhase = async (name, fn, frames) => {
-    const before = observedCalls;
-    await fn();
-    await render(frames);
-    phases.push({ name, pipelineCalls: observedCalls - before });
-  };
+    const frame = () =>
+      new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const render = async (n) => {
+      for (let i = 0; i < n; i++) {
+        scene.requestRender();
+        await frame(); // a real frame yield, not a busy wait
+      }
+    };
+    const label = (m) => (m ? m.label || "(unlabelled)" : "(none)");
 
-  // ── globe fleet: the master switch ──
-  await runPhase(
-    "globe: _logDepthWriteEnabled = false",
-    () => {
-      ctx._logDepthWriteEnabled = false;
-    },
-    25,
-  );
-  await runPhase(
-    "globe: _logDepthWriteEnabled = true",
-    () => {
-      ctx._logDepthWriteEnabled = true;
-    },
-    25,
-  );
+    const ctx = scene.context;
+    const cache = ctx.webgpuPipelineCache;
+    if (!cache) return { fatal: "no webgpuPipelineCache on the context" };
+    if (typeof cache.generateCacheKey !== "function") {
+      return { fatal: "generateCacheKey is not reachable at runtime" };
+    }
+    if (!(cache.cache instanceof Map)) {
+      return { fatal: "cache.cache is not a Map at runtime" };
+    }
+    // The engine-side counter this probe cross-checks against (Batch 795). Its
+    // ABSENCE is fatal, not a silently-skipped comparison: without it the
+    // cross-check would pass vacuously and this probe would be the only detector.
+    if (typeof cache.getStats !== "function") {
+      return { fatal: "cache.getStats() is not reachable at runtime" };
+    }
+    const statsProbe = cache.getStats();
+    if (typeof statsProbe.wrongModuleHits !== "number") {
+      return {
+        fatal:
+          "getStats().wrongModuleHits is missing — the engine-side aliasing counter " +
+          "(Batch 795) is gone or unwired, so the cross-check cannot run",
+      };
+    }
 
-  // ── sibling fleet: orthographic clears frameState.useLogDepth ──
-  await runPhase(
-    "camera.switchToOrthographicFrustum()",
-    () => scene.camera.switchToOrthographicFrustum(),
-    25,
-  );
-  await runPhase(
-    "camera.switchToPerspectiveFrustum()",
-    () => scene.camera.switchToPerspectiveFrustum(),
-    25,
-  );
-  await runPhase("scene.morphTo2D(0)", () => scene.morphTo2D(0), 30);
-  await runPhase("scene.morphTo3D(0)", () => scene.morphTo3D(0), 30);
+    const collisions = [];
+    const seenNames = new Set();
+    let observedCalls = 0;
+    let cacheHits = 0;
+    let wrongModuleHits = 0;
 
-  const engineStats = cache.getStats();
+    // NEGATIVE CONTROL — reproduce the pre-fix key by stripping the log markers
+    // from the name before hashing.
+    const realKey = cache.generateCacheKey.bind(cache);
+    // One shared stand-in for EVERY module, so the `sh:` fold degenerates to a
+    // constant and the key reverts to its pre-2026-08-06 discriminating power.
+    const foldNeutralizer = { __preFixModuleStandIn: true };
+    const keyOf = stripMarkers
+      ? (desc, variant) => {
+          const stripped = {
+            ...desc,
+            name: String(desc.name)
+              .replace(/, ld=1/g, "")
+              .replace(/\/ld=\d+/g, "")
+              .replace(/ \[ld\]/g, "")
+              .replace(/\|ld=\d+/g, ""),
+            vertex: desc.vertex
+              ? { ...desc.vertex, module: foldNeutralizer }
+              : desc.vertex,
+            fragment: desc.fragment
+              ? { ...desc.fragment, module: foldNeutralizer }
+              : desc.fragment,
+          };
+          // `defines`, when a producer declares it, is the other post-fix
+          // discriminator on this axis — drop it too so the control reproduces
+          // the pre-fix key rather than a half-folded hybrid.
+          delete stripped.defines;
+          delete stripped.definesHi;
+          return realKey(stripped, variant);
+        }
+      : realKey;
 
-  return {
-    collisions,
-    observedCalls,
-    callsAfterWarmup,
-    triggerCalls: observedCalls - callsAfterWarmup,
-    cacheSize: cache.cache.size,
-    cacheHits,
-    wrongModuleHits,
-    // Cross-check inputs: both counts scoped to the trigger phases only.
-    probeWrongDelta: wrongModuleHits - probeWrongBefore,
-    engineWrongDelta: engineStats.wrongModuleHits - engineWrongBefore,
-    engineWrongTotal: engineStats.wrongModuleHits,
-    engineStats,
-    phases,
-    // Coverage: which renderers were actually exercised. Reported, not asserted,
-    // so a lane that never ran is visible instead of silently "passing".
-    coverage: {
-      globe: [...seenNames].filter((n) => n.startsWith("Globe terrain")).length,
-      groundPrimitive: [...seenNames].filter((n) =>
-        n.startsWith("GroundPrimitive"),
-      ).length,
-      vector3DTile: [...seenNames].filter((n) => n.startsWith("Vector3DTile"))
-        .length,
-      ellipsoidPrimitive: [...seenNames].filter((n) =>
-        n.startsWith("EllipsoidPrimitive"),
-      ).length,
-      // `Model PBR [...]|<key>|ld=<n>` — the one model descriptor on the
-      // central cache.
-      modelPBR: [...seenNames].filter((n) => n.startsWith("Model PBR")).length,
-      gaussianSplat: [...seenNames].filter((n) => n.startsWith("GaussianSplat"))
-        .length,
-      total: seenNames.size,
-    },
-    sampleNames: [...seenNames].slice(0, 40),
-  };
-}, EXPECT_COLLISIONS);
+    // In `--expect-collisions` mode the synthesised keys no longer exist in the
+    // ENGINE's map (the engine stores real, module-folded keys), so the control
+    // keeps its own shadow index of pre-fix key -> first descriptor seen under it.
+    // Before the fold the stripped ON-state name collapsed onto the OFF-state's
+    // REAL key and the engine map alone sufficed; that shortcut died with the
+    // fold. In `detect` mode nothing changes — the engine's own map is read.
+    const shadow = stripMarkers ? new Map() : null;
 
-await browser.close();
+    const wrap = (methodName) => {
+      const orig = cache[methodName];
+      if (typeof orig !== "function") return;
+      cache[methodName] = function (desc, variant) {
+        try {
+          observedCalls++;
+          if (desc && desc.name) seenNames.add(String(desc.name));
+          const k = keyOf(desc, variant);
+          const prior = shadow ? shadow.get(k) : this.cache.get(k);
+          if (prior) cacheHits++;
+          else if (shadow && desc) shadow.set(k, { descriptor: desc });
+          if (
+            prior &&
+            desc &&
+            (prior.descriptor.vertex?.module !== desc.vertex?.module ||
+              prior.descriptor.fragment?.module !== desc.fragment?.module ||
+              prior.descriptor.vertex?.entryPoint !== desc.vertex?.entryPoint)
+          ) {
+            wrongModuleHits++;
+            collisions.push({
+              key: k,
+              method: methodName,
+              cachedName: prior.descriptor.name,
+              incomingName: desc.name,
+              cachedVertexModule: label(prior.descriptor.vertex?.module),
+              incomingVertexModule: label(desc.vertex?.module),
+              cachedFragmentModule: label(prior.descriptor.fragment?.module),
+              incomingFragmentModule: label(desc.fragment?.module),
+              cachedEntryPoint: prior.descriptor.vertex?.entryPoint,
+              incomingEntryPoint: desc.vertex?.entryPoint,
+            });
+          }
+        } catch (e) {
+          collisions.push({ key: "(detector-error)", error: String(e) });
+        }
+        return orig.apply(this, arguments);
+      };
+    };
+    wrap("getPipeline");
+    wrap("getPipelineSync");
+
+    // Add a GroundPrimitive so the terrain-classification lane is genuinely live
+    // rather than silently unexercised.
+    scene.primitives.add(
+      new C.GroundPrimitive({
+        geometryInstances: new C.GeometryInstance({
+          geometry: new C.RectangleGeometry({
+            rectangle: C.Rectangle.fromDegrees(-100, 30, -90, 40),
+          }),
+          attributes: {
+            color: C.ColorGeometryInstanceAttribute.fromColor(
+              C.Color.RED.withAlpha(0.5),
+            ),
+          },
+        }),
+      }),
+    );
+
+    // Add a glTF Model so the `WebGPUModelPipelineCache` lane is live. Its COLOR
+    // pipeline is the ONE model descriptor that routes through the central cache,
+    // and `maybeUpdateForLogDepth` wipes `_pipelines` on the same
+    // `isWebGPULogDepthActive` flip the orthographic / morph triggers drive — so
+    // without a model on screen that lane would be silently unexercised.
+    try {
+      const model = await C.Model.fromGltfAsync({
+        url: "/Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb",
+        modelMatrix: C.Transforms.eastNorthUpToFixedFrame(
+          C.Cartesian3.fromDegrees(-95, 35, 0),
+        ),
+        scale: 5000,
+      });
+      scene.primitives.add(model);
+    } catch (e) {
+      // Recorded, not thrown — the coverage map below reports a zero model count
+      // so a missing asset shows up as an unexercised lane rather than a silent pass.
+      seenNames.add(`(model load failed: ${e})`);
+    }
+
+    scene.camera.setView({
+      destination: C.Cartesian3.fromDegrees(-95, 35, 900000),
+    });
+
+    // READINESS IS A GATE, not a recorded field: do not proceed until the globe
+    // has actually materialized pipelines.
+    let ready = false;
+    for (let i = 0; i < 200 && !ready; i++) {
+      await render(1);
+      ready = cache.cache.size > 0 && scene.globe.tilesLoaded;
+    }
+    if (!ready) return { fatal: "readiness gate never satisfied" };
+    await render(20);
+
+    // Engine counter baseline is taken AFTER warm-up so the delta covers exactly
+    // the trigger phases, matching what the probe's own wrapper counts there.
+    const engineWrongBefore = cache.getStats().wrongModuleHits;
+    const probeWrongBefore = wrongModuleHits;
+
+    const callsAfterWarmup = observedCalls;
+    const phases = [];
+    const runPhase = async (name, fn, frames) => {
+      const before = observedCalls;
+      await fn();
+      await render(frames);
+      phases.push({ name, pipelineCalls: observedCalls - before });
+    };
+
+    // ── globe fleet: the master switch ──
+    await runPhase(
+      "globe: _logDepthWriteEnabled = false",
+      () => {
+        ctx._logDepthWriteEnabled = false;
+      },
+      25,
+    );
+    await runPhase(
+      "globe: _logDepthWriteEnabled = true",
+      () => {
+        ctx._logDepthWriteEnabled = true;
+      },
+      25,
+    );
+
+    // ── sibling fleet: orthographic clears frameState.useLogDepth ──
+    await runPhase(
+      "camera.switchToOrthographicFrustum()",
+      () => scene.camera.switchToOrthographicFrustum(),
+      25,
+    );
+    await runPhase(
+      "camera.switchToPerspectiveFrustum()",
+      () => scene.camera.switchToPerspectiveFrustum(),
+      25,
+    );
+    await runPhase("scene.morphTo2D(0)", () => scene.morphTo2D(0), 30);
+    await runPhase("scene.morphTo3D(0)", () => scene.morphTo3D(0), 30);
+
+    const engineStats = cache.getStats();
+
+    return {
+      collisions,
+      observedCalls,
+      callsAfterWarmup,
+      triggerCalls: observedCalls - callsAfterWarmup,
+      cacheSize: cache.cache.size,
+      cacheHits,
+      wrongModuleHits,
+      // Cross-check inputs: both counts scoped to the trigger phases only.
+      probeWrongDelta: wrongModuleHits - probeWrongBefore,
+      engineWrongDelta: engineStats.wrongModuleHits - engineWrongBefore,
+      engineWrongTotal: engineStats.wrongModuleHits,
+      engineStats,
+      phases,
+      // Coverage: which renderers were actually exercised. Reported, not asserted,
+      // so a lane that never ran is visible instead of silently "passing".
+      coverage: {
+        globe: [...seenNames].filter((n) => n.startsWith("Globe terrain"))
+          .length,
+        groundPrimitive: [...seenNames].filter((n) =>
+          n.startsWith("GroundPrimitive"),
+        ).length,
+        vector3DTile: [...seenNames].filter((n) => n.startsWith("Vector3DTile"))
+          .length,
+        ellipsoidPrimitive: [...seenNames].filter((n) =>
+          n.startsWith("EllipsoidPrimitive"),
+        ).length,
+        // `Model PBR [...]|<key>|ld=<n>` — the one model descriptor on the
+        // central cache.
+        modelPBR: [...seenNames].filter((n) => n.startsWith("Model PBR"))
+          .length,
+        gaussianSplat: [...seenNames].filter((n) =>
+          n.startsWith("GaussianSplat"),
+        ).length,
+        total: seenNames.size,
+      },
+      sampleNames: [...seenNames].slice(0, 40),
+    };
+  }, EXPECT_COLLISIONS);
+} finally {
+  // The bare `await browser.close()` this replaces was skipped whenever the
+  // evaluate threw, leaving a headless Edge + GPU process alive.
+  await browser.close();
+  clearTimeout(watchdog);
+}
 
 const report = {
   mode: EXPECT_COLLISIONS ? "negative-control" : "detect",

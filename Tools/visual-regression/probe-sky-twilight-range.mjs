@@ -47,6 +47,18 @@
 
 import { chromium } from "playwright";
 
+// Machine-safety watchdog (Batch 861+ fleet sweep). A probe that wedges holds a
+// headless Edge + GPU process alive indefinitely; `unref` keeps the timer from
+// extending a healthy run.
+const WATCHDOG_MS = 420_000;
+const watchdog = setTimeout(() => {
+  console.error(
+    `[probe-sky-twilight-range] watchdog fired after ${WATCHDOG_MS} ms`,
+  );
+  process.exit(2);
+}, WATCHDOG_MS);
+watchdog.unref?.();
+
 const BASE = process.env.PROBE_BASE ?? "http://localhost:8080";
 const VIEW = { width: 1024, height: 768 };
 
@@ -82,6 +94,16 @@ async function run(renderer) {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
+  try {
+    return await runWith(browser, renderer);
+  } finally {
+    // The bare `await browser.close()` this replaces was skipped whenever the
+    // evaluate threw, leaving a headless Edge + GPU process alive.
+    await browser.close();
+  }
+}
+
+async function runWith(browser, renderer) {
   const page = await browser.newPage({ viewport: VIEW });
   const errs = [];
   page.on("console", (m) => {
@@ -364,7 +386,6 @@ async function run(renderer) {
     { lanes: LANES, view: VIEW },
   );
 
-  await browser.close();
   return { ...result, consoleErrs: errs };
 }
 
@@ -516,4 +537,5 @@ const exitCode = hardFail || allErrs.length > 0 ? 1 : structural ? 3 : 0;
 console.log(
   `\nGATE ${pass ? "PASS" : structural ? "STRUCTURAL" : "FAIL"} (exit ${exitCode})`,
 );
+clearTimeout(watchdog);
 process.exit(exitCode);

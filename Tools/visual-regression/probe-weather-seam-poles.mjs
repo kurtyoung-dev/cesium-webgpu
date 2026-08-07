@@ -130,6 +130,18 @@ import {
   WEATHER_DETERMINISM_DIALS,
 } from "./lib/weather-probe-pinning.mjs";
 
+// Machine-safety watchdog (Batch 861+ fleet sweep). A probe that wedges holds a
+// headless Edge + GPU process alive indefinitely; `unref` keeps the timer from
+// extending a healthy run.
+const WATCHDOG_MS = 600_000;
+const watchdog = setTimeout(() => {
+  console.error(
+    `[probe-weather-seam-poles] watchdog fired after ${WATCHDOG_MS} ms`,
+  );
+  process.exit(2);
+}, WATCHDOG_MS);
+watchdog.unref?.();
+
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT = "Tools/visual-regression/output/weather-seam-poles";
 fs.mkdirSync(OUT, { recursive: true });
@@ -564,6 +576,7 @@ try {
       pins: setup.pins,
       dials: setup.dials,
       captures: scored,
+      globeReadiness: { setup: setup.readiness.globeReady },
       expectedChannelStrength: undefined,
     }),
   );

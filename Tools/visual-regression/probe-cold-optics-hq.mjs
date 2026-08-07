@@ -19,8 +19,33 @@
  *     sun (pillar) much taller than it is wide;
  *   - 0 WebGPU device errors.
  *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * VERDICT REPAIR (Batch 861+) — `NEW-PROBE-VACUOUS-REACHABILITY-ASSERTION` sweep
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `twoHalos` and `pillarTall` were computed under a literal `// Verdict.`
+ * banner, printed, and then NEVER GATED: the only exit was
+ * `process.exit(errCount === 0 ? 0 : 1)`. The probe therefore exited 0 — a
+ * citable green — with BOTH substantive claims false, as long as no device
+ * error fired. That is the stronger form of the vacuity class recorded in
+ * DEFERRED_WORK: not a proxy gate, a verdict with no gate at all.
+ *
+ * Both booleans are now `pass` conjuncts, at their ORIGINAL thresholds
+ * (`radial.peaks.length >= 2`; `pillar.aspect >= 1.8 && verticalExtentPx >= 20`),
+ * and the run carries a STRUCTURAL tier for the preconditions those numbers are
+ * only meaningful under:
+ *   - the sun must project to a screen point in each capture set (the radial and
+ *     pillar analyses are both centred on it; a null centre yields NaN, not a
+ *     product defect);
+ *   - the sun must be above the horizon at each solved time;
+ *   - `coldOpticsAdvanced` must READ BACK as driven in both legs; and
+ *   - the advanced-minus-legacy difference must be non-empty — an A/B in which
+ *     no pixel changed is a dead toggle, not an absent halo.
+ *
  * Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-cold-optics-hq.mjs
  * Outputs: Tools/visual-regression/output/cold-optics-hq-*.png
+ * Exit:
+ *   0 PASS | 1 a real product FAIL | 2 watchdog or exception
+ *   3 STRUCTURAL — a precondition failed, so the verdict certifies nothing
  */
 import { chromium } from "playwright";
 import fs from "fs";
@@ -34,6 +59,13 @@ import {
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
 const OUT = "Tools/visual-regression/output";
+
+const WATCHDOG_MS = 420_000;
+const watchdog = setTimeout(() => {
+  console.error(`[cold-optics-hq] watchdog fired after ${WATCHDOG_MS} ms`);
+  process.exit(2);
+}, WATCHDOG_MS);
+watchdog.unref?.();
 
 function shotDU(buf) {
   return "data:image/png;base64," + buf.toString("base64");
@@ -365,6 +397,14 @@ async function run() {
       "--use-vulkan",
     ],
   });
+  try {
+    return await runWith(browser);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function runWith(browser) {
   const page = await browser.newPage({
     viewport: { width: 1024, height: 768 },
   });
@@ -412,18 +452,25 @@ async function run() {
   await page.waitForTimeout(1200);
 
   // Legacy (advanced OFF) — parity reference + analysis baseline.
-  await page.evaluate(() => {
+  const dialsLegacyA = await page.evaluate(() => {
     const s = window.viewer.scene;
     s.coldOpticsEnabled = true;
     s.coldOpticsIntensity = 1.0;
     s.coldOpticsAdvanced = false;
+    return {
+      enabled: s.coldOpticsEnabled,
+      intensity: s.coldOpticsIntensity,
+      advanced: s.coldOpticsAdvanced,
+    };
   });
   await page.waitForTimeout(700);
   const legacyA = await shot(page, "cold-optics-hq-legacy-webgpu");
 
   // Advanced ON.
-  await page.evaluate(() => {
-    window.viewer.scene.coldOpticsAdvanced = true;
+  const dialsAdvA = await page.evaluate(() => {
+    const s = window.viewer.scene;
+    s.coldOpticsAdvanced = true;
+    return { enabled: s.coldOpticsEnabled, advanced: s.coldOpticsAdvanced };
   });
   await page.waitForTimeout(700);
   const advA = await shot(page, "cold-optics-hq-advanced-webgpu");
@@ -454,14 +501,18 @@ async function run() {
   console.log("[hq] setup B (low sun):", JSON.stringify(setupB));
   await page.waitForTimeout(900);
 
-  await page.evaluate(() => {
-    window.viewer.scene.coldOpticsAdvanced = false;
+  const dialsLegacyB = await page.evaluate(() => {
+    const s = window.viewer.scene;
+    s.coldOpticsAdvanced = false;
+    return { enabled: s.coldOpticsEnabled, advanced: s.coldOpticsAdvanced };
   });
   await page.waitForTimeout(600);
   const legacyB = await shot(page, "cold-optics-hq-lowsun-legacy-webgpu");
 
-  await page.evaluate(() => {
-    window.viewer.scene.coldOpticsAdvanced = true;
+  const dialsAdvB = await page.evaluate(() => {
+    const s = window.viewer.scene;
+    s.coldOpticsAdvanced = true;
+    return { enabled: s.coldOpticsEnabled, advanced: s.coldOpticsAdvanced };
   });
   await page.waitForTimeout(600);
   const advB = await shot(page, "cold-optics-hq-lowsun-advanced-webgpu");
@@ -483,9 +534,51 @@ async function run() {
   if (consoleErrors.length)
     consoleErrors.slice(0, 8).forEach((e) => console.log("  console:", e));
 
-  await browser.close();
+  // ── STRUCTURAL preconditions. Each one, if unmet, makes the two verdict
+  // booleans below arithmetic noise rather than statements about the optics.
+  const structural = [];
+  for (const [name, setup] of [
+    ["A (high sun, wide FOV)", setupA],
+    ["B (low sun)", setupB],
+  ]) {
+    if (!setup.sunWindow) {
+      structural.push(
+        `${name}: the sun did not project to a screen point — the radial and pillar analyses have no centre`,
+      );
+    }
+    if (!(setup.sunElevDeg > 0)) {
+      structural.push(
+        `${name}: solved sun elevation ${setup.sunElevDeg} is at or below the horizon — halos and pillars cannot occur`,
+      );
+    }
+  }
+  for (const [name, dials, expected] of [
+    ["A legacy", dialsLegacyA, false],
+    ["A advanced", dialsAdvA, true],
+    ["B legacy", dialsLegacyB, false],
+    ["B advanced", dialsAdvB, true],
+  ]) {
+    if (dials.enabled !== true || dials.advanced !== expected) {
+      structural.push(
+        `${name}: cold-optics dials did not take (enabled=${dials.enabled}, advanced=${dials.advanced}, expected advanced=${expected}) — the two legs are not the configurations they are labelled`,
+      );
+    }
+  }
+  // Non-vacuity of the A/B itself: if the advanced toggle moved no pixel at all,
+  // "no halos" is a dead toggle, not an absent optical feature.
+  const radialAddedEnergy = radial.profile.reduce((a, b) => a + b, 0);
+  if (!(radialAddedEnergy > 0)) {
+    structural.push(
+      "capture set A: advanced-minus-legacy added no brightness anywhere in the disc — the advanced toggle is inert, so the halo count measures nothing",
+    );
+  }
+  if (!(pillar.verticalBrightPx + pillar.horizontalBrightPx > 0)) {
+    structural.push(
+      "capture set B: advanced-minus-legacy added no brightness in either strip — the advanced toggle is inert, so the pillar aspect measures nothing",
+    );
+  }
 
-  // Verdict.
+  // Verdict — both booleans are now GATED, at their original thresholds.
   const twoHalos = radial.peaks.length >= 2;
   const pillarTall = pillar.aspect >= 1.8 && pillar.verticalExtentPx >= 20;
   console.log("\n==== COLD-OPTICS-HQ VERDICT ====");
@@ -494,10 +587,31 @@ async function run() {
     `pillar tall+narrow: ${pillarTall} (aspect ${pillar.aspect}, vExtent ${pillar.verticalExtentPx}px)`,
   );
   console.log(`device errors: ${errCount}`);
-  process.exit(errCount === 0 ? 0 : 1);
+  console.log(
+    `radial added-energy total: ${radialAddedEnergy.toFixed(2)} (non-vacuity)`,
+  );
+
+  if (structural.length) {
+    for (const s of structural) {
+      console.log(`  STRUCTURAL: ${s}`);
+    }
+    console.log(
+      "RESULT: STRUCTURAL — acceptance INCOMPLETE. This probe certifies nothing in this state.",
+    );
+    return 3;
+  }
+  const pass = twoHalos && pillarTall && errCount === 0;
+  console.log(`RESULT: ${pass ? "PASS" : "FAIL"}`);
+  return pass ? 0 : 1;
 }
 
-run().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+run()
+  .then((code) => {
+    clearTimeout(watchdog);
+    process.exit(code);
+  })
+  .catch((e) => {
+    clearTimeout(watchdog);
+    console.error(e);
+    process.exit(2);
+  });

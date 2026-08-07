@@ -124,6 +124,30 @@
  * The aim is then re-checked against the scored leg by
  * `collectHeadroomStructural`, so a calibration that went stale between the
  * ladder and the sweep reports STRUCTURAL instead of certifying.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * P10 READINESS NON-VACUITY (Batch 861+) — the enforcement layer must gate its
+ * OWN read-back
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `awaitGlobeReady` spends up to a 90 s budget counting binned `Pass.GLOBE`
+ * commands and then RETURNS `{ binnedGlobeCommands: 0, firstBinnedMs: null }`
+ * if the globe never binned one — there is no throw and no post-loop assertion.
+ * Until this clause existed, every pinned probe merely PRINTED that number
+ * inside a `console.log` template and `collectPinStructural` had no parameter
+ * for it, so a run in which the WebGPU globe pipeline was still cooking past the
+ * budget produced a product verdict (RED) rather than STRUCTURAL. The number
+ * that would have explained the run was computed, logged, and gated by nothing
+ * — the same shape as the `M2e` finding repaired in `lib/celestial-g1-gate.mjs`,
+ * and the exact race that `env-background-clear.spec.mjs` test `E5` already
+ * codifies for the sibling globe lane ("`tilesLoaded` is TRUE while the WebGPU
+ * globe pipeline is still cooking").
+ *
+ * The rule: a read-back that exists to prove non-vacuity must itself be
+ * asserted, and its ABSENCE must be STRUCTURAL too — otherwise a caller that
+ * forgets to pass it silently restores the defect. `globeReadiness` is
+ * therefore a REQUIRED option of `collectPinStructural`;
+ * `collectGlobeReadinessStructural` is the standalone enforcement, and
+ * `weather-probe-headroom.spec.mjs` pins both halves against mutants.
  */
 
 /**
@@ -251,6 +275,56 @@ export function collectHeadroomStructural(options) {
   ];
 }
 
+/**
+ * P10 enforcement. Turns ONE `awaitGlobeReady` report into STRUCTURAL reasons.
+ *
+ * Reads `binnedGlobeCommands` — the variable the readiness claim is a function
+ * of — not `elapsedMs` and not a `tilesLoaded`-shaped correlate. A budget that
+ * expired with zero binned globe commands means the frames the probe went on to
+ * score contained no globe, so every pixel statistic taken from them is a
+ * statistic of the clear colour.
+ *
+ * @param {object} options
+ * @param {string} options.label Leg name for the message.
+ * @param {object} [options.readiness] The `awaitGlobeReady` return value.
+ *   `undefined` is itself STRUCTURAL: an unsupplied read-back is indistinguish-
+ *   able from an unasserted one.
+ * @returns {Array<string>} STRUCTURAL reasons; empty means the globe rendered.
+ */
+export function collectGlobeReadinessStructural(options) {
+  const { label, readiness } = options;
+  if (readiness === null || typeof readiness !== "object") {
+    return [
+      `${label}: no globe-readiness read-back was supplied (${String(readiness)}) — ` +
+        `awaitGlobeReady returns rather than throws when the globe never bins a ` +
+        `Pass.GLOBE command, so an unpassed report is an unasserted one`,
+    ];
+  }
+  const binned = readiness.binnedGlobeCommands;
+  if (!Number.isFinite(binned)) {
+    return [
+      `${label}: binnedGlobeCommands read ${String(binned)}, which is not a finite ` +
+        `count — the readiness report is not an awaitGlobeReady result`,
+    ];
+  }
+  if (!(binned > 0)) {
+    return [
+      `${label}: the globe never binned a Pass.GLOBE command ` +
+        `(binnedGlobeCommands ${binned}) after ${readiness.elapsedMs} ms of ` +
+        `readiness budget — every scored frame is the clear colour, so a pixel ` +
+        `verdict here is a phantom, not a product defect`,
+    ];
+  }
+  if (!Number.isFinite(readiness.firstBinnedMs)) {
+    return [
+      `${label}: binnedGlobeCommands read ${binned} but firstBinnedMs is ` +
+        `${String(readiness.firstBinnedMs)} — the readiness report is internally ` +
+        `inconsistent and cannot be trusted as a non-vacuity proof`,
+    ];
+  }
+  return [];
+}
+
 /** Packed cloud-uniform slots read back to prove the shader-visible pins took. */
 export const WEATHER_PIN_SLOTS = Object.freeze({
   time: 35,
@@ -271,6 +345,17 @@ export const FORBIDDEN_QUALITY_BITS =
 
 /** The escape-hatch quality every pinned weather probe uses. */
 export const PINNED_CLOUD_QUALITY = 32;
+
+/**
+ * The only dials a probe may declare as its SUBJECT and therefore exempt from
+ * the determinism check. Wind and the tier escape are NOT exemptible: they are
+ * what make two consecutive captures comparable at all, so a probe that needs
+ * either of them free is not running a controlled A/B.
+ */
+export const EXEMPTIBLE_SUBJECT_DIALS = Object.freeze([
+  "cloudCastShadows",
+  "cloudContributesIBL",
+]);
 
 /**
  * Determinism pins shared by every pinned weather probe. Spread into the
@@ -621,11 +706,19 @@ export async function installWeatherPinHarnessOnPage(page) {
  * @param {Array<object>} options.captures Every capture whose numbers are scored;
  *   each must carry the `slots` snapshot and a `label` for the message.
  * @param {object} [options.applied] `{ legName: awaitWeatherApplied result }`.
+ * @param {object} options.globeReadiness REQUIRED (P10).
+ *   `{ legName: awaitGlobeReady result }`. Omitting it is STRUCTURAL — see the
+ *   P10 note above: a non-vacuity read-back that a caller can forget to hand in
+ *   is not enforcement.
  * @param {number} [options.expectedChannelStrength] Required slot-107 value when
  *   the probe drives a single strength for every scored capture. Probes with a
  *   gated leg pass `expectedChannelStrength` per capture instead (see below).
  * @param {boolean} [options.requireWeatherMap] Require slot 64 === 1 on every
  *   scored capture. False for probes that deliberately score a map-off leg.
+ * @param {Array<string>} [options.subjectDials] Determinism dials this probe
+ *   TOGGLES as its subject, so the shared check must not require the pinned
+ *   value. Restricted to `EXEMPTIBLE_SUBJECT_DIALS`; the probe still has to
+ *   read the dial back per leg and assert it itself.
  */
 export function collectPinStructural(options) {
   const {
@@ -633,11 +726,40 @@ export function collectPinStructural(options) {
     dials,
     captures,
     applied,
+    globeReadiness,
     expectedChannelStrength,
     requireWeatherMap = true,
     brightThreshold,
   } = options;
   const structural = [];
+
+  // ── P10 first: if the globe never rendered, nothing below is worth reading.
+  if (globeReadiness === undefined) {
+    structural.push(
+      "collectPinStructural was called without `globeReadiness` — the " +
+        "awaitGlobeReady read-back is unasserted, which is exactly the vacuity " +
+        "this clause exists to close",
+    );
+  } else if (globeReadiness === null || typeof globeReadiness !== "object") {
+    structural.push(
+      `collectPinStructural received a non-object \`globeReadiness\` (${String(globeReadiness)})`,
+    );
+  } else {
+    const legs = Object.entries(globeReadiness);
+    if (legs.length === 0) {
+      structural.push(
+        "`globeReadiness` is empty — no leg's globe readiness was asserted",
+      );
+    }
+    for (const [leg, readiness] of legs) {
+      structural.push(
+        ...collectGlobeReadinessStructural({
+          label: `${leg} globe readiness`,
+          readiness,
+        }),
+      );
+    }
+  }
 
   if (pins.imageryLayersAfter !== 0) {
     structural.push(
@@ -669,6 +791,20 @@ export function collectPinStructural(options) {
     );
   }
 
+  // A probe whose SUBJECT is one of the determinism dials declares it here and
+  // asserts it itself, per leg. Only the two booleans are exemptible, and an
+  // undeclarable name is STRUCTURAL rather than silently ignored.
+  const subjectDials = new Set(options.subjectDials ?? []);
+  for (const name of subjectDials) {
+    if (!EXEMPTIBLE_SUBJECT_DIALS.includes(name)) {
+      structural.push(
+        `subjectDials declared "${name}", which is not exemptible ` +
+          `(${EXEMPTIBLE_SUBJECT_DIALS.join(", ")}) — wind and the tier escape are ` +
+          `what make two consecutive captures comparable, so neither can be the subject`,
+      );
+    }
+  }
+
   if (dials) {
     if (dials.cloudWindSpeed !== 0) {
       structural.push(
@@ -681,11 +817,19 @@ export function collectPinStructural(options) {
       );
     }
     if (
-      dials.cloudCastShadows !== false ||
+      !subjectDials.has("cloudCastShadows") &&
+      dials.cloudCastShadows !== false
+    ) {
+      structural.push(
+        `cloudCastShadows pin did not take (${dials.cloudCastShadows}) — the env-cube refill is revision-edge-triggered and would land at an arbitrary point in the sweep`,
+      );
+    }
+    if (
+      !subjectDials.has("cloudContributesIBL") &&
       dials.cloudContributesIBL !== false
     ) {
       structural.push(
-        `cloud shadow/IBL pins did not take (castShadows=${dials.cloudCastShadows}, contributesIBL=${dials.cloudContributesIBL}) — the env-cube refill is revision-edge-triggered and would land at an arbitrary point in the sweep`,
+        `cloudContributesIBL pin did not take (${dials.cloudContributesIBL}) — the env-cube refill is revision-edge-triggered and would land at an arbitrary point in the sweep`,
       );
     }
   }
