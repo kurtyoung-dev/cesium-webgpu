@@ -480,6 +480,14 @@ Dynamic Ocean & Wind remains separately planned and blocked by O5.
 
 ## 6. GSPLAT track — Gaussian splats on WebGPU (maintainer-queued 2026-08-06, ruling R6)
 
+### EXTENDED-LANES FIRST RUN (2026-08-07, tip `25adfbd27d`, Batch 916) — G5's vacuity caveat DISCHARGED on the cube; tower's new controls are blocked by the KNOWN variance class
+
+First run of the CO-12 lanes (three azimuths, SH-off vacuity, corrupted covariance), exit 3 with the split read honestly:
+
+- **sh_unit_cube — every new control GREEN.** SH-OFF restored the cross-backend mismatch to **2.534/2.519/2.520%** at the three azimuths (predicted ~2.574% recorded pre-G5; gate >= 1% at >= 2 of 3) with 17.2-17.4% vs the SH-on frame — **the C15-G5 SH term is proven NON-VACUOUS and its substituted-evidence caveat is DISCHARGED.** COV-CTRL: single corrupted triple 1.980% (floor 0.5%, derived per-splat footprint 0.709%), bulk 33.358% (floor 1%), both reversible. Azimuth parity **0.000% at all three azimuths** vs the 1% threshold — recorded, armed at G8.
+- **tower — azimuth parity 0.017/0.020/0.018% vs the 3% threshold (excellent), but ALL THREE control legs went STRUCTURAL on the SAME mechanism**: restorations measured 0.062%/0.056% and capture-determinism 0.055% (431 px WebGPU / 389 px WebGL on the neg-ctrl leg) against the mutant-pinned 0.050% bar — this is `C15-GSPLAT-TOWER-FRAME-VARIANCE`, now measured on BOTH backends (the entry previously recorded WebGPU as the more deterministic side). No probe defect; the bar does not widen; the tower variance investigation remains the gate on G8's tower leg and now ALSO gates the control restorations.
+- G8 arming status: cube side fully armed (azimuths + both vacuity controls live and proven falsifiable); tower side armed for parity but its determinism preconditions stay structural until the variance class is understood BY MECHANISM.
+
 ### G5 ACCEPTANCE — COLOR RESIDUAL ELIMINATED (2026-08-07, Batch 895)
 
 On tip `2a950208cb` (rebuild): **sh_unit_cube mismatch 2.574% → 0.000%** (prediction was 0.35%; the two-sided red-flag band at <0.05% is answered by tower reading a NONZERO 0.017% — the instrument distinguishes the legs, so the cube zero is genuine byte-level convergence), SH live and self-reporting (`enabled=true degree=3 shWords=810` cube / `8,606,040` tower, both exactly as computed), WebGPU added% converged to WebGL's 19.141%, exit 0. **tower mismatch 0.017%** against its 3% threshold; its exit 3 is solely the filed `C15-GSPLAT-TOWER-FRAME-VARIANCE` WebGL reference class, untouched by G5. Bookkeeping owed to `C15-G8`: the probe's parity stage still prints the G3-era "recorded, not gated" text — the formal per-asset threshold re-arm (1%/3% as GATES) is the terminal row's flip, and the measured numbers already sit two orders inside them.
