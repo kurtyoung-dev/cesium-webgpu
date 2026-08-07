@@ -41,6 +41,20 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ### C13-GATE-B-CHANNELS-PROBE-NONDETERMINISM
 
+**RESOLVED 2026-08-06 (Batch 853). Five consecutive runs on one build: GREEN,
+GREEN, GREEN, GREEN, GREEN, with `rich mean` IDENTICAL at 0.8758 every time -
+spread 0.0000 against the 0.01 acceptance tolerance.** The probe is deterministic
+and passes.
+
+The stable mean also confirms the diagnosis quantitatively: it moved from the
+contaminated 0.4129-0.5374 band to 0.8758. The pre-pin readings were substantially
+measuring Ion world IMAGERY through a `max(r,g,b) > 120` threshold, not cloud - so
+those numbers were never a baseline, exactly as the fix predicted.
+
+**This does NOT close Gate B.** See `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE`: the
+other six Gate-B legs run on the same unpinned instrument class, so their GREENs
+rest on the same footing the `channels` flip came from.
+
 **Status:** OPEN / BLOCKING `C13-GATE-B`. This is an INSTRUMENT defect, not a
 product regression - and it is equally not evidence of correctness.
 
