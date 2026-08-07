@@ -16,6 +16,7 @@ import gulp from "gulp";
 import { rimraf } from "rimraf";
 
 import { bundleVariantPlugin } from "./bundleVariantPlugin.js";
+import { stampSpecBundleManifest } from "./specBundleFreshness.js";
 
 import { mkdirp } from "mkdirp";
 import assert from "node:assert";
@@ -1302,6 +1303,27 @@ export async function bundleCombinedSpecs(options) {
 }
 
 /**
+ * Regenerates the ROOT `Specs/SpecList.js`, rebundles it into `Build/Specs`,
+ * and stamps the freshness manifest (C11-132). The narrow counterpart to
+ * {@link buildWorkspaceSpecBundle} for the default and `--release` lanes.
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.incremental=false] true if the build should be cached for repeated rebuilds
+ * @param {boolean} [options.write=true] true if build output should be written to disk
+ */
+export async function buildCombinedSpecBundle(options = {}) {
+  const write = options.write ?? true;
+  await createCombinedSpecList();
+  await bundleCombinedSpecs({
+    incremental: options.incremental ?? false,
+    write: write,
+  });
+  if (write) {
+    await stampSpecBundleManifest("combined");
+  }
+}
+
+/**
  * Bundles test worker in used specs.
  * @param {object} options
  * @param {boolean} [options.incremental=false] true if the build should be cached for repeated rebuilds
@@ -1730,20 +1752,48 @@ export const buildEngine = async (options) => {
   });
 
   // Create SpecList.js
-  const specFiles = await globby(workspaceSpecFiles["engine"]);
-  const specListFile = path.join("packages/engine/Specs", "SpecList.js");
-  await createSpecListForWorkspace(specFiles, "engine", specListFile);
+  await buildWorkspaceSpecBundle("engine", { incremental, write });
+
+  return contexts;
+};
+
+/**
+ * Regenerates a workspace's `SpecList.js`, rebundles it into the directory
+ * Karma serves, and stamps the freshness manifest that certifies which spec
+ * sources the served bundle was built from (C11-132).
+ *
+ * Deliberately narrow: the spec bundle is a much smaller artifact than the
+ * workspace build, so the freshness handshake can refresh it without dragging
+ * in a full `Build/CesiumUnminified` rebuild.
+ *
+ * @param {Workspace} workspace The workspace to rebundle specs for.
+ * @param {object} [options]
+ * @param {boolean} [options.incremental=false] True if builds should be generated incrementally.
+ * @param {boolean} [options.write=true] True if bundles generated are written to files.
+ */
+export async function buildWorkspaceSpecBundle(workspace, options = {}) {
+  const incremental = options.incremental ?? false;
+  const write = options.write ?? true;
+
+  const specFiles = await globby(workspaceSpecFiles[workspace]);
+  const specListFile = path.join(`packages/${workspace}/Specs`, "SpecList.js");
+  await createSpecListForWorkspace(specFiles, workspace, specListFile);
 
   await bundleSpecs({
     incremental: incremental,
-    outbase: "packages/engine/Specs",
-    outdir: "packages/engine/Build/Specs",
+    outbase: `packages/${workspace}/Specs`,
+    outdir: `packages/${workspace}/Build/Specs`,
     specListFile: specListFile,
     write: write,
   });
 
-  return contexts;
-};
+  // An in-memory build wrote no bundle, so there is nothing on disk for a
+  // manifest to certify — stamping one would assert a freshness that no
+  // served artifact has.
+  if (write) {
+    await stampSpecBundleManifest(workspace, { files: specFiles });
+  }
+}
 
 /**
  * Builds the widgets workspace.
@@ -1780,17 +1830,7 @@ export const buildWidgets = async (options) => {
   });
 
   // Create SpecList.js
-  const specFiles = await globby(workspaceSpecFiles["widgets"]);
-  const specListFile = path.join("packages/widgets/Specs", "SpecList.js");
-  await createSpecListForWorkspace(specFiles, "widgets", specListFile);
-
-  await bundleSpecs({
-    incremental: incremental,
-    outbase: "packages/widgets/Specs",
-    outdir: "packages/widgets/Build/Specs",
-    specListFile: specListFile,
-    write: write,
-  });
+  await buildWorkspaceSpecBundle("widgets", { incremental, write });
 
   return contexts;
 };
@@ -1952,6 +1992,11 @@ export async function buildCesium(options) {
       incremental: incremental,
       write: write,
     });
+
+    // Certify which spec sources the ROOT bundle was built from (C11-132).
+    if (write) {
+      await stampSpecBundleManifest("combined");
+    }
 
     testWorkersContext = await bundleTestWorkers({
       incremental: incremental,

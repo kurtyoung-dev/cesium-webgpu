@@ -4,6 +4,7 @@ import {
   createWorldTerrainAsync,
   sampleTerrainMostDetailed,
 } from "../../index.js";
+import { describeRequiresNetwork } from "../../../../Specs/networkPolicy.js";
 
 describe("Core/sampleTerrainMostDetailed", function () {
   it("should throw querying heights from terrain without availability", async function () {
@@ -56,7 +57,9 @@ describe("Core/sampleTerrainMostDetailed", function () {
     ).toBeRejected();
   });
 
-  describe("with CesiumWorldTerrain", function () {
+  // C11-134 — Cesium World Terrain is a live Ion service; the rest of this file
+  // runs against local fixtures and stays in the offline lane.
+  describeRequiresNetwork("with CesiumWorldTerrain", function () {
     let worldTerrain;
     beforeAll(async function () {
       worldTerrain = await createWorldTerrainAsync();

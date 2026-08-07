@@ -9,6 +9,8 @@ let release = false;
 let debugCanvasWidth;
 let debugCanvasHeight;
 
+let offline = false;
+
 if (__karma__.config.args) {
   includeCategory = __karma__.config.args[0];
   excludeCategory = __karma__.config.args[1];
@@ -17,6 +19,10 @@ if (__karma__.config.args) {
   release = __karma__.config.args[4];
   debugCanvasWidth = __karma__.config.args[5];
   debugCanvasHeight = __karma__.config.args[6];
+  // C11-134 — read by token, not position: the tail of this arg list is shared
+  // with the jasmine adapter's own `--grep` pair, so a positional index here
+  // would break the moment either side gains an argument.
+  offline = __karma__.config.args.includes("--offline");
 }
 
 if (release) {
@@ -35,4 +41,5 @@ customizeJasmine(
   release,
   debugCanvasWidth,
   debugCanvasHeight,
+  offline,
 );

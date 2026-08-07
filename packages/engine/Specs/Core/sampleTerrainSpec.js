@@ -8,6 +8,7 @@ import {
   Resource,
   sampleTerrain,
 } from "../../index.js";
+import { describeRequiresNetwork } from "../../../../Specs/networkPolicy.js";
 
 describe("Core/sampleTerrain", function () {
   it("queries heights", async function () {
@@ -124,14 +125,18 @@ describe("Core/sampleTerrain", function () {
     ).toBeRejectedWithDeveloperError();
   });
 
-  it("works for a dodgy point right near the edge of a tile", async function () {
-    const worldTerrain = await createWorldTerrainAsync();
-    const positions = [
-      new Cartographic(0.33179290856829535, 0.7363107781851078),
-    ];
+  // C11-134 — the only case in this file that reaches Cesium World Terrain.
+  // Quarantined so the rest of the suite stays deterministic offline.
+  describeRequiresNetwork("with CesiumWorldTerrain", function () {
+    it("works for a dodgy point right near the edge of a tile", async function () {
+      const worldTerrain = await createWorldTerrainAsync();
+      const positions = [
+        new Cartographic(0.33179290856829535, 0.7363107781851078),
+      ];
 
-    await sampleTerrain(worldTerrain, 12, positions);
-    expect(positions[0].height).toBeDefined();
+      await sampleTerrain(worldTerrain, 12, positions);
+      expect(positions[0].height).toBeDefined();
+    });
   });
 
   describe("with terrain providers", function () {

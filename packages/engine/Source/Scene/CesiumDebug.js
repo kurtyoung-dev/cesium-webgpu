@@ -538,6 +538,24 @@ function installCesiumDebug(viewer) {
           `avg=${results.frameAvgMs.toFixed(3)}ms frames=${results.frameCount}):`,
       );
       console.table(rows);
+      // C11-140 — a per-pass table is only trustworthy if the samples behind it
+      // are accounted for. Surface the two invariants next to the numbers so an
+      // unbalanced ledger or an overlapping-pass double-count is visible at the
+      // point of reading, not only in the probe artifact.
+      if (!results.sampleLedgerBalanced) {
+        console.error(
+          `[CesiumDebug] GPU sample ledger does NOT close: ${results.unaccountedSampleCount} of ` +
+            `${results.attemptedFrameCount} attempts have no recorded outcome — these timings under-report`,
+        );
+      }
+      console.log(
+        `[CesiumDebug] GPU sample accounting: covered=${results.coveredMs.toFixed(3)}ms ` +
+          `unprofiled=${results.unprofiledMs.toFixed(3)}ms overlap=${results.overlapMs.toFixed(3)}ms ` +
+          `coverage=${results.coverageRatio === null ? "n/a" : `${(results.coverageRatio * 100).toFixed(1)}%`} ` +
+          `| sampled=${results.frameCount} skipped=${results.readbackSkipCount} ` +
+          `empty=${results.emptyFrameCount} failed=${results.failedReadbackCount} ` +
+          `lost=${results.lostSampleCount} pending=${results.pendingReadbackCount}`,
+      );
       return results;
     },
 

@@ -1,5 +1,6 @@
 import addDefaultMatchers from "./addDefaultMatchers.js";
 import equalsMethodEqualityTester from "./equalsMethodEqualityTester.js";
+import { installOfflineNetworkGuard, setOfflineLane } from "./networkPolicy.js";
 
 function customizeJasmine(
   env,
@@ -10,11 +11,21 @@ function customizeJasmine(
   release,
   debugCanvasWidth,
   debugCanvasHeight,
+  offline,
 ) {
   // set this for uniform test resolution across devices
   window.devicePixelRatio = 1;
 
   window.specsUsingRelease = release;
+
+  // C11-134 — the lane flag must be published BEFORE any spec module evaluates,
+  // because `describeRequiresNetwork()` decides at declaration time whether its
+  // suite is quarantined. karma-main.js runs ahead of SpecList.js, so this is
+  // the last point at which that ordering still holds.
+  setOfflineLane(offline === true);
+  if (offline === true) {
+    installOfflineNetworkGuard({ origin: window.location.origin });
+  }
 
   const originalDescribe = window.describe;
 

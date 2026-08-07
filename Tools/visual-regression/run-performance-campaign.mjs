@@ -32,6 +32,11 @@ import {
   summarizeMovingPickMetrics,
   summarizeTrackMetrics,
 } from "./lib/performance-campaign-utils.mjs";
+import {
+  FIRST_COMPLETE_FRAME_STABLE_FRAMES,
+  classifySettleAttribution,
+  findFirstCompleteFrame,
+} from "./lib/settle-attribution.mjs";
 import { assertPerformanceWorkloadManifest } from "./lib/performance-workload-manifest.mjs";
 import { summarizeRepresentativeTilesetResidency } from "./lib/representative-performance-content.mjs";
 import { classifyPerformanceCampaignExit } from "./lib/c11-205-evidence.mjs";
@@ -1795,6 +1800,7 @@ async function runOne(
         cameraTrack,
         apiInstrumentationEnabled,
         gpuTimestampsEnabled,
+        firstCompleteStableFrames,
       }) => {
         const setupStart = performance.now();
         const performanceCampaignCleanup = new Set();
@@ -1815,6 +1821,86 @@ async function runOne(
           "uncapturederror",
           onUncapturedDeviceError,
         );
+
+        // C11-146 — first-complete-frame. `frameNumber > 0` fires when the
+        // first frame renders, which is not when the scene is COMPLETE: a
+        // selected tile drawn from an upsampled fill mesh, or missing an
+        // imagery texture, is a placeholder. Perceived time-to-stable is the
+        // first frame where every selected tile draws its own loaded geometry
+        // with its imagery ready — and that is the metric a boot/TTFF claim
+        // has to move.
+        //
+        // The scan runs only until the scene completes and the listener is
+        // removed once the settle window closes, so the per-frame cost is
+        // confined to boot and is orders of magnitude below the 1.3–1.7 s
+        // settle lag it measures.
+        const COMPLETION_TRACE_LIMIT = 900;
+        const completionTrace = [];
+        let completionStableRun = 0;
+        let completionRunStart = null;
+        let firstCompleteFrame = null;
+        const tileIsComplete = (tile) => {
+          const data = tile?.data;
+          if (!data || !data.mesh || data.renderedMesh !== data.mesh) {
+            // No mesh, or a fill mesh upsampled from an ancestor: the tile is
+            // on screen but it is not showing its own data yet.
+            return false;
+          }
+          for (const tileImagery of data.imagery ?? []) {
+            if (!tileImagery.readyImagery) {
+              return false;
+            }
+          }
+          return true;
+        };
+        const sampleSceneCompletion = () => {
+          if (firstCompleteFrame) {
+            return;
+          }
+          const selectedTiles = scene.globe?._surface?._tilesToRender ?? [];
+          let completeTileCount = 0;
+          for (const tile of selectedTiles) {
+            if (tileIsComplete(tile)) {
+              completeTileCount++;
+            }
+          }
+          const sample = {
+            frameNumber: scene._frameState?.frameNumber ?? null,
+            tSinceSetupMs: performance.now() - setupStart,
+            selectedTileCount: selectedTiles.length,
+            completeTileCount,
+          };
+          if (completionTrace.length < COMPLETION_TRACE_LIMIT) {
+            completionTrace.push(sample);
+          }
+          if (
+            sample.selectedTileCount > 0 &&
+            sample.completeTileCount === sample.selectedTileCount
+          ) {
+            if (completionStableRun === 0) {
+              completionRunStart = sample;
+            }
+            completionStableRun++;
+            // `rendered == selected` flickers while tiles stream, so a run is
+            // required before declaring complete — but the metric is the FIRST
+            // frame of that run, not its end.
+            if (completionStableRun >= firstCompleteStableFrames) {
+              firstCompleteFrame = {
+                ...completionRunStart,
+                stableFrames: firstCompleteStableFrames,
+              };
+            }
+          } else {
+            completionStableRun = 0;
+            completionRunStart = null;
+          }
+        };
+        const removeCompletionListener = scene.postRender.addEventListener(
+          sampleSceneCompletion,
+        );
+        const completionListenerCleanup = () => removeCompletionListener();
+        performanceCampaignCleanup.add(completionListenerCleanup);
+
         const representativeWorkload =
           workloadDefinition.contentProfile ===
           "local-procedural-terrain-assets";
@@ -2389,6 +2475,54 @@ async function runOne(
           );
         }
         const setupToStableMs = performance.now() - setupStart;
+
+        // C11-146 — settle-window attribution. Whether a stable-time change is
+        // creditable depends on whether the window it happened in contained
+        // main-thread work at all: a settle with zero long tasks is GPU-submit
+        // bound and no main-thread closure/churn fix may book credit against
+        // it. Snapshot the window here, before the measurement window opens and
+        // filters `diagnostics.longTasks` down to its own range.
+        //
+        // A PerformanceObserver cannot deliver the long task containing this
+        // boundary until the current task yields, so yield once and drain the
+        // queued records first — the same handshake the measurement window uses.
+        const settleWindowEndMs = setupStart + setupToStableMs;
+        const settleDiagnostics = globalThis.__perfCampaignDiagnostics;
+        await new Promise((resolveObserverBoundary) =>
+          setTimeout(resolveObserverBoundary, 0),
+        );
+        for (const entry of settleDiagnostics?.longTaskObserver?.takeRecords?.() ||
+          []) {
+          settleDiagnostics.longTasks.push({
+            startTime: entry.startTime,
+            duration: entry.duration,
+          });
+        }
+        const settleWindow = {
+          available:
+            settleDiagnostics?.supportedEntryTypes?.includes("longtask") ??
+            false,
+          startMs: setupStart,
+          endMs: settleWindowEndMs,
+          longTasks: (settleDiagnostics?.longTasks || []).filter(
+            (entry) =>
+              entry.startTime + entry.duration > setupStart &&
+              entry.startTime < settleWindowEndMs,
+          ),
+        };
+
+        // The completion scan has served its purpose; keep it out of the
+        // measured window entirely.
+        removeCompletionListener();
+        performanceCampaignCleanup.delete(completionListenerCleanup);
+        const sceneCompletion = {
+          stableFrames: firstCompleteStableFrames,
+          detected: firstCompleteFrame !== null,
+          firstCompleteFrame,
+          tracedFrames: completionTrace.length,
+          traceTruncated: completionTrace.length >= COMPLETION_TRACE_LIMIT,
+          trace: completionTrace,
+        };
 
         // C11-173 — measure the real display refresh period with a short
         // no-op rAF spin so framePacing's dropped-frame math is judged
@@ -4066,6 +4200,10 @@ async function runOne(
             observedCount: observedLongTasks.length,
             entries: observedLongTasks,
           },
+          // C11-146 — kept alongside, never in place of, the existing settle
+          // timings so the C9-30 / Gate-A anchors stay comparable.
+          settleWindow,
+          sceneCompletion,
           userAgent: navigator.userAgent,
         };
       },
@@ -4077,6 +4215,7 @@ async function runOne(
         cameraTrack: GLOBE_CAMERA_TRACK,
         apiInstrumentationEnabled: apiInstrumentation,
         gpuTimestampsEnabled: gpuTimestamps,
+        firstCompleteStableFrames: FIRST_COMPLETE_FRAME_STABLE_FRAMES,
       },
     );
     browserResult.apiCounters.labels.delta = diffCounterLabelSnapshots(
@@ -4106,6 +4245,43 @@ async function runOne(
       (maximum, entry) => Math.max(maximum, entry.duration),
       0,
     );
+
+    // C11-146 — settle-window attribution and first-complete-frame.
+    const settleWindowEvidence = browserResult.settleWindow ?? null;
+    const settleAttribution = classifySettleAttribution({
+      longTasks: settleWindowEvidence?.longTasks ?? [],
+      windowStartMs: settleWindowEvidence?.startMs,
+      windowEndMs: settleWindowEvidence?.endMs,
+      available: settleWindowEvidence?.available ?? false,
+    });
+
+    const sceneCompletion = browserResult.sceneCompletion ?? null;
+    // Re-derive the metric from the recorded trace and compare against the
+    // in-page streaming decision. A disagreement is an instrument defect, not
+    // a renderer result, so it is recorded rather than quietly reconciled.
+    const derivedFirstComplete = findFirstCompleteFrame(
+      sceneCompletion?.trace ?? [],
+      { stableFrames: sceneCompletion?.stableFrames },
+    );
+    const firstCompleteFrameMs =
+      sceneCompletion?.firstCompleteFrame?.tSinceSetupMs ?? null;
+    const sceneCompletionEvidence = {
+      detected: sceneCompletion?.detected ?? false,
+      stableFrames: sceneCompletion?.stableFrames ?? null,
+      frameNumber: sceneCompletion?.firstCompleteFrame?.frameNumber ?? null,
+      selectedTileCount:
+        sceneCompletion?.firstCompleteFrame?.selectedTileCount ?? null,
+      tracedFrames: sceneCompletion?.tracedFrames ?? 0,
+      traceTruncated: sceneCompletion?.traceTruncated ?? false,
+      // Truncated traces cannot disprove the streaming decision, so the
+      // comparison reports null rather than a false disagreement.
+      agreesWithTrace: sceneCompletion?.traceTruncated
+        ? null
+        : (derivedFirstComplete?.tSinceSetupMs ?? null) ===
+          firstCompleteFrameMs,
+    };
+    browserResult.settleAttribution = settleAttribution;
+    browserResult.sceneCompletionEvidence = sceneCompletionEvidence;
     browserResult.webglProgramEvents.entries =
       browserResult.webglProgramEvents.entries.filter(
         (entry) =>
@@ -4531,10 +4707,22 @@ async function runOne(
         navigationUrl: url.href,
         viewerBoot,
         navigationToRendererReadyMs: rendererReady - navigationStart,
+        // `frameNumber > 0`. Retained verbatim: the C9-30 / Gate-A anchors are
+        // stated against it and a baseline is never re-derived (C11-146 trap 1).
         navigationToFirstObservedFrameMs: firstObservedFrame - navigationStart,
         navigationToStableMs:
           firstObservedFrame - navigationStart + browserResult.setupToStableMs,
         settleFrames: browserResult.settleFrames,
+        // C11-146 — perceived TTFF. Same timebase arithmetic as
+        // `navigationToStableMs`: an in-page offset added to the Node-side
+        // navigation-to-first-frame measurement.
+        setupToFirstCompleteFrameMs: firstCompleteFrameMs,
+        navigationToFirstCompleteFrameMs:
+          firstCompleteFrameMs === null
+            ? null
+            : firstObservedFrame - navigationStart + firstCompleteFrameMs,
+        firstCompleteFrame: sceneCompletionEvidence,
+        settleAttribution,
       },
       ...browserResult,
       featureFindings: usesCameraTrack(workload.action)

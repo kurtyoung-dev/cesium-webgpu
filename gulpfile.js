@@ -23,14 +23,17 @@ import {
 
 import {
   buildCesium,
+  buildCombinedSpecBundle,
   buildEngine,
   buildWidgets,
+  buildWorkspaceSpecBundle,
   bundleWorkers,
   glslToJavaScript,
   wgslToJavaScript,
   createCombinedSpecList,
   copyVariantSharedAssets,
 } from "./scripts/build.js";
+import { ensureSpecBundleFresh } from "./scripts/specBundleFreshness.js";
 
 // Determines the scope of the workspace packages. If the scope is set to cesium, the workspaces should be @cesium/engine.
 // This should match the scope of the dependencies of the root level package.json.
@@ -973,6 +976,12 @@ export async function test() {
   // requests the legacy diagnostic behavior with --no-failTaskOnError.
   const failTaskOnError = argv.failTaskOnError !== false;
   const suppressPassed = argv.suppressPassed ? argv.suppressPassed : false;
+  // C11-134 — the offline lane is the DEFAULT: this sandbox has no reliable
+  // outbound network, so a suite that reaches Ion / world terrain is
+  // nondeterministic and cannot produce truthful executed/skipped counts. The
+  // online lane is opt-in with `--no-offline`, which preserves the coverage
+  // rather than deleting it.
+  const offline = argv.offline !== false;
   const debug = argv.debug ? true : false;
   const debugCanvasWidth = argv.debugCanvasWidth;
   const debugCanvasHeight = argv.debugCanvasHeight;
@@ -985,12 +994,39 @@ export async function test() {
     workspace = workspace.replaceAll(`@${scope}/`, ``);
   }
 
+  // C11-132 — Karma serves one of three spec bundles depending on the lane.
+  // The workspace lane serves `packages/<ws>/Build/Specs`, which `buildCesium`
+  // does NOT produce; that mismatch is why a brand-new package spec could stay
+  // out of the served bundle and "pass" by never running.
+  const specBundleTarget = workspace ? workspace : "combined";
+
   if (!isProduction && !release) {
     console.log("Building specs...");
-    await buildCesium({
-      iife: true,
-    });
+    if (workspace) {
+      // The workspace lane also serves `packages/engine/Build/Workers/**` and
+      // the engine's static assets through proxies, so the engine build is a
+      // real dependency of both workspace lanes — not just the widgets one.
+      await buildEngine({});
+      if (workspace === "widgets") {
+        await buildWidgets({});
+      }
+    } else {
+      await buildCesium({
+        iife: true,
+      });
+    }
   }
+
+  // Freshness handshake: recompute the served bundle's source-set digest and
+  // rebuild-and-await it if it drifted, rather than serving a stale SpecList.
+  // Fresh bundles skip the rebuild entirely so the inner loop stays fast.
+  await ensureSpecBundleFresh(specBundleTarget, {
+    log: (message) => console.log(message),
+    rebuild: async (target) =>
+      target === "combined"
+        ? buildCombinedSpecBundle({})
+        : buildWorkspaceSpecBundle(target, {}),
+  });
 
   let browsers = debug ? ["ChromeDebugging"] : ["Chrome"];
   if (argv.browsers) {
@@ -1088,6 +1124,9 @@ export async function test() {
           debugCanvasHeight,
           "--grep",
           grep,
+          // Token, not position — karma-main.js reads it by name so neither
+          // side's arg list is pinned to the other's length.
+          ...(offline ? ["--offline"] : []),
         ],
       },
     },

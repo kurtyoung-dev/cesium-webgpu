@@ -50,7 +50,7 @@ A consolidated [traps index](#traps-index) closes the guide — every section's 
 6. First commands, always: `git log --oneline -15` + `git status --short` + `git branch -a` — attribute every dirty file to a task before touching anything; never `git add -A`, never bare `git stash`, never revert files you did not author.
 7. Ledger discipline: update the §3.2 row (IN PROGRESS / COMPLETE / PARTIAL-PAUSED / BLOCKED / DEFERRED) in the SAME commit as the work — a missing ledger update is a landing defect; an engine revert without a ledger row is invisible debt.
 8. Build gates before any probe: `npx tsc --noEmit` then `npx gulp build`; dev server `node server.js` (probes) / `node server.js --production` (perf lanes); edit `packages/engine/Source/**` only, never root `Source/` (build output).
-9. Karma specs: `npm run build --workspace @cesium/engine` FIRST (spec-bundle freshness trap, queue item 4A), `$env:CHROME_BIN` → Edge binary, focused runs via `--includeName`; a trailing "Chrome failed" line after SUCCESS is a launcher artifact — trust the exit code.
+9. Karma specs: ~~`npm run build --workspace @cesium/engine` FIRST (spec-bundle freshness trap, queue item 4A)~~ **— STRUCK 2026-08-07 (C11-132 landed; `gulp test` now verifies the served bundle itself and fails naming the drifted files). Do NOT copy this workaround forward.** `$env:CHROME_BIN` → Edge binary, focused runs via `--includeName`; a trailing "Chrome failed" line after SUCCESS is a launcher artifact — trust the exit code.
 10. Probes: Playwright Edge only (`channel: "msedge"`), never Firefox (no WebGPU); read the output PNGs yourself (Principle 8); scan generated scripts for unbounded loops before running.
 11. Performance evidence: moving-altitude route only (idle-soak FPS is INVALID); clean and `--api-instrumentation` lanes never mixed; ≥5 counterbalanced reps for blocking timing claims; comparison anchor = Gate-A r5 (WebGL 5.50 / WebGPU 7.51 ms CPU p95); never overwrite historical artifacts.
 12. One concern per slice; roll back the optimization, never the feature; tests and counters survive rollback.
@@ -552,9 +552,13 @@ switched to Opus; you (Opus) then do this, in order:
    During a MERGE specifically use `--concurrent 1 --no-stash` (its stash mechanism fails
    with MERGE_HEAD). Never `--no-verify`.
 2. **Workspace spec-bundle freshness (ledger row `NEW-WORKSPACE-SPEC-BUNDLE-FRESHNESS`, queue
-   item 4A):** `gulp test --workspace engine` serves `packages/engine/Build/Specs` but does
+   item 4A):** ~~`gulp test --workspace engine` serves `packages/engine/Build/Specs` but does
    NOT rebuild it — ALWAYS run `npm run build --workspace @cesium/engine` first, or a new/
-   changed spec silently doesn't execute. Focused runs:
+   changed spec silently doesn't execute.~~ **UPDATE 2026-08-07 — CLOSED as `C11-132`.** The
+   workspace lane now builds the workspace, and `gulp test` verifies the served bundle's
+   spec-source digest before starting Karma: it rebuilds only the spec bundle on drift, or
+   fails naming the added / removed / content-changed specs. The manual pre-build is no
+   longer required and should not be copied into new briefs. Focused runs:
    `gulp test --workspace engine --browsers=EdgeHeadlessCI --includeName "<pattern>"`.
 3. **Karma shutdown-disconnect artifact:** a trailing "Chrome failed"/disconnect line AFTER
    `TOTAL: ... SUCCESS` (exit 0) is a known wrapper artifact, not a test failure (recorded in

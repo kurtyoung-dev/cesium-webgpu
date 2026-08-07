@@ -62,7 +62,7 @@ Engine wave order (guide H7 Part A): **W1** `C10-01` · `C10-09` · `C10-10` · 
 6. First commands, always: `git log --oneline -15` + `git status --short` + `git branch -a` — attribute every dirty file to a task before touching anything; never `git add -A`, never bare `git stash`, never revert files you did not author.
 7. Ledger discipline: update your §3.2 row (IN PROGRESS / COMPLETE / PARTIAL-PAUSED / BLOCKED / DEFERRED) in the SAME commit as the work — a missing ledger update is a landing defect.
 8. Build gates before any probe: `npx tsc --noEmit` then `npx gulp build`; dev server `node server.js` (probes) / `node server.js --production` (perf lanes); edit `packages/engine/Source/**` only, never root `Source/`.
-9. Karma specs: `npm run build --workspace @cesium/engine` FIRST (spec-bundle freshness trap, `NEW-WORKSPACE-SPEC-BUNDLE-FRESHNESS`), `$env:CHROME_BIN` → Edge binary, focused runs via `--includeName`; a trailing "Chrome failed" after SUCCESS is a launcher artifact — trust the exit code.
+9. Karma specs: ~~`npm run build --workspace @cesium/engine` FIRST (spec-bundle freshness trap, `NEW-WORKSPACE-SPEC-BUNDLE-FRESHNESS`)~~ **— STRUCK 2026-08-07 (C11-132 landed). The trap is closed in `gulp test` itself: it verifies the served bundle's spec-source digest and rebuilds only the spec bundle when it drifted, or fails naming the exact files. Do NOT copy this workaround into new guides — see DEBUGGING_GUIDE.md "Running the Karma spec suites".** `$env:CHROME_BIN` → Edge binary, focused runs via `--includeName`; a trailing "Chrome failed" after SUCCESS is a launcher artifact — trust the exit code. Network-dependent suites are quarantined to the opt-in `--no-offline` lane (C11-134).
 10. Probes: Playwright Edge only (`channel:"msedge"`), never Firefox (no WebGPU); read the output PNGs yourself (Principle 8); scan generated scripts for unbounded loops before running (machine-crash memory rule).
 11. Performance evidence: moving-altitude route only (idle-soak FPS is INVALID); clean and `--api-instrumentation` lanes never mixed; ≥5 counterbalanced reps for blocking timing claims; **comparison anchor = the recorded `C9-30` clean-r5 artifact (or Gate-A `B8015811…` WebGL 5.50 / WebGPU 7.51 ms as a labelled fallback)** — never re-derive a baseline on the new tree; never overwrite historical artifacts.
 12. One concern per slice; roll back the optimization, never the feature; tests and counters survive rollback.
@@ -393,10 +393,12 @@ running) are:
   candidates** (they are the WebGPU-only residue C9-06 explicitly deferred).
 - **`NEW-WEBGPU-DEBUG-DEPTH-PLANE-GATE-PARITY`**, **`NEW-WEBGPU-POINT-BLENDOPTION-SYNC`** — NOT STARTED:
   small parity correctness gaps. → cheap correctness intake.
-- **`NEW-WORKSPACE-SPEC-BUNDLE-FRESHNESS`** — NOT STARTED: the `gulp test --workspace engine` stale-spec
+- **`NEW-WORKSPACE-SPEC-BUNDLE-FRESHNESS`** — ~~NOT STARTED: the `gulp test --workspace engine` stale-spec
   trap. → a **tooling** intake row; also encode its workaround (explicit `npm run build --workspace
   @cesium/engine` before focused test) in EVERY C10 task brief that runs Jasmine (it already is in the
-  C9 briefs — copy it).
+  C9 briefs — copy it).~~ **UPDATE 2026-08-07: CLOSED as `C11-132`.** `gulp test` now verifies the served
+  bundle's spec-source digest itself and rebuilds only the spec bundle on drift. **Stop copying the
+  workaround into briefs** — that copy-forward was the recurring cost the register flagged.
 - **`C9-08` octree-persistence** and **`C9-16` enabled-multi-frustum evidence** — deferred/opt-in
   remainders. → seeds unless a C10 task needs them.
 
@@ -858,8 +860,8 @@ moon, stars, atmosphere gradient against the WebGL captures.
   `diag-stars-hdr-autoexposure.mjs` — mismatch % must not regress.
 - Modes: `probe-2d-cv-modes.mjs`, `probe-2d-frustum-bins.mjs` (2D band counts unchanged).
 - Pick: `probe-pickposition-webgpu.mjs`, `probe-point-pick-webgpu.mjs`, `probe-billboard-pick.mjs`.
-- Karma (WebGL invariant): `npm run build --workspace @cesium/engine` FIRST (spec-bundle
-  freshness trap), `$env:CHROME_BIN` → Edge, run `--includeName Multifrustum` and
+- Karma (WebGL invariant): ~~`npm run build --workspace @cesium/engine` FIRST (spec-bundle
+  freshness trap)~~ **— STRUCK 2026-08-07, C11-132 closed it in `gulp test`**; `$env:CHROME_BIN` → Edge, run `--includeName Multifrustum` and
   `--includeName FrustumCommands`.
 
 **Step 6 — perf evidence (moving-altitude lane ONLY; idle-soak is invalid).**

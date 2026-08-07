@@ -14,8 +14,13 @@ import MockTerrainProvider from "../../../../Specs/MockTerrainProvider.js";
 import TerrainTileProcessor from "../../../../Specs/TerrainTileProcessor.js";
 import GeographicProjection from "../../Source/Core/GeographicProjection.js";
 import { SceneMode } from "@cesium/engine";
+import { describeRequiresNetwork } from "../../../../Specs/networkPolicy.js";
 
-describe(
+// C11-134 — every case in this suite builds Cesium World Terrain through
+// `createWorldTerrainAsync()`, so the whole suite belongs to the online lane.
+// The existing "WebGL" category is preserved: quarantine adds a lane, it does
+// not replace the category filter.
+describeRequiresNetwork(
   "Core/TerrainPicker",
   function () {
     let frameState;
