@@ -10883,3 +10883,23 @@ reason to look rather than to tune the probe around it.
 is WebGL-parity-correct and pixel-verified (parity 31.946% -> 2.574%); it makes
 the green splat's countable footprint 4x SMALLER, so it is strictly the wrong
 lever for this symptom.
+
+---
+
+## 2026-08-07 - the below-surface splat is not occluded by the globe (encode-space, not compare)
+
+### NEW-SPLAT-DEPTH-ENCODE-MISMATCH-VS-GLOBE
+
+**Status:** OPEN, evidence-complete, FILED not fixed - `C15-G6` owns it.
+
+**Observation (`C15-G3d`, Batch 883 run + PNG).** With the globe fully covering the frame, a splat 3 km BELOW the surface renders through it while a splat 2 km ABOVE it composes correctly. Every splat fragment beats the globe's depth, near and far alike.
+
+**What that rules out.** NOT a flipped depth compare: that hides the NEAR splat, and the near splat is not hidden. NOT reversed-Z: no such migration exists at HEAD (WebGPU renderer census - 51 `less-equal`, 2 `greater`, 1 `less`, 4 `always`, 1 `equal`, 1 `not-equal`; every splat pipeline is `less-equal` with the fleet's 1.0 depth clear). NOT the `C15-G3b` footprint port: the quad expansion writes clip x/y only (spec-pinned) and `SPLAT_PACKED_WASM` reaches only the shader module and the descriptor name, never the `depthStencil` block.
+
+**What it points at.** An ENCODE-SPACE mismatch: the splat's written depth is uniformly SMALLER than the globe's. Both producers read the same two `UniformState` fields (`currentFrustum`, `oneOverLog2FarDepthFromNearPlusOne`) - `WebGPUGaussianSplatRenderer.ts` and `WebGPUGlobeSurfaceCameraUB.ts` are verbatim identical on both - so the divergence is in WHEN or WHETHER each applies them. A splat writing log depth against a globe writing hyperbolic (or the two encoding with different near/far) puts every splat fragment on the near side of everything, which is exactly the observation. The splat renderer's own comment block already carries two CONTRADICTORY rationales about which near/far to use (the stashed full-frustum pair versus the live per-slice `currentFrustum`), which is the place to start.
+
+**Instrument ready.** `probe-splat-globe-occlusion.mjs` now prints a `(diag)` line with `logDepthWriteEnabled`, `useLogDepth`, `currentFrustum` near/far, the factor, the stashed `_logDepthEncodeNearFar`/`_logDepthEncodeFactor` and `numFrustums`, and classifies splat pixels by delta against a globe-only frame. One run should name the mismatch.
+
+**Acceptance when fixed:** `greenPaintedOverGlobe < 50` with `redPainted` unchanged at ~4,000-6,000, P1/P2 green, probe exit 0.
+
+**Effort:** M (this is the `C15-G6` per-frustum UBO re-pack). **Impact:** splats never depth-test correctly against the globe, on any scene.

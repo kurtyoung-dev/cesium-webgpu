@@ -3570,18 +3570,18 @@ function assertOcclusionProbeContract(source) {
   assert.match(source, /greenOverVoid\+\+;/);
   assert.match(
     source,
-    /out\.greenOverGlobe < 50/,
+    /out\.greenPaintedOverGlobe < 50/,
     `${OCCLUSION_PROBE_PATH}: check 3 scores total green again — a splat drawn over EMPTY SPACE would be filed as a depth-compare leak`,
   );
   assert.doesNotMatch(
     source,
-    /"3",\s*\n\s*out\.green < 50/,
+    /"3",\s*\n\s*out\.green(?!Painted) < 50/,
     `${OCCLUSION_PROBE_PATH}: check 3 is back on the undifferentiated green count`,
   );
   // ...and the missing-globe case must be STRUCTURAL, never a product verdict.
   assert.match(
     source,
-    /precondition\(\s*\n?\s*"P1",\s*\n?\s*out\.greenOverVoid === 0,/,
+    /precondition\(\s*\n?\s*"P1",\s*\n?\s*out\.greenPaintedOverVoid === 0,/,
     `${OCCLUSION_PROBE_PATH}: the globe-coverage precondition is gone`,
   );
   assert.match(
@@ -3597,12 +3597,12 @@ function assertOcclusionProbeContract(source) {
   // direction.
   assert.match(
     source,
-    /precondition\(\s*\n?\s*"P2",\s*\n?\s*out\.redOverGlobe > 2000,/,
+    /precondition\(\s*\n?\s*"P2",\s*\n?\s*out\.redPainted > 2000 && out\.globePixels > 20000,/,
     `${OCCLUSION_PROBE_PATH}: the compose-over-globe precondition is gone`,
   );
   assert.match(
     source,
-    /"2",\s*\n\s*out\.red > 2000,/,
+    /"2",\s*\n\s*out\.redPainted > 2000,/,
     `${OCCLUSION_PROBE_PATH}: check 2 no longer guards the never-drop defect it was written for`,
   );
   // Chrome hidden, and the viewer loaded offline so a missing ion token cannot
@@ -3628,7 +3628,7 @@ const OCCLUSION_PROBE_MUTANTS = [
   {
     name: "check 3 scores undifferentiated green",
     mutate: (source) =>
-      source.replace("out.greenOverGlobe < 50", "out.green < 50"),
+      source.replace("out.greenPaintedOverGlobe < 50", "out.green < 50"),
     because: /check 3 scores total green again/,
   },
   {
@@ -3666,6 +3666,218 @@ for (const mutant of OCCLUSION_PROBE_MUTANTS) {
       () => assertOcclusionProbeContract(mutated),
       mutant.because,
       `${mutant.name}: the contract accepted it, or rejected it for the wrong reason`,
+    );
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// C15-G3d — the "inversion" was two ABSOLUTE colour predicates misreporting a
+// scene they were never calibrated for. One real defect survives: the
+// below-surface splat is not occluded by the globe.
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Premultiplied over-blend, the composite both splats go through. */
+function overBlend(splat, alpha, dst) {
+  return splat.map((c, k) => c * alpha + dst[k] * (1 - alpha));
+}
+const isRedAbs = ([r, g, b]) => r > 150 / 255 && g < 90 / 255 && b < 90 / 255;
+
+test("HEAD: `redOverGlobe=33` is a PREDICATE artifact, not an occluded splat", () => {
+  // The probe's `isRed` needs r>150 AND g<90 AND b<90. Over BLACK (the
+  // Batch-882 scene, where the globe was absent) that is a wide band. Over the
+  // olive globe it is still wide — so the collapse to 33 px is NOT the
+  // background alone. What closes it is the GREEN splat drawn on top: its
+  // premultiplied veil lifts g back over the 90 bar exactly where the red
+  // annulus would otherwise qualify.
+  const RED = [1.0, 0.05, 0.05];
+  const GREEN = [0.05, 1.0, 0.05];
+  const OLIVE = [0.3, 0.3, 0.15]; // globe.baseColor tinted by the grid imagery
+  const BLACK = [0, 0, 0];
+
+  // Over black, a mid-alpha red fragment is unambiguously "red".
+  assert.ok(isRedAbs(overBlend(RED, 0.74, BLACK)));
+  // Over the olive globe, ALONE, it still is.
+  assert.ok(isRedAbs(overBlend(RED, 0.74, OLIVE)));
+  // ...but veil it with the green splat that sits on top at that radius and it
+  // stops qualifying, without the red splat having changed at all.
+  const redOverGlobe = overBlend(RED, 0.74, OLIVE);
+  const veiled = overBlend(GREEN, 0.304, redOverGlobe);
+  assert.ok(
+    !isRedAbs(veiled),
+    `the veiled fragment should fail isRed; got ${veiled.map((v) => Math.round(v * 255)).join("/")}`,
+  );
+  // And it does not become "green" either — it falls in the gap between the two
+  // absolute predicates, which is why BOTH counts read low and the run looked
+  // like an inversion.
+  const isGreenAbs = ([r, g, b]) =>
+    g > 150 / 255 && r < 90 / 255 && b < 90 / 255;
+  assert.ok(!isGreenAbs(veiled), "the veiled fragment is not green either");
+
+  // The delta classifier the probe now uses is immune: relative to the
+  // globe-only frame this pixel moved most in RED.
+  const dr = veiled[0] - OLIVE[0];
+  const dg = veiled[1] - OLIVE[1];
+  const db = veiled[2] - OLIVE[2];
+  assert.ok(
+    dr >= dg && dr >= db,
+    `delta classification must call this red: d=${[dr, dg, db].map((v) => v.toFixed(3)).join("/")}`,
+  );
+});
+
+test("HEAD: the globe's own grid lines can no longer count as leaked splat", () => {
+  // `isGreen` is satisfied by a pale-green GridImageryProvider line with no
+  // splat present at all. Under the delta classifier such a pixel is unchanged
+  // from the globe-only frame and is classified `null`.
+  const probe = readNormalized(OCCLUSION_PROBE_PATH);
+  assert.match(
+    probe,
+    /const PAINT_DELTA = 12;/,
+    `${OCCLUSION_PROBE_PATH}: the delta threshold is gone`,
+  );
+  assert.match(
+    probe,
+    /const paintedBy = \(i\) => \{/,
+    `${OCCLUSION_PROBE_PATH}: the delta classifier is gone`,
+  );
+  assert.match(
+    probe,
+    /out\.greenPaintedOverGlobe < 50/,
+    `${OCCLUSION_PROBE_PATH}: check 3 is back on an ABSOLUTE colour predicate — the globe's own green grid counts as a leak again`,
+  );
+  assert.match(
+    probe,
+    /out\.redPainted > 2000/,
+    `${OCCLUSION_PROBE_PATH}: check 2 is back on an ABSOLUTE colour predicate — a composed splat reads as 33 px over a coloured globe`,
+  );
+  assert.match(
+    probe,
+    /out\.greenPaintedOverVoid === 0/,
+    `${OCCLUSION_PROBE_PATH}: P1 no longer uses the delta classifier`,
+  );
+});
+
+test("HEAD: the splat depth CONVENTION matches the fleet, so the leak is not a flipped compare", () => {
+  // Candidate 1, refuted at the census level. A reversed-Z migration would have
+  // flipped the whole fleet; `less-equal` is overwhelmingly the convention and
+  // the splat pipelines are inside it. And a flipped compare produces the
+  // OPPOSITE signature to the one observed: it hides the NEAR splat. The near
+  // (above-surface) splat is NOT hidden — it composes over the globe, as the
+  // PNG and the predicate arithmetic above both show.
+  const renderer = readNormalized(RENDERER_PATH);
+  const compares = [...renderer.matchAll(/depthCompare: "([a-z-]+)"/g)].map(
+    (m) => m[1],
+  );
+  assert.ok(compares.length >= 4, "the splat depth states moved");
+  for (const compare of compares) {
+    assert.equal(
+      compare,
+      "less-equal",
+      `${RENDERER_PATH}: a splat pipeline uses "${compare}" — the fleet convention is less-equal with a 1.0 depth clear; a reversed-Z pipeline here would hide the NEAR splat, which is not the observed signature`,
+    );
+  }
+  // Candidate 2, refuted: the record-layout define selects a shader MODULE and
+  // a descriptor NAME. It does not reach the depth state.
+  const colorDescriptor = renderer.slice(
+    renderer.indexOf("const colorDescriptor: WebGPURenderPipelineDescriptor"),
+    renderer.indexOf("// GS-WSR: OIT pipeline variant"),
+  );
+  assert.match(colorDescriptor, /depthCompare: "less-equal",/);
+  assert.doesNotMatch(
+    colorDescriptor,
+    /layoutMarker[\s\S]{0,200}depthCompare|depthCompare[\s\S]{0,200}layoutMarker/,
+    `${RENDERER_PATH}: the layout marker now sits inside the depth state`,
+  );
+});
+
+test("HEAD: the probe records the log-depth inputs BOTH producers encode from", () => {
+  // The surviving defect is that every splat fragment beats the globe, near and
+  // far alike — the signature of an ENCODE-SPACE mismatch, not of a compare.
+  // Naming WHICH mismatch needs the inputs, and one run should be enough.
+  const probe = readNormalized(OCCLUSION_PROBE_PATH);
+  for (const field of [
+    "logDepthWriteEnabled",
+    "useLogDepth",
+    "currentFrustumNear",
+    "currentFrustumFar",
+    "oneOverLog2FarDepthFromNearPlusOne",
+    "stashedEncodeNearFar",
+    "stashedEncodeFactor",
+  ]) {
+    assert.ok(
+      probe.includes(field),
+      `${OCCLUSION_PROBE_PATH}: the ${field} diagnostic is gone — the next run cannot discriminate the encode candidates`,
+    );
+  }
+  assert.match(
+    probe,
+    /console\.log\(\s*\n?\s*`\(diag\) log depth/,
+    `${OCCLUSION_PROBE_PATH}: the diagnostics are collected but never printed`,
+  );
+  // Both producers read the same two UniformState fields, so the probe's
+  // reading of them is the reading both encoders get.
+  const splat = readNormalized(RENDERER_PATH);
+  const globeUB = readNormalized(
+    "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
+  );
+  for (const source of [splat, globeUB]) {
+    assert.match(source, /currentFrustum\?\.x \?\? 0\.0/);
+    assert.match(source, /oneOverLog2FarDepthFromNearPlusOne \?\? 0\.0/);
+  }
+});
+
+const OCCLUSION_G3D_MUTANTS = [
+  {
+    name: "check 3 reverts to the absolute green predicate",
+    mutate: (source) =>
+      source.replace(
+        "out.greenPaintedOverGlobe < 50",
+        "out.greenOverGlobe < 50",
+      ),
+    because: /check 3 is back on an ABSOLUTE colour predicate/,
+  },
+  {
+    name: "check 2 reverts to the absolute red predicate",
+    mutate: (source) =>
+      source.replaceAll("out.redPainted > 2000", "out.red > 2000"),
+    because: /check 2 is back on an ABSOLUTE colour predicate/,
+  },
+  {
+    name: "the delta classifier is deleted",
+    mutate: (source) =>
+      source.replace(
+        "const paintedBy = (i) => {",
+        "const paintedByX = (i) => {",
+      ),
+    because: /the delta classifier is gone/,
+  },
+];
+
+for (const mutant of OCCLUSION_G3D_MUTANTS) {
+  test(`occlusion-probe C15-G3d mutant rejected: ${mutant.name}`, () => {
+    const real = readNormalized(OCCLUSION_PROBE_PATH);
+    const mutated = mutant.mutate(real);
+    assert.notEqual(mutated, real, "the mutation did not apply");
+    assert.throws(
+      () => {
+        assert.match(mutated, /const PAINT_DELTA = 12;/);
+        assert.match(
+          mutated,
+          /const paintedBy = \(i\) => \{/,
+          "the delta classifier is gone",
+        );
+        assert.match(
+          mutated,
+          /out\.greenPaintedOverGlobe < 50/,
+          "check 3 is back on an ABSOLUTE colour predicate",
+        );
+        assert.match(
+          mutated,
+          /out\.redPainted > 2000/,
+          "check 2 is back on an ABSOLUTE colour predicate",
+        );
+      },
+      mutant.because,
+      `${mutant.name}: accepted, or rejected for the wrong reason`,
     );
   });
 }

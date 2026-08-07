@@ -516,7 +516,7 @@ scoping row must re-verify all of it at HEAD):**
 | `C15-G3` | Splat record format + WebGPU buffer commit — consume the WASM texture-generator output verbatim; first real WebGPU splat pixels | L | **COMPLETE — Batch 882 (`C15-G3b`) Edge-verified, every pre-registered number hit.** WebGPU splats RENDER: `cache.splatCount=27`, added **18.995%** vs WebGL **19.141%** (inside the predicted 17.8-21.0% band, within 0.8% of parity), parity mismatch **31.946% -> 2.574%** (below the predicted 8-15%), blockers `[]`, `WEBGPU-SPLATS-PRESENT`, exit 0. `probe-splat-sort` + `probe-oit-transparency` green. `probe-splat-globe-occlusion` check 3 red (`greenPx=1436`) -> **`C15-G3c`: attributed to the MISSING GLOBE, not the splat** (the sharper falloff makes leak pixels exactly 4x LESS countable, so it cannot manufacture a leak; 1436 px is precisely the fully-unoccluded footprint at the probe's geometry; the PNG shows the globe confined to a right-hand strip). Instrument fixed (globe-only reference frame, per-pixel green split, structural exit 3); no engine change. 117 harness checks green. Blocks nothing: `C15-G4`/`G5` are unblocked | `C15-G2` |
 | `C15-G4` | Consume the WASM radix sort (`primitive._indexes`) instead of the in-renderer synchronous JS comparator sort | M | PENDING | `C15-G3` |
 | `C15-G5` | Spherical harmonics (degree 1-3) in WGSL — the view-dependent colour term the WGSL has **zero** implementation of | L | PENDING | `C15-G3` |
-| `C15-G6` | `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` — re-verify against production data (the B647 fix is currently **vacuous** under every probe) | M | PENDING | `C15-G3` |
+| `C15-G6` | `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` — re-verify against production data (the B647 fix is currently **vacuous** under every probe) | M | **PENDING — and it now has OBSERVED evidence (`C15-G3d`, 2026-08-07).** A splat 3 km BELOW the surface renders through a fully-covering globe while a splat 2 km ABOVE it composes correctly: every splat fragment beats the globe's depth, near and far alike. That is an ENCODE-SPACE mismatch (uniformly smaller splat depth), refuting both a flipped compare (which would hide the NEAR splat) and reversed-Z (no such migration exists at HEAD — 51 `less-equal` across the WebGPU fleet). `probe-splat-globe-occlusion` now prints the log-depth inputs BOTH producers encode from, so one run names the mismatch | `C15-G3` |
 | `C15-G7` | `NEW-GS-CLASSIFICATION-DEPTH` — re-verify the depth-write variant against production data | S | PENDING | `C15-G3` |
 | `C15-G8` | Terminal parity gate + tracker reconciliation | M | PENDING | `C15-G4`, `C15-G5`, `C15-G6`, `C15-G7` |
 
@@ -1745,6 +1745,138 @@ the pre-`C15-G3c` probe restored, exactly **6 of 117** go red — the contract
 anchor and its 5 mutants — while the three arithmetic/engine tests stay green,
 which is the right separation: they do not depend on the probe's contract. File
 restored, md5-verified.
+
+
+#### `C15-G3d` — there is no inversion: two ABSOLUTE colour predicates misreported a scene they were never calibrated for (worker, 2026-08-07)
+
+Batch 883's re-run fired the SECOND falsifier: the globe came back
+(`greenOverVoid=0 of 1460`, P1 green — the globe-absent flake is
+nondeterministic and P1 now stands guard as designed). The reported signature
+was **inversion**: `redOverGlobe=33 of 33` for the ABOVE-surface splat (6,200 in
+Batch 882) against `greenOverGlobe=1460` for the BELOW-surface one. **The
+inversion is not real.** One defect survives, and it is not the one the
+signature suggested.
+
+##### Read the PNG first
+
+`output/splat-occlusion-default.png` from the Batch-883 run shows the globe
+covering the whole frame (olive, pale-green grid) with **both splats plainly
+composited over it**: a soft red/orange halo, and a saturated green core at its
+centre. The RED splat is *not* hidden. It is right there, doing exactly what
+check 2 asks of it.
+
+##### Why `redOverGlobe` collapsed to 33 — arithmetic, executed in the spec
+
+`isRed` is `r > 150 && g < 90 && b < 90`, an ABSOLUTE predicate calibrated
+against the Batch-882 scene where the globe was absent and splats sat on black.
+Over the olive globe the band is still wide (alpha ≥ 0.412 qualifies, wider than
+the 0.588 needed over black) — so the background alone does **not** explain the
+collapse. What closes it is the **GREEN splat drawn on top of the red one**:
+
+| fragment | r/g/b | isRed? | isGreen? |
+| --- | --- | --- | --- |
+| red splat, alpha 0.74, over black | 191/9/9 | yes | no |
+| red splat, alpha 0.74, over olive | 209/33/26 | yes | no |
+| ...then veiled by green at alpha 0.304 | **149/98/22** | **no** (r ≤ 150) | **no** (g ≥ 90) |
+
+The veiled annulus falls in the **gap between the two absolute predicates** —
+counted by neither — which is why BOTH numbers read low and the pair looked
+inverted. Only a razor-thin band clears `r > 150`: 33 px. Executed in
+`gsplat-harness.spec.mjs` against the real blend, both directions.
+
+Symmetrically, the globe's own **pale-green GridImageryProvider lines satisfy
+`isGreen` with no splat present at all**, so an unknown share of the 1,460 was
+never splat.
+
+##### The three candidates, scored
+
+1. **Log-depth / reversed-Z compare mismatch — REFUTED.** No reversed-Z exists
+   at HEAD: the WebGPU renderer census is 51 `depthCompare: "less-equal"`, 2
+   `greater`, 1 `less`, 4 `always`, 1 `equal`, 1 `not-equal`, and every splat
+   pipeline is `less-equal` with the fleet's 1.0 depth clear. A migration would
+   have flipped the fleet, not one renderer. **And the signature is wrong for
+   it:** a flipped compare hides the NEAR splat. The near splat is not hidden.
+2. **The `C15-G3b` footprint port — REFUTED.** The expansion writes `fp.x`/
+   `fp.y` only (pinned since `C15-G3c`), and the `SPLAT_PACKED_WASM` define
+   reaches only the shader MODULE and the descriptor NAME — `depthStencil` is
+   byte-identical across both variants, now asserted by slicing the colour
+   descriptor and checking the marker never appears inside it.
+3. **Nondeterministic scene state — CONFIRMED as a separate, already-filed
+   thing** (`NEW-WEBGPU-OCCLUSION-PROBE-GLOBE-ABSENT`): Batch 882 had no globe
+   over the splats, Batch 883 had a full one. That is why the two runs' numbers
+   are not comparable, and it is why P1 exists.
+4. **The 33-px red — answered:** the same predicate artifact, not occlusion.
+
+##### The one real defect
+
+**The below-surface splat is not occluded by the globe.** Its saturated core is
+unmistakable in the PNG, over a fully-covering globe, 3 km underground.
+
+And the *near* splat composing correctly while the *far* one leaks means **every
+splat fragment beats the globe's depth, near and far alike**. That is the
+signature of an **encode-space mismatch** — the splat's depth is uniformly
+smaller than the globe's — and specifically NOT of a flipped compare, which
+would have hidden the near one. Both producers read the same two
+`UniformState` fields (`currentFrustum`, `oneOverLog2FarDepthFromNearPlusOne`,
+verified identical in source), so the mismatch is in WHEN or WHETHER each
+applies them: a splat writing log depth against a globe writing hyperbolic (or
+vice versa) puts every splat fragment on the near side of everything, exactly as
+observed.
+
+**Not fixed in this round, deliberately.** Which of those it is cannot be
+determined offline, and the honest next step is one instrumented run rather than
+a speculative shader edit. This is `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` /
+`C15-G6` territory — the per-frustum UBO re-pack that `DEFERRED_WORK.md`
+already names as the deliverable — and `C15-G6` now inherits per-pixel evidence
+plus a probe that reports the discriminating inputs.
+
+##### What landed (instrument only; no engine change)
+
+* **Delta classification.** A pixel is splat-painted iff it DIFFERS from the
+  globe-only frame by ≥ 12/255 in some channel, classified by which channel
+  moved most. Background-independent: the globe's green grid can no longer be
+  counted as leaked splat, and a veiled red annulus can no longer vanish.
+  Checks 2 and 3 and precondition P1 now read `redPainted`,
+  `greenPaintedOverGlobe` and `greenPaintedOverVoid`; the absolute figures are
+  still printed alongside so the transition is legible in the log.
+* **Log-depth diagnostics**, printed on a `(diag)` line:
+  `logDepthWriteEnabled`, `useLogDepth`, `currentFrustum` near/far,
+  `oneOverLog2FarDepthFromNearPlusOne`, the stashed `_logDepthEncodeNearFar` /
+  `_logDepthEncodeFactor`, and `numFrustums` — the inputs BOTH encoders derive
+  from, so the next run names the mismatch instead of narrowing it.
+
+##### Pre-registered prediction for the re-run
+
+`node Tools/visual-regression/probe-splat-globe-occlusion.mjs` — and, for
+candidate 3, **run it 3× and compare these fields across runs**:
+`globePixels`, `greenPaintedOverVoid`, `numFrustums`, and the whole `(diag)`
+line. Per-run variation in `globePixels`/`greenPaintedOverVoid` is the
+globe-absent flake; variation in the `(diag)` values is a frustum-state
+dependency; stability in both with `greenPaintedOverGlobe` high is a
+deterministic encode defect.
+
+* **Check 2 GREEN**: `redPainted` ≈ **4,000-6,000** (was reported as 33 under
+  the absolute predicate) — the red splat was always composing.
+* **Check 3 RED, honestly**: `greenPaintedOverGlobe` ≈ **1,200-1,460**, still
+  above the `< 50` bar. This is the real defect and it should NOT go green until
+  the encode is fixed. Some of the previous 1,460 was grid line, so a modest
+  drop is expected and is not a fix.
+* **P1 GREEN** (`greenPaintedOverVoid = 0`) if the globe covers, STRUCTURAL
+  otherwise — either is informative.
+* **P2 GREEN** (`redPainted > 2000 && globePixels > 20000`).
+* **Exit 1** — a real product FAIL, correctly attributed for the first time.
+  (It exits 1 today too, but for the wrong reason on the wrong check.)
+
+**After the encode fix lands (`C15-G6`), the acceptance is:**
+`greenPaintedOverGlobe < 50`, `redPainted` unchanged at ~4,000-6,000,
+P1/P2 green, **exit 0**.
+
+*Gates:* `node --test gsplat-harness.spec.mjs` **124/124** (117 preserved);
+prettier + eslint clean on both touched files; no engine file modified, so tsc
+and Naga are unchanged from Batch 883. **Negative control (file copy):** with
+the pre-`C15-G3d` probe restored, **9 of 124** go red — the two contract
+anchors, the diagnostics anchor and all 6 probe mutants — while every engine
+and arithmetic test stays green. File restored, md5-verified.
 
 
 ### `C15-G4` — consume the WASM radix sort (M) — deps: `C15-G3`

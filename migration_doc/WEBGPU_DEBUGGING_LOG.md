@@ -17995,3 +17995,72 @@ is computed from the probe's own constants, the clip-z/w anchor forbids the
 expansion touching depth, and 5 mutants must be rejected — including
 "globePixels derived by subtraction again" and "the missing-globe case folded
 back into the product verdict".
+
+---
+
+## C15-G3d — an "inversion" that was two absolute colour predicates, and the real defect underneath (2026-08-07)
+
+**Bug:** `C15-G3d.1` (instrument) + `C15-G3d.2` (product, FILED not fixed).
+**Files:** `Tools/visual-regression/probe-splat-globe-occlusion.mjs`.
+
+**Reported symptom.** After `C15-G3c` the re-run had the globe back
+(`greenOverVoid=0 of 1460`, P1 green) and looked INVERTED: the ABOVE-surface
+splat counted 33 red px (6,200 the run before), the BELOW-surface one 1,460
+green px. Above-hidden plus below-visible is the classic flipped-depth-compare
+signature.
+
+**It was not inverted.** The PNG shows both splats composited over a
+fully-covering globe: a red/orange halo with a saturated green core inside it.
+The red splat is doing exactly what its check asks.
+
+**Why the red count collapsed — the transferable part.** `isRed` is an ABSOLUTE
+predicate (`r>150 && g<90 && b<90`) calibrated, by accident, against a scene
+where the globe was ABSENT and splats sat on black. Over the olive globe the
+qualifying band is actually WIDER (alpha ≥ 0.412 versus 0.588 over black), so
+the background alone does not explain it. What closes it is the GREEN splat
+drawn ON TOP: a red fragment at alpha 0.74 over olive reads 209/33/26 (red), and
+the same fragment veiled by green at alpha 0.304 reads **149/98/22** — one code
+value below `isRed`'s r-bar and eight above `isGreen`'s g-bar. It is counted by
+**neither** predicate. Both numbers read low, and low-red plus low-green looked
+like an inversion.
+
+The same predicate blindness runs the other way: the globe's own pale-green
+`GridImageryProvider` lines satisfy `isGreen` with no splat present, so an
+unknown share of the 1,460 was never splat either.
+
+*Two absolute colour predicates over a scene whose background changed are not a
+measurement.* Both directions are now executed in `gsplat-harness.spec.mjs`
+against the real premultiplied blend.
+
+**Fix (instrument).** Classify by the DELTA against the globe-only frame — a
+pixel is splat-painted iff it differs by ≥ 12/255 in some channel, attributed to
+whichever channel moved most. Background-independent, and it cannot count the
+globe as a splat. Checks 2/3 and precondition P1 now read `redPainted`,
+`greenPaintedOverGlobe`, `greenPaintedOverVoid`; the absolute figures stay in
+the log so the transition is legible.
+
+**Candidates refuted, with evidence rather than argument.**
+*Reversed-Z / compare mismatch:* no such migration exists at HEAD — the WebGPU
+renderer census is 51 `less-equal`, 2 `greater`, 1 `less`, 4 `always`, 1
+`equal`, 1 `not-equal`, and every splat pipeline is `less-equal`. A migration
+flips a fleet, not one renderer — and a flipped compare hides the NEAR splat,
+which is not what happened.
+*The `C15-G3b` footprint port:* the expansion writes `fp.x`/`fp.y` only (pinned
+at `C15-G3c`), and `SPLAT_PACKED_WASM` reaches only the shader module and the
+descriptor name — the colour descriptor's `depthStencil` is byte-identical
+across variants, now asserted by slicing the descriptor and requiring the layout
+marker never to appear inside it.
+
+**`C15-G3d.2` — the real defect, FILED not fixed.** The below-surface splat is
+not occluded. The near splat composing while the far one leaks means every splat
+fragment beats the globe's depth, near and far alike: an ENCODE-SPACE mismatch
+(the splat's depth uniformly smaller), not a compare. Both producers read the
+same two `UniformState` fields — `currentFrustum` and
+`oneOverLog2FarDepthFromNearPlusOne`, verified identical in source — so the
+divergence is in when or whether each applies them; a splat writing log depth
+against a globe writing hyperbolic puts every splat fragment in front of
+everything, exactly as observed. Which one it is cannot be settled offline, so
+the probe now prints both encoders' inputs (`logDepthWriteEnabled`,
+`useLogDepth`, `currentFrustum`, the factor, the stashed
+`_logDepthEncodeNearFar`/`_logDepthEncodeFactor`, `numFrustums`) and one run
+will name it. `C15-G6` inherits it.

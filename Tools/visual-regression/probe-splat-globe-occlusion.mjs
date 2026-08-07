@@ -261,6 +261,34 @@ const out = await page.evaluate(async () => {
   const green = count(img, isGreen);
   const nonBlack = count(img, isNonBlack);
   const globePixels = globeOnlyPixels;
+  // ── C15-G3d — classify by the DELTA against the globe-only frame.
+  //
+  // `isRed`/`isGreen` are ABSOLUTE predicates, and both of their premises were
+  // accidents of the Batch-882 scene (splats over BLACK). With the globe
+  // actually present they misreport in both directions:
+  //   * the GridImageryProvider's own pale-green lines satisfy `isGreen`, so
+  //     globe pixels count as leaked splat;
+  //   * the RED splat over the olive globe, veiled by the GREEN splat drawn on
+  //     top of it, lands at r≈149/g≈98 — just outside `isRed` (r>150) AND just
+  //     outside `isGreen` (g<90). It reads as 33 px of "red" while the PNG
+  //     plainly shows it composing over the globe.
+  // Differencing against the globe-only frame and classifying by which channel
+  // MOVED is background-independent and cannot count the globe as a splat.
+  const PAINT_DELTA = 12;
+  const paintedBy = (i) => {
+    const dr = img.data[i] - globeOnly.data[i];
+    const dg = img.data[i + 1] - globeOnly.data[i + 1];
+    const db = img.data[i + 2] - globeOnly.data[i + 2];
+    if (Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db)) < PAINT_DELTA) {
+      return null;
+    }
+    if (dr >= dg && dr >= db) return "red";
+    if (dg >= dr && dg >= db) return "green";
+    return "other";
+  };
+  let redPainted = 0;
+  let greenPaintedOverGlobe = 0;
+  let greenPaintedOverVoid = 0;
   let greenOverGlobe = 0;
   let greenOverVoid = 0;
   for (let p = 0; p < img.w * img.h; p++) {
@@ -278,7 +306,39 @@ const out = await page.evaluate(async () => {
   for (let p = 0; p < img.w * img.h; p++) {
     const i = 4 * p;
     if (isRed(img.data, i) && isNonBlack(globeOnly.data, i)) redOverGlobe++;
+    const painted = paintedBy(i);
+    if (painted === "red") {
+      redPainted++;
+    } else if (painted === "green") {
+      if (isNonBlack(globeOnly.data, i)) {
+        greenPaintedOverGlobe++;
+      } else {
+        greenPaintedOverVoid++;
+      }
+    }
   }
+
+  // ── C15-G3d — the log-depth inputs BOTH producers encode from.
+  //
+  // Two splats at 6 km and 11 km with the globe at 8 km between them: the near
+  // one composes and the far one leaks, i.e. every splat fragment beats the
+  // globe. That is an ENCODE-SPACE mismatch (the splat's depth is uniformly
+  // smaller), not a flipped compare — a flipped compare would hide the NEAR
+  // splat, and the near splat is not hidden. These fields are what the next
+  // run needs to name which mismatch it is, in one run instead of three.
+  const usAny = ctx.uniformState;
+  const logDepth = {
+    logDepthWriteEnabled: ctx._logDepthWriteEnabled ?? null,
+    useLogDepth: scene.frameState?.useLogDepth ?? null,
+    currentFrustumNear: usAny?.currentFrustum?.x ?? null,
+    currentFrustumFar: usAny?.currentFrustum?.y ?? null,
+    oneOverLog2FarDepthFromNearPlusOne:
+      usAny?.oneOverLog2FarDepthFromNearPlusOne ?? null,
+    stashedEncodeNearFar: usAny?._logDepthEncodeNearFar
+      ? Array.from(usAny._logDepthEncodeNearFar)
+      : null,
+    stashedEncodeFactor: usAny?._logDepthEncodeFactor ?? null,
+  };
 
   const sr = scene._alternateSceneRenderer;
   const deferredLeak = !!sr?._deferredOITSplats;
@@ -303,7 +363,11 @@ const out = await page.evaluate(async () => {
     green,
     greenOverGlobe,
     greenOverVoid,
+    redPainted,
+    greenPaintedOverGlobe,
+    greenPaintedOverVoid,
     redOverGlobe,
+    logDepth,
     nonBlack,
     globePixels,
     deferredLeak,
@@ -342,23 +406,30 @@ check(
 );
 precondition(
   "P1",
-  out.greenOverVoid === 0,
-  `the globe covers every pixel the BELOW-surface splat paints (occlusion is only evaluable where there is something to be occluded by): greenOverVoid=${out.greenOverVoid} px of ${out.green} green px`,
+  out.greenPaintedOverVoid === 0,
+  `the globe covers every pixel the BELOW-surface splat paints (occlusion is only evaluable where there is something to be occluded by): greenPaintedOverVoid=${out.greenPaintedOverVoid} px of ${out.greenPaintedOverGlobe + out.greenPaintedOverVoid} green-painted px`,
 );
 check(
   "2",
-  out.red > 2000,
-  `RED splat (2 km ABOVE surface) is RENDERED, not dropped (the C7-SPLAT-DEPTH-COMPOSE guard): redPx=${out.red} (pre-fix: 0)`,
+  out.redPainted > 2000,
+  `RED splat (2 km ABOVE surface) is RENDERED, not dropped (the C7-SPLAT-DEPTH-COMPOSE guard): redPaintedPx=${out.redPainted} (absolute-predicate redPx=${out.red}, which the C15-G3d note explains is not a rendering measurement over a coloured globe)`,
 );
 precondition(
   "P2",
-  out.redOverGlobe > 2000,
-  `...and it is COMPOSED OVER the globe rather than over empty space, which is the half of check 2 that needs a globe to be evaluable: redOverGlobe=${out.redOverGlobe} px of ${out.red} red px`,
+  out.redPainted > 2000 && out.globePixels > 20000,
+  `...and it is COMPOSED OVER the globe rather than over empty space, which is the half of check 2 that needs a globe to be evaluable: redPainted=${out.redPainted}, globePixels=${out.globePixels}`,
 );
 check(
   "3",
-  out.greenOverGlobe < 50,
-  `GREEN splat (3 km BELOW surface) stays HIDDEN where the globe is behind it: greenOverGlobe=${out.greenOverGlobe} (total green ${out.green}; the remainder, ${out.greenOverVoid} px, had no globe behind it and is reported by P1, not here)`,
+  out.greenPaintedOverGlobe < 50,
+  `GREEN splat (3 km BELOW surface) stays HIDDEN where the globe is behind it: greenPaintedOverGlobe=${out.greenPaintedOverGlobe} (delta-classified, so the globe's own green grid lines cannot be counted as leaked splat; the absolute-predicate figures were greenOverGlobe=${out.greenOverGlobe}/greenOverVoid=${out.greenOverVoid})`,
+);
+console.log(
+  `(diag) log depth — writeEnabled=${out.logDepth.logDepthWriteEnabled} useLogDepth=${out.logDepth.useLogDepth} ` +
+    `currentFrustum=[${out.logDepth.currentFrustumNear}, ${out.logDepth.currentFrustumFar}] ` +
+    `factor=${out.logDepth.oneOverLog2FarDepthFromNearPlusOne} ` +
+    `stashedNearFar=${JSON.stringify(out.logDepth.stashedEncodeNearFar)} stashedFactor=${out.logDepth.stashedEncodeFactor} ` +
+    `numFrustums=${out.numFrustums}`,
 );
 check(
   "4",
