@@ -1,0 +1,7 @@
+title: WebGPU Ground Fog
+description: "Near-surface mist from the WebGPU froxel fog: a 120 m band anchored to a camera-local ground datum, with its extinction derived from the Koschmieder relation so the intensity slider reads out as meteorological visibility. Ground fog drives the froxel renderer on its own — the volumetric fog master can stay off — and the multiple-scattering octaves turn a dense valley mist into a lit volume."
+labels:
+  - Showcases
+  - WebGPU
+  - Atmosphere
+thumbnail: thumbnail.jpg

@@ -1,5 +1,194 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
+## NEW-PROBE-SCENE-TO-SANDCASTLE-DEMO-PIPELINE
+
+**Standing pipeline, opened 2026-08-07 (demo wave 1, maintainer-approved).** Every
+feature this fork closes is closed by an acceptance probe, and every acceptance probe
+already contains the hardest half of a demo: a camera, a clock, an asset set and a
+toggle sequence that were chosen precisely because they make the feature visible. That
+half is currently thrown away at closure. This pipeline says it should be lifted out
+instead.
+
+### The rule: EXTRACT, don't retire
+
+A probe and a demo are two halves of the same scene with opposite second halves:
+
+| | Probe | Demo |
+|---|---|---|
+| Scene construction | camera, clock, assets, toggles | **the same** |
+| Second half | watchdogs, pins, band models, gates, exit codes | interactive controls + a readout |
+| Audience | the gate | a person |
+| Lifetime | forever — it is the instrument | forever — it is the shop window |
+
+- **Probes stay the truth instruments.** A demo NEVER inherits a watchdog, a pinned
+  clock that cannot be moved, a verdict, an exit code or a threshold. Nothing is
+  "ported off" a probe and nothing is retired because a demo now exists.
+- **A demo may quote a probe's constants**, and should, when the constant IS the
+  story — `webgpu-ground-fog` prints the meteorological visibility its intensity
+  slider implies because that number is derived (Koschmieder at the WMO 2 km
+  mist/fog boundary), not tuned. Quoting is a copy with a source comment, not an
+  import: gallery `main.js` files are standalone ES modules served to a browser and
+  cannot reach into `packages/engine/Source/**` or `Tools/**`.
+- **A demo must not modify a probe.** Probe files are out of scope for demo work.
+
+### Trigger points
+
+Open a demo audit — not a demo — at each of these:
+
+1. **A stage closes** (a campaign row reaches COMPLETE/CERTIFIED at defaults).
+2. **A default flips** (an effect that was opt-in becomes default ON, as earthshine
+   did at R5/Batch 861 — the demo is how a maintainer sees what changed at defaults).
+3. **A cluster of rows lands on one subsystem**, even if no single row is headline —
+   the moon stack is seven toggles from six rows and reads as one feature.
+
+### The audit comes first, and "leave alone" is a real verdict
+
+The maintainer's directive for wave 1, verbatim in intent: *for each feature, look at
+whether an existing sandcastle already covers it and just needs updating, or whether a
+new demo is needed for something specific — do not blindly create.* So each candidate
+feature is scored against the existing gallery BEFORE anything is written, the verdict
+is recorded here (including where it is leave-alone), and the reasoning cites the
+existing demo's actual contents rather than its title.
+
+### How the gallery discovers a demo (verified 2026-08-07, not assumed)
+
+`packages/sandcastle/scripts/buildGallery.js` globs `gallery/**/*` and keeps every
+path whose basename matches `/sandcastle\.(yml|yaml)/`. **There is no registry, index
+file or manifest to add a demo to.** The containing directory's basename becomes the
+slug. Enforced per demo: slug matches `/^[a-zA-Z0-9-.]+$/`; `title` + `description`
+required; the only other accepted keys are `thumbnail`, `legacyId`, `labels`,
+`development` (an unknown key is a build error); `labels` must exist (the
+`development` cross-check reads it unconditionally); sibling `index.html` and
+`main.js` must exist; a declared `thumbnail` must resolve. The harness — not the demo
+— owns backend selection: `Bucket.tsx` + `Helpers.ts` rewrite `new Cesium.Viewer(` to
+`await Cesium.Viewer.createAsync(` and patch the static `createAsync` to inject
+`contextOptions.renderer`, and the toolbar offers **WebGL / WebGPU / Split**. Two
+consequences that shape every demo written under this pipeline:
+
+- A backend-agnostic demo should construct with `new Cesium.Viewer(...)` so the
+  toggle and Split mode work on it. A WebGPU-only feature should pin the backend with
+  an explicit `createAsync({ contextOptions: { renderer: "webgpu" } })`, the way
+  `webgpu-weather-inspector` already does.
+- **A demo cannot build its own WebGL-vs-WebGPU side-by-side.** The injected
+  `contextOptions` is spread FIRST and `renderer` written last, so it overrides
+  whatever the demo asked for; in WebGPU mode both viewers of a hand-rolled pair would
+  come up WebGPU. Split mode is the harness's answer and is strictly better — it
+  compares the SAME demo source on both backends.
+
+### Wave 1 — audit table (2026-08-07)
+
+| # | Feature | Existing gallery demos inspected | Verdict | Reasoning (from contents, not titles) |
+|---|---|---|---|---|
+| 1 | **Moon appearance stack** (C12: LROC albedo, LOLA relief, Lommel-Seeliger, opposition surge, phase-correct earthshine default-ON since R5/B861, soft terminator, mip pipeline) | `moon`; `webgpu-dual-light-atmosphere`; `order-independent-translucency` | **NEW — `moon-appearance`** | `moon` is not about `scene.moon` at all: it sets `Ellipsoid.default = Ellipsoid.MOON` and builds a Moon-as-globe app out of ion LRO terrain tiles, mare-boundary and Artemis GeoJSON, and Apollo-site labels. Updating it would destroy an upstream showcase to host an unrelated subsystem. The only two other gallery references to `scene.moon` are a one-line `show = true` (`webgpu-dual-light-atmosphere`, where the moon is a light source for the sky shader, not the subject) and a `show = false` (`order-independent-translucency`). Nothing in the gallery renders the lunar disc as the subject. |
+| 2 | **Ground fog band** (B420/421 scaffold; the band first rendered at B843/850 — camera-local datum + Koschmieder-derived extinction; MS scale fixed at B870) | `fog`; `fog-post-process`; `atmospheric-conditions`; `volumetric-effects`; `webgpu-weather-inspector` | **NEW — `webgpu-ground-fog`** | Not one of the five touches `effects.groundFog`. `fog` is upstream `scene.fog` (density / visualDensityScalar / minimumBrightness / SSE). `fog-post-process` is a screen-space PP effect. `atmospheric-conditions` drives `weather.*` from a 4,500 km orbit — a camera that cannot see a 120 m band. `volumetric-effects` drives the `volumetricFog` MASTER plus clouds and cloud shadows from a 6,000 m ridge; ground fog's whole point is that it activates with that master OFF, so folding it in would bury the distinguishing behaviour under the very flag it bypasses. `webgpu-weather-inspector` exposes `scene.fog.{enabled,density}` only. Different API leaf, different camera envelope, different physics. |
+| 3 | **Gaussian splats on WebGPU** (C15 GSPLAT G0–G6 closed; G7/G8 open) | `3d-tiles-gaussian-splatting`; `3d-tiles-gaussian-splats-with-lod`; `3d-tiles-gaussian-splatting-comparison`; `itwin-gaussian-splats` | **LEAVE ALONE — no demo, no edit; re-audit at `C15-G8`** | All four are renderer-agnostic upstream demos over ion / iTwin assets; none pins a backend, so the harness's WebGPU and Split toggles already run them on WebGPU with zero code change. The fork's demo-worthy content here is the *parity*, and the harness's Split mode delivers exactly that on all four — a fifth demo would duplicate a control the toolbar already has, and (see above) could not even hold both backends at once. The in-tree gate assets (`Specs/Data/.../GaussianSplats/{sh_unit_cube,tower}`) are 27-splat and 286,868-splat instruments framed against a hidden globe on a black background; they are diagnostics, not scenes. And the terminal parity gate has NOT been re-armed — `C15-G8` is PENDING — so any demo asserting certified parity today would overclaim. **Owed instead:** the orchestrator's runtime confirmation (below) that the four demos come up clean on WebGPU, and a re-audit when `C15-G8` closes. |
+| 4 | **Sandcastle demo index drift** (found en route) | `migration_doc/FEATURE_GUIDE_AND_DEMOS.md` §11b | **UPDATED** | §11b's prose said "27 `webgpu-*` folders"; the directory held **29** before this wave. Prose corrected to point at the directory listing as the authority, the discovery mechanism written down, and rows added for both new demos. |
+
+### Wave 1 — ledger
+
+| Item | State |
+|---|---|
+| `packages/sandcastle/gallery/moon-appearance/` | **BUILT** — `index.html` + `main.js` + `sandcastle.yaml` + placeholder `thumbnail.jpg`. eslint + prettier clean; yaml validated against `buildGallery.js`'s own key/slug/file checks. Backend-agnostic (`new Cesium.Viewer`). |
+| `packages/sandcastle/gallery/webgpu-ground-fog/` | **BUILT** — same four files. eslint + prettier clean; yaml validated. WebGPU-pinned. |
+| Four Gaussian-splat demos | **UNTOUCHED** by design (verdict 3). |
+| `FEATURE_GUIDE_AND_DEMOS.md` §3 / §8 / §11b | **UPDATED** — moon-stack bullet, ground-fog dial + demo, two index rows, drift note, discovery mechanism. |
+| Thumbnails | **OWED (orchestrator).** Both demos ship a byte-copy of `public/images/placeholder-thumbnail.jpg`, which is what 27 of the 30 `webgpu-*` demos do. A real capture is owed for both. NOTE the upstream scaffold (`scripts/createDemo.js`) instead comments the key out with a TODO; the fork convention of copying the placeholder in is what was followed, but it makes "still owes a capture" invisible to `grep`, which is why the debt is recorded here instead. |
+| Build + browser verification | **OWED (orchestrator).** No build was run in the worker tree. `npm run build-sandcastle`, then the per-demo checks below. |
+| Demo probes | **OWED — `NEW-DEMO-WAVE1-COMPANION-PROBES`, filed here.** The fork already has a companion-probe convention for new-gallery-only demos: `probe-model-appearance-demo.mjs`, `probe-pp-library-demo.mjs`, `probe-fullscreen-sky-demo.mjs`, `probe-live-weather-demo.mjs`, `probe-dp46f-metadata-demo.mjs`, `probe-clustered-demo-scene.mjs` — each asserting signature pixels per control plus a byte-identical off-state, so a demo cannot silently rot when the API under it moves. Wave 1 deliberately produced none (probe work was out of scope for the demo worker), so `moon-appearance` and `webgpu-ground-fog` are the first new-gallery-only demos with no automated guard. Two probes owed: `probe-moon-appearance-demo.mjs` (per-toggle signature delta at each framing, and the relief/earthshine ASYMMETRY between framings, which is the part a per-control check would otherwise miss) and `probe-ground-fog-demo.mjs` (the visibility readout against `WebGPUGroundFogBand.ts`'s shipped constants — a drift guard on the demo's mirrored copy — plus the datum line's presence). **Effort: S each**; both reuse the existing acceptance probes' scene halves, which is the same extraction this pipeline is about. |
+
+### Wave 2 — parked candidates (audit first, same rule)
+
+Not launched. Each still needs its own existing-gallery audit before anything is
+written, and the trigger listed is what makes it eligible.
+
+- **Eclipse scene dimming (C12-29 S1/S2/S5/S6).** Trigger: the chain closed at Batch
+  879. Audit target: whether this belongs as framings inside `moon-appearance` (it is
+  the same Sun-Earth-Moon geometry and the same phase search, at syzygy) or as its own
+  demo — the S2 human-eye-vs-camera transfer-function switch is a genuinely separate
+  story from the lunar disc and probably wants its own toolbar.
+- **Cold-optics halos (B422 + B442 advanced: 22°/46° dispersed halos, sun dogs, light
+  pillars, upper tangent arc).** Trigger: `effects.optics.advanced` shipped. Audit
+  target: `webgpu-weather-particles` and `atmospheric-conditions` — is optics a
+  section of an existing weather demo or its own?
+- **CSM soft shadows.** Trigger: CSM is SHIPPED end-to-end. Audit target: the upstream
+  `shadows-dev` demo and `webgpu-point-light-shadows`; likely an update, not a new
+  demo.
+- **Cloud genus tour (V11 per-genus vertical density profiles).** Trigger: **HELD
+  until C13-16 ships.** `webgpu-weather-inspector` already carries the genus select
+  and the METAR/WMO preset bar, and its own comment records that per-genus *shape*
+  does not differentiate yet — so this is an UPDATE to that demo when the shape lands,
+  not a new one.
+- **Splat side-by-side re-certification.** Trigger: **`C15-G8` closes.** Re-run
+  verdict 3 with the terminal parity gate armed; the question to re-ask is whether the
+  Split-mode story needs anything beyond a description line on the four existing
+  demos.
+
+### What the orchestrator's browser verification should check
+
+Per demo, concrete and falsifiable. These are acceptance checks for the DEMOS, not
+for the features — the features have probes.
+
+**`moon-appearance`** (run it on WebGL, on WebGPU, and in Split):
+
+1. Opens on *Terminator close-up (half phase)* with a lit lunar disc a couple of
+   hundred pixels across, terminator running roughly down the middle, and the readout
+   panel showing an illuminated fraction near 50%.
+2. **LOLA relief** toggled off then on visibly changes the surface texture along the
+   terminator — and doing the same on *Full moon* changes far less. That asymmetry is
+   the feature; if the two framings respond equally, something is wrong with the
+   strength uniform, not with the demo.
+3. **Earthshine** at *Thin crescent*: toggling it changes the brightness of the
+   UNLIT limb specifically, not the lit crescent. The readout's "earthshine scale"
+   should read ~88% of maximum there and ~2% at *Full moon* — and the toggle should be
+   visually inert at *Full moon*, which is the phase-correctness claim.
+4. **Sky wash** at *Daytime moon*: off makes the disc read as a dark cutout against
+   the blue sky; on makes it pale. The readout should show both sun and moon elevations
+   positive (expect roughly sun ~60°, moon ~45°).
+5. *Moonrise at the horizon* frames the disc low against a twilight sky with the
+   readout showing a NEGATIVE sun elevation and a moon elevation near 4°.
+6. **Albedo variant → small (legacy)** visibly drops the surface detail, the readout
+   adds the "LOLA relief unavailable on this variant" line, and switching back
+   restores it. Watch the console across the swap: the demo destroys the previous
+   `Moon` and an in-flight texture load is the plausible failure mode.
+7. Zero console errors on either backend; Split mode shows the two panes tracking.
+
+**`webgpu-ground-fog`** (WebGPU only — it pins the backend):
+
+1. Opens on *Alpine ridge, midday (probe framing)* with a milky near-surface mist in
+   the lower part of the frame and clear sky above — the same asymmetry
+   `probe-ground-fog.mjs`'s gate C measures. Terrain must be visible THROUGH the mist;
+   a whiteout is a failure, not a stronger pass (gate D).
+2. The **Fog master** checkbox is OFF at that point. That is the own-activation claim
+   and it is the single most important thing to confirm by eye.
+3. **Ground fog** unchecked → the mist disappears; rechecked → it returns.
+4. The **intensity** slider's readout tracks it: 1.00 → 2.0 km ("dense mist / fog
+   boundary"), 0.60 → 3.3 km ("mist"), 0.30 → 6.5-6.7 km ("haze"). These are the
+   shipped constants, so a mismatch means the demo's mirrored constants have drifted
+   from `WebGPUGroundFogBand.ts`.
+5. The **datum line** appears (not "band diagnostics unavailable") and its terrain
+   height is plausible for the framing — thousands of metres on the Alpine ridge,
+   hundreds in the Inn valley — with the camera's height above the datum close to the
+   framing's own height above terrain. A datum that does not move between the two
+   framings is the original defect returning.
+6. **Multiple scattering** on with octaves 3 makes the dense mist read as a lit
+   volume rather than a flat mass, and does not blow out (the octave sum is
+   normalized, so a thin layer cannot exceed the single-scatter value).
+7. The time-of-day slider moves the in-scatter direction; *Inn valley floor, dawn*
+   opens at 04:15 UTC with a low sun.
+8. Zero console errors, no device-lost.
+
+**The four Gaussian-splat demos** (no code changed — this is the annotation check):
+
+1. `3d-tiles-gaussian-splatting` comes up on the **WebGPU** toggle with splats
+   rendering and no console errors; repeat for `3d-tiles-gaussian-splats-with-lod` and
+   `3d-tiles-gaussian-splatting-comparison`.
+2. **Split** mode on `3d-tiles-gaussian-splatting` shows both panes rendering the same
+   scene. This is the parity story; if it reads clean, the wave-1 verdict of
+   "leave alone" is confirmed and the re-audit waits for `C15-G8`. If it does NOT,
+   that is a finding against `C15-G7`/`G8`, not against this wave.
+3. `itwin-gaussian-splats` depends on an embedded iTwin share key with an expiry — if
+   it fails, check that before blaming the backend.
+
 ## New findings — `C15-G2` follow-up (the Batch-878 splat stall), 2026-08-07
 
 The defect itself is fixed and logged (`WEBGPU_DEBUGGING_LOG.md`, Batch

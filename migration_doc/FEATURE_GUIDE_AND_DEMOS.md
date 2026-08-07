@@ -148,6 +148,14 @@ scene.globe.atmosphericConditions
 - **Fullscreen view-independent sky** — toggles between the ellipsoid-shell sky
   (WebGL-parity default) and a fullscreen-pass sky that reconstructs the per-pixel
   view ray. WebGPU only. **Demo:** *WebGPU Fullscreen Sky*.
+- **Moon appearance stack** (Campaign 12, `lighting.enableLunarBRDF` /
+  `enableOppositionSurge` / `enableMoonSkyWash` / `enableLunarNormalMap` /
+  `enableEarthshine` / `enableEarthshinePhase` / `enableSoftTerminator`, plus the
+  `Moon.Variant` albedo+relief pairing). All default ON and implemented on BOTH
+  backends in lockstep, so each toggle's off position is the exact pre-C12 look
+  rather than an approximation of it. **Demo:** *Moon Appearance* — note this is
+  `scene.moon` (the Moon in Earth's sky), NOT the upstream *Moon* demo, which is a
+  Moon-as-globe app (`Ellipsoid.default = Ellipsoid.MOON` + lunar terrain tiles).
 - **Star brightness modulation / night-sky dimming** (`skyAtmosphere.starModulationCurve`,
   `enableStarBrightnessModulation`, `enableNightSkyDimming`).
 - **Procedural sky cubemap** (`ProceduralSkyCubemap.wgsl`, Batches 346 + 430) — a
@@ -628,7 +636,12 @@ ATMOSPHERIC_EFFECTS_ROADMAP + `git log`):
 
 - **Heat shimmer** — screen-space animated UV-warp (`WebGPUHeatShimmerEffect`,
   Batch 417b). Gated on `scene.heatShimmerEnabled`/`Intensity`.
-- **Ground fog** — near-surface density band on the froxel renderer (Batches 420/421).
+- **Ground fog** — near-surface density band on the froxel renderer (Batches 420/421;
+  the band actually *rendered* only from Batch 843/850, which gave it the camera-local
+  datum it needs and re-derived its extinction from Koschmieder at the WMO 2 km
+  mist/fog boundary). Dials: `effects.groundFog.{enabled, intensity}`; the band drives
+  the froxel renderer on its own, with `volumetricFog.enabled` still off.
+  **Demo:** *WebGPU Ground Fog*.
 - **Cold optics** — 22° halo + sun-dogs (`WebGPUColdOpticsEffect`, Batch 422); LIGHT
   PILLARS + 22°/46° dispersed halos + upper-tangent arc behind `effects.optics.advanced`
   (Batch 442).
@@ -818,6 +831,8 @@ the new gallery:
 | `volumetric-effects` | Stack WebGPU volumetric fog + volumetric clouds + cloud shadows cast into the fog — all off by default, compose into one atmospheric system (§4/§8). |
 | `webgpu-model-appearance` | New-gallery-only (no legacy counterpart). Drive `model.color`/`colorBlendMode`/`colorBlendAmount` (Batch 484), `silhouetteColor`/`silhouetteSize` (Batch 485), and `splitDirection` + `scene.splitPosition` (Batch 483) interactively on the WebGPU backend via toolbar menus + sliders. Verified: `Tools/visual-regression/probe-model-appearance-demo.mjs` (signature-pixel gates per feature + byte-identical off-state). |
 | `webgpu-post-process-library` | New-gallery-only (no legacy counterpart, Batch 524). Cycle the seven `PostProcessStageLibrary` builtins natively on WebGPU (§ Post-process). Verified: `Tools/visual-regression/probe-pp-library-demo.mjs`. |
+| `moon-appearance` | New-gallery-only (demo wave 1, 2026-08-07). The `scene.moon` appearance stack (§3): albedo variant, LOLA relief, Lommel-Seeliger, opposition surge, phase-correct earthshine, soft terminator, sky wash — five phase-selected framings derived at runtime from `Simon1994PlanetaryPositions`. Both backends, so the renderer toggle and Split mode read as parity. Scene halves from `probe-moon-lola-relief.mjs` + `probe-moon-atmosphere-appearance.mjs`. |
+| `webgpu-ground-fog` | New-gallery-only (demo wave 1, 2026-08-07). The near-surface mist band (§8): own-activation path with the fog master off, intensity slider read out as WMO meteorological visibility via Koschmieder, multiple-scattering octaves, and a live read-back of the camera-local band datum. Scene half from `probe-ground-fog.mjs`. WebGPU-pinned. |
 
 The 26 ported `webgpu-*` folders: `webgpu-async-resource-monitor`,
 `webgpu-bulk-vs-legacy-visualizers`, `webgpu-clustered-lighting`,
@@ -832,10 +847,31 @@ The 26 ported `webgpu-*` folders: `webgpu-async-resource-monitor`,
 `webgpu-weather-particles`. Plus the fork-original `webgpu-structural-metadata-pick`
 (DP-H46f — WebGPU `EXT_structural_metadata` property-texture read + `scene.pickMetadata`).
 
+> **Count re-verified 2026-08-07 (demo wave 1).** The "27 `webgpu-*` folders" prose
+> above was written at Batch ≈506 and had drifted: `ls packages/sandcastle/gallery |
+> grep webgpu` returns **29** before this wave and **30** after it, plus the three
+> unprefixed fork demos `atmospheric-conditions`, `volumetric-effects` and
+> `moon-appearance`. Treat the directory listing as the authority and this prose as a
+> summary; the enumerated table rows are the part worth reading.
+>
 > **Keeping the index current:** new demos go in `packages/sandcastle/gallery/<kebab>/`
 > (folder form) and are rebuilt with `npm run build-sandcastle`. The legacy
 > `Apps/Sandcastle/gallery/*.html` form is where fork WebGPU demos historically landed
 > but is no longer served by the node dev server. When you add a demo, add a row here.
+>
+> **Discovery is automatic — there is no registry to edit.**
+> `packages/sandcastle/scripts/buildGallery.js` globs `gallery/**/*`, keeps every path
+> whose basename matches `/sandcastle\.(yml|yaml)/`, and takes the containing
+> directory's basename as the slug. What it enforces per demo: the slug must match
+> `/^[a-zA-Z0-9-.]+$/`; `title` and `description` are required; the ONLY other
+> accepted keys are `thumbnail`, `legacyId`, `labels`, `development` (anything else is
+> a build error); `labels` must be present (the `development` cross-check indexes it
+> unconditionally); a sibling `index.html` and `main.js` must exist; and a declared
+> `thumbnail` must resolve on disk. Omitting `thumbnail` is legal and falls back to
+> `public/images/placeholder-thumbnail.jpg` — but the fork's own convention is to copy
+> that placeholder in as `thumbnail.jpg` and declare it, which is what the 30
+> `webgpu-*` demos do (27 of them are byte-identical copies of the placeholder, i.e.
+> they still owe a real capture).
 
 ---
 

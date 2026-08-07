@@ -1,0 +1,88 @@
+<style>
+  @import url(../templates/bucket.css);
+  #toolbar input[type="range"] {
+    width: 9em;
+    vertical-align: middle;
+  }
+  #toolbar td {
+    padding: 1px 4px;
+  }
+  #fogReadout {
+    margin-top: 6px;
+    padding: 5px 7px;
+    max-width: 26em;
+    background: rgba(10, 14, 24, 0.7);
+    border: 1px solid rgba(158, 197, 255, 0.35);
+    border-radius: 4px;
+    color: #dfe8ff;
+    font:
+      11px/1.45 Consolas,
+      Monaco,
+      monospace;
+    white-space: pre-wrap;
+  }
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar">
+  <select
+    data-bind="options: framings, optionsText: 'text', value: framing"
+  ></select>
+  <table>
+    <tbody>
+      <tr>
+        <td>Ground fog</td>
+        <td><input type="checkbox" data-bind="checked: groundFog" /></td>
+      </tr>
+      <tr>
+        <td>Intensity</td>
+        <td>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.02"
+            data-bind="value: intensity, valueUpdate: 'input'"
+          />
+        </td>
+      </tr>
+      <tr>
+        <td>Fog master</td>
+        <td><input type="checkbox" data-bind="checked: fogMaster" /></td>
+      </tr>
+      <tr>
+        <td>Multiple scattering</td>
+        <td><input type="checkbox" data-bind="checked: multiScatter" /></td>
+      </tr>
+      <tr>
+        <td>MS octaves</td>
+        <td>
+          <input
+            type="range"
+            min="1"
+            max="8"
+            step="1"
+            data-bind="value: msOctaves, valueUpdate: 'input'"
+          />
+        </td>
+      </tr>
+      <tr>
+        <td>Shadowed in-scatter</td>
+        <td><input type="checkbox" data-bind="checked: occlusion" /></td>
+      </tr>
+      <tr>
+        <td>Time of day (UTC h)</td>
+        <td>
+          <input
+            type="range"
+            min="0"
+            max="24"
+            step="0.25"
+            data-bind="value: hourUtc, valueUpdate: 'input'"
+          />
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <div id="fogReadout" data-bind="text: readout"></div>
+</div>

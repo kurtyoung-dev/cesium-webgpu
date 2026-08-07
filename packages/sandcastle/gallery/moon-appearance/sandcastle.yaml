@@ -1,0 +1,7 @@
+title: Moon Appearance
+description: "The lunar disc rendered in Earth's sky: LROC colour albedo, LOLA surface relief, Lommel-Seeliger regolith reflectance, the opposition surge, phase-correct earthshine, the soft terminator, and the daytime sky wash. Five phase-selected framings, and every toggle runs on both WebGL and WebGPU so the renderer switch shows parity."
+labels:
+  - Showcases
+  - Lighting
+  - Atmosphere
+thumbnail: thumbnail.jpg
