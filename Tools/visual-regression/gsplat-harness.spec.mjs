@@ -4104,3 +4104,317 @@ for (const mutant of G6E_MUTANTS) {
     );
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// C15-G6f — "a depth CLEAR between the OPAQUE pass and the splat pass"
+//
+// With the encode refuted at `C15-G6e`, the leading hypothesis became a depth
+// CLEAR sitting between the two producers: the blue PointPrimitive control
+// draws in `Pass.OPAQUE` and IS occluded, the splat draws in
+// `Pass.GAUSSIAN_SPLATS` and is not, and a clear between them explains that
+// asymmetry exactly. It was a good hypothesis. It is false, and the source
+// says so without a browser — so it is pinned here rather than re-argued.
+//
+// Three facts, each executed below:
+//
+//   1. `_resumeScenePass` — the resume used by every intra-frustum end/resume
+//      site in the loop — re-opens with `depthLoadOp: "load"`. It cannot clear.
+//   2. `_clearDepthStencil` IS the depth-clearing re-open (it forwards
+//      `getDepthStencilAttachment()`, whose default load op is "clear"), and
+//      BOTH of its frustum-loop call sites are ABOVE `_executeOpaquePass`.
+//      Any clear that fires is therefore upstream of the blue control too, so
+//      a clear cannot produce the observed asymmetry.
+//   3. Between the opaque pass and the splat dispatch the loop touches the
+//      pass boundary exactly once (the DP-H45 depth repack), and that block
+//      resumes through `_resumeScenePass`.
+//
+// The mutants below are the shapes the hypothesis would have to take to be
+// true. All must be rejected — which is what makes this a refutation rather
+// than a restatement of the current code.
+// ────────────────────────────────────────────────────────────────────────────
+
+const SCENE_RENDERER_PATH =
+  "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts";
+const FRUSTUM_LOOP_PATH =
+  "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererFrustumLoop.ts";
+const GLOBE_DEPTH_PATH =
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts";
+
+/**
+ * Extract a brace-balanced TypeScript block starting at `header`.
+ */
+function tsBlock(source, header) {
+  const at = source.indexOf(header);
+  assert.notEqual(at, -1, `block header not found: ${header}`);
+  let i = source.indexOf("{", at);
+  const from = i;
+  let depth = 0;
+  do {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}") depth--;
+    i++;
+  } while (depth > 0);
+  return source.slice(from, i);
+}
+
+/** Executable lines only, so a comment naming a load op cannot satisfy a rule. */
+const codeOnly = (block) =>
+  block
+    .split("\n")
+    .map((line) => line.replace(/^\s*\/\/.*$/, "").replace(/^\s*\*.*$/, ""))
+    .join("\n");
+
+function assertResumeLoadsDepth(sceneRendererSource) {
+  const body = codeOnly(
+    tsBlock(
+      sceneRendererSource,
+      "public _resumeScenePass(context: WebGPUContext)",
+    ),
+  );
+  assert.match(
+    body,
+    /depthLoadOp: "load"/,
+    `${SCENE_RENDERER_PATH}: _resumeScenePass no longer re-opens with depthLoadOp "load" — every intra-frustum end/resume now wipes depth`,
+  );
+  assert.match(
+    body,
+    /stencilLoadOp: "load"/,
+    `${SCENE_RENDERER_PATH}: _resumeScenePass no longer preserves stencil across the re-open`,
+  );
+  assert.doesNotMatch(
+    body,
+    /depthLoadOp: "clear"/,
+    `${SCENE_RENDERER_PATH}: _resumeScenePass clears depth`,
+  );
+}
+
+test("G6f: _resumeScenePass re-opens the scene pass with depthLoadOp load", () => {
+  assertResumeLoadsDepth(readNormalized(SCENE_RENDERER_PATH));
+});
+
+test("G6f: _clearDepthStencil is the only depth-CLEARING re-open", () => {
+  const source = readNormalized(SCENE_RENDERER_PATH);
+  const clearBody = codeOnly(
+    tsBlock(source, "public _clearDepthStencil(context: WebGPUContext)"),
+  );
+  // It clears by FORWARDING the attachment unmodified — `getDepthStencilAttachment`
+  // defaults to depthLoadOp "clear". That is the whole mechanism, and it is what
+  // makes this method (and only this method) able to reset depth.
+  assert.match(
+    clearBody,
+    /const depthStencilAttachment = colorTarget\.getDepthStencilAttachment\?\.\(\);/,
+    `${SCENE_RENDERER_PATH}: _clearDepthStencil no longer forwards the default (clearing) depth attachment`,
+  );
+  // ...and the default really is "clear", at the producer.
+  const targetSource = readNormalized(
+    "packages/engine/Source/Renderer/WebGPU/WebGPURenderTarget.ts",
+  );
+  assert.match(
+    targetSource,
+    /depthLoadOp: GPULoadOp = "clear"/,
+    "WebGPURenderTarget.getDepthStencilAttachment no longer defaults depthLoadOp to clear — the two re-open sites' semantics just inverted",
+  );
+});
+
+function assertClearsAreUpstreamOfOpaque(loopSource) {
+  const opaqueAt = loopSource.indexOf("host._executeOpaquePass(");
+  assert.notEqual(
+    opaqueAt,
+    -1,
+    `${FRUSTUM_LOOP_PATH}: opaque dispatch not found`,
+  );
+  const clearSites = [];
+  let from = 0;
+  for (;;) {
+    const at = loopSource.indexOf("host._clearDepthStencil(context)", from);
+    if (at === -1) break;
+    clearSites.push(at);
+    from = at + 1;
+  }
+  assert.ok(
+    clearSites.length >= 2,
+    `${FRUSTUM_LOOP_PATH}: expected the per-frustum clear AND the clearGlobeDepth clear; found ${clearSites.length}`,
+  );
+  for (const at of clearSites) {
+    assert.ok(
+      at < opaqueAt,
+      `${FRUSTUM_LOOP_PATH}: a _clearDepthStencil call now fires AFTER the opaque pass. ` +
+        `The blue PointPrimitive control draws in Pass.OPAQUE and the splat in Pass.GAUSSIAN_SPLATS, ` +
+        `so a clear between them would make the control's "occluded" reading meaningless.`,
+    );
+  }
+}
+
+test("G6f: every _clearDepthStencil call site is UPSTREAM of the opaque pass", () => {
+  assertClearsAreUpstreamOfOpaque(readNormalized(FRUSTUM_LOOP_PATH));
+});
+
+function assertNoClearBetweenOpaqueAndSplats(loopSource) {
+  const from = loopSource.indexOf("host._executeOpaquePass(");
+  const to = loopSource.indexOf("Pass.GAUSSIAN_SPLATS");
+  assert.ok(
+    from !== -1 && to !== -1 && from < to,
+    `${FRUSTUM_LOOP_PATH}: pass order changed`,
+  );
+  const between = codeOnly(loopSource.slice(from, to));
+  assert.doesNotMatch(
+    between,
+    /_clearDepthStencil/,
+    `${FRUSTUM_LOOP_PATH}: a depth clear now separates OPAQUE from GAUSSIAN_SPLATS`,
+  );
+  assert.doesNotMatch(
+    between,
+    /resumeDefaultRenderPass/,
+    `${FRUSTUM_LOOP_PATH}: a canvas-pass resume now separates OPAQUE from GAUSSIAN_SPLATS — ` +
+      `the splats would depth-test against the CANVAS depth, not the scene framebuffer's`,
+  );
+  // The one pass boundary that DOES sit there is the DP-H45 depth repack, and
+  // it resumes through the loading helper.
+  assert.match(
+    between,
+    /context\.endCurrentRenderPass\?\.\(\);[\s\S]*host\._globeDepth\.executeUpdateDepth\([\s\S]*host\._resumeScenePass\(context\);/,
+    `${FRUSTUM_LOOP_PATH}: the DP-H45 repack between OPAQUE and GAUSSIAN_SPLATS no longer ends+repacks+resumes as a unit`,
+  );
+}
+
+test("G6f: nothing between OPAQUE and GAUSSIAN_SPLATS can reset scene depth", () => {
+  assertNoClearBetweenOpaqueAndSplats(readNormalized(FRUSTUM_LOOP_PATH));
+});
+
+test("G6f: the depth-repack's own pass cannot touch scene depth", () => {
+  // `executeUpdateDepth` opens a render pass on `_depthCopyTarget`. If that
+  // target ever gained a depth-stencil attachment, `getLoadPassDescriptor()`
+  // would forward `getDepthStencilAttachment()` — default load op "clear" —
+  // and the repack WOULD wipe depth between the two producers. It has none.
+  const source = readNormalized(GLOBE_DEPTH_PATH);
+  const block = source.slice(
+    source.indexOf(`name: "GlobeDepth-DepthCopy"`),
+    source.indexOf(`name: "GlobeDepth-TempDepthCopy"`),
+  );
+  assert.ok(
+    block.length > 0,
+    `${GLOBE_DEPTH_PATH}: depth-copy target not found`,
+  );
+  assert.doesNotMatch(
+    block,
+    /depthStencilFormat/,
+    `${GLOBE_DEPTH_PATH}: the depth-copy target gained a depth attachment — its load-pass descriptor now clears it, ` +
+      `and the DP-H45 repack sits between the OPAQUE and GAUSSIAN_SPLATS producers`,
+  );
+});
+
+const G6F_MUTANTS = [
+  {
+    name: "_resumeScenePass re-opens with depthLoadOp clear",
+    path: SCENE_RENDERER_PATH,
+    mutate: (source) =>
+      source.replace(
+        `          depthLoadOp: "load" as GPULoadOp,`,
+        `          depthLoadOp: "clear" as GPULoadOp,`,
+      ),
+    check: assertResumeLoadsDepth,
+    because: /no longer re-opens with depthLoadOp "load"|clears depth/,
+  },
+  {
+    name: "a depth clear is inserted between OPAQUE and GAUSSIAN_SPLATS",
+    path: FRUSTUM_LOOP_PATH,
+    mutate: (source) =>
+      source.replace(
+        `    // Pass 11: GAUSSIAN_SPLATS`,
+        `    host._clearDepthStencil(context);\n    // Pass 11: GAUSSIAN_SPLATS`,
+      ),
+    check: (source) => {
+      assertClearsAreUpstreamOfOpaque(source);
+      assertNoClearBetweenOpaqueAndSplats(source);
+    },
+    because:
+      /fires AFTER the opaque pass|separates OPAQUE from GAUSSIAN_SPLATS/,
+  },
+  {
+    name: "the post-opaque repack falls through to the CANVAS pass resume",
+    path: FRUSTUM_LOOP_PATH,
+    mutate: (source) =>
+      source.replace(
+        `        host._globeDepth.executeUpdateDepth(enc, depthSource);\n        host._resumeScenePass(context);`,
+        `        host._globeDepth.executeUpdateDepth(enc, depthSource);\n        context.resumeDefaultRenderPass?.();`,
+      ),
+    check: (source) => assertNoClearBetweenOpaqueAndSplats(source),
+    because:
+      /canvas-pass resume now separates OPAQUE from GAUSSIAN_SPLATS|no longer ends\+repacks\+resumes as a unit/,
+  },
+];
+
+for (const mutant of G6F_MUTANTS) {
+  test(`G6f mutant rejected: ${mutant.name}`, () => {
+    const real = readNormalized(mutant.path);
+    const mutated = mutant.mutate(real);
+    assert.notEqual(mutated, real, "the mutation did not apply");
+    assert.throws(
+      () => mutant.check(mutated),
+      mutant.because,
+      `${mutant.name}: accepted, or rejected for the wrong reason`,
+    );
+  });
+}
+
+test("G6f: check 7 carries a POSITIVE control, so a zero cannot mean 'never drew'", () => {
+  // `bluePaintedOverGlobe = 0` is produced BOTH by "the control is correctly
+  // occluded" and by "the control painted nothing at all" — and check 7's whole
+  // purpose is to name the subsystem the next round works in, so a vacuous
+  // green there sends that round into the wrong renderer. The positive control
+  // shows the SAME point with its depth test disabled: it then has nothing that
+  // can hide it and MUST paint.
+  const probe = readNormalized(OCCLUSION_PROBE_PATH);
+  assert.match(
+    probe,
+    /bluePoint\.disableDepthTestDistance = Number\.POSITIVE_INFINITY;/,
+    `${OCCLUSION_PROBE_PATH}: the positive control for check 7 is gone — a zero blue count is unreadable again`,
+  );
+  assert.match(
+    probe,
+    /bluePoint\.disableDepthTestDistance = 0\.0;/,
+    `${OCCLUSION_PROBE_PATH}: the positive control must RESTORE the depth test, or check 7 measures a point that cannot be occluded`,
+  );
+  assert.match(
+    probe,
+    /out\.bluePositiveControlPx > 500/,
+    `${OCCLUSION_PROBE_PATH}: the positive control is measured but never asserted`,
+  );
+  // It is a PRECONDITION (exit 3), never a product verdict: an instrument that
+  // cannot see its own control has not measured the product either way.
+  const at = probe.indexOf("out.bluePositiveControlPx > 500");
+  const opener = probe.lastIndexOf("precondition(", at);
+  const wrongOpener = probe.lastIndexOf("check(", at);
+  assert.ok(
+    opener !== -1 && opener > wrongOpener,
+    `${OCCLUSION_PROBE_PATH}: the positive control must be a precondition (exit 3), not a check (exit 1)`,
+  );
+  // The control differences against the SAME globe-only frame at the SAME
+  // sensitivity as check 7 — a control measured at another threshold certifies
+  // nothing about the check it is supposed to certify. `PAINT_DELTA` is
+  // declared once and both classifiers close over it, so the two cannot drift.
+  assert.match(
+    probe,
+    /let bluePositiveControlPx = 0;/,
+    `${OCCLUSION_PROBE_PATH}: the positive control's counter is gone`,
+  );
+  const controlLoop = probe.slice(
+    probe.indexOf("let bluePositiveControlPx = 0;"),
+    probe.indexOf("if (db >= dr && db >= dg) bluePositiveControlPx++;"),
+  );
+  assert.match(
+    controlLoop,
+    /bluePositive\.data\[i\] - globeOnly\.data\[i\]/,
+    `${OCCLUSION_PROBE_PATH}: the positive control no longer differences against the globe-only frame`,
+  );
+  assert.match(
+    controlLoop,
+    /< PAINT_DELTA/,
+    `${OCCLUSION_PROBE_PATH}: the positive control uses its own threshold — it no longer certifies check 7`,
+  );
+  assert.equal(
+    (probe.match(/const PAINT_DELTA = /g) ?? []).length,
+    1,
+    `${OCCLUSION_PROBE_PATH}: PAINT_DELTA is declared more than once — the control and the check can now drift apart`,
+  );
+});

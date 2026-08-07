@@ -28,6 +28,13 @@
 //   (5) opt-in deferral armed (`_splatOITDeferral = true`): the never-drop
 //       seatbelt still renders the splat inline (>2000 px, no drop).
 //   (6) zero console/WebGPU validation errors.
+//   (7) CONTROL — a non-splat log-depth producer (PointPrimitive) at the SAME
+//       below-surface position stays hidden. Names the subsystem: blue occluded
+//       + green leaking = splat-pass-specific; both leaking = the scene
+//       framebuffer. Only readable when P3 is green.
+//   (P3) POSITIVE CONTROL for (7) — with its depth test disabled the same point
+//       MUST paint. Without this, "blue = 0" is equally "correctly occluded"
+//       and "never drew", and (7) names the wrong subsystem (C15-G6f).
 //
 // Usage: node Tools/visual-regression/probe-splat-globe-occlusion.mjs
 // Env:   PROBE_BASE (default http://localhost:8080)
@@ -275,6 +282,37 @@ const out = await page.evaluate(async () => {
   await frame(4);
   const globeOnly = await snap();
   const globeOnlyPixels = count(globeOnly, isNonBlack);
+
+  // ── C15-G6f — the POSITIVE CONTROL check 7 was missing.
+  //
+  // Check 7 reads `bluePaintedOverGlobe < 50` and calls a LOW count "the
+  // non-splat control is correctly occluded". But zero is equally what you get
+  // when the PointPrimitive renderer painted nothing at all — a different FR,
+  // a different pass slot, a `visibleCount` of 0, a pipeline still compiling.
+  // That is the identical vacuity shape `C15-G3c` found in check 3 and
+  // `C15-G3b.1` found in the readiness loop: one number, two incompatible
+  // causes, no way to separate them. And the cost of getting it wrong is worse
+  // here than anywhere else in this probe, because check 7's WHOLE job is to
+  // name the subsystem the next round works in — a vacuous GREEN sends that
+  // round into the splat renderer when the evidence actually says "the globe's
+  // depth is not in the buffer these passes test against".
+  //
+  // So: show ONLY the point, with its depth test DISABLED. It then has nothing
+  // that can hide it, and it MUST paint. If it does not, the instrument cannot
+  // see its own control and check 7 is not evaluable — STRUCTURAL, not a
+  // product verdict, exactly like P1/P2.
+  // The FRAME is captured here (render order is fixed); the pixels are counted
+  // below, with `PAINT_DELTA` — the SAME sensitivity check 7 is scored at. A
+  // control measured at a different threshold than the check it certifies
+  // certifies nothing.
+  bluePoint.show = true;
+  bluePoint.disableDepthTestDistance = Number.POSITIVE_INFINITY;
+  await frame(4);
+  const bluePositive = await snap();
+  bluePoint.disableDepthTestDistance = 0.0;
+  bluePoint.show = false;
+  await frame(2);
+
   setSplatsVisible(true);
   await frame(4);
 
@@ -309,6 +347,20 @@ const out = await page.evaluate(async () => {
     if (dg >= dr && dg >= db) return "green";
     return "other";
   };
+  // C15-G6f — the positive control, scored with `PAINT_DELTA`, the same
+  // sensitivity as check 7 below. Blue-dominant delta against the globe-only
+  // frame, on the frame where the point could not be occluded by anything.
+  let bluePositiveControlPx = 0;
+  for (let p = 0; p < bluePositive.w * bluePositive.h; p++) {
+    const i = 4 * p;
+    const dr = bluePositive.data[i] - globeOnly.data[i];
+    const dg = bluePositive.data[i + 1] - globeOnly.data[i + 1];
+    const db = bluePositive.data[i + 2] - globeOnly.data[i + 2];
+    if (Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db)) < PAINT_DELTA) {
+      continue;
+    }
+    if (db >= dr && db >= dg) bluePositiveControlPx++;
+  }
   let redPainted = 0;
   let greenPaintedOverGlobe = 0;
   let greenPaintedOverVoid = 0;
@@ -393,6 +445,7 @@ const out = await page.evaluate(async () => {
     greenPaintedOverGlobe,
     greenPaintedOverVoid,
     bluePaintedOverGlobe,
+    bluePositiveControlPx,
     redOverGlobe,
     logDepth,
     nonBlack,
@@ -451,11 +504,19 @@ check(
   out.greenPaintedOverGlobe < 50,
   `GREEN splat (3 km BELOW surface) stays HIDDEN where the globe is behind it: greenPaintedOverGlobe=${out.greenPaintedOverGlobe} (delta-classified, so the globe's own green grid lines cannot be counted as leaked splat; the absolute-predicate figures were greenOverGlobe=${out.greenOverGlobe}/greenOverVoid=${out.greenOverVoid})`,
 );
+precondition(
+  "P3",
+  out.bluePositiveControlPx > 500,
+  `POSITIVE CONTROL for check 7: with its depth test DISABLED the PointPrimitive control PAINTS: bluePositiveControlPx=${out.bluePositiveControlPx}. ` +
+    `A zero here means the control never reached the canvas, so check 7's low count says NOTHING about occlusion and its subsystem verdict is void — ` +
+    `read the run as "both leaking" (the scene framebuffer is the subject), not as "splat-pass-specific".`,
+);
 check(
   "7",
   out.bluePaintedOverGlobe < 50,
   `CONTROL: a non-splat log-depth producer (PointPrimitive) at the SAME 3 km below-surface position stays HIDDEN: bluePaintedOverGlobe=${out.bluePaintedOverGlobe}. ` +
-    `If this is GREEN while check 3 is RED, the defect is specific to the splat pass; if BOTH are RED the globe's depth is not in the buffer these passes test against and the subject is the scene framebuffer, not the splat renderer.`,
+    `If this is GREEN while check 3 is RED, the defect is specific to the splat pass; if BOTH are RED the globe's depth is not in the buffer these passes test against and the subject is the scene framebuffer, not the splat renderer. ` +
+    `THIS VERDICT IS ONLY READABLE WITH P3 GREEN — see P3.`,
 );
 console.log(
   `(diag) log depth — writeEnabled=${out.logDepth.logDepthWriteEnabled} useLogDepth=${out.logDepth.useLogDepth} ` +
