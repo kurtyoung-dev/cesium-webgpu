@@ -362,11 +362,19 @@ function buildPickInstanceData(collection, context) {
     // billboard it can't see).
     packBillboardInstance(instanceData, offset, bb);
 
-    // @location(4): pick color instead of display color
-    if (!defined(bb._pickId)) {
-      bb._pickId = context.createPickId(bb, "billboard");
-    }
-    const pc = bb._pickId.color;
+    // @location(4): pick color instead of display color.
+    //
+    // NEW-WEBGPU-COLLECTION-PICKID-OBJECT-SHAPE — this used to register the
+    // BARE `bb` (`context.createPickId(bb, "billboard")`). Two consequences,
+    // both wrong: (1) a resolved pick handed user code a Billboard whose
+    // `.primitive` / `.collection` / `.id` read `undefined`, where WebGL hands
+    // back `{primitive, collection, id}`; and (2) for a LABEL the registered
+    // target was the INTERNAL GLYPH billboard rather than the Label — because
+    // `Billboard.getPickId` (Billboard.js:1010-1023) registers
+    // `this._pickPrimitive`, which `LabelCollection.js:302` sets to the owning
+    // Label. `getPickId` also already passes the same `"billboard"` kind, so
+    // routing through it is a pure shape/ownership correction.
+    const pc = bb.getPickId(context).color;
     instanceData[offset + 16] = pc.red;
     instanceData[offset + 17] = pc.green;
     instanceData[offset + 18] = pc.blue;

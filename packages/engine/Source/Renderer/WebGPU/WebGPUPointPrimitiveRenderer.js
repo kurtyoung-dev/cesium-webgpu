@@ -294,11 +294,20 @@ function buildPickInstanceData(collection, context) {
     instanceData[offset + 6] = low.z;
     instanceData[offset + 7] = point._outlineWidth;
 
-    // Pick color from context pick ID
-    if (!defined(point._pickId)) {
-      point._pickId = context.createPickId(point, "point");
-    }
-    const pc = point._pickId.color;
+    // Pick color from the primitive's OWN pick-id factory.
+    //
+    // NEW-WEBGPU-COLLECTION-PICKID-OBJECT-SHAPE — this used to register the
+    // BARE `point` (`context.createPickId(point, "point")`), so a resolved pick
+    // handed user code a PointPrimitive whose `.primitive` / `.collection` /
+    // `.id` all read `undefined`, where WebGL hands back
+    // `{primitive, collection, id}` (`PointPrimitive.getPickId`,
+    // PointPrimitive.js:454-467 — which already passes the same `"point"`
+    // kind). Worse, the bare shape aliases the registered target with the
+    // primitive itself, so `PointPrimitive`'s `id` setter
+    // (PointPrimitive.js:409-412, `this._pickId.object.id = value`) re-enters
+    // its OWN accessor and recurses without bound. Route through the shared
+    // factory so both backends register one shape and one kind.
+    const pc = point.getPickId(context).color;
     instanceData[offset + 8] = pc.red;
     instanceData[offset + 9] = pc.green;
     instanceData[offset + 10] = pc.blue;

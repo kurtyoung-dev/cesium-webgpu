@@ -124,6 +124,92 @@ export interface PickPassHost {
 }
 
 /**
+ * NEW-WEBGPU-POINT-PICK-RESIDUAL (CO-16) — per-pass dispatch census for ONE
+ * pick mini-frame.
+ *
+ * Three stacked defects have now been found in the WebGPU collection pick
+ * chain (B914 pass binning, B739 pipeline key, and a standing residual), and
+ * every one of them was argued about offline for at least a batch because the
+ * chain publishes NOTHING observable between "the FR pushed a command" and
+ * "the readback decoded a key". The two questions that actually discriminate
+ * are: did the command reach the pick bin, and was it DISPATCHED or silently
+ * skipped by `executePickBatch`'s admission test? This records both, per Pass,
+ * for the pass that just ran — so a lane can name the death point in one run
+ * instead of one batch.
+ *
+ * Pragma-stripped: this interface survives type-checking (types are erased,
+ * not stripped) but every producer block below vanishes from release builds,
+ * so the counters cost nothing in production. A consumer must therefore treat
+ * `undefined` as "release build", never as "zero commands".
+ */
+export interface PickPassCensusRow {
+  /** Commands present in this Pass's frustum bin, summed over frustum slices. */
+  binned: number;
+  /** Commands that reached `dispatched.execute(...)`. */
+  dispatched: number;
+  /** Skipped: `debugCommandFilter` rejected the command. */
+  skippedDebugFilter: number;
+  /** Skipped: the resolved command is not a native `WebGPUDrawCommand`. */
+  skippedNonNative: number;
+  /** Skipped: no pick variant resolved AND no `pickOnly` / `_isPickCommand`. */
+  skippedNoPickVariant: number;
+  /** Of `binned`, how many carried a dedicated-pick marker. */
+  dedicatedPickBinned: number;
+}
+
+/** Whole-mini-frame census keyed by `Pass` index. */
+export interface PickPassCensus {
+  /** Increments once per {@link executePickPass}; lets a lane detect staleness. */
+  generation: number;
+  /** `frustumCommandsList.length` for the mini-frame this census describes. */
+  frustums: number;
+  /** Sparse map: only passes the schedule actually visited appear. */
+  passes: Record<number, PickPassCensusRow>;
+}
+
+/** Context slot the census is published on. Debug builds only. */
+type PickCensusContext = { _diagPickPassCensus?: PickPassCensus };
+
+//>>includeStart('debug', pragmas.debug);
+function diagResetPickCensus(
+  context: WebGPUContext,
+  frustums: number,
+): PickPassCensus {
+  const host = context as unknown as PickCensusContext;
+  const census: PickPassCensus = {
+    generation: (host._diagPickPassCensus?.generation ?? 0) + 1,
+    frustums,
+    passes: {},
+  };
+  host._diagPickPassCensus = census;
+  return census;
+}
+
+function diagPickCensusRow(
+  context: WebGPUContext,
+  passIndex: number,
+): PickPassCensusRow | null {
+  const census = (context as unknown as PickCensusContext)._diagPickPassCensus;
+  if (!census) {
+    return null;
+  }
+  let row = census.passes[passIndex];
+  if (!row) {
+    row = {
+      binned: 0,
+      dispatched: 0,
+      skippedDebugFilter: 0,
+      skippedNonNative: 0,
+      skippedNoPickVariant: 0,
+      dedicatedPickBinned: 0,
+    };
+    census.passes[passIndex] = row;
+  }
+  return row;
+}
+//>>includeEnd('debug');
+
+/**
  * Type-narrowed view of the pick framebuffer that
  * `WebGPUPickFramebuffer.begin()` publishes into `passState.framebuffer`.
  * The `_isWebGPUPickFBO` discriminator is the marker the SceneRenderer
@@ -397,6 +483,14 @@ export function executePickPass(
   const { frustumCommandsList } = view;
   const numFrustums: number = frustumCommandsList.length;
   const { uniformState } = context;
+
+  // NEW-WEBGPU-POINT-PICK-RESIDUAL (CO-16) — arm the census BEFORE the
+  // zero-frustum early return, so "the pick pass ran and found no frustum" is
+  // distinguishable from "the pick pass never ran at all" (the latter leaves
+  // the previous generation in place, which the lane compares against).
+  //>>includeStart('debug', pragmas.debug);
+  diagResetPickCensus(context, numFrustums);
+  //>>includeEnd('debug');
 
   if (numFrustums === 0) {
     return;
@@ -889,6 +983,16 @@ function executePickBatch(
   }
   context.uniformState?.updatePass(passIndex);
 
+  // NEW-WEBGPU-POINT-PICK-RESIDUAL (CO-16) — census row for this Pass. Every
+  // read/write below sits inside a debug pragma, so `censusRow` does not exist
+  // at all in a release build.
+  //>>includeStart('debug', pragmas.debug);
+  const censusRow = diagPickCensusRow(context, passIndex);
+  if (censusRow) {
+    censusRow.binned += count;
+  }
+  //>>includeEnd('debug');
+
   for (let i = 0; i < count; i++) {
     const command = commands[i];
     if (!command) {
@@ -897,6 +1001,11 @@ function executePickBatch(
 
     // Skip commands that don't participate in picking
     if (scene.debugCommandFilter && !scene.debugCommandFilter(command)) {
+      //>>includeStart('debug', pragmas.debug);
+      if (censusRow) {
+        censusRow.skippedDebugFilter++;
+      }
+      //>>includeEnd('debug');
       continue;
     }
 
@@ -944,6 +1053,20 @@ function executePickBatch(
     // such compatibility commands alongside its native feature-renderer
     // command, so the marker alone is not a sufficient admission test.
     const isNativeWebGPU = dispatched.isWebGPUDrawCommand === true;
+    //>>includeStart('debug', pragmas.debug);
+    if (censusRow) {
+      if (isDedicatedPick) {
+        censusRow.dedicatedPickBinned++;
+      }
+      if (!isNativeWebGPU) {
+        censusRow.skippedNonNative++;
+      } else if (!resolvedPickVariant && !isDedicatedPick) {
+        censusRow.skippedNoPickVariant++;
+      } else {
+        censusRow.dispatched++;
+      }
+    }
+    //>>includeEnd('debug');
     if (!isNativeWebGPU || (!resolvedPickVariant && !isDedicatedPick)) {
       continue;
     }

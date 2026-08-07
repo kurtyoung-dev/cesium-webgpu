@@ -702,11 +702,14 @@ function buildPickSegmentData(collection, context, frameState, modelMatrix) {
     const width = polyline.width || 1.0;
     const loopClose = polyline.loop === true && positions.length >= 2;
 
-    // One pick ID per polyline (all segments share it)
-    if (!defined(polyline._pickId)) {
-      polyline._pickId = context.createPickId(polyline, "polyline");
-    }
-    const pc = polyline._pickId.color;
+    // One pick ID per polyline (all segments share it).
+    //
+    // NEW-WEBGPU-COLLECTION-PICKID-OBJECT-SHAPE — this used to register the
+    // BARE `polyline`, so a resolved pick handed user code a Polyline whose
+    // `.primitive` / `.collection` / `.id` read `undefined`, where WebGL hands
+    // back `{primitive, collection, id}` (`Polyline.getPickId`,
+    // Polyline.js:163-175 — same `"polyline"` kind).
+    const pc = polyline.getPickId(context).color;
 
     const segLimit = loopClose ? positions.length : positions.length - 1;
     for (let j = 0; j < segLimit; j++) {
