@@ -192,7 +192,16 @@ Blocking decisions, ranked by scheduling impact (everything else keeps moving):
    generation/import path is approved (Gate C may close naming it).
 5. **PROBE-FLEET-EXIT3-CONTRACT-ADOPTION** — one ruling adopting the 0/1/2/3
    contract fleet-wide beats 20 per-probe patches.
-6. Lower-stakes, recorded: base-height-fog default flip;
+6. **Celestial Light Transport & Eye Adaptation epic** (maintainer-requested
+   2026-08-07, researched + queued in
+   [CELESTIAL_LIGHT_TRANSPORT_PLAN_2026-08-07.md](CELESTIAL_LIGHT_TRANSPORT_PLAN_2026-08-07.md)):
+   launch/identity decision (proposed Campaign 16; recommended hold until C12
+   closes, per the R4 principle) plus the six embedded rulings in that doc's
+   §7. Its §2 bug list (night-lights sentinel no-op that voids C11-159, the
+   0.5 terminator-alpha backend divergence, the untoggleable WebGPU-only
+   terminator glow, two homeless sun/limb divergences) is dispatchable NOW
+   under Lanes F/G without launching the epic.
+7. Lower-stakes, recorded: base-height-fog default flip;
    channels-metric saturation scene change; toggle-resolver conventions
    (lighting-registry facade split); shell-extent canonical coverage (after
    the machine-lane measurement); C12-13 t3 provenance; C11-163 star-source
