@@ -1,26 +1,66 @@
 #!/usr/bin/env node
 // probe-skybox-star-modulation.mjs — C11-176 SKYBOX STAR-MAP FADE (WebGPU vs WebGL)
 //
-// ROOT CAUSE UNDER TEST (2026-07-19 celestial research):
-//   AtmosphericConditions.js:368 ships `enableStarBrightnessModulation: true`,
-//   while WebGPUCubeMapPanoramaRenderer.js:539-548 documents the flag as
-//   "Default OFF for WebGL parity" and gates on `=== true` as a fail-safe
-//   against an ABSENT property. Shipping it present-and-true defeats that.
-//   The shader then multiplies star colour by
-//       factor = 1 - smoothstep(0, 1, clamp((skyBrightness - inflection) * steepness, 0, 1))
-//   with inflection=0.5, steepness=1.0 -> at skyBrightness=1.0, factor = 0.5
-//   (a 50% dim). WebGL's SkyBoxFS.glsl is 9 lines and has NO such term.
+// ORIGINAL ROOT CAUSE (2026-07-19 celestial research) — RECORDED, THEN
+// CORRECTED. The 2026-07-19 framing was: `AtmosphericConditions.js` ships
+// `enableStarBrightnessModulation: true` while the WebGPU renderer documents the
+// flag as "Default OFF for WebGL parity"; the WGSL then multiplies star colour by
+//     factor = 1 - smoothstep(0, 1, clamp((skyBrightness - inflection) * steepness, 0, 1))
+// while "WebGL's SkyBoxFS.glsl is 9 lines and has NO such term" — a WebGPU-only
+// dim, i.e. a parity break.
 //
-// WHY THE EXISTING PROBE MISSES IT: probe-env-skybox-stars parks the camera at
-// fromDegrees(0,0,5e7) pitch +90. `computeSkyBrightness` derives its up-vector
-// from camera.positionWC (Scene.js:5767-5772), so skyBrightness there is
-// whatever the ephemeris happens to give — the failing state is not guaranteed.
-// A gate that cannot reach the failing state is not a gate.
+// ⚠ THREE OF THAT BLOCK'S CITATIONS WENT STALE AND ONE OF ITS PREMISES WAS
+// REVERSED. Refreshed against HEAD 2026-08-07 (all four verified in the bytes):
 //
-// THIS PROBE forces the worst case: camera placed ALONG the sun direction, so
-// normalize(positionWC) == sunDirWC -> sunAlt = 1.0 -> skyBrightness = 1.0 ->
-// maximum dim. It aims perpendicular to the sun so neither the sun disc nor
-// Earth is in frame — a pure star field.
+//   1. The default lives at `AtmosphericConditions.js:616`
+//      (`enableStarBrightnessModulation: true`), not `:368`. It has moved twice;
+//      do not re-cite a line number without re-checking it.
+//   2. The `=== true` fail-safe against an ABSENT property is no longer in the
+//      WebGPU renderer: it is `CubeMapPanorama.js:511-514`, which ANDs
+//      `panorama._isStarMap === true`, `sky.enableStarBrightnessModulation ===
+//      true` and `frameState.skyAtmosphereVisible === true`. That third
+//      conjunct is a SECOND, independent reason the term can be inert.
+//   3. The curve constants are `STAR_MODULATION_INFLECTION = 0.0` and
+//      `STAR_MODULATION_STEEPNESS = 23.0` (`StarFieldMath.ts:439,442`), not
+//      0.5 / 1.0. At skyBrightness = 1.0 the factor is therefore exactly 0 —
+//      the ENTIRE star contribution is removed, not "a 50% dim". This probe no
+//      longer restates those numbers: it reads the packed curve back off the
+//      panorama's own `_starModulation` uniform.
+//   4. PREMISE REVERSED — WebGL now carries the same term. `SkyBoxFS.glsl` has
+//      the `u_starModulation` / `u_skyBrightness` block since C12-29 S6 / ruling
+//      E3, mirroring the WGSL including the order of operations. "Default ON is
+//      a parity break" is therefore no longer the claim; the parity claim is
+//      that the two backends modulate IDENTICALLY, and the additive capability
+//      claim is that the flag still moves pixels.
+//
+// WHAT THIS PROBE CAN AND CANNOT SEE. The camera sits at `dist = 5.0e7` m,
+// ~43,600 km up. `SkyBrightness.js`'s `computeAtmosphericColumnFactor` fades to
+// 0 between 60 km and `ATMOSPHERIC_COLUMN_FADE_END = 111 km`, so `skyBrightness`
+// is identically 0 there and the modulation factor is exactly 1.0 REGARDLESS of
+// the flag — the OFF and ON legs render the same pixels by construction. That
+// is the design (`AtmosphericConditions.js`: the orbital camera is the one that
+// must NOT dim), not a bug, and it means:
+//
+//   * the PARITY arms (WebGPU vs WebGL mean/contrast/density) are fully
+//     observable here and still certify;
+//   * the OPT-IN arm is NOT observable here. It is gated behind
+//     `reachedFailingState` (`skyBrightness > 0.5` — the driving variable, and
+//     the predicate `lib/celestial-g1-gate.mjs` adopted), and a run that cannot
+//     reach it exits 3 STRUCTURAL rather than manufacturing a FAIL.
+//
+// Until this repair the opt-in arm was `gpuOn.meanLum / gpuDefault.meanLum <
+// 0.85`, which could never be satisfied for TWO independent reasons — the
+// default is now ON, so that comparison is A/A, and skyBrightness is 0, so no
+// comparison can dim — and the probe emitted `FAIL ... optIn:false` at exit 1
+// over a scene the engine deliberately exempts. The arm now compares the
+// EXPLICITLY-ON leg against the EXPLICITLY-OFF leg, so it does not depend on a
+// default that has already flipped once.
+//
+// The C11-176 subject itself belongs to `probe-celestial-gates.mjs`'s
+// `in-column-star-modulation` lane (camera 30 km, sky atmosphere ON), the only
+// instrument in the fleet that satisfies both `CubeMapPanorama.js:511-514`
+// conjuncts. Moving THIS probe's camera into the column is filed as the
+// remaining step under NEW-PROBE-VACUOUS-REACHABILITY-ASSERTION.
 //
 // It measures CONTRAST, not just mean luminance. A washed-out star field can
 // share the same mean as a good one while having far lower variance, so a
@@ -28,6 +68,9 @@
 //
 // It also A/B toggles the flag at RUNTIME on WebGPU, which proves causation
 // without needing a source change.
+//
+// Exit codes: 0 PASS | 1 FAIL | 2 ERROR (a lane did not RUN, or INCOMPLETE) |
+// 3 STRUCTURAL (a lane RAN but could not see its subject).
 //
 // Usage: node Tools/visual-regression/probe-skybox-star-modulation.mjs
 
@@ -131,6 +174,18 @@ const MEASURE = async ({ toggleFlag, side }) => {
     const sky = ac && ac.skyAtmosphere;
     return sky ? sky.enableStarBrightnessModulation : undefined;
   };
+  // The SHIPPED curve, read back off the panorama's own packed uniform
+  // (inflection, steepness, enableFlag, cloudCover) rather than restated here.
+  // The literals this probe used to carry (0.5 / 1.0) were two re-derivations
+  // out of date, and a probe that predicts a dim from a stale copy of the curve
+  // is predicting a product that does not exist.
+  const readStarModulation = () => {
+    const p = scene.skyBox && scene.skyBox._panorama;
+    const m = p && p._starModulation;
+    return m
+      ? { inflection: m.x, steepness: m.y, enable: m.z, cloudCover: m.w }
+      : null;
+  };
   if (toggleFlag !== undefined) {
     const ac = scene.globe && scene.globe.atmosphericConditions;
     if (ac && ac.skyAtmosphere)
@@ -193,7 +248,11 @@ const MEASURE = async ({ toggleFlag, side }) => {
 
   return {
     skyBrightness: scene.frameState ? scene.frameState.skyBrightness : null,
+    skyAtmosphereVisible: scene.frameState
+      ? (scene.frameState.skyAtmosphereVisible ?? null)
+      : null,
     flagValue: readFlag(),
+    starModulationUniform: readStarModulation(),
     rendererType: scene.context.rendererType,
     width: w,
     height: h,
@@ -286,23 +345,35 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
   const ratio = (x, y) =>
     x != null && y != null && y !== 0 ? r3(x / y) : null;
 
+  // REACHABILITY, ON THE DRIVING VARIABLE. `frameState.skyBrightness` is what
+  // `CubeMapPanorama.js` feeds the smoothstep; solar elevation merely correlates
+  // with it below 60 km and is fully decoupled from it above 111 km, which is
+  // where this camera sits. Both backends must reach it: a one-sided reading
+  // would compare a modulated frame against an unmodulated one.
+  const reachedFailingState =
+    a && b && a.skyBrightness != null && b.skyBrightness != null
+      ? a.skyBrightness > 0.5 && b.skyBrightness > 0.5
+      : null;
+
   const verdict = {
     skyBrightness_webgpu: b ? r3(b.skyBrightness) : null,
-    reachedFailingState:
-      b && b.skyBrightness != null ? b.skyBrightness > 0.5 : null,
-    predictedDimFactor:
-      b && b.skyBrightness != null
-        ? r3(
-            1 -
-              (() => {
-                const t = Math.min(
-                  1,
-                  Math.max(0, (b.skyBrightness - 0.5) * 1.0),
-                );
-                return t * t * (3 - 2 * t);
-              })(),
-          )
-        : null,
+    skyBrightness_webgl: a ? r3(a.skyBrightness) : null,
+    skyAtmosphereVisible_webgpu: b ? b.skyAtmosphereVisible : null,
+    reachedFailingState,
+    // Derived from the SHIPPED curve read off the panorama uniform, not from a
+    // local copy of (inflection, steepness).
+    starModulationCurve_webgpu: b ? b.starModulationUniform : null,
+    predictedDimFactor: (() => {
+      const u = b && b.starModulationUniform;
+      if (!b || b.skyBrightness == null || !u) {
+        return null;
+      }
+      const t = Math.min(
+        1,
+        Math.max(0, (b.skyBrightness - u.inflection) * u.steepness),
+      );
+      return r3(1 - t * t * (3 - 2 * t));
+    })(),
     flagAsShipped: b ? b.flagValue : null,
     asShipped: {
       webgl: a
@@ -338,12 +409,27 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
       gpuOverGl_stddev: ratio(c && c.stddev, a && a.stddev),
       gpuOverGl_topMean: ratio(c && c.topMean, a && a.topMean),
     },
+    // CAUSATION — explicitly-OFF against explicitly-ON, so neither side depends
+    // on a default. It used to compare OFF against the AS-SHIPPED leg, which
+    // silently became an A/A the moment the default flipped to ON. Null rather
+    // than false when the scene cannot host the effect.
     causationProven:
-      b && c && b.topMean != null && c.topMean != null && b.topMean > 0
-        ? c.topMean / b.topMean > 1.15
+      reachedFailingState === true &&
+      c &&
+      d &&
+      c.topMean != null &&
+      d.topMean != null &&
+      d.topMean > 0
+        ? c.topMean / d.topMean > 1.15
+        : null,
+    // The default's identity is now a REPORTED fact, not the A/B's other half.
+    defaultMatchesExplicitOn:
+      b && d && b.meanLum > 0
+        ? Math.abs(d.meanLum / b.meanLum - 1) < 0.02
         : null,
     // GOVERNING PRINCIPLE CHECK: the default is parity, but the additive
-    // capability must remain reachable. Forcing the flag true must still dim.
+    // capability must remain reachable. Forcing the flag true must still dim
+    // RELATIVE TO FORCING IT FALSE.
     optInStillDims: {
       webgpu_modON: d
         ? {
@@ -353,10 +439,15 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
             topMean: r3(d.topMean),
           }
         : null,
+      modON_over_modOFF_mean: ratio(d && d.meanLum, c && c.meanLum),
       modON_over_default_mean: ratio(d && d.meanLum, b && b.meanLum),
       capabilityPreserved:
-        d && b && d.meanLum != null && b.meanLum > 0
-          ? d.meanLum / b.meanLum < 0.85
+        reachedFailingState === true &&
+        d &&
+        c &&
+        d.meanLum != null &&
+        c.meanLum > 0
+          ? d.meanLum / c.meanLum < 0.85
           : null,
     },
     // NIGHT-SIDE LANE — maintainer reports the fade on BOTH sides. The star
@@ -389,14 +480,35 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
           ? Math.abs(f.meanLum / e.meanLum - 1) > 0.1
           : null,
     },
-    // The gate: default must be at parity AND the opt-in must still function.
+    // THE GATE, in three tiers.
+    //
+    // PARITY is observable at this camera and certifies unconditionally. The
+    // OPT-IN arm is only observable where the modulation can act at all, so it
+    // is scored ONLY when `reachedFailingState` holds; otherwise the run is
+    // STRUCTURAL. Precedence follows `lib/celestial-g1-gate.mjs`: a measurable
+    // criterion failure outranks blindness (a real defect must not be
+    // downgraded), and blindness outranks a clean sheet (a lane that could not
+    // see its subject must not report green).
     GATE: (() => {
-      if (!a || !b || !d) return "INCOMPLETE";
+      if (!a || !b || !c || !d) return "INCOMPLETE";
       const meanOk = Math.abs(b.meanLum / a.meanLum - 1) < 0.1;
       const contrastOk = Math.abs(b.stddev / a.stddev - 1) < 0.1;
       const densityOk = Math.abs(b.starPct / a.starPct - 1) < 0.1;
-      const optInOk = d.meanLum / b.meanLum < 0.85;
-      return meanOk && contrastOk && densityOk && optInOk
+      if (!(meanOk && contrastOk && densityOk)) {
+        return `FAIL — mean:${meanOk} contrast:${contrastOk} density:${densityOk}`;
+      }
+      if (reachedFailingState !== true) {
+        return (
+          "STRUCTURAL — parity holds, but skyBrightness never exceeded 0.5 " +
+          `(webgl ${r3(a.skyBrightness)}, webgpu ${r3(b.skyBrightness)}), so the ` +
+          "star-modulation factor is exactly 1.0 on BOTH legs by construction " +
+          "and the OFF/ON A/B cannot discriminate. This is NOT a pass and NOT a " +
+          "defect; the C11-176 subject is owned by probe-celestial-gates.mjs's " +
+          "in-column-star-modulation lane."
+        );
+      }
+      const optInOk = c.meanLum > 0 ? d.meanLum / c.meanLum < 0.85 : false;
+      return optInOk
         ? "PASS — default at WebGL parity AND opt-in capability preserved"
         : `FAIL — mean:${meanOk} contrast:${contrastOk} density:${densityOk} optIn:${optInOk}`;
     })(),
@@ -420,15 +532,24 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
   // HARD EXIT CODES (binding probe rule 5, C12-01). The prior version exited 0
   // UNCONDITIONALLY here — even on GATE FAIL — so this gate could never fail a
   // CI/orchestrator run. Fixed: exit 1 on gate FAIL, 0 only on PASS, 2 on a
-  // structural error (a lane that never ran, or an INCOMPLETE verdict because a
-  // required capture is missing).
+  // HARNESS error (a lane that never ran, or an INCOMPLETE verdict because a
+  // required capture is missing), and — since 2026-08-07 — 3 when a lane RAN
+  // but could not see its subject. Conflating those last two is what let the
+  // unreachable opt-in arm report as a product FAIL for months.
   const anyLaneFailed = [gl, gpu, gpuOff, gpuOn, glNight, gpuNight].some(
     (l) => l && !l.ok,
   );
   const gateStr =
     typeof verdict.GATE === "string" ? verdict.GATE : "INCOMPLETE";
-  const structural = anyLaneFailed || gateStr.startsWith("INCOMPLETE");
-  const exitCode = structural ? 2 : gateStr.startsWith("PASS") ? 0 : 1;
+  const harnessError = anyLaneFailed || gateStr.startsWith("INCOMPLETE");
+  const laneBlind = gateStr.startsWith("STRUCTURAL");
+  const exitCode = harnessError
+    ? 2
+    : laneBlind
+      ? 3
+      : gateStr.startsWith("PASS")
+        ? 0
+        : 1;
   console.log(`\nGATE: ${gateStr}\nEXIT: ${exitCode}`);
   clearTimeout(watchdog);
   process.exit(exitCode);

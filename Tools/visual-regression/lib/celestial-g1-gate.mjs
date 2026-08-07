@@ -18,6 +18,20 @@
 //      which is identically 0 at the orbital camera G1 uses. The gate could not
 //      reach its own failure state and still reported a verdict.
 //
+// TWO MORE, FOUND BY AUDIT OF THE REPAIR ITSELF (2026-08-07). Both are the same
+// mistake in opposite directions — a blindness rule applied at the wrong scope:
+//
+//   4. The star-modulation non-vacuity control ANDed the two backends, so a
+//      term live on ONE backend and inert on the other — the C11-176 shape
+//      verbatim — was DOWNGRADED from FAIL to STRUCTURAL, whose printed
+//      headline reads "this is NOT a pass and NOT a defect". Non-vacuity is now
+//      per backend: BOTH dead is STRUCTURAL, ONE dead is a FAIL.
+//   5. The blindness rule was applied only to the SECONDARY count modes, never
+//      to the CERTIFYING `default` mode, whose four null ratios would have
+//      produced a confident exit 1 over a scene where no source was censused on
+//      either backend — a phantom defect. A doubly-blind certifying mode is now
+//      STRUCTURAL, and it voids the whole lane rather than the one criterion.
+//
 // Keeping the arithmetic here — pure, browser-free, importable — is what lets
 // `celestial-g1-gate.spec.mjs` construct the plausible WRONG implementation of
 // each rule and prove the spec rejects it.
@@ -150,10 +164,28 @@ export function skyFloorAgrees(glFloor, gpuFloor) {
 }
 
 /**
+ * The cubemap lane's CERTIFYING capture mode. Every criterion that folds into
+ * the lane's verdict is measured on this mode; the entries in `countModes` are
+ * secondary source splits that only add an M1 count check.
+ *
+ * Kept here rather than only in the probe because the blindness rule below has
+ * to apply to the certifying mode as well, and a rule that only the caller
+ * knows the subject of is a rule the spec cannot pin.
+ *
+ * @type {string}
+ */
+export const CUBEMAP_CERTIFYING_MODE = "default";
+
+/**
  * A capture mode where BOTH backends census zero point sources cannot express
  * a count ratio: 0/0 is not parity and not a defect, it is an instrument that
  * cannot see its subject. Such a mode is reported STRUCTURAL rather than
  * folded into PASS/FAIL.
+ *
+ * The two zero conditions are ANDed deliberately. A mode blind on ONE backend
+ * is the real defect shape (one renderer censusing nothing while the other
+ * censuses a full field), and it must stay a FAIL — see
+ * `celestial-g1-gate.spec.mjs`, which pins both halves.
  *
  * @param {{webglM1Count:number,webgpuM1Count:number}} mode
  * @returns {boolean}
@@ -186,23 +218,50 @@ function camel(mode) {
  */
 export function evaluateCubemapParityLane(lane) {
   const modes = lane.perMode ?? {};
-  const def = modes.default ?? {};
-  const criteria = {
-    default_m1CountRatio_ge_0_90: def.m1CountRatio >= M1_COUNT_RATIO_MIN,
-    default_m2a_in_band: inBand(def.m2aRatio),
-    default_m2b_in_band: inBand(def.m2bRatio),
-    default_m3Chroma_ge_0_85: def.m3ChromaRatio >= M3_CHROMA_RATIO_MIN,
-    // M2e — the pedestal discriminator. Absolute bound; see
-    // SKY_FLOOR_ABS_TOLERANCE. Certifies only here, where the background is
-    // black by construction and the quantization derivation therefore holds.
-    default_m2e_skyFloor_within_quantization: skyFloorAgrees(
-      def.webglSkyFloor,
-      def.webgpuSkyFloor,
-    ),
-  };
+  const certifyingMode = lane.certifyingMode ?? CUBEMAP_CERTIFYING_MODE;
+  const def = modes[certifyingMode] ?? {};
+
+  // THE BLINDNESS RULE APPLIES TO THE CERTIFYING MODE TOO.
+  //
+  // Every criterion below is measured on `default`, and each one reads a ratio
+  // that `ratio()` returns null for when the WebGL denominator is 0. `null >=
+  // 0.9` and `inBand(null)` are both false, so a mode where BOTH backends
+  // censused zero sources would have produced four confident FALSE criteria and
+  // exit 1 — a PHANTOM DEFECT over a scene in which the subject cannot be
+  // observed at all, which is precisely the verdict this module's own doctrine
+  // (see EXIT_CODE) forbids. The secondary count modes have been routed to
+  // STRUCTURAL since the repair landed; the certifying mode was not, so the one
+  // mode whose blindness voids the WHOLE lane was the one mode not covered.
+  //
+  // One-sided blindness is untouched: `modeIsBlind` ANDs the zeros, so a lane
+  // where WebGL censuses 55 and WebGPU censuses 0 still scores, still fails, and
+  // still names the criterion.
+  const certifyingModeBlind = modeIsBlind(def);
+
+  const criteria = certifyingModeBlind
+    ? {}
+    : {
+        [`${camel(certifyingMode)}_m1CountRatio_ge_0_90`]:
+          def.m1CountRatio >= M1_COUNT_RATIO_MIN,
+        [`${camel(certifyingMode)}_m2a_in_band`]: inBand(def.m2aRatio),
+        [`${camel(certifyingMode)}_m2b_in_band`]: inBand(def.m2bRatio),
+        [`${camel(certifyingMode)}_m3Chroma_ge_0_85`]:
+          def.m3ChromaRatio >= M3_CHROMA_RATIO_MIN,
+        // M2e — the pedestal discriminator. Absolute bound; see
+        // SKY_FLOOR_ABS_TOLERANCE. Certifies only here, where the background is
+        // black by construction and the quantization derivation therefore holds.
+        [`${camel(certifyingMode)}_m2e_skyFloor_within_quantization`]:
+          skyFloorAgrees(def.webglSkyFloor, def.webgpuSkyFloor),
+      };
 
   const structuralModes = [];
+  if (certifyingModeBlind) {
+    structuralModes.push(certifyingMode);
+  }
   for (const mode of lane.countModes ?? []) {
+    if (mode === certifyingMode) {
+      continue;
+    }
     if (modeIsBlind(modes[mode])) {
       structuralModes.push(mode);
       continue;
@@ -213,10 +272,14 @@ export function evaluateCubemapParityLane(lane) {
 
   return {
     ...lane,
+    certifyingMode,
+    certifyingModeBlind,
     criteria,
     structuralModes,
     framingReached: computeFramingReached(lane.skyBrightness),
-    pass: Object.values(criteria).every(Boolean),
+    // `{}.every(Boolean)` is vacuously true, so the blind case has to be
+    // excluded explicitly or an empty criteria set would read as a clean sheet.
+    pass: !certifyingModeBlind && Object.values(criteria).every(Boolean),
   };
 }
 
@@ -255,18 +318,45 @@ export function evaluateStarModulationLane(lane) {
   const glEnergy = energy("webgl");
   const gpuEnergy = energy("webgpu");
 
-  const modulationEngaged =
-    Math.abs(glEnergy.delta) >= MODULATION_ENGAGED_MIN_ABS_DELTA &&
+  // NON-VACUITY IS PER BACKEND, AND THE TWO CASES ARE NOT THE SAME CASE.
+  //
+  // A term that moved nothing on EITHER backend means the lane could not see
+  // its subject: STRUCTURAL. A term that moved pixels on ONE backend and not
+  // the other IS the C11-176 defect this lane was rebuilt to catch — a
+  // star-brightness modulation live on one renderer and inert on the other —
+  // and it must reach `failures[]`.
+  //
+  // ANDing the two ENGAGED conditions (the pre-repair shape) collapses those
+  // two cases into one and downgrades the defect to STRUCTURAL, whose printed
+  // headline asserts "this is NOT a pass and NOT a defect". Contrast
+  // `modeIsBlind`, which ANDs the two ZERO conditions and therefore has the
+  // correct polarity: blindness needs BOTH sides dead.
+  const glMeasured = Number.isFinite(glEnergy.delta);
+  const gpuMeasured = Number.isFinite(gpuEnergy.delta);
+  const glModulationEngaged =
+    glMeasured && Math.abs(glEnergy.delta) >= MODULATION_ENGAGED_MIN_ABS_DELTA;
+  const gpuModulationEngaged =
+    gpuMeasured &&
     Math.abs(gpuEnergy.delta) >= MODULATION_ENGAGED_MIN_ABS_DELTA;
+  const modulationEngaged = glModulationEngaged && gpuModulationEngaged;
+  const modulationBlind = !glModulationEngaged && !gpuModulationEngaged;
+  // A capture that produced no usable mean on a backend is an instrument
+  // failure, not a one-sided defect: there is no measurement to disagree with.
+  const modulationUnmeasured = !glMeasured || !gpuMeasured;
 
   const starEnergyRatio = ratio(gpuEnergy.delta, glEnergy.delta);
 
   // A lane that cannot reach the failure state, or whose modulation term never
-  // moved a pixel, has not measured its subject. Both are STRUCTURAL — the
-  // criteria below would otherwise report a confident green over nothing.
-  const structural = !framingReached || !modulationEngaged;
+  // moved a pixel ON EITHER BACKEND, has not measured its subject. Both are
+  // STRUCTURAL — the criteria below would otherwise report a confident green
+  // over nothing.
+  const structural = !framingReached || modulationUnmeasured || modulationBlind;
 
   const criteria = {
+    // Named separately from the ratio so a one-sided dead term is REPORTED as
+    // what it is. `starEnergyRatio` also catches it (0 and null are both out of
+    // band), but a bare out-of-band ratio does not say which side went inert.
+    modulationEngaged_on_both_backends: modulationEngaged,
     starEnergyRatio_in_band: inBand(starEnergyRatio),
     modulationOn_meanLumRatio_in_band: inBand(on.meanLumRatio),
     modulationOn_stddevRatio_in_band: inBand(on.stddevRatio),
@@ -276,6 +366,10 @@ export function evaluateStarModulationLane(lane) {
     ...lane,
     framingReached,
     modulationEngaged,
+    glModulationEngaged,
+    gpuModulationEngaged,
+    modulationBlind,
+    modulationUnmeasured,
     structural,
     glEnergy,
     gpuEnergy,
@@ -306,9 +400,12 @@ export function foldG1Verdict(evaluated) {
         failures.push(`orbital-cubemap-parity:${name}`);
       }
     }
+    const certifyingMode = cp.certifyingMode ?? CUBEMAP_CERTIFYING_MODE;
     for (const mode of cp.structuralModes) {
       structural.push(
-        `orbital-cubemap-parity:${mode} — both backends censused 0 sources`,
+        mode === certifyingMode
+          ? `orbital-cubemap-parity:${mode} — both backends censused 0 sources in the CERTIFYING mode; this lane certified nothing`
+          : `orbital-cubemap-parity:${mode} — both backends censused 0 sources`,
       );
     }
   }
@@ -320,9 +417,11 @@ export function foldG1Verdict(evaluated) {
     );
   } else if (sm.structural) {
     structural.push(
-      sm.framingReached
-        ? "in-column-star-modulation — modulation term never moved a pixel"
-        : "in-column-star-modulation — skyBrightness never exceeded the star-modulation threshold",
+      !sm.framingReached
+        ? "in-column-star-modulation — skyBrightness never exceeded the star-modulation threshold"
+        : sm.modulationUnmeasured
+          ? "in-column-star-modulation — the OFF/ON mean could not be measured on at least one backend"
+          : "in-column-star-modulation — modulation term never moved a pixel on EITHER backend",
     );
   } else {
     for (const [name, ok] of Object.entries(sm.criteria)) {
@@ -365,10 +464,20 @@ export function buildG1Summary(result) {
       framingReached: lane.framingReached,
       skyBrightness: lane.skyBrightness,
       sunElevationDeg: lane.sunElevationDeg,
+      ...(lane.certifyingModeBlind === undefined
+        ? {}
+        : {
+            certifyingMode: lane.certifyingMode,
+            certifyingModeBlind: lane.certifyingModeBlind,
+          }),
       ...(lane.modulationEngaged === undefined
         ? {}
         : {
             modulationEngaged: lane.modulationEngaged,
+            // PER-BACKEND, because the aggregate cannot distinguish "neither
+            // side moved" (blindness) from "one side went inert" (the defect).
+            glModulationEngaged: lane.glModulationEngaged,
+            gpuModulationEngaged: lane.gpuModulationEngaged,
             starEnergyRatio: lane.starEnergyRatio,
           }),
       criteria: lane.criteria,

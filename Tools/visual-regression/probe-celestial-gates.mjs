@@ -1120,6 +1120,9 @@ async function runG1Lane(browser, git, spec, browserVersion) {
       webgpu: r3(gpu.setup.cameraHeightM),
     },
     countModes: spec.countModes,
+    // Forwarded so the gate lib can apply the BLINDNESS rule to the certifying
+    // mode as well, rather than defaulting to its own copy of the name.
+    certifyingMode: spec.certifyingMode,
     perMode,
   };
 

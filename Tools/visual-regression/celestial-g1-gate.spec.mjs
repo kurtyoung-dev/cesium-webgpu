@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 
 import { srgbToLinear } from "./lib/celestial-metrics.mjs";
 import {
+  CUBEMAP_CERTIFYING_MODE,
   EXIT_CODE,
   MODULATION_ENGAGED_MIN_ABS_DELTA,
   SKY_FLOOR_ABS_TOLERANCE,
@@ -30,6 +31,7 @@ import {
   evaluateStarModulationLane,
   foldG1Verdict,
   inBand,
+  modeIsBlind,
   ratio,
   skyFloorAgrees,
 } from "./lib/celestial-g1-gate.mjs";
@@ -274,6 +276,135 @@ const RULES = {
     const folded = evaluate(impl, { cubemap: lane });
     assert.equal(folded.exitCode, EXIT_CODE.FAIL);
   },
+
+  // ---- AUDIT ITEM 4: one-sided modulation death is the DEFECT --------------
+  //
+  // The C11-176 shape is a star-brightness modulation that is live on one
+  // backend and inert on the other. If the lane's non-vacuity control ANDs the
+  // two backends, that shape reads as "the term never moved a pixel" and the
+  // gate prints "this is NOT a pass and NOT a defect" over a shipped one-sided
+  // regression. Both directions are exercised because the historical defect ran
+  // WebGPU-only and the C12-29 S6 / ruling E3 WebGL half can regress the other
+  // way.
+  "a modulation term dead on ONE backend is a real FAIL, not STRUCTURAL": (
+    impl,
+  ) => {
+    for (const [live, dead] of [
+      ["webgl", "webgpu"],
+      ["webgpu", "webgl"],
+    ]) {
+      const column = columnLane();
+      column.perMode["modulation-off"] = healthyMode({
+        [`${live}Mean`]: 0.3,
+        [`${dead}Mean`]: 0.1,
+      });
+      column.perMode["modulation-on"] = healthyMode({
+        webglMean: 0.1,
+        webgpuMean: 0.1,
+      });
+      const evaluated = impl.evaluateStarModulationLane(column);
+      assert.equal(
+        evaluated.framingReached,
+        true,
+        `${dead}-dead: the lane still reaches its failure state`,
+      );
+      assert.equal(
+        evaluated.structural,
+        false,
+        `${dead}-dead: a one-sided dead term is a DEFECT, not blindness`,
+      );
+      const folded = evaluate(impl, { column });
+      assert.equal(
+        folded.exitCode,
+        EXIT_CODE.FAIL,
+        `${dead}-dead: must be FAIL, got ${folded.verdict}`,
+      );
+      assert.ok(
+        folded.failures.some((f) =>
+          f.includes("modulationEngaged_on_both_backends"),
+        ),
+        `${dead}-dead: the failure must NAME the side that went inert, not be ` +
+          `implied by an out-of-band ratio`,
+      );
+    }
+  },
+  "the per-backend engagement flags distinguish blindness from a one-sided defect":
+    (impl) => {
+      const bothDead = impl.evaluateStarModulationLane(
+        columnLane({
+          perMode: {
+            "modulation-off": healthyMode({ webglMean: 0.3, webgpuMean: 0.3 }),
+            "modulation-on": healthyMode({ webglMean: 0.3, webgpuMean: 0.3 }),
+          },
+        }),
+      );
+      assert.equal(bothDead.glModulationEngaged, false);
+      assert.equal(bothDead.gpuModulationEngaged, false);
+      assert.equal(bothDead.structural, true);
+
+      const oneDead = impl.evaluateStarModulationLane(
+        columnLane({
+          perMode: {
+            "modulation-off": healthyMode({ webglMean: 0.3, webgpuMean: 0.1 }),
+            "modulation-on": healthyMode({ webglMean: 0.1, webgpuMean: 0.1 }),
+          },
+        }),
+      );
+      assert.equal(oneDead.glModulationEngaged, true);
+      assert.equal(oneDead.gpuModulationEngaged, false);
+      assert.equal(oneDead.structural, false);
+    },
+
+  // ---- AUDIT ITEM 5: the CERTIFYING mode needs the blindness rule too ------
+  //
+  // Every criterion the cubemap lane folds into its verdict is measured on the
+  // certifying mode. `ratio()` returns null when the WebGL denominator is 0, and
+  // `null >= 0.9` / `inBand(null)` are both false, so a doubly-blind certifying
+  // mode produced four confident FALSE criteria and exit 1 — a phantom defect
+  // over a scene where no source was censused at all.
+  "the CERTIFYING cubemap mode blind on BOTH backends is STRUCTURAL, never a verdict":
+    (impl) => {
+      const lane = cubemapLane();
+      lane.perMode.default = healthyMode({
+        webglM1Count: 0,
+        webgpuM1Count: 0,
+        m1CountRatio: null,
+        m2aRatio: null,
+        m2bRatio: null,
+        m3ChromaRatio: null,
+      });
+      const folded = evaluate(impl, { cubemap: lane });
+      assert.equal(
+        folded.exitCode,
+        EXIT_CODE.STRUCTURAL,
+        `a doubly-blind certifying mode must not produce a verdict, got ${folded.verdict}`,
+      );
+      assert.notEqual(folded.exitCode, EXIT_CODE.PASS);
+      assert.notEqual(folded.exitCode, EXIT_CODE.FAIL);
+      assert.equal(folded.failures.length, 0);
+      assert.ok(
+        folded.structural.some((s) => s.includes(CUBEMAP_CERTIFYING_MODE)),
+        "the blind CERTIFYING mode must be named in structural[]",
+      );
+    },
+  "the CERTIFYING cubemap mode blind on ONE backend is a real FAIL": (impl) => {
+    const lane = cubemapLane();
+    lane.perMode.default = healthyMode({
+      webglM1Count: 55,
+      webgpuM1Count: 0,
+      m1CountRatio: 0,
+    });
+    const folded = evaluate(impl, { cubemap: lane });
+    assert.equal(
+      folded.exitCode,
+      EXIT_CODE.FAIL,
+      `one-sided blindness on the certifying mode is the defect, got ${folded.verdict}`,
+    );
+    assert.ok(
+      folded.failures.some((f) => f.includes("m1CountRatio")),
+      "the count criterion must be named in failures[]",
+    );
+  },
   "a real defect outranks a structural lane": (impl) => {
     const lane = cubemapLane();
     lane.perMode.default = healthyMode({ m2aRatio: 2.0 });
@@ -449,6 +580,120 @@ const MUTANTS = {
       return { ...evaluated, structuralModes: [] };
     },
   },
+
+  // AUDIT ITEM 4 mutants — the non-vacuity control at the wrong scope.
+  "modulation non-vacuity ANDs the two backends (the shipped pre-repair shape)":
+    {
+      ...REAL,
+      evaluateStarModulationLane: (lane) => {
+        const evaluated = evaluateStarModulationLane(lane);
+        // Verbatim reconstruction of the pre-repair arithmetic: EITHER side
+        // going dead declares the whole lane blind.
+        const structural =
+          !evaluated.framingReached || !evaluated.modulationEngaged;
+        const criteria = { ...evaluated.criteria };
+        delete criteria.modulationEngaged_on_both_backends;
+        return {
+          ...evaluated,
+          structural,
+          criteria,
+          pass: !structural && Object.values(criteria).every(Boolean),
+        };
+      },
+    },
+  "one-sided modulation death implied only by an out-of-band ratio": {
+    ...REAL,
+    evaluateStarModulationLane: (lane) => {
+      const evaluated = evaluateStarModulationLane(lane);
+      // Keeps the FAIL but drops the criterion that says WHICH side went
+      // inert, so the report cannot be attributed.
+      const criteria = {
+        ...evaluated.criteria,
+        modulationEngaged_on_both_backends: true,
+      };
+      return {
+        ...evaluated,
+        criteria,
+        pass: !evaluated.structural && Object.values(criteria).every(Boolean),
+      };
+    },
+  },
+
+  // AUDIT ITEM 5 mutants — the blindness rule skipping the certifying mode.
+  "the certifying mode's criteria built unconditionally (the pre-repair shape)":
+    {
+      ...REAL,
+      evaluateCubemapParityLane: (lane) => {
+        const modes = lane.perMode ?? {};
+        const def = modes.default ?? {};
+        const criteria = {
+          default_m1CountRatio_ge_0_90: def.m1CountRatio >= 0.9,
+          default_m2a_in_band: inBand(def.m2aRatio),
+          default_m2b_in_band: inBand(def.m2bRatio),
+          default_m3Chroma_ge_0_85: def.m3ChromaRatio >= 0.85,
+          default_m2e_skyFloor_within_quantization: skyFloorAgrees(
+            def.webglSkyFloor,
+            def.webgpuSkyFloor,
+          ),
+        };
+        const structuralModes = [];
+        for (const mode of lane.countModes ?? []) {
+          if (modeIsBlind(modes[mode])) {
+            structuralModes.push(mode);
+            continue;
+          }
+          criteria[
+            `${mode.replaceAll(/-([a-z])/g, (_, c) => c.toUpperCase())}_m1CountRatio_ge_0_90`
+          ] = modes[mode]?.m1CountRatio >= 0.9;
+        }
+        return {
+          ...lane,
+          criteria,
+          structuralModes,
+          framingReached: computeFramingReached(lane.skyBrightness),
+          pass: Object.values(criteria).every(Boolean),
+        };
+      },
+    },
+  "a blind certifying mode reported as PASS (the false green)": {
+    ...REAL,
+    evaluateCubemapParityLane: (lane) => {
+      const evaluated = evaluateCubemapParityLane(lane);
+      if (!evaluated.certifyingModeBlind) {
+        return evaluated;
+      }
+      return {
+        ...evaluated,
+        certifyingModeBlind: false,
+        structuralModes: evaluated.structuralModes.filter(
+          (m) => m !== CUBEMAP_CERTIFYING_MODE,
+        ),
+        pass: true,
+      };
+    },
+  },
+  "ANY zero source count declares the certifying mode blind (the over-correction)":
+    {
+      ...REAL,
+      evaluateCubemapParityLane: (lane) => {
+        const evaluated = evaluateCubemapParityLane(lane);
+        const def = (lane.perMode ?? {}).default ?? {};
+        const blind =
+          (def.webglM1Count ?? 0) === 0 || (def.webgpuM1Count ?? 0) === 0;
+        if (!blind) {
+          return evaluated;
+        }
+        return {
+          ...evaluated,
+          certifyingModeBlind: true,
+          criteria: {},
+          structuralModes: [
+            ...new Set([...evaluated.structuralModes, CUBEMAP_CERTIFYING_MODE]),
+          ],
+          pass: false,
+        };
+      },
+    },
 
   // ITEM 1 mutants.
   "summary omits the sigma factor (the pre-repair shape)": {

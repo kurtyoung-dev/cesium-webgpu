@@ -20,6 +20,20 @@
 //     aggregate over the whole sky is arithmetically blind to this change (the
 //     trap recorded across this campaign and in the eclipse work).
 //
+// ⚠ REPAIRED 2026-08-07 — THE PIXELS LEG USED TO RENDER AT THE WALL CLOCK.
+// `useDefaultRenderLoop = false` (below) kills `CesiumWidget.render()`, which is
+// the ONLY caller that passes `clock.tick()` into `Scene.render`. Every render
+// in this file was then a bare `s.render()`, and `Scene.js` answers a missing
+// time argument with `JulianDate.now()` — so the four clock-solved lanes were
+// all DRAWN at whatever the wall clock said, while the ENGINE leg evaluated the
+// solved instants. The two legs described different scenes, which is exactly
+// what the comment at the clock solver calls "load-bearing, not fussiness", and
+// exactly what the landing commit claimed had been fixed. Every render now
+// passes `at()`, and the gate carries a STRUCTURAL guard (`renderedSunTracked`)
+// that reads the sun back OUT of the rendered frame and requires it to match the
+// lane it was solved for — so this class cannot recur silently. See
+// `probe-celestial-gates.mjs`'s BINDING PROBE RULES, rule 1.
+//
 // Lanes (predictions from the Batch 823 derivation):
 //   N  sun -20 deg  factor 1.000000  CONTROL — must be byte-identical to pre-C12-34
 //   A  sun -15 deg  factor 0.604705  astronomical twilight
@@ -47,6 +61,20 @@ const LANES = [
 // The engine leg is exact math on shipped code, so it gets a tight bound; the
 // factor is a pure function of the pinned elevation with no sampling noise.
 const ENGINE_TOL = 5e-4;
+
+// STRUCTURAL GUARD on the repaired render-time discipline, in degrees.
+//
+// The sun direction is read back off `uniformState.sunDirectionWC` in the SAME
+// task as the final render, so it is the sun the frame was DRAWN with. It must
+// land on the elevation the clock was solved for. The bound is loose enough to
+// absorb the ~0.53 deg solar disc and the bisection's own residual and tight
+// enough that a wall-clock substitution — which puts the sun tens of degrees
+// away, and puts ALL FOUR LANES AT THE SAME PLACE — cannot slip through.
+const RENDERED_ELEVATION_TOL_DEG = 1.0;
+// And the four lanes must be measurably DIFFERENT scenes. Their solved
+// elevations are -20/-15/-9/-3, so the smallest legitimate gap is 5 deg; a
+// wall-clock leg collapses this to ~0.
+const RENDERED_ELEVATION_MIN_SPREAD_DEG = 2.0;
 
 async function run(renderer) {
   const browser = await chromium.launch({
@@ -112,9 +140,12 @@ async function run(renderer) {
         nightZenithMagnitude: NIGHT_ZENITH_MAGNITUDE ?? null,
       };
 
-      // Ground camera at a fixed site; the sun direction is synthesized to hit
-      // each lane's elevation exactly rather than solved from a clock, so the
-      // lane IS its elevation with no ephemeris error in the way.
+      // Ground camera at a fixed site. The lane's sun is SOLVED FROM THE CLOCK
+      // (see `solveClock` below) and the clock then drives the renderer, so one
+      // scene backs both legs. This comment used to claim the opposite —
+      // "synthesized ... rather than solved from a clock" — which is the
+      // fingerprint of a clock solve retrofitted without touching the render
+      // call, and is precisely the state the 2026-08-07 repair found.
       const lon = -105.0;
       const lat = 40.0;
       const cameraPos = C.Cartesian3.fromDegrees(lon, lat, 500.0);
@@ -129,10 +160,17 @@ async function run(renderer) {
       );
       C.Cartesian3.normalize(east, east);
 
+      // EVERY render passes the pinned time. `useDefaultRenderLoop = false`
+      // above killed the only caller that would have supplied it, and a bare
+      // `s.render()` substitutes `JulianDate.now()` — the wall clock — which is
+      // what `frameState.time` then stamps and what `UniformState` derives
+      // `sunDirectionWC` from. `at()` is read per call, so it always returns the
+      // CURRENT lane's solved instant.
+      const at = () => v.clock.currentTime;
       const frame = async (n) => {
         for (let i = 0; i < n; i++) {
           s.requestRender();
-          s.render();
+          s.render(at());
           await new Promise((r) => requestAnimationFrame(r));
         }
       };
@@ -148,6 +186,21 @@ async function run(renderer) {
           w: c.width,
           h: c.height,
         };
+      };
+      // SAME-TASK CAPTURE, and the read-back of the sun the frame was DRAWN
+      // with. The drawing buffer is cleared once the compositor consumes a
+      // presented frame, so the final render, the `sunDirectionWC` read and the
+      // `drawImage` must all run without an intervening await. Reading the sun
+      // here rather than from setup is the whole point: it is the frame's own
+      // state, so it can falsify the render-time discipline instead of merely
+      // restating what the probe intended.
+      const renderAndGrab = () => {
+        s.requestRender();
+        s.render(at());
+        const renderedSunDir = C.Cartesian3.clone(
+          s.context.uniformState.sunDirectionWC,
+        );
+        return { image: grab(), renderedSunDir };
       };
       // Point metric: how many pixels the star field ADDS. Counting added
       // pixels (not mean luminance) is what survives a change whose ends are
@@ -260,11 +313,29 @@ async function run(renderer) {
 
         s.skyBox.starField.show = true;
         await frame(12);
-        const withStars = grab();
+        const withStars = renderAndGrab();
         s.skyBox.starField.show = false;
         await frame(12);
-        const without = grab();
+        const without = renderAndGrab();
         s.skyBox.starField.show = true;
+
+        // The sun the RENDERER used, expressed in the same units as the lane.
+        // If this does not equal `solvedElevationDeg`, the pixels and the engine
+        // leg are describing different scenes and the PIXELS verdict is void.
+        const renderedElevationDeg = C.Math.toDegrees(
+          Math.asin(
+            Math.max(
+              -1,
+              Math.min(
+                1,
+                computeCelestialElevationSine(
+                  withStars.renderedSunDir,
+                  cameraPos,
+                ),
+              ),
+            ),
+          ),
+        );
 
         // computeSkyBrightness returns SKY BRIGHTNESS (0 = astronomical night,
         // 1 = noon). The derivation's published numbers are the STAR
@@ -284,7 +355,8 @@ async function run(renderer) {
           sinAlt,
           skyBrightness: factor,
           factor: modulation,
-          starAddedPixels: addedPixels(withStars, without),
+          renderedElevationDeg,
+          starAddedPixels: addedPixels(withStars.image, without.image),
         });
       }
       return { engineExports, lanes: out, deviceErrs };
@@ -322,10 +394,45 @@ for (let i = 0; i < LANES.length; i++) {
     `lane ${lane.id} (sun ${lane.elevationDeg}deg): predicted=${lane.predicted.toFixed(6)} ` +
       `webgl=${g.factor.toFixed(6)} webgpu=${w.factor.toFixed(6)} ` +
       `starPx gl=${g.starAddedPixels} gpu=${w.starAddedPixels} ` +
+      `renderedElev gl=${g.renderedElevationDeg?.toFixed(2)} gpu=${w.renderedElevationDeg?.toFixed(2)} ` +
       `${ok ? "OK" : "MISMATCH"}${parity ? "" : " PARITY-BREAK"}`,
   );
   if (lane.control && g.factor !== 1.0) controlPass = false;
 }
+
+// STRUCTURAL PRECONDITION FOR THE PIXELS LEG — the renderer must have DRAWN
+// each lane at the instant that lane was solved for.
+//
+// This is the guard that makes the wall-clock class non-recurrent. It is read
+// back out of `uniformState.sunDirectionWC` in the same task as the final
+// render, so it describes the FRAME rather than the intent, and it fails in two
+// independent ways under a wall-clock substitution: every lane lands far from
+// its target elevation, and all four lanes land on the SAME elevation.
+const renderedElevations = (run) =>
+  run.lanes.map((l) => l.renderedElevationDeg ?? NaN);
+const glRenderedElev = renderedElevations(gl);
+const gpuRenderedElev = renderedElevations(gpu);
+const tracksSolved = (rendered) =>
+  rendered.every(
+    (deg, i) =>
+      Number.isFinite(deg) &&
+      Math.abs(deg - LANES[i].elevationDeg) <= RENDERED_ELEVATION_TOL_DEG,
+  );
+const lanesDiffer = (rendered) => {
+  const finite = rendered.filter((d) => Number.isFinite(d));
+  if (finite.length !== rendered.length) return false;
+  const sorted = [...finite].sort((a, b) => a - b);
+  let smallestGap = Infinity;
+  for (let i = 1; i < sorted.length; i++) {
+    smallestGap = Math.min(smallestGap, sorted[i] - sorted[i - 1]);
+  }
+  return smallestGap >= RENDERED_ELEVATION_MIN_SPREAD_DEG;
+};
+const renderedSunTracked =
+  tracksSolved(glRenderedElev) &&
+  tracksSolved(gpuRenderedElev) &&
+  lanesDiffer(glRenderedElev) &&
+  lanesDiffer(gpuRenderedElev);
 
 // Stars must be strictly more visible as the sun gets lower. Monotonic
 // ordering is a structural claim a band mean cannot make.
@@ -338,8 +445,24 @@ const monotonic = (a) => a[0] >= a[1] && a[1] >= a[2] && a[2] >= a[3];
 // so — scoring it as a product failure would be a phantom defect, and scoring
 // it as a pass would be a false green.
 const starsVisible = glStars[0] >= 50 && gpuStars[0] >= 50;
-if (!starsVisible) {
+let pixelStructuralReason = null;
+if (!renderedSunTracked) {
+  // Strictly ahead of `starsVisible`: if the frames were not drawn at their
+  // lanes' instants, `starAddedPixels` is not a measurement of this lane at all
+  // and no conclusion — including "the star field drew nothing" — follows.
+  pixelPass = null;
+  pixelStructuralReason =
+    "the RENDERED sun did not track the solved lane (rendered elevations " +
+    `gl=${JSON.stringify(glRenderedElev.map((d) => Number(d?.toFixed?.(2))))} ` +
+    `gpu=${JSON.stringify(gpuRenderedElev.map((d) => Number(d?.toFixed?.(2))))} ` +
+    `vs solved ${JSON.stringify(LANES.map((l) => l.elevationDeg))}) — the pixel ` +
+    "leg and the engine leg described different scenes";
+} else if (!starsVisible) {
   pixelPass = null; // structural
+  pixelStructuralReason =
+    "the star field drew nothing at the darkest lane, so this leg measured an " +
+    "empty sky (instrument gap, NOT a product verdict; the ENGINE leg above is " +
+    "unaffected)";
 } else if (!monotonic(glStars) || !monotonic(gpuStars)) {
   pixelPass = false;
 }
@@ -359,18 +482,38 @@ console.log(
 console.log(
   `PIXELS (star contribution monotonic with darkness): ${
     pixelPass === null
-      ? "STRUCTURAL - star field drew nothing at the darkest lane, so this leg measured an empty sky (instrument gap, NOT a product verdict; the ENGINE leg above is unaffected)"
+      ? `STRUCTURAL - ${pixelStructuralReason}`
       : pixelPass
         ? "PASS"
         : "FAIL"
   } gl=${JSON.stringify(glStars)} gpu=${JSON.stringify(gpuStars)}`,
 );
+console.log(
+  `RENDER-TIME (the frames were drawn at the lanes' solved instants): ${
+    renderedSunTracked ? "PASS" : "STRUCTURAL"
+  } renderedElevDeg gl=${JSON.stringify(glRenderedElev.map((d) => Number(d?.toFixed?.(2))))} ` +
+    `gpu=${JSON.stringify(gpuRenderedElev.map((d) => Number(d?.toFixed?.(2))))}`,
+);
 console.log(`errors: ${allErrs.length}`);
 if (allErrs.length) console.log(allErrs.slice(0, 6).join("\n"));
 
-// A structural pixel leg does not block the gate: the ENGINE leg is the
-// acceptance claim, and it is exact. The structural note is the owed follow-up.
-const pass =
-  enginePass && controlPass && pixelPass !== false && allErrs.length === 0;
-console.log(`\nGATE ${pass ? "PASS" : "FAIL"}`);
-process.exit(pass ? 0 : 1);
+// EXIT CODES: 0 PASS | 1 FAIL (a measurable criterion missed) | 3 STRUCTURAL (a
+// leg RAN but could not see its subject).
+//
+// The pixel leg used to be allowed through as a pass on the stated grounds that
+// the ENGINE leg is the acceptance claim and is exact. That is still true of the
+// ENGINE claim, and nothing about it is weakened here — but an exit 0 cannot
+// distinguish "both legs certified" from "one leg measured nothing", and this
+// probe's own history is the case for the distinction: the structural pixel leg
+// recorded at Batch 860 was an INSTRUMENT defect (the wall-clock render fixed
+// above), and it was reported under an exit code that reads as a clean run.
+// A leg that could not see its subject now exits 3, per the project rule filed
+// as NEW-PROBE-VACUOUS-REACHABILITY-ASSERTION.
+const hardFail = !enginePass || !controlPass || pixelPass === false;
+const structural = !hardFail && pixelPass === null;
+const pass = !hardFail && !structural && allErrs.length === 0;
+const exitCode = hardFail || allErrs.length > 0 ? 1 : structural ? 3 : 0;
+console.log(
+  `\nGATE ${pass ? "PASS" : structural ? "STRUCTURAL" : "FAIL"} (exit ${exitCode})`,
+);
+process.exit(exitCode);

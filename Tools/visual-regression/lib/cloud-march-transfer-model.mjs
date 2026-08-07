@@ -64,6 +64,12 @@
 
 import CloudType from "../../../packages/engine/Source/Scene/CloudType.js";
 import {
+  CLOUD_COVERAGE_ANCHOR,
+  CLOUD_COVERAGE_EXPONENT,
+  CLOUD_DENSITY_WORLD_TO_NOISE,
+  cloudEffectiveCoverage,
+} from "../../../packages/engine/Source/Renderer/WebGPU/WebGPUCloudDensityDomain.ts";
+import {
   CloudTypeProfile,
   genusErosionHeightWeight,
   genusFibreFactor,
@@ -72,11 +78,30 @@ import {
 
 const f32 = Math.fround;
 
-/** `CLOUD_DENSITY_WORLD_TO_NOISE` in CloudDensityDomain.wgsl. */
-export const WORLD_TO_NOISE = 0.0003000000142492354;
-/** `CLOUD_COVERAGE_ANCHOR` / `CLOUD_COVERAGE_EXPONENT`, same file. */
-export const COVERAGE_ANCHOR = 0.55;
-export const COVERAGE_EXPONENT = 0.25;
+// THE COVERAGE RESPONSE AND THE WORLD->NOISE SCALE ARE IMPORTED, NOT COPIED.
+//
+// They were local literals plus a local re-statement of `cloudEffectiveCoverage`
+// until 2026-08-07. The engine ships all four as an importable CPU twin
+// (`WebGPUCloudDensityDomain.ts`), a sibling model in this same fleet
+// (`fog-cheap-coverage-model.mjs`) already imports it, and the copy had already
+// drifted in ROUNDING — the shipped twin rounds `anchor`, `c / anchor` and the
+// `pow` result to f32 the way WGSL evaluates them, the copy did not. Re-deriving
+// `CLOUD_COVERAGE_ANCHOR` or `CLOUD_COVERAGE_EXPONENT` in the product (which
+// `CLOUD-LOW-COVERAGE-CUTOFF` already did once) would have left this model
+// answering R3's transfer-curve question about a coverage gate the engine no
+// longer ships, with nothing in the spec able to notice.
+//
+// Re-exported under the historical names so the spec and any consumer keep one
+// import site; `cloud-march-transfer.spec.mjs` asserts these ARE the engine's
+// own bindings rather than equal-valued copies.
+export {
+  cloudEffectiveCoverage,
+  CLOUD_COVERAGE_ANCHOR as COVERAGE_ANCHOR,
+  CLOUD_COVERAGE_EXPONENT as COVERAGE_EXPONENT,
+  CLOUD_DENSITY_WORLD_TO_NOISE as WORLD_TO_NOISE,
+};
+const WORLD_TO_NOISE = CLOUD_DENSITY_WORLD_TO_NOISE;
+
 /** `WGS84_EQUATORIAL_RADIUS` as the renderer packs `planetRadius`. */
 export const PLANET_RADIUS = 6378137.0;
 /** `absorptionCoeff`, hard-coded at WebGPUProceduralCloudRenderer.ts:1982. */
@@ -231,18 +256,6 @@ export function fbmNoise(px, py, pz) {
     z = f32(z + 0.13);
   }
   return value;
-}
-
-/** CloudDensityDomain.wgsl `cloudEffectiveCoverage`. */
-export function cloudEffectiveCoverage(coverage) {
-  if (coverage <= 0) {
-    return 0;
-  }
-  const c = Math.min(coverage, 1);
-  const lifted = f32(
-    COVERAGE_ANCHOR * Math.pow(c / COVERAGE_ANCHOR, COVERAGE_EXPONENT),
-  );
-  return Math.max(c, lifted);
 }
 
 /** ProceduralClouds.wgsl `heightGradientFor`. */

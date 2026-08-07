@@ -386,12 +386,17 @@ G1 shape verbatim and UNREPAIRED — it still carries the exact
 `probe-logdepth-payoff.mjs` are a stronger form of the same failure: they print
 a verdict and exit 0 **without gating their substantive subjects at all**.
 
+**UPDATE 2026-08-07 — one of the three is CLOSED.** `probe-env-skybox-stars.mjs`
+has been repaired (see its row below and the RESOLUTIONS block at the end of this
+section). `probe-cold-optics-hq.mjs` and `probe-logdepth-payoff.mjs` are
+UNTOUCHED and their exit 0 remains uncitable.
+
 | probe | boolean (file:line) | what it ASSERTS | what the defect is a FUNCTION OF | vacuous-risk | evidence |
 |---|---|---|---|---|---|
-| `probe-env-skybox-stars.mjs` | `framingReached` :410 | `(sunElevGpu ?? 0) >= 25 && (sunElevGl ?? 0) >= 25` — a camera+ephemeris PROXY | `frameState.skyBrightness` (`SkyBoxFS.glsl:30,40`; `WebGPUCubeMapPanoramaRenderer.js:129,137`; packed from `CubeMapPanorama.js:451`) | **YES — BLOCKING** | Camera `dist = 5.0e7` at :132-137 ⇒ height ≈ 43,622 km, far above `ATMOSPHERIC_COLUMN_FADE_END = 111000.0` (`SkyBrightness.js:60`, applied `:563`) ⇒ `skyBrightness` identically 0 ⇒ with `STAR_MODULATION_INFLECTION = 0.0` / `STEEPNESS = 23.0` (`StarFieldMath.ts:439,442`) the modulation factor is exactly 1.0 at ANY solar elevation. `skyBrightness` IS read (:193-195) and printed (:431) but never asserted. `framingReached` is a `pass` conjunct at :420-421 and `process.exit(pass ? 0 : 1)` at :441 — **no structural tier at all**, so a scene that cannot host the subject reports a certifying green. `probe-celestial-gates.mjs` had the identical predicate deleted at Batch 859 and `celestial-g1-gate.spec.mjs:574` now pins its absence there; this file was not swept |
+| `probe-env-skybox-stars.mjs` | `framingReached` :410 | `(sunElevGpu ?? 0) >= 25 && (sunElevGl ?? 0) >= 25` — a camera+ephemeris PROXY | `frameState.skyBrightness` (`SkyBoxFS.glsl:30,40`; `WebGPUCubeMapPanoramaRenderer.js:129,137`; packed from `CubeMapPanorama.js:451`) | **YES — BLOCKING** | Camera `dist = 5.0e7` at :132-137 ⇒ height ≈ 43,622 km, far above `ATMOSPHERIC_COLUMN_FADE_END = 111000.0` (`SkyBrightness.js:60`, applied `:563`) ⇒ `skyBrightness` identically 0 ⇒ with `STAR_MODULATION_INFLECTION = 0.0` / `STEEPNESS = 23.0` (`StarFieldMath.ts:439,442`) the modulation factor is exactly 1.0 at ANY solar elevation. `skyBrightness` IS read (:193-195) and printed (:431) but never asserted. `framingReached` is a `pass` conjunct at :420-421 and `process.exit(pass ? 0 : 1)` at :441 — **no structural tier at all**, so a scene that cannot host the subject reports a certifying green. `probe-celestial-gates.mjs` had the identical predicate deleted at Batch 859 and `celestial-g1-gate.spec.mjs:574` now pins its absence there; this file was not swept. **✅ RESOLVED 2026-08-07** — proxy conjunct removed from `pass`; `starModulationReachable` asserts `skyBrightness > 0.5` on BOTH backends and is REPORTED (not gated) with a "do not cite this run about star modulation" banner; the `sunlit` lane relabelled **sun-aligned orbital** for the default-pair parity it genuinely certifies; **structural tier added at exit 3** on the one blindness this probe's own subject admits — the WebGL REFERENCE must have produced a signal (`starPct`/`meanLum`/`brightPct` > 0 and both correlation grids non-degenerate, `correlate` now returning `varianceA`/`varianceB`), because `rat()` returns 0 on a zero denominator and `pearson` returns 0 on a flat grid, so a blank reference would have scored as a confident FAIL. Every bound in the new tier is ZERO — no fitted floor was invented. Exit codes now 0 / 1 / 2 (watchdog) / 3 |
 | `probe-cold-optics-hq.mjs` | `twoHalos` :489, `pillarTall` :490 (from `vReach` :316,:326) | `radial.peaks.length >= 2`; `pillar.aspect >= 1.8 && pillar.verticalExtentPx >= 20` | the radial peak count and pillar vertical luminance extent — measured correctly | **YES — BLOCKING** | Both are computed under a literal `// Verdict.` banner (:488), printed (:493-496), and **never gated**: `process.exit(errCount === 0 ? 0 : 1)` at :497. The probe exits 0 with `twoHalos === false` AND `pillarTall === false` as long as no device error fires. No off/on toggle and no subject-presence floor that can fail the run. A stronger form of the class than G1: not a proxy gate, a verdict with no gate |
 | `probe-logdepth-payoff.mjs` | none (`sanity` is a comment, :179); state is `flip.before`/`flip.after` :109-113 | nothing — the file contains no predicate, no `pass`, no `process.exit` | `isWebGPULogDepthActive(context, frameState)` = `context._logDepthWriteEnabled && frameState.useLogDepth` (`WebGPULogDepth.ts:79-84`) | **YES — BLOCKING** | The "switch-OFF baseline artifact" capture (:86) is taken while log depth is **already on**: `WebGPUContext.ts:764` `_logDepthWriteEnabled = true` (default TRUE since Batch 251), `Scene.js:160` `defaultLogDepthBuffer = true`, `:329`, and `:3518-3522` sets `useLogDepth` true for the probe's perspective camera. **The A/B is null by construction** — both captures are the same configuration — and the module always exits 0, so its printed `variance far-UR OFF = … ON = …` is quotable as evidence log depth fixed `NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION` when it demonstrates nothing. `FORK_OVERVIEW.md:102` independently records that item as "re-verify pending" |
-| `probe-skybox-star-modulation.mjs` | `reachedFailingState` :291 | `b.skyBrightness > 0.5` — **names the correct scalar** | `frameState.skyBrightness` | YES — inverted (phantom FAIL, not a false green) | Camera `dist = 5.0e7` at :103-109 ⇒ `skyBrightness = 0` by the same `SkyBrightness.js:563` path, so the GATE arm `optInOk = d.meanLum / b.meanLum < 0.85` (:398) **can never be satisfied** and the probe emits `FAIL … optIn:false` ⇒ exit 1 over a scene the engine deliberately exempts. `reachedFailingState` is reported but is NOT in `GATE` (:393-402) or in `structural` (:430), so it cannot route the run to exit 2. Its A/B is additionally degenerate: `AtmosphericConditions.js:589` now ships `enableStarBrightnessModulation: true`, so the `gpuOn` leg is A/A. Header root cause is stale on three counts (`AtmosphericConditions.js:368` → `:589`; the `=== true` fail-safe moved to `CubeMapPanorama.js:429-433`; `inflection=0.5, steepness=1.0` → `0.0 / 23.0`) |
+| `probe-skybox-star-modulation.mjs` | `reachedFailingState` :291 | `b.skyBrightness > 0.5` — **names the correct scalar** | `frameState.skyBrightness` | YES — inverted (phantom FAIL, not a false green) | Camera `dist = 5.0e7` at :103-109 ⇒ `skyBrightness = 0` by the same `SkyBrightness.js:563` path, so the GATE arm `optInOk = d.meanLum / b.meanLum < 0.85` (:398) **can never be satisfied** and the probe emits `FAIL … optIn:false` ⇒ exit 1 over a scene the engine deliberately exempts. `reachedFailingState` is reported but is NOT in `GATE` (:393-402) or in `structural` (:430), so it cannot route the run to exit 2. Its A/B is additionally degenerate: `AtmosphericConditions.js:589` now ships `enableStarBrightnessModulation: true`, so the `gpuOn` leg is A/A. Header root cause is stale on three counts (`AtmosphericConditions.js:368` → `:589`; the `=== true` fail-safe moved to `CubeMapPanorama.js:429-433`; `inflection=0.5, steepness=1.0` → `0.0 / 23.0`). **✅ RESOLVED 2026-08-07** — the phantom FAIL is closed: `reachedFailingState` now GATES (three-tier verdict following `foldG1Verdict`'s precedence — a measurable parity failure outranks blindness, blindness outranks a clean sheet), so an unreachable run **exits 3 STRUCTURAL, not 1**, with a reason string naming `skyBrightness` and pointing at the lane that owns the subject. The A/B re-diverges: `optInOk` compares the EXPLICITLY-ON leg against the EXPLICITLY-OFF leg instead of against a default that flipped, `causationProven` is re-pointed the same way and is `null` (not `false`) when unreachable, and `defaultMatchesExplicitOn` records the default's identity as a separate reported fact. `predictedDimFactor` reads the shipped curve off the panorama's own `_starModulation` uniform instead of restating `(0.5, 1.0)`. All three header citations refreshed against HEAD — the sweep's own line numbers had drifted AGAIN: `AtmosphericConditions.js:616` (not `:589`) and `CubeMapPanorama.js:511-514` (not `:429-433`); `StarFieldMath.ts:439,442` confirmed at `0.0 / 23.0`. **A FOURTH correction the sweep did not name: the premise is REVERSED** — `SkyBoxFS.glsl` now carries the same `u_starModulation`/`u_skyBrightness` block (C12-29 S6 / ruling E3), so "WebGL has NO such term" is false and "default ON is a parity break" is no longer the claim. **STILL OPEN:** moving the camera INSIDE the column, which is what would let this probe certify the subject rather than correctly declining to |
 | `probe-attachment-demand-registry.mjs` | `settled` :235; the topology checks :261-294, :364 | `r.topology === "mrt"`, `ad.forceSceneMRT === true`, `a.sceneColorAttachmentCount === 2`, `ad.recordMatchesActual === true` | `context.forceSceneMRT` feeding `gbufferDemanded = gbufferReadersDemand \|\| forceSceneMRT` | YES (topology axis only; readers axis is live and disclosed) | `WebGPUContext.ts:694` ships `forceSceneMRT = true` unconditionally and `WebGPUAttachmentDemandRegistry.ts:223-224` therefore pins `gbufferDemanded` true and `topology` `"mrt"` on every frame; `CesiumDebug.js:568-575` **refuses** `attachmentDemand(false)` until C9-10 lands. The engine annotates the collapse itself at `WebGPUContext.ts:6310-6311` ("near-tautological with the same demand flag the record was derived from"). Those five checks cannot fail in any reachable configuration. Section B (:313-374) IS a genuine per-consumer off→on→off A/B, so the probe is not wholly vacuous, and the guide row already discloses the pin |
 | `probe-live-weather-demo.mjs` | `reachedNetworkBoundary` :165 | `typeof st.lastError === "string" && /502\|EDR fetch failed\|fetch/i.test(st.lastError)` — a regex correlate, gated alongside `st.hasData === false` | `WeatherProvider.hasData` = `this._packed !== null` (`Weather/WeatherProvider.ts:97-99`) | YES (disclosed in-file) | The gate asserts the NEGATION of the driving scalar. `WeatherProvider.ts:371-375` leaves `_packed` null on any fetch rejection, so `hasData === false` is pinned by the sandbox fixture and the subject (live data driving the deck) cannot occur. `/fetch/i` also matches a malformed URL or a missing proxy route, which are not "reached the network boundary". **Inverted failure mode: a sandbox that DID have network and a working feed would FAIL this probe.** It prints `RESULT: GREEN` and exits 0 (:207); the caveat at :204 is prose, not machine-readable. Header :9-11 discloses the pin |
 | `probe-hiz-tile-occlusion.mjs` | `soaLayoutReachable` :162 (reported, never gated); `passNoNaN` :275; `passOBB` :274 | `!!layout`; `R.nanCount === 0 && R.populatedCount > 0`; `R.obbCount > 0` | `boundingVolumeRadius(bv)` returning finite for an OBB, and `OcclusionCulling._stats.commandsTested > 0` | YES (two of four gates; `passRadius` keeps it non-vacuous overall) | `passNoNaN` is a tautology of shipped code: `SOABoundingSphereLayout.js:199-207` `continue`s on any non-finite radius, and only slots `i < populatedCount` are inspected (:141-143), so `nanCount === 0` holds with or without the OBB fix. `passOBB` is self-fulfilling — the probe pushes its own three synthetic OBB commands at :107-117 before counting at :119-128. The probe calls `layout.populate()` itself (:140), so the SHIPPED Hi-Z path need never have run: `OcclusionCulling.js:249-256` early-returns unless `enabled && resultsReady`, `:188-191` disables it without compute shaders, and `commandsTested` is reported at :162-174 but never gated. `passRadius` (:276) IS a real detector (revert `SOABoundingSphereLayout.js:71-80` ⇒ `radiiChecked === 0` ⇒ FAIL). Corroborating: `campaign11_planning/CANDIDATE_REGISTER.md:203` records the tile↔Hi-Z wiring as WIP |
@@ -467,6 +472,63 @@ lane could not see its subject", and several probes (`probe-env-skybox-stars`,
    `probe-moon-atmosphere-appearance` inscatter assertion, `probe-ocean-wave-lod`
    MID lane, `probe-metadata-uint16` off-gate, `probe-model-color` MIX) can be
    batched together — each is a few lines.
+
+### RESOLUTIONS 2026-08-07 (repair-order items 1 and 4)
+
+- **Item 1 `probe-env-skybox-stars.mjs` — ✅ DONE.** The BLOCKING false green is
+  closed. Detail in that probe's row above; the short form is that the
+  `sunElevationDeg >= 25` proxy is gone from `pass`, reachability is asserted on
+  `skyBrightness` and REPORTED rather than gated (the probe's own subject is
+  parity, which is fully observable at `skyBrightness = 0`), the lane is
+  relabelled for what its camera certifies, and a structural tier at exit 3 now
+  covers the 0-vs-0 case that would otherwise have scored as a confident FAIL.
+- **Item 4 `probe-skybox-star-modulation.mjs` — ⚠ PARTIALLY DONE.** The phantom
+  FAIL, the A/A control and the three stale citations are fixed and the run now
+  routes to exit 3 when unreachable. **The camera move is NOT done** — it is the
+  one remaining piece of item 4, and until it lands this probe legitimately and
+  permanently reports STRUCTURAL rather than certifying C11-176. The subject is
+  owned meanwhile by `probe-celestial-gates.mjs`'s `in-column-star-modulation`
+  lane, whose geometry (`IN_COLUMN_HEIGHT_M = 30000`, `skyAtmosphereOn: true`) is
+  the shelf pattern to copy.
+- Items 2, 3 and 5 are UNTOUCHED.
+
+### THE CLASS HAS A SECOND FORM: WRONG SCOPE, NOT WRONG VARIABLE (2026-08-07)
+
+The Batch-859 G1 repair — the fix that NAMED this class — shipped **two** further
+instances of it, found by adversarial audit of the repair itself and fixed in
+`lib/celestial-g1-gate.mjs` on 2026-08-07. Neither is a proxy-variable defect:
+both assert the RIGHT variable at the WRONG SCOPE, and each produced exactly one
+of the two verdicts the class rule forbids.
+
+1. **A blindness rule that ANDs where it must OR ⇒ the DEFECT is downgraded to
+   STRUCTURAL.** The star-modulation lane's non-vacuity control was
+   `abs(glDelta) >= floor && abs(gpuDelta) >= floor`, so a modulation term live
+   on ONE backend and inert on the other — the C11-176 shape verbatim, which is
+   what the lane was rebuilt to catch — reported "the modulation term never moved
+   a pixel" at exit 3 with `failures[]` empty, under a printed headline that
+   asserts "this is NOT a pass and NOT a defect". The sibling `modeIsBlind` has
+   the correct polarity (it ANDs the two ZERO conditions, so blindness needs BOTH
+   sides dead) which is what makes the contrast unambiguous. **Non-vacuity is now
+   per backend**, with the one-sided case named as its own criterion so the
+   failure is attributable rather than implied by an out-of-band ratio.
+2. **A blindness rule applied to the secondary modes but not the CERTIFYING one
+   ⇒ a PHANTOM DEFECT.** All five of the cubemap lane's certifying criteria are
+   measured on the `default` mode, and each reads a ratio that goes `null` on a
+   zero WebGL denominator, so a doubly-blind `default` produced four confident
+   FALSE criteria and exit 1 over a scene where nothing was censused at all. The
+   probe deliberately excludes `default` from `G1_COUNT_MODES`, so the ONE mode
+   whose blindness voids the whole lane was the one mode the rule never reached.
+   Note the trap in the naive fix: `{}.every(Boolean)` is vacuously TRUE, so
+   emitting an empty criteria set would have converted the phantom FAIL into a
+   false GREEN — `pass` has to exclude the blind case explicitly.
+
+**The rule this adds to the list at the top of this entry:** a non-vacuity or
+blindness control must state, per measured party, which combination means "cannot
+see" and which means "defect". `A && B` and `!A && !B` are different claims, and
+picking the wrong one produces a confidently-wrong verdict rather than a silent
+one. Both new rules are pinned by `celestial-g1-gate.spec.mjs` (49 tests, 20
+mutants), including the two OVER-corrections — treating any single zero as
+blindness, and reporting a blind certifying mode as PASS.
 
 ---
 

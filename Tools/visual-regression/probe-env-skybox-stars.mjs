@@ -22,6 +22,39 @@
 //     vertically mirrored and a DIFFERENT sky region shows).
 //   - 0 WebGPU device errors.
 //
+// ⚠ WHAT THIS PROBE DOES **NOT** CERTIFY — repaired 2026-08-07.
+//
+// Until this repair the `sunlit` lane asserted `sunElevationDeg >= 25` as a
+// `pass` conjunct under the label "the only framing that reaches the C11-176
+// star-map modulation failure state". That is false, and the exit 0 it produced
+// was a live false green (filed under NEW-PROBE-VACUOUS-REACHABILITY-ASSERTION
+// in migration_doc/DEFERRED_WORK.md, swept 2026-08-06):
+//
+//   * The star-brightness modulation is a function of `frameState.skyBrightness`
+//     (`SkyBoxFS.glsl` u_skyBrightness / `CubeMapPanorama.js`), NOT of solar
+//     elevation. Both cameras here sit at `dist = 5.0e7` m — height ~43,600 km,
+//     far above `ATMOSPHERIC_COLUMN_FADE_END = 111 km` (`SkyBrightness.js`) — so
+//     `computeAtmosphericColumnFactor` zeroes `skyBrightness` and the modulation
+//     factor is exactly 1.0 at ANY solar elevation. `AtmosphericConditions.js`
+//     documents that as the DESIGN: the orbital camera is the one that must NOT
+//     dim.
+//   * `CubeMapPanorama.js` additionally gates the whole term on
+//     `frameState.skyAtmosphereVisible === true`.
+//
+// The reachability boolean now names the DRIVING variable
+// (`starModulationReachable`: skyBrightness > 0.5 on both backends), it is
+// REPORTED rather than folded into `pass`, and the `sunlit` lane is relabelled
+// for what its camera genuinely certifies: DEFAULT-PAIR (cube-map + sprite)
+// parity from a sun-aligned orbital vantage. The C11-176 subject belongs to
+// `probe-celestial-gates.mjs`'s `in-column-star-modulation` lane (30 km, sky
+// atmosphere ON), which is the only instrument in the fleet that reaches it.
+//
+// Exit codes: 0 PASS | 1 FAIL | 2 watchdog/harness | 3 STRUCTURAL (a lane RAN
+// but could not see its subject — the WebGL REFERENCE it is compared against
+// produced no signal, so the ratios are 0-vs-0 and the correlation is
+// undefined). A 0-vs-0 comparison scored as a FAIL is a phantom defect; scored
+// as a PASS it is a false green. Neither is reported here.
+//
 // Usage:
 //   node Tools/visual-regression/probe-env-skybox-stars.mjs
 // Outputs:
@@ -106,12 +139,13 @@ async function capture(rendererArg, starFieldOn, cameraMode) {
 
       let sunElevationDeg = null;
       if (cameraMode === "sunlit") {
-        // SUNLIT lane — the only framing that reaches the C11-176 star-map
-        // modulation failure state (Sun >= 25deg above the camera's local
-        // horizon). Hide the globe for a pure star field, then place the camera
-        // ALONG the settled sun direction so the Sun sits at the local zenith
-        // (elevation ~90deg), aiming perpendicular so neither the sun disc nor
-        // Earth is in frame.
+        // SUN-ALIGNED ORBITAL lane. It certifies DEFAULT-PAIR (cube-map +
+        // sprite) parity from a sun-relative vantage — NOT the C11-176 star
+        // modulation, which this camera cannot reach at any solar elevation
+        // (see the header). Hide the globe for a pure star field, then place the
+        // camera ALONG the settled sun direction so the Sun sits at the local
+        // zenith (elevation ~90deg), aiming perpendicular so neither the sun
+        // disc nor Earth is in frame.
         if (s.globe) s.globe.show = false;
         // RULE 3 — bounded sun-direction settle before sun-relative aiming
         // (ICRF loads async): <=180 frames, stable at 10 deltas < 1e-9.
@@ -335,12 +369,26 @@ async function correlate(pngA, pngB) {
         const den = Math.sqrt(da * db);
         return den > 0 ? num / den : 0;
       };
+      const variance = (g) => {
+        let m = 0;
+        for (let i = 0; i < g.length; i++) m += g[i];
+        m /= g.length;
+        let v = 0;
+        for (let i = 0; i < g.length; i++) v += (g[i] - m) * (g[i] - m);
+        return v / g.length;
+      };
       const gA = grid(A, false);
       const gB = grid(B, false);
       const gBflip = grid(B, true);
       return {
         aligned: pearson(gA, gB),
         mirrored: pearson(gA, gBflip),
+        // NON-VACUITY: `pearson` returns 0 when either side has zero variance,
+        // which would make `aligned > 0.5` a phantom FAIL over a flat/black
+        // reference rather than a real pattern mismatch. Reported so the caller
+        // can route that to STRUCTURAL instead.
+        varianceA: variance(gA),
+        varianceB: variance(gB),
       };
     },
     { ba, bb },
@@ -394,10 +442,11 @@ async function correlate(pngA, pngB) {
     results["webgl-away-cubemap"].out,
   );
 
-  // Lane 2 (NEW) — assert on the DEFAULT pair (starField ON, cubemap+sprites)
-  // in the SUNLIT framing, wiring the previously-computed-then-discarded
+  // Lane 2 — the DEFAULT pair (starField ON, cubemap+sprites) from the
+  // SUN-ALIGNED ORBITAL vantage, wiring the previously-computed-then-discarded
   // brightPct into the pass criteria. This is the pair the viewer actually
-  // ships, and the sunlit framing is where the C11-176 modulation would bite.
+  // ships. It certifies PARITY at that vantage; see the header for why it does
+  // NOT certify the C11-176 modulation.
   const gpuDef = results["webgpu-sunlit-default"].stats;
   const glDef = results["webgl-sunlit-default"].stats;
   const defDensityRatio = rat(gpuDef.starPct, glDef.starPct);
@@ -406,8 +455,33 @@ async function correlate(pngA, pngB) {
   const sunElevGpu = results["webgpu-sunlit-default"].meta.sunElevationDeg;
   const sunElevGl = results["webgl-sunlit-default"].meta.sunElevationDeg;
   const skyBrightGpu = results["webgpu-sunlit-default"].meta.skyBrightness;
-  // The sunlit lane must actually reach the failing state, else it is not a gate.
-  const framingReached = (sunElevGpu ?? 0) >= 25 && (sunElevGl ?? 0) >= 25;
+  const skyBrightGl = results["webgl-sunlit-default"].meta.skyBrightness;
+
+  // REACHABILITY, ON THE DRIVING VARIABLE — reported, never a `pass` conjunct.
+  //
+  // `probe-skybox-star-modulation.mjs`'s own predicate. It replaces
+  // `sunElevationDeg >= 25`, a camera+ephemeris proxy that says REACHED at
+  // exactly the camera where `skyBrightness` is 0 by construction. It is not a
+  // gate here because this probe's lanes are parity lanes: their subject is the
+  // cube map and the sprites, and both are fully observable at skyBrightness 0.
+  const starModulationReachable =
+    (skyBrightGpu ?? 0) > 0.5 && (skyBrightGl ?? 0) > 0.5;
+
+  // STRUCTURAL TIER — the WebGL REFERENCE has to have produced a signal.
+  //
+  // Every criterion below is a WebGPU/WebGL ratio or a Pearson correlation
+  // against the WebGL capture. `rat()` returns 0 on a zero denominator and
+  // `pearson` returns 0 on a zero-variance grid, so a reference that drew
+  // nothing scores as a confident FAIL — a phantom defect over a scene in which
+  // nothing could be compared. No fitted floor is involved: the bound is zero.
+  const referenceUsable =
+    glCube.starPct > 0 &&
+    glCube.meanLum > 0 &&
+    glDef.starPct > 0 &&
+    glDef.meanLum > 0 &&
+    glDef.brightPct > 0 &&
+    corr.varianceA > 0 &&
+    corr.varianceB > 0;
 
   const cubemapParity =
     band(densityRatio) &&
@@ -417,26 +491,46 @@ async function correlate(pngA, pngB) {
   const defaultParity =
     band(defDensityRatio) && band(defLumRatio) && band(defBrightRatio);
 
+  const structural = !referenceUsable;
   const pass =
-    cubemapParity && defaultParity && framingReached && gateErrors === 0;
+    !structural && cubemapParity && defaultParity && gateErrors === 0;
+  const exitCode = structural ? 3 : pass ? 0 : 1;
 
   console.log(
     `\n== verdict ==\n` +
       `  [away/cubemap] densityRatio=${densityRatio.toFixed(3)} ` +
       `lumRatio=${lumRatio.toFixed(3)} ` +
-      `corr aligned=${corr.aligned.toFixed(3)} mirrored=${corr.mirrored.toFixed(3)}\n` +
-      `  [sunlit/default] densityRatio=${defDensityRatio.toFixed(3)} ` +
+      `corr aligned=${corr.aligned.toFixed(3)} mirrored=${corr.mirrored.toFixed(3)} ` +
+      `refVar=${corr.varianceA.toFixed(3)}/${corr.varianceB.toFixed(3)}\n` +
+      `  [sun-aligned orbital/default] densityRatio=${defDensityRatio.toFixed(3)} ` +
       `lumRatio=${defLumRatio.toFixed(3)} brightRatio=${defBrightRatio.toFixed(3)}\n` +
-      `  sunElevationDeg gpu=${sunElevGpu} gl=${sunElevGl} ` +
-      `skyBrightness(gpu)=${skyBrightGpu} framingReached=${framingReached}\n` +
-      `  gateErrors=${gateErrors} => ` +
-      (pass ? "PASS" : "FAIL"),
+      `  referenceUsable=${referenceUsable} gateErrors=${gateErrors}\n` +
+      `  REPORTED, NOT GATED — sunElevationDeg gpu=${sunElevGpu} gl=${sunElevGl}; ` +
+      `skyBrightness gpu=${skyBrightGpu} gl=${skyBrightGl}; ` +
+      `starModulationReachable=${starModulationReachable}\n` +
+      `  => ` +
+      (structural ? "STRUCTURAL" : pass ? "PASS" : "FAIL"),
   );
+  if (structural) {
+    console.log(
+      "  STRUCTURAL: the WebGL reference produced no signal, so every ratio is " +
+        "0-vs-0 and the pattern correlation is undefined. This is NOT a pass " +
+        "and NOT a defect.",
+    );
+  }
+  if (!starModulationReachable) {
+    console.log(
+      "  NOTE: skyBrightness <= 0.5 at both cameras, so the C11-176 star " +
+        "modulation is inert here BY DESIGN (orbital vantage). Do not cite this " +
+        "run as evidence about star brightness modulation — that subject belongs " +
+        "to probe-celestial-gates.mjs's in-column-star-modulation lane.",
+    );
+  }
 
   console.log("\nPNGs:");
   for (const k of Object.keys(results)) {
     console.log("  " + path.resolve(results[k].out));
   }
   clearTimeout(watchdog);
-  process.exit(pass ? 0 : 1);
+  process.exit(exitCode);
 })();

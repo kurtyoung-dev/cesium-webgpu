@@ -22,6 +22,14 @@
  * depending on the stage that mutation removes, and the validation above has
  * stopped meaning anything.
  *
+ * That group was VACUOUS as first written and was REBUILT 2026-08-07: it scored
+ * a max over all four genera against the THIN lanes' bar, which the optically
+ * thick CUMULUS lane's own 0.135 residual already exceeded, so every subtest
+ * passed with NO mutation applied. Each subtest now scores displacement from the
+ * un-mutated model AND ground-truth loss at each lane's own regime tolerance,
+ * and a meta-mutant requires both predicates to go RED on a mutation the model
+ * cannot read. Details in the group's docstring.
+ *
  * TOLERANCES, AND WHY THEY ARE SPLIT BY OPTICAL REGIME. Nothing here is fitted:
  * every input is read from a shipped artifact. The three cirriform lanes are
  * optically thin (modelled column `tau` 0.21 .. 0.56) and the model reproduces
@@ -38,16 +46,26 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import {
+  CLOUD_COVERAGE_ANCHOR,
+  CLOUD_COVERAGE_EXPONENT,
+  CLOUD_DENSITY_WORLD_TO_NOISE,
+  cloudEffectiveCoverage as shippedCloudEffectiveCoverage,
+} from "../../packages/engine/Source/Renderer/WebGPU/WebGPUCloudDensityDomain.ts";
 import { fibreElongation } from "./lib/cloud-genus-morphology-model.mjs";
 import {
   ABSORPTION_COEFF,
+  COVERAGE_ANCHOR,
+  COVERAGE_EXPONENT,
   CloudType,
   CloudTypeProfile,
   MEASURED_SCREEN_ELONGATION,
   PROBE_ESTIMATOR,
   PROBE_GEOMETRY,
   PROBE_MARCH,
+  WORLD_TO_NOISE,
   buildModelParameters,
+  cloudEffectiveCoverage,
   columnOpticalDepth,
   genusMarchParameters,
   invertTransfer,
@@ -72,8 +90,111 @@ function toleranceFor(name) {
     : THIN_ELONGATION_TOLERANCE;
 }
 
+/**
+ * How far a mutation must move the model's OWN output before the removed stage
+ * counts as load-bearing.
+ *
+ * NOT a new tolerance: it is the SAME band the VALIDATION group scores the thin
+ * lanes against. A mutation that moves the model by less than the validation
+ * tolerance could not have been detected by the validation at all, so accepting
+ * it would be accepting a mutation the group cannot see.
+ */
+const MUTATION_ELONGATION_DISCRIMINATION = THIN_ELONGATION_TOLERANCE;
+
+// One model evaluation is ~1.3 s (4 genera x 2 directions x 16 lines x 256
+// samples x 32 steps), and the rebuilt mutation group needs the un-mutated
+// baseline alongside every mutant. Memoised so the baseline is computed once and
+// the `{}` no-op in the meta-mutant is free.
+const MODEL_CACHE = new Map();
+
 function modelled(name, overrides = {}) {
-  return screenAnisotropy({ cloudType: CloudType[name], ...overrides });
+  const key = `${name}|${JSON.stringify(overrides)}`;
+  let hit = MODEL_CACHE.get(key);
+  if (hit === undefined) {
+    hit = screenAnisotropy({ cloudType: CloudType[name], ...overrides });
+    MODEL_CACHE.set(key, hit);
+  }
+  return hit;
+}
+
+/**
+ * How far a mutation moves the model away from the UN-MUTATED model.
+ *
+ * This is the quantity the MUTATION group scores, and it replaces a comparison
+ * against an absolute ground-truth bar. The bar was `worst.elongation > 0.1`
+ * taken over a max that INCLUDES the optically-thick CUMULUS lane, whose
+ * un-mutated residual is 0.135 — so the assertion was satisfied before any
+ * mutation was applied and all five subtests passed on the baseline residual
+ * rather than on the mutation's effect (audit 2026-08-07, `confirmed[4]`).
+ * A displacement is immune to that: the baseline's displacement from itself is
+ * exactly 0, by construction.
+ *
+ * @param {object} overrides The mutation.
+ * @returns {{elongation:number,halfLength:number}} Worst move over ALL_GENERA.
+ */
+function displacementFromBaseline(overrides) {
+  let elongation = 0;
+  let halfLength = 0;
+  for (const name of ALL_GENERA) {
+    const mutant = modelled(name, overrides);
+    const base = modelled(name);
+    elongation = Math.max(
+      elongation,
+      Math.abs(mutant.elongation - base.elongation),
+    );
+    halfLength = Math.max(
+      halfLength,
+      Math.abs(mutant.alongLength - base.alongLength) / base.alongLength,
+      Math.abs(mutant.acrossLength - base.acrossLength) / base.acrossLength,
+    );
+  }
+  return { elongation, halfLength };
+}
+
+/**
+ * The single mutation predicate. Shared with the meta-mutant so the two cannot
+ * drift — a meta-mutant that tested a different predicate would prove nothing
+ * about the one the subtests use.
+ *
+ * @param {{elongation:number,halfLength:number}} displacement
+ * @returns {boolean}
+ */
+function discriminates(displacement) {
+  return (
+    displacement.elongation > MUTATION_ELONGATION_DISCRIMINATION ||
+    displacement.halfLength > HALF_LENGTH_RELATIVE_TOLERANCE
+  );
+}
+
+/**
+ * Does the mutant LOSE the ground truth, scored at each lane's OWN optical
+ * regime tolerance?
+ *
+ * The corroborating half of the rebuild, and the reason `toleranceFor` exists.
+ * Comparing a max-over-all-genera against the THIN bar is what made the old
+ * group vacuous; comparing each genus against its own bar is the same claim
+ * stated correctly, and it discriminates all five mutations.
+ *
+ * @param {object} overrides The mutation.
+ * @returns {boolean}
+ */
+function losesGroundTruth(overrides) {
+  for (const name of ALL_GENERA) {
+    const model = modelled(name, overrides);
+    const measured = MEASURED_SCREEN_ELONGATION[name];
+    if (Math.abs(model.elongation - measured.elongation) > toleranceFor(name)) {
+      return true;
+    }
+    for (const axis of ["alongLength", "acrossLength"]) {
+      if (
+        Math.abs(model[axis] - measured[axis]) / measured[axis] >
+        HALF_LENGTH_RELATIVE_TOLERANCE
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /** Worst absolute elongation error and worst relative half-length error. */
@@ -160,6 +281,36 @@ describe("C13-16 march transfer — the model reads its inputs from shipped arti
     assert.equal(PROBE_MARCH.steps, 32);
     assert.equal(ABSORPTION_COEFF, 0.04);
     assert.equal(PROBE_ESTIMATOR.sampleCount, 256);
+  });
+
+  it("reads the coverage response and the world->noise scale from the ENGINE, not a copy", () => {
+    // The model used to declare `WORLD_TO_NOISE`, `COVERAGE_ANCHOR`,
+    // `COVERAGE_EXPONENT` and a whole re-statement of `cloudEffectiveCoverage`
+    // as local literals, while the engine shipped all four as an importable CPU
+    // twin — and nothing in this "reads its inputs from shipped artifacts" group
+    // checked the coverage response at all. `CLOUD_COVERAGE_ANCHOR` and
+    // `CLOUD_COVERAGE_EXPONENT` have already been re-derived once in the product
+    // (`CLOUD-LOW-COVERAGE-CUTOFF`), so a copy is a live drift risk, not a
+    // hypothetical one.
+    //
+    // Identity, not equality: an equal-valued re-copy would satisfy `===` on the
+    // numbers but is exactly what this asserts against for the FUNCTION.
+    assert.equal(cloudEffectiveCoverage, shippedCloudEffectiveCoverage);
+    assert.equal(WORLD_TO_NOISE, CLOUD_DENSITY_WORLD_TO_NOISE);
+    assert.equal(COVERAGE_ANCHOR, CLOUD_COVERAGE_ANCHOR);
+    assert.equal(COVERAGE_EXPONENT, CLOUD_COVERAGE_EXPONENT);
+    // And the SHAPE of the response the model marches against, so a re-derivation
+    // that keeps the symbol names but changes the curve is still visible here.
+    assert.equal(cloudEffectiveCoverage(0), 0);
+    assert.equal(cloudEffectiveCoverage(1), 1);
+    // At and above the anchor the response reproduces the historical
+    // `1 - coverage` threshold; below it the coverage is LIFTED.
+    assert.ok(cloudEffectiveCoverage(0.55) >= 0.55);
+    assert.ok(cloudEffectiveCoverage(0.8) >= 0.8);
+    assert.ok(cloudEffectiveCoverage(0.3) > 0.3);
+    // The probe's own coverage, i.e. the one every number in this spec marches
+    // at, sits at or above the anchor and is therefore NOT lifted.
+    assert.ok(PROBE_MARCH.coverage >= COVERAGE_ANCHOR);
   });
 
   it("puts the four genera in the optical regimes the tolerances assume", () => {
@@ -265,6 +416,18 @@ describe("C13-16 march transfer — MUTATION: a model that stops being an IMAGE 
    * a pixel. Every one must lose the ground truth. `why` states what a pass
    * would mean, because a mutation that silently starts passing is worse than
    * no mutation at all.
+   *
+   * REBUILT 2026-08-07. Every entry here was VACUOUS as originally written: the
+   * predicate was `worstErrors(overrides).elongation > THIN_ELONGATION_TOLERANCE`,
+   * i.e. a max taken over ALL_GENERA — CUMULUS included — compared against the
+   * bar for the THIN lanes. CUMULUS's un-mutated residual is 0.135 and the bar
+   * is 0.100, so the assertion was satisfied before any mutation was applied and
+   * all five subtests passed on the baseline residual. Renaming any of the five
+   * override keys (which `buildModelParameters` silently ignores) left every
+   * subtest green. Each subtest now scores TWO things — displacement from the
+   * un-mutated model, and loss of the ground truth at each lane's OWN regime
+   * tolerance — and the meta-mutant below requires both predicates to go RED on
+   * a mutation the model cannot read.
    */
   const mutations = [
     {
@@ -296,16 +459,66 @@ describe("C13-16 march transfer — MUTATION: a model that stops being an IMAGE 
 
   for (const mutation of mutations) {
     it(`fails when ${mutation.label}`, () => {
-      const worst = worstErrors(mutation.overrides);
-      const failsElongation = worst.elongation > THIN_ELONGATION_TOLERANCE;
-      const failsHalfLength = worst.halfLength > HALF_LENGTH_RELATIVE_TOLERANCE;
+      // (a) The mutation must MOVE the model relative to the un-mutated model.
+      //     Scored against the baseline, never against an absolute bar the
+      //     baseline itself already clears.
+      const moved = displacementFromBaseline(mutation.overrides);
       assert.ok(
-        failsElongation || failsHalfLength,
-        `mutation reproduced the ground truth (elongation ${worst.elongation.toFixed(3)}, ` +
-          `half-length ${(worst.halfLength * 100).toFixed(1)}%) — ${mutation.why}`,
+        discriminates(moved),
+        `the mutation did not move the model (elongation ${moved.elongation.toFixed(3)} <= ` +
+          `${MUTATION_ELONGATION_DISCRIMINATION}, half-length ${(moved.halfLength * 100).toFixed(1)}% <= ` +
+          `${HALF_LENGTH_RELATIVE_TOLERANCE * 100}%) — either the override key is no longer read, ` +
+          `or ${mutation.why}`,
+      );
+      // (b) And it must land OUTSIDE the ground truth at each lane's own
+      //     optical-regime tolerance, which is the claim the group's docstring
+      //     actually makes.
+      assert.ok(
+        losesGroundTruth(mutation.overrides),
+        `the mutation still reproduces the measured run at every lane's own ` +
+          `tolerance — ${mutation.why}`,
       );
     });
   }
+
+  it("the mutation predicate goes RED on a no-op mutation (the meta-mutant)", () => {
+    // THE GUARD ON THE GUARD. `buildModelParameters` reads every field as
+    // `overrides.X ?? default` with no unknown-key validation, so renaming one
+    // of the five override keys silently turns its mutation into a no-op. That
+    // is exactly how the previous group went vacuous without anyone noticing:
+    // the subtests kept passing while measuring nothing. Feed the SAME two
+    // predicates a mutation the model cannot read and require both to reject it.
+    const noops = [
+      { label: "the empty mutation", overrides: {} },
+      {
+        label: "all five keys renamed (a future rename, verbatim)",
+        overrides: {
+          includeBaseFeild: false,
+          stepCount: 1,
+          includeErrosion: false,
+          includeFiber: false,
+          saturateTransfer: false,
+        },
+      },
+    ];
+    for (const noop of noops) {
+      const moved = displacementFromBaseline(noop.overrides);
+      assert.equal(
+        discriminates(moved),
+        false,
+        `${noop.label}: the displacement predicate accepted a mutation that ` +
+          `changes nothing (elongation ${moved.elongation}, half-length ${moved.halfLength}) ` +
+          `— every "fails when ..." subtest above is therefore vacuous`,
+      );
+      assert.equal(
+        losesGroundTruth(noop.overrides),
+        false,
+        `${noop.label}: the ground-truth predicate reported a loss with no ` +
+          `mutation applied — it is scoring the baseline residual, which is the ` +
+          `defect this rebuild removed`,
+      );
+    }
+  });
 
   it("fails when the FIELD is measured instead of the image (the CPU twin)", () => {
     // This is R3's premise stated as a test. `fibreElongation` is the existing
