@@ -17609,3 +17609,92 @@ adversarial mutants rejected: widening the not-black floor, re-merging the two
 bands into one gate, restoring `r3` rounding on the deepest means, measuring s5
 against the shipped capture instead of the midpoint, capturing the midpoint
 before its own render, and dropping the sign check.
+
+---
+
+## C12-29-S2-NOTBLACK-DEEPEST — RESOLVED: INSTRUMENT (absolute bar × documented ambient divergence) (2026-08-07)
+
+**Closes** the `ECLIPSE-S2-NOTBLACK-DEEPEST-WEBGPU` investigation opened at
+Batch 878. **No engine defect. No bar widened.**
+
+**The discriminator, pre-registered at Batch 878, resolved on the next run:**
+
+| quantity | WebGL | WebGPU | gpu/gl |
+| --- | --- | --- | --- |
+| `survivingFractionGround` (deepest rung) | 0.03415 | 0.03330 | **0.975** |
+| `survivingFractionSky` (deepest rung) | 0.2217 | 0.2288 | **1.032** |
+| `groundMarginOverFloor` (absolute, bar 0.004) | +7.03e-3 | **−7.8e-5** | — |
+
+Both ratios are deep inside the pre-registered `[0.85, 1.15]` band, so by the
+rule stated in advance this is the INSTRUMENT arm. The two backends agree on
+how much light survives at totality to **2.5%** (ground) and **3.2%** (sky);
+what they disagree on is the ABSOLUTE luminance the surviving fraction is a
+fraction OF — and the WebGPU miss was **78 parts per million** below the bar.
+
+**Mechanism, established at source in Batch 878 and unchanged:**
+`notBlackAtDeepest` was the only gating predicate in the probe that read an
+absolute luminance. Every other one is a ratio, a CPU scalar or a structural
+flag, and a constant per-backend difference in the globe's AMBIENT MODEL
+cancels in all of those and in none of it. That difference is real and shipped
+on purpose — `GlobeTerrain.wgsl`'s no-vertex-normals branch describes itself as
+an "intentional algorithmic rewrite of WebGL's `NdotL × 5 + 0.3` × fade path —
+gentler transition, brighter ambient, separate night ambient" — and this scene
+uses `EllipsoidTerrainProvider`, so it takes that branch. S5's composition was
+independently verified parity-matched in both shaders, so the S5-stacking
+suspect (which would have produced `floor² = 1.357e-3`, the right magnitude)
+is dead.
+
+**`NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA` is NOT implicated here** and
+steps back from prime suspect: the failing band is the GROUND, and the sky's
+surviving fractions agree to 3.2% across backends. That row stays OPEN on its
+own merits — it was root-caused independently from the G1 captures and nothing
+in this investigation touches it.
+
+**The repair — a change of FORM, not of tolerance.**
+
+* `notBlackAtDeepest{Sky,Ground}` now test a SURVIVING FRACTION against the
+  band's own undimmed frame. The bar is **DERIVED**, not fitted:
+  `NOT_EXTINGUISHED_FRACTION = sqrt(ECLIPSE_RADIOMETRIC_FLOOR) = 7.07107e-3`,
+  the GEOMETRIC mean of the two states the shipped model itself defines —
+  "at the model's floor" (`R^(1/3)` = 0.0368403) and "the floor applied twice"
+  (`R^(2/3)` = 1.35721e-3, the concrete extinguishment failure this codebase
+  has had to rule out). The symmetry is exact: `0.0368403 / 7.07107e-3 =
+  5.2100` and `7.07107e-3 / 1.35721e-3 = 5.2100`, i.e. **one full half-decade
+  of margin on each side**. It is a function of the same published illuminance
+  ratio the floor is built from, and tonight's measurements clear it by 4.7×
+  and 4.8× — if they had landed at the bar, the bar would still be here.
+  `0.5 × EXPECTED_TWILIGHT_FLOOR` was considered and rejected: 0.5 is
+  arbitrary, and it sits 2.0× below the pass state but 13.6× above the failure.
+* The absolute bar (0.004, ~1.02 code values) is **RETAINED UNCHANGED** as
+  `notBlackAtDeepest{Sky,Ground}AbsoluteReportedOnly` — it is still the number
+  a human reads off a screen, it is just no longer a gate, because it cannot
+  separate a defect from the engine's documented ambient divergence.
+* **NEW GATING cross-backend predicate**, the backend-neutral form of the
+  original claim and the one that catches the real defect class ("one backend
+  dims beyond its published factor at totality"):
+  `survivingFraction{Sky,Ground}Parity`, `gpu/gl` within `[0.85, 1.15]`.
+  Folded through a new `PARITY_GATE_PREDICATES` list exactly like the
+  per-backend gate, so a parity failure NAMES its predicate, and the run prints
+  `GATE parity: …`. A `null` on either side fails rather than passing
+  vacuously.
+
+**The "8–10% below the floor" observation, ANSWERED — the comparison was a
+category error.** `survivingFraction` is a ratio of CAPTURED band means (post
+PBR-Neutral, post inverse gamma); `EXPECTED_TWILIGHT_FLOOR` is a LINEAR-LIGHT
+multiplier on the scene light. This file's own header already says those are
+different quantities. The in-category expectation is
+`predictDim(offMean, floor)`, which is **0.0497** for an undimmed ground mean
+of 0.10–0.20 and rises to 0.0667 at 0.50 — so the measurement is ~**33%** below
+the in-category number, not 8% below a linear-light constant, and 33% is
+INSIDE the estimator slack this probe already quantified (17.6% at f = 0.40,
+72.1% at f = 0.157; the deepest rung is at the deep end). The two numbers
+landing within 10% of each other is a coincidence of the transform's
+near-linearity at small values. Recorded as
+`deepest.capturedSpaceFloorExpectation{Ground,Sky}`, reported-only.
+
+**Files:** `Tools/visual-regression/probe-eclipse-scene-dimming.mjs`,
+`Tools/visual-regression/eclipse-scene-dimming.spec.mjs` (48/48). Five
+adversarial mutants rejected: restoring the absolute bar as the gate, widening
+the parity band to [0.5, 2.0], fitting the fraction bar to just under tonight's
+value (0.033), dropping a parity predicate from the fold, and letting a null
+fraction pass vacuously.

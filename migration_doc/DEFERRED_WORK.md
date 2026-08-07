@@ -1,8 +1,28 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
-## New findings — eclipse deepest-rung worker, 2026-08-07 (Batch 878)
+## New findings — eclipse deepest-rung worker, 2026-08-07 (Batch 878; the first entry RESOLVED at Batch 880)
 
-- **`ECLIPSE-S2-NOTBLACK-DEEPEST-WEBGPU` — OPEN, one-sided, attribution
+- **`ECLIPSE-S2-NOTBLACK-DEEPEST-WEBGPU` — ✅ RESOLVED 2026-08-07 (Batch 880):
+  INSTRUMENT, not a product defect.** The Batch-878 discriminator returned
+  `survivingFractionGround` 0.03415 (WebGL) vs 0.03330 (WebGPU), ratio
+  **0.975**, and `survivingFractionSky` 0.2217 vs 0.2288, ratio **1.032** —
+  both deep inside the pre-registered [0.85, 1.15] band, which is the arm that
+  says INSTRUMENT. The two backends agree on how much light survives totality
+  to 2.5% / 3.2%; the WebGPU failure was **78 ppm** below an ABSOLUTE bar, on a
+  per-backend ambient difference the engine ships on purpose. Repaired by
+  changing the FORM of the claim, not its tolerance: `notBlackAtDeepest`
+  `{Sky,Ground}` now test a surviving fraction against a bar DERIVED as
+  `sqrt(R)` — the geometric mean of the model floor `R^(1/3)` and the floor
+  applied twice `R^(2/3)`, log-equidistant at 5.21x each way — the absolute bar
+  is retained UNCHANGED as a reported-only field, and a new GATING
+  cross-backend predicate `survivingFraction{Sky,Ground}Parity` catches the
+  defect class the absolute bar could only catch by luck.
+  **`NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA` is no longer implicated
+  here** — the failing band was the GROUND and the two sky fractions agree to
+  3.2% — and that row stays OPEN on its own independent evidence from the G1
+  captures. *Original wording retained below for the record.*
+
+- **`ECLIPSE-S2-NOTBLACK-DEEPEST-WEBGPU` (as first filed) — OPEN, one-sided, attribution
   pending ONE number.** `notBlackAtDeepest` fails on WebGPU and passes on
   WebGL: at the deepest rung a WebGPU band mean falls below the 0.004 (~1 code
   value) "totality is not extinguished" floor. **Ruled out at source:** S5's

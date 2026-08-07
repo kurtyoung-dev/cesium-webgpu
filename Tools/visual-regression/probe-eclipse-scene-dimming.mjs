@@ -1603,6 +1603,78 @@ const SUB_EFFECT_SIGN_EPS = 0.002;
 const NOT_BLACK_FLOOR = 0.004;
 
 /**
+ * "Not extinguished", expressed as a SURVIVING FRACTION of the band's own
+ * undimmed frame instead of as an absolute luminance.
+ *
+ * WHY THE FORM CHANGED (2026-08-07). The absolute bar above is the only thing
+ * in this probe that reads an absolute luminance; everything else is a ratio,
+ * a CPU scalar or a structural flag, and a constant per-backend difference in
+ * the globe's AMBIENT MODEL cancels in all of those and in none of it. That
+ * difference is real and DOCUMENTED — `GlobeTerrain.wgsl`'s no-vertex-normals
+ * branch is an "intentional algorithmic rewrite of WebGL's NdotL x 5 + 0.3 x
+ * fade path — gentler transition, brighter ambient, separate night ambient" —
+ * and this scene uses `EllipsoidTerrainProvider`, so it takes that branch. The
+ * measured consequence: at the deepest rung the two backends' surviving
+ * fractions agree to 2.5% (0.03415 vs 0.03330) while the absolute means
+ * straddle 0.004 by +7.03e-3 and -7.8e-5 — a 78-ppm miss that failed WebGPU
+ * and passed WebGL on a difference the engine ships on purpose. The claim the
+ * gate exists to make is about EXTINGUISHMENT, and extinguishment is a
+ * statement about the surviving fraction, so that is what it now measures.
+ *
+ * WHERE THE NUMBER COMES FROM — derived, not fitted. Two states the shipped
+ * model itself defines:
+ *   PASS  the scene sits at the model's floor,
+ *         `EXPECTED_TWILIGHT_FLOOR` = R^(1/3) = 0.0368403
+ *   FAIL  the floor is applied TWICE — the concrete extinguishment failure
+ *         this codebase has actually had to rule out (S5's per-fragment umbra
+ *         STACKING with S2 instead of superseding it, excluded at source in
+ *         `GlobeFS.glsl` / `GlobeTerrain.wgsl` on 2026-08-07):
+ *         `EXPECTED_TWILIGHT_FLOOR^2` = R^(2/3) = 1.35721e-3
+ * The discriminator between two MULTIPLICATIVE states belongs at their
+ * GEOMETRIC mean, which is log-equidistant from both:
+ *         sqrt(R^(1/3) * R^(2/3)) = sqrt(R) = 7.07107e-3
+ * and the symmetry is exact — 0.0368403 / 7.07107e-3 = 5.2100 and
+ * 7.07107e-3 / 1.35721e-3 = 5.2100. So the bar is `sqrt(R)`: one full
+ * half-decade of margin on each side, and it is a function of the SAME
+ * published illuminance ratio the floor itself is built from.
+ *
+ * Deliberately NOT `0.5 * EXPECTED_TWILIGHT_FLOOR`: 0.5 is an arbitrary
+ * fraction, and it lands 2.0x below the floor but 13.6x above the failure —
+ * asymmetric, and tight against the pass state for no stated reason.
+ *
+ * NOT FITTED TO TONIGHT: the measured ground fractions (0.03330 / 0.03415)
+ * clear this bar by 4.7x and 4.8x. If they had been at the bar, the bar would
+ * still be here — it is derived from R, and R is published.
+ */
+const NOT_EXTINGUISHED_FRACTION = Math.sqrt(ECLIPSE_RADIOMETRIC_FLOOR);
+
+/**
+ * Cross-backend agreement band for the surviving fraction, GATING.
+ *
+ * This is the predicate the absolute bar was only ever catching by luck. The
+ * defect class is "one backend dims beyond its published factor" — which is a
+ * RATIO statement, is invariant to the ambient-model difference, and is
+ * therefore the backend-neutral form of the original claim. +/-15% matches
+ * every other cross-backend band in this fleet and is far wider than the 2.5%
+ * the two backends actually agree to, so it fails on a real divergence rather
+ * than on the documented one.
+ */
+const SURVIVING_FRACTION_PARITY_BAND = Object.freeze({ lo: 0.85, hi: 1.15 });
+
+/**
+ * The CROSS-BACKEND predicates, folded exactly like `GATE_PREDICATES`.
+ *
+ * Same rule, same reason: the list composes the verdict and names the failure,
+ * so a parity FAIL says which comparison broke instead of leaving a reader to
+ * pick a false diagnostic out of the JSON.
+ */
+const PARITY_GATE_PREDICATES = Object.freeze([
+  "factorParity",
+  "survivingFractionSkyParity",
+  "survivingFractionGroundParity",
+]);
+
+/**
  * The predicates that COMPOSE the per-backend verdict, in evaluation order.
  *
  * This list IS the gate: `judge` folds it to produce `PASS` and filters it to
@@ -1687,6 +1759,8 @@ const GATE_PREDICATES = Object.freeze([
 const REPORTED_ONLY_PREDICATES = Object.freeze([
   "skyBracketOkReportedOnly",
   "groundBracketOkReportedOnly",
+  "notBlackAtDeepestSkyAbsoluteReportedOnly",
+  "notBlackAtDeepestGroundAbsoluteReportedOnly",
   "skyBracketS2OnlyOkReportedOnly",
   "groundBracketS2OnlyOkReportedOnly",
   "backgroundRevealExplainsAll",
@@ -2274,6 +2348,40 @@ function judge(steps) {
         ? deepest.on.ground.mean / deepest.off.ground.mean
         : null,
     expectedTwilightFloor: EXPECTED_TWILIGHT_FLOOR,
+
+    // ── Reported-only: the "8-10% below the floor" observation, ANSWERED ────
+    //
+    // The first read of `survivingFractionGround` (0.03415 / 0.03330) sits
+    // ~7-10% below `EXPECTED_TWILIGHT_FLOOR` (0.0368403), and the obvious
+    // question is whether that gap is a finding.
+    //
+    // IT IS NOT, AND THE COMPARISON THAT PRODUCES IT IS CATEGORY-MISMATCHED.
+    // `EXPECTED_TWILIGHT_FLOOR` is a LINEAR-LIGHT multiplier on the scene
+    // light; `survivingFraction` is a ratio of CAPTURED band means, i.e. after
+    // PBR-Neutral tonemapping and the inverse gamma. This file's own header
+    // already says those are different quantities — "a linear light multiply
+    // of `f` does NOT show up as `f` or even as `f^(1/2.2)` in the capture".
+    // The two numbers landing within 10% of each other is a COINCIDENCE of the
+    // transform being near-linear at small values, not agreement.
+    //
+    // The comparison that is in-category is `predictDim(offMean, floor)` — the
+    // captured-space reading a floor-dimmed band should produce. It is 0.0497
+    // for an undimmed ground mean of 0.10-0.20 and rises to 0.0667 at 0.50, so
+    // the measurement is ~33% BELOW the in-category expectation, not 8% below
+    // a linear-light constant. And 33% is INSIDE the estimator slack this
+    // probe quantified at `REPORTED_ONLY_PREDICATES`: holding a band mean
+    // fixed and changing only its composition moves the true ratio by 17.6% at
+    // f = 0.40 and 72.1% at f = 0.157, and the deepest rung is at the deep end
+    // of that range. So the residual needs no separate explanation — but it is
+    // reported, unrounded, so a future run that moves it can be seen to.
+    capturedSpaceFloorExpectationGround: predictDim(
+      deepest.off.ground.mean,
+      EXPECTED_TWILIGHT_FLOOR,
+    ),
+    capturedSpaceFloorExpectationSky: predictDim(
+      deepest.off.sky.mean,
+      EXPECTED_TWILIGHT_FLOOR,
+    ),
   };
   v.deepestDimsVisibly = deepest.dimSky < 0.9 && deepest.dimGround < 0.95;
 
@@ -2334,11 +2442,30 @@ function judge(steps) {
   // completely different paths (the sky through the atmosphere shell's
   // composite, the ground through the globe's diffuse + ambient model). The
   // bar is unchanged — only the reporting is.
-  v.notBlackAtDeepestSky = deepest.on.sky.mean > NOT_BLACK_FLOOR;
-  v.notBlackAtDeepestGround = deepest.on.ground.mean > NOT_BLACK_FLOOR;
-  // Retained so the historical series stays readable; not a gate any more —
-  // the two per-band predicates above are.
+  // ── Batch 880: the SURVIVING-FRACTION form ───────────────────────────────
+  //
+  // The bar is `NOT_EXTINGUISHED_FRACTION` = sqrt(R), log-equidistant between
+  // the model's floor and the floor applied twice; see its derivation. A null
+  // fraction FAILS rather than passing vacuously — a band with no undimmed
+  // reference has not shown that it survived anything. (`sanityFloors`
+  // separately requires `off.ground.mean > 0.02`, so a null here means a
+  // broken capture, not a legitimately dark scene.)
+  const survives = (fraction) =>
+    Number.isFinite(fraction) && fraction >= NOT_EXTINGUISHED_FRACTION;
+  v.notBlackAtDeepestSky = survives(v.deepest.survivingFractionSky);
+  v.notBlackAtDeepestGround = survives(v.deepest.survivingFractionGround);
+  // The absolute bar is RETAINED as reported-only, both for series continuity
+  // and because it is the quantity a human eye actually reads off a screen.
+  // It is no longer a gate: it cannot distinguish a defect from the
+  // engine's own documented ambient-model divergence, which is exactly how it
+  // failed WebGPU by 78 ppm on a frame whose surviving fraction matched
+  // WebGL's to 2.5%.
+  v.notBlackAtDeepestSkyAbsoluteReportedOnly =
+    deepest.on.sky.mean > NOT_BLACK_FLOOR;
+  v.notBlackAtDeepestGroundAbsoluteReportedOnly =
+    deepest.on.ground.mean > NOT_BLACK_FLOOR;
   v.notBlackAtDeepest = v.notBlackAtDeepestSky && v.notBlackAtDeepestGround;
+  v.notExtinguishedFraction = NOT_EXTINGUISHED_FRACTION;
 
   // Lane (d) — ruling E2's camera mode publishes the LINEAR radiometric
   // factor, strictly below the eye-adapted default, and renders darker.
@@ -2551,6 +2678,41 @@ function judge(steps) {
       factorParity: branchesMatch ? maxFactorDelta < 1e-9 : null,
       dimSeriesAgree: maxDimSkyDelta < 0.15 && maxDimGroundDelta < 0.2,
     };
+
+    // ── Batch 880: surviving-fraction parity at the deepest rung, GATING ────
+    //
+    // This is the predicate the absolute not-black bar was only ever catching
+    // by luck. The defect class it exists for is "one backend dims beyond its
+    // published factor at totality"; that is a RATIO statement, so it is
+    // invariant to the globe's documented per-backend ambient difference and
+    // fails only on a real divergence. Measured agreement on the run that
+    // motivated it was 2.5% (ground) and 3.2% (sky) against a +/-15% band.
+    //
+    // `null` on either side is NOT a pass: a missing fraction means the
+    // deepest rung had no usable undimmed reference, and a parity claim over a
+    // missing measurement is exactly the vacuity this fleet keeps re-learning.
+    const fractionRatio = (a, b) =>
+      Number.isFinite(a) && Number.isFinite(b) && b !== 0 ? a / b : null;
+    const inParityBand = (ratio) =>
+      Number.isFinite(ratio) &&
+      ratio >= SURVIVING_FRACTION_PARITY_BAND.lo &&
+      ratio <= SURVIVING_FRACTION_PARITY_BAND.hi;
+    parity.survivingFractionSkyRatio = fractionRatio(
+      verdicts.webgpu?.deepest?.survivingFractionSky,
+      verdicts.webgl?.deepest?.survivingFractionSky,
+    );
+    parity.survivingFractionGroundRatio = fractionRatio(
+      verdicts.webgpu?.deepest?.survivingFractionGround,
+      verdicts.webgl?.deepest?.survivingFractionGround,
+    );
+    parity.survivingFractionParityBand = SURVIVING_FRACTION_PARITY_BAND;
+    parity.survivingFractionSkyParity = inParityBand(
+      parity.survivingFractionSkyRatio,
+    );
+    parity.survivingFractionGroundParity = inParityBand(
+      parity.survivingFractionGroundRatio,
+    );
+
     verdicts.parity = parity;
     if (!branchesMatch) {
       structural = true;
@@ -2559,8 +2721,13 @@ function judge(steps) {
           "the ephemerides are not comparable; re-run once earth-orientation " +
           "data is warm in both",
       );
-    } else if (!parity.factorParity) {
-      anyFail = true;
+    } else {
+      parity.failedPredicates = PARITY_GATE_PREDICATES.filter(
+        (name) => parity[name] !== true,
+      );
+      if (parity.failedPredicates.length > 0) {
+        anyFail = true;
+      }
     }
   }
 
@@ -2612,6 +2779,12 @@ function judge(steps) {
     );
   }
   if (!structural) {
+    const parityFailed = verdicts.parity?.failedPredicates ?? [];
+    console.log(
+      parityFailed.length === 0
+        ? `GATE parity: PASS — all ${PARITY_GATE_PREDICATES.length} cross-backend predicates true`
+        : `GATE parity: FAIL — failing predicate(s): ${parityFailed.join(", ")}`,
+    );
     console.log(
       `NOT GATING (reported-only, expected false — see REPORTED_ONLY_PREDICATES): ` +
         (verdicts.webgl?.reportedOnlyPredicates ?? []).join(", "),

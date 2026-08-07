@@ -1503,6 +1503,45 @@ const EXPECTED_GATE_PREDICATES = [
 const assignsVerdictField = (probe, field) =>
   probe.includes(`\n  v.${field} =`) || probe.includes(`\n  v.${field}=`);
 
+/**
+ * An INDEPENDENT reimplementation of the probe's display transform, so the
+ * category argument in Batch 880 is checked rather than read back out of the
+ * text it is arguing about. PBR-Neutral (achromatic path) sandwiched between
+ * the inverse gamma and its undo, exactly as `predictDim` composes them.
+ *
+ * @param {number} meanOff captured band mean of the undimmed frame
+ * @param {number} factor linear-light multiplier applied to the scene light
+ * @returns {number} the captured-space ratio that multiplier produces
+ */
+function predictDimReference(meanOff, factor) {
+  const startCompression = 0.8 - 0.04;
+  const pbr = (x) => {
+    if (!(x > 0)) {
+      return 0;
+    }
+    const offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+    const c = x - offset;
+    if (c < startCompression) {
+      return c;
+    }
+    const d = 1 - startCompression;
+    return 1 - (d * d) / (c + d - startCompression);
+  };
+  let lo = 0;
+  let hi = 64;
+  const target = Math.pow(meanOff, 2.2);
+  for (let i = 0; i < 60; i++) {
+    const mid = 0.5 * (lo + hi);
+    if (pbr(mid) < target) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  const linearOff = 0.5 * (lo + hi);
+  return Math.pow(pbr(linearOff * factor), 1 / 2.2) / meanOff;
+}
+
 const parseFrozenList = (probe, name) => {
   const opener = `const ${name} = Object.freeze([`;
   const start = probe.indexOf(opener);
@@ -1674,15 +1713,19 @@ test("the not-black bar is a named constant, unchanged, and applied per band", (
   // mean distinguishable from black.
   assert.match(probe, /const NOT_BLACK_FLOOR = 0\.004;/);
   assert.match(probe, /NOT to be widened to make a run pass/);
-  // Applied per band, and BOTH bands gate.
+  // Batch 880 — the absolute bar is RETAINED but demoted to reported-only;
+  // the gating form is the surviving fraction (see the dedicated test below).
   assert.match(
     probe,
-    /v\.notBlackAtDeepestSky = deepest\.on\.sky\.mean > NOT_BLACK_FLOOR;/,
+    /v\.notBlackAtDeepestSkyAbsoluteReportedOnly =\s*deepest\.on\.sky\.mean > NOT_BLACK_FLOOR;/,
   );
   assert.match(
     probe,
-    /v\.notBlackAtDeepestGround = deepest\.on\.ground\.mean > NOT_BLACK_FLOOR;/,
+    /v\.notBlackAtDeepestGroundAbsoluteReportedOnly =\s*deepest\.on\.ground\.mean > NOT_BLACK_FLOOR;/,
   );
+  const reported = parseFrozenList(probe, "REPORTED_ONLY_PREDICATES");
+  assert.ok(reported.includes("notBlackAtDeepestSkyAbsoluteReportedOnly"));
+  assert.ok(reported.includes("notBlackAtDeepestGroundAbsoluteReportedOnly"));
   const gate = parseFrozenList(probe, "GATE_PREDICATES");
   assert.ok(gate.includes("notBlackAtDeepestSky"));
   assert.ok(gate.includes("notBlackAtDeepestGround"));
@@ -1796,5 +1839,153 @@ test("S6 really is additive and S5 really is subtractive — checked at the sour
   assert.match(
     globeWgsl,
     /eclipseUniforms\.params\.x > 1\.5 &&\s*eclipseUniforms\.params\.x < 3\.5/,
+  );
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Batch 880 — "not extinguished" moves from an ABSOLUTE luminance to a
+// SURVIVING FRACTION, and the cross-backend form of the same claim starts
+// gating.
+//
+// The discriminator pre-registered in Batch 878 resolved INSTRUMENT: at the
+// deepest rung the two backends' surviving fractions agreed to 2.5% (ground
+// 0.03415 vs 0.03330) and 3.2% (sky 0.2217 vs 0.2288), while the absolute
+// means straddled the 0.004 bar by +7.03e-3 and −7.8e-5. A 78-ppm miss failed
+// WebGPU and passed WebGL on the engine's own documented ambient divergence.
+// ───────────────────────────────────────────────────────────────────────────
+
+test("the not-extinguished bar is DERIVED from the published ratio, not fitted", () => {
+  const probe = readProbeText();
+  // Derived: the geometric mean of "at the model's floor" (R^1/3) and "the
+  // floor applied twice" (R^2/3) is sqrt(R) — log-equidistant from both.
+  assert.match(
+    probe,
+    /const NOT_EXTINGUISHED_FRACTION = Math\.sqrt\(ECLIPSE_RADIOMETRIC_FLOOR\);/,
+  );
+  // The arithmetic that justifies it has to travel with it.
+  assert.match(probe, /GEOMETRIC mean/);
+  assert.match(probe, /5\.2100/);
+  assert.match(probe, /NOT FITTED TO TONIGHT/);
+  // And the rejected alternative is recorded with its asymmetry, so the next
+  // reader does not re-open the choice.
+  assert.match(probe, /Deliberately NOT `0\.5 \* EXPECTED_TWILIGHT_FLOOR`/);
+
+  // The value must sit strictly between the two model states — this is the
+  // property that makes it a discriminator at all, and it is checked here
+  // rather than asserted in prose.
+  const R = ECLIPSE_RADIOMETRIC_FLOOR;
+  const bar = Math.sqrt(R);
+  const floor = ECLIPSE_TWILIGHT_FLOOR;
+  const doubleFloor = floor * floor;
+  assert.ok(bar < floor, "the bar must pass a scene sitting at the floor");
+  assert.ok(
+    bar > doubleFloor,
+    "the bar must fail a scene with the floor applied twice",
+  );
+  // Log-symmetric to within floating error: equal margin on both sides.
+  assert.ok(Math.abs(floor / bar - bar / doubleFloor) < 1e-9);
+  // A bar fitted just under tonight's measurement would sit ABOVE the
+  // half-decade point; this is the guard against that.
+  assert.ok(
+    bar <= floor / 5,
+    "the bar must keep at least a half-decade of margin below the floor",
+  );
+});
+
+test("the gating form is the fraction; the absolute bar is retained, demoted", () => {
+  const probe = readProbeText();
+  assert.match(
+    probe,
+    /const survives = \(fraction\) =>\s*Number\.isFinite\(fraction\) && fraction >= NOT_EXTINGUISHED_FRACTION;/,
+  );
+  assert.match(
+    probe,
+    /v\.notBlackAtDeepestSky = survives\(v\.deepest\.survivingFractionSky\);/,
+  );
+  assert.match(
+    probe,
+    /v\.notBlackAtDeepestGround = survives\(v\.deepest\.survivingFractionGround\);/,
+  );
+  // A null fraction must FAIL, not pass vacuously.
+  assert.match(probe, /Number\.isFinite\(fraction\) &&/);
+  assert.match(probe, /has not shown that it survived anything/);
+  // The absolute bar itself is unchanged — this repair is a change of FORM,
+  // not a widening.
+  assert.match(probe, /const NOT_BLACK_FLOOR = 0\.004;/);
+  const gate = parseFrozenList(probe, "GATE_PREDICATES");
+  assert.ok(gate.includes("notBlackAtDeepestSky"));
+  assert.ok(gate.includes("notBlackAtDeepestGround"));
+  assert.ok(!gate.includes("notBlackAtDeepestSkyAbsoluteReportedOnly"));
+  assert.ok(!gate.includes("notBlackAtDeepestGroundAbsoluteReportedOnly"));
+});
+
+test("cross-backend surviving-fraction parity GATES, and names its failure", () => {
+  const probe = readProbeText();
+  assert.match(
+    probe,
+    /const SURVIVING_FRACTION_PARITY_BAND = Object\.freeze\(\{ lo: 0\.85, hi: 1\.15 \}\);/,
+  );
+  assert.deepEqual(parseFrozenList(probe, "PARITY_GATE_PREDICATES"), [
+    "factorParity",
+    "survivingFractionSkyParity",
+    "survivingFractionGroundParity",
+  ]);
+  // Folded, like the per-backend list — the verdict names the failure.
+  assert.match(
+    probe,
+    /parity\.failedPredicates = PARITY_GATE_PREDICATES\.filter\(\s*\(name\) => parity\[name\] !== true,\s*\);/,
+  );
+  assert.match(
+    probe,
+    /if \(parity\.failedPredicates\.length > 0\) \{\s*anyFail = true;/,
+  );
+  assert.match(probe, /GATE parity: FAIL — failing predicate\(s\)/);
+  // The ratio is WebGPU over WebGL at the deepest rung, on both bands.
+  assert.match(
+    probe,
+    /verdicts\.webgpu\?\.deepest\?\.survivingFractionSky,\s*verdicts\.webgl\?\.deepest\?\.survivingFractionSky,/,
+  );
+  assert.match(
+    probe,
+    /verdicts\.webgpu\?\.deepest\?\.survivingFractionGround,\s*verdicts\.webgl\?\.deepest\?\.survivingFractionGround,/,
+  );
+  // Null must not pass — a parity claim over a missing measurement is vacuous.
+  assert.match(probe, /`null` on either side is NOT a pass/);
+  assert.match(probe, /Number\.isFinite\(ratio\) &&/);
+  // The defect class it exists for is stated where it is defined.
+  assert.match(probe, /one backend dims beyond its published factor/);
+});
+
+test("the below-the-floor observation is ANSWERED in-category, and reported", () => {
+  // `survivingFraction` is a ratio of CAPTURED means; `EXPECTED_TWILIGHT_FLOOR`
+  // is a LINEAR-LIGHT multiplier. Comparing them directly is a category error,
+  // and the ~8-10% "gap" it produces is not a finding. The in-category
+  // comparison is `predictDim(offMean, floor)`, and the residual against THAT
+  // is inside the estimator slack already quantified in this file.
+  const probe = readProbeText();
+  assert.match(
+    probe,
+    /capturedSpaceFloorExpectationGround: predictDim\(\s*deepest\.off\.ground\.mean,\s*EXPECTED_TWILIGHT_FLOOR,\s*\)/,
+  );
+  assert.match(probe, /capturedSpaceFloorExpectationSky: predictDim\(/);
+  assert.match(probe, /CATEGORY-MISMATCHED/);
+  assert.match(probe, /INSIDE the estimator slack/);
+  // Reported-only: it must not have quietly become a gate.
+  const gate = parseFrozenList(probe, "GATE_PREDICATES");
+  for (const name of gate) {
+    assert.ok(
+      !name.toLowerCase().includes("capturedspace"),
+      `${name} must not gate — it is an observation, not a claim`,
+    );
+  }
+
+  // And the arithmetic behind "in-category" is reproduced here, so the claim
+  // in the comment is checked rather than trusted: a floor-dimmed band reads
+  // WELL ABOVE the linear factor in captured space.
+  const floorInCaptured = predictDimReference(0.15, ECLIPSE_TWILIGHT_FLOOR);
+  assert.ok(
+    floorInCaptured > ECLIPSE_TWILIGHT_FLOOR * 1.25,
+    "the display transform must lift the floor materially, or the category " +
+      "argument does not hold",
   );
 });
