@@ -971,7 +971,40 @@ absolute number the pinned probes now produce. Gates run: `node --check`,
 
 ### NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD
 
-**Status:** OPEN / HIGH - found by the FIRST run of `probe-sun-shadow-gate.mjs`
+**Status:** RESOLVED 2026-08-06 — root-caused and fixed at Batch 849
+(`c7365d80f7`), pixel-verified at Batch 850 (`c178510469`). **Everything below
+this block is the ORIGINAL FILING and is retained as history; read it as the
+symptom report, not as current state.**
+
+> **RESOLUTION (recorded 2026-08-07, docs-reconciliation pass).** Batch 849
+> root-caused two independent defects on the same path: the cast pass wrote the
+> shadow depth and then a **duplicate dispatch cleared it on the same encoder**
+> before the color pass, and the receive matrix was **NDC-to-texture biased
+> twice**. Batch 850 measured the fix: the WebGPU `DAY_UNLIT` band-mean drop went
+> **0.00 → 20.17** against WebGL's 20.17 — **ratio exactly 1.00** — and gate E
+> stopped being STRUCTURAL, passing on BOTH backends. The Acceptance clause at the
+> foot of this entry is therefore **MET**, not owed.
+>
+> **Evidence pointers.** `migration_doc/WEBGPU_DEBUGGING_LOG.md` carries the
+> closure record under this same ID ("the cast pass wrote the shadow depth, then a
+> duplicate dispatch cleared it on the same encoder, before the color pass; and the
+> receive matrix was NDC-to-texture biased twice"). New files
+> `WebGPUShadowCastTargetState.ts` and `WebGPUShadowReceiveTransform.ts`;
+> `WebGPUGlobeSurfaceRenderer.ts` now gates on `candidateShadowMap.outOfView !== true`;
+> `WebGPUShadowMapRenderer.js` and `WebGPUEffectsBindGroup.js` now read
+> `shadowMap._darkness ?? shadowMap.darkness ?? 0.3`. Structural guard:
+> `Tools/visual-regression/webgpu-shadow-receive-contract.spec.mjs` (18 pass / 0 fail),
+> including "E2: the globe receive gate honors outOfView, like the cast dispatch does."
+>
+> **Why this sat stale.** Batch 849 wrote its closure to WEBGPU_DEBUGGING_LOG only;
+> Batch 850 edited DEFERRED_WORK only in the ground-fog / C11-205 regions.
+> `git log -S "NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD" -- migration_doc/DEFERRED_WORK.md`
+> returns exactly one commit — `c5c5be0a4a`, the one that CREATED the entry.
+> Nothing in the pipeline forces the two canonical docs to agree on a shared ID.
+> The three sibling entries listed under "prime suspects" below went stale from the
+> same root cause and are annotated at their own headings.
+
+**Status when filed:** OPEN / HIGH - found by the FIRST run of `probe-sun-shadow-gate.mjs`
 (authored Batch 840, run Batch 845), now that the probe's WebGL reference works.
 
 **Measured.** Sun at +30 deg, nadir camera 2600 m, `maximumDistance` 10000, a
@@ -1687,20 +1720,45 @@ re-scoped. Check (G) must keep passing either way.
 
 ### NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT
 
+**Status:** RESOLVED — gate B ACCEPTANCE PASSED 2026-08-06 (Batch 842),
+post-Batch-841 rebuild. *(Status line reconciled 2026-08-07: it previously read
+"ROOT-CAUSED + FIXED; browser ACCEPTANCE OWED", contradicting the very block it
+introduced. Gate F, not gate B, is the residual — see below.)*
+
 **ACCEPTANCE PASSED 2026-08-06 (Batch 842), post-Batch-841 rebuild.**
 `probe-vector-draping.mjs`: gate B bbox delta is now **0** - the two backends
-produce IDENTICAL bounding boxes ([451,19,607,747] both) - with centroid delta
-0.0/0.0 and counts 22396 vs 22397. Gates A/C/D/E all PASS. The delta went
-199 (original streaks) -> 103 (post-834, strays only) -> 0. The condition-number
-guard is confirmed by outcome, and the entry's own caution held: the predicate was
-never loosened and it is what measured each step.
+produce IDENTICAL bounding boxes - with counts 22396 vs 22397. Gates A/C/D/E all
+PASS. The delta went 199 (original streaks) -> 103 (post-834, strays only) -> 0.
+The condition-number guard is confirmed by outcome, and the entry's own caution
+held: the predicate was never loosened and it is what measured each step.
+
+> **NUMBERS CORRECTED 2026-08-07 against the cited artifact.** This block
+> originally published the identical bbox as `[451,19,607,747]` and the centroid
+> delta as `0.0/0.0`. Neither is what
+> `Tools/visual-regression/output/vector-draping/manifest.json` records.
+> Re-read at `generatedAt 2026-08-06T22:52:24.729Z` — provably the run this block
+> quotes, since its `changed` counts are exactly 22396 / 22397:
+>
+> | leg | bbox | centroid |
+> |---|---|---|
+> | WebGL nadir | `[451,19,584,747]` | `[542.1788712270048, 383.8786390426862]` |
+> | WebGPU nadir | `[451,19,584,747]` | `[542.179577622003, 383.8664999776756]` |
+>
+> **The headline claim survives** — the two bboxes ARE identical, so the gate-B
+> delta really is 0. But the published extent is **584, not 607**; 607 is the
+> stale pre-Batch-841 WebGPU value carried forward by hand. And the centroid delta
+> is **0.0007 / 0.0121**, not 0.0/0.0 — well inside the gate, but not zero.
+> This mattered: the entry's whole claim is a measured bbox equality, so a
+> verifier re-running the probe and reading 584 would have taken it for drift and
+> re-opened the row.
 
 Gate F remains STRUCTURAL - its in-build half measures 0 changed px on both
 backends, but the cross-build half still has no pre-change baseline. That is the
 only thing between C11-213 and a clean acceptance.
 
-**Status:** ROOT-CAUSED + FIXED (2026-08-06); browser ACCEPTANCE OWED. Found by the
-post-fix run of `probe-vector-draping.mjs` after Batch 834 cleaned the WebGPU side.
+**Status when filed:** ROOT-CAUSED + FIXED (2026-08-06); browser ACCEPTANCE OWED.
+Found by the post-fix run of `probe-vector-draping.mjs` after Batch 834 cleaned the
+WebGPU side.
 
 **TITLE CORRECTION - it is NOT WebGL-only.** Decoding the probe's own PNGs and
 re-deriving its changed-pixel mask (the vector-free frames are byte-identical across
@@ -1733,7 +1791,11 @@ almost exactly (22398 vs 22401; RED exactly 5625 vs 5625; BLUE 16773 vs 16776), 
 centroid delta is 0.0/0.0, and the oblique bounding boxes are now IDENTICAL
 ([440,371,595,394] on both).
 
-**But gate B still fails, in the OPPOSITE direction from the original defect.** At
+**But gate B still fails, in the OPPOSITE direction from the original defect.**
+*(SUPERSEDED — historical, as of the Batch-841 rebuild. Gate B PASSED at Batch 842
+with a bbox delta of 0; see the ACCEPTANCE PASSED block at the head of this entry.
+The paragraph below describes the Batch-835 measurement and is retained as the
+record of how the residual was characterised.)* At
 nadir WebGL's changed-pixel bbox is [451,19,710,747] while WebGPU's is
 [451,19,607,747] - WebGPU is now NARROWER by 103 px. WebGL's numbers are byte-identical
 to the pre-fix run, so nothing in Batches 827-834 moved them: this is a PRE-EXISTING
@@ -1919,6 +1981,11 @@ gate-B half is REASSIGNED:
   byte-identical to the pre-fix run, so nothing in Batches 827-834 moved them. That
   residual is tracked as `NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT` (OPEN / LOW), not
   here.
+  **SUPERSEDED 2026-08-07 — this is the Batch-835 reading and is no longer current.**
+  Gate B **PASSED at Batch 842** after the Batch-841 rebuild: both backends measure
+  `[451,19,584,747]` at nadir (delta 0), counts 22396 vs 22397. The
+  `NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT` entry is RESOLVED. **Gate F is the only
+  gate still not green.**
 - Gate F remains STRUCTURAL: its in-build half measures 0 changed px, but its
   cross-build half needs a pre-change baseline that does not exist.
 
@@ -1950,7 +2017,7 @@ gate-B half is REASSIGNED:
 
 ## 2026-07-26 — AURORA + SPACE WEATHER (Atmospheric-Effects Phase F) — RESEARCH-VERIFIED / CAMPAIGN 15 PLANNED
 
-- **EPIC-AURORA-SPACE-WEATHER — RESEARCH-VERIFIED (2026-08-02); `C15-00` COMPLETE; IMPLEMENTATION NOT STARTED.** Maintainer ask: *"add effects for Northern Lights and being able to trigger solar & magnetic storms. If there is open source data on space weather similar to atmospheric weather we should look into that as well."* Planning context: [`ATMOSPHERIC_EFFECTS_ROADMAP.md`](ATMOSPHERIC_EFFECTS_ROADMAP.md) Phase F. Execution authority: [`QUEUE_2026-08-02_CAMPAIGN15.md`](QUEUE_2026-08-02_CAMPAIGN15.md), `C15-01..08` pending. **Campaign 15 has not been launched.** Campaign-number correction: Dynamic Ocean & Wind already owns ratified Campaign 14 and remains blocked by O5 until C11+C12+C13 complete; this epic does not rename or accelerate it.
+- **EPIC-AURORA-SPACE-WEATHER — RESEARCH-VERIFIED (2026-08-02); `C15-00` COMPLETE; IMPLEMENTATION NOT STARTED.** Maintainer ask: *"add effects for Northern Lights and being able to trigger solar & magnetic storms. If there is open source data on space weather similar to atmospheric weather we should look into that as well."* Planning context: [`ATMOSPHERIC_EFFECTS_ROADMAP.md`](ATMOSPHERIC_EFFECTS_ROADMAP.md) Phase F. Execution authority: [`QUEUE_2026-08-02_CAMPAIGN15.md`](QUEUE_2026-08-02_CAMPAIGN15.md), `C15-01..08` pending. **Campaign 15 has not been launched.** Campaign-number correction: Dynamic Ocean & Wind already owns ratified Campaign 14 and remains blocked by O5 until C11+C12+C13 complete; this epic does not rename or accelerate it. **SUPERSEDED by R1 (2026-08-06; annotated 2026-08-07):** the O5 bar is now pragmatic — **C12 complete + C13 Gate B green** — not C11+C12+C13 completion. `C13-GATE-B` closed green at Batch 866, so the remaining C14 gate is C12 completion only. The campaign-number correction itself stands unchanged.
 
   **This SUPERSEDES the scattered aurora backlog entries** — `FEATURE_INVENTORY.md:1191` and `:1193`, `WEBGPU_MIGRATION_BACKLOG.md:708` and `:722`, `CELESTIAL_ATMOSPHERE_DESIGN.md:65`, plus the archived 2026-03-31 audit rows. Their *"procedural sky-dome shader, 2–3 days"* architecture cannot work both overhead and above the limb. Verified shape: an ellipsoid-relative, RTE **layered emission volume over 80–600 km** with separate 427.8 nm lower-edge, 557.7 nm green middle, and 630.0 nm red upper profiles; both backends consume one neutral kernel. NOAA/NASA anchors: [NOAA Aurora](https://www.spaceweather.gov/phenomena/aurora), [NASA Auroras](https://science.nasa.gov/sun/auroras/).
 
@@ -1963,6 +2030,19 @@ gate-B half is REASSIGNED:
   **Performance and evidence.** Default OFF means zero passes, allocations, jobs, animation, requests, uploads, and bind-group churn. Quality work improves the full feature rather than removing layers, hemispheres, RTE, or existing effects. A faint structured additive signal is invisible to a band mean, so acceptance uses point/structure or isolated-component differences and Node/Edge moving-camera altitude routes. Full gates and task order are in Campaign 15.
 
 ## 2026-07-24 — DYNAMIC OCEAN & WIND EPIC (ratified Campaign 14; O5-blocked) — planning COMPLETE
+
+> **SUPERSEDED by R1 (2026-08-06) — annotated 2026-08-07 by the docs-reconciliation
+> pass.** The "O5-blocked / waits for C11+C12+C13 COMPLETION" wording in this
+> section's heading and in the `EPIC-DYNAMIC-OCEAN-WIND` row below is the
+> **superseded strict reading**. Ruling **R1** (recorded in this same file under
+> "2026-08-06 - MAINTAINER RULINGS") binds O5's undefined word "done" to a
+> **pragmatic bar: C12 complete + C13 Gate B green**. Campaign 14 does NOT wait
+> for C11-137 certification, C13 Gates A/C/D, or the unstarted bodies of either
+> campaign — R2 keeps C11 and C13 honestly open precisely so C14 stops depending
+> on them. **Material update: `C13-GATE-B` CLOSED green at Batch 866
+> (`58af0d1819`) — seven instruments certifying on one build, no assertion
+> widened. The remaining C14 gate is C12 completion ONLY.** The historical text
+> below is retained unedited.
 
 - **EPIC-DYNAMIC-OCEAN-WIND — SEEDED (2026-07-24); §6 DECISIONS ANSWERED (maintainer 2026-07-24 → plan §6a, Batch 758: O2 OVERRULED — jet streams also feed a rough low-LOD physical coupling into clouds; O5 stricter — Campaign 14 waits for C11+C12+C13 COMPLETION; others as recommended); planning artifact `migration_doc/OCEAN_DYNAMICS_PLAN_2026-07-24.md` (17-agent research, 0 refuted findings).** Maintainer ask: waves with cloud-like randomness responding to weather/wind + wind effects, jet streams, currents — all togglable, performant. **The epic is mostly BROWNFIELD:** the FFT ocean's Phillips spectrum already consumes windX/windZ/windSpeed with live re-parameterization machinery (`OceanInitialSpectrum.wgsl:35-55`, `WebGPUOceanRenderer.ts:720-739` — only live setters are missing); wind visualization ALREADY SHIPPED (C6-FLOWFIELD-WIND, Batch 645, with four pre-named deferred follow-ups incl. `NEW-FLOWFIELD-OCEAN-CURRENTS`/`-TRAILS` that this epic absorbs, IDs retained); the weather-ingest pipeline carries optional named arrays so `windU?/windV?` ride the existing pattern (needs a `VelocityFieldSource` sibling — weatherTex's 4 channels are all claimed by clouds); the ONE-WIND-AUTHORITY architecture is pre-ratified at `WATER_RENDERING_DESIGN.md:672-674`. **Defect found by the research:** the engine has THREE disagreeing wind stores today (weather 10 m/s, clouds 15, FFT ocean 12, in three different representations) — the Level-0 authority fan-out fixes a real inconsistency, not just enables the epic. **Phases:** W0 contracts+baselines (S-M; shares the ocean-lid datum probe with the tides seed) → W1 wind-authority Level 0 (M) → W2 water-mask wind modulation, both backends (M; layers over `C11-172`) → W3 coverage + sea state (XL; `C6-FFT-OCEAN-CLIPMAP` is the waves-everywhere gate; JONSWAP/two-layer spectrum; sea-state randomness masks; ocean tier axis) → W4 currents + jet streams + field tooling (L; procedural curl-noise/gyres DEFAULT, GFS/RTOFS public-domain offline preprocessor, no bundled OSCAR/Copernicus) → W5 vector wind field Level 1 (L; gated on C13-14's weather-tile schema). **Hard prereqs:** C11-172, C6-FFT-OCEAN-CLIPMAP, C13-14 (W5 only); C11-149 NOT a prereq (zero new define bits — runtime uniforms). **Launch timing (rec):** after C13-GATE-D so the weather-tile wind schema is settled; W0-W2 are C13-independent if priority rises. **Six maintainer decisions** in the plan §6 (recs: ENU contract as a C13-18 rider; jet streams visualization-only; procedural-gyres default; ≤2.0 ms all-on GPU budget pending W0 baseline). **Every row carries the off-gate contract: default-off, byte-identical off, zero passes/allocations when off.**
 
@@ -8883,10 +8963,14 @@ has now RUN TWICE on Edge:
   pixels; gates A/C/D/E pass and the counts match WebGL to within 3 px (RED exactly
   equal).
 
-**What keeps this entry OPEN:** gate B still fails, now on a pre-existing WebGL-side
-extent (`NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT`), and gate F is STRUCTURAL — its
+**What keeps this entry OPEN:** ~~gate B still fails, now on a pre-existing WebGL-side
+extent (`NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT`), and~~ gate F is STRUCTURAL — its
 cross-build half needs a baseline recorded on a pre-change build, which does not
 exist. Neither is a defect in the WGSL twin, but neither is a green gate either.
+**CORRECTED 2026-08-07: gate B is no longer one of them.** It PASSED at Batch 842
+after the Batch-841 rebuild — both backends `[451,19,584,747]` at nadir, delta 0 —
+and `NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT` is RESOLVED. **Gate F alone keeps this
+entry open.**
 
 ### UP144-MODEL-READY-ZERO-PRIM-SPEC — zero-primitive readiness regression spec
 
@@ -9099,7 +9183,48 @@ down.
 
 ### CLOUD-LOW-COVERAGE-CUTOFF — coverage <= ~0.40 renders zero cloud
 
-**Status:** OPEN / RENDERER DEFECT (C13 family). Found by the C13-01 tour's
+**Status:** RESOLVED 2026-08-01 at **Batch 798** (`c5bd07bf1f`, "fix
+CLOUD-LOW-COVERAGE-CUTOFF - fair-weather skies render (probe-verified)").
+*(Reconciled 2026-08-07 — this entry read "OPEN / RENDERER DEFECT" for 62 batches
+after the fix landed, because Batch 798 touched **no file under `migration_doc/`**.
+Original filing retained below.)*
+
+> **RESOLUTION.** Root cause was `smoothstep(1 - coverage, 1, density)` demanding
+> values the baked 4-octave value-fBM shape field cannot contain (mean 0.431, max
+> 0.718), so the gate was **structurally zero below coverage 0.283** and erosion
+> consumed the survivors up to ~0.45 — the measured exceedance matches the tour's
+> cutoff exactly. Fix: `cloudEffectiveCoverage()`, a constant-elasticity power-law
+> lift (anchor 0.55, exponent 1/4) defined ONCE in
+> `Shaders/WebGPU/Environment/CloudDensityDomain.wgsl:186` and consumed by the
+> visible march (`ProceduralClouds.wgsl:1237`), the beer-shadow producer, the IBL
+> cube (`ProceduralSkyCubemap.wgsl:563`) and — from Batch 843 — the fog cheap path
+> (`VolumetricFog.wgsl:719`). The `max()` branch crossing makes coverage ≥ 0.55
+> **bit-for-bit historical**. The CPU twin imports the same definition and cannot
+> drift.
+>
+> **Acceptance MET.** The isolated sweep is monotone and nonzero (0.25 → 0.0004 up
+> to 0.55 → 0.0046), anchor preservation was PROVEN by a stash-controlled A/B
+> (unpatched `main` reads the identical 0.0046), the plains fair-weather fixture
+> PASSES its restored 0.02 floor, and `cloud-coverage-response.spec` is 11/11. The
+> **Acceptance** clause at the foot of this entry is therefore discharged, not owed.
+>
+> ⚠ **ID COLLISION — read this before editing either entry.** The section
+> immediately below carries the **identical `### CLOUD-LOW-COVERAGE-CUTOFF`
+> heading** for a *different* subject (the fog cheap-path arm, IMPLEMENTED
+> 2026-08-06). A grep for the ID returns this entry first. They are two distinct
+> items sharing one ID; disambiguate by subtitle — **"coverage <= ~0.40 renders
+> zero cloud"** (this one, the visible march, RESOLVED at Batch 798) versus
+> **"fog cheap-path arm"** (below). Any future "mark CLOUD-LOW-COVERAGE-CUTOFF
+> resolved" edit must say which.
+>
+> **Downstream note:** the `C13-01` row in `QUEUE_2026-07-23_CAMPAIGN13.md` still
+> lists this as one of "TWO REAL GAPS pinned by knownGapId ceiling gates". The
+> `C13-16` row in the same file already records the fix ("after
+> `CLOUD-LOW-COVERAGE-CUTOFF` restored cirrus VISIBILITY on 2026-08-01"). Do NOT
+> re-derive the coverage response or re-flip the plains ceiling gate that Batch 798
+> restored to a floor — that would silently revert a shipped fix's oracle.
+
+**Status when filed:** OPEN / RENDERER DEFECT (C13 family). Found by the C13-01 tour's
 fair-weather fixture and isolated with a single-variable coverage sweep at a
 known-good anchor (tradewind config, all else pinned): contribution 0.0076 at
 cloudCoverage 0.55, 0.0009 at 0.45, exactly 0 at 0.40/0.35/0.30; the plains
@@ -9118,6 +9243,11 @@ and the plains fixture, the plains ceiling gate fails, and its floor gate
 (0.02) is restored and passes.
 
 ### CLOUD-LOW-COVERAGE-CUTOFF — fog cheap-path arm
+
+> ⚠ **ID COLLISION (noted 2026-08-07):** this heading is byte-identical to the one
+> ~20 lines above, which covers a **different** subject — the visible-march
+> low-coverage cutoff, RESOLVED at Batch 798. Disambiguate by subtitle. This entry
+> is the **fog cheap-path arm** only.
 
 **Status:** IMPLEMENTED 2026-08-06, Edge acceptance owed. This is the arm the
 2026-08-02 Codex handoff (§5 item 3) left open as "fog cheap-path coverage
@@ -9495,6 +9625,65 @@ stood behind without a per-file content check.
   rewritten: stripping name markers alone no longer collapses the key, so it now
   also substitutes one shared stand-in module and keeps its own shadow index.
 
+  **— DOCTRINE RESCUED FROM AN UNTRACKED FILE (recorded 2026-08-07) —**
+
+  **Why this subsection exists.** Batch 825's commit message says the worker
+  wrote this doctrine into `CLAUDE.md`. **`CLAUDE.md` is gitignored** —
+  `.gitignore:6`, and `git ls-files` matches it zero times — so that text
+  entered **no commit** and exists only in one machine's working tree. Four
+  commits in the 2026-07-23 → 2026-08-06 window claim `CLAUDE.md` edits
+  (`8c291aaf66` B747, `fe0ba28a9c` B820, `43caae0589` B824, `cff2d90c52` B825);
+  each mentions the file **only in its message body, never in its diff**. Batch
+  829 corrected the record for two of them; the other two stood. A fresh clone,
+  a worktree, or any other machine gets none of it, and a subagent grepping
+  history for the aliasing doctrine finds nothing. **The load-bearing rules are
+  therefore copied here verbatim in substance, into the tracked entry that owns
+  the ID.** If they are ever re-edited in `CLAUDE.md`, mirror the change here —
+  this is the durable copy.
+
+  1. **Keep every existing marker.** The per-axis descriptor-name markers
+     (`, ld=1`, `, noCull`, `, imagery4`, `, enhOcean`, `defines=0x…`, `[sf=…]`)
+     were **demoted to defense-in-depth by the fold, not made useless.** A bare
+     `sh:41.…` proves two rows are distinct but not **which variant each one
+     is**; the markers are what make `describeCacheKey()`,
+     `listPipelineVariants()` and devtools labels readable. **Remove one only
+     with proof.**
+  2. **`stats.wrongModuleHits` must stay and must read 0.** Restated from the
+     paragraph above because it is the rule most likely to be mistaken for dead
+     code under Principle 7: a served hit now implies identical modules *by
+     construction*, so the counter is the **runtime canary that the fold is
+     still reached** — not a leftover.
+  3. **"Adding a new define bit", step 5, is now OPTIONAL.** Adding an axis
+     marker to the pipeline descriptor's `name` (or stamping the whole mask as
+     `defines=0x${defines.toString(16)}`) is defense in depth and **no longer
+     required for correctness** — module identity is strictly stronger than the
+     mask, so a new bit cannot alias whether or not anyone remembers. Steps 1–4
+     (add to `ShaderDefine` **without reordering**; document what it gates;
+     add the `//>>ifdef` / `//>>else` / `//>>endif` block keeping `//>>else` as
+     the historical path; route creation through `preprocess`/the module cache)
+     are **still mandatory**.
+  4. **Producers MAY declare `descriptor.defines` / `definesHi`.** The globe
+     does. It is optional — omitting it leaves the key byte-identical to what it
+     would otherwise be.
+  5. **Why the marker fleet existed at all**, so nobody re-litigates it: before
+     the fold the key read **neither the module nor the mask** — and since *no
+     caller passes a `variant`*, it also read neither `primitive.cullMode` nor
+     most of `depthStencil`. The markers stood in for those omissions, at the
+     cost of two batches of point mitigation and **five probes whose OFF legs
+     were void for months**.
+
+  **Filed risk — `NEW-DOC-CLAUDE-MD-UNTRACKED-RULEBOOK` (OPEN / LOW, effort XS).**
+  `CLAUDE.md` is auto-loaded into every Claude Code session on this repo and is
+  the de-facto rulebook, yet it is untracked, so (a) its content cannot be
+  reviewed in a diff, (b) it is lost on any fresh clone, and (c) commit messages
+  claiming to edit it are unfalsifiable. It also currently states the
+  **superseded** strict-O5 rule as live policy with no pointer to R1 (see the
+  R1 supersession annotations elsewhere in this file). **Acceptance:** a
+  maintainer decision on either tracking `CLAUDE.md` or maintaining a tracked
+  mirror, plus a rule that any doctrine added to it is landed in a tracked doc
+  in the same batch. **Not a worker call** — the ignore entry may well be
+  deliberate.
+
 ## 2026-08-02 — WebGPU globe renders zero frustums in the offline env-clear scenario
 
 ### NEW-WEBGPU-OFFLINE-GLOBE-ZERO-FRUSTUMS
@@ -9776,6 +9965,15 @@ insufficient-fix prose above is retained only as incident history.
 
 ### SUN-SHADOW-GATE-PROBE-NEEDED — cascadesEnabled fix still unverified at pixels
 
+> **RESOLVED 2026-08-06 (annotated 2026-08-07, docs-reconciliation pass).** The
+> "It has NOT been run" line below is STALE. `probe-sun-shadow-gate.mjs` ran at
+> Batch 845 (producing `NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD`) and again at
+> Batch 850 after the fix, where WebGPU's `DAY_UNLIT` band-mean drop measured
+> 20.17 against WebGL's 20.17 — ratio exactly 1.00 — and gate E stopped being
+> STRUCTURAL on both backends. The `cascadesEnabled` fix this entry says is
+> "unverified at pixels" is now verified at pixels. Everything below is retained
+> as the original filing.
+
 **UPDATE 2026-08-06 (Batch 840): probe AUTHORED, Edge acceptance still owed.**
 `Tools/visual-regression/probe-sun-shadow-gate.mjs` now exists and is
 fleet-convention (clock-solved elevations verified against the sun the engine
@@ -9803,8 +10001,15 @@ discriminator the Batch-805 measurement lacked.
 
 ### NEW-WEBGPU-SHADOW-DARKNESS-FADE-NOT-APPLIED
 
-**Status:** OPEN - found by source tracing while authoring the probe above; not
-yet measured.
+**Status:** RESOLVED at Batch 849 (`c7365d80f7`) — annotated 2026-08-07 by the
+docs-reconciliation pass. Both cited sites now read the FADED value:
+`WebGPUShadowMapRenderer.js:1330` and `WebGPUEffectsBindGroup.js:1292` are each
+`darkness: shadowMap._darkness ?? shadowMap.darkness ?? 0.3`. The line numbers in
+the original filing (1310 / 1289) have drifted with the fix. Original filing
+retained below.
+
+**Status when filed:** OPEN - found by source tracing while authoring the probe
+above; not yet measured.
 
 WebGL's receive uniform reads the FADED `shadowMap._darkness`
 (`Scene/ShadowMap.js:215`), which `ShadowMapComputations.js:707-717` lerps to
@@ -9816,7 +10021,14 @@ receive paths instead read the PUBLIC, UNFADED `shadowMap.darkness`:
 
 ### NEW-WEBGPU-GLOBE-RECEIVE-IGNORES-OUTOFVIEW
 
-**Status:** OPEN - found by the same tracing; not yet measured.
+**Status:** RESOLVED at Batch 849 (`c7365d80f7`) — annotated 2026-08-07 by the
+docs-reconciliation pass. `WebGPUGlobeSurfaceRenderer.ts:872` now gates on
+`candidateShadowMap.outOfView !== true`, and
+`Tools/visual-regression/webgpu-shadow-receive-contract.spec.mjs` pins it as
+"E2: the globe receive gate honors outOfView, like the cast dispatch does"
+(18 pass / 0 fail). Original filing retained below.
+
+**Status when filed:** OPEN - found by the same tracing; not yet measured.
 
 The globe's WebGPU receive gate consults only
 `lightShadowsEnabled && lightShadowMaps[0]`

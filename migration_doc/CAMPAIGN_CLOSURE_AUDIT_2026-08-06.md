@@ -1,5 +1,72 @@
 # Campaign Closure Audit — C11 / C12 / C13
 
+> ## ⛔ ADDENDUM 2026-08-07 — READ BEFORE ACTING ON ANY RECOMMENDATION BELOW
+>
+> **This audit is a historical snapshot taken at Batch 844. Its headline
+> recommendation was overtaken by Batches 851–866 within roughly 24 hours. The body
+> below is UNEDITED and stays that way — the value of a snapshot is that it records
+> what was known then. This block records what changed since.**
+>
+> ### 1. The headline recommendation is spent — `C13-GATE-B` is CLOSED
+>
+> §2 item 1 and §4.A say **"`C13-GATE-B` is 7 probe runs away and nothing else"**
+> and call it "the highest-value single action available across all three
+> campaigns". That was the right call, it was taken, and it is **done**:
+> **`C13-GATE-B` CLOSED GREEN at Batch 866 (`58af0d1819`).** Full roster at
+> closure — edr-mock 3/3, wcs 3/3, ingest 3/3, seam-poles 3/3 (860), time
+> exempt-by-proof (855), metar GREEN via discriminator (866), channels 10/10 with
+> the scored vector byte-identical across all ten runs (866). **No assertion was
+> widened anywhere in the chain.**
+>
+> ### 2. …but "7 probe RUNS and nothing else" was wrong about the *cost*
+>
+> The runs were not the work. Three findings the audit could not have had:
+>
+> - **Batch 852 (`6e7133072c`)** — the channels probe was scoring a **network-fed
+>   globe**, and **six other Gate-B legs shared the defect**.
+> - **Batch 855 (`d9502bc1e6`)** — **five of the six remaining legs had false-green
+>   mechanisms**; all five were pinned, and the sixth was exempted *with proof*.
+> - **Batch 864 (`47809cf482`)** — the **metar gate 4 had been BLIND since the day
+>   it was written**. Batch 860 read it RED 3/3; the attribution took two batches to
+>   settle, and the outcome was **no engine defect** — the instrument was the fault.
+>
+> ⚠ **§4.B's line "all six drive GLOBAL fields and the spec asserts their bytes are
+> unchanged, so any red is a real regression" is REFUTED — do not carry it
+> forward.** Batch 855 proved that reading unsafe. A red from an unpinned
+> network-fed leg is an instrument reading until pinned, not an engine regression.
+> This is the single most dangerous stale sentence in this document.
+>
+> ### 3. Promotions that have since happened (§4.A verdicts, executed)
+>
+> `C13-06` → **COMPLETE**; `C13-07` → **COMPLETE** (recorded honestly: the
+> Batch-855 susceptibility of its pixel gate was REAL and the verdict *survived* it
+> — seam-poles re-ran PASS 3/3 under the pin); `C13-08` → **COMPLETE** (the seven
+> owed browser regressions are green *under pinning*, i.e. stronger evidence than
+> the pre-pin runs the row originally asked for); `C13-GATE-B` → **COMPLETE**;
+> `C13-41` → **UNBLOCKED**, ready for dispatch. The
+> `CLOUD-LOW-COVERAGE-CUTOFF` **fog arm** Edge run (§4.B) is still owed.
+>
+> ### 4. The O5 question in §5 was answered — and the answer moved again
+>
+> §5 asks what "complete" means for the O5 hold. The maintainer ruled it the same
+> day: **R1 — O5 binds on a pragmatic bar, C12 complete + C13 Gate B green**, with
+> **R2** deliberately keeping C11 and C13 honestly open so C14 stops depending on
+> them (`DEFERRED_WORK.md`, §"2026-08-06 - MAINTAINER RULINGS"). **With Gate B now
+> closed, half that bar is met and the remaining Campaign-14 gate is C12 completion
+> ONLY.** §2 item 2 — "then take C12 to its gates" — is therefore no longer the
+> second priority; **it is the whole remaining path.** Note also that
+> `C12-21`/`C12-22`, which §2 item 2 puts on the G4 moon half, **landed at Batch
+> 858** (Edge acceptance owed), and `C12-27`, on the G2 critical path, **landed at
+> Batch 865** (Edge acceptance owed).
+>
+> ### 5. Index gap
+>
+> This file was, until this addendum, the **only** top-level `migration_doc/*.md`
+> absent from [`README.md`](README.md) — against README's own "**Trust this index**
+> over any individual doc's self-description". It is now indexed. That gap is why
+> the drift-sweep process which corrected four stale README rows at Batch 820 never
+> saw this file.
+
 **Prepared:** 2026-08-06, at `main` tip `2e209bbd62` (Batch 844), clean tree.
 
 **Question asked:** the maintainer wants to close out Campaigns 11, 12 and 13. What

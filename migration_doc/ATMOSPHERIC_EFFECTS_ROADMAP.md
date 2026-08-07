@@ -156,6 +156,13 @@ no-op on WebGL, like the procedural clouds).
   [`QUEUE_2026-08-02_CAMPAIGN15.md`](QUEUE_2026-08-02_CAMPAIGN15.md). Campaign 15 is not launched;
   runtime rows `C15-01..08` remain pending. The earlier Campaign-14 label was a documentation collision:
   **Campaign 14 remains Dynamic Ocean & Wind under its ratified O5 hold.**
+  **SUPERSEDED by R1 (2026-08-06) — annotated 2026-08-07 by the docs-reconciliation pass:**
+  the O5 hold is no longer "C11 + C12 + C13 all done". R1 binds O5's undefined word "done"
+  to a **pragmatic bar — C12 complete + C13 Gate B green** — and Campaign 14 does NOT wait
+  for C11-137 certification, C13 Gates A/C/D, or the unstarted bodies of either campaign
+  (ruling text in [`DEFERRED_WORK.md`](DEFERRED_WORK.md), §"2026-08-06 - MAINTAINER RULINGS").
+  **`C13-GATE-B` CLOSED green at Batch 866 (`58af0d1819`), so the remaining C14 gate is C12
+  completion ONLY.** The Campaign-14/15 identity statement above is unaffected.
 
   **Supersedes the scattered sky-dome backlog.** `FEATURE_INVENTORY.md:1133/1135`,
   `WEBGPU_MIGRATION_BACKLOG.md:708/722`, `CELESTIAL_ATMOSPHERE_DESIGN.md:65`, and the archived

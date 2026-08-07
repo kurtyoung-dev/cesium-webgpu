@@ -5,3 +5,4 @@ packages/sandcastle/node_modules
 /migration_doc/**
 
 LICENSE.md
+packages/engine/LICENSE.md

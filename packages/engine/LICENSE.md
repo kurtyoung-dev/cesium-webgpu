@@ -310,30 +310,32 @@ https://gist.github.com/banksean/300494
 Original source (archived): https://archive.org/details/nvidiagame-works-graphics-samples-master
 Fork: https://github.com/lyntel/GraphicsSamples/blob/3d30817ebeeade64fe6a4fc3aa1fe4265c29b6fd/samples/es3-kepler/FXAA/FXAA3_11.h
 
-> ----------------------------------------------------------------------------------
-> File:        es3-kepler\FXAA/FXAA3_11.h
-> SDK Version: v3.00 
-> Email:       gameworks@nvidia.com
-> Site:        http://developer.nvidia.com/
+> ---
+>
+> File: es3-kepler\FXAA/FXAA3_11.h
+> SDK Version: v3.00
+> Email: gameworks@nvidia.com
+> Site: http://developer.nvidia.com/
 >
 > Copyright (c) 2014-2015, NVIDIA CORPORATION. All rights reserved.
 >
 > Redistribution and use in source and binary forms, with or without
 > modification, are permitted provided that the following conditions
 > are met:
->  * Redistributions of source code must retain the above copyright
->    notice, this list of conditions and the following disclaimer.
->  * Redistributions in binary form must reproduce the above copyright
->    notice, this list of conditions and the following disclaimer in the
->    documentation and/or other materials provided with the distribution.
->  * Neither the name of NVIDIA CORPORATION nor the names of its
->    contributors may be used to endorse or promote products derived
->    from this software without specific prior written permission.
+>
+> - Redistributions of source code must retain the above copyright
+>   notice, this list of conditions and the following disclaimer.
+> - Redistributions in binary form must reproduce the above copyright
+>   notice, this list of conditions and the following disclaimer in the
+>   documentation and/or other materials provided with the distribution.
+> - Neither the name of NVIDIA CORPORATION nor the names of its
+>   contributors may be used to endorse or promote products derived
+>   from this software without specific prior written permission.
 >
 > THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
 > EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 > IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
-> PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+> PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
 > CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
 > EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
 > PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -910,6 +912,129 @@ http://medialize.github.io/URI.js/
 > LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 > THE SOFTWARE.
+
+# Bundled Engine Assets
+
+> **Why this section is here.** `package.json` ships `Source` and this
+> `LICENSE.md` in the published `@cesium/engine` tarball. The assets below live
+> under `Source/`, so they travel with the tarball — but the repository-root
+> `LICENSE.md`, where these terms were originally recorded, does **not**. An npm
+> consumer or a vendored copy therefore never sees the root file, and without
+> this section the package would grant Apache-2.0 over NASA, NGA and Yale-BSC5
+> material while naming none of it. Mirrored here in full (not as a pointer) on
+> 2026-08-07.
+>
+> **Keep in sync.** This section is a verbatim mirror of the `# Bundled Engine
+Assets` section of the repository-root `LICENSE.md`. **Any edit to either file
+> must be made to both in the same change.** Paths below are written
+> package-relative (`Source/…`), which is how they appear in the tarball; inside
+> the monorepo the same files live at `packages/engine/Source/…`.
+
+Binary assets shipped **inside the published `@cesium/engine` package** — not merely used by the example applications. These are **not** covered by the licence grant at the top of this file; each carries its own terms, stated below, and redistributors must carry this section with them.
+
+### Star map cube maps — NASA/GSFC Scientific Visualization Studio
+
+**Files:** 18 JPEG cube faces totalling **5,814,419 bytes** —
+
+| Variant                                                  | Files                                                                       | Face size | Encode                                                | Bundled bytes |
+| -------------------------------------------------------- | --------------------------------------------------------------------------- | --------- | ----------------------------------------------------- | ------------- |
+| `SkyBox.Variant.TYCHO_T3`                                | `Source/Assets/Textures/SkyBox/tycho2t3_80_{px,py,pz,mx,my,mz}.jpg`         | 1024×1024 | JPEG, 4:2:0 chroma (inherited from upstream CesiumJS) | 867,538       |
+| `SkyBox.Variant.TYCHO_T5`                                | `Source/Assets/Textures/SkyBox/tycho2t5_80_{px,py,pz,mx,my,mz}.jpg`         | 2048×2048 | JPEG quality 90, 4:4:4 chroma, mozjpeg                | 4,566,954     |
+| `SkyBox.Variant.TYCHO_T5_DIFFUSE` (default since C12-11) | `Source/Assets/Textures/SkyBox/tycho2t5_80_diffuse_{px,py,pz,mx,my,mz}.jpg` | 2048×2048 | JPEG quality 90, 4:4:4 chroma, mozjpeg                | 379,927       |
+
+See `Source/Scene/SkyBox.js`. All three are bundled offline; no face is fetched from the network. Any additional variant registered in `SkyBox.Variant` and derived from the same SVS product is covered by this same entry. **No compressed-texture (KTX2/Basis) form of any of these faces is bundled** — that remains unimplemented work (`C12-12`), so there is no supercompressed derivation chain to record here.
+
+**Product:** "The Tycho Catalog Skymap — Version 2.0", NASA SVS ID 3572, released 2009-01-26.
+
+The `t3` faces are the `t3` variant (SVS describes it as _"the Milky Way is very faint"_), reprojected from the source equirectangular image to six cube faces. That reprojection is **upstream CesiumJS's**, inherited with the fork; this project holds no bake script, source hash or encode record for it, and `Tools/skybox-bake/` does not reproduce it (its pinned source is the `t5` file below).
+
+The `t5` faces are the `t5` variant, which SVS describes as _"the Milky Way is very bright and bright stars are large"_ — the same sky, the same catalogues and the same creators as `t3`, rendered by SVS with a brighter intensity curve and a wider point-spread function, and published at 16384×8192 rather than as a pre-cut cube. They are baked from `TychoSkymapII.t5_16384x08192` (16384×8192 TIFF, SHA-256 `2eb9baf5796c62bb04d8c87625b93356cd5ff4172bc56d6b731df554393de04f`, 402,653,312 bytes) by the reproducible pipeline at `Tools/skybox-bake/bake-tycho-t5.mjs`, which verifies that hash before baking. **Derivation chain, in order:** SMPTE gamma-1.8 → linear → sRGB OETF as a per-channel 256→256 LUT (SVS states the product's colour standard is SMPTE with a gamma of 1.8; the JPEGs carry no ICC profile) → longitude-wrapped bilinear reprojection of the equirectangular to six GL cube faces at 4096/face → lanczos3 downsample to 2048/face → JPEG quality 90, 4:4:4, mozjpeg. The 384 MB source TIFF is **not** bundled. This is a derived work of the same NASA product and is covered by the terms below identically to the `t3` faces.
+
+**The `tycho2t5_80_diffuse_*` faces** are a further derived work of the _same_ `t5` source and bake, adding one step: a wrapped Gaussian low-pass of σ ≈ 0.44° (FWHM ≈ 1.03°) applied to the corrected equirectangular before reprojection, which removes the resolved stars and leaves only the degrees-scale galactic band. They exist because Campaign-12 decision DR-01 gives the cube map the diffuse Milky Way light and the `StarField` sprite catalogue every resolved star. Being a low-pass of the same pixels, they add **no** new source material and carry the same terms. Per-face provenance — the pinned source hash, the encode settings, and the SHA-256 of every shipped face — is recorded in `Tools/skybox-bake/skybox-manifest.json` and re-verified by `Tools/visual-regression/skybox-diffuse-seam.spec.mjs`.
+
+- Source: <https://svs.gsfc.nasa.gov/3572/>
+- NASA media guidelines: <https://www.nasa.gov/nasa-brand-center/images-and-media/>
+- Upstream CesiumJS additionally cited `http://maps.jpl.nasa.gov/stars.html`, which no longer resolves; recorded here for provenance completeness.
+
+**Credit:** NASA/Goddard Space Flight Center Scientific Visualization Studio.
+
+**Underlying catalogues:** the skymap was rendered from the Hipparcos and Tycho-2 star catalogues. **Credit: ESA.**
+
+**Terms position.** NASA publishes this product as NASA content; NASA's guidelines carve out material where NASA has incorporated third-party content, and NASA does not indemnify. ESA publishes the Hipparcos and Tycho catalogues under CC BY-NC 3.0 IGO — whose §2 states that _"Nothing in this License is intended to reduce, limit, or restrict any uses free from copyright protection"_, and whose §1 licenses a database only as to _the selection and arrangement of its contents constituting an intellectual creation_. This rendering plots substantially the entire catalogue (an unoriginal selection) positioned by physical sky coordinates (an arrangement dictated by nature rather than by the catalogue), with its expressive choices — point-spread function, colour mapping, intensity curve — originating with NASA. On that reading the non-commercial condition is not triggered. The ESA credit above is given because attribution costs nothing and honours the BY term; **it is not an admission that the NC term attaches.**
+
+**This is a documented risk assessment, not legal advice, and not a clearance.** The full analysis — including the points that remain unconfirmed and the specific findings that would reverse it — is recorded in the fork repository at `migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md` §6e. A future maintainer should read that section before relying on, extending, or changing this entry.
+
+### Lunar albedo map — NASA/GSFC Scientific Visualization Studio (CGI Moon Kit)
+
+**File:** `Source/Assets/Textures/Moon/lroc_color_poles_2k.jpg` (563,276 bytes, 2048×1024; SHA-256 `276a8d76bd20051b33bf12aa2ed55f95be2c1b476c0539aaf664de79e5ffc732`). Selected via `Moon.Variant.LROC_COLOR_2K`, the default since C12-24 — see `Source/Scene/Moon.js`. Bundled offline and fetched only when the moon is actually rendered. The historical upstream `Source/Assets/Textures/moonSmall.jpg` (256×128) remains bundled and selectable as `Moon.Variant.SMALL`.
+
+**Product:** "CGI Moon Kit", NASA SVS ID 4720, released 2019-09-06. The bundled file is the **2019 colour map** member of that product, `lroc_color_poles_2k.tif` (2048×1024, 24-bit RGB, no ICC profile; SHA-256 `13b797422e8c4b8607ff2b2623ac3a046a6da0132d567c2d272d92fad7052c4a`, 3,339,438 bytes), retrieved **2026-08-01**. SVS states the map is equirectangular and _"centered on 0° longitude"_.
+
+**Conversion applied:** encode to JPEG quality 90, 4:4:4 chroma — the same encode as the Tycho star faces above. **No** resampling (SVS publishes this product at exactly the shipped 2048×1024) and **no** transfer/tone correction (unlike SVS 3572, SVS states no non-sRGB colour standard for this product and the source carries no ICC profile; the map's nearside median luminance already matches the map it replaces to within 1%, so the swap is a resolution change only). Reproducible with `Tools/moon-albedo-bake/bake-lroc-color.mjs`, which verifies the pinned source hash before baking and refuses to install unless the lunar-landmark alignment checks pass. The 3.2 MB source TIFF is **not** bundled.
+
+- Source: <https://svs.gsfc.nasa.gov/4720/>
+- Direct file: <https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/lroc_color_poles_2k.tif>
+- NASA media guidelines: <https://www.nasa.gov/nasa-brand-center/images-and-media/>
+
+**Credit:** NASA/Goddard Space Flight Center Scientific Visualization Studio.
+
+**Underlying data:** the colour map was adapted by SVS from the LROC "Hapke Normalized" Wide Angle Camera mosaic — a composite built by the Lunar Reconnaissance Orbiter Camera team at **Arizona State University** from over 100,000 WAC images (<http://wms.lroc.asu.edu/lroc/view_rdr/WAC_HAPKE_NORMALIZED>). **Credit: NASA/GSFC/Arizona State University.**
+
+**Terms.** This is NASA content produced by a NASA centre from data returned by a NASA mission instrument, and is not subject to copyright protection in the United States. NASA's media guidelines permit reuse without a licence fee and impose no share-alike condition; the credits above are given because NASA requests attribution as a courtesy, not because a licence term compels it. The LROC instrument team's mosaic is likewise a NASA-mission data product distributed through the Planetary Data System without licence conditions. Unlike the star-map entry above, **no third-party non-commercial-licensed catalogue is incorporated**, so that entry's risk analysis does not apply here. NASA does not indemnify, and NASA's guidelines note that its endorsement of a product or service may not be implied.
+
+### Lunar normal map — NASA/GSFC Scientific Visualization Studio (CGI Moon Kit LOLA displacement)
+
+**File:** `Source/Assets/Textures/Moon/ldem_normal_1k.png` (679,782 bytes, 1024×512; SHA-256 `5e215ee08a03f0d0afd24851cf7d1973994bcb895ba4fc9dfdd1af31d8aa87e9`). Paired with `Moon.Variant.LROC_COLOR_2K`, the default since C12-24 — see `Source/Scene/Moon.js`. Bundled offline and fetched only when the moon is actually rendered. `Moon.Variant.SMALL` ships no normal map.
+
+**Product:** "CGI Moon Kit", NASA SVS ID 4720, released 2019-09-06 — the same product as the albedo entry above. The bundled file is **derived** from that product's LOLA **displacement** map `ldem_16.tif` (5760×2880, 16 pixels per degree, float32 kilometres relative to a 1737.4 km sphere, no ICC profile; SHA-256 `1ea42bf44f7e9d694f79c3afa7145f97fbf06cc67372067d9fe73dce43bad796`, 66,378,634 bytes), retrieved **2026-08-02**. SVS publishes the displacement maps in the same equirectangular projection, centred on 0° longitude, as the colour map. SVS publishes **no** normal map and **no** 2K displacement map (the `ldem_*` family is 4/16/64 pixels per degree only), so both the derivation and the output resolution are this project's.
+
+**Conversion applied:** area-weighted downsample of the height field to 1024×512, then central differences at the lunar radius — with the longitude stencil widened to `round(1/cos(lat))` texels so the derivative baseline stays a constant ground distance, and rows past a pole wrapped across it — yielding tangent-space (east, north, up) normals encoded as `n * 0.5 + 0.5` in 8-bit RGB PNG. PNG rather than JPEG: measured, chroma subsampling and DCT ringing cost 1.26°–1.68° of mean normal-tilt error against the 0.17° of an 8-bit lossless round trip, on a signal whose own mean tilt is only 2.7°. Reproducible with `Tools/moon-albedo-bake/bake-lola-normals.mjs`, which verifies the pinned source hash and the published LOLA relief range before deriving, and refuses to install unless the crater-relief polarity checks pass. The 66 MB source TIFF is **not** bundled.
+
+- Source: <https://svs.gsfc.nasa.gov/4720/>
+- Direct file: <https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/ldem_16.tif>
+- NASA media guidelines: <https://www.nasa.gov/nasa-brand-center/images-and-media/>
+
+**Credit:** NASA/Goddard Space Flight Center Scientific Visualization Studio.
+
+**Underlying data:** the displacement map is SVS's rendering of the digital elevation model from the **Lunar Orbiter Laser Altimeter (LOLA)** aboard the Lunar Reconnaissance Orbiter. **Credit: NASA/GSFC/MIT** (LOLA's principal investigation is led from MIT; the instrument and mission are NASA/GSFC).
+
+**Terms.** As with the albedo above, this is NASA content produced by a NASA centre from data returned by a NASA mission instrument, and is not subject to copyright protection in the United States. NASA's media guidelines permit reuse without a licence fee and impose no share-alike condition; the credits are given because NASA requests attribution as a courtesy. LOLA's elevation products are distributed through the Planetary Data System without licence conditions. No third-party non-commercial-licensed data is incorporated, so the star-map entry's risk analysis does not apply here. NASA does not indemnify, and NASA's endorsement may not be implied.
+
+### Geoid undulation grid — EGM2008 (NGA)
+
+**File:** `Source/Assets/Geoid/egm2008-0p5deg.i16` (520,594 bytes; consumed by `Source/Core/GeoidUndulationGrid.js` when the ocean vertical datum resolves to `GEOID` — see `Source/Core/VerticalDatum.js`). Fetched lazily at runtime, so applications that never enable a geoid datum never download it.
+
+**Product:** the Earth Gravitational Model 2008 (EGM2008) geoid-undulation grid published by the U.S. National Geospatial-Intelligence Agency. The bundled file is a 0.5° × 0.5° decimation, encoded as int16 centimetres, of the NGA 2.5-arcminute grid as redistributed by the PROJ project at <https://cdn.proj.org/us_nga_egm08_25.tif> (80,585,622 bytes, SHA-256 `4191d471eefebf24091b56dbc604353cb3b8cf8cc70e448bb9ae56a272bef17a`; that file's own TIFF `ImageDescription` reads _"WGS 84 (EPSG:4979) to EGM2008 height (EPSG:3855). Converted from egm08_25.gtx (last modified at 2018/10/08)"_). The decimation is reproducible with `Tools/build-geoid-undulation-grid.mjs`, which verifies the pinned source hash before baking. The 80 MB source is **not** bundled.
+
+**Terms.** The source file's TIFF Copyright tag (33432) reads verbatim:
+
+> Derived from work by NGA. Public Domain
+
+EGM2008 is a work of the U.S. Government and is not subject to copyright protection in the United States. No attribution obligation and no share-alike condition attach; the citation below is given as scholarly good practice, not as a licence term.
+
+**Citation:** Pavlis, N. K., Holmes, S. A., Kenyon, S. C., & Factor, J. K. (2012). _The development and evaluation of the Earth Gravitational Model 2008 (EGM2008)._ Journal of Geophysical Research, 117, B04406.
+
+### Bright-star catalogue — Yale BSC5, as served by NASA HEASARC
+
+**File:** `Source/Scene/BrightStarCatalog.js`. Not a binary asset but bundled measurement data, and listed here for the same reason as the entries above: it ships inside `@cesium/engine`, and the terms below must travel with any redistribution. The module holds **2,868 stars** to visual magnitude **5.5**, as a flat table of four numbers per star — J2000 right ascension, J2000 declination, V magnitude, B−V colour index. It is consumed by `Source/Scene/StarFieldMath.ts` on both rendering backends.
+
+**Product:** _Bright Star Catalogue, 5th Revised Edition (Preliminary Version)_, Hoffleit, D. & Warren, W. H. Jr., 1991. The rows were taken from the **NASA HEASARC** Browse table `heasarc_bsc5p` (9,110 rows), retrieved **2026-08-01** from `https://heasarc.gsfc.nasa.gov/FTP/heasarc/dbase/tdat_files/heasarc_bsc5p.tdat.gz` (913,895 bytes; SHA-256 `122628cde2d8bedf7e16ddf5f888167ac58c04b5592d6155408ce297f3073931`; the file's own header declares `table_security = public`). HEASARC states of that table that it _"was created by the HEASARC in 1995 based upon a file obtained from either the ADC or the CDS"_ and that it has since revised it — most recently in January 2014 — so the served table is itself a NASA/GSFC work product. The 914 KB source archive is **not** bundled; the ingest is reproducible with `Tools/star-catalog-bake/bake-star-catalog.mjs`, which verifies the pinned hash before doing anything.
+
+**What is redistributed.** Only the four factual columns, rounded to the precision the renderer uses, re-sorted under this project's own schema rather than in the source's row order. Identifiers, cross-references, spectral types, proper motions, parallaxes, notes and remarks are **not** taken.
+
+- HEASARC data policy: <https://heasarc.gsfc.nasa.gov/docs/heasarc/data_policy.html>
+- Catalogue page: <https://heasarc.gsfc.nasa.gov/W3Browse/star-catalog/bsc5p.html>
+- NASA media guidelines: <https://www.nasa.gov/nasa-brand-center/images-and-media/>
+
+**Credit:** Hoffleit & Warren (Yale University Observatory); table served by NASA's High Energy Astrophysics Science Archive Research Center (HEASARC), a service of the Astrophysics Science Division at NASA/GSFC.
+
+**Terms.** HEASARC's data policy states verbatim:
+
+> HEASARC materials are all available freely for your use.
+
+The only obligation it attaches is an acknowledgement in research publications. Its page enumerates the missions whose partner agencies impose extra conditions — the sole such carve-out is **XMM-Newton** (ESA, non-commercial); `bsc5p` is not partner-agency mission data and is not within it. Neither the catalogue page nor the served file carries a copyright notice, a licence, or a restriction. NASA's own guidance is that NASA content _"generally are not subject to copyright in the United States"_ and may be used _"in a factual manner that does not imply endorsement … without needing explicit permission"_, with a carve-out only for third-party material NASA **marks** as copyright-protected; this table carries no such marking. Independently, the four vendored fields are measurements of physical reality — uncopyrightable _facts_ in the United States under _Feist v. Rural_.
+
+**What this is not.** It is **not** a public-domain dedication and **not** a written grant. 17 U.S.C. §105 does **not** reach the underlying 1991 compilation, whose authors were a private university and a contractor; federal hosting confers no such status. Sourcing from HEASARC rather than VizieR/CDS is deliberate: it removes the EU _sui generis_ database right, which protects substantial extraction independently of copyright and whose maker would be the European provider. On that basis the residual exposure is assessed as low and accepted, on stated grounds — **not** recorded as "it is clear". A one-line written confirmation from CDS (`cds-question@unistra.fr`) and/or Yale that no restriction is asserted on redistribution of the factual fields would convert this from defensible to cleared, and remains the cheapest route. The full analysis, including the points that stay unconfirmed, is in the fork repository at `migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md` §6d (decision record DR-02) and in `Tools/star-catalog-bake/README.md` §2.
 
 # Tests
 

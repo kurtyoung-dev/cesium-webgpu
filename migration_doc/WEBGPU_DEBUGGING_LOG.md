@@ -24,6 +24,82 @@
 
 ---
 
+## BISECT HAZARD — Batch 785 (`e748181065`) does not build a working WebGL sky; `git bisect skip` it (recorded 2026-08-07)
+
+**This is a HISTORY defect, not a HEAD defect.** HEAD is healthy and has been since
+Batch 786. Nothing here needs fixing in code — history is pushed and immutable. The
+remedy is this record, so that the next person bisecting a WebGL regression across
+`47a940eed9..a6d4b1763a` does not spend a cycle mis-attributing a hard shader-compile
+wall to whatever they were actually hunting.
+
+**Files.** `packages/engine/Source/Shaders/SkyAtmosphereVS.glsl`,
+`packages/engine/Source/Shaders/SkyAtmosphereFS.glsl`,
+`packages/engine/Source/Shaders/Builtin/Functions/getSkyAtmosphereLightDirection.glsl`.
+
+**What happened.** The C12-31 sky-aureole fix was split across two adjacent mainline
+commits, 38 seconds apart, and the split cuts through a call/definition pair:
+
+| commit | batch | carries |
+|---|---|---|
+| `e748181065` | 785 | **Every C12-31 engine edit** — both GLSL **call sites**, the WGSL twin (`SkyAtmosphere.wgsl` `isLegacyOverhead`), the public enum member `DynamicAtmosphereLightingType.LEGACY_OVERHEAD = 3`, `Atmosphere.js`, `SkyAtmosphere.js`, `WebGPUSkyAtmosphereRenderer.js`, `WebGPUAtmosphereUniforms.ts`, `getDynamicAtmosphereLightDirection.glsl`, `Model/AtmosphereStageFS.glsl`. Its subject names only C13-06 / C13-07; its body never mentions C12-31. |
+| `34965a2b21` | 786 | Exactly 4 files: the **builtin definition** `Builtin/Functions/getSkyAtmosphereLightDirection.glsl` (+63), `probe-sky-aureole-anchor.mjs`, `sky-light-direction.spec.mjs`, and the C12 queue doc. Its message describes the WGSL twin and the enum — content that is in its PARENT. |
+
+**The failure at 785, mechanism by mechanism.**
+
+1. `SkyAtmosphereVS.glsl:42` and `SkyAtmosphereFS.glsl:107` call
+   `czm_getSkyAtmosphereLightDirection(...)` **unconditionally inside `main()`** —
+   the VS call sits *above* the `#ifndef PER_FRAGMENT_ATMOSPHERE` block, so there is
+   no preprocessor guard on either.
+2. `git grep "vec3 czm_getSkyAtmosphereLightDirection" e748181065 -- .` returns
+   **empty**. The definition exists nowhere in that tree, and neither
+   `AtmosphereCommon.glsl` nor `SkyAtmosphereCommon.glsl` — the other two entries in
+   the program's `sources` array — supplies it.
+3. `CzmBuiltins.js` cannot rescue it. It is build-generated and gitignored
+   (`packages/engine/.gitignore:5  Source/Shaders/**/*.js`); `scripts/build.js`
+   populates `builtinFunctions[]` from a live disk glob of `Builtin/Functions/*.glsl`
+   and rimrafs generated `.js` whose `.glsl` no longer exists. **Checking out 785
+   actively deletes any stale copy from your working tree** — which is exactly why
+   this is invisible until you bisect.
+4. `ShaderSource.js:70` gates dependency injection on
+   `Object.hasOwn(ShaderSource._czmBuiltinsAndUniforms, element)`, so an unknown
+   `czm_*` token is **dropped with no diagnostic**. The undeclared function reaches
+   the driver; the shader is GLSL ES 3.00, which forbids implicit declaration;
+   compilation fails at `ShaderProgram.js:461` → `RuntimeError`.
+
+**Trigger.** Check out or bisect to `e748181065`, run `npx gulp build`, open any
+default Viewer on **WebGL**. `SkyAtmosphere.js` sets `show = true` and the per-vertex
+path is the default whenever a globe is visible, so the sky program compiles on frame
+1 and throws. `git rev-list --first-parent` places 786 and 785 adjacent on mainline,
+so `git bisect` *will* land there.
+
+**Scope — read this before concluding anything.**
+
+- **WebGL only.** `SkyAtmosphere.wgsl` inlines the same selection as its
+  `isLegacyOverhead` block, so **WebGPU at 785 renders normally.** A bisect on a
+  WebGPU-only symptom is unaffected.
+- **786's own evidence stands.** `34965a2b21`'s tree is self-consistent — builtin
+  present, both call sites present — so the `sky-light-direction.spec.mjs` 17/17 and
+  `probe-sky-aureole-anchor.mjs` results recorded there are valid. Only the
+  intermediate commit is broken.
+- **785's C12-31 evidence pointer is not.** The C12-31 queue row cites
+  `sky-light-direction.spec.mjs **16/16**` as 785's evidence; that file does not
+  exist at 785. It is valid for the combined 785 + 786 tree only.
+
+**What to do.** `git bisect skip e748181065`, or bisect with a build script that
+treats a sky-program compile failure at that one commit as untestable. Do **not**
+file a WebGL sky-atmosphere regression against 785.
+
+**Lesson (generalizable).** A commit split must never separate a shader **call site**
+from its **builtin definition**, because the missing half fails *silently at
+injection time* — `ShaderSource` skips unknown `czm_` tokens without a warning — and
+only surfaces one layer down as an opaque driver compile error. The same shape
+applies to any generated registry populated by a disk glob: checking out an earlier
+commit *removes* the artifact that was masking the gap locally, so the defect is
+strictly invisible until someone bisects. Split commits along the seams of the
+dependency graph, not along the seams of the review narrative.
+
+---
+
 ## NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD — the cast pass wrote the shadow depth, then a duplicate dispatch cleared it on the same encoder, before the color pass; and the receive matrix was NDC-to-texture biased twice (2026-08-06)
 
 **Files.** `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts` (duplicate dispatch
@@ -98,7 +174,18 @@ source-proven, not pixel-proven.
 resets it before treating a zero as a finding. And a threshold expressed as an absolute floor
 (`umbraPx > 200`) instead of a cross-backend ratio let a 32x parity deficit ship green for weeks.
 
-## NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING, part 2 — the 10x magnitude gap was a unit error, a 24-degree instrument error, and 307 m of Alpine relief (2026-08-06, Batch 845)
+## NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING, part 2 — the 10x magnitude gap was a unit error, a 24-degree instrument error, and 307 m of Alpine relief (2026-08-06, Batch 850)
+
+> **Heading corrected 2026-08-07 (docs-reconciliation pass): this section was
+> originally headed "Batch 845", which is wrong.** Every file in the **Files**
+> block below shipped in **Batch 850 (`c178510469`)** — `git log -S "the 10x
+> magnitude gap was a unit error"` attributes this text to that commit, and its
+> name-status carries all six. **Batch 845 (`c5c5be0a4a`) is docs-only — `1 file
+> changed`, `migration_doc/DEFERRED_WORK.md`** — and shipped none of them. The
+> only thing that legitimately belongs to 845 is the *measurement run* that opened
+> the sibling shadow finding above. A session running `git show` or
+> `git log --grep 'Batch 845'` to recover this rationale would land on a
+> documentation-only commit and conclude the fix was missing or reverted.
 
 **Files.** `Tools/visual-regression/lib/ground-fog-band-model.mjs` (corrected FOV;
 composite delta, per-pixel inversion, shipped froxel quadrature, implied relief),

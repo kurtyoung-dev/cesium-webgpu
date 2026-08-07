@@ -56,8 +56,26 @@ function buildCommands(files, tools) {
 // `npm run prettier-check` ("**/*" filtered by .prettierignore): every
 // extension those two cover in CI has to be covered here, or the hook lets
 // through what CI then rejects. `tooling-coverage.spec.mjs` pins that.
+// License files are verbatim third-party terms — they must never be reflowed
+// or restructured to satisfy MD013/MD034/etc. The root `.markdownlintignore`
+// already exempts them for the glob-mode `npm run markdownlint`, but
+// lint-staged passes ABSOLUTE Windows paths straight to markdownlint-cli,
+// which does not apply the ignore file to explicitly-named paths — so the
+// exemption has to live here too (learned landing the packages/engine
+// LICENSE.md mirror, Batch 867).
+function isLicenseMarkdown(filePath) {
+  const rel = filePath.split(/[\\/]/).join("/");
+  return rel === "LICENSE.md" || rel.endsWith("/LICENSE.md");
+}
+
 export default {
   "*.{js,cjs,mjs,ts,tsx,css,html}": (files) =>
     buildCommands(files, ["eslint --cache --quiet", "prettier --write"]),
-  "*.md": (files) => buildCommands(files, ["markdownlint", "prettier --write"]),
+  "*.md": (files) => [
+    ...buildCommands(
+      files.filter((f) => !isLicenseMarkdown(f)),
+      ["markdownlint"],
+    ),
+    ...buildCommands(files, ["prettier --write"]),
+  ],
 };

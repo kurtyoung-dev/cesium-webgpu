@@ -61,6 +61,31 @@ to COMPLETE.
   every face censuses to 0 resolved point sources while retaining 83.5–94.6% of its
   band structure — and the bundle SHRINKS 4.355 MB → 0.362 MB. `probe-stars-catalog`
   check (A) is a real gate again as a POINT CENSUS, with a new check (G).
+  - ⛔ **CORRECTION 2026-08-07 — "the bundle SHRINKS 4.355 MB → 0.362 MB" is
+    wrong twice, and it is the number a future bundle-size regression check
+    would be anchored against.** (a) **It is a RUNTIME-FETCH comparison, not a
+    bundle comparison.** It contrasts the *default variant's* six faces before
+    and after; the un-blurred t5 set was **deliberately retained and is
+    asserted-bundled** — `skybox-manifest.json` keeps it under
+    `unblurredReversalArtifact` ("Retained + bundled so DR-01's reversal plan
+    needs no re-bake; selectable as `SkyBox.Variant.TYCHO_T5`"),
+    `skybox-diffuse-seam.spec.mjs:168` is literally *"the un-blurred reversal
+    artifact and the historical t3 set stay bundled"*, and `LICENSE.md:1038`
+    states "All three are bundled offline". `scripts/build.js::copyEngineAssets`
+    globs `packages/engine/Source/**` minus only `*.js/*.ts/*.glsl/*.css/*.md`,
+    so **every face is copied into `Build/Cesium*/Assets/`** and into the
+    `@cesium/engine` `Source` tarball. **The shipped asset payload therefore
+    GREW by 0.362 MiB (379,927 B) — it did not shrink.** (b) **The units are
+    mislabelled:** 0.362 and 4.355 are **MiB**, not MB (0.380 MB and 4.567 MB).
+  - **True figures, measured from the 18 faces on disk at HEAD:** diffuse
+    379,927 B (0.362 MiB); un-blurred t5 4,566,954 B (4.355 MiB); historical t3
+    867,538 B (0.827 MiB); **total bundled star map 5,814,419 B = 5.545 MiB**,
+    of which a default runtime fetches **six faces / 0.362 MiB**. These match
+    the per-variant "Bundled bytes" column already recorded correctly at
+    `LICENSE.md:1032-1036`, which needs no correction. *(Related: the
+    `Tools/skybox-bake/README.md` quotes two different sizes for the same t5
+    set — "4.16 MB" at :170 and "4.355 MB" at :262. Not corrected here; out of
+    this pass's touch surface.)*
 - **Batch 834 — the draping streaks, root-caused.** `vectorInverse2x2` answered a
   **singular** UV Jacobian with the **ZERO matrix**, which collapses
   `length(screenFromUv * offsetUv) < lineWidth` to always-true for the cell's first

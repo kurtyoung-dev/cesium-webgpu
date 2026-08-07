@@ -1025,6 +1025,12 @@ Source® Sans Pro, Adobe's first open source typeface family, was designed by Pa
 
 Binary assets shipped **inside the published `@cesium/engine` package** — not merely used by the example applications. These are **not** covered by the licence grant at the top of this file; each carries its own terms, stated below, and redistributors must carry this section with them.
 
+> **MIRRORED — edit both copies (added 2026-08-07).** This section is duplicated in full at [`packages/engine/LICENSE.md`](packages/engine/LICENSE.md). That is deliberate and it is not a pointer: `packages/engine/package.json` ships `Source` (which contains every asset below) and `LICENSE.md` (which resolves **package-local**) in the `@cesium/engine` tarball, and it does **not** ship this root file — so an npm consumer or a vendored copy never sees this text. Without the mirror the package would grant Apache-2.0 over NASA, NGA and Yale-BSC5 material while naming none of it, which is exactly what the sentence above forbids.
+>
+> **Any change to an entry below must be made in both files in the same change.** The two differ only in path prefix — this file uses `packages/engine/Source/…`, the mirror uses the tarball-relative `Source/…`.
+>
+> Note for whoever next touches the asset guard specs: `moon-albedo-asset.spec.mjs`, `moon-normal-map-asset.spec.mjs`, `skybox-diffuse-seam.spec.mjs`, `solar-glare-star-washout.spec.mjs` and `star-catalog-depth.spec.mjs` all resolve **this root file only**. They cannot currently detect drift in — or deletion of — the mirror. Pointing one of them at `packages/engine/LICENSE.md` as well is the cheap closure.
+
 ### Star map cube maps — NASA/GSFC Scientific Visualization Studio
 
 **Files:** 18 JPEG cube faces totalling **5,814,419 bytes** —

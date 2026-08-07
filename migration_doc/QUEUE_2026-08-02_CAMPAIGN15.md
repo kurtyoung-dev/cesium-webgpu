@@ -23,6 +23,18 @@ Space Weather to **Campaign 15**. It does not rename, launch, or relax Campaign
 [`DEFERRED_WORK.md`](DEFERRED_WORK.md), with design context in
 [`ATMOSPHERIC_EFFECTS_ROADMAP.md`](ATMOSPHERIC_EFFECTS_ROADMAP.md) Phase F.
 
+> **SUPERSEDED by R1 (2026-08-06) — annotated 2026-08-07 by the
+> docs-reconciliation pass.** The parenthetical above ("Campaigns 11, 12, and 13
+> must all complete before Campaign 14 launches") states the **superseded strict
+> reading** of O5. Ruling R1 ([`DEFERRED_WORK.md`](DEFERRED_WORK.md),
+> §"2026-08-06 - MAINTAINER RULINGS") binds O5's "done" to a **pragmatic bar:
+> C12 complete + C13 Gate B green** — Campaign 14 does NOT wait for C11-137
+> certification, C13 Gates A/C/D, or the unstarted bodies of either campaign.
+> **`C13-GATE-B` CLOSED green at Batch 866 (`58af0d1819`), so the remaining C14
+> gate is C12 completion ONLY.** The Campaign-15 numbering the paragraph above
+> establishes is UNAFFECTED, and R4's hold on `C15-01+` (start only after C12
+> closes) is likewise unaffected.
+
 ---
 
 ## 1. Theme and immutable contracts
