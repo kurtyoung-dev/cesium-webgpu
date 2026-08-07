@@ -32,7 +32,7 @@
  *                a false green (the `probe-vector-draping.mjs` gate-A rule).
  *
  * DETERMINISM CONTROL — the reason this file was rewritten. The rich sweep is
- * captured TWICE back to back under one configuration (`richA` then `richB`).
+ * captured TWICE under one configuration (`richA` then `richB`).
  * The two captures must agree per location within `CONTROL.perLocation` and on
  * the sweep mean within `CONTROL.mean`, and the cloud `time` uniform must read
  * the SAME value at each location in both. If they do not, the probe
@@ -41,6 +41,31 @@
  * that `richB` reaches location 0 from location 8 while `richA` reaches it from
  * the readiness pose, so the control also tests independence from view history,
  * which is where the recorded flip lived.
+ *
+ * THE CONTROL NOW BRACKETS THE SCORED GAP (Batch 861). It originally ran
+ * `richA -> richB` back to back, BEFORE the neutral and gated legs. But nothing
+ * this probe scores is read across that gap: gate 3 differences `rich` against
+ * `neutral` (a SOURCE swap), and gate 5 differences `richOff` against both (a
+ * source swap AND a strength change). A control that only spans a back-to-back
+ * repeat certifies stability across an interval no assertion reads. The order is
+ * therefore `richA -> neutral -> richOff -> richB`, so `richA`/`richB` bracket
+ * every source and strength change the scored gates read across — the same
+ * convention `probe-weather-metar.mjs` (`ch1A -> ch0 -> ch1B`) and
+ * `probe-weather-ingest.mjs` (`hiA -> lo -> hiB`) already use. The tolerances are
+ * UNCHANGED; only the interval they bound got wider, which is strictly stronger.
+ *
+ * SHARED PINNING (Batch 861). This probe was pinned at Batch 852, three batches
+ * BEFORE `lib/weather-probe-pinning.mjs` was extracted from it at Batch 855 for
+ * the other five Gate-B legs — so it was the reference implementation and also
+ * the last holder of a private copy. It now consumes the shared module like its
+ * five siblings: `installWeatherPinHarnessOnPage` for the in-page pins,
+ * same-task capture, wall-clock settle, binned-`Pass.GLOBE` readiness and
+ * `awaitWeatherApplied`; `collectPinStructural` for read-back enforcement; and
+ * `collectRepeatStructural` for the control. That closes the copy, and it also
+ * gains the read-backs the private copy never had — `requestRenderMode`,
+ * `clock.multiplier`, the `cloudQuality`/`cloudCastShadows`/`cloudContributesIBL`
+ * dial round trips — every one an ADDITIONAL structural check. No scored
+ * threshold moved.
  *
  * The tolerances are set strictly INSIDE the smallest scored margin (gate 3's
  * 0.01 on stddev, gate 4's 0.02 on a fraction), so a control PASS means the
@@ -196,6 +221,12 @@ import {
   errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
 import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
+import {
+  collectPinStructural,
+  collectRepeatStructural,
+  installWeatherPinHarnessOnPage,
+  WEATHER_DETERMINISM_DIALS,
+} from "./lib/weather-probe-pinning.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT = "Tools/visual-regression/output/weather-channels";
@@ -204,21 +235,6 @@ const VIEW = { width: 1024, height: 768 };
 
 const WATCHDOG_MS = 600_000;
 
-/** Packed-uniform slots read back to prove the pins took. */
-const SLOTS = {
-  time: 35,
-  maxSteps: 44,
-  weatherEnabled: 64,
-  qualityFlags: 74,
-  channelStrength: 107,
-};
-
-// qualityFlags bits that MUST be clear on the escape hatch: NOISE_BAKED(0),
-// HALF_RES(1), TEMPORAL(2), JITTER(3), LIGHT_CONE(10). Any of them set means the
-// tier path is active and the march has a frame-index input.
-const FORBIDDEN_QUALITY_BITS =
-  (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 10);
-
 const PIN = {
   // Far-apart longitudes spanning the field west->east at a fixed mid latitude,
   // so each samples a different A/G column of the "rich" field. UNCHANGED.
@@ -226,9 +242,8 @@ const PIN = {
   lat: 25.0,
   cameraHeight: 250_000.0,
   brightThreshold: 120,
-  cloudQuality: 32,
-  forbiddenQualityBits: FORBIDDEN_QUALITY_BITS,
-  slots: SLOTS,
+  // Step 3 — UNCHANGED from the pre-pinning probe's sampling grid.
+  sampleStride: 3,
   warmupDiscards: 2,
   viewSettleMs: 1000,
   sourceSettleMs: 1500,
@@ -264,134 +279,37 @@ function stats(arr) {
 
 /**
  * Everything below runs INSIDE the page. `page.evaluate` serializes the function
- * source and drops the surrounding closure, so every helper this lane needs is
- * defined here rather than imported — the recorded trap from the shared-helper
- * work.
+ * source and drops the surrounding closure, so the shared helpers arrive through
+ * `globalThis.__weatherPin` / `globalThis.__cloudProbe` (installed via
+ * `addInitScript`) rather than through imports.
  */
 const RUN_LANE = async (cfg) => {
   const C = (window.Cesium =
     window.Cesium || (await import("/Build/CesiumUnminified/index.js")));
-  const viewer = window.viewer;
-  const scene = viewer.scene;
-  const canvas = scene.canvas;
-  const rendererType = String(scene.context?.rendererType ?? "").toLowerCase();
+  const pin = globalThis.__weatherPin;
+  const scene = window.viewer.scene;
 
-  // ── P2: one render driver, one clock.
-  viewer.useDefaultRenderLoop = false;
-  scene.requestRenderMode = false;
-  viewer.clock.clockRange = C.ClockRange.UNBOUNDED;
-  viewer.clock.shouldAnimate = false;
-  viewer.clock.multiplier = 0.0;
-
-  for (const selector of [
-    ".cesium-viewer-timelineContainer",
-    ".cesium-viewer-animationContainer",
-    ".cesium-viewer-bottom",
-    ".cesium-viewer-toolbar",
-    ".cesium-viewer-fullscreenContainer",
-    ".cesium-viewer-navigationContainer",
-    ".cesium-navigation-help",
-    ".cesium-renderer-toggle",
-  ]) {
-    const element = document.querySelector(selector);
-    if (element) element.style.display = "none";
-  }
-
-  // ── P1: offline globe. `&offline=true` already asks the app for no base layer
-  // and no world terrain; these are the READ-BACK proofs, because a probe that
-  // merely requested determinism has not established it.
-  const imageryLayersBefore = scene.globe.imageryLayers.length;
-  scene.globe.imageryLayers.removeAll();
-  let terrainForced = false;
-  if (!(scene.globe.terrainProvider instanceof C.EllipsoidTerrainProvider)) {
-    scene.globe.terrainProvider = new C.EllipsoidTerrainProvider();
-    terrainForced = true;
-  }
-
-  // ── P8: no non-cloud light source may enter a bright-pixel count.
-  scene.globe.show = true;
-  scene.globe.enableLighting = false;
-  scene.globe.showGroundAtmosphere = false;
-  scene.globe.baseColor = C.Color.fromBytes(20, 20, 25);
-  if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
-  if (scene.skyBox) scene.skyBox.show = false;
-  if (scene.sun) scene.sun.show = false;
-  if (scene.moon) scene.moon.show = false;
-  if (scene.fog) scene.fog.enabled = false;
-  scene.backgroundColor = C.Color.BLACK;
+  // ── P1/P2/P8.
+  const pins = pin.pinScene(C, {
+    darkGlobe: true,
+    groundAtmosphere: false,
+    fog: false,
+    sky: false,
+  });
 
   // ── P6: per-location local mean noon. Same solar elevation at every location
   // at a fixed latitude, so illumination cannot masquerade as a channel effect.
-  const localNoon = (longitudeDegrees) =>
-    C.JulianDate.fromDate(
-      new Date(
-        Date.UTC(2026, 5, 1, 12, 0, 0) -
-          (longitudeDegrees / 15.0) * 60 * 60 * 1000,
-      ),
-    );
   const timeForLon = new Map();
-  for (const lon of cfg.lonSweep) timeForLon.set(lon, localNoon(lon));
-  const readyTime = localNoon(cfg.lonSweep[0]);
-
-  const renderAt = (julianDate) => {
-    viewer.clock.currentTime = julianDate;
-    scene.render(julianDate);
-  };
-
-  // WALL CLOCK, not frames: a cold pipeline variant has measured ~2674 ms to
-  // compile and a frame budget silently under-runs it.
-  const settle = async (julianDate, milliseconds) => {
-    const deadline = performance.now() + milliseconds;
-    let frames = 0;
-    while (performance.now() < deadline) {
-      renderAt(julianDate);
-      frames++;
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    return frames;
-  };
-
-  if (!C.Pass || !Number.isInteger(C.Pass.GLOBE)) {
-    throw new Error("Pass.GLOBE is not exported; readiness cannot be binned");
+  for (const lon of cfg.lonSweep) {
+    timeForLon.set(lon, pin.localNoonAt(C, lon));
   }
-  const binnedGlobeCommands = () => {
-    const frustums = scene._view?.frustumCommandsList ?? [];
-    let total = 0;
-    for (const frustum of frustums) {
-      total += frustum?.indices ? frustum.indices[C.Pass.GLOBE] | 0 : 0;
-    }
-    return total;
-  };
-  const awaitGlobeReady = async (julianDate, minimumSettleMs, budgetMs) => {
-    const start = performance.now();
-    let binned = 0;
-    let firstBinnedMs = null;
-    while (performance.now() - start < budgetMs) {
-      renderAt(julianDate);
-      binned = binnedGlobeCommands();
-      if (binned > 0 && firstBinnedMs === null) {
-        firstBinnedMs = performance.now() - start;
-      }
-      if (
-        firstBinnedMs !== null &&
-        performance.now() - start >= minimumSettleMs
-      ) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    return {
-      binnedGlobeCommands: binned,
-      firstBinnedMs,
-      elapsedMs: Math.round(performance.now() - start),
-    };
-  };
+  const readyTime = timeForLon.get(cfg.lonSweep[0]);
 
   // ── Cloud dials. Coverage/density/deck are the AUTHORED scene and are
-  // deliberately unchanged; wind speed (P3), quality (P4), shadows and IBL (P8)
-  // are the determinism pins. `weatherProvider` is assigned directly rather than
-  // through `configure`, whose round-trip snapshot would deep-walk the packed
-  // Uint8Array the provider holds.
+  // deliberately unchanged; the determinism dials (P3/P4/P8) are spread in from
+  // the shared module. `weatherProvider` is assigned directly rather than through
+  // `configure`, whose round-trip snapshot would deep-walk the packed Uint8Array
+  // the provider holds.
   const volumetricDials = {
     cloudCoverage: 0.6,
     cloudDensity: 0.9,
@@ -399,18 +317,13 @@ const RUN_LANE = async (cfg) => {
     cloudLayerTop: 4000,
     cloudWeatherChannelStrength: 1.0,
     cloudWeatherMap: false,
-    cloudWindSpeed: 0,
-    cloudQuality: cfg.cloudQuality,
-    cloudCastShadows: false,
-    cloudContributesIBL: false,
+    ...cfg.determinismDials,
   };
   const configure = (overrides) =>
     globalThis.__cloudProbe.configure({
       requireWebGPU: true,
       volumetric: { ...volumetricDials, ...overrides },
     });
-
-  const uniformAt = (slot) => scene.context?._cloudCache?.uniformData?.[slot];
 
   const setSource = (kind) => {
     const volumetric = scene.globe.defaultCloudCollection.volumetric;
@@ -426,92 +339,35 @@ const RUN_LANE = async (cfg) => {
     return volumetric.weatherProvider;
   };
 
-  // ── P5: the bytes must reach the GPU and the uniform must enable the map.
-  const awaitWeatherApplied = async (provider, julianDate, budgetMs) => {
-    const start = performance.now();
-    let state = {};
-    while (performance.now() - start < budgetMs) {
-      renderAt(julianDate);
-      const cache = scene.context?._cloudCache;
-      state = {
-        hasData: provider.hasData === true,
-        providerVersion: provider.version,
-        uploadedVersion: cache?.weatherProviderVersion,
-        weatherMapEnabled: uniformAt(cfg.slots.weatherEnabled),
-        lastError: provider.lastError ? String(provider.lastError) : null,
-      };
-      if (
-        state.hasData &&
-        state.providerVersion === state.uploadedVersion &&
-        state.weatherMapEnabled === 1
-      ) {
-        return {
-          ok: true,
-          waitedMs: Math.round(performance.now() - start),
-          ...state,
-        };
-      }
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    return {
-      ok: false,
-      waitedMs: Math.round(performance.now() - start),
-      ...state,
-    };
-  };
-
-  // ── P7: same-task capture. render -> drawImage -> getImageData with no await
-  // in between, so nothing can render over the frame that is being read.
-  const scratch = document.createElement("canvas");
-  const scratchContext = scratch.getContext("2d", { willReadFrequently: true });
-  const measure = (lon, wantPng) => {
-    renderAt(timeForLon.get(lon));
-    const w = canvas.width;
-    const h = canvas.height;
-    scratch.width = w;
-    scratch.height = h;
-    scratchContext.drawImage(canvas, 0, 0);
-    const px = scratchContext.getImageData(0, 0, w, h).data;
-    const png = wantPng ? scratch.toDataURL("image/png") : null;
-    let bright = 0;
-    let sumMax = 0;
-    let n = 0;
-    for (let y = Math.floor(h * 0.2); y < h * 0.8; y += 3) {
-      for (let x = Math.floor(w * 0.2); x < w * 0.8; x += 3) {
-        const i = (y * w + x) * 4;
-        const mx = Math.max(px[i], px[i + 1], px[i + 2]);
-        if (mx > cfg.brightThreshold) bright++;
-        sumMax += mx;
-        n++;
-      }
-    }
-    return {
-      lon,
-      frac: n ? bright / n : 0,
-      // CONTINUOUS companion to the step-function metric, so a threshold
-      // straddle is diagnosable from the log without a second run.
-      meanMax: n ? +(sumMax / n).toFixed(2) : 0,
-      samples: n,
-      png,
-      time: uniformAt(cfg.slots.time),
-      maxSteps: uniformAt(cfg.slots.maxSteps),
-      qualityFlags: uniformAt(cfg.slots.qualityFlags),
-      weatherMapEnabled: uniformAt(cfg.slots.weatherEnabled),
-      channelStrength: uniformAt(cfg.slots.channelStrength),
-    };
-  };
-
-  const captureAt = async (lon, wantPng) => {
-    const julianDate = timeForLon.get(lon);
+  const setView = (lon) =>
     scene.camera.setView({
       destination: C.Cartesian3.fromDegrees(lon, cfg.lat, cfg.cameraHeight),
       orientation: { heading: 0.0, pitch: C.Math.toRadians(-90.0), roll: 0.0 },
     });
+
+  const captureAt = async (lon, wantPng) => {
+    const julianDate = timeForLon.get(lon);
+    setView(lon);
     // DISCARDED warm-up renders: the first frames after a camera jump can be the
     // async prewarm's cold start.
-    for (let i = 0; i < cfg.warmupDiscards; i++) renderAt(julianDate);
-    const settledFrames = await settle(julianDate, cfg.viewSettleMs);
-    return { settledFrames, ...measure(lon, wantPng) };
+    for (let i = 0; i < cfg.warmupDiscards; i++) {
+      pin.renderAt(julianDate);
+    }
+    const settledFrames = await pin.settle(julianDate, cfg.viewSettleMs);
+    // ── P7: same-task capture.
+    const frame = pin.capture(julianDate, wantPng);
+    const metric = pin.brightFraction(
+      frame,
+      cfg.brightThreshold,
+      cfg.sampleStride,
+    );
+    return {
+      lon,
+      settledFrames,
+      png: frame.png,
+      slots: frame.slots,
+      ...metric,
+    };
   };
 
   const sweep = async (label, pngLons) => {
@@ -523,15 +379,9 @@ const RUN_LANE = async (cfg) => {
   };
 
   // ── Readiness, then the legs.
-  scene.camera.setView({
-    destination: C.Cartesian3.fromDegrees(
-      cfg.lonSweep[0],
-      cfg.lat,
-      cfg.cameraHeight,
-    ),
-    orientation: { heading: 0.0, pitch: C.Math.toRadians(-90.0), roll: 0.0 },
-  });
-  const globeReady = await awaitGlobeReady(
+  setView(cfg.lonSweep[0]);
+  const globeReady = await pin.awaitGlobeReady(
+    C,
     readyTime,
     cfg.readyMinSettleMs,
     cfg.readyBudgetMs,
@@ -546,13 +396,18 @@ const RUN_LANE = async (cfg) => {
     maxFrames: cfg.readyMaxFrames,
   });
 
+  // Leg order is `richA -> neutral -> richOff -> richB`, so the richA/richB
+  // determinism control BRACKETS every source and strength change the scored
+  // gates read across. A back-to-back richA/richB pair — which is what this probe
+  // ran before Batch 861 — would only prove stability across an interval no
+  // assertion reads.
   const richProvider = setSource("rich");
-  const richApplied = await awaitWeatherApplied(
+  const richApplied = await pin.awaitWeatherApplied(
     richProvider,
     readyTime,
     cfg.sourceBudgetMs,
   );
-  await settle(readyTime, cfg.sourceSettleMs);
+  await pin.settle(readyTime, cfg.sourceSettleMs);
   const richState = {
     hasData: richProvider.hasData,
     version: richProvider.version,
@@ -561,48 +416,40 @@ const RUN_LANE = async (cfg) => {
   const west = cfg.lonSweep[0];
   const east = cfg.lonSweep[cfg.lonSweep.length - 1];
   const richA = await sweep("richA", [west, east]);
-  const richB = await sweep("richB", []);
 
   const neutralProvider = setSource("uniform");
-  const neutralApplied = await awaitWeatherApplied(
+  const neutralApplied = await pin.awaitWeatherApplied(
     neutralProvider,
     readyTime,
     cfg.sourceBudgetMs,
   );
-  await settle(readyTime, cfg.sourceSettleMs);
+  await pin.settle(readyTime, cfg.sourceSettleMs);
   const neutral = await sweep("neutral", []);
 
   const offProvider = setSource("rich");
-  const offApplied = await awaitWeatherApplied(
+  const offApplied = await pin.awaitWeatherApplied(
     offProvider,
     readyTime,
     cfg.sourceBudgetMs,
   );
   const configuredOff = configure({ cloudWeatherChannelStrength: 0.0 });
-  await settle(readyTime, cfg.sourceSettleMs);
+  await pin.settle(readyTime, cfg.sourceSettleMs);
   const richOff = await sweep("richOff", []);
 
+  const configuredBackOn = configure();
+  await pin.settle(readyTime, cfg.sourceSettleMs);
+  const richB = await sweep("richB", []);
+
   return {
-    rendererType,
-    isWebGPU: scene.context?.isWebGPU === true,
-    pins: {
-      useDefaultRenderLoop: viewer.useDefaultRenderLoop,
-      shouldAnimate: viewer.clock.shouldAnimate,
-      clockMultiplier: viewer.clock.multiplier,
-      requestRenderMode: scene.requestRenderMode,
-      imageryLayersBefore,
-      imageryLayersAfter: scene.globe.imageryLayers.length,
-      ellipsoidTerrain:
-        scene.globe.terrainProvider instanceof C.EllipsoidTerrainProvider,
-      terrainForced,
-      showGroundAtmosphere: scene.globe.showGroundAtmosphere,
-      enableLighting: scene.globe.enableLighting,
-      cloudWindSpeed:
-        scene.globe.defaultCloudCollection.volumetric.cloudWindSpeed,
-      cloudQuality: scene.globe.defaultCloudCollection.volumetric.cloudQuality,
-      canvas: { width: canvas.width, height: canvas.height },
+    pins,
+    dials: pin.readDials(),
+    readiness: {
+      globeReady,
+      proceduralReady,
+      configured,
+      configuredOff,
+      configuredBackOn,
     },
-    readiness: { globeReady, proceduralReady, configured, configuredOff },
     applied: {
       rich: richApplied,
       neutral: neutralApplied,
@@ -628,6 +475,7 @@ async function run() {
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
   await installCloudProbeHarnessOnPage(page);
+  await installWeatherPinHarnessOnPage(page);
   await page.goto(URL, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(
     () => !!(window.viewer && window.viewer.scene),
@@ -638,7 +486,10 @@ async function run() {
   );
   await armWebGPUDevices(page);
 
-  const result = await page.evaluate(RUN_LANE, PIN);
+  const result = await page.evaluate(RUN_LANE, {
+    ...PIN,
+    determinismDials: WEATHER_DETERMINISM_DIALS,
+  });
 
   const gate = await collectGateErrors(page);
   const newErrs = (gate.errors || [])
@@ -677,8 +528,9 @@ async function run() {
   }
 
   console.log(
-    `renderer=${result.rendererType} pins=${JSON.stringify(result.pins)}`,
+    `renderer=${result.pins.rendererType} pins=${JSON.stringify(result.pins)}`,
   );
+  console.log(`dials ${JSON.stringify(result.dials)}`);
   console.log(
     `readiness globe{binned=${result.readiness.globeReady.binnedGlobeCommands} firstMs=${result.readiness.globeReady.firstBinnedMs} elapsedMs=${result.readiness.globeReady.elapsedMs}} procedural{frames=${result.readiness.proceduralReady.waitedFrames} executeCalls=${result.readiness.proceduralReady.executeCalls}}`,
   );
@@ -698,100 +550,66 @@ async function run() {
   console.log(`west=${westFrac.toFixed(3)} east=${eastFrac.toFixed(3)}`);
   console.log(`errs ${newErrs.length}`);
 
-  // ── STRUCTURAL preconditions. A pin that did not take means the probe is not
-  // measuring the configuration it documents, so it certifies nothing.
-  const allCaptures = [
-    ...richA.captures,
-    ...richB.captures,
-    ...neutral.captures,
-    ...richOff.captures,
+  // ── STRUCTURAL preconditions, via the shared enforcement. A pin that did not
+  // take means the probe is not measuring the configuration it documents, so it
+  // certifies nothing. Slot 107 must read 1 on the three full-strength legs and
+  // 0 on the gated one; gate 5 is meaningless otherwise.
+  const labelled = [
+    ...richA.captures.map((c) => ({
+      ...c,
+      label: `richA lon ${c.lon}`,
+      expectedChannelStrength: 1,
+    })),
+    ...neutral.captures.map((c) => ({
+      ...c,
+      label: `neutral lon ${c.lon}`,
+      expectedChannelStrength: 1,
+    })),
+    ...richOff.captures.map((c) => ({
+      ...c,
+      label: `richOff lon ${c.lon}`,
+      expectedChannelStrength: 0,
+    })),
+    ...richB.captures.map((c) => ({
+      ...c,
+      label: `richB lon ${c.lon}`,
+      expectedChannelStrength: 1,
+    })),
   ];
-  const badFlags = allCaptures.filter(
-    (c) => ((c.qualityFlags | 0) & PIN.forbiddenQualityBits) !== 0,
-  );
-  const badSteps = allCaptures.filter((c) => c.maxSteps !== PIN.cloudQuality);
-  const badWeather = allCaptures.filter((c) => c.weatherMapEnabled !== 1);
-  // Gate 5 is only meaningful if the strength dial actually reached the shader:
-  // 1 on the three full-strength legs, 0 on the gated one.
-  const badStrength = [
-    ...richA.captures.filter((c) => c.channelStrength !== 1),
-    ...richB.captures.filter((c) => c.channelStrength !== 1),
-    ...neutral.captures.filter((c) => c.channelStrength !== 1),
-    ...richOff.captures.filter((c) => c.channelStrength !== 0),
-  ];
-  const structural = [];
-  if (result.pins.imageryLayersAfter !== 0) {
-    structural.push(
-      `globe still has ${result.pins.imageryLayersAfter} imagery layer(s) — bright imagery is counted as cloud by the mx>${PIN.brightThreshold} metric`,
-    );
-  }
-  if (!result.pins.ellipsoidTerrain) {
-    structural.push(
-      "globe terrain is not an EllipsoidTerrainProvider — streamed terrain re-tiles the frame mid-capture",
-    );
-  }
-  if (result.pins.useDefaultRenderLoop !== false) {
-    structural.push("viewer.useDefaultRenderLoop did not stay false");
-  }
-  if (result.pins.shouldAnimate !== false) {
-    structural.push("viewer.clock.shouldAnimate did not stay false");
-  }
-  if (result.pins.cloudWindSpeed !== 0) {
-    structural.push(
-      `cloudWindSpeed round trip failed (${result.pins.cloudWindSpeed}) — the cloud time uniform is no longer inert`,
-    );
-  }
-  if (badSteps.length) {
-    structural.push(
-      `maxSteps(slot 44) read ${badSteps[0].maxSteps} on ${badSteps.length} capture(s), expected ${PIN.cloudQuality} — the escape hatch is not active`,
-    );
-  }
-  if (badFlags.length) {
-    structural.push(
-      `qualityFlags(slot 74) = 0x${(badFlags[0].qualityFlags | 0).toString(16)} on ${badFlags.length} capture(s) — a forbidden temporal/jitter/half-res/baked/cone bit is set, so the march has a frame-index input`,
-    );
-  }
-  if (badWeather.length) {
-    structural.push(
-      `weatherMapEnabled(slot 64) != 1 on ${badWeather.length} capture(s) — the deck was rendering from global coverage, not the weather map`,
-    );
-  }
-  if (badStrength.length) {
-    structural.push(
-      `weatherChannelStrength(slot 107) did not take on ${badStrength.length} capture(s) (first: lon ${badStrength[0].lon} read ${badStrength[0].channelStrength}) — the channel-gating leg is not gated`,
-    );
-  }
-  for (const [leg, applied] of Object.entries(result.applied)) {
-    if (!applied.ok) {
-      structural.push(
-        `${leg} weather bytes never reached the GPU within the budget (${JSON.stringify(applied)})`,
-      );
-    }
-  }
+  const structural = collectPinStructural({
+    pins: result.pins,
+    dials: result.dials,
+    captures: labelled,
+    applied: result.applied,
+    brightThreshold: PIN.brightThreshold,
+  });
 
-  // ── DETERMINISM CONTROL.
-  const perLocation = richFr.map((v, i) => Math.abs(v - richBFr[i]));
-  const maxPerLocation = Math.max(...perLocation);
-  const meanDelta = Math.abs(rich.mean - richRepeat.mean);
-  const timeDrift = richA.captures
-    .map((c, i) => ({ lon: c.lon, a: c.time, b: richB.captures[i].time }))
-    .filter((r) => r.a !== r.b);
+  // ── DETERMINISM CONTROL. richA and richB BRACKET the neutral and gated legs,
+  // so this bounds the instrument across the same interval gates 3 and 5 read
+  // across — a source round trip plus both strength changes.
+  const control = collectRepeatStructural({
+    label: "richA vs richB",
+    a: richA.captures.map((c) => ({
+      key: c.lon,
+      value: c.frac,
+      time: c.slots.time,
+    })),
+    b: richB.captures.map((c) => ({
+      key: c.lon,
+      value: c.frac,
+      time: c.slots.time,
+    })),
+    perSample: CONTROL.perLocation,
+    mean: CONTROL.mean,
+  });
   console.log(
-    `\n=== DETERMINISM CONTROL (richA vs richB, one configuration) ===\n` +
-      `  per-location |delta|: ${fmt(perLocation)}\n` +
-      `  max per-location ${maxPerLocation.toFixed(4)} (tolerance ${CONTROL.perLocation})\n` +
-      `  rich mean ${rich.mean} vs ${richRepeat.mean}, delta ${meanDelta.toFixed(4)} (tolerance ${CONTROL.mean})\n` +
-      `  cloud time uniform (slot 35) drift: ${timeDrift.length === 0 ? "none" : JSON.stringify(timeDrift)}`,
+    `\n=== DETERMINISM CONTROL (richA vs richB, bracketing neutral + richOff) ===\n` +
+      `  per-location |delta|: ${fmt(control.deltas)}\n` +
+      `  max per-location ${control.maxPerSample.toFixed(4)} (tolerance ${CONTROL.perLocation})\n` +
+      `  rich mean ${rich.mean} vs ${richRepeat.mean}, delta ${control.meanDelta.toFixed(4)} (tolerance ${CONTROL.mean})\n` +
+      `  cloud time uniform (slot 35) drift: ${control.timeDrift.length === 0 ? "none" : JSON.stringify(control.timeDrift)}`,
   );
-  const controlOk =
-    maxPerLocation <= CONTROL.perLocation &&
-    meanDelta <= CONTROL.mean &&
-    timeDrift.length === 0;
-  if (!controlOk) {
-    structural.push(
-      `the probe did not reproduce its own capture: max per-location delta ${maxPerLocation.toFixed(4)} (tol ${CONTROL.perLocation}), rich-mean delta ${meanDelta.toFixed(4)} (tol ${CONTROL.mean}), time-uniform drift on ${timeDrift.length} location(s)`,
-    );
-  }
+  structural.push(...control.reasons);
 
   // ── Scored gates. Thresholds UNCHANGED from the pre-pinning probe.
   const checks = [
@@ -825,9 +643,9 @@ async function run() {
   let pass = true;
   // A silent WebGL fallback HARD-FAILS rather than reporting STRUCTURAL: scoring
   // a WebGL frame as a WebGPU pass is a false green, not a blind leg.
-  const backendOk = result.rendererType === "webgpu";
+  const backendOk = result.pins.rendererType === "webgpu";
   console.log(
-    `  [${backendOk ? "PASS" : "FAIL"}] backend is WebGPU (${result.rendererType})`,
+    `  [${backendOk ? "PASS" : "FAIL"}] backend is WebGPU (${result.pins.rendererType})`,
   );
   if (!backendOk) pass = false;
   for (const [name, ok] of checks) {
@@ -846,7 +664,12 @@ async function run() {
     url: URL,
     pin: PIN,
     assert: ASSERT,
-    control: { ...CONTROL, maxPerLocation, meanDelta, ok: controlOk },
+    control: {
+      ...CONTROL,
+      maxPerLocation: control.maxPerSample,
+      meanDelta: control.meanDelta,
+      ok: control.reasons.length === 0,
+    },
     result,
     stats: {
       rich,

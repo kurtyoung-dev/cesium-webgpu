@@ -105,6 +105,61 @@ token or network failure changes the exposure without removing it).
 - `probe-weather-map`'s recorded per-location `cloudFrac` values are not
   baselines for any future pinned revision, for the same reasons recorded for
   the five pinned probes.
+## 2026-08-06 - INSTRUMENT DEFECT CLASS: a differenced BOUNDED metric with no headroom
+
+### NEW-PROBE-SATURATED-DIFFERENCE-METRIC
+
+**Status:** OPEN / MEDIUM — filed 2026-08-06 (Batch 861) while building the
+`C13-GATE-B-METAR-CHANNELS-NO-EFFECT` discriminator. The `metar` instance is FIXED
+here; the fleet sweep is NOT done.
+
+**The class.** A gate that scores the DIFFERENCE of a metric with hard bounds,
+without proving that its baseline leg sits away from those bounds. When the
+baseline is pinned at a bound the difference is forced toward zero no matter how
+large the underlying effect is, and the probe reports a confident null. It is the
+range-side sibling of `NEW-PROBE-VACUOUS-REACHABILITY-ASSERTION`: that class is a
+lane whose SCENE cannot reach the failure state, this one is a lane whose METRIC
+cannot express it. Both manufacture evidence, and both must exit 3.
+
+**The instance that named it.** `probe-weather-metar.mjs` gate 4 scored
+`sum|ch1-ch0| >= 0.04` across seven longitudes. Its `ch1` read
+`0.997,1.000,1.000,1.000,1.000,1.000,0.999` and its `ch0`
+`0.997,1.000,1.000,1.000,1.000,1.000,0.997` — five of seven pinned at exactly
+1.000 in BOTH legs. The arithmetic says this was unavoidable and had always been:
+the band `[-60,-40,-20,0,20,40,60]` lies entirely between the fixture's BKN (0.75),
+OVC (1.00) and BKN (0.75) stations at lat 35, and IDW cannot undershoot its inputs,
+so its coverage was `R = 0.750,0.800,0.950,1.000,0.950,0.800,0.750`. `weatherStrength`
+is packed as `cloudCoverage * 2` (`WebGPUProceduralCloudRenderer.ts:2032`) = 1.2 at
+the probe's authored `cloudCoverage 0.6`, so effective coverage was 0.90..1.00 —
+saturated at every sampled point, before `cloudEffectiveCoverage`
+(`CloudDensityDomain.wgsl:186-195`) lifted it further. **The gate could never have
+failed to be null, on any build, for the whole life of the row.**
+
+**The rule this yields, for every gate in `Tools/visual-regression/`:** when a gate
+differences a bounded metric, the BASELINE leg's value at every scored location
+must be asserted inside the metric's usable range, read **from the leg that was
+actually scored** — not from a setup measurement and not from a calibration pass
+that may have gone stale. A location outside the range makes the gate blind, which
+is STRUCTURAL, not a verdict. `collectHeadroomStructural` +
+`COVERAGE_HEADROOM_BAND` in `Tools/visual-regression/lib/weather-probe-pinning.mjs`
+are the enforceable home (P9); `selectPartialCoverageBand` is the companion aim for
+probes whose field->metric transfer is not predictable offline. Both are pinned by
+`weather-probe-headroom.spec.mjs` (29 tests, 9 adversarial mutants), including the
+stale-aim mutant that reads the calibration ladder instead of the scored leg.
+
+**Deferred (the sweep, not done here).** No audit has been run over the rest of the
+fleet for this shape. The mechanical first pass is cheap: every gate whose pass
+criterion is a difference, ratio or sum-of-deltas of a bounded quantity — bright
+fractions, coverage fractions, luminance ratios, count ratios — cross-checked
+against whether its baseline leg is ever asserted to be off the bound. Known
+candidates from this campaign alone: `probe-weather-channels.mjs`'s
+`west < east - 0.02` on the same `max(r,g,b) > 120` step metric (already filed as
+`C13-GATE-B-CHANNELS-METRIC-SATURATION`, held for a maintainer ruling because the
+fix there is a scene change), and the G1 `sprites-only` count ratio recorded as 0/0.
+**Effort:** M. **Impact:** a gate in this class does not merely fail to catch
+regressions — it certifies their absence.
+
+---
 
 ## 2026-08-06 - Gate B acceptance: metar RED 3/3 once pinned, with TWO live readings
 
@@ -169,6 +224,71 @@ that cannot fail.
   false-green SUSCEPTIBLE, but it has now re-run PASS 3/3 under the pin. The
   susceptibility was real; the verdict survived it.
 - `metar`'s previously logged absolute numbers are not baselines.
+
+### UPDATE 2026-08-06 (Batch 861) - READING B CONFIRMED FROM SOURCE; READING A REFUTED FROM SOURCE; discriminator AUTHORED, Edge run OWED
+
+**Reading B is confirmed arithmetically, not just plausibly.** The old band
+`[-60,-40,-20,0,20,40,60]` lies entirely between the fixture's lat-35 BKN040
+(cover 0.75), OVC008 (1.00) and BKN012 (0.75) stations, and
+`MetarWeatherSource._rasterize` is IDW power 2 with a hard 45-degree planar cutoff
+(`MetarWeatherSource.ts:289-352`), so the lat -25 row is 60 degrees away and never
+contributes. IDW cannot undershoot its inputs, so the band's coverage is
+`R = 0.750, 0.800, 0.950, 1.000, 0.950, 0.800, 0.750`. `weatherStrength` (slot 65)
+is packed as `cloudCoverage * 2` (`WebGPUProceduralCloudRenderer.ts:2032`) = 1.2 at
+the probe's authored `cloudCoverage 0.6`, so `effectiveCoverage = R * 1.2` clamps to
+1.0 for any `R >= 0.834` and the band's MINIMUM effective coverage was 0.90.
+`cloudEffectiveCoverage` (`CloudDensityDomain.wgsl:186-195`, anchor 0.55 exponent
+0.25) lifts it further. The measured `0.997,1.000,1.000,1.000,1.000,1.000,0.999` is
+exactly the predicted shape — the two 0.90 endpoints are the only two readings off
+1.000. **Gate 4 has been blind since it was written; its earlier GREENs were drift.**
+
+**Reading A is refuted at source: the G/B/A path is complete and live.**
+`decodeWeatherChannels` (`ProceduralClouds.wgsl:1173-1198`) is called from all three
+density evaluators — `legacyCloudDensity` (:1219-1226), `legacyCloudBaseDensity`
+(:1301-1308), `cloudMacroSampleAt` (:1371-1375) — and its three outputs are consumed
+as a density multiplier (`wch.densityScale`, :1277/:1332/:1398), a height-gradient
+base shift (`wch.baseShiftFrac`, :1240-1247) and a profile-shape bias
+(`wch.perGenusShape`, :1246). The payload is non-neutral: `WeatherTexPacker` writes
+G/B/A from `type` / `baseMeters` / `densityBias` (:366-384) and `densityFor`
+(`MetarWeatherSource.ts:148-157`) gives the old band's stations A = 0.675 (BKN) and
+0.850 (OVC) against 0.5 neutral, i.e. `densityScale` ran 1.35..1.70 there. A 35-70%
+density increase on an already-opaque deck is invisible to a nadir bright-pixel
+fraction. **No engine defect is claimed, and none was found by inspection** — but
+this is source-traced, not measured, and the Edge run is what decides it.
+
+**Discriminator authored (NOT yet run).** Gate 4 is re-aimed at partial coverage,
+with the aim proven in-probe rather than asserted:
+
+- The two inter-station windows where the 45-degree influence discs OVERLAP and the
+  lower-coverage station pulls the field down are the only partial-coverage regions
+  at lat 35: lon `[-104,-76]` (SKC 0.00 <-> BKN 0.75, R 0.088 -> 0.662) and
+  `[76,104]` (BKN 0.75 <-> FEW 0.25, R 0.692 -> 0.308). Those are the CALIBRATION
+  LADDER (2-degree steps, 30 candidates).
+- `R -> bright fraction` is not predictable offline (strength fold, coverage lift,
+  raymarch, 8-bit threshold), so the ladder is MEASURED in the strength-0 baseline
+  configuration and `selectPartialCoverageBand` picks gate 4's seven locations from
+  the measured result. The selector sees ONLY strength-0 values, so it cannot prefer
+  large deltas; and it spreads EVENLY in longitude rather than ranking by closeness
+  to mid-scale, because for an IDW field the station midpoint is exactly where the
+  interpolated A channel is most nearly neutral (at lon 90 the two stations'
+  densities 0.675 and 0.325 average to 0.500 and `densityScale` is 1.0).
+- `collectHeadroomStructural` re-checks the aim against the SCORED `ch0` leg: every
+  scored location must read inside 0.1..0.9 or the probe exits 3. A missed or stale
+  aim certifies nothing and does not fall back to a saturated band.
+- Three old-band longitudes (-60, 0, 60) ride the same ladder marked
+  `eligible: false`, so every run re-evidences the saturation on the record while
+  being structurally unscorable.
+- **The 0.04 bar, the 7-location count, gate 3's 0.05 margin and the control
+  tolerances are byte-identical.** Nothing was lowered.
+
+**Falsifiable prediction for the Edge run.** With `ch0` proven in 0.1..0.9 at seven
+points, reading B predicts `sum|ch1-ch0|` rises WELL clear of 0.04 (the A channel
+alone runs `densityScale` 0.30..1.35 across the ladder, and a 10-point-of-scale
+response at each of seven locations is 0.7); reading A predicts it stays near the
+0.0019 floor WITH headroom present, which would then be a real engine defect and the
+row converts to one. A STRUCTURAL exit means the ladder found fewer than seven
+in-band candidates — the metric is a near-step function — and the logged ladder says
+where to re-aim. **Class filed as `NEW-PROBE-SATURATED-DIFFERENCE-METRIC`.**
 
 ## 2026-08-06 - INSTRUMENT DEFECT CLASS: gates that assert a PROXY instead of the driving variable
 
@@ -604,6 +724,58 @@ tolerance must not be looser than the in-run mean tolerance of 0.0025 it sits
 above), and no run printed a `STRUCTURAL` block. An exit 3 on any run is NOT a
 Gate-B red - it is the probe declining to certify, and its printed reason names the
 pin that did not take.
+
+### UPDATE 2026-08-06 (Batch 861) - private pin copy CLOSED, control now BRACKETS the scored gap; ten-run acceptance still OWED
+
+**Premise correction for anyone reading the brief rather than the row.** This probe
+is NOT unpinned. It was pinned at Batch 852 and re-verified at Batch 853 with five
+consecutive runs on one build - GREEN 5/5, `rich mean` identical at 0.8758 every
+time, spread 0.0000 against the 0.01 tolerance. The recorded
+GREEN/RED/RED/RED/RED and the 0.4129..0.5374 swing are PRE-pin numbers. What was
+still owed is the **ten**-run acceptance this row's own criterion demands, and two
+instrument defects found while auditing it:
+
+**(a) It held the fleet's last private copy of the pin logic.** Batch 852 pinned it
+inline; `lib/weather-probe-pinning.mjs` was extracted FROM it at Batch 855 and the
+other five legs were migrated onto the shared module, but this one never was - so
+the reference implementation became the sole divergence risk. It now consumes
+`installWeatherPinHarnessOnPage`, `collectPinStructural` and
+`collectRepeatStructural` like its siblings. That also GAINS it read-backs the
+private copy never had: `requestRenderMode`, `clock.multiplier`, and the
+`cloudQuality` / `cloudCastShadows` / `cloudContributesIBL` dial round trips - each
+an ADDITIONAL structural check, none a relaxation.
+
+**(b) Its determinism control did not bracket the gap its assertions read across.**
+The control ran `richA -> richB` back to back and BEFORE the neutral and gated legs.
+But nothing this probe scores is read across that interval: gate 3 differences
+`rich` against `neutral` (a SOURCE swap) and gate 5 differences `richOff` against
+both (a source swap AND a strength change). A control that only spans a back-to-back
+repeat certifies stability across an interval no assertion reads - the same defect
+Batch 855 fixed in `metar` (`ch1A -> ch0 -> ch1B`) and `ingest`
+(`hiA -> lo -> hiB`) but never applied here. The leg order is now
+`richA -> neutral -> richOff -> richB`. **The tolerances are unchanged (0.005
+per-location, 0.0025 mean); only the interval they bound got wider.** No scored
+threshold moved: `minRichMean 0.02`, `stddevMargin 0.01`, `westEastMargin 0.02`,
+`brightThreshold 120`, stride 3 are all byte-identical, and the 0.0002 stddev miss
+recorded above is explicitly NOT a reason to widen anything.
+
+**Falsifiable prediction for the ten-run acceptance.** With the clock explicit, the
+wind at 0, the tier path escaped and imagery gone, every frame-index and wall-clock
+input to the march is removed, so consecutive captures of one configuration should
+be BIT-identical and the ten `rich mean` values should read the SAME value to four
+decimals - spread **0.0000**, not merely under 0.01. That is the physical
+prediction, and it is what Batch 853 already measured across five runs. The stated
+tolerance stays 0.01 because it is the recorded acceptance criterion; a measured
+spread anywhere between 0.0001 and 0.01 would be a PASS that still deserves
+investigation, because under this pin set there is no mechanism left that should
+produce it. **The one new risk this change introduces:** the widened control now
+spans a `WeatherProvider.setSource` round trip (rich -> uniform -> rich), so if the
+source swap is not perfectly reproducible the probe will report STRUCTURAL rather
+than GREEN. That is the correct outcome and a genuine finding, not a regression -
+gates 3 and 5 already depend on that reproducibility and were simply never testing
+it.
+
+**Still owed:** the ten-run Edge acceptance, on one build, per the runbook above.
 
 ## 2026-08-06 - the weather-probe fleet's threshold metric has no headroom
 

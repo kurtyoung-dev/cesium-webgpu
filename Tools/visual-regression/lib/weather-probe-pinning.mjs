@@ -87,7 +87,169 @@
  * assertion. The determinism control is an ADDITIONAL gate whose tolerances are
  * set strictly inside the smallest margin the calling probe scores, so a control
  * PASS means the residual capture noise cannot flip an assertion.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * P9 HEADROOM (Batch 861) — a differenced metric must be able to MOVE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `collectPinStructural` proves the probe is measuring the configuration it
+ * documents. It does NOT prove the configuration can EXPRESS the effect being
+ * scored. `probe-weather-metar.mjs` gate 4 differences a bright-pixel FRACTION
+ * between two configurations at seven locations; all seven sat at 0.997..1.000
+ * with five at exactly 1.000 in BOTH legs, so the scored quantity was pinned at
+ * its ceiling and no channel response — however large — could have registered.
+ * That is the same blindness class as `NEW-PROBE-VACUOUS-REACHABILITY-ASSERTION`
+ * (a lane that cannot see its subject), arriving through the metric's range
+ * rather than through the scene's reachability.
+ *
+ * The rule: when a gate scores a DIFFERENCE of a bounded metric, every scored
+ * location's BASELINE leg must be shown to sit away from both bounds, read from
+ * the leg that was actually scored, and a location that is not must produce
+ * STRUCTURAL (exit 3) rather than a verdict. `collectHeadroomStructural` is that
+ * enforcement and `COVERAGE_HEADROOM_BAND` is its band.
+ *
+ * `selectPartialCoverageBand` is the companion AIM. Where the partial-response
+ * region of a field is known from the fixture but the field-value -> metric
+ * transfer is not (it runs through the coverage lift, the raymarch and an 8-bit
+ * threshold), the probe measures a CALIBRATION ladder in the baseline
+ * configuration and selects its scored locations from the measured result. Two
+ * properties make that aiming rather than cherry-picking, and both are pinned by
+ * `weather-probe-headroom.spec.mjs`:
+ *   - the selector sees ONLY baseline-leg values. It has no access to the
+ *     response leg, so it cannot prefer locations where the delta is large.
+ *   - selection is evenly spaced across the in-band candidates in KEY order, not
+ *     ranked by closeness to mid-scale. Ranking would systematically prefer the
+ *     centre of an interpolated field — which, for an IDW field between two
+ *     stations, is exactly where the interpolated channel value is most nearly
+ *     NEUTRAL and the effect under test is weakest.
+ * The aim is then re-checked against the scored leg by
+ * `collectHeadroomStructural`, so a calibration that went stale between the
+ * ladder and the sweep reports STRUCTURAL instead of certifying.
  */
+
+/**
+ * A differenced bright-fraction must sit clear of BOTH bounds at every scored
+ * location. 0.1/0.9 leaves at least a tenth of full scale in each direction, so
+ * a per-location response of 0.1 is expressible at every scored point — against
+ * gate bars that sum to 0.04 across seven of them.
+ */
+export const COVERAGE_HEADROOM_BAND = Object.freeze({ min: 0.1, max: 0.9 });
+
+/** Inclusive band test that is false for NaN and for non-finite input. */
+export function inHeadroomBand(value, band = COVERAGE_HEADROOM_BAND) {
+  return Number.isFinite(value) && value >= band.min && value <= band.max;
+}
+
+/**
+ * Choose the scored locations for a differenced metric from a measured
+ * CALIBRATION ladder taken in the BASELINE configuration.
+ *
+ * @param {object} options
+ * @param {Array<{key:number|string, value:number, eligible?:boolean}>}
+ *   options.samples Calibration ladder. `eligible: false` marks a witness that
+ *   is measured for the record but must never be scored.
+ * @param {number} options.count How many locations the gate scores.
+ * @param {{min:number,max:number}} [options.band]
+ * @returns {{selected:Array<object>, inBand:Array<object>,
+ *   rejected:Array<object>, reasons:Array<string>}} `reasons` non-empty means
+ *   the aim missed the partial-response region: STRUCTURAL, not a verdict.
+ */
+export function selectPartialCoverageBand(options) {
+  const { samples, count, band = COVERAGE_HEADROOM_BAND } = options;
+  const eligible = samples.filter((s) => s.eligible !== false);
+  const inBand = eligible
+    .filter((s) => inHeadroomBand(s.value, band))
+    .slice()
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const rejected = eligible.filter((s) => !inHeadroomBand(s.value, band));
+
+  if (!Number.isInteger(count) || count < 1) {
+    return {
+      selected: [],
+      inBand,
+      rejected,
+      reasons: [`selectPartialCoverageBand: count must be a positive integer`],
+    };
+  }
+  if (inBand.length < count) {
+    return {
+      selected: [],
+      inBand,
+      rejected,
+      reasons: [
+        `the calibration ladder found ${inBand.length} location(s) inside the ` +
+          `${band.min}..${band.max} headroom band but the gate scores ${count} — ` +
+          `the aim missed the partial-response region, so the scored metric ` +
+          `would be pinned at a bound and could not move. Ladder: ` +
+          JSON.stringify(
+            eligible.map((s) => [s.key, +Number(s.value).toFixed(3)]),
+          ),
+      ],
+    };
+  }
+
+  // EVENLY SPACED in key order — deliberately not "closest to mid-scale". See
+  // the P9 note: mid-scale ranking would concentrate the sweep at the midpoint
+  // between two stations, which is where an IDW-interpolated channel is most
+  // nearly neutral and therefore where the effect under test is weakest.
+  const selected = [];
+  if (count === 1) {
+    selected.push(inBand[Math.floor((inBand.length - 1) / 2)]);
+  } else {
+    const step = (inBand.length - 1) / (count - 1);
+    for (let i = 0; i < count; i++) {
+      selected.push(inBand[Math.round(i * step)]);
+    }
+  }
+  const distinct = new Set(selected.map((s) => s.key));
+  if (distinct.size !== count) {
+    return {
+      selected: [],
+      inBand,
+      rejected,
+      reasons: [
+        `selectPartialCoverageBand produced ${distinct.size} distinct ` +
+          `location(s) for a ${count}-location gate`,
+      ],
+    };
+  }
+  return { selected, inBand, rejected, reasons: [] };
+}
+
+/**
+ * P9 enforcement. Reads the BASELINE leg that was actually scored — never the
+ * calibration ladder that aimed it — and requires every scored location to have
+ * headroom in both directions.
+ *
+ * @param {object} options
+ * @param {string} options.label Leg name for the message.
+ * @param {Array<{key:number|string, value:number}>} options.samples The scored
+ *   baseline leg.
+ * @param {{min:number,max:number}} [options.band]
+ * @returns {Array<string>} STRUCTURAL reasons; empty means the leg can move.
+ */
+export function collectHeadroomStructural(options) {
+  const { label, samples, band = COVERAGE_HEADROOM_BAND } = options;
+  if (!Array.isArray(samples) || samples.length === 0) {
+    return [
+      `${label}: no scored baseline samples — a differenced gate with no ` +
+        `baseline certifies nothing`,
+    ];
+  }
+  const outOfBand = samples.filter((s) => !inHeadroomBand(s.value, band));
+  if (outOfBand.length === 0) {
+    return [];
+  }
+  return [
+    `${label}: ${outOfBand.length} of ${samples.length} scored location(s) sit ` +
+      `outside the ${band.min}..${band.max} headroom band ` +
+      `(${outOfBand
+        .map((s) => `${s.key}=${Number(s.value).toFixed(3)}`)
+        .join(
+          ", ",
+        )}) — the metric is at a bound there, so no response of any ` +
+      `size could register and the gate is blind, not failing`,
+  ];
+}
 
 /** Packed cloud-uniform slots read back to prove the shader-visible pins took. */
 export const WEATHER_PIN_SLOTS = Object.freeze({
