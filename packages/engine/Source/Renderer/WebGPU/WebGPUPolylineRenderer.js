@@ -34,6 +34,7 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import BlendOption from "../../Scene/BlendOption.js";
 import Pass from "../Pass.js";
 // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — scene-mode-aware
 // position projection. `SceneTransforms.computeActualEllipsoidPosition`
@@ -1874,8 +1875,29 @@ async function _updateWebGPUPolylinesInner(
       );
 
       const polylineBlendOpt = collection._blendOption;
-      const polylinePass =
-        polylineBlendOpt === 0 ? Pass.OPAQUE : Pass.TRANSLUCENT;
+      //
+      // NEW-WEBGPU-COLLECTION-PASS-DEFAULT-REGRESSION (2026-08-07, Batch 917):
+      // reading the enum is necessary, but the FALSE branch must not be
+      // re-derived from the stale comment beside it. The literal that branch
+      // replaced was `9`, and 9 IS Pass.OPAQUE on this fork — so the DEFAULT
+      // blend option (OPAQUE_AND_TRANSLUCENT, and the only one any probe has
+      // certified) shipped in Pass.OPAQUE, NOT Pass.TRANSLUCENT. Rebinning it
+      // onto TRANSLUCENT moved every polyline collection to a different execution
+      // site (back-to-front sort, the "actual near" frustum republication) and
+      // inverted probe-splat-globe-occlusion's P3 / check-7 controls.
+      //
+      // WebGL PARITY is the arbiter, and it says Pass.OPAQUE for the collapsed
+      // command under EVERY blend option:
+      //   PolylineCollection.js:801 — `command.pass = translucent ? Pass.TRANSLUCENT : Pass.OPAQUE`, keyed off per-bucket MATERIAL translucency, not off a blend option (PolylineCollection exposes none, so `_blendOption` is permanently undefined). Wiring that per-bucket flag through is NEW-WEBGPU-POLYLINE-PASS-BUCKET-TRANSLUCENCY.
+      // With OPAQUE_AND_TRANSLUCENT WebGL emits a PAIR (even index opaque, odd
+      // translucent); this port collapses that to ONE blended draw, which
+      // Batch 889 shipped — and the occlusion probe certified — in Pass.OPAQUE.
+      // Note BlendOption.TRANSLUCENT also resolves to Pass.OPAQUE in WebGL, via
+      // the `!opaqueAndTranslucent` clause — so a single bin is the faithful
+      // collapse, not a simplification. Blend-mode-dependent choices below key
+      // off the BLEND OPTION, never off this bin. Pinned by
+      // Tools/visual-regression/collection-pass-routing.spec.mjs.
+      const polylinePass = Pass.OPAQUE;
       // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the matching
       // render-state from PolylineCollection (`_opaqueRS` / `_translucentRS`,
       // built on demand at lines 536/548 in PolylineCollection.js). The
@@ -1883,8 +1905,10 @@ async function _updateWebGPUPolylinesInner(
       // PolylineCollection.js — without this forward, the WebGPU pass
       // picks up encoder defaults for stencil/blend/viewport overrides
       // instead of the polyline-specific values.
+      // Keyed off the BLEND OPTION, not the pass bin — identical selection to
+      // both Batch 889 and Batch 914 (undefined !== OPAQUE → _translucentRS).
       const polylineRS =
-        polylinePass === Pass.OPAQUE
+        polylineBlendOpt === BlendOption.OPAQUE
           ? collection._opaqueRS
           : collection._translucentRS;
       const cmd = new WebGPUDrawCommand({
@@ -1916,8 +1940,11 @@ async function _updateWebGPUPolylinesInner(
       // Inert when the FAR-003 gate is off → gate-OFF byte-identical. The
       // polyline material FS returns a `FragOutput` struct (@location(0) color)
       // — handled by injectOITOutput's Slice-A struct branch.
+      // Attached whenever the collection is BLENDED — exactly the set Batch 889
+      // attached on. Inert while the command sits in Pass.OPAQUE; kept as live
+      // scaffolding for the per-bucket translucency split (Principle 7).
       if (
-        polylinePass === Pass.TRANSLUCENT &&
+        polylineBlendOpt !== BlendOption.OPAQUE &&
         defined(pipelineResult.descriptor) &&
         defined(pipelineResult.oitShaderCode)
       ) {

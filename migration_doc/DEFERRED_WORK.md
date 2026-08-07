@@ -11781,7 +11781,7 @@ lever for this symptom.
 
 **Effort:** M (this is the `C15-G6` per-frustum UBO re-pack). **Impact:** splats never depth-test correctly against the globe, on any scene.
 
-### NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT
+### NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT **CORRECTED Batch 917: B914's collection half was RESOLVED WITH A REGRESSION. The enum conversion was right, but the FALSE branch of the four <x>Pass selectors was re-derived from its stale `/* Pass.TRANSLUCENT */` comment rather than from the literal 9 — which IS Pass.OPAQUE in the fork enum. Since OPAQUE_AND_TRANSLUCENT is the default, EVERY default point/billboard/label/polyline collection moved from Pass.OPAQUE to Pass.TRANSLUCENT — a default-path routing change the B914 message explicitly disclaimed; that commit-message claim is INCORRECT AS SHIPPED. The CO-12 spec guard missed it because it asserted branch ORDER, not routing (it pinned the defect). Fix: all four selectors route Pass.OPAQUE (the WebGL contract — the !opaqueAndTranslucent clause sends BlendOption.TRANSLUCENT to Pass.OPAQUE too), renderState/OIT re-keyed to BlendOption (byte-identical selection to both B889 and B914); new collection-pass-routing.spec.mjs pins ROUTING with the comment-derived cut as a rejected mutant.**
 
 **Status: ✅ RESOLVED for the COLLECTION half, 2026-08-07 (CO-12) — with one
 correction to this entry and one new finding it did not contain. The CLASSIFIER
@@ -12016,3 +12016,22 @@ Both are CONSTANT model-space vectors along the spin axis, not surface normals. 
 ### C13-41-SHADOW-CONTRAST-ECLIPSE-EXCESS — the cast shadow's contrast weakens ~5% at deepest eclipse where the model predicts +0.08% (FILED 2026-08-07, Batch 915 — first run in which the shadow lane ever scored)
 
 **Status: OPEN / MEDIUM — a real, modest, named product finding on a fully de-vacuitized lane.** Fourth eclipse-cloud run (tip `6e9c997287`): with `shadowGroundIsBright`, `shadowGroundNotOccluded` and `shadowNonVacuous` ALL true (clear-sky contrast 0.6633, band ~16 texels, producer active in both eclipse positions, shadowStrength matching `predictDirectional` to 1e-6), `shadowContrastRatioAtDeepest` measured **1.0496** against the [0.97, 1.03] invariant; the discriminating rung reads 1.0214 (in band); the rejected-alternative-design signature (1.429) is excluded. So the DIRECTIONAL shadow scalar behaves exactly as modelled, but the DISPLAYED contrast weakens ~5% at totality. Mechanism candidates, in order: (a) the shadowed floor is ambient-lit and the ambient dims by a different law than the direct term (the shadow visibility is a direct/ambient RATIO effect the invariant's +0.08% model did not include); (b) the 0.35 beer floor interacting with the dimmed scene tone curve. Next: extend the gate model with the ambient/direct split (both terms are now published by the C13-41 machinery) and re-derive the predicted ratio; if the extended model lands near 1.05 the invariant band moves BY DERIVATION, not by widening. Instrument residual in the same run: the consumer-side `cloudShadowControl` telemetry readout printed UNREADABLE — fix the readout (it does not gate).
+
+
+---
+
+### NEW-WEBGPU-BILLBOARD-PICK-PIPELINE-KEY-MISMATCH — the billboard pick builder read the pipeline map with a raw-defines key after Batch 739 re-keyed it (FIXED Batch 917)
+
+**Status: FIXED (Batch 917, CO-14).** Batch 739 (C11-149) re-keyed `pipelineEntries` to `pipelineKeyWithDepthFlag(defines, noDepthTest)` = `defines*2+flag`; the billboard pick builder kept `pipelineEntries.get(colorDefines)` RAW — agreeing only at defines 0, while the default 3D path always carries LOG_DEPTH — so the lookup MISSED EVERY FRAME and returned before pushing the pick command. Billboard (and label, via the same FR) pick commands were never emitted. THIS — not the B914 pass binning — is why collection picking stayed null after B914; the two defects were independent and BOTH required. Points/polylines use their own pickPipelines maps, unaffected.
+
+### NEW-WEBGPU-POINT-PICK-RESIDUAL — if point pick still returns null after Batch 917, the cause is readback ordering or the log-depth encode split (FILED, unverified)
+
+**Status: OPEN / needs one browser lane.** Points emit correctly and their slot is executed, so the remaining candidates are (a) sync `scene.pick()` arming its readback before the pick render submits (needs 3-4 repeat calls or pickAsync to discriminate) or (b) the collections baking `camera.logDepth` before `publishLogDepthEncodeNearFar` in the pick pass. Both UNVERIFIED (Principle 9: named, not assumed).
+
+### NEW-WEBGPU-COLLECTION-PICKID-OBJECT-SHAPE — WebGPU registers the bare primitive where WebGL registers {primitive, collection, id} (FILED, verified)
+
+**Status: OPEN / MEDIUM.** `createPickId(point, "point")` vs WebGL's wrapper object: once picks resolve, `pickedObject.id/.primitive/.collection` read undefined and label picks resolve to the internal glyph Billboard. Does not cause null; it makes resolved picks the WRONG SHAPE for user code.
+
+### NEW-WEBGPU-POLYLINE-PASS-BUCKET-TRANSLUCENCY — WebGL keys polyline pass off per-bucket MATERIAL translucency; the WebGPU renderer has no equivalent (FILED)
+
+**Status: OPEN / LOW.** `PolylineCollection` exposes no blendOption (`_blendOption` permanently undefined); WebGL routes per bucket material. The Batch-917 routing sends the collapsed command to Pass.OPAQUE, matching the dominant WebGL case; a translucent-material bucket diverges and needs the per-bucket law if it ever matters at pixels.

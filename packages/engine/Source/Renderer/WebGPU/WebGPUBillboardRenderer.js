@@ -27,6 +27,7 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import BlendOption from "../../Scene/BlendOption.js";
 import Pass from "../Pass.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
@@ -1328,7 +1329,29 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   // still composite correctly in the translucent pass. A future refinement
   // would emit two commands (one per pass) when the collection is mixed.
   const blendOpt = collection._blendOption;
-  const billboardPass = blendOpt === 0 ? Pass.OPAQUE : Pass.TRANSLUCENT;
+  //
+  // NEW-WEBGPU-COLLECTION-PASS-DEFAULT-REGRESSION (2026-08-07, Batch 917):
+  // reading the enum is necessary, but the FALSE branch must not be
+  // re-derived from the stale comment beside it. The literal that branch
+  // replaced was `9`, and 9 IS Pass.OPAQUE on this fork — so the DEFAULT
+  // blend option (OPAQUE_AND_TRANSLUCENT, and the only one any probe has
+  // certified) shipped in Pass.OPAQUE, NOT Pass.TRANSLUCENT. Rebinning it
+  // onto TRANSLUCENT moved every billboard collection to a different execution
+  // site (back-to-front sort, the "actual near" frustum republication) and
+  // inverted probe-splat-globe-occlusion's P3 / check-7 controls.
+  //
+  // WebGL PARITY is the arbiter, and it says Pass.OPAQUE for the collapsed
+  // command under EVERY blend option:
+  //   BillboardCollection.js:1204 — `opaqueCommand || !opaqueAndTranslucent ? Pass.OPAQUE : Pass.TRANSLUCENT`
+  // With OPAQUE_AND_TRANSLUCENT WebGL emits a PAIR (even index opaque, odd
+  // translucent); this port collapses that to ONE blended draw, which
+  // Batch 889 shipped — and the occlusion probe certified — in Pass.OPAQUE.
+  // Note BlendOption.TRANSLUCENT also resolves to Pass.OPAQUE in WebGL, via
+  // the `!opaqueAndTranslucent` clause — so a single bin is the faithful
+  // collapse, not a simplification. Blend-mode-dependent choices below key
+  // off the BLEND OPTION, never off this bin. Pinned by
+  // Tools/visual-regression/collection-pass-routing.spec.mjs.
+  const billboardPass = Pass.OPAQUE;
 
   // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the source
   // JS-side renderState from BillboardCollection (`_rsOpaque` /
@@ -1339,8 +1362,10 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   // current pass, producing subtle stencil/blend drift relative to
   // WebGL. The `pass: OPAQUE` emit uses `_rsOpaque`; every other
   // emit (TRANSLUCENT or OPAQUE_AND_TRANSLUCENT) uses `_rsTranslucent`.
+  // Keyed off the BLEND OPTION, not the pass bin — identical selection to both
+  // Batch 889 and Batch 914.
   const colorRenderState =
-    billboardPass === Pass.OPAQUE
+    blendOpt === BlendOption.OPAQUE
       ? collection._rsOpaque
       : collection._rsTranslucent;
 
@@ -1374,7 +1399,10 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   // accumulation targets. Inert (never read) when the gate is off → gate-OFF
   // byte-identical. The billboard FS returns a `FragOutput` struct
   // (@location(0) color) — handled by injectOITOutput's Slice-A struct branch.
-  if (billboardPass === Pass.TRANSLUCENT && defined(entry.oitShaderCode)) {
+  // Attached whenever the collection is BLENDED — exactly the set Batch 889
+  // attached on. Inert while the command sits in Pass.OPAQUE; kept as live
+  // scaffolding for the two-command split (Principle 7).
+  if (blendOpt !== BlendOption.OPAQUE && defined(entry.oitShaderCode)) {
     cache.colorCommand._shaderCode = entry.oitShaderCode;
     cache.colorCommand._pipelineConfig = {
       label: "OIT Billboard",
@@ -1492,12 +1520,25 @@ function _pushBillboardPickCommand(
     // is DERIVED from the color descriptor through the centralized variant
     // factory (slot-0-only blend-stripped target, depth write forced on,
     // multisample dropped for the single-sample pick FBO) instead of the
-    // old hand-rolled `buildBillboardPickDescriptor`. The color entry for
-    // this defines-set always exists here: `updateWebGPUBillboards` builds
-    // and resolves it before pushing the pick command.
-    const colorEntry = cache.pipelineEntries.get(colorDefines);
+    // old hand-rolled `buildBillboardPickDescriptor`.
+    //
+    // NEW-WEBGPU-BILLBOARD-PICK-PIPELINE-KEY-MISMATCH (2026-08-07, Batch 917):
+    // this lookup used the RAW `colorDefines`, but `pipelineEntries` is keyed by
+    // `pipelineKeyWithDepthFlag(defines, noDepthTest)` = `defines * 2 + flag`
+    // (WebGPUCollectionRendererBase.ts:221-226, since Batch 739 / C11-149
+    // widened the key off define bit 31). The two agree ONLY when
+    // `defines === 0 && !noDepthTest` — and on the default 3D path `defines`
+    // always carries ShaderDefine.LOG_DEPTH, so the lookup ALWAYS missed and the
+    // `return` below fired on EVERY frame, before `commandList.push(
+    // cache.pickCommand)`. The billboard pick command was therefore never
+    // emitted at all, which is why Batch 914's pass-binning fix (necessary, and
+    // correct) did not make billboard/label picking work on its own. Labels ride
+    // the same path via `billboardFR.update(...)`, so they died with it.
+    const colorEntry = cache.pipelineEntries.get(
+      pipelineKeyWithDepthFlag(colorDefines, cache.currentNoDepthTest === true),
+    );
     if (!defined(colorEntry)) {
-      // Only reachable via the `?? 0` fallback before the first color
+      // Genuinely reachable only via the `?? 0` fallback before the first color
       // resolve — skip the pick draw this frame; next frame the color
       // descriptor exists.
       return;

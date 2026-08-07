@@ -26,6 +26,7 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import BlendOption from "../../Scene/BlendOption.js";
 import Pass from "../Pass.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import {
@@ -1245,8 +1246,29 @@ function _updateWebGPUPointPrimitivesInner(
   // CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW / OPAQUE. Read the enum.
   // Pick by collection.blendOption — point primitives use discard-based
   // alpha cutoffs so OPAQUE is safe when the collection is all-opaque.
-  const pointPass =
-    collection._blendOption === 0 ? Pass.OPAQUE : Pass.TRANSLUCENT;
+  //
+  // NEW-WEBGPU-COLLECTION-PASS-DEFAULT-REGRESSION (2026-08-07, Batch 917):
+  // reading the enum is necessary, but the FALSE branch must not be
+  // re-derived from the stale comment beside it. The literal that branch
+  // replaced was `9`, and 9 IS Pass.OPAQUE on this fork — so the DEFAULT
+  // blend option (OPAQUE_AND_TRANSLUCENT, and the only one any probe has
+  // certified) shipped in Pass.OPAQUE, NOT Pass.TRANSLUCENT. Rebinning it
+  // onto TRANSLUCENT moved every point collection to a different execution
+  // site (back-to-front sort, the "actual near" frustum republication) and
+  // inverted probe-splat-globe-occlusion's P3 / check-7 controls.
+  //
+  // WebGL PARITY is the arbiter, and it says Pass.OPAQUE for the collapsed
+  // command under EVERY blend option:
+  //   PointPrimitiveCollection.js:827 — `opaqueCommand || !opaqueAndTranslucent ? Pass.OPAQUE : Pass.TRANSLUCENT`
+  // With OPAQUE_AND_TRANSLUCENT WebGL emits a PAIR (even index opaque, odd
+  // translucent); this port collapses that to ONE blended draw, which
+  // Batch 889 shipped — and the occlusion probe certified — in Pass.OPAQUE.
+  // Note BlendOption.TRANSLUCENT also resolves to Pass.OPAQUE in WebGL, via
+  // the `!opaqueAndTranslucent` clause — so a single bin is the faithful
+  // collapse, not a simplification. Blend-mode-dependent choices below key
+  // off the BLEND OPTION, never off this bin. Pinned by
+  // Tools/visual-regression/collection-pass-routing.spec.mjs.
+  const pointPass = Pass.OPAQUE;
   cache.colorCommand = new WebGPUDrawCommand({
     pipeline: cache.pipeline,
     bindGroups: [cache.bindGroup],
@@ -1269,8 +1291,10 @@ function _updateWebGPUPointPrimitivesInner(
     // render-state (`_rsOpaque` vs `_rsTranslucent`) so
     // `applyPerEncoderState` drives the dynamic WebGPU pass state from
     // the same values the WebGL path uses.
+    // Keyed off the BLEND OPTION, not the pass bin — identical selection to
+    // both Batch 889 (`pointPass === 8` ⟺ `_blendOption === 0`) and Batch 914.
     renderState:
-      pointPass === Pass.OPAQUE
+      collection._blendOption === BlendOption.OPAQUE
         ? collection._rsOpaque
         : collection._rsTranslucent,
   });
@@ -1281,7 +1305,16 @@ function _updateWebGPUPointPrimitivesInner(
   // depth state (single-sample for the OIT accumulation targets). Inert when
   // the FAR-003 gate is off → gate-OFF byte-identical. The point FS returns a
   // `FragOutput` struct (@location(0) color) — injectOITOutput struct branch.
-  if (pointPass === Pass.TRANSLUCENT && defined(pipelineEntry.oitShaderCode)) {
+  // Attached whenever the collection is BLENDED — exactly the set Batch 889
+  // attached on (`pointPass === 9` held for TRANSLUCENT and
+  // OPAQUE_AND_TRANSLUCENT). Inert while the command sits in Pass.OPAQUE: the
+  // OIT auto-build loop only walks `frustumCommands.commands[Pass.TRANSLUCENT]`.
+  // Kept as live scaffolding for the two-command split that would restore
+  // WebGL's opaque/translucent PAIR (Principle 7).
+  if (
+    collection._blendOption !== BlendOption.OPAQUE &&
+    defined(pipelineEntry.oitShaderCode)
+  ) {
     cache.colorCommand._shaderCode = pipelineEntry.oitShaderCode;
     cache.colorCommand._pipelineConfig = {
       label: "OIT PointPrimitive",

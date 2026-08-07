@@ -7752,11 +7752,25 @@ test("CO-12: the collection feature renderers select their pass from the enum", 
   };
   for (const [file, variable] of Object.entries(expected)) {
     const code = readNormalized(`${WEBGPU_RENDERER_DIR}/${file}`);
+    // Batch 917 (NEW-WEBGPU-COLLECTION-PASS-DEFAULT-REGRESSION) — this
+    // assertion USED to pin the SHAPE `? Pass.OPAQUE : Pass.TRANSLUCENT`,
+    // i.e. the branch ORDER. That is precisely what let the default-row
+    // inversion ship green: a shape assertion cannot tell a correct mapping
+    // from its inverse, so it certified the very swap it was written to
+    // prevent. It now pins only that the bin comes from the enum at all; the
+    // ROUTING TRUTH TABLE (which blend option lands in which bin, scored
+    // against mutants that reintroduce the Batch-889 and Batch-914 forms)
+    // lives in Tools/visual-regression/collection-pass-routing.spec.mjs.
+    // The bin is now a CONSTANT `Pass.OPAQUE` — WebGL routes the collapsed
+    // single command there under every blend option (the
+    // `!opaqueAndTranslucent` clause in PointPrimitiveCollection.js:827 /
+    // BillboardCollection.js:1204 sends BlendOption.TRANSLUCENT there too),
+    // so requiring both arms here would re-pin the defect.
+    const declaration = code.match(new RegExp(`const ${variable} =([^;]*);`));
+    assert.ok(declaration, `${file}: the ${variable} declaration moved`);
     assert.match(
-      code,
-      new RegExp(
-        `const ${variable} =\\s*\\n?\\s*[^;]*\\?\\s*Pass\\.OPAQUE\\s*:\\s*Pass\\.TRANSLUCENT;`,
-      ),
+      declaration[1],
+      /Pass\.[A-Z_]+/,
       `${file}: ${variable} is no longer chosen from the Pass enum`,
     );
     assert.match(

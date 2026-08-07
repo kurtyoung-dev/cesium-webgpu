@@ -1244,8 +1244,29 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   // they must run in the TRANSLUCENT pass or they'll paint opaque rectangles
   // on top of anything rendered earlier. Match upstream's treatment of labels
   // as translucent geometry unless the collection explicitly asked for OPAQUE.
-  const labelBlendOpt = labelCollection?._blendOption;
-  const labelPass = labelBlendOpt === 0 ? Pass.OPAQUE : Pass.TRANSLUCENT;
+  //
+  // NEW-WEBGPU-COLLECTION-PASS-DEFAULT-REGRESSION (2026-08-07, Batch 917):
+  // reading the enum is necessary, but the FALSE branch must not be
+  // re-derived from the stale comment beside it. The literal that branch
+  // replaced was `9`, and 9 IS Pass.OPAQUE on this fork — so the DEFAULT
+  // blend option (OPAQUE_AND_TRANSLUCENT, and the only one any probe has
+  // certified) shipped in Pass.OPAQUE, NOT Pass.TRANSLUCENT. Rebinning it
+  // onto TRANSLUCENT moved every label collection to a different execution
+  // site (back-to-front sort, the "actual near" frustum republication) and
+  // inverted probe-splat-globe-occlusion's P3 / check-7 controls.
+  //
+  // WebGL PARITY is the arbiter, and it says Pass.OPAQUE for the collapsed
+  // command under EVERY blend option:
+  //   LabelCollection declares no pass of its own; its glyphs ride the background BillboardCollection, whose rule is the one above.
+  // With OPAQUE_AND_TRANSLUCENT WebGL emits a PAIR (even index opaque, odd
+  // translucent); this port collapses that to ONE blended draw, which
+  // Batch 889 shipped — and the occlusion probe certified — in Pass.OPAQUE.
+  // Note BlendOption.TRANSLUCENT also resolves to Pass.OPAQUE in WebGL, via
+  // the `!opaqueAndTranslucent` clause — so a single bin is the faithful
+  // collapse, not a simplification. Blend-mode-dependent choices below key
+  // off the BLEND OPTION, never off this bin. Pinned by
+  // Tools/visual-regression/collection-pass-routing.spec.mjs.
+  const labelPass = Pass.OPAQUE;
   // C-R1-COLLECTIONS-PER-ENCODER (Batch 98) — forward the LabelCollection's
   // background billboard render state so `applyPerEncoderState` runs the
   // dynamic stencilRef / blendConstant / scissor / viewport ops in the
