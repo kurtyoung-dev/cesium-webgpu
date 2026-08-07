@@ -97,6 +97,119 @@ applies to any generated registry populated by a disk glob: checking out an earl
 commit *removes* the artifact that was masking the gap locally, so the defect is
 strictly invisible until someone bisects. Split commits along the seams of the
 dependency graph, not along the seams of the review narrative.
+## Batch 867-Bug-1 — NEW-WEBGPU-FOG-MS-STALE-EXTINCTION-COPY: Batch 843 re-derived the ground-fog peak extinction at ONE of its two consumers, so the multi-scattering optical-depth scale conditioned itself against a 16.3x-too-small number (2026-08-07)
+
+**Files.** `packages/engine/Source/Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts`,
+`Tools/visual-regression/ground-fog-band.spec.mjs` (+2 tests, +1 mutation).
+
+**Root cause.** Batch 843 replaced the tuned `1.2e-4` peak extinction with the
+Koschmieder-derived `GROUND_FOG_PEAK_EXTINCTION` (`3.912 / 2000` = `1.956e-3`,
+`WebGPUGroundFogBand.ts:82`) — but only at the site that packs the value into the
+uniform buffer (`r.paramsData[87]`). The MULTI-SCATTERING optical-depth scale, ~190
+lines further down, kept a private copy of the refuted literal:
+
+```js
+const msGroundPeak = groundFogActive ? 1.2e-4 * groundFogIntensity : 0.0;
+const msBaseDensity = Math.max(fogMasterOn ? (vf?.density ?? 1.0) : 0.0, msGroundPeak, 1e-4);
+r.paramsData[122] = 3.0 / msBaseDensity;
+```
+
+The comment three lines above it already named the correct reference
+("the ground-fog `peakDensity × intensity`"), so the two sites described the same
+physical quantity with different numbers.
+
+**Consequence.** `VolumetricFog.wgsl:930` injects the band density as
+`groundFogIntensity * peakDensity * exp(-h / bandHeight)`, so the densest froxel IS
+slot 85 × slot 87. Slot 122 is meant to map that onto optical depth ~3
+(`msOpticalDepth = clamp(density * scale, 0, 4)`, WGSL:1011). With the stale
+literal the scale was `3.0 / 1.2e-4` = 25,000 instead of `3.0 / 1.956e-3` = 1,533.7,
+so `msOpticalDepth` pinned at the clamp of 4.0 from the datum up to ~300 m — the
+entire 3-band-height envelope — instead of decaying from 3.0 at the core. Every
+froxel in the mist layer then took the maximum slot-121 MS lift (2.0x) rather than
+only the dense core, roughly doubling in-scatter across the whole band and
+inverting the design intent recorded at WGSL:283-288.
+
+**Trigger.** `groundFog.enabled = true` AND `groundFog.intensity > 0` AND
+`volumetricFog.multiScatter = true` AND `volumetricFog.msOctaves >= 2`
+(`useMS = msEnabled && msOctaves > 1`, WGSL:1001; the registry default is
+`msOctaves: 1`, so multiScatter alone does not reach it). `volumetricFog.enabled`
+may be false — the ground-fog-only path falls through the gate at line 883.
+
+**Why no guard caught it.** `_groundFogDiagnostics.peakDensity` is assigned from
+`GROUND_FOG_PEAK_EXTINCTION` directly, so `probe-ground-fog.mjs`'s gate H reported
+the CORRECTED constant while the shader received the stale one. The Batch-843 guard
+fleet (`ground-fog-band.spec.mjs`, `lib/ground-fog-band-model.mjs`,
+`probe-ground-fog.mjs`) models the density INJECTION only — none of the three
+mentions slot 122, `opticalDepthScale`, `multiScatter` or `msOctaves`.
+
+**Fix.** `msGroundPeak` now reads `GROUND_FOG_PEAK_EXTINCTION * groundFogIntensity`.
+One home for the constant, with the history note kept as a comment so the literal is
+not reintroduced. Two new spec tests: a ONE-HOME pin that locates the `msGroundPeak`
+expression, requires the symbol, and rejects ANY numeric-exponent literal inside it
+(scoped to that expression, so the separate `1e-4` conditioning floor is untouched);
+and an arithmetic test that computes both scales and shows the stale one saturates
+the clamp at 0 m, 120 m and 300 m while the derived one lands exactly on 3.0 and
+never clamps. Plus a mutation that re-introduces the second copy and requires the
+pin to reject it while slot 87, the diagnostics echo and gate H all still pass —
+which is the shape the defect actually had.
+
+---
+
+## Batch 867-Bug-2 — NEW-WEBGPU-CHUNK-SHADOW-RECEIVE-STALE: the chunk-library copy of the shadow receiver kept the pre-Batch-849 double bias, under a docstring promising the convention "cannot drift" (2026-08-07)
+
+**Files.** `packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_effects.wgsl`,
+`packages/engine/Source/Shaders/WebGPU/chunks/structs/EffectsUniforms.wgsl`,
+`Tools/visual-regression/webgpu-shadow-receive-contract.spec.mjs` (+2 tests, +1 naga unit).
+
+**Root cause.** Batch 849 moved the WebGPU shadow-receive texture convention onto the
+CPU (`toWebGPUShadowReceiveMatrix`) and rewrote the four INLINED receivers to
+`let uv = coord.xy;`. `WebGPUShadowReceiveTransform.ts:31-33` records the rationale as
+"keeps the convention in one tested place: the four inlined receivers now sample
+`coord.xy` directly and cannot drift from each other." There is a FIFTH reader of
+`EffectsUniforms.shadowMatrix` — the chunk-library `csm_computeShadowFactor` — and it
+still carried the removed remap:
+
+```wgsl
+let shadowCoord = shadowPos.xyz / shadowPos.w;
+let uv = shadowCoord.xy * 0.5 + 0.5;
+let remapped = vec2<f32>(uv.x, 1.0 - uv.y);
+```
+
+The sole producer (`WebGPUShadowMapRenderer.js:1313`) unconditionally applies
+`toWebGPUShadowReceiveMatrix`, and all three sites that fill offset 0 of the effects
+UBO pack that same matrix, so any consumer of the bind group receives an
+already-scale-biased AND already-v-flipped matrix. The chunk's remap is a genuine
+double bias: every lookup collapses into `u ∈ [0.5, 1]`, `v ∈ [0, 0.5]`, mirrored —
+the exact NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD signature.
+
+**Scope, stated honestly.** This is a LATENT trap plus a false documented invariant,
+NOT a live rendering defect: no `@chunk csm_effects` marker exists and
+`WebGPUPrimitiveShaders.injectChunks` does not know the chunk, so the text is never
+compiled today. It also predates Batch 849 — the chunk was equally wrong before, and
+849 changed the v-ORIGIN only. What 849 introduced is the CLAIM that drift is
+structurally impossible, which the guard does not enforce:
+`webgpu-shadow-receive-contract.spec.mjs`'s `RECEIVER_SHADERS` table lists exactly
+the four inlined files, and it passed at HEAD while the chunk carried the old math.
+The chunk must NOT be deleted (Principle 7) — the chunk library is a live
+distribution mechanism (25 shipping shaders consume `csm_samplePointShadow` through
+`injectChunks`), and routing the next single-map receiver through
+`csm_computeShadowFactor` is exactly what it exists for.
+
+**Fix.** The chunk now matches the four receivers verbatim
+(`let coord = shadowPos.xyz / shadowPos.w; let uv = coord.xy;`) with the same
+explanatory comment. Its companion struct comment, which still described
+`shadowMatrix` as "world → shadow-map NDC", now states the texture-space contract and
+names the producer. New spec D4 extracts the two convention statements from BOTH the
+chunk and each of the four inlined receivers (CRLF-normalised) and requires them to
+be deep-equal, so the day the convention legitimately changes this fails as one fact
+rather than five; D5 restores the double bias in the chunk and requires D4 to reject
+it; and F1 now naga-validates the chunk against its own `EffectsUniforms` struct —
+the unit an `injectChunks` wiring would produce, and previously the only WGSL in the
+row that nothing compiled.
+
+**NOT changed: `Shaders/WebGPU/Shadow/ShadowMap.wgsl`.** It carries the same-shaped
+math but reads a DIFFERENT struct (`ShadowReceiveUniforms`) that no JS packs
+anywhere, so it is not governed by this contract and no claim is made about it here.
 
 ---
 

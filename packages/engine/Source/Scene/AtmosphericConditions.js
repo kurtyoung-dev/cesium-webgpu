@@ -127,6 +127,24 @@ class AtmosphericConditions {
    * once per frame by `Scene/SolarGlareAppearance.js` and published as
    * `frameState.solarGlareAppearance`, with an EXACT identity position when
    * false (strength 0 makes every consumer skip its whole glare block).
+   *
+   * FACADE-ABSENT BEHAVIOUR IS NOT UNIFORM ACROSS THIS REGISTRY, and every
+   * default above describes the value stored HERE, not what a globe-less scene
+   * gets. `Scene.js` publishes `frameState.atmosphericConditions` as `undefined`
+   * when there is no globe (a supported configuration: pure 3D-Tiles / CAD /
+   * model-viewer scenes), so each resolver's absent-facade convention decides
+   * the effective position:
+   *   - `!== false` — ON without a facade: `enableSolarLimbDarkening`,
+   *     `enableSolarGlareFalloff` (`Scene/SunDiscAppearance.js`), `enableEclipse`
+   *     (`Scene.js`).
+   *   - `=== true` — OFF without a facade, DELIBERATELY, so such a scene keeps
+   *     the pre-C12 look exactly: `enableEarthshinePhase`, `enableSoftTerminator`
+   *     (`Scene/MoonPhaseAppearance.js`), `enableAngularSolarGlare`
+   *     (`Scene/SolarGlareAppearance.js`), and the four moon-wave toggles plus
+   *     `enableMoonPhase` / `enableEarthshine` (`Scene/Moon.js`).
+   * So a globe-less scene really does get the C12-15/16 sun disc alongside the
+   * pre-C12 lunar terminator — the two pairs above are alike in default and in
+   * identity-when-false, but NOT in what happens when the facade is missing.
    * @type {object}
    * @readonly
    */

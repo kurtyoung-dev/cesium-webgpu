@@ -1540,7 +1540,17 @@ class WebGPUVolumetricFogRenderer {
     // per-metre scale). Reference whichever drives the densest froxel so the
     // optical depth is well-conditioned in both modes; thinner (higher-altitude)
     // froxels scale down → gain ~1 (no MS there), so the lift bites only the core.
-    const msGroundPeak = groundFogActive ? 1.2e-4 * groundFogIntensity : 0.0;
+    //
+    // ONE HOME: this reference MUST be the same `GROUND_FOG_PEAK_EXTINCTION` that
+    // slot 87 carries (line ~1353) — the WGSL injects `groundFogIntensity ×
+    // peakDensity × exp(-h/bandHeight)`, so the densest froxel IS slot 85 × slot
+    // 87. Batch 843 re-derived the constant (Koschmieder, 3.912/2000) at slot 87
+    // but left a second copy of the refuted 1.2e-4 here, which overstated the
+    // scale 16.3x and pinned the MS lift at the slot-121 clamp across the whole
+    // band instead of only its core. Do not re-introduce a literal.
+    const msGroundPeak = groundFogActive
+      ? GROUND_FOG_PEAK_EXTINCTION * groundFogIntensity
+      : 0.0;
     const msBaseDensity = Math.max(
       fogMasterOn ? (vf?.density ?? 1.0) : 0.0,
       msGroundPeak,

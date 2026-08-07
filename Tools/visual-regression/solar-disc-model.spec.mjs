@@ -307,6 +307,126 @@ test("toggle identity: both OFF reproduces the pre-C12 bake exactly", async () =
   assert.match(ac, /enableSolarGlareFalloff: true/);
 });
 
+// The `lighting` registry JSDoc is where a reader goes to learn what a toggle
+// does, and it presented the C12-15/16 sun-disc pair and the C12-21/22
+// moon-phase pair as alike ("both default ON ... EXACT identity position when
+// false", "sit alongside them"). They are NOT alike in the one case the
+// registry never mentioned: `Scene.js` publishes
+// `frameState.atmosphericConditions` as `undefined` when there is no globe, and
+// the sun resolver reads `!== false` (ON) while the moon resolver reads
+// `=== true` (OFF, deliberately). A globe-less scene — a supported
+// configuration — therefore gets the C12 sun disc AND the pre-C12 lunar
+// terminator. Ground truth below is EXECUTED, and the doc is held to it.
+const FACADE_ABSENT_CONVENTION = {
+  "Scene/SunDiscAppearance.js": {
+    on: ["enableSolarLimbDarkening", "enableSolarGlareFalloff"],
+    off: [],
+  },
+  "Scene/MoonPhaseAppearance.js": {
+    on: [],
+    off: ["enableEarthshinePhase", "enableSoftTerminator"],
+  },
+  "Scene/SolarGlareAppearance.js": {
+    on: [],
+    off: ["enableAngularSolarGlare"],
+  },
+};
+
+test("the lighting registry documents the facade-absent split it actually has", async () => {
+  // 1. GROUND TRUTH, executed — not read off the prose.
+  const sun = await importEngine("Scene/SunDiscAppearance.js");
+  const sunState = sun.createSunDiscAppearance();
+  sun.readSunDiscAppearance({}, sunState);
+  assert.equal(sunState.limbDarkening, true, "sun pair is ON with no facade");
+  assert.equal(sunState.glareFalloff, true, "sun pair is ON with no facade");
+
+  const moon = await importEngine("Scene/MoonPhaseAppearance.js");
+  const moonState = moon.createMoonPhaseAppearance();
+  moon.readMoonPhaseAppearance(
+    undefined, // no facade — exactly what a globe-less scene publishes
+    true, // phase modelling on, so the ONLY gate left is the facade
+    0.5,
+    moon.ASTRONOMICAL_UNIT,
+    moonState,
+  );
+  assert.equal(
+    moonState.earthshinePhase,
+    false,
+    "moon pair is OFF with no facade — the asymmetry the doc must state",
+  );
+  assert.equal(moonState.softTerminator, false);
+  assert.equal(moonState.earthshinePhaseScale, 1.0, "identity");
+  assert.equal(moonState.terminatorSoftness, 0.0, "identity");
+
+  // 2. The resolver SOURCES agree with what was just executed, so the table
+  //    below is anchored to code and not to this test's own assumptions.
+  for (const [file, buckets] of Object.entries(FACADE_ABSENT_CONVENTION)) {
+    const source = readEngine(file).replace(/\r\n/g, "\n");
+    for (const name of buckets.on) {
+      assert.match(
+        source,
+        new RegExp(`${name} !== false`),
+        `${file} must read ${name} as ON-without-facade`,
+      );
+    }
+    for (const name of buckets.off) {
+      assert.match(
+        source,
+        new RegExp(`${name} === true`),
+        `${file} must read ${name} as OFF-without-facade`,
+      );
+    }
+  }
+
+  // 3. The registry JSDoc must sort every one of them into the right bucket.
+  const registry = ac_lightingRegistry();
+  const onList = between(
+    registry,
+    "`!== false` — ON without a facade",
+    "`=== true` — OFF without a facade",
+  );
+  const offList = between(
+    registry,
+    "`=== true` — OFF without a facade",
+    "So a globe-less scene",
+  );
+  for (const buckets of Object.values(FACADE_ABSENT_CONVENTION)) {
+    for (const name of buckets.on) {
+      assert.ok(
+        onList.includes(name),
+        `${name} is ON without a facade but the registry does not list it there`,
+      );
+      assert.ok(!offList.includes(name), `${name} is listed in both buckets`);
+    }
+    for (const name of buckets.off) {
+      assert.ok(
+        offList.includes(name),
+        `${name} is OFF without a facade but the registry does not list it there`,
+      );
+      assert.ok(!onList.includes(name), `${name} is listed in both buckets`);
+    }
+  }
+});
+
+function ac_lightingRegistry() {
+  const source = readEngine("Scene/AtmosphericConditions.js").replace(
+    /\r\n/g,
+    "\n",
+  );
+  const start = source.indexOf("   * Lighting flags.");
+  const end = source.indexOf("  get lighting() {", start);
+  assert.ok(start > 0 && end > start, "the lighting registry JSDoc must exist");
+  return source.slice(start, end);
+}
+
+function between(text, from, to) {
+  const start = text.indexOf(from);
+  assert.ok(start >= 0, `the registry must contain "${from}"`);
+  const end = text.indexOf(to, start + from.length);
+  assert.ok(end > start, `the registry must contain "${to}" after "${from}"`);
+  return text.slice(start, end);
+}
+
 test("C12-17: WebGPU bake size/format parity with WebGL", () => {
   const wgpu = readEngine("Renderer/WebGPU/WebGPUEnvironmentRenderer.js");
   const sun = readEngine("Scene/Sun.js");

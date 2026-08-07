@@ -1,5 +1,62 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
+## New findings — audit-remediation worker (engine lane), 2026-08-07
+
+Surfaced while fixing the engine-code findings of the 2026-08-07 adversarially
+verified audit (window `47a940eed9..a6d4b1763a`). None blocks that batch; each is
+recorded because it was found, not routed around (Principle 9).
+
+- **`NEW-FOG-MS-SCALE-UNGUARDED`** — the multi-scattering uniforms
+  (`paramsData[116..123]`: `msEnabled`, `msOctaves`, the three decay factors, the
+  slot-121 lift clamp and the slot-122 `opticalDepthScale`) have NO spec or probe
+  coverage of their own. Batch 867 added a one-home pin plus an arithmetic test
+  for slot 122 specifically, because that is where the stale-constant defect
+  lived — but the other seven slots are still pinned by nothing, and
+  `probe-ground-fog.mjs`'s gate H reads back `_groundFogDiagnostics`, which does
+  not carry any of them. A `msOctaves >= 2` acceptance lane (Edge, ground-fog-only
+  scene, MS on vs off) is the missing instrument. **Effort: S.**
+- **`NEW-WEATHER-CONSTANT-FILL-SEAM-BLEND`** — Batch 867 made the PROCEDURAL
+  no-data fill bypass the packer's second polar low-pass, restoring the byte
+  continuity `WeatherFieldGrid` documents. The `"constant"` fill was deliberately
+  left alone: it is flat, so re-filtering it is the identity except within one
+  kernel radius of the fill/observed seam, and there the "right" answer is a
+  judgement call (a declared constant that comes back as 249 is not what the
+  caller declared; equally, a hard fill/observed edge at 60-80 deg latitude is not
+  obviously better than a blend). No contract exists either way, and no test could
+  be written that discriminates without one — an assertion was drafted and
+  discarded when it passed on the pre-fix bytes. Decide the contract, then pin it.
+  **Effort: XS once decided.**
+- **`NEW-LIGHTING-REGISTRY-FACADE-ABSENT-SPLIT`** — the `atmosphericConditions.lighting`
+  toggles genuinely disagree about what a GLOBE-LESS scene gets, and Batch 867 only
+  documented the split (and pinned the documentation against the executed
+  resolvers). `enableSolarLimbDarkening` / `enableSolarGlareFalloff` /
+  `enableEclipse` read `!== false` (ON without a facade); `enableEarthshinePhase` /
+  `enableSoftTerminator` / `enableAngularSolarGlare` / the four moon-wave toggles /
+  `enableMoonPhase` / `enableEarthshine` read `=== true` (OFF). Each side has a
+  written rationale, so this is not obviously a bug — but "supported configuration
+  gets half of C12" is a maintainer call, not a worker call. The alternatives are
+  (a) leave it and keep the doc, (b) unify on `!== false` and accept that
+  globe-less scenes change appearance, or (c) publish a default
+  `atmosphericConditions` when there is no globe, which makes the question moot for
+  every toggle at once. **Effort: S for (a)/(b), M for (c).**
+- **`NEW-GLOBEFS-DERIVATIVE-UNIFORMITY-SWEEP`** — C11-172's `dFdx(textureCoordinates)`
+  inside `if (coastCoverage > 0.0)` was fixed by hoisting, but no one has swept
+  `GlobeFS.glsl` (or the other GLSL fragment shaders) for the same shape. The
+  hazard class is "a derivative, or a `texture()` auto-LOD fetch, reached only from
+  inside a data-dependent branch or after a `discard`"; the WGSL side is protected
+  because naga REJECTS it, so only the GLSL half can carry it silently. A pure-CPU
+  structural sweep (locate every `dFdx|dFdy|fwidth|texture(` and prove its enclosing
+  control flow is uniform) would generalise the one-off pin Batch 867 added to
+  `ocean-wave-lod.spec.mjs`. **Effort: M.**
+- **`NEW-GLSL-HAS-NO-COMPILE-GATE`** — the naga tooling already ships
+  `glsl_to_spv`, and NOTHING in `Tools/` calls it. Every GLSL change in this repo
+  is currently gated by regex only, so a signature change like Batch 867's
+  `computeWaterColor` extra parameters is caught by an arity assertion the author
+  had to remember to write, rather than by a compiler. The blocker is that
+  `GlobeFS.glsl` needs `ShaderSource`'s builtin injection and define expansion
+  before it is a compilable unit — the same composition the WGSL specs already do
+  by hand for chunks. **Effort: M, and it retires a whole class of regex specs.**
+
 ## New findings — C12-27 / C12-14 / C12-13 worker, 2026-08-06
 
 Filed by the Campaign-12 appearance-tail worker. All five are surfaced rather

@@ -449,15 +449,158 @@ test("PROCEDURAL_NO_DATA_FILL is the default and the procedural producer is unto
   assert.equal(packed.filledTexels, TEX_W * TEX_H);
   const procedural = buildProceduralWeatherMap(TEX_W, TEX_H);
   for (let ty = 0; ty < TEX_H; ty++) {
-    if (!isIdentityRow(ty)) {
-      continue; // the composite is low-passed once more in the polar band
-    }
     for (let tx = 0; tx < TEX_W; tx++) {
       for (let channel = 0; channel < 4; channel++) {
         assert.equal(
           channelAt(packed.bytes, tx, ty, channel),
           channelAt(procedural, tx, ty, channel),
           `all-no-data fill differs from the procedural map at ${tx},${ty},${channel}`,
+        );
+      }
+    }
+  }
+});
+
+// The row loop above used to `continue` past every non-identity row, with the
+// note "the composite is low-passed once more in the polar band" — i.e. the
+// spec routed around the divergence while the module JSDoc kept promising "the
+// same bytes the renderer already shows when there is no provider at all",
+// unqualified. It IS the same bytes now, on every row. These three tests hold
+// the fix from all three sides: the byte-identity, the mechanism that broke it,
+// and the pole safety that must survive the repair.
+
+test("the procedural fill is not low-passed a SECOND time", () => {
+  const empty = {
+    gridWidth: 4,
+    gridHeight: 4,
+    coverage: new Float32Array(16).fill(NaN),
+    bounds: globalBounds(),
+  };
+  const packed = packWeatherFieldDetailed(empty, TEX_W, TEX_H);
+  const procedural = buildProceduralWeatherMap(TEX_W, TEX_H);
+
+  // The defect oracle: what the packer produced before the restore pass is
+  // exactly the reference map run through the filter a second time.
+  const doubleFiltered = applyEquirectPolarLowPass(
+    Uint8Array.from(procedural),
+    TEX_W,
+    TEX_H,
+  );
+  let doubleFilterDiffs = 0;
+  let worstDelta = 0;
+  const affectedRows = new Set();
+  for (let i = 0; i < procedural.length; i++) {
+    const delta = Math.abs(doubleFiltered[i] - procedural[i]);
+    if (delta !== 0) {
+      doubleFilterDiffs++;
+      worstDelta = Math.max(worstDelta, delta);
+      affectedRows.add(Math.floor(i / (TEX_W * 4)));
+    }
+  }
+  // The mutation must be able to fail: a second filter really does move bytes,
+  // so a passing byte-identity below is not vacuous.
+  assert.ok(
+    doubleFilterDiffs > 1000,
+    `a second low-pass must actually move bytes, moved ${doubleFilterDiffs}`,
+  );
+  assert.ok(worstDelta >= 8, `worst byte delta ${worstDelta}`);
+  // ...and only OUTSIDE the polar caps, which are idempotent (a constant row's
+  // mean is that constant) — that is why the cap exemption in the restore pass
+  // costs nothing here.
+  assert.ok(!affectedRows.has(0) && !affectedRows.has(TEX_H - 1));
+
+  // The shipped bytes are the SINGLE-filtered reference, not the double.
+  assert.deepEqual(Array.from(packed.bytes), Array.from(procedural));
+  assert.notDeepEqual(Array.from(packed.bytes), Array.from(doubleFiltered));
+});
+
+test("a PARTIAL provider keeps the unobserved texels byte-identical to the no-provider map", () => {
+  // The shape the METAR source actually produces: observed in one longitude
+  // half, no-data everywhere else. Every unobserved texel outside the polar
+  // caps must still be the no-provider byte, or attaching the provider visibly
+  // re-blurs the sky where nothing was measured.
+  const gw = 8;
+  const gh = 8;
+  const coverage = new Float32Array(gw * gh);
+  for (let y = 0; y < gh; y++) {
+    for (let x = 0; x < gw; x++) {
+      coverage[y * gw + x] = x < gw / 2 ? 0.0 : NaN;
+    }
+  }
+  const partial = packWeatherFieldDetailed(
+    { gridWidth: gw, gridHeight: gh, coverage, bounds: globalBounds() },
+    TEX_W,
+    TEX_H,
+  );
+  assert.ok(partial.filledTexels > 0 && partial.observedTexels > 0);
+  const procedural = buildProceduralWeatherMap(TEX_W, TEX_H);
+
+  // A texel is unobserved iff repacking with a `constant` fill of coverage 1
+  // hands back exactly 255 there — the constant path writes the quad verbatim
+  // and is not restored, so this identifies the fill REGION independently of
+  // the procedural path under test. Restrict to rows the low-pass leaves alone
+  // plus the polar band, excluding the two collapsed cap rows.
+  const probe = packWeatherFieldDetailed(
+    { gridWidth: gw, gridHeight: gh, coverage, bounds: globalBounds() },
+    TEX_W,
+    TEX_H,
+    { noDataFill: { kind: "constant", coverage: 1 } },
+  );
+  let checked = 0;
+  let polarBandChecked = 0;
+  for (let ty = 1; ty < TEX_H - 1; ty++) {
+    for (let tx = 0; tx < TEX_W; tx++) {
+      if (channelAt(probe.bytes, tx, ty, 0) !== 255) {
+        continue; // observed, or blurred by the seam — not a clean fill texel
+      }
+      for (let channel = 0; channel < 4; channel++) {
+        assert.equal(
+          channelAt(partial.bytes, tx, ty, channel),
+          channelAt(procedural, tx, ty, channel),
+          `unobserved texel ${tx},${ty},${channel} drifted from the no-provider map`,
+        );
+      }
+      checked++;
+      if (!isIdentityRow(ty)) {
+        polarBandChecked++;
+      }
+    }
+  }
+  assert.ok(checked > 1000, `the sweep must reach fill texels, saw ${checked}`);
+  // The polar band is where the second filter actually bit; a sweep that never
+  // reached it would pass vacuously.
+  assert.ok(
+    polarBandChecked > 100,
+    `the sweep must reach the polar band, saw ${polarBandChecked}`,
+  );
+});
+
+test("the restore pass does NOT re-open the polar cap C13-07 closed", () => {
+  // Part observed, part filled, at the cap. If the fill were restored there,
+  // the cap row would carry two values around the azimuth ring — exactly the
+  // per-azimuth read C13-07 removed.
+  const gw = 8;
+  const gh = 8;
+  const coverage = new Float32Array(gw * gh);
+  for (let y = 0; y < gh; y++) {
+    for (let x = 0; x < gw; x++) {
+      coverage[y * gw + x] = x < gw / 2 ? 0.0 : NaN;
+    }
+  }
+  const result = packWeatherFieldDetailed(
+    { gridWidth: gw, gridHeight: gh, coverage, bounds: globalBounds() },
+    TEX_W,
+    TEX_H,
+  );
+  for (const ty of [0, TEX_H - 1]) {
+    assert.ok(!isIdentityRow(ty), "row must be a polar cap row");
+    for (let channel = 0; channel < 4; channel++) {
+      const first = channelAt(result.bytes, 0, ty, channel);
+      for (let tx = 1; tx < TEX_W; tx++) {
+        assert.equal(
+          channelAt(result.bytes, tx, ty, channel),
+          first,
+          `cap row ${ty} channel ${channel} is not single-valued at ${tx}`,
         );
       }
     }

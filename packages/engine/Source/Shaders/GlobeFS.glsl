@@ -352,7 +352,7 @@ vec4 sampleAndBlend(
 }
 
 vec4 computeDayColor(vec4 initialColor, vec3 textureCoordinates, float nightBlend);
-vec4 computeWaterColor(vec3 positionEyeCoordinates, vec2 textureCoordinates, mat3 enuToEye, vec4 imageryColor, float specularMapValue, float fade);
+vec4 computeWaterColor(vec3 positionEyeCoordinates, vec2 textureCoordinates, vec2 tcDx, vec2 tcDy, mat3 enuToEye, vec4 imageryColor, float specularMapValue, float fade);
 
 const float fExposure = 2.0;
 
@@ -722,16 +722,35 @@ void main()
     // open-ocean effect.
     float coastBand = clamp(fwidth(mask) * 1.5, 0.2, 0.5);
     float coastCoverage = smoothstep(0.5 - coastBand, 0.5 + coastBand, mask);
+    // HOISTED TO UNIFORM CONTROL FLOW, deliberately — do not move these back
+    // inside the `coastCoverage > 0.0` branch. C11-172's footprint LOD needs
+    // `dFdx`/`dFdy` of these coordinates, and GLSL ES 3.00 §8.13 leaves
+    // derivatives UNDEFINED in non-uniform control flow: on a coast quad where
+    // 1-3 of the 4 lanes fail the coverage test, the helper lanes never
+    // evaluated `textureCoordinates`, so an unhoisted derivative reads garbage.
+    // That is not a cosmetic mip-level error since Batch 757 — `uvFootprint`
+    // above `OCEAN_OCTAVE_FADE_HI / highEffRate` (~7.5e-3) trips the HARD
+    // `OCEAN_WAVE_MARCH_CUTOFF` branch, collapsing the wave normal to flat and
+    // skipping the `waveIntensity` scale entirely, i.e. a 1-2 px specular
+    // discontinuity along exactly the coastline the feather two lines above
+    // exists to smooth. The WGSL twin hoists for the same reason (`geoUV`,
+    // `geoUV_dx`, `geoUV_dy` at fragment entry, threaded into
+    // `computeEnhancedOcean`). The VALUES are unchanged for every lane that
+    // takes the branch — same inputs, same expression — so fully-covered
+    // quads are byte-identical.
+    vec2 ellipsoidTextureCoordinates = czm_ellipsoidTextureCoordinates(normalMC);
+    vec2 ellipsoidFlippedTextureCoordinates = czm_ellipsoidTextureCoordinates(normalMC.zyx);
+
+    vec2 textureCoordinates = mix(ellipsoidTextureCoordinates, ellipsoidFlippedTextureCoordinates, czm_morphTime * smoothstep(0.9, 0.95, normalMC.z));
+
+    vec2 tcDx = dFdx(textureCoordinates);
+    vec2 tcDy = dFdy(textureCoordinates);
+
     if (coastCoverage > 0.0)
     {
         mat3 enuToEye = czm_eastNorthUpToEyeCoordinates(v_positionMC, normalEC);
 
-        vec2 ellipsoidTextureCoordinates = czm_ellipsoidTextureCoordinates(normalMC);
-        vec2 ellipsoidFlippedTextureCoordinates = czm_ellipsoidTextureCoordinates(normalMC.zyx);
-
-        vec2 textureCoordinates = mix(ellipsoidTextureCoordinates, ellipsoidFlippedTextureCoordinates, czm_morphTime * smoothstep(0.9, 0.95, normalMC.z));
-
-        vec4 oceanColor = computeWaterColor(v_positionEC, textureCoordinates, enuToEye, color, mask, fade);
+        vec4 oceanColor = computeWaterColor(v_positionEC, textureCoordinates, tcDx, tcDy, enuToEye, color, mask, fade);
         // Feather the ocean effect in over the anti-aliased coast band.
         color = mix(color, oceanColor, coastCoverage);
     }
@@ -1095,7 +1114,7 @@ float oceanOctaveLodWeight(float repeatsPerPixel)
     return 1.0 - smoothstep(OCEAN_OCTAVE_FADE_LO, OCEAN_OCTAVE_FADE_HI, repeatsPerPixel);
 }
 
-vec4 computeWaterColor(vec3 positionEyeCoordinates, vec2 textureCoordinates, mat3 enuToEye, vec4 imageryColor, float maskValue, float fade)
+vec4 computeWaterColor(vec3 positionEyeCoordinates, vec2 textureCoordinates, vec2 tcDx, vec2 tcDy, mat3 enuToEye, vec4 imageryColor, float maskValue, float fade)
 {
     vec3 positionToEyeEC = -positionEyeCoordinates;
     float positionToEyeECLength = length(positionToEyeEC);
@@ -1112,18 +1131,14 @@ vec4 computeWaterColor(vec3 positionEyeCoordinates, vec2 textureCoordinates, mat
     // altitude layer keyed on its EFFECTIVE repeat rate (oceanFrequency divided by
     // czm_getWaterNoise's coarsest tap divisor — the D2 recalibration; keying on
     // the raw oceanFrequency, as v1 did, over-stated the rate ~3 orders of
-    // magnitude and fired the fade far too early). GLSL permits dFdx/dFdy anywhere
-    // in the fragment stage (result only undefined under NON-uniform flow), so
-    // unlike the WGSL twin no derivative hoisting is needed. This call is inside
-    // the `coastCoverage > 0.0` branch, but over OPEN ocean (the reported case)
-    // the whole ocean tile takes that branch uniformly, so the derivative is
-    // well-defined; only coast-boundary quads can see a garbage derivative, and
-    // there it merely perturbs the LOD weight on a ≤1 px already-feathered edge.
+    // magnitude and fired the fade far too early). `tcDx`/`tcDy` are PASSED IN:
+    // GLSL ES 3.00 §8.13 leaves derivatives undefined in non-uniform control
+    // flow, and this function is only ever called from inside the
+    // `coastCoverage > 0.0` branch, so the caller takes them in uniform flow
+    // and threads them here — the same shape as the WGSL twin's `uvDx`/`uvDy`.
     // MAX-axis footprint: WebGL's texture() is isotropic (no anisotropy), so the
     // long axis is the resolution limiter (the WGSL twin uses MIN because its
     // sampler has maxAnisotropy 8).
-    vec2 tcDx = dFdx(textureCoordinates);
-    vec2 tcDy = dFdy(textureCoordinates);
     float uvFootprint = max(length(tcDx), length(tcDy));
     float highEffRate = oceanFrequencyHighAltitude / OCEAN_GETWATERNOISE_DIVISOR;
     float lowEffRate = oceanFrequencyLowAltitude / OCEAN_GETWATERNOISE_DIVISOR;

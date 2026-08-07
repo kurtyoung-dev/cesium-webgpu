@@ -579,6 +579,102 @@ test("the shader measures the band from the datum the renderer packs", () => {
   );
 });
 
+// The MS optical-depth scale (slot 122) is the SECOND consumer of the peak
+// extinction: the WGSL injects `groundFogIntensity × peakDensity ×
+// exp(-h/bandHeight)`, so the densest froxel of the ground-fog-only path IS
+// slot 85 × slot 87, and slot 122 has to reference the same number to condition
+// it. Batch 843 re-derived slot 87 and left a second copy of the refuted 1.2e-4
+// here, so the two sites described different fogs. These two tests hold them to
+// ONE source — the symbol, textually, and the arithmetic it produces.
+const msScaleBlock = (source) => {
+  const start = source.indexOf("// opticalDepthScale (offset 122)");
+  const end = source.indexOf("r.paramsData[123]", start);
+  assert.ok(start > 0 && end > start, "the MS scale block must be locatable");
+  return source.slice(start, end);
+};
+
+// Full-line `//` comments removed, so a comment that QUOTES the refuted literal
+// (the block's own history note does) can neither satisfy nor defeat a pin on
+// the expression itself.
+const codeOnly = (block) =>
+  block
+    .split("\n")
+    .filter((line) => !/^\s*\/\//.test(line))
+    .join("\n");
+
+test("the MS optical-depth scale references the SAME peak extinction slot 87 packs", () => {
+  const code = codeOnly(msScaleBlock(rendererSource));
+  const msGroundPeak = code.match(/const msGroundPeak =[\s\S]*?;/);
+  assert.ok(msGroundPeak, "the MS ground-peak reference must be locatable");
+  assert.match(
+    msGroundPeak[0],
+    /GROUND_FOG_PEAK_EXTINCTION \* groundFogIntensity/,
+    "the MS reference must read the leaf constant, not a second copy of it",
+  );
+  // No extinction literal may live in that expression — a numeric here is the
+  // defect, whatever its value. (The `1e-4` CONDITIONING floor on the line
+  // below is a different quantity and stays; this pin is scoped to the
+  // ground-peak expression alone.)
+  assert.doesNotMatch(
+    msGroundPeak[0],
+    /\d+(?:\.\d+)?e-\d+/,
+    "the ground-fog peak extinction must have exactly one home",
+  );
+  // ...and that one home is the same symbol slot 87 carries.
+  assert.match(code, /GROUND_FOG_PEAK_EXTINCTION/);
+  assert.match(
+    rendererSource,
+    /r\.paramsData\[87\] = GROUND_FOG_PEAK_EXTINCTION;/,
+  );
+});
+
+// `msOpticalDepth = clamp(density × opticalDepthScale, 0, 4)` (VolumetricFog.wgsl
+// :1011). `density` on the ground-fog-only path always uses the SHIPPED slot-87
+// peak; only the SCALE was reading the stale one, which is why the defect is
+// invisible to any gate that reads back slot 87 or `_groundFogDiagnostics`.
+const OPTICAL_DEPTH_TARGET = 3.0;
+const MS_OPTICAL_DEPTH_CLAMP = 4.0;
+const opticalDepthScaleFor = (peak, intensity) =>
+  OPTICAL_DEPTH_TARGET / Math.max(0.0, peak * intensity, 1e-4);
+const msOpticalDepthAt = (scale, intensity, heightMeters) =>
+  Math.min(
+    MS_OPTICAL_DEPTH_CLAMP,
+    intensity *
+      band.GROUND_FOG_PEAK_EXTINCTION *
+      Math.exp(-heightMeters / band.GROUND_FOG_BAND_HEIGHT) *
+      scale,
+  );
+
+test("one source conditions the MS optical depth; the stale literal pinned the whole band at the clamp", () => {
+  const derived = opticalDepthScaleFor(band.GROUND_FOG_PEAK_EXTINCTION, 1.0);
+  const stale = opticalDepthScaleFor(1.2e-4, 1.0);
+  assert.ok(
+    Math.abs(derived - 1533.7) < 0.5,
+    `derived opticalDepthScale ${derived}`,
+  );
+  assert.ok(Math.abs(stale - 25000) < 0.5, `stale opticalDepthScale ${stale}`);
+  assert.ok(stale / derived > 16, `overstatement ${stale / derived}x`);
+
+  // Derived: the densest froxel lands exactly on the design target and nothing
+  // in the band reaches the clamp, so the MS lift decays with altitude — which
+  // is the stated intent ("the lift bites only the core").
+  assert.ok(
+    Math.abs(msOpticalDepthAt(derived, 1.0, 0) - OPTICAL_DEPTH_TARGET) < 1e-9,
+  );
+  assert.ok(
+    msOpticalDepthAt(derived, 1.0, 0) < MS_OPTICAL_DEPTH_CLAMP,
+    "the derived scale must never saturate the clamp",
+  );
+  assert.ok(Math.abs(msOpticalDepthAt(derived, 1.0, 300) - 0.246) < 0.01);
+
+  // Stale: saturated at the clamp from the datum all the way to ~300 m, i.e.
+  // across the entire 3-band-height envelope the effect is defined over. Every
+  // froxel then takes the maximum MS lift instead of only the dense core.
+  assert.equal(msOpticalDepthAt(stale, 1.0, 0), MS_OPTICAL_DEPTH_CLAMP);
+  assert.equal(msOpticalDepthAt(stale, 1.0, 120), MS_OPTICAL_DEPTH_CLAMP);
+  assert.equal(msOpticalDepthAt(stale, 1.0, 300), MS_OPTICAL_DEPTH_CLAMP);
+});
+
 test("the probe that owns this acceptance gates instead of asking a human", () => {
   // The defect went unnoticed for 400+ batches because this probe printed band
   // numbers under the heading "Manual checks (read the PNGs)" and exited 0
@@ -659,6 +755,30 @@ test("MUTATION: reverting the peak extinction is caught by the sweep floor", () 
       (historicalSweep[2] - historicalSweep[0]) >
       10,
   );
+});
+
+test("MUTATION: a SECOND copy of the extinction in the MS scale is caught by the one-home pin", () => {
+  // This is the shape the defect actually had: slot 87 correct, slot 122
+  // referencing a private literal. Reproduce it and require the pin to reject.
+  const mutated = rendererSource.replace(
+    "GROUND_FOG_PEAK_EXTINCTION * groundFogIntensity",
+    "1.2e-4 * groundFogIntensity",
+  );
+  assert.notEqual(mutated, rendererSource, "the mutation must actually apply");
+  // Slot 87 is UNTOUCHED by the mutation, so the existing slot-87 pin, the
+  // `_groundFogDiagnostics` echo and probe-ground-fog's gate H all still pass —
+  // which is exactly why this needed its own pin.
+  assert.match(mutated, /r\.paramsData\[87\] = GROUND_FOG_PEAK_EXTINCTION;/);
+  const mutantExpr = codeOnly(msScaleBlock(mutated)).match(
+    /const msGroundPeak =[\s\S]*?;/,
+  )[0];
+  assert.throws(() =>
+    assert.match(
+      mutantExpr,
+      /GROUND_FOG_PEAK_EXTINCTION \* groundFogIntensity/,
+    ),
+  );
+  assert.throws(() => assert.doesNotMatch(mutantExpr, /\d+(?:\.\d+)?e-\d+/));
 });
 
 // ── 7b. The calibration question, settled ────────────────────────────────────

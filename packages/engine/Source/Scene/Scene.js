@@ -3873,7 +3873,7 @@ class Scene {
           frameState.moonPhaseFraction ?? 1.0,
           frameState.camera?.positionWC,
           frameState.camera?.positionCartographic?.height,
-        ) * frameState.eclipseSceneLightFactor;
+        ) * (frameState.eclipseSceneLightFactor ?? 1.0);
 
       // C12-27 — angular solar-glare star washout. Resolved ONCE here, before
       // `skyBox.update` (cube map) and `starField.update` (sprites), so all

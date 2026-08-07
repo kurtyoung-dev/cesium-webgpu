@@ -55,16 +55,23 @@ fn csm_computeShadowFactor(
   }
 
   let shadowPos = effects.shadowMatrix * vec4<f32>(worldPosition, 1.0);
-  let shadowCoord = shadowPos.xyz / shadowPos.w;
-  let uv = shadowCoord.xy * 0.5 + 0.5;
-  let remapped = vec2<f32>(uv.x, 1.0 - uv.y);
+  // Already WebGPU shadow-texture space — scale/bias from
+  // `ShadowMap.getViewProjection`, v-origin flip from
+  // `toWebGPUShadowReceiveMatrix` (`WebGPUShadowReceiveTransform.ts`).
+  // Re-applying `*0.5 + 0.5` here squeezes every lookup into the wrong
+  // quadrant, which is what made the globe receive no sun shadow at all
+  // (NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD). The CASCADED receivers are
+  // different on purpose: they are handed a RAW clip-space cascade VP and do
+  // the full remap themselves.
+  let coord = shadowPos.xyz / shadowPos.w;
+  let uv = coord.xy;
   let texelSize = 1.0 / effects.shadowMapSize;
 
   var visibility: f32;
   if (effects.shadowSoftShadows > 0.5) {
-    visibility = csm_sampleShadowMapPCF(shadowMap, shadowSampler, remapped, shadowCoord.z, texelSize);
+    visibility = csm_sampleShadowMapPCF(shadowMap, shadowSampler, uv, coord.z, texelSize);
   } else {
-    visibility = csm_sampleShadowMap(shadowMap, shadowSampler, remapped, shadowCoord.z);
+    visibility = csm_sampleShadowMap(shadowMap, shadowSampler, uv, coord.z);
   }
 
   return mix(effects.shadowDarkness, 1.0, visibility);

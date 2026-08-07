@@ -1531,7 +1531,11 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache._normalPublicationCallbacks,
   );
 
-  // Uniform buffer (Phase 1.2c v2 + C12 moon-wave tail = 336 bytes / 84 floats)
+  // Uniform buffer (Phase 1.2c v2 + C12 moon-wave tail + C12-25/21/22 =
+  // MOON_UNIFORM_BUFFER_SIZE, currently 352 bytes / 88 floats; floats 0..86 are
+  // in use, 87 is tail padding). The size lives ONLY on that constant — the
+  // next add-only uniform reads it here and appends after the last USED float,
+  // which is `ud[86]` in `_packMoonUniforms`, not float 84.
   if (!defined(cache.uniformBuffer)) {
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
       device,
@@ -1890,7 +1894,9 @@ function getWebGPUMoonStatistics(moon) {
   const cache = moon._webgpuCache;
   // Pull the moon-specific uniforms back out of the packed buffer for
   // a quick "what got pushed to the GPU last frame" view. The offsets
-  // here mirror `_packMoonUniforms()` (offsets 64..83 are the moon tail).
+  // here mirror `_packMoonUniforms()` (offsets 64..86 are the moon tail:
+  // 64..75 the Phase-1.2c block, 76..83 the C12 moon wave, 84 C12-25's
+  // relief strength, 85/86 the C12-21/22 phase pair).
   const ud = cache.uniformData;
   const moonDirWC =
     defined(ud) && ud.length > 67

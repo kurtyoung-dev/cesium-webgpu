@@ -18,7 +18,13 @@
 
 struct EffectsUniforms {
   // ── Shadow receive ──
-  shadowMatrix: mat4x4<f32>,   // world → shadow-map NDC
+  // Eye space → WebGPU shadow-TEXTURE space, not NDC: the sole producer
+  // (`WebGPUShadowMapRenderer.getShadowMapResources`) runs
+  // `toWebGPUShadowReceiveMatrix` over a `_shadowMapMatrix` that
+  // `ShadowMap.getViewProjection` has already scale/biased. After the divide
+  // a receiver samples `coord.xy` directly — see
+  // `WebGPUShadowReceiveTransform.ts` (NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD).
+  shadowMatrix: mat4x4<f32>,
   shadowMapSize: vec2<f32>,    // shadow texture dimensions (for PCF texel size)
   shadowDarkness: f32,         // 0..1 shadow minimum brightness
   shadowSoftShadows: f32,      // 0.0 = hard, 1.0 = PCF soft

@@ -572,6 +572,103 @@ test("WebGPU packs both at the reserved tail offsets, with identity fallbacks", 
   assert.match(envRenderer, /earthshinePhaseScale,\n\s*terminatorSoftness,/);
 });
 
+// C12-25/21/22 grew the moon UB 336 -> 352, but the two INLINE comments that
+// the next add-only author actually reads — the one over the allocation and the
+// one over the debug snapshot — were left describing the 336-byte / 84-float
+// tail. Reading "84 floats" at the allocation site and appending at float 84
+// silently overwrites C12-25's `normalStrength`: the buffer size and the bind
+// group stay valid, nothing throws, and only a probe that asserts on relief
+// notices. So the comments are pinned to numbers DERIVED from the code rather
+// than to a second copy of the literals.
+const lastPackedMoonFloat = (() => {
+  const start = envRenderer.indexOf("function _packMoonUniforms(");
+  assert.ok(start > 0, "the moon pack function must be locatable");
+  const body = envRenderer.slice(start, envRenderer.indexOf("\n}\n", start));
+  const indices = [...body.matchAll(/\bud\[(\d+)\]\s*=/g)].map((match) =>
+    Number(match[1]),
+  );
+  assert.ok(indices.length > 0, "the pack body must write indexed floats");
+  return Math.max(...indices);
+})();
+
+const moonUniformBufferSize = Number(
+  envRenderer.match(/const MOON_UNIFORM_BUFFER_SIZE = (\d+);/)[1],
+);
+
+test("the moon UB's inline offset comments describe the SHIPPED tail", () => {
+  // Ground truth, derived from the shipped code.
+  assert.equal(lastPackedMoonFloat, 86);
+  assert.equal(moonUniformBufferSize, 352);
+  assert.ok(
+    lastPackedMoonFloat < moonUniformBufferSize / 4,
+    "the pack must stay inside the allocation",
+  );
+
+  // 1. The allocation comment. It must not still advertise a smaller tail than
+  //    the code writes — that is the number a next author appends after.
+  const allocationStart = envRenderer.indexOf(
+    "// Uniform buffer (Phase 1.2c v2",
+  );
+  assert.ok(allocationStart > 0, "the allocation comment must be locatable");
+  const allocation = envRenderer.slice(
+    allocationStart,
+    envRenderer.indexOf(
+      "cache.uniformData = new Float32Array(",
+      allocationStart,
+    ),
+  );
+  const advertisedBytes = [...allocation.matchAll(/(\d+) bytes/g)].map(
+    (match) => Number(match[1]),
+  );
+  const advertisedFloats = [...allocation.matchAll(/(\d+) floats/g)].map(
+    (match) => Number(match[1]),
+  );
+  for (const bytes of advertisedBytes) {
+    assert.equal(
+      bytes,
+      moonUniformBufferSize,
+      `the allocation comment advertises ${bytes} bytes; the buffer is ${moonUniformBufferSize}`,
+    );
+  }
+  for (const floats of advertisedFloats) {
+    assert.equal(
+      floats,
+      moonUniformBufferSize / 4,
+      `the allocation comment advertises ${floats} floats; the buffer holds ${moonUniformBufferSize / 4}`,
+    );
+  }
+
+  // 2. The debug-snapshot comment. It names the moon tail's float range and the
+  //    reads directly beneath it must all fall inside that range.
+  const snapshotRange = envRenderer.match(
+    /mirror `_packMoonUniforms\(\)` \(offsets (\d+)\.\.(\d+) are the moon tail/,
+  );
+  assert.ok(snapshotRange, "the snapshot comment must name a float range");
+  assert.equal(
+    Number(snapshotRange[2]),
+    lastPackedMoonFloat,
+    "the snapshot comment's tail end must be the last float the pack writes",
+  );
+  const snapshotStart = envRenderer.indexOf(snapshotRange[0]);
+  const snapshotBody = envRenderer.slice(
+    snapshotStart,
+    envRenderer.indexOf(
+      "const lifecycle = cache._moonTextureLifecycle;",
+      snapshotStart,
+    ),
+  );
+  const snapshotReads = [...snapshotBody.matchAll(/\bud\[(\d+)\]/g)].map(
+    (match) => Number(match[1]),
+  );
+  assert.ok(snapshotReads.length > 0, "the snapshot must read indexed floats");
+  assert.ok(
+    Math.max(...snapshotReads) <= Number(snapshotRange[2]) &&
+      Math.min(...snapshotReads) >= Number(snapshotRange[1]),
+    `snapshot reads ${Math.min(...snapshotReads)}..${Math.max(...snapshotReads)} ` +
+      `escape the documented ${snapshotRange[1]}..${snapshotRange[2]}`,
+  );
+});
+
 test("WGSL UB members are appended at the tail, existing offsets frozen", () => {
   const normalAt = wgslCode.indexOf("normalStrength: f32");
   const shineAt = wgslCode.indexOf("earthshinePhaseScale: f32");

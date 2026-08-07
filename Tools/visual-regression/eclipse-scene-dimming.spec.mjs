@@ -514,7 +514,76 @@ test("Scene.js publishes ONE factor, before anything can consume it", () => {
 });
 
 test("Scene.js scales skyBrightness by the same factor", () => {
-  assert.match(sceneJs, /\) \* frameState\.eclipseSceneLightFactor;/);
+  assert.match(
+    sceneJs,
+    /\) \* \(frameState\.eclipseSceneLightFactor \?\? 1\.0\);/,
+  );
+});
+
+// `FrameState.eclipseSceneLightFactor` starts life `undefined` and is only
+// assigned by `prepareLogicalViewEclipse`. `undefined` is not 1.0 here: a bare
+// multiply yields NaN, `?? 1.0` does NOT catch NaN downstream
+// (`CubeMapPanorama.js`, `WebGPUCubeMapPanoramaRenderer.js`), and both skybox
+// shaders then feed the raw uniform to `clamp`, whose NaN behaviour is
+// implementation-defined — one driver blacks the sky, another is fine, and
+// nothing reaches the console. So the rule is: NO reader may take the field
+// bare. This walks the tree rather than listing sites, because the whole point
+// is to catch the reader that has not been written yet.
+const ENGINE_SOURCE = path.join(root, "packages/engine/Source");
+
+function engineSourceFiles(directory) {
+  const found = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const full = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      found.push(...engineSourceFiles(full));
+    } else if (/\.(js|ts)$/.test(entry.name)) {
+      found.push(full);
+    }
+  }
+  return found;
+}
+
+test("every reader of the S2 factor defends against an unpublished frame", () => {
+  // The publisher, and the two "capture then type-test" readers whose guard is
+  // on the following line (each pinned by its own test above/below).
+  const PUBLISHER = /frameState\.eclipseSceneLightFactor\s*=[^=]/;
+  const GUARDED = [
+    /frameState\.eclipseSceneLightFactor \?\?/,
+    /const eclipseSceneLightFactor = frameState\.eclipseSceneLightFactor;/,
+    /const eclipseFactorRaw = frameState\.eclipseSceneLightFactor;/,
+  ];
+  const offenders = [];
+  let readerCount = 0;
+  for (const file of engineSourceFiles(ENGINE_SOURCE)) {
+    const source = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
+    if (!source.includes("frameState.eclipseSceneLightFactor")) {
+      continue;
+    }
+    const lines = source.split("\n");
+    for (let index = 0; index < lines.length; index++) {
+      const trimmed = lines[index].trim();
+      if (
+        !trimmed.includes("frameState.eclipseSceneLightFactor") ||
+        trimmed.startsWith("//") ||
+        trimmed.startsWith("*") ||
+        trimmed.startsWith("/*") ||
+        PUBLISHER.test(trimmed)
+      ) {
+        continue;
+      }
+      readerCount += 1;
+      if (!GUARDED.some((pattern) => pattern.test(trimmed))) {
+        offenders.push(`${path.relative(root, file)}:${index + 1}  ${trimmed}`);
+      }
+    }
+  }
+  assert.ok(readerCount >= 4, `the scan must find readers, saw ${readerCount}`);
+  assert.deepEqual(
+    offenders,
+    [],
+    "these read the S2 factor with no undefined guard",
+  );
 });
 
 test("FrameState declares the S2 field", () => {

@@ -521,6 +521,89 @@ test("D2 MUTATION: restoring the double bias in a receiver fails the D1 check", 
   assert.match(body, /coord\.x \* 0\.5 \+ 0\.5/);
 });
 
+// The chunk LIBRARY copy of the same receiver. `WebGPUShadowReceiveTransform.ts`
+// claims the convention now lives "in one tested place ... and cannot drift" —
+// but D1 only reads the four INLINED copies, and this is the fifth reader of
+// `EffectsUniforms.shadowMatrix`. It is currently unreached (no `@chunk
+// csm_effects` marker exists, so `injectChunks` never prepends it) and must NOT
+// be deleted (Principle 7); the risk is that whoever wires it inherits the
+// pre-Batch-849 double bias while the docstring promises drift is impossible.
+const CSM_EFFECTS_CHUNK = `${ENGINE}/Shaders/WebGPU/chunks/functions/csm_effects.wgsl`;
+const EFFECTS_UNIFORMS_CHUNK = `${ENGINE}/Shaders/WebGPU/chunks/structs/EffectsUniforms.wgsl`;
+
+// The two statements that ARE the convention: the perspective divide and what
+// the sampler is handed. Line endings are normalised because this repository
+// checks these files out with CRLF on Windows; the assertion is about code
+// shape, never about which terminator the working tree happens to carry.
+function receiveConvention(rawSource, label) {
+  const source = rawSource.replace(/\r\n/g, "\n");
+  const anchor = source.indexOf("effects.shadowMatrix * vec4<f32>(");
+  assert.ok(anchor > 0, `${label} must have a single-map receive path`);
+  const statements = source
+    .slice(source.indexOf("\n", anchor) + 1)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("//"))
+    .slice(0, 2);
+  assert.equal(statements.length, 2, `${label} receive body must be readable`);
+  return statements;
+}
+
+test("D4: the chunk-library receiver carries the SAME convention as the inlined ones", () => {
+  const chunk = receiveConvention(read(CSM_EFFECTS_CHUNK), "csm_effects.wgsl");
+  assert.deepEqual(
+    chunk,
+    ["let coord = shadowPos.xyz / shadowPos.w;", "let uv = coord.xy;"],
+    "the chunk must consume the CPU-converted texture coordinate directly",
+  );
+  // Held against the inlined copies rather than against a literal alone, so the
+  // day the convention legitimately changes this fails as ONE fact, not five.
+  for (const [name, source] of Object.entries(RECEIVER_SHADERS)) {
+    assert.deepEqual(
+      chunk,
+      receiveConvention(source, name),
+      `csm_effects.wgsl drifted from ${name}`,
+    );
+  }
+  // The struct comment beside it is part of the contract: a reader wiring the
+  // chunk consults the field's own documentation before the transform module.
+  assert.match(
+    read(EFFECTS_UNIFORMS_CHUNK).replace(/\r\n/g, "\n"),
+    /shadow-TEXTURE space, not NDC/,
+    "EffectsUniforms.shadowMatrix must not still be documented as NDC",
+  );
+});
+
+test("D5 MUTATION: restoring the chunk's double bias fails the D4 check", () => {
+  const mutant = read(CSM_EFFECTS_CHUNK)
+    .replace(/\r\n/g, "\n")
+    .replace(
+      "let coord = shadowPos.xyz / shadowPos.w;\n  let uv = coord.xy;",
+      "let shadowCoord = shadowPos.xyz / shadowPos.w;\n" +
+        "  let uv = shadowCoord.xy * 0.5 + 0.5;",
+    );
+  assert.notEqual(
+    mutant,
+    read(CSM_EFFECTS_CHUNK).replace(/\r\n/g, "\n"),
+    "the mutation must actually apply",
+  );
+  const mutantConvention = receiveConvention(mutant, "csm_effects mutant");
+  assert.throws(() =>
+    assert.deepEqual(mutantConvention, [
+      "let coord = shadowPos.xyz / shadowPos.w;",
+      "let uv = coord.xy;",
+    ]),
+  );
+  // And it must disagree with each shipped inlined receiver, which is the form
+  // the check actually takes.
+  for (const [name, source] of Object.entries(RECEIVER_SHADERS)) {
+    assert.throws(
+      () => assert.deepEqual(mutantConvention, receiveConvention(source, name)),
+      `the D4 check must be able to see the double bias against ${name}`,
+    );
+  }
+});
+
 test("D3: the CASCADED path keeps its full remap — it is handed raw clip space", () => {
   const globe = RECEIVER_SHADERS["Globe/GlobeTerrain.wgsl"];
   const index = globe.indexOf("fn sampleOneCascade(");
@@ -631,6 +714,17 @@ test("F1: every shader this row touched passes naga validation", async () => {
       `${name} must validate at defines = 0`,
     );
   }
+
+  // The chunk-library receiver (D4) is edited by this row too, and nothing
+  // else compiles it — its struct companion plus the chunk is exactly the unit
+  // an `injectChunks` wiring would produce.
+  assert.doesNotThrow(
+    () =>
+      naga.validate_wgsl(
+        `${read(EFFECTS_UNIFORMS_CHUNK)}\n${read(CSM_EFFECTS_CHUNK)}`,
+      ),
+    "csm_effects.wgsl must validate against its own EffectsUniforms struct",
+  );
 });
 
 function expandZeroDefines(source) {

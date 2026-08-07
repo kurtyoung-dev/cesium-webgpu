@@ -259,6 +259,129 @@ test("(c) hard far cutoff branch present in both shaders", () => {
 });
 
 // ---------------------------------------------------------------------------
+// (c2) DERIVATIVE UNIFORMITY. `uvFootprint` is the LOD input, and since the
+// hard cutoff landed a bad footprint no longer nudges a mip level — it trips
+// `OCEAN_WAVE_MARCH_CUTOFF`, flattens the wave normal AND skips the
+// `waveIntensity` scale, i.e. a hard specular discontinuity along the coast.
+// GLSL ES 3.00 §8.13 makes `dFdx`/`dFdy` UNDEFINED in non-uniform control flow,
+// and `computeWaterColor` is only ever reached from inside
+// `if (coastCoverage > 0.0)` — a genuinely non-uniform branch at a coastline.
+// So the derivative must be taken by the CALLER, above that branch, exactly as
+// the WGSL twin already does (`geoUV_dx`/`geoUV_dy` hoisted to fragment entry
+// and threaded into `computeEnhancedOcean`).
+const glslNormalized = glsl.replace(/\r\n/g, "\n");
+const COAST_BRANCH = "if (coastCoverage > 0.0)";
+
+/** The body of a GLSL function DEFINITION (not its forward declaration). */
+function glslFunctionBody(source, signatureStart) {
+  const open = source.indexOf("{", signatureStart);
+  assert.ok(open > 0, "function body must be locatable");
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}" && --depth === 0) return source.slice(open, i);
+  }
+  throw new Error("unbalanced braces");
+}
+
+/** Comma-separated arity of the parenthesised list starting at `open`. */
+function arityAt(source, open) {
+  const close = source.indexOf(")", open);
+  assert.ok(close > open, "argument list must terminate");
+  const inner = source.slice(open + 1, close).trim();
+  assert.ok(!inner.includes("("), "no nested calls expected in this list");
+  return inner.length === 0 ? 0 : inner.split(",").length;
+}
+
+test("(c2) the ocean UV derivative is taken in UNIFORM control flow", () => {
+  const branchAt = glslNormalized.indexOf(COAST_BRANCH);
+  assert.ok(branchAt > 0, "the coast-coverage branch must be locatable");
+
+  // The coordinate AND its derivatives are established before the branch.
+  const coordAt = glslNormalized.indexOf("vec2 textureCoordinates = mix(");
+  const dxAt = glslNormalized.indexOf("vec2 tcDx = dFdx(textureCoordinates);");
+  const dyAt = glslNormalized.indexOf("vec2 tcDy = dFdy(textureCoordinates);");
+  assert.ok(coordAt > 0 && dxAt > 0 && dyAt > 0, "hoisted statements missing");
+  assert.ok(
+    coordAt < branchAt && dxAt < branchAt && dyAt < branchAt,
+    `the derivative must precede "${COAST_BRANCH}" (coord ${coordAt}, dx ${dxAt}, ` +
+      `dy ${dyAt}, branch ${branchAt}) — inside it the result is undefined`,
+  );
+
+  // ...and computeWaterColor must not take one itself. `lastIndexOf` picks the
+  // DEFINITION; the identical prefix earlier in the file is the forward
+  // declaration, and both must carry the pair.
+  const SIGNATURE =
+    "vec4 computeWaterColor(vec3 positionEyeCoordinates, vec2 textureCoordinates, vec2 tcDx, vec2 tcDy,";
+  const defAt = glslNormalized.lastIndexOf(SIGNATURE);
+  assert.ok(defAt > 0, "computeWaterColor must accept the derivatives");
+  assert.notEqual(
+    glslNormalized.indexOf(SIGNATURE),
+    defAt,
+    "the forward declaration must carry the same signature as the definition",
+  );
+  const body = glslFunctionBody(glslNormalized, defAt);
+  assert.doesNotMatch(
+    body,
+    /dFdx\(|dFdy\(|fwidth\(/,
+    "computeWaterColor runs under non-uniform flow — no derivative may be taken inside it",
+  );
+  assert.match(body, /max\(length\(tcDx\), length\(tcDy\)\)/);
+
+  // Prototype, definition and the single call site must agree on arity, or a
+  // half-applied signature change compiles to a different function.
+  const protoAt = glslNormalized.indexOf("vec4 computeWaterColor(vec3");
+  assert.ok(
+    protoAt > 0 && protoAt < defAt,
+    "the forward declaration must exist",
+  );
+  const callAt = glslNormalized.indexOf("computeWaterColor(v_positionEC,");
+  assert.ok(callAt > 0, "the call site must be locatable");
+  const protoArity = arityAt(
+    glslNormalized,
+    glslNormalized.indexOf("(", protoAt),
+  );
+  const defArity = arityAt(glslNormalized, glslNormalized.indexOf("(", defAt));
+  const callArity = arityAt(
+    glslNormalized,
+    glslNormalized.indexOf("(", callAt),
+  );
+  assert.equal(protoArity, 8);
+  assert.equal(defArity, 8);
+  assert.equal(callArity, 8);
+
+  // Lockstep: the WGSL twin threads the same pair rather than taking it inside.
+  assert.match(wgsl, /fn computeEnhancedOcean\([\s\S]{0,600}uvDx: vec2<f32>/);
+  assert.match(wgsl, /geoUV, geoUV_dx, geoUV_dy,/);
+});
+
+test("(c2) MUTATION: moving the derivative back inside the branch is rejected", () => {
+  // The exact pre-fix shape: the coordinate and its derivative both declared
+  // inside `if (coastCoverage > 0.0)`, with computeWaterColor taking dFdx.
+  const mutant = glslNormalized
+    .replace(
+      "vec2 tcDx = dFdx(textureCoordinates);\n    vec2 tcDy = dFdy(textureCoordinates);\n",
+      "",
+    )
+    .replace(
+      "        vec4 oceanColor = computeWaterColor(v_positionEC, textureCoordinates, tcDx, tcDy, enuToEye, color, mask, fade);",
+      "        vec2 tcDx = dFdx(textureCoordinates);\n" +
+        "        vec2 tcDy = dFdy(textureCoordinates);\n" +
+        "        vec4 oceanColor = computeWaterColor(v_positionEC, textureCoordinates, tcDx, tcDy, enuToEye, color, mask, fade);",
+    );
+  assert.notEqual(mutant, glslNormalized, "the mutation must actually apply");
+  const branchAt = mutant.indexOf(COAST_BRANCH);
+  const dxAt = mutant.indexOf("dFdx(textureCoordinates)");
+  assert.ok(dxAt > branchAt, "the mutant must put the derivative inside");
+  assert.throws(() =>
+    assert.ok(
+      dxAt < branchAt,
+      "the ordering check must be able to see a derivative inside the branch",
+    ),
+  );
+});
+
+// ---------------------------------------------------------------------------
 test("(d) fade is a true amplitude fade (.xy scaled by weight, .z kept)", () => {
   assert.match(
     wgsl,

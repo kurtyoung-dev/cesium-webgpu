@@ -22,7 +22,10 @@
  * @module Scene/Weather/WeatherTexPacker
  */
 import { GLOBAL_WEATHER_BOUNDS, type WeatherField } from "./WeatherTypes.js";
-import { applyEquirectPolarLowPass } from "./WeatherMapSeam.js";
+import {
+  applyEquirectPolarLowPass,
+  polarLowPassWidth,
+} from "./WeatherMapSeam.js";
 import { buildProceduralWeatherMap } from "./ProceduralWeatherMap.js";
 import {
   DEFAULT_WEATHER_GRID_REGISTRATION,
@@ -261,6 +264,59 @@ function constantFillQuad(fill: WeatherNoDataFill): Uint8Array {
 }
 
 /**
+ * Rewrite the PROCEDURAL no-data fill over the texels that took it, undoing the
+ * pole-safe low-pass's SECOND pass over bytes that were already band-limited.
+ *
+ * Scoped to the procedural fill on purpose. That fill's whole contract is
+ * byte-continuity with the no-provider render, and `buildProceduralWeatherMap`
+ * ends with this same filter at this same size, so the second pass is pure
+ * damage. A `"constant"` fill is flat — re-filtering it is the identity except
+ * within one kernel radius of the fill/observed seam, where there is no stated
+ * contract and the blend is arguably wanted; it is left alone.
+ *
+ * POLAR-CAP ROWS ARE DELIBERATELY EXEMPT. There `applyEquirectPolarLowPass`
+ * does not band-limit, it COLLAPSES the row to one value — that single-valued
+ * pole is the entire point of C13-07, and a row that is part observed and part
+ * filled would otherwise carry two values around the azimuth ring. On a fully
+ * filled cap row the exemption costs nothing: the fill's own cap row is already
+ * constant, so filtering it again is the identity.
+ *
+ * @param out The packed rgba8 bytes, already low-passed.
+ * @param filledMask One byte per texel, 1 where the fill was written; `null`
+ *   when nothing was filled.
+ * @param texW Texture width.
+ * @param texH Texture height.
+ * @param fillMap The procedural fill bytes, or `null` when the fill was not
+ *   procedural (or nothing was filled).
+ */
+function restoreProceduralNoDataFill(
+  out: Uint8Array,
+  filledMask: Uint8Array | null,
+  texW: number,
+  texH: number,
+  fillMap: Uint8Array | null,
+): void {
+  if (filledMask === null || fillMap === null) {
+    return;
+  }
+  for (let ty = 0; ty < texH; ty++) {
+    if (polarLowPassWidth(ty, texH, texW) >= texW) {
+      continue;
+    }
+    for (let tx = 0; tx < texW; tx++) {
+      if (filledMask[ty * texW + tx] === 0) {
+        continue;
+      }
+      const i = (ty * texW + tx) * 4;
+      out[i] = fillMap[i];
+      out[i + 1] = fillMap[i + 1];
+      out[i + 2] = fillMap[i + 2];
+      out[i + 3] = fillMap[i + 3];
+    }
+  }
+}
+
+/**
  * Resample a {@link WeatherField} onto the `texW x texH` GLOBAL rgba8 weather
  * texture, honouring the field's `bounds`, registration, and no-data — and
  * report what it did.
@@ -299,6 +355,9 @@ export function packWeatherFieldDetailed(
   const wrapX = weatherFieldWrapsLongitude(bounds, registration);
   const constantQuad = fill.kind === "constant" ? constantFillQuad(fill) : null;
   let fillMap: Uint8Array | null = null;
+  // Which texels took the no-data fill. Allocated only when something is
+  // actually filled; see the restore pass after the low-pass below.
+  let filledMask: Uint8Array | null = null;
 
   const taps: BilinearTaps = {
     i00: 0,
@@ -345,6 +404,8 @@ export function packWeatherFieldDetailed(
       if (taps.valid === 0) {
         // Outside the field's bounds, or every contributing cell is no-data.
         filledTexels++;
+        filledMask = filledMask ?? new Uint8Array(texW * texH);
+        filledMask[ty * texW + tx] = 1;
         if (constantQuad !== null) {
           out[i] = constantQuad[0];
           out[i + 1] = constantQuad[1];
@@ -392,6 +453,17 @@ export function packWeatherFieldDetailed(
   // and taper the longitudinal over-sampling below them, so a straight-down polar
   // camera does not read a different cell per azimuth. Exact no-op below ~59 deg.
   applyEquirectPolarLowPass(out, texW, texH);
+  // ...and then put the PROCEDURAL fill back, because the low-pass above would
+  // otherwise filter it a SECOND time. `buildProceduralWeatherMap` ends with
+  // this same filter at this same size, so the fill bytes arrive already
+  // band-limited; re-filtering them widened the kernel (box ∘ box = triangular)
+  // and moved 6,061 of 131,072 bytes by up to 30/255 across 42 of the 128 rows.
+  // That broke the contract `WeatherFieldGrid` states as the whole reason
+  // `procedural` is the default fill — "the same bytes the renderer already
+  // shows when there is no provider at all" — so attaching or detaching a
+  // partial provider (METAR emits no-data for most of the planet) visibly
+  // re-blurred high-latitude cloud structure where nothing was observed.
+  restoreProceduralNoDataFill(out, filledMask, texW, texH, fillMap);
   return {
     bytes: out,
     observedTexels,
