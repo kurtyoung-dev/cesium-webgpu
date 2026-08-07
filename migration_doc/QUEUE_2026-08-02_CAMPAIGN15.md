@@ -1879,6 +1879,133 @@ anchors, the diagnostics anchor and all 6 probe mutants — while every engine
 and arithmetic test stays green. File restored, md5-verified.
 
 
+#### `C15-G6e` — the encode hypothesis was MINE and it is REFUTED by its own follow-up data (worker, 2026-08-07)
+
+Batch 885 resolved the decision tree to its cleanest branch: three **bit-identical**
+runs, `greenPaintedOverVoid=0` (globe present every time), `redPainted=30961`
+stable, and a `(diag)` line identical to the last digit —
+`writeEnabled=true useLogDepth=true currentFrustum=[0.1, 1e8]
+factor=0.037628749439612946`, `stashedNearFar=[0.1, 1e8]`. Deterministic, not
+the flake, not frustum state.
+
+**And those values kill the hypothesis I filed at `C15-G3d`.**
+
+##### 1. The reconstruction, executed
+
+`factor` is exactly `1/log2(far - near + 1)` — reproduced to the last digit
+(`0.037628749439612946`), which identifies the quantity and proves both
+producers derived it the same way. The shared formula is
+`log2((w - near) + 1) * factor`. At the probe's geometry:
+
+| fragment | eye distance | encoded depth |
+| --- | ---: | ---: |
+| splat ABOVE surface | 6,000 m | **0.472277** |
+| globe surface | 8,000 m | **0.487892** |
+| splat BELOW surface | 11,000 m | **0.505179** |
+
+`above < globe < below`. Under the `less-equal` compare every splat pipeline
+declares, that arithmetic says the above-surface splat passes and the
+below-surface splat **fails** — the correct behaviour. **There is no encode
+mismatch to fix.**
+
+The two "contradictory rationales" in the splat renderer's comment block turn
+out not to be a fork at all at these values: the stashed full-frustum pair and
+the live `currentFrustum` are **the same numbers** here (`[0.1, 1e8]`), so the
+choice between them cannot produce the symptom either.
+
+##### 2. Why an encode mismatch was never possible here
+
+The splat and the globe each carry an *inline copy* of the log-depth helpers
+(neither uses the `#import` chunk system). "Keep them in sync" was a comment;
+it is now a test. `gsplat-harness.spec.mjs` extracts
+`csm_vertexLogDepth`, `csm_writeLogDepth` and `csm_updatePositionDepth` from
+the splat WGSL, from `Globe/GlobeTerrain.wgsl` and from the canonical
+`chunks/functions/*.wgsl`, strips comments, and requires all three to be
+**character-identical** — plus an explicit guard that neither side grows
+WebGL's `* 0.5` NDC factor (correct for GL's `[-1,1]`, wrong for WebGPU's
+`[0,1]`, and the classic way this family breaks). Two mutants must be rejected.
+The CPU side is pinned too: both read `currentFrustum?.x` and
+`oneOverLog2FarDepthFromNearPlusOne` and both carry the same
+`Math.log2(ldFar - ldNear + 1.0)` fallback.
+
+So: **identical formula, identical inputs, correctly-ordered outputs.** No
+engine change was made, because there is nothing here to change.
+
+##### 3. What is left, and the control that separates it
+
+Every splat fragment still beats the globe. With the encode excluded, the live
+hypotheses are all about the splat **pass**: the depth attachment it tests
+against does not contain the globe's depth (cleared, resolved, or a different
+attachment), or the declared `depthCompare`/`depthWriteEnabled` is not what
+executes.
+
+That is a different subsystem, and guessing at it is exactly what this track
+has repeatedly punished. So the probe gained the discriminator instead: a
+**`PointPrimitiveCollection` point at the SAME 3 km below-surface position** —
+a different shipped renderer that is also a renderer-wide log-depth producer
+(Batch 250) — classified `bluePaintedOverGlobe` and checked as **check 7**:
+
+* **blue OCCLUDED + green LEAKING** → the defect is specific to the splat pass.
+* **blue ALSO LEAKING** → the globe's depth is not in the buffer these passes
+  test against at all, and the subject is the scene framebuffer, not the splat
+  renderer.
+
+One run, and the next round starts in the right subsystem.
+
+##### 4. Closing out the `redPainted` prediction honestly
+
+Predicted 4,000-6,000; measured **30,961**. **The prediction was computed with
+the wrong metric, and that is my error, not a surprise in the data.** The
+4,000-6,000 band came from the ABSOLUTE `isRed` bar (`r > 150` ⟹ alpha ≥ 0.412
+⟹ r ≤ 0.646σ ⟹ ~4,800 px) — but `C15-G3d` had just replaced that check with the
+DELTA bar (≥ 12/255 in the dominant channel), and I predicted the new check
+using the old check's arithmetic.
+
+Redone with the delta bar: `dr = (1 - dst_r)·alpha ≥ 12/255` ⟹ alpha ≥ 0.067 ⟹
+`r ≤ 1.15σ`. At σ ≈ 60.6 px that is **~15,300 px** — the right order, and
+**2.03× short** of the measurement. Two candidates for the residual, neither
+verified and neither affecting any verdict: the pixel counts run on
+`canvas.width/height` (the drawing buffer), so a `devicePixelRatio` above 1
+scales every count by DPR² — 2.03× corresponds to DPR ≈ 1.42; or my σ estimate
+(60° fov, 1024×700, aspect-derived focal) is off. **The honest form for this
+round is therefore a RATIO, not an absolute**: the fix touches depth only, so
+`redPainted` must stay within ±10% of 30,961.
+
+##### Pre-registered predictions for the re-run
+
+`node Tools/visual-regression/probe-splat-globe-occlusion.mjs`:
+
+* **Check 7 (new control) is the load-bearing number.** No prediction is
+  offered for it — that is the point of a discriminator; predicting it would
+  be predicting the answer. Both outcomes are named above and both are
+  actionable.
+* `redPainted` **27,900-34,100** (30,961 ±10%) — depth-only changes cannot
+  move the footprint.
+* `greenPaintedOverGlobe` ≈ **2,752 unchanged**, still RED against the `< 50`
+  bar. **This round does NOT make check 3 green**, and any drop would need
+  explaining rather than celebrating.
+* `greenPaintedOverVoid = 0`, P1/P2 green; `numFrustums` and the whole
+  `(diag)` line **byte-identical to Batch 885**.
+* **Exit 1** — a real product FAIL, still correctly attributed, now with the
+  subsystem named by check 7.
+
+**When the real fix lands, the acceptance for the full four-instrument suite
+is:** `probe-gsplat-parity --expect-webgpu` exit 0 (`splatCount 27`, added
+≈18.995%, parity ≈2.574%, `WEBGPU-SPLATS-PRESENT`); `probe-splat-sort` PASS;
+`probe-oit-transparency` PASS; `probe-splat-globe-occlusion`
+`greenPaintedOverGlobe < 50`, `bluePaintedOverGlobe < 50`, `redPainted`
+unchanged, P1/P2 green, **exit 0**.
+
+*Gates:* `node --test gsplat-harness.spec.mjs` **131/131** (124 preserved);
+prettier + eslint clean. **No engine file was modified** — the round's finding
+is that there is nothing to modify here — so tsc and Naga are unchanged from
+Batch 884, and the four `(LOG_DEPTH × SPLAT_PACKED_WASM)` variants are the same
+bytes Naga validated there. **Negative control (file copy):** with the
+pre-`C15-G6e` probe restored, the control anchor and its dependants go red
+while the arithmetic and formula-identity tests stay green — they do not depend
+on the probe.
+
+
 ### `C15-G4` — consume the WASM radix sort (M) — deps: `C15-G3`
 
 Replace the synchronous main-thread comparator sort

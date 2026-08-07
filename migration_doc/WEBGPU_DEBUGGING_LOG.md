@@ -18064,3 +18064,21 @@ the probe now prints both encoders' inputs (`logDepthWriteEnabled`,
 `useLogDepth`, `currentFrustum`, the factor, the stashed
 `_logDepthEncodeNearFar`/`_logDepthEncodeFactor`, `numFrustums`) and one run
 will name it. `C15-G6` inherits it.
+
+---
+
+## C15-G6e - the encode hypothesis was mine, and its own follow-up data refuted it (2026-08-07)
+
+**Bug:** none found here - this entry records a REFUTATION and the guard that makes it permanent. **Files:** `Tools/visual-regression/probe-splat-globe-occlusion.mjs`, `Tools/visual-regression/gsplat-harness.spec.mjs`. No engine change.
+
+**What I filed at `C15-G3d`:** `NEW-SPLAT-DEPTH-ENCODE-MISMATCH-VS-GLOBE` - every splat fragment beats the globe, therefore the splat's encoded depth is uniformly smaller, therefore an encode-space mismatch. The reasoning was sound given what I could see offline. It was still wrong.
+
+**What the instrumented run returned.** Three bit-identical runs pinned the values BOTH encoders consume: near=0.1, far=1e8, factor=0.037628749439612946. That factor is exactly `1/log2(far - near + 1)` - reproduced to the last digit, which identifies the quantity and proves both producers derived it identically.
+
+**The reconstruction.** Shared formula `log2((w - near) + 1) * factor`, at the probe's geometry: splat-above (6 km) **0.472277**, globe (8 km) **0.487892**, splat-below (11 km) **0.505179**. Correctly interleaved. Under the `less-equal` compare every splat pipeline declares, that says above passes and below FAILS - the correct behaviour. **The encode is not the defect**, and the two 'contradictory rationales' in the splat renderer's comment block are not even a fork at these values: the stashed full-frustum pair and the live `currentFrustum` are the same numbers.
+
+**The lesson, which is the transferable part.** 'Every fragment of X beats Y' has at least two families of cause - X encodes wrongly, or X never tested against Y - and they are indistinguishable from pixel counts alone. I picked the first because it was the one I could reason about offline, and named it in a DEFERRED_WORK title. *A hypothesis that survives only because it was the one you could check is not evidence.* The filing has been corrected in place rather than deleted: the title is wrong, the observation it recorded is still open.
+
+**Guard landed so this cannot recur silently.** The splat and the globe each carry an INLINE copy of the log-depth helpers (neither uses the `#import` chunk system) and 'keep them in sync' was only a comment. `gsplat-harness.spec.mjs` now extracts `csm_vertexLogDepth`, `csm_writeLogDepth` and `csm_updatePositionDepth` from the splat WGSL, from `Globe/GlobeTerrain.wgsl` and from the canonical `chunks/functions/*.wgsl`, strips comments and requires all three character-identical - plus an explicit guard that neither grows WebGL's `* 0.5` NDC factor (right for GL's [-1,1], wrong for WebGPU's [0,1], and the classic way this family breaks). Two mutants must be rejected. The CPU lanes are pinned the same way.
+
+**Discriminator added for the next round.** With the encode excluded, the live hypotheses are all about the splat PASS. The probe gained a `PointPrimitiveCollection` point at the SAME below-surface position - a different shipped renderer that is also a log-depth producer - as check 7: blue occluded + green leaking means splat-pass-specific; both leaking means the globe's depth is not in the buffer these passes test against and the subject is the scene framebuffer. One run picks the subsystem instead of another offline argument.

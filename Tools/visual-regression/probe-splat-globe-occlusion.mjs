@@ -159,9 +159,31 @@ const out = await page.evaluate(async () => {
   // (top of the splat is ~2.4 km underground).
   const greenPrim = makeSplatPrim(-3000.0, [0.05, 1.0, 0.05]);
   scene.primitives.add(greenPrim);
+  // ── C15-G6e — the DISCRIMINATING CONTROL.
+  //
+  // A NON-SPLAT primitive at the SAME below-surface position, drawn by a
+  // different shipped renderer that is also a renderer-wide log-depth producer
+  // (PointPrimitiveCollection, Batch 250). It answers the one question the
+  // splat numbers cannot:
+  //   blue OCCLUDED + green LEAKING -> the defect is specific to the splat
+  //     pass (its depth attachment, its pass placement, or its declared depth
+  //     state not being what executes).
+  //   blue ALSO LEAKING              -> the globe's depth is not in the buffer
+  //     these passes test against at all, and the subject is the scene
+  //     framebuffer, not the splat renderer.
+  // Either way the next round starts in the right subsystem instead of the
+  // one the previous symptom pointed at.
+  const points = scene.primitives.add(new C.PointPrimitiveCollection());
+  const bluePoint = points.add({
+    position: C.Cartesian3.fromDegrees(LON, LAT, -3000.0),
+    pixelSize: 60,
+    color: new C.Color(0.05, 0.05, 1.0, 1.0),
+    disableDepthTestDistance: 0.0,
+  });
   const setSplatsVisible = (visible) => {
     redPrim.show = visible;
     greenPrim.show = visible;
+    bluePoint.show = visible;
   };
 
   v.camera.setView({
@@ -282,6 +304,7 @@ const out = await page.evaluate(async () => {
     if (Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db)) < PAINT_DELTA) {
       return null;
     }
+    if (db >= dr && db >= dg) return "blue";
     if (dr >= dg && dr >= db) return "red";
     if (dg >= dr && dg >= db) return "green";
     return "other";
@@ -289,6 +312,7 @@ const out = await page.evaluate(async () => {
   let redPainted = 0;
   let greenPaintedOverGlobe = 0;
   let greenPaintedOverVoid = 0;
+  let bluePaintedOverGlobe = 0;
   let greenOverGlobe = 0;
   let greenOverVoid = 0;
   for (let p = 0; p < img.w * img.h; p++) {
@@ -307,7 +331,9 @@ const out = await page.evaluate(async () => {
     const i = 4 * p;
     if (isRed(img.data, i) && isNonBlack(globeOnly.data, i)) redOverGlobe++;
     const painted = paintedBy(i);
-    if (painted === "red") {
+    if (painted === "blue") {
+      if (isNonBlack(globeOnly.data, i)) bluePaintedOverGlobe++;
+    } else if (painted === "red") {
       redPainted++;
     } else if (painted === "green") {
       if (isNonBlack(globeOnly.data, i)) {
@@ -366,6 +392,7 @@ const out = await page.evaluate(async () => {
     redPainted,
     greenPaintedOverGlobe,
     greenPaintedOverVoid,
+    bluePaintedOverGlobe,
     redOverGlobe,
     logDepth,
     nonBlack,
@@ -423,6 +450,12 @@ check(
   "3",
   out.greenPaintedOverGlobe < 50,
   `GREEN splat (3 km BELOW surface) stays HIDDEN where the globe is behind it: greenPaintedOverGlobe=${out.greenPaintedOverGlobe} (delta-classified, so the globe's own green grid lines cannot be counted as leaked splat; the absolute-predicate figures were greenOverGlobe=${out.greenOverGlobe}/greenOverVoid=${out.greenOverVoid})`,
+);
+check(
+  "7",
+  out.bluePaintedOverGlobe < 50,
+  `CONTROL: a non-splat log-depth producer (PointPrimitive) at the SAME 3 km below-surface position stays HIDDEN: bluePaintedOverGlobe=${out.bluePaintedOverGlobe}. ` +
+    `If this is GREEN while check 3 is RED, the defect is specific to the splat pass; if BOTH are RED the globe's depth is not in the buffer these passes test against and the subject is the scene framebuffer, not the splat renderer.`,
 );
 console.log(
   `(diag) log depth — writeEnabled=${out.logDepth.logDepthWriteEnabled} useLogDepth=${out.logDepth.useLogDepth} ` +

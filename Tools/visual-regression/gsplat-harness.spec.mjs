@@ -3881,3 +3881,226 @@ for (const mutant of OCCLUSION_G3D_MUTANTS) {
     );
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// C15-G6e — the encode hypothesis, EXECUTED against the pinned runtime
+// constants, and REFUTED. `NEW-SPLAT-DEPTH-ENCODE-MISMATCH-VS-GLOBE` was my
+// own filing at C15-G3d and it is wrong: the two producers encode identically,
+// from identical inputs, and their outputs interleave correctly.
+// ────────────────────────────────────────────────────────────────────────────
+
+const GLOBE_WGSL_PATH =
+  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl";
+const CANONICAL_WRITE_CHUNK =
+  "packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_writeLogDepth.wgsl";
+const CANONICAL_VERTEX_CHUNK =
+  "packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_vertexLogDepth.wgsl";
+
+/**
+ * The runtime values BOTH encoders were measured consuming, identical across
+ * three bit-identical Batch-885 runs.
+ */
+const DIAG = Object.freeze({
+  near: 0.1,
+  far: 1e8,
+  factor: 0.037628749439612946,
+});
+
+test("HEAD: the pinned factor is exactly 1/log2(far - near + 1)", () => {
+  // Not a coincidence to be assumed — it identifies WHICH quantity the runtime
+  // value is, and therefore that both producers derived it the same way.
+  assert.equal(1 / Math.log2(DIAG.far - DIAG.near + 1), DIAG.factor);
+});
+
+test("HEAD: at the probe's geometry the two encodes INTERLEAVE CORRECTLY", () => {
+  // csm_vertexLogDepth -> csm_writeLogDepth, the formula all three copies share.
+  const encode = (w) => Math.log2(w - DIAG.near + 1.0) * DIAG.factor;
+  // Camera 8 km nadir; splats at +2 km and -3 km relative to the surface.
+  const above = encode(6000);
+  const globe = encode(8000);
+  const below = encode(11000);
+
+  assert.ok(
+    above < globe && globe < below,
+    `expected above < globe < below; got ${above} / ${globe} / ${below}`,
+  );
+  // ...and therefore, under the `less-equal` compare every splat pipeline
+  // declares, the CORRECT visibility falls out of the arithmetic:
+  assert.ok(above <= globe, "the above-surface splat must pass the depth test");
+  assert.ok(!(below <= globe), "the below-surface splat must FAIL it");
+
+  // Magnitudes, so a future reader can check the claim without re-deriving.
+  assert.ok(Math.abs(above - 0.472277) < 1e-5);
+  assert.ok(Math.abs(globe - 0.487892) < 1e-5);
+  assert.ok(Math.abs(below - 0.505179) < 1e-5);
+
+  // The refutation, stated as the test's purpose: an ENCODE mismatch cannot be
+  // the cause of "every splat fragment beats the globe", because at the values
+  // both producers actually consumed, they do not.
+});
+
+/** Strip comments/blank lines so only the executable formula is compared. */
+function formulaBody(source, fnName) {
+  const at = source.indexOf(`fn ${fnName}(`);
+  assert.notEqual(at, -1, `${fnName} not found`);
+  let depth = 0;
+  let i = source.indexOf("{", at);
+  const from = i;
+  do {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}") depth--;
+    i++;
+  } while (depth > 0);
+  return source
+    .slice(from, i)
+    .split("\n")
+    .map((line) => line.replace(/\/\/.*$/, "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+test("HEAD: splat, globe and canonical chunk share ONE log-depth formula", () => {
+  // The splat and the globe each carry an inline copy (neither uses the
+  // #import chunk system). "Keep them in sync" is a comment; this is the test.
+  // If they ever diverge, THAT is when an encode mismatch becomes possible —
+  // and it is the only way it can happen.
+  const splat = extractSplatWgsl(readNormalized(RENDERER_PATH));
+  const globe = readNormalized(GLOBE_WGSL_PATH);
+  const canonicalWrite = readNormalized(CANONICAL_WRITE_CHUNK);
+  const canonicalVertex = readNormalized(CANONICAL_VERTEX_CHUNK);
+
+  for (const [fn, canonical] of [
+    ["csm_vertexLogDepth", canonicalVertex],
+    ["csm_writeLogDepth", canonicalWrite],
+    ["csm_updatePositionDepth", canonicalVertex],
+  ]) {
+    const fromCanonical = formulaBody(canonical, fn);
+    const fromSplat = formulaBody(splat, fn);
+    const fromGlobe = formulaBody(globe, fn);
+    assert.equal(
+      fromSplat,
+      fromCanonical,
+      `${RENDERER_PATH}: the inline ${fn} diverged from ${CANONICAL_WRITE_CHUNK.replace(/[^/]*$/, "")}${fn}.wgsl`,
+    );
+    assert.equal(
+      fromGlobe,
+      fromCanonical,
+      `${GLOBE_WGSL_PATH}: the inline ${fn} diverged from the canonical chunk`,
+    );
+  }
+
+  // No stray scale factor on either side — the classic way this family breaks
+  // (WebGL's czm_writeLogDepth carries a 0.5 for its [-1,1] NDC; WebGPU's
+  // [0,1] range must NOT).
+  assert.match(
+    formulaBody(splat, "csm_writeLogDepth"),
+    /^\{ return log2\(depthFromNearPlusOne\) \* oneOverLog2FarDepthFromNearPlusOne; \}$/,
+    `${RENDERER_PATH}: the splat's log-depth write grew or lost a factor`,
+  );
+  assert.equal(
+    formulaBody(splat, "csm_writeLogDepth"),
+    formulaBody(globe, "csm_writeLogDepth"),
+  );
+});
+
+test("HEAD: both producers read the SAME uniform lanes for near and factor", () => {
+  // Identical formulas fed different numbers would still diverge. The diag
+  // proves the numbers matched at runtime; this pins that they come from the
+  // same two UniformState fields on the CPU side.
+  const splat = readNormalized(RENDERER_PATH);
+  const globeUB = readNormalized(
+    "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
+  );
+  for (const source of [splat, globeUB]) {
+    assert.match(source, /currentFrustum\?\.x \?\? 0\.0/);
+    assert.match(source, /oneOverLog2FarDepthFromNearPlusOne \?\? 0\.0/);
+    assert.match(source, /Math\.log2\(ldFar - ldNear \+ 1\.0\)/);
+  }
+});
+
+test("HEAD: the probe carries a NON-SPLAT control at the same below-surface point", () => {
+  // With the encode refuted, the live hypotheses are all about the splat PASS
+  // (its depth attachment, its placement, its declared state). A second
+  // log-depth producer at the same position separates "splat-specific" from
+  // "the globe's depth is not in this buffer at all" in ONE run.
+  const probe = readNormalized(OCCLUSION_PROBE_PATH);
+  assert.match(
+    probe,
+    /new C\.PointPrimitiveCollection\(\)/,
+    `${OCCLUSION_PROBE_PATH}: the non-splat control is gone — the next round loses its subsystem discriminator`,
+  );
+  assert.match(
+    probe,
+    /position: C\.Cartesian3\.fromDegrees\(LON, LAT, -3000\.0\)/,
+  );
+  assert.match(
+    probe,
+    /out\.bluePaintedOverGlobe < 50/,
+    `${OCCLUSION_PROBE_PATH}: the control is not checked`,
+  );
+  // It must be hidden alongside the splats for the globe-only reference frame,
+  // or it would pollute the very baseline the classifier differences against.
+  assert.match(probe, /bluePoint\.show = visible;/);
+  // ...and classified before red/green, since a blue-dominant delta is neither.
+  const classifier = probe.slice(
+    probe.indexOf("const paintedBy = (i) => {"),
+    probe.indexOf('return "other";'),
+  );
+  assert.ok(
+    classifier.indexOf('return "blue"') < classifier.indexOf('return "red"'),
+    `${OCCLUSION_PROBE_PATH}: the blue control must be classified before red`,
+  );
+});
+
+const G6E_MUTANTS = [
+  {
+    name: "the splat's log-depth write grows WebGL's 0.5 NDC factor",
+    mutate: (source) =>
+      source.replace(
+        "return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;\n}\n//>>endif",
+        "return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne * 0.5;\n}\n//>>endif",
+      ),
+    because: /log-depth write grew or lost a factor|diverged from/,
+  },
+  {
+    name: "the splat's vertex log depth loses the near subtraction",
+    mutate: (source) =>
+      source.replace(
+        "  return (clipPosition.w - near) + 1.0;",
+        "  return clipPosition.w + 1.0;",
+      ),
+    because: /diverged from/,
+  },
+];
+
+for (const mutant of G6E_MUTANTS) {
+  test(`log-depth formula mutant rejected: ${mutant.name}`, () => {
+    const real = readNormalized(RENDERER_PATH);
+    const mutated = mutant.mutate(real);
+    assert.notEqual(mutated, real, "the mutation did not apply");
+    const splat = extractSplatWgsl(mutated);
+    const canonicalWrite = readNormalized(CANONICAL_WRITE_CHUNK);
+    const canonicalVertex = readNormalized(CANONICAL_VERTEX_CHUNK);
+    assert.throws(
+      () => {
+        assert.equal(
+          formulaBody(splat, "csm_writeLogDepth"),
+          formulaBody(canonicalWrite, "csm_writeLogDepth"),
+          "diverged from the canonical chunk",
+        );
+        assert.equal(
+          formulaBody(splat, "csm_vertexLogDepth"),
+          formulaBody(canonicalVertex, "csm_vertexLogDepth"),
+          "diverged from the canonical chunk",
+        );
+        assert.match(
+          formulaBody(splat, "csm_writeLogDepth"),
+          /^\{ return log2\(depthFromNearPlusOne\) \* oneOverLog2FarDepthFromNearPlusOne; \}$/,
+          "the splat's log-depth write grew or lost a factor",
+        );
+      },
+      mutant.because,
+      `${mutant.name}: accepted, or rejected for the wrong reason`,
+    );
+  });
+}
