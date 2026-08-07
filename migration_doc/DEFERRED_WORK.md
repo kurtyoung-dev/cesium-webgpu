@@ -11976,9 +11976,55 @@ acceptance lane is the gating cost, not the edit.
 **Status: OPEN / MEDIUM (instrument gap, NOT a product verdict — the probe correctly exited 3 STRUCTURAL).** First run of the re-scoped `probe-sky-twilight-range.mjs` (tip `c810dbace2`): at sun −20 deg (full night, star factor exactly 1.0), the brightest in-frame catalogue star (vmag 2.14, projected to (370,203)) censused **0 resolved sources** with **box peak luma 0.0** — the search box is entirely black — IDENTICALLY on both backends. The engine leg of the same run is exact, so the sky-brightness chain is healthy; what is unknown is whether (a) the star field is simply not drawn in this probe's scene configuration (skyBox/star-sprite pass not scheduled — check command counts), (b) the probe's projection math places the star wrong (frame/aberration/time mismatch — plausible since BOTH backends agree on black, i.e., the disagreement is probe-vs-world, not backend-vs-backend), or (c) the star field genuinely does not reach this framing (camera looks at the zenith column, star may be elsewhere). Next step: one instrumented Edge session dumping the star-pass command/draw counts plus a full-frame brightest-pixel census to locate where (if anywhere) stars actually rendered, then either fix the projection or re-aim the control. Do NOT lower the positional tolerance or widen the box to make it green.
 ---
 
-### C13-41-CLOUD-DECK-TONEMAP-SWALLOWS-THE-DIM — the deck's private Reinhard at exposure 0.22 flattens every light change including the eclipse (FILED 2026-08-07, Batch 912 / CO-11 — measured, NOT fixed) **CONTRADICTED BY THE FOURTH RUN 2026-08-07 (tip `6e9c997287`): with the aerial addend dimmed, the deck measured 0.5139 — IN BAND — where this entry's e~7.7 fit predicted 0.841. The fit inherited the un-dimmed addend's contamination (the real aerial share was ~4x the geometric estimate). RE-DERIVE e from the fourth run before asking for any ruling; the ruling ask is ON HOLD until then.**
+### C13-41-CLOUD-DECK-TONEMAP-SWALLOWS-THE-DIM — the deck's private Reinhard at exposure 0.22 flattens every light change including the eclipse (FILED 2026-08-07, Batch 912 / CO-11 — measured, NOT fixed) **REFUTED AND CLOSED 2026-08-07 (CO-17, fifth pass): e RE-DERIVED FROM THE CLEAN RUN IS 1.01, NOT 7.7. NO MAINTAINER RULING IS OWED.**
 
-**Status: OPEN / MEDIUM — needs a MAINTAINER RULING (the fixes change the un-eclipsed look).** The volumetric deck applies its own private Reinhard (`exposed = weightedColor * cloud.exposure`, exposure 0.22 — `ProceduralClouds.wgsl:2543-2544`, packed at float 97). `weightedColor` is exactly linear in the eclipse factor, so the deck's RADIANCE ratio at obscuration 0.9 is exactly 0.4642 as designed — but the deck runs at e = 0.22*L ~ 7.7 (L ~ 35, consistent with the shader's own "peaks ~20-30" note and the literal sunIntensity 10.0), where r(F*L)/r(L) = F(1+e)/(1+F*e) = 0.882: **a 2.15x linear dim displays as 1.13x.** Measured 0.8939 (addend-free 0.882) against a [0.44, 0.70] band derived for e <= 1 (the 0.70 ceiling requires e <= 1.693). The same saturation flattens time-of-day and ambient changes. Options: (a) auto-expose cloud.exposure against scene light so the deck keeps headroom; (b) composite the deck pre-tonemap into the scene chain so the scene's Reinhard+gamma own it once; (c) accept and retire the DISPLAY band as unpredictable, gating only pre-tonemap radiance. **Effort M.** Natural home: the C13 cloud-lighting wave (C13-21), ranked alongside `C13-41-CLOUD-SUNINTENSITY-HAS-NO-USER-INPUT` (the same knob from the other end). Do NOT widen [0.44, 0.70] to make the current composition pass — the band correctly encodes the e <= 1 design intent and the disagreement IS the finding.
+**Status: CLOSED-NEGATIVE (CO-17, 2026-08-07). The premise was an artefact of the un-dimmed aerial addend, and the arithmetic that produced e ~ 7.7 is reproducible as the error it was. The ruling ask is WITHDRAWN, not deferred.**
+
+**THE FIT INVERTED THE WRONG EQUATION.** The deck's displayed value is not the Reinhard alone: `ProceduralClouds.wgsl:2543-2544` tonemaps and then `:2557` lerps toward the aerial tint, `hazed = mix(toneMapped, cloud.aerialColor, aerial)`. Batch 912 made that tint eclipse-dimmed at the pack site (`dimAerialTint`), so the tint term is EXACTLY LINEAR in F while the tonemapped core is compressive. With `s` the tint's share of the un-eclipsed displayed deck the model is `R(F) = (1-s)*F(1+e)/(1+F*e) + s*F`. The third pass solved the **single-term** form `R = F(1+e)/(1+F*e)` against 0.882 — a ratio measured while the tint was still UNDIMMED — i.e. it charged the whole of an undimmed ADDEND to the tonemap's compression. That inversion is reproducible from the shipped gate module today: `fitDeckTonemapEntry(0.4642, 0.882, 0)` returns 7.70 (spec K3 pins it), so nothing about the arithmetic was wrong except the term it omitted.
+
+**`s` FALLS OUT BY SUBTRACTION, WITH NO FITTING.** The second Edge run (tip `1970806a59`, tint undimmed) and the fourth (tip `6e9c997287`, tint dimmed) differ ONLY in the tint's law, so `R_undimmed(F) - R_dimmed(F) = s*(1 - F)` at every rung, and the three non-trivial rungs each give `s` independently:
+
+| rung | F | R (2nd run) | R (4th run) | 1 - F | s |
+| --- | --- | --- | --- | --- | --- |
+| 0.30 | 0.887905 | 0.983 | 0.903215 | 0.112095 | **0.7118** |
+| 0.5452 | 0.769032 | 0.962 | 0.798213 | 0.230968 | **0.7091** |
+| 0.90 | 0.464200 | 0.894 | 0.513868 | 0.535800 | **0.7095** |
+
+Three independent rungs agreeing to **0.4%** is itself the check that the two-term form is the right one; a wrong model would not close on one `s`. Mean **s = 0.7101** (`DECK_AERIAL_SHARE_CROSS_RUN`).
+
+**e, RE-DERIVED, IS 1.01 — AND IT IS CONSISTENT ACROSS THE LADDER.** With `s = 0.7101`, `rho = (R - s*F)/(1 - s)` and `e = (rho - F)/(F*(1 - rho))`:
+
+| rung | F | R (4th run) | rho (pure deck) | **e** |
+| --- | --- | --- | --- | --- |
+| 0.30 | 0.887905 | 0.903215 | 0.9407 | **1.0033** |
+| 0.5452 | 0.769032 | 0.798213 | 0.8697 | **1.0045** |
+| 0.90 | 0.464200 | 0.513868 | 0.6355 | **1.0127** |
+
+A spread of 0.009 on three rungs spanning F = 0.46..0.89. An unconstrained two-parameter fit of the FOURTH RUN ALONE lands at `s = 0.7175, e = 1.0525` with an RMS residual of 1.05e-5 — agreement, though NOT independent confirmation: that fit is ill-conditioned on its own (perturbing every measured ratio by one 8-bit code admits `e` in [0.21, 11.7]). The cross-run subtraction is what pins it.
+
+**AN UNFITTED PARAMETER LANDS INSIDE ITS SHADER RANGE.** The un-eclipsed deck band is 0.627369, so the decomposition puts the tint at `s*0.627369 = 0.450` and the core at 0.177; with alpha ~ 1 that is a tint fraction `a = 0.654` and a tint luma of `0.450/0.654 = 0.6879`. `cloud.aerialColor`'s Rec.709 luma runs **0.6496** (todT 0) to **0.7081** (todT 1) from the packed literals at `WebGPUProceduralCloudRenderer.ts:2297-2299` — 0.6879 is inside that window at todT ~ 0.66, and nothing in the fit knew those literals. That is the strongest available check short of a new run.
+
+**CONSEQUENCE (i) — THE ENTRY IS REFUTED ENTIRELY.** `deckDisplayedRatio`'s [0.44, 0.70] window is `F(1+e)/(1+F*e)` for `e` in [0, 1], and its 0.70 ceiling holds up to `e = 1.693`. The measured `e = 1.01` is INSIDE the design envelope with 1.67x of margin to the ceiling. The pure-deck ratio the fit implies at the deepest rung is **0.6355**, essentially the `e = 1` edge value 0.6341 — the band was never wrong and the deck was never saturating. "The deck runs at e ~ 7.7 where a 2.15x linear dim displays as 1.13x" is false by a factor of 7.6 in `e`; the actual display compression is 0.4642 -> 0.6355, a 1.37x flattening of a 2.15x dim, which is exactly what a band derived for `e <= 1` was built to admit. None of options (a) auto-exposure, (b) pre-tonemap compositing or (c) retiring the display band is warranted, and each would change the un-eclipsed look for no defect.
+
+**RECONCILIATION WITH CO-11's 9.9%, HONESTLY.** CO-11 measured the aerial FRACTION `a` from march geometry (midpoint 5.2-10.2 km -> `a` in [0.086, 0.170], mean 0.120) and then used it as the display SHARE. Two errors compound, and both are nameable:
+
+1. **Algebra.** `s = a*A0 / ((1-a)*r(e) + a*A0)`. With `A0 = 0.688` larger than `r(e) = 0.513`, the addend is over-weighted: even at CO-11's own `a = 0.12` the share is **0.155**, not 0.099 — a 1.56x error with no measurement involved.
+2. **Geometry.** The measured `a = 0.654` corresponds to a march midpoint of ~39 km, 4-7x CO-11's estimate. The reason is that lane A's scored band is the SKY band (frame y 0.05..0.45) at a horizon-facing vantage, where a ray grazing a 1500-4000 m layer stays inside it for tens of kilometres; CO-11's 5.2-10.2 km is the near/overhead march. The estimate was right for the geometry it assumed and wrong for the geometry the band actually samples.
+
+Combined, the true share is **7.2x** CO-11's estimate — **not the "~4x" the fourth-run note recorded**, which came from comparing against a pre-registration rather than re-deriving the share. `0.7101/0.099 = 7.17` (spec K1 pins it).
+
+**WHAT WOULD PIN IT IN ONE NUMBER, IF ANYONE WANTS IT.** `cloudAerialStrength` is already a live dial (`config.cloudAerialStrength ?? 1.0`, packed at float 91). A fifth-run diagnostic leg at `cloudAerialStrength = 0` sets `a = 0` exactly, so the deck's displayed ratio IS `rho` and `e` reads off a single measurement with no cross-run input. Pre-registered: **the deepest rung reads 0.635 +/- 0.01**, inside [0.44, 0.70]. The gate module's `deckTonemapFit` already accepts a lane-supplied `deckAerialShare` for exactly that leg. This is a nice-to-have, not a blocker — the entry closes on the arithmetic above.
+
+**Rollback boundary: none — nothing was changed in the engine by this closure.** The gate module gained `deckDisplayedRatio`, `fitDeckAerialShare`, `fitDeckTonemapEntry`, `DECK_AERIAL_SHARE_CROSS_RUN` and the reported-only `deckTonemapEntryWithinDesignEnvelopeReportedOnly`; spec group K (K1-K4) pins the derivation, including the reproduction of the e ~ 7.7 reading as the single-term artefact.
+
+<details>
+<summary>ORIGINAL ENTRY AS FILED (Batch 912 / CO-11), retained for the record</summary>
+
+**Status as filed: OPEN / MEDIUM — needs a MAINTAINER RULING (the fixes change the un-eclipsed look).** The volumetric deck applies its own private Reinhard (`exposed = weightedColor * cloud.exposure`, exposure 0.22 — `ProceduralClouds.wgsl:2543-2544`, packed at float 97). `weightedColor` is exactly linear in the eclipse factor, so the deck's RADIANCE ratio at obscuration 0.9 is exactly 0.4642 as designed — but the deck runs at e = 0.22*L ~ 7.7 (L ~ 35, consistent with the shader's own "peaks ~20-30" note and the literal sunIntensity 10.0), where r(F*L)/r(L) = F(1+e)/(1+F*e) = 0.882: **a 2.15x linear dim displays as 1.13x.** Measured 0.8939 (addend-free 0.882) against a [0.44, 0.70] band derived for e <= 1 (the 0.70 ceiling requires e <= 1.693). The same saturation flattens time-of-day and ambient changes. Options: (a) auto-expose cloud.exposure against scene light so the deck keeps headroom; (b) composite the deck pre-tonemap into the scene chain so the scene's Reinhard+gamma own it once; (c) accept and retire the DISPLAY band as unpredictable, gating only pre-tonemap radiance. **Effort M.** Natural home: the C13 cloud-lighting wave (C13-21), ranked alongside `C13-41-CLOUD-SUNINTENSITY-HAS-NO-USER-INPUT` (the same knob from the other end). Do NOT widen [0.44, 0.70] to make the current composition pass — the band correctly encodes the e <= 1 design intent and the disagreement IS the finding.
+
+</details>
+
+**The one clause of the original that SURVIVES:** "Do NOT widen [0.44, 0.70]". It was never widened, and the re-derivation is why it never needed to be. `C13-41-CLOUD-SUNINTENSITY-HAS-NO-USER-INPUT` (the deck's direct term is the literal `10.0` fallback because `config.atmosphereLightIntensity` has no referent on `CloudVolumetrics`) is a SEPARATE wiring gap and stays OPEN on its own merits — this closure says nothing about it.
 
 ---
 
@@ -12068,9 +12114,80 @@ Both are CONSTANT model-space vectors along the spin axis, not surface normals. 
 
 ---
 
-### C13-41-SHADOW-CONTRAST-ECLIPSE-EXCESS — the cast shadow's contrast weakens ~5% at deepest eclipse where the model predicts +0.08% (FILED 2026-08-07, Batch 915 — first run in which the shadow lane ever scored)
+### C13-41-SHADOW-CONTRAST-ECLIPSE-EXCESS — the cast shadow's contrast weakens ~5% at deepest eclipse where the model predicts +0.08% (FILED 2026-08-07, Batch 915 — first run in which the shadow lane ever scored) **EXTENDED 2026-08-07 (CO-17, fifth pass): the ambient/direct split is DERIVED, it REFUTES its own leading hypothesis, THE BAND DOES NOT MOVE, and the finding is REFRAMED — the shadow path is exactly correct and the excess is a CONSEQUENCE of a ground band that under-dims by 12.6%.**
 
-**Status: OPEN / MEDIUM — a real, modest, named product finding on a fully de-vacuitized lane.** Fourth eclipse-cloud run (tip `6e9c997287`): with `shadowGroundIsBright`, `shadowGroundNotOccluded` and `shadowNonVacuous` ALL true (clear-sky contrast 0.6633, band ~16 texels, producer active in both eclipse positions, shadowStrength matching `predictDirectional` to 1e-6), `shadowContrastRatioAtDeepest` measured **1.0496** against the [0.97, 1.03] invariant; the discriminating rung reads 1.0214 (in band); the rejected-alternative-design signature (1.429) is excluded. So the DIRECTIONAL shadow scalar behaves exactly as modelled, but the DISPLAYED contrast weakens ~5% at totality. Mechanism candidates, in order: (a) the shadowed floor is ambient-lit and the ambient dims by a different law than the direct term (the shadow visibility is a direct/ambient RATIO effect the invariant's +0.08% model did not include); (b) the 0.35 beer floor interacting with the dimmed scene tone curve. Next: extend the gate model with the ambient/direct split (both terms are now published by the C13-41 machinery) and re-derive the predicted ratio; if the extended model lands near 1.05 the invariant band moves BY DERIVATION, not by widening. Instrument residual in the same run: the consumer-side `cloudShadowControl` telemetry readout printed UNREADABLE — fix the readout (it does not gate).
+**Status: OPEN / MEDIUM-HIGH — upgraded, because the derivation makes the subject larger, not smaller. The headline is no longer "the shadow contrast weakens ~5%"; it is "the eclipse leaves 12.6% of the ground band's brightness in place at obscuration 0.9, and the shadow contrast excess is the arithmetic shadow of that."**
+
+**THE EXTENSION THE ROW ASKED FOR, AND WHY IT MOVES NOTHING.** `GlobeTerrain.wgsl:4838` applies the cast shadow as `color = color * sampleCloudGroundShadow(...)` — a MULTIPLY on the whole accumulated surface colour — so the only un-shadowable part of the ground is whatever is ADDED after that line. Write `D` for the shadowable term and `A` for that residue:
+
+```text
+U(F) = D*d(F) + A*a(F)          unshadowed
+S(F) = T_F*D*d(F) + A*a(F)      shadowed,  T_F = mix(1, tau, s_F) = 1 - s_F*(1-tau)
+```
+
+**Under the published laws `d` and `a` are the SAME function.** C13-41 multiplies the cloud direct term, the cloud ambient term and both environment bakes by one scalar (`applyEclipseCloudDimming`, a plain multiply by `resolveEclipseCloudFactor`); C12-29 S2 multiplies the scene light colour, the sky shell, the ground atmosphere and the fog by that same scalar. **There is no second law in the publication.** Setting `d = a = F` makes F cancel out of both bands:
+
+```text
+c(F) = (T_F*D + A) / (D + A)        <- no F anywhere
+```
+
+so the only mover left is the shadow strength — precisely the quantity the original directional-only model already carried. The split changes the prediction's SIZE, not its cause, and only downward.
+
+**THE CLOSED FORM HAS NO FREE PARAMETERS.** With `x = A/(D+A)` and the MEASURED clear contrast `c1 = 1 - s_1*(1-tau)*(1-x)`:
+
+```text
+(1-tau)*(1-x) = (1 - c1)/s_1
+c(F)          = c1 + (s_1 - s_F)*(1 - c1)/s_1
+ratio         = 1 + (s_1 - s_F)*(1 - c1) / (s_1 * c1)
+```
+
+Both `tau` (the band-average beer transmittance) and `x` (the split) **cancel against the measured clear contrast**. The extension cannot be tuned to reach 1.05 because it has nothing to tune. At the fourth run's deepest rung (`s_F = 0.9995501`, `c1 = 0.679870`):
+
+```text
+ratio = 1 + 0.00044989 * (0.320130 / 0.679870) = 1 + 0.00044989 * 0.470868 = 1.00021184
+```
+
+| rung | s_F | c1 (measured) | split model | directional-only | MEASURED |
+| --- | --- | --- | --- | --- | --- |
+| 0.30 | 0.9999786 | 0.663565 | 1.0000109 | 1.0000398 | **1.012583** |
+| 0.5452 | 0.9999401 | 0.671416 | 1.0000293 | 1.0001113 | **1.021390** |
+| 0.90 | 0.9995501 | 0.679870 | **1.0002118** | 1.0008355 | **1.049596** |
+
+**THE DIRECTIONAL-ONLY MODEL IS THE SUPREMUM OF THE SPLIT FAMILY, NOT A RIVAL.** `ratio - 1` is decreasing in `c1`, and `c1 = tau*(1-x) + x` is minimised at `x = 0` with `tau` at the beer floor, where `c1 = 0.35` and `ratio = (1 - 0.65*s_F)/0.35` — the original prediction verbatim. So **no admissible split reaches 1.0496**: the whole family is capped at 1.00084 at the published strength, and the measurement is **59x past that cap** (316x and 192x at the shallower rungs). The extension moves the prediction **3.9x CLOSER to 1**, in the opposite direction from the measurement.
+
+**THEREFORE `shadowContrastRatio` STAYS AT [0.97, 1.03], BY DERIVATION.** The row asked for the band to move if the extension predicted ~1.05; it predicts 1.0002, so the band stands and **1.0496 is a REAL product finding**. Band headroom over the model went from 36x to 142x — a reason to keep it, not to widen it. `shadowContrastModelIsBoundedByDirectional` (gate 26, `gate-arithmetic`, never quarantined) enforces the inequality; spec J1-J4 pin the closed form, the supremum property, the fourth-run numbers and the mutant.
+
+**WHERE THE EXCESS ACTUALLY LIVES — THE REFRAMING.** Because F cancels, the published laws also predict that **both ground bands dim by exactly F**. They do not:
+
+| rung | F | unshadowed U(F)/U(1) | /F | shadowed S(F)/S(1) | /F | contrast ratio |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.30 | 0.887905 | 0.903587 | 1.0177 | 0.914957 | 1.0305 | 1.012583 |
+| 0.5452 | 0.769032 | 0.800458 | 1.0409 | 0.817579 | 1.0631 | 1.021390 |
+| 0.90 | 0.464200 | 0.522750 | **1.1261** | 0.548677 | **1.1820** | 1.049596 |
+
+`1.181983 / 1.126131 = 1.049596` exactly — **the shadow-contrast excess IS the quotient of the two bands' under-dims**, not an independent effect.
+
+**AND THE SHADOWABLE TERM IS EXACTLY RIGHT.** Inverting the four reads per rung with no assumption about `x` or `tau` (`extractShadowableDimming`: `d = (U(F)/U(1) - S(F)/U(1)) / (1 - c1)`) gives `d/F` = **1.0000 / 0.9924 / 0.9954 / 1.0075** across the ladder. The term the cast shadow multiplies dims by the published factor to under 1%. **The whole under-dim is in the residue the shadow cannot touch**, which is also why the shadowed band under-dims MORE than the unshadowed one (the residue is a larger share of it).
+
+**MECHANISM — the two candidates the row listed are BOTH refuted, and a third is measured.**
+
+- (a) *"the ambient dims by a different law than the direct term"* — REFUTED as stated: under the published laws it does not, and the closed form shows the split cancels anyway. The residue's law being different is the RESIDUAL hypothesis, not the split itself.
+- (b) *"the 0.35 beer floor interacting with the dimmed scene tone curve"* — REFUTED BY SIGN. For a monotone display transform applied to a purely multiplicative dim, `c(F) = g(T*L*F)/g(L*F)`. Pure gamma gives `T^(1/gamma)`, invariant in F. Reinhard gives `T(1+x)/(1+T*x)`, whose derivative in `x` is `T(1-T)/(1+Tx)^2 > 0` — so as F falls the ratio falls TOWARD T and `Rc < 1`. Every compressive display transform moves the contrast the **wrong way**. It cannot produce an excess.
+- (c) **MEASURED: an additive term in the ground band that dims sub-linearly.** Fitting `U(F)/U(1) = (1-x)*F + x*F^p` with `(1-x) = (1-c1)/(1-tau)` over the three rungs gives `tau = 0.35, p = 0.708, x ~ 0.49-0.51` (RMS 8.0e-4 on U), which reproduces the contrast ratios as 1.0085 / 1.0186 / 1.0534 against the measured 1.0126 / 1.0214 / 1.0496. An alternative parametrisation with a FULLY undimmed residue (`p = 0`) fits the contrast about as well (1.0088 / 1.0192 / 1.0529) but needs `tau` and `x` to drift across rungs (0.609 -> 0.641 and 0.140 -> 0.109), so it is the weaker read. **The finding is robust to the parametrisation: 11-50% of the ground band is carried by a term the eclipse does not dim at the F rate.** Naming WHICH term is not settled by this data and is deliberately not asserted.
+
+**THE ONE MEASUREMENT THAT ATTRIBUTES IT, PRE-REGISTERED.** Lane B already captures `offNoCloud` (deck-free ground, eclipse OFF) per rung. It does **not** capture the eclipse-ON twin. Adding `onNoCloud` (`enableVolumetric: false`, `setEclipse(true)`, same instant) splits the candidates in one number:
+
+- `onNoCloud/offNoCloud == F` (to the determinism bracket) -> the globe's own light path dims correctly, and the residue is **cloud-driven** — which the existing numbers already point at, since turning the deck on ADDS 13.7% to the ground band at rung 0 (`offNoShadow/offNoCloud = 1.1589`) even though lane B flies at 1400 m below a 1500 m deck floor and no downward ray can reach the deck. Prime suspects then are the cloud-driven post-process addends (`WebGPUAerialPerspectiveEffect`, `WebGPUVolumetricFogRenderer`) and the `C13-41-ENV-GROUND-INSCATTER-ADDEND-UNDIMMED` class already filed.
+- `onNoCloud/offNoCloud > F` -> the globe's own light path carries an under-dimmed term, and the cloud subsystem is exonerated.
+
+**INSTRUMENT RESIDUAL FOUND WHILE DOING THIS, worth one line in the same run.** `offNoCloud` reads **bit-identical (0.2750603921572111) at all four rungs**, across instants 54 minutes apart, while `offNoShadow` at the same instants moves 0.31877 -> 0.32925 (+3.3%). The lane's camera is sun-locked in HEADING only (`heading = sunHeading + PI` at a fixed lat/lon/height), so the local sun ELEVATION does change and a deck-free ground band should move with it. Either the deck-free capture is genuinely invariant for a reason worth knowing, or it is not being re-captured per rung. It does not gate and it does not affect the arithmetic above (which uses only the per-rung shadow quads), but it IS the read-back `shadowGroundIsBright` and `shadowGroundNotOccluded` are computed from, and both are scored off rung 0 alone. Discriminator: print the four `offNoCloud` values in the shadow console line; four identical f64s is the tell.
+
+**Effort:** the derivation is DONE (no engine change, no band change). The remaining work is one probe leg (`onNoCloud`, ~15 lines in lane B) plus whatever the attribution turns up. Natural home: the same C13 cloud-lighting wave as the rest of the C13-41 tail.
+
+<details>
+<summary>ENTRY AS FILED (Batch 915), retained for the record</summary>
+
+**Status as filed: OPEN / MEDIUM — a real, modest, named product finding on a fully de-vacuitized lane.** Fourth eclipse-cloud run (tip `6e9c997287`): with `shadowGroundIsBright`, `shadowGroundNotOccluded` and `shadowNonVacuous` ALL true (clear-sky contrast 0.6633, band ~16 texels, producer active in both eclipse positions, shadowStrength matching `predictDirectional` to 1e-6), `shadowContrastRatioAtDeepest` measured **1.0496** against the [0.97, 1.03] invariant; the discriminating rung reads 1.0214 (in band); the rejected-alternative-design signature (1.429) is excluded. So the DIRECTIONAL shadow scalar behaves exactly as modelled, but the DISPLAYED contrast weakens ~5% at totality. Mechanism candidates, in order: (a) the shadowed floor is ambient-lit and the ambient dims by a different law than the direct term (the shadow visibility is a direct/ambient RATIO effect the invariant's +0.08% model did not include); (b) the 0.35 beer floor interacting with the dimmed scene tone curve. Next: extend the gate model with the ambient/direct split (both terms are now published by the C13-41 machinery) and re-derive the predicted ratio; if the extended model lands near 1.05 the invariant band moves BY DERIVATION, not by widening. Instrument residual in the same run: the consumer-side `cloudShadowControl` telemetry readout printed UNREADABLE — fix the readout (it does not gate).
 
 
 ---

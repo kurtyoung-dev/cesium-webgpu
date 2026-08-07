@@ -34,6 +34,8 @@ import { fileURLToPath } from "node:url";
 
 import {
   CLOUD_SHADOW_BEER_FLOOR,
+  DECK_AERIAL_SHARE_CROSS_RUN,
+  DECK_TONEMAP_ENTRY_CEILING,
   ECLIPSE_ADAPTATION_EXPONENT,
   ECLIPSE_CLOUD_BANDS,
   ECLIPSE_CLOUD_EXIT,
@@ -49,16 +51,23 @@ import {
   SWEEP_RISING_FRAMES,
   computeRefreshCost,
   countBucketChanges,
+  deckDisplayedRatio,
   eclipseCloudExitCode,
   eclipseCloudGateLabel,
+  extractShadowableDimming,
+  fitDeckAerialShare,
+  fitDeckTonemapEntry,
   idealSweepBuckets,
   judgeEclipseCloudResponse,
   maxBucketStep,
   predictBucket,
   predictDirectional,
   predictFactor,
+  predictShadowContrastRatio,
   predictedSweepRefreshCount,
   shadowContrast,
+  shadowContrastModelIsBoundedByDirectional,
+  shadowContrastRatioSupremum,
 } from "./lib/eclipse-cloud-response-gate.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -477,7 +486,9 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
     ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES,
   );
   // Membership is pinned so a gate cannot be added or removed by accident.
-  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 25);
+  // 25 -> 26 at CO-17: `shadowContrastModelIsBoundedByDirectional`, the
+  // arithmetic property that keeps the shadow invariant from moving outward.
+  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 26);
   assert.equal(ECLIPSE_CLOUD_PARITY_PREDICATES.length, 2);
   // Nothing is scored without a declared blindness domain — an unmapped
   // predicate would be silently unquarantinable.
@@ -1379,5 +1390,539 @@ test("F4 the probe's cost legs are interleaved and both pay a warm-up", () => {
   assert.ok(
     8 >= REFRESH_COST_MIN_SEGMENTS_PER_LEG,
     "the probe's segment count must satisfy the gate's interleaving minimum",
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// J. THE AMBIENT/DIRECT SPLIT — the fifth-pass shadow model (CO-17)
+//
+// `C13-41-SHADOW-CONTRAST-ECLIPSE-EXCESS` named this extension as the
+// derivation that would move the [0.97, 1.03] invariant if it predicted ~1.05.
+// It predicts 1.0002. These tests are that arithmetic, and J3 is the reason the
+// band stays where it is.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A SECOND implementation of the split, carrying the two things the closed form
+ * cancels away — the residue's share and the beer transmittance — plus the one
+ * thing the published laws do NOT contain: a residue that dims by its own law
+ * `F^residueExponent` instead of by `F`. Every J test below compares against
+ * this, never against `predictShadowContrastRatio` echoing itself.
+ */
+function contrastRatioWithResidueLaw({
+  factor,
+  residueShare,
+  beer,
+  strengthEclipse,
+  strengthClear = 1,
+  residueExponent = 1,
+}) {
+  const direct = 1 - residueShare;
+  const residue = residueShare;
+  const transmittance = (strength) => 1 - strength * (1 - beer);
+  const at = (f, strength, exponent) => {
+    const lit = direct * f;
+    const floor = residue * Math.pow(f, exponent);
+    return (transmittance(strength) * lit + floor) / (lit + floor);
+  };
+  return at(factor, strengthEclipse, residueExponent) / at(1, strengthClear, 1);
+}
+
+test("J1 the closed form has NO free parameters — the split and the beer term cancel", () => {
+  // Two wildly different (share, transmittance) pairs chosen to land on the
+  // SAME clear contrast. Under the published laws they must predict the same
+  // eclipse contrast ratio, because the only thing that moves it is the shadow
+  // strength. If the closed form were secretly carrying a split, these diverge.
+  const strengthEclipse = 0.9995501111290277;
+  const pairs = [
+    { residueShare: 0, beer: 0.6 },
+    { residueShare: 0.5, beer: 0.2 },
+    { residueShare: 0.8, beer: -1.0 },
+  ];
+  const predictions = pairs.map(({ residueShare, beer }) => {
+    const clearContrast = beer * (1 - residueShare) + residueShare;
+    assert.ok(
+      Math.abs(clearContrast - 0.6) < 1e-12,
+      "the fixture pairs must share a clear contrast",
+    );
+    const second = contrastRatioWithResidueLaw({
+      factor: 0.4642002390771099,
+      residueShare,
+      beer,
+      strengthEclipse,
+    });
+    const closed = predictShadowContrastRatio({
+      strengthClear: 1,
+      strengthEclipse,
+      clearContrast,
+    });
+    assert.ok(
+      Math.abs(second - closed) < 1e-12,
+      `closed form ${closed} != second implementation ${second}`,
+    );
+    return closed;
+  });
+  assert.ok(Math.abs(predictions[0] - predictions[1]) < 1e-12);
+  assert.ok(Math.abs(predictions[0] - predictions[2]) < 1e-12);
+  // And the eclipse FACTOR itself is absent: the same prediction at any depth.
+  for (const factor of [1, 0.9, 0.4642002390771099, 0.01]) {
+    const second = contrastRatioWithResidueLaw({
+      factor,
+      residueShare: 0.5,
+      beer: 0.2,
+      strengthEclipse,
+    });
+    assert.ok(Math.abs(second - predictions[0]) < 1e-12);
+  }
+});
+
+test("J2 the directional-only model is the SUPREMUM of the split family, not a rival", () => {
+  // Equality at the corner (no residue, transmittance at the beer floor), and
+  // strictly below it everywhere the residue is real.
+  for (const strengthEclipse of [1, 0.9995501111290277, 0.9, 0.5, 0]) {
+    const supremum = shadowContrastRatioSupremum(strengthEclipse);
+    const atCorner = predictShadowContrastRatio({
+      strengthClear: 1,
+      strengthEclipse,
+      clearContrast: CLOUD_SHADOW_BEER_FLOOR,
+    });
+    assert.ok(
+      Math.abs(atCorner - supremum) < 1e-12,
+      `the corner must BE the directional-only model: ${atCorner} vs ${supremum}`,
+    );
+    for (const clearContrast of [0.5, 0.663306, 0.67987, 0.95]) {
+      const split = predictShadowContrastRatio({
+        strengthClear: 1,
+        strengthEclipse,
+        clearContrast,
+      });
+      assert.ok(
+        split <= supremum + 1e-12,
+        `a split reached ${split}, above the ${supremum} cap`,
+      );
+      if (strengthEclipse < 1) {
+        assert.ok(
+          split < supremum,
+          "a real residue must DILUTE the move, not preserve it",
+        );
+      }
+    }
+  }
+  assert.equal(shadowContrastModelIsBoundedByDirectional(), true);
+});
+
+test("J3 the extension predicts 1.0002 at the fourth run's numbers, so the BAND DOES NOT MOVE", () => {
+  // The fourth Edge run (tip 6e9c997287), deepest rung, verbatim.
+  const strengthEclipse = 0.9995501111290277;
+  const clearContrast = 0.22385011803330374 / 0.32925418914786103;
+  const measured = 0.12282138936132907 / 0.1721177829881891 / clearContrast;
+  assert.ok(Math.abs(clearContrast - 0.67987) < 5e-6);
+  assert.ok(Math.abs(measured - 1.049596) < 5e-6);
+
+  const predicted = predictShadowContrastRatio({
+    strengthClear: 1,
+    strengthEclipse,
+    clearContrast,
+  });
+  const supremum = shadowContrastRatioSupremum(strengthEclipse);
+  assert.ok(
+    Math.abs(predicted - 1.00021184) < 1e-7,
+    `the split model predicts ${predicted}`,
+  );
+  assert.ok(
+    Math.abs(supremum - 1.00083551) < 1e-7,
+    `the directional-only model predicts ${supremum}`,
+  );
+  // The extension moves the prediction TOWARD 1, i.e. the opposite direction
+  // from the measurement. That is the whole finding.
+  assert.ok(predicted - 1 < supremum - 1);
+  assert.ok(Math.abs((supremum - 1) / (predicted - 1) - 3.943) < 0.01);
+  // 59x past the cap of the whole family: no split can reach the measurement.
+  const excessOverCap = (measured - 1) / (supremum - 1);
+  assert.ok(
+    excessOverCap > 55 && excessOverCap < 65,
+    `the measurement is ${excessOverCap}x the family cap`,
+  );
+  // THE BAND IS UNCHANGED, and this assertion is the point of the test.
+  assert.equal(ECLIPSE_CLOUD_BANDS.shadowContrastRatio.lo, 0.97);
+  assert.equal(ECLIPSE_CLOUD_BANDS.shadowContrastRatio.hi, 1.03);
+  assert.ok(
+    ECLIPSE_CLOUD_BANDS.shadowContrastRatio.why.includes(
+      "the band DOES NOT MOVE",
+    ),
+    "the derivation that keeps the band has to be written where the band is",
+  );
+  // Headroom over the model, before and after the extension.
+  assert.ok(Math.abs(0.03 / (supremum - 1) - 35.9) < 0.5);
+  assert.ok(Math.abs(0.03 / (predicted - 1) - 141.6) < 1.0);
+});
+
+test("J4 MUTANT — only a residue law the publication does NOT contain reaches 1.05", () => {
+  const strengthEclipse = 0.9995501111290277;
+  const factor = 0.4642002390771099;
+  const clearContrast = 0.22385011803330374 / 0.32925418914786103;
+  // The residue's share implied by that clear contrast at the beer floor.
+  const residueShare = 1 - (1 - clearContrast) / (1 - CLOUD_SHADOW_BEER_FLOOR);
+  assert.ok(Math.abs(residueShare - 0.507493) < 1e-5);
+
+  // p = 1 — the published laws. Reproduces the closed form exactly.
+  const published = contrastRatioWithResidueLaw({
+    factor,
+    residueShare,
+    beer: CLOUD_SHADOW_BEER_FLOOR,
+    strengthEclipse,
+    residueExponent: 1,
+  });
+  assert.ok(
+    Math.abs(
+      published -
+        predictShadowContrastRatio({
+          strengthClear: 1,
+          strengthEclipse,
+          clearContrast,
+        }),
+    ) < 1e-12,
+  );
+  assert.ok(
+    published >= ECLIPSE_CLOUD_BANDS.shadowContrastRatio.lo &&
+      published <= ECLIPSE_CLOUD_BANDS.shadowContrastRatio.hi,
+    "the published laws land INSIDE the invariant, as designed",
+  );
+
+  // p = 0.708 — the exponent the fourth run's three rungs actually fit. This is
+  // the mutant: a residue that dims SUB-linearly. It reproduces the measurement
+  // and leaves the band, which is what makes 1.0496 a product finding rather
+  // than a modelling gap.
+  const subLinear = contrastRatioWithResidueLaw({
+    factor,
+    residueShare,
+    beer: CLOUD_SHADOW_BEER_FLOOR,
+    strengthEclipse,
+    residueExponent: 0.708,
+  });
+  assert.ok(
+    Math.abs(subLinear - 1.049596) < 0.006,
+    `the sub-linear residue predicts ${subLinear} against the measured 1.049596`,
+  );
+  assert.ok(subLinear > ECLIPSE_CLOUD_BANDS.shadowContrastRatio.hi);
+  // A residue that dims SUPER-linearly moves it the other way, so the sign of
+  // the excess is itself diagnostic.
+  assert.ok(
+    contrastRatioWithResidueLaw({
+      factor,
+      residueShare,
+      beer: CLOUD_SHADOW_BEER_FLOOR,
+      strengthEclipse,
+      residueExponent: 1.5,
+    }) < 1,
+  );
+});
+
+test("J5 the shadowable term's law is recoverable from the four band reads alone", () => {
+  // Round trip on a synthetic rung whose split, transmittance and two dimming
+  // laws are all known.
+  const beer = 0.42;
+  const residueShare = 0.3;
+  const direct = 1 - residueShare;
+  for (const [d, a] of [
+    [0.4642002390771099, 0.4642002390771099],
+    [0.4642002390771099, 0.62],
+    [0.31, 0.9],
+  ]) {
+    const shadow = {
+      offNoShadow: direct + residueShare,
+      offShadow: beer * direct + residueShare,
+      onNoShadow: direct * d + residueShare * a,
+      onShadow: beer * direct * d + residueShare * a,
+    };
+    assert.ok(
+      Math.abs(extractShadowableDimming(shadow) - d) < 1e-12,
+      "the inversion must return the shadowable term's own law",
+    );
+  }
+  // The fourth run's four rungs: the SHADOWABLE term dims by exactly the
+  // published factor to under 1%, while BOTH bands under-dim by up to 12.6% /
+  // 18.2%. The defect is in the residue, not in the shadow path.
+  const measured = [
+    {
+      factor: 1,
+      offNoShadow: 0.31876608674032336,
+      offShadow: 0.21143960549489235,
+      onNoShadow: 0.31876608674032336,
+      onShadow: 0.21143960549489235,
+    },
+    {
+      factor: 0.8879051946524728,
+      offNoShadow: 0.32176625572455075,
+      offShadow: 0.21351292724028043,
+      onNoShadow: 0.2907439288632721,
+      onShadow: 0.19535515345023421,
+    },
+    {
+      factor: 0.7690319128580584,
+      offNoShadow: 0.3249127691632386,
+      offShadow: 0.21815151409170608,
+      onNoShadow: 0.260078973339444,
+      onShadow: 0.17835615828277648,
+    },
+    {
+      factor: 0.4642002390771099,
+      offNoShadow: 0.32925418914786103,
+      offShadow: 0.22385011803330374,
+      onNoShadow: 0.1721177829881891,
+      onShadow: 0.12282138936132907,
+    },
+  ];
+  for (const rung of measured) {
+    const value = extractShadowableDimming(rung) / rung.factor;
+    assert.ok(
+      Math.abs(value - 1) < 0.01,
+      `the shadowable term read ${value} of the published factor`,
+    );
+  }
+  const unshadowedOverFactor = measured.map(
+    (rung) => rung.onNoShadow / rung.offNoShadow / rung.factor,
+  );
+  assert.ok(Math.abs(unshadowedOverFactor[3] - 1.126131) < 1e-5);
+  const shadowedOverFactor = measured.map(
+    (rung) => rung.onShadow / rung.offShadow / rung.factor,
+  );
+  assert.ok(Math.abs(shadowedOverFactor[3] - 1.181983) < 1e-5);
+  // And the contrast excess is exactly their quotient — the shadow finding is a
+  // CONSEQUENCE of the ground-band under-dim, not an independent one.
+  assert.ok(
+    Math.abs(shadowedOverFactor[3] / unshadowedOverFactor[3] - 1.049596) < 1e-5,
+  );
+});
+
+test("J6 the split model is REPORTED, never gated, and the reference run agrees with it", () => {
+  assert.ok(
+    ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.includes(
+      "shadowContrastMatchesSplitModelReportedOnly",
+    ),
+  );
+  assert.ok(
+    !ECLIPSE_CLOUD_GATE_PREDICATES.includes(
+      "shadowContrastMatchesSplitModelReportedOnly",
+    ),
+    "one finding must not be scored twice",
+  );
+  const verdict = judgeEclipseCloudResponse(passingRun());
+  assert.equal(verdict.shadowContrastMatchesSplitModelReportedOnly, true);
+  assert.equal(verdict.shadowContrastModelIsBoundedByDirectional, true);
+  assert.equal(verdict.shadowContrastModel.length, 4);
+  for (const entry of verdict.shadowContrastModel) {
+    // The estimator absorbs the strength move as well as the dimming law — it
+    // returns `d * (1 - T_F)/(1 - T_1)`, and that second factor is the <=0.05%
+    // the shadow strength itself changes. It is why the reading is ~1 rather
+    // than exactly 1 even on a fixture built from the published laws.
+    assert.ok(Math.abs(entry.groundDimming.shadowableOverFactor - 1) < 1e-3);
+    assert.ok(Math.abs(entry.groundDimming.unshadowedOverFactor - 1) < 1e-9);
+    assert.ok(Math.abs(entry.predicted - entry.supremum) < 1e-12);
+  }
+  // The arithmetic gate belongs to the domain that is never quarantined.
+  assert.equal(
+    ECLIPSE_CLOUD_PREDICATE_LANES.shadowContrastModelIsBoundedByDirectional,
+    "gate-arithmetic",
+  );
+});
+
+test("J7 a run whose residue UNDER-DIMS fails only the contrast gate, and the model says so", () => {
+  const run = clone(passingRun());
+  // Rebuild the ground bands with a real residue that dims as F^0.708 — the
+  // fourth run's shape, injected into the fixture. The deck, the IBL and the
+  // published scalars are untouched.
+  const beer = CLOUD_SHADOW_BEER_FLOOR;
+  const residueShare = 0.507493;
+  const direct = 1 - residueShare;
+  for (const rung of run.cloudLanes.rungs) {
+    const factor = rung.published.factor;
+    const strength = rung.published.shadowStrength;
+    const litOff = direct;
+    const litOn = direct * factor;
+    const floorOff = residueShare;
+    const floorOn = residueShare * Math.pow(factor, 0.708);
+    const scale = 0.5 / (litOff + floorOff);
+    rung.shadow.offNoShadow = (litOff + floorOff) * scale;
+    rung.shadow.offShadow = (beer * litOff + floorOff) * scale;
+    rung.shadow.onNoShadow = (litOn + floorOn) * scale;
+    rung.shadow.onShadow =
+      ((1 - strength * (1 - beer)) * litOn + floorOn) * scale;
+    rung.shadow.offNoCloud = rung.shadow.offNoShadow / 1.02;
+  }
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.deepEqual(verdict.structuralReasons, []);
+  assert.deepEqual(verdict.failedPredicates, ["shadowContrastInvariant"]);
+  assert.equal(verdict.shadowContrastMatchesSplitModelReportedOnly, false);
+  // The model still reports its own prediction, and it is still ~1.0002 — the
+  // instrument does not follow the measurement.
+  const deepest =
+    verdict.shadowContrastModel[verdict.shadowContrastModel.length - 1];
+  assert.ok(Math.abs(deepest.predicted - 1.00021184) < 1e-6);
+  assert.ok(deepest.measured > 1.04);
+  assert.ok(deepest.groundDimming.unshadowedOverFactor > 1.1);
+  // The shadowable term is still exactly right (to the strength move) even
+  // though the band it lives in under-dims by 12.6% — which is the whole point
+  // of publishing this column.
+  assert.ok(Math.abs(deepest.groundDimming.shadowableOverFactor - 1) < 1e-3);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K. THE DECK'S TONEMAP ENTRY, RE-FITTED FROM THE CLEAN RUN (CO-17)
+//
+// `C13-41-CLOUD-DECK-TONEMAP-SWALLOWS-THE-DIM` was filed on a fit of e ~ 7.7
+// taken while the aerial tint was still UNDIMMED. These tests re-derive e from
+// the fourth run and retire the entry.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The two Edge runs' deck ratio series, verbatim, for the subtraction. */
+const DECK_RUN_SERIES = [
+  {
+    factor: 0.8879051946524728,
+    undimmed: 0.983,
+    dimmed: 0.5662402716260491 / 0.626916402213654,
+  },
+  {
+    factor: 0.7690319128580584,
+    undimmed: 0.962,
+    dimmed: 0.5006915227201424 / 0.6272655114233235,
+  },
+  {
+    factor: 0.4642002390771099,
+    undimmed: 0.894,
+    dimmed: 0.322503925908934 / 0.6276002579608294,
+  },
+];
+
+test("K1 the aerial share falls out by SUBTRACTION, and the three rungs agree", () => {
+  // The runs differ only in the tint's law (1 vs F), so
+  // R_undimmed - R_dimmed = s*(1 - F) at every rung. No fitting.
+  const shares = DECK_RUN_SERIES.map((rung) =>
+    fitDeckAerialShare(rung.factor, rung.undimmed, rung.dimmed),
+  );
+  assert.ok(Math.abs(shares[0] - 0.711764) < 1e-5);
+  assert.ok(Math.abs(shares[1] - 0.709132) < 1e-5);
+  assert.ok(Math.abs(shares[2] - 0.709466) < 1e-5);
+  const spread = Math.max(...shares) - Math.min(...shares);
+  assert.ok(
+    spread / DECK_AERIAL_SHARE_CROSS_RUN < 0.005,
+    `three independent rungs must agree: spread ${spread}`,
+  );
+  const mean = shares.reduce((a, b) => a + b, 0) / shares.length;
+  assert.ok(Math.abs(mean - DECK_AERIAL_SHARE_CROSS_RUN) < 5e-4);
+  // CO-11's geometric estimate was 0.099. The correction is 7.2x, not the ~4x
+  // the fourth-run note recorded.
+  assert.ok(Math.abs(mean / 0.099 - 7.17) < 0.05);
+});
+
+test("K2 e re-fits to ~1.01 on the CLEAN run, consistently across all three rungs", () => {
+  const entries = DECK_RUN_SERIES.map((rung) =>
+    fitDeckTonemapEntry(rung.factor, rung.dimmed, DECK_AERIAL_SHARE_CROSS_RUN),
+  );
+  assert.ok(Math.abs(entries[0] - 1.0033) < 5e-3);
+  assert.ok(Math.abs(entries[1] - 1.0045) < 5e-3);
+  assert.ok(Math.abs(entries[2] - 1.0127) < 5e-3);
+  const spread = Math.max(...entries) - Math.min(...entries);
+  assert.ok(
+    spread < 0.012,
+    `e must be one number, not three: spread ${spread}`,
+  );
+  // CONSEQUENCE (i): inside the band's own design envelope, by a factor of 1.67.
+  for (const entry of entries) {
+    assert.ok(entry <= DECK_TONEMAP_ENTRY_CEILING);
+    assert.ok(
+      entry < 1.7,
+      "the deck sits inside the e <= 1.693 envelope the band was derived for",
+    );
+  }
+  // The forward model closes the loop on the measurement it was fitted to.
+  const deepest = DECK_RUN_SERIES[2];
+  assert.ok(
+    Math.abs(
+      deckDisplayedRatio(
+        deepest.factor,
+        entries[2],
+        DECK_AERIAL_SHARE_CROSS_RUN,
+      ) - deepest.dimmed,
+    ) < 1e-9,
+  );
+  // And the pure-deck (tint-free) ratio the fit implies is the number the
+  // [0.44, 0.70] window was derived for — in band, near its e = 1 edge.
+  const pureDeck = deckDisplayedRatio(deepest.factor, entries[2], 0);
+  assert.ok(Math.abs(pureDeck - 0.6355) < 5e-4);
+  assert.ok(
+    pureDeck >= ECLIPSE_CLOUD_BANDS.deckDisplayedRatio.lo &&
+      pureDeck <= ECLIPSE_CLOUD_BANDS.deckDisplayedRatio.hi,
+  );
+});
+
+test("K3 the e ~ 7.7 reading is REPRODUCED, and it is the missing addend term", () => {
+  // The third pass inverted the SINGLE-term form against the undimmed run's
+  // 0.882. Same function, aerial share 0 — so the disagreement is the share,
+  // not the arithmetic.
+  const thirdPass = fitDeckTonemapEntry(0.4642002390771099, 0.882, 0);
+  assert.ok(
+    Math.abs(thirdPass - 7.7) < 0.2,
+    `the third pass's inversion must be reproducible: ${thirdPass}`,
+  );
+  // The SAME undimmed measurement, corrected for the share the two runs
+  // actually pin, gives an e inside the design envelope instead.
+  const withShare = fitDeckTonemapEntry(
+    0.4642002390771099,
+    0.894 - DECK_AERIAL_SHARE_CROSS_RUN * (1 - 0.4642002390771099),
+    DECK_AERIAL_SHARE_CROSS_RUN,
+  );
+  assert.ok(withShare < DECK_TONEMAP_ENTRY_CEILING);
+  // A displayed ratio at or below the linear factor cannot come from a
+  // compressive transform at all, and a ratio at or above 1 is unattainable:
+  // both are `null`, never a fitted number.
+  assert.equal(fitDeckTonemapEntry(0.4642002390771099, 0.4, 0), null);
+  assert.equal(fitDeckTonemapEntry(0.4642002390771099, 1.2, 0), null);
+  assert.equal(fitDeckTonemapEntry(0.4642002390771099, 0.9, 0.95), null);
+});
+
+test("K4 the fold publishes the re-fit, reported-only, with its provenance", () => {
+  assert.ok(
+    ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.includes(
+      "deckTonemapEntryWithinDesignEnvelopeReportedOnly",
+    ),
+  );
+  assert.ok(
+    !ECLIPSE_CLOUD_GATE_PREDICATES.includes(
+      "deckTonemapEntryWithinDesignEnvelopeReportedOnly",
+    ),
+    "a cross-run input must never gate",
+  );
+  const verdict = judgeEclipseCloudResponse(passingRun());
+  assert.equal(verdict.deckTonemapFit.aerialShare, DECK_AERIAL_SHARE_CROSS_RUN);
+  assert.equal(verdict.deckTonemapFit.laneSuppliedShare, null);
+  assert.ok(
+    verdict.deckTonemapFit.aerialShareSource.includes("cross-run subtraction"),
+  );
+  // The scaffolding half: a lane that runs its own `cloudAerialStrength = 0`
+  // leg overrides the cross-run number and the fit stops being cross-run.
+  const supplied = clone(passingRun());
+  supplied.cloudLanes.deckAerialShare = 0;
+  const suppliedVerdict = judgeEclipseCloudResponse(supplied);
+  assert.equal(suppliedVerdict.deckTonemapFit.aerialShare, 0);
+  assert.ok(
+    suppliedVerdict.deckTonemapFit.aerialShareSource.includes("lane-supplied"),
+  );
+  // The reference fixture's deck is exactly LINEAR in the factor (no tonemap),
+  // so with the share removed the inversion returns the entry a linear deck
+  // has: ZERO. `e = 0` is Reinhard's own linear limit, not a fabrication.
+  assert.ok(
+    Math.abs(suppliedVerdict.deckTonemapFit.entries[3].tonemapEntry) < 1e-12,
+    "a linear deck must invert to e = 0",
+  );
+  // Below the linear factor there is no compressive entry at all, and the
+  // inversion says so rather than returning a negative one.
+  const belowLinear = clone(passingRun());
+  belowLinear.cloudLanes.deckAerialShare = 0;
+  belowLinear.cloudLanes.rungs[3].deck.onContribution *= 0.9;
+  assert.equal(
+    judgeEclipseCloudResponse(belowLinear).deckTonemapFit.entries[3]
+      .tonemapEntry,
+    null,
   );
 });

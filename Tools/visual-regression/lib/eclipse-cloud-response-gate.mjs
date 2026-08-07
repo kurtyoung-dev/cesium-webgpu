@@ -87,6 +87,32 @@
  *     move is ~11% of the visible ground fully shadowed, i.e. the shadow was
  *     there. `shadowGroundBrightness` and `shadowGroundRetention` are the two
  *     read-backs that make that diagnosable instead of inferable.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT THE FOURTH EDGE RUN's TWO DEFERRALS BECAME (CO-17) — two derivations,
+ * still ZERO band movement, and the second-run note above is now WRONG in one
+ * clause
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The fourth run scored every lane and left two numbers owed a model. Both are
+ * derived below, next to the functions that compute them:
+ *
+ *   - THE SHADOW's 1.0496 -> see the block above `predictShadowContrastRatio`.
+ *     The ambient/direct split the row named as the next derivation REFUTES its
+ *     own hypothesis: the eclipse factor cancels out of the contrast, the closed
+ *     form has no free parameter, and the directional-only model turns out to be
+ *     the SUPREMUM of the split family rather than a rival — so the band cannot
+ *     move outward and 1.0496 is a real finding. The derivation also relocates
+ *     it: the SHADOWABLE term dims by exactly the published factor, and it is
+ *     the ground band as a whole that under-dims by 12.6%.
+ *   - THE DECK's `e` -> see the block above `deckDisplayedRatio`. **The
+ *     second-run note above is superseded on exactly one clause:** "it is NOT
+ *     the aerial addend ... ~10% of the deck's band mean" is wrong by 7.2x. The
+ *     addend's DISPLAY share is 0.710, derived by subtracting the two runs, and
+ *     with it the tonemap entry re-fits to `e = 1.01` — inside the band's own
+ *     `e <= 1` design envelope, not the 7.7 that note records. The ~10% figure
+ *     was an aerial FRACTION used as a display SHARE, and it was measured for a
+ *     near-field march where the scored band is horizon-weighted. The clause is
+ *     left standing rather than edited so the correction is visible as one.
  */
 
 /** The engine's totality floor, recomputed from the two published illuminances
@@ -169,6 +195,367 @@ export function shadowContrast(strength) {
 
 /** Beer floor the globe's cloud-shadow mix targets. */
 export const CLOUD_SHADOW_BEER_FLOOR = 0.35;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE AMBIENT/DIRECT SPLIT — the fifth-pass extension of the shadow model
+// (C13-41-SHADOW-CONTRAST-ECLIPSE-EXCESS, CO-17)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The fourth Edge run measured `shadowContrastRatioAtDeepest` = 1.0496 against
+// the [0.97, 1.03] invariant, on a lane whose vacuity was fully cleared. The row
+// named the extension below as the next derivation, on the hypothesis that "the
+// shadowed floor is ambient-lit and the ambient dims by a different law than the
+// direct term". THE DERIVATION REFUTES THAT HYPOTHESIS, and it does so without
+// needing to know the split.
+//
+// THE SHADER'S OWN STRUCTURE gives the split exactly. `GlobeTerrain.wgsl:4838`
+// applies the cast shadow as `color = color * sampleCloudGroundShadow(...)` — a
+// MULTIPLY on the whole accumulated surface colour — and everything ADDED after
+// that line (the ground-atmosphere + fog block) is a floor the shadow cannot
+// touch. So with `D` the shadowable term and `A` the un-shadowable residue:
+//
+//   U(F) = D*d(F) + A*a(F)                 unshadowed
+//   S(F) = T_F*D*d(F) + A*a(F)             shadowed, T_F = mix(1, tau, s_F)
+//
+// UNDER THE PUBLISHED LAWS d AND a ARE THE SAME FUNCTION. C13-41 multiplies the
+// cloud's direct term, the cloud's ambient term and both environment bakes by
+// ONE scalar (`applyEclipseCloudDimming`, a plain multiply by
+// `resolveEclipseCloudFactor`), and C12-29 S2 multiplies the scene light colour,
+// the sky shell, the ground atmosphere and the fog by that same scalar. There is
+// no second law in the publication. Set d = a = F and F CANCELS OUT of both
+// bands:
+//
+//   c(F) = (T_F*D + A) / (D + A)
+//
+// so the ONLY thing that moves the contrast at all is `T_F`, i.e. the shadow
+// strength — exactly the quantity the original directional-only model already
+// carried. The split changes the prediction's SIZE but not its cause, and it can
+// only make it SMALLER, because A dilutes the move.
+//
+// THE CLOSED FORM HAS NO FREE PARAMETERS. Writing x = A/(D + A) and using the
+// MEASURED clear-sky contrast c1 = T_1*(1-x) + x = 1 - s_1*(1-tau)*(1-x):
+//
+//   (1 - tau)*(1 - x) = (1 - c1) / s_1                      [from c1 alone]
+//   c(F) = c1 + (s_1 - s_F) * (1 - tau) * (1 - x)
+//        = c1 + (s_1 - s_F) * (1 - c1) / s_1
+//   ratio = c(F)/c1 = 1 + (s_1 - s_F) * (1 - c1) / (s_1 * c1)
+//
+// Both `tau` (the beer transmittance the band actually averages) and `x` (the
+// split) CANCEL against the measured clear contrast. That is why the extension
+// cannot be tuned to reach 1.05: it has nothing to tune.
+//
+// AT THE FOURTH RUN'S NUMBERS (deepest rung: s_F = 0.9995501, c1 = 0.679870):
+//
+//   ratio = 1 + (1 - 0.9995501) * (1 - 0.679870) / 0.679870
+//         = 1 + 0.00044989 * 0.470868
+//         = 1.00021184
+//
+// against the directional-only 1.00083551 and the MEASURED 1.049596. The
+// extension moves the prediction 3.9x CLOSER to 1, in the opposite direction
+// from the measurement.
+//
+// THE DIRECTIONAL-ONLY MODEL IS THE SUPREMUM OF THIS FAMILY, not a rejected
+// alternative. `ratio - 1` is decreasing in c1, and c1 = tau*(1-x) + x is
+// minimised at x = 0 (no residue) and tau at the beer floor, where c1 = 0.35 and
+//
+//   ratio = 1 + (1 - s_F) * 0.65 / 0.35 = (1 - 0.65*s_F) / 0.35
+//
+// which is `shadowContrast(s_F) / shadowContrast(1)` — the original prediction,
+// verbatim. So NO admissible split reaches 1.0496: at the published s_F the
+// whole family is capped at 1.00084, and the measurement is 59x past that cap.
+// `shadowContrastModelIsBoundedByDirectional` gates the inequality.
+//
+// THEREFORE THE BAND DOES NOT MOVE. The row asked for it to move BY DERIVATION
+// if the extension predicted ~1.05; the extension predicts 1.0002, so
+// [0.97, 1.03] stands and 1.0496 is a REAL finding. The band's headroom over the
+// model grew from 36x to 142x, which is a reason to keep it, not to widen it.
+//
+// WHAT THE DERIVATION DOES LOCALISE. Because F cancels, the published laws also
+// predict that BOTH ground bands dim by exactly F — `onNoShadow/offNoShadow` and
+// `onShadow/offShadow` should each equal the published factor. The fourth run
+// reads 1.126x and 1.182x of F at the deepest rung: the ground band UNDER-DIMS,
+// and the contrast excess is the arithmetic consequence
+// (1.181983 / 1.126131 = 1.0496). `extractShadowableDimming` inverts the two
+// bands for the shadowable term's own law and reads d/F = 1.000 / 0.992 / 0.995 /
+// 1.008 across the ladder — the shadowable path is exactly right to <1%, so the
+// under-dim lives ENTIRELY in the residue the shadow cannot touch. Reported, not
+// gated: naming a residue is a diagnosis, and the fifth run's clouds-off
+// eclipse-ON control is what attributes it.
+
+/**
+ * The ambient/direct-split prediction for the eclipse contrast ratio, in closed
+ * form. See the block above: the split `x` and the beer transmittance `tau`
+ * cancel against the measured clear contrast, so this takes no split parameter
+ * and cannot be tuned.
+ *
+ * @param {object} model
+ * @param {number} model.strengthClear Published `shadowStrength` in the clear leg.
+ * @param {number} model.strengthEclipse Published `shadowStrength` under eclipse.
+ * @param {number} model.clearContrast MEASURED `shadowOn/shadowOff` in the clear leg.
+ * @returns {number|null} the predicted `contrast|eclipse / contrast|clear`
+ */
+export function predictShadowContrastRatio({
+  strengthClear,
+  strengthEclipse,
+  clearContrast,
+}) {
+  if (
+    !Number.isFinite(strengthClear) ||
+    !Number.isFinite(strengthEclipse) ||
+    !Number.isFinite(clearContrast) ||
+    !(strengthClear > 0) ||
+    !(clearContrast > 0)
+  ) {
+    return null;
+  }
+  return (
+    1 +
+    ((strengthClear - strengthEclipse) * (1 - clearContrast)) /
+      (strengthClear * clearContrast)
+  );
+}
+
+/**
+ * The SUPREMUM of {@link predictShadowContrastRatio} over every admissible split
+ * — attained at zero residue with the beer transmittance at its floor, where the
+ * closed form reduces to `shadowContrast(s_F) / shadowContrast(s_1)`, i.e. the
+ * original directional-only model verbatim.
+ *
+ * @param {number} strengthEclipse
+ * @param {number} [strengthClear=1]
+ * @returns {number}
+ */
+export function shadowContrastRatioSupremum(
+  strengthEclipse,
+  strengthClear = 1,
+) {
+  return shadowContrast(strengthEclipse) / shadowContrast(strengthClear);
+}
+
+/**
+ * Proves, over the whole admissible domain, that the extended model can never
+ * exceed the directional-only one — the property that keeps the invariant band
+ * from moving outward. Pure arithmetic with no run input, so it belongs to
+ * `gate-arithmetic` and is never quarantined.
+ *
+ * @returns {boolean}
+ */
+export function shadowContrastModelIsBoundedByDirectional() {
+  // The clear contrast a real band can carry: at least the beer floor (a fully
+  // shadowed band) and below 1 (a band with no shadow at all is vacuous and is
+  // caught by `shadowVacuityCeiling`).
+  for (let i = 0; i <= 64; i++) {
+    const clearContrast =
+      CLOUD_SHADOW_BEER_FLOOR +
+      ((1 - CLOUD_SHADOW_BEER_FLOOR) * i) / 65; /* strictly below 1 */
+    for (let j = 0; j <= 64; j++) {
+      const strengthEclipse = j / 64;
+      const split = predictShadowContrastRatio({
+        strengthClear: 1,
+        strengthEclipse,
+        clearContrast,
+      });
+      const supremum = shadowContrastRatioSupremum(strengthEclipse);
+      // Equality is REQUIRED at the beer floor — that is what makes the
+      // directional-only model the supremum rather than merely an upper bound.
+      if (!(split <= supremum + 1e-12)) {
+        return false;
+      }
+      if (i === 0 && Math.abs(split - supremum) > 1e-12) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Inverts one rung's four ground-band reads for the law the SHADOWABLE term
+ * actually followed, with no assumption about the residue's share or the beer
+ * transmittance. From the model in the block above, at one instant:
+ *
+ *   U(F)/U(1) - S(F)/U(1) = (1 - T)*(1 - x) * d(F)
+ *   1 - c1                = (1 - T)*(1 - x)          [c1 = S(1)/U(1)]
+ *
+ * so `d(F)` is the quotient. Under the published laws it must equal the
+ * published factor; anything else localises the defect to the shadowable path
+ * rather than to the residue.
+ *
+ * @param {object} shadow One rung's `shadow` block.
+ * @returns {number|null}
+ */
+export function extractShadowableDimming(shadow) {
+  const u1 = shadow?.offNoShadow;
+  const s1 = shadow?.offShadow;
+  const uF = shadow?.onNoShadow;
+  const sF = shadow?.onShadow;
+  if (![u1, s1, uF, sF].every((value) => Number.isFinite(value)) || !(u1 > 0)) {
+    return null;
+  }
+  const clearContrast = s1 / u1;
+  const denominator = 1 - clearContrast;
+  if (!(Math.abs(denominator) > 1e-9)) {
+    return null;
+  }
+  return (uF - sF) / u1 / denominator;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE DECK'S DISPLAY TRANSFORM — re-derived from the fourth run
+// (C13-41-CLOUD-DECK-TONEMAP-SWALLOWS-THE-DIM, CO-17)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The deck's displayed value is NOT the Reinhard alone. `ProceduralClouds.wgsl`
+// tonemaps at :2543-2544 and then lerps toward the aerial tint at :2557:
+//
+//   hazed = mix(toneMapped, cloud.aerialColor, aerial)
+//
+// Batch 912 made `cloud.aerialColor` eclipse-dimmed at the pack site
+// (`dimAerialTint`), so the tint term is EXACTLY LINEAR in F while the tonemapped
+// core is compressive. With `s` the tint's share of the un-eclipsed displayed
+// deck and `e = cloud.exposure * L` the tonemap entry:
+//
+//   R(F) = (1 - s) * F*(1 + e)/(1 + F*e) + s * F
+//
+// THE THIRD-PASS FIT INVERTED THE WRONG EQUATION. It solved the single-term form
+// `R = F(1+e)/(1+F*e)` against 0.882, a ratio taken while the tint was still
+// UNDIMMED — i.e. it charged the whole of an undimmed ADDEND to the tonemap's
+// compression and got e ~ 7.7. The fourth run dimmed the addend and measured
+// 0.5139 at the same rung, which is what makes the two-term form solvable.
+//
+// `s` FALLS OUT OF THE TWO RUNS BY SUBTRACTION, with no fitting at all. The only
+// difference between the runs is the tint's law (1 vs F), so
+//
+//   R_undimmed(F) - R_dimmed(F) = s * (1 - F)
+//
+// and the three non-trivial rungs each give `s` independently:
+//
+//   0.983 - 0.903215 = 0.079785 / (1 - 0.887905) = 0.7118
+//   0.962 - 0.798213 = 0.163787 / (1 - 0.769032) = 0.7091
+//   0.894 - 0.513868 = 0.380132 / (1 - 0.464200) = 0.7095
+//
+// — self-consistent to 0.4%, which is itself the check that the two-term form is
+// the right one. With s = 0.709 the deepest rung gives
+//
+//   rho = (0.513868 - 0.709*0.464200) / 0.291 = 0.634880
+//   e   = (rho - F) / (F * (1 - rho)) = 0.170680 / 0.169490 = 1.0070
+//
+// and an unconstrained two-parameter fit of the FOURTH RUN ALONE lands at
+// s = 0.7175, e = 1.0525 with an RMS residual of 1.05e-5 over three rungs —
+// agreement, not independent confirmation (that fit is ill-conditioned on its
+// own: perturbing every measured ratio by one 8-bit code admits e in [0.21, 11.7]).
+// The cross-run subtraction is what pins it, and the fifth run's
+// `cloudAerialStrength = 0` leg is what will pin it in ONE number.
+//
+// AN UNFITTED PARAMETER LANDS INSIDE ITS SHADER RANGE, which is the strongest
+// check available without a new run. The un-eclipsed deck band is 0.627369; the
+// decomposition puts the tint at s*0.627369 = 0.450 and the core at 0.177, so
+// with alpha ~ 1 the tint fraction is a = 0.654 and the tint's own luma is
+// 0.450/0.654 = 0.6879. `cloud.aerialColor`'s Rec.709 luma runs 0.6496 (todT 0)
+// to 0.7081 (todT 1) from the packed literals at
+// `WebGPUProceduralCloudRenderer.ts:2297-2299` — 0.6879 is inside that window at
+// todT ~ 0.66. Nothing in the fit knew those literals.
+//
+// CONSEQUENCE FOR THE ROW: e = 1.05 (bracketed [1.007, 1.053] by the two
+// derivations) is INSIDE the band's own design envelope. `deckDisplayedRatio`'s
+// [0.44, 0.70] is `F(1+e)/(1+F*e)` for e in [0, 1] and its 0.70 ceiling holds up
+// to e = 1.693. At e = 1.05 the pure-deck ratio is 0.6401, in band; the deck as
+// composited reads 0.5139, in band. The "private Reinhard at exposure 0.22
+// flattens every light change" claim is REFUTED — the flattening the third pass
+// measured was an undimmed addend, and it is fixed.
+
+/** The deck exposure the shader packs by default (`cloud.exposure`, float 97). */
+export const DECK_TONEMAP_EXPOSURE = 0.22;
+/** The tonemap entry at which `deckDisplayedRatio`'s 0.70 ceiling is reached. */
+export const DECK_TONEMAP_ENTRY_CEILING = 1.693;
+
+/**
+ * The aerial tint's MEASURED share of the un-eclipsed displayed deck.
+ *
+ * This is a measurement, not a band — the only one in this module — and it is
+ * here because the fit it feeds is reported-only and because the subtraction
+ * that produces it is reproducible from two recorded numbers per rung rather
+ * than from a curve. It is deliberately NOT used by any gating predicate: a
+ * cross-run input has no place in a gate.
+ *
+ * The three rungs agree to 0.4% (0.7118 / 0.7091 / 0.7095); the value below is
+ * their mean, and `fitDeckAerialShare` is the function that produces each.
+ * A fifth run with a `cloudAerialStrength = 0` diagnostic leg replaces it with a
+ * single-run number, at which point this constant should be retired.
+ * @type {number}
+ */
+export const DECK_AERIAL_SHARE_CROSS_RUN = 0.7101;
+/** Where {@link DECK_AERIAL_SHARE_CROSS_RUN} comes from, printed with the fit. */
+export const DECK_AERIAL_SHARE_CROSS_RUN_PROVENANCE =
+  "second Edge run (tip 1970806a59, tint UNDIMMED) minus fourth Edge run (tip 6e9c997287, tint dimmed) over the 3 non-trivial rungs: (0.983-0.903215)/0.112095=0.7118, (0.962-0.798213)/0.230968=0.7091, (0.894-0.513868)/0.535800=0.7095";
+
+/**
+ * The deck's displayed ratio under the two-term model: a compressive Reinhard
+ * core plus an aerial tint that is now exactly linear in the eclipse factor.
+ *
+ * @param {number} factor The eclipse factor F.
+ * @param {number} tonemapEntry `cloud.exposure * L`, the un-eclipsed exposed radiance.
+ * @param {number} [aerialShare=0] The tint's share of the un-eclipsed displayed deck.
+ * @returns {number}
+ */
+export function deckDisplayedRatio(factor, tonemapEntry, aerialShare = 0) {
+  const rho = (factor * (1 + tonemapEntry)) / (1 + factor * tonemapEntry);
+  return (1 - aerialShare) * rho + aerialShare * factor;
+}
+
+/**
+ * The aerial tint's share of the un-eclipsed displayed deck, by SUBTRACTION of
+ * two runs that differ only in whether the tint is dimmed. No fitting.
+ *
+ * @param {number} factor
+ * @param {number} ratioUndimmedAddend Displayed ratio with the tint undimmed.
+ * @param {number} ratioDimmedAddend Displayed ratio with the tint dimmed by F.
+ * @returns {number|null}
+ */
+export function fitDeckAerialShare(
+  factor,
+  ratioUndimmedAddend,
+  ratioDimmedAddend,
+) {
+  if (
+    !Number.isFinite(factor) ||
+    !Number.isFinite(ratioUndimmedAddend) ||
+    !Number.isFinite(ratioDimmedAddend) ||
+    !(factor < 1)
+  ) {
+    return null;
+  }
+  return (ratioUndimmedAddend - ratioDimmedAddend) / (1 - factor);
+}
+
+/**
+ * Inverts {@link deckDisplayedRatio} for the tonemap entry `e`, given the aerial
+ * share. Returns `null` when the measurement is outside the model's range (a
+ * displayed ratio at or below the linear F cannot be produced by a compressive
+ * transform, and one at or above 1 cannot be produced at all).
+ *
+ * @param {number} factor
+ * @param {number} ratio The measured displayed ratio.
+ * @param {number} [aerialShare=0]
+ * @returns {number|null}
+ */
+export function fitDeckTonemapEntry(factor, ratio, aerialShare = 0) {
+  if (
+    !Number.isFinite(factor) ||
+    !Number.isFinite(ratio) ||
+    !Number.isFinite(aerialShare) ||
+    !(aerialShare < 1) ||
+    !(factor > 0) ||
+    !(factor < 1)
+  ) {
+    return null;
+  }
+  const rho = (ratio - aerialShare * factor) / (1 - aerialShare);
+  if (!(rho > factor) || !(rho < 1)) {
+    return null;
+  }
+  return (rho - factor) / (factor * (1 - rho));
+}
 
 /**
  * Counts LEVEL CHANGES in a committed-bucket series, which is what an
@@ -270,7 +657,7 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
   shadowContrastRatio: band(
     0.97,
     1.03,
-    "prediction (ii) verbatim: mix(1, 0.35, s) moves 0.350000 -> 0.350293, i.e. +0.084%. +/-3% is two orders of magnitude wider than the predicted move and is set by 8-bit quantization on a ground band, NOT by the effect. It is also the DISCRIMINATOR: the rejected design (shadow strength = S2's factor) puts the contrast at 1 - 0.65*0.769 = 0.5001 against an un-eclipsed 0.35 at the 0.5452 rung, a ratio of 1.429 — 14x outside this band. A measured move beyond it REFUTES the shipped model, exactly as the row asks",
+    "prediction (ii) verbatim: mix(1, 0.35, s) moves 0.350000 -> 0.350293, i.e. +0.084%. +/-3% is two orders of magnitude wider than the predicted move and is set by 8-bit quantization on a ground band, NOT by the effect. It is also the DISCRIMINATOR: the rejected design (shadow strength = S2's factor) puts the contrast at 1 - 0.65*0.769 = 0.5001 against an un-eclipsed 0.35 at the 0.5452 rung, a ratio of 1.429 — 14x outside this band. A measured move beyond it REFUTES the shipped model, exactly as the row asks. FIFTH-PASS EXTENSION (CO-17), and the band DOES NOT MOVE: the row named the ambient/direct split as the derivation that might justify moving it, and the derivation refutes its own hypothesis. The cast shadow is a MULTIPLY on the whole surface colour (GlobeTerrain.wgsl:4838), so only what is ADDED after that line is un-shadowable; C13-41 and C12-29 S2 dim every term on BOTH sides of that line by the SAME scalar, so the eclipse factor cancels out of the contrast entirely and the closed form is ratio = 1 + (s_1 - s_F)*(1 - c_clear)/(s_1*c_clear) with the split and the beer transmittance both cancelled against the MEASURED clear contrast — no free parameter to tune. At the fourth run's numbers that is 1.00021, which is 3.9x CLOSER to 1 than the directional-only 1.00084, because the residue DILUTES the move. The directional-only model is the SUPREMUM of the whole split family (attained at zero residue with tau at the beer floor), so no admissible split reaches 1.05 and the measured 1.0496 is 59x past the family's cap — a REAL finding, not a modelling gap. `shadowContrastModelIsBoundedByDirectional` gates that inequality; the band's headroom over the model went from 36x to 142x, which is a reason to keep it rather than widen it",
   ),
 
   iblDeepestRatio: band(
@@ -384,6 +771,7 @@ export const ECLIPSE_CLOUD_GATE_PREDICATES = Object.freeze([
   "shadowStrengthMatchesDirectional",
   "shadowContrastInvariant",
   "shadowContrastRejectsAlternativeDesign",
+  "shadowContrastModelIsBoundedByDirectional",
   // Lane C — IBL dim, refresh cadence, recovery (prediction iii)
   "predictedRefreshCountExact",
   "rampNeverSkipsABucket",
@@ -419,6 +807,18 @@ export const ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES = Object.freeze([
   // gate — the same lesson `probe-eclipse-scene-dimming` learned over four
   // rounds of trying to predict a saturating display transform.
   "deckRatioMatchesLinearReportedOnly",
+  // CO-17. The ambient/direct-split model's own agreement with the measurement.
+  // It reads FALSE on the fourth run's numbers BY DESIGN — that disagreement IS
+  // `C13-41-SHADOW-CONTRAST-ECLIPSE-EXCESS`, and it is already carried by the
+  // gating `shadowContrastInvariant`. Gating it too would score one finding
+  // twice. Read `shadowContrastModel` for the per-rung arithmetic.
+  "shadowContrastMatchesSplitModelReportedOnly",
+  // CO-17. Whether the fitted deck tonemap entry sits inside the design
+  // envelope `deckDisplayedRatio` was derived for. NOT gating because the fit
+  // needs the aerial share, which a single run can only supply by subtraction
+  // against a PREVIOUS run — a cross-run input has no place in a gate. The
+  // fifth run's `cloudAerialStrength = 0` leg makes it a single-run number.
+  "deckTonemapEntryWithinDesignEnvelopeReportedOnly",
 ]);
 
 /**
@@ -483,6 +883,10 @@ export const ECLIPSE_CLOUD_PREDICATE_LANES = Object.freeze({
   shadowStrengthMatchesDirectional: "cloud-page",
   shadowContrastInvariant: "shadow",
   shadowContrastRejectsAlternativeDesign: "shadow",
+  // The split model's bound on itself: derived inside this module from the
+  // published laws with no run input, so it is never quarantined — the same
+  // domain, and for the same reason, as `predictedRefreshCountExact`.
+  shadowContrastModelIsBoundedByDirectional: "gate-arithmetic",
   // Lane C — IBL dim, refresh cadence, recovery (prediction iii)
   predictedRefreshCountExact: "gate-arithmetic",
   rampNeverSkipsABucket: "ibl-page",
@@ -960,6 +1364,119 @@ export function judgeEclipseCloudResponse(run) {
   v.shadowContrastRejectsAlternativeDesign =
     inBand(v.shadowContrastRatioAtDiscriminating, B.shadowContrastRatio) &&
     !inBand(v.rejectedDesignContrastRatio, B.shadowContrastRatio);
+  // The extension is an arithmetic property of the model, not of this run.
+  v.shadowContrastModelIsBoundedByDirectional =
+    shadowContrastModelIsBoundedByDirectional();
+
+  // ── THE AMBIENT/DIRECT SPLIT, per rung — reported, not gated (CO-17) ──────
+  // See the derivation block above `predictShadowContrastRatio`. Three columns
+  // per rung, and between them they say WHERE the excess lives:
+  //   `predicted`  the split model's closed form. No free parameter.
+  //   `supremum`   the directional-only model, i.e. the split family's cap.
+  //   `groundDimming` what each band ACTUALLY did against the published factor —
+  //                   under the published laws both must read exactly 1.0.
+  // `shadowable` inverts the four reads for the law the shadowable term followed;
+  // it reading ~1.0 while `unshadowed`/`shadowed` read >1.0 is what localises the
+  // under-dim to the residue the cast shadow cannot touch.
+  v.shadowContrastModel = rungs.map((rung) => {
+    const clearContrast = ratio(
+      rung.shadow?.offShadow,
+      rung.shadow?.offNoShadow,
+    );
+    const strengthEclipse = rung.published?.shadowStrength;
+    const strengthClear = rung.publishedOff?.shadowStrength;
+    const factor = rung.published?.factor;
+    const shadowable = extractShadowableDimming(rung.shadow);
+    const unshadowed = ratio(rung.shadow?.onNoShadow, rung.shadow?.offNoShadow);
+    const shadowed = ratio(rung.shadow?.onShadow, rung.shadow?.offShadow);
+    return {
+      obscuration: rung.published?.moonObscuration ?? null,
+      factor: factor ?? null,
+      clearContrast,
+      measured: contrastRatioAt(rung),
+      predicted: predictShadowContrastRatio({
+        strengthClear,
+        strengthEclipse,
+        clearContrast,
+      }),
+      supremum: Number.isFinite(strengthEclipse)
+        ? shadowContrastRatioSupremum(strengthEclipse, strengthClear ?? 1)
+        : null,
+      groundDimming: {
+        unshadowed,
+        shadowed,
+        shadowable,
+        unshadowedOverFactor: ratio(unshadowed, factor),
+        shadowedOverFactor: ratio(shadowed, factor),
+        shadowableOverFactor: ratio(shadowable, factor),
+      },
+    };
+  });
+  // Agreement within the determinism bracket, which is the tightest difference
+  // this instrument can resolve at all. FALSE on the fourth run's numbers by
+  // design — see the reported-only list for why it does not gate.
+  v.shadowContrastMatchesSplitModelReportedOnly =
+    v.shadowContrastModel.length > 0 &&
+    v.shadowContrastModel.every(
+      (entry) =>
+        Number.isFinite(entry.measured) &&
+        Number.isFinite(entry.predicted) &&
+        Math.abs(entry.measured - entry.predicted) <= B.determinismDelta.hi,
+    );
+
+  // ── THE DECK'S TONEMAP ENTRY, re-fitted — reported, not gated (CO-17) ─────
+  // The aerial share cannot be read from a single run (the tint is dimmed on
+  // BOTH legs of this one), so the fit consumes the share the lane hands in,
+  // whether that came from a `cloudAerialStrength = 0` diagnostic leg or from a
+  // cross-run subtraction. With no share supplied the fit degenerates to the
+  // single-term form — which is exactly the inversion the third pass performed,
+  // and it is kept reachable so its e ~ 7.7 can be reproduced and shown to be an
+  // artefact of the undimmed addend rather than a property of the tonemap.
+  const laneShare = Number.isFinite(cloud.deckAerialShare)
+    ? cloud.deckAerialShare
+    : null;
+  const fittedShare = laneShare ?? DECK_AERIAL_SHARE_CROSS_RUN;
+  v.deckTonemapFit = {
+    aerialShare: fittedShare,
+    aerialShareSource:
+      laneShare === null
+        ? `cross-run subtraction, ${DECK_AERIAL_SHARE_CROSS_RUN_PROVENANCE}`
+        : "lane-supplied (a cloudAerialStrength = 0 diagnostic leg)",
+    // The scaffolding half: a lane that runs the tint-free leg hands its own
+    // share in and this stops being a cross-run number. Kept reachable rather
+    // than assumed absent — Principle 7.
+    laneSuppliedShare: laneShare,
+    entries: rungs.map((rung) => {
+      const factor = rung.published?.factor;
+      const measured = ratio(
+        rung.deck?.onContribution,
+        rung.deck?.offContribution,
+      );
+      const tonemapEntry = fitDeckTonemapEntry(factor, measured, fittedShare);
+      return {
+        obscuration: rung.published?.moonObscuration ?? null,
+        factor: factor ?? null,
+        measured,
+        tonemapEntry,
+        // The pure-deck (tint-free) ratio the fitted entry implies — the
+        // quantity `deckDisplayedRatio`'s [0.44, 0.70] window was derived for.
+        pureDeckRatio: Number.isFinite(tonemapEntry)
+          ? deckDisplayedRatio(factor, tonemapEntry, 0)
+          : null,
+        // The THIRD PASS's inversion, reproduced: the same measurement charged
+        // entirely to the tonemap with no addend term at all. Reported so the
+        // e ~ 7.7 reading is visible as a modelling choice rather than a
+        // property of the shader.
+        tonemapEntrySingleTerm: fitDeckTonemapEntry(factor, measured, 0),
+      };
+    }),
+  };
+  v.deckTonemapEntryAtDeepest =
+    v.deckTonemapFit.entries[v.deckTonemapFit.entries.length - 1]
+      ?.tonemapEntry ?? null;
+  v.deckTonemapEntryWithinDesignEnvelopeReportedOnly =
+    Number.isFinite(v.deckTonemapEntryAtDeepest) &&
+    v.deckTonemapEntryAtDeepest <= DECK_TONEMAP_ENTRY_CEILING;
 
   // ── SHADOW TELEMETRY, reported not gated (Batch 911) ─────────────────────
   // The second run's report DID carry `shadowActiveOff/On` — three levels down
