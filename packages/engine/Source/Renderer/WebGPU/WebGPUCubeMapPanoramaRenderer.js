@@ -22,6 +22,7 @@ import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import defined from "../../Core/defined.js";
 import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Pass from "../Pass.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -664,7 +665,7 @@ export function createDrawCommand(
     indexBuffer: indexBuffer,
     indexFormat: "uint16",
     indexCount: indexCount,
-    pass: 0, // Pass.ENVIRONMENT
+    pass: Pass.ENVIRONMENT,
     owner: null,
   });
 }

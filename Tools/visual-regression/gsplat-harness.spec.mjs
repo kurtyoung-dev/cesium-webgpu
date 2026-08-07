@@ -32,14 +32,20 @@ import {
   ABSENCE_BLOCKERS,
   ABSENT_MARKER,
   ASSETS,
+  AZIMUTH_HEADINGS,
+  CONTROL_LANES,
   EXIT_CODE,
   PREDICT,
   PRESENT_MARKER,
   STAGE,
   STRUCTURAL_PRECONDITIONS,
+  angleBetweenDegrees,
   classifyWebgpuPresence,
+  evaluateAzimuthLane,
+  evaluateCovarianceControl,
   evaluateParity,
   evaluateReferenceLeg,
+  evaluateShOffControl,
   evaluateWebgpuLeg,
   foldGsplatVerdict,
   fractionOf,
@@ -2831,22 +2837,158 @@ test("HEAD: buffer sizes come from the resident record stride, never a literal",
   );
 });
 
-test("HEAD: the dynamic-OIT shader source is preprocessed, not the raw template", () => {
-  // `WebGPUSceneRendererTranslucentPass` compiles `_shaderCode` directly when a
-  // command has no `_oitPipeline`. WGSL reads `//>>ifdef` as a comment, so the
-  // raw template would compile with BOTH branches of every block present — two
-  // `fragmentMain` definitions — and here, with the wrong record stride.
-  const renderer = readNormalized(RENDERER_PATH);
-  assert.match(
-    renderer,
-    /cmd\._shaderCode = preprocess\(\s*\n\s*SPLAT_WGSL,\s*\n\s*0,\s*\n\s*cache\.layoutPacked \? ShaderDefineHi\.SPLAT_PACKED_WASM : 0,\s*\n\s*\);/,
-    `${RENDERER_PATH}: _shaderCode is not the preprocessed source for the resident layout`,
-  );
+// ────────────────────────────────────────────────────────────────────────────
+// NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE — both halves.
+//
+// `WebGPUSceneRendererTranslucentPass` (`:165-205`) builds an OIT pipeline for
+// any command carrying `_shaderCode` but no `_oitPipeline`. The splat command
+// is one of only two `_shaderCode` producers in the tree, and it was
+// mis-configured in two independent ways:
+//
+//   1. the RAW `//>>ifdef`-bearing template was assigned (WGSL reads those as
+//      comments, so both branches of every block would compile — two
+//      `fragmentMain` definitions). FIXED at `C15-G3`;
+//   2. no `_pipelineConfig`, so the fallback substituted `layout: "auto"` while
+//      the command's cached bind groups were built against an EXPLICIT
+//      `GPUPipelineLayout` — a validation error, not a visual difference.
+//      FIXED here.
+//
+// `C15-G5` then added a third: the inline re-derivation of the define mask
+// carried the layout axis but NOT `SPLAT_SPHERICAL_HARMONICS`, so the fallback
+// would have composited the base colour while the colour pass composited the
+// view-dependent one. The repair is structural — both halves are published as a
+// PAIR from the same resource build the bind-group layout came from, so a
+// future axis cannot reach one and miss the other.
+// ────────────────────────────────────────────────────────────────────────────
+
+const OIT_FALLBACK_ANCHORS = [
+  {
+    label:
+      "the fallback shader source is preprocessed for the FULL define mask",
+    pattern:
+      /const oitFallbackShaderCode = preprocess\(SPLAT_WGSL, 0, layoutDefinesHi\);/,
+    why: "a mask re-derived from one axis drops every other axis the compiled OIT module carries",
+  },
+  {
+    // Deliberately EXACT and contiguous rather than `[\s\S]*?`-separated: a
+    // lazy gap runs past the object's closing brace and can satisfy itself on
+    // an unrelated `layout,` later in the file, which is exactly how the first
+    // draft of this anchor let the `layout: "auto"` mutant survive.
+    label:
+      "the fallback config carries the EXPLICIT pipeline layout and the splat vertex buffers",
+    pattern:
+      /const oitFallbackConfig: WebGPUPipelineConfig = \{\n {4}label: [^\n]*\n {4}layout,\n {4}vertexBuffers: SPLAT_VERTEX_BUFFERS,\n/,
+    why: '`layout: "auto"` derives a different layout object, and binding the command\'s cached bind groups to it is a validation error; the vertex buffers must match the ones the command binds',
+  },
+  {
+    label: "the command publishes BOTH halves, from the cache, as a pair",
+    pattern:
+      /cmd\._shaderCode = cache\.oitFallbackShaderCode \?\? undefined;\s*\n\s*cmd\._pipelineConfig = cache\.oitFallbackConfig \?\? undefined;/,
+    why: "publishing one without the other is exactly the state this row found",
+  },
+  {
+    label: "both halves come from the SAME resource build",
+    pattern:
+      /cache\.oitFallbackShaderCode = resources\.oitFallbackShaderCode;\s*\n\s*cache\.oitFallbackConfig = resources\.oitFallbackConfig;/,
+    why: "a shader mask from one build and a layout from another is the drift the pairing exists to prevent",
+  },
+];
+
+function assertOitFallbackAnchors(source) {
+  for (const anchor of OIT_FALLBACK_ANCHORS) {
+    assert.match(source, anchor.pattern, `${anchor.label}: ${anchor.why}`);
+  }
   assert.doesNotMatch(
-    renderer,
+    source,
     /cmd\._shaderCode = SPLAT_WGSL;/,
-    `${RENDERER_PATH}: the raw ifdef-bearing template is assigned to _shaderCode again`,
+    "the raw ifdef-bearing template is assigned to _shaderCode again",
   );
+  // The fallback config must be built OUTSIDE the try/catch that produces
+  // `oitDescriptor`: a null descriptor means the injection threw, which is one
+  // of the two states in which the fallback is actually reached.
+  const buildAt = source.indexOf("const oitFallbackShaderCode = preprocess(");
+  const catchAt = source.indexOf(
+    "// OIT variant creation is non-fatal — falls back to standard alpha blending",
+  );
+  assert.ok(
+    buildAt !== -1 && catchAt !== -1 && buildAt > catchAt,
+    "the fallback config is built inside the OIT try/catch — it would be null in exactly the case the fallback exists for",
+  );
+}
+
+test("HEAD: the dynamic-OIT fallback carries a preprocessed source AND the explicit layout", () => {
+  assertOitFallbackAnchors(readNormalized(RENDERER_PATH));
+});
+
+test("HEAD: the translucent pass really does fall back to layout:auto without a config", () => {
+  // The premise. If the consumer stopped substituting `layout: "auto"`, the
+  // whole row would be moot — and the anchors above would keep passing while
+  // pinning something that no longer matters.
+  const pass = readNormalized(
+    "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererTranslucentPass.ts",
+  );
+  assert.match(
+    pass,
+    /const pipelineConfig = cmd\._pipelineConfig as/,
+    "the fallback no longer reads _pipelineConfig off the command",
+  );
+  assert.match(
+    pass,
+    /pipelineConfig \?\? \{[\s\S]*?layout: "auto",/,
+    'the fallback no longer substitutes layout: "auto" — re-read the row before changing the producer side',
+  );
+});
+
+const OIT_FALLBACK_MUTANTS = [
+  {
+    name: "the fallback mask is re-derived from the layout axis alone (the C15-G5 shape)",
+    mutate: (source) =>
+      source.replace(
+        "const oitFallbackShaderCode = preprocess(SPLAT_WGSL, 0, layoutDefinesHi);",
+        "const oitFallbackShaderCode = preprocess(\n    SPLAT_WGSL,\n    0,\n    packedWasmLayout ? ShaderDefineHi.SPLAT_PACKED_WASM : 0,\n  );",
+      ),
+  },
+  {
+    name: 'the fallback config falls back to layout: "auto"',
+    mutate: (source) =>
+      source.replace(
+        "  const oitFallbackConfig: WebGPUPipelineConfig = {\n    label: `GaussianSplat [packed=${layoutMarker}/sh=${shMarker}]`,\n    layout,",
+        '  const oitFallbackConfig: WebGPUPipelineConfig = {\n    label: `GaussianSplat [packed=${layoutMarker}/sh=${shMarker}]`,\n    layout: "auto",',
+      ),
+  },
+  {
+    name: "only the shader half is published on the command",
+    mutate: (source) =>
+      source.replace(
+        "    cmd._pipelineConfig = cache.oitFallbackConfig ?? undefined;",
+        "",
+      ),
+  },
+  {
+    name: "the raw template is assigned again",
+    mutate: (source) =>
+      source.replace(
+        "    cmd._shaderCode = cache.oitFallbackShaderCode ?? undefined;",
+        "    cmd._shaderCode = SPLAT_WGSL;",
+      ),
+  },
+];
+
+test("HEAD: the OIT-fallback anchors reject every plausible half-fix", () => {
+  const real = readNormalized(RENDERER_PATH);
+  assertOitFallbackAnchors(real);
+  for (const mutant of OIT_FALLBACK_MUTANTS) {
+    const mutated = mutant.mutate(real);
+    assert.notEqual(
+      mutated,
+      real,
+      `mutant "${mutant.name}" changed nothing — its target text moved`,
+    );
+    assert.throws(
+      () => assertOitFallbackAnchors(mutated),
+      `mutant "${mutant.name}" survived the anchors`,
+    );
+  }
 });
 
 // WGSL-source mutants. Each is applied to a COPY of the extracted shader and
@@ -5803,12 +5945,20 @@ const G4B_MUTANTS = [
         "  const quiescence = { quiesced: true, ms: 0, signature: null };",
       ),
     check: (source) => {
+      // POSITION-SPECIFIC, not a bare `includes`. CO-12 added quiescence waits
+      // to the orbit and to both vacuity controls, all of them AFTER the scored
+      // pair — so "is the name mentioned anywhere?" stopped discriminating the
+      // moment those landed, and this mutant survived. The claim the rule
+      // actually makes is that the SCORED pair is quiesced, so the check has to
+      // be about the first wait's position relative to that pair.
+      const waitAt = source.indexOf("await waitForSortQuiescence(");
+      const pairAt = source.indexOf("const onA = captureNow();");
       assert.ok(
-        source.includes("await waitForSortQuiescence("),
-        "the quiescence wait is not called",
+        waitAt !== -1 && pairAt !== -1 && waitAt < pairAt,
+        "the quiescence wait is not called before the scored determinism pair",
       );
     },
-    because: /quiescence wait is not called/,
+    because: /quiescence wait is not called before the scored determinism pair/,
   },
   {
     name: "the quiescence wait reports success when its budget expires",
@@ -7345,3 +7495,1211 @@ for (const mutant of SH_SOURCE_MUTANTS) {
     mutant.check(real);
   });
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// CO-12 (2026-08-07)
+//
+// Three deliverables land their pins here:
+//
+//   * `NEW-SPLAT-PENDING-WORK-DRAWCOMMAND-PROXY` — the WebGL-shaped liveness
+//     term in the shared frame-skip short-circuit;
+//   * `NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT` — stale numeric `Pass`
+//     literals in the collection feature renderers;
+//   * the probe's three added lanes (three azimuths + two vacuity controls),
+//     which are what `C15-G8` needs before it can gate honestly.
+//
+// Same doctrine as everything above: every predicate is executed rather than
+// grepped where execution is possible, and every rule is run against the
+// plausible wrong implementation as well as the real one.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── NEW-SPLAT-PENDING-WORK-DRAWCOMMAND-PROXY ────────────────────────────────
+
+/** Compile the extracted `hasDrawableResult` with its one real dependency. */
+function loadDrawableResultPredicate(source) {
+  const payloadText = extractFunction(source, "hasSnapshotRenderPayload");
+  const drawableText = extractFunction(source, "hasDrawableResult");
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    "defined",
+    `${payloadText}\n${drawableText}\nreturn hasDrawableResult;`,
+  )(definedShim);
+}
+
+const DRAW_COMMAND = { id: "a DrawCommand" };
+
+/**
+ * The truth table, and the reason it has six rows rather than two.
+ *
+ * The WEBGPU rows are the defect: `_drawCommand` is built only by
+ * `buildGSplatDrawCommand`, which `C15-G2` gated off on native backends, so the
+ * old term read "no drawable result" forever and the settled-scene early return
+ * was structurally unreachable. The WEBGL rows are the invariant the fix must
+ * not weaken — "just delete the term" satisfies the WebGPU rows and breaks
+ * these, and "always return true" satisfies neither set honestly.
+ */
+const DRAWABLE_TRUTH_TABLE = [
+  {
+    label: "WebGL, a DrawCommand exists -> drawable",
+    primitive: { _drawCommand: DRAW_COMMAND, _snapshot: undefined },
+    expected: true,
+  },
+  {
+    label: "WebGL, no DrawCommand yet -> not drawable (there IS work to do)",
+    primitive: { _drawCommand: undefined, _snapshot: { data: 1 } },
+    expected: false,
+  },
+  {
+    label:
+      "WebGPU, snapshot committed with the packed payload -> drawable (the fix)",
+    primitive: {
+      _featureRenderer: {},
+      _drawCommand: undefined,
+      _snapshot: { packedSplatTextureData: PAYLOAD },
+    },
+    expected: true,
+  },
+  {
+    label: "WebGPU, snapshot committed with NO payload -> not drawable",
+    primitive: {
+      _featureRenderer: {},
+      _drawCommand: undefined,
+      _snapshot: { packedSplatTextureData: undefined },
+    },
+    expected: false,
+  },
+  {
+    label: "WebGPU, nothing committed at all -> not drawable",
+    primitive: { _featureRenderer: {}, _drawCommand: undefined },
+    expected: false,
+  },
+  {
+    label:
+      "WebGPU must NOT be satisfied by a WebGL DrawCommand it could never own",
+    primitive: {
+      _featureRenderer: {},
+      _drawCommand: DRAW_COMMAND,
+      _snapshot: { packedSplatTextureData: undefined },
+    },
+    expected: false,
+  },
+];
+
+function assertDrawableTruthTable(source) {
+  const predicate = loadDrawableResultPredicate(source);
+  for (const row of DRAWABLE_TRUTH_TABLE) {
+    assert.equal(
+      predicate(row.primitive),
+      row.expected,
+      `hasDrawableResult: ${row.label}`,
+    );
+  }
+  // Both call sites must route through it. The `isBootstrap` site is not
+  // cosmetic: leaving the raw `_drawCommand` term there would keep a
+  // WebGL-shaped question inside a decision that runs on both backends.
+  assert.match(
+    source,
+    /const isBootstrap =\n\s*!defined\(this\._snapshot\) &&\n\s*!defined\(this\._pendingSnapshot\) &&\n\s*!hasDrawableResult\(this\);/,
+    `${PRIMITIVE_PATH}: the bootstrap test still asks a WebGL-only question`,
+  );
+  assert.match(
+    source,
+    /defined\(this\._pendingSortPromise\) \|\|\n(?:\s*\/\/[^\n]*\n)*\s*!hasDrawableResult\(this\);/,
+    `${PRIMITIVE_PATH}: hasPendingWork still reads _drawCommand directly — the early return is unreachable on a native backend`,
+  );
+}
+
+test("CO-12: the frame-skip liveness proxy is backend-neutral (executed, not grepped)", () => {
+  assertDrawableTruthTable(readNormalized(PRIMITIVE_PATH));
+});
+
+const DRAWABLE_MUTANTS = [
+  {
+    name: "the term reverts to the WebGL-shaped proxy",
+    mutate: (source) =>
+      source.replace(
+        "function hasDrawableResult(primitive) {\n  if (defined(primitive._featureRenderer)) {",
+        "function hasDrawableResult(primitive) {\n  if (false) {",
+      ),
+  },
+  {
+    name: "the native arm ignores the payload and trusts the snapshot alone",
+    mutate: (source) =>
+      source.replace(
+        "    return (\n      defined(primitive._snapshot) &&\n      hasSnapshotRenderPayload(primitive, primitive._snapshot)\n    );",
+        "    return defined(primitive._snapshot);",
+      ),
+  },
+  {
+    name: "the WebGL arm is widened to the snapshot too",
+    mutate: (source) =>
+      source.replace(
+        "  return defined(primitive._drawCommand);\n}",
+        "  return defined(primitive._drawCommand) || defined(primitive._snapshot);\n}",
+      ),
+  },
+  {
+    name: "the bootstrap call site is reverted",
+    mutate: (source) =>
+      source.replace(
+        "        !defined(this._pendingSnapshot) &&\n        !hasDrawableResult(this);",
+        "        !defined(this._pendingSnapshot) &&\n        !defined(this._drawCommand);",
+      ),
+  },
+];
+
+test("CO-12: the liveness-proxy battery rejects every plausible wrong fix", () => {
+  const real = readNormalized(PRIMITIVE_PATH);
+  assertDrawableTruthTable(real);
+  for (const mutant of DRAWABLE_MUTANTS) {
+    const mutated = mutant.mutate(real);
+    assert.notEqual(
+      mutated,
+      real,
+      `mutant "${mutant.name}" changed nothing — its target text moved`,
+    );
+    assert.throws(
+      () => assertDrawableTruthTable(mutated),
+      `mutant "${mutant.name}" survived the battery`,
+    );
+  }
+});
+
+// ── NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT ────────────────────────────────
+//
+// `packages/engine/Source/Renderer/Pass.js` is this fork's authority and it has
+// been INSERTED INTO TWICE (`CESIUM_3D_TILE_EDGES: 4`,
+// `CESIUM_3D_TILE_PLANAR_FILL_ID: 5`). Numeric pass literals written against an
+// earlier state of that enum keep compiling, keep their now-false
+// `/* Pass.X */` comments, and silently name a different slot. The class is
+// only detectable by comparing the literal against the enum, which is what this
+// block does.
+
+const PASS_PATH = "packages/engine/Source/Renderer/Pass.js";
+const WEBGPU_RENDERER_DIR = "packages/engine/Source/Renderer/WebGPU";
+
+/** Parse `Pass.js` into a name -> value map by executing its object literal. */
+function loadPassEnum() {
+  const source = readNormalized(PASS_PATH);
+  const open = source.indexOf("const Pass = {");
+  assert.notEqual(open, -1, `${PASS_PATH}: the Pass object literal moved`);
+  const close = source.indexOf("\n};", open);
+  assert.ok(
+    close > open,
+    `${PASS_PATH}: the Pass object literal is unbalanced`,
+  );
+  const body = source.slice(open + "const Pass = ".length, close + 2);
+  // eslint-disable-next-line no-new-func
+  return new Function(`return ${body}`)();
+}
+
+const PASS = loadPassEnum();
+
+/** Every `.js`/`.ts` file under the WebGPU renderer directory. */
+function webgpuRendererSources() {
+  const dir = resolve(ROOT, WEBGPU_RENDERER_DIR);
+  return readdirSync(dir)
+    .filter((name) => /\.(js|ts)$/.test(name))
+    .filter((name) => statSync(join(dir, name)).isFile())
+    .map((name) => ({
+      name: name,
+      relative: `${WEBGPU_RENDERER_DIR}/${name}`,
+      // Comment lines are stripped so an assertion about CODE cannot be
+      // satisfied — or violated — by prose describing the bug.
+      code: readNormalized(`${WEBGPU_RENDERER_DIR}/${name}`)
+        .split("\n")
+        .filter((line) => !line.trimStart().startsWith("//"))
+        .filter((line) => !line.trimStart().startsWith("*"))
+        .join("\n"),
+    }));
+}
+
+test("CO-12: the fork's Pass enum is the one these literals drifted against", () => {
+  // If this ever changes, every recorded "actually is" below changes with it,
+  // and the drift table must be re-derived rather than re-blessed.
+  assert.equal(PASS.CESIUM_3D_TILE, 6);
+  assert.equal(PASS.CESIUM_3D_TILE_CLASSIFICATION, 7);
+  assert.equal(PASS.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW, 8);
+  assert.equal(PASS.OPAQUE, 9);
+  assert.equal(PASS.TRANSLUCENT, 10);
+  assert.equal(PASS.GAUSSIAN_SPLATS, 12);
+});
+
+test("CO-12: no numeric pass literal survives under Source/Renderer/WebGPU", () => {
+  const offenders = [];
+  for (const file of webgpuRendererSources()) {
+    for (const [index, line] of file.code.split("\n").entries()) {
+      // `pass: <number>` in a command construction, and the
+      // `<number> /* Pass.X */` comparison shape the class was found in.
+      if (/\bpass:\s*[0-9]/.test(line) || /[0-9]+\s*\/\*\s*Pass\./.test(line)) {
+        offenders.push(`${file.relative}:${index + 1}: ${line.trim()}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `numeric pass literals are back — CLAUDE.md's enumerated-keys rule forbids them, and this fork's Pass enum has already been inserted into twice:\n${offenders.join("\n")}`,
+  );
+});
+
+test("CO-12: the collection feature renderers select their pass from the enum", () => {
+  const expected = {
+    "WebGPUPointPrimitiveRenderer.js": "pointPass",
+    "WebGPUBillboardRenderer.js": "billboardPass",
+    "WebGPULabelRenderer.js": "labelPass",
+    "WebGPUPolylineRenderer.js": "polylinePass",
+  };
+  for (const [file, variable] of Object.entries(expected)) {
+    const code = readNormalized(`${WEBGPU_RENDERER_DIR}/${file}`);
+    assert.match(
+      code,
+      new RegExp(
+        `const ${variable} =\\s*\\n?\\s*[^;]*\\?\\s*Pass\\.OPAQUE\\s*:\\s*Pass\\.TRANSLUCENT;`,
+      ),
+      `${file}: ${variable} is no longer chosen from the Pass enum`,
+    );
+    assert.match(
+      code,
+      /import Pass from "\.\.\/Pass\.js";/,
+      `${file}: the Pass import is gone`,
+    );
+  }
+});
+
+test("CO-12: collection PICK commands land in a pass the WebGPU pick loop executes", () => {
+  // The consequence the DEFERRED entry did not name. `pass: 8` is
+  // `CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW` on this fork, and the WebGPU
+  // pick pass never executes that slot — so the collection pick commands, each
+  // of which is a dedicated `pickOnly` draw and therefore the ONLY carrier of
+  // its collection's pick IDs, were binned where nothing dispatches them.
+  const pickPass = readNormalized(
+    "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPickPass.ts",
+  );
+  const executed = new Set(
+    [...pickPass.matchAll(/execute\(Pass\.([A-Z0-9_]+)\)/g)].map((m) => m[1]),
+  );
+  assert.ok(
+    executed.has("OPAQUE"),
+    "the pick loop no longer executes Pass.OPAQUE — the collection pick commands need a new home",
+  );
+  assert.equal(
+    executed.has("CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW"),
+    false,
+    "the pick loop now executes the IGNORE_SHOW slot; the premise of this fix changed and the row must be re-read",
+  );
+  for (const file of [
+    "WebGPUPointPrimitiveRenderer.js",
+    "WebGPUBillboardRenderer.js",
+    "WebGPUPolylineRenderer.js",
+  ]) {
+    const code = readNormalized(`${WEBGPU_RENDERER_DIR}/${file}`);
+    assert.match(
+      code,
+      /pass: Pass\.OPAQUE,\n\s*owner: collection,/,
+      `${file}: the pick command's pass is not Pass.OPAQUE — its own comment says pick always runs in the OPAQUE pass`,
+    );
+  }
+});
+
+/**
+ * NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT — the SECOND half of the class, filed
+ * rather than fixed, and pinned by VALUE so it cannot move unnoticed.
+ *
+ * The `DEFERRED_WORK` entry called these sites "comment-only" drift on the
+ * strength of a doc comment in `WebGPUSceneRenderer3DTilePasses.ts` that says
+ * "each pushes a `pass = 7` stencil-write command". The CODE a few lines away
+ * calls `runPass(Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW)` — 8 — and
+ * reads `frustumCommands.indices[...IGNORE_SHOW]` to decide whether the invert
+ * pass has stencil data at all. So the comment is the stale artifact, not the
+ * label: these are the SAME off-by-one, and the four classifier renderers are
+ * pushing one slot low.
+ *
+ * They are NOT corrected here. Moving them changes 3D-Tile classification and
+ * invert-classification dispatch across four renderers, and this lane has no
+ * browser to verify that with. What CO-12 did do is replace each literal with
+ * the enum member it ACTUALLY equals — value-identical, drift now readable —
+ * and pin that state below, so the row gets closed deliberately instead of
+ * drifting a third time.
+ */
+const CLASSIFIER_DRIFT_SITES = [
+  {
+    file: "WebGPUGroundPrimitiveRenderer.js",
+    text: "groundPasses.push(Pass.CESIUM_3D_TILE);",
+    intended: "CESIUM_3D_TILE_CLASSIFICATION",
+  },
+  {
+    file: "WebGPUGroundPrimitiveRenderer.js",
+    text: "pass: Pass.CESIUM_3D_TILE_CLASSIFICATION,",
+    intended: "CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW",
+  },
+  {
+    file: "WebGPUGroundPolylineRenderer.js",
+    text: "groundPasses.push(Pass.CESIUM_3D_TILE);",
+    intended: "CESIUM_3D_TILE_CLASSIFICATION",
+  },
+  {
+    file: "WebGPUGroundPolylineRenderer.js",
+    text: "pass: Pass.CESIUM_3D_TILE_CLASSIFICATION,",
+    intended: "CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW",
+  },
+  {
+    file: "WebGPUVector3DTilePrimitiveRenderer.js",
+    text: "groundPasses.push(Pass.CESIUM_3D_TILE);",
+    intended: "CESIUM_3D_TILE_CLASSIFICATION",
+  },
+  {
+    file: "WebGPUVector3DTilePrimitiveRenderer.js",
+    text: "pass: Pass.CESIUM_3D_TILE_CLASSIFICATION,",
+    intended: "CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW",
+  },
+  {
+    file: "WebGPUVector3DTileClampedPolylinesRenderer.js",
+    text: "const PASS_CESIUM_3D_TILE_CLASSIFICATION_DRIFTED = Pass.CESIUM_3D_TILE;",
+    intended: "CESIUM_3D_TILE_CLASSIFICATION",
+  },
+  {
+    file: "WebGPUVector3DTileClampedPolylinesRenderer.js",
+    text: "pass: Pass.CESIUM_3D_TILE_CLASSIFICATION,",
+    intended: "CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW",
+  },
+];
+
+test("CO-12: the classifier pass-slot drift is recorded, marked, and still exactly one slot low", () => {
+  for (const site of CLASSIFIER_DRIFT_SITES) {
+    const code = readNormalized(`${WEBGPU_RENDERER_DIR}/${site.file}`);
+    assert.ok(
+      code.includes(site.text),
+      `${site.file}: expected the recorded drifted site \`${site.text}\`. If it was CORRECTED, that is good news — update this table and the DEFERRED_WORK row together.`,
+    );
+    // The drift is exactly one slot, every time. That is the whole reason to
+    // believe it is one insertion's worth of rot rather than eight independent
+    // mistakes, and it is what makes the fix mechanical.
+    const actualName = site.text.match(/Pass\.([A-Z0-9_]+)/)[1];
+    assert.equal(
+      PASS[site.intended] - PASS[actualName],
+      1,
+      `${site.file}: ${actualName} is no longer exactly one slot below the intended ${site.intended}; the drift changed shape and the fix is no longer mechanical`,
+    );
+  }
+  for (const file of new Set(CLASSIFIER_DRIFT_SITES.map((s) => s.file))) {
+    assert.match(
+      readNormalized(`${WEBGPU_RENDERER_DIR}/${file}`),
+      /NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT/,
+      `${file}: the drift marker is gone — a reader would see a plausible-looking enum member with no warning`,
+    );
+  }
+});
+
+// ── CO-12: the three added probe lanes ──────────────────────────────────────
+//
+// `C15-G5` certified with ONE camera and NEITHER of the two controls its own
+// exit gate declared mandatory; `C15-G8`'s gate text names lanes the probe
+// could not run. The lanes exist now, so what has to be pinned is that they
+// cannot be satisfied by the wrong world:
+//
+//   * three captures at ONE camera diff to nothing and look like a perfect
+//     orbit;
+//   * an SH-off control that never actually switched SH off reports the same
+//     0.000% the SH-on run did, which is the BEST score the gate can print;
+//   * a corruption control that never reached the GPU reports "no change",
+//     which is indistinguishable from "the covariance does not matter".
+//
+// Each of those is a rule below, and each has a mutant that commits it.
+
+const AZIMUTH_PITCH_DEGREES = -30;
+
+/** The view direction the probe's own camera derivation produces. */
+function azimuthDirection(headingDegrees) {
+  const p = (AZIMUTH_PITCH_DEGREES * Math.PI) / 180;
+  const h = (headingDegrees * Math.PI) / 180;
+  return [Math.cos(p) * Math.cos(h), Math.cos(p) * Math.sin(h), Math.sin(p)];
+}
+
+function azimuthLeg(overrides = {}) {
+  const added = Math.round(CANVAS_PIXELS * 0.19141);
+  return {
+    canvasPixels: CANVAS_PIXELS,
+    azimuths: AZIMUTH_HEADINGS.map((heading, index) => ({
+      headingDegrees: heading,
+      pngKey: `k${heading}`,
+      viewDirection: azimuthDirection(heading),
+      canvasPixels: CANVAS_PIXELS,
+      backgroundForeground: 0,
+      added: { changed: added, edgeFraction: 0.08, luminanceStdDev: 32 },
+      determinismChanged: 0,
+      sortQuiesced: true,
+      // A 120 deg orbit re-projects the whole cloud; half the footprint moving
+      // is a deliberately unremarkable healthy value.
+      changedVsPrevious: index === 0 ? null : Math.round(added * 0.5),
+    })),
+    ...overrides,
+  };
+}
+
+const azimuthDiffs = (fractions) =>
+  AZIMUTH_HEADINGS.map((heading, index) => ({
+    headingDegrees: heading,
+    mismatchFraction: fractions[index],
+  }));
+
+function azimuthInput(overrides = {}) {
+  return {
+    expectWebgpu: true,
+    referenceBlind: false,
+    presenceState: "present",
+    asset: ASSET,
+    reference: azimuthLeg(),
+    webgpu: azimuthLeg(),
+    diffs: azimuthDiffs([0.0, 0.0002, 0.0001]),
+    ...overrides,
+  };
+}
+
+function shOffControl(overrides = {}) {
+  return {
+    supported: true,
+    why: "",
+    canvasPixels: CANVAS_PIXELS,
+    originalDegree: 3,
+    flipMs: 3_100,
+    azimuths: AZIMUTH_HEADINGS.map((heading) => ({
+      headingDegrees: heading,
+      // The recorded pre-C15-G5 residual: SH off means the WebGPU leg is the
+      // pre-G5 renderer again, so the cross-backend diff comes back.
+      crossBackendMismatch: 0.02574,
+      sameBackendMismatch: 0.02574,
+    })),
+    restored: true,
+    restoredChanged: 0,
+    ...overrides,
+  };
+}
+
+function shOffInput(overrides = {}) {
+  return {
+    expectWebgpu: true,
+    referenceBlind: false,
+    presenceState: "present",
+    asset: ASSET,
+    control: shOffControl(),
+    ...overrides,
+  };
+}
+
+function covarianceControl(overrides = {}) {
+  return {
+    supported: true,
+    why: "",
+    canvasPixels: CANVAS_PIXELS,
+    splatsCorruptedSingle: 1,
+    splatsCorruptedBulk: 14,
+    numSplats: 27,
+    cleanAddedChanged: Math.round(CANVAS_PIXELS * 0.19141),
+    // One splat of 27 at 4x area, comfortably over the 10x-determinism floor.
+    singleChanged: Math.round(CANVAS_PIXELS * 0.012),
+    // Half the cloud at 4x area, comfortably over the 1% cube gate.
+    bulkChanged: Math.round(CANVAS_PIXELS * 0.09),
+    restored: true,
+    restoredChanged: 0,
+    ...overrides,
+  };
+}
+
+function covarianceInput(overrides = {}) {
+  return {
+    expectWebgpu: true,
+    referenceBlind: false,
+    presenceState: "present",
+    asset: ASSET,
+    control: covarianceControl(),
+    ...overrides,
+  };
+}
+
+const ARMED_STAGE = Object.freeze({
+  ...STAGE,
+  id: "C15-G8-fixture",
+  controls: Object.freeze({
+    ...STAGE.controls,
+    azimuth: Object.freeze({
+      scored: true,
+      deferredTo: null,
+      reason: "fixture",
+    }),
+  }),
+});
+
+const CO12_REAL = Object.freeze({
+  evaluateAzimuthLane,
+  evaluateShOffControl,
+  evaluateCovarianceControl,
+});
+
+const CO12_RULES = {
+  "three captures at ONE camera are STRUCTURAL, not a perfect orbit": (
+    impl,
+  ) => {
+    const frozen = azimuthLeg();
+    for (const entry of frozen.azimuths) {
+      entry.viewDirection = azimuthDirection(0);
+    }
+    const lane = impl.evaluateAzimuthLane(
+      azimuthInput({ reference: frozen, webgpu: frozen }),
+    );
+    assert.ok(
+      lane.structural.some((item) => /cameras-not-separated/.test(item)),
+      `expected cameras-not-separated; got ${JSON.stringify(lane.structural)}`,
+    );
+    assert.equal(lane.failures.length, 0, "a blind lane does not file defects");
+  },
+
+  "an orbit that did not change the picture is STRUCTURAL": (impl) => {
+    const stuck = azimuthLeg();
+    for (const entry of stuck.azimuths) {
+      if (entry.changedVsPrevious !== null) entry.changedVsPrevious = 3;
+    }
+    const lane = impl.evaluateAzimuthLane(azimuthInput({ reference: stuck }));
+    assert.ok(
+      lane.structural.some((item) => /frames-not-distinct/.test(item)),
+      `expected frames-not-distinct; got ${JSON.stringify(lane.structural)}`,
+    );
+  },
+
+  "a partial orbit is STRUCTURAL, not two thirds of a gate": (impl) => {
+    const short = azimuthLeg();
+    short.azimuths = short.azimuths.slice(0, 2);
+    const lane = impl.evaluateAzimuthLane(azimuthInput({ webgpu: short }));
+    assert.ok(
+      lane.structural.some((item) => /azimuth:incomplete/.test(item)),
+      `expected azimuth:incomplete; got ${JSON.stringify(lane.structural)}`,
+    );
+  },
+
+  "an azimuth with no cross-backend diff is STRUCTURAL": (impl) => {
+    const lane = impl.evaluateAzimuthLane(
+      azimuthInput({ diffs: azimuthDiffs([0.0, null, 0.0001]) }),
+    );
+    assert.ok(
+      lane.structural.some((item) => /azimuth:no-diff-measured/.test(item)),
+      `expected azimuth:no-diff-measured; got ${JSON.stringify(lane.structural)}`,
+    );
+  },
+
+  "the azimuth lane refuses against a WebGPU leg that drew nothing": (impl) => {
+    const lane = impl.evaluateAzimuthLane(
+      azimuthInput({ presenceState: "absent" }),
+    );
+    assert.equal(lane.scored, false);
+    assert.equal(lane.failures.length, 0);
+    assert.equal(lane.structural.length, 0);
+  },
+
+  "the azimuth lane refuses against a blind reference": (impl) => {
+    const lane = impl.evaluateAzimuthLane(
+      azimuthInput({ referenceBlind: true }),
+    );
+    assert.ok(lane.structural.some((item) => /reference-blind/.test(item)));
+  },
+
+  "an over-threshold azimuth is a FAIL once the stage arms it": (impl) => {
+    const lane = impl.evaluateAzimuthLane(
+      azimuthInput({
+        stage: ARMED_STAGE,
+        diffs: azimuthDiffs([0.0, 0.0002, 0.031]),
+      }),
+    );
+    assert.equal(lane.gated, true);
+    assert.ok(
+      lane.failures.some((item) =>
+        /mismatch-above-threshold@240deg/.test(item),
+      ),
+      `expected the 240 deg azimuth to fail; got ${JSON.stringify(lane.failures)}`,
+    );
+  },
+
+  "the SHIPPED stage records the azimuth numbers without gating them": (
+    impl,
+  ) => {
+    const lane = impl.evaluateAzimuthLane(
+      azimuthInput({ diffs: azimuthDiffs([0.031, 0.031, 0.031]) }),
+    );
+    assert.equal(lane.gated, false);
+    assert.equal(lane.failures.length, 0);
+    assert.equal(lane.notes.length, 1);
+    assert.match(lane.notes[0], /RECORDED, NOT GATED/);
+  },
+
+  "an SH-off leg that still matches WebGL is a FAIL, not a perfect score": (
+    impl,
+  ) => {
+    const lane = impl.evaluateShOffControl(
+      shOffInput({
+        control: shOffControl({
+          azimuths: AZIMUTH_HEADINGS.map((heading) => ({
+            headingDegrees: heading,
+            crossBackendMismatch: 0,
+            sameBackendMismatch: 0,
+          })),
+        }),
+      }),
+    );
+    assert.ok(
+      lane.failures.some((item) => /sh-term-vacuous/.test(item)),
+      `expected sh-term-vacuous; got ${JSON.stringify(lane.failures)}`,
+    );
+  },
+
+  "one risen azimuth out of three is not enough": (impl) => {
+    const lane = impl.evaluateShOffControl(
+      shOffInput({
+        control: shOffControl({
+          azimuths: [
+            { headingDegrees: 0, crossBackendMismatch: 0.02574 },
+            { headingDegrees: 120, crossBackendMismatch: 0.0001 },
+            { headingDegrees: 240, crossBackendMismatch: 0.0 },
+          ],
+        }),
+      }),
+    );
+    assert.ok(lane.failures.some((item) => /sh-term-vacuous/.test(item)));
+  },
+
+  "two risen azimuths out of three IS enough (the row's own wording)": (
+    impl,
+  ) => {
+    const lane = impl.evaluateShOffControl(
+      shOffInput({
+        control: shOffControl({
+          azimuths: [
+            { headingDegrees: 0, crossBackendMismatch: 0.02574 },
+            { headingDegrees: 120, crossBackendMismatch: 0.021 },
+            // A view-dependent term is allowed to vanish at one camera.
+            { headingDegrees: 240, crossBackendMismatch: 0.0001 },
+          ],
+        }),
+      }),
+    );
+    assert.equal(lane.failures.length, 0);
+    assert.equal(lane.gated, true);
+  },
+
+  "an SH-off control that did not execute is STRUCTURAL, never silence": (
+    impl,
+  ) => {
+    const lane = impl.evaluateShOffControl(
+      shOffInput({ control: { supported: false, why: "no SH to switch off" } }),
+    );
+    assert.ok(
+      lane.structural.some((item) => /sh-off:not-executed/.test(item)),
+      `expected sh-off:not-executed; got ${JSON.stringify(lane.structural)}`,
+    );
+    assert.equal(lane.failures.length, 0);
+  },
+
+  "an SH-off control that does not restore the renderer is STRUCTURAL": (
+    impl,
+  ) => {
+    const lane = impl.evaluateShOffControl(
+      shOffInput({
+        control: shOffControl({
+          restored: true,
+          restoredChanged: Math.round(CANVAS_PIXELS * 0.05),
+        }),
+      }),
+    );
+    assert.ok(
+      lane.structural.some((item) => /sh-off:not-restored/.test(item)),
+      `expected sh-off:not-restored; got ${JSON.stringify(lane.structural)}`,
+    );
+  },
+
+  "the SH-off control is recorded but NOT gated on tower": (impl) => {
+    const lane = impl.evaluateShOffControl(
+      shOffInput({
+        asset: ASSETS.tower,
+        control: shOffControl({
+          azimuths: AZIMUTH_HEADINGS.map((heading) => ({
+            headingDegrees: heading,
+            crossBackendMismatch: 0,
+          })),
+        }),
+      }),
+    );
+    assert.equal(
+      lane.failures.length,
+      0,
+      "tower has no derived floor to gate on",
+    );
+    assert.equal(lane.notes.length, 1);
+    assert.match(lane.notes[0], /RECORDED, NOT GATED/);
+  },
+
+  "a corruption the parity gate cannot see is a FAIL": (impl) => {
+    const lane = impl.evaluateCovarianceControl(
+      covarianceInput({
+        control: covarianceControl({
+          bulkChanged: Math.round(CANVAS_PIXELS * 0.004),
+        }),
+      }),
+    );
+    assert.ok(
+      lane.failures.some((item) => /gate-cannot-fail/.test(item)),
+      `expected gate-cannot-fail; got ${JSON.stringify(lane.failures)}`,
+    );
+  },
+
+  "an invisible single-triple corruption is a FAIL on the tight leg": (
+    impl,
+  ) => {
+    const lane = impl.evaluateCovarianceControl(
+      covarianceInput({
+        control: covarianceControl({ singleChanged: 12 }),
+      }),
+    );
+    assert.ok(
+      lane.failures.some((item) => /single-triple-invisible/.test(item)),
+      `expected single-triple-invisible; got ${JSON.stringify(lane.failures)}`,
+    );
+  },
+
+  "the single-triple arm is NOT gated on tower (it is below the resolution)": (
+    impl,
+  ) => {
+    const lane = impl.evaluateCovarianceControl(
+      covarianceInput({
+        asset: ASSETS.tower,
+        control: covarianceControl({
+          numSplats: ASSETS.tower.expectedSplats,
+          cleanAddedChanged: Math.round(CANVAS_PIXELS * 0.0408),
+          singleChanged: 0,
+          bulkChanged: Math.round(CANVAS_PIXELS * 0.05),
+        }),
+      }),
+    );
+    assert.equal(
+      lane.failures.length,
+      0,
+      "one splat of 286,868 cannot move a measurable number of pixels; gating it would gate noise",
+    );
+  },
+
+  "an irreversible corruption is STRUCTURAL": (impl) => {
+    const lane = impl.evaluateCovarianceControl(
+      covarianceInput({
+        control: covarianceControl({
+          restoredChanged: Math.round(CANVAS_PIXELS * 0.02),
+        }),
+      }),
+    );
+    assert.ok(
+      lane.structural.some((item) => /covariance:not-restored/.test(item)),
+      `expected covariance:not-restored; got ${JSON.stringify(lane.structural)}`,
+    );
+  },
+
+  "a corruption that never became resident is STRUCTURAL": (impl) => {
+    const lane = impl.evaluateCovarianceControl(
+      covarianceInput({
+        control: { supported: false, why: "never became resident" },
+      }),
+    );
+    assert.ok(
+      lane.structural.some((item) => /covariance:not-executed/.test(item)),
+      `expected covariance:not-executed; got ${JSON.stringify(lane.structural)}`,
+    );
+  },
+
+  "every lane folds into the verdict": (impl) => {
+    const failing = impl.evaluateCovarianceControl(
+      covarianceInput({
+        control: covarianceControl({ bulkChanged: 0 }),
+      }),
+    );
+    const folded = foldGsplatVerdict({
+      reference: { failures: [], structural: [] },
+      webgpu: { failures: [], structural: [], notes: [] },
+      controls: [failing],
+    });
+    assert.equal(folded.exitCode, EXIT_CODE.FAIL);
+    const structural = impl.evaluateShOffControl(
+      shOffInput({ control: { supported: false, why: "x" } }),
+    );
+    assert.equal(
+      foldGsplatVerdict({
+        reference: { failures: [], structural: [] },
+        webgpu: { failures: [], structural: [], notes: [] },
+        controls: [structural],
+      }).exitCode,
+      EXIT_CODE.STRUCTURAL,
+    );
+  },
+};
+
+for (const [name, rule] of Object.entries(CO12_RULES)) {
+  test(`CO-12 rule: ${name}`, () => rule(CO12_REAL));
+}
+
+function firstCo12RuleThatRejects(impl) {
+  for (const [ruleName, rule] of Object.entries(CO12_RULES)) {
+    try {
+      rule(impl);
+    } catch {
+      return ruleName;
+    }
+  }
+  return null;
+}
+
+test("CO-12 meta: the real lane implementations survive every rule", () => {
+  assert.equal(firstCo12RuleThatRejects(CO12_REAL), null);
+});
+
+const CO12_MUTANTS = {
+  "the azimuth lane drops the camera-separation guard": {
+    ...CO12_REAL,
+    evaluateAzimuthLane(input) {
+      const real = CO12_REAL.evaluateAzimuthLane(input);
+      if (real.structural.some((item) => /cameras-not-separated/.test(item))) {
+        return CO12_REAL.evaluateAzimuthLane({
+          ...input,
+          reference: azimuthLeg(),
+          webgpu: azimuthLeg(),
+        });
+      }
+      return real;
+    },
+  },
+  "the azimuth lane drops the picture-changed guard": {
+    ...CO12_REAL,
+    evaluateAzimuthLane(input) {
+      const real = CO12_REAL.evaluateAzimuthLane(input);
+      if (real.structural.some((item) => /frames-not-distinct/.test(item))) {
+        return CO12_REAL.evaluateAzimuthLane({
+          ...input,
+          reference: azimuthLeg(),
+        });
+      }
+      return real;
+    },
+  },
+  "a partial orbit is quietly scored on whatever arrived": {
+    ...CO12_REAL,
+    evaluateAzimuthLane(input) {
+      const real = CO12_REAL.evaluateAzimuthLane(input);
+      if (real.structural.some((item) => /azimuth:incomplete/.test(item))) {
+        return { ...real, structural: [], failures: [], scored: true };
+      }
+      return real;
+    },
+  },
+  "an unexecuted SH-off control passes silently": {
+    ...CO12_REAL,
+    evaluateShOffControl(input) {
+      const real = CO12_REAL.evaluateShOffControl(input);
+      if (real.structural.some((item) => /sh-off:not-executed/.test(item))) {
+        return { ...real, structural: [], failures: [] };
+      }
+      return real;
+    },
+  },
+  "the SH-off control accepts a single risen azimuth": {
+    ...CO12_REAL,
+    evaluateShOffControl(input) {
+      const real = CO12_REAL.evaluateShOffControl(input);
+      if (real.failures.some((item) => /sh-term-vacuous/.test(item))) {
+        const risen = (input.control?.azimuths ?? []).filter(
+          (a) => (a.crossBackendMismatch ?? 0) > 0,
+        );
+        if (risen.length >= 1) return { ...real, failures: [] };
+      }
+      return real;
+    },
+  },
+  "the SH-off restoration arm is dropped": {
+    ...CO12_REAL,
+    evaluateShOffControl(input) {
+      const real = CO12_REAL.evaluateShOffControl(input);
+      if (real.structural.some((item) => /sh-off:not-restored/.test(item))) {
+        return CO12_REAL.evaluateShOffControl({
+          ...input,
+          control: { ...input.control, restoredChanged: 0 },
+        });
+      }
+      return real;
+    },
+  },
+  "the covariance bulk arm is dropped, leaving only the single one": {
+    ...CO12_REAL,
+    evaluateCovarianceControl(input) {
+      const real = CO12_REAL.evaluateCovarianceControl(input);
+      return {
+        ...real,
+        failures: real.failures.filter(
+          (item) => !/gate-cannot-fail/.test(item),
+        ),
+      };
+    },
+  },
+  "the covariance single arm is gated on EVERY asset": {
+    ...CO12_REAL,
+    evaluateCovarianceControl(input) {
+      const real = CO12_REAL.evaluateCovarianceControl(input);
+      const single = (input.control?.singleChanged ?? 0) / CANVAS_PIXELS;
+      if (
+        real.gated &&
+        single < PREDICT.negativeControlMargin * PREDICT.determinismFraction &&
+        !real.failures.some((item) => /single-triple-invisible/.test(item))
+      ) {
+        return {
+          ...real,
+          failures: [...real.failures, "covariance:single-triple-invisible"],
+        };
+      }
+      return real;
+    },
+  },
+  "an irreversible corruption is treated as a pass": {
+    ...CO12_REAL,
+    evaluateCovarianceControl(input) {
+      const real = CO12_REAL.evaluateCovarianceControl(input);
+      if (
+        real.structural.some((item) => /covariance:not-restored/.test(item))
+      ) {
+        return { ...real, structural: [] };
+      }
+      return real;
+    },
+  },
+};
+
+for (const [mutantName, impl] of Object.entries(CO12_MUTANTS)) {
+  test(`CO-12 mutant rejected: ${mutantName}`, () => {
+    assert.notEqual(
+      firstCo12RuleThatRejects(impl),
+      null,
+      `mutant "${mutantName}" survived every CO-12 rule`,
+    );
+  });
+}
+
+// ── CO-12: the numbers that must stay DERIVED, not adjusted ─────────────────
+
+test("CO-12 DERIVED: the azimuth separation is computed from the probe's own camera", () => {
+  // Re-derived here from the formula rather than copied: if someone changes the
+  // pitch or the heading step in the probe and not the prediction, this is what
+  // notices. `acos(cos^2 p cos d + sin^2 p)` at p = -30, d = 120.
+  const p = (AZIMUTH_PITCH_DEGREES * Math.PI) / 180;
+  const d = ((AZIMUTH_HEADINGS[1] - AZIMUTH_HEADINGS[0]) * Math.PI) / 180;
+  const derived =
+    (Math.acos(Math.cos(p) ** 2 * Math.cos(d) + Math.sin(p) ** 2) * 180) /
+    Math.PI;
+  assert.ok(
+    Math.abs(derived - PREDICT.azimuthSeparationDegrees) < 1e-9,
+    `PREDICT.azimuthSeparationDegrees (${PREDICT.azimuthSeparationDegrees}) is not the angle the probe's camera actually produces (${derived})`,
+  );
+  // And it must agree with the vector helper the lane uses.
+  assert.ok(
+    Math.abs(
+      angleBetweenDegrees(azimuthDirection(0), azimuthDirection(120)) - derived,
+    ) < 1e-9,
+  );
+  assert.ok(
+    Math.abs(
+      angleBetweenDegrees(azimuthDirection(120), azimuthDirection(240)) -
+        derived,
+    ) < 1e-9,
+  );
+  assert.equal(PREDICT.azimuthSeparationDegrees > 90, true);
+});
+
+test("CO-12: angleBetweenDegrees never lets an unmeasured camera satisfy the guard", () => {
+  for (const bad of [
+    [undefined, [1, 0, 0]],
+    [[1, 0, 0], null],
+    [
+      [0, 0, 0],
+      [1, 0, 0],
+    ],
+    [
+      [Number.NaN, 0, 0],
+      [1, 0, 0],
+    ],
+    [
+      [1, 0],
+      [1, 0, 0],
+    ],
+  ]) {
+    const value = angleBetweenDegrees(bad[0], bad[1]);
+    assert.equal(Number.isNaN(value), true);
+    assert.equal(
+      Math.abs(value - PREDICT.azimuthSeparationDegrees) <=
+        PREDICT.azimuthSeparationToleranceDegrees,
+      false,
+    );
+  }
+});
+
+test("CO-12 DERIVED: the single-triple arm is gated exactly where it is resolvable", () => {
+  // The arithmetic that decides which assets carry the single arm, restated so
+  // the choice is checkable rather than asserted. One corrupted splat can only
+  // move pixels inside its own footprint.
+  const floor = PREDICT.negativeControlMargin * PREDICT.determinismFraction;
+  const perSplat = {
+    sh_unit_cube: 0.19141 / ASSETS.sh_unit_cube.expectedSplats,
+    tower: 0.0408 / ASSETS.tower.expectedSplats,
+  };
+  assert.ok(
+    perSplat.sh_unit_cube > floor,
+    `the cube's per-splat footprint (${perSplat.sh_unit_cube}) must exceed the ${floor} floor, or the single arm gates noise`,
+  );
+  assert.ok(
+    perSplat.tower < floor / 100,
+    `tower's per-splat footprint (${perSplat.tower}) is orders below the floor — gating it would gate noise`,
+  );
+  assert.deepEqual(STAGE.controls.covariance.singleArmGatedAssets, [
+    "sh_unit_cube",
+  ]);
+  assert.deepEqual(STAGE.controls.shOff.gatedAssets, ["sh_unit_cube"]);
+});
+
+test("CO-12: the corruption factor is an exact half-float exponent shift", () => {
+  // 4 = +2 exponent. A non-power-of-two would make the corrupter's exponent
+  // arithmetic approximate, and an approximate corruption is not a control.
+  const shift = Math.log2(PREDICT.covarianceScaleFactor);
+  assert.equal(Number.isInteger(shift), true);
+  assert.equal(shift > 0, true);
+  assert.equal(PREDICT.covarianceBulkStride >= 2, true);
+});
+
+test("CO-12: the lane vocabulary is pinned", () => {
+  assert.deepEqual(CONTROL_LANES, [
+    "azimuth",
+    "sh-off-vacuity",
+    "covariance-vacuity",
+  ]);
+  assert.deepEqual(AZIMUTH_HEADINGS, [0, 120, 240]);
+  assert.equal(
+    AZIMUTH_HEADINGS[0],
+    0,
+    "heading 0 must stay FIRST — every recorded C15-G* number was taken there",
+  );
+});
+
+// ── CO-12: probe-source anchors for the added lanes ─────────────────────────
+
+test("CO-12 probe: every azimuth gets its own reference frame and its own quiescence", () => {
+  const from = PROBE_CODE.indexOf(
+    "for (let i = 1; i < azimuthHeadings.length; i++) {",
+  );
+  assert.notEqual(from, -1, `${PROBE_PATH}: the orbit loop is gone`);
+  const to = PROBE_CODE.indexOf("if (!runControls) {", from);
+  assert.ok(to > from, `${PROBE_PATH}: the orbit loop lost its terminator`);
+  const body = PROBE_CODE.slice(from, to);
+  assert.match(body, /frameCameraAt\(heading\)/);
+  assert.match(
+    body,
+    /tileset\.show = false;[\s\S]*?const off = captureNow\(\);/,
+    "an azimuth scored against another azimuth's reference frame measures the camera move, not the splats",
+  );
+  assert.match(
+    body,
+    /await waitForSortQuiescence\(/,
+    "a 120 deg camera move is exactly what triggers a steady sort; without re-quiescing, C15-G4b's defect returns at azimuths 1 and 2",
+  );
+  assert.match(
+    body,
+    /const a = captureNow\(\);\n\s*const b = captureNow\(\);/,
+    "the per-azimuth determinism pair must be same-task too",
+  );
+  assert.match(body, /changedVsPrevious: changedPixelCount\(/);
+});
+
+test("CO-12 probe: the SH-off control flips the ENGINE's own SH seam and puts it back", () => {
+  assert.match(
+    PROBE_CODE,
+    /controlled\._sphericalHarmonicsDegree = 0;/,
+    "the control must drive the degree the engine resolves SH from, not a probe-local flag",
+  );
+  assert.match(
+    PROBE_CODE,
+    /controlled\._sphericalHarmonicsDegree = originalDegree;/,
+    "the control must be withdrawn",
+  );
+  assert.match(
+    PROBE_CODE,
+    /resourcesShEnabled === false &&\s*\n?\s*!!controlled\._webgpuCache\?\.pipeline/,
+    "waiting only on the flag would capture during the cold variant compile, when nothing draws at all",
+  );
+  assert.match(PROBE_CODE, /restoredChanged: changedPixelCount\(/);
+});
+
+test("CO-12 probe: the corruption is applied to a COPY, never in place", () => {
+  assert.match(
+    PROBE_CODE,
+    /const data = payload\.data\.slice\(\);/,
+    "the payload must be copied — an in-place corruption cannot be withdrawn, and the restore arm would be measuring nothing",
+  );
+  assert.doesNotMatch(
+    PROBE_CODE,
+    /payload\.data\[[^\]]+\] =/,
+    "an in-place write to the real payload destroys the data every later reading depends on",
+  );
+  assert.match(
+    PROBE_CODE,
+    /controlled\._webgpuCache\?\.splatSourceToken === nextPayload/,
+    "residency must be waited on through the engine's own producer-identity dirty signal, not a frame count",
+  );
+  assert.match(
+    PROBE_CODE,
+    /const restoredUpload = await publish\(payload\);/,
+    "the original payload object must be republished, so the restore is a reference swap",
+  );
+  // The corrupter must not manufacture Inf/NaN: an exploded quad would satisfy
+  // this control for a reason unrelated to the covariance being read.
+  assert.match(PROBE_CODE, /if \(exponent === 0 \|\| exponent === 0x1f\) \{/);
+  assert.match(
+    PROBE_CODE,
+    /Math\.min\(30, Math\.max\(1, exponent \+ expDelta\)\)/,
+  );
+});
+
+test("CO-12 probe: the controls are WebGPU-only and flip-mode-only", () => {
+  assert.match(
+    PROBE_CODE,
+    /const webgpu = await runBackend\(\s*\n\s*browser,\s*\n\s*"webgpu",\s*\n\s*asset,\s*\n\s*derivedBudget,\s*\n\s*EXPECT_WEBGPU,\s*\n\s*\);/,
+    "the controls must ride the flip flag, not run in the default current-state mode",
+  );
+  const webglCall = PROBE_CODE.slice(
+    PROBE_CODE.indexOf("const webgl = await runBackend("),
+    PROBE_CODE.indexOf("const derivedBudget"),
+  );
+  assert.match(
+    webglCall,
+    /\n\s*false,\n\s*\);/,
+    "the WebGL leg is the REFERENCE — corrupting it would be corrupting the thing the measurement is against",
+  );
+  assert.match(PROBE_CODE, /runControls: runControls === true,/);
+});
+
+test("CO-12 probe: the three lanes are evaluated and folded, not merely printed", () => {
+  assert.match(PROBE_CODE, /const azimuth = evaluateAzimuthLane\(\{/);
+  assert.match(PROBE_CODE, /const shOff = evaluateShOffControl\(\{/);
+  assert.match(PROBE_CODE, /const covariance = evaluateCovarianceControl\(\{/);
+  assert.match(
+    PROBE_CODE,
+    /controls: \[azimuth, shOff, covariance\],/,
+    "a lane that is evaluated and not folded cannot change the exit code",
+  );
+  // Each lane must inherit the same two gatekeepers the parity leg has.
+  for (const lane of [
+    "evaluateAzimuthLane",
+    "evaluateShOffControl",
+    "evaluateCovarianceControl",
+  ]) {
+    const at = PROBE_CODE.indexOf(`${lane}({`);
+    const block = PROBE_CODE.slice(at, PROBE_CODE.indexOf("});", at));
+    assert.match(block, /referenceBlind: reference\.blind/, `${lane}`);
+    assert.match(block, /presenceState: webgpuLeg\.presence\.state/, `${lane}`);
+  }
+});

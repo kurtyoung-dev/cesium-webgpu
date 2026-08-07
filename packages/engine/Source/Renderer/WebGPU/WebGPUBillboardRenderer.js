@@ -27,6 +27,7 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Pass from "../Pass.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
@@ -1327,8 +1328,7 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   // still composite correctly in the translucent pass. A future refinement
   // would emit two commands (one per pass) when the collection is mixed.
   const blendOpt = collection._blendOption;
-  const billboardPass =
-    blendOpt === 0 ? 8 /* Pass.OPAQUE */ : 9; /* Pass.TRANSLUCENT */
+  const billboardPass = blendOpt === 0 ? Pass.OPAQUE : Pass.TRANSLUCENT;
 
   // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the source
   // JS-side renderState from BillboardCollection (`_rsOpaque` /
@@ -1340,7 +1340,7 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   // WebGL. The `pass: OPAQUE` emit uses `_rsOpaque`; every other
   // emit (TRANSLUCENT or OPAQUE_AND_TRANSLUCENT) uses `_rsTranslucent`.
   const colorRenderState =
-    billboardPass === 8 /* Pass.OPAQUE */
+    billboardPass === Pass.OPAQUE
       ? collection._rsOpaque
       : collection._rsTranslucent;
 
@@ -1366,7 +1366,7 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   });
 
   // C11-157 Slice B — OIT reachability for translucent billboards. When the
-  // command lands in Pass.TRANSLUCENT (9), attach the OIT variant inputs so
+  // command lands in Pass.TRANSLUCENT, attach the OIT variant inputs so
   // executeTranslucentPass auto-builds the MRT accumulation pipeline under the
   // FAR-003 gate. Reuses the base color pipeline's SHARED layout + vertex
   // layout + primitive/depth state (so the pre-baked bind group + per-slice
@@ -1374,10 +1374,7 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   // accumulation targets. Inert (never read) when the gate is off → gate-OFF
   // byte-identical. The billboard FS returns a `FragOutput` struct
   // (@location(0) color) — handled by injectOITOutput's Slice-A struct branch.
-  if (
-    billboardPass === 9 /* Pass.TRANSLUCENT */ &&
-    defined(entry.oitShaderCode)
-  ) {
+  if (billboardPass === Pass.TRANSLUCENT && defined(entry.oitShaderCode)) {
     cache.colorCommand._shaderCode = entry.oitShaderCode;
     cache.colorCommand._pipelineConfig = {
       label: "OIT Billboard",
@@ -1582,7 +1579,7 @@ function _pushBillboardPickCommand(
     vertexBuffers: [pickBuffer],
     vertexCount: VERTICES_PER_QUAD,
     instanceCount: safePickCount,
-    pass: 8,
+    pass: Pass.OPAQUE,
     owner: collection,
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,

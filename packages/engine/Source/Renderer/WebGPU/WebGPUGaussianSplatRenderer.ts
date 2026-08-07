@@ -15,6 +15,7 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import BoundingSphere from "../../Core/BoundingSphere.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import type { WebGPUPipelineConfig } from "./WebGPUDrawCommand.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -184,6 +185,13 @@ interface GaussianSplatCache {
   // logDepthEnabled) so a flip rebuilds the pick pipeline.
   pickLogDepthEnabled: boolean;
   pipelineLayout: GPUPipelineLayout | null;
+  // NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE — what the splat command publishes
+  // to the dynamic OIT fallback. Mirrored off the pipeline resources so both
+  // travel with the SAME variant axes the compiled OIT module was built from;
+  // a `_shaderCode` on one axis set and a bind group on another is exactly the
+  // class of defect this row exists to close.
+  oitFallbackShaderCode: string | null;
+  oitFallbackConfig: WebGPUPipelineConfig | null;
   // C-R7-RENDERER-MIGRATION (Batch 56) — see EllipsoidPrimitiveRenderer
   // for the rationale. The OIT pipeline is optional (its WGSL injection
   // can fail) and stays out of the central cache for now to preserve
@@ -1058,6 +1066,11 @@ interface SplatPipelineResources {
   // but with `depthWriteEnabled: true`. Routed through the central
   // pipeline cache the same way the color descriptor is.
   depthWriteDescriptor: WebGPURenderPipelineDescriptor;
+  // NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE — the two halves the dynamic OIT
+  // fallback in `WebGPUSceneRendererTranslucentPass` needs from this renderer.
+  // See `buildSplatPipelineResources` for why they are built unconditionally.
+  oitFallbackShaderCode: string;
+  oitFallbackConfig: WebGPUPipelineConfig;
 }
 
 /**
@@ -1299,6 +1312,42 @@ function buildSplatPipelineResources(
     },
   };
 
+  // ── NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE, second half.
+  //
+  // `WebGPUSceneRendererTranslucentPass` (`:165-205`) builds an OIT pipeline
+  // for any command carrying `_shaderCode` but no `_oitPipeline`, and when the
+  // command carries no `_pipelineConfig` it substitutes `layout: "auto"`. The
+  // splat VS reads three group-0 storage buffers plus a UBO through an
+  // EXPLICIT `GPUPipelineLayout`, and the command's cached bind groups were
+  // created against THAT layout — binding them to an auto-derived layout is a
+  // WebGPU validation error, not a visual difference. `C15-G3` fixed the
+  // `_shaderCode` half (it now ships preprocessed source rather than the raw
+  // `//>>ifdef` template); this is the layout half.
+  //
+  // Built UNCONDITIONALLY, not inside the `try` above: `oitDescriptor` is null
+  // exactly when `injectOITOutput` threw, and that is one of the two states in
+  // which the fallback is reached (the other is a pipeline-cache resolution
+  // that has not landed yet, where the fallback CAN succeed and must therefore
+  // have the real layout). The fields mirror `oitDescriptor` term for term, so
+  // a fallback pipeline is the same pipeline the renderer would have built —
+  // `createOITPipeline` supplies `WebGPUOIT.OIT_TARGETS` and forces
+  // `depthWriteEnabled: false` itself, which is why neither appears here.
+  const oitFallbackShaderCode = preprocess(SPLAT_WGSL, 0, layoutDefinesHi);
+  const oitFallbackConfig: WebGPUPipelineConfig = {
+    label: `GaussianSplat [packed=${layoutMarker}/sh=${shMarker}]`,
+    layout,
+    vertexBuffers: SPLAT_VERTEX_BUFFERS,
+    vertexEntryPoint: "vertexMain",
+    fragmentEntryPoint: "fragmentMain",
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: "depth24plus-stencil8",
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+    multisample: { count: sampleCount },
+  };
+
   return {
     shaderModule: sm,
     oitShaderModule,
@@ -1308,6 +1357,8 @@ function buildSplatPipelineResources(
     oitDescriptor,
     pickDescriptor,
     depthWriteDescriptor,
+    oitFallbackShaderCode,
+    oitFallbackConfig,
   };
 }
 
@@ -2097,6 +2148,11 @@ function updateWebGPUGaussianSplats(
       logDepthEnabled: false,
       pickLogDepthEnabled: false,
       pipelineLayout: null,
+      // NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE — populated with the pipeline
+      // resources; null until they exist, which is also before any command
+      // does, so the fallback can never see a half-published pair.
+      oitFallbackShaderCode: null,
+      oitFallbackConfig: null,
       pipelineRequestPending: false,
       // Batch 171 - velocity slots (lazy, allocated when TAA is on).
       splatData: null,
@@ -2311,6 +2367,11 @@ function updateWebGPUGaussianSplats(
     )._pipelineResources = resources;
     cache.shaderModule = resources.shaderModule;
     cache.pipelineLayout = resources.layout;
+    // NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE — publish both halves together,
+    // from the same resource build that produced the bind-group layout the
+    // command's bind groups are created against.
+    cache.oitFallbackShaderCode = resources.oitFallbackShaderCode;
+    cache.oitFallbackConfig = resources.oitFallbackConfig;
     cache.logDepthEnabled = logDepthActive;
     cache.pickLogDepthEnabled = pickLogActive;
     // C15-G3 — record which record layout these pipelines decode, so the flip
@@ -2872,13 +2933,21 @@ function updateWebGPUGaussianSplats(
     // `//>>ifdef` directives, which WGSL sees as comments: the consumer would
     // compile a source with BOTH branches of every block present (two
     // `fragmentMain` definitions) and, on the splat shader specifically, with
-    // the wrong record stride for packed data. `defines=0` matches the OIT
-    // module built above; the layout axis must be carried through.
-    cmd._shaderCode = preprocess(
-      SPLAT_WGSL,
-      0,
-      cache.layoutPacked ? ShaderDefineHi.SPLAT_PACKED_WASM : 0,
-    );
+    // the wrong record stride for packed data.
+    //
+    // NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE — both halves now come from the
+    // pipeline resources rather than being re-derived here. Two defects the
+    // re-derivation carried: (1) it rebuilt the define mask from
+    // `cache.layoutPacked` alone, so after `C15-G5` it omitted
+    // `SPLAT_SPHERICAL_HARMONICS` while the renderer's OWN OIT module included
+    // it — a fallback pipeline would have composited the base colour while the
+    // colour pass composited the view-dependent one; and (2) no
+    // `_pipelineConfig` was published at all, so the fallback substituted
+    // `layout: "auto"` and the command's explicit-layout bind groups would
+    // have failed WebGPU validation. Publishing them as a pair from one build
+    // is what keeps the shader axes and the layout from drifting apart again.
+    cmd._shaderCode = cache.oitFallbackShaderCode ?? undefined;
+    cmd._pipelineConfig = cache.oitFallbackConfig ?? undefined;
     cache.command = cmd;
   } else {
     // FEAT-GAP-09 (Batch 101) — per-frame effects BG refresh on

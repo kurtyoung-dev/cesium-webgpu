@@ -10,6 +10,7 @@ import defined from "../../Core/defined.js";
 import Ellipsoid from "../../Core/Ellipsoid.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Pass from "../Pass.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import SkyAtmosphereWGSL from "../../Shaders/WebGPU/Environment/SkyAtmosphere.js";
@@ -1387,7 +1388,7 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState) {
         bindGroups: [cache.bindGroup, lutInfo.bindGroup],
         vertexBuffers: [], // verts come from @builtin(vertex_index)
         vertexCount: 3,
-        pass: 0, // Pass.ENVIRONMENT
+        pass: Pass.ENVIRONMENT,
         owner: skyAtmosphere,
       });
     } else if (cache.fullscreenCommand.bindGroups[1] !== lutInfo.bindGroup) {
@@ -1406,7 +1407,7 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState) {
       indexBuffer: cache.indexBuffer,
       indexCount: cache.indexCount,
       indexFormat: "uint16",
-      pass: 0, // Pass.ENVIRONMENT
+      pass: Pass.ENVIRONMENT,
       owner: skyAtmosphere,
     });
   } else if (cache.command.bindGroups[1] !== lutInfo.bindGroup) {

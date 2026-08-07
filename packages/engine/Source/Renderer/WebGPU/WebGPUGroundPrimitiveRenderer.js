@@ -37,6 +37,7 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Pass from "../Pass.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import SceneMode from "../../Scene/SceneMode.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
@@ -2483,10 +2484,15 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   const classType = primitive?.classificationType ?? 0;
   const groundPasses = [];
   if (classType === 0 /* TERRAIN */ || classType === 2 /* BOTH */) {
-    groundPasses.push(3 /* TERRAIN_CLASSIFICATION */);
+    groundPasses.push(Pass.TERRAIN_CLASSIFICATION);
   }
   if (classType === 1 /* CESIUM_3D_TILE */ || classType === 2 /* BOTH */) {
-    groundPasses.push(6 /* CESIUM_3D_TILE_CLASSIFICATION */);
+    // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
+    // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION; the literal that used to sit here
+    // named it in a comment but carried the pre-insertion VALUE, which is
+    // Pass.CESIUM_3D_TILE on this fork. Value left UNCHANGED — the correction
+    // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+    groundPasses.push(Pass.CESIUM_3D_TILE);
   }
 
   // Migration Session 5 — depth-sample is now the only classifier path.
@@ -2858,7 +2864,12 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     ignoreShowCommand = new WebGPUDrawCommand({
       ...sharedDrawArgs,
       pipeline: cache.depthSampleStencilPipeline,
-      pass: 7 /* CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW */,
+      // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
+      // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW; the literal that used to sit here
+      // named it in a comment but carried the pre-insertion VALUE, which is
+      // Pass.CESIUM_3D_TILE_CLASSIFICATION on this fork. Value left UNCHANGED — the correction
+      // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+      pass: Pass.CESIUM_3D_TILE_CLASSIFICATION,
       // Stencil reference 0xff — `applyPerEncoderState` reads
       // `stencilTest.reference` and calls `passEncoder.setStencilReference`
       // before the draw. Combined with the pipeline's `passOp: replace`,

@@ -48,8 +48,9 @@
  *   `classificationType` is one of TERRAIN (0) / CESIUM_3D_TILE (1) /
  *   BOTH (2). The WebGPU command list dispatches a single command per
  *   pass it should appear in:
- *     - TERRAIN: `Pass.TERRAIN_CLASSIFICATION` (3)
- *     - CESIUM_3D_TILE: `Pass.CESIUM_3D_TILE_CLASSIFICATION` (6)
+ *     - TERRAIN: `Pass.TERRAIN_CLASSIFICATION`
+ *     - CESIUM_3D_TILE: intended `Pass.CESIUM_3D_TILE_CLASSIFICATION`;
+ *       currently binds `Pass.CESIUM_3D_TILE` — see the drift note below
  *     - BOTH: emit one of each.
  *   Both commands share the same pipeline / bind groups / vertex+index
  *   buffer; only the pass enum differs.
@@ -59,6 +60,7 @@
  */
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Pass from "../Pass.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import SceneMode from "../../Scene/SceneMode.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
@@ -102,8 +104,15 @@ const INITIAL_BATCH_BUFFER_FEATURES = 64;
 const VERTEX_STRIDE_FLOATS = 24;
 const VERTEX_STRIDE_BYTES = VERTEX_STRIDE_FLOATS * 4;
 
-const PASS_TERRAIN_CLASSIFICATION = 3;
-const PASS_CESIUM_3D_TILE_CLASSIFICATION = 6;
+// NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12).
+// `PASS_CESIUM_3D_TILE_CLASSIFICATION = 6` was a right-looking NAME over a
+// stale VALUE: 6 is Pass.CESIUM_3D_TILE on this fork, not
+// Pass.CESIUM_3D_TILE_CLASSIFICATION (7). Both constants are replaced by
+// the enum member each one ACTUALLY equalled, so no dispatched pass moves
+// and the wrong slot is now readable. The correction needs a 3D-Tile-
+// classification browser lane; see DEFERRED_WORK.
+const PASS_TERRAIN_CLASSIFICATION = Pass.TERRAIN_CLASSIFICATION;
+const PASS_CESIUM_3D_TILE_CLASSIFICATION_DRIFTED = Pass.CESIUM_3D_TILE;
 const CLASSIFICATION_TYPE_TERRAIN = 0;
 const CLASSIFICATION_TYPE_3DTILE = 1;
 const CLASSIFICATION_TYPE_BOTH = 2;
@@ -1357,7 +1366,7 @@ function createWebGPUVector3DTileClampedPolylineCommands(
     classType === CLASSIFICATION_TYPE_3DTILE ||
     classType === CLASSIFICATION_TYPE_BOTH
   ) {
-    passes.push(PASS_CESIUM_3D_TILE_CLASSIFICATION);
+    passes.push(PASS_CESIUM_3D_TILE_CLASSIFICATION_DRIFTED);
   }
   // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
   // IGNORE_SHOW stencil-write commands. Only emitted for primitives that
@@ -1409,7 +1418,12 @@ function createWebGPUVector3DTileClampedPolylineCommands(
       new WebGPUDrawCommand({
         ...sharedDrawArgs,
         pipeline: cache.stencilPipeline,
-        pass: 7 /* CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW */,
+        // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
+        // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW; the literal that used to sit here
+        // named it in a comment but carried the pre-insertion VALUE, which is
+        // Pass.CESIUM_3D_TILE_CLASSIFICATION on this fork. Value left UNCHANGED — the correction
+        // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+        pass: Pass.CESIUM_3D_TILE_CLASSIFICATION,
         renderState: { stencilTest: { reference: 0xff } },
       }),
     );

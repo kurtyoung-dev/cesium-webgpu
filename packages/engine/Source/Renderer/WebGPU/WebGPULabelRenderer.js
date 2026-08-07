@@ -24,6 +24,7 @@ import Color from "../../Core/Color.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
+import Pass from "../Pass.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import SDFSettings from "../../Scene/SDFSettings.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -1244,8 +1245,7 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   // on top of anything rendered earlier. Match upstream's treatment of labels
   // as translucent geometry unless the collection explicitly asked for OPAQUE.
   const labelBlendOpt = labelCollection?._blendOption;
-  const labelPass =
-    labelBlendOpt === 0 ? 8 /* Pass.OPAQUE */ : 9; /* Pass.TRANSLUCENT */
+  const labelPass = labelBlendOpt === 0 ? Pass.OPAQUE : Pass.TRANSLUCENT;
   // C-R1-COLLECTIONS-PER-ENCODER (Batch 98) — forward the LabelCollection's
   // background billboard render state so `applyPerEncoderState` runs the
   // dynamic stencilRef / blendConstant / scissor / viewport ops in the

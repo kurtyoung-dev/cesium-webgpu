@@ -13,6 +13,7 @@ import createGuid from "../../Core/createGuid.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Pass from "../Pass.js";
 import { getSharedMoonDecodedSourceCache } from "../../Core/MoonDecodedSourceCache.js";
 import MoonShaderCode from "../../Shaders/WebGPU/Environment/Moon.js";
 import { WebGPUImageUpload } from "./WebGPUImageUpload.js";
@@ -820,7 +821,7 @@ function updateWebGPUSun(sun, frameState) {
       bindGroups: [cache.bindGroup],
       vertexBuffers: [cache.vertexBuffer],
       vertexCount: 6,
-      pass: 0, // Pass.ENVIRONMENT
+      pass: Pass.ENVIRONMENT,
       owner: sun,
     });
   }
@@ -1732,7 +1733,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     indexBuffer: cache.geometry.indexBuffer,
     indexCount: cache.geometry.indexCount,
     indexFormat: "uint16",
-    pass: 0, // Pass.ENVIRONMENT
+    pass: Pass.ENVIRONMENT,
     owner: moon,
   });
   // Attach the bundle so a bundle-aware pass executor can replay it

@@ -216,7 +216,27 @@ urgent.
   both directions caught it at all. **Effort: M** (mechanical grep + a read per
   hit; no runtime work).
 
-- **`NEW-SPLAT-PENDING-WORK-DRAWCOMMAND-PROXY` — the shared frame-skip
+- **`NEW-SPLAT-PENDING-WORK-DRAWCOMMAND-PROXY` — ✅ RESOLVED 2026-08-07 (CO-12).**
+  Confirmed live at HEAD before the fix: BOTH sites read
+  `!defined(this._drawCommand)` — `GaussianSplatPrimitive.js:1536` (`isBootstrap`)
+  and `:1555` (`hasPendingWork`). The entry's own recommendation is what landed:
+  a backend-correct "no command yet" question rather than the primitive reaching
+  into the feature renderer's cache. New backend-neutral `hasDrawableResult`
+  (next to `hasSnapshotRenderPayload`, which it reuses) answers WebGL with
+  `defined(_drawCommand)` and a native backend with "the committed snapshot
+  carries the payload this backend draws from" — the two arms flip on the same
+  event, because `commitSnapshot` publishes `_snapshot` and clears
+  `_drawCommand` in one statement block. WebGL behaviour is byte-identical (the
+  native arm is unreachable there). Spec-pinned in `gsplat-harness.spec.mjs`:
+  the predicate is EXTRACTED FROM SOURCE AND EXECUTED over a six-row truth table
+  (both backends × command/snapshot/payload states, including the
+  WebGPU-shaped mutant "a native backend must not be satisfied by a
+  `DrawCommand` it could never own"), with 4 source mutants each also required
+  to leave the real source passing. **Owed:** nothing — the effect is a settled
+  scene skipping a `Matrix4.clone` + `Matrix4.multiply` + two `Cartesian3`
+  deltas per frame, with no rendered output change on either backend.
+  *Original filing follows.*
+  **`NEW-SPLAT-PENDING-WORK-DRAWCOMMAND-PROXY` — the shared frame-skip
   short-circuit is a WebGL-shaped liveness proxy, so it never fires on a native
   backend. FILED, small, and correctly owned by `C15-G3`.**
   `_updateSplatData`'s `hasPendingWork` includes the term
@@ -11584,9 +11604,41 @@ eliminates the +112 brightening.
 
 ### NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE
 
-**Status:** OPEN. Found while landing `C15-G3`; half of it was fixed in that
-row because the layout axis made it load-bearing, and the other half is a real
-pre-existing gap that nothing has ever exercised.
+**Status: ✅ RESOLVED 2026-08-07 (CO-12) — and there was a THIRD half nobody had
+counted.** Point 2 below (`_pipelineConfig` never set, so the fallback
+substituted `layout: "auto"` against explicit-layout bind groups) is fixed as
+described: `buildSplatPipelineResources` now returns
+`{oitFallbackShaderCode, oitFallbackConfig}` mirroring the OIT descriptor term
+for term — the same explicit `GPUPipelineLayout`, the same
+`SPLAT_VERTEX_BUFFERS`, the same primitive/depth/multisample state — and the
+command publishes both as a PAIR from the cache. They are built OUTSIDE the
+`try` that produces `oitDescriptor`, because a null descriptor means
+`injectOITOutput` threw, which is one of the exact two states in which the
+fallback is reached.
+
+**The third half, found while fixing the second:** `C15-G5` shipped the SH axis
+into the renderer's own OIT module (`preprocess(SPLAT_WGSL, 0, layoutDefinesHi)`
+at the descriptor) but the command's `_shaderCode` was re-derived inline from
+`cache.layoutPacked` ALONE — so the fallback carried `SPLAT_PACKED_WASM` and
+NOT `SPLAT_SPHERICAL_HARMONICS`. A fallback pipeline would have composited the
+base colour while the colour pass composited the view-dependent one. That is the
+same class as point 1, one row later, and it is why the repair is structural
+rather than another point fix: both halves now come from ONE resource build, so
+a future axis cannot reach the compiled module and miss the fallback.
+
+Spec-pinned in `gsplat-harness.spec.mjs` with five source anchors, an assertion
+that the CONSUMER still behaves the way the row assumes (a `layout: "auto"`
+substitution really is what happens without a config — otherwise the anchors
+would pin something that no longer matters), and 4 mutants including the exact
+`C15-G5`-shaped mask re-derivation. **Owed:** nothing to verify in a browser —
+the path stays unreachable at defaults (`_webgpuOITEnabled` is default-FALSE
+under FAR-003 containment, and the renderer sets `_oitPipeline` itself whenever
+the injection succeeds). This closes a latent validation error, not a visible
+one. *Original filing follows.*
+
+**Status (as filed):** OPEN. Found while landing `C15-G3`; half of it was fixed
+in that row because the layout axis made it load-bearing, and the other half is
+a real pre-existing gap that nothing has ever exercised.
 
 **Mechanism.** `WebGPUSceneRendererTranslucentPass` (`:165-205`) will build an
 OIT pipeline for any command that carries `_shaderCode` but no `_oitPipeline`:
@@ -11731,7 +11783,57 @@ lever for this symptom.
 
 ### NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT
 
-**Status:** OPEN — FILED 2026-08-07 (`C15-G6f.2`, Batch 886). Found while establishing that the `probe-splat-globe-occlusion` blue control lands in `Pass.OPAQUE` at all. Not fixed in that batch: out of its scope, and its acceptance suite would not see a regression this caused.
+**Status: ✅ RESOLVED for the COLLECTION half, 2026-08-07 (CO-12) — with one
+correction to this entry and one new finding it did not contain. The CLASSIFIER
+half is split out as `NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT` below and stays
+OPEN.**
+
+**What landed.** `Pass` is imported and used at every numeric site in the
+collection feature renderers — `WebGPUPointPrimitiveRenderer.js`,
+`WebGPUBillboardRenderer.js`, `WebGPULabelRenderer.js`,
+`WebGPUPolylineRenderer.js` (colour selector, render-state selector, OIT-variant
+gate, pick command) plus `WebGPUVector3DTilePolylinesRenderer.js` (three
+`pass: 9 /* Pass.TRANSLUCENT */` sites whose own comment names WebGL's
+`Pass.TRANSLUCENT` as the parity target) and the six correct-by-value
+`pass: 0, // Pass.ENVIRONMENT` sites, which are converted for the enumerated-keys
+rule without moving. **13 files, zero numeric pass literals left under
+`Source/Renderer/WebGPU/`.**
+
+**Correction to this entry: the `pass: 8` pick sites are NOT latent.** This
+entry recorded them as mis-labelled but did not follow them into the pick pass.
+`WebGPUSceneRendererPickPass.ts` executes exactly `GLOBE`,
+`TERRAIN_CLASSIFICATION`, `CESIUM_3D_TILE`, `CESIUM_3D_TILE_CLASSIFICATION`,
+`VOXELS`, `OPAQUE`, `GAUSSIAN_SPLATS`, `TRANSLUCENT` (`:591-686`) — and NOT
+`CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW`, which is what `8` is on this fork.
+The point / billboard / polyline pick commands are dedicated `pickOnly` draws
+pushed only under `frameState.passes.pick`, and they are the ONLY carrier of
+their collection's pick IDs (these renderers do not use
+`attachPickToColorCommand`, so `selectCommandVariant` has nothing to resolve on
+the colour command). Binned into slot 8, they were dispatched by nothing.
+Each of the three sites carries a comment reading "Pick always runs in the
+OPAQUE pass", so the intent was never in doubt — only the value. **Consequence
+of the fix: WebGPU picking of point / billboard / polyline collections is
+expected to start working.** That is a real behaviour change on a path with no
+probe, and it is the one OWED EDGE ACCEPTANCE from this batch (see the exact
+command in the CO-12 report). The `pickOnly` commands are native WebGPU with
+pipelines already targeting the single pick attachment, so they satisfy
+`executePickBatch`'s admission test by construction; the risk is bounded and
+the colour pass is untouched (pick commands are not pushed on colour frames).
+
+**Pinned so the class cannot return:** `gsplat-harness.spec.mjs` parses
+`Pass.js` by executing its object literal, asserts the six values these literals
+drifted against, and then greps EVERY `.js`/`.ts` under
+`Source/Renderer/WebGPU/` (comment lines stripped) for `pass: <number>` and
+`<number> /* Pass.` — the assertion is `deepEqual(offenders, [])`, with no
+allowlist. Three further tests pin the four collection selectors to
+`Pass.OPAQUE : Pass.TRANSLUCENT`, pin the pick commands to `Pass.OPAQUE`, and
+pin the pick loop's executed-pass set in BOTH directions (OPAQUE present,
+IGNORE_SHOW absent) so a change to the consumer re-opens the question instead of
+silently invalidating the fix.
+
+*Original filing follows, unchanged except for the status line.*
+
+**Status (as filed):** OPEN — FILED 2026-08-07 (`C15-G6f.2`, Batch 886). Found while establishing that the `probe-splat-globe-occlusion` blue control lands in `Pass.OPAQUE` at all. Not fixed in that batch: out of its scope, and its acceptance suite would not see a regression this caused.
 
 **The drift.** `packages/engine/Source/Renderer/Pass.js:17-32` is this fork's authority: the fork INSERTED `CESIUM_3D_TILE_EDGES: 4` and `CESIUM_3D_TILE_PLANAR_FILL_ID: 5`, so everything below shifted by two against upstream. At HEAD `OPAQUE: 9`, `TRANSLUCENT: 10`, `VOXELS: 11`, `GAUSSIAN_SPLATS: 12`, `CESIUM_3D_TILE_EDGES_DIRECT: 13`, `OVERLAY: 14`. Several collection feature renderers still carry NUMERIC pass literals written before that insertion, each with a now-false `/* Pass.X */` comment:
 
@@ -11748,9 +11850,69 @@ lever for this symptom.
 
 Separately, `pass: 7 /* CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW */` in `WebGPUGroundPrimitiveRenderer.js:2861`, `WebGPUGroundPolylineRenderer.js:3210`, `WebGPUVector3DTilePrimitiveRenderer.js:1665` and `WebGPUVector3DTileClampedPolylinesRenderer.js:1412` is **comment-only** drift — `7` is `CESIUM_3D_TILE_CLASSIFICATION` and is the intended slot (`WebGPUSceneRenderer3DTilePasses.ts:450` documents the `pass = 7` stencil-write contract). Those need the label corrected, not the value.
 
+> **⚠ REFUTED 2026-08-07 (CO-12). The paragraph above is wrong, and the way it went wrong is worth keeping.** `WebGPUSceneRenderer3DTilePasses.ts:450` is a DOC COMMENT ("each pushes a `pass = 7` stencil-write command"); the CODE in the same function calls `runPass(Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW)` (`:440`) and reads `frustumCommands.indices[Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW]` (`:461`) to set `invertHasStencilData`. Both resolve to **8**. So the comment is the stale artifact — written against the same pre-insertion enum as the literals it was used to exonerate — and these four sites are the SAME off-by-one, not a labelling slip. Split out as `NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT` below. *Lesson for this class: a numeric literal and the comment next to it drifted from the same edit, so the comment cannot be the witness for the literal — only the enum can.*
+
 **Fix.** Import `Pass` and use the enum at every one of these sites — the enumerated-keys rule in `CLAUDE.md` already forbids the literals. Correct the four stale `/* … */` labels. Then pin it: a spec that reads `Pass.js` and asserts no `pass: <number>` literal survives under `Source/Renderer/WebGPU/`, so the next enum insertion cannot re-open this silently. Note that fixing the point renderer's selector changes which render state a default collection gets (`_rsOpaque` becomes reachable), so it needs a collections visual pass, not just a compile.
 
 **Effort:** S (change) + M (verification sweep — Billboard/Label/Polyline/Point + the pick fleet). **Impact:** latent today on the default path; a real mis-binned pass for any app that sets `BlendOption.OPAQUE`, and a trap for the next person who inserts a `Pass` entry.
+
+### NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT
+
+**Status:** OPEN — FILED 2026-08-07 (CO-12), split out of
+`NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT` after that entry's "comment-only"
+reading was refuted (see the blockquote in it). **Value-preserving groundwork
+landed with the split; the correction itself did NOT and needs a browser lane.**
+
+**The drift.** Every numeric pass literal in the four depth-sample classifier
+renderers was written against a fork enum with ONE insertion, and this fork now
+has two — so each is exactly **one slot low**:
+
+| Site | Now reads | Intended |
+| --- | --- | --- |
+| `WebGPUGroundPrimitiveRenderer.js` `groundPasses.push` | `Pass.CESIUM_3D_TILE` (6) | `Pass.CESIUM_3D_TILE_CLASSIFICATION` (7) |
+| `WebGPUGroundPrimitiveRenderer.js` ignore-show `pass:` | `Pass.CESIUM_3D_TILE_CLASSIFICATION` (7) | `..._IGNORE_SHOW` (8) |
+| `WebGPUGroundPolylineRenderer.js` | same pair | same pair |
+| `WebGPUVector3DTilePrimitiveRenderer.js` | same pair (+ `passEnum === Pass.CESIUM_3D_TILE` selecting the tileset mark pipeline) | same pair |
+| `WebGPUVector3DTileClampedPolylinesRenderer.js` | `const PASS_CESIUM_3D_TILE_CLASSIFICATION_DRIFTED = Pass.CESIUM_3D_TILE` | `Pass.CESIUM_3D_TILE_CLASSIFICATION` |
+
+That last one is the worst shape in the class: a `const` whose NAME was right
+and whose VALUE was stale, so every reader downstream saw a correct-looking
+symbol. It has been renamed to carry `_DRIFTED` rather than keep lying.
+
+**Two consequences, both reasoned from source, neither measured.** (a) The
+classification COLOUR commands bin into `CESIUM_3D_TILE` and therefore execute
+in the 3D-tile pass rather than the classification pass — they still draw, but
+before the classification depth pack rather than after it. (b) The invert-
+classification IGNORE_SHOW stencil writes bin into `CESIUM_3D_TILE_CLASSIFICATION`
+while `_execute3DTilePasses` runs `runPass(...IGNORE_SHOW)` and gates
+`invertHasStencilData` on `indices[...IGNORE_SHOW]` — so on the WebGPU backend
+that counter can never be non-zero from these four producers, and the invert
+composite has no stencil to read. The WebGL producers
+(`ClassificationPrimitive.js:1165`, `ClassificationModelDrawCommand.js:108`,
+`GroundPolylinePrimitive.js:751`, `Vector3DTileClampedPolylines.js:817`) all use
+the enum and are unaffected.
+
+**What CO-12 did and deliberately did not do.** Every literal was replaced by
+the enum member it ACTUALLY equals — **value-identical, not a fix** — so no
+dispatched pass moved, the numeric literals are gone from the whole directory,
+and the wrong slot is now readable at the call site instead of hiding behind a
+false comment. Each site carries a `NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT`
+marker. `gsplat-harness.spec.mjs` pins all eight sites BY VALUE and asserts the
+gap to the intended member is exactly **1** at each — so the day someone fixes
+them the spec goes red and points at this row, and the day someone inserts
+another `Pass` entry it goes red for the other reason.
+
+**Why it was not corrected here.** Moving these changes 3D-Tile classification
+and invert-classification dispatch across four renderers, and CO-12 is a
+no-browser lane. The correction is mechanical (eight sites, +1 slot each) but it
+needs a classification acceptance run — draped `GroundPrimitive` /
+`ClassificationPrimitive` over terrain and over a tileset, plus an
+`invertClassification` scene — before it can be believed.
+
+**Effort:** S (change) + M (a 3D-Tile-classification browser lane that does not
+exist yet). **Impact:** unmeasured. Two of the four renderers are the ones the
+Q15 stencil rearchitecture went through, so the blast radius is real and the
+acceptance lane is the gating cost, not the edit.
 
 ### NEW-SPLAT-LOG-DEPTH-ENCODE-SOURCE-SPLIT
 

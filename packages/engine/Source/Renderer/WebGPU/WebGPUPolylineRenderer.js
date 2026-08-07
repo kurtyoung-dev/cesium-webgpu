@@ -34,6 +34,7 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Pass from "../Pass.js";
 // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — scene-mode-aware
 // position projection. `SceneTransforms.computeActualEllipsoidPosition`
 // maps an ECEF position to the active scene mode's frame: identity in
@@ -1874,7 +1875,7 @@ async function _updateWebGPUPolylinesInner(
 
       const polylineBlendOpt = collection._blendOption;
       const polylinePass =
-        polylineBlendOpt === 0 ? 8 /* Pass.OPAQUE */ : 9; /* Pass.TRANSLUCENT */
+        polylineBlendOpt === 0 ? Pass.OPAQUE : Pass.TRANSLUCENT;
       // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the matching
       // render-state from PolylineCollection (`_opaqueRS` / `_translucentRS`,
       // built on demand at lines 536/548 in PolylineCollection.js). The
@@ -1883,7 +1884,7 @@ async function _updateWebGPUPolylinesInner(
       // picks up encoder defaults for stencil/blend/viewport overrides
       // instead of the polyline-specific values.
       const polylineRS =
-        polylinePass === 8 /* Pass.OPAQUE */
+        polylinePass === Pass.OPAQUE
           ? collection._opaqueRS
           : collection._translucentRS;
       const cmd = new WebGPUDrawCommand({
@@ -1907,7 +1908,7 @@ async function _updateWebGPUPolylinesInner(
       });
 
       // C11-157 Slice B — OIT reachability for translucent polylines. Attach
-      // the OIT variant inputs when the command lands in Pass.TRANSLUCENT (9);
+      // the OIT variant inputs when the command lands in Pass.TRANSLUCENT;
       // reuses the base color pipeline's SHARED layout (camera+material BGLs)
       // + vertex/primitive/depth state (single-sample for the OIT accumulation
       // targets). createOITPipeline forces depthWriteEnabled:false, so reusing
@@ -1916,7 +1917,7 @@ async function _updateWebGPUPolylinesInner(
       // polyline material FS returns a `FragOutput` struct (@location(0) color)
       // — handled by injectOITOutput's Slice-A struct branch.
       if (
-        polylinePass === 9 /* Pass.TRANSLUCENT */ &&
+        polylinePass === Pass.TRANSLUCENT &&
         defined(pipelineResult.descriptor) &&
         defined(pipelineResult.oitShaderCode)
       ) {
@@ -2194,7 +2195,7 @@ function _pushPolylinePickCommand(
     vertexBuffers: [cache.pickSegmentBuffer],
     vertexCount: VERTICES_PER_SEGMENT,
     instanceCount: safePickSegmentCount,
-    pass: 8,
+    pass: Pass.OPAQUE,
     owner: collection,
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,

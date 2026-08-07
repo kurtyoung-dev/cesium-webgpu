@@ -350,6 +350,40 @@ function hasSnapshotRenderPayload(primitive, snapshot) {
 }
 
 /**
+ * Backend-neutral answer to "has this primitive produced a drawable result
+ * yet?" — the question `!defined(this._drawCommand)` used to stand in for.
+ *
+ * `NEW-SPLAT-PENDING-WORK-DRAWCOMMAND-PROXY`: `_drawCommand` is built only by
+ * {@link GaussianSplatPrimitive.buildGSplatDrawCommand}, which `C15-G2` gated
+ * off on native backends, so on WebGPU the old term was PERMANENTLY true. It
+ * fails toward doing more work rather than less, so it was never a stall — but
+ * it made the settled-scene early return structurally unreachable, costing a
+ * `Matrix4.clone`, a `Matrix4.multiply` and `shouldStartSteadySort`'s two
+ * `Cartesian3` deltas on every frame of a scene that has stopped moving.
+ *
+ * The replacement asks the same question in each backend's own terms and does
+ * NOT reach into the feature renderer's cache: on WebGL a drawable result IS
+ * the `DrawCommand`; on a native backend it is the committed snapshot carrying
+ * the payload that backend draws from, which is exactly what
+ * {@link hasSnapshotRenderPayload} already decides. `commitSnapshot` publishes
+ * `_snapshot` and clears `_drawCommand` in the same statement block, so both
+ * arms flip on the same event.
+ *
+ * @param {GaussianSplatPrimitive} primitive The owning primitive.
+ * @returns {boolean} {@code true} when the active backend has something to draw.
+ * @private
+ */
+function hasDrawableResult(primitive) {
+  if (defined(primitive._featureRenderer)) {
+    return (
+      defined(primitive._snapshot) &&
+      hasSnapshotRenderPayload(primitive, primitive._snapshot)
+    );
+  }
+  return defined(primitive._drawCommand);
+}
+
+/**
  * Destroys the GPU textures owned by a snapshot, if any, and clears the
  * references so they are not used after destruction.
  *
@@ -1533,7 +1567,7 @@ class GaussianSplatPrimitive {
       const isBootstrap =
         !defined(this._snapshot) &&
         !defined(this._pendingSnapshot) &&
-        !defined(this._drawCommand);
+        !hasDrawableResult(this);
       // This prevents an indefinite wait if selected tiles never settle completely.
       // In practice, this is the upper bound on "wait-for-stability" before forcing
       // a rebuild to avoid visible starvation.
@@ -1552,7 +1586,11 @@ class GaussianSplatPrimitive {
         selectedTilesChanged ||
         defined(this._pendingSnapshot) ||
         defined(this._pendingSortPromise) ||
-        !defined(this._drawCommand);
+        // NEW-SPLAT-PENDING-WORK-DRAWCOMMAND-PROXY — backend-neutral. The old
+        // `!defined(this._drawCommand)` was a WebGL-shaped liveness proxy that
+        // never fired on a native backend, so the settled-scene early return
+        // below could not be taken there.
+        !hasDrawableResult(this);
       if (
         !hasPendingWork &&
         Matrix4.equals(camera.viewMatrix, this._prevViewMatrix)

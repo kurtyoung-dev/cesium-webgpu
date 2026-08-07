@@ -92,6 +92,7 @@ import ComponentDatatype from "../../Core/ComponentDatatype.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Pass from "../Pass.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
 // NEW-LOG-DEPTH-REMAINING-CONSUMERS — the reverse helper the depth-sample
 // classifier uses to un-log the sampled globe depth before reconstructing
@@ -3047,10 +3048,15 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
   const classType = primitive?.classificationType ?? 0;
   const groundPasses = [];
   if (classType === 0 /* TERRAIN */ || classType === 2 /* BOTH */) {
-    groundPasses.push(3 /* TERRAIN_CLASSIFICATION */);
+    groundPasses.push(Pass.TERRAIN_CLASSIFICATION);
   }
   if (classType === 1 /* CESIUM_3D_TILE */ || classType === 2 /* BOTH */) {
-    groundPasses.push(6 /* CESIUM_3D_TILE_CLASSIFICATION */);
+    // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
+    // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION; the literal that used to sit here
+    // named it in a comment but carried the pre-insertion VALUE, which is
+    // Pass.CESIUM_3D_TILE on this fork. Value left UNCHANGED — the correction
+    // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+    groundPasses.push(Pass.CESIUM_3D_TILE);
   }
 
   // Depth source — prefer packed-translucent-depth, fall back to
@@ -3207,7 +3213,12 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     ignoreShowCommand = new WebGPUDrawCommand({
       ...sharedDrawArgs,
       pipeline: cache.stencilPipeline,
-      pass: 7 /* CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW */,
+      // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
+      // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW; the literal that used to sit here
+      // named it in a comment but carried the pre-insertion VALUE, which is
+      // Pass.CESIUM_3D_TILE_CLASSIFICATION on this fork. Value left UNCHANGED — the correction
+      // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+      pass: Pass.CESIUM_3D_TILE_CLASSIFICATION,
       renderState: { stencilTest: { reference: 0xff } },
     });
   }

@@ -180,6 +180,67 @@ export const STAGE = Object.freeze({
       "tilesets are SH degree 3, so a cross-backend diff scores the missing " +
       "view-dependent colour rather than the record decode this row ships",
   }),
+  /**
+   * `CO-12` — which of the three added lanes are GATES right now, and why the
+   * split is not arbitrary.
+   *
+   * The AZIMUTH lane inherits {@link STAGE.parity}'s discipline: it is the same
+   * cross-backend pixel comparison, just at three cameras instead of one, so it
+   * cannot become a gate before the single-camera one does. `C15-G8` flips both
+   * together (`parity.scored` and `controls.azimuth.scored`).
+   *
+   * The two VACUITY CONTROLS are gated NOW, at every stage, and that asymmetry
+   * is the point. A ceiling ("the two backends agree to within 1%") is only
+   * meaningful once someone has shown the measurement can DISAGREE; the
+   * controls are floors ("switching the SH term off, or corrupting the
+   * covariance, moves the number") and a floor that fails means the instrument
+   * is vacuous no matter which stage the track is on. `C15-G5` certified with
+   * neither of them executed — that is precisely the caveat this row exists to
+   * discharge, and deferring them again would reproduce it.
+   */
+  controls: Object.freeze({
+    azimuth: Object.freeze({
+      scored: false,
+      deferredTo: "C15-G8",
+      reason:
+        "the per-azimuth mismatch is the same cross-backend comparison the " +
+        "single-camera parity leg makes, so it is armed by the same row",
+    }),
+    shOff: Object.freeze({
+      scored: true,
+      /**
+       * Gated on `sh_unit_cube` only, and NOT because tower is harder — because
+       * the pre-`C15-G5` residual is a RECORDED number there and is not on
+       * tower. Batch 889 measured the cube's SH-off cross-backend mismatch at
+       * 2.574% against a 1% threshold; tower's SH-off residual has never been
+       * measured, so a floor for it would be invented at flip time rather than
+       * derived. Tower is measured, printed, and left ungated until a run
+       * supplies the number.
+       */
+      gatedAssets: Object.freeze(["sh_unit_cube"]),
+      reason:
+        "the C15-G5 row's own mandatory vacuity control: with SH consumption " +
+        "disabled the cross-backend mismatch must rise back above the gate " +
+        "threshold at >= 2 of the 3 azimuths, or the gate is not measuring SH",
+    }),
+    covariance: Object.freeze({
+      scored: true,
+      /**
+       * The SINGLE-triple arm is gated on `sh_unit_cube` only, for an
+       * arithmetic reason that is worth stating rather than discovering: one
+       * corrupted splat can only move pixels inside its own footprint, and the
+       * derived per-splat footprint is `addedFraction / expectedSplats` —
+       * 19.14% / 27 = **0.709%** on the cube, versus 4.08% / 286,868 =
+       * **1.4e-7** (a fraction of ONE pixel) on tower. Gating tower's single
+       * arm would be gating a quantity below the instrument's resolution.
+       * The BULK arm is gated on both.
+       */
+      singleArmGatedAssets: Object.freeze(["sh_unit_cube"]),
+      reason:
+        "C15-G8's own vacuity control: a deliberately corrupted covariance " +
+        "must move the picture, or the parity gate cannot fail",
+    }),
+  }),
 });
 
 /**
@@ -281,7 +342,112 @@ export const PREDICT = Object.freeze({
   contentReadyBudgetMs: 120_000,
   dataReadyBudgetMs: 120_000,
   settleMs: 2_000,
+
+  // ── CO-12 additions ──────────────────────────────────────────────────────
+
+  /**
+   * Wall-clock budget for one CONTROL step (a pipeline-variant flip, a payload
+   * re-upload) to become observable. Separate from `dataReadyBudgetMs` because
+   * it is not a data load: the dominant term is a cold WGSL variant compile,
+   * measured at ~2674 ms on this fork, and the SH-off control forces exactly
+   * one. Wall clock, never frames — same doctrine as every other budget here.
+   */
+  controlSettleBudgetMs: 45_000,
+
+  /**
+   * DERIVED — the pairwise angle between the camera VIEW DIRECTIONS at two of
+   * {@link AZIMUTH_HEADINGS}, which is NOT the 120 deg heading separation.
+   *
+   * `Camera.lookAt(centre, HeadingPitchRange(h, p, r))` places the camera on a
+   * cone of half-angle `90 - |p|` about the local up axis and points it at the
+   * centre, so the view direction is
+   * `(cos p cos h, cos p sin h, sin p)` in the local frame. For two headings
+   * separated by `d`:
+   *
+   *   cos(angle) = cos^2(p) * cos(d) + sin^2(p)
+   *
+   * At `p = -30 deg`, `d = 120 deg`: `0.75 * (-0.5) + 0.25 = -0.125`, so the
+   * angle is `acos(-0.125) = 97.18075578 deg` — and by symmetry it is the SAME
+   * for the 0-120, 120-240 and 240-0 pairs. This is the anti-vacuity guard for
+   * the azimuth lane: three captures taken at the SAME camera would agree
+   * trivially, and nothing else in the lane would notice.
+   */
+  azimuthSeparationDegrees: 97.18075578145829,
+  azimuthSeparationToleranceDegrees: 0.5,
+
+  /**
+   * Second azimuth anti-vacuity guard, and the one that catches a camera that
+   * moved on paper but not on screen (a lookAt that silently failed, a frozen
+   * canvas, a flood fill that is the same at every heading). Adjacent azimuth
+   * ON frames must differ by at least this FRACTION OF THE MEASURED ADDED
+   * FRACTION at azimuth 0.
+   *
+   * Scaled rather than absolute on purpose: the cube adds ~19% of the canvas
+   * and tower ~4%, so any constant floor is either vacuous for one asset or
+   * unreachable for the other. 0.25 is deliberately conservative — a 120 deg
+   * orbit re-projects the whole cloud, so the honest expectation is most of the
+   * footprint changing, and a quarter of it is a floor no working rotation can
+   * miss.
+   */
+  azimuthDistinctnessFactor: 0.25,
+
+  /**
+   * The RECORDED pre-`C15-G5` cross-backend mismatch on `sh_unit_cube`
+   * (Batch 889, `--expect-webgpu`, same 1024x768 pinned configuration). This is
+   * the number the SH-off control is expected to walk back to: with the WGSL SH
+   * term switched off, the WebGPU leg is once again the pre-G5 renderer, so the
+   * cross-backend diff should return to this magnitude. Recorded as a
+   * PREDICTION, gated as `>= parityThresholdFraction` — the gate is "the
+   * residual came back", not "it came back to three decimal places".
+   */
+  shOffPreG5CubeMismatchFraction: 0.02574,
+
+  /**
+   * How many of the three azimuths must show the risen SH-off residual. Two of
+   * three is the `C15-G5` row's own written wording, and it is the right shape:
+   * a view-dependent term can be near-zero at a particular camera (that is what
+   * "view-dependent" means), so requiring all three would make a correct
+   * implementation fail at an unlucky azimuth.
+   */
+  shOffMinAzimuths: 2,
+
+  /**
+   * Covariance-corruption control parameters, pre-registered.
+   *
+   * `covarianceScaleFactor` is applied in the HALF-FLOAT EXPONENT: 4 = +2 on
+   * the exponent field, which is exact for every normal half and cannot
+   * manufacture a NaN or an Inf (the corrupter clamps instead). Scaling all six
+   * sigma terms by 4 scales the 3D covariance by 4, the projected 2D conic by
+   * 4, the splat RADIUS by 2 and its AREA by 4 — a change large enough to be
+   * unambiguous and small enough to stay a splat rather than a full-screen
+   * artifact. Zeroing the triple was rejected: a singular covariance divides by
+   * a zero determinant, and an Inf/NaN quad would satisfy this control for a
+   * reason that has nothing to do with the covariance being read.
+   *
+   * `covarianceBulkStride = 2` corrupts every second splat. DERIVED necessity:
+   * the mismatch can never exceed the union of the clean and corrupted
+   * footprints, so on tower — whose clean footprint is ~4.08% of the canvas —
+   * NO corruption of a small subset can reach `C15-G8`'s 3% bar. Half the cloud
+   * at 4x area is the smallest pre-registered fraction with headroom over it.
+   */
+  covarianceScaleFactor: 4,
+  covarianceSingleSplatIndex: 0,
+  covarianceBulkStride: 2,
 });
+
+/**
+ * `C15-G5`'s written exit gate asks for three camera azimuths 120 deg apart;
+ * `C15-G8`'s asks for "the framed camera and two orbit positions". They are the
+ * same three cameras, so the harness has one list and both rows read it.
+ *
+ * Heading 0 is the historical single-camera pose every earlier `C15-G*` reading
+ * was taken at, and it stays FIRST so the primary scored frame is unchanged and
+ * the recorded numbers (19.141% added, 0.000% mismatch, 2.574% pre-G5) remain
+ * comparable.
+ *
+ * @type {readonly number[]}
+ */
+export const AZIMUTH_HEADINGS = Object.freeze([0, 120, 240]);
 
 /**
  * Named STRUCTURAL preconditions. Order is the order they are checked in, and
@@ -897,6 +1063,545 @@ export function evaluateParity(input) {
   };
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// CO-12 — the three lanes `C15-G5` certified WITHOUT and `C15-G8` cannot gate
+// without: three azimuths, the SH-off vacuity control, and the
+// corrupted-covariance vacuity control.
+//
+// All three follow the same doctrine as everything above them: they REFUSE to
+// produce a number in every case where the number would be vacuous, and each
+// refusal is named. The two controls are FLOORS, not ceilings — they assert
+// that the instrument can move, which is the one thing a parity ceiling can
+// never assert about itself.
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Names of the lanes this file evaluates, in the order they are reported.
+ * Pinned by `gsplat-harness.spec.mjs`: a lane silently dropped from the probe
+ * is a lane that stops protecting the gate without anything going red — the
+ * same reason {@link STRUCTURAL_PRECONDITIONS} is pinned.
+ */
+export const CONTROL_LANES = Object.freeze([
+  "azimuth",
+  "sh-off-vacuity",
+  "covariance-vacuity",
+]);
+
+const RAD_TO_DEG = 180 / Math.PI;
+
+/**
+ * Angle between two 3-vectors in degrees, or NaN when either is unusable.
+ * NaN never satisfies a `<=` comparison, so an unmeasured camera cannot pass
+ * the separation guard by accident (same contract as {@link fractionOf}).
+ *
+ * @param {number[]|undefined|null} a
+ * @param {number[]|undefined|null} b
+ * @returns {number}
+ */
+export function angleBetweenDegrees(a, b) {
+  if (
+    !Array.isArray(a) ||
+    !Array.isArray(b) ||
+    a.length !== 3 ||
+    b.length !== 3
+  ) {
+    return Number.NaN;
+  }
+  let dot = 0;
+  let lengthA = 0;
+  let lengthB = 0;
+  for (let i = 0; i < 3; i++) {
+    if (!Number.isFinite(a[i]) || !Number.isFinite(b[i])) {
+      return Number.NaN;
+    }
+    dot += a[i] * b[i];
+    lengthA += a[i] * a[i];
+    lengthB += b[i] * b[i];
+  }
+  lengthA = Math.sqrt(lengthA);
+  lengthB = Math.sqrt(lengthB);
+  if (!(lengthA > 0) || !(lengthB > 0)) {
+    return Number.NaN;
+  }
+  return (
+    Math.acos(Math.min(1, Math.max(-1, dot / (lengthA * lengthB)))) * RAD_TO_DEG
+  );
+}
+
+const laneResult = (overrides) => ({
+  scored: false,
+  gated: false,
+  entries: [],
+  structural: [],
+  failures: [],
+  notes: [],
+  reason: "",
+  ...overrides,
+});
+
+/**
+ * Preconditions shared by all three added lanes. They exist only when the
+ * single-camera legs already decided the run has a subject: a lane that scores
+ * three cameras against a blind reference, or against a WebGPU leg that drew
+ * nothing, is measuring exactly as much as the single-camera one would have.
+ *
+ * @param {object} input
+ * @param {string} laneName
+ * @returns {{ok:boolean, result:object}}
+ */
+function laneGuard(input, laneName) {
+  if (!input?.expectWebgpu) {
+    return {
+      ok: false,
+      result: laneResult({
+        reason: `${laneName} is scored only under --expect-webgpu`,
+      }),
+    };
+  }
+  if (input.referenceBlind) {
+    return {
+      ok: false,
+      result: laneResult({
+        structural: [`${laneName}:reference-blind`],
+        reason: `the WebGL reference leg could not see its subject, so ${laneName} measures nothing`,
+      }),
+    };
+  }
+  if (input.presenceState !== "present") {
+    return {
+      ok: false,
+      result: laneResult({
+        reason: `WebGPU leg is ${input.presenceState}; ${laneName} against a canvas with no splats scores nothing`,
+      }),
+    };
+  }
+  return { ok: true, result: null };
+}
+
+/**
+ * The THREE-AZIMUTH lane — `C15-G5`'s written exit gate ("three camera azimuths
+ * 120 deg apart") and `C15-G8`'s ("the framed camera and two orbit positions").
+ *
+ * Two anti-vacuity guards run BEFORE any mismatch is read, because a
+ * three-camera lane has two ways to be a one-camera lane wearing a disguise:
+ *
+ *   1. GEOMETRIC — the cameras did not actually separate. Guarded by the
+ *      recorded view directions against the DERIVED
+ *      {@link PREDICT.azimuthSeparationDegrees}, which is computed from the
+ *      pitch and heading the probe actually used, not asserted.
+ *   2. PICTORIAL — they separated and the picture did not follow (a frozen
+ *      canvas, a stale readback, a flood fill). Guarded on the REFERENCE leg,
+ *      whose frames are the ones the whole track is measured against.
+ *
+ * Both are STRUCTURAL, not failures: a lane that could not distinguish its own
+ * cameras has not found a product defect, it has found itself.
+ *
+ * @param {object} input
+ * @returns {object}
+ */
+export function evaluateAzimuthLane(input) {
+  const predict = input?.predict ?? PREDICT;
+  const stage = input?.stage ?? STAGE;
+  const controls = stage.controls ?? STAGE.controls;
+  const guard = laneGuard(input, "azimuth");
+  if (!guard.ok) {
+    return guard.result;
+  }
+
+  const reference = input.reference?.azimuths ?? [];
+  const webgpu = input.webgpu?.azimuths ?? [];
+  const diffs = input.diffs ?? [];
+  const expected = AZIMUTH_HEADINGS.length;
+  if (
+    reference.length !== expected ||
+    webgpu.length !== expected ||
+    diffs.length !== expected
+  ) {
+    return laneResult({
+      structural: [
+        `azimuth:incomplete — predicted ${expected} azimuths on each leg with a cross-backend diff for each; measured reference=${reference.length} webgpu=${webgpu.length} diffs=${diffs.length}. A partial orbit is not the gate C15-G5 wrote.`,
+      ],
+      reason: "the orbit did not complete on both legs",
+    });
+  }
+
+  // Guard 1 — the cameras really moved, on BOTH legs.
+  const separationFailures = [];
+  for (const [legName, leg] of [
+    ["reference", reference],
+    ["webgpu", webgpu],
+  ]) {
+    for (let i = 0; i < expected; i++) {
+      const next = (i + 1) % expected;
+      const angle = angleBetweenDegrees(
+        leg[i]?.viewDirection,
+        leg[next]?.viewDirection,
+      );
+      const ok =
+        Number.isFinite(angle) &&
+        Math.abs(angle - predict.azimuthSeparationDegrees) <=
+          predict.azimuthSeparationToleranceDegrees;
+      if (!ok) {
+        separationFailures.push(
+          `${legName} ${leg[i]?.headingDegrees}->${leg[next]?.headingDegrees} deg measured ${
+            Number.isFinite(angle) ? `${angle.toFixed(3)} deg` : "n/a"
+          }`,
+        );
+      }
+    }
+  }
+  if (separationFailures.length > 0) {
+    return laneResult({
+      structural: [
+        `azimuth:cameras-not-separated — predicted every adjacent pair of view directions ${predict.azimuthSeparationDegrees.toFixed(
+          3,
+        )} +/- ${predict.azimuthSeparationToleranceDegrees} deg apart (DERIVED from pitch ${-30} deg and 120 deg heading steps: acos(cos^2 p cos d + sin^2 p)); measured ${separationFailures.join(
+          "; ",
+        )}. Three captures at one camera agree trivially.`,
+      ],
+      reason: "the orbit did not move the camera",
+    });
+  }
+
+  // Guard 2 — the picture followed, measured on the reference leg.
+  const baseAdded = fractionOf(
+    reference[0]?.added?.changed,
+    reference[0]?.canvasPixels,
+  );
+  const distinctnessFloor = predict.azimuthDistinctnessFactor * baseAdded;
+  const notDistinct = [];
+  for (let i = 1; i < expected; i++) {
+    const changed = fractionOf(
+      reference[i]?.changedVsPrevious,
+      reference[i]?.canvasPixels,
+    );
+    if (!(Number.isFinite(changed) && changed >= distinctnessFloor)) {
+      notDistinct.push(
+        `${reference[i - 1]?.headingDegrees}->${reference[i]?.headingDegrees} deg changed ${pct(changed)}`,
+      );
+    }
+  }
+  if (notDistinct.length > 0) {
+    return laneResult({
+      structural: [
+        `azimuth:frames-not-distinct — predicted each orbit step changes >= ${pct(
+          distinctnessFloor,
+        )} of the canvas on the REFERENCE leg (${
+          predict.azimuthDistinctnessFactor
+        } x its ${pct(
+          baseAdded,
+        )} added fraction); measured ${notDistinct.join("; ")}. A camera that moved on paper and not on screen makes every azimuth number a copy of the first.`,
+      ],
+      reason: "the orbit did not change the picture",
+    });
+  }
+
+  const threshold = input.asset.parityThresholdFraction;
+  const entries = diffs.map((diff) => ({
+    headingDegrees: diff.headingDegrees,
+    mismatchFraction: diff.mismatchFraction,
+    pass: Number.isFinite(diff.mismatchFraction)
+      ? diff.mismatchFraction <= threshold
+      : null,
+  }));
+  const unmeasured = entries.filter((e) => e.pass === null);
+  if (unmeasured.length > 0) {
+    return laneResult({
+      entries,
+      structural: [
+        `azimuth:no-diff-measured — ${unmeasured
+          .map((e) => `${e.headingDegrees} deg`)
+          .join(
+            ", ",
+          )} produced no cross-backend diff; the comparison never happened`,
+      ],
+      reason: "one or more azimuths were never compared",
+    });
+  }
+
+  const over = entries.filter((e) => e.pass === false);
+  if (controls.azimuth?.scored !== true) {
+    return laneResult({
+      entries,
+      notes: [
+        `azimuth: ${entries
+          .map((e) => `${e.headingDegrees}deg=${pct(e.mismatchFraction)}`)
+          .join(" ")} against the ${pct(
+          threshold,
+        )} ${input.asset.name} threshold — RECORDED, NOT GATED at ${stage.id}: ${
+          controls.azimuth?.reason ?? "no reason recorded"
+        }. Armed at ${controls.azimuth?.deferredTo ?? "C15-G8"}.`,
+      ],
+      reason: `measured ${entries
+        .map((e) => `${e.headingDegrees}deg=${pct(e.mismatchFraction)}`)
+        .join(" ")} — recorded, not gated at ${stage.id}`,
+    });
+  }
+  return laneResult({
+    scored: true,
+    gated: true,
+    entries,
+    failures: over.map(
+      (e) =>
+        `azimuth:mismatch-above-threshold@${e.headingDegrees}deg — predicted <= ${pct(
+          threshold,
+        )}; measured ${pct(e.mismatchFraction)}`,
+    ),
+    reason: `predicted every azimuth <= ${pct(threshold)}; measured ${entries
+      .map((e) => `${e.headingDegrees}deg=${pct(e.mismatchFraction)}`)
+      .join(" ")}`,
+  });
+}
+
+/**
+ * The SH-OFF VACUITY CONTROL — the check `C15-G5` declared MANDATORY in its own
+ * exit gate and then certified without.
+ *
+ * With the WGSL spherical-harmonics term switched off, the WebGPU leg is once
+ * again the pre-`C15-G5` renderer, so the cross-backend mismatch must climb
+ * back to the recorded pre-G5 residual. If it does NOT — if SH-off still diffs
+ * to 0.000% against a WebGL leg that evaluates degree-3 SH — then the 0.000%
+ * the row certified on was never measuring SH, and the two legs agree for some
+ * other reason entirely. That is the failure this control exists to name, and
+ * it is the one a ceiling can never catch: a vacuous gate reports its best
+ * possible score.
+ *
+ * @param {object} input
+ * @returns {object}
+ */
+export function evaluateShOffControl(input) {
+  const predict = input?.predict ?? PREDICT;
+  const stage = input?.stage ?? STAGE;
+  const controls = stage.controls ?? STAGE.controls;
+  const guard = laneGuard(input, "sh-off");
+  if (!guard.ok) {
+    return guard.result;
+  }
+
+  const control = input.control ?? {};
+  if (control.supported !== true) {
+    return laneResult({
+      structural: [
+        `sh-off:not-executed — ${control.why ?? "the probe did not run the SH-off leg"}. The C15-G5 exit gate calls this control MANDATORY, so a run without it certifies nothing about the SH term.`,
+      ],
+      reason: "the SH-off leg did not execute",
+    });
+  }
+
+  // Two-sided, exactly like the tileset-hidden negative control: switching SH
+  // back on must return the picture. A control that permanently mutates the
+  // scene invalidates the readings taken before it, not just its own.
+  const restored = fractionOf(control.restoredChanged, control.canvasPixels);
+  if (
+    control.restored !== true ||
+    !(Number.isFinite(restored) && restored <= predict.determinismFraction)
+  ) {
+    return laneResult({
+      structural: [
+        `sh-off:not-restored — predicted re-enabling SH returns to the clean frame within ${pct(
+          predict.determinismFraction,
+        )}; measured restored=${control.restored} at ${pct(
+          restored,
+        )}. An irreversible control leaves every number in the run describing a different renderer than the one under test.`,
+      ],
+      reason: "the SH-off control did not restore the renderer",
+    });
+  }
+
+  const entries = (control.azimuths ?? []).map((entry) => ({
+    headingDegrees: entry.headingDegrees,
+    crossBackendMismatch: entry.crossBackendMismatch,
+    sameBackendMismatch: entry.sameBackendMismatch,
+  }));
+  if (entries.length !== AZIMUTH_HEADINGS.length) {
+    return laneResult({
+      entries,
+      structural: [
+        `sh-off:incomplete — predicted ${AZIMUTH_HEADINGS.length} SH-off captures (the row asks for the control at >= 2 of 3 azimuths); measured ${entries.length}`,
+      ],
+      reason: "the SH-off orbit did not complete",
+    });
+  }
+
+  const threshold = input.asset.parityThresholdFraction;
+  const risen = entries.filter(
+    (e) =>
+      Number.isFinite(e.crossBackendMismatch) &&
+      e.crossBackendMismatch >= threshold,
+  );
+  const measured = entries
+    .map(
+      (e) =>
+        `${e.headingDegrees}deg=${pct(e.crossBackendMismatch)}(vs-webgl)/${pct(
+          e.sameBackendMismatch,
+        )}(vs-sh-on)`,
+    )
+    .join(" ");
+
+  const gatedHere = (controls.shOff?.gatedAssets ?? []).includes(
+    input.asset.name,
+  );
+  if (controls.shOff?.scored !== true || !gatedHere) {
+    return laneResult({
+      entries,
+      notes: [
+        `sh-off: ${measured} — RECORDED, NOT GATED for ${input.asset.name}: ${
+          gatedHere
+            ? (controls.shOff?.reason ?? "no reason recorded")
+            : "the pre-C15-G5 residual is a recorded number on sh_unit_cube only, so a floor for this asset would be invented rather than derived"
+        }`,
+      ],
+      reason: `measured ${measured} — recorded, not gated for ${input.asset.name}`,
+    });
+  }
+
+  const failures =
+    risen.length >= predict.shOffMinAzimuths
+      ? []
+      : [
+          `sh-off:sh-term-vacuous — predicted the cross-backend mismatch rises back to about ${pct(
+            predict.shOffPreG5CubeMismatchFraction,
+          )} (the recorded pre-C15-G5 figure) and clears the ${pct(
+            threshold,
+          )} gate threshold at >= ${
+            predict.shOffMinAzimuths
+          } of ${entries.length} azimuths; measured ${measured} — ${
+            risen.length
+          } cleared it. An SH-off leg that still matches WebGL means the parity number is not measuring the SH term.`,
+        ];
+  return laneResult({
+    scored: true,
+    gated: true,
+    entries,
+    failures,
+    reason: `predicted >= ${predict.shOffMinAzimuths} of ${entries.length} azimuths above ${pct(
+      threshold,
+    )} with SH off (pre-C15-G5 reference ${pct(
+      predict.shOffPreG5CubeMismatchFraction,
+    )}); measured ${measured}`,
+  });
+}
+
+/**
+ * The CORRUPTED-COVARIANCE VACUITY CONTROL — `C15-G8`'s own ("an intentionally
+ * corrupted covariance term must push the mismatch above the threshold, proving
+ * the gate can fail").
+ *
+ * Both arms are same-backend: the corrupted WebGPU frame against the clean
+ * WebGPU frame at the same camera. That is deliberate — the question is whether
+ * the WebGPU pixel path READS the covariance bytes, and a cross-backend diff
+ * would fold in every other difference between the two renderers.
+ *
+ * The corruption is applied to a COPY of the payload and then withdrawn, and
+ * the withdrawal is itself gated: an irreversible corruption would mean every
+ * later reading describes damaged data.
+ *
+ * @param {object} input
+ * @returns {object}
+ */
+export function evaluateCovarianceControl(input) {
+  const predict = input?.predict ?? PREDICT;
+  const stage = input?.stage ?? STAGE;
+  const controls = stage.controls ?? STAGE.controls;
+  const guard = laneGuard(input, "covariance");
+  if (!guard.ok) {
+    return guard.result;
+  }
+
+  const control = input.control ?? {};
+  if (control.supported !== true) {
+    return laneResult({
+      structural: [
+        `covariance:not-executed — ${control.why ?? "the probe did not run the corruption leg"}. Without it the parity threshold has never been shown to be reachable from the wrong side.`,
+      ],
+      reason: "the corruption leg did not execute",
+    });
+  }
+
+  const canvasPixels = control.canvasPixels;
+  const restored = fractionOf(control.restoredChanged, canvasPixels);
+  if (
+    control.restored !== true ||
+    !(Number.isFinite(restored) && restored <= predict.determinismFraction)
+  ) {
+    return laneResult({
+      structural: [
+        `covariance:not-restored — predicted restoring the original payload returns to the clean frame within ${pct(
+          predict.determinismFraction,
+        )}; measured restored=${control.restored} at ${pct(restored)}`,
+      ],
+      reason: "the corruption was not reversible",
+    });
+  }
+
+  const single = fractionOf(control.singleChanged, canvasPixels);
+  const bulk = fractionOf(control.bulkChanged, canvasPixels);
+  const threshold = input.asset.parityThresholdFraction;
+  // DERIVED — one corrupted splat can only move pixels inside its own
+  // footprint, whose expected size is the measured added fraction divided by
+  // the splat count. Printed next to the measurement so a red is diagnosable
+  // from the log rather than from arithmetic done later.
+  const perSplatFootprint =
+    fractionOf(control.cleanAddedChanged, canvasPixels) /
+    input.asset.expectedSplats;
+  const singleFloor =
+    predict.negativeControlMargin * predict.determinismFraction;
+  const entries = [
+    {
+      arm: "single",
+      changedFraction: single,
+      floor: singleFloor,
+      derivedFootprint: perSplatFootprint,
+    },
+    { arm: "bulk", changedFraction: bulk, floor: threshold },
+  ];
+  const measured = `single=${pct(single)} (derived per-splat footprint ${pct(
+    perSplatFootprint,
+  )}, floor ${pct(singleFloor)}) bulk=${pct(bulk)} (floor ${pct(threshold)})`;
+
+  if (controls.covariance?.scored !== true) {
+    return laneResult({
+      entries,
+      notes: [`covariance: ${measured} — RECORDED, NOT GATED at ${stage.id}`],
+      reason: `measured ${measured} — recorded, not gated at ${stage.id}`,
+    });
+  }
+
+  const failures = [];
+  const singleGated = (
+    controls.covariance?.singleArmGatedAssets ?? []
+  ).includes(input.asset.name);
+  if (singleGated && !(Number.isFinite(single) && single >= singleFloor)) {
+    failures.push(
+      `covariance:single-triple-invisible — predicted corrupting ONE covariance triple (splat ${predict.covarianceSingleSplatIndex}, all six sigma terms x${predict.covarianceScaleFactor}) moves >= ${pct(
+        singleFloor,
+      )} of the canvas (${
+        predict.negativeControlMargin
+      }x the determinism bar, and below the ${pct(
+        perSplatFootprint,
+      )} footprint that splat occupies); measured ${pct(single)}`,
+    );
+  }
+  if (!(Number.isFinite(bulk) && bulk >= threshold)) {
+    failures.push(
+      `covariance:gate-cannot-fail — predicted corrupting every ${predict.covarianceBulkStride}th splat's covariance moves >= ${pct(
+        threshold,
+      )} of the canvas, i.e. past the ${input.asset.name} parity gate itself; measured ${pct(
+        bulk,
+      )}. A parity gate that a corrupted covariance cannot breach is not gating the covariance.`,
+    );
+  }
+  return laneResult({
+    scored: true,
+    gated: true,
+    entries,
+    failures,
+    reason: `predicted single >= ${pct(singleFloor)}${
+      singleGated ? "" : " (recorded only for this asset)"
+    } and bulk >= ${pct(threshold)}; measured ${measured}`,
+  });
+}
+
 /**
  * Fold the legs into one verdict + exit code.
  *
@@ -927,6 +1632,18 @@ export function foldGsplatVerdict(evaluated) {
     if (parity.scored && parity.pass === false) {
       failures.push(`parity:mismatch-above-threshold — ${parity.reason}`);
     }
+  }
+
+  // CO-12 — the added lanes fold in the SAME shape as the legs above (arrays of
+  // named failures and structural items), so nothing here special-cases them
+  // and adding a fourth lane costs one entry in the probe's array. A lane whose
+  // arrays are empty contributes nothing, which is what "recorded, not gated"
+  // is supposed to look like.
+  for (const lane of evaluated?.controls ?? []) {
+    if (!lane) continue;
+    failures.push(...(lane.failures ?? []));
+    structural.push(...(lane.structural ?? []));
+    notes.push(...(lane.notes ?? []));
   }
 
   let verdict = "PASS";

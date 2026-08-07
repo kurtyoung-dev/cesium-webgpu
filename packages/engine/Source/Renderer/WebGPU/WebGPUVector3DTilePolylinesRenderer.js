@@ -46,6 +46,7 @@
 import defined from "../../Core/defined.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Pass from "../Pass.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import SceneMode from "../../Scene/SceneMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -1101,7 +1102,7 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
     indexFormat: cache.indexFormat,
     indexCount: cache.indexCount || 0,
     vertexCount: 0,
-    pass: 9 /* Pass.TRANSLUCENT */,
+    pass: Pass.TRANSLUCENT,
     owner: primitive,
   });
 
@@ -1121,7 +1122,7 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
       indexFormat: cache.indexFormat,
       indexCount: cache.indexCount || 0,
       vertexCount: 0,
-      pass: 9 /* Pass.TRANSLUCENT */,
+      pass: Pass.TRANSLUCENT,
       owner: primitive,
     });
   }
@@ -1137,7 +1138,7 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
         indexFormat: cache.indexFormat,
         indexCount: cache.indexCount || 0,
         vertexCount: 0,
-        pass: 9 /* Pass.TRANSLUCENT */,
+        pass: Pass.TRANSLUCENT,
         owner: primitive,
         pickOnly: true,
       }),

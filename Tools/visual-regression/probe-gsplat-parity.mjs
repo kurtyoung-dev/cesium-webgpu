@@ -83,6 +83,37 @@
  *     gap. Without that, "the tileset added N pixels" is not a resolvable
  *     measurement and every threshold below it is noise.
  *
+ * WHAT `CO-12` ADDED, AND WHY THE ROW EXISTED
+ * -------------------------------------------
+ * `C15-G5` certified on ONE framed camera with NEITHER of the two controls its
+ * own exit gate declared mandatory, and `C15-G8`'s gate text asks for lanes
+ * this probe could not run at all. Three lanes close that:
+ *
+ *   * THREE AZIMUTHS. The same tileset orbited to headings 0 / 120 / 240 deg,
+ *     each with its own hidden-tileset reference frame, its own sort
+ *     quiescence and its own back-to-back determinism pair. Two anti-vacuity
+ *     guards run before any mismatch is read: the recorded view directions must
+ *     be the DERIVED 97.181 deg apart, and the picture must actually change
+ *     between adjacent azimuths. Three captures at one camera would otherwise
+ *     agree perfectly and look like the strongest possible result.
+ *   * SH-OFF VACUITY CONTROL. `primitive._sphericalHarmonicsDegree` is driven
+ *     to 0, which is the seam the engine already has: `resolveSplatShSource`
+ *     reports `enabled: false`, `activeShEnabled` flips, and the renderer
+ *     recompiles the `//>>else` variant with no SH term — the pre-`C15-G5`
+ *     renderer. The cross-backend mismatch must climb back to the recorded
+ *     2.574%. A run that stays at 0.000% with SH off proves the 0.000% was
+ *     never measuring SH.
+ *   * CORRUPTED-COVARIANCE VACUITY CONTROL. A COPY of the packed payload with
+ *     one splat's covariance triple scaled 4x (and a second copy with every
+ *     other splat's) is published as a new payload object, which is the
+ *     engine's own producer-identity dirty signal. The picture must move. Both
+ *     controls are withdrawn afterwards and the withdrawal is itself gated:
+ *     an irreversible control invalidates every reading taken before it.
+ *
+ * Both controls are GATES at every stage, while the azimuth mismatch stays
+ * recorded-not-gated until `C15-G8` — see `STAGE.controls` for why a floor and
+ * a ceiling do not arm together.
+ *
  * CONVENTIONS (fleet doctrine, all load-bearing)
  * ----------------------------------------------
  *   * Watchdog armed at 600 s; exceeding it exits 2, never 0.
@@ -112,7 +143,7 @@
  *   node Tools/visual-regression/probe-gsplat-parity.mjs --expect-webgpu --asset=both
  * Env:
  *   PROBE_BASE                  default http://localhost:8080
- *   PROBE_GSPLAT_WATCHDOG_MS    default 600000 (raise for --asset=both)
+ *   PROBE_GSPLAT_WATCHDOG_MS    default 1200000 (raise for --asset=both)
  * Out:
  *   Tools/visual-regression/output/gsplat-parity/*.png + manifest.json
  * Exit:
@@ -134,11 +165,15 @@ import {
 import {
   ABSENT_MARKER,
   ASSETS,
+  AZIMUTH_HEADINGS,
   EXIT_CODE,
   PREDICT,
   STAGE,
+  evaluateAzimuthLane,
+  evaluateCovarianceControl,
   evaluateParity,
   evaluateReferenceLeg,
+  evaluateShOffControl,
   evaluateWebgpuLeg,
   foldGsplatVerdict,
   fractionOf,
@@ -161,7 +196,11 @@ const PITCH_DEGREES = -30.0;
 /** 8-bit channel value above which a pixel counts as non-background. */
 const BACKGROUND_LEVEL = 16;
 
-const WATCHDOG_MS = Number(process.env.PROBE_GSPLAT_WATCHDOG_MS ?? 600_000);
+// CO-12 raised the default from 600 s: the WebGPU leg now walks three azimuths
+// and two controls, and the SH-off control forces one COLD WGSL variant compile
+// (~2674 ms measured on this fork) that no earlier run paid. The watchdog is a
+// safety net, not a budget — every loop inside the lane carries its own.
+const WATCHDOG_MS = Number(process.env.PROBE_GSPLAT_WATCHDOG_MS ?? 1_200_000);
 const watchdog = setTimeout(() => {
   console.error(
     `STRUCTURAL: probe exceeded ${WATCHDOG_MS} ms — raise PROBE_GSPLAT_WATCHDOG_MS for --asset=both`,
@@ -198,6 +237,8 @@ const RUN_LANE = async ({
   rangeScale,
   pitchDegrees,
   backgroundLevel,
+  azimuthHeadings,
+  runControls,
 }) => {
   const C = (window.Cesium =
     window.Cesium || (await import("/Build/CesiumUnminified/index.js")));
@@ -317,6 +358,15 @@ const RUN_LANE = async ({
     sortSignatureAtCapture: null,
     negativeControlChanged: null,
     added: null,
+    // CO-12 — one entry per orbit position. Entry 0 IS the historical single
+    // camera (heading 0), reported both here and in the flat fields above, so
+    // every number `C15-G1..G5` recorded stays directly comparable.
+    azimuths: [],
+    // CO-12 — WebGPU-only vacuity controls. `supported: false` with a `why` is
+    // a first-class outcome: the model turns it into a named STRUCTURAL, never
+    // into silence.
+    shOffControl: { supported: false, why: "not requested on this lane" },
+    covarianceControl: { supported: false, why: "not requested on this lane" },
     pngs: {},
   };
 
@@ -341,6 +391,25 @@ const RUN_LANE = async ({
       renderNow();
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
+  };
+  /**
+   * CO-12 — render until `predicate()` holds or the wall-clock budget expires.
+   * Wall clock, never a frame count, for the same reason every other budget in
+   * this file is: the conditions it waits on are pipeline-variant compiles and
+   * queue-ordered buffer writes, and neither is denominated in frames. Bounded
+   * by construction; the caller records the `ok` flag and the controls turn a
+   * false into a named STRUCTURAL rather than proceeding on stale state.
+   */
+  const waitForCondition = async (predicate, budgetMs) => {
+    const start = performance.now();
+    while (performance.now() - start < budgetMs) {
+      renderNow();
+      if (predicate()) {
+        return { ok: true, ms: performance.now() - start };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return { ok: false, ms: performance.now() - start };
   };
 
   // ── C15-G4b — splat-sort quiescence.
@@ -555,15 +624,32 @@ const RUN_LANE = async ({
   scene.primitives.add(tileset);
 
   // ── Camera derived from the tileset's OWN bounding sphere.
+  //
+  // CO-12 — parameterized by heading so the orbit lane reuses the SAME
+  // derivation at every azimuth. The range is computed once, from the sphere as
+  // it stands when the lane frames its first camera, so the three orbit
+  // positions differ ONLY in heading — a range that drifted with streaming
+  // would change the projected size and contaminate the per-azimuth comparison.
   const sphere = tileset.boundingSphere;
   const range = Math.max(sphere.radius * rangeScale, 10.0);
-  scene.camera.lookAt(
-    sphere.center,
-    new C.HeadingPitchRange(0.0, C.Math.toRadians(pitchDegrees), range),
-  );
-  // Bake the world-space pose and release the bounding-sphere reference frame,
-  // so nothing later in the lane is interpreted in a local frame.
-  scene.camera.lookAtTransform(C.Matrix4.IDENTITY);
+  const frameCameraAt = (headingDegrees) => {
+    scene.camera.lookAt(
+      tileset.boundingSphere.center,
+      new C.HeadingPitchRange(
+        C.Math.toRadians(headingDegrees),
+        C.Math.toRadians(pitchDegrees),
+        range,
+      ),
+    );
+    // Bake the world-space pose and release the bounding-sphere reference
+    // frame, so nothing later in the lane is interpreted in a local frame.
+    scene.camera.lookAtTransform(C.Matrix4.IDENTITY);
+  };
+  const viewDirectionNow = () => {
+    const d = scene.camera.directionWC;
+    return [d.x, d.y, d.z];
+  };
+  frameCameraAt(azimuthHeadings[0]);
 
   // ── Readiness: wall clock, never frame counts.
   const contentStart = performance.now();
@@ -875,6 +961,270 @@ const RUN_LANE = async ({
     [`${asset.name}-${renderer}-off-after`]: offB.png,
     [`${asset.name}-${renderer}-capture-liveness`]: liveness.png,
   };
+
+  // ══ CO-12 — THE ORBIT ══════════════════════════════════════════════════
+  //
+  // Entry 0 is the frame already scored above, recorded rather than re-taken:
+  // re-capturing it would make the primary reading and the orbit's first
+  // reading two different measurements of the same claim, and the track's
+  // recorded numbers are all against THIS one.
+  const cleanFrames = [onA];
+  record.azimuths.push({
+    headingDegrees: azimuthHeadings[0],
+    pngKey: `${asset.name}-${renderer}-on`,
+    viewDirection: viewDirectionNow(),
+    canvasPixels: record.canvasPixels,
+    backgroundForeground: record.backgroundForeground,
+    added: record.added,
+    determinismChanged: record.determinismChanged,
+    sortQuiesced: record.sortQuiesced,
+    sortQuiesceMs: record.sortQuiesceMs,
+    changedVsPrevious: null,
+  });
+
+  for (let i = 1; i < azimuthHeadings.length; i++) {
+    const heading = azimuthHeadings[i];
+    frameCameraAt(heading);
+    // Each azimuth gets its OWN hidden-tileset reference frame. The background
+    // is black and everything else in the scene is hidden, so all three SHOULD
+    // be blank — which is exactly why measuring them separately costs nothing
+    // and catches the case where one of them is not.
+    tileset.show = false;
+    await settleMs(predict.settleMs);
+    const off = captureNow();
+    tileset.show = true;
+    await settleMs(predict.settleMs);
+    // A 120 deg camera move is precisely what `shouldStartSteadySort` exists to
+    // notice, so every orbit position re-enters the sort pipeline and has to
+    // re-quiesce before its determinism pair. Skipping this would reintroduce
+    // the C15-G4b defect at azimuths 1 and 2 while azimuth 0 stayed clean.
+    const quiesce = await waitForSortQuiescence(
+      predict.settleMs,
+      quiesceBudgetMs,
+    );
+    const a = captureNow();
+    const b = captureNow();
+    cleanFrames.push(a);
+    const pngKey = `${asset.name}-${renderer}-az${heading}-on`;
+    record.pngs[pngKey] = a.png;
+    record.azimuths.push({
+      headingDegrees: heading,
+      pngKey: pngKey,
+      viewDirection: viewDirectionNow(),
+      canvasPixels: record.canvasPixels,
+      backgroundForeground: foregroundCount(off.image),
+      added: analyzeAdded(a.image, off.image),
+      determinismChanged: changedPixelCount(a.image, b.image),
+      sortQuiesced: quiesce.quiesced,
+      sortQuiesceMs: quiesce.ms,
+      // The anti-vacuity number: how much the picture changed relative to the
+      // PREVIOUS orbit position. A camera that moved on paper and not on screen
+      // leaves this at the determinism floor.
+      changedVsPrevious: changedPixelCount(a.image, cleanFrames[i - 1].image),
+    });
+  }
+
+  if (!runControls) {
+    record.shOffControl = {
+      supported: false,
+      why: "controls run only on the WebGPU leg under --expect-webgpu",
+    };
+    record.covarianceControl = {
+      supported: false,
+      why: "controls run only on the WebGPU leg under --expect-webgpu",
+    };
+    return record;
+  }
+
+  const controlled = tileset.gaussianSplatPrimitive;
+  const controlCache = controlled?._webgpuCache;
+
+  // ══ CO-12 — SH-OFF VACUITY CONTROL ═════════════════════════════════════
+  //
+  // The seam is the engine's own: `resolveSplatShSource` reports
+  // `enabled: false` for a degree below 1, `activeShEnabled` follows it,
+  // `shFlipped` invalidates the pipeline resources and the renderer recompiles
+  // the `//>>else` variant — a WGSL module with no SH term at all. That is a
+  // stronger control than clearing a uniform: a uniform-level switch would
+  // leave the SH code path compiled and could be defeated by the same defect
+  // it is meant to detect.
+  {
+    const originalDegree = controlled?._sphericalHarmonicsDegree ?? 0;
+    if (!controlled || !controlCache || !(originalDegree >= 1)) {
+      record.shOffControl = {
+        supported: false,
+        why: `no SH to switch off (primitive=${!!controlled} cache=${!!controlCache} degree=${originalDegree}) — both in-tree gate assets are SH degree 3, so this is itself a finding`,
+      };
+    } else {
+      controlled._sphericalHarmonicsDegree = 0;
+      const flipped = await waitForCondition(
+        () =>
+          controlled._webgpuCache?.resourcesShEnabled === false &&
+          !!controlled._webgpuCache?.pipeline,
+        predict.controlSettleBudgetMs,
+      );
+      if (!flipped.ok) {
+        record.shOffControl = {
+          supported: false,
+          why: `the renderer did not recompile the no-SH variant within ${predict.controlSettleBudgetMs} ms (resourcesShEnabled=${controlled._webgpuCache?.resourcesShEnabled})`,
+        };
+        controlled._sphericalHarmonicsDegree = originalDegree;
+      } else {
+        const azimuths = [];
+        for (let i = 0; i < azimuthHeadings.length; i++) {
+          const heading = azimuthHeadings[i];
+          frameCameraAt(heading);
+          await settleMs(predict.settleMs);
+          await waitForSortQuiescence(predict.settleMs, quiesceBudgetMs);
+          const shot = captureNow();
+          const pngKey = `${asset.name}-${renderer}-shoff-az${heading}`;
+          record.pngs[pngKey] = shot.png;
+          azimuths.push({
+            headingDegrees: heading,
+            pngKey: pngKey,
+            // Same-backend: SH-off vs the SH-on frame at the SAME camera. This
+            // is the C15-G5 row's literal wording. The cross-backend half is
+            // computed on the Node side against the WebGL leg's PNG, because
+            // that is the comparison the 2.574% figure was recorded from.
+            sameBackendChanged: changedPixelCount(
+              shot.image,
+              cleanFrames[i].image,
+            ),
+          });
+        }
+        // Withdraw the control and require the picture to come back.
+        controlled._sphericalHarmonicsDegree = originalDegree;
+        const restoredFlip = await waitForCondition(
+          () =>
+            controlled._webgpuCache?.resourcesShEnabled === true &&
+            !!controlled._webgpuCache?.pipeline,
+          predict.controlSettleBudgetMs,
+        );
+        frameCameraAt(azimuthHeadings[0]);
+        await settleMs(predict.settleMs);
+        await waitForSortQuiescence(predict.settleMs, quiesceBudgetMs);
+        const restoredShot = captureNow();
+        record.shOffControl = {
+          supported: true,
+          why: "",
+          canvasPixels: record.canvasPixels,
+          originalDegree,
+          flipMs: flipped.ms,
+          azimuths,
+          restored: restoredFlip.ok,
+          restoredChanged: changedPixelCount(
+            restoredShot.image,
+            cleanFrames[0].image,
+          ),
+        };
+      }
+    }
+  }
+
+  // ══ CO-12 — CORRUPTED-COVARIANCE VACUITY CONTROL ═══════════════════════
+  //
+  // Words 4-6 of each 8-u32 packed record hold the six unique symmetric
+  // covariance terms as three `unpackHalf2x16` pairs (`C15-G0` 6a(A)). The
+  // corruption is applied in the HALF-FLOAT EXPONENT — +2 is an exact x4 for
+  // every normal half — and clamped short of the Inf/NaN encoding, so a
+  // corrupted splat is a WRONGLY-SIZED splat rather than a degenerate quad that
+  // could satisfy this control for reasons unrelated to the covariance.
+  {
+    const payload = controlled?._packedSplatTextureData;
+    const numSplats = controlled?._numSplats ?? 0;
+    if (!payload?.data || numSplats <= 0 || !controlCache) {
+      record.covarianceControl = {
+        supported: false,
+        why: `no packed payload to corrupt (data=${!!payload?.data} numSplats=${numSplats} cache=${!!controlCache})`,
+      };
+    } else {
+      const expDelta = Math.round(Math.log2(predict.covarianceScaleFactor));
+      const scaleHalf = (bits) => {
+        const sign = bits & 0x8000;
+        const exponent = (bits >> 10) & 0x1f;
+        const mantissa = bits & 0x03ff;
+        // Zero / denormal (0) and Inf / NaN (31) are left alone: neither has an
+        // exponent that can be shifted without changing what the value MEANS.
+        if (exponent === 0 || exponent === 0x1f) {
+          return bits;
+        }
+        const shifted = Math.min(30, Math.max(1, exponent + expDelta));
+        return (sign | (shifted << 10) | mantissa) >>> 0;
+      };
+      const scalePair = (word) =>
+        ((scaleHalf((word >>> 16) & 0xffff) << 16) |
+          scaleHalf(word & 0xffff)) >>>
+        0;
+      const corrupt = (firstSplat, stride) => {
+        // A COPY. The original payload object and its bytes are never written,
+        // so the restore step is a reference swap and cannot leave residue.
+        const data = payload.data.slice();
+        let corrupted = 0;
+        for (let s = firstSplat; s < numSplats; s += stride) {
+          const base = s * 8;
+          for (let w = 4; w <= 6; w++) {
+            data[base + w] = scalePair(data[base + w]);
+          }
+          corrupted++;
+        }
+        return { payload: { ...payload, data: data }, corrupted };
+      };
+      const publish = async (nextPayload) => {
+        controlled._packedSplatTextureData = nextPayload;
+        // The engine's OWN dirty signal is producer identity, so waiting on the
+        // resident token is waiting on the upload the corruption is supposed to
+        // cause — not on a frame count that might beat it.
+        const uploaded = await waitForCondition(
+          () => controlled._webgpuCache?.splatSourceToken === nextPayload,
+          predict.controlSettleBudgetMs,
+        );
+        await settleMs(predict.settleMs);
+        await waitForSortQuiescence(predict.settleMs, quiesceBudgetMs);
+        return uploaded;
+      };
+
+      frameCameraAt(azimuthHeadings[0]);
+      await settleMs(predict.settleMs);
+      await waitForSortQuiescence(predict.settleMs, quiesceBudgetMs);
+
+      const single = corrupt(predict.covarianceSingleSplatIndex, numSplats + 1);
+      const singleUploaded = await publish(single.payload);
+      const singleShot = captureNow();
+      record.pngs[`${asset.name}-${renderer}-corrupt-single`] = singleShot.png;
+
+      const bulk = corrupt(0, predict.covarianceBulkStride);
+      const bulkUploaded = await publish(bulk.payload);
+      const bulkShot = captureNow();
+      record.pngs[`${asset.name}-${renderer}-corrupt-bulk`] = bulkShot.png;
+
+      const restoredUpload = await publish(payload);
+      const restoredShot = captureNow();
+
+      record.covarianceControl = {
+        supported: singleUploaded.ok && bulkUploaded.ok,
+        why:
+          singleUploaded.ok && bulkUploaded.ok
+            ? ""
+            : `the corrupted payload never became resident (single=${singleUploaded.ok} bulk=${bulkUploaded.ok}) within ${predict.controlSettleBudgetMs} ms`,
+        canvasPixels: record.canvasPixels,
+        splatsCorruptedSingle: single.corrupted,
+        splatsCorruptedBulk: bulk.corrupted,
+        numSplats,
+        cleanAddedChanged: record.added?.changed ?? null,
+        singleChanged: changedPixelCount(
+          singleShot.image,
+          cleanFrames[0].image,
+        ),
+        bulkChanged: changedPixelCount(bulkShot.image, cleanFrames[0].image),
+        restored: restoredUpload.ok,
+        restoredChanged: changedPixelCount(
+          restoredShot.image,
+          cleanFrames[0].image,
+        ),
+      };
+    }
+  }
+
   return record;
 };
 
@@ -948,7 +1298,7 @@ function filteredErrors(errors) {
   );
 }
 
-async function runBackend(browser, renderer, asset, dataBudgetMs) {
+async function runBackend(browser, renderer, asset, dataBudgetMs, runControls) {
   const page = await browser.newPage({ viewport: VIEW });
   const pageErrors = attachPageErrors(page);
   const consoleGate = attachConsoleErrorGate(page);
@@ -983,6 +1333,8 @@ async function runBackend(browser, renderer, asset, dataBudgetMs) {
       rangeScale: RANGE_SCALE,
       pitchDegrees: PITCH_DEGREES,
       backgroundLevel: BACKGROUND_LEVEL,
+      azimuthHeadings: AZIMUTH_HEADINGS,
+      runControls: runControls === true,
     });
     const gate = await collectGateErrors(page);
     const errors = filteredErrors([
@@ -1109,6 +1461,11 @@ async function main() {
         "webgl",
         asset,
         PREDICT.dataReadyBudgetMs,
+        // The controls are WebGPU-only by construction: the WebGL leg uploads
+        // the packed payload into a `Texture` and keeps no CPU copy, and it is
+        // the REFERENCE — corrupting it would be corrupting the thing the
+        // measurement is against.
+        false,
       );
       const derivedBudget = Number.isFinite(webgl?.dataReadyMs)
         ? Math.min(
@@ -1116,7 +1473,13 @@ async function main() {
             Math.max(30_000, 4 * webgl.dataReadyMs),
           )
         : PREDICT.dataReadyBudgetMs;
-      const webgpu = await runBackend(browser, "webgpu", asset, derivedBudget);
+      const webgpu = await runBackend(
+        browser,
+        "webgpu",
+        asset,
+        derivedBudget,
+        EXPECT_WEBGPU,
+      );
       runs.push({ asset, webgl, webgpu, derivedBudget });
     }
 
@@ -1135,6 +1498,68 @@ async function main() {
             b,
             threshold: 3 * BACKGROUND_LEVEL,
           });
+
+          // CO-12 — the per-azimuth cross-backend diffs, and the SH-off leg's
+          // cross-backend diffs, both scored against the WebGL leg at the SAME
+          // heading. Pairing by HEADING rather than by array position is what
+          // makes a lane that captured its orbit in a different order (or
+          // dropped one) show up as a missing pair instead of a silently
+          // mismatched comparison.
+          const referenceByHeading = new Map(
+            (run.webgl?.azimuths ?? []).map((entry) => [
+              entry.headingDegrees,
+              run.webgl?.pngs?.[entry.pngKey],
+            ]),
+          );
+          run.azimuthDiffs = [];
+          for (const entry of run.webgpu?.azimuths ?? []) {
+            const referencePng = referenceByHeading.get(entry.headingDegrees);
+            const webgpuPng = run.webgpu?.pngs?.[entry.pngKey];
+            if (!referencePng || !webgpuPng) continue;
+            const measured = await page.evaluate(DIFF_IN_PAGE, {
+              a: referencePng,
+              b: webgpuPng,
+              threshold: 3 * BACKGROUND_LEVEL,
+            });
+            run.azimuthDiffs.push({
+              headingDegrees: entry.headingDegrees,
+              mismatchFraction: measured.mismatchFraction,
+              mismatched: measured.mismatched,
+              total: measured.total,
+              png: measured.png,
+            });
+          }
+        }
+        // Re-walk for the SH-off cross-backend halves: they need one diff per
+        // azimuth against the WebGL leg, and keeping them out of the loop above
+        // stops a missing SH-off leg from skipping the azimuth diffs with it.
+        for (const run of runs) {
+          const shOff = run.webgpu?.shOffControl;
+          if (shOff?.supported !== true) continue;
+          const referenceByHeading = new Map(
+            (run.webgl?.azimuths ?? []).map((entry) => [
+              entry.headingDegrees,
+              run.webgl?.pngs?.[entry.pngKey],
+            ]),
+          );
+          for (const entry of shOff.azimuths ?? []) {
+            entry.sameBackendMismatch = fractionOf(
+              entry.sameBackendChanged,
+              run.webgpu?.canvasPixels,
+            );
+            const referencePng = referenceByHeading.get(entry.headingDegrees);
+            const shOffPng = run.webgpu?.pngs?.[entry.pngKey];
+            if (!referencePng || !shOffPng) {
+              entry.crossBackendMismatch = Number.NaN;
+              continue;
+            }
+            const measured = await page.evaluate(DIFF_IN_PAGE, {
+              a: referencePng,
+              b: shOffPng,
+              threshold: 3 * BACKGROUND_LEVEL,
+            });
+            entry.crossBackendMismatch = measured.mismatchFraction;
+          }
         }
       } finally {
         await page.close().catch(() => {});
@@ -1154,6 +1579,20 @@ async function main() {
       fs.writeFileSync(
         path.join(OUT, `${run.asset.name}-parity-diff.png`),
         Buffer.from(run.diff.png.slice(comma + 1), "base64"),
+      );
+    }
+    // CO-12 — one diff PNG per orbit position. The row's exit gate says "PNGs
+    // read by the author", and an azimuth whose number the author cannot look
+    // at is a number nobody checked.
+    for (const entry of run.azimuthDiffs ?? []) {
+      if (!entry.png) continue;
+      const comma = entry.png.indexOf(",");
+      fs.writeFileSync(
+        path.join(
+          OUT,
+          `${run.asset.name}-parity-diff-az${entry.headingDegrees}.png`,
+        ),
+        Buffer.from(entry.png.slice(comma + 1), "base64"),
       );
     }
   }
@@ -1188,7 +1627,39 @@ async function main() {
       mismatchFraction: run.diff?.mismatchFraction,
       asset,
     });
-    run.evaluation = { reference, webgpu: webgpuLeg, parity };
+    // CO-12 — the three added lanes. Each takes the SAME two gatekeepers the
+    // parity leg does (reference blindness, WebGPU presence) so a run that
+    // could not see its subject cannot produce an orbit or a control verdict
+    // either.
+    const azimuth = evaluateAzimuthLane({
+      expectWebgpu: EXPECT_WEBGPU,
+      referenceBlind: reference.blind,
+      presenceState: webgpuLeg.presence.state,
+      asset,
+      reference: webgl,
+      webgpu: webgpu,
+      diffs: run.azimuthDiffs ?? [],
+    });
+    const shOff = evaluateShOffControl({
+      expectWebgpu: EXPECT_WEBGPU,
+      referenceBlind: reference.blind,
+      presenceState: webgpuLeg.presence.state,
+      asset,
+      control: webgpu?.shOffControl,
+    });
+    const covariance = evaluateCovarianceControl({
+      expectWebgpu: EXPECT_WEBGPU,
+      referenceBlind: reference.blind,
+      presenceState: webgpuLeg.presence.state,
+      asset,
+      control: webgpu?.covarianceControl,
+    });
+    run.evaluation = {
+      reference,
+      webgpu: webgpuLeg,
+      parity,
+      controls: [azimuth, shOff, covariance],
+    };
 
     const addedFraction = fractionOf(
       webgl?.added?.changed,
@@ -1300,8 +1771,55 @@ async function main() {
       }] forbids=[${STAGE.retired.join(", ")}]`,
     );
     console.log(`  [PARITY]     ${parity.reason}`);
+    console.log(
+      `  [AZIMUTH]    predicted ${AZIMUTH_HEADINGS.join("/")} deg, adjacent view directions ${PREDICT.azimuthSeparationDegrees.toFixed(
+        3,
+      )} deg apart (DERIVED) and each orbit step changing >= ${
+        PREDICT.azimuthDistinctnessFactor
+      }x the added fraction; ${azimuth.reason || "not scored"}`,
+    );
+    for (const entry of webgpu?.azimuths ?? []) {
+      console.log(
+        `               ${String(entry.headingDegrees).padStart(3)}deg webgpu added=${pct(
+          fractionOf(entry.added?.changed, entry.canvasPixels),
+        )} det=${entry.determinismChanged} quiesced=${entry.sortQuiesced} vsPrev=${
+          entry.changedVsPrevious ?? "n/a"
+        }`,
+      );
+    }
+    console.log(
+      `  [SH-OFF]     predicted the cross-backend mismatch rises back to about ${pct(
+        PREDICT.shOffPreG5CubeMismatchFraction,
+      )} (recorded pre-C15-G5) at >= ${PREDICT.shOffMinAzimuths} of ${
+        AZIMUTH_HEADINGS.length
+      } azimuths; ${shOff.reason || "not scored"}${
+        webgpu?.shOffControl?.supported === true
+          ? ` [flip ${Math.round(webgpu.shOffControl.flipMs)}ms, degree ${webgpu.shOffControl.originalDegree} -> 0 -> ${webgpu.shOffControl.originalDegree}]`
+          : ""
+      }`,
+    );
+    console.log(
+      `  [COV-CTRL]   predicted one covariance triple x${
+        PREDICT.covarianceScaleFactor
+      } is visible and every ${PREDICT.covarianceBulkStride}th splat breaches the ${pct(
+        asset.parityThresholdFraction,
+      )} gate; ${covariance.reason || "not scored"}${
+        webgpu?.covarianceControl?.supported === true
+          ? ` [corrupted ${webgpu.covarianceControl.splatsCorruptedSingle}/${webgpu.covarianceControl.splatsCorruptedBulk} of ${webgpu.covarianceControl.numSplats}]`
+          : ""
+      }`,
+    );
 
     for (const note of webgpuLeg.notes) console.log(`  ${note}`);
+    for (const lane of run.evaluation.controls) {
+      for (const note of lane.notes) console.log(`  [LANE]       ${note}`);
+      for (const item of lane.structural) {
+        console.log(`  [STRUCTURAL] ${asset.name}: ${item}`);
+      }
+      for (const item of lane.failures) {
+        console.log(`  [FAIL]       ${asset.name}: ${item}`);
+      }
+    }
     for (const item of [...reference.structural, ...webgpuLeg.structural]) {
       console.log(`  [STRUCTURAL] ${asset.name}: ${item}`);
     }
@@ -1324,7 +1842,11 @@ async function main() {
         base: BASE,
         mode: EXPECT_WEBGPU ? "expect-webgpu" : "current-state",
         viewport: VIEW,
-        camera: { rangeScale: RANGE_SCALE, pitchDegrees: PITCH_DEGREES },
+        camera: {
+          rangeScale: RANGE_SCALE,
+          pitchDegrees: PITCH_DEGREES,
+          azimuthHeadings: AZIMUTH_HEADINGS,
+        },
         predictions: PREDICT,
         runs: runs.map((run) => ({
           asset: run.asset.name,
@@ -1333,6 +1855,10 @@ async function main() {
           webgl: withoutPngs(run.webgl),
           webgpu: withoutPngs(run.webgpu),
           diff: run.diff ? { ...run.diff, png: undefined } : null,
+          azimuthDiffs: (run.azimuthDiffs ?? []).map((entry) => ({
+            ...entry,
+            png: undefined,
+          })),
           evaluation: run.evaluation,
         })),
       },

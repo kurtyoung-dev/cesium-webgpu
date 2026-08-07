@@ -59,6 +59,7 @@ import Cartographic from "../../Core/Cartographic.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Pass from "../Pass.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import SceneMode from "../../Scene/SceneMode.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
@@ -1508,10 +1509,15 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   const classType = primitive.classificationType ?? 0;
   const groundPasses = [];
   if (classType === 0 /* TERRAIN */ || classType === 2 /* BOTH */) {
-    groundPasses.push(3 /* TERRAIN_CLASSIFICATION */);
+    groundPasses.push(Pass.TERRAIN_CLASSIFICATION);
   }
   if (classType === 1 /* CESIUM_3D_TILE */ || classType === 2 /* BOTH */) {
-    groundPasses.push(6 /* CESIUM_3D_TILE_CLASSIFICATION */);
+    // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
+    // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION; the literal that used to sit here
+    // named it in a comment but carried the pre-insertion VALUE, which is
+    // Pass.CESIUM_3D_TILE on this fork. Value left UNCHANGED — the correction
+    // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+    groundPasses.push(Pass.CESIUM_3D_TILE);
   }
 
   // Emit one color DrawCommand per `_batchedIndices` entry × per
@@ -1526,12 +1532,14 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
   // IGNORE_SHOW stencil-write commands, one per batch. Only emitted when
   // the primitive participates in 3D Tile classification (BOTH or
-  // CESIUM_3D_TILE — captured by the `groundPasses.includes(6)` check
+  // CESIUM_3D_TILE — captured by the `groundPasses.includes` check
   // below). The Vector3DTilePrimitive dispatch site pushes these
   // alongside `colorCommands` when `frameState.invertClassification` is
   // true.
   const ignoreShowCommands = [];
-  const emitsThreeDTileClassification = groundPasses.includes(6);
+  const emitsThreeDTileClassification = groundPasses.includes(
+    Pass.CESIUM_3D_TILE,
+  );
   for (let i = 0; i < batchedIndices.length; i++) {
     const entry = batchedIndices[i];
     const offset = entry.offset | 0;
@@ -1595,7 +1603,9 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       // draw. Mirrors Vector3DTilePrimitive.createColorCommands, which
       // interleaves commands[j*2]=stencilDepth, commands[j*2+1]=color.
       const markPipeline =
-        passEnum === 6 ? cache.markTilesetPipeline : cache.markTerrainPipeline;
+        passEnum === Pass.CESIUM_3D_TILE
+          ? cache.markTilesetPipeline
+          : cache.markTerrainPipeline;
       if (!defined(markPipeline) || !defined(cache.colorPipeline)) {
         // Pipelines still resolving asynchronously — skip this pass's
         // color this frame (the mark is a hard prerequisite for the
@@ -1662,7 +1672,12 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
         new WebGPUDrawCommand({
           ...sharedDrawArgs,
           pipeline: cache.stencilPipeline,
-          pass: 7 /* CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW */,
+          // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
+          // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW; the literal that used to sit here
+          // named it in a comment but carried the pre-insertion VALUE, which is
+          // Pass.CESIUM_3D_TILE_CLASSIFICATION on this fork. Value left UNCHANGED — the correction
+          // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+          pass: Pass.CESIUM_3D_TILE_CLASSIFICATION,
           renderState: { stencilTest: { reference: 0xff } },
         }),
       );

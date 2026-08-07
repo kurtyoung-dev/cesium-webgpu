@@ -36,6 +36,7 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Transforms from "../../Core/Transforms.js";
+import Pass from "../Pass.js";
 import type JulianDate from "../../Core/JulianDate.js";
 import BrightStarCatalog from "../../Scene/BrightStarCatalog.js";
 import {
@@ -669,7 +670,7 @@ function updateWebGPUStarField(
       vertexBuffers: [cache.instanceBuffer],
       vertexCount: 6,
       instanceCount: cache.starCount,
-      pass: 0, // Pass.ENVIRONMENT
+      pass: Pass.ENVIRONMENT,
       owner: starField,
     });
   }

@@ -26,6 +26,7 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Pass from "../Pass.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import {
   makeBindGroupLayout,
@@ -1238,13 +1239,14 @@ function _updateWebGPUPointPrimitivesInner(
   // — mirrors the billboard wiring.
   // pass:0 was a real bug (that value is Pass.ENVIRONMENT, not OPAQUE),
   // causing points to render before the globe surface and paint over
-  // the sky. OPAQUE=8 or TRANSLUCENT=9 are the valid pass values.
+  // the sky. NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT (2026-08-07): the replacement
+  // values were written as NUMERIC literals against a fork Pass enum that
+  // has since gained a second insertion, so 8/9 drifted onto
+  // CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW / OPAQUE. Read the enum.
   // Pick by collection.blendOption — point primitives use discard-based
   // alpha cutoffs so OPAQUE is safe when the collection is all-opaque.
   const pointPass =
-    collection._blendOption === 0
-      ? 8 /* Pass.OPAQUE */
-      : 9; /* Pass.TRANSLUCENT */
+    collection._blendOption === 0 ? Pass.OPAQUE : Pass.TRANSLUCENT;
   cache.colorCommand = new WebGPUDrawCommand({
     pipeline: cache.pipeline,
     bindGroups: [cache.bindGroup],
@@ -1268,21 +1270,18 @@ function _updateWebGPUPointPrimitivesInner(
     // `applyPerEncoderState` drives the dynamic WebGPU pass state from
     // the same values the WebGL path uses.
     renderState:
-      pointPass === 8 /* Pass.OPAQUE */
+      pointPass === Pass.OPAQUE
         ? collection._rsOpaque
         : collection._rsTranslucent,
   });
 
   // C11-157 Slice B — OIT reachability for translucent point primitives.
   // Attach the OIT variant inputs when the command lands in Pass.TRANSLUCENT
-  // (9); reuses the base color pipeline's SHARED layout + vertex/primitive/
+  // reusing the base color pipeline's SHARED layout + vertex/primitive/
   // depth state (single-sample for the OIT accumulation targets). Inert when
   // the FAR-003 gate is off → gate-OFF byte-identical. The point FS returns a
   // `FragOutput` struct (@location(0) color) — injectOITOutput struct branch.
-  if (
-    pointPass === 9 /* Pass.TRANSLUCENT */ &&
-    defined(pipelineEntry.oitShaderCode)
-  ) {
+  if (pointPass === Pass.TRANSLUCENT && defined(pipelineEntry.oitShaderCode)) {
     cache.colorCommand._shaderCode = pipelineEntry.oitShaderCode;
     cache.colorCommand._pipelineConfig = {
       label: "OIT PointPrimitive",
@@ -1498,7 +1497,7 @@ function _pushPickCommand(
     vertexBuffers: [pickBuffer],
     vertexCount: VERTICES_PER_QUAD,
     instanceCount: safePickCount,
-    pass: 8,
+    pass: Pass.OPAQUE,
     owner: collection,
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,
