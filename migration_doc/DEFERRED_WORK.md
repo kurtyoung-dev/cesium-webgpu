@@ -331,6 +331,85 @@ by streamed imagery/terrain; where it can, add `&offline=true` +
 before re-banking its verdict. **Effort:** M. **Impact:** the trustworthiness of
 Gate B as a whole, not just of the `channels` leg.
 
+### UPDATE 2026-08-06 - six Gate-B legs CLASSIFIED; five PINNED, one exonerated
+
+Susceptibility was assessed per probe rather than blanket-pinned. Loading a
+network globe is not the same as being corrupted by one: what matters is whether
+the SCORED quantity can be moved by it. Five of the six can; one cannot.
+
+**No product defect is claimed by this pass, and none was found.** Every
+mechanism below lives in probe configuration. This is a source-traced
+classification, NOT a measured one - see "NOT verified" at the end.
+
+| probe | class | what the verdict reads | the mechanism |
+|---|---|---|---|
+| `edr-mock` | **SUSCEPTIBLE** | pixels: `max(r,g,b)>120` count over the central 60% of a 250 km nadir frame (`:76-83` pre-fix) | metric counted imagery; and the contamination is ORDERED - `west` (lon -160) is the FIRST longitude visited ~7 s after setup, `east` (lon 160) the LAST, nine camera jumps later against a warmer tile cache, so streamed imagery biases `east - west` UP, the exact direction gate 3 scores |
+| `wcs` | **SUSCEPTIBLE** | pixels: byte-identical capture path to `edr-mock` (`:66-75` pre-fix), same nine longitudes, same `east - west >= 0.03` | same ordered-imagery false-green path |
+| `metar` | **SUSCEPTIBLE** (worst case) | pixels: same `>120` count, two point samples + two 7-longitude sweeps (`:76-85` pre-fix) | TWO independent false-green paths. Gate 3 (`cloudy - clear >= 0.05`) samples lon 0/lat 35 (bright North African coast) against lon -120/lat 35 (Pacific) - imagery pushes the difference the way the gate scores it. Gate 4 (`sum\|ch1-ch0\| >= 0.04`) differences two sweeps taken at different wall-clock times, so ANY drift between them ADDS to the scored sum: tiles still arriving, the deck advecting at the 15.0 m/s default wind under a wall-clock `time`, and the tier path's temporal/jitter/half-res |
+| `ingest` | **SUSCEPTIBLE** | pixels: whitish/grey classifier (`L>90`, `max-min<55`, not blue) over a near-ground upward view (`:96-128` pre-fix) | dominant contaminant is the CLOCK, not imagery: this probe never disabled sky/sun/atmosphere and never set the clock, so solar elevation differed every run and drifted during each run across a hard `L>90` bar. Secondary: camera at 650 m with +16 deg pitch and ~23.4 deg vertical half-FOV puts the bottom of the sampled band (to `y=0.82h`) at or below the horizon, where sunlit terrain imagery is exactly what the classifier looks for, and no globe base colour was set |
+| `seam-poles` | **SUSCEPTIBLE** (different axis) | pixels: adjacent-column luminance step distribution + 12-sector azimuthal ring variance (`:142-201` pre-fix) | its imagery vector was ALREADY CLOSED - it called `imageryLayers.removeAll()`, set a dark base colour, disabled sky/sun/moon/skyBox and pinned a per-view solar-noon clock. What stayed open: `useDefaultRenderLoop` left true and every settle frame was `s.render()` with NO argument, which `Scene.js` fills with `JulianDate.now()` - so setting `clock.currentTime` never reached the frame, and the deck advected at the default wind through all 120 settle frames. Both scored quantities are fine-grained spatial statistics, so a translating field moves them directly. Temporal accumulation (tier path, `cloudQuality` 64) low-pass filters exactly the adjacent-column step it scores, which is a false-GREEN direction. Terrain was still streamed (no `offline`, no forced `EllipsoidTerrainProvider`) |
+| `time` | **NOT SUSCEPTIBLE** | CPU only: `getPackedTexture` byte hashes + `provider.version` counters (`:40-110`) | never renders, never reads a pixel, never touches `window.viewer`. It constructs its own `WeatherProvider` objects and drives them with EXPLICIT fixed instants (`t0 = Date.UTC(2026,0,1)`, `+6h`, `-9h`, `+18h`) - no wall clock anywhere. The network globe reaches it only as CPU/bandwidth contention against its 300 ms `poll` budget, whose failure mode is a null buffer, which fails the `h0 != null` guards - i.e. contention can only produce a false RED, never a false GREEN. **Its existing GREEN is trustworthy as recorded; no re-run is owed.** |
+
+**Pinned this pass** (`edr-mock`, `wcs`, `metar`, `ingest`, `seam-poles`), to the
+`probe-weather-channels.mjs` P1-P8 pattern. Because this is one defect class
+across five files it got ONE enforceable home rather than five copies:
+`Tools/visual-regression/lib/weather-probe-pinning.mjs` -
+`installWeatherPinHarnessOnPage` (in-page pins + same-task capture + wall-clock
+settle + `awaitWeatherApplied` + binned-`Pass.GLOBE` readiness),
+`collectPinStructural` (read-back enforcement) and `collectRepeatStructural`
+(determinism control). Each probe now: loads `&offline=true`, calls
+`imageryLayers.removeAll()` and forces an `EllipsoidTerrainProvider`, drives ONE
+render loop with an EXPLICIT `JulianDate` on every render, pins `cloudWindSpeed`
+to 0 and `cloudQuality` to 32 (the tier escape hatch), gates on the weather bytes
+actually reaching the GPU, and READS BACK every pin - scene state plus packed
+cloud-uniform slots 35/44/64/74/107. A pin that did not take reports **STRUCTURAL
+(exit 3)**, not a verdict. All five gained a WebGPU-backend hard-fail and a
+watchdog.
+
+**No assertion was widened, lowered or removed.** Every scored threshold is
+byte-identical to the pre-pinning probe; the determinism control is an
+ADDITIONAL gate. Its tolerances sit strictly inside each probe's smallest scored
+margin, and where a probe scores a SUM of per-sample deltas (`metar` gate 4) the
+control bounds that same sum. In `metar` and `ingest` the repeat legs were
+deliberately ordered to BRACKET the intervening leg (`ch1A -> ch0 -> ch1B`,
+`hiA -> lo -> hiB`) so the control spans the gap the assertion actually reads
+across, and spans the dial/source changes.
+
+**Recorded numbers that are NO LONGER BASELINES.** Removing imagery, stopping the
+wind, escaping the tier path and fixing the clock all move absolute levels. For
+all five pinned probes, previously logged `fr:` / `deck%` / `centerMax` / `p95` /
+`ring mean` / `cloudFrac` values must not be compared against. Every scored gate
+is relative and survives - with ONE exception: `ingest` gate 4 (`deckHi > 5`) is
+ABSOLUTE, and additionally lost the terrain/ground-atmosphere pixels that used to
+inflate it. If it now fails, that is a finding to investigate, not a licence to
+lower the bar.
+
+**NOT verified - no browser was run in this pass.** The classifications are
+source-traced from the probe sources, `CloudVolumetrics.js` defaults
+(`cloudWindSpeed` 15.0 at `:83`, `cloudQuality` 64 at `:164`),
+`WebGPUProceduralCloudRenderer.ts:2019-2029` (`weatherEnabled`) and
+`CesiumViewerStartupOptions.js:18-42`. Not confirmed: that each pinned probe
+still reaches its readiness gate inside the new budgets; that the new wall-clock
+settles are long enough where a 90/120-frame rAF settle used to be; the exact
+fraction of `ingest`'s sampled band that sits below the horizon; and every
+absolute number the pinned probes now produce. Gates run: `node --check`,
+`prettier`, `eslint` per file - all clean.
+
+**Still OWED before Gate B can close.**
+1. Ten consecutive runs of EACH of the five pinned probes on ONE build, same
+   verdict every time, control PASS every time. The orchestrator's command:
+   `for i in 1 2 3 4 5 6 7 8 9 10; do node Tools/visual-regression/probe-weather-edr-mock.mjs; echo "run $i -> $?"; done`
+   and likewise for `probe-weather-wcs.mjs`, `probe-weather-metar.mjs`,
+   `probe-weather-ingest.mjs`, `probe-weather-seam-poles.mjs`. Exit 3 on ANY run
+   means acceptance is INCOMPLETE, not red.
+2. `probe-weather-time.mjs` needs NO re-run (see the table).
+3. The first pinned runs should REPORT the true residual control spread. If ten
+   runs measure 0.0000, tighten `CONTROL` rather than leave slack.
+4. **Out of scope this pass, still unassessed:** the three remaining network-fed
+   weather probes that are NOT Gate-B legs - `probe-weather-inspector`,
+   `probe-weather-map`, `probe-weather-presets`. They were not classified here
+   and must not be cited as evidence for anything until they are. **Effort:** S.
+
 ## 2026-08-06 - WebGPU globe does not receive sun shadows AT ALL
 
 ### NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD
