@@ -2215,6 +2215,154 @@ frozen legacy-route hashes in `cloud-density-domain.spec.mjs`. The
 `cloud-genus-morphology` (21/21), `cloud-density-domain` (14/14),
 `cloud-coverage-response` and `cloud-tour-sequences` lanes are all still green.
 
+### UPDATE 2026-08-07 (later) - U2 EXECUTED: THE STOP LIFTS FOR THE **PAIR**. Sign-off package below; still no shader change.
+
+The Batch-896 STOP ended by naming two unblockers. Both are now levers in
+`cloud-march-transfer-model.mjs` and both have been swept
+(`carveBeforeErosion`, `erosionCompensation`, plus `erosionMode` as a third
+finding). `cloud-march-transfer.spec.mjs` is **49 -> 73 tests, all green**.
+**Nothing shipped**, and the negative pin is now two-sided: the spec asserts the
+shader still has no budget symbol AND that `legacyCloudDensity` still clamps
+before it carves, so "shipped" cannot silently stop meaning what the model's
+default means.
+
+**U2-REORDER, DEFINED.** Shipped is `max(gate x gradient - erosion, 0) x fibre`
+- the genus carve is one link of the `mammatus x species x feature` factor
+chain, applied to density that has ALREADY survived the subtractive erosion's
+zero clamp. Reordered is `max(gate x gradient x fibre - erosion, 0)`: the carve
+moves ahead of the clamp, so a filament GAP must clear the erosion floor AFTER
+being carved rather than before. Pointwise the reorder can only REMOVE mass
+(`f x max(x-e,0) = max(fx - fe, 0) >= max(fx - e, 0)` for f in [0,1]) - it is
+not a free lunch, and the model asserts the sign rather than the algebra.
+
+**GENUS GATING IS STRUCTURAL, NOT A BRANCH.** `genusFibreFactor` early-returns
+exactly 1.0 at `strength` 0 and `x * 1` is exact in f32, so
+`max(x*1 - e, 0) * 1` and `max(x - e, 0) * 1` are the SAME arithmetic. CUMULUS
+is byte-identical under the reorder, under the compensation, and at every point
+of the sweep - asserted with `assert.equal` and no tolerance. The compensation
+is conditioned on `strength` alone, the same axis the shipped
+`genusErosionHeightWeight` already uses, so the two cannot disagree about which
+genera are fibrous. The raw `erosionScale` attribution lever stays UNGATED on
+purpose: "turn the erosion off entirely" has to remain expressible, and the
+Batch-896 clamp attribution is scored with it.
+
+**THE ZERO-BUDGET REORDER EFFECT** - the free half of the result. At
+`baseVarianceBudget` 0 the reorder alone moves CIRRUS **1.232 -> 1.541** (+0.31,
+most of the way to gate C) and costs **-15.2%** opacity at the gate
+configuration and **-26.9%** at the tour fixture. Carving before the clamp
+drives the gaps to exactly zero instead of merely scaling them down, which is a
+harder streak edge for no budget at all.
+
+**WHY THE PAIR WORKS - the coincidence the result rests on.** Batch 896's
+blocker was an exchange rate: the erosion's mass leverage is ~2.2x stronger at
+the tour fixture than at the gate configuration, so compensating the floor
+overshot the opacity bar. The REORDER's mass LOSS carries almost the same ratio
+(26.9 / 15.2 = **1.77**), so the two nearly cancel at both coverages at once. At
+zero budget, `erosionCompensation` **0.667** lands **-0.2%** at the gate
+configuration and **+0.2%** at the fixture SIMULTANEOUSLY, with CIRRUS at 1.426.
+Neither half does this alone - the compensation on the SHIPPED composition is
+the Batch-896 overshoot (+15.4% / +36.0%).
+
+**THE REORDERED DESIGN TABLE** (same columns as Batch 896; `dw` =
+`budgetDownWeight`, `b` = `baseVarianceBudget`, `c` = `erosionCompensation`;
+opacity columns are relative to the SHIPPED composition, so they price the whole
+change, not just the budget):
+
+| composition | dw | b | c | CIRRUS elong | ci/cu | ci/cs | cs/cc | opacity @ gate config | opacity @ fixture | TAIL @ fixture |
+|---|---|---|---|---|---|---|---|---|---|---|
+| shipped | - | 0 | - | 1.232 | 1.473 | 1.242 | 1.059 | 0 | 0 | 0 |
+| **Batch 896 best gate-C** | 1.0 | 0.85 | - | 1.959 | 2.342 | 1.878 | 1.109 | +1.2% | **-47.5%** | **-43.1%** |
+| reorder only | - | 0 | 0 | 1.541 | 1.843 | 1.495 | 1.087 | -15.2% | -26.9% | -28.8% |
+| reorder + comp | - | 0 | 0.667 | 1.426 | 1.705 | 1.399 | 1.095 | **-0.2%** | **+0.2%** | +2.3% |
+| pair + budget | 0.25 | 0.45 | 0.667 | 1.649 | 1.971 | 1.577 | 1.116 | +4.8% | -5.8% | -3.6% |
+| **pair + budget (RECOMMENDED)** | 0.25 | 0.55 | 0.6 | **1.733** | **2.072** | **1.644** | **1.121** | **+4.4%** | **-10.2%** | **-7.8%** |
+| pair + budget | 0.25 | 0.55 | 0.65 | 1.730 | 2.068 | 1.641 | 1.122 | +5.8% | -7.9% | -5.2% |
+| pair + budget | 0 | 0.65 | 0.6 | 1.761 | 2.106 | 1.660 | 1.124 | +8.6% | -2.6% | -2.9% |
+
+Every row keeps CUMULUS at exactly 0.836341.
+
+**THE RECOMMENDED POINT IS CHOSEN ON MARGIN AGAINST THE MODEL'S OWN BAND, NOT ON
+COST.** The balanced point (`b` 0.45 / `c` 0.667) is cheaper on opacity
+(+4.8% / -5.8%) and was REJECTED: the five-lane validation records the model
+over-reading CIRRUS by 0.054 with a thin-lane tolerance of 0.1, so a predicted
+1.649 predicts a MEASURED 1.60 with a band straddling gate C's floor - a coin
+flip, not something to spend an Edge run on. The recommended point predicts
+1.733, i.e. a residual-corrected **1.679** with the whole +/-0.1 band above 1.6.
+
+**U1 COMES OFF THE CRITICAL PATH.** At Batch 896's budget weight (0.45) the
+exact per-coverage pivot was load-bearing - a constant pivot cost another 14
+points at the fixture. The pair needs a weight of only **0.29**, and at that
+weight the exact pivot is worth ~3.6 points of fixture tail: substituting the
+plain derived `BASE_FIELD_MEAN` (0.484375, no new response function, and its
+pivot still tracks coverage because it is fed through the gate's own threshold)
+still clears gate C and still predicts the floor above 0.002. **A shipped
+`cloudGateMean(cEff)` response is therefore a refinement, not a prerequisite** -
+which removes the largest piece of new machinery the Batch-896 unblockers named.
+
+**U2-COMPENSATION ALONE, AND THE THIRD LEVER.** Compensation on the shipped
+composition is the Batch-896 overshoot and reaches only 1.293 - it is a mass
+lever, not an elongation lever, which is exactly why it pairs with the reorder
+rather than replacing it. `erosionMode` is a FINDING rather than a candidate:
+the LIVE route erodes SUBTRACTIVELY (`legacyCloudDensity`) while the BAKED route
+uses a `remap` the renderer's own uniform table calls the "V4 mean-preserving
+erosion floor" (`cloudDensityFromMacro`). **The two shipped routes disagree
+about the very composition R7's budget fights.** Bringing the remap to the LIVE
+route is NOT byte-neutral (it moves the default CUMULUS lane 0.8363 -> 0.8328
+and adds +6.4% opacity) and does not rescue the fixture under a budget (-48%),
+so it is not the answer - but it is now executable, and anyone reasoning about
+this chain should know the product has two answers depending on tier.
+
+**VALIDATION SPLITS - and this is load-bearing.**
+- **SHIPPED-composition model vs SHIPPED measurements: MUST HOLD, and does.**
+  `carveBeforeErosion` defaults to false, so the Batch-857 five-lane validation
+  is untouched: worst elongation error 0.135 (CUMULUS), worst half-length 13.0%,
+  and every lane is asserted byte-identical to the pre-U2 model.
+- **REORDERED-composition numbers are PRE-REGISTERED PREDICTIONS with no
+  measurements behind them.** They predict a DIFFERENT IMAGE from the one the
+  product renders today, so agreement with `MEASURED_SCREEN_ELONGATION` would
+  mean the composition change had done nothing. The spec asserts the
+  DISAGREEMENT for CIRRUS, so nobody later reads the reordered table as
+  validated. CUMULUS is the exception and must still match - it is the
+  byte-identity lane.
+
+**PRE-REGISTERED EDGE ACCEPTANCE for the recommended point** (predicted MEASURED
+= model value minus the shipped-composition residual for that lane; bands are
+the validation's own tolerances, 0.1 thin / 0.2 thick):
+
+| gate | quantity | model | predicted MEASURED | failure band |
+|---|---|---|---|---|
+| A UNIFORMS | slots 168-171, CIRRUS | `[0.6, 9, 0.9, 0.12]` | unchanged | any other row |
+| A UNIFORMS | `CloudUniforms` length | 172 | **172 - no tail growth**; the three new dials are global authored constants conditioned by the existing per-genus slots, so no UB pin is owed | 175 means the design drifted |
+| B NEUTRAL | default CUMULUS scene | 0.836341, identical | **exactly 0 changed pixels** | any nonzero diff |
+| C | CIRRUS elongation | 1.733 | **1.679** | < 1.579 |
+| C | CIRRUS / CUMULUS | 2.072 | **1.729** | < 1.55 |
+| D | rotated-wind argmax | 90 deg (rival margin 1.456 vs the shipped composition's 1.020 near-tie) | **90 deg** | outside [60, 120] |
+| E | cirrus -> cirrostratus | 1.644 | **1.614** | < 1.45 |
+| E | cirrostratus -> cirrocumulus | 1.121 | **1.145** | < 1.1 - **the thinnest gate of the five**; propagated naively the band reaches 1.03, so this is the one most likely to miss and its miss should be read as a band problem, not a design failure |
+| item 6 | `northatlantic-cirrus-fibratus` ground `changedFraction` | tail -7.8% | **0.00258** (from the recorded 0.0028) | < 0.002 (the authored floor); **29% of predicted margin** |
+| - | mean column opacity, gate configuration | - | **+4.4%** | - |
+
+**THE RESIDUAL FRONTIER - the STOP lifted, it did not vanish.** At
+gate-C-passing elongation the two opacity surfaces still trade, at about 1:1.7:
+`c` 0.55 / 0.60 / 0.65 gives (+2.9%, -12.6%) / (+4.4%, -10.2%) /
+(+5.8%, -7.9%). **No point is within a STRICT 3% at both**, and the spec asserts
+that so the candidate cannot be sold as tighter than it is. R7's wording is "a
+few percent", and +4.4% / -10.2% is a few percent at the gate configuration and
+a tenth at the fixture whose FLOOR is nonetheless predicted to hold by 29%.
+Whether that is the deal to take is the maintainer's call; what changed is that
+it is now a deal rather than a wall - Batch 896's best gate-C point predicted
+the same floor at **0.00159, UNDER it**.
+
+**WHAT A SIGN-OFF WOULD COMMIT TO** (none of it done here): moving
+`genusFibreFactor` ahead of the erosion in all three density evaluators
+(`legacyCloudDensity`, `legacyCloudBaseDensity`, `cloudMacroSampleAt` - in the
+macro path the carve moves from `densityFactor` into `preErosion`, and W5's
+`base >= full` still holds because `remap(d,lo,1,0,1) <= d` for `d <= 1`); three
+authored constants; a re-freeze of the `cloud-density-domain.spec.mjs` legacy
+hashes with the reason recorded; naga on the combined source; and the Edge run
+above. The uniform layout does NOT move.
+
+
 ## 2026-08-06 - ground fog renders NOTHING (Phase C, defect present since Batch 420)
 ### NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING
 

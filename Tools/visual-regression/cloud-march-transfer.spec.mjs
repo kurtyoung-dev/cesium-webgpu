@@ -72,6 +72,7 @@ import {
   PROBE_GEOMETRY,
   PROBE_MARCH,
   TOUR_CIRRUS_FIXTURE,
+  U2_CANDIDATE,
   WORLD_TO_NOISE,
   baseVarianceBudgetWeight,
   buildModelParameters,
@@ -1269,6 +1270,506 @@ describe("C13-16 R7 budget — MUTATION: every new lever must be READ", () => {
       0,
       "a renamed erosionScale still moved the model — the key is being read " +
         "under two spellings",
+    );
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// U2 (2026-08-07) — the two unblockers Batch 896 named, EVALUATED.
+//
+// Batch 896 ended at a STOP and listed what would lift it. Both items are now
+// levers in the model and both have been swept. The STOP lifts for the PAIR
+// (reorder + genus-conditioned erosion compensation), and the R7 unblocker U1
+// turns out not to be needed at all. Nothing is shipped: this is still a design
+// instrument, and the negative shader pin below is extended to say so.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** R7's bars again, so the U2 groups score against the SAME numbers. */
+const U2_GATE_C_FLOOR = 1.6;
+const U2_GATE_C_RATIO = 1.4;
+const U2_GATE_E_STEP = 1.1;
+const U2_GATE_D_WINDOW = Object.freeze([60, 120]);
+
+/**
+ * The recorded tour value the floor prediction is scaled from. `probe-cloud-tour`
+ * measured ground `changedFraction` 0.0028 for this fixture after
+ * CLOUD-LOW-COVERAGE-CUTOFF; the authored floor is 0.002.
+ */
+const FIXTURE_RECORDED_GROUND_FRACTION = 0.0028;
+
+describe("U2-REORDER — the composition change, defined against the SHIPPED order", () => {
+  it("the SHIPPED shader still carves AFTER the erosion clamp", () => {
+    // The reorder is only a delta if the thing it is a delta FROM is still
+    // there. `legacyCloudDensity` must still clamp to zero and only then
+    // multiply the fibre factor in its trailing product. If this order ever
+    // changes in the shader, `carveBeforeErosion: false` has stopped meaning
+    // "shipped" and every number in these groups is measured against a fiction.
+    const shaderPath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
+    );
+    const source = fs.readFileSync(shaderPath, "utf8");
+    const start = source.indexOf("fn legacyCloudDensity(");
+    assert.ok(start > 0, "legacyCloudDensity not found");
+    const body = source.slice(start, source.indexOf("\nfn ", start + 10));
+    const clampAt = body.indexOf("density = max(density, 0.0);");
+    const carveAt = body.indexOf("genusFibreFactor(samplePos, heightFraction)");
+    assert.ok(clampAt > 0, "the subtractive erosion's zero clamp is gone");
+    assert.ok(carveAt > 0, "the fibre carve is gone from legacyCloudDensity");
+    assert.ok(
+      clampAt < carveAt,
+      "legacyCloudDensity now carves BEFORE the clamp — the U2 reorder has " +
+        "been SHIPPED. Repoint the model's default and re-baseline these groups.",
+    );
+    // And the BAKED route's remap spelling is still the other shipped one, which
+    // is what `erosionMode` exists to express.
+    assert.ok(source.includes("remap(density, erosionLo, 1.0, 0.0, 1.0)"));
+  });
+
+  it("is byte-identical on every non-fibrous genus, structurally", () => {
+    // THE GENUS GATE, and it is not a branch. `genusFibreFactor` early-returns
+    // exactly 1.0 at `strength` 0, and `x * 1` is exact in f32, so
+    // `max(x*1 - e, 0) * 1` and `max(x - e, 0) * 1` are the same arithmetic.
+    // Asserted with `assert.equal` and no tolerance, on the lane that matters.
+    const shipped = modelled("CUMULUS");
+    const reordered = modelled("CUMULUS", { carveBeforeErosion: true });
+    assert.equal(reordered.elongation, shipped.elongation);
+    assert.equal(reordered.alongLength, shipped.alongLength);
+    assert.equal(reordered.acrossLength, shipped.acrossLength);
+    // Including with the compensation on, which is conditioned on the same
+    // `strength` and is therefore also exactly inert here.
+    const compensated = modelled("CUMULUS", {
+      carveBeforeErosion: true,
+      erosionCompensation: 1,
+    });
+    assert.equal(compensated.elongation, shipped.elongation);
+    // The raw `erosionScale` attribution lever is deliberately NOT gated — it
+    // has to keep moving CUMULUS or "turn the erosion off entirely" would stop
+    // being expressible, and the Batch-896 attribution is scored with it.
+    assert.notEqual(
+      modelled("CUMULUS", { erosionScale: 0 }).elongation,
+      shipped.elongation,
+    );
+  });
+
+  it("can only REMOVE mass pointwise, so it is not a free lunch", () => {
+    // `f * max(x - e, 0) = max(f*x - f*e, 0) >= max(f*x - e, 0)` for f in [0,1].
+    // Stated as a measurement rather than as algebra: at zero budget the reorder
+    // costs -15.2% at the gate configuration and -26.9% at the tour fixture.
+    const probeBase = meanColumnOpacity({ cloudType: CloudType.CIRRUS });
+    const probe =
+      (meanColumnOpacity({
+        cloudType: CloudType.CIRRUS,
+        carveBeforeErosion: true,
+      }) -
+        probeBase) /
+      probeBase;
+    const fixtureBase = meanColumnOpacity(FIXTURE_MARCH_INPUTS);
+    const fixture =
+      (meanColumnOpacity({
+        ...FIXTURE_MARCH_INPUTS,
+        carveBeforeErosion: true,
+      }) -
+        fixtureBase) /
+      fixtureBase;
+    assert.ok(probe < 0 && fixture < 0, "the reorder must not ADD mass");
+    assert.ok(Math.abs(probe + 0.152) < R7_OPACITY_PIN, `${probe}`);
+    assert.ok(Math.abs(fixture + 0.269) < R7_OPACITY_PIN, `${fixture}`);
+  });
+
+  it("buys 0.31 of elongation at zero budget — the free half of the result", () => {
+    // Carving before the clamp means a filament GAP has to clear the erosion
+    // floor after being carved, so the gaps are driven to exactly zero instead
+    // of merely scaled down. That is a harder streak edge for no budget at all.
+    const shipped = modelled("CIRRUS").elongation;
+    const reordered = modelled("CIRRUS", {
+      carveBeforeErosion: true,
+    }).elongation;
+    assert.ok(Math.abs(shipped - 1.2323) < R7_ELONGATION_PIN);
+    assert.ok(Math.abs(reordered - 1.5414) < R7_ELONGATION_PIN, `${reordered}`);
+    // Most of the way to gate C, and still short of it — which is why the pair
+    // still needs a budget on top.
+    assert.ok(reordered < U2_GATE_C_FLOOR);
+  });
+});
+
+describe("U2-COMPENSATION — the erosion lever, and why the PAIR cancels", () => {
+  it("is genus-conditioned on the same axis the shipped height weight uses", () => {
+    // `genusErosionHeightWeight` conditions on `strength` alone; so does this,
+    // so the two cannot disagree about which genera are fibrous.
+    const cirrus = CloudTypeProfile.getFibreMorphology(CloudType.CIRRUS);
+    const cumulus = CloudTypeProfile.getFibreMorphology(CloudType.CUMULUS);
+    const scaleFor = (row, compensation) =>
+      buildModelParameters({ row, erosionCompensation: compensation })
+        .erosionDepthScale;
+    assert.equal(scaleFor(cumulus, 1), 1);
+    assert.equal(scaleFor(cirrus, 0), 1);
+    assert.ok(Math.abs(scaleFor(cirrus, 1) - 0.4) < 1e-6);
+    // And it still composes with the raw attribution lever.
+    assert.equal(
+      buildModelParameters({
+        row: cirrus,
+        erosionCompensation: 1,
+        erosionScale: 0,
+      }).erosionDepthScale,
+      0,
+    );
+  });
+
+  it("cancels the reorder at BOTH configurations at once — the coincidence", () => {
+    // THE RESULT. Batch 896's blocker was an exchange rate: the erosion's mass
+    // leverage is ~2.2x stronger at the fixture than at the gate configuration,
+    // so compensating one overshot the other. The reorder's mass LOSS carries
+    // almost the same ratio (26.9 / 15.2 = 1.77), so a single compensation
+    // setting lands both within a quarter of a point of zero.
+    const probeBase = meanColumnOpacity({ cloudType: CloudType.CIRRUS });
+    const fixtureBase = meanColumnOpacity(FIXTURE_MARCH_INPUTS);
+    const paired = { carveBeforeErosion: true, erosionCompensation: 0.667 };
+    const probe =
+      (meanColumnOpacity({ cloudType: CloudType.CIRRUS, ...paired }) -
+        probeBase) /
+      probeBase;
+    const fixture =
+      (meanColumnOpacity({ ...FIXTURE_MARCH_INPUTS, ...paired }) -
+        fixtureBase) /
+      fixtureBase;
+    assert.ok(Math.abs(probe) < 0.01, `gate configuration ${probe}`);
+    assert.ok(Math.abs(fixture) < 0.01, `tour fixture ${fixture}`);
+    // Neither half does this alone: the compensation on the SHIPPED composition
+    // is the Batch-896 overshoot, +15.4% / +36.0%.
+    const soloProbe =
+      (meanColumnOpacity({
+        cloudType: CloudType.CIRRUS,
+        erosionCompensation: 1,
+      }) -
+        probeBase) /
+      probeBase;
+    assert.ok(
+      soloProbe > 0.1,
+      `compensation alone should overshoot: ${soloProbe}`,
+    );
+  });
+});
+
+describe("U2 — the EROSION MODE finding: the two shipped routes disagree", () => {
+  it("the BAKED remap is not byte-neutral if brought to the LIVE route", () => {
+    // Not a candidate — a finding. `cloudDensityFromMacro` erodes by a remap the
+    // renderer's uniform table calls "mean-preserving"; `legacyCloudDensity`
+    // subtracts. They are not the same image: switching this model's LIVE chain
+    // to the remap moves the DEFAULT CUMULUS lane, which alone disqualifies it
+    // as a quiet alignment, and it adds opacity rather than reaching a gate.
+    const shipped = modelled("CUMULUS").elongation;
+    const remapped = modelled("CUMULUS", { erosionMode: "remap" }).elongation;
+    assert.notEqual(remapped, shipped);
+    assert.ok(Math.abs(remapped - 0.8328) < R7_ELONGATION_PIN, `${remapped}`);
+    const base = meanColumnOpacity({ cloudType: CloudType.CIRRUS });
+    const delta =
+      (meanColumnOpacity({
+        cloudType: CloudType.CIRRUS,
+        erosionMode: "remap",
+      }) -
+        base) /
+      base;
+    assert.ok(delta > 0.03, `the remap should ADD mass, got ${delta}`);
+    // And it does not rescue the fixture under a budget — the point of testing it.
+    const fixtureBase = meanColumnOpacity(FIXTURE_MARCH_INPUTS);
+    const fixture =
+      (meanColumnOpacity({
+        ...FIXTURE_MARCH_INPUTS,
+        erosionMode: "remap",
+        carveBeforeErosion: true,
+        baseVarianceBudget: 0.5,
+      }) -
+        fixtureBase) /
+      fixtureBase;
+    assert.ok(fixture < -0.3, `remap should not rescue the floor: ${fixture}`);
+  });
+});
+
+describe("U2 — the SIGN-OFF candidate clears every R7 bar", () => {
+  const scored = () => candidate(U2_CANDIDATE, { scan: true });
+
+  it("gate C: CIRRUS 1.733 against the 1.6 floor, ratio 2.072 against 1.4", () => {
+    const s = scored();
+    assert.ok(Math.abs(s.cirrus - 1.733) < R7_ELONGATION_PIN, `${s.cirrus}`);
+    assert.ok(s.cirrus >= U2_GATE_C_FLOOR);
+    assert.ok(s.cirrusOverCumulus >= U2_GATE_C_RATIO);
+    assert.ok(
+      Math.abs(s.cirrusOverCumulus - 2.072) < R7_ELONGATION_PIN,
+      `${s.cirrusOverCumulus}`,
+    );
+  });
+
+  it("gate D: the argmax sits on the true wind axis with a 1.38x margin", () => {
+    const s = scored();
+    assert.ok(
+      s.argmaxDeg >= U2_GATE_D_WINDOW[0] && s.argmaxDeg <= U2_GATE_D_WINDOW[1],
+      `argmax ${s.argmaxDeg}`,
+    );
+    assert.ok(Math.abs(s.argmaxMargin - 1.456) < 0.05, `${s.argmaxMargin}`);
+    // The baseline is a 1.02x near-tie, i.e. the shipped composition is one
+    // percent of noise away from the 60 deg the probe actually measured. The
+    // candidate is not.
+    const baseline = candidate({}, { scan: true });
+    assert.ok(s.argmaxMargin > baseline.argmaxMargin * 1.3);
+  });
+
+  it("gate E: both ordering steps clear x1.1", () => {
+    const s = scored();
+    assert.ok(s.stepCirrusCirrostratus >= U2_GATE_E_STEP);
+    assert.ok(s.stepCirrostratusCirrocumulus >= U2_GATE_E_STEP);
+    assert.ok(
+      Math.abs(s.stepCirrusCirrostratus - 1.644) < R7_ELONGATION_PIN,
+      `${s.stepCirrusCirrostratus}`,
+    );
+    assert.ok(
+      Math.abs(s.stepCirrostratusCirrocumulus - 1.121) < R7_ELONGATION_PIN,
+      `${s.stepCirrostratusCirrocumulus}`,
+    );
+  });
+
+  it("opacity: +4.4% at the gate configuration, -10.2% at the tour fixture", () => {
+    const s = scored();
+    assert.ok(
+      Math.abs(s.probeOpacityDelta - 0.044) < R7_OPACITY_PIN,
+      `${s.probeOpacityDelta}`,
+    );
+    assert.ok(
+      Math.abs(s.fixtureOpacityDelta + 0.102) < R7_OPACITY_PIN,
+      `${s.fixtureOpacityDelta}`,
+    );
+    // Both are "a few percent" in R7's wording, and NEITHER is within a strict
+    // 3%. The candidate is not the cheapest point on the frontier — it is the
+    // cheapest one whose gate-C margin clears the model's own validated band,
+    // which is the constraint that actually decides whether an Edge run is worth
+    // spending. The cheaper balanced point is pinned in the frontier group.
+    assert.ok(s.probeOpacityDelta > 0 && s.fixtureOpacityDelta < 0);
+  });
+
+  it("the tour fixture's FLOOR is predicted to hold with margin", () => {
+    const s = scored();
+    assert.ok(
+      Math.abs(s.fixtureTailDelta + 0.078) < R7_OPACITY_PIN,
+      `${s.fixtureTailDelta}`,
+    );
+    const predicted =
+      FIXTURE_RECORDED_GROUND_FRACTION * (1 + s.fixtureTailDelta);
+    assert.ok(
+      predicted > TOUR_CIRRUS_FIXTURE.minChangedFraction,
+      `predicted ground changedFraction ${predicted} is under the floor`,
+    );
+    // ~0.00258 against 0.002, i.e. 29% of margin. Batch 896's best gate-C point
+    // predicted 0.00159 — UNDER the floor. That reversal is the whole result.
+    assert.ok(predicted > 0.00255, `${predicted}`);
+  });
+
+  it("leaves CUMULUS byte-identical", () => {
+    assert.equal(scored().elongation.CUMULUS, modelled("CUMULUS").elongation);
+  });
+});
+
+describe("U2 — U1 is a refinement, not a prerequisite", () => {
+  it("the exact per-coverage pivot buys margin, and the candidate passes without it", () => {
+    // R7's unblocker U1 was "ship a `cloudGateMean(cEff)` response so the budget
+    // can be mean-neutral at every coverage". At Batch 896's budget weight
+    // (0.45) that was load-bearing: a constant pivot cost another 14 points at
+    // the fixture. At the PAIR's much smaller weight (0.24) it is worth ~3.6
+    // points of fixture tail, and every gate still passes without it — so U1
+    // comes off the critical path.
+    const exact = candidate(U2_CANDIDATE, { scan: false });
+    const plain = candidate(
+      { ...U2_CANDIDATE, budgetPivotQuantile: BASE_FIELD_MEAN },
+      { scan: false },
+    );
+    assert.ok(plain.cirrus >= U2_GATE_C_FLOOR, `${plain.cirrus}`);
+    assert.ok(plain.stepCirrostratusCirrocumulus >= U2_GATE_E_STEP);
+    const predicted =
+      FIXTURE_RECORDED_GROUND_FRACTION * (1 + plain.fixtureTailDelta);
+    assert.ok(
+      predicted > TOUR_CIRRUS_FIXTURE.minChangedFraction,
+      `plain-pivot floor prediction ${predicted}`,
+    );
+    // The exact pivot is BETTER at the fixture — that is its value, stated as a
+    // number so "U1 is optional" is a measured claim and not a shrug.
+    assert.ok(
+      exact.fixtureTailDelta > plain.fixtureTailDelta,
+      "the exact pivot should spare the fixture",
+    );
+  });
+});
+
+describe("U2 — VALIDATION splits: shipped matches measurements, reordered is PRE-REGISTERED", () => {
+  it("the SHIPPED-composition model still reproduces the measured run", () => {
+    // MUST HOLD. `carveBeforeErosion` defaults to false, so the Batch-857
+    // five-lane validation is untouched by any of this; re-asserted here because
+    // the composition lever is exactly the kind of thing that silently
+    // re-baselines a validation.
+    const worst = worstErrors();
+    assert.ok(worst.elongation <= THICK_ELONGATION_TOLERANCE);
+    assert.ok(worst.halfLength <= HALF_LENGTH_RELATIVE_TOLERANCE);
+    for (const name of ALL_GENERA) {
+      assert.equal(
+        modelled(name, { carveBeforeErosion: false }).elongation,
+        modelled(name).elongation,
+      );
+    }
+  });
+
+  it("the REORDERED predictions are NOT validated, and must not be compared to the measured run", () => {
+    // The reordered model predicts a DIFFERENT IMAGE from the one the product
+    // renders today, so agreement with `MEASURED_SCREEN_ELONGATION` would mean
+    // the composition change had done nothing. This asserts the DISagreement, so
+    // nobody later reads the reordered numbers as validated.
+    const reordered = candidate(U2_CANDIDATE, { scan: false });
+    for (const name of THIN_GENERA) {
+      const measured = MEASURED_SCREEN_ELONGATION[name].elongation;
+      const model = reordered.elongation[name];
+      if (name === "CIRRUS") {
+        assert.ok(
+          Math.abs(model - measured) > THIN_ELONGATION_TOLERANCE,
+          `${name}: the reordered prediction must NOT match the shipped ` +
+            `measurement, or the composition change is a no-op`,
+        );
+      }
+    }
+    // CUMULUS is the exception and must still match — it is the byte-identity
+    // lane, so the reordered model has to keep reproducing the measured run
+    // there exactly as the shipped model does.
+    assert.ok(
+      Math.abs(
+        reordered.elongation.CUMULUS -
+          MEASURED_SCREEN_ELONGATION.CUMULUS.elongation,
+      ) <= THICK_ELONGATION_TOLERANCE,
+    );
+  });
+});
+
+describe("U2 — the RESIDUAL frontier: the STOP lifted, it did not vanish", () => {
+  /**
+   * Batch 896's frontier ran from (+1.2%, -47.5%) to (+26.1%, +2.9%) with no
+   * feasible point. The pair moves the whole curve, but a curve is still what it
+   * is: at gate-C-passing elongation the two opacity surfaces still trade, at
+   * about 1:1.7. These rows are the new shape.
+   */
+  const U2_FRONTIER = [
+    { compensation: 0.55, probe: 0.029, fixture: -0.126 },
+    { compensation: 0.6, probe: 0.044, fixture: -0.102 },
+    { compensation: 0.65, probe: 0.058, fixture: -0.079 },
+  ];
+
+  for (const row of U2_FRONTIER) {
+    it(`erosionCompensation ${row.compensation} lands where the table says`, () => {
+      const s = candidate(
+        { ...U2_CANDIDATE, erosionCompensation: row.compensation },
+        { scan: false },
+      );
+      assert.ok(s.cirrus >= U2_GATE_C_FLOOR, `gate C ${s.cirrus}`);
+      assert.ok(
+        Math.abs(s.probeOpacityDelta - row.probe) < R7_OPACITY_PIN,
+        `probe ${s.probeOpacityDelta}`,
+      );
+      assert.ok(
+        Math.abs(s.fixtureOpacityDelta - row.fixture) < R7_OPACITY_PIN,
+        `fixture ${s.fixtureOpacityDelta}`,
+      );
+    });
+  }
+
+  it("no point is within 3% at BOTH configurations — the residual", () => {
+    // Honest about what did NOT close. R7's opacity wording is "a few percent";
+    // the candidate is +4.8 / -5.8, which is a few percent on both. A STRICT 3%
+    // reading is still not reachable, and saying so here stops the candidate
+    // from being sold as tighter than it is.
+    for (const row of U2_FRONTIER) {
+      const s = candidate(
+        { ...U2_CANDIDATE, erosionCompensation: row.compensation },
+        { scan: false },
+      );
+      const both =
+        Math.abs(s.probeOpacityDelta) <= R7_OPACITY_BUDGET &&
+        Math.abs(s.fixtureOpacityDelta) <= R7_OPACITY_BUDGET;
+      assert.equal(
+        both,
+        false,
+        `compensation ${row.compensation} is within 3% at both surfaces — the ` +
+          `residual frontier has closed and the docs must be re-read`,
+      );
+    }
+  });
+});
+
+describe("U2 — MUTATION: the composition levers must be READ", () => {
+  const levers = [
+    {
+      label: "carveBeforeErosion",
+      overrides: { carveBeforeErosion: true },
+      reference: {},
+    },
+    {
+      label: "erosionCompensation",
+      overrides: { carveBeforeErosion: true, erosionCompensation: 1 },
+      reference: { carveBeforeErosion: true },
+    },
+  ];
+
+  for (const lever of levers) {
+    it(`${lever.label} moves the model away from its reference`, () => {
+      const moved = displacementFromBaseline(lever.overrides, lever.reference);
+      assert.ok(
+        discriminates(moved),
+        `${lever.label} did not move the model (elongation ${moved.elongation}, ` +
+          `half-length ${moved.halfLength}) — the override key is not being read`,
+      );
+    });
+  }
+
+  it("erosionMode moves the MASS and the byte-identity, which is its axis", () => {
+    // Scored like `erosionScale` and for the same reason: the remap's effect is
+    // on how much density survives the floor, not on the shape of what does.
+    // Its elongation displacement is ~0.009, under the shape predicate's floor —
+    // which is a true statement about the lever, not a defect in it, so the
+    // predicate is chosen to match the claim instead of the claim being bent to
+    // match a shared predicate.
+    const base = meanColumnOpacity({ cloudType: CloudType.CIRRUS });
+    const moved =
+      (meanColumnOpacity({
+        cloudType: CloudType.CIRRUS,
+        erosionMode: "remap",
+      }) -
+        base) /
+      base;
+    assert.ok(Math.abs(moved) > 0.03, `erosionMode moved opacity by ${moved}`);
+    // And it breaks the default genus's byte-identity, which `carveBeforeErosion`
+    // does not — the discriminator between "a composition change that can be
+    // genus-gated" and one that cannot.
+    assert.notEqual(
+      modelled("CUMULUS", { erosionMode: "remap" }).elongation,
+      modelled("CUMULUS").elongation,
+    );
+  });
+
+  it("the predicates go RED on the U2 keys renamed (the meta-mutant)", () => {
+    // Same guard-on-the-guard as the R7 group, extended to the three keys U2
+    // added to `buildModelParameters`'s unvalidated `overrides.X ?? default`.
+    const renamed = {
+      carveBeforeErrosion: true,
+      erosionCompensationn: 1,
+      erosionModes: "remap",
+    };
+    const moved = displacementFromBaseline(renamed);
+    assert.equal(
+      discriminates(moved),
+      false,
+      `renaming the three U2 keys still moved the model (${moved.elongation}) ` +
+        `— the lever subtests above are vacuous`,
+    );
+    assert.equal(losesGroundTruth(renamed), false);
+    // And the mass predicate too, or `erosionMode`'s subtest is the unguarded one.
+    const base = meanColumnOpacity({ cloudType: CloudType.CIRRUS });
+    assert.equal(
+      meanColumnOpacity({ cloudType: CloudType.CIRRUS, erosionModes: "remap" }),
+      base,
+      "a renamed erosionMode still moved the model",
     );
   });
 });

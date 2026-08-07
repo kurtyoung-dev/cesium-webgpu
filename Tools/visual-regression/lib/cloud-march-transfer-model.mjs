@@ -95,6 +95,47 @@
  * configuration cannot drift, and the two opacity statistics
  * ({@link meanColumnOpacity}, {@link columnOpacityExceedance}) are separate
  * because the fixture's gate is a TAIL count, not a mean.
+ *
+ * ── U2 (2026-08-07): THE UNBLOCKERS, EVALUATED — AND THE STOP LIFTS ─────────
+ *
+ * The R7 sweep above ended by naming two unblockers. Both are now levers here
+ * and both have been swept. THE STOP LIFTS, but only for the PAIR:
+ *
+ *   `carveBeforeErosion`  U2-REORDER. The genus fibre carve multiplies the
+ *                         density BEFORE the subtractive erosion instead of
+ *                         after it: `max(gate*gradient*fibre - erosion, 0)`
+ *                         rather than `max(gate*gradient - erosion, 0)*fibre`.
+ *                         Alone, at ZERO budget, it moves CIRRUS 1.232 -> 1.541
+ *                         and costs -15.2% / -26.9% opacity. Pointwise it can
+ *                         only remove mass, so it is not free.
+ *   `erosionCompensation` U2-COMPENSATION. A genus-conditioned shallowing of the
+ *                         erosion DEPTH, on `genusErosionHeightWeight`'s own
+ *                         argument. Alone it is a strong mass lever and a weak
+ *                         elongation lever - which is exactly what the reorder
+ *                         needs, because the reorder is the reverse.
+ *
+ * THE PAIR IS WHY IT WORKS. Batch 896's blocker was an exchange rate: the
+ * erosion's mass leverage is ~2.2x stronger at the tour fixture than at the gate
+ * configuration, so compensating the floor overshot the opacity bar. The
+ * REORDER's mass LOSS carries almost the same ratio (-26.9 / -15.2 = 1.77), so
+ * the two nearly cancel at every coverage at once: at zero budget,
+ * `erosionCompensation` 0.667 lands -0.2% at the gate configuration and +0.2% at
+ * the fixture SIMULTANEOUSLY. That is the coincidence the whole result rests on,
+ * and it is a measurement, not a design intention.
+ *
+ * `erosionMode` is a third lever and a finding rather than a candidate: the LIVE
+ * route this model reproduces erodes SUBTRACTIVELY while the BAKED route uses a
+ * `remap` the renderer's own uniform table calls "mean-preserving". Aligning
+ * LIVE to BAKED is NOT byte-neutral (it moves the default CUMULUS lane and adds
+ * +6.4% opacity) and does not reach the gates, so it is not the answer - but the
+ * two shipped routes disagreeing about the composition R7's budget fights is
+ * worth having in an executable form.
+ *
+ * {@link U2_CANDIDATE} is the recommended operating point. `budgetPivotQuantile`
+ * is deliberately NOT part of it: at the much smaller budget weight the pair
+ * needs (0.24 against 0.45), the exact per-coverage pivot buys 3.6 points of
+ * fixture tail and the design passes without it, so the R7 unblocker "ship a
+ * `cloudGateMean(cEff)` response" is a refinement and no longer a prerequisite.
  */
 
 import CloudType from "../../../packages/engine/Source/Scene/CloudType.js";
@@ -245,6 +286,21 @@ export const TOUR_CIRRUS_FIXTURE = Object.freeze({
  * `(0.5 + 0.25 + 0.125 + 0.0625 + 0.03125) * 0.5 = 0.484375`.
  */
 export const BASE_FIELD_MEAN = 0.484375;
+
+/**
+ * How the subtractive detail erosion composes with the density it erodes.
+ *
+ * `subtractive` is the LIVE route this model reproduces (`legacyCloudDensity`:
+ * `density -= worley * 0.18 * w(h); density = max(density, 0)`).
+ * `remap` is the BAKED route's spelling (`cloudDensityFromMacro`:
+ * `clamp(remap(density, erosionLo, 1, 0, 1), 0, 1)`), which the renderer's
+ * uniform table calls the "V4 mean-preserving erosion floor".
+ *
+ * BOTH ARE SHIPPED, on different routes. That is a finding in its own right:
+ * the composition R7's variance budget collides with is not one thing.
+ */
+export const EROSION_SUBTRACTIVE = "subtractive";
+export const EROSION_REMAP = "remap";
 
 /**
  * R7 CANDIDATE — how much of the budget is spent pulling a sample DOWN.
@@ -452,21 +508,6 @@ export function marchedDensity(sp, h, p) {
   }
   const heightGradient = heightGradientFor(h, p.profileShape, p.anvilBias);
   density = f32(density * heightGradient);
-  if (p.includeErosion !== false) {
-    const worleyDetail = worleyF1(
-      f32(sp[0] * 5),
-      f32(sp[1] * 5),
-      f32(sp[2] * 5),
-    );
-    density = f32(
-      density -
-        f32(
-          f32(f32(worleyDetail * 0.18) * p.erosionScale) *
-            genusErosionHeightWeight(h, p.row.strength),
-        ),
-    );
-    density = Math.max(density, 0);
-  }
   let fibre = 1;
   if (p.includeFibre !== false) {
     // `fibreFrequencyScale` is a WHAT-IF lever, not a product path. Because
@@ -482,8 +523,56 @@ export function marchedDensity(sp, h, p) {
     const row = k === 1 ? p.row : { ...p.row, shear: f32(p.row.shear * k) };
     fibre = genusFibreFactor(scaled, h, row, p.windDirection);
   }
+  // U2-REORDER (candidate) — WHERE the genus fibre carve multiplies in.
+  //
+  // SHIPPED: `max(gate * gradient - erosion, 0) * fibre`. The carve is one link
+  // of the `mammatus x species x feature` factor chain, applied to the density
+  // that has ALREADY survived the subtractive erosion's zero clamp.
+  //
+  // REORDERED: `max(gate * gradient * fibre - erosion, 0)`. The carve is moved
+  // ahead of the clamp, so a filament GAP has to clear the erosion floor after
+  // being carved rather than before. Pointwise the reorder can only REMOVE mass
+  // — `f * max(x - e, 0) = max(f*x - f*e, 0) >= max(f*x - e, 0)` for f in [0,1]
+  // — so it is not a free lunch, and how much it removes versus how much streak
+  // contrast it buys is the whole question.
+  //
+  // The genus gate is STRUCTURAL, not a branch: `genusFibreFactor` early-returns
+  // exactly 1.0 at `strength` 0, and `x * 1` is exact in f32, so both spellings
+  // collapse to the same arithmetic on every non-fibrous genus. The other three
+  // morphology links stay where they are.
+  if (p.carveBeforeErosion) {
+    density = f32(density * fibre);
+  }
+  if (p.includeErosion !== false) {
+    const worleyDetail = worleyF1(
+      f32(sp[0] * 5),
+      f32(sp[1] * 5),
+      f32(sp[2] * 5),
+    );
+    const erosionLo = f32(
+      f32(f32(worleyDetail * 0.18) * p.erosionDepthScale) *
+        genusErosionHeightWeight(h, p.row.strength),
+    );
+    if (p.erosionMode === EROSION_REMAP) {
+      // The BAKED route's spelling, `cloudDensityFromMacro`:
+      // `clamp(remap(density, erosionLo, 1, 0, 1), 0, 1)` = `(d - lo)/(1 - lo)`.
+      // The renderer calls it the "V4 mean-preserving erosion floor" (uniform
+      // slot 79) precisely because it RESCALES the survivors instead of
+      // translating everything down, so the zero clamp only bites where
+      // `d < lo`. The LIVE route this model reproduces uses the SUBTRACTIVE
+      // spelling instead — the two shipped routes disagree about the very
+      // composition R7's budget is fighting, which is why this is a lever and
+      // not a rewrite.
+      density = clamp(f32(f32(density - erosionLo) / f32(1 - erosionLo)), 0, 1);
+    } else {
+      density = f32(density - erosionLo);
+      density = Math.max(density, 0);
+    }
+  }
+  const trailingFibre = p.carveBeforeErosion ? 1 : fibre;
   return f32(
-    f32(f32(density * p.densityMultiplier) * p.profileDensityScale) * fibre,
+    f32(f32(density * p.densityMultiplier) * p.profileDensityScale) *
+      trailingFibre,
   );
 }
 
@@ -607,6 +696,9 @@ export function buildModelParameters(overrides = {}) {
     budgetDownWeight:
       overrides.budgetDownWeight ?? BUDGET_DOWN_WEIGHT_SYMMETRIC,
     erosionScale: overrides.erosionScale ?? 1,
+    erosionCompensation: overrides.erosionCompensation ?? 0,
+    erosionMode: overrides.erosionMode ?? EROSION_SUBTRACTIVE,
+    carveBeforeErosion: overrides.carveBeforeErosion ?? false,
     saturate: overrides.saturate ?? true,
     radianceScale: overrides.radianceScale ?? 255,
     clipLevel: overrides.clipLevel ?? Infinity,
@@ -619,6 +711,21 @@ export function buildModelParameters(overrides = {}) {
     (p.profileExtinction > 0 ? p.profileExtinction : 1) *
     (overrides.absorptionScale ?? 1);
   p.effectiveCoverage = cloudEffectiveCoverage(p.coverage);
+  // U2-COMPENSATION (candidate) — a GENUS-CONDITIONED shallowing of the
+  // subtractive erosion, on the same argument `genusErosionHeightWeight` already
+  // makes: an ice deck is not shredded by convective entrainment, so a fibrous
+  // genus should not carry a cumuliform erosion DEPTH either. Conditioned on
+  // `strength` alone, exactly like the shipped height weight it rides beside, so
+  // it is identity on every non-fibrous genus by construction.
+  //
+  // `erosionScale` stays as the RAW global attribution lever — it is what the
+  // Batch-896 clamp attribution is scored with, and it must keep moving CUMULUS
+  // so that "turn the erosion off entirely" remains expressible. The two
+  // multiply; only `erosionCompensation` is a candidate design.
+  p.erosionDepthScale = f32(
+    p.erosionScale *
+      f32(1 - p.erosionCompensation * clamp(p.row.strength, 0, 1)),
+  );
   p.budgetUseAspect = overrides.budgetUseAspect ?? true;
   p.budgetWeight = baseVarianceBudgetWeight(p.row, p.baseVarianceBudget, {
     useAspect: p.budgetUseAspect,
@@ -1000,6 +1107,31 @@ export function columnOpacityExceedance(
   }
   return hits / count;
 }
+
+/**
+ * U2 — the recommended operating point, and the thing a maintainer signs off.
+ *
+ * Chosen on MARGIN AGAINST THE MODEL'S OWN VALIDATED BAND, not on balance. The
+ * five-lane validation records the model over-reading CIRRUS by 0.054 and pins
+ * the thin lanes to 0.1, so a candidate whose predicted elongation is 1.65
+ * predicts a MEASURED value of 1.60 with a band that straddles gate C's floor —
+ * a coin flip, and not something to spend an Edge run on. This point predicts
+ * 1.733, i.e. a residual-corrected 1.679 with the whole +/-0.1 band above 1.6.
+ *
+ * The balanced point (`baseVarianceBudget` 0.45, `erosionCompensation` 0.667)
+ * is cheaper on opacity — +4.8% / -5.8% against this point's +4.4% / -10.2% —
+ * and was rejected for exactly that band reason. Both are on the frontier the
+ * spec pins; the trade between the two opacity surfaces still runs about 1:1.7.
+ *
+ * NOT SHIPPED. This is a model record so the numbers a sign-off would rest on
+ * are executable rather than transcribed.
+ */
+export const U2_CANDIDATE = Object.freeze({
+  carveBeforeErosion: true,
+  baseVarianceBudget: 0.55,
+  budgetDownWeight: 0.25,
+  erosionCompensation: 0.6,
+});
 
 /**
  * The tour fixture's march inputs in the shape {@link buildModelParameters}
