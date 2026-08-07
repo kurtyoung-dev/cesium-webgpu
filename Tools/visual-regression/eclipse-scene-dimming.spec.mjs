@@ -1084,13 +1084,15 @@ test("the gates are model-free: equivalence, not prediction", () => {
   // multiplicative contract. Keep it on for the shipped ON capture, then turn
   // it off only for the engine/manual equivalence pair. The dedicated S6 probe
   // gates the glow itself, so the isolation cannot hide a removed feature.
-  // Batch 873: S5's per-fragment globe umbra is isolated in the SAME block for
-  // the same reason, so the pin now spans both switches. Keeping them adjacent
-  // is the point — one render must follow both, or the reference frame carries
-  // one sub-effect and not the other.
+  // Batch 873 isolated S5 alongside S6; Batch 878 split the isolation into TWO
+  // steps so the two sub-effects are separately attributable. The ORDER is the
+  // load-bearing part: S6 off -> render -> midpoint capture -> S5 also off ->
+  // render -> reference capture. A capture taken before its own render, or a
+  // second toggle before the first capture, silently merges the two terms
+  // again.
   assert.match(
     probe,
-    /ac\.lighting\.enableEclipseHorizonTwilight = false;\s*ac\.lighting\.enableEclipseGlobeShadow = false;\s*scene\.render\(T\(\)\);\s*equivalentOnState = readState\(\);/,
+    /ac\.lighting\.enableEclipseHorizonTwilight = false;\s*scene\.render\(T\(\)\);\s*s6OffSky = bandStats\([\s\S]{0,120}?ac\.lighting\.enableEclipseGlobeShadow = false;\s*scene\.render\(T\(\)\);\s*equivalentOnState = readState\(\);/,
   );
   assert.match(probe, /engineReference:\s*\{/);
   assert.match(probe, /horizonTwilightIsolated/);
@@ -1399,10 +1401,13 @@ test("the equivalence gate isolates BOTH orthogonal sub-effects (S6 and S5)", ()
     /enableEclipseGlobeShadow no longer has its shipped default-on value/,
   );
 
-  // Isolated in the engine-reference capture, alongside S6...
+  // Isolated in the engine-reference capture, alongside S6 — since Batch 878
+  // in two steps, S6 first, so the midpoint separates them. Both switches must
+  // still be off by the time the reference is captured.
+  assert.match(probe, /ac\.lighting\.enableEclipseHorizonTwilight = false;/);
   assert.match(
     probe,
-    /ac\.lighting\.enableEclipseHorizonTwilight = false;\s*ac\.lighting\.enableEclipseGlobeShadow = false;/,
+    /ac\.lighting\.enableEclipseGlobeShadow = false;\s*scene\.render\(T\(\)\);\s*equivalentOnState = readState\(\);/,
   );
   // ...restored immediately after it...
   assert.match(
@@ -1479,7 +1484,10 @@ const EXPECTED_GATE_PREDICATES = [
   "curveMatchesPrediction",
   "floorRespected",
   "floorExactAtTotality",
-  "notBlackAtDeepest",
+  // Batch 878 — split per band, deliberately: the AND named a rung but not a
+  // band, and the two bands reach this bar by completely different paths.
+  "notBlackAtDeepestSky",
+  "notBlackAtDeepestGround",
   "aeFactorStrictlyLower",
   "aeIdentityWhenClear",
   "aeRendersDarker",
@@ -1505,7 +1513,7 @@ const parseFrozenList = (probe, name) => {
   return [...body.matchAll(/"([A-Za-z0-9_]+)"/g)].map((x) => x[1]);
 };
 
-test("the gate list IS the verdict — membership is exactly the 22 predicates", () => {
+test("the gate list IS the verdict — membership is exactly the 23 predicates", () => {
   const probe = readProbeText();
   assert.deepEqual(
     parseFrozenList(probe, "GATE_PREDICATES"),
@@ -1597,10 +1605,21 @@ test("the bracket has a LIKE-FOR-LIKE companion measured against the S2-only fra
     (probe.match(/const predictWithBackground = /g) ?? []).length,
     1,
   );
-  // The sub-effect depth is reported, because that number is what says whether
-  // a bracket miss is S5/S6 or the estimator.
-  assert.match(probe, /subEffectDepthSky:/);
-  assert.match(probe, /subEffectDepthGround:/);
+  // The sub-effect contributions are reported, because those numbers are what
+  // say whether a bracket miss is S5/S6 or the estimator. Batch 878 SPLIT the
+  // single signed sum into its two terms; the sum is kept under its honest
+  // name.
+  assert.match(probe, /isolatedMinusShippedSky:/);
+  assert.match(probe, /isolatedMinusShippedGround:/);
+  assert.match(probe, /s5DepthSky:/);
+  assert.match(probe, /s5DepthGround:/);
+  assert.match(probe, /s6DepthSky:/);
+  assert.match(probe, /s6DepthGround:/);
+  assert.doesNotMatch(
+    probe,
+    /subEffectDepthSky:/,
+    "the un-attributable signed sum must not survive under its old name",
+  );
   // Still non-gating.
   const gate = parseFrozenList(probe, "GATE_PREDICATES");
   for (const name of [
@@ -1628,4 +1647,154 @@ test("the estimator error that keeps the brackets loose is RECORDED, with number
   assert.match(probe, /72\.1%/);
   // ...against the bracket's own half-widths, so the comparison is explicit.
   assert.match(probe, /half-widths are −25% \/ \+15%/);
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Batch 878 — two findings from the first run that could name its own
+// failing predicate.
+//
+//  (1) `notBlackAtDeepest` came back false on WebGPU and true on WebGL. It is
+//      the ONLY gating predicate in the probe that reads an ABSOLUTE band
+//      luminance; every other one is a ratio, a CPU scalar or a structural
+//      flag, and a constant per-backend difference in the globe's ambient
+//      model cancels in all of those and in none of this one. It also ANDed
+//      two independent bands, and the block that reports its inputs rounded
+//      them to 3 dp — coarser than the 0.004 bar it was reporting on.
+//
+//  (2) `subEffectDepthSky` came back NEGATIVE (−0.078) while
+//      `subEffectDepthGround` came back positive (+0.008, +0.046) on the same
+//      run. That is not a leak: the quantity was a signed SUM of two terms
+//      with opposite signs — S5 only removes light from the globe, S6 only
+//      ADDS light to the sky — so it was never attributable as one number.
+// ───────────────────────────────────────────────────────────────────────────
+
+test("the not-black bar is a named constant, unchanged, and applied per band", () => {
+  const probe = readProbeText();
+  // The bar itself must not drift. It is ~1.02 code values: the smallest band
+  // mean distinguishable from black.
+  assert.match(probe, /const NOT_BLACK_FLOOR = 0\.004;/);
+  assert.match(probe, /NOT to be widened to make a run pass/);
+  // Applied per band, and BOTH bands gate.
+  assert.match(
+    probe,
+    /v\.notBlackAtDeepestSky = deepest\.on\.sky\.mean > NOT_BLACK_FLOOR;/,
+  );
+  assert.match(
+    probe,
+    /v\.notBlackAtDeepestGround = deepest\.on\.ground\.mean > NOT_BLACK_FLOOR;/,
+  );
+  const gate = parseFrozenList(probe, "GATE_PREDICATES");
+  assert.ok(gate.includes("notBlackAtDeepestSky"));
+  assert.ok(gate.includes("notBlackAtDeepestGround"));
+  // The old combined boolean survives for series continuity but must NOT gate
+  // — otherwise a failure still reports a rung without a band.
+  assert.ok(!gate.includes("notBlackAtDeepest"));
+  assert.match(
+    probe,
+    /v\.notBlackAtDeepest =\s*\n?\s*v\.notBlackAtDeepestSky && v\.notBlackAtDeepestGround;/,
+  );
+  // No second literal copy of the bar anywhere.
+  assert.equal((probe.match(/> 0\.004/g) ?? []).length, 0);
+});
+
+test("the deepest-rung report resolves finer than the bar it reports on", () => {
+  // 0.0035 (fail) and 0.0044 (pass) both print as 0.004/0.003 under `r3`, so
+  // the report could not distinguish a failure from a pass. Means unrounded,
+  // margins stated, and the backend-neutral companion alongside.
+  const probe = readProbeText();
+  assert.match(probe, /onSkyMean: deepest\.on\.sky\.mean,/);
+  assert.match(probe, /onGroundMean: deepest\.on\.ground\.mean,/);
+  assert.match(probe, /offSkyMean: deepest\.off\.sky\.mean,/);
+  assert.match(probe, /offGroundMean: deepest\.off\.ground\.mean,/);
+  assert.match(
+    probe,
+    /skyMarginOverFloor: deepest\.on\.sky\.mean - NOT_BLACK_FLOOR,/,
+  );
+  assert.match(
+    probe,
+    /groundMarginOverFloor: deepest\.on\.ground\.mean - NOT_BLACK_FLOOR,/,
+  );
+  assert.match(probe, /survivingFractionSky:/);
+  assert.match(probe, /survivingFractionGround:/);
+  assert.match(probe, /expectedTwilightFloor: EXPECTED_TWILIGHT_FLOOR,/);
+  // The reason this predicate is the one that diverges must be recorded next
+  // to it, or the next reader re-derives it.
+  assert.match(
+    probe,
+    /ONLY gating predicate in this probe that\s*\/\/\s*reads an absolute luminance/,
+  );
+  assert.match(probe, /intentional algorithmic rewrite/);
+});
+
+test("the two sub-effects are SEPARATED, and their signs are fixed by physics", () => {
+  const probe = readProbeText();
+  // The midpoint capture is what makes the split possible.
+  assert.match(probe, /let s6OffSky = null;/);
+  assert.match(probe, /s6Off: \{ sky: s6OffSky, ground: s6OffGround \},/);
+  // s6 = (midpoint − shipped)/off  and  s5 = (isolated − midpoint)/off.
+  assert.match(
+    probe,
+    /\(mid\.sky\.mean - s\.on\.sky\.mean\) \/ offSky/,
+    "s6 must be measured against the SHIPPED capture",
+  );
+  assert.match(
+    probe,
+    /\(ref\.sky\.mean - mid\.sky\.mean\) \/ offSky/,
+    "s5 must be measured against the MIDPOINT, not the shipped capture",
+  );
+  // The signs are the physics, and they are asserted as a reported check.
+  assert.match(probe, /const SUB_EFFECT_SIGN_EPS = 0\.002;/);
+  assert.match(probe, /a tolerance on ZERO/);
+  assert.match(
+    probe,
+    /s5Sky >= -SUB_EFFECT_SIGN_EPS &&\s*s5Ground >= -SUB_EFFECT_SIGN_EPS &&\s*s6Sky <= SUB_EFFECT_SIGN_EPS &&\s*s6Ground <= SUB_EFFECT_SIGN_EPS/,
+  );
+  // Reported, not gating: a sign violation means the INSTRUMENT leaked, and
+  // this fleet escalates instrument faults rather than failing the engine.
+  const gate = parseFrozenList(probe, "GATE_PREDICATES");
+  assert.ok(!gate.includes("subEffectSignsConsistent"));
+  assert.match(probe, /subEffectSignsConsistent:/);
+  // And the asymmetry that produced the negative reading is written down.
+  assert.match(probe, /S5's per-fragment umbra only REMOVES light/);
+  assert.match(probe, /S6's horizon twilight only ADDS light/);
+});
+
+test("S6 really is additive and S5 really is subtractive — checked at the source", () => {
+  // The sign expectations above are only worth pinning if they are true of the
+  // shipped shaders. If either changes character, the check inverts and must
+  // be revisited deliberately.
+  const skyFs = readEngine("Shaders/SkyAtmosphereFS.glsl").replace(
+    /\r\n/g,
+    "\n",
+  );
+  assert.match(
+    skyFs,
+    /color\.rgb \+= skyLuminance \* ECLIPSE_TWILIGHT_TINT \* \(u_eclipseHorizonTwilight \* band\);/,
+    "S6 must remain an ADDITIVE glow",
+  );
+  // ...and it is exactly zero outside the last sliver of obscuration, which is
+  // why the negative sky term appears only at the deepest rung.
+  assert.match(
+    skyFs,
+    /if \(u_eclipseHorizonTwilight > 0\.0 && translucent == 0\.0\)/,
+  );
+  // S5 multiplies the globe surface by a factor in [floor, 1] — subtractive.
+  const globeFs = readEngine("Shaders/GlobeFS.glsl").replace(/\r\n/g, "\n");
+  assert.match(globeFs, /finalColor\.rgb \*= eclipseAbsolute;/);
+  // Both backends compose S5 the same way; a divergence here WOULD be a
+  // product defect rather than an instrument one, so it is pinned.
+  const globeWgsl = readEngine(
+    "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+  ).replace(/\r\n/g, "\n");
+  for (const src of [globeFs, globeWgsl]) {
+    assert.match(src, /eclipseRelative = eclipseAbsolute \* /);
+  }
+  assert.match(
+    globeFs,
+    /u_eclipseParams\.x > 1\.5 && u_eclipseParams\.x < 3\.5/,
+  );
+  assert.match(
+    globeWgsl,
+    /eclipseUniforms\.params\.x > 1\.5 &&\s*eclipseUniforms\.params\.x < 3\.5/,
+  );
 });

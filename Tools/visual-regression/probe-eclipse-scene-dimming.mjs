@@ -1212,8 +1212,29 @@ const LADDER = async ({ lat, lon, ladder }) => {
     let equivalentEngineMirror = engineMirror;
     let horizonTwilightIsolated = false;
     let globeShadowIsolated = false;
+    // Intermediate capture: S6 OFF, S5 still ON. Lets the two sub-effects be
+    // separated instead of reported as one signed sum. `null` on a clear rung.
+    let s6OffSky = null;
+    let s6OffGround = null;
     if (isEclipsed) {
+      // TWO STEPS, NOT ONE — so the two sub-effects are separately
+      // attributable (Batch 878). Turning both off together yields a SIGNED
+      // SUM of opposite terms: S5's per-fragment umbra only REMOVES light from
+      // the globe, while S6's horizon twilight only ADDS light to the sky
+      // (`SkyAtmosphereFS.glsl`: `color.rgb += skyLuminance * TINT * gain`).
+      // The first read of the combined delta came back −0.078 in the sky band
+      // and +0.046 in the ground band on the same run, which is uninterpretable
+      // as one quantity and exactly what two opposite terms look like.
+      //
+      // Step 1 removes S6 only; step 2 additionally removes S5. The difference
+      // between the two captures is S5 alone, and the difference between step 1
+      // and the shipped ON capture is S6 alone. Costs one extra render per
+      // eclipsed rung and makes both signs checkable.
       ac.lighting.enableEclipseHorizonTwilight = false;
+      scene.render(T());
+      s6OffSky = bandStats(skyY0, skyY1);
+      s6OffGround = bandStats(groundY0, groundY1, groundMask);
+
       ac.lighting.enableEclipseGlobeShadow = false;
       scene.render(T());
       equivalentOnState = readState();
@@ -1455,6 +1476,8 @@ const LADDER = async ({ lat, lon, ladder }) => {
               ground: equivalentOnGround,
               horizonTwilightIsolated,
               globeShadowIsolated,
+              // S6 OFF, S5 still ON — the midpoint that separates the two.
+              s6Off: { sky: s6OffSky, ground: s6OffGround },
             },
             state: manualState,
             sky: manualSky,
@@ -1555,6 +1578,31 @@ async function runBackend(browser, renderer, plan) {
 // ── Verdict ─────────────────────────────────────────────────────────────────
 
 /**
+ * Slack on the SIGN of each separated sub-effect, in units of the undimmed
+ * band mean.
+ *
+ * Not a tolerance on a physical quantity — a tolerance on ZERO. S5 can only
+ * remove light and S6 can only add it, so the two terms have fixed signs; the
+ * only thing that can push a genuinely-zero term across zero is 8-bit
+ * quantisation of the band mean, which is bounded by (1/255)/N per pixel and
+ * is orders of magnitude below this. Anything larger than this in the wrong
+ * direction is an isolation leak.
+ */
+const SUB_EFFECT_SIGN_EPS = 0.002;
+
+/**
+ * "Totality is deep civil twilight, not an extinguished frame" — expressed as
+ * an absolute band-mean floor in the captured [0, 1] range.
+ *
+ * 0.004 is ~1.02 eight-bit code values, i.e. the smallest band mean that is
+ * distinguishable from black at all. Unchanged since the gate was written and
+ * NOT to be widened to make a run pass: the research this row implements is
+ * explicit that the umbral sky is ~10x brighter than a full-moon night, and a
+ * band mean under one code value is the failure that claim exists to catch.
+ */
+const NOT_BLACK_FLOOR = 0.004;
+
+/**
  * The predicates that COMPOSE the per-backend verdict, in evaluation order.
  *
  * This list IS the gate: `judge` folds it to produce `PASS` and filters it to
@@ -1582,7 +1630,11 @@ const GATE_PREDICATES = Object.freeze([
   "curveMatchesPrediction",
   "floorRespected",
   "floorExactAtTotality",
-  "notBlackAtDeepest",
+  // Batch 878 — split per band. `notBlackAtDeepest` (the AND) is still
+  // computed and reported for series continuity, but the GATE is the two
+  // bands separately, so a failure names which one went black.
+  "notBlackAtDeepestSky",
+  "notBlackAtDeepestGround",
   "aeFactorStrictlyLower",
   "aeIdentityWhenClear",
   "aeRendersDarker",
@@ -1604,10 +1656,21 @@ const GATE_PREDICATES = Object.freeze([
  *
  *  1. SUB-EFFECT BIAS. `predictDim` models S2 alone while `s.on` renders the
  *     shipped stack (S2 + S5's per-fragment umbra + S6's horizon glow), so the
- *     measurement is biased DEEP, and most at the deep rungs where S5's
- *     `G(O_fragment)` bites hardest. `bracketS2Only` removes exactly this
- *     term by re-measuring against the isolated reference the equivalence
- *     gate already renders.
+ *     measurement is biased, and most at the deep rungs. `bracketS2Only`
+ *     removes exactly this term by re-measuring against the isolated reference
+ *     the equivalence gate already renders.
+ *     ★ CORRECTED 2026-08-07 by its own first reading, which was PARTLY
+ *     against the prediction made when this note was written. The bias is NOT
+ *     one-signed and NOT small in both bands: measured `+0.008` and `+0.046`
+ *     in the GROUND band (S5, which only removes light, growing with
+ *     obscuration) and `−0.078` in the SKY band (S6, which only ADDS light,
+ *     and only in the last ~2% of obscuration). The prediction of "+0.003 to
+ *     +0.02, so the bracket misses will not close" was therefore wrong in the
+ *     ground band — at `+0.046` the S2-only ground reading moves from a 12.1%
+ *     miss to roughly 4%, i.e. **for the ground band S5 explains most of the
+ *     bias and reason 2 is not needed**. Reason 2 stands for the SKY band.
+ *     This is why the two sub-effects are now measured SEPARATELY
+ *     (`s5Depth*` / `s6Depth*`) rather than as one signed sum.
  *  2. ESTIMATOR ERROR (this one survives the fix). `predictDim` pushes a band
  *     MEAN through a per-pixel nonlinearity — the probe's own comment calls
  *     that "an approximation … that is what the tolerance bands are for". The
@@ -1893,6 +1956,28 @@ function judge(steps) {
     const dimSkyS2 = haveRef && offSky > 0 ? ref.sky.mean / offSky : null;
     const dimGroundS2 =
       haveRef && offGround > 0 ? ref.ground.mean / offGround : null;
+    // The S6-off midpoint splits the combined delta into its two terms:
+    //   s6 = (midpoint − shipped)/off   (S6 removed, S5 still on)  -> <= 0
+    //   s5 = (isolated − midpoint)/off  (S5 then removed)          -> >= 0
+    // Their sum is `isolatedMinusShipped`, which is why that number alone
+    // cannot be attributed.
+    const mid = ref?.s6Off;
+    const haveMid =
+      Number.isFinite(mid?.sky?.mean) && Number.isFinite(mid?.ground?.mean);
+    const s6Sky =
+      haveMid && offSky > 0 ? (mid.sky.mean - s.on.sky.mean) / offSky : null;
+    const s6Ground =
+      haveMid && offGround > 0
+        ? (mid.ground.mean - s.on.ground.mean) / offGround
+        : null;
+    const s5Sky =
+      haveMid && haveRef && offSky > 0
+        ? (ref.sky.mean - mid.sky.mean) / offSky
+        : null;
+    const s5Ground =
+      haveMid && haveRef && offGround > 0
+        ? (ref.ground.mean - mid.ground.mean) / offGround
+        : null;
     const bSky = s.bg?.on?.sky?.mean ?? null;
     const predSkyLow = predictDim(offSky, f);
     const predSkyHigh =
@@ -1908,12 +1993,41 @@ function judge(steps) {
       dimSkyS2Only: r3(dimSkyS2),
       dimGroundShipped: r3(s.dimGround),
       dimGroundS2Only: r3(dimGroundS2),
-      // How much of the shipped depth the isolated sub-effects contribute.
-      // This is the number that says whether a bracket miss is S5/S6 or the
-      // estimator; it was 0.004 on the band means when S5 was first isolated.
-      subEffectDepthSky: dimSkyS2 === null ? null : r3(dimSkyS2 - s.dimSky),
-      subEffectDepthGround:
+      // ── The two sub-effects, SEPARATED and SIGN-CHECKED (Batch 878) ──────
+      //
+      // `isolatedMinusShipped` is a SIGNED SUM of two terms that point in
+      // OPPOSITE directions, and reading it as one "depth" is what produced
+      // the −0.078 sky / +0.046 ground pair that looked physically impossible:
+      //   * S5's per-fragment umbra only REMOVES light from the GLOBE, so
+      //     switching it off can only RAISE the reference  -> s5 >= 0.
+      //   * S6's horizon twilight only ADDS light to the SKY
+      //     (`SkyAtmosphereFS.glsl`: `color.rgb += skyLuminance * TINT *
+      //     gain`), so switching it off can only LOWER the reference
+      //     -> s6 <= 0.
+      // The sky band is therefore expected NEGATIVE at the deep rungs (S6
+      // dominates there — it is exactly 0 outside the last ~2% of obscuration)
+      // and the ground band POSITIVE and growing (S5). Those signs are the
+      // physics; a violation is a leak in the isolation, not a curiosity.
+      isolatedMinusShippedSky:
+        dimSkyS2 === null ? null : r3(dimSkyS2 - s.dimSky),
+      isolatedMinusShippedGround:
         dimGroundS2 === null ? null : r3(dimGroundS2 - s.dimGround),
+      s5DepthSky: r3(s5Sky),
+      s5DepthGround: r3(s5Ground),
+      s6DepthSky: r3(s6Sky),
+      s6DepthGround: r3(s6Ground),
+      // REPORTED consistency check, not a gate: the shipped physics fixes
+      // these signs, so a violation says the isolation leaked (a capture taken
+      // before the toggle took effect, or a restore that did not re-render)
+      // rather than that the engine changed. `null` when the midpoint capture
+      // is absent.
+      subEffectSignsConsistent:
+        s5Sky === null || s6Sky === null
+          ? null
+          : s5Sky >= -SUB_EFFECT_SIGN_EPS &&
+            s5Ground >= -SUB_EFFECT_SIGN_EPS &&
+            s6Sky <= SUB_EFFECT_SIGN_EPS &&
+            s6Ground <= SUB_EFFECT_SIGN_EPS,
       predictedSkyShellOnly: r3(predSkyLow),
       predictedSkyWithBackground: r3(predSkyHigh),
       predictedGround: r3(predGround),
@@ -2112,13 +2226,54 @@ function judge(steps) {
 
   // The deepest rung must dim VISIBLY, not by a rounding error.
   const deepest = byFactor[byFactor.length - 1];
+  // ── The deepest rung, reported FINER THAN ITS OWN BAR ────────────────────
+  //
+  // `notBlackAtDeepest` tests an ABSOLUTE band mean against 0.004, and this
+  // block used to round the same means to three decimals — so 0.0035 (fail)
+  // and 0.0044 (pass) both printed as "0.004"/"0.003" and the report could not
+  // resolve the threshold it was reporting on. Means are now UNROUNDED, and
+  // the margin is stated, because the FIRST question about a failure here is
+  // "by how much".
+  //
+  // `notBlackAtDeepest` is also the ONLY gating predicate in this probe that
+  // reads an absolute luminance. Every other one is a ratio (`dim*`), a CPU
+  // scalar (`factor`, the curve, the floor) or a structural flag — quantities
+  // in which a constant per-backend difference in the globe's ambient model
+  // CANCELS. It does not cancel here, and the two globe lighting paths are a
+  // DOCUMENTED intentional divergence: `GlobeTerrain.wgsl`'s no-vertex-normals
+  // branch is an "intentional algorithmic rewrite of WebGL's NdotL × 5 + 0.3
+  // × fade path — gentler transition, brighter ambient, separate night
+  // ambient", and this scene uses `EllipsoidTerrainProvider`, which has no
+  // vertex normals. `survivingFraction` is therefore reported next to the
+  // absolute means: it is the backend-neutral form of the same physical claim
+  // ("totality is deep twilight, not extinguished"), and comparing the two
+  // across backends is what says whether a failure here is the engine or the
+  // ambient-model difference. NOTHING IS WIDENED on that basis without a
+  // measurement — the numbers come first.
   v.deepest = {
     iso: deepest.iso,
     factor: r6(deepest.on.state.factor),
     dimSky: r3(deepest.dimSky),
     dimGround: r3(deepest.dimGround),
-    onSkyMean: r3(deepest.on.sky.mean),
-    onGroundMean: r3(deepest.on.ground.mean),
+    onSkyMean: deepest.on.sky.mean,
+    onGroundMean: deepest.on.ground.mean,
+    offSkyMean: deepest.off.sky.mean,
+    offGroundMean: deepest.off.ground.mean,
+    // Distance to the bar, signed: negative means the band failed.
+    skyMarginOverFloor: deepest.on.sky.mean - NOT_BLACK_FLOOR,
+    groundMarginOverFloor: deepest.on.ground.mean - NOT_BLACK_FLOOR,
+    // Backend-neutral companion. The engine's own published floor is
+    // `EXPECTED_TWILIGHT_FLOOR`; a band dimmed to it retains that fraction of
+    // its undimmed self, modulo the display transform.
+    survivingFractionSky:
+      deepest.off.sky.mean > 0
+        ? deepest.on.sky.mean / deepest.off.sky.mean
+        : null,
+    survivingFractionGround:
+      deepest.off.ground.mean > 0
+        ? deepest.on.ground.mean / deepest.off.ground.mean
+        : null,
+    expectedTwilightFloor: EXPECTED_TWILIGHT_FLOOR,
   };
   v.deepestDimsVisibly = deepest.dimSky < 0.9 && deepest.dimGround < 0.95;
 
@@ -2173,8 +2328,17 @@ function judge(steps) {
     total.every(
       (s) => Math.abs(s.on.state.factor - EXPECTED_TWILIGHT_FLOOR) < 1e-12,
     );
-  v.notBlackAtDeepest =
-    deepest.on.sky.mean > 0.004 && deepest.on.ground.mean > 0.004;
+  // SPLIT PER BAND (Batch 878). One boolean over two independent bands is the
+  // same legibility defect the verdict itself had: `notBlackAtDeepest: false`
+  // named a rung but not a BAND, and the sky and the ground reach this bar by
+  // completely different paths (the sky through the atmosphere shell's
+  // composite, the ground through the globe's diffuse + ambient model). The
+  // bar is unchanged — only the reporting is.
+  v.notBlackAtDeepestSky = deepest.on.sky.mean > NOT_BLACK_FLOOR;
+  v.notBlackAtDeepestGround = deepest.on.ground.mean > NOT_BLACK_FLOOR;
+  // Retained so the historical series stays readable; not a gate any more —
+  // the two per-band predicates above are.
+  v.notBlackAtDeepest = v.notBlackAtDeepestSky && v.notBlackAtDeepestGround;
 
   // Lane (d) — ruling E2's camera mode publishes the LINEAR radiometric
   // factor, strictly below the eye-adapted default, and renders darker.

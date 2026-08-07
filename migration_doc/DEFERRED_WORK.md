@@ -1,5 +1,52 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
+## New findings — eclipse deepest-rung worker, 2026-08-07 (Batch 878)
+
+- **`ECLIPSE-S2-NOTBLACK-DEEPEST-WEBGPU` — OPEN, one-sided, attribution
+  pending ONE number.** `notBlackAtDeepest` fails on WebGPU and passes on
+  WebGL: at the deepest rung a WebGPU band mean falls below the 0.004 (~1 code
+  value) "totality is not extinguished" floor. **Ruled out at source:** S5's
+  composition, which both backends implement identically (`absolute`,
+  `relative = absolute × invSceneLightFactor`, identical `params.x ∈ (1.5,
+  3.5)` gate — `GlobeFS.glsl:841-862` vs `GlobeTerrain.wgsl:4737-4792`), with
+  the CPU reference `composeGlobeSurfaceFactor` returning `absolute` so S5
+  SUPERSEDES S2 rather than stacking. A double-application would have given
+  `floor² = 1.35e-3`, the right magnitude for this failure, so excluding it
+  matters. **Established:** this is the ONLY gating predicate in the probe that
+  reads an ABSOLUTE luminance — every other one is a ratio, a CPU scalar or a
+  structural flag, in which a constant per-backend ambient difference cancels —
+  and the two globe lighting paths ARE a documented intentional divergence
+  (`GlobeTerrain.wgsl`'s no-vertex-normals branch: "intentional algorithmic
+  rewrite … gentler transition, brighter ambient, separate night ambient";
+  this scene uses `EllipsoidTerrainProvider`, i.e. no vertex normals).
+  **The bar was NOT widened.** The instrument was repaired instead: the
+  predicate is split per band, the deepest-rung means are reported unrounded
+  with signed margins (they were rounded to 3 dp against a 0.004 bar, so the
+  report could not resolve a pass from a fail), and
+  `survivingFraction{Sky,Ground}` is published as the backend-neutral form of
+  the same claim. **Decide on the next run:** `gpu/gl` ratio of
+  `survivingFractionGround` inside **[0.85, 1.15]** ⇒ instrument (re-express
+  the claim as a surviving fraction); outside ⇒ product defect, next suspect
+  `NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA` composing over the ground band.
+  **Effort: S once the number is in hand.**
+
+- **`ECLIPSE-S5-S6-OPPOSITE-SIGNS` — RESOLVED, and it corrects a Batch-876
+  prediction.** The reported `subEffectDepthSky: −0.078` was not an isolation
+  leak: S5 only REMOVES light (globe, positive delta when switched off) and S6
+  only ADDS it (`SkyAtmosphereFS.glsl`'s `color.rgb += skyLuminance × TINT ×
+  gain`, sky band, non-zero only in the last ~2% of obscuration, negative delta
+  when switched off). The field was a SIGNED SUM of two opposite terms and was
+  never attributable. The isolation now runs in two steps and reports
+  `s5Depth*` and `s6Depth*` separately, with the physics-fixed signs published
+  as `subEffectSignsConsistent` (reported, not gating — a violation means the
+  instrument leaked). Leak independently excluded by `equivalenceWorstRel: 0`,
+  which requires S5 to be fully off in the captured frame despite its toggle
+  being a shader define. **Batch 876's prediction ("+0.003 to +0.02, misses
+  will not close") was wrong for the GROUND band:** at the measured `+0.046`
+  the S2-only ground reading moves from a 12.1% miss to ~4%, so S5 explains
+  most of the ground bracket bias and the estimator argument is needed only for
+  the SKY band. Corrected in-file at `REPORTED_ONLY_PREDICATES`.
+
 ## New findings — eclipse-gate legibility worker, 2026-08-07 (Batch 874)
 
 One finding, and it is about how a verdict is READ rather than what it

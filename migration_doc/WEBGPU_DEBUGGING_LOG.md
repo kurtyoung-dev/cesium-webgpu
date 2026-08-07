@@ -17498,3 +17498,114 @@ adversarial mutants rejected: promoting `skyBracketOkReportedOnly` into the gate
 (2 tests), typo-ing a predicate name (2), dropping `equivalenceOk` from the list
 (2), restoring a hand-written `v.PASS` conjunction (1), and letting the S2-only
 bracket re-derive its own reference instead of reading the isolated one (1).
+
+---
+
+## C12-29-S5-S6-SIGN-SPLIT + the deepest-rung absolute gate (2026-08-07)
+
+Two findings from the first run of the eclipse probe that could name its own
+failing predicate. No engine change; both repairs are in the instrument.
+
+### 1. `subEffectDepthSky: -0.078` is REAL, and the field was un-attributable
+
+**Reported as physically suspicious** — the S2-only isolated reference rendered
+DARKER than the full S2+S5+S6 composite, which "cannot happen if S5/S6 only
+remove light".
+
+**The premise is half wrong, and that is the finding.** The two sub-effects
+point in OPPOSITE directions:
+
+* **S5** (per-fragment lunar umbra) multiplies the globe surface by a factor in
+  `[floor, 1]` — `GlobeFS.glsl:862` `finalColor.rgb *= eclipseAbsolute;` and its
+  WGSL twin. It only REMOVES light, and only from the GROUND band. Switching it
+  off can only RAISE the reference ⇒ **positive** delta.
+* **S6** (360-degree horizon twilight) is ADDITIVE — `SkyAtmosphereFS.glsl`:
+  `color.rgb += skyLuminance * ECLIPSE_TWILIGHT_TINT * (u_eclipseHorizonTwilight
+  * band);` — and it is a SkyAtmosphere uniform, so it acts on the SKY band, and
+  it is exactly 0.0 outside the last ~2% of obscuration. Switching it off can
+  only LOWER the reference ⇒ **negative** delta, at the deepest rung only.
+
+`subEffectDepth*` was the SUM of those two terms, so `−0.078` (sky, S6-dominated)
+alongside `+0.008 / +0.046` (ground, S5-dominated) is exactly the expected
+signature — and it is uninterpretable as one number. **The sign is real; the
+field was wrong.**
+
+**Isolation leak ruled out.** The Batch-873 block is set → render → capture →
+restore → render, which is the correct order, and S5's toggle is a SHADER DEFINE
+(`GlobeSurfaceShaderSet.js`), so a leak would have to be a recompile latency.
+It is not: the equivalence leg returns `equivalenceWorstRel: 0` — the isolated
+engine frame is BIT-IDENTICAL to the manual twin — which is only possible if S5
+is fully off in the very frame that was captured.
+
+**Fix.** The isolation now runs in TWO steps (S6 off → render → midpoint
+capture → S5 also off → render → reference capture), costing one extra render
+per eclipsed rung. That yields `s6Depth{Sky,Ground} = (midpoint − shipped)/off`
+and `s5Depth{Sky,Ground} = (isolated − midpoint)/off` separately, with the
+signed sum retained under its honest name `isolatedMinusShipped*`. The fixed
+signs are published as `subEffectSignsConsistent` — REPORTED, not gating,
+because a violation would mean the instrument leaked, and this fleet escalates
+instrument faults rather than failing the engine on them.
+
+**A prediction of mine was wrong and is corrected in-file.** Batch 876 predicted
+"+0.003 to +0.02, so the bracket misses will not close". The ground band
+measured `+0.046`. At that size the S2-only ground reading moves from a 12.1%
+miss to roughly 4% — so **for the GROUND band S5 explains most of the bracket
+bias and the estimator argument is not needed**. The estimator argument stands
+for the SKY band. The note at `REPORTED_ONLY_PREDICATES` now says so.
+
+### 2. `notBlackAtDeepest` — WebGPU-only, and it is the probe's only absolute gate
+
+**Not yet attributable to product or instrument, and deliberately not "fixed".**
+What is established:
+
+* **S5's composition is parity-matched at source** and is therefore NOT the
+  cause. Both backends compute `absolute = G(O_fragment)`,
+  `relative = absolute × invSceneLightFactor`, and select between them on the
+  identical gate `params.x ∈ (1.5, 3.5)` — `GlobeFS.glsl:841-862` vs
+  `GlobeTerrain.wgsl:4737-4792`. The CPU reference
+  (`EclipseGlobeShadow.composeGlobeSurfaceFactor`) returns
+  `sceneLightFactor × (absolute × invSceneLightFactor)` = `absolute`, i.e. S5
+  SUPERSEDES S2 rather than stacking with it, and both shaders implement that.
+  A double-application would have produced `floor² = 1.35e-3` — the right order
+  of magnitude for this failure — so ruling it out at source matters.
+* **`notBlackAtDeepest` is the ONLY gating predicate in the probe that reads an
+  ABSOLUTE band luminance.** Every other one is a ratio (`dim*`,
+  `equivalenceOk`), a CPU scalar (`factor`, the curve, the floor) or a
+  structural flag. A constant per-backend difference in the globe's ambient
+  model CANCELS in all of those and in none of this one — which is exactly why
+  this is the single predicate that diverges.
+* **The two globe lighting paths are a DOCUMENTED intentional divergence.**
+  `GlobeTerrain.wgsl`'s no-vertex-normals branch describes itself as an
+  "intentional algorithmic rewrite of WebGL's `NdotL × 5 + 0.3` × fade path —
+  gentler transition, brighter ambient, separate night ambient", with
+  `nightAmbient = 0.025`. The probe uses `EllipsoidTerrainProvider`, which has
+  no vertex normals, so this scene takes that branch on WebGPU.
+* **The report could not resolve its own bar.** `v.deepest` rounded the band
+  means to 3 dp while the bar is 0.004, so 0.0035 (fail) and 0.0044 (pass) both
+  printed as `0.004`/`0.003`.
+
+**Instrument repairs (bar unchanged at 0.004):** the predicate is split into
+`notBlackAtDeepestSky` / `notBlackAtDeepestGround` (both gating, so a failure
+names the band); the deepest-rung means are reported UNROUNDED with signed
+margins; and `survivingFraction{Sky,Ground}` is reported alongside — the
+backend-neutral form of the same physical claim, and the number that decides
+product-vs-instrument on the next run.
+
+**The discriminator, stated in advance.** Read
+`verdicts.<backend>.deepest.survivingFractionGround` (and Sky) on both backends:
+
+* ratio `gpu/gl` within **[0.85, 1.15]** while `offGroundMean` differs ⇒
+  **INSTRUMENT**: the absolute bar is interacting with the documented ambient
+  difference, and the honest repair is to express "not extinguished" as a
+  surviving fraction of that backend's own undimmed frame.
+* ratio `gpu/gl` **outside [0.85, 1.15]** ⇒ **PRODUCT DEFECT**: something dims
+  the WebGPU globe beyond the published factor, it is not S5's composition, and
+  the next suspect is the shell-alpha defect
+  `NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA` composing over the ground band.
+
+**Files:** `Tools/visual-regression/probe-eclipse-scene-dimming.mjs`,
+`Tools/visual-regression/eclipse-scene-dimming.spec.mjs` (44/44). Six
+adversarial mutants rejected: widening the not-black floor, re-merging the two
+bands into one gate, restoring `r3` rounding on the deepest means, measuring s5
+against the shipped capture instead of the midpoint, capturing the midpoint
+before its own render, and dropping the sign check.
