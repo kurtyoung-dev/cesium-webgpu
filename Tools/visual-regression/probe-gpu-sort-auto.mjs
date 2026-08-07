@@ -345,7 +345,14 @@ async function run() {
     noGateErrors: res.gate.errors.length === 0 && !res.gate.deviceLost,
   };
   console.log(`\n  CHECKS: ${JSON.stringify(checks, null, 0)}`);
-  const pass = Object.values(checks).every(Boolean);
-  console.log(`\n[probe-gpu-sort-auto] ${pass ? "PASS" : "FAIL"}`);
+  // The verdict is the FOLD of the named check list, and the failure line is
+  // its FILTER — so a FAIL always says which predicate failed instead of
+  // leaving a reader to diff a nine-key JSON dump. Truth value is unchanged:
+  // `every(Boolean)` over the same object.
+  const failedPredicates = Object.keys(checks).filter((k) => !checks[k]);
+  const pass = failedPredicates.length === 0;
+  console.log(
+    `\n[probe-gpu-sort-auto] ${pass ? "PASS" : `FAIL — failing predicate(s): ${failedPredicates.join(", ")}`}`,
+  );
   process.exit(pass ? 0 : 1);
 })();

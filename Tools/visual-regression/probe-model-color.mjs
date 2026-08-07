@@ -326,6 +326,24 @@ for (const mode of modes) {
   let redOK = true;
   if (mode === "highlight" || mode === "replace") {
     redOK = gpuMean.g < 20 && gpuMean.b < 20 && glMean.g < 20 && glMean.b < 20;
+  } else if (mode === "mix") {
+    // LATENT VACUITY, closed 2026-08-07 (NEW-PROBE-VACUOUS-REACHABILITY-
+    // ASSERTION item 5). MIX used to fall through to the `true` initializer, so
+    // it carried NO mode-specific predicate at all and was covered only by the
+    // cross-backend parity triple — a bug that broke MIX identically on both
+    // backends passed, while the PASS banner named MIX explicitly.
+    //
+    // The assertion is a MECHANISM-TOGGLE control, not a new bar: MIX blends
+    // the model toward red, so relative to the UNTINTED capture the milk
+    // truck's green and blue must fall on BOTH backends. The margin is ZERO —
+    // no fitted threshold was invented, and nothing here can fail a build in
+    // which the mix does anything at all.
+    const untinted = meanModelColor(caps.webgpu_none.decoded);
+    redOK =
+      gpuMean.g < untinted.g &&
+      gpuMean.b < untinted.b &&
+      glMean.g < untinted.g &&
+      glMean.b < untinted.b;
   }
   const modeOK = meanOK && maskOK && pixOK && redOK;
   report.modes[mode] = {

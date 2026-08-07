@@ -549,20 +549,39 @@ async function runBackend(browser, renderer, lanes) {
     const a = gl.lanes[name];
     const b = gpu.lanes[name];
     const v = { lane: name, iso: lanes[name].iso };
+    // LATENT VACUITY, closed 2026-08-07 (NEW-PROBE-VACUOUS-REACHABILITY-
+    // ASSERTION item 5). `enableMoonPhase` was read into the manifest and never
+    // gated. `Moon.js:360-363` pins `phaseFraction = 1.0` when it is false, at
+    // which point the historical gate evaluates to 1.0 on every lane and ALL
+    // THREE lanes pass with the defect unobservable. The default is currently
+    // safe (`AtmosphericConditions.js:463`), so this changes no verdict at
+    // HEAD — it is the one default flip away from a fleet-wide false green, and
+    // a flag whose value is printed but not asserted is exactly the shape this
+    // class exists to close. Read from the settled frame each lane rendered,
+    // not from setup, and it escalates to STRUCTURAL rather than FAIL: a lane
+    // that cannot host its subject is blind, not broken.
+    const phaseEnabled = (leg) =>
+      leg && leg.enableMoonPhase === false ? "enableMoonPhase is OFF" : null;
     if (
       !a ||
       !b ||
       a.structuralError ||
       b.structuralError ||
       !a.pfInWindow ||
-      !b.pfInWindow
+      !b.pfInWindow ||
+      phaseEnabled(a) ||
+      phaseEnabled(b)
     ) {
       v.structural = {
         webgl: a
-          ? (a.structuralError ?? (a.pfInWindow ? null : "pf outside window"))
+          ? (phaseEnabled(a) ??
+            a.structuralError ??
+            (a.pfInWindow ? null : "pf outside window"))
           : "missing",
         webgpu: b
-          ? (b.structuralError ?? (b.pfInWindow ? null : "pf outside window"))
+          ? (phaseEnabled(b) ??
+            b.structuralError ??
+            (b.pfInWindow ? null : "pf outside window"))
           : "missing",
       };
       structural = true;

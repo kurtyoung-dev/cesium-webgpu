@@ -402,6 +402,7 @@ function distinctPixelCount(pixels) {
   );
 
   let pass = true;
+  const failedPredicates = [];
   const report = { runAt: new Date().toISOString(), cells: [] };
   for (const c of cells) {
     const d = c.diagnostics;
@@ -436,8 +437,13 @@ function distinctPixelCount(pixels) {
       .forEach((e) =>
         console.log(`      console: ${e.text?.split("\n")[0].slice(0, 220)}`),
       );
-    if (c.deviceErrors.length || c.pageErrors.length || c.consoleErrs.length)
+    if (c.deviceErrors.length || c.pageErrors.length || c.consoleErrs.length) {
       pass = false;
+      // This leg sits OUTSIDE `check()`, so without its own push a run that
+      // failed only here would print an EMPTY failing-predicate list — the
+      // mis-attribution the naming was added to remove, in a new form.
+      failedPredicates.push(`cell ${c.label} error-free`);
+    }
     report.cells.push({
       label: c.label,
       renderer: c.renderer,
@@ -455,7 +461,13 @@ function distinctPixelCount(pixels) {
 
   const check = (name, ok) => {
     console.log(`  [${ok ? "PASS" : "FAIL"}] ${name}`);
-    if (!ok) pass = false;
+    if (!ok) {
+      pass = false;
+      // The helper already had the name in hand and discarded it, so the
+      // verdict line could only say THAT something failed. Accumulating it
+      // costs one line and changes no truth value.
+      failedPredicates.push(name);
+    }
   };
 
   console.log("");
@@ -540,6 +552,8 @@ function distinctPixelCount(pixels) {
     path.join(OUT_DIR, "metadata-table-texture-report.json"),
     JSON.stringify(report, null, 2),
   );
-  console.log(`\n  overall: ${pass ? "PASS" : "FAIL"}`);
+  console.log(
+    `\n  overall: ${pass ? "PASS" : `FAIL — failing predicate(s): ${failedPredicates.join("; ")}`}`,
+  );
   process.exit(pass ? 0 : 1);
 })();

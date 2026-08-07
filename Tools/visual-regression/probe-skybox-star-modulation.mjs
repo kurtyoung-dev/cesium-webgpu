@@ -48,6 +48,24 @@
 //     the predicate `lib/celestial-g1-gate.mjs` adopted), and a run that cannot
 //     reach it exits 3 STRUCTURAL rather than manufacturing a FAIL.
 //
+// 2026-08-07 — THE CAMERA MOVE LANDED, so the second bullet no longer describes
+// the whole probe. An IN-COLUMN lane at `IN_COLUMN_HEIGHT_M` = 30 km with
+// `skyAtmosphere.show = true` now runs the SAME explicit-OFF vs explicit-ON A/B
+// against the SAME 0.85 bar, on a pair where `skyBrightness` saturates and the
+// modulation can act; the orbital legs are untouched and keep certifying parity.
+// The gate scores whichever arm demonstrates reachability, preferring
+// in-column, and still exits 3 when NEITHER can see the subject. Nothing was
+// lowered, widened or re-aimed: the 0.85 ratio, the three 0.1 parity bands and
+// the `skyBrightness > 0.5` predicate are byte-identical.
+//
+// ⚠ NOT YET RUN. The three new legs are source-level; their first Edge
+// execution is owed, and until it happens the in-column numbers are predictions,
+// not baselines. The prediction is explicit so it can be refuted: with the
+// column factor at 1.0 and `STAR_MODULATION_STEEPNESS = 23.0`, the ON leg
+// should read far below 0.85 of the OFF leg, and `inColumn.reached` must be
+// true on BOTH backends — if `skyAtmosphereVisible` comes back false the third
+// `CubeMapPanorama.js:511-514` conjunct is the blocker, not the height.
+//
 // Until this repair the opt-in arm was `gpuOn.meanLum / gpuDefault.meanLum <
 // 0.85`, which could never be satisfied for TWO independent reasons — the
 // default is now ON, so that comparison is A/A, and skyBrightness is 0, so no
@@ -56,11 +74,13 @@
 // EXPLICITLY-ON leg against the EXPLICITLY-OFF leg, so it does not depend on a
 // default that has already flipped once.
 //
-// The C11-176 subject itself belongs to `probe-celestial-gates.mjs`'s
-// `in-column-star-modulation` lane (camera 30 km, sky atmosphere ON), the only
-// instrument in the fleet that satisfies both `CubeMapPanorama.js:511-514`
-// conjuncts. Moving THIS probe's camera into the column is filed as the
-// remaining step under NEW-PROBE-VACUOUS-REACHABILITY-ASSERTION.
+// `probe-celestial-gates.mjs`'s `in-column-star-modulation` lane (camera 30 km,
+// sky atmosphere ON) was the ONLY instrument in the fleet satisfying both
+// `CubeMapPanorama.js:511-514` conjuncts; the in-column lane added here is the
+// second, and it is deliberately the same geometry so the two agree or
+// disagree about the same thing. The two are not redundant: celestial-gates
+// certifies the modulation's own ENERGY within each backend, this probe
+// certifies the OFF/ON capability and cross-backend parity.
 //
 // It measures CONTRAST, not just mean luminance. A washed-out star field can
 // share the same mean as a good one while having far lower variance, so a
@@ -81,6 +101,13 @@ import path from "path";
 const BASE = "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
 
+// 30 km — inside `ATMOSPHERIC_COLUMN_FADE_END = 111000` with margin at both
+// ends: high enough that the fade has not begun (it starts at 60 km) and low
+// enough that `computeAtmosphericColumnFactor` is 1.0. Same value as
+// `probe-celestial-gates.mjs`'s `IN_COLUMN_HEIGHT_M`, deliberately, so the two
+// instruments certify the same geometry.
+const IN_COLUMN_HEIGHT_M = 30000;
+
 const HARD_LIMIT_MS = 260000;
 const watchdog = setTimeout(() => {
   console.error("[probe-skybox-star-mod] WATCHDOG FIRED (260s) — forcing exit");
@@ -92,7 +119,7 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
 
 // Runs in-page. Positions the camera for maximum star modulation, renders,
 // and returns both the driving scalar and star-field image statistics.
-const MEASURE = async ({ toggleFlag, side }) => {
+const MEASURE = async ({ toggleFlag, side, heightM }) => {
   const C = await import("/Build/CesiumUnminified/index.js");
   const viewer = window.viewer;
   const scene = viewer.scene;
@@ -113,6 +140,18 @@ const MEASURE = async ({ toggleFlag, side }) => {
   scene.backgroundColor = C.Color.BLACK;
   if (scene.globe) scene.globe.show = false; // pure sky, no Earth
   scene.requestRenderMode = false;
+  // SECOND CONJUNCT of `CubeMapPanorama.js:511-514`. The modulation term needs
+  // `frameState.skyAtmosphereVisible === true` as well as a non-zero
+  // `skyBrightness`, and `Scene.js` derives that flag from `skyAtmosphere.show`.
+  // The in-column lane is pointless without it; the orbital lanes are unaffected
+  // either way because their column factor is 0 regardless. Turning it on for
+  // both keeps the two lanes differing in exactly ONE variable — the radius —
+  // which is what makes the pair readable as an A/B of reachability.
+  //
+  // `globe.show = false` does NOT block this: `Scene.js:3813-3816` makes
+  // `!globe.show` satisfy the readiness test (refuted as a suspected blocker
+  // during the 2026-08-06 sweep of `probe-moon-atmosphere-appearance`).
+  if (scene.skyAtmosphere) scene.skyAtmosphere.show = true;
 
   // Prime until uniformState.sunDirectionWC is STABLE. The ICRF/earth-
   // orientation data loads ASYNC after the first demanding render; until it
@@ -142,12 +181,28 @@ const MEASURE = async ({ toggleFlag, side }) => {
   // NIGHT:  camera OPPOSITE the sun => sunAlt = -1.0 => skyBrightness = 0
   //   => the star-modulation factor is exactly 1.0 (no dim) by construction,
   //   so ANY residual WebGPU-vs-WebGL gap on this lane is a SECOND cause.
+  //
+  // THE RADIUS IS THE WHOLE OF THE IN-COLUMN REPAIR. `computeCelestialElevation
+  // Sine` takes local up as `normalize(cameraPositionWC)`, so putting the eye on
+  // the sun ray makes sin(altitude) exactly 1 at ANY radius — the two lanes
+  // therefore share an identical solar geometry and differ only in height.
+  // At `dist` (~43,600 km) `computeAtmosphericColumnFactor` zeroes
+  // `skyBrightness`; at `heightM` = 30 km the factor is 1.0 and `skyBrightness`
+  // saturates. Same construction as `probe-celestial-gates.mjs`'s
+  // `in-column-star-modulation` lane, which is the shelf pattern this copies.
   const dist = 5.0e7;
   const axis =
     side === "night" ? C.Cartesian3.negate(sunDir, new C.Cartesian3()) : sunDir;
+  let radius = dist;
+  if (Number.isFinite(heightM)) {
+    const ellipsoid = scene.ellipsoid ?? C.Ellipsoid.WGS84;
+    const ray = C.Cartesian3.multiplyByScalar(axis, 1.0e7, new C.Cartesian3());
+    const surface = ellipsoid.scaleToGeodeticSurface(ray, new C.Cartesian3());
+    radius = C.Cartesian3.magnitude(surface) + heightM;
+  }
   const position = C.Cartesian3.multiplyByScalar(
     axis,
-    dist,
+    radius,
     new C.Cartesian3(),
   );
 
@@ -253,6 +308,10 @@ const MEASURE = async ({ toggleFlag, side }) => {
       : null,
     flagValue: readFlag(),
     starModulationUniform: readStarModulation(),
+    // Read back from the camera, not from the requested `heightM`: a setView
+    // that silently failed would otherwise leave the lane label claiming a
+    // geometry the frame does not have.
+    cameraHeightM: scene.camera?.positionCartographic?.height ?? null,
     rendererType: scene.context.rendererType,
     width: w,
     height: h,
@@ -266,7 +325,13 @@ const MEASURE = async ({ toggleFlag, side }) => {
   };
 };
 
-async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
+async function runBackend(
+  browser,
+  renderer,
+  toggleFlag,
+  side = "sunlit",
+  heightM = null,
+) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
   });
@@ -290,11 +355,11 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
       { timeout: 90000 },
     );
     await page.waitForTimeout(5000);
-    const stats = await page.evaluate(MEASURE, { toggleFlag, side });
+    const stats = await page.evaluate(MEASURE, { toggleFlag, side, heightM });
     await page.screenshot({
       path: path.join(
         OUT_DIR,
-        `skybox-stars-${side}-${renderer}${toggleFlag === undefined ? "" : `-mod${toggleFlag ? "ON" : "OFF"}`}.png`,
+        `skybox-stars-${side}-${renderer}${toggleFlag === undefined ? "" : `-mod${toggleFlag ? "ON" : "OFF"}`}${Number.isFinite(heightM) ? `-h${Math.round(heightM)}` : ""}.png`,
       ),
     });
     return {
@@ -302,6 +367,7 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
       renderer,
       toggleFlag,
       side,
+      heightM,
       stats,
       consoleErrors: errs.slice(0, 4),
     };
@@ -311,6 +377,7 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
       renderer,
       toggleFlag,
       side,
+      heightM,
       error: String((e && e.message) || e).slice(0, 300),
       consoleErrors: errs.slice(0, 4),
     };
@@ -322,7 +389,7 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
 (async () => {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const browser = await chromium.launch({ channel: "msedge", headless: true });
-  let gl, gpu, gpuOff, gpuOn, glNight, gpuNight;
+  let gl, gpu, gpuOff, gpuOn, glNight, gpuNight, colOff, colOn, colGl;
   try {
     gl = await runBackend(browser, "webgl", undefined);
     gpu = await runBackend(browser, "webgpu", undefined); // as shipped
@@ -330,6 +397,34 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
     gpuOn = await runBackend(browser, "webgpu", true); // opt-in still works?
     glNight = await runBackend(browser, "webgl", undefined, "night");
     gpuNight = await runBackend(browser, "webgpu", undefined, "night");
+    // IN-COLUMN LANE (30 km). Identical solar geometry to the orbital legs —
+    // only the radius differs — so the OFF/ON pair below is the SAME A/B at the
+    // SAME 0.85 bar, run where the modulation can actually act.
+    colOff = await runBackend(
+      browser,
+      "webgpu",
+      false,
+      "sunlit",
+      IN_COLUMN_HEIGHT_M,
+    );
+    colOn = await runBackend(
+      browser,
+      "webgpu",
+      true,
+      "sunlit",
+      IN_COLUMN_HEIGHT_M,
+    );
+    // The WebGL reference at the same height: reachability must be shown on
+    // BOTH backends before an A/B across them means anything, and since C12-29
+    // S6 gave `SkyBoxFS.glsl` the same term, this leg is also what makes the
+    // in-column claim a PARITY claim rather than a WebGPU-only one.
+    colGl = await runBackend(
+      browser,
+      "webgl",
+      undefined,
+      "sunlit",
+      IN_COLUMN_HEIGHT_M,
+    );
   } finally {
     await browser.close().catch(() => {});
   }
@@ -340,7 +435,10 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
     c = S(gpuOff),
     d = S(gpuOn),
     e = S(glNight),
-    f = S(gpuNight);
+    f = S(gpuNight),
+    g = S(colOff),
+    h = S(colOn),
+    i = S(colGl);
 
   const ratio = (x, y) =>
     x != null && y != null && y !== 0 ? r3(x / y) : null;
@@ -353,6 +451,22 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
   const reachedFailingState =
     a && b && a.skyBrightness != null && b.skyBrightness != null
       ? a.skyBrightness > 0.5 && b.skyBrightness > 0.5
+      : null;
+
+  // IN-COLUMN REACHABILITY — the same predicate on the same driving variable,
+  // asserted on the legs that are actually scored (the OFF leg is the baseline
+  // of the A/B, the WebGL leg is the parity reference). This is what the camera
+  // move exists to satisfy; `reachedFailingState` above stays as the honest
+  // report that the ORBITAL legs cannot, by design, reach it.
+  const inColumnReached =
+    g && i && g.skyBrightness != null && i.skyBrightness != null
+      ? g.skyBrightness > 0.5 && i.skyBrightness > 0.5
+      : null;
+  // The panorama's third conjunct, read off the gated frames rather than
+  // assumed from `skyAtmosphere.show = true`.
+  const inColumnAtmosphereVisible =
+    g && i
+      ? g.skyAtmosphereVisible === true && i.skyAtmosphereVisible === true
       : null;
 
   const verdict = {
@@ -480,6 +594,38 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
           ? Math.abs(f.meanLum / e.meanLum - 1) > 0.1
           : null,
     },
+    // IN-COLUMN LANE (30 km, sky atmosphere ON) — the repair that lets this
+    // probe certify C11-176 instead of correctly declining to. Nothing here is
+    // a new bar: `capabilityPreserved` is the SAME `ON/OFF mean < 0.85` test the
+    // orbital lane already carried, applied to a pair that can move.
+    inColumn: {
+      requestedHeightM: IN_COLUMN_HEIGHT_M,
+      measuredHeightM_webgpuOff: g ? Math.round(g.cameraHeightM ?? -1) : null,
+      measuredHeightM_webgl: i ? Math.round(i.cameraHeightM ?? -1) : null,
+      skyBrightness_webgpuOff: g ? r3(g.skyBrightness) : null,
+      skyBrightness_webgpuOn: h ? r3(h.skyBrightness) : null,
+      skyBrightness_webgl: i ? r3(i.skyBrightness) : null,
+      skyAtmosphereVisible: inColumnAtmosphereVisible,
+      reached: inColumnReached,
+      webgpu_modOFF: g
+        ? { mean: r3(g.meanLum), stddev: r3(g.stddev), topMean: r3(g.topMean) }
+        : null,
+      webgpu_modON: h
+        ? { mean: r3(h.meanLum), stddev: r3(h.stddev), topMean: r3(h.topMean) }
+        : null,
+      webgl: i
+        ? { mean: r3(i.meanLum), stddev: r3(i.stddev), topMean: r3(i.topMean) }
+        : null,
+      modON_over_modOFF_mean: ratio(h && h.meanLum, g && g.meanLum),
+      // Parity of the OFF leg against WebGL at the same height. Reported, not
+      // gated: the orbital lane owns the parity claim and its bars are the ones
+      // that were calibrated.
+      offLeg_gpuOverGl_mean: ratio(g && g.meanLum, i && i.meanLum),
+      capabilityPreserved:
+        inColumnReached === true && g && h && h.meanLum != null && g.meanLum > 0
+          ? h.meanLum / g.meanLum < 0.85
+          : null,
+    },
     // THE GATE, in three tiers.
     //
     // PARITY is observable at this camera and certifies unconditionally. The
@@ -495,22 +641,49 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
       const contrastOk = Math.abs(b.stddev / a.stddev - 1) < 0.1;
       const densityOk = Math.abs(b.starPct / a.starPct - 1) < 0.1;
       if (!(meanOk && contrastOk && densityOk)) {
-        return `FAIL — mean:${meanOk} contrast:${contrastOk} density:${densityOk}`;
+        return `FAIL — failing predicate(s): ${[
+          meanOk ? null : "orbitalMeanParity",
+          contrastOk ? null : "orbitalContrastParity",
+          densityOk ? null : "orbitalDensityParity",
+        ]
+          .filter(Boolean)
+          .join(", ")}`;
       }
-      if (reachedFailingState !== true) {
+      // OPT-IN ARM. Scored on whichever pair can actually see the modulation,
+      // preferring the IN-COLUMN pair. Precedence is unchanged: a measurable
+      // criterion failure outranks blindness, blindness outranks a clean sheet.
+      // The bar is the same 0.85 in both branches — the camera move changed
+      // WHERE it is measured, not WHAT is required.
+      const armReached =
+        inColumnReached === true
+          ? "in-column"
+          : reachedFailingState === true
+            ? "orbital"
+            : null;
+      if (armReached === null) {
         return (
-          "STRUCTURAL — parity holds, but skyBrightness never exceeded 0.5 " +
-          `(webgl ${r3(a.skyBrightness)}, webgpu ${r3(b.skyBrightness)}), so the ` +
-          "star-modulation factor is exactly 1.0 on BOTH legs by construction " +
-          "and the OFF/ON A/B cannot discriminate. This is NOT a pass and NOT a " +
-          "defect; the C11-176 subject is owned by probe-celestial-gates.mjs's " +
-          "in-column-star-modulation lane."
+          "STRUCTURAL — parity holds, but skyBrightness never exceeded 0.5 on " +
+          "EITHER lane: orbital " +
+          `(webgl ${r3(a.skyBrightness)}, webgpu ${r3(b.skyBrightness)}) is 0 by ` +
+          "design above ATMOSPHERIC_COLUMN_FADE_END, and the 30 km in-column " +
+          `lane read (webgl ${i ? r3(i.skyBrightness) : "n/a"}, webgpu ` +
+          `${g ? r3(g.skyBrightness) : "n/a"}) with skyAtmosphereVisible ` +
+          `${inColumnAtmosphereVisible}. The star-modulation factor is exactly ` +
+          "1.0 on both legs by construction, so the OFF/ON A/B cannot " +
+          "discriminate. This is NOT a pass and NOT a defect."
         );
       }
-      const optInOk = c.meanLum > 0 ? d.meanLum / c.meanLum < 0.85 : false;
+      const armOff = armReached === "in-column" ? g : c;
+      const armOn = armReached === "in-column" ? h : d;
+      const optInOk =
+        armOff && armOn && armOff.meanLum > 0
+          ? armOn.meanLum / armOff.meanLum < 0.85
+          : false;
       return optInOk
-        ? "PASS — default at WebGL parity AND opt-in capability preserved"
-        : `FAIL — mean:${meanOk} contrast:${contrastOk} density:${densityOk} optIn:${optInOk}`;
+        ? `PASS — default at WebGL parity AND opt-in capability preserved (${armReached} arm)`
+        : `FAIL — failing predicate(s): optInStillDims (${armReached} arm, ` +
+            `ON/OFF mean ${ratio(armOn && armOn.meanLum, armOff && armOff.meanLum)} ` +
+            "must be < 0.85)";
     })(),
   };
 
@@ -518,13 +691,34 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
   fs.writeFileSync(
     outPath,
     JSON.stringify(
-      { verdict, gl, gpu, gpuOff, gpuOn, glNight, gpuNight },
+      {
+        verdict,
+        gl,
+        gpu,
+        gpuOff,
+        gpuOn,
+        glNight,
+        gpuNight,
+        colOff,
+        colOn,
+        colGl,
+      },
       null,
       2,
     ),
   );
   console.log(JSON.stringify(verdict, null, 2));
-  for (const l of [gl, gpu, gpuOff, gpuOn, glNight, gpuNight])
+  for (const l of [
+    gl,
+    gpu,
+    gpuOff,
+    gpuOn,
+    glNight,
+    gpuNight,
+    colOff,
+    colOn,
+    colGl,
+  ])
     if (l && !l.ok)
       console.log(`${l.renderer}(mod=${l.toggleFlag}) FAILED: ${l.error}`);
   console.log(`\n[full report: ${outPath}]`);
@@ -536,9 +730,17 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
   // required capture is missing), and — since 2026-08-07 — 3 when a lane RAN
   // but could not see its subject. Conflating those last two is what let the
   // unreachable opt-in arm report as a product FAIL for months.
-  const anyLaneFailed = [gl, gpu, gpuOff, gpuOn, glNight, gpuNight].some(
-    (l) => l && !l.ok,
-  );
+  const anyLaneFailed = [
+    gl,
+    gpu,
+    gpuOff,
+    gpuOn,
+    glNight,
+    gpuNight,
+    colOff,
+    colOn,
+    colGl,
+  ].some((l) => l && !l.ok);
   const gateStr =
     typeof verdict.GATE === "string" ? verdict.GATE : "INCOMPLETE";
   const harnessError = anyLaneFailed || gateStr.startsWith("INCOMPLETE");

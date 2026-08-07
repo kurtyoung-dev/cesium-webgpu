@@ -55,8 +55,21 @@ import fs from "fs";
 import path from "path";
 import { chromium } from "playwright";
 
+import { collectHeadroomStructural } from "./lib/weather-probe-pinning.mjs";
+
 const BASE = "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
+
+// Headroom band for the sky annulus every lane judgement differences against.
+// Floor 25/255 mirrors the existing `skyPresent >= 25` check so the two cannot
+// drift apart; ceiling 215/255 is 255 minus the largest scored bar (+40 in
+// `nightMoonDominates`), i.e. the highest sky the lane's own arithmetic can
+// still express. Neither number is a new gate threshold — both are derived from
+// bars that were already in the file.
+const MOON_RING_HEADROOM_BAND = Object.freeze({
+  min: 25 / 255,
+  max: 215 / 255,
+});
 
 const HARD_LIMIT_MS = 420000;
 const watchdog = setTimeout(() => {
@@ -863,6 +876,68 @@ async function runBackend(browser, renderer, lanes) {
       (ringMeanRatio === null || (ringMeanRatio > 0.6 && ringMeanRatio < 1.6));
     // Non-vacuous reference: control sanity on WebGL is the floor.
     if (!glChecks.controlSane) structural = true;
+    // SATURATED-DIFFERENCE PRECONDITION (NEW-PROBE-SATURATED-DIFFERENCE-METRIC,
+    // fleet sweep 2026-08-07). Every lane judgement here differences the disc
+    // against `atmo.ringMean` — `crescentVisible` wants `discMax >= ringMean +
+    // 25`, `nightMoonDominates` wants `+40`, `discAtOrAboveSky` wants
+    // `>= ringMean - 5`. `discMax` is hard-capped at 255, so as the sky annulus
+    // approaches the 8-bit ceiling those differences are forced toward zero no
+    // matter how bright the Moon renders, and the lane reports a confident
+    // defect it could not have avoided. The probe already asserted the FLOOR
+    // (`skyPresent`); only the ceiling was missing.
+    //
+    // 215/255 = 255 minus the LARGEST scored bar (+40), so every gate in the
+    // lane stays expressible inside the band. Read from `atmo` — the leg that
+    // is actually judged — not from `control`, per the class rule. Routing to
+    // `structural` cannot turn a PASS into a FAIL: no threshold moved.
+    const ringHeadroom = collectHeadroomStructural({
+      label: `${name}/atmo sky-annulus`,
+      samples: [
+        { key: "webgl", value: a.atmo.ringMean / 255 },
+        { key: "webgpu", value: b.atmo.ringMean / 255 },
+      ],
+      band: MOON_RING_HEADROOM_BAND,
+    });
+    if (ringHeadroom.length > 0) {
+      v.headroomStructural = ringHeadroom;
+      structural = true;
+    }
+    // LATENT VACUITY, closed 2026-08-07 (NEW-PROBE-VACUOUS-REACHABILITY-
+    // ASSERTION item 5). `frameState.moonAtmosphereExtinction` and
+    // `moonAtmosphereInscatter` ARE the scalars every judgement in this lane is
+    // a function of. They were collected (`diag`, :599-628) and shipped to the
+    // manifest, and then asserted nowhere: `controlSane` is a correctly-named
+    // reference floor measured in the arm where the subject is switched OFF,
+    // not a reachability assertion for the arm where it is ON.
+    //
+    // `Moon.js:382-385` pins extinction to (1,1,1) and inscatter to (0,0,0)
+    // whenever the atmosphere is hidden — which is BY DESIGN the control arm's
+    // state. If the ATMOSPHERE arm reads those same pinned values, the lane is
+    // an A/A and `extinctionDims` is measuring noise. Zero margin, no invented
+    // threshold: the requirement is only that at least one scalar left its
+    // control-arm pin, which is the weakest statement that still excludes an
+    // inert mechanism.
+    const subjectLive = (leg) => {
+      const e = leg?.diag?.extinction;
+      const i2 = leg?.diag?.inscatter;
+      if (!e && !i2) {
+        return false;
+      }
+      const dimmed = !!e && (e.x < 1 || e.y < 1 || e.z < 1);
+      const added = !!i2 && (i2.x > 0 || i2.y > 0 || i2.z > 0);
+      return dimmed || added;
+    };
+    if (!subjectLive(a) || !subjectLive(b)) {
+      v.subjectStructural = {
+        webgl: subjectLive(a)
+          ? null
+          : "extinction/inscatter still at the control-arm pin",
+        webgpu: subjectLive(b)
+          ? null
+          : "extinction/inscatter still at the control-arm pin",
+      };
+      structural = true;
+    }
     Object.assign(v, {
       phaseFraction: r3(a.phaseFraction),
       elevations: { moon: a.elMoonActual, sun: a.elSunActual },

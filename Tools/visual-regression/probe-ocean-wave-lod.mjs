@@ -383,6 +383,20 @@ function evaluateMid(gpu) {
   const structural = anyLaneFailed || incomplete || !identityOk;
   const gatePass =
     low.verdict === "PASS" && mid.verdict === "PASS" && lowGlSane && midGlSane;
+  // The gate list COMPOSES the failure line. `FAIL — low:FAIL mid:PASS` names
+  // the failing LANE, which is one level too coarse: each lane folds three to
+  // five criteria and the reader still has to open the JSON to find out which.
+  // Truth value unchanged — same lanes, same sanity booleans.
+  const failedPredicates = [
+    ...Object.entries(low.checks ?? {})
+      .filter(([, ok]) => !ok)
+      .map(([k]) => `low.${k}`),
+    ...Object.entries(mid.checks ?? {})
+      .filter(([, ok]) => !ok)
+      .map(([k]) => `mid.${k}`),
+    ...(lowGlSane ? [] : ["lowGlSane"]),
+    ...(midGlSane ? [] : ["midGlSane"]),
+  ];
 
   const verdict = {
     backendIdentity: identity,
@@ -405,7 +419,18 @@ function evaluateMid(gpu) {
         ? "INCOMPLETE — a lane failed to run or a capture is missing"
         : gatePass
           ? "PASS — far calms, near shows animating waves (not noise), mid renders lit ocean"
-          : `FAIL — low:${low.verdict} mid:${mid.verdict} lowGlSane:${lowGlSane} midGlSane:${midGlSane}`,
+          : `FAIL — failing predicate(s): ${failedPredicates.join(", ")} (low:${low.verdict} mid:${mid.verdict})`,
+    // CALIBRATION READ FOR A FILED FOLLOW-UP, NOT A CRITERION. The MID lane has
+    // no temporal-liveness arm — `animOk` exists only in LOW — so MID's whole
+    // contribution to `gatePass` is "the canvas is lit and not noise". Adding
+    // `animOk` to MID would move a bar, so it is FILED rather than done here;
+    // this number is recorded on every run so the follow-up batch can see
+    // whether the arm would pass before it adds it. Do NOT read a value here as
+    // evidence that MID shows waves — nothing scores it.
+    midNearTemporal_UNSCORED:
+      midGpu && midGpu.ok ? (midGpu.stats.nearBand.temporal ?? null) : null,
+    midNearTemporal_webgl_UNSCORED:
+      midGl && midGl.ok ? (midGl.stats.nearBand.temporal ?? null) : null,
   };
 
   const outPath = path.join(OUT_DIR, "ocean-wave-lod.json");

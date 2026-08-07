@@ -562,7 +562,12 @@ async function run() {
     noGateErrors: res.gate.errors.length === 0 && !res.gate.deviceLost,
   };
   console.log(`\n  CHECKS: ${JSON.stringify(checks, null, 0)}`);
-  const pass = Object.values(checks).every(Boolean);
-  console.log(`\n[probe-gpu-sort-consume] ${pass ? "PASS" : "FAIL"}`);
+  // Fold/filter pair — see the sibling note in `probe-gpu-sort-auto.mjs`. Same
+  // truth value, a failure line that names its own cause.
+  const failedPredicates = Object.keys(checks).filter((k) => !checks[k]);
+  const pass = failedPredicates.length === 0;
+  console.log(
+    `\n[probe-gpu-sort-consume] ${pass ? "PASS" : `FAIL — failing predicate(s): ${failedPredicates.join(", ")}`}`,
+  );
   process.exit(pass ? 0 : 1);
 })();

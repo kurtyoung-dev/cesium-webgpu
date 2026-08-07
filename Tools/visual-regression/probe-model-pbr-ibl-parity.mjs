@@ -394,20 +394,33 @@ console.log(JSON.stringify(report, null, 2));
 // catch any regression that reintroduces the flat-ambient divergence.
 const TOL_PCT = 5.0;
 const within = (p) => p !== null && Math.abs(p) <= TOL_PCT;
-const pass =
-  wgl.ready &&
-  wgpu.ready &&
-  wgpu.gateErrors.length === 0 &&
-  !wgpu.deviceLost &&
-  deltas !== null &&
-  within(deltas.meanLumPct) &&
-  within(deltas.meanRPct) &&
-  within(deltas.meanGPct) &&
-  within(deltas.meanBPct);
+// The FAIL literal used to hard-assert a specific cause — "at-rest PBR diverges
+// beyond 5% (D1 atmosphere-derived env-map sky regression)" — which is FALSE for
+// five of this conjunction's nine legs: a WebGL model that never loaded, a
+// WebGPU model that never loaded, a device error, a lost device and a null
+// delta set all printed that sentence. A stated wrong cause is worse than an
+// unstated one; a reader chasing a D1 regression that is not there is exactly
+// the mis-attribution `INSTRUMENT DEFECT CLASS: a verdict that does not name its
+// own failing predicate` was filed for. Truth value below is byte-identical.
+const GATE_PREDICATES = {
+  webglModelReady: wgl.ready,
+  webgpuModelReady: wgpu.ready,
+  webgpuErrorFree: wgpu.gateErrors.length === 0,
+  webgpuDeviceAlive: !wgpu.deviceLost,
+  deltasMeasured: deltas !== null,
+  meanLumWithinTol: deltas !== null && within(deltas.meanLumPct),
+  meanRWithinTol: deltas !== null && within(deltas.meanRPct),
+  meanGWithinTol: deltas !== null && within(deltas.meanGPct),
+  meanBWithinTol: deltas !== null && within(deltas.meanBPct),
+};
+const failedPredicates = Object.keys(GATE_PREDICATES).filter(
+  (k) => !GATE_PREDICATES[k],
+);
+const pass = failedPredicates.length === 0;
 
 console.log(
   pass
     ? "GATE PASS — WebGPU at-rest PBR matches WebGL within 5% (mean luminance + per-channel tint); 0 device errors"
-    : "GATE FAIL — at-rest PBR diverges beyond 5% (D1 atmosphere-derived env-map sky regression; see webgpuVsWebgl_pct deltas)",
+    : `GATE FAIL — failing predicate(s): ${failedPredicates.join(", ")}. A tint/luminance predicate means at-rest PBR diverges beyond ${TOL_PCT}% (see webgpuVsWebgl_pct deltas — the D1 atmosphere-derived env-map sky is the historical cause); a readiness, error or device predicate means the comparison never happened.`,
 );
 process.exit(pass ? 0 : 1);

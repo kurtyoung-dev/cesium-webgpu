@@ -202,10 +202,23 @@ const rbDelta = (a, b) => Math.abs(a.r - b.r) + Math.abs(a.b - b.b);
     Math.abs(skyRespWgl - skyRespWgpu) < 20;
   const passC = atmoRespWgl < 8 && atmoRespWgpu < 8;
   const passD = totalErrors === 0;
-  const pass = passA && passB && passC && passD;
+  // Fold/filter over NAMED predicates. The old line printed `[A:… B:… C:… D:…]`,
+  // which tells a reader that something failed but not what "C" was — the
+  // letters are positional, and a reader has to walk back up the file to map
+  // them. Same truth value, cause named at the point of failure.
+  const GATE_PREDICATES = {
+    baseFrameParity: passA,
+    skyOverrideReachesShaderOnBothBackends: passB,
+    sceneAtmosphereOverrideIgnoredBySky: passC,
+    errorFree: passD,
+  };
+  const failedPredicates = Object.keys(GATE_PREDICATES).filter(
+    (k) => !GATE_PREDICATES[k],
+  );
+  const pass = failedPredicates.length === 0;
   console.log("");
   console.log(
-    `  RESULT: ${pass ? "PASS" : "FAIL"}  [A:${passA} B:${passB} C:${passC} D:${passD}]`,
+    `  RESULT: ${pass ? "PASS" : `FAIL — failing predicate(s): ${failedPredicates.join(", ")}`}  [A:${passA} B:${passB} C:${passC} D:${passD}]`,
   );
   process.exit(pass ? 0 : 1);
 })();

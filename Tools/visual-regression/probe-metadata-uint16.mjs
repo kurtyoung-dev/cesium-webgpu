@@ -218,35 +218,47 @@ async function runBackend(renderer) {
       // DISPLAY proof (WebGPU only): flip the metadata debug paint and sample
       // canvas pixels at the stripe positions via a 2D-canvas copy.
       let display;
+      let displayOff;
       if (scene.context?.isWebGPU) {
+        // Sample the SAME stripe positions from a same-task canvas copy.
+        const sampleStripes = () => {
+          const src = scene.canvas;
+          const c2d = document.createElement("canvas");
+          c2d.width = src.width;
+          c2d.height = src.height;
+          const ctx = c2d.getContext("2d");
+          ctx.drawImage(src, 0, 0);
+          const dpr = src.width / src.clientWidth;
+          return positions.map((p) => {
+            const d = ctx.getImageData(
+              Math.round(p.x * dpr),
+              Math.round(p.y * dpr),
+              1,
+              1,
+            ).data;
+            return {
+              stripe: p.stripe,
+              k: p.k,
+              x: p.x,
+              y: p.y,
+              r: d[0],
+              g: d[1],
+              b: d[2],
+            };
+          });
+        };
         globalThis.CesiumWebGPUMetadataDebug = true;
         for (let i = 0; i < 60; i++) await render();
-        const src = scene.canvas;
-        const c2d = document.createElement("canvas");
-        c2d.width = src.width;
-        c2d.height = src.height;
-        const ctx = c2d.getContext("2d");
-        ctx.drawImage(src, 0, 0);
-        const dpr = src.width / src.clientWidth;
-        display = positions.map((p) => {
-          const d = ctx.getImageData(
-            Math.round(p.x * dpr),
-            Math.round(p.y * dpr),
-            1,
-            1,
-          ).data;
-          return {
-            stripe: p.stripe,
-            k: p.k,
-            x: p.x,
-            y: p.y,
-            r: d[0],
-            g: d[1],
-            b: d[2],
-          };
-        });
+        display = sampleStripes();
         globalThis.CesiumWebGPUMetadataDebug = false;
         for (let i = 0; i < 20; i++) await render();
+        // LATENT VACUITY, closed 2026-08-07 (NEW-PROBE-VACUOUS-REACHABILITY-
+        // ASSERTION item 5). The debug paint was flipped ON and back OFF and
+        // NOTHING was ever asserted on the OFF frame — unlike both sibling
+        // metadata probes, which each carry an explicit off-gate cell. Without
+        // it, a display path that paints those stripes for a reason unrelated
+        // to the metadata debug flag reads as proof the flag works.
+        displayOff = sampleStripes();
       }
 
       return {
@@ -255,6 +267,7 @@ async function runBackend(renderer) {
         positions,
         perProperty,
         display,
+        displayOff,
         deviceErrors: window.__probeDeviceErrors ?? [],
       };
     },
@@ -320,6 +333,30 @@ async function runBackend(renderer) {
     }
     for (const e of [...(b.consoleErrors ?? []), ...(b.deviceErrors ?? [])]) {
       fails.push(`${b.renderer} error: ${e}`);
+    }
+  }
+
+  // OFF-GATE (added 2026-08-07). Turning the metadata debug paint off must
+  // CHANGE the sampled stripes — a mechanism-toggle control, matching the
+  // explicit off-gate cells `probe-metadata-mat` (scene E) and
+  // `probe-metadata-table-texture` (cell D) already carry. Zero margin: the
+  // requirement is only that at least one sampled point moved, which is the
+  // weakest statement that still excludes a paint the flag does not drive.
+  if (webgpu.isWebGPU && webgpu.display && webgpu.displayOff) {
+    const moved = webgpu.display.filter((on, k) => {
+      const off = webgpu.displayOff[k];
+      return off && (on.r !== off.r || on.g !== off.g || on.b !== off.b);
+    });
+    if (moved.length === 0) {
+      fails.push(
+        `webgpu off-gate: switching CesiumWebGPUMetadataDebug off changed NONE of ` +
+          `the ${webgpu.display.length} sampled stripe pixels, so the debug paint ` +
+          `the display proof reads is not driven by the flag`,
+      );
+    } else {
+      notes.push(
+        `off-gate: ${moved.length}/${webgpu.display.length} sampled stripes changed when the debug paint was switched off`,
+      );
     }
   }
 

@@ -240,7 +240,21 @@ if (gpu.rendererType !== "webgpu") {
   );
 }
 
-const pass = gateA && gateB && gateC && gateD;
+// The gate list COMPOSES the verdict rather than sitting beside it: `pass` is
+// its fold and `failedPredicates` its filter, so the FAIL line names its own
+// cause. Truth value is identical to the previous `gateA && gateB && gateC &&
+// gateD`. Names are the semantic labels the file already prints at the
+// mid-run summary, not the opaque letters.
+const GATE_PREDICATES = {
+  snapFunctional: gateA,
+  noSnapMiss: gateB,
+  snapEnabledLatches: gateC,
+  errorFree: gateD,
+};
+const failedPredicates = Object.keys(GATE_PREDICATES).filter(
+  (k) => !GATE_PREDICATES[k],
+);
+const pass = failedPredicates.length === 0;
 clearTimeout(watchdog);
 if (structural.length > 0) {
   console.log("\nSTRUCTURAL");
@@ -255,5 +269,7 @@ if (structural.length > 0) {
   );
   process.exit(3);
 }
-console.log(`\nGATE ${pass ? "PASS" : "FAIL"}`);
+console.log(
+  `\nGATE ${pass ? "PASS" : `FAIL — failing predicate(s): ${failedPredicates.join(", ")}`}`,
+);
 process.exit(pass ? 0 : 1);

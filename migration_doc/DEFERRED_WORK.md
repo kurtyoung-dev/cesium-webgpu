@@ -437,6 +437,379 @@ in one day.
   so the next reader does not attempt a fifth modelling round. **Effort: N/A —
   this is a closed question, kept as evidence.**
 
+## PROBE-HYGIENE FLEET SWEEPS — batch CO-20, 2026-08-07 (Lane G)
+
+Five filed fleet patterns, each swept over **all 620 `Tools/visual-regression/probe-*.mjs`**
+rather than over the subset that happened to be noticed. Every sweep's FULL
+inventory is recorded here — a sweep that only fixes what it stumbled on is the
+failure mode this batch exists to close, and it is how the filename-glob miss
+(`probe-cloud-shadows-polar`) happened in the first place.
+
+**Standing constraint honoured:** instruments changed, bars did NOT. No
+threshold was moved, widened or lowered anywhere in this batch. Where a
+sweep-fix would have changed a probe's VERDICT it is FILED per-probe below
+instead of applied. Nothing here mass-adopts the 0/1/2/3 contract —
+`PROBE-FLEET-EXIT3-CONTRACT-ADOPTION` is a maintainer ruling, and probes whose
+only available repair required inventing a structural tier are recorded rather
+than patched.
+
+**NOT VERIFIED IN A BROWSER.** No Edge run happened in this batch. Every claim
+below is source-traced or `node --test`-proved; the probe edits are source-level
+and their first executions are owed (named in §6).
+
+### §1 — VERDICT-LEGIBILITY SWEEP (`INSTRUMENT DEFECT CLASS: a verdict that does not name its own failing predicate`)
+
+**Selector:** every probe folding ≥3 named booleans (or an `.every(Boolean)`
+over a checks object) into one `PASS`, that prints a verdict, and that has no
+`failedPredicates`/`failures.push`-shaped naming on the failure path. **41 hits
+of 620.**
+
+**Classification (all 41 read in full):** 23 MECHANICAL-FIX-FEASIBLE (an
+enumerated named-boolean structure already exists, so a filter over it is
+verdict-preserving), 1 PARTIAL (`probe-eclipse-sky-totality` — its `laneOk()`
+fold is anonymous; parity keys are named), 17 NOT-MECHANICAL (the pass
+expression is inline/anonymous; effort S–M each). **DIAGNOSTIC-ONLY: zero** —
+every one of the 41 composes a real verdict, so none is exempt. **ALREADY-NAMES:
+zero fully**; `probe-scene-snap` and `probe-metadata-table-texture` were the
+closest and both fell short (the first names reasons only on its STRUCTURAL
+lane, the second prints `[FAIL] <name>` inline but accumulates nothing).
+
+**Fixed here (7, all verdict-preserving — same truth value, named cause):**
+
+| probe | before | after |
+|---|---|---|
+| `probe-gpu-sort-auto` | `[probe-gpu-sort-auto] FAIL` beside a 9-key JSON dump | `FAIL — failing predicate(s): …` filtered from the same `checks` object |
+| `probe-gpu-sort-consume` | same shape, 9 keys | same repair |
+| `probe-metadata-table-texture` | `overall: FAIL`; `check(name, ok)` had the name and discarded it | accumulates into `failedPredicates`; the out-of-`check()` error leg pushes its own row so the list can never print EMPTY |
+| `probe-ocean-wave-lod` | `FAIL — low:FAIL mid:PASS …` (names the LANE, one level too coarse) | folds both lanes' `checks` objects into `low.*` / `mid.*` predicate names |
+| `probe-scene-snap` | `GATE FAIL` after four booleans printed mid-run | `GATE_PREDICATES` map with the file's own semantic labels (`snapFunctional`, `noSnapMiss`, `snapEnabledLatches`, `errorFree`) |
+| `probe-sky-atmosphere-coeffs` | `RESULT: FAIL [A:… B:… C:… D:…]` — positional letters | named predicates, letters retained alongside |
+| `probe-model-pbr-ibl-parity` | **actively MIS-ATTRIBUTING** | see below |
+
+**`probe-model-pbr-ibl-parity` is the worst instance found and was not in the
+mechanical set — it was fixed anyway because it states a WRONG cause rather
+than no cause.** Its FAIL literal read *"at-rest PBR diverges beyond 5% (D1
+atmosphere-derived env-map sky regression)"*, which is false for **five of its
+nine legs**: a WebGL model that never loaded, a WebGPU model that never loaded,
+a device error, a lost device, and a null delta set all printed that sentence.
+A reader would have chased a D1 regression that was not there. The conjunction
+is now a named `GATE_PREDICATES` map with byte-identical truth value, and the
+failure line distinguishes "the comparison diverged" from "the comparison never
+happened".
+
+**Filed, not fixed — the remaining 17 mechanical-feasible probes**
+(`probe-atmo-resolver-consistency`, `probe-c10-10-shadow-single-sweep`,
+`probe-colorgrading-wired`, `probe-csm-cast-dispatch`, `probe-ellipsoid-rte`,
+`probe-env-skybox-stars`, `probe-gltf-points-mode`, `probe-model-ktx2-ibl`,
+`probe-model-scene2d-idl`, `probe-model-scene2d-stage-guard`,
+`probe-model-splitter`, `probe-point-sprite-shape`,
+`probe-pointcloud-edl-parity`, `probe-timedynamic-pointcloud-load`,
+`probe-voxel-cylinder`, `probe-voxel-ellipsoid`,
+`probe-voxel-user-customshader`) **plus the 17 non-mechanical and the 1
+partial.** Each is independent and verdict-preserving; **effort XS–S each**,
+M for the batch.
+
+**NEW FINDING the sweep surfaced (`NEW-PROBE-VERDICT-PRINTS-FAIL-AND-EXITS-ZERO`).**
+Three probes print `GATE FAIL` and then **exit 0** — no `process.exit` and no
+`process.exitCode` anywhere in the file: `probe-point-sprite-shape.mjs`,
+`probe-pointcloud-edl-parity.mjs`, `probe-timedynamic-pointcloud-load.mjs`.
+A silently-passing FAIL is strictly worse than an unattributed one: an
+orchestrator or CI loop reading exit codes records these as green. **NOT fixed
+here — adding a non-zero exit CHANGES the verdict a runner observes**, which is
+outside this batch's mandate. **Status: OPEN / MEDIUM. Effort: XS each.**
+
+### §2 — SATURATED-DIFFERENCE SWEEP (`NEW-PROBE-SATURATED-DIFFERENCE-METRIC`)
+
+**Selector:** every comparison line differencing, ratio-ing or summing deltas of
+a bounded-sounding quantity (`*Pct`, `*Frac`, `*Fraction`, `coverage`, `ratio`,
+`alpha`, `opacity`, luminance means). **66 hits of 620, all classified.**
+
+| class | n | meaning |
+|---|---|---|
+| SAFE-UNBOUNDED | 47 | the metric has no hard bound in the direction that matters — a raw count, a variance, a millisecond timing, or a RATIO whose numerator can exceed its denominator with the denominator guarded non-zero |
+| SAFE-HEADROOM-PROVEN | 15 | bounded, and the baseline leg is already asserted off the bound (quoted per row in the working notes) |
+| SUSCEPTIBLE-VERDICT-PRESERVING | 3 | bounded, no precondition, and one can be added that only routes to STRUCTURAL |
+| NEEDS-OWN-BATCH | 1 | bounded and pinned BY AUTHORED DESIGN — a precondition would make every run structural |
+
+**Fixed here (1 of the 3).** `probe-moon-atmosphere-appearance.mjs` — every lane
+judgement differences the disc against `atmo.ringMean` (`crescentVisible` wants
+`discMax >= ringMean + 25`, `nightMoonDominates` `+40`, `discAtOrAboveSky`
+`>= ringMean - 5`). `discMax` is hard-capped at 255, so as the sky annulus
+approaches the ceiling those differences are forced toward zero however bright
+the Moon renders. The probe already asserted the FLOOR (`skyPresent >= 25`);
+only the ceiling was missing. Now routed through the class's own enforceable
+home — `collectHeadroomStructural` from `lib/weather-probe-pinning.mjs`, its
+**first use outside the weather fleet** — with band `[25/255, 215/255]`. Both
+numbers are DERIVED FROM BARS ALREADY IN THE FILE (25 mirrors `skyPresent`; 215
+is 255 minus the largest scored bar, `+40`), read from the leg that is actually
+judged, and can only set `structural`.
+
+**Filed, not fixed (2), both because the repair needs a structural tier the
+probe does not have — i.e. exit-3 adoption, which is the maintainer's ruling:**
+
+- **`probe-exag-water-streaks.mjs`** — `meanBOk = |glB − gpuB| <= 15` over pixels
+  PRE-SELECTED for being bright blue (`B>90 && B−R>25 && B−G>10`), so the
+  sampled population sits in ~90..255 and the ceiling is live. The probe's own
+  subject is *saturated blue water fragments*: a WebGL reference at 250 against
+  a badly-clipping WebGPU at 255 scores |Δ| = 5 and PASSES. Fix = assert `glB`
+  in `[90, 240]` **plus** a structural channel this file lacks. **Effort: S.**
+- **`probe-moon-sunlit.mjs`** — `limbRatio = edgeMean/centerMean < 0.6` on both
+  backends. The numerator can never exceed the denominator, and `centerMean` is
+  a mean over the inner 0.3 r of a near-FULL disc, which clips at 255. A clipped
+  centre DEPRESSES `limbRatio` into the PASS band, certifying "limb darkening"
+  from clipping — against the probe's own null hypothesis that a matte disc
+  reads ~1.0. `centerMean` is already returned from the measurement, so the
+  assertion is one line; the structural channel is not. **Effort: S.**
+
+**NEEDS-OWN-BATCH (1).** `probe-weather-channels.mjs`'s `westFrac < eastFrac −
+margin` over a hard `max(r,g,b) > 120` step metric — the file DOCUMENTS its own
+pinning ("a legitimately dense east can pin at 1.000 and lose all headroom").
+Already filed as `C13-GATE-B-CHANNELS-METRIC-SATURATION`, held for a maintainer
+ruling because the remedy is a SCENE change. Confirmed here, not re-filed.
+
+**Closest miss, recorded so it is re-checked.** `probe-env-pass-matrix` DOES
+difference 8-bit luminance (`discMean >= ringMean + 20`) with the ceiling in the
+scoring direction, and is SAFE only because `isMeaningful()` excludes the sun
+predicate from every atmosphere-ON cell, in prose naming the mechanism. That is
+a construction-level proof, not a measured one: **if the cell table ever gains an
+atmosphere-ON sun cell this becomes SUSCEPTIBLE the same day.**
+
+### §3 — WATCHDOG-ANCHOR SPEC (`PROBE-WATCHDOG-SOURCE-ANCHOR-SPEC`) — ✅ SHIPPED
+
+The filing's residual was that the 2026-08-07 machine-safety sweep was MANUAL,
+so "the next batch of probes can reintroduce it". Closed by
+**`Tools/visual-regression/probe-fleet-contract.spec.mjs`** (pure Node, 32 tests)
+over **`lib/probe-fleet-contract.mjs`** (the analyzer) and
+**`lib/probe-fleet-contract-allowlist.mjs`** (the pinned census).
+
+**Fleet census at `557445c2a0`:** 620 probe files; **615 launch a browser**;
+**55 already compliant**; **560 allowlisted**; 5 launch nothing and are out of
+scope (`probe-atmosphere-unification`, `probe-edge-degenerate`,
+`probe-edge-linestrings`, `probe-gpu-culler-consumers`, `probe-png-bytes`).
+
+| violation | n |
+|---|---|
+| no watchdog + `browser.close` outside `finally` | 531 |
+| no watchdog | 14 |
+| `browser.close` outside `finally` | 9 |
+| no watchdog + never closes the browser | 5 |
+| never closes the browser | 1 |
+| structural routed to exit 2 | **0** |
+
+Allowlist reasons are one line each and name WHICH construct is missing plus the
+probe's `git log --diff-filter=A` add-date, because the two are not equally
+urgent (Playwright reaps the browser on process exit, so a missing `finally`
+matters only on the throw path; a missing watchdog is the only reason a hung
+probe never ends). Add-month histogram of the 560: 2026-04 × 5, 2026-05 × 176,
+2026-06 × 219, 2026-07 × 159, **2026-08 × 1**.
+
+**That one is the recurrence the filing predicted.** `probe-collection-pick.mjs`
+was added **2026-08-07** — the same day the rule was filed — and closes its
+browser outside any `finally`. Its allowlist reason says `POST-DATES the rule —
+repair owed` so it cannot hide among the inherited 559. **Effort: XS.**
+
+**What makes the spec enforcement rather than decoration:**
+
+1. **C2** — every non-allowlisted probe must satisfy the contract, so a NEW
+   probe missing a watchdog FAILS. The failure message says to add the
+   constructs and explicitly forbids appending to the allowlist.
+2. **C3 — the RATCHET.** Allowlist entries whose file is gone, and entries whose
+   probe now COMPLIES, both fail the spec. The list can only shrink; a repair
+   must delete its row in the same change.
+3. **C5** — every reason must name the violations the probe actually still has,
+   so the list cannot rot into a stale description of a fixed problem.
+4. **C6** — no probe declaring the contract may route STRUCTURAL to exit 2. Not
+   allowlisted (this is a verdict defect, not inherited machine-safety debt) and
+   the fleet is currently clean of it.
+5. **C7** — the ten probes that already implement the exit-3 tier must keep it.
+   Deliberately an anti-REGRESSION anchor, **not** an adoption requirement: the
+   `PROBE-FLEET-EXIT3-CONTRACT-ADOPTION` ruling is the maintainer's.
+6. **C8/C9 — MUTATION controls.** Take a probe that is compliant TODAY, strip
+   its watchdog (and separately its `finally`) from a copy of its source, and
+   require the violation to reappear. Without these the fleet assertions would
+   pass trivially if the analyzer stopped detecting.
+
+**Detector defects found and fixed while building it, each of which would have
+made the spec a false green** (all now pinned by tests A1–A9c, B1–B10):
+(a) the `probe-*.mjs` glob matched the spec ITSELF, which reported itself as a
+violator; (b) `EXIT_CODE.STRUCTURAL` — a literal-3 scan reports
+`probe-celestial-gates.mjs`, the probe that DEFINES the contract, as not
+implementing it, and `probe-cold-optics-hq` (`return 3` inside
+`if (structural…)`) and `probe-skybox-star-modulation` (`laneBlind ? 3 :`) the
+same; (c) `probe-c11-205-lifecycle-v2` computes its exit code in
+`lib/c11-205-evidence.mjs`, so the anchor follows ONE hop into a local `lib/`
+import — for the structural tier only, never for watchdog or `finally`, which
+must live in the process that owns the browser; (d) a 600-character lookback
+window read the pinned weather probes' `if (structural.length) { … exitCode = 3 }`
+as controlling an unrelated `process.exit(2)` on the watchdog path, so guard
+resolution is now containment-based (`innermostGuard`); (e) comment and string
+text mentioning "watchdog"/"STRUCTURAL" was being read as code, so the analyzer
+blanks comments and string literals length-preservingly first; (f) the C9
+mutation replaced only the FIRST `finally` in a donor that has three, leaving
+the close inside a surviving one — it now replaces all.
+
+### §4 — VACUITY ITEMS 4 AND 5 (`NEW-PROBE-VACUOUS-REACHABILITY-ASSERTION`)
+
+**Item 4 — the camera move — ✅ DONE.** `probe-skybox-star-modulation.mjs` now
+carries an IN-COLUMN lane at `IN_COLUMN_HEIGHT_M = 30000` with
+`skyAtmosphere.show = true` (the second `CubeMapPanorama.js:511-514` conjunct,
+which the orbital lanes never satisfied), copying
+`probe-celestial-gates.mjs`'s shelf pattern deliberately so the two instruments
+certify the SAME geometry. Three new legs (`webgpu` OFF, `webgpu` ON, `webgl`
+reference). Because the eye sits on the sun ray, `sin(altitude)` is exactly 1 at
+any radius — **the two lanes differ in exactly one variable, the radius** — so
+the pair reads as an A/B of reachability itself. The gate now scores whichever
+arm demonstrates reachability, preferring in-column, and still exits 3 when
+NEITHER can. **The 0.85 opt-in ratio, the three 0.1 parity bands and the
+`skyBrightness > 0.5` predicate are byte-identical; the camera move changed
+WHERE the bar is measured, not WHAT it requires.** The stale header claim that
+the move "is filed as the remaining step" was corrected in the same edit.
+
+**Item 5 — the five latent holes — 4 CLOSED, 1 SPLIT.**
+
+1. **`probe-moon-phase-gate` `enableMoonPhase` — CLOSED.** Read into the manifest
+   and never gated; `Moon.js:360-363` pins `phaseFraction = 1.0` when false, at
+   which point the historical gate evaluates to 1.0 and ALL THREE lanes pass with
+   the defect unobservable. Now a STRUCTURAL conjunct (not a FAIL — a lane that
+   cannot host its subject is blind, not broken), read off the settled frame each
+   lane rendered. Default is currently `true`, so **no verdict changes at HEAD**;
+   this is the one default flip away from a fleet-wide false green.
+2. **`probe-moon-atmosphere-appearance` inscatter — CLOSED.**
+   `moonAtmosphereExtinction`/`moonAtmosphereInscatter` ARE the scalars every
+   judgement in the lane is a function of; they were collected, shipped to the
+   manifest, and asserted nowhere (`controlSane` is a reference floor measured in
+   the arm where the subject is switched OFF, not a reachability assertion for
+   the arm where it is ON). Now a mechanism-toggle control: at least one scalar
+   must have left the control-arm pin that `Moon.js:382-385` applies. **Zero
+   margin — no threshold invented.**
+3. **`probe-metadata-uint16` off-gate — CLOSED.** The debug paint was flipped ON
+   and back OFF and nothing was ever asserted on the OFF frame, unlike both
+   sibling metadata probes which each carry an explicit off-gate cell. Now
+   samples the same stripe positions after the flag goes off and requires at
+   least one to have MOVED — zero margin, the weakest statement that still
+   excludes a paint the flag does not drive.
+4. **`probe-model-color` MIX — CLOSED.** MIX fell through to `let redOK = true`
+   and carried no mode-specific predicate at all, covered only by the
+   cross-backend parity triple — so a bug breaking MIX identically on both
+   backends passed while the PASS banner named MIX explicitly. Now a
+   mechanism-toggle control against the UNTINTED capture (`webgpu_none`, taken
+   before the mode loop): mixing red in must lower green and blue on BOTH
+   backends. **Zero margin.**
+5. **`probe-ocean-wave-lod` MID lane — SPLIT.** The legibility half is done (§1).
+   The vacuity half is **FILED, not fixed**: MID has no `animOk` arm (the
+   temporal liveness control exists only in LOW), so paired with `midGlSane`'s
+   single luminance arm its whole contribution to `gatePass` is "the canvas is
+   lit and not noise". Adding `animOk` would move the bar set, so instead the
+   run now RECORDS `midNearTemporal_UNSCORED` on both backends — explicitly
+   labelled not-a-criterion — so the follow-up batch can see whether the arm
+   would pass before it adds it. Second, separate hole confirmed and still open:
+   **`showWaterEffect` (default `false`, `GlobeSurfaceTileProvider.js:318`) is
+   never set OR read by this probe.** **Effort: S.**
+
+### §5 — NETWORK-GLOBE SHAPE SWEEP (`C13-WEATHER-PROBE-FLEET-SHAPE-SWEEP`)
+
+Re-run **by SHAPE, not by filename** — the lesson the `probe-cloud-shadows-polar`
+miss taught. Shape = *the scene pulls terrain/imagery from the network AND the
+verdict reads globe pixels*, applied to all 620 probes:
+
+| filter | remaining |
+|---|---|
+| all probes | 620 |
+| loads `Apps/CesiumViewer/index.html` or a Sandcastle gallery demo **without** `offline=true` | 559 |
+| …and scores pixels (`getImageData` / `screenshot` / `toDataURL`) | 432 |
+| …and applies NO neutralizer (`imageryLayers.removeAll`, `baseLayer: false`, `lib/weather-probe-pinning`, `globe.show = false`) | 265 |
+| …**and has a gate at all** (a non-zero exit or a printed FAIL) — an ungated diagnostic cannot false-green | **116** |
+
+Neutralizer census for context: 45 probes pin `offline`, 61 call
+`imageryLayers.removeAll()`, 161 hide the globe. **The 116 gated candidates are
+the honest inventory.** By family: **`probe-cloud-*` × 28**, `globe-*` × 5,
+`compute-*` × 4, `ocean-*` × 4, `aerial-*`/`atmo-*`/`cold-optics*`/`env-*`/
+`ground-*`/`logdepth-*`/`moon-*`/`weather-*` × 3 each, remainder singletons.
+Full list, `probe-` and `.mjs` elided:
+
+> 2d-globe-render, aerial-froxel, aerial-perspective, aerial-runtime-config,
+> atmo-lighting, atmo-lut-no-device-error, atmo-luts, billboard-partial-write,
+> c10-11-mixed-coherence, channel-materials, classifier-logdepth-flip,
+> classifier-scenemode, cloud-aerial, cloud-ambient, cloud-clockbind,
+> cloud-config, cloud-depth-occlusion, cloud-diagonal, cloud-dials,
+> cloud-exotic-flags, cloud-extinction, cloud-features, cloud-genus,
+> cloud-godray, cloud-ibl-full, cloud-lighting, cloud-lut-flagon,
+> cloud-mammatus, cloud-noisebake, cloud-noisecore, cloud-phase, cloud-remap,
+> cloud-shadow-cascades, cloud-special, cloud-species, cloud-stbn-lod,
+> cloud-tier-resolver, cloud-tod, cloud-u4a-managed, cloud-weather-flags,
+> clustered-lights-resize, clustered-multifrustum, cold-optics,
+> cold-optics-hq, cold-optics-parity, collections-msaa, compute-engine-wired,
+> compute-instance-generic, compute-instance-webgl2,
+> compute-instance-webgl2-demos, confirm-inspector-sky, culler-pool-decomp,
+> depth-plane-horizon-oracle, determinism-kit, dp46e-pick-metadata,
+> dp46f-metadata-demo, dusk-terminator, entity-bulk,
+> entity-bulk-billboard-label, env-moon, env-pass-matrix, env-temporal,
+> exag-water-streaks, feature-id-texture, flowfield-wind, fog-auto-vpt,
+> fullscreen-sky-demo, geojson-primitive, globe-bindgroup-cache,
+> globe-pipeline-readiness, globe-polar-stretch, globe-translucency,
+> globe-underground, ground-atmosphere, ground-fog, ground-polyline-logdepth,
+> heat-shimmer, hiz-tile-occlusion, lake-water-mask, live-weather-demo,
+> logdepth-payoff, logdepth-pp-sliceb, logdepth-pp-slicec,
+> metadata-multicomponent, metadata-uint16, moon-atmosphere, moon-lola-relief,
+> moon-sunlit, motion-blur, new-sandcastles, ocean-datum, ocean-tide-datum,
+> ocean-wave-lod, ocean-waves-perf, orbital-catalog, orbital-sgp4,
+> panorama-hdr, phase12-bugbash, pointcloud-logdepth,
+> polyline-appearance-logdepth, polyline-cloud-consume, pp-frustum-thread,
+> precip-data, precip-wiring, reproject-baseline, sandcastle-scene-capture,
+> sky-aureole-anchor, ssgi, standalone-model-pick, sun-lens-glare, taa-jitter,
+> weather-inspector, weather-map, weather-presets, webgpu-reinit-switch,
+> webgpu-tile-popping
+
+**The entry's own open question is ANSWERED: `probe-cloud-*` is the largest
+family in the class (28 of 116) and `probe-confirm-inspector-sky` is in it.**
+Gate B's cloud evidence should not be re-banked before those 28 are triaged.
+
+**NOTHING WAS PINNED, deliberately, and this is a finding rather than a
+shortfall.** Pinning is not verdict-preserving in this class: removing the Ion
+base layer changes the pixel values every one of these gates scores, and several
+carry ABSOLUTE floors that imagery can only push UP (the `probe-weather-map`
+analysis showed checks 1 and 2 in exactly that position). Under this batch's
+standing constraint — *a probe whose sweep-fix would change its VERDICT gets
+FILED* — the shape sweep's deliverable is the inventory plus the filing, not a
+mass re-pin. The three already-classified tails (`probe-weather-map`,
+`probe-weather-presets`, `probe-weather-inspector`) keep their existing scoped
+repairs under `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE-TAIL`; **the other 113 are
+newly named here and none of them may be cited as determinism-grade evidence
+until triaged.** Triage is per-probe and cheap (does the contamination land in
+the scored region, and is its bias ORDERED in the direction the gate scores?);
+the repairs are not. **Effort: M to triage the 28-probe cloud family, L for the
+whole 116.**
+
+### §6 — GATES RUN, AND WHAT IS OWED
+
+`node --test Tools/visual-regression/probe-fleet-contract.spec.mjs` **32/32**;
+`prettier --check` clean on all 15 touched files; `eslint` clean, one file per
+invocation; every touched file `node --check` clean; new files normalized to
+CRLF to match the working tree; no git write commands were run.
+
+The whole browser-free suite (`node --test Tools/visual-regression/*.spec.mjs`)
+reads **2424 / 2428, 4 files failing** — and the four are **environmental, not
+regressions**: `model-native-pipeline-stage-tax`, `moon-normal-strength-policy`,
+`moon-webgl-mip-policy` and `webgpu-snap-framebuffer-lifecycle` all import engine
+modules that pull GENERATED shader JS (e.g.
+`packages/engine/Source/Shaders/EllipsoidFS.js`), which does not exist in a
+worktree where `gulp build` has never run. Confirmed by running one directly:
+`ERR_MODULE_NOT_FOUND`. **No spec in the repo anchors on any probe this batch
+edited** (`grep -l` over `*.spec.mjs` returns only the new
+`probe-fleet-contract.spec.mjs`), and no engine file was touched. Worth noting
+for its own sake: **four browser-free specs are unrunnable in an unbuilt
+worktree**, which silently subtracts them from any pre-commit sweep run there.
+
+**Owed to Edge (first executions, none of which existed before this batch):**
+`probe-skybox-star-modulation` (three new in-column legs — the prediction is
+recorded IN THE FILE so it can be refuted: `inColumn.reached` must be true on
+BOTH backends, and if `skyAtmosphereVisible` comes back false the blocker is the
+third `CubeMapPanorama` conjunct, not the height);
+`probe-moon-atmosphere-appearance` (headroom band + inscatter control);
+`probe-moon-phase-gate`, `probe-metadata-uint16`, `probe-model-color`
+(new conjuncts, all expected inert at HEAD); and a confirming run of the six
+verdict-legibility probes, whose changes are print-path only.
+
 ## New findings — celestial/eclipse instrument worker, 2026-08-07 (Batch 873)
 
 Three findings, all measured. Two are re-attributions that OVERTURN the
