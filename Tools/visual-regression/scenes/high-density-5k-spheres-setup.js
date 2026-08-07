@@ -40,10 +40,16 @@ function mulberry32(seed) {
   };
 }
 
-const rng = mulberry32(p.rngSeed);
-
 function addInstances(viewer) {
   if (!viewer) return;
+
+  // Re-seed PER VIEWER. The rng used to live at module scope and was
+  // consumed sequentially — the WebGL viewer ate draws 1..15000 and the
+  // WebGPU viewer ate 15001..30000, so the two backends NEVER rendered the
+  // same sphere set and every cross-backend diff of this scene measured two
+  // disjoint random samples (~8.6%), not the pipeline. The header comment
+  // promised identity; this is what actually delivers it.
+  const rng = mulberry32(p.rngSeed);
 
   // Pre-compute the lat/lon scale factors once. `dx` and `dy` are
   // meters in the local east/north frame; convert to degrees for

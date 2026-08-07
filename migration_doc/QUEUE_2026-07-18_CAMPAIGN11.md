@@ -300,7 +300,7 @@ guide · wave.**
 
 | C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
 |---|---|---|---|---|---|---|---|
-| `C11-11` | NEW-HIGH-DENSITY-SPHERES-CROSS-BACKEND-DRIFT | standing-reds | P0 | correctness | unknown–M | G1 | W1 (diagnose) |
+| `C11-11` | NEW-HIGH-DENSITY-SPHERES-CROSS-BACKEND-DRIFT | standing-reds | P0 | correctness | unknown–M | G1 | W1 (diagnose) **RE-ATTRIBUTED 2026-08-07 (Batch 919, orchestrator machine lane): the scene-level cross-backend red was THE INSTRUMENT. high-density-5k-spheres-setup.js created its mulberry32 rng at MODULE scope and called addInstances(webglViewer) then addInstances(webgpuViewer) against the SAME stream — the WebGL viewer consumed draws 1..15000 and the WebGPU viewer 15001..30000, so the two backends NEVER rendered the same sphere set, by construction, since Batch 224. The header comment promised seed-identical positions; the code did not deliver them. One-line fix (re-seed per viewer): cross-backend diff collapsed 8.60% -> 1.48% PASS, and the residual is visually sphere-silhouette antialiasing rims on IDENTICAL geometry (PNG read). Remaining row scope: decide whether the 1.48% needs decomposition, and re-baseline this scene's history via C11-139 — every historical baseline from the disjoint-sample era is permanently invalid (91.78% vs both backends identically).** |
 | `C11-12` | NEW-WEBGPU-SCENE-PASS-MSAA-FLIP-TRANSITION | standing-reds | P0 | correctness | M | G1 | W2 |
 | `C11-13` | NEW-VOXEL-INSIDE-CAMERA-BLACK | standing-reds | P0 | correctness | M | G1 (walkthrough G6) | W1 |
 | `C11-14` | NEW-WEBGL-ANISO-GLSL-BROKEN | standing-reds | P1 | correctness | S | G1 | W1 |
@@ -547,7 +547,7 @@ the mapped C13 ID and Campaign 13's current status table instead.
 | `C11-136` | NEW-SCENE-BROAD-SUITE-FAILURE-CLOSURE (item 64 / A.5) | test-infra | P1 | correctness | L | G9 | W7 (exit-gate owner) |
 | `C11-137` | C8-SHARED-UPSTREAM-CONTRACT-GATE (item 72 / A.16) | test-infra | P1 | infra/tooling | L | G9 | **EXIT (dead last)** |
 | `C11-138` | NEW-SHADER-GENERATOR-UPSTREAM-CONTRACT-PARITY (item 66 / A.6) | test-infra | P1 | correctness | S | G9 | W7 (exit-gate owner; cheapest) |
-| `C11-139` | C9-03-CERTIFYING-VISUAL-BASELINE-PROMOTION | test-infra | P1 | tooling | M | G9 | W7 (after C11-11 spheres repaired) |
+| `C11-139` | C9-03-CERTIFYING-VISUAL-BASELINE-PROMOTION | test-infra | P1 | tooling | M | G9 | W7 (after C11-11 spheres repaired) **UNBLOCKED 2026-08-07 (Batch 919): the spheres red it waited on is repaired (instrument re-attribution). Its scope now includes re-capturing the spheres scene's baselines, which the disjoint-sample era invalidated.** |
 | `C11-140` | NEW-GPU-TIMESTAMP-UNIQUE-SAMPLE-ACCOUNTING (A.11) | test-infra | P1 | tooling | S | G9 | W1 (perf-claim prereq tooling) |
 | `C11-141` | C9-02-VISIBILITY-EXECUTION-OWNERSHIP-MANIFEST | test-infra | P1 | correctness | L | G9 | W7 |
 | `C11-142` | NEW-RESOURCE-URL-SEMANTIC-PARITY (item 67 / A.7) | test-infra | P2 | correctness | L | G9 | W7 (exit-gate owner) |
