@@ -2699,9 +2699,16 @@ test("HEAD: the renderer transforms splats by _rootTransform, not a missing mode
 
 test("HEAD: the WASM sort permutation is consumed, and the JS comparator cannot see it", () => {
   const renderer = readNormalized(RENDERER_PATH);
+  // C15-G4 widened the cast to carry the permutation's provenance alongside it,
+  // so the anchor is on the READ, not on the cast's one-field shape.
   assert.match(
     renderer,
-    /_indexes\?: Uint32Array \}\)\._indexes;/,
+    /_indexes\?: Uint32Array;/,
+    `${RENDERER_PATH}: the shared radix-sort permutation is no longer read`,
+  );
+  assert.match(
+    renderer,
+    /const indexes = fields\._indexes;/,
     `${RENDERER_PATH}: the shared radix-sort permutation is no longer read`,
   );
   assert.match(
@@ -4971,3 +4978,536 @@ test("G6h: the per-frustum depth clear that makes binning load-bearing is still 
     "View.js no longer gives BV-less commands the camera worst-case span — re-derive C15-G6h before trusting it",
   );
 });
+
+// ── C15-G4 — the asynchronous WASM radix sort, consumed ─────────────────────
+//
+// The row's claim is a NEGATIVE one — "no synchronous main-thread sort runs on
+// production content" — and a negative claim is exactly the kind that goes
+// vacuously green. Three ways it could:
+//
+//   * the comparator is skipped because the splat count is 0, not because the
+//     worker's permutation arrived (nothing drew, so nothing sorted);
+//   * the worker's permutation IS uploaded, but a superseded one can overwrite
+//     it afterwards, so the draw order silently regresses to an older camera;
+//   * the upload happens before the resolution check, so the buffer is written
+//     from whatever `_indexes` happened to hold — including nothing.
+//
+// So the guard below does not assert "the comparator did not run". It EXECUTES
+// the real swap function over an ordered sequence of resolutions and asserts
+// which bytes are resident afterwards, and it re-runs every rule against
+// mutated copies of the real engine source. Nothing here touches the tree: the
+// mutants are in-memory copies, compiled and thrown away.
+
+/**
+ * Extract the real `uploadProvidedSortOrder` and compile it. The only TS in the
+ * body is the one `as unknown as` cast, which erases to the identity.
+ */
+function loadUploadProvidedSortOrder(rendererSource) {
+  const at = rendererSource.indexOf("function uploadProvidedSortOrder(");
+  assert.notEqual(
+    at,
+    -1,
+    `${RENDERER_PATH}: uploadProvidedSortOrder is gone — C15-G4's consume half`,
+  );
+  const body = tsBlock(rendererSource, "function uploadProvidedSortOrder(");
+  const header = rendererSource.slice(at, rendererSource.indexOf(body, at));
+  assert.match(
+    header,
+    /device: GPUDevice,\s*primitive: CesiumObjectWithWebGPUCache,\s*cache: GaussianSplatCache,/,
+    "uploadProvidedSortOrder's signature changed — the extractor is stale",
+  );
+  const js = body.replace(/ as unknown as \{[\s\S]*?\}/, "");
+  assert.ok(
+    !js.includes(" as unknown as"),
+    "an unhandled TS cast survived into the extracted body",
+  );
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    `return function uploadProvidedSortOrder(device, primitive, cache) ${js};`,
+  )();
+}
+
+/** A stand-in GPU buffer whose resident bytes the rules can read back. */
+function fakeSortBuffer(count) {
+  return { label: "sortedIndices", resident: new Uint32Array(count) };
+}
+
+function fakeDevice(options = {}) {
+  const writes = [];
+  return {
+    writes,
+    queue: {
+      writeBuffer(buffer, offset, data) {
+        if (options.throwOnWrite) {
+          throw new Error("device write rejected");
+        }
+        writes.push({ buffer, offset, data: Uint32Array.from(data) });
+        buffer.resident.set(data, offset);
+      },
+    },
+  };
+}
+
+function sortCache(count, overrides = {}) {
+  return {
+    splatCount: count,
+    sortedIndexBuffer: fakeSortBuffer(count),
+    providedIndexSource: null,
+    providedIndexSequence: -1,
+    providedIndexGeneration: -1,
+    comparatorSorts: 0,
+    providedSortUploads: 0,
+    supersededSortUploads: 0,
+    lastSortCameraDir: {},
+    sortRequestPending: true,
+    ...overrides,
+  };
+}
+
+/** A primitive as the producer stamps it: permutation + provenance. */
+function sortedPrimitive(order, sequence, dataGeneration) {
+  return {
+    _indexes: Uint32Array.from(order),
+    _indexesSortSequence: sequence,
+    _indexesDataGeneration: dataGeneration,
+  };
+}
+
+test("G4: the worker's permutation is uploaded and becomes the resident order", () => {
+  const upload = loadUploadProvidedSortOrder(readNormalized(RENDERER_PATH));
+  const cache = sortCache(3);
+  const device = fakeDevice();
+  const consumed = upload(device, sortedPrimitive([2, 0, 1], 7, 3), cache);
+  assert.equal(consumed, true, "a resolved permutation must be consumed");
+  assert.deepEqual(Array.from(cache.sortedIndexBuffer.resident), [2, 0, 1]);
+  assert.equal(cache.providedSortUploads, 1);
+  assert.equal(cache.providedIndexSequence, 7);
+  assert.equal(cache.providedIndexGeneration, 3);
+});
+
+test("G4: a re-upload of the SAME array is not re-written", () => {
+  const upload = loadUploadProvidedSortOrder(readNormalized(RENDERER_PATH));
+  const cache = sortCache(3);
+  const device = fakeDevice();
+  const primitive = sortedPrimitive([2, 0, 1], 7, 3);
+  upload(device, primitive, cache);
+  const consumed = upload(device, primitive, cache);
+  assert.equal(consumed, true);
+  assert.equal(
+    device.writes.length,
+    1,
+    "the same permutation re-uploaded every frame is 1.1 MB/frame on tower",
+  );
+});
+
+test("G4 GENERATION GUARD: an out-of-order resolution does NOT regress the buffer", () => {
+  // The row's correctness point, executed. Sort B (newer camera) resolves
+  // first; sort A (older camera, LOWER sequence, same data) resolves after.
+  // The late arrival must not put the older order back on the GPU, and it must
+  // not hand control to the synchronous comparator either.
+  const upload = loadUploadProvidedSortOrder(readNormalized(RENDERER_PATH));
+  const cache = sortCache(3);
+  const device = fakeDevice();
+
+  upload(device, sortedPrimitive([2, 1, 0], 9, 3), cache);
+  assert.deepEqual(Array.from(cache.sortedIndexBuffer.resident), [2, 1, 0]);
+
+  const consumed = upload(device, sortedPrimitive([0, 1, 2], 8, 3), cache);
+  assert.equal(
+    consumed,
+    true,
+    "a refused resolution must still report the order as resident — falling " +
+      "through to the synchronous comparator is the outcome G4 removes",
+  );
+  assert.deepEqual(
+    Array.from(cache.sortedIndexBuffer.resident),
+    [2, 1, 0],
+    "the superseded sort regressed the resident draw order",
+  );
+  assert.equal(device.writes.length, 1, "the stale permutation was written");
+  assert.equal(cache.supersededSortUploads, 1);
+  assert.equal(cache.providedIndexSequence, 9, "provenance moved backwards");
+});
+
+test("G4 GENERATION GUARD: re-delivering the SAME sequence is refused", () => {
+  // Equal is not newer. Without the `<=` this is an accepted re-write of an
+  // order that is already resident — harmless in bytes, but it means the guard
+  // is comparing the wrong thing and the strictly-older case is one edit away.
+  const upload = loadUploadProvidedSortOrder(readNormalized(RENDERER_PATH));
+  const cache = sortCache(3);
+  const device = fakeDevice();
+  upload(device, sortedPrimitive([2, 1, 0], 9, 3), cache);
+  upload(device, sortedPrimitive([0, 1, 2], 9, 3), cache);
+  assert.deepEqual(Array.from(cache.sortedIndexBuffer.resident), [2, 1, 0]);
+  assert.equal(cache.supersededSortUploads, 1);
+});
+
+test("G4 GENERATION GUARD: an OLDER data generation is refused even with a higher sequence", () => {
+  const upload = loadUploadProvidedSortOrder(readNormalized(RENDERER_PATH));
+  const cache = sortCache(3);
+  const device = fakeDevice();
+  upload(device, sortedPrimitive([2, 1, 0], 9, 4), cache);
+  upload(device, sortedPrimitive([0, 1, 2], 99, 3), cache);
+  assert.deepEqual(Array.from(cache.sortedIndexBuffer.resident), [2, 1, 0]);
+  assert.equal(cache.supersededSortUploads, 1);
+});
+
+test("G4 GENERATION GUARD: a NEWER data generation wins even with a lower sequence", () => {
+  // The counter-case that stops the guard from being a plain `sequence >`
+  // monotonic counter. A rebuild re-bases the data; its permutation must land.
+  const upload = loadUploadProvidedSortOrder(readNormalized(RENDERER_PATH));
+  const cache = sortCache(3);
+  const device = fakeDevice();
+  upload(device, sortedPrimitive([2, 1, 0], 90, 3), cache);
+  const consumed = upload(device, sortedPrimitive([1, 0, 2], 4, 4), cache);
+  assert.equal(consumed, true);
+  assert.deepEqual(Array.from(cache.sortedIndexBuffer.resident), [1, 0, 2]);
+  assert.equal(cache.providedIndexGeneration, 4);
+});
+
+test("G4: no upload before the sort has resolved", () => {
+  const upload = loadUploadProvidedSortOrder(readNormalized(RENDERER_PATH));
+  const cache = sortCache(3);
+  const device = fakeDevice();
+  const consumed = upload(device, { _indexes: undefined }, cache);
+  assert.equal(
+    consumed,
+    false,
+    "with no permutation there is nothing to be resident",
+  );
+  assert.equal(device.writes.length, 0, "wrote the buffer before resolution");
+  assert.deepEqual(Array.from(cache.sortedIndexBuffer.resident), [0, 0, 0]);
+});
+
+test("G4: a permutation that does not describe the resident buffer is refused", () => {
+  const upload = loadUploadProvidedSortOrder(readNormalized(RENDERER_PATH));
+  const cache = sortCache(3);
+  const device = fakeDevice();
+  const consumed = upload(device, sortedPrimitive([1, 0], 7, 3), cache);
+  assert.equal(consumed, false, "a length mismatch must not be consumed");
+  assert.equal(device.writes.length, 0);
+});
+
+test("G4: an UNSTAMPED producer keeps the historical identity-only behaviour", () => {
+  // The three synthetic probes hand this renderer a hand-rolled object. They
+  // carry no `_indexes` at all today, but the surface is public enough that a
+  // producer supplying one without provenance must not be locked out.
+  const upload = loadUploadProvidedSortOrder(readNormalized(RENDERER_PATH));
+  const cache = sortCache(3);
+  const device = fakeDevice();
+  upload(device, { _indexes: Uint32Array.from([2, 1, 0]) }, cache);
+  upload(device, { _indexes: Uint32Array.from([0, 2, 1]) }, cache);
+  assert.deepEqual(Array.from(cache.sortedIndexBuffer.resident), [0, 2, 1]);
+  assert.equal(cache.providedSortUploads, 2);
+});
+
+test("G4: a failed write does not leave the cache claiming residency", () => {
+  // Bookkeeping ahead of the write is the classic version of this bug: the
+  // cache says permutation P is resident, the GPU still holds the old one, and
+  // the identity short-circuit then refuses to ever correct it.
+  const upload = loadUploadProvidedSortOrder(readNormalized(RENDERER_PATH));
+  const cache = sortCache(3);
+  const device = fakeDevice({ throwOnWrite: true });
+  assert.throws(() => upload(device, sortedPrimitive([2, 1, 0], 7, 3), cache));
+  assert.equal(
+    cache.providedIndexSource,
+    null,
+    "the cache recorded a permutation the GPU never received",
+  );
+  assert.equal(cache.providedIndexSequence, -1);
+  assert.equal(cache.providedSortUploads, 0);
+});
+
+// ── C15-G4 source anchors: the schedule → resolve → consume chain ───────────
+
+test("G4 SCHEDULE: the WASM radix sort is scheduled above the backend branch", () => {
+  // If the schedule sat below the feature-renderer dispatch, WebGPU would never
+  // get a permutation and the comparator would be load-bearing again. This is
+  // the C15-G2 extraction that G4 depends on; it must not be reverted.
+  const primitive = readNormalized(PRIMITIVE_PATH);
+  const update = tsBlock(primitive, "  update(frameState) {");
+  const dataAt = update.indexOf("this._updateSplatData(frameState);");
+  const dispatchAt = update.indexOf("fr.update(this, frameState);");
+  assert.ok(dataAt !== -1 && dispatchAt !== -1, "the update chain changed");
+  assert.ok(
+    dataAt < dispatchAt,
+    "the shared data pipeline (which schedules the sort) must run BEFORE the " +
+      "feature renderer, or WebGPU never sees `_indexes`",
+  );
+  const shared = tsBlock(primitive, "  _updateSplatData(frameState) {");
+  assert.ok(
+    shared.includes("GaussianSplatSorter.radixSortIndexes({"),
+    "the worker sort is no longer scheduled from the backend-neutral half",
+  );
+  assert.ok(
+    !shared.includes("Array.prototype.sort"),
+    "a synchronous sort appeared in the shared per-frame path",
+  );
+});
+
+test("G4 PUBLISH: the steady sort publishes through the sequence guard", () => {
+  const primitive = readNormalized(PRIMITIVE_PATH);
+  const steady = tsBlock(primitive, "async function resolveSteadySort(");
+  assert.ok(
+    steady.includes("publishSortedIndexes("),
+    "resolveSteadySort no longer routes through the sequence guard",
+  );
+  assert.ok(
+    !/primitive\._indexes = sortedData/.test(steady),
+    "resolveSteadySort assigns `_indexes` directly, bypassing the guard",
+  );
+  const commit = tsBlock(primitive, "function commitSnapshot(");
+  assert.ok(
+    commit.includes("primitive._indexesSortSequence =") &&
+      commit.includes("primitive._indexesDataGeneration ="),
+    "the atomic commit no longer stamps the permutation's provenance — a " +
+      "consumer cannot order what carries no sequence",
+  );
+});
+
+test("G4 CONSUME: the async permutation is tried before the comparator", () => {
+  const renderer = readNormalized(RENDERER_PATH);
+  const provided = renderer.indexOf(
+    "if (!uploadProvidedSortOrder(device, primitive, cache)) {",
+  );
+  assert.notEqual(provided, -1, "the sort chain's entry point moved");
+  const comparator = renderer.indexOf(
+    "maybeSortSplats(device, primitive, frameState, cache);",
+    provided,
+  );
+  assert.ok(
+    comparator > provided,
+    "the synchronous comparator must be reachable only when no provided " +
+      "permutation describes the resident buffer",
+  );
+});
+
+test("G4 RETIREMENT: maybeSortSplats survives, but cannot run on packed content", () => {
+  // Principle 7. The comparator's three exercisers are synthetic legacy-layout
+  // probes, one of which (probe-splat-sort) is the Batch-288 sort-consume
+  // evidence. Deleting it turns a green instrument red for an unrelated reason.
+  const renderer = readNormalized(RENDERER_PATH);
+  const body = tsBlock(renderer, "function maybeSortSplats(");
+  assert.ok(
+    body.includes("if (cache.layoutPacked) {\n    return;\n  }"),
+    "the packed early-out is gone — the synchronous main-thread sort is back " +
+      "on the production path",
+  );
+  const guardAt = body.indexOf("if (cache.layoutPacked)");
+  const sortAt = body.indexOf("Array.prototype.sort.call(");
+  assert.ok(
+    guardAt !== -1 && sortAt !== -1 && guardAt < sortAt,
+    "the packed guard no longer dominates the sort",
+  );
+  assert.ok(
+    body.includes("cache.comparatorSorts++"),
+    "the exit gate's observable is gone — 'the comparator never runs' would " +
+      "be an inference again, not a measurement",
+  );
+  for (const probe of [
+    "probe-splat-sort.mjs",
+    "probe-splat-globe-occlusion.mjs",
+    "probe-oit-transparency.mjs",
+  ]) {
+    assert.ok(
+      existsSync(resolve(ROOT, "Tools/visual-regression", probe)),
+      `${probe} is gone — re-derive whether maybeSortSplats still has an exerciser`,
+    );
+  }
+});
+
+test("G4 OBSERVABLE: the probe samples and prints the comparator counter", () => {
+  // Without this the row's exit gate is unreadable: "the comparator never ran"
+  // would be re-derived from source shape on every future run instead of
+  // measured on the run being judged. `providedSortUploads` rides along as the
+  // liveness partner — comparatorSorts=0 with providedSortUploads=0 means
+  // nothing sorted at all, which is the vacuous green.
+  assert.match(
+    PROBE_CODE,
+    /record\.cacheComparatorSorts =\s*\n?\s*p\?\._webgpuCache\?\.comparatorSorts \?\? null;/,
+    `${PROBE_PATH}: the C15-G4 exit-gate observable is not sampled`,
+  );
+  assert.match(
+    PROBE_CODE,
+    /record\.cacheProvidedSortUploads =/,
+    `${PROBE_PATH}: the comparator counter lost its liveness partner`,
+  );
+  assert.match(
+    PROBE_CODE,
+    /record\.cacheSupersededSortUploads =/,
+    `${PROBE_PATH}: the sequence guard's refusal counter is not sampled`,
+  );
+  assert.match(
+    PROBE,
+    /comparatorSorts=\$\{/,
+    `${PROBE_PATH}: the exit-gate observable is sampled but never printed`,
+  );
+});
+
+const G4_MUTANTS = [
+  {
+    name: "the synchronous comparator is restored on the WebGPU packed path",
+    file: RENDERER_PATH,
+    mutate: (source) =>
+      source.replace(
+        "  if (cache.layoutPacked) {\n    return;\n  }\n  const splatData",
+        "  const splatData",
+      ),
+    check: (source) => {
+      const body = tsBlock(source, "function maybeSortSplats(");
+      assert.ok(
+        body.includes("if (cache.layoutPacked) {\n    return;\n  }"),
+        "the packed early-out is gone",
+      );
+    },
+    because: /packed early-out is gone/,
+  },
+  {
+    name: "the consumer's generation guard is removed",
+    file: RENDERER_PATH,
+    mutate: (source) =>
+      source.replace(
+        / {4}if \(\n {6}generation < cache\.providedIndexGeneration \|\|[\s\S]*?\n {4}\) \{\n {6}cache\.supersededSortUploads\+\+;\n {6}return true;\n {4}\}\n/,
+        "",
+      ),
+    check: (source) => {
+      const upload = loadUploadProvidedSortOrder(source);
+      const cache = sortCache(3);
+      const device = fakeDevice();
+      upload(device, sortedPrimitive([2, 1, 0], 9, 3), cache);
+      upload(device, sortedPrimitive([0, 1, 2], 8, 3), cache);
+      assert.deepEqual(
+        Array.from(cache.sortedIndexBuffer.resident),
+        [2, 1, 0],
+        "the superseded sort regressed the resident draw order",
+      );
+    },
+    because: /regressed the resident draw order/,
+  },
+  {
+    name: "the upload is hoisted above the resolution check",
+    file: RENDERER_PATH,
+    mutate: (source) =>
+      source.replace(
+        "  const indexes = fields._indexes;\n  const count = cache.splatCount;",
+        "  const indexes = fields._indexes;\n  const count = cache.splatCount;\n  device.queue.writeBuffer(cache.sortedIndexBuffer, 0, indexes ?? []);",
+      ),
+    check: (source) => {
+      const upload = loadUploadProvidedSortOrder(source);
+      const cache = sortCache(3);
+      const device = fakeDevice();
+      upload(device, { _indexes: undefined }, cache);
+      assert.equal(
+        device.writes.length,
+        0,
+        "wrote the buffer before the sort resolved",
+      );
+    },
+    because: /before the sort resolved/,
+  },
+  {
+    name: "the cache records residency before the write succeeds",
+    file: RENDERER_PATH,
+    mutate: (source) =>
+      source.replace(
+        "  device.queue.writeBuffer(cache.sortedIndexBuffer, 0, indexes);\n  // Bookkeeping AFTER the write",
+        "  cache.providedIndexSource = indexes;\n  device.queue.writeBuffer(cache.sortedIndexBuffer, 0, indexes);\n  // Bookkeeping AFTER the write",
+      ),
+    check: (source) => {
+      const upload = loadUploadProvidedSortOrder(source);
+      const cache = sortCache(3);
+      const device = fakeDevice({ throwOnWrite: true });
+      assert.throws(() =>
+        upload(device, sortedPrimitive([2, 1, 0], 7, 3), cache),
+      );
+      assert.equal(
+        cache.providedIndexSource,
+        null,
+        "the cache recorded a permutation the GPU never received",
+      );
+    },
+    because: /the GPU never received/,
+  },
+  {
+    name: "the exit gate's comparator counter is deleted",
+    file: RENDERER_PATH,
+    mutate: (source) => source.replace("  cache.comparatorSorts++;\n", ""),
+    check: (source) => {
+      const body = tsBlock(source, "function maybeSortSplats(");
+      assert.ok(
+        body.includes("cache.comparatorSorts++"),
+        "the exit gate's observable is gone",
+      );
+    },
+    because: /exit gate's observable is gone/,
+  },
+  {
+    name: "the steady sort publishes `_indexes` directly again",
+    file: PRIMITIVE_PATH,
+    mutate: (source) =>
+      source.replace(
+        / {4}if \(\n {6}!publishSortedIndexes\([\s\S]*?\n {4}\) \{\n {6}primitive\._sorterPromise = undefined;\n {6}primitive\._sorterState = GaussianSplatSortingState\.IDLE;\n {6}return;\n {4}\}\n/,
+        "    primitive._indexes = sortedData;\n",
+      ),
+    check: (source) => {
+      const steady = tsBlock(source, "async function resolveSteadySort(");
+      assert.ok(
+        steady.includes("publishSortedIndexes("),
+        "resolveSteadySort no longer routes through the sequence guard",
+      );
+    },
+    because: /no longer routes through the sequence guard/,
+  },
+  {
+    name: "the commit stops stamping the permutation's provenance",
+    file: PRIMITIVE_PATH,
+    mutate: (source) =>
+      source.replace(
+        / {2}primitive\._indexesSortSequence = snapshot\.indexesSortSequence \?\? 0;\n {2}primitive\._indexesDataGeneration =\n {4}snapshot\.indexesDataGeneration \?\? primitive\._splatDataGeneration;\n/,
+        "",
+      ),
+    check: (source) => {
+      const commit = tsBlock(source, "function commitSnapshot(");
+      assert.ok(
+        commit.includes("primitive._indexesSortSequence =") &&
+          commit.includes("primitive._indexesDataGeneration ="),
+        "the atomic commit no longer stamps the permutation's provenance",
+      );
+    },
+    because: /no longer stamps the permutation's provenance/,
+  },
+  {
+    name: "the shared schedule is moved below the feature-renderer dispatch",
+    file: PRIMITIVE_PATH,
+    mutate: (source) =>
+      source.replace(
+        "    this._updateSplatData(frameState);\n\n    if (defined(fr)) {\n      fr.update(this, frameState);\n    }",
+        "    if (defined(fr)) {\n      fr.update(this, frameState);\n    }\n\n    this._updateSplatData(frameState);",
+      ),
+    check: (source) => {
+      const update = tsBlock(source, "  update(frameState) {");
+      assert.ok(
+        update.indexOf("this._updateSplatData(frameState);") <
+          update.indexOf("fr.update(this, frameState);"),
+        "the shared data pipeline no longer runs before the feature renderer",
+      );
+    },
+    because: /no longer runs before the feature renderer/,
+  },
+];
+
+for (const mutant of G4_MUTANTS) {
+  test(`G4 mutant rejected: ${mutant.name}`, () => {
+    const real = readNormalized(mutant.file);
+    const mutated = mutant.mutate(real);
+    assert.notEqual(mutated, real, "the mutation did not apply");
+    assert.throws(
+      () => mutant.check(mutated),
+      mutant.because,
+      `${mutant.name}: accepted, or rejected for the wrong reason`,
+    );
+    // And the rule passes on the real source — otherwise the mutant proves
+    // nothing about the shipped code.
+    mutant.check(real);
+  });
+}

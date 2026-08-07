@@ -279,6 +279,17 @@ const RUN_LANE = async ({
     cacheLayoutPacked: null,
     cacheSplatRecordBytes: null,
     cacheSortedIndexCount: null,
+    // C15-G4 — the row's exit gate is a NEGATIVE ("the synchronous main-thread
+    // comparator never runs on production content"), so it needs an observable
+    // rather than an inference. `cacheComparatorSorts` counts the sorts that
+    // ACTUALLY executed and must read 0 on both assets;
+    // `cacheProvidedSortUploads` is its liveness partner — 0 there would mean
+    // the comparator was idle because nothing sorted at all.
+    // `cacheSupersededSortUploads` counts out-of-order resolutions the
+    // sequence guard refused at the buffer-upload boundary.
+    cacheComparatorSorts: null,
+    cacheProvidedSortUploads: null,
+    cacheSupersededSortUploads: null,
     packedPayloadWords: null,
     featureRendererKind: null,
     absenceBlockers: [],
@@ -518,6 +529,11 @@ const RUN_LANE = async ({
     record.cacheLayoutPacked = p?._webgpuCache?.layoutPacked ?? null;
     record.cacheSplatRecordBytes = p?._webgpuCache?.splatRecordBytes ?? null;
     record.cacheSortedIndexCount = p?._webgpuCache?.sortedIndexCount ?? null;
+    record.cacheComparatorSorts = p?._webgpuCache?.comparatorSorts ?? null;
+    record.cacheProvidedSortUploads =
+      p?._webgpuCache?.providedSortUploads ?? null;
+    record.cacheSupersededSortUploads =
+      p?._webgpuCache?.supersededSortUploads ?? null;
     record.packedPayloadWords =
       p?._packedSplatTextureData?.data?.length ?? null;
   };
@@ -1110,6 +1126,15 @@ async function main() {
       } packedWords=${webgpu?.packedPayloadWords ?? "n/a"} (predicted ${
         asset.expectedSplats * 8
       } minimum for ${asset.expectedSplats} splats)`,
+    );
+    console.log(
+      `               sort: comparatorSorts=${
+        webgpu?.cacheComparatorSorts ?? "n/a"
+      } (C15-G4 exit gate: 0) providedUploads=${
+        webgpu?.cacheProvidedSortUploads ?? "n/a"
+      } (liveness: > 0, else nothing sorted at all) superseded=${
+        webgpu?.cacheSupersededSortUploads ?? "n/a"
+      } (out-of-order resolutions refused at the upload boundary)`,
     );
     console.log(
       `               rendererCommit=${webgpu?.rendererCommitted}@${

@@ -117,6 +117,8 @@ const SnapshotState = {
  * @property {number} shCoefficientCount Coefficients per splat.
  * @property {number} numSplats Total splat count in this snapshot.
  * @property {Uint32Array|undefined} indexes Sorted index buffer when READY.
+ * @property {number|undefined} indexesSortSequence `_sortRequestId` of the sort that produced `indexes` (`C15-G4` provenance).
+ * @property {number|undefined} indexesDataGeneration `_splatDataGeneration` the sort that produced `indexes` ran against.
  * @property {Texture|undefined} gaussianSplatTexture Packed splat attribute texture.
  * @property {Texture|undefined} sphericalHarmonicsTexture Packed SH texture.
  * @property {GaussianSplatPrimitive.AttributeTextureData|undefined} packedSplatTextureData Packed WASM splat payload, retained only when a native feature renderer owns the draw.
@@ -277,6 +279,45 @@ function isActiveSort(primitive, activeSort) {
     activeSort.requestId === primitive._sortRequestId &&
     activeSort.dataGeneration === primitive._splatDataGeneration
   );
+}
+
+/**
+ * `C15-G4` — publish a resolved permutation together with the PROVENANCE of the
+ * sort that produced it.
+ *
+ * `_indexes` alone carries no answer to "which camera, against which data?", so
+ * a consumer in another module — the WebGPU renderer reads `_indexes` off an
+ * arbitrary object, which is how the three synthetic probes reach it — cannot
+ * tell a newer permutation from an older one that happens to have the same
+ * length. The stamp makes the ordering explicit: `_sortRequestId` is already
+ * monotonic across BOTH the pending-snapshot and steady-state sorts, so it is
+ * the sequence number, and `_splatDataGeneration` names the data epoch it was
+ * computed against.
+ *
+ * The refusal below is a second line of defence, not the first: the steady path
+ * reaches here only through {@link isActiveSort}, which requires exact equality
+ * with the latest request. It exists so that a future scheduler which allows
+ * two sorts in flight cannot silently regress the draw order.
+ *
+ * @param {GaussianSplatPrimitive} primitive The splat primitive.
+ * @param {Uint32Array} indexes The resolved permutation.
+ * @param {number} sequence `_sortRequestId` of the producing sort.
+ * @param {number} dataGeneration `_splatDataGeneration` it was sorted against.
+ * @returns {boolean} `false` when the result was superseded and discarded.
+ * @private
+ */
+function publishSortedIndexes(primitive, indexes, sequence, dataGeneration) {
+  if (
+    dataGeneration < primitive._indexesDataGeneration ||
+    (dataGeneration === primitive._indexesDataGeneration &&
+      sequence <= primitive._indexesSortSequence)
+  ) {
+    return false;
+  }
+  primitive._indexes = indexes;
+  primitive._indexesSortSequence = sequence;
+  primitive._indexesDataGeneration = dataGeneration;
+  return true;
 }
 
 /**
@@ -466,7 +507,16 @@ function commitSnapshot(primitive, snapshot, frameState) {
   primitive._shData = snapshot.shData;
   primitive._sphericalHarmonicsDegree = snapshot.sphericalHarmonicsDegree;
   primitive._numSplats = snapshot.numSplats;
+  // `C15-G4` — the commit is the ATOMIC data swap, so it assigns directly
+  // rather than through `publishSortedIndexes`: refusing here would leave
+  // `_indexes` describing a different generation than `_positions`. Staleness
+  // is already excluded upstream (`resolvePendingSnapshotSort` returns unless
+  // the resolved sort still owns `_pendingSnapshot`). The stamp travels with
+  // the permutation so cross-module consumers can order it.
   primitive._indexes = snapshot.indexes;
+  primitive._indexesSortSequence = snapshot.indexesSortSequence ?? 0;
+  primitive._indexesDataGeneration =
+    snapshot.indexesDataGeneration ?? primitive._splatDataGeneration;
   primitive.gaussianSplatTexture = snapshot.gaussianSplatTexture;
   primitive.sphericalHarmonicsTexture = snapshot.sphericalHarmonicsTexture;
   // `C15-G2`: the packed WASM output, retained only when a native feature
@@ -764,6 +814,10 @@ async function resolvePendingSnapshotSort(
 
     const pending = pendingSort.snapshot;
     pending.indexes = sortedData;
+    // `C15-G4` — carry the provenance onto the snapshot so `commitSnapshot`
+    // publishes the permutation and its sequence in the same atomic swap.
+    pending.indexesSortSequence = pendingSort.requestId;
+    pending.indexesDataGeneration = pendingSort.dataGeneration;
     pending.state = SnapshotState.READY;
     primitive._pendingSortPromise = undefined;
     primitive._pendingSort = undefined;
@@ -819,7 +873,21 @@ async function resolveSteadySort(primitive, activeSort, sortPromise) {
       }
       return;
     }
-    primitive._indexes = sortedData;
+    // `C15-G4` — sequence-guarded publish. A superseded resolution must not
+    // regress the order the renderers are already drawing: stale-but-consistent
+    // beats torn, so a refused result leaves the previous permutation resident.
+    if (
+      !publishSortedIndexes(
+        primitive,
+        sortedData,
+        activeSort.requestId,
+        activeSort.dataGeneration,
+      )
+    ) {
+      primitive._sorterPromise = undefined;
+      primitive._sorterState = GaussianSplatSortingState.IDLE;
+      return;
+    }
     primitive._sorterState = GaussianSplatSortingState.SORTED;
   } catch (err) {
     if (!isActiveSort(primitive, activeSort)) {
@@ -935,6 +1003,21 @@ class GaussianSplatPrimitive {
      * @private
      */
     this._indexes = undefined;
+    /**
+     * `C15-G4` — provenance of the permutation currently in `_indexes`: the
+     * `_sortRequestId` of the sort that produced it (monotonic across both the
+     * pending-snapshot and steady-state sorts) and the `_splatDataGeneration`
+     * it was computed against. Consumers in other modules order permutations by
+     * this pair; `-1` means no sort has published yet.
+     * @type {number}
+     * @private
+     */
+    this._indexesSortSequence = -1;
+    /**
+     * @type {number}
+     * @private
+     */
+    this._indexesDataGeneration = -1;
     /**
      * The number of splats in the primitive.
      * This is the total number of splats across all selected tiles.
@@ -1223,6 +1306,8 @@ class GaussianSplatPrimitive {
     this._scales = undefined;
     this._colors = undefined;
     this._indexes = undefined;
+    this._indexesSortSequence = -1;
+    this._indexesDataGeneration = -1;
     this._packedSplatTextureData = undefined;
     destroySnapshotTextures(this._pendingSnapshot);
     destroySnapshotTextures(this._snapshot);

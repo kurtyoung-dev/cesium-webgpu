@@ -519,7 +519,7 @@ scoping row must re-verify all of it at HEAD):**
 | `C15-G1` | Probe harness + **WebGL reference leg** on the two in-tree splat tilesets. No engine change. | S | **IMPLEMENTATION DONE — 2026-08-07 (worker)**; pending orchestrator landing + Edge run. `probe-gsplat-parity.mjs` + `lib/gsplat-parity-model.mjs` + `gsplat-harness.spec.mjs` (50 checks green). Predictions + the §6a addendum below | `C15-G0` |
 | `C15-G2` | Scene-logic extraction: move the FR dispatch below the data commit; split the backend-neutral snapshot pack from the WebGL `Texture` upload | M | **CONFIRMED-COMPLETE — 2026-08-07 (Batch 880 fix, Edge-verified).** Batch 878 landed the extraction and came back exit 3 on its own STAGE contract (`_numSplats` stuck at 0 — the TEXTURE_READY guard read `pending.gaussianSplatTexture`, a WebGL object the native branch deliberately never creates); `hasSnapshotRenderPayload` fixed it and the re-run measured `numSplats=27`, blockers exactly `[no-splat-data-fields, cache-splat-count-zero]`, **exit 0** — an exact match to the re-registered predictions. Mechanism + corrected boundary in the §6c `C15-G2` block below | `C15-G1` |
 | `C15-G3` | Splat record format + WebGPU buffer commit — consume the WASM texture-generator output verbatim; first real WebGPU splat pixels | L | **COMPLETE — Batch 882 (`C15-G3b`) Edge-verified, every pre-registered number hit.** WebGPU splats RENDER: `cache.splatCount=27`, added **18.995%** vs WebGL **19.141%** (inside the predicted 17.8-21.0% band, within 0.8% of parity), parity mismatch **31.946% -> 2.574%** (below the predicted 8-15%), blockers `[]`, `WEBGPU-SPLATS-PRESENT`, exit 0. `probe-splat-sort` + `probe-oit-transparency` green. `probe-splat-globe-occlusion` check 3 red (`greenPx=1436`) -> **`C15-G3c`: attributed to the MISSING GLOBE, not the splat** (the sharper falloff makes leak pixels exactly 4x LESS countable, so it cannot manufacture a leak; 1436 px is precisely the fully-unoccluded footprint at the probe's geometry; the PNG shows the globe confined to a right-hand strip). Instrument fixed (globe-only reference frame, per-pixel green split, structural exit 3); no engine change. 117 harness checks green. Blocks nothing: `C15-G4`/`G5` are unblocked | `C15-G2` |
-| `C15-G4` | Consume the WASM radix sort (`primitive._indexes`) instead of the in-renderer synchronous JS comparator sort | M | PENDING | `C15-G3` |
+| `C15-G4` | Consume the WASM radix sort (`primitive._indexes`) instead of the in-renderer synchronous JS comparator sort | M | **IMPLEMENTATION DONE — 2026-08-07 (worker)**; pending orchestrator landing + Edge run on BOTH assets. **The row's headline was already shipped by its own dependencies, and the record has to say so:** `C15-G2` moved the whole backend-neutral pipeline — including the `GaussianSplatSorter.radixSortIndexes` schedule — ABOVE the FR dispatch, and `C15-G3` consumed its `_indexes` product, so the asynchronous worker sort has owned the WebGPU order since Batch 878 and the synchronous comparator has been unreachable on packed content since Batch 881. What `C15-G4` actually adds: (1) **provenance** — `_indexes` carried no answer to "which camera, against which data?", so `GaussianSplatPrimitive` now stamps `_indexesSortSequence` (the already-monotonic `_sortRequestId`) + `_indexesDataGeneration` at both assignment sites, `commitSnapshot` directly (it IS the atomic data swap; refusing there would desynchronize `_indexes` from `_positions`) and `resolveSteadySort` through a new `publishSortedIndexes`; (2) **a sequence guard at the buffer-upload boundary** in `uploadProvidedSortOrder` — the upload IS the swap (`writeBuffer` snapshots at call time, so a frame draws the whole old permutation or the whole new one), and a resolution for an older sequence or older generation is refused while still returning `true`, so the refusal keeps the resident order instead of falling through to a synchronous sort; (3) **the exit gate's observable** — `cache.comparatorSorts` (gate: 0), `providedSortUploads` (liveness: > 0, else 0/0 is a vacuous green) and `supersededSortUploads`, sampled and printed by `probe-gsplat-parity.mjs`. `maybeSortSplats` is **RETIRED, not deleted** (Principle 7): its `layoutPacked` early-out is the retirement, and it is the ONLY sorter for the three synthetic legacy-layout probes — `probe-splat-sort.mjs` (the Batch-288 sort-consume evidence), `probe-splat-globe-occlusion.mjs`, `probe-oit-transparency.mjs`. Harness 156 → 179: the guard is EXTRACTED FROM SOURCE AND EXECUTED over ordered resolutions, with 8 mutants, each also required to pass on the real source. Discharges `C10-04-SPLAT-ASYNC-SORT` (DEFERRED_WORK 2026-08-07). Predictions in the `C15-G4` block below | `C15-G3` |
 | `C15-G5` | Spherical harmonics (degree 1-3) in WGSL — the view-dependent colour term the WGSL has **zero** implementation of | L | PENDING | `C15-G3` |
 | `C15-G6` | `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` — re-verify against production data (the B647 fix is currently **vacuous** under every probe) | M | **PENDING — and it now has OBSERVED evidence (`C15-G3d`, 2026-08-07).** A splat 3 km BELOW the surface renders through a fully-covering globe while a splat 2 km ABOVE it composes correctly: every splat fragment beats the globe's depth, near and far alike. That is an ENCODE-SPACE mismatch (uniformly smaller splat depth), refuting both a flipped compare (which would hide the NEAR splat) and reversed-Z (no such migration exists at HEAD — 51 `less-equal` across the WebGPU fleet). `probe-splat-globe-occlusion` now prints the log-depth inputs BOTH producers encode from, so one run names the mismatch. **UPDATE Batch 885 (`C15-G6e`): the encode hypothesis is REFUTED by its own pinned constants** (near=0.1, far=1e8, factor=1/log2(far-near+1); reconstructed above 0.472277 < globe 0.487892 < below 0.505179 — correctly interleaved), and the three inline log-depth helper copies are now formula-identity-locked by an extracting spec. **UPDATE Batch 886 (`C15-G6f`): the successor 'depth CLEAR between OPAQUE and GAUSSIAN_SPLATS' hypothesis is REFUTED AT SOURCE** — `_resumeScenePass` re-opens with `depthLoadOp:load`, `_clearDepthStencil` is the only clearing re-open and both of its call sites are upstream of `_executeOpaquePass`, the only pass boundary between the two producers is the DP-H45 repack (which resumes with load, onto a depth-less copy target), and the draw-time pipeline/variant selection is unconditional. Also eliminated: the encode-PHASE question (both producers pack from `currentFrustum` at primitive-update time). **AND the discriminator itself had no positive control** — `bluePaintedOverGlobe = 0` was equally 'occluded' and 'never drew'; new STRUCTURAL precondition **P3** (point alone, depth test disabled, must paint > 500 px) makes the next run decidable in one shot. 140-check harness, 3 new mutants. Filed on the way: `NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT`. **UPDATE Batch 887 (`C15-G6g`): P3 GREEN (3026 px painted / 0 occluded) — the control is sound and the asymmetry is real.** Exhaustive field-by-field diff of the splat vs the point command+pipeline: declared depth state IDENTICAL, cache forwards it verbatim, multisample/format bakes agree, `WebGPUSceneRendererPassRedirect.ts` has no splat branch — candidates 1-3 all refuted at source. **Prime suspect filed as `NEW-SPLAT-LOG-DEPTH-ENCODE-SOURCE-SPLIT`**: the splat is the ONLY log-depth producer reading the live `currentFrustum`; PointPrimitive/Billboard/Label/Polyline/EllipsoidPrimitive/DepthPlane all prefer the stashed full-camera-frustum encode, and the point renderer's comment names the splat's exact symptom as its reason. NOT flipped — the globe is on the live side too, so the pairs may coincide; `recordLogDepthEncoder` now publishes each producer's BAKED pair and the probe reconstructs predicted-vs-measured visibility. One run convicts the encode or closes it with numbers. Harness 140 -> 148, and it forbids the splat's source moving in either direction without that run. **UPDATE Batch 888 — the decider answered branch 2: ALL THREE BAKED TRIPLES EQUAL** (`[0.1, 1e10, 0.030102999566280455]`), reconstructed `redSplat@6km=0.37782 < globe@8km=0.39031 < greenSplat@11km=0.40414` — the arithmetic predicts green HIDDEN against a measured LEAK, so **the encode is exonerated with numbers and the PASS is convicted**, and `NEW-SPLAT-LOG-DEPTH-ENCODE-SOURCE-SPLIT` is downgraded to a latent hazard. **✅ FIXED Batch 889 (`C15-G6h`).** Cause: the splat command had NO `boundingVolume`, so `View.createPotentiallyVisibleSet` gave it the camera worst-case span (`View.js:382-392`) — `[0.1, 1e10]` under log depth, a 1e11 ratio that splits into TWO slices — and it binned into BOTH, while the globe's tiles bin into the near one only; depth is cleared between slices and colour is not, so the far-slice execution composited against a depth buffer with no globe in it. **B647's fields now EXECUTE for real:** `_tileset.boundingSphere` first (WebGL parity, and already live for the real-tileset parity probe), else a sphere DERIVED from the resident splat centres and transformed to world space by the command's own model matrix — so the synthetic and custom producers that are this path's only exercisers stop inheriting the worst-case span. Derived once per attribute commit (the block that already walks the same bytes), one `BoundingSphere.transform` per frame. `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` resolves with this mechanism trace and its recorded per-frustum-UBO-repack fix is marked wrong. Harness 148 -> 156: the derivation is EXTRACTED FROM SOURCE AND EXECUTED over both record layouts, with 4 mutants. `NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT` stays separate and open. | `C15-G3` |
 | `C15-G7` | `NEW-GS-CLASSIFICATION-DEPTH` — re-verify the depth-write variant against production data | S | PENDING | `C15-G3` |
@@ -2029,6 +2029,76 @@ element on the sample frame; longest main-thread task during a 60-frame orbit is
 **below** the pre-row measurement taken in the same run (interleaved A/B, not
 across builds). Back-to-front correctness preserved: `probe-splat-sort.mjs`
 still asserts the non-identity permutation.
+
+#### `C15-G4` implementation record + pre-registered predictions (2026-08-07, worker)
+
+**Dataflow at HEAD, re-read rather than inherited.** The row was written against
+the Batch-288 picture ("the renderer runs a synchronous main-thread sort"). That
+picture is two rows out of date, and saying so is part of the deliverable:
+
+1. `GaussianSplatPrimitive.update` (`:1305`) calls `_updateSplatData(frameState)`
+   and only THEN `fr.update(this, frameState)`. Every sort schedule —
+   the pending-snapshot sort (`:1691`) and both steady-state sorts (`:1749`,
+   `:1783`) — lives inside `_updateSplatData`, i.e. above the backend branch, so
+   the WASM worker sort has run on the WebGPU path since `C15-G2` (Batch 878).
+2. `resolveSteadySort` (`:806`) publishes to `_indexes`;
+   `resolvePendingSnapshotSort` (`:739`) publishes via `commitSnapshot` (`:437`),
+   which swaps `_indexes` and `_packedSplatTextureData` in the same statement
+   run — so the WebGPU cache can never hold packed bytes without a matching
+   permutation, and the identity seed written at buffer reallocation is
+   overwritten in the same frame.
+3. `uploadProvidedSortOrder` (renderer) writes that permutation to
+   `sortedIndexBuffer`; `maybeSortSplats` returns immediately for
+   `cache.layoutPacked`, which every production commit sets.
+
+So the "consume the WASM sort" half was already done. The parts that were NOT:
+the permutation carried no provenance, the consumer's only staleness test was
+array identity, and "the comparator never runs" had no observable — it was an
+inference from source shape. Those three are what this row built (ledger row
+above for the mechanism).
+
+**The command-level `_backToFrontSplatsComparator` is OUT OF SCOPE and correct
+as-is.** Batch 888's bounding-volume fix did make it run for the first time, but
+it sorts **draw commands** by camera distance
+(`WebGPUSceneRenderer.ts:379/498-517`), mirroring the shared
+`Scene/CommandSorter.js#backToFrontSplats` that `SceneRenderer.js:212` runs on
+WebGL. It is the cross-command ordering, not the per-splat ordering, its cost is
+O(commands) with one splat command per primitive, and forking it would break
+WebGL/WebGPU parity in the command sorter. Left alone.
+
+**Pre-registered predictions.** Both legs in one run, pinned clock. New
+observables print on the `sort:` line.
+
+*`sh_unit_cube` (27 splats) — expected UNCHANGED from the `C15-G3` acceptance.*
+27 elements sort trivially and the packed early-out was already in place at
+Batch 882, so this leg is a REGRESSION check, not a measurement of the row:
+`numSplats` 27/27, `cache.splatCount` 27, `splatPassCommands` 1/1,
+added **18.995%** WebGPU vs **19.141%** WebGL (band 17.8–21.0%), parity mismatch
+**~2.574%** (the `C15-G5` SH baseline — unchanged, since SH is untouched here),
+blockers `[]`, `WEBGPU-SPLATS-PRESENT`, exit 0. New counters:
+`comparatorSorts=0`, `providedSortUploads >= 1`, `supersededSortUploads=0`.
+Any movement in added% or mismatch on this leg is a REGRESSION, not a result.
+
+*`tower` (286,868 splats) — the row's real gate, never yet run on WebGPU.*
+
+| observable | prediction | derivation |
+| --- | --- | --- |
+| `numSplats` / `cache.splatCount` | exactly **286,868**, both legs | single-tile tileset (`root.content = 0/0.glb`, no children, `geometricError 0.0`) so there is no LOD subsetting, and the texture hard cap is `maxTex*(maxTex/2)` ≈ 33.5 M at `maxTex=8192` — three orders of magnitude clear, so `splatBudgetSSEScale` stays 1.0 |
+| `splatPassCommands` | **1 / 1** | one `GaussianSplatPrimitive` per tileset → one splat command, as measured on `sh_unit_cube` |
+| `cacheSplatRecordBytes` / `packedWords` | **32** / **>= 2,294,944** (`286,868 * 8`) | packed WASM record, `C15-G3` Option B |
+| **`comparatorSorts`** | **0** — the row's gate | `layoutPacked === true` on every production commit, so the comparator returns before allocating its `Float64Array(286868)` |
+| **`providedSortUploads`** | **>= 1** — the anti-vacuity partner | 0/0 would mean nothing sorted at all, which passes the gate for the wrong reason |
+| `supersededSortUploads` | **0** at a settled camera | one sort in flight at a time (`_sorterPromise` is single-slot); a non-zero value is informative, not a failure |
+| added% agreement | **`added_webgpu / added_webgl` in [0.90, 1.10]**, and the absolute gap `<= 2` percentage points | this is the FALSIFIABLE tower prediction. `sh_unit_cube` measured 0.992 (18.995/19.141) after the `C15-G3b` footprint port, and the footprint math is shared |
+| added% absolute | **5–45%**, weakly constrained | no prior tower run exists; the tower's bounding box is a tall thin 8.4 × 8.1 × 36.6 m half-extent volume, so the framed silhouette is a narrow vertical band, not a disc. Stated as a band precisely so a wildly-outside value is diagnosable — the RELATIVE agreement above is the real gate |
+| `dataReady` wall clock | **true on both legs**; `dataReadyMs_webgpu / dataReadyMs_webgl <= 1.5`, WebGL itself **1.5–8 s** | 7.5 MB SPZ glb through two WASM workers dominates; the shared pipeline is now byte-identical up to the FR dispatch, and WebGPU's only extra work is retaining the 9.2 MB packed payload plus one `writeBuffer`. The G1-era budget is `min(120 s, max(30 s, 4 x webgl.dataReadyMs))`, so 1.5x is comfortably inside it |
+| **no main-thread stall** | asserted by **`comparatorSorts === 0`** (a count, not a timing), corroborated by the two timings above staying inside the 4x budget and by `rendererCommitMs` not growing with splat count | a per-frame 286k-element `Array.prototype.sort` would show as the budget expiring or `rendererCommitMs` blowing out; the count is the direct evidence and the timings are the cross-check |
+
+**Off-gate:** WebGL output must be byte-identical. The producer change is
+additive (two new stamp fields plus a refusal that `isActiveSort` already makes
+unreachable on the steady path), and `buildGSplatDrawCommand` reads only
+`_indexes` — unchanged. `capture-and-diff` + both `GaussianSplat*Spec` suites
+are the standing check.
 
 ### `C15-G5` — spherical harmonics degree 1-3 in WGSL (L) — deps: `C15-G3`
 

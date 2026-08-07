@@ -110,15 +110,35 @@ interface GaussianSplatCache {
   splatSourceToken: object | null;
   // C15-G3 — identity + length of the `primitive._indexes` permutation last
   // uploaded to `sortedIndexBuffer`. The WASM radix sort resolves into a fresh
-  // array, so identity is the re-upload signal. `C15-G4` owns the demand/
-  // throttle policy around it; this row only consumes what the shared pipeline
-  // already produced.
+  // array, so identity is the re-upload signal.
   providedIndexSource: ArrayBufferView | null;
+  // C15-G4 — provenance of the RESIDENT permutation, mirrored from the
+  // producer's stamp (`GaussianSplatPrimitive._indexesSortSequence` /
+  // `_indexesDataGeneration`). The upload boundary is the swap point, so this
+  // pair is what makes the swap monotonic: a resolution for an older camera
+  // pose, or for a superseded data generation, is refused rather than allowed
+  // to regress the order already on the GPU. `-1` = nothing resident (the
+  // identity seed), which every stamped permutation beats.
+  providedIndexSequence: number;
+  providedIndexGeneration: number;
+  // C15-G4 instruments. `comparatorSorts` is the `C15-G4` exit gate's own
+  // observable: the row's contract is that the synchronous main-thread
+  // comparator NEVER runs on production content, and "never" has to be
+  // measured, not inferred. `providedSortUploads` counts worker permutations
+  // that landed; `supersededSortUploads` counts the ones the sequence guard
+  // refused.
+  comparatorSorts: number;
+  providedSortUploads: number;
+  supersededSortUploads: number;
   // CPU-side sorted permutation staging; reused across frames when the count
   // is unchanged. Identity until the async sort resolves.
   sortIndices: Uint32Array | null;
   // Camera pose at the last sort so we only re-sort when the view moves enough.
   lastSortCameraDir: Cartesian3 | null;
+  // Externally-forced re-sort request for the LEGACY comparator path: set it to
+  // skip the view-angle throttle once. Retained per the `C15-G4` row (the
+  // demand signal stays with the throttle); the production path takes its
+  // demand from the shared `shouldStartSteadySort` in the primitive instead.
   sortRequestPending: boolean;
   splatCount: number;
   command: CesiumAnyDrawCommand | null;
@@ -1232,6 +1252,13 @@ function tryResolveSplatPipelines(
 // relative to the splat cloud. Mirrors the WebGL steady-sort cadence
 // (GaussianSplatPrimitive DEFAULT_SORT_MIN_ANGLE_RADIANS).
 const SORT_MIN_ANGLE_COS = Math.cos(0.008726646259971648);
+// C15-G4 — a legacy-layout cloud this large would make the synchronous
+// comparator a visible main-thread stall. The three in-tree exercisers are 3,
+// 27 and a handful of splats, so this can only fire for an out-of-tree producer
+// that should be supplying `_indexes` instead. Diagnostic only: the sort still
+// runs, so no feature is bypassed to protect a metric.
+const COMPARATOR_STALL_SPLATS = 65536;
+const _reportedComparatorStall = new WeakSet<object>();
 const scratchSortDir = new Cartesian3();
 const scratchSortMV = new Matrix4();
 
@@ -1269,6 +1296,23 @@ function splatModelMatrix(primitive: CesiumObjectWithWebGPUCache): Matrix4 {
  * rotated enough since the last sort (cheap-frame amortization). The sort key
  * is the splat-center eye-space z; farthest (most negative z) drawn first.
  *
+ * # `C15-G4` — why this is RETIRED but not deleted
+ *
+ * It is a synchronous main-thread `Array.prototype.sort` with a JS comparator
+ * over a freshly allocated `Float64Array(count)`. On production content that is
+ * a per-frame stall — `tower` is 286,868 splats — so `C15-G4` retires it from
+ * that path STRUCTURALLY: the packed layout returns before any work, and
+ * `uploadProvidedSortOrder` has already consumed the worker's permutation by
+ * the time this is called at all.
+ *
+ * It is NOT dead code (Principle 7). The LEGACY 16-f32 record has exactly three
+ * exercisers, all synthetic probe primitives that carry `_splatData` and no
+ * `_indexes` — `probe-splat-sort.mjs` (which asserts the non-identity
+ * permutation and is the Batch-288 sort-consume evidence),
+ * `probe-splat-globe-occlusion.mjs` and `probe-oit-transparency.mjs`. Deleting
+ * this would leave those three drawing in identity order and turn a green
+ * instrument red for a reason that has nothing to do with what it measures.
+ *
  * @private
  */
 function maybeSortSplats(
@@ -1281,13 +1325,11 @@ function maybeSortSplats(
   if (count === 0 || !cache.sortedIndexBuffer) {
     return;
   }
-  // C15-G3 — the packed production path takes its permutation from the WASM
-  // radix sort the shared pipeline already ran (`primitive._indexes`), uploaded
-  // by `uploadProvidedSortOrder` above. This comparator is the LEGACY-layout
-  // fallback for the synthetic probes, which carry no `_indexes`. It is also a
-  // synchronous main-thread `Array.prototype.sort`, so letting it run for a
-  // 286k-splat tileset would be a per-frame main-thread stall; `C15-G4` owns
-  // deleting it outright.
+  // C15-G4 — the retirement itself. The packed production path takes its
+  // permutation from the WASM radix sort the shared pipeline already ran
+  // (`primitive._indexes`), uploaded by `uploadProvidedSortOrder` above; this
+  // comparator is the LEGACY-layout fallback only. Removing this line puts a
+  // synchronous 286k-element main-thread sort back on every qualifying frame.
   if (cache.layoutPacked) {
     return;
   }
@@ -1353,6 +1395,25 @@ function maybeSortSplats(
     indices,
     (a: number, b: number) => depth[a] - depth[b],
   );
+  // C15-G4 instrument — the exit gate reads this off the cache and requires 0
+  // on production content. Counted at the point the sort ACTUALLY ran, not at
+  // entry, so the throttled and early-returned frames do not inflate it.
+  cache.comparatorSorts++;
+  // Permanent sentinel (no pragma): reaching a main-thread comparator sort at
+  // this size is the stall `C15-G4` exists to prevent, and it can only happen
+  // if a legacy-layout producer grew past probe scale. Behaviour is unchanged —
+  // the sort still runs, so nothing is bypassed or degraded — but the condition
+  // must reach the console, once, rather than showing up as a frame-time
+  // mystery.
+  if (
+    count >= COMPARATOR_STALL_SPLATS &&
+    !_reportedComparatorStall.has(cache)
+  ) {
+    _reportedComparatorStall.add(cache);
+    console.error(
+      `[CesiumJS:webgpu] GaussianSplat legacy comparator sorted ${count} splats on the main thread. The async WASM radix sort (primitive._indexes) is the production path; a producer this large must supply it.`,
+    );
+  }
 
   device.queue.writeBuffer(cache.sortedIndexBuffer, 0, indices);
   if (dir) {
@@ -1602,15 +1663,32 @@ function computeLocalSplatBoundingSphere(
 }
 
 /**
- * C15-G3 — upload the permutation the shared WASM radix sort already produced.
+ * `C15-G4` — consume the asynchronous WASM radix sort, and make the swap
+ * atomic at the buffer-upload boundary.
  *
- * `GaussianSplatPrimitive` runs `GaussianSplatSorter.radixSortIndexes` in a
- * worker for BOTH backends since `C15-G2` and commits the result to
- * `_indexes`; the WebGPU draw indexes through `sortedIndices[instance_index]`,
- * so consuming it is a buffer write. `C15-G4` owns the rest of that story (the
- * demand signal, the throttle, deleting the in-renderer comparator, and the
- * main-thread-task measurement); this row only stops dropping the permutation
- * the pipeline already computed.
+ * `GaussianSplatPrimitive` schedules `GaussianSplatSorter.radixSortIndexes` on
+ * a task-processor worker for BOTH backends since `C15-G2`, and publishes the
+ * resolved permutation to `_indexes` with a `(sequence, dataGeneration)` stamp.
+ * The WebGPU draw indexes through `sortedIndices[instance_index]`, so consuming
+ * it is a single buffer write — which is exactly what makes the swap atomic:
+ * `writeBuffer` snapshots the source at call time, so the frame either draws
+ * the whole old permutation or the whole new one. There is no window in which
+ * half the splats are ordered for one camera and half for another.
+ *
+ * The two failure modes this guards, in order of how they'd actually be hit:
+ *
+ *   * **Torn order** — impossible by construction (one write, whole array), and
+ *     the length check refuses a permutation that does not describe the buffer.
+ *   * **Regression** — a resolution for camera A arriving after one for camera
+ *     B. The producer's `isActiveSort` already refuses those, but this consumer
+ *     reads `_indexes` off an *arbitrary* object (the synthetic probes prove
+ *     that surface is real), so it re-derives the ordering itself from the
+ *     stamp rather than trusting a scheduler in another module. A refused
+ *     resolution leaves the previous permutation resident and STILL returns
+ *     `true`: stale-but-consistent beats falling back to a synchronous sort.
+ *
+ * An unstamped producer (no `_indexesSortSequence`) keeps the historical
+ * identity-only behaviour, so the legacy synthetic path is unchanged.
  *
  * @returns {boolean} `true` when a provided permutation is resident, so the
  *   comparator fallback must not run.
@@ -1621,8 +1699,17 @@ function uploadProvidedSortOrder(
   primitive: CesiumObjectWithWebGPUCache,
   cache: GaussianSplatCache,
 ): boolean {
-  const indexes = (primitive as unknown as { _indexes?: Uint32Array })._indexes;
+  const fields = primitive as unknown as {
+    _indexes?: Uint32Array;
+    _indexesSortSequence?: number;
+    _indexesDataGeneration?: number;
+  };
+  const indexes = fields._indexes;
   const count = cache.splatCount;
+  // Not resolved yet, or resolved against a different splat count — either way
+  // there is nothing that legitimately describes the resident buffer, so no
+  // write happens. This ordering is load-bearing: the upload must never precede
+  // the resolution check.
   if (
     !indexes ||
     count === 0 ||
@@ -1634,8 +1721,27 @@ function uploadProvidedSortOrder(
   if (cache.providedIndexSource === indexes) {
     return true;
   }
+  const sequence = fields._indexesSortSequence;
+  const generation = fields._indexesDataGeneration;
+  if (typeof sequence === "number" && typeof generation === "number") {
+    if (
+      generation < cache.providedIndexGeneration ||
+      (generation === cache.providedIndexGeneration &&
+        sequence <= cache.providedIndexSequence)
+    ) {
+      cache.supersededSortUploads++;
+      return true;
+    }
+  }
   device.queue.writeBuffer(cache.sortedIndexBuffer, 0, indexes);
+  // Bookkeeping AFTER the write: if the write throws, the cache must keep
+  // describing what is actually on the GPU, not what we intended to put there.
   cache.providedIndexSource = indexes;
+  if (typeof sequence === "number" && typeof generation === "number") {
+    cache.providedIndexSequence = sequence;
+    cache.providedIndexGeneration = generation;
+  }
+  cache.providedSortUploads++;
   // The comparator's throttle state is meaningless once the worker owns the
   // order; clear it so a later fall-back to the legacy layout re-sorts.
   cache.lastSortCameraDir = null;
@@ -1677,6 +1783,13 @@ function updateWebGPUGaussianSplats(
       splatRecordBytes: LEGACY_SPLAT_RECORD_BYTES,
       splatSourceToken: null,
       providedIndexSource: null,
+      // C15-G4 — nothing but the identity seed is resident, so every stamped
+      // permutation outranks it.
+      providedIndexSequence: -1,
+      providedIndexGeneration: -1,
+      comparatorSorts: 0,
+      providedSortUploads: 0,
+      supersededSortUploads: 0,
       sortIndices: null,
       lastSortCameraDir: null,
       sortRequestPending: false,
@@ -1983,6 +2096,11 @@ function updateWebGPUGaussianSplats(
       // The identity seed just overwrote whatever permutation was resident, so
       // the provided-order upload must re-run even for the same `_indexes`.
       cache.providedIndexSource = null;
+      // C15-G4 — and the sequence guard must not veto that re-upload. The guard
+      // protects a RESIDENT order from being regressed; after the identity seed
+      // there is no resident order to protect, so the provenance resets with it.
+      cache.providedIndexSequence = -1;
+      cache.providedIndexGeneration = -1;
     }
     // The splat + sorted-index storage buffers were reallocated, so the
     // bind group must be rebuilt against the new buffers.
@@ -1998,6 +2116,8 @@ function updateWebGPUGaussianSplats(
     cache.lastRevision = -1;
     cache.splatSourceToken = null;
     cache.providedIndexSource = null;
+    cache.providedIndexSequence = -1;
+    cache.providedIndexGeneration = -1;
     cache.splatData = null;
     cache.prevSplatData = null;
     cache.command = null;
@@ -2056,15 +2176,16 @@ function updateWebGPUGaussianSplats(
     cache.pickCommand = null;
   }
 
-  // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — run a CPU back-to-front sort
-  // when the view has moved enough since the last sort, then upload the new
-  // permutation to the sorted-index storage buffer. Mirrors WebGL's radix
-  // sort feeding primitive._indexes — the WebGPU draw previously dropped it.
-  //
-  // C15-G3 — when the shared pipeline HAS produced that permutation, consume
-  // it instead of recomputing it; the comparator is now the legacy-layout
-  // fallback only. `C15-G4` owns the rest (demand signal, throttle, deleting
-  // the comparator, and the main-thread-task measurement).
+  // C15-G4 — the sort chain, in priority order. The asynchronous WASM radix
+  // sort the shared pipeline runs on a worker owns the production order; its
+  // resolved permutation is swapped in atomically at the buffer-upload
+  // boundary. Only when NO provided permutation describes the resident buffer
+  // does the legacy synchronous comparator get a chance, and it in turn refuses
+  // the packed layout — so on production content neither branch ever runs a
+  // main-thread sort (`cache.comparatorSorts` is the measurement, not the
+  // claim). `uploadProvidedSortOrder` returning `true` after REFUSING a
+  // superseded resolution is deliberate: keeping the previous order is correct,
+  // falling back to a synchronous sort is not.
   if (!uploadProvidedSortOrder(device, primitive, cache)) {
     maybeSortSplats(device, primitive, frameState, cache);
   }

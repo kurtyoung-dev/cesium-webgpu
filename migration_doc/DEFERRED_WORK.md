@@ -591,6 +591,83 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-08-07 — `C10-04-SPLAT-ASYNC-SORT` RESOLVED by `C15-G4`
+
+### C10-04-SPLAT-ASYNC-SORT
+
+**Status: RESOLVED-BY-`C15-G4` (implementation done 2026-08-07, pending the Edge
+run). Formal closure rides with `C15-G8`'s tracker reconciliation.** The C10-04
+STOP-AND-BLOCK verdict (`WEBGPU_DEBUGGING_LOG.md:1233`) was: the WebGPU splat
+renderer runs a synchronous main-thread `Array.prototype.sort` where the WebGL
+path already schedules an asynchronous WASM radix sort in a worker — but the
+row could not be executed, because at the time **no production splat data
+reached the renderer at all**, so the sync sort never ran and there was nothing
+to measure. Its premise was confirmed and it was parked behind
+`NEW-WEBGPU-SPLAT-DATA-PRODUCER`.
+
+**What actually resolved it, and the correction the record needs.** The
+resolution is NOT "the WebGPU renderer learned to call `radixSortIndexes`". By
+the time this row executed, `C15-G2` had already moved the whole backend-neutral
+splat pipeline — including the sort schedule — ABOVE the feature-renderer
+dispatch (`GaussianSplatPrimitive.update` calls `_updateSplatData(frameState)`
+and only then `fr.update`), so the worker sort has been running on the WebGPU
+path since Batch 878, and `C15-G3` had already made the renderer consume its
+`_indexes` product. Re-reading the chain at HEAD is what established that: the
+row's headline deliverable was **already shipped by its own dependencies**, and
+recording it otherwise would have credited `C15-G4` with work it did not do.
+
+**What `C15-G4` added on top:**
+
+1. **Provenance on the permutation.** `_indexes` carried no answer to "which
+   camera, against which data?", so no consumer in another module could order
+   two permutations of equal length. `GaussianSplatPrimitive` now stamps
+   `_indexesSortSequence` (the already-monotonic `_sortRequestId`) and
+   `_indexesDataGeneration` at both assignment sites —
+   `commitSnapshot` (which assigns directly, because it IS the atomic data swap
+   and refusing there would desynchronize `_indexes` from `_positions`) and
+   `resolveSteadySort` (which now publishes through `publishSortedIndexes`).
+2. **A sequence guard at the buffer-upload boundary**, in
+   `WebGPUGaussianSplatRenderer.uploadProvidedSortOrder`. The upload IS the
+   swap — `queue.writeBuffer` snapshots the source at call time, so a frame
+   draws the whole old permutation or the whole new one, never a mix. A
+   resolution for an older sequence or an older data generation is refused and
+   the resident order is kept; the function still returns `true` so the refusal
+   does NOT fall through to the synchronous comparator. Stale-but-consistent
+   beats torn; a synchronous 286k-element sort beats neither.
+3. **The exit gate's observable.** `cache.comparatorSorts` counts sorts that
+   actually executed, `cache.providedSortUploads` is its liveness partner (0/0
+   means nothing sorted at all — the vacuous green), and
+   `cache.supersededSortUploads` counts refusals. `probe-gsplat-parity.mjs`
+   samples and prints all three.
+
+**`maybeSortSplats` is RETIRED, not deleted (Principle 7).** Its
+`if (cache.layoutPacked) return;` early-out is the retirement: production
+content is always the packed 32-byte WASM record, so the comparator is
+structurally unreachable there. It stays because the LEGACY 16-f32 record has
+exactly three exercisers — `probe-splat-sort.mjs` (the Batch-288 sort-consume
+evidence, which asserts the non-identity permutation),
+`probe-splat-globe-occlusion.mjs` and `probe-oit-transparency.mjs` — all
+synthetic primitives carrying `_splatData` and no `_indexes`. Deleting it would
+turn a green instrument red for a reason unrelated to what it measures. A
+permanent sentinel now reports (once, without changing behaviour) if the
+comparator is ever reached with ≥ 65,536 splats.
+
+**The GPU/compute radix sort (`WEBGPU_MIGRATION_BACKLOG.md:799`) stays
+deferred** — unchanged by this row, and explicitly a `C15-G4` non-goal (§6d).
+
+**Guard:** `Tools/visual-regression/gsplat-harness.spec.mjs`, 156 → 179 checks.
+The sequence guard is EXTRACTED FROM SOURCE AND EXECUTED over ordered
+resolutions (out-of-order, equal-sequence, older-generation, newer-generation-
+with-lower-sequence, unstamped, length-mismatch, unresolved, throwing write),
+with 8 mutants — restoring the comparator on the packed path, removing the
+guard, hoisting the upload above the resolution check, recording residency
+before the write succeeds, deleting the counter, publishing `_indexes` directly,
+dropping the commit stamp, and moving the shared schedule back below the FR
+dispatch. Each mutant is also required to pass on the real source, so a mutant
+cannot certify a rule the shipped code fails.
+
+---
+
 ## 2026-08-06 - the three NON-Gate-B weather probes, CLASSIFIED
 
 ### C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE-TAIL
