@@ -124,6 +124,18 @@
 //   diagnostics, because they are the record of the saturating-shell physics
 //   for whoever reads this next.
 //
+//   ★ READ `failedPredicates`, NOT THE DIAGNOSTICS (added 2026-08-07). Round 4
+//   left ~40 booleans on each backend's verdict, of which 22 gate and five do
+//   not — and two of the five are EXPECTED FALSE by the paragraph above. A run
+//   was consequently reported as "the gate FAILs on a different leg" citing
+//   `skyInBracket` and `backgroundRevealExplains`, neither of which can fail
+//   anything. `verdicts.<backend>.failedPredicates` now names the gating
+//   predicates that are not true (empty on a pass), `gatePredicates` and
+//   `reportedOnlyPredicates` publish the two sets, and the run prints
+//   `GATE webgl: …` / `GATE webgpu: …` as its last lines before `EXIT`.
+//   See `REPORTED_ONLY_PREDICATES` for the measured reasons the brackets
+//   cannot be tightened into gates.
+//
 //   THE SKY BAND IS NOT THE SHELL ALONE (Edge cycle finding I1, both
 //   backends, growing with obscuration). The band is
 //   `shell*alpha + B*(1-alpha)` composited in display space, and the shell's
@@ -1541,6 +1553,82 @@ async function runBackend(browser, renderer, plan) {
 }
 
 // ── Verdict ─────────────────────────────────────────────────────────────────
+
+/**
+ * The predicates that COMPOSE the per-backend verdict, in evaluation order.
+ *
+ * This list IS the gate: `judge` folds it to produce `PASS` and filters it to
+ * produce `failedPredicates`, so there is no second hand-maintained copy that
+ * could disagree with the conjunction. Adding a name here adds a gate;
+ * removing one removes a gate — both are deliberate acts, and
+ * `eclipse-scene-dimming.spec.mjs` pins the membership so neither can happen
+ * by accident.
+ */
+const GATE_PREDICATES = Object.freeze([
+  "offFactorAllExactlyOne",
+  "toggleObserved",
+  "autoExposureFlagObserved",
+  "physicsRunsWhenOff",
+  "ladderNonVacuous",
+  "terrainResponsive",
+  "clearStepIdentity",
+  "sanityFloors",
+  "lightUniformCarriesFactor",
+  "monotoneSky",
+  "monotoneGround",
+  "equivalenceOk",
+  "backgroundIsToggleInvariant",
+  "deepestDimsVisibly",
+  "curveMatchesPrediction",
+  "floorRespected",
+  "floorExactAtTotality",
+  "notBlackAtDeepest",
+  "aeFactorStrictlyLower",
+  "aeIdentityWhenClear",
+  "aeRendersDarker",
+  "aeDimmingNonVacuous",
+]);
+
+/**
+ * Booleans that are COMPUTED AND REPORTED but deliberately do NOT gate, with
+ * the reason each one is expected to read false.
+ *
+ * Round 4 demoted the whole predictive lane (`predictDim`, `cRecovered`, the
+ * brackets) after three modelling rounds each leaked; see the file header.
+ * Keeping the numbers is the point — they are the record of the saturating
+ * shell — but they must never be mistaken for the verdict again, which is
+ * what happened on 2026-08-07 when a run whose only bracket flags were false
+ * was reported as "the gate fails on a different leg".
+ *
+ * TWO INDEPENDENT REASONS THE BRACKETS CANNOT BE TIGHT, both measured:
+ *
+ *  1. SUB-EFFECT BIAS. `predictDim` models S2 alone while `s.on` renders the
+ *     shipped stack (S2 + S5's per-fragment umbra + S6's horizon glow), so the
+ *     measurement is biased DEEP, and most at the deep rungs where S5's
+ *     `G(O_fragment)` bites hardest. `bracketS2Only` removes exactly this
+ *     term by re-measuring against the isolated reference the equivalence
+ *     gate already renders.
+ *  2. ESTIMATOR ERROR (this one survives the fix). `predictDim` pushes a band
+ *     MEAN through a per-pixel nonlinearity — the probe's own comment calls
+ *     that "an approximation … that is what the tolerance bands are for". The
+ *     error is Jensen's gap and it is NOT small: holding the band mean at 0.5
+ *     and only changing its COMPOSITION between a uniform band and a 50/50 or
+ *     80/20 bright/dark split moves the true ratio by 17.6% (f = 0.40), 20.4%
+ *     (f = 0.279) and 72.1% (f = 0.157) relative to the mean-based
+ *     prediction. The sky bracket's own half-widths are −25% / +15%. A band
+ *     whose composition changes with obscuration — which the sky band does, by
+ *     the header's own "the sky band is not the shell alone" finding — is
+ *     therefore expected to leave the bracket at the deep rungs, with no
+ *     engine change whatsoever.
+ */
+const REPORTED_ONLY_PREDICATES = Object.freeze([
+  "skyBracketOkReportedOnly",
+  "groundBracketOkReportedOnly",
+  "skyBracketS2OnlyOkReportedOnly",
+  "groundBracketS2OnlyOkReportedOnly",
+  "backgroundRevealExplainsAll",
+]);
+
 function judge(steps) {
   const v = {};
   v.terrainResponse = steps[0]?.terrainResponse ?? null;
@@ -1782,6 +1870,65 @@ function judge(steps) {
         s.dimGround <= Math.min(1.0, predGround * 1.25 + 0.05),
     });
   }
+
+  // ── The same brackets, measured against the S2-ONLY reference ────────────
+  //
+  // `s.on` is the SHIPPED stack: S2's uniform scalar PLUS S5's per-fragment
+  // globe umbra PLUS S6's horizon twilight. `predictDim` models S2 alone, so
+  // every bracket above is biased DEEP by the sub-effects — most at the deep
+  // rungs, because S5's umbra is keyed to `G(O_fragment)` and deepens with
+  // obscuration. The equivalence leg already renders the S2-only frame
+  // (`manual.engineReference`, S5 and S6 switched off), so the honest
+  // comparison costs nothing extra. Null-safe: a rung whose equivalence
+  // capture is missing contributes `null` membership rather than a false
+  // failure.
+  const bracketS2Only = [];
+  for (const s of eclipsed) {
+    const ref = s.manual?.engineReference;
+    const f = s.on.state.factor;
+    const offSky = s.off.sky.mean;
+    const offGround = s.off.ground.mean;
+    const haveRef =
+      Number.isFinite(ref?.sky?.mean) && Number.isFinite(ref?.ground?.mean);
+    const dimSkyS2 = haveRef && offSky > 0 ? ref.sky.mean / offSky : null;
+    const dimGroundS2 =
+      haveRef && offGround > 0 ? ref.ground.mean / offGround : null;
+    const bSky = s.bg?.on?.sky?.mean ?? null;
+    const predSkyLow = predictDim(offSky, f);
+    const predSkyHigh =
+      bSky === null ? predSkyLow : predictWithBackground(offSky, f, bSky);
+    const predGround = predictDim(offGround, f);
+    bracketS2Only.push({
+      iso: s.iso,
+      factor: r6(f),
+      isolated:
+        ref?.horizonTwilightIsolated === true &&
+        ref?.globeShadowIsolated === true,
+      dimSkyShipped: r3(s.dimSky),
+      dimSkyS2Only: r3(dimSkyS2),
+      dimGroundShipped: r3(s.dimGround),
+      dimGroundS2Only: r3(dimGroundS2),
+      // How much of the shipped depth the isolated sub-effects contribute.
+      // This is the number that says whether a bracket miss is S5/S6 or the
+      // estimator; it was 0.004 on the band means when S5 was first isolated.
+      subEffectDepthSky: dimSkyS2 === null ? null : r3(dimSkyS2 - s.dimSky),
+      subEffectDepthGround:
+        dimGroundS2 === null ? null : r3(dimGroundS2 - s.dimGround),
+      predictedSkyShellOnly: r3(predSkyLow),
+      predictedSkyWithBackground: r3(predSkyHigh),
+      predictedGround: r3(predGround),
+      skyInBracket:
+        dimSkyS2 === null || predSkyLow === null || predSkyHigh === null
+          ? null
+          : dimSkyS2 >= predSkyLow * 0.75 &&
+            dimSkyS2 <= Math.min(1.0, predSkyHigh * 1.15 + 0.02),
+      groundInBracket:
+        dimGroundS2 === null || predGround === null
+          ? null
+          : dimGroundS2 >= predGround * 0.5 &&
+            dimGroundS2 <= Math.min(1.0, predGround * 1.25 + 0.05),
+    });
+  }
   // ── R1: THE GATE IS EQUIVALENCE, NOT PREDICTION ──────────────────────────
   //
   // Everything above (`predictDim`, `cRecovered`, `backgroundRevealExplains`,
@@ -1917,9 +2064,34 @@ function judge(steps) {
   v.equivalenceTolerance = { relative: EQUIV_REL, absolute: EQUIV_ABS };
 
   // ── Reported-only diagnostics, kept because they DOCUMENT the physics ────
+  //
+  // ★ NONE OF THE THREE BELOW GATES, AND TWO OF THEM ARE EXPECTED FALSE.
+  // Round 3 recorded `backgroundRevealExplains === false` on both backends at
+  // EVERY rung (see the header), so `backgroundRevealExplainsAll: false` is
+  // the RECORDED ANSWER, not a regression; and `predictDim` is a mean-based
+  // estimator of a per-pixel nonlinearity, which cannot be tight on a band
+  // whose composition changes with obscuration (see
+  // `REPORTED_ONLY_PREDICATES` for the measured size of that error). They were
+  // read as gate failures once (2026-08-07); `gatePredicates` /
+  // `reportedOnlyPredicates` / `failedPredicates` exist so that cannot recur.
   v.bracket = bracket;
   v.skyBracketOkReportedOnly = bracket.every((b) => b.skyInBracket);
   v.groundBracketOkReportedOnly = bracket.every((b) => b.groundInBracket);
+  // LIKE-FOR-LIKE COMPANION (2026-08-07). The brackets above measure the
+  // SHIPPED stack (S2 + S5's per-fragment umbra + S6's horizon glow) against a
+  // prediction that models S2 ALONE, so they are biased DEEP by exactly the
+  // sub-effects the equivalence gate isolates — the same blind spot that made
+  // the equivalence leg fail before S5 was isolated, one layer out. The
+  // isolated S2-only reference is already captured for that gate, so the
+  // comparison can be made honest for free. Still reported-only: removing the
+  // S5/S6 bias does not remove the estimator error above.
+  v.bracketS2Only = bracketS2Only;
+  v.skyBracketS2OnlyOkReportedOnly = bracketS2Only.every(
+    (b) => b.skyInBracket !== false,
+  );
+  v.groundBracketS2OnlyOkReportedOnly = bracketS2Only.every(
+    (b) => b.groundInBracket !== false,
+  );
   // Round-3 verdict, retained so the next reader does not re-run the same
   // three modelling rounds: FALSE here means the sky's excess brightness is
   // NOT background reveal — it is the shell's sub-linear response.
@@ -2026,29 +2198,24 @@ function judge(steps) {
     eclipsed.some((s) => s.on.sky.mean - s.ae.sky.mean > 0.02) &&
     eclipsed.some((s) => s.on.ground.mean - s.ae.ground.mean > 0.005);
 
-  v.PASS =
-    v.offFactorAllExactlyOne &&
-    v.toggleObserved &&
-    v.autoExposureFlagObserved &&
-    v.physicsRunsWhenOff &&
-    v.ladderNonVacuous &&
-    v.terrainResponsive &&
-    v.clearStepIdentity &&
-    v.sanityFloors &&
-    v.lightUniformCarriesFactor &&
-    v.monotoneSky &&
-    v.monotoneGround &&
-    v.equivalenceOk &&
-    v.backgroundIsToggleInvariant &&
-    v.deepestDimsVisibly &&
-    v.curveMatchesPrediction &&
-    v.floorRespected &&
-    v.floorExactAtTotality &&
-    v.notBlackAtDeepest &&
-    v.aeFactorStrictlyLower &&
-    v.aeIdentityWhenClear &&
-    v.aeRendersDarker &&
-    v.aeDimmingNonVacuous;
+  // ── The verdict, and WHICH predicate produced it ─────────────────────────
+  //
+  // `PASS` is the conjunction of `GATE_PREDICATES` and NOTHING ELSE — it is
+  // built by folding that list, so the list and the verdict cannot drift apart
+  // the way a hand-written `a && b && …` chain and a hand-written failure
+  // message can. `failedPredicates` names the ones that are not `true`.
+  //
+  // WHY THIS EXISTS (2026-08-07). A FAIL used to be a bare `PASS: false` next
+  // to ~40 sibling booleans, three of which are REPORTED-ONLY diagnostics that
+  // are EXPECTED false (`backgroundRevealExplainsAll` is round 3's recorded
+  // answer; the two bracket flags are a mean-based estimator of a per-pixel
+  // nonlinearity). A reader looking for the cause found the false diagnostics
+  // first and attributed the failure to them — twice, in one day. Naming the
+  // gate and naming the non-gate is cheaper than re-litigating that.
+  v.gatePredicates = GATE_PREDICATES;
+  v.reportedOnlyPredicates = REPORTED_ONLY_PREDICATES;
+  v.failedPredicates = GATE_PREDICATES.filter((name) => v[name] !== true);
+  v.PASS = v.failedPredicates.length === 0;
   return v;
 }
 
@@ -2261,6 +2428,31 @@ function judge(steps) {
   console.log(
     JSON.stringify({ derived, verdicts, structuralReasons, GATE }, null, 2),
   );
+
+  // ── The one line a reader should need on a FAIL ──────────────────────────
+  //
+  // The full JSON above carries ~40 booleans per backend, five of which are
+  // reported-only diagnostics that are EXPECTED false. Printing the gate's own
+  // answer LAST, in words, is what keeps the next reader from picking a false
+  // diagnostic out of the noise and calling it the cause (2026-08-07).
+  for (const name of ["webgl", "webgpu"]) {
+    const verdict = verdicts[name];
+    if (!verdict) {
+      continue;
+    }
+    const failed = verdict.failedPredicates ?? [];
+    console.log(
+      failed.length === 0
+        ? `GATE ${name}: PASS — all ${verdict.gatePredicates?.length ?? 0} gating predicates true`
+        : `GATE ${name}: FAIL — failing predicate(s): ${failed.join(", ")}`,
+    );
+  }
+  if (!structural) {
+    console.log(
+      `NOT GATING (reported-only, expected false — see REPORTED_ONLY_PREDICATES): ` +
+        (verdicts.webgl?.reportedOnlyPredicates ?? []).join(", "),
+    );
+  }
 
   const exitCode = structural ? 2 : anyFail ? 1 : 0;
   console.log(`EXIT: ${exitCode}`);

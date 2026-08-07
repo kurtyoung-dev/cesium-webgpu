@@ -17397,3 +17397,104 @@ the wrong comparison. **The 1e-4 / 1e-5 tolerance was not widened.**
 **Files:** `Tools/visual-regression/probe-eclipse-scene-dimming.mjs`,
 `Tools/visual-regression/eclipse-scene-dimming.spec.mjs` (35/35; dropping the
 isolation line fails 2 tests, perturbing the probe's embedded floor fails 1).
+
+---
+
+## C12-29-S2-GATE-LEGIBILITY — a reported-only diagnostic was read as the gate, twice in one day (2026-08-07)
+
+**Type:** Instrument legibility. No engine defect; no gating predicate changed.
+
+**Symptom:** after the S5 isolation landed and `equivalenceOk` went green
+(`equivalenceWorstRel: 0`, bit-identical on both backends), the next run of
+`probe-eclipse-scene-dimming.mjs` was reported as "the gate still FAILs on a
+different leg", citing `skyInBracket: false` on 4 of 8 rungs,
+`backgroundRevealExplains: false`, and `dimGround 0.485 vs predictedGround
+0.552`.
+
+**None of those three can fail the gate, and two of them are documented to be
+false.** `skyInBracket` / `groundInBracket` / `backgroundRevealExplains` occur
+in exactly five places in the probe: their own construction and the three
+`...ReportedOnly` / `...ExplainsAll` aggregates. None of those aggregates
+appears in `v.PASS`, in `anyFail`, or in `structural`. The file header's round-4
+block states the position outright: three rounds of physical modelling each
+leaked, round 3's own falsifiability machinery returned
+`backgroundRevealExplains === false` **on both backends at every rung** with
+`cRecovered` 3.5–42× the available background, and the whole predictive lane was
+demoted to reported-only. `backgroundRevealExplainsAll: false` is that recorded
+answer, not a regression.
+
+**The quoted ground number is also inside its own bracket:** the ground
+membership test is `dimGround >= pred*0.5 && dimGround <= min(1, pred*1.25 +
+0.05)`, i.e. `[0.276, 0.740]` at `pred = 0.552`. A measured `0.485` is
+comfortably inside it.
+
+**Three hypotheses were offered; all three are refuted.**
+
+1. **Batch 871's eclipse cloud/IBL response is dimming the scene beyond the
+   twin's model.** REFUTED TWICE, independently.
+   *Reachability:* `resolveEclipseCloudFactor` has exactly three consumers —
+   `WebGPUProceduralCloudRenderer`, `DynamicEnvironmentMapManager` and its
+   WebGPU twin. The probe's scene sets `globe.show`, `showGroundAtmosphere`,
+   `skyAtmosphere.show`, `sun.show`, an `EllipsoidTerrainProvider` and a flat
+   base colour; it enables no clouds, contains no model, and the probe's own
+   site table already records "site 5 (WebGPU model direct lighting) is N/A
+   here: the scene contains no model". Neither consumer can reach the sky or
+   ground band.
+   *Measurement:* the equivalence leg compares an engine frame with
+   `enableEclipse` ON (871 live if it were reachable) against a manual frame
+   with `enableEclipse` OFF (871 inert). It came back `equivalenceWorstRel: 0`
+   — **bit-identical, both backends, all bands**. A single code value of 871
+   contribution would have made that non-zero, exactly as S5's did.
+2. **The Batch 873 S5-isolation edit has a rung-dependent bug at high
+   obscuration.** REFUTED BY ORDERING. The brackets are built from `s.on`,
+   `s.off` and `s.bg`. The ON capture is taken at step 2 of the rung loop, the
+   isolation block is step 3, and the background captures at step 5 run after
+   the block has restored both flags and re-rendered. `dimSky = on/off` is
+   fixed before the edit executes; the edit writes only `equivalentOn*`, which
+   feeds the equivalence leg alone.
+3. **Something else in Batches 861–872** (R5 earthshine default). Earthshine
+   acts on the Moon's un-lit limb; the scene draws no moon primitive and the
+   bands are sky and terrain. Not reachable.
+
+**What the brackets ARE measuring, and why they cannot be tight.** Two
+independent reasons, both quantified and now recorded in-file:
+
+* **Sub-effect bias.** `predictDim` models S2 alone, while `s.on` renders the
+  shipped stack — S2 **plus** S5's per-fragment umbra **plus** S6's horizon
+  glow. The measurement is therefore biased deep, and most at the deep rungs,
+  because S5 is keyed to `G(O_fragment)`. This is the same blind spot that made
+  the equivalence leg fail before S5 was isolated, one layer out.
+* **Estimator error, which survives that fix.** `predictDim` pushes a band MEAN
+  through a per-pixel nonlinearity (inverse gamma → PBR-Neutral inverse → scale
+  → forward). The probe's own comment already calls this "an approximation …
+  that is what the tolerance bands are for"; the size of it was never written
+  down. Measured: holding the band mean fixed at 0.5 and changing only its
+  COMPOSITION between a uniform band and a 50/50 or 80/20 bright/dark split
+  moves the true ratio by **17.6%** at `f = 0.40`, **20.4%** at `f = 0.279` and
+  **72.1%** at `f = 0.157`, against sky-bracket half-widths of −25% / +15%. The
+  sky band's composition demonstrably does change with obscuration — that is
+  the header's own "the sky band is not the shell alone" finding — so leaving
+  the bracket at the deep rungs is the expected behaviour of the estimator, not
+  a statement about the engine.
+
+**Fix (instrument only, no engine change, no bracket widened):**
+
+* `GATE_PREDICATES` is now the single frozen list that COMPOSES the verdict:
+  `PASS` is its fold and `failedPredicates` is its filter, so the gate and its
+  explanation cannot drift apart the way a hand-written conjunction and a
+  hand-written message can.
+* `REPORTED_ONLY_PREDICATES` names the five non-gating booleans and carries the
+  arithmetic above, so "expected false" is stated where it is read.
+* Both sets are published on each backend's verdict, and the run prints
+  `GATE webgl: …` / `GATE webgpu: …` as its last lines before `EXIT`.
+* `bracketS2Only` re-measures the same brackets against the ISOLATED S2-only
+  reference the equivalence gate already renders, and reports
+  `subEffectDepthSky` / `subEffectDepthGround` — the number that says whether a
+  bracket miss is S5/S6 or the estimator. Null-safe, and still non-gating.
+
+**Files:** `Tools/visual-regression/probe-eclipse-scene-dimming.mjs`,
+`Tools/visual-regression/eclipse-scene-dimming.spec.mjs` (40/40). Five
+adversarial mutants rejected: promoting `skyBracketOkReportedOnly` into the gate
+(2 tests), typo-ing a predicate name (2), dropping `equivalenceOk` from the list
+(2), restoring a hand-written `v.PASS` conjunction (1), and letting the S2-only
+bracket re-derive its own reference instead of reading the isolated one (1).

@@ -1072,7 +1072,14 @@ test("the gates are model-free: equivalence, not prediction", () => {
     "the old stale-read comment must not survive the fix",
   );
   assert.match(probe, /v\.equivalenceOk =/);
-  assert.match(probe, /v\.equivalenceOk &&/, "equivalence must be in PASS");
+  // Batch 874 — `PASS` is now the FOLD of `GATE_PREDICATES` rather than a
+  // hand-written conjunction, so "equivalence must be in PASS" is membership
+  // in that list. Same claim, and it no longer breaks on a re-order.
+  assert.match(
+    probe,
+    /const GATE_PREDICATES = Object\.freeze\(\[[\s\S]*?"equivalenceOk",[\s\S]*?\]\);/,
+    "equivalence must be in PASS",
+  );
   // Batch 770 — S6's additive horizon glow is a separate feature from S2's
   // multiplicative contract. Keep it on for the shipped ON capture, then turn
   // it off only for the engine/manual equivalence pair. The dedicated S6 probe
@@ -1103,12 +1110,17 @@ test("the gates are model-free: equivalence, not prediction", () => {
   assert.match(probe, /responsiveFraction >= 0\.25/);
   assert.match(probe, /meanAbsoluteResponse >= 0\.05/);
   assert.match(probe, /v\.terrainResponsive/);
-  assert.match(probe, /v\.terrainResponsive &&/);
+  // Batch 874 — membership in the folded gate list, for the same reason the
+  // equivalence pin above moved: `PASS` is no longer a hand-written chain.
+  assert.match(
+    probe,
+    /const GATE_PREDICATES = Object\.freeze\(\[[\s\S]*?"terrainResponsive",[\s\S]*?\]\);/,
+  );
   assert.match(probe, /const aeLuminanceTolerance = 1e-4;/);
   assert.match(probe, /v\.aeDimmingNonVacuous/);
   assert.match(
     probe,
-    /v\.aeRendersDarker &&\s*v\.aeDimmingNonVacuous/,
+    /"aeRendersDarker",\s*"aeDimmingNonVacuous",/,
     "the quantisation tolerance must be paired with a non-vacuous dimming gate",
   );
   // The manual twin must reproduce sites 1, 2 and 3 — and VERIFY site 3's
@@ -1430,4 +1442,190 @@ test("S5's globe umbra really is gated on enableEclipse (the reason it needs iso
     readEngine("Scene/AtmosphericConditions.js"),
     /enableEclipseGlobeShadow: true,/,
   );
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Batch 874 — the verdict must SAY which predicate failed, and the
+// reported-only diagnostics must stay out of the gate.
+//
+// On 2026-08-07 a run of this probe was reported as "the gate FAILs on a
+// different leg", citing `skyInBracket: false` and
+// `backgroundRevealExplains: false`. Neither gates, and the second is round
+// 3's RECORDED answer — the file header states it came back false on both
+// backends at every rung. The cause of that misreading is structural: a FAIL
+// used to be a bare `PASS: false` sitting among ~40 sibling booleans.
+//
+// These tests pin the repair AND the boundary, so a future edit can neither
+// promote a documented-false diagnostic into the gate nor let the gate and its
+// explanation drift apart.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** The 22 predicates that composed `PASS` before the fold was introduced. */
+const EXPECTED_GATE_PREDICATES = [
+  "offFactorAllExactlyOne",
+  "toggleObserved",
+  "autoExposureFlagObserved",
+  "physicsRunsWhenOff",
+  "ladderNonVacuous",
+  "terrainResponsive",
+  "clearStepIdentity",
+  "sanityFloors",
+  "lightUniformCarriesFactor",
+  "monotoneSky",
+  "monotoneGround",
+  "equivalenceOk",
+  "backgroundIsToggleInvariant",
+  "deepestDimsVisibly",
+  "curveMatchesPrediction",
+  "floorRespected",
+  "floorExactAtTotality",
+  "notBlackAtDeepest",
+  "aeFactorStrictlyLower",
+  "aeIdentityWhenClear",
+  "aeRendersDarker",
+  "aeDimmingNonVacuous",
+];
+
+/**
+ * Does `judge` assign `v.<field>`? Written with `indexOf` rather than a
+ * constructed RegExp: a template-built pattern is one escaping mistake away
+ * from matching everything (or nothing), and this predicate's whole job is to
+ * catch a name that exists in the list but nowhere else.
+ */
+const assignsVerdictField = (probe, field) =>
+  probe.includes(`\n  v.${field} =`) || probe.includes(`\n  v.${field}=`);
+
+const parseFrozenList = (probe, name) => {
+  const opener = `const ${name} = Object.freeze([`;
+  const start = probe.indexOf(opener);
+  assert.ok(start >= 0, `${name} moved or is no longer a frozen array literal`);
+  const end = probe.indexOf("]);", start);
+  assert.ok(end > start, `${name} is not terminated`);
+  const body = probe.slice(start + opener.length, end);
+  return [...body.matchAll(/"([A-Za-z0-9_]+)"/g)].map((x) => x[1]);
+};
+
+test("the gate list IS the verdict — membership is exactly the 22 predicates", () => {
+  const probe = readProbeText();
+  assert.deepEqual(
+    parseFrozenList(probe, "GATE_PREDICATES"),
+    EXPECTED_GATE_PREDICATES,
+    "a gating predicate was added or removed — that is a deliberate act and " +
+      "this list must be updated with it",
+  );
+  // `PASS` must be the FOLD of that list, not a parallel hand-written chain.
+  // A leftover `v.PASS = a && b && …` would let the two disagree silently,
+  // which is the failure mode `failedPredicates` exists to remove.
+  assert.match(
+    probe,
+    /v\.failedPredicates = GATE_PREDICATES\.filter\(\(name\) => v\[name\] !== true\);/,
+  );
+  assert.match(probe, /v\.PASS = v\.failedPredicates\.length === 0;/);
+  assert.doesNotMatch(
+    probe,
+    /v\.PASS =\s*\n?\s*v\.[A-Za-z]+ &&/,
+    "the hand-written conjunction must be gone, not shadowed",
+  );
+  assert.equal((probe.match(/v\.PASS =/g) ?? []).length, 1);
+});
+
+test("every gating predicate is actually assigned — a typo would fail forever", () => {
+  // `v[name] !== true` treats a MISSPELLED name as permanently failing, and it
+  // would fail on a green engine with no other symptom. Each name must have a
+  // real `v.<name> =` assignment in the probe.
+  const probe = readProbeText();
+  for (const name of parseFrozenList(probe, "GATE_PREDICATES")) {
+    assert.ok(
+      assignsVerdictField(probe, name),
+      `GATE_PREDICATES names "${name}" but nothing assigns v.${name}`,
+    );
+  }
+});
+
+test("the reported-only diagnostics are NAMED and are NOT in the gate", () => {
+  const probe = readProbeText();
+  const gate = parseFrozenList(probe, "GATE_PREDICATES");
+  const reported = parseFrozenList(probe, "REPORTED_ONLY_PREDICATES");
+
+  // The two bracket aggregates and round 3's recorded verdict. These are the
+  // exact fields that were misread as the gate.
+  for (const name of [
+    "skyBracketOkReportedOnly",
+    "groundBracketOkReportedOnly",
+    "backgroundRevealExplainsAll",
+  ]) {
+    assert.ok(reported.includes(name), `${name} must be declared non-gating`);
+  }
+  for (const name of reported) {
+    assert.ok(
+      !gate.includes(name),
+      `${name} is declared reported-only AND gating — pick one`,
+    );
+    assert.ok(
+      assignsVerdictField(probe, name),
+      `REPORTED_ONLY_PREDICATES names "${name}" but nothing assigns it`,
+    );
+  }
+
+  // Published on the verdict so the JSON is self-describing without the reader
+  // having to open this file.
+  assert.match(probe, /v\.gatePredicates = GATE_PREDICATES;/);
+  assert.match(probe, /v\.reportedOnlyPredicates = REPORTED_ONLY_PREDICATES;/);
+
+  // And the run must say it in words, last, where a reader will see it.
+  assert.match(probe, /GATE \$\{name\}: FAIL — failing predicate\(s\)/);
+  assert.match(probe, /NOT GATING \(reported-only, expected false/);
+});
+
+test("the bracket has a LIKE-FOR-LIKE companion measured against the S2-only frame", () => {
+  // The shipped brackets compare an S2+S5+S6 measurement against an S2-only
+  // prediction — the same blind spot that made the equivalence leg fail before
+  // S5 was isolated, one layer out. The isolated reference is already
+  // rendered for the equivalence gate, so the honest comparison is free.
+  const probe = readProbeText();
+  assert.match(probe, /const bracketS2Only = \[\];/);
+  // It must read the ISOLATED reference, not re-derive one.
+  assert.match(probe, /const ref = s\.manual\?\.engineReference;/);
+  assert.match(
+    probe,
+    /isolated:\s*ref\?\.horizonTwilightIsolated === true &&\s*ref\?\.globeShadowIsolated === true,/,
+  );
+  // It must use the SAME predictors as the shipped bracket — a second copy of
+  // `predictDim` would be a second thing that can drift.
+  assert.equal((probe.match(/function predictDim\(/g) ?? []).length, 1);
+  assert.equal(
+    (probe.match(/const predictWithBackground = /g) ?? []).length,
+    1,
+  );
+  // The sub-effect depth is reported, because that number is what says whether
+  // a bracket miss is S5/S6 or the estimator.
+  assert.match(probe, /subEffectDepthSky:/);
+  assert.match(probe, /subEffectDepthGround:/);
+  // Still non-gating.
+  const gate = parseFrozenList(probe, "GATE_PREDICATES");
+  for (const name of [
+    "skyBracketS2OnlyOkReportedOnly",
+    "groundBracketS2OnlyOkReportedOnly",
+  ]) {
+    assert.ok(!gate.includes(name));
+  }
+  // A missing equivalence capture must produce `null` membership, never a
+  // false "out of bracket" — the vacuity rule this fleet keeps re-learning.
+  assert.match(probe, /dimSkyS2 === null \|\| predSkyLow === null/);
+});
+
+test("the estimator error that keeps the brackets loose is RECORDED, with numbers", () => {
+  // Two independent reasons, both measured, both in the file. If a future
+  // reader is tempted to re-tighten the brackets, the arithmetic that says
+  // they cannot be tight has to be sitting next to them.
+  const probe = readProbeText();
+  assert.match(probe, /SUB-EFFECT BIAS/);
+  assert.match(probe, /ESTIMATOR ERROR/);
+  assert.match(probe, /Jensen/);
+  // The measured composition sensitivity at the three deep factors.
+  assert.match(probe, /17\.6%/);
+  assert.match(probe, /20\.4%/);
+  assert.match(probe, /72\.1%/);
+  // ...against the bracket's own half-widths, so the comparison is explicit.
+  assert.match(probe, /half-widths are −25% \/ \+15%/);
 });

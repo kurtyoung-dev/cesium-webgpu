@@ -1,5 +1,50 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
+## New findings — eclipse-gate legibility worker, 2026-08-07 (Batch 874)
+
+One finding, and it is about how a verdict is READ rather than what it
+measures. Filed as its own class because this fleet has now paid for it twice
+in one day.
+
+- **`INSTRUMENT DEFECT CLASS: a verdict that does not name its own failing
+  predicate` — RESOLVED for `probe-eclipse-scene-dimming.mjs`, OPEN as a fleet
+  pattern.** After the S5 isolation turned `equivalenceOk` green
+  (`equivalenceWorstRel: 0`, bit-identical both backends), the same run was
+  reported as failing "on a different leg", citing `skyInBracket: false` and
+  `backgroundRevealExplains: false`. Neither can fail anything: both feed only
+  `...ReportedOnly` aggregates that appear in no gate expression, and the
+  second is round 3's RECORDED answer — the probe header states it came back
+  false on both backends at every rung. The structural cause is that a FAIL was
+  a bare `PASS: false` sitting among ~40 sibling booleans, five of which are
+  non-gating and two of which are expected false. **Repaired here** by making
+  the gate list (`GATE_PREDICATES`) the thing that COMPOSES the verdict —
+  `PASS` is its fold, `failedPredicates` is its filter, both sets are published
+  on the verdict, and the run prints `GATE <backend>: FAIL — failing
+  predicate(s): …` as its last line before `EXIT`. **Still open as a pattern:**
+  every other probe in `Tools/visual-regression/` that ANDs a long list of
+  booleans into one `PASS` has the same shape, and several also carry
+  reported-only diagnostics next to it. A sweep that gives each of them a
+  named-predicate verdict is cheap and would remove a recurring class of
+  mis-attribution. **Effort: M.**
+
+- **`ECLIPSE-S2-BRACKET-ESTIMATOR-ERROR` — the reported-only brackets cannot be
+  tightened into gates, and now the arithmetic says why.** Two independent
+  reasons, both quantified in-file at
+  `probe-eclipse-scene-dimming.mjs`'s `REPORTED_ONLY_PREDICATES`:
+  (1) **sub-effect bias** — `predictDim` models S2 alone while `s.on` renders
+  S2 + S5's per-fragment umbra + S6's horizon glow, so the measurement is
+  biased deep and most so at the deep rungs; a like-for-like companion
+  (`bracketS2Only`) now re-measures against the isolated S2-only reference the
+  equivalence gate already renders, and reports `subEffectDepth{Sky,Ground}`;
+  (2) **estimator error** — `predictDim` pushes a band MEAN through a per-pixel
+  nonlinearity, and holding the mean at 0.5 while changing only the band's
+  COMPOSITION (uniform vs 50/50 vs 80/20 bright/dark) moves the true ratio by
+  17.6% at `f = 0.40`, 20.4% at `f = 0.279` and 72.1% at `f = 0.157`, against
+  sky-bracket half-widths of −25% / +15%. Reason (2) survives any fix to (1),
+  which is why round 4's demotion of the whole predictive lane stands. Recorded
+  so the next reader does not attempt a fifth modelling round. **Effort: N/A —
+  this is a closed question, kept as evidence.**
+
 ## New findings — celestial/eclipse instrument worker, 2026-08-07 (Batch 873)
 
 Three findings, all measured. Two are re-attributions that OVERTURN the
