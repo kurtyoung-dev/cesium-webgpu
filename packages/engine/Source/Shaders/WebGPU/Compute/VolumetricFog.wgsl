@@ -124,7 +124,20 @@ struct VolumetricFogParams {
   //       and an exact f32 zero at low latitudes. Anchoring the band to this
   //       reference removes the offset entirely — the subtraction cancels the
   //       sphere-vs-ellipsoid error because both terms are in the same frame.
-  //   z, w = pad
+  //   z = baseSurfaceAltitude — NEW-WEBGPU-BASE-HEIGHT-FOG-INSCRIBED-SPHERE-DATUM.
+  //       The SAME correction for the BASE height fog, whose `exp(-altitude *
+  //       falloff)` is fed the raw inscribed-sphere altitude. At the default
+  //       1e-4 falloff the 21,385 m equatorial offset scales the configured
+  //       density by 0.118, and the polar offset by 1.0 — the same fog is 8.5x
+  //       thinner over the equator than over a pole. Unlike the ground band this
+  //       is not an arithmetic collapse, just a latitude-dependent density
+  //       error, and correcting it changes every existing master-on scene — so
+  //       it is opt-in (`volumetricFog.surfaceRelativeAltitude`) and this slot
+  //       stays 0 by default. `max(0.0, altitude - 0.0)` is bit-exact for the
+  //       already-clamped `altitude`, so the default density field is unchanged.
+  //       This datum is SEA LEVEL (the ellipsoid surface along the camera's
+  //       radial), not terrain: the base fog is an atmospheric column.
+  //   w = pad
   altitudeCurvature: vec4<f32>,
 
   // Phase 6c — Cloud shadows in volumetric fog (Session 65 Batch 44).
@@ -857,7 +870,15 @@ fn densityInjection(@builtin(global_invocation_id) gid: vec3<u32>) {
   let altitude = max(0.0, cameraAltitude + deltaLinear + deltaCurvature);
 
   // Standard exponential height fog.
-  var density = baseDensity * exp(-altitude * falloff);
+  //
+  // NEW-WEBGPU-BASE-HEIGHT-FOG-INSCRIBED-SPHERE-DATUM — measured from
+  // `altitudeCurvature.z` (the ellipsoid surface along the camera's radial) when
+  // `volumetricFog.surfaceRelativeAltitude` is opted into, and from the
+  // inscribed sphere otherwise. The default packs 0.0, and `altitude` is already
+  // `max(0.0, ...)`, so `max(0.0, altitude - 0.0)` is bit-exact — the OFF path's
+  // density field is byte-identical to pre-fix.
+  let baseAltitude = max(0.0, altitude - u.altitudeCurvature.z);
+  var density = baseDensity * exp(-baseAltitude * falloff);
 
   // Phase 5d — varying atmosphere density. Modulate the height-fog
   // density by `(1 + strength × fbm3d(worldPos / scale))`. The noise

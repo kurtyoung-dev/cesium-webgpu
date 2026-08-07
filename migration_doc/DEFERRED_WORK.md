@@ -119,7 +119,6 @@ own overhead evidence - a ledger that perturbs the thing it certifies is the
 "discriminator built from the primitive it discriminates" trap.
 
 **Related:** `migration_doc/QUEUE_2026-07-18_CAMPAIGN11.md` `C11-205` / `C11-168`.
-
 ## 2026-08-06 - C13-16 cirrus morphology attenuates from 9:1 to ~1.2:1 on screen
 
 ### C13-16-SCREEN-ANISOTROPY-ATTENUATION
@@ -188,18 +187,81 @@ C MIST pass with lower band +3.6 against upper band 0 (separation 3.60, needed
 not a whiteout); E STABILITY pass (OFF vs OFF 0 in both bands); F CLEAN pass.
 A feature that had never rendered in this project's history now renders.
 
-**OPEN CALIBRATION QUESTION, recorded rather than glossed.** The fix's own
-derivation predicted ground-band optical depth 0.503 at intensity 1, i.e. roughly
-**40** 8-bit counts of brightening. The measured separation is **3.6** — the gate
-passes on its >= 3 floor, but the magnitude is about 10x below prediction. Either
-the Koschmieder-derived `peakDensity` is not reaching the march at the value the
-derivation assumes, or the band/camera geometry at the probe's altitude admits far
-less of the layer than the closed-form estimate. Discriminator: instrument the
-shipped optical depth for the probe's exact camera (the spec's CPU twin already
-models it) and compare against the rendered separation; if the twin also predicts
-~3.6 the derivation comment is wrong, and if it predicts 40 the shader is not
-receiving the density the twin thinks it is. Do NOT raise `peakDensity` to close
-the gap before that is settled — it would tune against an unexplained factor.
+**CALIBRATION QUESTION SETTLED 2026-08-06 (Batch 845), offline, from the Batch
+844 frames themselves. `peakDensity` was NOT touched.**
+
+The recorded question was whether the twin predicts ~3.6 (making the derivation
+comment wrong) or ~40 (making the density delivery wrong). It predicts **+34.9**,
+so the second branch fires — but not as a density defect. Three separate errors
+were tangled together, and the discriminator separated all three:
+
+**1. The "~40 counts" was the wrong QUANTITY (a unit error in the derivation).**
+It is `(1 - T) x sceneLuminance`, the `scene x transmittance` half of the
+composite on its own — an ATTENUATION magnitude, which read alone is a
+*darkening*. The composite is `scene x T + inScatter`, so what the gate scores is
+`(fogLuminance - sceneLuminance) x (1 - T)`. With the shipped uniforms the mist is
+brighter than the terrain it hazes, so the terms compound rather than cancel and
+the corrected signed prediction is **+34.9 counts**, not +/-40. Coincidentally
+close in magnitude, which is exactly why the error survived review.
+
+**2. The band model was pointing its rays 24 degrees too high (an instrument
+defect).** `PROBE_CAMERA.verticalFovDeg` was 60, but Cesium applies
+`PerspectiveFrustum.fov` to the WIDER axis: at 1280x720 the true vertical FOV is
+**35.98 deg**. The frame settles it — the ground-fog delta first appears at row
+~216, which is -0.8 deg (just under the horizon) under 35.98 and +12 deg (open
+sky, where fog cannot reach) under 60. Corrected, the level-ground band optical
+depth at the probe's camera is **0.688**, not 0.503.
+
+**3. The rendered shortfall is entirely in the OPTICAL DEPTH, and it is the LEVEL
+DATUM meeting Alpine relief.** Decoding the probe's own PNGs and regressing
+per-pixel `(OFF luminance, ON-OFF delta)` over all 277,760 ground-band pixels
+inverts the composite and recovers BOTH unknowns, which no band mean can:
+
+| quantity | measured from the frame | predicted from shipped constants | verdict |
+|---|---|---|---|
+| in-scatter `S` | **170.65** counts | 171.6 .. 215.7 counts | matches to **0.5%**, no free parameter |
+| transmittance | 0.94811 | 0.503 | |
+| optical depth | **0.0533** | **0.6876** | **12.9x short** |
+
+The scattering half is therefore exonerated by measurement: `albedo x (ambient
+0.7 + a bounded HG sun term)` predicts the mist's own radiance to within half a
+percent. The whole deficit is the optical depth, and converting it to the one
+thing a level band cannot represent gives **307 m of terrain standing above the
+camera's single-scalar datum** — inside, but near the edge of, the 3-band-height
+(360 m) envelope the band's own docstring claims. Feeding that 307 m back through
+the model reproduces the measured brighten to **3.60 vs 3.60**.
+
+**The competing hypothesis was refuted, not merely disfavoured.** A uniform ~10%
+dilution of the fog contribution somewhere downstream fits the band mean equally
+well (the regression's recovered `S` is invariant to it). It cannot fit the ROW
+STRUCTURE: per-row effective optical depth over rows 336-704 runs
+0.030 -> 0.224 -> 0.050 -> 0.087 against a model profile that falls monotonically
+2.02 -> 0.55, one row reads exactly 0.000, and the row-to-row ratio spreads 6x.
+A constant factor cannot turn a monotone profile into one with an interior peak.
+Read as relief instead, the same rows give 220-500 m of terrain above the datum -
+a smooth, plausible Alpine profile. `MUTATION: a constant dilution cannot produce
+the measured row structure` pins this.
+
+**Two more candidates were tested and eliminated numerically** (all in
+`ground-fog-band.spec.mjs` / the model): the coarse froxel quadrature moves the
+delivered depth in the OTHER direction (the shipped log slicing plus the
+below-datum clamp behind the terrain overshoot the ideal integral by ~2x, so it
+cannot explain a shortfall), and a datum stuck at sea level would give ~0.0000,
+not 0.053.
+
+**What shipped with the settlement (Batch 845):** the model gained the composite
+delta, the per-pixel inversion, the shipped froxel quadrature and the corrected
+FOV; `probe-ground-fog.mjs` gained gate **G DATUM** (the band's SHIPPED inputs,
+read back off `getStatistics().groundFog`, checked against the CPU twin - Batch
+844 could not tell a wrong datum from a wrong density because nothing reported
+what the shader had been handed) and gate **H CALIBRATION** (the per-pixel
+inversion, in-scatter against the shipped uniforms and optical depth against the
+model, reported as the implied relief); and gate **C**'s floor is now computed
+from the model at the level datum's relief envelope (**2.37** counts) instead of
+the round 3.0 - the recorded 3.60 clears it.
+
+**Consequence for the follow-ups:** the per-column datum below is no longer a
+refinement. It is the fix for the magnitude, and it now has a number: 307 m.
 
 **Status:** ROOT-CAUSED + FIXED IN TREE; browser acceptance OWED. Found by running
 `probe-ground-fog.mjs` as the smoke lane for Batch 832. Batch 832 is EXONERATED by
@@ -309,16 +371,12 @@ capture path is not repeatable), CLEAN - with a 420 s watchdog and exit codes
 `probe-vector-draping.mjs`.
 
 **Follow-up owed (Principle 9), not folded in:** the datum is ONE SCALAR per frame -
-the terrain height under the camera. A camera parked on a peak far above the valley it
-is looking at will float the layer at the peak's elevation. The physically better
-version reconstructs a PER-COLUMN datum in the density pass from the scene depth
-texture (the pass already has the screen-space (x, y) of its froxel column), which
-makes the mist terrain-following instead of level. That needs a new binding in the
-density BGL plus the log-depth decode, and must be measured, so it is filed rather
-than guessed at here. Note also that the BASE height fog still measures altitude from
-the inscribed sphere, which scales its density by up to `exp(-21385 * falloff)` (~8x
-at the equator vs a pole) - a real latitude-dependent error, but a parity-visible
-change to the master-on path, so likewise separate.
+the terrain height under the camera. Both follow-ups filed at Batch 843 are now
+separate entries with measured numbers behind them:
+`NEW-WEBGPU-GROUND-FOG-PER-COLUMN-DATUM` (below - promoted to THE fix for the
+magnitude gap, 307 m measured) and
+`NEW-WEBGPU-BASE-HEIGHT-FOG-INSCRIBED-SPHERE-DATUM` (below - SHIPPED as an opt-in
+at Batch 845, byte-identical by default).
 
 **Batch 832 ruled out by measurement, not by argument.** Checked out the pre-832
 `VolumetricFog.wgsl` + `WebGPUVolumetricFogResources.ts`, rebuilt, re-ran: identical
@@ -361,6 +419,98 @@ per the filed hypothesis, and discarded). The density they compute is zero.
 **Acceptance:** `probe-ground-fog.mjs` shows lowerBandBrighten materially above
 upperBandBrighten with ground fog on, OFF-vs-OFF stays 0.00, and the PNGs show mist
 hugging the ground - with the probe converted to a gating verdict.
+
+## 2026-08-06 - the ground-fog band is LEVEL, and the terrain it hazes is not
+
+### NEW-WEBGPU-GROUND-FOG-PER-COLUMN-DATUM
+
+**Status:** OPEN, and PROMOTED by measurement (Batch 845). Filed at Batch 843 as a
+refinement of `NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING`; the calibration settlement
+shows it is the reason the shipped mist renders at **1/12.9** of its modelled
+strength at the acceptance camera. Not a regression and not a density bug - the
+level band is doing what a level band does in mountains.
+
+**The number.** At the probe's camera (10.5E 46.4N, 3500 m, Cesium World Terrain
+answering **2041.31 m** beneath it) the level-ground band model predicts optical
+depth **0.6876** across the ground band; the frame delivers **0.0533**. The gap is
+`exp(-dh / 120)` with **dh = 307 m** - the height of the terrain the lower band
+actually looks at, above the ONE scalar datum taken beneath the camera. Per row
+the implied relief runs **220-500 m**, a smooth Alpine profile. The band's own
+docstring puts its useful limit at 3 band heights (360 m), so this scene sits just
+inside the envelope: the mist is faint, not absent. A camera on a ridge over a
+valley is the same failure with the sign flipped, and that one leaves the layer
+floating in mid-air.
+
+**Design, and the blocker that turned out not to exist.** The Batch 843 filing
+assumed a per-column datum needs the scene depth, which the density compute pass
+would not have. It does: `WebGPUSceneRendererEnvironmentalEffects` step 4 calls
+`fogFR.update(...)` and `fogFR.composite(..., depthView, ...)` **from the same
+block, on the same frame**, after the opaque scene has rendered - the composite is
+already handed the resolved depth view that `update()` would need. So:
+
+1. thread the existing `depthView` into `update()` (optional argument; the call
+   site already holds it), bind it in the density BGL with a 1x1 placeholder for
+   the frames that have none - the sun-shadow slot is the precedent;
+2. in `densityInjection`, sample the depth at the froxel COLUMN's screen pixel
+   (the pass already computes `uv` from `gid.xy`), decode it with the composite's
+   own `logDepthToEyeDistance` (needs `camera.frustum.far`, which the compute
+   uniforms do not carry yet - slot 71 is free), and reconstruct that surface
+   point's altitude with the SAME Taylor form the froxel altitude uses;
+3. measure the band from that per-column datum when the column has a valid depth,
+   falling back to the per-frame scalar for sky columns.
+
+**Effort:** M (one slice: ~80 lines across the WGSL, the renderer and the BGL,
+plus the CPU twin for the column reconstruction).
+
+**Do not land it blind.** It changes a bind-group layout, so it needs a browser
+run, and gates G/H exist precisely to score it: G confirms the datum the shader
+was handed, H reports the delivered optical depth against the model and prints the
+implied relief. The acceptance is that H's implied offset collapses toward 0 and
+gate C's separation rises from 3.60 toward the model's **+34.9** counts. **Watch
+for the coupled hazard:** froxels BELOW the datum are clamped to the PEAK band
+density, and the composite's trilinear read in depth straddles the terrain
+boundary, so the shipped quadrature already overshoots the ideal integral by ~2x
+where the ray meets the ground. A per-column datum puts that boundary in EVERY
+column instead of a few, so the below-datum clamp may need to become a taper in
+the same slice. Modelled in `froxelBandOpticalDepth`.
+
+## 2026-08-06 - the BASE height fog measures altitude from the inscribed sphere
+
+### NEW-WEBGPU-BASE-HEIGHT-FOG-INSCRIBED-SPHERE-DATUM
+
+**Status: SHIPPED as an OPT-IN (Batch 845), default OFF and byte-identical.**
+Filed at Batch 843 alongside the ground-fog datum fix; quantified and implemented
+here. Not folded into the default because it is a parity-visible change to the
+master-on path.
+
+**The error, quantified.** `densityInjection` feeds the base height fog the raw
+inscribed-sphere altitude, so `exp(-altitude * falloff)` is evaluated from a datum
+that sits 21,384.7 m below sea level at the equator, 10,214.8 m at 46.4 deg N and
+0 m at a pole. At the shipped default `falloff = 1e-4` that is a pure density
+scale of **0.1178x at the equator**, 0.36x at the probe's latitude and 1.0x at a
+pole - **the same configured fog is 8.49x thinner over the equator than over a
+pole**, and `falloff` does not mean what it says anywhere but the poles.
+
+**Why it is not simply corrected.** Every scene tuned against today's behaviour
+would get denser everywhere but the poles - up to 8.5x. That is a visual change to
+the default master-on path, not a bug fix that can ride along.
+
+**What shipped.** `volumetricFog.surfaceRelativeAltitude` (default `false`).
+When true the renderer packs the ellipsoid-surface altitude along the camera's
+radial - SEA LEVEL, not terrain, because the base fog is an atmospheric column,
+not a mist layer - into the free `altitudeCurvature.z` pad (slot 70, no buffer
+growth, no bind-group change), and the shader measures the base fog from it. The
+OFF path packs 0.0, and since `altitude` is already `max(0.0, ...)`,
+`max(0.0, altitude - 0.0)` returns the identical float: the default density field
+is **bit-exact**, not merely close. Pinned by
+`the base-fog correction is OPT-IN and its default is bit-exact` and
+`the base height fog's inscribed-sphere datum is an 8.5x latitude error`.
+
+**Still owed:** a browser run of the ON path (no acceptance probe drives it yet),
+and a decision on whether the corrected datum should eventually become the
+default with a migration note. The IBL-ambient path's `sampleFogTransmittance`
+still takes the raw inscribed-sphere altitude for its LUT lookup; that is the
+LUT's own frame and was deliberately left alone.
 
 ## 2026-08-06 - the star point-census finds no resolved sources in a LIVE frame
 

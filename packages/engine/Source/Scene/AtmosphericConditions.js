@@ -955,6 +955,23 @@ function buildVolumetricFog() {
     // for thick mist; beyond ~4 the geometric decay makes added octaves
     // negligible. Only consumed when `multiScatter` is TRUE.
     msOctaves: 1,
+    // NEW-WEBGPU-BASE-HEIGHT-FOG-INSCRIBED-SPHERE-DATUM (Batch 845) — opt-in
+    // correction of the BASE height fog's altitude datum. The froxel altitude
+    // is measured from the ellipsoid's INSCRIBED SPHERE (the polar radius), so
+    // sea level sits 21,385 m above that frame at the equator and 0 m at a
+    // pole. `density * exp(-altitude * falloff)` therefore scales the SAME
+    // configured fog by 0.118x at the equator and 1.0x at a pole (default
+    // falloff 1e-4) — an 8.5x latitude-dependent error that has been present
+    // since the froxel fog landed. When TRUE the density pass measures the base
+    // fog from the ellipsoid surface along the camera's radial instead, so
+    // `falloff` means what it says at every latitude.
+    //
+    // DEFAULT FALSE, and deliberately so: this is a visible density change on
+    // the master-on path, and every scene tuned against the current behaviour
+    // would shift (denser everywhere but the poles). The OFF path packs a 0.0
+    // datum and the shader's subtraction is bit-exact, so the default frame is
+    // byte-identical. WebGPU only.
+    surfaceRelativeAltitude: false,
   };
 }
 

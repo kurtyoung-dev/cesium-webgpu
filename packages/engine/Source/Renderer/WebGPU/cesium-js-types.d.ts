@@ -407,6 +407,12 @@ interface CesiumFrameState {
           // Number of MS octaves (renderer-clamped to [1, 8]). 1 == single-
           // scatter (parity). Only consumed when `multiScatter` is true.
           msOctaves?: number;
+          // NEW-WEBGPU-BASE-HEIGHT-FOG-INSCRIBED-SPHERE-DATUM (Batch 845) —
+          // opt-in: measure the BASE height fog from the ellipsoid surface
+          // instead of the inscribed sphere, removing an 8.5x latitude-
+          // dependent density error. Default false packs a 0.0 datum, which the
+          // shader subtracts bit-exactly (byte-identical).
+          surfaceRelativeAltitude?: boolean;
         };
         lighting?: { enabled?: boolean; moonIntensity?: number };
         varyingAtmosphereDensity?:

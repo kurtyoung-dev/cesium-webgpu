@@ -111,6 +111,39 @@ export function getVolumetricFogShaderModuleCache(
   return cache;
 }
 
+/**
+ * The ground-fog band's per-frame inputs, as packed. Reported through
+ * {@link WebGPUVolumetricFogRenderer#getStatistics} so an acceptance probe can
+ * check the shipped datum against the band model instead of inferring it from
+ * pixels. See NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING.
+ */
+export interface GroundFogDiagnostics {
+  /** Whether the band contributed density this frame. */
+  active: boolean;
+  /** `effects.groundFog.intensity`, as packed (slot 85). */
+  intensity: number;
+  /** Band falloff scale in metres (slot 86). */
+  bandHeight: number;
+  /** Extinction at the datum for intensity 1, per metre (slot 87). */
+  peakDensity: number;
+  /** The ground datum in the inscribed-sphere frame (slot 69). */
+  referenceAltitude: number;
+  /** Terrain height beneath the camera that fed the datum; 0 at sea level. */
+  terrainHeight: number;
+  /** Camera altitude above the inscribed sphere (slot 67). */
+  cameraAltitude: number;
+  /** Ambient term the scattering pass used (slot 57). */
+  ambientStrength: number;
+  /** Fog single-scatter albedo (slots 8..10). */
+  albedo: { r: number; g: number; b: number };
+  /** Henyey-Greenstein anisotropy (slot 11). */
+  anisotropy: number;
+  /** Whether the BASE height fog measured altitude from the ellipsoid surface. */
+  surfaceRelativeAltitude: boolean;
+  /** The base-fog surface datum in the inscribed-sphere frame (slot 70). */
+  baseSurfaceAltitude: number;
+}
+
 /** Quality preset → 3D texture resolution mapping (W × H × D). */
 export const QUALITY_RESOLUTIONS = {
   low: { width: 80, height: 45, depth: 64 },
@@ -570,6 +603,28 @@ class WebGPUVolumetricFogRenderer {
   // sample (resolved history vs raw integrated volume).
   private _temporalFrameIndex = 0;
   private _temporalResolvedThisFrame = false;
+  // NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING (Batch 845) — the ground-fog band's
+  // SHIPPED inputs, recorded as they are packed. Batch 844 measured a rendered
+  // mist ~10x weaker than the band model predicted and could not tell whether
+  // the density was wrong or the datum was, because nothing on the frame
+  // reported what the shader had actually been handed. `probe-ground-fog.mjs`
+  // now reads these back and compares them against the CPU twin, so the same
+  // question is a measurement rather than an argument. Pure recording — nothing
+  // here is read by the render path.
+  private _groundFogDiagnostics: GroundFogDiagnostics = {
+    active: false,
+    intensity: 0,
+    bandHeight: GROUND_FOG_BAND_HEIGHT,
+    peakDensity: GROUND_FOG_PEAK_EXTINCTION,
+    referenceAltitude: 0,
+    terrainHeight: 0,
+    cameraAltitude: 0,
+    ambientStrength: 0,
+    albedo: { r: 0, g: 0, b: 0 },
+    anisotropy: 0,
+    surfaceRelativeAltitude: false,
+    baseSurfaceAltitude: 0,
+  };
 
   constructor(device: GPUDevice) {
     this._device = device;
@@ -614,9 +669,14 @@ class WebGPUVolumetricFogRenderer {
     updatesDispatched: number;
     updatesSkippedFrozen: number;
     composites: number;
+    groundFog: GroundFogDiagnostics;
   } {
     const r = this._resources;
     return {
+      groundFog: {
+        ...this._groundFogDiagnostics,
+        albedo: { ...this._groundFogDiagnostics.albedo },
+      },
       enabled: this._lastEnabled,
       frozen: this._frozen,
       snapshotRegistered: this._snapshotRegistered,
@@ -1047,6 +1107,7 @@ class WebGPUVolumetricFogRenderer {
     // `globe.getHeight` walks the terrain quadtree to the camera's leaf tile,
     // which is why it is gated rather than computed unconditionally.
     r.paramsData[69] = 0.0;
+    let groundFogTerrainHeight = 0.0;
     if (groundFogActive && cMag > 0) {
       const globeWithHeight = _scene?.globe as
         | {
@@ -1062,6 +1123,7 @@ class WebGPUVolumetricFogRenderer {
         cartographic && globeWithHeight?.getHeight
           ? (globeWithHeight.getHeight(cartographic) ?? 0.0)
           : 0.0;
+      groundFogTerrainHeight = terrainHeight;
       const radii = globeEllipsoid?.radii;
       r.paramsData[69] = groundFogReferenceAltitude(
         upX,
@@ -1074,7 +1136,37 @@ class WebGPUVolumetricFogRenderer {
         terrainHeight,
       );
     }
+    // NEW-WEBGPU-BASE-HEIGHT-FOG-INSCRIBED-SPHERE-DATUM — slot 70 is the same
+    // idea for the BASE height fog: the ellipsoid surface along the camera's
+    // radial (sea level, NOT terrain), in the inscribed-sphere frame. The base
+    // fog's `exp(-altitude * falloff)` is fed the raw inscribed-sphere altitude,
+    // which overstates the height of the ground by 21,385 m at the equator and
+    // 0 at a pole — at the default 1e-4 falloff that is a latitude-dependent
+    // density scale from 0.118x to 1.0x, i.e. the SAME configured fog is 8.5x
+    // thinner over the equator than over a pole.
+    //
+    // Correcting it unconditionally would change every existing master-on scene,
+    // so it is opt-in (`volumetricFog.surfaceRelativeAltitude`, default false)
+    // and the OFF path packs the historical 0.0. The shader subtracts this slot,
+    // and `max(0.0, altitude - 0.0)` is bit-exact for the already-clamped
+    // `altitude`, so the default path's density field is byte-identical.
     r.paramsData[70] = 0.0;
+    const surfaceRelativeAltitude = vf?.surfaceRelativeAltitude === true;
+    if (surfaceRelativeAltitude && cMag > 0) {
+      const radii = globeEllipsoid?.radii;
+      r.paramsData[70] = groundFogReferenceAltitude(
+        upX,
+        upY,
+        upZ,
+        radii?.x ?? 6378137,
+        radii?.y ?? 6378137,
+        radii?.z ?? 6356752,
+        innerRadius,
+        // Sea level: the base height fog is an atmospheric column, not a
+        // terrain-following layer, so its datum is the ellipsoid surface.
+        0.0,
+      );
+    }
     r.paramsData[71] = 0.0;
 
     // Sun direction + intensity (offsets 48..51).
@@ -1259,6 +1351,25 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[85] = groundFogIntensity;
     r.paramsData[86] = GROUND_FOG_BAND_HEIGHT;
     r.paramsData[87] = GROUND_FOG_PEAK_EXTINCTION;
+
+    // Record what the band was handed, so an acceptance run can compare the
+    // SHIPPED datum against the CPU twin instead of inferring it from pixels
+    // (NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING, Batch 845). Read-only diagnostics.
+    const diagnostics = this._groundFogDiagnostics;
+    diagnostics.active = groundFogActive === true;
+    diagnostics.intensity = groundFogIntensity;
+    diagnostics.bandHeight = GROUND_FOG_BAND_HEIGHT;
+    diagnostics.peakDensity = GROUND_FOG_PEAK_EXTINCTION;
+    diagnostics.referenceAltitude = r.paramsData[69];
+    diagnostics.terrainHeight = groundFogTerrainHeight;
+    diagnostics.cameraAltitude = cameraAltitude;
+    diagnostics.ambientStrength = ambientStrengthValue;
+    diagnostics.albedo.r = albedo.r;
+    diagnostics.albedo.g = albedo.g;
+    diagnostics.albedo.b = albedo.b;
+    diagnostics.anisotropy = r.paramsData[11];
+    diagnostics.surfaceRelativeAltitude = surfaceRelativeAltitude;
+    diagnostics.baseSurfaceAltitude = r.paramsData[70];
 
     // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL fog-ambient uniforms
     // (offsets 88..91). When `iblAmbient` is on, the scattering kernel

@@ -98,6 +98,73 @@ source-proven, not pixel-proven.
 resets it before treating a zero as a finding. And a threshold expressed as an absolute floor
 (`umbraPx > 200`) instead of a cross-backend ratio let a 32x parity deficit ship green for weeks.
 
+## NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING, part 2 — the 10x magnitude gap was a unit error, a 24-degree instrument error, and 307 m of Alpine relief (2026-08-06, Batch 845)
+
+**Files.** `Tools/visual-regression/lib/ground-fog-band-model.mjs` (corrected FOV;
+composite delta, per-pixel inversion, shipped froxel quadrature, implied relief),
+`Tools/visual-regression/ground-fog-band.spec.mjs` (31 tests),
+`Tools/visual-regression/probe-ground-fog.mjs` (gates G DATUM + H CALIBRATION,
+model-derived C floor),
+`packages/engine/Source/Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts`
+(`GroundFogDiagnostics`, slot 70), `.../Shaders/WebGPU/Compute/VolumetricFog.wgsl`
+(base-fog datum), `packages/engine/Source/Scene/AtmosphericConditions.js`
+(`surfaceRelativeAltitude`).
+
+**The question.** Batch 844's acceptance passed every gate while recording that
+the mist rendered ~10x weaker than its own derivation predicted (+3.6 8-bit counts
+against "~40"). The filed discriminator: instrument the shipped optical depth at
+the probe's exact camera and see whether the twin predicts 3.6 or 40.
+
+**Root causes — three, compounding.**
+
+1. **Unit error in the derivation.** "~40 counts" is `(1 - T) x sceneLuminance`,
+   the attenuation half of `scene x T + inScatter` — a magnitude that on its own
+   is a *darkening*. The probe scores the signed composite change,
+   `(fogLuminance - sceneLuminance) x (1 - T)`. Corrected, the prediction is
+   **+34.9 counts**. The two being numerically close is why it survived review.
+2. **The band model's vertical FOV was wrong.** It used 60 deg; Cesium applies
+   `PerspectiveFrustum.fov` to the WIDER axis, so 1280x720 gives **35.98 deg**.
+   The frame proves it: the fog delta first appears at row ~216, which is -0.8 deg
+   under 35.98 and +12 deg — open sky — under 60.
+3. **The residual is the LEVEL datum meeting relief.** Decoding the probe's own
+   PNGs and regressing `(OFF luminance, ON-OFF delta)` per pixel over 277,760
+   ground-band pixels inverts the composite: in-scatter **170.65** counts against
+   the shipped uniforms' admissible 171.6..215.7 (**0.5%**, no free parameter —
+   the scattering pass is exonerated), transmittance 0.94811 i.e. optical depth
+   **0.0533** against the model's **0.6876** (**12.9x**). Converted to relief:
+   **307 m** of terrain above the camera's single-scalar datum, which fed back
+   through the model reproduces the measured brighten exactly (3.60 vs 3.60).
+
+**How the competing hypothesis died.** A uniform ~10% dilution of the fog
+contribution fits the band mean just as well — and the regression's recovered
+radiance is invariant to it, so that leg cannot separate them. The ROW STRUCTURE
+can: measured per-row optical depth runs 0.030 -> 0.224 -> 0.050 -> 0.087 against
+a monotone model profile 2.02 -> 0.55, with one row at exactly 0.000. A constant
+factor cannot manufacture an interior peak. As relief the same rows read 220-500 m
+— a smooth Alpine profile. Two further candidates were eliminated numerically: the
+coarse froxel quadrature overshoots the ideal integral (~2x, wrong direction), and
+a datum stuck at sea level would deliver ~0.0000.
+
+**What `peakDensity` did.** Nothing. It was not touched, per the entry's own
+instruction not to tune against an unexplained factor — and the factor turned out
+not to be in the density at all.
+
+**Fixes applied.** The derivation corrected in the model, the spec and the entry;
+the FOV corrected and pinned against `PerspectiveFrustum.js`; `GroundFogDiagnostics`
+added so the shipped datum/band/peak/ambient are readable off
+`getStatistics().volumetricFog.groundFog`; gates G (shipped inputs vs the CPU twin)
+and H (per-pixel composite inversion) added to the probe; gate C's floor computed
+from the model at the level datum's relief envelope (**2.37** counts) instead of a
+round 3.0. The BASE height fog's own inscribed-sphere datum (an **8.49x**
+equator-vs-pole density error at the default falloff) shipped as the opt-in
+`volumetricFog.surfaceRelativeAltitude`, bit-exact when off.
+
+**Owed.** A browser run of the two new gates, and the per-column datum
+(`NEW-WEBGPU-GROUND-FOG-PER-COLUMN-DATUM`), which this settlement promotes from a
+refinement to the fix for the magnitude — with the ordering blocker removed:
+`update()` and `composite()` are called from the same block with the resolved
+depth view already in hand.
+
 ---
 
 ## NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — the 120 m mist band was measured from a datum 10-21 km below the ground, so `exp()` underflowed and the composite copied the scene bit-for-bit (2026-08-06)
