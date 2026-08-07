@@ -209,6 +209,7 @@ Filed by the C13-41 worker. All surfaced rather than routed around (Principle
 Filed while landing the audit's weather/shadow/misc instrument repairs. All are
 surfaced rather than routed around (Principle 9); none blocks that batch.
 
+- **BASELINE RECORDED 2026-08-07 (first Edge exercise of the ratio guard, tip `1c3778072d`): soft umbra/reference 0.945, hard 0.963 — both deep inside [0.25, 4.0], all five criteria PASS.** These are the recorded healthy-state ratios; the 32x-deficit class this guard exists for would read ~0.03.
 - **`NEW-CSM-SOFT-SHADOW-ABSOLUTE-UMBRA-FLOOR` — FILED AND RESOLVED in the same
   pass (2026-08-07).** Batch 849 (`c7365d80f7`) identified this in its own commit
   message — *"CSM ratio 0.88 versus single-map ratio 0.031, a 32x deficit that sat
@@ -256,6 +257,7 @@ surfaced rather than routed around (Principle 9); none blocks that batch.
   list; the mechanical repair (route it through `lib/weather-probe-pinning.mjs`,
   exactly as `probe-cloud-shadows-polar.mjs` was here) stays owned by the TAIL
   entry.
+- **UPDATE 2026-08-07 (Edge sweep, build at tip `1c3778072d`): the expected RED did NOT materialize, legitimately — the probe ran GATE PASS.** Lane 1 terminator ON-vs-OFF WebGL 0.60% / WebGPU 0.59% (bar 0.4); Lane 2 full-phase 0.46% < half on BOTH backends under the honest relative gate; Lane 3 parity 0.05%; Lane 4 identity 0.04% <= ON+noise. The Batch-813 numbers that would have failed (half 1.30 / full 1.46) belonged to an older build; current bytes are healthy. **RESOLVED: instrument repaired, product healthy — neither of the two filed readings applied at HEAD.**
 - **`NEW-PROBE-MOON-LOLA-LANE2-EXPECTED-RED`** — **Status: OPEN / MEDIUM,
   awaiting a re-run.** `probe-moon-lola-relief.mjs` Lane 2 now enforces the
   relative criterion its header always documented (`onOffDiffPct(full) <
@@ -1569,6 +1571,8 @@ own overhead evidence - a ledger that perturbs the thing it certifies is the
 ## 2026-08-06 - C13-16 cirrus morphology attenuates from 9:1 to ~1.2:1 on screen
 
 ### C13-16-SCREEN-ANISOTROPY-ATTENUATION
+
+**LIVE GATE EVIDENCE 2026-08-07 (Edge sweep, `probe-cloud-genus-morphology.mjs`, tip `1c3778072d`):** gates D and E now FAIL exactly along the transfer model's predicted dilution plateau — measured elongations CIRRUS 1.18 / CIRROSTRATUS 0.98 / CIRROCUMULUS 0.90 (ordering directionally CORRECT; the second step misses the x1.1 bar at x1.089) and the wind-rotation argmax moved 60 deg against a [60,120] window (the boundary). Both failures are marginal in precisely the way the Batch-857 model explains. This is the pending maintainer ruling made visible in a live gate, not a new regression; do NOT fix by widening either bar.
 
 **Status:** OPEN - needs a DECISION, not a threshold edit. Found by the first
 successful run of `probe-cloud-genus-morphology.mjs --phase=direction`
