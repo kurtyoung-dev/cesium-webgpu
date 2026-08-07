@@ -387,6 +387,31 @@ class FrameState {
     this.moonOppositionSurge = undefined;
 
     /**
+     * Per-frame earthshine phase scale (C12-21) — Earth's illuminated
+     * fraction as seen FROM the Moon, the exact complement of the Moon's own
+     * phase, so earthshine peaks at new moon and is exactly zero at full.
+     * Exactly 1.0 — the historical constant term — when the toggle or
+     * moon-phase modelling is off. Resolved by
+     * {@link readMoonPhaseAppearance}; consumed by the WebGPU moon feature
+     * renderer, and by the WebGL path via the Moon primitive's
+     * `u_earthshinePhaseScale`.
+     * @type {number|undefined}
+     */
+    this.moonEarthshinePhaseScale = undefined;
+
+    /**
+     * Per-frame soft-terminator width (C12-22) — the Sun's angular RADIUS in
+     * radians as seen from the Moon (~4.649e-3), measured from the true
+     * Sun→Moon distance. Exactly 0.0 when the toggle is off, which selects
+     * the legacy `max(N·L, 0)` horizon clip in both shader twins. Resolved by
+     * {@link readMoonPhaseAppearance}; consumed by the WebGPU moon feature
+     * renderer, and by the WebGL path via the Moon primitive's
+     * `u_terminatorSoftness`.
+     * @type {number|undefined}
+     */
+    this.moonTerminatorSoftness = undefined;
+
+    /**
      * Per-frame RGB atmospheric extinction (transmittance) for the Sun —
      * the fraction of sunlight, per channel, that survives the slant path
      * through the atmosphere to the camera along the camera→sun ray.

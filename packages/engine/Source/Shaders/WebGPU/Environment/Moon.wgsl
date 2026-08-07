@@ -52,7 +52,9 @@
 //     daytime "dark blob"). No GLSL twin ever had it. Do NOT re-add; the
 //     phaseFraction uniform stays for C12-21 phase-dependent earthshine.
 //   - Earthshine — soft blue-grey tint on the unlit side, gated by
-//     atmosphericConditions.lighting.enableEarthshine
+//     atmosphericConditions.lighting.enableEarthshine, and since C12-21
+//     scaled by the Earth-phase complement (see below). Twin: the EARTHSHINE
+//     block in EllipsoidFS.glsl.
 //
 // C12 moon-wave additions (2026-07-24, BOTH backends in lockstep with
 // EllipsoidFS.glsl — keep character-consistent):
@@ -73,6 +75,23 @@
 //     `normalStrength`, which is exactly 0.0 (the identity) when the
 //     feature is off or the selected Moon.Variant ships no map. Twin:
 //     the LUNAR_NORMAL_MAP block in EllipsoidFS.glsl.
+//   - C12-21 phase-dependent earthshine (2026-08-06): the constant ashen
+//     tint is multiplied by `earthshinePhaseScale`, which is Earth's
+//     illuminated fraction seen FROM the Moon — the exact complement of the
+//     Moon's phase seen from Earth, so earthshine peaks at new moon and is
+//     exactly zero at full. Exactly 1.0 (the historical constant) when the
+//     toggle or moon-phase modelling is off. Twin: the EARTHSHINE block in
+//     EllipsoidFS.glsl. Both read Scene/MoonPhaseAppearance.js's single
+//     resolved number via frameState.
+//   - C12-22 soft terminator (2026-08-06): the Lommel-Seeliger μ0 uses the
+//     finite solar disc's cosine-weighted irradiance instead of the hard
+//     `max(N·L, 0)` clip. `terminatorSoftness` is the Sun's angular RADIUS
+//     seen from the Moon (~4.649e-3 rad), resolved CPU-side from the true
+//     Sun→Moon distance; exactly 0.0 selects the legacy clip bit-for-bit.
+//     Applied ONLY in the Lommel-Seeliger branch, on both backends: the
+//     GLSL twin's Phong fallback runs inside czm_private_phong / czm_phong,
+//     shared builtins that must not grow a moon-specific term — so keeping
+//     the fallback hard-clipped on BOTH backends is what preserves parity.
 //
 // Coordinate frame strategy:
 //   The ray march happens in MOON MODEL space. The VS rasterizes the
@@ -92,6 +111,9 @@
 // Uniform layout: 352-byte budget (256 → 320 in Phase 1.2c v2; 320 → 336
 // for the C12 moon wave; 336 → 352 for C12-25's `normalStrength` — ADD-ONLY
 // at the tail, existing offsets frozen; phaseFraction stays at byte 268).
+// C12-21/C12-22 add two more f32 at bytes 340 and 344 — still ADD-ONLY at the
+// tail, and they fit inside the 336..351 slot C12-25 already opened, so the
+// buffer SIZE, the bind-group layout and every existing offset are unchanged.
 //
 // This file is the build source for Shaders/WebGPU/Environment/Moon.js
 // (hand-written wrapper until the next `gulp build` regenerates it via
@@ -163,6 +185,18 @@ struct U {
   // full (inscatter vec3 + oppositionSurge), so the UB grows 336 -> 352.
   // ADD-ONLY at the tail; every existing offset is frozen.
   normalStrength: f32,                              // 336
+
+  // C12-21 — Earth's illuminated fraction seen FROM the Moon, i.e. the
+  // complement of the Moon's own phase. EXACTLY 1.0 (the historical constant
+  // earthshine) when the toggle or moon-phase modelling is off. Resolved once
+  // per frame by Scene/MoonPhaseAppearance.js, so the GLSL twin's
+  // u_earthshinePhaseScale cannot disagree with it.
+  earthshinePhaseScale: f32,                        // 340
+
+  // C12-22 — the Sun's angular RADIUS seen from the Moon, in radians
+  // (~4.649e-3). EXACTLY 0.0 when the toggle is off, which makes
+  // softTerminatorMu0 return the legacy max(N·L, 0) bit-for-bit.
+  terminatorSoftness: f32,                          // 344
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -234,6 +268,26 @@ fn intersectEllipsoid(
   let t0 = (-b - sqrtDisc) / (2.0 * a);
   let t1 = (-b + sqrtDisc) / (2.0 * a);
   return EllipsoidIntersection(vec2<f32>(t0, t1), disc);
+}
+
+// C12-22 — cosine-weighted irradiance from a solar disc of angular radius
+// `softness`, replacing the hard `max(nDotL, 0)` horizon clip. Character-
+// identical twin of softTerminatorMu0 in EllipsoidFS.glsl; the JS reference
+// (and the derivation) live in Scene/MoonPhaseAppearance.js.
+//
+//     f(c) = 0                       c <= -w
+//     f(c) = (c + w)^2 / (4w)        -w < c < w
+//     f(c) = c                       c >= w
+//
+// C1-continuous at both seams and EXACTLY the legacy value outside the band,
+// so `softness == 0.0` is a true identity rather than an approximation of one.
+fn softTerminatorMu0(nDotL: f32, hardMu0: f32, softness: f32) -> f32 {
+  if (softness <= 0.0) {
+    return hardMu0;
+  }
+  let clamped = clamp(nDotL, -softness, softness);
+  let t = clamped + softness;
+  return max(nDotL - softness, 0.0) + t * t / (4.0 * softness);
 }
 
 // Phong lighting through a CsmMaterial. Matches czm_private_phong from
@@ -434,7 +488,10 @@ fn computeEllipsoidColor(
   let useLunar: bool = u32(round(u.lunarBRDF)) == 1u;
   var lit: vec3<f32>;
   if (useLunar) {
-    let mu0 = max(dot(N, L), 0.0);
+    // C12-22 — `mu0Hard` is the legacy horizon clip, kept as the exact value
+    // softTerminatorMu0 returns when `terminatorSoftness` is 0.0.
+    let mu0Hard = max(dot(N, L), 0.0);
+    let mu0 = softTerminatorMu0(dot(N, L), mu0Hard, u.terminatorSoftness);
     let mu = max(dot(N, toEyeMC), 0.0);
     let lommelSeeliger = 2.0 * mu0 / (mu0 + mu + 1.0e-4);
     lit = m.diffuse * lommelSeeliger * u.oppositionSurge;
@@ -458,9 +515,20 @@ fn computeEllipsoidColor(
   // Earthshine — gated on atmosphericConditions.lighting.enableEarthshine.
   // Soft blue-grey tint on the unlit side; uses raw (pre-phase) N·L so
   // the shadowed hemisphere still receives it during crescent phases.
+  //
+  // C12-21 — `earthshinePhaseScale` is Earth's illuminated fraction as seen
+  // FROM the Moon, which is the exact complement of the Moon's phase seen
+  // from Earth. Earthshine therefore PEAKS at new moon (a full Earth hangs
+  // over the lunar night side) and is exactly zero at full moon (a new Earth
+  // lights nothing) — the constant term this replaces had it backwards. The
+  // scale is exactly 1.0 when the toggle or moon-phase modelling is off, so
+  // that position is the historical constant bit-for-bit. The GLSL twin is
+  // the EARTHSHINE block in EllipsoidFS.glsl; both read the SAME resolved
+  // number, published on frameState by Scene/MoonPhaseAppearance.js.
   let earthshineOn: bool = u32(round(u.enableEarthshine)) == 1u;
   if (earthshineOn) {
-    let earthshine = vec3<f32>(0.4, 0.5, 0.7) * 0.08 * (1.0 - rawNdotL);
+    let earthshine =
+      vec3<f32>(0.4, 0.5, 0.7) * 0.08 * (1.0 - rawNdotL) * u.earthshinePhaseScale;
     color = color + earthshine;
   }
 

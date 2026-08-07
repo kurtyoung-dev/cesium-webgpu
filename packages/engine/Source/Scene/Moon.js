@@ -22,6 +22,10 @@ import {
 import computeLunarOppositionSurge from "./computeLunarOppositionSurge.js";
 import EllipsoidPrimitive from "./EllipsoidPrimitive.js";
 import Material from "./Material.js";
+import {
+  createMoonPhaseAppearance,
+  readMoonPhaseAppearance,
+} from "./MoonPhaseAppearance.js";
 import resolveMoonNormalMapStrength from "./resolveMoonNormalMapStrength.js";
 import {
   canGenerateWebGLMoonMipmaps,
@@ -270,6 +274,10 @@ class Moon {
     // C12-30 — cache for the additive in-scattering (sky-wash) integral,
     // the extinction's additive twin. Same exact-input caching contract.
     this._atmosphereInscatterCache = createAtmosphereInscatterCache();
+
+    // C12-21 / C12-22 — reusable result object for the shared moon-phase
+    // appearance resolver. Allocated once; never reallocated per frame.
+    this._phaseAppearance = createMoonPhaseAppearance();
   }
 
   /**
@@ -511,6 +519,47 @@ class Moon {
     );
     const normalMapDemand = normalMapStrength > 0.0;
     frameState.moonNormalMapStrength = normalMapStrength;
+
+    // C12-21 / C12-22 — resolve BOTH moon-phase appearance terms ONCE here,
+    // before the backend branch (Scene Logic Extractor pattern), for exactly
+    // the reason C12-25 resolves the relief strength here: two independently
+    // derived gates are how one backend ends up subtly different from the
+    // other, and the C11-176b `phaseGate` was precisely that failure (a
+    // WGSL-only phase multiplier with no GLSL counterpart).
+    //
+    // The solar angular radius uses the TRUE Sun→Moon distance, which varies
+    // ±1.7% over a year with Earth's orbital eccentricity; the mean value is
+    // the fallback when the frame carries no sun position.
+    const sunPositionWC = defined(uniformState)
+      ? uniformState.sunPositionWC
+      : undefined;
+    const sunDistanceFromMoon = defined(sunPositionWC)
+      ? Cartesian3.magnitude(
+          Cartesian3.subtract(sunPositionWC, translation, scratchSunFromMoon),
+        )
+      : undefined;
+    const phaseAppearance = readMoonPhaseAppearance(
+      lighting,
+      enableMoonPhase,
+      phaseFraction,
+      sunDistanceFromMoon,
+      this._phaseAppearance,
+    );
+    frameState.moonEarthshinePhaseScale = phaseAppearance.earthshinePhaseScale;
+    frameState.moonTerminatorSoftness = phaseAppearance.terminatorSoftness;
+
+    // Hand both to the WebGL moon primitive. `undefined` compiles the term
+    // out of EllipsoidFS entirely (byte-identical); earthshine additionally
+    // rides the existing `enableEarthshine` master toggle, which the WGSL
+    // twin reads as its own `enableEarthshine` uniform.
+    const earthshineEnabled =
+      defined(lighting) && lighting.enableEarthshine === true;
+    ellipsoidPrimitive.earthshinePhaseScale = earthshineEnabled
+      ? phaseAppearance.earthshinePhaseScale
+      : undefined;
+    ellipsoidPrimitive.terminatorSoftness = phaseAppearance.softTerminator
+      ? phaseAppearance.terminatorSoftness
+      : undefined;
 
     // Backend-specific path — delegate to feature renderer if available
     const context = frameState.context;
@@ -965,6 +1014,7 @@ const scratchMoonDirWC = new Cartesian3();
 const scratchExtinction = new Cartesian3();
 const scratchInscatter = new Cartesian3();
 const scratchMoonToSun = new Cartesian3();
+const scratchSunFromMoon = new Cartesian3();
 const scratchMoonToCamera = new Cartesian3();
 const scratchCommandList = [];
 

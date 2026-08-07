@@ -13,6 +13,33 @@ uniform float u_oppositionSurge;
 uniform sampler2D u_lunarNormalMap;
 uniform float u_lunarNormalStrength;
 #endif
+#ifdef EARTHSHINE
+uniform float u_earthshinePhaseScale;
+#endif
+#ifdef SOFT_TERMINATOR
+uniform float u_terminatorSoftness;
+
+// C12-22 — cosine-weighted irradiance from a solar disc of angular radius
+// `softness`, replacing the hard `max(nDotL, 0)` horizon clip. Character-
+// identical twin of softTerminatorMu0 in Moon.wgsl; the JS reference (and the
+// derivation) live in Scene/MoonPhaseAppearance.js.
+//
+//     f(c) = 0                       c <= -w
+//     f(c) = (c + w)^2 / (4w)        -w < c < w
+//     f(c) = c                       c >= w
+//
+// C1-continuous at both seams and EXACTLY the legacy value outside the band,
+// so `softness == 0.0` is a true identity rather than an approximation of one.
+float softTerminatorMu0(float nDotL, float hardMu0, float softness)
+{
+    if (softness <= 0.0) {
+        return hardMu0;
+    }
+    float clamped = clamp(nDotL, -softness, softness);
+    float t = clamped + softness;
+    return max(nDotL - softness, 0.0) + t * t / (4.0 * softness);
+}
+#endif
 
 in vec3 v_positionEC;
 
@@ -140,28 +167,67 @@ vec4 computeEllipsoidColor(czm_ray ray, float intersection, float side)
     vec3 lunarLightDirEC = czm_lightDirectionEC;
 #endif
     float mu0 = max(dot(material.normal, lunarLightDirEC), 0.0);
+#ifdef SOFT_TERMINATOR
+    // C12-22 — the Sun is not a point. From the Moon it subtends an angular
+    // RADIUS of ~4.649e-3 rad, so within that band around the geometric
+    // terminator the solar disc is partially below the local horizon and the
+    // irradiance rolls off instead of being clipped. `u_terminatorSoftness`
+    // is that radius, resolved CPU-side from the true Sun->Moon distance by
+    // Scene/MoonPhaseAppearance.js and shared with the WGSL twin, which
+    // applies it at exactly this point in Moon.wgsl's Lommel-Seeliger branch.
+    //
+    // Deliberately NOT applied to the czm_private_phong / czm_phong fallbacks
+    // below: those are shared builtins used by every lit primitive in the
+    // engine and must not grow a moon-specific term. Leaving the fallback
+    // hard-clipped on BOTH backends is what keeps the pair in parity.
+    mu0 = softTerminatorMu0(dot(material.normal, lunarLightDirEC), mu0, u_terminatorSoftness);
+#endif
     float mu = max(dot(material.normal, normalize(positionToEyeEC)), 0.0);
     float lommelSeeliger = 2.0 * mu0 / (mu0 + mu + 1.0e-4);
-    vec4 lunarColor = vec4(material.diffuse * lommelSeeliger, material.alpha);
-#ifdef OPPOSITION_SURGE
-    // C12-23 — Hapke-SHOE opposition surge, computed CPU-side from the
-    // true phase angle (constant across the distant disc).
-    lunarColor.rgb *= u_oppositionSurge;
-#endif
-    return lunarColor;
+    vec4 litColor = vec4(material.diffuse * lommelSeeliger, material.alpha);
 #elif defined(ONLY_SUN_LIGHTING)
     vec4 litColor = czm_private_phong(normalize(positionToEyeEC), material, czm_sunDirectionEC);
-#ifdef OPPOSITION_SURGE
-    litColor.rgb *= u_oppositionSurge;
-#endif
-    return litColor;
 #else
     vec4 litColor = czm_phong(normalize(positionToEyeEC), material, czm_lightDirectionEC);
+#endif
+
+    // Single exit from here down (C12-21). The three lighting laws above used
+    // to return independently, which forced every post-lighting term to be
+    // written out once per branch — the opposition surge already carried
+    // three identical copies. One tail keeps the WGSL twin's shape (Moon.wgsl
+    // also composes into a single `color`) and means a new term is added in
+    // one place, not three.
+
 #ifdef OPPOSITION_SURGE
+    // C12-23 — Hapke-SHOE opposition surge, computed CPU-side from the
+    // true phase angle (constant across the distant disc). Applies to the
+    // lunar BRDF and to both phong fallbacks, exactly as before.
     litColor.rgb *= u_oppositionSurge;
 #endif
-    return litColor;
+
+#ifdef EARTHSHINE
+    // C12-21 — earthshine: sunlight reflected off EARTH onto the Moon's night
+    // side, the "ashen light". Twin of the earthshine block in Moon.wgsl,
+    // which is where this term shipped first; C12-21 is also what gives it a
+    // GLSL counterpart at all, closing a Principle-5 gap the C11-176b row had
+    // flagged ("earthshine appears in no GLSL file").
+    //
+    // Keyed on raw N.L so the shadowed hemisphere still receives it during
+    // crescent phases, and scaled by `u_earthshinePhaseScale` = Earth's
+    // illuminated fraction seen FROM the Moon, the exact complement of the
+    // Moon's phase seen from Earth. Earthshine therefore PEAKS at new moon
+    // and is exactly zero at full. The scale is exactly 1.0 when the phase
+    // term is disabled, reproducing the historical constant bit-for-bit.
+#ifdef ONLY_SUN_LIGHTING
+    vec3 earthshineLightDirEC = czm_sunDirectionEC;
+#else
+    vec3 earthshineLightDirEC = czm_lightDirectionEC;
 #endif
+    float rawNdotL = max(dot(material.normal, earthshineLightDirEC), 0.0);
+    litColor.rgb += vec3(0.4, 0.5, 0.7) * 0.08 * (1.0 - rawNdotL) * u_earthshinePhaseScale;
+#endif
+
+    return litColor;
 }
 
 void main()

@@ -230,6 +230,32 @@ class EllipsoidPrimitive {
     this._oppositionSurgeEnabled = false;
 
     /**
+     * Optional earthshine scale (C12-21) — Earth's illuminated fraction as
+     * seen FROM the Moon, the exact complement of the Moon's own phase, so
+     * earthshine peaks at new moon and vanishes at full. `undefined` (the
+     * default) compiles the whole earthshine term out — byte-identical for
+     * every other EllipsoidPrimitive consumer, and the position
+     * {@link Moon} selects while `lighting.enableEarthshine` is false.
+     * A defined 1.0 reproduces the historical constant term exactly.
+     * @type {number|undefined}
+     * @private
+     */
+    this.earthshinePhaseScale = undefined;
+    this._earthshineEnabled = false;
+
+    /**
+     * Optional soft-terminator width (C12-22) — the Sun's angular RADIUS in
+     * radians as seen from the Moon, resolved CPU-side from the true
+     * Sun→Moon distance. `undefined` (the default) compiles the term out;
+     * a defined 0.0 is also an exact identity inside the shader. Only
+     * consumed by the `LUNAR_BRDF` disc law, never by the phong fallbacks.
+     * @type {number|undefined}
+     * @private
+     */
+    this.terminatorSoftness = undefined;
+    this._softTerminatorEnabled = false;
+
+    /**
      * Optional tangent-space normal map (C12-25) perturbing the LIGHTING
      * normal in an east/north/up frame — the LOLA-derived lunar relief that
      * makes craters read near the terminator. A raw `Texture` rather than a
@@ -315,6 +341,14 @@ class EllipsoidPrimitive {
       },
       u_oppositionSurge: function () {
         return that.oppositionSurge ?? 1.0;
+      },
+      // C12-21 / C12-22. Both fall back to their exact identity so a frame
+      // that raced the define transition still shades the legacy way.
+      u_earthshinePhaseScale: function () {
+        return that.earthshinePhaseScale ?? 1.0;
+      },
+      u_terminatorSoftness: function () {
+        return that.terminatorSoftness ?? 0.0;
       },
       // C12-25. Only ever sampled when LUNAR_NORMAL_MAP is defined, which is
       // itself driven by `defined(this.lunarNormalMap)` in the same update()
@@ -479,6 +513,19 @@ class EllipsoidPrimitive {
       oppositionSurgeEnabled !== this._oppositionSurgeEnabled;
     this._oppositionSurgeEnabled = oppositionSurgeEnabled;
 
+    // C12-21 / C12-22 — same define-toggle pattern again: only the
+    // presence/absence of each term recompiles, while the scale and the
+    // solar angular radius are plain per-frame uniforms, so tracking the
+    // real ephemeris never triggers a shader rebuild.
+    const earthshineEnabled = defined(this.earthshinePhaseScale);
+    const earthshineChanged = earthshineEnabled !== this._earthshineEnabled;
+    this._earthshineEnabled = earthshineEnabled;
+
+    const softTerminatorEnabled = defined(this.terminatorSoftness);
+    const softTerminatorChanged =
+      softTerminatorEnabled !== this._softTerminatorEnabled;
+    this._softTerminatorEnabled = softTerminatorEnabled;
+
     // C12-25 — same define-toggle pattern. Only the presence/absence of the
     // normal map recompiles; `lunarNormalStrength` is a plain per-frame
     // uniform, so a user animating it never triggers a shader rebuild.
@@ -521,6 +568,8 @@ class EllipsoidPrimitive {
       atmosphereInscatterChanged ||
       lunarBRDFChanged ||
       oppositionSurgeChanged ||
+      earthshineChanged ||
+      softTerminatorChanged ||
       lunarNormalMapChanged ||
       lunarAlbedoExplicitGradientsChanged ||
       lunarNormalExplicitGradientsChanged
@@ -545,6 +594,12 @@ class EllipsoidPrimitive {
       }
       if (oppositionSurgeEnabled) {
         fs.defines.push("OPPOSITION_SURGE");
+      }
+      if (earthshineEnabled) {
+        fs.defines.push("EARTHSHINE");
+      }
+      if (softTerminatorEnabled) {
+        fs.defines.push("SOFT_TERMINATOR");
       }
       if (lunarNormalMapEnabled) {
         fs.defines.push("LUNAR_NORMAL_MAP");

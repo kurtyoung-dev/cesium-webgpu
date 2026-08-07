@@ -117,7 +117,12 @@ class AtmosphericConditions {
    * `enableSolarGlareFalloff` (C12-16) are here too — both default ON, both
    * backends, both resolved once per frame by `Scene/SunDiscAppearance.js`
    * and published as `frameState.sunDiscAppearance`, and both with an EXACT
-   * identity position when false.
+   * identity position when false. The C12 moon-phase toggles
+   * `enableEarthshinePhase` (C12-21) and `enableSoftTerminator` (C12-22) sit
+   * alongside them — both default ON, both backends, both resolved once per
+   * frame by `Scene/MoonPhaseAppearance.js` and published as
+   * `frameState.moonEarthshinePhaseScale` / `frameState.moonTerminatorSoftness`,
+   * and both with an EXACT identity position when false.
    * @type {object}
    * @readonly
    */
@@ -420,11 +425,45 @@ function buildLighting(globe) {
   //    expression verbatim. Measured delta inside 6 solar radii: at most
   //    0.098 in profile units (0.074 in alpha) — the table is in
   //    `SolarDiscModel.solarGlareProfile`'s JSDoc.
+  // C12 moon-phase wave (2026-08-06) — two more toggles, both DEFAULT ON and
+  // implemented on BOTH backends in lockstep, resolved once per frame by
+  // `Scene/MoonPhaseAppearance.js`:
+  //
+  //  - enableEarthshinePhase (C12-21): scales earthshine by Earth's
+  //    illuminated fraction as seen FROM the Moon, which is the exact
+  //    COMPLEMENT of the Moon's phase seen from Earth. Earthshine therefore
+  //    peaks at new moon and is exactly zero at full; the shipped term was a
+  //    constant, i.e. physically backwards. Off passes a scale of exactly
+  //    1.0 — the historical constant, not an approximation of it.
+  //    HONEST NOTE: this row is arithmetically INERT at engine defaults,
+  //    because its master toggle `enableEarthshine` defaults to FALSE. It
+  //    becomes live the instant an application opts in. The same batch also
+  //    gives earthshine a GLSL implementation for the first time (it had
+  //    been WGSL-only, a standing Principle-5 gap the C11-176b row flagged),
+  //    so whether `enableEarthshine` should now default ON is a real
+  //    maintainer question — recorded in the C12-21 queue row, NOT decided
+  //    here.
+  //
+  //  - enableSoftTerminator (C12-22): the Sun subtends an angular RADIUS of
+  //    ~0.2664 deg (4.649e-3 rad) from the Moon, so the terminator is a
+  //    penumbra, not a step. Replaces `max(N.L, 0)` with the finite-disc
+  //    irradiance inside that band, in the Lommel-Seeliger path only (the
+  //    phong fallbacks run through shared czm builtins on WebGL and stay
+  //    hard-clipped on BOTH backends). Off passes softness exactly 0.0,
+  //    which the shader function returns the legacy clip for.
+  //    HONEST NOTE: physically real but SUB-PIXEL at rendered disc sizes.
+  //    The band spans 2*R*w screen pixels at a face-on terminator: 0.88 px
+  //    at the ~190 px zoomed disc, 0.07 px at the default ~16 px disc. What
+  //    it buys is the removal of a hard binary edge, not a visibly wide
+  //    penumbra — the real Moon's soft-looking terminator is topography
+  //    (C12-25's LOLA relief), not the Sun's angular size.
   const leaf = {
     enableSunLight: true,
     enableMoonLight: true,
     enableMoonPhase: true,
     enableEarthshine: false,
+    enableEarthshinePhase: true,
+    enableSoftTerminator: true,
     enableDualLightAtmosphere: true,
     moonIntensity: 0.05,
     enableLunarBRDF: true,

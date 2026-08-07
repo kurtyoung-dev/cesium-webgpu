@@ -86,7 +86,16 @@ test("WGSL: Lommel-Seeliger branch selected by the runtime lunarBRDF uniform", (
     "the Lommel-Seeliger disc law 2·μ0/(μ0+μ+ε)",
   );
   // μ0 against the selected light, μ against the eye — both clamped.
-  assert.match(wgslCode, /let mu0 = max\(dot\(N, L\), 0\.0\);/);
+  // C12-22 (2026-08-06) renamed the clamped μ0 to `mu0Hard`: it is now the
+  // value `softTerminatorMu0` returns when `terminatorSoftness` is 0, and
+  // `mu0` is the (possibly softened) quantity the disc law consumes. The
+  // assertion below still pins the same thing this row cared about — μ0 is
+  // the clamped cosine against the SELECTED light, not against a fixed one.
+  assert.match(wgslCode, /let mu0Hard = max\(dot\(N, L\), 0\.0\);/);
+  assert.match(
+    wgslCode,
+    /let mu0 = softTerminatorMu0\(dot\(N, L\), mu0Hard, u\.terminatorSoftness\);/,
+  );
   assert.match(wgslCode, /let mu = max\(dot\(N, toEyeMC\), 0\.0\);/);
 });
 
@@ -128,11 +137,27 @@ test("GLSL: u_oppositionSurge under OPPOSITION_SURGE in every lighting path", ()
     glsl,
     /#ifdef OPPOSITION_SURGE\s*\n\s*uniform float u_oppositionSurge;/,
   );
-  const occurrences = glsl.match(/\*= u_oppositionSurge;/g) ?? [];
+  // C12-21 (2026-08-06) gave computeEllipsoidColor a SINGLE exit: the three
+  // lighting laws now assign `litColor` and fall through to one shared tail,
+  // so the surge multiply is written once and still applies to all three.
+  // Three copies would now be a bug, not the requirement.
+  const occurrences = glsl.match(/litColor\.rgb \*= u_oppositionSurge;/g) ?? [];
   assert.equal(
     occurrences.length,
-    3,
-    "surge multiply present in lunar + private_phong + phong paths",
+    1,
+    "surge multiply lives in the single shared tail after the lighting-law selection",
+  );
+  // Structural proof that the single site really covers every path: the
+  // surge block must come AFTER the #endif that closes the law selection,
+  // and after all three law assignments.
+  const lunarAt = glsl.indexOf("vec4 litColor = vec4(material.diffuse *");
+  const privatePhongAt = glsl.indexOf("czm_private_phong(");
+  const phongAt = glsl.indexOf("czm_phong(");
+  const surgeAt = glsl.indexOf("litColor.rgb *= u_oppositionSurge;");
+  assert.ok(lunarAt > 0 && privatePhongAt > 0 && phongAt > 0 && surgeAt > 0);
+  assert.ok(
+    surgeAt > lunarAt && surgeAt > privatePhongAt && surgeAt > phongAt,
+    "the shared surge tail must follow every lighting-law assignment",
   );
   assert.match(primitive, /fs\.defines\.push\("OPPOSITION_SURGE"\);/);
 });

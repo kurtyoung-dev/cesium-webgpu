@@ -1716,6 +1716,8 @@ function updateWebGPUMoon(moon, frameState, commandList) {
  *   inscatter          80..82  (C12-30 sky-wash, additive)
  *   oppositionSurge    83      (C12-23)
  *   normalStrength     84      (C12-25 LOLA relief; 0 = exact identity)
+ *   earthshinePhase    85      (C12-21 Earth-phase complement; 1 = identity)
+ *   terminatorSoftness 86      (C12-22 solar angular radius; 0 = identity)
  *
  * @private
  */
@@ -1833,6 +1835,18 @@ function _packMoonUniforms(moon, frameState, cache) {
   // number and cannot disagree about whether relief is on. Exactly 0.0
   // disables the perturbation as an exact identity.
   ud[84] = frameState.moonNormalMapStrength ?? 0.0;
+
+  // C12-21 — earthshine phase scale at offset 85 (byte 340) and C12-22 —
+  // solar angular radius at offset 86 (byte 344). Both resolved ONCE,
+  // backend-agnostically, by Moon.update via Scene/MoonPhaseAppearance.js and
+  // handed to the WebGL twin as u_earthshinePhaseScale / u_terminatorSoftness,
+  // so the two backends cannot derive different numbers. The `??` fallbacks
+  // are the two exact identities: 1.0 leaves earthshine at its historical
+  // constant, 0.0 makes softTerminatorMu0 return the legacy max(N·L, 0).
+  // Both live inside the 336..351 slot C12-25 already opened, so the buffer
+  // size and the bind-group layout are unchanged.
+  ud[85] = frameState.moonEarthshinePhaseScale ?? 1.0;
+  ud[86] = frameState.moonTerminatorSoftness ?? 0.0;
 }
 
 /**
@@ -1902,6 +1916,10 @@ function getWebGPUMoonStatistics(moon) {
   // C12-25 — relief strength as last pushed, plus whether the bound normal
   // texture is the real map or the flat identity placeholder.
   const normalMapStrength = defined(ud) && ud.length > 84 ? ud[84] : null;
+  // C12-21 / C12-22 — as last pushed. The Edge acceptance probe reads these
+  // to prove the CPU-resolved numbers actually reached the GPU.
+  const earthshinePhaseScale = defined(ud) && ud.length > 85 ? ud[85] : null;
+  const terminatorSoftness = defined(ud) && ud.length > 86 ? ud[86] : null;
   const lifecycle = cache._moonTextureLifecycle;
   const albedoLifecycle = lifecycle?.channels?.albedo;
   const normalLifecycle = lifecycle?.channels?.normal;
@@ -1947,6 +1965,8 @@ function getWebGPUMoonStatistics(moon) {
     moonDirectionWC: moonDirWC,
     phaseFraction,
     earthshineOn,
+    earthshinePhaseScale,
+    terminatorSoftness,
     useLogDepth,
     shininess,
     specularStrength,
