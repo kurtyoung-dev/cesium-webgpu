@@ -1,5 +1,6 @@
 import BoundingRectangle from "../Core/BoundingRectangle.js";
 import Cartesian2 from "../Core/Cartesian2.js";
+import Cartesian3 from "../Core/Cartesian3.js";
 import Cartesian4 from "../Core/Cartesian4.js";
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
@@ -10,6 +11,7 @@ import AdditiveBlend from "../Shaders/PostProcessStages/AdditiveBlend.js";
 import BrightPass from "../Shaders/PostProcessStages/BrightPass.js";
 import GaussianBlur1D from "../Shaders/PostProcessStages/GaussianBlur1D.js";
 import PassThrough from "../Shaders/PostProcessStages/PassThrough.js";
+import SolarHalo from "../Shaders/PostProcessStages/SolarHalo.js";
 import PostProcessStage from "./PostProcessStage.js";
 import PostProcessStageComposite from "./PostProcessStageComposite.js";
 import PostProcessStageSampleMode from "./PostProcessStageSampleMode.js";
@@ -20,8 +22,19 @@ class SunPostProcess {
   constructor() {
     this._sceneFramebuffer = new SceneFramebuffer();
 
+    // C12-18 — resolved screen-space halo state, refreshed every `update()`
+    // from `frameState.sunHalo` (Scene/SunHaloAppearance.js). The zero
+    // intensity below is the safe default: `SolarHalo.glsl` adds
+    // `haloColor * veil * intensity`, so an un-refreshed frame adds exactly
+    // 0.0 rather than a stale halo at the wrong screen position.
+    this._haloCenter = new Cartesian2();
+    this._haloLimbPx = 1.0;
+    this._haloCoreRadii = 1.0;
+    this._haloIntensity = 0.0;
+    this._haloColor = new Cartesian3(1.0, 1.0, 1.0);
+
     const scale = 0.125;
-    const stages = new Array(6);
+    const stages = new Array(7);
 
     stages[0] = new PostProcessStage({
       fragmentShader: PassThrough,
@@ -109,6 +122,37 @@ class SunPostProcess {
       },
     });
 
+    // C12-18 (absorbs C11-160) — the screen-space solar veiling glare, run
+    // LAST so it is added to the fully composited scene rather than being fed
+    // back into the bright pass (which would bloom the halo of the halo).
+    //
+    // CLT-C4 is satisfied here without a second multiply anywhere: the
+    // eclipse factor is folded into `u_haloIntensity` for this SYNTHESISED
+    // halo, and the bright-pass chain above it derives its bloom from the sun
+    // billboard whose ALPHA `Sun.update` already scaled by `sunEclipseAlpha`.
+    // At totality both therefore go to zero, which is the whole point of the
+    // rider: a corona inside an undimmed halo is the failure mode.
+    stages[6] = new PostProcessStage({
+      fragmentShader: SolarHalo,
+      uniforms: {
+        u_haloCenter: function () {
+          return that._haloCenter;
+        },
+        u_haloLimbPx: function () {
+          return that._haloLimbPx;
+        },
+        u_haloCoreRadii: function () {
+          return that._haloCoreRadii;
+        },
+        u_haloIntensity: function () {
+          return that._haloIntensity;
+        },
+        u_haloColor: function () {
+          return that._haloColor;
+        },
+      },
+    });
+
     this._stages = new PostProcessStageComposite({
       stages: stages,
     });
@@ -143,7 +187,7 @@ class SunPostProcess {
     this._textureCache.clear(context);
   }
 
-  update(passState) {
+  update(passState, frameState) {
     const context = passState.context;
     const viewport = passState.viewport;
 
@@ -155,6 +199,12 @@ class SunPostProcess {
     this._stages.update(context, false);
 
     updateSunPosition(this, context, viewport);
+    // C12-18 — the halo's screen geometry, amplitude and tint are resolved
+    // ONCE per frame in Scene/SunHaloAppearance.js and consumed identically
+    // here and by the WebGPU `SunHaloEffect`. `frameState` is optional so an
+    // older caller (or a frame before `Sun.update` has run) leaves the stage
+    // arithmetically inert rather than throwing.
+    updateSolarHalo(this, frameState);
 
     return framebuffer;
   }
@@ -286,6 +336,32 @@ function updateSunPosition(postProcess, context, viewport) {
   for (let i = 1; i < 4; ++i) {
     BoundingRectangle.clone(scissorRectangle, stages.get(i).scissorRectangle);
   }
+}
+
+/**
+ * C12-18 — copy the frame's resolved halo state onto the instance so the
+ * stage's uniform closures read it. Pure transfer: every number here is
+ * computed in `Scene/SunHaloAppearance.js` before the backend branch, which
+ * is what makes the WebGL stage and the WebGPU effect provably agree.
+ *
+ * @param {SunPostProcess} postProcess The instance.
+ * @param {object} [frameState] The frame state.
+ * @private
+ */
+function updateSolarHalo(postProcess, frameState) {
+  const halo = frameState?.sunHalo;
+  if (!defined(halo) || halo.visible !== true) {
+    postProcess._haloIntensity = 0.0;
+    return;
+  }
+  postProcess._haloCenter.x = halo.centerX;
+  postProcess._haloCenter.y = halo.centerY;
+  postProcess._haloLimbPx = halo.limbPx;
+  postProcess._haloCoreRadii = halo.haloCoreRadii;
+  postProcess._haloIntensity = halo.haloIntensity;
+  postProcess._haloColor.x = halo.haloColorR;
+  postProcess._haloColor.y = halo.haloColorG;
+  postProcess._haloColor.z = halo.haloColorB;
 }
 
 export default SunPostProcess;

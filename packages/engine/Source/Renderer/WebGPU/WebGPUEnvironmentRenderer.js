@@ -319,9 +319,13 @@ function floatToHalfBits(value) {
  *        (C12-17 parity with WebGL's HALF_FLOAT/UNSIGNED_BYTE selection).
  * @param {object} appearance Resolved `frameState.sunDiscAppearance`
  *        (C12-15 / C12-16); see `Scene/SunDiscAppearance.js`.
+ * @param {object} halo Resolved `frameState.sunHalo` (C12-18); see
+ *        `Scene/SunHaloAppearance.js`. Supplies the disc's terminating radius
+ *        and the bake halo gain, so this loop and `SunTextureFS.glsl` are fed
+ *        the same two numbers rather than each re-deriving them.
  * @private
  */
-function createSunTexture(device, size, glowFactor, format, appearance) {
+function createSunTexture(device, size, glowFactor, format, appearance, halo) {
   const texture = device.createTexture({
     label: `Sun procedural texture [${size}^2 ${format}]`,
     size: [size, size, 1],
@@ -342,7 +346,14 @@ function createSunTexture(device, size, glowFactor, format, appearance) {
   // which shrinks the central disc (radiusTS) and widens the glow halo as
   // glowFactor rises. Sun default glowFactor = 1 -> glowLengthTS = 5.
   const glowLengthTS = glowFactor * 5.0;
-  const radiusTS = 0.5 / (1.0 + 2.0 * glowLengthTS);
+  // C12-18 — the disc's terminating radius and the bake halo gain arrive
+  // resolved from `Scene/SunHaloAppearance.js`, published on frameState before
+  // the backend branch. The fallbacks below are the HISTORICAL positions
+  // (undersized disc + baked halo), matching what `SunTextureFS.glsl` renders
+  // when its uniforms carry the disabled toggle values — so an unpublished
+  // frame degrades to the pre-C12-18 picture rather than to a sun with no glow.
+  const radiusTS = halo ? halo.discEdge : 0.5 / (1.0 + 2.0 * glowLengthTS);
+  const haloGain = halo ? halo.bakeHaloGain : 1.0;
   const lengthScalar = 2.0 / Math.sqrt(2.0);
   const smoothstep = (e0, e1, x) => {
     const t = Math.min(1.0, Math.max(0.0, (x - e0) / (e1 - e0)));
@@ -402,10 +413,12 @@ function createSunTexture(device, size, glowFactor, format, appearance) {
       let cg = 1.0;
       let cb = surface + 0.2;
       let ca = surface;
-      // glow halo into blue + alpha.
+      // glow halo into blue + alpha. C12-18 — `haloGain` is 0 whenever the
+      // post-process chain owns the halo, which makes the bake disc-only;
+      // the GLSL twin gates the same term with `u_haloGain`.
       const glow = sunGlare(radius);
-      cb += glow * 0.75;
-      ca += glow * 0.75;
+      cb += glow * (0.75 * haloGain);
+      ca += glow * (0.75 * haloGain);
       // lens-flare bursts (rotate(position, dir) * (25, 0.75), then radius).
       // Aperture diffraction, not veiling glare — unchanged by C12-16, and
       // reading `glareLegacyEdge` for the same 0.55 the GLSL twin uses.
@@ -418,7 +431,9 @@ function createSunTexture(device, size, glowFactor, format, appearance) {
         const rb = Math.sqrt(rx * rx + ry * ry) * lengthScalar;
         burst += bursts[b][2] * (1.0 - smoothstep(0.0, glareLegacyEdge, rb));
       }
-      burst = Math.min(1.0, Math.max(0.0, burst)) * 0.15;
+      // C12-18 — bursts follow `haloGain` with the halo (GLSL twin does the
+      // same); a disc with six spikes and no surrounding glow reads as a bug.
+      burst = Math.min(1.0, Math.max(0.0, burst)) * (0.15 * haloGain);
       cr += burst;
       cg += burst;
       cb += burst;
@@ -592,6 +607,14 @@ function updateWebGPUSun(sun, frameState) {
   // Unreachable today (`Sun.update` publishes before the FR branch), which is
   // precisely why the mismatch would have been permanent if it ever fired.
   const appearanceKey = defined(appearance) ? appearance.key : 0;
+  // C12-18 — the halo state also shapes the bake (disc edge + halo gain), so
+  // it joins the rebuild signature in bits 2-3, exactly as `Sun.js` does for
+  // the WebGL bake. Fallback 2 = the historical position this function bakes
+  // when `halo` is undefined (legacy disc edge + baked halo), by the same
+  // reasoning that forced `appearanceKey`'s fallback to 0: caching a legacy
+  // bake under a "default" signature would pin it permanently.
+  const halo = frameState.sunHalo;
+  const haloKey = defined(halo) ? halo.key : 2;
 
   // Regenerate the baked texture when glowFactor, the drawing-buffer-derived
   // size, the HDR format or the C12-15/16 toggle signature changes (mirrors
@@ -602,7 +625,8 @@ function updateWebGPUSun(sun, frameState) {
     (cache.lastGlowFactor !== glowFactor ||
       cache.lastBakeSize !== bakeSize ||
       cache.lastBakeFormat !== bakeFormat ||
-      cache.lastAppearanceKey !== appearanceKey)
+      cache.lastAppearanceKey !== appearanceKey ||
+      cache.lastHaloKey !== haloKey)
   ) {
     cache.sunTexture.destroy();
     cache.sunTexture = undefined;
@@ -618,11 +642,13 @@ function updateWebGPUSun(sun, frameState) {
       glowFactor,
       bakeFormat,
       appearance,
+      halo,
     );
     cache.lastGlowFactor = glowFactor;
     cache.lastBakeSize = bakeSize;
     cache.lastBakeFormat = bakeFormat;
     cache.lastAppearanceKey = appearanceKey;
+    cache.lastHaloKey = haloKey;
     cache.sunTextureView = cache.sunTexture.createView();
     if (!defined(cache.sampler)) {
       cache.sampler = device.createSampler({
@@ -667,7 +693,11 @@ function updateWebGPUSun(sun, frameState) {
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFormat = context.depthFormat || "depth24plus-stencil8";
     const descriptor = {
-      name: `Sun pipeline [${format}/${depthFormat}]`,
+      // `, alphaBlend` is a readability marker in the CLAUDE.md sense: the
+      // pipeline key already folds shader-module + target identity
+      // structurally, so this exists so `describeCacheKey()` and devtools
+      // say WHICH blend a row is, not to keep two rows apart (C11-115).
+      name: `Sun pipeline [${format}/${depthFormat}, alphaBlend]`,
       layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
       vertex: {
         module: shaderModule,
@@ -682,18 +712,38 @@ function updateWebGPUSun(sun, frameState) {
       fragment: {
         module: shaderModule,
         entryPoint: "fs",
-        // Slice 5c-B Phase 1 (Batch 106) — scene-FB target. Additive
-        // blend (src.a × src + 1 × dst) for the sun/moon flare layer.
+        // C11-115 (NS-SUN-BLEND-MODE-DIVERGENCE) — WebGPU now blends the sun
+        // ALPHA_BLEND, matching WebGL. This is the ratified direction (C11
+        // §7.0, 2026-07-18; transferred to C12-18 by LD-1) and the exact
+        // twin of `BlendingState.ALPHA_BLEND`, which `Sun.js` sets on the
+        // WebGL draw command: SRC_ALPHA / ONE_MINUS_SRC_ALPHA for colour and
+        // ONE / ONE_MINUS_SRC_ALPHA for alpha.
+        //
+        // WHAT THIS FIXES, measured (C12-29 round 3, recorded on the
+        // C12-15/16/17 rows). Under the previous additive blend
+        // (`src-alpha` / `one`) the composite was `dst + src.rgb*src.a`, so a
+        // BLACK billboard — which is exactly what the sun becomes once
+        // atmospheric extinction drives its rgb to zero near the horizon —
+        // was an EXACT IDENTITY on WebGPU while WebGL's ALPHA_BLEND darkened
+        // the sky by `a*dst`. That single divergence reproduced every
+        // observation in that investigation: a residual that appeared only
+        // where the billboard was black, tracked `bgMean`, and collapsed to 0
+        // at the one step where no billboard was drawn.
+        //
+        // The C12-29 S1 eclipse fade is invariant to this flip by
+        // construction — it scales ALPHA, which is the blend weight under
+        // both functions — and so is the C12-18 disc/halo split for the same
+        // reason.
         targets: makeSceneFBTargets(format, {
           blend: {
             color: {
               srcFactor: "src-alpha",
-              dstFactor: "one",
+              dstFactor: "one-minus-src-alpha",
               operation: "add",
             },
             alpha: {
               srcFactor: "one",
-              dstFactor: "one",
+              dstFactor: "one-minus-src-alpha",
               operation: "add",
             },
           },

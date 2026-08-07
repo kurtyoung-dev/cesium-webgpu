@@ -3812,6 +3812,12 @@ class Scene {
       // C12-27 — no celestial consumer runs on this path; leave the glare
       // unpublished so a stale resolution can never be read.
       frameState.solarGlareAppearance = undefined;
+      // C12-18 — same reasoning, and the halo needs it MORE than the glare
+      // does: a stale `sunHalo` still carries `visible: true` and a screen
+      // position, and the post-process consumers would paint it over a frame
+      // that draws no Sun at all.
+      frameState.sunHalo = undefined;
+      frameState.sunBloomActive = false;
     } else {
       // Resolve atmosphere applicability before any celestial consumer runs.
       // The constructor/show flag alone is not authoritative while a globe is
@@ -3934,6 +3940,28 @@ class Scene {
       // so it also guarantees a far frustum in WebGPU sky-only views without a
       // duplicate command-list entry.
       environmentState.starFieldCommand = starCommand;
+      // C12-18 (absorbs C11-160) — publish whether the post-process chain that
+      // draws the screen-space solar halo will run this frame, BEFORE
+      // `Sun.update` resolves the halo. `Sun.update` has no `scene` reference,
+      // and the decision must be made before the backend branch so both bakes
+      // see the same `bakeHaloGain`; this is the same publish-then-branch
+      // convention `skyAtmosphereVisible` uses a few lines above.
+      //
+      // `scene.sunBloom` is the single switch on BOTH backends: it gates
+      // `SunPostProcess` (WebGL, `FramebufferOrchestrator`) and, since
+      // C11-160, the `SunHaloEffect` (WebGPU,
+      // `configureWebGPUPostProcessPipeline`). WebVR is excluded because the
+      // sun-bloom path is skipped there on WebGL and WebGPU rejects WebVR
+      // outright (`supportsStereoRendering`).
+      frameState.sunBloomActive =
+        this.sunBloom === true && this._useWebVR !== true;
+      // STALENESS RESET, and it is load-bearing rather than tidy. `Sun.update`
+      // early-returns in 2D / MORPHING / non-render passes and when
+      // `sun.show` is false, so without this the LAST 3D frame's halo object
+      // — `visible: true`, at its old screen position — would still be on
+      // `frameState` and both consumers would happily paint it. Same reason
+      // `moonPhaseFraction` is reset above the Moon update.
+      frameState.sunHalo = undefined;
       const sunCommands = defined(this.sun)
         ? this.sun.update(frameState, view.passState, this._hdr)
         : undefined;

@@ -270,6 +270,154 @@ function solarBakeRadiusToSolarRadii(radius, glowLengthTS) {
   return radius * Math.SQRT2 * halfExtentRsun;
 }
 
+// ─── C12-18 — THE DISC IS UNDERSIZED BY EXACTLY sqrt(2) ────────────────────
+//
+// Both bakes compare the CORNER-normalised `radius` against `radiusTS`, but
+// `radiusTS = 0.5 / (1 + 2*glowLengthTS)` is expressed as a fraction of the
+// quad's HALF-EXTENT (`|p| <= 0.5`), not of the corner distance. Concretely,
+// with `p = uv - 0.5` the on-screen offset of a texel is `p * quadWidth`, the
+// quad half-width is `(1 + 2*glowLengthTS)` solar limbs, and so
+//
+//   |p| == radiusTS   <=>   on-screen offset == 1.0 solar limb  (correct)
+//   radius == radiusTS  <=>  |p| == radiusTS / lengthScalar
+//                        <=>  offset == 1/sqrt(2) == 0.7071 solar limbs
+//
+// i.e. the shipped disc subtends 0.7071 x the Sun's true angular radius —
+// 0.3767 deg of diameter instead of 0.5327 deg. `solarBakeRadiusToSolarRadii`
+// above says the same thing in one line: it maps the shipped `radiusTS` to
+// 0.70711 R_sun. WebGPU's CPU bake reproduced the WebGL expression faithfully,
+// so BOTH backends are undersized by the same factor and the defect is
+// invisible to any WebGL-vs-WebGPU diff. This is the "disc at true 0.53 deg"
+// half of the C12-18 row.
+
+/**
+ * The `lengthScalar` both bakes apply to `length(uv - 0.5)`.
+ *
+ * Written as `2 / sqrt(2)` and NOT as `Math.SQRT2` deliberately: that is the
+ * literal expression in `SunTextureFS.glsl` and in the WebGPU CPU bake, and
+ * in IEEE-754 binary64 the two differ by one ULP
+ * (`2 / Math.sqrt(2) === 1.414213562373095` vs `Math.SQRT2 ===
+ * 1.4142135623730951`). Both round to the same binary32, so nothing visible
+ * turns on it, but "one constants source" means carrying the bakes' own
+ * expression rather than a mathematically-equal neighbour.
+ *
+ * @private
+ */
+const SOLAR_DISC_BAKE_LENGTH_SCALAR = 2.0 / Math.sqrt(2.0);
+
+/**
+ * Historical (undersized) disc edge in bake-`radius` units:
+ * `0.5 / (1 + 2*glowLengthTS)`, which lands at 1/sqrt(2) solar radii.
+ *
+ * @param {number} glowLengthTS `glowFactor * 5`, as both bakes compute it.
+ * @returns {number} Bake radius at which the legacy disc terminates.
+ * @private
+ */
+function solarDiscBakeEdgeLegacy(glowLengthTS) {
+  return 0.5 / (1.0 + 2.0 * glowLengthTS);
+}
+
+/**
+ * C12-18 disc edge in bake-`radius` units — the radius at which the disc
+ * terminates so that it subtends the Sun's TRUE angular radius.
+ *
+ * `solarBakeRadiusToSolarRadii(solarDiscBakeEdge(g), g) === 1` to within a
+ * binary64 ULP, by construction; `solar-sun-halo-model.spec.mjs` pins that.
+ *
+ * @param {number} glowLengthTS `glowFactor * 5`, as both bakes compute it.
+ * @param {boolean} [trueSize=true] `false` returns the legacy edge EXACTLY
+ *        (`solarDiscBakeEdgeLegacy`), which is the byte-identical off
+ *        position of `lighting.enableTrueSolarDiscSize`.
+ * @returns {number} Bake radius at which the disc terminates.
+ * @private
+ */
+function solarDiscBakeEdge(glowLengthTS, trueSize) {
+  const legacy = solarDiscBakeEdgeLegacy(glowLengthTS);
+  return trueSize === false ? legacy : legacy * SOLAR_DISC_BAKE_LENGTH_SCALAR;
+}
+
+// ─── C12-18 — THE SCREEN-SPACE HALO ────────────────────────────────────────
+//
+// `SOLAR_GLARE_SUPPORT` above records the honest bound of a BAKED halo: a
+// finite quad must reach zero somewhere or its straight edges show, so the
+// C12-16 profile is pedestal-subtracted to terminate on the inscribed circle
+// at 11 R_sun. Its own doc comment names the sequel: "The genuinely
+// non-terminating tail is C12-18's job — the screen-space halo from the
+// post-process chain, which has no quad to fall off."
+//
+// This is that tail. It is the SAME Lorentzian, evaluated in ANGULAR units
+// (solar radii from the projected solar centre) and WITHOUT the pedestal
+// subtraction or the support clamp, because in screen space there is no quad
+// to fall off. Amplitude is the bake's own `0.75` glare weight, so the two
+// compositions are continuous at the centre by construction.
+
+/**
+ * Alpha weight the bake gives its glare halo (`color.ba += glow * 0.75`).
+ * The screen-space halo inherits it so the hand-off changes the halo's
+ * SHAPE (non-terminating) and not its overall level.
+ *
+ * @private
+ */
+const SOLAR_HALO_AMPLITUDE = 0.75;
+
+/**
+ * Half-amplitude radius of the screen-space halo, in SOLAR RADII.
+ *
+ * Derived, not dialled: it is {@link SOLAR_GLARE_CORE} pushed through the
+ * bake's own radius→solar-radii map, so the screen-space curve and the baked
+ * curve are the same curve. At the default `glowFactor = 1` it is
+ * `0.275 * sqrt(2) * 11 = 4.27800 R_sun`, i.e. 1.1397 deg — the halo is at
+ * half strength a bit over one degree from the Sun.
+ *
+ * @param {number} glowLengthTS `glowFactor * 5`, as both bakes compute it.
+ * @returns {number} Half-amplitude radius in solar radii.
+ * @private
+ */
+function solarHaloCoreRadii(glowLengthTS) {
+  return solarBakeRadiusToSolarRadii(SOLAR_GLARE_CORE, glowLengthTS);
+}
+
+/**
+ * C12-18 screen-space veiling-glare profile — the REFERENCE IMPLEMENTATION of
+ * the shader math. `SolarHalo.glsl` and `SolarHalo.wgsl` are line-for-line
+ * translations of this body and `solar-sun-halo-model.spec.mjs` extracts,
+ * compiles and compares all three.
+ *
+ *   veil(rho) = 1 / (1 + (rho / core)^2)
+ *
+ * NO pedestal subtraction and NO support clamp, unlike
+ * {@link solarGlareProfile}. That is the entire point of moving the halo off
+ * the billboard: the profile decays as `1/rho^2` forever instead of being
+ * truncated at the quad's inscribed circle. Measured difference against the
+ * baked profile at `glowFactor = 1` (in ALPHA units, i.e. x0.75):
+ *
+ *   rho (R_sun) | baked  | screen | delta alpha | 8-bit codes
+ *   ------------+--------+--------+-------------+------------
+ *          0.0  | 1.0000 | 1.0000 |     0.0000  |   0.0
+ *          1.0  | 0.9404 | 0.9482 |     0.0059  |   1.5
+ *          4.28 | 0.4244 | 0.5000 |     0.0567  |  14.5
+ *          8.56 | 0.0790 | 0.2000 |     0.0908  |  23.1
+ *         11.0  | 0.0000 | 0.1314 |     0.0985  |  25.1   <- worst case
+ *         20.0  | 0.0000 | 0.0438 |     0.0328  |   8.4
+ *         50.0  | 0.0000 | 0.0073 |     0.0055  |   1.4
+ *        100.0  | 0.0000 | 0.0018 |     0.0014  |   0.35  <- sub-LSB
+ *
+ * The worst-case brightening is therefore EXACTLY at the old support radius
+ * (11 R_sun = 2.93 deg) and is 25/255; the halo stays above one 8-bit code
+ * out to ~57 R_sun (15 deg) and falls below it beyond. Both facts are
+ * pinned by the spec, because "non-terminating" must not be allowed to mean
+ * "washes the whole sky".
+ *
+ * @param {number} rhoRsun Distance from the solar centre in solar radii.
+ * @param {number} coreRsun {@link solarHaloCoreRadii}.
+ * @returns {number} Veil weight in (0, 1]; 1.0 at the centre.
+ * @private
+ */
+function solarScreenHaloProfile(rhoRsun, coreRsun) {
+  const t = rhoRsun / coreRsun;
+  return 1.0 / (1.0 + t * t);
+}
+
 // ─── C12-27 — ANGULAR parameterisation (star washout near the Sun) ─────────
 //
 // The deleted `enableStarBrightnessModulation` global dim was keyed to the
@@ -468,12 +616,18 @@ const SolarDiscModel = Object.freeze({
   SOLAR_GLARE_ANGULAR_CORE,
   SOLAR_GLARE_ANGULAR_SUPPORT,
   SOLAR_GLARE_ANGULAR_PEDESTAL,
+  SOLAR_DISC_BAKE_LENGTH_SCALAR,
+  SOLAR_HALO_AMPLITUDE,
   lorentzianPedestal,
   pedestalLorentzian,
   solarLimbIntensity,
   solarGlareProfile,
   solarGlareProfileLegacy,
   solarBakeRadiusToSolarRadii,
+  solarDiscBakeEdgeLegacy,
+  solarDiscBakeEdge,
+  solarHaloCoreRadii,
+  solarScreenHaloProfile,
   angularGlareVeil,
   solarAngularGlareVeil,
   solarAngularGlareFactor,
@@ -492,12 +646,18 @@ export {
   SOLAR_GLARE_ANGULAR_CORE,
   SOLAR_GLARE_ANGULAR_SUPPORT,
   SOLAR_GLARE_ANGULAR_PEDESTAL,
+  SOLAR_DISC_BAKE_LENGTH_SCALAR,
+  SOLAR_HALO_AMPLITUDE,
   lorentzianPedestal,
   pedestalLorentzian,
   solarLimbIntensity,
   solarGlareProfile,
   solarGlareProfileLegacy,
   solarBakeRadiusToSolarRadii,
+  solarDiscBakeEdgeLegacy,
+  solarDiscBakeEdge,
+  solarHaloCoreRadii,
+  solarScreenHaloProfile,
   angularGlareVeil,
   solarAngularGlareVeil,
   solarAngularGlareFactor,

@@ -135,8 +135,9 @@ class AtmosphericConditions {
    * model-viewer scenes), so each resolver's absent-facade convention decides
    * the effective position:
    *   - `!== false` — ON without a facade: `enableSolarLimbDarkening`,
-   *     `enableSolarGlareFalloff` (`Scene/SunDiscAppearance.js`), `enableEclipse`
-   *     (`Scene.js`).
+   *     `enableSolarGlareFalloff` (`Scene/SunDiscAppearance.js`),
+   *     `enableTrueSolarDiscSize`, `enableScreenSpaceSunHalo`
+   *     (`Scene/SunHaloAppearance.js`), `enableEclipse` (`Scene.js`).
    *   - `=== true` — OFF without a facade, DELIBERATELY, so such a scene keeps
    *     the pre-C12 look exactly: `enableEarthshinePhase`, `enableSoftTerminator`
    *     (`Scene/MoonPhaseAppearance.js`), `enableAngularSolarGlare`
@@ -447,6 +448,27 @@ function buildLighting(globe) {
   //    expression verbatim. Measured delta inside 6 solar radii: at most
   //    0.098 in profile units (0.074 in alpha) — the table is in
   //    `SolarDiscModel.solarGlareProfile`'s JSDoc.
+  //
+  // C12-18 (2026-08-07) — two more sun toggles, both DEFAULT ON, both on
+  // BOTH backends, resolved once per frame by `Scene/SunHaloAppearance.js`:
+  //
+  //  - enableTrueSolarDiscSize (C12-18): the baked disc terminates where the
+  //    Sun's TRUE angular radius falls, instead of at 1/sqrt(2) of it. Both
+  //    bakes compared the CORNER-normalised `radius` against a `radiusTS`
+  //    expressed as a fraction of the quad's HALF-EXTENT, so the shipped disc
+  //    subtended 0.3767 deg of diameter instead of 0.5327 deg. Off returns
+  //    the historical `0.5 / (1 + 2*glowLengthTS)` bit-for-bit.
+  //
+  //  - enableScreenSpaceSunHalo (C12-18, absorbing C11-160): the halo is
+  //    drawn by the post-process chain (`SolarHalo.glsl` inside
+  //    `SunPostProcess` on WebGL, `SunHaloEffect` on WebGPU) instead of being
+  //    baked into the billboard, so its veiling-glare tail decays as
+  //    1/theta^2 without the truncation a finite quad forces. Off keeps the
+  //    baked halo verbatim and adds no post-process stage. EXACTLY ONE halo
+  //    source is live at a time by construction — the bake's gain is DERIVED
+  //    from this toggle, never set beside it. The screen-space halo also
+  //    requires `scene.sunBloom` (default true): with sun bloom off the
+  //    baked halo is kept rather than the Sun silently losing its glow.
   // C12 moon-phase wave (2026-08-06) — two more toggles, both DEFAULT ON and
   // implemented on BOTH backends in lockstep, resolved once per frame by
   // `Scene/MoonPhaseAppearance.js`:
@@ -519,6 +541,8 @@ function buildLighting(globe) {
     enableEclipseGlobeShadow: true,
     enableSolarLimbDarkening: true,
     enableSolarGlareFalloff: true,
+    enableTrueSolarDiscSize: true,
+    enableScreenSpaceSunHalo: true,
     enableAngularSolarGlare: true,
     // C12-29 S6 — the 360-degree horizon twilight. Inside the umbra the
     // observer is surrounded by penumbra: the umbral ground track is only

@@ -24,6 +24,10 @@ import {
   createSunDiscAppearance,
   readSunDiscAppearance,
 } from "./SunDiscAppearance.js";
+import {
+  createSunHaloAppearance,
+  readSunHaloAppearance,
+} from "./SunHaloAppearance.js";
 import PixelDatatype from "../Renderer/PixelDatatype.js";
 import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
@@ -103,6 +107,13 @@ class Sun {
     this._bakedAppearanceKey = undefined;
     this._limbDarkening = new Cartesian3(1.0, 0.0, 0.0);
     this._glareProfile = new Cartesian4(0.0, 0.0, 0.0, 1.0);
+
+    // C12-18 — disc size + halo-source resolution, published on frameState
+    // before the backend branch (same convention as `_discAppearance`).
+    // `_haloGain` is the bake's halo weight: 1.0 keeps the historical baked
+    // halo, 0.0 hands the halo to the post-process chain.
+    this._haloAppearance = createSunHaloAppearance();
+    this._haloGain = 1.0;
 
     const that = this;
     this._uniformMap = {
@@ -276,6 +287,26 @@ class Sun {
     this._glareProfile.z = appearance.glareLegacyEdge;
     this._glareProfile.w = appearance.glareLegacy;
 
+    // C12-18 (absorbs C11-160 + C11-115) — the disc's true angular size and
+    // the halo-source decision. Resolved here, BEFORE the feature-renderer
+    // branch, for the same reason C12-15/16 are: the GLSL bake takes these as
+    // uniforms and the WebGPU CPU bake reads the published object, so they are
+    // provably the same numbers rather than two independent derivations. The
+    // screen-space consumers (`SunPostProcess`'s `SolarHalo` stage on WebGL,
+    // `SunHaloEffect` on WebGPU) read the same publication.
+    //
+    // `glowLengthTS` is hoisted out of the texture-rebuild block below because
+    // the halo geometry needs it on the WebGPU path too, which returns before
+    // that block ever runs.
+    const glowLengthTS = this._glowFactor * 5.0;
+    const halo = readSunHaloAppearance(
+      frameState,
+      glowLengthTS,
+      this._haloAppearance,
+    );
+    frameState.sunHalo = halo;
+    this._haloGain = halo.bakeHaloGain;
+
     // Backend-specific rendering via Feature Renderer. Environment commands
     // are return-only: Scene publishes the result as sunDrawCommand, then the
     // renderer applies the authoritative visibility result while injecting it
@@ -302,16 +333,18 @@ class Sun {
       drawingBufferHeight !== this._drawingBufferHeight ||
       this._glowFactorDirty ||
       useHdr !== this._useHdr ||
-      // C12-15 / C12-16 — a toggle flip changes the baked profile, so the
-      // texture must be re-baked exactly as a glowFactor change does.
-      this._bakedAppearanceKey !== appearance.key
+      // C12-15 / C12-16 / C12-18 — a toggle flip changes the baked profile,
+      // so the texture must be re-baked exactly as a glowFactor change does.
+      // The C12-18 halo key is folded into the same signature (bits 2-3) so
+      // one comparison still covers every bake-shaping toggle.
+      this._bakedAppearanceKey !== appearance.key + (halo.key << 2)
     ) {
       this._texture = this._texture && this._texture.destroy();
       this._drawingBufferWidth = drawingBufferWidth;
       this._drawingBufferHeight = drawingBufferHeight;
       this._glowFactorDirty = false;
       this._useHdr = useHdr;
-      this._bakedAppearanceKey = appearance.key;
+      this._bakedAppearanceKey = appearance.key + (halo.key << 2);
 
       let size = Math.max(drawingBufferWidth, drawingBufferHeight);
       size = Math.pow(2.0, Math.ceil(Math.log(size) / Math.log(2.0)) - 2.0);
@@ -334,13 +367,27 @@ class Sun {
         pixelDatatype: pixelDatatype,
       });
 
-      this._glowLengthTS = this._glowFactor * 5.0;
-      this._radiusTS = (1.0 / (1.0 + 2.0 * this._glowLengthTS)) * 0.5;
+      this._glowLengthTS = glowLengthTS;
+      // C12-18 — the disc's terminating radius, resolved by
+      // `SunHaloAppearance`. The historical expression
+      // `0.5 / (1 + 2*glowLengthTS)` is the `enableTrueSolarDiscSize = false`
+      // position and is returned bit-for-bit there; the default position
+      // multiplies it by the bakes' own `lengthScalar` so the disc subtends
+      // the Sun's TRUE angular radius instead of 1/sqrt(2) of it. See the
+      // C12-18 derivation block in `SolarDiscModel.js`.
+      this._radiusTS = halo.discEdge;
 
       const that = this;
       const uniformMap = {
         u_radiusTS: function () {
           return that._radiusTS;
+        },
+        // C12-18 — 1.0 keeps the historical baked halo + lens-flare bursts;
+        // 0.0 removes them from the bake because the post-process chain is
+        // drawing the halo this frame. Derived in `SunHaloAppearance`, never
+        // set independently, so a double halo is unrepresentable.
+        u_haloGain: function () {
+          return that._haloGain;
         },
         // C12-15 / C12-16 — the bake's only numeric source. `SunTextureFS`
         // holds no copy of the limb-darkening triple or the glare

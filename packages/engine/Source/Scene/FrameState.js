@@ -478,6 +478,30 @@ class FrameState {
     this.sunDiscAppearance = undefined;
 
     /**
+     * Whether the post-process chain that draws the C12-18 screen-space solar
+     * halo will run this frame — `scene.sunBloom` and not WebVR. Published by
+     * {@link Scene#updateEnvironment} BEFORE {@link Sun#update}, because the
+     * halo-source decision must be made before the backend branch so both
+     * bakes agree about whether the halo is still baked.
+     * @type {boolean|undefined}
+     */
+    this.sunBloomActive = undefined;
+
+    /**
+     * Resolved sun disc-size + halo-source state (C12-18, absorbing C11-160
+     * and C11-115), published by {@link Sun#update} before the backend branch.
+     * Carries the bake payload (`discEdge`, `bakeHaloGain`) consumed by
+     * `SunTextureFS.glsl` and the WebGPU CPU bake, AND the screen-space
+     * payload (`centerX`, `centerY`, `limbPx`, `haloCoreRadii`,
+     * `haloIntensity`, `haloColorR/G/B`) consumed by `SolarHalo.glsl` inside
+     * {@link SunPostProcess} and by the WebGPU `SunHaloEffect`. See
+     * `Scene/SunHaloAppearance.js`; its header states the one invariant —
+     * exactly one halo source is live at a time.
+     * @type {object|undefined}
+     */
+    this.sunHalo = undefined;
+
+    /**
      * Resolved angular solar-glare star washout (C12-27), published by
      * {@link Scene#updateEnvironment} BEFORE the star cube map and the star
      * sprite catalogue update, so all four shader consumers (WGSL + GLSL, cube

@@ -1,4 +1,17 @@
+// C12-18 — the bake `radius` at which the solar disc terminates. This used to
+// be `0.5 / (1 + 2*glowLengthTS)` computed in Sun.js and compared against the
+// CORNER-normalised `radius`, which made the disc subtend 1/sqrt(2) of the
+// Sun's true angular radius (0.3767 deg of diameter instead of 0.5327 deg).
+// It is now resolved by Scene/SunHaloAppearance.js; `enableTrueSolarDiscSize
+// = false` passes the historical value bit-for-bit.
 uniform float u_radiusTS;
+
+// C12-18 — bake halo weight. 1.0 = the historical baked glare halo + lens-
+// flare bursts. 0.0 = the post-process chain owns the halo this frame
+// (`SolarHalo.glsl` on WebGL, `SolarHalo.wgsl` on WebGPU), so the bake carries
+// the DISC ONLY and the two halo sources can never both be live. Derived from
+// one boolean in SunHaloAppearance.js — see the invariant in its header.
+uniform float u_haloGain;
 
 // C12-15 — quadratic limb-darkening coefficients (a0, a1, a2) for
 // I(mu) = a0 + a1*mu + a2*mu^2, mu = cos(heliocentric angle), normalised to
@@ -87,8 +100,14 @@ void main()
 
     vec4 color = vec4(vec2(1.0), surface + 0.2, surface);
 
+    // C12-18 — `u_haloGain` gates the BAKED halo. At the shipped default it is
+    // 0.0 and this term vanishes exactly, leaving the disc alone in the bake;
+    // the halo is drawn in screen space instead, where it can carry a genuine
+    // non-terminating 1/rho^2 tail (see Scene/SolarDiscModel.js
+    // `solarScreenHaloProfile`). At 1.0 the expression is bit-for-bit the
+    // historical one.
     float glow = sunGlare(radius);
-    color.ba += mix(vec2(0.0), vec2(1.0), glow) * 0.75;
+    color.ba += mix(vec2(0.0), vec2(1.0), glow) * (0.75 * u_haloGain);
 
     vec4 burst = vec4(0.0);
 
@@ -113,7 +132,11 @@ void main()
 
     // End of manual loop unrolling.
 
-    color += clamp(burst, vec4(0.0), vec4(1.0)) * 0.15;
+    // The lens-flare bursts are part of the same instrument-response layer as
+    // the halo, so they follow `u_haloGain` rather than staying behind after
+    // the halo moves to the post-process chain — a disc with six spikes and no
+    // surrounding glow would read as a bug.
+    color += clamp(burst, vec4(0.0), vec4(1.0)) * (0.15 * u_haloGain);
 
     out_FragColor = clamp(color, vec4(0.0), vec4(1.0));
 }

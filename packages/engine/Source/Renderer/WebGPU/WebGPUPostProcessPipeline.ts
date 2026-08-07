@@ -99,6 +99,12 @@ import {
 } from "./WebGPULibraryPostProcessStage.js";
 // Audit A.11 (Batch 133) -- pipeline-level GodRay registration.
 import { GodRayEffect, type GodRayConfig } from "./WebGPUGodRayEffect.js";
+// C12-18 / C11-160 -- pipeline-level SunHalo registration. `scene.sunBloom`
+// had no WebGPU consumer at all before this; see WebGPUSunHaloEffect.ts.
+import {
+  SunHaloEffect,
+  type SunHaloFrameState,
+} from "./WebGPUSunHaloEffect.js";
 // Atmospheric Effects Phase B (Batch 417b) -- pipeline-level HeatShimmer
 // registration. Single-pass animated UV-warp; mirrors the GodRay touchpoints.
 import {
@@ -327,6 +333,8 @@ export class WebGPUPostProcessPipeline {
 
   // Complex multi-pass effects
   private _bloomEffect: BloomEffect | null = null;
+  // C12-18 / C11-160 — screen-space solar veiling glare.
+  private _sunHaloEffect: SunHaloEffect | null = null;
   private _aoEffect: AmbientOcclusionEffect | null = null;
   private _dofEffect: DepthOfFieldEffect | null = null;
   private _taaEffect: WebGPUTAAEffect | null = null;
@@ -423,6 +431,10 @@ export class WebGPUPostProcessPipeline {
     if (this._aoEffect?.enabled) return true;
     if (this._dofEffect?.enabled) return true;
     if (this._godRayEffect?.enabled) return true;
+    // C12-18 — the halo alone must be able to keep the chain alive, because
+    // on a default WebGPU scene with no other effect enabled it is the ONLY
+    // stage between the scene FB and the canvas that draws anything.
+    if (this._sunHaloEffect?.enabled) return true;
     if (this._heatShimmerEffect?.enabled) return true;
     if (this._coldOpticsEffect?.enabled) return true;
     if (this._aerialPerspectiveEffect?.enabled) return true;
@@ -435,6 +447,10 @@ export class WebGPUPostProcessPipeline {
 
   get bloomEffect(): BloomEffect | null {
     return this._bloomEffect;
+  }
+
+  get sunHaloEffect(): SunHaloEffect | null {
+    return this._sunHaloEffect;
   }
 
   get ambientOcclusionEffect(): AmbientOcclusionEffect | null {
@@ -550,6 +566,11 @@ export class WebGPUPostProcessPipeline {
     this._aoEffect?.destroy();
     this._dofEffect?.destroy();
     this._godRayEffect?.destroy();
+    // C12-18 — the halo's output texture is sized + formatted against
+    // `_intermediateFormat`, so a resize / HDR toggle must drop it too. The
+    // configure pass lazily re-adds it on the same frame when
+    // `scene.sunBloom` is on (the gate checks the live slot).
+    this._sunHaloEffect?.destroy();
     // Atmospheric Effects Phase B (Batch 417b) — HeatShimmer's output texture
     // is sized + formatted against `_intermediateFormat`, so a resize / HDR
     // toggle must drop it too. The configure pass lazily re-adds it on the
@@ -571,6 +592,7 @@ export class WebGPUPostProcessPipeline {
     this._aoEffect = null;
     this._dofEffect = null;
     this._godRayEffect = null;
+    this._sunHaloEffect = null;
     this._heatShimmerEffect = null;
     this._coldOpticsEffect = null;
     this._aerialPerspectiveEffect = null;
@@ -1100,6 +1122,33 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
+   * C12-18 / C11-160 — add the screen-space solar halo (one fullscreen pass).
+   *
+   * Idempotent like the other `add*` methods, and it uses the INTERMEDIATE
+   * format for the same reason bloom does: the halo is additive HDR energy
+   * and clamping it at 8 bits before tonemap would flatten exactly the tail
+   * this row exists to produce.
+   */
+  addSunHalo(device: GPUDevice, canvasFormat: GPUTextureFormat): void {
+    if (this._sunHaloEffect) return;
+    this._sunHaloEffect = new SunHaloEffect();
+    this._sunHaloEffect.initialize(
+      device,
+      this._width,
+      this._height,
+      this._intermediateFormat || canvasFormat,
+    );
+  }
+
+  /**
+   * C12-18 — push this frame's resolved halo state (`frameState.sunHalo`).
+   * No-op when the effect has not been added, so callers need no guard.
+   */
+  setSunHaloFrameState(state: SunHaloFrameState): void {
+    this._sunHaloEffect?.setFrameState(state);
+  }
+
+  /**
    * Add ambient occlusion effect (SSAO Generate → Blur → Modulate).
    * Requires depth texture to function.
    */
@@ -1476,6 +1525,23 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
+    // 0.5 SunHalo (C12-18 / C11-160) — screen-space solar veiling glare.
+    // Runs BEFORE AO/bloom/tonemap, mirroring WebGL, where `SunPostProcess`
+    // executes during environment rendering and copies into the scene
+    // framebuffer, so everything downstream sees the halo. Needs no depth:
+    // veiling glare is scattering inside the observer's optics and is
+    // deliberately not occluded by scene geometry. The effect self-skips
+    // (returns `sourceView` untouched) when its amplitude is exactly 0, so
+    // an eclipsed or disabled halo costs one branch, not a pass.
+    if (this._sunHaloEffect?.enabled) {
+      currentView = this._sunHaloEffect.execute(
+        encoder,
+        currentView,
+        depth,
+        this._sampler!,
+      );
+    }
+
     // 1. Ambient Occlusion (needs depth; optionally reads G-buffer
     // normal — Phase 8a Slice 4, Batch 87).
     if (this._aoEffect?.enabled && depth) {
@@ -1798,6 +1864,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._aoEffect?.resize(width, height);
     this._dofEffect?.resize(width, height);
     this._godRayEffect?.resize(width, height);
+    this._sunHaloEffect?.resize(width, height);
     this._heatShimmerEffect?.resize(width, height);
     this._coldOpticsEffect?.resize(width, height);
     this._aerialPerspectiveEffect?.resize(width, height);
@@ -1850,6 +1917,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       this._aoEffect.enabled = enabled;
     } else if (name === "DepthOfField" && this._dofEffect) {
       this._dofEffect.enabled = enabled;
+    } else if (name === "SunHalo" && this._sunHaloEffect) {
+      this._sunHaloEffect.enabled = enabled;
     } else {
       const stage = this._customStages.find((s) => s.name === name);
       if (stage) stage.enabled = enabled;
@@ -2140,6 +2209,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._aoEffect?.destroy();
     this._dofEffect?.destroy();
     this._godRayEffect?.destroy();
+    this._sunHaloEffect?.destroy();
     this._heatShimmerEffect?.destroy();
     this._coldOpticsEffect?.destroy();
     this._aerialPerspectiveEffect?.destroy();
@@ -2156,6 +2226,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._aoEffect = null;
     this._dofEffect = null;
     this._godRayEffect = null;
+    this._sunHaloEffect = null;
     this._heatShimmerEffect = null;
     this._coldOpticsEffect = null;
     this._aerialPerspectiveEffect = null;

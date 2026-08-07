@@ -73,6 +73,12 @@ export interface PostProcessCache {
   // viewProjection.
   godRayEnabled: boolean;
   godRayInitialized: boolean;
+  // C12-18 / C11-160 -- screen-space solar halo. Driven by `scene.sunBloom`
+  // (default TRUE, the SAME flag that gates WebGL's `SunPostProcess`), which
+  // had NO WebGPU consumer before this row: `supportsLegacySunBloom` returns
+  // false so the legacy allocation is skipped, and nothing replaced it.
+  sunHaloEnabled: boolean;
+  sunHaloInitialized: boolean;
   // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer (animated
   // screen-space UV-warp) post-process. Activated via
   // `scene.heatShimmerEnabled = true`, intensity via
@@ -196,6 +202,8 @@ function getDefaultCache(): PostProcessCache {
     depthOfFieldEnabled: false,
     godRayEnabled: false,
     godRayInitialized: false,
+    sunHaloEnabled: false,
+    sunHaloInitialized: false,
     heatShimmerEnabled: false,
     heatShimmerInitialized: false,
     coldOpticsEnabled: false,
@@ -438,6 +446,18 @@ function configureWebGPUPostProcessPipeline(
   // addition). Mirrors the `scene.taaEnabled` pattern.
   cache.godRayEnabled =
     (scene as unknown as { godRayEnabled?: boolean })?.godRayEnabled === true;
+
+  // C12-18 / C11-160 -- the screen-space solar halo rides `scene.sunBloom`,
+  // the same public flag WebGL's `SunPostProcess` rides, AND the same
+  // `environmentState.isSunVisible` occlusion test that gates the WebGL
+  // chain -- a Sun behind the Earth must not paint a halo through it.
+  // `frameState.sunHalo.visible` additionally covers the behind-camera and
+  // degenerate-geometry cases; `Sun.update` publishes it before the backend
+  // branch (`Scene/SunHaloAppearance.js`).
+  cache.sunHaloEnabled =
+    (scene as unknown as { sunBloom?: boolean })?.sunBloom === true &&
+    (scene as unknown as { _environmentState?: { isSunVisible?: boolean } })
+      ?._environmentState?.isSunVisible !== false;
 
   // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer enabled flag,
   // scene-level (ad-hoc `scene.heatShimmerEnabled`, pushed by the 417a
@@ -943,6 +963,22 @@ function configureWebGPUPostProcessPipeline(
   // Cheap: a name-match walk over the (typically tiny) stage list; the
   // uniform repack happens GPU-side only for enabled stages at execute.
   syncInterceptedLibraryStages(pipeline, userStages, scene);
+
+  // C12-18 / C11-160 -- SunHalo lazy init + per-frame state push. The gate
+  // checks the LIVE `pipeline.sunHaloEffect` slot rather than a sticky cache
+  // flag so the effect transparently re-adds after any pipeline recreate
+  // (HDR toggle, resize, device loss) that nulls it -- the same pattern the
+  // TAA lazy-add uses.
+  if (cache.sunHaloEnabled && !pipeline.sunHaloEffect) {
+    pipeline.addSunHalo(device, canvasFormat);
+    cache.sunHaloInitialized = true;
+  }
+  if (pipeline.sunHaloEffect) {
+    pipeline.sunHaloEffect.enabled = cache.sunHaloEnabled;
+    if (cache.sunHaloEnabled) {
+      pushSunHaloFrameState(pipeline, scene);
+    }
+  }
 
   // Audit A.11 (Batch 133) -- GodRay lazy init + per-frame sun UV
   // update. Config can be supplied via `scene.godRayConfig` (optional).
@@ -1464,6 +1500,63 @@ function updateAerialPerspectiveFrameData(
     cloudShadowAbsorption: cloudCache?.shadowAbsorption ?? 0.04,
     // C13-41 — same `_cloudCache` seam as the absorption above.
     cloudShadowStrength: cloudCache?.shadowStrength ?? 1.0,
+  });
+}
+
+/**
+ * C12-18 / C11-160 -- push `frameState.sunHalo` into the WebGPU halo effect.
+ *
+ * PURE TRANSFER, deliberately. Every number is resolved once in
+ * `Scene/SunHaloAppearance.js` before the backend branch and consumed
+ * identically by WebGL's `SolarHalo` stage; re-deriving any of it here (the
+ * projection, the limb size, the eclipse factor) is exactly the drift the
+ * publish-then-branch convention exists to prevent. When the publication is
+ * missing or reports `visible === false`, the amplitude is pushed as 0, which
+ * makes the effect skip its pass entirely.
+ */
+function pushSunHaloFrameState(
+  pipeline: WebGPUPostProcessPipeline,
+  scene: CesiumScene | undefined,
+): void {
+  const halo = (
+    scene as unknown as {
+      frameState?: {
+        sunHalo?: {
+          visible?: boolean;
+          centerX?: number;
+          centerY?: number;
+          limbPx?: number;
+          haloCoreRadii?: number;
+          haloIntensity?: number;
+          haloColorR?: number;
+          haloColorG?: number;
+          haloColorB?: number;
+        };
+      };
+    }
+  )?.frameState?.sunHalo;
+  if (!halo || halo.visible !== true) {
+    pipeline.setSunHaloFrameState({
+      centerX: 0,
+      centerY: 0,
+      limbPx: 1,
+      coreRadii: 1,
+      intensity: 0,
+      colorR: 1,
+      colorG: 1,
+      colorB: 1,
+    });
+    return;
+  }
+  pipeline.setSunHaloFrameState({
+    centerX: halo.centerX ?? 0,
+    centerY: halo.centerY ?? 0,
+    limbPx: halo.limbPx ?? 1,
+    coreRadii: halo.haloCoreRadii ?? 1,
+    intensity: halo.haloIntensity ?? 0,
+    colorR: halo.haloColorR ?? 1,
+    colorG: halo.haloColorG ?? 1,
+    colorB: halo.haloColorB ?? 1,
   });
 }
 

@@ -162,7 +162,9 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
   }
 
   if (environmentState.isSunVisible && scene.sunBloom && !useWebVR) {
-    passState.framebuffer = scene._sunPostProcess.update(passState);
+    // C12-18 — `frameState` threaded through so the `SolarHalo` stage can read
+    // the halo state `Sun.update` published this frame.
+    passState.framebuffer = scene._sunPostProcess.update(passState, frameState);
     scene._sunPostProcess.clear(context, passState, clearColor);
   } else if (useGlobeDepthFramebuffer) {
     passState.framebuffer = view.globeDepth.framebuffer;
