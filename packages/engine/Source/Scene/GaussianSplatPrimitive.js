@@ -119,6 +119,7 @@ const SnapshotState = {
  * @property {Uint32Array|undefined} indexes Sorted index buffer when READY.
  * @property {Texture|undefined} gaussianSplatTexture Packed splat attribute texture.
  * @property {Texture|undefined} sphericalHarmonicsTexture Packed SH texture.
+ * @property {GaussianSplatPrimitive.AttributeTextureData|undefined} packedSplatTextureData Packed WASM splat payload, retained only when a native feature renderer owns the draw.
  * @property {number} lastTextureWidth Last splat texture width.
  * @property {number} lastTextureHeight Last splat texture height.
  * @property {string} state Current snapshot lifecycle state from {@link SnapshotState}.
@@ -439,6 +440,13 @@ function commitSnapshot(primitive, snapshot, frameState) {
   primitive._indexes = snapshot.indexes;
   primitive.gaussianSplatTexture = snapshot.gaussianSplatTexture;
   primitive.sphericalHarmonicsTexture = snapshot.sphericalHarmonicsTexture;
+  // `C15-G2`: the packed WASM output, retained only when a native feature
+  // renderer owns the draw (the WebGL path uploaded it into a Texture and does
+  // not keep a second CPU copy). This is the artifact `C15-G3` consumes; it is
+  // deliberately NOT named `_splatData`, because that field is the WebGPU
+  // renderer's 16-float `SplatRecord` read and this buffer is the WASM-native
+  // 8-uint32 layout. Assigning it there would draw garbage, not splats.
+  primitive._packedSplatTextureData = snapshot.packedSplatTextureData;
   primitive._lastTextureWidth = snapshot.lastTextureWidth;
   primitive._lastTextureHeight = snapshot.lastTextureHeight;
   // Commit row-addressing params alongside the texture; the shader must
@@ -462,9 +470,99 @@ function commitSnapshot(primitive, snapshot, frameState) {
 }
 
 /**
+ * Backend-neutral half of the splat texture pipeline (`C15-G2`). Applies the
+ * texture-size budget — truncating the snapshot when the splat count exceeds
+ * what a single row-addressed 2D layout can hold — computes the row
+ * mask/shift the shader indexes with, and trims or zero-pads the raw WASM
+ * buffer to the chosen dimensions.
+ *
+ * No GPU object is created here. This runs on <b>both</b> backends so they
+ * agree on <code>numSplats</code> and on the row addressing by construction,
+ * rather than through two parallel implementations that can drift.
+ *
+ * @param {GaussianSplatPrimitive.Snapshot} snapshot Snapshot being populated.
+ * @param {GaussianSplatPrimitive.AttributeTextureData} splatTextureData Raw packed output of the WASM texture generator.
+ * @param {number} maximumTextureSize The active backend's maximum 2D texture dimension.
+ * @returns {GaussianSplatPrimitive.AttributeTextureData} The trimmed/padded payload.
+ * @private
+ */
+function computeSplatTextureLayout(
+  snapshot,
+  splatTextureData,
+  maximumTextureSize,
+) {
+  const maxTex = maximumTextureSize;
+
+  // Use maximumTextureSize as the texture width; splatsPerRow = maxTex / 2
+  // (each splat occupies 2 side-by-side texels). The WASM buffer layout is
+  // width-independent, so the raw data is reused as-is.
+  const optimalWidth = maxTex;
+  let optimalHeight = Math.ceil(snapshot.numSplats / (maxTex / 2));
+  const splatRowShift = Math.log2(maxTex / 2);
+  const splatRowMask = maxTex / 2 - 1;
+
+  // Hard cap: >maxTex*(maxTex/2) splats cannot fit in any valid texture.
+  if (optimalHeight > maxTex) {
+    const originalCount = snapshot.numSplats;
+    optimalHeight = maxTex;
+    const splatsPerRow = optimalWidth / 2;
+    snapshot.numSplats = maxTex * splatsPerRow;
+    // Truncate CPU attribute arrays to match numSplats.
+    snapshot.positions = snapshot.positions.subarray(0, snapshot.numSplats * 3);
+    snapshot.rotations = snapshot.rotations.subarray(0, snapshot.numSplats * 4);
+    snapshot.scales = snapshot.scales.subarray(0, snapshot.numSplats * 3);
+    snapshot.colors = snapshot.colors.subarray(0, snapshot.numSplats * 4);
+    // shData is allocated independently and must be truncated separately.
+    if (defined(snapshot.shData)) {
+      const shPerSplat = snapshot.shData.length / originalCount;
+      snapshot.shData = snapshot.shData.subarray(
+        0,
+        Math.floor(snapshot.numSplats * shPerSplat),
+      );
+    }
+    // Scale up SSE next frame so traversal selects fewer tiles.
+    snapshot.splatBudgetSSEScale = originalCount / snapshot.numSplats;
+    console.warn(
+      `[GaussianSplat][HARD CAP] ${originalCount} splats exceed the maximum texture capacity ` +
+        `(${maxTex}\u00d7${splatsPerRow} = ${snapshot.numSplats} splats at width=${optimalWidth}). ` +
+        `Rendering only the first ${snapshot.numSplats} splats to avoid a WebGL crash. ` +
+        `Increasing maximumScreenSpaceError by ${snapshot.splatBudgetSSEScale.toFixed(2)}x next frame.`,
+    );
+  } else {
+    // Within budget; clear any SSE inflation carried over from a previous cap.
+    snapshot.splatBudgetSSEScale = 1.0;
+  }
+
+  // Trim or zero-pad the raw WASM buffer to match the chosen dimensions.
+  const requiredLen = optimalWidth * optimalHeight * 4;
+  let effectiveData;
+  if (requiredLen <= splatTextureData.data.length) {
+    effectiveData = splatTextureData.data.subarray(0, requiredLen);
+  } else {
+    effectiveData = new Uint32Array(requiredLen);
+    effectiveData.set(splatTextureData.data);
+  }
+
+  snapshot.splatRowMask = splatRowMask;
+  snapshot.splatRowShift = splatRowShift;
+
+  return {
+    width: optimalWidth,
+    height: optimalHeight,
+    data: effectiveData,
+  };
+}
+
+/**
  * Finalizes async splat texture generation for a snapshot. The resolved data
  * updates or recreates GPU textures, and the snapshot transitions to
  * {@link SnapshotState.TEXTURE_READY} when complete.
+ *
+ * This is where the neutral/GL boundary sits (`C15-G2`): everything up to and
+ * including {@link computeSplatTextureLayout} is shared, and only the WebGL
+ * <code>Texture</code> uploads below are backend-specific. When a native
+ * feature renderer owns the draw, the packed buffer is retained on the
+ * snapshot instead of being uploaded.
  *
  * @param {GaussianSplatPrimitive} primitive The owning primitive.
  * @param {FrameState} frameState The current frame state.
@@ -484,76 +582,38 @@ async function processGeneratedSplatTextureData(
   const maximumTextureSize = frameState.context.limits.maximumTextureSize;
   try {
     const splatTextureData = await promise;
-    const maxTex = maximumTextureSize;
 
-    // Use maximumTextureSize as the texture width; splatsPerRow = maxTex / 2
-    // (each splat occupies 2 side-by-side texels). The WASM buffer layout is
-    // width-independent, so the raw data is reused as-is.
-    const optimalWidth = maxTex;
-    let optimalHeight = Math.ceil(snapshot.numSplats / (maxTex / 2));
-    const splatRowShift = Math.log2(maxTex / 2);
-    const splatRowMask = maxTex / 2 - 1;
-
-    // Hard cap: >maxTex*(maxTex/2) splats cannot fit in any valid texture.
-    if (optimalHeight > maxTex) {
-      const originalCount = snapshot.numSplats;
-      optimalHeight = maxTex;
-      const splatsPerRow = optimalWidth / 2;
-      snapshot.numSplats = maxTex * splatsPerRow;
-      // Truncate CPU attribute arrays to match numSplats.
-      snapshot.positions = snapshot.positions.subarray(
-        0,
-        snapshot.numSplats * 3,
-      );
-      snapshot.rotations = snapshot.rotations.subarray(
-        0,
-        snapshot.numSplats * 4,
-      );
-      snapshot.scales = snapshot.scales.subarray(0, snapshot.numSplats * 3);
-      snapshot.colors = snapshot.colors.subarray(0, snapshot.numSplats * 4);
-      // shData is allocated independently and must be truncated separately.
-      if (defined(snapshot.shData)) {
-        const shPerSplat = snapshot.shData.length / originalCount;
-        snapshot.shData = snapshot.shData.subarray(
-          0,
-          Math.floor(snapshot.numSplats * shPerSplat),
-        );
-      }
-      // Scale up SSE next frame so traversal selects fewer tiles.
-      snapshot.splatBudgetSSEScale = originalCount / snapshot.numSplats;
-      console.warn(
-        `[GaussianSplat][HARD CAP] ${originalCount} splats exceed the maximum texture capacity ` +
-          `(${maxTex}\u00d7${splatsPerRow} = ${snapshot.numSplats} splats at width=${optimalWidth}). ` +
-          `Rendering only the first ${snapshot.numSplats} splats to avoid a WebGL crash. ` +
-          `Increasing maximumScreenSpaceError by ${snapshot.splatBudgetSSEScale.toFixed(2)}x next frame.`,
-      );
-    } else {
-      // Within budget; clear any SSE inflation carried over from a previous cap.
-      snapshot.splatBudgetSSEScale = 1.0;
-    }
-
-    // Trim or zero-pad the raw WASM buffer to match the chosen dimensions.
-    const requiredLen = optimalWidth * optimalHeight * 4;
-    let effectiveData;
-    if (requiredLen <= splatTextureData.data.length) {
-      effectiveData = splatTextureData.data.subarray(0, requiredLen);
-    } else {
-      effectiveData = new Uint32Array(requiredLen);
-      effectiveData.set(splatTextureData.data);
-    }
-    const effectiveTextureData = {
-      width: optimalWidth,
-      height: optimalHeight,
-      data: effectiveData,
-    };
-
-    snapshot.splatRowMask = splatRowMask;
-    snapshot.splatRowShift = splatRowShift;
+    // Backend-neutral: the budget, the truncation and the row addressing are
+    // computed once, for both backends, so the two agree on `numSplats` by
+    // construction rather than through two parallel implementations.
+    const effectiveTextureData = computeSplatTextureLayout(
+      snapshot,
+      splatTextureData,
+      maximumTextureSize,
+    );
 
     if (primitive._pendingSnapshot !== snapshot) {
       snapshot.state = SnapshotState.BUILDING;
       return;
     }
+
+    // ── Backend branch. Everything above ran for both backends; everything
+    // below constructs WebGL `Texture` objects. A native feature renderer owns
+    // its own GPU resources, so it gets the packed WASM buffer verbatim and no
+    // WebGL texture is created for it at all. `C15-G3` turns this retained
+    // artifact into a GPU storage buffer; until then the WebGPU splat draw is
+    // still absent by design, for that one remaining reason.
+    if (defined(primitive._featureRenderer)) {
+      snapshot.packedSplatTextureData = effectiveTextureData;
+      snapshot.lastTextureWidth = effectiveTextureData.width;
+      snapshot.lastTextureHeight = effectiveTextureData.height;
+      // The SH texture pack below is a WebGL texture layout. The neutral SH
+      // payload is already on the snapshot as `shData`; `C15-G5` owns the WGSL
+      // consumer and its layout, so nothing is packed for it here.
+      snapshot.state = SnapshotState.TEXTURE_READY;
+      return;
+    }
+
     if (!defined(snapshot.gaussianSplatTexture)) {
       snapshot.gaussianSplatTexture = createGaussianSplatTexture(
         frameState.context,
@@ -680,7 +740,12 @@ async function resolvePendingSnapshotSort(
     primitive._pendingSort = undefined;
     commitSnapshot(primitive, pending, frameState);
     primitive._pendingSnapshot = undefined;
-    GaussianSplatPrimitive.buildGSplatDrawCommand(primitive, frameState);
+    // DRAW half. `buildGSplatDrawCommand` constructs a WebGL VertexArray +
+    // ShaderProgram + DrawCommand; a native feature renderer builds its own
+    // command from the committed data on its next `update`.
+    if (!defined(primitive._featureRenderer)) {
+      GaussianSplatPrimitive.buildGSplatDrawCommand(primitive, frameState);
+    }
   } catch (err) {
     if (
       !defined(pendingSort) ||
@@ -855,6 +920,25 @@ class GaussianSplatPrimitive {
      * @private
      */
     this._needsGaussianSplatTexture = true;
+    /**
+     * The active feature renderer for this primitive, resolved once per frame
+     * at the top of {@link GaussianSplatPrimitive#update} and read by the
+     * shared data pipeline to decide whether the WebGL GPU objects
+     * (`Texture`, `VertexArray`, `ShaderProgram`, `DrawCommand`) should be
+     * built at all. `undefined` means this primitive draws through WebGL.
+     * @type {undefined|object}
+     * @private
+     */
+    this._featureRenderer = undefined;
+    /**
+     * The packed output of the WASM splat texture generator, retained only
+     * when a feature renderer owns the draw. The WebGL path uploads the same
+     * bytes into {@link GaussianSplatPrimitive#gaussianSplatTexture} and keeps
+     * no second CPU copy.
+     * @type {undefined|GaussianSplatPrimitive.AttributeTextureData}
+     * @private
+     */
+    this._packedSplatTextureData = undefined;
     this._snapshot = undefined;
     this._pendingSnapshot = undefined;
     this._retiredTextures = [];
@@ -1110,6 +1194,7 @@ class GaussianSplatPrimitive {
     this._scales = undefined;
     this._colors = undefined;
     this._indexes = undefined;
+    this._packedSplatTextureData = undefined;
     destroySnapshotTextures(this._pendingSnapshot);
     destroySnapshotTextures(this._snapshot);
     if (defined(this._retiredTextures)) {
@@ -1175,10 +1260,15 @@ class GaussianSplatPrimitive {
 
   /**
    * Updates the Gaussian splat primitive for the current frame.
-   * This method checks if the primitive needs to be updated based on the current frame state,
-   * and if so, it processes the selected tiles, aggregates their attributes,
-   * and generates the Gaussian splat texture if necessary.
-   * It also handles the sorting of splat indexes and builds the draw command for rendering.
+   *
+   * Structured per the Scene Logic Extractor rule: the backend-neutral splat
+   * data pipeline — snapshot aggregation, the WASM texture generator, the WASM
+   * radix sort and the snapshot commit — runs in
+   * {@link GaussianSplatPrimitive#_updateSplatData} BEFORE the backend branch,
+   * so a feature renderer is handed a primitive whose `_numSplats`,
+   * `_indexes`, `_positions` and `_rootTransform` are already populated. Only
+   * the DRAW half is backend-specific: WebGL builds a `DrawCommand`, a native
+   * backend dispatches its feature renderer.
    *
    * @param {FrameState} frameState
    * @private
@@ -1191,15 +1281,34 @@ class GaussianSplatPrimitive {
       FeatureRendererKey.GAUSSIAN_SPLAT,
     );
     const fr = readiness.kind === "ready" ? readiness.renderer : undefined;
-    if (fr) {
-      fr.update(this, frameState);
-      this._featureRenderer = fr;
+    if (!defined(fr) && readiness.kind !== "unsupported") {
       return;
     }
-    if (readiness.kind !== "unsupported") {
-      return;
-    }
+    // Assigned BEFORE the shared pipeline runs: the WebGL-only halves and
+    // their async continuations read it to decide whether to build WebGL GPU
+    // objects at all.
+    this._featureRenderer = fr;
 
+    this._updateSplatData(frameState);
+
+    if (defined(fr)) {
+      fr.update(this, frameState);
+    }
+  }
+
+  /**
+   * The backend-neutral splat data pipeline: selected-tile change detection,
+   * snapshot aggregation, WASM splat-texture generation, WASM radix sort
+   * scheduling and the snapshot commit. Runs on every backend.
+   *
+   * The two WebGL-only touchpoints reached from here — the `_drawCommand`
+   * push and {@link GaussianSplatPrimitive.buildGSplatDrawCommand} — are the
+   * DRAW half and are gated on `_featureRenderer` being absent.
+   *
+   * @param {FrameState} frameState
+   * @private
+   */
+  _updateSplatData(frameState) {
     const tileset = this._tileset;
 
     releaseRetiredTextures(this, frameState.frameNumber);
@@ -1208,6 +1317,9 @@ class GaussianSplatPrimitive {
       return;
     }
 
+    // DRAW half — WebGL only. `_drawCommand` is assigned by
+    // `buildGSplatDrawCommand`, which is itself gated on `_featureRenderer`
+    // being absent, so this is structurally unreachable on a native backend.
     if (this._drawCommand) {
       frameState.commandList.push(this._drawCommand);
     }
@@ -1483,6 +1595,10 @@ class GaussianSplatPrimitive {
           indexes: undefined,
           gaussianSplatTexture: undefined,
           sphericalHarmonicsTexture: undefined,
+          // Set by processGeneratedSplatTextureData, and only on the native
+          // (non-WebGL) branch — the WebGL path uploads the same bytes into
+          // `gaussianSplatTexture` instead of retaining a CPU copy.
+          packedSplatTextureData: undefined,
           lastTextureWidth: 0,
           lastTextureHeight: 0,
           splatRowMask: 0, // set by processGeneratedSplatTextureData
@@ -1659,7 +1775,11 @@ class GaussianSplatPrimitive {
       return; //still sorting, wait for next frame
     } else if (this._sorterState === GaussianSplatSortingState.SORTED) {
       //update the draw command if sorted
-      GaussianSplatPrimitive.buildGSplatDrawCommand(this, frameState);
+      // DRAW half — WebGL only. A native feature renderer rebuilds its own
+      // command from `_indexes`, which the shared sort above just refreshed.
+      if (!defined(this._featureRenderer)) {
+        GaussianSplatPrimitive.buildGSplatDrawCommand(this, frameState);
+      }
       this._sorterState = GaussianSplatSortingState.IDLE; //reset state for next frame
       this._dirty = false;
       this._sorterPromise = undefined; //reset promise for next frame
@@ -1678,6 +1798,22 @@ class GaussianSplatPrimitive {
    */
   get ready() {
     return this._ready;
+  }
+
+  /**
+   * Whether the splats should be drawn this frame.
+   *
+   * The primitive is created and owned by its {@link Cesium3DTileset} and has
+   * no visibility of its own, so this mirrors `tileset.show` — the same signal
+   * the WebGL draw path gates on in `_updateSplatData`. Read-only on purpose:
+   * a settable member here would be a SECOND source of truth, and the two
+   * backends would then honour different ones. Callers set `tileset.show`.
+   * @type {boolean}
+   * @private
+   * @readonly
+   */
+  get show() {
+    return this._tileset?.show ?? false;
   }
 
   /**

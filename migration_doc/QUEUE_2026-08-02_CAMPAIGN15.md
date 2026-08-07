@@ -512,7 +512,7 @@ scoping row must re-verify all of it at HEAD):**
 | --- | --- | --- | --- | --- |
 | `C15-G0` | Scoping + root-cause verification: reproduce the production no-render, verify the `NEW-WEBGPU-SPLAT-DATA-PRODUCER` mechanism at HEAD, map the full WebGL splat data path (loader -> workers -> primitive -> renderer) and specify the WebGPU producer design + task breakdown `C15-G1..Gn` with exit gates | M | **COMPLETE — 2026-08-06** (report §6a-§6d below; docs/analysis only, no engine change) | — |
 | `C15-G1` | Probe harness + **WebGL reference leg** on the two in-tree splat tilesets. No engine change. | S | **IMPLEMENTATION DONE — 2026-08-07 (worker)**; pending orchestrator landing + Edge run. `probe-gsplat-parity.mjs` + `lib/gsplat-parity-model.mjs` + `gsplat-harness.spec.mjs` (50 checks green). Predictions + the §6a addendum below | `C15-G0` |
-| `C15-G2` | Scene-logic extraction: move the FR dispatch below the data commit; split the backend-neutral snapshot pack from the WebGL `Texture` upload | M | PENDING | `C15-G1` |
+| `C15-G2` | Scene-logic extraction: move the FR dispatch below the data commit; split the backend-neutral snapshot pack from the WebGL `Texture` upload | M | **IMPLEMENTATION DONE — 2026-08-07 (worker)**; pending orchestrator landing + Edge run. `GaussianSplatPrimitive.update` split into shared `_updateSplatData` + a DRAW-only branch; read-only `show` accessor proxying `tileset.show`; probe/model/spec updated to a staged absence contract. Decisions + falsifiable predictions in the §6c `C15-G2` block below | `C15-G1` |
 | `C15-G3` | Splat record format + WebGPU buffer commit — consume the WASM texture-generator output verbatim; first real WebGPU splat pixels | L | PENDING | `C15-G2` |
 | `C15-G4` | Consume the WASM radix sort (`primitive._indexes`) instead of the in-renderer synchronous JS comparator sort | M | PENDING | `C15-G3` |
 | `C15-G5` | Spherical harmonics (degree 1-3) in WGSL — the view-dependent colour term the WGSL has **zero** implementation of | L | PENDING | `C15-G3` |
@@ -848,6 +848,128 @@ snapshot build, aggregation, worker dispatch, sort dispatch and commit are
 spy or `scene.context` resource stats). WebGL leg from `C15-G1` unchanged within
 the probe's noise floor; both `GaussianSplat*Spec` suites green.
 
+#### `C15-G2` — IMPLEMENTATION DONE (worker, 2026-08-07) — pending orchestrator landing + Edge run
+
+Four files, one of them the engine:
+
+| File | Change |
+| --- | --- |
+| `packages/engine/Source/Scene/GaussianSplatPrimitive.js` | `update()` split; `computeSplatTextureLayout` extracted; `show` accessor; two draw-half gates; `_packedSplatTextureData` retained on the native branch |
+| `Tools/visual-regression/lib/gsplat-parity-model.mjs` | `STAGE` (required/retired blockers); `classifyWebgpuPresence` scoped to renderer-owned state |
+| `Tools/visual-regression/probe-gsplat-parity.mjs` | stage printed next to what was measured; blocker comments re-anchored; `numSplats` added to the WebGPU line |
+| `Tools/visual-regression/gsplat-harness.spec.mjs` | 63 checks (was 50): 4 new rules, 2 new model mutants, the two HEAD anchors INVERTED into C15-G2 predicates, 5 source-mutant rejections, probe-assumption + sort-reachability anchors |
+
+**(a) The `show` decision — a read-only accessor proxying `tileset.show`.**
+`get show() { return this._tileset?.show ?? false; }`. Rejected alternatives
+and why: a settable own-property (`this.show = true`, the `Cesium3DTileset` /
+`Model` convention) would be a SECOND source of truth — the WebGL draw path
+gates on `tileset.show` at `_updateSplatData`, so the two backends would then
+honour different signals and a caller could hide one and not the other;
+deleting the renderer's guard would drop visibility entirely. `PointCloud.js`
+was checked and defines no `show` at all, so there is no sibling convention
+pulling the other way for a tileset-OWNED primitive. `?? false` rather than
+`=== true` so `!primitive.show` and `!tileset.show` agree for every value, not
+just booleans. The three synthetic probes are unaffected — they hand-roll
+`show: true` on plain object literals, which a prototype accessor cannot reach;
+`gsplat-harness.spec.mjs` now pins that they still declare it.
+
+**(b) The neutral/GL boundary, as found.** It is not where the row's plan
+guessed. The data pipeline is a single state machine with ~25 early returns,
+so "run the neutral part, then branch" could not be done by moving statements;
+the body was renamed to `_updateSplatData(frameState)` and `update()` became
+resolve → `_updateSplatData` → `if (fr) fr.update(...)`. Every early return
+then returns from the shared half and the dispatch is still reached. The three
+genuinely GL-coupled points inside that body:
+
+1. `buildGSplatDrawCommand` (WebGL `VertexArray` + `ShaderProgram` +
+   `DrawCommand`) — two call sites, both now gated on `_featureRenderer` being
+   absent (the `SORTED` branch, and `resolvePendingSnapshotSort`'s async tail).
+2. `processGeneratedSplatTextureData`'s `Texture` uploads — the boundary sits
+   exactly at `createGaussianSplatTexture`. Everything above it (budget, hard
+   cap, attribute truncation, row mask/shift, trim/pad) was extracted to
+   `computeSplatTextureLayout` and stays SHARED, deliberately: it is what sets
+   `numSplats`, and forking it would make the two backends disagree on the
+   count the `C15-G8` parity gate compares.
+3. The `_drawCommand` `commandList.push` — left ungated because it is
+   structurally unreachable (only `buildGSplatDrawCommand` assigns it), with a
+   comment saying so.
+
+`releaseRetiredTextures` is left unconditional: it iterates `_retiredTextures`,
+which only `commitSnapshot` fills and only from GL textures, so it is a no-op
+on the native path.
+
+**What the WebGPU FR now receives:** a primitive with `_numSplats`, `_indexes`,
+`_positions`/`_rotations`/`_scales`/`_colors`, `_shData`, `_rootTransform`,
+`_splatRowMask`/`_splatRowShift` populated, plus `_packedSplatTextureData` —
+the WASM generator's output verbatim, retained ONLY on the native branch (the
+WebGL path already holds those bytes in a `Texture`). It is deliberately NOT
+assigned to `_splatData`: that field is the FR's 16-float `SplatRecord` read
+and this buffer is the WASM-native 8×u32 layout, so assigning it would draw
+garbage rather than splats. **`C15-G2` therefore still draws nothing, for
+exactly one remaining reason** — `_splatData` is unassigned, so `cache.splatCount`
+stays 0 and the FR returns before its command build. That is `C15-G3`.
+
+**`maybeSortSplats` is structurally unreachable, not newly guarded.** The
+synchronous main-thread `Array.prototype.sort` sits at
+`WebGPUGaussianSplatRenderer.ts:1383`, AFTER the `cache.splatCount === 0`
+return at `:1359`. Since `_splatData` is still unassigned the count stays 0, so
+the WebGPU side cannot pay a 286k-element JS sort for data it cannot draw. A
+new spec anchor pins that ordering; adding a redundant runtime guard would have
+been speculative. `C15-G4` replaces the sort outright.
+
+**(d) The probe contract is now STAGED.** The old rule — "was at least one
+known blocker observed?" — would have kept printing the same green marker after
+`C15-G2` removed two of the four, for a strictly smaller reason, with nothing in
+the log saying so. `STAGE` names both sets and enforces both directions: a
+`retired` blocker observed again is `webgpu:blocker-regression` (structural), a
+`required` blocker missing is `webgpu:blocker-contract-stale` (structural).
+`C15-G3` moves both remaining names into `retired`, which empties `required`
+and forces `--expect-webgpu`.
+
+`classifyWebgpuPresence` also had to be re-scoped, and this is the trap this
+row would otherwise have walked into: its `dataCommitted` signal read
+`numSplats > 0 || cacheSplatCount > 0`. That was correct while the data
+pipeline sat below the FR dispatch. It is now SHARED, so `numSplats` reads
+286,868 on a WebGPU leg that drew nothing — one positive signal out of three,
+i.e. `ambiguous`, i.e. **exit 3 on a healthy engine**. It now reads
+`cacheSplatCount` only, the sole remaining renderer-owned signal. A spec mutant
+carries the pre-G2 classifier and must be rejected.
+
+*Falsifiable predictions for the Edge run* (`sh_unit_cube` unless noted; the
+WebGL leg is predicted UNCHANGED from `C15-G1`'s recorded predictions):
+
+- WebGPU leg: `_numSplats === 27` (`286868` on `tower`) — **was 0**;
+  `_indexes.length === 27` — **was undefined**; `isStable === true` — **was
+  false**; `dataReady === true` well inside the derived budget — **was false
+  after 4× the WebGL wall clock**; `cache.splatCount` prints **`0`, not `null`**
+  (the FR now gets past its visibility guard and allocates the cache);
+  `splatPassCommands === 0`; `added.changed === 0`;
+  `absenceBlockers = [no-splat-data-fields, cache-splat-count-zero]`;
+  printed line still `WEBGPU-SPLATS-ABSENT (expected until C15-G3)`; overall
+  exit **0**.
+- Anything else is diagnosable from the printed stage line: `blockers` still
+  containing `primitive-show-undefined` means the accessor did not land;
+  containing `primitive-numsplats-zero` means the shared pipeline did not run
+  for WebGPU (check that `_updateSplatData` is reached before the dispatch);
+  `cache.splatCount` printing `null` means the FR still exits at its first
+  statement.
+- One-time cost that did not exist before: the WebGPU leg now reaches
+  `tryResolveSplatPipelines`, so the splat shader module + pipeline compile
+  once on a production splat scene. Expected, not a defect.
+- WebGL exit gate for the row: `capture-and-diff` unchanged and both
+  `GaussianSplat*Spec` suites green. The WebGL path is argued byte-identical by
+  construction (`fr` is `undefined`, so every new gate takes its historical
+  branch and `computeSplatTextureLayout` is a pure extraction preserving
+  statement order); that argument is what the Edge run + Jasmine suites test.
+
+**Known divergence recorded, not fixed (see DEFERRED_WORK, 2026-08-07):** the
+shared budget reads `context.limits.maximumTextureSize`, which is
+`MAX_TEXTURE_SIZE` on WebGL (16384 typical) and `maxTextureDimension2D` on
+WebGPU (8192 typical). Neither gate asset comes near either cap, but above
+~8.4M splats the two backends would truncate to different `numSplats` and the
+`C15-G8` gate would be comparing different clouds. `C15-G3` should decide
+whether the native branch takes a buffer-shaped budget instead.
+
 ### `C15-G3` — splat record format + WebGPU buffer commit (L) — deps: `C15-G2`
 
 The format decision, then the commit. **Recommended: Option B — consume the WASM
@@ -880,12 +1002,20 @@ are meter-scale in the `_rootTransform` ENU frame by construction
 `(pH - camH) + (pL - camL)` cancellation structure intact, and land a rationale
 comment at the site. Do not silently drop the RTE lanes.
 
-**Prerequisite added by `C15-G1` (see the §6a addendum):** the renderer's first
-statement `if (!primitive.show) return;` fires for every production primitive
-because `GaussianSplatPrimitive` has no `show` member. Assigning splat data
-alone renders nothing. Land the `show` member (or the guard change) in `C15-G2`
-or here, and prove it with `probe-gsplat-parity.mjs --expect-webgpu` — the flip
-this row is supposed to turn on.
+**Prerequisite added by `C15-G1` (see the §6a addendum) — DISCHARGED by
+`C15-G2` (2026-08-07).** The renderer's first statement
+`if (!primitive.show) return;` used to fire for every production primitive
+because `GaussianSplatPrimitive` had no `show` member. `C15-G2` landed a
+read-only `show` accessor proxying `tileset.show`. This row no longer has to
+solve it — but it inherits the obligation to prove the flip with
+`probe-gsplat-parity.mjs --expect-webgpu`, and to move
+`no-splat-data-fields` + `cache-splat-count-zero` from `STAGE.required` into
+`STAGE.retired` in `lib/gsplat-parity-model.mjs` (which empties `required` and
+makes default mode structurally refuse to certify).
+
+**Also inherited from `C15-G2`:** the WASM generator's packed output is already
+retained on the primitive as `_packedSplatTextureData` (native branch only) —
+this row's Option B consumes it directly, with no re-plumbing of the producer.
 
 Also in scope: `maybeSortSplats` (`:968-1049`) and `attachSplatVelocityCommand`
 (`:1654+`) both read the 16-float stride and must be moved to the new layout (or,

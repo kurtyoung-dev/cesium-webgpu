@@ -18,6 +18,17 @@
  *   and presence hands off to a cross-backend pixel-diff parity gate scored
  *   against the `C15-G8` thresholds (tower < 3%, sh_unit_cube < 1%).
  *
+ * THE ABSENCE CONTRACT IS STAGED, NOT A STANDING "at least one blocker"
+ * -------------------------------------------------------------------
+ * `C15-G2` moved the splat data pipeline above the backend branch and gave the
+ * primitive a `show` accessor, which RETIRED two of the four blockers the
+ * default mode used to accept. A gate that only asked "was any known blocker
+ * seen?" would keep printing the same green marker for a strictly smaller
+ * reason and never say so. So `STAGE` in the model names both sets: a retired
+ * blocker observed again is a REGRESSION (structural), and a required blocker
+ * NOT observed means the absence has some other cause (also structural). The
+ * stage is printed on every run next to what was measured.
+ *
  * The flip is the whole point of the row: one instrument that cannot be
  * satisfied by the wrong world. Two blank canvases diff to 0.000% — the
  * tightest parity number this gate can print — so the parity leg REFUSES to
@@ -100,6 +111,7 @@ import {
   ASSETS,
   EXIT_CODE,
   PREDICT,
+  STAGE,
   evaluateParity,
   evaluateReferenceLeg,
   evaluateWebgpuLeg,
@@ -472,11 +484,17 @@ const RUN_LANE = async ({
 
   // Named, observed blockers in the scaffolded WebGPU path. These are what
   // make an absence ATTRIBUTABLE instead of merely blank.
+  // These four observations are collected UNCONDITIONALLY and unchanged across
+  // the track; which of them are expected to fire at the current stage is the
+  // model's job (`STAGE`), not the page's. A probe that stopped LOOKING for a
+  // retired blocker could not report its return.
   if (primitive) {
     if (typeof primitive.show === "undefined") {
       // `WebGPUGaussianSplatRenderer.updateWebGPUGaussianSplats` opens with
-      // `if (!primitive.show) return;` and GaussianSplatPrimitive defines no
-      // `show`, so the renderer exits at its first statement.
+      // `if (!primitive.show) return;`. Before C15-G2, GaussianSplatPrimitive
+      // defined no `show` at all and the renderer exited at its first
+      // statement; C15-G2 added a read-only accessor proxying `tileset.show`,
+      // so this should no longer fire. If it does, that accessor is gone.
       record.absenceBlockers.push("primitive-show-undefined");
     }
     if (
@@ -487,12 +505,18 @@ const RUN_LANE = async ({
       record.absenceBlockers.push("no-splat-data-fields");
     }
     if ((primitive._numSplats ?? 0) === 0) {
+      // Before C15-G2 the splat data pipeline sat below the feature-renderer
+      // dispatch and never ran on this backend. It is now shared, so on a
+      // healthy post-G2 engine this reads the same count as the WebGL leg.
       record.absenceBlockers.push("primitive-numsplats-zero");
     }
     if (
       primitive._webgpuCache &&
       (primitive._webgpuCache.splatCount ?? 0) === 0
     ) {
+      // Reachable only once the renderer gets past its visibility guard, which
+      // is why this could not be observed before C15-G2: `_webgpuCache` was
+      // never allocated and `cacheSplatCount` read `null`, not `0`.
       record.absenceBlockers.push("cache-splat-count-zero");
     }
   }
@@ -978,7 +1002,12 @@ async function main() {
     console.log(
       `               blockers=[${(webgpu?.absenceBlockers ?? []).join(", ")}] frKind=${
         webgpu?.featureRendererKind
-      } cache.splatCount=${webgpu?.cacheSplatCount}`,
+      } cache.splatCount=${webgpu?.cacheSplatCount} numSplats=${webgpu?.numSplats}`,
+    );
+    console.log(
+      `               stage=${STAGE.id} requires=[${STAGE.required.join(
+        ", ",
+      )}] forbids=[${STAGE.retired.join(", ")}]`,
     );
     console.log(`  [PARITY]     ${parity.reason}`);
 

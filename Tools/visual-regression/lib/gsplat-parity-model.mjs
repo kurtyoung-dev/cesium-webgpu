@@ -53,28 +53,71 @@ export const ABSENT_MARKER = "WEBGPU-SPLATS-ABSENT (expected until C15-G3)";
  * absence. Each is an independently observable fact about the HEAD engine, and
  * each is a thing `C15-G2`/`C15-G3` has to remove before splats can appear.
  *
- * `primitive-show-undefined` is NOT in the `C15-G0` report and was found while
- * building this harness: `WebGPUGaussianSplatRenderer.updateWebGPUGaussianSplats`
- * opens with `if (!primitive.show) return;`, and `GaussianSplatPrimitive`
- * defines no `show` member at all — so for a PRODUCTION primitive the renderer
- * exits at its first statement and never reaches the `_splatData` read at the
- * bottom of the file that `C15-G0` recorded as the break. The three synthetic
- * probes all hand-roll `show: true` on their fake primitive, which is why they
- * reach the data path and production never does. Assigning `_splatData` alone
- * would therefore still render nothing.
+ * This is the VOCABULARY — every blocker this harness knows how to name across
+ * the whole track. Which of them are expected to be OBSERVED right now is a
+ * separate, stage-dependent question; see {@link STAGE}. Keeping the two apart
+ * is what lets `C15-G2` retire a blocker without either deleting the name (and
+ * losing the ability to detect its return) or leaving it in a list the run is
+ * still happy to be satisfied by.
+ *
+ * `primitive-show-undefined` was NOT in the `C15-G0` report; it was found while
+ * building this harness at `58af0d1819`, and it was the FIRST blocker in the
+ * chain — `WebGPUGaussianSplatRenderer.updateWebGPUGaussianSplats` opens with
+ * `if (!primitive.show) return;` and `GaussianSplatPrimitive` defined no `show`
+ * member at all, so the renderer exited at its first statement and never
+ * reached the `_splatData` read that `C15-G0` recorded as the break. `C15-G2`
+ * removed it by giving the primitive a read-only `show` accessor that mirrors
+ * `tileset.show`. The three synthetic probes hand-roll `show: true` on plain
+ * object literals, so they were never affected either way.
  */
 export const ABSENCE_BLOCKERS = Object.freeze([
-  // `WebGPUGaussianSplatRenderer.ts` first statement; `GaussianSplatPrimitive`
-  // has no `show`, so `!undefined` returns immediately.
+  // RETIRED BY C15-G2. `WebGPUGaussianSplatRenderer.ts` first statement;
+  // `GaussianSplatPrimitive` now exposes `get show()` proxying `tileset.show`,
+  // so this no longer fires. Kept in the vocabulary so its RETURN is
+  // detectable — see STAGE.retiredBlockers.
   "primitive-show-undefined",
-  // `C15-G0`'s recorded break: nothing in packages/ assigns any of
-  // `_splatData` / `_renderResources.splatBuffer` / `_splatCount`.
+  // `C15-G0`'s recorded break, and the one `C15-G3` closes: nothing in
+  // packages/ assigns any of `_splatData` / `_renderResources.splatBuffer` /
+  // `_splatCount`.
   "no-splat-data-fields",
-  // The WebGL-side commit never runs, so the shared snapshot state is empty.
+  // RETIRED BY C15-G2. Before the scene-logic extraction the whole data
+  // pipeline sat below the FR dispatch, so the shared snapshot state was empty
+  // on the WebGPU leg. It now runs before the backend branch.
   "primitive-numsplats-zero",
-  // The FR ran far enough to allocate its cache and still found no data.
+  // The FR ran far enough to allocate its cache and still found no data. Since
+  // C15-G2 this is the load-bearing one: it proves the renderer executed past
+  // its visibility guard and stopped at the missing splat buffer, which is
+  // exactly and only what `C15-G3` is left to fix.
   "cache-splat-count-zero",
 ]);
+
+/**
+ * Which blockers the CURRENT stage of the GSPLAT track expects to observe.
+ *
+ * A dual-mode gate that only ever asks "was at least one known blocker seen?"
+ * decays the moment a row removes one: the run keeps printing the same green
+ * marker for a strictly smaller reason, and nobody can tell from the log that
+ * the world moved. So the stage is stated explicitly and BOTH directions are
+ * enforced:
+ *
+ *   * a blocker in `retired` that is observed again is a REGRESSION of the row
+ *     that removed it — structural, never "expected absence";
+ *   * a blocker in `required` that is NOT observed means the absence has a
+ *     different cause than the one this stage documents — also structural,
+ *     because certifying it would be certifying something unmeasured.
+ *
+ * `C15-G3` moves `no-splat-data-fields` and `cache-splat-count-zero` into
+ * `retired`, at which point `required` is empty and the probe must be run with
+ * `--expect-webgpu` instead.
+ */
+export const STAGE = Object.freeze({
+  id: "C15-G2",
+  retired: Object.freeze([
+    "primitive-show-undefined",
+    "primitive-numsplats-zero",
+  ]),
+  required: Object.freeze(["no-splat-data-fields", "cache-splat-count-zero"]),
+});
 
 /**
  * The two in-tree tilesets (`C15-G0` §6b, "Test-asset situation"). Served by
@@ -358,8 +401,15 @@ export function precheckPreconditions(lane, predict = PREDICT) {
  *   commands:boolean, pixels:boolean, addedFraction:number, why:string}}
  */
 export function classifyWebgpuPresence(lane, predict = PREDICT) {
-  const dataCommitted =
-    (lane?.numSplats ?? 0) > 0 || (lane?.cacheSplatCount ?? 0) > 0;
+  // RENDERER-SCOPED, deliberately. Before `C15-G2` the whole splat data
+  // pipeline sat below the feature-renderer dispatch, so `_numSplats > 0` was
+  // itself evidence that the WebGPU path had done something. Since the
+  // scene-logic extraction that pipeline is SHARED: `_numSplats` now reads
+  // 286,868 on the WebGPU leg of a run where the renderer drew nothing at all,
+  // and folding it in here would classify every post-G2 run "ambiguous" and
+  // exit 3 on a healthy engine. The only signal that still discriminates what
+  // the WebGPU renderer did is its own cache.
+  const dataCommitted = (lane?.cacheSplatCount ?? 0) > 0;
   const commands = (lane?.splatPassCommands ?? 0) > 0;
   const addedFraction = fractionOf(lane?.added?.changed, lane?.canvasPixels);
   const pixels =
@@ -568,13 +618,38 @@ export function evaluateWebgpuLeg(
     if (observed.length === 0) {
       structural.push(
         `webgpu:absence-unattributed — the FR is ready and nothing rendered, ` +
-          `but none of the known HEAD blockers [${ABSENCE_BLOCKERS.join(
+          `but none of the known blockers [${ABSENCE_BLOCKERS.join(
             ", ",
           )}] was observed. "Nothing rendered" is also what a broken probe ` +
           `looks like; an unattributed absence certifies nothing.`,
       );
       return { presence, criteria: null, structural, failures: [], notes: [] };
     }
+
+    // Stage contract, both directions. See STAGE.
+    const regressed = STAGE.retired.filter((name) => observed.includes(name));
+    if (regressed.length > 0) {
+      structural.push(
+        `webgpu:blocker-regression — [${regressed.join(", ")}] was observed, ` +
+          `but ${STAGE.id} removed it. Its return means that row regressed, ` +
+          `not that the absence is "expected": the run would be certifying a ` +
+          `blank canvas for a reason the track already closed.`,
+      );
+      return { presence, criteria: null, structural, failures: [], notes: [] };
+    }
+    const missing = STAGE.required.filter((name) => !observed.includes(name));
+    if (missing.length > 0) {
+      structural.push(
+        `webgpu:blocker-contract-stale — ${STAGE.id} expects the absence to be ` +
+          `attributable to [${STAGE.required.join(", ")}], but [${missing.join(
+            ", ",
+          )}] was not observed (saw [${observed.join(", ") || "none"}]). ` +
+          `Either the cause moved or a later row landed; certifying this ` +
+          `absence would be certifying something the probe did not measure.`,
+      );
+      return { presence, criteria: null, structural, failures: [], notes: [] };
+    }
+
     return {
       presence,
       criteria: null,
@@ -582,8 +657,11 @@ export function evaluateWebgpuLeg(
       failures: [],
       notes: [
         `${ABSENT_MARKER} — ${presence.why}; feature renderer ready; ` +
-          `blockers observed: ${observed.join(", ")}. This is the documented ` +
-          `C15-G0 baseline the rest of the track is measured against.`,
+          `blockers observed: ${observed.join(", ")} (${STAGE.id} contract: ` +
+          `requires [${STAGE.required.join(", ")}], forbids [${STAGE.retired.join(
+            ", ",
+          )}]). This is the documented baseline the rest of the track is ` +
+          `measured against.`,
       ],
     };
   }

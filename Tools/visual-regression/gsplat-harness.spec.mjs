@@ -34,6 +34,7 @@ import {
   ASSETS,
   EXIT_CODE,
   PREDICT,
+  STAGE,
   STRUCTURAL_PRECONDITIONS,
   classifyWebgpuPresence,
   evaluateParity,
@@ -119,21 +120,23 @@ function webgpuAbsentLane(overrides = {}) {
     requested: "webgpu",
     rendererType: "webgpu",
     ...preconditionsHealthy(),
-    dataReady: false,
-    dataReadyMs: null,
+    // POST-C15-G2 SHAPE. The splat data pipeline now runs above the backend
+    // branch, so the WebGPU leg commits the same snapshot the WebGL leg does:
+    // `numSplats`/`indexesLength`/`isStable`/`dataReady` all read like the
+    // reference. What is still missing is the WebGPU-side buffer, which is why
+    // `cacheSplatCount` is 0 (not `null` — the renderer now gets past its
+    // visibility guard and allocates the cache) and nothing is drawn.
+    dataReady: true,
+    dataReadyMs: 6_800,
     dataBudgetMs: 30_000,
-    numSplats: 0,
-    isStable: false,
-    indexesLength: null,
+    numSplats: 27,
+    isStable: true,
+    indexesLength: 27,
     splatPassCommands: 0,
     commandListSplatCommands: 0,
-    cacheSplatCount: null,
+    cacheSplatCount: 0,
     featureRendererKind: "ready",
-    absenceBlockers: [
-      "primitive-show-undefined",
-      "no-splat-data-fields",
-      "primitive-numsplats-zero",
-    ],
+    absenceBlockers: ["no-splat-data-fields", "cache-splat-count-zero"],
     added: {
       changed: 0,
       edgeFraction: Number.NaN,
@@ -231,7 +234,14 @@ const RULES = {
       { expectWebgpu: false },
     );
     assert.equal(leg.notes.length, 0, "no marker without an attribution");
-    assert.ok(leg.structural.length > 0);
+    // The REASON is asserted, not merely "something was structural": an
+    // implementation that manufactures blockers and then trips a different
+    // structural check would otherwise satisfy a bare length assertion while
+    // having invented the attribution this rule exists to forbid.
+    assert.ok(
+      leg.structural.some((item) => /absence-unattributed/.test(item)),
+      `expected absence-unattributed; got ${JSON.stringify(leg.structural)}`,
+    );
     assert.equal(
       impl.foldGsplatVerdict({
         reference: impl.evaluateReferenceLeg(referenceLane(), ASSET, PREDICT),
@@ -252,6 +262,106 @@ const RULES = {
     );
     assert.equal(leg.notes.length, 0);
     assert.ok(leg.structural.some((item) => /absence-unattributed/.test(item)));
+  },
+
+  "the SHARED data commit is not evidence the WebGPU renderer did anything": (
+    impl,
+  ) => {
+    // The C15-G2 trap. Before the scene-logic extraction, `_numSplats > 0` on
+    // the WebGPU leg could only mean the WebGPU path had run. It is now the
+    // shared snapshot commit and reads 286,868 on a leg that drew nothing — so
+    // a classifier that still folds it in scores every healthy post-G2 run
+    // "ambiguous" and exits 3 on a working engine.
+    const lane = webgpuAbsentLane({
+      numSplats: ASSETS.tower.expectedSplats,
+      indexesLength: ASSETS.tower.expectedSplats,
+      cacheSplatCount: 0,
+      splatPassCommands: 0,
+    });
+    const presence = impl.classifyWebgpuPresence(lane, PREDICT);
+    assert.equal(
+      presence.state,
+      "absent",
+      "a populated SHARED snapshot with no renderer cache, no command and no pixels is ABSENT",
+    );
+    assert.equal(presence.dataCommitted, false);
+    const leg = impl.evaluateWebgpuLeg(lane, ASSETS.tower, PREDICT, {
+      expectWebgpu: false,
+    });
+    assert.equal(leg.structural.length, 0);
+    assert.equal(leg.notes.length, 1);
+  },
+
+  "a blocker C15-G2 retired, observed again, is a REGRESSION not an attribution":
+    (impl) => {
+      for (const retired of STAGE.retired) {
+        const leg = impl.evaluateWebgpuLeg(
+          webgpuAbsentLane({
+            absenceBlockers: [...STAGE.required, retired],
+          }),
+          ASSET,
+          PREDICT,
+          { expectWebgpu: false },
+        );
+        assert.equal(
+          leg.notes.length,
+          0,
+          `${retired} returning must not print the expected-absence marker`,
+        );
+        assert.ok(
+          leg.structural.some((item) => /blocker-regression/.test(item)),
+          `${retired} returning must be reported as a regression; got ${JSON.stringify(
+            leg.structural,
+          )}`,
+        );
+      }
+    },
+
+  "a required blocker missing means the absence has some OTHER cause": (
+    impl,
+  ) => {
+    for (const required of STAGE.required) {
+      const remaining = STAGE.required.filter((name) => name !== required);
+      const leg = impl.evaluateWebgpuLeg(
+        webgpuAbsentLane({ absenceBlockers: remaining }),
+        ASSET,
+        PREDICT,
+        { expectWebgpu: false },
+      );
+      assert.equal(
+        leg.notes.length,
+        0,
+        `missing ${required} must not print the expected-absence marker`,
+      );
+      assert.ok(
+        leg.structural.some((item) => /blocker-contract-stale/.test(item)),
+        `missing ${required} must be reported as a stale contract; got ${JSON.stringify(
+          leg.structural,
+        )}`,
+      );
+    }
+  },
+
+  "the stage sets are disjoint and drawn from the declared vocabulary": (
+    impl,
+  ) => {
+    void impl;
+    for (const name of [...STAGE.required, ...STAGE.retired]) {
+      assert.ok(
+        ABSENCE_BLOCKERS.includes(name),
+        `${name} is not in ABSENCE_BLOCKERS, so recognizedBlockers can never surface it`,
+      );
+    }
+    for (const name of STAGE.required) {
+      assert.ok(
+        !STAGE.retired.includes(name),
+        `${name} cannot be both required and retired`,
+      );
+    }
+    assert.ok(
+      STAGE.required.length > 0,
+      "an empty required set means the absence contract is over — run --expect-webgpu",
+    );
   },
 
   "absence while the lazy FR never loaded is STRUCTURAL, not expected": (
@@ -723,6 +833,60 @@ const MUTANTS = {
     },
   },
 
+  // The literal pre-C15-G2 classifier. It was correct while the splat data
+  // pipeline sat below the FR dispatch; carrying it forward past the
+  // scene-logic extraction turns every healthy run into exit 3.
+  "presence classified from the SHARED snapshot commit": {
+    ...REAL,
+    classifyWebgpuPresence(lane, predict) {
+      const real = REAL.classifyWebgpuPresence(lane, predict);
+      const dataCommitted =
+        (lane?.numSplats ?? 0) > 0 || (lane?.cacheSplatCount ?? 0) > 0;
+      const positive = [dataCommitted, real.commands, real.pixels].filter(
+        Boolean,
+      ).length;
+      return {
+        ...real,
+        dataCommitted,
+        state:
+          positive === 0 ? "absent" : positive === 3 ? "present" : "ambiguous",
+      };
+    },
+  },
+
+  // "Any known blocker attributes the absence" — the pre-G2 contract. It keeps
+  // printing the same green marker after a row removes a blocker, and cannot
+  // tell a retired blocker's RETURN from business as usual.
+  "stage contract dropped: any known blocker still attributes the absence": {
+    ...REAL,
+    evaluateWebgpuLeg(lane, asset, predict, options) {
+      const stripped = {
+        ...lane,
+        absenceBlockers: (lane?.absenceBlockers ?? []).filter((name) =>
+          STAGE.required.includes(name),
+        ),
+      };
+      const real = REAL.evaluateWebgpuLeg(stripped, asset, predict, options);
+      // Re-run with the full required set so a missing/retired blocker can
+      // never reach the stage checks — exactly what "just keep the old
+      // one-of-any rule" does.
+      if (
+        !options?.expectWebgpu &&
+        real.structural.some((item) =>
+          /blocker-regression|blocker-contract-stale/.test(item),
+        )
+      ) {
+        return REAL.evaluateWebgpuLeg(
+          { ...lane, absenceBlockers: [...STAGE.required] },
+          asset,
+          predict,
+          options,
+        );
+      }
+      return real;
+    },
+  },
+
   "unattributed absence treated as the expected absence": {
     ...REAL,
     evaluateWebgpuLeg(lane, asset, predict, options) {
@@ -936,86 +1100,285 @@ test("both gate tilesets are in-tree and served from the repo root", () => {
   );
 });
 
-// ── Source anchors on the C15-G0 engine facts (CRLF-normalized) ─────────────
+// ── Source anchors on the engine facts (CRLF-normalized) ────────────────────
 //
-// These are TRIPWIRES. When C15-G2/G3 land they SHOULD break — loudly — and
-// whoever breaks them has to flip the probe to --expect-webgpu rather than let
-// the harness silently change meaning underneath a green run.
+// These are TRIPWIRES. They pin the C15-G2 structure — the FR dispatch sits
+// BELOW the shared data pipeline, and `show` resolves to real visibility — and
+// when C15-G3 lands they SHOULD break, loudly, so whoever breaks them has to
+// flip the probe to --expect-webgpu rather than let the harness silently
+// change meaning underneath a green run.
+//
+// Each anchor is a PURE PREDICATE over source text, so the same check runs
+// against the real file AND against deliberately mutated copies of it. An
+// anchor that only ever sees the correct source proves nothing about what it
+// would reject: the MUTANT-SOURCE group below re-introduces the pre-G2 shape
+// and requires the predicate to fail.
 
 const PRIMITIVE_PATH = "packages/engine/Source/Scene/GaussianSplatPrimitive.js";
 const RENDERER_PATH =
   "packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts";
 
-test("HEAD: the FR dispatch still returns BEFORE the WebGL data path", () => {
-  const source = readNormalized(PRIMITIVE_PATH);
+/**
+ * C15-G2 structure check over `GaussianSplatPrimitive.js` source text. Throws
+ * with a named reason when the scene-logic extraction is not in place.
+ */
+function assertDispatchBelowDataCommit(source) {
   const updateStart = source.indexOf("  update(frameState) {");
   assert.notEqual(
     updateStart,
     -1,
     `${PRIMITIVE_PATH}: GaussianSplatPrimitive#update moved`,
   );
-  const dispatch = source.indexOf(
-    "if (fr) {\n      fr.update(this, frameState);\n      this._featureRenderer = fr;\n      return;\n    }",
+
+  // The pre-G2 shape: dispatch-and-return as the first branch of update().
+  assert.equal(
+    source.indexOf(
+      "if (fr) {\n      fr.update(this, frameState);\n      this._featureRenderer = fr;\n      return;\n    }",
+      updateStart,
+    ),
+    -1,
+    `${PRIMITIVE_PATH}: the pre-C15-G2 dispatch-and-return block is back — the entire data path is below it again`,
+  );
+
+  const sharedCall = source.indexOf(
+    "this._updateSplatData(frameState);",
     updateStart,
   );
   assert.notEqual(
-    dispatch,
+    sharedCall,
     -1,
-    `${PRIMITIVE_PATH}: the C15-G0 early-return block is gone. If C15-G2 landed the scene-logic extraction, re-run the probe with --expect-webgpu and update this anchor.`,
+    `${PRIMITIVE_PATH}: the shared data pipeline call is gone from update()`,
   );
-  // ...and it is the FIRST branch in the body, not a late guard.
+  const dispatch = source.indexOf("fr.update(this, frameState);", updateStart);
+  assert.notEqual(dispatch, -1, `${PRIMITIVE_PATH}: the FR dispatch is gone`);
   assert.ok(
-    dispatch - updateStart < 500,
-    "the feature-renderer return is no longer the first branch of update()",
+    dispatch > sharedCall,
+    `${PRIMITIVE_PATH}: the FR dispatch must sit BELOW the shared data pipeline — that ordering is the whole of C15-G2`,
   );
-  // Ordering is asserted on the CALL SITES reached from update(), not on the
-  // textual position of the helper definitions: `commitSnapshot` is declared
-  // near the top of the file but only ever reached through the dispatch that
-  // update() performs after this return.
+
+  // The data pipeline itself must still be inside the SHARED half, i.e. its
+  // definition must open before the dispatch is reached. Ordering is asserted
+  // on the CALL SITES the shared half performs, not on helper declarations.
+  const sharedStart = source.indexOf("  _updateSplatData(frameState) {");
+  assert.notEqual(
+    sharedStart,
+    -1,
+    `${PRIMITIVE_PATH}: _updateSplatData is gone`,
+  );
   for (const call of [
     "GaussianSplatPrimitive.generateSplatTexture(",
     "GaussianSplatSorter.radixSortIndexes({",
-    "GaussianSplatPrimitive.buildGSplatDrawCommand(this, frameState)",
   ]) {
-    const index = source.indexOf(call, updateStart);
-    assert.notEqual(index, -1, `${PRIMITIVE_PATH}: ${call} moved`);
-    assert.ok(
-      index > dispatch,
-      `${call} must still sit AFTER the feature-renderer return for the absence contract to hold`,
+    assert.notEqual(
+      source.indexOf(call, sharedStart),
+      -1,
+      `${PRIMITIVE_PATH}: ${call} is no longer reached from the shared half`,
+    );
+  }
+
+  // The DRAW half stays gated. Both `buildGSplatDrawCommand` call sites must
+  // be behind a `_featureRenderer`-absent check, or the WebGPU path would
+  // construct WebGL VertexArray/ShaderProgram objects it cannot use.
+  const buildCalls = [
+    ...source.matchAll(/GaussianSplatPrimitive\.buildGSplatDrawCommand\(/g),
+  ];
+  assert.ok(
+    buildCalls.length >= 2,
+    `${PRIMITIVE_PATH}: expected the two buildGSplatDrawCommand call sites; found ${buildCalls.length}`,
+  );
+  for (const match of buildCalls) {
+    const before = source.slice(Math.max(0, match.index - 400), match.index);
+    assert.match(
+      before,
+      /if\s*\(!defined\((?:this|primitive)\._featureRenderer\)\)\s*\{[^{}]*$/,
+      `${PRIMITIVE_PATH}: a buildGSplatDrawCommand call at offset ${match.index} is not gated on _featureRenderer being absent`,
+    );
+  }
+
+  // The neutral/GL boundary inside the texture pipeline: the WebGL `Texture`
+  // constructors must sit behind the same branch.
+  const textureBranch = source.indexOf(
+    "if (defined(primitive._featureRenderer)) {",
+  );
+  const firstTextureCreate = source.indexOf(
+    "snapshot.gaussianSplatTexture = createGaussianSplatTexture(",
+  );
+  assert.notEqual(
+    textureBranch,
+    -1,
+    `${PRIMITIVE_PATH}: the backend branch in processGeneratedSplatTextureData is gone`,
+  );
+  assert.notEqual(
+    firstTextureCreate,
+    -1,
+    `${PRIMITIVE_PATH}: createGaussianSplatTexture call moved`,
+  );
+  assert.ok(
+    textureBranch < firstTextureCreate,
+    `${PRIMITIVE_PATH}: the WebGL Texture upload must sit BELOW the backend branch`,
+  );
+
+  // ...and the neutral half above it must still be shared, not duplicated.
+  assert.match(
+    source,
+    /function computeSplatTextureLayout\(/,
+    `${PRIMITIVE_PATH}: the neutral trim/pad/row-mask half was re-inlined`,
+  );
+}
+
+/**
+ * C15-G2 visibility check: `GaussianSplatPrimitive` resolves `show`, and it
+ * resolves it from the tileset rather than inventing a second source of truth.
+ */
+function assertShowResolvesFromTileset(source) {
+  assert.match(
+    source,
+    /^\s*get show\(\) \{\n\s*return this\._tileset\?\.show \?\? false;\n\s*\}/m,
+    `${PRIMITIVE_PATH}: the C15-G2 \`show\` accessor is gone or no longer proxies tileset.show — the WebGPU renderer's first statement fires again for every production primitive`,
+  );
+  // A settable member would be the SECOND source of truth this decision
+  // deliberately rejected: the WebGL path gates on `tileset.show`, so the two
+  // backends would then honour different signals.
+  assert.doesNotMatch(
+    source,
+    /^\s*(?:this\.show\s*=|set show\()/m,
+    `${PRIMITIVE_PATH}: \`show\` became settable — visibility now has two sources of truth`,
+  );
+  // The WebGL path's own gate must still read the tileset directly, which is
+  // what makes the accessor a proxy rather than a divergence.
+  assert.match(
+    source,
+    /if \(!tileset\.show\) \{/,
+    `${PRIMITIVE_PATH}: the WebGL visibility gate moved; re-verify what \`show\` proxies`,
+  );
+}
+
+test("HEAD: the FR dispatch sits BELOW the shared data commit (C15-G2)", () => {
+  assertDispatchBelowDataCommit(readNormalized(PRIMITIVE_PATH));
+});
+
+test("HEAD: `show` resolves from the owning tileset (C15-G2)", () => {
+  assertShowResolvesFromTileset(readNormalized(PRIMITIVE_PATH));
+});
+
+// MUTANT-SOURCE group. Each mutation is applied to a COPY of the real file and
+// the corresponding predicate must REJECT it. Without this, an anchor that
+// silently stopped matching anything would pass forever.
+const SOURCE_MUTANTS = [
+  {
+    name: "pre-G2 ordering: dispatch-and-return restored as update()'s first branch",
+    predicate: assertDispatchBelowDataCommit,
+    because: /pre-C15-G2 dispatch-and-return block is back/,
+    mutate: (source) =>
+      source.replace(
+        "    this._updateSplatData(frameState);\n\n    if (defined(fr)) {\n      fr.update(this, frameState);\n    }",
+        "    if (fr) {\n      fr.update(this, frameState);\n      this._featureRenderer = fr;\n      return;\n    }\n    this._updateSplatData(frameState);",
+      ),
+  },
+  {
+    name: "the draw-command build is un-gated (WebGL objects built on WebGPU)",
+    predicate: assertDispatchBelowDataCommit,
+    because: /is not gated on _featureRenderer being absent/,
+    mutate: (source) =>
+      source.replace(
+        "      if (!defined(this._featureRenderer)) {\n        GaussianSplatPrimitive.buildGSplatDrawCommand(this, frameState);\n      }",
+        "      GaussianSplatPrimitive.buildGSplatDrawCommand(this, frameState);",
+      ),
+  },
+  {
+    name: "the WebGL Texture upload is no longer behind the backend branch",
+    predicate: assertDispatchBelowDataCommit,
+    because: /backend branch in processGeneratedSplatTextureData is gone/,
+    mutate: (source) =>
+      source.replace(
+        "if (defined(primitive._featureRenderer)) {",
+        "if (false) {",
+      ),
+  },
+  {
+    name: "the show guard is deleted rather than answered",
+    predicate: assertShowResolvesFromTileset,
+    because: /accessor is gone or no longer proxies tileset\.show/,
+    mutate: (source) =>
+      source.replace(
+        "  get show() {\n    return this._tileset?.show ?? false;\n  }",
+        "",
+      ),
+  },
+  {
+    name: "show becomes a settable own-property (second source of truth)",
+    predicate: assertShowResolvesFromTileset,
+    because: /accessor is gone or no longer proxies tileset\.show/,
+    mutate: (source) =>
+      source.replace(
+        "  get show() {\n    return this._tileset?.show ?? false;\n  }",
+        "  get show() {\n    return this._show;\n  }\n\n  set show(value) {\n    this._show = value;\n  }",
+      ),
+  },
+];
+
+for (const mutant of SOURCE_MUTANTS) {
+  test(`HEAD mutant rejected: ${mutant.name}`, () => {
+    const real = readNormalized(PRIMITIVE_PATH);
+    const mutated = mutant.mutate(real);
+    assert.notEqual(
+      mutated,
+      real,
+      "the mutation did not apply — the anchored text moved, so this mutant proves nothing",
+    );
+    // The REASON is pinned too. `assert.throws` alone would be satisfied by an
+    // anchor that happened to break on some unrelated assertion, which is how a
+    // mutation test quietly stops testing the mutation.
+    assert.throws(
+      () => mutant.predicate(mutated),
+      mutant.because,
+      `the anchor accepted the mutated source, or rejected it for the wrong reason; it is not actually pinning ${mutant.name}`,
+    );
+  });
+}
+
+test("HEAD: the synthetic splat probes' hand-rolled primitives still satisfy the renderer's guard", () => {
+  // C15-G2 changed how PRODUCTION primitives resolve `show`. The three probes
+  // that reach the WebGPU splat data path do so with plain object literals, so
+  // the accessor cannot affect them — but only while they keep declaring it.
+  for (const probe of [
+    "Tools/visual-regression/probe-splat-sort.mjs",
+    "Tools/visual-regression/probe-splat-globe-occlusion.mjs",
+    "Tools/visual-regression/probe-oit-transparency.mjs",
+  ]) {
+    const source = readNormalized(probe);
+    assert.match(
+      source,
+      /^\s*show: true,$/m,
+      `${probe}: the hand-rolled splat primitive no longer declares show: true, so it exits at the renderer's first statement`,
+    );
+    assert.match(
+      source,
+      /_splatData:/,
+      `${probe}: the hand-rolled splat primitive no longer assigns _splatData`,
     );
   }
 });
 
-test("HEAD: the WebGPU renderer still exits on `primitive.show` before reading splat data", () => {
+test("HEAD: the WebGPU renderer cannot reach its synchronous JS sort with no splat data", () => {
+  // C15-G2 makes the shared pipeline run for WebGPU, which means `_positions`
+  // and `_indexes` now exist on the WebGPU leg for a 286,868-splat tileset.
+  // The in-renderer `maybeSortSplats` is a synchronous main-thread
+  // Array.prototype.sort and must NOT start paying that per frame for data it
+  // cannot draw. It is structurally unreachable because the splatCount-zero
+  // return precedes it; C15-G4 replaces it with the WASM sort.
   const source = readNormalized(RENDERER_PATH);
-  const guard = source.indexOf("if (!primitive.show) {");
-  const read = source.indexOf(
-    "primitive._splatData || primitive._renderResources?.splatBuffer",
-  );
+  const zeroReturn = source.indexOf("if (cache.splatCount === 0) {");
+  const sortCall = source.indexOf("maybeSortSplats(device, primitive");
   assert.notEqual(
-    guard,
+    zeroReturn,
     -1,
-    `${RENDERER_PATH}: the first-statement show guard is gone`,
+    `${RENDERER_PATH}: the splatCount-zero early return is gone`,
   );
-  assert.notEqual(read, -1, `${RENDERER_PATH}: the splat-data read moved`);
+  assert.notEqual(sortCall, -1, `${RENDERER_PATH}: maybeSortSplats call moved`);
   assert.ok(
-    guard < read,
-    "the show guard precedes the data read; that ordering is why assigning _splatData alone would still render nothing",
-  );
-
-  // ...and `GaussianSplatPrimitive` still defines no `show`, which is what
-  // makes that guard fire for every PRODUCTION primitive. The three synthetic
-  // probes hand-roll `show: true`, which is why they reach the data path.
-  const primitiveSource = readNormalized(PRIMITIVE_PATH);
-  assert.doesNotMatch(
-    primitiveSource,
-    /^\s*(?:get|set)\s+show\s*\(/m,
-    `${PRIMITIVE_PATH}: a \`show\` accessor appeared — the earliest WebGPU blocker changed; re-verify the absence attribution`,
-  );
-  assert.doesNotMatch(
-    primitiveSource,
-    /^\s*this\.show\s*=/m,
-    `${PRIMITIVE_PATH}: \`this.show\` is now assigned — the earliest WebGPU blocker changed`,
+    zeroReturn < sortCall,
+    `${RENDERER_PATH}: the synchronous JS sort is now reachable with an empty cache — a 286k-element sort per frame for data the WebGPU path cannot yet draw (C15-G4)`,
   );
 });
 
