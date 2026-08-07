@@ -460,7 +460,7 @@ defect that no existing gate could have seen.
   **Effort: M.** **Blocks:** any re-reading of `probe-celestial-gates.mjs`
   Lane B's `starEnergyRatio` as a star-modulation number.
 
-- **`PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS` — ✅ RE-SCOPED IN CODE
+- **`PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS` — ✅ RE-SCOPED IN CODE **FIRST EDGE RUN 2026-08-07 (tip `c810dbace2`): the re-scope is VALIDATED — Lane A passes per-mode with the DR-01 zero-census assertion live and its positive controls non-vacuous; G1's only red is the KNOWN shell-extent-coupled Lane B. The twilight probe's engine leg PASSES on both backends; its star-pixel leg is STRUCTURAL (see TWILIGHT-STAR-REACHABILITY-BLACK-BOX below).**
   2026-08-07 (CO-3); EDGE ACCEPTANCE OWED.** The original filing is preserved
   below unchanged. **What now exists:**
   - `Tools/visual-regression/lib/celestial-source-split.mjs` (new) — the
@@ -11730,3 +11730,10 @@ Separately, `pass: 7 /* CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW */` in `WebGPU
 ### SANDCASTLE2-EDITOR-DTS-404 — every Sandcastle2 page 404s on `Source/Cesium.d.ts` (FILED 2026-08-07)
 
 **Status: OPEN / LOW (app shell).** The Sandcastle2 editor (Monaco IntelliSense) requests `/Source/Cesium.d.ts` and the dev server does not serve it — one console error + one 404 on every demo page, harmless to demo runtime but it pollutes every console-clean gate (the wave-1 verification had to allow-list it). Fix shape: serve the built d.ts at that path (or point the editor at the built types location); the verification contract used — "no failing resources beyond the app-shell Cesium.d.ts 404" — tightens to zero once fixed.
+
+
+---
+
+### TWILIGHT-STAR-REACHABILITY-BLACK-BOX — the positional star-reachability control found a completely black box at the projected catalogue-star position (FILED 2026-08-07)
+
+**Status: OPEN / MEDIUM (instrument gap, NOT a product verdict — the probe correctly exited 3 STRUCTURAL).** First run of the re-scoped `probe-sky-twilight-range.mjs` (tip `c810dbace2`): at sun −20 deg (full night, star factor exactly 1.0), the brightest in-frame catalogue star (vmag 2.14, projected to (370,203)) censused **0 resolved sources** with **box peak luma 0.0** — the search box is entirely black — IDENTICALLY on both backends. The engine leg of the same run is exact, so the sky-brightness chain is healthy; what is unknown is whether (a) the star field is simply not drawn in this probe's scene configuration (skyBox/star-sprite pass not scheduled — check command counts), (b) the probe's projection math places the star wrong (frame/aberration/time mismatch — plausible since BOTH backends agree on black, i.e., the disagreement is probe-vs-world, not backend-vs-backend), or (c) the star field genuinely does not reach this framing (camera looks at the zenith column, star may be elsewhere). Next step: one instrumented Edge session dumping the star-pass command/draw counts plus a full-frame brightest-pixel census to locate where (if anywhere) stars actually rendered, then either fix the projection or re-aim the control. Do NOT lower the positional tolerance or widen the box to make it green.
