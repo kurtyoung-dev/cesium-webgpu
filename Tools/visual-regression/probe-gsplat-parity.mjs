@@ -1,33 +1,59 @@
 #!/usr/bin/env node
 /**
- * `C15-G1` — Gaussian-splat probe harness + WebGL reference leg.
+ * `C15-G1..G3` — Gaussian-splat probe harness, WebGL reference leg, and the
+ * `--expect-webgpu` flip.
  *
  * This is the instrument every later GSPLAT row's exit gate runs through, and
  * it is deliberately DUAL-MODE. The same probe has to do two opposite jobs at
  * two different points in the track:
  *
- *   DEFAULT (today, C15-G1..G2): the WebGPU splat path renders NOTHING. That is
- *   the documented `C15-G0` baseline. The probe certifies the absence honestly
- *   — it prints the greppable marker `WEBGPU-SPLATS-ABSENT (expected until
- *   C15-G3)` and the overall run stays exit 0 — but ONLY when the absence is
+ *   DEFAULT (C15-G1..G2): the WebGPU splat path rendered NOTHING. That was the
+ *   documented `C15-G0` baseline. The probe certified the absence honestly —
+ *   it printed the greppable marker `WEBGPU-SPLATS-ABSENT (expected until
+ *   C15-G3)` and the overall run stayed exit 0 — but ONLY when the absence was
  *   ATTRIBUTABLE to a named, observed blocker in the scaffolded path. A blank
  *   canvas is also what a broken probe, a dead device, or an unloaded tileset
  *   looks like, so an unattributed absence exits 3, not 0.
  *
- *   `--expect-webgpu` (C15-G3+): absence becomes a real product FAIL (exit 1),
- *   and presence hands off to a cross-backend pixel-diff parity gate scored
- *   against the `C15-G8` thresholds (tower < 3%, sh_unit_cube < 1%).
+ *   `--expect-webgpu` (C15-G3+, and the mode this row's exit gate is written
+ *   against): absence is a real product FAIL (exit 1), and presence is scored
+ *   against the product criteria.
+ *
+ * WHERE THE STAGE STANDS NOW (C15-G3)
+ * -----------------------------------
+ * `C15-G3` retired the last two named blockers, which empties `STAGE.required`.
+ * An empty required set is itself a contract: there is no absence this stage
+ * knows how to certify, so a DEFAULT run is structural
+ * (`webgpu:stage-requires-expect-webgpu`) no matter what it measures. The
+ * probe stays dual-mode — it still collects and prints every blocker — it just
+ * cannot call the result green. Run it with `--expect-webgpu`.
  *
  * THE ABSENCE CONTRACT IS STAGED, NOT A STANDING "at least one blocker"
  * -------------------------------------------------------------------
  * `C15-G2` moved the splat data pipeline above the backend branch and gave the
  * primitive a `show` accessor, which RETIRED two of the four blockers the
- * default mode used to accept. A gate that only asked "was any known blocker
- * seen?" would keep printing the same green marker for a strictly smaller
- * reason and never say so. So `STAGE` in the model names both sets: a retired
- * blocker observed again is a REGRESSION (structural), and a required blocker
- * NOT observed means the absence has some other cause (also structural). The
- * stage is printed on every run next to what was measured.
+ * default mode used to accept; `C15-G3` retired the other two by committing
+ * the WASM record into a storage buffer. A gate that only asked "was any known
+ * blocker seen?" would keep printing the same green marker for a strictly
+ * smaller reason and never say so. So `STAGE` in the model names both sets: a
+ * retired blocker observed again is a REGRESSION (structural), and a required
+ * blocker NOT observed means the absence has some other cause (also
+ * structural). The stage is printed on every run next to what was measured.
+ *
+ * THE PARITY DIFF IS MEASURED BUT NOT GATED AT C15-G3
+ * ---------------------------------------------------
+ * The WGSL has NO spherical-harmonics term until `C15-G5`, and BOTH gate
+ * tilesets are SH degree 3 — every splat carries a view-dependent colour the
+ * WebGPU leg cannot reproduce yet. A cross-backend diff at this stage
+ * therefore scores the MISSING SH, not the record decode this row ships, and
+ * cannot come in under 1% / 3% however correct the decode is. So the diff is
+ * still computed, still printed, still written to disk as a PNG (its magnitude
+ * is the SH signal `C15-G5` has to remove) — and deliberately not folded into
+ * the verdict. What gates `C15-G3` instead is the reference leg's OWN
+ * structure battery applied to the WEBGPU leg — added fraction, edge fraction,
+ * luminance spread, the 10x negative-control margin — plus splat-count
+ * equality. The `C15-G8` thresholds are UNCHANGED; `C15-G5` flips
+ * `STAGE.parity.scored` and they become the gate again.
  *
  * The flip is the whole point of the row: one instrument that cannot be
  * satisfied by the wrong world. Two blank canvases diff to 0.000% — the
@@ -80,11 +106,10 @@
  * needed and still committed nothing" rather than "we waited an arbitrary
  * number we picked".
  *
- * Usage:
- *   node Tools/visual-regression/probe-gsplat-parity.mjs
- *   node Tools/visual-regression/probe-gsplat-parity.mjs --asset=tower
- *   node Tools/visual-regression/probe-gsplat-parity.mjs --asset=both
+ * Usage (at C15-G3, always pass --expect-webgpu; default mode is structural):
  *   node Tools/visual-regression/probe-gsplat-parity.mjs --expect-webgpu
+ *   node Tools/visual-regression/probe-gsplat-parity.mjs --expect-webgpu --asset=tower
+ *   node Tools/visual-regression/probe-gsplat-parity.mjs --expect-webgpu --asset=both
  * Env:
  *   PROBE_BASE                  default http://localhost:8080
  *   PROBE_GSPLAT_WATCHDOG_MS    default 600000 (raise for --asset=both)
@@ -242,6 +267,15 @@ const RUN_LANE = async ({
     splatPassCommands: 0,
     commandListSplatCommands: 0,
     cacheSplatCount: null,
+    // C15-G3 diagnostics — which attribute-record layout the renderer's cache
+    // committed, and how many bytes per splat it believes it holds. A packed
+    // commit that somehow reported the legacy stride is the single most
+    // likely way this row goes wrong (the cloud would decode at half rate),
+    // and it is invisible in the pixel metrics.
+    cacheLayoutPacked: null,
+    cacheSplatRecordBytes: null,
+    cacheSortedIndexCount: null,
+    packedPayloadWords: null,
     featureRendererKind: null,
     absenceBlockers: [],
     framing: null,
@@ -473,6 +507,13 @@ const RUN_LANE = async ({
     sphericalHarmonicsDegree: primitive?._sphericalHarmonicsDegree ?? null,
   };
   record.cacheSplatCount = primitive?._webgpuCache?.splatCount ?? null;
+  record.cacheLayoutPacked = primitive?._webgpuCache?.layoutPacked ?? null;
+  record.cacheSplatRecordBytes =
+    primitive?._webgpuCache?.splatRecordBytes ?? null;
+  record.cacheSortedIndexCount =
+    primitive?._webgpuCache?.sortedIndexCount ?? null;
+  record.packedPayloadWords =
+    primitive?._packedSplatTextureData?.data?.length ?? null;
   try {
     // FeatureRendererKey.GAUSSIAN_SPLAT === 16. The primitive's own update
     // kicks this lazy loader every frame, so reading it is idempotent here.
@@ -500,7 +541,15 @@ const RUN_LANE = async ({
     if (
       primitive._splatData === undefined &&
       primitive._renderResources?.splatBuffer === undefined &&
-      primitive._splatCount === undefined
+      primitive._splatCount === undefined &&
+      // C15-G3 — the PRODUCTION source. The renderer consumes the WASM
+      // `generate_splat_texture` output verbatim (8 u32/splat) off
+      // `_packedSplatTextureData`; the legacy 16-f32 trio above stays
+      // unassigned by design (Option B forks no worker format), so testing
+      // only those three would keep reporting this blocker forever on a
+      // healthy engine. The blocker means "no splat bytes reach the renderer
+      // in ANY layout it can consume", and all four fields are what that is.
+      primitive._packedSplatTextureData === undefined
     ) {
       record.absenceBlockers.push("no-splat-data-fields");
     }
@@ -1005,9 +1054,23 @@ async function main() {
       } cache.splatCount=${webgpu?.cacheSplatCount} numSplats=${webgpu?.numSplats}`,
     );
     console.log(
-      `               stage=${STAGE.id} requires=[${STAGE.required.join(
-        ", ",
-      )}] forbids=[${STAGE.retired.join(", ")}]`,
+      `               layout=${
+        webgpu?.cacheLayoutPacked === null ||
+        webgpu?.cacheLayoutPacked === undefined
+          ? "n/a"
+          : webgpu.cacheLayoutPacked
+            ? "packed-wasm(32B)"
+            : "legacy-record(64B)"
+      } recordBytes=${webgpu?.cacheSplatRecordBytes ?? "n/a"} sortedIdx=${
+        webgpu?.cacheSortedIndexCount ?? "n/a"
+      } packedWords=${webgpu?.packedPayloadWords ?? "n/a"} (predicted ${
+        asset.expectedSplats * 8
+      } minimum for ${asset.expectedSplats} splats)`,
+    );
+    console.log(
+      `               stage=${STAGE.id} requires=[${
+        STAGE.required.join(", ") || "none — default mode cannot certify"
+      }] forbids=[${STAGE.retired.join(", ")}]`,
     );
     console.log(`  [PARITY]     ${parity.reason}`);
 
@@ -1072,8 +1135,26 @@ async function main() {
   if (verdict.verdict === "PASS" && !EXPECT_WEBGPU) {
     console.log(
       `The run is green ON THE CURRENT-STATE CONTRACT: the WebGL reference renders splats and ${ABSENT_MARKER}. ` +
-        `It is NOT evidence that WebGPU splats work. When C15-G3 lands, re-run with --expect-webgpu — ` +
+        `It is NOT evidence that WebGPU splats work. Re-run with --expect-webgpu — ` +
         `that mode turns this same absence into exit 1.`,
+    );
+  }
+  // C15-G3 — the stage has no required blockers left, so a DEFAULT run can no
+  // longer be green on the absence contract. Say so explicitly at the bottom
+  // of the log rather than leaving the reader to infer it from a structural
+  // line, and say it whether the run went structural or (impossibly) green.
+  if (!EXPECT_WEBGPU && STAGE.required.length === 0) {
+    console.log(
+      `NOTE: ${STAGE.id} retired every named absence blocker, so DEFAULT mode is no longer a certification ` +
+        `mode — WebGPU is expected to render splats. Run with --expect-webgpu; that is the mode this row's ` +
+        `exit gate is written against.`,
+    );
+  }
+  if (EXPECT_WEBGPU && STAGE.parity?.scored === false) {
+    console.log(
+      `NOTE: the cross-backend parity diff is MEASURED and PRINTED above but NOT GATED at ${STAGE.id} — ` +
+        `${STAGE.parity.reason}. The per-asset thresholds are unchanged and become the gate again at ` +
+        `${STAGE.parity.deferredTo}. This run gates on the WebGPU leg's own structure battery + count equality.`,
     );
   }
   process.exitCode = verdict.exitCode;

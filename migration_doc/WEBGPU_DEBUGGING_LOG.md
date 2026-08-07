@@ -17760,3 +17760,62 @@ adversarial mutants rejected: restoring the absolute bar as the gate, widening
 the parity band to [0.5, 2.0], fitting the fraction bar to just under tonight's
 value (0.033), dropping a parity predicate from the fold, and letting a null
 fraction pass vacuously.
+
+---
+
+## C15-G3-SPLAT-MODEL-MATRIX — the WebGPU splat renderer transformed by a member production primitives do not have (2026-08-07)
+
+**Bug:** `C15-G3.1`. **Files:**
+`packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts`.
+
+**Symptom (predicted, not observed — found by reading, before the first Edge
+run):** the first production Gaussian-splat cloud on WebGPU would have rendered
+at the geocentre instead of at the tileset, on both the colour pass and the
+depth-sort key, while every existing probe stayed green.
+
+**Root cause.** `updateWebGPUGaussianSplats` built its modelView from
+
+```ts
+const mm = primitive.modelMatrix ?? Matrix4.IDENTITY;
+```
+
+and `maybeSortSplats` did the same for its eye-space-z key.
+**`GaussianSplatPrimitive` defines no `modelMatrix` member at all.** Its WebGL
+DrawCommand is built with `modelMatrix: primitive._rootTransform`
+(`GaussianSplatPrimitive.js:2307-2321`) — the ENU frame at the tileset
+bounding-sphere centre — and `GaussianSplatPrimitive.transformTile` bakes every
+tile into `inverse(_rootTransform)` precisely so `view * modelMatrix` stays
+numerically small at ECEF scale. So for real content `mm` resolved to IDENTITY
+and the metre-scale ENU positions were interpreted as ECEF.
+
+**Why it survived from Batch 288 to here.** The three exercisers of this code
+path are all synthetic probes that hand-roll a fake primitive
+(`probe-splat-sort.mjs:216-233`, `probe-splat-globe-occlusion.mjs:119-134`,
+`probe-oit-transparency.mjs:717`), and each declares `modelMatrix:
+Matrix4.IDENTITY` and no `_rootTransform`. The read was therefore correct for
+every object that had ever reached it. This is the same shape as the
+`C15-G2`/Batch-878 stall (a shared readiness predicate reading a WebGL object):
+**a scaffolded path accumulates assumptions that are true only of its
+scaffolding**, and they surface all at once when production data first arrives.
+Worth noting the renderer already had the RIGHT matrix a few lines below — the
+`C7-SPLAT-DEPTH-COMPOSE` block reads `parityFields._rootTransform` for the
+command's `modelMatrix` — so the file simultaneously used the correct transform
+for binning and the wrong one for projection.
+
+**Fix.** A `splatModelMatrix(primitive)` helper returning
+`_rootTransform ?? modelMatrix ?? Matrix4.IDENTITY`, used by both the uniform
+pack and the sort key. The synthetic probes are unaffected (they have no
+`_rootTransform`). Pinned by `gsplat-harness.spec.mjs` at both call sites, with
+a companion anchor on the WebGL `DrawCommand` so a change on that side is
+caught here too.
+
+**Second defect fixed in the same pass (`C15-G3.2`):** `cmd._shaderCode` was
+assigned the RAW `SPLAT_WGSL` template, `//>>ifdef` directives included.
+`WebGPUSceneRendererTranslucentPass` compiles that string directly when a
+command has no `_oitPipeline`; WGSL treats the directives as comments, so it
+would compile a source with both branches of every conditional present (two
+`fragmentMain` definitions) — and, after `C15-G3`, with the wrong record
+stride. Now `preprocess(SPLAT_WGSL, 0, layoutDefinesHi)`. Unreachable today
+(the renderer populates `_oitPipeline` itself and OIT is contained off), and
+the REST of that fallback is still broken for splats — see
+`NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE` in `DEFERRED_WORK.md`.

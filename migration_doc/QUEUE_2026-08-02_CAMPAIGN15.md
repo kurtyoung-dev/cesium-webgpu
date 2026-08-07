@@ -512,8 +512,8 @@ scoping row must re-verify all of it at HEAD):**
 | --- | --- | --- | --- | --- |
 | `C15-G0` | Scoping + root-cause verification: reproduce the production no-render, verify the `NEW-WEBGPU-SPLAT-DATA-PRODUCER` mechanism at HEAD, map the full WebGL splat data path (loader -> workers -> primitive -> renderer) and specify the WebGPU producer design + task breakdown `C15-G1..Gn` with exit gates | M | **COMPLETE — 2026-08-06** (report §6a-§6d below; docs/analysis only, no engine change) | — |
 | `C15-G1` | Probe harness + **WebGL reference leg** on the two in-tree splat tilesets. No engine change. | S | **IMPLEMENTATION DONE — 2026-08-07 (worker)**; pending orchestrator landing + Edge run. `probe-gsplat-parity.mjs` + `lib/gsplat-parity-model.mjs` + `gsplat-harness.spec.mjs` (50 checks green). Predictions + the §6a addendum below | `C15-G0` |
-| `C15-G2` | Scene-logic extraction: move the FR dispatch below the data commit; split the backend-neutral snapshot pack from the WebGL `Texture` upload | M | **LANDED Batch 878, INCOMPLETE — fix IMPLEMENTATION DONE 2026-08-07 (worker), pending orchestrator landing + re-run.** Batch 878's Edge run came back **exit 3**, caught by this row's own STAGE contract: the structure landed and `show` took (`cache.splatCount` printed `0`, not `null`), but `_numSplats` stayed `0` on WebGPU — the TEXTURE_READY readiness guard read `pending.gaussianSplatTexture`, a WebGL object the native branch deliberately never creates, so the state machine stalled permanently before the sort. Fixed by `hasSnapshotRenderPayload`. Mechanism + corrected boundary in the §6c `C15-G2` block below | `C15-G1` |
-| `C15-G3` | Splat record format + WebGPU buffer commit — consume the WASM texture-generator output verbatim; first real WebGPU splat pixels | L | PENDING | `C15-G2` |
+| `C15-G2` | Scene-logic extraction: move the FR dispatch below the data commit; split the backend-neutral snapshot pack from the WebGL `Texture` upload | M | **CONFIRMED-COMPLETE — 2026-08-07 (Batch 880 fix, Edge-verified).** Batch 878 landed the extraction and came back exit 3 on its own STAGE contract (`_numSplats` stuck at 0 — the TEXTURE_READY guard read `pending.gaussianSplatTexture`, a WebGL object the native branch deliberately never creates); `hasSnapshotRenderPayload` fixed it and the re-run measured `numSplats=27`, blockers exactly `[no-splat-data-fields, cache-splat-count-zero]`, **exit 0** — an exact match to the re-registered predictions. Mechanism + corrected boundary in the §6c `C15-G2` block below | `C15-G1` |
+| `C15-G3` | Splat record format + WebGPU buffer commit — consume the WASM texture-generator output verbatim; first real WebGPU splat pixels | L | **IMPLEMENTATION DONE — 2026-08-07 (worker)**; pending orchestrator landing + Edge run with `--expect-webgpu`. Option B landed (32-byte WASM record read directly in WGSL behind `ShaderDefineHi.SPLAT_PACKED_WASM`), buffers + `_indexes` committed, `_rootTransform` model-matrix defect found and fixed, probe STAGE flipped to `C15-G3` (required empty → default mode structurally refuses), parity RECORDED-NOT-GATED until `C15-G5` (SH). 95 harness checks green (was 68). Design + pre-registered predictions in the `C15-G3` block below | `C15-G2` |
 | `C15-G4` | Consume the WASM radix sort (`primitive._indexes`) instead of the in-renderer synchronous JS comparator sort | M | PENDING | `C15-G3` |
 | `C15-G5` | Spherical harmonics (degree 1-3) in WGSL — the view-dependent colour term the WGSL has **zero** implementation of | L | PENDING | `C15-G3` |
 | `C15-G6` | `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` — re-verify against production data (the B647 fix is currently **vacuous** under every probe) | M | PENDING | `C15-G3` |
@@ -1125,6 +1125,274 @@ canvas returns to background. `probe-splat-sort.mjs` and
 `probe-splat-globe-occlusion.mjs` still pass on the migrated layout. A
 `node --test` CPU spec proves the JS-side pack and the WGSL-side unpack agree on
 a known `(scale, rotation)` triple against the GLSL reference decode.
+
+#### `C15-G3` — IMPLEMENTATION DONE (worker, 2026-08-07) — pending orchestrator landing + Edge run
+
+**One clause of the exit gate above needed re-reading, not weakening.** It asks
+for "a `node --test` CPU spec [that] proves the JS-side pack and the WGSL-side
+unpack agree". Option B has **no JS-side pack** — that is the point of it; the
+WASM writer packs, and the only in-tree description of what it wrote is the GLSL
+decode. So the equivalent-strength spec pins the two SHADER decodes against each
+other, both PARSED from source rather than transcribed: the GLSL word/half
+mapping is derived from `PrimitiveGaussianSplatVS.glsl` (its `u1/u2/u3`
+assignments and its 9-argument `Vrk` mat3), the WGSL mapping from the extracted
+`SPLAT_WGSL` (`loadSplat`'s `unpack2x16float` reads and `vertexMain`'s `Sigma`
+mat3x3), and all nine covariance elements plus position and colour must resolve
+to the SAME `(word, half)`. On top of that the "known `(scale, rotation)`
+triple" runs for real: Σ = R·diag(s)·(R·diag(s))ᵀ from a 37° rotation about
+(1,2,3) with scale (0.35, 0.08, 1.25), half-encoded into an 8-u32 record and
+decoded back through the WGSL's own parsed mapping, asserted to 1e-3 (f16
+precision) and asserted symmetric. Seven WGSL mutants must be rejected, each
+verified to die on the intended assertion.
+
+Five files, two of them engine:
+
+| File | Change |
+| --- | --- |
+| `packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts` | `ShaderDefineHi.SPLAT_PACKED_WASM = hiDefineBit(2)` — the record-layout axis (add-only; 0/1 unchanged) |
+| `packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts` | `SPLAT_WGSL` reads `array<u32>` + a `//>>ifdef`-gated `loadSplat`; packed-source resolution + buffer commit + lifecycle; `_indexes` consumed; `_rootTransform` model matrix; stride-derived velocity sizing; preprocessed `_shaderCode` |
+| `Tools/visual-regression/lib/gsplat-parity-model.mjs` | `STAGE` → `C15-G3` (all four blockers retired, `required` empty); stage is now a PARAMETER; `STAGE.parity` (recorded-not-gated); `PRESENT_MARKER` |
+| `Tools/visual-regression/probe-gsplat-parity.mjs` | `no-splat-data-fields` predicate extended to the packed payload; layout/stride/sorted-index diagnostics; stage + parity-deferral notes printed |
+| `Tools/visual-regression/gsplat-harness.spec.mjs` | 95 checks (was 68): the decode-agreement battery, the round-trip, the flat-run algebra, Naga on 4 variants, 9 renderer anchors, 7 WGSL mutants, 3 new model mutants, the G2 stage machinery preserved against a frozen fixture |
+
+**(a) The format decision, taken as the row recommended: Option B, verbatim.** The
+WGSL group-0 binding 1 is now `array<u32>` in BOTH variants — not two different
+struct types — and the `SPLAT_PACKED_WASM` define selects only the arithmetic
+inside `loadSplat`. That keeps the BGL, the bind group, the pipeline layout and
+the buffer usage flags literally identical across the two layouts; the only
+thing a layout flip changes is which shader module (and therefore which
+pipeline) the cache hands back. The packed branch mirrors
+`PrimitiveGaussianSplatVS.glsl:152-173` term for term:
+
+| u32 | packed decode | legacy (`//>>else`) |
+| --- | --- | --- |
+| 0-2 | `bitcast<f32>` → model-space position → `positionHigh` | `positionHigh` |
+| 3 | unused (the GLSL reads the texel as vec4 and takes `.xyz`) | `positionLow.x` |
+| 4-6 | 3 × `unpack2x16float` → `(Sxx,Sxy)`, `(Sxz,Syy)`, `(Syz,Szz)` | ... |
+| 7 | RGBA8, shifts 0/8/16/24, ÷255 | ... |
+
+Stride 8 u32 (32 B) vs the legacy 16 f32 (64 B): 9.2 MB rather than 18.4 MB of
+GPU storage for `tower`, **zero** CPU repack (`data.subarray(0, count * 8)` goes
+straight to `queue.writeBuffer`), and a covariance that is bit-identical to what
+WebGL samples — which is what makes a tight `C15-G8` threshold reachable once SH
+lands. Option A (repack to the 64-byte record) was not implemented and stays
+recorded as the fallback; a spec anchor forbids a `new Float32Array(count * 16)`
+appearing here so it cannot arrive by the back door.
+
+**The flat-run premise, proven rather than asserted.** `computeSplatTextureLayout`
+pads the WASM buffer out to the full `width * height * 4` texture footprint, so
+"slice the first `count * 8`" is only correct if the records are a flat run. They
+are: with `width = maxTex`, `rowMask = maxTex/2 - 1` and `rowShift = log2(maxTex/2)`,
+the GLSL address `y*width + x = (i >> rowShift)*maxTex + ((i & rowMask) << 1)`
+reduces to exactly `2*i` for every `i` and every power-of-two `maxTex`. The spec
+reads all four formulas out of the engine and the GLSL and checks the identity
+numerically, so a change to either end goes red here rather than in a probe.
+
+**(b) RTE — the named decision, taken explicitly.** The WASM record stores
+position as a single f32 vec3, so `positionHigh`/`positionLow` cannot be
+recovered from it; the f32 is the data's own precision ceiling. The packed
+branch sets `positionHigh = <the f32 vec3>`, `positionLow = vec3(0)`, and BOTH
+variants keep the identical
+`(positionHigh - encodedCameraHigh) + (positionLow - encodedCameraLow)` →
+`mvpRelativeToEye * vec4(posRTE, 1)` shape. The lane is zeroed, not deleted,
+with a rationale comment at the site. RTE still buys what it exists for on the
+CAMERA side, which is untouched: the CPU transforms the camera into the
+primitive's model frame (`inverse(rootTransform) * cameraWC`) and splits it
+high/low, and `transformTile` bakes every tile into `inverse(_rootTransform)`,
+so splat positions are metre-scale in that ENU frame and the large magnitude is
+cancelled BEFORE the f32 subtract rather than after it. **The synthetic path was
+checked first and does NOT violate RTE** — it carries a real high/low split —
+so there was nothing to propagate or to record as a pre-existing violation.
+
+**(c) A defect found en route, and it would have made the first pixels land at
+the geocentre.** `updateWebGPUGaussianSplats` built its modelView from
+`primitive.modelMatrix ?? Matrix4.IDENTITY`. **`GaussianSplatPrimitive` has no
+`modelMatrix` member at all** — its WebGL DrawCommand is built with
+`modelMatrix: primitive._rootTransform` (`GaussianSplatPrimitive.js:2307-2321`),
+the ENU frame at the tileset bounding-sphere centre, precisely so
+`view * modelMatrix` stays numerically small. The read was harmless for the
+three synthetic probes (they hand-roll `modelMatrix` and no `_rootTransform`)
+and wrong for every production primitive, which is exactly the shape of bug the
+scaffolded-only path accumulates. Fixed with a `splatModelMatrix()` helper
+preferring `_rootTransform`, used by both the uniform pack and the depth-sort
+key. Logged in `WEBGPU_DEBUGGING_LOG.md`.
+
+**A second, smaller one:** `cmd._shaderCode = SPLAT_WGSL` handed the RAW
+template — `//>>ifdef` directives and all — to
+`WebGPUSceneRendererTranslucentPass`, which compiles it when a command has no
+`_oitPipeline`. WGSL reads those directives as comments, so the consumer would
+compile a source with BOTH branches of every block present (two `fragmentMain`
+definitions). Pre-existing and normally unreachable (the renderer sets
+`_oitPipeline`), but the layout axis made it load-bearing: an un-preprocessed
+source would also carry the wrong stride. Now `preprocess(SPLAT_WGSL, 0,
+layoutDefinesHi)`.
+
+**(d) The commit, and what its dirty signal is.** The source resolution
+(`resolveSplatSource`) prefers the legacy `_splatData` / `_renderResources.splatBuffer`
+when present (the probes) and otherwise takes `_packedSplatTextureData`. The
+commit fires on `(count, layout, producer identity)`, not on the count alone: a
+snapshot rebuild that lands on the same splat count produces a fresh payload
+object and nothing else changes, and a count-only check would leave the previous
+cloud resident forever. The identity token is the PAYLOAD OBJECT, never the
+`subarray` view — a fresh view is allocated per call, so view identity would
+report "changed" every frame and re-upload 9 MB per frame on `tower`.
+
+Uploads go through `device.queue.writeBuffer` (the fork's frame-owned,
+queue-ordered CPU→GPU path); no encoder and no `queue.submit` were added — the
+only submit in the file remains the pre-existing velocity prev-seed self-copy.
+
+Lifecycle: re-upload on snapshot commit (via the identity token); **withdrawal**
+— when the packed producer goes away (tileset unload, `_dirty` teardown,
+`GaussianSplatPrimitive.destroy`, all of which clear `_packedSplatTextureData`
+and `_numSplats`) the cache retires `splatCount`/commands rather than
+rasterizing stale bytes; destroy is unchanged and already routed
+(`GaussianSplatPrimitive.destroy` → `this._featureRenderer.destroy(this)` →
+`destroyWebGPUGaussianSplatResources`, which destroys all four buffers).
+
+**Pipeline invalidation has its own layout field, deliberately.**
+`cache.resourcesLayoutPacked` (what the PIPELINES compile for) is tracked apart
+from `cache.layoutPacked` (what the BUFFER holds). They are legitimately out of
+step for the frames between a flip and the pipeline resolving, because
+`tryResolveSplatPipelines` returns early while a cold variant compiles (~2.7 s
+measured on this fork) and the buffer commit sits BELOW that return — comparing
+the flip against the buffer's layout would re-invalidate and re-REQUEST the
+pipelines on every frame of that window.
+
+**(e) The sort. `_indexes` is consumed; the comparator is not deleted.** The row
+is explicitly not `C15-G4`, so the in-renderer synchronous
+`Array.prototype.sort` stays for the legacy synthetic path (which has no
+`_indexes` and whose non-identity-permutation assertion is the Batch-288
+evidence). What changed is that the WebGPU draw no longer DROPS the permutation
+the shared pipeline already computed: `uploadProvidedSortOrder` writes
+`primitive._indexes` into `sortedIndexBuffer` when its length matches the splat
+count, and `maybeSortSplats` returns immediately for the packed layout. So the
+production path never pays a 286k-element main-thread sort. `C15-G4` still owns
+the demand signal, the throttle, deleting the comparator outright, and the
+interleaved-A/B main-thread-task measurement.
+
+**(f) The probe contract flips, and default mode stops being a certification
+mode.** `STAGE.id` is `C15-G3`, all four blockers are `retired`, and `required`
+is EMPTY. An empty required set is itself a contract: there is no absence this
+stage can certify, so a default run is structural
+(`webgpu:stage-requires-expect-webgpu`) whatever it measures — reported that way
+rather than as `absence-unattributed` (which blames the probe) or
+`blocker-regression` (which blames a row that did not regress). The probe stays
+dual-mode and still collects every blocker. `no-splat-data-fields` now also
+tests `_packedSplatTextureData`, because the legacy trio stays unassigned BY
+DESIGN under Option B and testing only those three would report the blocker
+forever on a healthy engine.
+
+The stage is now a PARAMETER of `evaluateWebgpuLeg`/`evaluateParity`. Without
+that, every rule exercising the both-directions blocker contract would go
+vacuous the moment `required` emptied — loops over an empty array assert nothing
+and still report green. The mechanism is tested against a frozen `C15-G2`
+fixture; the shipped stage is pinned separately.
+
+**(g) The parity-mode decision — parity is RECORDED, not GATED, at `C15-G3`.**
+Both gate tilesets are SH degree 3 and the WGSL has no spherical-harmonics term
+until `C15-G5` (`C15-G0` §6a(B)), so every splat carries a view-dependent colour
+the WebGPU leg cannot reproduce. A cross-backend diff at this stage scores the
+MISSING SH, not the record decode this row ships, and cannot come in under 1% /
+3% however correct the decode is. So the diff is still computed, still printed,
+still written to disk (its magnitude is the SH signal `C15-G5` has to remove)
+and deliberately not folded into the verdict.
+
+**What gates `C15-G3` instead is the reference leg's own structure battery
+applied to the WEBGPU leg** — added-pixel fraction ≥ 2.000%, edge fraction in
+[0.002, 0.95], luminance σ ≥ 4, the 10× negative-control margin, zero
+console/device errors — **plus splat-count equality**. Those are exactly the
+criteria `splatRenderCriteria` already computed for the reference; the flip mode
+now runs them on the WebGPU leg and prints `WEBGPU-SPLATS-PRESENT (C15-G3)` when
+they all hold. **The `C15-G8` thresholds are UNCHANGED** (`tower` 3%,
+`sh_unit_cube` 1%): `C15-G5` flips `STAGE.parity.scored` and the same numbers
+become the gate again. A spec rule drives the identical input through a
+parity-scored stage fixture and requires it to FAIL, so "deferred" can never be
+confused with "deleted", and a missing diff stays STRUCTURAL even while the gate
+is deferred — deferring the gate must not defer the measurement.
+
+*Falsifiable predictions for the Edge run* — `node Tools/visual-regression/probe-gsplat-parity.mjs --expect-webgpu`,
+`sh_unit_cube`, Edge, 1024×768 = 786,432 px, pinned clock `2026-06-01T18:00:00Z`.
+The WebGL leg is predicted UNCHANGED from `C15-G1`/`C15-G2` (27 splats,
+~19.1% added):
+
+- WebGPU leg: `_numSplats === 27`; `_indexes.length === 27`;
+  **`cache.splatCount === 27`** — was 0; **`layout=packed-wasm(32B)`,
+  `recordBytes=32`, `sortedIdx=27`**; `packedWords >= 216` (27 × 8; the printed
+  value is the padded texture footprint, so expect it to be far larger —
+  `maximumTextureSize * ceil(27/(maxTex/2)) * 4`, i.e. 32,768 at
+  `maxTextureDimension2D = 8192`);
+  **`splatPassCommands >= 1`** and **`commandListSplatCommands === 1`** (the row's
+  exit gate asks for exactly one `Pass.GAUSSIAN_SPLATS` command; the binned
+  count is per-frustum and the harness scene is single-frustum, so the two
+  should agree) — both were 0; **`added.changed >= 15,729 px (2.000%)`**
+  with `edgeFraction` in [0.002, 0.95] and luminance σ ≥ 4;
+  `negativeControlChanged` still < 0.100% of canvas; determinism < 0.050%;
+  zero console/device errors; printed line
+  `WEBGPU-SPLATS-PRESENT (C15-G3)`; overall exit **0**.
+- Parity: a number IS printed and is predicted to be LARGE — the SH-shaped
+  difference, expected well above the 1% `sh_unit_cube` threshold and plausibly
+  comparable to the added fraction itself, since SH degree 3 perturbs colour on
+  essentially every splat pixel. It is reported as
+  `RECORDED, NOT GATED at C15-G3` and contributes nothing to the exit code.
+  **Its magnitude is the pre-registered baseline `C15-G5` must beat.**
+- On `tower`: the same shape with `_numSplats === 286868`,
+  `cache.splatCount === 286868`, `recordBytes=32` (≈9.18 MB of storage buffer).
+
+*Named ways this can come back other than predicted, and what each means:*
+
+- `cache.splatCount === 0` with `numSplats === 27` → the commit did not fire.
+  Check `resolveSplatSource`: either `_packedSplatTextureData` is undefined on
+  the primitive (the `C15-G2` retention regressed) or the console carries the
+  permanent `packed payload is short` error, which would mean the shared layout
+  pass produced fewer than `count * 8` words.
+- `splatPassCommands === 0` with a non-zero `cache.splatCount` → the command was
+  built but not binned. `boundingVolume` now comes from `_tileset.boundingSphere`
+  for real content (it was always `undefined` under every synthetic probe — §6b
+  row 3), so this is the FIRST run in which the B647 binning fields are
+  executed at all. That is `C15-G6`'s subject arriving early; the single-frustum
+  globe-hidden harness scene is the target here.
+- Added pixels present but structure RED (`edgeFraction` at the ceiling,
+  σ below 4) → a decode-shaped defect the offset pins did not catch: confetti at
+  ~1 px per splat is what a wrong stride looks like on screen. Read the PNG
+  against the WebGL leg before touching thresholds.
+- A device/validation error mentioning binding size → `maxStorageBufferBindingSize`
+  on `tower` (9.18 MB, well under the 128 MB default, so this would indicate an
+  adaptive-limit cap rather than the data).
+- Default mode (no `--expect-webgpu`) exits 3 with
+  `webgpu:stage-requires-expect-webgpu`. That is CORRECT, not a regression.
+
+*Gates run in the worktree:* `npx tsc --noEmit` in `packages/engine` — 0 errors
+(0 non-TS2307); `prettier --write` clean on all five files; `eslint` clean on
+the three `Tools/` files, one file per invocation (engine `.ts` under
+`packages/engine/Source` is not covered by any `eslint.config.js` block — it
+reports "File ignored because no matching configuration was supplied", which is
+the repo's standing state, not a new gap); `node --test
+Tools/visual-regression/gsplat-harness.spec.mjs` — **95/95** (68/68 baseline
+preserved and extended); `pipeline-key-aliasing.spec.mjs` 59/59 and
+`mat-logdepth-encode-stash.spec.mjs` 12/12 still green (the two other specs that
+read the `ShaderDefine` registry). Naga validates all four
+`(LOG_DEPTH × SPLAT_PACKED_WASM)` variants.
+
+*Negative control (file copy, per the standing convention — no `git stash`):*
+with the pre-`C15-G3` renderer copied back over the file, **16 of 95 go red** —
+the 9 new renderer anchors plus all 7 WGSL mutants (which correctly report "this
+mutation no longer applies") — while **every `C15-G2` anchor stays green**. The
+file was restored and md5-verified identical. Separately, each WGSL mutant was
+run with its rejection message printed, confirming all 7 die on the intended
+assertion (e.g. "covariance element [1][2] disagrees: WGSL reads cov2.y → word 6
+half 1, GLSL reads u3.x → word 6 half 0") rather than on an unrelated parse
+error.
+
+**Not in this row, recorded so it is not mistaken for done:** the WGSL still has
+no SH term (`C15-G5`); the comparator sort still exists for the legacy layout
+(`C15-G4`); the multifrustum compose and the classification-depth swap are now
+REACHABLE for the first time but unverified (`C15-G6`, `C15-G7`); and the
+`maximumTextureSize` divergence recorded at `C15-G2` is unchanged — the native
+branch still takes the texture-shaped budget, which above ~8.4M splats would
+truncate the two backends to different counts. `C15-G3` deliberately did not
+re-open it: changing the budget shape would fork `numSplats` between the
+backends, which is the one thing the `C15-G8` gate cannot tolerate.
+
 
 ### `C15-G4` — consume the WASM radix sort (M) — deps: `C15-G3`
 

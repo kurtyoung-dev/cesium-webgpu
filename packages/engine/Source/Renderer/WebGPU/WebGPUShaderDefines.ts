@@ -984,6 +984,40 @@ export const ShaderDefineHi = Object.freeze({
    * Consumer: `GlobeTerrain.wgsl` (`computeEnhancedOcean`).
    */
   ENHANCED_OCEAN: hiDefineBit(1),
+
+  /**
+   * Gaussian-splat attribute-record LAYOUT axis (`C15-G3` /
+   * `NEW-WEBGPU-SPLAT-DATA-PRODUCER`). Selects which record the splat VS
+   * decodes out of the group-0 binding-1 storage buffer, which is declared
+   * `array<u32>` in BOTH variants so the binding type never changes:
+   *
+   *   * SET — the WASM `generate_splat_texture` output consumed VERBATIM:
+   *     8 u32 (32 bytes) per splat, laid out exactly as
+   *     `PrimitiveGaussianSplatVS.glsl:152-173` decodes it (w0-w2 =
+   *     `bitcast<f32>` model-space position, w3 unused, w4-w6 = three
+   *     `unpack2x16float` covariance pairs, w7 = RGBA8 colour). This is the
+   *     PRODUCTION path: it forks no worker format, halves splat GPU memory
+   *     versus the expanded record, and keeps the covariance bit-identical to
+   *     WebGL — which is what makes the `C15-G8` parity threshold reachable.
+   *   * CLEAR (the `//>>else`, and the DEFAULT) — the historical 16-f32 /
+   *     64-byte `SplatRecord`: `positionHigh(3) + positionLow(3) + covA(3) +
+   *     covB(3) + rgba(4)`. Nothing in `packages/` emits it; the three
+   *     synthetic splat probes (`probe-splat-sort.mjs`,
+   *     `probe-splat-globe-occlusion.mjs`, `probe-oit-transparency.mjs`) do,
+   *     and they are the Batch-288 sort-consume evidence, so the branch stays.
+   *
+   * Gating (single flip point): OR'd in by `buildSplatPipelineResources` when
+   * the primitive's data source is the packed WASM payload
+   * (`_packedSplatTextureData`) rather than the legacy `_splatData`. The bit
+   * participates in the shader-module cache's hi-word level
+   * (`getOrCreate(..., keySalt, definesHi)`) and is stamped into every splat
+   * pipeline descriptor name (`packed=`), so the two layouts can never share
+   * a module or a pipeline.
+   *
+   * Consumer: the inline `SPLAT_WGSL` in `WebGPUGaussianSplatRenderer.ts`
+   * (`loadSplat` / `loadPrevSplatModelPosition`).
+   */
+  SPLAT_PACKED_WASM: hiDefineBit(2),
 } as const);
 
 // Namespace-collision boot assertion: a name living in BOTH tables would

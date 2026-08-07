@@ -49,6 +49,15 @@ export const EXIT_CODE = Object.freeze({
 export const ABSENT_MARKER = "WEBGPU-SPLATS-ABSENT (expected until C15-G3)";
 
 /**
+ * The greppable marker for the OTHER half of the dual mode: `--expect-webgpu`
+ * scored WebGPU splats as present and gated them. Printed only when the flip
+ * mode actually reached its product criteria.
+ *
+ * @type {string}
+ */
+export const PRESENT_MARKER = "WEBGPU-SPLATS-PRESENT (C15-G3)";
+
+/**
  * The named blockers a default-mode run will accept as an ATTRIBUTION for the
  * absence. Each is an independently observable fact about the HEAD engine, and
  * each is a thing `C15-G2`/`C15-G3` has to remove before splats can appear.
@@ -76,18 +85,23 @@ export const ABSENCE_BLOCKERS = Object.freeze([
   // so this no longer fires. Kept in the vocabulary so its RETURN is
   // detectable — see STAGE.retiredBlockers.
   "primitive-show-undefined",
-  // `C15-G0`'s recorded break, and the one `C15-G3` closes: nothing in
-  // packages/ assigns any of `_splatData` / `_renderResources.splatBuffer` /
-  // `_splatCount`.
+  // RETIRED BY C15-G3. `C15-G0`'s recorded break: no splat attribute bytes
+  // reach the WebGPU renderer in ANY layout it can consume. Still nothing in
+  // packages/ assigns the legacy `_splatData` / `_renderResources.splatBuffer`
+  // / `_splatCount` trio — that was the point of Option B — but the renderer's
+  // production source is now `_packedSplatTextureData` (the WASM record,
+  // consumed verbatim), and the probe's predicate tests all four fields.
   "no-splat-data-fields",
   // RETIRED BY C15-G2. Before the scene-logic extraction the whole data
   // pipeline sat below the FR dispatch, so the shared snapshot state was empty
   // on the WebGPU leg. It now runs before the backend branch.
   "primitive-numsplats-zero",
-  // The FR ran far enough to allocate its cache and still found no data. Since
-  // C15-G2 this is the load-bearing one: it proves the renderer executed past
-  // its visibility guard and stopped at the missing splat buffer, which is
-  // exactly and only what `C15-G3` is left to fix.
+  // RETIRED BY C15-G3. The FR ran far enough to allocate its cache and still
+  // found no data. Between C15-G2 and C15-G3 this was the load-bearing
+  // attribution — the renderer executed past its visibility guard and stopped
+  // at the missing splat buffer. C15-G3 commits that buffer, so a healthy run
+  // reads the asset's splat count here. Its RETURN means the buffer commit
+  // stopped happening.
   "cache-splat-count-zero",
 ]);
 
@@ -106,17 +120,66 @@ export const ABSENCE_BLOCKERS = Object.freeze([
  *     different cause than the one this stage documents — also structural,
  *     because certifying it would be certifying something unmeasured.
  *
- * `C15-G3` moves `no-splat-data-fields` and `cache-splat-count-zero` into
- * `retired`, at which point `required` is empty and the probe must be run with
- * `--expect-webgpu` instead.
+ * `C15-G3` moved `no-splat-data-fields` and `cache-splat-count-zero` into
+ * `retired`, which empties `required`. An EMPTY `required` set is itself a
+ * contract: there is no absence this stage knows how to certify, so default
+ * mode structurally refuses (`webgpu:stage-requires-expect-webgpu`) and the
+ * run must use `--expect-webgpu`. That is deliberately not the same thing as
+ * "default mode is gone" — the probe stays dual-mode, and a default run still
+ * reports every blocker it observed, it just cannot call the result green.
+ *
+ * The stage is a PARAMETER of `evaluateWebgpuLeg` / `evaluateParity`
+ * (`options.stage`), not a hard-wired constant, so the both-directions
+ * enforcement stays executable against a non-empty stage after the shipped
+ * one goes empty. `gsplat-harness.spec.mjs` exercises the mechanism with a
+ * frozen `C15-G2` fixture and pins the SHIPPED stage separately.
  */
 export const STAGE = Object.freeze({
-  id: "C15-G2",
+  id: "C15-G3",
   retired: Object.freeze([
     "primitive-show-undefined",
     "primitive-numsplats-zero",
+    // RETIRED BY C15-G3. The renderer's data source is now the packed WASM
+    // payload (`_packedSplatTextureData`), consumed verbatim; the probe's
+    // blocker predicate tests that field too, so a production primitive no
+    // longer reports "no splat data reaches the renderer".
+    "no-splat-data-fields",
+    // RETIRED BY C15-G3. The cache commits `splatCount = _numSplats` from the
+    // packed payload, so a healthy run reads 27 / 286868 here, not 0.
+    "cache-splat-count-zero",
   ]),
-  required: Object.freeze(["no-splat-data-fields", "cache-splat-count-zero"]),
+  required: Object.freeze([]),
+  /**
+   * Whether the cross-backend pixel diff is a GATE at this stage, and why not.
+   *
+   * `C15-G3` ships the geometry: position, covariance and the RGBA8 base
+   * colour, decoded bit-identically to what WebGL samples. It does NOT ship
+   * spherical harmonics — the WGSL has no SH implementation at all
+   * (`C15-G0` §6a(B)), and BOTH gate tilesets are SH degree 3, so every splat
+   * carries a view-dependent colour term the WebGPU leg cannot reproduce yet.
+   * A cross-backend diff therefore measures the MISSING SH, not the record
+   * decode, and it cannot come in under the 1% / 3% thresholds no matter how
+   * correct this row is.
+   *
+   * So parity is MEASURED and PRINTED at this stage — the number is evidence,
+   * and its magnitude is the SH signal `C15-G5` has to remove — but it is not
+   * folded into the verdict. What gates `C15-G3` instead is the reference
+   * leg's own structure battery applied to the WEBGPU leg (added fraction,
+   * edge fraction, luminance spread, the 10x negative-control margin) plus
+   * splat-count equality, all of which `splatRenderCriteria` already computes
+   * for whichever leg claims presence.
+   *
+   * The thresholds in {@link ASSETS} are UNCHANGED and stay the terminal
+   * `C15-G8` gate. `C15-G5` flips `scored` to `true`; nothing else moves.
+   */
+  parity: Object.freeze({
+    scored: false,
+    deferredTo: "C15-G5",
+    reason:
+      "the WGSL has no spherical-harmonics term until C15-G5 and both gate " +
+      "tilesets are SH degree 3, so a cross-backend diff scores the missing " +
+      "view-dependent colour rather than the record decode this row ships",
+  }),
 });
 
 /**
@@ -563,7 +626,7 @@ export function evaluateReferenceLeg(lane, asset, predict = PREDICT) {
  * @param {object} lane
  * @param {object} asset
  * @param {object} [predict]
- * @param {{expectWebgpu?:boolean}} [options]
+ * @param {{expectWebgpu?:boolean, stage?:object}} [options]
  * @returns {{presence:ReturnType<typeof classifyWebgpuPresence>,
  *   criteria:(Record<string,boolean>|null), structural:string[],
  *   failures:string[], notes:string[]}}
@@ -575,6 +638,10 @@ export function evaluateWebgpuLeg(
   options = {},
 ) {
   const expectWebgpu = options.expectWebgpu === true;
+  // The stage is injectable so the both-directions blocker enforcement stays
+  // executable after the SHIPPED stage's `required` set goes empty. Production
+  // callers pass nothing and get {@link STAGE}.
+  const stage = options.stage ?? STAGE;
   const presence = classifyWebgpuPresence(lane, predict);
   const structural = precheckPreconditions(lane, predict)
     .filter((check) => !check.ok)
@@ -602,7 +669,26 @@ export function evaluateWebgpuLeg(
       );
       return { presence, criteria: null, structural, failures: [], notes: [] };
     }
-    // Absent — the expected state. Attribute it or report STRUCTURAL.
+    // Absent. At a stage with NO required blockers there is no absence left to
+    // certify — every named cause has been closed — so default mode refuses
+    // BEFORE it starts attributing. Falling through would report either
+    // `absence-unattributed` (if the probe saw nothing, which is now the
+    // healthy shape of a broken renderer) or `blocker-regression` (if it saw a
+    // retired one), and both name the wrong thing: what actually happened is
+    // that the run was scored under a contract the track has moved past.
+    if (stage.required.length === 0) {
+      structural.push(
+        `webgpu:stage-requires-expect-webgpu — ${stage.id} retired every named ` +
+          `blocker ([${stage.retired.join(", ")}]), so there is no absence this ` +
+          `stage can certify: WebGPU is expected to RENDER splats now. This ` +
+          `run measured none (${presence.why}; blockers observed: ` +
+          `[${recognizedBlockers(lane).join(", ") || "none"}]). Re-run with ` +
+          `--expect-webgpu, which scores that as a product FAIL instead of an ` +
+          `uncertifiable absence.`,
+      );
+      return { presence, criteria: null, structural, failures: [], notes: [] };
+    }
+    // Attribute it or report STRUCTURAL.
     if (lane?.featureRendererKind !== "ready") {
       structural.push(
         `webgpu:feature-renderer-readiness — predicted the GAUSSIAN_SPLAT ` +
@@ -627,21 +713,21 @@ export function evaluateWebgpuLeg(
     }
 
     // Stage contract, both directions. See STAGE.
-    const regressed = STAGE.retired.filter((name) => observed.includes(name));
+    const regressed = stage.retired.filter((name) => observed.includes(name));
     if (regressed.length > 0) {
       structural.push(
         `webgpu:blocker-regression — [${regressed.join(", ")}] was observed, ` +
-          `but ${STAGE.id} removed it. Its return means that row regressed, ` +
+          `but ${stage.id} removed it. Its return means that row regressed, ` +
           `not that the absence is "expected": the run would be certifying a ` +
           `blank canvas for a reason the track already closed.`,
       );
       return { presence, criteria: null, structural, failures: [], notes: [] };
     }
-    const missing = STAGE.required.filter((name) => !observed.includes(name));
+    const missing = stage.required.filter((name) => !observed.includes(name));
     if (missing.length > 0) {
       structural.push(
-        `webgpu:blocker-contract-stale — ${STAGE.id} expects the absence to be ` +
-          `attributable to [${STAGE.required.join(", ")}], but [${missing.join(
+        `webgpu:blocker-contract-stale — ${stage.id} expects the absence to be ` +
+          `attributable to [${stage.required.join(", ")}], but [${missing.join(
             ", ",
           )}] was not observed (saw [${observed.join(", ") || "none"}]). ` +
           `Either the cause moved or a later row landed; certifying this ` +
@@ -657,8 +743,8 @@ export function evaluateWebgpuLeg(
       failures: [],
       notes: [
         `${ABSENT_MARKER} — ${presence.why}; feature renderer ready; ` +
-          `blockers observed: ${observed.join(", ")} (${STAGE.id} contract: ` +
-          `requires [${STAGE.required.join(", ")}], forbids [${STAGE.retired.join(
+          `blockers observed: ${observed.join(", ")} (${stage.id} contract: ` +
+          `requires [${stage.required.join(", ")}], forbids [${stage.retired.join(
             ", ",
           )}]). This is the documented baseline the rest of the track is ` +
           `measured against.`,
@@ -686,12 +772,24 @@ export function evaluateWebgpuLeg(
     };
   }
   const criteria = splatRenderCriteria(lane, asset, predict);
+  const failures = namedFailures("webgpu", criteria);
   return {
     presence,
     criteria,
     structural: [],
-    failures: namedFailures("webgpu", criteria),
-    notes: [],
+    failures,
+    // C15-G3 — when the flip mode passes, say so with a greppable marker. The
+    // criteria list is printed with it, because THAT is what `C15-G3` gates on
+    // (see STAGE.parity): the reference leg's own structure battery, applied
+    // to the WebGPU leg, plus splat-count equality.
+    notes:
+      failures.length === 0
+        ? [
+            `${PRESENT_MARKER} — ${presence.why}; every criterion the ` +
+              `reference leg is held to now holds on the WEBGPU leg: ` +
+              `${Object.keys(criteria).join(", ")}.`,
+          ]
+        : [],
   };
 }
 
@@ -703,11 +801,12 @@ export function evaluateWebgpuLeg(
  *
  * @param {{expectWebgpu:boolean, referenceBlind:boolean,
  *   presenceState:SplatPresenceState, mismatchFraction:(number|null|undefined),
- *   asset:object}} input
+ *   asset:object, stage?:object}} input
  * @returns {{scored:boolean, pass:(boolean|null), threshold:(number|null),
  *   mismatchFraction:(number|null), structural:(string|null), reason:string}}
  */
 export function evaluateParity(input) {
+  const stage = input?.stage ?? STAGE;
   const base = {
     scored: false,
     pass: null,
@@ -742,6 +841,24 @@ export function evaluateParity(input) {
       structural: "parity:no-diff-measured",
       reason:
         "both legs claim splats but no cross-backend diff was produced; the comparison never happened",
+    };
+  }
+  // C15-G3 — the diff is still REQUIRED to exist (the check above stays
+  // structural) and is reported, but it is not a gate while the WGSL has no
+  // spherical-harmonics term. See STAGE.parity for why, and why leaving the
+  // thresholds untouched matters: `C15-G5` flips `scored` and the SAME numbers
+  // become the gate again.
+  if (stage.parity?.scored === false) {
+    return {
+      ...base,
+      mismatchFraction: input.mismatchFraction,
+      reason:
+        `measured mismatch ${pct(input.mismatchFraction)} — RECORDED, NOT ` +
+        `GATED at ${stage.id}: ${stage.parity.reason}. The ` +
+        `${pct(input.asset.parityThresholdFraction)} threshold for ` +
+        `${input.asset.name} is unchanged and becomes the gate again at ` +
+        `${stage.parity.deferredTo}. What gates this stage instead is the ` +
+        `WebGPU leg's own structure battery + count equality.`,
     };
   }
   const threshold = input.asset.parityThresholdFraction;
