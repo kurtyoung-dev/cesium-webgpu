@@ -596,9 +596,11 @@ test("both toggles are registered in AtmosphericConditions, default ON", () => {
   const registry = conditions.slice(jsdocAt, getterAt);
   assert.ok(registry.includes("enableEarthshinePhase"));
   assert.ok(registry.includes("enableSoftTerminator"));
-  // The pre-existing master toggle is UNCHANGED by this row — C12-21 is
-  // inert at defaults and says so.
-  assert.match(conditions, /enableEarthshine: false,/);
+  // Maintainer ruling 2026-08-06 (R5): the master toggle now defaults ON.
+  // Both original reasons for the FALSE default (WebGPU-only, phase-
+  // backwards) were removed by C12-21's batch, so the phase-correct term is
+  // live on both backends at defaults and C12-21 is no longer inert.
+  assert.match(conditions, /enableEarthshine: true,/);
 });
 
 // ───────────────────────────────────────────────────────────────────────────

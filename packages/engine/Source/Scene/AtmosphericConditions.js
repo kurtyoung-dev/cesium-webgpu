@@ -435,14 +435,13 @@ function buildLighting(globe) {
   //    peaks at new moon and is exactly zero at full; the shipped term was a
   //    constant, i.e. physically backwards. Off passes a scale of exactly
   //    1.0 — the historical constant, not an approximation of it.
-  //    HONEST NOTE: this row is arithmetically INERT at engine defaults,
-  //    because its master toggle `enableEarthshine` defaults to FALSE. It
-  //    becomes live the instant an application opts in. The same batch also
-  //    gives earthshine a GLSL implementation for the first time (it had
-  //    been WGSL-only, a standing Principle-5 gap the C11-176b row flagged),
-  //    so whether `enableEarthshine` should now default ON is a real
-  //    maintainer question — recorded in the C12-21 queue row, NOT decided
-  //    here.
+  //    The same batch also gave earthshine a GLSL implementation for the
+  //    first time (it had been WGSL-only, a standing Principle-5 gap the
+  //    C11-176b row flagged). MAINTAINER RULING 2026-08-06 (R5): with both
+  //    original reasons for the FALSE default removed (WebGPU-only,
+  //    phase-backwards), `enableEarthshine` now defaults ON, making the
+  //    phase-correct term live on BOTH backends at defaults. Apps opt out
+  //    the same way they previously opted in.
   //
   //  - enableSoftTerminator (C12-22): the Sun subtends an angular RADIUS of
   //    ~0.2664 deg (4.649e-3 rad) from the Moon, so the terminator is a
@@ -461,7 +460,7 @@ function buildLighting(globe) {
     enableSunLight: true,
     enableMoonLight: true,
     enableMoonPhase: true,
-    enableEarthshine: false,
+    enableEarthshine: true,
     enableEarthshinePhase: true,
     enableSoftTerminator: true,
     enableDualLightAtmosphere: true,

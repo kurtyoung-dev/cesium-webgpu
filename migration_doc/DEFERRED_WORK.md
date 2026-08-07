@@ -159,6 +159,20 @@ endpoints and the Kp / OVATION schema claims that `C15-00`'s own exit gate asks 
 (they are unverifiable offline and were flagged as such at authoring). Do NOT start
 C15-01+ until C12 closes, so the active campaign count stays bounded.
 
+**R5 (added 2026-08-06 evening) - `enableEarthshine` DEFAULTS ON.** Batch 858
+removed both original reasons for the FALSE default (the term was WebGPU-only and
+phase-backwards; it is now lockstep on both backends and phase-correct), and the
+maintainer ruled the flip the same day. `C12-21` is therefore no longer inert at
+engine defaults. Landed with the ruling; Edge acceptance rides the already-owed
+C12-21/22 moon run. Apps opt out via `lighting.enableEarthshine = false`.
+
+**R6 (added 2026-08-06 evening) - GAUSSIAN SPLATS ON WEBGPU queued into the C15
+queue document.** Maintainer report: gsplats do not work AT ALL on the WebGPU
+backend today. Scoping lane dispatched; rows live in
+[`QUEUE_2026-08-02_CAMPAIGN15.md`](QUEUE_2026-08-02_CAMPAIGN15.md) §GSPLAT. The R4
+hold on C15-01+ (aurora build rows) is UNCHANGED — the gsplat lane is a separate
+track sharing the queue document, not a lift of that hold.
+
 ### R4 EXECUTED 2026-08-06 - SWPC spot-check done, `C15-00` exit gate now MEASURED
 
 Full evidence record: [`QUEUE_2026-08-02_CAMPAIGN15.md`](QUEUE_2026-08-02_CAMPAIGN15.md)

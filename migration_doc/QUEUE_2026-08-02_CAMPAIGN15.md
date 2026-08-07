@@ -465,3 +465,48 @@ Campaign 15 is independent of atmospheric T/Td/RH ingest, but it may not
 duplicate Campaign 12's shared sky-brightness work or Campaign 13's generic
 weather-tile ownership. It also grants no authority to start Campaign 14:
 Dynamic Ocean & Wind remains separately planned and blocked by O5.
+
+## 6. GSPLAT track — Gaussian splats on WebGPU (maintainer-queued 2026-08-06, ruling R6)
+
+**Maintainer directive (2026-08-06 evening):** queue onto Campaign 15 the work needed
+to get Gaussian splats working on the WebGPU backend. Maintainer report: **they do
+not work at all today.** This track shares the C15 queue DOCUMENT but is a separate
+lane from the aurora theme; the R4 hold on `C15-01..08` (aurora build rows wait for
+C12 closure) is UNCHANGED by this addition.
+
+**Known state at queueing time (from `FEATURE_INVENTORY.md` §B + DEFERRED_WORK — the
+scoping row must re-verify all of it at HEAD):**
+
+- `WebGPUGaussianSplatRenderer` EXISTS and is probe-verified as a rendering path
+  (back-to-front sort consumed via a sorted-index storage buffer, log-depth producer,
+  Batch 288) — but **only under `probe-splat-sort.mjs`'s SYNTHETIC `_splatData`**.
+- **The root cause on record is `NEW-WEBGPU-SPLAT-DATA-PRODUCER` (C10-04
+  STOP-AND-BLOCK, 2026-07-18):** `GaussianSplatPrimitive.update` returns to the WebGPU
+  feature renderer BEFORE the WebGL data-commit path runs, and nothing in-tree assigns
+  `primitive._splatData` / `_renderResources.splatBuffer` — the renderer is
+  SCAFFOLDED-not-SHIPPED for production data. This matches the maintainer's
+  'do not work at all'.
+- Known adjacent open items that a fix will hit: `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE`
+  (single-pack command occluded by opaque geometry in multi-frustum scenes),
+  `NEW-GS-CLASSIFICATION-DEPTH` (translucent tiles classify against globe-depth, not
+  splat-depth), the GPU radix-sort backlog item (BACKLOG-§11), and the upstream
+  v1.144-era splat worker pipeline (`gaussianSplatSorter` / `TextureGenerator`
+  workers, SPZ loader) whose outputs the WebGPU path must consume without forking
+  their formats.
+
+### Ledger
+
+| ID | Task | Status |
+| --- | --- | --- |
+| `C15-G0` | Scoping + root-cause verification: reproduce the production no-render, verify the `NEW-WEBGPU-SPLAT-DATA-PRODUCER` mechanism at HEAD, map the full WebGL splat data path (loader -> workers -> primitive -> renderer) and specify the WebGPU producer design + task breakdown `C15-G1..Gn` with exit gates | **DISPATCHED 2026-08-06** |
+| `C15-G1..Gn` | Authored by `C15-G0` — do not pre-invent them here | pending `C15-G0` |
+
+**`C15-G0` exit gate:** a written scoping report in this section that (a) names the
+exact break with file:line evidence at HEAD, (b) confirms or refutes each known-state
+bullet above, (c) produces the `C15-G1..Gn` rows sized S/M/L with deps and per-row
+falsifiable exit gates (a real .spz/3D-Tiles splat asset rendering on WebGPU with a
+WebGL-parity pixel gate is the track's terminal gate), and (d) states what the track
+does NOT cover. Priority relative to aurora rows: the maintainer queued gsplats as
+wanted-working; the aurora hold (R4) does not apply to this track, so `C15-G*` rows
+may execute while `C15-01+` stay held.
+
