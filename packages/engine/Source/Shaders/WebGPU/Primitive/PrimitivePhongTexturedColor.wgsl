@@ -353,8 +353,12 @@ fn computeShadowFactor(eyePos: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
 
     let shadowPos = effects.shadowMatrix * vec4<f32>(eyePos, 1.0);
+    // Already WebGPU shadow-texture space — scale/bias from
+    // `ShadowMap.getViewProjection`, v-origin flip from
+    // `toWebGPUShadowReceiveMatrix` (`WebGPUShadowReceiveTransform.ts`).
+    // NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD.
     let coord = shadowPos.xyz / shadowPos.w;
-    let uv = vec2<f32>(coord.x * 0.5 + 0.5, 1.0 - (coord.y * 0.5 + 0.5));
+    let uv = coord.xy;
     let texelSize = 1.0 / effects.shadowMapSize;
 
     var visibility: f32;

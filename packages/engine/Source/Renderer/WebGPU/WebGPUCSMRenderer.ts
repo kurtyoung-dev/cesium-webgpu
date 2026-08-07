@@ -195,6 +195,7 @@ export interface CSMCastPassHost {
   }[];
   _castDispatches: number;
   _shadowContentState: "uninitialized" | "casters" | "empty";
+  _shadowContentFrame: number | undefined;
   _cascadeCastBuffers: GPUBuffer[] | null;
   _cascadeCastBufferData: Float32Array[] | null;
   _cascadeCastBindGroups: Map<string, GPUBindGroup>[] | null;
@@ -355,6 +356,13 @@ export class WebGPUCSMRenderer {
   public _shadowContentState: "uninitialized" | "casters" | "empty" =
     "uninitialized";
   /**
+   * Frame number on which casters were last rendered into the cascade array.
+   * Read by `shouldClearShadowCastTarget` so a caster-less re-entry on the
+   * SAME frame cannot wipe depth the color pass is about to sample
+   * (`NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD`).
+   */
+  public _shadowContentFrame: number | undefined = undefined;
+  /**
    * Shared pipeline cache passed to the cross-module cast-pipeline
    * factory. Holds the compiled per-vertex-layout pipelines keyed by
    * layout name. Separate from `shadowMap._webgpuCache` so CSM and
@@ -473,6 +481,7 @@ export class WebGPUCSMRenderer {
   initialize(device: GPUDevice): void {
     this._device = device;
     this._shadowContentState = "uninitialized";
+    this._shadowContentFrame = undefined;
 
     // Texture array: 4 layers of depth32float.
     this._cascadeTexture = device.createTexture({
@@ -910,6 +919,7 @@ export class WebGPUCSMRenderer {
       mode?: number;
       verticalExaggeration?: number;
       verticalExaggerationRelativeHeight?: number;
+      frameNumber?: number;
     },
     context?: {
       getGPUCullerForCascade?: (idx: number) => unknown;
@@ -1134,6 +1144,7 @@ export class WebGPUCSMRenderer {
     this._cascadeCastBindGroups = null;
     this._sharedPipelineCache = null;
     this._shadowContentState = "uninitialized";
+    this._shadowContentFrame = undefined;
     this._device = null;
   }
 }

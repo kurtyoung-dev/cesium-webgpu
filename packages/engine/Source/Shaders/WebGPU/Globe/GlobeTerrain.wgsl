@@ -3169,8 +3169,16 @@ fn globeComputeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
 fn globeComputeShadowFactor(positionEC: vec3<f32>) -> f32 {
   if (effects.shadowDarkness >= 1.0) { return 1.0; }
   let shadowPos = effects.shadowMatrix * vec4<f32>(positionEC, 1.0);
+  // `effects.shadowMatrix` lands DIRECTLY in WebGPU shadow-texture space —
+  // `ShadowMap.getViewProjection` already folds in the NDC-to-texture
+  // scale/bias and `toWebGPUShadowReceiveMatrix` applies the v-origin flip on
+  // the CPU (see `WebGPUShadowReceiveTransform.ts`). Re-applying `*0.5 + 0.5`
+  // here squeezed every lookup into the wrong quadrant, which is why the globe
+  // received no sun shadow at all (NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD).
+  // The CSM path below is different on purpose: it is handed a RAW clip-space
+  // cascade VP and does the full remap itself.
   let coord = shadowPos.xyz / shadowPos.w;
-  let uv = vec2<f32>(coord.x * 0.5 + 0.5, 1.0 - (coord.y * 0.5 + 0.5));
+  let uv = coord.xy;
   let texelSize = 1.0 / effects.shadowMapSize;
   // Sample shadow UNCONDITIONALLY to satisfy uniform control flow
   // requirement. textureSampleCompareLevel uses explicit LOD 0 so it

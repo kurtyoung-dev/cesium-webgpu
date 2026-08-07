@@ -48,6 +48,7 @@ import defined from "../../Core/defined.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import { prepareTerrainShadowCastCommandUniforms } from "./WebGPUGlobeSurfaceTileBuffers.js";
 import { getOrCreateShadowCastBindGroup } from "./WebGPUShadowCastBindGroupCache.js";
+import { shouldClearShadowCastTarget } from "./WebGPUShadowCastTargetState.js";
 import {
   _getOrCreateCastPipeline,
   _inferShadowLayoutKey,
@@ -94,6 +95,12 @@ interface CSMTerrainFrameState {
   mode?: number;
   verticalExaggeration?: number;
   verticalExaggerationRelativeHeight?: number;
+  /**
+   * Identifies the frame being encoded so a caster-less re-entry can be told
+   * apart from a real "casters went away" transition. See
+   * `WebGPUShadowCastTargetState`.
+   */
+  frameNumber?: number;
 }
 
 interface CommandSphereScratch {
@@ -376,7 +383,13 @@ export function renderCSMCastPass(
     return;
   }
   if (castCommands.length === 0) {
-    if (host._shadowContentState === "empty") {
+    if (
+      !shouldClearShadowCastTarget(
+        host._shadowContentState,
+        host._shadowContentFrame,
+        frameState?.frameNumber,
+      )
+    ) {
       return;
     }
     for (let ci = 0; ci < host._cascadeCount; ci++) {
@@ -823,4 +836,5 @@ export function renderCSMCastPass(
     pass.end();
   }
   host._shadowContentState = "casters";
+  host._shadowContentFrame = frameState?.frameNumber;
 }

@@ -1565,11 +1565,13 @@ fn computeMotionVectorScreenSpace(input: FragmentInput) -> vec2<f32> {
 
 fn sampleSingleShadow(positionEC: vec3<f32>) -> f32 {
   let shadowPos = effects.shadowMatrix * vec4<f32>(positionEC, 1.0);
+  // Already WebGPU shadow-texture space — the NDC-to-texture scale/bias comes
+  // from `ShadowMap.getViewProjection` and the v-origin flip from
+  // `toWebGPUShadowReceiveMatrix` (`WebGPUShadowReceiveTransform.ts`). A second
+  // `*0.5 + 0.5` here sampled the wrong quadrant
+  // (NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD).
   let coord = shadowPos.xyz / shadowPos.w;
-  let uv = vec2<f32>(
-    coord.x * 0.5 + 0.5,
-    1.0 - (coord.y * 0.5 + 0.5),
-  );
+  let uv = coord.xy;
   let outOfBounds =
     uv.x < 0.0 || uv.x > 1.0 ||
     uv.y < 0.0 || uv.y > 1.0 ||

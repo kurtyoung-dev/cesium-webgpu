@@ -18,6 +18,8 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { prepareTerrainShadowCastCommandUniforms } from "./WebGPUGlobeSurfaceTileBuffers.js";
 import { getOrCreateShadowCastBindGroup } from "./WebGPUShadowCastBindGroupCache.js";
+import { shouldClearShadowCastTarget } from "./WebGPUShadowCastTargetState.js";
+import { toWebGPUShadowReceiveMatrix } from "./WebGPUShadowReceiveTransform.js";
 // C11-90 — the shadow cast path bakes the SAME topology axis as the color
 // path, so it reads it from the same home instead of restating the format.
 import {
@@ -1301,13 +1303,31 @@ function getShadowMapResources(shadowMap) {
   const isPointLight =
     shadowMap._isPointLight === true && cache.isCube === true;
 
+  // `_shadowMapMatrix` already lands in GL-origin shadow TEXTURE space (see
+  // `WebGPUShadowReceiveTransform`); only the image origin still differs, and
+  // the conversion is cached per shadow map so concurrent callers never alias
+  // one module-level scratch.
+  let matrix = Matrix4.IDENTITY;
+  if (defined(shadowMap._shadowMapMatrix)) {
+    cache.webgpuReceiveMatrix ??= new Matrix4();
+    matrix = toWebGPUShadowReceiveMatrix(
+      shadowMap._shadowMapMatrix,
+      cache.webgpuReceiveMatrix,
+    );
+  }
+
   return {
     texture: cache.depthTexture,
     view: cache.depthTextureView,
     sampler: cache.comparisonSampler,
-    matrix: shadowMap._shadowMapMatrix || Matrix4.IDENTITY,
+    matrix,
     size: cache.size ?? SHADOW_MAP_SIZE,
-    darkness: shadowMap.darkness ?? 0.3,
+    // NEW-WEBGPU-SHADOW-DARKNESS-FADE-NOT-APPLIED — WebGL's receive uniform
+    // reads the FADED `_darkness` (`Scene/ShadowMap.js` `combineUniforms`),
+    // which `ShadowMapComputations` ramps to 1.0 (= no darkening) as the light
+    // approaches and crosses the horizon. Reading the public, unfaded
+    // `darkness` kept WebGPU darkening at 0.3 through the terminator.
+    darkness: shadowMap._darkness ?? shadowMap.darkness ?? 0.3,
     softShadows: shadowMap.softShadows ?? false,
     // C-R10-POINT-LIGHT-RECEIVE additions. Undefined for directional /
     // spot shadow maps so existing callers can continue ignoring them.
@@ -1341,7 +1361,13 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
   }
   const hasCasters = defined(castCommands) && castCommands.length > 0;
   if (!hasCasters) {
-    if (cache.shadowContentState === "empty") {
+    if (
+      !shouldClearShadowCastTarget(
+        cache.shadowContentState,
+        cache.shadowContentFrame,
+        frameState?.frameNumber,
+      )
+    ) {
       return false;
     }
     if (shadowMap._isPointLight) {
@@ -1438,6 +1464,7 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
       castCommands,
     );
     cache.shadowContentState = "casters";
+    cache.shadowContentFrame = frameState?.frameNumber;
     return true;
   }
 
@@ -1483,6 +1510,7 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
   );
   pass.end();
   cache.shadowContentState = "casters";
+  cache.shadowContentFrame = frameState?.frameNumber;
   return true;
 }
 

@@ -1738,16 +1738,26 @@ export class WebGPUSceneRenderer {
     // (Batch 149). Inert today — Batch 152+ wires actual consumers.
     this._dispatchClusteredLighting(config);
 
-    // --- Shadow cast pass (once per frame, before multi-frustum rendering) ---
-    // Renders scene from light's perspective into the shadow map depth texture.
-    if (!config.picking) {
-      this._cpuPassProfiler.beginPass("shadow");
-      try {
-        context.executeShadowMapCastCommands(scene);
-      } finally {
-        this._cpuPassProfiler.endPass("shadow");
-      }
-    }
+    // --- Shadow cast pass ---
+    // NOT dispatched here. `SceneRenderer.executeShadowMapCastCommands` is the
+    // canonical, backend-neutral site: it is the ONLY place that populates
+    // `ShadowMap.passes[j].commandList` (light-frustum + per-cascade culling of
+    // `shadowState.casterCommands`), and it delegates to
+    // `context.executeShadowMapCastCommands` immediately afterwards, before
+    // `executeCommands` is ever reached.
+    //
+    // NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD: this used to call the context
+    // dispatch a SECOND time. `WebGPUContext.executeShadowMapCastCommands`
+    // empties the per-pass command lists when it finishes, so the second entry
+    // always collected zero casters — and once Batch 775 gave the caster-less
+    // branch a transition clear, that second entry wiped the depth the first
+    // entry had just written, on the same command encoder, before the color
+    // pass sampled it. Every WebGPU receiver then read an all-far depth map and
+    // reported "fully lit".
+    //
+    // The `shadow` CPU-pass-profiler bucket goes with it: the dispatch no longer
+    // happens inside the renderer's frame. `shouldClearShadowCastTarget` keeps
+    // the wipe impossible even if some future path re-enters the dispatch.
 
     // Opaque near offset to avoid tearing between adjacent frustums
     const opaqueFrustumNearOffset: number =

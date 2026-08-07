@@ -858,11 +858,19 @@ export class WebGPUGlobeSurfaceRenderer {
     const receivesShadows =
       shadowModeRuntime.receiveShadows(tileProvider.shadows) &&
       frameState.globeTranslucencyState?.translucent !== true;
+    // NEW-WEBGPU-GLOBE-RECEIVE-IGNORES-OUTOFVIEW — an out-of-view map (the
+    // below-horizon cull in `ShadowMap.checkVisibility`) is not cast into this
+    // frame, so sampling it would darken the night side from a stale, day-lit
+    // depth target. WebGL skips the receive derivation for the same reason
+    // (`Scene/SceneRenderer.js` `executeShadowMapCastCommands` / the per-command
+    // receive swap), and the WebGPU CAST dispatch already skips on it.
+    const candidateShadowMap = shadowState?.lightShadowMaps?.[0];
     const receiveShadowMap =
       receivesShadows &&
       shadowState?.lightShadowsEnabled &&
-      shadowState?.lightShadowMaps?.[0]
-        ? shadowState.lightShadowMaps[0]
+      candidateShadowMap &&
+      candidateShadowMap.outOfView !== true
+        ? candidateShadowMap
         : undefined;
 
     // CSM Slice 1 — resolve the context's cascaded shadow map renderer

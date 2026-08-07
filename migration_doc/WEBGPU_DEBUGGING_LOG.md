@@ -24,6 +24,82 @@
 
 ---
 
+## NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD — the cast pass wrote the shadow depth, then a duplicate dispatch cleared it on the same encoder, before the color pass; and the receive matrix was NDC-to-texture biased twice (2026-08-06)
+
+**Files.** `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts` (duplicate dispatch
+removed), new `packages/engine/Source/Renderer/WebGPU/WebGPUShadowCastTargetState.ts`, new
+`packages/engine/Source/Renderer/WebGPU/WebGPUShadowReceiveTransform.ts`,
+`WebGPUShadowMapRenderer.js`, `WebGPUCSMCastPass.ts`, `WebGPUCSMRenderer.ts`,
+`WebGPUEffectsBindGroup.js`, `WebGPUGlobeSurfaceRenderer.ts`, and the four inlined receivers
+`Shaders/WebGPU/{Globe/GlobeTerrain,Model/ModelPBRComplete,Primitive/PrimitivePhongColor,Primitive/PrimitivePhongTexturedColor}.wgsl`,
+plus `Tools/visual-regression/webgpu-shadow-receive-contract.spec.mjs` (new, 18 tests).
+
+**Symptom.** First-ever run of `probe-sun-shadow-gate.mjs` (Batch 845) against a WORKING WebGL
+reference: WebGL band-mean drop 20.17/255 with 58,728 darkened pixels; WebGPU **0.00 and 0**.
+Identical in both lighting modes, zero console and zero device errors, and the manifest's own
+reach probe showed the machinery apparently healthy — `lightShadowsEnabled: true`,
+`lightShadowMaps: 1`, `casterCommands: 1`, `outOfView: false`,
+`darkness(public/effective) 0.3/0.3`.
+
+**The misleading datum.** WebGPU's `passCommandLists` read `[0,0,0,0]` against WebGL's
+`[1,1,1,1]`, which looks exactly like "no casters reached the map". It is not:
+`WebGPUContext.executeShadowMapCastCommands` empties those lists when it finishes, so a
+post-frame read on WebGPU is always zero. `c10-10-final-report.json` (2026-07-18) records the
+same `[0,0,0,0]` alongside 25,192 umbra pixels — proof the lists being empty afterwards says
+nothing about whether the cast ran. Chasing that reading first would have led straight past the
+real cause.
+
+**Root cause, link 1 (the exact zero).** The WebGPU cast dispatch is entered twice per frame:
+once at `Scene/SceneRenderer.js:993`, immediately after the only loop that fills
+`ShadowMap.passes[j].commandList` (reached from `ViewportExecutor:481`), and again at
+`WebGPUSceneRenderer.ts:1746` inside `executeCommands` (reached from `ViewportExecutor:499`,
+strictly later). Because the context empties the lists at the end of the first entry, the second
+always collected zero casters. Harmless — until **Batch 775 (faa3ee6f65, 2026-08-01)** gave the
+caster-less branch a transition clear so a scene losing its casters would stop showing a stale
+shadow. From that commit on, the second entry opened a `depthLoadOp: "clear"` pass on the depth
+target the first entry had just written, on the same command encoder, before the color pass.
+Every receiver read an all-far depth map and returned visibility 1.0, i.e.
+`mix(0.3, 1.0, 1.0) = 1.0`. A clear-only pass is valid WebGPU, so nothing errored. The surviving
+call at `WebGPUSceneRenderer.ts:1746` is the first false link: it went redundant at Batch 296
+(which hoisted the population + delegate to the backend-neutral site) and destructive at 775.
+
+**Root cause, link 2 (why the single map would still have been ~3% of WebGL).**
+`ShadowMap._shadowMapMatrix` is already in shadow TEXTURE space — `getViewProjection` folds in
+`scaleBiasZeroToOneMatrix` — so after the divide it reads `x = 0.5*ndc.x + 0.5`,
+`y = 0.5*ndc.y + 0.5` (GL bottom-origin), `z = ndc.z`. All four WebGPU single-map receivers then
+re-applied the FULL NDC-to-UV remap on top of it, collapsing every lookup into `u in [0.5, 1]`,
+`v in [0, 0.5]` — wrong quadrant, mirrored. The cascaded path was never affected because it is
+handed a raw clip-space cascade VP and does the remap itself. That asymmetry is visible in
+`c10-10-final-report.json`: CSM cell 25,192 umbra pixels vs WebGL 28,485 (ratio 0.88), single-map
+cell **876** (ratio 0.031) — a 32x deficit that sat under the probe's `umbraPx > 200` threshold
+and was never questioned.
+
+**Fix.** Remove the duplicate dispatch. Add `shouldClearShadowCastTarget()` and a
+`shadowContentFrame` stamp so a caster-less re-entry on the same frame can never wipe a populated
+target again from any caller, while the genuine transition clear is preserved. Move the
+NDC-origin conversion to one CPU helper, `toWebGPUShadowReceiveMatrix()` (a pre-divide v flip),
+returned from `getShadowMapResources` and cached per shadow map; the four receivers now sample
+`coord.xy` directly. Two WebGL-parity corrections rode along and are pinned by the same spec:
+the receive darkness now reads the FADED `shadowMap._darkness` that WebGL's `combineUniforms`
+reads, and the globe receive gate now honours `outOfView` like the cast dispatch already did.
+Neither contributed to the zero.
+
+**Verification.** `webgpu-shadow-receive-contract.spec.mjs` rebuilds `_shadowMapMatrix` from the
+real `Matrix4` / `OrthographicOffCenterFrustum` / `ClipSpaceConvention` modules and proves the
+shipped transform reproduces the exact texel the cast pass wrote (< 1e-9 on five in-frustum
+samples); its mutation tests re-introduce the double bias, the dropped v flip, the dropped
+same-frame guard and the removed second dispatch and require each to be detected. Full suite
+1472 pass / 4 fail (the 4 being the pre-existing bare-worktree `ERR_MODULE_NOT_FOUND` specs).
+**Browser acceptance (`probe-sun-shadow-gate.mjs` gates C and E) is still owed** — this batch is
+source-proven, not pixel-proven.
+
+**Lesson.** A per-frame diagnostic that a backend CLEARS as part of its normal path
+(`passCommandLists`) cannot be read as evidence about that frame — check whether the consumer
+resets it before treating a zero as a finding. And a threshold expressed as an absolute floor
+(`umbraPx > 200`) instead of a cross-backend ratio let a 32x parity deficit ship green for weeks.
+
+---
+
 ## NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — the 120 m mist band was measured from a datum 10-21 km below the ground, so `exp()` underflowed and the composite copied the scene bit-for-bit (2026-08-06)
 
 **Files.** `packages/engine/Source/Shaders/WebGPU/Compute/VolumetricFog.wgsl`

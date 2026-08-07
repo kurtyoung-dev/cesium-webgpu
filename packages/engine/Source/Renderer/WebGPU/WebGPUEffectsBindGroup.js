@@ -1286,7 +1286,10 @@ function createEffectsBindGroup(device, frameState, options) {
         farPlane,
         nearPlane: 1.0,
         depthBias: shadowMap._pointBias?.depthBias ?? 0.005,
-        darkness: shadowMap.darkness ?? 0.3,
+        // NEW-WEBGPU-SHADOW-DARKNESS-FADE-NOT-APPLIED — read the FADED
+        // `_darkness` that WebGL's `combineUniforms` reads, not the public
+        // unfaded property. Same correction as `getShadowMapResources`.
+        darkness: shadowMap._darkness ?? shadowMap.darkness ?? 0.3,
         // Batch 63 — soft point-light shadows. ShadowMap.softShadows is
         // the canonical opt-in flag (mirrors the WebGL `softShadows`
         // path); when set we hand the model FS a 1.5-texel PCF radius,
