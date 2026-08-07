@@ -37,6 +37,70 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-08-06 - Gate B acceptance: metar RED 3/3 once pinned, with TWO live readings
+
+### C13-GATE-B-METAR-CHANNELS-NO-EFFECT
+
+**Status:** OPEN / BLOCKING `C13-GATE-B`. **Do NOT record this as an engine defect
+yet, and do NOT record it as an instrument defect either** - two readings survive the
+evidence and separating them is the next concrete work.
+
+**The acceptance pass (Batch 855's pinning, one build, 3 runs per probe):**
+
+| probe | runs | verdict |
+|---|---|---|
+| `edr-mock` | 3/3 | GREEN |
+| `wcs` | 3/3 | GREEN |
+| `metar` | 3/3 | **RED** |
+| `ingest` | 3/3 | GREEN |
+| `seam-poles` | 3/3 | PASS |
+
+Four of five survive their pinning cleanly and their scored values are byte-identical
+run to run (`edr-mock` per-location deltas exactly `0.000`, sweep-mean delta `0.0000`;
+`west 0.389 / east 1.000` still separates, so the pin did not flatten the signal it
+was protecting). `time` needed no re-run - see Batch 855 for why its GREEN is
+trustworthy by construction.
+
+**The failure is the probe's gate 4, and the instrument around it is now sound.**
+`metar`'s own determinism control reads max per-location `0.0000` (tol 0.004), mean
+delta `0.0000` (tol 0.002), summed `|delta| 0.0000` against a 0.015 tolerance - and
+that control scores THE SAME QUANTITY gate 4 scores against 0.04. Gate 4 measures
+`sum|ch1-ch0| = 0.0019`, i.e. turning the G/B/A weather channels ON does not move the
+deck. Gates 1, 2, 3, 5 and 6 all pass, including IDW spatial variation (cloudy OVC
+`1.000` vs clear SKC `0.000`), so the provider is fetched, parsed and rasterized.
+
+**Reading A - the previous GREEN was manufactured, and this is the true state.**
+Batch 855 predicted this outcome in advance and in writing: gate 4 sums `|ch1-ch0|`
+across two sweeps taken at DIFFERENT WALL-CLOCK TIMES, so any drift - arriving tiles,
+the deck advecting at the 15 m/s default wind, tier-path temporal/jitter - ADDED to
+the scored sum. Remove the drift and the signal it was standing in for is not there.
+The prediction preceding the measurement is what makes this reading strong.
+
+**Reading B - the sampled locations have no headroom, so nothing COULD move.**
+`ch1` reads `0.997, 1.000, 1.000, 1.000, 1.000, 1.000, 0.999` and `ch0` reads
+`0.997, 1.000, 1.000, 1.000, 1.000, 1.000, 0.997`. **Five of seven locations sit at
+exactly 1.000 in BOTH configurations** - saturated coverage. A metric whose ends are
+byte-identical is blind, and this campaign has already been bitten by precisely that
+shape twice. Under this reading the channels may well reach the shader and the probe
+cannot see it.
+
+**Discriminator (cheap, one run).** Re-aim gate 4's seven locations at partial
+coverage - target `ch0` in roughly `0.3..0.7` - and re-run. If the channels reach the
+shader, `sum|delta|` must rise well clear of 0.04 at unsaturated sample points; if it
+stays at ~0.002 with real headroom present, reading A is confirmed and the G/B/A
+channel path is a genuine engine defect. **Do NOT lower the 0.04 bar** - it was
+authored against an expected channel effect, and fitting it to 0.0019 produces a gate
+that cannot fail.
+
+**Consequences to record now:**
+
+- `C13-GATE-B` cannot close. Four legs are certified; `metar` is not.
+- **`C13-07`'s promotion to COMPLETE is UNBLOCKED**, contrary to the hold placed on it
+  earlier today: its pixel evidence is `probe-weather-seam-poles.mjs`, which was
+  false-green SUSCEPTIBLE, but it has now re-run PASS 3/3 under the pin. The
+  susceptibility was real; the verdict survived it.
+- `metar`'s previously logged absolute numbers are not baselines.
+
 ## 2026-08-06 - INSTRUMENT DEFECT CLASS: gates that assert a PROXY instead of the driving variable
 
 - **NEW-PROBE-VACUOUS-REACHABILITY-ASSERTION — FILED (2026-08-06, C12-G1F2 repair); premise CONFIRMED at HEAD `bba8dc657a` by code inspection of both blockers.** **The class:** a gate whose reachability assertion names a variable that merely CORRELATES with the one driving the defect. Such a gate reports PASS or FAIL over a scene in which its subject cannot occur, and nothing in the output says so — it is strictly worse than no gate, because it manufactures evidence.
