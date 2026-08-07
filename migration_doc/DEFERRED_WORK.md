@@ -214,6 +214,8 @@ regressions — it certifies their absence.
 
 ### C13-GATE-B-METAR-CHANNELS-NO-EFFECT
 
+**RESOLVED 2026-08-07 (Batch 866).** Reading B confirmed end-to-end, reading A refuted. Batch 864 proved the blindness arithmetically (old band effective coverage 0.90..1.00) and refuted the no-consumer hypothesis at source; the Batch-866 Edge run then measured the re-aimed gate 4 at **0.1469 vs the unchanged 0.04 bar** with scored-leg headroom structurally proven. No engine defect existed; the instrument was blind from authoring. Gate B closed on this result.
+
 **Status:** OPEN / BLOCKING `C13-GATE-B`. **Do NOT record this as an engine defect
 yet, and do NOT record it as an instrument defect either** - two readings survive the
 evidence and separating them is the next concrete work.
