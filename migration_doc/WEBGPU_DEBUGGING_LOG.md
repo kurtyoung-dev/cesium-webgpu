@@ -24,6 +24,68 @@
 
 ---
 
+## Batch 878-Bug-1 — `NEW-WEBGPU-SPLAT-SNAPSHOT-READINESS-GL-PREDICATE`: the shared splat state machine used "does the WebGL texture exist?" as its readiness test, so the native branch — which creates no texture by design — stalled permanently one step before the sort (2026-08-07)
+
+**Bug:** `C15-G2` (Batch 878) moved the Gaussian-splat data pipeline above the
+backend branch so the WebGPU feature renderer would be handed a populated
+primitive. The Edge run came back **exit 3**: WebGL unchanged and green, WebGPU
+`cache.splatCount === 0` (not `null`, so the `show` fix took and the renderer
+ran) but `_numSplats === 0`, `_indexes` undefined, `dataReady false` after the
+full 30 s budget.
+
+**Files:** `packages/engine/Source/Scene/GaussianSplatPrimitive.js`
+
+**Root cause:** `_updateSplatData`'s snapshot state machine
+(`:1629-1634` at `e3fe74aa09`) re-checked the payload after
+`SnapshotState.TEXTURE_READY`:
+
+```js
+if (
+  pending.state === SnapshotState.TEXTURE_READY &&
+  !defined(pending.gaussianSplatTexture)
+) {
+  return;
+}
+```
+
+`TEXTURE_READY` means "the WASM generator resolved", not "the payload
+survived", so on WebGL this is a real invariant check. But `C15-G2`'s native
+branch in `processGeneratedSplatTextureData` sets `TEXTURE_READY` and leaves
+`gaussianSplatTexture` `undefined` deliberately — not creating a WebGL
+`Texture` is the entire point of the branch. The guard therefore fired every
+frame forever on WebGPU: `GaussianSplatSorter.radixSortIndexes` was never
+scheduled, `resolvePendingSnapshotSort` never ran, `commitSnapshot` never ran.
+
+**Why the scene-logic extraction missed it:** the boundary audit swept for code
+that CONSTRUCTS backend-specific objects and gated every such site. It did not
+sweep for code that READS one inside a condition. Constructing and testing are
+different verbs; a readiness predicate written in terms of a WebGL object is
+invisible to a construction-site audit and is the generalizable trap here.
+
+**Fix:** new shared predicate `hasSnapshotRenderPayload(primitive, snapshot)` —
+`packedSplatTextureData` when a feature renderer owns the draw,
+`gaussianSplatTexture` otherwise — called from the guard. WebGL reduces to the
+original expression byte-for-byte, and the WebGL invariant is preserved (a
+WebGL snapshot with a failed texture still stalls, which deleting the guard
+would have broken).
+
+**Caught by:** `probe-gsplat-parity.mjs`'s `STAGE` contract, landed in the same
+row. `primitive-numsplats-zero` was declared RETIRED by `C15-G2`; observing it
+again raised `webgpu:blocker-contract-stale` → structural. Under the previous
+"at least one known blocker attributes the absence" rule the run would have
+printed the green ABSENT marker and the defect would have reached `C15-G3`
+undetected. **This is the concrete payoff of stating a stage contract in both
+directions rather than accepting any known blocker.**
+
+**Guard:** `Tools/visual-regression/gsplat-harness.spec.mjs` extracts
+`hasSnapshotRenderPayload` from the engine source by balanced-brace scan and
+EXECUTES it against a four-cell truth table, plus three source mutants (the
+Batch-878 unconditional read, `return true`, inverted branches) and a call-site
+anchor. Negative control: restoring the shipped Batch-878 file turns exactly
+those five red.
+
+---
+
 ## BISECT HAZARD — Batch 785 (`e748181065`) does not build a working WebGL sky; `git bisect skip` it (recorded 2026-08-07)
 
 **This is a HISTORY defect, not a HEAD defect.** HEAD is healthy and has been since

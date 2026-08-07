@@ -1197,8 +1197,13 @@ function assertDispatchBelowDataCommit(source) {
 
   // The neutral/GL boundary inside the texture pipeline: the WebGL `Texture`
   // constructors must sit behind the same branch.
+  // Anchored on the branch BODY, not on `if (defined(primitive._featureRenderer))`
+  // alone: `hasSnapshotRenderPayload` now opens with the same condition earlier
+  // in the file, and a bare `indexOf` would silently start matching THAT one —
+  // an anchor pointing at the wrong site passes forever. (Caught by the mutant
+  // battery when the predicate landed.)
   const textureBranch = source.indexOf(
-    "if (defined(primitive._featureRenderer)) {",
+    "if (defined(primitive._featureRenderer)) {\n      snapshot.packedSplatTextureData = effectiveTextureData;",
   );
   const firstTextureCreate = source.indexOf(
     "snapshot.gaussianSplatTexture = createGaussianSplatTexture(",
@@ -1261,6 +1266,130 @@ test("HEAD: `show` resolves from the owning tileset (C15-G2)", () => {
   assertShowResolvesFromTileset(readNormalized(PRIMITIVE_PATH));
 });
 
+// ── The snapshot-readiness predicate — the C15-G2 follow-up defect ───────────
+//
+// `_updateSplatData` re-checks the snapshot's payload after
+// `SnapshotState.TEXTURE_READY` before it schedules the sort. The check used to
+// read `pending.gaussianSplatTexture` unconditionally, which is a WebGL object
+// the native branch deliberately never creates — so the native path reached
+// TEXTURE_READY with no texture BY DESIGN, the guard fired every frame forever,
+// the sort was never scheduled, `commitSnapshot` never ran, and `_numSplats`
+// stayed 0 on WebGPU while WebGL was unaffected. That is a whole class of bug
+// the C15-G2 boundary analysis can produce: a readiness PREDICATE written in
+// terms of a backend-specific artifact, sitting in the shared half.
+//
+// Regex anchors alone would be weak here, so the real function is EXTRACTED
+// from the engine file and EXECUTED against its truth table — the same
+// mutate-a-copy-of-the-engine-source shape `pipeline-key-aliasing.spec.mjs`
+// uses for its fold.
+
+/** Cesium's `defined`, verbatim (`Core/defined.js`). */
+const definedShim = (value) => value !== undefined && value !== null;
+
+/**
+ * Slice a top-level `function <name>(...) {...}` out of source text by
+ * balanced-brace scan, so the extracted unit is the real bytes, not a copy.
+ */
+function extractFunction(source, name) {
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${PRIMITIVE_PATH}: function ${name} is gone`);
+  const open = source.indexOf("{", start);
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}") {
+      depth--;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  throw new Error(`unbalanced braces while extracting ${name}`);
+}
+
+/** Compile the extracted predicate with a `defined` shim and hand it back. */
+function loadPayloadPredicate(source) {
+  const text = extractFunction(source, "hasSnapshotRenderPayload");
+  // eslint-disable-next-line no-new-func
+  return new Function("defined", `${text}\nreturn hasSnapshotRenderPayload;`)(
+    definedShim,
+  );
+}
+
+const PAYLOAD = { width: 1, height: 1, data: new Uint32Array(8) };
+const FAKE_TEXTURE = { destroy() {} };
+
+/**
+ * The truth table. Two cells are the fix; the other two are the invariants the
+ * fix must NOT weaken — "just delete the guard" satisfies neither.
+ */
+const PAYLOAD_TRUTH_TABLE = [
+  {
+    label: "WebGL, texture present → ready",
+    primitive: { _featureRenderer: undefined },
+    snapshot: {
+      gaussianSplatTexture: FAKE_TEXTURE,
+      packedSplatTextureData: undefined,
+    },
+    expected: true,
+  },
+  {
+    label:
+      "WebGL, texture MISSING → NOT ready (the original invariant, unweakened)",
+    primitive: { _featureRenderer: undefined },
+    snapshot: {
+      gaussianSplatTexture: undefined,
+      packedSplatTextureData: PAYLOAD,
+    },
+    expected: false,
+  },
+  {
+    label: "native, packed payload present → ready (the C15-G2 fix)",
+    primitive: { _featureRenderer: {} },
+    snapshot: {
+      gaussianSplatTexture: undefined,
+      packedSplatTextureData: PAYLOAD,
+    },
+    expected: true,
+  },
+  {
+    label: "native, packed payload MISSING → NOT ready",
+    primitive: { _featureRenderer: {} },
+    snapshot: {
+      gaussianSplatTexture: FAKE_TEXTURE,
+      packedSplatTextureData: undefined,
+    },
+    expected: false,
+  },
+];
+
+function assertPayloadTruthTable(source) {
+  const predicate = loadPayloadPredicate(source);
+  for (const row of PAYLOAD_TRUTH_TABLE) {
+    assert.equal(
+      predicate(row.primitive, row.snapshot),
+      row.expected,
+      `hasSnapshotRenderPayload: ${row.label}`,
+    );
+  }
+}
+
+test("HEAD: the snapshot-readiness predicate is backend-aware (executed, not grepped)", () => {
+  assertPayloadTruthTable(readNormalized(PRIMITIVE_PATH));
+});
+
+test("HEAD: the TEXTURE_READY guard calls the predicate, not the WebGL texture", () => {
+  const source = readNormalized(PRIMITIVE_PATH);
+  assert.match(
+    source,
+    /pending\.state === SnapshotState\.TEXTURE_READY &&\n\s*!hasSnapshotRenderPayload\(this, pending\)/,
+    `${PRIMITIVE_PATH}: the TEXTURE_READY readiness guard no longer routes through hasSnapshotRenderPayload — the native path stalls forever the moment it reads a WebGL object directly`,
+  );
+  assert.doesNotMatch(
+    source,
+    /TEXTURE_READY &&\n\s*!defined\(pending\.gaussianSplatTexture\)/,
+    `${PRIMITIVE_PATH}: the pre-fix unconditional texture read is back`,
+  );
+});
+
 // MUTANT-SOURCE group. Each mutation is applied to a COPY of the real file and
 // the corresponding predicate must REJECT it. Without this, an anchor that
 // silently stopped matching anything would pass forever.
@@ -1291,8 +1420,8 @@ const SOURCE_MUTANTS = [
     because: /backend branch in processGeneratedSplatTextureData is gone/,
     mutate: (source) =>
       source.replace(
-        "if (defined(primitive._featureRenderer)) {",
-        "if (false) {",
+        "if (defined(primitive._featureRenderer)) {\n      snapshot.packedSplatTextureData = effectiveTextureData;",
+        "if (false) {\n      snapshot.packedSplatTextureData = effectiveTextureData;",
       ),
   },
   {
@@ -1303,6 +1432,39 @@ const SOURCE_MUTANTS = [
       source.replace(
         "  get show() {\n    return this._tileset?.show ?? false;\n  }",
         "",
+      ),
+  },
+  {
+    // THE DEFECT ITSELF. This is exactly what shipped in Batch 878 and it made
+    // the WebGPU leg stall at `numSplats=0` for 30 s while WebGL was green.
+    name: "readiness reads the WebGL texture unconditionally (the Batch-878 stall)",
+    predicate: assertPayloadTruthTable,
+    because: /native, packed payload present/,
+    mutate: (source) =>
+      source.replace(
+        "  if (defined(primitive._featureRenderer)) {\n    return defined(snapshot.packedSplatTextureData);\n  }\n  return defined(snapshot.gaussianSplatTexture);",
+        "  return defined(snapshot.gaussianSplatTexture);",
+      ),
+  },
+  {
+    // The obvious wrong fix: "the guard is in the way, delete it."
+    name: "readiness always true (guard deleted rather than made backend-aware)",
+    predicate: assertPayloadTruthTable,
+    because: /texture MISSING/,
+    mutate: (source) =>
+      source.replace(
+        "  if (defined(primitive._featureRenderer)) {\n    return defined(snapshot.packedSplatTextureData);\n  }\n  return defined(snapshot.gaussianSplatTexture);",
+        "  return true;",
+      ),
+  },
+  {
+    name: "readiness branches inverted (each backend checks the other's payload)",
+    predicate: assertPayloadTruthTable,
+    because: /texture present/,
+    mutate: (source) =>
+      source.replace(
+        "  if (defined(primitive._featureRenderer)) {\n    return defined(snapshot.packedSplatTextureData);\n  }\n  return defined(snapshot.gaussianSplatTexture);",
+        "  if (defined(primitive._featureRenderer)) {\n    return defined(snapshot.gaussianSplatTexture);\n  }\n  return defined(snapshot.packedSplatTextureData);",
       ),
   },
   {

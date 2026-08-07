@@ -1,5 +1,52 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
+## New findings — `C15-G2` follow-up (the Batch-878 splat stall), 2026-08-07
+
+The defect itself is fixed and logged (`WEBGPU_DEBUGGING_LOG.md`, Batch
+878-Bug-1). These two are what it left behind: one fleet-wide sweep it argues
+for, and one small asymmetry the extraction introduced that is real but not
+urgent.
+
+- **`SCENE-EXTRACTION-AUDIT-GAP: readiness PREDICATES written in terms of
+  backend-specific artifacts` — OPEN as a fleet pattern.** Every Scene Logic
+  Extractor application on this fork audits for code that *constructs*
+  backend-specific objects and gates those sites. Batch 878 proved that is only
+  half the sweep: `GaussianSplatPrimitive._updateSplatData` also *read* a WebGL
+  `Texture`'s existence as its "is the snapshot ready?" test, and that single
+  condition stalled the entire native data path forever while every
+  construction site was correctly gated and every structural anchor was green.
+  Constructing and testing are different verbs and only the first was being
+  looked for. **The sweep:** across the ~28 feature-renderer extraction sites,
+  grep for backend-specific artifacts appearing inside CONDITIONS rather than
+  at assignments — `defined(x.texture)`, `x.vertexArray`, `x.shaderProgram`,
+  `x.drawCommand`, `x.framebuffer` in `if`/`&&`/`?:` within shared code. Each
+  hit is either a genuine backend-neutral proxy or a latent permanent stall on
+  the other backend, and the two are indistinguishable without reading. The
+  fork has one precedent for how expensive this class is to find at runtime:
+  Batch 878 needed a full probe round-trip, and only a stage contract stated in
+  both directions caught it at all. **Effort: M** (mechanical grep + a read per
+  hit; no runtime work).
+
+- **`NEW-SPLAT-PENDING-WORK-DRAWCOMMAND-PROXY` — the shared frame-skip
+  short-circuit is a WebGL-shaped liveness proxy, so it never fires on a native
+  backend. FILED, small, and correctly owned by `C15-G3`.**
+  `_updateSplatData`'s `hasPendingWork` includes the term
+  `!defined(this._drawCommand)`, meaning "we have not produced a drawable
+  result yet, so there is work to do". `_drawCommand` is built only by
+  `buildGSplatDrawCommand`, which `C15-G2` correctly gated off on native
+  backends — so on WebGPU the term is **permanently true**, `hasPendingWork` is
+  permanently true, and the `!hasPendingWork && Matrix4.equals(viewMatrix,
+  _prevViewMatrix)` early return can never be taken. **Not a stall and not a
+  correctness bug** (it fails toward doing more work, and `_prevViewMatrix` is
+  consulted nowhere else), but it costs the full IDLE body every frame on a
+  settled scene: a `Matrix4.clone`, a `Matrix4.multiply`, and
+  `shouldStartSteadySort`'s two `Cartesian3` deltas — which then correctly
+  returns false, so **no** per-frame WASM sort is incurred. The right fix is
+  not to special-case it now: `C15-G3` is what makes a WebGPU splat command
+  exist, so the term should become a backend-correct "no command yet" question
+  at that point rather than the primitive reaching into the feature renderer's
+  cache from here. **Effort: S**, folded into `C15-G3`.
+
 ## New findings — eclipse deepest-rung worker, 2026-08-07 (Batch 878; the first entry RESOLVED at Batch 880)
 
 - **`ECLIPSE-S2-NOTBLACK-DEEPEST-WEBGPU` — ✅ RESOLVED 2026-08-07 (Batch 880):

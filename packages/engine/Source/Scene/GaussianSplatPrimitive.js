@@ -280,6 +280,35 @@ function isActiveSort(primitive, activeSort) {
 }
 
 /**
+ * Whether a snapshot's generated render payload exists for the ACTIVE backend.
+ *
+ * {@link SnapshotState.TEXTURE_READY} records that the WASM texture generator
+ * RESOLVED; it does not record that the payload survived. The state machine in
+ * {@link GaussianSplatPrimitive#_updateSplatData} therefore re-checks the
+ * payload before it schedules the sort — but the payload is backend-specific:
+ * WebGL's is the {@link Texture}, and a native feature renderer's is the
+ * retained packed WASM buffer, because it creates no `Texture` at all.
+ *
+ * Reading `gaussianSplatTexture` unconditionally is what stalled the native
+ * path permanently after the `C15-G2` scene-logic extraction: the snapshot
+ * reached `TEXTURE_READY` with no texture by design, so the guard fired on
+ * every frame forever, the sort was never scheduled and `commitSnapshot` never
+ * ran. Keep this predicate backend-aware — it is the one readiness check in the
+ * shared half that cannot be written in terms of WebGL objects.
+ *
+ * @param {GaussianSplatPrimitive} primitive The owning primitive.
+ * @param {GaussianSplatPrimitive.Snapshot} snapshot The snapshot to test.
+ * @returns {boolean} {@code true} when the active backend's payload is present.
+ * @private
+ */
+function hasSnapshotRenderPayload(primitive, snapshot) {
+  if (defined(primitive._featureRenderer)) {
+    return defined(snapshot.packedSplatTextureData);
+  }
+  return defined(snapshot.gaussianSplatTexture);
+}
+
+/**
  * Destroys the GPU textures owned by a snapshot, if any, and clears the
  * references so they are not used after destruction.
  *
@@ -1626,9 +1655,12 @@ class GaussianSplatPrimitive {
         if (pending.state === SnapshotState.TEXTURE_PENDING) {
           return;
         }
+        // Backend-aware by necessity: on WebGL the payload is the `Texture`,
+        // on a native backend it is the retained packed WASM buffer. Reading
+        // the texture unconditionally stalls the native path forever.
         if (
           pending.state === SnapshotState.TEXTURE_READY &&
-          !defined(pending.gaussianSplatTexture)
+          !hasSnapshotRenderPayload(this, pending)
         ) {
           return;
         }

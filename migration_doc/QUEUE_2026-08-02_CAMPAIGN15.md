@@ -512,7 +512,7 @@ scoping row must re-verify all of it at HEAD):**
 | --- | --- | --- | --- | --- |
 | `C15-G0` | Scoping + root-cause verification: reproduce the production no-render, verify the `NEW-WEBGPU-SPLAT-DATA-PRODUCER` mechanism at HEAD, map the full WebGL splat data path (loader -> workers -> primitive -> renderer) and specify the WebGPU producer design + task breakdown `C15-G1..Gn` with exit gates | M | **COMPLETE — 2026-08-06** (report §6a-§6d below; docs/analysis only, no engine change) | — |
 | `C15-G1` | Probe harness + **WebGL reference leg** on the two in-tree splat tilesets. No engine change. | S | **IMPLEMENTATION DONE — 2026-08-07 (worker)**; pending orchestrator landing + Edge run. `probe-gsplat-parity.mjs` + `lib/gsplat-parity-model.mjs` + `gsplat-harness.spec.mjs` (50 checks green). Predictions + the §6a addendum below | `C15-G0` |
-| `C15-G2` | Scene-logic extraction: move the FR dispatch below the data commit; split the backend-neutral snapshot pack from the WebGL `Texture` upload | M | **IMPLEMENTATION DONE — 2026-08-07 (worker)**; pending orchestrator landing + Edge run. `GaussianSplatPrimitive.update` split into shared `_updateSplatData` + a DRAW-only branch; read-only `show` accessor proxying `tileset.show`; probe/model/spec updated to a staged absence contract. Decisions + falsifiable predictions in the §6c `C15-G2` block below | `C15-G1` |
+| `C15-G2` | Scene-logic extraction: move the FR dispatch below the data commit; split the backend-neutral snapshot pack from the WebGL `Texture` upload | M | **LANDED Batch 878, INCOMPLETE — fix IMPLEMENTATION DONE 2026-08-07 (worker), pending orchestrator landing + re-run.** Batch 878's Edge run came back **exit 3**, caught by this row's own STAGE contract: the structure landed and `show` took (`cache.splatCount` printed `0`, not `null`), but `_numSplats` stayed `0` on WebGPU — the TEXTURE_READY readiness guard read `pending.gaussianSplatTexture`, a WebGL object the native branch deliberately never creates, so the state machine stalled permanently before the sort. Fixed by `hasSnapshotRenderPayload`. Mechanism + corrected boundary in the §6c `C15-G2` block below | `C15-G1` |
 | `C15-G3` | Splat record format + WebGPU buffer commit — consume the WASM texture-generator output verbatim; first real WebGPU splat pixels | L | PENDING | `C15-G2` |
 | `C15-G4` | Consume the WASM radix sort (`primitive._indexes`) instead of the in-renderer synchronous JS comparator sort | M | PENDING | `C15-G3` |
 | `C15-G5` | Spherical harmonics (degree 1-3) in WGSL — the view-dependent colour term the WGSL has **zero** implementation of | L | PENDING | `C15-G3` |
@@ -969,6 +969,101 @@ WebGPU (8192 typical). Neither gate asset comes near either cap, but above
 ~8.4M splats the two backends would truncate to different `numSplats` and the
 `C15-G8` gate would be comparing different clouds. `C15-G3` should decide
 whether the native branch takes a buffer-shaped budget instead.
+
+#### `C15-G2` follow-up — the Batch-878 run came back exit 3, and why (worker, 2026-08-07)
+
+**The instrument worked; the boundary analysis above was incomplete.** The
+Batch-878 Edge run measured: WebGL leg PASS unchanged (27 splats, 19.141%
+added); WebGPU leg `cache.splatCount === 0` **not `null`** — so the `show`
+accessor took and the renderer executed past its first statement, exactly as
+predicted — but `numSplats=0`, `indexes=n/a`, `data=false@never/30000 ms`.
+Blockers measured `[no-splat-data-fields, primitive-numsplats-zero,
+cache-splat-count-zero]`; `STAGE` had `primitive-numsplats-zero` in `retired`,
+so its return raised `webgpu:blocker-contract-stale` → structural exit 3. That
+is the staged contract doing the job it was built for: the old
+"at-least-one-blocker" rule would have printed the green ABSENT marker on this
+exact run and the defect would have shipped invisibly into `C15-G3`.
+
+**Mechanism, `GaussianSplatPrimitive.js:1629-1634` at `e3fe74aa09` (pre-fix):**
+
+```js
+if (
+  pending.state === SnapshotState.TEXTURE_READY &&
+  !defined(pending.gaussianSplatTexture)   // ← WebGL object, shared half
+) {
+  return;
+}
+```
+
+`SnapshotState.TEXTURE_READY` records that the WASM generator RESOLVED; this
+guard is the state machine's second check that the payload actually
+materialized, and it is a genuine WebGL invariant (a snapshot can reach
+TEXTURE_READY and lose its texture). But `C15-G2`'s native branch sets
+`TEXTURE_READY` with `gaussianSplatTexture` left `undefined` **by design** —
+that is the whole point of not creating a `Texture`. So on WebGPU the guard
+fired on **every frame forever**: `radixSortIndexes` was never scheduled,
+`resolvePendingSnapshotSort` never ran, `commitSnapshot` never ran, and
+`_numSplats` stayed 0 for the full 30 s budget while WebGL was untouched.
+
+**The class of defect, which is the transferable part:** `C15-G2`'s boundary
+analysis correctly found every place that *constructs* a WebGL object and gated
+those. It missed that the shared state machine also *reads* a WebGL object as a
+READINESS PREDICATE. Constructing and testing are different verbs, and only the
+first was audited. Any future scene-logic extraction on this fork should sweep
+for both — the grep is `\.(texture|vertexArray|shaderProgram|drawCommand)\b`
+inside conditions, not just at assignment sites.
+
+**Fix (chosen over re-scoping — this is squarely `C15-G2`'s boundary, not
+`C15-G3`-shaped work):** a new shared predicate
+`hasSnapshotRenderPayload(primitive, snapshot)` that asks the backend-correct
+question — `packedSplatTextureData` when a feature renderer owns the draw,
+`gaussianSplatTexture` otherwise. The guard calls it. WebGL is byte-identical
+(`_featureRenderer` undefined → the expression reduces to the original
+`defined(snapshot.gaussianSplatTexture)`), and the WebGL invariant is NOT
+weakened: a WebGL snapshot whose texture failed still stalls, which is what
+"just delete the guard" would have broken.
+
+**Audit of the rest of the shared half, done after the fix.** Every other
+`gaussianSplatTexture` / `sphericalHarmonicsTexture` read was re-checked and
+none is a gate: `destroySnapshotTextures` and `retireTexture` are
+`defined()`-guarded no-ops; `commitSnapshot`'s assignments carry `undefined`
+harmlessly; `buildGSplatDrawCommand` is already gated. `_hasGaussianSplatTexture`
+has **two assignments and zero reads repo-wide** — write-only, so not a gate
+(left in place per Principle 7). `shouldStartSteadySort` is backend-neutral and
+throttled by frame interval + camera position/angle deltas, so the WebGPU leg
+does not acquire a per-frame WASM sort. `GaussianSplatSorter.radixSortIndexes`
+takes no context.
+
+**Spec (5 new checks, 68 total).** The predicate is EXTRACTED from the engine
+file by balanced-brace scan and **executed** against a four-cell truth table —
+not grepped — so the test exercises the real bytes: (WebGL, texture) → ready;
+(WebGL, no texture) → NOT ready; (native, packed payload) → ready; (native, no
+packed payload) → NOT ready. Three source mutants must be rejected: the
+Batch-878 unconditional texture read, `return true` ("delete the guard"), and
+inverted branches. Plus a call-site anchor that the guard routes through the
+predicate. **Negative control:** with the shipped Batch-878 engine file copied
+back in, exactly those 5 go red and the four original `C15-G2` structure
+anchors stay green — a precise separation, since the extraction itself was
+sound.
+
+*One anchor was found weak while doing this and repaired:* the pre-existing
+"WebGL Texture upload is behind the backend branch" anchor matched the bare
+string `if (defined(primitive._featureRenderer)) {`, which the new predicate
+now also contains **earlier in the file** — so `indexOf` silently started
+pointing at the wrong site. Both the anchor and its mutant are now anchored on
+the branch BODY. The mutant battery is what surfaced this.
+
+*Re-registered predictions for the next Edge run* — WebGL leg unchanged:
+WebGPU `_numSplats === 27` (`286868` on `tower`), `_indexes.length` matching,
+`isStable === true`, `dataReady === true`, `cache.splatCount === 0`,
+`splatPassCommands === 0`, `added.changed === 0`,
+`absenceBlockers = [no-splat-data-fields, cache-splat-count-zero]`, marker
+`WEBGPU-SPLATS-ABSENT (expected until C15-G3)`, **exit 0**. If `numSplats` is
+still 0, the stall moved to a different early return and the next suspects in
+order are `hasRootTransform` (top-of-frame snapshot vs. rebuild-time
+assignment) and the `radixSortIndexes` task-processor readiness path, both of
+which are backend-neutral in source and would therefore indicate something
+upstream of this file.
 
 ### `C15-G3` — splat record format + WebGPU buffer commit (L) — deps: `C15-G2`
 
