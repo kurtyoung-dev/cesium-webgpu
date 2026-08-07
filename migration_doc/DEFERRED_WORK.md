@@ -37,6 +37,40 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-08-06 - MAINTAINER RULINGS (O5 scope, C11/C13 status, C13-16, C15)
+
+### RULING-2026-08-06 - four decisions, recorded verbatim so they cannot drift
+
+Answered by the maintainer 2026-08-06 in response to the four blocking questions
+raised from `CAMPAIGN_CLOSURE_AUDIT_2026-08-06.md`. Recorded here because O5's own
+ambiguity - one undefined word, 'done' - is what cost this campaign a quarter of
+uncertainty. These are rulings, not proposals.
+
+**R1 - O5 'done' binds on a PRAGMATIC BAR: C12 complete + C13 Gate B green.**
+Campaign 14 (Dynamic Ocean & Wind) unblocks on that bar and does NOT wait for
+C11-137 certification, C13 Gates A/C/D, or the unstarted bodies of either campaign.
+This supersedes the strict reading of `OCEAN_DYNAMICS_PLAN_2026-07-24.md:188` while
+preserving its intent (ocean work follows the weather/cloud foundation, not the
+entire backlog). C14 is therefore WEEKS out, not quarters.
+
+**R2 - C11 and C13 stay OPEN AS-IS. No re-scope.** Their ledgers remain accurate to
+original intent, including the ~178 unstarted C11 rows and the 17 unstarted C13
+rows. Do NOT quietly redefine either campaign's deliverable to match what shipped.
+Note the deliberate pairing with R1: the campaigns stay honestly open, and C14 stops
+depending on them. C11-137 certification remains HELD.
+
+**R3 - C13-16: MEASURE THE MARCH'S TRANSFER FIRST.** Before touching authored
+aspects or gate thresholds, build a model that predicts the INTEGRATED IMAGE rather
+than the field, and use it to decide with numbers whether the 9:1-in-domain to
+~1.2:1-on-screen attenuation means the aspects are wrong or the gates are. Explicitly
+NOT chosen: raising the aspects by feel, and re-deriving the gates from the measured
+values (which would produce a gate that cannot fail).
+
+**R4 - C15: SPOT-CHECK SWPC NOW, HOLD THE BUILD ROWS.** Verify the three SWPC
+endpoints and the Kp / OVATION schema claims that `C15-00`'s own exit gate asks for
+(they are unverifiable offline and were flagged as such at authoring). Do NOT start
+C15-01+ until C12 closes, so the active campaign count stays bounded.
+
 ## 2026-08-06 - probe-weather-channels is NON-DETERMINISTIC and cannot certify Gate B
 
 ### C13-GATE-B-CHANNELS-PROBE-NONDETERMINISM
