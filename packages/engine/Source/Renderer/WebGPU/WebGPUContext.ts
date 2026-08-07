@@ -14,6 +14,11 @@
 
 import RendererType, { RendererInitializationError } from "../RendererType.js";
 import WebGPUSync from "./WebGPUSync.js";
+import { snapshotCloudObservability } from "./WebGPUCloudObservability.js";
+import type {
+  CloudCpuStageAccumulator,
+  CloudFrameCounters,
+} from "./WebGPUCloudObservability.js";
 import {
   GraphicsContext,
   GraphicsContextOptions,
@@ -6577,6 +6582,41 @@ export class WebGPUContext extends GraphicsContext {
         stats.pipelineCache = { ...this._webgpuPipelineCache.getStats() };
       } catch (e) {
         stats.pipelineCache = { error: String((e as Error)?.message ?? e) };
+      }
+    }
+    // C13-02 — cloud CPU/GPU observability. The counters are bookkeeping the
+    // cloud renderer already pays for on its own encode path; this is pure
+    // exposure. `gpu` is scoped to the seven cloud pass labels and folded
+    // through the SAME `summarizeFrameCoverage` union the whole-frame ledger
+    // uses (C11-140), so `clouds.cloudCoveredMs` is a unique-sample measure
+    // rather than a sum that double-counts overlapping passes.
+    const cloudCache = (
+      this as unknown as {
+        _cloudCache?: {
+          observability?: CloudFrameCounters;
+          cpuStages?: CloudCpuStageAccumulator;
+          temporalHistoryGeneration?: number;
+          temporalHistoryResetCount?: number;
+          temporalHistoryAcceptedFrames?: number;
+        };
+      }
+    )._cloudCache;
+    if (cloudCache?.observability && cloudCache.cpuStages) {
+      try {
+        const profiler = this._timestampProfiler;
+        const samples = profiler?.latestFrameSamples ?? null;
+        stats.volumetricClouds = snapshotCloudObservability({
+          counters: cloudCache.observability,
+          cpu: cloudCache.cpuStages,
+          temporal: {
+            generation: cloudCache.temporalHistoryGeneration ?? 0,
+            resetCount: cloudCache.temporalHistoryResetCount ?? 0,
+            acceptedFrames: cloudCache.temporalHistoryAcceptedFrames ?? 0,
+          },
+          samples: samples && samples.length > 0 ? samples : null,
+        });
+      } catch (e) {
+        stats.volumetricClouds = { error: String((e as Error)?.message ?? e) };
       }
     }
     stats.environmentMapDemand = {

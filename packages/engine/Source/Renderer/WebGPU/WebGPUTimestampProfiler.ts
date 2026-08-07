@@ -214,6 +214,18 @@ export class WebGPUTimestampProfiler {
   private _latestCoverageBalanced: boolean = true;
   private _latestInvertedSampleCount: number = 0;
   private _overlappingFrameCount: number = 0;
+  /**
+   * C13-02 — the most recently READ frame's raw pass intervals, retained so a
+   * consumer can fold a SCOPED union (e.g. only the cloud passes) through the
+   * same `summarizeFrameCoverage` this class uses for the whole frame.
+   *
+   * Retention costs nothing: `_readSubmittedFrame` already builds this array
+   * per readback and used to drop it after the unscoped fold. Summing the
+   * per-pass `lastMs` values from `getResults()` is NOT an alternative — it
+   * double-counts every nanosecond two passes share, which is the exact defect
+   * `WebGPUTimestampAccounting` was written to remove.
+   */
+  private _latestFrameSamples: readonly TimedPassSample[] = [];
   private _attemptedFrames: number = 0;
   private _sampledFrames: number = 0;
   private _droppedPassCount: number = 0;
@@ -574,6 +586,9 @@ export class WebGPUTimestampProfiler {
       // their sum, is what the frame span can be divided into. Any excess of
       // the sum over the union is overlap, reported rather than clamped away.
       const coverage = summarizeFrameCoverage(samples);
+      // C13-02 — retain the intervals the fold consumed so a scoped consumer
+      // can re-fold a subset. Assignment only; the array was allocated above.
+      this._latestFrameSamples = samples;
       this._addToRollingWindow(this._frameTimings, coverage.frameSpanMs);
       this._addToRollingWindow(
         this._profiledPassTimings,
@@ -765,6 +780,10 @@ export class WebGPUTimestampProfiler {
     this._latestCoverageBalanced = true;
     this._latestInvertedSampleCount = 0;
     this._overlappingFrameCount = 0;
+    // A retained sample set outlives the counters it was folded into unless it
+    // is cleared here too — a scoped consumer would otherwise keep reporting
+    // the pre-reset frame as current.
+    this._latestFrameSamples = [];
     this._attemptedFrames = 0;
     this._sampledFrames = 0;
     this._droppedPassCount = 0;
@@ -772,6 +791,19 @@ export class WebGPUTimestampProfiler {
     this._failedReadbackCount = 0;
     this._emptyFrameCount = 0;
     this._lostSampleCount = 0;
+  }
+
+  /**
+   * C13-02 — the most recently read frame's raw pass intervals, in nanoseconds
+   * relative to that frame's origin. Empty until a readback completes and
+   * after `reset()`.
+   *
+   * Exposed so a subsystem can fold a SCOPED unique-sample union over its own
+   * passes (`WebGPUCloudObservability.summarizeCloudGpuCoverage`) instead of
+   * summing `getResults().passes[*].lastMs`, which double-counts overlap.
+   */
+  get latestFrameSamples(): readonly TimedPassSample[] {
+    return this._latestFrameSamples;
   }
 
   /** Whether profiling is enabled. */

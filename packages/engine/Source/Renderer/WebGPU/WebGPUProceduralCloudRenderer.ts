@@ -31,6 +31,14 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import {
+  CloudCpuStage,
+  CloudCpuStageAccumulator,
+  createCloudFrameCounters,
+  recordCloudPass,
+  resetCloudFrameCounters,
+} from "./WebGPUCloudObservability.js";
+import type { CloudFrameCounters } from "./WebGPUCloudObservability.js";
+import {
   resolveCloudPreset,
   CloudNoiseSource,
   CLOUD_QF_OCTAVES_SHIFT,
@@ -398,6 +406,13 @@ export interface CloudCache {
   maskPipeline: GPURenderPipeline | null;
   maskShaderModule: GPUShaderModule | null;
   maskRenderedThisFrame: boolean;
+  // C13-02 — the observability surface. `observability` is reset IN PLACE at
+  // the top of every execute (including the culled early return, so a skipped
+  // frame reports zeros rather than the last drawn frame's numbers), and
+  // `cpuStages` is DISABLED by default so the shipped path pays no clock reads
+  // and the render result cannot depend on the instrumentation.
+  observability: CloudFrameCounters;
+  cpuStages: CloudCpuStageAccumulator;
 }
 
 function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
@@ -511,6 +526,8 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       maskPipeline: null,
       maskShaderModule: null,
       maskRenderedThisFrame: false,
+      observability: createCloudFrameCounters(),
+      cpuStages: new CloudCpuStageAccumulator(),
     };
   }
   return context._cloudCache;
@@ -1267,6 +1284,22 @@ function ensureWeatherView(
   // only when its version changes. Otherwise fall back to the procedural map
   // (uploaded once, sentinel -1). Switching back from provider to procedural
   // re-uploads the procedural fill.
+  // C13-02 — weather texture cache accounting. A "hit" is a frame on which the
+  // resident version already matched the requested one, so no upload was
+  // encoded; a "miss" is a frame that had to re-upload. `liveBytes` describes
+  // the RESIDENT texture and therefore survives the per-frame reset.
+  const counters = cache.observability;
+  const weatherBytes = WEATHER_TEX_W * WEATHER_TEX_H * 4;
+  counters.weatherLiveBytes = weatherBytes;
+  const wantedVersion = providerBytes !== null ? providerVersion : -1;
+  if (cache.weatherProviderVersion === wantedVersion) {
+    counters.weatherCacheHits++;
+  } else {
+    counters.weatherCacheMisses++;
+    counters.weatherUploads++;
+    counters.weatherUploadBytes += weatherBytes;
+  }
+
   if (providerBytes !== null) {
     if (cache.weatherProviderVersion !== providerVersion) {
       device.queue.writeTexture(dst, providerBytes, layout, size);
@@ -1770,6 +1803,11 @@ function timedCloudPass(
   context: CesiumGraphicsContext,
   descriptor: GPURenderPassDescriptor,
 ): GPURenderPassDescriptor {
+  // C13-02 — pass ACCOUNTING rides the same single seam as pass TIMING. Every
+  // cloud pass already routes through here, so the counts cannot drift from the
+  // encode sites the way seven hand-placed increments could, and a pass count
+  // exists even on adapters with no `timestamp-query` support.
+  recordCloudPass(context._cloudCache?.observability, descriptor.label);
   return context.withRenderPassTimestamps?.(descriptor) ?? descriptor;
 }
 
@@ -1790,7 +1828,19 @@ export function executeProceduralClouds(
 
   // TAKRAM-9 — reset the per-frame "mask rendered" flag up front so a culled or
   // early-returned frame reports null to the god-ray consumer (no stale map).
-  if (context._cloudCache) context._cloudCache.maskRenderedThisFrame = false;
+  //
+  // C13-02 — the per-frame counters follow the same up-front convention, and
+  // for the same reason: a culled frame that kept last frame's target sizes and
+  // pass counts would read as work that never happened. `resetCloudFrameCounters`
+  // zeroes in place (no allocation) and bumps the lifetime `frames` count. The
+  // very first execute has no cache yet, so it is reset just below instead —
+  // the two branches are exclusive, so `frames` counts every execute once.
+  const existingCache = context._cloudCache;
+  if (existingCache) {
+    existingCache.maskRenderedThisFrame = false;
+    resetCloudFrameCounters(existingCache.observability);
+    existingCache.cpuStages.beginStage(CloudCpuStage.TOTAL);
+  }
 
   // Frustum cull (Batch 413) — the cloud shell is a sphere at the planet origin
   // (radius = planetRadius + cloudLayerTop). Skip the full-screen raymarch
@@ -1808,6 +1858,8 @@ export function executeProceduralClouds(
       if (planes[p].w < -outerR) {
         if (context._cloudCache) {
           markCloudTemporalInactive(context._cloudCache);
+          context._cloudCache.observability.culledFrames++;
+          context._cloudCache.cpuStages.endStage(CloudCpuStage.TOTAL);
         }
         return false; // shell entirely outside the frustum — nothing to draw
       }
@@ -1815,6 +1867,14 @@ export function executeProceduralClouds(
   }
 
   const cache = ensureCloudCache(context);
+  if (existingCache === undefined) {
+    // First execute on this context: the counters were allocated a line ago.
+    resetCloudFrameCounters(cache.observability);
+    cache.cpuStages.beginStage(CloudCpuStage.TOTAL);
+  }
+  const counters = cache.observability;
+  const stages = cache.cpuStages;
+  stages.beginStage(CloudCpuStage.PACK);
   initializeCloudPipeline(device, cache, context._canvasFormat || "bgra8unorm");
 
   // V2/V3 — bake (once) + resolve the 3D noise views, BEFORE packing so the
@@ -2006,6 +2066,29 @@ export function executeProceduralClouds(
     // Even an adjacent re-entry must therefore seed from the current march.
     markCloudTemporalInactive(cache);
   }
+  // C13-02 — the raymarch geometry and step budgets, recorded at the ONE point
+  // where the half-res gate, the temporal gate and the quality resolver have
+  // all settled. Everything here is already computed; nothing is derived twice.
+  //
+  // The sample "counts" are explicitly BOUNDED PROXIES (dispatched pixels x the
+  // resolved budgets), which is the form C13-02 asks for. A true per-sample
+  // count would need a shader-side atomic — and C13-39's negative result rules
+  // that out: WGSL register allocation is static, so even a runtime-gated
+  // counter costs occupancy on the default path.
+  counters.marchWidth = halfResActive ? cache.halfWidth : canvasW;
+  counters.marchHeight = halfResActive ? cache.halfHeight : canvasH;
+  counters.marchPixels = counters.marchWidth * counters.marchHeight;
+  counters.halfResActive = halfResActive ? 1 : 0;
+  counters.maxSteps = qualityResolved.maxSteps;
+  counters.lightSteps = qualityResolved.lightSteps;
+  counters.primarySampleBudget = counters.marchPixels * counters.maxSteps;
+  counters.lightSampleBudget =
+    counters.primarySampleBudget * counters.lightSteps;
+  counters.resolveWidth = temporalActive ? cache.temporalWidth : 0;
+  counters.resolveHeight = temporalActive ? cache.temporalHeight : 0;
+  counters.resolvePixels = counters.resolveWidth * counters.resolveHeight;
+  counters.upscalePixels = halfResActive ? canvasW * canvasH : 0;
+
   data[offset++] = qualityResolved.maxSteps;
   data[offset++] = qualityResolved.lightSteps;
   data[offset++] = config.cloudDensity ?? 0.3;
@@ -2612,6 +2695,8 @@ export function executeProceduralClouds(
   // derivation. Exactly 1.0 outside an eclipse, so the consumers' former
   // literal `1.0` is reproduced bit-for-bit.
   cache.shadowStrength = eclipseCloudDirectionalFraction(frameState);
+  stages.endStage(CloudCpuStage.PACK);
+  stages.beginStage(CloudCpuStage.SHADOW);
   if (config.cloudCastShadows === true) {
     const shadowOk = ensureShadowResources(device, cache);
     if (!shadowOk) {
@@ -2712,6 +2797,9 @@ export function executeProceduralClouds(
       // A degenerate frame leaves the map inert rather than publishing an
       // identity projection every consumer would then sample as a real shadow.
       cache.shadowActive = frameOk;
+      // C13-02 — the single beer-shadow map: one pass, at this resolution.
+      counters.shadowPassCount++;
+      counters.shadowSize = cache.shadowSize;
 
       // ── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP — opt-in 3-cascade atlas ──
       // Additive on top of the single map (which aerial/fog still read): render
@@ -2819,10 +2907,19 @@ export function executeProceduralClouds(
           }
           cascadePass.end();
           cache.shadowCascadeActive = frameOk;
+          // C13-02 — the atlas is ONE render pass carrying
+          // CLOUD_SHADOW_CASCADE_COUNT viewport-scoped draws. Counting it as
+          // one pass and recording the tile count separately keeps
+          // `shadowPassCount` comparable with the profiler's pass ledger.
+          counters.shadowPassCount++;
+          counters.shadowCascadeSize = cache.shadowCascadeSize;
+          counters.shadowCascadeCount = CLOUD_SHADOW_CASCADE_COUNT;
         }
       }
     }
   }
+  stages.endStage(CloudCpuStage.SHADOW);
+  stages.beginStage(CloudCpuStage.COMPOSITE);
 
   if (
     halfResActive &&
@@ -2873,6 +2970,7 @@ export function executeProceduralClouds(
       cache.temporalBindGroups[0] &&
       cache.temporalBindGroups[1]
     ) {
+      stages.beginStage(CloudCpuStage.TEMPORAL);
       const readIdx = cache.temporalRead & 1;
       const writeIdx = readIdx ^ 1;
       const writeView = cache.temporalHistoryView[writeIdx]!;
@@ -2956,8 +3054,15 @@ export function executeProceduralClouds(
           historySample,
         ) | cache.temporalHistoryPendingResetReasons;
       cache.temporalHistoryPendingResetReasons = 0;
+      // C13-02 — the per-frame reconstruction verdict, recorded on the SAME
+      // branches that maintain the lifetime totals so the two can never
+      // disagree. `historyReset` follows `temporalHistoryResetCount` exactly:
+      // it marks only the rejections that started a NEW generation, so a
+      // persistent reason (MORPH) does not read as a fresh reset every frame.
+      counters.historyResetReasons = temporalResetReasons;
       if (temporalResetReasons !== 0) {
         cache.temporalFirstFrame = true;
+        counters.historyRejected = 1;
         if (
           cloudTemporalResetStartsGeneration(
             cache.temporalHistoryLatchedResetReasons,
@@ -2966,11 +3071,13 @@ export function executeProceduralClouds(
         ) {
           cache.temporalHistoryGeneration++;
           cache.temporalHistoryResetCount++;
+          counters.historyReset = 1;
         }
         cache.temporalHistoryLatchedResetReasons |= temporalResetReasons;
       } else if (!cache.temporalFirstFrame) {
         cache.temporalHistoryAcceptedFrames++;
         cache.temporalHistoryLatchedResetReasons = 0;
+        counters.historyAccepted = 1;
       }
       cache.temporalHistoryResetReasons = temporalResetReasons;
 
@@ -3064,6 +3171,7 @@ export function executeProceduralClouds(
         true,
       );
       cache.temporalFirstFrame = false;
+      stages.endStage(CloudCpuStage.TEMPORAL);
     }
 
     // Pass 2/3: depth-aware bilateral upscale + composite over the scene → canvas.
@@ -3159,6 +3267,8 @@ export function executeProceduralClouds(
   if (!useMain) {
     device.queue.submit([encoder.finish()]);
   }
+  stages.endStage(CloudCpuStage.COMPOSITE);
+  stages.endStage(CloudCpuStage.TOTAL);
   return true;
 }
 

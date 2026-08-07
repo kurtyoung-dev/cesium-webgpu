@@ -85,6 +85,7 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.highDensityCull() — gpuCuller/HiZ/sort-keys stats ║
 ║  CesiumDebug.globeBindGroups() — globe bind-group cache stats ║
 ║  CesiumDebug.cacheStats()      — pipeline + bind-group cache counters ║
+║  CesiumDebug.cloudStats(t/f)   — cloud observability + CPU stage timing ║
 ║  CesiumDebug.webgpuOIT(t/f)    — WebGPU OIT containment gate (FAR-003) ║
 ║  CesiumDebug.attachmentDemand(t/f) — scene-FB attachment demand record ║
 ║  CesiumDebug.globeFragmentDebug(name) — visualize FS stages ║
@@ -918,6 +919,114 @@ function installCesiumDebug(viewer) {
         pipelineCache: pipeline ?? null,
         bindGroupCaches: bindGroups ?? null,
       };
+    },
+
+    /**
+     * C13-02 — cloud CPU/GPU observability and temporal-cost counters.
+     *
+     * Read-only with no argument. Pass `true`/`false` to turn CPU STAGE TIMING
+     * on or off: it is off by default because a `performance.now()` pair
+     * straddling each stage is observable work on the shipped path, and
+     * C13-02 requires the instrumentation to be removable without changing the
+     * render result. Toggling clears the accumulated stage statistics so a
+     * later read cannot present numbers from a differently-configured run.
+     *
+     * The counters themselves (target sizes, dispatched pixels, pass counts,
+     * history accept/reject/reset, weather cache hits/misses/uploads/bytes)
+     * are always live — they are bookkeeping the renderer already pays for.
+     *
+     * `gpu` is present only when the adapter supports `timestamp-query` AND a
+     * readback has completed; it is the UNION of the cloud passes' GPU
+     * intervals, not their sum, so `cloudOverlapMs > 0` is a real finding
+     * (two cloud passes overlapped) rather than a rounding detail.
+     *
+     * Usage:
+     *   CesiumDebug.cloudStats()        // read
+     *   CesiumDebug.cloudStats(true)    // enable CPU stage timing
+     */
+    cloudStats(enableCpuTiming) {
+      const ctx = scene._context;
+      if (!ctx?.isWebGPU || typeof ctx.getRendererStatistics !== "function") {
+        console.warn("[CesiumDebug] Cloud statistics are WebGPU-only");
+        return null;
+      }
+      if (typeof enableCpuTiming === "boolean") {
+        const stagesOwner = ctx._cloudCache?.cpuStages;
+        if (!stagesOwner) {
+          console.warn(
+            "[CesiumDebug] Cloud renderer has not run yet — enable clouds and render a frame first",
+          );
+          return null;
+        }
+        stagesOwner.setEnabled(enableCpuTiming);
+      }
+      const clouds = ctx.getRendererStatistics().volumetricClouds;
+      if (!clouds) {
+        console.warn(
+          "[CesiumDebug] No cloud statistics yet — enable the volumetric cloud deck and render a frame first",
+        );
+        return null;
+      }
+      if (clouds.error !== undefined) {
+        console.error(`[CesiumDebug] Cloud statistics failed: ${clouds.error}`);
+        return clouds;
+      }
+      console.table([
+        {
+          lane: "raymarch",
+          size: `${clouds.raymarch.width}x${clouds.raymarch.height}`,
+          pixels: clouds.raymarch.pixelsDispatched,
+          detail: `maxSteps=${clouds.raymarch.maxSteps} lightSteps=${clouds.raymarch.lightSteps} halfRes=${clouds.raymarch.halfResActive}`,
+        },
+        {
+          lane: "reconstruction",
+          size: `${clouds.reconstruction.resolveWidth}x${clouds.reconstruction.resolveHeight}`,
+          pixels: clouds.reconstruction.resolvePixels,
+          detail: `accepted=${clouds.reconstruction.historyAccepted} rejected=${clouds.reconstruction.historyRejected} reset=${clouds.reconstruction.historyReset} gen=${clouds.reconstruction.lifetime.generation}`,
+        },
+        {
+          lane: "shadow",
+          size: `${clouds.shadow.size} / atlas ${clouds.shadow.cascadeSize}x${clouds.shadow.cascadeCount}`,
+          pixels: clouds.shadow.size * clouds.shadow.size,
+          detail: `passes=${clouds.shadow.passCount}`,
+        },
+        {
+          lane: "weather",
+          size: `${clouds.weather.liveBytes} B live`,
+          pixels: clouds.weather.uploadBytes,
+          detail: `hits=${clouds.weather.cacheHits} misses=${clouds.weather.cacheMisses} uploads=${clouds.weather.uploads}`,
+        },
+        {
+          lane: "passes",
+          size: `${clouds.passCount} this frame`,
+          pixels: clouds.frames,
+          detail: `culled=${clouds.culledFrames}`,
+        },
+      ]);
+      if (clouds.cpu.enabled === true) {
+        console.table(clouds.cpu.stages);
+      } else {
+        console.log(
+          "[CesiumDebug] CPU stage timing is OFF (default). CesiumDebug.cloudStats(true) to enable.",
+        );
+      }
+      if (clouds.gpu) {
+        console.table({
+          clouds: clouds.gpu.clouds,
+          environment: clouds.gpu.environment,
+        });
+        if (clouds.gpu.clouds.cloudOverlapMs > 0) {
+          console.warn(
+            `[CesiumDebug] Cloud passes OVERLAPPED in GPU time by ${clouds.gpu.clouds.cloudOverlapMs.toFixed(4)} ms — ` +
+              "the naive sum of their durations would double-count that span.",
+          );
+        }
+      } else {
+        console.log(
+          "[CesiumDebug] No GPU timestamps yet — CesiumDebug.gpuPassCost(true), then render.",
+        );
+      }
+      return clouds;
     },
 
     /**

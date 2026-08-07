@@ -1,0 +1,1324 @@
+#!/usr/bin/env node
+// probe-eclipse-cloud-response.mjs — C13-41 (the C12-29 S3 rider) Edge
+// acceptance: eclipse-driven cloud lighting, cloud shadow, and IBL
+// dimming/refresh.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// WHY THIS FILE EXISTS AT ALL
+// ─────────────────────────────────────────────────────────────────────────────
+// C13-41 landed at Batch 871 with THREE pre-registered, falsifiable Edge
+// predictions and NO probe to run them. `Tools/visual-regression/` carries the
+// row's pure-Node contract (`eclipse-cloud-ibl-response.spec.mjs`, 17/17), and
+// the four existing eclipse probes (`probe-eclipse-globe-shadow`,
+// `probe-eclipse-scene-dimming`, `probe-eclipse-sky-totality`,
+// `probe-eclipse-sun-fade`) measure NONE of the three — CO-1's reconciliation
+// confirmed that. Authoring this probe is the FIRST step of the acceptance, not
+// a re-run of one.
+//
+// THE THREE PREDICTIONS, VERBATIM FROM THE ROW:
+//
+//   (i)   at obscuration 0.9 the eclipse factor is 0.464228 and the cloud
+//         deck's PRE-tonemap radiance ratio vs no-eclipse is exactly 0.4642;
+//         post-Reinhard the DISPLAYED ratio lands between 0.46 (faint deck)
+//         and ~0.63 (a bright core at exposed radiance ~1) — never above ~0.7.
+//   (ii)  the ground cloud-shadow contrast changes by +0.08%
+//         (`mix(1, 0.35, s)` goes 0.350000 -> 0.350293), i.e. visually
+//         unchanged — a probe measuring a LARGE shadow-contrast change at 0.9
+//         REFUTES the model.
+//   (iii) a 0 -> 0.9 -> 0 obscuration sweep produces exactly 275 environment
+//         refreshes (one first-frame baseline + 2 x 137 bucket edges, buckets
+//         256 -> 119), which is quiescent on roughly two thirds of an
+//         801-frame sweep.
+//
+// Plus the row's STILL OWED list: an IBL recovery leg that steps a clock
+// through the deep phase and out the other side and asserts the environment
+// brightens back, and the wall-clock cost of the 275 fills
+// (`C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`), which lane C times so that row
+// discharges in the same run.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// AIMING vs GATING — the discriminator is never built from what it discriminates
+// ─────────────────────────────────────────────────────────────────────────────
+// The engine's own `updateEclipseState` (exported as `Cesium.EclipseState`) is
+// used to AIM: to locate the ground vantage and the instants whose obscuration
+// hits each target. That is legitimate and deliberate — it makes the SCHEDULED
+// obscuration and the REALIZED obscuration the same number by construction, so
+// the ladder is exact instead of approximately located by a uniform-disc
+// stand-in. It is not a gate.
+//
+// Every GATE compares the shipped subsystem against a SECOND implementation
+// written here from the published constants:
+//   `predictFactor`      — the S2 curve (flux^(1/3)), re-derived, so a silent
+//                          retune of `ECLIPSE_ADAPTATION_EXPONENT` or the
+//                          5-lux floor fails the probe instead of riding along;
+//   `predictDirectional` — C13-41's own `visible / (visible + FLOOR*(1-visible))`;
+//   `predictBucket`      — `round(f * 256)`, the 1/256 refresh grid.
+// A gate that echoed the engine's own accessor would certify nothing.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// THE SWEEP IS A FACTOR SWEEP, AND ITS DESCENDING BRANCH IS A REVERSE REPLAY
+// ─────────────────────────────────────────────────────────────────────────────
+// Lane C's claim is about the FACTOR walking 1.0 -> 0.4642 -> 1.0 across a
+// quantization grid. The rising branch is 401 real instants aimed at the linear
+// obscuration ramp `o = 0.9 * k / 400`; the descending branch REPLAYS those
+// instants in reverse (400 frames, peak not repeated). Every frame is therefore
+// a real, engine-derived eclipse state, and the descending obscuration series
+// is the EXACT mirror of the rising one — which is what makes "exactly 275"
+// determinate rather than a coin flip on where the real falling branch's
+// samples happen to land. The physical falling branch is not what the
+// prediction is about; the anti-latch recovery IS, and a reverse replay
+// exercises it exactly. Lane A/B use real, forward, physically-ordered instants.
+//
+// WHY 401 FRAMES ON THE RAMP AND NOT FEWER. The refresh count is the number of
+// bucket CHANGES, not the number of bucket EDGES: a ramp coarse enough to jump
+// two buckets in one frame fires ONE refresh and the count collapses. The
+// bucket derivative is steepest at the deep end — `db/do = (256/3) *
+// flux^(-2/3) * (1-FLOOR)`, which at o = 0.9 (flux 0.1) is ~396 per unit
+// obscuration, i.e. 0.89 buckets per frame at the ramp's `do = 0.9/400`. Under
+// one per frame with ~12% margin, by construction. `rampNeverSkipsABucket`
+// gates that margin from the REALIZED series rather than trusting the algebra.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// WHAT EACH BACKEND GETS, AND WHY THAT IS NOT AN ASYMMETRY DEFECT
+// ─────────────────────────────────────────────────────────────────────────────
+// Lanes A and B are WebGPU-only because the volumetric deck and the beer-shadow
+// map are WebGPU-only. The row's WebGL decision is recorded and deliberate: the
+// WebGL cloud path is the billboard `CloudCollection`, whose fragment shader
+// has no sun direction, no scene light and no N-dot-L — its only brightness
+// input is the per-`CumulusCloud` AUTHORED `v_brightness`. An eclipse-only
+// multiply would be the ONLY light response it has. That premise is a SOURCE
+// claim and is pinned by `eclipse-cloud-ibl-response.spec.mjs` (E2), not
+// re-litigated here.
+//
+// Lane C runs on BOTH backends, because the IBL leg ships on both and the
+// anti-latch mechanism is the same quantized level comparison.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// PROBE HYGIENE (fleet doctrine — `lib/weather-probe-pinning.mjs` shape)
+// ─────────────────────────────────────────────────────────────────────────────
+// offline globe (`&offline=true` + imagery removed + EllipsoidTerrainProvider,
+// all READ BACK); `useDefaultRenderLoop=false`, `requestRenderMode=false`,
+// `shouldAnimate=false`, `multiplier=0`, and EVERY render goes through
+// `renderAt(julianDate)` with an explicit date; `cloudWindSpeed = 0` so the
+// clock is provably inert on cloud SHAPE (`cloud.time` reaches the density
+// field only as `windDirection * windSpeed * time`) — which is what makes a
+// per-instant clock safe in a lane that must move the clock; `cloudQuality =
+// 32` (the escape hatch: no temporal, no jitter, no half-res, LIVE noise, so
+// two captures of one configuration are comparable); a DISCARDED warm-up before
+// the first scored capture (the async noise prewarm renders a cold first
+// fixture stable-black); same-task capture (render -> drawImage -> getImageData
+// with no await between); canvas-ELEMENT screenshots; `rendererType` read back
+// and hard-failed on mismatch; a determinism bracket (the first scored
+// configuration is re-captured at the end and must reproduce); an unref'd
+// force-exit watchdog; `browser.close()` in `finally`; every loop bounded.
+//
+// EXIT CONTRACT: 0 pass / 1 gate fail / 2 harness-structural / 3
+// pin-or-vacuity-structural. A structural exit is never a product verdict.
+//
+// EVERY helper used inside a `page.evaluate` callback is defined INSIDE that
+// callback — module-scope bindings do not cross the serialization boundary.
+//
+// Usage: node Tools/visual-regression/probe-eclipse-cloud-response.mjs
+//   (requires the dev server on localhost:8080 and a current gulp build)
+
+import { createHash } from "crypto";
+import fs from "fs";
+import path from "path";
+import { chromium } from "playwright";
+import {
+  collectPinStructural,
+  installWeatherPinHarnessOnPage,
+  PINNED_CLOUD_QUALITY,
+  WEATHER_DETERMINISM_DIALS,
+} from "./lib/weather-probe-pinning.mjs";
+import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
+import {
+  ECLIPSE_CLOUD_BANDS,
+  ECLIPSE_CLOUD_GATE_PREDICATES,
+  ECLIPSE_CLOUD_PARITY_PREDICATES,
+  ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES,
+  SWEEP_FRAMES,
+  SWEEP_PEAK_OBSCURATION,
+  SWEEP_RISING_FRAMES,
+  judgeEclipseCloudResponse,
+  predictBucket,
+  predictDirectional,
+  predictFactor,
+  predictedSweepRefreshCount,
+} from "./lib/eclipse-cloud-response-gate.mjs";
+
+const BASE = process.env.PROBE_BASE ?? "http://localhost:8080";
+const OUT_DIR = "Tools/visual-regression/output";
+const MODEL_URL =
+  "/Apps/SampleData/models/TestKHRExtensions/TestKhrSpecular.gltf";
+
+// 8 minutes, not the fleet's usual 7: lane C renders 801 pinned frames on each
+// of two backends on top of lanes A and B. Still a hard ceiling — the watchdog
+// forces exit 2, it does not extend to fit a slow run.
+const HARD_LIMIT_MS = 480000;
+const watchdog = setTimeout(() => {
+  console.error(
+    "[probe-eclipse-cloud-response] WATCHDOG FIRED (480s) — forcing exit",
+  );
+  process.exit(2);
+}, HARD_LIMIT_MS);
+if (watchdog.unref) {
+  watchdog.unref();
+}
+
+const r3 = (x) =>
+  x === null || x === undefined || !Number.isFinite(x)
+    ? null
+    : Math.round(x * 1000) / 1000;
+const r6 = (x) =>
+  x === null || x === undefined || !Number.isFinite(x)
+    ? null
+    : Math.round(x * 1e6) / 1e6;
+
+// ── Provenance: the probe must not run against a stale build ────────────────
+const SOURCE_FILES = [
+  "packages/engine/Source/Scene/EclipseCloudResponse.js",
+  "packages/engine/Source/Scene/EclipseState.js",
+  "packages/engine/Source/Scene/DynamicEnvironmentMapManager.js",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
+];
+
+// NUMERAL-FREE substrings on purpose: esbuild normalises float literals
+// (`1.0` -> `1`) on the way into the bundle, so a marker containing `1.0`
+// matches the source but never the build (S1's lesson, cost a round).
+const VERBATIM_SLICES = [
+  {
+    file: "packages/engine/Source/Scene/EclipseCloudResponse.js",
+    marker: "return flux > ",
+  },
+  {
+    file: "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
+    marker:
+      "cache.shadowStrength = eclipseCloudDirectionalFraction(frameState)",
+  },
+  {
+    file: "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
+    marker: "cache.lastEclipseEnvBucket = eclipseEnvBucket",
+  },
+  {
+    file: "packages/engine/Source/Scene/DynamicEnvironmentMapManager.js",
+    marker: "this._lastEclipseEnvBucket = eclipseEnvBucket",
+  },
+];
+
+const REQUIRED_TOKENS = [
+  "quantizeEclipseEnvironmentRefreshInput",
+  "eclipseCloudDirectionalFraction",
+  "applyEclipseCloudDimming",
+  "eclipseSceneLightFactor",
+  "shadowStrength",
+  "enableEclipse",
+];
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function collectBundleFiles() {
+  const bundleDir = "Build/CesiumUnminified";
+  const files = [];
+  for (const name of fs.readdirSync(bundleDir)) {
+    if (name.endsWith(".js")) {
+      files.push(path.join(bundleDir, name));
+    }
+  }
+  const chunksDir = path.join(bundleDir, "chunks");
+  if (fs.existsSync(chunksDir)) {
+    for (const name of fs.readdirSync(chunksDir)) {
+      if (name.endsWith(".js")) {
+        files.push(path.join(chunksDir, name));
+      }
+    }
+  }
+  return files;
+}
+
+function provenance() {
+  const sources = {};
+  let newestSourceMs = 0;
+  for (const p of SOURCE_FILES) {
+    const bytes = fs.readFileSync(p);
+    const stat = fs.statSync(p);
+    sources[p] = { byteLength: bytes.byteLength, sha256: sha256(bytes) };
+    if (stat.mtimeMs > newestSourceMs) {
+      newestSourceMs = stat.mtimeMs;
+    }
+  }
+
+  let bundleFiles;
+  try {
+    bundleFiles = collectBundleFiles();
+  } catch {
+    return { ok: false, reason: "Build/CesiumUnminified missing", sources };
+  }
+  if (bundleFiles.length === 0) {
+    return { ok: false, reason: "no built JS found", sources };
+  }
+
+  let newestBundleMs = 0;
+  for (const f of bundleFiles) {
+    const m = fs.statSync(f).mtimeMs;
+    if (m > newestBundleMs) {
+      newestBundleMs = m;
+    }
+  }
+
+  // Only files written by the MOST RECENT build may satisfy the token and
+  // marker searches — `Build/CesiumUnminified` accumulates content-hashed
+  // chunks across builds, and a stale leftover would contain every token we
+  // look for, turning the guard into a no-op exactly when it matters.
+  const BUILD_WINDOW_MS = 600000;
+  const cutoffMs = newestBundleMs - BUILD_WINDOW_MS;
+  const considered = [];
+  for (const f of bundleFiles) {
+    if (fs.statSync(f).mtimeMs >= cutoffMs) {
+      considered.push(f);
+    }
+  }
+  const entryPath = path.join("Build/CesiumUnminified", "index.js");
+  const entryFresh =
+    fs.existsSync(entryPath) &&
+    considered.some((f) => path.resolve(f) === path.resolve(entryPath));
+
+  const texts = considered.map((f) => fs.readFileSync(f, "utf8"));
+  const missingTokens = REQUIRED_TOKENS.filter(
+    (t) => !texts.some((text) => text.includes(t)),
+  );
+  const missingSlices = [];
+  for (const slice of VERBATIM_SLICES) {
+    const src = fs.readFileSync(slice.file, "utf8");
+    if (!src.includes(slice.marker)) {
+      missingSlices.push(`${slice.file}: marker absent from SOURCE`);
+      continue;
+    }
+    if (!texts.some((text) => text.includes(slice.marker))) {
+      missingSlices.push(`${slice.file}: marker absent from BUILD`);
+    }
+  }
+  const buildIsNewer = newestBundleMs >= newestSourceMs;
+
+  return {
+    sources,
+    bundleFileCount: bundleFiles.length,
+    consideredFileCount: considered.length,
+    entryFresh,
+    buildIsNewer,
+    missingTokens,
+    missingSlices,
+    ok:
+      buildIsNewer &&
+      entryFresh &&
+      missingTokens.length === 0 &&
+      missingSlices.length === 0,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IN-PAGE: derive the vantage and the exact instants for each target obscuration
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Uses the ENGINE's own `updateEclipseState` (AIMING, not gating — see header),
+// so the scheduled and realized obscurations are the same number by
+// construction. Bounded: 2 regions x 5 vantages x 241 coarse samples, then a
+// 44-step bisection per target.
+const DERIVE_SCHEDULE = async ({ targets, rampFrames, rampPeak }) => {
+  const C = await import("/Build/CesiumUnminified/index.js");
+  const updateEclipseState = C.EclipseState;
+  if (typeof updateEclipseState !== "function") {
+    return { structuralError: "Cesium.EclipseState is not the state updater" };
+  }
+
+  const state = {
+    sunPositionWC: new C.Cartesian3(),
+    moonPositionWC: new C.Cartesian3(),
+  };
+  const options = {
+    active: true,
+    enabled: true,
+    autoExposure: false,
+    horizonTwilightEnabled: true,
+    cameraPositionWC: new C.Cartesian3(),
+    cameraHeight: 0.0,
+    time: undefined,
+  };
+
+  const setVantage = (lat, lon, height) => {
+    C.Cartesian3.fromDegrees(
+      lon,
+      lat,
+      height,
+      undefined,
+      options.cameraPositionWC,
+    );
+    options.cameraHeight = height;
+  };
+
+  const obscurationAt = (julian) => {
+    options.time = julian;
+    const s = updateEclipseState(state, options);
+    return s.valid === true ? s.moonObscuration : 0.0;
+  };
+
+  // The 2026-08-12 total solar eclipse: a north-Atlantic / Iberian track. Two
+  // candidate regions, five vantages each; the deepest wins. Deliberately the
+  // same fixture family the S2 ladder probe uses, so a reader comparing the two
+  // runs is comparing the same eclipse.
+  const REGIONS = [
+    { name: "iceland", lat: 64.15, lons: [-24.0, -21.9, -19.5, -17.0, -14.5] },
+    { name: "spain", lat: 41.65, lons: [-6.0, -3.7, -1.5, 0.6, 2.8] },
+  ];
+  const dayStart = C.JulianDate.fromIso8601("2026-08-12T15:00:00Z");
+  const COARSE_SAMPLES = 241; // 3 hours at 45 s
+  const COARSE_STEP_S = 45.0;
+
+  let best = null;
+  const scratch = new C.JulianDate();
+  for (const region of REGIONS) {
+    for (const lon of region.lons) {
+      setVantage(region.lat, lon, 0.0);
+      for (let i = 0; i < COARSE_SAMPLES; i++) {
+        C.JulianDate.addSeconds(dayStart, i * COARSE_STEP_S, scratch);
+        const o = obscurationAt(scratch);
+        if (best === null || o > best.obscuration) {
+          best = {
+            region: region.name,
+            lat: region.lat,
+            lon,
+            obscuration: o,
+            index: i,
+            iso: C.JulianDate.toIso8601(scratch),
+            seconds: i * COARSE_STEP_S,
+          };
+        }
+      }
+    }
+  }
+  if (best === null || !(best.obscuration > rampPeak)) {
+    return {
+      structuralError: `no vantage reached obscuration ${rampPeak}; deepest ${best ? best.obscuration : "none"}`,
+      best,
+    };
+  }
+
+  setVantage(best.lat, best.lon, 0.0);
+
+  // The RISING branch bracket: from the last sample at (near) zero obscuration
+  // up to the peak sample. Bisection needs a monotone bracket, and the rising
+  // branch is monotone by construction.
+  let riseStartSeconds = 0.0;
+  for (let i = best.index; i >= 0; i--) {
+    C.JulianDate.addSeconds(dayStart, i * COARSE_STEP_S, scratch);
+    if (obscurationAt(scratch) <= 0.0) {
+      riseStartSeconds = i * COARSE_STEP_S;
+      break;
+    }
+  }
+  const peakSeconds = best.seconds;
+
+  // Bisect the rising branch for the time at which obscuration === target.
+  const timeForObscuration = (target) => {
+    if (!(target > 0.0)) {
+      return riseStartSeconds;
+    }
+    let lo = riseStartSeconds;
+    let hi = peakSeconds;
+    for (let i = 0; i < 44; i++) {
+      const mid = 0.5 * (lo + hi);
+      C.JulianDate.addSeconds(dayStart, mid, scratch);
+      if (obscurationAt(scratch) < target) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    return 0.5 * (lo + hi);
+  };
+
+  const instantAt = (seconds) => {
+    C.JulianDate.addSeconds(dayStart, seconds, scratch);
+    return {
+      seconds,
+      iso: C.JulianDate.toIso8601(scratch),
+      obscuration: obscurationAt(scratch),
+    };
+  };
+
+  // Lane A/B ladder: the named targets, in ascending (forward-in-time) order.
+  const ladder = targets.map((target) => {
+    const rung = instantAt(timeForObscuration(target));
+    rung.target = target;
+    return rung;
+  });
+
+  // Lane C ramp: the RISING branch only. The driver mirrors it for the
+  // descending branch (reverse replay — see the file header).
+  const ramp = [];
+  for (let k = 0; k < rampFrames; k++) {
+    const target = (rampPeak * k) / (rampFrames - 1);
+    ramp.push(instantAt(timeForObscuration(target)));
+  }
+
+  return {
+    region: best.region,
+    lat: best.lat,
+    lon: best.lon,
+    peakObscuration: best.obscuration,
+    peakIso: best.iso,
+    riseStartSeconds,
+    peakSeconds,
+    ladder,
+    ramp,
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IN-PAGE: lanes A + B (WebGPU only) — deck lighting and cloud-shadow contrast
+// ─────────────────────────────────────────────────────────────────────────────
+const RUN_CLOUD_LANES = async (cfg) => {
+  const C = (window.Cesium =
+    window.Cesium || (await import("/Build/CesiumUnminified/index.js")));
+  const pin = globalThis.__weatherPin;
+  const cloudProbe = globalThis.__cloudProbe;
+  const viewer = window.viewer;
+  const scene = viewer.scene;
+
+  // ── P1/P2: offline globe, one render driver, one clock. Sky is KEPT: the
+  // deck is measured as a DIFFERENCE against a clouds-off capture of the same
+  // instant, so whatever the sky contributes cancels exactly.
+  const pins = pin.pinScene(C, { groundAtmosphere: false, fog: false });
+  scene.globe.enableLighting = true;
+
+  const ac = scene.globe ? scene.globe.atmosphericConditions : null;
+  if (!ac || !ac.lighting || !("enableEclipse" in ac.lighting)) {
+    return {
+      structuralError: "no atmosphericConditions.lighting.enableEclipse",
+    };
+  }
+  // C12-29 S5's per-fragment umbra is an ORTHOGONAL sub-effect that darkens the
+  // globe surface independently of anything this row touches. Lane B measures a
+  // ground CONTRAST, and S5 moves both bands; switching it off is what its own
+  // docstring says isolation probes should do.
+  if ("enableEclipseGlobeShadow" in ac.lighting) {
+    ac.lighting.enableEclipseGlobeShadow = false;
+  }
+
+  const setEclipse = (on) => {
+    ac.lighting.enableEclipse = on;
+  };
+
+  const configure = (extra) =>
+    cloudProbe.configure({
+      requireWebGPU: true,
+      enableVolumetric: extra.enableVolumetric !== false,
+      volumetric: {
+        cloudCoverage: 0.6,
+        cloudDensity: 0.5,
+        cloudLayerBottom: 1500,
+        cloudLayerTop: 4000,
+        ...cfg.determinismDials,
+        ...(extra.dials ?? {}),
+      },
+    });
+
+  // ── Band reducers. Defined INSIDE the callback (serialization boundary).
+  const bandMean = (frame, y0, y1) => {
+    const { data, width, height } = frame;
+    const top = Math.floor(height * y0);
+    const bottom = Math.floor(height * y1);
+    let sum = 0;
+    let samples = 0;
+    for (let y = top; y < bottom; y += 2) {
+      for (let x = Math.floor(width * 0.15); x < width * 0.85; x += 2) {
+        const i = (y * width + x) * 4;
+        // Rec.709 luma on the captured (display-transformed) values.
+        sum +=
+          (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) /
+          255;
+        samples++;
+      }
+    }
+    return { mean: samples ? sum / samples : 0, samples };
+  };
+
+  const skyBand = (frame) => bandMean(frame, 0.05, 0.45);
+  const groundBand = (frame) => bandMean(frame, 0.6, 0.95);
+
+  // ── Camera: ground vantage, ANTI-SOLAR azimuth so the S1 sun billboard is
+  // out of frame entirely and nothing measured here can be its alpha fade.
+  const aimCamera = (julian, pitchDegrees) => {
+    const carto = C.Cartographic.fromDegrees(
+      cfg.lon,
+      cfg.lat,
+      cfg.cameraHeight,
+    );
+    const positionWC = C.Cartographic.toCartesian(carto);
+    const enu = C.Transforms.eastNorthUpToFixedFrame(positionWC);
+    const sunWC =
+      C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+        julian,
+        new C.Cartesian3(),
+      );
+    const rot = C.Transforms.computeIcrfToCentralBodyFixedMatrix(
+      julian,
+      new C.Matrix3(),
+    );
+    C.Matrix3.multiplyByVector(rot, sunWC, sunWC);
+    const toSun = C.Cartesian3.normalize(
+      C.Cartesian3.subtract(sunWC, positionWC, new C.Cartesian3()),
+      new C.Cartesian3(),
+    );
+    const inverseEnu = C.Matrix4.inverseTransformation(enu, new C.Matrix4());
+    const sunLocal = C.Matrix4.multiplyByPointAsVector(
+      inverseEnu,
+      toSun,
+      new C.Cartesian3(),
+    );
+    const sunHeading = Math.atan2(sunLocal.x, sunLocal.y);
+    scene.camera.setView({
+      destination: positionWC,
+      orientation: {
+        heading: sunHeading + Math.PI,
+        pitch: C.Math.toRadians(pitchDegrees),
+        roll: 0.0,
+      },
+    });
+  };
+
+  const results = { rungs: [], structuralError: null, pins, dials: null };
+
+  // ── Readiness: the lazy procedural feature renderer must have EXECUTED, and
+  // the globe must have BINNED commands. A fixed rAF count is not evidence.
+  configure({});
+  results.dials = pin.readDials();
+  const firstTime = C.JulianDate.fromIso8601(cfg.ladder[0].iso);
+  const ready = await cloudProbe.awaitProceduralReady({
+    featureRendererKey: cfg.proceduralKey,
+    frameTime: firstTime,
+    maxFrames: 240,
+  });
+  const globeReadiness = await pin.awaitGlobeReady(C, firstTime, 400, 60000);
+  results.ready = ready;
+  results.globeReadiness = { first: globeReadiness };
+
+  // ── Discarded warm-up. The async noise prewarm renders a cold first fixture
+  // stable-black; a scored capture taken there is not a measurement.
+  aimCamera(firstTime, cfg.skyPitchDegrees);
+  await pin.settle(firstTime, 1200);
+  pin.capture(firstTime, false); // discarded on purpose
+
+  const captures = [];
+  const captureLabelled = (label, julian, wantPng) => {
+    const frame = pin.capture(julian, wantPng);
+    captures.push({ label, slots: frame.slots });
+    return frame;
+  };
+
+  const shots = [];
+  for (let index = 0; index < cfg.ladder.length; index++) {
+    const rung = cfg.ladder[index];
+    const julian = C.JulianDate.fromIso8601(rung.iso);
+    const deepest = index === cfg.ladder.length - 1;
+
+    // ── LANE A: deck lighting. Four captures at ONE instant:
+    //   (cloudsOn, eclipseOff) (cloudsOff, eclipseOff)
+    //   (cloudsOn, eclipseOn)  (cloudsOff, eclipseOn)
+    // The deck's own contribution is the DIFFERENCE within each eclipse
+    // position, so the sky — which S2 already dims through its own sites —
+    // cancels exactly and what is left is the deck.
+    aimCamera(julian, cfg.skyPitchDegrees);
+    setEclipse(false);
+    configure({ enableVolumetric: true });
+    await pin.settle(julian, cfg.settleMs);
+    const aOffClouds = skyBand(
+      captureLabelled(`A${index}-eclipseOff-cloudsOn`, julian, deepest),
+    );
+    const offCloudsPng = deepest ? pin.capture(julian, true).png : null;
+    configure({ enableVolumetric: false });
+    await pin.settle(julian, cfg.settleMs);
+    const aOffBare = skyBand(
+      captureLabelled(`A${index}-eclipseOff-cloudsOff`, julian, false),
+    );
+
+    setEclipse(true);
+    configure({ enableVolumetric: true });
+    await pin.settle(julian, cfg.settleMs);
+    const aOnFrame = captureLabelled(
+      `A${index}-eclipseOn-cloudsOn`,
+      julian,
+      deepest,
+    );
+    const aOnClouds = skyBand(aOnFrame);
+    const onCloudsPng = deepest ? aOnFrame.png : null;
+    configure({ enableVolumetric: false });
+    await pin.settle(julian, cfg.settleMs);
+    const aOnBare = skyBand(
+      captureLabelled(`A${index}-eclipseOn-cloudsOff`, julian, false),
+    );
+
+    // The engine's published state for THIS instant, read in the same task as
+    // the render that produced it.
+    setEclipse(true);
+    configure({ enableVolumetric: true });
+    pin.renderAt(julian);
+    const eclipseState = scene.frameState?.eclipseState;
+    const published = {
+      moonObscuration: eclipseState ? eclipseState.moonObscuration : null,
+      factor: scene.frameState?.eclipseSceneLightFactor ?? null,
+      enabled: eclipseState ? eclipseState.enabled : null,
+      valid: eclipseState ? eclipseState.valid : null,
+      shadowStrength: scene.context?._cloudCache?.shadowStrength ?? null,
+    };
+    setEclipse(false);
+    pin.renderAt(julian);
+    const publishedOff = {
+      factor: scene.frameState?.eclipseSceneLightFactor ?? null,
+      moonObscuration: scene.frameState?.eclipseState?.moonObscuration ?? null,
+      shadowStrength: scene.context?._cloudCache?.shadowStrength ?? null,
+    };
+
+    // ── LANE B: ground cloud-shadow CONTRAST. Look down; toggle
+    // `cloudCastShadows` at one instant in each eclipse position. The contrast
+    // is `shadowOn / shadowOff`, and the CLAIM is that the eclipse leaves that
+    // ratio essentially unchanged (+0.08%) — because an eclipse dims the direct
+    // beam and the skylight together, so the shadow's contrast ratio survives
+    // until the nonlocal umbral floor takes over.
+    aimCamera(julian, cfg.groundPitchDegrees);
+    setEclipse(false);
+    configure({ enableVolumetric: true, dials: { cloudCastShadows: false } });
+    await pin.settle(julian, cfg.settleMs);
+    const bOffNoShadow = groundBand(
+      captureLabelled(`B${index}-eclipseOff-shadowOff`, julian, false),
+    );
+    configure({ enableVolumetric: true, dials: { cloudCastShadows: true } });
+    await pin.settle(julian, cfg.settleMs);
+    const bOffShadow = groundBand(
+      captureLabelled(`B${index}-eclipseOff-shadowOn`, julian, false),
+    );
+    const shadowStrengthOff =
+      scene.context?._cloudCache?.shadowStrength ?? null;
+
+    setEclipse(true);
+    configure({ enableVolumetric: true, dials: { cloudCastShadows: false } });
+    await pin.settle(julian, cfg.settleMs);
+    const bOnNoShadow = groundBand(
+      captureLabelled(`B${index}-eclipseOn-shadowOff`, julian, false),
+    );
+    configure({ enableVolumetric: true, dials: { cloudCastShadows: true } });
+    await pin.settle(julian, cfg.settleMs);
+    const bOnShadow = groundBand(
+      captureLabelled(`B${index}-eclipseOn-shadowOn`, julian, false),
+    );
+    const shadowStrengthOn = scene.context?._cloudCache?.shadowStrength ?? null;
+
+    // Restore the lane-A dials so the next rung starts from one configuration.
+    configure({ enableVolumetric: true });
+
+    if (deepest && onCloudsPng && offCloudsPng) {
+      shots.push({ name: "deepest-eclipseOn-cloudsOn", png: onCloudsPng });
+      shots.push({ name: "deepest-eclipseOff-cloudsOn", png: offCloudsPng });
+    }
+
+    results.rungs.push({
+      target: rung.target,
+      iso: rung.iso,
+      published,
+      publishedOff,
+      deck: {
+        offClouds: aOffClouds.mean,
+        offBare: aOffBare.mean,
+        onClouds: aOnClouds.mean,
+        onBare: aOnBare.mean,
+        offContribution: aOffClouds.mean - aOffBare.mean,
+        onContribution: aOnClouds.mean - aOnBare.mean,
+        samples: aOffClouds.samples,
+      },
+      shadow: {
+        offNoShadow: bOffNoShadow.mean,
+        offShadow: bOffShadow.mean,
+        onNoShadow: bOnNoShadow.mean,
+        onShadow: bOnShadow.mean,
+        strengthOff: shadowStrengthOff,
+        strengthOn: shadowStrengthOn,
+        samples: bOffShadow.samples,
+      },
+    });
+  }
+
+  // ── Determinism bracket: re-capture the FIRST scored configuration and
+  // require it to reproduce. Without this, residual capture noise is
+  // indistinguishable from a real effect at the tight lane-B band.
+  {
+    const rung = cfg.ladder[0];
+    const julian = C.JulianDate.fromIso8601(rung.iso);
+    aimCamera(julian, cfg.skyPitchDegrees);
+    setEclipse(false);
+    configure({ enableVolumetric: true });
+    await pin.settle(julian, cfg.settleMs);
+    const repeat = skyBand(
+      captureLabelled("repeat-A0-eclipseOff-cloudsOn", julian, false),
+    );
+    results.repeat = {
+      first: results.rungs[0].deck.offClouds,
+      again: repeat.mean,
+      delta: Math.abs(repeat.mean - results.rungs[0].deck.offClouds),
+    };
+  }
+
+  results.captures = captures;
+  results.shots = shots;
+  results.rendererType = String(
+    scene.context?.rendererType ?? "",
+  ).toLowerCase();
+  return results;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IN-PAGE: lane C — IBL dimming, the quantized refresh cadence, and recovery
+// ─────────────────────────────────────────────────────────────────────────────
+const RUN_IBL_SWEEP = async (cfg) => {
+  const C = (window.Cesium =
+    window.Cesium || (await import("/Build/CesiumUnminified/index.js")));
+  const pin = globalThis.__weatherPin;
+  const viewer = window.viewer;
+  const scene = viewer.scene;
+
+  const pins = pin.pinScene(C, {
+    groundAtmosphere: false,
+    fog: false,
+  });
+
+  // P10 is collected FIRST, while the globe is still shown: the readiness
+  // read-back proves the offline globe actually reached the frame. Only then
+  // does the lane hide it, because the measured quantity is the MODEL's
+  // IBL-lit brightness and a lit globe would dominate the band.
+  const readinessTime = C.JulianDate.fromIso8601(cfg.ramp[0].iso);
+  const globeReadiness = await pin.awaitGlobeReady(
+    C,
+    readinessTime,
+    300,
+    30000,
+  );
+
+  scene.globe.show = false;
+  scene.backgroundColor = C.Color.BLACK;
+  scene.light = new C.DirectionalLight({
+    direction: new C.Cartesian3(0, 0, -1),
+    color: C.Color.BLACK,
+    intensity: 0.0,
+  });
+
+  const ac = scene.globe ? scene.globe.atmosphericConditions : null;
+  if (!ac || !ac.lighting || !("enableEclipse" in ac.lighting)) {
+    return {
+      structuralError: "no atmosphericConditions.lighting.enableEclipse",
+    };
+  }
+
+  const modelMatrix = C.Transforms.eastNorthUpToFixedFrame(
+    C.Cartesian3.fromDegrees(cfg.lon, cfg.lat, 0.0),
+  );
+  const model = await C.Model.fromGltfAsync({
+    url: cfg.modelUrl,
+    modelMatrix,
+    scale: 1.0,
+  });
+  scene.primitives.add(model);
+
+  const firstTime = C.JulianDate.fromIso8601(cfg.ramp[0].iso);
+  for (let i = 0; i < 600 && !model.ready; i++) {
+    pin.renderAt(firstTime);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  if (!model.ready) {
+    return { structuralError: "the IBL model never became ready" };
+  }
+
+  const manager = model.environmentMapManager;
+  if (!manager) {
+    return { structuralError: "model.environmentMapManager is absent" };
+  }
+  // The COMMITTED refresh level, read from whichever backend owns it. Both
+  // commit inside the branch that actually re-fills, so a transition here IS a
+  // fill — that is what makes counting transitions a refresh count rather than
+  // a re-derivation of the arithmetic.
+  const committedBucket = () => {
+    const webgpu = manager._webgpuCache;
+    if (webgpu && "lastEclipseEnvBucket" in webgpu) {
+      return webgpu.lastEclipseEnvBucket;
+    }
+    if ("_lastEclipseEnvBucket" in manager) {
+      return manager._lastEclipseEnvBucket;
+    }
+    return undefined;
+  };
+  if (committedBucket() === undefined) {
+    return {
+      structuralError:
+        "no committed eclipse refresh bucket on either manager — the C13-41 refresh input is not reachable",
+    };
+  }
+
+  scene.camera.viewBoundingSphere(
+    model.boundingSphere,
+    new C.HeadingPitchRange(
+      0.0,
+      C.Math.toRadians(-20.0),
+      model.boundingSphere.radius * 3.5,
+    ),
+  );
+  scene.camera.lookAtTransform(C.Matrix4.IDENTITY);
+
+  const modelBand = (frame) => {
+    const { data, width, height } = frame;
+    let sum = 0;
+    let samples = 0;
+    let lit = 0;
+    for (let y = Math.floor(height * 0.25); y < height * 0.75; y += 2) {
+      for (let x = Math.floor(width * 0.25); x < width * 0.75; x += 2) {
+        const i = (y * width + x) * 4;
+        const luma =
+          (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) /
+          255;
+        sum += luma;
+        if (luma > 0.02) {
+          lit++;
+        }
+        samples++;
+      }
+    }
+    return {
+      mean: samples ? sum / samples : 0,
+      litFraction: samples ? lit / samples : 0,
+      samples,
+    };
+  };
+
+  // Frame labels only. The shared pin checker's capture clause reads the CLOUD
+  // uniform slots, and this lane deliberately runs no cloud deck (it isolates
+  // the environment cube), so `_cloudCache` does not exist and every slot would
+  // read `undefined`. Handing those captures to the checker would manufacture a
+  // structural failure out of a configuration the lane does not use; the lane
+  // therefore declares `captures: []` in the driver and the labels below exist
+  // for the report.
+  const frameLabels = [];
+  const settleAndRead = async (julian, label, milliseconds) => {
+    await pin.settle(julian, milliseconds);
+    const frame = pin.capture(julian, false);
+    frameLabels.push(label);
+    return modelBand(frame);
+  };
+
+  // ── The sweep. Eclipse ON. Rising branch = the derived instants; descending
+  // branch = the SAME instants replayed in reverse (see the file header).
+  ac.lighting.enableEclipse = true;
+  const schedule = [];
+  for (const rung of cfg.ramp) {
+    schedule.push(rung);
+  }
+  for (let k = cfg.ramp.length - 2; k >= 0; k--) {
+    schedule.push(cfg.ramp[k]);
+  }
+
+  // Warm-up so the environment cube's first fill is not inside the timed sweep.
+  await pin.settle(C.JulianDate.fromIso8601(schedule[0].iso), 1500);
+
+  const factors = [];
+  const buckets = [];
+  const obscurations = [];
+  let bucketTransitions = 0;
+  let previousCommitted = committedBucket();
+  const initialCommitted = previousCommitted;
+  const sweepStartMs = performance.now();
+  for (let f = 0; f < schedule.length; f++) {
+    const julian = C.JulianDate.fromIso8601(schedule[f].iso);
+    pin.renderAt(julian);
+    factors.push(scene.frameState?.eclipseSceneLightFactor ?? null);
+    obscurations.push(scene.frameState?.eclipseState?.moonObscuration ?? null);
+    const committed = committedBucket();
+    buckets.push(committed);
+    if (!Object.is(committed, previousCommitted)) {
+      bucketTransitions++;
+      previousCommitted = committed;
+    }
+    // Yield only every 32 frames: an await per frame turns an 801-frame sweep
+    // into 801 task boundaries, and the sweep is a COST measurement.
+    if ((f & 31) === 31) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+  const sweepWallMs = performance.now() - sweepStartMs;
+
+  // The NaN-seeded first commit is a refresh too (`NaN !== anything`), and it
+  // is the "one first-frame baseline" term of the 275. It happened during the
+  // warm-up above, so add it back explicitly rather than pretending the sweep
+  // saw it.
+  const engineRefreshCount =
+    bucketTransitions + (Number.isNaN(initialCommitted) ? 0 : 1);
+
+  // ── The COST control: the identical 801-frame schedule with the eclipse
+  // effect OFF, which produces exactly ONE eclipse-driven fill (the identity
+  // bucket, committed once). The difference is the wall-clock cost of the
+  // eclipse-driven fills — `C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`.
+  ac.lighting.enableEclipse = false;
+  await pin.settle(C.JulianDate.fromIso8601(schedule[0].iso), 1500);
+  let controlTransitions = 0;
+  let controlPrevious = committedBucket();
+  const controlStartMs = performance.now();
+  for (let f = 0; f < schedule.length; f++) {
+    pin.renderAt(C.JulianDate.fromIso8601(schedule[f].iso));
+    const committed = committedBucket();
+    if (!Object.is(committed, controlPrevious)) {
+      controlTransitions++;
+      controlPrevious = committed;
+    }
+    if ((f & 31) === 31) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+  const controlWallMs = performance.now() - controlStartMs;
+
+  // ── Brightness legs: baseline (clear), deepest, and RECOVERY (back at clear
+  // after the sweep has been through the deep phase). The recovery leg is the
+  // anti-latch assertion the row explicitly still owed.
+  ac.lighting.enableEclipse = true;
+  const clearTime = C.JulianDate.fromIso8601(cfg.ramp[0].iso);
+  const deepTime = C.JulianDate.fromIso8601(cfg.ramp[cfg.ramp.length - 1].iso);
+  const baseline = await settleAndRead(clearTime, "C-baseline", 1200);
+  const deepest = await settleAndRead(deepTime, "C-deepest", 1200);
+  const recovered = await settleAndRead(clearTime, "C-recovered", 1200);
+
+  const publishedAtDeepest = (() => {
+    pin.renderAt(deepTime);
+    return {
+      moonObscuration: scene.frameState?.eclipseState?.moonObscuration ?? null,
+      factor: scene.frameState?.eclipseSceneLightFactor ?? null,
+    };
+  })();
+
+  return {
+    pins,
+    globeReadiness: { sweep: globeReadiness },
+    frameLabels,
+    rendererType: String(scene.context?.rendererType ?? "").toLowerCase(),
+    sweepFrames: schedule.length,
+    factors,
+    obscurations,
+    buckets,
+    initialCommittedWasNaN: Number.isNaN(initialCommitted),
+    engineRefreshCount,
+    controlRefreshCount: controlTransitions,
+    sweepWallMs,
+    controlWallMs,
+    ibl: { baseline, deepest, recovered },
+    publishedAtDeepest,
+    modelReady: model.ready === true,
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Driver
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function openPage(browser, renderer) {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const consoleErrors = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      consoleErrors.push(message.text().slice(0, 400));
+    }
+  });
+  page.on("pageerror", (error) =>
+    consoleErrors.push(String(error).slice(0, 400)),
+  );
+  await installWeatherPinHarnessOnPage(page);
+  await installCloudProbeHarnessOnPage(page);
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&offline=true`,
+    { waitUntil: "domcontentloaded", timeout: 90000 },
+  );
+  await page.waitForFunction(() => !!window.viewer?.scene, null, {
+    timeout: 90000,
+  });
+  return { context, page, consoleErrors };
+}
+
+async function resolveProceduralKey(page) {
+  return page.evaluate(async () => {
+    const C = await import("/Build/CesiumUnminified/index.js");
+    const key = C.FeatureRendererKey?.PROCEDURAL_CLOUDS;
+    return typeof key === "number" ? key : null;
+  });
+}
+
+(async () => {
+  fs.mkdirSync(OUT_DIR, { recursive: true });
+
+  const prov = provenance();
+  if (!prov.ok) {
+    console.error(
+      "[probe-eclipse-cloud-response] PROVENANCE FAILURE — stale or missing build:",
+      JSON.stringify(prov, null, 2),
+    );
+    process.exit(2);
+  }
+
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  let derived;
+  let cloudLanes;
+  let iblWebGPU;
+  let iblWebGL;
+  const consoleFaults = { webgpu: [], webgl: [] };
+  const shotsWritten = [];
+
+  try {
+    // ── Derive the schedule ONCE, on a WebGL context (pure ephemeris; no
+    // rendering), and reuse it for both backends so the two runs are the same
+    // fixture rather than two independently-located ones.
+    {
+      const opened = await openPage(browser, "webgl");
+      derived = await opened.page.evaluate(DERIVE_SCHEDULE, {
+        targets: ECLIPSE_CLOUD_BANDS.ladderTargets,
+        rampFrames: SWEEP_RISING_FRAMES,
+        rampPeak: SWEEP_PEAK_OBSCURATION,
+      });
+      await opened.context.close().catch(() => {});
+    }
+    if (!derived || derived.structuralError) {
+      console.error(
+        "[probe-eclipse-cloud-response] schedule derivation failed:",
+        JSON.stringify(derived, null, 2),
+      );
+      await browser.close().catch(() => {});
+      process.exit(2);
+    }
+    console.log(
+      `2026-08-12 vantage ${derived.region} (${r3(derived.lat)}, ${r3(derived.lon)}), ` +
+        `peak obscuration ${r3(derived.peakObscuration)} at ${derived.peakIso}`,
+    );
+    for (const rung of derived.ladder) {
+      console.log(
+        `  ladder target ${rung.target} -> realized ${r6(rung.obscuration)} @ ${rung.iso}`,
+      );
+    }
+
+    const laneConfig = {
+      lat: derived.lat,
+      lon: derived.lon,
+      cameraHeight: 300.0,
+      skyPitchDegrees: 12.0,
+      groundPitchDegrees: -35.0,
+      settleMs: 500,
+      ladder: derived.ladder,
+      determinismDials: WEATHER_DETERMINISM_DIALS,
+    };
+
+    // ── WebGPU: lanes A + B, then lane C in a fresh context (the IBL lane
+    // hides the globe and replaces the scene light, so it must not share a
+    // context with the cloud lanes).
+    {
+      const opened = await openPage(browser, "webgpu");
+      const proceduralKey = await resolveProceduralKey(opened.page);
+      if (proceduralKey === null) {
+        cloudLanes = {
+          structuralError:
+            "FeatureRendererKey.PROCEDURAL_CLOUDS is not exported",
+        };
+      } else {
+        cloudLanes = await opened.page.evaluate(RUN_CLOUD_LANES, {
+          ...laneConfig,
+          proceduralKey,
+        });
+      }
+      consoleFaults.webgpu.push(...opened.consoleErrors.slice(0, 8));
+      if (cloudLanes?.shots) {
+        for (const shot of cloudLanes.shots) {
+          if (!shot.png) {
+            continue;
+          }
+          const file = path.join(
+            OUT_DIR,
+            `eclipse-cloud-response-${shot.name}.png`,
+          );
+          fs.writeFileSync(
+            file,
+            Buffer.from(shot.png.split(",")[1] ?? "", "base64"),
+          );
+          shotsWritten.push(file.replaceAll("\\", "/"));
+        }
+        delete cloudLanes.shots;
+      }
+      await opened.context.close().catch(() => {});
+    }
+
+    const iblConfig = {
+      lat: derived.lat,
+      lon: derived.lon,
+      modelUrl: MODEL_URL,
+      ramp: derived.ramp,
+    };
+    {
+      const opened = await openPage(browser, "webgpu");
+      iblWebGPU = await opened.page.evaluate(RUN_IBL_SWEEP, iblConfig);
+      consoleFaults.webgpu.push(...opened.consoleErrors.slice(0, 8));
+      await opened.context.close().catch(() => {});
+    }
+    {
+      const opened = await openPage(browser, "webgl");
+      iblWebGL = await opened.page.evaluate(RUN_IBL_SWEEP, iblConfig);
+      consoleFaults.webgl.push(...opened.consoleErrors.slice(0, 8));
+      await opened.context.close().catch(() => {});
+    }
+  } finally {
+    await browser.close().catch(() => {});
+  }
+
+  // ── Pin enforcement (exit 3). A probe that is not measuring the
+  // configuration it documents certifies nothing, so this is STRUCTURAL and
+  // never a product verdict.
+  const pinReasons = [];
+  for (const [name, lane] of [
+    ["webgpu-cloud", cloudLanes],
+    ["webgpu-ibl", iblWebGPU],
+    ["webgl-ibl", iblWebGL],
+  ]) {
+    if (!lane || lane.structuralError) {
+      pinReasons.push(
+        `${name}: ${lane?.structuralError ?? "lane did not run"}`,
+      );
+      continue;
+    }
+    // The cloud lanes hand in their dials AND every scored capture's uniform
+    // slots. The IBL lanes hand in neither: they run no cloud deck by design,
+    // so `_cloudCache` does not exist and the cloud-slot clause would
+    // manufacture a structural failure out of a configuration they do not use.
+    // Their scene pins and globe readiness are still fully enforced.
+    const isCloudLane = name === "webgpu-cloud";
+    pinReasons.push(
+      ...collectPinStructural({
+        pins: lane.pins,
+        dials: isCloudLane ? lane.dials : undefined,
+        captures: isCloudLane ? (lane.captures ?? []) : [],
+        globeReadiness: lane.globeReadiness ?? {},
+        requireWeatherMap: false,
+        subjectDials: ["cloudCastShadows", "cloudContributesIBL"],
+      }).map((reason) => `${name}: ${reason}`),
+    );
+  }
+
+  const verdicts =
+    pinReasons.length === 0
+      ? judgeEclipseCloudResponse({ cloudLanes, iblWebGPU, iblWebGL })
+      : null;
+
+  const structural =
+    pinReasons.length > 0 ||
+    verdicts === null ||
+    verdicts.structuralReasons.length > 0;
+  const failed = structural ? [] : verdicts.failedPredicates;
+  const GATE = structural
+    ? "STRUCTURAL"
+    : failed.length === 0
+      ? "PASS"
+      : "FAIL";
+
+  const report = {
+    probe: "probe-eclipse-cloud-response",
+    task: "C13-41 (C12-29 S3 rider) — cloud lighting / cloud shadow / IBL",
+    provenance: {
+      buildIsNewer: prov.buildIsNewer,
+      entryFresh: prov.entryFresh,
+      consideredFileCount: prov.consideredFileCount,
+    },
+    // The tier escape hatch every scored capture is required to have been taken
+    // under. Echoed into the report because the pin checker's failure message
+    // names it and a reader should not have to open the shared module to learn
+    // what value was expected.
+    pinnedCloudQuality: PINNED_CLOUD_QUALITY,
+    bands: ECLIPSE_CLOUD_BANDS,
+    predictions: {
+      factorAt09: predictFactor(SWEEP_PEAK_OBSCURATION),
+      directionalAt09: predictDirectional(SWEEP_PEAK_OBSCURATION),
+      bucketAt09: predictBucket(predictFactor(SWEEP_PEAK_OBSCURATION)),
+      sweepFrames: SWEEP_FRAMES,
+      sweepRefreshCount: predictedSweepRefreshCount(),
+    },
+    derived: derived
+      ? {
+          region: derived.region,
+          lat: derived.lat,
+          lon: derived.lon,
+          peakObscuration: derived.peakObscuration,
+          peakIso: derived.peakIso,
+          ladder: derived.ladder,
+          rampFrames: derived.ramp?.length ?? 0,
+        }
+      : null,
+    shotsWritten,
+    consoleFaults,
+    pinReasons,
+    webgpuCloudLanes: cloudLanes,
+    webgpuIbl: iblWebGPU,
+    webglIbl: iblWebGL,
+    verdicts,
+    GATE,
+  };
+  fs.writeFileSync(
+    path.join(OUT_DIR, "eclipse-cloud-response-report.json"),
+    JSON.stringify(report, null, 2),
+  );
+  console.log(
+    JSON.stringify(
+      { predictions: report.predictions, pinReasons, verdicts, GATE },
+      null,
+      2,
+    ),
+  );
+
+  // ── The one line a reader should need on a FAIL. The JSON above carries
+  // dozens of numbers; naming the GATING predicate that is not true is what
+  // keeps the next reader from picking a diagnostic out of the noise and
+  // calling it the cause.
+  if (structural) {
+    for (const reason of [
+      ...pinReasons,
+      ...(verdicts?.structuralReasons ?? []),
+    ]) {
+      console.log(`STRUCTURAL: ${reason}`);
+    }
+  } else {
+    console.log(
+      failed.length === 0
+        ? `GATE: PASS — all ${ECLIPSE_CLOUD_GATE_PREDICATES.length} gating predicates true`
+        : `GATE: FAIL — failing predicate(s): ${failed.join(", ")}`,
+    );
+    console.log(
+      `GATE parity: ${verdicts.parityFailed.length === 0 ? "PASS" : `FAIL — ${verdicts.parityFailed.join(", ")}`} ` +
+        `(${ECLIPSE_CLOUD_PARITY_PREDICATES.length} cross-backend predicates)`,
+    );
+    console.log(
+      `NOT GATING (reported-only): ${ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.join(", ")}`,
+    );
+    console.log(
+      `COST (C13-41-ECLIPSE-REFRESH-COST-UNMEASURED): ` +
+        `webgpu ${r3(verdicts.cost.webgpuMsPerRefresh)} ms/refresh, ` +
+        `webgl ${r3(verdicts.cost.webglMsPerRefresh)} ms/refresh`,
+    );
+  }
+
+  const exitCode =
+    pinReasons.length > 0 ? 3 : structural ? 2 : failed.length ? 1 : 0;
+  console.log(`EXIT: ${exitCode}`);
+  clearTimeout(watchdog);
+  process.exit(exitCode);
+})().catch((e) => {
+  console.error("[probe-eclipse-cloud-response] STRUCTURAL:", e);
+  process.exit(2);
+});
