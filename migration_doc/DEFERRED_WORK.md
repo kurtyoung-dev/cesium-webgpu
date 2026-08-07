@@ -606,6 +606,118 @@ upper edge) and `item8-near-sun-phase.png` (the forward glow must read as a brig
 gradient, not a clipped white disc - if it blows out, the lever is
 GENUS_PHASE_G_LIMIT and the number should be reported, not quietly retuned).
 
+### UPDATE 2026-08-06 - R3 EXECUTED: the march transfer is MEASURED, and the stated mechanism above was WRONG
+
+Ruling **R3** asked for a model of the INTEGRATED IMAGE before any authored aspect
+or gate threshold is touched. That model is
+`Tools/visual-regression/lib/cloud-march-transfer-model.mjs`, pinned by
+`Tools/visual-regression/cloud-march-transfer.spec.mjs` (22/22, five-way mutation
+group). It reconstructs the perspective ray, the shipped 1500-4000 m shell, the
+32 fine samples, the shipped LIVE density chain, the march's saturating transfer
+`alpha = 1 - exp(-tau)`, and the probe's OWN estimator at the probe's pixel scale
+(278.8 m/px). **No parameter is fitted** - every input is read from a shipped
+artifact.
+
+**Validation against the measured run (unfitted):**
+
+| lane | measured elongation | MODEL | measured along/across px | MODEL |
+|---|---|---|---|---|
+| CUMULUS | 0.971 | 0.836 | 3.59 / 3.70 | 3.50 / 4.18 |
+| CIRRUS | 1.178 | 1.232 | 7.68 / 6.51 | 7.49 / 6.08 |
+| CIRROSTRATUS | 0.978 | 0.992 | 7.21 / 7.37 | 7.01 / 7.06 |
+| CIRROCUMULUS | 0.905 | 0.937 | 6.93 / 7.66 | 6.71 / 7.16 |
+| CIRRUS wind-rotated (control) | 1.259 | 1.304 | 8.11 / 6.44 | 8.04 / 6.17 |
+
+Worst elongation error 0.054 on the three optically-thin lanes and 0.135 on
+CUMULUS (the optically THICK lane, median column `tau` ~9.9, where the two
+deliberately-omitted stages - tone mapping and the 8-bit canvas clip - act
+hardest). Worst half-length error 13.0%.
+
+**The mechanism recorded above ("the march integrates many shell samples per
+pixel ... so the along-wind correlation is averaged down") is REFUTED by the
+model.** Elongation is step-count INVARIANT: 8 / 16 / 32 / 96 steps give
+1.240 / 1.231 / 1.232 / 1.232 for CIRRUS, a spread of 0.009. Integration is not
+the attenuator.
+
+**The attenuator is the multiplicative composition with the ISOTROPIC BASE
+FIELD.** Replace `fbmNoise` with its own mean and run the identical march, the
+identical 32 steps, the identical saturating transfer and the identical estimator,
+and CIRRUS reads **9.06** - i.e. the authored 9:1 survives the march intact. The
+numbers behind it: one noise unit is 3333 m = 11.96 px, so the fibre domain's
+across-wind cell is ~4 px and its along-wind cell at aspect 9 is ~37 px, while the
+base fBm's first octave is a full ~12 px and the subtractive Worley erosion is
+~2.5 px. Final density is `base x gradient x erosion x fibre`, so the image's
+correlation length is set by the isotropic factors (~6.7 px, which is exactly what
+the model reports at aspect 1) and the carve is a minority share of the image
+variance. Its aspect can only stretch the share it already owns.
+
+**THE ANSWER TO R3's QUESTION: NEITHER (a) NOR (b) AS STATED. Gate C's 1.6 is
+unreachable by any authored aspect, so "raise the aspects" is not an available
+option - and the gate is reachable without touching an aspect at all.**
+
+Transfer curve, CIRRUS row otherwise shipped (strength 0.6, shear 0.9):
+
+| aspect | 1 | 2 | 3 | 5 | 7 | **9** | 12 | 16 | 24 | **32** | 48 | 64 | 96 | 256 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| on-screen elongation | 1.013 | 1.004 | 1.130 | 1.135 | 1.224 | **1.232** | 1.228 | 1.296 | 1.330 | **1.379** | 1.319 | 1.308 | 1.272 | 1.317 |
+
+The curve TURNS OVER at aspect ~32 with a ceiling of **1.379** and does not
+recover: once the along-wind fibre scale outruns the base field's own
+decorrelation length, further stretching buys nothing on screen. A 28x increase
+over the authored 9 buys +0.15 of elongation and still misses the 1.6 floor and
+the 1.4 `cirrusOverCumulusMin`.
+
+**The lever is fibre STRENGTH, which controls the carve DEPTH and therefore the
+fibre's share of image variance.** At the SHIPPED aspect 9:
+
+| strength | 0.2 | 0.4 | **0.6 (shipped)** | 0.7 | 0.75 | 0.8 | 0.9 | 1.0 |
+|---|---|---|---|---|---|---|---|---|
+| on-screen elongation | 0.994 | 1.051 | **1.232** | 1.466 | 1.654 | 2.077 | 3.117 | 4.170 |
+
+Gate C's 1.6 crosses between strength **0.70 and 0.75** with the aspect untouched.
+A third lever, `FIBRE_DOMAIN_FREQUENCY` (shipped 3.0), was measured and is weak
+and non-monotone: the best value found (1.5) reaches only 1.271.
+
+**THE COST, which is why this is still a maintainer decision and not an edit.**
+Raising strength deepens the carve, which REMOVES density: modelled mean column
+opacity falls from 0.199 at strength 0.6 to ~0.166 at 0.75, **-17%**. That is in
+direct collision with the risk already recorded for this same row - the
+`probe-cloud-tour.mjs` `northatlantic-cirrus-fibratus` floor, where ground is
+expected near 0.0017 against a 0.002 floor, and where the recorded correct
+response is *lowering* `FIBRE_MORPHOLOGY[CIRRUS].strength`, never the floor. The
+two demands point in opposite directions and cannot both be satisfied by this
+knob. `GENUS_PHASE_G_LIMIT` is NOT coupled to either lever arithmetically: the
+phase delta is slot 171 and the aspect slot 169, and cirrus already runs AT the
+clamp (`phaseG1` 0.85 + delta 0.12 = 0.97 -> clamped to 0.95) regardless of what
+the aspect or strength do. The coupling is visual only.
+
+**Gate D is the same phenomenon, confirmed.** The model reproduces the failure
+SHAPE: at the shipped strength a competing off-axis lobe of the same amplitude as
+the wind lobe wins the argmax, and at strength 0.75 the argmax snaps cleanly to
+the true wind axis (0 deg and 90 deg on the two wind lanes). The model does NOT
+reproduce the measured lobe's LOCATION (it puts it at 150 deg; the probe measured
+30 deg) - see the limitations below.
+
+**LIMITATIONS, stated so they are not discovered later as surprises.** The model
+omits the light march, multi-scatter octaves, silver lining, sky/ground ambient
+and the HG phase (all per-sample COLOUR terms, which cancel in a
+variance-normalised correlation ratio unless they imprint structure at the
+metric's own ~7 px scale - the unexplained 30 deg lobe is the most likely place
+they do); it omits tone mapping and the 8-bit canvas clip (which is where the
+CUMULUS residual of 0.135 sits - forcing a clip at radiance 400 moves CUMULUS to
+0.964 against the measured 0.971, but that number is FITTED and is recorded as a
+diagnosis, not adopted); and it evaluates the field directly at the estimator's
+sample positions rather than rasterising and bilinearly resampling as the probe
+does. None of these move the two findings above: the step-count invariance and
+the aspect ceiling both hold across every variation tried.
+
+**STILL OWED, and still the maintainer's call:** whether to spend the -17% deck
+opacity to buy a gate-C-passing cirrus, whether to instead re-derive gates C/D/E
+from THIS model (which is now possible and which can fail), or whether to accept
+the current appearance and record the attenuation. R3 forbade re-deriving the
+gates from the measured values; deriving them from this model is a different act
+and is now available. Nothing in the authored table was changed by this work.
+
 ## 2026-08-06 - ground fog renders NOTHING (Phase C, defect present since Batch 420)
 ### NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING
 
