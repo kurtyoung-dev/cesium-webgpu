@@ -11,6 +11,7 @@
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
+import BoundingSphere from "../../Core/BoundingSphere.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import {
@@ -124,6 +125,14 @@ interface GaussianSplatCache {
   pickCommand: CesiumAnyDrawCommand | null;
   initialized: boolean;
   lastRevision: number;
+  // C15-G6h (NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE) — MODEL-space bounds of the
+  // resident splat centres, recomputed only when the attribute bytes change
+  // (in the same block that uploads them, so it adds no new asymptotic cost),
+  // and the world-space sphere the draw command carries. Kept separate because
+  // the model matrix can change every frame while the data does not: the
+  // per-frame work is one `BoundingSphere.transform`, not a rescan.
+  localBoundingSphere: BoundingSphere | null;
+  worldBoundingSphere: BoundingSphere | null;
   // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — flip-
   // rebuild guard mirroring the format-generation guard. When the LOG_DEPTH
   // master switch flips, the color/depth-write pipelines must recompile from
@@ -1374,6 +1383,10 @@ const PACKED_SPLAT_RECORD_BYTES = 32;
 const LEGACY_SPLAT_RECORD_BYTES = 64;
 /** u32 words per splat in the packed WASM record. @private */
 const PACKED_SPLAT_RECORD_WORDS = PACKED_SPLAT_RECORD_BYTES / 4;
+// C15-G6h — f32 lanes per legacy record, the unit `computeLocalSplatBoundingSphere`
+// strides by. Derived from the byte size for the same reason the word count is:
+// a literal here could drift from the record the shader decodes.
+const LEGACY_SPLAT_RECORD_FLOATS = LEGACY_SPLAT_RECORD_BYTES / 4;
 
 /**
  * Payloads whose short-buffer error has already been reported, so the
@@ -1461,6 +1474,131 @@ function resolveSplatSource(primitive: CesiumObjectWithWebGPUCache): {
     };
   }
   return { view: null, count: 0, packed: false, token: null };
+}
+
+/**
+ * C15-G6h (NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE) — MODEL-space bounding sphere
+ * over the resident splat centres.
+ *
+ * # Why the command needs one at all
+ *
+ * `View.createPotentiallyVisibleSet` gives a command with NO `boundingVolume`
+ * the camera's worst-case span (`View.js:382-392`). Under log depth that span
+ * is `[0.1, 1e10]`, whose 1e11 ratio splits into TWO depth slices — and the
+ * BV-less command then bins into BOTH, while the globe (whose tiles carry real
+ * bounding volumes) bins only into the near one. The frustum loop clears depth
+ * between slices (`WebGPUSceneRendererFrustumLoop.ts:251-253`) and preserves
+ * colour, so the splat's far-slice execution draws against a depth buffer that
+ * does not contain the globe. That is the `C15-G6h` leak: measured at Batch 888
+ * with all three producers' baked log-depth pairs EQUAL, which excluded the
+ * encode and left the binning.
+ *
+ * B647 already added `boundingVolume: tileset.boundingSphere` for real content
+ * (matching `GaussianSplatPrimitive.js:2318`), but every exerciser of this path
+ * is a synthetic primitive with no `_tileset`, so that fix has never executed —
+ * the `C15-G6` queue row records exactly that. This derivation closes the gap
+ * for ANY producer, so a custom or synthetic primitive cannot silently inherit
+ * the worst-case span.
+ *
+ * # Cost
+ *
+ * Called ONLY from the attribute-commit block, which already walks the same
+ * bytes to upload them and already fills an O(n) identity permutation. Two
+ * allocation-free passes (AABB, then exact radius about its centre) add no new
+ * asymptotic cost and nothing per frame — the per-frame work is one
+ * `BoundingSphere.transform` at the command site.
+ *
+ * # What is deliberately NOT included
+ *
+ * The Gaussian FOOTPRINT (each splat's covariance) is not added to the radius.
+ * The command is not `cull`-gated — `Scene.isVisible` returns true immediately
+ * for `!command.cull` (`Scene.js:3746`) — so this volume can never clip a splat
+ * out of the frame; it feeds slice binning, the scene near/far accumulators and
+ * the back-to-front sort key, all of which work in kilometres-to-megametres
+ * while a splat's footprint is metres. Adding it would mean decoding f16
+ * covariance for the packed layout to move a slice boundary that cannot move.
+ *
+ * @param view - the resident attribute bytes (legacy 16-f32 or packed 8-u32).
+ * @param count - splat count.
+ * @param packed - true for the WASM `SPLAT_PACKED_WASM` record layout.
+ * @returns the model-space sphere, or null when there is nothing to bound.
+ */
+function computeLocalSplatBoundingSphere(
+  view: ArrayBufferView,
+  count: number,
+  packed: boolean,
+): BoundingSphere | null {
+  if (count <= 0) {
+    return null;
+  }
+  // Both layouts are read as f32 over the SAME bytes: the packed record stores
+  // position as three u32 words that the WGSL `bitcast<f32>`s, and reading them
+  // through a Float32Array is that same reinterpretation, bit-exact.
+  const stride = packed
+    ? PACKED_SPLAT_RECORD_WORDS
+    : LEGACY_SPLAT_RECORD_FLOATS;
+  const needed = count * stride;
+  if (view.byteOffset % 4 !== 0 || view.byteLength < needed * 4) {
+    return null;
+  }
+  const f32 = new Float32Array(view.buffer, view.byteOffset, needed);
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < count; i++) {
+    const base = i * stride;
+    // RTE: the legacy record splits the model-space position into high + low
+    // words (the packed WASM record has no low word — the f32 IS the data's
+    // precision ceiling, see `loadSplat`). Recombining here mirrors the vertex
+    // shader exactly; the sum is model-space and metre-scale by construction.
+    const x = packed ? f32[base] : f32[base] + f32[base + 3];
+    const y = packed ? f32[base + 1] : f32[base + 1] + f32[base + 4];
+    const z = packed ? f32[base + 2] : f32[base + 2] + f32[base + 5];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      // A NaN centre would poison the sphere and, through it, the scene near/far
+      // accumulators — every other command's slice assignment with it. Skip the
+      // record; a cloud that is ENTIRELY non-finite falls through to null below.
+      continue;
+    }
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (z < minZ) minZ = z;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+    if (z > maxZ) maxZ = z;
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
+    return null;
+  }
+
+  const cx = (minX + maxX) * 0.5;
+  const cy = (minY + maxY) * 0.5;
+  const cz = (minZ + maxZ) * 0.5;
+  // Exact radius about the AABB centre rather than half the diagonal: the
+  // diagonal over-bounds a flat or linear cloud (common for a single tile) by
+  // up to sqrt(3), which would widen the scene far plane for everyone.
+  let radiusSquared = 0.0;
+  for (let i = 0; i < count; i++) {
+    const base = i * stride;
+    const x = (packed ? f32[base] : f32[base] + f32[base + 3]) - cx;
+    const y = (packed ? f32[base + 1] : f32[base + 1] + f32[base + 4]) - cy;
+    const z = (packed ? f32[base + 2] : f32[base + 2] + f32[base + 5]) - cz;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      continue;
+    }
+    const d = x * x + y * y + z * z;
+    if (d > radiusSquared) {
+      radiusSquared = d;
+    }
+  }
+  return new BoundingSphere(
+    new Cartesian3(cx, cy, cz),
+    Math.sqrt(radiusSquared),
+  );
 }
 
 /**
@@ -1561,6 +1699,9 @@ function updateWebGPUGaussianSplats(
       // C10-09 - prev-buffer revision-skip.
       instanceDataRevision: 0,
       prevBufferRevision: undefined,
+      // C15-G6h - derived command bounds; filled by the attribute commit.
+      localBoundingSphere: null,
+      worldBoundingSphere: null,
     } as GaussianSplatCache;
   }
 
@@ -1801,6 +1942,14 @@ function updateWebGPUGaussianSplats(
       ? PACKED_SPLAT_RECORD_BYTES
       : LEGACY_SPLAT_RECORD_BYTES;
     cache.splatSourceToken = source.token;
+    // C15-G6h — recompute the model-space bounds alongside the bytes they
+    // describe. This is the ONLY call site: bounds and buffer contents change
+    // together by construction, so they can never disagree.
+    cache.localBoundingSphere = computeLocalSplatBoundingSphere(
+      splatData,
+      revision,
+      source.packed,
+    );
     cache.command = null;
     // Batch 171 - track THIS frame's splat data so the velocity helper
     // can promote it to `prevSplatData` AFTER its dispatch. Reference
@@ -2094,15 +2243,53 @@ function updateWebGPUGaussianSplats(
   // `boundingVolume.center`). Without them a multi-frustum real-tileset splat
   // command is binned into every frustum band and never depth-sorted against
   // its neighbours. Both refresh every frame (the tileset bounding sphere
-  // grows as tiles stream in). Synthetic FR-driven primitives without a
-  // tileset (probes) leave `boundingVolume` undefined — null-safe: the sorter
-  // short-circuits on missing centers and single-frustum binning is unaffected.
+  // grows as tiles stream in).
+  //
+  // C15-G6h — and "without them" was EVERY frame, for every exerciser of this
+  // path. The pre-existing note here said a missing `boundingVolume` was
+  // "null-safe … single-frustum binning is unaffected". The first half is true
+  // and the second half was the defect: a BV-less command does not get
+  // single-frustum binning, it gets the camera's WORST-CASE span
+  // (`View.js:382-392`), which under log depth is `[0.1, 1e10]` — a 1e11 ratio
+  // that splits into TWO slices and bins the command into BOTH, while the globe
+  // bins into the near one only. Depth is cleared between slices and colour is
+  // not, so the far-slice execution composites against a depth buffer with no
+  // globe in it. Measured at Batch 888 with every producer's baked log-depth
+  // pair EQUAL, which excluded the encode and left exactly this.
+  //
+  // So the bounding volume is now derived when no tileset offers one, and the
+  // fallback order is deliberate:
+  //   1. `_tileset.boundingSphere` — WebGL parity, and authoritative for real
+  //      content because it covers the WHOLE tileset (including tiles not yet
+  //      resident) rather than just the splats currently uploaded;
+  //   2. the derived sphere over the resident centres, transformed to world
+  //      space by the SAME matrix the command carries (C15-G3's lesson: the
+  //      splat's model frame is `_rootTransform` for real content and
+  //      `modelMatrix` for synthetic primitives — `splatModelMatrix` resolves
+  //      both, and a bounding volume left in model space would bin against the
+  //      camera as though the tileset sat at the geocentre);
+  //   3. `undefined` — only reachable for a producer with neither a tileset nor
+  //      decodable attribute bytes. That keeps the worst-case span, which is the
+  //      honest answer when the extent is genuinely unknown: a command that
+  //      might belong in any slice must not be clipped out of one.
   const parityFields = primitive as unknown as {
     _tileset?: { boundingSphere?: CesiumBoundingSphere };
     _rootTransform?: Matrix4;
   };
-  const commandBoundingVolume = parityFields._tileset?.boundingSphere;
   const commandModelMatrix = parityFields._rootTransform ?? mm;
+  let commandBoundingVolume = parityFields._tileset?.boundingSphere;
+  if (!commandBoundingVolume && cache.localBoundingSphere) {
+    // Transform into a persistent scratch: the model matrix can change every
+    // frame while the data does not, so this is the only per-frame cost and it
+    // is O(1). The command holds a reference to this same object, which the
+    // PVS walk reads synchronously in the same frame.
+    cache.worldBoundingSphere ??= new BoundingSphere();
+    commandBoundingVolume = BoundingSphere.transform(
+      cache.localBoundingSphere,
+      commandModelMatrix,
+      cache.worldBoundingSphere,
+    ) as unknown as CesiumBoundingSphere;
+  }
 
   if (!cache.command) {
     const cmd = new WebGPUDrawCommand({

@@ -4668,3 +4668,306 @@ for (const mutant of G6G_MUTANTS) {
     );
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// C15-G6h — the command bounding volume, and the multifrustum leak it closes
+//
+// MECHANISM (measured at Batch 888, after the encode was excluded with numbers):
+// `View.createPotentiallyVisibleSet` gives a command with no `boundingVolume`
+// the camera's WORST-CASE span (`View.js:382-392`). Under log depth that is
+// [0.1, 1e10]; its 1e11 ratio splits into two depth slices and the command bins
+// into BOTH, while the globe's tiles — which carry real bounding volumes — bin
+// into the near one only. The frustum loop clears depth between slices and
+// preserves colour (`WebGPUSceneRendererFrustumLoop.ts:251-253`), so the
+// far-slice execution composites against a depth buffer with no globe in it.
+//
+// B647 added `boundingVolume: tileset.boundingSphere` for real content and the
+// `C15-G6` row records that it has never executed, because every exerciser of
+// this path is a synthetic primitive with no `_tileset`. The fix derives the
+// volume when no tileset offers one, so no producer can inherit the worst-case
+// span. These rules execute the derivation, not just its source text.
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Extract `computeLocalSplatBoundingSphere` from the renderer and make it
+ * callable: the function is pure and touches only Math / Float32Array / Number
+ * plus two module constants and two Core classes, all injected here. Executing
+ * the REAL source is the point — a spec that re-implemented the algorithm would
+ * pass just as happily against a broken engine.
+ */
+function loadDerivedBoundsFn(rendererSource) {
+  const text = tsBlock(
+    rendererSource,
+    "function computeLocalSplatBoundingSphere(",
+  );
+  const header = rendererSource.slice(
+    rendererSource.indexOf("function computeLocalSplatBoundingSphere("),
+    rendererSource.indexOf(text),
+  );
+  assert.match(
+    header,
+    /view: ArrayBufferView,\s*count: number,\s*packed: boolean,/,
+    "computeLocalSplatBoundingSphere's signature changed — the extractor is stale",
+  );
+  // Stub the two Core classes with plain shapes; the assertions below only read
+  // `center.{x,y,z}` and `radius`. Same compile-the-extracted-source technique
+  // `loadPayloadPredicate` above already uses — executing the REAL function is
+  // the whole point, and a `.ts` source cannot be imported directly here.
+  // eslint-disable-next-line no-new-func
+  const factory = new Function(
+    "PACKED_SPLAT_RECORD_WORDS",
+    "LEGACY_SPLAT_RECORD_FLOATS",
+    "BoundingSphere",
+    "Cartesian3",
+    `return function computeLocalSplatBoundingSphere(view, count, packed) ${text};`,
+  );
+  return factory(
+    8,
+    16,
+    class {
+      constructor(center, radius) {
+        this.center = center;
+        this.radius = radius;
+      }
+    },
+    class {
+      constructor(x, y, z) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+      }
+    },
+  );
+}
+
+/** Legacy 16-f32 record: positionHigh(0..2) + positionLow(3..5), rest unused. */
+function legacyBuffer(points) {
+  const out = new Float32Array(points.length * 16);
+  points.forEach(([x, y, z], i) => {
+    const b = i * 16;
+    // Split each coordinate across the high/low lanes so the test proves the
+    // RTE recombination, not just that lane 0 was read.
+    out[b] = x - 0.25;
+    out[b + 1] = y - 0.25;
+    out[b + 2] = z - 0.25;
+    out[b + 3] = 0.25;
+    out[b + 4] = 0.25;
+    out[b + 5] = 0.25;
+  });
+  return out;
+}
+
+/** Packed WASM 8-u32 record: position in words 0..2, bitcast to f32. */
+function packedBuffer(points) {
+  const f32 = new Float32Array(points.length * 8);
+  points.forEach(([x, y, z], i) => {
+    const b = i * 8;
+    f32[b] = x;
+    f32[b + 1] = y;
+    f32[b + 2] = z;
+  });
+  return new Uint32Array(f32.buffer);
+}
+
+test("G6h: the derived bounding sphere is correct, EXECUTED, in both layouts", () => {
+  const derive = loadDerivedBoundsFn(readNormalized(RENDERER_PATH));
+  // A deliberately ASYMMETRIC, FLAT cloud: a symmetric one would pass even if
+  // the centre were computed as a plain average, and a non-flat one would hide
+  // an over-bounding radius.
+  const points = [
+    [0, 0, 0],
+    [10, 0, 0],
+    [10, 4, 0],
+    [0, 4, 0],
+  ];
+  for (const [label, view, packed] of [
+    ["legacy", legacyBuffer(points), false],
+    ["packed", packedBuffer(points), true],
+  ]) {
+    const sphere = derive(view, points.length, packed);
+    assert.ok(sphere, `${label}: no sphere derived`);
+    assert.ok(Math.abs(sphere.center.x - 5) < 1e-4, `${label}: centre x`);
+    assert.ok(Math.abs(sphere.center.y - 2) < 1e-4, `${label}: centre y`);
+    assert.ok(Math.abs(sphere.center.z - 0) < 1e-4, `${label}: centre z`);
+    // Exact radius about the AABB centre = sqrt(5^2 + 2^2). Half the AABB
+    // DIAGONAL would be sqrt(5^2+2^2+0^2) too here, so the flat case alone does
+    // not separate them — the z-extruded case below does.
+    assert.ok(
+      Math.abs(sphere.radius - Math.sqrt(29)) < 1e-4,
+      `${label}: radius ${sphere.radius} != sqrt(29)`,
+    );
+  }
+  // Empty and short inputs must return null rather than a poisoned sphere: a
+  // NaN centre would flow into the scene near/far accumulators and re-slice the
+  // frustum for EVERY other command in the frame.
+  assert.equal(derive(legacyBuffer([]), 0, false), null);
+  assert.equal(derive(new Float32Array(4), 1, false), null, "short buffer");
+  const nonFinite = legacyBuffer([[0, 0, 0]]);
+  nonFinite[0] = Number.NaN;
+  assert.equal(derive(nonFinite, 1, false), null, "all-NaN cloud");
+});
+
+test("G6h: the radius is exact about the centre, not half the AABB diagonal", () => {
+  const derive = loadDerivedBoundsFn(readNormalized(RENDERER_PATH));
+  // No point sits at an AABB CORNER: the x-extremes are at mid-height and the
+  // y-extremes are at mid-span. Half the AABB diagonal then strictly
+  // over-bounds, so this separates the two formulas — a cloud whose extremes
+  // happen to be corners does not, which is why the flat case above cannot
+  // stand in for this one. Over-bounding widens the scene FAR plane for every
+  // command in the frame, which is how a "harmless" bounding volume re-slices
+  // the frustum.
+  const points = [
+    [-5, 0.5, 0],
+    [5, 0.5, 0],
+    [0, 0, 0],
+    [0, 1, 0],
+  ];
+  const sphere = derive(legacyBuffer(points), points.length, false);
+  const halfDiagonal = Math.sqrt(5 * 5 + 0.5 * 0.5);
+  assert.ok(Math.abs(sphere.center.y - 0.5) < 1e-4);
+  assert.ok(
+    sphere.radius < halfDiagonal,
+    `radius ${sphere.radius} is not tighter than the half-diagonal ${halfDiagonal}`,
+  );
+  assert.ok(Math.abs(sphere.radius - 5) < 1e-4);
+});
+
+test("G6h: the command's bounding volume is derived, and in WORLD space", () => {
+  const renderer = readNormalized(RENDERER_PATH);
+  // Fallback order: tileset sphere (WebGL parity, covers non-resident tiles)
+  // then the derived sphere. Losing either leg re-opens the leak for a
+  // different class of producer.
+  assert.match(
+    renderer,
+    /let commandBoundingVolume = parityFields\._tileset\?\.boundingSphere;/,
+    `${RENDERER_PATH}: the tileset bounding sphere is no longer the first source — that is B647's WebGL-parity path`,
+  );
+  assert.match(
+    renderer,
+    /if \(!commandBoundingVolume && cache\.localBoundingSphere\)/,
+    `${RENDERER_PATH}: the derived-bounds fallback is gone — BV-less commands inherit the camera worst-case span again and re-open C15-G6h`,
+  );
+  // C15-G3's lesson: the splat's model frame is `_rootTransform` for real
+  // content and `modelMatrix` for synthetic primitives. A volume left in model
+  // space bins against the camera as though the tileset sat at the geocentre.
+  assert.match(
+    renderer,
+    /BoundingSphere\.transform\(\s*cache\.localBoundingSphere,\s*commandModelMatrix,/,
+    `${RENDERER_PATH}: the derived sphere is no longer transformed to world space by the command's own matrix`,
+  );
+  // Derived exactly where the bytes it describes are uploaded, so the two can
+  // never disagree — and so the O(n) scan cannot migrate into the per-frame path.
+  const commitBlock = renderer.slice(
+    renderer.indexOf("cache.splatSourceToken = source.token;"),
+    renderer.indexOf("cache.instanceDataRevision++"),
+  );
+  assert.match(
+    commitBlock,
+    /cache\.localBoundingSphere = computeLocalSplatBoundingSphere\(/,
+    `${RENDERER_PATH}: the bounds derivation left the attribute-commit block`,
+  );
+  assert.equal(
+    (renderer.match(/computeLocalSplatBoundingSphere\(/g) ?? []).length,
+    2,
+    `${RENDERER_PATH}: computeLocalSplatBoundingSphere has more than its definition + single commit-block call site — an extra call is a per-frame O(n) scan`,
+  );
+});
+
+const G6H_MUTANTS = [
+  {
+    name: "the derived-bounds fallback is removed (BV-less commands return)",
+    mutate: (source) =>
+      source.replace(
+        "if (!commandBoundingVolume && cache.localBoundingSphere) {",
+        "if (false && cache.localBoundingSphere) {",
+      ),
+    check: (source) =>
+      assert.match(
+        source,
+        /if \(!commandBoundingVolume && cache\.localBoundingSphere\)/,
+        "the derived-bounds fallback is gone",
+      ),
+    because: /derived-bounds fallback is gone/,
+  },
+  {
+    name: "the derived sphere is left in MODEL space (transform dropped)",
+    mutate: (source) =>
+      source.replace(
+        /BoundingSphere\.transform\(\s*cache\.localBoundingSphere,\s*commandModelMatrix,\s*cache\.worldBoundingSphere,\s*\)/,
+        "cache.localBoundingSphere",
+      ),
+    check: (source) =>
+      assert.match(
+        source,
+        /BoundingSphere\.transform\(\s*cache\.localBoundingSphere,\s*commandModelMatrix,/,
+        "the derived sphere is no longer transformed to world space",
+      ),
+    because: /no longer transformed to world space/,
+  },
+  {
+    name: "the legacy RTE recombination drops the low word",
+    mutate: (source) =>
+      source.replace(
+        "    const x = packed ? f32[base] : f32[base] + f32[base + 3];",
+        "    const x = f32[base];",
+      ),
+    check: (source) => {
+      const derive = loadDerivedBoundsFn(source);
+      const sphere = derive(legacyBuffer([[10, 0, 0]]), 1, false);
+      assert.ok(
+        Math.abs(sphere.center.x - 10) < 1e-4,
+        `centre x ${sphere.center.x} lost the RTE low word`,
+      );
+    },
+    because: /lost the RTE low word/,
+  },
+  {
+    name: "the O(n) scan is hoisted out of the commit block into every frame",
+    mutate: (source) =>
+      source.replace(
+        "  let commandBoundingVolume = parityFields._tileset?.boundingSphere;",
+        "  cache.localBoundingSphere = computeLocalSplatBoundingSphere(source.view, source.count, source.packed);\n  let commandBoundingVolume = parityFields._tileset?.boundingSphere;",
+      ),
+    check: (source) =>
+      assert.equal(
+        (source.match(/computeLocalSplatBoundingSphere\(/g) ?? []).length,
+        2,
+        "an extra call is a per-frame O(n) scan",
+      ),
+    because: /per-frame O\(n\) scan/,
+  },
+];
+
+for (const mutant of G6H_MUTANTS) {
+  test(`G6h mutant rejected: ${mutant.name}`, () => {
+    const real = readNormalized(RENDERER_PATH);
+    const mutated = mutant.mutate(real);
+    assert.notEqual(mutated, real, "the mutation did not apply");
+    assert.throws(
+      () => mutant.check(mutated),
+      mutant.because,
+      `${mutant.name}: accepted, or rejected for the wrong reason`,
+    );
+  });
+}
+
+test("G6h: the per-frustum depth clear that makes binning load-bearing is still there", () => {
+  // The leak needs BOTH halves: a command in a slice it does not belong in, AND
+  // depth being reset between slices while colour accumulates. If the second
+  // half ever changes, the bounding volume stops being a correctness fix and
+  // becomes a performance one — a future reader must not inherit the wrong
+  // reason for this code.
+  const loop = readNormalized(FRUSTUM_LOOP_PATH);
+  assert.match(
+    loop,
+    /Clear depth\/stencil per frustum \(but not color — color accumulates across frustums\)\./,
+    `${FRUSTUM_LOOP_PATH}: the per-frustum depth-clear contract changed`,
+  );
+  assert.match(loop, /host\._clearDepthStencil\(context\);/);
+  const view = readNormalized("packages/engine/Source/Scene/View.js");
+  assert.match(
+    view,
+    /If command has no bounding volume we need to use the camera's[\s\S]{0,120}worst-case near and far planes/,
+    "View.js no longer gives BV-less commands the camera worst-case span — re-derive C15-G6h before trusting it",
+  );
+});
