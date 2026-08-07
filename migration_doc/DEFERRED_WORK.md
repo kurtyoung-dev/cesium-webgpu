@@ -37,6 +37,30 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-08-06 - INSTRUMENT DEFECT CLASS: gates that assert a PROXY instead of the driving variable
+
+- **NEW-PROBE-VACUOUS-REACHABILITY-ASSERTION — FILED (2026-08-06, C12-G1F2 repair); premise CONFIRMED at HEAD `bba8dc657a` by code inspection of both blockers.** **The class:** a gate whose reachability assertion names a variable that merely CORRELATES with the one driving the defect. Such a gate reports PASS or FAIL over a scene in which its subject cannot occur, and nothing in the output says so — it is strictly worse than no gate, because it manufactures evidence.
+
+  **The instance that named the class.** `probe-celestial-gates.mjs` (gate G1) existed to protect the C11-176 star-brightness modulation. Its header claimed its framing was "the only framing that reaches the C11-176 failure state" and it asserted `sunElevationDeg >= 25`. But the modulation term is driven by `frameState.skyBrightness`, and **two independent blockers** held that at exactly 0 in G1's own scene:
+  1. G1's camera sits at `dist = 5.0e7` m (height ~43,600 km), far above `ATMOSPHERIC_COLUMN_FADE_END = 111000.0` (`packages/engine/Source/Scene/SkyBrightness.js:60`, applied at `:563` as `clamped * computeAtmosphericColumnFactor(cameraHeight)`), so the column factor is 0. `AtmosphericConditions.js` documents this as the DESIGN — "that camera gets factor 1.0 and is byte-identical to today" — i.e. the orbital camera is precisely the one that must NOT dim.
+  2. `packages/engine/Source/Scene/CubeMapPanorama.js:433` additionally gates the whole term on `frameState.skyAtmosphereVisible === true`, and G1 sets `scene.skyAtmosphere.show = false`.
+
+  Both recorded runs corroborate it: `skyBrightness {webgl: 0, webgpu: 0}` at `sunElevationDeg: 90`, with `framingReached: true`. The gate had run green-or-red on this scene for the whole life of the row.
+
+  **Why this is a class, not a one-off.** The failure mode needs only two ingredients that recur across this fleet: (a) a defect driven by a derived scalar that the probe does not read, and (b) a stand-in that is cheap to compute from the camera. Sibling shapes already seen: `probe-eclipse-sun-fade`'s `legacyBehaviourRestored` asked a luminance metric to show a cull whose boundary sits below the observable band (Batch 760, lane-(c) C1); the G1 `sprites-only` split scores a count ratio on a mode where BOTH backends census 0 sources, which is 0/0, not parity. In every case the correct verdict is **STRUCTURAL (exit 3)** — never 0 (false green) and never 1 (phantom defect).
+
+  **The rule this yields, for every gate in `Tools/visual-regression/`:**
+  - The reachability assertion MUST name the variable the defect is a function of, read from the frame that was actually gated — not from setup, and not a camera-derived proxy.
+  - If the certifying scene cannot reach the failure state, that is a scene defect: add a lane that can, and keep the original lane under a name that describes what it genuinely measures.
+  - A lane that cannot see its subject exits 3, and the reason string must say which variable was unreachable.
+  - A non-vacuity control (an A/B where the mechanism is toggled and must move a measurable) is the only proof that the lane is live; a reachability boolean alone can still be satisfied by an inert mechanism.
+
+  **Done for G1 (2026-08-06).** `framingReached` now asserts `skyBrightness > 0.5` (`probe-skybox-star-modulation.mjs`'s own predicate); a second `in-column-star-modulation` lane (30 km, sky atmosphere ON, `enableStarBrightnessModulation` OFF/ON A/B, certifying on the modulation's own energy `mean(OFF) − mean(ON)` so the atmosphere shell cancels within each backend) exercises the real path; the orbital lane is retained as `orbital-cubemap-parity`. Verdict logic extracted to `Tools/visual-regression/lib/celestial-g1-gate.mjs` and pinned by `celestial-g1-gate.spec.mjs` (40 tests, 15 adversarial mutants).
+
+  **Deferred (the general sweep, not done here).** No audit has been run over the rest of the probe fleet for this shape. The mechanical first pass is cheap: every probe whose pass criteria include a `*Reached*`/`framing*`/`*Sane*` boolean, cross-checked against which frameState scalar its defect is actually a function of. **Effort:** M (fleet-wide read + per-probe judgement; fixes are per-probe and independent). **Impact:** a probe in this class does not merely fail to catch regressions — it certifies their absence, which is how `C12-G1F2` stayed open as a phantom row across four batches. **Trace:** `QUEUE_2026-07-19_CAMPAIGN12.md` `C12-G1F2` row; `SkyBrightness.js:49-100,563`; `CubeMapPanorama.js:421-452`; `AtmosphericConditions.js:492-560`.
+
+---
+
 ## 2026-08-06 - MAINTAINER RULINGS (O5 scope, C11/C13 status, C13-16, C15)
 
 ### RULING-2026-08-06 - four decisions, recorded verbatim so they cannot drift

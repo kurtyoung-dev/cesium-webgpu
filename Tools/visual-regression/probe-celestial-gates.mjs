@@ -11,17 +11,51 @@
 // normalized-kernel convolution (mip/bilinear/MSAA/JPEG) moves the mean by
 // zero, so a mean diff cannot see any of these gates.
 //
-// GATE G1 (default run) — skybox fade regression gate.
-//   Camera on the SUNLIT side with the Sun >= 25 deg above the camera's local
-//   horizon (the only framing that reaches the C11-176 failure state); globe /
-//   sun / moon / skyAtmosphere / fog OFF; >= 30 settle renders. Captured three
-//   ways per M6 source-split (see below). PASS requires, on the default pair:
+// GATE G1 (default run) — TWO LANES since the C12-G1F2 repair.
+//
+//   LANE A — `orbital-cubemap-parity`. The historical G1 framing: camera at
+//   5.0e7 m along the sun direction, globe / sun / moon / skyAtmosphere / fog
+//   OFF, bare star field over a black background, captured three ways per the
+//   M6 source-split below. It measures exactly what it can see — CUBEMAP AND
+//   SPRITE PARITY. It was previously LABELLED as "the only framing that reaches
+//   the C11-176 failure state", which is false in two independent ways:
+//     * that camera is ~43,600 km up, far above
+//       `ATMOSPHERIC_COLUMN_FADE_END = 111 km` (`SkyBrightness.js`), so
+//       `computeAtmosphericColumnFactor` is 0 and `frameState.skyBrightness` is
+//       identically 0 — the recorded runs show `skyBrightness 0` at
+//       `sunElevationDeg 90`. `AtmosphericConditions.js` states this as the
+//       DESIGN ("that camera gets factor 1.0 and is byte-identical to today").
+//     * `CubeMapPanorama.js` gates star modulation on
+//       `frameState.skyAtmosphereVisible === true`, and this lane turns the sky
+//       atmosphere off.
+//   PASS requires, on the default pair:
 //     M1 point-source count ratio (WebGPU/WebGL) >= 0.90
 //     M2a RMS-contrast ratio in [0.85, 1.15]
 //     M2b (P99.9 - P50) ratio in [0.85, 1.15]
 //     M3 median chroma >= 0.85 x WebGL
+//     M2e robust sky floor: |gpu - gl| <= one 8-bit code value in linear light
 //   and, on EACH M6 mode, the M1 count ratio >= 0.90 (so a cubemap-only or
-//   sprites-only regression cannot be masked by the other source).
+//   sprites-only regression cannot be masked by the other source). A mode where
+//   BOTH backends census zero sources is reported STRUCTURAL, not FAIL — 0/0 is
+//   an instrument that cannot see its subject.
+//
+//   LANE B — `in-column-star-modulation`. Camera INSIDE the atmospheric column
+//   (30 km, i.e. below `ATMOSPHERIC_COLUMN_FADE_START = 60 km`) on the sunlit
+//   side with the sky atmosphere ON, so `skyBrightness` saturates to 1.0 and
+//   `skyAtmosphereVisible` is true — both C11-176 preconditions met. Captured
+//   twice, with `enableStarBrightnessModulation` OFF then ON. The certifying
+//   quantity is the modulation's OWN energy, `mean(OFF) - mean(ON)`, taken
+//   within each backend and only then compared across backends: differencing
+//   inside a backend cancels the sky-atmosphere shell, so a shell-parity gap
+//   can neither masquerade as nor mask a star-modulation gap. The OFF/ON swing
+//   doubles as the non-vacuity control — a lane whose modulation term never
+//   moved a pixel is STRUCTURAL.
+//
+//   REACHABILITY IS ASSERTED ON THE DRIVING VARIABLE. `framingReached` tests
+//   `skyBrightness > 0.5` — `probe-skybox-star-modulation.mjs`'s own predicate —
+//   NOT `sunElevationDeg >= 25`. Solar elevation is a proxy that correlates with
+//   sky brightness below 60 km and is fully decoupled from it above 111 km,
+//   which is where the old assertion was being evaluated.
 //
 // M6 SOURCE-SPLIT — the true isolation toggles (determined from SkyBox.js +
 // Scene.updateEnvironment, NOT guessed):
@@ -74,7 +108,17 @@
 //   3. Bounded sun-direction settle loop before any sun-relative aiming (ICRF
 //      loads async): <= 180 frames, stable when 10 consecutive deltas < 1e-9.
 //   4. Unref'd force-exit watchdog + try/finally browser close.
-//   5. HARD exit codes: 0 only on PASS, 1 on gate FAIL, 2 on structural error.
+//   5. HARD exit codes: 0 only on PASS, 1 on gate FAIL, 2 on a lane that failed
+//      to RUN, 3 on STRUCTURAL (a lane that ran but could not see its subject).
+//   6. Settle is a WALL-CLOCK READINESS BUDGET, not a frame count, and every
+//      capture is preceded by a DISCARDED warm-up capture. See SETTLE_BUDGET_MS.
+//
+// EXIT CODES:
+//   0 PASS  1 FAIL (a measurable criterion is out of band)
+//   2 ERROR (a backend lane did not run)
+//   3 STRUCTURAL (a lane ran but could not see its subject — reachability not
+//     met, or the modulation term never moved a pixel, or both backends
+//     censused zero sources in a count mode). NEVER report such a lane as 0.
 //
 // Usage:
 //   node Tools/visual-regression/probe-celestial-gates.mjs            # G1 (SDR)
@@ -94,13 +138,58 @@ import {
   m5MagnitudeFidelity,
 } from "./lib/celestial-metrics.mjs";
 import { sha256, createSceneIdentity } from "./lib/visual-gate-policy.mjs";
+import {
+  EXIT_CODE,
+  buildG1Summary,
+  evaluateCubemapParityLane,
+  evaluateStarModulationLane,
+  foldG1Verdict,
+  ratio,
+} from "./lib/celestial-g1-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
 const PINNED_ISO = "2026-05-19T18:00:00Z";
 const VIEWPORT = { width: 1280, height: 720 };
 const CROP = { width: 1000, height: 640 };
-const SETTLE_FRAMES = 32;
+
+// SETTLE — a WALL-CLOCK READINESS BUDGET, not a frame count.
+//
+// The previous `SETTLE_FRAMES = 32` bought roughly 530 ms of frames. The
+// measured async pipeline-compile cost on this fork is 2674 ms, so a 32-frame
+// settle capture reads a scene whose pipelines are still compiling — and the
+// shortfall lands hardest on whichever mode is captured first. The budget below
+// is the project standard (wall clock >= the measured compile cost), with a
+// frame floor so a fast machine still advances the render loop enough times.
+//
+// The yield is `setTimeout`, not `requestAnimationFrame`: with
+// `useDefaultRenderLoop = false` in a headless browser, rAF delivery is at the
+// compositor's discretion, and a starved rAF would silently shorten the budget
+// into exactly the under-settle it exists to prevent.
+const SETTLE_BUDGET_MS = 3000;
+const SETTLE_MIN_FRAMES = 32;
+const SETTLE_YIELD_MS = 16;
+
+// MODE CAPTURE ORDER — EXPLICIT AND CERTIFYING-LAST.
+//
+// The previous order was `["default", "cubemap-only", "sprites-only"]`, so the
+// only certifying mode was always captured against the COLDEST caches while its
+// non-certifying siblings inherited warm ones. That is an ordered contamination
+// whose bias runs in the direction the gate scores. The certifying mode is now
+// captured LAST, after its siblings have warmed everything it shares.
+const G1_MODE_CAPTURE_ORDER = ["cubemap-only", "sprites-only", "default"];
+const G1_CERTIFYING_MODE = "default";
+const G1_COUNT_MODES = ["cubemap-only", "sprites-only"];
+
+// Lane B captures OFF first so the certifying difference `mean(OFF) - mean(ON)`
+// is taken with ON — the state the defect lives in — measured last and warmest.
+const COLUMN_MODE_CAPTURE_ORDER = ["modulation-off", "modulation-on"];
+
+// Lane B camera height, metres. Below ATMOSPHERIC_COLUMN_FADE_START (60 km) so
+// `computeAtmosphericColumnFactor` is exactly 1.0 and `skyBrightness` is
+// whatever the solar geometry says — which, with the camera placed along the
+// sun direction, is the saturated daylight value 1.0.
+const IN_COLUMN_HEIGHT_M = 30000;
 
 const BRACKET = process.argv.includes("--bracket");
 
@@ -121,18 +210,25 @@ const CATALOG_EXPECTATIONS = [
   { name: "Mirzam", ra: 95.674, dec: -17.956, vmag: 1.98 },
 ];
 
-const HARD_LIMIT_MS = 300000;
+// Raised from 300s at the C12-G1F2 repair: the run now has two lanes, and every
+// capture pays a wall-clock settle budget plus a discarded warm-up (see
+// SETTLE_BUDGET_MS). The watchdog must outlast the honest worst case or it
+// becomes the thing that fails the gate.
+const HARD_LIMIT_MS = 600000;
 const watchdog = setTimeout(() => {
-  console.error("[probe-celestial-gates] WATCHDOG FIRED (300s) — forcing exit");
-  process.exit(2);
+  console.error("[probe-celestial-gates] WATCHDOG FIRED (600s) — forcing exit");
+  process.exit(EXIT_CODE.ERROR);
 }, HARD_LIMIT_MS);
 if (watchdog.unref) {
   watchdog.unref();
 }
 
 const r3 = (x) => (!Number.isFinite(x) ? null : Math.round(x * 1000) / 1000);
-const ratio = (a, b) =>
-  Number.isFinite(a) && Number.isFinite(b) && b !== 0 ? a / b : null;
+// NOTE: sky floors, means and stddevs are reported UNROUNDED. The M2e tolerance
+// is ~3.0e-4 in linear light, so the 3-decimal rounder this report used to apply
+// to `webgl_skyFloor`/`webgpu_skyFloor` printed every legitimate floor as a flat
+// 0 and made the pedestal discriminator unreadable in the very report that was
+// supposed to carry it.
 
 function getGit() {
   const run = (cmd) => execSync(cmd, { encoding: "utf8" }).trim();
@@ -157,9 +253,19 @@ function normalizeHardwareClass(parts) {
 // Returns the stable sun direction, sky brightness, adapter provenance, and the
 // canvas/crop geometry. Runs entirely at the pinned clock.
 // --------------------------------------------------------------------------
-async function setupScene(page, { aim }) {
+async function setupScene(page, { aim, skyAtmosphereOn, cameraHeightM }) {
   return page.evaluate(
-    async ({ pinnedIso, aimMode, crop, settleFrames, catalog }) => {
+    async ({
+      pinnedIso,
+      aimMode,
+      crop,
+      settleBudgetMs,
+      settleMinFrames,
+      settleYieldMs,
+      catalog,
+      skyOn,
+      heightM,
+    }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const viewer = window.viewer;
       const scene = viewer.scene;
@@ -183,7 +289,11 @@ async function setupScene(page, { aim }) {
         scene.moon.show = false;
       }
       if (scene.skyAtmosphere) {
-        scene.skyAtmosphere.show = false;
+        // Lane B REQUIRES this on: `CubeMapPanorama.updateStarModulation` gates
+        // the whole term on `frameState.skyAtmosphereVisible === true`, which
+        // `Scene.js` derives from `skyAtmosphere.show`. Lane A keeps it off so
+        // its background stays black and the M2e quantization bound holds.
+        scene.skyAtmosphere.show = skyOn === true;
       }
       if (scene.fog) {
         scene.fog.enabled = false;
@@ -255,12 +365,33 @@ async function setupScene(page, { aim }) {
         cameraUp = C.Cartesian3.normalize(eye, new C.Cartesian3());
       } else {
         // SUNLIT G1: camera ALONG the sun direction => local up == sunDir =>
-        // the Sun sits at the local zenith (elevation ~90deg, >> 25deg). Aim
+        // the Sun sits at the local zenith. `computeCelestialElevationSine`
+        // takes local up as `normalize(cameraPositionWC)`, so placing the eye on
+        // the sun ray makes sin(altitude) exactly 1 at ANY radius. Aim
         // perpendicular to the sun so neither the sun disc nor Earth is in view.
+        //
+        // The RADIUS is what separates the two lanes, and it is the whole point
+        // of the C12-G1F2 repair: at `dist` the camera is ~43,600 km up and
+        // `computeAtmosphericColumnFactor` zeroes `skyBrightness`; at
+        // `heightM` = 30 km it is 1.0 and `skyBrightness` saturates to 1.0.
         const axis = sunDir;
+        let radius = dist;
+        if (Number.isFinite(heightM)) {
+          const ellipsoid = scene.ellipsoid ?? C.Ellipsoid.WGS84;
+          const ray = C.Cartesian3.multiplyByScalar(
+            axis,
+            1.0e7,
+            new C.Cartesian3(),
+          );
+          const surface = ellipsoid.scaleToGeodeticSurface(
+            ray,
+            new C.Cartesian3(),
+          );
+          radius = C.Cartesian3.magnitude(surface) + heightM;
+        }
         const position = C.Cartesian3.multiplyByScalar(
           axis,
-          dist,
+          radius,
           new C.Cartesian3(),
         );
         const seed =
@@ -325,9 +456,16 @@ async function setupScene(page, { aim }) {
         }
       }
 
-      for (let i = 0; i < settleFrames; i++) {
+      // Wall-clock readiness budget (see SETTLE_BUDGET_MS in the Node half).
+      const settleStart = performance.now();
+      let settleFrameCount = 0;
+      while (
+        performance.now() - settleStart < settleBudgetMs ||
+        settleFrameCount < settleMinFrames
+      ) {
         scene.render(pinnedTime());
-        await new Promise((r) => requestAnimationFrame(r));
+        settleFrameCount++;
+        await new Promise((r) => setTimeout(r, settleYieldMs));
       }
 
       const canvas = scene.canvas;
@@ -382,7 +520,13 @@ async function setupScene(page, { aim }) {
         skyBrightness: scene.frameState
           ? (scene.frameState.skyBrightness ?? null)
           : null,
+        skyAtmosphereVisible: scene.frameState
+          ? scene.frameState.skyAtmosphereVisible === true
+          : null,
+        cameraHeightM: scene.camera?.positionCartographic?.height ?? null,
         sunElevationDeg,
+        settleFrameCount,
+        settleElapsedMs: performance.now() - settleStart,
         adapter,
         canvasWidth: canvas.width,
         canvasHeight: canvas.height,
@@ -394,8 +538,12 @@ async function setupScene(page, { aim }) {
       pinnedIso: PINNED_ISO,
       aimMode: aim,
       crop: CROP,
-      settleFrames: SETTLE_FRAMES,
+      settleBudgetMs: SETTLE_BUDGET_MS,
+      settleMinFrames: SETTLE_MIN_FRAMES,
+      settleYieldMs: SETTLE_YIELD_MS,
       catalog: CATALOG_EXPECTATIONS,
+      skyOn: skyAtmosphereOn === true,
+      heightM: Number.isFinite(cameraHeightM) ? cameraHeightM : null,
     },
   );
 }
@@ -406,7 +554,15 @@ async function setupScene(page, { aim }) {
 // --------------------------------------------------------------------------
 async function captureMode(page, { mode, crop, exposure, hdr }) {
   return page.evaluate(
-    async ({ captureMode, cropRect, exposureFactor, useHdr, settleFrames }) => {
+    async ({
+      captureMode,
+      cropRect,
+      exposureFactor,
+      useHdr,
+      settleBudgetMs,
+      settleMinFrames,
+      settleYieldMs,
+    }) => {
       await import("/Build/CesiumUnminified/index.js");
       const viewer = window.viewer;
       const scene = viewer.scene;
@@ -414,12 +570,7 @@ async function captureMode(page, { mode, crop, exposure, hdr }) {
 
       const skyBox = scene.skyBox;
       if (skyBox) {
-        if (captureMode === "default") {
-          skyBox.show = true;
-          if (skyBox.starField) {
-            skyBox.starField.show = true;
-          }
-        } else if (captureMode === "cubemap-only") {
+        if (captureMode === "cubemap-only") {
           skyBox.show = true;
           if (skyBox.starField) {
             skyBox.starField.show = false;
@@ -433,7 +584,27 @@ async function captureMode(page, { mode, crop, exposure, hdr }) {
           if (skyBox.starField) {
             skyBox.starField.show = true;
           }
+        } else {
+          // "default" and both Lane-B modulation modes are the full sky.
+          skyBox.show = true;
+          if (skyBox.starField) {
+            skyBox.starField.show = true;
+          }
         }
+      }
+
+      // Lane B A/B: the modulation flag lives on the atmospheric-conditions
+      // facade, which `Scene` republishes to frameState every frame regardless
+      // of `globe.show`.
+      let modulationFlag = null;
+      const skyLeaf = scene.globe?.atmosphericConditions?.skyAtmosphere;
+      if (skyLeaf) {
+        if (captureMode === "modulation-off") {
+          skyLeaf.enableStarBrightnessModulation = false;
+        } else if (captureMode === "modulation-on") {
+          skyLeaf.enableStarBrightnessModulation = true;
+        }
+        modulationFlag = skyLeaf.enableStarBrightnessModulation === true;
       }
 
       let hdrEngaged = null;
@@ -445,25 +616,49 @@ async function captureMode(page, { mode, crop, exposure, hdr }) {
         }
       }
 
-      for (let i = 0; i < settleFrames; i++) {
-        scene.render(pinnedTime());
-        await new Promise((r) => requestAnimationFrame(r));
-      }
-
       // RULE 2 — final render + readback in ONE task, no await between.
-      scene.render(pinnedTime());
-      const canvas = scene.canvas;
-      const tmp = document.createElement("canvas");
-      tmp.width = canvas.width;
-      tmp.height = canvas.height;
-      const ctx = tmp.getContext("2d");
-      ctx.drawImage(canvas, 0, 0);
-      const full = ctx.getImageData(
-        cropRect.x,
-        cropRect.y,
-        cropRect.width,
-        cropRect.height,
-      );
+      const grab = () => {
+        scene.render(pinnedTime());
+        const canvas = scene.canvas;
+        const tmp = document.createElement("canvas");
+        tmp.width = canvas.width;
+        tmp.height = canvas.height;
+        const ctx = tmp.getContext("2d");
+        ctx.drawImage(canvas, 0, 0);
+        return ctx.getImageData(
+          cropRect.x,
+          cropRect.y,
+          cropRect.width,
+          cropRect.height,
+        );
+      };
+
+      const settle = () => {
+        const start = performance.now();
+        let frames = 0;
+        return (async () => {
+          while (
+            performance.now() - start < settleBudgetMs ||
+            frames < settleMinFrames
+          ) {
+            scene.render(pinnedTime());
+            frames++;
+            await new Promise((r) => setTimeout(r, settleYieldMs));
+          }
+          return frames;
+        })();
+      };
+
+      // WARM-UP CAPTURE — settle, capture, DISCARD. The readback itself is part
+      // of the work being warmed (canvas alloc, drawImage path, and on WebGPU
+      // the present/consume cycle), so warming with renders alone would leave
+      // the first real capture measuring a cold path. Nothing from this pass
+      // reaches the metrics.
+      const warmupFrames = await settle();
+      grab();
+
+      const settleFrameCount = await settle();
+      const full = grab();
 
       return {
         width: cropRect.width,
@@ -472,6 +667,13 @@ async function captureMode(page, { mode, crop, exposure, hdr }) {
         skyBrightness: scene.frameState
           ? (scene.frameState.skyBrightness ?? null)
           : null,
+        skyAtmosphereVisible: scene.frameState
+          ? scene.frameState.skyAtmosphereVisible === true
+          : null,
+        modulationFlag,
+        warmupDiscarded: true,
+        warmupFrames,
+        settleFrameCount,
         hdrEngaged,
         exposureFactor: useHdr ? exposureFactor : null,
         cubemapOn: !!(skyBox && skyBox.show),
@@ -483,7 +685,9 @@ async function captureMode(page, { mode, crop, exposure, hdr }) {
       cropRect: crop,
       exposureFactor: exposure ?? 1,
       useHdr: !!hdr,
-      settleFrames: SETTLE_FRAMES,
+      settleBudgetMs: SETTLE_BUDGET_MS,
+      settleMinFrames: SETTLE_MIN_FRAMES,
+      settleYieldMs: SETTLE_YIELD_MS,
     },
   );
 }
@@ -658,7 +862,11 @@ function stitchBracket(captures) {
   return { data: out, width, height };
 }
 
-async function runBackend(browser, renderer, { aim, hdr }) {
+async function runBackend(
+  browser,
+  renderer,
+  { aim, hdr, modes, skyAtmosphereOn, cameraHeightM },
+) {
   const context = await browser.newContext({ viewport: VIEWPORT });
   const page = await context.newPage();
   const consoleErrors = [];
@@ -683,7 +891,11 @@ async function runBackend(browser, renderer, { aim, hdr }) {
     );
     await page.waitForTimeout(5000);
 
-    const setup = await setupScene(page, { aim });
+    const setup = await setupScene(page, {
+      aim,
+      skyAtmosphereOn,
+      cameraHeightM,
+    });
     const captures = {};
     if (hdr) {
       for (const [factor, label] of [
@@ -699,7 +911,9 @@ async function runBackend(browser, renderer, { aim, hdr }) {
         });
       }
     } else {
-      for (const mode of ["default", "cubemap-only", "sprites-only"]) {
+      // Order is the caller's explicit, justified sequence — see
+      // G1_MODE_CAPTURE_ORDER / COLUMN_MODE_CAPTURE_ORDER.
+      for (const mode of modes ?? G1_MODE_CAPTURE_ORDER) {
         captures[mode] = await captureMode(page, {
           mode,
           crop: setup.crop,
@@ -741,66 +955,125 @@ function writeCapturePng(image, name) {
   return { file, png };
 }
 
-async function runG1(browser, git) {
-  const gl = await runBackend(browser, "webgl", { aim: "sunlit", hdr: false });
+// The two G1 lanes. `cameraHeightM: null` means "use the historical orbital
+// distance"; a finite value places the eye that far above the ellipsoid on the
+// sun ray. `skyAtmosphereOn` decides both whether the background is black (and
+// therefore whether the M2e quantization bound applies) and whether
+// `frameState.skyAtmosphereVisible` — a hard precondition of the star-modulation
+// term — can ever be true.
+const G1_LANE_SPECS = [
+  {
+    key: "cubemapParity",
+    id: "orbital-cubemap-parity",
+    role: "cubemap + sprite parity over a black background (M6 source split)",
+    modes: G1_MODE_CAPTURE_ORDER,
+    countModes: G1_COUNT_MODES,
+    certifyingMode: G1_CERTIFYING_MODE,
+    skyAtmosphereOn: false,
+    cameraHeightM: null,
+  },
+  {
+    key: "starModulation",
+    id: "in-column-star-modulation",
+    role: "C11-176 star-brightness modulation, inside the atmospheric column",
+    modes: COLUMN_MODE_CAPTURE_ORDER,
+    countModes: [],
+    certifyingMode: "modulation-on",
+    skyAtmosphereOn: true,
+    cameraHeightM: IN_COLUMN_HEIGHT_M,
+  },
+];
+
+function comparePair(glImg, gpuImg) {
+  const glM = metricsForImage(glImg);
+  const gpuM = metricsForImage(gpuImg);
+  return {
+    m1CountRatio: ratio(gpuM.m1.count, glM.m1.count),
+    m2aRatio: ratio(gpuM.m2.rmsContrast, glM.m2.rmsContrast),
+    m2bRatio: ratio(gpuM.m2.p999MinusP50, glM.m2.p999MinusP50),
+    m3ChromaRatio: ratio(gpuM.m3.medianSaturation, glM.m3.medianSaturation),
+    // ATTRIBUTION FACTORS for m2aRatio = (sigma/mu)_gpu / (sigma/mu)_gl. Without
+    // both of these a failing m2aRatio cannot be attributed to a mean/pedestal
+    // shift versus a contrast excess — the omission that produced C12-G1F2.
+    meanLumRatio: ratio(gpuM.m2.mean, glM.m2.mean),
+    stddevRatio: ratio(gpuM.m2.stddev, glM.m2.stddev),
+    webglMean: glM.m2.mean,
+    webgpuMean: gpuM.m2.mean,
+    webglStddev: glM.m2.stddev,
+    webgpuStddev: gpuM.m2.stddev,
+    webglM1Count: glM.m1.count,
+    webgpuM1Count: gpuM.m1.count,
+    webglSkyFloor: glM.m2e.skyFloor,
+    webgpuSkyFloor: gpuM.m2e.skyFloor,
+  };
+}
+
+async function runG1Lane(browser, git, spec, browserVersion) {
+  const gl = await runBackend(browser, "webgl", {
+    aim: "sunlit",
+    hdr: false,
+    modes: spec.modes,
+    skyAtmosphereOn: spec.skyAtmosphereOn,
+    cameraHeightM: spec.cameraHeightM,
+  });
   const gpu = await runBackend(browser, "webgpu", {
     aim: "sunlit",
     hdr: false,
+    modes: spec.modes,
+    skyAtmosphereOn: spec.skyAtmosphereOn,
+    cameraHeightM: spec.cameraHeightM,
   });
   if (!gl.ok || !gpu.ok) {
     return { fatal: true, gl, gpu };
   }
 
-  const browserVersion = browser.version();
-  const envOf = (lane) => ({
+  const envOf = (backend) => ({
     browserClass: "msedge",
     browserVersion,
     adapterClass: normalizeHardwareClass([
-      lane.setup.adapter.vendor,
-      lane.setup.adapter.architecture,
-      lane.setup.adapter.device,
-      lane.setup.adapter.description,
+      backend.setup.adapter.vendor,
+      backend.setup.adapter.architecture,
+      backend.setup.adapter.device,
+      backend.setup.adapter.description,
     ]),
   });
 
   const manifest = {};
-  const modes = ["default", "cubemap-only", "sprites-only"];
   const perMode = {};
-  for (const mode of modes) {
+  for (const mode of spec.modes) {
     const glImg = toImage(gl.captures[mode]);
     const gpuImg = toImage(gpu.captures[mode]);
-    const glM = metricsForImage(glImg);
-    const gpuM = metricsForImage(gpuImg);
-    perMode[mode] = {
-      webgl: glM,
-      webgpu: gpuM,
-      m1CountRatio: ratio(gpuM.m1.count, glM.m1.count),
-      m2aRatio: ratio(gpuM.m2.rmsContrast, glM.m2.rmsContrast),
-      m2bRatio: ratio(gpuM.m2.p999MinusP50, glM.m2.p999MinusP50),
-      m3ChromaRatio: ratio(gpuM.m3.medianSaturation, glM.m3.medianSaturation),
-      meanLumRatio_DIAGNOSTIC: ratio(gpuM.m2.mean, glM.m2.mean),
-    };
-    for (const [renderer, lane, img] of [
+    perMode[mode] = comparePair(glImg, gpuImg);
+
+    for (const [renderer, backend, img] of [
       ["webgl", gl, glImg],
       ["webgpu", gpu, gpuImg],
     ]) {
-      const sceneName = `celestial-g1-${mode}`;
-      const pngName = `celestial-g1-${mode}-${renderer}.png`;
+      const sceneName = `celestial-g1-${spec.id}-${mode}`;
+      const pngName = `${sceneName}-${renderer}.png`;
       const { png } = writeCapturePng(img, pngName);
       const sceneDescriptor = {
         name: sceneName,
-        camera: { aim: "sunlit", distance: 5.0e7, pinnedIso: PINNED_ISO },
+        camera: {
+          aim: "sunlit",
+          heightM: spec.cameraHeightM,
+          distance: spec.cameraHeightM === null ? 5.0e7 : null,
+          pinnedIso: PINNED_ISO,
+        },
         setup: "celestial-gate-g1",
         setupParams: {
+          lane: spec.id,
           mode,
           globeOff: true,
           sunOff: true,
-          skyAtmosphereOff: true,
+          skyAtmosphereOn: spec.skyAtmosphereOn,
+          settleBudgetMs: SETTLE_BUDGET_MS,
+          warmupDiscarded: true,
         },
       };
       const sceneIdentity = createSceneIdentity(sceneDescriptor, {
         baseUrl: BASE,
-        settleFrames: SETTLE_FRAMES,
+        settleFrames: SETTLE_MIN_FRAMES,
         viewport: VIEWPORT,
       });
       manifest[`${sceneName}:${renderer}`] = buildManifestEntry({
@@ -808,72 +1081,84 @@ async function runG1(browser, git) {
         image: pngName,
         pngBytes: png,
         renderer,
-        env: envOf(lane),
+        env: envOf(backend),
         git,
         sceneIdentity,
         extra: {
           hdr: false,
-          skyBrightness: r3(lane.captures[mode].skyBrightness),
-          sunElevationDeg: r3(lane.setup.sunElevationDeg),
+          lane: spec.id,
+          skyBrightness: r3(backend.captures[mode].skyBrightness),
+          skyAtmosphereVisible: backend.captures[mode].skyAtmosphereVisible,
+          modulationFlag: backend.captures[mode].modulationFlag,
+          cameraHeightM: r3(backend.setup.cameraHeightM),
+          sunElevationDeg: r3(backend.setup.sunElevationDeg),
         },
       });
     }
   }
 
-  // ---- G1 pass evaluation ----
-  // ratio() returns null when a denominator is absent, and `null >= n` is
-  // false, so a missing ratio fails its criterion without an explicit guard.
-  const inBand = (x, lo, hi) => x >= lo && x <= hi;
-  const def = perMode.default;
-  const criteria = {
-    default_m1CountRatio_ge_0_90: def.m1CountRatio >= 0.9,
-    default_m2a_in_band: inBand(def.m2aRatio, 0.85, 1.15),
-    default_m2b_in_band: inBand(def.m2bRatio, 0.85, 1.15),
-    default_m3Chroma_ge_0_85: def.m3ChromaRatio >= 0.85,
-    cubemapOnly_m1CountRatio_ge_0_90:
-      perMode["cubemap-only"].m1CountRatio >= 0.9,
-    spritesOnly_m1CountRatio_ge_0_90:
-      perMode["sprites-only"].m1CountRatio >= 0.9,
-  };
-  // Sunlit framing must actually be reached, else the gate is meaningless.
-  const framingReached =
-    gl.setup.sunElevationDeg >= 25 && gpu.setup.sunElevationDeg >= 25;
-  const pass = framingReached && Object.values(criteria).every(Boolean);
-
-  return {
-    fatal: false,
-    gate: "G1",
-    pass,
-    framingReached,
+  // skyBrightness is read from the CERTIFYING mode's own capture, not from
+  // setup: the reachability claim has to describe the frame that was gated.
+  const certifying = spec.certifyingMode;
+  const laneInput = {
+    id: spec.id,
+    role: spec.role,
+    skyBrightness: {
+      webgl: gl.captures[certifying].skyBrightness,
+      webgpu: gpu.captures[certifying].skyBrightness,
+    },
+    skyAtmosphereVisible: {
+      webgl: gl.captures[certifying].skyAtmosphereVisible,
+      webgpu: gpu.captures[certifying].skyAtmosphereVisible,
+    },
     sunElevationDeg: {
       webgl: r3(gl.setup.sunElevationDeg),
       webgpu: r3(gpu.setup.sunElevationDeg),
     },
-    skyBrightness: {
-      webgl: r3(gl.setup.skyBrightness),
-      webgpu: r3(gpu.setup.skyBrightness),
+    cameraHeightM: {
+      webgl: r3(gl.setup.cameraHeightM),
+      webgpu: r3(gpu.setup.cameraHeightM),
     },
-    criteria,
-    perMode: Object.fromEntries(
-      modes.map((m) => [
-        m,
-        {
-          m1CountRatio: r3(perMode[m].m1CountRatio),
-          m2aRatio: r3(perMode[m].m2aRatio),
-          m2bRatio: r3(perMode[m].m2bRatio),
-          m3ChromaRatio: r3(perMode[m].m3ChromaRatio),
-          meanLumRatio_DIAGNOSTIC: r3(perMode[m].meanLumRatio_DIAGNOSTIC),
-          webgl_m1Count: perMode[m].webgl.m1.count,
-          webgpu_m1Count: perMode[m].webgpu.m1.count,
-          webgl_skyFloor: r3(perMode[m].webgl.m2e.skyFloor),
-          webgpu_skyFloor: r3(perMode[m].webgpu.m2e.skyFloor),
-        },
-      ]),
-    ),
+    countModes: spec.countModes,
+    perMode,
+  };
+
+  return { fatal: false, laneInput, manifest, gl, gpu };
+}
+
+async function runG1(browser, git) {
+  const browserVersion = browser.version();
+  const lanes = {};
+  const manifest = {};
+  const consoleErrors = {};
+  for (const spec of G1_LANE_SPECS) {
+    const run = await runG1Lane(browser, git, spec, browserVersion);
+    if (run.fatal) {
+      return { fatal: true, gl: run.gl, gpu: run.gpu };
+    }
+    Object.assign(manifest, run.manifest);
+    consoleErrors[`${spec.id}:webgl`] = run.gl.consoleErrors;
+    consoleErrors[`${spec.id}:webgpu`] = run.gpu.consoleErrors;
+    lanes[spec.key] =
+      spec.key === "starModulation"
+        ? evaluateStarModulationLane(run.laneInput)
+        : evaluateCubemapParityLane(run.laneInput);
+  }
+
+  const folded = foldG1Verdict(lanes);
+  return {
+    fatal: false,
+    gate: "G1",
+    ...folded,
+    pass: folded.exitCode === EXIT_CODE.PASS,
+    // Kept at the top level for continuity with the historical report shape.
+    // It now reports the STAR-MODULATION lane, i.e. the variable that actually
+    // drives the defect, not the orbital lane's solar-elevation proxy.
+    framingReached: lanes.starModulation?.framingReached ?? false,
+    orbitalLaneFramingReached: lanes.cubemapParity?.framingReached ?? false,
+    lanes,
     manifest,
-    gl,
-    gpu,
-    consoleErrors: { webgl: gl.consoleErrors, webgpu: gpu.consoleErrors },
+    consoleErrors,
   };
 }
 
@@ -996,7 +1281,7 @@ async function runBracket(browser, git) {
       };
       const sceneIdentity = createSceneIdentity(sceneDescriptor, {
         baseUrl: BASE,
-        settleFrames: SETTLE_FRAMES,
+        settleFrames: SETTLE_MIN_FRAMES,
         viewport: VIEWPORT,
       });
       manifest[`${sceneName}:${renderer}`] = buildManifestEntry({
@@ -1054,7 +1339,7 @@ async function runBracket(browser, git) {
 
   if (result.fatal) {
     console.error(
-      "[probe-celestial-gates] STRUCTURAL FAILURE — a backend lane did not run",
+      "[probe-celestial-gates] ERROR — a backend lane did not run at all",
     );
     for (const lane of [result.gl, result.gpu]) {
       if (lane && !lane.ok) {
@@ -1065,7 +1350,7 @@ async function runBracket(browser, git) {
       }
     }
     clearTimeout(watchdog);
-    process.exit(2);
+    process.exit(EXIT_CODE.ERROR);
   }
 
   const outName = BRACKET ? "celestial-bracket.json" : "celestial-g1.json";
@@ -1099,28 +1384,17 @@ async function runBracket(browser, git) {
         : "bracket FAIL — HDR not engaged and/or no source detected on a backend",
     );
   } else {
-    console.log(
-      JSON.stringify(
-        {
-          gate: result.gate,
-          pass: result.pass,
-          framingReached: result.framingReached,
-          sunElevationDeg: result.sunElevationDeg,
-          skyBrightness: result.skyBrightness,
-          criteria: result.criteria,
-          perMode: result.perMode,
-        },
-        null,
-        2,
-      ),
-    );
+    console.log(JSON.stringify(buildG1Summary(result), null, 2));
     console.log(`\n[full report: ${outPath}]`);
-    exitCode = result.pass ? 0 : 1;
-    console.log(
-      exitCode === 0
-        ? "G1 PASS — WebGPU/WebGL at parity across all three M6 source splits"
-        : "G1 FAIL — see criteria/perMode above",
-    );
+    exitCode = result.exitCode;
+    const verdictLine = {
+      [EXIT_CODE.PASS]:
+        "G1 PASS — cubemap/sprite parity holds AND the in-column star-modulation lane reached its failure state at parity",
+      [EXIT_CODE.FAIL]: "G1 FAIL — see failures/lanes above",
+      [EXIT_CODE.STRUCTURAL]:
+        "G1 STRUCTURAL — a lane ran but could not see its subject; this is NOT a pass and NOT a defect (see structural[] above)",
+    };
+    console.log(verdictLine[exitCode] ?? `G1 exit ${exitCode}`);
   }
 
   clearTimeout(watchdog);
@@ -1128,5 +1402,5 @@ async function runBracket(browser, git) {
 })().catch((e) => {
   console.error("[probe-celestial-gates] FATAL", e);
   clearTimeout(watchdog);
-  process.exit(2);
+  process.exit(EXIT_CODE.ERROR);
 });
