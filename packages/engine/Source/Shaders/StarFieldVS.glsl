@@ -47,6 +47,17 @@ uniform float u_minPointSize;
 // (1,1,1) up leaves the field byte-identical (pow(1, x) === 1).
 uniform vec3 u_zenithTransmittance;
 uniform vec3 u_cameraUpFixed;
+// C12-27 — angular solar-glare star washout. Resolved once per frame on the
+// CPU by Scene/SolarGlareAppearance.js and published on
+// frameState.solarGlareAppearance; the WGSL twin (Shaders/WebGPU/Catalog/
+// StarField.wgsl) reads byte-identical values from its uniform buffer.
+//   u_solarGlare.xyz  = Sun direction in the TEME instance frame (unit)
+//   u_solarGlare.w    = washout strength; EXACTLY 0 disables the whole block
+//   u_solarGlareCurve = (angular core rad, pedestal, support rad, reserved)
+// The curve numbers arrive as uniforms rather than shader literals so this
+// file carries NO numeric copy of them at all — the C12-15/16 convention.
+uniform vec4 u_solarGlare;
+uniform vec4 u_solarGlareCurve;
 
 out vec2 v_corner;     // [-1, 1] quad-local coordinate
 out vec3 v_color;      // HDR color (already intensity-weighted)
@@ -54,6 +65,34 @@ out vec3 v_color;      // HDR color (already intensity-weighted)
 // profile multiplies the core's radius by this so the core keeps a
 // constant on-screen size while the enlarged quad carries the halo.
 out float v_coreScale;
+
+// C12-27 — veiling-glare weight as a function of angular separation from the
+// Sun. Character-identical to `solarGlareVeil` in
+// `Shaders/WebGPU/Catalog/StarField.wgsl`,
+// `Shaders/WebGPU/CubeMapPanorama.wgsl` and `Shaders/SkyBoxFS.glsl`, and a
+// line-for-line translation of `angularGlareVeil` in
+// `Scene/SolarDiscModel.js`; `Tools/visual-regression/solar-glare-star-washout.spec.mjs`
+// extracts all four texts, compiles each body as JavaScript, and requires them
+// to agree with the JS reference to 1e-15.
+//
+//   raw(theta)  = 1 / (1 + (theta/core)^2)      -> ~ 1/theta^2 far field
+//   veil(theta) = (raw - pedestal) / (1 - pedestal), clamped to [0, 1]
+//
+// The `1/theta^2` tail is the Stiles-Holladay / CIE disability-glare form. The
+// pedestal subtraction makes the veil reach EXACTLY 0 at the support angle
+// (90 deg), and the `cosSeparation <= 0.0` early-out is the same half-space,
+// so a star at or beyond 90 deg from the Sun is multiplied by exactly 1.0 —
+// byte-identical to the no-Sun frame, which is the C12-27 acceptance criterion.
+float solarGlareVeil(float cosSeparation, float core, float pedestal, float support)
+{
+    if (cosSeparation <= 0.0) { return 0.0; }
+    float theta = acos(min(cosSeparation, 1.0));
+    if (theta >= support) { return 0.0; }
+    float t = theta / core;
+    float raw = 1.0 / (1.0 + t * t);
+    float v = (raw - pedestal) / (1.0 - pedestal);
+    return clamp(v, 0.0, 1.0);
+}
 
 void main()
 {
@@ -104,5 +143,24 @@ void main()
     float sinElev = dot(dirFixed, u_cameraUpFixed);
     float airmass = 1.0 / max(sinElev, 0.02631579);
     vec3 extinction = pow(u_zenithTransmittance, vec3(airmass));
-    v_color = starColor * intensity * u_intensityScale * extinction;
+
+    // C12-27 — angular solar-glare washout, per star (a star is a point
+    // source, so its separation from the Sun is constant across its whole
+    // quad). Dotted against the RAW `directionFixed` attribute, not `dirFixed`:
+    // the attribute is the TEME catalogue direction and the published Sun
+    // vector is resolved into TEME, so this is the same dot the WGSL twin takes
+    // — one published vector serves all four consumers. Appended LAST in the
+    // multiply chain so the disabled position (`glare == 1.0`) is exact:
+    // `x * 1.0 === x`.
+    float glare = 1.0;
+    if (u_solarGlare.w > 0.0)
+    {
+        glare = 1.0 - u_solarGlare.w * solarGlareVeil(
+            dot(directionFixed, u_solarGlare.xyz),
+            u_solarGlareCurve.x,
+            u_solarGlareCurve.y,
+            u_solarGlareCurve.z
+        );
+    }
+    v_color = starColor * intensity * u_intensityScale * extinction * glare;
 }

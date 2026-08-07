@@ -50,6 +50,7 @@ import {
 } from "../Scene/StarFieldMath.js";
 import BrightStarCatalog from "../Scene/BrightStarCatalog.js";
 import Cartesian3 from "../Core/Cartesian3.js";
+import Cartesian4 from "../Core/Cartesian4.js";
 import Buffer from "./Buffer.js";
 import BufferUsage from "./BufferUsage.js";
 import DrawCommand from "./DrawCommand.js";
@@ -204,6 +205,10 @@ function buildResources(context, cache) {
   // C7-SUN-STARS-EXTINCTION — persistent uniform-backing vectors.
   cache.zenithTransmittance = new Cartesian3(1.0, 1.0, 1.0);
   cache.cameraUpFixed = new Cartesian3(0.0, 0.0, 1.0);
+  // C12-27 — persistent backing for the angular solar-glare uniforms. The
+  // strength (`w = 0`) is the exact identity: the VS skips the whole block.
+  cache.solarGlare = new Cartesian4(0.0, 0.0, 1.0, 0.0);
+  cache.solarGlareCurve = new Cartesian4(1.0, 0.0, 0.0, 0.0);
 }
 
 /**
@@ -306,6 +311,25 @@ function updateWebGLStarField(starField, frameState) {
     Cartesian3.clone(Cartesian3.UNIT_Z, cache.cameraUpFixed);
   }
 
+  // C12-27 — angular solar-glare washout. Resolved once per frame by
+  // `Scene.updateEnvironment` (`Scene/SolarGlareAppearance.js`) and read here
+  // exactly as `starZenithTransmittance` is, so the WebGPU pack and this one
+  // consume the identical numbers. Strength 0 (toggle off, or no resolution
+  // published) makes the VS skip its whole glare block — byte-identical.
+  const glare = frameState.solarGlareAppearance;
+  if (defined(glare) && glare.enabled === true) {
+    const sun = glare.sunDirectionTeme;
+    cache.solarGlare.x = sun.x;
+    cache.solarGlare.y = sun.y;
+    cache.solarGlare.z = sun.z;
+    cache.solarGlare.w = glare.strength;
+    cache.solarGlareCurve.x = glare.angularCore;
+    cache.solarGlareCurve.y = glare.pedestal;
+    cache.solarGlareCurve.z = glare.support;
+  } else {
+    cache.solarGlare.w = 0.0;
+  }
+
   if (!defined(cache.uniformMap)) {
     cache.uniformMap = {
       u_pointSize: function () {
@@ -324,6 +348,12 @@ function updateWebGLStarField(starField, frameState) {
       },
       u_cameraUpFixed: function () {
         return cache.cameraUpFixed;
+      },
+      u_solarGlare: function () {
+        return cache.solarGlare;
+      },
+      u_solarGlareCurve: function () {
+        return cache.solarGlareCurve;
       },
     };
   }

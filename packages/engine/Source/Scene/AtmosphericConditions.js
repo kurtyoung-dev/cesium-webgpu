@@ -122,7 +122,11 @@ class AtmosphericConditions {
    * alongside them — both default ON, both backends, both resolved once per
    * frame by `Scene/MoonPhaseAppearance.js` and published as
    * `frameState.moonEarthshinePhaseScale` / `frameState.moonTerminatorSoftness`,
-   * and both with an EXACT identity position when false.
+   * and both with an EXACT identity position when false. The C12-27 toggle
+   * `enableAngularSolarGlare` joins them — default ON, both backends, resolved
+   * once per frame by `Scene/SolarGlareAppearance.js` and published as
+   * `frameState.solarGlareAppearance`, with an EXACT identity position when
+   * false (strength 0 makes every consumer skip its whole glare block).
    * @type {object}
    * @readonly
    */
@@ -456,6 +460,29 @@ function buildLighting(globe) {
   //    it buys is the removal of a hard binary edge, not a visibly wide
   //    penumbra — the real Moon's soft-looking terminator is topography
   //    (C12-25's LOLA relief), not the Sun's angular size.
+  // C12-27 (2026-08-06) — one more toggle, DEFAULT ON, on BOTH backends and in
+  // BOTH star paths (the cube map and the sprite catalogue), resolved once per
+  // frame by `Scene/SolarGlareAppearance.js`:
+  //
+  //  - enableAngularSolarGlare (C12-27): washes out stars as a function of
+  //    their ANGULAR SEPARATION FROM THE SUN, using the same
+  //    pedestal-subtracted Lorentzian (`1/theta^2` Stiles-Holladay / CIE
+  //    veiling-glare form) that C12-16 already ships for the sun billboard —
+  //    the one curve lives in `Scene/SolarDiscModel.js`, parameterised over
+  //    bake radius there and over radians here. Replaces the model C11-176
+  //    deleted, which keyed the dim to the SUN'S ELEVATION and therefore dimmed
+  //    the whole sky uniformly (including stars 180 deg away) and did nothing
+  //    at all in orbit. Off passes strength exactly 0.0, which every shader
+  //    reads as "skip the block" — byte-identical, not approximately so.
+  //    DELIBERATELY NOT gated by the 111 km atmospheric-column factor that
+  //    makes the C12-29 S6 star modulation inert in orbit: sky glow needs a
+  //    column, veiling glare needs an observer, and orbit is exactly the case
+  //    this row was reported from.
+  //    HONEST NOTE: measurable only near the Sun, by construction. At the
+  //    shipped constants a star loses 3.2% of its radiance at 30 deg
+  //    separation, 6.6% at 20 deg, 22.8% at 10 deg, 49.8% at 5.477 deg
+  //    (the half-amplitude angle) and 96.8% at 1 deg; at and beyond 90 deg the
+  //    multiplier is exactly 1.0.
   const leaf = {
     enableSunLight: true,
     enableMoonLight: true,
@@ -474,6 +501,7 @@ function buildLighting(globe) {
     enableEclipseGlobeShadow: true,
     enableSolarLimbDarkening: true,
     enableSolarGlareFalloff: true,
+    enableAngularSolarGlare: true,
     // C12-29 S6 — the 360-degree horizon twilight. Inside the umbra the
     // observer is surrounded by penumbra: the umbral ground track is only
     // 100-160 km wide, so in EVERY azimuth the still-sunlit atmosphere begins

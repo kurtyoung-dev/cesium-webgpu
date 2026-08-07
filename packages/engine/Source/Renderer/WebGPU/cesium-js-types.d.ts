@@ -497,6 +497,19 @@ interface CesiumFrameState {
   // the starfield (published by StarField.update). Undefined when the effect
   // is disabled (atmosphere hidden / from orbit).
   starZenithTransmittance?: CesiumCartesian3 | undefined;
+  // C12-27 — angular solar-glare star washout, resolved once per frame by
+  // Scene.updateEnvironment (Scene/SolarGlareAppearance.js) and read by BOTH
+  // star paths on both backends. Undefined when the environment is not drawn.
+  solarGlareAppearance?:
+    | {
+        enabled: boolean;
+        strength: number;
+        angularCore: number;
+        pedestal: number;
+        support: number;
+        sunDirectionTeme: CesiumCartesian3;
+      }
+    | undefined;
   // C7-SUN-STARS-EXTINCTION — per-frame RGB transmittance along the camera→sun
   // ray (published by Sun.update). Undefined when the effect is disabled.
   sunAtmosphereExtinction?: CesiumCartesian3 | undefined;

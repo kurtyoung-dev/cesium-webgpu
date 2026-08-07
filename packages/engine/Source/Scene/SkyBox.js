@@ -39,6 +39,14 @@ class SkyBox {
   constructor(options) {
     this._sources = options.sources;
 
+    // C12-14 — which entry of {@link SkyBox.Variant} these sources came from,
+    // when the sky box was built by {@link SkyBox.createEarthSkyBox}.
+    // `undefined` for a hand-constructed sky box, because arbitrary `sources`
+    // cannot be attributed to a variant. Load-bearing for a consumer of
+    // {@link SkyBox#starCubeMap}: the default variant carries NO resolved
+    // stars (DR-01), so the answer changes what sampling the cube map means.
+    this._variant = options.variant;
+
     this._show = options.show ?? true;
     this._panorama = new CubeMapPanorama({
       sources: this._sources,
@@ -81,6 +89,48 @@ class SkyBox {
 
   set sources(value) {
     this._panorama.sources = value;
+    // The new faces are not attributable to a `SkyBox.Variant` entry, so stop
+    // claiming one rather than reporting a stale answer.
+    this._variant = undefined;
+  }
+
+  /**
+   * The {@link SkyBox.Variant} these faces came from, or `undefined` when the
+   * sky box was constructed directly from arbitrary `sources` (or its sources
+   * were replaced afterwards).
+   *
+   * Read this alongside {@link SkyBox#starCubeMap}: under the default
+   * `TYCHO_T5_DIFFUSE` the cube map carries the diffuse galactic band and NO
+   * resolved stars (Campaign-12 decision DR-01 gives those to the
+   * {@link StarField} sprite catalogue), so a reflection that samples only the
+   * cube map will show the Milky Way and no individual stars.
+   *
+   * @type {string|undefined}
+   * @readonly
+   */
+  get variant() {
+    return this._variant;
+  }
+
+  /**
+   * C12-14 — a backend-neutral, SAMPLABLE handle to the star cube map, so code
+   * outside the sky box can look the stars up in a shader rather than only
+   * seeing them drawn. Refreshed once per frame on both backends; also
+   * published as `frameState.starCubeMap`.
+   *
+   * `available` is false until the six faces finish loading, and the handles
+   * are BORROWED — see `Scene/StarCubeMapResource.js` for the frame (TEME),
+   * content, availability and ownership rules a consumer must respect.
+   *
+   * **Nothing samples this yet.** It exists to discharge the "samplable STAR
+   * cubemap" blocker recorded against `C11-163` (celestial water reflection);
+   * see that module's header before treating it as dead code (Principle 7).
+   *
+   * @type {object}
+   * @readonly
+   */
+  get starCubeMap() {
+    return this._panorama.samplableCubeMap;
   }
 
   /**
@@ -193,6 +243,9 @@ class SkyBox {
     //>>includeEnd('debug');
     const resolved = descriptor ?? skyBoxVariants[SkyBox.Variant.TYCHO_T3];
     return new SkyBox({
+      // C12-14 — record which variant these faces are, so a consumer of
+      // `skyBox.starCubeMap` can tell whether the map carries resolved stars.
+      variant: defined(descriptor) ? v : SkyBox.Variant.TYCHO_T3,
       sources: {
         positiveX: resolved.url("px"),
         negativeX: resolved.url("mx"),

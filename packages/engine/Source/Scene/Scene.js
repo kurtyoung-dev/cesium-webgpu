@@ -40,6 +40,10 @@ import Atmosphere from "./Atmosphere.js";
 import AtmosphericConditions from "./AtmosphericConditions.js";
 import { computeSkyBrightness } from "./SkyBrightness.js";
 import {
+  createSolarGlareAppearance,
+  readSolarGlareAppearance,
+} from "./SolarGlareAppearance.js";
+import {
   getEclipseHorizonTwilightFactor,
   getEclipseSceneLightFactor,
   updateEclipseState,
@@ -1192,6 +1196,12 @@ class Scene {
 
     this._performanceDisplay = undefined;
     this._debugVolume = undefined;
+
+    // C12-27 — reusable per-scene resolution of the angular solar-glare
+    // washout, filled by `updateEnvironment` and published on `frameState`.
+    // Per-Scene rather than module-scope so two Scenes (split-screen, mixed
+    // backends) never share one buffer.
+    this._solarGlareAppearance = undefined;
 
     this._screenSpaceCameraController = new ScreenSpaceCameraController(this);
     this._cameraUnderground = false;
@@ -3799,6 +3809,9 @@ class Scene {
       environmentState.moonCommand = undefined;
       environmentState.isSkyAtmosphereVisible = false;
       frameState.skyAtmosphereVisible = false;
+      // C12-27 — no celestial consumer runs on this path; leave the glare
+      // unpublished so a stale resolution can never be read.
+      frameState.solarGlareAppearance = undefined;
     } else {
       // Resolve atmosphere applicability before any celestial consumer runs.
       // The constructor/show flag alone is not authoritative while a globe is
@@ -3861,6 +3874,23 @@ class Scene {
           frameState.camera?.positionWC,
           frameState.camera?.positionCartographic?.height,
         ) * frameState.eclipseSceneLightFactor;
+
+      // C12-27 — angular solar-glare star washout. Resolved ONCE here, before
+      // `skyBox.update` (cube map) and `starField.update` (sprites), so all
+      // four shader consumers on both backends read one identical resolution
+      // instead of re-deriving the Sun's TEME direction each. Independent of
+      // `skyBrightness` above: that term models sky glow from the atmospheric
+      // column and is inert in orbit by design, while veiling glare travels
+      // with the observer — see `Scene/SolarGlareAppearance.js`.
+      if (!defined(this._solarGlareAppearance)) {
+        this._solarGlareAppearance = createSolarGlareAppearance();
+      }
+      frameState.solarGlareAppearance = readSolarGlareAppearance(
+        frameState.atmosphericConditions?.lighting,
+        frameState.context.uniformState.sunDirectionWC,
+        frameState.context.uniformState.temeToPseudoFixedMatrix,
+        this._solarGlareAppearance,
+      );
 
       if (defined(skyAtmosphere)) {
         environmentState.skyAtmosphereCommand = skyAtmosphere.update(

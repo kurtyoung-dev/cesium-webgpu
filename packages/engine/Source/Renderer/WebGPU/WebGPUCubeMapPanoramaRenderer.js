@@ -5,13 +5,15 @@
  * Creates pipelines, buffers, bind groups, and WebGPUDrawCommand instances for cubemap
  * panorama rendering in the WebGPU renderer.
  *
- * Uniform layout matches CubeMapPanorama.wgsl (224 bytes, 256-aligned):
+ * Uniform layout matches CubeMapPanorama.wgsl (272 bytes of data, 288-byte buffer):
  *   projection:         mat4x4<f32>  (offset 0,  64 bytes)
  *   viewRotation:       mat4x4<f32>  (offset 64, 64 bytes)
  *   panoramaTransform:  mat4x4<f32>  (offset 128, 64 bytes)
  *   params:             vec4<f32>    (offset 192, 16 bytes) — far, morphTime, debugCubeFace, skyBrightness
  *   starModulation:     vec4<f32>    (offset 208, 16 bytes) — inflection, steepness, enableFlag, cloudCover
  *   hdr:                vec4<f32>    (offset 224, 16 bytes) — gamma (0 when SDR), reserved, reserved, reserved
+ *   solarGlare:         vec4<f32>    (offset 240, 16 bytes) — C12-27 Sun dir in the cube-map (TEME) frame, strength
+ *   solarGlareCurve:    vec4<f32>    (offset 256, 16 bytes) — C12-27 angular core (rad), pedestal, support (rad), reserved
  */
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -45,6 +47,16 @@ struct CubeMapPanoramaUniforms {
   // (frameState.useHDR), else 0. Zero on the default SDR path keeps the
   // fragment output byte-identical. y/z/w reserved.
   hdr: vec4<f32>,
+  // C12-27 — angular solar-glare star washout, ADD-ONLY at the tail.
+  // xyz = Sun direction in THIS shader's cube-map lookup frame (TEME for
+  // SkyBox, whose panoramaTransform IS temeToPseudoFixed); w = washout
+  // strength, EXACTLY 0 for generic panoramas and for the disabled toggle,
+  // which skips the whole block. Resolved once per frame on the CPU by
+  // Scene/SolarGlareAppearance.js; SkyBoxFS.glsl reads the same numbers.
+  solarGlare: vec4<f32>,
+  // x = angular core (rad), y = pedestal, z = support (rad), w = reserved.
+  // Uniforms rather than literals so this shader carries no numeric copy.
+  solarGlareCurve: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: CubeMapPanoramaUniforms;
@@ -80,6 +92,38 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   output.position = vec4<f32>(clipPos.x, clipPos.y, clipPos.w, clipPos.w);
   output.texCoord = input.position;
   return output;
+}
+
+// C12-27 — veiling-glare weight as a function of angular separation from the
+// Sun. Character-identical to solarGlareVeil in Shaders/SkyBoxFS.glsl,
+// Shaders/WebGPU/Catalog/StarField.wgsl and Shaders/StarFieldVS.glsl, and a
+// line-for-line translation of angularGlareVeil in Scene/SolarDiscModel.js.
+// Tools/visual-regression/solar-glare-star-washout.spec.mjs extracts all five
+// texts (this JS-embedded production copy included), compiles each body as
+// JavaScript, and requires them to agree with the JS reference to 1e-15.
+//
+//   raw(theta)  = 1 / (1 + (theta/core)^2)      -> ~ 1/theta^2 far field
+//   veil(theta) = (raw - pedestal) / (1 - pedestal), clamped to [0, 1]
+//
+// The 1/theta^2 tail is the Stiles-Holladay / CIE disability-glare form. The
+// pedestal subtraction makes the veil reach EXACTLY 0 at the support angle
+// (90 deg), and the cosSeparation <= 0.0 early-out is the same half-space,
+// so a direction at or beyond 90 deg from the Sun is multiplied by exactly 1.0
+// — byte-identical to the no-Sun frame, the C12-27 acceptance criterion.
+//
+// NOTE: keep this whole template literal free of backticks, escaped or not.
+// The specs slice the embedded WGSL out by scanning for the first backtick
+// immediately followed by a semicolon, so one inside the string silently
+// truncates the extracted shader and the naga validation then passes on a
+// fragment. That is exactly how this comment block was first written.
+fn solarGlareVeil(cosSeparation: f32, core: f32, pedestal: f32, support: f32) -> f32 {
+  if (cosSeparation <= 0.0) { return 0.0; }
+  let theta = acos(min(cosSeparation, 1.0));
+  if (theta >= support) { return 0.0; }
+  let t = theta / core;
+  let raw = 1.0 / (1.0 + t * t);
+  let v = (raw - pedestal) / (1.0 - pedestal);
+  return clamp(v, 0.0, 1.0);
 }
 
 @fragment
@@ -140,6 +184,22 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   modulated = modulated * (1.0 - cloudCover);
 
+  // C12-27 — angular solar-glare washout. ORDER IS PART OF THE CONTRACT and
+  // SkyBoxFS.glsl mirrors it exactly: modulate -> cloud-occlude -> GLARE ->
+  // gamma. Must stay before the gamma step for the same reason the other two
+  // do: czm_gammaCorrect is an sRGB->linear decode under HDR and
+  // k*x^g != (k*x)^g, so moving a multiply across it desynchronises the
+  // backends.
+  if (uniforms.solarGlare.w > 0.0) {
+    let veil = solarGlareVeil(
+      dot(dir, uniforms.solarGlare.xyz),
+      uniforms.solarGlareCurve.x,
+      uniforms.solarGlareCurve.y,
+      uniforms.solarGlareCurve.z
+    );
+    modulated = modulated * (1.0 - uniforms.solarGlare.w * veil);
+  }
+
   // Match WebGL czm_gammaCorrect (Builtin/Functions/gammaCorrect.glsl):
   // it is a no-op when HDR is off (the default). Cubemap PNG data is
   // sRGB-encoded; the canvas color space is sRGB; passing the sampled
@@ -160,8 +220,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-// Uniform buffer size: 208 bytes data, padded to 256 for GPU alignment
-const UNIFORM_BUFFER_SIZE = 256;
+// Uniform buffer size: 272 bytes of data (C12-27 appended `solarGlare` +
+// `solarGlareCurve` at offsets 240/256), padded to 288 — a multiple of 16, so
+// every vec4 stays naturally aligned. ADD-ONLY: no pre-existing offset moved,
+// so the bind-group layout and every bind group are unchanged.
+const UNIFORM_BUFFER_SIZE = 288;
 const UNIFORM_FLOAT_COUNT = UNIFORM_BUFFER_SIZE / 4;
 
 // Cached per-device resources (shader module, pipeline, bind group layouts)
@@ -551,6 +614,22 @@ export function updateUniforms(
         : 2.2
       : 0.0;
 
+  // C12-27 — angular solar-glare washout (floats 60..67, offsets 240/256).
+  // CubeMapPanorama resolves this vector once before backend dispatch, exactly
+  // like `_starModulation`: `isStarMap` gates it, so generic/Street View
+  // panoramas write strength 0 and the shader skips the whole block. The
+  // identity fallbacks below cover a panorama that has not reached `update`.
+  const solarGlare = panorama?._solarGlare;
+  const solarGlareCurve = panorama?._solarGlareCurve;
+  uniformData[60] = solarGlare?.x ?? 0.0;
+  uniformData[61] = solarGlare?.y ?? 0.0;
+  uniformData[62] = solarGlare?.z ?? 1.0;
+  uniformData[63] = solarGlare?.w ?? 0.0;
+  uniformData[64] = solarGlareCurve?.x ?? 1.0;
+  uniformData[65] = solarGlareCurve?.y ?? 0.0;
+  uniformData[66] = solarGlareCurve?.z ?? 0.0;
+  uniformData[67] = 0.0;
+
   device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 }
 
@@ -634,6 +713,29 @@ function getState(panorama) {
     _instanceState.set(panorama, state);
   }
   return state;
+}
+
+/**
+ * C12-14 — expose the loaded cube texture so backend-neutral scene code can
+ * publish it as a SAMPLABLE star texture (see `Scene/StarCubeMapResource.js`).
+ *
+ * Registered as the CUBE_MAP_PANORAMA feature renderer's `getResource`, which
+ * is how `CubeMapPanorama` reaches it without importing from `Renderer/WebGPU/`
+ * (Principle 2). Returns `undefined` while the six faces are still loading.
+ *
+ * @param {Object} panorama The CubeMapPanorama instance.
+ * @returns {{texture: GPUTexture, view: GPUTextureView}|undefined}
+ */
+export function getCubeMapPanoramaResource(panorama) {
+  const state = _instanceState.get(panorama);
+  if (
+    !defined(state) ||
+    !defined(state.cubeMapTexture) ||
+    !defined(state.cubeMapView)
+  ) {
+    return undefined;
+  }
+  return { texture: state.cubeMapTexture, view: state.cubeMapView };
 }
 
 /**

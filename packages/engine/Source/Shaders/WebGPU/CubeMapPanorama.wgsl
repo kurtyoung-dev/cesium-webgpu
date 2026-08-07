@@ -7,13 +7,15 @@
 // - The box is always centered on the camera (view rotation only, no translation)
 // - Positions are just direction vectors for cubemap lookup
 //
-// Uniform layout (240 bytes, buffer 256-aligned):
+// Uniform layout (272 bytes, buffer 288 bytes):
 //   projection:         mat4x4<f32>  (offset 0,   64 bytes)
 //   viewRotation:       mat4x4<f32>  (offset 64,  64 bytes) — camera view rotation (3x3 in 4x4)
 //   panoramaTransform:  mat4x4<f32>  (offset 128, 64 bytes) — panorama orientation (identity for SkyBox)
 //   params:             vec4<f32>    (offset 192, 16 bytes) — x=far, y=morphTime, z=debugCubeFace, w=skyBrightness
 //   starModulation:     vec4<f32>    (offset 208, 16 bytes) — x=inflection, y=steepness, z=enableFlag, w=cloudCover
 //   hdr:                vec4<f32>    (offset 224, 16 bytes) — x=gamma in HDR, 0 in SDR
+//   solarGlare:         vec4<f32>    (offset 240, 16 bytes) — xyz=Sun dir in the cube-map (TEME) frame, w=strength
+//   solarGlareCurve:    vec4<f32>    (offset 256, 16 bytes) — x=angular core rad, y=pedestal, z=support rad, w=reserved
 //
 // Phase 1.3b — Star brightness modulation. The cubemap panorama doubles
 // as the starfield. When the sky is bright (sun above horizon, full moon
@@ -28,6 +30,16 @@
 // fragment shader multiplies the modulated star color by `(1 - cloudCover)`
 // so a fully overcast sky hides stars completely without requiring a
 // separate occlusion pass or weather-particle layer.
+//
+// C12-27 — Angular solar-glare star washout. ADD-ONLY at the tail (the buffer
+// grows 256 -> 288 bytes; every pre-existing offset is unchanged, so the BGL
+// and bind groups are untouched). `solarGlare` carries the Sun direction in
+// THIS shader's own lookup frame plus a strength, and `solarGlareCurve`
+// carries the veiling-glare parameters, both resolved once per frame on the
+// CPU by `Scene/SolarGlareAppearance.js`. WebGL's `SkyBoxFS.glsl` reads
+// byte-identical values through `u_solarGlare` / `u_solarGlareCurve`. Applies
+// to star maps only: `CubeMapPanorama.isStarMap` gates the CPU resolution, so
+// generic and Street View panoramas resolve strength 0 and stay exact.
 
 struct CubeMapPanoramaUniforms {
   projection: mat4x4<f32>,
@@ -36,6 +48,8 @@ struct CubeMapPanoramaUniforms {
   params: vec4<f32>,
   starModulation: vec4<f32>,
   hdr: vec4<f32>,
+  solarGlare: vec4<f32>,
+  solarGlareCurve: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: CubeMapPanoramaUniforms;
@@ -91,6 +105,32 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   return output;
 }
 
+// C12-27 — veiling-glare weight as a function of angular separation from the
+// Sun. Character-identical to `solarGlareVeil` in `Shaders/SkyBoxFS.glsl`,
+// `Shaders/WebGPU/Catalog/StarField.wgsl` and `Shaders/StarFieldVS.glsl`, and a
+// line-for-line translation of `angularGlareVeil` in
+// `Scene/SolarDiscModel.js`; `Tools/visual-regression/solar-glare-star-washout.spec.mjs`
+// extracts all four texts, compiles each body as JavaScript, and requires them
+// to agree with the JS reference to 1e-15.
+//
+//   raw(theta)  = 1 / (1 + (theta/core)^2)      -> ~ 1/theta^2 far field
+//   veil(theta) = (raw - pedestal) / (1 - pedestal), clamped to [0, 1]
+//
+// The `1/theta^2` tail is the Stiles-Holladay / CIE disability-glare form. The
+// pedestal subtraction makes the veil reach EXACTLY 0 at the support angle
+// (90 deg), and the `cosSeparation <= 0.0` early-out is the same half-space,
+// so a direction at or beyond 90 deg from the Sun is multiplied by exactly 1.0
+// — byte-identical to the no-Sun frame, the C12-27 acceptance criterion.
+fn solarGlareVeil(cosSeparation: f32, core: f32, pedestal: f32, support: f32) -> f32 {
+  if (cosSeparation <= 0.0) { return 0.0; }
+  let theta = acos(min(cosSeparation, 1.0));
+  if (theta >= support) { return 0.0; }
+  let t = theta / core;
+  let raw = 1.0 / (1.0 + t * t);
+  let v = (raw - pedestal) / (1.0 - pedestal);
+  return clamp(v, 0.0, 1.0);
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let dir = normalize(input.texCoord);
@@ -140,6 +180,24 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     modulated = modulated * factor;
   }
   modulated = modulated * (1.0 - cloudCover);
+
+  // C12-27 — angular solar-glare washout. ORDER IS PART OF THE CONTRACT and
+  // `SkyBoxFS.glsl` mirrors it exactly: modulate -> cloud-occlude -> GLARE ->
+  // gamma. It has to stay before the gamma step for the same reason the other
+  // two do — `czm_gammaCorrect` is an sRGB->linear decode under HDR and
+  // `k*x^g != (k*x)^g`, so moving a multiply across it desynchronises the
+  // backends. `dir` and `solarGlare.xyz` are both in the cube-map lookup
+  // frame (TEME for `SkyBox`, whose `panoramaTransform` IS
+  // `temeToPseudoFixed`).
+  if (uniforms.solarGlare.w > 0.0) {
+    let veil = solarGlareVeil(
+      dot(dir, uniforms.solarGlare.xyz),
+      uniforms.solarGlareCurve.x,
+      uniforms.solarGlareCurve.y,
+      uniforms.solarGlareCurve.z
+    );
+    modulated = modulated * (1.0 - uniforms.solarGlare.w * veil);
+  }
 
   // Match WebGL czm_gammaCorrect (Builtin/Functions/gammaCorrect.glsl):
   // no-op when HDR is off (the default). Cubemap PNG data is sRGB and

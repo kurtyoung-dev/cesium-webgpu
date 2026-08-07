@@ -1,6 +1,6 @@
-// SolarDiscModel.js — C12-15 / C12-16. THE single source of truth for the
-// solar-disc photometry constants and the two radial profiles the sun-disc
-// bake is built from.
+// SolarDiscModel.js — C12-15 / C12-16 / C12-27. THE single source of truth for
+// the solar-disc photometry constants and the radial profiles the sun-disc bake
+// and the angular star washout are built from.
 //
 // WHY THIS MODULE EXISTS. Before it, the limb-darkening triple lived only in
 // `computeSolarObscuration.js` (C12-29 S1's eclipse photometry) and the sun
@@ -17,9 +17,32 @@
 //      so the GLSL carries no numeric copy of them at all.
 //   3. `Renderer/WebGPU/WebGPUEnvironmentRenderer.js` — imports the pure
 //      functions directly for its CPU bake.
+//   4. `Scene/SolarGlareAppearance.js` — C12-27's per-frame resolver, which
+//      feeds the ANGULAR parameterisation of the same veiling-glare curve to
+//      four shaders (star sprites + star cube map, both backends) as uniforms.
 //
 // That makes "one constants source" structural rather than a comment: there
 // is no second literal to drift.
+//
+// ─── ONE CURVE, TWO PARAMETERISATIONS (C12-27) ─────────────────────────────
+//
+// C12-16's `solarGlareProfile` and C12-27's `solarAngularGlareVeil` are the
+// SAME pedestal-subtracted Lorentzian, `{@link pedestalLorentzian}`, evaluated
+// over two different domains:
+//
+//   C12-16  x = bake `radius` (the billboard's own texture coordinate)
+//   C12-27  x = ANGULAR separation from the Sun, in radians
+//
+// Both decay as `1/x^2` — the Stiles-Holladay / CIE disability-glare form
+// `L_veil ∝ E / theta^2`. The C12-27 queue row prescribes reusing "the C12-05
+// Stiles-Holladay math"; that identification is WRONG and is recorded here so
+// nobody re-derives it. `C12-05` DID land (Batch 748), but its Moffat wing is
+// `(1 + (r/alpha)^2)^(-beta)` with `STAR_PSF_BETA = 2.0`, i.e. a log-log slope
+// of `-2*beta = -4`: an inverse-FOURTH-power wing, deliberately, because it
+// models a single unresolved star's point-spread function and not the veiling
+// luminance across the sky. The landed inverse-SQUARE veiling form in this fork
+// is C12-16's, right here. So the glare curve has exactly one home, and it is
+// this module.
 //
 // COORDINATE CONVENTION (shared by both bakes, do not change without changing
 // both). The bake runs over the square billboard texture; with
@@ -86,6 +109,51 @@ const SOLAR_GLARE_CORE = 0.275;
 const SOLAR_GLARE_SUPPORT = Math.SQRT1_2;
 
 /**
+ * Value the raw Lorentzian `1 / (1 + (support/core)^2)` takes at the support
+ * radius. Subtracting it (and renormalising) is what makes a profile reach
+ * exactly 0.0 at its support instead of leaving a pedestal that would paint a
+ * visible hard edge there.
+ *
+ * @param {number} support Outer support, in the profile's own domain units.
+ * @param {number} core Half-amplitude radius, same units.
+ * @returns {number} The raw Lorentzian value at `support`.
+ * @private
+ */
+function lorentzianPedestal(support, core) {
+  return 1.0 / (1.0 + (support / core) * (support / core));
+}
+
+/**
+ * The shared pedestal-subtracted Lorentzian both glare profiles are made of
+ * (see the "one curve, two parameterisations" note in the module header).
+ *
+ *   raw(x)     = 1 / (1 + (x / core)^2)          ->  ~ (core/x)^2 for x >> core
+ *   profile(x) = (raw(x) - pedestal) / (1 - pedestal), clamped to [0, 1]
+ *
+ * The clamp is what terminates the curve at the support radius: beyond it
+ * `raw < pedestal`, so the numerator goes negative and the result is exactly
+ * 0.0 — not "small", zero. Callers that need a byte-identical no-op outside
+ * the support rely on that.
+ *
+ * The operation ORDER here is byte-for-byte the expression `solarGlareProfile`
+ * carried before C12-27 factored it out; `solar-glare-star-washout.spec.mjs`
+ * pins the two against a frozen copy of the pre-C12-27 body over a dense sweep
+ * and requires EXACT equality, so the refactor cannot have moved a bit.
+ *
+ * @param {number} x Position in the profile's own domain.
+ * @param {number} core Half-amplitude radius.
+ * @param {number} pedestal {@link lorentzianPedestal} at the support radius.
+ * @returns {number} Glare weight in [0, 1].
+ * @private
+ */
+function pedestalLorentzian(x, core, pedestal) {
+  const t = x / core;
+  const raw = 1.0 / (1.0 + t * t);
+  const v = (raw - pedestal) / (1.0 - pedestal);
+  return v < 0.0 ? 0.0 : v > 1.0 ? 1.0 : v;
+}
+
+/**
  * Value the raw Lorentzian takes at {@link SOLAR_GLARE_SUPPORT}. Subtracting
  * it (and renormalising) is what makes the profile reach exactly 0.0 at the
  * support radius instead of leaving a ~0.13 pedestal that would paint a
@@ -93,11 +161,10 @@ const SOLAR_GLARE_SUPPORT = Math.SQRT1_2;
  *
  * @private
  */
-const SOLAR_GLARE_PEDESTAL =
-  1.0 /
-  (1.0 +
-    (SOLAR_GLARE_SUPPORT / SOLAR_GLARE_CORE) *
-      (SOLAR_GLARE_SUPPORT / SOLAR_GLARE_CORE));
+const SOLAR_GLARE_PEDESTAL = lorentzianPedestal(
+  SOLAR_GLARE_SUPPORT,
+  SOLAR_GLARE_CORE,
+);
 
 /**
  * Legacy glare cutoff radius — the `0.55` in `1 - smoothstep(0, 0.55, r)`.
@@ -170,10 +237,7 @@ function solarLimbIntensity(x) {
  * @private
  */
 function solarGlareProfile(radius) {
-  const t = radius / SOLAR_GLARE_CORE;
-  const raw = 1.0 / (1.0 + t * t);
-  const v = (raw - SOLAR_GLARE_PEDESTAL) / (1.0 - SOLAR_GLARE_PEDESTAL);
-  return v < 0.0 ? 0.0 : v > 1.0 ? 1.0 : v;
+  return pedestalLorentzian(radius, SOLAR_GLARE_CORE, SOLAR_GLARE_PEDESTAL);
 }
 
 /**
@@ -206,6 +270,173 @@ function solarBakeRadiusToSolarRadii(radius, glowLengthTS) {
   return radius * Math.SQRT2 * halfExtentRsun;
 }
 
+// ─── C12-27 — ANGULAR parameterisation (star washout near the Sun) ─────────
+//
+// The deleted `enableStarBrightnessModulation` global dim was keyed to the
+// SUN'S ELEVATION above the camera's local horizon, so it dimmed stars 180 deg
+// away from the Sun just as hard as stars beside it, and it did nothing at all
+// in orbit. What actually washes out stars near the Sun is veiling glare —
+// light scattered inside the eye/optics — and that is a function of ANGULAR
+// SEPARATION, which is what the constants below parameterise.
+//
+// NOT GATED BY `computeAtmosphericColumnFactor`, DELIBERATELY. The C12-29 S6
+// star-brightness modulation is inert above the engine's 111 km scattering
+// shell, by design: it models sky glow from the atmospheric COLUMN, and above
+// the column there is no glow. Veiling glare is a DIFFERENT physical mechanism
+// — scattering in the observer's eye and optics, which travel with the
+// observer — so it must NOT inherit that gate. An astronaut looking 5 deg from
+// the Sun sees no stars there; that is exactly the case the column factor
+// switches off. (Stated here because this is the first question any auditor
+// comparing the two terms will ask.)
+
+/**
+ * Lower and upper bounds of the angular band over which the Stiles-Holladay
+ * inverse-square disability-glare law `L_veil = k * E / theta^2` (theta in
+ * degrees) is the accepted description. Inside ~1 deg the point-source
+ * idealisation breaks down against the source's own angular size; past
+ * ~30 deg the CIE general equation's other terms take over. Recorded as
+ * constants because {@link SOLAR_GLARE_ANGULAR_CORE} is DERIVED from them
+ * rather than dialled.
+ *
+ * @private
+ */
+const SOLAR_GLARE_ANGULAR_VALID_MIN_DEG = 1.0;
+const SOLAR_GLARE_ANGULAR_VALID_MAX_DEG = 30.0;
+
+/**
+ * Half-amplitude angle of the veiling-glare veil, in RADIANS.
+ *
+ * Derived, not tuned: it is the GEOMETRIC centre of the validity band above,
+ * `sqrt(1 * 30) = 5.477225575 deg`. Anchoring there puts the curve's knee in
+ * the middle of the decade where the inverse-square law is the accepted
+ * description, so the whole of that band is carried by a genuine `1/theta^2`
+ * tail rather than by the regularised core.
+ *
+ * WHY NOT THE SUN'S OWN ANGULAR RADIUS. A Lorentzian regularised at the
+ * source's angular size (0.2664 deg, the figure `MoonPhaseAppearance` derives)
+ * is the "pure" Stiles-Holladay reading, but it puts the veil at
+ * `(0.2664/10)^2 = 7e-4` at 10 deg — three orders of magnitude below one 8-bit
+ * code value, i.e. arithmetically inert everywhere it is supposed to act. The
+ * observed washout is dominated by ocular/instrument stray light, whose
+ * effective source size is the glare spread of the optics, not the disc. The
+ * amplitude of that spread is an APPEARANCE parameter and is disclosed as one;
+ * the SHAPE and the SUPPORT are not.
+ *
+ * @private
+ */
+const SOLAR_GLARE_ANGULAR_CORE =
+  (Math.sqrt(
+    SOLAR_GLARE_ANGULAR_VALID_MIN_DEG * SOLAR_GLARE_ANGULAR_VALID_MAX_DEG,
+  ) *
+    Math.PI) /
+  180.0;
+
+/**
+ * Outer support of the angular veil, in radians — exactly 90 degrees.
+ *
+ * This is a GATE constant, not a photometric one. The C12-27 acceptance
+ * criterion is "stars at >90 deg separation are byte-identical to the no-Sun
+ * frame", so the curve is pedestal-subtracted to reach exactly 0.0 at
+ * `PI/2` and every consumer additionally early-outs on `cos(theta) <= 0`,
+ * which is the same half-space. The multiplier there is exactly 1.0, and
+ * `x * 1.0 === x` for every finite IEEE-754 `x` — byte-identical, not close.
+ *
+ * A real veiling-glare PSF of course does not terminate at 90 deg; the
+ * pedestal subtraction is the same honest bound C12-16 documents for the
+ * finite billboard, applied to a finite acceptance criterion.
+ *
+ * @private
+ */
+const SOLAR_GLARE_ANGULAR_SUPPORT = Math.PI / 2.0;
+
+/**
+ * Value the raw angular Lorentzian takes at {@link SOLAR_GLARE_ANGULAR_SUPPORT}.
+ *
+ * @private
+ */
+const SOLAR_GLARE_ANGULAR_PEDESTAL = lorentzianPedestal(
+  SOLAR_GLARE_ANGULAR_SUPPORT,
+  SOLAR_GLARE_ANGULAR_CORE,
+);
+
+/**
+ * C12-27 REFERENCE IMPLEMENTATION of the shader math — the JS twin of
+ * `solarGlareVeil` in `StarField.wgsl`, `StarFieldVS.glsl`,
+ * `CubeMapPanorama.wgsl` and `SkyBoxFS.glsl`. Written FLAT (rather than
+ * delegating to {@link pedestalLorentzian}) so the four shader bodies are a
+ * line-for-line translation of it and `solar-glare-star-washout.spec.mjs` can
+ * extract, compile and compare them; the spec separately proves this flat form
+ * and `pedestalLorentzian` agree, so "one curve" stays a measured fact.
+ *
+ * Takes the COSINE of the separation because that is what every consumer
+ * already has — a dot product of two unit vectors in the star (TEME) frame —
+ * and because `cos <= 0` is exactly the ">= 90 deg" half-space the gate needs.
+ *
+ * THREE REDUNDANT ZERO-GUARDS, DELIBERATELY. The `cos <= 0` early-out, the
+ * `theta >= support` test and the lower clamp all return exact zero over the
+ * same half-space at the shipped `support == PI/2`, so removing any ONE of
+ * them leaves this function bit-identical (measured — see the "mutually
+ * REDUNDANT" test in `solar-glare-star-washout.spec.mjs`, which also proves
+ * the redundancy is CONDITIONAL: at a support below 90 deg the early-out alone
+ * is not sufficient). Keep all three: the early-out is a real fast path that
+ * skips an `acos` for half the sky, and the other two are what keep the
+ * function correct if the support ever moves.
+ *
+ * @param {number} cosSeparation `dot(starDirection, sunDirection)`, both unit.
+ * @param {number} core Half-amplitude angle in radians.
+ * @param {number} pedestal Raw Lorentzian value at `support`.
+ * @param {number} support Outer support angle in radians (must be <= PI/2 for
+ *        the `cosSeparation <= 0` early-out to be exact).
+ * @returns {number} Veil weight in [0, 1]; exactly 0 at and beyond `support`.
+ * @private
+ */
+function angularGlareVeil(cosSeparation, core, pedestal, support) {
+  if (cosSeparation <= 0.0) {
+    return 0.0;
+  }
+  const theta = Math.acos(Math.min(cosSeparation, 1.0));
+  if (theta >= support) {
+    return 0.0;
+  }
+  const t = theta / core;
+  const raw = 1.0 / (1.0 + t * t);
+  const v = (raw - pedestal) / (1.0 - pedestal);
+  return v < 0.0 ? 0.0 : v > 1.0 ? 1.0 : v;
+}
+
+/**
+ * {@link angularGlareVeil} bound to the shipped constants.
+ *
+ * @param {number} cosSeparation `dot(starDirection, sunDirection)`, both unit.
+ * @returns {number} Veil weight in [0, 1].
+ * @private
+ */
+function solarAngularGlareVeil(cosSeparation) {
+  return angularGlareVeil(
+    cosSeparation,
+    SOLAR_GLARE_ANGULAR_CORE,
+    SOLAR_GLARE_ANGULAR_PEDESTAL,
+    SOLAR_GLARE_ANGULAR_SUPPORT,
+  );
+}
+
+/**
+ * The multiplier every C12-27 consumer applies to star radiance.
+ *
+ * `1 - strength * veil`: exactly 1.0 (a byte-identical no-op) when the toggle
+ * is off (`strength === 0`) or the star is at or beyond the support angle,
+ * exactly `1 - strength` dead on the Sun.
+ *
+ * @param {number} cosSeparation `dot(starDirection, sunDirection)`, both unit.
+ * @param {number} strength Washout strength; 0 disables, 1 fully extinguishes
+ *        a star at zero separation.
+ * @returns {number} Radiance multiplier in [1 - strength, 1].
+ * @private
+ */
+function solarAngularGlareFactor(cosSeparation, strength) {
+  return 1.0 - strength * solarAngularGlareVeil(cosSeparation);
+}
+
 /**
  * Frozen namespace default export.
  *
@@ -232,10 +463,20 @@ const SolarDiscModel = Object.freeze({
   SOLAR_GLARE_SUPPORT,
   SOLAR_GLARE_PEDESTAL,
   SOLAR_GLARE_LEGACY_EDGE,
+  SOLAR_GLARE_ANGULAR_VALID_MIN_DEG,
+  SOLAR_GLARE_ANGULAR_VALID_MAX_DEG,
+  SOLAR_GLARE_ANGULAR_CORE,
+  SOLAR_GLARE_ANGULAR_SUPPORT,
+  SOLAR_GLARE_ANGULAR_PEDESTAL,
+  lorentzianPedestal,
+  pedestalLorentzian,
   solarLimbIntensity,
   solarGlareProfile,
   solarGlareProfileLegacy,
   solarBakeRadiusToSolarRadii,
+  angularGlareVeil,
+  solarAngularGlareVeil,
+  solarAngularGlareFactor,
 });
 
 export {
@@ -246,9 +487,19 @@ export {
   SOLAR_GLARE_SUPPORT,
   SOLAR_GLARE_PEDESTAL,
   SOLAR_GLARE_LEGACY_EDGE,
+  SOLAR_GLARE_ANGULAR_VALID_MIN_DEG,
+  SOLAR_GLARE_ANGULAR_VALID_MAX_DEG,
+  SOLAR_GLARE_ANGULAR_CORE,
+  SOLAR_GLARE_ANGULAR_SUPPORT,
+  SOLAR_GLARE_ANGULAR_PEDESTAL,
+  lorentzianPedestal,
+  pedestalLorentzian,
   solarLimbIntensity,
   solarGlareProfile,
   solarGlareProfileLegacy,
   solarBakeRadiusToSolarRadii,
+  angularGlareVeil,
+  solarAngularGlareVeil,
+  solarAngularGlareFactor,
 };
 export default SolarDiscModel;

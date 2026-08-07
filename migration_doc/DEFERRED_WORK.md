@@ -1,5 +1,54 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
+## New findings — C12-27 / C12-14 / C12-13 worker, 2026-08-06
+
+Filed by the Campaign-12 appearance-tail worker. All five are surfaced rather
+than routed around (Principle 9); none blocks the batch.
+
+- **`C12-27-FOLLOWUP-ECLIPSED-SUN`** — the angular glare does not know whether
+  the Sun is actually *visible*. `Scene/SolarGlareAppearance.js` resolves the
+  washout from the Sun's DIRECTION alone, so a camera in Earth's shadow (or
+  during totality) still washes out stars around the Sun's sky position even
+  though there is no glare source to scatter. The fix is one multiply: scale
+  `strength` by an existing visibility scalar — `frameState.eclipseState`'s
+  `sunVisibleFraction` already carries BOTH the lunar obscuration and the Earth
+  limb occlusion in f64, computed backend-agnostically before any consumer, and
+  is exactly 1.0 whenever nothing occults the Sun (so folding it in is a
+  byte-identical no-op in the ordinary case). Deliberately NOT done in this
+  batch: it couples a C12 appearance row to the C12-29 eclipse subsystem's
+  publication order, and the coupling deserves its own gate. **Effort: XS.**
+- **`C12-27-FOLLOWUP-STRENGTH-DIAL`** — the washout STRENGTH is a module
+  constant (`SOLAR_GLARE_STRENGTH = 1.0`), not a public dial, matching the
+  C12-15/16/20/22 boolean-toggle precedent. If an application ever needs a
+  softer wash, it becomes an `atmosphericConditions.lighting` number rather
+  than a second boolean. Recorded so the absence reads as a decision.
+- **`C12-12-KTX2-SKYBOX-NOT-BUNDLED`** — the `C12-13` row asks for "the KTX2
+  bake derivation chain" in `LICENSE.md`. **That clause is vacuous at HEAD:**
+  no KTX2 or Basis asset exists anywhere in the tree, `Tools/skybox-bake/`
+  contains no KTX2 path, and `C12-12` (VRAM/streaming policy — 2048 default,
+  4096 opt-in, KTX2 compressed) has not landed. The LICENSE entry now states
+  the position explicitly and `solar-glare-star-washout.spec.mjs` asserts BOTH
+  halves, so the day a compressed face ships without the entry being extended,
+  the spec fails.
+- **`C12-13-T3-PROVENANCE-GAP`** — surfaced while extending the entry, NOT
+  introduced by it: the `tycho2t3_80_*` faces are **upstream CesiumJS's**
+  reprojection, and this project holds no bake script, no pinned source hash
+  and no encode record for them (`Tools/skybox-bake/` reproduces only `t5`).
+  They are also 1024/face **4:2:0** JPEG, which is the chroma subsampling the
+  `G3` gate criterion says fails immediately. The LICENSE entry now says so
+  rather than letting the reproducible-bake sentence be read as covering all
+  three variants. Closing the gap means either re-baking `t3` from a pinned
+  source or accepting the inherited condition explicitly — a maintainer call.
+- **`C11-163-CUBEMAP-HAS-NO-RESOLVED-STARS`** — `C12-14` hands `C11-163` a
+  samplable star cube map, but under the default `TYCHO_T5_DIFFUSE` that map
+  carries the diffuse galactic band and **zero resolved stars** (DR-01 moved
+  every resolved star to the sprite catalogue; `skybox-manifest.json` measures
+  0 point sources on all six faces). So "stars reflected on water" cannot be
+  built from the cube map alone. `C11-163` must decide between sampling the
+  un-blurred `TYCHO_T5` variant for reflections, accepting a Milky-Way-only
+  reflection, or adding a sprite-derived term. The new `skyBox.variant` getter
+  is what lets that decision be made at runtime.
+
 **Last Updated:** 2026-06-12 (Batch 253 final regression sweep — NEW-CLOUD-SCALE-METERS + depth-plane [ld] visibility fixed; NEW-CLOUD-IMPOSTOR-FS-PARITY + NEW-BUILD-OUTPUT-WGSL-PRUNE opened; Batches 243–252 entries verified current). Prior: 2026-05-30 (_DOC_AUDIT_PLAN.md §3.2 Batch 179–185 drift sweep at HEAD `88b111e49c` Batch 185 — NEW-GROUNDPRIM-TEXTURED-MATERIALS marked RESOLVED, NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION added as the canonical open residual, NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION approach-(A) downgraded to producer-shipped; prior 2026-05-02 AUDIT_2026_05_02.md cross-coupling sweep. **Also 2026-05-30:** pre-archive safety lift (_DOC_AUDIT_PLAN.md §2 Cluster B / §3.7) of still-open build/lifecycle + data-pipeline findings from the three 2026-04-16 pillars being archived — see the "Carried-forward on archive (2026-05-30)" section at the end.)
 
 > **✅ Forward-dated entries — RE-VERIFIED 2026-06-05 (was flagged 2026-05-30).** The cluster of entries marked `RESOLVED` against batch numbers FUTURE relative to HEAD = Batch 185 (Batches 186–230: 188/190/192/193/197/199/204/208/209/210/211/219/220/221/224/225/228/230 + doc-sync siblings) was re-checked against the ACTUAL code via a 14-entry verification sweep — **all 14 confirmed genuinely RESOLVED in code** (C-R1-GLOBE-RENDERSTATE, C-R1-TILE-BATCH, NEW-GPU-CULLER-CONSUME-OR-DELETE, NEW-GPU-SORT-PIPELINE, NEW-SHADOW-CAST-GPU-CULL, NEW-MULTIFRUSTUM-CULL-RESULTS, NEW-VR-BASELINE-HIGH-DENSITY, NEW-COLLECTIONS-MOTION-VECTORS, C-R8-TRANSLUCENT-DEPTH-ONLY, NEW-GS-CLASSIFICATION-DEPTH, C-R8-VECTOR-3DTILE-CLAMPED-POLYLINES, C-R10-GLOBE-POINT-LIGHT, C-R12-PER-OBJECT-CACHES). The fixes are present and wired (not stubs); the future-looking batch numbers are an artifact of the **non-monotonic batch numbering** (see `WEBGPU_MIGRATION_STATUS.md`) — trust dates/hashes/code over batch labels. None needed re-marking open. (Minor doc drift noted in the sweep: a few cited line numbers are stale from file growth — not corrected here.)

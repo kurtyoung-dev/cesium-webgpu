@@ -28,6 +28,12 @@ import {
   STAR_MODULATION_INFLECTION,
   STAR_MODULATION_STEEPNESS,
 } from "./StarFieldMath.js";
+import {
+  clearStarCubeMapResource,
+  createStarCubeMapResource,
+  setWebGLStarCubeMap,
+  setWebGPUStarCubeMap,
+} from "./StarCubeMapResource.js";
 
 /**
  * @typedef {object} CubeMapPanorama.ConstructorOptions
@@ -134,6 +140,20 @@ class CubeMapPanorama {
     );
     this._skyBrightness = 0.0;
 
+    // C12-27 — angular solar-glare washout inputs for `SkyBoxFS.glsl` and the
+    // WebGPU packer, refreshed by the same backend-neutral resolver. The
+    // identity values below (strength `w = 0`) make every consumer skip its
+    // whole glare block, so a panorama that never reaches `update` — or any
+    // panorama that is not a star map — renders exactly as it did before.
+    this._solarGlare = new Cartesian4(0.0, 0.0, 1.0, 0.0);
+    this._solarGlareCurve = new Cartesian4(1.0, 0.0, 0.0, 0.0);
+
+    // C12-14 — backend-neutral handle to the loaded cube map, so code outside
+    // this class can SAMPLE it rather than only draw it. Refreshed once per
+    // update on both backends. Nothing samples it yet; see the header of
+    // `Scene/StarCubeMapResource.js` before treating it as dead code.
+    this._samplableCubeMap = createStarCubeMapResource();
+
     // Credit specified by the user.
     let credit = options.credit;
     if (typeof credit === "string") {
@@ -170,6 +190,28 @@ class CubeMapPanorama {
    */
   get isStarMap() {
     return this._isStarMap;
+  }
+
+  /**
+   * C12-14 — a backend-neutral, SAMPLABLE handle to this panorama's cube map,
+   * refreshed once per {@link CubeMapPanorama#update} on both backends.
+   *
+   * `available` is false until the six faces finish loading asynchronously and
+   * can return to false when `sources` are replaced, so read it every frame.
+   * The handles are BORROWED — this object owns and destroys the underlying
+   * resources. The lookup direction is TEME / inertial, not Earth-fixed.
+   *
+   * Nothing samples this today: it exists to discharge the "samplable STAR
+   * cubemap" blocker `C11-163` (celestial water reflection) recorded against
+   * itself. See `Scene/StarCubeMapResource.js` before treating it as dead
+   * code (Principle 7).
+   *
+   * @type {object}
+   * @readonly
+   * @private
+   */
+  get samplableCubeMap() {
+    return this._samplableCubeMap;
   }
 
   /**
@@ -253,7 +295,14 @@ class CubeMapPanorama {
     // WebGPU rendering path — delegates to feature renderer
     const fr = context.getFeatureRenderer(FeatureRendererKey.CUBE_MAP_PANORAMA);
     if (fr) {
-      return fr.update(this, frameState, useHdr);
+      const command = fr.update(this, frameState, useHdr);
+      // C12-14 — refresh the samplable handle AFTER the renderer has had a
+      // chance to realize the texture this frame.
+      const gpu =
+        typeof fr.getResource === "function" ? fr.getResource(this) : undefined;
+      setWebGPUStarCubeMap(this._samplableCubeMap, gpu?.texture, gpu?.view);
+      publishStarCubeMap(this, frameState);
+      return command;
     }
 
     // WebGL rendering path.
@@ -302,6 +351,12 @@ class CubeMapPanorama {
         u_skyBrightness: function () {
           return that._skyBrightness;
         },
+        u_solarGlare: function () {
+          return that._solarGlare;
+        },
+        u_solarGlareCurve: function () {
+          return that._solarGlareCurve;
+        },
       };
 
       const geometry = BoxGeometry.createGeometry(
@@ -346,6 +401,12 @@ class CubeMapPanorama {
       this._useHdr = useHdr;
       this._addToPanoramaCommandList = true;
     }
+
+    // C12-14 — refresh the samplable handle on the WebGL path too. Placed
+    // before the early-out below so a still-loading cube map publishes
+    // `available: false` rather than leaving a stale handle behind.
+    setWebGLStarCubeMap(this._samplableCubeMap, this._cubeMap);
+    publishStarCubeMap(this, frameState);
 
     if (!defined(this._cubeMap)) {
       return undefined;
@@ -403,9 +464,29 @@ class CubeMapPanorama {
     command.shaderProgram =
       command.shaderProgram && command.shaderProgram.destroy();
     this._cubeMap = this._cubeMap && this._cubeMap.destroy();
+    // C12-14 — drop the borrowed handles so a consumer holding the descriptor
+    // across the teardown sees `available: false` instead of a dead texture.
+    clearStarCubeMapResource(this._samplableCubeMap);
 
     return destroyObject(this);
   }
+}
+
+/**
+ * C12-14 — publish the samplable star cube map on `frameState` for the star
+ * maps only, so a future sampler (`C11-163`) can reach it without holding a
+ * reference to {@link SkyBox}. Generic and Street View panoramas keep their
+ * handle on the instance but never claim the frame-wide "star cube map" slot.
+ *
+ * @param {CubeMapPanorama} panorama
+ * @param {FrameState} frameState
+ * @private
+ */
+function publishStarCubeMap(panorama, frameState) {
+  if (panorama._isStarMap !== true) {
+    return;
+  }
+  frameState.starCubeMap = panorama._samplableCubeMap;
 }
 
 /**
@@ -449,6 +530,33 @@ function updateStarModulation(panorama, frameState) {
   m.z = enable ? 1.0 : 0.0;
   m.w = cloudCover;
   panorama._skyBrightness = frameState.skyBrightness ?? 1.0;
+
+  // C12-27 — angular solar-glare washout. `Scene.updateEnvironment` already
+  // resolved the Sun direction and the curve; this only applies the star-map
+  // gate, so generic and Street View panoramas carry strength EXACTLY 0.
+  // Deliberately NOT gated on `frameState.skyAtmosphereVisible` (unlike the
+  // star modulation above): veiling glare is scattering in the observer's eye
+  // and optics, not in an atmospheric column, so it must still act in orbit —
+  // which is the viewpoint the row was reported from.
+  const glareAppearance = frameState.solarGlareAppearance;
+  const g = panorama._solarGlare;
+  const gc = panorama._solarGlareCurve;
+  const glareActive =
+    panorama._isStarMap === true &&
+    defined(glareAppearance) &&
+    glareAppearance.enabled === true;
+  if (glareActive) {
+    const sun = glareAppearance.sunDirectionTeme;
+    g.x = sun.x;
+    g.y = sun.y;
+    g.z = sun.z;
+    g.w = glareAppearance.strength;
+    gc.x = glareAppearance.angularCore;
+    gc.y = glareAppearance.pedestal;
+    gc.z = glareAppearance.support;
+  } else {
+    g.w = 0.0;
+  }
 }
 
 export default CubeMapPanorama;

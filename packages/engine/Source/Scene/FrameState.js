@@ -478,6 +478,35 @@ class FrameState {
     this.sunDiscAppearance = undefined;
 
     /**
+     * Resolved angular solar-glare star washout (C12-27), published by
+     * {@link Scene#updateEnvironment} BEFORE the star cube map and the star
+     * sprite catalogue update, so all four shader consumers (WGSL + GLSL, cube
+     * map + sprites) read one identical resolution. Carries the Sun's
+     * direction in the TEME / inertial star frame plus the veiling-glare curve
+     * parameters from `Scene/SolarDiscModel.js`. `strength` is exactly 0 in
+     * the `enableAngularSolarGlare = false` position, which every consumer
+     * treats as a whole-block skip — byte-identical, not close. Undefined when
+     * the environment is not being drawn at all.
+     * @type {object|undefined}
+     */
+    this.solarGlareAppearance = undefined;
+
+    /**
+     * The SAMPLABLE star cube map (C12-14), published by
+     * {@link CubeMapPanorama#update} for star maps only — i.e. by
+     * {@link SkyBox}, not by generic or Street View panoramas. Carries a
+     * backend-neutral descriptor plus the WebGL {@link CubeMap} or the WebGPU
+     * `GPUTexture` + `GPUTextureView`; see `Scene/StarCubeMapResource.js` for
+     * the frame (TEME, not Earth-fixed), the content caveat (the default
+     * variant is diffuse-only), the async availability rule, and the borrowed-
+     * ownership rule. **Nothing samples this yet** — it discharges the
+     * "samplable STAR cubemap" blocker recorded against `C11-163` (celestial
+     * water reflection), which is the intended consumer.
+     * @type {object|undefined}
+     */
+    this.starCubeMap = undefined;
+
+    /**
      * Per-frame multiplier applied to every SUN-DRIVEN scene light and
      * atmosphere intensity during a solar eclipse (C12-29 S2) — the scene
      * light colour (`UniformState`), the sky-atmosphere shell on both

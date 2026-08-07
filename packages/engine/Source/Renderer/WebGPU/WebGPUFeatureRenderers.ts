@@ -79,6 +79,7 @@ import { updateWebGPUSkyAtmosphere } from "./WebGPUSkyAtmosphereRenderer.js";
 import {
   updateCubeMapPanorama,
   destroyCubeMapPanorama,
+  getCubeMapPanoramaResource,
 } from "./WebGPUCubeMapPanoramaRenderer.js";
 // Track V-C (Batch 313) — Yale Bright Star Catalog HDR starfield.
 import {
@@ -387,6 +388,13 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
   context.registerFeatureRenderer(FeatureRendererKey.CUBE_MAP_PANORAMA, {
     update: updateCubeMapPanorama,
     destroy: destroyCubeMapPanorama,
+    // C12-14 — hands the loaded cube texture + view back to backend-neutral
+    // scene code so `Scene/StarCubeMapResource.js` can publish it as a
+    // SAMPLABLE star texture. Nothing samples it yet; `C11-163` (celestial
+    // water reflection) is the recorded consumer, and this is the blocker that
+    // row named. Scaffolding by design — see that module's header before
+    // treating it as dead (Principle 7).
+    getResource: getCubeMapPanoramaResource,
   });
 
   // Track V-C (Batch 313) — bright-star catalog starfield. The renderer

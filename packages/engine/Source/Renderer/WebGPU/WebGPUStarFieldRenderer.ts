@@ -152,7 +152,9 @@ function getStarShaderModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
 // the WebGL renderer packs the identical record.
 const STAR_VERTEX_STRIDE = FLOATS_PER_STAR * 4; // 32 bytes
 // Uniform buffer: mat4 (16) + pointSize.xy (2) + intensityScale (1) +
-// minPointSize (1) = 20 floats → pad to 256 for alignment.
+// minPointSize (1) + C7 extinction (8) + C12-27 solar glare (8) = 36 floats
+// (144 bytes) → the 256-byte allocation is unchanged. C12-27 is ADD-ONLY at
+// the tail (floats 28..35, bytes 112..143), so no BGL or bind-group churn.
 const STAR_UNIFORM_BUFFER_SIZE = 256;
 
 const scratchTemeToFixed3 = new Matrix3();
@@ -285,6 +287,35 @@ function packStarUniforms(
     uniformData[26] = 1.0;
   }
   uniformData[27] = 0.0;
+
+  // C12-27 — angular solar-glare washout (floats 28..35). Resolved once per
+  // frame by `Scene.updateEnvironment` (`Scene/SolarGlareAppearance.js`) and
+  // read here exactly as `starZenithTransmittance` is, so this pack and the
+  // WebGL uniform closures consume the identical numbers. The Sun direction is
+  // already in the TEME instance frame, which is the frame `directionFixed`
+  // lives in — the TEME->fixed rotation is baked into the matrix above, so the
+  // shader's dot product needs no extra transform. Strength 0 (toggle off, or
+  // no resolution published) makes the shader skip its whole glare block.
+  const glare = frameState.solarGlareAppearance;
+  if (defined(glare) && glare.enabled === true) {
+    const sun = glare.sunDirectionTeme;
+    uniformData[28] = sun.x;
+    uniformData[29] = sun.y;
+    uniformData[30] = sun.z;
+    uniformData[31] = glare.strength;
+    uniformData[32] = glare.angularCore;
+    uniformData[33] = glare.pedestal;
+    uniformData[34] = glare.support;
+  } else {
+    uniformData[28] = 0.0;
+    uniformData[29] = 0.0;
+    uniformData[30] = 1.0;
+    uniformData[31] = 0.0;
+    uniformData[32] = 1.0;
+    uniformData[33] = 0.0;
+    uniformData[34] = 0.0;
+  }
+  uniformData[35] = 0.0;
 }
 
 /**
