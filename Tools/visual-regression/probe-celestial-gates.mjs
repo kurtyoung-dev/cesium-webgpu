@@ -1209,9 +1209,21 @@ async function captureMode(
       // Scene-level pins follow the same explicit-both-directions rule as the
       // lighting flags: several lanes share one page, so a leg that depends
       // on a Scene property states it rather than inheriting the previous
-      // leg's value. The disc lane pins `sunBloom` OFF because the limb law
-      // is a bake property — measured through a bright-pass bloom, the lane
-      // measures the bloom.
+      // leg's value.
+      //
+      // ⚠ DO NOT PIN `sunBloom = false` ON ANY SUN LANE TO "REMOVE THE HALO".
+      // The one-halo-source invariant in `Scene/SunHaloAppearance.js` derives
+      // `bakeHaloGain` from `screenHalo`, and `sunBloom = false` forces
+      // `screenHalo = false`, so the pin does not delete the halo — it SWAPS
+      // the screen halo for the legacy BAKED one, which is composited into the
+      // billboard's own alpha. That baked halo drives the bake's alpha above 1
+      // across the WHOLE disc (min 1.0053 at the extreme limb) and its blue
+      // above 1 as well, so both saturate and the disc renders FLAT: every
+      // disc pixel reads the same code and the limb law is erased from the
+      // capture. No scene configuration renders a halo-free disc. The
+      // halo-free quantity is a DIFFERENTIAL between legs (`flat - limb`
+      // cancels the halo exactly, because no halo uniform reads either disc
+      // toggle) — measure that, at the shipped defaults.
       if (scenePins) {
         for (const [flag, value] of Object.entries(scenePins)) {
           if (typeof value === "boolean") {

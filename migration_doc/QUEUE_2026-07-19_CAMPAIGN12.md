@@ -705,6 +705,93 @@ the 0.95R signal, discOnlyRatio 0.568 > the 0.5 ceiling before any halo);
 (2) the bloom-mirror decision on the filed MEDIUM row. Four runs, four
 pre-registrations, the last one exact.
 
+### 2026-08-08 C12-19 EDGE-DELTA PRE-REGISTRATION CORRECTED — the recorded 250.3/195.9 expectation was derived at `bakeHaloGain = 0`, and the prescribed flags force `bakeHaloGain = 1`
+
+The 2026-08-09 CO-30 stamp (line ~1181) records: "The C12-19 delta legs need
+`enableScreenSpaceSunHalo:false` + `sunBloom:false` to read the disc-only
+250.3/195.9 codes (both backends saturate at 253 otherwise)." **Both halves of
+that sentence are wrong, and they are wrong in opposite directions.**
+
+**PROVENANCE.** 250.31 / 195.92 are not two exposure legs — they are the disc
+CENTRE and the EXTREME LIMB at exposure 1×, read straight off the `L = 2.0` row
+of the `C12-19-RADIANCE-VS-LIMB-CONTRAST-TRADEOFF` table
+(`DEFERRED_WORK.md`, transcribed from `SolarDiscModel.js:641-668`). Their
+generator is `solarDiscLimbContrastCodes`, whose model is `L` and `a0·L` —
+i.e. `alpha = limb(x)`, which is the bake **at `bakeHaloGain = 0`**, the
+`sunBloom = true` position. The row's own prose says so. The recipe then
+prescribes `sunBloom = false`.
+
+**WHAT THE FLAGS ACTUALLY DO.** Under the C12-18 one-halo-source invariant
+(`Scene/SunHaloAppearance.js`), `sunBloom:false` ⇒ `screenHalo = false` ⇒
+`bakeHaloGain = 1.0`. The bake then writes
+`alpha = limb(x) + 0.75·glare(r)` and `blue = limb(x) + 0.2 + 0.75·glare(r)`.
+The true-size disc edge is bake radius 0.0642824 against a glare core of
+0.275, so `glare` only falls to **0.9404** across the whole disc and the
+minimum alpha is **1.005265** at x = 1 — above the clamp. Blue's minimum is
+1.205265. **Both clamps bind at every disc pixel**, in all four
+profile × disc-size combinations (min alpha 1.0053 / 1.0270 / 1.0217 /
+1.0355). The bake emits `(1,1,1,1)` and the composite is `L` everywhere.
+
+**CORRECTED EXPECTATION UNDER THE RECORDED FLAGS** (both backends, both
+radiance legs — a FLAT disc, not a limb-darkened one):
+
+| L | exposure | centre | x = 0.95 | extreme limb |
+| --- | --- | --- | --- | --- |
+| 1 | 1× | 239.24 | 239.24 | 239.24 |
+| 1 | 0.125× | 83.16 | 83.16 | 83.16 |
+| 2 | 1× | **250.31** | **250.31** | **250.31** |
+| 2 | 0.125× | 125.45 | 125.45 | 125.45 |
+
+250.3 is reproduced only because it saturates either way. **195.9 is
+unreachable by any pixel** — the error is +54.4 codes, the entire C12-15
+signal. `D1 = flat − limb` is identically **0**, which trips
+`DISC_MIN_DIFFERENTIAL_PIXELS` and reports the headline defect. That is
+exactly the observed run-7/8 disc-lane death (B978/B979), now derived from
+the shipped text with zero free parameters.
+
+**AND THE SATURATION PREMISE IS BACKWARDS.** At the shipped defaults the disc
+reads 252.72 → 250.35 at 1× (so "saturate at 253" is fair) but **167.66 →
+125.80 at 0.125×** — unsaturated, with 42 codes of gradient. The
+`DISC_BRACKET_EXPOSURES = [1, 0.125]` leg the disc lane already captures
+solves the problem the flags were invented for. The flags strictly REDUCE
+signal: 2.37 codes of centre-to-limb gradient at defaults → 0.00 with them on.
+
+**REPLACEMENT RECIPE — no flags; read the differential at the shipped
+defaults, on the 0.125× leg.** `D1 = flat − limb` cancels the halo EXACTLY
+(no halo uniform reads `enableSolarLimbDarkening` or
+`enableTrueSolarDiscSize`), so it is halo-free by construction rather than by
+configuration. Pre-registered `D1` in display codes:
+
+| L | exposure | D1(x = 0) | D1(0.95) | D1(x = 1) |
+| --- | --- | --- | --- | --- |
+| 1 | 0.125× | 0.00 | 17.92 | 31.46 |
+| 2 | 0.125× | 0.00 | 22.88 | 39.69 |
+| 2 | 1× | 0.00 | 1.03 | 2.30 |
+
+**THE DELTA AXIS THAT EARNS THE RUN.** Make `lighting.enableTrueSolarRadiance`
+(L = 2 vs L = 1) the delta, and invert the D2 plateau on each leg. That
+discriminates the open `G4-DISC-RADIANCE-EXCESS-UNEXPLAINED` rider in a way
+G4's single-radiance runs cannot: a MULTIPLICATIVE ×1.295 excess predicts
+recovered(L = 1) = 1.295, an ADDITIVE +0.59 predicts 1.590 — 0.295 linear
+units apart against a plateau whose own agreement is ~0.01% over ~21,600 px.
+Under the OLD flag recipe the excess is invisible: a flat disc at 1× prices
+one code at 15.2% of L (`d(code)/dL = 3.29`), versus 1.05% on the disc-only
+extreme limb (47.71). Sensitivity is why the recipe matters, not taste.
+
+**MINOR CORRECTION TO THE SHIPPED TABLE.** The `L = 1` limb code is **138.56**,
+not 138.24. The neutral-grey collapse is exact for the peak channel at L = 2
+(min channel 0.1306 stays in the `offset = 0.04` branch), but at L = 1 the
+`+0.2` hue term drops the min channel to 0.0653, into the `x − 6.25x²` toe,
+which lifts the peak channel by 0.32 codes. Cosmetic for the ceiling solve
+(which reads contrast at L ≈ 2), recorded so the table is not re-quoted as
+exact.
+
+**NO PRODUCT CHANGE IS IMPLIED.** The bake, the invariant and the clamps are
+all behaving as designed and as documented; this stamp corrects an
+EXPECTATION and a RECIPE, both of which were paper artifacts — no
+`probe-sun-hdr-radiance.mjs` was ever written; the delta run's runnable
+artifact is still OWED and this stamp is its build spec.
+
 ### 2026-08-08 G4 NINTH RUN — **FIRST EXIT 0. GATE G4 CLOSED** (Batch 984)
 
 Run at `d9cb31a374` (B979 pin removal + B983 floored criterion both
