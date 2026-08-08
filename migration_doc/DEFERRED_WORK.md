@@ -12858,3 +12858,17 @@ instead (fork-added splash, blank canvas, or other divergence), and make
 WebGPU use the upstream loading presentation - same DOM, same styling,
 same timing semantics, removed at the same readiness point. No fork-only
 loading chrome without the UX-01 dev-UI param.
+
+**CLOSED (CO-41, landed 2026-08-08 machine date).** The fork-only
+`LoadingOverlay` z-9999 scrim is deleted; `Viewer.createAsync` gains an
+`onProgress` parameter matching `CesiumWidget`; the CesiumViewer page
+hides its upstream `#loadingIndicator` via `whenScenesRendered`
+(`Apps/CesiumViewer/CesiumViewerLoadingIndicator.js`) — readiness is the
+first `Scene.postRender`, bounded at 10 s so a never-rendering viewer
+cannot strand the indicator. Node spec 20/20; browser check 12/12 on
+both backends (indicator shown→hidden at first frame ~1.9 s WebGL /
+~2.1 s WebGPU, no overlay DOM, canvas lit at hide, hide frame-driven not
+bound-driven, and the failure control proves the check can fail: with
+rAF strangled the indicator persists at +3 s and the 10 s bound hides it
+at ~11.7 s). The check was reconstructed post-compaction from the CO-41
+design contract and is labelled as such.

@@ -30,7 +30,6 @@ import {
   FullscreenButton,
   Geocoder,
   HomeButton,
-  LoadingOverlay,
   NavigationHelpButton,
   SceneModePicker,
   SelectionIndicator,
@@ -604,7 +603,7 @@ describe(
       expect(window.requestAnimationFrame).toHaveBeenCalledTimes(1);
     });
 
-    it("createAsync destroys an acquired Viewer when the final overlay update throws", async function () {
+    it("createAsync destroys an acquired Viewer when the final progress report throws", async function () {
       const callerChild = document.createElement("span");
       let transaction;
       const createContext = CesiumWidget._createAsyncContext;
@@ -616,9 +615,6 @@ describe(
         transaction = await pending;
         return transaction;
       });
-      spyOn(LoadingOverlay.prototype, "remove").and.throwError(
-        "injected final overlay failure",
-      );
 
       const contextOptions = { renderer: "webgl" };
       if (window.webglStub) {
@@ -627,18 +623,54 @@ describe(
 
       let constructionError;
       try {
-        await Viewer.createAsync(container, {
-          ...getMinimalDataSourceViewerOptions(),
-          contextOptions,
-        });
+        await Viewer.createAsync(
+          container,
+          {
+            ...getMinimalDataSourceViewerOptions(),
+            contextOptions,
+          },
+          function (progress) {
+            if (progress === 100) {
+              throw new Error("injected final progress failure");
+            }
+          },
+        );
       } catch (error) {
         constructionError = error;
       }
 
-      expect(constructionError.message).toBe("injected final overlay failure");
+      expect(constructionError.message).toBe("injected final progress failure");
       expect(transaction.context.isDestroyed()).toBe(true);
       expect(callerChild.parentNode).toBe(container);
       expect(container.querySelector(".cesium-viewer")).toBeNull();
+    });
+
+    it("createAsync adds no element of its own while the context is acquired", async function () {
+      const contextOptions = { renderer: "webgl" };
+      if (window.webglStub) {
+        contextOptions.getWebGLStub = getWebGLStub;
+      }
+
+      let childrenDuringAcquisition;
+      const createContext = CesiumWidget._createAsyncContext;
+      spyOn(CesiumWidget, "_createAsyncContext").and.callFake(async function (
+        ...args
+      ) {
+        childrenDuringAcquisition = container.childElementCount;
+        return createContext(...args);
+      });
+
+      viewer = await Viewer.createAsync(container, {
+        ...getMinimalDataSourceViewerOptions(),
+        contextOptions,
+      });
+
+      // The container is untouched until the constructor runs, which is what
+      // makes the asynchronous path present the same page as the synchronous
+      // one for the whole of its longer initialization.
+      expect(childrenDuringAcquisition).toBe(0);
+      expect(container.childElementCount).toBe(1);
+      expect(container.firstElementChild.className).toBe("cesium-viewer");
     });
 
     it("clears selection and tracking only after the final shared EntityCollection source is removed", async function () {

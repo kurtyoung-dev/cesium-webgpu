@@ -40,7 +40,6 @@ import SelectionIndicator from "../SelectionIndicator/SelectionIndicator.js";
 import subscribeAndEvaluate from "../subscribeAndEvaluate.js";
 import Timeline from "../Timeline/Timeline.js";
 import VRButton from "../VRButton/VRButton.js";
-import LoadingOverlay from "./LoadingOverlay.js";
 
 const boundingSphereScratch = new BoundingSphere();
 
@@ -2195,11 +2194,18 @@ class Viewer {
 
 /**
  * Creates a Viewer asynchronously with support for WebGPU renderer initialization.
- * Shows a loading overlay during async initialization and removes it when ready.
+ *
+ * The container receives exactly the elements the synchronous constructor
+ * creates, and receives them at the same point: nothing is added while the
+ * graphics context is being acquired. An application that wants to show
+ * progress owns that presentation and drives it from <code>onProgress</code>,
+ * which reports the same milestones as {@link CesiumWidget.createAsync}.
  *
  * @param {Element|string} container The DOM element or ID that will contain the viewer.
  * @param {Viewer.ConstructorOptions} [options] Same options as Viewer constructor.
  *   Include `contextOptions: { renderer: 'webgpu' }` to enable WebGPU.
+ * @param {Function} [onProgress] Optional callback for loading progress (0-100).
+ *   Signature: function(progress: number, status: string)
  * @returns {Promise<Viewer>} Promise that resolves to the initialized Viewer.
  *
  * @example
@@ -2207,10 +2213,9 @@ class Viewer {
  *   contextOptions: { renderer: "webgpu" }
  * });
  */
-Viewer.createAsync = async function (container, options) {
+Viewer.createAsync = async function (container, options, onProgress) {
   options = options ?? {};
   const containerEl = getElement(container);
-  const overlay = new LoadingOverlay(containerEl);
   let transaction;
   let viewer;
 
@@ -2218,9 +2223,7 @@ Viewer.createAsync = async function (container, options) {
     transaction = await CesiumWidget._createAsyncContext(
       containerEl,
       options,
-      (progress, status) => {
-        overlay.updateProgress(progress, status);
-      },
+      onProgress,
     );
 
     viewer = new Viewer(container, {
@@ -2231,8 +2234,9 @@ Viewer.createAsync = async function (container, options) {
       _countContextReferences: transaction.countReferences,
     });
 
-    overlay.updateProgress(100, "Ready");
-    overlay.remove();
+    if (defined(onProgress)) {
+      onProgress(100, "Ready");
+    }
 
     return viewer;
   } catch (error) {
@@ -2243,9 +2247,6 @@ Viewer.createAsync = async function (container, options) {
     });
     runViewerCleanupStep(function () {
       destroyViewerContextIfLive(transaction?.context);
-    });
-    runViewerCleanupStep(function () {
-      overlay.showError(error.message || String(error));
     });
     throw error;
   }

@@ -33,6 +33,7 @@ import {
   ensureForkChromeStyles,
 } from "./CesiumViewerDevUi.js";
 import { isDevUiEnabled, resolveStartMode } from "./CesiumViewerStartMode.js";
+import { whenScenesRendered } from "./CesiumViewerLoadingIndicator.js";
 
 const endUserOptions = queryToObject(window.location.search.substring(1));
 
@@ -45,6 +46,10 @@ let webglViewer = null;
 let webgpuViewer = null;
 // Null whenever the development chrome is gated off, which is the default.
 let rendererToolbar = null;
+// Abandons an outstanding wait on the loading indicator. A renderer change
+// starts a new wait, and the one it replaces must not hide the indicator the
+// new start has just put back.
+let cancelLoadingWait = null;
 
 // ---- Viewer Creation Helpers ----
 
@@ -164,6 +169,20 @@ function applyViewSettings(viewer) {
 
 // ---- DOM Management ----
 
+function hideLoadingIndicatorWhenRendered() {
+  const loadingIndicator = document.getElementById("loadingIndicator");
+  const scenes = [webglViewer, webgpuViewer]
+    .filter((viewer) => viewer && !viewer.isDestroyed())
+    .map((viewer) => viewer.scene);
+
+  cancelLoadingWait?.();
+  // The canceller of a wait that has already reported ready is a no-op, so the
+  // reference is simply replaced by the next start's.
+  cancelLoadingWait = whenScenesRendered(scenes, function () {
+    loadingIndicator.style.display = "none";
+  });
+}
+
 function destroyAllViewers() {
   if (webglViewer && !webglViewer.isDestroyed()) {
     webglViewer.destroy();
@@ -264,6 +283,8 @@ window.switchRenderer = async function (mode) {
   rendererToolbar?.setActiveMode(mode);
 
   const loadingIndicator = document.getElementById("loadingIndicator");
+  cancelLoadingWait?.();
+  cancelLoadingWait = null;
   loadingIndicator.style.display = "";
 
   destroyAllViewers();
@@ -299,15 +320,17 @@ window.switchRenderer = async function (mode) {
       }
     }
   } catch (exception) {
+    loadingIndicator.style.display = "none";
     const message = formatError(exception);
     console.error(message);
     if (!document.querySelector(".cesium-widget-errorPanel")) {
       //eslint-disable-next-line no-alert
       window.alert(message);
     }
+    return;
   }
 
-  loadingIndicator.style.display = "none";
+  hideLoadingIndicatorWhenRendered();
 };
 
 window.toggleFps = function (enabled) {
@@ -385,7 +408,7 @@ async function main() {
     return;
   }
 
-  loadingIndicator.style.display = "none";
+  hideLoadingIndicatorWhenRendered();
 }
 
 async function loadDataSources(viewer) {
