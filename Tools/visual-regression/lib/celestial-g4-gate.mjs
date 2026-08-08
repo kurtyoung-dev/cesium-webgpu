@@ -75,6 +75,16 @@
 // failure string and additionally requires the headline scalars to AGREE
 // across backends.
 
+// ONE definition of the shipped display chain. The 8-bit inversion and the
+// bracket's saturation code live in the G2 lib because the C12-02 bracket was
+// built there first; G4 IMPORTS them rather than re-deriving, so the quantum
+// this lane floors a bound with is by construction the quantum the composite it
+// measures was stitched from.
+import {
+  BRACKET_SATURATION_CODE,
+  displayToLinear,
+} from "./celestial-g2-gate.mjs";
+
 // ---------------------------------------------------------------------------
 // EXIT CONTRACT — the same one G1/G2/G3 use.
 // ---------------------------------------------------------------------------
@@ -103,6 +113,10 @@ export const ARM_STATE = Object.freeze({
   PENDING_CONTENT: "STRUCTURAL-pending-content",
   UNDETERMINED: "STRUCTURAL-pending-content-undetermined",
   DISAGREEMENT: "STRUCTURAL-discriminator-disagreement",
+  // G4-FIRSTRUN-FIX-4. The arm reads an ABSOLUTE radial profile off the disc
+  // lane's own captures, so a disc lane that could not see its subject cannot
+  // hand it a certifying number — the ratio is still measured and printed.
+  PENDING_AIM: "STRUCTURAL-pending-aim",
 });
 
 // ---------------------------------------------------------------------------
@@ -173,6 +187,23 @@ export const TRUE_SIZE_RATIO_TOLERANCE = 0.05;
  * @type {number}
  */
 export const DISC_AIM_TOLERANCE_PX = 8;
+
+/**
+ * Radius, in pixels, the halo lane searches for its brightest pixel.
+ *
+ * ⚠ THIS IS THE INSTRUMENT'S DYNAMIC RANGE, NOT ITS BOUND. The certifying
+ * bound stays {@link HALO_AIM_TOLERANCE_PX} = 6. The first G4 run
+ * (Batch 941) reported `aimDistancePx = 11.7686` on WebGL against a search
+ * radius of 12 — i.e. the search hit its own wall and the number was a FLOOR,
+ * not a measurement, so the structural note could not say how far off the aim
+ * actually was. A search radius must exceed the miss it is asked to REPORT by
+ * enough that the reported number is a value; 64 px is 10.6x the certifying
+ * tolerance, is 3.3 deg at the halo lane's default framing (19.35 px/deg), and
+ * still lands INSIDE the 16 R_sun band edge at 81.5 px, so the search cannot
+ * latch onto the halo band it is about to measure.
+ * @type {number}
+ */
+export const HALO_AIM_SEARCH_RADIUS_PX = 64;
 
 /**
  * Fraction of the peak difference at which the disc edge is declared.
@@ -311,6 +342,15 @@ export const LIMB_MIN_DROP_LINEAR = 0.01;
  * @type {{lo:number,hi:number}}
  */
 export const LIMB_ABSOLUTE_RATIO_BAND = Object.freeze({ lo: 0.3, hi: 0.5 });
+
+/**
+ * The `x` §5's absolute ratio is sampled at. RATIFIED with the band; it is the
+ * `0.95R` in `I(0.95R)/I(0)` and is carried as a named constant only so
+ * {@link expectedCompositeLimbRatio} evaluates the confound at the SAME point
+ * the criterion reads.
+ * @type {number}
+ */
+export const LIMB_ABSOLUTE_RATIO_SAMPLE_X = 0.95;
 
 /**
  * Peak linear scene radiance above which the sun bake CANNOT be the shipped
@@ -673,6 +713,50 @@ export const EARTHSHINE_PHASE_SCALING_MAX_REL_DEV = 0.2;
  */
 export const EARTHSHINE_INERTNESS_FACTOR = 3.0;
 
+/**
+ * Multiple of the CAPTURE'S OWN quantization step that floors the inertness
+ * bound. `G4-FIRSTRUN-FIX-3` — a RE-DERIVATION, not a widening.
+ *
+ * ⚠ WHY THE OLD BOUND WAS UNMEASURABLE BY CONSTRUCTION. At the resolved full
+ * moon `scaleFull / scaleCrescent = 3.273e-4 / 0.8801 = 3.719e-4`, so
+ * {@link EARTHSHINE_INERTNESS_FACTOR} times the phase-scaled crescent delta is
+ * `3 * 0.03478 * 3.719e-4 = 3.88e-5` — four orders of magnitude BELOW anything
+ * an 8-bit readback can resolve. Batch 941 duly scored it red on BOTH backends
+ * at 0.008876 (webgl) and 0.016449 (webgpu).
+ *
+ * ⚠ AND THOSE TWO NUMBERS ARE ONE CODE STEP. Re-running the census offline
+ * against the run's own PNGs puts the peak-delta pixel at 8-bit codes
+ * `(230,231,227)` on webgl and `(236,237,232)` on webgpu, both taken from the
+ * 1x leg, where ONE code step is worth 0.009804 / 0.019237 of linear
+ * luminance — so `peakDelta / quantum` is **0.91 and 0.86, i.e. BELOW ONE
+ * QUANTUM ON BOTH BACKENDS**. Two further facts settle it: the two backends
+ * differ by 1.85x on a term that is resolved CPU-side and published on
+ * `frameState` before the backend branch (so it cannot differ), and the census
+ * reports `darkenedPixels` 8 and 4 — pixels that got DARKER when earthshine
+ * was switched ON, which the shipped additive term cannot do. The lane was
+ * measuring its own readback noise.
+ *
+ * DERIVED, and the factor is CAPPED FROM ABOVE, not chosen for comfort:
+ *
+ *   * FLOOR. The statistic is a PEAK over ~247,000 pixels of the difference of
+ *     two independently quantized captures, so a one-code disagreement at the
+ *     extreme pixel is a certainty at that population size. One quantum is
+ *     therefore the smallest honest bound; 1.5 adds 50% for a peak that
+ *     straddles a code boundary in more than one channel.
+ *   * CEILING. The bound must still REJECT the pre-C12-21 CONSTANT term, whose
+ *     full-moon delta is the un-scaled crescent delta (~0.0348). That caps the
+ *     factor at `0.0348 / 0.019237 = 1.81` on the worse of the two backends.
+ *     1.5 is the largest round value inside that cap, leaving a rejection
+ *     margin of 2.37x (webgl) and 1.20x (webgpu).
+ *
+ * The cap is not left to arithmetic either: {@link evaluateEarthshineSubLane}
+ * reports the criterion STRUCTURAL if the instrument floor ever rises to the
+ * constant term's own amplitude, rather than certifying a bound that could no
+ * longer see the defect it exists to reject.
+ * @type {number}
+ */
+export const EARTHSHINE_INERTNESS_QUANTUM_FACTOR = 1.5;
+
 // ---------------------------------------------------------------------------
 // MOON — SOFT TERMINATOR (C12-22)
 // ---------------------------------------------------------------------------
@@ -830,6 +914,34 @@ export const G4_CROSS_BACKEND_MAX_RELATIVE_SPREAD = 0.15;
  */
 export const G4_CROSS_BACKEND_MAX_COUNT_SPREAD = 0.4;
 
+/**
+ * Which SUB-LANE each cross-backend scalar was harvested from
+ * (`G4-FIRSTRUN-FIX-2`).
+ *
+ * ⚠ PER-LANE SCOPING APPLIES TO THE FOLD TOO. A sub-lane that reports
+ * STRUCTURAL has said, in its own words, that it could not see its subject.
+ * Every number it published is then a description of the wrong thing, and
+ * comparing two backends' wrong things produces a cross-backend FAILURE whose
+ * subject is the instrument. Batch 941 filed three such failures
+ * (`discDiameterDeg`, `trueSizeRatio`, `haloBandMean`) off webgl's structural
+ * disc and halo lanes.
+ *
+ * The gated scalar is NOT silently skipped: {@link foldG4Verdict} reports it
+ * STRUCTURAL BY NAME, with both backends' values and the spread it would have
+ * computed, so the number stays on the record and the reason it did not certify
+ * is stated rather than inferred from an absence.
+ * @type {Object<string,string>}
+ */
+export const PARITY_SCALAR_SOURCE_LANE = Object.freeze({
+  discDiameterDeg: "disc",
+  trueSizeRatio: "disc",
+  haloBandMean: "halo",
+  earthshineMedianDelta: "earthshine",
+  fullQuarterRatio: "phase",
+  terminatorChangedPixels: "terminator",
+  earthshineChangedPixels: "earthshine",
+});
+
 // ---------------------------------------------------------------------------
 // PURE HELPERS — arithmetic
 // ---------------------------------------------------------------------------
@@ -963,6 +1075,125 @@ export function angleDegForPixelOffset(offsetPx, fovXDeg, widthPx) {
 /** Rec.709 luminance of the pixel starting at `i`. */
 export function luminanceAt(data, i) {
   return 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+}
+
+/**
+ * Linear-luminance value of ONE 8-bit code step at a captured pixel — the
+ * instrument's own resolution AT THAT BRIGHTNESS. `G4-FIRSTRUN-FIX-3`.
+ *
+ * The shipped display chain is `exposure -> PBR-Neutral -> gamma`, and its
+ * inverse is violently non-linear near the top: the same one-code step is worth
+ * 3.8e-3 of linear luminance at code 128 and 3.3e-1 at code 250. A single
+ * constant "8-bit quantum" is therefore wrong everywhere except at one
+ * brightness, which is why this is evaluated AT THE PIXEL rather than assumed.
+ *
+ * The step is taken as the LARGEST of the three single-channel steps, because
+ * PBR Neutral's compression is a function of the triple's MAX channel: bumping
+ * the max channel moves the inverse further than bumping either other one, and
+ * the bound has to cover the worst channel the readback could have disagreed on.
+ *
+ * @param {ArrayLike<number>} codes Three 8-bit codes `[r,g,b]`.
+ * @param {number} exposureFactor The capture's `postProcessStages.exposure`.
+ * @param {{gamma?:number}} [options]
+ * @returns {number} Linear-luminance value of one code step; NaN if the inputs
+ *          are not usable.
+ */
+export function captureCodeQuantumLinear(codes, exposureFactor, options = {}) {
+  if (!Array.isArray(codes) && !ArrayBuffer.isView(codes)) {
+    return NaN;
+  }
+  if (codes.length < 3 || !(exposureFactor > 0)) {
+    return NaN;
+  }
+  const base = displayToLinear(codes[0], codes[1], codes[2], exposureFactor, {
+    ...options,
+  });
+  const baseLum = luminanceAt(base, 0);
+  let worst = 0;
+  for (let c = 0; c < 3; c++) {
+    const bumped = [codes[0], codes[1], codes[2]];
+    bumped[c] = Math.min(255, bumped[c] + 1);
+    const lin = displayToLinear(
+      bumped[0],
+      bumped[1],
+      bumped[2],
+      exposureFactor,
+      { ...options },
+    );
+    const step = Math.abs(luminanceAt(lin, 0) - baseLum);
+    if (step > worst) {
+      worst = step;
+    }
+  }
+  return Number.isFinite(worst) ? worst : NaN;
+}
+
+/**
+ * The bracket leg `stitchBracketLinear` would have chosen for one pixel.
+ *
+ * ⚠ THIS MIRRORS A RULE THAT LIVES SOMEWHERE ELSE, so it is written as one
+ * function and pinned by a spec test that requires it to agree with
+ * `stitchBracketLinear`'s own pick on a synthetic bracket. Two copies of a
+ * selection rule that drift are worse than one copy that is checked.
+ *
+ * @param {{data:ArrayLike<number>,exposureFactor:number}[]} captures
+ * @param {number} index Byte index of the pixel's RED channel.
+ * @param {{saturationCode?:number}} [options]
+ * @returns {{capture:object,exposureFactor:number,saturated:boolean}|null}
+ */
+export function chooseBracketLeg(captures, index, options = {}) {
+  const saturationCode = options.saturationCode ?? BRACKET_SATURATION_CODE;
+  if (!Array.isArray(captures) || captures.length === 0) {
+    return null;
+  }
+  const ordered = captures
+    .slice()
+    .sort((a, b) => b.exposureFactor - a.exposureFactor);
+  for (const cap of ordered) {
+    const peak = Math.max(
+      cap.data[index],
+      Math.max(cap.data[index + 1], cap.data[index + 2]),
+    );
+    if (peak < saturationCode) {
+      return {
+        capture: cap,
+        exposureFactor: cap.exposureFactor,
+        saturated: false,
+      };
+    }
+  }
+  const lowest = ordered[ordered.length - 1];
+  return {
+    capture: lowest,
+    exposureFactor: lowest.exposureFactor,
+    saturated: true,
+  };
+}
+
+/**
+ * Instrument resolution of the STITCHED composite at one pixel, in linear
+ * luminance — {@link chooseBracketLeg} composed with
+ * {@link captureCodeQuantumLinear}.
+ *
+ * @param {{data:ArrayLike<number>,exposureFactor:number}[]} captures
+ * @param {number} index Byte index of the pixel's RED channel.
+ * @param {{saturationCode?:number,gamma?:number}} [options]
+ * @returns {number} Linear-luminance value of one code step; NaN if unusable.
+ */
+export function bracketQuantumAt(captures, index, options = {}) {
+  if (!Number.isFinite(index) || index < 0) {
+    return NaN;
+  }
+  const leg = chooseBracketLeg(captures, index, options);
+  if (leg === null) {
+    return NaN;
+  }
+  const d = leg.capture.data;
+  return captureCodeQuantumLinear(
+    [d[index], d[index + 1], d[index + 2]],
+    leg.exposureFactor,
+    options,
+  );
 }
 
 /**
@@ -1231,7 +1462,10 @@ export function unlitLimbDelta(on, off, options) {
  * @param {{data:ArrayLike<number>,width:number,height:number}} off Softening OFF.
  * @param {{cx:number,cy:number,radius:number,eps:number}} options
  * @returns {{discPixels:number,changedPixels:number,darkenedPixels:number,
- *            peakDelta:number,totalDelta:number}}
+ *            peakDelta:number,peakIndex:number,totalDelta:number}}
+ *          `peakIndex` is the RGBA byte index of the pixel that produced
+ *          `peakDelta`, so a caller holding the raw bracket can ask what ONE
+ *          CODE STEP was worth there (`G4-FIRSTRUN-FIX-3`).
  */
 export function discDeltaCensus(on, off, options) {
   const { cx, cy, radius, eps } = options;
@@ -1239,6 +1473,7 @@ export function discDeltaCensus(on, off, options) {
   let changedPixels = 0;
   let darkenedPixels = 0;
   let peakDelta = -Infinity;
+  let peakIndex = NaN;
   let totalDelta = 0;
   const x0 = Math.max(0, Math.floor(cx - radius - 1));
   const x1 = Math.min(on.width - 1, Math.ceil(cx + radius + 1));
@@ -1260,6 +1495,7 @@ export function discDeltaCensus(on, off, options) {
       }
       if (d > peakDelta) {
         peakDelta = d;
+        peakIndex = i;
       }
     }
   }
@@ -1268,6 +1504,7 @@ export function discDeltaCensus(on, off, options) {
     changedPixels,
     darkenedPixels,
     peakDelta: Number.isFinite(peakDelta) ? peakDelta : NaN,
+    peakIndex,
     totalDelta,
   };
 }
@@ -1315,6 +1552,81 @@ export function discIntegratedBrightness(image, options) {
 // function of the module means the spec can run the SAME code against the real
 // module and against mutants of it.
 // ---------------------------------------------------------------------------
+
+/**
+ * §5's `I(0.95R)/I(0)` as the SHIPPED CHAIN actually renders it — disc plus the
+ * C12-18 screen halo that sits over it — from closed form.
+ *
+ * ⚠ THIS IS THE NAMED CONFOUND, PUT ON THE RECORD AS A NUMBER
+ * (`G4-FIRSTRUN-FIX-4`). §5's band `[0.3, 0.5]` was ratified for the DISC-ONLY
+ * radial law. What a camera pointed at the Sun sees at the shipped defaults is
+ *
+ *     I_composite(x) = discRadiance * I_limb(x) + haloAmplitude * P(x)
+ *
+ * with `P` the screen halo's Lorentzian in SOLAR radii (`x` at the disc edge IS
+ * one solar radius, so the disc's `x` and the halo's `rho` are the same
+ * variable over the disc). The halo is nearly FLAT across the disc — its
+ * half-amplitude radius is 4.278 R_sun, so `P(0.95)/P(0) = 0.953` — which means
+ * it acts as a PEDESTAL under the ratio and lifts it toward 1.
+ *
+ * Two separate readings come out of this, and BOTH belong in the maintainer
+ * pack rather than in a moved bound:
+ *
+ *   * `discOnlyRatio` — the shipped limb law alone at `x = 0.95` is
+ *     `I(0.95)/I(0) = 0.5680` with the shipped `(a0,a1,a2) = (0.3, 0.93,
+ *     -0.23)`, i.e. ALREADY ABOVE §5's 0.5 ceiling BEFORE any halo. §5's band
+ *     is satisfied at the EXTREME limb (`I(1)/I(0) = a0 = 0.30`), not at 0.95R.
+ *   * `compositeRatio` — with `discRadiance = 2` and `haloAmplitude = 1.5` (the
+ *     C12-19 defaults: `SOLAR_HALO_AMPLITUDE * discRadiance`) the composite
+ *     predicts 0.7330, and Batch 941 MEASURED 0.7138 on WebGPU — 2.6% away.
+ *     The band is not being missed by an unknown amount; it is being missed by
+ *     an amount the shipped laws predict.
+ *
+ * THE BAND IS NOT MOVED HERE. This function only makes the arithmetic
+ * reviewable.
+ *
+ * @param {{solarLimbIntensity:Function,solarScreenHaloProfile:Function}} model
+ *        The shipped `SolarDiscModel` namespace (or a mutant of it).
+ * @param {{discRadiance:number,haloAmplitude:number,haloCoreRadii:number,
+ *          x?:number}} o Live-resolved appearance scalars; `x` defaults to the
+ *        §5 sample point 0.95.
+ * @returns {{x:number,discOnlyRatio:number,compositeRatio:number,
+ *            haloShareAtX:number,haloShareAtCentre:number,
+ *            haloProfileAtX:number,haloProfileAtCentre:number}}
+ */
+export function expectedCompositeLimbRatio(model, o) {
+  const x = Number.isFinite(o?.x) ? o.x : LIMB_ABSOLUTE_RATIO_SAMPLE_X;
+  const d = o?.discRadiance;
+  const h = o?.haloAmplitude;
+  const core = o?.haloCoreRadii;
+  const iX = model.solarLimbIntensity(x);
+  const i0 = model.solarLimbIntensity(0.0);
+  const discOnlyRatio = i0 > 0 ? iX / i0 : NaN;
+  if (!(d >= 0) || !(h >= 0) || !(core > 0)) {
+    return {
+      x,
+      discOnlyRatio,
+      compositeRatio: NaN,
+      haloShareAtX: NaN,
+      haloShareAtCentre: NaN,
+      haloProfileAtX: NaN,
+      haloProfileAtCentre: NaN,
+    };
+  }
+  const pX = model.solarScreenHaloProfile(x, core);
+  const p0 = model.solarScreenHaloProfile(0.0, core);
+  const num = d * iX + h * pX;
+  const den = d * i0 + h * p0;
+  return {
+    x,
+    discOnlyRatio,
+    compositeRatio: den > 0 ? num / den : NaN,
+    haloShareAtX: num > 0 ? (h * pX) / num : NaN,
+    haloShareAtCentre: den > 0 ? (h * p0) / den : NaN,
+    haloProfileAtX: pX,
+    haloProfileAtCentre: p0,
+  };
+}
 
 /**
  * Radius, in solar radii, at which `screenHalo(rho) - bakedHalo(rho)` peaks.
@@ -1453,6 +1765,105 @@ export function brightestWithinRadius(image, cx, cy, radius) {
   return best;
 }
 
+/**
+ * The aim diagnostic every sun lane now reports, every run
+ * (`G4-FIRSTRUN-FIX-1`, part b).
+ *
+ * ⚠ THE POINT OF THIS BLOCK IS THAT IT DISCRIMINATES, NOT THAT IT DESCRIBES. A
+ * disc or halo lane that is off centre has exactly two possible causes and they
+ * demand opposite responses:
+ *
+ *   * the CAMERA is not pointed at the Sun — an INSTRUMENT defect. Then the
+ *     ephemeris projection of `sunPositionWC` is off centre by the same amount
+ *     and in the same direction as the measured light, so
+ *     `ephemerisVsMeasuredPx` is ~0 while `measuredOffsetPx` is not.
+ *   * the SUN IS NOT DRAWN WHERE THE EPHEMERIS SAYS — a PRODUCT defect. Then
+ *     the two disagree and `ephemerisVsMeasuredPx` is the size of the
+ *     disagreement.
+ *
+ * Batch 941 had no such block, so its structural note could only say "the
+ * camera is not looking at the Sun" — a conclusion, not a measurement. Both
+ * numbers are reported in PIXELS and in DEGREES, because the pixel figure is
+ * meaningless without the framing that produced it (the same 0.1739 deg aim
+ * error reads 111 px at the disc lane's 2 deg fov and 3.4 px at the halo
+ * lane's 60 deg).
+ *
+ * @param {{measuredPx:{x:number,y:number},width:number,height:number,
+ *          fovXDeg:number,canvasWidth:number,
+ *          sunProjection:{x:number,y:number}|null}} o
+ * @returns {object} Diagnostic block; every field is a number or null.
+ */
+export function buildAimDiagnostic(o) {
+  const cx = o.width / 2;
+  const cy = o.height / 2;
+  const toDeg = (px) => angleDegForPixelOffset(px, o.fovXDeg, o.canvasWidth);
+  const mx = o?.measuredPx?.x;
+  const my = o?.measuredPx?.y;
+  const measuredOffsetPx =
+    Number.isFinite(mx) && Number.isFinite(my)
+      ? Math.hypot(mx - cx, my - cy)
+      : NaN;
+  const sp = o?.sunProjection ?? null;
+  const hasProjection =
+    sp !== null && Number.isFinite(sp.x) && Number.isFinite(sp.y);
+  const ephemerisOffsetPx = hasProjection
+    ? Math.hypot(sp.x - cx, sp.y - cy)
+    : NaN;
+  const ephemerisVsMeasuredPx =
+    hasProjection && Number.isFinite(measuredOffsetPx)
+      ? Math.hypot(sp.x - mx, sp.y - my)
+      : NaN;
+  return {
+    cropCentrePx: { x: cx, y: cy },
+    measuredPx:
+      Number.isFinite(mx) && Number.isFinite(my) ? { x: mx, y: my } : null,
+    measuredOffsetPx,
+    measuredOffsetDeg: toDeg(measuredOffsetPx),
+    ephemerisPx: hasProjection ? { x: sp.x, y: sp.y } : null,
+    ephemerisOffsetPx,
+    ephemerisOffsetDeg: toDeg(ephemerisOffsetPx),
+    ephemerisVsMeasuredPx,
+    ephemerisVsMeasuredDeg: toDeg(ephemerisVsMeasuredPx),
+    fovXDeg: Number.isFinite(o.fovXDeg) ? o.fovXDeg : null,
+    canvasWidth: Number.isFinite(o.canvasWidth) ? o.canvasWidth : null,
+    pxPerDeg:
+      Number.isFinite(o.fovXDeg) && o.canvasWidth > 0
+        ? o.canvasWidth /
+          (2.0 * ((Math.tan((o.fovXDeg * Math.PI) / 360.0) * 180.0) / Math.PI))
+        : null,
+  };
+}
+
+/**
+ * One line naming an aim miss precisely, for a structural note.
+ *
+ * @param {string} lane Lane name, for the message.
+ * @param {object} aim {@link buildAimDiagnostic}'s result.
+ * @param {number} tolerancePx The lane's certifying tolerance.
+ * @returns {string}
+ */
+export function describeAimMiss(lane, aim, tolerancePx) {
+  const r3 = (v) => (Number.isFinite(v) ? Number(v.toFixed(4)) : "?");
+  const verdict = !Number.isFinite(aim?.ephemerisVsMeasuredPx)
+    ? "the ephemeris projection of the Sun was not available, so this run " +
+      "cannot say whether the CAMERA or the DRAWN SUN is displaced"
+    : aim.ephemerisVsMeasuredPx <= tolerancePx
+      ? "the ephemeris projection of `sunPositionWC` lands on the SAME spot " +
+        `(${r3(aim.ephemerisVsMeasuredPx)} px away), so the Sun IS drawn where ` +
+        "the ephemeris puts it and the CAMERA AIM is what is displaced — an " +
+        "instrument defect, not a product verdict"
+      : `the ephemeris projection of \`sunPositionWC\` sits ${r3(aim.ephemerisVsMeasuredPx)} px ` +
+        "from the measured light, so the drawn Sun and the ephemeris DISAGREE " +
+        "— that is a product reading and must not be dismissed as aim";
+  return (
+    `${lane} sits ${r3(aim?.measuredOffsetPx)} px ` +
+    `(${r3(aim?.measuredOffsetDeg)} deg) from the crop centre, against a ` +
+    `tolerance of ${tolerancePx} px; the ephemeris projection sits ` +
+    `${r3(aim?.ephemerisOffsetPx)} px (${r3(aim?.ephemerisOffsetDeg)} deg) off. ` +
+    verdict
+  );
+}
+
 /** Largest finite value in a radial profile's mean array. */
 function profilePeak(profile) {
   let peak = 0;
@@ -1558,8 +1969,25 @@ export function measureDiscDifferential(o) {
     radius: Math.max(3, 0.2 * discRadiusPx),
   });
 
+  const aim = buildAimDiagnostic({
+    measuredPx: Number.isFinite(centroid.x)
+      ? { x: centroid.x, y: centroid.y }
+      : null,
+    width: d1.width,
+    height: d1.height,
+    fovXDeg: o.fovXDeg,
+    canvasWidth: o.canvasWidth,
+    sunProjection: o.sunProjectionCropPx ?? null,
+  });
+
   return {
     aimDistancePx,
+    aimDistanceDeg: angleDegForPixelOffset(
+      aimDistancePx,
+      o.fovXDeg,
+      o.canvasWidth,
+    ),
+    aim,
     differentialPositivePixels: centroid.pixels,
     limbLegLitPixels,
     centroid: { x: centroid.x, y: centroid.y, pixels: centroid.pixels },
@@ -1600,7 +2028,7 @@ export function measureHaloProfile(o) {
     o.screen,
     cx,
     cy,
-    o.aimSearchRadiusPx ?? 12,
+    o.aimSearchRadiusPx ?? HALO_AIM_SEARCH_RADIUS_PX,
   );
   const cropRadiusPx = Math.min(cx, cy);
   const bandInnerPx = HALO_BAND_RSUN.inner * o.limbPx;
@@ -1619,8 +2047,23 @@ export function measureHaloProfile(o) {
   const expectedShape = haloShapeExpectation(o.model, HALO_SHAPE_SAMPLE_RSUN);
   const shape = shapeDeviation(measuredShape, expectedShape, 0);
   const modelPeak = screenMinusBakedPeak(o.model);
+  const aimDiagnostic = buildAimDiagnostic({
+    measuredPx: aim.x >= 0 ? { x: aim.x + 0.5, y: aim.y + 0.5 } : null,
+    width: o.screen.width,
+    height: o.screen.height,
+    fovXDeg: o.fovXDeg,
+    canvasWidth: o.canvasWidth,
+    sunProjection: o.sunProjectionCropPx ?? null,
+  });
   return {
     aimDistancePx: aim.distance,
+    aimDistanceDeg: angleDegForPixelOffset(
+      aim.distance,
+      o.fovXDeg,
+      o.canvasWidth,
+    ),
+    aim: aimDiagnostic,
+    aimSearchRadiusPx: o.aimSearchRadiusPx ?? HALO_AIM_SEARCH_RADIUS_PX,
     limbPx: o.limbPx,
     cropRadiusPx,
     bandInnerPx,
@@ -1657,8 +2100,19 @@ export function measureHaloProfile(o) {
  * preferring one: two references that disagree mean the instrument, not the
  * product, is the thing under test.
  *
+ * ⚠ AND IT IS GATED ON THE DISC LANE (`G4-FIRSTRUN-FIX-4`). Unlike the
+ * differential arm, this one reads an ABSOLUTE radial profile off the shipped
+ * disc leg, centred on the centroid the disc lane found. A disc lane that went
+ * structural has, by its own declaration, no disc profile to read — Batch 941's
+ * 0.679 / 0.714 readings were taken about a centroid 112 px from where the Sun
+ * was, on a "disc" whose measured diameter was 0.292 deg against an ephemeris
+ * 0.527 deg. Those are not measurements of `I(0.95R)/I(0)`. The arm therefore
+ * reports {@link ARM_STATE.PENDING_AIM} and prints the ratio, exactly as it
+ * does for pending CONTENT.
+ *
  * @param {{bakeClampPresent:boolean|null,discPeakLinear:number,
- *          ratioI095overI0:number}} m
+ *          ratioI095overI0:number,discLaneStructural:boolean,
+ *          expectedComposite:object}} m
  * @returns {{state:string,pending:string|null,criteria:Object<string,boolean>,
  *            reason:string,measured:object}}
  */
@@ -1672,6 +2126,12 @@ export function evaluateLimbAbsoluteArm(m) {
       ? m.ratioI095overI0
       : null,
     band: LIMB_ABSOLUTE_RATIO_BAND,
+    // THE NAMED CONFOUND, AS A NUMBER. See `expectedCompositeLimbRatio`: the
+    // §5 band was ratified for the DISC-ONLY law, and what this ratio is taken
+    // over is disc PLUS the C12-18 screen halo (amplitude x2 under C12-19).
+    // Reported on every arm state so the maintainer decision has the
+    // arithmetic whether or not the arm certified.
+    expectedComposite: m?.expectedComposite ?? null,
   };
   if (m?.bakeClampPresent !== true && m?.bakeClampPresent !== false) {
     return {
@@ -1716,6 +2176,24 @@ export function evaluateLimbAbsoluteArm(m) {
         "ratio is MEASURED and reported every run; it certifies nothing until " +
         "C12-19 lands. Limb darkening's presence and shape are certified " +
         "meanwhile by the differential arm, which cancels the halo exactly.",
+      measured,
+    };
+  }
+  // G4-FIRSTRUN-FIX-4 — the CONTENT is there, but the lane the number comes
+  // from could not see its subject. Structural, by name, with the ratio still
+  // on the record.
+  if (m.discLaneStructural === true) {
+    return {
+      state: ARM_STATE.PENDING_AIM,
+      pending: null,
+      criteria: {},
+      reason:
+        "C12-19 has landed, but the DISC sub-lane is structural this run, so " +
+        "the absolute ratio was taken about a centroid the lane itself " +
+        "declared was not the Sun. The number is MEASURED and printed; it " +
+        "certifies nothing until the disc lane comes back non-structural. " +
+        "Limb darkening's presence and shape are unaffected — the " +
+        "differential arm cancels the halo exactly and is gated separately.",
       measured,
     };
   }
@@ -1781,9 +2259,14 @@ export function evaluateDiscSubLane(m) {
   }
   if (!(m.aimDistancePx <= DISC_AIM_TOLERANCE_PX)) {
     structural.push(
-      `the limb differential's centroid sits ${m.aimDistancePx} px from ` +
-        `the crop centre (tolerance ${DISC_AIM_TOLERANCE_PX}) — the camera is ` +
-        "not looking at the Sun, so there is no disc profile to measure",
+      describeAimMiss(
+        "the limb differential's centroid",
+        m.aim ?? {
+          measuredOffsetPx: m.aimDistancePx,
+          measuredOffsetDeg: m.aimDistanceDeg,
+        },
+        DISC_AIM_TOLERANCE_PX,
+      ),
     );
   }
   if (!(m.discRadiusPx > 0) || !(m.legacyRadiusPx > 0)) {
@@ -1842,8 +2325,14 @@ export function evaluateHaloSubLane(m) {
   }
   if (!(m?.aimDistancePx <= HALO_AIM_TOLERANCE_PX)) {
     structural.push(
-      `the brightest pixel sits ${m?.aimDistancePx ?? "?"} px from the crop ` +
-        `centre (tolerance ${HALO_AIM_TOLERANCE_PX}) — the Sun is not framed`,
+      describeAimMiss(
+        "the brightest pixel",
+        m?.aim ?? {
+          measuredOffsetPx: m?.aimDistancePx,
+          measuredOffsetDeg: m?.aimDistanceDeg,
+        },
+        HALO_AIM_TOLERANCE_PX,
+      ),
     );
   }
   if (!(m?.limbPx > 0)) {
@@ -1997,11 +2486,86 @@ export function evaluateEarthshineSubLane(m) {
   const grNominal = EARTHSHINE_TINT_GR_NOMINAL;
   const br = m.crescent.medianB / m.crescent.medianR;
   const gr = m.crescent.medianG / m.crescent.medianR;
-  const inertnessBound =
+
+  // G4-FIRSTRUN-FIX-3 — the inertness bound is re-derived with a floor at the
+  // INSTRUMENT'S OWN RESOLUTION. See EARTHSHINE_INERTNESS_QUANTUM_FACTOR: the
+  // phase-scaled term alone is 3.9e-5, which no 8-bit readback can resolve, so
+  // the criterion was scoring the readback's quantization rather than the
+  // renderer. The floor is the value of ONE CODE STEP at the pixel that
+  // produced `peakDelta`, measured on the capture the census ran over.
+  const physicalBound =
     EARTHSHINE_INERTNESS_FACTOR *
       m.crescent.medianDelta *
       (m.scaleFull / m.scaleCrescent) +
     TERMINATOR_DELTA_EPS;
+  const quantum = m.full?.peakQuantumLinear;
+  const instrumentBound = Number.isFinite(quantum)
+    ? EARTHSHINE_INERTNESS_QUANTUM_FACTOR * quantum
+    : NaN;
+  // The pre-C12-21 CONSTANT term's own full-moon amplitude: an earthshine that
+  // does not scale with phase lights the full moon exactly as hard as it lights
+  // the crescent. This is what the criterion EXISTS to reject, so it is also
+  // the ceiling above which the criterion has stopped being a criterion.
+  const mutantLevel = m.crescent.medianDelta;
+  const inertnessBound = Math.max(
+    physicalBound,
+    Number.isFinite(instrumentBound) ? instrumentBound : 0,
+  );
+  const inertnessDiagnostics = {
+    inertnessBound,
+    inertnessPhysicalBound: physicalBound,
+    inertnessInstrumentBound: Number.isFinite(instrumentBound)
+      ? instrumentBound
+      : null,
+    inertnessQuantumLinear: Number.isFinite(quantum) ? quantum : null,
+    inertnessBoundSource:
+      Number.isFinite(instrumentBound) && instrumentBound > physicalBound
+        ? "instrument-resolution floor (one 8-bit code step at the peak pixel)"
+        : "phase-scaled crescent delta",
+    inertnessMutantLevel: mutantLevel,
+    inertnessMutantMargin:
+      inertnessBound > 0 ? mutantLevel / inertnessBound : null,
+  };
+  if (!Number.isFinite(quantum)) {
+    return {
+      criteria: {},
+      structural: [
+        "the capture bracket's quantization step at the full-moon peak pixel " +
+          "could not be resolved, so the inertness criterion has no honest " +
+          "floor: its physical bound is " +
+          `${physicalBound}, four orders of magnitude below one 8-bit code, ` +
+          "and scoring against it would grade the readback rather than the " +
+          "renderer",
+      ],
+      predictedRatio,
+      measuredRatio,
+      tintBR: br,
+      tintGR: gr,
+      ...inertnessDiagnostics,
+      fullPeakDelta: m.full?.peakDelta ?? null,
+      pass: false,
+    };
+  }
+  if (!(inertnessBound < mutantLevel)) {
+    return {
+      criteria: {},
+      structural: [
+        `the inertness bound (${inertnessBound}) has risen to the amplitude of ` +
+          `the very defect it rejects (the pre-C12-21 CONSTANT term lights the ` +
+          `full moon at ${mutantLevel}), because one 8-bit code step at the ` +
+          `peak pixel is now worth ${quantum}. A bound that cannot see its own ` +
+          "target does not certify; raise the moon lane's exposure bracket or " +
+          "census a robust statistic instead of the peak",
+      ],
+      predictedRatio,
+      measuredRatio,
+      tintBR: br,
+      tintGR: gr,
+      ...inertnessDiagnostics,
+      fullPeakDelta: m.full?.peakDelta ?? null,
+      pass: false,
+    };
+  }
   const criteria = {
     earthshine_lights_unlit_limb_at_crescent:
       Number.isFinite(m.crescent.medianDelta) &&
@@ -2027,7 +2591,7 @@ export function evaluateEarthshineSubLane(m) {
     measuredRatio,
     tintBR: br,
     tintGR: gr,
-    inertnessBound,
+    ...inertnessDiagnostics,
     fullPeakDelta: m.full?.peakDelta ?? null,
     pass: Object.values(criteria).every(Boolean),
   };
@@ -2173,7 +2737,13 @@ export function evaluateG4Backend(backend) {
   const earthshine = evaluateEarthshineSubLane(backend.earthshine);
   const terminator = evaluateTerminatorSubLane(backend.terminator);
   const phase = evaluatePhaseSubLane(backend.phase);
-  const limbArm = evaluateLimbAbsoluteArm(backend.limbAbsolute);
+  // G4-FIRSTRUN-FIX-4 — the arm's certifying read is gated on the lane its
+  // number comes from. Injected here rather than asked of the probe: this is
+  // the only place that knows the disc lane's verdict.
+  const limbArm = evaluateLimbAbsoluteArm({
+    ...(backend.limbAbsolute ?? {}),
+    discLaneStructural: disc.structural.length > 0,
+  });
 
   const criteria = {
     ...disc.criteria,
@@ -2228,6 +2798,18 @@ export function evaluateG4Backend(backend) {
       earthshineChangedPixels:
         backend.earthshine?.crescent?.changedPixels ?? null,
     },
+    // G4-FIRSTRUN-FIX-2 — which SUB-LANE each parity scalar was harvested from.
+    // The fold needs this to apply per-lane scoping to itself: a scalar taken
+    // from a lane that could not see its subject is not a number two backends
+    // can be compared on. Batch 941 compared webgl's 0.292 deg "disc" — the
+    // mis-aimed crop — against webgpu's 0.527 deg and filed the 57% spread as
+    // a cross-backend FAILURE.
+    paritySources: PARITY_SCALAR_SOURCE_LANE,
+    subLaneStructural: Object.fromEntries(
+      Object.entries({ disc, halo, policy, earthshine, terminator, phase }).map(
+        ([k, v]) => [k, v.structural.length > 0],
+      ),
+    ),
     criteria,
     structural,
     // Explicit: an empty criteria set (every sub-lane structural) must NOT read
@@ -2284,8 +2866,11 @@ export function foldG4Verdict(evaluated) {
     }
   }
 
-  // CROSS-BACKEND PARITY. Only meaningful when both sides measured the scalar;
-  // otherwise the per-backend structural notes already say why.
+  // CROSS-BACKEND PARITY, WITH PER-LANE SCOPING APPLIED TO THE FOLD ITSELF
+  // (`G4-FIRSTRUN-FIX-2`). A scalar certifies only when the sub-lane it came
+  // from is non-structural on BOTH backends; otherwise it is reported
+  // STRUCTURAL BY NAME with both values and the spread still printed. See
+  // PARITY_SCALAR_SOURCE_LANE.
   const gl = evaluated?.webgl;
   const gpu = evaluated?.webgpu;
   if (gl && gpu) {
@@ -2296,7 +2881,45 @@ export function foldG4Verdict(evaluated) {
       for (const key of Object.keys(gl[name] ?? {})) {
         const a = gl[name][key];
         const b = gpu[name]?.[key];
+        const lane = PARITY_SCALAR_SOURCE_LANE[key] ?? null;
+        const blocked = [];
+        for (const [renderer, side] of [
+          ["webgl", gl],
+          ["webgpu", gpu],
+        ]) {
+          if (lane === null) {
+            continue;
+          }
+          if (side.subLaneStructural?.[lane] === true) {
+            blocked.push(renderer);
+          }
+        }
+        if (lane === null) {
+          structural.push(
+            `cross-backend:${key}_parity — the scalar has no declared source ` +
+              "sub-lane, so the fold cannot tell whether the lane that " +
+              "produced it could see its subject. Add it to " +
+              "PARITY_SCALAR_SOURCE_LANE",
+          );
+          continue;
+        }
+        if (blocked.length > 0) {
+          structural.push(
+            `cross-backend:${key}_parity — STRUCTURAL: its source sub-lane ` +
+              `'${lane}' is structural on ${blocked.join(", ")}, so the ` +
+              "values below describe a frame that lane declared it could not " +
+              `see. MEASURED ANYWAY: webgl ${a}, webgpu ${b}, relative spread ` +
+              `${relativeSpread(a, b)}, bound ${bound}. NOT a verdict`,
+          );
+          continue;
+        }
         if (!Number.isFinite(a) || !Number.isFinite(b)) {
+          structural.push(
+            `cross-backend:${key}_parity — STRUCTURAL: the scalar is not ` +
+              `finite on both backends (webgl ${a}, webgpu ${b}) although ` +
+              `sub-lane '${lane}' reported no structural note. A missing ` +
+              "number is not agreement",
+          );
           continue;
         }
         const spread = relativeSpread(a, b);
@@ -2310,13 +2933,24 @@ export function foldG4Verdict(evaluated) {
     }
     // A pending arm must resolve to the SAME state on both backends. One
     // backend certifying an arm the other calls pending would mean the two are
-    // running different engine content.
+    // running different engine content — EXCEPT when the disagreement is
+    // itself a structural gate (`PENDING_AIM`), which is a statement about one
+    // backend's disc lane and not about the engine content the arm reads.
     const glState = gl.limbArm?.state;
     const gpuState = gpu.limbArm?.state;
     if (glState !== gpuState) {
-      failures.push(
-        `cross-backend:limbAbsoluteArm_state (webgl ${glState}, webgpu ${gpuState})`,
-      );
+      const aimGated =
+        glState === ARM_STATE.PENDING_AIM || gpuState === ARM_STATE.PENDING_AIM;
+      const note = `cross-backend:limbAbsoluteArm_state (webgl ${glState}, webgpu ${gpuState})`;
+      if (aimGated) {
+        structural.push(
+          `${note} — STRUCTURAL: one backend's DISC sub-lane could not see its ` +
+            "subject, so the two arms are gated by different things rather " +
+            "than resolving the same discriminators differently",
+        );
+      } else {
+        failures.push(note);
+      }
     }
   }
 
@@ -2330,6 +2964,69 @@ export function foldG4Verdict(evaluated) {
     exitCode = EXIT_CODE.STRUCTURAL;
   }
   return { verdict, exitCode, failures, structural, pendingArms };
+}
+
+/**
+ * Maximum length an array may have inside a REPORT before it is treated as a
+ * retained image buffer. `G4-FIRSTRUN-FIX-5`.
+ *
+ * The largest legitimate array in a G4 report is a five-sample shape vector.
+ * 4,096 is three orders of magnitude of slack and still four orders below the
+ * 2,560,000-element capture arrays this guard exists to catch.
+ * @type {number}
+ */
+export const REPORT_MAX_ARRAY_LENGTH = 4096;
+
+/**
+ * PERMANENT SENTINEL — find image buffers retained inside a report object.
+ * `G4-FIRSTRUN-FIX-5`.
+ *
+ * The first G4 run OOM'd a ~3.6 GB default Node heap because all 56 captures
+ * (28 per backend, each a 2,560,000-element plain `Array` at 8 bytes an
+ * element = 20.5 MB) stayed live until the very end of the run. The structural
+ * repair is to consume and release each lane's captures as it completes; this
+ * is the check that the repair cannot silently regress by a pixel buffer
+ * finding its way into the serialized report instead.
+ *
+ * Reported as a PATH LIST rather than a boolean so a hit names the field.
+ *
+ * @param {unknown} value Report object.
+ * @param {{maxLength?:number,maxDepth?:number}} [options]
+ * @returns {string[]} Dotted paths of offending nodes; empty when clean.
+ */
+export function findRetainedImageBuffers(value, options = {}) {
+  const maxLength = options.maxLength ?? REPORT_MAX_ARRAY_LENGTH;
+  const maxDepth = options.maxDepth ?? 12;
+  const hits = [];
+  const seen = new Set();
+  const walk = (node, path, depth) => {
+    if (node === null || typeof node !== "object" || depth > maxDepth) {
+      return;
+    }
+    if (seen.has(node)) {
+      return;
+    }
+    seen.add(node);
+    if (ArrayBuffer.isView(node)) {
+      hits.push(`${path} (${node.constructor.name}[${node.length}])`);
+      return;
+    }
+    if (Array.isArray(node)) {
+      if (node.length > maxLength) {
+        hits.push(`${path} (Array[${node.length}])`);
+        return;
+      }
+      for (let i = 0; i < node.length; i++) {
+        walk(node[i], `${path}[${i}]`, depth + 1);
+      }
+      return;
+    }
+    for (const [k, v] of Object.entries(node)) {
+      walk(v, path === "" ? k : `${path}.${k}`, depth + 1);
+    }
+  };
+  walk(value, "", 0);
+  return hits;
 }
 
 /**
@@ -2348,6 +3045,8 @@ export function buildG4Summary(result) {
           pendingArms: b.pendingArms,
           parityScalars: b.parityScalars,
           parityCounts: b.parityCounts,
+          subLaneStructural: b.subLaneStructural,
+          limbArm: b.limbArm,
           reports: b.reports,
         }
       : null;
@@ -2359,6 +3058,12 @@ export function buildG4Summary(result) {
       SOLAR_ANGULAR_DIAMETER_NOMINAL_DEG,
       SOLAR_ANGULAR_DIAMETER_TOLERANCE,
       DISC_EPHEMERIS_TOLERANCE,
+      DISC_AIM_TOLERANCE_PX,
+      HALO_AIM_TOLERANCE_PX,
+      HALO_AIM_SEARCH_RADIUS_PX,
+      LIMB_ABSOLUTE_RATIO_SAMPLE_X,
+      EARTHSHINE_INERTNESS_QUANTUM_FACTOR,
+      PARITY_SCALAR_SOURCE_LANE,
       TRUE_SIZE_RATIO_NOMINAL,
       TRUE_SIZE_RATIO_TOLERANCE,
       LIMB_SHAPE_SAMPLE_X,
@@ -2434,6 +3139,13 @@ export default {
   unlitLimbDelta,
   discDeltaCensus,
   discIntegratedBrightness,
+  captureCodeQuantumLinear,
+  chooseBracketLeg,
+  bracketQuantumAt,
+  buildAimDiagnostic,
+  describeAimMiss,
+  expectedCompositeLimbRatio,
+  findRetainedImageBuffers,
   screenMinusBakedPeak,
   limbShapeExpectation,
   haloShapeExpectation,

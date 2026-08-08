@@ -58,10 +58,16 @@ import {
   softTerminatorMu0,
 } from "../../packages/engine/Source/Scene/MoonPhaseAppearance.js";
 import {
+  displayToLinear,
+  stitchBracketLinear,
+} from "./lib/celestial-g2-gate.mjs";
+import {
   ARM_STATE,
   C12_19_HDR_PEAK_DISCRIMINATOR,
+  DISC_AIM_TOLERANCE_PX,
   DISC_EPHEMERIS_TOLERANCE,
   EARTHSHINE_INERTNESS_FACTOR,
+  EARTHSHINE_INERTNESS_QUANTUM_FACTOR,
   EARTHSHINE_MIN_CHANGED_PIXELS,
   EARTHSHINE_MIN_MASK_PIXELS,
   EARTHSHINE_MIN_MEDIAN_DELTA,
@@ -70,6 +76,9 @@ import {
   EARTHSHINE_TINT_GR_NOMINAL,
   EARTHSHINE_TINT_MAX_REL_DEV,
   EXIT_CODE,
+  G4_CROSS_BACKEND_MAX_RELATIVE_SPREAD,
+  HALO_AIM_SEARCH_RADIUS_PX,
+  HALO_AIM_TOLERANCE_PX,
   HALO_BAKE_BAND_MAX_RADIANCE,
   HALO_BAND_RSUN,
   HALO_DELTA_PEAK_NOMINAL_RSUN,
@@ -93,6 +102,7 @@ import {
   MOON_PHASE_TARGET_TOLERANCE,
   MOON_UNLIT_DARK_FLOOR,
   MOON_UNLIT_MASK_FRACTION,
+  PARITY_SCALAR_SOURCE_LANE,
   PENDING_CONTENT,
   SOLAR_ANGULAR_DIAMETER_NOMINAL_DEG,
   SOLAR_ANGULAR_DIAMETER_TOLERANCE,
@@ -106,7 +116,13 @@ import {
   TRUE_SIZE_RATIO_NOMINAL,
   TRUE_SIZE_RATIO_TOLERANCE,
   angleDegForPixelOffset,
+  bracketQuantumAt,
+  brightestWithinRadius,
+  buildAimDiagnostic,
   buildG4Summary,
+  captureCodeQuantumLinear,
+  chooseBracketLeg,
+  describeAimMiss,
   discDeltaCensus,
   discIntegratedBrightness,
   evaluateDiscSubLane,
@@ -117,6 +133,8 @@ import {
   evaluatePhaseSubLane,
   evaluatePolicySubLane,
   evaluateTerminatorSubLane,
+  expectedCompositeLimbRatio,
+  findRetainedImageBuffers,
   foldG4Verdict,
   haloShapeExpectation,
   limbShapeExpectation,
@@ -126,6 +144,7 @@ import {
   median,
   radialProfile,
   relativeDeviation,
+  relativeSpread,
   screenMinusBakedPeak,
   shapeDeviation,
   unlitLimbDelta,
@@ -868,7 +887,23 @@ function synthEarthshine(phaseFraction, scale, tint) {
  * is EMPTY there and its median is NaN. That is a property of the geometry, not
  * of the renderer, and evaluating inertness on it would fail a healthy build.
  */
-function synthFullInertness(scale, phaseFraction = 0.995) {
+/**
+ * The capture quantum the synthetic censuses are graded against.
+ *
+ * The synthetic frames are float — they HAVE no 8-bit readback and therefore no
+ * quantization step of their own. Batch 941's measured value at the WebGL
+ * full-moon peak pixel is used instead, so the mutants below are rejected by
+ * the floor the REAL lane will apply rather than by a friendlier one:
+ * `captureCodeQuantumLinear([230,231,227], 1) = 0.0098041`. The spec asserts
+ * that identity separately, so this number cannot drift away from the module.
+ */
+const RUN941_WEBGL_PEAK_QUANTUM = 0.00980414014788722;
+
+function synthFullInertness(
+  scale,
+  phaseFraction = 0.995,
+  peakQuantumLinear = RUN941_WEBGL_PEAK_QUANTUM,
+) {
   const on = renderMoon({
     phaseFraction,
     softness: MEAN_SOLAR_ANGULAR_RADIUS,
@@ -879,12 +914,15 @@ function synthFullInertness(scale, phaseFraction = 0.995) {
     softness: MEAN_SOLAR_ANGULAR_RADIUS,
     earthshineScale: 0,
   });
-  return discDeltaCensus(on, off, {
-    cx: MOON_MASK.cx,
-    cy: MOON_MASK.cy,
-    radius: MOON_RADIUS_PX * MOON_DISC_MASK_FRACTION,
-    eps: TERMINATOR_DELTA_EPS,
-  });
+  return {
+    ...discDeltaCensus(on, off, {
+      cx: MOON_MASK.cx,
+      cy: MOON_MASK.cy,
+      radius: MOON_RADIUS_PX * MOON_DISC_MASK_FRACTION,
+      eps: TERMINATOR_DELTA_EPS,
+    }),
+    peakQuantumLinear,
+  };
 }
 
 test("the full-moon unlit mask is EMPTY — which is why inertness is censused over the disc", () => {
@@ -1698,4 +1736,602 @@ test("MOON_FULL_QUARTER_RATIO_MIN is §5's ratified Lambertian bar", () => {
   assert.equal(MOON_FULL_QUARTER_RATIO_MIN, 3.0);
   assert.ok(MOON_FULL_QUARTER_RATIO_MIN < Math.PI);
   assert.ok(EARTHSHINE_INERTNESS_FACTOR >= 1);
+});
+
+// ===========================================================================
+// 9. THE BATCH-941 FIRST-RUN REPAIRS — `G4-FIRSTRUN-FIX-1..5`
+//
+// Every rule below is stated once and then run against the WRONG
+// implementation, which is in each case the implementation that shipped in
+// Batch 941 and produced its seven reds.
+// ===========================================================================
+
+// --- FIX-1: the aim diagnostic must DISCRIMINATE, not describe --------------
+
+test("FIX-1: an aim diagnostic separates a mis-aimed CAMERA from a mis-drawn SUN", () => {
+  // CASE A — camera mis-aimed. The ephemeris projection and the measured light
+  // land on the SAME spot, both off centre. That is an instrument defect.
+  const cameraMissed = buildAimDiagnostic({
+    measuredPx: { x: 419.78, y: 240.93 },
+    width: 1000,
+    height: 640,
+    fovXDeg: 2.0,
+    canvasWidth: 1280,
+    sunProjection: { x: 419.9, y: 241.0 },
+  });
+  assert.ok(cameraMissed.measuredOffsetPx > 100);
+  assert.ok(cameraMissed.ephemerisVsMeasuredPx < 1);
+  assert.match(
+    describeAimMiss("disc", cameraMissed, DISC_AIM_TOLERANCE_PX),
+    /CAMERA AIM is what is displaced/,
+  );
+
+  // CASE B — the Sun is not drawn where the ephemeris says. Same measured
+  // offset, but now the two references DISAGREE, and the note must NOT call
+  // that aim.
+  const sunMisdrawn = buildAimDiagnostic({
+    measuredPx: { x: 419.78, y: 240.93 },
+    width: 1000,
+    height: 640,
+    fovXDeg: 2.0,
+    canvasWidth: 1280,
+    sunProjection: { x: 500, y: 320 },
+  });
+  assert.ok(sunMisdrawn.ephemerisVsMeasuredPx > DISC_AIM_TOLERANCE_PX);
+  assert.match(
+    describeAimMiss("disc", sunMisdrawn, DISC_AIM_TOLERANCE_PX),
+    /DISAGREE/,
+  );
+  assert.doesNotMatch(
+    describeAimMiss("disc", sunMisdrawn, DISC_AIM_TOLERANCE_PX),
+    /CAMERA AIM is what is displaced/,
+  );
+});
+
+test("FIX-1: the aim miss is reported in DEGREES, and the two sun lanes agree there", () => {
+  // The whole reason the first run's decomposition was arguable: 111.65 px and
+  // 3.38 px look like different defects until they are converted. They are the
+  // SAME angle, and only the degree figure says so.
+  const discDeg = angleDegForPixelOffset(111.65251611227245, 2.0, 1280);
+  const haloDeg = angleDegForPixelOffset(
+    Math.hypot(637.6121917687179 - 640, 362.3878 - 360),
+    60.0,
+    1280,
+  );
+  assert.ok(
+    relativeDeviation(discDeg, haloDeg) < 0.01,
+    `disc ${discDeg} deg vs halo ${haloDeg} deg`,
+  );
+  // ...and that common angle is sqrt(2) times WGS84's geodetic-vs-geocentric
+  // deflection at the Sun's declination on the pinned epoch (19.8024 deg),
+  // which is the closed form of the `Camera.setView` gimbal-lock defect the
+  // probe now repairs. `f = 1/298.257223563`.
+  const f = 1.0 / 298.257223563;
+  const phi = (19.8024 * Math.PI) / 180;
+  const predictedDeg = (Math.SQRT2 * f * Math.sin(2 * phi) * 180) / Math.PI;
+  assert.ok(
+    relativeDeviation(discDeg, predictedDeg) < 0.01,
+    `measured ${discDeg} deg vs closed form ${predictedDeg} deg`,
+  );
+});
+
+test("FIX-1: a widened halo aim search REPORTS the miss instead of capping it", () => {
+  // Batch 941 reported 11.7686 px against a search radius of 12 — a floor, not
+  // a measurement. The certifying tolerance is NOT touched.
+  assert.ok(HALO_AIM_SEARCH_RADIUS_PX > HALO_AIM_TOLERANCE_PX * 4);
+  assert.equal(HALO_AIM_TOLERANCE_PX, 6);
+  // ...and it must stay inside the 16 R_sun band it is about to measure, or the
+  // search could latch onto the halo itself.
+  const bandInnerPx = HALO_BAND_RSUN.inner * 5.095441965074199;
+  assert.ok(
+    HALO_AIM_SEARCH_RADIUS_PX < bandInnerPx,
+    `search ${HALO_AIM_SEARCH_RADIUS_PX} px vs band inner ${bandInnerPx} px`,
+  );
+  // The measurement itself: a source planted 30 px out is FOUND at 30 px by the
+  // new radius and CAPPED at 12 by the old one.
+  const size = 200;
+  const image = {
+    data: new Float64Array(size * size * 4),
+    width: size,
+    height: size,
+  };
+  const px = size / 2 + 30;
+  const py = size / 2;
+  image.data[4 * (py * size + px) + 1] = 10;
+  assert.ok(
+    Math.abs(
+      brightestWithinRadius(
+        image,
+        size / 2,
+        size / 2,
+        HALO_AIM_SEARCH_RADIUS_PX,
+      ).distance - 30,
+    ) < 1.5,
+  );
+  assert.ok(
+    brightestWithinRadius(image, size / 2, size / 2, 12).distance <= 12,
+    "the old radius can only ever report its own wall",
+  );
+});
+
+// --- FIX-2: the parity fold is scoped per lane -----------------------------
+
+function structuralDiscBackend(renderer) {
+  const b = goodBackend(renderer);
+  // Exactly Batch 941's webgl disc: a mis-aimed centroid, so the lane declares
+  // itself unable to see its subject AND publishes a nonsense diameter.
+  b.disc = {
+    ...b.disc,
+    aimDistancePx: 112.63205854313084,
+    discDiameterDeg: 0.29243585918925186,
+    trueSizeRatio: 2.2580207250107804,
+  };
+  return b;
+}
+
+test("FIX-2 MUTANT REJECTED — an UNGATED parity fold files structural-lane numbers as failures", () => {
+  // The mutant is the shipped Batch-941 fold: compare any two finite scalars.
+  const gl = evaluateG4Backend(structuralDiscBackend("webgl"));
+  const gpu = evaluateG4Backend(goodBackend("webgpu"));
+  const ungated = [];
+  for (const key of Object.keys(gl.parityScalars)) {
+    const a = gl.parityScalars[key];
+    const b = gpu.parityScalars[key];
+    if (!Number.isFinite(a) || !Number.isFinite(b)) {
+      continue;
+    }
+    if (!(relativeSpread(a, b) <= G4_CROSS_BACKEND_MAX_RELATIVE_SPREAD)) {
+      ungated.push(key);
+    }
+  }
+  assert.ok(
+    ungated.includes("discDiameterDeg") && ungated.includes("trueSizeRatio"),
+    `the ungated fold must produce the failures it produced in Batch 941, got ${ungated}`,
+  );
+
+  // The SHIPPED fold must not. Same inputs, and the same numbers are reported —
+  // as STRUCTURAL, by name, never silently dropped.
+  const folded = foldG4Verdict({ webgl: gl, webgpu: gpu });
+  for (const key of ["discDiameterDeg", "trueSizeRatio"]) {
+    assert.ok(
+      !folded.failures.some((f) => f.startsWith(`cross-backend:${key}_parity`)),
+      `${key} parity must not FAIL off a structural lane`,
+    );
+    const note = folded.structural.find((s) =>
+      s.startsWith(`cross-backend:${key}_parity`),
+    );
+    assert.ok(note, `${key} parity must be reported STRUCTURAL BY NAME`);
+    assert.match(note, /MEASURED ANYWAY/);
+    assert.match(note, /source sub-lane 'disc'/);
+  }
+});
+
+test("FIX-2: parity still CERTIFIES when both source lanes can see their subject", () => {
+  const gl = evaluateG4Backend(goodBackend("webgl"));
+  const drifted = goodBackend("webgpu");
+  drifted.disc = { ...drifted.disc, discDiameterDeg: 0.9 };
+  const folded = foldG4Verdict({
+    webgl: gl,
+    webgpu: evaluateG4Backend(drifted),
+  });
+  assert.ok(
+    folded.failures.some((f) =>
+      f.startsWith("cross-backend:discDiameterDeg_parity"),
+    ),
+    "gating must not make the fold toothless",
+  );
+});
+
+test("FIX-2: every parity scalar declares the sub-lane it came from", () => {
+  const gl = evaluateG4Backend(goodBackend("webgl"));
+  for (const key of [
+    ...Object.keys(gl.parityScalars),
+    ...Object.keys(gl.parityCounts),
+  ]) {
+    assert.ok(
+      typeof PARITY_SCALAR_SOURCE_LANE[key] === "string",
+      `${key} has no declared source lane`,
+    );
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(
+        gl.subLaneStructural,
+        PARITY_SCALAR_SOURCE_LANE[key],
+      ),
+      `${key} names a sub-lane that does not exist`,
+    );
+  }
+});
+
+// --- FIX-3: the inertness bound has an instrument-resolution floor ----------
+
+test("FIX-3: the capture quantum is the SHIPPED display chain's own code step", () => {
+  // Both figures are Batch 941's peak-delta pixels, read off its own PNGs.
+  assert.ok(
+    Math.abs(captureCodeQuantumLinear([230, 231, 227], 1) - 0.009804) < 1e-5,
+  );
+  assert.ok(
+    Math.abs(captureCodeQuantumLinear([236, 237, 232], 1) - 0.019237) < 1e-5,
+  );
+  // The whole reason a single constant would be wrong: the same code step is
+  // worth two orders of magnitude more near the top of the range.
+  assert.ok(
+    captureCodeQuantumLinear([249, 249, 249], 1) >
+      20 * captureCodeQuantumLinear([128, 128, 128], 1),
+  );
+  assert.ok(Number.isNaN(captureCodeQuantumLinear([1, 2], 1)));
+  assert.ok(Number.isNaN(captureCodeQuantumLinear([1, 2, 3], 0)));
+});
+
+test("FIX-3: chooseBracketLeg picks what stitchBracketLinear picks", () => {
+  // A rule written twice is a rule that drifts. This is the validator.
+  const w = 4;
+  const h = 1;
+  const mk = (fill, exposureFactor) => ({
+    data: new Uint8ClampedArray(w * h * 4).fill(fill),
+    width: w,
+    height: h,
+    exposureFactor,
+  });
+  const lo = mk(60, 1);
+  const hi = mk(60, 8);
+  // Saturate the 8x leg on pixel 2 only.
+  hi.data[8] = 253;
+  hi.data[9] = 253;
+  hi.data[10] = 253;
+  const stitched = stitchBracketLinear([lo, hi]);
+  for (let i = 0; i < w * 4; i += 4) {
+    const leg = chooseBracketLeg([lo, hi], i);
+    const expected = displayToLinear(
+      leg.capture.data[i],
+      leg.capture.data[i + 1],
+      leg.capture.data[i + 2],
+      leg.exposureFactor,
+    );
+    assert.ok(
+      Math.abs(stitched.data[i + 1] - expected[1]) < 1e-12,
+      `pixel ${i / 4}: chooseBracketLeg disagrees with the stitch`,
+    );
+  }
+  assert.equal(chooseBracketLeg([lo, hi], 8).exposureFactor, 1);
+  assert.equal(chooseBracketLeg([lo, hi], 0).exposureFactor, 8);
+  assert.equal(chooseBracketLeg([], 0), null);
+
+  // `bracketQuantumAt` is what the probe calls: the composition of the two, at
+  // the pixel `discDeltaCensus` reported. It must read the quantum of the leg
+  // the stitch chose, NOT of the highest exposure.
+  assert.equal(
+    bracketQuantumAt([lo, hi], 8),
+    captureCodeQuantumLinear([60, 60, 60], 1),
+  );
+  assert.equal(
+    bracketQuantumAt([lo, hi], 0),
+    captureCodeQuantumLinear([60, 60, 60], 8),
+  );
+  // A census that found no peak (`peakIndex` NaN) must not invent a floor.
+  assert.ok(Number.isNaN(bracketQuantumAt([lo, hi], NaN)));
+});
+
+test("FIX-3 MUTANT REJECTED — a bound BELOW the capture quantum cannot certify", () => {
+  // The Batch-941 bound, reconstructed: 3 * crescent * (scaleFull/scaleCrescent)
+  // is 3.9e-5, four orders of magnitude under one code step. The measured
+  // full-moon peaks (0.008876 webgl, 0.016449 webgpu) are BELOW one quantum,
+  // and both scored red.
+  const shipped = goodEarthshine();
+  const phaseOnlyBound =
+    EARTHSHINE_INERTNESS_FACTOR *
+      shipped.crescent.medianDelta *
+      (3.273084444154195e-4 / 0.880139447663971) +
+    TERMINATOR_DELTA_EPS;
+  // 1.387e-4 against a 9.804e-3 code step — 71x below the smallest difference
+  // the readback can express, and its PHYSICAL term alone (3.87e-5, the rest is
+  // TERMINATOR_DELTA_EPS) is 253x below.
+  assert.ok(
+    phaseOnlyBound < RUN941_WEBGL_PEAK_QUANTUM / 50,
+    `the phase-only bound (${phaseOnlyBound}) must be far below one code step`,
+  );
+  assert.ok(
+    phaseOnlyBound - TERMINATOR_DELTA_EPS < RUN941_WEBGL_PEAK_QUANTUM / 200,
+  );
+
+  // The SHIPPED evaluator floors it, and the real run's readings now pass.
+  for (const [peakDelta, quantum] of [
+    [0.008875830607049995, 0.00980414014788722],
+    [0.016448991872372476, 0.019237402711809515],
+  ]) {
+    const verdict = evaluateEarthshineSubLane({
+      ...shipped,
+      scaleCrescent: 0.880139447663971,
+      scaleQuarter: 0.5002862786656523,
+      scaleFull: 3.273084444154195e-4,
+      full: {
+        ...shipped.full,
+        peakDelta,
+        peakQuantumLinear: quantum,
+      },
+    });
+    assert.equal(
+      verdict.criteria.earthshine_inert_at_full_moon,
+      true,
+      `peakDelta ${peakDelta} is ${(peakDelta / quantum).toFixed(2)} of one code step`,
+    );
+    assert.match(verdict.inertnessBoundSource, /instrument-resolution floor/);
+    assert.ok(verdict.inertnessMutantMargin > 1);
+  }
+});
+
+test("FIX-3: the floored bound STILL rejects the pre-C12-21 CONSTANT term", () => {
+  // The requirement the re-derivation is capped by. The constant term lights
+  // the full moon exactly as hard as the crescent — Batch 941's crescent median
+  // was 0.0348 — and the floored bound must stay below that on BOTH backends.
+  const shipped = goodEarthshine();
+  for (const quantum of [0.00980414014788722, 0.019237402711809515]) {
+    const verdict = evaluateEarthshineSubLane({
+      ...shipped,
+      scaleCrescent: 0.880139447663971,
+      scaleQuarter: 0.5002862786656523,
+      scaleFull: 3.273084444154195e-4,
+      crescent: { ...shipped.crescent, medianDelta: 0.03477632023848592 },
+      full: {
+        ...shipped.full,
+        peakDelta: 0.03477632023848592,
+        peakQuantumLinear: quantum,
+      },
+    });
+    assert.equal(
+      verdict.criteria.earthshine_inert_at_full_moon,
+      false,
+      `the constant term must be rejected at quantum ${quantum}`,
+    );
+    assert.ok(
+      verdict.inertnessBound < 0.03477632023848592,
+      `bound ${verdict.inertnessBound} must stay under the mutant's amplitude`,
+    );
+  }
+  assert.equal(EARTHSHINE_INERTNESS_QUANTUM_FACTOR, 1.5);
+  // The cap that fixes 1.5: any larger round factor would reach the mutant on
+  // the worse of the two backends.
+  assert.ok(
+    EARTHSHINE_INERTNESS_QUANTUM_FACTOR <
+      0.03477632023848592 / 0.019237402711809515,
+  );
+});
+
+test("FIX-3: a quantum-limited bound is STRUCTURAL, never a weaker certification", () => {
+  const shipped = goodEarthshine();
+  const verdict = evaluateEarthshineSubLane({
+    ...shipped,
+    full: { ...shipped.full, peakDelta: 1e-6, peakQuantumLinear: 0.2 },
+  });
+  assert.deepEqual(verdict.criteria, {});
+  assert.equal(verdict.pass, false);
+  assert.ok(
+    verdict.structural.some((s) => /cannot see its own target/.test(s)),
+  );
+  // ...and a MISSING quantum is structural too, not a silent fall-back to the
+  // unmeasurable bound.
+  const noQuantum = evaluateEarthshineSubLane({
+    ...shipped,
+    full: { ...shipped.full, peakQuantumLinear: undefined },
+  });
+  assert.deepEqual(noQuantum.criteria, {});
+  assert.ok(noQuantum.structural.some((s) => /no honest[\s\S]*floor/.test(s)));
+});
+
+// --- FIX-4: the limb arm is gated on the lane its number comes from ---------
+
+test("FIX-4 MUTANT REJECTED — a certifying limb read on a STRUCTURAL disc lane", () => {
+  const landed = {
+    bakeClampPresent: false,
+    discPeakLinear: 4.175617896405583,
+    ratioI095overI0: 0.6790315872185032,
+  };
+  // The mutant is the shipped Batch-941 arm: content landed, so certify —
+  // regardless of whether the disc lane could see the disc.
+  const ungated = evaluateLimbAbsoluteArm(landed);
+  assert.equal(ungated.state, ARM_STATE.ACTIVE);
+  assert.equal(
+    ungated.criteria.limb_absoluteRatio_I095_over_I0_in_band,
+    false,
+    "the ungated arm produced Batch 941's red off a mis-aimed capture",
+  );
+
+  // The SHIPPED arm, gated.
+  const gated = evaluateLimbAbsoluteArm({
+    ...landed,
+    discLaneStructural: true,
+  });
+  assert.equal(gated.state, ARM_STATE.PENDING_AIM);
+  assert.deepEqual(gated.criteria, {});
+  assert.equal(gated.measured.ratioI095overI0, 0.6790315872185032);
+  assert.match(gated.reason, /DISC sub-lane is structural/);
+
+  // And the whole-backend path routes the same way: a structural disc lane must
+  // not emit the limb criterion at all.
+  const backend = evaluateG4Backend({
+    ...structuralDiscBackend("webgl"),
+    limbAbsolute: landed,
+  });
+  assert.equal(
+    backend.criteria.limb_absoluteRatio_I095_over_I0_in_band,
+    undefined,
+  );
+  assert.equal(
+    backend.pendingArms.limb_absoluteRatio_I095_over_I0_in_band.state,
+    ARM_STATE.PENDING_AIM,
+  );
+});
+
+test("FIX-4: an aim-gated arm disagreement is STRUCTURAL, not a cross-backend failure", () => {
+  const landed = {
+    bakeClampPresent: false,
+    discPeakLinear: 4.2,
+    ratioI095overI0: 0.4,
+  };
+  const gl = evaluateG4Backend({
+    ...structuralDiscBackend("webgl"),
+    limbAbsolute: landed,
+  });
+  const gpu = evaluateG4Backend({
+    ...goodBackend("webgpu"),
+    limbAbsolute: landed,
+  });
+  const folded = foldG4Verdict({ webgl: gl, webgpu: gpu });
+  assert.ok(
+    !folded.failures.some((f) => f.includes("limbAbsoluteArm_state")),
+    "an aim gate on one side is not a content disagreement",
+  );
+  assert.ok(
+    folded.structural.some((s) => s.includes("limbAbsoluteArm_state")),
+    "...but it must still be named",
+  );
+  // A REAL content disagreement is still a FAIL.
+  const clamped = evaluateG4Backend({
+    ...goodBackend("webgl"),
+    limbAbsolute: {
+      bakeClampPresent: true,
+      discPeakLinear: 1.2,
+      ratioI095overI0: 0.9,
+    },
+  });
+  assert.ok(
+    foldG4Verdict({ webgl: clamped, webgpu: gpu }).failures.some((f) =>
+      f.includes("limbAbsoluteArm_state"),
+    ),
+  );
+});
+
+test("FIX-4: the halo-over-disc confound is on the record AS A NUMBER", () => {
+  // §5's band is NOT moved. What this pins is the arithmetic the maintainer
+  // decision needs: what the SHIPPED chain predicts for the quantity §5 bounds.
+  const shipped = expectedCompositeLimbRatio(SolarDiscModel, {
+    discRadiance: 2.0,
+    haloAmplitude: 1.5,
+    haloCoreRadii: SolarDiscModel.solarHaloCoreRadii(GLOW_LENGTH_TS),
+  });
+  // (1) The DISC-ONLY law at 0.95R is already ABOVE §5's ceiling. §5's band is
+  //     satisfied at the EXTREME limb, where I(1)/I(0) = a0 = 0.30.
+  assert.ok(
+    Math.abs(shipped.discOnlyRatio - 0.5679674069255255) < 1e-9,
+    `disc-only ratio ${shipped.discOnlyRatio}`,
+  );
+  assert.ok(shipped.discOnlyRatio > LIMB_ABSOLUTE_RATIO_BAND.hi);
+  assert.ok(
+    Math.abs(
+      SolarDiscModel.solarLimbIntensity(1.0) /
+        SolarDiscModel.solarLimbIntensity(0.0) -
+        LIMB_ABSOLUTE_RATIO_BAND.lo,
+    ) < 1e-12,
+  );
+  // (2) The halo lifts it further, and the prediction matches what Batch 941
+  //     MEASURED on WebGPU (0.7138) to 2.6%.
+  assert.ok(
+    Math.abs(shipped.compositeRatio - 0.7329830770625845) < 1e-9,
+    `composite ratio ${shipped.compositeRatio}`,
+  );
+  assert.ok(
+    relativeDeviation(0.7137926594658577, shipped.compositeRatio) < 0.05,
+    "the shipped laws must predict the measured composite",
+  );
+  // (3) And the halo is more than half of the signal at 0.95R — which is what
+  //     "the ratio cannot be separated from the veil" means numerically.
+  assert.ok(shipped.haloShareAtX > 0.5);
+  assert.ok(
+    Math.abs(shipped.haloShareAtCentre - 1.5 / 3.5) < 1e-12,
+    "at the centre the halo profile is exactly 1, so its share is H/(D+H)",
+  );
+  // With the halo REMOVED the composite collapses onto the disc-only law — the
+  // control that says the confound term is what is doing the lifting.
+  const noHalo = expectedCompositeLimbRatio(SolarDiscModel, {
+    discRadiance: 2.0,
+    haloAmplitude: 0,
+    haloCoreRadii: SolarDiscModel.solarHaloCoreRadii(GLOW_LENGTH_TS),
+  });
+  assert.ok(Math.abs(noHalo.compositeRatio - noHalo.discOnlyRatio) < 1e-12);
+});
+
+// --- FIX-5: the report may not retain pixels --------------------------------
+
+test("FIX-5: a G4 report contains NO image buffers", () => {
+  const evaluated = {
+    webgl: evaluateG4Backend(goodBackend("webgl")),
+    webgpu: evaluateG4Backend(goodBackend("webgpu")),
+  };
+  assert.deepEqual(findRetainedImageBuffers(evaluated), []);
+  assert.deepEqual(
+    findRetainedImageBuffers(
+      buildG4Summary({ ...foldG4Verdict(evaluated), backends: evaluated }),
+    ),
+    [],
+  );
+});
+
+test("FIX-5 MUTANT REJECTED — a retained capture is FOUND and NAMED", () => {
+  const evaluated = {
+    webgl: evaluateG4Backend(goodBackend("webgl")),
+    webgpu: evaluateG4Backend(goodBackend("webgpu")),
+  };
+  // Exactly the shape that OOM'd the first run: the lane's own pixels reachable
+  // from the report.
+  evaluated.webgl.reports.disc.captures = {
+    "flat-1x": { data: new Array(2_560_000).fill(0) },
+  };
+  const hits = findRetainedImageBuffers(evaluated);
+  assert.equal(hits.length, 1);
+  assert.match(hits[0], /webgl\.reports\.disc\.captures/);
+  assert.match(hits[0], /Array\[2560000\]/);
+  // A TypedArray is caught at ANY length — a Float64Array in a report is always
+  // an image, never a bound.
+  assert.ok(
+    findRetainedImageBuffers({ a: { b: new Float64Array(8) } }).length === 1,
+  );
+  // ...and the five-sample shape vectors a real report DOES carry are not.
+  assert.deepEqual(findRetainedImageBuffers({ shape: [1, 2, 3, 4, 5] }), []);
+});
+
+test("FIX-5: the probe reduces and RELEASES each lane as it completes", () => {
+  const src = readNormalized("./probe-celestial-gates.mjs");
+  // The hook exists, the captures are dropped after it, and `runG4` uses it.
+  assert.match(
+    src,
+    /async function runBackendLanes\(browser, renderer, laneDefs, onLane\)/,
+  );
+  assert.match(src, /lane\.captures = null;/);
+  assert.match(src, /writeLaneCaptures\(laneKey, lane, renderer\);/);
+  assert.match(src, /reduceLane\(laneKey, lane, sinks\[renderer\]\);/);
+  // The permanent sentinel is wired.
+  assert.match(src, /findRetainedImageBuffers\(backends\)/);
+  assert.match(src, /REPORT RETAINS IMAGE BUFFERS/);
+  // The three epochs are reduced ONE LANE AT A TIME — the shape that made all
+  // 56 captures co-resident is gone.
+  assert.doesNotMatch(src, /function moonEpochMetrics\(/);
+  assert.match(src, /function moonEpochLaneMetrics\(lane, key\)/);
+  assert.match(src, /function assembleMoonPhase\(epochs, surge\)/);
+});
+
+// --- FIX-1 (probe side): the camera basis repair is present and explained ---
+
+test("FIX-1: the probe writes the REQUESTED basis back after setView", () => {
+  const src = readNormalized("./probe-celestial-gates.mjs");
+  // One aim helper in `setupScene`, used by all three aim modes — no branch may
+  // call `setView` with an orientation on its own any more.
+  assert.match(src, /const aimCamera = \(position, direction, up\) => \{/);
+  assert.match(src, /aimCamera\(eye, dir, realUp\);/);
+  assert.match(src, /aimCamera\(position, direction, perp\);/);
+  assert.match(src, /aimCamera\(position, perp, up\);/);
+  // The repair itself, in both `setupScene` and `setupMoonScene`.
+  const repairs = src.match(
+    /C\.Cartesian3\.clone\(direction, scene\.camera\.direction\);/g,
+  );
+  assert.equal(repairs.length, 2, "setupScene and setupMoonScene");
+  // The residual is measured BEFORE the repair, so the defect's own magnitude
+  // is reported every run rather than being silently corrected away.
+  assert.match(src, /hprRoundTripResidualDeg/);
+  assert.match(src, /appliedResidualDeg/);
+  assert.match(src, /localVerticalSeparationDeg/);
+  // The ephemeris projection reaches both sun lanes' measurements.
+  assert.match(src, /sunProjectionCropPx/);
+  assert.match(
+    src,
+    /sunProjectionCropPx: lane\.setup\.sunProjectionCropPx \?\? null/,
+  );
 });

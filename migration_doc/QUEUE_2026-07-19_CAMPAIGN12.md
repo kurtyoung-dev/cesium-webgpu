@@ -668,6 +668,178 @@ captures + f64 decodes + base64 transfer strings live → >3.6 GB; release per
 lane). Rerun after fixes; the moon half needs no rerun to stand — its lanes
 were aimed (moonAimDistancePx 4.9–10.3 px) and non-structural throughout.
 
+#### 2026-08-08 CO-28 correction note (the five fixes, as built — appended, the stamp above stands)
+
+Batch group **CO-28**. **Instruments only** (`Tools/visual-regression/**` +
+this note); zero engine files touched. Three corrections to the filing above
+come first, because each changes what the fix had to be.
+
+- **CORRECTION 1 — the aim error is 0.1745°, not ~0.35°, and it is ONE angle
+  both sun lanes agree on.** The filing scaled the disc offset with the wrong
+  pixel scale. Correct: 111.65 px ÷ 639.93 px/deg = **0.17447°** (disc, fovX 2)
+  and the LIVE `frameState.sunHalo` centre (637.6122, 362.3878) vs the canvas
+  centre = 3.3768 px ÷ 19.35 px/deg = **0.17470°** (halo, fovX 60, the DEFAULT
+  framing — not 22°). Four significant figures apart.
+- **CORRECTION 2 — neither filed suspect is the cause.** It is not aim-time vs
+  settled-clock (no ephemeris motion is needed to produce the number) and not
+  billboard-quad vs disc-centre. **ROOT CAUSE: `Camera.setView({orientation:
+  {direction, up}})` does not keep the basis it is handed.** It converts
+  direction/up to heading/pitch/roll in the local ENU frame at `destination`
+  and rebuilds from the angles, and `getHeading` has a **gimbal-lock branch**
+  (`CameraInternals.js`) that fires when `|direction.z|` in that frame is
+  within `EPSILON3 = 1e-3` of 1 — where it takes the azimuth from the **UP**
+  vector, 90° away from the direction's own. Every lane that parks on a body's
+  ray and looks along it is inside that branch, and the direction is not
+  *exactly* the local vertical because the geodetic normal deviates from the
+  radial by `eps = f·sin(2φ)` (0.12299° at the Sun's 19.80° declination). The
+  reconstruction keeps the pitch and swaps the azimuth, so the applied
+  direction lands `2·sin(45°)·eps = √2·eps = 0.17393°` away, at exactly 135° in
+  screen space. **Reproduced OFFLINE against the shipped `Camera`/`Transforms`
+  source, no browser:** predicted 111.30 px vs measured 111.65 (disc);
+  predicted (−2.38, +2.38) px vs the live halo centre's (−2.3878, +2.3878);
+  and the three moon epochs predicted **4.98 / 7.85 / 10.37 px** against
+  measured **4.91 / 7.92 / 10.33**. The same script puts `sunlit` and `sirius`
+  at residual **exactly 0** — only `sun-facing`, `anti-sun` and the moon lanes
+  are displaced.
+- **CORRECTION 3 — the moon half was never aimed either; its tolerance is just
+  wider than the defect.** `MOON_AIM_TOLERANCE_PX` is 16 and the defect is
+  ≤10.4 px at fovX 22. The moon half still stands: no moon predicate or
+  threshold was touched, and every reading it certified was taken on a disc
+  whose mask it did cover. But "its lanes were aimed" in the stamp above is
+  wrong, and after FIX-1 they are.
+
+What each fix changed:
+
+- **FIX-1 (root fix + mandatory instrumentation).** `setupScene` now aims
+  through ONE `aimCamera(position, direction, up)` helper used by all three aim
+  modes; it calls `setView` (which owns position + transform) and then writes
+  the REQUESTED basis back into `camera.direction/up/right`. `setupMoonScene`
+  carries the same repair. In the non-degenerate lanes the write-back is an
+  identity, so **G1's `sunlit` and G1/G2/G3's `sirius` lanes are provably
+  unchanged**; **G2's `sun-facing`/`anti-sun` glare lanes move by 3.4 px at
+  their framing** (they were mis-aimed by the same 0.1745°). Instrumentation,
+  reported every run whether or not it is needed: `aimDiagnostics`
+  (requested vs HPR-round-trip vs applied direction, the residual in degrees
+  read **before** the repair so the defect's own magnitude stays on the record,
+  and `localVerticalSeparationDeg` — the `eps` whose √2 multiple IS the
+  residual), plus `sunProjectionCropPx` (the ephemeris projection of
+  `sunPositionWC` in the crop's own pixel coordinates) threaded into both sun
+  measurements. `buildAimDiagnostic` + `describeAimMiss` turn that into a
+  structural note that **discriminates**: ephemeris and measured light on the
+  same spot ⇒ camera aim (instrument); apart ⇒ the Sun is not drawn where the
+  ephemeris says (product). The halo lane's brightest-pixel search widened
+  6→**64 px** (`HALO_AIM_SEARCH_RADIUS_PX`); the certifying bound stays 6.
+  Batch 941's `11.7686` was the old 12-px search hitting its own wall — a
+  floor, not a measurement.
+- **FIX-2.** `PARITY_SCALAR_SOURCE_LANE` declares the sub-lane behind every
+  parity scalar, `evaluateG4Backend` publishes `subLaneStructural`, and
+  `foldG4Verdict` compares a scalar only when its source lane is non-structural
+  on BOTH backends. Otherwise it reports `cross-backend:<key>_parity —
+  STRUCTURAL: …  MEASURED ANYWAY: webgl …, webgpu …, relative spread …` — by
+  name, never skipped. A scalar with no declared source lane is itself
+  structural (it cannot be silently trusted). Non-finite on one side is
+  structural too, not agreement.
+- **FIX-3 — re-derivation, and the derivation is now the CAPTURE'S, not a
+  constant.** The filing's premise needed sharpening: the relevant quantum is
+  not `1/255` but the value of ONE 8-bit code step **at the pixel that produced
+  the reading**, pushed back through the shipped `exposure → PBR-Neutral →
+  gamma` chain — 3.8e-3 at code 128 and 3.3e-1 at code 250. Re-running the
+  census offline against the run's own PNGs reproduces its numbers exactly
+  (webgl 0.008876, webgpu 0.016449; `darkenedPixels` 8 and 4) and puts the peak
+  pixels at codes `(230,231,227)` and `(236,237,232)` on the 1× leg, where one
+  step is worth 0.009804 / 0.019237 — so **`peakDelta / quantum` is 0.91 and
+  0.86: both readings are BELOW ONE QUANTUM.** Two independent confirmations
+  that this was readback noise: the backends differ by 1.85× on a term resolved
+  CPU-side before the backend branch, and the census counted pixels that got
+  **darker** when earthshine was switched ON. New:
+  `captureCodeQuantumLinear`, `chooseBracketLeg` (pinned by a validator against
+  `stitchBracketLinear`'s own pick), `bracketQuantumAt`; `discDeltaCensus` now
+  returns `peakIndex`; the bound is `max(3 × phase-scaled, 1.5 × quantum)`.
+  **The 1.5 is capped from above, not chosen:** the bound must still reject the
+  pre-C12-21 constant term (0.0348), which caps the factor at
+  `0.0348 / 0.019237 = 1.81`. Rejection margins 2.37× (webgl) and 1.20×
+  (webgpu). And the cap is enforced rather than assumed — if the instrument
+  floor ever reaches the constant term's own amplitude the criterion reports
+  **STRUCTURAL** ("a bound that cannot see its own target does not certify")
+  instead of certifying a weaker one. A missing quantum is structural too.
+- **FIX-4.** New `ARM_STATE.PENDING_AIM`; `evaluateLimbAbsoluteArm` takes
+  `discLaneStructural` (injected by `evaluateG4Backend`, the only place that
+  knows) and reports `STRUCTURAL-pending-aim` with the ratio still printed. A
+  cross-backend arm-state difference caused by an aim gate is structural rather
+  than a content-disagreement FAILURE; a real discriminator disagreement still
+  fails. **The confound is now a NUMBER, not a hypothesis** —
+  `expectedCompositeLimbRatio(model, {discRadiance, haloAmplitude,
+  haloCoreRadii})` evaluates `[D·I(x) + H·P(x)] / [D·I(0) + H·P(0)]` from the
+  shipped laws against the LIVE-resolved scalars, and is carried on
+  `limbAbsolute.expectedComposite` in every arm state. At the shipped defaults
+  (D = 2.0, H = 1.5, core = 4.278 R_sun) it gives **compositeRatio 0.73298** —
+  within **2.6%** of Batch 941's measured 0.7138 on WebGPU — with the halo
+  contributing **55.7%** of the signal at 0.95R and 42.9% at centre. **AND A
+  SECOND FINDING FOR THE PACK: `discOnlyRatio = 0.56797`, i.e. the shipped limb
+  law at x = 0.95 is ABOVE §5's 0.5 ceiling BEFORE any halo.** §5's `[0.3,0.5]`
+  is satisfied at the EXTREME limb, where `I(1)/I(0) = a0 = 0.30` exactly. **§5's
+  band is NOT moved here** — both numbers go to the maintainer with the
+  radiance-tradeoff ask.
+- **FIX-5.** Root retention was `data: Array.from(full.data)` — a plain JS
+  `Array` of `1000·640·4 = 2,560,000` numbers, 20.5 MB per capture at 8 bytes
+  an element, ×28 per backend ×2 = **1.15 GB held live to the end of the run**,
+  because `runG4` captured BOTH backends fully before reducing anything.
+  `runBackendLanes` now takes an optional `onLane` hook and nulls
+  `lane.captures` after it; `runG4` writes each lane's PNGs and reduces it to
+  scalars inside that hook, and `moonEpochMetrics` was split into
+  `moonEpochLaneMetrics` (per lane) + `assembleMoonPhase` (scalars only), which
+  is what made per-lane release possible. Peak retention drops to one lane's
+  bracket (6 captures, ~123 MB) plus its stitched composites, ~15× under the
+  default heap. Permanent sentinel `findRetainedImageBuffers` walks the report
+  before serialization and `console.error`s any TypedArray or >4,096-element
+  array, naming the path. **NOT taken, and recorded as the next lever if the
+  rerun is still tight:** moving the capture transport from a JSON number array
+  to base64 → `Uint8ClampedArray` would cut the per-capture footprint another
+  8× (20.5 MB → 2.56 MB) and the CDP payload from ~10 MB to 3.4 MB, but it
+  changes a function all four gates share and could not be validated here
+  without a browser.
+
+**Gates, all green, no allowlisting:** `node --test celestial-g4-gate.spec.mjs`
+**82/82** (was 64; +18 covering all five fixes, with mutants — an ungated parity
+fold, a below-quantum bound, a certifying limb read on a structural disc lane, a
+retained capture, and the old 12-px aim cap); the celestial family +
+`probe-fleet-contract.spec.mjs` **278/278**; `celestial-metrics` +
+`celestial-uniform-offsets` + `moon-phase-terminator` + `moon-phase-gate` +
+`sun-halo-composition` + `sun-hdr-radiance` + `hdr-display-default` **136/136**;
+`prettier --check` clean; `eslint Tools/visual-regression/` clean; watchdog
+(2,400 s in `--g4`) untouched.
+
+⚠ **PRE-REGISTERED RERUN EXPECTATION.** Replaying Batch 941's OWN report through
+the fixed lib (with the offline-derived quanta injected) is recorded here so the
+rerun is scored against a prediction, not against hindsight:
+
+1. **All seven reds clear**, and the AS-RUN pixels now fold to **exit 3
+   STRUCTURAL, zero failures** — 2 inertness reds go GREEN, 2 limb reds become
+   `STRUCTURAL-pending-aim`, 3 parity reds become STRUCTURAL-by-name.
+2. **With the aim repaired the expected verdict is FAIL (exit 1), and the
+   remaining reds are NEW and REAL**, not residue: `webgl:halo_tail_present_
+   beyond_billboard`, `webgl:halo_tail_shape_is_lorentzian`,
+   `webgl:halo_tail_slope_in_band` and `cross-backend:haloBandMean_parity`.
+   Batch 941 measured `screenBandMean` **0.000295 (webgl) vs 0.051480
+   (webgpu)** — a **175×** deficit — with webgl's shape samples reading
+   `[0, 0, 0, 0.003]` against webgpu's `[0.1002, 0.0657, 0.0427, 0.0299]`,
+   which match the shipped Lorentzian to 0.07%. That band is an annulus about
+   the CROP CENTRE, so a 3.4 px aim error cannot explain it; the raw PNGs agree
+   (webgl's 1× halo frame peaks at luminance 26/255 against webgpu's 253). **The
+   C12-18 screen halo appears to be absent or ~175× weak on WebGL at the default
+   framing** — a genuine cross-backend defect the structural aim was masking. If
+   the rerun shows it, it is a C12-18 product row, not an instrument one.
+3. **Both `limb_absoluteRatio_I095_over_I0_in_band` reds will RETURN as
+   certifying failures** once the disc lane is non-structural (~0.71–0.73 vs
+   `[0.3,0.5]`), by design: FIX-4 gates the read, it does not excuse it. The
+   report will now carry `expectedComposite` so the red reads as the ratified-
+   bar question it is.
+4. The sun lanes should report `hprRoundTripResidualDeg ≈ 0.174`,
+   `appliedResidualDeg ≈ 0`, `localVerticalSeparationDeg ≈ 0.123`, and
+   `aim.ephemerisVsMeasuredPx` ≈ 0 with `measuredOffsetPx` inside tolerance.
+   **If `appliedResidualDeg` is not ~0 the repair did not take; if
+   `ephemerisVsMeasuredPx` is large the defect is the renderer, not the aim.**
+
 ### 2026-08-07 CO-27 gate-lane overlay (G4 lane construction — the LAST missing C12 gate lane)
 
 Batch group **CO-27**, following the CO-3 / CO-24 house pattern.
