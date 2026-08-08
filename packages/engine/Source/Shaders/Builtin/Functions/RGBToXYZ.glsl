@@ -25,6 +25,19 @@ vec3 czm_RGBToXYZ(vec3 rgb)
     vec3 Yxy;
     Yxy.r = xyz.g;
     float temp = dot(vec3(1.0), xyz);
-    Yxy.gb = xyz.rg / temp;
+    // A lightless pixel has NO CHROMATICITY, and `xyz.rg / 0.0` is 0/0 = NaN,
+    // not zero. Exact black is the only input that reaches it — every entry of
+    // RGB2XYZ is positive, so `temp > 0` for any non-zero, non-negative rgb —
+    // and it is also the most common pixel in a scene rendered against space.
+    //
+    // The NaN used to be laundered by the 8-bit output textures its one engine
+    // consumer (`PostProcessStages/BrightPass.glsl`, run by `SunPostProcess`)
+    // wrote into. C12-19 (Batch 937) gave those stages float storage so HDR
+    // could reach them, and the NaN then survived, was spread over the whole
+    // bright-pass scissor by the two Gaussian passes, and painted a black
+    // rectangle around the Sun. Zero chromaticity keeps the `czm_XYZToRGB`
+    // round trip at black, which is the honest answer for a pixel with no
+    // light. Every non-black input is bit-for-bit unchanged.
+    Yxy.gb = temp > 0.0 ? xyz.rg / temp : vec2(0.0);
     return Yxy;
 }

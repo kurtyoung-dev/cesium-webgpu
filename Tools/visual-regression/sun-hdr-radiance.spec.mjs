@@ -757,3 +757,313 @@ test("C12-19: an unpublished frame degrades to the SDR identity, never to a dark
   const env = readEngine("Renderer/WebGPU/WebGPUEnvironmentRenderer.js");
   assert.match(env, /typeof discRadiance === "number" \? discRadiance : 1\.0/);
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// 9. C12-19 FOLLOW-UP (CO-30) — THE BLACK RECTANGLE AROUND THE SUN
+//
+// `BrightPass.glsl` is the only engine consumer of the `czm_RGBToXYZ` /
+// `czm_XYZToRGB` Yxy round trip, and that round trip is 0/0 = NaN for an
+// EXACTLY BLACK pixel (`xyz.rg / temp` with `temp == 0`, then `/ Yxy.b`).
+// Until Batch 937 every `SunPostProcess` stage wrote UNSIGNED_BYTE, which
+// laundered the NaN to 0. Section 6 above gave those stages float storage so
+// HDR could reach them — and the NaN then SURVIVED, was spread by the two
+// `GaussianBlur1D` passes over the whole bright-pass scissor, and painted an
+// exact black rectangle around the Sun in the composited frame.
+//
+// AS-RUN EVIDENCE (`output/celestial-g4.json` + its PNGs, Batch 946, WebGL,
+// HDR engaged, `sunBloom` default ON):
+//   * halo lane (fovX 60): an EXACT 310 x 309 px rectangle of luminance 0
+//     centred on the Sun. `60 * limbPx = 60 * 5.0954 = 305.7 px` is the
+//     scissor `SunPostProcess.updateSunPosition` sets on stages 0-3, to the
+//     pixel. OUTSIDE that rectangle the WebGL and WebGPU frames are
+//     BYTE-IDENTICAL (0 differing pixels at 1x) — i.e. the whole
+//     C12-15/16/18/19 appearance stack is engaged and correct on WebGL.
+//   * disc lane (fovX 2): the scissor covers the entire canvas, so the frame
+//     is 0 everywhere EXCEPT the part of the solar disc no blur tap can reach
+//     from a black texel — the disc ERODED by the two passes' +/-7-texel
+//     reach. That island, not the disc, is what the gate measured as
+//     `discDiameterDeg` 0.2907 and `trueSizeRatio` 2.224.
+//
+// The guard lives in the two builtins (the 0/0 is theirs), so every present
+// and future consumer is covered; every non-black input is bit-for-bit
+// unchanged. The WGSL twins `csm_RGBToXYZ` / `csm_XYZToRGB` are a plain
+// matrix pair with no division and need no guard, and WebGPU's bloom bright
+// pass is the `ContrastBias` port, not this curve — so there is nothing to
+// mirror on that backend.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** `SAMPLES - 1` in `GaussianBlur1D.glsl`; asserted against the source below. */
+const BLUR_REACH_TEXELS = 7;
+
+/** The 9 constants of a `const mat3 NAME = mat3(...)` declaration, in order. */
+function parseMat3(code, name) {
+  const re = new RegExp(`const\\s+mat3\\s+${name}\\s*=\\s*mat3\\(([^)]*)\\)`);
+  const m = re.exec(code);
+  assert.ok(m, `mat3 ${name} not found`);
+  const nums = m[1].split(",").map((s) => Number(s.trim()));
+  assert.equal(nums.length, 9, `mat3 ${name} needs 9 constants`);
+  assert.ok(
+    nums.every((n) => Number.isFinite(n)),
+    `mat3 ${name} has a non-numeric constant`,
+  );
+  return nums;
+}
+
+const FORWARD_GUARDED =
+  /Yxy\.gb\s*=\s*temp\s*>\s*0\.0\s*\?\s*xyz\.rg\s*\/\s*temp\s*:\s*vec2\(\s*0\.0\s*\)\s*;/;
+const FORWARD_UNGUARDED = /Yxy\.gb\s*=\s*xyz\.rg\s*\/\s*temp\s*;/;
+const INVERSE_GUARDED =
+  /if\s*\(\s*!\(\s*Yxy\.b\s*>\s*0\.0\s*\)\s*\)\s*\{?\s*return\s+vec3\(\s*0\.0\s*\)\s*;/;
+const INVERSE_GUARD_BLOCK =
+  /if\s*\(\s*!\(\s*Yxy\.b\s*>\s*0\.0\s*\)\s*\)\s*\{[\s\S]*?\}/;
+
+/**
+ * A JS twin of the Yxy round trip whose MATRICES AND GUARD STATE ARE BOTH READ
+ * OUT OF THE SHIPPED GLSL. Reverting either guard in the source flips
+ * `guardedForward` / `guardedInverse` and the finiteness assertions below fail
+ * — which is what makes this a pin on the engine rather than on the twin.
+ */
+function compileYxyRoundTrip(rgbSrc, xyzSrc) {
+  const fwd = codeOf(rgbSrc);
+  const inv = codeOf(xyzSrc);
+  const RGB2XYZ = parseMat3(fwd, "RGB2XYZ");
+  const XYZ2RGB = parseMat3(inv, "XYZ2RGB");
+
+  const guardedForward = FORWARD_GUARDED.test(fwd);
+  if (!guardedForward) {
+    assert.match(
+      fwd,
+      FORWARD_UNGUARDED,
+      "czm_RGBToXYZ's chromaticity assignment is neither the guarded nor the unguarded form — the twin cannot model it",
+    );
+  }
+  const guardedInverse = INVERSE_GUARDED.test(inv);
+
+  // GLSL mat3(...) is COLUMN-major: the first three constants are column 0.
+  const mul = (m, v) => [
+    m[0] * v[0] + m[3] * v[1] + m[6] * v[2],
+    m[1] * v[0] + m[4] * v[1] + m[7] * v[2],
+    m[2] * v[0] + m[5] * v[1] + m[8] * v[2],
+  ];
+
+  const toYxy = (rgb) => {
+    const xyz = mul(RGB2XYZ, rgb);
+    const temp = xyz[0] + xyz[1] + xyz[2];
+    const chroma =
+      guardedForward && !(temp > 0.0)
+        ? [0.0, 0.0]
+        : [xyz[0] / temp, xyz[1] / temp];
+    return [xyz[1], chroma[0], chroma[1]];
+  };
+
+  const toRGB = (Yxy) => {
+    if (guardedInverse && !(Yxy[2] > 0.0)) {
+      return [0.0, 0.0, 0.0];
+    }
+    const xyz = [
+      (Yxy[0] * Yxy[1]) / Yxy[2],
+      Yxy[0],
+      (Yxy[0] * (1.0 - Yxy[1] - Yxy[2])) / Yxy[2],
+    ];
+    return mul(XYZ2RGB, xyz);
+  };
+
+  return { toYxy, toRGB, guardedForward, guardedInverse };
+}
+
+/** `BrightPass.glsl`'s main(), end to end, over an rgb triple. */
+function compileBrightPassRGB(rt) {
+  const extract = compileBrightPass();
+  return (rgb, avgLuminance, threshold, offset) => {
+    const Yxy = rt.toYxy(rgb);
+    const brightness = extract(Yxy[0], avgLuminance, threshold, offset);
+    return rt.toRGB([brightness, Yxy[1], Yxy[2]]);
+  };
+}
+
+const shippedRgbToXyz = () =>
+  readEngine("Shaders/Builtin/Functions/RGBToXYZ.glsl");
+const shippedXyzToRgb = () =>
+  readEngine("Shaders/Builtin/Functions/XYZToRGB.glsl");
+
+test("CO-30: the shipped Yxy round trip is FINITE at exactly black — black in, black out", () => {
+  const rt = compileYxyRoundTrip(shippedRgbToXyz(), shippedXyzToRgb());
+  assert.equal(rt.guardedForward, true, "czm_RGBToXYZ must guard `temp`");
+  assert.equal(rt.guardedInverse, true, "czm_XYZToRGB must guard `Yxy.b`");
+
+  const Yxy = rt.toYxy([0, 0, 0]);
+  assert.ok(
+    Yxy.every((v) => Number.isFinite(v)),
+    `czm_RGBToXYZ(black) produced ${JSON.stringify(Yxy)}`,
+  );
+  assert.deepEqual(rt.toRGB(Yxy), [0, 0, 0]);
+});
+
+test("CO-30: BrightPass over a black pixel is finite — the whole chain, not just the builtin", () => {
+  const rt = compileYxyRoundTrip(shippedRgbToXyz(), shippedXyzToRgb());
+  const brightPass = compileBrightPassRGB(rt);
+  for (const [threshold, offset] of [
+    [0.25, 0.1],
+    [0.7290000000000001, 0.5],
+  ]) {
+    const out = brightPass([0, 0, 0], 0.5, threshold, offset);
+    assert.ok(
+      out.every((v) => Number.isFinite(v)),
+      `BrightPass(black) produced ${JSON.stringify(out)} at (${threshold}, ${offset})`,
+    );
+    assert.deepEqual(out, [0, 0, 0], "a lightless pixel contributes no bloom");
+  }
+});
+
+test("CO-30: every NON-black input is bit-for-bit unchanged by the guards", () => {
+  const shipped = compileYxyRoundTrip(shippedRgbToXyz(), shippedXyzToRgb());
+  // The pre-fix expressions, reconstructed from the shipped source by removing
+  // exactly the two guards. Any difference on a non-black input would be a
+  // behaviour change this fix is not entitled to make.
+  const legacy = compileYxyRoundTrip(
+    shippedRgbToXyz().replace(FORWARD_GUARDED, "Yxy.gb = xyz.rg / temp;"),
+    shippedXyzToRgb().replace(INVERSE_GUARD_BLOCK, ""),
+  );
+  assert.equal(legacy.guardedForward, false);
+  assert.equal(legacy.guardedInverse, false);
+
+  const samples = [
+    [1, 1, 1],
+    [1, 1, 1.2],
+    [2, 2, 2],
+    [0.5, 0.25, 0.125],
+    [1e-6, 0, 0],
+    [0, 0, 1e-7],
+    [3.5, 3.5, 3.5],
+  ];
+  for (const rgb of samples) {
+    const a = shipped.toRGB(shipped.toYxy(rgb));
+    const b = legacy.toRGB(legacy.toYxy(rgb));
+    for (let c = 0; c < 3; c++) {
+      assert.equal(a[c], b[c], `round trip drifted at ${JSON.stringify(rgb)}`);
+    }
+  }
+});
+
+test("CO-30: MUTATION-FOLD — remove either guard and the NaN comes straight back", () => {
+  const unguardedForward = compileYxyRoundTrip(
+    shippedRgbToXyz().replace(FORWARD_GUARDED, "Yxy.gb = xyz.rg / temp;"),
+    shippedXyzToRgb(),
+  );
+  assert.equal(unguardedForward.guardedForward, false);
+  assert.ok(
+    unguardedForward.toYxy([0, 0, 0]).some((v) => Number.isNaN(v)),
+    "the unguarded forward transform must be NaN at black",
+  );
+
+  // The inverse guard is load-bearing on its own: with the forward guard in
+  // place the degenerate triple is (0, 0, 0), and `0 * 0 / 0` is still NaN.
+  const unguardedInverse = compileYxyRoundTrip(
+    shippedRgbToXyz(),
+    shippedXyzToRgb().replace(INVERSE_GUARD_BLOCK, ""),
+  );
+  assert.equal(unguardedInverse.guardedInverse, false);
+  assert.ok(
+    unguardedInverse
+      .toRGB(unguardedInverse.toYxy([0, 0, 0]))
+      .some((v) => Number.isNaN(v)),
+    "the unguarded inverse must be NaN at the degenerate chromaticity",
+  );
+});
+
+test("CO-30: the blur's reach is read from the shipped GaussianBlur1D, not assumed", () => {
+  const src = readEngine("Shaders/PostProcessStages/GaussianBlur1D.glsl");
+  const samples = /#define SAMPLES (\d+)/.exec(src);
+  assert.ok(samples, "SAMPLES not found in GaussianBlur1D.glsl");
+  assert.match(
+    src,
+    /for \(int i = 1; i < SAMPLES; \+\+i\)/,
+    "the loop shape the reach is derived from",
+  );
+  assert.match(src, /texture\(colorTexture, st - offset\)/);
+  assert.match(src, /texture\(colorTexture, st \+ offset\)/);
+  // i runs 1..SAMPLES-1 and both signs are sampled, so one pass carries a
+  // value SAMPLES-1 texels — a NaN included.
+  assert.equal(Number(samples[1]) - 1, BLUR_REACH_TEXELS);
+
+  // ...and SunPostProcess runs the pair as x-then-y at one texel per step.
+  const sun = codeOf(readEngine("Scene/SunPostProcess.js"));
+  assert.match(sun, /direction: 0\.0,/);
+  assert.match(sun, /direction: 1\.0,/);
+  assert.match(sun, /1\.0 \/ brightPass\.outputTexture\.width/);
+});
+
+/**
+ * The island a NaN background leaves behind: the set of texels whose whole
+ * `(2r+1) x (2r+1)` neighbourhood is inside the disc, because the x pass then
+ * the y pass together carry a NaN `r` texels in each axis independently.
+ *
+ * `a` / `b` are the disc's semi-axes in DOWNSAMPLE TEXELS.
+ */
+function nanErodedIsland(a, b, r) {
+  // On the x axis the binding constraint is the neighbourhood corner (x+r, r).
+  const x = Math.sqrt(Math.max(0, a * a * (1 - (r * r) / (b * b)))) - r;
+  const y = Math.sqrt(Math.max(0, b * b * (1 - (r * r) / (a * a)))) - r;
+  return { x, y };
+}
+
+test("CO-30: the erosion model reproduces the AS-RUN Batch-946 WebGL islands", () => {
+  // Downsample texel size at the run's 1280x720 canvas, read off the PNGs'
+  // own quantisation: the bright-pass texture is 128 x 128, so a texel is
+  // 10 px in x and 5.625 px in y. Semi-axes below are measured offline from
+  // `output/celestial-g4-disc-*-1x-*.png` (Batch 946), in texels.
+  const cases = [
+    ["true-size", { a: 16.6, b: 29.51 }, { x: 9.5, y: 20.44 }],
+    ["legacy", { a: 11.5, b: 20.44 }, { x: 4.5, y: 10.49 }],
+  ];
+  for (const [leg, disc, measured] of cases) {
+    const predicted = nanErodedIsland(disc.a, disc.b, BLUR_REACH_TEXELS);
+    assert.ok(
+      Math.abs(predicted.x - measured.x) <= 1.5,
+      `${leg}: predicted island semiX ${predicted.x.toFixed(2)} vs measured ${measured.x}`,
+    );
+    assert.ok(
+      Math.abs(predicted.y - measured.y) <= 1.5,
+      `${leg}: predicted island semiY ${predicted.y.toFixed(2)} vs measured ${measured.y}`,
+    );
+  }
+
+  // The gate's two certifying disc reds are ARITHMETIC CONSEQUENCES of that
+  // erosion, not measurements of the disc: an ADDITIVE erosion cannot preserve
+  // a RATIO, so `trueSizeRatio` had to leave sqrt(2).
+  const eroded =
+    nanErodedIsland(16.6, 29.51, BLUR_REACH_TEXELS).x /
+    nanErodedIsland(11.5, 20.44, BLUR_REACH_TEXELS).x;
+  assert.ok(
+    eroded > 2.0,
+    `the eroded ratio must be far above sqrt(2); got ${eroded.toFixed(3)}`,
+  );
+  // ...and with no erosion the same model returns the shipped sqrt(2) pin.
+  const clean =
+    nanErodedIsland(16.6, 29.51, 0).x / nanErodedIsland(11.5, 20.44, 0).x;
+  assert.ok(
+    Math.abs(clean - Math.SQRT2) / Math.SQRT2 < 0.05,
+    `an uneroded disc pair must read sqrt(2); got ${clean.toFixed(4)}`,
+  );
+});
+
+test("CO-30: the black rectangle IS the bright-pass scissor — 60 * limbPx, to the pixel", () => {
+  const src = codeOf(readEngine("Scene/SunPostProcess.js"));
+  // `sunSize` is the full-resolution extent the scissor is derived from.
+  assert.match(src, /\*\s*30\.0\s*\*\s*2\.0/, "the 60x limb extent");
+  assert.match(src, /scissorRectangle\.width = Math\.min\(size\.x, width\)/);
+  assert.match(
+    src,
+    /for \(let i = 1; i < 4; \+\+i\)/,
+    "stages 0-3 are the scissored ones — 4-6 are full screen",
+  );
+
+  // AS-RUN: halo lane limbPx 5.095442 (frameState.sunHalo, Batch 946) against
+  // a measured 310 x 309 px rectangle of exact zero in the WebGL frame.
+  const limbPx = 5.095441965074199;
+  const sunSize = limbPx * 30.0 * 2.0;
+  assert.ok(
+    Math.abs(sunSize - 310) <= 5 && Math.abs(sunSize - 309) <= 5,
+    `scissor extent ${sunSize.toFixed(1)} px must match the measured 310 x 309 px hole`,
+  );
+});

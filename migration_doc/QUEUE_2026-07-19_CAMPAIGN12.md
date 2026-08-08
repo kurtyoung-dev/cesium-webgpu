@@ -605,6 +605,39 @@ any G3 claim.
   no faint target in frame) and is NOT a product verdict. G3 needs `sharp`, a
   declared repo dependency, to decode the served faces off-browser.
 
+### 2026-08-09 CO-30 verdict (Batch 947) — the B946 filing is REFUTED AND REPLACED; the fix is landed
+
+**WEBGL-SUN-APPEARANCE-STACK-DISENGAGED is REFUTED**: outside a rectangle
+around the Sun, the B946 halo-lane WebGL and WebGPU frames are
+**byte-identical (0/544,210 differing pixels at 1×)** — the appearance
+stack was engaged and correct all along. The real defect, now fixed, is
+**WEBGL-SUNBLOOM-BRIGHTPASS-NAN-BLACK-RECT, a B937 (C12-19) regression**:
+`czm_RGBToXYZ`/`czm_XYZToRGB` return 0/0 = NaN for an exactly-black pixel;
+BrightPass (SunPostProcess stage 1) is their only engine consumer; B937's
+HALF_FLOAT stages let the NaN survive where the pre-B937 UNSIGNED_BYTE
+storage laundered it to 0; two GaussianBlur1D passes spread it ±7 texels,
+compositing an EXACT `60 × limbPx` black rectangle over the Sun (measured
+310 × 309 px vs predicted 305.7). Every B946 WebGL finding was a
+measurement of that hole (the disc "erosion" is additive 7 texels/axis —
+7.10/7.00 measured — which is WHY the ratio left √2), and the 63.9-px
+"drawn Sun vs ephemeris DISAGREE" note is **WITHDRAWN** (the 64-px search
+wall over an all-zero field — the same artifact class as B941's 11.77/12).
+The moon half never runs the pipeline (`isSunVisible` gate). FIX: both
+builtins guard their degenerate divide; every non-black input bit-for-bit
+unchanged (spec-pinned by parsing the shipped GLSL, mutation-verified both
+directions); SDR unaffected. Gates at landing: sun-hdr-radiance 34/34, g4
++ fleet 148/148, tsc 0 non-TS2307. **NEW ROW FILED:
+WEBGL-SUN-BLOOM-IS-AN-UNMIRRORED-ADDITIVE (MEDIUM)** — WebGL's bright-pass
+bloom has no WebGPU counterpart at defaults (discPeakLinear 4.176 vs 3.514
+= disc 2.0 + halo 1.5 exactly); it will lift WebGL's composite limb ratio
+~8% above WebGPU's post-fix (pre-registered ~0.77 vs 0.714 — still the
+unchanged §5 maintainer item). Note recorded: the C12-19-VRAM row's
+"stages 1-3 could stay 8-bit" option would have re-masked this NaN and
+must not be adopted as a fix. The C12-19 delta legs need
+`enableScreenSpaceSunHalo:false` + `sunBloom:false` to read the disc-only
+250.3/195.9 codes (both backends saturate at 253 otherwise). Full
+pre-registered G4-third-run expectations in the Batch-947 commit message.
+
 ### 2026-08-09 G4 SECOND RUN (Batch 946) — aim repair PROVEN (appliedResidual 0, round-trip 0.1797° as predicted); FIX-5 validated on the DEFAULT heap; and the unmasked WebGL sun is REALLY BROKEN
 
 Exit 1. Moon half green again (full:quarter 3.014). Both limb-ratio reds
