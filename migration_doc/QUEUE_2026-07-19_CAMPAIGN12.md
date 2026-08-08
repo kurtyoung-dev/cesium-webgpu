@@ -705,6 +705,23 @@ the 0.95R signal, discOnlyRatio 0.568 > the 0.5 ceiling before any halo);
 (2) the bloom-mirror decision on the filed MEDIUM row. Four runs, four
 pre-registrations, the last one exact.
 
+### 2026-08-08 G4 NINTH RUN — **FIRST EXIT 0. GATE G4 CLOSED** (Batch 984)
+
+Run at `d9cb31a374` (B979 pin removal + B983 floored criterion both
+landed): **G4 PASS on both backends** — empty failure list, zero false
+criteria, and no pending arms ("every G4 criterion is certifying at this
+commit"). The pre-registered discriminator was honored exactly:
+`limb_shape_matches_shipped_law` GREEN via the derived one-code floor
+(measured maxRelDev webgl 0.0756 / webgpu 0.0848 — matching the offline
+prediction from B983's simulation to four decimal places), every other
+criterion unchanged, no scene pins anywhere. The solar disc's size and
+limb law, the C12-18 screen halo, the C12-28 SDR policy, and the
+C12-21/C12-22 moon terms all certify identically on both backends. Nine
+runs total: five VOID/confounded or instrument-defeated, one healthy-red
+baseline, two regression runs, one PASS — the instrument history stands
+in the stamps below. Open rider (does NOT hold the gate):
+`G4-DISC-RADIANCE-EXCESS-UNEXPLAINED` (DEFERRED_WORK, filed B983).
+
 ### 2026-08-08 MECHANISM RESOLVED (Batch 979) — B978's engine-defect suspicion REFUTED; the pin fought a DESIGNED invariant; limb_shape root-caused to a criterion denominator hazard
 
 (Machine date 2026-08-08; the neighbouring stamps in this thread carry the
