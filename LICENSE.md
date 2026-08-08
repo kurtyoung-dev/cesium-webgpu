@@ -427,15 +427,7 @@ initial field.
 
 https://gist.github.com/tommyettinger/46a874533244883189143505d203312c
 
-**Notice status: unresolved.** No licence grant for this snippet could be
-established from any source available inside this repository — it carries no
-notice where it is used, no dependency vendors it, and the author's gist is not
-mirrored here. This entry records the provenance and the open question rather
-than asserting terms the project has not seen. The analysis, the exact question
-that closes it, and the alternative closure (replacing the function with an
-original implementation) are recorded in
-[`migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`](migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md)
-under `L-01`.
+**Public-domain (CC0) — dedication read and transcribed 2026-08-10** from the gist itself, which opens: "Written in 2017 by Tommy Ettinger (tommy.ettinger@gmail.com) To the extent possible under law, the author has dedicated all copyright and related and neighboring rights to this software to the public domain worldwide. See http://creativecommons.org/publicdomain/zero/1.0/". The generator is therefore in the public domain worldwide and the code stays as-is. Determination `L-01` is closed; the analysis trail remains in [`migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`](migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md).
 
 ### naga
 
@@ -561,15 +553,11 @@ the vertical height and the horizontal choppiness field, in
 displacement and normal reassembly in `OceanSurface.wgsl`, follow this
 project's WGSL formulation.
 
-**Notice status: pending transcription.** The MIT permission text below is the
-standard MIT body and is complete apart from its copyright line, which this
-project has not been able to read from the upstream `LICENSE` file offline and
-therefore does not assert. Transcribing that one line from
-<https://github.com/Popov72/OceanDemo> closes it; see
-[`migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`](migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md)
-under `L-13`.
+**Notice transcribed 2026-08-10** from the upstream `LICENSE.md` at <https://github.com/Popov72/OceanDemo> (default branch `main`): the file carries the FFT-Ocean author's line — the port retains the original notice — and it is reproduced verbatim below. Determination `L-13` is closed.
 
 > MIT License
+>
+> Copyright (c) 2020 Ivan Pensionerov
 >
 > Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 >
@@ -588,14 +576,11 @@ project's technique — advance every particle from a previous-state buffer into
 a next-state buffer, reseed on a per-frame drop probability — from a fragment
 shader writing a texture to a WGSL compute kernel writing a storage buffer.
 
-**Notice status: pending transcription.** The ISC permission text below is the
-standard ISC body and is complete apart from its copyright line, which this
-project has not been able to read from the upstream `LICENSE` file offline and
-therefore does not assert. See
-[`migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`](migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md)
-under `L-12`.
+**Notice transcribed 2026-08-10** from the upstream `LICENSE` at <https://github.com/mapbox/webgl-wind>; reproduced verbatim below. Determination `L-12` (webgl-wind half) is closed.
 
 > ISC License
+>
+> Copyright (c) 2016, Mapbox
 >
 > Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.
 >
@@ -611,14 +596,11 @@ particle state in longitude and latitude against an ellipsoid rather than in
 plane coordinates, and converting to a position only at draw time — follows
 this project's Cesium adaptation of the same technique.
 
-**Notice status: pending transcription.** The MIT permission text below is the
-standard MIT body and is complete apart from its copyright line, which this
-project has not been able to read from the upstream `LICENSE` file offline and
-therefore does not assert. See
-[`migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`](migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md)
-under `L-12`.
+**Notice transcribed 2026-08-10** from the upstream `LICENSE` at <https://github.com/RaymanNg/3D-Wind-Field>; reproduced verbatim below. Determination `L-12` (3D-Wind-Field half) is closed.
 
 > MIT License
+>
+> Copyright (c) 2019 RaymanNg
 >
 > Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 >
@@ -636,14 +618,11 @@ treating samples beyond a far-plane fraction as sky that contributes its colour
 directly, and everything closer as an occluder that contributes nothing —
 follows this engine's `GodRayPost.ts`, over the Mitchell radial-blur base.
 
-**Notice status: pending transcription.** The MIT permission text below is the
-standard MIT body and is complete apart from its copyright line, which this
-project has not been able to read from the upstream `LICENSE` file offline and
-therefore does not assert. See
-[`migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`](migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md)
-under `L-11`.
+**Notice transcribed 2026-08-10** from the upstream `LICENSE` at <https://github.com/Orillusion/orillusion>; reproduced verbatim below. Determination `L-11` is closed.
 
 > MIT License
+>
+> Copyright (c) 2024 Orillusion
 >
 > Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 >
@@ -699,11 +678,7 @@ project's.
 Vello is dual-licensed Apache-2.0 OR MIT. The Apache-2.0 half matches this
 project's own licence; its full text is reproduced at the top of this file.
 
-**Notice status: pending transcription.** The copyright line of either half has
-not been read from the upstream repository offline and is therefore not
-asserted here. See
-[`migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`](migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md)
-under `L-18`.
+**Notice transcribed 2026-08-10** from the upstream `LICENSE-MIT` at <https://github.com/linebender/vello>: "Copyright 2020 the Vello Authors". The Apache-2.0 half remains the operative grant (matching this project's licence, reproduced at the top of this file); the copyright statement above is the attribution the notice condition asks for. Determination `L-18` is closed.
 
 ### NoSleep.js
 

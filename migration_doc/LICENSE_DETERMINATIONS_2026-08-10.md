@@ -401,3 +401,19 @@ were resolved by adding reference blocks to the files themselves, in the shape
 One of the 32, `Assets/WaterMask/ne10mLakes.bin`, is a binary and is resolved
 above as L-21 instead. The `README.md` References & Credits section lists every
 work named by either pass.
+
+## 7. Closure addendum — 2026-08-10, Batch 965 (orchestrator, network pass)
+
+CO-38 ran sandboxed; the orchestrator re-ran the six network lookups the
+batch could not. Results, transcribed into both `LICENSE.md` files:
+
+| Item | Finding | Status |
+| --- | --- | --- |
+| L-01 | The gist opens with an explicit CC0 public-domain dedication ("Written in 2017 by Tommy Ettinger ... dedicated all copyright and related and neighboring rights ... to the public domain worldwide", linking creativecommons.org/publicdomain/zero/1.0). | **RESOLVED — public domain; no replacement needed** |
+| L-11 | Orillusion `LICENSE`: "Copyright (c) 2024 Orillusion", MIT. | **RESOLVED** |
+| L-12 | mapbox/webgl-wind `LICENSE`: "Copyright (c) 2016, Mapbox", ISC. RaymanNg/3D-Wind-Field `LICENSE`: "Copyright (c) 2019 RaymanNg", MIT. | **RESOLVED** |
+| L-13 | Popov72/OceanDemo `LICENSE.md` (branch `main`): "Copyright (c) 2020 Ivan Pensionerov" — the port retains the FFT-Ocean author's line; transcribed as found. | **RESOLVED** |
+| L-18 | linebender/vello `LICENSE-MIT`: "Copyright 2020 the Vello Authors". Apache-2.0 half remains the operative grant. | **RESOLVED** |
+
+**The sole remaining open item is L-23** (should `wgslToJavaScript` mirror
+`glslToJavaScript`'s `@license` extraction — a build-script decision).
