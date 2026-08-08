@@ -28,24 +28,23 @@ import {
   CesiumDebug as installCesiumDebug,
 } from "../../Build/CesiumUnminified/index.js";
 import resolveCesiumViewerStartupOptions from "./CesiumViewerStartupOptions.js";
-
-// ---- State ----
-let currentMode = "webgl"; // 'webgl' | 'webgpu' | 'split'
-let showFps = false;
-let webglViewer = null;
-let webgpuViewer = null;
+import {
+  createRendererToolbar,
+  ensureForkChromeStyles,
+} from "./CesiumViewerDevUi.js";
+import { isDevUiEnabled, resolveStartMode } from "./CesiumViewerStartMode.js";
 
 const endUserOptions = queryToObject(window.location.search.substring(1));
 
-// Parse initial mode from query string
-if (endUserOptions.renderer === "webgpu") {
-  currentMode = "webgpu";
-} else if (endUserOptions.renderer === "split") {
-  currentMode = "split";
-}
-if (endUserOptions.stats) {
-  showFps = true;
-}
+// ---- State ----
+let currentMode = resolveStartMode(endUserOptions); // 'webgl' | 'webgpu' | 'split'
+// `stats=true` is an upstream option and stays independent of the fork's
+// chrome; only the checkbox that mirrors it is development-only.
+let showFps = !!endUserOptions.stats;
+let webglViewer = null;
+let webgpuViewer = null;
+// Null whenever the development chrome is gated off, which is the default.
+let rendererToolbar = null;
 
 // ---- Viewer Creation Helpers ----
 
@@ -200,6 +199,10 @@ function resetContainers() {
 }
 
 function createSplitContainers() {
+  // The pane layout is fork-only chrome, so its rules are not in the page
+  // until something asks for them.
+  ensureForkChromeStyles();
+
   // Hide main container
   const mainContainer = document.getElementById("cesiumContainer");
   if (mainContainer) {
@@ -246,28 +249,19 @@ function createSplitContainers() {
   );
 }
 
-// ---- UI Button State ----
-
-function updateButtonState(mode) {
-  document
-    .getElementById("btnWebGL")
-    .classList.toggle("active", mode === "webgl");
-  document
-    .getElementById("btnWebGPU")
-    .classList.toggle("active", mode === "webgpu");
-  document
-    .getElementById("btnSplit")
-    .classList.toggle("active", mode === "split");
-}
-
-// ---- Global Switch Functions (called from HTML onclick) ----
+// ---- Global Switch Functions ----
+//
+// These stay on `window` whether or not the toolbar was built. They are the
+// programmatic entry points that drive a renderer change, and tooling calls
+// them directly against a page started with no development chrome; the
+// toolbar is only one of their callers.
 
 window.switchRenderer = async function (mode) {
   if (mode === currentMode) {
     return;
   }
   currentMode = mode;
-  updateButtonState(mode);
+  rendererToolbar?.setActiveMode(mode);
 
   const loadingIndicator = document.getElementById("loadingIndicator");
   loadingIndicator.style.display = "";
@@ -331,9 +325,14 @@ window.toggleFps = function (enabled) {
 async function main() {
   const loadingIndicator = document.getElementById("loadingIndicator");
 
-  // Set initial UI state
-  updateButtonState(currentMode);
-  document.getElementById("fpsToggle").checked = showFps;
+  if (isDevUiEnabled(endUserOptions)) {
+    rendererToolbar = createRendererToolbar({
+      mode: currentMode,
+      showFps: showFps,
+      onSelectMode: (mode) => window.switchRenderer(mode),
+      onToggleFps: (enabled) => window.toggleFps(enabled),
+    });
+  }
 
   try {
     if (currentMode === "webgl") {

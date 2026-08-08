@@ -53,6 +53,19 @@ Instructions for serving local data are in the CesiumJS
 
 Interested in contributing? See [CONTRIBUTING.md](CONTRIBUTING.md). :heart:
 
+### Development
+
+`npm start` serves the repository at <http://localhost:8080/>. The CesiumViewer
+application there starts on WebGPU, falling back to WebGL when the browser does
+not support it, and otherwise matches upstream CesiumViewer.
+
+`npm run start-dev-ui` serves the same content and additionally prints the
+CesiumViewer URL that enables this fork's development chrome — the
+WebGL/WebGPU/Split renderer switcher and the FPS toggle. That chrome is built
+only for a page loaded with `?devUi=true` (`?devUi=1` also works); every other
+URL, including `?renderer=webgl` and `?renderer=webgpu`, leaves it out
+entirely.
+
 ## :green_book: License
 
 [Apache 2.0](http://www.apache.org/licenses/LICENSE-2.0.html). CesiumJS is free for both commercial and non-commercial use.

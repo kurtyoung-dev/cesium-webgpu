@@ -110,7 +110,9 @@ async function run() {
 
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  // Start in WebGL (default renderer for the CesiumViewer page).
+  // Start in WebGL. The page defaults to WebGPU, so the mode is requested
+  // explicitly; `window.switchRenderer` is published with or without the
+  // page's development chrome, so no `devUi` parameter is needed here.
   const url = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgl`;
   await page.goto(url, { waitUntil: "networkidle" });
   await page.waitForFunction(() => !!window.switchRenderer);

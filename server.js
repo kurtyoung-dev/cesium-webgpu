@@ -37,6 +37,11 @@ const argv = await yargs(process.argv)
       type: "boolean",
       description: "Run a public server that listens on all interfaces.",
     },
+    devUi: {
+      type: "boolean",
+      description:
+        "Print the CesiumViewer URL that enables the renderer switcher and FPS toggle.",
+    },
     production: {
       type: "boolean",
       description: "If true, skip build step and serve existing built files.",
@@ -55,6 +60,10 @@ const { getSandcastleConfig, buildSandcastleGallery, buildSandcastleApp } =
   argv.production ? {} : await import("./scripts/buildSandcastle.js");
 
 const outputDirectory = path.join("Build", "CesiumDev");
+
+// The CesiumViewer builds its renderer switcher and FPS toggle only when this
+// parameter is present; a bare viewer URL carries the upstream chrome.
+const DEV_UI_VIEWER_PATH = "/Apps/CesiumViewer/index.html?devUi=true";
 
 function formatTimeSinceInSeconds(start) {
   return Math.ceil((performance.now() - start) / 100) / 10;
@@ -545,6 +554,13 @@ const throttle = (callback) => {
       } else {
         console.log(
           `Cesium development server running locally.  Connect to http://localhost:${server.address()?.port}/`,
+        );
+      }
+      if (argv.devUi) {
+        // Printed from the listen callback so the URL follows the build
+        // output rather than racing ahead of it.
+        console.log(
+          `CesiumViewer with the development UI: http://localhost:${server.address()?.port}${DEV_UI_VIEWER_PATH}`,
         );
       }
     },
