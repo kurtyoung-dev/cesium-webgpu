@@ -62,6 +62,47 @@
 // with this one: the off-state `emission.requested === false`, and the
 // attachments-only `producerTargets === 3` that leg B's 3-vs-2 comparison needs.
 //
+// ── WHAT CHANGED AFTER THE BATCH-944 FIRST RUN (CO-32) ───────────────────────
+//
+// The first run's leg B core was green 15/15 and stands. Its VISUAL numbers and
+// its whole leg C / leg D were instrument artifacts of ONE mechanism, now fixed
+// here and documented in `lib/cloud-refresh-skip.mjs`: `?offline=true` forces
+// `requestRenderMode: true`, the clock is pinned, and Batch 942 restored the
+// temporal resolve — so once the cloud lane converges, `scene.render(t)`
+// executes NOTHING and the published counters freeze. Every window in this
+// probe counted render calls, and render calls had stopped being frames.
+//
+//   1. PER-PHASE STATIONARITY GATES. Each captured state (off /
+//      attachments-only / consume / consume+8) now converges under its OWN
+//      bounded stationarity gate — two screenshots `STATIONARITY_GAP_EXECUTES`
+//      REAL executes apart must be byte-equal — before its screenshot counts. A
+//      diff is marked `interpretable` only when BOTH endpoints converged. The
+//      Batch-944 `off → attachments` figure of 34.5% against a 0.0000%
+//      same-state floor was exactly this: the off capture was taken ~21 frames
+//      in, mid-convergence, and the floor pair was taken converged.
+//
+//   2. RESIZE. The Batch-944 leg C recorded "the resize never took". The report
+//      refutes that: `canvasSize` read 1024x640 while the attachments stayed
+//      400x250 at generation 1. The viewport change DID reach the canvas; the
+//      probe never waited for the ENGINE to act on it, because `until:
+//      "consumed"` was ALREADY TRUE in the pre-resize state and its coherence
+//      check was ALREADY SATISFIED by the pre-resize numbers, so the phase
+//      returned after one render call carrying a stale snapshot. (The survival
+//      probe's rider "worked" by luck: its frozen state had `liveBytes === 0`,
+//      which failed coherence and forced two more frames.) The repair is
+//      condition-based: wait for the canvas backing store to CHANGE, then run a
+//      `until: "resized"` window whose arrival requires the attachment dims to
+//      differ from the pre-resize dims AND the generation to have advanced —
+//      a condition the stale state cannot satisfy.
+//
+//   3. LEG D KEEP-LIVE + TIMING ARM. All ten windows reported
+//      `attemptedFrameCount: 0` — the profiler was armed and never saw a frame
+//      — and exactly the five A-windows "held their arm" because the frozen
+//      snapshot was an A-state snapshot. Every span now keeps the lane live,
+//      the timestamp surface is re-armed per window immediately before the
+//      measured span, and a window whose TIMING arm did not hold is
+//      DISCARDED-AND-NAMED rather than folded into a median.
+//
 // INSTRUMENT DOCTRINE INHERITED FROM THE C13-09 CERTIFIED RUN (Batch 936):
 //   * Canvas pixels come from Playwright ELEMENT SCREENSHOTS. An in-page
 //     `drawImage` from a WebGPU canvas copies transparent black even in the
@@ -69,7 +110,7 @@
 //   * The published cloud counters lag cache truth by 1-2 frames (resident
 //     figures publish at frame start). Every counter read goes through a
 //     BOUNDED consistency window and records the observed latency
-//     (`publishLagFrames`); a counter that never publishes still fails at the
+//     (`publishLagExecutes`); a counter that never publishes still fails at the
 //     bound rather than being waited for forever.
 //   * Readiness gates on `marchPixels > 0`, never on a fixed warm-up count —
 //     the async noise bake races fixed counts.
@@ -116,6 +157,14 @@ import {
   readPassTiming,
   summarize,
 } from "./lib/cloud-reconstruction-consume.mjs";
+import {
+  REFRESH_SKIP_BOUNDS,
+  classifyExecuteWindow,
+  diffInterpretable,
+  foldStationarity,
+  renderCallBudget,
+  starvedWindowReasons,
+} from "./lib/cloud-refresh-skip.mjs";
 
 const EXIT = Object.freeze({
   PASS: 0,
@@ -129,8 +178,10 @@ const PERF = process.argv.includes("--perf");
 const OUTPUT_DIR =
   "Tools/visual-regression/output/cloud-reconstruction-consume";
 const BYTES_PER_TEXEL_OWNED = 24;
-const PHASE_FRAMES = 24;
-const PUBLISH_LAG_MAX = 4;
+const PHASE_EXECUTES = 24;
+const PUBLISH_LAG_MAX = REFRESH_SKIP_BOUNDS.publishLagExecutes;
+const STATIONARITY_GAP_EXECUTES = REFRESH_SKIP_BOUNDS.stationarityGapExecutes;
+const STATIONARITY_MAX_ROUNDS = REFRESH_SKIP_BOUNDS.stationarityMaxRounds;
 const VIEWPORT = { width: 800, height: 500 };
 const RESIZED = { width: 1024, height: 640 };
 const PERF_ITERATIONS = Number(process.env.C13_10_PERF_ITERATIONS ?? 5);
@@ -141,18 +192,21 @@ const PERF_MEASURE_FRAMES = Math.max(
 const PERF_WARM_FRAMES = 24;
 const PERF_VERIFY_FRAMES = 8;
 
-// Bounded frame budgets for every `until` condition. Nothing in this probe
-// loops without one.
+// Bounded EXECUTE budgets for every `until` condition. Nothing in this probe
+// loops without one, and every one of them is denominated in engine executes
+// rather than in render calls — see `lib/cloud-refresh-skip.mjs`.
 const UNTIL_LIMITS = Object.freeze({
   produced: 60,
   consumed: 90,
   released: 12,
   notEmitting: 60,
+  resized: 30,
 });
 
-// Budget: legs B+C ≈ 600 readiness + ~10 bounded phases ≤ 90 frames each;
-// leg D ≈ 2 × iterations × (24 warm + 60 measured) frames. At 24 iterations
-// that is ~4000 frames, so the watchdog only ever fires on a driver hang.
+// Budget: legs B+C ≈ 600 readiness + ~10 bounded phases ≤ 90 executes each +
+// four stationarity gates ≤ 64 executes each; leg D ≈ 2 × iterations ×
+// (24 warm + 8 verify + 60 measured) executes. At 24 iterations that is ~4500
+// frames, so the watchdog only ever fires on a driver hang.
 const WATCHDOG_MS = PERF ? 1_200_000 : 600_000;
 const watchdog = setTimeout(() => {
   console.error(
@@ -205,6 +259,12 @@ async function openPage(browser, viewport) {
  * probe (same camera, clock, deck and tier) so the two runs are comparable:
  * "low" is T1, the half-resolution TEMPORAL tier, which is the only shape in
  * which the march can emit AND the resolve can consume.
+ *
+ * The readiness loop is itself kept live, and the return records the two facts
+ * the keep-live derivation rests on: this page really is in `requestRenderMode`
+ * (so the fix is addressing the mechanism that exists), and snapshot mode is
+ * NOT enabled (so `requestRender()`'s only side effect beyond the gate flag —
+ * `markDirty` on a FROZEN snapshot — is provably unreachable).
  */
 async function setupToReady(page) {
   return page.evaluate(async () => {
@@ -231,6 +291,7 @@ async function setupToReady(page) {
     let readinessFrames = 0;
     let ready = false;
     for (; readinessFrames < 600; readinessFrames++) {
+      scene.requestRender();
       scene.render(frameTime);
       const snap =
         scene._context?.getRendererStatistics?.()?.volumetricClouds ?? null;
@@ -253,12 +314,19 @@ async function setupToReady(page) {
       tilesLoaded: scene.globe.tilesLoaded,
       halfResActive: snap?.raymarch?.halfResActive ?? null,
       marchPixels: snap?.raymarch?.pixelsDispatched ?? null,
+      executes: snap?.frames ?? null,
+      // The keep-live premise, read back rather than assumed.
+      requestRenderMode: scene.requestRenderMode === true,
+      maximumRenderTimeChange: scene.maximumRenderTimeChange ?? null,
+      snapshotModeEnabled: scene.snapshotMode?.enabled === true,
+      snapshotModeFrozen: scene.snapshotMode?.isFrozen === true,
       commands: {
         attachments:
           typeof window.CesiumDebug?.cloudReconstructionAttachments ===
           "function",
         reconstruction:
           typeof window.CesiumDebug?.cloudReconstruction === "function",
+        gpuPassCost: typeof window.CesiumDebug?.gpuPassCost === "function",
       },
     };
   });
@@ -274,24 +342,81 @@ async function setQuality(page, quality) {
 }
 
 /**
- * Optionally flip the two opt-ins, then render.
+ * Pump KEPT-LIVE render calls until the canvas backing store leaves the size it
+ * is at now, then report what it landed on.
  *
- * `frames` renders a fixed count. `until` renders until the named arrival
- * condition holds (each with its own BOUNDED frame budget), then keeps
- * rendering through a small consistency window until the published counters
- * agree with each other — the 1-2 frame publish lag the C13-09 run measured —
- * recording the observed `publishLagFrames`. Counters are read in the SAME TASK
- * as the final render.
+ * `Viewer.prototype.resize` is subscribed to `scene.postUpdate`, which fires
+ * OUTSIDE the `shouldRender` block — so the first render call after a viewport
+ * change reconfigures the canvas and calls `requestRender()` for the NEXT
+ * frame. Waiting on the CHANGE rather than on an expected number keeps this
+ * device-pixel-ratio agnostic.
  */
-async function phase(page, { toggle = null, frames = 0, until = null }) {
+async function awaitCanvasChange(page, previous) {
+  const callBudget = renderCallBudget(UNTIL_LIMITS.resized);
   return page.evaluate(
+    async ({ previous, callBudget }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const scene = window.viewer.scene;
+      const frameTime = C.JulianDate.fromIso8601("2026-06-21T18:20:00Z");
+      let renderCalls = 0;
+      let changed = false;
+      for (; renderCalls < callBudget;) {
+        scene.requestRender();
+        scene.render(frameTime);
+        renderCalls++;
+        if (
+          scene.canvas.width !== previous.width ||
+          scene.canvas.height !== previous.height
+        ) {
+          changed = true;
+          break;
+        }
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      return {
+        changed,
+        renderCalls,
+        width: scene.canvas.width,
+        height: scene.canvas.height,
+      };
+    },
+    { previous, callBudget },
+  );
+}
+
+/**
+ * Optionally flip the two opt-ins, then render KEPT-LIVE frames.
+ *
+ * `executes` renders until that many ENGINE EXECUTES have happened. `until`
+ * renders until the named arrival condition holds (each with its own BOUNDED
+ * execute budget), then keeps rendering through a small consistency window
+ * until the published counters agree with each other — the 1-2 frame publish
+ * lag the C13-09 run measured — recording the observed `publishLagExecutes`.
+ * Counters are read in the SAME TASK as the final render.
+ *
+ * ★ EXECUTES, NOT RENDER CALLS. `volumetricClouds.frames` is bumped by
+ * `resetCloudFrameCounters` at the top of every `executeProceduralClouds`, so
+ * it is the only counter that distinguishes a frame from a refresh-skipped
+ * no-op. The render-call budget survives purely as a loop bound, and a window
+ * that exhausts it without earning its executes is classified STARVED —
+ * structural, never a finding.
+ */
+async function phase(
+  page,
+  { label = "phase", toggle = null, executes = 0, until = null, expect = null },
+) {
+  const executeBudget =
+    until === null ? Math.max(1, executes) : UNTIL_LIMITS[until];
+  const callBudget = renderCallBudget(executeBudget);
+  const raw = await page.evaluate(
     async ({
       toggle,
-      frames,
       until,
+      expect,
       passNames,
       bytesPerTexel,
-      limits,
+      executeBudget,
+      callBudget,
       publishLagMax,
     }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
@@ -316,6 +441,13 @@ async function phase(page, { toggle = null, frames = 0, until = null }) {
 
       const snapNow = () =>
         scene._context?.getRendererStatistics?.()?.volumetricClouds ?? null;
+      // ★ KEEP-LIVE. Neither debug toggle above calls `requestRender()`, and
+      // under `requestRenderMode` a quiescent scene would swallow every render
+      // call that follows — including the ones meant to APPLY the toggle.
+      const renderLive = () => {
+        scene.requestRender();
+        scene.render(frameTime);
+      };
       const arrived = (snap) => {
         const att = snap?.reconstruction?.attachments;
         const em = snap?.reconstruction?.emission;
@@ -324,6 +456,18 @@ async function phase(page, { toggle = null, frames = 0, until = null }) {
         if (until === "consumed") return em.consumed === true;
         if (until === "released") return att.liveBytes === 0;
         if (until === "notEmitting") return em.emitted === false;
+        if (until === "resized") {
+          // Deliberately NOT satisfiable by the pre-resize state: the dims must
+          // have moved AND the generation must have advanced past the value the
+          // caller measured before the viewport changed.
+          return (
+            att.width > 0 &&
+            att.height > 0 &&
+            (att.width !== expect?.previousWidth ||
+              att.height !== expect?.previousHeight) &&
+            att.generation > (expect?.previousGeneration ?? -1)
+          );
+        }
         return true;
       };
       const coherent = (snap) => {
@@ -342,32 +486,44 @@ async function phase(page, { toggle = null, frames = 0, until = null }) {
             bytesExact
           );
         }
+        if (until === "resized") {
+          return arrived(snap) && bytesExact && em.consumed === true;
+        }
         return arrived(snap);
       };
 
-      const maxFrames = until === null ? Math.max(1, frames) : limits[until];
-      let framesRun = 0;
-      let conditionMet = until === null;
+      const executesAtStart = snapNow()?.frames ?? 0;
+      let renderCalls = 0;
+      let executesRun = 0;
+      let conditionMet = false;
       let snap = null;
-      for (; framesRun < maxFrames;) {
-        scene.render(frameTime);
-        framesRun++;
+      for (; renderCalls < callBudget && executesRun < executeBudget;) {
+        renderLive();
+        renderCalls++;
         snap = snapNow();
+        executesRun = (snap?.frames ?? executesAtStart) - executesAtStart;
         if (until !== null && arrived(snap)) {
           conditionMet = true;
           break;
         }
         await new Promise((r) => requestAnimationFrame(r));
       }
+      // A fixed-execute phase "arrives" by spending its whole budget — so a
+      // starved one is classified starved instead of quietly reading green.
+      if (until === null) {
+        conditionMet = executesRun >= executeBudget;
+      }
 
-      let publishLagFrames = 0;
+      let publishLagExecutes = 0;
       if (conditionMet) {
-        for (; publishLagFrames < publishLagMax; publishLagFrames++) {
+        for (; publishLagExecutes < publishLagMax; publishLagExecutes++) {
           if (coherent(snap)) break;
           await new Promise((r) => requestAnimationFrame(r));
-          scene.render(frameTime);
+          renderLive();
+          renderCalls++;
           snap = snapNow();
         }
+        executesRun = (snap?.frames ?? executesAtStart) - executesAtStart;
       }
 
       const att = snap?.reconstruction?.attachments ?? null;
@@ -382,10 +538,11 @@ async function phase(page, { toggle = null, frames = 0, until = null }) {
         .sort();
       return {
         toggleResult,
-        framesRun,
+        renderCalls,
+        executesRun,
         conditionMet,
         coherent: coherent(snap),
-        publishLagFrames,
+        publishLagExecutes,
         marchPixels: snap?.raymarch?.pixelsDispatched ?? null,
         halfResActive: snap?.raymarch?.halfResActive ?? null,
         attachments: att
@@ -414,20 +571,90 @@ async function phase(page, { toggle = null, frames = 0, until = null }) {
     },
     {
       toggle,
-      frames,
       until,
+      expect,
       passNames: PERF_PASS_NAMES,
       bytesPerTexel: BYTES_PER_TEXEL_OWNED,
-      limits: UNTIL_LIMITS,
+      executeBudget,
+      callBudget,
       publishLagMax: PUBLISH_LAG_MAX,
     },
   );
+  return {
+    ...raw,
+    ...classifyExecuteWindow({
+      conditionMet: raw.conditionMet,
+      executesRun: raw.executesRun,
+      renderCalls: raw.renderCalls,
+      executeBudget,
+      renderCallBudget: callBudget,
+    }),
+    label,
+    until,
+  };
 }
 
 async function screenshotCanvas(page) {
   return page.locator(".cesium-widget canvas").first().screenshot({
     type: "png",
   });
+}
+
+/**
+ * Converge one state to its OWN byte-stationary fixed point, then capture it.
+ *
+ * ★ THE PRECONDITION IS PER STATE. The Batch-944 run diffed a converged
+ * attachments-only capture against an `off` capture taken ~21 executes in, and
+ * read 34.5% — a number that describes where the temporal history happened to
+ * be, not what the flag did. Each state is now given rounds of
+ * `STATIONARITY_GAP_EXECUTES` real executes until two consecutive captures are
+ * byte-equal, bounded at `STATIONARITY_MAX_ROUNDS`; a state that never
+ * converges is NAMED and its diffs are marked not interpretable.
+ */
+async function captureStationary(page, label) {
+  const rounds = [];
+  let previousPng = await screenshotCanvas(page);
+  let previousSha = sha(previousPng);
+  let executesObserved = 0;
+  for (let round = 0; round < STATIONARITY_MAX_ROUNDS; round++) {
+    const gap = await phase(page, {
+      label: `${label}:stationarity:${round}`,
+      executes: STATIONARITY_GAP_EXECUTES,
+    });
+    const png = await screenshotCanvas(page);
+    const digest = sha(png);
+    const equal = digest === previousSha;
+    executesObserved = gap.executesRun;
+    rounds.push({
+      round,
+      executesRun: gap.executesRun,
+      renderCalls: gap.renderCalls,
+      outcome: gap.outcome,
+      equal,
+    });
+    if (equal) {
+      return {
+        label,
+        png,
+        sha: digest,
+        stationary: true,
+        rounds,
+        executesObserved,
+        windows: rounds.length,
+      };
+    }
+    previousPng = png;
+    previousSha = digest;
+  }
+  return {
+    label,
+    png: previousPng,
+    sha: previousSha,
+    stationary: false,
+    rounds,
+    executesObserved,
+    windows: rounds.length,
+  };
 }
 
 /** Decode two PNGs on a scratch page and return the mismatched-pixel fraction. */
@@ -481,10 +708,26 @@ async function pixelDiff(page, pngA, pngB) {
  *   2. VERIFY — bounded, and every frame's verdicts are sampled. This is what
  *      makes the window's number attributable: a timing measured while the
  *      flag was still flipping is a number with the wrong label.
- *   3. MEASURE — profiler reset, then exactly `measureFrames` renders at a
- *      pinned clock and NO snapshot reads. `getRendererStatistics()` is
- *      allocation-bearing by design, and per-frame snapshotting inside a timing
- *      window times the instrument.
+ *   3. MEASURE — timing surface RE-ARMED (which also resets the profiler), then
+ *      exactly `measureFrames` kept-live renders at a pinned clock and NO
+ *      snapshot reads. `getRendererStatistics()` is allocation-bearing by
+ *      design, and per-frame snapshotting inside a timing window times the
+ *      instrument.
+ *
+ * ★ EVERY SPAN IS KEPT LIVE. On the Batch-944 run all ten windows reported
+ * `attemptedFrameCount: 0`: the profiler was armed correctly and simply never
+ * saw a frame, because a converged cloud lane under `requestRenderMode` makes
+ * `scene.render(t)` a no-op. `scene.requestRender()` before each render is the
+ * minimal invalidation that fixes it — it touches only the `shouldRender` gate,
+ * so the set of GPU passes encoded on a rendered frame is unchanged and the
+ * timings keep their meaning. See `lib/cloud-refresh-skip.mjs` for the full
+ * derivation and the rejected alternatives.
+ *
+ * ★ THE TIMING ARM IS RE-VERIFIED AFTER THE FACT. `gpuPassCost(true)` is issued
+ * at window start (so timestamp resources are built during WARM, not inside the
+ * measured span) and again immediately before MEASURE (to reset). The results
+ * are then read back: `enabled`, and `attemptedFrameCount` — the count of
+ * frames the profiler ARMED, which is 0 exactly when the lane was skipped.
  */
 async function measurePerfWindow(page, arm) {
   return page.evaluate(
@@ -503,19 +746,30 @@ async function measurePerfWindow(page, arm) {
       const frameTime = C.JulianDate.fromIso8601("2026-06-21T18:20:00Z");
       const snapNow = () =>
         ctx?.getRendererStatistics?.()?.volumetricClouds ?? null;
+      const renderLive = () => {
+        scene.requestRender();
+        scene.render(frameTime);
+      };
 
       // An absent debug command means the lane cannot see its subject, which is
       // STRUCTURAL — so it is reported, not thrown.
       const commandsPresent =
         typeof dbg?.cloudReconstructionAttachments === "function" &&
-        typeof dbg?.cloudReconstruction === "function";
+        typeof dbg?.cloudReconstruction === "function" &&
+        typeof dbg?.gpuPassCost === "function";
       if (commandsPresent) {
         dbg.cloudReconstructionAttachments(true);
         dbg.cloudReconstruction(arm !== armA);
+        // Arm BEFORE the warm span so the query sets and readback buffers are
+        // allocated outside the measured window.
+        dbg.gpuPassCost(true);
       }
+      const armedAtStart =
+        ctx?.timestampProfiler?.getResults?.()?.enabled === true;
 
+      const executesAtStart = snapNow()?.frames ?? 0;
       for (let i = 0; i < warmFrames; i++) {
-        scene.render(frameTime);
+        renderLive();
         await new Promise((r) => requestAnimationFrame(r));
       }
 
@@ -524,7 +778,7 @@ async function measurePerfWindow(page, arm) {
       let marchActiveFrames = 0;
       const producerTargetsSeen = [];
       for (let i = 0; i < verifyFrames; i++) {
-        scene.render(frameTime);
+        renderLive();
         const snap = snapNow();
         const em = snap?.reconstruction?.emission ?? null;
         if (em?.emitted === true) emittedFrames++;
@@ -536,15 +790,23 @@ async function measurePerfWindow(page, arm) {
         await new Promise((r) => requestAnimationFrame(r));
       }
 
+      // Re-arm + reset immediately before the measured span. `gpuPassCost(true)`
+      // resets the profiler and requests a render; `profiler.reset()` alone
+      // would leave a dropped arm undetected.
+      if (commandsPresent) {
+        dbg.gpuPassCost(true);
+      }
       const profiler = ctx?.timestampProfiler ?? null;
-      profiler?.reset?.();
+      const reArmed = profiler?.getResults?.()?.enabled === true;
       for (let i = 0; i < measureFrames; i++) {
-        scene.render(frameTime);
+        renderLive();
         await new Promise((r) => requestAnimationFrame(r));
       }
       // Same-task read of the final measured frame's verdicts.
-      scene.render(frameTime);
+      renderLive();
       const finalSnap = snapNow();
+      const executesRun =
+        (finalSnap?.frames ?? executesAtStart) - executesAtStart;
 
       const device = ctx?.device ?? null;
       if (device) {
@@ -570,6 +832,14 @@ async function measurePerfWindow(page, arm) {
       return {
         arm,
         commandsPresent,
+        timingArm: {
+          armedAtStart,
+          reArmed,
+          enabledAfter: raw?.enabled === true,
+          attemptedFrameCount: raw?.attemptedFrameCount ?? null,
+          frameCount: raw?.frameCount ?? null,
+          emptyFrameCount: raw?.emptyFrameCount ?? null,
+        },
         verify: {
           frames: verifyFrames,
           emittedFrames,
@@ -577,6 +847,7 @@ async function measurePerfWindow(page, arm) {
           marchActiveFrames,
           producerTargetsSeen,
         },
+        executesRun,
         final: {
           emission: finalSnap?.reconstruction?.emission ?? null,
           produced: finalSnap?.reconstruction?.attachments?.produced ?? null,
@@ -616,6 +887,44 @@ async function measurePerfWindow(page, arm) {
   );
 }
 
+/**
+ * Did this window's TIMING arm hold for its whole measured span?
+ *
+ * DERIVED, not chosen: with keep-live in place one render call is one engine
+ * execute, and the profiler arms once per rendered frame, so a window that
+ * actually ran its measured span must report `attemptedFrameCount >=
+ * measureFrames`. A window reporting 0 (the entire Batch-944 leg D) never saw a
+ * frame at all. `sampleLedgerBalanced` is the profiler's own C11-140 guarantee
+ * that no sample vanished, and `frameCount > 0` is the C11-146 rule that a
+ * zeroed block is not a measurement.
+ *
+ * @param {object} window One measured window.
+ * @returns {{ok: boolean, reason: string|null}} Attributability verdict.
+ */
+function timingArmHeld(window) {
+  const results = window?.results ?? null;
+  const timing = window?.timingArm ?? null;
+  if (window?.commandsPresent !== true) {
+    return { ok: false, reason: "the debug commands were absent" };
+  }
+  if (!results || results.enabled !== true || timing?.reArmed !== true) {
+    return { ok: false, reason: "the profiler was not armed for this window" };
+  }
+  if (!(results.attemptedFrameCount >= PERF_MEASURE_FRAMES)) {
+    return {
+      ok: false,
+      reason: `the profiler armed only ${results.attemptedFrameCount} of ${PERF_MEASURE_FRAMES} measured frames`,
+    };
+  }
+  if (results.sampleLedgerBalanced !== true) {
+    return { ok: false, reason: "the GPU sample ledger did not close" };
+  }
+  if (!(results.frameCount > 0)) {
+    return { ok: false, reason: "no frame resolved a timestamp" };
+  }
+  return { ok: true, reason: null };
+}
+
 const browser = await chromium.launch({
   channel: "msedge",
   headless: true,
@@ -625,7 +934,8 @@ const browser = await chromium.launch({
 const report = {
   base: BASE,
   perfRequested: PERF,
-  phaseFrames: PHASE_FRAMES,
+  phaseExecutes: PHASE_EXECUTES,
+  refreshSkipBounds: REFRESH_SKIP_BOUNDS,
   perf: null,
   predicates: {},
   structuralReasons: [],
@@ -653,36 +963,123 @@ try {
       "CesiumDebug.cloudReconstruction is ABSENT from this build — the C13-10 legs cannot be driven",
     );
   }
+  // The keep-live derivation assumes `requestRender()`'s ONLY effect beyond the
+  // gate flag is unreachable. Read that back instead of assuming it.
+  if (readiness.snapshotModeEnabled || readiness.snapshotModeFrozen) {
+    structuralReasons.push(
+      `KEEP-LIVE PREMISE BROKEN — snapshot mode is enabled=${readiness.snapshotModeEnabled} frozen=${readiness.snapshotModeFrozen}, so scene.requestRender() also marks a snapshot dirty and is no longer a pure gate flip`,
+    );
+  }
+
+  const windowLedger = [];
+  const track = (window) => {
+    windowLedger.push({
+      label: window.label,
+      outcome: window.outcome,
+      executesRun: window.executesRun,
+      executeBudget: window.executeBudget,
+      renderCalls: window.renderCalls,
+      renderCallBudget: window.renderCallBudget,
+    });
+    return window;
+  };
 
   // (B0) DEFAULT state: nothing toggled. Only the `requested === false` half of
   // Leg 0 is claimed here; the cross-build byte identity is the attachments
   // probe's arm.
-  const off = await phase(main.page, { frames: PHASE_FRAMES });
-  const pngOff = await screenshotCanvas(main.page);
+  const off = track(
+    await phase(main.page, { label: "off", executes: PHASE_EXECUTES }),
+  );
+  const offCapture = await captureStationary(main.page, "off");
 
   // (B1) ATTACHMENTS-ONLY — C13-09's state, which must SURVIVE C13-10. This is
   // also the comparison state leg B's 3 → 2 claim is measured against, and it
   // is measured IN THIS PAGE so no cross-page fixed point is involved.
-  const attachmentsOnly = await phase(main.page, {
-    toggle: { attachments: true, reconstruction: false },
-    until: "produced",
-  });
-  const attachmentsOnlySettled = await phase(main.page, {
-    frames: PHASE_FRAMES,
-  });
-  const pngAttachments = await screenshotCanvas(main.page);
+  const attachmentsOnly = track(
+    await phase(main.page, {
+      label: "attachments-only",
+      toggle: { attachments: true, reconstruction: false },
+      until: "produced",
+    }),
+  );
+  const attachmentsOnlySettled = track(
+    await phase(main.page, {
+      label: "attachments-only:settled",
+      executes: PHASE_EXECUTES,
+    }),
+  );
+  const attachmentsCapture = await captureStationary(
+    main.page,
+    "attachments-only",
+  );
 
   // (B2) CONSUME ON — the first consumer the attachments have ever had.
-  const consume = await phase(main.page, {
-    toggle: { reconstruction: true },
-    until: "consumed",
-  });
-  const consumeSettled = await phase(main.page, { frames: PHASE_FRAMES });
-  const pngConsume = await screenshotCanvas(main.page);
+  const consume = track(
+    await phase(main.page, {
+      label: "consume",
+      toggle: { reconstruction: true },
+      until: "consumed",
+    }),
+  );
+  const consumeSettled = track(
+    await phase(main.page, {
+      label: "consume:settled",
+      executes: PHASE_EXECUTES,
+    }),
+  );
+  const consumeCapture = await captureStationary(main.page, "consume");
   // Same-state, same-page self-diff: this page's own frame-to-frame floor, so
   // the recorded consume delta is interpretable rather than a bare number.
-  await phase(main.page, { frames: 8 });
+  const consumeFloorWindow = track(
+    await phase(main.page, {
+      label: "consume:self-floor",
+      executes: STATIONARITY_GAP_EXECUTES,
+    }),
+  );
+  const pngOff = offCapture.png;
+  const pngAttachments = attachmentsCapture.png;
+  const pngConsume = consumeCapture.png;
   const pngConsumeAgain = await screenshotCanvas(main.page);
+
+  const stationarity = foldStationarity([
+    {
+      label: "off",
+      stationary: offCapture.stationary,
+      rounds: offCapture.rounds,
+      executesObserved: offCapture.executesObserved,
+    },
+    {
+      label: "attachments-only",
+      stationary: attachmentsCapture.stationary,
+      rounds: attachmentsCapture.rounds,
+      executesObserved: attachmentsCapture.executesObserved,
+    },
+    {
+      label: "consume",
+      stationary: consumeCapture.stationary,
+      rounds: consumeCapture.rounds,
+      executesObserved: consumeCapture.executesObserved,
+    },
+    {
+      label: "consume+8",
+      stationary: sha(pngConsume) === sha(pngConsumeAgain),
+      rounds: [{ round: 0, executesRun: consumeFloorWindow.executesRun }],
+      executesObserved: consumeFloorWindow.executesRun,
+    },
+  ]);
+  report.stationarity = {
+    gapExecutes: STATIONARITY_GAP_EXECUTES,
+    maxRounds: STATIONARITY_MAX_ROUNDS,
+    stationary: stationarity.stationary,
+    captures: {
+      off: { ...offCapture, png: undefined },
+      attachments: { ...attachmentsCapture, png: undefined },
+      consume: { ...consumeCapture, png: undefined },
+    },
+  };
+  for (const reason of stationarity.reasons) {
+    structuralReasons.push(reason);
+  }
 
   report.legB = {
     off,
@@ -693,15 +1090,83 @@ try {
   };
 
   // ── LEG C — lifecycle under consume-on ──────────────────────────────────
+  // The pre-resize attachment state is what the `resized` arrival condition is
+  // measured AGAINST; without it the stale snapshot satisfies the condition on
+  // the first render call, which is exactly what happened at Batch 944. It is
+  // read from the FRESHEST pre-resize window, and a degenerate reading (zero
+  // dims or zero generation, i.e. a frame the producer did not run) is NAMED —
+  // the condition `width !== 0 && generation > 0` is satisfiable by the stale
+  // state, so a degenerate baseline would silently restore the defect.
+  const preResize = consumeFloorWindow.attachments ?? consume.attachments;
+  const beforeResize = {
+    previousWidth: preResize?.width ?? 0,
+    previousHeight: preResize?.height ?? 0,
+    previousGeneration: preResize?.generation ?? 0,
+  };
+  if (
+    !(beforeResize.previousWidth > 0) ||
+    !(beforeResize.previousGeneration > 0)
+  ) {
+    structuralReasons.push(
+      `RESIZE BASELINE DEGENERATE — the pre-resize attachment state read ${beforeResize.previousWidth}x${beforeResize.previousHeight} gen ${beforeResize.previousGeneration}; the resize arrival condition cannot discriminate against it`,
+    );
+  }
   await main.page.setViewportSize(RESIZED);
-  const resizeUp = await phase(main.page, { until: "consumed" });
+  const canvasUp = await awaitCanvasChange(main.page, {
+    width: consumeFloorWindow.canvasSize?.width ?? VIEWPORT.width,
+    height: consumeFloorWindow.canvasSize?.height ?? VIEWPORT.height,
+  });
+  const resizeUp = track(
+    await phase(main.page, {
+      label: "resize-up",
+      until: "resized",
+      expect: beforeResize,
+    }),
+  );
+  const beforeResizeBack = {
+    previousWidth: resizeUp.attachments?.width ?? 0,
+    previousHeight: resizeUp.attachments?.height ?? 0,
+    previousGeneration: resizeUp.attachments?.generation ?? 0,
+  };
   await main.page.setViewportSize(VIEWPORT);
-  const resizeBack = await phase(main.page, { until: "consumed" });
-  await setQuality(main.page, "high");
-  const tierHigh = await phase(main.page, { until: "notEmitting" });
-  await setQuality(main.page, "low");
-  const tierLow = await phase(main.page, { until: "consumed" });
-  report.legC = { resizeUp, resizeBack, tierHigh, tierLow };
+  const canvasBack = await awaitCanvasChange(main.page, {
+    width: canvasUp.width,
+    height: canvasUp.height,
+  });
+  const resizeBack = track(
+    await phase(main.page, {
+      label: "resize-back",
+      until: "resized",
+      expect: beforeResizeBack,
+    }),
+  );
+  const tierHighSet = await setQuality(main.page, "high");
+  const tierHigh = track(
+    await phase(main.page, { label: "tier-high", until: "notEmitting" }),
+  );
+  const tierLowSet = await setQuality(main.page, "low");
+  const tierLow = track(
+    await phase(main.page, { label: "tier-low", until: "consumed" }),
+  );
+  report.legC = {
+    canvasUp,
+    canvasBack,
+    resizeUp,
+    resizeBack,
+    tierHigh,
+    tierLow,
+    tierReadback: { high: tierHighSet, low: tierLowSet },
+  };
+  if (!canvasUp.changed || !canvasBack.changed) {
+    structuralReasons.push(
+      `RESIZE PLUMBING — the canvas backing store did not change within its bound (up=${canvasUp.changed} ${canvasUp.width}x${canvasUp.height}, back=${canvasBack.changed} ${canvasBack.width}x${canvasBack.height}); the resize legs did not see their subject`,
+    );
+  }
+
+  for (const reason of starvedWindowReasons(windowLedger)) {
+    structuralReasons.push(reason);
+  }
+  report.windowLedger = windowLedger;
 
   const gateMain = await collectGateErrors(main.page);
   report.gateMain = gateMain;
@@ -725,6 +1190,29 @@ try {
     offVsConsume: await pixelDiff(scratch, pngOff, pngConsume),
     consumeSelfFloor: await pixelDiff(scratch, pngConsume, pngConsumeAgain),
   };
+  // A diff is only interpretable when BOTH of its endpoints converged — the
+  // Batch-944 34.5% was a converged capture minus a mid-convergence one.
+  const interpretable = stationarity.stationary;
+  diffs.offVsAttachments.interpretable = diffInterpretable(
+    interpretable,
+    "off",
+    "attachments-only",
+  );
+  diffs.attachmentsVsConsume.interpretable = diffInterpretable(
+    interpretable,
+    "attachments-only",
+    "consume",
+  );
+  diffs.offVsConsume.interpretable = diffInterpretable(
+    interpretable,
+    "off",
+    "consume",
+  );
+  diffs.consumeSelfFloor.interpretable = diffInterpretable(
+    interpretable,
+    "consume",
+    "consume+8",
+  );
   await scratch.close().catch(() => {});
   report.hashes = {
     off: sha(pngOff),
@@ -785,12 +1273,29 @@ try {
     const gatePerf = await collectGateErrors(perfPage.page);
     await perfPage.page.close().catch(() => {});
 
-    // Per-arm summaries and PAIRED per-iteration deltas, per pass.
+    // A window whose TIMING arm did not hold is DISCARDED-AND-NAMED: it never
+    // enters a median, and it is reported by index and arm.
+    const armVerdicts = windows.map((w, index) => ({
+      index,
+      iteration: w.iteration,
+      arm: w.arm,
+      ...timingArmHeld(w),
+    }));
+    const discarded = armVerdicts.filter((v) => !v.ok);
+    const timedWindows = windows.filter((w, index) => armVerdicts[index].ok);
+    for (const verdict of discarded) {
+      structuralReasons.push(
+        `PERF WINDOW DISCARDED — window ${verdict.index} (iteration ${verdict.iteration}, ${verdict.arm}): ${verdict.reason}`,
+      );
+    }
+
+    // Per-arm summaries and PAIRED per-iteration deltas, per pass — built ONLY
+    // from windows whose timing arm held.
     const perPass = {};
     for (const name of PERF_PASS_NAMES) {
       const byArm = { [ARM_A]: [], [ARM_B]: [] };
       const pairs = new Map();
-      for (const w of windows) {
+      for (const w of timedWindows) {
         const timing = readPassTiming(w.results, name);
         const value = timing ? timing.avgMs : null;
         byArm[w.arm].push(value);
@@ -804,16 +1309,21 @@ try {
         paired: pairedDeltas([...pairs.values()]),
       };
     }
-    // Every window must have SEEN both named passes, or the medians above are
-    // built on a partial set.
-    const blindWindows = windows.filter(
+    // Every surviving window must have SEEN both named passes, or the medians
+    // above are built on a partial set.
+    const blindWindows = timedWindows.filter(
       (w) =>
         readPassTiming(w.results, PASS_MARCH) === null ||
         readPassTiming(w.results, PASS_PRODUCER) === null,
     );
-    if (windows.length > 0 && blindWindows.length > 0) {
+    if (timedWindows.length > 0 && blindWindows.length > 0) {
       structuralReasons.push(
-        `PERF ARM PARTIAL — ${blindWindows.length} of ${windows.length} windows produced no usable timing for one of the two named passes`,
+        `PERF ARM PARTIAL — ${blindWindows.length} of ${timedWindows.length} timed windows produced no usable timing for one of the two named passes`,
+      );
+    }
+    if (windows.length > 0 && timedWindows.length === 0) {
+      structuralReasons.push(
+        "PERF ARM BLIND — no window held its timing arm; NO occupancy number exists and none is quoted",
       );
     }
     // A window's number is attributable only if its declared arm held on EVERY
@@ -840,10 +1350,10 @@ try {
         `PERF ARM UNVERIFIED — only ${armsHeld} of ${windows.length} windows held their declared arm across every verify frame; those timings are not attributable`,
       );
     }
-    const ledgerClean = windows.every(
+    const ledgerClean = timedWindows.every(
       (w) => w.results?.sampleLedgerBalanced === true,
     );
-    if (windows.length > 0 && !ledgerClean) {
+    if (timedWindows.length > 0 && !ledgerClean) {
       structuralReasons.push(
         "PERF ARM LEDGER — at least one window's GPU sample ledger did not close; those timings under-report",
       );
@@ -856,6 +1366,9 @@ try {
       support,
       interleave,
       windowCount: windows.length,
+      timedWindowCount: timedWindows.length,
+      armVerdicts,
+      discardedWindowCount: discarded.length,
       armsHeld,
       ledgerClean,
       blindWindowCount: blindWindows.length,
@@ -970,35 +1483,38 @@ try {
 
   console.log("=== C13-10 EDGE ACCEPTANCE — march-emitted reconstruction ===");
   console.log(
-    `  readiness: ${readiness.readinessFrames} frames (march ${readiness.marchPixels}px halfRes=${readiness.halfResActive}) commands=${JSON.stringify(readiness.commands)}`,
+    `  readiness: ${readiness.readinessFrames} frames (march ${readiness.marchPixels}px halfRes=${readiness.halfResActive}) requestRenderMode=${readiness.requestRenderMode} snapshotMode=${readiness.snapshotModeEnabled}/${readiness.snapshotModeFrozen} commands=${JSON.stringify(readiness.commands)}`,
   );
   console.log(
-    `  OFF:        requested=${off.emission?.requested} liveBytes=${off.attachments?.liveBytes}`,
+    `  OFF:        requested=${off.emission?.requested} liveBytes=${off.attachments?.liveBytes} (${off.executesRun}/${off.executeBudget} executes, ${off.outcome})`,
   );
   console.log(
-    `  ATTACH-ONLY: produced=${attA?.produced} targets=${emA?.producerTargets} gen=${attA?.generation} liveBytes=${attA?.liveBytes} (${attA?.width}x${attA?.height}x24) emitted=${emA?.emitted} consumed=${emA?.consumed} lag=${attachmentsOnly.publishLagFrames}f`,
+    `  ATTACH-ONLY: produced=${attA?.produced} targets=${emA?.producerTargets} gen=${attA?.generation} liveBytes=${attA?.liveBytes} (${attA?.width}x${attA?.height}x24) emitted=${emA?.emitted} consumed=${emA?.consumed} lag=${attachmentsOnly.publishLagExecutes}e (${attachmentsOnly.executesRun} executes, ${attachmentsOnly.outcome})`,
   );
   console.log(
-    `  CONSUME:     requested=${emB?.requested} emitted=${emB?.emitted} consumed=${emB?.consumed} targets=${emB?.producerTargets} gen=${attB?.generation} liveBytes=${attB?.liveBytes} withinFrames=${consume.framesRun} lag=${consume.publishLagFrames}f`,
+    `  CONSUME:     requested=${emB?.requested} emitted=${emB?.emitted} consumed=${emB?.consumed} targets=${emB?.producerTargets} gen=${attB?.generation} liveBytes=${attB?.liveBytes} withinExecutes=${consume.executesRun} lag=${consume.publishLagExecutes}e (${consume.outcome})`,
   );
   console.log(
     `  pass topology: passCount ${attachmentsOnly.passCount} → ${consume.passCount}; march ${attachmentsOnly.passes[PASS_MARCH]}→${consume.passes[PASS_MARCH]}, producer ${attachmentsOnly.passes[PASS_PRODUCER]}→${consume.passes[PASS_PRODUCER]}, resolve ${attachmentsOnly.passes[PASS_RESOLVE]}→${consume.passes[PASS_RESOLVE]}, upscale ${attachmentsOnly.passes[PASS_UPSCALE]}→${consume.passes[PASS_UPSCALE]}`,
   );
   console.log(
+    `  STATIONARITY (${STATIONARITY_GAP_EXECUTES} executes/round, ≤${STATIONARITY_MAX_ROUNDS} rounds): off=${offCapture.stationary} in ${offCapture.windows} | attachments=${attachmentsCapture.stationary} in ${attachmentsCapture.windows} | consume=${consumeCapture.stationary} in ${consumeCapture.windows}`,
+  );
+  console.log(
     "  VISUAL (recorded, NO pass/fail bar this run — read the PNGs):",
   );
   console.log(
-    `    off→attachments ${pct(diffs.offVsAttachments.mismatchFraction)} | attachments→consume ${pct(diffs.attachmentsVsConsume.mismatchFraction)} | off→consume ${pct(diffs.offVsConsume.mismatchFraction)} | same-state floor ${pct(diffs.consumeSelfFloor.mismatchFraction)}`,
+    `    off→attachments ${pct(diffs.offVsAttachments.mismatchFraction)} [interpretable=${diffs.offVsAttachments.interpretable}] | attachments→consume ${pct(diffs.attachmentsVsConsume.mismatchFraction)} [interpretable=${diffs.attachmentsVsConsume.interpretable}] | off→consume ${pct(diffs.offVsConsume.mismatchFraction)} | same-state floor ${pct(diffs.consumeSelfFloor.mismatchFraction)}`,
   );
   console.log(
-    `  LEG C: resize ${attB?.width}x${attB?.height} gen ${attB?.generation} → ${attUp?.width}x${attUp?.height} gen ${attUp?.generation} (${resizeUp.framesRun}f, liveBytes=${attUp?.liveBytes}) → ${attBack?.width}x${attBack?.height} gen ${attBack?.generation} (${resizeBack.framesRun}f, liveBytes=${attBack?.liveBytes})`,
+    `  LEG C: canvas ${canvasUp.changed ? "changed" : "STUCK"} → ${canvasUp.width}x${canvasUp.height} in ${canvasUp.renderCalls} calls; attachments ${attB?.width}x${attB?.height} gen ${attB?.generation} → ${attUp?.width}x${attUp?.height} gen ${attUp?.generation} (${resizeUp.executesRun}e, liveBytes=${attUp?.liveBytes}, ${resizeUp.outcome}) → ${attBack?.width}x${attBack?.height} gen ${attBack?.generation} (${resizeBack.executesRun}e, liveBytes=${attBack?.liveBytes}, ${resizeBack.outcome})`,
   );
   console.log(
-    `    tier high: emitted=${tierHigh.emission?.emitted} consumed=${tierHigh.emission?.consumed} produced=${tierHigh.attachments?.produced} halfRes=${tierHigh.halfResActive} liveBytes=${tierHigh.attachments?.liveBytes} (resident by design) | back to low: emitted=${tierLow.emission?.emitted} consumed=${tierLow.emission?.consumed} within ${tierLow.framesRun}f`,
+    `    tier high (readback ${tierHighSet}): emitted=${tierHigh.emission?.emitted} consumed=${tierHigh.emission?.consumed} produced=${tierHigh.attachments?.produced} halfRes=${tierHigh.halfResActive} liveBytes=${tierHigh.attachments?.liveBytes} (resident by design) | back to low (readback ${tierLowSet}): emitted=${tierLow.emission?.emitted} consumed=${tierLow.emission?.consumed} within ${tierLow.executesRun}/${tierLow.executeBudget} executes (${tierLow.outcome})`,
   );
-  if (perf && perf.windowCount > 0) {
+  if (perf && perf.timedWindowCount > 0) {
     console.log(
-      `  LEG D (interleaved A/B, ${perf.interleave.iterations} iterations × 2 windows, ${PERF_WARM_FRAMES} warm + ${PERF_VERIFY_FRAMES} verify + ${PERF_MEASURE_FRAMES} measured frames each, orders ${perf.interleave.ordersSeen.join("+")}, maxRun ${perf.interleave.maxRun}, armsHeld ${perf.armsHeld}/${perf.windowCount}, ledgerClean ${perf.ledgerClean}):`,
+      `  LEG D (interleaved A/B, ${perf.interleave.iterations} iterations × 2 windows, ${PERF_WARM_FRAMES} warm + ${PERF_VERIFY_FRAMES} verify + ${PERF_MEASURE_FRAMES} measured frames each, orders ${perf.interleave.ordersSeen.join("+")}, maxRun ${perf.interleave.maxRun}, armsHeld ${perf.armsHeld}/${perf.windowCount}, timed ${perf.timedWindowCount}/${perf.windowCount}, discarded ${perf.discardedWindowCount}, ledgerClean ${perf.ledgerClean}):`,
     );
     for (const name of PERF_PASS_NAMES) {
       const row = perf.perPass[name];
@@ -1010,7 +1526,9 @@ try {
       "    DERIVATION (expectations, not bars): emitting march carries ~4 more live f32 → ≥ historical march; emitting producer skips up to 6 ray-ellipsoid intersections + 9 log-bearing estimator evaluations for 10 rg32float loads → expected CHEAPER. The upscale is the untouched drift control.",
     );
   } else if (PERF) {
-    console.log("  LEG D: NO WINDOWS MEASURED — see the structural reasons.");
+    console.log(
+      "  LEG D: NO ATTRIBUTABLE WINDOWS — see the structural reasons; no timing is quoted.",
+    );
   }
   console.log(`  predicates: ${JSON.stringify(p)}`);
   if (fold.failed.length) {

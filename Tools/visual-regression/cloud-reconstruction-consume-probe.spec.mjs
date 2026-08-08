@@ -362,17 +362,17 @@ test("D1 BOTH producerTargets states are measured, IN ONE PAGE", () => {
   // The attachments-only window is what makes 2 a MOVE rather than a number.
   pinWithMutant(
     flat,
-    /phase\(main\.page, \{ toggle: \{ attachments: true, reconstruction: false \}, until: "produced", \}\)/,
+    /phase\(main\.page, \{ label: "attachments-only", toggle: \{ attachments: true, reconstruction: false \}, until: "produced", \}\)/,
     (s) =>
       s.replace(
-        'phase(main.page, { toggle: { attachments: true, reconstruction: false }, until: "produced", })',
-        'phase(main.page, { until: "produced", })',
+        'phase(main.page, { label: "attachments-only", toggle: { attachments: true, reconstruction: false }, until: "produced", })',
+        'phase(main.page, { label: "attachments-only", until: "produced", })',
       ),
     "the attachments-only comparison window runs on the main page",
   );
   assert.match(
     flat,
-    /phase\(main\.page, \{ toggle: \{ reconstruction: true \}, until: "consumed", \}\)/,
+    /phase\(main\.page, \{ label: "consume", toggle: \{ reconstruction: true \}, until: "consumed", \}\)/,
     "the consume window must run on the SAME page — a second page has its own temporal fixed point",
   );
   for (const anchor of [
@@ -480,24 +480,37 @@ test("D5 readiness gates on marchPixels > 0, not on a frame count", () => {
 });
 
 test("D6 counters are read through a BOUNDED consistency window", () => {
-  assert.match(probeSource, /PUBLISH_LAG_MAX = 4;/);
+  // The bound is denominated in ENGINE EXECUTES and comes from the shared
+  // refresh-skip derivation — a render call under `requestRenderMode` is not
+  // a frame, which is what made this window expire against a frozen snapshot
+  // at Batch 944. See `lib/cloud-refresh-skip.mjs`.
+  assert.match(
+    probeSource,
+    /PUBLISH_LAG_MAX = REFRESH_SKIP_BOUNDS\.publishLagExecutes;/,
+  );
   pinWithMutant(
     flat,
-    /for \(; publishLagFrames < publishLagMax; publishLagFrames\+\+\) \{ if \(coherent\(snap\)\) break;/,
+    /for \(; publishLagExecutes < publishLagMax; publishLagExecutes\+\+\) \{ if \(coherent\(snap\)\) break;/,
     (s) =>
       s.replace(
-        "for (; publishLagFrames < publishLagMax; publishLagFrames++) { if (coherent(snap)) break;",
+        "for (; publishLagExecutes < publishLagMax; publishLagExecutes++) { if (coherent(snap)) break;",
         "while (!coherent(snap)) { ",
       ),
     "the publish-lag window is bounded and records its own latency",
   );
   assert.ok(
-    flat.includes("publishLagFrames,"),
+    flat.includes("publishLagExecutes,"),
     "the observed latency must be REPORTED, not just waited out",
   );
-  // Every `until` condition carries its own frame budget.
+  // Every `until` condition carries its own EXECUTE budget.
   assert.match(probeSource, /UNTIL_LIMITS = Object\.freeze\(\{/);
-  for (const key of ["produced", "consumed", "released", "notEmitting"]) {
+  for (const key of [
+    "produced",
+    "consumed",
+    "released",
+    "notEmitting",
+    "resized",
+  ]) {
     assert.match(
       probeSource,
       new RegExp(`${key}: \\d+,`),
@@ -512,25 +525,35 @@ test("D7 the perf window verifies its ARM held, outside the measured span", () =
   assert.ok(flat.includes("dbg.cloudReconstruction(arm !== armA)"));
   const measure = probeSource.slice(
     probeSource.indexOf("async function measurePerfWindow"),
-    probeSource.indexOf("const browser = await chromium.launch("),
+    probeSource.indexOf("function timingArmHeld"),
   );
-  // Three spans in order: warm (settle), verify (sample), measure (time).
+  // Three spans in order: warm (settle), verify (sample), measure (time). The
+  // measured span now opens on the RE-ARM (`gpuPassCost(true)`, which resets
+  // the profiler) rather than on a bare `profiler.reset()` — the Batch-944 run
+  // proved a reset alone cannot tell you the arm survived the window.
   const verifyStart = measure.indexOf("for (let i = 0; i < verifyFrames; i++)");
-  const measureStart = measure.indexOf("profiler?.reset?.();");
+  const measureStart = measure.indexOf(
+    "for (let i = 0; i < measureFrames; i++)",
+  );
+  const reArmStart = measure.lastIndexOf("dbg.gpuPassCost(true);");
   assert.ok(verifyStart > 0, "the verify span is gone");
-  assert.ok(measureStart > 0, "the profiler reset marks the measured span");
+  assert.ok(measureStart > 0, "the measured span is gone");
+  assert.ok(
+    reArmStart > verifyStart && reArmStart < measureStart,
+    "the timing surface must be re-armed between the verify and measured spans",
+  );
   assert.ok(
     measure.indexOf("emittedFrames++") > verifyStart &&
       measure.indexOf("emittedFrames++") < measureStart,
     "verdict sampling belongs to the VERIFY span: sampling the warm span records the flag transition, sampling the measured span times the instrument",
   );
-  // The MEASURED span must contain nothing but renders — `snapNow()` calls
-  // `getRendererStatistics()`, which is allocation-bearing by design.
+  // The MEASURED span must contain nothing but KEPT-LIVE renders — `snapNow()`
+  // calls `getRendererStatistics()`, which is allocation-bearing by design.
   const measuredLoop = measure.slice(
     measureStart,
     measure.indexOf("// Same-task read"),
   );
-  assert.ok(measuredLoop.includes("scene.render(frameTime);"));
+  assert.ok(measuredLoop.includes("renderLive();"));
   assert.ok(
     !measuredLoop.includes("snapNow()"),
     "a snapshot read inside the timing window times the instrument, not the pass",
@@ -562,6 +585,37 @@ test("D7 the perf window verifies its ARM held, outside the measured span", () =
   ]) {
     assert.ok(armCheck.includes(field), `the arm check ignores ${field}`);
   }
+});
+
+test("D9 the probe routes through the SHARED refresh-skip repair", () => {
+  // The three Batch-944 instrument defects (mid-convergence captures, a resize
+  // window the stale state satisfied, a perf lane that never saw a frame) are
+  // one mechanism, and it belongs to both cloud reconstruction probes. Its
+  // rules and their mutants live in `cloud-refresh-skip.spec.mjs`; this pin
+  // exists so removing the import fails HERE too, rather than leaving that
+  // spec passing against a probe that no longer uses it.
+  assert.match(
+    probeSource,
+    /from "\.\/lib\/cloud-refresh-skip\.mjs"/,
+    "the shared refresh-skip repair is no longer imported",
+  );
+  for (const symbol of [
+    "classifyExecuteWindow",
+    "diffInterpretable",
+    "foldStationarity",
+    "renderCallBudget",
+    "starvedWindowReasons",
+  ]) {
+    assert.ok(probeSource.includes(symbol), `${symbol} is no longer used`);
+  }
+  assert.ok(
+    probeSource.includes("captureStationary(main.page,"),
+    "each captured state must converge under its own stationarity gate",
+  );
+  assert.ok(
+    probeSource.includes("PERF WINDOW DISCARDED"),
+    "a perf window whose timing arm dropped must be discarded and NAMED",
+  );
 });
 
 test("D8 device loss is declared OUT OF SCOPE rather than silently omitted", () => {
