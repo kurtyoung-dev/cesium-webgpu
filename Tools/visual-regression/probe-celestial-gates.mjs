@@ -1108,7 +1108,7 @@ async function setupScene(
 // --------------------------------------------------------------------------
 async function captureMode(
   page,
-  { mode, crop, exposure, hdr, glareOn, toggles },
+  { mode, crop, exposure, hdr, glareOn, toggles, sceneFlags },
 ) {
   return page.evaluate(
     async ({
@@ -1121,6 +1121,7 @@ async function captureMode(
       settleMinFrames,
       settleYieldMs,
       lightingToggles,
+      scenePins,
     }) => {
       await import("/Build/CesiumUnminified/index.js");
       const viewer = window.viewer;
@@ -1202,6 +1203,20 @@ async function captureMode(
         lightingRequested = {};
         for (const flag of Object.keys(lightingToggles)) {
           lightingRequested[flag] = lightingLeaf[flag] === true;
+        }
+      }
+
+      // Scene-level pins follow the same explicit-both-directions rule as the
+      // lighting flags: several lanes share one page, so a leg that depends
+      // on a Scene property states it rather than inheriting the previous
+      // leg's value. The disc lane pins `sunBloom` OFF because the limb law
+      // is a bake property — measured through a bright-pass bloom, the lane
+      // measures the bloom.
+      if (scenePins) {
+        for (const [flag, value] of Object.entries(scenePins)) {
+          if (typeof value === "boolean") {
+            scene[flag] = value;
+          }
         }
       }
 
@@ -1357,6 +1372,7 @@ async function captureMode(
       settleMinFrames: SETTLE_MIN_FRAMES,
       settleYieldMs: SETTLE_YIELD_MS,
       lightingToggles: toggles ?? null,
+      scenePins: sceneFlags ?? null,
     },
   );
 }
@@ -1596,6 +1612,7 @@ async function runBackendLanes(browser, renderer, laneDefs, onLane) {
           hdr: cap.hdr === true,
           glareOn: cap.glareOn,
           toggles: cap.toggles,
+          sceneFlags: cap.sceneFlags,
         });
       }
       const lane = { setup, captures };
@@ -3908,6 +3925,7 @@ const G4_LANE_DEFS = [
         exposure: e,
         hdr: true,
         glareOn: false,
+        sceneFlags: { sunBloom: false },
         toggles: {
           enableSolarLimbDarkening: false,
           enableTrueSolarDiscSize: true,
@@ -3923,6 +3941,7 @@ const G4_LANE_DEFS = [
         exposure: e,
         hdr: true,
         glareOn: false,
+        sceneFlags: { sunBloom: false },
         toggles: {
           enableSolarLimbDarkening: false,
           enableTrueSolarDiscSize: false,
@@ -3936,6 +3955,7 @@ const G4_LANE_DEFS = [
         exposure: e,
         hdr: true,
         glareOn: false,
+        sceneFlags: { sunBloom: false },
         toggles: {
           enableSolarLimbDarkening: true,
           enableTrueSolarDiscSize: true,
