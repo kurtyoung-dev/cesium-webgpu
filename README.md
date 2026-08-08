@@ -274,6 +274,10 @@ See more in the [CesiumJS Features Checklist](https://github.com/CesiumGS/cesium
 
 ## :books: References & Credits
 
+> **Automation note:** this fork is developed by an autonomous AI agent
+> pipeline; commit timestamps reflect automated landings, not personal
+> working sessions — see [AUTOMATION.md](AUTOMATION.md).
+>
 > **Licensing note:** all fork-specific work (the WebGPU backend, WGSL
 > shaders, and tooling) is available under the same Apache-2.0 terms as
 > upstream CesiumJS — see the [Fork-Specific Work](LICENSE.md#fork-specific-work)
