@@ -16,15 +16,30 @@
 //   rather than importing the march's. The duplication is deliberate and is the
 //   cheaper side of the trade.
 //
-// ★ THE DEPTH HERE IS AN ESTIMATOR, NOT AN ACCUMULATION. The march resolved
-//   this pixel's alpha; this pass recovers the depth that alpha implies over
-//   the geometric shell interval, which is strictly more than C13-05's
-//   midpoint proxy and strictly less than per-sample accumulation. Emitting a
-//   true accumulated depth requires the march to write it, which requires
-//   changing the march, which is C13-10's row and comes with the interleaved
-//   A/B protocol. The CPU twin of the estimator lives in
+// ★ THE DEPTH HAS TWO PRODUCERS, SELECTED AT COMPILE TIME.
+//
+//   DEFAULT (`//>>else`, C13-09) — an ESTIMATOR. The march resolved this
+//   pixel's alpha; this pass recovers the depth that alpha implies over the
+//   geometric shell interval under uniform extinction, which is strictly more
+//   than C13-05's midpoint proxy and strictly less than per-sample
+//   accumulation. Its CPU twin lives in
 //   `WebGPUCloudReconstructionAttachments.ts`
 //   (`cloudTransmittanceWeightedDepth`) and is pinned against this expression.
+//
+//   `CLOUD_MARCH_EMIT_RECONSTRUCTION` (C13-10) — an ACCUMULATION. The march
+//   itself sums `Σ wᵢ·tᵢ` over the SAME transmittance weights its radiance
+//   uses and writes contract slot 1 directly, so this pass reads the depth at
+//   binding 2 instead of estimating it, and its own MRT drops the depth slot
+//   (a pass cannot sample what it writes). The estimator stays as the `//>>else`
+//   and as the CPU twin — it is still the only depth available to a build that
+//   does not compile the emitting march, and it is the reference the emission
+//   is checked against. Its CPU twin `cloudMarchWeightedDepth` is pinned
+//   against the emitting expression the same way.
+//
+//   The variant costs the MARCH two FMAs and a compare per contributing sample
+//   and SAVES this pass a per-pixel ellipsoid-shell intersection plus nine
+//   estimator evaluations. Any occupancy claim about that trade is owed the
+//   interleaved-A/B protocol and is not asserted here.
 //
 // RTE contract, inherited unchanged from C13-04/05: no full-ECEF vec3<f32> is
 // ever formed. The planet centre arrives as an encoded high/low split relative
@@ -72,12 +87,35 @@ struct AttachmentUniforms {
 // only blur the signal the moments are supposed to measure.
 @group(0) @binding(0) var currentTex: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> u: AttachmentUniforms;
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+// C13-10 — the depth attachment the MARCH wrote this frame (contract slot 1,
+// rg32float: front distance, transmittance-weighted mean distance, metres).
+// In this variant the estimator below is not evaluated at all: the march
+// accumulated the true per-sample weighted depth from the same weights its
+// radiance used, and this pass reads it rather than re-deriving it from alpha.
+// It is bound READ-ONLY and is NOT in this pass's attachment list — a pass
+// cannot sample a target it also writes, which is exactly why ownership of the
+// depth slot MOVES to the march instead of being duplicated here.
+@group(0) @binding(2) var marchDepthTex: texture_2d<f32>;
+//>>endif
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) uv: vec2<f32>,
 };
 
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+// C13-10 — the emitting variant's MRT. `depth` is ABSENT because the march
+// wrote contract slot 1 directly; this pass reads it at binding 2. The
+// remaining two keep their contract order, so slot 2 -> @location(0) and
+// slot 3 -> @location(1).
+struct AttachmentOutput {
+  // rgba16float — motion UV, validity, normalized previous anchor distance.
+  @location(0) velocity: vec4<f32>,
+  // rgba16float — mean and mean-square of normalized depth, then of coverage.
+  @location(1) moments: vec4<f32>,
+};
+//>>else
 // MRT order matches the owned attachments in
 // `CLOUD_RECONSTRUCTION_ATTACHMENTS` (contract slots 1, 2, 3).
 struct AttachmentOutput {
@@ -88,6 +126,7 @@ struct AttachmentOutput {
   // rgba16float — mean and mean-square of normalized depth, then of coverage.
   @location(2) moments: vec4<f32>,
 };
+//>>endif
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vid: u32) -> VertexOutput {
@@ -258,7 +297,10 @@ fn weightedDepthFromAlpha(t0: f32, t1: f32, alpha: f32) -> f32 {
 @fragment
 fn fragmentMain(input: VertexOutput) -> AttachmentOutput {
   var out: AttachmentOutput;
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+//>>else
   out.depth = vec2<f32>(-1.0, -1.0);
+//>>endif
   out.velocity = vec4<f32>(0.0);
   out.moments = vec4<f32>(0.0);
 
@@ -271,13 +313,27 @@ fn fragmentMain(input: VertexOutput) -> AttachmentOutput {
     vec2<i32>(0, 0),
     resolution - vec2<i32>(1, 1)
   );
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+//>>else
   let alpha = clamp(textureLoad(currentTex, center, 0).a, 0.0, 1.0);
+//>>endif
 
   let rayDirection = currentRelativeRay(input.uv);
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+//>>else
   let interval = nearestShellInterval(rayDirection);
+//>>endif
   let farCap = max(u.encodedCameraHighAndFarCap.w, 1.0);
 
   // ── Depth ──
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+  // C13-10 — the march already wrote contract slot 1. The anchor the velocity
+  // channel needs is the MARCH's transmittance-weighted mean, so this pass only
+  // reads it back; the shell intersection, the estimator and the centre alpha
+  // fetch are not evaluated at all in this variant, which is why the producer
+  // gets CHEAPER here even though the march gets slightly more expensive.
+  let weighted = textureLoad(marchDepthTex, center, 0).g;
+//>>else
   // A shell miss leaves (-1, -1): "this ray carries no cloud", which a consumer
   // must propagate rather than treat as distance zero.
   var weighted = -1.0;
@@ -285,14 +341,24 @@ fn fragmentMain(input: VertexOutput) -> AttachmentOutput {
     weighted = weightedDepthFromAlpha(interval.x, interval.y, alpha);
     out.depth = vec2<f32>(interval.x, weighted);
   }
+//>>endif
 
   // ── Moments ──
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+  // C13-10 — with the march emitting, each neighbour has its OWN
+  // transmittance-weighted depth, so the depth moment pair stops being an
+  // approximation over one shared interval and becomes the real spatial
+  // distribution. The no-cloud sentinel contributes 0 (the same value the
+  // estimator variant contributes on a shell miss), so an empty neighbourhood
+  // still reports a zero mean and a zero variance rather than a negative one.
+//>>else
   // Coverage moments are exact over the 3x3 neighbourhood. Depth moments reuse
   // the CENTRE ray's interval with each neighbour's alpha: the shell interval
   // is a smooth geometric function of direction, so across three half-
   // resolution texels it varies far less than the alpha does, and re-deriving
   // nine ray directions plus nine ellipsoid intersections to capture that
   // difference would cost more than the variance it recovers is worth.
+//>>endif
   var sumDepth = 0.0;
   var sumDepthSq = 0.0;
   var sumAlpha = 0.0;
@@ -307,6 +373,12 @@ fn fragmentMain(input: VertexOutput) -> AttachmentOutput {
       );
       let neighborAlpha = clamp(textureLoad(currentTex, coord, 0).a, 0.0, 1.0);
       var neighborDepth = 0.0;
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+      let neighborWeighted = textureLoad(marchDepthTex, coord, 0).g;
+      if (neighborWeighted >= 0.0) {
+        neighborDepth = clamp(neighborWeighted / farCap, 0.0, 1.0);
+      }
+//>>else
       if (interval.x >= 0.0) {
         neighborDepth = clamp(
           weightedDepthFromAlpha(interval.x, interval.y, neighborAlpha) / farCap,
@@ -314,6 +386,7 @@ fn fragmentMain(input: VertexOutput) -> AttachmentOutput {
           1.0
         );
       }
+//>>endif
       sumDepth = sumDepth + neighborDepth;
       sumDepthSq = sumDepthSq + neighborDepth * neighborDepth;
       sumAlpha = sumAlpha + neighborAlpha;

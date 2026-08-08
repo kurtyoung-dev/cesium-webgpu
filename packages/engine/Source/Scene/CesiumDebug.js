@@ -87,6 +87,7 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.cacheStats()      — pipeline + bind-group cache counters ║
 ║  CesiumDebug.cloudStats(t/f)   — cloud observability + CPU stage timing ║
 ║  CesiumDebug.cloudReconstructionAttachments(t/f) — C13-09 attachment set ║
+║  CesiumDebug.cloudReconstruction(t/f) — C13-10 march-emitted depth + consumer ║
 ║  CesiumDebug.webgpuOIT(t/f)    — WebGPU OIT containment gate (FAR-003) ║
 ║  CesiumDebug.attachmentDemand(t/f) — scene-FB attachment demand record ║
 ║  CesiumDebug.globeFragmentDebug(name) — visualize FS stages ║
@@ -1111,6 +1112,74 @@ function installCesiumDebug(viewer) {
         );
       }
       return attachments;
+    },
+
+    /**
+     * C13-10 — toggle MARCH-EMITTED reconstruction and its first consumer.
+     *
+     * A SECOND switch on top of `cloudReconstructionAttachments`, and the
+     * separation is the point: with only the attachments on, the set is
+     * produced and read by nobody (C13-09's state, and the reason its
+     * byte-identical acceptance leg still means something). With this on, the
+     * half-resolution march compiles the emission variant and writes the depth
+     * slot from its own per-sample accumulation, the producer reads that target
+     * instead of estimating, and the temporal resolve validates history against
+     * the set — so THE OUTPUT MAY CHANGE. That is the first time anything has
+     * consumed the attachments.
+     *
+     * Enabling implies the attachment set; disabling leaves it allocated so the
+     * two can be A/B'd without a reallocation between legs.
+     */
+    cloudReconstruction(enabled) {
+      const ctx = scene._context;
+      if (!ctx?.isWebGPU || typeof ctx.getRendererStatistics !== "function") {
+        console.warn("[CesiumDebug] Cloud reconstruction is WebGPU-only");
+        return null;
+      }
+      const cache = ctx._cloudCache;
+      if (!cache) {
+        console.warn(
+          "[CesiumDebug] Cloud renderer has not run yet — enable a VOLUMETRIC CloudCollection and render a frame first",
+        );
+        return null;
+      }
+      if (typeof enabled === "boolean") {
+        cache.reconstructionEnabled = enabled;
+        if (enabled) {
+          cache.attachmentsEnabled = true;
+        }
+        console.log(
+          `[CesiumDebug] Cloud march-emitted reconstruction ${
+            enabled ? "ENABLED" : "DISABLED"
+          } — when enabled the march writes the depth attachment and the temporal resolve reads the set, so the composite MAY differ (C13-10).`,
+        );
+      }
+      const clouds = ctx.getRendererStatistics().volumetricClouds;
+      const emission = clouds?.reconstruction?.emission;
+      if (!emission) {
+        console.warn("[CesiumDebug] No cloud statistics yet — render a frame");
+        return null;
+      }
+      console.table([
+        {
+          requested: emission.requested,
+          emitted: emission.emitted,
+          consumed: emission.consumed,
+          producerTargets: emission.producerTargets,
+          attachmentsProduced: clouds.reconstruction.attachments.produced,
+        },
+      ]);
+      if (emission.requested && !emission.emitted) {
+        console.log(
+          "[CesiumDebug] Requested but not emitted — the variant needs the attachment set produced this frame (half-res tier, perspective, non-morphing) and both variant pipelines built.",
+        );
+      }
+      if (emission.emitted && !emission.consumed) {
+        console.log(
+          "[CesiumDebug] Emitted but not consumed — the consuming resolve additionally needs a temporal tier (cloudVolumetricQuality 'low'/'medium'); a cinematic tier marches without history.",
+        );
+      }
+      return emission;
     },
 
     /**

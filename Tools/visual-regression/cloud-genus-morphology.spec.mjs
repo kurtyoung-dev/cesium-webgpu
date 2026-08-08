@@ -37,6 +37,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { defaultVariant } from "./lib/wgsl-variant.mjs";
 
 import CloudType from "../../packages/engine/Source/Scene/CloudType.js";
 import CloudTypeProfile from "../../packages/engine/Source/Scene/CloudTypeProfile.js";
@@ -614,6 +615,6 @@ test("naga validates the cloud shader with the per-genus morphology", async () =
     ),
   });
   assert.doesNotThrow(() =>
-    naga.validate_wgsl(`${domainSource}\n${cloudShaderSource}`),
+    naga.validate_wgsl(`${domainSource}\n${defaultVariant(cloudShaderSource)}`),
   );
 });

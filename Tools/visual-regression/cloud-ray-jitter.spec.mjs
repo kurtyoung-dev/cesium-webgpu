@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { defaultVariant } from "./lib/wgsl-variant.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -332,6 +333,10 @@ test("the complete procedural-cloud shader passes Naga WGSL validation", async (
       path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
     ),
   });
-  const composedShader = `${densityDomain}\n${shader}`;
+  // C13-10 — naga must see what the PIPELINE compiles: the cloud march and the
+  // temporal resolve now carry `//>>ifdef` variants, so their raw text holds both
+  // branches at once and is not valid WGSL alone. `defaultVariant` is the engine
+  // preprocessor at `definesHi = 0`, and a no-op for a directive-free shader.
+  const composedShader = `${densityDomain}\n${defaultVariant(shader)}`;
   assert.doesNotThrow(() => naga.validate_wgsl(composedShader));
 });

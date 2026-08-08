@@ -53,6 +53,13 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { transform } from "esbuild";
+// C13-10 — ONE loader for "what does a pipeline actually compile", shared with
+// `cloud-march-emission.spec.mjs` and the rest of the cloud lane.
+import {
+  defaultVariant,
+  preprocess,
+  ShaderDefineHi,
+} from "./lib/wgsl-variant.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -108,6 +115,7 @@ const {
   CLOUD_ATTACHMENT_PASS_LABEL,
   CLOUD_ATTACHMENT_UNIFORM_BYTES,
   CLOUD_ATTACHMENT_UNIFORM_FLOATS,
+  CLOUD_EMITTED_ATTACHMENTS,
   CLOUD_OWNED_ATTACHMENTS,
   CLOUD_RECONSTRUCTION_ATTACHMENTS,
   CloudAttachmentSlot,
@@ -243,12 +251,19 @@ test("A6 the depth clear is the no-cloud sentinel, and no other clear is negativ
   }
 });
 
-test("A7 NOTHING CONSUMES THE OWNED SET — the empty list is the honest state", () => {
+// ★ UPDATED BY C13-10 (was "NOTHING CONSUMES THE OWNED SET"). At C13-09 every
+//   owned attachment carried an EMPTY consumer list, and that emptiness was the
+//   row's honest state. C13-10 gave the set its first reader — the temporal
+//   resolve, under `ShaderDefineHi.CLOUD_RECONSTRUCTION_CONSUME` — so the list
+//   is no longer empty and the test now pins WHO reads it. C13-12 is expected
+//   to leave this unchanged: it adds POLICY inside that same pass, not a new
+//   reader, so a third consumer appearing here is a signal to re-read the row.
+test("A7 the owned set's ONE consumer is the temporal resolve", () => {
   for (const spec of CLOUD_OWNED_ATTACHMENTS) {
     assert.deepEqual(
       spec.consumers,
-      [],
-      `${spec.key} lists a consumer, but C13-09 is infrastructure — the readers are C13-10/12`,
+      ["CloudTemporalResolve pass"],
+      `${spec.key} does not name the C13-10 consumer`,
     );
     assert.equal(spec.producer, CLOUD_ATTACHMENT_PASS_LABEL);
   }
@@ -257,6 +272,18 @@ test("A7 NOTHING CONSUMES THE OWNED SET — the empty list is the honest state",
   assert.ok(
     CLOUD_RECONSTRUCTION_ATTACHMENTS[CloudAttachmentSlot.COLOR].consumers
       .length > 0,
+  );
+  // C13-10 — ownership of the DEPTH slot, and only that slot, moves to the
+  // march under the emission variant. An `variantProducer` appearing on a
+  // second slot means a second target changed hands and the pass topology
+  // below no longer describes what runs.
+  const withVariantProducer = CLOUD_RECONSTRUCTION_ATTACHMENTS.filter(
+    (spec) => spec.variantProducer !== undefined,
+  ).map((spec) => spec.key);
+  assert.deepEqual(withVariantProducer, ["depth"]);
+  assert.equal(
+    CLOUD_RECONSTRUCTION_ATTACHMENTS[CloudAttachmentSlot.DEPTH].variantProducer,
+    "ProceduralClouds half-res pass",
   );
 });
 
@@ -597,15 +624,38 @@ test("E1 the stage is DEFAULT OFF in the source, so the shipped path pays nothin
     (s) => s.replace("attachmentsEnabled: false,", "attachmentsEnabled: true,"),
     "the cloud cache initialises the attachment stage to off",
   );
+  // ★ UPDATED BY C13-10. The gate used to be inline on the producer block;
+  //   C13-10 hoisted it above the raymarch (the emitting march needs contract
+  //   slot 1 to exist as one of its OWN colour attachments) and named it. The
+  //   flag it reads is unchanged, and so is the property: with the stage off,
+  //   nothing allocates and no pass is encoded.
   pinWithMutant(
     cloudRenderer,
-    /if \(cache\.attachmentsEnabled && cache\.halfView\) \{/,
+    /const attachmentStageActive = cache\.attachmentsEnabled && !!cache\.halfView;/,
     (s) =>
       s.replace(
-        "if (cache.attachmentsEnabled && cache.halfView) {",
-        "if (cache.halfView) {",
+        "const attachmentStageActive = cache.attachmentsEnabled && !!cache.halfView;",
+        "const attachmentStageActive = !!cache.halfView;",
       ),
-    "the producer block is gated on the opt-in flag",
+    "the attachment stage is gated on the opt-in flag",
+  );
+  assert.match(
+    cloudRenderer,
+    /if \(attachmentStageActive\) \{\n\s*if \(attachmentsReady && cache\.attachmentUniformBuffer\) \{/,
+    "the producer block must still be inside the stage gate",
+  );
+  // C13-10's own flag is a SECOND opt-in, also default off. Folding the two
+  // into one would make C13-09's "produced but not consumed" leg untestable,
+  // because no build would produce without consuming.
+  pinWithMutant(
+    cloudRenderer,
+    /reconstructionEnabled: false,/,
+    (s) =>
+      s.replace(
+        "reconstructionEnabled: false,",
+        "reconstructionEnabled: true,",
+      ),
+    "the cloud cache initialises march-emitted reconstruction to off",
   );
 });
 
@@ -656,21 +706,42 @@ test("E3 THE COMPOSITE IS UNCHANGED — the upscale never reads an attachment", 
   );
 });
 
-test("E4 NO CONSUMER EXISTS YET — the resolve and upscale shaders are attachment-free", () => {
-  for (const [name, source] of [
-    ["CloudTemporalResolve.wgsl", temporalResolveWgsl],
-    ["CloudUpscale.wgsl", upscaleWgsl],
-  ]) {
-    for (const token of ["velocityTex", "momentsTex", "depthTex"]) {
-      assert.ok(
-        !source.includes(token),
-        `${name} samples ${token} — C13-09 produces only; C13-12 owns the consumers and updates this pin`,
-      );
-    }
+// ★ UPDATED BY C13-10 (was "NO CONSUMER EXISTS YET"). The resolve is now the
+//   set's reader — but ONLY inside its `CLOUD_RECONSTRUCTION_CONSUME` variant.
+//   The property this test defends is unchanged in substance: the DEFAULT
+//   resolve, and the upscale in every variant, must remain attachment-free, so
+//   a build that does not compile the bit is the pre-C13-10 shader.
+test("E4 the DEFAULT resolve and the upscale remain attachment-free", () => {
+  const attachmentTokens = [
+    "reconstructionDepthTex",
+    "reconstructionVelocityTex",
+    "reconstructionMomentsTex",
+  ];
+  // The upscale never reads an attachment in ANY variant — it carries no
+  // `//>>ifdef` for one, so the raw source is the whole story.
+  for (const token of attachmentTokens) {
+    assert.ok(
+      !upscaleWgsl.includes(token),
+      `CloudUpscale.wgsl samples ${token} — the composite must stay attachment-free`,
+    );
   }
-  // The resolve still describes its own depth as a PROXY, which is the
-  // statement C13-09 exists to eventually retire.
-  assert.match(temporalResolveWgsl, /representative geometric proxy/);
+  // The resolve declares them, but every declaration and every read must sit
+  // inside the consumption variant. Strip the ifdef branches and nothing may
+  // remain: that is the default pipeline's source.
+  const defaultResolve = defaultVariant(temporalResolveWgsl);
+  for (const token of attachmentTokens) {
+    assert.ok(
+      temporalResolveWgsl.includes(token),
+      `CloudTemporalResolve.wgsl no longer declares ${token} — C13-10's consumer is gone`,
+    );
+    assert.ok(
+      !defaultResolve.includes(token),
+      `${token} is read OUTSIDE the CLOUD_RECONSTRUCTION_CONSUME variant — the default pipeline would change`,
+    );
+  }
+  // The default path still describes its own depth as a PROXY. C13-10 retired
+  // that statement only inside the variant; the fallback is still a proxy.
+  assert.match(defaultResolve, /representative geometric proxy/);
 });
 
 test("E5 the generation is committed only AFTER every owned texture exists", () => {
@@ -752,13 +823,17 @@ test("E8 the counters record what the pass ACTUALLY used", () => {
     observabilitySource.includes("attachmentLiveBytes: number;"),
     "the resident byte figure must exist on the counter record",
   );
+  // The RESET list holds QUOTED field names; a prose mention of the field in a
+  // comment beside it is not a reset. Matching the quoted form is what makes
+  // this check about the code rather than about the commentary (C13-10 added
+  // exactly such a comment, and a substring test failed on it).
   assert.ok(
     !observabilitySource
       .slice(
         observabilitySource.indexOf("const RESET_FIELDS"),
         observabilitySource.indexOf("createCloudFrameCounters"),
       )
-      .includes("attachmentLiveBytes"),
+      .includes('"attachmentLiveBytes"'),
     "zeroing the resident figure would report the set as freed every quiescent frame",
   );
 });
@@ -787,16 +862,52 @@ test("E9 the debug surface reaches the set without a static import of the lazy r
 // static, so a single line added here inflates the register footprint of the
 // visible march, the shadow map, the cascade atlas and the god-ray mask alike.
 //
-// ★ IF THIS FAILS AND YOU ARE C13-10, that is expected — C13-10 is the row
-//   permitted to change the march, and it updates these two constants in the
-//   same commit that changes the shader, with the interleaved-A/B evidence.
-//   IF THIS FAILS AND YOU ARE ANYONE ELSE, the change belongs in a separate
+// ★ THE PIN WAS UPDATED BY C13-10 ON 2026-08-07, DELIBERATELY.
+//
+//   The note this test used to carry said: "IF THIS FAILS AND YOU ARE C13-10,
+//   that is expected — C13-10 is the row permitted to change the march, and it
+//   updates these two constants in the same commit that changes the shader."
+//   That is what happened. The march now carries ONE compile-time variant,
+//   `CLOUD_MARCH_EMIT_RECONSTRUCTION`, which accumulates the front and
+//   transmittance-weighted depth and writes contract slot 1 as a second colour
+//   target. The previous pin was
+//   `8cc74fbb020fa873a3d61004b809655052b46cd88e92c6fb338fea4af28fa1bf` at 2962
+//   lines.
+//
+//   ★ THE CONSTRAINT DID NOT WEAKEN — ITS ENFORCEMENT MOVED UP A LEVEL. A raw
+//     content hash can no longer say what C13-39 needs said, because the file
+//     now legitimately contains code four of the five pipelines compiled from
+//     it never see. So F1a pins the raw file (any change to the march is
+//     visible and deliberate) and F1b pins the thing that actually bounds the
+//     register footprint: the DEFAULT variant's non-comment text must be
+//     byte-identical to the pre-C13-10 module. `MARCH_DEFAULT_CODE_SHA256` was
+//     computed from the 8cc74fbb… file itself, so F1b is an equality against
+//     the historical shader, not against a snapshot of the new one.
+//
+//   IF F1a FAILS AND YOU ARE NOT C13-10, the change belongs in a separate
 //   module and a separate pipeline, the way this row's producer does it.
+//   IF F1b FAILS, a variant block's `//>>else` stopped being the historical
+//   code — every pipeline compiled at `definesHi = 0` just changed.
 const MARCH_WGSL_SHA256 =
-  "8cc74fbb020fa873a3d61004b809655052b46cd88e92c6fb338fea4af28fa1bf";
-const MARCH_WGSL_LINES = 2962;
+  "74affeac6add9256cca0bf5b52b07b0f2e56dab115feae848d56331fceb30173";
+const MARCH_WGSL_LINES = 3105;
+// SHA-256 of the default variant with blank lines and whole-line comments
+// removed. Computed from the PRE-C13-10 module (8cc74fbb…, 2962 lines) and
+// unchanged by this row: 1798 lines of code.
+const MARCH_DEFAULT_CODE_SHA256 =
+  "b20ff584a16e0c78df248c34e2849b808a80cc3a1434a7ed1074e9b292de843b";
+const MARCH_DEFAULT_CODE_LINES = 1798;
 
-test("F1 ProceduralClouds.wgsl is BYTE-UNCHANGED by this row", () => {
+/** Blank- and comment-line-stripped source: the text a compiler acts on. */
+function codeOnly(source) {
+  return source
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("//"))
+    .join("\n");
+}
+
+test("F1a ProceduralClouds.wgsl matches its pin — any change here is deliberate", () => {
   const digest = crypto.createHash("sha256").update(marchWgsl).digest("hex");
   assert.equal(
     marchWgsl.split("\n").length,
@@ -806,7 +917,35 @@ test("F1 ProceduralClouds.wgsl is BYTE-UNCHANGED by this row", () => {
   assert.equal(
     digest,
     MARCH_WGSL_SHA256,
-    "the march shader changed — C13-39 binds: reconstruction WGSL goes in a SEPARATE module and pipeline",
+    "the march shader changed — C13-39 binds: unless you are the row that owns the march, this goes in a SEPARATE module and pipeline",
+  );
+});
+
+test("F1b the DEFAULT march variant is the pre-C13-10 module, code for code", () => {
+  // This is the check that actually enforces C13-39 now. Four of the five
+  // pipelines compiled from this module (full-resolution march, beer-shadow
+  // map, cascade atlas, god-ray mask) compile it at `definesHi = 0`; if that
+  // text is the historical text, their register footprint is the historical
+  // footprint, whatever the emitting variant costs.
+  const code = codeOnly(defaultVariant(marchWgsl));
+  assert.equal(
+    code.split("\n").length,
+    MARCH_DEFAULT_CODE_LINES,
+    "the default variant gained or lost CODE lines — a //>>else stopped being the historical path",
+  );
+  assert.equal(
+    crypto.createHash("sha256").update(code).digest("hex"),
+    MARCH_DEFAULT_CODE_SHA256,
+    "the default march variant is no longer byte-identical to the pre-C13-10 module",
+  );
+  // ...and the variant must actually DO something, or the pin above is
+  // pinning a no-op.
+  const emitCode = codeOnly(
+    preprocess(marchWgsl, 0, ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION),
+  );
+  assert.ok(
+    emitCode.split("\n").length > MARCH_DEFAULT_CODE_LINES,
+    "the emission variant emits no more code than the default — the ifdef blocks are empty",
   );
 });
 
@@ -878,24 +1017,31 @@ test("F3 the WGSL and the TS twin are the SAME estimator, character for characte
   );
 });
 
-test("F4 the producer writes exactly the owned attachments, in slot order", () => {
+/** MRT outputs of `AttachmentOutput` in one PREPROCESSED producer variant. */
+function producerOutputs(source) {
   // Scoped to the fragment output struct: `VertexOutput` also declares a
   // `@location(0)`, and a whole-file scan would silently include it.
-  const outputStructStart = producerWgsl.indexOf("struct AttachmentOutput {");
-  assert.ok(outputStructStart > 0);
-  const outputStruct = producerWgsl.slice(
-    outputStructStart,
-    producerWgsl.indexOf("};", outputStructStart),
-  );
-  const outputs = [...outputStruct.matchAll(/@location\((\d)\) (\w+):/g)].map(
-    (m) => ({ location: Number(m[1]), name: m[2] }),
-  );
-  assert.deepEqual(outputs, [
+  const start = source.indexOf("struct AttachmentOutput {");
+  assert.ok(start > 0, "no AttachmentOutput struct in this variant");
+  const body = source.slice(start, source.indexOf("};", start));
+  return [...body.matchAll(/@location\((\d)\) (\w+):/g)].map((m) => ({
+    location: Number(m[1]),
+    name: m[2],
+  }));
+}
+
+// ★ UPDATED BY C13-10. The producer used to have ONE output layout; it now has
+//   two, and which one is correct depends on who wrote the depth slot.
+test("F4 each producer variant writes exactly the attachments IT owns, in slot order", () => {
+  // DEFAULT — the producer owns all three, and slot N maps to @location(N-1)
+  // because slot 0 is the shared march target.
+  const defaultOutputs = producerOutputs(defaultVariant(producerWgsl));
+  assert.deepEqual(defaultOutputs, [
     { location: 0, name: "depth" },
     { location: 1, name: "velocity" },
     { location: 2, name: "moments" },
   ]);
-  outputs.forEach((out, index) => {
+  defaultOutputs.forEach((out, index) => {
     assert.equal(
       out.name,
       CLOUD_OWNED_ATTACHMENTS[index].key,
@@ -907,10 +1053,38 @@ test("F4 the producer writes exactly the owned attachments, in slot order", () =
       "owned slot N maps to @location(N-1); slot 0 is the shared march target",
     );
   });
-  // The renderer derives the pipeline targets from the SAME table.
+
+  // EMISSION — the march wrote slot 1, so the producer must NOT list it. A
+  // producer that kept the depth output here would be writing a target it also
+  // samples, which is not expressible in one render pass.
+  const emitOutputs = producerOutputs(
+    preprocess(producerWgsl, 0, ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION),
+  );
+  assert.deepEqual(emitOutputs, [
+    { location: 0, name: "velocity" },
+    { location: 1, name: "moments" },
+  ]);
+  emitOutputs.forEach((out, index) => {
+    assert.equal(
+      out.name,
+      CLOUD_EMITTED_ATTACHMENTS[index].key,
+      "the emitting MRT order must follow CLOUD_EMITTED_ATTACHMENTS",
+    );
+  });
+  assert.deepEqual(
+    CLOUD_EMITTED_ATTACHMENTS.map((spec) => spec.key),
+    ["velocity", "moments"],
+    "the emitted list must be the owned list MINUS the slot the march took over",
+  );
+
+  // The renderer derives BOTH pipelines' targets from the SAME tables.
   assert.match(
     cloudRenderer,
     /targets: CLOUD_OWNED_ATTACHMENTS\.map\(\(spec\) => \(\{\n\s*format: spec\.format,\n\s*\}\)\),/,
+  );
+  assert.match(
+    cloudRenderer,
+    /targets: CLOUD_EMITTED_ATTACHMENTS\.map\(\(spec\) => \(\{\n\s*format: spec\.format,\n\s*\}\)\),/,
   );
 });
 
@@ -948,14 +1122,35 @@ test("G1 the producer shader passes naga validation", async () => {
       path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
     ),
   });
-  // The producer is a STANDALONE module: this is the exact text the pipeline
+  // ★ UPDATED BY C13-10: naga must see what the PIPELINE sees, not the raw
+  //   file. Since the producer gained `//>>ifdef` branches that redefine
+  //   `AttachmentOutput` and `weighted`, the raw text is deliberately not valid
+  //   WGSL on its own — both branches are present at once. Validating it
+  //   unpreprocessed would fail for a reason that has nothing to do with either
+  //   shader being wrong.
+  //
+  // The producer is a STANDALONE module: this is the exact text each pipeline
   // compiles, with no density-domain or march prelude concatenated in.
-  assert.doesNotThrow(() => naga.validate_wgsl(producerWgsl));
-  // ...and the march it must not have touched still validates as before.
+  assert.doesNotThrow(() => naga.validate_wgsl(defaultVariant(producerWgsl)));
+  assert.doesNotThrow(() =>
+    naga.validate_wgsl(
+      preprocess(
+        producerWgsl,
+        0,
+        ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION,
+      ),
+    ),
+  );
+  // ...and the march still validates in BOTH variants.
   const densityDomain = readEngine(
     "Shaders/WebGPU/Environment/CloudDensityDomain.wgsl",
   );
   assert.doesNotThrow(() =>
-    naga.validate_wgsl(`${densityDomain}\n${marchWgsl}`),
+    naga.validate_wgsl(`${densityDomain}\n${defaultVariant(marchWgsl)}`),
+  );
+  assert.doesNotThrow(() =>
+    naga.validate_wgsl(
+      `${densityDomain}\n${preprocess(marchWgsl, 0, ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION)}`,
+    ),
   );
 });

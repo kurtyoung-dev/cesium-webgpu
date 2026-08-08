@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { defaultVariant } from "./lib/wgsl-variant.mjs";
 
 import {
   CLOUD_DENSITY_DETAIL_OFFSET,
@@ -834,5 +835,13 @@ test("the shared domain composes into the IBL cloud consumer", async () => {
       path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
     ),
   });
-  assert.doesNotThrow(() => naga.validate_wgsl(`${wgslSource}\n${iblSource}`));
+  // C13-10 — naga must see what the PIPELINE compiles: the cloud march and the
+  // temporal resolve now carry `//>>ifdef` variants, so their raw text holds both
+  // branches at once and is not valid WGSL alone. `defaultVariant` is the engine
+  // preprocessor at `definesHi = 0`, and a no-op for a directive-free shader.
+  assert.doesNotThrow(() =>
+    naga.validate_wgsl(
+      `${defaultVariant(wgslSource)}\n${defaultVariant(iblSource)}`,
+    ),
+  );
 });

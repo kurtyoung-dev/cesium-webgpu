@@ -260,6 +260,8 @@ const SURVIVING_FIELDS = Object.freeze({
     "describes a RESIDENT texture, not this frame's work — zeroing it would report the texture as freed every quiescent frame",
   attachmentLiveBytes:
     "C13-09 — describes the RESIDENT reconstruction attachment set, same reason as weatherLiveBytes",
+  reconstructionRequested:
+    "C13-10 — describes the RESIDENT request for march-emitted reconstruction. Zeroing it every frame would make a frame that ASKED for the variant and fell back (full-resolution tier, orthographic/morph, a pipeline that could not build) indistinguishable from one where nobody asked — which is the exact evidence Gate C needs beside `reconstructionEmitted`",
 });
 
 test("B1 reset zeroes every per-frame field, in place, with no reallocation", () => {

@@ -14,21 +14,32 @@
  * the reconstruction chain reads, its formats, its byte cost, and the
  * generation key that makes a stale bind group impossible to serve.
  *
- * ★ THIS ROW IS INFRASTRUCTURE. The producers write; NOTHING READS THEM YET.
- *   That is the Principle-7 scaffolding-with-documented-intent shape, and the
- *   inventory of live-versus-pending is right here rather than in a commit
- *   message:
+ * ★ WHAT IS LIVE AND WHAT IS STILL PENDING. The inventory belongs here rather
+ *   than in a commit message, and it is updated as rows land — not left to
+ *   describe the day the file was created:
  *
  *     LIVE at C13-09    — allocation, resize, device-swap recreation, the
  *                         generation key, the producer pass, and the byte /
- *                         pass counters the Gate-A surface reports.
- *     PENDING C13-10    — the true 1/16-rate current-frame march. It replaces
- *                         the analytic depth estimator below with per-sample
- *                         accumulation emitted from the march itself, and it
- *                         is the row that may change the march shader.
- *     PENDING C13-12    — the CONSUMERS: attachment-aware motion/depth
- *                         rejection, variance clipping from the moment pair,
- *                         reactive history, wind advection, disocclusion.
+ *                         pass counters the Gate-A surface reports. Produced,
+ *                         and (at that row) consumed by nothing.
+ *     LIVE at C13-10    — the MARCH-EMITTED depth (a compile-time variant, see
+ *                         the C13-10 block at the foot of this file) and the
+ *                         FIRST CONSUMER: the temporal resolve now reads
+ *                         depth / velocity / moments and validates history
+ *                         against them. Both are opt-in and default OFF, and
+ *                         they are SEPARATE opt-ins from C13-09's, so a build
+ *                         can still produce without consuming — which is what
+ *                         keeps C13-09's "produced but not consumed" claim
+ *                         A/B-testable.
+ *     PENDING C13-10    — the row's headline is NOT closed by that slice: one
+ *                         current-frame phase covering one-sixteenth of
+ *                         full-resolution pixels, and a FULL-RESOLUTION
+ *                         history, both remain. The history below is still
+ *                         half-resolution.
+ *     PENDING C13-12    — every THRESHOLDED consumer: attachment-aware
+ *                         motion/depth rejection, variance clipping from the
+ *                         moment pair, reactive history, wind advection,
+ *                         disocclusion proper.
  *
  * ★ C13-39 BINDS THE SHAPE. Its negative result established that WGSL register
  *   allocation is STATIC, so anything added to the shared `ProceduralClouds`
@@ -95,9 +106,17 @@ export interface CloudAttachmentSpec {
    * owned by the march, not by this row.
    */
   readonly ownedHere: boolean;
-  /** Render-pass label of the pass that writes it. */
+  /** Render-pass label of the pass that writes it on the DEFAULT path. */
   readonly producer: string;
-  /** Campaign rows that will READ it. Empty means "nothing consumes it yet". */
+  /**
+   * C13-10 — render-pass label of the pass that writes it when
+   * `ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION` is compiled, when that
+   * differs from {@link producer}. Present only on the depth slot, whose
+   * ownership MOVES to the march under that variant; absent everywhere else,
+   * because an absent field is a stronger statement than a duplicated one.
+   */
+  readonly variantProducer?: string;
+  /** Render-pass labels that READ it. Empty means "nothing consumes it yet". */
   readonly consumers: readonly string[];
   /**
    * Value the producer pass CLEARS this attachment to. Per-attachment because
@@ -162,7 +181,10 @@ export const CLOUD_RECONSTRUCTION_ATTACHMENTS: readonly CloudAttachmentSpec[] =
         "R = front (nearest) cloud distance in metres, G = transmittance-weighted mean distance in metres; both -1 when the ray carries no cloud",
       ownedHere: true,
       producer: "CloudReconstructionAttachments pass",
-      consumers: Object.freeze([]),
+      // C13-10: under the emission variant the MARCH writes this slot as a
+      // second colour target and the producer reads it instead.
+      variantProducer: "ProceduralClouds half-res pass",
+      consumers: Object.freeze(["CloudTemporalResolve pass"]),
       // Both channels are metres, and -1 is the "no cloud on this ray"
       // sentinel every consumer must propagate rather than read as zero.
       clearValue: Object.freeze({ r: -1, g: -1, b: 0, a: 0 }),
@@ -176,7 +198,7 @@ export const CLOUD_RECONSTRUCTION_ATTACHMENTS: readonly CloudAttachmentSpec[] =
         "RG = current UV minus reprojected previous UV, B = reprojection validity (1 or 0), A = previous anchor distance normalized by the far cap",
       ownedHere: true,
       producer: "CloudReconstructionAttachments pass",
-      consumers: Object.freeze([]),
+      consumers: Object.freeze(["CloudTemporalResolve pass"]),
       // Zero motion with validity (B) zero reads as "could not be
       // reprojected", which is exactly what an unwritten texel means.
       clearValue: Object.freeze({ r: 0, g: 0, b: 0, a: 0 }),
@@ -190,7 +212,7 @@ export const CLOUD_RECONSTRUCTION_ATTACHMENTS: readonly CloudAttachmentSpec[] =
         "R = mean normalized depth, G = mean squared normalized depth, B = mean coverage, A = mean squared coverage (variance = G - R*R and A - B*B)",
       ownedHere: true,
       producer: "CloudReconstructionAttachments pass",
-      consumers: Object.freeze([]),
+      consumers: Object.freeze(["CloudTemporalResolve pass"]),
       // All four are means of non-negative quantities; zero is both the
       // correct empty value and a zero variance.
       clearValue: Object.freeze({ r: 0, g: 0, b: 0, a: 0 }),
@@ -403,10 +425,12 @@ export function cloudAttachmentGenerationIsCurrent(
  * than a plausible-looking zero.
  *
  * ★ THIS IS AN ESTIMATOR, NOT AN ACCUMULATION. It is exact only for uniform
- *   extinction inside the interval. `C13-10` owns the march rewrite that emits
- *   the true per-sample transmittance-weighted depth; this is what the topology
- *   can produce WITHOUT touching `ProceduralClouds.wgsl`, and the WGSL producer
- *   mirrors it expression-for-expression.
+ *   extinction inside the interval. It remains the DEFAULT and is not
+ *   deprecated: it is the only depth available to a build that does not compile
+ *   `C13-10`'s emitting march, it is the `//>>else` of that variant, and it is
+ *   the reference the accumulation is checked against. The accumulation itself
+ *   is {@link cloudMarchWeightedDepth}. The WGSL producer mirrors this
+ *   expression-for-expression.
  *
  * @param t0 Interval entry distance in metres.
  * @param t1 Interval exit distance in metres.
@@ -551,3 +575,268 @@ export interface CloudAttachmentUniformInputs {
  * orbit, so a normalized depth stays inside [0, 1] for any visible cloud.
  */
 export const CLOUD_ATTACHMENT_DEFAULT_DEPTH_NORMALIZATION_METERS = 2.0e6;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// C13-10 — MARCH-EMITTED RECONSTRUCTION
+//
+// The estimator above answers "what depth does this alpha imply over this
+// geometric interval". The functions below answer the question the estimator
+// could not reach without changing the march: "what depth did the march
+// actually integrate". They are the CPU twins of the
+// `CLOUD_MARCH_EMIT_RECONSTRUCTION` variant, and they exist here — beside the
+// estimator, in the same pure module — precisely so a reviewer can see the two
+// side by side and so `node --test` can execute both without a device.
+//
+// ★ OWNERSHIP MOVES, IT DOES NOT DUPLICATE. When the variant is compiled the
+//   MARCH writes contract slot 1 (`depth`) as a second colour target and the
+//   producer pass READS it, because a render pass cannot sample an attachment
+//   it also writes. {@link CLOUD_EMITTED_ATTACHMENTS} is the producer's MRT
+//   list in that variant, and it is derived from the same contract table so
+//   the two can never drift.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Attachments the PRODUCER pass writes when the march emits the depth slot.
+ * Slot 1 is absent: the march owns it in that variant. Derived from
+ * {@link CLOUD_OWNED_ATTACHMENTS} rather than restated, so adding an owned
+ * attachment updates both lists at once.
+ */
+export const CLOUD_EMITTED_ATTACHMENTS: readonly CloudAttachmentSpec[] =
+  Object.freeze(
+    CLOUD_OWNED_ATTACHMENTS.filter(
+      (spec) => spec.slot !== CloudAttachmentSlot.DEPTH,
+    ),
+  );
+
+/**
+ * Slot the MARCH writes directly under the emission variant. Named rather than
+ * spelled `1` at the three call sites that need it.
+ */
+export const CLOUD_MARCH_EMITTED_SLOT = CloudAttachmentSlot.DEPTH;
+
+/**
+ * Alpha floor for the emission division, mirroring `CLOUD_EMIT_MIN_ALPHA` in
+ * `ProceduralClouds.wgsl`.
+ *
+ * It is far below any alpha that can reach the division: a deck only records a
+ * front distance after a sample with `density > 0.001` contributed, and the
+ * march's own early-out stops at `transmittance < 0.01`. It exists so that a
+ * deck which recorded a front distance and then had every weight cancel in
+ * `f32` cannot publish a NaN into an attachment a consumer trusts.
+ */
+export const CLOUD_EMIT_MIN_ALPHA = 1.0e-6;
+
+/**
+ * rgba16float's relative quantum near 1 (`2^-10`), mirroring
+ * `CLOUD_MOMENT_F16_QUANTUM` in `CloudTemporalResolve.wgsl`.
+ *
+ * This is a STORAGE tolerance, not a quality threshold. The moment attachment
+ * stores `E[x]` and `E[x²]` as independent half-floats, so a record from a real
+ * distribution can violate `E[x²] >= E[x]²` by about this much through rounding
+ * alone. Moving it changes what counts as a self-consistent record and nothing
+ * else — no cloud, no blend weight, no rejection policy depends on its value.
+ */
+export const CLOUD_MOMENT_F16_QUANTUM = 0.0009765625;
+
+/**
+ * Transmittance-weighted mean distance the march ACCUMULATED, in metres.
+ *
+ * `weightedDistanceSum` is `Σ wᵢ·tᵢ` over the march's own per-sample weights
+ * `wᵢ = (1 - exp(-σᵢ·Δᵢ))·Tᵢ` — the identical weights its radiance accumulation
+ * uses — and `Σ wᵢ = alpha` by construction, so the mean is the plain quotient.
+ * Nothing is assumed about how the extinction varies inside the interval, which
+ * is the single respect in which this is strictly better than
+ * {@link cloudTransmittanceWeightedDepth}: that estimator is exact only for
+ * uniform extinction, and a cloud is the opposite of uniform.
+ *
+ * Returns `-1` when the ray carried no cloud, so the sentinel propagates
+ * exactly as it does everywhere else in the contract.
+ *
+ * @param frontDistance Nearest contributing sample distance, or a negative
+ *   value when the deck contributed nothing.
+ * @param weightedDistanceSum `Σ wᵢ·tᵢ` in metres.
+ * @param alpha The deck's resolved alpha (`Σ wᵢ`).
+ */
+export function cloudMarchWeightedDepth(
+  frontDistance: number,
+  weightedDistanceSum: number,
+  alpha: number,
+): number {
+  if (frontDistance < 0.0 || alpha <= 0.0) {
+    return -1.0;
+  }
+  return weightedDistanceSum / Math.max(alpha, CLOUD_EMIT_MIN_ALPHA);
+}
+
+/** One deck's emission, as `marchDeck` returns it under the variant. */
+export interface CloudDeckEmission {
+  /** Nearest contributing sample distance in metres; negative when empty. */
+  readonly frontDistance: number;
+  /** `Σ wᵢ·tᵢ` over the deck's own transmittance weights, metres. */
+  readonly weightedDistanceSum: number;
+  /** The deck's resolved alpha. */
+  readonly alpha: number;
+}
+
+/**
+ * Compose the multi-deck front / weighted pair the way `fragmentMain` does.
+ *
+ * Two things here are decisions rather than bookkeeping:
+ *
+ *   THE FRONT IS A MINIMUM, NOT THE FIRST DECK. The composite is ordered by
+ *   `|cameraAltitude - deckMidAltitude|`, a VERTICAL-BAND key that is not ray
+ *   order for an oblique view — a high deck can be entered before a low one.
+ *   Taking the first deck's front would hand a disocclusion test the wrong
+ *   surface exactly in the multi-deck case the row exists to serve.
+ *
+ *   THE WEIGHTED MEAN COMPOSES EXACTLY. Deck `k` enters the composite with
+ *   weight `transₖ` (the running transmittance in front of it) and its own
+ *   weights sum to `alphaₖ`, so `Σₖ transₖ·Σᵢwₖᵢtₖᵢ` divided by
+ *   `Σₖ transₖ·alphaₖ` — which IS the composited alpha — is the
+ *   transmittance-weighted mean over the whole stack. No renormalization
+ *   fudge is needed and none is applied.
+ *
+ * Decks are consumed in composite order and an empty deck (alpha <= 0) is
+ * skipped exactly as the shader's `continue` skips it. The opaque early-out
+ * (`trans < 0.005`) is applied here too, so the twin stops where the shader
+ * stops rather than integrating decks the GPU never marched.
+ *
+ * @param decks Per-deck emissions in FRONT-TO-BACK COMPOSITE ORDER.
+ */
+export function cloudCompositeMarchDepth(decks: readonly CloudDeckEmission[]): {
+  front: number;
+  weighted: number;
+  alpha: number;
+} {
+  let front = -1.0;
+  let weightedSum = 0.0;
+  let accAlpha = 0.0;
+  let trans = 1.0;
+  for (let k = 0; k < decks.length; k++) {
+    if (trans < 0.005) {
+      break;
+    }
+    const deck = decks[k];
+    if (deck.alpha <= 0.0) {
+      continue;
+    }
+    if (
+      deck.frontDistance >= 0.0 &&
+      (front < 0.0 || deck.frontDistance < front)
+    ) {
+      front = deck.frontDistance;
+    }
+    weightedSum += trans * deck.weightedDistanceSum;
+    accAlpha += trans * deck.alpha;
+    trans *= 1.0 - deck.alpha;
+  }
+  if (front < 0.0 || accAlpha <= 0.0) {
+    return { front: -1.0, weighted: -1.0, alpha: accAlpha };
+  }
+  return {
+    front: front,
+    weighted: weightedSum / Math.max(accAlpha, CLOUD_EMIT_MIN_ALPHA),
+    alpha: accAlpha,
+  };
+}
+
+/**
+ * Why the temporal resolve refused to reuse history for one texel.
+ *
+ * ORDER IS PART OF THE CONTRACT: the WGSL tests these in exactly this sequence
+ * and returns on the first hit, so a twin that reorders them would agree on
+ * "rejected" while disagreeing on WHY — and the reason is what the counters
+ * publish. ADD-ONLY.
+ */
+export const CloudHistoryRejection = Object.freeze({
+  /** History is usable; the resolve proceeds to the clamp + blend. */
+  NONE: 0,
+  /** A moment record that no distribution could have produced. */
+  MALFORMED_MOMENTS: 1,
+  /** Every texel in the producer's 3x3 was empty — the early-out. */
+  EMPTY_NEIGHBOURHOOD: 2,
+  /** The producer marked the reprojection unusable (velocity B = 0). */
+  PRODUCER_INVALID: 3,
+  /** The depth attachment carries the no-cloud sentinel. */
+  NO_CLOUD_ANCHOR: 4,
+  /** The motion vector lands outside the previous frame. */
+  OFF_SCREEN: 5,
+});
+
+/** One texel's attachment record, as the resolve reads it. */
+export interface CloudReconstructionTexel {
+  /** moments.r — mean normalized depth. */
+  readonly depthMean: number;
+  /** moments.g — mean squared normalized depth. */
+  readonly depthSecondMoment: number;
+  /** moments.b — mean coverage. */
+  readonly coverageMean: number;
+  /** moments.a — mean squared coverage. */
+  readonly coverageSecondMoment: number;
+  /** velocity.r/g — current UV minus reprojected previous UV. */
+  readonly motionU: number;
+  readonly motionV: number;
+  /** velocity.b — the producer's reprojection validity (1 or 0). */
+  readonly reprojectionValidity: number;
+  /** depth.g — transmittance-weighted mean distance, metres; -1 = no cloud. */
+  readonly weightedDepth: number;
+  /** This texel's UV. */
+  readonly u: number;
+  readonly v: number;
+}
+
+/**
+ * CPU twin of the `CLOUD_RECONSTRUCTION_CONSUME` validity gate in
+ * `CloudTemporalResolve.wgsl`.
+ *
+ * ★ WHAT THIS DELIBERATELY DOES NOT CONTAIN. The C13 ledger gives `C13-12`
+ *   "attachment-aware motion/depth rejection, variance clipping, reactive
+ *   history, wind advection in reprojection, disocclusion". Every one of those
+ *   needs a TUNED NUMBER — a depth-delta bound, a clip width in sigmas, a
+ *   reactivity ramp. There is no tuned number here, and that is the boundary:
+ *   this function returns only facts the producer already recorded
+ *   ({@link CloudHistoryRejection.PRODUCER_INVALID},
+ *   {@link CloudHistoryRejection.NO_CLOUD_ANCHOR},
+ *   {@link CloudHistoryRejection.OFF_SCREEN}), one internal-consistency
+ *   requirement whose only constant is the storage format's own quantum, and
+ *   one early-out that is exactly output-equivalent to running the full path.
+ *
+ * @returns A {@link CloudHistoryRejection} value.
+ */
+export function classifyCloudReconstructionHistory(
+  texel: CloudReconstructionTexel,
+): number {
+  const depthVariance =
+    texel.depthSecondMoment - texel.depthMean * texel.depthMean;
+  const coverageVariance =
+    texel.coverageSecondMoment - texel.coverageMean * texel.coverageMean;
+  if (
+    depthVariance < -CLOUD_MOMENT_F16_QUANTUM ||
+    coverageVariance < -CLOUD_MOMENT_F16_QUANTUM
+  ) {
+    return CloudHistoryRejection.MALFORMED_MOMENTS;
+  }
+  if (
+    texel.coverageMean <= 0.0 &&
+    coverageVariance <= CLOUD_MOMENT_F16_QUANTUM
+  ) {
+    return CloudHistoryRejection.EMPTY_NEIGHBOURHOOD;
+  }
+  if (texel.reprojectionValidity < 0.5) {
+    return CloudHistoryRejection.PRODUCER_INVALID;
+  }
+  if (texel.weightedDepth < 0.0) {
+    return CloudHistoryRejection.NO_CLOUD_ANCHOR;
+  }
+  const previousU = texel.u - texel.motionU;
+  const previousV = texel.v - texel.motionV;
+  if (
+    previousU < 0.0 ||
+    previousU > 1.0 ||
+    previousV < 0.0 ||
+    previousV > 1.0
+  ) {
+    return CloudHistoryRejection.OFF_SCREEN;
+  }
+  return CloudHistoryRejection.NONE;
+}

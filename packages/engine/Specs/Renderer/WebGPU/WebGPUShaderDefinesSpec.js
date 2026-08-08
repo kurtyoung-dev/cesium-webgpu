@@ -250,10 +250,26 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       expect(ShaderDefineHi.SPLAT_SPHERICAL_HARMONICS).toBe(1 << 3);
     });
 
+    it("pins the cloud reconstruction-emission axis to hi-word bit 4", function () {
+      // C13-10. Gates `ProceduralClouds.wgsl`'s per-sample front/weighted depth
+      // accumulation and the producer's matching read. Compile-time rather than
+      // a uniform because C13-39 established that WGSL register allocation is
+      // STATIC — a uniform gate would charge the four non-emitting march
+      // pipelines for registers only the half-resolution march uses.
+      expect(ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION).toBe(1 << 4);
+    });
+
+    it("pins the cloud reconstruction-consumption axis to hi-word bit 5", function () {
+      // C13-10, kept SEPARATE from bit 4 on purpose: C13-09's recorded
+      // "produced but NOT consumed" state is only A/B-testable while a build
+      // can compile the producer without the consumer.
+      expect(ShaderDefineHi.CLOUD_RECONSTRUCTION_CONSUME).toBe(1 << 5);
+    });
+
     it("pins every declared hi define (no unpinned additions)", function () {
       // Same discipline as the lo table: a newly-claimed hi bit must come
       // with its own explicit pin above; bump this count with it.
-      expect(Object.keys(ShaderDefineHi).length).toBe(4);
+      expect(Object.keys(ShaderDefineHi).length).toBe(6);
     });
 
     it("uses each hi bit exactly once, as a power of two, below bit 31", function () {

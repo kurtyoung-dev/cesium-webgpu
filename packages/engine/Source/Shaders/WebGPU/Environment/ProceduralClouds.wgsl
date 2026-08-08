@@ -15,6 +15,22 @@
 // References:
 //   - "The Real-Time Volumetric Cloudscapes of Horizon Zero Dawn" (Schneider, SIGGRAPH 2015)
 //   - "Nubis: Authoring Real-Time Volumetric Cloudscapes" (Schneider, SIGGRAPH 2017)
+//
+// ★ C13-10 — THE ONE COMPILE-TIME VARIANT THIS MODULE CARRIES.
+//   Every `//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION` block below is deleted by
+//   `WebGPUShaderPreprocessor.preprocess(source, 0, definesHi)` unless the
+//   caller sets `ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION`, and every
+//   such block keeps the historical code as its `//>>else`. At `definesHi = 0`
+//   the emitted WGSL is the pre-C13-10 module with only the directive COMMENT
+//   lines removed — pinned as an executed equality by
+//   `cloud-march-emission.spec.mjs` A1, not merely asserted here.
+//
+//   That is not style, it is the C13-39 constraint: WGSL register allocation is
+//   STATIC, so code added unconditionally to this module inflates the register
+//   footprint of the full-resolution march, the beer-shadow map, the cascade
+//   atlas and the god-ray mask, none of which produce a reconstruction
+//   attachment. Only the half-resolution march pipeline compiles the bit.
+//   Anything added here that is NOT inside a variant block is paid by all five.
 
 struct CloudUniforms {
   // Camera
@@ -2124,6 +2140,27 @@ fn cloudLutLuminance(c: vec3<f32>) -> f32 {
 struct DeckResult {
   hazed: vec3<f32>,
   alpha: f32,
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+  // C13-10 — per-sample reconstruction emission. Present ONLY in the emitting
+  // variant: C13-39's negative result makes register footprint a static
+  // property of the module, so these two accumulators (and every line that
+  // touches them) are deleted by the preprocessor for the full-resolution
+  // march, the shadow map, the cascade atlas and the god-ray mask.
+  //
+  //   frontDistance       nearest sample distance that actually contributed
+  //                       extinction, metres; -1 when the deck contributed
+  //                       nothing. This is the channel one mean depth cannot
+  //                       provide for separated overlapping volumes.
+  //   weightedDistanceSum Σ wᵢ·tᵢ over this deck's OWN transmittance weights,
+  //                       where wᵢ = (1 - exp(-σᵢ·Δ)) · Tᵢ is exactly the
+  //                       weight the radiance accumulation already uses. Their
+  //                       sum is the deck's alpha by construction, so the
+  //                       transmittance-weighted mean distance is this divided
+  //                       by `alpha` — an ACCUMULATION, not the uniform-
+  //                       extinction estimator C13-09 had to settle for.
+  frontDistance: f32,
+  weightedDistanceSum: f32,
+//>>endif
 };
 
 // Batch 443 — march ONE cloud shell [deckBottom, deckTop] along the view ray and
@@ -2149,6 +2186,13 @@ fn marchDeck(
   var result: DeckResult;
   result.hazed = vec3<f32>(0.0);
   result.alpha = 0.0;
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+  // -1 is the contract's "no cloud on this ray" sentinel, and it must survive
+  // every early return below (shell miss, depth occlusion, degenerate interval)
+  // rather than reading as distance zero.
+  result.frontDistance = -1.0;
+  result.weightedDistanceSum = 0.0;
+//>>endif
 
   // C13-04 — cloud shells follow WGS84's oblate figure instead of using the
   // equatorial radius as a sphere at every latitude.
@@ -2462,6 +2506,18 @@ fn marchDeck(
       // genera read consistently darker AND more opaque, thin genera wispier.
       let sampleTransmittance = exp(-density * curFineStep * effectiveAbsorption());
       let sampleWeight = (1.0 - sampleTransmittance) * transmittance;
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+      // C13-10 — accumulate the reconstruction depth from the SAME weight the
+      // radiance uses, at the SAME sample position. Nothing here re-derives a
+      // distance or re-samples the density: the emission is a running sum over
+      // work the march already did, which is why the added cost is two FMAs and
+      // a compare rather than another traversal.
+      if (result.frontDistance < 0.0) {
+        result.frontDistance = sampleDistance;
+      }
+      result.weightedDistanceSum =
+        result.weightedDistanceSum + sampleWeight * sampleDistance;
+//>>endif
 
       // W2 — sky-ambient gradient + ground bounce. The blue sky lights the cloud
       // TOPS (heightFraction -> 1) and the warm ground bounce lights the BOTTOMS
@@ -2619,8 +2675,46 @@ fn multiDeckEnabled() -> bool {
   return (u32(cloud.qualityFlags) & QF_MULTI_DECK) != 0u;
 }
 
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+// C13-10 — the emitting march's MRT. `@location(0)` is bit-for-bit the target
+// the historical single-output `fragmentMain` wrote; `@location(1)` is the
+// C13-09 `depth` attachment (slot 1, rg32float), written by the march itself
+// instead of by the producer's estimator. The producer cannot write it in the
+// same pass it reads it from, so ownership moves rather than duplicating.
+struct CloudMarchOutput {
+  @location(0) color: vec4<f32>,
+  // R = front (nearest contributing) distance, G = transmittance-weighted mean
+  // distance, both metres; (-1, -1) when the ray carries no cloud.
+  @location(1) depth: vec2<f32>,
+};
+
+// Resolve ONE deck's emission into the attachment's (front, weighted) pair.
+// `Σwᵢ = α` by construction, so the division is the exact weighted mean of the
+// marched sample distances; the floor only keeps a zero-alpha deck (which is
+// already screened by the sentinel) from dividing by zero.
+fn deckReconstructionDepth(result: DeckResult) -> vec2<f32> {
+  if (result.frontDistance < 0.0 || result.alpha <= 0.0) {
+    return vec2<f32>(-1.0, -1.0);
+  }
+  return vec2<f32>(
+    result.frontDistance,
+    result.weightedDistanceSum / max(result.alpha, CLOUD_EMIT_MIN_ALPHA)
+  );
+}
+
+// Alpha floor for the emission division. Well below the `transmittance < 0.01`
+// early-out and below any alpha that survives `density > 0.001`, so it never
+// participates in a value the attachment publishes — it exists so a deck that
+// set `frontDistance` and then had its weight cancel cannot produce a NaN.
+const CLOUD_EMIT_MIN_ALPHA: f32 = 1.0e-6;
+//>>endif
+
 @fragment
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+fn fragmentMain(input: VertexOutput) -> CloudMarchOutput {
+//>>else
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+//>>endif
   // V9 (Batch 432) — half-res jitter. In the half-res path each output texel
   // covers a 2×2 full-res block; offset the marched ray within that texel by a
   // per-frame Bayer pattern so consecutive frames (and neighbouring half-res
@@ -2674,11 +2768,25 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // V9 (Batch 432) — half-res path: emit PREMULTIPLIED cloud radiance + alpha.
     if (halfResEnabled()) {
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+      return CloudMarchOutput(
+        vec4<f32>(hazed * cloudAlpha, cloudAlpha),
+        deckReconstructionDepth(r)
+      );
+//>>else
       return vec4<f32>(hazed * cloudAlpha, cloudAlpha);
+//>>endif
     }
     // Full-res path — unchanged scene/cloud composite formula.
     let finalColor = mix(sceneColor.rgb, hazed, cloudAlpha);
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+    return CloudMarchOutput(
+      vec4<f32>(finalColor, sceneColor.a),
+      deckReconstructionDepth(r)
+    );
+//>>else
     return vec4<f32>(finalColor, sceneColor.a);
+//>>endif
   }
 
   // ── Batch 443 multi-deck path — march up to 3 shells (LOW/MID/HIGH) and
@@ -2731,6 +2839,17 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   var accColor = vec3<f32>(0.0);
   var accAlpha: f32 = 0.0;
   var trans: f32 = 1.0;
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+  // C13-10 — multi-deck emission. The FRONT is the MINIMUM contributing sample
+  // distance over the visible decks, not the first deck in composite order:
+  // the composite is ordered by |cameraAltitude - deckMidAltitude|, which is a
+  // vertical-band key and is not the same as ray order for an oblique view.
+  // The WEIGHTED mean composes exactly, because each deck enters the composite
+  // with weight `trans` and its own Σwᵢ sums to its alpha, so
+  // `Σₖ transₖ·Σᵢwₖᵢtₖᵢ / accAlpha` is the weighted mean over the whole stack.
+  var emitFront: f32 = -1.0;
+  var emitWeightedSum: f32 = 0.0;
+//>>endif
   for (var k: i32 = 0; k < 3; k = k + 1) {
     if (trans < 0.005) { break; } // opaque — far decks fully occluded, early-out
     let di = order[k];
@@ -2741,20 +2860,44 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       marchSamplePhase,
     );
     if (r.alpha <= 0.0) { continue; } // empty deck (missed shell / fully thin) — skip
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+    if (r.frontDistance >= 0.0 &&
+        (emitFront < 0.0 || r.frontDistance < emitFront)) {
+      emitFront = r.frontDistance;
+    }
+    emitWeightedSum = emitWeightedSum + trans * r.weightedDistanceSum;
+//>>endif
     accColor += trans * r.alpha * r.hazed;
     accAlpha += trans * r.alpha;
     trans = trans * (1.0 - r.alpha);
   }
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+  var emitDepth = vec2<f32>(-1.0, -1.0);
+  if (emitFront >= 0.0 && accAlpha > 0.0) {
+    emitDepth = vec2<f32>(
+      emitFront,
+      emitWeightedSum / max(accAlpha, CLOUD_EMIT_MIN_ALPHA)
+    );
+  }
+//>>endif
 
   // V9 (Batch 432) — half-res path: emit the PREMULTIPLIED multi-deck radiance +
   // composited alpha (same contract as the single-shell path; the bilateral
   // upscale over-composites against the scene). accColor is already premultiplied.
   if (halfResEnabled()) {
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+    return CloudMarchOutput(vec4<f32>(accColor, accAlpha), emitDepth);
+//>>else
     return vec4<f32>(accColor, accAlpha);
+//>>endif
   }
   // Full-res path — over-composite the premultiplied cloud stack onto the scene.
   let finalColor = sceneColor.rgb * (1.0 - accAlpha) + accColor;
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+  return CloudMarchOutput(vec4<f32>(finalColor, sceneColor.a), emitDepth);
+//>>else
   return vec4<f32>(finalColor, sceneColor.a);
+//>>endif
 }
 
 // ─── TAKRAM-9 (cloud-aware god rays) — screen-space transmittance mask ───

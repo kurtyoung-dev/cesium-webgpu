@@ -31,6 +31,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { defaultVariant } from "./lib/wgsl-variant.mjs";
 
 import {
   CLOUD_COVERAGE_ANCHOR,
@@ -170,11 +171,17 @@ test("both composed consumers still compile with the shared response", async () 
       path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
     ),
   });
+  // C13-10 — validate what a PIPELINE compiles, not the raw file. The march now
+  // carries a `//>>ifdef` variant, so its raw text deliberately contains both
+  // branches at once and is not valid WGSL on its own. `defaultVariant` is the
+  // engine's own preprocessor at `definesHi = 0`, i.e. exactly what every
+  // pipeline in this test's scope receives, and it is a no-op for any shader
+  // that carries no directives.
   assert.doesNotThrow(() =>
-    naga.validate_wgsl(`${domainSource}\n${cloudSource}`),
+    naga.validate_wgsl(`${domainSource}\n${defaultVariant(cloudSource)}`),
   );
   assert.doesNotThrow(() =>
-    naga.validate_wgsl(`${domainSource}\n${iblSource}`),
+    naga.validate_wgsl(`${domainSource}\n${defaultVariant(iblSource)}`),
   );
 });
 

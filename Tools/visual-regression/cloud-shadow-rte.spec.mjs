@@ -20,6 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { defaultVariant } from "./lib/wgsl-variant.mjs";
 
 import {
   CLOUD_SHADOW_WGS84_A,
@@ -888,15 +889,21 @@ test("every shader C13-06 touched passes naga validation", async () => {
   });
 
   assert.doesNotThrow(() =>
-    naga.validate_wgsl(`${densityDomainSource}\n${cloudShaderSource}`),
+    naga.validate_wgsl(
+      `${densityDomainSource}\n${defaultVariant(cloudShaderSource)}`,
+    ),
   );
-  assert.doesNotThrow(() => naga.validate_wgsl(aerialShaderSource));
+  assert.doesNotThrow(() =>
+    naga.validate_wgsl(defaultVariant(aerialShaderSource)),
+  );
   // CLOUD-LOW-COVERAGE-CUTOFF (fog arm) — VolumetricFog now consumes the
   // shared `cloudEffectiveCoverage` from the density-domain chunk, so its
   // compiled unit is the composition, exactly as the visible march's is.
   // `WebGPUVolumetricFogResources` prepends the same chunk at module scope.
   assert.doesNotThrow(() =>
-    naga.validate_wgsl(`${densityDomainSource}\n${fogShaderSource}`),
+    naga.validate_wgsl(
+      `${densityDomainSource}\n${defaultVariant(fogShaderSource)}`,
+    ),
   );
   // GlobeTerrain carries //>>ifdef blocks; validate the defines = 0 expansion
   // (the historical //>>else branch of every block), matching the shipped
@@ -906,26 +913,12 @@ test("every shader C13-06 touched passes naga validation", async () => {
   );
 });
 
-function expandZeroDefines(source) {
-  const out = [];
-  const stack = [];
-  for (const line of source.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("//>>ifdef")) {
-      stack.push({ emitting: false });
-      continue;
-    }
-    if (trimmed === "//>>else") {
-      stack[stack.length - 1].emitting = true;
-      continue;
-    }
-    if (trimmed === "//>>endif") {
-      stack.pop();
-      continue;
-    }
-    if (stack.every((frame) => frame.emitting)) {
-      out.push(line);
-    }
-  }
-  return out.join("\n");
-}
+// C13-10 — this used to be a hand-rolled re-implementation of the preprocessor
+// living in one spec. Three cloud shaders gained `//>>ifdef` variants in that
+// row, so several specs suddenly needed the same expansion, and six divergent
+// approximations of the engine's preprocessor is exactly the CPU-twin drift
+// this fleet has been burned by before. `defaultVariant` in
+// `lib/wgsl-variant.mjs` calls the ENGINE's `preprocess` at `definesHi = 0`,
+// which is the same expansion this function performed and is guaranteed to
+// track the real one.
+const expandZeroDefines = defaultVariant;

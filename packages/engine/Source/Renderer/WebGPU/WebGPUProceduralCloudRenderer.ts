@@ -119,6 +119,8 @@ import {
   CLOUD_ATTACHMENT_DEFAULT_DEPTH_NORMALIZATION_METERS,
   CLOUD_ATTACHMENT_UNIFORM_BYTES,
   CLOUD_ATTACHMENT_UNIFORM_FLOATS,
+  CLOUD_EMITTED_ATTACHMENTS,
+  CLOUD_MARCH_EMITTED_SLOT,
   CLOUD_OWNED_ATTACHMENTS,
   cloudAttachmentsNeedAllocation,
   commitCloudAttachmentGeneration,
@@ -126,6 +128,13 @@ import {
   packCloudAttachmentUniforms,
   releaseCloudAttachmentGeneration,
 } from "./WebGPUCloudReconstructionAttachments.js";
+// C13-10 — the reconstruction EMISSION/CONSUMPTION axes. Two compile-time bits,
+// never a uniform: C13-39 proved WGSL register allocation is static, so gating
+// the march's emission on a uniform would charge the shadow map, the cascade
+// atlas, the god-ray mask and the full-resolution march for registers only the
+// half-resolution march uses.
+import { ShaderDefineHi } from "./WebGPUShaderDefines.js";
+import { preprocess } from "./WebGPUShaderPreprocessor.js";
 import type {
   CloudAttachmentGeneration,
   CloudAttachmentUniformInputs,
@@ -180,6 +189,19 @@ const CLOUD_UNIFORM_FLOATS =
   148 + CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS + CLOUD_GENUS_MORPHOLOGY_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${ProceduralCloudsWGSL}`;
+// C13-10 — the hi-word masks for the emitting march / producer and the
+// consuming resolve. Named once so no call site spells a bit inline, and so a
+// spec can assert the renderer preprocesses with the SAME axis the registry
+// documents rather than with a literal that happens to match today.
+const CLOUD_MARCH_EMIT_DEFINES_HI =
+  ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION as number;
+const CLOUD_RECONSTRUCTION_CONSUME_DEFINES_HI =
+  ShaderDefineHi.CLOUD_RECONSTRUCTION_CONSUME as number;
+// Format of the attachment the march writes directly under the emission
+// variant. Read from the contract table, never restated: the pipeline target,
+// the texture and the WGSL output must agree by construction.
+const CLOUD_MARCH_EMITTED_FORMAT: GPUTextureFormat =
+  CLOUD_OWNED_ATTACHMENTS[CLOUD_MARCH_EMITTED_SLOT - 1].format;
 // C13-06 — the shell axes the WGSL march reads and the axes the sun-view frame
 // projects the footprint centre onto MUST be one value, or the shadow map lands
 // on a different deck than the one the visible march renders.
@@ -534,11 +556,12 @@ export interface CloudCache {
   // are defined at the reconstruction resolution, and on the full-res path
   // there is no intermediate march target to derive them from.
   //
-  // ★ NOTHING READS THEM. This is the row's infrastructure, and the consumers
-  //   are C13-10 (true 1/16-rate current-frame march) and C13-12 (motion/depth
-  //   rejection, variance clipping, reactive history, wind-aware reprojection,
-  //   disocclusion). Removing the targets because "no render pass reads them"
-  //   is the exact anti-pattern CLAUDE.md Principle 7 documents.
+  // ★ AT C13-09 NOTHING READ THEM. `reconstructionEnabled` below is C13-10's
+  //   SEPARATE opt-in that makes the march emit and the resolve consume; with
+  //   only `attachmentsEnabled` set the set is still produced-and-unread, which
+  //   is what keeps C13-09's own acceptance legs meaningful. Removing the
+  //   targets because "no render pass reads them" is the exact anti-pattern
+  //   CLAUDE.md Principle 7 documents.
   attachmentsEnabled: boolean;
   attachmentTextures: (GPUTexture | null)[];
   attachmentViews: (GPUTextureView | null)[];
@@ -557,6 +580,42 @@ export interface CloudCache {
   /** Reused packing record — the per-frame path must not allocate one. */
   attachmentUniformInputs: CloudAttachmentUniformInputs;
   attachmentRenderedThisFrame: boolean;
+  // ── C13-10 — march-emitted reconstruction + the first consumer ──
+  // A SECOND opt-in, DEFAULT OFF, layered on C13-09's. When it is set the
+  // half-resolution march compiles with `CLOUD_MARCH_EMIT_RECONSTRUCTION` and
+  // writes contract slot 1 (depth) as a second colour target; the producer
+  // compiles with the same bit, READS that target and drops the depth slot from
+  // its own MRT; and the temporal resolve compiles with
+  // `CLOUD_RECONSTRUCTION_CONSUME` and validates history against the set.
+  //
+  // ★ EVERY VARIANT PIPELINE IS A SEPARATE OBJECT BESIDE THE HISTORICAL ONE
+  //   (`halfEmitPipeline` beside `halfPipeline`, and so on). Nothing is
+  //   rebuilt, invalidated or recompiled when the flag flips, so the shipped
+  //   pipelines are the same GPU objects they would have been without this row
+  //   — which is what makes "default byte-identical" a structural property
+  //   rather than a promise.
+  reconstructionEnabled: boolean;
+  /** Half-res march compiled with the emission bit; 2 colour targets. */
+  halfEmitPipeline: GPURenderPipeline | null;
+  /** Producer compiled with the emission bit; reads depth, writes 2 targets. */
+  attachmentEmitPipeline: GPURenderPipeline | null;
+  attachmentEmitBindGroupLayout: GPUBindGroupLayout | null;
+  attachmentEmitBindGroup: GPUBindGroup | null;
+  /** March-target view `attachmentEmitBindGroup` was built against. */
+  attachmentEmitBindGroupSourceView: GPUTextureView | null;
+  /** Depth-attachment view `attachmentEmitBindGroup` was built against. */
+  attachmentEmitBindGroupDepthView: GPUTextureView | null;
+  /** Temporal resolve compiled with the consumption bit. */
+  temporalConsumePipeline: GPURenderPipeline | null;
+  temporalConsumeBindGroupLayout: GPUBindGroupLayout | null;
+  /** One consuming bind group per history READ parity, as the base path has. */
+  temporalConsumeBindGroups: [GPUBindGroup | null, GPUBindGroup | null];
+  /** Attachment generation the consuming bind groups were built under. */
+  temporalConsumeAttachmentGeneration: number;
+  /** True when the emitting march actually ran this frame. */
+  reconstructionEmittedThisFrame: boolean;
+  /** True when the consuming resolve actually ran this frame. */
+  reconstructionConsumedThisFrame: boolean;
   // C13-02 — the observability surface. `observability` is reset IN PLACE at
   // the top of every execute (including the culled early return, so a skipped
   // frame reports zeros rather than the last drawn frame's numbers), and
@@ -738,6 +797,19 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       attachmentUniformData: new Float32Array(CLOUD_ATTACHMENT_UNIFORM_FLOATS),
       attachmentUniformInputs: createCloudAttachmentUniformInputs(),
       attachmentRenderedThisFrame: false,
+      reconstructionEnabled: false,
+      halfEmitPipeline: null,
+      attachmentEmitPipeline: null,
+      attachmentEmitBindGroupLayout: null,
+      attachmentEmitBindGroup: null,
+      attachmentEmitBindGroupSourceView: null,
+      attachmentEmitBindGroupDepthView: null,
+      temporalConsumePipeline: null,
+      temporalConsumeBindGroupLayout: null,
+      temporalConsumeBindGroups: [null, null],
+      temporalConsumeAttachmentGeneration: 0,
+      reconstructionEmittedThisFrame: false,
+      reconstructionConsumedThisFrame: false,
       observability: createCloudFrameCounters(),
       cpuStages: new CloudCpuStageAccumulator(),
     };
@@ -949,7 +1021,58 @@ export function setCloudReconstructionAttachments(
   }
   cache.attachmentsEnabled = enabled;
   if (!enabled) {
+    cache.reconstructionEnabled = false;
     releaseCloudAttachmentResources(cache);
+  }
+}
+
+/**
+ * C13-10 — request (or release) MARCH-EMITTED reconstruction and its first
+ * consumer.
+ *
+ * This is a SECOND opt-in layered on {@link setCloudReconstructionAttachments},
+ * and the separation is deliberate. C13-09 landed the set as "produced but not
+ * consumed, by design"; folding both behind one switch would make that recorded
+ * claim untestable, because there would no longer be a build that produces
+ * without consuming. With this flag set:
+ *
+ *   - the half-resolution march compiles with
+ *     `ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION` and writes contract slot
+ *     1 itself, accumulating the TRUE transmittance-weighted depth from the same
+ *     weights its radiance uses rather than leaving the producer to estimate it
+ *     from the resolved alpha;
+ *   - the producer compiles with the same bit, reads that target, and drops the
+ *     depth slot from its own MRT (a pass cannot sample what it writes);
+ *   - the temporal resolve compiles with
+ *     `ShaderDefineHi.CLOUD_RECONSTRUCTION_CONSUME` and validates history
+ *     against the set.
+ *
+ * ★ THE OUTPUT MAY CHANGE WHEN THIS IS ON, and that is the point — it is the
+ *   first time anything reads the attachments. C13-09's own acceptance legs
+ *   (attachments on, output byte-identical) remain valid with this flag CLEAR.
+ *
+ * Enabling implies {@link setCloudReconstructionAttachments}: the consumer
+ * cannot read a set that was never allocated.
+ *
+ * @param context The owning graphics context.
+ * @param enabled True to compile and run the emitting/consuming variants.
+ */
+export function setCloudReconstruction(
+  context: CesiumGraphicsContext,
+  enabled: boolean,
+): void {
+  const cache = context._cloudCache;
+  if (!cache) {
+    if (enabled) {
+      const created = ensureCloudCache(context);
+      created.attachmentsEnabled = true;
+      created.reconstructionEnabled = true;
+    }
+    return;
+  }
+  cache.reconstructionEnabled = enabled;
+  if (enabled) {
+    cache.attachmentsEnabled = true;
   }
 }
 
@@ -1305,6 +1428,9 @@ function ensureTemporalResources(
     cache.temporalHeight = halfH;
     cache.temporalRead = 0;
     cache.temporalBindGroups = [null, null];
+    // C13-10 — the consuming groups reference the SAME history views.
+    cache.temporalConsumeBindGroups = [null, null];
+    cache.temporalConsumeAttachmentGeneration = 0;
     // History contents are undefined after (re)allocation — seed identity next frame.
     cache.temporalFirstFrame = true;
     cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
@@ -1379,12 +1505,117 @@ function ensureTemporalResources(
     }
   }
 
+  // ── C13-10 — the CONSUMING resolve ──
+  // Beside the historical pipeline, never replacing it. The extra bindings are
+  // the C13-09 attachment set; the base bind group cannot be reused because a
+  // bind-group layout is part of a pipeline's identity.
+  if (cache.reconstructionEnabled && !cache.temporalConsumePipeline) {
+    cache.temporalConsumeBindGroupLayout = makeBindGroupLayout(
+      device,
+      "CloudTemporalResolve consume BGL",
+      [
+        texture(0, Stage.FRAGMENT), // current freshly-marched half-res cloud
+        texture(1, Stage.FRAGMENT), // previous accumulated history
+        sampler(2, Stage.FRAGMENT),
+        uniformBuffer(3, Stage.FRAGMENT),
+        texture(4, Stage.FRAGMENT), // contract slot 1 — depth
+        texture(5, Stage.FRAGMENT), // contract slot 2 — velocity
+        texture(6, Stage.FRAGMENT), // contract slot 3 — moments
+      ],
+    );
+    const consumeModule = device.createShaderModule({
+      label: `CloudTemporalResolve shader (consume, definesHi=0x${CLOUD_RECONSTRUCTION_CONSUME_DEFINES_HI.toString(16)})`,
+      code: preprocess(
+        CloudTemporalResolveWGSL,
+        0,
+        CLOUD_RECONSTRUCTION_CONSUME_DEFINES_HI,
+      ),
+    });
+    cache.temporalConsumePipeline = device.createRenderPipeline({
+      label: "CloudTemporalResolve pipeline (consume)",
+      layout: device.createPipelineLayout({
+        label: "CloudTemporalResolve consume pipeline layout",
+        bindGroupLayouts: [cache.temporalConsumeBindGroupLayout],
+      }),
+      vertex: { module: consumeModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: consumeModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: CLOUD_TEMPORAL_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+  }
+
   return (
     !!cache.temporalHistoryView[0] &&
     !!cache.temporalHistoryView[1] &&
     !!cache.temporalPipeline &&
     !!cache.temporalBindGroups[0] &&
     !!cache.temporalBindGroups[1]
+  );
+}
+
+/**
+ * C13-10 — (re)build the CONSUMING resolve's bind groups, and report whether
+ * this frame may use them.
+ *
+ * Called from the composite block AFTER the producer has run, not from
+ * `ensureTemporalResources`: the attachment textures do not exist when the
+ * temporal gate is resolved, and building the groups there would leave the
+ * first enabled frame silently on the historical path.
+ *
+ * The groups are keyed on the ATTACHMENT GENERATION rather than on being
+ * non-null. A resize or a device swap advances that counter and reallocates the
+ * three textures the groups reference; the counter is monotonic by C13-09's
+ * contract (`releaseCloudAttachmentGeneration` never rewinds it), so a group
+ * captured under generation N can never key as current under a later one.
+ */
+function ensureCloudTemporalConsumeBindGroups(
+  device: GPUDevice,
+  cache: CloudCache,
+): boolean {
+  const generation = cache.attachmentGeneration.generation;
+  if (
+    !cache.reconstructionEnabled ||
+    !cache.temporalConsumePipeline ||
+    !cache.temporalConsumeBindGroupLayout ||
+    !cache.halfView ||
+    !cache.temporalUniformBuffer ||
+    !cache.temporalSampler ||
+    !cache.temporalHistoryView[0] ||
+    !cache.temporalHistoryView[1] ||
+    generation <= 0 ||
+    !cache.attachmentViews[0] ||
+    !cache.attachmentViews[1] ||
+    !cache.attachmentViews[2]
+  ) {
+    return false;
+  }
+  if (
+    !cache.temporalConsumeBindGroups[0] ||
+    !cache.temporalConsumeBindGroups[1] ||
+    cache.temporalConsumeAttachmentGeneration !== generation
+  ) {
+    for (let readIndex = 0; readIndex < 2; readIndex++) {
+      cache.temporalConsumeBindGroups[readIndex] = device.createBindGroup({
+        label: `CloudTemporalResolve bind group (consume, read ${readIndex})`,
+        layout: cache.temporalConsumeBindGroupLayout,
+        entries: [
+          { binding: 0, resource: cache.halfView },
+          { binding: 1, resource: cache.temporalHistoryView[readIndex]! },
+          { binding: 2, resource: cache.temporalSampler },
+          { binding: 3, resource: { buffer: cache.temporalUniformBuffer } },
+          { binding: 4, resource: cache.attachmentViews[0]! },
+          { binding: 5, resource: cache.attachmentViews[1]! },
+          { binding: 6, resource: cache.attachmentViews[2]! },
+        ],
+      });
+    }
+    cache.temporalConsumeAttachmentGeneration = generation;
+  }
+  return (
+    !!cache.temporalConsumeBindGroups[0] && !!cache.temporalConsumeBindGroups[1]
   );
 }
 
@@ -1407,6 +1638,17 @@ function releaseCloudAttachmentResources(cache: CloudCache): void {
   cache.attachmentBindGroup = null;
   cache.attachmentBindGroupSourceView = null;
   cache.attachmentRenderedThisFrame = false;
+  // C13-10 — the emitting group and BOTH consuming groups reference textures
+  // that were just destroyed. Dropping them here (rather than trusting the
+  // generation check) is what keeps a resize from submitting a bind group whose
+  // depth attachment no longer exists.
+  cache.attachmentEmitBindGroup = null;
+  cache.attachmentEmitBindGroupSourceView = null;
+  cache.attachmentEmitBindGroupDepthView = null;
+  cache.temporalConsumeBindGroups = [null, null];
+  cache.temporalConsumeAttachmentGeneration = 0;
+  cache.reconstructionEmittedThisFrame = false;
+  cache.reconstructionConsumedThisFrame = false;
   releaseCloudAttachmentGeneration(cache.attachmentGeneration);
 }
 
@@ -1517,6 +1759,72 @@ function ensureCloudAttachmentResources(
     cache.attachmentBindGroupSourceView = sourceView;
   }
 
+  // ── C13-10 — the EMITTING producer ──
+  // Built beside the estimating one, never in place of it, so clearing the
+  // flag returns to exactly the pipeline C13-09 shipped. Binding 2 is the depth
+  // attachment the MARCH wrote this frame; the pass therefore writes only the
+  // remaining two targets, because sampling an attachment it also writes is not
+  // expressible in a single render pass and duplicating the target to make it
+  // expressible would cost 8 B/texel for a copy.
+  if (cache.reconstructionEnabled && !cache.attachmentEmitPipeline) {
+    cache.attachmentEmitBindGroupLayout = makeBindGroupLayout(
+      device,
+      "CloudReconstructionAttachments emit BGL",
+      [
+        texture(0, Stage.FRAGMENT), // freshly marched half-res cloud
+        uniformBuffer(1, Stage.FRAGMENT),
+        texture(2, Stage.FRAGMENT), // contract slot 1, written by the march
+      ],
+    );
+    const emitModule = device.createShaderModule({
+      label: `CloudReconstructionAttachments shader (emit, definesHi=0x${CLOUD_MARCH_EMIT_DEFINES_HI.toString(16)})`,
+      code: preprocess(
+        CloudReconstructionAttachmentsWGSL,
+        0,
+        CLOUD_MARCH_EMIT_DEFINES_HI,
+      ),
+    });
+    cache.attachmentEmitPipeline = device.createRenderPipeline({
+      label: "CloudReconstructionAttachments pipeline (emit)",
+      layout: device.createPipelineLayout({
+        label: "CloudReconstructionAttachments emit pipeline layout",
+        bindGroupLayouts: [cache.attachmentEmitBindGroupLayout],
+      }),
+      vertex: { module: emitModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: emitModule,
+        entryPoint: "fragmentMain",
+        targets: CLOUD_EMITTED_ATTACHMENTS.map((spec) => ({
+          format: spec.format,
+        })),
+      },
+      primitive: { topology: "triangle-list" },
+    });
+  }
+
+  const emittedDepthView = cache.attachmentViews[CLOUD_MARCH_EMITTED_SLOT - 1];
+  if (
+    cache.reconstructionEnabled &&
+    cache.attachmentEmitBindGroupLayout &&
+    cache.attachmentUniformBuffer &&
+    emittedDepthView &&
+    (!cache.attachmentEmitBindGroup ||
+      cache.attachmentEmitBindGroupSourceView !== sourceView ||
+      cache.attachmentEmitBindGroupDepthView !== emittedDepthView)
+  ) {
+    cache.attachmentEmitBindGroup = device.createBindGroup({
+      label: "CloudReconstructionAttachments bind group (emit)",
+      layout: cache.attachmentEmitBindGroupLayout,
+      entries: [
+        { binding: 0, resource: sourceView },
+        { binding: 1, resource: { buffer: cache.attachmentUniformBuffer } },
+        { binding: 2, resource: emittedDepthView },
+      ],
+    });
+    cache.attachmentEmitBindGroupSourceView = sourceView;
+    cache.attachmentEmitBindGroupDepthView = emittedDepthView;
+  }
+
   if (!cache.attachmentPipeline || !cache.attachmentBindGroup) {
     return false;
   }
@@ -1526,6 +1834,25 @@ function ensureCloudAttachmentResources(
     }
   }
   return true;
+}
+
+/**
+ * C13-10 — is the emitting/consuming variant fully built and usable this frame?
+ *
+ * Both halves of the handshake are required together: a march that emits into a
+ * depth target no producer reads would leave the attachment stale, and a
+ * producer compiled for the emitting layout cannot run against a march that did
+ * not write slot 1. Anything missing falls the whole frame back to C13-09's
+ * estimator path, which is always correct — never to a half-applied variant.
+ */
+function cloudReconstructionVariantReady(cache: CloudCache): boolean {
+  return (
+    cache.reconstructionEnabled &&
+    !!cache.halfEmitPipeline &&
+    !!cache.attachmentEmitPipeline &&
+    !!cache.attachmentEmitBindGroup &&
+    !!cache.attachmentViews[CLOUD_MARCH_EMITTED_SLOT - 1]
+  );
 }
 
 /**
@@ -1583,6 +1910,49 @@ function ensureHalfResResources(
         module: shaderModule,
         entryPoint: "fragmentMain",
         targets: [{ format: CLOUD_HALF_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+  }
+
+  // C13-10 — the EMITTING half-res march. A SEPARATE pipeline built from a
+  // SEPARATE module, beside the historical one rather than replacing it, so a
+  // runtime flip never invalidates or recompiles the shipped pipeline. It is
+  // the ONLY pipeline in this renderer compiled with the emission bit: the
+  // full-resolution march, the beer-shadow map, the cascade atlas and the
+  // god-ray mask all keep compiling `PROCEDURAL_CLOUDS_SOURCE` verbatim at
+  // `definesHi = 0`, which is what holds their register footprint at the value
+  // C13-39 measured.
+  if (
+    cache.reconstructionEnabled &&
+    !cache.halfEmitPipeline &&
+    cache.bindGroupLayout
+  ) {
+    const emitModule = device.createShaderModule({
+      label: `ProceduralClouds shader (half-res, emit, definesHi=0x${CLOUD_MARCH_EMIT_DEFINES_HI.toString(16)})`,
+      code: preprocess(
+        PROCEDURAL_CLOUDS_SOURCE,
+        0,
+        CLOUD_MARCH_EMIT_DEFINES_HI,
+      ),
+    });
+    cache.halfEmitPipeline = device.createRenderPipeline({
+      label: "ProceduralClouds half-res pipeline (emit)",
+      layout: device.createPipelineLayout({
+        label: "ProceduralClouds half-res emit pipeline layout",
+        bindGroupLayouts: [cache.bindGroupLayout],
+      }),
+      vertex: { module: emitModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: emitModule,
+        entryPoint: "fragmentMain",
+        // @location(0) is the historical colour target; @location(1) is
+        // contract slot 1, whose format comes from the contract table so the
+        // pipeline and the texture can never disagree.
+        targets: [
+          { format: CLOUD_HALF_FORMAT },
+          { format: CLOUD_MARCH_EMITTED_FORMAT },
+        ],
       },
       primitive: { topology: "triangle-list" },
     });
@@ -2259,6 +2629,10 @@ export function executeProceduralClouds(
   if (existingCache) {
     existingCache.maskRenderedThisFrame = false;
     existingCache.attachmentRenderedThisFrame = false;
+    // C13-10 — same reason, one level up: a culled frame must not report that
+    // the march emitted or that the resolve consumed.
+    existingCache.reconstructionEmittedThisFrame = false;
+    existingCache.reconstructionConsumedThisFrame = false;
     resetCloudFrameCounters(existingCache.observability);
     existingCache.cpuStages.beginStage(CloudCpuStage.TOTAL);
   }
@@ -2516,10 +2890,21 @@ export function executeProceduralClouds(
   if (!cache.attachmentsEnabled && cache.attachmentGeneration.liveBytes > 0) {
     releaseCloudAttachmentResources(cache);
   }
+  // C13-10 — the same self-heal one level up. Consuming a set that is not being
+  // produced is the stale-read failure the whole per-frame flag discipline
+  // exists to prevent, so a directly-cleared `attachmentsEnabled` also clears
+  // the dependent flag rather than leaving a half-armed variant.
+  if (!cache.attachmentsEnabled && cache.reconstructionEnabled) {
+    cache.reconstructionEnabled = false;
+  }
   // C13-09 — a RESIDENT figure, so it is published every execute rather than
   // only on frames the producer ran. `liveBytes > 0` with `attachmentPixels`
   // 0 is the real state "the set is allocated but this frame produced none".
   counters.attachmentLiveBytes = cache.attachmentGeneration.liveBytes;
+  // C13-10 — RESIDENT too: the requested state, published every execute so a
+  // frame that requested the variant but could not build it reads as
+  // `requested=1, emitted=0` rather than as "nobody asked".
+  counters.reconstructionRequested = cache.reconstructionEnabled ? 1 : 0;
 
   data[offset++] = qualityResolved.maxSteps;
   data[offset++] = qualityResolved.lightSteps;
@@ -3380,54 +3765,21 @@ export function executeProceduralClouds(
     cache.upscaleUniformBuffer &&
     cache.upscaleSampler
   ) {
-    // ── V9 (Batch 432) — HALF-RES PATH ──
-    // Pass 1: raymarch into the 0.5× rgba16float target (CLEAR to transparent so
-    // non-cloud texels stay 0; the shader emits premultiplied cloud + alpha).
-    const halfPass = encoder.beginRenderPass(
-      timedCloudPass(context, {
-        label: "ProceduralClouds half-res pass",
-        colorAttachments: [
-          {
-            view: cache.halfView,
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: "clear",
-            storeOp: "store",
-          },
-        ],
-      }),
-    );
-    halfPass.setPipeline(cache.halfPipeline);
-    halfPass.setBindGroup(0, bindGroup);
-    halfPass.draw(3); // full-screen triangle
-    halfPass.end();
-
-    // ── C13-09 — RECONSTRUCTION ATTACHMENT PRODUCER (opt-in, default OFF) ──
-    // Runs between the raymarch and the temporal resolve, so C13-12 can read
-    // the set inside the resolve without reordering anything. Writes front /
-    // transmittance-weighted cloud depth, screen-space motion with its
-    // validity, and the depth/coverage moment pair.
-    //
-    // ★ NOTHING READS THESE YET, AND THE COMPOSITE BELOW IS UNCHANGED. With
-    //   `attachmentsEnabled` false (the default) this block does not run at
-    //   all: no target is allocated, no pass is encoded, and the cloud lane is
-    //   identical in pixels AND in cost. With it on, the producer writes and
-    //   the counters report, but the upscale still reads exactly what it read
-    //   before. The consumers are C13-10 (true 1/16-rate current-frame march)
-    //   and C13-12 (motion/depth rejection, variance clipping, reactive
-    //   history, wind-aware reprojection, disocclusion).
-    //
-    // A usable current inverse view-projection-relative-to-eye is REQUIRED:
-    // without it the per-pixel ray direction is meaningless and every channel
-    // would be noise. Orthographic and morph frames therefore produce no
-    // attachments, which is the same residual C13-05 recorded — they stay
-    // current-only until reconstruction carries a per-pixel ray origin.
-    if (cache.attachmentsEnabled && cache.halfView) {
+    // ── C13-09/C13-10 — ATTACHMENT RESOURCES, RESOLVED BEFORE THE MARCH ──
+    // The transform check and the allocation are hoisted above the raymarch
+    // because C13-10's emitting variant needs contract slot 1 to EXIST as a
+    // colour attachment of the march pass itself. With the attachment stage off
+    // (the default) neither call runs and the block below is exactly the
+    // pre-C13-09 encode.
+    const attachmentStageActive = cache.attachmentsEnabled && !!cache.halfView;
+    let attachmentsReady = false;
+    if (attachmentStageActive) {
       const attachmentTransformValid = resolveCloudInverseCurrentVpRte(
         temporalReprojectionSupported,
         us?.inverseProjection,
         us?.inverseView,
       );
-      const attachmentsReady =
+      attachmentsReady =
         attachmentTransformValid &&
         ensureCloudAttachmentResources(
           device,
@@ -3436,6 +3788,82 @@ export function executeProceduralClouds(
           cache.halfHeight,
           cache.halfView,
         );
+    }
+    // C13-10 — the emitting march runs only when BOTH halves of the handshake
+    // built. A half-applied variant (a march that emits into a target no
+    // producer reads, or a producer expecting a slot the march never wrote) is
+    // never encoded; the frame falls back to the estimator path instead.
+    const emitReconstruction =
+      attachmentsReady && cloudReconstructionVariantReady(cache);
+
+    // ── V9 (Batch 432) — HALF-RES PATH ──
+    // Pass 1: raymarch into the 0.5× rgba16float target (CLEAR to transparent so
+    // non-cloud texels stay 0; the shader emits premultiplied cloud + alpha).
+    // C13-10 — when emitting, the SAME pass additionally writes contract slot 1
+    // from the march's own per-sample accumulation. One pass, one traversal:
+    // the depth is a by-product of work already done, not a second march.
+    const halfPass = encoder.beginRenderPass(
+      timedCloudPass(context, {
+        label: "ProceduralClouds half-res pass",
+        colorAttachments: emitReconstruction
+          ? [
+              {
+                view: cache.halfView,
+                clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                loadOp: "clear" as const,
+                storeOp: "store" as const,
+              },
+              {
+                view: cache.attachmentViews[CLOUD_MARCH_EMITTED_SLOT - 1]!,
+                // The contract's own sentinel: a texel the triangle somehow
+                // misses must read "no cloud", never distance zero.
+                clearValue:
+                  CLOUD_OWNED_ATTACHMENTS[CLOUD_MARCH_EMITTED_SLOT - 1]
+                    .clearValue,
+                loadOp: "clear" as const,
+                storeOp: "store" as const,
+              },
+            ]
+          : [
+              {
+                view: cache.halfView,
+                clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                loadOp: "clear" as const,
+                storeOp: "store" as const,
+              },
+            ],
+      }),
+    );
+    halfPass.setPipeline(
+      emitReconstruction ? cache.halfEmitPipeline! : cache.halfPipeline,
+    );
+    halfPass.setBindGroup(0, bindGroup);
+    halfPass.draw(3); // full-screen triangle
+    halfPass.end();
+    cache.reconstructionEmittedThisFrame = emitReconstruction;
+
+    // ── C13-09 — RECONSTRUCTION ATTACHMENT PRODUCER (opt-in, default OFF) ──
+    // Runs between the raymarch and the temporal resolve, so C13-12 can read
+    // the set inside the resolve without reordering anything. Writes front /
+    // transmittance-weighted cloud depth, screen-space motion with its
+    // validity, and the depth/coverage moment pair.
+    //
+    // ★ WITH `attachmentsEnabled` FALSE (the default) this block does not run
+    //   at all: no target is allocated, no pass is encoded, and the cloud lane
+    //   is identical in pixels AND in cost. With it on but C13-10's
+    //   `reconstructionEnabled` CLEAR, the producer writes and the counters
+    //   report while the upscale still reads exactly what it read before —
+    //   C13-09's "produced but not consumed" state, preserved deliberately so
+    //   its acceptance legs stay meaningful. With BOTH on, the march wrote slot
+    //   1 itself, this pass reads it and writes the remaining two, and the
+    //   resolve below validates history against the set.
+    //
+    // A usable current inverse view-projection-relative-to-eye is REQUIRED:
+    // without it the per-pixel ray direction is meaningless and every channel
+    // would be noise. Orthographic and morph frames therefore produce no
+    // attachments, which is the same residual C13-05 recorded — they stay
+    // current-only until reconstruction carries a per-pixel ray origin.
+    if (attachmentStageActive) {
       if (attachmentsReady && cache.attachmentUniformBuffer) {
         const attachmentCurrentCamera = us?.cameraPosition ?? camPos;
         const attachmentPreviousCamera = us?.previousCameraPosition;
@@ -3509,22 +3937,39 @@ export function executeProceduralClouds(
         // encode sites as SOURCE TEXT and requires them to agree with the
         // registry in both directions. The constant and this literal are
         // pinned equal by `cloud-reconstruction-attachments.spec.mjs`.
+        // C13-10 — the emitting variant's target list starts at contract slot 2,
+        // because slot 1 was already written by the march this pass reads it
+        // from. Derived from `CLOUD_EMITTED_ATTACHMENTS` so the pipeline's
+        // formats and the attachment list come from one table.
+        const producedAttachments = emitReconstruction
+          ? CLOUD_EMITTED_ATTACHMENTS
+          : CLOUD_OWNED_ATTACHMENTS;
+        const producedViewOffset = emitReconstruction ? 1 : 0;
         const attachmentPass = encoder.beginRenderPass(
           timedCloudPass(context, {
             label: "CloudReconstructionAttachments pass",
             // CLEAR every target: a texel the full-screen triangle somehow
             // misses must read as "no cloud, no motion, no variance" rather
             // than as the previous generation's contents.
-            colorAttachments: cache.attachmentViews.map((view, index) => ({
-              view: view!,
-              clearValue: CLOUD_OWNED_ATTACHMENTS[index].clearValue,
+            colorAttachments: producedAttachments.map((spec, index) => ({
+              view: cache.attachmentViews[index + producedViewOffset]!,
+              clearValue: spec.clearValue,
               loadOp: "clear" as const,
               storeOp: "store" as const,
             })),
           }),
         );
-        attachmentPass.setPipeline(cache.attachmentPipeline!);
-        attachmentPass.setBindGroup(0, cache.attachmentBindGroup!);
+        attachmentPass.setPipeline(
+          emitReconstruction
+            ? cache.attachmentEmitPipeline!
+            : cache.attachmentPipeline!,
+        );
+        attachmentPass.setBindGroup(
+          0,
+          emitReconstruction
+            ? cache.attachmentEmitBindGroup!
+            : cache.attachmentBindGroup!,
+        );
         attachmentPass.draw(3); // full-screen triangle
         attachmentPass.end();
         cache.attachmentRenderedThisFrame = true;
@@ -3532,8 +3977,12 @@ export function executeProceduralClouds(
         counters.attachmentWidth = cache.halfWidth;
         counters.attachmentHeight = cache.halfHeight;
         counters.attachmentPixels = cache.halfWidth * cache.halfHeight;
+        // The CONTRACT set is always three targets; what changes with the
+        // variant is which pass wrote each one, not how many exist.
         counters.attachmentCount = cache.attachmentViews.length;
         counters.attachmentGeneration = cache.attachmentGeneration.generation;
+        counters.reconstructionEmitted = emitReconstruction ? 1 : 0;
+        counters.reconstructionProducerTargets = producedAttachments.length;
       }
     }
 
@@ -3714,7 +4163,20 @@ export function executeProceduralClouds(
       td[to++] = 0.0;
       device.queue.writeBuffer(cache.temporalUniformBuffer, 0, td);
 
-      const temporalBindGroup = cache.temporalBindGroups[readIdx]!;
+      // ── C13-10 — THE FIRST CONSUMER THE ATTACHMENTS HAVE EVER HAD ──
+      // Gated on the attachments having been PRODUCED THIS FRAME
+      // (`attachmentRenderedThisFrame`), not merely on being allocated: a frame
+      // whose producer was skipped (no usable inverse transform, a culled
+      // march) would otherwise validate this frame's history against last
+      // frame's motion vectors, which is precisely the stale-set failure
+      // C13-09's per-frame flag exists to make impossible.
+      const consumeReconstruction =
+        cache.reconstructionEnabled &&
+        cache.attachmentRenderedThisFrame &&
+        ensureCloudTemporalConsumeBindGroups(device, cache);
+      const temporalBindGroup = consumeReconstruction
+        ? cache.temporalConsumeBindGroups[readIdx]!
+        : cache.temporalBindGroups[readIdx]!;
       const temporalPass = encoder.beginRenderPass(
         timedCloudPass(context, {
           label: "CloudTemporalResolve pass",
@@ -3728,10 +4190,16 @@ export function executeProceduralClouds(
           ],
         }),
       );
-      temporalPass.setPipeline(cache.temporalPipeline);
+      temporalPass.setPipeline(
+        consumeReconstruction
+          ? cache.temporalConsumePipeline!
+          : cache.temporalPipeline,
+      );
       temporalPass.setBindGroup(0, temporalBindGroup);
       temporalPass.draw(3);
       temporalPass.end();
+      cache.reconstructionConsumedThisFrame = consumeReconstruction;
+      counters.reconstructionConsumed = consumeReconstruction ? 1 : 0;
 
       // The upscale reads the freshly-written, accumulated history.
       upscaleSourceView = writeView;
@@ -3983,6 +4451,15 @@ export function destroyProceduralCloudResources(
     cache.attachmentBindGroupLayout = null;
     cache.attachmentUniformBuffer?.destroy();
     cache.attachmentUniformBuffer = null;
+    // C13-10 — the variant pipelines and layouts are device-owned exactly like
+    // the historical ones, so they are dropped HERE and only here. A flag flip
+    // must never destroy them: rebuilding a pipeline on a user toggle is the
+    // hitch the separate-object design exists to avoid.
+    cache.halfEmitPipeline = null;
+    cache.attachmentEmitPipeline = null;
+    cache.attachmentEmitBindGroupLayout = null;
+    cache.temporalConsumePipeline = null;
+    cache.temporalConsumeBindGroupLayout = null;
     cache.initialized = false;
     context._cloudCache = undefined;
   }

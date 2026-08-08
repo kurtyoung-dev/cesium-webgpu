@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { defaultVariant } from "./lib/wgsl-variant.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -227,10 +228,14 @@ test("visible and IBL density shaders remain valid WGSL with shared domain", asy
       path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
     ),
   });
+  // C13-10 — naga must see what the PIPELINE compiles: the cloud march now
+  // carries a `//>>ifdef` variant, so its raw text holds both branches at once
+  // and is not valid WGSL alone. `defaultVariant` is the engine preprocessor at
+  // `definesHi = 0`, and a no-op for a directive-free shader.
   assert.doesNotThrow(() =>
-    naga.validate_wgsl(`${domainSource}\n${cloudSource}`),
+    naga.validate_wgsl(`${domainSource}\n${defaultVariant(cloudSource)}`),
   );
   assert.doesNotThrow(() =>
-    naga.validate_wgsl(`${domainSource}\n${iblSource}`),
+    naga.validate_wgsl(`${domainSource}\n${defaultVariant(iblSource)}`),
   );
 });

@@ -202,6 +202,31 @@ export interface CloudFrameCounters {
    */
   attachmentLiveBytes: number;
 
+  // ── C13-10 march-emitted reconstruction ──
+  // Gate C asks for evidence that the current work and the reconstruction
+  // topology are what they are claimed to be. These four are the minimum that
+  // distinguishes "the variant was requested" from "the variant actually ran",
+  // which is the distinction a half-built pipeline would otherwise hide.
+  /**
+   * RESIDENT: 1 when `reconstructionEnabled` is set on the cache, published
+   * every execute. `requested = 1` beside `emitted = 0` is the honest report of
+   * a frame that asked for the variant and fell back — a full-resolution tier,
+   * an orthographic/morph frame, or a pipeline that could not build.
+   */
+  reconstructionRequested: number;
+  /** 1 when the EMITTING march pipeline encoded this frame. */
+  reconstructionEmitted: number;
+  /** 1 when the CONSUMING temporal resolve encoded this frame. */
+  reconstructionConsumed: number;
+  /**
+   * Colour targets the producer pass wrote this frame: 3 on the estimator path
+   * and 2 when the march emitted contract slot 1 itself. Not derivable from
+   * `attachmentCount` (which is the CONTRACT size and does not change), and it
+   * is the counter that proves ownership of the depth slot actually moved
+   * rather than the set quietly being written twice.
+   */
+  reconstructionProducerTargets: number;
+
   /** Cloud shadow passes encoded this frame (single map + cascade atlas). */
   shadowPassCount: number;
   /** Single beer-shadow-map edge length; 0 when cast shadows are off. */
@@ -245,6 +270,13 @@ const RESET_FIELDS: readonly (keyof CloudFrameCounters)[] = Object.freeze([
   "attachmentPixels",
   "attachmentCount",
   "attachmentGeneration",
+  // C13-10 — per-frame verdicts. `reconstructionRequested` is deliberately
+  // ABSENT for the same reason `attachmentLiveBytes` is: it describes the
+  // RESIDENT request, and zeroing it every frame would report the variant as
+  // un-asked-for on any frame that fell back.
+  "reconstructionEmitted",
+  "reconstructionConsumed",
+  "reconstructionProducerTargets",
   "weatherCacheHits",
   "weatherCacheMisses",
   "weatherUploads",
@@ -286,6 +318,10 @@ export function createCloudFrameCounters(): CloudFrameCounters {
     attachmentCount: 0,
     attachmentGeneration: 0,
     attachmentLiveBytes: 0,
+    reconstructionRequested: 0,
+    reconstructionEmitted: 0,
+    reconstructionConsumed: 0,
+    reconstructionProducerTargets: 0,
     weatherCacheHits: 0,
     weatherCacheMisses: 0,
     weatherUploads: 0,
@@ -624,11 +660,29 @@ export function snapshotCloudObservability(
           bytesPerTexel: spec.bytesPerTexel,
           ownedHere: spec.ownedHere,
           producer: spec.producer,
-          // Empty until C13-10/12 land. An empty list is the honest state, not
-          // a formatting artifact: nothing reads these yet.
+          // C13-10 — non-null only on the depth slot, whose ownership moves to
+          // the march under the emission variant. Published so a reader of the
+          // debug surface can see WHICH pass wrote the target they are looking
+          // at without opening the renderer.
+          variantProducer: spec.variantProducer ?? null,
+          // C13-10 gave the owned set its first consumer (the temporal
+          // resolve). C13-12 adds no new READER — it adds POLICY inside that
+          // same pass — so this list is expected to stay as it is.
           consumers: spec.consumers.slice(),
           channels: spec.channels,
         })),
+      },
+      // C13-10 — the emission/consumption verdicts, kept BESIDE the attachment
+      // block rather than inside it: the attachments are a resource, this is
+      // what happened to them this frame. `requested` true with `emitted` false
+      // is the honest report of a fallback, and `producerTargets` is what
+      // proves ownership of the depth slot moved (3 -> 2) rather than the set
+      // being written twice.
+      emission: {
+        requested: c.reconstructionRequested > 0,
+        emitted: c.reconstructionEmitted > 0,
+        consumed: c.reconstructionConsumed > 0,
+        producerTargets: c.reconstructionProducerTargets,
       },
       lifetime: {
         generation: inputs.temporal.generation,

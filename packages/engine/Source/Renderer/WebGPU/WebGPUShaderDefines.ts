@@ -1061,6 +1061,75 @@ export const ShaderDefineHi = Object.freeze({
    * (`loadSplatShCoefficient` / `evaluateSplatSH` / `vertexMain`).
    */
   SPLAT_SPHERICAL_HARMONICS: hiDefineBit(3),
+
+  /**
+   * Cloud RECONSTRUCTION-EMISSION axis (`C13-10`). The march becomes the
+   * producer of the `C13-09` depth attachment instead of the analytic
+   * estimator that stands in for it.
+   *
+   *   * SET — `ProceduralClouds.wgsl`'s `marchDeck` additionally accumulates
+   *     the FRONT (nearest contributing sample) distance and the running
+   *     `Σ wᵢ·tᵢ` over its own transmittance weights, `fragmentMain` returns a
+   *     second `@location(1) vec2<f32>` carrying `(front, Σwᵢtᵢ/α)` in metres,
+   *     and `CloudReconstructionAttachments.wgsl` READS that target instead of
+   *     estimating (its own output struct then drops `depth`, because the
+   *     march already wrote it and a pass cannot read what it writes).
+   *   * CLEAR (the `//>>else`, and the DEFAULT) — every branch emits the
+   *     historical code: the march returns one colour target and the producer
+   *     computes `weightedDepthFromAlpha` over the geometric shell interval.
+   *
+   * ★ WHY THIS IS A COMPILE-TIME VARIANT AND NOT A UNIFORM. `C13-39`'s
+   *   negative result established that WGSL register allocation is STATIC:
+   *   anything added to the shared `ProceduralClouds` module inflates EVERY
+   *   pipeline compiled from it — the visible march, the full-resolution
+   *   march, the shadow map, the cascade atlas and the god-ray mask, four of
+   *   which want nothing to do with a reconstruction attachment. Gating the
+   *   emission on a uniform would pay the registers on all of them
+   *   unconditionally. Gating it on this bit means the four non-emitting
+   *   pipelines compile the module at `definesHi = 0`, where the preprocessor
+   *   has already deleted the emission text, so their register footprint is
+   *   exactly what C13-39 measured. Any occupancy claim about the EMITTING
+   *   pipeline is owed the interleaved-A/B protocol.
+   *
+   * Gating (single flip point): OR'd in by the cloud renderer when
+   * `cache.reconstructionEnabled` is set, and ONLY for the half-resolution
+   * march pipeline and the attachment producer. The emitting pipelines are
+   * SEPARATE objects (`halfEmitPipeline`, `attachmentEmitPipeline`) built
+   * lazily beside the historical ones, so the default pipeline is never
+   * rebuilt, never invalidated, and never recompiled by a runtime flip.
+   *
+   * Consumers: `ProceduralClouds.wgsl` (`DeckResult` / `marchDeck` /
+   * `fragmentMain`), `CloudReconstructionAttachments.wgsl`
+   * (`AttachmentOutput` / `fragmentMain`).
+   */
+  CLOUD_MARCH_EMIT_RECONSTRUCTION: hiDefineBit(4),
+
+  /**
+   * Cloud RECONSTRUCTION-CONSUMPTION axis (`C13-10`). Kept SEPARATE from
+   * {@link ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION} on purpose: the
+   * two halves of the handshake gate different modules, and `C13-09`'s
+   * recorded state — "produced but NOT consumed, by design" — is only
+   * A/B-testable while a build can produce without consuming.
+   *
+   *   * SET — `CloudTemporalResolve.wgsl` binds the depth / velocity /
+   *     moments attachments and reconstructs from them: the history anchor
+   *     becomes the march's TRUE transmittance-weighted depth rather than the
+   *     shell-interval midpoint proxy, the previous UV comes from the
+   *     producer's motion vector rather than being re-derived, and the
+   *     producer's validity flag gates history reuse.
+   *   * CLEAR (the `//>>else`, and the DEFAULT) — the historical
+   *     `representativeShellDistance` proxy path, byte-for-byte.
+   *
+   * ★ THE POLICY BOUNDARY IS THE LEDGER'S. `C13-12` "owns attachment-aware
+   *   motion/depth rejection, variance clipping, reactive history, wind
+   *   advection in reprojection, disocclusion". So every THRESHOLDED test
+   *   belongs to that row; this bit gates only the READS and the non-parametric
+   *   validity plumbing (the producer's own validity flag, and the exactly-
+   *   equivalent empty-neighbourhood early-out the coverage moment licenses).
+   *
+   * Consumer: `CloudTemporalResolve.wgsl` (`fragmentMain`).
+   */
+  CLOUD_RECONSTRUCTION_CONSUME: hiDefineBit(5),
 } as const);
 
 // Namespace-collision boot assertion: a name living in BOTH tables would
