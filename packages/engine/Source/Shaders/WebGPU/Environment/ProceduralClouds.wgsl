@@ -2308,6 +2308,15 @@ fn marchDeck(
     // is false, the pow is never evaluated and curFineStep equals fineStep.
     // Growth only advances t faster, so it strictly reduces the iteration count
     // and cannot trip the maxIter sentinel.
+    //
+    // Reference: Shota Matsuda, Takram — `@takram/three-clouds` in
+    // three-geospatial (MIT),
+    // https://github.com/takram-design-engineering/three-geospatial — the
+    // perspective step-growth and far ray-distance cap that this pair of dials
+    // follows. Their march accumulates the scale per iteration
+    // (`stepSize *= perspectiveStepScale`); the closed-form `pow` used here is
+    // ours, chosen so the comb stays stateless and exactly reproducible from t.
+    // Technique only — no source was copied.
     var curFineStep = fineStep;
     if (cloud.marchStepGrowth > 1.0) {
       curFineStep = fineStep * pow(cloud.marchStepGrowth, (t - tStart) / max(fineStep, 1.0));
@@ -2880,6 +2889,14 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 // procedural cloud renderer runs it only when cloud-aware god rays are active.
 // The god-ray generate pass samples the mask to attenuate the light shaft where
 // clouds block the sun, giving crepuscular rays through gaps.
+//
+// Reference: Shota Matsuda, Takram — `@takram/three-clouds` in three-geospatial
+// (MIT), https://github.com/takram-design-engineering/three-geospatial — the
+// approach of resolving cloud occlusion of light shafts from the cloud pass's
+// own march rather than from scene depth. Theirs writes a shadow-length
+// integral (`marchShadowLength`) to a separate target; this emits the view-ray
+// transmittance product instead, which the shaft pass multiplies by directly.
+// Technique only — no source was copied.
 //
 // This mirrors `fragmentMain`'s full-res branches, single-shell and multi-deck,
 // with three differences: no half-res UV jitter, an exact midpoint sample phase

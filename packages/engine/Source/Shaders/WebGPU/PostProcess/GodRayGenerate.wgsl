@@ -9,6 +9,11 @@
 // References:
 //   - Mitchell, "Volumetric Light Scattering as a Post-Process" (GPU Gems 3)
 //   - Orillusion's `GodRayPost.ts` for the depth-gated variant
+//   - Shota Matsuda, Takram — `@takram/three-clouds` in three-geospatial
+//     (MIT), https://github.com/takram-design-engineering/three-geospatial —
+//     for resolving cloud occlusion of the shaft from the cloud march's own
+//     transmittance rather than from scene depth, which a cloud pass that
+//     writes no depth cannot supply. Technique only; no source was copied.
 //
 // Design choices:
 //   - Takes a screen-space sun UV rather than computing from world-space
@@ -52,7 +57,7 @@ struct GodRayUniforms {
 @group(0) @binding(1) var sceneDepthTex: texture_2d<f32>;
 @group(0) @binding(2) var texSampler: sampler;
 @group(0) @binding(3) var<uniform> uniforms: GodRayUniforms;
-// TAKRAM-9 (cloud-aware god rays) — per-pixel cloud TRANSMITTANCE
+// Cloud-aware god rays — per-pixel cloud TRANSMITTANCE
 // (1 = clear sky, 0 = fully opaque cloud) produced by the procedural cloud
 // renderer's mask pass. Default binding is a 1×1 white (r8unorm 255 → exactly
 // 1.0) fallback, so multiplying by it is byte-identical to the depth-only

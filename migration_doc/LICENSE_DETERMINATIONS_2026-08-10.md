@@ -311,6 +311,106 @@ find it quietly broken.
 `scripts/build.js`, but it is a build-script change and therefore outside a
 comment-and-notice batch.*
 
+### L-24 — Takram `three-geospatial` across five subsystems · RESOLVED
+
+Opened by maintainer directive on 2026-08-08 — *double check any effects or
+features inspired by the Takram work is credited to them and their main
+author* — and not by the census, which never flagged it. That is the finding
+worth recording: **the census could not have flagged it.** Its `needs-license-review`
+rule keys on files whose provenance is third-party and unrecorded. Every Takram
+site already carried prose credit, so each one read as *recorded* and passed.
+What none of them had was a notice in either `LICENSE.md`.
+
+**What was found.** Twenty-one Takram references across nine files under
+`packages/engine/Source`, in two distinct shapes.
+
+*Shape one — credited, but the licence routed to an internal document.* Five
+subsystems from the 2026-06 celestial/atmosphere track name Takram in their
+headers and then send the reader to
+`migration_doc/RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md` for the terms. That
+document is not published in any npm package, any bundle, or the release
+archive. This is precisely the L-10 defect — a licence routed to a research
+note rather than to the file a recipient of the code would open — and it had
+been sitting in the atmosphere shaders since Batch 306.
+
+*Shape two — the credit had become a codename.* The cloud-aware god-ray work
+was tracked as `TAKRAM-9` and the marker was carried into the code itself, in
+the god-ray shaders, `WebGPUGodRayEffect.ts` and
+`WebGPUPostProcessStageCollection.ts`. A tracker tag is not attribution: it
+names an internal work item, and to a reader outside this repository it says
+nothing at all. The C16-03 cloud pass had already removed two such tags from
+`ProceduralClouds.wgsl` (the god-ray transmittance mask and the
+`Takram/AAA perspective step`) and banked them in
+`migration_doc/DEV_NOTES_clouds.md`, explicitly leaving open whether either
+technique derives from Takram and therefore owes a notice. This determination
+closes that question.
+
+**Source of truth.** The upstream repository, read over the network — evidence
+class 1. `LICENSE` at
+<https://github.com/takram-design-engineering/three-geospatial> reads
+`The MIT License (MIT)` / `Copyright (c) 2024 Shota Matsuda`, with a body
+confirmed to match the canonical OSI template word for word apart from that
+line. `packages/clouds/package.json` gives the author as
+`Shota Matsuda <shota@takram.com>` and the licence as MIT. The two techniques
+the directive singled out were verified in their own source rather than assumed:
+`packages/clouds/src/shaders/clouds.frag` contains both
+`stepSize *= perspectiveStepScale` and the `maxRayDistance` break, and writes a
+`marchShadowLength`-derived shadow length alongside the transmittance integral;
+`qualityPresets.ts` carries `maxRayDistance` as a tunable preset field.
+`AerialPerspectiveEffect.ts`, `SunDirectionalLight.ts` and `SkyLightProbe.ts`
+all exist in `packages/atmosphere/src`, confirming the three class names the
+fork's headers already cited.
+
+**Classification.** Every site is **DERIVED-TECHNIQUE**; none is
+DERIVED-CODE. The evidence for that is positive, not merely an absence:
+
+| Site | Their mechanism | Ours |
+| --- | --- | --- |
+| Cloud march step growth | `stepSize *= perspectiveStepScale`, accumulated per iteration | `fineStep * pow(marchStepGrowth, k)`, a stateless closed form |
+| Cloud occlusion of shafts | shadow-length integral to a separate target | view-ray transmittance product into an `r8unorm` mask |
+| Aerial perspective | `AerialPerspectiveEffect`, three.js post-processing | WGSL fullscreen pass on the fork's log-depth contract |
+| Atmosphere-derived lighting | `SunDirectionalLight` + `SkyLightProbe` | `AtmosphereDerivedLighting.js` against `frameState.light` |
+| Star colour | Planckian-locus fit | same published fit, reimplemented |
+
+The shared identifier `maxRayDistance` is the one name in common, and it is an
+ordinary descriptive term for the quantity it holds. The underlying atmosphere
+model is Bruneton & Neyret's published work in both projects, not Takram's, so
+the atmosphere sites owe Takram credit for the *structure* they adopted rather
+than for the physics.
+
+**Determination.** RESOLVED. Under the standard's own tie-breaker — an
+unnecessary entry costs a paragraph, a missing one is a defect that ships — a
+**Takram three-geospatial** entry now exists in both `LICENSE.md` files,
+reproducing the MIT notice with its copyright line and listing all five
+subsystems. The MIT notice condition is thereby satisfied for consumers of the
+`@cesium/engine` tarball, which is the artifact the affected code ships in and
+which never sees the root file (§4). `ThirdParty.extra.json` is deliberately
+**not** touched: nothing is vendored or installed from the project, and that
+manifest lists dependencies rather than techniques.
+
+**Comment changes made here.** Reference blocks naming the project, the author,
+the licence and the repository URL were added to the three files that end this
+batch marker-clean: `ProceduralClouds.wgsl` at both the step-growth site and
+the transmittance-mask entry point — restoring, with a real citation, the
+provenance C16-03 had to drop — and `GodRayGenerate.wgsl`, whose existing
+`References:` block gained a Takram line. The `TAKRAM-9` codename is gone from
+`GodRayGenerate.wgsl` and `GodRayGenerate_f16.wgsl`.
+
+**Deliberately left for the owning shards.** Six files still route their Takram
+credit to the internal research document, or still carry the `TAKRAM-9`
+codename: `AtmosphereLUT.wgsl`, `AerialPerspective.wgsl`, `StarField.wgsl`,
+`WebGPUAerialPerspectiveEffect.ts`, `AtmosphereDerivedLighting.js`,
+`WebGPUGodRayEffect.ts`, `WebGPUPostProcessStageCollection.ts` and `Scene.js`.
+Each carries substantial pre-existing marker debt — 91 markers in the two
+post-process TypeScript files alone — so editing them here would either leave
+them failing the guard or turn an attribution batch into an unreviewed comment
+rewrite of files whose shards (C16-04 onward) have not run. **The licensing
+obligation does not wait for them:** it is discharged by the `LICENSE.md`
+entries above, which name those files explicitly. What remains for the shards
+is the local citation quality, and this paragraph is the instruction for it —
+replace the `migration_doc/…` routing and the `TAKRAM-9` tag with a reference
+block in the shape used in `ProceduralClouds.wgsl`.
+
 ## 3. Outstanding items, and exactly what closes each
 
 Every item below has a complete entry in both `LICENSE.md` files, stating what
@@ -387,7 +487,8 @@ names a row that must be present in the generated `ThirdParty.json`.
     { "id": "L-18", "heading": "Vello", "files": ["root", "engine"], "status": "PARTIAL" },
     { "id": "L-21", "heading": "Inland-lake polygon mask — Natural Earth 1:10m Lakes", "files": ["root", "engine"], "status": "RESOLVED" },
     { "id": "L-22a", "heading": null, "files": [], "thirdPartyJson": "@spz-loader/core", "status": "RESOLVED" },
-    { "id": "L-22b", "heading": null, "files": [], "thirdPartyJson": "@cesium/wasm-splats", "status": "RESOLVED" }
+    { "id": "L-22b", "heading": null, "files": [], "thirdPartyJson": "@cesium/wasm-splats", "status": "RESOLVED" },
+    { "id": "L-24", "heading": "Takram three-geospatial", "files": ["root", "engine"], "status": "RESOLVED" }
   ]
 }
 ```
@@ -417,3 +518,17 @@ batch could not. Results, transcribed into both `LICENSE.md` files:
 
 **L-23 CLOSED — Batch 966 (maintainer-directed):** `wgslToJavaScript` now mirrors `glslToJavaScript`'s `@license` extraction (the docblock is re-emitted above the minified module); pinned by a mirror test in `verify-packaged-notices.spec.mjs` so the asymmetry cannot return. ~~The sole remaining open item is L-23~~ **All 23 determinations are now closed.** (should `wgslToJavaScript` mirror
 `glslToJavaScript`'s `@license` extraction — a build-script decision).
+
+## 8. Addendum — 2026-08-08, maintainer directive (Takram attribution)
+
+`L-24` was added after the twenty-three above, by maintainer directive rather
+than by the census, and is RESOLVED. **All 24 determinations are now closed.**
+
+It is worth separating why it exists from what it changed. The census reads a
+file as compliant when its provenance is *recorded somewhere*; every Takram
+site recorded provenance in prose, so none was flagged, and the gap survived
+from Batch 306 to here. A prose credit pointing at a document that ships in no
+artifact is not a notice. The lesson generalises past this entry: **the census
+detects unrecorded provenance, not unpublished notices** — the second is what
+`Tools/c16/verify-packaged-notices.mjs` exists to catch, and it can only catch
+it for headings the manifest in §5 actually names.

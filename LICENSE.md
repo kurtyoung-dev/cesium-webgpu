@@ -697,6 +697,47 @@ project's own licence; its full text is reproduced at the top of this file.
 
 **Notice transcribed 2026-08-10** from the upstream `LICENSE-MIT` at <https://github.com/linebender/vello>: "Copyright 2020 the Vello Authors". The Apache-2.0 half remains the operative grant (matching this project's licence, reproduced at the top of this file); the copyright statement above is the attribution the notice condition asks for. Determination `L-18` is closed.
 
+### Takram three-geospatial
+
+https://github.com/takram-design-engineering/three-geospatial
+
+Several of the fork's WebGPU atmosphere and volumetric-cloud subsystems follow
+techniques published in this monorepo, whose `@takram/three-atmosphere` and
+`@takram/three-clouds` packages are the closest open geospatial precedent for
+that work:
+
+- `packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl` —
+  the perspective step-growth and far ray-distance cap on the view march, and
+  resolving cloud occlusion of light shafts from the cloud march's own
+  transmittance rather than from scene depth.
+- `packages/engine/Source/Shaders/WebGPU/PostProcess/GodRayGenerate.wgsl` and
+  its half-precision mirror — the consumer of that transmittance mask.
+- `packages/engine/Source/Shaders/WebGPU/PostProcess/AerialPerspective.wgsl`
+  and `packages/engine/Source/Renderer/WebGPU/WebGPUAerialPerspectiveEffect.ts`
+  — the transmittance-times-colour plus in-scatter structure of a whole-scene
+  aerial-perspective post-process, after `AerialPerspectiveEffect`.
+- `packages/engine/Source/Scene/AtmosphereDerivedLighting.js` — deriving a
+  directional sun light and a sky-irradiance ambient from the atmosphere model,
+  after `SunDirectionalLight` and `SkyLightProbe`.
+- `packages/engine/Source/Shaders/WebGPU/Catalog/StarField.wgsl` — the
+  Planckian-locus fit turning a B−V colour index into a star colour.
+
+No source was copied in any of them: each is an independent WGSL, TypeScript or
+JavaScript implementation, and the underlying atmosphere model is Bruneton &
+Neyret's published work rather than this project's. The entry is here because
+the approaches are theirs, and because a notice costs a paragraph while a
+missing one is a defect that ships.
+
+> The MIT License (MIT)
+>
+> Copyright (c) 2024 Shota Matsuda
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 ### NoSleep.js
 
 https://github.com/richtr/NoSleep.js

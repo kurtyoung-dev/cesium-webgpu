@@ -28,7 +28,8 @@ struct GodRayUniforms {
 @group(0) @binding(1) var sceneDepthTex: texture_2d<f32>;
 @group(0) @binding(2) var texSampler: sampler;
 @group(0) @binding(3) var<uniform> uniforms: GodRayUniforms;
-// TAKRAM-9 (cloud-aware god rays) — see GodRayGenerate.wgsl. 1×1 white
+// Cloud-aware god rays — see GodRayGenerate.wgsl, which carries the technique
+// reference for the cloud-transmittance mask. 1×1 white
 // (r8unorm) fallback → exactly 1.0 → byte-identical to the depth-only path.
 @group(0) @binding(4) var cloudTransTex: texture_2d<f32>;
 
