@@ -12828,3 +12828,22 @@ tables are ignored, so polygon draping is a WebGL-only feature until the
 storage-buffer layout learns the polygon tables and the WGSL twin gains the
 polygon distance test. Principle-5 gap, M-sized; the WebGL path is correct
 on both counts today. Owner: C11 W1 tail (vector lane).
+
+## MAINTAINER DIRECTIVE 2026-08-11 — two work packages (UX-01, DOC-01)
+
+**UX-01 — DEV-UI GATING + UPSTREAM-SHAPED START FLOW.** The CesiumViewer
+renderer switcher (WebGL/WebGPU/Split toolbar in
+`Apps/CesiumViewer/CesiumViewer.js`) and the FPS toggle are fork-only UI
+and must render ONLY when started with a specific parameter (dev-UI param);
+the bare viewer must match the upstream start flow so integrators can swap
+upstream → fork without UI surprises. Add an npm script that starts the
+fork WITH the dev UI enabled. **WebGPU becomes the viewer's default
+renderer** (no param → WebGPU; explicit `?renderer=` params keep working).
+Sandcastle 2's renderer-switch UI is explicitly OUT OF SCOPE — untouched.
+
+**DOC-01 — README OVERHAUL.** README gains: a summary of the fork's work;
+an explicit work-in-progress / BETA status statement; and a feature table
+covering the fork's new features with completion %, notes/details, and a
+WebGPU SCREENSHOT per feature (grouped by subsystem; sourced from
+FEATURE_INVENTORY + the parity report; screenshots captured by a scripted
+Edge pass into `Documentation/Images/webgpu-fork/`, machine-lane owned).
