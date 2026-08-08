@@ -129,13 +129,17 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       expect(ShaderSourceId.POINT_CLOUD_EDL_BLEND).toBe(39);
       expect(ShaderSourceId.FLOW_FIELD_RENDER).toBe(40);
       expect(ShaderSourceId.OCEAN_SURFACE).toBe(41);
+      // Batch 821 (UP144-SNAP-WEBGPU-EDGES) added this entry without its pin;
+      // caught by the count guard below on the suite's first Edge run since
+      // (Batch 951). The registry addition itself was legitimate add-only.
+      expect(ShaderSourceId.EDGE_EMITTER).toBe(42);
     });
 
     it("pins every declared source ID (no unpinned additions)", function () {
       // As with the defines, this count guard forces a newly-added source
-      // ID to come with its own explicit pin above. IDs 1..41 with 0
-      // reserved => 41 entries.
-      expect(Object.keys(ShaderSourceId).length).toBe(41);
+      // ID to come with its own explicit pin above. IDs 1..42 with 0
+      // reserved => 42 entries.
+      expect(Object.keys(ShaderSourceId).length).toBe(42);
     });
 
     it("reserves source ID 0 (no entry uses it)", function () {
