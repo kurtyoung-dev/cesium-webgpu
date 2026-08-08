@@ -605,6 +605,69 @@ any G3 claim.
   no faint target in frame) and is NOT a product verdict. G3 needs `sharp`, a
   declared repo dependency, to decode the served faces off-browser.
 
+### 2026-08-08 G4 FIRST RUN (Batch 941 stamp) — exit 1, and the reds DECOMPOSE: one probe aiming defect + two bound derivations; the MOON HALF CERTIFIED GREEN
+
+**Run facts (`output/celestial-g4.json`, 12 GB heap — the first attempt OOM'd
+the default ~3.6 GB Node heap at 31 min, an instrument finding in itself):**
+both pre-registration upgrades fired — the C12-19 arm went **ACTIVE** on both
+backends (bake clamp ABSENT + discPeakLinear 4.18/3.51 > 1.8708, the two
+discriminators AGREE), and the full-moon epoch resolved **REACHABLE** (phase
+angle 2.068° ≤ 5°), so every criterion certified. webgpu 33/35 green, webgl
+19/21 green (its disc+halo lanes went structural, so fewer evaluated).
+
+**✅ CERTIFIED GREEN — the C12-21/22 owed Edge acceptance is DISCHARGED:**
+earthshine lights the unlit limb at crescent (median delta 0.0348 vs bar
+0.005), tints blue-over-red/green-over-red in band, scales with the LIVE
+resolved Earth-phase complement, terminator softness = the solar angular
+radius on the LIVE uniform (and exactly 0.0 OFF), band exists/local/no pixel
+darkened, phase ordering full>quarter>crescent, **full:quarter 3.013 ≥ 3.0 at
+a REACHABLE 2.07° epoch** (surge multiplier 1.196 live). Policy lane 7/7 with
+the SDR positive control flipping both ways. **`halo_deltaPeak_at_11_Rsun`
+GREEN on WebGPU — B906's derivation confirmed live.** Lorentzian tail shape,
+slope band, one-halo-source truth table: green (webgpu).
+
+**❌ The 7 reds, decomposed (NONE is yet a product verdict):**
+
+1. **ROOT INSTRUMENT DEFECT — the sun aim misses by ~0.35° on BOTH backends.**
+   Disc-lane limb centroid 112.6 px (webgl) / 111.7 px (webgpu) off the crop
+   centre at the 2° telescope fov (tolerance 8), and the webgl halo lane's
+   brightest pixel is 11.77 px off at 22° fov — **the same angular error
+   scaled by the fov ratio** (0.35° ≈ 12.7 px at 22°/800 px). One aiming bug,
+   fov-scaling-consistent, backend-independent. The disc lanes went
+   structural exactly as the lane's own pre-registration anticipated
+   ("mis-projected centre ... is NOT a product verdict").
+2. **The 3 cross-backend parity reds are FALSE reds from a fold-gating gap:**
+   `discDiameterDeg` / `trueSizeRatio` / `haloBandMean` parity compared
+   scalars HARVESTED FROM STRUCTURAL LANES (webgl's 0.292° "disc" is the
+   mis-aimed crop, not a rendered disc). Parity must be gated on BOTH sides'
+   source lanes being non-structural — per-lane scoping applies to the fold
+   too.
+3. **The 2 `limb_absoluteRatio_I095_over_I0_in_band` reds (0.679/0.714 vs
+   ratified [0.3, 0.5]) were measured on the SAME mis-aimed disc captures**,
+   so they are not interpretable this run — AND the arm has a named confound
+   to resolve before its next certifying read: the C12-18 screen halo sits
+   over the disc (its amplitude now also ×2 under C12-19), lifting the
+   composite ratio above the disc-only law the §5 band was ratified for. The
+   two backends agreeing (0.68 vs 0.71) says whatever this is, it is not a
+   backend defect. Goes to the maintainer pack WITH the radiance-tradeoff
+   ask; the bars are §5's and are NOT moved here.
+4. **The 2 `earthshine_inert_at_full_moon` reds are a bound-derivation error:**
+   3 × the phase-scaled crescent delta = 3 × 0.000327 × 0.0348 ≈ 3.4e-5
+   luminance — BELOW the 8-bit capture quantum (1/255 ≈ 3.9e-3). The bound is
+   unmeasurable by construction; it needs a floor at the instrument
+   resolution (re-derivation, not widening: the criterion still rejects the
+   pre-C12-21 CONSTANT term, whose full-moon delta is the full 0.035).
+
+**FILED (this stamp is the filing): G4-FIRSTRUN-FIX-1** sun aim (~0.35°, find
+the frame vs ephemeris mismatch; suspect list starts at aim-time vs
+settled-clock sun position and billboard-quad vs disc-centre), **-FIX-2**
+parity fold gating on non-structural sources, **-FIX-3** earthshine inertness
+bound floored at the capture quantum, **-FIX-4** limb-arm reads gated on the
+disc lane being non-structural, **-FIX-5** probe memory retention (holds all
+captures + f64 decodes + base64 transfer strings live → >3.6 GB; release per
+lane). Rerun after fixes; the moon half needs no rerun to stand — its lanes
+were aimed (moonAimDistancePx 4.9–10.3 px) and non-structural throughout.
+
 ### 2026-08-07 CO-27 gate-lane overlay (G4 lane construction — the LAST missing C12 gate lane)
 
 Batch group **CO-27**, following the CO-3 / CO-24 house pattern.
