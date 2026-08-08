@@ -7,9 +7,13 @@ documented."_ Research executed by a four-agent Opus fan-out (workflow
 eclipse, eye-adaptation literature) with every in-fork claim carrying file:line
 evidence. **This epic is NOT part of Campaign 12's closure scope** — C12's
 four-gate exit is literal, and this work must not widen it. Proposed campaign
-identity: **Campaign 16** (reservation only — campaign numbering is ratified
-add-only; this document is not a launch ruling, and launch is a maintainer call
-consistent with the bounded-active-campaign principle of ruling R4).
+identity: **Campaign 17** — renumbered 2026-08-08 in this document; the
+original reservation here read "Campaign 16", which the maintainer's
+2026-08-10-dated launch of Comment Remediation & Attribution
+(`QUEUE_2026-08-10_CAMPAIGN16.md`) has since claimed. (Campaign numbering is
+ratified add-only; this document is not a launch ruling, and launch is a
+maintainer call consistent with the bounded-active-campaign principle of
+ruling R4.)
 
 The maintainer's four asks, restated:
 
@@ -387,3 +391,59 @@ Marble licensing (NASA non-copyright + acknowledgment string), Stellarium/PSI
 corona-rendering practice. Raw reports live in the session workspace
 (workflow `wf_b9b40051-931`); every load-bearing claim above is restated with
 its evidence, so this document stands alone.
+
+## 9. Track D — Atmosphere fidelity at dawn/dusk (maintainer directive 2026-08-08)
+
+**Origin:** maintainer ask (2026-08-08): _"do we already have effects or
+effects planned for dawn and sunset? are they top tier but performant? if not
+lets queue these up."_ Answered by a 19-agent audit (workflow
+`wf_20abf089-9c7`: six parallel sweeps over the atmosphere/cloud/sun/moon
+code and every ledger, adversarial verification of the load-bearing claims,
+gap synthesis against the Hillaire-2020 / Bruneton-class bar).
+
+**Audit verdict:** the fork ships a broad, mostly both-backends dawn/sunset
+system that is highly performant — but at defaults both backends deliberately
+run in Tier-1 Nishita-parity mode (single-scatter march, no ozone, ~3%
+multiple-scattering add). The complete top-tier LUT architecture ALREADY
+EXISTS on WebGPU (compute-baked transmittance/MS/sky-view family) but is
+opt-in/default-OFF with perceptual-not-physical fidelity constants. No
+rewrite is needed: the gap is ~10 targeted fixes, most S/S-M. The two
+loudest visual wrongs at dusk today: cloud sunlight color comes from a fixed
+CPU smoothstep ramp rather than the extinction integral the fork already
+computes per-frame (WebGPU volumetrics — and clouds stay warmly lit all
+night), and the WebGL billboard clouds ignore the sun entirely (hard-coded
+light direction, grey-white at any elevation).
+
+**Placement rationale:** these rows live HERE, not in C12 (its maximal gate
+is the C14 critical path — R-2026-08-10-1) and not in C13 (in close-out).
+Cross-system light transport is this epic's charter. Rows are
+dependency-ordered; sizes are audit estimates.
+
+| ID | Title | Scope | Acceptance (probe-verifiable) | Size |
+|---|---|---|---|---|
+| CLT-D1 | Cloud direct-sun physical transmittance | Replace the elevation smoothstep ramp in the volumetric-cloud UB packer with the normalized per-frame sun atmosphere-extinction integral (fulfils the original W3 spec); below-horizon extinction naturally extinguishes the night direct term. | Scripted-sunset Edge probe: cloud-deck direct-term red/blue ratio tracks the CPU integrator output monotonically at +30 deg/+2 deg/-2 deg/-6 deg sun; at -6 deg direct contribution ~ 0; noon frame within tolerance of pre-change baseline. | S |
+| CLT-D2 | Billboard-cloud sun awareness (parity twin) | Feed real sun direction + the shared extinction tint into the billboard-cloud GLSL (replacing its hard-coded light vector) and the unlit WGSL twin identically. | Split-screen probe at sunset: billboard clouds warm-shift on BOTH backends with cross-backend mismatch under the standing VR threshold; midday byte-drift bounded. | S-M |
+| CLT-D3 | Ozone in the celestial extinction integral | Add the Chappuis tent-profile term (matching the WGSL ozone density profile) to the CPU extinction integrator, feeding sun/moon/stars/halo and (via D1) clouds. | Integrator unit probe: grazing-ray green-channel transmittance drops by the analytic Chappuis factor; disc-pixel probe shows the hue delta; extinction identity (1,1,1) above the shell preserved. | S |
+| CLT-D4 | Ozone GLSL twin | Port the ozone absorber into the GLSL atmosphere march (math exists in the WGSL twin); lockstep-doc update mandatory. | With ozone forced on, WebGL-vs-WebGPU dusk-zenith sky diff under threshold; ozone-off legs byte-identical to pre-change on both backends. | S-M |
+| CLT-D5 | Ozone default-on (RULING) | After D4, flip the ozone default to true on both backends. | Dusk zenith blue-shift present on both backends at defaults; ozone=false byte-identical to today's default. | S |
+| CLT-D6 | Energy-conserving multiple scattering | Replace the perceptual F_MS x MS_SCALE pair (~3% add) with the 1/(1-f_ms) series from an isotropic 32x32 MS LUT; kernel-math-only, bindings exist. | Twilight probe at sun -4 deg: MS-on zenith luminance rises materially vs today while noon frames stay within tolerance; MS-off byte-identical. | S-M |
+| CLT-D7 | Sky-view LUT: per-frame camera-altitude bake | Bake sky-view+MS kernels every frame at true camera altitude; delete the altitude=0 limit and sun-dirty rebake machinery; retire the sky-inscatter-LUT scaffold note in DEFERRED_WORK. | LUT-vs-inline-march pixel diff under threshold at ground/10 km/100 km; animated-sunset timelapse shows no rebake hitch; GPU timing probe confirms <= 0.15 ms/frame bake. | S-M |
+| CLT-D8 | Aerial perspective certification + default ruling | Certify the aerial-perspective pass (+froxel) against the parity gate (deps D6/D7 so the haze matches the MS sky) and put the WebGPU default-on decision to the maintainer as a documented one-way enhancement (WebGL has no pass). | Sunset probe: distant terrain haze reddens with sun elevation; OFF leg byte-identical; froxel timing <= 0.15 ms; eclipse-coupling regression leg green. | M |
+| CLT-D9 | Sun-disc cross-limb extinction gradient | Evaluate the cached extinction integral at 3-5 tangent heights and interpolate across the disc in both sun shaders (discharges the deferral recorded on the C12-29 S4 row without expanding C12). | Horizon-sunset close-up probe: lower-limb/upper-limb red ratio gradient present on both backends; orbital band matches the S4 measured ramp. | M |
+| CLT-D10 | Shell-extent alpha canonicity (RULING) | Decide whether WebGL's fixed ray-exit clip or WebGPU's full-coverage shell is canonical for the tracked NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA parity delta, then conform the loser. | Anti-solar-side probe over a star-lit background: both backends' transmission profiles match the ruled canon. | S code, ruling-gated |
+
+**Execution-order notes:** D1 and D3 are independent and both feed the same
+scripted-sunset acceptance scene as CLT-A12 — build that probe once. D5
+requires D4 (parity before a default flip). D6 and D7 unlock D8's
+certification. D10 should be ruled at epic launch, before any Track-D
+twilight probe bakes its bands, so an unresolved anti-solar divergence
+cannot invalidate them.
+
+**Deliberately NOT duplicated here (owned elsewhere):** star reveal lag
+(CLT-A4), Schaefer NELM (CLT-A9), civil-twilight imagery blend (CLT-B7),
+corona (CLT-C3), crepuscular rays + missing WebGL twin (CLT-C5a/b),
+per-position cloud optical extinction (C13-23), earth-limb airglow
+(ex-C12-26 future row), and the TWILIGHT-STAR-REACHABILITY-BLACK-BOX
+instrument gap — which must close before any Track-D acceptance that
+asserts star pixels.
+
