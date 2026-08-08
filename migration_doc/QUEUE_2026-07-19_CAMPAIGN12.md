@@ -705,6 +705,29 @@ the 0.95R signal, discOnlyRatio 0.568 > the 0.5 ceiling before any halo);
 (2) the bloom-mirror decision on the filed MEDIUM row. Four runs, four
 pre-registrations, the last one exact.
 
+### 2026-08-08 C12-19 DELTA PROBE FIRST RUN (Batch 992) — exit 1 on BOTH backends identically; the radiance-excess shape is NEITHER pure multiplicative NOR pure additive; D1 at x=0.95 reads low on both legs
+
+First run of `probe-sun-hdr-radiance.mjs` (built B991, corrected recipe:
+no flags, enableTrueSolarRadiance delta axis). Failure lists are
+IDENTICAL cross-backend — the engine is self-consistent; what failed is
+the model-vs-measurement comparison: `d1_codes` at x=0.95 low on both
+radiance legs (and the non-scoring x=1 samples read ~20 vs expected
+31–40), `d1_codes_trueRadiance_x0` nonzero, and
+`radiance_excess_shape_is_decided` FALSE — the recovered excess factor
+is 1.2964 at L=2 but 1.3910 at L=1 against instrument noise 0.001:
+multiplicative predicts equal factors, additive predicts 1.6278 at L=1
+(c estimated from the shipped leg). NEITHER fits — the excess is
+RADIANCE-DEPENDENT with a shape no one-parameter model explains, and
+the measured differential is FLATTER than the shipped law at the same
+time. The two anomalies may share a cause. The instrument printed its
+own discrimination limits as designed (x=0 and x=1 criteria cannot
+separate the hypotheses; only x=0.95 at 0.77x tol comes close).
+trueSizeRatio 1.4319 vs √2 also slightly high. 24 PNGs + report banked
+at `output/sun-hdr-radiance*`; OFFLINE ABLATION DISPATCHED — same
+method that resolved the limb-shape red (B983): reproduce the readings
+from the PNGs, then ablate the forward model until the residual names
+the missing term. No verdict on the shipped law until it returns.
+
 ### 2026-08-08 C12-19 EDGE-DELTA PRE-REGISTRATION CORRECTED — the recorded 250.3/195.9 expectation was derived at `bakeHaloGain = 0`, and the prescribed flags force `bakeHaloGain = 1`
 
 The 2026-08-09 CO-30 stamp (line ~1181) records: "The C12-19 delta legs need
