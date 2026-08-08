@@ -3925,7 +3925,6 @@ const G4_LANE_DEFS = [
         exposure: e,
         hdr: true,
         glareOn: false,
-        sceneFlags: { sunBloom: false },
         toggles: {
           enableSolarLimbDarkening: false,
           enableTrueSolarDiscSize: true,
@@ -3941,7 +3940,6 @@ const G4_LANE_DEFS = [
         exposure: e,
         hdr: true,
         glareOn: false,
-        sceneFlags: { sunBloom: false },
         toggles: {
           enableSolarLimbDarkening: false,
           enableTrueSolarDiscSize: false,
@@ -3955,7 +3953,6 @@ const G4_LANE_DEFS = [
         exposure: e,
         hdr: true,
         glareOn: false,
-        sceneFlags: { sunBloom: false },
         toggles: {
           enableSolarLimbDarkening: true,
           enableTrueSolarDiscSize: true,

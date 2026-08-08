@@ -705,7 +705,50 @@ the 0.95R signal, discOnlyRatio 0.568 > the 0.5 ceiling before any halo);
 (2) the bloom-mirror decision on the filed MEDIUM row. Four runs, four
 pre-registrations, the last one exact.
 
-### 2026-08-11 BISECT VERDICT (Batch 978) — B971 is the cause; B972 exonerated; a runtime sunBloom-flip kill is the suspected mechanism
+### 2026-08-08 MECHANISM RESOLVED (Batch 979) — B978's engine-defect suspicion REFUTED; the pin fought a DESIGNED invariant; limb_shape root-caused to a criterion denominator hazard
+
+(Machine date 2026-08-08; the neighbouring stamps in this thread carry the
+session-context date 2026-08-11. The git timestamps are authoritative.)
+
+The B978 diagnostic ran: flipping `scene.sunBloom` false→true at runtime
+moves the sun-region bright-pixel count only by the bloom's own halo
+(webgl 18626→18024→18626, webgpu 18634→17988→18634) — the sun render
+survives and recovers perfectly on BOTH backends. **There is no engine
+defect.** The real mechanism is the C12-18 one-halo-source invariant,
+designed and documented at `SunHaloAppearance.js` (module header + the
+`chainAvailable` read): `sunBloom=false` ⇒ `screenHalo=false` ⇒
+`bakeHaloGain=1.0` — the probe's pin did not remove the halo from the
+measurement, it SWAPPED the screen halo for the legacy BAKED halo,
+contaminating the disc legs directly; the one-way leak then flipped every
+later halo lane on the shared page into bake mode (`screenHalo_on` false,
+`bakeGain_is_zero` false — run 7/8's exact failure list). A pixel-count
+diagnostic could never see this: a bright sun renders either way.
+
+**The pin approach is unusable BY DESIGN — no scene configuration renders
+a halo-free disc.** It was also unnecessary: `limb_shape` already measures
+the differential `D1 = flat − limb`, in which the screen halo cancels
+exactly. The persistent limb_shape red is a CRITERION defect, not a
+capture confound: `shapeDeviation` divides by the local expected value,
+and at x=0.3 the expectation is only 0.0512 of the anchor — a 20%
+relative band there demands ~0.01 absolute accuracy at the weakest-signal
+sample. Measured (anchor-normalised): webgl 0.0402 / webgpu 0.0392 vs
+expected 0.0512 — the backends agree with each other to 0.001 while both
+sit −0.011 below the ANALYTIC law, a shared-chain systematic (prime
+suspect: the shipped bake discretization, which `limbShapeExpectation`
+does not model). A worker is dispatched to simulate the bake chain
+offline and land either expectation-through-the-instrument (preferred,
+if the simulation reproduces the measured values) or a derived
+error-budget band — with a mutation test proving a wrong law still fails.
+
+Actions: the three `sceneFlags: { sunBloom: false }` pins are REMOVED
+from the disc legs (restoring the bisect-verified healthy probe
+configuration; the sceneFlags channel itself stays as explicit-pin
+scaffolding). The --g4 KNOWN-BROKEN flag lifts when the pin removal and
+the criterion fix land; the NINTH-RUN pre-registration is amended to: no
+sunBloom pins anywhere, limb_shape green via the landed instrument fix,
+discOnly and every other criterion unchanged — first exit-0 candidate.
+
+### 2026-08-11 BISECT VERDICT (Batch 978) — B971 is the cause; B972 exonerated; a runtime sunBloom-flip kill is the suspected mechanism [SUSPICION REFUTED at B979 — see the stamp above]
 
 Working-tree revert of the B971 probe edit alone restored the sun lanes
 completely (radiance 2.5927/2.5929, discOnly certifying, exactly the two
