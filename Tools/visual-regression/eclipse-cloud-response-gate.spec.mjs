@@ -41,6 +41,7 @@ import {
   ECLIPSE_CLOUD_BANDS,
   ECLIPSE_CLOUD_EXIT,
   ECLIPSE_CLOUD_GATE_PREDICATES,
+  ECLIPSE_CLOUD_LANE_PARENTS,
   ECLIPSE_CLOUD_PARITY_PREDICATES,
   ECLIPSE_CLOUD_PREDICATE_LANES,
   ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES,
@@ -63,6 +64,7 @@ import {
   fitDeckTonemapEntry,
   idealSweepBuckets,
   judgeEclipseCloudResponse,
+  laneIsBlind,
   maxBucketStep,
   predictBucket,
   predictDirectional,
@@ -435,6 +437,12 @@ function passingRun() {
       shadow: {
         offNoCloud,
         onNoCloud,
+        // CO-21: the settled twins. In a healthy run the deck-free control is
+        // the same number whether it is read in first or last position, and the
+        // fixture says so exactly — a fixture that jittered them would model the
+        // very unsettled instrument `deckFreeGroundCapturesSettled` detects.
+        offNoCloudSettled: offNoCloud,
+        onNoCloudSettled: onNoCloud,
         offNoShadow,
         offShadow,
         onNoShadow,
@@ -511,6 +519,28 @@ function passingRun() {
 
 const clone = (value) => structuredClone(value);
 
+/**
+ * Re-point CO-21's settled twins at whatever the mutant just wrote to the
+ * first-position deck-free reads.
+ *
+ * Every mutant below models a SETTLED instrument reading a wrong number — a
+ * converged capture of a real defect. Leaving the twins behind would instead
+ * model an UNSETTLED instrument, which `deckFreeGroundCapturesSettled` is built
+ * to quarantine, and the mutant would then prove the convergence detector works
+ * rather than the thing it was written for. K2 injects the unsettled shape
+ * deliberately and is the only test that must NOT call this.
+ */
+function settleDeckFreeTwins(run) {
+  for (const rung of run.cloudLanes?.rungs ?? []) {
+    if (!rung.shadow) {
+      continue;
+    }
+    rung.shadow.offNoCloudSettled = rung.shadow.offNoCloud;
+    rung.shadow.onNoCloudSettled = rung.shadow.onNoCloud;
+  }
+  return run;
+}
+
 test("D1 the reference run PASSES, so the mutants below are isolating one thing", () => {
   const verdict = judgeEclipseCloudResponse(passingRun());
   assert.deepEqual(
@@ -540,9 +570,14 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
   // 26 -> 28 at CO-19: the two pre-registered fifth-run legs,
   // `deckPureRatioInBand` (lane A's tint-free deck ratio) and
   // `deckFreeGroundDimsByFactor` (lane B's deck-free attribution).
-  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 28);
+  // 28 -> 29 at CO-21: `deckFreeGroundCapturesSettled`, the convergence
+  // precondition that decides whether the fifth run's 0.449 is a measurement
+  // (ENGINE) or a transient (INSTRUMENT).
+  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 29);
   // 4 -> 5 at CO-19: `offNoCloudVariesWithSun`, the instrument tell.
-  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 5);
+  // 5 -> 6 at CO-21: `deckFreeGroundRetentionLegsAgreeReportedOnly`, the
+  // corroborating disagreement between lane B's two retention ratios.
+  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 6);
   assert.equal(ECLIPSE_CLOUD_PARITY_PREDICATES.length, 2);
   // Nothing is scored without a declared blindness domain — an unmapped
   // predicate would be silently unquarantinable.
@@ -788,6 +823,7 @@ test("E2b a ground too DARK to carry a shadow is STRUCTURAL, and names why", () 
     rung.shadow.onShadow =
       rung.shadow.onNoShadow * shadowContrast(predictDirectional(rung.target));
   }
+  settleDeckFreeTwins(run);
   const verdict = judgeEclipseCloudResponse(run);
   assert.equal(verdict.shadowGroundIsBright, false);
   assert.ok(
@@ -818,6 +854,7 @@ test("E2c the SECOND run's exact shape — a deck sitting in the ground band —
     rung.shadow.onNoShadow = 0.378175;
     rung.shadow.onShadow = 0.377913;
   }
+  settleDeckFreeTwins(run);
   const verdict = judgeEclipseCloudResponse(run);
   assert.equal(verdict.shadowGroundIsBright, false);
   assert.equal(verdict.shadowGroundNotOccluded, false);
@@ -986,6 +1023,11 @@ test("H1 the first run's EXACT shape — shadow-blind + deck out of band — is 
       "shadowNonVacuous",
       "shadowContrastInvariant",
       "shadowContrastRejectsAlternativeDesign",
+      // CO-21: `deck-free` is a CHILD of `shadow`, so a blind lane B takes the
+      // attribution AND its convergence precondition with it — the direction
+      // that must hold. The converse (an unsettled control blinding the
+      // contrast) is what the parent chain deliberately prevents; L9 pins it.
+      "deckFreeGroundCapturesSettled",
       "deckFreeGroundDimsByFactor",
     ].sort(),
     "ONLY the shadow lane's own predicates may be quarantined",
@@ -1031,8 +1073,13 @@ test("H3 a blind cloud PAGE blinds both its lanes and nothing else", () => {
   const verdict = judgeEclipseCloudResponse(run);
   for (const name of ECLIPSE_CLOUD_GATE_PREDICATES) {
     const lane = ECLIPSE_CLOUD_PREDICATE_LANES[name];
-    const cloudOwned =
-      lane === "cloud-page" || lane === "deck" || lane === "shadow";
+    // `deck-free` is a descendant of `shadow`, so the cloud page owns it too —
+    // resolved through `ECLIPSE_CLOUD_LANE_PARENTS` rather than restated, so a
+    // new child domain cannot be added without this list following it.
+    const cloudOwned = laneIsBlind(
+      { "cloud-page": ["blind"] },
+      ECLIPSE_CLOUD_PREDICATE_LANES[name],
+    );
     assert.equal(
       verdict.unscoredPredicates.includes(name),
       cloudOwned,
@@ -1854,6 +1901,7 @@ test("J7 a run whose residue UNDER-DIMS fails only the contrast gate, and the mo
     // rather than a restatement of the contrast fail.
     rung.shadow.onNoCloud = rung.shadow.offNoCloud * factor;
   }
+  settleDeckFreeTwins(run);
   const verdict = judgeEclipseCloudResponse(run);
   assert.deepEqual(verdict.structuralReasons, []);
   assert.deepEqual(verdict.failedPredicates, ["shadowContrastInvariant"]);
@@ -2123,6 +2171,7 @@ function injectUnderDimmingResidue(run, { alsoDeckFree }) {
       ? (rung.shadow.offNoCloud * (litOn + floorOn)) / (litOff + floorOff)
       : rung.shadow.offNoCloud * factor;
   }
+  settleDeckFreeTwins(run);
 }
 
 test("L1 the deck-free tolerance is PROPAGATED from the band it was measured on", () => {
@@ -2189,6 +2238,7 @@ test("L2 MUTANT — a tolerance that admits the globe-path excess is required to
     rung.shadow.onNoCloud =
       rung.shadow.offNoCloud * (0.492507 * F + 0.507493 * Math.pow(F, 0.708));
   }
+  settleDeckFreeTwins(run);
   const verdict = judgeEclipseCloudResponse(run);
   assert.deepEqual(verdict.structuralReasons, []);
   assert.deepEqual(verdict.failedPredicates, ["deckFreeGroundDimsByFactor"]);
@@ -2215,6 +2265,7 @@ test("L2 MUTANT — a tolerance that admits the globe-path excess is required to
   for (const rung of noisy.cloudLanes.rungs) {
     rung.shadow.onNoCloud += BAND_MEAN_CAPTURE_DELTA;
   }
+  settleDeckFreeTwins(noisy);
   const noisyVerdict = judgeEclipseCloudResponse(noisy);
   assert.equal(
     noisyVerdict.deckFreeGroundDimsByFactor,
@@ -2298,6 +2349,7 @@ test("L4 four bit-identical deck-free reads set the TELL, and it never gates", (
     rung.shadow.onShadow =
       rung.shadow.onNoShadow * shadowContrast(rung.published.shadowStrength);
   });
+  settleDeckFreeTwins(run);
   const verdict = judgeEclipseCloudResponse(run);
   assert.equal(
     verdict.offNoCloudVariesWithSun,
@@ -2465,10 +2517,14 @@ test("L7 MUTANT — a fit that IGNORES the leg's share re-derives the WRONG entr
 
 test("L8 both CO-19 gates can FAIL in isolation, each scoped to its own lane", () => {
   assert.equal(ECLIPSE_CLOUD_PREDICATE_LANES.deckPureRatioInBand, "deck");
+  // CO-21 moved the attribution into its own `deck-free` domain, a CHILD of
+  // `shadow`. Both directions are pinned: lane B still blinds it, and it no
+  // longer blinds lane B.
   assert.equal(
     ECLIPSE_CLOUD_PREDICATE_LANES.deckFreeGroundDimsByFactor,
-    "shadow",
+    "deck-free",
   );
+  assert.equal(ECLIPSE_CLOUD_LANE_PARENTS["deck-free"], "shadow");
 
   // (a) the leg reads a LINEAR deck — e = 0, rho = 0.4642, 17 half-widths below.
   expectFailure(
@@ -2498,6 +2554,7 @@ test("L8 both CO-19 gates can FAIL in isolation, each scoped to its own lane", (
         rung.shadow.onNoCloud =
           rung.shadow.offNoCloud * Math.min(1, rung.published.factor * 1.12);
       }
+      settleDeckFreeTwins(run);
     },
     ["deckFreeGroundDimsByFactor"],
   );
@@ -2510,7 +2567,219 @@ test("L8 both CO-19 gates can FAIL in isolation, each scoped to its own lane", (
         rung.shadow.onNoCloud =
           rung.shadow.offNoCloud * rung.published.factor * 0.85;
       }
+      settleDeckFreeTwins(run);
     },
     ["deckFreeGroundDimsByFactor"],
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CO-21 — THE ENABLE-IDENTITY ATTRIBUTION
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The fifth Edge run measured `onNoCloud / offNoCloud` = 0.449 at obscuration
+// ZERO, where every published law forces exactly 1.0: `resolveEclipseCloudFactor`
+// returns 1.0, `eclipseCloudDirectionalFraction` returns 1.0,
+// `applyEclipseCloudDimming` is a bit-exact multiply by 1.0, and
+// `quantizeEclipseEnvironmentRefreshInput(1.0)` is the identity bucket. Enabling
+// the eclipse at zero obscuration must therefore be byte-neutral for the ground.
+//
+// The run's own numbers contain BOTH halves of the ambiguity CO-21 exists to
+// remove, and neither half is decidable from the fifth run alone:
+//
+//   deck-present, rung 0   onNoShadow 0.45784608750450445 == offNoShadow, and
+//                          onShadow 0.27773434657205215 == offShadow — BIT for
+//                          BIT. The eclipse-enable contributed nothing.
+//   deck-free,    rung 0   onNoCloud 0.2077768453355468 against offNoCloud
+//                          0.46274509803954333 — a factor of 0.4490.
+//
+// Either the deck-free read is the truth and the deck-present pair masks a real
+// engine violation, or the deck-free read is a transient: it is the ONLY scored
+// capture in the probe taken one settle after a genuine eclipse-state
+// TRANSITION, because the eclipse-OFF leg's toggle at the lane-B entry is a
+// no-op (the `publishedOff` read two blocks earlier already left the flag
+// false). The settled twin decides it, and these tests pin both verdict shapes.
+
+test("K1 the ENABLE-IDENTITY mutant — a dim at F = 1 — FAILS, settled or not", () => {
+  // The fifth run's rung-0 shape verbatim, on a fixture whose factor at that
+  // rung IS exactly 1.0. This is the mutant the row's identity contract exists
+  // to catch, and it must not be survivable by any tolerance the gate derives:
+  // at F = 1 the propagated tolerance is at most `deckFreeGroundDimToleranceCap`
+  // = 0.05333 and the injected delta is 0.551 — 10.3x it.
+  assert.equal(predictFactor(0), 1, "the first rung must BE the identity rung");
+  expectFailure(
+    (run) => {
+      const identityRung = run.cloudLanes.rungs[0];
+      assert.equal(identityRung.published.factor, 1);
+      identityRung.shadow.onNoCloud =
+        identityRung.shadow.offNoCloud * 0.4490092844112451;
+      settleDeckFreeTwins(run);
+    },
+    ["deckFreeGroundDimsByFactor"],
+  );
+
+  // ...and the arithmetic is REPORTED, not just the boolean: 0.449 at F = 1 is
+  // an `overFactor` of 0.449, i.e. 55% of the ground's light removed by the
+  // TOGGLE rather than by the eclipse.
+  const run = clone(passingRun());
+  const identityRung = run.cloudLanes.rungs[0];
+  identityRung.shadow.onNoCloud =
+    identityRung.shadow.offNoCloud * 0.4490092844112451;
+  settleDeckFreeTwins(run);
+  const verdict = judgeEclipseCloudResponse(run);
+  const entry = verdict.deckFreeGroundDim[0];
+  assert.equal(entry.factor, 1);
+  assert.ok(Math.abs(entry.measured - 0.4490092844112451) < 1e-12);
+  assert.ok(Math.abs(entry.overFactor - 0.4490092844112451) < 1e-12);
+  assert.ok(Math.abs(entry.delta + 0.5509907155887549) < 1e-12);
+  assert.ok(
+    entry.tolerance <= ECLIPSE_CLOUD_BANDS.deckFreeGroundDimToleranceCap.hi,
+    "no derived tolerance may exceed the cap",
+  );
+  assert.equal(entry.withinTolerance, false);
+});
+
+test("K2 an UNSETTLED deck-free control is STRUCTURAL, not a product FAIL", () => {
+  // The instrument branch of the fifth run: the first-position eclipse-ON
+  // capture reads 0.449 and the settled twin, three settles further from the
+  // transition, has converged onto the law. A gate that scored the first read
+  // would report an engine identity violation that does not exist.
+  const run = clone(passingRun());
+  const identityRung = run.cloudLanes.rungs[0];
+  identityRung.shadow.onNoCloud =
+    identityRung.shadow.offNoCloud * 0.4490092844112451;
+  // Deliberately NOT `settleDeckFreeTwins` — the twin keeps the converged value.
+  const verdict = judgeEclipseCloudResponse(run);
+
+  assert.equal(verdict.deckFreeGroundCapturesSettled, false);
+  const reason = verdict.structuralReasons.find((r) =>
+    r.includes("had not converged"),
+  );
+  assert.ok(reason, JSON.stringify(verdict.structuralReasons));
+  // BOTH legs' deltas are named, so a reader can see WHICH one moved.
+  assert.match(reason, /eclipse-OFF moved 0 /);
+  assert.match(reason, /eclipse-ON moved 0\.28/);
+  // The attribution is quarantined rather than scored...
+  assert.ok(verdict.unscoredPredicates.includes("deckFreeGroundDimsByFactor"));
+  assert.ok(
+    verdict.unscoredPredicates.includes("deckFreeGroundCapturesSettled"),
+  );
+  // ...and NOTHING else is: an unsettled deck-free CONTROL says nothing about
+  // the cast-shadow contrast, which is a ratio of ratios among the
+  // deck-present captures. This is the per-lane scoping the third pass asked
+  // for, in the direction that matters.
+  assert.ok(!verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+  assert.ok(!verdict.unscoredPredicates.includes("shadowNonVacuous"));
+  assert.ok(!verdict.unscoredPredicates.includes("deckRatioInBand"));
+  assert.deepEqual(verdict.failedPredicates, []);
+  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.STRUCTURAL);
+});
+
+test("K3 the convergence detector cannot LAUNDER a settled defect", () => {
+  // The engine branch: both reads agree on 0.449. A detector that merely
+  // demanded "two numbers exist" would let this through; it must PASS the
+  // convergence check and FAIL the attribution.
+  const run = clone(passingRun());
+  for (const rung of run.cloudLanes.rungs) {
+    rung.shadow.onNoCloud = rung.shadow.offNoCloud * 0.4490092844112451;
+  }
+  settleDeckFreeTwins(run);
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.deepEqual(verdict.structuralReasons, []);
+  assert.equal(verdict.deckFreeGroundCapturesSettled, true);
+  assert.deepEqual(verdict.failedPredicates, ["deckFreeGroundDimsByFactor"]);
+  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.FAIL);
+});
+
+test("K4 a MISSING settled twin is treated as unconverged, never as agreement", () => {
+  // `absDelta` returns null rather than 0 when a read is absent, so a probe
+  // that silently stops capturing the twin blinds the lane instead of
+  // certifying it. An absent convergence check is exactly as uninformative as
+  // a failed one.
+  const run = clone(passingRun());
+  for (const rung of run.cloudLanes.rungs) {
+    delete rung.shadow.onNoCloudSettled;
+  }
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.deckFreeGroundCapturesSettled, false);
+  assert.equal(verdict.deckFreeGroundSettleDelta[0].onDelta, null);
+  assert.ok(verdict.unscoredPredicates.includes("deckFreeGroundDimsByFactor"));
+  assert.deepEqual(verdict.failedPredicates, []);
+});
+
+test("K5 the ON-leg retention twin is computed and REPORTED, never gating", () => {
+  // `shadowGroundNotOccluded` reads the OFF leg only. Its ON twin is the
+  // corroborating number for the whole CO-21 question: the fifth run read
+  // 0.9894 off against 2.2035 on, and the deck-present and deck-free bands
+  // cannot both be measuring one surface. It does not gate, because WHICH of
+  // the two is wrong is exactly what `deckFreeGroundCapturesSettled` decides.
+  const verdict = judgeEclipseCloudResponse(passingRun());
+  assert.ok(Number.isFinite(verdict.deckFreeGroundOnRetentionRatio));
+  assert.ok(
+    !ECLIPSE_CLOUD_GATE_PREDICATES.includes("deckFreeGroundOnRetentionRatio"),
+  );
+  assert.equal(
+    verdict.shadowTelemetry.groundRetentionOn,
+    verdict.deckFreeGroundOnRetentionRatio,
+  );
+
+  // The fifth run's actual pair, replayed: the ON leg's retention is 2.2x
+  // while the OFF leg's is 0.99.
+  const run = clone(passingRun());
+  const r0 = run.cloudLanes.rungs[0].shadow;
+  r0.offNoCloud = 0.46274509803954333;
+  r0.onNoCloud = 0.2077768453355468;
+  r0.offNoShadow = 0.45784608750450445;
+  r0.onNoShadow = 0.45784608750450445;
+  settleDeckFreeTwins(run);
+  const fifth = judgeEclipseCloudResponse(run);
+  assert.ok(Math.abs(fifth.shadowGroundRetentionRatio - 0.9894131552) < 1e-8);
+  assert.ok(Math.abs(fifth.deckFreeGroundOnRetentionRatio - 2.2035) < 1e-3);
+});
+
+test("K6 the probe captures the settled twin on BOTH legs, matched in position", () => {
+  const probe = fs
+    .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+
+  // Both twins exist, over the SAME dials and the same settle as the
+  // first-position reads they are compared against.
+  assert.match(probe, /const bOffNoCloudSettled = groundBand\(/);
+  assert.match(probe, /const bOnNoCloudSettled = groundBand\(/);
+  assert.match(probe, /B\$\{index\}-eclipseOff-cloudsOff-settled/);
+  assert.match(probe, /B\$\{index\}-eclipseOn-cloudsOff-settled/);
+  assert.match(probe, /offNoCloudSettled: bOffNoCloudSettled\.mean,/);
+  assert.match(probe, /onNoCloudSettled: bOnNoCloudSettled\.mean,/);
+
+  // MATCHED ORDERING is the point. A repeat on the eclipse-ON leg alone would
+  // re-introduce the unmatched-position defect it exists to detect, so the two
+  // must be structurally identical statements — same configure, same settle,
+  // same reducer — and each must sit AFTER its own leg's shadow captures.
+  const legSetup =
+    /configure\(\{ enableVolumetric: false, dials: groundDials \}\);\n\s*await pin\.settle\(julian, cfg\.settleMs\);\n\s*const bO(?:ff|n)NoCloudSettled = groundBand\(/g;
+  assert.equal(
+    (probe.match(legSetup) ?? []).length,
+    2,
+    "both legs must set up their settled twin identically",
+  );
+  assert.ok(
+    probe.indexOf("bOffNoCloudSettled") <
+      probe.indexOf("const bOnNoCloud = groundBand("),
+    "the OFF twin must be captured before the eclipse-ON leg begins",
+  );
+  assert.ok(
+    probe.indexOf("const bOffShadow") < probe.indexOf("bOffNoCloudSettled"),
+    "the OFF twin must sit AFTER its leg's shadow captures",
+  );
+  assert.ok(
+    probe.indexOf("const bOnShadow") < probe.indexOf("bOnNoCloudSettled"),
+    "the ON twin must sit AFTER its leg's shadow captures",
+  );
+
+  // The evidence reaches the console unrounded — the deltas ARE the verdict.
+  assert.match(probe, /SHADOW deck-free convergence: settled/);
+  assert.match(
+    probe,
+    /settled\+failing = ENGINE identity violation; unsettled = INSTRUMENT/,
   );
 });

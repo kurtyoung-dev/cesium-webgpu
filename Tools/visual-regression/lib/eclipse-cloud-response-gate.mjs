@@ -883,6 +883,12 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
     "the DECK-FREE ground band mean, i.e. the brightness of the surface the cast shadow has to darken. This is a PRECONDITION, and it exists because the second Edge run's lane B was vacuous for a reason the ceiling above cannot express. The offline pin removes every imagery layer, so the globe renders `GlobeSurfaceTileProvider.baseColor`, whose default `new Color(0, 0, 0.5, 1)` has a Rec.709 luma of 0.036 BEFORE the Lambert term. The cast shadow floors the ground at `max(exp(-tau*0.04), 0.35)`, so it can remove at most 65% of whatever the ground contributes: at 0.036 that is 0.023 of a full band and the 0.98 ceiling is unreachable by construction. 0.15 is the floor at which a fully-shadowed ground band moves the contrast by 0.65*0.15 = 0.0975, 4.875x the 0.02 the ceiling asks for. STRUCTURAL, not a product failure",
   ),
 
+  deckFreeGroundSettleDelta: band(
+    0,
+    BAND_MEAN_CAPTURE_DELTA,
+    "|settled - first| on the deck-free ground band, on EACH eclipse leg. The fifth run measured `onNoCloud / offNoCloud` = 0.449 at obscuration ZERO — where the published laws force exactly 1.0 — and its own numbers could not say whether the globe's light path is really dimmed by merely ENABLING the eclipse or whether that one capture had simply not converged: it is the ONLY scored capture in the probe taken a single settle after a genuine eclipse-state TRANSITION (the eclipse-OFF leg's toggle at the lane-B entry is a no-op, because the `publishedOff` read two blocks earlier already left the flag false). The probe now takes the same deck-free configuration TWICE on BOTH legs — once in first position and once in last — and this band is the agreement they must show. A drift beyond one eight-bit code is an UNSETTLED instrument, not a product finding, so it is STRUCTURAL: it quarantines the `deck-free` domain — the attribution and this detector, and deliberately NOT the cast-shadow contrast, which is a ratio of ratios among the deck-present captures — rather than scoring an attribution over a capture that was still moving. The bound is `BAND_MEAN_CAPTURE_DELTA` verbatim rather than a second literal, because the quantity being bounded is the same one `determinismDelta` bounds — the smallest difference this instrument can resolve at all. NOTE the asymmetry this CANNOT launder: if both reads agree AND the ratio is 0.449, the reading is the measurement and `deckFreeGroundDimsByFactor` still fails, which is the ENGINE verdict shape",
+  ),
+
   shadowGroundRetention: band(
     0.85,
     1.18,
@@ -925,7 +931,10 @@ export const ECLIPSE_CLOUD_GATE_PREDICATES = Object.freeze([
   "shadowContrastInvariant",
   "shadowContrastRejectsAlternativeDesign",
   "shadowContrastModelIsBoundedByDirectional",
-  // Lane B attribution leg — the deck-free ground's own dimming law
+  // Lane B attribution leg — the deck-free ground's own dimming law. The
+  // convergence precondition is evaluated FIRST: an attribution taken off a
+  // capture that was still moving is not an attribution.
+  "deckFreeGroundCapturesSettled",
   "deckFreeGroundDimsByFactor",
   // Lane C — IBL dim, refresh cadence, recovery (prediction iii)
   "predictedRefreshCountExact",
@@ -984,6 +993,16 @@ export const ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES = Object.freeze([
   // identical f64s becomes its own instrument investigation rather than a
   // product verdict, which is exactly why this does not gate.
   "offNoCloudVariesWithSun",
+  // CO-21. Whether lane B's two retention ratios AGREE — `offNoShadow/offNoCloud`
+  // (the gating `shadowGroundNotOccluded` reads it) against its previously
+  // uncomputed eclipse-ON twin `onNoShadow/onNoCloud`. The fifth run read 0.9894
+  // off and 2.2035 on, and one surface cannot produce both, so this is the
+  // corroborating number for the whole enable-identity question. It is
+  // reported-only because WHICH of the two is wrong is decided by
+  // `deckFreeGroundCapturesSettled`, not by their disagreement: gating it would
+  // score the same ambiguity twice and would fail a run in the exact shape where
+  // the deck-present band is the contaminated one.
+  "deckFreeGroundRetentionLegsAgreeReportedOnly",
 ]);
 
 /**
@@ -1026,6 +1045,16 @@ export const ECLIPSE_CLOUD_LANE_PARENTS = Object.freeze({
   "cloud-page": null,
   deck: "cloud-page",
   shadow: "cloud-page",
+  // CO-21 — the deck-free attribution leg is a CHILD of the shadow lane, not a
+  // peer of it. Everything that blinds lane B blinds the attribution (it reads
+  // lane B's own ground band, and `shadowGroundIsBright` is the band mean its
+  // tolerance is propagated from), but the converse must NOT hold: an unsettled
+  // deck-free CONTROL says nothing about the cast-shadow contrast, which is a
+  // ratio OF ratios taken entirely among the deck-present captures. Blinding
+  // the whole `shadow` domain for it would demote the row's real
+  // `C13-41-SHADOW-CONTRAST-ECLIPSE-EXCESS` finding to non-gating — precisely
+  // the per-lane over-scoping the third pass was told to stop doing.
+  "deck-free": "shadow",
   "ibl-page": null,
   "ibl-model": "ibl-page",
 });
@@ -1061,9 +1090,11 @@ export const ECLIPSE_CLOUD_PREDICATE_LANES = Object.freeze({
   shadowContrastModelIsBoundedByDirectional: "gate-arithmetic",
   // The deck-free attribution leg reads lane B's own ground band, and its
   // precondition (`shadowGroundIsBright`, the band mean the tolerance is
-  // propagated from) lives in the same domain. Scoring an attribution over a
-  // band too dark to carry one certifies nothing.
-  deckFreeGroundDimsByFactor: "shadow",
+  // propagated from) lives in the parent domain. Scoring an attribution over a
+  // band too dark to carry one certifies nothing — and CO-21 adds the second
+  // precondition, that the band had stopped moving when it was read.
+  deckFreeGroundCapturesSettled: "deck-free",
+  deckFreeGroundDimsByFactor: "deck-free",
   // Lane C — IBL dim, refresh cadence, recovery (prediction iii)
   predictedRefreshCountExact: "gate-arithmetic",
   rampNeverSkipsABucket: "ibl-page",
@@ -1306,6 +1337,12 @@ const inBand = (value, b) =>
 const ratio = (a, b) =>
   Number.isFinite(a) && Number.isFinite(b) && b !== 0 ? a / b : null;
 
+// `null` rather than NaN when either read is absent, so a MISSING settled twin
+// fails `inBand` and blinds the lane instead of silently passing it: an absent
+// convergence check is exactly as uninformative as a failed one.
+const absDelta = (a, b) =>
+  Number.isFinite(a) && Number.isFinite(b) ? Math.abs(a - b) : null;
+
 /**
  * Folds one run's measurements into the verdict.
  *
@@ -1448,6 +1485,61 @@ export function judgeEclipseCloudResponse(run) {
         `turning the deck on moves the ground band by ${v.shadowGroundRetentionRatio}x (outside [${B.shadowGroundRetention.lo}, ${B.shadowGroundRetention.hi}]) — the scored band is not the ground, so its contrast is not the cast shadow's`,
       );
     }
+    // ── THE SETTLED-TWIN DETECTOR (CO-21) ───────────────────────────────────
+    // Both deck-free reads, on both legs, against the one code value this
+    // instrument can resolve. A drift means the first-position capture had not
+    // converged, which makes EVERY deck-free attribution below it a reading of
+    // a transient rather than of the engine. STRUCTURAL for the same reason
+    // `shadowGroundIsBright` is: the lane cannot answer, and pretending it did
+    // is how the fifth run's 0.449 became attributable to two different causes.
+    v.deckFreeGroundSettleDelta = rungs.map((rung) => {
+      const s = rung.shadow ?? {};
+      const offDelta = absDelta(s.offNoCloudSettled, s.offNoCloud);
+      const onDelta = absDelta(s.onNoCloudSettled, s.onNoCloud);
+      return {
+        obscuration: rung.published?.moonObscuration ?? null,
+        offFirst: Number.isFinite(s.offNoCloud) ? s.offNoCloud : null,
+        offSettled: Number.isFinite(s.offNoCloudSettled)
+          ? s.offNoCloudSettled
+          : null,
+        offDelta,
+        onFirst: Number.isFinite(s.onNoCloud) ? s.onNoCloud : null,
+        onSettled: Number.isFinite(s.onNoCloudSettled)
+          ? s.onNoCloudSettled
+          : null,
+        onDelta,
+        settled:
+          inBand(offDelta, B.deckFreeGroundSettleDelta) &&
+          inBand(onDelta, B.deckFreeGroundSettleDelta),
+      };
+    });
+    v.deckFreeGroundCapturesSettled =
+      v.deckFreeGroundSettleDelta.length > 0 &&
+      v.deckFreeGroundSettleDelta.every((entry) => entry.settled === true);
+    if (!v.deckFreeGroundCapturesSettled) {
+      const worst = v.deckFreeGroundSettleDelta.find(
+        (entry) => entry.settled !== true,
+      );
+      markBlind(
+        "deck-free",
+        `the deck-free ground control did not reproduce within one capture code at obscuration ${worst?.obscuration}: eclipse-OFF moved ${worst?.offDelta} (${worst?.offFirst} -> ${worst?.offSettled}) and eclipse-ON moved ${worst?.onDelta} (${worst?.onFirst} -> ${worst?.onSettled}) against the ${B.deckFreeGroundSettleDelta.hi} bracket — the first-position capture had not converged, so the deck-free attribution reads a transient and not the engine`,
+      );
+    }
+    // The ON-leg twin of `shadowGroundRetentionRatio`, REPORTED not gated. The
+    // OFF-leg ratio says the scored band is ground; this one says whether it is
+    // still ground once the eclipse is on. The fifth run read 0.9894 off and
+    // 2.2035 on — the deck-present and deck-free bands cannot both be measuring
+    // the same surface, and that contradiction is the whole CO-21 question. It
+    // does not gate because which of the two readings is wrong is exactly what
+    // `deckFreeGroundCapturesSettled` decides.
+    v.deckFreeGroundOnRetentionRatio = ratio(
+      rungs[0]?.shadow?.onNoShadow,
+      rungs[0]?.shadow?.onNoCloud,
+    );
+    v.deckFreeGroundRetentionLegsAgreeReportedOnly = inBand(
+      ratio(v.deckFreeGroundOnRetentionRatio, v.shadowGroundRetentionRatio),
+      B.shadowGroundRetention,
+    );
     v.shadowContrastClear = ratio(
       rungs[0]?.shadow?.offShadow,
       rungs[0]?.shadow?.offNoShadow,
@@ -1786,6 +1878,14 @@ export function judgeEclipseCloudResponse(run) {
     offNoShadowSpread: v.offNoShadowSpread,
     offNoCloudVariesWithSun: v.offNoCloudVariesWithSun,
     deckFreeExcessAtDeepest: v.deckFreeGroundExcessAtDeepest,
+    // CO-21: the convergence evidence, next to the number it qualifies. The
+    // two retention ratios sit together because their DISAGREEMENT is the
+    // question — the OFF leg says the scored band is ground, the ON leg says
+    // the deck-present and deck-free bands are 2.2x apart, and only one of
+    // those can be true of a single surface.
+    deckFreeSettled: v.deckFreeGroundCapturesSettled,
+    deckFreeSettleDelta: v.deckFreeGroundSettleDelta,
+    groundRetentionOn: v.deckFreeGroundOnRetentionRatio,
     cameraHeight: rungs[0]?.shadow?.cameraHeight ?? null,
     pitchDegrees: rungs[0]?.shadow?.pitchDegrees ?? null,
   };

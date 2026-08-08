@@ -1012,6 +1012,31 @@ const RUN_CLOUD_LANES = async (cfg) => {
     const globeUniformOff = globeUniformTelemetry();
     const footprintOff = shadowFootprintTelemetry();
 
+    // ── THE SETTLED TWIN of the deck-free control (CO-21). The SAME
+    // configuration as `bOffNoCloud`, re-captured at the END of the leg instead
+    // of at its start, i.e. three settles further from the leg's own eclipse
+    // transition instead of one.
+    //
+    // WHY IT EXISTS. The fifth run measured `onNoCloud / offNoCloud` = 0.449 at
+    // obscuration ZERO, where the published laws force 1.0, and its two
+    // candidate causes are indistinguishable in that run's own numbers: either
+    // the globe's light path really is dimmed by merely ENABLING the eclipse
+    // (engine), or the deck-free capture is the ONLY scored capture in the
+    // probe taken one settle after a genuine eclipse-state transition and had
+    // not converged (instrument). The first-vs-settled delta separates them
+    // with one extra capture per leg: a converged reading proves the number is
+    // the measurement, and a moving one proves it was not.
+    //
+    // IT IS TAKEN ON BOTH LEGS, at the same ordinal position within each leg.
+    // A repeat on the eclipse-ON leg alone would re-introduce exactly the
+    // unmatched-ordering defect it exists to detect — the comparison would then
+    // be a first-position OFF read against a last-position ON read.
+    configure({ enableVolumetric: false, dials: groundDials });
+    await pin.settle(julian, cfg.settleMs);
+    const bOffNoCloudSettled = groundBand(
+      captureLabelled(`B${index}-eclipseOff-cloudsOff-settled`, julian, false),
+    );
+
     setEclipse(true);
     // ── THE DECK-FREE ECLIPSE-ON TWIN (CO-19), at the SAME instant as
     // `bOffNoCloud` and with the identical configuration apart from the eclipse
@@ -1048,6 +1073,14 @@ const RUN_CLOUD_LANES = async (cfg) => {
     const cloudCacheOn = cloudCacheTelemetry();
     const globeUniformOn = globeUniformTelemetry();
 
+    // CO-21: the eclipse-ON half of the settled twin, at the same ordinal
+    // position within its leg as the OFF one above. See the block there.
+    configure({ enableVolumetric: false, dials: groundDials });
+    await pin.settle(julian, cfg.settleMs);
+    const bOnNoCloudSettled = groundBand(
+      captureLabelled(`B${index}-eclipseOn-cloudsOff-settled`, julian, false),
+    );
+
     // Restore the lane-A dials so the next rung starts from one configuration.
     configure({ enableVolumetric: true });
 
@@ -1082,6 +1115,12 @@ const RUN_CLOUD_LANES = async (cfg) => {
         // CO-19: the eclipse-ON twin of the same deck-free control, captured at
         // the same instant. `onNoCloud / offNoCloud` is the attribution.
         onNoCloud: bOnNoCloud.mean,
+        // CO-21: the SETTLED twins of both deck-free controls — same dials,
+        // same instant, last position in the leg instead of first. The pair of
+        // deltas is what says whether the two reads above are measurements or
+        // transients; see the block at the OFF capture.
+        offNoCloudSettled: bOffNoCloudSettled.mean,
+        onNoCloudSettled: bOnNoCloudSettled.mean,
         offNoShadow: bOffNoShadow.mean,
         offShadow: bOffShadow.mean,
         onNoShadow: bOnNoShadow.mean,
@@ -1847,6 +1886,28 @@ async function resolveFeatureRendererKeys(page) {
         `deck-free dim at deepest ${r3(t.deckFreeExcessAtDeepest)}x F ` +
         `(1.0 exonerates the globe light path and makes the CO-17 residue CLOUD-DRIVEN; ` +
         `>1 indicts the globe path)`,
+    );
+    // CO-21 ATTRIBUTION EVIDENCE, printed UNROUNDED. The fifth run's 0.449 at
+    // obscuration ZERO has exactly two causes and this line separates them:
+    // `deckFreeSettled true` means the reads had CONVERGED, so 0.449 is the
+    // measurement and the identity violation is the ENGINE's; `false` means the
+    // first-position capture was still moving and the number was an artefact of
+    // being the only scored capture taken one settle after a real eclipse-state
+    // transition. `retention on/off` is the corroborating pair: 0.9894 off
+    // against 2.2035 on says the deck-present and deck-free bands cannot both
+    // be reading the same surface.
+    console.log(
+      `SHADOW deck-free convergence: settled ${t.deckFreeSettled} ` +
+        `(bracket ${ECLIPSE_CLOUD_BANDS.deckFreeGroundSettleDelta.hi}); ` +
+        `per-rung [${(t.deckFreeSettleDelta ?? [])
+          .map(
+            (e) =>
+              `obs ${e.obscuration}: off ${e.offFirst}->${e.offSettled} (d ${e.offDelta}), ` +
+              `on ${e.onFirst}->${e.onSettled} (d ${e.onDelta})`,
+          )
+          .join(" | ")}]; ` +
+        `retention off ${t.groundRetention} vs on ${t.groundRetentionOn} ` +
+        `(settled+failing = ENGINE identity violation; unsettled = INSTRUMENT)`,
     );
   }
   // The CO-19 deck leg, on its own line: the pure deck ratio and the `e` it
