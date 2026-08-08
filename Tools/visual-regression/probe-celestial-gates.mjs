@@ -199,11 +199,62 @@
 //                 trigger readings themselves are evidence for a maintainer
 //                 ruling, per DR-01's own "decide on evidence, not impression".
 //
+// GATE G4 (--g4) — "Sun + Moon". Six sub-lanes per backend, and — like G2 and
+// G3 — it must PASS IDENTICALLY ON BOTH. Every term it measures is resolved
+// CPU-side and published on `frameState` BEFORE the backend branch
+// (`SunDiscAppearance`, `SunHaloAppearance`, `MoonPhaseAppearance`), which is
+// precisely why a one-backend pass is a FAIL rather than a partial pass.
+//
+//   policy      — C12-28's SDR leg, plus the LIVE positive control that makes
+//                 it non-vacuous: the scene's DETECTED display state is forced
+//                 to HDR, the shipped resolver is re-run, the flag must FLIP,
+//                 and restoring the real detection must flip it back. Also
+//                 fetches the served sun-bake source for the C12-19 pending
+//                 arm. Takes no picture. Runs FIRST, before any capture pins
+//                 the HDR flag as user-set.
+//   disc        — C12-15 + C12-18. Telescope framing (fovX 2 deg), sun over
+//                 black, three toggle legs: limb OFF (flat), true-size OFF
+//                 (legacy), and the shipped default. `flat - limb` isolates the
+//                 limb law with the screen halo CANCELLING EXACTLY; `flat -
+//                 legacy` is an annulus whose two edges are the legacy and
+//                 true-size discs, and whose ratio is B906's 1.4142 fix.
+//   halo        — C12-18's screen-space tail, measured between 16 and 30 solar
+//                 radii — past the billboard's own corner at sqrt(2)*11 =
+//                 15.56 R_sun, so the bake leg is the positive control that the
+//                 band is EMPTY without the post-process chain. Also reads the
+//                 one-halo-source invariant (`screenHalo -> bakeHaloGain 0`)
+//                 LIVE off `frameState.sunHalo`, and asserts the eclipse alpha
+//                 chain's exact identity on the sunlit side.
+//   earthshine  — C12-21's owed Edge acceptance. Three phase epochs solved with
+//                 the moon-appearance demo's own `findTimeForPhase`; the unlit
+//                 limb's `ON - OFF` delta must be present at the crescent,
+//                 carry the shipped ashen tint, SCALE WITH THE LIVE RESOLVED
+//                 Earth-phase complement, and go inert at full moon.
+//   terminator  — C12-22's owed Edge acceptance. Softening ON vs OFF at the
+//                 quarter epoch: a thin non-negative band hugging the
+//                 terminator, ZERO darkened pixels (the model's own property),
+//                 and a live softness equal to the solar angular radius.
+//   phase       — the disc brightens with phase, and §5's full:quarter bar
+//                 behind an explicit REACHABILITY gate (see
+//                 `SURGE_REACHABLE_MAX_PHASE_ANGLE_DEG`).
+//
+// ⚠ ONE CRITERION IS A PENDING ARM. §5's `I(0.95R)/I(0) in [0.3,0.5]` cannot be
+// measured as an ABSOLUTE ratio until `C12-19` removes the `clamp(...,0,1)` from
+// both sun bakes — both bake sources say so in their own comments. The arm is
+// neither failed nor skipped: it self-activates from two independent live
+// discriminators (the served bake's clamp, and the measured peak disc radiance
+// against a bound the clamped build cannot exceed), reports
+// `STRUCTURAL-pending-content:C12-19` BY NAME in its own printed block, and the
+// ratio is measured and reported every run so the number is on the record
+// before the content lands. A DISAGREEMENT between the two discriminators is
+// STRUCTURAL rather than a guess.
+//
 // Usage:
 //   node Tools/visual-regression/probe-celestial-gates.mjs            # G1 (SDR)
 //   node Tools/visual-regression/probe-celestial-gates.mjs --bracket  # C12-02 HDR bracket
 //   node Tools/visual-regression/probe-celestial-gates.mjs --g2       # G2 (PSF + glare)
 //   node Tools/visual-regression/probe-celestial-gates.mjs --g3       # G3 (star-map asset)
+//   node Tools/visual-regression/probe-celestial-gates.mjs --g4       # G4 (sun + moon)
 //   PROBE_BASE=http://localhost:8080 node ... (override server)
 
 import { chromium } from "playwright";
@@ -251,6 +302,21 @@ import {
   foldG3Verdict,
   foldVariant,
 } from "./lib/celestial-g3-gate.mjs";
+import {
+  MOON_DISC_MASK_FRACTION,
+  MOON_PHASE_TARGETS,
+  MOON_UNLIT_DARK_FLOOR,
+  MOON_UNLIT_MASK_FRACTION,
+  TERMINATOR_DELTA_EPS,
+  buildG4Summary,
+  discDeltaCensus,
+  discIntegratedBrightness,
+  evaluateG4Backend,
+  foldG4Verdict,
+  measureDiscDifferential,
+  measureHaloProfile,
+  unlitLimbDelta,
+} from "./lib/celestial-g4-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
@@ -330,6 +396,7 @@ const G2_MAGNITUDE_MAX_EXPECTATIONS = 120;
 const BRACKET = process.argv.includes("--bracket");
 const G2 = process.argv.includes("--g2");
 const G3 = process.argv.includes("--g3");
+const G4 = process.argv.includes("--g4");
 
 // G3 MOTION SWEEP — sub-pixel translation of the star field under a camera-only
 // rotation at the PINNED clock. The clock never advances, so the stars' inertial
@@ -392,7 +459,13 @@ const CATALOG_EXPECTATIONS = [
 // becomes the thing that fails the gate.
 // G3 gets more again: it pays two settled captures per backend PLUS a 24-frame
 // motion sweep per backend, and then decodes eighteen 2048-px JPEGs off-browser.
-const HARD_LIMIT_MS = G3 ? 1800000 : G2 ? 1200000 : 600000;
+// G4 is the longest of the four: SEVEN settled setups and 28 settled captures
+// per backend — disc (3 toggle legs x 2 exposures), halo (2 x 2), three moon
+// epochs (2 x 2 each) and the terminator lane (2 x 3) — every one of them
+// preceded by a discarded warm-up capture, plus a zero-capture policy lane. At
+// the measured ~7 s per capture that is ~4 min per backend; the budget is 40 min
+// so the watchdog cannot become the thing that fails the gate on a cold machine.
+const HARD_LIMIT_MS = G4 ? 2400000 : G3 ? 1800000 : G2 ? 1200000 : 600000;
 const watchdog = setTimeout(() => {
   console.error(
     `[probe-celestial-gates] WATCHDOG FIRED (${HARD_LIMIT_MS / 1000}s) — forcing exit`,
@@ -435,7 +508,15 @@ function normalizeHardwareClass(parts) {
 // --------------------------------------------------------------------------
 async function setupScene(
   page,
-  { aim, skyAtmosphereOn, cameraHeightM, fovXDeg, catalogMaxVmag },
+  {
+    aim,
+    skyAtmosphereOn,
+    cameraHeightM,
+    fovXDeg,
+    catalogMaxVmag,
+    sunOn,
+    moonOn,
+  },
 ) {
   return page.evaluate(
     async ({
@@ -451,6 +532,8 @@ async function setupScene(
       fovX,
       maxVmag,
       maxExpectations,
+      showSun,
+      showMoon,
     }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const viewer = window.viewer;
@@ -468,11 +551,14 @@ async function setupScene(
       if (scene.globe) {
         scene.globe.show = false;
       }
+      // G1/G2 want a bare star field, so both bodies default OFF and every
+      // existing lane keeps its historical scene byte-for-byte. G4's sun lanes
+      // are the first to ask for the sun billboard itself.
       if (scene.sun) {
-        scene.sun.show = false;
+        scene.sun.show = showSun === true;
       }
       if (scene.moon) {
-        scene.moon.show = false;
+        scene.moon.show = showMoon === true;
       }
       if (scene.skyAtmosphere) {
         // Lane B REQUIRES this on: `CubeMapPanorama.updateStarModulation` gates
@@ -813,10 +899,42 @@ async function setupScene(
         }
       }
 
+      // G4 SUN GEOMETRY. `frameState.sunHalo` is `SunHaloAppearance`'s resolved
+      // result, published before the backend branch, so this is the SAME
+      // `limbPx` the shipped `SolarHalo` stage draws with — not a second
+      // derivation that could disagree with it. The ephemeris diameter is the
+      // honest reference for the disc-size criterion: 0.5334 deg is a mean and
+      // the real disc breathes +/-1.7% over a year.
+      const sunPositionWC = scene.context.uniformState.sunPositionWC;
+      const camPositionWC = scene.camera.positionWC;
+      const sunDistanceM =
+        sunPositionWC && camPositionWC
+          ? C.Cartesian3.distance(sunPositionWC, camPositionWC)
+          : null;
+      const expectedSolarAngularRadiusDeg =
+        sunDistanceM > 0
+          ? (Math.asin(C.Math.SOLAR_RADIUS / sunDistanceM) * 180) / Math.PI
+          : null;
+      const haloState = scene.frameState?.sunHalo ?? null;
+
       return {
         rendererType: scene.context.rendererType,
         catalogSource,
         appliedFovXDeg,
+        sunDistanceM,
+        expectedSolarAngularRadiusDeg,
+        devicePixelRatio: window.devicePixelRatio ?? 1,
+        sunHalo: haloState
+          ? {
+              screenHalo: haloState.screenHalo === true,
+              bakeHaloGain: haloState.bakeHaloGain,
+              haloIntensity: haloState.haloIntensity,
+              haloCoreRadii: haloState.haloCoreRadii,
+              limbPx: haloState.limbPx,
+              visible: haloState.visible === true,
+              eclipseFactor: haloState.eclipseFactor,
+            }
+          : null,
         skyBrightness: scene.frameState
           ? (scene.frameState.skyBrightness ?? null)
           : null,
@@ -847,6 +965,8 @@ async function setupScene(
       fovX: Number.isFinite(fovXDeg) ? fovXDeg : null,
       maxVmag: Number.isFinite(catalogMaxVmag) ? catalogMaxVmag : null,
       maxExpectations: G2_MAGNITUDE_MAX_EXPECTATIONS,
+      showSun: sunOn === true,
+      showMoon: moonOn === true,
     },
   );
 }
@@ -855,7 +975,10 @@ async function setupScene(
 // In-page: apply the M6 toggles (or the bracket exposure), settle, and capture
 // the crop in the SAME task as the final render (RULE 2).
 // --------------------------------------------------------------------------
-async function captureMode(page, { mode, crop, exposure, hdr, glareOn }) {
+async function captureMode(
+  page,
+  { mode, crop, exposure, hdr, glareOn, toggles },
+) {
   return page.evaluate(
     async ({
       captureMode,
@@ -866,6 +989,7 @@ async function captureMode(page, { mode, crop, exposure, hdr, glareOn }) {
       settleBudgetMs,
       settleMinFrames,
       settleYieldMs,
+      lightingToggles,
     }) => {
       await import("/Build/CesiumUnminified/index.js");
       const viewer = window.viewer;
@@ -876,6 +1000,14 @@ async function captureMode(page, { mode, crop, exposure, hdr, glareOn }) {
       if (skyBox) {
         if (captureMode === "cubemap-only") {
           skyBox.show = true;
+          if (skyBox.starField) {
+            skyBox.starField.show = false;
+          }
+        } else if (captureMode === "sun-only" || captureMode === "moon-only") {
+          // G4: no sky at all. The disc/halo/moon measurements are radiances
+          // over a BLACK background, so a cube map or a sprite catalogue in
+          // frame would be an additive pedestal on every band this gate reads.
+          skyBox.show = false;
           if (skyBox.starField) {
             skyBox.starField.show = false;
           }
@@ -921,6 +1053,25 @@ async function captureMode(page, { mode, crop, exposure, hdr, glareOn }) {
       if (lightingLeaf && typeof glareFlag === "boolean") {
         lightingLeaf.enableAngularSolarGlare = glareFlag;
         glareRequested = lightingLeaf.enableAngularSolarGlare === true;
+      }
+
+      // G4 A/B TOGGLES. Every one of these lives on the SAME
+      // atmospheric-conditions facade, is re-resolved by its owning module every
+      // frame (`SunDiscAppearance`, `SunHaloAppearance`, `MoonPhaseAppearance`),
+      // and has a documented byte-identical OFF position. Each leg pins the
+      // flags it depends on EXPLICITLY rather than inheriting whatever the
+      // previous leg left behind — several lanes run on one page.
+      let lightingRequested = null;
+      if (lightingLeaf && lightingToggles) {
+        for (const [flag, value] of Object.entries(lightingToggles)) {
+          if (typeof value === "boolean") {
+            lightingLeaf[flag] = value;
+          }
+        }
+        lightingRequested = {};
+        for (const flag of Object.keys(lightingToggles)) {
+          lightingRequested[flag] = lightingLeaf[flag] === true;
+        }
       }
 
       // HDR IS SET IN BOTH DIRECTIONS, NOT ONLY ON. `runBackendLanes` drives
@@ -1003,12 +1154,46 @@ async function captureMode(page, { mode, crop, exposure, hdr, glareOn }) {
           }
         : null;
 
+      // G4 LIVE STATE — read in the SAME task as the measured render (RULE 2),
+      // so the resolved appearance describes the frame that was captured rather
+      // than the intent. All of these are published on `frameState` by their
+      // owning module BEFORE the backend branch, which is exactly why they can
+      // certify a shared-code claim.
+      const fs = scene.frameState;
+      const haloState = fs?.sunHalo ?? null;
+      const sunHalo = haloState
+        ? {
+            screenHalo: haloState.screenHalo === true,
+            trueDiscSize: haloState.trueDiscSize === true,
+            bakeHaloGain: haloState.bakeHaloGain,
+            discEdge: haloState.discEdge,
+            haloIntensity: haloState.haloIntensity,
+            haloAmplitude: haloState.haloAmplitude,
+            haloCoreRadii: haloState.haloCoreRadii,
+            eclipseFactor: haloState.eclipseFactor,
+            limbPx: haloState.limbPx,
+            centerX: haloState.centerX,
+            centerY: haloState.centerY,
+            visible: haloState.visible === true,
+          }
+        : null;
+
       return {
         width: cropRect.width,
         height: cropRect.height,
         data: Array.from(full.data),
         glareRequested,
         solarGlare,
+        lightingRequested,
+        sunHalo,
+        sunEclipseAlpha: fs?.sunEclipseAlpha ?? null,
+        eclipseSunVisibleFraction: fs?.eclipseState?.sunVisibleFraction ?? null,
+        moonPhaseFraction: fs?.moonPhaseFraction ?? null,
+        moonEarthshinePhaseScale: fs?.moonEarthshinePhaseScale ?? null,
+        moonTerminatorSoftness: fs?.moonTerminatorSoftness ?? null,
+        enableEarthshine: lightingLeaf
+          ? lightingLeaf.enableEarthshine === true
+          : null,
         skyBrightness: scene.frameState
           ? (scene.frameState.skyBrightness ?? null)
           : null,
@@ -1034,6 +1219,7 @@ async function captureMode(page, { mode, crop, exposure, hdr, glareOn }) {
       settleBudgetMs: SETTLE_BUDGET_MS,
       settleMinFrames: SETTLE_MIN_FRAMES,
       settleYieldMs: SETTLE_YIELD_MS,
+      lightingToggles: toggles ?? null,
     },
   );
 }
@@ -1243,19 +1429,24 @@ async function withPage(browser, renderer, body) {
 // Each lane is `{ key, setup, captures }`; captures within a lane run in the
 // listed order, which is CERTIFYING-LAST for the same reason
 // `G1_MODE_CAPTURE_ORDER` is (see its comment).
+// `setupFn` lets a lane bring its own in-page configuration (G4's moon lanes
+// solve a phase epoch and park on the Earth->Moon line; its policy lane takes no
+// picture at all). Omitting it keeps the historical `setupScene`, so G1/G2/G3
+// lane definitions are unchanged.
 async function runBackendLanes(browser, renderer, laneDefs) {
   return withPage(browser, renderer, async (page) => {
     const lanes = {};
     for (const def of laneDefs) {
-      const setup = await setupScene(page, def.setup);
+      const setup = await (def.setupFn ?? setupScene)(page, def.setup);
       const captures = {};
-      for (const cap of def.captures) {
+      for (const cap of def.captures ?? []) {
         captures[cap.key] = await captureMode(page, {
           mode: cap.mode,
           crop: setup.crop,
           exposure: cap.exposure,
           hdr: cap.hdr === true,
           glareOn: cap.glareOn,
+          toggles: cap.toggles,
         });
       }
       lanes[def.key] = { setup, captures };
@@ -2970,6 +3161,966 @@ async function runG3(browser, git) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// GATE G4 — Sun (disc size, limb darkening, screen-space halo, SDR policy) +
+// Moon (earthshine, soft terminator, phase). Six sub-lanes per backend, and —
+// like G2 and G3 — it must PASS IDENTICALLY ON BOTH.
+// ---------------------------------------------------------------------------
+//
+// FRAMING ARITHMETIC, so the two field-of-view overrides read as derivations
+// rather than dials:
+//
+//   SUN DISC (fovX 2 deg). The Sun's angular RADIUS is ~0.263 deg at the pinned
+//   epoch, so the disc's rendered radius is ~170 px on a 1280-px canvas and its
+//   diameter (~341 px) fits inside the 640-px crop with 40% of a radius to
+//   spare — which is what the "the differential vanishes outside the disc"
+//   criterion needs. At the default 60 deg the same disc is 5.7 px across and
+//   `x = 0.95` and `x = 1.0` land in the same pixel.
+//
+//   SUN HALO (default fovX). Here the disc must be SMALL: the halo is measured
+//   between 16 and 30 solar radii — past the billboard's own corner at
+//   sqrt(2) * 11 = 15.56 R_sun, so nothing baked can reach it — and 30 R_sun is
+//   168 px at the default framing against a 320-px crop half-height. At the
+//   disc lane's 2 deg the same band would be 5,100 px out.
+//
+//   MOON (fovX 22 deg, standoff 2.0e7 m). The standoff is
+//   `probe-moon-lola-relief.mjs`'s, unchanged. The FOV is what the C12-22 band
+//   needs: near the terminator `N.L ~ d / R`, so the softening band
+//   `|N.L| < w = 4.649e-3` is `2 w R` PIXELS wide — 1.0 px at the default
+//   framing (unmeasurable) against 2.7 px at 22 deg, where the disc is 578 px
+//   across and still inside the 640-px crop. Nothing about the moon is resized;
+//   this magnifies the same disc onto more pixels, exactly as G2's telescope
+//   framing does for the star PSF.
+
+const G4_SUN_DISC_FOV_X_DEG = 2.0;
+const G4_MOON_FOV_X_DEG = 22.0;
+const G4_MOON_STANDOFF_M = 2.0e7;
+
+// Phase-epoch search grid — the moon-appearance demo's own
+// (`packages/sandcastle/gallery/moon-appearance/main.js`), reused rather than
+// re-invented so this lane pins the SAME instants the demo shows.
+const G4_MOON_SEARCH_START_ISO = "2026-07-01T00:00:00Z";
+const G4_MOON_SEARCH_DAYS = 32;
+
+// EXPOSURE BRACKETS. Two steps each, chosen for the dynamic range the lane
+// actually spans rather than copied from G2's 1x/8x/64x:
+//   sun disc — 1x and 1/8x, because the disc plus the 0.75-amplitude screen
+//     halo can exceed the LDR white point and the HIGH end is what needs
+//     headroom;
+//   sun halo — 1x and 8x, because the tail at 30 R_sun is ~0.015 in linear
+//     light and the FAINT end is what needs the gain;
+//   moon    — 1x and 8x for the same reason (earthshine is ~0.05, the
+//     terminator softening ~1e-3).
+const G4_DISC_EXPOSURES = [1, 0.125];
+const G4_HALO_EXPOSURES = [1, 8];
+const G4_MOON_EXPOSURES = [1, 8];
+// The terminator lane gets a third, deeper step. The C12-22 softening peaks at
+// `w/4 = 1.16e-3` in mu0 units — modelled at 2.2e-4 in linear radiance once the
+// lunar albedo is folded in — which is only ~6 code values at 8x. 64x puts the
+// same signal at ~46 codes, so the band census is not living on the
+// quantization floor of its own bracket.
+const G4_TERMINATOR_EXPOSURES = [1, 8, 64];
+
+// --------------------------------------------------------------------------
+// In-page: the C12-28 SDR-display leg, its live positive control, and the
+// C12-19 pending-arm discriminator. Takes no picture.
+// --------------------------------------------------------------------------
+async function setupPolicyProbe(page) {
+  return page.evaluate(
+    async ({ cropRect, bakeSourceUrl }) => {
+      await import("/Build/CesiumUnminified/index.js");
+      const viewer = window.viewer;
+      const scene = viewer.scene;
+
+      const detected = scene._hdrDisplayIsHdr;
+      const observed = {
+        displayIsHdr: detected === true,
+        displayDetectionResolved: typeof detected === "boolean",
+        hdrSupported: scene.highDynamicRangeSupported === true,
+        policy: scene.hdrDisplayPolicy,
+        sceneHdrOn: scene.highDynamicRange === true,
+        canvasOutputOn: scene.useHDRCanvasOutput === true,
+        sceneHdrUserSet: scene._hdrUserSet === true,
+        canvasOutputUserSet: scene._useHDRCanvasOutputUserSet === true,
+      };
+
+      // POSITIVE CONTROL. The SDR readings above pass identically with the
+      // whole of C12-28 reverted, so on their own they certify nothing. Forcing
+      // the DETECTED display state to HDR and re-running the shipped resolver
+      // is what makes the SDR result a decision rather than an absence: the
+      // flag must flip ON, and then flip BACK when the real detection is
+      // restored. `_applyHdrDisplayDefault` saves and restores the user-set
+      // flags itself, so the control cannot leave the scene pinned.
+      let controlRan = false;
+      let controlSceneHdrOn = null;
+      let restoredSceneHdrOn = null;
+      let restoredSceneHdrUserSet = null;
+      if (typeof scene._applyHdrDisplayDefault === "function") {
+        scene._hdrDisplayIsHdr = true;
+        scene._applyHdrDisplayDefault();
+        controlSceneHdrOn = scene.highDynamicRange === true;
+        scene._hdrDisplayIsHdr = detected;
+        scene._applyHdrDisplayDefault();
+        restoredSceneHdrOn = scene.highDynamicRange === true;
+        restoredSceneHdrUserSet = scene._hdrUserSet === true;
+        controlRan = true;
+      }
+
+      // C12-19 DISCRIMINATOR — the served bake source. `C12-19` is defined as
+      // "remove the clamp(...,0,1) in both bakes", so the presence of the GLSL
+      // bake's final clamp is the most direct statement available of whether
+      // that content exists at this commit. Read over HTTP from the same served
+      // source tree the G2 magnitude lane imports `BrightStarCatalog` from.
+      let bakeClampPresent = null;
+      let bakeSourceBytes = null;
+      try {
+        const res = await fetch(bakeSourceUrl);
+        if (res.ok) {
+          const text = await res.text();
+          bakeSourceBytes = text.length;
+          bakeClampPresent = /out_FragColor\s*=\s*clamp\s*\(\s*color/.test(
+            text,
+          );
+        }
+      } catch {
+        bakeClampPresent = null;
+      }
+
+      return {
+        rendererType: scene.context.rendererType,
+        crop: {
+          x: 0,
+          y: 0,
+          width: cropRect.width,
+          height: cropRect.height,
+        },
+        expectations: [],
+        adapter: {
+          vendor: null,
+          architecture: null,
+          device: null,
+          description: null,
+        },
+        policyReadings: {
+          ...observed,
+          controlRan,
+          controlSceneHdrOn,
+          restoredSceneHdrOn,
+          restoredSceneHdrUserSet,
+        },
+        bakeClampPresent,
+        bakeSourceBytes,
+      };
+    },
+    {
+      cropRect: CROP,
+      bakeSourceUrl: "/packages/engine/Source/Shaders/SunTextureFS.glsl",
+    },
+  );
+}
+
+// --------------------------------------------------------------------------
+// In-page: solve one lunar phase epoch, park on the Earth->Moon line, settle,
+// and report the moon's screen geometry plus the LIVE resolved appearance
+// scalars. Runs entirely at the resolved (and thereafter pinned) clock.
+// --------------------------------------------------------------------------
+async function setupMoonScene(
+  page,
+  { phaseKey, phaseTarget, fovXDeg, standoffM },
+) {
+  return page.evaluate(
+    async ({
+      key,
+      target,
+      crop,
+      fovX,
+      standoff,
+      searchStartIso,
+      searchDays,
+      settleBudgetMs,
+      settleMinFrames,
+      settleYieldMs,
+    }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const viewer = window.viewer;
+      const scene = viewer.scene;
+
+      // RULE 1 — kill the default loop; every render below passes the clock.
+      viewer.clock.shouldAnimate = false;
+      viewer.useDefaultRenderLoop = false;
+      scene.requestRenderMode = false;
+
+      // Moon over black: no globe, no sun billboard, no sky, no star field. The
+      // earthshine and terminator measurements are absolute radiances over the
+      // disc, so any additional emitter in frame is a pedestal on both legs of
+      // an A/B whose whole point is that everything else cancels.
+      scene.backgroundColor = C.Color.BLACK;
+      if (scene.globe) {
+        scene.globe.show = false;
+      }
+      if (scene.sun) {
+        scene.sun.show = false;
+      }
+      if (scene.moon) {
+        scene.moon.show = true;
+      }
+      if (scene.skyAtmosphere) {
+        scene.skyAtmosphere.show = false;
+      }
+      if (scene.fog) {
+        scene.fog.enabled = false;
+      }
+      if (scene.skyBox) {
+        scene.skyBox.show = false;
+        if (scene.skyBox.starField) {
+          scene.skyBox.starField.show = false;
+        }
+      }
+
+      let appliedFovXDeg = null;
+      const frustum = scene.camera?.frustum;
+      if (frustum && typeof frustum.fov === "number") {
+        if (typeof window.__probeOriginalFovRad !== "number") {
+          window.__probeOriginalFovRad = frustum.fov;
+        }
+        frustum.fov = Number.isFinite(fovX)
+          ? C.Math.toRadians(fovX)
+          : window.__probeOriginalFovRad;
+        appliedFovXDeg = C.Math.toDegrees(frustum.fov);
+      }
+
+      // ── PHASE SEARCH ──────────────────────────────────────────────────────
+      // Transcribed from `packages/sandcastle/gallery/moon-appearance/main.js`
+      // (`illuminatedFraction` + `findTimeForPhase`), inlined here because a
+      // `page.evaluate` body cannot close over module scope. Deterministic: a
+      // fixed 3-hour coarse grid over a fixed 32-day window, then a fixed
+      // 10-minute refinement, so the resolved instant is reproducible and is
+      // recorded in the manifest.
+      //
+      // It runs entirely in the INERTIAL frame: the illuminated fraction is a
+      // dot product of two unit vectors that share the same frame rotation, so
+      // the ICRF->fixed transform cancels and hundreds of samples cost no
+      // rotation at all (and, usefully, do not depend on ICRF data having
+      // loaded yet).
+      const illuminatedFraction = (t) => {
+        const moon = C.Cartesian3.normalize(
+          C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
+            t,
+            new C.Cartesian3(),
+          ),
+          new C.Cartesian3(),
+        );
+        const sun = C.Cartesian3.normalize(
+          C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+            t,
+            new C.Cartesian3(),
+          ),
+          new C.Cartesian3(),
+        );
+        return 0.5 * (1.0 - C.Cartesian3.dot(moon, sun));
+      };
+      const searchStart = C.JulianDate.fromIso8601(searchStartIso);
+      let best = searchStart;
+      let bestError = Number.POSITIVE_INFINITY;
+      const consider = (t) => {
+        const error = Math.abs(illuminatedFraction(t) - target);
+        if (error < bestError) {
+          bestError = error;
+          best = t;
+        }
+      };
+      for (let hours = 0; hours <= searchDays * 24; hours += 3) {
+        consider(C.JulianDate.addHours(searchStart, hours, new C.JulianDate()));
+      }
+      const coarse = best;
+      for (let minutes = -180; minutes <= 180; minutes += 10) {
+        consider(C.JulianDate.addMinutes(coarse, minutes, new C.JulianDate()));
+      }
+      const resolved = best;
+      const solvedFraction = illuminatedFraction(resolved);
+      viewer.clock.currentTime = resolved;
+      const pinnedTime = () => viewer.clock.currentTime;
+
+      // RULE 3 — bounded settle. Also what gives the ICRF data a chance to
+      // load, which the camera placement below needs (the phase search did not).
+      let prev = null;
+      let stableRun = 0;
+      for (let i = 0; i < 180 && stableRun < 10; i++) {
+        scene.render(pinnedTime());
+        const cur = C.Cartesian3.clone(
+          scene.context.uniformState.sunDirectionWC,
+        );
+        if (prev && C.Cartesian3.distance(cur, prev) < 1e-9) {
+          stableRun++;
+        } else {
+          stableRun = 0;
+        }
+        prev = cur;
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+
+      // ── CAMERA: the demo's `viewDiscCloseUp` ─────────────────────────────
+      const moonInertial =
+        C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
+          pinnedTime(),
+          new C.Cartesian3(),
+        );
+      const rotation = new C.Matrix3();
+      if (
+        !C.defined(
+          C.Transforms.computeIcrfToFixedMatrix(pinnedTime(), rotation),
+        )
+      ) {
+        C.Transforms.computeTemeToPseudoFixedMatrix(pinnedTime(), rotation);
+      }
+      const moonFixed = C.Matrix3.multiplyByVector(
+        rotation,
+        moonInertial,
+        new C.Cartesian3(),
+      );
+      const moonDistance = C.Cartesian3.magnitude(moonFixed);
+      const direction = C.Cartesian3.normalize(moonFixed, new C.Cartesian3());
+      const destination = C.Cartesian3.multiplyByScalar(
+        direction,
+        moonDistance - standoff,
+        new C.Cartesian3(),
+      );
+      let up = C.Cartesian3.cross(
+        direction,
+        C.Cartesian3.UNIT_Z,
+        new C.Cartesian3(),
+      );
+      if (C.Cartesian3.magnitude(up) < 1.0e-6) {
+        up = C.Cartesian3.cross(direction, C.Cartesian3.UNIT_X, up);
+      }
+      C.Cartesian3.normalize(up, up);
+      scene.camera.setView({ destination, orientation: { direction, up } });
+
+      // Wall-clock readiness budget (see SETTLE_BUDGET_MS in the Node half).
+      const settleStart = performance.now();
+      let settleFrameCount = 0;
+      while (
+        performance.now() - settleStart < settleBudgetMs ||
+        settleFrameCount < settleMinFrames
+      ) {
+        scene.render(pinnedTime());
+        settleFrameCount++;
+        await new Promise((r) => setTimeout(r, settleYieldMs));
+      }
+
+      // Adapter provenance (C12-03 substrate), same resolution order as
+      // `setupScene`.
+      let adapter = {
+        vendor: null,
+        architecture: null,
+        device: null,
+        description: null,
+      };
+      const ctx = scene.context;
+      const gpuAdapter = ctx.adapter ?? ctx._adapter;
+      if (gpuAdapter && gpuAdapter.info) {
+        const info = gpuAdapter.info;
+        adapter = {
+          vendor: info.vendor ?? null,
+          architecture: info.architecture ?? null,
+          device: info.device ?? null,
+          description: info.description ?? null,
+        };
+      } else {
+        try {
+          const gl = ctx._gl || ctx._originalGLContext || ctx.gl;
+          if (gl) {
+            const ext = gl.getExtension("WEBGL_debug_renderer_info");
+            if (ext) {
+              adapter.description = gl.getParameter(
+                ext.UNMASKED_RENDERER_WEBGL,
+              );
+              adapter.vendor = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL);
+            }
+          }
+        } catch {
+          // leave adapter unknown
+        }
+      }
+
+      const canvas = scene.canvas;
+      const cw = Math.min(crop.width, canvas.width);
+      const ch = Math.min(crop.height, canvas.height);
+      const ox = Math.floor((canvas.width - cw) / 2);
+      const oy = Math.floor((canvas.height - ch) / 2);
+
+      // MOON SCREEN GEOMETRY. `cartesianToCanvasCoordinates` works in CSS
+      // pixels while the crop is in drawing-buffer pixels; the ratio is 1 in
+      // headless Edge but is measured rather than assumed, and recorded.
+      const bufferScale =
+        canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
+      const centreWin = scene.cartesianToCanvasCoordinates(
+        moonFixed,
+        new C.Cartesian2(),
+      );
+      const right = C.Cartesian3.normalize(
+        C.Cartesian3.cross(
+          scene.camera.directionWC,
+          scene.camera.upWC,
+          new C.Cartesian3(),
+        ),
+        new C.Cartesian3(),
+      );
+      const edgePoint = C.Cartesian3.add(
+        moonFixed,
+        C.Cartesian3.multiplyByScalar(
+          right,
+          C.Math.LUNAR_RADIUS,
+          new C.Cartesian3(),
+        ),
+        new C.Cartesian3(),
+      );
+      const edgeWin = scene.cartesianToCanvasCoordinates(
+        edgePoint,
+        new C.Cartesian2(),
+      );
+      const moonLimbPx =
+        Math.hypot(edgeWin.x - centreWin.x, edgeWin.y - centreWin.y) *
+        bufferScale;
+      const moonCentre = {
+        x: centreWin.x * bufferScale - ox,
+        y: centreWin.y * bufferScale - oy,
+      };
+      const moonAimDistancePx = Math.hypot(
+        moonCentre.x - cw / 2,
+        moonCentre.y - ch / 2,
+      );
+
+      // PHASE ANGLE, measured on the real geometry rather than inferred from
+      // the elongation identity: the angle AT THE MOON between the Sun and the
+      // camera. This is what `computeLunarOppositionSurge` consumes, and it is
+      // what decides whether §5's full:quarter bar is reachable at this epoch.
+      const sunPositionWC = scene.context.uniformState.sunPositionWC;
+      const camPositionWC = scene.camera.positionWC;
+      let phaseAngleDeg = null;
+      if (sunPositionWC && camPositionWC) {
+        const toSun = C.Cartesian3.normalize(
+          C.Cartesian3.subtract(sunPositionWC, moonFixed, new C.Cartesian3()),
+          new C.Cartesian3(),
+        );
+        const toCam = C.Cartesian3.normalize(
+          C.Cartesian3.subtract(camPositionWC, moonFixed, new C.Cartesian3()),
+          new C.Cartesian3(),
+        );
+        phaseAngleDeg =
+          (Math.acos(
+            Math.max(-1, Math.min(1, C.Cartesian3.dot(toSun, toCam))),
+          ) *
+            180) /
+          Math.PI;
+      }
+
+      const fs = scene.frameState;
+      return {
+        rendererType: scene.context.rendererType,
+        phaseKey: key,
+        phaseTarget: target,
+        resolvedIso: C.JulianDate.toIso8601(resolved),
+        solvedFraction,
+        phaseFraction: fs?.moonPhaseFraction ?? null,
+        phaseAngleDeg,
+        earthshinePhaseScale: fs?.moonEarthshinePhaseScale ?? null,
+        terminatorSoftness: fs?.moonTerminatorSoftness ?? null,
+        moonDistanceM: moonDistance,
+        cameraToMoonM: standoff,
+        moonCentre,
+        moonLimbPx,
+        moonAimDistancePx,
+        bufferScale,
+        appliedFovXDeg,
+        settleFrameCount,
+        settleElapsedMs: performance.now() - settleStart,
+        adapter,
+        canvasWidth: canvas.width,
+        canvasHeight: canvas.height,
+        crop: { x: ox, y: oy, width: cw, height: ch },
+        expectations: [],
+      };
+    },
+    {
+      key: phaseKey,
+      target: phaseTarget,
+      crop: CROP,
+      fovX: Number.isFinite(fovXDeg) ? fovXDeg : null,
+      standoff: standoffM,
+      searchStartIso: G4_MOON_SEARCH_START_ISO,
+      searchDays: G4_MOON_SEARCH_DAYS,
+      settleBudgetMs: SETTLE_BUDGET_MS,
+      settleMinFrames: SETTLE_MIN_FRAMES,
+      settleYieldMs: SETTLE_YIELD_MS,
+    },
+  );
+}
+
+// G4 LANE DEFINITIONS.
+//
+// ORDER IS LOAD-BEARING TWICE OVER. `policy` runs FIRST because its positive
+// control drives `Scene#highDynamicRange` through the public setter, and every
+// capture lane after it sets that flag explicitly per capture — running it last
+// would read a flag the captures had already pinned as user-set. Within every
+// other lane the SHIPPED-DEFAULT leg is captured LAST, so the certifying state
+// is measured against the warmest caches, for the reason
+// `G1_MODE_CAPTURE_ORDER` states.
+const G4_LANE_DEFS = [
+  {
+    key: "policy",
+    setupFn: setupPolicyProbe,
+    setup: {},
+    captures: [],
+  },
+  {
+    key: "disc",
+    setup: {
+      aim: "sun-facing",
+      skyAtmosphereOn: false,
+      cameraHeightM: null,
+      fovXDeg: G4_SUN_DISC_FOV_X_DEG,
+      sunOn: true,
+      moonOn: false,
+    },
+    captures: [
+      // FLAT — limb darkening off. `(a0,a1,a2) = (1,0,0)` makes the law
+      // evaluate to exactly 1 everywhere, i.e. the historical flat `step()`
+      // disc, bit-for-bit. This is the reference leg of the differential.
+      ...G4_DISC_EXPOSURES.map((e) => ({
+        key: `flat-${e}x`,
+        mode: "sun-only",
+        exposure: e,
+        hdr: true,
+        glareOn: false,
+        toggles: {
+          enableSolarLimbDarkening: false,
+          enableTrueSolarDiscSize: true,
+          enableScreenSpaceSunHalo: true,
+        },
+      })),
+      // LEGACY SIZE — the pre-C12-18 undersized disc, still flat, so
+      // `flat - legacy` is an ANNULUS whose inner edge is the legacy disc and
+      // whose outer edge is the true-size one. Their ratio is the B906 fix.
+      ...G4_DISC_EXPOSURES.map((e) => ({
+        key: `legacy-${e}x`,
+        mode: "sun-only",
+        exposure: e,
+        hdr: true,
+        glareOn: false,
+        toggles: {
+          enableSolarLimbDarkening: false,
+          enableTrueSolarDiscSize: false,
+          enableScreenSpaceSunHalo: true,
+        },
+      })),
+      // SHIPPED DEFAULT — captured last.
+      ...G4_DISC_EXPOSURES.map((e) => ({
+        key: `limb-${e}x`,
+        mode: "sun-only",
+        exposure: e,
+        hdr: true,
+        glareOn: false,
+        toggles: {
+          enableSolarLimbDarkening: true,
+          enableTrueSolarDiscSize: true,
+          enableScreenSpaceSunHalo: true,
+        },
+      })),
+    ],
+  },
+  {
+    key: "halo",
+    setup: {
+      aim: "sun-facing",
+      skyAtmosphereOn: false,
+      cameraHeightM: null,
+      fovXDeg: null,
+      sunOn: true,
+      moonOn: false,
+    },
+    captures: [
+      // BAKE — the historical baked halo. Its billboard cannot reach past
+      // 15.56 R_sun, so the 16-30 R_sun band is the positive control that the
+      // band is empty without the post-process chain.
+      ...G4_HALO_EXPOSURES.map((e) => ({
+        key: `bake-${e}x`,
+        mode: "sun-only",
+        exposure: e,
+        hdr: true,
+        glareOn: false,
+        toggles: { enableScreenSpaceSunHalo: false },
+      })),
+      // SHIPPED DEFAULT — captured last.
+      ...G4_HALO_EXPOSURES.map((e) => ({
+        key: `screen-${e}x`,
+        mode: "sun-only",
+        exposure: e,
+        hdr: true,
+        glareOn: false,
+        toggles: { enableScreenSpaceSunHalo: true },
+      })),
+    ],
+  },
+  ...["crescent", "quarter", "full"].map((phaseKey) => ({
+    key: `moon-${phaseKey}`,
+    setupFn: setupMoonScene,
+    setup: {
+      phaseKey,
+      phaseTarget: MOON_PHASE_TARGETS[phaseKey],
+      fovXDeg: G4_MOON_FOV_X_DEG,
+      standoffM: G4_MOON_STANDOFF_M,
+    },
+    captures: [
+      ...G4_MOON_EXPOSURES.map((e) => ({
+        key: `esOff-${e}x`,
+        mode: "moon-only",
+        exposure: e,
+        hdr: true,
+        toggles: { enableEarthshine: false, enableSoftTerminator: true },
+      })),
+      // SHIPPED DEFAULT (ruling R5 flipped `enableEarthshine` ON) — last.
+      ...G4_MOON_EXPOSURES.map((e) => ({
+        key: `esOn-${e}x`,
+        mode: "moon-only",
+        exposure: e,
+        hdr: true,
+        toggles: { enableEarthshine: true, enableSoftTerminator: true },
+      })),
+    ],
+  })),
+  {
+    key: "moon-terminator",
+    setupFn: setupMoonScene,
+    setup: {
+      phaseKey: "quarter",
+      phaseTarget: MOON_PHASE_TARGETS.quarter,
+      fovXDeg: G4_MOON_FOV_X_DEG,
+      standoffM: G4_MOON_STANDOFF_M,
+    },
+    captures: [
+      // HARD EDGE — `terminatorSoftness = 0` selects `max(N.L, 0)` bit-for-bit.
+      ...G4_TERMINATOR_EXPOSURES.map((e) => ({
+        key: `softOff-${e}x`,
+        mode: "moon-only",
+        exposure: e,
+        hdr: true,
+        toggles: { enableSoftTerminator: false, enableEarthshine: true },
+      })),
+      // SHIPPED DEFAULT — last.
+      ...G4_TERMINATOR_EXPOSURES.map((e) => ({
+        key: `softOn-${e}x`,
+        mode: "moon-only",
+        exposure: e,
+        hdr: true,
+        toggles: { enableSoftTerminator: true, enableEarthshine: true },
+      })),
+    ],
+  },
+];
+
+/** Stitch one named leg's exposures into a linear-light float image. */
+function stitchLeg(lane, prefix, exposures) {
+  const caps = exposures.map((e) => lane.captures[`${prefix}-${e}x`]);
+  if (caps.some((c) => !c)) {
+    return null;
+  }
+  return {
+    linear: stitchBracketLinear(caps),
+    hdrEngaged: caps.every((c) => c.hdrEngaged === true),
+    lead: caps[0],
+  };
+}
+
+// Disc sub-lane measurements for one backend. The MEASUREMENT itself lives in
+// `lib/celestial-g4-gate.mjs` (`measureDiscDifferential`) so
+// `celestial-g4-gate.spec.mjs` exercises the code the gate actually runs, over
+// synthetic frames whose answer is known in closed form. This wrapper owns only
+// the stitching and the live state.
+function discMetrics(lane, solarModel) {
+  const flat = stitchLeg(lane, "flat", G4_DISC_EXPOSURES);
+  const legacy = stitchLeg(lane, "legacy", G4_DISC_EXPOSURES);
+  const limb = stitchLeg(lane, "limb", G4_DISC_EXPOSURES);
+  if (!flat || !legacy || !limb) {
+    return { hdrEngaged: false, aimDistancePx: NaN };
+  }
+  const measured = measureDiscDifferential({
+    flat: flat.linear,
+    limb: limb.linear,
+    legacy: legacy.linear,
+    model: solarModel,
+    fovXDeg: lane.setup.appliedFovXDeg,
+    canvasWidth: lane.setup.canvasWidth,
+    ephemerisDiameterDeg: 2 * (lane.setup.expectedSolarAngularRadiusDeg ?? NaN),
+  });
+  return {
+    ...measured,
+    hdrEngaged: flat.hdrEngaged && legacy.hdrEngaged && limb.hdrEngaged,
+    fovXDeg: lane.setup.appliedFovXDeg,
+    lightingFlats: flat.lead.lightingRequested,
+    lightingLimb: limb.lead.lightingRequested,
+    lightingLegacy: legacy.lead.lightingRequested,
+    discEdgeFlat: flat.lead.sunHalo?.discEdge ?? null,
+    discEdgeLegacy: legacy.lead.sunHalo?.discEdge ?? null,
+  };
+}
+
+// Halo sub-lane measurements for one backend. Same split: `measureHaloProfile`
+// is the lib's, the live `frameState.sunHalo` readings are this wrapper's.
+function haloMetrics(lane, solarModel) {
+  const bake = stitchLeg(lane, "bake", G4_HALO_EXPOSURES);
+  const screen = stitchLeg(lane, "screen", G4_HALO_EXPOSURES);
+  if (!bake || !screen) {
+    return { hdrEngaged: false, aimDistancePx: NaN };
+  }
+  const measured = measureHaloProfile({
+    screen: screen.linear,
+    bake: bake.linear,
+    limbPx: screen.lead.sunHalo?.limbPx ?? NaN,
+    model: solarModel,
+    aimSearchRadiusPx: PSF_AIM_SEARCH_RADIUS_PX,
+  });
+  return {
+    ...measured,
+    hdrEngaged: bake.hdrEngaged && screen.hdrEngaged,
+    screenLeg: screen.lead.sunHalo,
+    bakeLeg: bake.lead.sunHalo,
+    sunVisibleFraction: screen.lead.eclipseSunVisibleFraction,
+    sunEclipseAlpha: screen.lead.sunEclipseAlpha,
+  };
+}
+
+// Earthshine + phase measurements across the three epoch lanes.
+function moonEpochMetrics(lanes, surge) {
+  const epochs = {};
+  const earthshine = {};
+  for (const key of ["crescent", "quarter", "full"]) {
+    const lane = lanes[`moon-${key}`];
+    const off = stitchLeg(lane, "esOff", G4_MOON_EXPOSURES);
+    const on = stitchLeg(lane, "esOn", G4_MOON_EXPOSURES);
+    const s = lane.setup;
+    epochs[key] = {
+      resolvedIso: s.resolvedIso,
+      phaseTarget: s.phaseTarget,
+      solvedFraction: s.solvedFraction,
+      phaseFraction: s.phaseFraction,
+      phaseAngleDeg: s.phaseAngleDeg,
+      earthshinePhaseScale: s.earthshinePhaseScale,
+      terminatorSoftness: s.terminatorSoftness,
+      moonLimbPx: s.moonLimbPx,
+      moonAimDistancePx: s.moonAimDistancePx,
+      appliedFovXDeg: s.appliedFovXDeg,
+    };
+    if (!off || !on) {
+      earthshine[key] = { maskPixels: 0, changedPixels: 0, medianDelta: NaN };
+      epochs[key].integratedBrightness = NaN;
+      continue;
+    }
+    // THE FULL EPOCH IS CENSUSED OVER THE WHOLE DISC, not the unlit mask: at
+    // full moon there is no unlit limb in view, so the mask is empty and its
+    // median is NaN. See `EARTHSHINE_INERTNESS_FACTOR`.
+    earthshine[key] =
+      key === "full"
+        ? discDeltaCensus(on.linear, off.linear, {
+            cx: s.moonCentre.x,
+            cy: s.moonCentre.y,
+            radius: s.moonLimbPx * MOON_DISC_MASK_FRACTION,
+            eps: TERMINATOR_DELTA_EPS,
+          })
+        : unlitLimbDelta(on.linear, off.linear, {
+            cx: s.moonCentre.x,
+            cy: s.moonCentre.y,
+            radius: s.moonLimbPx,
+            innerFraction: MOON_UNLIT_MASK_FRACTION,
+            darkFloor: MOON_UNLIT_DARK_FLOOR,
+            changedEps: TERMINATOR_DELTA_EPS,
+          });
+    // Disc-integrated brightness is taken on the SHIPPED leg (earthshine ON),
+    // because that is the configuration the product renders.
+    epochs[key].integratedBrightness = discIntegratedBrightness(on.linear, {
+      cx: s.moonCentre.x,
+      cy: s.moonCentre.y,
+      radius: s.moonLimbPx * MOON_DISC_MASK_FRACTION,
+    }).integrated;
+    epochs[key].hdrEngaged = on.hdrEngaged && off.hdrEngaged;
+    epochs[key].enableEarthshine = on.lead.enableEarthshine;
+  }
+  const fullPhaseAngleDeg = epochs.full.phaseAngleDeg;
+  return {
+    epochs,
+    earthshine,
+    phase: {
+      epochs,
+      fullPhaseAngleDeg,
+      fullSurgeMultiplier: Number.isFinite(fullPhaseAngleDeg)
+        ? surge((fullPhaseAngleDeg * Math.PI) / 180)
+        : null,
+      fullQuarterRatio:
+        epochs.full.integratedBrightness / epochs.quarter.integratedBrightness,
+      quarterCrescentRatio:
+        epochs.quarter.integratedBrightness /
+        epochs.crescent.integratedBrightness,
+    },
+  };
+}
+
+// Soft-terminator measurements for one backend.
+function terminatorMetrics(lane) {
+  const off = stitchLeg(lane, "softOff", G4_TERMINATOR_EXPOSURES);
+  const on = stitchLeg(lane, "softOn", G4_TERMINATOR_EXPOSURES);
+  const s = lane.setup;
+  if (!off || !on) {
+    return { discPixels: 0, softnessOff: null, softnessOn: null };
+  }
+  const census = discDeltaCensus(on.linear, off.linear, {
+    cx: s.moonCentre.x,
+    cy: s.moonCentre.y,
+    radius: s.moonLimbPx * MOON_DISC_MASK_FRACTION,
+    eps: TERMINATOR_DELTA_EPS,
+  });
+  return {
+    ...census,
+    aimDistancePx: s.moonAimDistancePx,
+    moonLimbPx: s.moonLimbPx,
+    resolvedIso: s.resolvedIso,
+    phaseFraction: s.phaseFraction,
+    softnessOff: off.lead.moonTerminatorSoftness,
+    softnessOn: on.lead.moonTerminatorSoftness,
+    // Modelled band width, carried so a red count can be read against the
+    // geometry that produced it rather than against the bound alone.
+    modelledBandWidthPx_DIAGNOSTIC: r3(
+      2 * (on.lead.moonTerminatorSoftness ?? 0) * s.moonLimbPx,
+    ),
+  };
+}
+
+async function runG4(browser, git) {
+  // The shipped photometry modules, imported in NODE. Both are dependency-free
+  // plain ESM, so this is the real engine source rather than a transcription —
+  // the same posture the G2 magnitude lane takes when it imports
+  // `BrightStarCatalog` in-page.
+  const solarModel = (
+    await import("../../packages/engine/Source/Scene/SolarDiscModel.js")
+  ).default;
+  const surge = (
+    await import("../../packages/engine/Source/Scene/computeLunarOppositionSurge.js")
+  ).default;
+
+  const gl = await runBackendLanes(browser, "webgl", G4_LANE_DEFS);
+  const gpu = await runBackendLanes(browser, "webgpu", G4_LANE_DEFS);
+  if (!gl.ok || !gpu.ok) {
+    return { fatal: true, gl, gpu };
+  }
+
+  const browserVersion = browser.version();
+  const manifest = {};
+  const backends = {};
+  for (const [renderer, run] of [
+    ["webgl", gl],
+    ["webgpu", gpu],
+  ]) {
+    const moon = moonEpochMetrics(run.lanes, surge);
+    const disc = discMetrics(run.lanes.disc, solarModel);
+    const policyLane = run.lanes.policy.setup;
+    const measured = {
+      renderer,
+      disc,
+      halo: haloMetrics(run.lanes.halo, solarModel),
+      policy: policyLane.policyReadings,
+      earthshine: {
+        enableEarthshine: moon.epochs.crescent.enableEarthshine,
+        aimDistancePx: moon.epochs.crescent.moonAimDistancePx,
+        scaleCrescent: moon.epochs.crescent.earthshinePhaseScale,
+        scaleQuarter: moon.epochs.quarter.earthshinePhaseScale,
+        scaleFull: moon.epochs.full.earthshinePhaseScale,
+        crescent: moon.earthshine.crescent,
+        quarter: moon.earthshine.quarter,
+        full: moon.earthshine.full,
+      },
+      terminator: terminatorMetrics(run.lanes["moon-terminator"]),
+      phase: moon.phase,
+      limbAbsolute: {
+        bakeClampPresent: policyLane.bakeClampPresent,
+        discPeakLinear: disc.discPeakLinear,
+        ratioI095overI0: disc.ratioI095overI0_DIAGNOSTIC,
+      },
+    };
+    backends[renderer] = evaluateG4Backend(measured);
+
+    for (const [laneKey, lane] of Object.entries(run.lanes)) {
+      for (const [capKey, cap] of Object.entries(lane.captures)) {
+        const img = toImage(cap);
+        const sceneName = `celestial-g4-${laneKey}-${capKey}`;
+        const pngName = `${sceneName}-${renderer}.png`;
+        const { png } = writeCapturePng(img, pngName);
+        const sceneDescriptor = {
+          name: sceneName,
+          camera: {
+            aim: lane.setup.phaseKey ?? "sun-facing",
+            fovXDeg: lane.setup.appliedFovXDeg,
+            distance: lane.setup.cameraToMoonM ?? 5.0e7,
+            pinnedIso: lane.setup.resolvedIso ?? PINNED_ISO,
+          },
+          setup: "celestial-gate-g4",
+          setupParams: {
+            lane: laneKey,
+            capture: capKey,
+            hdr: cap.hdrEngaged === true,
+            exposure: cap.exposureFactor,
+            lighting: cap.lightingRequested,
+            settleBudgetMs: SETTLE_BUDGET_MS,
+            warmupDiscarded: true,
+          },
+        };
+        manifest[`${sceneName}:${renderer}`] = buildManifestEntry({
+          scene: sceneName,
+          image: pngName,
+          pngBytes: png,
+          renderer,
+          env: {
+            browserClass: "msedge",
+            browserVersion,
+            adapterClass: normalizeHardwareClass([
+              lane.setup.adapter.vendor,
+              lane.setup.adapter.architecture,
+              lane.setup.adapter.device,
+              lane.setup.adapter.description,
+            ]),
+          },
+          git,
+          sceneIdentity: createSceneIdentity(sceneDescriptor, {
+            baseUrl: BASE,
+            settleFrames: SETTLE_MIN_FRAMES,
+            viewport: VIEWPORT,
+          }),
+          extra: {
+            lane: laneKey,
+            capture: capKey,
+            lighting: cap.lightingRequested,
+            resolvedIso: lane.setup.resolvedIso ?? PINNED_ISO,
+            moonPhaseFraction: cap.moonPhaseFraction ?? null,
+            bakeHaloGain: cap.sunHalo?.bakeHaloGain ?? null,
+          },
+        });
+      }
+    }
+  }
+
+  const folded = foldG4Verdict(backends);
+  return {
+    fatal: false,
+    gate: "G4",
+    ...folded,
+    pass: folded.exitCode === EXIT_CODE.PASS,
+    backends,
+    manifest,
+    consoleErrors: {
+      webgl: gl.consoleErrors,
+      webgpu: gpu.consoleErrors,
+    },
+  };
+}
+
 (async () => {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const git = getGit();
@@ -2977,13 +4128,15 @@ async function runG3(browser, git) {
   let result;
   let exitCode;
   try {
-    result = G3
-      ? await runG3(browser, git)
-      : G2
-        ? await runG2(browser, git)
-        : BRACKET
-          ? await runBracket(browser, git)
-          : await runG1(browser, git);
+    result = G4
+      ? await runG4(browser, git)
+      : G3
+        ? await runG3(browser, git)
+        : G2
+          ? await runG2(browser, git)
+          : BRACKET
+            ? await runBracket(browser, git)
+            : await runG1(browser, git);
   } finally {
     await browser.close().catch(() => {});
   }
@@ -3004,17 +4157,56 @@ async function runG3(browser, git) {
     process.exit(EXIT_CODE.ERROR);
   }
 
-  const outName = G3
-    ? "celestial-g3.json"
-    : G2
-      ? "celestial-g2.json"
-      : BRACKET
-        ? "celestial-bracket.json"
-        : "celestial-g1.json";
+  const outName = G4
+    ? "celestial-g4.json"
+    : G3
+      ? "celestial-g3.json"
+      : G2
+        ? "celestial-g2.json"
+        : BRACKET
+          ? "celestial-bracket.json"
+          : "celestial-g1.json";
   const outPath = path.join(OUT_DIR, outName);
   fs.writeFileSync(outPath, JSON.stringify(result, null, 2));
 
-  if (G3) {
+  if (G4) {
+    console.log(JSON.stringify(buildG4Summary(result), null, 2));
+    // PENDING ARMS are printed SEPARATELY and labelled, for the same reason G3
+    // separates its reversal triggers: a reader skimming the criteria list must
+    // not mistake "the content this criterion binds does not exist yet" for
+    // either a pass or a defect. An arm that is silently absent from this block
+    // is an arm that ACTIVATED and is certifying in `criteria` above.
+    const arms = Object.entries(result.pendingArms ?? {});
+    console.log("\nPENDING ARMS (bound, NOT certifying at this commit):");
+    if (arms.length === 0) {
+      console.log("  (none — every G4 criterion is certifying at this commit)");
+    }
+    for (const [name, arm] of arms) {
+      console.log(`  ${name}`);
+      console.log(`    state:   ${arm.state}`);
+      console.log(`    pending: ${arm.pending ?? "n/a"}`);
+      console.log(`    measured: ${JSON.stringify(arm.measured)}`);
+      console.log(`    why:     ${arm.reason}`);
+    }
+    // REPORTED, not gated — same posture as G1/G2/G3.
+    for (const [renderer, errs] of Object.entries(result.consoleErrors ?? {})) {
+      if (errs && errs.length > 0) {
+        console.log(`console errors (${renderer}): ${errs.length}`);
+        errs.slice(0, 6).forEach((e) => console.log(`  ERR: ${e}`));
+      }
+    }
+    console.log(`\n[full report: ${outPath}]`);
+    exitCode = result.exitCode;
+    const verdictLine = {
+      [EXIT_CODE.PASS]:
+        "G4 PASS — the solar disc's size and limb law, the C12-18 screen halo, the C12-28 SDR policy, and the C12-21/C12-22 moon terms all certify, IDENTICALLY on both backends",
+      [EXIT_CODE.FAIL]:
+        "G4 FAIL — see failures[] above; each entry names the backend and the predicate. A pass on ONE backend is a FAIL for this gate (every term is CPU-resolved before the backend branch, campaign principle 5)",
+      [EXIT_CODE.STRUCTURAL]:
+        "G4 STRUCTURAL — a sub-lane ran but could not see its subject; this is NOT a pass and NOT a defect (see structural[] above)",
+    };
+    console.log(verdictLine[exitCode] ?? `G4 exit ${exitCode}`);
+  } else if (G3) {
     console.log(JSON.stringify(buildG3Summary(result), null, 2));
     // The reversal-trigger block is printed SEPARATELY and labelled, because it
     // is evidence for a maintainer ruling rather than part of the verdict. A
