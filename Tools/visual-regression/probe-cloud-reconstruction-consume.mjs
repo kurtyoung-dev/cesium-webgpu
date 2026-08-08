@@ -103,6 +103,41 @@
 //      measured span, and a window whose TIMING arm did not hold is
 //      DISCARDED-AND-NAMED rather than folded into a median.
 //
+// ── WHAT CHANGED AFTER THE BATCH-953 RUN (CO-33) — THE VISUAL ARM ───────────
+//
+// ★ THE VISUAL ARM'S MEANING CHANGED. It is a REDESIGN, not a tightening.
+//
+// The CO-32 stationarity gates worked exactly as designed and returned a
+// verdict nobody had planned for: with the lane really executing, NONE of the
+// four captured states reached a byte-stationary fixed point in 8 rounds of 8
+// real executes. Every recorded diff came back `interpretable=false` — 33.4% /
+// 38.6% / 37.8% against a SAME-STATE floor of 30.4%.
+//
+// That is the subject, not the instrument. A jittered half-resolution march
+// feeding a temporal resolve ORBITS; it does not converge. Byte identity tests
+// for a fixed point, and under live execution there is no fixed point to test.
+// (The historical greens for that arm came from frozen frames — render calls
+// that executed nothing — which is why Batch 953 named them vacuous.)
+//
+// So `interpretable` — which still means "both endpoints reached a byte-
+// stationary fixed point", and is still computed and printed — is no longer the
+// gate on whether a number can be read. Each state's OWN consecutive captures
+// now yield its frame-to-frame fluctuation distribution, a cross-state
+// comparison is judged against the POOLED band of its two endpoints
+// (`max + range + floor`, FIRST-PASS DERIVED), and the band's sensitivity is
+// measured IN-RUN by an injected control ladder: the smallest perturbation the
+// band rejects is the published detection limit of the verdict, and a band that
+// rejects NOTHING yields "NOT MEASURED" rather than a comfortable "inside".
+// Derivation and rejected alternatives: `lib/cloud-refresh-skip.mjs` section 3.
+//
+// STILL NO PASS/FAIL BAR. The row says the composite MAY differ under the first
+// consumer, so this probe grows no visual predicate — an OUTSIDE verdict is the
+// first quantified thing this lane can say about the consumer's visual effect,
+// and it is INFORMATION. What is STRUCTURAL is a comparison that could not be
+// measured at all. Correspondingly, a non-stationary state is no longer pushed
+// to structural on its own: it is the expected regime, and its reason is quoted
+// inside any comparison that ends with no usable tier.
+//
 // INSTRUMENT DOCTRINE INHERITED FROM THE C13-09 CERTIFIED RUN (Batch 936):
 //   * Canvas pixels come from Playwright ELEMENT SCREENSHOTS. An in-page
 //     `drawImage` from a WebGPU canvas copies transparent black even in the
@@ -158,10 +193,22 @@ import {
   summarize,
 } from "./lib/cloud-reconstruction-consume.mjs";
 import {
+  BAND_BOUNDS,
+  COARSE_DELTA_LEVELS,
+  CONTROL_LADDER,
   REFRESH_SKIP_BOUNDS,
+  TIER_NONE,
   classifyExecuteWindow,
+  deriveFluctuationBand,
+  describeBand,
+  describeDetection,
+  describeInertness,
   diffInterpretable,
+  foldDetectionLimit,
+  foldPixelInertness,
   foldStationarity,
+  ladderBlock,
+  pixelInertnessReasons,
   renderCallBudget,
   starvedWindowReasons,
 } from "./lib/cloud-refresh-skip.mjs";
@@ -182,6 +229,7 @@ const PHASE_EXECUTES = 24;
 const PUBLISH_LAG_MAX = REFRESH_SKIP_BOUNDS.publishLagExecutes;
 const STATIONARITY_GAP_EXECUTES = REFRESH_SKIP_BOUNDS.stationarityGapExecutes;
 const STATIONARITY_MAX_ROUNDS = REFRESH_SKIP_BOUNDS.stationarityMaxRounds;
+const BAND_SAMPLE_CAP = BAND_BOUNDS.sampleCap;
 const VIEWPORT = { width: 800, height: 500 };
 const RESIZED = { width: 1024, height: 640 };
 const PERF_ITERATIONS = Number(process.env.C13_10_PERF_ITERATIONS ?? 5);
@@ -615,7 +663,21 @@ async function captureStationary(page, label) {
   const rounds = [];
   let previousPng = await screenshotCanvas(page);
   let previousSha = sha(previousPng);
+  // ★ THE ROUNDS ARE ALSO THE BAND'S SAMPLES. When the state does converge the
+  // gate returns early and these are unused; when it does NOT — the live regime
+  // every state was in on the Batch-953 run — consecutive rounds separated by
+  // real executes ARE this state's own frame-to-frame fluctuation, which is the
+  // only honest baseline a cross-state diff can be judged against. The LAST
+  // `BAND_SAMPLE_CAP` are kept: a gate's early rounds are still on the
+  // convergence curve, and the tail is the orbit.
+  const samples = [{ png: previousPng, sha: previousSha, executesRun: 0 }];
   let executesObserved = 0;
+  const keep = (sample) => {
+    samples.push(sample);
+    if (samples.length > BAND_SAMPLE_CAP) {
+      samples.shift();
+    }
+  };
   for (let round = 0; round < STATIONARITY_MAX_ROUNDS; round++) {
     const gap = await phase(page, {
       label: `${label}:stationarity:${round}`,
@@ -625,6 +687,7 @@ async function captureStationary(page, label) {
     const digest = sha(png);
     const equal = digest === previousSha;
     executesObserved = gap.executesRun;
+    keep({ png, sha: digest, executesRun: gap.executesRun });
     rounds.push({
       round,
       executesRun: gap.executesRun,
@@ -641,6 +704,7 @@ async function captureStationary(page, label) {
         rounds,
         executesObserved,
         windows: rounds.length,
+        samples,
       };
     }
     previousPng = png;
@@ -654,13 +718,34 @@ async function captureStationary(page, label) {
     rounds,
     executesObserved,
     windows: rounds.length,
+    samples,
   };
 }
 
-/** Decode two PNGs on a scratch page and return the mismatched-pixel fraction. */
-async function pixelDiff(page, pngA, pngB) {
+// ── PIXEL COMPARISON KERNEL — pinned BYTE-IDENTICAL across both cloud
+// reconstruction probes by cloud-refresh-skip.spec.mjs (section G). Edit both
+// copies or neither: a silent divergence would leave the two probes' bands
+// incomparable while every printed number still looked plausible. ────────────
+
+/**
+ * Decode two PNGs on a scratch page and return the statistic profile of their
+ * difference — optionally after applying a DECLARED control perturbation to the
+ * second image.
+ *
+ * The perturbation is what calibrates a band's detection limit, and it is
+ * applied HERE, riding on a real same-state pair rather than on a pristine
+ * copy: a control laid over a zero baseline answers an easier question than the
+ * one a cross-state comparison asks. The sign is chosen away from the clamp
+ * (`v > 127 ? -amp : +amp`) so every touched pixel really moves by the declared
+ * amplitude instead of saturating against 0 or 255.
+ *
+ * THREE statistics come out of ONE pass over the same pixels — footprint,
+ * coarse footprint, magnitude. `lib/cloud-refresh-skip.mjs` section 3 records
+ * why a single one of them is not enough at a 30% dither floor.
+ */
+async function comparePngs(page, { a, b, perturb = null }) {
   return page.evaluate(
-    async ({ a, b }) => {
+    async ({ a, b, perturb, coarseDelta }) => {
       async function decode(b64) {
         const resp = await fetch(`data:image/png;base64,${b64}`);
         const bitmap = await createImageBitmap(await resp.blob());
@@ -674,28 +759,139 @@ async function pixelDiff(page, pngA, pngB) {
       const ia = await decode(a);
       const ib = await decode(b);
       if (ia.width !== ib.width || ia.height !== ib.height) {
-        return { mismatchFraction: 1, sizeMismatch: true };
+        return {
+          mismatchFraction: 1,
+          coarseFraction: 1,
+          meanNormalizedDelta: 1,
+          maxDelta: 255,
+          width: ia.width,
+          height: ia.height,
+          sizeMismatch: true,
+        };
       }
-      let mismatched = 0;
       const da = ia.data;
       const db = ib.data;
-      for (let i = 0; i < da.length; i += 4) {
-        if (
-          da[i] !== db[i] ||
-          da[i + 1] !== db[i + 1] ||
-          da[i + 2] !== db[i + 2]
-        ) {
-          mismatched++;
+      if (perturb) {
+        for (let row = perturb.y; row < perturb.y + perturb.h; row++) {
+          for (let col = perturb.x; col < perturb.x + perturb.w; col++) {
+            const at = (row * ib.width + col) * 4;
+            for (let c = 0; c < 3; c++) {
+              const v = db[at + c];
+              db[at + c] =
+                v > 127 ? v - perturb.amplitude : v + perturb.amplitude;
+            }
+          }
         }
       }
+      let mismatched = 0;
+      let coarse = 0;
+      let sum = 0;
+      let maxDelta = 0;
+      for (let i = 0; i < da.length; i += 4) {
+        const dr = Math.abs(da[i] - db[i]);
+        const dg = Math.abs(da[i + 1] - db[i + 1]);
+        const dbl = Math.abs(da[i + 2] - db[i + 2]);
+        const d = Math.max(dr, dg, dbl);
+        if (d >= 1) {
+          mismatched++;
+        }
+        if (d > coarseDelta) {
+          coarse++;
+        }
+        sum += d;
+        if (d > maxDelta) {
+          maxDelta = d;
+        }
+      }
+      const total = ia.width * ia.height;
       return {
-        mismatchFraction: mismatched / (ia.width * ia.height),
+        mismatchFraction: mismatched / total,
+        coarseFraction: coarse / total,
+        meanNormalizedDelta: sum / total / 255,
+        maxDelta,
+        width: ia.width,
+        height: ia.height,
         sizeMismatch: false,
       };
     },
-    { a: pngA.toString("base64"), b: pngB.toString("base64") },
+    {
+      a: a.toString("base64"),
+      b: b.toString("base64"),
+      perturb,
+      coarseDelta: COARSE_DELTA_LEVELS,
+    },
   );
 }
+
+/** The plain, unperturbed comparison every RECORDED diff goes through. */
+async function pixelDiff(page, pngA, pngB) {
+  return comparePngs(page, { a: pngA, b: pngB, perturb: null });
+}
+
+/**
+ * One state's own frame-to-frame fluctuation: consecutive same-state captures,
+ * each pair carrying the REAL executes that ran between them.
+ */
+async function sampleFluctuation(page, capture) {
+  const samples = Array.isArray(capture?.samples) ? capture.samples : [];
+  const out = [];
+  for (let i = 1; i < samples.length; i++) {
+    const stats = await pixelDiff(page, samples[i - 1].png, samples[i].png);
+    out.push({
+      label: `${capture.label}:${i - 1}->${i}`,
+      executes: samples[i].executesRun,
+      stats,
+    });
+  }
+  return out;
+}
+
+/**
+ * Run the declared control ladder against a state's LAST same-state pair.
+ *
+ * Every rung's profile therefore has the same fluctuation baseline a real
+ * cross-state comparison has, which is what makes "this band rejects rung N"
+ * a statement about the band rather than about the perturbation.
+ */
+async function ladderFor(page, capture) {
+  const samples = Array.isArray(capture?.samples) ? capture.samples : [];
+  if (samples.length < 2) {
+    return [];
+  }
+  const a = samples[samples.length - 2].png;
+  const b = samples[samples.length - 1].png;
+  const base = await pixelDiff(page, a, b);
+  if (base.sizeMismatch) {
+    return [];
+  }
+  const rungs = [];
+  for (const rung of CONTROL_LADDER) {
+    const block = ladderBlock(rung, base.width, base.height);
+    const stats = await comparePngs(page, {
+      a,
+      b,
+      perturb: { ...block, amplitude: rung.amplitudeLevels },
+    });
+    rungs.push({ ...rung, block, stats });
+  }
+  return rungs;
+}
+
+/** A report-safe view of a capture: hashes and execute counts, never pixels. */
+function describeCapture(capture) {
+  return {
+    label: capture?.label ?? null,
+    sha: capture?.sha ?? null,
+    stationary: capture?.stationary === true,
+    rounds: capture?.rounds ?? [],
+    executesObserved: capture?.executesObserved ?? null,
+    samples: (capture?.samples ?? []).map((s) => ({
+      sha: s.sha,
+      executesRun: s.executesRun,
+    })),
+  };
+}
+// ── END PIXEL COMPARISON KERNEL ─────────────────────────────────────────────
 
 /**
  * ONE interleaved perf window.
@@ -1071,15 +1267,18 @@ try {
     gapExecutes: STATIONARITY_GAP_EXECUTES,
     maxRounds: STATIONARITY_MAX_ROUNDS,
     stationary: stationarity.stationary,
+    reasons: stationarity.reasons,
     captures: {
-      off: { ...offCapture, png: undefined },
-      attachments: { ...attachmentsCapture, png: undefined },
-      consume: { ...consumeCapture, png: undefined },
+      off: describeCapture(offCapture),
+      attachments: describeCapture(attachmentsCapture),
+      consume: describeCapture(consumeCapture),
     },
   };
-  for (const reason of stationarity.reasons) {
-    structuralReasons.push(reason);
-  }
+  // ★ THESE REASONS ARE NO LONGER PUSHED STRAIGHT TO STRUCTURAL (CO-33). Under
+  // keep-live a non-stationary state is the EXPECTED regime, not a fault: byte
+  // identity simply does not apply to a frame that never stops executing, and
+  // the tolerance band takes over. The reasons are recorded here and are QUOTED
+  // — never dropped — inside any comparison that ends up with no usable tier.
 
   report.legB = {
     off,
@@ -1213,6 +1412,101 @@ try {
     "consume",
     "consume+8",
   );
+
+  // ── TOLERANCE BANDS (CO-33) — the live-frame replacement for byte identity ─
+  //
+  // The Batch-953 run recorded off→attachments 33.4%, attachments→consume
+  // 38.6%, off→consume 37.8% — against a SAME-STATE floor of 30.4%. Every one
+  // of those numbers was marked `interpretable=false` and none of them could be
+  // read, because with the lane really executing NO state reached a byte-
+  // stationary fixed point in 8 rounds of 8 executes. The numbers were not
+  // wrong; they had no baseline.
+  //
+  // They have one now. Each state's own consecutive captures — separated by
+  // REAL executes — give its frame-to-frame fluctuation distribution; a
+  // cross-state comparison is judged against the POOLED band of its two
+  // endpoint states, at a sensitivity an injected control ladder measures in
+  // this same run. Derivation, rejected alternatives and both anti-vacuity
+  // modes: `lib/cloud-refresh-skip.mjs` section 3.
+  //
+  // ★ STILL NO PASS/FAIL BAR IN THIS PROBE. The C13-10 row says the composite
+  // MAY differ under the first consumer, so an OUTSIDE verdict here is
+  // INFORMATION — the first quantified statement this lane has ever been able
+  // to make about the consumer's visual effect — and not a failure. What IS
+  // structural is a band that could not be derived or that rejected nothing:
+  // then the comparison was not measured, and it says so.
+  const fluctuation = {
+    off: await sampleFluctuation(scratch, offCapture),
+    attachments: await sampleFluctuation(scratch, attachmentsCapture),
+    consume: await sampleFluctuation(scratch, consumeCapture),
+  };
+  const ladders = {
+    attachments: await ladderFor(scratch, attachmentsCapture),
+    consume: await ladderFor(scratch, consumeCapture),
+  };
+  const bandSpecs = [
+    {
+      key: "offVsAttachments",
+      label: "off -> attachments-only",
+      a: "off",
+      b: "attachments-only",
+      pool: [...fluctuation.off, ...fluctuation.attachments],
+      ladder: ladders.attachments,
+    },
+    {
+      key: "attachmentsVsConsume",
+      label: "attachments-only -> consume",
+      a: "attachments-only",
+      b: "consume",
+      pool: [...fluctuation.attachments, ...fluctuation.consume],
+      ladder: ladders.consume,
+    },
+    {
+      key: "offVsConsume",
+      label: "off -> consume",
+      a: "off",
+      b: "consume",
+      pool: [...fluctuation.off, ...fluctuation.consume],
+      ladder: ladders.consume,
+    },
+    {
+      key: "consumeSelfFloor",
+      label: "consume -> consume+8 (same-state control)",
+      a: "consume",
+      b: "consume+8",
+      pool: fluctuation.consume,
+      ladder: ladders.consume,
+    },
+  ];
+  const visual = {};
+  for (const spec of bandSpecs) {
+    const band = deriveFluctuationBand(spec.pool, { label: spec.label });
+    const detection = foldDetectionLimit(band, spec.ladder, {
+      label: spec.label,
+    });
+    visual[spec.key] = {
+      label: spec.label,
+      band,
+      detection,
+      fold: foldPixelInertness({
+        label: spec.label,
+        bothEndpointsStationary:
+          stationarity.stationary[spec.a] === true &&
+          stationarity.stationary[spec.b] === true,
+        identical: diffs[spec.key].mismatchFraction === 0,
+        band,
+        detection,
+        stats: diffs[spec.key],
+        stationarityReasons: stationarity.reasons,
+      }),
+    };
+  }
+  for (const reason of pixelInertnessReasons(
+    Object.values(visual).map((v) => v.fold),
+  )) {
+    structuralReasons.push(reason);
+  }
+
   await scratch.close().catch(() => {});
   report.hashes = {
     off: sha(pngOff),
@@ -1221,6 +1515,7 @@ try {
     consumePlus8: sha(pngConsumeAgain),
   };
   report.diffs = diffs;
+  report.visual = { fluctuation, ladders, comparisons: visual };
 
   // ── LEG D — interleaved A/B cost (only with --perf) ──────────────────────
   let perf = null;
@@ -1506,6 +1801,17 @@ try {
   console.log(
     `    off→attachments ${pct(diffs.offVsAttachments.mismatchFraction)} [interpretable=${diffs.offVsAttachments.interpretable}] | attachments→consume ${pct(diffs.attachmentsVsConsume.mismatchFraction)} [interpretable=${diffs.attachmentsVsConsume.interpretable}] | off→consume ${pct(diffs.offVsConsume.mismatchFraction)} | same-state floor ${pct(diffs.consumeSelfFloor.mismatchFraction)}`,
   );
+  const notMeasured = Object.values(visual).filter(
+    (v) => v.fold.tier === TIER_NONE,
+  ).length;
+  console.log(
+    `  TOLERANCE BANDS (CO-33; live-frame replacement for byte identity, FIRST-PASS DERIVED — still NO bar; ${notMeasured}/${Object.keys(visual).length} comparisons NOT MEASURED):`,
+  );
+  for (const entry of Object.values(visual)) {
+    console.log(`    ${describeBand(entry.band)}`);
+    console.log(`    ${describeDetection(entry.detection)}`);
+    console.log(`    ${describeInertness(entry.fold)}`);
+  }
   console.log(
     `  LEG C: canvas ${canvasUp.changed ? "changed" : "STUCK"} → ${canvasUp.width}x${canvasUp.height} in ${canvasUp.renderCalls} calls; attachments ${attB?.width}x${attB?.height} gen ${attB?.generation} → ${attUp?.width}x${attUp?.height} gen ${attUp?.generation} (${resizeUp.executesRun}e, liveBytes=${attUp?.liveBytes}, ${resizeUp.outcome}) → ${attBack?.width}x${attBack?.height} gen ${attBack?.generation} (${resizeBack.executesRun}e, liveBytes=${attBack?.liveBytes}, ${resizeBack.outcome})`,
   );

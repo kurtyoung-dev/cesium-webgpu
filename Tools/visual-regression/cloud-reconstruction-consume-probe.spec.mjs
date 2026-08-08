@@ -29,7 +29,19 @@
 //
 //   - THE VISUAL DELTA HAS NO BAR ON THIS RUN, DELIBERATELY. The row says the
 //     composite MAY differ; a probe that quietly grew a pixel bound would be
-//     failing (or passing) on a threshold nobody derived.
+//     failing (or passing) on a threshold nobody derived. After the CO-33
+//     redesign the visual arm produces BAND verdicts as well as raw diffs, and
+//     a band verdict is precisely the kind of respectable-looking number that
+//     would tempt a promotion into the fold — so D3's forbidden list covers it.
+//
+//   - THE BAND ARM ITSELF (D10, CO-33). Batch 953 ran this probe with the lane
+//     really executing and NONE of its four captured states reached a
+//     byte-stationary fixed point: a jittered half-res march feeding a temporal
+//     resolve orbits, so byte identity tests a property the subject does not
+//     have. Each state's own fluctuation is now the baseline, a cross-state
+//     comparison is judged against the POOLED band of its two endpoints, and
+//     the band's sensitivity is measured IN-RUN by an injected control ladder —
+//     a band that rejects nothing reports NOT MEASURED rather than "inside".
 //
 //   - MACHINE SAFETY. Watchdog, bounded loops, close-in-finally, and the 0/1/2/3
 //     exit contract with FAIL outranking STRUCTURAL.
@@ -426,7 +438,21 @@ test("D3 THE VISUAL DELTA CARRIES NO BAR ON THIS RUN", () => {
     probeSource.indexOf("── Output ──"),
   );
   assert.ok(predicates.length > 500, "the predicate block moved");
-  for (const forbidden of ["mismatchFraction", "diffs.", "sizeMismatch"]) {
+  // ★ THE FORBIDDEN LIST GREW WITH THE CO-33 REDESIGN. The visual arm now
+  // produces BAND verdicts as well as raw diffs, and a band verdict is exactly
+  // the kind of thing that would look respectable enough to promote to a
+  // predicate. The row still says the composite MAY differ under its first
+  // consumer, so it stays out of the fold.
+  for (const forbidden of [
+    "mismatchFraction",
+    "diffs.",
+    "sizeMismatch",
+    "visual",
+    "band",
+    "Band",
+    "inert",
+    "Inert",
+  ]) {
     assert.ok(
       !predicates.includes(forbidden),
       `a pixel bound crept into the predicate block via "${forbidden}" — the row says the composite MAY differ, and no bound has been derived`,
@@ -445,6 +471,50 @@ test("D3 THE VISUAL DELTA CARRIES NO BAR ON THIS RUN", () => {
   assert.ok(
     ["mismatchFraction", "diffs."].some((f) => mutated.includes(f)),
     "the mutant did not apply",
+  );
+  // ...and the band form of the same mutant.
+  const bandMutant = predicates.replace(
+    "p.gateArmed",
+    "p.visualWithinBand = visual.attachmentsVsConsume.fold.verdict !== false;\n  p.gateArmed",
+  );
+  assert.ok(
+    ["visual", "band", "Band"].some((f) => bandMutant.includes(f)),
+    "the band mutant did not apply",
+  );
+});
+
+test("D10 the visual arm is a BAND arm now, with its sensitivity measured in-run", () => {
+  // The CO-33 redesign. Byte identity is untestable on a live-executing frame —
+  // Batch 953 proved it on this exact probe, four states, zero fixed points —
+  // so each state's OWN fluctuation becomes the baseline, and the band's
+  // detection limit is measured by an injected control ladder in the same run.
+  for (const anchor of [
+    "const fluctuation = {",
+    "const ladders = {",
+    "deriveFluctuationBand(spec.pool, { label: spec.label })",
+    "foldDetectionLimit(band, spec.ladder, {",
+    "fold: foldPixelInertness({",
+  ]) {
+    assert.ok(
+      probeSource.includes(anchor),
+      `the band arm is missing: ${anchor}`,
+    );
+  }
+  // A cross-state band POOLS its two endpoint states: the comparison has one
+  // endpoint in each, so one endpoint's fluctuation is the wrong baseline.
+  assert.match(
+    probeSource,
+    /pool: \[\.\.\.fluctuation\.\w+, \.\.\.fluctuation\.\w+\]/,
+  );
+  // A comparison that could not be measured must reach STRUCTURAL — never a
+  // silent "inside".
+  assert.match(probeSource, /pixelInertnessReasons\(/);
+  assert.match(probeSource, /structuralReasons\.push\(reason\);/);
+  // Captures reach the report through the pixel-free view.
+  assert.match(probeSource, /off: describeCapture\(offCapture\)/);
+  assert.ok(
+    !probeSource.includes("off: { ...offCapture, png: undefined }"),
+    "a capture is still being spread into the report by hand — its retained sample PNGs would ride along",
   );
 });
 

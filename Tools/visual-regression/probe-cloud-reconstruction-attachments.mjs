@@ -32,14 +32,15 @@
 //   * ACROSS pages (even same build) the fixed point differs per page —
 //     temporal history freezes initialization variance permanently — so the
 //     "byte-identical to the pre-change build" arm is physically untestable
-//     as a cross-build byte compare. It is discharged by: same-page settled
-//     byte identity across the toggle + a cross-build PIXEL DIFF bounded by
-//     the instrument's own same-build cross-page noise floor (measured in
-//     the same run, bound = max(2 x floor, 0.1%) — FIRST-PASS DERIVED) +
-//     the structural spec pins (no attachment sampler in resolve/upscale;
-//     composite source unchanged). Active-window pixel-inertness rests on
-//     those structural pins — a live A/B of the same frame index on one
-//     timeline is not constructible.
+//     as a cross-build byte compare. It is discharged by: same-page pixel
+//     inertness across the toggle + a cross-build PIXEL DIFF judged against
+//     the instrument's own same-build CROSS-PAGE BAND (measured in the same
+//     run, calibrated in the same run — see the CO-33 note below; it used to
+//     be `max(2 x floor, 0.1%)` over a single reading, which at the measured
+//     29.2% floor was a 58% bound) + the structural spec pins (no attachment
+//     sampler in resolve/upscale; composite source unchanged). Active-window
+//     pixel-inertness rests on those structural pins — a live A/B of the same
+//     frame index on one timeline is not constructible.
 //   * Canvas pixels come from Playwright ELEMENT SCREENSHOTS (in-page
 //     drawImage from a WebGPU canvas copies transparent black even in the
 //     same task). Counters are read in the SAME TASK as a scene.render.
@@ -72,6 +73,47 @@
 // evidence), and the resize rider waits on a condition the PRE-resize state
 // cannot satisfy rather than on "produced", which it always could.
 //
+// ── WHAT CHANGED AFTER THE BATCH-953 RUN (CO-33) — THE VISUAL ARM ────────
+//
+// ★ TWO PREDICATE MEANINGS CHANGED IN THIS PROBE. Read this before comparing
+// a new run against an old one.
+//
+// The Batch-953 run had every counter and lifecycle predicate green and the
+// two settled-byte-identity predicates RED — on a FAILED stationarity
+// precondition. Eight rounds of eight real executes never produced two
+// byte-equal captures, and the structural block said so in the same output
+// that reported the reds. A predicate that fires red on a precondition it
+// declared broken is an instrument fault, not a finding: the C13-09 subject
+// was never given a chance to pass or fail.
+//
+//   1. `settledByteIdentityOffOn` / `settledByteIdentityOnOff` are now
+//      TRI-STATE. They keep their exact meaning WHEN THEY APPLY — two
+//      byte-stationary captures must be byte-equal — and read NULL, with a
+//      named structural reason, when the stationarity precondition fails.
+//      Null routes to STRUCTURAL, never to green (the consume probe's own
+//      pattern, now shared).
+//
+//   2. NEW `pixelInertOffOnWithinBand` / `pixelInertOnOffWithinBand` — the
+//      LIVE-frame form of the same claim, and the reason this is a REDESIGN
+//      rather than a gate. Under keep-live the frame genuinely never settles:
+//      a jittered half-res march feeding a temporal resolve orbits, it does
+//      not converge, so byte identity tests a property the subject does not
+//      have. These predicates instead measure each state's OWN frame-to-frame
+//      fluctuation, derive a band from it (`max + range + floor`, FIRST-PASS
+//      DERIVED), pool the two endpoint states' fluctuation, and require the
+//      cross-state difference to sit inside. The band is calibrated IN-RUN by
+//      an injected control ladder: the smallest perturbation it rejects is the
+//      published sensitivity of the claim, and a band that rejects NOTHING is
+//      named `BAND NOT DISCRIMINATING` and yields null rather than green.
+//      Full derivation and every rejected alternative: `cloud-refresh-skip.mjs`
+//      section 3.
+//
+// The C2 and C3 captures are now converged through the same per-state gate C1
+// always used, so all three endpoints contribute fluctuation samples, and the
+// cross-build arm's bound is likewise a cross-PAGE band rather than a doubled
+// single reading (a 29.2% floor doubled is a 58% bound — a number that could
+// not fail).
+//
 // Usage: node Tools/visual-regression/probe-cloud-reconstruction-attachments.mjs
 // Env:   PROBE_BASE (default http://localhost:8080)  — current build
 //        PRE_BASE   (optional)                       — pre-change build server
@@ -91,9 +133,23 @@ import {
   errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
 import {
+  BAND_BOUNDS,
+  COARSE_DELTA_LEVELS,
+  CONTROL_LADDER,
   REFRESH_SKIP_BOUNDS,
+  TIER_BAND,
+  TIER_NONE,
+  TIER_STATIONARY,
   classifyExecuteWindow,
+  deriveFluctuationBand,
+  describeBand,
+  describeDetection,
+  describeInertness,
+  foldDetectionLimit,
+  foldPixelInertness,
   foldStationarity,
+  ladderBlock,
+  pixelInertnessReasons,
   renderCallBudget,
   starvedWindowReasons,
 } from "./lib/cloud-refresh-skip.mjs";
@@ -108,6 +164,7 @@ const BYTES_PER_TEXEL_OWNED = 24;
 const STATIONARITY_GAP_EXECUTES = REFRESH_SKIP_BOUNDS.stationarityGapExecutes;
 const STATIONARITY_MAX_ROUNDS = REFRESH_SKIP_BOUNDS.stationarityMaxRounds;
 const PUBLISH_LAG_MAX = REFRESH_SKIP_BOUNDS.publishLagExecutes;
+const BAND_SAMPLE_CAP = BAND_BOUNDS.sampleCap;
 const VIEWPORT = { width: 800, height: 500 };
 const RESIZED = { width: 1024, height: 640 };
 
@@ -147,6 +204,12 @@ watchdog.unref?.();
 
 function sha(buf) {
   return createHash("sha256").update(buf).digest("hex");
+}
+
+function pct(fraction) {
+  return fraction === null || fraction === undefined
+    ? "n/a"
+    : `${(fraction * 100).toFixed(4)}%`;
 }
 
 async function openPage(browser, base) {
@@ -495,7 +558,20 @@ async function captureStationary(page, label) {
   const rounds = [];
   let previousPng = await screenshotCanvas(page);
   let previousSha = sha(previousPng);
+  // ★ THE ROUNDS ARE ALSO THE BAND'S SAMPLES. When the state does converge the
+  // gate returns early and these are unused; when it does NOT — the live regime
+  // — consecutive rounds separated by real executes ARE this state's own
+  // frame-to-frame fluctuation, which is the only honest baseline a cross-state
+  // diff can be judged against. The LAST `BAND_SAMPLE_CAP` are kept: a gate's
+  // early rounds are still on the convergence curve, and the tail is the orbit.
+  const samples = [{ png: previousPng, sha: previousSha, executesRun: 0 }];
   let executesObserved = 0;
+  const keep = (sample) => {
+    samples.push(sample);
+    if (samples.length > BAND_SAMPLE_CAP) {
+      samples.shift();
+    }
+  };
   for (let round = 0; round < STATIONARITY_MAX_ROUNDS; round++) {
     const gap = await phase(page, {
       label: `${label}:stationarity:${round}`,
@@ -505,6 +581,7 @@ async function captureStationary(page, label) {
     const digest = sha(png);
     const equal = digest === previousSha;
     executesObserved = gap.executesRun;
+    keep({ png, sha: digest, executesRun: gap.executesRun });
     rounds.push({
       round,
       executesRun: gap.executesRun,
@@ -520,6 +597,7 @@ async function captureStationary(page, label) {
         stationary: true,
         rounds,
         executesObserved,
+        samples,
       };
     }
     previousPng = png;
@@ -532,13 +610,34 @@ async function captureStationary(page, label) {
     stationary: false,
     rounds,
     executesObserved,
+    samples,
   };
 }
 
-/** Decode two PNGs in-page and return the mismatched-pixel fraction. */
-async function pixelDiff(page, pngA, pngB) {
+// ── PIXEL COMPARISON KERNEL — pinned BYTE-IDENTICAL across both cloud
+// reconstruction probes by cloud-refresh-skip.spec.mjs (section G). Edit both
+// copies or neither: a silent divergence would leave the two probes' bands
+// incomparable while every printed number still looked plausible. ────────────
+
+/**
+ * Decode two PNGs on a scratch page and return the statistic profile of their
+ * difference — optionally after applying a DECLARED control perturbation to the
+ * second image.
+ *
+ * The perturbation is what calibrates a band's detection limit, and it is
+ * applied HERE, riding on a real same-state pair rather than on a pristine
+ * copy: a control laid over a zero baseline answers an easier question than the
+ * one a cross-state comparison asks. The sign is chosen away from the clamp
+ * (`v > 127 ? -amp : +amp`) so every touched pixel really moves by the declared
+ * amplitude instead of saturating against 0 or 255.
+ *
+ * THREE statistics come out of ONE pass over the same pixels — footprint,
+ * coarse footprint, magnitude. `lib/cloud-refresh-skip.mjs` section 3 records
+ * why a single one of them is not enough at a 30% dither floor.
+ */
+async function comparePngs(page, { a, b, perturb = null }) {
   return page.evaluate(
-    async ({ a, b }) => {
+    async ({ a, b, perturb, coarseDelta }) => {
       async function decode(b64) {
         const resp = await fetch(`data:image/png;base64,${b64}`);
         const bitmap = await createImageBitmap(await resp.blob());
@@ -552,38 +651,153 @@ async function pixelDiff(page, pngA, pngB) {
       const ia = await decode(a);
       const ib = await decode(b);
       if (ia.width !== ib.width || ia.height !== ib.height) {
-        return { mismatchFraction: 1, sizeMismatch: true };
+        return {
+          mismatchFraction: 1,
+          coarseFraction: 1,
+          meanNormalizedDelta: 1,
+          maxDelta: 255,
+          width: ia.width,
+          height: ia.height,
+          sizeMismatch: true,
+        };
       }
-      let mismatched = 0;
       const da = ia.data;
       const db = ib.data;
-      for (let i = 0; i < da.length; i += 4) {
-        if (
-          da[i] !== db[i] ||
-          da[i + 1] !== db[i + 1] ||
-          da[i + 2] !== db[i + 2]
-        ) {
-          mismatched++;
+      if (perturb) {
+        for (let row = perturb.y; row < perturb.y + perturb.h; row++) {
+          for (let col = perturb.x; col < perturb.x + perturb.w; col++) {
+            const at = (row * ib.width + col) * 4;
+            for (let c = 0; c < 3; c++) {
+              const v = db[at + c];
+              db[at + c] =
+                v > 127 ? v - perturb.amplitude : v + perturb.amplitude;
+            }
+          }
         }
       }
+      let mismatched = 0;
+      let coarse = 0;
+      let sum = 0;
+      let maxDelta = 0;
+      for (let i = 0; i < da.length; i += 4) {
+        const dr = Math.abs(da[i] - db[i]);
+        const dg = Math.abs(da[i + 1] - db[i + 1]);
+        const dbl = Math.abs(da[i + 2] - db[i + 2]);
+        const d = Math.max(dr, dg, dbl);
+        if (d >= 1) {
+          mismatched++;
+        }
+        if (d > coarseDelta) {
+          coarse++;
+        }
+        sum += d;
+        if (d > maxDelta) {
+          maxDelta = d;
+        }
+      }
+      const total = ia.width * ia.height;
       return {
-        mismatchFraction: mismatched / (ia.width * ia.height),
+        mismatchFraction: mismatched / total,
+        coarseFraction: coarse / total,
+        meanNormalizedDelta: sum / total / 255,
+        maxDelta,
+        width: ia.width,
+        height: ia.height,
         sizeMismatch: false,
       };
     },
-    { a: pngA.toString("base64"), b: pngB.toString("base64") },
+    {
+      a: a.toString("base64"),
+      b: b.toString("base64"),
+      perturb,
+      coarseDelta: COARSE_DELTA_LEVELS,
+    },
   );
 }
 
+/** The plain, unperturbed comparison every RECORDED diff goes through. */
+async function pixelDiff(page, pngA, pngB) {
+  return comparePngs(page, { a: pngA, b: pngB, perturb: null });
+}
+
 /**
- * A reference page: setup, readiness, bounded warm-up, then a STATIONARY
- * capture.
+ * One state's own frame-to-frame fluctuation: consecutive same-state captures,
+ * each pair carrying the REAL executes that ran between them.
+ */
+async function sampleFluctuation(page, capture) {
+  const samples = Array.isArray(capture?.samples) ? capture.samples : [];
+  const out = [];
+  for (let i = 1; i < samples.length; i++) {
+    const stats = await pixelDiff(page, samples[i - 1].png, samples[i].png);
+    out.push({
+      label: `${capture.label}:${i - 1}->${i}`,
+      executes: samples[i].executesRun,
+      stats,
+    });
+  }
+  return out;
+}
+
+/**
+ * Run the declared control ladder against a state's LAST same-state pair.
  *
- * The stationarity gate matters here for a reason specific to this endpoint: an
- * unconverged reference INFLATES the same-build cross-page noise floor, and the
- * cross-build bound is `max(2 x floor, 0.1%)` — so a sloppy reference makes the
- * pre-change arm EASIER to pass. Gating it is the only way the derived bound
- * stays honest.
+ * Every rung's profile therefore has the same fluctuation baseline a real
+ * cross-state comparison has, which is what makes "this band rejects rung N"
+ * a statement about the band rather than about the perturbation.
+ */
+async function ladderFor(page, capture) {
+  const samples = Array.isArray(capture?.samples) ? capture.samples : [];
+  if (samples.length < 2) {
+    return [];
+  }
+  const a = samples[samples.length - 2].png;
+  const b = samples[samples.length - 1].png;
+  const base = await pixelDiff(page, a, b);
+  if (base.sizeMismatch) {
+    return [];
+  }
+  const rungs = [];
+  for (const rung of CONTROL_LADDER) {
+    const block = ladderBlock(rung, base.width, base.height);
+    const stats = await comparePngs(page, {
+      a,
+      b,
+      perturb: { ...block, amplitude: rung.amplitudeLevels },
+    });
+    rungs.push({ ...rung, block, stats });
+  }
+  return rungs;
+}
+
+/** A report-safe view of a capture: hashes and execute counts, never pixels. */
+function describeCapture(capture) {
+  return {
+    label: capture?.label ?? null,
+    sha: capture?.sha ?? null,
+    stationary: capture?.stationary === true,
+    rounds: capture?.rounds ?? [],
+    executesObserved: capture?.executesObserved ?? null,
+    samples: (capture?.samples ?? []).map((s) => ({
+      sha: s.sha,
+      executesRun: s.executesRun,
+    })),
+  };
+}
+// ── END PIXEL COMPARISON KERNEL ─────────────────────────────────────────────
+
+/**
+ * A reference page: setup, readiness, bounded warm-up, then a capture that is
+ * converged if this build can converge and SAMPLED either way.
+ *
+ * ★ THE CROSS-BUILD BOUND CHANGED WITH THE VISUAL ARM (CO-33). It used to be
+ * `max(2 x floor, 0.1%)` over a SINGLE cross-page reading — and on the
+ * Batch-953 run that floor read 29.2%, i.e. a bound of 58% that no build
+ * difference could ever have exceeded. A doubled single reading is not a bound;
+ * it is one number wearing another number's clothes. The reference now returns
+ * its own sample series, the cross-page floor is a DISTRIBUTION over
+ * index-paired main-vs-reference captures, and the cross-build arm is judged
+ * against a band derived from it — the same construction, and the same
+ * anti-vacuity rules, as every other comparison in this probe.
  */
 async function referenceCapture(browser, base) {
   const { page, errors, gpuConsoleErrors, armState } = await openPage(
@@ -611,7 +825,8 @@ async function referenceCapture(browser, base) {
       },
       toggleAvailable,
       png: capture.png,
-      capture: { ...capture, png: undefined },
+      samples: capture.samples,
+      capture: describeCapture(capture),
       errors,
       gpuConsoleErrors,
       gpuGate,
@@ -697,7 +912,13 @@ try {
       executes: PHASE_EXECUTES,
     }),
   );
-  const c2 = await screenshotCanvas(main.page);
+  // ★ C2 AND C3 ARE NOW CONVERGED-AND-SAMPLED, like C1. Two reasons, and both
+  // are consequences of keep-live: a bare screenshot after a fixed window is a
+  // point on whatever curve the state happens to be on (the exact defect that
+  // produced the consume probe's uninterpretable 34.5%), and the band needs
+  // every endpoint's OWN fluctuation samples, not just the reference state's.
+  const c2Capture = await captureStationary(main.page, "flag-on");
+  const c2 = c2Capture.png;
   // (E) toggle OFF again → C3.
   const offSettled = track(
     await phase(main.page, {
@@ -706,7 +927,8 @@ try {
       executes: PHASE_EXECUTES,
     }),
   );
-  const c3 = await screenshotCanvas(main.page);
+  const c3Capture = await captureStationary(main.page, "flag-off-again");
+  const c3 = c3Capture.png;
   report.phases = { active, heal, settle, onSettled, offSettled };
   report.hashes = { c1: sha(c1), c2: sha(c2), c3: sha(c3) };
 
@@ -717,6 +939,12 @@ try {
   }
   // The stationarity fold also carries the ANTI-VACUITY check: byte-equality
   // across zero engine executes is not evidence of anything.
+  //
+  // ★ ITS REASONS ARE NO LONGER PUSHED STRAIGHT TO STRUCTURAL. Under keep-live
+  // a non-stationary state is the EXPECTED regime, not a fault: the byte-identity
+  // tier simply does not apply, and the band tier takes over. The reasons are
+  // recorded here and are QUOTED — not dropped — inside any comparison that ends
+  // up with no usable tier at all.
   const stationarityFold = foldStationarity([
     {
       label: "flag-off",
@@ -724,18 +952,28 @@ try {
       rounds: c1Capture.rounds,
       executesObserved: c1Capture.executesObserved,
     },
+    {
+      label: "flag-on",
+      stationary: c2Capture.stationary,
+      rounds: c2Capture.rounds,
+      executesObserved: c2Capture.executesObserved,
+    },
+    {
+      label: "flag-off-again",
+      stationary: c3Capture.stationary,
+      rounds: c3Capture.rounds,
+      executesObserved: c3Capture.executesObserved,
+    },
   ]);
   const stationary = stationarityFold.stationary["flag-off"] === true;
-  if (!stationary) {
-    pre.push(
-      "stationarity precondition failed — two flag-off captures 8 EXECUTES apart never became byte-equal; byte-identity comparisons are not interpretable",
-    );
-    for (const reason of stationarityFold.reasons) {
-      pre.push(reason);
-    }
-  }
   report.stationary = stationary;
-  report.stationarityCapture = { ...c1Capture, png: undefined };
+  report.stationarityFold = stationarityFold;
+  report.stationarityCapture = describeCapture(c1Capture);
+  report.captures = {
+    c1: describeCapture(c1Capture),
+    c2: describeCapture(c2Capture),
+    c3: describeCapture(c3Capture),
+  };
 
   // (F) Resize rider, flag ON: away and back — a resize wakes the march, so
   // the producer runs at both sizes; the generation must climb monotonically
@@ -803,26 +1041,16 @@ try {
   const gpuGateMain = await collectGateErrors(main.page);
   await main.page.close().catch(() => {});
 
-  // ── Reference pages: same-build noise floor + pre-change build ──────────
+  // ── Reference pages: same-build cross-page band + pre-change build ──────
   const refSame = await referenceCapture(browser, BASE);
-  report.refSame = { ...refSame, png: undefined };
-  if (refSame.capture.stationary !== true) {
-    pre.push(
-      "same-build REFERENCE never became stationary — an unconverged reference INFLATES the noise floor, and the cross-build bound is derived from that floor",
-    );
-  }
+  report.refSame = { ...refSame, png: undefined, samples: undefined };
   let refPre = null;
   if (PRE_BASE) {
     refPre = await referenceCapture(browser, PRE_BASE);
-    report.refPre = { ...refPre, png: undefined };
+    report.refPre = { ...refPre, png: undefined, samples: undefined };
     if (refPre.toggleAvailable) {
       pre.push(
         "pre-change server exposes CesiumDebug.cloudReconstructionAttachments — it is NOT a pre-change build; arm invalid",
-      );
-    }
-    if (refPre.capture.stationary !== true) {
-      pre.push(
-        "pre-change REFERENCE never became stationary — the cross-build diff would measure convergence phase, not the build difference",
       );
     }
   } else {
@@ -836,19 +1064,145 @@ try {
   }
   report.windowLedger = windowLedger;
 
+  // ── Bands (scratch page — PNG decode only, no WebGPU involved) ───────────
   const scratch = await browser.newPage();
   await scratch.goto("about:blank");
+
+  // Each endpoint state's OWN frame-to-frame fluctuation, and its control
+  // ladder. A cross-state band POOLS both endpoints, because the comparison it
+  // judges has one endpoint in each state.
+  const fluctuation = {
+    c1: await sampleFluctuation(scratch, c1Capture),
+    c2: await sampleFluctuation(scratch, c2Capture),
+    c3: await sampleFluctuation(scratch, c3Capture),
+  };
+  const ladders = {
+    c2: await ladderFor(scratch, c2Capture),
+    c3: await ladderFor(scratch, c3Capture),
+  };
+  const bandOffOn = deriveFluctuationBand(
+    [...fluctuation.c1, ...fluctuation.c2],
+    { label: "flag-off+flag-on" },
+  );
+  const bandOnOff = deriveFluctuationBand(
+    [...fluctuation.c2, ...fluctuation.c3],
+    { label: "flag-on+flag-off-again" },
+  );
+  const detectOffOn = foldDetectionLimit(bandOffOn, ladders.c2, {
+    label: "flag-off+flag-on",
+  });
+  const detectOnOff = foldDetectionLimit(bandOnOff, ladders.c3, {
+    label: "flag-on+flag-off-again",
+  });
+  const diffOffOn = await pixelDiff(scratch, c1, c2);
+  const diffOnOff = await pixelDiff(scratch, c2, c3);
+  const inertOffOn = foldPixelInertness({
+    label: "flag-off -> flag-on",
+    bothEndpointsStationary:
+      stationarityFold.stationary["flag-off"] === true &&
+      stationarityFold.stationary["flag-on"] === true,
+    identical: report.hashes.c1 === report.hashes.c2,
+    band: bandOffOn,
+    detection: detectOffOn,
+    stats: diffOffOn,
+    stationarityReasons: stationarityFold.reasons,
+  });
+  const inertOnOff = foldPixelInertness({
+    label: "flag-on -> flag-off-again",
+    bothEndpointsStationary:
+      stationarityFold.stationary["flag-on"] === true &&
+      stationarityFold.stationary["flag-off-again"] === true,
+    identical: report.hashes.c2 === report.hashes.c3,
+    band: bandOnOff,
+    detection: detectOnOff,
+    stats: diffOnOff,
+    stationarityReasons: stationarityFold.reasons,
+  });
+  report.visual = {
+    fluctuation,
+    ladders,
+    bands: { offOn: bandOffOn, onOff: bandOnOff },
+    detection: { offOn: detectOffOn, onOff: detectOnOff },
+    diffs: { offOn: diffOffOn, onOff: diffOnOff },
+    inertness: { offOn: inertOffOn, onOff: inertOnOff },
+  };
+  for (const reason of pixelInertnessReasons([inertOffOn, inertOnOff])) {
+    pre.push(reason);
+  }
+
+  // The cross-build arm's own band is CROSS-PAGE, because its comparison is:
+  // the main page's C1 against a different page's capture. Index-paired
+  // main-vs-reference captures give the distribution; the ladder rides the
+  // reference's own last same-state pair, so the calibration keeps the same
+  // shape as everywhere else.
+  //
+  // Each element of a cross-page pair is an ENDPOINT, not a gap, so the series'
+  // very first capture — which has no preceding gap and therefore records zero
+  // executes — is dropped here rather than being read as a frozen window. The
+  // anti-vacuity rule still bites on everything else: a page that stopped
+  // executing contributes samples with zero executes and poisons the band, by
+  // name, exactly as it should.
+  const mainSamples = c1Capture.samples.filter((s) => s.executesRun > 0);
+  const referenceSamples = refSame.samples.filter((s) => s.executesRun > 0);
+  const crossPagePairs = Math.min(mainSamples.length, referenceSamples.length);
+  const crossPageSamples = [];
+  for (let i = 0; i < crossPagePairs; i++) {
+    const mine = mainSamples[mainSamples.length - crossPagePairs + i];
+    const theirs =
+      referenceSamples[referenceSamples.length - crossPagePairs + i];
+    const stats = await pixelDiff(scratch, mine.png, theirs.png);
+    crossPageSamples.push({
+      label: `cross-page:${i}`,
+      // Both endpoints advanced by their own gate's executes; the honest
+      // separation to record is the smaller of the two, so a page that stalled
+      // cannot be masked by one that did not.
+      executes: Math.min(mine.executesRun, theirs.executesRun),
+      stats,
+    });
+  }
+  const crossPageBand = deriveFluctuationBand(crossPageSamples, {
+    label: "cross-page (same build)",
+  });
+  const crossPageDetection = foldDetectionLimit(
+    crossPageBand,
+    await ladderFor(scratch, refSame),
+    { label: "cross-page (same build)" },
+  );
   const noiseFloor = await pixelDiff(scratch, c1, refSame.png);
   report.noiseFloor = noiseFloor;
+  report.crossPage = {
+    samples: crossPageSamples,
+    band: crossPageBand,
+    detection: crossPageDetection,
+  };
   let preDiff = null;
-  let preBound = null;
+  let crossBuild = null;
   if (refPre) {
     preDiff = await pixelDiff(scratch, c1, refPre.png);
-    // FIRST-PASS DERIVED: twice the same-build cross-page floor, with a 0.1%
-    // absolute floor so a zero-noise run cannot demand the impossible.
-    preBound = Math.max(2 * noiseFloor.mismatchFraction, 0.001);
+    crossBuild = foldPixelInertness({
+      label: "cross-build (pre-change -> current)",
+      // ★ THE STATIONARY TIER MUST NEVER APPLY HERE, even when BOTH pages
+      // converge. Cross-page byte identity is physically impossible on this
+      // subject and has been since the C13-09 certified run: each page's
+      // temporal history freezes its own initialization variance into a
+      // DIFFERENT fixed point, and two same-build pages measured 37.26% apart.
+      // Letting a stationary pair route to byte identity here would
+      // manufacture a guaranteed red out of a known-impossible test — the
+      // Batch-953 failure mode, one layer over.
+      bothEndpointsStationary: false,
+      identical: false,
+      band: crossPageBand,
+      detection: crossPageDetection,
+      stats: preDiff,
+      stationarityReasons: [
+        `cross-build endpoints converged: c1=${c1Capture.stationary} pre=${refPre.capture.stationary} (recorded only — cross-page byte identity is not a test this subject can pass)`,
+      ],
+    });
     report.preDiff = preDiff;
-    report.preBound = preBound;
+    report.crossBuild = crossBuild;
+    for (const reason of pixelInertnessReasons([crossBuild])) {
+      pre.push(reason);
+    }
   }
   await scratch.close().catch(() => {});
 
@@ -879,9 +1233,24 @@ try {
   // Self-healing release on disable.
   p.selfHealingReleaseOnDisable =
     attHeal !== null && attHeal.liveBytes === 0 && heal.passCount === 0;
-  // Settled byte identity across the toggle.
-  p.settledByteIdentityOffOn = report.hashes.c1 === report.hashes.c2;
-  p.settledByteIdentityOnOff = report.hashes.c2 === report.hashes.c3;
+  // ── PIXEL-INERTNESS ACROSS THE TOGGLE — TWO TIERS, MEANINGS CHANGED ─────
+  //
+  // TIER 1, byte identity at a byte-stationary fixed point. Same meaning it
+  // always had, now TRI-STATE: it reads NULL, not red, when the stationarity
+  // precondition it depends on has failed. A predicate that fires red on a
+  // precondition its own output declares broken is an instrument fault — that
+  // was the Batch-953 shape, and it is what CO-33 was dispatched to close.
+  p.settledByteIdentityOffOn =
+    inertOffOn.tier === TIER_STATIONARY ? inertOffOn.verdict : null;
+  p.settledByteIdentityOnOff =
+    inertOnOff.tier === TIER_STATIONARY ? inertOnOff.verdict : null;
+  // TIER 2, the live-frame form: the cross-state difference must sit inside the
+  // band the two endpoint states' OWN fluctuation defines, at a sensitivity the
+  // in-run control ladder measured. Null when no discriminating band exists.
+  p.pixelInertOffOnWithinBand =
+    inertOffOn.tier === TIER_BAND ? inertOffOn.verdict : null;
+  p.pixelInertOnOffWithinBand =
+    inertOnOff.tier === TIER_BAND ? inertOnOff.verdict : null;
   // Informational: whether the producer was actually RUNNING during the C2
   // capture. Either state is legitimate — an active march makes the identity
   // the STRONG (producer-live) form; an idle march makes it the settled form.
@@ -905,10 +1274,13 @@ try {
     attBack !== null &&
     attBig.generation > attActive.generation &&
     attBack.generation > attBig.generation;
-  // Cross-build arm.
-  p.crossBuildDiffWithinDerivedBound = refPre
-    ? preDiff.sizeMismatch === false && preDiff.mismatchFraction <= preBound
-    : null;
+  // Cross-build arm — same two-tier fold, judged against the CROSS-PAGE band
+  // (its comparison is cross-page by construction, so a same-page band would be
+  // the wrong baseline).
+  p.crossBuildDiffWithinDerivedBound =
+    crossBuild === null || crossBuild.tier === TIER_NONE
+      ? null
+      : crossBuild.verdict;
   p.zeroErrors =
     main.errors.length === 0 &&
     main.gpuConsoleErrors.length === 0 &&
@@ -928,9 +1300,16 @@ try {
     writeFileSync(`${OUTPUT_DIR}/ref-pre-change.png`, refPre.png);
   }
 
+  // A predicate that DID NOT RUN is `null` — structural, never green and never
+  // red. With the visual arm now tiered, the two byte-identity predicates and
+  // the two band predicates are null in each other's regime by construction, so
+  // this list is expected to be non-empty on every run; what matters is that a
+  // null is always accompanied by a NAMED reason.
   const failed = Object.entries(p).filter(([, v]) => v === false);
-  const structural =
-    pre.length > 0 || p.crossBuildDiffWithinDerivedBound === null;
+  const notRun = Object.entries(p)
+    .filter(([, v]) => v === null)
+    .map(([k]) => k);
+  const structural = pre.length > 0 || notRun.length > 0;
 
   console.log(
     "=== C13-09 EDGE ACCEPTANCE — cloud reconstruction attachments ===",
@@ -948,7 +1327,7 @@ try {
     `  settle:  ${settle.executesRun} executes in ${settle.renderCalls} calls, settled=${settle.conditionMet} (unreachable by design in this fixture)`,
   );
   console.log(
-    `  stationarity: ${stationary} after ${c1Capture.rounds.length} rounds of ${STATIONARITY_GAP_EXECUTES} executes (observed ${c1Capture.executesObserved})`,
+    `  stationarity: flag-off=${stationary} flag-on=${c2Capture.stationary} flag-off-again=${c3Capture.stationary} (rounds of ${STATIONARITY_GAP_EXECUTES} executes; observed ${c1Capture.executesObserved}/${c2Capture.executesObserved}/${c3Capture.executesObserved})`,
   );
   console.log(
     `  settled captures: c1=${report.hashes.c1.slice(0, 12)} c2=${report.hashes.c2.slice(0, 12)} c3=${report.hashes.c3.slice(0, 12)} producerLiveDuringC2=${report.producerLiveDuringC2}`,
@@ -956,17 +1335,25 @@ try {
   console.log(
     `  rider:   ${attActive?.width}x${attActive?.height} gen ${attActive?.generation} → ${attBig?.width}x${attBig?.height} gen ${attBig?.generation} (liveBytes=${attBig?.liveBytes}, ${riderBig.executesRun}e, ${riderBig.outcome}) → ${attBack?.width}x${attBack?.height} gen ${attBack?.generation} (liveBytes=${attBack?.liveBytes}, ${riderBack.executesRun}e, ${riderBack.outcome})`,
   );
+  console.log("  PIXEL-INERTNESS (tiered; bands FIRST-PASS DERIVED):");
+  console.log(`    ${describeBand(bandOffOn)}`);
+  console.log(`    ${describeDetection(detectOffOn)}`);
+  console.log(`    ${describeInertness(inertOffOn)}`);
+  console.log(`    ${describeBand(bandOnOff)}`);
+  console.log(`    ${describeDetection(detectOnOff)}`);
+  console.log(`    ${describeInertness(inertOnOff)}`);
   console.log(
-    `  noise floor (same build, cross page): ${(noiseFloor.mismatchFraction * 100).toFixed(4)}% (reference stationary=${refSame.capture.stationary})`,
+    `  noise floor (same build, cross page): ${pct(noiseFloor.mismatchFraction)} over ${crossPageSamples.length} index-paired captures; ${describeBand(crossPageBand)} | ${describeDetection(crossPageDetection)}`,
   );
-  if (refPre) {
-    console.log(
-      `  cross-build diff: ${(preDiff.mismatchFraction * 100).toFixed(4)}% (bound ${(preBound * 100).toFixed(4)}% — FIRST-PASS DERIVED)`,
-    );
+  if (crossBuild) {
+    console.log(`  cross-build: ${describeInertness(crossBuild)}`);
   }
   console.log(`  predicates: ${JSON.stringify(p)}`);
   if (failed.length) {
     console.log(`  RED: ${failed.map(([k]) => k).join(", ")}`);
+  }
+  if (notRun.length) {
+    console.log(`  NOT RUN: ${notRun.join(", ")}`);
   }
   for (const reason of pre) console.log(`  STRUCTURAL: ${reason}`);
 
@@ -980,12 +1367,12 @@ try {
   }
   if (structural) {
     console.log(
-      "STRUCTURAL — no red predicate, but a precondition or the pre-change arm did not hold/run",
+      "STRUCTURAL — no red predicate, but a precondition, a visual tier or the pre-change arm did not hold/run",
     );
     process.exit(3);
   }
   console.log(
-    "PASS — C13-09 Edge acceptance: active counters, settled byte-inertness, lifecycle, cross-build arm all green",
+    "PASS — C13-09 Edge acceptance: active counters, pixel-inertness (at its measured detection limit), lifecycle, cross-build arm all green",
   );
   process.exit(0);
 } finally {
