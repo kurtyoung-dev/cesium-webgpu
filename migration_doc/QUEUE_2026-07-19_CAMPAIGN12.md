@@ -705,6 +705,29 @@ the 0.95R signal, discOnlyRatio 0.568 > the 0.5 ceiling before any halo);
 (2) the bloom-mirror decision on the filed MEDIUM row. Four runs, four
 pre-registrations, the last one exact.
 
+### 2026-08-11 G4 EIGHTH RUN (Batch 976) — the mass failure is REAL and UNCONFOUNDED; sun lanes dead on both backends; bisect owed BEFORE any further change lands
+
+The CO-39 four-variant runtime smoke PASSED first (bare = upstream chrome
++ WebGPU active; devUi restores toolbar+fps; explicit renderer params
+honored; zero page errors) — UX-01's owed browser verification is DONE,
+and the viewer boots fine. The eighth run then reproduced run 7's shape
+EXACTLY with no confound: 15 reds, `limb_differential_has_signal` zero,
+halo screen-leg reading bake-mode, all sun scalars null — on BOTH
+backends, while the MOON half stays green. A regression in the SUN lanes
+was introduced by B971 (the scene-pins/captureMode edit — prime suspect:
+it rewired the shared capture path AND pins sunBloom=false on disc legs
+without restoring it for later legs on the shared page) and/or B972's
+viewer interaction. **BISECT PROTOCOL (next session, before ANY further
+landing touches this area):** (1) locally revert the B971
+probe-celestial-gates edit, rerun --g4; (2) if healthy → the edit is the
+cause: fix = pin sunBloom BOTH directions on every sun-lane leg (the
+explicit-pin rule the B971 edit violated by pinning one-way) + re-audit
+the captureMode signature change; (3) if still dead → B972 interaction,
+suspect list starts at createAsync's (now-removed-by-CO-41) LoadingOverlay
+z-9999 scrim overlapping captures and window.viewer timing. CO-41
+(UX-02, ready to land — removes the overlay entirely) lands AFTER the
+bisect so it cannot re-confound it.
+
 ### 2026-08-11 G4 SEVENTH RUN — **VOID** (Batch 974): confounded by a mid-run viewer swap; NOT a verdict
 
 Run 7 (the sunBloom=false discriminator run) returned a mass failure — 15
