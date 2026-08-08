@@ -460,6 +460,8 @@ only — zero engine files touched.** Read this before any G1/G2 claim below.
 
 ### 2026-08-07 CO-24 gate-lane overlay (G3 lane construction)
 
+**FIRST EDGE RUN (2026-08-07, tip `4f6d3c9751`, Batch 934): the pre-registration hit on 4 of 5 — exit 1 with the four asset/format/fidelity predicates red IDENTICALLY on both backends (`asset_arcminPerPixel_le_2_0`, `asset_faceSize_ge_2700`, `format_medianChroma_ge_0_20`, `fidelity_dustLaneIQR_ratio_ge_3`) and every split/catalogue/band predicate green. The fifth red is the instrument's own honesty: `motion_control_isolatesSubPixelPhase` — the alias-twinkle peak-vs-sum control flags imperfect sub-pixel isolation (bright-star box sum moved 1220x = the star crossed the box during the sweep), so the measured twinkle (4.758x = 1.69 mag, vs the 3.77x prediction and the 1.2 first-pass bound) reads TRIGGERED but its amplitude carries an instrument caveat until the box tracking is fixed (S follow-up: track the box with the projected star, per-frame). Reversal triggers on both backends: smearedMilkyWay NOT triggered (0.928 vs 0.60), spriteDensity TRIGGERED (0.174x of t3), aliasTwinkle TRIGGERED-with-caveat. THE MAINTAINER DECISION NOW HAS LIVE NUMBERS: re-bake at 4096 (clears both angular arms by the spec's own pin) vs re-derive the chroma/dust bars vs accept-as-written — plus whether two triggered reversal conditions warrant revisiting DR-01 (noting the smear trigger, the one DR-01 was most worried about, did NOT fire).**
+
 Batch group **CO-24** of `CLOSEOUT_PLAN_2026-08-07.md` Lane B, following the CO-3
 house pattern. **Instruments only — zero engine files touched.** Read this before
 any G3 claim.
