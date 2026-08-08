@@ -1449,7 +1449,11 @@ function ensureTemporalResources(
     );
     const resolveModule = device.createShaderModule({
       label: "CloudTemporalResolve shader",
-      code: CloudTemporalResolveWGSL,
+      // C13-10 aftermath (Batch 942): the source now carries //>>ifdef
+      // blocks, so RAW text is both branches concatenated — invalid WGSL
+      // ("redeclaration of 'previousUv'"). defines=0 emits the //>>else
+      // branch, byte-identical to the pre-C13-10 module (spec F1b).
+      code: preprocess(CloudTemporalResolveWGSL, 0, 0),
     });
     cache.temporalPipeline = device.createRenderPipeline({
       label: "CloudTemporalResolve pipeline",
@@ -1717,7 +1721,9 @@ function ensureCloudAttachmentResources(
     );
     const attachmentModule = device.createShaderModule({
       label: "CloudReconstructionAttachments shader",
-      code: CloudReconstructionAttachmentsWGSL,
+      // C13-10 aftermath (Batch 942): raw ifdef-bearing text is invalid WGSL;
+      // defines=0 is byte-identical to the pre-C13-10 producer (spec F1b).
+      code: preprocess(CloudReconstructionAttachmentsWGSL, 0, 0),
     });
     cache.attachmentPipeline = device.createRenderPipeline({
       label: "CloudReconstructionAttachments pipeline",
@@ -1896,7 +1902,9 @@ function ensureHalfResResources(
   if (!cache.halfPipeline && cache.bindGroupLayout) {
     const shaderModule = device.createShaderModule({
       label: "ProceduralClouds shader (half-res)",
-      code: PROCEDURAL_CLOUDS_SOURCE,
+      // C13-10 aftermath (Batch 942): raw ifdef-bearing text is invalid WGSL;
+      // defines=0 is byte-identical to the pre-C13-10 march (spec F1b).
+      code: preprocess(PROCEDURAL_CLOUDS_SOURCE, 0, 0),
     });
     const layout = device.createPipelineLayout({
       label: "ProceduralClouds half-res pipeline layout",
@@ -2273,7 +2281,9 @@ function initializeCloudPipeline(
 
   const shaderModule = device.createShaderModule({
     label: "ProceduralClouds shader",
-    code: PROCEDURAL_CLOUDS_SOURCE,
+    // C13-10 aftermath (Batch 942): raw ifdef-bearing text is invalid WGSL;
+    // defines=0 is byte-identical to the pre-C13-10 march (spec F1b).
+    code: preprocess(PROCEDURAL_CLOUDS_SOURCE, 0, 0),
   });
   // TAKRAM-9 — retained so the (lazy) transmittance-mask pipeline can reuse the
   // same module + BGL without recompiling the WGSL.
@@ -2502,7 +2512,9 @@ function ensureShadowResources(device: GPUDevice, cache: CloudCache): boolean {
     );
     const shaderModule = device.createShaderModule({
       label: "ProceduralClouds shader (shadow pass)",
-      code: PROCEDURAL_CLOUDS_SOURCE,
+      // C13-10 aftermath (Batch 942): raw ifdef-bearing text is invalid WGSL;
+      // defines=0 is byte-identical to the pre-C13-10 march (spec F1b).
+      code: preprocess(PROCEDURAL_CLOUDS_SOURCE, 0, 0),
     });
     cache.shadowPipeline = device.createRenderPipeline({
       label: "CloudShadow pipeline",

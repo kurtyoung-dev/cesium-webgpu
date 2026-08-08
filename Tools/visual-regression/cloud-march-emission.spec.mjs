@@ -179,17 +179,23 @@ test("A1 both axes are REGISTERED hi-word defines, added without disturbing the 
 });
 
 test("A2 EXACTLY ONE march pipeline compiles the emission bit", () => {
-  // The four historical pipelines keep compiling the shared source VERBATIM,
-  // with no preprocess call at all. That is what holds their register
-  // footprint at the value C13-39 measured, and it is why F1b in the
-  // attachments spec can pin the default text against the pre-C13-10 module.
-  const verbatim = [
-    ...cloudRenderer.matchAll(/code: PROCEDURAL_CLOUDS_SOURCE,/g),
-  ];
+  // Batch 942 correction: this test originally pinned the historical
+  // pipelines compiling the shared source VERBATIM "with no preprocess call
+  // at all" — and the browser refuted that design premise on the first
+  // post-landing run: RAW ifdef-bearing text is both branches concatenated,
+  // which is invalid WGSL ("expected '}'"), and every page logged compile
+  // errors. The invariant this test actually protects is unchanged and is
+  // carried by the DEFAULT-BRANCH text instead: the non-emitting pipelines
+  // compile `preprocess(source, 0, 0)`, which F1b pins byte-identical to the
+  // pre-C13-10 module — so the C13-39 register footprint is held by text
+  // equality, not by skipping the preprocessor.
+  const defaultCompile =
+    /code: preprocess\(\s*PROCEDURAL_CLOUDS_SOURCE,\s*0,\s*0,?\s*\)/g;
+  const verbatim = [...cloudRenderer.matchAll(defaultCompile)];
   assert.equal(
     verbatim.length,
     3,
-    "the full-res march, the mask module and the shadow map must keep compiling the source verbatim",
+    "the full-res march, the mask module and the shadow map must compile the DEFAULT branch (preprocess at defines=0)",
   );
   // Whitespace-tolerant: prettier wraps the argument list at this width, and a
   // pin that breaks on reformatting is a pin nobody trusts.
@@ -216,15 +222,18 @@ test("A2 EXACTLY ONE march pipeline compiles the emission bit", () => {
     emitBlock,
     /label: "ProceduralClouds half-res pipeline \(emit\)"/,
   );
-  // The mutant that matters: routing one of the verbatim sites through the
-  // preprocessor with the emission bit would charge a non-emitting pipeline
-  // for the registers.
+  // The mutant that matters: routing one of the default-branch sites through
+  // the preprocessor with the emission bit would charge a non-emitting
+  // pipeline for the registers.
+  const oneDefaultSite = cloudRenderer.match(
+    /code: preprocess\(\s*PROCEDURAL_CLOUDS_SOURCE,\s*0,\s*0,?\s*\)/,
+  )[0];
   const mutated = cloudRenderer.replace(
-    "code: PROCEDURAL_CLOUDS_SOURCE,",
-    "code: preprocess(PROCEDURAL_CLOUDS_SOURCE, 0, CLOUD_MARCH_EMIT_DEFINES_HI),",
+    oneDefaultSite,
+    "code: preprocess(PROCEDURAL_CLOUDS_SOURCE, 0, CLOUD_MARCH_EMIT_DEFINES_HI)",
   );
   assert.equal(
-    [...mutated.matchAll(/code: PROCEDURAL_CLOUDS_SOURCE,/g)].length,
+    [...mutated.matchAll(defaultCompile)].length,
     2,
     "the mutant did not take",
   );
@@ -260,10 +269,12 @@ test("A3 the emitting pipelines are SEPARATE objects, never a rebuild of the shi
   assert.match(destroy, /cache\.halfEmitPipeline = null;/);
   assert.match(destroy, /cache\.attachmentEmitPipeline = null;/);
   assert.match(destroy, /cache\.temporalConsumePipeline = null;/);
-  // The historical half-res pipeline's construction is untouched by the row.
+  // The historical half-res pipeline's construction still compiles the
+  // DEFAULT branch (Batch 942: preprocess at defines=0 — byte-identical text
+  // per F1b; raw compilation was the landing defect).
   assert.match(
     cloudRenderer,
-    /if \(!cache\.halfPipeline && cache\.bindGroupLayout\) \{\n\s*const shaderModule = device\.createShaderModule\(\{\n\s*label: "ProceduralClouds shader \(half-res\)",\n\s*code: PROCEDURAL_CLOUDS_SOURCE,/,
+    /if \(!cache\.halfPipeline && cache\.bindGroupLayout\) \{\n\s*const shaderModule = device\.createShaderModule\(\{\n\s*label: "ProceduralClouds shader \(half-res\)",\n(\s*\/\/[^\n]*\n)*\s*code: preprocess\(PROCEDURAL_CLOUDS_SOURCE, 0, 0\),/,
   );
 });
 
@@ -1176,4 +1187,42 @@ test("F2 bounded loops — the emission adds no unbounded traversal", async () =
       `${label} introduced an unbounded WGSL loop`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// G — Batch 942 regression pin: NO RUNTIME COMPILE OF RAW IFDEF-BEARING WGSL
+// ---------------------------------------------------------------------------
+// The C13-10 landing left four device.createShaderModule sites compiling
+// PROCEDURAL_CLOUDS_SOURCE / CloudTemporalResolveWGSL RAW. Raw text carries
+// BOTH //>>ifdef branches, which is invalid WGSL post-C13-10 ("redeclaration
+// of 'previousUv'", "expected '}'"), and the browser logged compile errors on
+// every page while the working pipelines came from the preprocessed sites —
+// caught by the C13-09 survival run's zeroErrors gate, corroborated by the
+// cross-page noise floor collapsing 37% → 0.03% (the broken default resolve
+// killed temporal history). Every compile of an ifdef-bearing cloud source
+// must route through preprocess(); defines=0 emits the //>>else branch,
+// byte-identical to the pre-C13-10 module (F1b), so this is free.
+test("G1: no createShaderModule site compiles PROCEDURAL_CLOUDS_SOURCE or CloudTemporalResolveWGSL raw", () => {
+  assert.ok(
+    !/code:\s*PROCEDURAL_CLOUDS_SOURCE\s*,/.test(cloudRenderer),
+    "a shader-module site compiles the march RAW — route it through preprocess(source, defines, definesHi)",
+  );
+  assert.ok(
+    !/code:\s*CloudTemporalResolveWGSL\s*,/.test(cloudRenderer),
+    "a shader-module site compiles the temporal resolve RAW — route it through preprocess(source, defines, definesHi)",
+  );
+  assert.ok(
+    !/code:\s*CloudReconstructionAttachmentsWGSL\s*,/.test(cloudRenderer),
+    "a shader-module site compiles the attachment producer RAW — route it through preprocess(source, defines, definesHi)",
+  );
+  // The default-branch compiles exist and are explicit about defines=0.
+  const zeroPre = (
+    cloudRenderer.match(
+      /preprocess\(\s*(?:PROCEDURAL_CLOUDS_SOURCE|CloudTemporalResolveWGSL),\s*0,\s*0,?\s*\)/g,
+    ) ?? []
+  ).length;
+  assert.ok(
+    zeroPre >= 4,
+    `expected the four historical compile sites to preprocess at defines=0 (found ${zeroPre})`,
+  );
 });

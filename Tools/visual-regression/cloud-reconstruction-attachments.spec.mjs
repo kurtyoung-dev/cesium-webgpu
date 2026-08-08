@@ -962,7 +962,13 @@ test("F2 the producer is a SEPARATE module that does not embed the march", () =>
     cloudRenderer.indexOf("function ensureCloudAttachmentResources("),
     cloudRenderer.indexOf("function ensureHalfResResources("),
   );
-  assert.match(ensure, /code: CloudReconstructionAttachmentsWGSL,/);
+  // Batch 942: the compile routes through preprocess at defines=0 (raw
+  // ifdef-bearing text is invalid WGSL — the post-C13-10 regression); the
+  // separate-module property this test protects is unchanged.
+  assert.match(
+    ensure,
+    /code: preprocess\(CloudReconstructionAttachmentsWGSL, 0, 0\),/,
+  );
   assert.ok(
     !ensure.includes("PROCEDURAL_CLOUDS_SOURCE"),
     "compiling the march source into this pipeline would reintroduce exactly the register pressure C13-39 measured",
