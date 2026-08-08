@@ -74,6 +74,13 @@ import DynamicAtmosphereLightingType from "./DynamicAtmosphereLightingType.js";
 import Fog from "./Fog.js";
 import FrameState from "./FrameState.js";
 import GlobeTranslucencyState from "./GlobeTranslucencyState.js";
+import {
+  HdrDisplayPolicy,
+  normalizeHdrDisplayPolicy,
+  observeHdrDisplay,
+  queryHdrDisplay,
+  resolveHdrDefault,
+} from "./HdrDisplayCapability.js";
 import InvertClassification from "./InvertClassification.js";
 import JobScheduler from "./JobScheduler.js";
 import MapMode2D from "./MapMode2D.js";
@@ -1498,6 +1505,21 @@ class Scene {
     this.highDynamicRange = false;
     this.gamma = 2.2;
 
+    // C12-28 (NEW-HDR-DEFAULT-ON-HDR-CAPABLE-DISPLAYS) — the assignment above
+    // is the historical hardcoded SDR base state and stays exactly as it was;
+    // display detection is what may lift it, and only on a display that can
+    // actually show the result. `_hdrUserSet` is cleared here because the
+    // constructor's own `highDynamicRange = false` went through the public
+    // setter and would otherwise count as an application override, pinning
+    // every scene to SDR forever. See `Scene/HdrDisplayCapability.js` for the
+    // decision rules; `Scene#hdrDisplayPolicy` is the escape hatch.
+    this._hdrUserSet = false;
+    this._useHDRCanvasOutputUserSet = false;
+    this._hdrDisplayPolicy = HdrDisplayPolicy.SCENE;
+    this._hdrDisplayIsHdr = undefined;
+    this._hdrDisplayUnsub = null;
+    this._initializeHdrDisplayDetection();
+
     /**
      * The spherical harmonic coefficients for image-based lighting of PBR models.
      * @type {Cartesian3[]}
@@ -2874,14 +2896,29 @@ class Scene {
 
   /**
    * Whether or not to use high dynamic range rendering.
+   *
+   * C12-28 — the default is no longer hardcoded `false`: on a display that
+   * reports `(dynamic-range: high)`, and on a context that supports HDR
+   * ({@link Scene#highDynamicRangeSupported}), it defaults to `true` and
+   * follows the display if the window moves to another monitor. **Assigning
+   * this property ends the tracking** — the assigned value is then owned by
+   * the application and detection will never overwrite it. Set
+   * {@link Scene#hdrDisplayPolicy} to `'off'` to opt out of detection entirely
+   * without pinning a value.
+   *
    * @type {boolean}
-   * @default false
+   * @default false on SDR displays; the display capability otherwise
    */
   get highDynamicRange() {
     return this._hdr;
   }
 
   set highDynamicRange(value) {
+    // C12-28 — an explicit assignment is an application override and is
+    // permanent, in BOTH directions. Recorded before the capability clamp
+    // below so that pinning `true` on a context that cannot do HDR still
+    // stops detection from later flipping it.
+    this._hdrUserSet = true;
     const context = this._context;
     const hdr =
       value &&
@@ -2889,6 +2926,41 @@ class Scene {
       (context.colorBufferFloat || context.colorBufferHalfFloat);
     this._hdrDirty = hdr !== this._hdr;
     this._hdr = hdr;
+  }
+
+  /**
+   * C12-28 — how far this scene may act on the detected display capability.
+   *
+   * - `'off'` — no detection; the pre-C12-28 hardcoded SDR default.
+   * - `'scene'` (default) — default {@link Scene#highDynamicRange} from the
+   *   display. The scene renders into a float framebuffer and the normal SDR
+   *   tonemap still runs on the way to the canvas.
+   * - `'scene-and-canvas'` — additionally default
+   *   {@link Scene#useHDRCanvasOutput}, which skips that tonemap and asks the
+   *   WebGPU canvas for extended range. Opt-in: it is the half that cannot be
+   *   validated without HDR hardware, and WebGL has no canvas-colour-space
+   *   equivalent (the flag is ignored there rather than blowing out an 8-bit
+   *   canvas).
+   *
+   * Changing this re-resolves immediately. Values the application has already
+   * assigned are still never overwritten.
+   *
+   * @type {'off' | 'scene' | 'scene-and-canvas'}
+   * @default 'scene'
+   */
+  get hdrDisplayPolicy() {
+    return this._hdrDisplayPolicy;
+  }
+
+  set hdrDisplayPolicy(value) {
+    const normalized = normalizeHdrDisplayPolicy(value);
+    if (this._hdrDisplayPolicy === normalized) {
+      return;
+    }
+    this._hdrDisplayPolicy = normalized;
+    if (this._applyHdrDisplayDefault()) {
+      this.requestRender();
+    }
   }
 
   /**
@@ -2937,6 +3009,11 @@ class Scene {
   }
 
   set useHDRCanvasOutput(value) {
+    // C12-28 — as with `highDynamicRange`, an explicit assignment ends
+    // detection for this property. Recorded before the unchanged-value early
+    // return: assigning the value it already has is still an expression of
+    // intent, and detection must respect it.
+    this._useHDRCanvasOutputUserSet = true;
     const next = value === true;
     if (this._useHDRCanvasOutput === next) {
       return;
@@ -2951,6 +3028,80 @@ class Scene {
     if (ctx && typeof ctx.setHDRCanvasOutput === "function") {
       ctx.setHDRCanvasOutput(next);
     }
+  }
+
+  /**
+   * C12-28 — read the display capability once and subscribe to changes.
+   *
+   * The subscription is the load-bearing half: a laptop dragged onto an HDR
+   * external monitor, or the OS HDR toggle, fires `change` on the media query
+   * and this scene re-resolves. Without it the default would be frozen at
+   * whatever display the scene happened to be constructed on.
+   *
+   * Safe in Node / jsdom / any host without `matchMedia`: the query reports
+   * "unavailable", the resolver applies nothing, and no listener is attached.
+   *
+   * @private
+   */
+  _initializeHdrDisplayDetection() {
+    const host = typeof window !== "undefined" ? window : undefined;
+    const query = queryHdrDisplay(host);
+    this._hdrDisplayIsHdr = query.displayIsHdr;
+    this._applyHdrDisplayDefault();
+    if (!query.detectionAvailable) {
+      return;
+    }
+    this._hdrDisplayUnsub = observeHdrDisplay(host, (displayIsHdr) => {
+      if (this.isDestroyed()) {
+        return;
+      }
+      this._hdrDisplayIsHdr = displayIsHdr;
+      if (this._applyHdrDisplayDefault()) {
+        this.requestRender();
+      }
+    });
+  }
+
+  /**
+   * C12-28 — apply {@link resolveHdrDefault} to this scene.
+   *
+   * Assignment goes through the public setters so the HDR-dirty bookkeeping
+   * and the WebGPU canvas reconfigure both run exactly as they do for an
+   * application assignment; the user-set flags are then restored, because a
+   * detection-driven write must not masquerade as an application override
+   * (that would make the very first detection freeze the value forever).
+   *
+   * @returns {boolean} true when anything actually changed.
+   * @private
+   */
+  _applyHdrDisplayDefault() {
+    const context = this._context;
+    const decision = resolveHdrDefault({
+      displayIsHdr: this._hdrDisplayIsHdr,
+      contextSupportsHdr: this.highDynamicRangeSupported === true,
+      policy: this._hdrDisplayPolicy,
+      canvasExtendedRangeSupported:
+        defined(context) && typeof context.setHDRCanvasOutput === "function",
+      sceneHdrUserSet: this._hdrUserSet === true,
+      canvasOutputUserSet: this._useHDRCanvasOutputUserSet === true,
+      currentSceneHdr: this._hdr === true,
+      currentCanvasOutput: this._useHDRCanvasOutput === true,
+    });
+
+    let changed = false;
+    if (decision.applySceneHdr) {
+      const wasUserSet = this._hdrUserSet;
+      this.highDynamicRange = decision.sceneHdr;
+      this._hdrUserSet = wasUserSet;
+      changed = true;
+    }
+    if (decision.applyCanvasOutput) {
+      const wasUserSet = this._useHDRCanvasOutputUserSet;
+      this.useHDRCanvasOutput = decision.canvasOutput;
+      this._useHDRCanvasOutputUserSet = wasUserSet;
+      changed = true;
+    }
+    return changed;
   }
 
   /**
@@ -5497,6 +5648,9 @@ function destroySceneResources(scene) {
   removeCallback("_featureRendererReadinessUnsub");
   removeCallback("_asyncResourceUnsub");
   removeCallback("_hdrFallbackUnsub");
+  // C12-28 — the media-query listener closes over this Scene and is owned by
+  // `window`, so it outlives the scene unless detached here.
+  removeCallback("_hdrDisplayUnsub");
   removeCallback("_removeTerrainProviderReadyListener");
   removeCallback("_removeUpdateHeightCallback");
 

@@ -1275,11 +1275,65 @@ than routed around (Principle 9); none blocks the batch.
 - **`C12-12-KTX2-SKYBOX-NOT-BUNDLED`** — the `C12-13` row asks for "the KTX2
   bake derivation chain" in `LICENSE.md`. **That clause is vacuous at HEAD:**
   no KTX2 or Basis asset exists anywhere in the tree, `Tools/skybox-bake/`
-  contains no KTX2 path, and `C12-12` (VRAM/streaming policy — 2048 default,
-  4096 opt-in, KTX2 compressed) has not landed. The LICENSE entry now states
+  contains no KTX2 path. The LICENSE entry now states
   the position explicitly and `solar-glare-star-washout.spec.mjs` asserts BOTH
   halves, so the day a compressed face ships without the entry being extended,
-  the spec fails.
+  the spec fails. **Status update 2026-08-07 (CO-22):** `C12-12`'s *policy*
+  half has since landed (`Scene/SkyBoxResolutionPolicy.ts`), so this entry is
+  now scoped to the **encode** half only, and it is blocked for exactly the
+  reason `MOON-ALBEDO-KTX2` is: no `toktx` / `ktx` / `basisu` on the machine
+  and no encoder in the repo. `skybox-resolution-policy.spec.mjs` adds a second
+  negative pin (no `.ktx2`/`.basis`/`.dds` in `Assets/Textures/SkyBox/`), and
+  note that the day a compressed face DOES ship, the VRAM model in
+  `SkyBoxResolutionPolicy.ts` must be revisited with it — it assumes
+  `rgba8unorm`, and a transcoded BC7/ASTC cube is ~4× cheaper.
+- **`C12-12-SKYBOX-4096-TIER-NOT-BAKED`** — `C12-12` shipped the resolution
+  **seam** (2048 default, 4096 opt-in, device-limit step-down, honest
+  `fallback` reporting) but **no 4096 faces exist in the tree**, so the opt-in
+  tier currently resolves down to 2048 for every variant. This is not a gap in
+  the policy: `Tools/skybox-bake/bake-tycho-t5.mjs` already reprojects the
+  hash-pinned SVS 3572 source to a **4096 master** and only then lanczos3-
+  downsamples to 2048 (`skybox-manifest.json`: `encode.masterSize = 4096`,
+  `encode.faceSize = 2048`), so the tier is reproducible — the bake simply has
+  never been run with the downsample skipped, and the 18 shipped faces are one
+  tier per variant. **Installing it is a data-only change:** add a `"4096"` row
+  to the variant in `SKYBOX_BUNDLED_TIERS` with
+  `prefixSuffix: SKYBOX_OPT_IN_TIER_PREFIX_SUFFIX` and drop in the six
+  `<prefix>_4096_<face>.jpg` files;
+  `Tools/visual-regression/skybox-resolution-policy.spec.mjs` proves the seam
+  works the moment a tier is registered (injected-table case) and will FAIL the
+  day faces land without registration. **Before baking it, weigh the cost the
+  row exists to control:** a 4096 cube is **402,653,184 bytes (384 MiB)** of
+  uncompressed `rgba8unorm` VRAM against 96 MiB at 2048, plus ~18 MB of JPEG
+  download at q90 4:4:4 (extrapolated from the 2048 faces' 4.57 MB). That is
+  also why `TYCHO_T5_DIFFUSE` — the default variant, whose faces are
+  deliberately low-passed to σ ≈ 0.44° and compress to 0.36 MB total — is the
+  *worst* candidate for a 4096 bake: there is no resolved detail left in it to
+  resolve. If a 4096 tier is baked at all, `TYCHO_T5` (the un-blurred DR-01
+  reversal artifact) is the variant that would benefit. **Effort:** S (bake) +
+  XS (register). **Maintainer call**, because it spends 288 MiB of VRAM for a
+  variant nobody runs by default.
+- **`C12-28-CANVAS-EXTENDED-RANGE-OPT-IN`** — `C12-28` defaults
+  `Scene#highDynamicRange` from the display, but the §6 (Q3) definition also
+  said "with the WebGPU canvas configured for extended range where supported".
+  That half ships **opt-in**, behind `Scene#hdrDisplayPolicy =
+  'scene-and-canvas'`, rather than in the default flip. Three reasons, recorded
+  so the absence reads as a decision: (1) it cannot be validated on this
+  machine — no HDR display, and headless Edge cannot synthesize
+  `(dynamic-range: high)`; (2) `Scene#useHDRCanvasOutput` is still marked
+  `@experimental`, and auto-enabling it would reconfigure the canvas to
+  `rgba16float` + `display-p3` + `toneMapping: {mode:"extended"}` on every HDR
+  monitor, unreviewed; (3) **it has no WebGL leg** — `GPUCanvasContext.configure`
+  has no WebGL counterpart, so on WebGL the flag would only skip the SDR
+  tonemap and blow out highlights into an 8-bit canvas. The resolver refuses it
+  on any context that does not expose `setHDRCanvasOutput`, which is the
+  Principle-5 honest answer: the scene-HDR half ships on both backends in this
+  slice, the canvas half is architecturally WebGPU-only until someone wires
+  WebGL2's `drawingBufferStorage` / `drawingBufferColorSpace`. **What is owed:**
+  a maintainer check on real HDR hardware — confirm the default flip, then flip
+  `hdrDisplayPolicy = 'scene-and-canvas'` and confirm the extended-range image
+  on WebGPU — after which promoting it to the default (or wiring the WebGL leg)
+  becomes a decidable question rather than a guess.
 - **`C12-13-T3-PROVENANCE-GAP`** — surfaced while extending the entry, NOT
   introduced by it: the `tycho2t3_80_*` faces are **upstream CesiumJS's**
   reprojection, and this project holds no bake script, no pinned source hash

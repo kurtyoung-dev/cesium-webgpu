@@ -3,6 +3,12 @@ import defined from "../Core/defined.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import CubeMapPanorama from "./CubeMapPanorama.js";
 import SceneMode from "./SceneMode.js";
+import {
+  DEFAULT_SKYBOX_RESOLUTION,
+  SkyBoxResolution,
+  estimateCubeMapVramBytes,
+  resolveSkyBoxResolution,
+} from "./SkyBoxResolutionPolicy.js";
 import StarField from "./StarField.js";
 import destroyObject from "../Core/destroyObject.js";
 
@@ -46,6 +52,12 @@ class SkyBox {
     // {@link SkyBox#starCubeMap}: the default variant carries NO resolved
     // stars (DR-01), so the answer changes what sampling the cube map means.
     this._variant = options.variant;
+
+    // C12-12 — the resolution tier these faces were served at, when the sky box
+    // was built by {@link SkyBox.createEarthSkyBox}. `undefined` for a
+    // hand-constructed sky box, whose faces can be any size.
+    this._resolution = options.resolution;
+    this._faceSize = options.faceSize;
 
     this._show = options.show ?? true;
     this._panorama = new CubeMapPanorama({
@@ -92,6 +104,10 @@ class SkyBox {
     // The new faces are not attributable to a `SkyBox.Variant` entry, so stop
     // claiming one rather than reporting a stale answer.
     this._variant = undefined;
+    // C12-12 — likewise for the resolution tier: arbitrary faces have no tier
+    // and an unknown face size, so the VRAM estimate must stop answering too.
+    this._resolution = undefined;
+    this._faceSize = undefined;
   }
 
   /**
@@ -110,6 +126,51 @@ class SkyBox {
    */
   get variant() {
     return this._variant;
+  }
+
+  /**
+   * C12-12 — the {@link SkyBox.Resolution} tier these faces were served at, or
+   * `undefined` for a hand-constructed sky box.
+   *
+   * This can differ from what was requested: the policy never invents a URL,
+   * so asking for a tier that is not bundled for the chosen variant serves the
+   * closest bundled one instead. Read {@link SkyBox#estimatedVramBytes} for
+   * what the choice actually costs.
+   *
+   * @type {string|undefined}
+   * @readonly
+   */
+  get resolution() {
+    return this._resolution;
+  }
+
+  /**
+   * C12-12 — edge length in pixels of each of the six faces, or `undefined`
+   * for a hand-constructed sky box.
+   *
+   * @type {number|undefined}
+   * @readonly
+   */
+  get faceSize() {
+    return this._faceSize;
+  }
+
+  /**
+   * C12-12 — video memory the star cube map occupies once decoded:
+   * `6 × faceSize² × 4` bytes. `undefined` for a hand-constructed sky box.
+   *
+   * Both backends upload the faces as `rgba8unorm` with a single mip level, so
+   * this is exact rather than an estimate of an unknown format — 96 MiB at the
+   * default 2048 tier, 384 MiB at 4096. The JPEG's on-disk size does not enter
+   * into it. See `Scene/SkyBoxResolutionPolicy.js` for the loader evidence.
+   *
+   * @type {number|undefined}
+   * @readonly
+   */
+  get estimatedVramBytes() {
+    return defined(this._faceSize)
+      ? estimateCubeMapVramBytes(this._faceSize)
+      : undefined;
   }
 
   /**
@@ -216,6 +277,14 @@ class SkyBox {
    *
    * @param {string} [variant] One of {@link SkyBox.Variant}. Defaults to
    *        {@link SkyBox.defaultVariant}, which applications may set globally.
+   * @param {object} [options] C12-12 resolution policy options.
+   * @param {string} [options.resolution] One of {@link SkyBox.Resolution}.
+   *        Defaults to {@link SkyBox.defaultResolution} (2048/face, 96 MiB).
+   *        A tier that is not bundled for the chosen variant resolves DOWN to
+   *        the closest bundled one — no URL is ever fabricated.
+   * @param {number} [options.maximumCubeMapSize] `scene.maximumCubeMapSize`,
+   *        when the caller knows it. Steps the tier down to what the device
+   *        can actually allocate.
    * @return {SkyBox} The default skybox for the Earth
    *
    * @example
@@ -230,8 +299,15 @@ class SkyBox {
    * @example
    * // Or change the default for every skybox created afterwards.
    * Cesium.SkyBox.defaultVariant = Cesium.SkyBox.Variant.TYCHO_T5;
+   *
+   * @example
+   * // Opt into the high-resolution tier where it is bundled (384 MiB of VRAM).
+   * viewer.scene.skyBox = Cesium.SkyBox.createEarthSkyBox(undefined, {
+   *   resolution: Cesium.SkyBox.Resolution.SIZE_4096,
+   *   maximumCubeMapSize: viewer.scene.maximumCubeMapSize,
+   * });
    */
-  static createEarthSkyBox(variant) {
+  static createEarthSkyBox(variant, options) {
     const v = variant ?? SkyBox.defaultVariant;
     const descriptor = skyBoxVariants[v];
     //>>includeStart('debug', pragmas.debug);
@@ -242,17 +318,49 @@ class SkyBox {
     }
     //>>includeEnd('debug');
     const resolved = descriptor ?? skyBoxVariants[SkyBox.Variant.TYCHO_T3];
+    // C12-14 — record which variant these faces are, so a consumer of
+    // `skyBox.starCubeMap` can tell whether the map carries resolved stars.
+    const resolvedVariant = defined(descriptor) ? v : SkyBox.Variant.TYCHO_T3;
+
+    // C12-12 — pick the resolution tier BEFORE building URLs. The variant is
+    // already resolved above, so the policy can never see an unknown variant
+    // from this path.
+    const requested = options?.resolution;
+    const tier = resolveSkyBoxResolution({
+      variant: resolvedVariant,
+      requested: requested ?? SkyBox.defaultResolution,
+      maximumCubeMapSize: options?.maximumCubeMapSize,
+    });
+    //>>includeStart('debug', pragmas.debug);
+    // Only complain when the caller asked for something specific. The default
+    // request (2048) legitimately falls back on `TYCHO_T3`, which is bundled at
+    // 1024 — warning about that on every default construction would be noise.
+    if (defined(requested) && tier.fallback) {
+      console.warn(
+        `[CesiumJS:SkyBox] Resolution "${tier.requested}" is not bundled for variant "${resolvedVariant}" ` +
+          `(available: ${tier.availableResolutions.join(", ")}); serving "${tier.resolution}". Reason: ${tier.reason}.`,
+      );
+    }
+    //>>includeEnd('debug');
+    if (tier.exceedsDeviceLimit) {
+      console.error(
+        `[CesiumJS:SkyBox] Smallest bundled star cube map for "${resolvedVariant}" is ${tier.faceSize}px/face, ` +
+          `which exceeds this device's maximumCubeMapSize (${options?.maximumCubeMapSize}). The sky box will fail to load.`,
+      );
+    }
+
+    const tierSuffix = tier.prefixSuffix;
     return new SkyBox({
-      // C12-14 — record which variant these faces are, so a consumer of
-      // `skyBox.starCubeMap` can tell whether the map carries resolved stars.
-      variant: defined(descriptor) ? v : SkyBox.Variant.TYCHO_T3,
+      variant: resolvedVariant,
+      resolution: tier.resolution,
+      faceSize: tier.faceSize,
       sources: {
-        positiveX: resolved.url("px"),
-        negativeX: resolved.url("mx"),
-        positiveY: resolved.url("py"),
-        negativeY: resolved.url("my"),
-        positiveZ: resolved.url("pz"),
-        negativeZ: resolved.url("mz"),
+        positiveX: resolved.url("px", tierSuffix),
+        negativeX: resolved.url("mx", tierSuffix),
+        positiveY: resolved.url("py", tierSuffix),
+        negativeY: resolved.url("my", tierSuffix),
+        positiveZ: resolved.url("pz", tierSuffix),
+        negativeZ: resolved.url("mz", tierSuffix),
       },
     });
   }
@@ -315,28 +423,33 @@ SkyBox.Variant = Object.freeze({
   TYCHO_T5_DIFFUSE: "TYCHO_T5_DIFFUSE",
 });
 
+// C12-12 — `tierSuffix` is the resolution-tier infix from
+// `Scene/SkyBoxResolutionPolicy.js`. It is empty for each variant's bundled
+// tier, which is what keeps every default URL byte-identical to what shipped
+// before the policy existed; a future 4096 bake would install
+// `<prefix>_4096_<face>.jpg`.
 const skyBoxVariants = {
   [SkyBox.Variant.TYCHO_T3]: {
     prefix: "tycho2t3_80",
-    url(suffix) {
+    url(face, tierSuffix) {
       return buildModuleUrl(
-        `Assets/Textures/SkyBox/${this.prefix}_${suffix}.jpg`,
+        `Assets/Textures/SkyBox/${this.prefix}${tierSuffix ?? ""}_${face}.jpg`,
       );
     },
   },
   [SkyBox.Variant.TYCHO_T5]: {
     prefix: "tycho2t5_80",
-    url(suffix) {
+    url(face, tierSuffix) {
       return buildModuleUrl(
-        `Assets/Textures/SkyBox/${this.prefix}_${suffix}.jpg`,
+        `Assets/Textures/SkyBox/${this.prefix}${tierSuffix ?? ""}_${face}.jpg`,
       );
     },
   },
   [SkyBox.Variant.TYCHO_T5_DIFFUSE]: {
     prefix: "tycho2t5_80_diffuse",
-    url(suffix) {
+    url(face, tierSuffix) {
       return buildModuleUrl(
-        `Assets/Textures/SkyBox/${this.prefix}_${suffix}.jpg`,
+        `Assets/Textures/SkyBox/${this.prefix}${tierSuffix ?? ""}_${face}.jpg`,
       );
     },
   },
@@ -359,5 +472,41 @@ const skyBoxVariants = {
  * @default SkyBox.Variant.TYCHO_T5_DIFFUSE
  */
 SkyBox.defaultVariant = SkyBox.Variant.TYCHO_T5_DIFFUSE;
+
+/**
+ * C12-12 — selectable star-cube-map face resolutions for
+ * {@link SkyBox.createEarthSkyBox}.
+ *
+ * The star cube map is the largest fixed texture allocation in a default
+ * scene and it is stored uncompressed (`rgba8unorm`, six faces, one mip level
+ * on BOTH backends), so the tier is a VRAM decision before it is a quality
+ * decision:
+ *
+ * | tier | VRAM  | note                                              |
+ * |------|-------|---------------------------------------------------|
+ * | 1024 | 24 MiB  | only `TYCHO_T3` ships at this size (upstream)    |
+ * | 2048 | 96 MiB  | the default; `TYCHO_T5` and `TYCHO_T5_DIFFUSE`   |
+ * | 4096 | 384 MiB | opt-in — **no 4096 faces are bundled at HEAD**   |
+ *
+ * Requesting a tier that is not bundled for the chosen variant serves the
+ * closest bundled tier instead and reports it on {@link SkyBox#resolution};
+ * no URL is fabricated. See `Scene/SkyBoxResolutionPolicy.js` for the policy,
+ * the loader evidence behind those numbers, and what installing the 4096 tier
+ * would take.
+ *
+ * @enum {string}
+ * @readonly
+ */
+SkyBox.Resolution = SkyBoxResolution;
+
+/**
+ * The resolution tier {@link SkyBox.createEarthSkyBox} uses when none is
+ * passed. 2048/face — 96 MiB of video memory, and the size
+ * `Tools/skybox-bake/` actually installs.
+ *
+ * @type {string}
+ * @default SkyBox.Resolution.SIZE_2048
+ */
+SkyBox.defaultResolution = DEFAULT_SKYBOX_RESOLUTION;
 
 export default SkyBox;
