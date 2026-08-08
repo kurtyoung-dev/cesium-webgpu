@@ -91,6 +91,13 @@ Screenshots are WebGPU captures produced by
 each one is recorded in
 [`Tools/readme-screenshots/scenes.json`](Tools/readme-screenshots/scenes.json).
 
+Screenshots are captured from the live WebGPU renderer with the viewer chrome
+(including the on-canvas credit bar) hidden for legibility. Imagery and terrain
+in these images: Bing Maps aerial via Cesium ion, and Cesium World Terrain
+© Cesium GS, Inc. and its data providers; OpenStreetMap-derived layers
+© OpenStreetMap contributors. The running application always displays the
+full attribution in its credit bar.
+
 <!-- FEATURE-TABLE:BEGIN -->
 
 ### Renderer core & architecture
