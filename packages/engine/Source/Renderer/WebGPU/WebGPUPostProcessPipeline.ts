@@ -105,6 +105,12 @@ import {
   SunHaloEffect,
   type SunHaloFrameState,
 } from "./WebGPUSunHaloEffect.js";
+// The bright-pass glow half of the same chain. Runs before the halo so the
+// halo is never bright-passed; see WebGPUSunBloomEffect.ts.
+import {
+  SunBloomEffect,
+  type SunBloomFrameState,
+} from "./WebGPUSunBloomEffect.js";
 // Atmospheric Effects Phase B (Batch 417b) -- pipeline-level HeatShimmer
 // registration. Single-pass animated UV-warp; mirrors the GodRay touchpoints.
 import {
@@ -335,6 +341,7 @@ export class WebGPUPostProcessPipeline {
   private _bloomEffect: BloomEffect | null = null;
   // C12-18 / C11-160 — screen-space solar veiling glare.
   private _sunHaloEffect: SunHaloEffect | null = null;
+  private _sunBloomEffect: SunBloomEffect | null = null;
   private _aoEffect: AmbientOcclusionEffect | null = null;
   private _dofEffect: DepthOfFieldEffect | null = null;
   private _taaEffect: WebGPUTAAEffect | null = null;
@@ -435,6 +442,7 @@ export class WebGPUPostProcessPipeline {
     // on a default WebGPU scene with no other effect enabled it is the ONLY
     // stage between the scene FB and the canvas that draws anything.
     if (this._sunHaloEffect?.enabled) return true;
+    if (this._sunBloomEffect?.enabled) return true;
     if (this._heatShimmerEffect?.enabled) return true;
     if (this._coldOpticsEffect?.enabled) return true;
     if (this._aerialPerspectiveEffect?.enabled) return true;
@@ -451,6 +459,10 @@ export class WebGPUPostProcessPipeline {
 
   get sunHaloEffect(): SunHaloEffect | null {
     return this._sunHaloEffect;
+  }
+
+  get sunBloomEffect(): SunBloomEffect | null {
+    return this._sunBloomEffect;
   }
 
   get ambientOcclusionEffect(): AmbientOcclusionEffect | null {
@@ -571,6 +583,7 @@ export class WebGPUPostProcessPipeline {
     // configure pass lazily re-adds it on the same frame when
     // `scene.sunBloom` is on (the gate checks the live slot).
     this._sunHaloEffect?.destroy();
+    this._sunBloomEffect?.destroy();
     // Atmospheric Effects Phase B (Batch 417b) — HeatShimmer's output texture
     // is sized + formatted against `_intermediateFormat`, so a resize / HDR
     // toggle must drop it too. The configure pass lazily re-adds it on the
@@ -593,6 +606,7 @@ export class WebGPUPostProcessPipeline {
     this._dofEffect = null;
     this._godRayEffect = null;
     this._sunHaloEffect = null;
+    this._sunBloomEffect = null;
     this._heatShimmerEffect = null;
     this._coldOpticsEffect = null;
     this._aerialPerspectiveEffect = null;
@@ -1149,6 +1163,33 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
+   * Add the sun bright-pass glow (bright pass, two blurs, additive composite).
+   *
+   * Idempotent like the other `add*` methods, and it uses the intermediate
+   * format for the reason bloom and the halo do: the glow is additive HDR
+   * energy, and clamping it at 8 bits before tonemap would flatten it.
+   */
+  addSunBloom(device: GPUDevice, canvasFormat: GPUTextureFormat): void {
+    if (this._sunBloomEffect) return;
+    this._sunBloomEffect = new SunBloomEffect();
+    this._sunBloomEffect.initialize(
+      device,
+      this._width,
+      this._height,
+      this._intermediateFormat || canvasFormat,
+    );
+  }
+
+  /**
+   * Push this frame's resolved glow state (`frameState.sunHalo`, whose
+   * bright-pass pair and screen geometry both stages read). No-op when the
+   * effect has not been added, so callers need no guard.
+   */
+  setSunBloomFrameState(state: SunBloomFrameState): void {
+    this._sunBloomEffect?.setFrameState(state);
+  }
+
+  /**
    * Add ambient occlusion effect (SSAO Generate → Blur → Modulate).
    * Requires depth texture to function.
    */
@@ -1525,6 +1566,24 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
+    // 0.4 SunBloom — the bright-pass glow around the Sun. Runs BEFORE the
+    // halo, mirroring the WebGL chain, where the halo is the last stage of
+    // `SunPostProcess` precisely so it is never fed back into the bright pass.
+    // The two terms are then separable: the glow is the display's response to
+    // the scene's supra-white luminance, the halo is scattering inside the
+    // observer's optics, and neither reads the other's output. The effect
+    // self-skips (returns `sourceView` untouched) while the Sun's projected
+    // geometry is unusable.
+    if (this._sunBloomEffect?.enabled) {
+      currentView = this._sunBloomEffect.execute(
+        encoder,
+        currentView,
+        depth,
+        this._sampler!,
+        this._timestampProvider ?? undefined,
+      );
+    }
+
     // 0.5 SunHalo (C12-18 / C11-160) — screen-space solar veiling glare.
     // Runs BEFORE AO/bloom/tonemap, mirroring WebGL, where `SunPostProcess`
     // executes during environment rendering and copies into the scene
@@ -1865,6 +1924,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._dofEffect?.resize(width, height);
     this._godRayEffect?.resize(width, height);
     this._sunHaloEffect?.resize(width, height);
+    this._sunBloomEffect?.resize(width, height);
     this._heatShimmerEffect?.resize(width, height);
     this._coldOpticsEffect?.resize(width, height);
     this._aerialPerspectiveEffect?.resize(width, height);
@@ -1919,6 +1979,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       this._dofEffect.enabled = enabled;
     } else if (name === "SunHalo" && this._sunHaloEffect) {
       this._sunHaloEffect.enabled = enabled;
+    } else if (name === "SunBloom" && this._sunBloomEffect) {
+      this._sunBloomEffect.enabled = enabled;
     } else {
       const stage = this._customStages.find((s) => s.name === name);
       if (stage) stage.enabled = enabled;
@@ -2210,6 +2272,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._dofEffect?.destroy();
     this._godRayEffect?.destroy();
     this._sunHaloEffect?.destroy();
+    this._sunBloomEffect?.destroy();
     this._heatShimmerEffect?.destroy();
     this._coldOpticsEffect?.destroy();
     this._aerialPerspectiveEffect?.destroy();
@@ -2227,6 +2290,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._dofEffect = null;
     this._godRayEffect = null;
     this._sunHaloEffect = null;
+    this._sunBloomEffect = null;
     this._heatShimmerEffect = null;
     this._coldOpticsEffect = null;
     this._aerialPerspectiveEffect = null;

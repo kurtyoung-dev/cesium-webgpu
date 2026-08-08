@@ -127,6 +127,12 @@ function createSunHaloAppearance() {
     centerY: 0.0,
     limbPx: 0.0,
     visible: false,
+    // Whether `centerX/centerY/limbPx` describe a Sun that is in front of the
+    // camera with finite geometry. Separate from `visible`, which additionally
+    // requires the screen halo to be switched on: the bright-pass glow and the
+    // halo are independent stages of the same chain, and an app that turns the
+    // halo off still gets a glow around a Sun the projection can locate.
+    geometryValid: false,
     // 2-bit bake-rebuild signature: bit 0 = true disc size, bit 1 = the bake
     // still owns the halo. Both bakes rebuild their texture when it changes,
     // exactly like `sunDiscAppearance.key` does.
@@ -316,6 +322,7 @@ function readSunHaloAppearance(frameState, glowLengthTS, result) {
   result.haloColorG = defined(extinction) ? extinction.y : 1.0;
   result.haloColorB = defined(extinction) ? extinction.z : 1.0;
 
+  result.geometryValid = geometryOk;
   result.visible = screenHalo && geometryOk;
   result.haloIntensity = result.visible
     ? result.haloAmplitude * result.eclipseFactor

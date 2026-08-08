@@ -845,9 +845,178 @@ touched files. **Files:** `Tools/visual-regression/lib/celestial-g4-gate.mjs`,
 comment-only PROVENANCE block in
 `packages/engine/Source/Scene/SolarDiscModel.js`.
 
+### 2026-08-11 CO-37 (C12-34) - the WebGPU sun-bloom MIRROR lands, and the row's OWN premise is corrected: the mirror cannot clear `webgl:limb_shape_matches_shipped_law`, and the bloom does not reproduce that red at the shipped geometry
+
+**Ruling R-2026-08-10-3 is implemented as ruled.** WebGPU now carries the
+bright-pass sun glow at defaults, on the same `scene.sunBloom` flag, from the
+same published tuning and the same shape constants. Two corrections come first,
+because each changes what the row's acceptance can claim.
+
+**CORRECTION 1 - the mirror CANNOT clear `webgl:limb_shape_matches_shipped_law`,
+and the pre-registered "exit 0 when C12-34 lands" is withdrawn.**
+`limb_shape_matches_shipped_law` is a PER-BACKEND criterion
+(`evaluateDiscSubLane`, `m.limbShapeMaxRelDev <= LIMB_SHAPE_MAX_REL_DEV`), not a
+parity fold. It is computed from that backend's own `flat - limb` differential
+against the shipped law. The brief that reached this row described it as "red
+because the two backends disagree"; it is not. Adding a glow to WebGPU changes
+only `webgpu:*` readings, and this row's own mutant contract requires the WebGL
+path to be untouched - so WebGL's reading is arithmetically unreachable from
+here. The only two things that could clear it are a change to the WebGL render
+path (ruling R-3's documented Option B, default WebGL's bloom off) or a change
+to the instrument.
+
+**CORRECTION 2 - the bloom is NOT sufficient to produce that red, and the model
+that says so reproduces every OTHER live number to under 2%.** The WebGL chain
+was simulated end to end offline (bright pass on the disc, the shipped 8-tap
+incremental Gaussian on the square 128-texel buffer a 1280x720 canvas selects,
+bilinear upsample, the `mix(color0 + color1, color1, smoothstep(0.5, 0.8, x))`
+composite, then the screen halo) and the three synthetic legs were pushed
+through the REAL `measureDiscDifferential`. At the probe's geometry
+(fovX 2 deg, R = 169.3 px, canvas 1280x720):
+
+| reading | no bloom (model) | webgpu (live, B964) | bloomed (model) | webgl (live, B964) |
+| --- | --- | --- | --- | --- |
+| `discRadianceMeasured` | 2.0000 | 2.021 | **2.5939** | **2.593** |
+| `discOnlyRatio` | 0.5664 | 0.5442 | 0.5666 | 0.5671 |
+| `discPeakLinear` | 3.5000 | 3.514 (B941) | 4.2049 | 4.176 (B941) |
+| `limbShapeMaxRelDev` | 0.0043 | green | **0.0614** | **red (> 0.20)** |
+
+The bloomed `discRadianceMeasured` lands **0.03% from the live WebGL reading**,
+and `discPeakLinear` within 0.7%, so the bloom's magnitude is modelled
+correctly. The same model moves `limbShapeMaxRelDev` only from 0.0043 to
+**0.0614** - comfortably inside the 0.20 bar. A sensitivity sweep says the
+bloom alone crosses 0.20 only when the blur-to-disc ratio is roughly doubled
+(R = 120 px with a 2x blur reaches 0.39; R = 169.3 px at the shipped blur stays
+at 0.06). **So the "unmirrored bloom pushing the tightest disc criterion over
+its bar" attribution recorded at the third run is not supported by the
+arithmetic, and the WebGL shape red has an unidentified second cause.** That is
+filed, not guessed at, below.
+
+**WHAT THE MIRROR IS.** Four passes in the WebGPU post-process chain, encoded at
+slot 0.4, immediately BEFORE the C12-18 halo at 0.5 - the same order the WebGL
+chain has, where `SolarHalo` is stage 6 precisely so the halo is never
+bright-passed. `SunBrightPass.wgsl` (new, twinned with `BrightPass.glsl`
+including both degenerate-chromaticity guards), `GaussianBlur1D.wgsl` twice
+(already twinned; reused, not re-authored), and `AdditiveBlend.wgsl` - whose
+`center` / `radius` uniform slots had been DECLARED and unused since it was
+ported, i.e. exactly the scaffolding shape Principle 7 describes; this row
+finishes it into the GLSL twin's radial fade and becomes its first consumer.
+
+**THE ENERGY SPLIT, DERIVED.** Disc, glow and halo are three terms with three
+inputs and no shared one:
+
+- the **disc** is the billboard, `L * I(rho)`, the Cox/Allen photosphere;
+- the **glow** is the display's response to supra-white scene luminance. Its
+  input is the scene framebuffer WITHOUT the halo, and its amplitude at the
+  disc centre is a closed form of the derived pair alone:
+  `threshold = s`, `offset = s * (sqrt(L) - 1)` gives
+  `out(L) = (sqrt(L) + 1) / (sqrt(L) + 2)`, in which the scale `s` divides out.
+  At the shipped `L = 2` that is exactly `1/sqrt(2) = 0.70711`;
+- the **halo** is Stiles-Holladay veiling glare, `A * L / (1 + (rho/rho_core)^2)`,
+  synthesised from the ephemeris and reading no framebuffer at all.
+
+They cannot double-count because **the glow cannot grow into the halo**: disc
+and halo are both linear in `L`, while the bright pass is a saturating rational
+bounded by 1 for every radiance. At `L = 2` the composite centre is
+`2.0 + 1.5 + 0.70711 = 4.20711` - disc 47.5%, halo 35.7%, glow **16.8%** - and
+that share FALLS as the sun brightens (3.9% at `L = 10`). A term that cannot run
+away needs no renormalisation constant, which is why none is introduced. The two
+also occupy different decades of `rho`: the glow's 8-tap kernel truncates at
+7 texels, i.e. ~0.41 solar radii at the probe's geometry, so it is a
+sub-solar-radius skirt, while the halo's `1/rho^2` tail is measured out to
+30 R_sun by the G4 halo lane. Their overlap is one narrow annulus.
+
+**ONE SOURCE OF TRUTH, ENFORCED.** The bright-pass pair is
+`frameState.sunHalo.brightPassThreshold/Offset`, published once by
+`SunHaloAppearance` before the backend branch and read by both consumers. The
+five shape constants (texture scale, blur delta, blur sigma, the `30 x 2` box,
+the `0.15` composite fraction) now live once in `SolarDiscModel.js`, and the
+spec RE-READS them out of the shipped `SunPostProcess.js` text and fails if
+either side drifts; `solarBloomCompositeRadiusPx` and
+`solarBloomBlurBufferSize` are shared functions, not transcribed arithmetic. A
+dialled literal in the WebGPU effect is a spec failure by construction
+(`assert.doesNotMatch` on `0.125`, `30.0`, `0.3428`, `0.25`).
+
+**ONE FLAG, AND ONE NEW PUBLISHED BIT.** `cache.sunBloomEnabled =
+cache.sunHaloEnabled`, so the glow rides `scene.sunBloom` and
+`environmentState.isSunVisible` exactly as the halo does and the two cannot
+drift. The glow is deliberately NOT gated on `enableScreenSpaceSunHalo`: the
+WebGL twin transfers the bright-pass pair even on frames where the halo stage is
+off, and `sunHalo.visible` folds that toggle in. `SunHaloAppearance` therefore
+publishes a new `geometryValid` (the projection succeeded and the Sun is in
+front of the camera), which is what the glow gates on. Byte-inert for WebGL:
+nothing on that path reads it.
+
+**PRE-REGISTERED FOR THE G4 SIXTH RUN.** Both backends still evaluate **43
+criteria**; `structural[]` empty; `nonVerdictMisroutes []`. Expected exit is
+**1 with exactly ONE red - `webgl:limb_shape_matches_shipped_law`, UNCHANGED**,
+because nothing in this row can reach it. Anything else is news. Specifically:
+
+- `webgpu:discRadianceMeasured` **2.021 -> ~2.59** (model 2.5939), converging on
+  webgl's 2.593; the cross-backend spread on that scalar collapses from ~28% to
+  under 2%.
+- `webgpu:discPeakLinear` **3.514 -> ~4.2** (model 4.2049), matching webgl's
+  4.176.
+- `limb_discOnlyRatio_I095_over_I0_in_band` **CERTIFIES on both backends and
+  the readings barely move** - the model puts the bloomed disc-only ratio at
+  0.5666 against 0.5664 unbloomed, a shift of 2e-4. This is the differential
+  cancelling the glow the same way it cancels the halo, and it is the
+  pre-registration CO-35's design predicts.
+- `webgpu:limb_shape_matches_shipped_law` **stays GREEN**, moving 0.0043 ->
+  ~0.06 against the 0.20 bar. If it goes RED, the mirror is not faithful and
+  the model above is wrong in a way worth bisecting.
+- `webgpu:limb_drop_at_0_95R_measurable` - `limbAnchorDelta` rises
+  **0.867 -> ~1.13** (model), still above `LIMB_MIN_DROP_LINEAR`.
+- Disc size, `trueSizeRatio` and the halo lane are untouched by the glow (model:
+  `discRadiusPx` 169.44 -> 169.54, `trueSizeRatio` 1.4153 -> 1.4166).
+
+**FILED - `WEBGL-LIMB-SHAPE-RED-HAS-A-SECOND-CAUSE` (MEDIUM).** The WebGL disc
+lane's `limbShapeMaxRelDev` exceeds 0.20 for a reason the bloom does not
+explain (model 0.061 vs the bar 0.20, with every other bloom-sensitive reading
+in that lane reproduced to under 2%). Discriminator owed and cheap: run the G4
+disc lane's three legs with `scene.sunBloom = false` on BOTH backends - the same
+pin the C12-19 delta legs already use. The limb LAW is a property of the
+billboard bake, not of the post-process, so a lane that measures it through a
+bloom is measuring the bloom; if the red survives `sunBloom = false` the cause
+is in the WebGL sun path and the G4 attribution is wrong, and if it clears, the
+lane's own pin is the fix and the criterion becomes backend-symmetric and
+mirror-proof at the same time. Either way this is instrument work, not a
+product change, and it is what the standing red actually needs.
+
+**Gates:** `webgpu-sun-bloom-mirror.spec.mjs` **19/19** (new: shared-tuning pin,
+shape-constant pins re-read from the shipped WebGL text, both-backends-one-flag,
+the not-gated-on-the-halo-toggle pin, execute-order pin, WebGL-untouched pins,
+the two shader bodies executed as JavaScript and required to agree to 1e-15,
+naga on both WGSL files, off-is-off, the energy-split closed form, and two
+mutants); whole celestial + sun + moon + eclipse + sky family +
+`probe-fleet-contract` **1037/1039** - the two failures are
+`moon-normal-strength-policy` and `moon-webgl-mip-policy`, both
+`ERR_MODULE_NOT_FOUND` on the GENERATED `Shaders/EllipsoidFS.js`, i.e. a
+worktree with no `gulp build` behind it, unrelated to this row and reproducible
+at HEAD. `npx tsc --noEmit -p packages/engine` 140 errors, **0 non-TS2307**
+(the 140 are the generated shader modules, three of them this row's). Marker
+guard on the seven touched files: **0 errors**, and zero markers on any added
+line. prettier + eslint clean. **Files:**
+`packages/engine/Source/Renderer/WebGPU/WebGPUSunBloomEffect.ts` (new),
+`packages/engine/Source/Shaders/WebGPU/PostProcess/SunBrightPass.wgsl` (new),
+`packages/engine/Source/Shaders/WebGPU/PostProcess/AdditiveBlend.wgsl`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts`,
+`packages/engine/Source/Scene/SolarDiscModel.js`,
+`packages/engine/Source/Scene/SunHaloAppearance.js`,
+`Tools/visual-regression/webgpu-sun-bloom-mirror.spec.mjs` (new),
+`migration_doc/SHADER_PAIRS_LOCKSTEP.md`, this queue.
+
+**ID COLLISION, for the ledger's own hygiene:** `C12-34` is used TWICE in this
+document - R-3's bloom-mirror row at the table below, and the
+sky-brightness-estimator row further down, which records that it was renumbered
+to `C12-34` on 2026-08-01 "because `C12-33` was taken". The maintainer ruling
+names the bloom mirror, so this stamp treats the mirror as `C12-34`; the older
+row needs a new id from whoever owns the numbering.
+
 | ID | Work | Size | Status |
 | --- | --- | --- | --- |
-| `C12-34` | **WEBGPU-SUN-BLOOM-MIRROR (R-2026-08-10-3).** Implement the WebGPU equivalent of WebGL's `SunPostProcess` bright-pass sun bloom (sun-region bright pass feeding the existing PP chain), so both backends carry the effect at defaults. Must compose with the C12-18 screen halo without double-counting (derive the shared-energy story, don't dial it); expected to clear the G4 `webgl:limb_shape_matches_shipped_law` watch-red at its source. Both-backends acceptance via the G4 sun half. Fallback (documented, R-3): default WebGL's bloom off and make C12-18 the single glow source — trigger: the mirror double-counts in a way tuning cannot reconcile. | M | PENDING |
+| `C12-34` | **WEBGPU-SUN-BLOOM-MIRROR (R-2026-08-10-3).** Implement the WebGPU equivalent of WebGL's `SunPostProcess` bright-pass sun bloom (sun-region bright pass feeding the existing PP chain), so both backends carry the effect at defaults. Must compose with the C12-18 screen halo without double-counting (derive the shared-energy story, don't dial it); expected to clear the G4 `webgl:limb_shape_matches_shipped_law` watch-red at its source. Both-backends acceptance via the G4 sun half. Fallback (documented, R-3): default WebGL's bloom off and make C12-18 the single glow source — trigger: the mirror double-counts in a way tuning cannot reconcile. | M | **IMPLEMENTED (CO-37, 2026-08-11) - EDGE ACCEPTANCE OWED.** WebGPU carries the bright-pass glow at defaults; one flag, one published tuning, one set of shape constants pinned to the shipped WebGL text. The row's expected G4 effect is CORRECTED: the mirror cannot clear `webgl:limb_shape_matches_shipped_law` (a per-backend criterion on an untouched backend), and the bloom does not reproduce that red at the shipped geometry (modelled 0.061 vs the 0.20 bar, with `discRadianceMeasured` reproduced to 0.03%). See the CO-37 stamp above. |
 
 ### 2026-08-09 CO-30 verdict (Batch 947) — the B946 filing is REFUTED AND REPLACED; the fix is landed
 
@@ -1594,7 +1763,7 @@ unchanged).
 | ID | Item | Effort |
 |---|---|---|
 | `C12-26` | **`NEW-EARTH-LIMB-AIRGLOW-EMISSION`.** The green band in the maintainer's ISS reference is O I 557.7 nm nightglow (~90–105 km); the red-orange band above is O I 630.0 nm from the F region. These are **emissive and sun-independent**. `SkyAtmosphere` is a *scattering* model whose `nightAlpha` drives the shell to zero opacity on the dark side — **there is no code path in which it could produce a limb band at night.** This is a new emissive limb shell. **File as its own row; do NOT expand `C11-176..179` to cover it.** | M–L |
-| `C12-34` | **`NEW-SKY-BRIGHTNESS-ESTIMATOR-NO-TWILIGHT-RANGE` (filed by C12-29 S6, 2026-07-25 — Principle 9, surfaced rather than routed around; originally numbered `C12-S6F1` in the parked S6 worktree, renumbered on extraction 2026-08-01 because `C12-33` was taken).** `Scene/SkyBrightness.js`'s sun term is `smoothstep(-0.1, 0.4, sunAlt)` (`:168`, verified still live on main), which reaches EXACTLY 0 once the sun is below **−5.74°** and saturates at 1 above **+23.6°**. It therefore carries **no dynamic range at all across the twilight decade**, where the naked-eye star count actually changes: civil twilight, nautical twilight and astronomical night all map to the same input value, 0. Two measured consequences shipped with the E3 default flip and are recorded in `StarFieldMath.ts` rather than tuned away, because the modulation curve has two parameters and cannot separate states the ESTIMATOR has already collapsed: a full moon overhead lands at factor **0.01818 (−4.35 mag, NELM ≈ 2.2** against a published full-moon ≈ 4.5 — the Milky Way correctly vanishes, but ~2.3 mag too deep), and mid civil twilight (sun −2°) lands at **exactly 0**, where real observers still have Venus and one or two first-magnitude stars. **FIX SHAPE:** replace the double-smoothstep with a **log-luminance** estimate (published twilight sky-brightness vs solar depression — e.g. Patat et al. 2006 / standard twilight photometry curves) and re-derive the two curve constants against it, keeping the totality anchor. Both consumers already read one shared pair of constants (`STAR_MODULATION_INFLECTION` / `STAR_MODULATION_STEEPNESS`), and `eclipse-sky-totality.spec.mjs` re-derives them from the totality anchor, so **the re-derivation has a gate waiting for it**. Also worth folding in: the moon term is a flat 4% perceptual constant with no photometric derivation. ✅ **IMPLEMENTED (worker, 2026-08-02; LANDED Batch 823) — ENGINE-LEG EDGE ACCEPTANCE **PASSED** at Batch 824, star-PIXEL leg still OWED as an instrument gap; not COMPLETE. See the EDGE ACCEPTANCE paragraph at the end of this row.** The double-smoothstep is replaced by a log-luminance model in `SkyBrightness.js`: the sun term is the published zenith twilight-photometry ladder (μ in V mag/arcsec² — sunset 8.0, end of civil −6° 14.0, end of nautical −12° 19.7, astronomical night −18° 21.9, day 4.0 saturating at the SAME +23.6° the old smoothstep did), the moon term is the published full-moon zenith brightness (18.0, i.e. `10^(0.4·3.9) − 1 = 35.31` night-sky luminances) scaled by a `p^3.64` phase-flux law (`0.5^3.64 = 0.0802`, the published quarter-moon ≈8% of full-moon illuminance) instead of a flat 4% with LINEAR phase, the two sum in **linear** luminance, and the combined log-luminance passes through a perceptual transfer derived from the Crumey/Schaefer NELM relation at 0.5 mag NELM per mag/arcsec². **The curve constants are CONFIRMED, not moved:** the transfer is built so `modulation(B(μ))` IS the NELM chain `10^(−0.4·0.5·(21.9 − μ))` throughout the star window, which pins the pair at the shipped (inflection 0, steepness 23.0) and keeps the S2 totality anchor bit-exact. **MEASURED:** ≤ −18° and ≥ +23.6° are BYTE-IDENTICAL (exactly 0 and exactly 1). Across −18°→−6° the old star-factor span was **exactly 0.000000**; it is now **0.973697** (−15° 1.000000→0.604705, −12° →0.363078, −9° →0.098257, −6° →0.026303). Civil twilight: −3° 0.370549→0.006619, and −2° goes from **exactly 0** to 0.004175 — NELM 0.55, the row's "Venus and one or two first-magnitude stars". Full moon overhead 0.018176→**0.165959** (9.13×, −4.35 mag → −1.95 mag, NELM 2.15 → **4.55** against the published ≈4.5 — the row's headline defect, closed). High-sun totality is unmoved at 0.062810 (−3.00 mag); low-sun totality 0.5246→0.664912 (−0.44 mag). **Second finding, fixed en route:** `computeStarDayFade` and the estimator each carried their OWN normalize-and-dot of the camera position. They are now one exported `computeCelestialElevationSine` — the single home C15's aurora night-gate is to reuse — and the spec fails if a second one reappears. **Third finding, fixed:** the log-luminance model's "no sun" value is the DARK end, so a non-finite input would have inverted the module's documented "misconfigured scene → full bright" policy into a bright starry midnight; one degenerate-input policy is now stated and pinned. **Fourth finding, corrected:** `eclipse-sky-totality.spec.mjs`'s off-anchor test asserted the old numbers through an INLINE COPY of the deleted sun term — it would have stayed green while describing an estimator that no longer exists. It now runs the real `computeSkyBrightness` (51/51). **NO SHADER CHANGED** — the scalar travels on the existing `u_skyBrightness` / `params.w` uniform — so no `SHADER_PAIRS_LOCKSTEP.md` row and no naga run is owed; the spec asserts the four modulation implementations stay byte-identical and that neither backend grew a copy of the photometry. **Gate:** `node --test Tools/visual-regression/sky-brightness-twilight.spec.mjs` **27/27**, executing the real `SkyBrightness.js` + `StarFieldMath.ts` (no re-implementation), every metric banded or pointwise, with five MUTATION tests that feed the checks the exact legacy estimator, a binary day/night gate, a 1e-6 epsilon floor, a linear moon phase and a re-inlined second elevation derivation, and require each check to REJECT them. ⚠ **Edge acceptance still owed, and one known downstream effect to measure:** `FIXTURE_NIGHT_MAX_SUN_ELEV_DEG = −8°` in `lib/eclipse-fixture-constraints.mjs` was derived when the estimator saturated to 0 below −5.74°; the star modulation factor at that fixture instant is now **0.063390 (NELM 3.51), a ~16× dim**, not 1.0. `dayFade` is still exactly 1 so the constraint and threshold stand and `probe-eclipse-sky-totality`'s gated verdicts are unaffected (B4 counts command ownership; lane D's sprite/cubemap deltas are reported diagnostics), but the prose has been corrected and any future lane needing factor === 1 must ask for ≤ −18° explicitly.  **EDGE ACCEPTANCE 2026-08-06 (orchestrator, `probe-sky-twilight-range.mjs`): ENGINE + CONTROL legs PASS.** The SHIPPED SkyBrightness module, imported from the served source tree and driven at clock-SOLVED solar elevations, reproduces the derivation EXACTLY to six decimals on BOTH backends: -20deg 1.000000 (control, byte-identical end), -15deg 0.604705, -9deg 0.098257, -3deg 0.006619, webgl == webgpu bit-for-bit, 0 console/device errors. The probe's star-PIXEL leg reports STRUCTURAL (not FAIL): the star field drew nothing at the darkest lane in that configuration, so the leg measured an empty sky and its verdict is meaningless either way - an owed instrument gap, NOT a product verdict. Three earlier probe rounds were orchestrator instrument defects worth recording because the first presented exactly like a feature that never shipped: an object-literal call (the signature is POSITIONAL) hit the module's documented misconfigured-scene guard and returned a uniform 1.000000 on every lane; then sky BRIGHTNESS was compared against STAR-MODULATION predictions; then the pixel leg used a synthesized sun while the renderer drew with the clock's sun, so the two legs described different scenes. ⛔ **THAT LAST CORRECTION IS ITSELF INVERTED, AND THE STRUCTURAL PIXEL LEG ABOVE WAS AN INSTRUMENT DEFECT — root-caused and repaired 2026-08-07.** The landed probe does the OPPOSITE of what this row and commit `43caae0589` record: the ENGINE leg is clock-SOLVED, and the PIXEL leg rendered at the **WALL CLOCK**. `probe-sky-twilight-range.mjs:77` sets `useDefaultRenderLoop = false`, which kills `CesiumWidget.render()` — the only caller that passes `clock.tick()` into `Scene.render` — and every render in the file was then a bare `s.render()`, which `Scene.js` answers with `JulianDate.now()`; `SceneUtilities` stamps that onto `frameState.time` and `UniformStateComputations` derives `sunDirectionWC` from it, so `v.clock.currentTime = jd` reached no pixel. The commit landed at 15:31 UTC = ~08:31 local solar at the probe's site (lon −105 / lat 40), i.e. **full daylight** — which is precisely why "the star field drew nothing at the darkest lane". **The recorded `starPx` numbers from that run are VOID and must not be carried forward.** The file was byte-identical from `43caae0589` to HEAD, so it was unfixed for the whole interval. **REPAIR (2026-08-07):** every render now passes `at()` (= `v.clock.currentTime`, read per call so it tracks the current lane); the capture is same-task (`renderAndGrab` renders, reads `uniformState.sunDirectionWC`, and `drawImage`s with no intervening await, closing the separate rule-2 violation); and a new **RENDER-TIME leg** reads the sun back OUT of the rendered frame and requires each lane's rendered solar elevation to sit within `RENDERED_ELEVATION_TOL_DEG = 1.0°` of the elevation its clock was solved for AND the four lanes to be ≥ `RENDERED_ELEVATION_MIN_SPREAD_DEG = 2.0°` apart — so a wall-clock substitution, which collapses all four lanes onto ONE sun, cannot recur silently. The in-file comment claiming the sun is "synthesized … rather than solved from a clock" (the fingerprint of a clock solve retrofitted without touching the render call) is corrected. **Exit codes changed: 0 PASS \| 1 FAIL \| 3 STRUCTURAL.** The ENGINE-leg acceptance recorded above is UNCHANGED and unweakened — it never depended on the render call — but an exit 0 could not distinguish "both legs certified" from "one leg measured nothing", and this row is the case for the distinction. **Re-run owed:** the ENGINE/CONTROL numbers should reproduce bit-for-bit; the PIXELS leg is now measuring for the first time. | M |
+| `C12-36` | **`NEW-SKY-BRIGHTNESS-ESTIMATOR-NO-TWILIGHT-RANGE` (filed by C12-29 S6, 2026-07-25 — Principle 9, surfaced rather than routed around; originally numbered `C12-S6F1` in the parked S6 worktree, renumbered on extraction 2026-08-01 because `C12-33` was taken; **renumbered AGAIN to `C12-36` on 2026-08-11** (C12-35 is the moon-lifecycle row) because ruling R-2026-08-10-3 assigned `C12-34` to the sun-bloom mirror before this collision was noticed — CO-37 ledger-hygiene catch).** `Scene/SkyBrightness.js`'s sun term is `smoothstep(-0.1, 0.4, sunAlt)` (`:168`, verified still live on main), which reaches EXACTLY 0 once the sun is below **−5.74°** and saturates at 1 above **+23.6°**. It therefore carries **no dynamic range at all across the twilight decade**, where the naked-eye star count actually changes: civil twilight, nautical twilight and astronomical night all map to the same input value, 0. Two measured consequences shipped with the E3 default flip and are recorded in `StarFieldMath.ts` rather than tuned away, because the modulation curve has two parameters and cannot separate states the ESTIMATOR has already collapsed: a full moon overhead lands at factor **0.01818 (−4.35 mag, NELM ≈ 2.2** against a published full-moon ≈ 4.5 — the Milky Way correctly vanishes, but ~2.3 mag too deep), and mid civil twilight (sun −2°) lands at **exactly 0**, where real observers still have Venus and one or two first-magnitude stars. **FIX SHAPE:** replace the double-smoothstep with a **log-luminance** estimate (published twilight sky-brightness vs solar depression — e.g. Patat et al. 2006 / standard twilight photometry curves) and re-derive the two curve constants against it, keeping the totality anchor. Both consumers already read one shared pair of constants (`STAR_MODULATION_INFLECTION` / `STAR_MODULATION_STEEPNESS`), and `eclipse-sky-totality.spec.mjs` re-derives them from the totality anchor, so **the re-derivation has a gate waiting for it**. Also worth folding in: the moon term is a flat 4% perceptual constant with no photometric derivation. ✅ **IMPLEMENTED (worker, 2026-08-02; LANDED Batch 823) — ENGINE-LEG EDGE ACCEPTANCE **PASSED** at Batch 824, star-PIXEL leg still OWED as an instrument gap; not COMPLETE. See the EDGE ACCEPTANCE paragraph at the end of this row.** The double-smoothstep is replaced by a log-luminance model in `SkyBrightness.js`: the sun term is the published zenith twilight-photometry ladder (μ in V mag/arcsec² — sunset 8.0, end of civil −6° 14.0, end of nautical −12° 19.7, astronomical night −18° 21.9, day 4.0 saturating at the SAME +23.6° the old smoothstep did), the moon term is the published full-moon zenith brightness (18.0, i.e. `10^(0.4·3.9) − 1 = 35.31` night-sky luminances) scaled by a `p^3.64` phase-flux law (`0.5^3.64 = 0.0802`, the published quarter-moon ≈8% of full-moon illuminance) instead of a flat 4% with LINEAR phase, the two sum in **linear** luminance, and the combined log-luminance passes through a perceptual transfer derived from the Crumey/Schaefer NELM relation at 0.5 mag NELM per mag/arcsec². **The curve constants are CONFIRMED, not moved:** the transfer is built so `modulation(B(μ))` IS the NELM chain `10^(−0.4·0.5·(21.9 − μ))` throughout the star window, which pins the pair at the shipped (inflection 0, steepness 23.0) and keeps the S2 totality anchor bit-exact. **MEASURED:** ≤ −18° and ≥ +23.6° are BYTE-IDENTICAL (exactly 0 and exactly 1). Across −18°→−6° the old star-factor span was **exactly 0.000000**; it is now **0.973697** (−15° 1.000000→0.604705, −12° →0.363078, −9° →0.098257, −6° →0.026303). Civil twilight: −3° 0.370549→0.006619, and −2° goes from **exactly 0** to 0.004175 — NELM 0.55, the row's "Venus and one or two first-magnitude stars". Full moon overhead 0.018176→**0.165959** (9.13×, −4.35 mag → −1.95 mag, NELM 2.15 → **4.55** against the published ≈4.5 — the row's headline defect, closed). High-sun totality is unmoved at 0.062810 (−3.00 mag); low-sun totality 0.5246→0.664912 (−0.44 mag). **Second finding, fixed en route:** `computeStarDayFade` and the estimator each carried their OWN normalize-and-dot of the camera position. They are now one exported `computeCelestialElevationSine` — the single home C15's aurora night-gate is to reuse — and the spec fails if a second one reappears. **Third finding, fixed:** the log-luminance model's "no sun" value is the DARK end, so a non-finite input would have inverted the module's documented "misconfigured scene → full bright" policy into a bright starry midnight; one degenerate-input policy is now stated and pinned. **Fourth finding, corrected:** `eclipse-sky-totality.spec.mjs`'s off-anchor test asserted the old numbers through an INLINE COPY of the deleted sun term — it would have stayed green while describing an estimator that no longer exists. It now runs the real `computeSkyBrightness` (51/51). **NO SHADER CHANGED** — the scalar travels on the existing `u_skyBrightness` / `params.w` uniform — so no `SHADER_PAIRS_LOCKSTEP.md` row and no naga run is owed; the spec asserts the four modulation implementations stay byte-identical and that neither backend grew a copy of the photometry. **Gate:** `node --test Tools/visual-regression/sky-brightness-twilight.spec.mjs` **27/27**, executing the real `SkyBrightness.js` + `StarFieldMath.ts` (no re-implementation), every metric banded or pointwise, with five MUTATION tests that feed the checks the exact legacy estimator, a binary day/night gate, a 1e-6 epsilon floor, a linear moon phase and a re-inlined second elevation derivation, and require each check to REJECT them. ⚠ **Edge acceptance still owed, and one known downstream effect to measure:** `FIXTURE_NIGHT_MAX_SUN_ELEV_DEG = −8°` in `lib/eclipse-fixture-constraints.mjs` was derived when the estimator saturated to 0 below −5.74°; the star modulation factor at that fixture instant is now **0.063390 (NELM 3.51), a ~16× dim**, not 1.0. `dayFade` is still exactly 1 so the constraint and threshold stand and `probe-eclipse-sky-totality`'s gated verdicts are unaffected (B4 counts command ownership; lane D's sprite/cubemap deltas are reported diagnostics), but the prose has been corrected and any future lane needing factor === 1 must ask for ≤ −18° explicitly.  **EDGE ACCEPTANCE 2026-08-06 (orchestrator, `probe-sky-twilight-range.mjs`): ENGINE + CONTROL legs PASS.** The SHIPPED SkyBrightness module, imported from the served source tree and driven at clock-SOLVED solar elevations, reproduces the derivation EXACTLY to six decimals on BOTH backends: -20deg 1.000000 (control, byte-identical end), -15deg 0.604705, -9deg 0.098257, -3deg 0.006619, webgl == webgpu bit-for-bit, 0 console/device errors. The probe's star-PIXEL leg reports STRUCTURAL (not FAIL): the star field drew nothing at the darkest lane in that configuration, so the leg measured an empty sky and its verdict is meaningless either way - an owed instrument gap, NOT a product verdict. Three earlier probe rounds were orchestrator instrument defects worth recording because the first presented exactly like a feature that never shipped: an object-literal call (the signature is POSITIONAL) hit the module's documented misconfigured-scene guard and returned a uniform 1.000000 on every lane; then sky BRIGHTNESS was compared against STAR-MODULATION predictions; then the pixel leg used a synthesized sun while the renderer drew with the clock's sun, so the two legs described different scenes. ⛔ **THAT LAST CORRECTION IS ITSELF INVERTED, AND THE STRUCTURAL PIXEL LEG ABOVE WAS AN INSTRUMENT DEFECT — root-caused and repaired 2026-08-07.** The landed probe does the OPPOSITE of what this row and commit `43caae0589` record: the ENGINE leg is clock-SOLVED, and the PIXEL leg rendered at the **WALL CLOCK**. `probe-sky-twilight-range.mjs:77` sets `useDefaultRenderLoop = false`, which kills `CesiumWidget.render()` — the only caller that passes `clock.tick()` into `Scene.render` — and every render in the file was then a bare `s.render()`, which `Scene.js` answers with `JulianDate.now()`; `SceneUtilities` stamps that onto `frameState.time` and `UniformStateComputations` derives `sunDirectionWC` from it, so `v.clock.currentTime = jd` reached no pixel. The commit landed at 15:31 UTC = ~08:31 local solar at the probe's site (lon −105 / lat 40), i.e. **full daylight** — which is precisely why "the star field drew nothing at the darkest lane". **The recorded `starPx` numbers from that run are VOID and must not be carried forward.** The file was byte-identical from `43caae0589` to HEAD, so it was unfixed for the whole interval. **REPAIR (2026-08-07):** every render now passes `at()` (= `v.clock.currentTime`, read per call so it tracks the current lane); the capture is same-task (`renderAndGrab` renders, reads `uniformState.sunDirectionWC`, and `drawImage`s with no intervening await, closing the separate rule-2 violation); and a new **RENDER-TIME leg** reads the sun back OUT of the rendered frame and requires each lane's rendered solar elevation to sit within `RENDERED_ELEVATION_TOL_DEG = 1.0°` of the elevation its clock was solved for AND the four lanes to be ≥ `RENDERED_ELEVATION_MIN_SPREAD_DEG = 2.0°` apart — so a wall-clock substitution, which collapses all four lanes onto ONE sun, cannot recur silently. The in-file comment claiming the sun is "synthesized … rather than solved from a clock" (the fingerprint of a clock solve retrofitted without touching the render call) is corrected. **Exit codes changed: 0 PASS \| 1 FAIL \| 3 STRUCTURAL.** The ENGINE-leg acceptance recorded above is UNCHANGED and unweakened — it never depended on the render call — but an exit 0 could not distinguish "both legs certified" from "one leg measured nothing", and this row is the case for the distinction. **Re-run owed:** the ENGINE/CONTROL numbers should reproduce bit-for-bit; the PIXELS leg is now measuring for the first time. | M |
 
 ---
 

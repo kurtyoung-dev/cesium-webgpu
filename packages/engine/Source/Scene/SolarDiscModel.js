@@ -854,6 +854,119 @@ function solarBrightPassTuning(linearRadiance, avgLuminance, result) {
   return out;
 }
 
+// ─── The sun-bloom chain's shape, shared by both backends ──────────────────
+//
+// `SunPostProcess` (WebGL) and `WebGPUSunBloomEffect` draw the same glow from
+// the same numbers. The constants below are that glow's shape; the WebGL
+// pipeline states them as stage options and instance fields, and
+// `Tools/visual-regression/webgpu-sun-bloom-mirror.spec.mjs` parses the shipped
+// `SunPostProcess.js` text and fails if any of them drifts from the value here.
+// A second set of literals in the WebGPU effect is the failure this section
+// exists to make impossible.
+
+/**
+ * Fraction of the drawing buffer the bright pass and the two blur passes run
+ * at. The blur's screen-space footprint is `sigma` texels of this buffer, so
+ * the pair `(scale, sigma)` — not `sigma` alone — is what sets the glow's
+ * radius in pixels.
+ *
+ * @private
+ */
+const SUN_BLOOM_TEXTURE_SCALE = 0.125;
+
+/**
+ * The blur buffer is forced square, at the next power of two of the smaller
+ * scaled dimension. That is not a rounding convenience: the shipped blur feeds
+ * one `step` uniform to both directions (`step.x = step.y = 1 / width`), which
+ * only describes an isotropic kernel while the buffer's texels are square.
+ *
+ * @param {number} width Drawing-buffer width in pixels.
+ * @param {number} height Drawing-buffer height in pixels.
+ * @returns {number} Edge length of the square blur buffer, in texels.
+ * @private
+ */
+function solarBloomBlurBufferSize(width, height) {
+  const scaled = Math.min(
+    Math.ceil(width * SUN_BLOOM_TEXTURE_SCALE),
+    Math.ceil(height * SUN_BLOOM_TEXTURE_SCALE),
+  );
+  if (!(scaled > 1)) {
+    return 1;
+  }
+  return Math.pow(2, Math.ceil(Math.log2(scaled)));
+}
+
+/**
+ * Incremental-Gaussian parameters of the two blur passes, in texels of the
+ * buffer {@link solarBloomBlurBufferSize} sizes.
+ *
+ * @private
+ */
+const SUN_BLOOM_BLUR_DELTA = 1.0;
+const SUN_BLOOM_BLUR_SIGMA = 2.0;
+
+/**
+ * The glow's composite footprint, in solar radii.
+ *
+ * `SUN_BLOOM_SIZE_RADII` is the box the bright pass is restricted to, measured
+ * in solar radii across; `SUN_BLOOM_COMPOSITE_RADIUS_FRACTION` turns that box
+ * into the radius the additive composite fades over. Their product is the only
+ * form either backend uses, so it is exposed as a function rather than as two
+ * numbers to be multiplied again at each call site.
+ *
+ * @private
+ */
+const SUN_BLOOM_SIZE_RADII = 30.0 * 2.0;
+const SUN_BLOOM_COMPOSITE_RADIUS_FRACTION = 0.15;
+
+/**
+ * Radius, in drawing-buffer pixels, over which the additive composite fades the
+ * glow out. The composite adds in full inside `0.5 x` this radius and adds
+ * nothing outside `0.8 x` it, so this is what bounds the glow's support.
+ *
+ * @param {number} limbPx Pixels per solar radius (`SunHaloAppearance.limbPx`).
+ * @returns {number} The composite radius in pixels; 0 for degenerate input,
+ *          which makes the composite add nothing rather than divide by zero.
+ * @private
+ */
+function solarBloomCompositeRadiusPx(limbPx) {
+  if (!(limbPx > 0.0)) {
+    return 0.0;
+  }
+  return limbPx * SUN_BLOOM_SIZE_RADII * SUN_BLOOM_COMPOSITE_RADIUS_FRACTION;
+}
+
+/**
+ * The glow's amplitude at the disc centre, in the same linear units the disc
+ * and the screen halo are measured in.
+ *
+ * This is the number that answers "does the glow double-count the halo". It is
+ * {@link solarBrightPassTuning}'s own half-saturation identity read at the
+ * disc: the derived `offset` places `out = 1/sqrt(2)` exactly at
+ * `luminance = discRadiance`, so the glow contributes `1/sqrt(2)` there for
+ * EVERY radiance while the disc contributes `discRadiance` and the halo
+ * contributes `SOLAR_HALO_AMPLITUDE * discRadiance`. The glow is the only one
+ * of the three that does not scale with radiance — the bright pass is a
+ * saturating rational bounded by 1 — so its share of the composite falls as
+ * the sun brightens and no renormalisation constant is needed to keep it
+ * bounded.
+ *
+ * @param {number} linearRadiance {@link solarDiscHdrRadiance}.
+ * @returns {number} Linear radiance the glow adds at the disc centre.
+ * @private
+ */
+function solarBloomCentreAmplitude(linearRadiance) {
+  const tuning = solarBrightPassTuning(
+    linearRadiance,
+    SUN_BRIGHT_PASS_AVG_LUMINANCE,
+  );
+  const scaled =
+    (sunBrightPassKey(SUN_BRIGHT_PASS_AVG_LUMINANCE) * linearRadiance) /
+    SUN_BRIGHT_PASS_AVG_LUMINANCE;
+  const bright = Math.max(scaled - tuning.threshold, 0.0);
+  return bright / (tuning.offset + bright);
+}
+
 // ─── C12-27 — ANGULAR parameterisation (star washout near the Sun) ─────────
 //
 // The deleted `enableStarBrightnessModulation` global dim was keyed to the
@@ -1064,6 +1177,11 @@ const SolarDiscModel = Object.freeze({
   SUN_BRIGHT_PASS_AVG_LUMINANCE,
   SUN_BRIGHT_PASS_THRESHOLD_LEGACY,
   SUN_BRIGHT_PASS_OFFSET_LEGACY,
+  SUN_BLOOM_TEXTURE_SCALE,
+  SUN_BLOOM_BLUR_DELTA,
+  SUN_BLOOM_BLUR_SIGMA,
+  SUN_BLOOM_SIZE_RADII,
+  SUN_BLOOM_COMPOSITE_RADIUS_FRACTION,
   lorentzianPedestal,
   pedestalLorentzian,
   solarLimbIntensity,
@@ -1080,6 +1198,9 @@ const SolarDiscModel = Object.freeze({
   solarDiscHdrRadiance,
   sunBrightPassKey,
   solarBrightPassTuning,
+  solarBloomBlurBufferSize,
+  solarBloomCompositeRadiusPx,
+  solarBloomCentreAmplitude,
   angularGlareVeil,
   solarAngularGlareVeil,
   solarAngularGlareFactor,
@@ -1110,6 +1231,11 @@ export {
   SUN_BRIGHT_PASS_AVG_LUMINANCE,
   SUN_BRIGHT_PASS_THRESHOLD_LEGACY,
   SUN_BRIGHT_PASS_OFFSET_LEGACY,
+  SUN_BLOOM_TEXTURE_SCALE,
+  SUN_BLOOM_BLUR_DELTA,
+  SUN_BLOOM_BLUR_SIGMA,
+  SUN_BLOOM_SIZE_RADII,
+  SUN_BLOOM_COMPOSITE_RADIUS_FRACTION,
   lorentzianPedestal,
   pedestalLorentzian,
   solarLimbIntensity,
@@ -1126,6 +1252,9 @@ export {
   solarDiscHdrRadiance,
   sunBrightPassKey,
   solarBrightPassTuning,
+  solarBloomBlurBufferSize,
+  solarBloomCompositeRadiusPx,
+  solarBloomCentreAmplitude,
   angularGlareVeil,
   solarAngularGlareVeil,
   solarAngularGlareFactor,

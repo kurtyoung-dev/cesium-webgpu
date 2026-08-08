@@ -38,6 +38,13 @@ import {
   type LibraryStageFrameContext,
 } from "./WebGPULibraryPostProcessStage.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
+// The sun glow's shape and its one derived screen quantity, shared with the
+// WebGL chain so neither backend carries a second set of literals.
+import {
+  SUN_BRIGHT_PASS_OFFSET_LEGACY,
+  SUN_BRIGHT_PASS_THRESHOLD_LEGACY,
+  solarBloomCompositeRadiusPx,
+} from "../../Scene/SolarDiscModel.js";
 // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — single source of truth for whether renderer-
 // wide log depth is active this frame (threaded into each depth-reading PP
 // effect UB so the Slice-B log-reverse can branch on it).
@@ -79,6 +86,12 @@ export interface PostProcessCache {
   // false so the legacy allocation is skipped, and nothing replaced it.
   sunHaloEnabled: boolean;
   sunHaloInitialized: boolean;
+  // The bright-pass glow half of the same chain, on the SAME `scene.sunBloom`
+  // flag and the same visibility test. Both backends therefore carry the glow
+  // at the shipped default, which is what makes their sun-region response
+  // comparable at all.
+  sunBloomEnabled: boolean;
+  sunBloomInitialized: boolean;
   // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer (animated
   // screen-space UV-warp) post-process. Activated via
   // `scene.heatShimmerEnabled = true`, intensity via
@@ -204,6 +217,8 @@ function getDefaultCache(): PostProcessCache {
     godRayInitialized: false,
     sunHaloEnabled: false,
     sunHaloInitialized: false,
+    sunBloomEnabled: false,
+    sunBloomInitialized: false,
     heatShimmerEnabled: false,
     heatShimmerInitialized: false,
     coldOpticsEnabled: false,
@@ -458,6 +473,12 @@ function configureWebGPUPostProcessPipeline(
     (scene as unknown as { sunBloom?: boolean })?.sunBloom === true &&
     (scene as unknown as { _environmentState?: { isSunVisible?: boolean } })
       ?._environmentState?.isSunVisible !== false;
+
+  // The glow rides the same two conditions. It is deliberately NOT gated on
+  // `enableScreenSpaceSunHalo`: the two stages are independent members of one
+  // chain, and the WebGL twin transfers the bright-pass tuning even on frames
+  // where the halo stage is off.
+  cache.sunBloomEnabled = cache.sunHaloEnabled;
 
   // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer enabled flag,
   // scene-level (ad-hoc `scene.heatShimmerEnabled`, pushed by the 417a
@@ -977,6 +998,18 @@ function configureWebGPUPostProcessPipeline(
     pipeline.sunHaloEffect.enabled = cache.sunHaloEnabled;
     if (cache.sunHaloEnabled) {
       pushSunHaloFrameState(pipeline, scene);
+    }
+  }
+
+  // The glow, added and pushed on the same live-slot pattern.
+  if (cache.sunBloomEnabled && !pipeline.sunBloomEffect) {
+    pipeline.addSunBloom(device, canvasFormat);
+    cache.sunBloomInitialized = true;
+  }
+  if (pipeline.sunBloomEffect) {
+    pipeline.sunBloomEffect.enabled = cache.sunBloomEnabled;
+    if (cache.sunBloomEnabled) {
+      pushSunBloomFrameState(pipeline, scene);
     }
   }
 
@@ -1557,6 +1590,62 @@ function pushSunHaloFrameState(
     colorR: halo.haloColorR ?? 1,
     colorG: halo.haloColorG ?? 1,
     colorB: halo.haloColorB ?? 1,
+  });
+}
+
+/**
+ * Push `frameState.sunHalo` into the WebGPU glow effect.
+ *
+ * Pure transfer, with the one derived quantity taken from the shared model
+ * rather than recomputed: `solarBloomCompositeRadiusPx` turns the published
+ * pixels-per-solar-radius into the composite's fade radius, and it is the same
+ * function the WebGL chain's own radius is pinned against.
+ *
+ * The gate is `geometryValid`, not `visible`: `visible` additionally requires
+ * the screen halo to be switched on, and an app that disables the halo still
+ * gets the glow. A missing publication or an unusable projection pushes a
+ * radius of 0, which makes the effect skip its passes entirely.
+ */
+function pushSunBloomFrameState(
+  pipeline: WebGPUPostProcessPipeline,
+  scene: CesiumScene | undefined,
+): void {
+  const halo = (
+    scene as unknown as {
+      frameState?: {
+        sunHalo?: {
+          geometryValid?: boolean;
+          centerX?: number;
+          centerY?: number;
+          limbPx?: number;
+          brightPassThreshold?: number;
+          brightPassOffset?: number;
+        };
+      };
+    }
+  )?.frameState?.sunHalo;
+  if (!halo || halo.geometryValid !== true) {
+    pipeline.setSunBloomFrameState({
+      brightPassThreshold: SUN_BRIGHT_PASS_THRESHOLD_LEGACY,
+      brightPassOffset: SUN_BRIGHT_PASS_OFFSET_LEGACY,
+      centerX: 0,
+      centerY: 0,
+      radiusPx: 0,
+    });
+    return;
+  }
+  pipeline.setSunBloomFrameState({
+    brightPassThreshold:
+      typeof halo.brightPassThreshold === "number"
+        ? halo.brightPassThreshold
+        : SUN_BRIGHT_PASS_THRESHOLD_LEGACY,
+    brightPassOffset:
+      typeof halo.brightPassOffset === "number"
+        ? halo.brightPassOffset
+        : SUN_BRIGHT_PASS_OFFSET_LEGACY,
+    centerX: halo.centerX ?? 0,
+    centerY: halo.centerY ?? 0,
+    radiusPx: solarBloomCompositeRadiusPx(halo.limbPx ?? 0),
   });
 }
 
