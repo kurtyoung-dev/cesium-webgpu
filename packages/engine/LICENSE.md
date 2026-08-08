@@ -206,6 +206,23 @@ Patents US9153063B2 US9865085B1 US10592242
 
 Patents pending US15/829,786 US16/850,266 US16/851,958
 
+# Fork-Specific Work
+
+This repository is a fork of [CesiumJS](https://github.com/CesiumGS/cesium)
+that adds a WebGPU rendering backend, WGSL shader implementations, and
+associated tooling, maintained by Kurt Young
+([`kurtyoung-dev`](https://github.com/kurtyoung-dev)).
+
+**All fork-specific additions and modifications are licensed under the same
+Apache License 2.0 terms as upstream CesiumJS, reproduced above, with no
+additional restrictions.** You are free to use, modify, and redistribute the
+fork-specific work under exactly the guidelines that govern upstream CesiumJS.
+
+_Courtesy request (not a license condition):_ if you build on the
+fork-specific work, credit to the fork's author is appreciated — but it is
+**not required**. The Apache License 2.0 above states the complete and only
+binding terms; nothing in this section adds to or subtracts from them.
+
 # Third-Party Code
 
 CesiumJS includes the following third-party code.
