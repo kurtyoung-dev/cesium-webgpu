@@ -289,7 +289,7 @@ TidalConstituents.Mm = makeConstituent(
 /**
  * The eight primary constituents every global atlas publishes, in descending
  * equilibrium amplitude. This is the EOT20 bake set.
- * @type {readonly object[]}
+ * @type {ReadonlyArray<object>}
  */
 TidalConstituents.PRIMARY = Object.freeze([
   TidalConstituents.M2,
@@ -304,7 +304,7 @@ TidalConstituents.PRIMARY = Object.freeze([
 
 /**
  * The eight primary constituents plus the two long-period ones.
- * @type {readonly object[]}
+ * @type {ReadonlyArray<object>}
  */
 TidalConstituents.ALL = Object.freeze([
   ...TidalConstituents.PRIMARY,

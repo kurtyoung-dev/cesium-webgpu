@@ -46,6 +46,14 @@ const BUFFER_WASM_ENCODE_THRESHOLD = 2000;
  */
 
 /**
+ * The optional per-collection threshold override the parity probe stamps to
+ * force one encode path or the other.
+ * @typedef {object} BufferPointEncodeThresholdOverride
+ * @property {number} [_wasmEncodeThresholdOverride]
+ * @ignore
+ */
+
+/**
  * Attribute locations when using 64-bit position precision.
  * @type {Record<BufferPointAttribute, number>}
  * @ignore
@@ -164,7 +172,7 @@ function renderBufferPointCollection(collection, frameState, renderContext) {
     // can force the SAME large collection onto the scalar path
     // (override = Number.POSITIVE_INFINITY) or batch path (override = 0).
     const thresholdOverride =
-      /** @type {{_wasmEncodeThresholdOverride?: number}} */ (collection)
+      /** @type {BufferPointEncodeThresholdOverride} */ (collection)
         ._wasmEncodeThresholdOverride;
     const threshold =
       typeof thresholdOverride === "number"

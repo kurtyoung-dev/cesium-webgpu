@@ -102,7 +102,7 @@ class VisualPerformanceTargetService {
     // from the GPUDevice limits by {@link #resolveInitialQualityTier} and cached
     // here so repeat calls (per-frame from a `quality:'auto'` consumer) are O(1)
     // and deterministic. null until first resolved.
-    /** @type {("low"|"medium"|"high")|null} */
+    /** @type {"low"|"medium"|"high"|null} */
     this._initialTier = null;
   }
 

@@ -75,6 +75,18 @@ import {
 } from "./MetadataWGSLHelpers.js";
 
 /**
+ * One row of the generated `struct Metadata`: the source property plus the
+ * disambiguated WGSL field name and type the codegen declares for it.
+ *
+ * @typedef {object} MetadataStructField
+ * @property {string} propertyId
+ * @property {string} fieldName
+ * @property {MetadataClassProperty} classProperty
+ * @property {string} wgslType
+ * @private
+ */
+
+/**
  * Resolve the ordered list of GPU-compatible property-ATTRIBUTE infos for a
  * primitive, mirroring `MetadataPipelineStage.getPropertyAttributesInfo`
  * (MetadataPipelineStage.js:149) — same `property.attribute` →
@@ -90,7 +102,7 @@ import {
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
- * @returns {{ propertyId: string, fieldName: string, classProperty: MetadataClassProperty, wgslType: string }[]}
+ * @returns {MetadataStructField[]}
  * @private
  */
 function getPropertyAttributeFields(model, primitive) {
@@ -868,8 +880,7 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
- * @returns {{ propertyId: string, fieldName: string,
- *   classProperty: MetadataClassProperty, wgslType: string }[]}
+ * @returns {MetadataStructField[]}
  * @private
  */
 function getAllMetadataFields(model, primitive, runtimeNode) {

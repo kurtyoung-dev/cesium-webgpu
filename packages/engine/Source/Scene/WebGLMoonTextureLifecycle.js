@@ -509,6 +509,18 @@ function reconcileWebGLMoonTextureChannel(lifecycle, channelName, options) {
 }
 
 /**
+ * The outcome of one commit attempt. Everything but `committed` is absent on
+ * the not-committed result.
+ *
+ * @typedef {object} WebGLMoonTextureCommitResult
+ * @property {boolean} committed
+ * @property {object} [value] The newly published Texture.
+ * @property {object} [previous] The Texture this one displaced, if any.
+ * @property {object} [identity] Identity the published Texture was keyed by.
+ * @private
+ */
+
+/**
  * Synchronously realize and publish a staged source. This function is called
  * only from Moon.update. It releases the decoded-source lease immediately
  * after the Texture constructor returns (or throws).
@@ -518,7 +530,7 @@ function reconcileWebGLMoonTextureChannel(lifecycle, channelName, options) {
  * @param {object} context
  * @param {function} createTexture
  * @param {function} destroyTexture
- * @returns {{committed: boolean, value?: object, previous?: object, identity?: object}}
+ * @returns {WebGLMoonTextureCommitResult}
  * @private
  */
 function commitWebGLMoonTextureChannel(
@@ -687,13 +699,23 @@ function getWebGLMoonPublishedTexture(lifecycle, channelName) {
 }
 
 /**
+ * The published Texture of each channel that had one, keyed by channel name.
+ * A channel with nothing published is absent.
+ *
+ * @typedef {object} WebGLMoonPublishedTextures
+ * @property {object} [albedo]
+ * @property {object} [normal]
+ * @private
+ */
+
+/**
  * Release every pending/staged decoded-source lease. Published GPU values are
  * returned, not destroyed, because albedo is Material-owned while normal is
  * Moon-owned.
  *
  * @param {object|undefined} lifecycle
  * @param {string} [reason]
- * @returns {{albedo?: object, normal?: object}}
+ * @returns {WebGLMoonPublishedTextures}
  * @private
  */
 function retireWebGLMoonTextureLifecycle(lifecycle, reason = "retired") {

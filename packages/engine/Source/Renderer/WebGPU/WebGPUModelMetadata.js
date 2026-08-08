@@ -64,6 +64,123 @@ import ModelUtility from "../../Scene/Model/ModelUtility.js";
 import { ensureFloat32 } from "../../Scene/Model/ModelPrimitiveGeometry.js";
 
 /**
+ * One UNIQUE physical property texture and the contiguous (texture, sampler)
+ * binding slot pair it was assigned.
+ *
+ * @typedef {object} PropertyTextureBinding
+ * @property {object} reader The glTF `textureReader` the slot samples.
+ * @property {number} textureBinding
+ * @property {number} samplerBinding
+ * @private
+ */
+
+/**
+ * Per-property accessor info: which physical slot to sample and how to read a
+ * value out of it.
+ *
+ * @typedef {object} PropertyTextureAccessor
+ * @property {string} propertyId
+ * @property {MetadataClassProperty} classProperty
+ * @property {number} textureBinding
+ * @property {number} samplerBinding
+ * @property {string} channels Channel swizzle, e.g. `"rg"`.
+ * @property {number} texCoord Which texCoord set the property samples at.
+ * @property {Matrix3|undefined} transform Baked KHR_texture_transform matrix.
+ * @property {boolean} hasTransform False when the transform is identity.
+ * @private
+ */
+
+/**
+ * The SHARED property-TEXTURE layout the binding side and the codegen both
+ * consume. See {@link resolvePropertyTextureLayout}.
+ *
+ * @typedef {object} PropertyTextureLayout
+ * @property {PropertyTextureBinding[]} textures
+ * @property {PropertyTextureAccessor[]} properties
+ * @property {number} overflowCount Properties dropped by the texture cap.
+ * @private
+ */
+
+/**
+ * The tightly-packed property-table image: rows = properties, columns =
+ * features.
+ *
+ * @typedef {object} PropertyTableTextureData
+ * @property {number} width
+ * @property {number} height
+ * @property {Uint8Array} data
+ * @private
+ */
+
+/**
+ * Per-property accessor info for the property TABLE: the texture ROW the
+ * property's packed bytes live on.
+ *
+ * @typedef {object} PropertyTableAccessor
+ * @property {string} propertyId
+ * @property {MetadataClassProperty} classProperty
+ * @property {number} propertyInfoIndex
+ * @private
+ */
+
+/**
+ * The SHARED property-TABLE layout the binding side and the codegen both
+ * consume. See {@link resolvePropertyTableLayout}.
+ *
+ * @typedef {object} PropertyTableLayout
+ * @property {PropertyTable} propertyTable
+ * @property {PropertyTableTextureData} textureData
+ * @property {string} featureIdSource
+ * @property {string} featureIdWgslVariable
+ * @property {number} featureIdTexCoord
+ * @property {number} featureIdChannelCount
+ * @property {number} textureBinding
+ * @property {number} samplerBinding
+ * @property {PropertyTableAccessor[]} properties
+ * @private
+ */
+
+/**
+ * One bind-group entry the metadata block contributes to the material BGL.
+ *
+ * @typedef {object} MetadataBindGroupEntry
+ * @property {number} binding
+ * @property {GPUTextureView|GPUSampler} resource
+ * @private
+ */
+
+/**
+ * The bind-group entries a metadata block splices into the material bind
+ * group.
+ *
+ * @typedef {object} MetadataBindGroupEntries
+ * @property {MetadataBindGroupEntry[]} entries
+ * @private
+ */
+
+/**
+ * A GPU texture plus explicit ownership reporting, so the caller knows whether
+ * it must release the texture.
+ *
+ * @typedef {object} OwnedGpuTexture
+ * @property {GPUTexture|null} texture
+ * @property {boolean} owned
+ * @property {Function} [release]
+ * @private
+ */
+
+/**
+ * Builds a GPU texture from a glTF texture reader. Passed in by the renderer
+ * to avoid a circular import. May report ownership explicitly, or return the
+ * bare texture when the caller does not own it.
+ *
+ * @callback CreateGpuTextureCallback
+ * @param {object} reader
+ * @returns {OwnedGpuTexture|GPUTexture|null}
+ * @private
+ */
+
+/**
  * DP-H46c — first group-1 binding for the property-TEXTURE block. The model
  * material BGL occupies bindings 0-38 (UBOs + PBR + KHR + featureId + IBL +
  * BRDF LUT); the property textures begin here so they never collide with the
@@ -371,21 +488,8 @@ function ensureMetadataResources(device, primCache, metadataData) {
  * @param {number} [maxTextures=MAX_PROPERTY_TEXTURES] cap on unique physical
  *   textures; properties whose physical texture would exceed the cap are
  *   dropped (and the caller may log a one-time overflow warning).
- * @returns {{
- *   textures: { reader: object, textureBinding: number, samplerBinding: number }[],
- *   properties: {
- *     propertyId: string,
- *     classProperty: MetadataClassProperty,
- *     textureBinding: number,
- *     samplerBinding: number,
- *     channels: string,
- *     texCoord: number,
- *     transform: Matrix3|undefined,
- *     hasTransform: boolean,
- *   }[],
- *   overflowCount: number,
- * }|undefined} the layout, or `undefined` when the primitive maps to no
- *   GPU-compatible property texture.
+ * @returns {PropertyTextureLayout|undefined} the layout, or `undefined` when
+ *   the primitive maps to no GPU-compatible property texture.
  * @private
  */
 function resolvePropertyTextureLayout(model, primitive, maxTextures) {
@@ -514,15 +618,14 @@ function primitiveHasPropertyTexture(model, primitive) {
  *
  * @param {GPUDevice} device
  * @param {object} primCache per-primitive cache slot
- * @param {object} layout the layout from {@link resolvePropertyTextureLayout}
- * @param {(reader: object) => ({texture: GPUTexture|null, owned: boolean,
- *   release?: function}|GPUTexture|null)} createGpuTexture builds a GPU
- *   texture from a glTF texture reader and explicitly reports ownership
+ * @param {PropertyTextureLayout} layout the layout from {@link resolvePropertyTextureLayout}
+ * @param {CreateGpuTextureCallback} createGpuTexture builds a GPU texture from
+ *   a glTF texture reader and explicitly reports ownership
  * @param {GPUTexture} fallbackTexture 1×1 placeholder used while a reader's
  *   image hasn't resolved yet
  * @param {GPUSampler} sampler a non-filtering / linear sampler shared by all
  *   property textures (created once on the pipeline cache)
- * @returns {{ entries: {binding:number, resource:GPUTextureView|GPUSampler}[] }|undefined}
+ * @returns {MetadataBindGroupEntries|undefined}
  * @private
  */
 function ensurePropertyTextureResources(
@@ -889,21 +992,7 @@ function findPropertyTableForPrimitive(model, primitive, runtimeNode) {
  * @param {ModelRuntimeNode} [runtimeNode] - PARITY-METADATA-TABLE-INSTANCE-
  *   SOURCE: enables the instance-sourced feature-ID path. Optional so
  *   non-instanced callers stay byte-identical.
- * @returns {{
- *   propertyTable: PropertyTable,
- *   textureData: { width: number, height: number, data: Uint8Array },
- *   featureIdSource: string,
- *   featureIdWgslVariable: string,
- *   featureIdTexCoord: number,
- *   featureIdChannelCount: number,
- *   textureBinding: number,
- *   samplerBinding: number,
- *   properties: {
- *     propertyId: string,
- *     classProperty: MetadataClassProperty,
- *     propertyInfoIndex: number,
- *   }[],
- * }|undefined}
+ * @returns {PropertyTableLayout|undefined}
  * @private
  */
 function resolvePropertyTableLayout(model, primitive, runtimeNode) {
@@ -1015,10 +1104,10 @@ function primitiveHasPropertyTable(model, primitive, runtimeNode) {
  *
  * @param {GPUDevice} device
  * @param {object} primCache per-primitive cache slot
- * @param {object} layout the layout from {@link resolvePropertyTableLayout}
+ * @param {PropertyTableLayout} layout the layout from {@link resolvePropertyTableLayout}
  * @param {GPUSampler} sampler a non-filtering sampler (shared, unused by
  *   textureLoad but bound to satisfy the BGL)
- * @returns {{ entries: {binding:number, resource:GPUTextureView|GPUSampler}[] }|undefined}
+ * @returns {MetadataBindGroupEntries|undefined}
  * @private
  */
 function ensurePropertyTableResources(device, primCache, layout, sampler) {

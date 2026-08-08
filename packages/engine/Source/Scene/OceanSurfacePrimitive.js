@@ -83,7 +83,10 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 function OceanSurfacePrimitive(options) {
   options = options ?? Frozen.EMPTY_OBJECT;
 
-  /** @type {boolean} Whether the ocean is drawn. */
+  /**
+   * Whether the ocean is drawn.
+   * @type {boolean}
+   */
   this.show = options.show ?? true;
 
   // ── Renderer-consumed packed fields (scene-logic-extractor outputs). ──

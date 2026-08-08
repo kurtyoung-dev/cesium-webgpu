@@ -188,7 +188,7 @@ const tauRate = 15.0 + hRate - sRate;
  * polynomials above; the published values are
  * `[14.49205211, 0.54901653, 0.04106864, 0.00464183, 0.00220641, 0.00000196]`.
  * Frozen: the phase sum reads it every evaluation.
- * @type {readonly number[]}
+ * @type {ReadonlyArray<number>}
  */
 TidalArguments.RATES_DEGREES_PER_HOUR = Object.freeze([
   tauRate,
@@ -202,7 +202,7 @@ TidalArguments.RATES_DEGREES_PER_HOUR = Object.freeze([
 /**
  * The same rates in RADIANS PER SECOND, which is what a constituent's angular
  * speed is assembled from.
- * @type {readonly number[]}
+ * @type {ReadonlyArray<number>}
  */
 TidalArguments.RATES_RADIANS_PER_SECOND = Object.freeze(
   TidalArguments.RATES_DEGREES_PER_HOUR.map(

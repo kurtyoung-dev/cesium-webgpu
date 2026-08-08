@@ -17,6 +17,15 @@ import defined from "../Core/defined.js";
 /** @import Resource from "../Core/Resource.js"; */
 
 /**
+ * The decode-related provider options this class reads off the shared
+ * {@link UrlTemplate3DTilesDataProvider} options bag.
+ *
+ * @typedef {object} MVTDecodeOptions
+ * @property {boolean} [decodeInWorker] Whether tile decode runs in a worker.
+ * @private
+ */
+
+/**
  * A Mapbox Vector Tiles (MVT) data provider. Loads .mvt or .pbf tiles, converting tiles
  * dynamically (at runtime) into 3D Tiles.
  *
@@ -39,8 +48,7 @@ class MVTDataProvider extends UrlTemplate3DTilesDataProvider {
     // main thread exactly as before. When true, decode + GLB build are moved to
     // a web worker (with a synchronous main-thread fallback). See MVTTileDecoder.
     this._decodeInWorker =
-      /** @type {{decodeInWorker?: boolean}} */ (options ?? {})
-        .decodeInWorker ?? false;
+      /** @type {MVTDecodeOptions} */ (options ?? {}).decodeInWorker ?? false;
   }
 
   /**

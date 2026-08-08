@@ -182,7 +182,7 @@ class CustomShader {
      *
      * @type {string|undefined}
      * @readonly
-     * @experimental
+     * @experimental The native-WGSL custom shader path is not final and is subject to change without Cesium's standard deprecation policy.
      */
     this.wgslVertexShaderText = options.wgslVertexShaderText;
 
@@ -201,7 +201,7 @@ class CustomShader {
      *
      * @type {string|undefined}
      * @readonly
-     * @experimental
+     * @experimental The native-WGSL custom shader path is not final and is subject to change without Cesium's standard deprecation policy.
      */
     this.wgslFragmentShaderText = options.wgslFragmentShaderText;
 

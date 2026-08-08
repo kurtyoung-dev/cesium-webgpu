@@ -66,6 +66,24 @@ import defined from "../../Core/defined.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 
 /**
+ * Packs the camera UB into the shared CPU scratch.
+ *
+ * @callback WebGPUCollectionCameraUBPack
+ * @param {Float32Array} data
+ * @returns {void}
+ * @private
+ */
+
+/**
+ * Resolves the per-slice bind group for one draw.
+ *
+ * @callback WebGPUCollectionCameraUBResolver
+ * @returns {GPUBindGroup|null} `null` to fall back to the static bind group
+ *   when the slice index is unavailable.
+ * @private
+ */
+
+/**
  * Owns a per-collection pool of per-slice camera UB buffers + bind groups.
  * Buffers/bind groups are created lazily on first sight of a slice index and
  * reused across frames. The CPU scratch `Float32Array` is shared across slices
@@ -103,7 +121,7 @@ class WebGPUCollectionCameraUB {
    * @param {object} opts
    * @param {number} opts.bufferSize - Camera UB size in bytes.
    * @param {GPUBindGroupLayout} opts.bindGroupLayout - The group's layout.
-   * @param {(data: Float32Array) => void} opts.pack - Packs the camera UB.
+   * @param {WebGPUCollectionCameraUBPack} opts.pack - Packs the camera UB.
    *   Invoked ONCE here (at update time) to capture the frame's reference
    *   snapshot — the SAME full-camera-frustum bake the static bind group
    *   holds. Reads `uniformState.projection`/`.view`/encode frustum. When
@@ -135,8 +153,8 @@ class WebGPUCollectionCameraUB {
    *   correct in-range z. SCENE3D perspective + log-depth's clip-z clamp
    *   already keeps the single bake correct in all slices, so 3D leaves
    *   `repackPerSlice` FALSE and stays byte-identical (no regression).
-   * @returns {() => (GPUBindGroup|null)} Resolver; returns `null` to fall back
-   *   to the static bind group when the slice index is unavailable.
+   * @returns {WebGPUCollectionCameraUBResolver} Resolver; returns `null` to
+   *   fall back to the static bind group when the slice index is unavailable.
    */
   makeResolver(opts) {
     const bufferSize = opts.bufferSize;

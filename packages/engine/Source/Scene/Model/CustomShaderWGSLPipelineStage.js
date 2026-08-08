@@ -4,8 +4,8 @@
  * {@link CustomShaderPipelineStage}: it emits a WGSL string declaring
  *
  *   struct CustomShaderUniforms { <field per user uniform> };
- *   @group(1) @binding(N) var<uniform> czm_customUniforms: CustomShaderUniforms;
- *   @group(1) @binding(N+1..) var czm_customTexture0: texture_2d<f32>; (+sampler)
+ *   `@group(1) @binding(N) var<uniform> czm_customUniforms: CustomShaderUniforms;`
+ *   `@group(1) @binding(N+1..) var czm_customTexture0: texture_2d<f32>;` (+sampler)
  *   struct czm_customFragmentInput { positionMC/EC, texCoord0, color0, normalEC };
  *   struct czm_customModelMaterial { diffuse, specular, roughness, alpha, emissive,
  *                                    metalness, occlusion, normalEC };

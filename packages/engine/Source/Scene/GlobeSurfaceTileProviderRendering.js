@@ -1030,8 +1030,8 @@ const _webgpuGlobeRenderers = new WeakMap();
  * keyed off `context.device`, so a second device prewarms its own renderer
  * (INV-06-5). Every failure mode is a no-op that leaves the lazy path intact.
  *
- * @param {import("../Renderer/GraphicsContext.js").default} context The WebGPU
- *   context being initialized. A no-op on WebGL contexts (no `.device`).
+ * @param {GraphicsContext} context The WebGPU context being initialized. A
+ *   no-op on WebGL contexts (no `.device`).
  * @private
  */
 function warmUpGlobeRenderer(context) {

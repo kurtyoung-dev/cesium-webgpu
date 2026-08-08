@@ -95,6 +95,16 @@ function getCommandDistanceSquaredForSort(command, position) {
  */
 
 /**
+ * The subset of a collection {@link syncCollectionCommandOrdering} reads: the
+ * two public ordering properties plus the reusable canonical packet it fills.
+ *
+ * @typedef {object} CommandOrderingCollection
+ * @property {number} [renderLayer]
+ * @property {number} [renderPriority]
+ * @property {CommandOrdering} _commandOrdering
+ */
+
+/**
  * Creates the reusable semantic ordering packet owned by a collection.
  * This is called during construction, not from the per-frame render hot path.
  *
@@ -118,11 +128,7 @@ function createCommandOrdering(sortLayer, sortPriority, materialSortId) {
  * Snapshots a collection's public ordering fields into its reusable canonical
  * packet. Collection update methods call this before choosing a renderer.
  *
- * @param {{
- *   renderLayer?: number,
- *   renderPriority?: number,
- *   _commandOrdering: CommandOrdering,
- * }} collection
+ * @param {CommandOrderingCollection} collection
  * @returns {CommandOrdering}
  */
 function syncCollectionCommandOrdering(collection) {
