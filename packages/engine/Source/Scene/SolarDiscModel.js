@@ -418,6 +418,373 @@ function solarScreenHaloProfile(rhoRsun, coreRsun) {
   return 1.0 / (1.0 + t * t);
 }
 
+// ─── C12-19 — TRUE HDR SUN RADIANCE ────────────────────────────────────────
+//
+// TWO PREMISE CORRECTIONS, recorded here because the row's own text and the
+// Batch-906 record both carry the older reading:
+//
+// (1) THE BAKE CLAMP IS NOT WHAT MASKS LIMB DARKENING. `SunTextureFS.glsl`
+//     writes `rgb = (1, 1, surface + 0.2)` and `alpha = surface + 0.75*glow`,
+//     and the C12-18 default hands the halo to the post-process chain, which
+//     sets `bakeHaloGain = 0` and deletes the `0.75*glow` term. What is left
+//     is `alpha = surface = limb(x)`, which NEVER reaches the clamp, so the
+//     limb law composites straight through: over a dark sky the disc runs
+//     255 codes at centre to 77 at the extreme limb on BOTH backends AT HEAD.
+//     C12-18 was its own unmasking row. The clamp still binds on exactly one
+//     channel at the default — BLUE, over the inner disc, where
+//     `surface + 0.2 > 1` — and there it is doing real work: the `+0.2` is a
+//     HUE term (it makes the halo orange and the core white), so "removing
+//     the clamp" on blue turns the sun's core blue. It is a WHITE POINT, not
+//     a radiance clamp.
+//
+// (2) REMOVING THE CLAMP FROM ALPHA IS UNSAFE. Since C11-115/C12-18 both
+//     backends blend the sun ALPHA_BLEND, where alpha is the DESTINATION
+//     weight: `dst = src.rgb*a + dst*(1 - a)`. An alpha above 1 makes
+//     `1 - a` negative and SUBTRACTS the sky — a dark ring around the sun,
+//     i.e. exactly the Batch-364 black-sky class this row's own warning
+//     names. On the `sunBloom = false` path the legacy baked halo drives
+//     alpha to ~1.9, so the ring would be strong. The alpha saturation is a
+//     BLEND WEIGHT clamp and must stay.
+//
+// So the radiance that the single old `clamp(color, 0, 1)` conflated with
+// chroma and coverage is delivered as an EXPLICIT SCALE, applied in the sun
+// fragment shaders AFTER `czm_gammaCorrect` — i.e. in linear space, where a
+// radiance belongs — and is exactly 1.0 whenever the scene is not HDR, so the
+// SDR frame is `x * 1.0 === x` for every finite float rather than merely
+// "close".
+
+/**
+ * Disc radiance in the SDR position: the multiplicative identity.
+ *
+ * Stated as a constant rather than an inline `1.0` because it is the whole
+ * SDR-safety argument — under `highDynamicRange = false` the sun path is not
+ * "retuned to look similar", it is arithmetically unchanged.
+ *
+ * @private
+ */
+const SOLAR_DISC_SDR_RADIANCE = 1.0;
+
+/**
+ * `startCompression` and the pre-compression `offset` from
+ * `czm_pbrNeutralTonemapping` (Shaders/Builtin/Functions/
+ * pbrNeutralTonemapping.glsl), the DEFAULT tonemapper on both backends
+ * (`PostProcessStageCollection` sets `Tonemapper.PBR_NEUTRAL`;
+ * `WebGPUPostProcessStageCollection` maps to `TonemapMode.PBR_NEUTRAL`).
+ *
+ * Mirrored, not re-invented: `sun-hdr-radiance.spec.mjs` extracts both
+ * literals from the GLSL and fails if they drift from these.
+ *
+ * @private
+ */
+const PBR_NEUTRAL_START_COMPRESSION = 0.8 - 0.04;
+const PBR_NEUTRAL_OFFSET = 0.04;
+
+/**
+ * `czm_pbrNeutralTonemapping` restricted to NEUTRAL GREY inputs
+ * (`r === g === b`), which is what the solar disc is — the bake's rgb is
+ * `(1, 1, <=1)` and the disc core is white.
+ *
+ * On a neutral input the operator's `x = min(...)` and `peak = max(...)` are
+ * the same number and the desaturating `mix` is an identity, so the whole
+ * body collapses to the scalar below. That collapse is what makes the
+ * limb-contrast solve closed enough to bisect on; the spec proves it agrees
+ * with the full vector body of the GLSL over a dense sweep, so this is a
+ * restriction rather than a second implementation.
+ *
+ * @param {number} v Linear radiance of a neutral grey.
+ * @returns {number} Tonemapped value in [0, 1).
+ * @private
+ */
+function pbrNeutralNeutralGrey(v) {
+  const x = v < 0.0 ? 0.0 : v;
+  const offset = x < 0.08 ? x - 6.25 * x * x : PBR_NEUTRAL_OFFSET;
+  const peak = x - offset;
+  if (peak < PBR_NEUTRAL_START_COMPRESSION) {
+    return peak;
+  }
+  const d = 1.0 - PBR_NEUTRAL_START_COMPRESSION;
+  return 1.0 - (d * d) / (peak + d - PBR_NEUTRAL_START_COMPRESSION);
+}
+
+/**
+ * The 8-bit code a neutral linear radiance lands on after the default
+ * tonemapper and `czm_inverseGamma` (`pow(color, 1/czm_gamma)`), at
+ * `exposure = 1` (the shipped default of every tonemap stage).
+ *
+ * @param {number} linearRadiance Scene-linear radiance.
+ * @param {number} [gamma=2.2] `scene.gamma`.
+ * @returns {number} Display code in [0, 255].
+ * @private
+ */
+function solarDiscDisplayCode(linearRadiance, gamma) {
+  const g = gamma > 0.0 ? gamma : 2.2;
+  const t = pbrNeutralNeutralGrey(linearRadiance);
+  return 255.0 * Math.pow(t > 0.0 ? t : 0.0, 1.0 / g);
+}
+
+/**
+ * Display-code difference between the disc CENTRE and the extreme LIMB at a
+ * given disc radiance — i.e. how much of the C12-15 limb-darkening law
+ * survives the display transform.
+ *
+ * The composited disc is `L * limb(x)` (the bake carries `limb` in alpha and
+ * ALPHA_BLEND multiplies by it), so centre and limb are `L` and `a0 * L`.
+ *
+ * @param {number} linearRadiance Disc-centre radiance `L`.
+ * @param {number} [gamma=2.2] `scene.gamma`.
+ * @returns {number} Codes of contrast; 0 when the two saturate together.
+ * @private
+ */
+function solarDiscLimbContrastCodes(linearRadiance, gamma) {
+  return (
+    solarDiscDisplayCode(linearRadiance, gamma) -
+    solarDiscDisplayCode(SOLAR_LIMB_DARKENING_A0 * linearRadiance, gamma)
+  );
+}
+
+/**
+ * The limb-darkening law's UNDISTORTED contrast: what a pure display
+ * transform (gamma only, no tone curve) would show for a disc whose centre
+ * sits exactly at display white. `255 * (1 - a0^(1/gamma))` = 107.47 codes at
+ * the shipped `a0 = 0.30`, `gamma = 2.2`.
+ *
+ * This is the yardstick the ceiling below is measured against.
+ *
+ * @private
+ */
+const SOLAR_DISC_LIMB_CONTRAST_IDEAL =
+  255.0 * (1.0 - Math.pow(SOLAR_LIMB_DARKENING_A0, 1.0 / 2.2));
+
+/**
+ * Fraction of {@link SOLAR_DISC_LIMB_CONTRAST_IDEAL} the disc must retain.
+ *
+ * One half — the half-power point of the limb-darkening SIGNAL. Chosen as the
+ * one fraction that needs no justification of its own: at the half-power point
+ * the tone curve has taken exactly as much of the law as it has left.
+ *
+ * @private
+ */
+const SOLAR_DISC_LIMB_CONTRAST_FRACTION = 0.5;
+
+/**
+ * THE CEILING THIS ROW EXISTS TO NAME: the largest disc radiance at which more
+ * than half of the limb-darkening law survives the default display transform.
+ *
+ * ⚠ RAISING THE SUN'S RADIANCE **DESTROYS** LIMB DARKENING; IT DOES NOT
+ * UNMASK IT. PBR Neutral compresses everything above `startCompression` toward
+ * a single white, so the centre and the limb converge as `L` grows. Measured
+ * with the functions above (gamma 2.2, exposure 1, over a dark sky):
+ *
+ *   L      | centre code | limb code | contrast | fraction of ideal
+ *   -------+-------------+-----------+----------+------------------
+ *     1.0  |    239.24   |   138.24  |  101.01  |  0.940
+ *     2.0  |    250.31   |   195.92  |   54.39  |  0.506
+ *     3.0  |    252.25   |   234.37  |   17.88  |  0.166
+ *     5.0  |    253.49   |   247.77  |    5.72  |  0.053
+ *    10.0  |    254.29   |   252.25  |    2.05  |  0.019
+ *   100.0  |    254.93   |   254.77  |    0.16  |  0.001
+ *
+ * i.e. the "~10^5 energy" the row's warning contemplates would render the
+ * solar disc a flat white circle with the C12-15 law arithmetically invisible
+ * — the inverse of the Batch-364 failure by a different route.
+ *
+ * Solved by bisection over `[1, 64]` with a FIXED 200-iteration budget (the
+ * function is strictly decreasing in `L` over that interval, and a fixed trip
+ * count is what keeps this a bounded loop at module scope). The result is
+ * 2.0148, and the reason that number is not the shipped default is the next
+ * constant.
+ *
+ * @private
+ */
+const SOLAR_DISC_RADIANCE_CONTRAST_CEILING = (() => {
+  const target =
+    SOLAR_DISC_LIMB_CONTRAST_FRACTION * SOLAR_DISC_LIMB_CONTRAST_IDEAL;
+  let lo = 1.0;
+  let hi = 64.0;
+  for (let i = 0; i < 200; i++) {
+    const mid = 0.5 * (lo + hi);
+    if (solarDiscLimbContrastCodes(mid, 2.2) > target) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return 0.5 * (lo + hi);
+})();
+
+/**
+ * Hard upper bound on the disc radiance, from the HDR framebuffer's own
+ * format rather than from taste.
+ *
+ * The scene buffer is `rgba16float` (`PixelDatatype.HALF_FLOAT`), whose
+ * largest finite value is 65504. The brightest pixel the sun path can produce
+ * is the disc (`L`) plus the C12-18 screen halo at its centre
+ * (`SOLAR_HALO_AMPLITUDE * L`) plus the sun bloom's additive contribution,
+ * which `BrightPass.glsl` bounds by 1 (`b / (offset + b) < 1`). Requiring that
+ * sum to stay two stops below the format's ceiling — headroom for the
+ * Gaussian blur's weighted sums and for fp16 rounding — gives
+ *
+ *   (1 + SOLAR_HALO_AMPLITUDE) * L + 1 <= 65504 / 4
+ *
+ * i.e. L <= 9357.1. It never binds at any default; it exists so that an app
+ * which sets `scene.light.intensity` to something enormous gets a bright sun
+ * rather than an `Inf` that propagates NaN through every downstream stage.
+ *
+ * @private
+ */
+const SOLAR_DISC_RADIANCE_FP16_CEILING =
+  (65504.0 / 4.0 - 1.0) / (1.0 + SOLAR_HALO_AMPLITUDE);
+
+/**
+ * The disc's linear radiance for this frame.
+ *
+ * DERIVED FROM THE ENGINE'S OWN STATEMENT OF SOLAR RADIANCE, not dialled.
+ * `UniformState.updateFrameState` builds `czm_lightColorHdr` as
+ * `light.color * light.intensity` and then publishes `czm_lightColor` as that
+ * value renormalised so its brightest channel is <= 1. Every PBR surface in
+ * the scene is already lit by the HDR one and shaded by the LDR one; the two
+ * differ by exactly this factor. The disc that EMITS `czm_lightColorHdr` must
+ * HAVE `czm_lightColorHdr` — anything else asserts that the sun is dimmer
+ * than the light it casts.
+ *
+ * At the shipped defaults (`SunLight`, white, `intensity = 2.0`) that is
+ * **2.0**, which lands within 0.74% of
+ * {@link SOLAR_DISC_RADIANCE_CONTRAST_CEILING} (2.0148) — two derivations
+ * with nothing in common agreeing on the same number, which is the reason
+ * this row ships a radiance of 2 and not of 10^5. The engine's own light
+ * intensity is, to within a percent, the largest radiance at which the
+ * C12-15 limb law still survives the default tonemapper.
+ *
+ * EXPLICITLY NOT the eclipse-dimmed light. `UniformState` applies
+ * `eclipseSceneLightFactor` to BOTH `_lightColorHdr` and `_lightColor` after
+ * the renormalisation, so their RATIO — this function's value — is invariant
+ * to the eclipse. That is required, not incidental: `Sun.update` already
+ * scales the billboard's ALPHA by `sunEclipseAlpha`, and a radiance that also
+ * dimmed would SQUARE the fade, the same failure `SunHaloAppearance`'s header
+ * records for the halo.
+ *
+ * @param {boolean} useHdr `frameState.useHDR` — whether the scene renders
+ *        into a float framebuffer at all.
+ * @param {object} [light] `frameState.light`.
+ * @returns {number} Linear radiance; EXACTLY 1.0 whenever the scene is SDR.
+ * @private
+ */
+function solarDiscHdrRadiance(useHdr, light) {
+  if (useHdr !== true) {
+    return SOLAR_DISC_SDR_RADIANCE;
+  }
+  const intensity = light?.intensity;
+  const color = light?.color;
+  if (!(intensity > 0.0)) {
+    return SOLAR_DISC_SDR_RADIANCE;
+  }
+  const peak = Math.max(
+    color?.red ?? 1.0,
+    Math.max(color?.green ?? 1.0, color?.blue ?? 1.0),
+  );
+  const radiance = intensity * (peak > 0.0 ? peak : 1.0);
+  if (!(radiance > SOLAR_DISC_SDR_RADIANCE)) {
+    // A light dimmer than white must not make the DISC dimmer than the SDR
+    // picture — that would be an appearance regression dressed as physics.
+    return SOLAR_DISC_SDR_RADIANCE;
+  }
+  return Math.min(radiance, SOLAR_DISC_RADIANCE_FP16_CEILING);
+}
+
+// ─── C12-19 — BRIGHT-PASS RETUNE (WebGL sun bloom) ─────────────────────────
+//
+// `SunPostProcess` stage 1 is `BrightPass.glsl`, the ONLY consumer of that
+// shader in the engine. (The file named `BrightPass.wgsl` on the WebGPU side
+// is a port of `ContrastBias.glsl` — the global `scene.bloom` stage, default
+// OFF on both backends — and is NOT this curve.) Its three uniforms were
+// tuned against an input that could not exceed 1, which is no longer true
+// once the disc carries HDR radiance.
+
+/**
+ * `avgLuminance` as `SunPostProcess` has always set it — "a guess at the
+ * average luminance across the entire scene". Unchanged by this row: it is
+ * the argument to `key()`, which is a scene-exposure heuristic, not a
+ * bright-pass parameter.
+ *
+ * @private
+ */
+const SUN_BRIGHT_PASS_AVG_LUMINANCE = 0.5;
+
+/**
+ * The historical `threshold` / `offset` pair, kept so the SDR position is
+ * reproducible from this module rather than re-typed at the call site.
+ *
+ * @private
+ */
+const SUN_BRIGHT_PASS_THRESHOLD_LEGACY = 0.25;
+const SUN_BRIGHT_PASS_OFFSET_LEGACY = 0.1;
+
+/**
+ * JS twin of `key()` in `BrightPass.glsl`.
+ *
+ * @param {number} avg Average scene luminance.
+ * @returns {number} The key value the shader scales luminance by.
+ * @private
+ */
+function sunBrightPassKey(avg) {
+  return Math.max(0.0, 1.5 - 1.5 / (avg * 0.1 + 1.0)) + 0.1;
+}
+
+/**
+ * C12-19 bright-pass tuning, DERIVED from the disc radiance.
+ *
+ * `BrightPass.glsl` computes
+ *
+ *   scaled = key(avg) * luminance / avg          (a pure scale, s = key/avg)
+ *   bright = max(scaled - threshold, 0)
+ *   out    = bright / (offset + bright)
+ *
+ * so `threshold` names the luminance at which extraction STARTS and
+ * `threshold + offset` names the luminance at which it reaches one half. Two
+ * derivations, no free parameters:
+ *
+ *   * START AT DISPLAY WHITE. `threshold = s * 1.0`. The shipped 0.25 starts
+ *     at luminance 0.7292 — BELOW white — so an ordinary bright sky was
+ *     already blooming. Under SDR that is merely the shipped look; under HDR,
+ *     where the scene legitimately contains values at and above 1, it washes
+ *     the frame. (`s = key(0.5)/0.5 = 0.342857`, so `threshold = 0.342857`.)
+ *
+ *   * HALF-SATURATE AT THE GEOMETRIC MEAN OF THE RANGE. The curve must span
+ *     `[1, L]`; the value that splits a multiplicative range in half is
+ *     `sqrt(L)`, so `offset = s * (sqrt(L) - 1)`. That places `out = 0.5`
+ *     exactly at `luminance = sqrt(L)` and `out = 1/sqrt(2)` exactly at
+ *     `luminance = L`, both checkable identities rather than measurements.
+ *     At the shipped `L = 2`: `offset = 0.142016`, half-saturation at 1.4142.
+ *
+ * With the shipped pair the sun's own range is FLAT: 0.4815 at white against
+ * 0.8133 at L = 2, i.e. two thirds of the extraction is spent below display
+ * white and the sun itself moves the output by only 0.33. The derived pair
+ * spends the whole range on the sun.
+ *
+ * `L <= 1` returns the historical pair BIT-FOR-BIT — both because that is the
+ * SDR identity position and because `offset` would otherwise be 0, which
+ * turns the final divide into a hard step at the threshold.
+ *
+ * @param {number} linearRadiance {@link solarDiscHdrRadiance}.
+ * @param {number} [avgLuminance] The stage's `avgLuminance` uniform.
+ * @param {object} [result] Optional object to fill.
+ * @returns {object} `{ threshold, offset }`.
+ * @private
+ */
+function solarBrightPassTuning(linearRadiance, avgLuminance, result) {
+  const out = result ?? { threshold: 0.0, offset: 0.0 };
+  if (!(linearRadiance > SOLAR_DISC_SDR_RADIANCE)) {
+    out.threshold = SUN_BRIGHT_PASS_THRESHOLD_LEGACY;
+    out.offset = SUN_BRIGHT_PASS_OFFSET_LEGACY;
+    return out;
+  }
+  const avg = avgLuminance > 0.0 ? avgLuminance : SUN_BRIGHT_PASS_AVG_LUMINANCE;
+  const s = sunBrightPassKey(avg) / avg;
+  out.threshold = s;
+  out.offset = s * (Math.sqrt(linearRadiance) - 1.0);
+  return out;
+}
+
 // ─── C12-27 — ANGULAR parameterisation (star washout near the Sun) ─────────
 //
 // The deleted `enableStarBrightnessModulation` global dim was keyed to the
@@ -618,6 +985,16 @@ const SolarDiscModel = Object.freeze({
   SOLAR_GLARE_ANGULAR_PEDESTAL,
   SOLAR_DISC_BAKE_LENGTH_SCALAR,
   SOLAR_HALO_AMPLITUDE,
+  SOLAR_DISC_SDR_RADIANCE,
+  PBR_NEUTRAL_START_COMPRESSION,
+  PBR_NEUTRAL_OFFSET,
+  SOLAR_DISC_LIMB_CONTRAST_IDEAL,
+  SOLAR_DISC_LIMB_CONTRAST_FRACTION,
+  SOLAR_DISC_RADIANCE_CONTRAST_CEILING,
+  SOLAR_DISC_RADIANCE_FP16_CEILING,
+  SUN_BRIGHT_PASS_AVG_LUMINANCE,
+  SUN_BRIGHT_PASS_THRESHOLD_LEGACY,
+  SUN_BRIGHT_PASS_OFFSET_LEGACY,
   lorentzianPedestal,
   pedestalLorentzian,
   solarLimbIntensity,
@@ -628,6 +1005,12 @@ const SolarDiscModel = Object.freeze({
   solarDiscBakeEdge,
   solarHaloCoreRadii,
   solarScreenHaloProfile,
+  pbrNeutralNeutralGrey,
+  solarDiscDisplayCode,
+  solarDiscLimbContrastCodes,
+  solarDiscHdrRadiance,
+  sunBrightPassKey,
+  solarBrightPassTuning,
   angularGlareVeil,
   solarAngularGlareVeil,
   solarAngularGlareFactor,
@@ -648,6 +1031,16 @@ export {
   SOLAR_GLARE_ANGULAR_PEDESTAL,
   SOLAR_DISC_BAKE_LENGTH_SCALAR,
   SOLAR_HALO_AMPLITUDE,
+  SOLAR_DISC_SDR_RADIANCE,
+  PBR_NEUTRAL_START_COMPRESSION,
+  PBR_NEUTRAL_OFFSET,
+  SOLAR_DISC_LIMB_CONTRAST_IDEAL,
+  SOLAR_DISC_LIMB_CONTRAST_FRACTION,
+  SOLAR_DISC_RADIANCE_CONTRAST_CEILING,
+  SOLAR_DISC_RADIANCE_FP16_CEILING,
+  SUN_BRIGHT_PASS_AVG_LUMINANCE,
+  SUN_BRIGHT_PASS_THRESHOLD_LEGACY,
+  SUN_BRIGHT_PASS_OFFSET_LEGACY,
   lorentzianPedestal,
   pedestalLorentzian,
   solarLimbIntensity,
@@ -658,6 +1051,12 @@ export {
   solarDiscBakeEdge,
   solarHaloCoreRadii,
   solarScreenHaloProfile,
+  pbrNeutralNeutralGrey,
+  solarDiscDisplayCode,
+  solarDiscLimbContrastCodes,
+  solarDiscHdrRadiance,
+  sunBrightPassKey,
+  solarBrightPassTuning,
   angularGlareVeil,
   solarAngularGlareVeil,
   solarAngularGlareFactor,

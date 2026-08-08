@@ -90,7 +90,13 @@ struct Uniforms {
   // lets one immutable six-corner buffer and one draw command survive every
   // clock tick while retaining encoded high/low RTE precision.
   encodedSunHigh: vec3<f32>, _sunPad0: f32,
-  encodedSunLow: vec3<f32>, _sunPad1: f32,
+  // C12-19 — the disc's LINEAR radiance occupies the former \`_sunPad1\` pad at
+  // offset 156. Exactly the C12-29 S1 manoeuvre that turned \`_p2\` into
+  // \`eclipseAlpha\`: the pad was already written (as 0.0) and already reserved
+  // by the 256-byte uniform buffer, so this is a rename plus a use — no
+  // stride, alignment, binding or bind-group-layout delta, and no new
+  // ShaderDefine bit (C12 exit condition 5).
+  encodedSunLow: vec3<f32>, discRadiance: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var tex: texture_2d<f32>;
@@ -129,6 +135,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   if (u.gamma != 1.0) {
     color = vec4f(pow(color.rgb, vec3f(u.gamma)), color.a);
   }
+  // C12-19 — true HDR disc radiance, the WGSL twin of SunFS.glsl's
+  // \`out_FragColor.rgb *= u_discRadiance\`. AFTER the gamma decode (a radiance
+  // is linear; applying it first would raise it to the gamma) and on RGB ONLY
+  // (alpha is this pipeline's ALPHA_BLEND destination weight since C11-115 —
+  // an alpha above 1 makes \`1 - a\` negative and subtracts the sky). Exactly
+  // 1.0 outside HDR, so the multiply is a byte-identical no-op there.
+  color = vec4f(color.rgb * u.discRadiance, color.a);
   // C7-SUN-STARS-EXTINCTION — attenuate + redden the sun by the atmospheric
   // extinction (dims + warms a low sun over the horizon). extinction == (1,1,1)
   // from orbit / atmosphere hidden, so this is a byte-identical no-op there.
@@ -440,24 +453,44 @@ function createSunTexture(device, size, glowFactor, format, appearance, halo) {
       cb += burst;
       ca += burst;
 
+      // C12-19 — the twin of the SPLIT saturation at the bottom of
+      // `SunTextureFS.glsl`'s main(). Componentwise identical to the
+      // historical clamp; split so both halves are named:
+      //   * rgb is CHROMA (a white point — `+0.2` on blue is the hue term
+      //     that makes the halo orange and the core white),
+      //   * alpha is the ALPHA_BLEND DESTINATION WEIGHT — above 1 it makes
+      //     `1 - a` negative and subtracts the sky (the Batch-364 class).
+      // The disc's true HDR radiance is NOT baked here: it is a linear
+      // multiply in the sun fragment shader (`u.discRadiance`), so the bake
+      // stays a shape and the radiance stays a per-frame scalar. See the
+      // C12-19 block in Scene/SolarDiscModel.js.
+      const chromaR = Math.min(1.0, Math.max(0.0, cr));
+      const chromaG = Math.min(1.0, Math.max(0.0, cg));
+      const chromaB = Math.min(1.0, Math.max(0.0, cb));
+      const blendWeight = Math.min(1.0, Math.max(0.0, ca));
+
       const idx = (y * size + x) * 4;
       if (isHalf) {
-        // C12-17 — HDR bake. The values are still clamped to [0, 1] here
-        // (removing that clamp is C12-19's job and needs the BrightPass
-        // retune); half-float buys PRECISION in the glare tail, which is
-        // exactly where 8-bit quantisation truncated the profile. Measured:
-        // rgba8unorm cannot represent alpha below 1/255 = 0.00392, which
-        // clips the legacy halo at 8.199 solar radii instead of its true
-        // 8.556 — a 4.2% radial loss, and 100% of the C12-16 tail beyond it.
-        pixels[idx + 0] = floatToHalfBits(Math.min(1.0, Math.max(0.0, cr)));
-        pixels[idx + 1] = floatToHalfBits(Math.min(1.0, Math.max(0.0, cg)));
-        pixels[idx + 2] = floatToHalfBits(Math.min(1.0, Math.max(0.0, cb)));
-        pixels[idx + 3] = floatToHalfBits(Math.min(1.0, Math.max(0.0, ca)));
+        // C12-17 — HDR bake. Half-float buys PRECISION in the glare tail,
+        // which is exactly where 8-bit quantisation truncated the profile.
+        // Measured: rgba8unorm cannot represent alpha below 1/255 = 0.00392,
+        // which clips the legacy halo at 8.199 solar radii instead of its
+        // true 8.556 — a 4.2% radial loss, and 100% of the C12-16 tail
+        // beyond it.
+        pixels[idx + 0] = floatToHalfBits(chromaR);
+        pixels[idx + 1] = floatToHalfBits(chromaG);
+        pixels[idx + 2] = floatToHalfBits(chromaB);
+        pixels[idx + 3] = floatToHalfBits(blendWeight);
       } else {
-        pixels[idx + 0] = Math.min(255, Math.max(0, cr) * 255);
-        pixels[idx + 1] = Math.min(255, Math.max(0, cg) * 255);
-        pixels[idx + 2] = Math.min(255, Math.max(0, cb) * 255);
-        pixels[idx + 3] = Math.min(255, Math.max(0, ca) * 255);
+        // The 8-bit store is its own saturation — `rgba8unorm` cannot carry
+        // anything outside [0, 1] at all — so this branch would be unchanged
+        // even if the split above were removed. That is the structural half
+        // of C12-19's SDR-safety argument: on an SDR display the sun path is
+        // range-limited by the FORMAT, not by a tuning decision.
+        pixels[idx + 0] = chromaR * 255;
+        pixels[idx + 1] = chromaG * 255;
+        pixels[idx + 2] = chromaB * 255;
+        pixels[idx + 3] = blendWeight * 255;
       }
     }
   }
@@ -560,7 +593,13 @@ function packSunUniforms(uniformData, frameState, glowFactor, gamma) {
   uniformData[36] = scratchEncodedPos.low.x;
   uniformData[37] = scratchEncodedPos.low.y;
   uniformData[38] = scratchEncodedPos.low.z;
-  uniformData[39] = 0.0;
+
+  // C12-19 — disc radiance at offset 39 (the former `_sunPad1`, byte 156).
+  // `Sun.update` resolves it before the backend branch, so this slot and
+  // WebGL's `u_discRadiance` always carry the same scalar. Falls back to 1.0
+  // (exact identity) when the publisher hasn't run.
+  const discRadiance = frameState.sunHalo?.discRadiance;
+  uniformData[39] = typeof discRadiance === "number" ? discRadiance : 1.0;
 }
 
 /**

@@ -33,6 +33,12 @@
 //     radius; see the C12-18 derivation block in `SolarDiscModel.js`.
 //   * `haloAmplitude` / `haloCoreRadii` — the screen-space veiling-glare
 //     profile's two parameters, both derived from the SAME C12-16 curve.
+//     C12-19 scales `haloAmplitude` by `discRadiance`; see the block at its
+//     assignment for why that is required rather than cosmetic.
+//   * `discRadiance` — C12-19's linear disc radiance, and the
+//     `brightPassThreshold` / `brightPassOffset` pair derived from it. NOT
+//     bake payload: both are consumed downstream of the bake, and neither
+//     joins `key`.
 //   * `eclipseFactor` — CLT-C4. The eclipse factor must multiply the PP halo's
 //     INPUT or the halo survives totality; a corona inside an undimmed halo is
 //     the named failure mode. Because the screen-space halo is SYNTHESISED
@@ -56,14 +62,20 @@ import defined from "../Core/defined.js";
 import CesiumMath from "../Core/Math.js";
 import Matrix4 from "../Core/Matrix4.js";
 import {
+  SOLAR_DISC_SDR_RADIANCE,
   SOLAR_HALO_AMPLITUDE,
+  SUN_BRIGHT_PASS_AVG_LUMINANCE,
+  solarBrightPassTuning,
   solarDiscBakeEdge,
   solarDiscBakeEdgeLegacy,
+  solarDiscHdrRadiance,
   solarHaloCoreRadii,
 } from "./SolarDiscModel.js";
 
 const scratchSunEC = new Cartesian4();
 const scratchSunClip = new Cartesian4();
+// C12-19 — reused every frame so the bright-pass derivation allocates nothing.
+const scratchBrightPass = { threshold: 0.0, offset: 0.0 };
 
 /**
  * Creates the mutable result object {@link readSunHaloAppearance} fills in.
@@ -77,10 +89,23 @@ function createSunHaloAppearance() {
     // Resolved toggle positions.
     trueDiscSize: true,
     screenHalo: false,
+    trueRadiance: true,
     // Bake payload — consumed by `SunTextureFS.glsl` (as uniforms) and by
     // `WebGPUEnvironmentRenderer.createSunTexture` (as plain numbers).
     discEdge: 0.0,
     bakeHaloGain: 1.0,
+    // C12-19 — the disc's LINEAR radiance, applied in the sun fragment
+    // shaders AFTER `czm_gammaCorrect` (`u_discRadiance` on WebGL, the
+    // `discRadiance` uniform slot on WebGPU). NOT part of the bake and
+    // deliberately NOT part of `key`: it is a per-frame scalar, so folding it
+    // into the rebuild signature would re-run the WebGPU CPU bake every frame
+    // that `scene.light` moves (the `aerialPerspective` path swaps in a
+    // continuously-varying derived SunLight).
+    discRadiance: SOLAR_DISC_SDR_RADIANCE,
+    // C12-19 — `SunPostProcess` stage-1 bright-pass tuning, derived from
+    // `discRadiance`. Exactly the historical (0.25, 0.1) in the SDR position.
+    brightPassThreshold: 0.25,
+    brightPassOffset: 0.1,
     // Screen-space payload — consumed by the WebGL `SolarHalo` stage inside
     // `SunPostProcess` and by the WebGPU `SunHaloEffect`.
     haloAmplitude: SOLAR_HALO_AMPLITUDE,
@@ -204,6 +229,9 @@ function computeSunScreenGeometry(frameState, result) {
  *   `enableScreenSpaceSunHalo === false` -> `bakeHaloGain = 1` and
  *      `haloIntensity = 0`, i.e. the historical baked halo and no
  *      screen-space stage at all.
+ *   `enableTrueSolarRadiance === false`  -> `discRadiance = 1.0` and the
+ *      historical `(0.25, 0.1)` bright-pass pair, i.e. C12-19 is an exact
+ *      identity in both dynamic ranges.
  *
  * With both false the sun bake is byte-identical to the pre-C12-18 engine on
  * both backends and no post-process stage is added.
@@ -218,6 +246,12 @@ function readSunHaloAppearance(frameState, glowLengthTS, result) {
   const lighting = frameState?.atmosphericConditions?.lighting;
   const trueDiscSize = lighting?.enableTrueSolarDiscSize !== false;
   const haloRequested = lighting?.enableScreenSpaceSunHalo !== false;
+  // C12-19 — the third toggle on the same leaf, same `!== false` convention.
+  // OFF pins the disc radiance at exactly 1.0 and the bright pass at the
+  // historical pair, which together make the whole row an identity in BOTH
+  // dynamic ranges — the escape hatch for an app that wants the pre-C12-19
+  // HDR picture back without leaving HDR.
+  const trueRadiance = lighting?.enableTrueSolarRadiance !== false;
 
   // The screen-space halo only exists where the post-process chain that draws
   // it actually runs. `frameState.sunBloomActive` is published by
@@ -238,7 +272,33 @@ function readSunHaloAppearance(frameState, glowLengthTS, result) {
   // DERIVED, never assigned independently — see the module header.
   result.bakeHaloGain = screenHalo ? 0.0 : 1.0;
 
-  result.haloAmplitude = SOLAR_HALO_AMPLITUDE;
+  // C12-19 — the disc's linear radiance, and the bright-pass pair derived
+  // from it. Resolved HERE, with the rest of the sun's per-frame appearance,
+  // so the WebGL uniform, the WebGPU uniform slot and the `SunPostProcess`
+  // stage all read ONE number instead of three derivations of it.
+  result.trueRadiance = trueRadiance;
+  result.discRadiance = trueRadiance
+    ? solarDiscHdrRadiance(frameState?.useHDR === true, frameState?.light)
+    : SOLAR_DISC_SDR_RADIANCE;
+  solarBrightPassTuning(
+    result.discRadiance,
+    SUN_BRIGHT_PASS_AVG_LUMINANCE,
+    scratchBrightPass,
+  );
+  result.brightPassThreshold = scratchBrightPass.threshold;
+  result.brightPassOffset = scratchBrightPass.offset;
+
+  // C12-19 — THE B906 RE-DERIVATION THIS ROW OWED. `SOLAR_HALO_AMPLITUDE` is
+  // the bake's own `0.75` glare weight, and B906 adopted it for the screen
+  // halo so "the two compositions are continuous at the centre by
+  // construction". That construction was written against a disc whose
+  // composited peak was 1.0. Once the disc peaks at `discRadiance`, an
+  // unscaled 0.75 halo is `0.75 / discRadiance` of the disc — at the shipped
+  // radiance a sun less than half as glowing as its own C12-16 curve says it
+  // is, and the discontinuity grows with any app that brightens its light.
+  // Scaling by the SAME scalar the disc is scaled by is what keeps the
+  // invariant an identity rather than a coincidence at one radiance.
+  result.haloAmplitude = SOLAR_HALO_AMPLITUDE * result.discRadiance;
   result.haloCoreRadii = solarHaloCoreRadii(glowLengthTS);
 
   // CLT-C4 — the eclipse factor multiplies the halo's amplitude, which for a

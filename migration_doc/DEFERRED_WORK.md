@@ -12756,3 +12756,43 @@ FIX when it matters: flip the row order in `unpackPickPixels` (write row `copyHe
 ### C13-41-DECKFREE-CONTROL-REDESIGN — the deck-free ground control is state-order-dependent and needs an isolated capture design (FILED 2026-08-07, Batch 931 / run 6)
 
 **Status: OPEN / MEDIUM (instrument).** Across three runs the lane-B deck-free control produced three distinct behaviors: frozen-dark across 54 min (run 4), sun-varying (run 5), and frozen at EXACTLY the raw baseColor 200/255 unlit at all four rungs while its on-leg twin varied (run 6, with the settled-twin gate correctly firing). The control's reading depends on configure/capture ORDER in a way none of the scored lanes do — every conclusion drawn from it (run 5's ×0.44 "identity violation", run 6's frozen tell) was an artifact of instrument state, and run 5's headline is WITHDRAWN. Redesign: capture the deck-free state in its own configure epoch (full scene state re-application before each control capture) or its own browser session; gate on the settled-twin + a lit-surface precondition (a control reading exactly the unlit baseColor is blind by construction). Until then the "does the globe light path dim by exactly F" question stays OPEN with no evidence either way; the shadow-contrast excess (1.055, ratio-of-ratios, constant-multiplier-immune) remains the eclipse chain's one standing product finding.
+
+---
+
+## 2026-08-07 - C12-19 true HDR sun radiance (batch group CO-26): what landed, and the four tails
+
+### C12-19-BAKE-CLAMP-PREMISE-CORRECTED - the clamp was never what masked limb darkening, and removing it from ALPHA is unsafe (RECORDED 2026-08-07, CO-26 - no work owed)
+
+**Status: CLOSED-AS-CORRECTION.** The `C12-19` row and the Batch-906 record both read the sun bake's final `clamp(color, 0, 1)` as the thing hiding C12-15 limb darkening. Measured at HEAD (`sun-hdr-radiance.spec.mjs`, 4001-sample radial sweep):
+
+* At the C12-18 default (`bakeHaloGain = 0`, i.e. `scene.sunBloom = true`) the bake's alpha is exactly `limb(x)` and NEVER reaches the saturation. The saturation binds on ONE channel, BLUE, over the inner disc where `surface + 0.2 > 1`. **C12-18 was its own unmasking row**: over a dark sky the SDR composite already runs 255 codes at centre to 76.5 at the extreme limb on both backends, and the HDR composite runs 239.2 to 138.2.
+* Blue's saturation is a WHITE POINT. The `+0.2` is the hue term that makes the halo orange and the core white; unsaturated, blue exceeds red by 0.2 at the core, i.e. a 20% blue cast on the sun. Deleting that clamp is an appearance regression, not an unmasking.
+* Removing the clamp from ALPHA is actively unsafe. Since C11-115/C12-18 both backends blend the sun ALPHA_BLEND, so alpha is the destination weight in `dst = src.rgb*a + dst*(1-a)`. On the `sunBloom = false` path the legacy baked halo drives alpha to ~1.9, making `1 - a` negative: the sun would SUBTRACT the sky and paint a dark ring - the Batch-364 black-sky class reached from the opposite direction.
+
+The landed shape is therefore a SPLIT (chroma white-point saturation + alpha blend-weight saturation, componentwise bit-for-bit the old expression) plus an explicit linear radiance scale in the sun fragment shaders. Both halves of the split are mutant-pinned. **No further work is owed on the clamp; the correction is recorded so the naive reading is not re-attempted.**
+
+### C12-19-RADIANCE-VS-LIMB-CONTRAST-TRADEOFF - the row's two goals oppose each other under the default tonemapper (FILED 2026-08-07, CO-26 - MAINTAINER DECISION ASKED)
+
+**Status: OPEN / DECISION.** Under `Tonemapper.PBR_NEUTRAL` (the default on both backends) at `exposure = 1`, the display-code contrast between the disc centre and the extreme limb is STRICTLY DECREASING in disc radiance - measured over 2001 samples in `[1, 64]`:
+
+| L | centre code | limb code | contrast | fraction of ideal |
+|---|---|---|---|---|
+| 1.0 | 239.24 | 138.24 | 101.01 | 0.940 |
+| 2.0 | 250.31 | 195.92 | 54.39 | 0.506 |
+| 3.0 | 252.25 | 234.37 | 17.88 | 0.166 |
+| 10.0 | 254.29 | 252.25 | 2.05 | 0.019 |
+| 1e5 | - | - | <0.01 | ~0 |
+
+So the row's "~10^5 energy" warning understates the problem: that radiance does not merely risk crushing the rest of the scene, it renders the C12-15 law arithmetically invisible. The shipped radiance is **2.0**, derived from `light.intensity * max(light.color)` - the factor by which `czm_lightColorHdr` exceeds `czm_lightColor` - which lands within 0.74% of the independently-solved half-power ceiling 2.0148. **The ask:** is "half the limb-darkening law survives" the right stopping rule, or should the disc carry more radiance for bloom/eye-adaptation realism and let C12-15 be a zoomed-in-only feature? The two derivations agreeing is what makes 2.0 defensible today, not a ruling.
+
+### C12-19-AUTOEXPOSURE-LANES-OWED - the row's explicit AE-on / AE-off requirement needs a browser lane (FILED 2026-08-07, CO-26)
+
+**Status: OPEN / OWED.** The row text requires the radiance to be "probed against both AE-on and AE-off lanes". `AutoExposure` divides the whole frame by a measured average luminance, so a sun at radiance L raises that average and darkens everything else - the "sun crushes everything else" failure named in the row. Every number banked in this batch is the AE-OFF lane (`exposure = 1`, the shipped default of every tonemap stage). The AE-on lane is a browser measurement and was not run (no Edge in this batch). Design: `probe-sun-hdr-radiance.mjs` with four legs - {AE off, AE on} x {radiance 1, radiance 2} - measuring (a) the disc centre/limb codes, (b) the mean luminance of a globe crop away from the sun, and (c) the AE convergence time. Two-sided expectation: with AE on, the non-sun crop must not lose more than the AE integrator's own step per frame; a step change at frame 1 means the sun is inside the AE metering region and needs an exclusion.
+
+### C12-19-WEBGPU-GLOBAL-BLOOM-BRIGHTPASS-SDR-SHAPED - the WebGPU global bloom's bright pass saturates for any input above white (FILED 2026-08-07, CO-26)
+
+**Status: OPEN / LOW (default-off).** `Shaders/WebGPU/PostProcess/BrightPass.wgsl` is NOT the curve C12-19 retuned - it is a port of `ContrastBias.glsl`, the global `scene.bloom` stage, which is default-OFF on both backends. Its body does an HSB round-trip, a contrast curve about mid-grey and a final `clamp(0, 1)`; at the WebGL defaults (contrast 128, brightness -0.3) any input whose HSB value exceeds ~1.0 already lands above 1 and clamps, so under HDR the whole stage is a binary mask rather than a graded extraction. The WebGL twin (`ContrastBias.glsl` inside `PostProcessStageLibrary.createBloomStage`) has the same shape, so this is NOT a cross-backend divergence - it is a shared SDR-shaped stage that HDR outgrew. Fix shape: a radiance-aware knee mirroring `SolarDiscModel.solarBrightPassTuning`, applied on BOTH backends together, gated so the SDR position stays byte-identical. Not scoped into C12-19 because the stage is off by default and the row's named target was the sun bloom's bright pass.
+
+### C12-19-SUNPOSTPROCESS-HDR-STAGE-VRAM - the HDR datatype fix costs three full-resolution half-float targets (FILED 2026-08-07, CO-26)
+
+**Status: OPEN / LOW (measure).** Closing the `SunPostProcess` 8-bit vacuity blocker means stages 4, 5 and 6 (full resolution, no `textureScale`) plus the pipeline's own scene framebuffer now allocate `HALF_FLOAT` instead of `UNSIGNED_BYTE` whenever `highDynamicRange` is on. Estimated at 1920x1080 that is about +25 MB of VRAM, HDR-only, and it buys the frame back its HDR range end-to-end. Stages 0-3 run at 0.125 scale and are negligible. Not measured on hardware. If it ever matters, stages 1-3 could stay 8-bit (their output is `brightness = b/(offset+b)`, bounded below 1 by construction) while stage 0 and stages 4-6 must remain HDR - stage 0 because it is the bright pass's only view of the scene, and 4-6 because they carry the composite back to the scene framebuffer.

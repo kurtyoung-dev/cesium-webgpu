@@ -12,6 +12,12 @@ import BrightPass from "../Shaders/PostProcessStages/BrightPass.js";
 import GaussianBlur1D from "../Shaders/PostProcessStages/GaussianBlur1D.js";
 import PassThrough from "../Shaders/PostProcessStages/PassThrough.js";
 import SolarHalo from "../Shaders/PostProcessStages/SolarHalo.js";
+import PixelDatatype from "../Renderer/PixelDatatype.js";
+import {
+  SUN_BRIGHT_PASS_AVG_LUMINANCE,
+  SUN_BRIGHT_PASS_OFFSET_LEGACY,
+  SUN_BRIGHT_PASS_THRESHOLD_LEGACY,
+} from "./SolarDiscModel.js";
 import PostProcessStage from "./PostProcessStage.js";
 import PostProcessStageComposite from "./PostProcessStageComposite.js";
 import PostProcessStageSampleMode from "./PostProcessStageSampleMode.js";
@@ -19,7 +25,35 @@ import PostProcessStageTextureCache from "./PostProcessStageTextureCache.js";
 import SceneFramebuffer from "./SceneFramebuffer.js";
 
 class SunPostProcess {
-  constructor() {
+  /**
+   * @param {PixelDatatype} [pixelDatatype=PixelDatatype.UNSIGNED_BYTE] The
+   *        output datatype of every stage AND of this pipeline's own scene
+   *        framebuffer.
+   *
+   * C12-19 — THE VACUITY BLOCKER THIS PARAMETER EXISTS TO CLOSE. Every stage
+   * below was constructed at `PostProcessStage`'s default `UNSIGNED_BYTE`, and
+   * `update()` called `sceneFramebuffer.update(context, viewport)` with no
+   * `hdr` argument. So with `scene.sunBloom = true` — the shipped default —
+   * the WHOLE SCENE was rendered into an 8-bit framebuffer even under
+   * `highDynamicRange = true`, every stage output re-clamped it to 8 bits, and
+   * `copy()` handed that back to the HDR scene framebuffer. HDR was defeated
+   * on WebGL at defaults, which C12-28 (Batch 932) made load-bearing by
+   * defaulting `highDynamicRange` ON for HDR-capable displays.
+   *
+   * Consequences that are all one bug: the C12-19 disc radiance could never
+   * exceed 1 on this path, the C12-18 screen halo was clipped at 1 by stage
+   * 6's own output texture, and the bright pass below could never see a
+   * luminance above display white no matter how it was tuned — which is why
+   * the retune and the datatype land together rather than separately.
+   *
+   * The caller resolves the datatype (it is the one that has a `Context` and
+   * can ask about float-texture support) and reconstructs this object when it
+   * changes; `FramebufferOrchestrator` does both.
+   */
+  constructor(pixelDatatype) {
+    const datatype = pixelDatatype ?? PixelDatatype.UNSIGNED_BYTE;
+    this._pixelDatatype = datatype;
+    this._useHdr = datatype !== PixelDatatype.UNSIGNED_BYTE;
     this._sceneFramebuffer = new SceneFramebuffer();
 
     // C12-18 — resolved screen-space halo state, refreshed every `update()`
@@ -33,6 +67,14 @@ class SunPostProcess {
     this._haloIntensity = 0.0;
     this._haloColor = new Cartesian3(1.0, 1.0, 1.0);
 
+    // C12-19 — bright-pass tuning, refreshed every `update()` from
+    // `frameState.sunHalo`. The historical pair is the initial value, so an
+    // un-refreshed frame (or a caller that passes no `frameState`) bright-
+    // passes exactly as the engine always has.
+    this._brightPassThreshold = SUN_BRIGHT_PASS_THRESHOLD_LEGACY;
+    this._brightPassOffset = SUN_BRIGHT_PASS_OFFSET_LEGACY;
+
+    const that = this;
     const scale = 0.125;
     const stages = new Array(7);
 
@@ -41,20 +83,37 @@ class SunPostProcess {
       textureScale: scale,
       forcePowerOfTwo: true,
       sampleMode: PostProcessStageSampleMode.LINEAR,
+      pixelDatatype: datatype,
     });
 
     const brightPass = (stages[1] = new PostProcessStage({
       fragmentShader: BrightPass,
       uniforms: {
-        avgLuminance: 0.5, // A guess at the average luminance across the entire scene
-        threshold: 0.25,
-        offset: 0.1,
+        // A guess at the average luminance across the entire scene. This is
+        // `key()`'s argument — a scene-exposure heuristic, not a bright-pass
+        // parameter — and C12-19 deliberately leaves it alone.
+        avgLuminance: SUN_BRIGHT_PASS_AVG_LUMINANCE,
+        // C12-19 — DERIVED from the disc's radiance in
+        // `SolarDiscModel.solarBrightPassTuning`, not dialled: `threshold`
+        // puts the extraction's foot exactly on display white (the shipped
+        // 0.25 started at luminance 0.729, i.e. an ordinary bright sky was
+        // already blooming) and `offset` puts its half-saturation point on
+        // `sqrt(discRadiance)`, the geometric centre of the range it has to
+        // span. Both collapse to the historical (0.25, 0.1) bit-for-bit
+        // whenever the radiance is 1 — every SDR frame, and every frame with
+        // `lighting.enableTrueSolarRadiance === false`.
+        threshold: function () {
+          return that._brightPassThreshold;
+        },
+        offset: function () {
+          return that._brightPassOffset;
+        },
       },
       textureScale: scale,
       forcePowerOfTwo: true,
+      pixelDatatype: datatype,
     }));
 
-    const that = this;
     this._delta = 1.0;
     this._sigma = 2.0;
     this._blurStep = new Cartesian2();
@@ -77,6 +136,7 @@ class SunPostProcess {
       },
       textureScale: scale,
       forcePowerOfTwo: true,
+      pixelDatatype: datatype,
     });
 
     stages[3] = new PostProcessStage({
@@ -97,11 +157,13 @@ class SunPostProcess {
       },
       textureScale: scale,
       forcePowerOfTwo: true,
+      pixelDatatype: datatype,
     });
 
     stages[4] = new PostProcessStage({
       fragmentShader: PassThrough,
       sampleMode: PostProcessStageSampleMode.LINEAR,
+      pixelDatatype: datatype,
     });
 
     this._uCenter = new Cartesian2();
@@ -120,6 +182,7 @@ class SunPostProcess {
           return that._sceneFramebuffer.framebuffer.getColorTexture(0);
         },
       },
+      pixelDatatype: datatype,
     });
 
     // C12-18 (absorbs C11-160) — the screen-space solar veiling glare, run
@@ -151,6 +214,7 @@ class SunPostProcess {
           return that._haloColor;
         },
       },
+      pixelDatatype: datatype,
     });
 
     this._stages = new PostProcessStageComposite({
@@ -165,6 +229,19 @@ class SunPostProcess {
 
     this._textureCache = textureCache;
     this.length = stages.length;
+  }
+
+  /**
+   * C12-19 — the datatype this pipeline was built with. `FramebufferOrchestrator`
+   * compares it against the datatype the current `scene._hdr` implies and
+   * reconstructs on a mismatch, because `PostProcessStage._pixelDatatype` is
+   * fixed at construction.
+   *
+   * @type {PixelDatatype}
+   * @readonly
+   */
+  get pixelDatatype() {
+    return this._pixelDatatype;
   }
 
   get(index) {
@@ -192,7 +269,11 @@ class SunPostProcess {
     const viewport = passState.viewport;
 
     const sceneFramebuffer = this._sceneFramebuffer;
-    sceneFramebuffer.update(context, viewport);
+    // C12-19 — pass the HDR flag through. Without it this framebuffer was
+    // always `UNSIGNED_BYTE`, and since the scene renders INTO it whenever
+    // `sunBloom` is on, that single missing argument clamped the entire HDR
+    // scene to 8 bits before any tonemapper saw it.
+    sceneFramebuffer.update(context, viewport, this._useHdr);
     const framebuffer = sceneFramebuffer.framebuffer;
 
     this._textureCache.update(context);
@@ -350,6 +431,17 @@ function updateSunPosition(postProcess, context, viewport) {
  */
 function updateSolarHalo(postProcess, frameState) {
   const halo = frameState?.sunHalo;
+  // C12-19 — the bright-pass pair is transferred even when the halo is not
+  // visible. The two are independent: the halo stage can be off (the Sun
+  // behind the camera, `enableScreenSpaceSunHalo === false`) while the
+  // bright-pass chain above it is still extracting a genuinely HDR sun.
+  if (defined(halo) && typeof halo.brightPassThreshold === "number") {
+    postProcess._brightPassThreshold = halo.brightPassThreshold;
+    postProcess._brightPassOffset = halo.brightPassOffset;
+  } else {
+    postProcess._brightPassThreshold = SUN_BRIGHT_PASS_THRESHOLD_LEGACY;
+    postProcess._brightPassOffset = SUN_BRIGHT_PASS_OFFSET_LEGACY;
+  }
   if (!defined(halo) || halo.visible !== true) {
     postProcess._haloIntensity = 0.0;
     return;

@@ -77,22 +77,23 @@ void main()
     // radial intensity law, so the disc's RADIANCE falls from 1.0 at centre
     // to a0 (= 0.30) at the limb.
     //
-    // HONEST LIMIT AT SDR DEFAULTS (the C12-19 seam). The alpha this bake
-    // writes is `surface + 0.75 * glare + burst`, clamped to 1 at the
-    // bottom of main(). Over the disc the glare term alone is ~0.73, so
-    // alpha at the extreme limb is 0.30 + 0.73 = 1.03 and STILL clamps to
-    // 1.0 — with the 0..1 clamp in place, limb darkening is arithmetically
-    // invisible in the default bake. It is implemented at the radiance
-    // level anyway so that C12-19 (removes the clamp, retunes BrightPass)
-    // and C12-18 (moves the halo to the post-process chain) light it up
-    // without touching the law again. NOTE FOR C12-19: the clamp count is
-    // ASYMMETRIC across the pair — ONE site here (the final clamp at the
-    // bottom of main()) but SIX in the WebGPU CPU twin
-    // (WebGPUEnvironmentRenderer.createSunTexture: four in the half-float
-    // branch, two in the 8-bit branch), and the 8-bit branch cannot carry
-    // values above 1 at all. Do NOT "fix" the invisibility by
-    // scaling the glare down here: that dims the entire sun on both
-    // backends, and the reconciliation is exactly what C12-18/C12-19 own.
+    // C12-19 RESOLUTION OF THE OLD "HONEST LIMIT" NOTE HERE. That note said
+    // limb darkening was arithmetically invisible because alpha
+    // (`surface + 0.75*glare + burst`) clamped to 1. That was true of the
+    // BAKED-HALO composition — and C12-18 retired it: at the shipped default
+    // `u_haloGain` is 0, the glare and burst terms vanish exactly, and the
+    // alpha this bake writes is `surface` = `limb(x)`, which never reaches
+    // the clamp. So C12-18 was its own unmasking row, and over a dark sky
+    // this law already composites at 255 -> 77 codes on both backends.
+    // The saturation at the bottom of main() still binds on exactly one
+    // channel at the default — BLUE, where `surface + 0.2 > 1` — and there
+    // it is a WHITE POINT, not a radiance clamp: the `+0.2` is the hue term
+    // that makes the halo orange and the core white, so removing it turns
+    // the sun's core blue. C12-19 therefore delivers true radiance as an
+    // explicit LINEAR scale in `SunFS.glsl` (`u_discRadiance`, applied after
+    // `czm_gammaCorrect`) rather than by deleting a clamp. Do NOT "fix" any
+    // remaining alpha saturation on the `u_haloGain = 1` path by removing
+    // the clamp either — see the note at the bottom of main().
     float x = min(radius / u_radiusTS, 1.0);
     float mu = sqrt(max(0.0, 1.0 - x * x));
     float limb = u_limbDarkening.x + u_limbDarkening.y * mu + u_limbDarkening.z * mu * mu;
@@ -138,5 +139,28 @@ void main()
     // surrounding glow would read as a bug.
     color += clamp(burst, vec4(0.0), vec4(1.0)) * (0.15 * u_haloGain);
 
-    out_FragColor = clamp(color, vec4(0.0), vec4(1.0));
+    // C12-19 — the final saturation, SPLIT so that its two jobs are named and
+    // separable. Componentwise this is bit-for-bit the historical
+    // `clamp(color, vec4(0.0), vec4(1.0))`; nothing about the bake changes.
+    // What changes is that the next reader can see WHY neither half may be
+    // deleted:
+    //
+    //   * rgb is CHROMA — a white point, not a radiance. `+0.2` on blue is
+    //     what makes the halo orange and the core white; letting blue run to
+    //     1.2 gives a blue-cored sun. The disc's radiance is applied later,
+    //     in LINEAR space, by `SunFS.glsl`'s `u_discRadiance` multiply.
+    //
+    //   * alpha is a BLEND WEIGHT. Since C11-115 both backends draw this
+    //     billboard with ALPHA_BLEND, i.e. `dst = src.rgb*a + dst*(1 - a)`.
+    //     An alpha above 1 makes `1 - a` NEGATIVE and subtracts the sky — a
+    //     dark ring around the sun, which is the Batch-364 black-sky class.
+    //     On the `u_haloGain = 1` path the legacy baked halo drives alpha to
+    //     about 1.9, so the ring would be severe. This clamp is load-bearing.
+    //
+    // `sun-hdr-radiance.spec.mjs` REJECTS the mutant that removes either
+    // half, and the WebGPU CPU twin in
+    // `WebGPUEnvironmentRenderer.createSunTexture` carries the same split.
+    vec3 chroma = clamp(color.rgb, vec3(0.0), vec3(1.0));
+    float blendWeight = clamp(color.a, 0.0, 1.0);
+    out_FragColor = vec4(chroma, blendWeight);
 }

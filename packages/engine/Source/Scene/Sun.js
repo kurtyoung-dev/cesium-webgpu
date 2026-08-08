@@ -115,6 +115,12 @@ class Sun {
     this._haloAppearance = createSunHaloAppearance();
     this._haloGain = 1.0;
 
+    // C12-19 — the disc's linear radiance, applied in `SunFS.glsl` AFTER
+    // `czm_gammaCorrect`. Exactly 1.0 in SDR, so the billboard is unchanged
+    // bit-for-bit there. Not a bake input: it never touches
+    // `_bakedAppearanceKey`.
+    this._discRadiance = 1.0;
+
     const that = this;
     this._uniformMap = {
       u_texture: function () {
@@ -128,6 +134,9 @@ class Sun {
       },
       u_eclipseAlpha: function () {
         return that._eclipseAlpha;
+      },
+      u_discRadiance: function () {
+        return that._discRadiance;
       },
     };
   }
@@ -306,6 +315,10 @@ class Sun {
     );
     frameState.sunHalo = halo;
     this._haloGain = halo.bakeHaloGain;
+    // C12-19 — read from the SAME publication both bakes and the
+    // `SunPostProcess` bright pass read, so the WebGL uniform below cannot
+    // disagree with WebGPU's uniform slot about how bright the sun is.
+    this._discRadiance = halo.discRadiance;
 
     // Backend-specific rendering via Feature Renderer. Environment commands
     // are return-only: Scene publishes the result as sunDrawCommand, then the

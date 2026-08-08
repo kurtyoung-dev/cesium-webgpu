@@ -1,5 +1,6 @@
 import Color from "../Core/Color.js";
 import defined from "../Core/defined.js";
+import PixelDatatype from "../Renderer/PixelDatatype.js";
 import SunPostProcess from "./SunPostProcess.js";
 
 /**
@@ -50,9 +51,20 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
   // capability getter `supportsLegacySunBloom` (true on WebGL, false on
   // WebGPU) per CLAUDE.md §2.
   const supportsLegacySunBloom = context?.supportsLegacySunBloom !== false;
+  // C12-19 — the datatype `SunPostProcess` must be built with. Resolved the
+  // same way `SceneFramebuffer.update` resolves its own, because the scene
+  // renders INTO that pipeline's framebuffer whenever sun bloom is on: an
+  // 8-bit choice here clamps the whole HDR frame (see the constructor's
+  // vacuity note). Fixed at construction, so a `highDynamicRange` flip has to
+  // reconstruct — which is what the second block below does.
+  const sunBloomPixelDatatype = scene._hdr
+    ? context.halfFloatingPointTexture
+      ? PixelDatatype.HALF_FLOAT
+      : PixelDatatype.FLOAT
+    : PixelDatatype.UNSIGNED_BYTE;
   if (defined(scene.sun) && scene.sunBloom !== scene._sunBloom) {
     if (scene.sunBloom && !useWebVR && supportsLegacySunBloom) {
-      scene._sunPostProcess = new SunPostProcess();
+      scene._sunPostProcess = new SunPostProcess(sunBloomPixelDatatype);
     } else if (defined(scene._sunPostProcess)) {
       scene._sunPostProcess = scene._sunPostProcess.destroy();
     }
@@ -61,6 +73,18 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
   } else if (!defined(scene.sun) && defined(scene._sunPostProcess)) {
     scene._sunPostProcess = scene._sunPostProcess.destroy();
     scene._sunBloom = false;
+  }
+  // C12-19 — rebuild on an HDR flip. `PostProcessStage._pixelDatatype` has no
+  // setter and the stage's texture cache keys on it, so the only way to move
+  // this pipeline between dynamic ranges is to construct a new one. Compared
+  // against the instance's own recorded datatype rather than against a new
+  // `scene._*` mirror field, so there is no second source of truth to drift.
+  if (
+    defined(scene._sunPostProcess) &&
+    scene._sunPostProcess.pixelDatatype !== sunBloomPixelDatatype
+  ) {
+    scene._sunPostProcess.destroy();
+    scene._sunPostProcess = new SunPostProcess(sunBloomPixelDatatype);
   }
 
   const clear = scene._clearColorCommand;
