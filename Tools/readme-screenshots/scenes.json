@@ -1,0 +1,620 @@
+{
+  "$comment": "Manifest for Tools/readme-screenshots/capture-readme-screenshots.mjs. One entry per README feature-table row; `output` lands in Documentation/Images/webgpu-fork/. Kinds: `sandcastle` (a fork gallery demo, addressed by its packages/sandcastle/gallery folder and resolved to the standalone Apps/Sandcastle page through sandcastle.yaml legacyId), `viewer` (Apps/CesiumViewer with declarative camera/clock/settings/content), `page` (any other fork page). Every settings path is written AND read back; a path that does not exist or does not stick is STRUCTURAL (exit 3), never a silently wrong screenshot.",
+  "viewport": { "width": 1024, "height": 576 },
+  "scenes": [
+    {
+      "id": "renderer-webgpu-backend",
+      "group": "Renderer core & architecture",
+      "row": "WebGPU rendering backend",
+      "output": "renderer-webgpu-backend.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T16:00:00Z",
+      "view": { "lon": -95.0, "lat": 25.0, "height": 14000000.0, "pitch": -90.0 },
+      "settings": [
+        { "path": "scene.globe.enableLighting", "value": true },
+        { "path": "scene.globe.showGroundAtmosphere", "value": true },
+        { "path": "scene.skyAtmosphere.show", "value": true }
+      ],
+      "settleFrames": 420,
+      "minNonBlackPct": 0.2,
+      "minDistinct": 8
+    },
+    {
+      "id": "shader-pipeline-caches",
+      "group": "Renderer core & architecture",
+      "row": "WGSL shader pipeline & resource caches",
+      "output": "shader-pipeline-caches.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-async-resource-monitor",
+      "settleMs": 9000,
+      "minNonBlackPct": 0.15,
+      "minDistinct": 8
+    },
+    {
+      "id": "globe-terrain-imagery",
+      "group": "Globe & imagery",
+      "row": "Quadtree terrain & imagery",
+      "output": "globe-terrain-imagery.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T17:30:00Z",
+      "view": {
+        "lon": -112.12,
+        "lat": 36.02,
+        "height": 4200.0,
+        "heading": 15.0,
+        "pitch": -18.0
+      },
+      "settings": [
+        { "path": "scene.globe.enableLighting", "value": true },
+        { "path": "scene.globe.showGroundAtmosphere", "value": true }
+      ],
+      "settleFrames": 600,
+      "minNonBlackPct": 0.5,
+      "minDistinct": 10
+    },
+    {
+      "id": "globe-many-imagery-layers",
+      "group": "Globe & imagery",
+      "row": "Multi-layer imagery & reprojection",
+      "output": "globe-many-imagery-layers.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-many-imagery-layers",
+      "settleMs": 12000,
+      "minNonBlackPct": 0.3,
+      "minDistinct": 10
+    },
+    {
+      "id": "globe-night-lighting",
+      "group": "Globe & imagery",
+      "row": "Globe lighting, night lights & translucency",
+      "output": "globe-night-lighting.png",
+      "kind": "viewer",
+      "timeIso": "2026-01-15T02:30:00Z",
+      "view": { "lon": 12.0, "lat": 46.0, "height": 9000000.0, "pitch": -90.0 },
+      "settings": [
+        { "path": "scene.globe.enableLighting", "value": true },
+        { "path": "scene.globe.showGroundAtmosphere", "value": true },
+        { "path": "scene.globe.dynamicAtmosphereLighting", "value": true }
+      ],
+      "settleFrames": 420,
+      "minNonBlackPct": 0.1,
+      "minDistinct": 6
+    },
+    {
+      "id": "globe-vector-tiles",
+      "group": "Globe & imagery",
+      "row": "Vector-tile draping",
+      "output": "globe-vector-tiles.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-vector-tile-buffer-rendering",
+      "settleMs": 10000,
+      "minNonBlackPct": 0.25,
+      "minDistinct": 8
+    },
+    {
+      "id": "tiles-3d-core",
+      "group": "3D Tiles & Gaussian splats",
+      "row": "3D Tiles core formats",
+      "output": "tiles-3d-core.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T17:00:00Z",
+      "content": [
+        {
+          "type": "tileset",
+          "url": "/Apps/SampleData/Cesium3DTiles/Batched/BatchedWithBatchTable/tileset.json",
+          "zoomTo": true
+        }
+      ],
+      "settings": [{ "path": "scene.globe.enableLighting", "value": true }],
+      "settleFrames": 480,
+      "minNonBlackPct": 0.4,
+      "minDistinct": 8
+    },
+    {
+      "id": "tiles-point-cloud-edl",
+      "group": "3D Tiles & Gaussian splats",
+      "row": "Point clouds & eye-dome lighting",
+      "output": "tiles-point-cloud-edl.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T17:00:00Z",
+      "content": [
+        {
+          "type": "tileset",
+          "url": "/Apps/SampleData/Cesium3DTiles/PointCloud/PointCloudRGB/tileset.json",
+          "zoomTo": true,
+          "settings": [
+            { "path": "pointCloudShading.eyeDomeLighting", "value": true },
+            { "path": "pointCloudShading.attenuation", "value": true },
+            { "path": "maximumScreenSpaceError", "value": 4 }
+          ]
+        }
+      ],
+      "settleFrames": 480,
+      "minNonBlackPct": 0.1,
+      "minDistinct": 6
+    },
+    {
+      "id": "tiles-voxels",
+      "group": "3D Tiles & Gaussian splats",
+      "row": "Voxels",
+      "output": "tiles-voxels.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-voxel-pick",
+      "settleMs": 10000,
+      "minNonBlackPct": 0.1,
+      "minDistinct": 6
+    },
+    {
+      "id": "tiles-gaussian-splats",
+      "group": "3D Tiles & Gaussian splats",
+      "row": "Gaussian splats (3DGS)",
+      "output": "tiles-gaussian-splats.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T17:00:00Z",
+      "content": [
+        {
+          "type": "tileset",
+          "url": "/Specs/Data/Cesium3DTiles/GaussianSplats/tower/tileset.json",
+          "zoomTo": true
+        }
+      ],
+      "settleFrames": 600,
+      "minNonBlackPct": 0.1,
+      "minDistinct": 6
+    },
+    {
+      "id": "model-pbr",
+      "group": "glTF models, PBR & IBL",
+      "row": "glTF model pipeline & PBR",
+      "output": "model-pbr.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T17:00:00Z",
+      "content": [
+        {
+          "type": "model",
+          "url": "/Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb",
+          "lon": -123.0744619,
+          "lat": 44.0503706,
+          "height": 0.0,
+          "scale": 4.0,
+          "zoomTo": true
+        }
+      ],
+      "settings": [{ "path": "scene.globe.enableLighting", "value": true }],
+      "settleFrames": 480,
+      "minNonBlackPct": 0.4,
+      "minDistinct": 8
+    },
+    {
+      "id": "model-khr-extensions",
+      "group": "glTF models, PBR & IBL",
+      "row": "KHR material extensions",
+      "output": "model-khr-extensions.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T17:00:00Z",
+      "content": [
+        {
+          "type": "model",
+          "url": "/Apps/SampleData/models/TestKHRExtensions/TestKhrClearcoat.gltf",
+          "lon": -123.0744619,
+          "lat": 44.0503706,
+          "height": 0.0,
+          "scale": 40.0,
+          "zoomTo": true
+        }
+      ],
+      "settings": [{ "path": "scene.globe.enableLighting", "value": true }],
+      "settleFrames": 480,
+      "minNonBlackPct": 0.4,
+      "minDistinct": 8
+    },
+    {
+      "id": "model-ibl-dynamic-env",
+      "group": "glTF models, PBR & IBL",
+      "row": "Image-based lighting & dynamic environment maps",
+      "output": "model-ibl-dynamic-env.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T02:20:00Z",
+      "content": [
+        {
+          "type": "model",
+          "url": "/Apps/SampleData/models/CesiumBalloon/CesiumBalloon.glb",
+          "lon": -123.0744619,
+          "lat": 44.0503706,
+          "height": 30.0,
+          "scale": 8.0,
+          "zoomTo": true
+        }
+      ],
+      "settings": [
+        { "path": "scene.globe.enableLighting", "value": true },
+        { "path": "scene.highDynamicRange", "value": true },
+        { "path": "scene.skyAtmosphere.show", "value": true }
+      ],
+      "settleFrames": 600,
+      "minNonBlackPct": 0.3,
+      "minDistinct": 8
+    },
+    {
+      "id": "clouds-volumetric",
+      "group": "Clouds & weather",
+      "row": "Volumetric clouds",
+      "output": "clouds-volumetric.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T17:30:00Z",
+      "view": {
+        "lon": -121.6875,
+        "lat": 44.95,
+        "height": 9000.0,
+        "heading": 0.0,
+        "pitch": -6.0
+      },
+      "settings": [
+        { "path": "scene.globe.enableLighting", "value": true },
+        { "path": "scene.globe.defaultCloudCollection.volumetric.cloudLayerBottom", "value": 1500 },
+        { "path": "scene.globe.defaultCloudCollection.volumetric.cloudLayerTop", "value": 4000 },
+        { "path": "scene.globe.defaultCloudCollection.volumetric.cloudCoverage", "value": 0.45 },
+        { "path": "scene.globe.defaultCloudCollection.volumetric.cloudDensity", "value": 0.4 },
+        { "path": "scene.globe.defaultCloudCollection.enableVolumetric", "value": true }
+      ],
+      "settleFrames": 600,
+      "minNonBlackPct": 0.4,
+      "minDistinct": 8
+    },
+    {
+      "id": "clouds-weather-inspector",
+      "group": "Clouds & weather",
+      "row": "Weather-driven cloud dials",
+      "output": "clouds-weather-inspector.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-weather-inspector",
+      "settleMs": 14000,
+      "minNonBlackPct": 0.4,
+      "minDistinct": 8
+    },
+    {
+      "id": "weather-live-edr",
+      "group": "Clouds & weather",
+      "row": "Live weather ingest",
+      "output": "weather-live-edr.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-live-weather-edr",
+      "settleMs": 16000,
+      "minNonBlackPct": 0.3,
+      "minDistinct": 8
+    },
+    {
+      "id": "weather-particles",
+      "group": "Clouds & weather",
+      "row": "Weather particles",
+      "output": "weather-particles.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-weather-particles",
+      "settleMs": 12000,
+      "minNonBlackPct": 0.3,
+      "minDistinct": 8
+    },
+    {
+      "id": "atmosphere-sky",
+      "group": "Atmosphere, sky & celestial",
+      "row": "Sky atmosphere & aerial perspective",
+      "output": "atmosphere-sky.png",
+      "kind": "sandcastle",
+      "gallery": "atmospheric-conditions",
+      "settleMs": 12000,
+      "minNonBlackPct": 0.3,
+      "minDistinct": 8
+    },
+    {
+      "id": "atmosphere-dual-light",
+      "group": "Atmosphere, sky & celestial",
+      "row": "Dual-light atmosphere",
+      "output": "atmosphere-dual-light.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-dual-light-atmosphere",
+      "settleMs": 12000,
+      "minNonBlackPct": 0.08,
+      "minDistinct": 6
+    },
+    {
+      "id": "celestial-sun",
+      "group": "Atmosphere, sky & celestial",
+      "row": "Sun: limb darkening, glare & bloom",
+      "output": "celestial-sun.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T12:00:00Z",
+      "aim": "sun-disc",
+      "settings": [
+        { "path": "scene.sun.show", "value": true },
+        { "path": "scene.sunBloom", "value": true },
+        { "path": "scene.globe.show", "value": false }
+      ],
+      "settleFrames": 420,
+      "minNonBlackPct": 0.005,
+      "minDistinct": 3
+    },
+    {
+      "id": "celestial-moon",
+      "group": "Atmosphere, sky & celestial",
+      "row": "Moon: albedo, relief & phase",
+      "output": "celestial-moon.png",
+      "kind": "viewer",
+      "timeIso": "2026-07-13T12:00:00Z",
+      "aim": "moon-disc",
+      "settings": [
+        { "path": "scene.moon.show", "value": true },
+        { "path": "scene.globe.show", "value": false },
+        { "path": "scene.skyAtmosphere.show", "value": false }
+      ],
+      "settleFrames": 480,
+      "minNonBlackPct": 0.005,
+      "minDistinct": 3
+    },
+    {
+      "id": "celestial-stars",
+      "group": "Atmosphere, sky & celestial",
+      "row": "Stars: star map & bright-star catalogue",
+      "output": "celestial-stars.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-fullscreen-sky",
+      "settleMs": 12000,
+      "minNonBlackPct": 0.01,
+      "minDistinct": 4
+    },
+    {
+      "id": "celestial-eclipse",
+      "group": "Atmosphere, sky & celestial",
+      "row": "Eclipses & occultation",
+      "output": "celestial-eclipse.png",
+      "kind": "viewer",
+      "timeIso": "2024-04-08T18:17:16Z",
+      "view": { "lon": -104.0, "lat": 25.0, "height": 8000000.0, "pitch": -90.0 },
+      "settings": [
+        { "path": "scene.globe.enableLighting", "value": true },
+        { "path": "scene.globe.showGroundAtmosphere", "value": true },
+        { "path": "scene.skyAtmosphere.show", "value": true }
+      ],
+      "settleFrames": 480,
+      "minNonBlackPct": 0.15,
+      "minDistinct": 6
+    },
+    {
+      "id": "ocean-enhanced-waves",
+      "group": "Ocean & water",
+      "row": "Enhanced ocean, waves & tidal datum",
+      "output": "ocean-enhanced-waves.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T18:30:00Z",
+      "view": {
+        "lon": -157.85,
+        "lat": 21.24,
+        "height": 900.0,
+        "heading": 210.0,
+        "pitch": -9.0
+      },
+      "settings": [
+        { "path": "scene.globe.enableLighting", "value": true },
+        { "path": "scene.globe.showWaterEffect", "value": true },
+        { "path": "scene.globe.enableEnhancedOcean", "value": true }
+      ],
+      "settleFrames": 600,
+      "minNonBlackPct": 0.5,
+      "minDistinct": 8
+    },
+    {
+      "id": "ocean-water-mask",
+      "group": "Ocean & water",
+      "row": "Inland water mask & classification seam",
+      "output": "ocean-water-mask.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T17:00:00Z",
+      "view": {
+        "lon": -87.2,
+        "lat": 42.6,
+        "height": 60000.0,
+        "heading": 0.0,
+        "pitch": -35.0
+      },
+      "settings": [
+        { "path": "scene.globe.enableLighting", "value": true },
+        { "path": "scene.globe.showWaterEffect", "value": true }
+      ],
+      "settleFrames": 600,
+      "minNonBlackPct": 0.5,
+      "minDistinct": 8
+    },
+    {
+      "id": "shadows-csm",
+      "group": "Shadows & lighting",
+      "row": "Cascaded shadow maps",
+      "output": "shadows-csm.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T01:30:00Z",
+      "content": [
+        {
+          "type": "model",
+          "url": "/Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb",
+          "lon": -123.0744619,
+          "lat": 44.0503706,
+          "height": 0.0,
+          "scale": 6.0,
+          "zoomTo": true
+        }
+      ],
+      "settings": [
+        { "path": "shadows", "value": true },
+        { "path": "scene.globe.enableLighting", "value": true },
+        { "path": "scene.shadowMap.softShadows", "value": true }
+      ],
+      "settleFrames": 600,
+      "minNonBlackPct": 0.4,
+      "minDistinct": 8
+    },
+    {
+      "id": "shadows-point-light",
+      "group": "Shadows & lighting",
+      "row": "Point & spot light shadows",
+      "output": "shadows-point-light.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-point-light-shadows",
+      "settleMs": 12000,
+      "minNonBlackPct": 0.5,
+      "minDistinct": 8
+    },
+    {
+      "id": "lighting-clustered",
+      "group": "Shadows & lighting",
+      "row": "Forward+ clustered lighting & area lights",
+      "output": "lighting-clustered.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-clustered-lighting",
+      "settleMs": 12000,
+      "minNonBlackPct": 0.4,
+      "minDistinct": 8
+    },
+    {
+      "id": "pp-taa",
+      "group": "Post-processing",
+      "row": "Temporal anti-aliasing",
+      "output": "pp-taa.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-temporal-anti-aliasing",
+      "settleMs": 14000,
+      "minNonBlackPct": 0.3,
+      "minDistinct": 8
+    },
+    {
+      "id": "pp-ssr",
+      "group": "Post-processing",
+      "row": "Screen-space reflections",
+      "output": "pp-ssr.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-screen-space-reflections",
+      "settleMs": 12000,
+      "minNonBlackPct": 0.3,
+      "minDistinct": 8
+    },
+    {
+      "id": "pp-bloom-dof-tonemap",
+      "group": "Post-processing",
+      "row": "Bloom, depth of field, FXAA & tonemapping",
+      "output": "pp-bloom-dof-tonemap.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-depth-of-field",
+      "settleMs": 12000,
+      "minNonBlackPct": 0.3,
+      "minDistinct": 8
+    },
+    {
+      "id": "pp-god-rays-ao-ssgi",
+      "group": "Post-processing",
+      "row": "God rays, ambient occlusion & screen-space GI",
+      "output": "pp-god-rays-ao-ssgi.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-god-rays",
+      "settleMs": 12000,
+      "minNonBlackPct": 0.3,
+      "minDistinct": 8
+    },
+    {
+      "id": "pp-volumetric-fog",
+      "group": "Post-processing",
+      "row": "Volumetric fog",
+      "output": "pp-volumetric-fog.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T17:30:00Z",
+      "view": {
+        "lon": -121.6875,
+        "lat": 45.2735,
+        "height": 6000.0,
+        "heading": 15.0,
+        "pitch": -20.0
+      },
+      "settings": [
+        { "path": "scene.globe.enableLighting", "value": true },
+        { "path": "scene.globe.atmosphericConditions.volumetricFog.density", "value": 1.5 },
+        { "path": "scene.globe.atmosphericConditions.volumetricFog.maxDistance", "value": 30000 },
+        { "path": "scene.globe.atmosphericConditions.volumetricFog.enabled", "value": true }
+      ],
+      "settleFrames": 600,
+      "minNonBlackPct": 0.4,
+      "minDistinct": 8
+    },
+    {
+      "id": "collections-bulk-entities",
+      "group": "Points, vectors & collections",
+      "row": "Bulk entity, point & label collections",
+      "output": "collections-bulk-entities.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-bulk-vs-legacy-visualizers",
+      "settleMs": 14000,
+      "minNonBlackPct": 0.2,
+      "minDistinct": 8
+    },
+    {
+      "id": "collections-model-edges",
+      "group": "Points, vectors & collections",
+      "row": "Model edges & feature-ID edges",
+      "output": "collections-model-edges.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-edge-visibility",
+      "settleMs": 12000,
+      "minNonBlackPct": 0.2,
+      "minDistinct": 6
+    },
+    {
+      "id": "compute-instance-catalog",
+      "group": "Compute & performance",
+      "row": "GPU compute-instance system",
+      "output": "compute-instance-catalog.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-orbital-catalog",
+      "settleMs": 12000,
+      "minNonBlackPct": 0.08,
+      "minDistinct": 6
+    },
+    {
+      "id": "compute-high-density",
+      "group": "Compute & performance",
+      "row": "High-density culling, sorting & WASM bridges",
+      "output": "compute-high-density.png",
+      "kind": "sandcastle",
+      "gallery": "webgpu-sgp4-satellites",
+      "settleMs": 14000,
+      "minNonBlackPct": 0.08,
+      "minDistinct": 6
+    },
+    {
+      "id": "tooling-split-screen",
+      "group": "Build variants & tooling",
+      "row": "WebGL preservation, split-screen harness & build variants",
+      "output": "tooling-split-screen.png",
+      "kind": "page",
+      "url": "/Apps/WebGPUTest/split-screen-comparison.html",
+      "captureTarget": "page",
+      "settleMs": 16000,
+      "minNonBlackPct": 0.2,
+      "minDistinct": 8
+    },
+    {
+      "id": "tooling-debug-overlays",
+      "group": "Build variants & tooling",
+      "row": "Debug overlays & the probe fleet",
+      "output": "tooling-debug-overlays.png",
+      "kind": "viewer",
+      "timeIso": "2026-06-21T17:30:00Z",
+      "view": {
+        "lon": -112.12,
+        "lat": 36.02,
+        "height": 12000.0,
+        "heading": 15.0,
+        "pitch": -25.0
+      },
+      "settings": [{ "path": "scene.globe.enableLighting", "value": true }],
+      "calls": ["CesiumDebug.showWireframe"],
+      "settleFrames": 600,
+      "minNonBlackPct": 0.3,
+      "minDistinct": 8
+    }
+  ]
+}
