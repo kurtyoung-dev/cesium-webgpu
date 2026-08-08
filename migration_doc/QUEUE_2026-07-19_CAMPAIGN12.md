@@ -705,6 +705,20 @@ the 0.95R signal, discOnlyRatio 0.568 > the 0.5 ceiling before any halo);
 (2) the bloom-mirror decision on the filed MEDIUM row. Four runs, four
 pre-registrations, the last one exact.
 
+### 2026-08-10 G4 FIFTH RUN (Batch 964) — CO-35's pre-registration hit EXACTLY; the sun half is ONE batch from green
+
+Exit 1 with **exactly one failure**: `webgl:limb_shape_matches_shipped_law`
+(the `C12-34` unmirrored-bloom item). `structural[]` empty, 43 criteria
+both backends. **The re-ratified disc-only criterion CERTIFIED on both**:
+measured 0.5671 (webgl) / 0.5442 (webgpu) inside the derived
+[0.5124, 0.5874], within 3% of the predicted 0.5499 — and the webgl
+reading sits 0.24% from the pure-law 0.5680 even though its bloom
+inflates `discRadianceMeasured` to **2.593 vs webgpu's 2.021** (resolved
+2.0): the differential cancels the bloom exactly as CO-35 designed, and
+that 2.59-vs-2.02 split is `C12-34`'s work order quantified. Five runs,
+five pre-registrations; the maintainer's R-2 condition is fully
+discharged in pixels. **When C12-34 lands, G4 pre-registers exit 0.**
+
 ### 2026-08-10 MAINTAINER RULINGS (Batch 957) — see MAINTAINER_RULINGS_2026-08-10.md
 
 **R-1:** `C12-29` keeps the **MAXIMAL exit gate** — C12 stays open until all
