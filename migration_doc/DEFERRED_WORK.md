@@ -12847,3 +12847,14 @@ covering the fork's new features with completion %, notes/details, and a
 WebGPU SCREENSHOT per feature (grouped by subsystem; sourced from
 FEATURE_INVENTORY + the parity report; screenshots captured by a scripted
 Edge pass into `Documentation/Images/webgpu-fork/`, machine-lane owned).
+
+## MAINTAINER DIRECTIVE 2026-08-11b — UX-02 LOADING-SCREEN PARITY
+
+WebGPU must present the SAME loading experience as WebGL, i.e. the
+upstream one. Determine what the upstream/WebGL startup path shows while
+the viewer initializes (and through async WebGPU device/pipeline warmup,
+which takes longer than WebGL init), what the WebGPU path currently shows
+instead (fork-added splash, blank canvas, or other divergence), and make
+WebGPU use the upstream loading presentation - same DOM, same styling,
+same timing semantics, removed at the same readiness point. No fork-only
+loading chrome without the UX-01 dev-UI param.
