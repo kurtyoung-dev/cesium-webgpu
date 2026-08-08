@@ -690,6 +690,21 @@ files touched.
   celestial family + `probe-fleet-contract` **307/307**, no allowlisting;
   prettier + eslint clean on all three touched files.
 
+### 2026-08-09 G4 FOURTH RUN (Batch 950) — EXACT pre-registration hit; the G4 lane is INSTRUMENT-CLEAN
+
+Exit 1 with **precisely the three pre-registered reds and nothing else**:
+`limb_absoluteRatio_I095_over_I0_in_band` on both backends (the standing
+§5 maintainer item) and `webgl:limb_shape_matches_shipped_law` (the
+WEBGL-SUN-BLOOM-IS-AN-UNMIRRORED-ADDITIVE watch item). Both backends
+evaluated 43 criteria; `structural[]` empty; `nonVerdictMisroutes []`;
+earthshine parity certified. **Every red the gate now shows is a product
+question with a complete evidence set — none is the instrument.** The G4
+sun half closes on two decisions: (1) the §5 limb-ratio ruling (evidence:
+shipped radiance 2.0, composite 0.651/0.714, model 0.733, halo 55.7% of
+the 0.95R signal, discOnlyRatio 0.568 > the 0.5 ceiling before any halo);
+(2) the bloom-mirror decision on the filed MEDIUM row. Four runs, four
+pre-registrations, the last one exact.
+
 ### 2026-08-09 CO-30 verdict (Batch 947) — the B946 filing is REFUTED AND REPLACED; the fix is landed
 
 **WEBGL-SUN-APPEARANCE-STACK-DISENGAGED is REFUTED**: outside a rectangle
