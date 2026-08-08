@@ -67,7 +67,8 @@ import {
   DISC_AIM_TOLERANCE_PX,
   DISC_EPHEMERIS_TOLERANCE,
   EARTHSHINE_INERTNESS_FACTOR,
-  EARTHSHINE_INERTNESS_QUANTUM_FACTOR,
+  EARTHSHINE_INERTNESS_MIN_MUTANT_CODES,
+  EARTHSHINE_INERTNESS_QUANTILE,
   EARTHSHINE_MIN_CHANGED_PIXELS,
   EARTHSHINE_MIN_MASK_PIXELS,
   EARTHSHINE_MIN_MEDIAN_DELTA,
@@ -106,6 +107,7 @@ import {
   PENDING_CONTENT,
   SOLAR_ANGULAR_DIAMETER_NOMINAL_DEG,
   SOLAR_ANGULAR_DIAMETER_TOLERANCE,
+  STRUCTURAL_NON_VERDICT_MARKER,
   SURGE_REACHABLE_MAX_PHASE_ANGLE_DEG,
   TERMINATOR_DELTA_EPS,
   TERMINATOR_MAX_BAND_FRACTION,
@@ -920,6 +922,10 @@ function synthFullInertness(
       cy: MOON_MASK.cy,
       radius: MOON_RADIUS_PX * MOON_DISC_MASK_FRACTION,
       eps: TERMINATOR_DELTA_EPS,
+      // The certifying rank, requested exactly as the probe requests it
+      // (`G4-FOLLOWUP-EARTHSHINE-EXPOSURE`). A spec that censused the peak
+      // while the lane censused a rank would grade a statistic nobody runs.
+      quantile: EARTHSHINE_INERTNESS_QUANTILE,
     }),
     peakQuantumLinear,
   };
@@ -935,6 +941,11 @@ test("the full-moon unlit mask is EMPTY — which is why inertness is censused o
   const census = synthFullInertness(0.005);
   assert.ok(census.discPixels >= TERMINATOR_MIN_DISC_PIXELS);
   assert.ok(Number.isFinite(census.peakDelta));
+  // ...and the RANK the criterion actually reads is defined on the same mask
+  // (`G4-FOLLOWUP-EARTHSHINE-EXPOSURE`).
+  assert.equal(census.quantileLevel, EARTHSHINE_INERTNESS_QUANTILE);
+  assert.ok(Number.isFinite(census.quantileDelta));
+  assert.ok(census.quantileDelta <= census.peakDelta);
 });
 
 test("SYNTHETIC EARTHSHINE: the unlit limb lights, with the shipped ashen tint", () => {
@@ -1942,7 +1953,176 @@ test("FIX-2: every parity scalar declares the sub-lane it came from", () => {
   }
 });
 
-// --- FIX-3: the inertness bound has an instrument-resolution floor ----------
+// --- G4-FOLLOWUP-STRUCTURAL-PARITY-CHANNEL: a labelled non-verdict is never
+// --- a failure. The filing's MECHANISM is refuted below; the INVARIANT behind
+// --- it is given an enforceable home, which is what actually needed doing.
+
+/** Run `fn` with `console.error` captured. */
+function captureConsoleError(fn) {
+  const lines = [];
+  const original = console.error;
+  console.error = (...args) => lines.push(args.join(" "));
+  try {
+    return { value: fn(), lines };
+  } finally {
+    console.error = original;
+  }
+}
+
+test("FOLLOWUP-CHANNEL: the FILED mechanism is REFUTED — a gated scalar is on the STRUCTURAL channel already", () => {
+  // Batch 948 filed this follow-up believing FIX-2's gated entries reached
+  // `failures[]` and drove exit 1. They did not: exit 1 came from three
+  // per-backend criterion reds, and every gated entry was on `structural[]`.
+  // Re-stated here as an executable refutation over the same fixture shape.
+  const gl = evaluateG4Backend(structuralDiscBackend("webgl"));
+  const gpu = evaluateG4Backend(goodBackend("webgpu"));
+  const folded = foldG4Verdict({ webgl: gl, webgpu: gpu });
+  assert.deepEqual(
+    folded.failures.filter((f) =>
+      String(f).includes(STRUCTURAL_NON_VERDICT_MARKER),
+    ),
+    [],
+    "no labelled non-verdict may be a failure",
+  );
+  const gated = folded.structural.filter((s) =>
+    s.startsWith("cross-backend:discDiameterDeg_parity"),
+  );
+  assert.equal(gated.length, 1);
+  assert.ok(gated[0].endsWith(STRUCTURAL_NON_VERDICT_MARKER));
+  assert.deepEqual(folded.nonVerdictMisroutes, []);
+});
+
+test("FOLLOWUP-CHANNEL: EVERY fold-channel non-verdict carries the marker", () => {
+  // Four branches route to the structural channel for a reporting reason. An
+  // invariant keyed on a marker is only total if every branch stamps it, so
+  // each one is triggered and read rather than assumed.
+  // (d) arm-state difference caused by the AIM gate alone: both sides are
+  // handed the same LANDED content, so the only thing that can separate their
+  // arm states is webgl's structural disc lane.
+  const landed = {
+    bakeClampPresent: false,
+    discPeakLinear: 4.2,
+    ratioI095overI0: 0.4,
+  };
+  const gl = evaluateG4Backend({
+    ...structuralDiscBackend("webgl"),
+    limbAbsolute: landed,
+  });
+  const gpu = evaluateG4Backend({
+    ...goodBackend("webgpu"),
+    limbAbsolute: landed,
+  });
+  // (a) blocked source lane — already covered above; (b) no declared source
+  // lane; (c) not finite on both sides although the lane is clean.
+  gl.parityScalars = { ...gl.parityScalars, undeclaredScalar: 1 };
+  gpu.parityScalars = {
+    ...gpu.parityScalars,
+    undeclaredScalar: 2,
+    fullQuarterRatio: NaN,
+  };
+  const folded = foldG4Verdict({ webgl: gl, webgpu: gpu });
+  const channel = folded.structural.filter((s) =>
+    s.startsWith("cross-backend:"),
+  );
+  assert.ok(channel.length >= 4, `only ${channel.length} channel entries`);
+  for (const note of channel) {
+    assert.ok(
+      note.includes(STRUCTURAL_NON_VERDICT_MARKER),
+      `unmarked non-verdict: ${note}`,
+    );
+  }
+  assert.ok(channel.some((s) => /no declared source/.test(s)));
+  assert.ok(channel.some((s) => /not finite on both backends/.test(s)));
+  assert.ok(channel.some((s) => s.includes("limbAbsoluteArm_state")));
+  assert.deepEqual(folded.nonVerdictMisroutes, []);
+});
+
+test("FOLLOWUP-CHANNEL MUTANT — an UNGATED real parity red MUST still fail", () => {
+  // The filing's own required mutant, and the reason the invariant is keyed on
+  // the LABEL rather than on the `cross-backend:` prefix: a genuine parity
+  // disagreement between two lanes that could BOTH see their subject carries no
+  // label, so it must still reach `failures[]` and drive exit 1.
+  const gl = evaluateG4Backend(goodBackend("webgl"));
+  const drifted = goodBackend("webgpu");
+  drifted.disc = { ...drifted.disc, discDiameterDeg: 0.9 };
+  const folded = foldG4Verdict({
+    webgl: gl,
+    webgpu: evaluateG4Backend(drifted),
+  });
+  const red = folded.failures.find((f) =>
+    f.startsWith("cross-backend:discDiameterDeg_parity"),
+  );
+  assert.ok(red, "an ungated parity red must still be a FAILURE");
+  assert.ok(!red.includes(STRUCTURAL_NON_VERDICT_MARKER));
+  assert.equal(folded.exitCode, EXIT_CODE.FAIL);
+  assert.deepEqual(folded.nonVerdictMisroutes, []);
+});
+
+test("FOLLOWUP-CHANNEL MUTANT — a labelled entry that DOES reach failures[] is re-routed and NAMED", () => {
+  // The enforceable home. The mutant is a future branch that files a labelled
+  // non-verdict as a failure; the guard must move it, drop the verdict from
+  // FAIL to STRUCTURAL, and say so on a channel that is never pragma-stripped.
+  const gl = evaluateG4Backend(goodBackend("webgl"));
+  const gpu = evaluateG4Backend(goodBackend("webgpu"));
+  const label =
+    "cross-backend:invented_parity — STRUCTURAL: some future branch. " +
+    STRUCTURAL_NON_VERDICT_MARKER;
+  const injected = { ...gl, criteria: { ...gl.criteria, [label]: false } };
+  const { value: folded, lines } = captureConsoleError(() =>
+    foldG4Verdict({ webgl: injected, webgpu: gpu }),
+  );
+  assert.deepEqual(
+    folded.failures.filter((f) =>
+      String(f).includes(STRUCTURAL_NON_VERDICT_MARKER),
+    ),
+    [],
+  );
+  assert.equal(folded.nonVerdictMisroutes.length, 1);
+  assert.ok(folded.structural.some((s) => s.includes(label)));
+  assert.equal(folded.exitCode, EXIT_CODE.STRUCTURAL);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /re-routed to the structural channel/);
+
+  // NEGATIVE CONTROL — an ordinary failure is left exactly where it was, and
+  // the sentinel stays silent.
+  const ordinary = {
+    ...gl,
+    criteria: { ...gl.criteria, some_real_predicate: false },
+  };
+  const clean = captureConsoleError(() =>
+    foldG4Verdict({ webgl: ordinary, webgpu: gpu }),
+  );
+  assert.ok(clean.value.failures.includes("webgl:some_real_predicate"));
+  assert.equal(clean.value.exitCode, EXIT_CODE.FAIL);
+  assert.deepEqual(clean.value.nonVerdictMisroutes, []);
+  assert.deepEqual(clean.lines, []);
+});
+
+test("FOLLOWUP-CHANNEL: the summary carries the invariant's own result", () => {
+  const gl = evaluateG4Backend(goodBackend("webgl"));
+  const gpu = evaluateG4Backend(goodBackend("webgpu"));
+  const folded = foldG4Verdict({ webgl: gl, webgpu: gpu });
+  const summary = buildG4Summary({
+    ...folded,
+    backends: { webgl: gl, webgpu: gpu },
+  });
+  // Printed unconditionally, so a reader sees the invariant was CHECKED rather
+  // than inferring it from an absence.
+  assert.deepEqual(summary.nonVerdictMisroutes, []);
+  assert.equal(
+    summary.bounds.STRUCTURAL_NON_VERDICT_MARKER,
+    STRUCTURAL_NON_VERDICT_MARKER,
+  );
+});
+
+// --- FIX-3: the capture's own quantization step, measured AT THE PIXEL -------
+//
+// The two helpers below are unchanged by
+// `G4-FOLLOWUP-EARTHSHINE-EXPOSURE`. What changed is the JOB the quantum does:
+// it no longer floors the inertness BOUND (see the FOLLOWUP block after them),
+// it states whether the constant-term mutant is resolvable at all. Both are
+// still load-bearing, and both are still the only place the mirror of the
+// C12-02 selection rule is checked against the rule itself.
 
 test("FIX-3: the capture quantum is the SHIPPED display chain's own code step", () => {
   // Both figures are Batch 941's peak-delta pixels, read off its own PNGs.
@@ -2011,20 +2191,349 @@ test("FIX-3: chooseBracketLeg picks what stitchBracketLinear picks", () => {
   assert.ok(Number.isNaN(bracketQuantumAt([lo, hi], NaN)));
 });
 
-test("FIX-3 MUTANT REJECTED — a bound BELOW the capture quantum cannot certify", () => {
-  // The Batch-941 bound, reconstructed: 3 * crescent * (scaleFull/scaleCrescent)
-  // is 3.9e-5, four orders of magnitude under one code step. The measured
-  // full-moon peaks (0.008876 webgl, 0.016449 webgpu) are BELOW one quantum,
-  // and both scored red.
+// --- G4-FOLLOWUP-EARTHSHINE-EXPOSURE: the census reads a RANK, not the peak --
+//
+// Batch 948's own numbers are the input to every derivation below, so the
+// arithmetic that justified the change is executable rather than recited.
+const RUN948 = Object.freeze({
+  discPixels: 246832,
+  scaleCrescent: 0.880139447663971,
+  scaleQuarter: 0.5002862786656523,
+  scaleFull: 3.273084444154195e-4,
+  webgl: Object.freeze({
+    crescentMedianDelta: 0.03477632023848592,
+    peakDelta: 0.01704819024525972,
+    peakQuantumLinear: 0.01924738563549866,
+    changedPixels: 431,
+    darkenedPixels: 13,
+  }),
+  webgpu: Object.freeze({
+    crescentMedianDelta: 0.03473231374271182,
+    peakDelta: 0.0213296636398278,
+    peakQuantumLinear: 0.02508651275798124,
+    changedPixels: 311,
+    darkenedPixels: 7,
+  }),
+});
+
+/** The Batch-948 lane input for one backend, with the rank reading supplied. */
+function run948Earthshine(renderer, quantileDelta) {
+  const shipped = goodEarthshine();
+  const r = RUN948[renderer];
+  return {
+    ...shipped,
+    scaleCrescent: RUN948.scaleCrescent,
+    scaleQuarter: RUN948.scaleQuarter,
+    scaleFull: RUN948.scaleFull,
+    crescent: { ...shipped.crescent, medianDelta: r.crescentMedianDelta },
+    full: {
+      ...shipped.full,
+      discPixels: RUN948.discPixels,
+      changedPixels: r.changedPixels,
+      darkenedPixels: r.darkenedPixels,
+      peakDelta: r.peakDelta,
+      peakQuantumLinear: r.peakQuantumLinear,
+      quantileLevel: EARTHSHINE_INERTNESS_QUANTILE,
+      quantileDelta,
+    },
+  };
+}
+
+test("FOLLOWUP-EXPOSURE: the PEAK statistic reads one code step BY CONSTRUCTION", () => {
+  // The premise of the whole re-derivation, stated as arithmetic over the run's
+  // own numbers rather than as a claim. `peakDelta / quantum` is within one
+  // code step of unity on BOTH backends — a max over ~247,000 differences of
+  // two independently quantized captures lands on a single flipped code.
+  for (const renderer of ["webgl", "webgpu"]) {
+    const r = RUN948[renderer];
+    const codes = r.peakDelta / r.peakQuantumLinear;
+    assert.ok(
+      codes > 0.8 && codes < 1.0,
+      `${renderer}: peakDelta is ${codes} code steps, not a signal`,
+    );
+    // ...and pixels got DARKER when an ADDITIVE term was switched ON, which
+    // settles it as readback noise rather than a faint real response.
+    assert.ok(r.darkenedPixels > 0);
+  }
+});
+
+test("FOLLOWUP-EXPOSURE: FIX-3's per-pixel floor could not survive Batch 948", () => {
+  // Why the floor had to go rather than be widened: at the webgpu quantum, the
+  // OLD `1.5 * quantum` floor is ABOVE the constant-term mutant it must reject,
+  // so FIX-3's own cap fired and the lane went STRUCTURAL. It was right to.
+  const oldFloor = 1.5 * RUN948.webgpu.peakQuantumLinear;
+  assert.ok(
+    oldFloor > RUN948.webgpu.crescentMedianDelta,
+    `the old floor ${oldFloor} must be shown ABOVE the mutant ` +
+      `${RUN948.webgpu.crescentMedianDelta} — that is the defect being fixed`,
+  );
+  // And no factor rescues it: even ONE whole quantum leaves a 1.38x margin, so
+  // any floor with slack in it reaches the mutant on this backend.
+  assert.ok(
+    RUN948.webgpu.crescentMedianDelta / RUN948.webgpu.peakQuantumLinear < 1.5,
+  );
+});
+
+test("FOLLOWUP-EXPOSURE: a DEEPER BRACKET cannot reach the census pixel", () => {
+  // The other option the filing offered, refuted with the shipped selection
+  // rule rather than by assertion. The full-moon peak reads ~239 at 1x, which
+  // is UNSATURATED, so `chooseBracketLeg` takes 1x — and keeps taking it
+  // whatever else is in the bracket. A 0.5x leg would be 3.1x finer and is
+  // never reached.
+  const w = 1;
+  const h = 1;
+  const mk = (codes, exposureFactor) => ({
+    data: new Uint8ClampedArray([...codes, 255]),
+    width: w,
+    height: h,
+    exposureFactor,
+  });
+  const at1x = [238, 239, 235];
+  const at8x = [254, 254, 252];
+  const atHalf = [178, 179, 175];
+  const legs = [mk(at1x, 1), mk(at8x, 8), mk(atHalf, 0.5)];
+  assert.equal(chooseBracketLeg(legs, 0).exposureFactor, 1);
+  // ...and the stitch agrees, which is what makes this a property of the
+  // shipped rule and not of the mirror.
+  const stitched = stitchBracketLinear(legs);
+  const expected = displayToLinear(at1x[0], at1x[1], at1x[2], 1);
+  assert.ok(Math.abs(stitched.data[1] - expected[1]) < 1e-12);
+  // The quantum the unreachable leg would have offered, on the record.
+  const coarse = captureCodeQuantumLinear(at1x, 1);
+  const fine = captureCodeQuantumLinear(atHalf, 0.5);
+  assert.ok(
+    coarse / fine > 3,
+    `the 0.5x leg is ${coarse / fine}x finer and unreachable`,
+  );
+  assert.ok(Math.abs(coarse - RUN948.webgpu.peakQuantumLinear) < 1e-9);
+});
+
+test("FOLLOWUP-EXPOSURE: the 0.95 rank is the geometric midpoint of what it separates", () => {
+  // NULL — the worse backend's measured readback-flip fraction.
+  const noise = RUN948.webgl.changedPixels / RUN948.discPixels;
+  // MUTANT — the constant term moves at least one code at the COARSEST pixel
+  // the census can see, so its brightened fraction is 1.0.
+  const mutantCodes =
+    RUN948.webgpu.crescentMedianDelta / RUN948.webgpu.peakQuantumLinear;
+  assert.ok(mutantCodes >= EARTHSHINE_INERTNESS_MIN_MUTANT_CODES);
+  const midpoint = Math.sqrt(noise * 1.0);
+  assert.ok(
+    Math.abs(midpoint - 0.0418) < 5e-4,
+    `midpoint ${midpoint} must reproduce the recorded 4.18e-2`,
+  );
+  assert.equal(EARTHSHINE_INERTNESS_QUANTILE, 0.95);
+  const tail = 1 - EARTHSHINE_INERTNESS_QUANTILE;
+  assert.ok(tail / noise > 20, `only ${tail / noise}x above the noise floor`);
+  assert.ok(1.0 / tail > 15, `only ${1.0 / tail}x below the mutant`);
+});
+
+test("FOLLOWUP-EXPOSURE: the rank reads ZERO on Batch 948's own census population", () => {
+  // Constructed from the recorded counts, not from a re-run: 431 brightened and
+  // 13 darkened pixels in a 246,832-pixel disc puts the 95th percentile deep
+  // inside the zeros. The census is exercised, not stubbed.
+  for (const renderer of ["webgl", "webgpu"]) {
+    const r = RUN948[renderer];
+    const on = {
+      data: new Float64Array(RUN948.discPixels * 4),
+      width: 1,
+      height: 1,
+    };
+    const off = {
+      data: new Float64Array(RUN948.discPixels * 4),
+      width: 1,
+      height: 1,
+    };
+    for (let k = 0; k < r.changedPixels; k++) {
+      on.data[4 * k + 1] = r.peakQuantumLinear / 0.7152;
+    }
+    for (let k = 0; k < r.darkenedPixels; k++) {
+      const i = 4 * (RUN948.discPixels - 1 - k);
+      off.data[i + 1] = r.peakQuantumLinear / 0.7152;
+    }
+    // One row, so the "disc" is the whole strip.
+    on.width = RUN948.discPixels;
+    off.width = RUN948.discPixels;
+    const census = discDeltaCensus(on, off, {
+      cx: RUN948.discPixels / 2,
+      cy: 0.5,
+      radius: RUN948.discPixels,
+      eps: TERMINATOR_DELTA_EPS,
+      quantile: EARTHSHINE_INERTNESS_QUANTILE,
+    });
+    assert.equal(census.discPixels, RUN948.discPixels);
+    assert.equal(census.changedPixels, r.changedPixels);
+    assert.equal(census.darkenedPixels, r.darkenedPixels);
+    assert.equal(census.quantileDelta, 0);
+    // The PEAK on the same population is one whole code step — the statistic
+    // that could not certify, measured side by side with the one that can.
+    assert.ok(Math.abs(census.peakDelta - r.peakQuantumLinear) < 1e-12);
+    // A census that was NOT asked for a rank reports NaN, never 0: "not
+    // measured" must not be readable as "measured zero", which is exactly the
+    // reading that would certify.
+    const unasked = discDeltaCensus(on, off, {
+      cx: RUN948.discPixels / 2,
+      cy: 0.5,
+      radius: RUN948.discPixels,
+      eps: TERMINATOR_DELTA_EPS,
+    });
+    assert.equal(unasked.quantileLevel, null);
+    assert.ok(Number.isNaN(unasked.quantileDelta));
+  }
+});
+
+test("FOLLOWUP-EXPOSURE: Batch 948's STRUCTURAL webgpu lane now CERTIFIES", () => {
+  // The regression this follow-up exists to remove, pinned on both backends.
+  for (const renderer of ["webgl", "webgpu"]) {
+    const verdict = evaluateEarthshineSubLane(run948Earthshine(renderer, 0));
+    assert.deepEqual(
+      verdict.structural,
+      [],
+      `${renderer} must no longer be structural`,
+    );
+    assert.equal(verdict.criteria.earthshine_inert_at_full_moon, true);
+    assert.equal(verdict.inertnessCensusQuantile, 0.95);
+    assert.equal(verdict.inertnessCensusDelta, 0);
+    assert.match(verdict.inertnessBoundSource, /phase-scaled crescent delta/);
+    // The bound is the PHYSICAL one again — 1.387e-4, not a quantum multiple.
+    assert.ok(
+      Math.abs(verdict.inertnessBound - 1.3875e-4) < 1e-7,
+      `bound ${verdict.inertnessBound}`,
+    );
+    // ...and both caps are provable WITH MARGIN, printed with the verdict.
+    assert.ok(
+      verdict.inertnessMutantMargin > 200,
+      `bound-vs-mutant margin ${verdict.inertnessMutantMargin}`,
+    );
+    assert.ok(
+      verdict.inertnessResolvabilityMargin > 1.3,
+      `resolvability margin ${verdict.inertnessResolvabilityMargin}`,
+    );
+    assert.ok(verdict.inertnessBrightenedFraction < 0.002);
+    // The old statistic is still reported, as the diagnostic it now is.
+    assert.equal(verdict.fullPeakDelta, RUN948[renderer].peakDelta);
+  }
+});
+
+test("FOLLOWUP-EXPOSURE MUTANT REJECTED — the pre-C12-21 CONSTANT term, at Batch 948's own framing", () => {
+  // The requirement the re-derivation is capped by, now on the rank statistic:
+  // the constant term brightens the WHOLE disc, so the 95th percentile reads
+  // its full amplitude and the criterion must go red on both backends.
+  for (const renderer of ["webgl", "webgpu"]) {
+    const level = RUN948[renderer].crescentMedianDelta;
+    const verdict = evaluateEarthshineSubLane(
+      run948Earthshine(renderer, level),
+    );
+    assert.deepEqual(verdict.structural, []);
+    assert.equal(
+      verdict.criteria.earthshine_inert_at_full_moon,
+      false,
+      `${renderer}: the constant term must be rejected`,
+    );
+    assert.ok(
+      level / verdict.inertnessBound > 200,
+      `rejection margin ${level / verdict.inertnessBound}`,
+    );
+  }
+  // And the same mutant on REAL synthetic pixels, where the census runs for
+  // itself rather than being handed a number.
+  const constantTerm = synthEarthshine(0.12, 1.0);
+  const verdict = evaluateEarthshineSubLane({
+    enableEarthshine: true,
+    aimDistancePx: 0,
+    scaleCrescent: 0.88,
+    scaleQuarter: 0.5,
+    scaleFull: 0.02,
+    crescent: constantTerm,
+    quarter: synthEarthshine(0.5, 1.0),
+    full: synthFullInertness(1.0),
+  });
+  assert.equal(verdict.criteria.earthshine_inert_at_full_moon, false);
+  assert.ok(verdict.inertnessCensusDelta > 10 * verdict.inertnessBound);
+});
+
+test("FOLLOWUP-EXPOSURE: an UNRESOLVABLE mutant is STRUCTURAL, never a weaker certification", () => {
+  // FIX-3's cap, restated for the rank statistic and still enforced rather than
+  // assumed: if one code step reaches the mutant's own amplitude, a 100%
+  // constant term could move zero codes and the census would certify blind.
+  const blind = evaluateEarthshineSubLane({
+    ...run948Earthshine("webgpu", 0),
+    // One code worth more than the 0.03473 mutant.
+    full: {
+      ...run948Earthshine("webgpu", 0).full,
+      peakQuantumLinear: 0.05,
+    },
+  });
+  assert.deepEqual(blind.criteria, {});
+  assert.equal(blind.pass, false);
+  assert.ok(
+    blind.structural.some((s) => /cannot resolve its own target/.test(s)),
+    `structural: ${blind.structural}`,
+  );
+  // The cap sits exactly at one code step, and 1.0 is a RESOLVABILITY
+  // precondition rather than slack — so the shipped margins must clear it.
+  assert.equal(EARTHSHINE_INERTNESS_MIN_MUTANT_CODES, 1.0);
+  for (const renderer of ["webgl", "webgpu"]) {
+    const r = RUN948[renderer];
+    assert.ok(
+      r.crescentMedianDelta / r.peakQuantumLinear >
+        EARTHSHINE_INERTNESS_MIN_MUTANT_CODES,
+    );
+  }
+  // A MISSING quantum is structural too — the census cannot state its own
+  // resolution, so it does not certify.
+  const noQuantum = evaluateEarthshineSubLane({
+    ...run948Earthshine("webgpu", 0),
+    full: {
+      ...run948Earthshine("webgpu", 0).full,
+      peakQuantumLinear: undefined,
+    },
+  });
+  assert.deepEqual(noQuantum.criteria, {});
+  assert.ok(
+    noQuantum.structural.some((s) => /cannot state its own resolution/.test(s)),
+  );
+  // ...and so is a BOUND that has reached the mutant, which is the literal
+  // FIX-3 cap: it fires when the phase scaling stops being small.
+  const wideBound = evaluateEarthshineSubLane({
+    ...run948Earthshine("webgpu", 0),
+    scaleFull: RUN948.scaleCrescent,
+  });
+  assert.deepEqual(wideBound.criteria, {});
+  assert.ok(
+    wideBound.structural.some((s) => /cannot see its own target/.test(s)),
+  );
+});
+
+test("FOLLOWUP-EXPOSURE MUTANT REJECTED — a census taken at the WRONG rank cannot certify", () => {
+  // A probe that stopped passing the level, or passed a different one, would
+  // otherwise hand the evaluator a number graded against a bound derived
+  // somewhere else. This is the drift guard between the two files.
+  for (const level of [undefined, null, 0.5, 0.99]) {
+    const verdict = evaluateEarthshineSubLane({
+      ...run948Earthshine("webgpu", 0),
+      full: {
+        ...run948Earthshine("webgpu", 0).full,
+        quantileLevel: level,
+      },
+    });
+    assert.deepEqual(verdict.criteria, {}, `level ${level} must not certify`);
+    assert.ok(verdict.structural.some((s) => /drifted apart/.test(s)));
+  }
+  // The probe must therefore request exactly the level the evaluator derives.
+  const probeSource = readNormalized("./probe-celestial-gates.mjs");
+  assert.match(probeSource, /quantile: EARTHSHINE_INERTNESS_QUANTILE,/);
+});
+
+test("FOLLOWUP-EXPOSURE: the phase-scaled bound is UNMEASURABLE alone — which is why the rank is needed", () => {
+  // Retained from FIX-3, because it is still the reason the criterion cannot
+  // simply be a magnitude test on a per-pixel statistic: 1.387e-4 is 71x below
+  // one code step, and its PHYSICAL term alone is 253x below.
   const shipped = goodEarthshine();
   const phaseOnlyBound =
     EARTHSHINE_INERTNESS_FACTOR *
       shipped.crescent.medianDelta *
-      (3.273084444154195e-4 / 0.880139447663971) +
+      (RUN948.scaleFull / RUN948.scaleCrescent) +
     TERMINATOR_DELTA_EPS;
-  // 1.387e-4 against a 9.804e-3 code step — 71x below the smallest difference
-  // the readback can express, and its PHYSICAL term alone (3.87e-5, the rest is
-  // TERMINATOR_DELTA_EPS) is 253x below.
   assert.ok(
     phaseOnlyBound < RUN941_WEBGL_PEAK_QUANTUM / 50,
     `the phase-only bound (${phaseOnlyBound}) must be far below one code step`,
@@ -2032,89 +2541,9 @@ test("FIX-3 MUTANT REJECTED — a bound BELOW the capture quantum cannot certify
   assert.ok(
     phaseOnlyBound - TERMINATOR_DELTA_EPS < RUN941_WEBGL_PEAK_QUANTUM / 200,
   );
-
-  // The SHIPPED evaluator floors it, and the real run's readings now pass.
-  for (const [peakDelta, quantum] of [
-    [0.008875830607049995, 0.00980414014788722],
-    [0.016448991872372476, 0.019237402711809515],
-  ]) {
-    const verdict = evaluateEarthshineSubLane({
-      ...shipped,
-      scaleCrescent: 0.880139447663971,
-      scaleQuarter: 0.5002862786656523,
-      scaleFull: 3.273084444154195e-4,
-      full: {
-        ...shipped.full,
-        peakDelta,
-        peakQuantumLinear: quantum,
-      },
-    });
-    assert.equal(
-      verdict.criteria.earthshine_inert_at_full_moon,
-      true,
-      `peakDelta ${peakDelta} is ${(peakDelta / quantum).toFixed(2)} of one code step`,
-    );
-    assert.match(verdict.inertnessBoundSource, /instrument-resolution floor/);
-    assert.ok(verdict.inertnessMutantMargin > 1);
-  }
-});
-
-test("FIX-3: the floored bound STILL rejects the pre-C12-21 CONSTANT term", () => {
-  // The requirement the re-derivation is capped by. The constant term lights
-  // the full moon exactly as hard as the crescent — Batch 941's crescent median
-  // was 0.0348 — and the floored bound must stay below that on BOTH backends.
-  const shipped = goodEarthshine();
-  for (const quantum of [0.00980414014788722, 0.019237402711809515]) {
-    const verdict = evaluateEarthshineSubLane({
-      ...shipped,
-      scaleCrescent: 0.880139447663971,
-      scaleQuarter: 0.5002862786656523,
-      scaleFull: 3.273084444154195e-4,
-      crescent: { ...shipped.crescent, medianDelta: 0.03477632023848592 },
-      full: {
-        ...shipped.full,
-        peakDelta: 0.03477632023848592,
-        peakQuantumLinear: quantum,
-      },
-    });
-    assert.equal(
-      verdict.criteria.earthshine_inert_at_full_moon,
-      false,
-      `the constant term must be rejected at quantum ${quantum}`,
-    );
-    assert.ok(
-      verdict.inertnessBound < 0.03477632023848592,
-      `bound ${verdict.inertnessBound} must stay under the mutant's amplitude`,
-    );
-  }
-  assert.equal(EARTHSHINE_INERTNESS_QUANTUM_FACTOR, 1.5);
-  // The cap that fixes 1.5: any larger round factor would reach the mutant on
-  // the worse of the two backends.
-  assert.ok(
-    EARTHSHINE_INERTNESS_QUANTUM_FACTOR <
-      0.03477632023848592 / 0.019237402711809515,
-  );
-});
-
-test("FIX-3: a quantum-limited bound is STRUCTURAL, never a weaker certification", () => {
-  const shipped = goodEarthshine();
-  const verdict = evaluateEarthshineSubLane({
-    ...shipped,
-    full: { ...shipped.full, peakDelta: 1e-6, peakQuantumLinear: 0.2 },
-  });
-  assert.deepEqual(verdict.criteria, {});
-  assert.equal(verdict.pass, false);
-  assert.ok(
-    verdict.structural.some((s) => /cannot see its own target/.test(s)),
-  );
-  // ...and a MISSING quantum is structural too, not a silent fall-back to the
-  // unmeasurable bound.
-  const noQuantum = evaluateEarthshineSubLane({
-    ...shipped,
-    full: { ...shipped.full, peakQuantumLinear: undefined },
-  });
-  assert.deepEqual(noQuantum.criteria, {});
-  assert.ok(noQuantum.structural.some((s) => /no honest[\s\S]*floor/.test(s)));
+  // The rank is what makes it measurable: zero is comfortably under a bound no
+  // per-pixel reading could ever be under.
+  assert.ok(0 <= phaseOnlyBound);
 });
 
 // --- FIX-4: the limb arm is gated on the lane its number comes from ---------

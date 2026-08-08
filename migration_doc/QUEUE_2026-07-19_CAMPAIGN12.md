@@ -631,6 +631,65 @@ entries labeled "NOT a verdict" still land in failures[] and drive exit 1
 G4-FOLLOWUP-STRUCTURAL-PARITY-CHANNEL. With those two, the G4 sun half is
 one maintainer ruling + one bloom-mirror decision from fully green.
 
+#### 2026-08-09 CO-31 note — both follow-ups built; ONE of the two filings above is REFUTED (appended; the stamp stands otherwise)
+
+**Instruments only** (`Tools/visual-regression/**` + this note); zero engine
+files touched.
+
+- **(ii) G4-FOLLOWUP-STRUCTURAL-PARITY-CHANNEL — the recorded MECHANISM is
+  REFUTED.** Re-folding this run's own `backends` object at the B948 commit
+  puts all three gated entries on `structural[]` and `failures[]` holds
+  exactly `webgl:limb_shape_matches_shipped_law` +
+  `webgl/webgpu:limb_absoluteRatio…`. FIX-2 was already routing correctly;
+  exit 1 came from the three per-backend criterion reds, not from the parity
+  entries. What was real is the INVARIANT, so it got an **enforceable home**
+  instead of a point fix: `STRUCTURAL_NON_VERDICT_MARKER` is now stamped on
+  **all four** fold-channel branches (blocked source lane, undeclared source
+  lane, non-finite-on-both, aim-gated arm state — only one carried it
+  before), and `foldG4Verdict` ends with a permanent sentinel that re-routes
+  any marked entry reaching `failures[]`, `console.error`s the misroute by
+  name, and publishes `nonVerdictMisroutes` (normally `[]`) on the verdict and
+  in the summary. Mutants both directions: an injected labelled failure is
+  moved and drops the verdict 1→3; an UNGATED real parity red still fails at
+  exit 1 and the sentinel stays silent.
+- **(i) G4-FOLLOWUP-EARTHSHINE-EXPOSURE — the census now reads a RANK, and the
+  EXPOSURE option is refuted on the shipped selection rule.** A deeper bracket
+  cannot reach the pixel that produced the reading: `stitchBracketLinear` (and
+  its mirror `chooseBracketLeg`) take the HIGHEST unsaturated leg, the
+  full-moon peak reads ~239 at 1x against `BRACKET_SATURATION_CODE` 250, so 1x
+  is chosen and stays chosen — a higher leg saturates and is skipped, and the
+  0.5x leg that would be **3.1x finer** (8.1e-3 vs 0.0251) is never reached.
+  Only a change to the C12-02 rule all four gates share could reach it. So the
+  lane's other named option was taken: `earthshine_inert_at_full_moon` is
+  censused at the **95th percentile** of the disc delta
+  (`EARTHSHINE_INERTNESS_QUANTILE`) instead of the peak. DERIVED as the
+  geometric midpoint of the two fractions it separates, both MEASURED here:
+  null readback noise 431/246,832 = 1.75e-3 (webgl, the worse side) and the
+  constant-term mutant's 1.0 → `sqrt(1.746e-3) = 4.18e-2` → 0.05, i.e. 28.6x
+  above the noise and 20x below the mutant. The peak's null reading was one
+  code step **by construction** (`peakDelta/quantum` 0.89 webgl, 0.85 webgpu,
+  with 13 and 7 pixels going DARKER under an additive term); the rank's null
+  reading is **exactly 0** at these counts, so FIX-3's per-pixel instrument
+  floor is not just relaxed but **removed** — the bound is the PHYSICAL
+  1.387e-4 again, and the mutant rejection margin is **250x** instead of 1.20x.
+  FIX-3's cap survives, restated: `EARTHSHINE_INERTNESS_MIN_MUTANT_CODES = 1.0`
+  requires the mutant to move at least one code at the coarsest pixel the
+  census can see (measured 1.81x webgl / 1.38x webgpu), and violating it is
+  STRUCTURAL, not a weaker certification. A missing quantum and a census taken
+  at the WRONG rank are structural too (the probe↔evaluator drift guard).
+- **PRE-REGISTERED FOR THE NEXT G4 RUN**, computed by re-running the new
+  evaluator over THIS run's recorded per-backend inputs: webgpu earthshine
+  leaves the structural channel, both backends evaluate **43 criteria**, the
+  two earthshine parity scalars CERTIFY (spread 1.27e-3 and 4.97e-6 against
+  bounds 0.15/0.40), `structural[]` is **empty**, `nonVerdictMisroutes` is
+  `[]`, and the gate reads **exit 1 with exactly three reds**: `limb_absoluteRatio`
+  on both backends (the standing §5 maintainer item) and webgl
+  `limb_shape_matches_shipped_law` (the unmirrored-bloom watch item). Anything
+  else is news.
+- Gates: `celestial-g4-gate.spec.mjs` 94/94 (13 new, incl. 6 mutants), whole
+  celestial family + `probe-fleet-contract` **307/307**, no allowlisting;
+  prettier + eslint clean on all three touched files.
+
 ### 2026-08-09 CO-30 verdict (Batch 947) — the B946 filing is REFUTED AND REPLACED; the fix is landed
 
 **WEBGL-SUN-APPEARANCE-STACK-DISENGAGED is REFUTED**: outside a rectangle

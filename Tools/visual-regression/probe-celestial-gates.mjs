@@ -303,6 +303,7 @@ import {
   foldVariant,
 } from "./lib/celestial-g3-gate.mjs";
 import {
+  EARTHSHINE_INERTNESS_QUANTILE,
   HALO_AIM_SEARCH_RADIUS_PX,
   MOON_DISC_MASK_FRACTION,
   MOON_PHASE_TARGETS,
@@ -4164,14 +4165,19 @@ function moonEpochLaneMetrics(lane, key) {
       cy: s.moonCentre.y,
       radius: s.moonLimbPx * MOON_DISC_MASK_FRACTION,
       eps: TERMINATOR_DELTA_EPS,
+      // THE CERTIFYING STATISTIC (`G4-FOLLOWUP-EARTHSHINE-EXPOSURE`). The peak
+      // of a ~247,000-pixel delta reads one code step of readback noise by
+      // construction; the rank reads zero while noise stays under 5% of the
+      // disc. `peakDelta` is still reported below, as the diagnostic it now is.
+      quantile: EARTHSHINE_INERTNESS_QUANTILE,
     });
-    // THE INSTRUMENT'S OWN RESOLUTION AT THE PIXEL THAT PRODUCED THE READING
-    // (`G4-FIRSTRUN-FIX-3`). Taken here, while the raw bracket is still in
-    // hand, because the evaluator cannot recover it from a stitched composite:
-    // the display chain's inverse is violently non-linear near the top, so one
-    // 8-bit code is worth 3.8e-3 of linear luminance at code 128 and 3.3e-1 at
-    // code 250. Batch 941's full-moon "earthshine" peak was 0.86-0.91 of ONE
-    // such step.
+    // THE INSTRUMENT'S OWN RESOLUTION AT THE PIXEL THAT PRODUCED THE LARGEST
+    // OBSERVED DELTA (`G4-FIRSTRUN-FIX-3`, now the RESOLVABILITY precondition —
+    // see EARTHSHINE_INERTNESS_MIN_MUTANT_CODES). Taken here, while the raw
+    // bracket is still in hand, because the evaluator cannot recover it from a
+    // stitched composite: the display chain's inverse is violently non-linear
+    // near the top, so one 8-bit code is worth 3.8e-3 of linear luminance at
+    // code 128 and 3.3e-1 at code 250.
     earthshine.peakQuantumLinear = bracketQuantumAt(
       on.legs,
       earthshine.peakIndex,

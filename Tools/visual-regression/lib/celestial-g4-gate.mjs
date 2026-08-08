@@ -689,7 +689,7 @@ export const EARTHSHINE_MIN_MASK_PIXELS = 2000;
 export const EARTHSHINE_PHASE_SCALING_MAX_REL_DEV = 0.2;
 
 /**
- * Slack factor on the near-full inertness bound: the PEAK delta anywhere on the
+ * Slack factor on the near-full inertness bound: the CENSUSED delta over the
  * full-moon DISC must not exceed
  * `factor * medianDeltaCrescent * (scaleFull / scaleCrescent)`.
  *
@@ -699,63 +699,94 @@ export const EARTHSHINE_PHASE_SCALING_MAX_REL_DEV = 0.2;
  * Evaluating inertness on an empty mask fails the criterion on a healthy
  * renderer for a reason that is pure geometry — the vacuity class this repo
  * keeps paying for, and it was caught here by the spec's own synthetic full
- * moon before any Edge run. The peak over the disc is always defined, is
- * strictly stronger than a median, and is the honest statement of "earthshine
- * vanishes at full moon".
+ * moon before any Edge run.
  *
  * DERIVED: with the phase scaling correct the two sides sit within the
  * lit-fraction geometry of each other, so the factor is measurement slack; 3x
  * absorbs it and the near-zero denominator's quantization. The criterion's
- * teeth are against the PRE-C12-21 CONSTANT term, whose full-moon peak equals
- * its crescent peak while `scaleFull/scaleCrescent` is ~0.02 — a ~16x
- * violation.
+ * teeth are against the PRE-C12-21 CONSTANT term, whose full-moon delta equals
+ * its crescent delta while `scaleFull/scaleCrescent` is ~3.7e-4.
  * @type {number}
  */
 export const EARTHSHINE_INERTNESS_FACTOR = 3.0;
 
 /**
- * Multiple of the CAPTURE'S OWN quantization step that floors the inertness
- * bound. `G4-FIRSTRUN-FIX-3` — a RE-DERIVATION, not a widening.
+ * Rank at which the full-moon inertness census reads the disc's ON-minus-OFF
+ * delta. `G4-FOLLOWUP-EARTHSHINE-EXPOSURE`.
  *
- * ⚠ WHY THE OLD BOUND WAS UNMEASURABLE BY CONSTRUCTION. At the resolved full
- * moon `scaleFull / scaleCrescent = 3.273e-4 / 0.8801 = 3.719e-4`, so
- * {@link EARTHSHINE_INERTNESS_FACTOR} times the phase-scaled crescent delta is
- * `3 * 0.03478 * 3.719e-4 = 3.88e-5` — four orders of magnitude BELOW anything
- * an 8-bit readback can resolve. Batch 941 duly scored it red on BOTH backends
- * at 0.008876 (webgl) and 0.016449 (webgpu).
+ * ⚠ THIS REPLACES THE PEAK, AND WITH IT `G4-FIRSTRUN-FIX-3`'s instrument floor.
+ * The peak of a ~247,000-pixel delta between two independently quantized
+ * captures reads ONE CODE STEP by construction — a max over that population
+ * lands on the brightest pixel, which is exactly where PBR Neutral's
+ * compression makes a code step worth most. FIX-3 correctly floored the bound
+ * at `1.5 x quantum` to stop grading that noise, and Batch 948 then showed why
+ * a per-pixel floor cannot work at this framing: the full moon sits at 8-bit
+ * codes ~(238,239,235) on the 1x leg, where one step is worth **0.0251** of
+ * linear luminance, so the floor rose to **0.0376 — ABOVE the 0.0347 amplitude
+ * of the constant-term mutant it must reject**. FIX-3's own cap fired and the
+ * lane went STRUCTURAL, correctly.
  *
- * ⚠ AND THOSE TWO NUMBERS ARE ONE CODE STEP. Re-running the census offline
- * against the run's own PNGs puts the peak-delta pixel at 8-bit codes
- * `(230,231,227)` on webgl and `(236,237,232)` on webgpu, both taken from the
- * 1x leg, where ONE code step is worth 0.009804 / 0.019237 of linear
- * luminance — so `peakDelta / quantum` is **0.91 and 0.86, i.e. BELOW ONE
- * QUANTUM ON BOTH BACKENDS**. Two further facts settle it: the two backends
- * differ by 1.85x on a term that is resolved CPU-side and published on
- * `frameState` before the backend branch (so it cannot differ), and the census
- * reports `darkenedPixels` 8 and 4 — pixels that got DARKER when earthshine
- * was switched ON, which the shipped additive term cannot do. The lane was
- * measuring its own readback noise.
+ * ⚠ AND A DEEPER EXPOSURE BRACKET CANNOT FIX IT, which is why this follow-up
+ * takes the census-statistic option rather than the exposure option.
+ * `stitchBracketLinear` (and its mirror {@link chooseBracketLeg}) select the
+ * HIGHEST exposure whose sample is unsaturated. The full-moon peak reads 239 at
+ * 1x, below `BRACKET_SATURATION_CODE` 250, so 1x is chosen — and stays chosen
+ * whatever else is added to the bracket. A higher leg (8x, 64x) saturates there
+ * and is skipped; a LOWER leg (0.5x would put the same pixel at code 178, where
+ * one step is worth 8.1e-3 — a 3.1x finer quantum) is never reached. Only a
+ * change to the C12-02 selection rule that all four gates share could reach it,
+ * and that is not a moon-lane decision.
  *
- * DERIVED, and the factor is CAPPED FROM ABOVE, not chosen for comfort:
+ * DERIVED — the level is the geometric midpoint of the two fractions it has to
+ * separate, both of which are MEASURED rather than assumed:
  *
- *   * FLOOR. The statistic is a PEAK over ~247,000 pixels of the difference of
- *     two independently quantized captures, so a one-code disagreement at the
- *     extreme pixel is a certainty at that population size. One quantum is
- *     therefore the smallest honest bound; 1.5 adds 50% for a peak that
- *     straddles a code boundary in more than one channel.
- *   * CEILING. The bound must still REJECT the pre-C12-21 CONSTANT term, whose
- *     full-moon delta is the un-scaled crescent delta (~0.0348). That caps the
- *     factor at `0.0348 / 0.019237 = 1.81` on the worse of the two backends.
- *     1.5 is the largest round value inside that cap, leaving a rejection
- *     margin of 2.37x (webgl) and 1.20x (webgpu).
+ *   * NULL. With the shipped phase-scaled earthshine, Batch 948's own census
+ *     found `changedPixels` 431/246,832 (webgl) and 311/246,832 (webgpu) —
+ *     1.75e-3 and 1.26e-3 of the disc, plus 13 and 7 pixels that got DARKER
+ *     when earthshine was switched ON, which an additive term cannot do. That
+ *     population IS the readback noise, and a quantile above it reads exactly
+ *     zero.
+ *   * MUTANT. The pre-C12-21 CONSTANT term lights the full moon as hard as the
+ *     crescent (0.0347), which is 1.38 code steps at the coarsest pixel the
+ *     census can see, so EVERY disc pixel moves at least one code: its
+ *     brightened fraction is 1.0.
+ *   * MIDPOINT. `sqrt(1.746e-3 * 1.0) = 4.18e-2`, rounded to 5e-2, i.e. the
+ *     95th percentile. 28.6x above the worse backend's measured noise floor and
+ *     20x below the mutant's coverage.
  *
- * The cap is not left to arithmetic either: {@link evaluateEarthshineSubLane}
- * reports the criterion STRUCTURAL if the instrument floor ever rises to the
- * constant term's own amplitude, rather than certifying a bound that could no
- * longer see the defect it exists to reject.
+ * The premise is enforced by the criterion itself rather than by a separate
+ * assumption: if readback noise ever did reach 5% of the disc, this quantile
+ * stops reading zero and the criterion goes RED — the conservative direction.
  * @type {number}
  */
-export const EARTHSHINE_INERTNESS_QUANTUM_FACTOR = 1.5;
+export const EARTHSHINE_INERTNESS_QUANTILE = 0.95;
+
+/**
+ * How many 8-bit code steps the constant-term mutant must move at the coarsest
+ * pixel the inertness census can see, before the census is allowed to certify.
+ * `G4-FOLLOWUP-EARTHSHINE-EXPOSURE` — this is `G4-FIRSTRUN-FIX-3`'s cap,
+ * restated for the rank statistic that replaced the peak.
+ *
+ * FIX-3's cap asked whether the BOUND had risen to the mutant's amplitude,
+ * because the bound carried a per-pixel quantum floor. The rank statistic's
+ * null reading is zero, so the bound is purely physical again and that question
+ * is no longer where the instrument can go blind. The question that survives
+ * is the one underneath it: **can one code step still resolve the mutant at
+ * all?** If the disc were bright enough that one step exceeded the mutant's own
+ * amplitude, a 100%-coverage constant term would move zero codes on part of the
+ * disc and the census would certify a defect it simply could not see.
+ *
+ * DERIVED at 1.0 — one whole code step, the smallest difference an 8-bit
+ * readback can express. It is a RESOLVABILITY precondition, not a slack factor,
+ * so there is nothing to pad: at 1.0 the mutant moves at least one code
+ * everywhere, and the measured margins are 1.81x (webgl, quantum 0.019247) and
+ * 1.38x (webgpu, quantum 0.025087) against a 0.0347 mutant.
+ *
+ * Enforced, not assumed: {@link evaluateEarthshineSubLane} returns STRUCTURAL
+ * when it is violated, exactly as FIX-3's cap did.
+ * @type {number}
+ */
+export const EARTHSHINE_INERTNESS_MIN_MUTANT_CODES = 1.0;
 
 // ---------------------------------------------------------------------------
 // MOON — SOFT TERMINATOR (C12-22)
@@ -932,6 +963,35 @@ export const G4_CROSS_BACKEND_MAX_COUNT_SPREAD = 0.4;
  * is stated rather than inferred from an absence.
  * @type {Object<string,string>}
  */
+/**
+ * The label every entry {@link foldG4Verdict} routes to the STRUCTURAL channel
+ * for a REPORTING reason carries, and the token the fold's own invariant reads.
+ * `G4-FOLLOWUP-STRUCTURAL-PARITY-CHANNEL`.
+ *
+ * ⚠ WHAT THIS IS AND IS NOT. It marks an entry that was measured and printed by
+ * name but is NOT a statement about the product — a cross-backend scalar whose
+ * source sub-lane declared it could not see its subject, a scalar with no
+ * declared source lane, a scalar that is not finite on both sides, an arm-state
+ * difference caused by a structural gate rather than by the two backends
+ * resolving the same discriminators differently. Sub-lane structural notes do
+ * NOT carry it: they are the sub-lane's own words about its own frame, and the
+ * fold does not re-label them.
+ *
+ * ⚠ WHY IT IS A TOKEN AND NOT JUST PROSE. Batch 948 filed
+ * `G4-FOLLOWUP-STRUCTURAL-PARITY-CHANNEL` on the belief that these entries were
+ * reaching `failures[]` and driving exit 1. Re-folding the run's own
+ * `backends` object at that commit shows they were not — every one of them was
+ * on `structural[]`, and the exit 1 came from three per-backend criterion reds.
+ * The FILED MECHANISM IS REFUTED. What is real is the invariant behind it: a
+ * labelled non-verdict must never be a failure. So rather than a point fix to a
+ * seam that was already closed, the rule gets an ENFORCEABLE home — see the
+ * invariant at the end of {@link foldG4Verdict}, which re-routes any marked
+ * entry that reaches `failures[]` and reports the misroute as a permanent
+ * `console.error` plus a `nonVerdictMisroutes` field on the verdict.
+ * @type {string}
+ */
+export const STRUCTURAL_NON_VERDICT_MARKER = "NOT a verdict";
+
 export const PARITY_SCALAR_SOURCE_LANE = Object.freeze({
   discDiameterDeg: "disc",
   trueSizeRatio: "disc",
@@ -1460,15 +1520,24 @@ export function unlitLimbDelta(on, off, options) {
  *
  * @param {{data:ArrayLike<number>,width:number,height:number}} on Softening ON.
  * @param {{data:ArrayLike<number>,width:number,height:number}} off Softening OFF.
- * @param {{cx:number,cy:number,radius:number,eps:number}} options
+ * @param {{cx:number,cy:number,radius:number,eps:number,quantile?:number}} options
+ *        `quantile`, when a finite level in `(0,1)`, additionally reports the
+ *        delta at that RANK over the mask (`G4-FOLLOWUP-EARTHSHINE-EXPOSURE`).
+ *        Omitted by callers that do not need it, because it costs one buffered
+ *        pass over the mask.
  * @returns {{discPixels:number,changedPixels:number,darkenedPixels:number,
- *            peakDelta:number,peakIndex:number,totalDelta:number}}
+ *            peakDelta:number,peakIndex:number,totalDelta:number,
+ *            quantileLevel:number|null,quantileDelta:number}}
  *          `peakIndex` is the RGBA byte index of the pixel that produced
  *          `peakDelta`, so a caller holding the raw bracket can ask what ONE
- *          CODE STEP was worth there (`G4-FIRSTRUN-FIX-3`).
+ *          CODE STEP was worth there (`G4-FIRSTRUN-FIX-3`). `quantileDelta` is
+ *          NaN — never 0 — when no level was requested, so a consumer cannot
+ *          mistake "not measured" for "measured zero".
  */
 export function discDeltaCensus(on, off, options) {
   const { cx, cy, radius, eps } = options;
+  const level = options.quantile;
+  const wantQuantile = Number.isFinite(level) && level > 0 && level < 1;
   let discPixels = 0;
   let changedPixels = 0;
   let darkenedPixels = 0;
@@ -1479,14 +1548,23 @@ export function discDeltaCensus(on, off, options) {
   const x1 = Math.min(on.width - 1, Math.ceil(cx + radius + 1));
   const y0 = Math.max(0, Math.floor(cy - radius - 1));
   const y1 = Math.min(on.height - 1, Math.ceil(cy + radius + 1));
+  // Sized from the bounding box, so the fill can never run past its end; the
+  // buffer is local and dies with the call (`G4-FIRSTRUN-FIX-5` keeps pixel
+  // arrays out of the REPORT, not out of the measurement).
+  const deltas = wantQuantile
+    ? new Float64Array(Math.max(0, (x1 - x0 + 1) * (y1 - y0 + 1)))
+    : null;
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
       if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) > radius) {
         continue;
       }
-      discPixels++;
       const i = 4 * (y * on.width + x);
       const d = luminanceAt(on.data, i) - luminanceAt(off.data, i);
+      if (deltas !== null) {
+        deltas[discPixels] = d;
+      }
+      discPixels++;
       if (d > eps) {
         changedPixels++;
         totalDelta += d;
@@ -1499,6 +1577,18 @@ export function discDeltaCensus(on, off, options) {
       }
     }
   }
+  let quantileDelta = NaN;
+  if (deltas !== null && discPixels > 0) {
+    // NEAREST-RANK on the ascending sort. `Float64Array.prototype.sort` is
+    // numeric, so no comparator is needed — and no comparator is the only form
+    // that cannot silently become lexicographic.
+    const sorted = deltas.subarray(0, discPixels).sort();
+    const rank = Math.min(
+      discPixels - 1,
+      Math.max(0, Math.ceil(level * discPixels) - 1),
+    );
+    quantileDelta = sorted[rank];
+  }
   return {
     discPixels,
     changedPixels,
@@ -1506,6 +1596,8 @@ export function discDeltaCensus(on, off, options) {
     peakDelta: Number.isFinite(peakDelta) ? peakDelta : NaN,
     peakIndex,
     totalDelta,
+    quantileLevel: wantQuantile ? level : null,
+    quantileDelta,
   };
 }
 
@@ -2487,55 +2579,95 @@ export function evaluateEarthshineSubLane(m) {
   const br = m.crescent.medianB / m.crescent.medianR;
   const gr = m.crescent.medianG / m.crescent.medianR;
 
-  // G4-FIRSTRUN-FIX-3 — the inertness bound is re-derived with a floor at the
-  // INSTRUMENT'S OWN RESOLUTION. See EARTHSHINE_INERTNESS_QUANTUM_FACTOR: the
-  // phase-scaled term alone is 3.9e-5, which no 8-bit readback can resolve, so
-  // the criterion was scoring the readback's quantization rather than the
-  // renderer. The floor is the value of ONE CODE STEP at the pixel that
-  // produced `peakDelta`, measured on the capture the census ran over.
+  // G4-FOLLOWUP-EARTHSHINE-EXPOSURE — the inertness census reads a RANK, not
+  // the peak, and the bound is purely physical again. See
+  // EARTHSHINE_INERTNESS_QUANTILE for why `G4-FIRSTRUN-FIX-3`'s per-pixel
+  // instrument floor could not survive a near-white full moon, and why a deeper
+  // exposure bracket cannot reach the pixel that produced the reading.
   const physicalBound =
     EARTHSHINE_INERTNESS_FACTOR *
       m.crescent.medianDelta *
       (m.scaleFull / m.scaleCrescent) +
     TERMINATOR_DELTA_EPS;
   const quantum = m.full?.peakQuantumLinear;
-  const instrumentBound = Number.isFinite(quantum)
-    ? EARTHSHINE_INERTNESS_QUANTUM_FACTOR * quantum
-    : NaN;
   // The pre-C12-21 CONSTANT term's own full-moon amplitude: an earthshine that
   // does not scale with phase lights the full moon exactly as hard as it lights
   // the crescent. This is what the criterion EXISTS to reject, so it is also
   // the ceiling above which the criterion has stopped being a criterion.
   const mutantLevel = m.crescent.medianDelta;
-  const inertnessBound = Math.max(
-    physicalBound,
-    Number.isFinite(instrumentBound) ? instrumentBound : 0,
-  );
+  const inertnessBound = physicalBound;
+  const censusLevel = m.full?.quantileLevel;
+  const censusDelta = m.full?.quantileDelta;
+  const brightenedFraction =
+    m.full?.discPixels > 0 ? m.full.changedPixels / m.full.discPixels : null;
   const inertnessDiagnostics = {
     inertnessBound,
     inertnessPhysicalBound: physicalBound,
-    inertnessInstrumentBound: Number.isFinite(instrumentBound)
-      ? instrumentBound
-      : null,
     inertnessQuantumLinear: Number.isFinite(quantum) ? quantum : null,
     inertnessBoundSource:
-      Number.isFinite(instrumentBound) && instrumentBound > physicalBound
-        ? "instrument-resolution floor (one 8-bit code step at the peak pixel)"
-        : "phase-scaled crescent delta",
+      "phase-scaled crescent delta (the rank statistic's null reading is zero, " +
+      "so no instrument floor is added to the bound)",
+    inertnessCensusQuantile: Number.isFinite(censusLevel) ? censusLevel : null,
+    inertnessCensusDelta: Number.isFinite(censusDelta) ? censusDelta : null,
+    inertnessBrightenedFraction: brightenedFraction,
     inertnessMutantLevel: mutantLevel,
     inertnessMutantMargin:
       inertnessBound > 0 ? mutantLevel / inertnessBound : null,
+    // How many 8-bit code steps the mutant would move at the coarsest pixel the
+    // census can see. Below EARTHSHINE_INERTNESS_MIN_MUTANT_CODES the census is
+    // blind to its own target.
+    inertnessResolvabilityMargin: Number.isFinite(quantum)
+      ? mutantLevel / quantum
+      : null,
   };
   if (!Number.isFinite(quantum)) {
     return {
       criteria: {},
       structural: [
         "the capture bracket's quantization step at the full-moon peak pixel " +
-          "could not be resolved, so the inertness criterion has no honest " +
-          "floor: its physical bound is " +
-          `${physicalBound}, four orders of magnitude below one 8-bit code, ` +
-          "and scoring against it would grade the readback rather than the " +
-          "renderer",
+          "could not be resolved, so the census cannot show that it is able to " +
+          "resolve the constant-term mutant it exists to reject (that term " +
+          `lights the full moon at ${mutantLevel}); a census that cannot state ` +
+          "its own resolution does not certify",
+      ],
+      predictedRatio,
+      measuredRatio,
+      tintBR: br,
+      tintGR: gr,
+      ...inertnessDiagnostics,
+      fullPeakDelta: m.full?.peakDelta ?? null,
+      pass: false,
+    };
+  }
+  if (censusLevel !== EARTHSHINE_INERTNESS_QUANTILE) {
+    return {
+      criteria: {},
+      structural: [
+        `the full-moon census reported quantile level ${censusLevel} but the ` +
+          `criterion is derived at ${EARTHSHINE_INERTNESS_QUANTILE} — the ` +
+          "probe and the evaluator have drifted apart, and a bound derived at " +
+          "one rank cannot grade a reading taken at another",
+      ],
+      predictedRatio,
+      measuredRatio,
+      tintBR: br,
+      tintGR: gr,
+      ...inertnessDiagnostics,
+      fullPeakDelta: m.full?.peakDelta ?? null,
+      pass: false,
+    };
+  }
+  if (!(quantum * EARTHSHINE_INERTNESS_MIN_MUTANT_CODES < mutantLevel)) {
+    return {
+      criteria: {},
+      structural: [
+        `one 8-bit code step at the coarsest pixel of the full-moon census is ` +
+          `worth ${quantum}, which is not below the amplitude of the very ` +
+          `defect the census exists to reject (the pre-C12-21 CONSTANT term ` +
+          `lights the full moon at ${mutantLevel}). A constant term could then ` +
+          "move ZERO codes over part of the disc and the census would certify " +
+          "a defect it cannot see; an instrument that cannot resolve its own " +
+          "target does not certify",
       ],
       predictedRatio,
       measuredRatio,
@@ -2552,10 +2684,8 @@ export function evaluateEarthshineSubLane(m) {
       structural: [
         `the inertness bound (${inertnessBound}) has risen to the amplitude of ` +
           `the very defect it rejects (the pre-C12-21 CONSTANT term lights the ` +
-          `full moon at ${mutantLevel}), because one 8-bit code step at the ` +
-          `peak pixel is now worth ${quantum}. A bound that cannot see its own ` +
-          "target does not certify; raise the moon lane's exposure bracket or " +
-          "census a robust statistic instead of the peak",
+          `full moon at ${mutantLevel}). A bound that cannot see its own ` +
+          "target does not certify",
       ],
       predictedRatio,
       measuredRatio,
@@ -2579,10 +2709,13 @@ export function evaluateEarthshineSubLane(m) {
     earthshine_scales_with_earth_phase_complement:
       relativeDeviation(measuredRatio, predictedRatio) <=
       EARTHSHINE_PHASE_SCALING_MAX_REL_DEV,
-    // OVER THE WHOLE DISC — see EARTHSHINE_INERTNESS_FACTOR. At full moon the
-    // unlit mask is empty by construction, so the peak is what is defined.
+    // OVER THE WHOLE DISC — see EARTHSHINE_INERTNESS_FACTOR — and at a RANK
+    // rather than the peak (EARTHSHINE_INERTNESS_QUANTILE). At full moon the
+    // unlit mask is empty by construction, so a disc statistic is what is
+    // defined; the peak of that statistic reads one code step of readback noise
+    // by construction, so the rank is what is measurable.
     earthshine_inert_at_full_moon:
-      Number.isFinite(m.full?.peakDelta) && m.full.peakDelta <= inertnessBound,
+      Number.isFinite(censusDelta) && censusDelta <= inertnessBound,
   };
   return {
     criteria,
@@ -2832,7 +2965,12 @@ export function evaluateG4Backend(backend) {
  *
  * @param {{webgl:object,webgpu:object}} evaluated
  * @returns {{verdict:string,exitCode:number,failures:string[],
- *            structural:string[],pendingArms:object}}
+ *            structural:string[],pendingArms:object,
+ *            nonVerdictMisroutes:string[]}}
+ *          `nonVerdictMisroutes` is normally empty; a non-empty list names
+ *          entries that carried {@link STRUCTURAL_NON_VERDICT_MARKER} yet
+ *          reached `failures[]`, and were re-routed
+ *          (`G4-FOLLOWUP-STRUCTURAL-PARITY-CHANNEL`).
  */
 export function foldG4Verdict(evaluated) {
   const failures = [];
@@ -2899,7 +3037,7 @@ export function foldG4Verdict(evaluated) {
             `cross-backend:${key}_parity — the scalar has no declared source ` +
               "sub-lane, so the fold cannot tell whether the lane that " +
               "produced it could see its subject. Add it to " +
-              "PARITY_SCALAR_SOURCE_LANE",
+              `PARITY_SCALAR_SOURCE_LANE. ${STRUCTURAL_NON_VERDICT_MARKER}`,
           );
           continue;
         }
@@ -2909,7 +3047,8 @@ export function foldG4Verdict(evaluated) {
               `'${lane}' is structural on ${blocked.join(", ")}, so the ` +
               "values below describe a frame that lane declared it could not " +
               `see. MEASURED ANYWAY: webgl ${a}, webgpu ${b}, relative spread ` +
-              `${relativeSpread(a, b)}, bound ${bound}. NOT a verdict`,
+              `${relativeSpread(a, b)}, bound ${bound}. ` +
+              STRUCTURAL_NON_VERDICT_MARKER,
           );
           continue;
         }
@@ -2918,7 +3057,7 @@ export function foldG4Verdict(evaluated) {
             `cross-backend:${key}_parity — STRUCTURAL: the scalar is not ` +
               `finite on both backends (webgl ${a}, webgpu ${b}) although ` +
               `sub-lane '${lane}' reported no structural note. A missing ` +
-              "number is not agreement",
+              `number is not agreement. ${STRUCTURAL_NON_VERDICT_MARKER}`,
           );
           continue;
         }
@@ -2946,11 +3085,37 @@ export function foldG4Verdict(evaluated) {
         structural.push(
           `${note} — STRUCTURAL: one backend's DISC sub-lane could not see its ` +
             "subject, so the two arms are gated by different things rather " +
-            "than resolving the same discriminators differently",
+            "than resolving the same discriminators differently. " +
+            STRUCTURAL_NON_VERDICT_MARKER,
         );
       } else {
         failures.push(note);
       }
+    }
+  }
+
+  // ENFORCED INVARIANT + PERMANENT SENTINEL
+  // (`G4-FOLLOWUP-STRUCTURAL-PARITY-CHANNEL`). A labelled non-verdict must
+  // never be a failure. Every branch above already routes correctly — the
+  // filing's premise that they did not is refuted in
+  // STRUCTURAL_NON_VERDICT_MARKER's own note — so this is not a point fix but
+  // the rule's enforceable home: it holds for branches nobody has written yet.
+  //
+  // NOT pragma-stripped and NOT silent: a marked entry reaching `failures[]`
+  // means the gate was about to report a defect it had itself declared was not
+  // one, which is a wrong verdict, not a diagnostic.
+  const nonVerdictMisroutes = failures.filter((f) =>
+    String(f).includes(STRUCTURAL_NON_VERDICT_MARKER),
+  );
+  if (nonVerdictMisroutes.length > 0) {
+    console.error(
+      `[celestial-g4] ${nonVerdictMisroutes.length} labelled non-verdict(s) ` +
+        "reached failures[] and were re-routed to the structural channel: " +
+        nonVerdictMisroutes.join(" | "),
+    );
+    for (const entry of nonVerdictMisroutes) {
+      failures.splice(failures.indexOf(entry), 1);
+      structural.push(entry);
     }
   }
 
@@ -2963,7 +3128,14 @@ export function foldG4Verdict(evaluated) {
     verdict = "STRUCTURAL";
     exitCode = EXIT_CODE.STRUCTURAL;
   }
-  return { verdict, exitCode, failures, structural, pendingArms };
+  return {
+    verdict,
+    exitCode,
+    failures,
+    structural,
+    pendingArms,
+    nonVerdictMisroutes,
+  };
 }
 
 /**
@@ -3062,8 +3234,10 @@ export function buildG4Summary(result) {
       HALO_AIM_TOLERANCE_PX,
       HALO_AIM_SEARCH_RADIUS_PX,
       LIMB_ABSOLUTE_RATIO_SAMPLE_X,
-      EARTHSHINE_INERTNESS_QUANTUM_FACTOR,
+      EARTHSHINE_INERTNESS_QUANTILE,
+      EARTHSHINE_INERTNESS_MIN_MUTANT_CODES,
       PARITY_SCALAR_SOURCE_LANE,
+      STRUCTURAL_NON_VERDICT_MARKER,
       TRUE_SIZE_RATIO_NOMINAL,
       TRUE_SIZE_RATIO_TOLERANCE,
       LIMB_SHAPE_SAMPLE_X,
@@ -3110,6 +3284,10 @@ export function buildG4Summary(result) {
     },
     failures: result.failures,
     structural: result.structural,
+    // Normally `[]`. Printed unconditionally so a reader can see the invariant
+    // was CHECKED rather than infer it from an absence
+    // (`G4-FOLLOWUP-STRUCTURAL-PARITY-CHANNEL`).
+    nonVerdictMisroutes: result.nonVerdictMisroutes ?? [],
     pendingArms: result.pendingArms,
     backends: {
       webgl: backend(result.backends?.webgl),
