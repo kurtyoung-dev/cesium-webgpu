@@ -1153,10 +1153,15 @@ test("C12-14: both backends realize the handle and the star map publishes it", (
     /get starCubeMap\(\) \{\s*\n\s*return this\._panorama\.samplableCubeMap;/,
   );
   assert.match(skyBoxScene, /get variant\(\) \{/);
+  // Batch 932 (C12-12) hoisted the default-variant ternary into
+  // `resolvedVariant` so the resolution policy could read it; the semantic —
+  // the default star variant is TYCHO_T3, and it is what the constructor
+  // receives — is unchanged and both halves are pinned.
   assert.match(
     skyBoxScene,
-    /variant: defined\(descriptor\) \? v : SkyBox\.Variant\.TYCHO_T3,/,
+    /const resolvedVariant = defined\(descriptor\) \? v : SkyBox\.Variant\.TYCHO_T3;/,
   );
+  assert.match(skyBoxScene, /variant: resolvedVariant,/);
   // Replacing the sources must stop claiming a variant rather than go stale.
   assert.match(
     skyBoxScene,
