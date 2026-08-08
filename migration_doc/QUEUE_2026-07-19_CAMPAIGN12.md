@@ -705,6 +705,21 @@ the 0.95R signal, discOnlyRatio 0.568 > the 0.5 ceiling before any halo);
 (2) the bloom-mirror decision on the filed MEDIUM row. Four runs, four
 pre-registrations, the last one exact.
 
+### 2026-08-11 BISECT VERDICT (Batch 978) — B971 is the cause; B972 exonerated; a runtime sunBloom-flip kill is the suspected mechanism
+
+Working-tree revert of the B971 probe edit alone restored the sun lanes
+completely (radiance 2.5927/2.5929, discOnly certifying, exactly the two
+known limb_shape reds — the sixth-run state bit-for-bit). The B972 viewer
+refactor is EXONERATED. Mechanism suspicion: the disc lane died WITH the
+pin applied to its own legs, so `scene.sunBloom = false` flipped at
+capture time may kill the SUN RENDER entirely on both backends (not just
+the bloom) — if confirmed, that is a REAL ENGINE DEFECT (upstream
+supports sunBloom=false; a runtime flip must not erase the sun) that the
+discriminator accidentally exposed, and the probe fix (pin both
+directions) must wait on the engine fix or set the flag pre-construction.
+Diagnostic in flight; the B971 edit stays landed but the --g4 lane is
+KNOWN-BROKEN until the mechanism resolves (do not run --g4 for verdicts).
+
 ### 2026-08-11 G4 EIGHTH RUN (Batch 976) — the mass failure is REAL and UNCONFOUNDED; sun lanes dead on both backends; bisect owed BEFORE any further change lands
 
 The CO-39 four-variant runtime smoke PASSED first (bare = upstream chrome
