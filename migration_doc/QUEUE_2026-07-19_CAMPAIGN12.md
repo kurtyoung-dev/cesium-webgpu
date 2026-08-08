@@ -705,6 +705,26 @@ the 0.95R signal, discOnlyRatio 0.568 > the 0.5 ceiling before any halo);
 (2) the bloom-mirror decision on the filed MEDIUM row. Four runs, four
 pre-registrations, the last one exact.
 
+### 2026-08-11 G4 SIXTH RUN (Batch 970) — the mirror VERIFIED to four decimals; the limb-shape red goes SYMMETRIC and indicts the lane, not the law
+
+Exit 1, `structural[]` empty. **`C12-34` mirror VERIFIED:**
+`discRadianceMeasured` webgpu **2.5929 vs webgl 2.5927** — a 0.008%
+cross-backend spread against the pre-registered <2%; the sun now carries
+the same bright-pass glow on both backends at defaults. `discOnly` still
+CERTIFIES on both (webgl 0.5671 unchanged; webgpu 0.5442 → **0.5553**, a
+0.011 move — larger than the modelled 2e-4 glow-cancellation residual;
+recorded as a model-vs-measured deviation on the differential, still
+comfortably in band). **THE NEWS: `limb_shape_matches_shipped_law` is now
+red on BOTH backends** — the faithful mirror REPRODUCED the webgl red on
+webgpu, which upgrades `WEBGL-LIMB-SHAPE-RED-HAS-A-SECOND-CAUSE`: the
+criterion is measuring the bloom-through-lane interaction (which exceeds
+CO-37's 0.061 model), not the limb law. The law itself is certified by
+the disc-only arm either way. NEXT (Batch 971): the filed discriminator —
+pin `scene.sunBloom = false` on the disc lane's three legs (the C12-19
+delta-leg pattern; the limb LAW is a bake property and the lane should
+measure it clean). Pre-registration for the seventh run: `limb_shape`
+GREEN on both, `discRadianceMeasured` ~2.0 on both, `discOnly` unchanged.
+
 ### 2026-08-10 G4 FIFTH RUN (Batch 964) — CO-35's pre-registration hit EXACTLY; the sun half is ONE batch from green
 
 Exit 1 with **exactly one failure**: `webgl:limb_shape_matches_shipped_law`
