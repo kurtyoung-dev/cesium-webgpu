@@ -14,8 +14,8 @@
 // file the README mentions") passes trivially when the README grows a row that
 // nobody captured — the reader then gets a broken image. The reverse-only check
 // passes when the manifest grows a scene nobody displays — dead capture work.
-// `crossCheck` reports both directions and a table row with no scene is a hard
-// failure, per DOC-01.
+// `crossCheck` reports both directions, and a table row with no scene is a hard
+// failure.
 //
 // CRLF: this repo checks out with `core.autocrlf=true`. Every parser here
 // normalises line endings before splitting; nothing anchors on a bare "\n".
@@ -25,6 +25,18 @@ import { join } from "node:path";
 
 /** Directory (repo-relative, POSIX separators) the README points its images at. */
 export const IMAGE_DIR = "Documentation/Images/webgpu-fork";
+
+/** Directory (repo-relative) holding the standalone fork demo pages. */
+export const LEGACY_GALLERY_DIR = "Apps/Sandcastle/gallery";
+
+/**
+ * Root-relative URL of the unbuilt ES module bundle the dev server serves.
+ *
+ * Both scene kinds depend on it: viewer scenes import it to reach the Cesium
+ * namespace, and demo pages need it loaded into the global scope before their
+ * own `window.startup` can run.
+ */
+export const ENGINE_MODULE_URL = "/Build/CesiumUnminified/index.js";
 
 /** Fence markers delimiting the machine-read region of the README. */
 export const TABLE_BEGIN = "<!-- FEATURE-TABLE:BEGIN -->";
@@ -386,7 +398,7 @@ export function crossCheck(rows, scenes) {
  * The new gallery (`packages/sandcastle/gallery/<folder>/`) is the catalogue;
  * the standalone page the probe fleet actually drives is
  * `Apps/Sandcastle/gallery/<legacyId>`. Resolving through the yaml keeps the
- * manifest addressed by gallery folder, as DOC-01 asks, without hard-coding the
+ * manifest addressed by gallery folder without hard-coding the
  * spaced-and-capitalised legacy file names.
  *
  * @param {string} repoRoot Absolute repository root.
@@ -415,6 +427,46 @@ export function galleryLegacyId(repoRoot, gallery) {
 }
 
 /**
+ * Check that a standalone demo page can still be booted by the capture script.
+ *
+ * The two loader scripts every gallery page references — `Sandcastle-header.js`
+ * and `load-cesium-es6.js` — were deleted when the legacy Sandcastle app was
+ * removed, so the page's own `if (typeof Cesium !== "undefined")` tail never
+ * fires and nothing on the page ever runs. The capture script re-creates both
+ * loaders (a `Sandcastle` shim installed before the page's scripts, then an
+ * explicit module import that calls `window.startup`), which works for exactly
+ * one reason: the demo's inline script still DEFINES `window.startup`.
+ *
+ * That single assumption is what this function pins. A demo rewritten to drop
+ * the `window.startup` wrapper cannot be booted by the re-created loader, and
+ * without this check it would present as a 90-second wait for a flag nobody
+ * sets — a browser-time mystery for an authoring-time fact.
+ *
+ * @param {string} repoRoot Absolute repository root.
+ * @param {string} legacyId Standalone page file name.
+ * @returns {string[]} Reasons the page cannot be booted; empty when it can.
+ */
+export function legacyDemoBootErrors(repoRoot, legacyId) {
+  const page = join(repoRoot, LEGACY_GALLERY_DIR, legacyId);
+  if (!existsSync(page)) {
+    return [`${LEGACY_GALLERY_DIR}/${legacyId} is not on disk`];
+  }
+  const html = readFileSync(page, "utf8");
+  const errors = [];
+  if (!/window\.startup\s*=/.test(html)) {
+    errors.push(
+      `${legacyId} defines no window.startup — the capture script's loader has nothing to call`,
+    );
+  }
+  if (!/id="cesium_sandcastle_script"/.test(html)) {
+    errors.push(
+      `${legacyId} has no inline demo script — its body would never define window.startup`,
+    );
+  }
+  return errors;
+}
+
+/**
  * Resolve a scene to the URL the browser opens and the repo files it needs.
  *
  * Returning `requiredFiles` is what lets the spec fail at authoring time
@@ -439,12 +491,13 @@ export function resolveScene(scene, repoRoot) {
       );
       url = "";
     } else {
-      const rel = `Apps/Sandcastle/gallery/${legacyId}`;
+      const rel = `${LEGACY_GALLERY_DIR}/${legacyId}`;
       requiredFiles.push(rel);
+      errors.push(...legacyDemoBootErrors(repoRoot, legacyId));
       // Every fork demo reads `?renderer=` (three of them default to WebGPU
       // that way rather than pinning it in source), so the parameter is always
       // appended — harmless for the 26 that pin it, load-bearing for the rest.
-      url = `/Apps/Sandcastle/gallery/${encodeURIComponent(legacyId)}?renderer=webgpu`;
+      url = `/${LEGACY_GALLERY_DIR}/${encodeURIComponent(legacyId)}?renderer=webgpu`;
     }
     requiredFiles.push(
       `packages/sandcastle/gallery/${scene.gallery}/sandcastle.yaml`,

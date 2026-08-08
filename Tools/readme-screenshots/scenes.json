@@ -1,5 +1,5 @@
 {
-  "$comment": "Manifest for Tools/readme-screenshots/capture-readme-screenshots.mjs. One entry per README feature-table row; `output` lands in Documentation/Images/webgpu-fork/. Kinds: `sandcastle` (a fork gallery demo, addressed by its packages/sandcastle/gallery folder and resolved to the standalone Apps/Sandcastle page through sandcastle.yaml legacyId), `viewer` (Apps/CesiumViewer with declarative camera/clock/settings/content), `page` (any other fork page). Every settings path is written AND read back; a path that does not exist or does not stick is STRUCTURAL (exit 3), never a silently wrong screenshot.",
+  "$comment": "Manifest for Tools/readme-screenshots/capture-readme-screenshots.mjs. One entry per README feature-table row; `output` lands in Documentation/Images/webgpu-fork/. Kinds: `sandcastle` (a fork gallery demo, addressed by its packages/sandcastle/gallery folder and resolved to the standalone Apps/Sandcastle page through sandcastle.yaml legacyId), `viewer` (Apps/CesiumViewer with declarative camera/clock/settings/content), `page` (any other fork page). The standalone demo pages reference two loader scripts that were deleted with the legacy Sandcastle app, so the capture script installs a Sandcastle shim and imports the engine bundle itself before calling the demo's own window.startup; `settleMs` therefore covers only the asynchronous loading that follows startup, and is additionally capped by the per-scene time budget. Every settings path is written AND read back; a path that does not exist or does not stick is STRUCTURAL (exit 3), never a silently wrong screenshot.",
   "viewport": { "width": 1024, "height": 576 },
   "scenes": [
     {
@@ -26,7 +26,7 @@
       "output": "shader-pipeline-caches.png",
       "kind": "sandcastle",
       "gallery": "webgpu-async-resource-monitor",
-      "settleMs": 9000,
+      "settleMs": 6000,
       "minNonBlackPct": 0.15,
       "minDistinct": 8
     },
@@ -59,7 +59,7 @@
       "output": "globe-many-imagery-layers.png",
       "kind": "sandcastle",
       "gallery": "webgpu-many-imagery-layers",
-      "settleMs": 12000,
+      "settleMs": 7000,
       "minNonBlackPct": 0.3,
       "minDistinct": 10
     },
@@ -87,7 +87,7 @@
       "output": "globe-vector-tiles.png",
       "kind": "sandcastle",
       "gallery": "webgpu-vector-tile-buffer-rendering",
-      "settleMs": 10000,
+      "settleMs": 6000,
       "minNonBlackPct": 0.25,
       "minDistinct": 8
     },
@@ -140,7 +140,7 @@
       "output": "tiles-voxels.png",
       "kind": "sandcastle",
       "gallery": "webgpu-voxel-pick",
-      "settleMs": 10000,
+      "settleMs": 6000,
       "minNonBlackPct": 0.1,
       "minDistinct": 6
     },
@@ -268,7 +268,7 @@
       "output": "clouds-weather-inspector.png",
       "kind": "sandcastle",
       "gallery": "webgpu-weather-inspector",
-      "settleMs": 14000,
+      "settleMs": 8000,
       "minNonBlackPct": 0.4,
       "minDistinct": 8
     },
@@ -279,7 +279,7 @@
       "output": "weather-live-edr.png",
       "kind": "sandcastle",
       "gallery": "webgpu-live-weather-edr",
-      "settleMs": 16000,
+      "settleMs": 9000,
       "minNonBlackPct": 0.3,
       "minDistinct": 8
     },
@@ -290,7 +290,7 @@
       "output": "weather-particles.png",
       "kind": "sandcastle",
       "gallery": "webgpu-weather-particles",
-      "settleMs": 12000,
+      "settleMs": 7000,
       "minNonBlackPct": 0.3,
       "minDistinct": 8
     },
@@ -301,7 +301,7 @@
       "output": "atmosphere-sky.png",
       "kind": "sandcastle",
       "gallery": "atmospheric-conditions",
-      "settleMs": 12000,
+      "settleMs": 7000,
       "minNonBlackPct": 0.3,
       "minDistinct": 8
     },
@@ -312,7 +312,7 @@
       "output": "atmosphere-dual-light.png",
       "kind": "sandcastle",
       "gallery": "webgpu-dual-light-atmosphere",
-      "settleMs": 12000,
+      "settleMs": 7000,
       "minNonBlackPct": 0.08,
       "minDistinct": 6
     },
@@ -357,7 +357,7 @@
       "output": "celestial-stars.png",
       "kind": "sandcastle",
       "gallery": "webgpu-fullscreen-sky",
-      "settleMs": 12000,
+      "settleMs": 7000,
       "minNonBlackPct": 0.01,
       "minDistinct": 4
     },
@@ -457,7 +457,7 @@
       "output": "shadows-point-light.png",
       "kind": "sandcastle",
       "gallery": "webgpu-point-light-shadows",
-      "settleMs": 12000,
+      "settleMs": 7000,
       "minNonBlackPct": 0.5,
       "minDistinct": 8
     },
@@ -468,7 +468,7 @@
       "output": "lighting-clustered.png",
       "kind": "sandcastle",
       "gallery": "webgpu-clustered-lighting",
-      "settleMs": 12000,
+      "settleMs": 7000,
       "minNonBlackPct": 0.4,
       "minDistinct": 8
     },
@@ -479,7 +479,7 @@
       "output": "pp-taa.png",
       "kind": "sandcastle",
       "gallery": "webgpu-temporal-anti-aliasing",
-      "settleMs": 14000,
+      "settleMs": 8000,
       "minNonBlackPct": 0.3,
       "minDistinct": 8
     },
@@ -490,7 +490,7 @@
       "output": "pp-ssr.png",
       "kind": "sandcastle",
       "gallery": "webgpu-screen-space-reflections",
-      "settleMs": 12000,
+      "settleMs": 7000,
       "minNonBlackPct": 0.3,
       "minDistinct": 8
     },
@@ -501,7 +501,7 @@
       "output": "pp-bloom-dof-tonemap.png",
       "kind": "sandcastle",
       "gallery": "webgpu-depth-of-field",
-      "settleMs": 12000,
+      "settleMs": 7000,
       "minNonBlackPct": 0.3,
       "minDistinct": 8
     },
@@ -512,7 +512,7 @@
       "output": "pp-god-rays-ao-ssgi.png",
       "kind": "sandcastle",
       "gallery": "webgpu-god-rays",
-      "settleMs": 12000,
+      "settleMs": 7000,
       "minNonBlackPct": 0.3,
       "minDistinct": 8
     },
@@ -547,7 +547,7 @@
       "output": "collections-bulk-entities.png",
       "kind": "sandcastle",
       "gallery": "webgpu-bulk-vs-legacy-visualizers",
-      "settleMs": 14000,
+      "settleMs": 8000,
       "minNonBlackPct": 0.2,
       "minDistinct": 8
     },
@@ -558,7 +558,7 @@
       "output": "collections-model-edges.png",
       "kind": "sandcastle",
       "gallery": "webgpu-edge-visibility",
-      "settleMs": 12000,
+      "settleMs": 7000,
       "minNonBlackPct": 0.2,
       "minDistinct": 6
     },
@@ -569,7 +569,7 @@
       "output": "compute-instance-catalog.png",
       "kind": "sandcastle",
       "gallery": "webgpu-orbital-catalog",
-      "settleMs": 12000,
+      "settleMs": 7000,
       "minNonBlackPct": 0.08,
       "minDistinct": 6
     },
@@ -580,7 +580,7 @@
       "output": "compute-high-density.png",
       "kind": "sandcastle",
       "gallery": "webgpu-sgp4-satellites",
-      "settleMs": 14000,
+      "settleMs": 8000,
       "minNonBlackPct": 0.08,
       "minDistinct": 6
     },
@@ -592,7 +592,7 @@
       "kind": "page",
       "url": "/Apps/WebGPUTest/split-screen-comparison.html",
       "captureTarget": "page",
-      "settleMs": 16000,
+      "settleMs": 14000,
       "minNonBlackPct": 0.2,
       "minDistinct": 8
     },

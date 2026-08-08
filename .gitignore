@@ -83,3 +83,7 @@ __pycache__/
 # `Tools/visual-regression/baseline/` and are NOT covered by this rule.
 /Tools/visual-regression/output/
 
+# README screenshot harness reports; the PNGs it captures are committed
+# under Documentation/Images/webgpu-fork/, the run reports are not.
+/Tools/readme-screenshots/output/
+

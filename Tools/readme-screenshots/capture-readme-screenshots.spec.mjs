@@ -3,19 +3,23 @@
 // script's own membership in the probe fleet's machine-safety contract.
 // Pure Node: no browser, no network, no GPU.
 //
-// THE GAP THIS CLOSES. DOC-01 asks for a table whose every row carries a
-// completion figure, a basis for that figure, and a WebGPU screenshot — and for
-// one command that produces every image. Three things can rot silently between
-// runs, and all three produce a README that LOOKS finished:
+// THE GAP THIS CLOSES. The README's feature table promises a completion figure,
+// a basis for that figure, and a WebGPU screenshot on every row, produced by one
+// command. Five things can rot silently between runs, and all of them produce a
+// README that LOOKS finished:
 //
 //   1. a row is added with no scene, so its image never exists and the reader
 //      sees a broken picture;
 //   2. a scene is added with no row, so capture time is spent on an image
 //      nobody displays;
 //   3. a scene names a demo, tileset or model that has since moved, which is
-//      only discovered forty minutes into an Edge run, as a black PNG.
+//      only discovered forty minutes into an Edge run, as a black PNG;
+//   4. a demo page loses the entry point the capture script's loader calls, so
+//      the page sits inert and the run spends a readiness timeout finding out;
+//   5. the run's own schedule stops fitting its manifest — a watchdog sized from
+//      a constant, or a re-run that repeats work already on disk.
 //
-// All three are decidable from source, so they are decided here.
+// All five are decidable from source, so they are decided here.
 //
 // WHY THE DETECTORS ARE MUTANT-TESTED FIRST. A contract checker is exactly the
 // shape of instrument this repo has repeatedly been burned by: it passes, and
@@ -34,7 +38,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   CONTENT_TYPES,
+  ENGINE_MODULE_URL,
   IMAGE_DIR,
+  LEGACY_GALLERY_DIR,
   SCENE_AIMS,
   SCENE_KINDS,
   TABLE_BEGIN,
@@ -42,12 +48,21 @@ import {
   auditContract,
   crossCheck,
   galleryLegacyId,
+  legacyDemoBootErrors,
   parseFeatureTable,
   resolveScene,
   screenshotPath,
   tableCells,
   validateManifest,
 } from "./lib/readme-table.mjs";
+import {
+  DEFAULT_SCENE_BUDGET_MS,
+  DEFAULT_WATCHDOG_CAP_MS,
+  MIN_WATCHDOG_MS,
+  computeWatchdogMs,
+  describeProgress,
+  planRun,
+} from "./lib/capture-plan.mjs";
 import { analyzeProbeSource } from "../visual-regression/lib/probe-fleet-contract.mjs";
 import { PROBE_CONTRACT_ALLOWLIST } from "../visual-regression/lib/probe-fleet-contract-allowlist.mjs";
 
@@ -59,6 +74,7 @@ const CAPTURE_SOURCE = readFileSync(
   join(HERE, "capture-readme-screenshots.mjs"),
   "utf8",
 );
+const PLAN_SOURCE = readFileSync(join(HERE, "lib", "capture-plan.mjs"), "utf8");
 
 /** A completion cell: `92 %` or `70-80 %`, optionally emphasised. */
 const COMPLETION_CELL = /^\*{0,2}\d{1,3}(?:\s*[–-]\s*\d{1,3})?\s*%\*{0,2}$/;
@@ -175,8 +191,8 @@ test("B6 mutant: a pixel threshold outside (0, 1] is rejected", () => {
 });
 
 test("B7 mutant: a README row with no scene FAILS the cross-check", () => {
-  // DOC-01's hard rule. A row whose image nobody produces renders as a broken
-  // picture, which is worse than an absent row.
+  // A row whose image nobody produces renders as a broken picture, which is
+  // worse than an absent row.
   const rows = [
     { group: "G", feature: "Widget", screenshot: `${IMAGE_DIR}/widget.png` },
     { group: "G", feature: "Orphan", screenshot: `${IMAGE_DIR}/orphan.png` },
@@ -250,7 +266,7 @@ test("C1: the real README and the real manifest satisfy the whole contract", () 
   );
   assert.ok(
     audit.rows.length >= 25 && audit.rows.length <= 45,
-    `the table has ${audit.rows.length} rows; DOC-01 asks for a presentable ~25-40`,
+    `the table has ${audit.rows.length} rows; a presentable table is ~25-40`,
   );
   assert.equal(audit.rows.length, audit.scenes.length);
 });
@@ -264,8 +280,8 @@ test("C2: every row states a completion figure AND a basis for it", () => {
         `${row.feature}: completion cell "${row.status}" is not a % or a % range`,
       );
     }
-    // A figure with no stated basis is the thing DOC-01 forbids: invented
-    // precision. The word "Basis" is the marker the table uses for it.
+    // A figure with no stated basis is invented precision. The word "Basis" is
+    // the marker the table uses to carry the evidence behind the number.
     if (!/\bBasis:/.test(row.notes)) {
       offenders.push(
         `${row.feature}: notes cell states no "Basis:" for its figure`,
@@ -292,7 +308,7 @@ test("C4: every group in the manifest is a group in the README, in order", () =>
   const { rows, groups } = parseFeatureTable(README);
   const manifestGroups = [...new Set(MANIFEST.scenes.map((s) => s.group))];
   assert.deepEqual(manifestGroups, groups);
-  // Every DOC-01 subsystem bucket is represented.
+  // Every subsystem bucket the table divides the fork into is represented.
   assert.ok(groups.length >= 10, `only ${groups.length} subsystem groups`);
   assert.ok(rows.length > groups.length);
 });
@@ -378,8 +394,8 @@ test("D1: the capture script satisfies the probe fleet's machine-safety contract
 });
 
 test("D2: the capture script is NOT allowlisted anywhere", () => {
-  // DOC-01: fleet-contract compliant, no allowlisting. The allowlist is closed
-  // and shrink-only; a new tool appearing in it would be a regression in the
+  // Fleet-contract compliant, no allowlisting. The allowlist is closed and
+  // shrink-only; a new tool appearing in it would be a regression in the
   // ratchet, not an exemption.
   const listed = Object.keys(PROBE_CONTRACT_ALLOWLIST).filter((name) =>
     /capture-readme-screenshots/.test(name),
@@ -450,9 +466,20 @@ test("D7: the script reads back every setting it writes", () => {
   );
 });
 
-test("D8: the script offers the --only re-capture mode DOC-01 asks for", () => {
+test("D8: the script offers the --only, --list and resume controls", () => {
   assert.ok(CAPTURE_SOURCE.includes("--only"));
   assert.ok(CAPTURE_SOURCE.includes("--list"));
+  // Resuming is the default, so the flag that turns it OFF is the one the
+  // script has to expose; a run with no way back to a full re-capture would
+  // quietly refuse to refresh images that are already on disk.
+  assert.ok(
+    CAPTURE_SOURCE.includes("--force"),
+    "no way to re-capture images that already exist",
+  );
+  assert.ok(
+    /skipExisting\s*=\s*!\(/.test(CAPTURE_SOURCE),
+    "skip-existing is not the default; an interrupted run cannot be resumed",
+  );
 });
 
 test("D9: the manifest exercises every scene kind the script implements", () => {
@@ -472,6 +499,237 @@ test("D9: the manifest exercises every scene kind the script implements", () => 
 });
 
 // ---------------------------------------------------------------------------
+// F. Booting the standalone demo pages
+// ---------------------------------------------------------------------------
+
+test("F1: every demo page still defines the entry point the loader calls", () => {
+  // The two loader scripts these pages reference were deleted with the legacy
+  // Sandcastle app, so the capture script supplies both. The one thing it
+  // cannot supply is the demo's own `window.startup`, and a page that lost it
+  // would present as a readiness timeout rather than as a missing function.
+  const sandcastle = MANIFEST.scenes.filter((s) => s.kind === "sandcastle");
+  const offenders = [];
+  for (const scene of sandcastle) {
+    const legacyId = galleryLegacyId(REPO_ROOT, scene.gallery);
+    const errors = legacyDemoBootErrors(REPO_ROOT, legacyId ?? "");
+    if (errors.length > 0) {
+      offenders.push(`${scene.id}: ${errors.join("; ")}`);
+    }
+  }
+  assert.deepEqual(offenders, [], offenders.join("\n"));
+});
+
+test("F2 mutant: a page with no window.startup is rejected", () => {
+  const errors = legacyDemoBootErrors(REPO_ROOT, "no-such-demo.html");
+  assert.ok(errors.some((e) => /is not on disk/.test(e)));
+});
+
+test("F3: resolveScene carries the boot contract into the run's own audit", () => {
+  // The check has to fire from the SAME resolver the capture script calls,
+  // or the spec proves a rule the run does not apply.
+  const { errors } = resolveScene(
+    { ...goodScene, kind: "sandcastle", gallery: "no-such-gallery" },
+    REPO_ROOT,
+  );
+  assert.ok(errors.some((e) => /no sandcastle\.yaml legacyId/.test(e)));
+});
+
+test("F4: the script re-creates both deleted loaders, and imports the bundle", () => {
+  // Named individually because either half alone leaves the page inert: the
+  // Sandcastle global without the module import has nothing to run, and the
+  // module import without the global throws the moment a demo builds a button.
+  assert.ok(
+    /window\.Sandcastle\s*=/.test(CAPTURE_SOURCE),
+    "no Sandcastle global is installed; every demo would throw at finishedLoading",
+  );
+  assert.ok(
+    /addToolbarMenu/.test(CAPTURE_SOURCE),
+    "the menu helper is missing; demos that build content in a menu handler would photograph empty",
+  );
+  assert.ok(
+    /defaultAction/.test(CAPTURE_SOURCE),
+    "the default action is never invoked; a menu's first entry is the state the demo means to show",
+  );
+  assert.ok(
+    CAPTURE_SOURCE.includes("window.startup("),
+    "the demo entry point is never called",
+  );
+  assert.ok(
+    CAPTURE_SOURCE.includes("ENGINE_MODULE_URL"),
+    "the engine bundle is never imported into the demo page",
+  );
+  assert.equal(ENGINE_MODULE_URL, "/Build/CesiumUnminified/index.js");
+  assert.equal(LEGACY_GALLERY_DIR, "Apps/Sandcastle/gallery");
+});
+
+test("F5: a dead route is decided by a pre-flight, not by a readiness timeout", () => {
+  assert.ok(
+    /urlAnswers/.test(CAPTURE_SOURCE),
+    "no HTTP pre-flight; an unserved URL would cost a full readiness timeout",
+  );
+  assert.ok(
+    /does not serve/.test(CAPTURE_SOURCE),
+    "a URL that does not answer is not reported as a structural note",
+  );
+  assert.ok(
+    /AbortSignal\.timeout/.test(CAPTURE_SOURCE),
+    "the pre-flight itself can hang",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// G. The run's schedule — budget, resume, watchdog
+// ---------------------------------------------------------------------------
+
+test("G1: the watchdog scales with the scene count and stops at the cap", () => {
+  const one = computeWatchdogMs({ sceneCount: 1 });
+  const forty = computeWatchdogMs({ sceneCount: 40 });
+  assert.ok(forty > one, "a longer manifest does not buy a longer watchdog");
+  assert.ok(
+    forty >= 40 * DEFAULT_SCENE_BUDGET_MS,
+    "the watchdog is shorter than the per-scene budgets it has to contain",
+  );
+  assert.equal(
+    computeWatchdogMs({ sceneCount: 100000 }),
+    DEFAULT_WATCHDOG_CAP_MS,
+    "an unbounded manifest buys an unbounded run",
+  );
+  assert.equal(computeWatchdogMs({ sceneCount: 0 }), MIN_WATCHDOG_MS);
+});
+
+test("G2 mutant: nonsense sizing inputs fall back rather than disarm", () => {
+  // A watchdog computed as NaN is a watchdog that never fires.
+  for (const bad of [Number.NaN, -1, undefined, "90000"]) {
+    const ms = computeWatchdogMs({ sceneCount: 5, sceneBudgetMs: bad });
+    assert.ok(
+      Number.isFinite(ms) && ms >= MIN_WATCHDOG_MS,
+      `sceneBudgetMs=${String(bad)} produced ${String(ms)}`,
+    );
+  }
+  assert.ok(Number.isFinite(computeWatchdogMs({ sceneCount: Number.NaN })));
+});
+
+test("G3: the run resumes by skipping images already on disk", () => {
+  const scenes = [
+    { ...goodScene, id: "alpha", output: "alpha.png" },
+    { ...goodScene, id: "beta", output: "beta.png" },
+    { ...goodScene, id: "gamma", output: "gamma.png" },
+  ];
+  const sizes = { "alpha.png": 4096, "beta.png": 0 };
+  const sizeOf = (path) => sizes[path.split(/[\\/]/).pop()] ?? 0;
+  const plan = planRun({ scenes, skipExisting: true, outDir: "out", sizeOf });
+  assert.deepEqual(
+    plan.run.map((s) => s.id),
+    ["beta", "gamma"],
+    "a zero-byte PNG must be re-captured, not treated as done",
+  );
+  assert.deepEqual(
+    plan.skipped.map((s) => s.id),
+    ["alpha"],
+  );
+});
+
+test("G3b: a scene the last run failed is re-captured, PNG or no PNG", () => {
+  // The capture script writes a PNG on every attempt, including attempts that
+  // miss their pixel thresholds. Skipping on file presence alone would pin a
+  // known-bad image in the README for as long as nobody deleted it by hand.
+  const scenes = [
+    { ...goodScene, id: "alpha", output: "alpha.png" },
+    { ...goodScene, id: "beta", output: "beta.png" },
+  ];
+  const plan = planRun({
+    scenes,
+    skipExisting: true,
+    outDir: "out",
+    priorFailures: new Set(["beta"]),
+    sizeOf: () => 4096,
+  });
+  assert.deepEqual(
+    plan.run.map((s) => s.id),
+    ["beta"],
+  );
+  assert.deepEqual(
+    plan.skipped.map((s) => s.id),
+    ["alpha"],
+  );
+});
+
+test("G4: --only always re-captures, and an unknown id is structural", () => {
+  const scenes = [{ ...goodScene, id: "alpha", output: "alpha.png" }];
+  const sizeOf = () => 9999;
+  const plan = planRun({
+    scenes,
+    only: "alpha",
+    skipExisting: true,
+    outDir: "out",
+    sizeOf,
+  });
+  assert.deepEqual(
+    plan.run.map((s) => s.id),
+    ["alpha"],
+    "asking for one scene by name must not be answered with a skip",
+  );
+  const missing = planRun({ scenes, only: "nope", sizeOf });
+  assert.equal(missing.run.length, 0);
+  assert.ok(missing.errors.some((e) => /matches no scene/.test(e)));
+});
+
+test("G5: a cut-short run names what it captured AND what it never reached", () => {
+  // The defect this replaces: a force-exit that said only that it had fired,
+  // leaving the next invocation to re-derive the remainder by hand.
+  const planned = [
+    { id: "alpha" },
+    { id: "beta" },
+    { id: "gamma" },
+    { id: "delta" },
+  ];
+  const lines = describeProgress({
+    planned,
+    results: [
+      { id: "alpha", ok: true },
+      { id: "beta", ok: false },
+    ],
+    skipped: [{ id: "zeta" }],
+  }).join("\n");
+  assert.match(lines, /captured 1\/4/);
+  assert.match(lines, /\+1 skipped/);
+  assert.match(lines, /attempted but not OK: beta/);
+  assert.match(lines, /NEVER ATTEMPTED \(2\): gamma, delta/);
+});
+
+test("G6: the watchdog the script arms is computed, and reports progress", () => {
+  assert.ok(
+    /computeWatchdogMs\(\{[\s\S]{0,200}sceneCount: planned\.length/.test(
+      CAPTURE_SOURCE,
+    ),
+    "the watchdog is not sized from the scenes actually scheduled",
+  );
+  assert.ok(
+    /describeProgress\(/.test(CAPTURE_SOURCE),
+    "the force-exit path prints no per-scene accounting",
+  );
+  assert.ok(
+    /SCENE_BUDGET_MS/.test(CAPTURE_SOURCE),
+    "there is no per-scene time budget",
+  );
+  assert.ok(
+    /budgetLeft\(\)/.test(CAPTURE_SOURCE),
+    "waits are not clamped to what the scene has left",
+  );
+});
+
+test("G7: exactly one watchdog exists, and it is the one the mutants target", () => {
+  // Two watchdogs would make D3's mutation control vacuous: stripping the first
+  // would leave the second, and the analyzer would keep reporting compliance.
+  const armings = CAPTURE_SOURCE.match(/setTimeout\(/g) ?? [];
+  assert.equal(
+    armings.length,
+    1,
+    `expected one setTimeout arming site, found ${armings.length}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
 // E. Offline isolation — this spec must never reach for a browser
 // ---------------------------------------------------------------------------
 
@@ -487,6 +745,7 @@ test("E1: this spec and the shared library are browser-free", () => {
   for (const [name, source] of [
     ["the spec", specSource],
     ["readme-table.mjs", librarySource],
+    ["capture-plan.mjs", PLAN_SOURCE],
   ]) {
     assert.ok(
       !/from\s*["']playwright["']/.test(source),
