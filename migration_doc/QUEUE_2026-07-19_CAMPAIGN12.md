@@ -605,6 +605,26 @@ any G3 claim.
   no faint target in frame) and is NOT a product verdict. G3 needs `sharp`, a
   declared repo dependency, to decode the served faces off-browser.
 
+### 2026-08-09 G4 SECOND RUN (Batch 946) — aim repair PROVEN (appliedResidual 0, round-trip 0.1797° as predicted); FIX-5 validated on the DEFAULT heap; and the unmasked WebGL sun is REALLY BROKEN
+
+Exit 1. Moon half green again (full:quarter 3.014). Both limb-ratio reds
+returned CERTIFYING as pre-registered (webgl 0.7181 / webgpu 0.7140 vs §5
+[0.3,0.5]) — the maintainer item now has clean-aim numbers matching CO-28's
+predicted composite 0.733. **NEW CERTIFYING PRODUCT FINDINGS (WebGL only;
+WebGPU green on all):** disc diameter **0.2907° vs nominal 0.5334°**,
+trueSizeRatio **2.224 vs √2**, limb shape does not match the shipped law,
+limb does not vanish at centre; halo lane structural with the NEW
+discriminating note — ephemeris projection 0 px off while the brightest
+pixel sits 63.9 px away: **the drawn Sun and the ephemeris disagree**;
+haloBandMean 0.00041 vs webgpu 0.05144 (~125× deficit, correctly excluded
+from parity by FIX-2's structural gating). FILED:
+**WEBGL-SUN-APPEARANCE-STACK-DISENGAGED** — one-cause hypothesis: the
+C12-15/16/18/B906 appearance stack is not engaged on the WebGL sun path in
+this scene (undersized disc + no limb law + missing screen halo cohere);
+DISCRIMINATOR OWED: the queued C12-19 Edge-delta run pre-registered WebGL
+HDR disc 250.3 codes — running it separates a B937 regression from a
+pre-existing gap. Investigation dispatched (CO-30).
+
 ### 2026-08-08 G4 FIRST RUN (Batch 941 stamp) — exit 1, and the reds DECOMPOSE: one probe aiming defect + two bound derivations; the MOON HALF CERTIFIED GREEN
 
 **Run facts (`output/celestial-g4.json`, 12 GB heap — the first attempt OOM'd
