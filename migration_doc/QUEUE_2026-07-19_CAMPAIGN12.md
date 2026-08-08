@@ -705,6 +705,20 @@ the 0.95R signal, discOnlyRatio 0.568 > the 0.5 ceiling before any halo);
 (2) the bloom-mirror decision on the filed MEDIUM row. Four runs, four
 pre-registrations, the last one exact.
 
+### 2026-08-11 G4 SEVENTH RUN — **VOID** (Batch 974): confounded by a mid-run viewer swap; NOT a verdict
+
+Run 7 (the sunBloom=false discriminator run) returned a mass failure — 15
+reds, every sun lane signal-less on BOTH backends, all scalars NaN. It is
+**VOID, not evidence**: Batch 972's CesiumViewer refactor landed WHILE the
+probe was mid-run, and `Apps/**` is served from SOURCE, so pages swapped
+under the browser between lanes. Two changes (the B971 lane edit + the
+B972 viewer swap) in one run — attribution impossible; no failure list
+from it may be quoted. The discriminator pre-registration STANDS and moves
+to run 8, sequenced BEHIND the CO-39 runtime smoke (which this incident
+converts from owed-verification into the first suspect: if the new
+async-start viewer changes when `window.viewer` appears, every lane's
+setup races it).
+
 ### 2026-08-11 G4 SIXTH RUN (Batch 970) — the mirror VERIFIED to four decimals; the limb-shape red goes SYMMETRIC and indicts the lane, not the law
 
 Exit 1, `structural[]` empty. **`C12-34` mirror VERIFIED:**
