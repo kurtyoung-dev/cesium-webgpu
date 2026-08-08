@@ -1036,6 +1036,24 @@ The only obligation it attaches is an acknowledgement in research publications. 
 
 **What this is not.** It is **not** a public-domain dedication and **not** a written grant. 17 U.S.C. §105 does **not** reach the underlying 1991 compilation, whose authors were a private university and a contractor; federal hosting confers no such status. Sourcing from HEASARC rather than VizieR/CDS is deliberate: it removes the EU _sui generis_ database right, which protects substantial extraction independently of copyright and whose maker would be the European provider. On that basis the residual exposure is assessed as low and accepted, on stated grounds — **not** recorded as "it is clear". A one-line written confirmation from CDS (`cds-question@unistra.fr`) and/or Yale that no restriction is asserted on redistribution of the factual fields would convert this from defensible to cleared, and remains the cheapest route. The full analysis, including the points that stay unconfirmed, is in the fork repository at `migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md` §6d (decision record DR-02) and in `Tools/star-catalog-bake/README.md` §2.
 
+### Spatiotemporal blue-noise mask — generated in this repository (no third-party terms)
+
+**File:** `Source/Assets/Textures/Noise/stbn_scalar_128x128x64.png` (1,049,988 bytes, 1024×1024, 8-bit greyscale PNG; SHA-256 `8dd44e0b07bc69dea20955f67d9b9f78c0cf51a4f59b771b9eb3e7936cb2d579`). A 128×128×64 scalar spatiotemporal blue-noise mask, stored as an 8×8 grid of 128×128 tiles, one tile per temporal slice. Seam module: `Source/Scene/StbnNoiseVolume.js`.
+
+**This entry grants nothing and reserves nothing, and that is why it exists.** Every other entry in this section is here because the asset carries terms of its own that must travel with a redistribution. This one carries **none**: it has no third party at all. It was not obtained — it is _computed_, from scratch, by `Tools/stbn-bake/bake-stbn.mjs` in the fork repository, and it is covered by the Apache-2.0 grant at the top of this file exactly like the rest of the project's own work. It is listed so that an audit of the binaries inside `@cesium/engine` accounts for every one of them and does not have to wonder whether this one was simply missed.
+
+**Method.** Published algorithms, implemented from their descriptions; no third-party implementation was copied, adapted or consulted:
+
+- R. A. Ulichney, "The void-and-cluster method for dither array generation", Proc. SPIE 1913, Human Vision, Visual Processing, and Digital Display IV, 1993, pp. 332–343. DOI [10.1117/12.152707](https://doi.org/10.1117/12.152707) — the per-slice spatial mask.
+- I. Georgiev and M. Fajardo, "Blue-noise dithered sampling", ACM SIGGRAPH 2016 Talks, article 35. DOI [10.1145/2897839.2927430](https://doi.org/10.1145/2897839.2927430) — the pairwise energy minimised by random swaps.
+- A. Wolfe, N. Morrical, T. Akenine-Möller and R. Ramamoorthi, "Spatiotemporal Blue Noise Masks", Eurographics Symposium on Rendering 2022. DOI [10.2312/sr.20221161](https://doi.org/10.2312/sr.20221161) — the separable spatiotemporal criterion the result is certified against.
+
+The pseudo-random stream is AES-256-CTR over a zero plaintext keyed by SHA-256 of a seed string, via Node's built-in `crypto` — two published NIST standards and no borrowed PRNG.
+
+**Explicitly not used: NVIDIA's STBN SDK.** Neither its generator nor its published masks, and neither any blog or Shadertoy mirror of those masks. Its "Non-Commercial Use License" restricts use to research or evaluation and forces same-licence redistribution, which is incompatible with this Apache-2.0 fork. Generating our own was the point of the exercise, not a fallback from it.
+
+**Reproducibility.** `node Tools/stbn-bake/bake-stbn.mjs --install` regenerates the identical bytes: the bake is deterministic in its seed and parameters, and `--repro` re-runs it and asserts the SHA-256 is unchanged. Provenance, every parameter, and the measured Fourier spectra are recorded in `Tools/stbn-bake/stbn-manifest.json`; `Tools/visual-regression/stbn-asset.spec.mjs` re-derives the shipped hash and re-measures the spectra, so neither the evidence nor the licence position above can drift away from the asset. Full method notes: `Tools/stbn-bake/README.md` in the fork repository.
+
 # Tests
 
 The CesiumJS tests use the following third-party libraries and data.

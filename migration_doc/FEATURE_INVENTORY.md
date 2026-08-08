@@ -955,6 +955,8 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 
 ## C. WIP — Work In Progress
 
+
+- **STBN stochastic cloud jitter** `(SCAFFOLDED)` — license-clean spatiotemporal blue-noise volume generated in-repo (`Tools/stbn-bake/`, certified against the published spectral characterisation; asset hash-pinned under `Assets/Textures/Noise/`); the loader seam (`Scene/StbnNoiseVolume.js`) has no consumer yet. Part 2 (cloud-jitter consumption at the BAYER4/IGN sites) is `C13-11-PART2-CLOUD-STBN-CONSUMPTION` in DEFERRED_WORK. Subsystems: Post-process & Effects, Performance & Compute.
 Partially shipped features with known gaps. Working code exists but the feature isn't fully wired or has limitations.
 
 ### C.1 Globe & Imagery
