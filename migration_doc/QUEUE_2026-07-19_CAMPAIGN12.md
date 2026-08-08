@@ -605,6 +605,32 @@ any G3 claim.
   no faint target in frame) and is NOT a product verdict. G3 needs `sharp`, a
   declared repo dependency, to decode the served faces off-browser.
 
+### 2026-08-09 G4 THIRD RUN (Batch 948) — the NaN fix VERIFIED end-to-end; WebGL disc + halo lanes certify for the FIRST TIME
+
+WebGL: discDiameterDeg **0.2907 → 0.5290** (nominal 0.5334), trueSizeRatio
+**2.224 → 1.4290** (√2 = 1.4142, bar ±0.05), haloBandMean **0.00041 →
+0.051457 vs webgpu 0.051439 — matching to four digits; the "125× deficit"
+is gone with the hole**. WebGL evaluated **43 criteria** (21 in run 1);
+parity scalars all green at spread ≤ 0.01. WebGPU byte-stable as
+pre-registered. Remaining per-backend reds are exactly the script:
+`limb_absoluteRatio` both backends (webgl **0.6509** / webgpu 0.7140 vs §5
+[0.3,0.5] — the standing maintainer item; note webgl came in BELOW the
+~0.77 pre-registration, not above: the bloom interaction differs from the
+CO-30 model, a datum for the WEBGL-SUN-BLOOM-IS-AN-UNMIRRORED-ADDITIVE
+row) and webgl `limb_shape_matches_shipped_law` (the pre-registered WATCH
+ITEM — the unmirrored bloom pushing the tightest disc criterion over its
+0.20 bar). **TWO instrument follow-ups filed from the run's own honesty:**
+(i) FIX-3's cap-enforcement fired live — the webgpu earthshine lane went
+STRUCTURAL because one 8-bit code at the peak is worth 0.0251 in this
+exposure, putting the quantum floor (0.0376) ABOVE the constant-term
+mutant (0.0347) it must reject; the lane's own message names the fix
+(raise the moon exposure bracket or census a robust statistic) —
+G4-FOLLOWUP-EARTHSHINE-EXPOSURE; (ii) FIX-2 seam: structural-source parity
+entries labeled "NOT a verdict" still land in failures[] and drive exit 1
+— they belong on the structural channel (exit 3) —
+G4-FOLLOWUP-STRUCTURAL-PARITY-CHANNEL. With those two, the G4 sun half is
+one maintainer ruling + one bloom-mirror decision from fully green.
+
 ### 2026-08-09 CO-30 verdict (Batch 947) — the B946 filing is REFUTED AND REPLACED; the fix is landed
 
 **WEBGL-SUN-APPEARANCE-STACK-DISENGAGED is REFUTED**: outside a rectangle
