@@ -5,6 +5,16 @@
  * a 3D Gaussian to a 2D screen-space Gaussian evaluated per-pixel.
  * Uses RTE (Relative-To-Eye) positioning for planetary-scale precision.
  *
+ * References:
+ *   - Bernhard Kerbl, Georgios Kopanas, Thomas Leimkuehler and George
+ *     Drettakis, "3D Gaussian Splatting for Real-Time Radiance Field
+ *     Rendering", ACM Transactions on Graphics 42(4), 2023 —
+ *     {@link https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/}.
+ *     The covariance projection, the spherical-harmonic evaluation of
+ *     view-dependent colour and the front-to-back depth ordering implement
+ *     that paper; they are written against WebGPU rather than ported from
+ *     its CUDA reference.
+ *
  * @module WebGPUGaussianSplatRenderer
  */
 

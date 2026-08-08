@@ -18,6 +18,17 @@
 // `@binding` collision (same idiom as VolumetricFog.wgsl). Each pipeline binds
 // only the target its entry point writes.
 
+// References:
+//   - Andrew Schneider and Nathan Vos, "The Real-Time Volumetric Cloudscapes
+//     of Horizon Zero Dawn" (SIGGRAPH 2015 Advances in Real-Time Rendering) —
+//     the Perlin-Worley remap baked into the shape texture's red channel and
+//     the Worley erosion octaves in the remaining channels.
+//   - Andrew Schneider, "Real-Time Volumetric Cloudscapes", GPU Pro 7
+//     (2016) — the same construction written up with the frequency ladder
+//     these dispatches use.
+//   - Steven Worley, "A Cellular Texture Basis Function" (SIGGRAPH 1996) —
+//     the cellular noise itself.
+
 @group(0) @binding(0) var shapeTex: texture_storage_3d<rgba8unorm, write>;
 @group(0) @binding(1) var detailTex: texture_storage_3d<rgba8unorm, write>;
 

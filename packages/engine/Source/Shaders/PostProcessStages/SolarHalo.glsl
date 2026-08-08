@@ -7,6 +7,11 @@
 // Tools/visual-regression/sun-halo-composition.spec.mjs — keep them in
 // lockstep (SHADER_PAIRS_LOCKSTEP.md).
 //
+// Reference: the 1/theta^2 veiling-glare falloff is the disability-glare
+// form standardised by the CIE — see CIE 135/1:1999, "Disability Glare", and
+// the Stiles-Holladay relation it generalises. The Lorentzian written below
+// is that law regularised at theta = 0 so it stays finite on the disc.
+//
 // WHY THIS EXISTS. The halo used to be baked into the sun billboard's texture,
 // where a finite quad forced it to terminate at the quad's inscribed circle
 // (11 solar radii). Real veiling glare never terminates: it falls as

@@ -10,6 +10,11 @@
 // Output = inputColor * mix(strength, 1.0, shadow) where shadow=1
 // means fully lit and shadow=0 means fully occluded.
 //
+// Reference: the short screen-space ray march against the depth buffer is
+// the contact-shadow technique described by Mikkel Gjoel and Mikke Svendsen,
+// "The Rendering of Inside" (GDC 2016), and used under that name in several
+// engines since. No reference source is incorporated.
+//
 // Why this exists:
 //   - Shadow maps from the sun cover large-scale shadowing well but
 //     are coarse near object bases (PCF blur + cascade resolution).

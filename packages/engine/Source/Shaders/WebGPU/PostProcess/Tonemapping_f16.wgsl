@@ -9,6 +9,12 @@
 // `Tonemapping.wgsl` is the spec — keep both files in sync if you change
 // any of the operator implementations.
 //
+// References, as for the f32 original: Krzysztof Narkowicz, "ACES Filmic Tone
+// Mapping Curve" (2016); John Hable, "Filmic Tonemapping Operators" (2010) for
+// the Uncharted 2 curve; and the Khronos PBR Neutral operator at
+// https://github.com/KhronosGroup/ToneMapping/tree/main/PBR_Neutral. Each is
+// ported from this project's own GLSL builtin of the same name.
+//
 // HDR clamp policy: pre-tonemap input can exceed the f16 max (~65504) when
 // emissive surfaces, sun reflections, or other very-bright sources land in
 // the framebuffer. We clamp to `F16_MAX_HDR` immediately after the texture

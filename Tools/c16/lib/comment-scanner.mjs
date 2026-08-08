@@ -589,11 +589,23 @@ export function extractComments(source, language) {
  *   - CRLF and LF therefore compare equal, which matters because the working
  *     tree is CRLF and git blobs are LF.
  *
+ * That last rule needs one more step to actually hold. Whitespace collapsing
+ * reaches only the code between literals, so a multi-line template literal —
+ * an embedded WGSL shader, say — is compared byte for byte, and its interior
+ * newlines are CRLF on the working-tree side and LF on the git-blob side. Any
+ * file carrying one would fail the verifier on line endings alone, whatever
+ * its author changed. Line terminators are therefore normalised across the
+ * whole input before tokenizing. Nothing is lost by it: git stores blobs with
+ * LF under this repository's `text=auto`, so a line-ending difference inside a
+ * literal is not a change the repository can even represent, and every other
+ * byte of every literal is still compared exactly.
+ *
  * @param {string} source File text.
  * @param {("js"|"wgsl"|"glsl")} language Grammar to apply.
  * @returns {string} Canonical code-only form.
  */
-export function canonicalizeCode(source, language) {
+export function canonicalizeCode(rawSource, language) {
+  const source = rawSource.replace(/\r\n?/g, "\n");
   const segments = tokenize(source, language);
   const pieces = [];
   for (const segment of segments) {

@@ -17,6 +17,10 @@
 //   - Phase 1: localBitonicSort256 — fully sorts groups of 256
 //   - Phase 2: globalBitonicMerge — merges pairs across groups
 //
+// Reference: K. E. Batcher, "Sorting Networks and their Applications",
+// AFIPS Spring Joint Computer Conference 32, 307 (1968) — the bitonic merge
+// network whose stage/pass structure the two entry points below implement.
+//
 // Same network shape as PointCloudSort.wgsl; only the comparator
 // differs (u32 → u64-via-pair).
 

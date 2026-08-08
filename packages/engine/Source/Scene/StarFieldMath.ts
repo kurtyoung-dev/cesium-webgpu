@@ -14,6 +14,16 @@
  *     brightness-driven size boost.
  *   - {@link computeStarDayFade}: the camera-altitude-gated daytime fade.
  *
+ * References:
+ *   - Norman Pogson, "Magnitudes of Thirty-six of the Minor Planets", Monthly
+ *     Notices of the Royal Astronomical Society 17, 12 (1856) — the
+ *     five-magnitudes-per-factor-of-100 scale the brightness mapping inverts.
+ *   - Fernando Ballesteros, "New insights into black bodies", Europhysics
+ *     Letters 97, 34008 (2012) — the B-V to effective-temperature relation.
+ *   - Max Planck's blackbody spectrum, integrated against the CIE 1931
+ *     colour-matching functions, gives the Planckian locus that temperature is
+ *     then mapped through.
+ *
  * Both the WebGPU renderer ({@link WebGPUStarFieldRenderer}) and the WebGL
  * renderer ({@link WebGLStarFieldRenderer}) import these so the two
  * backends place / color / brighten the same stars identically — only the

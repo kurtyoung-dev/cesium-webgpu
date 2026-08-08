@@ -17,6 +17,15 @@ import Transforms from "./Transforms.js";
  * clock and the real Simon-1994 ephemerides — which is why nothing here uses
  * wall time, a synthetic sinusoid, or a fitted period.
  *
+ * References:
+ *   - Gerard Petit and Brian Luzum (eds.), "IERS Conventions (2010)", IERS
+ *     Technical Note 36, chapter 6 — the degree-2 tide-generating potential
+ *     and the Love numbers k2 and h2 whose combination gives the diminishing
+ *     factor used below.
+ *   - George Darwin, "On the Precession of a Viscous Spheroid and on the
+ *     Remote History of the Earth", Philosophical Transactions of the Royal
+ *     Society 170, 447 (1879), for the equilibrium-tide construction itself.
+ *
  * WHAT IT IS. The equilibrium tide is the ocean surface that would exist if
  * water responded instantly and frictionlessly to the tide-generating
  * potential. For a body of gravitational parameter GM at geocentric distance

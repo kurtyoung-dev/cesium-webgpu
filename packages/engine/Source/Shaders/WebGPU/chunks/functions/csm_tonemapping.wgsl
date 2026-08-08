@@ -4,6 +4,18 @@
  * @chunk functions/csm_tonemapping
  */
 
+// References:
+//   - Erik Reinhard, Michael Stark, Peter Shirley and James Ferwerda,
+//     "Photographic Tone Reproduction for Digital Images" (SIGGRAPH 2002) —
+//     the c / (1 + c) operator.
+//   - Krzysztof Narkowicz, "ACES Filmic Tone Mapping Curve" (2016) —
+//     https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/
+//     The rational fit to the Academy Color Encoding System RRT and ODT whose
+//     five constants appear below.
+//   - John Hable, "Filmic Tonemapping Operators" (2010) — the Uncharted 2
+//     curve. Ported from this project's own GLSL builtins, which carry the
+//     same citations.
+
 // Simple Reinhard tone mapping
 fn csm_reinhardTonemap(color: vec3<f32>) -> vec3<f32> {
     return color / (color + vec3<f32>(1.0));

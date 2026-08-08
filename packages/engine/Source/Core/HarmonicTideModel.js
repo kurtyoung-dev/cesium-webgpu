@@ -17,6 +17,15 @@ import defined from "./defined.js";
  * from {@link TidalArguments} + {@link TidalConstituents} evaluated at the scene
  * clock. No tier can drift off the Moon, because no tier owns a clock.
  *
+ * References:
+ *   - Paul Schureman, "Manual of Harmonic Analysis and Prediction of Tides",
+ *     U.S. Coast and Geodetic Survey Special Publication 98 (1940 revision) —
+ *     the constituent set, the node factors f and u, and the Greenwich phase
+ *     lag convention g that the tables below are keyed to.
+ *   - Gerard Petit and Brian Luzum (eds.), "IERS Conventions (2010)", IERS
+ *     Technical Note 36, chapter 6 — the Love-number combination and the
+ *     equilibrium amplitudes the equilibrium station is built from.
+ *
  * THE TWO FORMS, AND WHY THEY ARE THE SAME FUNCTION.
  *
  *   Atlas / station:  h(t) = SUM_c  f_c(t) * A_c * cos( V_c(t) + u_c(t) - g_c )

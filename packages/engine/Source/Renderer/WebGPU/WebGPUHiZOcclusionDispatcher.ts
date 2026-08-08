@@ -34,6 +34,12 @@
  * step (tracked in the backlog).
  *
  * @private
+ * Reference: Stephen Hill and Daniel Collin, "Practical, Dynamic Visibility
+ * for Games", GPU Pro 2 (2011) — the depth-pyramid form of hierarchical-Z
+ * occlusion culling this dispatcher builds and tests against, in which a
+ * bounding volume is rejected when its nearest depth is behind the
+ * conservative maximum stored at the mip level matching its screen extent.
+ *
  * @module WebGPUHiZOcclusionDispatcher
  */
 

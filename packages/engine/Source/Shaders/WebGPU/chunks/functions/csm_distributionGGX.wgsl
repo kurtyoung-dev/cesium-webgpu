@@ -2,6 +2,12 @@
  * Normal Distribution Function (GGX/Trowbridge-Reitz)
  * Used in PBR rendering for microfacet specular BRDF
  * 
+ * Reference: Bruce Walter, Stephen Marschner, Hongsong Li and Kenneth
+ * Torrance, "Microfacet Models for Refraction through Rough Surfaces"
+ * (EGSR 2007), where the distribution is introduced as GGX; the
+ * alpha = roughness^2 remap follows Brian Karis, "Real Shading in Unreal
+ * Engine 4" (SIGGRAPH 2013).
+ *
  * @chunk functions/csm_distributionGGX
  * @requires functions/csm_constants
  */

@@ -11,6 +11,11 @@
  * CPU-side f16 encoding/decoding uses IEEE 754 half-precision format.
  * GPU-side uses WGSL `enable f16;` + `f16` / `vec3<f16>` types.
  *
+ * Reference: Jeroen van der Zijp, "Fast Half Float Conversions" (2008),
+ * {@link http://www.fox-toolkit.org/ftp/fasthalffloatconversion.pdf} — the
+ * precomputed base/shift/mantissa table scheme the encoder and decoder below
+ * use in place of per-value bit manipulation.
+ *
  * @example
  * if (context.hasFeature('shader-f16')) {
  *   const normals = WebGPUF16Utils.encodeNormalsF16(normalArray);

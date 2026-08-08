@@ -11,6 +11,11 @@
 // cubemap for diffuse irradiance. CesiumJS supports both paths — when SH
 // coefficients are provided by the user, this convolution is skipped.
 //
+// Reference: Brian Karis, "Real Shading in Unreal Engine 4" (SIGGRAPH 2013
+// Physically Based Shading course) — the split-sum approximation whose diffuse
+// half this convolution precomputes. The cosine-weighted hemisphere sum below
+// is the direct form of that integral, not an importance-sampled estimate.
+//
 // Dispatch: 6 × ceil(size/8) × ceil(size/8) workgroups
 //   Each invocation writes one texel of one cubemap face.
 

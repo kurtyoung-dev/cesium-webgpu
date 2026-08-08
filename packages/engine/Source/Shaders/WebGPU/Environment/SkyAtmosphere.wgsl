@@ -15,6 +15,21 @@
 // Any change in this file MUST land with a matching change in the GLSL
 // counterparts. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
 //
+// References:
+//   - Tomoyuki Nishita, Takao Sirai, Katsumi Tadamura and Eihachiro Nakamae,
+//     "Display of the Earth Taking into Account Atmospheric Scattering"
+//     (SIGGRAPH 1993) — the single-scattering integral the ray march below
+//     evaluates, and the model this shader's WebGL twin also follows.
+//   - Eric Bruneton and Fabrice Neyret, "Precomputed Atmospheric Scattering",
+//     Computer Graphics Forum 27(4), 1079 (2008) —
+//     https://hal.inria.fr/inria-00288758
+//     The transmittance and inscatter table conventions the lookup path reads.
+//   - Sebastien Hillaire, "A Scalable and Production Ready Sky and Atmosphere
+//     Rendering Technique", Computer Graphics Forum 39(4), 13 (2020) —
+//     https://sebh.github.io/publications/egsr2020.pdf
+//     The multiple-scattering term and the sky-view parameterisation.
+// Reimplemented from those papers; no reference source is incorporated.
+//
 // STRUCTURAL DIVERGENCES (cataloged for the convention ledger)
 //
 // 1. **Single file vs multi-file split.** GLSL splits the pipeline into

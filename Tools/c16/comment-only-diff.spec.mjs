@@ -334,6 +334,30 @@ test("CRLF and LF compare equal", () => {
   assert.equal(canonicalizeCode(crlf, "js"), canonicalizeCode(lf, "js"));
 });
 
+test("CRLF inside a multi-line literal compares equal, other bytes do not", () => {
+  // Whitespace collapsing reaches only the code between literals, and literals
+  // are compared verbatim — so without a whole-input line-terminator fold, any
+  // file holding an embedded shader string fails on line endings alone. Several
+  // do, `WebGPUGaussianSplatRenderer.ts` among them, and the failure names a
+  // "code change" at a line nobody touched.
+  const lf = "const WGSL = `\n@compute\nfn main() {}\n`;\n";
+  const crlf = lf.replaceAll("\n", "\r\n");
+  assertCommentOnly(
+    crlf,
+    lf,
+    SUBJECT,
+    "a CRLF worktree must not read as a code change inside an embedded shader",
+  );
+
+  // The fold must not become a licence to edit the literal.
+  assertCodeDiffers(
+    lf,
+    lf.replace("fn main() {}", "fn main() { x(); }"),
+    SUBJECT,
+    "a real change inside an embedded shader is still a code change",
+  );
+});
+
 test("re-indentation of code is tolerated but a newline that changes ASI is CAUGHT", () => {
   assertCommentOnly(
     "function f() {\n  return {\n    a: 1,\n  };\n}\n",

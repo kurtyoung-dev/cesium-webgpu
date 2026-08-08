@@ -2,6 +2,16 @@
 // the solar-disc photometry constants and the radial profiles the sun-disc bake
 // and the angular star washout are built from.
 //
+// References:
+//   - A. Claret, "A new non-linear limb-darkening law for LTE stellar
+//     atmosphere models", Astronomy and Astrophysics 363, 1081 (2000) — the
+//     quadratic law I(mu)/I(1) = a0 + a1*mu + a2*mu^2 whose coefficients this
+//     module publishes.
+//   - Arthur Cox (ed.), "Allen's Astrophysical Quantities" (4th edition,
+//     2000), section 14.7, for the solar values that law is evaluated with.
+//   - CIE 135/1:1999, "Disability Glare", for the 1/theta^2 veiling-glare
+//     falloff the screen halo profile is regularised from.
+//
 // WHY THIS MODULE EXISTS. Before it, the limb-darkening triple lived only in
 // `computeSolarObscuration.js` (C12-29 S1's eclipse photometry) and the sun
 // billboard's own disc was a *binary* `step()` with no limb darkening at all,

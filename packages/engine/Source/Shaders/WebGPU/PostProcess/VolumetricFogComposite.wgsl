@@ -11,6 +11,15 @@
 // unchanged. Phase 5b/5c populate the texture with real density and
 // scattered light values; the composite math doesn't change.
 //
+// References:
+//   - Bart Wronski, "Volumetric Fog: Unified Compute Shader Based Solution to
+//     Atmospheric Scattering" (SIGGRAPH 2014 Advances in Real-Time Rendering
+//     in Games) — the froxel volume this samples and the
+//     scattered-light-over-transmittance composite applied below.
+//   - Sebastien Hillaire, "Physically Based and Unified Volumetric Rendering
+//     in Frostbite" (SIGGRAPH 2015) — the energy-conserving integration the
+//     producing pass performs into that volume.
+//
 // Bind group layout:
 //   binding 0: uniform CompositeUniforms { invViewProj, near/far, screen size }
 //   binding 1: linear sampler

@@ -8,6 +8,11 @@
 // Dispatched once per frame, ~0.3ms for a 1920×1080 depth buffer.
 // Each workgroup processes a 16×16 tile of the output mip level.
 //
+// Reference: Stephen Hill and Daniel Collin, "Practical, Dynamic Visibility
+// for Games", GPU Pro 2 (2011) — the maximum-depth pyramid built here, which
+// makes an occlusion test conservative: a volume rejected at some mip is
+// guaranteed hidden, while a volume kept may still be hidden.
+//
 // Usage:
 //   Mip 0 = full-resolution depth (input, not computed here)
 //   Mip 1 = max of each 2×2 block from Mip 0

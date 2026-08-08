@@ -11,6 +11,14 @@
 //   R = scale factor for F0  (Fresnel reflectance at normal incidence)
 //   G = bias  factor for F0
 //
+// References:
+//   - Brian Karis, "Real Shading in Unreal Engine 4" (SIGGRAPH 2013 Physically
+//     Based Shading course) — the split-sum approximation and the scale/bias
+//     environment-BRDF table this shader tabulates.
+//   - Holger Dammertz, "Hammersley Points on the Hemisphere" —
+//     http://holger.dammertz.org/stuff/notes_HammersleyOnHemisphere.html
+//     The Van der Corput radical inverse used to generate the sample set.
+//
 // Usage in PBR fragment shader:
 //   let brdf = textureSample(brdfLut, lutSampler, vec2(NdotV, roughness));
 //   let specularIBL = (F0 * brdf.x + brdf.y) * prefilteredRadiance;

@@ -210,6 +210,12 @@ Patents pending US15/829,786 US16/850,266 US16/851,958
 
 CesiumJS includes the following third-party code.
 
+> **Mirrored section.** Entries here that cover code shipping from
+> `Source/` are duplicated in the repository-root `LICENSE.md`, which is **not**
+> part of the published `@cesium/engine` tarball. Any edit to one must be made
+> to the other in the same change; `node Tools/c16/verify-packaged-notices.mjs`
+> fails when the two drift.
+
 ### Sean O'Neil
 
 http://sponeil.net/
@@ -343,6 +349,341 @@ Fork: https://github.com/lyntel/GraphicsSamples/blob/3d30817ebeeade64fe6a4fc3aa1
 > OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 > (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 > OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+### Linearly Transformed Cosines (LTC) area lights
+
+WebGPU analytic area-light shading (`RectAreaLight` / `DiskAreaLight`,
+C6-LTC-AREA-LIGHTS). The two fitted 64×64 lookup tables embedded in
+`Source/Renderer/WebGPU/WebGPULTCLUTData.ts` and the
+edge-integral / cubic-solve math ported into
+`Source/Shaders/WebGPU/chunks/structs/ClusteredLighting.wgsl`
+are derived from the authors' reference implementation:
+
+https://github.com/selfshadow/ltc_code
+
+Paper: Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt,
+"Real-Time Polygonal-Light Shading with Linearly Transformed Cosines",
+ACM Transactions on Graphics (Proc. SIGGRAPH 2016) 35(4), 2016.
+Project page: https://eheitzresearch.wordpress.com/415-2/
+
+> Copyright (c) 2017, Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt.
+> All rights reserved.
+>
+> Redistribution and use in source and binary forms, with or without
+> modification, are permitted provided that the following conditions are met:
+>
+> - If you use (or adapt) the source code in your own work, please include a
+>   reference to the paper:
+>
+>   Real-Time Polygonal-Light Shading with Linearly Transformed Cosines.
+>   Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt.
+>   ACM Transactions on Graphics (Proceedings of ACM SIGGRAPH 2016) 35(4), 2016.
+>   Project page: https://eheitzresearch.wordpress.com/415-2/
+>
+> - Redistributions of source code must retain the above copyright notice, this
+>   list of conditions and the following disclaimer.
+>
+> - Redistributions in binary form must reproduce the above copyright notice,
+>   this list of conditions and the following disclaimer in the documentation
+>   and/or other materials provided with the distribution.
+>
+> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+> AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+> IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+> DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+> FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+> DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+> SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+> CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+> OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+> OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+### Mulberry32 pseudo-random generator
+
+The `mulberry32` helper in `Source/Scene/FlowFieldWindLayer.js`
+is a verbatim copy of Tommy Ettinger's 32-bit generator of that name, used to
+seed the flow-field particle set so a given seed always produces the same
+initial field.
+
+https://gist.github.com/tommyettinger/46a874533244883189143505d203312c
+
+**Notice status: unresolved.** No licence grant for this snippet could be
+established from any source available inside this repository — it carries no
+notice where it is used, no dependency vendors it, and the author's gist is not
+mirrored here. This entry records the provenance and the open question rather
+than asserting terms the project has not seen. The analysis, the exact question
+that closes it, and the alternative closure (replacing the function with an
+original implementation) are recorded in
+the fork repository's `migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`
+under `L-01`.
+
+### naga
+
+WGSL / GLSL / SPIR-V shader translator from the `gfx-rs` project, vendored as a
+`wasm-bindgen` WebAssembly build at
+`Source/ThirdParty/naga-wasm/` (`naga_wasm.js`,
+`naga_wasm_bg.wasm`, `naga_wasm.d.ts`). Loaded lazily by
+`Source/Renderer/WebGPU/WebGPUNagaTranspiler.ts` the first time
+the WebGL compatibility stub is asked to compile a GLSL string on the WebGPU
+backend; applications that never take that path never fetch it.
+
+https://github.com/gfx-rs/wgpu/tree/trunk/naga
+
+naga is dual-licensed MIT OR Apache-2.0. Copies of both halves travel with the
+vendored build as `LICENSE-MIT` and `LICENSE-APACHE` in the same directory. The
+Apache-2.0 half matches this project's own licence; the MIT notice is
+reproduced here so it also reaches consumers who receive only a built bundle.
+
+> MIT License
+>
+> Copyright (c) 2025 The gfx-rs developers
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+### three.js
+
+https://github.com/mrdoob/three.js
+
+Two shaders derive from three.js. `SSGIGenerate.wgsl` re-implements the
+visibility-bitmask screen-space global-illumination technique whose reference
+implementation is three.js's `SSGINode`; the thin-film iridescence block in
+`Model/ModelPBRComplete.wgsl` follows the structure and the variable naming of
+three.js's `iridescenceFresnel`, itself the Khronos reference formulation of
+Belcour & Barla 2017. No file is a copy, but the second is close enough in
+shape that the notice belongs here.
+
+> The MIT License
+>
+> Copyright © 2010-2026 three.js authors
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+### SSRT3
+
+https://github.com/cdrinmatane/SSRT3
+
+Second reference implementation behind
+`Source/Shaders/WebGPU/PostProcess/SSGIGenerate.wgsl` — the
+sector-visibility bitmask and the per-sample linear thickness term follow its
+formulation of Therrien, Levesque & Gilet 2023. Technique only; no source was
+copied.
+
+> MIT License
+>
+> Copyright (c) 2024 CDRIN
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+### FFT-Ocean
+
+https://github.com/gasgiant/FFT-Ocean
+
+The spectral ocean shaders under
+`Source/Shaders/WebGPU/Ocean/` follow this project's compute
+formulation: the precomputed twiddle-and-index texture and the inverse-
+conjugated butterfly (`OceanTwiddle.wgsl`, `OceanIFFT.wgsl`), the
+time-dependent-spectrum packing (`OceanTimeSpectrum.wgsl`), the
+Jacobian-threshold foam term (`OceanMerge.wgsl`), and the displacement and
+normal reassembly (`OceanSurface.wgsl`). The sign and index conventions were
+re-derived and validated against a brute-force inverse discrete Fourier
+transform before porting, but the kernel decomposition is this project's, so
+the notice is reproduced.
+
+> MIT License
+>
+> Copyright (c) 2020 Ivan Pensionerov
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+### WebTide
+
+https://github.com/BarthPaleologue/WebTide
+
+The WGSL shape of the twiddle-factor precompute and the inverse-FFT stage
+kernels in `Source/Shaders/WebGPU/Ocean/OceanTwiddle.wgsl` and
+`OceanIFFT.wgsl` follows this project's `twiddleFactors.wgsl`, which is the
+same decomposition expressed for WebGPU rather than for a compute API with
+different binding rules.
+
+> MIT License
+>
+> Copyright (c) 2024 Barthelemy Paleologue
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+### OceanDemo
+
+https://github.com/Popov72/OceanDemo
+
+The two-for-one Hermitian packing that lets one inverse transform carry both
+the vertical height and the horizontal choppiness field, in
+`Source/Shaders/WebGPU/Ocean/OceanTimeSpectrum.wgsl`, and the
+displacement and normal reassembly in `OceanSurface.wgsl`, follow this
+project's WGSL formulation.
+
+**Notice status: pending transcription.** The MIT permission text below is the
+standard MIT body and is complete apart from its copyright line, which this
+project has not been able to read from the upstream `LICENSE` file offline and
+therefore does not assert. Transcribing that one line from
+<https://github.com/Popov72/OceanDemo> closes it; see
+the fork repository's `migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`
+under `L-13`.
+
+> MIT License
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+### webgl-wind
+
+https://github.com/mapbox/webgl-wind
+
+The ping-pong particle-state integrator in
+`Source/Shaders/WebGPU/FlowFieldAdvect.wgsl` and its host
+`Source/Renderer/WebGPU/WebGPUFlowFieldRenderer.ts` port this
+project's technique — advance every particle from a previous-state buffer into
+a next-state buffer, reseed on a per-frame drop probability — from a fragment
+shader writing a texture to a WGSL compute kernel writing a storage buffer.
+
+**Notice status: pending transcription.** The ISC permission text below is the
+standard ISC body and is complete apart from its copyright line, which this
+project has not been able to read from the upstream `LICENSE` file offline and
+therefore does not assert. See
+the fork repository's `migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`
+under `L-12`.
+
+> ISC License
+>
+> Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.
+>
+> THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+### 3D-Wind-Field
+
+https://github.com/RaymanNg/3D-Wind-Field
+
+The geographic form of the flow-field integrator in
+`Source/Shaders/WebGPU/FlowFieldAdvect.wgsl` — advancing
+particle state in longitude and latitude against an ellipsoid rather than in
+plane coordinates, and converting to a position only at draw time — follows
+this project's Cesium adaptation of the same technique.
+
+**Notice status: pending transcription.** The MIT permission text below is the
+standard MIT body and is complete apart from its copyright line, which this
+project has not been able to read from the upstream `LICENSE` file offline and
+therefore does not assert. See
+the fork repository's `migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`
+under `L-12`.
+
+> MIT License
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+### Orillusion
+
+https://github.com/Orillusion/orillusion
+
+The depth-gated variant of the radial light-shaft blur in
+`Source/Shaders/WebGPU/PostProcess/GodRayGenerate.wgsl` —
+treating samples beyond a far-plane fraction as sky that contributes its colour
+directly, and everything closer as an occluder that contributes nothing —
+follows this engine's `GodRayPost.ts`, over the Mitchell radial-blur base.
+
+**Notice status: pending transcription.** The MIT permission text below is the
+standard MIT body and is complete apart from its copyright line, which this
+project has not been able to read from the upstream `LICENSE` file offline and
+therefore does not assert. See
+the fork repository's `migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`
+under `L-11`.
+
+> MIT License
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+### glTF Sample Renderer (Khronos)
+
+https://github.com/KhronosGroup/glTF-Sample-Renderer
+
+Formerly published as `KhronosGroup/glTF-Sample-Viewer`. The thin-film
+iridescence term in
+`Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl` follows the
+Khronos reference formulation of `KHR_materials_iridescence` — the two-interface
+Fresnel split, the optical-path-difference phase accumulation, and the Gaussian
+sensitivity fits of Belcour & Barla 2017 — closely enough in structure and
+naming to be treated as adapted rather than independently derived. The rest of
+that shader's metallic-roughness BRDF is a port of this project's own WebGL
+implementation, which is covered by the `gltf-WebGL-PBR` entry above.
+
+glTF Sample Renderer is licensed under the Apache License, Version 2.0 — the
+same licence as this project. Its full text is reproduced at the top of this
+file.
+
+> Copyright 2018-2021 Khronos Group
+>
+> Licensed under the Apache License, Version 2.0 (the "License");
+> you may not use this file except in compliance with the License.
+> You may obtain a copy of the License at
+>
+> http://www.apache.org/licenses/LICENSE-2.0
+>
+> Unless required by applicable law or agreed to in writing, software
+> distributed under the License is distributed on an "AS IS" BASIS,
+> WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+> See the License for the specific language governing permissions and
+> limitations under the License.
+
+### Vello
+
+https://github.com/linebender/vello
+
+The single-pass decoupled-look-back prefix sum in
+`Source/Shaders/WebGPU/Compute/DecoupledLookbackScan.wgsl` —
+the partition-state flag encoding, the backward walk over prior partitions, and
+the bounded spin on a not-yet-published partition — follows this project's
+`pathtag_scan` WGSL kernel, which is the practical WebGPU rendering of Merrill
+& Garland's algorithm. WebGPU forbids a `storageBarrier` in the single-lane
+branch that does the walk, so the watchdog budget replacing it is this
+project's.
+
+Vello is dual-licensed Apache-2.0 OR MIT. The Apache-2.0 half matches this
+project's own licence; its full text is reproduced at the top of this file.
+
+**Notice status: pending transcription.** The copyright line of either half has
+not been read from the upstream repository offline and is therefore not
+asserted here. See
+the fork repository's `migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md`
+under `L-18`.
 
 ### jsep
 
@@ -1053,6 +1394,22 @@ The pseudo-random stream is AES-256-CTR over a zero plaintext keyed by SHA-256 o
 **Explicitly not used: NVIDIA's STBN SDK.** Neither its generator nor its published masks, and neither any blog or Shadertoy mirror of those masks. Its "Non-Commercial Use License" restricts use to research or evaluation and forces same-licence redistribution, which is incompatible with this Apache-2.0 fork. Generating our own was the point of the exercise, not a fallback from it.
 
 **Reproducibility.** `node Tools/stbn-bake/bake-stbn.mjs --install` regenerates the identical bytes: the bake is deterministic in its seed and parameters, and `--repro` re-runs it and asserts the SHA-256 is unchanged. Provenance, every parameter, and the measured Fourier spectra are recorded in `Tools/stbn-bake/stbn-manifest.json`; `Tools/visual-regression/stbn-asset.spec.mjs` re-derives the shipped hash and re-measures the spectra, so neither the evidence nor the licence position above can drift away from the asset. Full method notes: `Tools/stbn-bake/README.md` in the fork repository.
+
+### Inland-lake polygon mask — Natural Earth 1:10m Lakes
+
+**File:** `Source/Assets/WaterMask/ne10mLakes.bin` (912,548 bytes). Read by `Source/Scene/WaterClassificationProvider.ts` (`LakeWaterClassificationProvider`), which composites the lake polygons over a terrain provider's own water mask at the shared upload point so both rendering backends consume identical texels. Fetched by `Source/Scene/Globe.js` only when `globe.lakeWaterMask` is enabled — the flag is off by default, so an application that never sets it never downloads the file.
+
+**Product:** Natural Earth "Lakes + Reservoirs" at 1:10m scale — the global file `ne_10m_lakes.geojson` together with the North America supplement `ne_10m_lakes_north_america.geojson`, as redistributed by the Natural Earth vector repository. Natural Earth classes the Caspian as ocean, so it is absent from this dataset and from the bundled file.
+
+**Conversion applied:** multi-polygon parts flattened to independent polygons, each carrying its own bounding box for tile culling; ring vertices quantized to a pair of 16-bit fractions of that bounding box; packed into the little-endian `LWM1` container whose layout is documented in the header of `Tools/build-lake-water-mask.mjs`, which reproduces the file from the two source GeoJSONs. Worst-case quantization error is about 17 m on the largest bounding box, well inside the 1:10m dataset's own cartographic accuracy. Geometry only — no name, class, scale-rank or other attribute field is carried. The source GeoJSONs are **not** bundled.
+
+- Source: <https://www.naturalearthdata.com/downloads/10m-physical-vectors/>
+- Vector repository: <https://github.com/nvkelso/natural-earth-vector>
+- Terms of use: <https://www.naturalearthdata.com/about/terms-of-use/>
+
+**Credit:** Made with Natural Earth. Free vector and raster map data @ naturalearthdata.com.
+
+**Terms.** Natural Earth places all of its map data in the public domain. Its terms of use state that no permission is needed to use the data and that users may modify, disseminate and print it, that no fee is charged, and that attribution is appreciated but not required. The credit above is therefore given as the customary courtesy, not because a licence term compels it. Natural Earth disclaims liability for the data's accuracy, and the same disclaimer is passed on here: this asset drives a cartographic water mask for shading, and is not a survey product.
 
 # Tests
 

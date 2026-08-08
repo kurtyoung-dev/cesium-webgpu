@@ -73,6 +73,19 @@
         "name": "topojson-client"
     },
     {
+        "name": "naga",
+        "license": ["MIT", "Apache-2.0"],
+        "version": "27.0.3",
+        "url": "https://github.com/gfx-rs/wgpu/tree/trunk/naga",
+        "notes": "Vendored as a wasm-bindgen build at packages/engine/Source/ThirdParty/naga-wasm/ (not an npm dependency); built from packages/wasm-naga/. Dual-licensed MIT OR Apache-2.0; both texts ship beside the blob as LICENSE-MIT and LICENSE-APACHE."
+    },
+    {
+        "name": "@spz-loader/core"
+    },
+    {
+        "name": "@cesium/wasm-splats"
+    },
+    {
         "name": "@tweenjs/tween.js"
     },
     {

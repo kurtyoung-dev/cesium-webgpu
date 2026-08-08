@@ -26,6 +26,13 @@
 // tiny inverse ranges. This avoids reconstructing P through camera high/low
 // state and keeps the eclipse payload safe for offscreen/cube-face Views.
 
+// Reference: the umbra/penumbra construction is the standard two-cone
+// solar-eclipse geometry — the shadow axis through the two body centres, the
+// penumbra as the external tangent cone and the umbra as the internal one,
+// with the observed obscuration read from the overlap of the two apparent
+// discs. See Jean Meeus, "Astronomical Algorithms" (2nd edition, 1998),
+// chapters 54 and 55, for the same construction in its classical form.
+
 import Cartesian3 from "../Core/Cartesian3.js";
 import Cartesian4 from "../Core/Cartesian4.js";
 import defined from "../Core/defined.js";

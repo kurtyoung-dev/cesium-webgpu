@@ -13,6 +13,14 @@ uniform float u_radiusTS;
 // one boolean in SunHaloAppearance.js — see the invariant in its header.
 uniform float u_haloGain;
 
+// Reference: the quadratic limb-darkening law I(mu)/I(1) = a0 + a1*mu +
+// a2*mu^2 is the standard two-coefficient form tabulated for stellar
+// atmospheres; see A. Claret, "A new non-linear limb-darkening law for LTE
+// stellar atmosphere models", Astronomy and Astrophysics 363, 1081 (2000),
+// which introduces it alongside the four-coefficient law it generalises. The
+// solar coefficients themselves are supplied as uniforms rather than written
+// here.
+//
 // C12-15 — quadratic limb-darkening coefficients (a0, a1, a2) for
 // I(mu) = a0 + a1*mu + a2*mu^2, mu = cos(heliocentric angle), normalised to
 // I(1) = 1 at disc centre. Fed from Scene/SolarDiscModel.js so this shader

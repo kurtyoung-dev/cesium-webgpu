@@ -23,6 +23,19 @@
 //                      composite. Output is the final 3D texture the
 //                      composite render pass samples.
 //
+// References:
+//   - Bart Wronski, "Volumetric Fog: Unified Compute Shader Based Solution to
+//     Atmospheric Scattering" (SIGGRAPH 2014) — the froxel volume and the
+//     three-pass inject/scatter/integrate decomposition.
+//   - Sebastien Hillaire, "Physically Based and Unified Volumetric Rendering
+//     in Frostbite" (SIGGRAPH 2015) — the energy-conserving form of the
+//     per-froxel integration used below.
+//   - Louis-Gustave Henyey and Jesse Greenstein, "Diffuse Radiation in the
+//     Galaxy", Astrophysical Journal 93, 70 (1941) — the phase function.
+//   - Jorge Jimenez et al., "Next Generation Post Processing in Call of Duty:
+//     Advanced Warfare" (SIGGRAPH 2014) — the interleaved-gradient noise used
+//     to dither the march offset.
+//
 // Bind group layout strategy:
 //   The three passes have different read/write needs. WGSL doesn't allow
 //   the same `@binding(N)` to be declared twice in one module, so each

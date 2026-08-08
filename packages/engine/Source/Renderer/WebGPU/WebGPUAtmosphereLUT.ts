@@ -17,6 +17,17 @@
  * `invalidateAtmosphereLUT`, and their moon equivalents) stay on the
  * class — they're 3-10 LOC each, no extraction value.
  *
+ * References:
+ *   - Eric Bruneton and Fabrice Neyret, "Precomputed Atmospheric Scattering",
+ *     Computer Graphics Forum 27(4), 1079 (2008) —
+ *     {@link https://hal.inria.fr/inria-00288758}. The transmittance and
+ *     inscatter table parameterisation the texture pair below is sized and
+ *     addressed for.
+ *   - Sebastien Hillaire, "A Scalable and Production Ready Sky and Atmosphere
+ *     Rendering Technique", Computer Graphics Forum 39(4), 13 (2020) —
+ *     {@link https://sebh.github.io/publications/egsr2020.pdf}, for the
+ *     multiple-scattering term the second dispatch accumulates.
+ *
  * @module WebGPUAtmosphereLUT
  */
 

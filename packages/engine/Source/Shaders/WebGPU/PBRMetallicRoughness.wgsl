@@ -2,6 +2,22 @@
 // Physically Based Rendering shader using metallic-roughness workflow
 // Compatible with glTF 2.0 PBR materials
 //
+// References:
+//   - Bruce Walter, Stephen Marschner, Hongsong Li and Kenneth Torrance,
+//     "Microfacet Models for Refraction through Rough Surfaces" (EGSR 2007) —
+//     the Trowbridge-Reitz/GGX normal distribution.
+//   - Brian Karis, "Real Shading in Unreal Engine 4" (SIGGRAPH 2013 Physically
+//     Based Shading course) — the Smith geometry remap k = (r + 1)^2 / 8 and
+//     the split-sum environment approximation.
+//   - Christophe Schlick, "An Inexpensive BRDF Model for Physically-based
+//     Rendering", Computer Graphics Forum 13(3), 233 (1994) — the Fresnel
+//     approximation.
+//   - Khronos glTF 2.0 specification, appendix B, for the metallic-roughness
+//     parameterisation the uniforms carry:
+//     https://github.com/KhronosGroup/glTF/tree/main/specification/2.0
+// Implemented from those descriptions and from this project's own GLSL
+// material stage, not transcribed from a reference renderer.
+//
 // RTE — position is supplied as high/low split (locations 0/1) per the
 // engine-wide 64-bit emulation rules. Clip-space is computed via
 // `mvpRelativeToEye * translateRelativeToEye(...)` so planetary-scale

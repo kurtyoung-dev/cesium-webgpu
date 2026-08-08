@@ -6,6 +6,11 @@
 // additive blend — using SOURCE_ALPHA would attenuate by the falloff
 // twice and crush every star to a sub-threshold smudge).
 //
+// Reference: A. F. J. Moffat, "A Theoretical Investigation of Focal Stellar
+// Images in the Photographic Emulsion and Application to Photographic
+// Photometry", Astronomy and Astrophysics 3, 455 (1969) — the
+// (1 + (r/alpha)^2)^(-beta) wing profile the halo term below evaluates.
+//
 // C12-05/06/07 — Moffat core+wing glare PSF, chroma-preserving amplitude
 // split. These constants MUST stay byte-identical to the WGSL twin
 // (Shaders/WebGPU/Catalog/StarField.wgsl) — Principle 5 shared shading;

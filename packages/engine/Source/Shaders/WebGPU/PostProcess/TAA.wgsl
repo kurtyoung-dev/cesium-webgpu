@@ -4,6 +4,13 @@
 // buffer using depth-based motion-vector reprojection + neighborhood
 // clamping.
 //
+// References:
+//   - Brian Karis, "High Quality Temporal Supersampling" (SIGGRAPH 2014
+//     Advances in Real-Time Rendering in Games) — the tonemap-weighted
+//     resolve and the neighbourhood colour clamp applied below.
+//   - Marco Salvi, "An Excursion in Temporal Supersampling" (GDC 2016) — the
+//     variance form of that clamp, which the neighbourhood bounds follow.
+//
 // Pipeline order: BEFORE Tonemap (linear/HDR domain), before optional
 // FXAA. NEW-TAA-PIPELINE-ORDER-RECONCILE (Batch 290) confirmed this is
 // the correct placement: the resolve below operates in `tonemapWeight`

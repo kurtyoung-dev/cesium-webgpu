@@ -11,6 +11,15 @@
 //   - Shadow mapping integration (reads shadow map for primary light)
 //   - Ambient occlusion integration (reads AO texture)
 //
+// References:
+//   - Bruce Walter et al., "Microfacet Models for Refraction through Rough
+//     Surfaces" (EGSR 2007) — the GGX distribution.
+//   - Brian Karis, "Real Shading in Unreal Engine 4" (SIGGRAPH 2013) — the
+//     Smith geometry remap k = (r + 1)^2 / 8 used for the direct term.
+//   - Christophe Schlick, "An Inexpensive BRDF Model for Physically-based
+//     Rendering", Computer Graphics Forum 13(3), 233 (1994) — the Fresnel
+//     approximation.
+//
 // Performance characteristics:
 //   - O(pixels × lights) — each pixel evaluates all lights once
 //   - Early depth-test skip for sky pixels (depth == 1.0)

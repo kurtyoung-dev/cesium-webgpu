@@ -5,6 +5,9 @@
 // avoids a full-resolution depth-to-r32float copy — mip 0 of the Hi-Z
 // pyramid is built directly from the scene depth attachment.
 
+// Reference: Stephen Hill and Daniel Collin, "Practical, Dynamic Visibility
+// for Games", GPU Pro 2 (2011), as for HiZPyramid.wgsl.
+
 @group(0) @binding(0) var depthInput: texture_depth_2d;
 @group(0) @binding(1) var hiZOutput: texture_storage_2d<r32float, write>;
 

@@ -4,6 +4,16 @@
 // Supports up to MAX_TEXTURES imagery layers per tile.
 // Uses tile-center-relative vertex positions + u_center3D for full ECEF.
 //
+// References for the atmosphere terms:
+//   - Eric Bruneton and Fabrice Neyret, "Precomputed Atmospheric Scattering",
+//     Computer Graphics Forum 27(4), 1079 (2008) —
+//     https://hal.inria.fr/inria-00288758
+//     The transmittance and inscatter lookup tables the ground pass samples,
+//     and the Rayleigh and Mie coefficients they are built from.
+//   - Sean O'Neil, "Accurate Atmospheric Scattering", GPU Gems 2 (2005) — the
+//     analytic fallback the non-lookup path follows, which is also the model
+//     this project's WebGL globe uses.
+//
 // Features:
 //   - RTE (Relative-To-Eye) precision for planetary scale
 //   - Up to 4 imagery layers with alpha/brightness/contrast/saturation

@@ -25,6 +25,13 @@
  *     throughput. SSR remains opt-in (off by default), so the cost
  *     only applies to scenes that explicitly enable it.
  *
+ * Reference: Morgan McGuire and Michael Mara, "Efficient GPU Screen-Space Ray
+ * Tracing", Journal of Computer Graphics Techniques 3(4), 73 (2014) —
+ * {@link https://jcgt.org/published/0003/04/04/}. The digital-differential-
+ * analyser march in screen space, with the thickness test that decides whether
+ * a depth crossing is a hit or a step behind an occluder, follows that paper;
+ * the shader it drives cites it as well.
+ *
  * @private
  */
 import SSRShaderWGSL from "../../Shaders/WebGPU/PostProcess/ScreenSpaceReflections.js";
