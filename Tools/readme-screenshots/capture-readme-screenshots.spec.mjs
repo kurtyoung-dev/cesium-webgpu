@@ -35,14 +35,17 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { deflateSync } from "node:zlib";
 
 import {
   CONTENT_TYPES,
+  DEFAULT_CAPTURE_SELECTOR,
   ENGINE_MODULE_URL,
   IMAGE_DIR,
   LEGACY_GALLERY_DIR,
   SCENE_AIMS,
   SCENE_KINDS,
+  SCENE_TERRAINS,
   TABLE_BEGIN,
   TABLE_END,
   auditContract,
@@ -55,6 +58,22 @@ import {
   tableCells,
   validateManifest,
 } from "./lib/readme-table.mjs";
+import {
+  ANCHOR_KINDS,
+  decodePng,
+  evaluateAnchors,
+  largestBrightRegion,
+  rowCoverage,
+} from "./lib/image-anchors.mjs";
+import {
+  resolveDeadRoutes,
+  scanPageReferences,
+  toRootRelative,
+} from "./lib/dead-routes.mjs";
+import {
+  isForeignNetworkFailure,
+  networkFailureSubject,
+} from "./lib/console-gate.mjs";
 import {
   DEFAULT_SCENE_BUDGET_MS,
   DEFAULT_WATCHDOG_CAP_MS,
@@ -730,6 +749,627 @@ test("G7: exactly one watchdog exists, and it is the one the mutants target", ()
 });
 
 // ---------------------------------------------------------------------------
+// H. Dead routes — the 404s that rejected eighteen correct captures
+// ---------------------------------------------------------------------------
+
+/** Every page the manifest actually opens, repo-relative. */
+function manifestPages() {
+  const pages = new Set(["Apps/CesiumViewer/index.html"]);
+  for (const scene of MANIFEST.scenes) {
+    for (const file of resolveScene(scene, REPO_ROOT).requiredFiles) {
+      if (file.endsWith(".html")) {
+        pages.add(file);
+      }
+    }
+  }
+  return [...pages];
+}
+
+test("H1: the routed URLs are DERIVED from the pages and the disk", () => {
+  // The list is not written down anywhere. A loader that comes back must stop
+  // being routed with no edit, and a route must never be installed for a file
+  // that exists — that would mask a real regression in it.
+  const references = scanPageReferences(REPO_ROOT, manifestPages());
+  assert.ok(
+    references.length >= 8,
+    `the scan found only ${references.length} references; it is not reading the pages`,
+  );
+  const routes = resolveDeadRoutes(REPO_ROOT, references);
+  for (const route of routes) {
+    assert.ok(
+      !existsSync(join(REPO_ROOT, route.url.replace(/^\//, ""))),
+      `${route.url} is ON DISK and must not be routed`,
+    );
+    assert.match(route.contentType, /^(text|application)\//);
+  }
+  // The two loader scripts every gallery page still references are exactly the
+  // pair the round-2 run's 404s came from.
+  const referenced = new Set(references);
+  assert.ok(referenced.has("/Apps/Sandcastle/Sandcastle-header.js"));
+  assert.ok(referenced.has("/Apps/Sandcastle/load-cesium-es6.js"));
+});
+
+test("H2: the scan follows stylesheet imports, not just the page's own tags", () => {
+  // The demo layout arrives through two levels of `@import`, and a break at the
+  // second level is invisible from the page — which is how a 1024x1 capture
+  // happened once already.
+  const references = scanPageReferences(REPO_ROOT, manifestPages());
+  assert.ok(references.includes("/Apps/Sandcastle/templates/bucket.css"));
+  assert.ok(
+    references.some((url) => /Widgets\/widgets\.css$/.test(url)),
+    "the scan stopped at bucket.css and never read what it imports",
+  );
+});
+
+test("H3 mutant: a reference that exists is NOT routed; a missing one is", () => {
+  const routes = resolveDeadRoutes(REPO_ROOT, [
+    "/Apps/Sandcastle/templates/bucket.css",
+    "/Apps/Sandcastle/no-such-loader.js",
+  ]);
+  assert.deepEqual(
+    routes.map((r) => r.url),
+    ["/Apps/Sandcastle/no-such-loader.js"],
+  );
+});
+
+test("H4: toRootRelative resolves page-relative paths and refuses foreign ones", () => {
+  const dir = "Apps/Sandcastle/gallery";
+  assert.equal(
+    toRootRelative(dir, "../Sandcastle-header.js"),
+    "/Apps/Sandcastle/Sandcastle-header.js",
+  );
+  assert.equal(
+    toRootRelative(dir, "../../../Build/CesiumUnminified/Cesium.js"),
+    "/Build/CesiumUnminified/Cesium.js",
+  );
+  assert.equal(toRootRelative(dir, "/Build/x.js?v=2"), "/Build/x.js");
+  for (const foreign of ["https://example.com/a.js", "//cdn/a.js", "#anchor"]) {
+    assert.equal(toRootRelative(dir, foreign), null);
+  }
+});
+
+test("H5: the console gate did NOT get a 404 escape hatch", () => {
+  // The fix is that the 404 never happens. If the gate had instead been taught
+  // to ignore "Failed to load resource", a missing tileset, model or bundle
+  // would go unreported — the failures a screenshot run most needs to see.
+  const suppressed = /const SUPPRESSED_CONSOLE = \[([\s\S]*?)\n\];/.exec(
+    CAPTURE_SOURCE,
+  );
+  assert.ok(suppressed, "the suppression list is gone from the capture script");
+  assert.ok(
+    !/Failed to load resource|404/i.test(suppressed[1]),
+    `the suppression list swallows 404s: ${suppressed[1]}`,
+  );
+  assert.ok(
+    !/Sandcastle-header|load-cesium-es6/.test(suppressed[1]),
+    "the dead loaders are suppressed by NAME again; they are routed, not ignored",
+  );
+  assert.ok(
+    /page\.route\(/.test(CAPTURE_SOURCE),
+    "nothing is routed; the dead references would 404 again",
+  );
+  assert.ok(
+    /DEAD_ROUTES/.test(CAPTURE_SOURCE) &&
+      /resolveDeadRoutes/.test(CAPTURE_SOURCE),
+    "the routes are not derived from the shared resolver",
+  );
+});
+
+test("H6: only foreign hosts are forgiven their network errors", () => {
+  // Stated against the exact strings a real run produced. A demo that layers
+  // third-party tiles reports whatever those servers do; what this fork serves
+  // stays fatal, 404 included, because that is how a missing tileset, model or
+  // bundle announces itself.
+  const base = "http://localhost:8080";
+  const cors =
+    "Access to XMLHttpRequest at 'https://tile.openstreetmap.fr/openriverboatmap/1/1/0.png' from origin 'http://localhost:8080' has been blocked by CORS policy: The 'Access-Control-Allow-Origin' header has a value";
+  // The message names the run's own origin too, as the ORIGIN of the request.
+  // The subject is the resource, which comes first.
+  assert.equal(isForeignNetworkFailure(cors, undefined, base), true);
+  assert.equal(
+    networkFailureSubject(cors, undefined),
+    "https://tile.openstreetmap.fr/openriverboatmap/1/1/0.png",
+  );
+  // The mirror image: a CORS refusal for something this fork serves stays fatal.
+  assert.equal(
+    isForeignNetworkFailure(
+      "Access to fetch at 'http://localhost:8080/Build/CesiumUnminified/index.js' from origin 'https://example.com' has been blocked by CORS policy",
+      undefined,
+      base,
+    ),
+    false,
+  );
+  assert.equal(
+    isForeignNetworkFailure(
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "https://tile.openstreetmap.fr/openriverboatmap/1/1/0.png",
+      base,
+    ),
+    true,
+  );
+  // The failure this fork owns, in both of Chromium's shapes.
+  assert.equal(
+    isForeignNetworkFailure(
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      `${base}/Apps/SampleData/models/Missing.glb`,
+      base,
+    ),
+    false,
+  );
+  assert.equal(
+    isForeignNetworkFailure(
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      undefined,
+      base,
+    ),
+    false,
+    "a 404 that names no host must not be forgiven",
+  );
+  // Not a network error at all.
+  assert.equal(
+    isForeignNetworkFailure(
+      "Uncaught TypeError at https://example.com/x.js",
+      undefined,
+      base,
+    ),
+    false,
+  );
+  assert.ok(
+    /isForeignNetworkFailure\(text, message\.location\(\)\?\.url, BASE\)/.test(
+      CAPTURE_SOURCE,
+    ),
+    "the capture script does not route its console errors through the shared rule",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// I. The offline image reader and the content anchors
+// ---------------------------------------------------------------------------
+
+/** CRC-32, so the spec can build PNGs a decoder will accept. */
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let i = 0; i < 8; i++) {
+      crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([length, body, crc]);
+}
+
+/**
+ * Encode an RGB image as a PNG using ONE filter type for every scanline.
+ *
+ * Filters are the half of PNG that an "approximate" decoder skips, so each of
+ * the five is written and read back below.
+ *
+ * @param {number} width Image width.
+ * @param {number} height Image height.
+ * @param {(x: number, y: number) => number[]} pixel RGB at a coordinate.
+ * @param {number} filter Filter type 0-4.
+ * @returns {Buffer} PNG bytes.
+ */
+function encodePng(width, height, pixel, filter = 0) {
+  const stride = width * 3;
+  const rows = [];
+  const previous = new Uint8Array(stride);
+  for (let y = 0; y < height; y++) {
+    const raw = new Uint8Array(stride);
+    for (let x = 0; x < width; x++) {
+      const [r, g, b] = pixel(x, y);
+      raw[x * 3] = r;
+      raw[x * 3 + 1] = g;
+      raw[x * 3 + 2] = b;
+    }
+    const encoded = new Uint8Array(stride);
+    for (let i = 0; i < stride; i++) {
+      const a = i >= 3 ? raw[i - 3] : 0;
+      const b = previous[i];
+      const c = i >= 3 ? previous[i - 3] : 0;
+      let value;
+      if (filter === 0) {
+        value = raw[i];
+      } else if (filter === 1) {
+        value = raw[i] - a;
+      } else if (filter === 2) {
+        value = raw[i] - b;
+      } else if (filter === 3) {
+        value = raw[i] - ((a + b) >> 1);
+      } else {
+        const p = a + b - c;
+        const pa = Math.abs(p - a);
+        const pb = Math.abs(p - b);
+        const pc = Math.abs(p - c);
+        const predictor = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+        value = raw[i] - predictor;
+      }
+      encoded[i] = value & 0xff;
+    }
+    rows.push(Buffer.concat([Buffer.from([filter]), Buffer.from(encoded)]));
+    previous.set(raw);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type: truecolour
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(Buffer.concat(rows))),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+test("I1: the decoder reconstructs every PNG scanline filter", () => {
+  // A decoder that ignores filter bytes reads plausible garbage for filters
+  // 1-4 — worse than failing, because the anchors would then be measuring an
+  // image nobody produced.
+  const pattern = (x, y) => [(x * 7 + y * 3) % 256, (x * 13) % 256, y % 256];
+  for (let filter = 0; filter <= 4; filter++) {
+    const image = decodePng(encodePng(23, 11, pattern, filter));
+    assert.equal(image.width, 23);
+    assert.equal(image.height, 11);
+    for (let y = 0; y < 11; y++) {
+      for (let x = 0; x < 23; x++) {
+        const i = (y * 23 + x) * 3;
+        assert.deepEqual(
+          [image.rgb[i], image.rgb[i + 1], image.rgb[i + 2]],
+          pattern(x, y),
+          `filter ${filter} at (${x}, ${y})`,
+        );
+      }
+    }
+  }
+});
+
+test("I2: brightSpot measures a CONNECTED region, not a bright-pixel count", () => {
+  // The failure mode this exists for: a black sky whose only bright pixels are
+  // scattered stars, or a UI panel that has been cropped away.
+  const disc = (x, y) =>
+    (x - 30) ** 2 + (y - 20) ** 2 < 64 ? [255, 255, 255] : [0, 0, 0];
+  const speckle = (x, y) =>
+    (x * 7 + y * 11) % 97 === 0 ? [255, 255, 255] : [0, 0, 0];
+  const withDisc = decodePng(encodePng(60, 40, disc));
+  const withSpeckle = decodePng(encodePng(60, 40, speckle));
+  const discRegion = largestBrightRegion(withDisc, 170);
+  const speckleRegion = largestBrightRegion(withSpeckle, 170);
+  assert.ok(discRegion.pixels > 150, `disc measured ${discRegion.pixels}`);
+  assert.ok(
+    speckleRegion.brightTotal > 20,
+    "the speckle control has no bright pixels at all",
+  );
+  assert.equal(
+    speckleRegion.pixels,
+    1,
+    "scattered pixels were merged into a region",
+  );
+  assert.ok(Math.abs(discRegion.centerX - 30) < 1);
+  assert.ok(Math.abs(discRegion.centerY - 20) < 1);
+});
+
+test("I3: horizonCoverage fails the half-black composition a percentage passes", () => {
+  const topHalf = (x, y) => (y < 20 ? [200, 200, 200] : [0, 0, 0]);
+  const everywhere = () => [200, 200, 200];
+  const half = rowCoverage(decodePng(encodePng(60, 40, topHalf)), 8, 16);
+  const full = rowCoverage(decodePng(encodePng(60, 40, everywhere)), 8, 16);
+  assert.equal(half.fraction, 0.5);
+  assert.equal(full.fraction, 1);
+});
+
+test("I4: a declared anchor that is not met is reported, and one that is is silent", () => {
+  const black = () => [0, 0, 0];
+  const disc = (x, y) =>
+    (x - 30) ** 2 + (y - 20) ** 2 < 100 ? [255, 255, 255] : [0, 0, 0];
+  const anchor = { brightSpot: { luminance: 170, minPixels: 150 } };
+  const missing = evaluateAnchors(encodePng(60, 40, black), anchor);
+  assert.equal(missing.failures.length, 1);
+  assert.match(missing.failures[0], /brightSpot/);
+  assert.equal(missing.measured.brightSpot.largestRegionPixels, 0);
+  const present = evaluateAnchors(encodePng(60, 40, disc), anchor);
+  assert.deepEqual(present.failures, []);
+  assert.ok(present.measured.brightSpot.largestRegionPixels >= 150);
+  // No anchor declared is not the same as an anchor that passed.
+  assert.deepEqual(evaluateAnchors(encodePng(4, 4, black), undefined), {
+    failures: [],
+    measured: {},
+  });
+});
+
+test("I5: an undecodable capture fails its anchor rather than passing it", () => {
+  const result = evaluateAnchors(Buffer.from("not a png at all"), {
+    brightSpot: {},
+  });
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0], /could not be decoded/);
+});
+
+// ---------------------------------------------------------------------------
+// J. The capture is of the SCENE, not of the application around it
+// ---------------------------------------------------------------------------
+
+test("J1: the run hides the viewer's UI before it photographs", () => {
+  // An element screenshot is a crop of the PAGE: the navigation help, timeline,
+  // animation dial and credit bar sit on top of the canvas and were inside
+  // every round-2 crop — both spoiling the picture and answering thresholds the
+  // scene did not.
+  assert.ok(
+    /SCREENSHOT_CHROME_CSS/.test(CAPTURE_SOURCE),
+    "no chrome is hidden; the shots carry the application's UI",
+  );
+  for (const selector of [
+    ".cesium-viewer-toolbar",
+    ".cesium-viewer-timelineContainer",
+    ".cesium-viewer-animationContainer",
+    ".cesium-widget-credits",
+    ".cesium-navigation-help",
+  ]) {
+    assert.ok(
+      CAPTURE_SOURCE.includes(selector),
+      `${selector} is still in the picture`,
+    );
+  }
+  assert.ok(
+    /addStyleTag\(\{ content: SCREENSHOT_CHROME_CSS \}\)/.test(CAPTURE_SOURCE),
+    "the chrome stylesheet is defined but never installed",
+  );
+});
+
+test("J2: every capture is an ELEMENT screenshot", () => {
+  assert.equal(DEFAULT_CAPTURE_SELECTOR, ".cesium-widget canvas");
+  assert.ok(
+    /element\.screenshot\(\{ type: "png" \}\)/.test(CAPTURE_SOURCE),
+    "the capture is not taken from an element",
+  );
+  assert.ok(
+    !/page\.screenshot\(/.test(CAPTURE_SOURCE),
+    "a full-page screenshot path is back; it photographs the whole application",
+  );
+  // The split-screen page holds two canvases side by side, so it names its own
+  // element rather than one of them.
+  const split = MANIFEST.scenes.find((s) => s.kind === "page");
+  assert.ok(split.captureSelector && split.captureSelector !== "canvas");
+  assert.ok(
+    split.expectCanvases >= 2,
+    "the two-viewer page does not require both canvases before capturing",
+  );
+});
+
+test("J3: the celestial scenes declare content anchors", () => {
+  // These are the scenes a percentage cannot adjudicate: a disc on black is a
+  // few per cent of the frame, and the chrome that used to be in shot was 18 %.
+  for (const id of ["celestial-sun", "celestial-moon", "celestial-eclipse"]) {
+    const scene = MANIFEST.scenes.find((s) => s.id === id);
+    assert.ok(scene.anchor?.brightSpot, `${id} declares no brightSpot anchor`);
+    assert.ok(scene.anchor.brightSpot.minPixels > 0);
+  }
+  for (const scene of MANIFEST.scenes) {
+    for (const kind of Object.keys(scene.anchor ?? {})) {
+      assert.ok(
+        ANCHOR_KINDS.includes(kind),
+        `${scene.id}: anchor "${kind}" is not implemented`,
+      );
+    }
+  }
+  assert.ok(
+    /evaluateAnchors\(/.test(CAPTURE_SOURCE),
+    "the manifest declares anchors the run never evaluates",
+  );
+});
+
+test("J4 mutant: an unknown anchor kind is rejected by the validator", () => {
+  const { errors } = validateManifest({
+    scenes: [{ ...goodScene, anchor: { looksNice: {} } }],
+  });
+  assert.ok(errors.some((e) => /is not an anchor/.test(e)));
+  const empty = validateManifest({ scenes: [{ ...goodScene, anchor: {} }] });
+  assert.ok(empty.errors.some((e) => /anchor is empty/.test(e)));
+});
+
+// ---------------------------------------------------------------------------
+// K. Recipes the round-2 run proved wrong
+// ---------------------------------------------------------------------------
+
+test("K1: the sun aim stands in sunlight, not behind the planet", () => {
+  // Round 2 parked the camera on the ANTI-sun side and looked back through the
+  // Earth: the sun command is culled against the occluder and the glare veil
+  // resolves a visible fraction of zero. The capture was a black sky whose only
+  // non-black pixels were the UI.
+  const aim =
+    /aim === "sun-disc"\s*\?\s*C\.Cartesian3\.multiplyByScalar\(\s*direction,\s*(-?)standoff/.exec(
+      CAPTURE_SOURCE,
+    );
+  assert.ok(aim, "the sun aim's standoff is no longer expressed here");
+  assert.equal(aim[1], "", "the sun camera is behind the Earth again");
+});
+
+test("K2: the aim writes its basis back after setView", () => {
+  // `setView` converts direction/up into heading/pitch/roll and rebuilds from
+  // them, and `getHeading` has a gimbal-lock branch that fires for exactly the
+  // geometry these aims use. The celestial gate probe measured 0.174 degrees of
+  // displacement; on the sun scene's 6-degree frustum that is ~30 px.
+  assert.ok(
+    /aimResidualDeg/.test(CAPTURE_SOURCE),
+    "the round-trip residual is not measured, so a regression cannot be seen",
+  );
+  assert.ok(
+    /C\.Cartesian3\.clone\(direction, scene\.camera\.direction\)/.test(
+      CAPTURE_SOURCE,
+    ),
+    "the requested basis is not written back",
+  );
+});
+
+test("K3: a scene that needs ground under its subject pins the ellipsoid", () => {
+  // The application's default is Cesium World Terrain. A model at height 0 is
+  // then BURIED — the framing camera ends up under the surface, every terrain
+  // face is back-facing and culled, and the capture is the model on black with
+  // no ground and no shadow. That is what round 2 photographed for shadows-csm.
+  const shadows = MANIFEST.scenes.find((s) => s.id === "shadows-csm");
+  assert.equal(shadows.terrain, "ellipsoid");
+  assert.ok(SCENE_TERRAINS.includes("ellipsoid"));
+  assert.ok(
+    /EllipsoidTerrainProvider/.test(CAPTURE_SOURCE),
+    "the manifest pins a terrain the script cannot apply",
+  );
+  const { errors } = validateManifest({
+    scenes: [{ ...goodScene, terrain: "flat-earth" }],
+  });
+  assert.ok(errors.some((e) => /terrain must be one of/.test(e)));
+});
+
+test("K4: the moon scene asks for a LIT near side", () => {
+  // Round 2 pinned an instant at which the near side was unlit and photographed
+  // a black disc for the row about albedo, relief and phase.
+  const moon = MANIFEST.scenes.find((s) => s.id === "celestial-moon");
+  assert.ok(
+    moon.phaseTarget >= 0.9,
+    `celestial-moon asks for ${moon.phaseTarget} illumination`,
+  );
+  assert.ok(
+    /computeMoonPositionInEarthInertialFrame/.test(CAPTURE_SOURCE) &&
+      /phaseTarget/.test(CAPTURE_SOURCE),
+    "the manifest asks for a phase the script never solves for",
+  );
+  const { errors } = validateManifest({
+    scenes: [{ ...goodScene, aim: "sun-disc", phaseTarget: 1 }],
+  });
+  assert.ok(
+    errors.some((e) => /phaseTarget requires the moon-disc aim/.test(e)),
+  );
+});
+
+test("K5: a disc scene narrows its frustum enough to show a disc", () => {
+  // The sun is half a degree across: nine pixels at the application's default
+  // 60-degree frustum, which is present and invisible to a reader and to a
+  // threshold alike.
+  for (const id of ["celestial-sun", "celestial-moon"]) {
+    const scene = MANIFEST.scenes.find((s) => s.id === id);
+    assert.ok(scene.fovDeg > 0 && scene.fovDeg <= 30, `${id}: fovDeg`);
+  }
+  assert.ok(
+    /fovDeg/.test(CAPTURE_SOURCE),
+    "the manifest narrows a frustum the script never touches",
+  );
+  const { errors } = validateManifest({
+    scenes: [{ ...goodScene, fovDeg: 400 }],
+  });
+  assert.ok(errors.some((e) => /fovDeg/.test(e)));
+});
+
+test("K6: a page scene reaches its subject the way the page really works", () => {
+  // The split-screen harness builds NOTHING until its launch button is pressed,
+  // and then builds two viewers on two backends in series. Round 2 waited 30 s
+  // for a canvas on a page that was, correctly, still at its placeholder.
+  const split = MANIFEST.scenes.find((s) => s.id === "tooling-split-screen");
+  assert.deepEqual(split.clicks, ["#btnLaunch"]);
+  assert.deepEqual(split.readyGlobals, ["webglViewer", "webgpuViewer"]);
+  const page = readFileSync(
+    join(REPO_ROOT, "Apps", "WebGPUTest", "split-screen-comparison.html"),
+    "utf8",
+  );
+  for (const selector of split.clicks) {
+    assert.ok(
+      page.includes(`id="${selector.slice(1)}"`),
+      `${selector} is not on the page`,
+    );
+  }
+  for (const name of split.readyGlobals) {
+    assert.ok(
+      new RegExp(`window\\.${name}\\s*=`).test(page),
+      `the page never sets window.${name}, so the wait could only time out`,
+    );
+  }
+  assert.ok(
+    page.includes(`id="${split.captureSelector.slice(1)}"`),
+    "the capture selector names an element the page does not have",
+  );
+});
+
+test("K7: a page scene's readiness ceiling spans two cold starts, inside the budget", () => {
+  const ceiling = /const PAGE_READY_TIMEOUT_MS = ([0-9_]+);/.exec(
+    CAPTURE_SOURCE,
+  );
+  assert.ok(ceiling, "page scenes have no readiness ceiling of their own");
+  const ms = Number.parseInt(ceiling[1].replaceAll("_", ""), 10);
+  assert.ok(ms >= 60_000, `${ms} ms is one cold start, not two`);
+  assert.ok(
+    ms < DEFAULT_SCENE_BUDGET_MS,
+    "the ceiling outlives the scene budget that is supposed to contain it",
+  );
+});
+
+test("K8: the demo pages the round-2 run could not start are fixed at source", () => {
+  const dof = readFileSync(
+    join(REPO_ROOT, LEGACY_GALLERY_DIR, "WebGPU Depth of Field.html"),
+    "utf8",
+  );
+  // `new Viewer` with an explicit WebGPU request throws from
+  // `getSynchronousRendererType` before any Viewer state exists: adapter and
+  // device acquisition are asynchronous.
+  assert.ok(
+    /Viewer\.createAsync\(/.test(dof),
+    "the depth-of-field demo still constructs its Viewer synchronously",
+  );
+  assert.ok(
+    !/new Cesium\.Viewer\(/.test(dof),
+    "a synchronous Viewer construction is back in the depth-of-field demo",
+  );
+  const monitor = readFileSync(
+    join(REPO_ROOT, LEGACY_GALLERY_DIR, "WebGPU Async Resource Monitor.html"),
+    "utf8",
+  );
+  // Without the shared stylesheet `.fullSize` is undefined, the container has
+  // no height, and the widget sizes its canvas to a one-pixel-tall box.
+  assert.ok(
+    /@import url\(\.\.\/templates\/bucket\.css\)/.test(monitor),
+    "the resource-monitor demo still has no layout stylesheet; its canvas collapses to 1 px",
+  );
+  // And the run refuses a collapsed canvas rather than photographing a strip.
+  assert.ok(
+    /canvas\.height > 1/.test(CAPTURE_SOURCE),
+    "a one-pixel-tall canvas would still be accepted as ready",
+  );
+});
+
+test("K9: no scene keeps a threshold that only the hidden chrome could pass", () => {
+  // The chrome was worth ~18 % non-black in 8+ colour buckets. Any scene still
+  // asking for more than the scene alone can supply would now fail for a reason
+  // that has nothing to do with the scene. These two measured 0.0 % with the
+  // chrome masked out of the round-2 PNGs, so their floors are deliberately at
+  // the "is anything there at all" level, with an anchor doing the real work
+  // where one applies.
+  const floors = new Map([
+    ["celestial-sun", 0.01],
+    ["tiles-point-cloud-edl", 0.05],
+    ["renderer-webgpu-backend", 0.05],
+    ["celestial-eclipse", 0.05],
+    ["globe-night-lighting", 0.02],
+    ["model-pbr", 0.2],
+    ["shadows-csm", 0.2],
+    ["model-khr-extensions", 0.25],
+  ]);
+  for (const [id, ceiling] of floors) {
+    const scene = MANIFEST.scenes.find((s) => s.id === id);
+    assert.ok(scene, `${id} is no longer in the manifest`);
+    assert.ok(
+      scene.minNonBlackPct <= ceiling,
+      `${id}: minNonBlackPct ${scene.minNonBlackPct} is above what the scene measured without the chrome (${ceiling})`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
 // E. Offline isolation — this spec must never reach for a browser
 // ---------------------------------------------------------------------------
 
@@ -746,6 +1386,18 @@ test("E1: this spec and the shared library are browser-free", () => {
     ["the spec", specSource],
     ["readme-table.mjs", librarySource],
     ["capture-plan.mjs", PLAN_SOURCE],
+    [
+      "dead-routes.mjs",
+      readFileSync(join(HERE, "lib", "dead-routes.mjs"), "utf8"),
+    ],
+    [
+      "image-anchors.mjs",
+      readFileSync(join(HERE, "lib", "image-anchors.mjs"), "utf8"),
+    ],
+    [
+      "console-gate.mjs",
+      readFileSync(join(HERE, "lib", "console-gate.mjs"), "utf8"),
+    ],
   ]) {
     assert.ok(
       !/from\s*["']playwright["']/.test(source),

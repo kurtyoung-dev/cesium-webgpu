@@ -1,5 +1,7 @@
 {
   "$comment": "Manifest for Tools/readme-screenshots/capture-readme-screenshots.mjs. One entry per README feature-table row; `output` lands in Documentation/Images/webgpu-fork/. Kinds: `sandcastle` (a fork gallery demo, addressed by its packages/sandcastle/gallery folder and resolved to the standalone Apps/Sandcastle page through sandcastle.yaml legacyId), `viewer` (Apps/CesiumViewer with declarative camera/clock/settings/content), `page` (any other fork page). The standalone demo pages reference two loader scripts that were deleted with the legacy Sandcastle app, so the capture script installs a Sandcastle shim and imports the engine bundle itself before calling the demo's own window.startup; `settleMs` therefore covers only the asynchronous loading that follows startup, and is additionally capped by the per-scene time budget. Every settings path is written AND read back; a path that does not exist or does not stick is STRUCTURAL (exit 3), never a silently wrong screenshot.",
+  "$thresholds": "minNonBlackPct / minDistinct were RE-CALIBRATED when the capture became chrome-free. The round-2 shots were element screenshots already, but an element screenshot is a crop of the PAGE: the navigation-help panel, timeline, animation dial and credit bar sit on top of the canvas and were inside every crop, worth ~18 % non-black in 8+ colour buckets on their own. Masking those rectangles out of the round-2 PNGs offline gives what a chrome-free capture will actually measure, and each threshold below is set against THAT number, at roughly half of it so a scene has margin. Two scenes measured 0.0 % with the chrome masked — celestial-sun and tiles-point-cloud-edl — i.e. their subject was never in frame and their thresholds had been passing on UI pixels alone.",
+  "$anchors": "`anchor` states what the SUBJECT must look like, evaluated in Node from the captured PNG (lib/image-anchors.mjs). brightSpot = a connected region above a luminance, which a disc produces and a black sky does not, however bright the surrounding UI. horizonCoverage = the fraction of rows carrying content, which rejects the 'vista across the top, void across the bottom' composition that a global percentage passes. A failed anchor is STRUCTURAL: the run could not see its subject.",
   "viewport": { "width": 1024, "height": 576 },
   "scenes": [
     {
@@ -16,8 +18,8 @@
         { "path": "scene.skyAtmosphere.show", "value": true }
       ],
       "settleFrames": 420,
-      "minNonBlackPct": 0.2,
-      "minDistinct": 8
+      "minNonBlackPct": 0.025,
+      "minDistinct": 6
     },
     {
       "id": "shader-pipeline-caches",
@@ -27,8 +29,8 @@
       "kind": "sandcastle",
       "gallery": "webgpu-async-resource-monitor",
       "settleMs": 6000,
-      "minNonBlackPct": 0.15,
-      "minDistinct": 8
+      "minNonBlackPct": 0.1,
+      "minDistinct": 6
     },
     {
       "id": "globe-terrain-imagery",
@@ -42,15 +44,17 @@
         "lat": 36.02,
         "height": 4200.0,
         "heading": 15.0,
-        "pitch": -18.0
+        "pitch": -8.0
       },
+      "fovDeg": 28.0,
       "settings": [
         { "path": "scene.globe.enableLighting", "value": true },
         { "path": "scene.globe.showGroundAtmosphere", "value": true }
       ],
       "settleFrames": 600,
-      "minNonBlackPct": 0.5,
-      "minDistinct": 10
+      "minNonBlackPct": 0.35,
+      "minDistinct": 8,
+      "anchor": { "horizonCoverage": { "minRowFraction": 0.85 } }
     },
     {
       "id": "globe-many-imagery-layers",
@@ -60,8 +64,8 @@
       "kind": "sandcastle",
       "gallery": "webgpu-many-imagery-layers",
       "settleMs": 7000,
-      "minNonBlackPct": 0.3,
-      "minDistinct": 10
+      "minNonBlackPct": 0.45,
+      "minDistinct": 8
     },
     {
       "id": "globe-night-lighting",
@@ -77,8 +81,8 @@
         { "path": "scene.globe.dynamicAtmosphereLighting", "value": true }
       ],
       "settleFrames": 420,
-      "minNonBlackPct": 0.1,
-      "minDistinct": 6
+      "minNonBlackPct": 0.008,
+      "minDistinct": 4
     },
     {
       "id": "globe-vector-tiles",
@@ -88,7 +92,7 @@
       "kind": "sandcastle",
       "gallery": "webgpu-vector-tile-buffer-rendering",
       "settleMs": 6000,
-      "minNonBlackPct": 0.25,
+      "minNonBlackPct": 0.5,
       "minDistinct": 8
     },
     {
@@ -107,7 +111,7 @@
       ],
       "settings": [{ "path": "scene.globe.enableLighting", "value": true }],
       "settleFrames": 480,
-      "minNonBlackPct": 0.4,
+      "minNonBlackPct": 0.5,
       "minDistinct": 8
     },
     {
@@ -117,6 +121,7 @@
       "output": "tiles-point-cloud-edl.png",
       "kind": "viewer",
       "timeIso": "2026-06-21T17:00:00Z",
+      "terrain": "ellipsoid",
       "content": [
         {
           "type": "tileset",
@@ -130,8 +135,8 @@
         }
       ],
       "settleFrames": 480,
-      "minNonBlackPct": 0.1,
-      "minDistinct": 6
+      "minNonBlackPct": 0.02,
+      "minDistinct": 3
     },
     {
       "id": "tiles-voxels",
@@ -141,7 +146,7 @@
       "kind": "sandcastle",
       "gallery": "webgpu-voxel-pick",
       "settleMs": 6000,
-      "minNonBlackPct": 0.1,
+      "minNonBlackPct": 0.15,
       "minDistinct": 6
     },
     {
@@ -182,8 +187,8 @@
       ],
       "settings": [{ "path": "scene.globe.enableLighting", "value": true }],
       "settleFrames": 480,
-      "minNonBlackPct": 0.4,
-      "minDistinct": 8
+      "minNonBlackPct": 0.12,
+      "minDistinct": 6
     },
     {
       "id": "model-khr-extensions",
@@ -205,8 +210,8 @@
       ],
       "settings": [{ "path": "scene.globe.enableLighting", "value": true }],
       "settleFrames": 480,
-      "minNonBlackPct": 0.4,
-      "minDistinct": 8
+      "minNonBlackPct": 0.15,
+      "minDistinct": 3
     },
     {
       "id": "model-ibl-dynamic-env",
@@ -232,7 +237,7 @@
         { "path": "scene.skyAtmosphere.show", "value": true }
       ],
       "settleFrames": 600,
-      "minNonBlackPct": 0.3,
+      "minNonBlackPct": 0.5,
       "minDistinct": 8
     },
     {
@@ -245,9 +250,9 @@
       "view": {
         "lon": -121.6875,
         "lat": 44.95,
-        "height": 9000.0,
-        "heading": 0.0,
-        "pitch": -6.0
+        "height": 800.0,
+        "heading": 90.0,
+        "pitch": 16.0
       },
       "settings": [
         { "path": "scene.globe.enableLighting", "value": true },
@@ -258,8 +263,9 @@
         { "path": "scene.globe.defaultCloudCollection.enableVolumetric", "value": true }
       ],
       "settleFrames": 600,
-      "minNonBlackPct": 0.4,
-      "minDistinct": 8
+      "minNonBlackPct": 0.5,
+      "minDistinct": 8,
+      "anchor": { "horizonCoverage": { "minRowFraction": 0.9 } }
     },
     {
       "id": "clouds-weather-inspector",
@@ -269,7 +275,7 @@
       "kind": "sandcastle",
       "gallery": "webgpu-weather-inspector",
       "settleMs": 8000,
-      "minNonBlackPct": 0.4,
+      "minNonBlackPct": 0.5,
       "minDistinct": 8
     },
     {
@@ -280,7 +286,7 @@
       "kind": "sandcastle",
       "gallery": "webgpu-live-weather-edr",
       "settleMs": 9000,
-      "minNonBlackPct": 0.3,
+      "minNonBlackPct": 0.4,
       "minDistinct": 8
     },
     {
@@ -291,7 +297,7 @@
       "kind": "sandcastle",
       "gallery": "webgpu-weather-particles",
       "settleMs": 7000,
-      "minNonBlackPct": 0.3,
+      "minNonBlackPct": 0.5,
       "minDistinct": 8
     },
     {
@@ -302,8 +308,8 @@
       "kind": "sandcastle",
       "gallery": "atmospheric-conditions",
       "settleMs": 7000,
-      "minNonBlackPct": 0.3,
-      "minDistinct": 8
+      "minNonBlackPct": 0.15,
+      "minDistinct": 6
     },
     {
       "id": "atmosphere-dual-light",
@@ -313,8 +319,8 @@
       "kind": "sandcastle",
       "gallery": "webgpu-dual-light-atmosphere",
       "settleMs": 7000,
-      "minNonBlackPct": 0.08,
-      "minDistinct": 6
+      "minNonBlackPct": 0.25,
+      "minDistinct": 8
     },
     {
       "id": "celestial-sun",
@@ -324,6 +330,7 @@
       "kind": "viewer",
       "timeIso": "2026-06-21T12:00:00Z",
       "aim": "sun-disc",
+      "fovDeg": 6.0,
       "settings": [
         { "path": "scene.sun.show", "value": true },
         { "path": "scene.sunBloom", "value": true },
@@ -331,7 +338,8 @@
       ],
       "settleFrames": 420,
       "minNonBlackPct": 0.005,
-      "minDistinct": 3
+      "minDistinct": 3,
+      "anchor": { "brightSpot": { "luminance": 170, "minPixels": 400 } }
     },
     {
       "id": "celestial-moon",
@@ -339,16 +347,19 @@
       "row": "Moon: albedo, relief & phase",
       "output": "celestial-moon.png",
       "kind": "viewer",
-      "timeIso": "2026-07-13T12:00:00Z",
+      "timeIso": "2026-08-26T00:00:00Z",
       "aim": "moon-disc",
+      "phaseTarget": 0.95,
+      "fovDeg": 20.0,
       "settings": [
         { "path": "scene.moon.show", "value": true },
         { "path": "scene.globe.show", "value": false },
         { "path": "scene.skyAtmosphere.show", "value": false }
       ],
       "settleFrames": 480,
-      "minNonBlackPct": 0.005,
-      "minDistinct": 3
+      "minNonBlackPct": 0.02,
+      "minDistinct": 3,
+      "anchor": { "brightSpot": { "luminance": 80, "minPixels": 3000 } }
     },
     {
       "id": "celestial-stars",
@@ -358,8 +369,8 @@
       "kind": "sandcastle",
       "gallery": "webgpu-fullscreen-sky",
       "settleMs": 7000,
-      "minNonBlackPct": 0.01,
-      "minDistinct": 4
+      "minNonBlackPct": 0.4,
+      "minDistinct": 8
     },
     {
       "id": "celestial-eclipse",
@@ -375,8 +386,9 @@
         { "path": "scene.skyAtmosphere.show", "value": true }
       ],
       "settleFrames": 480,
-      "minNonBlackPct": 0.15,
-      "minDistinct": 6
+      "minNonBlackPct": 0.025,
+      "minDistinct": 6,
+      "anchor": { "brightSpot": { "luminance": 60, "minPixels": 1500 } }
     },
     {
       "id": "ocean-enhanced-waves",
@@ -430,6 +442,7 @@
       "output": "shadows-csm.png",
       "kind": "viewer",
       "timeIso": "2026-06-21T01:30:00Z",
+      "terrain": "ellipsoid",
       "content": [
         {
           "type": "model",
@@ -447,8 +460,8 @@
         { "path": "scene.shadowMap.softShadows", "value": true }
       ],
       "settleFrames": 600,
-      "minNonBlackPct": 0.4,
-      "minDistinct": 8
+      "minNonBlackPct": 0.12,
+      "minDistinct": 6
     },
     {
       "id": "shadows-point-light",
@@ -480,7 +493,7 @@
       "kind": "sandcastle",
       "gallery": "webgpu-temporal-anti-aliasing",
       "settleMs": 8000,
-      "minNonBlackPct": 0.3,
+      "minNonBlackPct": 0.5,
       "minDistinct": 8
     },
     {
@@ -491,7 +504,7 @@
       "kind": "sandcastle",
       "gallery": "webgpu-screen-space-reflections",
       "settleMs": 7000,
-      "minNonBlackPct": 0.3,
+      "minNonBlackPct": 0.25,
       "minDistinct": 8
     },
     {
@@ -502,8 +515,8 @@
       "kind": "sandcastle",
       "gallery": "webgpu-depth-of-field",
       "settleMs": 7000,
-      "minNonBlackPct": 0.3,
-      "minDistinct": 8
+      "minNonBlackPct": 0.2,
+      "minDistinct": 6
     },
     {
       "id": "pp-god-rays-ao-ssgi",
@@ -513,8 +526,8 @@
       "kind": "sandcastle",
       "gallery": "webgpu-god-rays",
       "settleMs": 7000,
-      "minNonBlackPct": 0.3,
-      "minDistinct": 8
+      "minNonBlackPct": 0.5,
+      "minDistinct": 4
     },
     {
       "id": "pp-volumetric-fog",
@@ -537,8 +550,8 @@
         { "path": "scene.globe.atmosphericConditions.volumetricFog.enabled", "value": true }
       ],
       "settleFrames": 600,
-      "minNonBlackPct": 0.4,
-      "minDistinct": 8
+      "minNonBlackPct": 0.5,
+      "minDistinct": 2
     },
     {
       "id": "collections-bulk-entities",
@@ -548,7 +561,7 @@
       "kind": "sandcastle",
       "gallery": "webgpu-bulk-vs-legacy-visualizers",
       "settleMs": 8000,
-      "minNonBlackPct": 0.2,
+      "minNonBlackPct": 0.5,
       "minDistinct": 8
     },
     {
@@ -559,7 +572,7 @@
       "kind": "sandcastle",
       "gallery": "webgpu-edge-visibility",
       "settleMs": 7000,
-      "minNonBlackPct": 0.2,
+      "minNonBlackPct": 0.5,
       "minDistinct": 6
     },
     {
@@ -570,7 +583,7 @@
       "kind": "sandcastle",
       "gallery": "webgpu-orbital-catalog",
       "settleMs": 7000,
-      "minNonBlackPct": 0.08,
+      "minNonBlackPct": 0.025,
       "minDistinct": 6
     },
     {
@@ -581,8 +594,8 @@
       "kind": "sandcastle",
       "gallery": "webgpu-sgp4-satellites",
       "settleMs": 8000,
-      "minNonBlackPct": 0.08,
-      "minDistinct": 6
+      "minNonBlackPct": 0.15,
+      "minDistinct": 8
     },
     {
       "id": "tooling-split-screen",
@@ -591,8 +604,11 @@
       "output": "tooling-split-screen.png",
       "kind": "page",
       "url": "/Apps/WebGPUTest/split-screen-comparison.html",
-      "captureTarget": "page",
-      "settleMs": 14000,
+      "clicks": ["#btnLaunch"],
+      "readyGlobals": ["webglViewer", "webgpuViewer"],
+      "expectCanvases": 2,
+      "captureSelector": "#splitContainer",
+      "settleMs": 12000,
       "minNonBlackPct": 0.2,
       "minDistinct": 8
     },
@@ -613,7 +629,7 @@
       "settings": [{ "path": "scene.globe.enableLighting", "value": true }],
       "calls": ["CesiumDebug.showWireframe"],
       "settleFrames": 600,
-      "minNonBlackPct": 0.3,
+      "minNonBlackPct": 0.4,
       "minDistinct": 8
     }
   ]

@@ -84,7 +84,14 @@
         // WebGPU PostProcess pipeline + DoF wiring landed in Batch 98.
         // (Without this, the AUTO renderer might pick WebGL and the
         // demo would silently route through the upstream GL path.)
-        const viewer = new Cesium.Viewer("cesiumContainer", {
+        //
+        // `createAsync`, not `new Viewer`: adapter and device acquisition are
+        // asynchronous, so the synchronous constructor rejects an explicit
+        // WebGPU request outright — `getSynchronousRendererType` throws a
+        // DeveloperError before any Viewer state is built, and the demo never
+        // starts. Every other WebGPU demo in this gallery already awaits
+        // `Viewer.createAsync`; this one was the last synchronous holdout.
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
           contextOptions: { renderer: "webgpu" },
         });
 

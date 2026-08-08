@@ -23,6 +23,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { ANCHOR_KINDS } from "./image-anchors.mjs";
+
 /** Directory (repo-relative, POSIX separators) the README points its images at. */
 export const IMAGE_DIR = "Documentation/Images/webgpu-fork";
 
@@ -58,6 +60,32 @@ export const SCENE_KINDS = Object.freeze(["viewer", "sandcastle", "page"]);
 
 /** Content kinds a viewer scene may load before capture. */
 export const CONTENT_TYPES = Object.freeze(["tileset", "model"]);
+
+/**
+ * Terrain a viewer scene may pin.
+ *
+ * `ellipsoid` exists because the application's default is Cesium World Terrain,
+ * and a model placed at height 0 over real terrain is BURIED: the ground around
+ * it is tens of metres higher, the framing camera ends up under the surface,
+ * every terrain face is then back-facing and culled, and the capture is the
+ * model alone on pure black with no ground and no shadow. A scene whose subject
+ * is the model — or the shadow the model casts onto something — pins the smooth
+ * ellipsoid so that height 0 IS the ground.
+ */
+export const SCENE_TERRAINS = Object.freeze(["default", "ellipsoid"]);
+
+/**
+ * Element a scene photographs, by default the scene canvas alone.
+ *
+ * A Playwright element screenshot is a CROP OF THE PAGE, not a read of the
+ * element's own backing store, so everything the viewer draws ON TOP of the
+ * canvas — navigation help, timeline, animation dial, credits — lands in the
+ * picture and in the pixel statistics computed from it. Both halves of that
+ * matter: the shots carried UI chrome, and the chrome's own bright pixels
+ * satisfied thresholds that the scene did not. The capture script hides the
+ * chrome before it photographs; this selector decides what is left in frame.
+ */
+export const DEFAULT_CAPTURE_SELECTOR = ".cesium-widget canvas";
 
 const LINES = (text) => text.replaceAll("\r\n", "\n").split("\n");
 
@@ -249,6 +277,103 @@ export function validateManifest(manifest) {
     }
     if (scene.aim !== undefined && scene.kind !== "viewer") {
       errors.push(`${where}: aim is only meaningful for viewer scenes`);
+    }
+    if (scene.terrain !== undefined) {
+      if (!SCENE_TERRAINS.includes(scene.terrain)) {
+        errors.push(
+          `${where}: terrain must be one of ${SCENE_TERRAINS.join(", ")}`,
+        );
+      }
+      if (scene.kind !== "viewer") {
+        errors.push(`${where}: terrain is only meaningful for viewer scenes`);
+      }
+    }
+    if (scene.fovDeg !== undefined) {
+      if (
+        typeof scene.fovDeg !== "number" ||
+        !(scene.fovDeg > 0) ||
+        scene.fovDeg >= 180
+      ) {
+        errors.push(`${where}: fovDeg must be a positive angle below 180`);
+      }
+      if (scene.kind !== "viewer") {
+        errors.push(`${where}: fovDeg is only meaningful for viewer scenes`);
+      }
+    }
+    if (scene.phaseTarget !== undefined) {
+      if (
+        typeof scene.phaseTarget !== "number" ||
+        scene.phaseTarget < 0 ||
+        scene.phaseTarget > 1
+      ) {
+        errors.push(`${where}: phaseTarget must be a fraction in [0, 1]`);
+      }
+      // The phase search only has a body to solve for on the moon lane; asking
+      // for one anywhere else is a manifest that believes something is happening.
+      if (scene.aim !== "moon-disc") {
+        errors.push(`${where}: phaseTarget requires the moon-disc aim`);
+      }
+    }
+    if (scene.anchor !== undefined) {
+      if (typeof scene.anchor !== "object" || scene.anchor === null) {
+        errors.push(`${where}: anchor must be an object`);
+      } else {
+        for (const key of Object.keys(scene.anchor)) {
+          if (!ANCHOR_KINDS.includes(key)) {
+            errors.push(
+              `${where}: anchor.${key} is not an anchor the capture script evaluates (${ANCHOR_KINDS.join(", ")})`,
+            );
+          }
+        }
+        if (Object.keys(scene.anchor).length === 0) {
+          errors.push(`${where}: anchor is empty — declare one or drop it`);
+        }
+      }
+    }
+    if (
+      scene.captureSelector !== undefined &&
+      (typeof scene.captureSelector !== "string" ||
+        scene.captureSelector.trim().length === 0)
+    ) {
+      errors.push(`${where}: captureSelector must be a non-empty selector`);
+    }
+    if (
+      scene.expectCanvases !== undefined &&
+      (!Number.isInteger(scene.expectCanvases) || scene.expectCanvases < 1)
+    ) {
+      errors.push(`${where}: expectCanvases must be an integer >= 1`);
+    }
+    for (const [field, onlyKind] of [
+      ["clicks", "page"],
+      ["readyGlobals", "page"],
+    ]) {
+      if (scene[field] === undefined) {
+        continue;
+      }
+      if (!Array.isArray(scene[field]) || scene[field].length === 0) {
+        errors.push(`${where}: ${field} must be a non-empty array`);
+        continue;
+      }
+      if (scene.kind !== onlyKind) {
+        errors.push(
+          `${where}: ${field} is only meaningful for ${onlyKind} scenes`,
+        );
+      }
+      for (const [i, entry] of scene[field].entries()) {
+        if (typeof entry !== "string" || entry.trim().length === 0) {
+          errors.push(`${where}: ${field}[${i}] must be a non-empty string`);
+        }
+      }
+    }
+    for (const [i, name] of (scene.readyGlobals ?? []).entries()) {
+      if (
+        typeof name === "string" &&
+        !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)
+      ) {
+        errors.push(
+          `${where}: readyGlobals[${i}] is not a bare window property name`,
+        );
+      }
     }
     if (scene.view !== undefined) {
       if (scene.kind !== "viewer") {

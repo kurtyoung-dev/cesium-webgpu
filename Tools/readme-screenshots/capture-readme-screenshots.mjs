@@ -61,6 +61,30 @@
 // presented texture. The PNG bytes are decoded in-page afterwards purely to
 // compute statistics, which is decoding a file, not sampling a live canvas.
 //
+// WHY THE VIEWER'S OWN UI IS HIDDEN BEFORE THE SHOT. An element screenshot is a
+// CROP OF THE PAGE. Everything the widget draws on top of the canvas — the
+// expanded navigation-help panel, the toolbar, the timeline, the animation dial,
+// the credit bar carrying the default-ion-token notice — is inside that crop.
+// Two things follow, and the run paid for both: the images were unusable as
+// documentation, and the chrome's own pixels answered the thresholds. Masking
+// the chrome out of the round-2 captures offline puts `celestial-sun` at 0.0 %
+// non-black and `tiles-point-cloud-edl` at 0.0 % — two scenes reported captured
+// whose subject was never in frame. `SCREENSHOT_CHROME_CSS` removes the chrome
+// so both the picture and the measurement are of the scene.
+//
+// WHY SOME SCENES DECLARE AN ANCHOR. A percentage cannot tell a sun from a
+// bright UI panel. `anchor` states what the subject must look like — a
+// connected bright region for a disc, content spread down the frame for a vista
+// — and is evaluated in Node from the PNG. A failed anchor is STRUCTURAL: the
+// run could not see its subject, which is not the same fact as "too dark".
+//
+// WHY THE DEAD LOADER SCRIPTS ARE ROUTED, NOT SUPPRESSED. The gallery pages
+// still reference two loader scripts that were deleted with the legacy
+// Sandcastle app. `lib/dead-routes.mjs` derives that list from the pages and the
+// disk, and every such URL is answered with an empty 200 BEFORE navigation, so
+// the 404 never happens. Every other 404 stays fatal — a missing tileset or a
+// missing bundle is exactly what a screenshot run must not paper over.
+//
 // TIME IS BOUNDED PER SCENE, NOT PER RUN. Every wait below is clamped to what
 // is left of the scene's budget, and a scene whose URL does not answer is
 // rejected by an HTTP pre-flight in milliseconds rather than by a 90-second
@@ -91,11 +115,15 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 import {
+  DEFAULT_CAPTURE_SELECTOR,
   ENGINE_MODULE_URL,
   IMAGE_DIR,
   auditContract,
   resolveScene,
 } from "./lib/readme-table.mjs";
+import { resolveDeadRoutes, scanPageReferences } from "./lib/dead-routes.mjs";
+import { evaluateAnchors } from "./lib/image-anchors.mjs";
+import { isForeignNetworkFailure } from "./lib/console-gate.mjs";
 import {
   DEFAULT_SCENE_BUDGET_MS,
   computeWatchdogMs,
@@ -127,6 +155,13 @@ const WATCHDOG_OVERRIDE_MS =
 const PREFLIGHT_TIMEOUT_MS = 8_000;
 const NAV_TIMEOUT_MS = 45_000;
 const READY_TIMEOUT_MS = 30_000;
+// A `page` scene is not one application starting; the split-screen harness
+// builds a WebGL viewer AND a WebGPU viewer, from a cold shader cache, in
+// series, only after a button is pressed. Thirty seconds is a ceiling for ONE
+// cold start, and the round-2 run spent exactly that and captured nothing. This
+// ceiling spans two, and is still clamped by the scene's own budget below, so a
+// page that never comes up cannot eat the run.
+const PAGE_READY_TIMEOUT_MS = 60_000;
 const RETRY_ATTEMPTS = 3;
 const RETRY_WAIT_MS = 2_000;
 // Reserved out of each scene's budget for the capture itself: screenshot,
@@ -264,6 +299,68 @@ armWatchdog(watchdogMs);
 console.log(
   `[readme-screenshots] ${planned.length} scene(s) to capture; ${SCENE_BUDGET_MS} ms each, watchdog ${watchdogMs} ms`,
 );
+
+// ---------------------------------------------------------------------------
+// Dead routes — the URLs these pages ask for that nothing serves any more
+// ---------------------------------------------------------------------------
+
+const scenePages = new Set(["Apps/CesiumViewer/index.html"]);
+for (const scene of planned) {
+  for (const file of resolveScene(scene, REPO_ROOT).requiredFiles) {
+    if (file.endsWith(".html")) {
+      scenePages.add(file);
+    }
+  }
+}
+// Derived, never written down: a loader that comes back stops being routed with
+// no edit here, and a route is only ever installed for a file the disk agrees
+// is absent.
+const DEAD_ROUTES = resolveDeadRoutes(
+  REPO_ROOT,
+  scanPageReferences(REPO_ROOT, [...scenePages]),
+);
+if (DEAD_ROUTES.length > 0) {
+  console.log(
+    `[readme-screenshots] fulfilling ${DEAD_ROUTES.length} dead reference(s) with empty 200s (every other 404 stays fatal):`,
+  );
+  for (const route of DEAD_ROUTES) {
+    console.log(`    ${route.url}`);
+  }
+}
+
+/**
+ * CSS that removes the application's UI from the picture and the measurement.
+ *
+ * Only the widget's own chrome and the demo pages' controls: a demo's own
+ * content panel (the resource monitor's table, the weather inspector's dials)
+ * IS the subject of its README row and stays.
+ */
+const SCREENSHOT_CHROME_CSS = `
+.cesium-viewer-toolbar,
+.cesium-viewer-animationContainer,
+.cesium-viewer-timelineContainer,
+.cesium-viewer-fullscreenContainer,
+.cesium-viewer-vrContainer,
+.cesium-viewer-geocoderContainer,
+.cesium-viewer-bottom,
+.cesium-widget-credits,
+.cesium-credit-lightbox-overlay,
+.cesium-navigation-help,
+.cesium-navigationHelpButton-wrapper,
+.cesium-infoBox,
+.cesium-viewer-infoBoxContainer,
+.cesium-selection-wrapper,
+.cesium-viewer-selectionIndicatorContainer,
+.cesium-performanceDisplay,
+.cesium-viewer-cesiumInspectorContainer,
+.cesium-viewer-cesium3DTilesInspectorContainer,
+.cesium-viewer-voxelInspectorContainer,
+#toolbar,
+#loadingOverlay,
+#loadingIndicator {
+  display: none !important;
+}
+`;
 
 // ---------------------------------------------------------------------------
 // Pre-flight — is the subject even being served?
@@ -488,10 +585,59 @@ async function applyViewerScene(spec) {
   // Pin the clock AND kill the widget's own render loop. A bare `scene.render()`
   // renders at wall-clock now while the widget loop renders at the pinned time;
   // two different suns then interleave into whatever frame the compositor holds.
-  const pinned =
+  let pinned =
     typeof spec.timeIso === "string"
       ? C.JulianDate.fromIso8601(spec.timeIso)
       : viewer.clock.currentTime.clone();
+  // A scene may ask for a lunar phase rather than an instant; the search below
+  // replaces `pinned` with the epoch that answers it, and the resolved instant
+  // is reported so the picture stays reproducible.
+  let resolvedPhase = null;
+  if (typeof spec.phaseTarget === "number") {
+    // Transcribed from the celestial gate probe's phase solver: the illuminated
+    // fraction is a dot product of two unit vectors that share the same frame
+    // rotation, so the ICRF transform cancels and the search costs no rotation
+    // and does not wait for ICRF data. Fixed grids keep the answer reproducible.
+    const illuminatedFraction = (t) => {
+      const moon = C.Cartesian3.normalize(
+        C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
+          t,
+          new C.Cartesian3(),
+        ),
+        new C.Cartesian3(),
+      );
+      const sun = C.Cartesian3.normalize(
+        C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+          t,
+          new C.Cartesian3(),
+        ),
+        new C.Cartesian3(),
+      );
+      return 0.5 * (1.0 - C.Cartesian3.dot(moon, sun));
+    };
+    let best = pinned;
+    let bestError = Number.POSITIVE_INFINITY;
+    const consider = (t) => {
+      const error = Math.abs(illuminatedFraction(t) - spec.phaseTarget);
+      if (error < bestError) {
+        bestError = error;
+        best = t;
+      }
+    };
+    for (let hours = 0; hours <= 32 * 24; hours += 3) {
+      consider(C.JulianDate.addHours(pinned, hours, new C.JulianDate()));
+    }
+    const coarse = best;
+    for (let minutes = -180; minutes <= 180; minutes += 10) {
+      consider(C.JulianDate.addMinutes(coarse, minutes, new C.JulianDate()));
+    }
+    pinned = best;
+    resolvedPhase = {
+      target: spec.phaseTarget,
+      solved: illuminatedFraction(pinned),
+      timeIso: C.JulianDate.toIso8601(pinned, 0),
+    };
+  }
   viewer.clock.startTime = pinned.clone();
   viewer.clock.stopTime = pinned.clone();
   viewer.clock.currentTime = pinned.clone();
@@ -537,6 +683,43 @@ async function applyViewerScene(spec) {
 
   for (const setting of spec.settings ?? []) {
     writeSetting(viewer, "settings", setting.path, setting.value);
+  }
+
+  // Terrain. The application's default is Cesium World Terrain, under which a
+  // model at height 0 sits BELOW the ground: the framing camera then ends up
+  // under the surface, every terrain face is back-facing and culled, and the
+  // capture is the model alone on black with no ground to receive a shadow.
+  if (spec.terrain === "ellipsoid") {
+    try {
+      viewer.terrainProvider = new C.EllipsoidTerrainProvider();
+      if (!(viewer.terrainProvider instanceof C.EllipsoidTerrainProvider)) {
+        structural.push("terrain: ellipsoid terrain did not stick");
+      } else {
+        applied.push("terrain=ellipsoid");
+      }
+    } catch (error) {
+      structural.push(`terrain: ellipsoid could not be set (${String(error)})`);
+    }
+  }
+
+  // Field of view. A body whose disc is half a degree across is nine pixels
+  // wide at the application's default 60-degree frustum — present, and
+  // invisible to a reader and to a threshold alike.
+  if (typeof spec.fovDeg === "number") {
+    const frustum = scene.camera?.frustum;
+    if (frustum === undefined || typeof frustum.fov !== "number") {
+      structural.push("fovDeg: this camera has no perspective frustum");
+    } else {
+      frustum.fov = C.Math.toRadians(spec.fovDeg);
+      const readBack = C.Math.toDegrees(frustum.fov);
+      if (Math.abs(readBack - spec.fovDeg) > 1e-6) {
+        structural.push(
+          `fovDeg: wrote ${spec.fovDeg}, read ${readBack.toFixed(6)}`,
+        );
+      } else {
+        applied.push(`fovDeg=${spec.fovDeg}`);
+      }
+    }
   }
 
   // Content: local tilesets / models only. Anything remote would make the
@@ -615,17 +798,18 @@ async function applyViewerScene(spec) {
     const fixed = C.Matrix3.multiplyByVector(rotation, inertial, inertial);
     const distance = C.Cartesian3.magnitude(fixed);
     const direction = C.Cartesian3.normalize(fixed, new C.Cartesian3());
-    // Sun: stand well back from Earth on the anti-sun side so the disc is alone
-    // in frame. Moon: park 20,000 km short of it, the standoff the LOLA-relief
-    // probe uses to make a few degrees of terminator tilt readable.
+    // Sun: stand off on the SUNLIT side and look outward, so the Earth is
+    // BEHIND the camera. The previous recipe parked on the anti-sun side and
+    // looked back through the planet: the sun command is then culled against
+    // the Earth occluder and the solar-glare veil resolves a visible fraction
+    // of zero, which is exactly what round 2 photographed — a black sky whose
+    // only non-black pixels were the UI. Moon: park 20,000 km short of it, the
+    // standoff the LOLA-relief probe uses to make a few degrees of terminator
+    // tilt readable.
     const standoff = aim === "sun-disc" ? 3.0e7 : 2.0e7;
     const destination =
       aim === "sun-disc"
-        ? C.Cartesian3.multiplyByScalar(
-            direction,
-            -standoff,
-            new C.Cartesian3(),
-          )
+        ? C.Cartesian3.multiplyByScalar(direction, standoff, new C.Cartesian3())
         : C.Cartesian3.multiplyByScalar(
             direction,
             distance - standoff,
@@ -641,7 +825,32 @@ async function applyViewerScene(spec) {
     }
     C.Cartesian3.normalize(up, up);
     scene.camera.setView({ destination, orientation: { direction, up } });
-    aimReport = { aim, distance };
+    // `setView` does NOT keep the basis it is handed: it converts direction/up
+    // into heading/pitch/roll in the local frame at `destination` and rebuilds
+    // from those angles, and `getHeading` has a gimbal-lock branch that fires
+    // whenever the camera direction IS the local vertical — which is every aim
+    // that parks on a body's ray and looks along it. The celestial gate probe
+    // measured the resulting displacement at 0.174 degrees and repairs it the
+    // same way: let `setView` own the position and the transform, then write the
+    // requested basis back verbatim. On a 6-degree frustum that is 30 px of
+    // aim error, which is the difference between a centred disc and a clipped one.
+    const roundTrip = C.Cartesian3.clone(
+      scene.camera.directionWC,
+      new C.Cartesian3(),
+    );
+    const aimResidualDeg =
+      (Math.acos(
+        Math.max(-1, Math.min(1, C.Cartesian3.dot(direction, roundTrip))),
+      ) *
+        180) /
+      Math.PI;
+    C.Cartesian3.clone(direction, scene.camera.direction);
+    C.Cartesian3.clone(up, scene.camera.up);
+    C.Cartesian3.normalize(
+      C.Cartesian3.cross(direction, up, scene.camera.right),
+      scene.camera.right,
+    );
+    aimReport = { aim, distance, aimResidualDeg };
   } else if (spec.view) {
     scene.camera.setView({
       destination: C.Cartesian3.fromDegrees(
@@ -684,10 +893,29 @@ async function applyViewerScene(spec) {
   const limit = spec.settleFrames ?? 480;
   const settleDeadline = performance.now() + (spec.settleBudgetMs ?? 45_000);
   let budgetExhausted = false;
+  // The application asks for Cesium World Terrain through an ASYNCHRONOUS
+  // `Terrain.fromWorldTerrain()`, and the base-layer picker assigns the result
+  // whenever it resolves — which can be after this spec has already pinned the
+  // ellipsoid. Re-asserting inside the settle loop is what makes the pin hold;
+  // re-assigning only when it has actually changed keeps it from re-tiling the
+  // globe every frame. The count is reported, so a pin that had to fight for it
+  // is visible rather than silent.
+  let terrainReasserts = 0;
+  const holdTerrain = () => {
+    if (
+      spec.terrain !== "ellipsoid" ||
+      viewer.terrainProvider instanceof C.EllipsoidTerrainProvider
+    ) {
+      return;
+    }
+    viewer.terrainProvider = new C.EllipsoidTerrainProvider();
+    terrainReasserts++;
+  };
   // Reported once, not once per frame: a display that throws throws every time,
   // and hundreds of identical notes would bury the rest of the report.
   let displayThrew = false;
   while (frames < limit && stable < 12) {
+    holdTerrain();
     if (performance.now() >= settleDeadline) {
       budgetExhausted = true;
       break;
@@ -761,6 +989,14 @@ async function applyViewerScene(spec) {
       `content ${zoomTarget?.url ?? "(unknown)"} never produced a bounding sphere`,
     );
   }
+  if (
+    spec.terrain === "ellipsoid" &&
+    !(viewer.terrainProvider instanceof C.EllipsoidTerrainProvider)
+  ) {
+    structural.push(
+      "terrain: the ellipsoid pin lost to the application's world terrain — the subject may be underground",
+    );
+  }
   // Trailing pinned render so the compositor holds a pinned-time frame for the
   // screenshot below — the widget's own loop is off.
   try {
@@ -774,6 +1010,9 @@ async function applyViewerScene(spec) {
     structural,
     applied,
     aimReport,
+    resolvedPhase,
+    terrainReasserts,
+    pinnedTimeIso: C.JulianDate.toIso8601(pinned, 0),
     frames,
     budgetExhausted,
     ready: stable >= 12,
@@ -851,20 +1090,17 @@ const SUPPRESSED_CONSOLE = [
   /\[CesiumJS:webgpu/,
   /powerPreference option is currently ignored/i,
   /favicon/i,
-  // The gallery pages still reference the two loader scripts that were deleted
-  // with the legacy Sandcastle app; this script supplies both itself, so their
-  // 404s are expected rather than a fault in the scene. The third tag they
-  // carry is `nomodule`, which a module-capable browser never even fetches.
-  /Sandcastle-header\.js/,
-  /load-cesium-es6\.js/,
 ];
+// The two deleted-loader entries that used to live here have been REMOVED, and
+// deliberately: they matched a SCRIPT NAME against a message TEXT, and the text
+// of a 404 is "Failed to load resource: the server responded with a status of
+// 404 (Not Found)" — the URL is only in the message's location. They suppressed
+// nothing for eighteen scenes. `DEAD_ROUTES` answers those two URLs with empty
+// 200s instead, so there is no 404 to suppress and every other 404 stays fatal.
 
-function isExternalResourceFailure(text, locationUrl) {
-  if (!/Failed to load resource/i.test(text)) {
-    return false;
-  }
-  return typeof locationUrl === "string" && !locationUrl.startsWith(BASE);
-}
+// Whether a network error belongs to this fork or to somebody else's tile
+// server is decided by `lib/console-gate.mjs`, so the rule that SILENCES an
+// error is testable against real message strings rather than read and believed.
 
 /**
  * Capture one scene, within its own wall-clock budget.
@@ -928,7 +1164,7 @@ async function captureScene(browser, scene) {
     const text = message.text();
     if (
       SUPPRESSED_CONSOLE.some((re) => re.test(text)) ||
-      isExternalResourceFailure(text, message.location()?.url)
+      isForeignNetworkFailure(text, message.location()?.url, BASE)
     ) {
       return;
     }
@@ -960,6 +1196,17 @@ async function captureScene(browser, scene) {
   if (scene.kind === "sandcastle") {
     await page.addInitScript(legacySandcastleLoader);
   }
+  // Installed BEFORE navigation: a route added afterwards would not catch the
+  // page's own head scripts, which is where every dead reference lives.
+  for (const route of DEAD_ROUTES) {
+    await page.route(`${BASE}${route.url}`, (intercepted) =>
+      intercepted.fulfill({
+        status: 200,
+        contentType: route.contentType,
+        body: "",
+      }),
+    );
+  }
 
   try {
     await page.goto(record.url, {
@@ -981,6 +1228,10 @@ async function captureScene(browser, scene) {
       record.frames = report.frames;
       record.ready = report.ready;
       record.budgetExhausted = report.budgetExhausted === true;
+      record.aim = report.aimReport;
+      record.resolvedPhase = report.resolvedPhase;
+      record.terrainReasserts = report.terrainReasserts;
+      record.pinnedTimeIso = report.pinnedTimeIso;
       record.structural.push(...report.structural);
     } else {
       let booted = true;
@@ -1017,37 +1268,103 @@ async function captureScene(browser, scene) {
           }
         }
       }
+      // A `page` scene may need a control pressed before anything exists to
+      // photograph. The split-screen harness builds nothing until "Launch Both"
+      // is clicked; round 2 waited thirty seconds for a canvas on a page that
+      // was, correctly, still sitting at its placeholder.
+      const readyCeiling =
+        scene.kind === "page" ? PAGE_READY_TIMEOUT_MS : READY_TIMEOUT_MS;
+      for (const selector of scene.clicks ?? []) {
+        try {
+          await page.waitForSelector(selector, {
+            state: "visible",
+            timeout: allow(READY_TIMEOUT_MS),
+          });
+          await page.click(selector);
+          record.clicked = [...(record.clicked ?? []), selector];
+        } catch (error) {
+          record.structural.push(
+            `clicks: ${selector} never became clickable (${String(error?.message ?? error)})`,
+          );
+          booted = false;
+        }
+      }
+      // The globals the page itself publishes when it is up. Waiting on the
+      // thing the page really sets beats waiting on a canvas that a half-built
+      // page can also produce.
+      if (booted && (scene.readyGlobals ?? []).length > 0) {
+        try {
+          await page.waitForFunction(
+            (names) =>
+              names.every(
+                (name) => window[name] !== undefined && window[name] !== null,
+              ),
+            scene.readyGlobals,
+            { timeout: allow(readyCeiling) },
+          );
+        } catch {
+          record.structural.push(
+            `readyGlobals: ${scene.readyGlobals.join(", ")} never appeared — the page did not finish coming up`,
+          );
+          booted = false;
+        }
+      }
       // A demo that never booted has no canvas to wait for; waiting anyway
       // spends the rest of the budget confirming what is already known.
       if (booted) {
-        await page.waitForFunction(
-          () => {
-            const canvas = document.querySelector("canvas");
-            return canvas !== null && canvas.width > 0 && canvas.height > 0;
-          },
-          { timeout: allow(READY_TIMEOUT_MS) },
-        );
+        const expectCanvases = scene.expectCanvases ?? 1;
+        try {
+          await page.waitForFunction(
+            (expected) => {
+              const canvases = [...document.querySelectorAll("canvas")].filter(
+                (canvas) => canvas.width > 0 && canvas.height > 1,
+              );
+              return canvases.length >= expected;
+            },
+            expectCanvases,
+            { timeout: allow(readyCeiling) },
+          );
+        } catch {
+          record.structural.push(
+            `no sized canvas on the page (expected ${expectCanvases}) — nothing was drawn to photograph`,
+          );
+          booted = false;
+        }
         // The demo drives its own render loop, so this settle is the scene
         // loading its content — capped by the budget rather than by hope.
-        await page.waitForTimeout(allow(scene.settleMs ?? 8_000));
+        if (booted) {
+          await page.waitForTimeout(allow(scene.settleMs ?? 8_000));
+        }
       }
     }
 
-    const captureTarget = scene.captureTarget ?? "canvas";
+    // Every capture is of the SCENE, not of the application around it.
+    await page.addStyleTag({ content: SCREENSHOT_CHROME_CSS }).catch(() => {});
+    // A viewer scene's render loop is OFF by this point — the clock is pinned
+    // and the widget loop was killed — so the compositor is holding a frame
+    // that was presented before the stylesheet landed. A few pinned renders
+    // after the layout change keep the screenshot a picture of a frame that was
+    // drawn for THIS layout. Demo pages and the split-screen page drive their
+    // own loops and need nothing here.
+    if (scene.kind === "viewer") {
+      await page.evaluate(renderMoreFrames, 3).catch(() => {});
+    }
+
+    const captureSelector = scene.captureSelector ?? DEFAULT_CAPTURE_SELECTOR;
+    record.captureSelector = captureSelector;
+    let captured = null;
     for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
       record.attempts = attempt;
-      let png;
-      if (captureTarget === "page") {
-        png = await page.screenshot({ type: "png", fullPage: false });
-      } else {
-        const canvas = await page.$(".cesium-widget canvas");
-        if (canvas === null) {
-          record.structural.push("no .cesium-widget canvas on the page");
-          break;
-        }
-        png = await canvas.screenshot({ type: "png" });
+      const element = await page.$(captureSelector);
+      if (element === null) {
+        record.structural.push(
+          `nothing on the page matches the capture selector "${captureSelector}"`,
+        );
+        break;
       }
+      const png = await element.screenshot({ type: "png" });
       writeFileSync(join(OUT_DIR, scene.output), png);
+      captured = png;
       record.stats = await page.evaluate(pngStats, png.toString("base64"));
       if (
         record.stats.nonBlackPct >= scene.minNonBlackPct &&
@@ -1065,6 +1382,16 @@ async function captureScene(browser, scene) {
       } else {
         break;
       }
+    }
+
+    // Content anchors, decided in Node from the bytes that were just written.
+    // A scene that declares one is saying what its subject LOOKS like, which is
+    // the question a percentage cannot answer; failing it is STRUCTURAL because
+    // the subject is not there, not because it is dim.
+    if (captured !== null && scene.anchor !== undefined) {
+      const anchors = evaluateAnchors(captured, scene.anchor);
+      record.anchors = anchors.measured;
+      record.structural.push(...anchors.failures);
     }
 
     // Let asynchronous GPU errors flush: `onuncapturederror` fires after queue

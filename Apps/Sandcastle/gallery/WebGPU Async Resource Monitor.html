@@ -49,6 +49,12 @@
     "
   >
     <style>
+      /* The gallery's shared layout, which every other demo here imports.
+         Without it `.fullSize` is an undefined class, `#cesiumContainer` has no
+         height, and the widget sizes its canvas to a one-pixel-tall box — the
+         page still runs, and every screenshot of it is a 1024x1 strip. */
+      @import url(../templates/bucket.css);
+
       #monitorPanel {
         position: absolute;
         top: 8px;
