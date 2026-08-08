@@ -86,6 +86,7 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.globeBindGroups() — globe bind-group cache stats ║
 ║  CesiumDebug.cacheStats()      — pipeline + bind-group cache counters ║
 ║  CesiumDebug.cloudStats(t/f)   — cloud observability + CPU stage timing ║
+║  CesiumDebug.cloudReconstructionAttachments(t/f) — C13-09 attachment set ║
 ║  CesiumDebug.webgpuOIT(t/f)    — WebGPU OIT containment gate (FAR-003) ║
 ║  CesiumDebug.attachmentDemand(t/f) — scene-FB attachment demand record ║
 ║  CesiumDebug.globeFragmentDebug(name) — visualize FS stages ║
@@ -985,6 +986,15 @@ function installCesiumDebug(viewer) {
           detail: `accepted=${clouds.reconstruction.historyAccepted} rejected=${clouds.reconstruction.historyRejected} reset=${clouds.reconstruction.historyReset} gen=${clouds.reconstruction.lifetime.generation}`,
         },
         {
+          // C13-09 — zeros here are the DEFAULT state (the set is opt-in), not
+          // a missing measurement. CesiumDebug.cloudReconstructionAttachments()
+          // prints the per-target contract.
+          lane: "attachments",
+          size: `${clouds.reconstruction.attachments.width}x${clouds.reconstruction.attachments.height}`,
+          pixels: clouds.reconstruction.attachments.pixelsDispatched,
+          detail: `produced=${clouds.reconstruction.attachments.produced} targets=${clouds.reconstruction.attachments.targetCount} gen=${clouds.reconstruction.attachments.generation} liveBytes=${clouds.reconstruction.attachments.liveBytes}`,
+        },
+        {
           lane: "shadow",
           size: `${clouds.shadow.size} / atlas ${clouds.shadow.cascadeSize}x${clouds.shadow.cascadeCount}`,
           pixels: clouds.shadow.size * clouds.shadow.size,
@@ -1027,6 +1037,80 @@ function installCesiumDebug(viewer) {
         );
       }
       return clouds;
+    },
+
+    /**
+     * C13-09 — read or toggle the cloud RECONSTRUCTION ATTACHMENT set (front /
+     * transmittance-weighted depth, screen-space velocity, depth+coverage
+     * moments).
+     *
+     * DEFAULT OFF, and that is the shipped contract: with it off nothing is
+     * allocated and no pass is encoded, so the cloud lane is identical in
+     * pixels AND in cost. With it on the producer runs and the counters
+     * report, but NOTHING READS THE SET — the consumers are C13-10 (true
+     * 1/16-rate current-frame march) and C13-12 (motion/depth rejection,
+     * variance clipping, reactive history, wind-aware reprojection,
+     * disocclusion). So the composite is byte-identical either way, which is
+     * exactly what makes this safe to leave on while measuring.
+     *
+     * The producer needs the half-resolution march target, so a tier that
+     * resolves `renderResScale === 1` (cinematic, or the `cloudQuality !== 64`
+     * escape hatch) produces nothing even when enabled. Set
+     * `cloudVolumetricQuality` to "low" or "medium" to exercise it.
+     *
+     * Usage:
+     *   CesiumDebug.cloudReconstructionAttachments()      // read
+     *   CesiumDebug.cloudReconstructionAttachments(true)  // enable
+     *
+     * @param {boolean} [enabled] Omit to read; pass a boolean to set.
+     * @returns {object|null} The attachment block of the cloud snapshot.
+     */
+    cloudReconstructionAttachments(enabled) {
+      const ctx = scene._context;
+      if (!ctx?.isWebGPU || typeof ctx.getRendererStatistics !== "function") {
+        console.warn(
+          "[CesiumDebug] Cloud reconstruction attachments are WebGPU-only",
+        );
+        return null;
+      }
+      const cache = ctx._cloudCache;
+      if (!cache) {
+        console.warn(
+          "[CesiumDebug] Cloud renderer has not run yet — enable a VOLUMETRIC CloudCollection and render a frame first",
+        );
+        return null;
+      }
+      if (typeof enabled === "boolean") {
+        cache.attachmentsEnabled = enabled;
+        console.log(
+          `[CesiumDebug] Cloud reconstruction attachments ${
+            enabled ? "ENABLED" : "DISABLED"
+          } — the composite is unchanged either way (no consumer until C13-10/12).`,
+        );
+      }
+      const clouds = ctx.getRendererStatistics().volumetricClouds;
+      const attachments = clouds?.reconstruction?.attachments;
+      if (!attachments) {
+        console.warn("[CesiumDebug] No cloud statistics yet — render a frame");
+        return null;
+      }
+      console.table(attachments.contract);
+      console.table([
+        {
+          produced: attachments.produced,
+          size: `${attachments.width}x${attachments.height}`,
+          pixels: attachments.pixelsDispatched,
+          targets: attachments.targetCount,
+          generation: attachments.generation,
+          liveBytes: attachments.liveBytes,
+        },
+      ]);
+      if (!attachments.produced && cache.attachmentsEnabled) {
+        console.log(
+          "[CesiumDebug] Enabled but not produced — the producer needs the half-res march target (cloudVolumetricQuality 'low'/'medium') and a perspective, non-morphing frame.",
+        );
+      }
+      return attachments;
     },
 
     /**

@@ -36,7 +36,7 @@
  * sum over the union is surfaced as `overlapMs`. A cloud GPU claim built on the
  * naive sum is not falsifiable; a claim built on the union is.
  *
- * The seven pass names below are the render-pass DESCRIPTOR LABELS, because
+ * The eight pass names below are the render-pass DESCRIPTOR LABELS, because
  * that is the key `WebGPUPerformanceManager.withRenderPassTimestamps` records
  * timings under. They are data, not a re-derivation: `cloud-observability
  * -counters.spec.mjs` reads the renderer source and fails if a label here has
@@ -56,15 +56,25 @@
 import type { DebugStatsObject } from "../GraphicsContext.js";
 import { summarizeFrameCoverage } from "./WebGPUTimestampAccounting.js";
 import type { TimedPassSample } from "./WebGPUTimestampAccounting.js";
+// C13-09 — the attachment CONTRACT is published alongside the counters so a
+// reader of the debug surface can see what each target is for without opening
+// the renderer. Pure data: this module still touches no WGSL and no device.
+import { CLOUD_RECONSTRUCTION_ATTACHMENTS } from "./WebGPUCloudReconstructionAttachments.js";
 
 /**
- * Render-pass labels of the seven cloud passes, in encode order. Keys into the
+ * Render-pass labels of the cloud passes, in encode order. Keys into the
  * timestamp profiler's per-pass results and into the frame's raw samples.
  */
 export const CLOUD_TIMED_PASS_NAMES: readonly string[] = Object.freeze([
   "CloudShadow map pass",
   "CloudShadow cascade atlas pass",
   "ProceduralClouds half-res pass",
+  // C13-09 — the reconstruction attachment producer, encoded between the
+  // raymarch and the resolve so C13-12 can read the set inside the resolve.
+  // Present only when the opt-in attachment set is enabled; the registry is
+  // ADD-ONLY, so its absence from a frame is reported through
+  // `missingPassNames` rather than by shrinking the table.
+  "CloudReconstructionAttachments pass",
   "CloudTemporalResolve pass",
   "CloudUpscale composite pass",
   "ProceduralClouds pass",
@@ -73,7 +83,7 @@ export const CLOUD_TIMED_PASS_NAMES: readonly string[] = Object.freeze([
 
 /**
  * The environment pass the cloud deck feeds but does not own. Kept SEPARATE
- * from the seven above: folding it into the cloud union would attribute the
+ * from the list above: folding it into the cloud union would attribute the
  * whole sky bake to the cloud lane, which is the attribution error C11-146's
  * settle-window rule exists to prevent. Reported as its own scope.
  */
@@ -151,6 +161,26 @@ export interface CloudFrameCounters {
   /** Reset-reason bitmask observed this frame (0 when accepted). */
   historyResetReasons: number;
 
+  // ── C13-09 reconstruction attachments ──
+  // The set is OPT-IN and default OFF, so all of these read 0 on the shipped
+  // path. That zero is load-bearing evidence rather than an absence: Gate A
+  // reads it as "the producer encoded nothing and allocated nothing", which is
+  // the claim the default path makes.
+  /** Reconstruction attachment width; 0 when the set was not produced. */
+  attachmentWidth: number;
+  /** Reconstruction attachment height; 0 when the set was not produced. */
+  attachmentHeight: number;
+  /** Pixels the attachment producer dispatched this frame. */
+  attachmentPixels: number;
+  /** Owned attachments written this frame (the MRT target count). */
+  attachmentCount: number;
+  /**
+   * Generation the producer used this frame; 0 when it did not run. Advances
+   * on every (re)allocation, so a resize or device swap is visible here rather
+   * than inferred from a size change.
+   */
+  attachmentGeneration: number;
+
   /** Frames the weather texture was already current, so nothing uploaded. */
   weatherCacheHits: number;
   /** Frames the resident version differed from the requested one. */
@@ -161,6 +191,16 @@ export interface CloudFrameCounters {
   weatherUploadBytes: number;
   /** Bytes the weather texture currently occupies (0 before allocation). */
   weatherLiveBytes: number;
+
+  /**
+   * Bytes the OWNED reconstruction attachments currently occupy. Like
+   * `weatherLiveBytes` this describes a RESIDENT resource, so it survives the
+   * per-frame reset — zeroing it would report the set as freed on every
+   * quiescent frame. The shared half-res colour target is deliberately
+   * excluded: it is not cost this row added, and reporting it here would
+   * overstate the attachment set's footprint.
+   */
+  attachmentLiveBytes: number;
 
   /** Cloud shadow passes encoded this frame (single map + cascade atlas). */
   shadowPassCount: number;
@@ -200,6 +240,11 @@ const RESET_FIELDS: readonly (keyof CloudFrameCounters)[] = Object.freeze([
   "historyRejected",
   "historyReset",
   "historyResetReasons",
+  "attachmentWidth",
+  "attachmentHeight",
+  "attachmentPixels",
+  "attachmentCount",
+  "attachmentGeneration",
   "weatherCacheHits",
   "weatherCacheMisses",
   "weatherUploads",
@@ -235,6 +280,12 @@ export function createCloudFrameCounters(): CloudFrameCounters {
     historyRejected: 0,
     historyReset: 0,
     historyResetReasons: 0,
+    attachmentWidth: 0,
+    attachmentHeight: 0,
+    attachmentPixels: 0,
+    attachmentCount: 0,
+    attachmentGeneration: 0,
+    attachmentLiveBytes: 0,
     weatherCacheHits: 0,
     weatherCacheMisses: 0,
     weatherUploads: 0,
@@ -251,8 +302,9 @@ export function createCloudFrameCounters(): CloudFrameCounters {
 
 /**
  * Zeroes the per-frame fields in place. No allocation, and `weatherLiveBytes`
- * survives because it describes a RESIDENT resource rather than this frame's
- * work — zeroing it would report the texture as freed on every quiescent frame.
+ * and `attachmentLiveBytes` survive because they describe RESIDENT resources
+ * rather than this frame's work — zeroing them would report the textures as
+ * freed on every quiescent frame.
  *
  * @param counters The record to reset.
  * @param culled True when the execute is about to return without encoding.
@@ -458,7 +510,7 @@ export interface CloudGpuCoverage extends DebugStatsObject {
  * would make the fraction a tautology.
  *
  * @param samples One frame's timed passes, relative to the frame origin.
- * @param names Cloud pass names to scope to. Defaults to the seven cloud passes.
+ * @param names Cloud pass names to scope to. Defaults to every cloud pass.
  */
 export function summarizeCloudGpuCoverage(
   samples: readonly TimedPassSample[],
@@ -552,6 +604,32 @@ export function snapshotCloudObservability(
       // unambiguous.
       acceptanceThisFrame:
         acceptance > 0 ? c.historyAccepted / acceptance : null,
+      // C13-09 — the attachment set. `produced` false with `liveBytes` > 0 is
+      // a real and readable state: the targets are resident but this frame did
+      // not run the producer (culled, or a full-resolution tier). The contract
+      // is published alongside the numbers so a reader does not have to open
+      // the source to learn what each channel means.
+      attachments: {
+        produced: c.attachmentPixels > 0,
+        width: c.attachmentWidth,
+        height: c.attachmentHeight,
+        pixelsDispatched: c.attachmentPixels,
+        targetCount: c.attachmentCount,
+        generation: c.attachmentGeneration,
+        liveBytes: c.attachmentLiveBytes,
+        contract: CLOUD_RECONSTRUCTION_ATTACHMENTS.map((spec) => ({
+          slot: spec.slot,
+          key: spec.key,
+          format: String(spec.format),
+          bytesPerTexel: spec.bytesPerTexel,
+          ownedHere: spec.ownedHere,
+          producer: spec.producer,
+          // Empty until C13-10/12 land. An empty list is the honest state, not
+          // a formatting artifact: nothing reads these yet.
+          consumers: spec.consumers.slice(),
+          channels: spec.channels,
+        })),
+      },
       lifetime: {
         generation: inputs.temporal.generation,
         resetCount: inputs.temporal.resetCount,

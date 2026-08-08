@@ -592,13 +592,33 @@ test("renderer consumes the C13-05 classifier and its own prior RTE camera state
     rendererSource,
     /inverse\(P \* Vrot\) = inverse\(Vrot\) \* inverse\(P\)/,
   );
+  // C13-09 EXTRACTED this composition into `resolveCloudInverseCurrentVpRte`
+  // so its reconstruction attachment producer uses the SAME current-ray
+  // transform rather than a second copy. The C13-05 property is unchanged and
+  // is now pinned at the ONE site that computes it: the cheap
+  // inverse-view x inverse-projection composition, never a general inversion
+  // of the relative-to-eye matrix.
   const temporalTransformBlock = rendererSource.slice(
-    rendererSource.indexOf("const previousVpRte"),
-    rendererSource.indexOf("const transformsValid"),
+    rendererSource.indexOf("function resolveCloudInverseCurrentVpRte("),
+    rendererSource.indexOf("function cloudCameraPairIsFinite("),
+  );
+  assert.ok(
+    temporalTransformBlock.length > 0,
+    "the inverse current VP-RTE helper must exist",
   );
   assert.match(
     temporalTransformBlock,
     /Matrix4\.multiply\(\s*scratchInverseViewRelativeToEye,\s*inverseProjection/,
+  );
+  assert.doesNotMatch(
+    temporalTransformBlock,
+    /Matrix4\.inverse\s*\(/,
+    "a general inversion of the relative-to-eye matrix is the form C13-05 rejected",
+  );
+  assert.match(
+    rendererSource,
+    /const inverseCurrentVpRteValid =\s*matrix4IsFinite\(previousVpRte\) &&\s*resolveCloudInverseCurrentVpRte\(\s*temporalReprojectionSupported,/,
+    "the temporal resolve must consume the shared helper AND keep its own previous-transform requirement",
   );
   assert.match(
     rendererSource,

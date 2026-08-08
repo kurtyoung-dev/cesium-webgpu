@@ -94,9 +94,18 @@ async function transpileEngineModule(relativePath, rewrites = {}) {
 const accountingUrl = await transpileEngineModule(
   "Renderer/WebGPU/WebGPUTimestampAccounting.ts",
 );
+// C13-09 — the observability snapshot publishes the attachment CONTRACT, so
+// its module has to be transpiled and its specifier rewritten too. It has no
+// relative imports of its own, which is why one level is enough.
+const attachmentsUrl = await transpileEngineModule(
+  "Renderer/WebGPU/WebGPUCloudReconstructionAttachments.ts",
+);
 const observabilityUrl = await transpileEngineModule(
   "Renderer/WebGPU/WebGPUCloudObservability.ts",
-  { "./WebGPUTimestampAccounting.js": accountingUrl },
+  {
+    "./WebGPUTimestampAccounting.js": accountingUrl,
+    "./WebGPUCloudReconstructionAttachments.js": attachmentsUrl,
+  },
 );
 const observability = await import(observabilityUrl);
 const {
@@ -226,6 +235,11 @@ const PER_FRAME_NUMERIC_FIELDS = Object.freeze([
   "historyRejected",
   "historyReset",
   "historyResetReasons",
+  "attachmentWidth",
+  "attachmentHeight",
+  "attachmentPixels",
+  "attachmentCount",
+  "attachmentGeneration",
   "weatherCacheHits",
   "weatherCacheMisses",
   "weatherUploads",
@@ -244,6 +258,8 @@ const SURVIVING_FIELDS = Object.freeze({
   culledFrames: "lifetime cull count, same reason",
   weatherLiveBytes:
     "describes a RESIDENT texture, not this frame's work — zeroing it would report the texture as freed every quiescent frame",
+  attachmentLiveBytes:
+    "C13-09 — describes the RESIDENT reconstruction attachment set, same reason as weatherLiveBytes",
 });
 
 test("B1 reset zeroes every per-frame field, in place, with no reallocation", () => {

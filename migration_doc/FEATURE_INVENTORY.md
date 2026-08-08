@@ -1062,10 +1062,20 @@ Partially shipped features with known gaps. Working code exists but the feature 
   CELESTIAL §4.6)
 - CLOUD-SHADOWS (improvement plan 4.1) SHIPPED Batch 437 — Schneider single-map "beer shadow map": the procedural cloud layer's OPTICAL DEPTH is rasterized from the SUN's orthographic view into a 512² r16float target (`cloudShadowMain` entry in `ProceduralClouds.wgsl`; sun-relative ortho VP built in `WebGPUProceduralCloudRenderer`, footprint = camera ground point ±60 km) and sampled (transmittance = exp(-opticalDepth·absorption), 0.35 floor) by FOUR consumers to darken what's under the clouds, replacing the loosely-correlated local-hash/fbm approximations: (a) `GlobeTerrain.wgsl` lit ground (camera UB 148→168: cloudShadowVP + control; group-2 bindings 9/10), (b) `AerialPerspective.wgsl` inscatter (uniforms 56→76; binding 7), (c) `VolumetricFog.wgsl` (params 96→116; bindings 11/12 — REPLACES the 1-sample local-fbm `sampleCloudShadow` under the `cloudShadowHiFi` sub-flag). Opt-in `globe.cloudCastShadows` (default false) + fog sub-flag `atmosphericConditions.volumetricFog.cloudShadowHiFi`. DEFAULT-FALSE IS BYTE-IDENTICAL: no map rendered, all consumers read a 1×1-white/zero (transmittance=1) placeholder, every uniform tail carries identity+disabled control gated on `x>0.5`. Parity verified ZERO drift on terrain+aerial+fog vs stash-reverted main; flag-on probes show cloud-shaped soft ground shadows that track the sun. Consumer (d) env-map ground term DEFERRED (separate dynamic-env-map/SH subsystem — NEW-CLOUD-SHADOW-ENVMAP). (CELESTIAL §4.6 / improvement-plan 4.1)
 - Volumetric-cloud temporal reconstruction is WIP despite the Batch-433 implementation anchor:
-  `C13-05` completes only the bounded WGS84/RTE and coarse history-reset correction; reconstruction
-  attachments (`C13-09`), true 1/16-rate current work/full-resolution reconstruction (`C13-10`), and
-  advanced wind/depth/disocclusion/variance/reactive rejection (`C13-12`) remain open
-  ([Campaign 13](QUEUE_2026-07-23_CAMPAIGN13.md); CELESTIAL §4.6)
+  `C13-05` completes only the bounded WGS84/RTE and coarse history-reset correction; true
+  1/16-rate current work/full-resolution reconstruction (`C13-10`) and advanced
+  wind/depth/disocclusion/variance/reactive rejection (`C13-12`) remain open
+  ([Campaign 13](QUEUE_2026-07-23_CAMPAIGN13.md); CELESTIAL §4.6).
+  **`C13-09` reconstruction attachments landed 2026-08-07 as PRODUCED-BUT-NOT-CONSUMED
+  infrastructure and stay in §C for exactly that reason** — the four-slot contract
+  (premultiplied colour/transmittance, front + transmittance-weighted depth, velocity with an
+  explicit validity channel, depth/coverage moments), its allocation / resize / device-swap
+  lifecycle with a monotonic generation key, the `CloudReconstructionAttachments pass` producer in
+  its OWN WGSL module and pipeline (the C13-39 constraint, enforced by a content-hash pin on
+  `ProceduralClouds.wgsl`), and the Gate-A byte/pass counters are all live and OPT-IN DEFAULT-OFF
+  (`CesiumDebug.cloudReconstructionAttachments(t/f)`). Nothing reads the set; the composite is
+  byte-identical with the producer on or off. The entry moves to §B when `C13-12` lands the
+  consumers. Orthographic/morph and full-resolution tiers still produce no attachments.
 - Varying atmosphere density (`enableVaryingAtmosphereDensity`) defaults FALSE; no-op when volumetric fog off (CELESTIAL §4.9)
 
 ### C.8 Performance & Compute

@@ -19,6 +19,34 @@
  *   - cloudDensity: number (default 0.3)
  *   - cloudQuality: number 32-128 steps (default 64)
  *
+ * ── C13-09 RECONSTRUCTION ATTACHMENTS: WHAT IS LIVE, WHAT IS PENDING ──
+ *
+ * LIVE. `CloudReconstructionAttachments pass` writes front / transmittance-
+ * weighted cloud depth, screen-space motion with an explicit validity channel,
+ * and the depth/coverage moment pair, at the half-resolution march size, with
+ * full creation / resize / device-swap lifecycle and a monotonic generation
+ * key. It is OPT-IN and DEFAULT OFF (`setCloudReconstructionAttachments`,
+ * surfaced as `CesiumDebug.cloudReconstructionAttachments(true)`): with it off
+ * nothing allocates and no pass is encoded, so the shipped cloud lane is
+ * identical in pixels AND in cost.
+ *
+ * PENDING, and deliberately so — this row is infrastructure and NOTHING READS
+ * THE SET YET (CLAUDE.md Principle 7: the producer half exists, the consumer
+ * half is the follow-up, and deleting the targets because no pass samples them
+ * is the documented anti-pattern):
+ *
+ *   - C13-10 owns the true 1/16-rate current-frame march. It replaces the
+ *     analytic depth ESTIMATOR (shell interval under the march's own resolved
+ *     alpha) with per-sample accumulation emitted by the march itself, and it
+ *     is the row permitted to change `ProceduralClouds.wgsl`.
+ *   - C13-12 owns every consumer: attachment-aware motion/depth rejection,
+ *     variance clipping from the moment pair, reactive history, wind advection
+ *     in reprojection, and disocclusion.
+ *   - Orthographic and morph frames still produce NO attachments, because the
+ *     producer needs a usable inverse current view-projection-relative-to-eye
+ *     for its per-pixel ray. That is the same residual C13-05 recorded; it
+ *     closes when reconstruction carries a per-pixel ray origin.
+ *
  * @private
  */
 import ProceduralCloudsWGSL from "../../Shaders/WebGPU/Environment/ProceduralClouds.js";
@@ -83,6 +111,25 @@ import SceneMode from "../../Scene/SceneMode.js";
 import CloudUpscaleWGSL from "../../Shaders/WebGPU/Environment/CloudUpscale.js";
 // V10 (Batch 433) — temporal reprojection + accumulation resolve shader.
 import CloudTemporalResolveWGSL from "../../Shaders/WebGPU/Environment/CloudTemporalResolve.js";
+// C13-09 — the reconstruction attachment producer. A SEPARATE WGSL module and a
+// SEPARATE pipeline on purpose: C13-39 proved WGSL register allocation is
+// static, so this must never reach `ProceduralClouds.wgsl`.
+import CloudReconstructionAttachmentsWGSL from "../../Shaders/WebGPU/Environment/CloudReconstructionAttachments.js";
+import {
+  CLOUD_ATTACHMENT_DEFAULT_DEPTH_NORMALIZATION_METERS,
+  CLOUD_ATTACHMENT_UNIFORM_BYTES,
+  CLOUD_ATTACHMENT_UNIFORM_FLOATS,
+  CLOUD_OWNED_ATTACHMENTS,
+  cloudAttachmentsNeedAllocation,
+  commitCloudAttachmentGeneration,
+  createCloudAttachmentGeneration,
+  packCloudAttachmentUniforms,
+  releaseCloudAttachmentGeneration,
+} from "./WebGPUCloudReconstructionAttachments.js";
+import type {
+  CloudAttachmentGeneration,
+  CloudAttachmentUniformInputs,
+} from "./WebGPUCloudReconstructionAttachments.js";
 import { buildCloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 import type { CloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 import {
@@ -195,6 +242,77 @@ function matrix4HasNonZeroEntry(matrix: ArrayLike<number>): boolean {
     }
   }
   return false;
+}
+
+/**
+ * C13-05 / C13-09 — resolve the inverse current view-projection-relative-to-eye
+ * into the shared scratch matrix and report whether the result is usable.
+ *
+ * inverse(P * Vrot) = inverse(Vrot) * inverse(P), so this reuses the inverse
+ * view/projection `UniformState` already produced and removes the inverse-view
+ * translation instead of generally inverting the relative-to-eye matrix — the
+ * cheaper form in the perspective hot path. Unsupported orthographic/morph
+ * projections are gated by the caller's `supported` flag before any resource is
+ * allocated.
+ *
+ * EXTRACTED AT C13-09 rather than copied: the reconstruction attachment
+ * producer needs the SAME current-ray transform the temporal resolve uses, and
+ * two independently maintained RTE inversions is exactly the drift C13-03's
+ * coordinate contract exists to prevent. The body is unchanged from the C13-05
+ * temporal site it was lifted from.
+ *
+ * The PREVIOUS-frame transform is deliberately NOT part of this predicate. It
+ * is a reprojection input, not a current-ray input, and the two consumers need
+ * different things: the temporal resolve cannot run without it (so it checks it
+ * alongside this call, preserving C13-05's behaviour exactly), while the
+ * attachment producer's depth and moment channels are perfectly well defined on
+ * a frame that has no usable history — only its velocity channel is not, and
+ * that channel carries its own validity flag for precisely this case.
+ */
+function resolveCloudInverseCurrentVpRte(
+  supported: boolean,
+  inverseProjection: ArrayLike<number> | undefined,
+  inverseView: ArrayLike<number> | undefined,
+): boolean {
+  if (
+    !supported ||
+    !matrix4IsFinite(inverseProjection) ||
+    !matrix4IsFinite(inverseView) ||
+    !matrix4HasNonZeroEntry(inverseProjection as Matrix4)
+  ) {
+    return false;
+  }
+  Matrix4.clone(inverseView as Matrix4, scratchInverseViewRelativeToEye);
+  scratchInverseViewRelativeToEye[12] = 0.0;
+  scratchInverseViewRelativeToEye[13] = 0.0;
+  scratchInverseViewRelativeToEye[14] = 0.0;
+  Matrix4.multiply(
+    scratchInverseViewRelativeToEye,
+    inverseProjection as Matrix4,
+    scratchInverseCurrentViewProjectionRelativeToEye,
+  );
+  return matrix4IsFinite(scratchInverseCurrentViewProjectionRelativeToEye);
+}
+
+/**
+ * C13-05 / C13-09 — true when both camera positions exist and are finite, i.e.
+ * when the CPU-`f64` `currentCameraWC - previousCameraWC` delta the shaders
+ * add before the previous-frame projection is meaningful.
+ */
+function cloudCameraPairIsFinite(
+  currentCamera: { x: number; y: number; z: number } | undefined,
+  previousCamera: { x: number; y: number; z: number } | undefined,
+): boolean {
+  return (
+    currentCamera !== undefined &&
+    previousCamera !== undefined &&
+    Number.isFinite(currentCamera.x) &&
+    Number.isFinite(currentCamera.y) &&
+    Number.isFinite(currentCamera.z) &&
+    Number.isFinite(previousCamera.x) &&
+    Number.isFinite(previousCamera.y) &&
+    Number.isFinite(previousCamera.z)
+  );
 }
 
 export interface CloudCache {
@@ -406,6 +524,39 @@ export interface CloudCache {
   maskPipeline: GPURenderPipeline | null;
   maskShaderModule: GPUShaderModule | null;
   maskRenderedThisFrame: boolean;
+  // ── C13-09 — reconstruction attachments (front/weighted depth, velocity,
+  // moments) ──
+  // DEFAULT OFF: `attachmentsEnabled` starts false, so nothing here allocates,
+  // no pass is encoded, and the shipped cloud lane is byte-identical AND
+  // cost-identical. Turned on through `setCloudReconstructionAttachments`
+  // (surfaced as `CesiumDebug.cloudReconstructionAttachments(true)`), the
+  // producer writes the set at the HALF-RES march resolution — the attachments
+  // are defined at the reconstruction resolution, and on the full-res path
+  // there is no intermediate march target to derive them from.
+  //
+  // ★ NOTHING READS THEM. This is the row's infrastructure, and the consumers
+  //   are C13-10 (true 1/16-rate current-frame march) and C13-12 (motion/depth
+  //   rejection, variance clipping, reactive history, wind-aware reprojection,
+  //   disocclusion). Removing the targets because "no render pass reads them"
+  //   is the exact anti-pattern CLAUDE.md Principle 7 documents.
+  attachmentsEnabled: boolean;
+  attachmentTextures: (GPUTexture | null)[];
+  attachmentViews: (GPUTextureView | null)[];
+  attachmentGeneration: CloudAttachmentGeneration;
+  attachmentPipeline: GPURenderPipeline | null;
+  attachmentBindGroupLayout: GPUBindGroupLayout | null;
+  attachmentBindGroup: GPUBindGroup | null;
+  /**
+   * The march-target view `attachmentBindGroup` was built against. Exact
+   * identity, so a reallocated half-res target rebuilds the group instead of
+   * silently sampling a destroyed texture.
+   */
+  attachmentBindGroupSourceView: GPUTextureView | null;
+  attachmentUniformBuffer: GPUBuffer | null;
+  attachmentUniformData: Float32Array;
+  /** Reused packing record — the per-frame path must not allocate one. */
+  attachmentUniformInputs: CloudAttachmentUniformInputs;
+  attachmentRenderedThisFrame: boolean;
   // C13-02 — the observability surface. `observability` is reset IN PLACE at
   // the top of every execute (including the culled early return, so a skipped
   // frame reports zeros rather than the last drawn frame's numbers), and
@@ -413,6 +564,51 @@ export interface CloudCache {
   // and the render result cannot depend on the instrumentation.
   observability: CloudFrameCounters;
   cpuStages: CloudCpuStageAccumulator;
+}
+
+/**
+ * C13-09 — the mutable record {@link packCloudAttachmentUniforms} reads.
+ *
+ * The interface is `readonly` so consumers cannot mutate a published contract;
+ * the cache holds this widened alias so the ONE per-context instance can be
+ * rewritten in place every frame without allocating.
+ */
+type MutableCloudAttachmentUniformInputs = {
+  -readonly [
+    K in keyof CloudAttachmentUniformInputs
+  ]: CloudAttachmentUniformInputs[K];
+};
+
+function createCloudAttachmentUniformInputs(): MutableCloudAttachmentUniformInputs {
+  return {
+    previousViewProjectionRelativeToEye: null,
+    inverseCurrentViewProjectionRelativeToEye: null,
+    encodedCameraHighX: 0.0,
+    encodedCameraHighY: 0.0,
+    encodedCameraHighZ: 0.0,
+    encodedCameraLowX: 0.0,
+    encodedCameraLowY: 0.0,
+    encodedCameraLowZ: 0.0,
+    cameraGeodeticHeight: 0.0,
+    cameraDeltaX: 0.0,
+    cameraDeltaY: 0.0,
+    cameraDeltaZ: 0.0,
+    depthNormalizationMeters:
+      CLOUD_ATTACHMENT_DEFAULT_DEPTH_NORMALIZATION_METERS,
+    width: 0,
+    height: 0,
+    reprojectionValid: false,
+    deckBottom: 0.0,
+    deckTop: 0.0,
+    deckLowBottom: 0.0,
+    deckLowTop: 0.0,
+    deckMidBottom: 0.0,
+    deckMidTop: 0.0,
+    deckHighBottom: 0.0,
+    deckHighTop: 0.0,
+    multiDeck: false,
+    generation: 0,
+  };
 }
 
 function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
@@ -526,6 +722,22 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       maskPipeline: null,
       maskShaderModule: null,
       maskRenderedThisFrame: false,
+      attachmentsEnabled: false,
+      attachmentTextures: new Array<GPUTexture | null>(
+        CLOUD_OWNED_ATTACHMENTS.length,
+      ).fill(null),
+      attachmentViews: new Array<GPUTextureView | null>(
+        CLOUD_OWNED_ATTACHMENTS.length,
+      ).fill(null),
+      attachmentGeneration: createCloudAttachmentGeneration(),
+      attachmentPipeline: null,
+      attachmentBindGroupLayout: null,
+      attachmentBindGroup: null,
+      attachmentBindGroupSourceView: null,
+      attachmentUniformBuffer: null,
+      attachmentUniformData: new Float32Array(CLOUD_ATTACHMENT_UNIFORM_FLOATS),
+      attachmentUniformInputs: createCloudAttachmentUniformInputs(),
+      attachmentRenderedThisFrame: false,
       observability: createCloudFrameCounters(),
       cpuStages: new CloudCpuStageAccumulator(),
     };
@@ -710,6 +922,70 @@ export function getCloudTransmittanceView(
   const cache = context._cloudCache;
   if (!cache || !cache.maskRenderedThisFrame) return null;
   return cache.maskView;
+}
+
+/**
+ * C13-09 — request (or release) the reconstruction attachment set.
+ *
+ * DEFAULT OFF, and that is a correctness claim rather than a caution: with it
+ * off nothing allocates and no pass is encoded, so the shipped cloud lane is
+ * byte-identical in pixels AND identical in cost. With it on the producer runs
+ * and the counters report, but NO consumer exists yet — the composite is
+ * unchanged either way. C13-10 and C13-12 are the rows that read the set.
+ *
+ * @param context The owning graphics context.
+ * @param enabled True to allocate and produce the attachments.
+ */
+export function setCloudReconstructionAttachments(
+  context: CesiumGraphicsContext,
+  enabled: boolean,
+): void {
+  const cache = context._cloudCache;
+  if (!cache) {
+    // No cloud cache yet — stash the request on a lazily-created cache so the
+    // first cloud frame honors it (the transmittance-capture convention).
+    if (enabled) ensureCloudCache(context).attachmentsEnabled = true;
+    return;
+  }
+  cache.attachmentsEnabled = enabled;
+  if (!enabled) {
+    releaseCloudAttachmentResources(cache);
+  }
+}
+
+/**
+ * C13-09 — the attachment view for `slot`, or null when the set was not
+ * produced this frame. `attachmentRenderedThisFrame` is what stops a consumer
+ * reading a stale generation on a frame the cloud march was culled or the
+ * tier resolved to the full-resolution path.
+ *
+ * @param context The owning graphics context.
+ * @param slot A {@link CloudAttachmentSlot} value. Slot 0 (the shared march
+ *   target) is not owned here and always returns null.
+ */
+export function getCloudReconstructionAttachmentView(
+  context: CesiumGraphicsContext,
+  slot: number,
+): GPUTextureView | null {
+  const cache = context._cloudCache;
+  if (!cache || !cache.attachmentRenderedThisFrame) return null;
+  const index = slot - 1;
+  if (index < 0 || index >= cache.attachmentViews.length) return null;
+  return cache.attachmentViews[index];
+}
+
+/**
+ * C13-09 — the generation the resident attachment set was built under, or 0
+ * when nothing is resident. Monotonic across resize and device swap, so a
+ * retained bind group captured under an earlier generation can be recognised
+ * as stale rather than served (the key C13-40's retirement work needs).
+ *
+ * @param context The owning graphics context.
+ */
+export function getCloudReconstructionAttachmentGeneration(
+  context: CesiumGraphicsContext,
+): number {
+  return context._cloudCache?.attachmentGeneration.generation ?? 0;
 }
 
 /**
@@ -1110,6 +1386,146 @@ function ensureTemporalResources(
     !!cache.temporalBindGroups[0] &&
     !!cache.temporalBindGroups[1]
   );
+}
+
+/**
+ * C13-09 — release the owned reconstruction attachments WITHOUT rewinding the
+ * generation counter.
+ *
+ * Rewinding would let a retired bind group's key collide with a future one,
+ * which is exactly the confusion C13-40's post-submit retirement work has to
+ * be able to rule out. The pipeline, layout and uniform buffer are size- and
+ * device-independent, so they survive a resize; only a device teardown
+ * (`destroyProceduralCloudResources`) drops them.
+ */
+function releaseCloudAttachmentResources(cache: CloudCache): void {
+  for (let i = 0; i < cache.attachmentTextures.length; i++) {
+    cache.attachmentTextures[i]?.destroy();
+    cache.attachmentTextures[i] = null;
+    cache.attachmentViews[i] = null;
+  }
+  cache.attachmentBindGroup = null;
+  cache.attachmentBindGroupSourceView = null;
+  cache.attachmentRenderedThisFrame = false;
+  releaseCloudAttachmentGeneration(cache.attachmentGeneration);
+}
+
+/**
+ * C13-09 — (re)allocate the owned reconstruction attachments plus the producer
+ * pipeline, and rebuild the one bind group that reads the current march target.
+ *
+ * Lifecycle, all three cases the row requires:
+ *
+ *   CREATION — first enabled frame. `generation` goes 0 -> 1 and the live-byte
+ *     figure the debug surface reports becomes non-zero.
+ *   RESIZE — the half-res target changed size (canvas resize or a tier that
+ *     resolved a different `renderResScale`). Every owned texture is destroyed
+ *     and recreated and the generation advances, because the previous contents
+ *     describe a different pixel grid and a consumer must not blend across it.
+ *   DEVICE SWAP — `deviceKey` identity differs. Textures created on a lost
+ *     device are unusable even at an unchanged size, so identity (not size) is
+ *     the comparison. The teardown path additionally drops the pipeline.
+ *
+ * `sourceView` is the freshly marched half-res target: the bind group is
+ * rebuilt whenever that view is reallocated, which is what the identity check
+ * against `attachmentBindGroupSourceView` detects.
+ *
+ * @returns True when a producer pass can be encoded this frame.
+ */
+function ensureCloudAttachmentResources(
+  device: GPUDevice,
+  cache: CloudCache,
+  width: number,
+  height: number,
+  sourceView: GPUTextureView,
+): boolean {
+  const w = Math.max(1, Math.floor(width));
+  const h = Math.max(1, Math.floor(height));
+
+  if (
+    cloudAttachmentsNeedAllocation(cache.attachmentGeneration, w, h, device)
+  ) {
+    for (let i = 0; i < CLOUD_OWNED_ATTACHMENTS.length; i++) {
+      const spec = CLOUD_OWNED_ATTACHMENTS[i];
+      cache.attachmentTextures[i]?.destroy();
+      const attachmentTexture = device.createTexture({
+        label: `ProceduralClouds Reconstruction ${spec.key}`,
+        size: { width: w, height: h, depthOrArrayLayers: 1 },
+        format: spec.format,
+        usage:
+          GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      cache.attachmentTextures[i] = attachmentTexture;
+      cache.attachmentViews[i] = attachmentTexture.createView();
+    }
+    // Only after EVERY owned texture exists, so a partially built set never
+    // advertises itself as a complete generation.
+    commitCloudAttachmentGeneration(cache.attachmentGeneration, w, h, device);
+    cache.attachmentBindGroup = null;
+  }
+
+  if (!cache.attachmentPipeline) {
+    cache.attachmentBindGroupLayout = makeBindGroupLayout(
+      device,
+      "CloudReconstructionAttachments BGL",
+      [
+        texture(0, Stage.FRAGMENT), // freshly marched half-res cloud
+        uniformBuffer(1, Stage.FRAGMENT),
+      ],
+    );
+    const attachmentModule = device.createShaderModule({
+      label: "CloudReconstructionAttachments shader",
+      code: CloudReconstructionAttachmentsWGSL,
+    });
+    cache.attachmentPipeline = device.createRenderPipeline({
+      label: "CloudReconstructionAttachments pipeline",
+      layout: device.createPipelineLayout({
+        label: "CloudReconstructionAttachments pipeline layout",
+        bindGroupLayouts: [cache.attachmentBindGroupLayout],
+      }),
+      vertex: { module: attachmentModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: attachmentModule,
+        entryPoint: "fragmentMain",
+        targets: CLOUD_OWNED_ATTACHMENTS.map((spec) => ({
+          format: spec.format,
+        })),
+      },
+      primitive: { topology: "triangle-list" },
+    });
+    cache.attachmentUniformBuffer = device.createBuffer({
+      label: "CloudReconstructionAttachments UB",
+      size: Math.max(CLOUD_ATTACHMENT_UNIFORM_BYTES, 256),
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  if (
+    cache.attachmentBindGroupLayout &&
+    cache.attachmentUniformBuffer &&
+    (!cache.attachmentBindGroup ||
+      cache.attachmentBindGroupSourceView !== sourceView)
+  ) {
+    cache.attachmentBindGroup = device.createBindGroup({
+      label: "CloudReconstructionAttachments bind group",
+      layout: cache.attachmentBindGroupLayout,
+      entries: [
+        { binding: 0, resource: sourceView },
+        { binding: 1, resource: { buffer: cache.attachmentUniformBuffer } },
+      ],
+    });
+    cache.attachmentBindGroupSourceView = sourceView;
+  }
+
+  if (!cache.attachmentPipeline || !cache.attachmentBindGroup) {
+    return false;
+  }
+  for (let i = 0; i < cache.attachmentViews.length; i++) {
+    if (!cache.attachmentViews[i]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -1835,9 +2251,14 @@ export function executeProceduralClouds(
   // zeroes in place (no allocation) and bumps the lifetime `frames` count. The
   // very first execute has no cache yet, so it is reset just below instead —
   // the two branches are exclusive, so `frames` counts every execute once.
+  //
+  // C13-09 — `attachmentRenderedThisFrame` is reset here for the same reason:
+  // a culled frame that left it set would hand a C13-10/12 consumer an
+  // attachment set describing a frame that was never marched.
   const existingCache = context._cloudCache;
   if (existingCache) {
     existingCache.maskRenderedThisFrame = false;
+    existingCache.attachmentRenderedThisFrame = false;
     resetCloudFrameCounters(existingCache.observability);
     existingCache.cpuStages.beginStage(CloudCpuStage.TOTAL);
   }
@@ -2088,6 +2509,17 @@ export function executeProceduralClouds(
   counters.resolveHeight = temporalActive ? cache.temporalHeight : 0;
   counters.resolvePixels = counters.resolveWidth * counters.resolveHeight;
   counters.upscalePixels = halfResActive ? canvasW * canvasH : 0;
+  // C13-09 — SELF-HEALING RELEASE. `attachmentsEnabled` is also writable from
+  // the debug surface without going through `setCloudReconstructionAttachments`,
+  // so a set that has been switched off must free itself on the next execute
+  // rather than stay resident and keep reporting live bytes.
+  if (!cache.attachmentsEnabled && cache.attachmentGeneration.liveBytes > 0) {
+    releaseCloudAttachmentResources(cache);
+  }
+  // C13-09 — a RESIDENT figure, so it is published every execute rather than
+  // only on frames the producer ran. `liveBytes > 0` with `attachmentPixels`
+  // 0 is the real state "the set is allocated but this frame produced none".
+  counters.attachmentLiveBytes = cache.attachmentGeneration.liveBytes;
 
   data[offset++] = qualityResolved.maxSteps;
   data[offset++] = qualityResolved.lightSteps;
@@ -2969,6 +3401,142 @@ export function executeProceduralClouds(
     halfPass.draw(3); // full-screen triangle
     halfPass.end();
 
+    // ── C13-09 — RECONSTRUCTION ATTACHMENT PRODUCER (opt-in, default OFF) ──
+    // Runs between the raymarch and the temporal resolve, so C13-12 can read
+    // the set inside the resolve without reordering anything. Writes front /
+    // transmittance-weighted cloud depth, screen-space motion with its
+    // validity, and the depth/coverage moment pair.
+    //
+    // ★ NOTHING READS THESE YET, AND THE COMPOSITE BELOW IS UNCHANGED. With
+    //   `attachmentsEnabled` false (the default) this block does not run at
+    //   all: no target is allocated, no pass is encoded, and the cloud lane is
+    //   identical in pixels AND in cost. With it on, the producer writes and
+    //   the counters report, but the upscale still reads exactly what it read
+    //   before. The consumers are C13-10 (true 1/16-rate current-frame march)
+    //   and C13-12 (motion/depth rejection, variance clipping, reactive
+    //   history, wind-aware reprojection, disocclusion).
+    //
+    // A usable current inverse view-projection-relative-to-eye is REQUIRED:
+    // without it the per-pixel ray direction is meaningless and every channel
+    // would be noise. Orthographic and morph frames therefore produce no
+    // attachments, which is the same residual C13-05 recorded — they stay
+    // current-only until reconstruction carries a per-pixel ray origin.
+    if (cache.attachmentsEnabled && cache.halfView) {
+      const attachmentTransformValid = resolveCloudInverseCurrentVpRte(
+        temporalReprojectionSupported,
+        us?.inverseProjection,
+        us?.inverseView,
+      );
+      const attachmentsReady =
+        attachmentTransformValid &&
+        ensureCloudAttachmentResources(
+          device,
+          cache,
+          cache.halfWidth,
+          cache.halfHeight,
+          cache.halfView,
+        );
+      if (attachmentsReady && cache.attachmentUniformBuffer) {
+        const attachmentCurrentCamera = us?.cameraPosition ?? camPos;
+        const attachmentPreviousCamera = us?.previousCameraPosition;
+        // Only the VELOCITY channel needs history. Depth and moments are well
+        // defined on a frame with none (first use, a reset, a teleport), so a
+        // missing previous transform marks velocity invalid rather than
+        // suppressing the whole set.
+        const attachmentReprojectionValid =
+          matrix4IsFinite(us?.previousViewProjectionRelativeToEye) &&
+          cloudCameraPairIsFinite(
+            attachmentCurrentCamera,
+            attachmentPreviousCamera,
+          );
+        const inputs =
+          cache.attachmentUniformInputs as MutableCloudAttachmentUniformInputs;
+        inputs.previousViewProjectionRelativeToEye = attachmentReprojectionValid
+          ? (us?.previousViewProjectionRelativeToEye ?? null)
+          : null;
+        inputs.inverseCurrentViewProjectionRelativeToEye =
+          scratchInverseCurrentViewProjectionRelativeToEye;
+        // The SAME encoded high/low camera split the primary march packed, so
+        // both derive the planet centre from one origin (slots 120-127).
+        inputs.encodedCameraHighX = data[120];
+        inputs.encodedCameraHighY = data[121];
+        inputs.encodedCameraHighZ = data[122];
+        inputs.encodedCameraLowX = data[124];
+        inputs.encodedCameraLowY = data[125];
+        inputs.encodedCameraLowZ = data[126];
+        inputs.cameraGeodeticHeight =
+          frameState.camera?.positionCartographic?.height ?? 0.0;
+        // Both operands are JS numbers (f64); only the per-frame-small result
+        // is down-cast when the packer writes it.
+        inputs.cameraDeltaX = attachmentReprojectionValid
+          ? attachmentCurrentCamera!.x - attachmentPreviousCamera!.x
+          : 0.0;
+        inputs.cameraDeltaY = attachmentReprojectionValid
+          ? attachmentCurrentCamera!.y - attachmentPreviousCamera!.y
+          : 0.0;
+        inputs.cameraDeltaZ = attachmentReprojectionValid
+          ? attachmentCurrentCamera!.z - attachmentPreviousCamera!.z
+          : 0.0;
+        // Slot 145 is the resolved far cap (0 means "no cap"). Dividing the
+        // moment pair by zero would publish NaN, so an uncapped march
+        // normalizes by the planetary fallback instead.
+        inputs.depthNormalizationMeters =
+          data[145] > 0.0
+            ? data[145]
+            : CLOUD_ATTACHMENT_DEFAULT_DEPTH_NORMALIZATION_METERS;
+        inputs.width = cache.halfWidth;
+        inputs.height = cache.halfHeight;
+        inputs.reprojectionValid = attachmentReprojectionValid;
+        inputs.deckBottom = config.cloudLayerBottom ?? 1500.0;
+        inputs.deckTop = config.cloudLayerTop ?? 4000.0;
+        inputs.deckLowBottom = deckBounds[0][0];
+        inputs.deckLowTop = deckBounds[0][1];
+        inputs.deckMidBottom = deckBounds[1][0];
+        inputs.deckMidTop = deckBounds[1][1];
+        inputs.deckHighBottom = deckBounds[2][0];
+        inputs.deckHighTop = deckBounds[2][1];
+        inputs.multiDeck = multiDeckOn;
+        inputs.generation = cache.attachmentGeneration.generation;
+        packCloudAttachmentUniforms(cache.attachmentUniformData, inputs);
+        device.queue.writeBuffer(
+          cache.attachmentUniformBuffer,
+          0,
+          cache.attachmentUniformData,
+        );
+
+        // The label is spelled out rather than routed through
+        // `CLOUD_ATTACHMENT_PASS_LABEL` because C13-02's D1 check reads the
+        // encode sites as SOURCE TEXT and requires them to agree with the
+        // registry in both directions. The constant and this literal are
+        // pinned equal by `cloud-reconstruction-attachments.spec.mjs`.
+        const attachmentPass = encoder.beginRenderPass(
+          timedCloudPass(context, {
+            label: "CloudReconstructionAttachments pass",
+            // CLEAR every target: a texel the full-screen triangle somehow
+            // misses must read as "no cloud, no motion, no variance" rather
+            // than as the previous generation's contents.
+            colorAttachments: cache.attachmentViews.map((view, index) => ({
+              view: view!,
+              clearValue: CLOUD_OWNED_ATTACHMENTS[index].clearValue,
+              loadOp: "clear" as const,
+              storeOp: "store" as const,
+            })),
+          }),
+        );
+        attachmentPass.setPipeline(cache.attachmentPipeline!);
+        attachmentPass.setBindGroup(0, cache.attachmentBindGroup!);
+        attachmentPass.draw(3); // full-screen triangle
+        attachmentPass.end();
+        cache.attachmentRenderedThisFrame = true;
+
+        counters.attachmentWidth = cache.halfWidth;
+        counters.attachmentHeight = cache.halfHeight;
+        counters.attachmentPixels = cache.halfWidth * cache.halfHeight;
+        counters.attachmentCount = cache.attachmentViews.length;
+        counters.attachmentGeneration = cache.attachmentGeneration.generation;
+      }
+    }
+
     // V10 (Batch 433) — TEMPORAL RESOLVE (optional, between raymarch and upscale).
     // Reproject the previous accumulated history through the RTE
     // `previousViewProjectionRelativeToEye`, neighborhood-clamp it to the current
@@ -3002,33 +3570,19 @@ export function executeProceduralClouds(
       const inverseView = us?.inverseView;
       const currentCamera = us?.cameraPosition ?? camPos;
       const previousCamera = us?.previousCameraPosition;
-      let inverseCurrentVpRteValid = false;
-      if (
-        temporalReprojectionSupported &&
+      // The previous transform is checked HERE rather than inside the helper:
+      // the temporal resolve genuinely cannot run without it, while the C13-09
+      // producer can (its velocity channel carries its own validity flag).
+      const inverseCurrentVpRteValid =
         matrix4IsFinite(previousVpRte) &&
-        matrix4IsFinite(inverseProjection) &&
-        matrix4IsFinite(inverseView) &&
-        matrix4HasNonZeroEntry(inverseProjection as Matrix4)
-      ) {
-        // inverse(P * Vrot) = inverse(Vrot) * inverse(P). Reuse the already
-        // computed inverse view/projection and remove the inverse-view
-        // translation instead of generally inverting the VP_RTE matrix. This
-        // is cheaper in the perspective hot path; unsupported
-        // orthographic/morph projections were gated before temporal resources.
-        Matrix4.clone(inverseView as Matrix4, scratchInverseViewRelativeToEye);
-        scratchInverseViewRelativeToEye[12] = 0.0;
-        scratchInverseViewRelativeToEye[13] = 0.0;
-        scratchInverseViewRelativeToEye[14] = 0.0;
-        Matrix4.multiply(
-          scratchInverseViewRelativeToEye,
-          inverseProjection as Matrix4,
-          scratchInverseCurrentViewProjectionRelativeToEye,
+        resolveCloudInverseCurrentVpRte(
+          temporalReprojectionSupported,
+          inverseProjection,
+          inverseView,
         );
-        inverseCurrentVpRteValid = matrix4IsFinite(
-          scratchInverseCurrentViewProjectionRelativeToEye,
-        );
-      }
 
+      // Written out rather than routed through `cloudCameraPairIsFinite` so
+      // TypeScript still narrows both operands for the delta below.
       const transformsValid =
         inverseCurrentVpRteValid &&
         currentCamera !== undefined &&
@@ -3419,6 +3973,16 @@ export function destroyProceduralCloudResources(
     cache.maskPipeline = null;
     cache.maskShaderModule = null;
     cache.maskRenderedThisFrame = false;
+    // C13-09 — release the reconstruction attachments. The targets and the
+    // bind group go through the shared release (which keeps the generation
+    // counter monotonic, so a retired bind group's key can never be reused);
+    // the pipeline, layout and uniform buffer are device-owned and only a
+    // teardown drops them.
+    releaseCloudAttachmentResources(cache);
+    cache.attachmentPipeline = null;
+    cache.attachmentBindGroupLayout = null;
+    cache.attachmentUniformBuffer?.destroy();
+    cache.attachmentUniformBuffer = null;
     cache.initialized = false;
     context._cloudCache = undefined;
   }
