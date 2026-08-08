@@ -1018,7 +1018,13 @@ test("multi-lane state is restored, not left behind", () => {
 });
 
 test("the G2 probe carries a watchdog and closes the browser in finally", () => {
-  assert.match(PROBE, /const HARD_LIMIT_MS = G2 \? 1200000 : 600000;/);
+  // CO-24 added the G3 arm ahead of these two. The G2 and default budgets are
+  // pinned unchanged — the assertion is still that G2 gets 1,200,000 ms and a
+  // default run gets 600,000, it just now has a longer sibling in front of it.
+  assert.match(
+    PROBE,
+    /const HARD_LIMIT_MS = G3 \? 1800000 : G2 \? 1200000 : 600000;/,
+  );
   assert.match(PROBE, /WATCHDOG FIRED/);
   assert.match(PROBE, /if \(watchdog\.unref\)/);
   assert.match(PROBE, /await browser\.close\(\)\.catch\(\(\) => \{\}\);/);

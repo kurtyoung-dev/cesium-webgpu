@@ -170,10 +170,40 @@
 //     met, or the modulation term never moved a pixel, or both backends drew no
 //     lit pixel in a mode). NEVER report such a lane as 0.
 //
+// GATE G3 (--g3) — the "asset upgrade" gate: the star-map cube faces
+// themselves. Five sub-lanes per backend, and — like G2 — it must PASS
+// IDENTICALLY ON BOTH. The faces are backend-neutral bytes, so the asset arms
+// are identical by construction and a disagreement there is a real finding
+// (different variant resolved, or different bytes served), not noise.
+//
+//   asset       — the SERVED cube faces of the ACTIVE variant, fetched from the
+//                 URLs the ENGINE resolved (`SkyBox.createEarthSkyBox(...)`),
+//                 decoded in Node, and measured for §5's criteria (1) angular
+//                 sampling, (3) median chroma + the JPEG SOF chroma-subsampling
+//                 fact, and (4) dust-lane structure. Criterion (4) is a RATIO
+//                 against the bundled t3 faces, which are measured in the SAME
+//                 run rather than read from a stored constant.
+//   split       — DR-01's seam, asserted twice: on the served BYTES (the diffuse
+//                 faces census ~0 resolved sources, the un-blurred reversal
+//                 faces census many — the detector's positive control) and on a
+//                 LIVE cubemap-only frame (so a runtime variant flip cannot hide
+//                 behind innocent bytes).
+//   catalogue   — the supply DR-01 moved the resolved stars onto: the shipped
+//                 `BrightStarCatalog` depth and limiting magnitude, plus a live
+//                 sprites-only frame that must actually resolve a star.
+//   adversarial — the LEGACY t3 faces pushed through the SAME metrics, required
+//                 to FAIL. A gate that cannot reject the asset it was written to
+//                 replace is measuring nothing, so a clean t3 is a gate FAILURE.
+//   motion      — DR-01's reversal triggers under CAMERA MOTION. Certifying only
+//                 for instrument validity and cross-backend agreement; the
+//                 trigger readings themselves are evidence for a maintainer
+//                 ruling, per DR-01's own "decide on evidence, not impression".
+//
 // Usage:
 //   node Tools/visual-regression/probe-celestial-gates.mjs            # G1 (SDR)
 //   node Tools/visual-regression/probe-celestial-gates.mjs --bracket  # C12-02 HDR bracket
 //   node Tools/visual-regression/probe-celestial-gates.mjs --g2       # G2 (PSF + glare)
+//   node Tools/visual-regression/probe-celestial-gates.mjs --g3       # G3 (star-map asset)
 //   PROBE_BASE=http://localhost:8080 node ... (override server)
 
 import { chromium } from "playwright";
@@ -213,6 +243,14 @@ import {
   foldG2Verdict,
   stitchBracketLinear,
 } from "./lib/celestial-g2-gate.mjs";
+import {
+  analyzeFace,
+  buildG3Summary,
+  computeAssetTriggers,
+  evaluateG3Backend,
+  foldG3Verdict,
+  foldVariant,
+} from "./lib/celestial-g3-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
@@ -291,6 +329,45 @@ const G2_MAGNITUDE_MAX_EXPECTATIONS = 120;
 
 const BRACKET = process.argv.includes("--bracket");
 const G2 = process.argv.includes("--g2");
+const G3 = process.argv.includes("--g3");
+
+// G3 MOTION SWEEP — sub-pixel translation of the star field under a camera-only
+// rotation at the PINNED clock. The clock never advances, so the stars' inertial
+// directions are fixed and the ONLY thing changing is where each sprite lands
+// relative to the pixel grid. That is what isolates sampling phase from every
+// other reason a star could change brightness (ephemeris, extinction, day fade).
+//
+// The step is deliberately NOT a whole pixel and not a simple fraction: 0.37 px
+// walks the sub-pixel phase around the unit square without ever repeating inside
+// the sweep, so 24 frames sample 24 distinct phases and the max/min they bracket
+// is a lower bound on the true swing. 24 frames because the analytic model puts
+// the peak's full phase period at 1 px, so ~2.7 periods are covered.
+const G3_MOTION_FRAMES = 24;
+const G3_MOTION_STEP_PX = 0.37;
+// Half-size of the measurement box around a target star's predicted position.
+// The modelled quad half-extent at the default framing is 3.667 px, so 6 px
+// contains the whole sprite with margin while staying far smaller than the
+// nearest-neighbour spacing the target selection enforces.
+const G3_MOTION_BOX_HALF_PX = 6;
+// Faint-target magnitude window. Below `MAG_CUTOFF` (5.5) so the star is drawn
+// at all, and at the faint end because DR-01's trigger is specifically about
+// faint sprites ("sub-pixel sprites are the classic failure").
+const G3_FAINT_VMAG_MIN = 4.5;
+const G3_FAINT_VMAG_MAX = 5.4;
+// A target must have no catalogue neighbour within this angle, so the box
+// measures ONE star. 4x the box's own angular half-size at the default framing.
+const G3_TARGET_ISOLATION_DEG = 0.35;
+// Cube faces, in the order the manifest and the bake list them.
+const G3_FACE_KEYS = ["px", "mx", "py", "my", "pz", "mz"];
+// Source keys on `SkyBox.sources`, paired with the face keys above.
+const G3_SOURCE_KEYS = Object.freeze({
+  px: "positiveX",
+  mx: "negativeX",
+  py: "positiveY",
+  my: "negativeY",
+  pz: "positiveZ",
+  mz: "negativeZ",
+});
 
 // Curated bright stars (J2000 RA/Dec deg, Johnson V) spanning ~3.5 mag around
 // the Sirius field — the M5 cross-match set. Projected in-page at the pinned
@@ -313,7 +390,9 @@ const CATALOG_EXPECTATIONS = [
 // capture pays a wall-clock settle budget plus a discarded warm-up (see
 // SETTLE_BUDGET_MS). The watchdog must outlast the honest worst case or it
 // becomes the thing that fails the gate.
-const HARD_LIMIT_MS = G2 ? 1200000 : 600000;
+// G3 gets more again: it pays two settled captures per backend PLUS a 24-frame
+// motion sweep per backend, and then decodes eighteen 2048-px JPEGs off-browser.
+const HARD_LIMIT_MS = G3 ? 1800000 : G2 ? 1200000 : 600000;
 const watchdog = setTimeout(() => {
   console.error(
     `[probe-celestial-gates] WATCHDOG FIRED (${HARD_LIMIT_MS / 1000}s) — forcing exit`,
@@ -2113,6 +2192,784 @@ async function runG2(browser, git) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// GATE G3 — star-map asset upgrade (§5 criteria 1-4 + DR-01 reversal triggers).
+// ---------------------------------------------------------------------------
+
+// In-page: report the face URLs the ENGINE resolves for every bundled variant,
+// which variant the scene is actually flying, and the shipped catalogue's depth.
+//
+// The URLs come from `SkyBox.createEarthSkyBox(variant).sources` rather than
+// from string surgery on a prefix, so the probe measures the faces the engine
+// would load — if a variant descriptor's `url()` ever changes shape, this
+// follows it instead of silently measuring the old path.
+async function g3ReadEnvironment(page) {
+  return page.evaluate(async () => {
+    const C = await import("/Build/CesiumUnminified/index.js");
+    const mod =
+      await import("/packages/engine/Source/Scene/BrightStarCatalog.js");
+    const cat = mod.default;
+    const scene = window.viewer.scene;
+
+    const variants = {};
+    for (const key of Object.keys(C.SkyBox.Variant)) {
+      const v = C.SkyBox.Variant[key];
+      // Constructed but never updated, so no GPU resource is created; this is a
+      // URL lookup through the engine's own descriptor table.
+      variants[v] = { ...C.SkyBox.createEarthSkyBox(v).sources };
+    }
+
+    let minVmag = Infinity;
+    let maxVmag = -Infinity;
+    for (let i = 0; i < cat.count; i++) {
+      const vmag = cat.data[i * cat.STRIDE + 2];
+      if (vmag < minVmag) {
+        minVmag = vmag;
+      }
+      if (vmag > maxVmag) {
+        maxVmag = vmag;
+      }
+    }
+
+    return {
+      variants,
+      defaultVariant: C.SkyBox.defaultVariant,
+      activeVariant: scene.skyBox ? (scene.skyBox.variant ?? null) : null,
+      activeSources: scene.skyBox ? { ...scene.skyBox.sources } : null,
+      catalogue: {
+        records: cat.count,
+        stride: cat.STRIDE,
+        brightestVmag: minVmag,
+        limitingMagnitude: maxVmag,
+      },
+    };
+  });
+}
+
+// In-page: the moving-camera leg.
+//
+// PINNED CLOCK THROUGHOUT and CAMERA-ONLY motion — the stars' inertial
+// directions never change, so the only thing varying between frames is where
+// each sprite lands on the pixel grid. Every frame renders with the pinned time
+// and reads back in the SAME task (RULE 2), and the A/B frame-cost legs are
+// INTERLEAVED (off, on, off, on, ...) as the campaign's timing doctrine
+// requires — a block of OFF frames followed by a block of ON frames would
+// measure thermal drift as a sprite cost.
+async function g3MotionSweep(page, opts) {
+  return page.evaluate(
+    async ({
+      frames,
+      stepPx,
+      boxHalf,
+      faintMin,
+      faintMax,
+      isolationDeg,
+      cropRect,
+      settleBudgetMs,
+      settleMinFrames,
+      settleYieldMs,
+    }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const mod =
+        await import("/packages/engine/Source/Scene/BrightStarCatalog.js");
+      const cat = mod.default;
+      const viewer = window.viewer;
+      const scene = viewer.scene;
+      const pinnedTime = () => viewer.clock.currentTime;
+
+      // SPRITES ONLY. The trigger is about sprite sampling; the cube map would
+      // add a diffuse pedestal under every measurement box for no benefit.
+      if (scene.skyBox) {
+        scene.skyBox.show = false;
+        if (scene.skyBox.starField) {
+          scene.skyBox.starField.show = true;
+        }
+      }
+      scene.highDynamicRange = false;
+      if (scene.postProcessStages) {
+        scene.postProcessStages.exposure = 1.0;
+      }
+
+      // Catalogue rows -> fixed-frame unit directions at the pinned clock, via
+      // the same TEME -> pseudo-fixed transform the renderer uses.
+      const temeToFixed = C.Transforms.computeTemeToPseudoFixedMatrix(
+        pinnedTime(),
+        new C.Matrix3(),
+      );
+      const dirOf = (ra, dec) => {
+        const r = C.Math.toRadians(ra);
+        const d = C.Math.toRadians(dec);
+        const teme = new C.Cartesian3(
+          Math.cos(d) * Math.cos(r),
+          Math.cos(d) * Math.sin(r),
+          Math.sin(d),
+        );
+        const out = C.Matrix3.multiplyByVector(
+          temeToFixed,
+          teme,
+          new C.Cartesian3(),
+        );
+        return C.Cartesian3.normalize(out, out);
+      };
+
+      const rows = [];
+      for (let i = 0; i < cat.count; i++) {
+        const b = i * cat.STRIDE;
+        rows.push({
+          index: i,
+          ra: cat.data[b],
+          dec: cat.data[b + 1],
+          vmag: cat.data[b + 2],
+          dir: dirOf(cat.data[b], cat.data[b + 1]),
+        });
+      }
+      const brightest = rows.reduce(
+        (a, r) => (r.vmag < a.vmag ? r : a),
+        rows[0],
+      );
+
+      // AIM at the brightest star, then pick the faint target from the stars
+      // that share the frame with it. `setupScene` already placed the camera on
+      // this star for the enclosing lane, but the aim is re-derived here so the
+      // sweep is self-contained and cannot inherit a stale framing.
+      const dist = 5.0e7;
+      const dir0 = C.Cartesian3.clone(brightest.dir, new C.Cartesian3());
+      const eye = C.Cartesian3.multiplyByScalar(
+        dir0,
+        -dist,
+        new C.Cartesian3(),
+      );
+      let up0 = C.Cartesian3.UNIT_Z;
+      if (Math.abs(C.Cartesian3.dot(dir0, up0)) > 0.95) {
+        up0 = C.Cartesian3.UNIT_X;
+      }
+      const right0 = C.Cartesian3.normalize(
+        C.Cartesian3.cross(dir0, up0, new C.Cartesian3()),
+        new C.Cartesian3(),
+      );
+      up0 = C.Cartesian3.normalize(
+        C.Cartesian3.cross(right0, dir0, new C.Cartesian3()),
+        new C.Cartesian3(),
+      );
+
+      const canvas = scene.canvas;
+      const ox = Math.floor((canvas.width - cropRect.width) / 2);
+      const oy = Math.floor((canvas.height - cropRect.height) / 2);
+      const fovX = scene.camera.frustum.fov;
+      const tanHalfX = Math.tan(fovX / 2);
+      const tanHalfY = tanHalfX / (canvas.width / canvas.height);
+      const stepRad = (stepPx * fovX) / canvas.width;
+
+      // FAINT TARGET SELECTION. Inside the magnitude window, inside the crop
+      // with margin, and ISOLATED — no catalogue neighbour within
+      // `isolationDeg`, so the measurement box contains exactly one star.
+      const isolationCos = Math.cos(C.Math.toRadians(isolationDeg));
+      const projectWith = (dir, f, r, u) => {
+        const zc = C.Cartesian3.dot(dir, f);
+        if (zc <= 1e-6) {
+          return null;
+        }
+        const xc = C.Cartesian3.dot(dir, r);
+        const yc = C.Cartesian3.dot(dir, u);
+        const ndcX = xc / zc / tanHalfX;
+        const ndcY = yc / zc / tanHalfY;
+        return {
+          x: (ndcX * 0.5 + 0.5) * canvas.width - ox,
+          y: (0.5 - ndcY * 0.5) * canvas.height - oy,
+        };
+      };
+      const margin = boxHalf + 6 + Math.ceil(frames * stepPx);
+      let faint = null;
+      for (const r of rows) {
+        if (r.vmag < faintMin || r.vmag > faintMax) {
+          continue;
+        }
+        const p = projectWith(r.dir, dir0, right0, up0);
+        if (
+          !p ||
+          p.x < margin ||
+          p.y < margin ||
+          p.x > cropRect.width - margin ||
+          p.y > cropRect.height - margin
+        ) {
+          continue;
+        }
+        let isolated = true;
+        for (const other of rows) {
+          if (other.index === r.index) {
+            continue;
+          }
+          if (C.Cartesian3.dot(other.dir, r.dir) > isolationCos) {
+            isolated = false;
+            break;
+          }
+        }
+        if (isolated) {
+          faint = r;
+          break;
+        }
+      }
+
+      const lumAt = (data, i) =>
+        0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+
+      // Box statistics around a predicted position: the local background is the
+      // mean of the box's own border ring, so a diffuse pedestal (or an
+      // exposure change) subtracts out of both the peak and the sum.
+      const boxStats = (img, cx, cy) => {
+        const x0 = Math.max(0, Math.round(cx) - boxHalf);
+        const x1 = Math.min(img.width - 1, Math.round(cx) + boxHalf);
+        const y0 = Math.max(0, Math.round(cy) - boxHalf);
+        const y1 = Math.min(img.height - 1, Math.round(cy) + boxHalf);
+        let ringSum = 0;
+        let ringCount = 0;
+        let peak = -Infinity;
+        let total = 0;
+        for (let y = y0; y <= y1; y++) {
+          for (let x = x0; x <= x1; x++) {
+            const v = lumAt(img.data, 4 * (y * img.width + x));
+            const onBorder = x === x0 || x === x1 || y === y0 || y === y1;
+            if (onBorder) {
+              ringSum += v;
+              ringCount++;
+            }
+            if (v > peak) {
+              peak = v;
+            }
+            total += v;
+          }
+        }
+        const bg = ringCount > 0 ? ringSum / ringCount : 0;
+        const area = (x1 - x0 + 1) * (y1 - y0 + 1);
+        return {
+          peak: peak - bg,
+          sum: total - bg * area,
+          background: bg,
+        };
+      };
+
+      const grab = () => {
+        const tmp = document.createElement("canvas");
+        tmp.width = canvas.width;
+        tmp.height = canvas.height;
+        const ctx = tmp.getContext("2d");
+        ctx.drawImage(canvas, 0, 0);
+        return ctx.getImageData(ox, oy, cropRect.width, cropRect.height);
+      };
+
+      // Wall-clock readiness budget + a DISCARDED warm-up capture, exactly as
+      // `captureMode` does — the sweep's first frame must not be the one paying
+      // for pipeline compilation.
+      const start = performance.now();
+      let warmFrames = 0;
+      while (
+        performance.now() - start < settleBudgetMs ||
+        warmFrames < settleMinFrames
+      ) {
+        scene.render(pinnedTime());
+        warmFrames++;
+        await new Promise((r) => setTimeout(r, settleYieldMs));
+      }
+      scene.render(pinnedTime());
+      grab();
+
+      const setFrame = (k) => {
+        const q = C.Quaternion.fromAxisAngle(
+          up0,
+          k * stepRad,
+          new C.Quaternion(),
+        );
+        const rot = C.Matrix3.fromQuaternion(q, new C.Matrix3());
+        const dir = C.Cartesian3.normalize(
+          C.Matrix3.multiplyByVector(rot, dir0, new C.Cartesian3()),
+          new C.Cartesian3(),
+        );
+        const up = C.Cartesian3.normalize(
+          C.Matrix3.multiplyByVector(rot, up0, new C.Cartesian3()),
+          new C.Cartesian3(),
+        );
+        scene.camera.setView({
+          destination: eye,
+          orientation: { direction: dir, up },
+        });
+        const right = C.Cartesian3.normalize(
+          C.Cartesian3.cross(dir, up, new C.Cartesian3()),
+          new C.Cartesian3(),
+        );
+        return { dir, up, right };
+      };
+
+      const samples = [];
+      let firstFrame = null;
+      let lastFrame = null;
+      const maxFrames = Math.min(64, Math.max(1, frames));
+      for (let k = 0; k < maxFrames; k++) {
+        const basis = setFrame(k);
+
+        // A/B INTERLEAVED, off then on, inside the same sweep step.
+        if (scene.skyBox && scene.skyBox.starField) {
+          scene.skyBox.starField.show = false;
+        }
+        const t0 = performance.now();
+        scene.render(pinnedTime());
+        const msOff = performance.now() - t0;
+
+        if (scene.skyBox && scene.skyBox.starField) {
+          scene.skyBox.starField.show = true;
+        }
+        const t1 = performance.now();
+        scene.render(pinnedTime());
+        const msOn = performance.now() - t1;
+        // RULE 2 — readback in the SAME task as the measured render.
+        const img = grab();
+
+        if (k === 0) {
+          firstFrame = img;
+        }
+        lastFrame = img;
+
+        const bp = projectWith(brightest.dir, basis.dir, basis.right, basis.up);
+        const fp = faint
+          ? projectWith(faint.dir, basis.dir, basis.right, basis.up)
+          : null;
+        samples.push({
+          k,
+          msOn,
+          msOff,
+          bright: bp ? boxStats(img, bp.x, bp.y) : null,
+          brightXY: bp,
+          faint: fp ? boxStats(img, fp.x, fp.y) : null,
+          faintXY: fp,
+        });
+        await new Promise((r) => setTimeout(r, 0));
+      }
+
+      // POSITIVE CONTROL for the sweep itself: the last frame must differ from
+      // the first. A sweep whose frames are pixel-identical sampled ONE phase.
+      let changedPixels = 0;
+      if (firstFrame && lastFrame) {
+        for (let i = 0; i < firstFrame.data.length; i += 4) {
+          if (
+            firstFrame.data[i] !== lastFrame.data[i] ||
+            firstFrame.data[i + 1] !== lastFrame.data[i + 1] ||
+            firstFrame.data[i + 2] !== lastFrame.data[i + 2]
+          ) {
+            changedPixels++;
+          }
+        }
+      }
+
+      return {
+        samples,
+        changedPixels,
+        warmFrames,
+        stepRad,
+        fovXDeg: C.Math.toDegrees(fovX),
+        canvas: { width: canvas.width, height: canvas.height },
+        brightest: {
+          index: brightest.index,
+          vmag: brightest.vmag,
+          ra: brightest.ra,
+          dec: brightest.dec,
+        },
+        faint: faint
+          ? {
+              index: faint.index,
+              vmag: faint.vmag,
+              ra: faint.ra,
+              dec: faint.dec,
+            }
+          : null,
+        cropWidth: cropRect.width,
+        cropHeight: cropRect.height,
+      };
+    },
+    {
+      frames: opts.frames,
+      stepPx: opts.stepPx,
+      boxHalf: opts.boxHalf,
+      faintMin: opts.faintMin,
+      faintMax: opts.faintMax,
+      isolationDeg: opts.isolationDeg,
+      cropRect: opts.crop,
+      settleBudgetMs: SETTLE_BUDGET_MS,
+      settleMinFrames: SETTLE_MIN_FRAMES,
+      settleYieldMs: SETTLE_YIELD_MS,
+    },
+  );
+}
+
+// Reduce the sweep's per-frame samples to the ratios the motion sub-lane binds.
+//
+// The min is FLOORED AT ONE 8-BIT CODE. A background-subtracted signal below one
+// code is indistinguishable from absent, so dividing by it would report an
+// arbitrary number instead of a swing; flooring makes the ratio a LOWER BOUND on
+// the true swing, which is the conservative direction for a trigger that fires
+// when the ratio is large.
+function g3MotionMetrics(sweep) {
+  const ONE_CODE = 1.0;
+  const series = (pick) =>
+    (sweep.samples ?? []).map(pick).filter((v) => Number.isFinite(v));
+  const swing = (values) => {
+    if (values.length < 2) {
+      return { min: null, max: null, ratio: NaN };
+    }
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    return { min, max, ratio: max / Math.max(ONE_CODE, min) };
+  };
+  const faintPeak = swing(series((s) => s.faint?.peak));
+  const faintSum = swing(series((s) => s.faint?.sum));
+  const brightSum = swing(series((s) => s.bright?.sum));
+  const median = (xs) => {
+    if (xs.length === 0) {
+      return NaN;
+    }
+    const s = xs.slice().sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)];
+  };
+  const msOn = median(series((s) => s.msOn));
+  const msOff = median(series((s) => s.msOff));
+  return {
+    frames: (sweep.samples ?? []).length,
+    changedPixels: sweep.changedPixels ?? 0,
+    faintFound: faintPeak.max !== null && faintPeak.max > ONE_CODE,
+    brightFound: brightSum.max !== null && brightSum.max > ONE_CODE,
+    faintPeakRatio: faintPeak.ratio,
+    faintPeakMin: faintPeak.min,
+    faintPeakMax: faintPeak.max,
+    faintSumRatio: faintSum.ratio,
+    brightSumRatio: brightSum.ratio,
+    // DIAGNOSTIC ONLY — an interleaved A/B wall-clock delta, reported so the
+    // C12-09 "frame cost of a deeper catalogue" question has a number, NOT
+    // bound by any criterion. A wall-clock CPU delta on one machine is not a
+    // GPU cost measurement.
+    spriteFrameCostMsDiagnostic:
+      Number.isFinite(msOn) && Number.isFinite(msOff) ? msOn - msOff : null,
+    medianMsOn: msOn,
+    medianMsOff: msOff,
+    target: sweep.faint ?? null,
+    control: sweep.brightest ?? null,
+    stepRad: sweep.stepRad ?? null,
+    fovXDeg: sweep.fovXDeg ?? null,
+  };
+}
+
+// Fetch + decode the six faces of one variant from the URLs the ENGINE
+// resolved. The bytes are hashed BEFORE decode so the fingerprint covers what
+// the server sent, not what an image library reconstructed.
+// `decode: false` fetches and HASHES without decoding. The second backend needs
+// only the fingerprint — the pixels are the same bytes, and the fingerprint
+// comparison is what proves it — so decoding eighteen 2048-px JPEGs twice would
+// buy nothing.
+async function g3FetchVariant(sharp, sources, { decode }) {
+  const faces = {};
+  const fingerprint = [];
+  for (const faceKey of G3_FACE_KEYS) {
+    const url = sources?.[G3_SOURCE_KEYS[faceKey]];
+    if (typeof url !== "string") {
+      fingerprint.push(`${faceKey}|MISSING`);
+      continue;
+    }
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`G3 asset fetch failed: ${url} -> ${response.status}`);
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    fingerprint.push(`${faceKey}|${url}|${sha256(Buffer.from(bytes))}`);
+    if (!decode) {
+      continue;
+    }
+    const { data, info } = await sharp(Buffer.from(bytes))
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    faces[faceKey] = analyzeFace({
+      data,
+      width: info.width,
+      height: info.height,
+      stride: info.channels,
+      bytes,
+    });
+    faces[faceKey].url = url;
+    faces[faceKey].bytes = bytes.length;
+  }
+  return {
+    variant: decode ? foldVariant(faces) : null,
+    fingerprint: fingerprint.join("\n"),
+  };
+}
+
+// POSITIVE CONTROL for the chroma detector.
+//
+// Median chroma reads 0.000 on every bundled tier, and that is ALSO what a
+// broken chroma metric reads. This pushes a synthetic swatch of KNOWN HSV
+// saturation through the same `analyzeFace` path; if it does not come back, the
+// asset's 0.000 is the instrument and the criterion certifies nothing. The
+// swatch is built here rather than fetched so the control cannot itself be a
+// casualty of whatever broke the assets.
+function g3ChromaControl() {
+  const size = 64;
+  const data = new Uint8ClampedArray(size * size * 4);
+  // Saturation = (max - min) / max = (200 - 100) / 200 = 0.5 exactly.
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = 200;
+    data[i + 1] = 100;
+    data[i + 2] = 100;
+    data[i + 3] = 255;
+  }
+  const record = analyzeFace({ data, width: size, height: size, stride: 4 });
+  return { medianSaturation: record.medianChroma, expected: 0.5 };
+}
+
+const G3_LANE_DEFS = [
+  {
+    key: "split",
+    setup: {
+      aim: "sirius",
+      skyAtmosphereOn: false,
+      cameraHeightM: null,
+      fovXDeg: null,
+    },
+    // Cubemap first, sprites last: the sprites-only frame feeds BOTH the
+    // catalogue arm's live census and the motion lane that follows it on the
+    // same page, so it is the one that must be measured warmest.
+    captures: [
+      { key: "cubemap-only", mode: "cubemap-only", hdr: false },
+      { key: "sprites-only", mode: "sprites-only", hdr: false },
+    ],
+  },
+];
+
+async function runG3Backend(browser, renderer) {
+  return withPage(browser, renderer, async (page) => {
+    const environment = await g3ReadEnvironment(page);
+    const lanes = {};
+    for (const def of G3_LANE_DEFS) {
+      const setup = await setupScene(page, def.setup);
+      const captures = {};
+      for (const cap of def.captures) {
+        captures[cap.key] = await captureMode(page, {
+          mode: cap.mode,
+          crop: setup.crop,
+          hdr: cap.hdr === true,
+        });
+      }
+      lanes[def.key] = { setup, captures };
+    }
+    const sweep = await g3MotionSweep(page, {
+      frames: G3_MOTION_FRAMES,
+      stepPx: G3_MOTION_STEP_PX,
+      boxHalf: G3_MOTION_BOX_HALF_PX,
+      faintMin: G3_FAINT_VMAG_MIN,
+      faintMax: G3_FAINT_VMAG_MAX,
+      isolationDeg: G3_TARGET_ISOLATION_DEG,
+      crop: lanes.split.setup.crop,
+    });
+    return { environment, lanes, sweep };
+  });
+}
+
+async function runG3(browser, git) {
+  let sharp;
+  try {
+    sharp = (await import("sharp")).default;
+  } catch (e) {
+    console.error(
+      "[probe-celestial-gates] G3 needs `sharp` (a declared repo dependency, " +
+        "used by Tools/skybox-bake) to decode the served cube faces off-browser: " +
+        String((e && e.message) || e),
+    );
+    return { fatal: true, gl: null, gpu: null };
+  }
+
+  const gl = await runG3Backend(browser, "webgl");
+  const gpu = await runG3Backend(browser, "webgpu");
+  if (!gl.ok || !gpu.ok) {
+    return { fatal: true, gl, gpu };
+  }
+
+  // The faces are backend-neutral bytes. Fetch + hash per backend (cheap, and
+  // it is what makes the cross-backend arm a real measurement), but DECODE only
+  // once unless the fingerprints disagree.
+  const variantKeys = ["TYCHO_T3", "TYCHO_T5", "TYCHO_T5_DIFFUSE"];
+  const decoded = {};
+  const fingerprints = {};
+  for (const [renderer, run] of [
+    ["webgl", gl],
+    ["webgpu", gpu],
+  ]) {
+    const parts = [];
+    for (const key of variantKeys) {
+      const sources = run.environment.variants[key];
+      const decode = decoded[key] === undefined;
+      const fetched = await g3FetchVariant(sharp, sources, { decode });
+      parts.push(`${key}\n${fetched.fingerprint}`);
+      if (decode) {
+        decoded[key] = fetched.variant;
+      }
+    }
+    fingerprints[renderer] = sha256(parts.join("\n"));
+  }
+
+  const chromaControl = g3ChromaControl();
+  const browserVersion = browser.version();
+  const manifest = {};
+  const backends = {};
+
+  for (const [renderer, run] of [
+    ["webgl", gl],
+    ["webgpu", gpu],
+  ]) {
+    const activeVariant =
+      run.environment.activeVariant ?? run.environment.defaultVariant;
+    const active = decoded[activeVariant] ?? null;
+    const t3 = decoded.TYCHO_T3 ?? null;
+    const unblurred = decoded.TYCHO_T5 ?? null;
+
+    const cubemapImage = toImage(run.lanes.split.captures["cubemap-only"]);
+    const spritesImage = toImage(run.lanes.split.captures["sprites-only"]);
+    const cubemapCensus = m1PointSourceCensus(cubemapImage);
+    const spritesCensus = m1PointSourceCensus(spritesImage);
+    const cubemapExtent = m7LitExtent(cubemapImage);
+    const spritesExtent = m7LitExtent(spritesImage);
+    const motion = g3MotionMetrics(run.sweep);
+
+    const measured = {
+      renderer,
+      asset: {
+        active,
+        t3,
+        unblurred,
+        activeVariant,
+        chromaControl,
+        fingerprint: fingerprints[renderer],
+      },
+      split: {
+        diffuseMaxFaceSources: active ? active.maxFaceSources : NaN,
+        unblurredMinFaceSources: unblurred
+          ? Math.min(
+              ...Object.values(unblurred.faces).map((f) => f.sources ?? 0),
+            )
+          : NaN,
+        liveResolvedSources: cubemapCensus.count,
+        liveLitPixels: cubemapExtent.litPixels,
+      },
+      catalogue: {
+        records: run.environment.catalogue.records,
+        limitingMagnitude: run.environment.catalogue.limitingMagnitude,
+        liveResolvedSources: spritesCensus.count,
+        liveLitPixels: spritesExtent.litPixels,
+      },
+      adversarial: { t3 },
+      motion,
+      triggers: computeAssetTriggers({
+        active,
+        unblurred,
+        t3,
+        catalogueRecords: run.environment.catalogue.records,
+      }),
+    };
+    backends[renderer] = evaluateG3Backend(measured);
+    backends[renderer].measured = {
+      liveCubemap: {
+        resolvedSources: cubemapCensus.count,
+        litPixels: cubemapExtent.litPixels,
+        peakLuminance: cubemapExtent.peakLuminance,
+      },
+      liveSprites: {
+        resolvedSources: spritesCensus.count,
+        litPixels: spritesExtent.litPixels,
+        peakLuminance: spritesExtent.peakLuminance,
+      },
+      catalogue: run.environment.catalogue,
+      motion,
+      variants: Object.fromEntries(
+        variantKeys.map((k) => [
+          k,
+          decoded[k]
+            ? {
+                faceSize: decoded[k].faceSize,
+                arcminPerPixel: decoded[k].arcminPerPixel,
+                totalSources: decoded[k].totalSources,
+                sourcesPerSteradian: decoded[k].sourcesPerSteradian,
+                medianDustLaneIQR: decoded[k].medianDustLaneIQR,
+                medianGranularityIQR: decoded[k].medianGranularityIQR,
+                medianBandStdDev: decoded[k].medianBandStdDev,
+                medianChroma: decoded[k].medianChroma,
+                subsampling: decoded[k].subsampling,
+              }
+            : null,
+        ]),
+      ),
+    };
+
+    for (const [capKey, cap] of Object.entries(run.lanes.split.captures)) {
+      const img = toImage(cap);
+      const sceneName = `celestial-g3-split-${capKey}`;
+      const pngName = `${sceneName}-${renderer}.png`;
+      const { png } = writeCapturePng(img, pngName);
+      const sceneDescriptor = {
+        name: sceneName,
+        camera: {
+          aim: "sirius",
+          fovXDeg: run.lanes.split.setup.appliedFovXDeg,
+          distance: 5.0e7,
+          pinnedIso: PINNED_ISO,
+        },
+        setup: "celestial-gate-g3",
+        setupParams: {
+          capture: capKey,
+          activeVariant,
+          settleBudgetMs: SETTLE_BUDGET_MS,
+          warmupDiscarded: true,
+        },
+      };
+      manifest[`${sceneName}:${renderer}`] = buildManifestEntry({
+        scene: sceneName,
+        image: pngName,
+        pngBytes: png,
+        renderer,
+        env: {
+          browserClass: "msedge",
+          browserVersion,
+          adapterClass: normalizeHardwareClass([
+            run.lanes.split.setup.adapter.vendor,
+            run.lanes.split.setup.adapter.architecture,
+            run.lanes.split.setup.adapter.device,
+            run.lanes.split.setup.adapter.description,
+          ]),
+        },
+        git,
+        sceneIdentity: createSceneIdentity(sceneDescriptor, {
+          baseUrl: BASE,
+          settleFrames: SETTLE_MIN_FRAMES,
+          viewport: VIEWPORT,
+        }),
+        extra: {
+          capture: capKey,
+          activeVariant,
+          assetFingerprint: fingerprints[renderer],
+        },
+      });
+    }
+  }
+
+  const folded = foldG3Verdict(backends);
+  return {
+    fatal: false,
+    gate: "G3",
+    ...folded,
+    pass: folded.exitCode === EXIT_CODE.PASS,
+    backends,
+    manifest,
+    consoleErrors: {
+      webgl: gl.consoleErrors,
+      webgpu: gpu.consoleErrors,
+    },
+  };
+}
+
 (async () => {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const git = getGit();
@@ -2120,11 +2977,13 @@ async function runG2(browser, git) {
   let result;
   let exitCode;
   try {
-    result = G2
-      ? await runG2(browser, git)
-      : BRACKET
-        ? await runBracket(browser, git)
-        : await runG1(browser, git);
+    result = G3
+      ? await runG3(browser, git)
+      : G2
+        ? await runG2(browser, git)
+        : BRACKET
+          ? await runBracket(browser, git)
+          : await runG1(browser, git);
   } finally {
     await browser.close().catch(() => {});
   }
@@ -2145,15 +3004,50 @@ async function runG2(browser, git) {
     process.exit(EXIT_CODE.ERROR);
   }
 
-  const outName = G2
-    ? "celestial-g2.json"
-    : BRACKET
-      ? "celestial-bracket.json"
-      : "celestial-g1.json";
+  const outName = G3
+    ? "celestial-g3.json"
+    : G2
+      ? "celestial-g2.json"
+      : BRACKET
+        ? "celestial-bracket.json"
+        : "celestial-g1.json";
   const outPath = path.join(OUT_DIR, outName);
   fs.writeFileSync(outPath, JSON.stringify(result, null, 2));
 
-  if (G2) {
+  if (G3) {
+    console.log(JSON.stringify(buildG3Summary(result), null, 2));
+    // The reversal-trigger block is printed SEPARATELY and labelled, because it
+    // is evidence for a maintainer ruling rather than part of the verdict. A
+    // reader who skims the criteria list must not mistake a fired trigger for a
+    // gate failure, or an unfired one for a gate pass.
+    console.log("\nDR-01 REVERSAL TRIGGERS (measured; NON-CERTIFYING):");
+    for (const [renderer, b] of Object.entries(result.backends ?? {})) {
+      for (const [key, t] of Object.entries(b?.triggers ?? {})) {
+        console.log(
+          `  ${renderer}:${key} measured=${t.measured} bound=${t.bound} ` +
+            `[${t.boundKind}] triggered=${t.triggered}`,
+        );
+      }
+    }
+    // REPORTED, not gated — same posture as G1/G2.
+    for (const [renderer, errs] of Object.entries(result.consoleErrors ?? {})) {
+      if (errs && errs.length > 0) {
+        console.log(`console errors (${renderer}): ${errs.length}`);
+        errs.slice(0, 6).forEach((e) => console.log(`  ERR: ${e}`));
+      }
+    }
+    console.log(`\n[full report: ${outPath}]`);
+    exitCode = result.exitCode;
+    const verdictLine = {
+      [EXIT_CODE.PASS]:
+        "G3 PASS — the shipped star-map asset certifies on every ratified criterion, IDENTICALLY on both backends",
+      [EXIT_CODE.FAIL]:
+        "G3 FAIL — see failures[] above; each entry names the backend and the predicate. Bars marked RATIFIED are NOT to be moved to clear a red: they are §5's own numbers",
+      [EXIT_CODE.STRUCTURAL]:
+        "G3 STRUCTURAL — a sub-lane ran but could not see its subject; this is NOT a pass and NOT a defect (see structural[] above)",
+    };
+    console.log(verdictLine[exitCode] ?? `G3 exit ${exitCode}`);
+  } else if (G2) {
     console.log(JSON.stringify(buildG2Summary(result), null, 2));
     // REPORTED, not gated — same posture as G1. A console error during a gate
     // run is worth reading even when every criterion passed, and a gate that

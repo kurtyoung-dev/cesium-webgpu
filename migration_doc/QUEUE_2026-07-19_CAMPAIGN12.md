@@ -458,6 +458,153 @@ only — zero engine files touched.** Read this before any G1/G2 claim below.
 
 ---
 
+### 2026-08-07 CO-24 gate-lane overlay (G3 lane construction)
+
+Batch group **CO-24** of `CLOSEOUT_PLAN_2026-08-07.md` Lane B, following the CO-3
+house pattern. **Instruments only — zero engine files touched.** Read this before
+any G3 claim.
+
+- **G3 LANE EXISTS** (`node Tools/visual-regression/probe-celestial-gates.mjs --g3`),
+  five sub-lanes per backend, and it must PASS IDENTICALLY ON BOTH. New files:
+  `lib/celestial-g3-gate.mjs` (pure metrics + verdict) and
+  `celestial-g3-gate.spec.mjs` (59 tests). The four §5 criteria are bound as:
+  - **(1) angular sampling** → `asset_arcminPerPixel_le_2_0` +
+    `asset_faceSize_ge_2700`, measured on the SERVED faces of the variant the
+    ENGINE resolved (`SkyBox.createEarthSkyBox(v).sources`, fetched over HTTP and
+    decoded off-browser), plus a supplementary `asset_angularSampling_beats_t3`
+    — an "asset UPGRADE" gate must at minimum beat the asset it replaces, and
+    that predicate is what the t3 adversarial arm turns on.
+  - **(2) sources/steradian ≥10× t3** → **SUPERSEDED AS CERTIFYING BY DR-01 and
+    re-pointed**, exactly as Batch 848 re-pointed `probe-stars-catalog.mjs` and
+    CO-3 re-pointed G1 Lane A. The cube map carries no resolved sources BY
+    RULING, so a cube-map density bar is unmeasurable on the shipped asset. It
+    becomes `split_diffuseFaces_resolvedSources_le_2` +
+    `split_unblurredFaces_resolvedSources_ge_bound` (the detector's positive
+    control) + `split_liveCubemapOnly_resolvedSources_le_2` +
+    `catalogue_records_ge_shipped` / `catalogue_limitingMagnitude_ge_shipped` /
+    `catalogue_liveResolvedSources_present`. **The literal ratio is still
+    computed every run** and reported as reversal trigger `spriteDensity`.
+  - **(3) median chroma ≥ 0.20** → `format_medianChroma_ge_0_20` (re-pointed from
+    "HSV saturation at the M1 detections", an empty set on a diffuse face, onto
+    the band pixels — the top decile by luminance) **plus
+    `format_chromaSubsampling_is_444`, read out of the served JPEG's own SOF
+    marker.** The header is the fact; the pixel level is the inference. No decode
+    is needed for the header arm, so `celestial-g3-gate.spec.mjs` asserts it
+    against all 18 REAL bundled files under `node --test`.
+  - **(4) dust-lane structure ≥3× current** → `fidelity_dustLaneIQR_ratio_ge_3`,
+    with the t3 baseline **measured in the same run** rather than read from a
+    stored constant, plus `fidelity_bandStructure_retained` at the SHIPPED
+    `DR01_LIMITS.diffuseMinBandRatio` (0.60).
+- ⚠ **PRE-REGISTERED RED — AND THE RED IS THE ASSET, NOT THE INSTRUMENT.**
+  Derived offline from the bundled bytes (18 JPEGs decoded, metrics run by the
+  shipped lib; recorded as `BUNDLED_ASSET_DERIVATION`):
+
+  | measurement | t3 (legacy) | t5 (un-blurred) | **t5-diffuse (SHIPPED)** | bar |
+  |---|---|---|---|---|
+  | face size / arcmin per px | 1024 / **5.273** | 2048 / **2.637** | 2048 / **2.637** | ≥2700 / ≤2.0 |
+  | resolved sources (sky) | 16,474 | 43,673 | **0** (by ruling) | — |
+  | sources per steradian | 1,311 | 3,475 | **0** | ≥10× t3 |
+  | dust-lane IQR (σ 0.703°) | 2.996 | 1.940 | **1.753** | ≥3× t3 |
+  | granularity IQR | 5.411 | 3.505 | **0.4215** | — |
+  | band std-dev | 2.409 | 1.603 | **1.488** | ≥0.60× t5 |
+  | median chroma | 0.000 | 0.000 | **0.000** | ≥0.20 |
+  | chroma subsampling | **4:2:0** | 4:4:4 | **4:4:4** | 4:4:4 |
+
+  **Three of the four ratified criteria are missed by the UN-BLURRED t5 as
+  well**, so (1), (3) and (4) were never reachable with the SVS product Q1
+  selected at the size C12-10 encoded — this is not a consequence of DR-01, and
+  reversing DR-01 would not turn any of them green. Specifically: the encode
+  chose **2048/face** where the criterion asks for **≥2700** (`skybox-manifest.json`
+  records a 4096 master lanczos3-downsampled to 2048 — a 4096 encode clears both
+  angular arms, and the spec pins that so "the bar is missed" cannot be misread
+  as "the bar is impossible"); the SVS render is **near-neutral in 8 bits** at
+  every tier, including at its own star cores (median saturation 0.048 on t5's
+  censused sources), so the 0.20 chroma level has no candidate anywhere in the
+  product family; and the t5 bake's diffuse swing is **lower** than t3's in
+  stored 8-bit (0.648×), so the "≥3× current" ratio is inverted rather than
+  short. The scale-invariant form (IQR/median) reads 1.21× — still not 3×.
+  **The research text's own caveat — "the σ and 3× need one calibration pass
+  against the chosen asset" — is hereby discharged, and the answer is that the
+  bar is missed.** Bars marked RATIFIED are NOT moved to clear this; the
+  maintainer decision (re-bake at 4096, re-derive the two constants against the
+  chosen asset, or accept G3 as unreachable-as-written) is filed, not taken.
+- **THE DISCRIMINATOR IS PROVEN, NOT ASSUMED.** `adversarial` is a real sub-lane,
+  not only a spec fixture: the probe pushes the LEGACY t3 faces through the
+  identical metrics every run and requires them to FAIL on format (4:2:0),
+  angular sampling and the DR-01 seam (t3's faces carry 1,097-4,801 resolved
+  sources per face). A t3 that came back clean is a gate FAILURE, because the
+  gate would then be unable to tell an upgrade from the thing it replaced. The
+  spec runs the fabricated clean-t3 mutant to prove that arm has teeth.
+- **DR-01 REVERSAL TRIGGERS ARE MEASURED, NOT RULED ON** — printed in their own
+  labelled block and explicitly NON-CERTIFYING, because DR-01 is a ratified
+  decision whose own instruction is to "decide on evidence, not impression":
+  - `smearedMilkyWay` — band-structure retention diffuse-vs-un-blurred, measured
+    **0.928** against the shipped 0.60 bound (**NOT triggered**); grain retention
+    0.120, i.e. the low-pass removed the granularity it was supposed to remove
+    and kept the degree-scale structure it was supposed to keep.
+  - `spriteDensity` — delivered **228/sr** (2,868 catalogue rows over 4π) against
+    t3's measured **1,311/sr** = **0.174×**, against the ratified ≥10×
+    (**TRIGGERED**). This is DR-01 reversal trigger #2 and it is also what
+    criterion (2) becomes once the cube map is out of the resolved-star business.
+  - `aliasTwinkle` — a **moving-camera** leg (motion-is-mandatory charter):
+    24 frames, camera-only rotation at 0.37 px/frame under the PINNED clock, so
+    the only thing changing is sub-pixel sampling phase. **Analytic prediction
+    from the shipped PSF at the lane's framing** (`STAR_PSF_SIGMA` 0.12 × quad
+    half-extent 3.667 px = core σ **0.440 px**): a faint star's sampled PEAK
+    swings **3.77×** (1.44 mag) while its box SUM swings only 1.226×, and the
+    brightest star (quad scale 2.909, core σ 1.28 px) swings just 1.18×. So the
+    trigger is predicted **MET for faint sprites** — exactly the failure DR-01
+    named ("sub-pixel sprites are the classic failure"). The certifying control
+    is **peak-versus-sum on the SAME star**: resampling moves energy between
+    pixels without creating it, so a sweep whose peak and sum swing together is
+    modulating flux and says nothing about aliasing.
+  - Cross-backend: the trigger STATES must agree (`StarField.wgsl` and
+    `StarFieldFS.glsl` are character-identical), and so must the asset
+    FINGERPRINT (sha256 over the resolved URLs + served bytes, taken per
+    backend). A backend-dependent twinkle is a parity defect regardless of how
+    DR-01 is eventually ruled.
+- **Frame cost** is captured as an INTERLEAVED A/B (sprites off/on inside each
+  sweep step) and reported as **DIAGNOSTIC ONLY**, unbound — a wall-clock CPU
+  delta on one machine is not a GPU cost measurement. It exists so `C12-09`'s
+  parked magnitude-6.0 deepen has a number to argue from.
+- **Gates at authoring:** new `celestial-g3-gate.spec.mjs` **59/59** (synthetic
+  ground truth for both structure metrics + their orthogonality, the REAL 18-file
+  header assertion, the t3 adversarial in both directions, a pixel-fixed-sigma
+  mutant, a clean-t3 mutant, a flattened-band mutant, a peak-equals-sum mutant,
+  and a MUTATION-FOLD that deletes the cross-backend arms from a copy of the
+  module and requires the defect it catches to come back); celestial family
+  **254/254** including `probe-fleet-contract.spec.mjs` **32/32** with **no
+  allowlist entry added**. Prettier + per-file eslint clean. No engine file
+  touched. One instrument edit outside the new files: `celestial-g2-gate.spec.mjs`
+  pinned `HARD_LIMIT_MS` by exact text, so it now pins the same expression with
+  the G3 arm in front — the G2 (1,200,000 ms) and default (600,000 ms) budgets
+  are unchanged.
+- **Thresholds by kind.** RATIFIED (unmoved, §5's own): 2.0 arcmin/px, 2700
+  px/face, 0.20 chroma, 3× dust-lane ratio, 10× source density. SHIPPED (reused,
+  nothing invented): `DR01_LIMITS.diffuseMinBandRatio` 0.60,
+  `DR01_LIMITS.unblurredMinPointSources` 200, `DR01_LIVE_MAX_RESOLVED_SOURCES` 2,
+  catalogue 2,868 records / vmag 5.5, 4:4:4. DERIVED: `DUST_LANE_SIGMA_DEG`
+  0.703125 (the research text's 16 px expressed as an ANGLE so both tiers get the
+  same kernel — a pixel-fixed σ would low-pass t3 twice as hard and make the
+  ratio measure the kernel), `DUST_LANE_MARGIN_FRACTION` 0.10,
+  `CHROMA_BAND_PERCENTILE` 0.90, `MOTION_MIN_CHANGED_PIXELS` exactly 0-barred.
+  ⚠ **FIRST-PASS DERIVED, owed a re-derivation from the first Edge run:**
+  `TWINKLE_TRIGGER_PEAK_RATIO` 1.20 (0.2 mag by Pogson — a perceptual anchor, not
+  a fit; the analytic model omits the LDR clamp, the premultiplied additive blend
+  and any MSAA the real pipeline applies).
+- **OWED — Edge acceptance, none of it has executed:**
+  `probe-celestial-gates.mjs --g3` (first G3 run ever). Expected exit **1
+  (FAIL)** with `asset_arcminPerPixel_le_2_0`, `asset_faceSize_ge_2700`,
+  `format_medianChroma_ge_0_20` and `fidelity_dustLaneIQR_ratio_ge_3` red on BOTH
+  backends and every other predicate green; `spriteDensity` and `aliasTwinkle`
+  triggered, `smearedMilkyWay` not. **Anything else is news** — in particular a
+  STRUCTURAL exit means a control did not come back (a black cubemap-only frame,
+  a chroma detector that cannot see a known swatch, a sweep that never moved, or
+  no faint target in frame) and is NOT a product verdict. G3 needs `sharp`, a
+  declared repo dependency, to decode the served faces off-browser.
+
+---
+
 ## 3. Split — C11 tail vs C12
 
 **These belong in C11's W9 tail, not here.** One-line defaults and comment corrections with an existing P1 home; they should not wait for a new campaign. **⚠ 2026-07-23: that home does not exist — no `C11-176b`/`C11-176c` rows were ever appended to the C11 queue, and C11 is now PAUSED, so as filed these WILL wait indefinitely, defeating the rationale. Decision at C12 launch (LD-2): pull them in as C12 W1 riders, IDs retained (recommended — `C11-176b` is open in code at HEAD (`Moon.wgsl:345-346`), gates `C12-21`/`C12-22` per the research dep table (`CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md:353-354`), and edits the same `Moon.wgsl` phase region W5 touches, so landing it BEFORE `C12-20..23` re-baselines the Batch-517 crescent probe once, not twice; Batch 730 already discharged the `LICENSE.md:1042` dead-URL bullet of `C11-176c`) — or explicitly accept they sleep until C11 resumes.**
@@ -714,8 +861,9 @@ unchanged).
 | ID | Item | Effort | Deps |
 |---|---|---|---|
 | `C12-10` | **✅ COMPLETE / LANDED Batches 742/744 — reproducible T5 bake and installed reversal artifact.** The hash-pinned 16K SVS source pipeline performs gamma-1.8→sRGB correction, 4096 reprojection, 2048 downsample, and wrapped-equirect Gaussian diffuse generation. Six 2048 unblurred JPEG faces (4.355 MB total) are bundled and T5 is the default; 4096 and diffuse outputs remain reproducible from `Tools/skybox-bake/bake-tycho-t5.mjs`. Installing unblurred faces before the deeper catalog was deliberate reversal sequencing, not C12-11 completion. | L | — |
-| `C12-11` | **✅ IMPLEMENTED 2026-08-06 — DR-01 seam LANDED; Edge acceptance OWED (do not self-promote).** The default cube map is now `SkyBox.Variant.TYCHO_T5_DIFFUSE` (six new 2048 q90 4:4:4 faces, **0.36 MB total**), leaving the 2,868-record sprite catalog as the sole source of resolved stars on both backends. Faces were regenerated from the hash-pinned 16K SVS source (re-downloaded; SHA-256 verified) — **not** by blurring the six shipped JPEGs. Reproducibility is proven: the same run's un-blurred faces came out **byte-identical (SHA-256) to the six already in the tree**, so the diffuse set is a genuine artifact of the documented pipeline. `TYCHO_T5` (un-blurred) and `TYCHO_T3` stay bundled; the un-blurred bytes are untouched. ⚠ **The bake's diffuse path was doubly broken and had never been consumed** — (1) `.blur()` was chained onto a `sharp.composite()` pipeline, and sharp applies `composite` LAST, so the blur hit an empty base and the un-blurred strips were pasted over it: a total no-op; (2) `composite()` returns RGBA, which the caller read with a 3-byte stride, making the map ~29× too bright. Both fixed (explicit `Buffer.copy` wrap-padding + channel/length sentinels). **A mean is invariant under blur and could not see either defect** — only a peak/point metric can. Measured seam (`skybox-manifest.json`, SHA-bound to the shipped bytes): diffuse **points = 0 on all six faces** (peak lum 8–28 vs 251–255 un-blurred) while retaining **83–95%** of each face's own band structure. Gates: new `skybox-diffuse-seam.spec.mjs` 24/24 (SYNTHETIC ground-truth + 3 MUTATION tests), package tsc non-TS2307 = 0, root tsc 0, prettier/eslint clean. `probe-stars-catalog` check (A) is now a REAL gate (point census, not a brightness count) plus a new check (G) asserting the cubemap alone yields no resolved stars. **OWED:** the Edge run of `probe-stars-catalog.mjs` (A/G/B/C/D/E/F), G3 diffuse/reversal visual review, and the moving-camera alias/frame-cost lane. See `C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md`. | M | `C12-09` ✅, `C12-10` ✅ |
 | `C12-12` | **VRAM/streaming policy** — 2048/face default, 4096 opt-in, KTX2 compressed (4096/face RGBA8 uncompressed ≈ 402 MB). ✅ **POLICY HALF IMPLEMENTED 2026-08-07 (Batch group CO-22); KTX2 HALF STAYS TOOLING-BLOCKED; 4096 TIER IS NOT BAKED.** New leaf module `Scene/SkyBoxResolutionPolicy.ts` owns the tier table, the pure `resolveSkyBoxResolution()` and the VRAM model; `SkyBox.js` gains `SkyBox.Resolution` + `SkyBox.defaultResolution` (following the existing `SkyBox.Variant` / `SkyBox.defaultVariant` shape) and a second `createEarthSkyBox(variant, options)` argument (`{ resolution, maximumCubeMapSize }`), plus `skyBox.resolution` / `faceSize` / `estimatedVramBytes` accessors. Backend-agnostic by construction — the policy picks URLs, which both loaders consume identically; no shader, define bit or renderer change. ⚠ **The row's premise needed correcting in two places.** (1) **"2048/face default" is not what every variant ships**: `TYCHO_T3` is bundled at **1024**/face (upstream's faces), only `TYCHO_T5` and `TYCHO_T5_DIFFUSE` are 2048. The policy therefore serves the DEFAULT request (2048) as a documented step-down on `T3` rather than pretending a 2048 t3 exists. (2) **No 4096 face exists anywhere in the tree** — `Tools/skybox-bake/` reprojects to a 4096 master and lanczos3-downsamples to 2048 (`skybox-manifest.json`: `encode.masterSize = 4096`, `encode.faceSize = 2048`), so the opt-in tier is *reproducible but not bundled*. What landed is the **seam**: an explicit `SIZE_4096` request resolves DOWN to what is on disk and reports `fallback: true` + reason `tier-not-bundled` — it never fabricates a URL that would 404 the sky — and installing the tier later is a data-only change (add a `"4096"` row with `prefixSuffix: "_4096"` and the six `<prefix>_4096_<face>.jpg` files). Filed as `C12-12-SKYBOX-4096-TIER-NOT-BAKED`. **VRAM numbers are re-derived from the loaders, not from this row:** both backends upload the faces as `rgba8unorm` with **ONE mip level** (WebGPU `WebGPUCubeMapPanoramaRenderer.js` `createTexture` has no `mipLevelCount`; WebGL `loadCubeMap.js` uses the `CubeMap` constructor defaults and never calls `generateMipmap()`), so the cost is exactly `6 × faceSize² × 4` — **1024 → 25,165,824 B (24 MiB)**, **2048 → 100,663,296 B (96 MiB)**, **4096 → 402,653,184 B (384 MiB / 403 MB decimal**, which is the row's "≈ 402 MB"**)**. The JPEG's on-disk size does not enter into it. **KTX2 remains out of scope and blocked** — no KTX2/Basis encoder exists in this repo or on the machine (`C12-12-KTX2-SKYBOX-NOT-BUNDLED`, `MOON-ALBEDO-KTX2`), and neither consumer path transcodes KTX2 today; the spec pins the absence so the `C12-13` LICENSE clause cannot silently go stale. **Gate:** `Tools/visual-regression/skybox-resolution-policy.spec.mjs` — 27 assertions, browser-free: the tier table is checked against `Assets/Textures/SkyBox/` **in both directions** (every promised face exists; all 18 faces on disk are accounted for, so an unregistered bake fails), the 4096 seam is proven to work via an injected table while the tree is proven to contain no `_4096_` face, the VRAM constants are re-derived AND the two loaders are re-read to prove the single-mip `rgba8unorm` premise still holds, and no compressed-texture face is bundled. **OWED:** Edge acceptance that the default sky still renders identically (the URLs are byte-identical by construction and the spec pins the filename shape, but no pixel run has been made). | S | `C12-10` ✅ |
+| `C12-11` | **✅ IMPLEMENTED 2026-08-06 — DR-01 seam LANDED; Edge acceptance OWED (do not self-promote).** The default cube map is now `SkyBox.Variant.TYCHO_T5_DIFFUSE` (six new 2048 q90 4:4:4 faces, **0.36 MB total**), leaving the 2,868-record sprite catalog as the sole source of resolved stars on both backends. Faces were regenerated from the hash-pinned 16K SVS source (re-downloaded; SHA-256 verified) — **not** by blurring the six shipped JPEGs. Reproducibility is proven: the same run's un-blurred faces came out **byte-identical (SHA-256) to the six already in the tree**, so the diffuse set is a genuine artifact of the documented pipeline. `TYCHO_T5` (un-blurred) and `TYCHO_T3` stay bundled; the un-blurred bytes are untouched. ⚠ **The bake's diffuse path was doubly broken and had never been consumed** — (1) `.blur()` was chained onto a `sharp.composite()` pipeline, and sharp applies `composite` LAST, so the blur hit an empty base and the un-blurred strips were pasted over it: a total no-op; (2) `composite()` returns RGBA, which the caller read with a 3-byte stride, making the map ~29× too bright. Both fixed (explicit `Buffer.copy` wrap-padding + channel/length sentinels). **A mean is invariant under blur and could not see either defect** — only a peak/point metric can. Measured seam (`skybox-manifest.json`, SHA-bound to the shipped bytes): diffuse **points = 0 on all six faces** (peak lum 8–28 vs 251–255 un-blurred) while retaining **83–95%** of each face's own band structure. Gates: new `skybox-diffuse-seam.spec.mjs` 24/24 (SYNTHETIC ground-truth + 3 MUTATION tests), package tsc non-TS2307 = 0, root tsc 0, prettier/eslint clean. `probe-stars-catalog` check (A) is now a REAL gate (point census, not a brightness count) plus a new check (G) asserting the cubemap alone yields no resolved stars. **OWED:** the Edge run of `probe-stars-catalog.mjs` (A/G/B/C/D/E/F), G3 diffuse/reversal visual review, and the moving-camera alias/frame-cost lane. See `C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md`. ✅ **TWO OF THOSE THREE OWED ITEMS NOW HAVE A MECHANICAL INSTRUMENT (CO-24, 2026-08-07) — `probe-celestial-gates.mjs --g3`; the Edge run is still owed, and the visual review is narrowed rather than discharged.** What the lane MEASURES so it need not be eyeballed: (a) **the "diffuse/reversal visual review"** — band-structure retention diffuse-vs-un-blurred (offline: **0.928** against the shipped 0.60 bound) and granularity retention (**0.120**, i.e. the low-pass removed the grain and kept the degree-scale structure), reported as DR-01 reversal trigger `smearedMilkyWay` — **NOT triggered**; and the seam re-asserted on a LIVE cubemap-only frame with a lit-pixel positive control, so a runtime variant flip cannot hide behind innocent bytes. (b) **the "moving-camera alias/frame-cost lane"** — a 24-frame camera-only sweep at 0.37 px/frame under the pinned clock, measuring a faint sprite's box PEAK against its box SUM (reversal trigger `aliasTwinkle`, bar 0.2 mag; **analytically predicted TRIGGERED at 3.77× / 1.44 mag** from the shipped `STAR_PSF_SIGMA` at the lane's framing, with the brightest star at only 1.18× — the sub-pixel failure DR-01 named), plus an INTERLEAVED A/B sprites-on/off frame-cost delta reported as **DIAGNOSTIC ONLY**. What is **NOT** discharged: the trigger readings are deliberately NON-CERTIFYING — DR-01 is a ratified decision and G3 measures its reversal conditions rather than ruling on them — and no G3 run has executed on Edge, so every number above is offline-derived or analytic. The `probe-stars-catalog.mjs` Edge run remains owed in full and is not covered by this lane. | M | `C12-09` ✅, `C12-10` ✅ |
+| `C12-12` | **VRAM/streaming policy** — 2048/face default, 4096 opt-in, KTX2 compressed (4096/face RGBA8 uncompressed ≈ 402 MB). | S | `C12-10` |
 | `C12-13` | **`LICENSE.md` refresh** — ✅ **LANDED Batch 865 (`193393790c`) — EDGE ACCEPTANCE OWED.** *(Wording stamped 2026-08-07, close-out docs reconciliation. This cell read "IMPLEMENTATION DONE (worker, 2026-08-06) — pending orchestrator landing" — text written by the very commit that landed it, which is the stale-wording class the `C11-176b` refutation in this document was filed to kill. `193393790c` carries `Scene/SolarGlareAppearance.js`, `Scene/SolarDiscModel.js`, `Scene/SkyBox.js`, `Scene/StarCubeMapResource.js`, `Scene/CubeMapPanorama.js`, both star renderers, `Shaders/SkyBoxFS.glsl` and `LICENSE.md` on `main`. See the "2026-08-06 appearance-tail overlay" stale-wording correction near the top of this file — **in this document "pending orchestrator landing" means EDGE ACCEPTANCE OWED, not code unlanded.**)* ❌ **THE RECORDED RESIDUAL WAS ALREADY TWO-THIRDS DISCHARGED, AND ITS LAST THIRD IS VACUOUS — verified against `LICENSE.md` at HEAD and against the 18 files actually on disk.** (a) "extend the **Files** line with the baked t5 faces" — ALREADY DONE: the line covered `tycho2t5_80_*` and `tycho2t5_80_diffuse_*` before this batch. (b) "a t5 variant description sentence" — ALREADY DONE, including the diffuse paragraph. (c) "record the KTX2 bake derivation chain" — **VACUOUS: no KTX2 or Basis asset exists anywhere in the tree and `Tools/skybox-bake/` has no KTX2 path, because `C12-12` has not landed.** What this batch actually adds is the real residual the row did not anticipate: a per-variant **Files table** with the measured face resolution, encode and byte cost (t3 **1024²**, JPEG **4:2:0**, 867,538 B — inherited from upstream; t5 and t5-diffuse **2048²**, JPEG q90 **4:4:4** mozjpeg, 4,566,954 B and 379,927 B; **total 5,814,419 B**, verified against disk by the spec); the full ordered derivation chain for the baked faces (pinned source SHA-256 + byte count → SMPTE gamma-1.8→linear→sRGB 256→256 LUT → longitude-wrapped bilinear reprojection to six GL cube faces at 4096 → lanczos3 downsample to 2048 → JPEG q90 4:4:4 mozjpeg, source TIFF not bundled); an explicit statement that **no compressed-texture form is bundled**, so the C12-12 clause reads as a fact rather than an omission; and a correction that the **t3 reprojection is upstream CesiumJS's**, not this project's — `Tools/skybox-bake/` pins the `t5` source and does not reproduce `t3`, which the previous wording could be read as implying. Filed as `C12-13-T3-PROVENANCE-GAP` and `C12-12-KTX2-SKYBOX-NOT-BUNDLED` in `DEFERRED_WORK.md`; note the t3 faces' 4:2:0 chroma is what the `G3` gate criterion says fails immediately. **Gate:** `solar-glare-star-washout.spec.mjs` enumerates the 18 shipped faces, requires each variant prefix to appear in the entry, requires the recorded total to equal the bytes on disk, requires each derivation step by name, and asserts BOTH halves of the KTX2 claim — so the day a compressed face ships without the entry being extended, the spec fails. | XS | `C12-10` ✅ |
 | `C12-14` | *(opportunistic)* Expose the baked cubemap as a **samplable star texture**, discharging the `C11-163` celestial-water-reflection blocker for free. ✅ **LANDED Batch 865 (`193393790c`) — EDGE ACCEPTANCE OWED.** *(Wording stamped 2026-08-07, close-out docs reconciliation. This cell read "IMPLEMENTATION DONE (worker, 2026-08-06) — pending orchestrator landing" — text written by the very commit that landed it, which is the stale-wording class the `C11-176b` refutation in this document was filed to kill. `193393790c` carries `Scene/SolarGlareAppearance.js`, `Scene/SolarDiscModel.js`, `Scene/SkyBox.js`, `Scene/StarCubeMapResource.js`, `Scene/CubeMapPanorama.js`, both star renderers, `Shaders/SkyBoxFS.glsl` and `LICENSE.md` on `main`. See the "2026-08-06 appearance-tail overlay" stale-wording correction near the top of this file — **in this document "pending orchestrator landing" means EDGE ACCEPTANCE OWED, not code unlanded.**)* New pure `Scene/StarCubeMapResource.js` owns a backend-neutral descriptor (`available`, `backend`, `faceSize`, `orientation`, plus the WebGL `CubeMap` **or** the WebGPU `GPUTexture` + cube `GPUTextureView`), refreshed once per `CubeMapPanorama.update` on BOTH backends and reachable three ways: `skyBox.starCubeMap`, `CubeMapPanorama#samplableCubeMap`, and `frameState.starCubeMap` (published for star maps only, so generic and Street View panoramas never claim the frame-wide slot). WebGPU is reached through a new `getResource` entry on the `CUBE_MAP_PANORAMA` feature renderer, so scene code still imports nothing from `Renderer/WebGPU/` (Principle 2). ⚠ **Principle 7 — nothing samples it yet, deliberately.** `CELESTIAL_WATER_REFLECTION_RESEARCH.md` names "samplable STAR cubemap" as `C11-163`'s **biggest gap** (its `sampleStarField()` had no texture: `StarField.wgsl` is un-samplable point sprites and `ProceduralSkyCubemap.wgsl` is atmosphere-only); that row is the recorded consumer, and every module header says so before a future dead-code audit reaches it. Three consumer contracts are stated as data and in prose: the lookup direction is **TEME, not Earth-fixed** (both backends apply `temeToPseudoFixed` on the way to clip space); `available` is false until the six faces load asynchronously and can go false again on a `sources` swap or teardown; and the handles are **borrowed** — the panorama owns and destroys them. ⚠ **Found en route, and load-bearing for `C11-163` rather than for this row:** under the default `TYCHO_T5_DIFFUSE` the cube map carries the diffuse galactic band and **zero resolved stars** (DR-01; `skybox-manifest.json` measures 0 point sources on all six faces), so "stars reflected on water" cannot be built from this texture alone — `C11-163` must choose between sampling the un-blurred `TYCHO_T5`, accepting a Milky-Way-only reflection, or adding a sprite-derived term. To make that decidable at runtime the sky box now also reports **`skyBox.variant`** (set by `createEarthSkyBox`, cleared when `sources` are replaced so it can never go stale). Filed as `C11-163-CUBEMAP-HAS-NO-RESOLVED-STARS` in `DEFERRED_WORK.md`. **Gate:** `solar-glare-star-washout.spec.mjs` — descriptor lifecycle including the loading/destroyed transitions, both realization sites in the correct ORDER (WebGPU after `fr.update`, WebGL before the "no cube map yet" early-out), star-map-only publication, teardown clearing, and the Principle-2 seam. | S | `C12-10` ✅ |
 | **Gate** | **G3**, both backends. | | |
@@ -764,7 +912,7 @@ unchanged).
 |---|---|---|
 | **G1** | Skybox fade | Camera **on the sunlit side, Sun ≥ 25° above local horizon** — the only framing that reaches the failure state. M1 source-count ratio ≥ 0.90; RMS-contrast and P99.9−P50 ratios ∈ [0.85, 1.15]. **Mean luminance is diagnostic only and explicitly non-certifying.** *Expected already-green at HEAD: Batch 722 landed the fix and the §6 Q2 measurements are effectively this gate passing — G1 is held as a REGRESSION gate, baselined by `C12-01` in W1.* |
 | **G2** | White blobs | **`r_1e-3 / r_core ≥ 8`** — a Gaussian truncated at `d=1.0` cannot exceed ~1.8, so this one number separates blob from star. Plus: two agreeing log-log slopes in [−5,−2]; <25 clipped px/star; rendered brightest:faintest ≥ 15:1 (today **4:1** by construction). ✅ **BROWSER LANE BUILT 2026-08-07 (CO-3) — `probe-celestial-gates.mjs --g2`; Edge acceptance OWED (first run ever).** Per ruling `C12-G2-DEF` the browser gate binds the ratio on the **composite-HWHM** definition at **≥ 4** (analytic core-component ≥ 8 stays in `starfield-psf.spec.mjs`); simulated through the shipped display chain at the lane's telescope framing the shipped PSF scores **7.20** and the OLD truncated Gaussian **1.79**, so the bar separates with 1.8× margin both ways. "<25 clipped px/star" is evaluated in **linear scene radiance against the LDR white point of 1.0**, not against 8-bit code 250 — under PBR Neutral radiance 1.0 renders as code 239 and code 250 is radiance ~1.91, so the two definitions differ by ~1.9×. "Rendered brightest:faintest" is `min(peak_brightest, 1.0) / peak_faintest`, exactly the quantity `StarFieldMath.ts` anchors the exposure against (16.7:1). **C12-27's acceptance criterion is carried verbatim as the third sub-lane.** See the 2026-08-07 CO-3 overlay above for the full predicate list. |
-| **G3** | Asset upgrade | ≤ 2.0 arcmin/px; ≥10× sources/steradian vs the t3 baseline; median chroma ≥ 0.20 (**fails immediately under 4:2:0 JPEG**, so it doubles as the format gate); **dust-lane structure** via low-pass residual IQR ≥ 3× current. |
+| **G3** | Asset upgrade | ≤ 2.0 arcmin/px; ≥10× sources/steradian vs the t3 baseline; median chroma ≥ 0.20 (**fails immediately under 4:2:0 JPEG**, so it doubles as the format gate); **dust-lane structure** via low-pass residual IQR ≥ 3× current. ✅ **BROWSER LANE BUILT 2026-08-07 (CO-24) — `probe-celestial-gates.mjs --g3`; Edge acceptance OWED (first run ever).** Five sub-lanes per backend (`asset`, `split`, `catalogue`, `adversarial`, `motion`), 18 bound predicates, must pass IDENTICALLY on both. **⚠ PRE-REGISTERED RED, and the red is in the ASSET, not the instrument:** measured offline from the bundled bytes, the shipped `TYCHO_T5_DIFFUSE` faces score **2.637 arcmin/px** (2048/face against the ≥2700 bar), **median chroma 0.000** (against 0.20), and a dust-lane IQR ratio of **0.585×** t3 (against 3×) — and the **un-blurred t5 misses the same three**, so criteria (1)/(3)/(4) were never reachable with the SVS product Q1 selected at the size C12-10 encoded. **This is not a DR-01 consequence.** Criterion (2) is superseded as certifying by DR-01 (the cube map carries no resolved sources by ruling) and re-pointed onto the split + catalogue arms, with the literal ratio still measured and reported as reversal trigger `spriteDensity` (delivered **228/sr** vs t3's **1,311/sr** = 0.174×). Bars marked RATIFIED are held unmoved; the research text's own "the σ and 3× need one calibration pass against the chosen asset" is now discharged — **that pass says the bar is missed.** See the 2026-08-07 CO-24 overlay above. |
 | **G4** | Sun + Moon | Sun: `r_1e-3/r_core ≥ 10`; angular diameter within 5% of 0.5334°; `I(0.95R)/I(0)` ∈ [0.3,0.5]. Moon: full:quarter integrated-brightness ratio must exceed the Lambertian ~3:1. |
 
 **C12 closes when all four gates pass on both backends at HEAD, with:**
