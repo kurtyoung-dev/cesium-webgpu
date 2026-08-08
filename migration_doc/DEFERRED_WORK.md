@@ -12695,3 +12695,10 @@ FIX when it matters: flip the row order in `unpackPickPixels` (write row `copyHe
 ### NEW-WEBGPU-POLYLINE-PASS-BUCKET-TRANSLUCENCY — WebGL keys polyline pass off per-bucket MATERIAL translucency; the WebGPU renderer has no equivalent (FILED)
 
 **Status: OPEN / LOW.** `PolylineCollection` exposes no blendOption (`_blendOption` permanently undefined); WebGL routes per bucket material. The Batch-917 routing sends the collapsed command to Pass.OPAQUE, matching the dominant WebGL case; a translucent-material bucket diverges and needs the per-bucket law if it ever matters at pixels.
+
+
+---
+
+### C13-41-DECKFREE-CONTROL-REDESIGN — the deck-free ground control is state-order-dependent and needs an isolated capture design (FILED 2026-08-07, Batch 931 / run 6)
+
+**Status: OPEN / MEDIUM (instrument).** Across three runs the lane-B deck-free control produced three distinct behaviors: frozen-dark across 54 min (run 4), sun-varying (run 5), and frozen at EXACTLY the raw baseColor 200/255 unlit at all four rungs while its on-leg twin varied (run 6, with the settled-twin gate correctly firing). The control's reading depends on configure/capture ORDER in a way none of the scored lanes do — every conclusion drawn from it (run 5's ×0.44 "identity violation", run 6's frozen tell) was an artifact of instrument state, and run 5's headline is WITHDRAWN. Redesign: capture the deck-free state in its own configure epoch (full scene state re-application before each control capture) or its own browser session; gate on the settled-twin + a lit-surface precondition (a control reading exactly the unlit baseColor is blind by construction). Until then the "does the globe light path dim by exactly F" question stays OPEN with no evidence either way; the shadow-contrast excess (1.055, ratio-of-ratios, constant-multiplier-immune) remains the eclipse chain's one standing product finding.
