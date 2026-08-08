@@ -75,6 +75,12 @@ See more in the [CesiumJS Features Checklist](https://github.com/CesiumGS/cesium
 
 ## :books: References & Credits
 
+> **Licensing note:** all fork-specific work (the WebGPU backend, WGSL
+> shaders, and tooling) is available under the same Apache-2.0 terms as
+> upstream CesiumJS — see the [Fork-Specific Work](LICENSE.md#fork-specific-work)
+> section of the license. Credit to the fork author is appreciated but not
+> required.
+
 The rendering work in this fork stands on published research, on datasets
 published by public agencies, and on a handful of open-source projects whose
 approach it follows. Everything named below is credited in the source file that
