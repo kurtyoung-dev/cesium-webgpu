@@ -396,3 +396,37 @@ test("the determinations document parses and names real files", async () => {
     );
   }
 });
+
+test("both shader-to-JS transforms extract @license banners identically", async () => {
+  // glslToJavaScript has always re-emitted @license docblocks above the
+  // minified module; wgslToJavaScript silently stripped them until the two
+  // were mirrored. This pin holds the mirror: the extraction regex must
+  // appear in BOTH transforms, and identically, so a notice-bearing shader
+  // in either language survives minification with its attribution intact.
+  const buildJs = await fs.readFile(
+    path.join(ROOT, "scripts", "build.js"),
+    "utf8",
+  );
+  const pattern = String.raw`/\/\*\*(?:[^*\/]|\*(?!\/)|
+)*?@license(?:.|
+)*?\*\//gm`;
+  const occurrences = buildJs.split("@license").length - 1;
+  assert.ok(
+    occurrences >= 2,
+    "the @license extraction must exist in both glslToJavaScript and wgslToJavaScript",
+  );
+  const glslAt = buildJs.indexOf("function glslToJavaScript");
+  const wgslAt = buildJs.indexOf("function wgslToJavaScript");
+  assert.ok(glslAt > 0 && wgslAt > glslAt);
+  const glslBody = buildJs.slice(glslAt, wgslAt);
+  const wgslBody = buildJs.slice(wgslAt);
+  for (const body of [glslBody, wgslBody]) {
+    assert.match(
+      body,
+      /extractedCopyrightComments/,
+      "a transform lost its copyright extraction",
+    );
+    assert.match(body, /@license/);
+  }
+  void pattern;
+});

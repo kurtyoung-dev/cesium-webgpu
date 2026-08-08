@@ -415,5 +415,5 @@ batch could not. Results, transcribed into both `LICENSE.md` files:
 | L-13 | Popov72/OceanDemo `LICENSE.md` (branch `main`): "Copyright (c) 2020 Ivan Pensionerov" — the port retains the FFT-Ocean author's line; transcribed as found. | **RESOLVED** |
 | L-18 | linebender/vello `LICENSE-MIT`: "Copyright 2020 the Vello Authors". Apache-2.0 half remains the operative grant. | **RESOLVED** |
 
-**The sole remaining open item is L-23** (should `wgslToJavaScript` mirror
+**L-23 CLOSED — Batch 966 (maintainer-directed):** `wgslToJavaScript` now mirrors `glslToJavaScript`'s `@license` extraction (the docblock is re-emitted above the minified module); pinned by a mirror test in `verify-packaged-notices.spec.mjs` so the asymmetry cannot return. ~~The sole remaining open item is L-23~~ **All 23 determinations are now closed.** (should `wgslToJavaScript` mirror
 `glslToJavaScript`'s `@license` extraction — a build-script decision).

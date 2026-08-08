@@ -1049,6 +1049,17 @@ export async function wgslToJavaScript(minify, minifyStateFilePath, workspace) {
       let contents = await readFile(wgslFile, { encoding: "utf8" });
       contents = contents.replace(/\r\n/gm, "\n");
 
+      // Mirror glslToJavaScript: an @license docblock must survive minification
+      // into the generated module, or a notice-bearing shader would silently
+      // ship stripped of its required attribution.
+      let copyrightComments = "";
+      const extractedCopyrightComments = contents.match(
+        /\/\*\*(?:[^*\/]|\*(?!\/)|\n)*?@license(?:.|\n)*?\*\//gm,
+      );
+      if (extractedCopyrightComments) {
+        copyrightComments = `${extractedCopyrightComments.join("\n")}\n`;
+      }
+
       if (minify) {
         contents = contents
           .replace(/\/\/.*$/gm, "")
@@ -1061,7 +1072,7 @@ export async function wgslToJavaScript(minify, minifyStateFilePath, workspace) {
       }
 
       contents = contents.split('"').join('\\"').replace(/\n/gm, "\\n\\\n");
-      contents = `\
+      contents = `${copyrightComments}\
 //This file is automatically rebuilt by the Cesium build process.\n\
 export default "${contents}";\n`;
 
