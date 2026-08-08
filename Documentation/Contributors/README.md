@@ -6,6 +6,7 @@
 - **IDEs** - use any IDE you want for CesiumJS development. Most contributors use WebStorm (commercial) or VSCode (open source).
   - [VSCode Guide](VSCodeGuide/README.md) - How to set up VSCode.
 - [Coding Guide](CodingGuide/README.md) - JavaScript and GLSL coding conventions and best practices for design, maintainability, and performance.
+  - [Fork Comment Standard](CodingGuide/ForkCommentStandard.md) - How comments are written in this fork's WebGPU work: constraints not history, placement, attribution, and the checks that enforce them.
 - [Testing Guide](TestingGuide/README.md) - How to run the CesiumJS tests and write awesome tests.
 - [Performance Testing Guide](PerformanceTestingGuide/README.md) - Best practices for measuring runtime performance.
 - [Documentation Guide](DocumentationGuide/README.md) - How to write great reference documentation.

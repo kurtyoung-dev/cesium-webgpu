@@ -1,0 +1,37 @@
+# Campaign 16 clean-list ratchet — read by Tools/c16/comment-marker-guard.mjs.
+#
+# WHAT A LINE MEANS. Each entry is a repo-relative path, either an exact file
+# or a directory prefix (recursive). Everything an entry covers has been
+# remediated to the fork comment standard
+# (Documentation/Contributors/CodingGuide/ForkCommentStandard.md) and is
+# enforced STRICTLY from then on: a marker reappearing under a listed path is
+# an ERROR in the pre-commit hook and in the one-shot scan, not a warning.
+# Paths that are NOT listed are still warn-only, because the rewrite shards
+# C16-03..C16-12 have not reached them yet.
+#
+# HOW TO USE IT. A rewrite batch appends the paths it certified, in the same
+# commit as the rewrite. That is what makes the debt monotonically
+# non-increasing rather than a number somebody re-measures and re-argues.
+#
+# REMOVING AN ENTRY IS A REGRESSION. The list is append-only in practice. If a
+# path has to come off, the batch that removes it says why in its commit
+# message; there is no other record of the reversal.
+#
+# `node Tools/c16/comment-marker-guard.mjs --verify-cleanlist` asserts both
+# halves of the ratchet's honesty: every entry still resolves to at least one
+# in-scope file (so a rename cannot silently retire an entry), and everything
+# the list covers is still marker-free.
+#
+# Seed entries below are directories that were ALREADY marker-free when the
+# guard landed at C16-00 — measured, not assumed (188 files), so
+# --verify-cleanlist is a real check from day one rather than a vacuous one.
+# They are mostly untouched upstream trees; listing them means a future fork
+# edit cannot introduce the first marker into them unnoticed.
+
+packages/widgets/Source
+packages/engine/Source/Workers
+packages/engine/Source/Scene/GltfPipeline
+packages/engine/Source/Shaders/Materials
+packages/engine/Source/Shaders/Voxels
+packages/engine/Source/Shaders/Appearances
+packages/engine/Source/Renderer/ResourceOwnership

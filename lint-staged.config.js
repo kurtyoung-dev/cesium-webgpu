@@ -56,24 +56,49 @@ function buildCommands(files, tools) {
 // `npm run prettier-check` ("**/*" filtered by .prettierignore): every
 // extension those two cover in CI has to be covered here, or the hook lets
 // through what CI then rejects. `tooling-coverage.spec.mjs` pins that.
-// License files are verbatim third-party terms — they must never be reflowed
-// or restructured to satisfy MD013/MD034/etc. The root `.markdownlintignore`
-// already exempts them for the glob-mode `npm run markdownlint`, but
-// lint-staged passes ABSOLUTE Windows paths straight to markdownlint-cli,
-// which does not apply the ignore file to explicitly-named paths — so the
-// exemption has to live here too (learned landing the packages/engine
-// LICENSE.md mirror, Batch 867).
-function isLicenseMarkdown(filePath) {
+// markdownlint exemptions must mirror the root `.markdownlintignore`, because
+// lint-staged passes ABSOLUTE Windows paths straight to markdownlint-cli and
+// markdownlint-cli does not apply its ignore file to explicitly-named paths.
+// Without this the hook rejects files that `npm run markdownlint` never looks
+// at, which is a worse failure than the reverse: the author is told to
+// restructure a document that CI has no opinion about.
+//
+//   - `LICENSE.md` (any depth): verbatim third-party terms, never reflowed or
+//     restructured to satisfy MD013/MD034.
+//   - `migration_doc/`: campaign queues, ledgers and the DEV notes archive.
+//     The notes quote source comments verbatim, so their markdown is dictated
+//     by whatever the original comment contained.
+//   - `Tools/`: probe reports and tool notes.
+//   - `ThirdParty/`: vendored upstream READMEs.
+function isMarkdownlintExempt(filePath) {
   const rel = filePath.split(/[\\/]/).join("/");
-  return rel === "LICENSE.md" || rel.endsWith("/LICENSE.md");
+  return (
+    rel === "LICENSE.md" ||
+    rel.endsWith("/LICENSE.md") ||
+    rel.includes("migration_doc/") ||
+    rel.includes("Tools/") ||
+    rel.includes("ThirdParty/")
+  );
 }
+
+// The fork comment standard
+// (Documentation/Contributors/CodingGuide/ForkCommentStandard.md) applies to
+// engine + widgets source only, and covers shader files that no other lane in
+// this config touches. The guard is warn-only for paths the remediation shards
+// have not reached yet and an error for paths listed in
+// Tools/c16/comment-marker-cleanlist.txt, so it can be wired in before the
+// rewrites land without failing every commit in the meantime.
+const COMMENT_GUARD_GLOB =
+  "packages/*/Source/**/*.{js,mjs,cjs,ts,tsx,wgsl,glsl}";
 
 export default {
   "*.{js,cjs,mjs,ts,tsx,css,html}": (files) =>
     buildCommands(files, ["eslint --cache --quiet", "prettier --write"]),
+  [COMMENT_GUARD_GLOB]: (files) =>
+    buildCommands(files, ["node Tools/c16/comment-marker-guard.mjs"]),
   "*.md": (files) => [
     ...buildCommands(
-      files.filter((f) => !isLicenseMarkdown(f)),
+      files.filter((f) => !isMarkdownlintExempt(f)),
       ["markdownlint"],
     ),
     ...buildCommands(files, ["prettier --write"]),
