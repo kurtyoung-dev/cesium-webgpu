@@ -1,25 +1,27 @@
 /// <reference types="@webgpu/types" />
 /**
- * Campaign 3 v2 — 3D cloud-noise texture bake (V2).
+ * 3D cloud-noise texture bake.
  *
- * **What's shipped (V2):** allocate + bake the two tileable 3D noise textures
- * the volumetric-cloud raymarcher will sample, and hand back sample views + a
- * `repeat` 3D sampler. The bake runs ONCE (a one-shot compute encoder, like the
- * VolumetricFog shadow-placeholder init). C13-37 Slice B extends each level-0
- * bake into a complete box-filtered mip chain in that same encoder.
+ * Allocates and bakes the two tileable 3D noise textures the volumetric-cloud
+ * raymarcher samples, and hands back sample views plus a `repeat` 3D sampler.
+ * The bake runs once, in a one-shot compute encoder, which also extends each
+ * level-0 bake into a complete box-filtered mip chain.
  *
  *   • shape  — 128³ RGBA8: R = Perlin-Worley billow, G/B/A = inverted Worley at
- *              increasing frequency (the erosion fBm V3 combines to remap R).
+ *              increasing frequency, which the erosion fBm combines to remap R.
  *   • detail — 32³  RGBA8: R/G/B = high-frequency inverted Worley.
  *
- * **What's a NO-OP until V3:** nothing here samples the textures. V2 binds them
- * into the cloud BGL (bindings 6/7/8) but the shader keeps `noiseSource = 0` and
- * the live `fbmNoise`/`worleyF1` march still produces every pixel — so V2 is
- * byte-identical. V3 flips `cloudDensity`/`cloudBaseDensity` to sample these.
+ * The textures are bound into the cloud bind-group layout at bindings 6, 7 and
+ * 8 whenever they exist, but whether the fragment shader reads them is a
+ * separate decision: `cloudDensity` and `cloudBaseDensity` sample them only
+ * when the resolved tier selects the baked noise source (`CLOUD_QF_NOISE_BAKED`
+ * in the quality flags). Otherwise the live `fbmNoise` and `worleyF1` march
+ * produces every pixel and these textures are resident but unread.
  *
- * Modeled on `WebGPUVolumetricFogResources.ts` (3D `texture_storage_3d` write
- * target + compute bake). Uses `device.createComputePipeline` directly (the bake
- * is a per-context singleton, so central pipeline-cache dedup buys nothing).
+ * Modeled on `WebGPUVolumetricFogResources.ts`: a 3D `texture_storage_3d` write
+ * target filled by a compute bake. `device.createComputePipeline` is called
+ * directly because the bake is a per-context singleton, so routing it through
+ * the central pipeline cache would buy nothing.
  *
  * @module WebGPUCloudNoiseResources
  */
@@ -30,10 +32,10 @@ import CloudNoiseMipmapSource from "../../Shaders/WebGPU/Compute/CloudNoiseMipma
 export interface CloudNoiseResources {
   shapeTexture: GPUTexture;
   shapeSampleView: GPUTextureView; // texture_3d<f32> for the cloud FS
-  // Batch 439 (4.8 CLOUD-PW-NOISE) — the Perlin-Worley SHAPE variant. Baked into a
-  // SEPARATE texture only when `perlinWorley` is requested (else null); the renderer
-  // binds this view at binding 6 instead of `shapeSampleView` when the flag is on,
-  // so the default value-FBM bake output is never disturbed.
+  // The Perlin-Worley shape variant, baked into its own texture only when
+  // `perlinWorley` is requested and null otherwise. The renderer binds this
+  // view at binding 6 in place of `shapeSampleView` when the flag is on, which
+  // leaves the value-FBM bake output undisturbed.
   shapePWTexture: GPUTexture | null;
   shapePWSampleView: GPUTextureView | null;
   detailTexture: GPUTexture;
@@ -112,12 +114,12 @@ function encodeCloudNoiseMipChain(
  * be used (caller falls back to the 1×1×1 white view + keeps the live-noise
  * march).
  *
- * Batch 439 (4.8 CLOUD-PW-NOISE) — when `perlinWorley` is true, a SECOND shape
- * texture is allocated and baked via the `bakeShapePW` entry point (Schneider
- * Perlin-Worley remap). The default value-FBM `shapeTexture` is ALWAYS baked
- * identically regardless of this flag, so the byte-for-byte default output is
- * preserved; the renderer chooses which view to bind. The PW texture is allocated
- * ONLY when requested (no cost on the default path).
+ * When `perlinWorley` is true, a second shape texture is allocated and baked
+ * through the `bakeShapePW` entry point, which applies the Perlin-Worley remap.
+ * The value-FBM `shapeTexture` is baked identically whatever this flag is, so
+ * the default output is unchanged and the renderer only chooses which view to
+ * bind. The Perlin-Worley texture is allocated only when requested, so the
+ * default path carries no cost for it.
  */
 export function buildCloudNoiseResources(
   device: GPUDevice,
@@ -230,9 +232,9 @@ export function buildCloudNoiseResources(
     compute: { module, entryPoint: "bakeDetail" },
   });
 
-  // C13-37 Slice B — one format-specialized pipeline downsamples every shape,
-  // detail, and optional PW level. It uses textureLoad, so no transient sampler
-  // or per-mip parameter buffer is needed.
+  // One format-specialized pipeline downsamples every shape, detail and
+  // optional Perlin-Worley level. It uses `textureLoad`, so no transient
+  // sampler or per-mip parameter buffer is needed.
   const mipModule = device.createShaderModule({
     label: "CloudNoiseMipmap",
     code: CloudNoiseMipmapSource,
@@ -272,10 +274,10 @@ export function buildCloudNoiseResources(
     },
   });
 
-  // Batch 439 (4.8 CLOUD-PW-NOISE) — allocate + bake the Perlin-Worley shape
-  // variant into a SEPARATE texture only when requested. Reuses the same BGL/layout
-  // (binding 0 = its own storage view; binding 1 keeps the detail target the entry
-  // point ignores). The default value bake above is untouched either way.
+  // Allocate and bake the Perlin-Worley shape variant into its own texture,
+  // only when requested. It reuses the same bind-group layout: binding 0 is its
+  // own storage view, and binding 1 keeps the detail target that the entry
+  // point ignores. The value bake above is untouched either way.
   let shapePWTexture: GPUTexture | null = null;
   let shapePWSampleView: GPUTextureView | null = null;
   let shapePWPipeline: GPUComputePipeline | null = null;

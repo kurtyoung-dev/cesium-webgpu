@@ -1,16 +1,16 @@
 /**
- * OGC API - EDR weather source (Phase 1 MVP). Pulls a gridded cloud-cover field
- * from an EDR `cube` query returning CoverageJSON, and normalizes it into a
- * {@link WeatherField} — no GRIB2/NetCDF binary decode (CoverageJSON parses
- * natively in the browser). Default target: NOAA/NWS-MDL (free, no-auth,
- * public-domain), GFS, total cloud cover.
+ * OGC API - EDR weather source. Pulls a gridded cloud-cover field from an EDR
+ * `cube` query returning CoverageJSON and normalizes it into a
+ * {@link WeatherField}. No GRIB2 or NetCDF binary decode is involved, because
+ * CoverageJSON parses natively in the browser. The default target is the free,
+ * no-auth, public-domain NOAA/NWS-MDL service, GFS total cloud cover.
  *
- * NOTE (see migration_doc/WEATHER_DATA_INGEST_ROADMAP.md): the NWS-MDL endpoint
- * is a dev-lab prototype and its CORS headers are not guaranteed — so this
- * source supports an optional same-origin `proxy` and an `AbortSignal`, and the
- * {@link WeatherProvider} treats a rejected fetch as "no data" (the cloud
- * renderer falls back to its procedural map). Verified end-to-end against
- * {@link SyntheticWeatherSource}; the live call is opt-in.
+ * The NWS-MDL endpoint is a prototype and its CORS headers are not guaranteed,
+ * so this source supports an optional same-origin `proxy` and an `AbortSignal`,
+ * and the {@link WeatherProvider} treats a rejected fetch as no data, leaving
+ * the cloud renderer on its procedural map. {@link SyntheticWeatherSource}
+ * exercises the same path end to end without the network; the live call is
+ * opt-in.
  *
  * @module Scene/Weather/EdrWeatherSource
  */

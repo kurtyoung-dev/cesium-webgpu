@@ -1,65 +1,49 @@
 /// <reference types="@webgpu/types" />
 /**
- * C13-09 — cloud reconstruction attachment LAYOUT, LIFETIME, and GENERATION.
+ * Cloud reconstruction attachment layout, lifetime, and generation.
  *
- * WHAT THIS ROW OWNS, AND WHAT IT DELIBERATELY DOES NOT.
+ * The cloud history is a colour-only half-resolution proxy, and
+ * `CloudTemporalResolve.wgsl` says so itself: its `representativeShellDistance`
+ * is a representative geometric proxy rather than physical cloud depth. One
+ * mean depth per pixel cannot separate two overlapping volumes, cannot reject a
+ * disoccluded history sample, and cannot tell a reprojection that crossed a
+ * silhouette from one that did not. This module is the topology that fixes
+ * that: the exact attachment set the reconstruction chain reads, its formats,
+ * its byte cost, and the generation key that makes a stale bind group
+ * impossible to serve.
  *
- * `C13-05` left the cloud history a COLOR-ONLY half-resolution proxy, and said
- * so in `CloudTemporalResolve.wgsl` itself: its `representativeShellDistance`
- * is "a representative geometric proxy, not physical cloud depth; per-pixel
- * front/weighted depth remains C13-09". One mean depth per pixel cannot
- * separate two overlapping volumes, cannot reject a disoccluded history sample,
- * and cannot tell a reprojection that crossed a silhouette from one that did
- * not. This module is the TOPOLOGY that fixes that: the exact attachment set
- * the reconstruction chain reads, its formats, its byte cost, and the
- * generation key that makes a stale bind group impossible to serve.
+ * Current behaviour and current limits. Allocation, resize, device-swap
+ * recreation, the generation key, the producer pass, and the byte and pass
+ * counters are all wired. Two further pieces are wired but opt-in and default
+ * off: the march-emitted depth, a compile-time variant described on
+ * `CLOUD_EMITTED_ATTACHMENTS`, and the set's one consumer, the temporal
+ * resolve, which reads depth, velocity and moments and validates history
+ * against them. They are separate opt-ins, so a build can produce the set
+ * without consuming it and the two halves stay independently testable.
  *
- * ★ WHAT IS LIVE AND WHAT IS STILL PENDING. The inventory belongs here rather
- *   than in a commit message, and it is updated as rows land — not left to
- *   describe the day the file was created:
+ * Absent: a current-frame phase covering one-sixteenth of the full-resolution
+ * pixels, and a full-resolution history — the history below is still
+ * half-resolution. Also absent is every thresholded consumer: attachment-aware
+ * motion and depth rejection, variance clipping from the moment pair, reactive
+ * history, wind advection, and disocclusion proper.
  *
- *     LIVE at C13-09    — allocation, resize, device-swap recreation, the
- *                         generation key, the producer pass, and the byte /
- *                         pass counters the Gate-A surface reports. Produced,
- *                         and (at that row) consumed by nothing.
- *     LIVE at C13-10    — the MARCH-EMITTED depth (a compile-time variant, see
- *                         the C13-10 block at the foot of this file) and the
- *                         FIRST CONSUMER: the temporal resolve now reads
- *                         depth / velocity / moments and validates history
- *                         against them. Both are opt-in and default OFF, and
- *                         they are SEPARATE opt-ins from C13-09's, so a build
- *                         can still produce without consuming — which is what
- *                         keeps C13-09's "produced but not consumed" claim
- *                         A/B-testable.
- *     PENDING C13-10    — the row's headline is NOT closed by that slice: one
- *                         current-frame phase covering one-sixteenth of
- *                         full-resolution pixels, and a FULL-RESOLUTION
- *                         history, both remain. The history below is still
- *                         half-resolution.
- *     PENDING C13-12    — every THRESHOLDED consumer: attachment-aware
- *                         motion/depth rejection, variance clipping from the
- *                         moment pair, reactive history, wind advection,
- *                         disocclusion proper.
+ * WGSL register allocation is static, so anything added to the shared
+ * `ProceduralClouds` module inflates every pipeline compiled from it, including
+ * the shadow map, the cascade atlas and the god-ray mask, none of which want a
+ * reconstruction attachment. The producer therefore lives in its own WGSL
+ * module (`CloudReconstructionAttachments.wgsl`) and its own pipeline, and
+ * re-derives the WGS84 shell intersection rather than importing it. That
+ * duplication is what holds the march's register budget where it is;
+ * `cloud-reconstruction-attachments.spec.mjs` pins `ProceduralClouds.wgsl` by
+ * content hash so it cannot erode by accident.
  *
- * ★ C13-39 BINDS THE SHAPE. Its negative result established that WGSL register
- *   allocation is STATIC, so anything added to the shared `ProceduralClouds`
- *   module inflates EVERY pipeline compiled from it — including the shadow map,
- *   the cascade atlas and the god-ray mask, none of which want a reconstruction
- *   attachment. So the producer lives in its own WGSL module
- *   (`CloudReconstructionAttachments.wgsl`) and its own pipeline, and it
- *   re-derives the WGS84 shell intersection rather than importing it. The
- *   duplication is the point: it is what keeps the march's register budget at
- *   exactly the value C13-39 measured. `cloud-reconstruction-attachments
- *   .spec.mjs` pins `ProceduralClouds.wgsl` by content hash so this cannot
- *   erode by accident.
- *
- * ★ SLOT 0 IS NOT ALLOCATED HERE. The premultiplied color/transmittance
- *   attachment the row asks for ALREADY EXISTS as the half-resolution march
- *   target (`ProceduralClouds Half-Res Target`, rgba16float, premultiplied RGB
- *   with alpha; transmittance is `1 - a`). Re-allocating it would double the
- *   cost of a target the topology only needed to NAME. It is in the table with
- *   `ownedHere: false` so the contract is complete and the byte accounting can
- *   still separate "what this row added" from "what the set costs".
+ * Slot 0 is not allocated here. The premultiplied colour and transmittance
+ * attachment already exists as the half-resolution march target
+ * (`ProceduralClouds Half-Res Target`, rgba16float, premultiplied RGB with
+ * alpha, transmittance being `1 - a`), and re-allocating it would double the
+ * cost of a target this topology only needs to name. It appears in the table
+ * with `ownedHere: false`, so the contract is complete and the byte accounting
+ * can still separate what this module added from what the whole set costs.
  *
  * Everything in this module is pure: no device calls, no allocation on the
  * per-frame path, and every function is executable under `node --test`.
@@ -67,9 +51,15 @@
  * @module WebGPUCloudReconstructionAttachments
  */
 
-/** Slot indices into {@link CLOUD_RECONSTRUCTION_ATTACHMENTS}. ADD-ONLY. */
+/**
+ * Slot indices into {@link CLOUD_RECONSTRUCTION_ATTACHMENTS}. Entries may be
+ * added but never reordered or removed.
+ */
 export const CloudAttachmentSlot = Object.freeze({
-  /** Premultiplied color + alpha. The EXISTING half-res march target. */
+  /**
+   * Premultiplied color and alpha, carried by the existing half-resolution
+   * march target.
+   */
   COLOR: 0,
   /** Front (nearest) and transmittance-weighted cloud distance, metres. */
   DEPTH: 1,
@@ -84,11 +74,11 @@ export const CloudAttachmentSlot = Object.freeze({
  *
  * `key` is a stable identity: it appears in GPU object labels, in the debug
  * snapshot, and in the spec. Renaming one is a breaking change to the evidence
- * trail, so the table is ADD-ONLY in the same sense as `ShaderDefine`.
+ * trail, so the table is add-only in the same sense as `ShaderDefine`.
  */
 export interface CloudAttachmentSpec {
   /**
-   * Index into the CONTRACT table. Owned attachments map to the producer's
+   * Index into the contract table. Owned attachments map to the producer's
    * MRT `@location(slot - 1)` because slot 0 is the shared march target and is
    * not an attachment of the producer pass.
    */
@@ -106,17 +96,20 @@ export interface CloudAttachmentSpec {
    * owned by the march, not by this row.
    */
   readonly ownedHere: boolean;
-  /** Render-pass label of the pass that writes it on the DEFAULT path. */
+  /** Render-pass label of the pass that writes it on the default path. */
   readonly producer: string;
   /**
-   * C13-10 — render-pass label of the pass that writes it when
+   * Render-pass label of the pass that writes it when
    * `ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION` is compiled, when that
    * differs from {@link producer}. Present only on the depth slot, whose
-   * ownership MOVES to the march under that variant; absent everywhere else,
+   * ownership moves to the march under that variant; absent everywhere else,
    * because an absent field is a stronger statement than a duplicated one.
    */
   readonly variantProducer?: string;
-  /** Render-pass labels that READ it. Empty means "nothing consumes it yet". */
+  /**
+   * Render-pass labels that read it. An empty list means nothing consumes it
+   * yet.
+   */
   readonly consumers: readonly string[];
   /**
    * Value the producer pass CLEARS this attachment to. Per-attachment because
@@ -132,25 +125,25 @@ export interface CloudAttachmentSpec {
 /**
  * The attachment set, in slot order.
  *
- * FORMAT RATIONALE, because each one was a decision rather than a default:
+ * Each format is a decision rather than a default:
  *
- *   DEPTH is `rg32float`, not `rg16float`. Distances are metres on a planet:
+ *   Depth is `rg32float`, not `rg16float`. Distances are metres on a planet:
  *   half-float carries an 11-bit mantissa, so at 100 km the quantum is ~50 m
  *   and at 1000 km it is ~500 m — larger than a cloud deck is thick. A depth
  *   attachment whose quantization exceeds the feature it separates cannot
- *   reject a disocclusion, which is the whole reason C13-12 wants it.
- *   `rg32float` is renderable in core WebGPU but NOT filterable without the
- *   optional `float32-filterable` feature, so consumers must read it with
+ *   reject a disocclusion, which is the whole reason a rejection test needs
+ *   it. `rg32float` is renderable in core WebGPU but not filterable without
+ *   the optional `float32-filterable` feature, so consumers must read it with
  *   `textureLoad`, never a linear sampler.
  *
- *   VELOCITY is `rgba16float` rather than a bare `rg`. A two-channel motion
+ *   Velocity is `rgba16float` rather than a bare `rg`. A two-channel motion
  *   vector cannot distinguish "did not move" from "could not be reprojected",
- *   and C13-12's rejection logic turns on exactly that difference. B carries
- *   the validity flag and A the normalized previous-frame anchor distance, so
- *   a consumer gets motion, trust, and the depth to compare against from one
+ *   and the rejection logic turns on exactly that difference. B carries the
+ *   validity flag and A the normalized previous-frame anchor distance, so a
+ *   consumer gets motion, trust, and the depth to compare against from one
  *   fetch.
  *
- *   MOMENTS is `rgba16float` over NORMALIZED quantities. Raw metre-squared
+ *   Moments is `rgba16float` over normalized quantities. Raw metre-squared
  *   moments overflow half-float at ~255 m; both pairs here are in [0,1]
  *   (depth divided by the resolved far cap, and coverage), so the format is
  *   exact enough to recover a variance and small enough to stay cheap.
@@ -181,8 +174,8 @@ export const CLOUD_RECONSTRUCTION_ATTACHMENTS: readonly CloudAttachmentSpec[] =
         "R = front (nearest) cloud distance in metres, G = transmittance-weighted mean distance in metres; both -1 when the ray carries no cloud",
       ownedHere: true,
       producer: "CloudReconstructionAttachments pass",
-      // C13-10: under the emission variant the MARCH writes this slot as a
-      // second colour target and the producer reads it instead.
+      // Under the emission variant the march writes this slot as a second
+      // colour target and the producer reads it instead.
       variantProducer: "ProceduralClouds half-res pass",
       consumers: Object.freeze(["CloudTemporalResolve pass"]),
       // Both channels are metres, and -1 is the "no cloud on this ray"
@@ -230,7 +223,7 @@ export const CLOUD_ATTACHMENT_PASS_LABEL =
   "CloudReconstructionAttachments pass";
 
 /**
- * `AttachmentUniforms` float count — MUST equal the WGSL struct length in
+ * `AttachmentUniforms` float count. It has to equal the WGSL struct length in
  * `CloudReconstructionAttachments.wgsl`: previousVpRte(16) +
  * inverseCurrentVpRte(16) + six vec4 rows = 56. Fits the 256-byte minimum
  * uniform-buffer allocation without growing it.
@@ -241,7 +234,7 @@ export const CLOUD_ATTACHMENT_UNIFORM_FLOATS = 56;
 export const CLOUD_ATTACHMENT_UNIFORM_BYTES =
   CLOUD_ATTACHMENT_UNIFORM_FLOATS * 4;
 
-/** Bytes ONE attachment occupies at the given size. */
+/** Bytes a single attachment occupies at the given size. */
 export function cloudAttachmentBytes(
   spec: CloudAttachmentSpec,
   width: number,
@@ -253,9 +246,9 @@ export function cloudAttachmentBytes(
 }
 
 /**
- * Bytes the attachments THIS ROW ALLOCATES occupy at the given size. The
- * pre-existing color target is excluded on purpose: it is not new cost, and
- * reporting it as such would overstate what the row added.
+ * Bytes the attachments this module allocates occupy at the given size. The
+ * pre-existing color target is excluded: it is not new cost, and reporting it
+ * as such would overstate what the reconstruction set adds.
  */
 export function cloudOwnedAttachmentBytes(
   width: number,
@@ -268,7 +261,7 @@ export function cloudOwnedAttachmentBytes(
   return total;
 }
 
-/** Bytes the WHOLE contract occupies, including the shared color target. */
+/** Bytes the entire contract occupies, including the shared color target. */
 export function cloudAttachmentSetBytes(width: number, height: number): number {
   let total = 0;
   for (let i = 0; i < CLOUD_RECONSTRUCTION_ATTACHMENTS.length; i++) {
@@ -284,11 +277,11 @@ export function cloudAttachmentSetBytes(width: number, height: number): number {
 /**
  * Generation record for the owned attachment set.
  *
- * `generation` starts at 0 meaning "nothing allocated" and increments on every
- * (re)allocation. C13-40 will key retained bind groups on it; until then it is
- * what makes a resize or a device swap OBSERVABLE rather than silent. It is
- * never reset to a previously used value, so a bind group captured under
- * generation N can never be mistaken for one built under a later N.
+ * `generation` starts at 0, meaning nothing is allocated, and increments on
+ * every (re)allocation, which is what makes a resize or a device swap
+ * observable rather than silent. It is never reset to a previously used value,
+ * so a bind group captured under generation N can never be mistaken for one
+ * built under a later N — a property retained bind groups are meant to key on.
  *
  * `deviceKey` is the owning `GPUDevice`, held as an opaque object so this
  * module stays device-free and node-testable. Identity comparison is the whole
@@ -365,11 +358,10 @@ export function commitCloudAttachmentGeneration(
 }
 
 /**
- * Return the record to "nothing allocated" WITHOUT rewinding the generation.
+ * Return the record to "nothing allocated" without rewinding the generation.
  *
- * Rewinding would let a retired bind group's key collide with a future one,
- * which is the precise failure C13-40's retirement work has to be able to rule
- * out. Release keeps the counter monotonic and only clears the resident facts.
+ * Rewinding would let a retired bind group's key collide with a later one, so
+ * release keeps the counter monotonic and clears only the resident facts.
  */
 export function releaseCloudAttachmentGeneration(
   state: CloudAttachmentGeneration,
@@ -395,42 +387,44 @@ export function cloudAttachmentGenerationIsCurrent(
 }
 
 /**
- * Transmittance-weighted mean distance through ONE cloud interval, in metres.
+ * Transmittance-weighted mean distance through a single cloud interval, in
+ * metres.
  *
  * The march already resolved this pixel's alpha; this recovers the depth that
- * alpha implies rather than guessing the interval midpoint the way C13-05's
- * proxy does. Assume uniform extinction `s` over `[t0, t1]` with
- * `alpha = 1 - exp(-s * L)`, so the transmittance-weighted density along the
- * ray is the truncated exponential `s * exp(-s * (t - t0)) / alpha` and
+ * alpha implies rather than guessing the interval midpoint the way the
+ * colour-only history proxy does. Assume uniform extinction `s` over
+ * `[t0, t1]` with `alpha = 1 - exp(-s * L)`, so the transmittance-weighted
+ * density along the ray is the truncated exponential
+ * `s * exp(-s * (t - t0)) / alpha` and
  *
  *     E[t] = t0 + 1/s - L * (1 - alpha) / alpha.
  *
  * Two limits matter. As `alpha -> 0` the estimator tends to the interval
- * MIDPOINT — a uniformly thin interval has its mass in the middle — and that
- * one IS a branch, because the two terms both diverge like `span / alpha` and
- * their difference loses most of its significant digits below `alpha ~ 1e-4`.
- * The branch is CONTINUOUS with the formula at its threshold.
+ * midpoint — a uniformly thin interval has its mass in the middle — and that
+ * limit is a branch, because the two terms both diverge like `span / alpha`
+ * and their difference loses most of its significant digits below
+ * `alpha ~ 1e-4`. The branch is continuous with the formula at its threshold.
  *
- * As `alpha -> 1` the estimator tends toward `t0`, but only LOGARITHMICALLY:
+ * As `alpha -> 1` the estimator tends toward `t0`, but only logarithmically:
  * at `alpha = 1 - 1e-4` it is still ~11% of the interval past the entry point.
- * There is therefore deliberately NO snap-to-`t0` branch — one would introduce
- * a discontinuity of a tenth of the deck thickness exactly where an opaque
- * cloud's depth is being handed to a reprojection. Instead the transmittance
- * is floored at {@link CLOUD_WEIGHTED_DEPTH_MIN_TRANSMITTANCE} so the
- * logarithm stays finite, and a fully opaque pixel reports a visible surface a
- * short way inside the deck, which is both continuous and closer to what an
- * opaque cloud actually looks like than the entry plane is.
+ * There is therefore no snap-to-`t0` branch — one would introduce a
+ * discontinuity of a tenth of the deck thickness exactly where an opaque
+ * cloud's depth is handed to a reprojection. Instead the transmittance is
+ * floored at {@link CLOUD_WEIGHTED_DEPTH_MIN_TRANSMITTANCE} so the logarithm
+ * stays finite, and a fully opaque pixel reports a visible surface a short way
+ * inside the deck, which is both continuous and closer to what an opaque cloud
+ * looks like than the entry plane is.
  *
  * Returns `-1` for an empty interval so callers propagate "no cloud" rather
  * than a plausible-looking zero.
  *
- * ★ THIS IS AN ESTIMATOR, NOT AN ACCUMULATION. It is exact only for uniform
- *   extinction inside the interval. It remains the DEFAULT and is not
- *   deprecated: it is the only depth available to a build that does not compile
- *   `C13-10`'s emitting march, it is the `//>>else` of that variant, and it is
- *   the reference the accumulation is checked against. The accumulation itself
- *   is {@link cloudMarchWeightedDepth}. The WGSL producer mirrors this
- *   expression-for-expression.
+ * This is an estimator, not an accumulation, and is exact only for uniform
+ * extinction inside the interval. It is nonetheless the default rather than a
+ * deprecated path: it is the only depth available to a build that does not
+ * compile the emitting march, it is the `//>>else` branch of that variant, and
+ * it is the reference the accumulation is checked against. The accumulation
+ * itself is {@link cloudMarchWeightedDepth}. The WGSL producer mirrors this
+ * expression for expression.
  *
  * @param t0 Interval entry distance in metres.
  * @param t1 Interval exit distance in metres.
@@ -576,30 +570,22 @@ export interface CloudAttachmentUniformInputs {
  */
 export const CLOUD_ATTACHMENT_DEFAULT_DEPTH_NORMALIZATION_METERS = 2.0e6;
 
-// ═══════════════════════════════════════════════════════════════════════════
-// C13-10 — MARCH-EMITTED RECONSTRUCTION
-//
-// The estimator above answers "what depth does this alpha imply over this
-// geometric interval". The functions below answer the question the estimator
-// could not reach without changing the march: "what depth did the march
-// actually integrate". They are the CPU twins of the
-// `CLOUD_MARCH_EMIT_RECONSTRUCTION` variant, and they exist here — beside the
-// estimator, in the same pure module — precisely so a reviewer can see the two
-// side by side and so `node --test` can execute both without a device.
-//
-// ★ OWNERSHIP MOVES, IT DOES NOT DUPLICATE. When the variant is compiled the
-//   MARCH writes contract slot 1 (`depth`) as a second colour target and the
-//   producer pass READS it, because a render pass cannot sample an attachment
-//   it also writes. {@link CLOUD_EMITTED_ATTACHMENTS} is the producer's MRT
-//   list in that variant, and it is derived from the same contract table so
-//   the two can never drift.
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
- * Attachments the PRODUCER pass writes when the march emits the depth slot.
- * Slot 1 is absent: the march owns it in that variant. Derived from
- * {@link CLOUD_OWNED_ATTACHMENTS} rather than restated, so adding an owned
- * attachment updates both lists at once.
+ * Attachments the producer pass writes when the march emits the depth slot.
+ *
+ * The estimator above answers what depth a given alpha implies over a given
+ * geometric interval. The functions below answer what depth the march actually
+ * integrated, which the estimator cannot reach without changing the march.
+ * They are the CPU twins of the `CLOUD_MARCH_EMIT_RECONSTRUCTION` variant, and
+ * they sit beside the estimator in the same pure module so the two can be read
+ * side by side and `node --test` can execute both without a device.
+ *
+ * Ownership moves under the variant rather than duplicating: when it is
+ * compiled the march writes contract slot 1 (`depth`) as a second colour
+ * target and the producer pass reads it, because a render pass cannot sample
+ * an attachment it also writes. Slot 1 is therefore absent from this list,
+ * which is derived from {@link CLOUD_OWNED_ATTACHMENTS} rather than restated,
+ * so adding an owned attachment updates both at once.
  */
 export const CLOUD_EMITTED_ATTACHMENTS: readonly CloudAttachmentSpec[] =
   Object.freeze(
@@ -609,7 +595,7 @@ export const CLOUD_EMITTED_ATTACHMENTS: readonly CloudAttachmentSpec[] =
   );
 
 /**
- * Slot the MARCH writes directly under the emission variant. Named rather than
+ * Slot the march writes directly under the emission variant. Named rather than
  * spelled `1` at the three call sites that need it.
  */
 export const CLOUD_MARCH_EMITTED_SLOT = CloudAttachmentSlot.DEPTH;
@@ -630,7 +616,7 @@ export const CLOUD_EMIT_MIN_ALPHA = 1.0e-6;
  * rgba16float's relative quantum near 1 (`2^-10`), mirroring
  * `CLOUD_MOMENT_F16_QUANTUM` in `CloudTemporalResolve.wgsl`.
  *
- * This is a STORAGE tolerance, not a quality threshold. The moment attachment
+ * This is a storage tolerance, not a quality threshold. The moment attachment
  * stores `E[x]` and `E[x²]` as independent half-floats, so a record from a real
  * distribution can violate `E[x²] >= E[x]²` by about this much through rounding
  * alone. Moving it changes what counts as a self-consistent record and nothing
@@ -639,7 +625,7 @@ export const CLOUD_EMIT_MIN_ALPHA = 1.0e-6;
 export const CLOUD_MOMENT_F16_QUANTUM = 0.0009765625;
 
 /**
- * Transmittance-weighted mean distance the march ACCUMULATED, in metres.
+ * Transmittance-weighted mean distance the march accumulated, in metres.
  *
  * `weightedDistanceSum` is `Σ wᵢ·tᵢ` over the march's own per-sample weights
  * `wᵢ = (1 - exp(-σᵢ·Δᵢ))·Tᵢ` — the identical weights its radiance accumulation
@@ -683,16 +669,16 @@ export interface CloudDeckEmission {
  *
  * Two things here are decisions rather than bookkeeping:
  *
- *   THE FRONT IS A MINIMUM, NOT THE FIRST DECK. The composite is ordered by
- *   `|cameraAltitude - deckMidAltitude|`, a VERTICAL-BAND key that is not ray
+ *   The front is a minimum, not the first deck. The composite is ordered by
+ *   `|cameraAltitude - deckMidAltitude|`, a vertical-band key that is not ray
  *   order for an oblique view — a high deck can be entered before a low one.
  *   Taking the first deck's front would hand a disocclusion test the wrong
- *   surface exactly in the multi-deck case the row exists to serve.
+ *   surface in exactly the multi-deck case the attachment set exists to serve.
  *
- *   THE WEIGHTED MEAN COMPOSES EXACTLY. Deck `k` enters the composite with
+ *   The weighted mean composes exactly. Deck `k` enters the composite with
  *   weight `transₖ` (the running transmittance in front of it) and its own
  *   weights sum to `alphaₖ`, so `Σₖ transₖ·Σᵢwₖᵢtₖᵢ` divided by
- *   `Σₖ transₖ·alphaₖ` — which IS the composited alpha — is the
+ *   `Σₖ transₖ·alphaₖ` — which is the composited alpha — is the
  *   transmittance-weighted mean over the whole stack. No renormalization
  *   fudge is needed and none is applied.
  *
@@ -701,7 +687,7 @@ export interface CloudDeckEmission {
  * (`trans < 0.005`) is applied here too, so the twin stops where the shader
  * stops rather than integrating decks the GPU never marched.
  *
- * @param decks Per-deck emissions in FRONT-TO-BACK COMPOSITE ORDER.
+ * @param decks Per-deck emissions in front-to-back composite order.
  */
 export function cloudCompositeMarchDepth(decks: readonly CloudDeckEmission[]): {
   front: number;
@@ -743,10 +729,10 @@ export function cloudCompositeMarchDepth(decks: readonly CloudDeckEmission[]): {
 /**
  * Why the temporal resolve refused to reuse history for one texel.
  *
- * ORDER IS PART OF THE CONTRACT: the WGSL tests these in exactly this sequence
- * and returns on the first hit, so a twin that reorders them would agree on
- * "rejected" while disagreeing on WHY — and the reason is what the counters
- * publish. ADD-ONLY.
+ * The order is part of the contract: the WGSL tests these in exactly this
+ * sequence and returns on the first hit, so a twin that reordered them would
+ * agree on "rejected" while disagreeing on the reason — and the reason is what
+ * the counters publish. Entries may be added but never reordered or removed.
  */
 export const CloudHistoryRejection = Object.freeze({
   /** History is usable; the resolve proceeds to the clamp + blend. */
@@ -789,17 +775,16 @@ export interface CloudReconstructionTexel {
  * CPU twin of the `CLOUD_RECONSTRUCTION_CONSUME` validity gate in
  * `CloudTemporalResolve.wgsl`.
  *
- * ★ WHAT THIS DELIBERATELY DOES NOT CONTAIN. The C13 ledger gives `C13-12`
- *   "attachment-aware motion/depth rejection, variance clipping, reactive
- *   history, wind advection in reprojection, disocclusion". Every one of those
- *   needs a TUNED NUMBER — a depth-delta bound, a clip width in sigmas, a
- *   reactivity ramp. There is no tuned number here, and that is the boundary:
- *   this function returns only facts the producer already recorded
- *   ({@link CloudHistoryRejection.PRODUCER_INVALID},
- *   {@link CloudHistoryRejection.NO_CLOUD_ANCHOR},
- *   {@link CloudHistoryRejection.OFF_SCREEN}), one internal-consistency
- *   requirement whose only constant is the storage format's own quantum, and
- *   one early-out that is exactly output-equivalent to running the full path.
+ * The boundary of this function is that it contains no tuned number. The
+ * policies that would belong elsewhere — attachment-aware motion and depth
+ * rejection, variance clipping, reactive history, wind advection in
+ * reprojection, disocclusion — each need one: a depth-delta bound, a clip
+ * width in sigmas, a reactivity ramp. What is returned here is only facts the
+ * producer already recorded ({@link CloudHistoryRejection.PRODUCER_INVALID},
+ * {@link CloudHistoryRejection.NO_CLOUD_ANCHOR},
+ * {@link CloudHistoryRejection.OFF_SCREEN}), one internal-consistency
+ * requirement whose only constant is the storage format's own quantum, and one
+ * early-out that is exactly output-equivalent to running the full path.
  *
  * @returns A {@link CloudHistoryRejection} value.
  */

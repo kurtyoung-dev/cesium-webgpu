@@ -8,9 +8,8 @@
  * volumetric cloud deck from this collection's <code>.volumetric</code> config,
  * and <b>suppresses this collection's billboards</b>. It is <b>WebGPU only</b>;
  * on the WebGL renderer a <code>VOLUMETRIC</code> collection stores the mode but
- * renders nothing extra (documented graceful no-op — see FORK_OVERVIEW
- * principle 10). Only one <code>VOLUMETRIC</code> collection is primary per
- * frame in the first cut (see migration_doc/CLOUD_UNIFICATION_DESIGN.md §7 Q1).</p>
+ * renders nothing extra, a documented graceful no-op. At most one
+ * <code>VOLUMETRIC</code> collection is primary per frame.</p>
  *
  * @enum {number}
  */

@@ -1,12 +1,11 @@
 /**
  * Coarse temporal-history validity contract for procedural clouds.
  *
- * C13-05 owns camera-relative reprojection and correctness-preserving history
- * invalidation. This classifier deliberately handles only discontinuities that
- * make the previous transform or cloud-shell topology unusable. Continuous
- * bounded camera motion and ordinary clock/wind evolution preserve history;
- * C13-12 owns wind-aware reprojection, reactive masks, variance clipping, and
- * selective invalidation for richer reconstruction attachments.
+ * This classifier handles only discontinuities that make the previous transform
+ * or the cloud-shell topology unusable. Continuous bounded camera motion and
+ * ordinary clock or wind evolution preserve history. Wind-aware reprojection,
+ * reactive masks, variance clipping and selective invalidation against the
+ * reconstruction attachments are not part of it.
  *
  * The caller owns both mutable records and reuses them every frame. Neither
  * classifier nor commit function creates arrays, objects, or typed-array views.
@@ -32,7 +31,7 @@ export const CLOUD_TEMPORAL_RESET_RESOURCE = 1 << 10;
 /**
  * Return true when a reset episode introduces at least one reason that was not
  * already latched. This lets adjacent distinct cuts advance diagnostics while a
- * persistent reason such as MORPH increments only once.
+ * persistent reason such as a morph increments only once.
  */
 export function cloudTemporalResetStartsGeneration(
   latchedReasons: number,
@@ -47,9 +46,9 @@ export function cloudTemporalResetStartsGeneration(
 /**
  * State from the last frame that successfully wrote temporal cloud history.
  *
- * `temporalActive` is also observed on inactive frames so an inactive→active
- * transition cannot reuse a stale allocation. All remaining fields describe
- * the last successful history write, not merely the last Scene frame.
+ * `temporalActive` is also observed on inactive frames so a transition from
+ * inactive to active cannot reuse a stale allocation. All remaining fields
+ * describe the last successful history write, not merely the last Scene frame.
  */
 export interface CloudTemporalHistoryState {
   initialized: boolean;
@@ -68,11 +67,11 @@ export interface CloudTemporalHistoryState {
 }
 
 /**
- * Current frame inputs required by the coarse C13-05 classifier.
+ * Current frame inputs required by the coarse classifier.
  *
- * Time, wind, weather, and appearance controls are intentionally absent:
- * ordinary continuous evolution must not flush history. Advanced change
- * classification and wind-aware reconstruction remain C13-12 work.
+ * Time, wind, weather, and appearance controls are absent: ordinary continuous
+ * evolution must not flush history. Finer change classification and wind-aware
+ * reconstruction are not part of this contract.
  */
 export interface CloudTemporalHistorySample {
   frameNumber: number;

@@ -1,23 +1,25 @@
 /**
- * Deterministic synthetic weather source (Phase 0 — testing / offline). Emits a
- * known global coverage field so the ingest pipeline (source -> packer ->
- * weatherTex -> clouds) can be verified end-to-end WITHOUT depending on the live
- * (dev-lab, CORS-uncertain) EDR endpoint. Patterns:
+ * Deterministic synthetic weather source, for testing and offline use. Emits a
+ * known global coverage field so the ingest pipeline — source to packer to
+ * weatherTex to clouds — can be verified end to end without depending on the
+ * live EDR endpoint, whose CORS behaviour is not guaranteed. The patterns:
  *   - "uniform"  : a flat coverage value everywhere.
- *   - "eastwest" : a west(0) -> east(1) longitude gradient (clearly spatial).
+ *   - "eastwest" : a west(0) to east(1) longitude gradient, clearly spatial.
  *   - "bands"    : alternating latitude bands.
  *   - "drift"    : a sinusoidal cloud band whose longitude phase advances with
- *                  `request.time` — a deterministic TIME-VARYING field for the
- *                  Phase-2 time model (no network). Same time -> same field.
- *   - "rich"     : Phase 3 — a high, near-uniform R coverage with INDEPENDENTLY
+ *                  `request.time`, giving the time model a deterministic
+ *                  time-varying field with no network. The same time produces
+ *                  the same field.
+ *   - "rich"     : a high, near-uniform R coverage with independently
  *                  spatially-varying G (genus, by longitude quadrant), B (cloud
- *                  base, north->south), and A (density bias, west->east), so a
- *                  probe can prove the shader applies G/B/A, not just R.
+ *                  base, north to south) and A (density bias, west to east), so
+ *                  a probe can prove the shader applies G, B and A and not just
+ *                  R.
  *
- * C13-08: the emitted field carries `request.bounds` when the caller asks for a
- * sub-region, so the same deterministic patterns double as a REGIONAL fixture
- * (the packer then places them on that rectangle instead of over the planet).
- * With no requested bounds the field is global, exactly as before.
+ * The emitted field carries `request.bounds` when the caller asks for a
+ * sub-region, so the same deterministic patterns double as a regional fixture
+ * and the packer places them on that rectangle rather than over the planet.
+ * With no requested bounds the field is global.
  *
  * @module Scene/Weather/SyntheticWeatherSource
  */
@@ -38,11 +40,11 @@ const HOUR_MS = 3600000;
 const DRIFT_SPATIAL_CYCLES = 3;
 const DRIFT_PERIOD_HOURS = 24;
 
-/** Optional present-weather the synthetic field carries (PRECIP-DATA, Batch 444). */
+/** Optional present weather the synthetic field carries. */
 export interface SyntheticPresentWeather {
   /** Uniform WMO `ww` present-weather code (00..99) across the field. */
   ww?: number;
-  /** Aggregate visibility, KILOMETRES (low → denser data-driven precip). */
+  /** Aggregate visibility in kilometres; lower means denser data-driven precipitation. */
   visibilityKm?: number;
 }
 
@@ -141,9 +143,9 @@ export class SyntheticWeatherSource implements WeatherSource {
         }
       }
     }
-    // PRECIP-DATA (Batch 444) — carry present-weather when configured. A uniform
-    // `ww` grid + the field-level `representativeWw`/`visibilityKm` let the
-    // data-driven precip path read a known code offline (no network).
+    // Carry present weather when configured. A uniform `ww` grid alongside the
+    // field-level `representativeWw` and `visibilityKm` lets the data-driven
+    // precipitation path read a known code offline, with no network.
     let ww: Float32Array | undefined;
     if (this._present?.ww !== undefined) {
       ww = new Float32Array(w * h);
@@ -160,10 +162,9 @@ export class SyntheticWeatherSource implements WeatherSource {
       ww,
       representativeWw: this._present?.ww,
       visibilityKm: this._present?.visibilityKm,
-      // C13-08 — honour a REGIONAL request so the offline path can produce a
-      // deterministic regional field (the packer then places it on that
-      // rectangle instead of stretching it). Omitted → the global extent, i.e.
-      // byte-identical to every existing synthetic probe.
+      // Honour a regional request, so the offline path can produce a
+      // deterministic regional field and the packer places it on that rectangle
+      // rather than stretching it. Omitted, the field takes the global extent.
       bounds: request.bounds ?? GLOBAL_WEATHER_BOUNDS,
       // The loops above place column 0 ON `west` and column `w-1` ON `east`.
       registration: "node",

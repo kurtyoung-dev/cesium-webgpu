@@ -1,47 +1,45 @@
 /**
- * C13-07 — dateline/pole-safe sampling machinery for the GLOBAL equirectangular
- * weather map (the C2-16 `weatherTex` seam).
+ * Dateline- and pole-safe sampling machinery for the global equirectangular
+ * weather map behind the `weatherTex` seam.
  *
- * This module owns ONE thing: the texel <-> lon/lat convention shared by every
+ * This module owns one thing: the texel to lon/lat convention shared by every
  * producer of the weather texture and by the WGSL that samples it, plus the two
- * bounded corrections that convention needs to be artifact-free:
+ * bounded corrections that convention needs in order to be artifact-free:
  *
- *   1. **Antimeridian (dateline).** The texture is sampled with
- *      `addressModeU: "repeat"`, so texel `texW-1` and texel `0` are filtered
- *      together across lon = +-180 deg. A repeating SAMPLER cannot make
- *      non-periodic SOURCE data seam-free, so any procedural producer must be
- *      exactly periodic in longitude. {@link periodicFbm2D} is the seam-safe
- *      value-noise fBM that guarantees it by wrapping the integer noise lattice
- *      modulo each octave's period.
+ *   1. **Antimeridian.** The texture is sampled with `addressModeU: "repeat"`,
+ *      so texel `texW-1` and texel `0` are filtered together across
+ *      lon = +-180 deg. A repeating sampler cannot make non-periodic source data
+ *      seam-free, so any procedural producer has to be exactly periodic in
+ *      longitude. {@link periodicFbm2D} is the seam-safe value-noise fBM that
+ *      guarantees it, by wrapping the integer noise lattice modulo each octave's
+ *      period.
  *   2. **Poles.** An equirectangular grid keeps `texW` distinct longitude
  *      samples at every latitude while the ground circumference collapses as
  *      `cos(lat)`. At the pole all of those samples occupy one point, so the
  *      value read there depends on the azimuth of approach: a pinwheel, and a
  *      genuine discontinuity at the pole itself.
  *      {@link applyEquirectPolarLowPass} removes it by low-passing each row in
- *      longitude with a WRAP-AWARE box whose width tracks `1 / cos(lat)`. The
- *      filter is exactly identity below ~59 deg (so mid-latitude content is
- *      byte-for-byte unchanged) and degenerates to the row MEAN in the two
- *      polar-cap rows, which makes the pole single-valued under the shader's
+ *      longitude with a wrap-aware box whose width tracks `1 / cos(lat)`. The
+ *      filter is exactly the identity below ~59 deg, leaving mid-latitude
+ *      content byte-for-byte unchanged, and degenerates to the row mean in the
+ *      two polar-cap rows, which makes the pole single-valued under the shader's
  *      `addressModeV: "clamp-to-edge"`.
  *
- * SCOPE (deliberate): this is the bounded stopgap the Campaign 13 queue scopes
- * for the CURRENT global map. It does NOT introduce the globe-quadtree weather
- * tile schema, gutters, per-tile bounds/no-data, atlas, or LOD — that is `C13-14`
- * and this module must not be presented as a substitute for it.
+ * This covers the current global map. It does not introduce a globe-quadtree
+ * weather tile schema with gutters, per-tile bounds and no-data, an atlas or
+ * LOD, and must not be presented as a substitute for one.
  *
- * The field-grid convention is the one declared by {@link WeatherField}: row 0 is
- * the NORTH edge, column 0 is the WEST edge, i.e. a node-centred grid whose first
- * and last columns are the SAME meridian for a global field. Under that
- * convention a wrap-aware bilinear fetch is unreachable (the resample coordinate
- * never leaves `[0, gridWidth-1]`), so none is added here.
+ * The field-grid convention is the one {@link WeatherField} declares: row 0 is
+ * the north edge and column 0 is the west edge, a node-centred grid whose first
+ * and last columns are on one meridian for a global field. Under that convention
+ * a wrap-aware bilinear fetch is unreachable, because the resample coordinate
+ * never leaves `[0, gridWidth-1]`, so none is added here.
  *
- * C13-08 has since RATIFIED that convention as the default and made it explicit
- * and per-field — see {@link WeatherFieldGrid}, which is now the single home for
- * the source-grid coordinate reference, the regional-bounds placement, and the
- * no-data semantics. It also adds the wrap-aware fetch exactly where it BECAME
- * reachable (a cell-registered full-circle field); this module's statement above
- * remains true for the node-registered default.
+ * {@link WeatherFieldGrid} makes that convention explicit and per-field, and is
+ * the single home for the source-grid coordinate reference, regional-bounds
+ * placement and no-data semantics. It adds the wrap-aware fetch for the one case
+ * that does reach it, a cell-registered full-circle field; the statement above
+ * holds for the node-registered default.
  *
  * @module Scene/Weather/WeatherMapSeam
  */

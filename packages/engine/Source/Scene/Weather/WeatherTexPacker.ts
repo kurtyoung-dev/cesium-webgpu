@@ -1,21 +1,23 @@
 /**
  * Bakes a normalized {@link WeatherField} into the WebGPU cloud renderer's
- * weather-map texture bytes (Phase 0). The output byte layout EXACTLY matches
- * {@link buildProceduralWeatherMap} (Scene/Weather/ProceduralWeatherMap.ts) — a
- * 256x128 (default) rgba8unorm equirectangular texture, row 0 = north:
+ * weather-map texture bytes. The output byte layout matches
+ * {@link buildProceduralWeatherMap} (Scene/Weather/ProceduralWeatherMap.ts)
+ * exactly — a 256x128 by default rgba8unorm equirectangular texture with row 0
+ * at north:
  *   R = coverage (0..1 -> 0..255)   — the only channel the shader reads today
  *   G = cloud type / genus (scaffolding, default 128)
  *   B = cloud base, normalized      (scaffolding, default 0)
  *   A = density bias (0.5 neutral)  (scaffolding, default 128)
  *
- * ALL unit conversions live here so a WeatherSource only emits normalized data.
+ * Every unit conversion lives here, so a WeatherSource only emits normalized
+ * data.
  *
- * C13-08: the texture stays GLOBAL — the renderer keeps packing the fixed global
- * `weatherTexBounds`, and REGIONAL placement happens HERE, by writing the field
+ * The texture stays global: the renderer keeps packing the fixed global
+ * `weatherTexBounds`, and regional placement happens here, by writing the field
  * only into the texels its `bounds` actually cover. That is the placement that
- * keeps a repeating-U / clamping-V sampler meaningful; re-pointing
- * `weatherTexBounds` at a regional rectangle would instead TILE the region across
- * the planet. Texels the field does not observe are written from a declared
+ * keeps a repeating-U, clamping-V sampler meaningful; re-pointing
+ * `weatherTexBounds` at a regional rectangle would tile the region across the
+ * planet instead. Texels the field does not observe are written from a declared
  * {@link WeatherNoDataFill}. Both the source-grid coordinate reference and the
  * no-data semantics are decided in {@link WeatherFieldGrid}, not here.
  *
@@ -264,22 +266,22 @@ function constantFillQuad(fill: WeatherNoDataFill): Uint8Array {
 }
 
 /**
- * Rewrite the PROCEDURAL no-data fill over the texels that took it, undoing the
- * pole-safe low-pass's SECOND pass over bytes that were already band-limited.
+ * Rewrites the procedural no-data fill over the texels that took it, undoing the
+ * pole-safe low-pass's second pass over bytes that were already band-limited.
  *
- * Scoped to the procedural fill on purpose. That fill's whole contract is
- * byte-continuity with the no-provider render, and `buildProceduralWeatherMap`
- * ends with this same filter at this same size, so the second pass is pure
- * damage. A `"constant"` fill is flat — re-filtering it is the identity except
- * within one kernel radius of the fill/observed seam, where there is no stated
+ * Scoped to the procedural fill. That fill's whole contract is byte-continuity
+ * with the no-provider render, and `buildProceduralWeatherMap` ends with this
+ * same filter at this same size, so a second pass is pure damage. A `"constant"`
+ * fill is flat, so re-filtering it is the identity except within one kernel
+ * radius of the seam between fill and observed data, where there is no stated
  * contract and the blend is arguably wanted; it is left alone.
  *
- * POLAR-CAP ROWS ARE DELIBERATELY EXEMPT. There `applyEquirectPolarLowPass`
- * does not band-limit, it COLLAPSES the row to one value — that single-valued
- * pole is the entire point of C13-07, and a row that is part observed and part
- * filled would otherwise carry two values around the azimuth ring. On a fully
- * filled cap row the exemption costs nothing: the fill's own cap row is already
- * constant, so filtering it again is the identity.
+ * Polar-cap rows are exempt. There `applyEquirectPolarLowPass` does not
+ * band-limit but collapses the row to a single value, and that single-valued
+ * pole is the point of the low-pass: a row that is part observed and part filled
+ * would otherwise carry two values around the azimuth ring. On a fully filled
+ * cap row the exemption costs nothing, because the fill's own cap row is already
+ * constant and filtering it again is the identity.
  *
  * @param out The packed rgba8 bytes, already low-passed.
  * @param filledMask One byte per texel, 1 where the fill was written; `null`
@@ -317,12 +319,12 @@ function restoreProceduralNoDataFill(
 }
 
 /**
- * Resample a {@link WeatherField} onto the `texW x texH` GLOBAL rgba8 weather
- * texture, honouring the field's `bounds`, registration, and no-data — and
- * report what it did.
+ * Resamples a {@link WeatherField} onto the global `texW x texH` rgba8 weather
+ * texture, honouring the field's `bounds`, registration and no-data, and reports
+ * what it did.
  *
- * A GLOBAL field (bounds == the texture's window, node-registered, no gaps) takes
- * exactly the historical code path and produces exactly the historical bytes.
+ * A field whose bounds are the texture's own window, node-registered and without
+ * gaps, takes the plain global path and produces the same bytes it always has.
  *
  * @param field The normalized weather grid.
  * @param texW Texture width (default 256, matches WEATHER_TEX_W).
@@ -343,10 +345,9 @@ export function packWeatherFieldDetailed(
     field.baseMeters !== undefined && field.baseMeters.length === gw * gh;
   const hasDensity =
     field.densityBias !== undefined && field.densityBias.length === gw * gh;
-  // `bounds` is required by the type, but `packWeatherField` is a PUBLIC export
-  // and pre-C13-08 callers never had to supply meaningful ones (nothing read
-  // them). A bounds-less field therefore keeps its historical global behaviour
-  // rather than throwing.
+  // `bounds` is required by the type, but `packWeatherField` is a public export
+  // and an external caller can still hand over a field without them. A
+  // bounds-less field falls back to the global window rather than throwing.
   const bounds = field.bounds ?? GLOBAL_WEATHER_BOUNDS;
   const registration = field.registration ?? DEFAULT_WEATHER_GRID_REGISTRATION;
   const sentinel = field.noDataValue;
@@ -377,16 +378,16 @@ export function packWeatherFieldDetailed(
   let filledTexels = 0;
 
   for (let ty = 0; ty < texH; ty++) {
-    // Row 0 = north in both the field and the texture, so the v axes align.
-    // C13-07: resample at TEXEL CENTRES — `(ty + 0.5) / texH` — not at texel
+    // Row 0 is north in both the field and the texture, so the v axes align.
+    // Resample at texel centres, `(ty + 0.5) / texH`, rather than at texel
     // indices normalized over `texH - 1`. A `linear` sampler reconstructs the
-    // stored value at the texel CENTRE, so the old edge-anchored mapping put the
-    // field up to half a texel off in longitude, which is exactly the pair of
-    // values `addressModeU: "repeat"` blends across the antimeridian.
+    // stored value at the texel centre, so an edge-anchored mapping puts the
+    // field up to half a texel off in longitude — exactly the pair of values
+    // `addressModeU: "repeat"` blends across the antimeridian.
     const texelV = (ty + 0.5) / texH;
-    // C13-08: ...and THEN place that texel inside the field's own window. For a
+    // Then place that texel inside the field's own window. For a
     // global field this is the identity, so the expression below is still the
-    // historical `((ty + 0.5) / texH) * (gh - 1)`.
+    // plain `((ty + 0.5) / texH) * (gh - 1)`.
     const fv = weatherFieldV(texelV, bounds);
     const insideLat = fv >= 0 && fv <= 1;
     const fy = weatherFieldGridCoordinate(fv, gh, registration);
@@ -449,20 +450,20 @@ export function packWeatherFieldDetailed(
     }
   }
 
-  // C13-07 — pole-safe: collapse the polar-cap rows to a single longitude value
-  // and taper the longitudinal over-sampling below them, so a straight-down polar
-  // camera does not read a different cell per azimuth. Exact no-op below ~59 deg.
+  // Pole-safe: collapse the polar-cap rows to a single longitude value and taper
+  // the longitudinal over-sampling below them, so a straight-down polar camera
+  // does not read a different cell per azimuth. An exact no-op below ~59 deg.
   applyEquirectPolarLowPass(out, texW, texH);
-  // ...and then put the PROCEDURAL fill back, because the low-pass above would
-  // otherwise filter it a SECOND time. `buildProceduralWeatherMap` ends with
-  // this same filter at this same size, so the fill bytes arrive already
-  // band-limited; re-filtering them widened the kernel (box ∘ box = triangular)
-  // and moved 6,061 of 131,072 bytes by up to 30/255 across 42 of the 128 rows.
-  // That broke the contract `WeatherFieldGrid` states as the whole reason
-  // `procedural` is the default fill — "the same bytes the renderer already
-  // shows when there is no provider at all" — so attaching or detaching a
-  // partial provider (METAR emits no-data for most of the planet) visibly
-  // re-blurred high-latitude cloud structure where nothing was observed.
+  // Then put the procedural fill back, because the low-pass above would filter
+  // it a second time. `buildProceduralWeatherMap` ends with this same filter at
+  // this same size, so the fill bytes arrive already band-limited, and
+  // re-filtering widens the kernel — a box convolved with a box is triangular —
+  // which moves 6,061 of 131,072 bytes by up to 30/255 across 42 of the 128
+  // rows. That would break the byte-continuity with the no-provider render that
+  // `WeatherFieldGrid` gives as the reason `procedural` is the default fill, so
+  // attaching or detaching a partial provider — METAR emits no-data for most of
+  // the planet — would visibly re-blur high-latitude cloud structure where
+  // nothing was observed.
   restoreProceduralNoDataFill(out, filledMask, texW, texH, fillMap);
   return {
     bytes: out,
@@ -475,9 +476,10 @@ export function packWeatherFieldDetailed(
 }
 
 /**
- * Resample a {@link WeatherField} to a `texW x texH` rgba8 weather texture.
+ * Resamples a {@link WeatherField} to a `texW x texH` rgba8 weather texture.
  *
- * Thin wrapper over {@link packWeatherFieldDetailed} — same work, bytes only.
+ * A thin wrapper over {@link packWeatherFieldDetailed} — the same work, bytes
+ * only.
  *
  * @param field The normalized weather grid.
  * @param texW Texture width (default 256, matches WEATHER_TEX_W).

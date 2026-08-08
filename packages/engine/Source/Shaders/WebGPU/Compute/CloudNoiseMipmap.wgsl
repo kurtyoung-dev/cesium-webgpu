@@ -1,4 +1,4 @@
-// Campaign 13 C13-37 Slice B — 3D cloud-noise mip downsample.
+// 3D cloud-noise mip downsample.
 //
 // Each dispatch reads one explicit source mip view and writes the next explicit
 // destination mip view. One destination voxel is the normalized box average of

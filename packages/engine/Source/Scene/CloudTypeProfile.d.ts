@@ -1,6 +1,6 @@
-// Co-located ambient types for the plain-JS CloudTypeProfile.js (Session 29
-// pattern: a sibling .d.ts overrides JS inference for TS importers, so the
-// WebGPU renderer can read .get(type).shape etc. without `any`).
+// Co-located ambient types for the plain-JS CloudTypeProfile.js. A sibling
+// .d.ts overrides JS inference for TypeScript importers, so the WebGPU renderer
+// can read `.get(type).shape` and the rest without `any`.
 
 export interface CloudProfile {
   /** Altitude deck (CloudDeck: LOW=0/MID=1/HIGH=2). */

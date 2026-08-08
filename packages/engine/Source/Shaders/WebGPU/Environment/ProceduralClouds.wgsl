@@ -16,22 +16,26 @@
 //   - "The Real-Time Volumetric Cloudscapes of Horizon Zero Dawn" (Schneider, SIGGRAPH 2015)
 //   - "Nubis: Authoring Real-Time Volumetric Cloudscapes" (Schneider, SIGGRAPH 2017)
 //
-// ★ C13-10 — THE ONE COMPILE-TIME VARIANT THIS MODULE CARRIES.
-//   Every `//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION` block below is deleted by
-//   `WebGPUShaderPreprocessor.preprocess(source, 0, definesHi)` unless the
-//   caller sets `ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION`, and every
-//   such block keeps the historical code as its `//>>else`. At `definesHi = 0`
-//   the emitted WGSL is the pre-C13-10 module with only the directive COMMENT
-//   lines removed — pinned as an executed equality by
-//   `cloud-march-emission.spec.mjs` A1, not merely asserted here.
+// The module carries exactly one compile-time variant. Every
+// `//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION` block below is deleted by
+// `WebGPUShaderPreprocessor.preprocess(source, 0, definesHi)` unless the caller
+// sets `ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION`, and each such block
+// keeps the non-emitting code as its `//>>else`, so at `definesHi = 0` the
+// emitted WGSL differs from the non-emitting module only by the removed
+// directive lines. `cloud-march-emission.spec.mjs` executes that equality
+// rather than assuming it.
 //
-//   That is not style, it is the C13-39 constraint: WGSL register allocation is
-//   STATIC, so code added unconditionally to this module inflates the register
-//   footprint of the full-resolution march, the beer-shadow map, the cascade
-//   atlas and the god-ray mask, none of which produce a reconstruction
-//   attachment. Only the half-resolution march pipeline compiles the bit.
-//   Anything added here that is NOT inside a variant block is paid by all five.
+// WGSL register allocation is static, so code added unconditionally to this
+// module inflates the register footprint of the full-resolution march, the
+// beer-shadow map, the cascade atlas and the god-ray mask, none of which
+// produce a reconstruction attachment. Only the half-resolution march pipeline
+// compiles the bit, so anything added outside a variant block is paid by all
+// five.
 
+// Field order and byte offsets are locked to the packer in
+// WebGPUProceduralCloudRenderer.ts: new fields take a fresh 16-byte row at the
+// end and existing offsets never move. The number in each trailing comment is
+// that field's float index in the packer's write order.
 struct CloudUniforms {
   // Camera
   inverseProjection: mat4x4<f32>,
@@ -62,208 +66,186 @@ struct CloudUniforms {
   _pad1: f32,
   // Screen info
   resolution: vec2<f32>,
-  // C13-04 — reuse the former aligned vec2 pad, preserving this uniform's byte
-  // size and every later field offset.
+  // These two occupy the aligned vec2 pad that preceded them, so the uniform's
+  // byte size and every later field offset are unchanged.
   planetPolarRadius: f32,        // WGS84 semi-minor axis (6356752.314245179 m)
   cameraGeodeticHeight: f32,     // CPU-f64 Cartographic height, stored as f32
-  // Weather Phase 1 — weather-map seam (floats 64-79). Byte-locked to the JS
-  // packer in WebGPUProceduralCloudRenderer.ts.
+  // Weather-map seam, floats 64-79.
   weatherMapEnabled: f32,        // 64 — >0.5 → sample the weather map per position
   weatherStrength: f32,          // 65 — per-cell coverage multiplier (folds in cloudCoverage)
-  phaseG2: f32,                  // 66 — W1 dual-lobe back-scatter g
-  phaseBlend: f32,               // 67 — W1 forward/back lobe blend weight
+  phaseG2: f32,                  // 66 — dual-lobe back-scatter g
+  phaseBlend: f32,               // 67 — forward/back lobe blend weight
   weatherTexBounds: vec4<f32>,   // 68-71 — minLon, minLat, lonRange, latRange (radians)
-  // NOTE: scalar pads (NOT a vec3) so 72-75 stay byte-exact — a vec3 here has
+  // Scalar pads rather than a vec3, so 72-75 stay byte-exact: a vec3 here takes
   // 16-byte alignment and would jump to float 76, breaking the packer lock.
-  phaseG1: f32,                  // 72 — W1 dual-lobe forward-scatter g (silver lining)
-  ambientIntensity: f32,         // 73 — W2 sky/ground ambient intensity
-  qualityFlags: f32,             // 74 — V1 tier bitfield (read via u32())
-  // Batch 439 (4.7 CLOUD-CURL) — reserved slot 75 ACTIVATED in place (add-only;
-  // byte-layout unchanged). 0 → the BAKED-path detail-erosion curl warp is
-  // skipped entirely (default render byte-identical). >0 → amplitude of the
-  // analytic curl-noise domain warp on the detail sample position.
-  curlAmplitude: f32,            // 75 — 4.7 curl warp amplitude (0 = off, default)
-  // 76-79 — split from the old `_padA` vec4 (byte-identical: 4 scalars on the
-  // same 16-byte stride). Each named per the ratified D-2 table.
+  phaseG1: f32,                  // 72 — dual-lobe forward-scatter g (silver lining)
+  ambientIntensity: f32,         // 73 — sky/ground ambient intensity
+  qualityFlags: f32,             // 74 — tier bitfield (read via u32())
+  // 0 skips the baked-path detail-erosion curl warp entirely, which is the
+  // default; above 0 it is the amplitude of the analytic curl-noise domain warp
+  // applied to the detail sample position.
+  curlAmplitude: f32,            // 75 — curl warp amplitude (0 = off, default)
+  // 76-79 are four scalars on one 16-byte stride, occupying the bytes a single
+  // vec4 would.
   frameCounter: f32,             // 76 — Bayer/cone 16-phase + IGN 64-phase
-  curlFrequency: f32,            // 77 — 4.7 curl-noise swirl wavelength (noise-space scale)
-  lightSampleScale: f32,         // 78 — reserved (V5 lighting)
-  erosionStrength: f32,          // 79 — V4 mean-preserving erosion strength
-  skyAmbientColor: vec3<f32>,    // 80-82 — W2 blue-sky ambient (lights cloud tops)
+  curlFrequency: f32,            // 77 — curl-noise swirl wavelength (noise-space scale)
+  lightSampleScale: f32,         // 78 — light-march step-count and cone-radius scale
+  erosionStrength: f32,          // 79 — mean-preserving erosion strength
+  skyAmbientColor: vec3<f32>,    // 80-82 — blue-sky ambient (lights cloud tops)
   _padB: f32,                    // 83
-  groundAmbientColor: vec3<f32>, // 84-86 — W2 ground-bounce ambient (lights cloud bottoms)
+  groundAmbientColor: vec3<f32>, // 84-86 — ground-bounce ambient (lights cloud bottoms)
   _padC: f32,                    // 87
-  sunLightColor: vec3<f32>,      // 88-90 — W3 time-of-day sun color (warm low / neutral noon)
-  aerialStrength: f32,           // 91 — W4 aerial-perspective strength
-  aerialColor: vec3<f32>,        // 92-94 — W4 horizon inscatter haze tint (time-of-day keyed)
+  sunLightColor: vec3<f32>,      // 88-90 — time-of-day sun color (warm low / neutral noon)
+  aerialStrength: f32,           // 91 — aerial-perspective strength
+  aerialColor: vec3<f32>,        // 92-94 — horizon inscatter haze tint (time-of-day keyed)
   _padD: f32,                    // 95
-  // ── Batch 407 (promoted shader consts → live dials; all scalar f32, one
-  // 16-byte row 96-99 + a second 100-103). Default-byte-identical: the JS packer
-  // writes the former const values, so an unset dial reproduces today's render. ──
-  puffSize: f32,                 // 96 — promoted SHAPE_SCALE (baked base puff size)
-  exposure: f32,                 // 97 — promoted CLOUD_EXPOSURE (Reinhard tone-map)
-  msDecayA: f32,                 // 98 — MS_SCATTER_DECAY (per-octave contribution)
-  msDecayB: f32,                 // 99 — MS_EXTINCTION_DECAY (per-octave extinction)
-  msDecayC: f32,                 // 100 — MS_PHASE_DECAY (per-octave eccentricity)
-  // ── Batch 408 (V11 per-genus vertical-density profile; slots 101-103 were the
-  // Batch-407 reserved pads, renamed in place — add-only). Default CUMULUS keeps
-  // the render byte-identical: profileShape=BILLOWY uses the LITERAL original
-  // height gradient and profileDensityScale=1.0. ──
+  // Live dials for quantities that would otherwise be shader constants: all
+  // scalar f32 across one 16-byte row 96-99 and a second 100-103. The packer
+  // supplies a nominal default for each, so an untouched dial is a no-op.
+  puffSize: f32,                 // 96 — baked base puff size (shape-domain scale)
+  exposure: f32,                 // 97 — Reinhard tone-map exposure
+  msDecayA: f32,                 // 98 — multi-scatter contribution per octave
+  msDecayB: f32,                 // 99 — multi-scatter extinction per octave
+  msDecayC: f32,                 // 100 — multi-scatter eccentricity per octave
+  // Per-genus vertical-density profile, 101-104. The default genus is CUMULUS,
+  // whose profileShape is BILLOWY and whose scales are 1.0, so the neutral
+  // setting is the plain height gradient.
   profileShape: f32,             // 101 — 0=SLAB / 1=BILLOWY / 2=TOWERING_ANVIL
   profileDensityScale: f32,      // 102 — per-genus density vs CUMULUS (1.0 = neutral)
   profileExtinction: f32,        // 103 — per-genus optical extinction scale vs CUMULUS (1.0 = neutral); scales absorptionCoeff in the light march + view-ray transmittance
   anvilBias: f32,                // 104 — TOWERING_ANVIL upper-flare bias (0 = none)
-  // ── Batch 409 (depth occlusion; slots 105-106 were Batch-408 pads) ──
-  nearPlane: f32,                // 105 — camera frustum near (reverse the log depth)
+  // Depth occlusion needs the frustum planes to reverse the log depth.
+  nearPlane: f32,                // 105 — camera frustum near
   farPlane: f32,                 // 106 — camera frustum far
-  // ── Batch 424 (Weather Phase 3 — weather-map G/B/A channel reads). Slot 107
-  // was the Batch-409 reserved pad, renamed in place (add-only). Scales how
-  // strongly the weather map's G (genus), B (base) and A (density-bias) channels
-  // modulate the cloud model. Default 1.0; a NEUTRAL map cell (G=0.5, B=0, A=0.5)
-  // is a no-op at ANY strength, so weatherMapEnabled=0 OR a neutral map is
-  // byte-identical to the pre-424 render. ──
-  weatherChannelStrength: f32,   // 107 — G/B/A influence scale (0 = R-only legacy)
-  // ── Batch 434 (3.3 CLOUD-AERIAL-LUT + 3.4 CLOUD-AMBIENT-LUT) — atmosphere-LUT
-  // coupling. Slots 108-111 are one new 16-byte row, appended ADD-ONLY. All four
-  // default to the legacy path so an unset render is byte-identical:
-  //   aerialLutMode=0  → heuristic ~60 km LDR aerial lerp (unchanged)
-  //   ambientLutMode=0 → constant sky/ground ambient lerp (unchanged)
-  // Both also self-heal: even with the mode flag set, the WGSL falls back to the
-  // legacy branch when the sampled LUT radiance is ~0 (the LUTs are unbaked, e.g.
-  // skyAtmosphere off), so a stray "physical" flag never blacks-out the clouds. ──
+  // Scales how strongly the weather map's G (genus), B (base) and A
+  // (density-bias) channels modulate the cloud model. A neutral map cell
+  // (G=0.5, B=0, A=0.5) is a no-op at any strength, so either a neutral map or
+  // weatherMapEnabled=0 leaves the model driven by coverage alone.
+  weatherChannelStrength: f32,   // 107 — G/B/A influence scale (0 = R channel only)
+  // Atmosphere-LUT coupling, 108-111:
+  //   aerialLutMode=0  → heuristic ~60 km LDR aerial lerp
+  //   ambientLutMode=0 → constant sky/ground ambient lerp
+  // Both self-heal: even with the mode flag set, the WGSL falls back to the
+  // constant branch when the sampled LUT radiance is ~0, which is what an
+  // unbaked LUT reads as (skyAtmosphere off, for instance), so a stray
+  // "physical" flag cannot black out the clouds.
   aerialLutMode: f32,            // 108 — 0 heuristic / 1 physical (sky-view inscatter + transmittance)
-  ambientLutMode: f32,           // 109 — 0 constant / 1 sky-LUT (MS sky LUT up/down hemispheres)
-  atmosphereThickness: f32,      // 110 — m; MUST equal the LUT bake's ATMOSPHERE_THICKNESS (111e3)
+  ambientLutMode: f32,           // 109 — 0 constant / 1 sky-LUT (up/down hemispheres of the multiple-scattering LUT)
+  atmosphereThickness: f32,      // 110 — m; must equal the LUT bake's ATMOSPHERE_THICKNESS (111e3)
   _padE: f32,                    // 111 — pad to the 16-byte row
-  // ── Batch 443 (4.9 CLOUD-MULTIDECK) — multi-deck shell march. Slots 112-119 are
-  // two new 16-byte rows, appended ADD-ONLY. Default OFF is byte-identical: when
-  // multiDeck=0 the fragment marches EXACTLY ONE shell with cloudLayerBottom/Top
-  // (today's bounds + composite), and these deck-bounds floats are never read.
-  // When >0 the fragment marches up to 3 shells (LOW/MID/HIGH) from these bounds
-  // and composites them FRONT-TO-BACK (near deck over far deck, premultiplied).
-  // Bounds source: CloudTypeProfile.CloudDeck.bounds (LOW [0,2km], MID [2,7km],
-  // HIGH [5,13km]) packed by the JS renderer. ──
-  multiDeck: f32,                // 112 — 0 single shell (default) / >0 march LOW/MID/HIGH
+  // Multi-deck shell march, 112-119. At multiDeck=0 the fragment marches exactly
+  // one shell from cloudLayerBottom/Top and these deck-bounds floats are never
+  // read. Above 0 it marches up to three shells (low, mid, high) from these
+  // bounds and composites them front-to-back, near deck over far, premultiplied.
+  // Bounds come from CloudTypeProfile.CloudDeck.bounds — low [0,2 km], mid
+  // [2,7 km], high [5,13 km] — packed by the JS renderer.
+  multiDeck: f32,                // 112 — 0 single shell (default) / >0 march low/mid/high
   _padF: f32,                    // 113 — pad
   deckBoundsLow: vec2<f32>,      // 114-115 — LOW deck [bottom, top] (m above surface)
   deckBoundsMid: vec2<f32>,      // 116-117 — MID deck [bottom, top]
   deckBoundsHigh: vec2<f32>,     // 118-119 — HIGH deck [bottom, top]
-  // ── Batch 445 (4.12 CLOUD-RTE) — camera-relative high-precision march. Slots
-  // 120-127, two new 16-byte rows appended ADD-ONLY (existing field offsets above
-  // are UNCHANGED). The RTE high/low split of the camera world position; the planet
-  // center relative to the camera is -(high+low). READ ONLY inside the
-  // CLOUD_QF_HIGH_PRECISION branch. C13-04 enables that branch automatically;
-  // explicit false retains the legacy A/B route. The .xyz carry the split; the
-  // packed pad keeps each on a 16-byte (vec4) stride so the struct length is 128. ──
+  // Camera-relative high-precision march, 120-127: the relative-to-eye high/low
+  // split of the camera world position, from which the planet centre relative to
+  // the camera is -(high + low). Read only inside the high-precision branch,
+  // which is active unless `globe.cloudHighPrecision` is explicitly false. The
+  // .xyz carry the split and the pads keep each on a 16-byte (vec4) stride.
   encodedCameraHigh: vec3<f32>,  // 120-122 — high part of the camera world position
   _padG: f32,                    // 123 — pad to the 16-byte row
   encodedCameraLow: vec3<f32>,   // 124-126 — low part (refinement) of the camera position
   _padH: f32,                    // 127 — pad to the 16-byte row
-  // ── Batch 555 (E2 CLOUD-MAMMATUS) — pendulous "mamma" pouches on the cloud
-  // UNDERSIDE. Slots 128-131, one new 16-byte row appended ADD-ONLY (all earlier
-  // offsets UNCHANGED). Default OFF is byte-identical: when mammatusStrength=0 the
-  // mammatusFactor() below early-returns 1.0 so density is untouched and these
-  // floats are never read past the guard. The factor is a per-position multiplier
-  // in [0,1] applied IDENTICALLY in cloudDensity AND the cloudBaseDensity oracle,
-  // so the W5 `base >= full` empty-space-skip invariant is preserved. ──
+  // Pendulous "mamma" pouches on the cloud underside, 128-131. At
+  // mammatusStrength=0 mammatusFactor() early-returns 1.0, so density is
+  // untouched and these floats are never read past the guard. The factor is a
+  // per-position multiplier in [0,1] applied identically in the full density and
+  // in the cloudBaseDensity oracle, which is what keeps the `base >= full`
+  // empty-space-skip invariant true.
   mammatusStrength: f32,         // 128 — 0 off (default) / >0 underside pouch carve depth
   mammatusScale: f32,            // 129 — horizontal lobe frequency (pouch size; 1.0 neutral)
   mammatusDepth: f32,            // 130 — underside band height fraction the pouches occupy
   _padI: f32,                    // 131 — pad to the 16-byte row
-  // ── Batch 610 (E1 CLOUD-EXOTIC-SPECIES) — species/varieties as bounded density
-  // SHAPING on the baked-density-field arch (CLOUD_TAXONOMY_ROADMAP E1). Slots
-  // 132-135, one new 16-byte row appended ADD-ONLY (all earlier offsets UNCHANGED).
-  // Default OFF is byte-identical: speciesMode=0 makes speciesFactor() early-return
-  // 1.0 so density is untouched and these floats are never read past the guard. The
-  // factor is a per-position multiplier in [0,1] applied IDENTICALLY in cloudDensity
-  // AND the cloudBaseDensity oracle, so the W5 `base >= full` skip invariant holds.
-  // A per-genus gate lives in JS (default genera leave speciesMode=0); the shader
-  // only sees a non-zero mode when the user opts a deck into a species.
+  // Species and varieties as bounded density shaping over the baked density
+  // field, 132-135. At speciesMode=0 speciesFactor() early-returns 1.0, so
+  // density is untouched and these floats are never read past the guard. The
+  // factor is a per-position multiplier in [0,1] applied identically in the full
+  // density and in the cloudBaseDensity oracle, preserving `base >= full`. A
+  // per-genus gate lives in JS, so the shader sees a non-zero mode only when the
+  // user opts a deck into a species.
   speciesMode: f32,              // 132 — 0 off / 1 lenticularis / 2 fibratus-uncinus
   speciesStrength: f32,          // 133 — shaping depth (0 off → 1.0 factor; clamped 0..1)
   speciesScale: f32,             // 134 — feature frequency (lens/filament size; 1.0 neutral)
   speciesParam: f32,             // 135 — mode extra: uncinus fallstreak hook shear (mode 2)
-  // ── Batch 611 (E2 CLOUD-EXOTIC-FEATURES-REMAINING) — the sibling supplementary
-  // "features" to B592 mammatus / B610 species (CLOUD_TAXONOMY_ROADMAP E2), each a
-  // bounded density-shaping mode. Slots 136-139, one new 16-byte row appended
-  // ADD-ONLY (all earlier offsets UNCHANGED). Default OFF is byte-identical:
-  // featureMode=0 makes featureFactor() early-return 1.0 so density is untouched and
-  // these floats are never read past the guard. The factor is a per-position [0,1]
-  // multiplier applied IDENTICALLY in cloudDensity AND the cloudBaseDensity oracle,
-  // so the W5 `base >= full` skip invariant holds. A per-genus gate lives in JS
-  // (default genera leave featureMode=0); the shader only sees a non-zero mode when
-  // the user opts a deck into a feature.
+  // Supplementary features, the sibling of the mammatus and species dials above,
+  // 136-139; each is a bounded density-shaping mode. At featureMode=0
+  // featureFactor() early-returns 1.0, so density is untouched and these floats
+  // are never read past the guard. The factor is a per-position [0,1] multiplier
+  // applied identically in the full density and in the cloudBaseDensity oracle,
+  // preserving `base >= full`. A per-genus gate lives in JS, so the shader sees a
+  // non-zero mode only when the user opts a deck into a feature.
   featureMode: f32,              // 136 — 0 off / 1 asperitas / 2 fluctus / 3 arcus / 4 virga
   featureStrength: f32,          // 137 — shaping depth (0 off → 1.0 factor; clamped 0..1)
   featureScale: f32,             // 138 — feature frequency (wave/streak size; 1.0 neutral)
   featureParam: f32,             // 139 — mode extra (fluctus shear / arcus width / virga reach)
-  // ── Batch 612 (E3 CLOUD-EXOTIC-SPECIAL) — "special clouds" that are a new
-  // DECK + iridescent SHADING rather than a density-shaping factor
-  // (CLOUD_TAXONOMY_ROADMAP E3). Unlike B592 mammatus / B610 species / B611
-  // features (which multiply DENSITY), this multiplies the per-sample cloud COLOR
-  // by an iridescent tint, so it renders the two "shining" high-altitude forms:
-  //   noctilucent (mesospheric NLC — electric silvery-blue billow shell) and
-  //   nacreous (stratospheric mother-of-pearl — pastel iridescent bands keyed to
-  //   the sun/view scattering angle). The user places the deck at meso/strato
-  //   altitude via the existing multi-deck deckBoundsHigh bounds (Batch 443); this
-  //   batch adds the SHADING half. Slots 140-143, one new 16-byte row appended
-  //   ADD-ONLY (all earlier offsets UNCHANGED). Default OFF is byte-identical: when
-  //   specialShadeMode=0 the specialShadeTint() below early-returns vec3(1.0) so the
-  //   cloud color is multiplied by exactly 1.0 (IEEE754 identity) and these floats
-  //   are never read past the guard. The tint applies ONLY to the view-ray radiance
-  //   (marchDeck), NOT to density or the cloudBaseDensity oracle, so the W5
-  //   `base >= full` empty-space-skip invariant is untouched.
+  // Special clouds, 140-143. Unlike the mammatus, species and feature dials,
+  // which multiply density, this multiplies the per-sample cloud colour by an
+  // iridescent tint, rendering the two "shining" high-altitude forms:
+  // noctilucent (mesospheric, an electric silvery-blue billow shell) and
+  // nacreous (stratospheric mother-of-pearl, pastel iridescent bands keyed to
+  // the sun/view scattering angle). The deck is placed at mesospheric or
+  // stratospheric altitude through the multi-deck deckBoundsHigh bounds; these
+  // fields supply only the shading. At specialShadeMode=0 specialShadeTint()
+  // early-returns vec3(1.0), so the colour is multiplied by the IEEE 754
+  // identity and these floats are never read past the guard. The tint applies to
+  // the view-ray radiance in marchDeck only, not to density or to the
+  // cloudBaseDensity oracle, so `base >= full` is untouched.
   specialShadeMode: f32,         // 140 — 0 off / 1 noctilucent / 2 nacreous
   specialShadeStrength: f32,     // 141 — tint blend depth (0 off → vec3(1.0); clamped 0..1)
   specialShadeScale: f32,        // 142 — band/iridescence spatial frequency (1.0 neutral)
   specialShadeParam: f32,        // 143 — mode extra (nacreous spectral cycling frequency)
-  // ── Batch 634 (C6-CLOUD-STBN-TAAU, LOD half) — two orbit-cost dials for the
-  // view-ray march (marchDeck), each an ADD-ONLY 16-byte row 144-147 (all earlier
-  // offsets UNCHANGED). Both default to a NO-OP so the default render is
-  // byte-identical:
-  //   marchStepGrowth=1.0 → pow(1.0, n)=1.0 → curStep == fineStep exactly, and the
-  //     `> 1.0` guard is false so the pow is never even evaluated (uniform branch).
-  //   maxRayDistance=0.0  → the `> 0.0` far-cap guard is false so tEnd is untouched.
-  // When opted in: the fixed sampling comb GROWS geometrically along the ray so far
-  // shell samples (which read as 1-2 px) coarsen (Takram/AAA perspective step), and
-  // the march STOPS past maxRayDistance where clouds are sub-pixel. WebGPU-only
-  // (no WebGL twin) — a pure perf/quality dial with no visual-parity requirement.
-  marchStepGrowth: f32,          // 144 — geometric per-fine-step growth (1.0 = off/uniform, byte-identical)
-  maxRayDistance: f32,           // 145 — far cap on the view march in meters (0 = off/infinite, byte-identical)
+  // Two orbit-cost dials for the view-ray march in marchDeck, 144-147. Both
+  // default to a no-op:
+  //   marchStepGrowth=1.0 → the `> 1.0` guard is false, so the pow is never
+  //     evaluated and curStep equals fineStep exactly.
+  //   maxRayDistance=0.0  → the `> 0.0` far-cap guard is false, so tEnd is
+  //     untouched.
+  // When opted in, the fixed sampling comb grows geometrically along the ray so
+  // far shell samples, which subtend one or two pixels, coarsen; and the march
+  // stops past maxRayDistance, where clouds are sub-pixel. There is no WebGL
+  // twin: this is a cost/quality dial with no visual-parity requirement.
+  marchStepGrowth: f32,          // 144 — geometric per-fine-step growth (1.0 = off, uniform comb)
+  maxRayDistance: f32,           // 145 — far cap on the view march in meters (0 = off, infinite)
   _padJ: f32,                    // 146 — pad to the 16-byte row
   _padK: f32,                    // 147 — pad to the 16-byte row
-  // C13-37 — CPU-f64 density-domain phases at the current camera origin.
-  // The primary march adds only camera-relative metre offsets in f32, avoiding
-  // raw full-ECEF conversion inside the density hot path. Three independent
-  // rows preserve the seeded shape/warp/detail coordinate transforms.
+  // CPU-f64 density-domain phases at the current camera origin. The primary
+  // march adds only camera-relative metre offsets in f32, keeping a raw
+  // full-ECEF conversion out of the density hot path. Three independent rows
+  // carry the seeded shape, warp and detail coordinate transforms.
   densityShapeOriginPhase: vec3<f32>, // 148-150
   _padL: f32,                         // 151
   densityWarpOriginPhase: vec3<f32>,  // 152-154
   _padM: f32,                         // 155
   densityDetailOriginPhase: vec3<f32>,// 156-158
   _padN: f32,                         // 159
-  // Unwrapped canonical morphology origin, encoded high/low after CPU-f64
-  // wind advection. Optional analytic species/features rely on the historical
-  // unrotated x/z wind plane and must not consume wrapped texture coordinates.
+  // Unwrapped canonical morphology origin, encoded high/low after CPU-f64 wind
+  // advection. The analytic species and feature factors build their wind frame
+  // from the unrotated x/z plane, so they must read this rather than a wrapped
+  // texture coordinate.
   densityMorphologyOriginHigh: vec3<f32>, // 160-162
   _padO: f32,                              // 163
   densityMorphologyOriginLow: vec3<f32>,  // 164-166
   _padP: f32,                              // 167
-  // ── C13-16 (per-genus cloud morphology — the cirrus/fibrous slice). Slots
-  // 168-171, one new 16-byte row appended ADD-ONLY (every earlier offset is
-  // UNCHANGED). These activate the two axes of Scene/CloudTypeProfile.js that had
-  // no renderer consumer — the FIBROUS/PUFFY `erosion` style and the per-genus
-  // Henyey-Greenstein `phaseG` — so an ice genus reads as sheared filaments with
-  // a forward-peaked phase rather than as a faint scaled-down cumulus.
+  // Per-genus cloud morphology, 168-171. These carry the two axes of
+  // Scene/CloudTypeProfile.js that shape an ice genus — the fibrous/puffy
+  // `erosion` style and the per-genus Henyey-Greenstein `phaseG` — so a cirrus
+  // genus reads as sheared filaments with a forward-peaked phase rather than as
+  // a faint scaled-down cumulus.
   //
-  // Default byte-identity: the default genus is CUMULUS, which is PUFFY with
-  // phaseG equal to its own, so genusFibreStrength is exactly 0 (genusFibreFactor
-  // early-returns 1.0 and genusErosionHeightWeight early-returns the literal
-  // historical `1.0 - h`) and genusPhaseDelta is exactly 0 (genusForwardG
-  // early-returns cloud.phaseG1). Neither anisotropy nor shear is read past those
-  // guards. The fibre factor is a per-position multiplier in [0,1] applied
-  // IDENTICALLY in the full density and the cloudBaseDensity oracle, so the W5
-  // `base >= full` empty-space-skip invariant holds.
+  // The default genus is CUMULUS, which is puffy and whose phaseG is the
+  // baseline, so genusFibreStrength and genusPhaseDelta are both exactly 0:
+  // genusFibreFactor early-returns 1.0, genusErosionHeightWeight early-returns
+  // `1.0 - h`, genusForwardG early-returns cloud.phaseG1, and neither anisotropy
+  // nor shear is read past those guards. The fibre factor is a per-position
+  // multiplier in [0,1] applied identically in the full density and in the
+  // cloudBaseDensity oracle, preserving `base >= full`.
   genusFibreStrength: f32,       // 168 — 0 PUFFY/off (default) .. 1 fully fibrous carve
   genusFibreAnisotropy: f32,     // 169 — filament length:width aspect along the wind (>= 1)
   genusFibreShear: f32,          // 170 — fallstreak along-wind lag per unit shell height
@@ -274,46 +256,47 @@ struct CloudUniforms {
 @group(0) @binding(1) var depthTex: texture_2d<f32>;
 @group(0) @binding(2) var texSampler: sampler;
 @group(0) @binding(3) var<uniform> cloud: CloudUniforms;
-// Weather Phase 1 — global lat/lon weather field (R=coverage, G=type, B=base,
-// A=density-bias). Declared texture_2d_array (depth 1) so the multi-deck slice
-// (Phase 2) can add deck layers without changing the binding.
+// Global lat/lon weather field (R = coverage, G = type, B = base, A =
+// density-bias). Declared texture_2d_array with depth 1 so per-deck layers can
+// be added later without changing the binding.
 @group(0) @binding(4) var weatherTex: texture_2d_array<f32>;
 @group(0) @binding(5) var weatherSampler: sampler;
-// V2 — baked 3D noise (shape 128³ + detail 32³) + sampler. DECLARED but NOT
-// sampled yet (no path reads them → byte-identical); V3 switches cloudDensity /
-// cloudBaseDensity to sample these instead of the live fbmNoise/worleyF1.
+// Baked 3D noise — shape 128³ and detail 32³ — with their shared sampler. The
+// density evaluation reads these instead of the live fbmNoise/worleyF1 pair
+// whenever the baked-noise quality bit is set.
 @group(0) @binding(6) var cloudShapeTex: texture_3d<f32>;
 @group(0) @binding(7) var cloudDetailTex: texture_3d<f32>;
 @group(0) @binding(8) var cloudNoiseSampler: sampler;
-// Batch 434 (3.3 + 3.4) — precomputed atmosphere LUTs (shared with SkyAtmosphere).
-// Bound UNCONDITIONALLY so the pipeline/BGL never forks; the renderer binds 1×1
-// placeholders when the LUTs aren't allocated. The shader only samples them when
-// the corresponding mode flag is set AND the sampled radiance is non-zero (the
-// unbaked LUTs read all-zero → the legacy fallback runs). Same 256×128 sun-relative
-// sky-view domain as SkyAtmosphere's bindings 5/6; the transmittance LUT is 256×64.
-//   9  — sun-relative SKY-VIEW single-scatter inscatter (3.3 air light)
-//   10 — sun-relative MULTIPLE-SCATTERING sky radiance (3.4 ambient hemispheres)
-//   11 — TRANSMITTANCE (altitude × cosZenith) for the 3.3 cloud-color attenuation
+// Precomputed atmosphere LUTs, shared with SkyAtmosphere. Bound unconditionally
+// so the pipeline and bind-group layout never fork; the renderer binds 1×1
+// placeholders when the LUTs are not allocated. The shader samples them only
+// when the corresponding mode flag is set and the sampled radiance is non-zero,
+// because an unbaked LUT reads all-zero and the constant fallback runs instead.
+// Same 256×128 sun-relative sky-view domain as SkyAtmosphere's bindings 5 and 6;
+// the transmittance LUT is 256×64.
+//   9  — sun-relative sky-view single-scatter inscatter (the air light)
+//   10 — sun-relative multiple-scattering sky radiance (ambient hemispheres)
+//   11 — transmittance (altitude × cosZenith) for cloud-color attenuation
 //   12 — linear LUT sampler (clamp-to-edge)
 @group(0) @binding(9) var cloudSkyViewLut: texture_2d<f32>;
 @group(0) @binding(10) var cloudMultipleScatterLut: texture_2d<f32>;
 @group(0) @binding(11) var cloudTransmittanceLut: texture_2d<f32>;
 @group(0) @binding(12) var cloudLutSampler: sampler;
-// Batch 437 (CLOUD-SHADOWS) — sun-view "beer shadow map" pass uniforms. Bound ONLY
-// in the dedicated shadow pipeline's bind group (binding 13); the main cloud color
-// pass never declares it (a fragment that doesn't reference a binding doesn't need
-// it in the pipeline layout, WebGPU validates per-entry-point). The shadow pass
-// reuses the SAME `CloudUniforms` (binding 3) + weather/noise bindings (4-8) so its
-// `cloudDensity`/`cloudBaseDensity` oracle is byte-identical to the visible march —
-// the cast shadow therefore tracks exactly the rendered cloud field.
+// Sun-view beer-shadow-map pass uniforms, bound only in the dedicated shadow
+// pipeline's bind group at binding 13. The main cloud color pass never declares
+// it: WebGPU validates bindings per entry point, so a fragment that does not
+// reference one does not need it in the pipeline layout. The shadow pass reuses
+// the same `CloudUniforms` at binding 3 and the same weather and noise bindings
+// 4-8, so its density evaluation is the code the visible march runs and the cast
+// shadow tracks the rendered cloud field exactly.
 struct CloudShadowUniforms {
-  // C13-06 — inverse of the sun-view orthographic view-projection, expressed
-  // RELATIVE TO THE CAMERA (clip → camera-relative world). `WebGPUCloudShadowFrame`
-  // cancels the planet-scale translation in CPU `f64`, so reconstructing a
-  // shadow-map column here yields a small camera-relative vector rather than a
-  // full-ECEF `f32` position. Every downstream quantity — shell roots, height
-  // fraction, density domains — then stays in the SAME RTE frame the visible
-  // march uses (`encodedCameraHigh/Low` + the CPU-`f64` density origin phases).
+  // Inverse of the sun-view orthographic view-projection, expressed relative to
+  // the camera (clip → camera-relative world). `WebGPUCloudShadowFrame` cancels
+  // the planet-scale translation in CPU `f64`, so reconstructing a shadow-map
+  // column here yields a small camera-relative vector rather than a full-ECEF
+  // `f32` position. Every downstream quantity — shell roots, height fraction,
+  // density domains — then stays in the same relative-to-eye frame the visible
+  // march uses: `encodedCameraHigh/Low` plus the CPU-`f64` density origin phases.
   sunViewInvVpRelativeToEye: mat4x4<f32>,
   // xyz = normalized sun direction (world); w = light-march step count for the
   // optical-depth accumulation along the sun ray (kept low — this is a coarse map).
@@ -327,44 +310,38 @@ struct VertexOutput {
 };
 
 const PI: f32 = 3.14159265358979;
-// Weather Phase 3 — cloud-base normalization band (MUST equal CLOUD_BASE_NORM_METERS
-// in WeatherTexPacker.ts). The packer stores B = baseMetres / 12000; the shader
+// Cloud-base normalization band; must equal CLOUD_BASE_NORM_METERS in
+// WeatherTexPacker.ts. The packer stores B = baseMetres / 12000 and the shader
 // reverses it to metres before converting to a shell-thickness fraction.
 const CLOUD_BASE_NORM_METERS: f32 = 12000.0;
-// W1 — exposure feeding the Reinhard tone-map at the cloud composite. Calibrated
-// against sunIntensity~10 + the dual-lobe forward peak so the silver lining is a
-// gradient, not a white-out. Promoted to the `cloud.exposure` uniform (Batch 407,
-// default 0.22) so it can be tuned live; the const is gone.
 
-// V1 — `qualityFlags`@74 bit layout. Feature batches wire each: V3 noiseSource,
-// V9 halfRes, V10 temporal, C13-36 jitter, V5 octaves, V11 profile. Unpack with
-// `u32(cloud.qualityFlags)`.
+// Bit layout of `qualityFlags`, float 74. Unpack with `u32(cloud.qualityFlags)`.
 const QF_NOISE_BAKED: u32 = 1u;     // bit 0
 const QF_HALF_RES: u32 = 2u;        // bit 1
 const QF_TEMPORAL: u32 = 4u;        // bit 2
 const QF_JITTER: u32 = 8u;          // bit 3
 const QF_OCTAVES_SHIFT: u32 = 4u;   // bits 4-6
 const QF_PROFILE_ON: u32 = 128u;    // bit 7
-// Batch 434 — atmosphere-LUT coupling (add-only). The JS renderer sets these only
-// when the corresponding mode flag is 'physical'/'sky-lut'; the shader additionally
-// gates each on a non-zero LUT radiance (unbaked LUT → legacy fallback).
-const QF_AERIAL_LUT: u32 = 256u;    // bit 8 — 3.3 physical aerial (sky-view + transmittance)
-const QF_AMBIENT_LUT: u32 = 512u;   // bit 9 — 3.4 sky-LUT cloud ambient (MS sky LUT)
-const QF_LIGHT_CONE: u32 = 1024u;   // bit 10 — 3.6 cone-sampled light march (Batch 436)
-const QF_MULTI_DECK: u32 = 2048u;   // bit 11 — 4.9 multi-deck shell march (Batch 443)
-// Batch 445 (4.12 CLOUD-RTE), C13-04 default-on. Explicit
-// globe.cloudHighPrecision=false keeps the world-coordinate A/B branch available.
-const QF_HIGH_PRECISION: u32 = 4096u; // bit 12 — 4.12 camera-relative high-precision march (1<<12)
-const QF_PLANET_DENSITY: u32 = 8192u; // bit 13 — C13-37 planet-anchored baked density
+// Atmosphere-LUT coupling. The JS renderer sets these only when the
+// corresponding mode flag is 'physical' or 'sky-lut'; the shader additionally
+// gates each on a non-zero LUT radiance, so an unbaked LUT falls back to the
+// constant path.
+const QF_AERIAL_LUT: u32 = 256u;    // bit 8 — physical aerial (sky-view + transmittance)
+const QF_AMBIENT_LUT: u32 = 512u;   // bit 9 — sky-LUT cloud ambient (multiple-scattering LUT)
+const QF_LIGHT_CONE: u32 = 1024u;   // bit 10 — cone-sampled light march
+const QF_MULTI_DECK: u32 = 2048u;   // bit 11 — multi-deck shell march
+// Set unless `globe.cloudHighPrecision` is explicitly false, which keeps the
+// world-coordinate branch available as a comparison route.
+const QF_HIGH_PRECISION: u32 = 4096u; // bit 12 — camera-relative high-precision march (1<<12)
+const QF_PLANET_DENSITY: u32 = 8192u; // bit 13 — planet-anchored baked density
 
-// V9 (Batch 432) — ordered 4×4 Bayer matrix (normalized 0..1, the standard
-// recursive dither pattern). Used to JITTER the half-res sample point by a
-// sub-pixel offset within each 2×2 full-res footprint, cycled per frame on
-// `cloud.frameCounter` (float 76). Decorrelating the half-res grid per Wronski
-// ("Volumetric Atmospheric Scattering", GDC 2014; "Temporal Supersampling")
-// breaks up the blocky 2× under-sampling so the bilateral upscale reconstructs
-// soft volumetric forms instead of a hard checkerboard. The 16-tap LUT is a const
-// array indexed by `(frameCounter mod 16)`.
+// Ordered 4×4 Bayer matrix, normalized 0..1 — the standard recursive dither
+// pattern. It jitters the half-res sample point by a sub-pixel offset within
+// each 2×2 full-res footprint, cycled per frame on `cloud.frameCounter`
+// (float 76). Decorrelating the half-res grid (Wronski, "Volumetric Atmospheric
+// Scattering", GDC 2014) breaks up the blocky 2× under-sampling so the bilateral
+// upscale reconstructs soft volumetric forms instead of a hard checkerboard. The
+// 16-tap table is indexed by `frameCounter mod 16`.
 const BAYER4: array<f32, 16> = array<f32, 16>(
    0.0 / 16.0,  8.0 / 16.0,  2.0 / 16.0, 10.0 / 16.0,
   12.0 / 16.0,  4.0 / 16.0, 14.0 / 16.0,  6.0 / 16.0,
@@ -372,12 +349,12 @@ const BAYER4: array<f32, 16> = array<f32, 16>(
   15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0
 );
 
-// C13-36 — Jimenez 2014 analytic interleaved-gradient noise (IGN), shared with
-// this repository's volumetric-fog renderer. This is blue-noise-like screen
-// noise, not spatiotemporal blue noise (STBN). It needs no texture, sampler,
-// bind group, or external asset. The golden-ratio frame rotation gives the
-// temporal tiers a 64-frame decorrelated sequence while full-resolution T3
-// intentionally stays at frame zero.
+// Jimenez 2014 analytic interleaved-gradient noise (IGN), shared with this
+// repository's volumetric-fog renderer. This is blue-noise-like screen noise,
+// not spatiotemporal blue noise, and it needs no texture, sampler, bind group or
+// external asset. The golden-ratio frame rotation gives the temporally-resolved
+// tiers a 64-frame decorrelated sequence; the full-resolution path stays at
+// frame zero, where there is no history to average the variation away.
 fn interleavedGradientNoise(
   pixelCoord: vec2<f32>,
   frameIndex: f32,
@@ -397,9 +374,10 @@ fn cloudRaySamplePhase(pixelCoord: vec2<f32>) -> f32 {
     return 0.5;
   }
 
-  // Animate only when a temporal history actually exists. Cinematic/full-res
-  // and a self-healing temporal-allocation fallback use a deterministic spatial
-  // phase, so this ray-phase feature adds no unfiltered frame-to-frame sparkle.
+  // Animate only where a temporal history exists to filter the variation. The
+  // full-resolution path, and the fallback taken when the temporal targets
+  // cannot be allocated, use a deterministic spatial phase instead, so the ray
+  // phase never introduces unfiltered frame-to-frame sparkle.
   var frameIndex = 0.0;
   if ((flags & QF_TEMPORAL) != 0u) {
     frameIndex = cloud.frameCounter;
@@ -407,19 +385,17 @@ fn cloudRaySamplePhase(pixelCoord: vec2<f32>) -> f32 {
   return interleavedGradientNoise(pixelCoord, frameIndex);
 }
 
-// ─── Full-screen triangle ───
+// Full-screen triangle
 @vertex
 fn vertexMain(@builtin(vertex_index) vid: u32) -> VertexOutput {
   var out: VertexOutput;
-  // OVERSIZED fullscreen triangle — verts (-1,-1), (3,-1), (-1,3) so the whole
-  // [-1,1] clip square sits INSIDE the triangle and every screen pixel is shaded.
-  // The previous exact-fit triangle (-1,-1),(1,-1),(-1,1) coincided with three
-  // NDC corners and covered ONLY the lower-left half (x+y<=0) — the upper-right
-  // half was never rasterized, so clouds appeared only in the bottom-left of the
-  // screen behind a hard corner-to-corner diagonal. (That diagonal was long
-  // misfiled as a "frustum-edge artifact"; it was a non-oversized fullscreen
-  // triangle.) `uv` is an affine function of the clip xy, so it still
-  // interpolates 0..1 across the visible square unchanged.
+  // Oversized fullscreen triangle — vertices (-1,-1), (3,-1), (-1,3) — so the
+  // whole [-1,1] clip square sits inside the triangle and every screen pixel is
+  // shaded. An exact-fit triangle (-1,-1), (1,-1), (-1,1) coincides with three
+  // NDC corners and covers only the lower-left half, x + y <= 0, leaving the
+  // upper-right half unrasterized behind a hard corner-to-corner diagonal. `uv`
+  // is an affine function of the clip xy, so it interpolates 0..1 across the
+  // visible square either way.
   let x = f32((vid << 1u) & 2u) * 2.0 - 1.0;
   let y = f32(vid & 2u) * 2.0 - 1.0;
   out.position = vec4<f32>(x, y, 0.0, 1.0);
@@ -427,7 +403,7 @@ fn vertexMain(@builtin(vertex_index) vid: u32) -> VertexOutput {
   return out;
 }
 
-// ─── Hash functions for noise ───
+// Hash functions for noise
 fn hash3(p: vec3<f32>) -> f32 {
   var q = fract(p * 0.1031);
   q += dot(q, q.zyx + 31.32);
@@ -440,7 +416,7 @@ fn hash33(p: vec3<f32>) -> vec3<f32> {
   return fract((q.xxy + q.yxx) * q.zyx);
 }
 
-// ─── Value noise 3D ───
+// Value noise 3D
 fn valueNoise(p: vec3<f32>) -> f32 {
   let i = floor(p);
   let f = fract(p);
@@ -455,7 +431,7 @@ fn valueNoise(p: vec3<f32>) -> f32 {
   );
 }
 
-// ─── FBM (Fractal Brownian Motion) noise — 5 octaves ───
+// FBM (fractal Brownian motion) noise — 5 octaves
 fn fbmNoise(p: vec3<f32>) -> f32 {
   var val: f32 = 0.0;
   var amp: f32 = 0.5;
@@ -470,16 +446,16 @@ fn fbmNoise(p: vec3<f32>) -> f32 {
   return val;
 }
 
-// ─── Worley (cellular) noise 3D — F1 distance (379a, minimal re-land) ───
-// Distance to the nearest feature point (one per cell, hashed) over the 3×3×3
-// neighborhood. HIGH between cells, low at feature points — so subtracting it
-// carves the inter-lobe gaps, leaving rounded cauliflower lobes (the billowy
-// cloud-edge character value-noise can't produce). 27 taps; reuses hash33.
+// Worley (cellular) noise 3D — F1 distance.
+// Distance to the nearest feature point, one per cell and hashed, over the 3×3×3
+// neighbourhood. High between cells and low at feature points, so subtracting it
+// carves the inter-lobe gaps and leaves the rounded cauliflower lobes that value
+// noise alone cannot produce. 27 taps; reuses hash33.
 //
-// NOTE on the prior 379a revert: that attempt remapped the BASE shape by Worley
-// (`remap(perlin, worleyLow-1, 1, 0, 1)`), which raised the density floor and
-// over-densified the clouds. This re-land swaps ONLY the subtractive erosion —
-// it can carve detail but never ADD density, so it cannot reproduce that failure.
+// The result is used only as subtractive erosion. Remapping the base shape by
+// Worley instead — `remap(perlin, worleyLow - 1, 1, 0, 1)` — raises the density
+// floor and over-densifies the deck; erosion can carve detail but never add
+// density, so it cannot reach that failure.
 fn worleyF1(p: vec3<f32>) -> f32 {
   let id = floor(p);
   let fd = fract(p);
@@ -497,16 +473,16 @@ fn worleyF1(p: vec3<f32>) -> f32 {
   return sqrt(min(minDistSq, 1.0));
 }
 
-// ─── Batch 439 (4.7 CLOUD-CURL) — analytic curl-noise domain warp ───
-// Curl of a 3-component value-noise vector potential, evaluated analytically by
-// central differences. curl(F) = (∂Fz/∂y − ∂Fy/∂z, ∂Fx/∂z − ∂Fz/∂x,
-// ∂Fy/∂x − ∂Fx/∂y) is DIVERGENCE-FREE, so warping a sample position by it produces
-// the swirling, incompressible, tendril-like advection that gives Schneider/Nubis
-// cloud edges their wispy, turbulent character (instead of fbm's blobby erosion).
-// The potential is `valueNoise` (already periodic-friendly here) offset by large
-// constants per component so the three scalar fields decorrelate. Computed ONLY
-// when curlAmplitude>0 (the call site guards it), so the default path never runs
-// this — and at amplitude 0 the warp offset is exactly vec3(0) anyway.
+// Analytic curl-noise domain warp.
+// Curl of a three-component value-noise vector potential, evaluated by central
+// differences. curl(F) = (∂Fz/∂y − ∂Fy/∂z, ∂Fx/∂z − ∂Fz/∂x, ∂Fy/∂x − ∂Fx/∂y) is
+// divergence-free, so warping a sample position by it produces the swirling,
+// incompressible, tendril-like advection that gives Schneider/Nubis cloud edges
+// their wispy, turbulent character instead of fBm's blobby erosion. The
+// potential is `valueNoise`, already periodic-friendly here, offset by large
+// constants per component so the three scalar fields decorrelate. The call sites
+// guard on curlAmplitude > 0, so this is not evaluated at all when the warp is
+// off; at amplitude 0 the offset would be exactly vec3(0) in any case.
 fn curlPotential(p: vec3<f32>) -> vec3<f32> {
   return vec3<f32>(
     valueNoise(p),
@@ -535,28 +511,27 @@ fn curlNoise3(p: vec3<f32>) -> vec3<f32> {
   return curl;
 }
 
-// ─── ECEF world position → weather-map UV (Weather Phase 1) ───
-// Equirectangular geodetic lon/lat (spherical approximation — a coarse weather
-// field doesn't need ellipsoidal exactness). lon = atan2(y, x) ∈ [-PI, PI];
-// lat = asin(z / r). Mapped onto [0,1]² via weatherTexBounds; v is flipped so
-// texture row 0 (top) is the north pole.
+// ECEF world position to weather-map UV.
+// Equirectangular geodetic lon/lat under a spherical approximation, since a
+// coarse weather field does not need ellipsoidal exactness. lon = atan2(y, x)
+// ∈ [-PI, PI]; lat = asin(z / r). Mapped onto [0,1]² through weatherTexBounds; v
+// is flipped so texture row 0, the top, is the north pole.
 //
-// C13-07 seam contract — the CPU twin is `weatherUVFromLonLat` in
-// Scene/Weather/WeatherMapSeam.ts and the producers write TEXEL CENTRES
-// ((tx+0.5)/texW, (ty+0.5)/texH). The two are pinned together by
-// Tools/visual-regression/weather-map-seam.spec.mjs; do not edit one alone.
-// Dateline: the sampler is addressModeU="repeat", which filters texel texW-1
-// against texel 0 across ±180° — seam-free ONLY because the producers are
-// periodic in longitude. Poles: the sampler is addressModeV="clamp-to-edge" and
-// the producers collapse the polar-cap rows to one longitude value, so the pole
-// is single-valued.
+// The seam contract has two halves: the CPU twin is `weatherUVFromLonLat` in
+// Scene/Weather/WeatherMapSeam.ts, and the producers write texel centres,
+// ((tx + 0.5) / texW, (ty + 0.5) / texH). `weather-map-seam.spec.mjs` pins them
+// together, so neither can be edited alone. Across the dateline the sampler is
+// addressModeU="repeat", filtering texel texW-1 against texel 0 at ±180°, which
+// is seam-free only because the producers are periodic in longitude. At the
+// poles the sampler is addressModeV="clamp-to-edge" and the producers collapse
+// the polar-cap rows to one longitude value, so the pole is single-valued.
 fn worldToWeatherUV(worldPos: vec3<f32>) -> vec2<f32> {
   let r = max(length(worldPos), 1.0);
-  // C13-07 pole guard: on the spin axis (x = y = 0) atan2 is indeterminate in
-  // WGSL and may yield NaN, which a NaN texture coordinate would propagate into
-  // coverage — and then into density — for a straight-down polar view. The polar
-  // rows are longitude-CONSTANT, so any finite longitude reads the same texel
-  // there and 0 is a safe substitute.
+  // Pole guard: on the spin axis (x = y = 0) atan2 is indeterminate in WGSL and
+  // may yield NaN, and a NaN texture coordinate propagates into coverage and
+  // then into density for a straight-down polar view. The polar rows are
+  // longitude-constant, so any finite longitude reads the same texel there and 0
+  // is a safe substitute.
   let axial = worldPos.x * worldPos.x + worldPos.y * worldPos.y;
   let lon = select(0.0, atan2(worldPos.y, worldPos.x), axial > 1e-12);
   let lat = asin(clamp(worldPos.z / r, -1.0, 1.0));
@@ -566,12 +541,12 @@ fn worldToWeatherUV(worldPos: vec3<f32>) -> vec2<f32> {
   return vec2<f32>(u, v);
 }
 
-// ─── Cloud density at a world-space point ───
+// Cloud density at a world-space point
 fn remap(v: f32, lo: f32, hi: f32, a: f32, b: f32) -> f32 {
   return a + (v - lo) * (b - a) / (hi - lo);
 }
 
-// V3 — is the baked-3D-texture density core active? (qualityFlags bit 0)
+// Is the baked-3D-texture density core active? (qualityFlags bit 0)
 fn noiseBakedEnabled() -> bool {
   return (u32(cloud.qualityFlags) & QF_NOISE_BAKED) != 0u;
 }
@@ -580,31 +555,23 @@ fn planetDensityEnabled() -> bool {
   return (u32(cloud.qualityFlags) & QF_PLANET_DENSITY) != 0u;
 }
 
-// V9 (Batch 432) — is the half-res render path active? (qualityFlags bit 1). When
-// set, the raymarch renders into a 0.5× rgba16float offscreen target and emits
-// PREMULTIPLIED cloud radiance + alpha (NO scene-color composite — that moves to
-// the bilateral upscale pass). When clear, the legacy full-res draw(3)→canvas
-// composite runs UNCHANGED (byte-identical). The qualityFlags bit gates which
-// return branch fragmentMain takes; the JS renderer also keys the pipeline's
-// color-target format (canvasFormat vs rgba16float) on the same tier resolve.
+// Is the half-res render path active? (qualityFlags bit 1). When set, the
+// raymarch renders into a 0.5× rgba16float offscreen target and emits
+// premultiplied cloud radiance and alpha, leaving the scene-color composite to
+// the bilateral upscale pass. When clear, the full-res draw(3) composites
+// straight to the canvas. The bit gates which return branch fragmentMain takes,
+// and the JS renderer keys the pipeline's color-target format — canvas format
+// against rgba16float — on the same tier resolve.
 fn halfResEnabled() -> bool {
   return (u32(cloud.qualityFlags) & QF_HALF_RES) != 0u;
 }
 
-// V3 — baked cloud BASE shape (one trilinear fetch of the shape texture's R: the
-// contrast-stretched Perlin fBM the bake wrote). Drop-in for the live `fbmNoise`
-// base — NOT Worley-remapped (a remap raises the mean + over-densifies, the
-// 379a-revert lesson the live code warns about); the Worley stays SUBTRACTIVE
-// erosion via the detail texture in cloudDensity. SHARED by cloudDensity + the
-// cloudBaseDensity skip-oracle so they stay identical BEFORE erosion — that
-// preserves W5's `base >= full` invariant (cloudDensity subtracts erosion; the
-// oracle does not). The `repeat` sampler tiles the periodic bake through world space.
-// C13-37 Slice B — convert the ray interval represented by one density sample
-// into an explicit 3D-texture mip. The rotated density domains are orthonormal,
-// so their scalar world-to-domain scale is sufficient. A footprint covering at
-// most one level-0 voxel returns exactly LOD 0. The internal legacy oracle and
-// LIVE path remain exact mip-0 routes; only the planet-domain BAKED branch may
-// select lower-frequency levels.
+// Convert the ray interval one density sample represents into an explicit
+// 3D-texture mip. The rotated density domains are orthonormal, so their scalar
+// world-to-domain scale is sufficient. A footprint covering at most one level-0
+// voxel returns exactly LOD 0. The internal oracle and the live-noise path stay
+// exact mip-0 routes; only the planet-domain baked branch may select
+// lower-frequency levels.
 fn cloudNoiseMipLevel(
   footprintMeters: f32,
   domainUnitsPerMeter: f32,
@@ -667,21 +634,30 @@ fn cloudDensityMipLevels(footprintMeters: f32) -> CloudNoiseMipLevels {
   );
 }
 
+// Baked cloud base shape: one trilinear fetch of the shape texture's R channel,
+// the contrast-stretched Perlin fBm the bake wrote. It stands in for the live
+// `fbmNoise` base and is not Worley-remapped, because a remap raises the mean
+// and over-densifies the deck; the Worley stays subtractive erosion through
+// the detail texture in the full density. Shared by the full density and
+// the cloudBaseDensity skip oracle so the two agree before erosion, which is
+// what makes `base >= full` hold — the full density subtracts erosion, the
+// oracle does not. The `repeat` sampler tiles the periodic bake through world
+// space.
 fn bakedBase(
   coordinates: CloudDensityCoordinates,
   mipLevels: CloudNoiseMipLevels,
 ) -> f32 {
-  // Domain-warp the lookup by a SLOW low-frequency offset (sampled from the
-  // detail texture at a large period) so the baked texture's ~3.3 km tiling grid
-  // bends into organic shapes instead of reading as an obvious repeating lattice.
-  // (Normally the spatially-varying weather map masks the repeat; this keeps it
-  // hidden when the weather map is off.) Warp preserves the single-sample
-  // contrast — no octave-blend smoothing — so the billowy puffs survive.
-  // SHAPE_SCALE < 1 enlarges the base puffs (the texture covers more world per
-  // tile) so the default deck reads as bigger, fluffier cumulus instead of fine
-  // dapple; the detail erosion (cloudDensity, samplePos*5) stays fine, giving big
-  // lobes with cauliflower edges. Warp + warp-sample scale track SHAPE_SCALE so
-  // the de-tiling stays proportional.
+  // Domain-warp the lookup by a slow low-frequency offset, sampled from the
+  // detail texture at a large period, so the baked texture's ~3.3 km tiling grid
+  // bends into organic shapes instead of reading as a repeating lattice. A
+  // spatially-varying weather map normally masks the repeat; this keeps it
+  // hidden when the weather map is off. The warp preserves the single-sample
+  // contrast — there is no octave-blend smoothing — so the billowy puffs
+  // survive. A puffSize below 1 enlarges the base puffs, because the texture
+  // then covers more world per tile, so the deck reads as fluffy cumulus rather
+  // than fine dapple; the detail erosion stays fine, giving big lobes with
+  // cauliflower edges. The warp and its sample scale track puffSize so the
+  // de-tiling stays proportional.
   let w = textureSampleLevel(
     cloudDetailTex,
     cloudNoiseSampler,
@@ -697,9 +673,10 @@ fn bakedBase(
   ).r;
 }
 
-// Exact pre-C13-37 baked lookup retained for the bit-13-off/LIVE functionality
-// oracle. Keeping this separate also guarantees the fallback never observes a
-// generated mip or a rotated domain.
+// Baked lookup for the routes that do not use the planet-anchored domain: the
+// live-noise path and the bit-13-off baked path. Keeping it separate from
+// `bakedBase` guarantees those never observe a generated mip or a rotated
+// domain, which is also what makes them a usable same-build oracle.
 fn legacyBakedBase(samplePos: vec3<f32>) -> f32 {
   let SHAPE_SCALE = cloud.puffSize;
   let s = samplePos * SHAPE_SCALE;
@@ -712,9 +689,9 @@ fn legacyBakedBase(samplePos: vec3<f32>) -> f32 {
   ).r;
 }
 
-// C13-37 — retain the historical harmonic coordinate construction for the
-// internal same-build oracle and the LIVE fallback. This is intentionally kept
-// separate from CloudDensityDomain.wgsl so bit-13-off remains exact.
+// The unrotated harmonic coordinate construction, used by the same-build oracle
+// and the live-noise fallback. It is kept separate from CloudDensityDomain.wgsl
+// so the bit-13-off route stays exact.
 fn legacyCloudDensityCoordinates(worldNoise: vec3<f32>) -> CloudDensityCoordinates {
   let shape = worldNoise * cloud.puffSize;
   return CloudDensityCoordinates(
@@ -737,10 +714,11 @@ fn cloudDensityCoordinatesAtWorld(
   return legacyCloudDensityCoordinates(worldNoise);
 }
 
-// Primary-view RTE path: CPU-f64 phases already include camera origin and wind;
-// the shader adds only the small camera-relative sample displacement. Live
-// consumer since C13-06 (`cloudDensityRelativeWithFootprint`, the beer-shadow
-// producer); the primary march inlines the same reconstruction per-ray.
+// Primary-view relative-to-eye path: the CPU-f64 phases already include the
+// camera origin and the wind, so the shader adds only the small camera-relative
+// sample displacement. `cloudDensityRelativeWithFootprint`, the beer-shadow
+// producer, calls this; the primary march inlines the same reconstruction per
+// ray.
 fn cloudDensityCoordinatesAtRelative(
   relativeWorld: vec3<f32>,
 ) -> CloudDensityCoordinates {
@@ -773,7 +751,7 @@ fn advanceDensityCoordinates(
 }
 
 // Camera-relative morphology origin, paired with
-// cloudDensityCoordinatesAtRelative above. Live consumer since C13-06.
+// cloudDensityCoordinatesAtRelative above.
 fn cloudMorphologyCoordinateAtRelative(
   relativeWorld: vec3<f32>,
 ) -> vec3<f32> {
@@ -796,20 +774,18 @@ fn cloudMorphologyCoordinateAtWorld(
   return (worldPos + windOffset) * CLOUD_DENSITY_WORLD_TO_NOISE;
 }
 
-// V11 — per-genus vertical density gradient. Replaces the single hardcoded
-// `smoothstep(0,0.15,h)*smoothstep(1,0.7,h)` so genera read as different SHAPES,
-// not just different coverage: SLAB = flat sheet (stratus/altostratus/cirro-
-// stratus), BILLOWY = rounded cumulus (the historical default), TOWERING_ANVIL =
-// tall convective column that flares near the top (congestus/cumulonimbus).
-// CRITICAL: BILLOWY returns the EXACT original expression so the default CUMULUS
-// path is byte-identical; and this is called IDENTICALLY in cloudDensity and the
-// cloudBaseDensity oracle so the W5 `base >= full` invariant is preserved.
+// Per-genus vertical density gradient, so genera read as different shapes rather
+// than only as different coverage: SLAB is a flat sheet (stratus, altostratus,
+// cirrostratus), BILLOWY a rounded cumulus, TOWERING_ANVIL a tall convective
+// column that flares near the top (congestus, cumulonimbus). Called identically
+// from the full density and from the cloudBaseDensity oracle, which is what
+// preserves the `base >= full` invariant.
 fn heightGradientFor(h: f32, shape: f32, anvil: f32) -> f32 {
   if (shape < 0.5) {
     // SLAB — fills most of the layer; thin soft edges top and bottom.
     return smoothstep(0.0, 0.08, h) * smoothstep(1.0, 0.92, h);
   } else if (shape < 1.5) {
-    // BILLOWY — the literal historical gradient (keep byte-identical).
+    // BILLOWY — the default, and the plain gradient the other two vary from.
     return smoothstep(0.0, 0.15, h) * smoothstep(1.0, 0.7, h);
   }
   // TOWERING_ANVIL — rounded base, broad high shoulder; anvil widens the top
@@ -819,30 +795,26 @@ fn heightGradientFor(h: f32, shape: f32, anvil: f32) -> f32 {
   return base * anvilTop;
 }
 
-// ─── C13-16 — per-genus FIBROUS (ice-crystal) morphology ───
+// Per-genus fibrous (ice-crystal) morphology.
 //
-// Scene/CloudTypeProfile.js has always carried an `erosion` axis (FIBROUS for the
-// cirrus family, PUFFY for the water-droplet genera) and a per-genus `phaseG`, and
-// NEITHER reached the shader: a genus changed only its density scale, deck, height
-// gradient, and extinction, so cirrus rendered as faint scaled-down cumulus lobes.
-// These three functions are the genus-level SHAPE and PHASE half.
-//
-// Relationship to the neighbouring morphology functions: mammatusFactor /
-// speciesFactor / featureFactor are OPT-IN user selections of a supplementary
-// feature, species, or variety on top of whatever genus is active. This one is the
-// genus's own baseline character, derived from the profile table rather than from a
-// user dial, and it composes multiplicatively into the SAME [0,1] factor chain
-// those three already form — a fourth link, not a second chain. A user who also
-// selects `cloudSpecies: "fibratus"` gets a finer filament structure layered on the
-// genus grain, which is what the WMO hierarchy (genus -> species) actually means.
+// Relationship to the neighbouring morphology functions: mammatusFactor,
+// speciesFactor and featureFactor are opt-in user selections of a supplementary
+// feature, species or variety on top of whatever genus is active. This one is
+// the genus's own baseline character, taken from the CloudTypeProfile table
+// rather than from a user dial, and it composes multiplicatively into the same
+// [0,1] factor chain those three form — a fourth link, not a second chain. A
+// user who also selects `cloudSpecies: "fibratus"` gets a finer filament
+// structure layered on the genus grain, which is what the WMO genus-to-species
+// hierarchy means.
 //
 // Physical model. Cirriform cloud is ice precipitating out of small generating
-// cells near the tropopause. The crystals fall at ~0.3-1 m/s through a layer whose
-// horizontal wind changes strongly with height (jet-stream shear of order 5-20 m/s
-// per km), so each crystal is advected downstream as it descends and the cloud is
-// drawn into a long streak trailing beneath and downwind of its generating head.
-// Two consequences are modelled here: the streak's ANISOTROPY (length:width of
-// order 5:1 to 20:1 along the wind) and its TILT (the lower end lags the head).
+// cells near the tropopause. The crystals fall at ~0.3-1 m/s through a layer
+// whose horizontal wind changes strongly with height — jet-stream shear of order
+// 5-20 m/s per km — so each crystal is advected downstream as it descends and
+// the cloud is drawn into a long streak trailing beneath and downwind of its
+// generating head. Two consequences are modelled here: the streak's anisotropy,
+// a length-to-width ratio of order 5:1 to 20:1 along the wind, and its tilt, the
+// lower end lagging the head.
 //
 // `sp` is the wind-advected noise-space sample position and `h` the shell height
 // fraction (0 base .. 1 top), matching every other factor in the chain.
@@ -854,22 +826,22 @@ fn genusFibreFactor(sp: vec3<f32>, h: f32) -> f32 {
   // Horizontal wind frame in noise space (same convention as speciesFactor: the
   // wind vector maps to world as vec3(windDirection.x, 0, windDirection.y), so the
   // horizontal plane is sp.xz). Fall back to +X at zero wind so the frame — and
-  // therefore the streak DIRECTION — stays defined rather than degenerate.
+  // therefore the streak direction — stays defined rather than degenerate.
   let windH = vec2<f32>(cloud.windDirection.x, cloud.windDirection.y);
   let wlen = length(windH);
   let windDir = select(vec2<f32>(1.0, 0.0), windH / max(wlen, 1e-5), wlen > 1e-5);
   let crossDir = vec2<f32>(-windDir.y, windDir.x);
   let horiz = vec2<f32>(sp.x, sp.z);
-  // Fallstreak tilt: the generating head is at the deck TOP, and the falling ice
+  // Fallstreak tilt: the generating head is at the deck top, and the falling ice
   // lags downwind of it, so the along-wind displacement grows toward the base
   // (h -> 0) and vanishes at the head (h = 1).
   let along = dot(horiz, windDir) - (1.0 - h) * cloud.genusFibreShear;
   let acr = dot(horiz, crossDir);
-  // Anisotropic sampling domain. Dividing ONLY the along-wind axis by the aspect
+  // Anisotropic sampling domain. Dividing only the along-wind axis by the aspect
   // ratio makes an isotropic cell field read as filaments `aspect` times longer
-  // along the wind than across it — this single division IS the streak signature.
-  // At aspect 1 the domain is isotropic again and the genus falls back to generic
-  // rounded cells, which is exactly the failure this row exists to remove.
+  // along the wind than across it — this single division is the streak
+  // signature. At aspect 1 the domain is isotropic again and the genus falls
+  // back to generic rounded cells, which does not read as cirriform.
   let aspect = max(cloud.genusFibreAnisotropy, 1.0);
   // The vertical axis is compressed so cells stay columnar through a thin high
   // deck: a filament is a curtain hanging through the layer, not a floating blob.
@@ -880,15 +852,14 @@ fn genusFibreFactor(sp: vec3<f32>, h: f32) -> f32 {
   return clamp(1.0 - carve, 0.0, 1.0);
 }
 
-// C13-16 — the height weighting of the subtractive detail erosion.
+// Height weighting of the subtractive detail erosion.
 //
-// Cumuliform erosion is deliberately base-weighted (`1 - h`): a convective water
-// cloud has a soft ragged bottom and a crisp cauliflower top, so the detail octave
-// eats the base and leaves the crown. Ice cloud has no such buoyant asymmetry —
-// the deck is shredded uniformly through its depth — so a fibrous genus blends
-// that weight toward a constant. At genusFibreStrength 0 this returns the literal
-// historical `1.0 - h` through an explicit early return, so a default render is
-// byte-identical rather than merely arithmetically equal.
+// Cumuliform erosion is base-weighted (`1 - h`): a convective water cloud has a
+// soft ragged bottom and a crisp cauliflower top, so the detail octave eats the
+// base and leaves the crown. Ice cloud has no such buoyant asymmetry — the deck
+// is shredded uniformly through its depth — so a fibrous genus blends that
+// weight toward a constant. At genusFibreStrength 0 the early return yields
+// `1.0 - h` itself, not an arithmetically-equal mix.
 fn genusErosionHeightWeight(h: f32) -> f32 {
   let fibre = clamp(cloud.genusFibreStrength, 0.0, 1.0);
   if (fibre <= 0.0) {
@@ -897,16 +868,16 @@ fn genusErosionHeightWeight(h: f32) -> f32 {
   return mix(1.0 - h, 1.0, fibre);
 }
 
-// C13-16 — per-genus Henyey-Greenstein forward-lobe eccentricity.
+// Per-genus Henyey-Greenstein forward-lobe eccentricity.
 //
-// Ice crystals (hexagonal plates and columns) scatter far more forward-peaked
+// Ice crystals — hexagonal plates and columns — scatter far more forward-peaked
 // than liquid droplets: CloudTypeProfile gives the cirrus family g ~ 0.88-0.9
-// against ~0.76-0.78 for the water genera. The delta is applied to the tunable
-// `phaseG1` rather than replacing it so the existing W1/W3 lighting calibration
-// is preserved, and the sum is clamped short of 1 because the HG denominator
-// `(1 + g^2 - 2g)^1.5` collapses there and the forward peak would diverge.
-// genusPhaseDelta is exactly 0 for CUMULUS, and the early return makes that case
-// byte-identical.
+// against ~0.76-0.78 for the water genera. The delta is added to the tunable
+// `phaseG1` rather than replacing it, so the sun-colour and dual-lobe
+// calibration carried by that uniform survives, and the sum is clamped short of
+// 1 because the HG denominator `(1 + g^2 - 2g)^1.5` collapses there and the
+// forward peak would diverge. genusPhaseDelta is exactly 0 for CUMULUS, which
+// the early return handles without arithmetic.
 const GENUS_PHASE_G_LIMIT: f32 = 0.95;
 fn genusForwardG() -> f32 {
   if (cloud.genusPhaseDelta == 0.0) {
@@ -919,17 +890,16 @@ fn genusForwardG() -> f32 {
   );
 }
 
-// Batch 555 (E2 CLOUD-MAMMATUS) — pendulous "mamma" pouches on the cloud UNDERSIDE.
-// Returns a density multiplier in [0,1] that CARVES the underside BETWEEN rounded
-// lobe cells while keeping density at the cell centres, so the otherwise-flat cloud
-// base reads as a field of downward-bulging pouches (the mammatus signature —
-// "invert the height gradient near the base + add lobed displacement",
-// CLOUD_TAXONOMY_ROADMAP E2). Guarded on mammatusStrength: at 0 it returns 1.0 so
-// the default render is byte-identical (this is the opt-in default-OFF gate). Called
-// IDENTICALLY from cloudDensity AND the cloudBaseDensity oracle — both multiply by
-// the SAME in-[0,1] factor, so the W5 `base >= full` invariant holds (base*f >=
-// full*f for f>=0). `sp` is the wind-advected noise-space sample position (samplePos)
-// so the pouches drift with the deck; `h` is the shell height fraction (0 base..1 top).
+// Pendulous "mamma" pouches on the cloud underside. Returns a density multiplier
+// in [0,1] that carves the underside between rounded lobe cells while keeping
+// density at the cell centres, so the otherwise-flat cloud base reads as a field
+// of downward-bulging pouches: the mammatus signature is an inverted height
+// gradient near the base plus a lobed displacement. Guarded on mammatusStrength,
+// which returns 1.0 at 0 and makes the feature opt-in. Called identically from
+// the full density and from the cloudBaseDensity oracle — both multiply by the
+// same in-[0,1] factor, so `base >= full` survives, since base·f >= full·f for
+// f >= 0. `sp` is the wind-advected noise-space sample position, so the pouches
+// drift with the deck; `h` is the shell height fraction (0 base .. 1 top).
 fn mammatusFactor(sp: vec3<f32>, h: f32) -> f32 {
   if (cloud.mammatusStrength <= 0.0) {
     return 1.0;
@@ -947,26 +917,29 @@ fn mammatusFactor(sp: vec3<f32>, h: f32) -> f32 {
   // pouches hang straight down rather than tilt. `mammatusScale` sets pouch size.
   let lobeP = vec3<f32>(sp.x, sp.y * 0.25, sp.z) * (8.0 * max(cloud.mammatusScale, 1e-3));
   let cellDist = worleyF1(lobeP);
-  // Carve BETWEEN pouches (high cellDist) and keep density at pouch centres (low
-  // cellDist); smoothstep rounds the pouch lobe. Scaled by the band + strength.
+  // Carve between pouches, at high cellDist, and keep density at pouch centres,
+  // at low cellDist; smoothstep rounds the pouch lobe. Scaled by band and
+  // strength.
   let carve = smoothstep(0.15, 1.0, cellDist) * band * cloud.mammatusStrength;
   return clamp(1.0 - carve, 0.0, 1.0);
 }
 
-// Batch 610 (E1 CLOUD-EXOTIC-SPECIES) — species/varieties as bounded density SHAPING
-// (CLOUD_TAXONOMY_ROADMAP E1). Returns a per-position density multiplier in [0,1]:
-//   mode 1 LENTICULARIS — smooth, wind-aligned, vertically-stacked lens plates
-//     (orographic "flying saucer" stacks). SMOOTH by construction (no Worley/curl)
-//     — the smoothness is the signature vs the lobed mammatus carve. Density is kept
-//     in elongated lens cores along the wind and tapered between stacked plates.
-//   mode 2 FIBRATUS / UNCINUS — wispy cirrus filaments STRETCHED along the wind
-//     (fibratus). speciesParam adds a height-sheared "hook" that curls the upper
-//     filaments downwind (the uncinus fallstreak comma). Worley cells compressed
-//     hard along-wind become long streaks; density is carved BETWEEN filaments.
-// Guarded on speciesMode<0.5 OR speciesStrength<=0 → returns 1.0 (opt-in default-OFF
-// gate → byte-identical). Called IDENTICALLY from cloudDensity AND cloudBaseDensity
-// (same in-[0,1] factor), so the W5 `base >= full` invariant is preserved. `sp` is
-// the wind-advected noise-space sample position; `h` is the shell height fraction.
+// Species and varieties as bounded density shaping. Returns a per-position
+// density multiplier in [0,1]:
+//   mode 1 LENTICULARIS — smooth, wind-aligned, vertically-stacked lens plates,
+//     the orographic "flying saucer" stack. Smooth by construction, with no
+//     Worley or curl term: the smoothness is what distinguishes it from the
+//     lobed mammatus carve. Density is kept in elongated lens cores along the
+//     wind and tapered between stacked plates.
+//   mode 2 FIBRATUS / UNCINUS — wispy cirrus filaments stretched along the wind
+//     for fibratus. speciesParam adds a height-sheared hook that curls the upper
+//     filaments downwind, the uncinus fallstreak comma. Worley cells compressed
+//     hard along-wind become long streaks; density is carved between filaments.
+// Guarded on speciesMode < 0.5 or speciesStrength <= 0, which returns 1.0 and
+// makes the feature opt-in. Called identically from the full density and from
+// cloudBaseDensity with the same in-[0,1] factor, so `base >= full` survives.
+// `sp` is the wind-advected noise-space sample position; `h` is the shell height
+// fraction.
 fn speciesFactor(sp: vec3<f32>, h: f32) -> f32 {
   if (cloud.speciesMode < 0.5 || cloud.speciesStrength <= 0.0) {
     return 1.0;
@@ -1010,25 +983,27 @@ fn speciesFactor(sp: vec3<f32>, h: f32) -> f32 {
   return clamp(fib, 0.0, 1.0);
 }
 
-// Batch 611 (E2 CLOUD-EXOTIC-FEATURES-REMAINING) — the sibling supplementary
-// "features" to mammatus (B592) / species (B610) (CLOUD_TAXONOMY_ROADMAP E2). Returns
-// a per-position density multiplier in [0,1]:
-//   mode 1 ASPERITAS — chaotic wavy UNDERSIDE. A domain-warped multi-directional sine
-//     field carves the base band into an undulating, non-repeating wavy surface (the
-//     "storm-tossed sea seen from below" signature).
-//   mode 2 FLUCTUS (Kelvin-Helmholtz) — breaking-wave billows along the TOP band.
-//     Density concentrates at periodic wind-aligned crests; a height shear (featureParam)
-//     leans the crest downwind so the top reads as a row of curling / breaking waves.
-//   mode 3 ARCUS — shelf/roll LEADING EDGE. Keeps a dense wind-leading roll and carves a
-//     trough just behind it so a shelf stands proud of the lower/mid body (featureParam
-//     widens the shelf).
-//   mode 4 VIRGA / PRAECIPITATIO — fallstreak TAIL below the body. Carves the lower band
-//     into vertical across-wind streaks so density hangs down in fibrous trails
-//     (featureParam→1 = praecipitatio: denser streaks reaching further toward the base).
-// Guarded on featureMode<0.5 OR featureStrength<=0 → returns 1.0 (opt-in default-OFF
-// gate → byte-identical). Called IDENTICALLY from cloudDensity AND cloudBaseDensity
-// (same in-[0,1] factor), so the W5 `base >= full` invariant is preserved. `sp` is the
-// wind-advected noise-space sample position; `h` is the shell height fraction (0..1).
+// Supplementary features, the sibling of the mammatus and species factors above.
+// Returns a per-position density multiplier in [0,1]:
+//   mode 1 ASPERITAS — chaotic wavy underside. A domain-warped
+//     multi-directional sine field carves the base band into an undulating,
+//     non-repeating wavy surface, the storm-tossed sea seen from below.
+//   mode 2 FLUCTUS (Kelvin-Helmholtz) — breaking-wave billows. Density
+//     concentrates at periodic wind-aligned crests, and a height shear from
+//     featureParam leans the crest downwind so the band reads as a row of
+//     curling waves.
+//   mode 3 ARCUS — shelf or roll at the leading edge. Keeps a dense wind-leading
+//     roll and carves a trough just behind it so a shelf stands proud of the
+//     lower and mid body; featureParam widens the shelf.
+//   mode 4 VIRGA / PRAECIPITATIO — fallstreak tail below the body. Carves the
+//     lower band into vertical across-wind streaks so density hangs down in
+//     fibrous trails; featureParam toward 1 gives praecipitatio, denser streaks
+//     reaching further toward the base.
+// Guarded on featureMode < 0.5 or featureStrength <= 0, which returns 1.0 and
+// makes the feature opt-in. Called identically from the full density and from
+// cloudBaseDensity with the same in-[0,1] factor, so `base >= full` survives.
+// `sp` is the wind-advected noise-space sample position; `h` is the shell height
+// fraction, 0 to 1.
 fn featureFactor(sp: vec3<f32>, h: f32) -> f32 {
   if (cloud.featureMode < 0.5 || cloud.featureStrength <= 0.0) {
     return 1.0;
@@ -1062,11 +1037,12 @@ fn featureFactor(sp: vec3<f32>, h: f32) -> f32 {
   }
 
   if (cloud.featureMode < 2.5) {
-    // FLUCTUS (Kelvin-Helmholtz) — breaking-wave billows along a shear interface. The
-    // K-H wave forms at a shear layer in the cloud body; anchor the billows in the
-    // mid/lower body where the deck actually carries density (the anvil top carries
-    // little, so a top-only band reads as no change). The periodic wind-aligned crest
-    // is the fluctus signature vs the chaotic asperitas / streaked virga carves.
+    // FLUCTUS (Kelvin-Helmholtz) — breaking-wave billows along a shear
+    // interface. The wave forms at a shear layer in the cloud body, so the
+    // billows are anchored in the mid and lower body where the deck carries
+    // density; an anvil top carries little, and a top-only band would read as no
+    // change. The periodic wind-aligned crest is the fluctus signature, against
+    // the chaotic asperitas and streaked virga carves.
     let band = 1.0 - smoothstep(0.5, 0.9, h);
     if (band <= 0.0) {
       return 1.0;
@@ -1081,9 +1057,9 @@ fn featureFactor(sp: vec3<f32>, h: f32) -> f32 {
   }
 
   if (cloud.featureMode < 3.5) {
-    // ARCUS — a dense roll/shelf at the wind-LEADING edge. A slowly-repeating along-wind
-    // cell places a roll (dense front lip) with a carved trough just behind it so the
-    // shelf stands proud. featureParam widens the shelf.
+    // ARCUS — a dense roll or shelf at the wind-leading edge. A slowly-repeating
+    // along-wind cell places a roll, the dense front lip, with a carved trough
+    // just behind it so the shelf stands proud. featureParam widens the shelf.
     let cell = fract(along * 0.06 * scale);
     let width = 0.25 + 0.35 * clamp(cloud.featureParam, 0.0, 1.0);
     let gap = smoothstep(width, width + 0.18, cell)
@@ -1094,10 +1070,11 @@ fn featureFactor(sp: vec3<f32>, h: f32) -> f32 {
     return clamp(1.0 - carve, 0.0, 1.0);
   }
 
-  // VIRGA / PRAECIPITATIO — fallstreak tail below the body. Carve the LOWER band into
-  // vertical across-wind streaks so density hangs down in fibrous trails. featureParam
-  // (praecipitatio) makes the streaks finer/more numerous AND reach further toward the
-  // base, so it reads as heavier precipitation than plain virga.
+  // VIRGA / PRAECIPITATIO — fallstreak tail below the body. Carve the lower band
+  // into vertical across-wind streaks so density hangs down in fibrous trails.
+  // featureParam, the praecipitatio dial, makes the streaks finer and more
+  // numerous and reaches them further toward the base, so it reads as heavier
+  // precipitation than plain virga.
   let param = clamp(cloud.featureParam, 0.0, 1.0);
   // param deepens the affected band (streaks reach further down toward the base).
   let bandDepth = 0.5 + 0.3 * param;
@@ -1116,12 +1093,12 @@ fn featureFactor(sp: vec3<f32>, h: f32) -> f32 {
   return clamp(1.0 - carve, 0.0, 1.0);
 }
 
-// Batch 612 (E3 CLOUD-EXOTIC-SPECIAL) — smooth pastel spectral palette (Iñigo
-// Quilez cosine gradient). Maps a scalar phase t (any real; only fract(t) matters)
-// to a mother-of-pearl iridescent color. The high DC term (a≈0.83) + low amplitude
-// (b≈0.16) keep the colors PASTEL (unsaturated, high-value) — the nacreous
-// mother-of-pearl look — rather than a saturated rainbow. The phase offsets (d) are
-// spaced 0/⅓/⅔ so R/G/B peak at different t, giving the smooth spectral cycle.
+// Smooth pastel spectral palette — an Iñigo Quilez cosine gradient. Maps a
+// scalar phase t (any real; only fract(t) matters) to a mother-of-pearl
+// iridescent color. The high DC term (a ≈ 0.83) and low amplitude (b ≈ 0.16)
+// keep the colors pastel — unsaturated and high-value, the nacreous look —
+// rather than a saturated rainbow. The phase offsets d are spaced 0, ⅓, ⅔ so R,
+// G and B peak at different t, giving the smooth spectral cycle.
 fn iridescentHue(t: f32) -> vec3<f32> {
   let a = vec3<f32>(0.83, 0.83, 0.86);
   let b = vec3<f32>(0.16, 0.15, 0.14);
@@ -1130,21 +1107,21 @@ fn iridescentHue(t: f32) -> vec3<f32> {
   return a + b * cos(2.0 * PI * (c * t + d));
 }
 
-// Batch 612 (E3 CLOUD-EXOTIC-SPECIAL) — iridescent color tint for the two "shining"
-// special-cloud forms. Returns a MULTIPLIER on the per-sample cloud color:
-//   mode 1 NOCTILUCENT — mesospheric NLC. A cool electric silvery-blue boost
-//     modulated by the fine herringbone billow banding NLCs are famous for. NLCs
-//     glow by high-altitude sunlight AFTER local sunset, so the tint is keyed to the
-//     billow STRUCTURE (position), not the sun-facing term.
-//   mode 2 NACREOUS — stratospheric mother-of-pearl. Pastel spectral bands keyed to
-//     the sun/view SCATTERING ANGLE (cosTheta — like a diffraction corona) plus a
-//     slow spatial phase, so adjacent cloud regions show different pastel hues and
-//     the colors shift as the sun/view geometry changes. specialShadeParam sets the
-//     spectral cycling frequency.
-// Guarded on specialShadeMode<0.5 OR specialShadeStrength<=0 → returns vec3(1.0) (the
-// opt-in default-OFF gate → the cloud color is multiplied by exactly 1.0, so the
-// default render is byte-identical). `sp` is the noise-space sample position; `h` is
-// the shell height fraction (0 base..1 top); `cosTheta` is dot(view, sun).
+// Iridescent color tint for the two "shining" special-cloud forms. Returns a
+// multiplier on the per-sample cloud color:
+//   mode 1 NOCTILUCENT — mesospheric. A cool electric silvery-blue modulated by
+//     the fine herringbone billow banding these clouds are known for. They glow
+//     by high-altitude sunlight after local sunset, so the tint is keyed to the
+//     billow structure — position — rather than to the sun-facing term.
+//   mode 2 NACREOUS — stratospheric mother-of-pearl. Pastel spectral bands keyed
+//     to the sun/view scattering angle in cosTheta, like a diffraction corona,
+//     plus a slow spatial phase, so adjacent cloud regions show different pastel
+//     hues and the colors shift as the sun/view geometry changes.
+//     specialShadeParam sets the spectral cycling frequency.
+// Guarded on specialShadeMode < 0.5 or specialShadeStrength <= 0, which returns
+// vec3(1.0) and makes the feature opt-in. `sp` is the noise-space sample
+// position, `h` the shell height fraction (0 base .. 1 top), and `cosTheta` is
+// dot(view, sun).
 fn specialShadeTint(sp: vec3<f32>, h: f32, cosTheta: f32) -> vec3<f32> {
   if (cloud.specialShadeMode < 0.5 || cloud.specialShadeStrength <= 0.0) {
     return vec3<f32>(1.0);
@@ -1152,13 +1129,14 @@ fn specialShadeTint(sp: vec3<f32>, h: f32, cosTheta: f32) -> vec3<f32> {
   let strength = clamp(cloud.specialShadeStrength, 0.0, 1.0);
   let scale = max(cloud.specialShadeScale, 1e-3);
   if (cloud.specialShadeMode < 1.5) {
-    // NOCTILUCENT — electric silvery-blue with fine herringbone billow bands. The
-    // tint pulls RED/GREEN DOWN and keeps BLUE at ~1.0 (never a brightness BOOST):
-    // boosting all channels only pushes the sample into the Reinhard tone-map knee
-    // where the warm sun washes the hue back toward white, so instead we ATTENUATE
-    // the warm channels so blue survives tone-mapping as the dominant channel. The
-    // billow bands ripple brightness slightly DOWNWARD (<=1) so they never re-enter
-    // the knee. `nlc` = cool electric blue with strongly-suppressed red/green.
+    // NOCTILUCENT — electric silvery-blue with fine herringbone billow bands.
+    // The tint pulls red and green down and holds blue at ~1.0 rather than
+    // boosting any channel: boosting pushes the sample into the Reinhard
+    // tone-map knee, where the warm sun washes the hue back toward white, so
+    // attenuating the warm channels is what lets blue survive tone-mapping as
+    // the dominant channel. The billow bands ripple brightness downward only
+    // (<= 1) so they never re-enter the knee. `nlc` is cool electric blue with
+    // strongly-suppressed red and green.
     let band = 0.85 + 0.15 * sin((sp.x + sp.z) * 60.0 * scale + sp.y * 20.0);
     let nlc = vec3<f32>(0.42, 0.60, 1.0);
     return mix(vec3<f32>(1.0), nlc * band, strength);
@@ -1172,12 +1150,12 @@ fn specialShadeTint(sp: vec3<f32>, h: f32, cosTheta: f32) -> vec3<f32> {
   return mix(vec3<f32>(1.0), iridescentHue(phase), strength);
 }
 
-// ─── Weather Phase 3 — per-position G/B/A channel decode ───
-// Decodes the weather sample's three scaffolding channels into model-space
-// modifiers, NEUTRAL-SAFE: a neutral cell (G=0.5, B=0, A=0.5) yields the
-// identity (densityScale=1, baseShift=0, shape=cloud.profileShape) at ANY
-// `weatherChannelStrength`, so existing R-only maps + weatherMapEnabled=0 stay
-// byte-identical. Returns:
+// Per-position G/B/A channel decode.
+// Decodes the weather sample's three secondary channels into model-space
+// modifiers, and is neutral-safe: a neutral cell (G=0.5, B=0, A=0.5) yields the
+// identity — densityScale 1, baseShift 0, shape cloud.profileShape — at any
+// `weatherChannelStrength`, so an R-only map behaves as if the channels were not
+// read. Returns:
 //   .x = densityScale      — A density-bias multiplier (1.0 neutral)
 //   .y = baseShiftFrac     — B cloud-base height shift in shell fractions (0 neutral)
 //   .z = perGenusShape     — G-biased height-gradient shape index (cloud.profileShape neutral)
@@ -1191,18 +1169,16 @@ fn decodeWeatherChannels(gba: vec3<f32>, deckThickness: f32) -> WeatherChannels 
   // A — density bias (0.5 neutral). Remap to a multiplier around 1.0: A=0.5→1.0,
   // A=1→1+s, A=0→1-s. Clamp at 0 so a fully-thin cell can't drive density negative.
   let densityScale = max(0.0, 1.0 + (gba.z - 0.5) * 2.0 * s);
-  // B — cloud base, normalized over CLOUD_BASE_NORM_METERS (12 km). 0 neutral. The
-  // raw value is base-metres/12000; convert to a fraction of the cloud SHELL
-  // thickness so the height gradient lifts off that base. layerThickness is the
-  // shell span (top-bottom). B=0 → no shift → today's behaviour. Batch 443 — the
-  // active DECK's thickness is passed in so per-deck base shifts stay in the deck's
-  // own shell fraction; the default single-shell call passes cloudLayerTop-Bottom
-  // so the value is byte-identical to pre-443.
+  // B — cloud base, normalized over CLOUD_BASE_NORM_METERS (12 km), 0 neutral.
+  // The raw value is base-metres / 12000; convert it to a fraction of the cloud
+  // shell thickness so the height gradient lifts off that base. `deckThickness`
+  // is the active deck's own span, so a per-deck base shift stays in that deck's
+  // shell fraction; the single-shell call passes cloudLayerTop - cloudLayerBottom.
   let layerThickness = max(deckThickness, 1.0);
   let baseShiftFrac = clamp(
     gba.y * CLOUD_BASE_NORM_METERS / layerThickness * s, 0.0, 0.9);
   // G — genus/type index packed as genus/10 (0..1 → 0..10). 0.5 (the packer's
-  // neutral mid, genus≈5) → no change: blend the GLOBAL cloud.profileShape toward
+  // neutral mid, genus ≈ 5) → no change: blend cloud.profileShape toward
   // SLAB(0) below mid and TOWERING_ANVIL(2) above mid by the signed deviation, so
   // a low-G cell flattens (stratus-like) and a high-G cell towers (cumulonimbus-
   // like). |G-0.5| small → ≈ the global shape. This is a best-effort shape bias,
@@ -1213,11 +1189,10 @@ fn decodeWeatherChannels(gba: vec3<f32>, deckThickness: f32) -> WeatherChannels 
   return WeatherChannels(densityScale, baseShiftFrac, perGenusShape);
 }
 
-// C13-37 same-build control. These two functions preserve the pre-change
-// density evaluation literally for LIVE and bit-13-off BAKED lanes. They are
-// intentionally not routed through the macro/domain helpers: this makes the A/B
-// lane capable of detecting regressions in those helpers as well as in the
-// rotated texture coordinates.
+// Same-build control. These two functions carry the density evaluation for the
+// live-noise and bit-13-off baked routes in full, and are not routed through the
+// macro and domain helpers, so comparing against them detects a regression in
+// those helpers as well as in the rotated texture coordinates.
 fn legacyCloudDensity(
   worldPos: vec3<f32>,
   heightFraction: f32,
@@ -1354,10 +1329,11 @@ fn legacyCloudBaseDensity(
     featureFactor(samplePos, heightFraction);
 }
 
-// C13-37 evaluates coverage, base noise, vertical profile, and every morphology
-// factor once. The adaptive fine path then reuses this exact macro sample for the
-// conservative base oracle and the eroded full density, removing the old double
-// weather/noise/morphology tax while making base >= full structural.
+// One evaluation of coverage, base noise, vertical profile and every morphology
+// factor. The adaptive fine path reuses this same macro sample for both the
+// conservative base oracle and the eroded full density, so the weather, noise
+// and morphology work is paid once rather than twice, and `base >= full` becomes
+// structural instead of a convention two call sites have to keep.
 struct CloudMacroSample {
   preErosion: f32,
   densityFactor: f32,
@@ -1380,8 +1356,9 @@ fn cloudMacroSampleAt(
   deckTop: f32,
   footprintMeters: f32,
 ) -> CloudMacroSample {
-  // Weather remains geographically anchored to worldPos. C13-07/08 own the
-  // equirectangular seam/bounds correction; density coordinates never advect it.
+  // Weather stays geographically anchored to worldPos: the equirectangular seam
+  // and bounds handling live in worldToWeatherUV, and the density coordinates
+  // never advect it.
   var effectiveCoverage = cloud.coverage;
   var wch = WeatherChannels(1.0, 0.0, cloud.profileShape);
   if (cloud.weatherMapEnabled > 0.5) {
@@ -1476,12 +1453,13 @@ fn cloudDensityAtCoordinates(
   return cloudDensityFromMacro(macroSample, heightFraction);
 }
 
-// Raw-world wrappers keep the non-RTE A/B diagnostic route on the same
-// mathematical density field. C13-06 moved the LIVE shadow route onto the
-// camera-relative twin below; these remain the explicit `cloudHighPrecision =
-// false` escape path and the same-build oracle.
-// SCAFFOLDING (Principle 7): cloudDensity itself is defined but not yet called
-// (cloudDensityWithFootprint below IS live). Do not delete.
+// Raw-world wrappers keep the non-relative-to-eye route on the same mathematical
+// density field. They are the explicit `cloudHighPrecision = false` escape path
+// and the same-build oracle for the camera-relative twin below, which is what
+// the shadow producer reads through. `cloudDensity` itself has no caller —
+// `cloudDensityWithFootprint` is the one the escape path reaches — and is kept
+// as the zero-footprint entry point of that pair; the shader compiler strips an
+// uncalled function, so it costs nothing at runtime.
 fn cloudDensity(
   worldPos: vec3<f32>,
   heightFraction: f32,
@@ -1525,21 +1503,20 @@ fn cloudDensityWithFootprint(
   );
 }
 
-// C13-06 — the CAMERA-RELATIVE twin of cloudDensityWithFootprint, and the one
-// density entry point the beer-shadow-map producer uses.
+// The camera-relative twin of cloudDensityWithFootprint, and the density entry
+// point the beer-shadow-map producer uses.
 //
-// The pre-C13-06 shadow pass reconstructed a full-ECEF `vec3<f32>` sample and
-// rebuilt the periodic texture domains from it. That is the raw-world route the
-// visible march abandoned in C13-37: the visible march reconstructs its domains
-// from CPU-`f64` origin phases plus a small camera-relative displacement. Two
-// routes reading "the same field" through different reconstructions is exactly
-// the per-consumer approximation the audit convicted, so the shadow now reads
-// through the identical owner.
+// The visible march reconstructs its domains from CPU-`f64` origin phases plus a
+// small camera-relative displacement. Reconstructing a full-ECEF `vec3<f32>`
+// sample and rebuilding the periodic texture domains from that instead is a
+// different approximation of the same field, and a shadow cast from a
+// differently-approximated field does not line up with the rendered cloud, so
+// both go through this one owner.
 //
-// `relativePos` is the sample position relative to the camera — the same frame
+// `relativePos` is the sample position relative to the camera — the frame
 // `encodedCameraHigh/Low` and the origin phases are anchored at. The world
-// position is reconstructed in the established high-then-low order ONLY for the
-// geographic weather lookup, whose own correctness is C13-07/C13-08's row.
+// position is reconstructed in high-then-low order for the geographic weather
+// lookup alone.
 fn cloudDensityRelativeWithFootprint(
   relativePos: vec3<f32>,
   centerHigh: vec3<f32>,
@@ -1563,9 +1540,11 @@ fn cloudDensityRelativeWithFootprint(
   );
 }
 
-// SCAFFOLDING (Principle 7): cloudBaseDensity is defined but not yet called. It is
-// the cheap no-erosion base oracle retained for the C13-22 shadow redesign's
-// empty-space skipping; wire-up is pending. Do not delete.
+// The cheap no-erosion base oracle in standalone form, for empty-space skipping
+// in a shadow march. It has no caller: the visible march reaches the same
+// quantity through `cloudBaseFromMacro`, and the shadow map does not yet skip
+// empty space. It is kept because that skipping needs this shape rather than the
+// macro-sample one, and the shader compiler strips an uncalled function.
 fn cloudBaseDensity(
   worldPos: vec3<f32>,
   heightFraction: f32,
@@ -1588,35 +1567,31 @@ fn cloudBaseDensity(
   return cloudBaseFromMacro(macroSample);
 }
 
-// ─── Ray-sphere intersection (sphere centered at the planet origin) ───
-// RTE precision (Batch 412). The naive form `c = dot(ro,ro) - radius*radius`
-// subtracts two ~4e13 f32 values (camera + shell are both ~6.4e6 m from the
-// planet center), so the discriminant loses ~7 significant digits — a fuzzy /
-// shimmering cloud-layer silhouette at grazing angles from altitude. This stable
-// form (Haines et al., "Precision Improvements for Ray/Sphere Intersection",
-// Ray Tracing Gems ch. 7) builds the closest-approach (perpendicular) vector
-// FIRST and squares THAT, so dot(cp,cp) carries the small perpendicular distance
-// without the big-number cancellation; the roots come back as tClosest ±
-// halfChord (no -b + sqrtD cancellation). It returns the IDENTICAL (near, far)
-// pair as the old form, just computed more precisely — every grazing ray wins,
-// no view regresses.
+// Ray-sphere intersection, sphere centred at the planet origin.
+// The naive form `c = dot(ro,ro) - radius*radius` subtracts two ~4e13 f32
+// values, since camera and shell are both ~6.4e6 m from the planet centre, so
+// the discriminant loses about seven significant digits and the cloud-layer
+// silhouette reads as fuzzy and shimmering at grazing angles from altitude. This
+// stable form builds the closest-approach (perpendicular) vector first and
+// squares that, so dot(cp,cp) carries the small perpendicular distance without
+// the big-number cancellation, and the roots come back as tClosest ± halfChord
+// with no -b + sqrtD cancellation. It returns the same (near, far) pair as the
+// naive form, computed more precisely.
 //
-// RESIDUAL (deferred): for near-RADIAL rays the geometry still needs
-// `radius - |ro|` (a ~1e3 m difference of two ~6.4e6 m magnitudes), which f32
-// can't fully resolve — removing THAT needs RTE high/low camera (DP emulation in
-// WGSL). The residual is ~1 m and not visibly observed, so the full DP path
-// stays deferred (NEW-WEBGPU-CLOUD-RTE) until a shimmer artifact is seen.
+// Reference: Haines et al., "Precision Improvements for Ray/Sphere
+// Intersection", Ray Tracing Gems ch. 7.
 //
-// RETAINED (Principle 7), NOT dead code: C13-04 moved the visible march and
-// C13-06 moved the beer-shadow producer onto the oblate `rayEllipsoidIntersect*`
-// pair, so this spherical form currently has no caller in this module. It stays
-// because it is the documented numerically-stable primitive the cloud subsystem
-// reaches for whenever a TRUE sphere is the right model (the environment-capture
-// march keeps its own local copy, `cloudShellIntersect` in
-// ProceduralSkyCubemap.wgsl, for exactly that reason), and because C13-22's
-// shadow redesign is queued against this file. Deleting it would mean
-// re-deriving the Haines form and its rationale from scratch. The shader
-// compiler dead-strips an uncalled function, so it costs nothing at runtime.
+// A residual remains: near-radial rays still need `radius - |ro|`, a ~1e3 m
+// difference of two ~6.4e6 m magnitudes that f32 cannot fully resolve, and
+// removing it needs double-precision emulation from a high/low camera split.
+// That residual is about a metre and has not been observed as an artifact.
+//
+// This spherical form has no caller in this module: the visible march and the
+// beer-shadow producer both intersect the oblate `rayEllipsoidIntersect` pair.
+// It is kept as the numerically-stable primitive to reach for when a true sphere
+// is the right model — the environment-capture march keeps its own copy,
+// `cloudShellIntersect` in ProceduralSkyCubemap.wgsl, for that reason — and the
+// shader compiler strips an uncalled function, so it costs nothing at runtime.
 fn raySphereIntersect(ro: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
   let tClosest = -dot(ro, rd);
   let cp = ro + rd * tClosest; // closest point on the ray to the planet center
@@ -1628,16 +1603,16 @@ fn raySphereIntersect(ro: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
   return vec2<f32>(tClosest - halfChord, tClosest + halfChord);
 }
 
-// Batch 445 (4.12 CLOUD-RTE) — is the camera-relative high-precision march active?
-// (qualityFlags bit 12). C13-04 makes this the automatic/default path; explicit
-// cloudHighPrecision=false retains the closest-point f32 A/B route.
+// Is the camera-relative high-precision march active? (qualityFlags bit 12).
+// This is the automatic path; explicit cloudHighPrecision=false selects the
+// closest-point f32 route instead.
 fn highPrecisionEnabled() -> bool {
   return (u32(cloud.qualityFlags) & QF_HIGH_PRECISION) != 0u;
 }
 
-// C13-04 — WGS84 oblate shell helpers. A cloud boundary at height h is represented
-// by axes (a+h, a+h, b+h). This bounded correction removes the equatorial-sphere
-// error that placed a 20 km polar camera below the deck.
+// WGS84 oblate shell helpers. A cloud boundary at height h is represented by
+// axes (a+h, a+h, b+h). Treating the shell as an equatorial-radius sphere at
+// every latitude instead puts a 20 km polar camera below the deck.
 fn cloudShellAxes(height: f32) -> vec3<f32> {
   return vec3<f32>(
     cloud.planetRadius + height,
@@ -1714,9 +1689,9 @@ fn ellipsoidShellHeightFractionRTE(
   innerInverseAxes: vec3<f32>,
   outerInverseAxes: vec3<f32>,
 ) -> f32 {
-  // Form the RTE world point once, then use precomputed reciprocals. This preserves
-  // the old high-then-low cancellation order and removes vector division from the
-  // inner density/light loops.
+  // Form the relative-to-eye world point once, then use precomputed reciprocals.
+  // This keeps the high-then-low cancellation order and keeps vector division
+  // out of the inner density and light loops.
   let worldPos = (point - centerHigh) - centerLow;
   let innerScaled = worldPos * innerInverseAxes;
   let outerScaled = worldPos * outerInverseAxes;
@@ -1725,40 +1700,40 @@ fn ellipsoidShellHeightFractionRTE(
   return clamp(fromInner / max(fromInner + toOuter, 1e-7), 0.0, 1.0);
 }
 
-// ─── Henyey-Greenstein phase function ───
+// Henyey-Greenstein phase function
 fn hgPhase(cosTheta: f32, g: f32) -> f32 {
   let g2 = g * g;
   return (1.0 - g2) / (4.0 * PI * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5));
 }
 
-// ─── Dual-lobe phase function (forward + back scatter) ───
-// W1 — uniform-driven so the lobes are tunable (and W3 can modulate them by
-// time-of-day). The forward lobe (phaseG1) is the silver lining toward the sun;
-// the back lobe (phaseG2) fills the anti-sun side; phaseBlend mixes them.
+// Dual-lobe phase function (forward and back scatter).
+// Uniform-driven so the lobes are tunable and can be modulated by time of day.
+// The forward lobe, phaseG1, is the silver lining toward the sun; the back lobe,
+// phaseG2, fills the anti-sun side; phaseBlend mixes them.
 fn cloudPhase(cosTheta: f32) -> f32 {
-  // C13-16 — the forward lobe carries the per-genus ice/water eccentricity.
+  // The forward lobe carries the per-genus ice/water eccentricity.
   let forward = hgPhase(cosTheta, genusForwardG());
   let back = hgPhase(cosTheta, cloud.phaseG2);
   return mix(back, forward, cloud.phaseBlend);
 }
 
-// Batch 436 (3.6 CLOUD-CONE-LIGHT) — is the Schneider/Nubis cone-sampled light
-// march active? (qualityFlags bit 10). T1/T2 set it; T3 cinematic + the escape
-// hatch leave it clear → the straight march below runs verbatim (byte-identical).
+// Is the Schneider/Nubis cone-sampled light march active? (qualityFlags bit 10).
+// The lower quality tiers set it; the cinematic full-resolution tier and the
+// escape hatch leave it clear, so the straight march below runs instead.
 fn lightConeEnabled() -> bool {
   return (u32(cloud.qualityFlags) & QF_LIGHT_CONE) != 0u;
 }
 
-// Batch 436 — fixed 6-tap cone kernel (Schneider, "Real-Time Volumetric
-// Cloudscapes of Horizon Zero Dawn", SIGGRAPH 2015 / Nubis 2017). Five short
-// taps marching toward the sun, each pushed sideways by a UNIT offset so the
-// sampled positions FAN OUT into a cone — the cone captures more of the occluding
-// cloud body (the parts that shadow the sample but don't lie on the exact
-// sun ray) with far fewer taps than a dense straight march. The offsets are a
-// small irregular set on the unit sphere; they're scaled per-tap by an
-// increasing radius and jittered per-pixel (see lightMarchCone) so the sparse
-// taps don't band. The 6th step is ONE LONG far tap (handled separately) using
-// the cheap `cloudBaseDensity` oracle to fold in distant self-shadowing.
+// Fixed 6-tap cone kernel (Schneider, "Real-Time Volumetric Cloudscapes of
+// Horizon Zero Dawn", SIGGRAPH 2015 / Nubis 2017). Five short taps march toward
+// the sun, each pushed sideways by a unit offset so the sampled positions fan
+// out into a cone; the cone captures more of the occluding cloud body — the
+// parts that shadow the sample without lying on the exact sun ray — with far
+// fewer taps than a dense straight march. The offsets are a small irregular set
+// on the unit sphere, scaled per tap by an increasing radius and jittered per
+// pixel in lightMarchCone so the sparse taps do not band. The sixth step is one
+// long far tap, handled separately, using the cheap base-density oracle to fold
+// in distant self-shadowing.
 const CONE_KERNEL: array<vec3<f32>, 5> = array<vec3<f32>, 5>(
   vec3<f32>( 0.38051787,  0.92453268,  0.02111722),
   vec3<f32>( 0.35578787, -0.55155486, -0.75555583),
@@ -1767,26 +1742,26 @@ const CONE_KERNEL: array<vec3<f32>, 5> = array<vec3<f32>, 5>(
   vec3<f32>(-0.85181792, -0.15296098,  0.34155418)
 );
 
-// Batch 436 — per-pixel/per-frame cone jitter. Pairs cleanly with the half-res
-// temporal accumulation: rotating the cone slightly each frame (frameCounter) and
-// per screen position decorrelates the sparse 5-tap pattern so the temporal
-// resolve averages out the under-sampling instead of locking in a fixed bias.
-// Returns a small unit-length vector used to perturb the kernel offsets.
+// Per-pixel, per-frame cone jitter. It pairs with the half-res temporal
+// accumulation: rotating the cone slightly each frame, on frameCounter, and per
+// screen position decorrelates the sparse 5-tap pattern so the temporal resolve
+// averages out the under-sampling instead of locking in a fixed bias. Returns a
+// small vector used to perturb the kernel offsets.
 fn coneJitter(pos: vec3<f32>) -> vec3<f32> {
-  // C13-36 widens frameCounter to 64 phases for ray IGN. Preserve the existing
-  // cone-light sequence exactly by retaining only its original low 4 bits.
+  // frameCounter runs over 64 phases for the ray noise. Masking to its low 4
+  // bits keeps the cone-light sequence on the 16 phases it was tuned against.
   let coneFrame = f32(u32(cloud.frameCounter) & 15u);
   let seed = pos * 0.013 + vec3<f32>(coneFrame * 0.61803399);
   return hash33(seed) - vec3<f32>(0.5);
 }
 
-// Batch 436 — Schneider 6-tap cone light march. Sums optical depth from 5 short
-// cone-offset taps (full eroded `cloudDensity`) plus 1 long far tap (cheap
-// `cloudBaseDensity` oracle) toward the sun. Returns an optical depth in the SAME
-// units as the straight march (density × marched-length), so it feeds the SAME
-// beer-powder / multi-scatter / HG lighting model unchanged — only the SAMPLING
-// PATTERN differs. ~½ the cost: 6 taps (5 full + 1 cheap) vs the straight march's
-// `lightSteps` full taps per cone radius.
+// Schneider 6-tap cone light march. Sums optical depth from five short
+// cone-offset taps of the full eroded density plus one long far tap of the cheap
+// base-density oracle, toward the sun. It returns an optical depth in the same
+// units as the straight march — density × marched length — so it feeds the same
+// beer-powder, multi-scatter and Henyey-Greenstein lighting model unchanged, and
+// only the sampling pattern differs. Six taps, five full and one cheap, against
+// the straight march's `lightSteps` full taps per cone radius.
 fn lightMarchCone(
   pos: vec3<f32>,
   heightFraction: f32,
@@ -1802,9 +1777,10 @@ fn lightMarchCone(
   let outerInverseAxes = vec3<f32>(1.0) / outerAxes;
   let layerThickness = deckTop - deckBottom;
 
-  // Base step toward the sun. The straight march walked `steps` of `layerThickness/
-  // steps`; the cone covers the same near-shadow span with 5 geometrically-growing
-  // steps. lightSampleScale stays the tier cost lever (T1/T2 = 0.5 → tighter cone).
+  // Base step toward the sun. Where the straight march walks `steps` of
+  // `layerThickness / steps`, the cone covers the same near-shadow span with five
+  // geometrically-growing steps. lightSampleScale is the tier cost lever: the
+  // lower tiers pass 0.5, giving a tighter cone.
   let coneStepBase = layerThickness * 0.16 * cloud.lightSampleScale;
   // Build a sun-aligned basis so the kernel's lateral component fans across the
   // sun ray (kernel.z rides along the sun direction; x/y spread the cone).
@@ -1816,8 +1792,8 @@ fn lightMarchCone(
   let jit = coneJitter(pos);
 
   var opticalDepth: f32 = 0.0;
-  // 5 short cone taps. Step distance and cone radius BOTH grow with i, so the taps
-  // sweep a widening cone toward the sun. Each tap reads the FULL density.
+  // Five short cone taps. Step distance and cone radius both grow with i, so the
+  // taps sweep a widening cone toward the sun. Each reads the full density.
   for (var i: i32 = 0; i < 5; i = i + 1) {
     let fi = f32(i);
     let marchDist = coneStepBase * (fi + 1.0);
@@ -1852,10 +1828,11 @@ fn lightMarchCone(
     }
   }
 
-  // ONE LONG FAR TAP — captures distant self-shadowing the short cone can't reach,
-  // using the CHEAP base-density oracle (no Worley / detail fetches). `cloudBaseDensity`
-  // is conservative (base >= full), so this slightly OVER-shadows the far term —
-  // exactly the desired soft far self-occlusion at a fraction of a full tap's cost.
+  // One long far tap captures distant self-shadowing the short cone cannot
+  // reach, using the cheap base-density oracle with no Worley or detail fetches.
+  // The oracle is conservative — base >= full — so this slightly over-shadows
+  // the far term, which reads as the intended soft far self-occlusion at a
+  // fraction of a full tap's cost.
   let farDist = layerThickness * 1.5;
   let farDelta = sunDir * farDist;
   let farPos = pos + farDelta;
@@ -1886,10 +1863,9 @@ fn lightMarchCone(
   return opticalDepth;
 }
 
-// ─── Light march: compute optical depth toward sun ───
-// Batch 436 — dispatch: the cone path (T1/T2) when QF_LIGHT_CONE is set, else the
-// STRAIGHT N-step march below, kept VERBATIM so the default / cinematic / escape
-// hatch render byte-identical to pre-436.
+// Light march: optical depth toward the sun.
+// Dispatches to the cone path when QF_LIGHT_CONE is set, otherwise to the
+// straight N-step march below.
 fn lightMarch(
   pos: vec3<f32>,
   heightFraction: f32,
@@ -1905,10 +1881,10 @@ fn lightMarch(
     );
   }
   let sunDir = normalize(cloud.sunDirection);
-  // V5 — scale the light-march step count by the tier's lightSampleScale (T3 = 1.0
-  // → unchanged; lower tiers march fewer, bigger steps for ~the same optical depth
-  // at lower cost). lightSteps is the EXPONENTIAL cost knob, so this is the cheap
-  // lever for the low tiers.
+  // Scale the light-march step count by the tier's lightSampleScale: 1.0 leaves
+  // it alone, and lower tiers march fewer, bigger steps for roughly the same
+  // optical depth at lower cost. `lightSteps` multiplies the per-view-sample
+  // cost, so this is the cheapest lever the low tiers have.
   let steps = max(1, i32(cloud.lightSteps * cloud.lightSampleScale));
   let innerAxes = cloudShellAxes(deckBottom);
   let outerAxes = cloudShellAxes(deckTop);
@@ -1983,22 +1959,22 @@ fn lightMarch(
   return opticalDepth;
 }
 
-// Batch 408 V11 — per-genus optical extinction coefficient. The base
-// `cloud.absorptionCoeff` is the global Beer-Lambert extinction; `profileExtinction`
-// (slot 103, normalized so the DEFAULT genus CUMULUS = 1.0) scales it so denser
-// genera (cumulonimbus ~1.58x) absorb more light → darker, more opaque cores, while
-// thin genera (cirrus ~0.17x) absorb less → wispier, more translucent. Applied
-// CONSISTENTLY at every optical-density site (the light-march beer/powder + the
-// view-ray sample transmittance) so a genus is uniformly denser or thinner.
-// GUARD: a zero/unset scaffolding slot (profileExtinction <= 0) falls back to 1.0
-// (no scaling), so a stray zero-packed uniform never zeroes the absorption (which
-// would make the clouds vanish — exp(0)=1, fully transparent).
+// Per-genus optical extinction coefficient. `cloud.absorptionCoeff` carries the
+// scene-wide Beer-Lambert extinction and `profileExtinction`, float 103, scales
+// it, normalized so CUMULUS is 1.0: denser genera such as cumulonimbus at ~1.58×
+// absorb more and read as darker, more opaque cores, while thin genera such as
+// cirrus at ~0.17× absorb less and read wispier. It is applied at every
+// optical-density site — the light-march beer-powder term and the view-ray
+// sample transmittance — so a genus is uniformly denser or thinner. A
+// profileExtinction of 0 or below falls back to 1.0, so a stray zero-packed
+// uniform cannot zero the absorption and make the clouds vanish, exp(0) being 1
+// and therefore fully transparent.
 fn effectiveAbsorption() -> f32 {
   let scale = select(1.0, cloud.profileExtinction, cloud.profileExtinction > 0.0);
   return cloud.absorptionCoeff * scale;
 }
 
-// ─── Beer-Powder approximation for cloud lighting ───
+// Beer-powder approximation for cloud lighting
 fn beerPowder(opticalDepth: f32, powder: f32) -> f32 {
   let absorb = effectiveAbsorption();
   let beer = exp(-opticalDepth * absorb);
@@ -2006,27 +1982,23 @@ fn beerPowder(opticalDepth: f32, powder: f32) -> f32 {
   return mix(beer, beer * powderEffect, powder);
 }
 
-// ─── Cheap multi-octave multi-scatter (379c) ───
-// Schneider/Nubis approximation: sum N Beer-Powder octaves with progressively
-// LESS extinction and lower contribution, so deep cloud interiors receive a soft
-// residual glow instead of going pure black (single-scatter Beer alone). The sum
-// is NORMALIZED by the total contribution so a THIN cloud (every octave ≈ 1)
-// returns ≈ 1.0 — this CANNOT over-brighten (the analogue of the 379a
-// over-densification failure); it only lifts the dark deep-cloud tail.
-// V5 — Frostbite art-directable multiple scattering. N octaves with GEOMETRIC
-// decay of scattering (a^i), extinction (b^i), and phase eccentricity (c^i), with
-// the dual-lobe phase FOLDED PER-OCTAVE: deeper octaves are dimmer, less
-// extinguished (so interiors keep a residual glow instead of going black), AND
-// more ISOTROPIC (the phase peak relaxes) — the soft lit-from-within look. The
-// returned value already includes the phase (the caller no longer multiplies by
-// it). Normalized by the scattering sum so a THIN cloud returns ≈ the phase
-// (cannot over-brighten). `octaves` is tier-driven (qualityFlags bits 4-6).
+// Cheap multi-octave multiple scattering, in the Schneider/Nubis and Frostbite
+// art-directable form: sum N beer-powder octaves with geometric decay of
+// scattering (a^i), extinction (b^i) and phase eccentricity (c^i), folding the
+// dual-lobe phase in per octave. Deeper octaves are dimmer, less extinguished —
+// so interiors keep a residual glow instead of going black under single-scatter
+// Beer alone — and more isotropic as the phase peak relaxes, which is the soft
+// lit-from-within look. The returned value already carries the phase, so the
+// caller does not multiply by it again. Normalizing by the scattering sum means
+// a thin cloud, where every octave is ≈ 1, returns ≈ the phase: this can only
+// lift the dark deep-cloud tail, never over-brighten. `octaves` comes from
+// qualityFlags bits 4-6.
 fn multiScatterLight(opticalDepth: f32, cosTheta: f32, powder: f32, octaves: i32) -> f32 {
-  let a = cloud.msDecayA; // MS_SCATTER_DECAY — contribution per octave (Batch 407 dial, default 0.5)
-  let b = cloud.msDecayB; // MS_EXTINCTION_DECAY — extinction per octave (default 0.5)
-  let c = cloud.msDecayC; // MS_PHASE_DECAY — eccentricity per octave (default 0.85, gentle: keeps T3 ≈ prior)
+  let a = cloud.msDecayA; // contribution per octave (default 0.5)
+  let b = cloud.msDecayB; // extinction per octave (default 0.5)
+  let c = cloud.msDecayC; // eccentricity per octave (default 0.85, a gentle relax)
   let n = max(octaves, 1);
-  // V11 — per-genus extinction scale (CUMULUS = 1.0 neutral; guarded zero→1.0).
+  // Per-genus extinction scale; CUMULUS is 1.0 and a zero is guarded to 1.0.
   let absorb = effectiveAbsorption();
   var luminance: f32 = 0.0;
   var total: f32 = 0.0;
@@ -2049,7 +2021,7 @@ fn multiScatterLight(opticalDepth: f32, cosTheta: f32, powder: f32, octaves: i32
   return luminance / max(total, 1e-6);
 }
 
-// ─── Reconstruct world-space ray from UV ───
+// Reconstruct a world-space ray from UV
 fn getWorldRay(uv: vec2<f32>) -> vec3<f32> {
   let ndc = vec4<f32>(uv * 2.0 - 1.0, 1.0, 1.0);
   var viewDir = cloud.inverseProjection * ndc;
@@ -2058,25 +2030,26 @@ fn getWorldRay(uv: vec2<f32>) -> vec3<f32> {
   return normalize(worldDir.xyz);
 }
 
-// Batch 409 — reverse the renderer-wide LOGARITHMIC depth to a positive
-// eye-space distance along the view ray (metres). Byte-compatible with
-// csm_reverseLogDepthToEyeDistance / AerialPerspective.wgsl::logDepthToEyeDistance.
+// Reverse the renderer-wide logarithmic depth to a positive eye-space distance
+// along the view ray, in metres. Byte-compatible with
+// csm_reverseLogDepthToEyeDistance and
+// AerialPerspective.wgsl::logDepthToEyeDistance.
 fn logDepthToEyeDistance(logZ: f32, near: f32, far: f32) -> f32 {
   let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);
   let depthFromNear = exp2(logZ * log2FarDepthFromNearPlusOne) - 1.0;
   return depthFromNear + near;
 }
 
-// ─── Batch 434 — atmosphere-LUT coupling helpers ───
-// 3.3 + 3.4 sample the SAME precomputed LUTs the SkyAtmosphere shader uses, with
-// the IDENTICAL (U, V) parameterization (so the cloud air-light / ambient agree
-// with the visible sky dome). The two sky-domain helpers are copied verbatim from
-// SkyAtmosphere.wgsl::sampleSkyViewLut / sampleMultipleScatterLut; the transmittance
-// helper mirrors AerialPerspective.wgsl::sampleTransmittance.
+// Atmosphere-LUT coupling helpers.
+// These sample the same precomputed LUTs the SkyAtmosphere shader uses, with the
+// identical (U, V) parameterization, so the cloud air light and ambient agree
+// with the visible sky dome. The two sky-domain helpers are copies of
+// SkyAtmosphere.wgsl::sampleSkyViewLut and sampleMultipleScatterLut; the
+// transmittance helper mirrors AerialPerspective.wgsl::sampleTransmittance.
 
-// 3.3 physical aerial — sun-relative SKY-VIEW single-scatter inscatter (the
-// in-between air light). U = relativeAzimuth(view, sun)/π; V = Hillaire horizon
-// warp of cosViewZenith. `up` is the local vertical at the sample point.
+// Physical aerial: sun-relative sky-view single-scatter inscatter, the
+// in-between air light. U = relativeAzimuth(view, sun) / π; V is the Hillaire
+// horizon warp of cosViewZenith. `up` is the local vertical at the sample point.
 fn cloudSampleSkyViewLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) -> vec3<f32> {
   let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
   let vCoord = clamp(0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith)), 0.0, 1.0);
@@ -2094,10 +2067,10 @@ fn cloudSampleSkyViewLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) ->
   return max(s.rgb, vec3<f32>(0.0));
 }
 
-// 3.4 sky-coupled ambient — sun-relative MULTIPLE-SCATTERING sky radiance, same
-// sun-relative sky-view domain as cloudSampleSkyViewLut (Batch 429 re-baked the MS
-// LUT onto that domain). Sampling the UP hemisphere gives the diffuse sky fill that
-// lights cloud TOPS; the DOWN hemisphere gives the ground-bounce fill for BOTTOMS.
+// Sky-coupled ambient: sun-relative multiple-scattering sky radiance, over the
+// same sun-relative sky-view domain as cloudSampleSkyViewLut. Sampling the up
+// hemisphere gives the diffuse sky fill that lights cloud tops; the down
+// hemisphere gives the ground-bounce fill for their bottoms.
 fn cloudSampleMultipleScatterLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) -> vec3<f32> {
   let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
   let vCoord = clamp(0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith)), 0.0, 1.0);
@@ -2115,10 +2088,11 @@ fn cloudSampleMultipleScatterLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<
   return max(s.rgb, vec3<f32>(0.0));
 }
 
-// 3.3 transmittance — Bruneton TRANSMITTANCE LUT (altitude × cosZenith). Mirrors
-// AerialPerspective.wgsl::sampleTransmittance: u = (cosZenith+1)/2, v = altitude /
-// thickness. Returns the multiplicative extinction along the path to the top of
-// atmosphere from a point at `altitude` looking along `cosZenith` (cos angle to up).
+// Bruneton transmittance LUT (altitude × cosZenith). Mirrors
+// AerialPerspective.wgsl::sampleTransmittance: u = (cosZenith + 1) / 2,
+// v = altitude / thickness. Returns the multiplicative extinction along the path
+// to the top of the atmosphere from a point at `altitude` looking along
+// `cosZenith`, the cosine of the angle to up.
 fn cloudSampleTransmittance(altitude: f32, cosZenith: f32) -> vec3<f32> {
   let thickness = cloud.atmosphereThickness;
   let u = clamp(cosZenith * 0.5 + 0.5, 0.0, 1.0);
@@ -2126,52 +2100,49 @@ fn cloudSampleTransmittance(altitude: f32, cosZenith: f32) -> vec3<f32> {
   return textureSampleLevel(cloudTransmittanceLut, cloudLutSampler, vec2<f32>(u, v), 0.0).rgb;
 }
 
-// Cheap luminance — used as the unbaked-LUT sentinel (an all-zero LUT reads ~0, so
-// the physical/sky-LUT branches self-heal to the legacy path).
+// Cheap luminance, used as the unbaked-LUT sentinel: an all-zero LUT reads ~0, so
+// the physical and sky-LUT branches fall back to the constant path.
 fn cloudLutLuminance(c: vec3<f32>) -> f32 {
   return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
-// Batch 443 (4.9 CLOUD-MULTIDECK) — per-deck march result. `hazed` is the LDR
-// tone-mapped + aerial-hazed cloud color for THIS deck; `alpha` = 1 - transmittance
-// (the deck's coverage). For the default single shell these are byte-identical to
-// the legacy fragmentMain locals of the same name; the front-to-back composite then
-// reproduces the legacy `mix(sceneColor, hazed, cloudAlpha)` exactly.
+// Per-deck march result. `hazed` is the LDR tone-mapped and aerial-hazed cloud
+// color for this deck; `alpha` is 1 - transmittance, the deck's coverage. For a
+// single shell the front-to-back composite over one deck reduces to
+// `mix(sceneColor, hazed, alpha)`.
 struct DeckResult {
   hazed: vec3<f32>,
   alpha: f32,
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
-  // C13-10 — per-sample reconstruction emission. Present ONLY in the emitting
-  // variant: C13-39's negative result makes register footprint a static
-  // property of the module, so these two accumulators (and every line that
-  // touches them) are deleted by the preprocessor for the full-resolution
-  // march, the shadow map, the cascade atlas and the god-ray mask.
+  // Per-sample reconstruction emission, present only in the emitting variant.
+  // Register footprint is a static property of the module, so these two
+  // accumulators and every line that touches them are deleted by the
+  // preprocessor for the full-resolution march, the shadow map, the cascade
+  // atlas and the god-ray mask, none of which read them.
   //
   //   frontDistance       nearest sample distance that actually contributed
   //                       extinction, metres; -1 when the deck contributed
-  //                       nothing. This is the channel one mean depth cannot
+  //                       nothing. This is the channel a mean depth cannot
   //                       provide for separated overlapping volumes.
-  //   weightedDistanceSum Σ wᵢ·tᵢ over this deck's OWN transmittance weights,
-  //                       where wᵢ = (1 - exp(-σᵢ·Δ)) · Tᵢ is exactly the
-  //                       weight the radiance accumulation already uses. Their
-  //                       sum is the deck's alpha by construction, so the
+  //   weightedDistanceSum Σ wᵢ·tᵢ over this deck's own transmittance weights,
+  //                       where wᵢ = (1 - exp(-σᵢ·Δ)) · Tᵢ is the weight the
+  //                       radiance accumulation already uses. Their sum is the
+  //                       deck's alpha by construction, so the
   //                       transmittance-weighted mean distance is this divided
-  //                       by `alpha` — an ACCUMULATION, not the uniform-
-  //                       extinction estimator C13-09 had to settle for.
+  //                       by `alpha` — an accumulation rather than an estimate
+  //                       from an assumed uniform extinction.
   frontDistance: f32,
   weightedDistanceSum: f32,
 //>>endif
 };
 
-// Batch 443 — march ONE cloud shell [deckBottom, deckTop] along the view ray and
-// return its tone-mapped + aerial-hazed color + alpha. This is the LEGACY
-// fragmentMain march body with the hardcoded `cloud.cloudLayerBottom/Top`
-// replaced by the `deckBottom/Top` parameters and the scene-composite tail
-// lifted out to the caller (the caller composites — single shell or
-// front-to-back). `marchSamplePhase=0.5` preserves the old midpoint positions
-// exactly; C13-36's tier flag supplies a spatial/temporal phase instead. A ray
-// that misses the shell, or whose layer is fully occluded by depth, returns
-// alpha 0 (transparent → contributes nothing to the composite).
+// March one cloud shell [deckBottom, deckTop] along the view ray and return its
+// tone-mapped, aerial-hazed color and alpha. The scene composite is the caller's,
+// since it differs between the single shell and the front-to-back stack.
+// `marchSamplePhase` of 0.5 samples interval midpoints; the jitter tier supplies
+// a spatial or temporal phase instead. A ray that misses the shell, or whose
+// layer is fully occluded by depth, returns alpha 0 and contributes nothing to
+// the composite.
 fn marchDeck(
   rayOrigin: vec3<f32>,
   rayDir: vec3<f32>,
@@ -2194,16 +2165,16 @@ fn marchDeck(
   result.weightedDistanceSum = 0.0;
 //>>endif
 
-  // C13-04 — cloud shells follow WGS84's oblate figure instead of using the
-  // equatorial radius as a sphere at every latitude.
+  // Cloud shells follow WGS84's oblate figure rather than using the equatorial
+  // radius as a sphere at every latitude.
   let innerAxes = cloudShellAxes(deckBottom);
   let outerAxes = cloudShellAxes(deckTop);
   let innerInverseAxes = vec3<f32>(1.0) / innerAxes;
   let outerInverseAxes = vec3<f32>(1.0) / outerAxes;
 
   // Intersect the ray with the two oblate shell boundaries. The high-precision
-  // branch operates camera-relative with a high/low center; explicit false retains
-  // the world-coordinate A/B path, but both branches use the same WGS84 geometry.
+  // branch works camera-relative from a high/low centre; the other branch works
+  // in world coordinates. Both use the same WGS84 geometry.
   var tInner: vec2<f32>;
   var tOuter: vec2<f32>;
   if (highPrecisionEnabled()) {
@@ -2219,8 +2190,9 @@ fn marchDeck(
     return result;
   }
 
-  // The CPU already has the f64 WGS84 Cartographic height. Reusing it here avoids
-  // both the old polar misclassification and redundant per-deck GPU conversion.
+  // The CPU already has the f64 WGS84 Cartographic height. Reusing it avoids a
+  // per-deck GPU conversion, and avoids the polar misclassification a spherical
+  // `length(p) - planetRadius` height would produce.
   let cameraAltitude = cloud.cameraGeodeticHeight;
   var tStart: f32;
   var tEnd: f32;
@@ -2239,23 +2211,22 @@ fn marchDeck(
     tEnd = tOuter.y;
   }
 
-  // Batch 409 — DEPTH OCCLUSION. Stop the march at opaque scene geometry (the
-  // globe / terrain / tiles) so clouds don't render THROUGH the Earth. sceneDepth
-  // is the renderer-wide log depth; reverse it to an along-ray eye distance and
-  // clamp tEnd. Sky pixels carry the cleared far depth (>= skyCutoff) → tSceneHit
-  // ≈ far → no clamp, so the full sky shell still marches. If terrain sits in
-  // front of the whole layer, tEnd clamps below tStart and the early-out below
-  // returns transparent (clouds fully occluded). No depth WRITE — clouds are a
-  // translucent over-composite.
+  // Depth occlusion. Stop the march at opaque scene geometry — globe, terrain,
+  // tiles — so clouds do not render through the Earth. `sceneDepth` is the
+  // renderer-wide log depth; reversing it gives an along-ray eye distance to
+  // clamp tEnd against. Sky pixels carry the cleared far depth, so tSceneHit is
+  // ≈ far, no clamp applies and the full sky shell still marches. If terrain
+  // sits in front of the whole layer, tEnd clamps below tStart and the early-out
+  // below returns transparent. Nothing writes depth: clouds are a translucent
+  // over-composite.
   if (sceneDepth < 0.999999) {
     let tSceneHit = logDepthToEyeDistance(sceneDepth, cloud.nearPlane, cloud.farPlane);
     tEnd = min(tEnd, tSceneHit);
   }
 
-  // Batch 634 (C6-CLOUD-STBN-TAAU, LOD half) — FAR CAP. Stop the march past a
-  // distance where the cloud shell subtends a fraction of a pixel: those far
-  // samples cost full march budget for sub-pixel return. Default 0 → skip (tEnd
-  // untouched → byte-identical). When set, clamp tEnd so the march ends early.
+  // Far cap. Stop the march past a distance where the cloud shell subtends a
+  // fraction of a pixel, since those samples cost full march budget for
+  // sub-pixel return. At 0 the guard is false and tEnd is untouched.
   if (cloud.maxRayDistance > 0.0) {
     tEnd = min(tEnd, cloud.maxRayDistance);
   }
@@ -2270,23 +2241,22 @@ fn marchDeck(
   let cosTheta = dot(rayDir, sunDir);
   let layerThickness = deckTop - deckBottom;
 
-  // W5 — adaptive coarse→fine march (empty-space skipping). A CHEAP, smooth,
-  // conservative low-detail density (`cloudBaseDensity` — no Worley, no detail)
-  // is the skip oracle: march coarse jumps through empty space probing ONLY the
-  // base shape; on the first base hit, back up one coarse step and refine to
-  // FINE_RATIO-smaller steps; snap back to coarse only once the BASE shape is
-  // gone — never inside an erosion pocket (where full density is 0 but the cloud
-  // continues), which is what truncated clouds when a full-density test drove the
-  // skip. Fine samples integrate the FULL eroded density at the SAME cadence and
-  // grid as the old fixed march (fineStep == old stepSize, and the back-up keeps
-  // the fine grid aligned to tStart + k·fineStep), so the image is preserved; the
-  // win is replacing full taps over empty space with cheap base taps at 1/4 the
-  // count. `maxSteps` still governs the fine budget.
-  let fineStep = (tEnd - tStart) / f32(steps); // == old fixed stepSize (preserves image)
-  // coarseStep (FINE_RATIO = 4) is derived per-iteration as curCoarseStep so the
-  // Batch 634 geometric step growth scales BOTH the coarse skip and fine cadence
-  // consistently. At the default marchStepGrowth=1.0 curCoarseStep == fineStep*4.0
-  // exactly, preserving the pre-634 coarse step.
+  // Adaptive coarse-to-fine march with empty-space skipping. The skip oracle is
+  // a cheap, smooth, conservative low-detail density — the base shape, with no
+  // Worley and no detail fetch: coarse jumps probe only that through empty
+  // space; on the first base hit the march backs up one coarse step and refines
+  // to steps four times smaller; it snaps back to coarse only once the base
+  // shape is gone. Driving the skip from the full density instead truncates
+  // clouds, because an erosion pocket has zero full density while the cloud
+  // continues through it. Fine samples integrate the full eroded density on the
+  // same grid a fixed march would use — fineStep is that march's step size, and
+  // the back-up keeps the fine grid aligned to tStart + k·fineStep — so the
+  // image is the fixed march's, with cheap base taps replacing full taps over
+  // empty space at a quarter of the count. `maxSteps` governs the fine budget.
+  let fineStep = (tEnd - tStart) / f32(steps);
+  // The coarse step is derived per iteration as curCoarseStep, so the geometric
+  // step growth scales the coarse skip and the fine cadence together. At
+  // marchStepGrowth 1.0, curCoarseStep is exactly fineStep * 4.0.
 
   var transmittance: f32 = 1.0;
   var lightEnergy: f32 = 0.0;
@@ -2330,15 +2300,14 @@ fn marchDeck(
     guard = guard + 1;
     if (guard > maxIter) { break; }
 
-    // Batch 634 (C6-CLOUD-STBN-TAAU, LOD half) — geometric in-march step growth.
-    // The fixed sampling comb (fineStep/coarseStep) pays full detail cost for far
-    // shell samples that read as 1-2 px. Grow the step geometrically with distance
-    // from the layer entry (Takram/AAA "perspective step") so near samples stay
-    // crisp and far samples coarsen. `pow(growth, k)` with k = fine-steps travelled
-    // is stateless and exact. Default marchStepGrowth=1.0 → the guard is false so
-    // the pow is never evaluated and curFineStep == fineStep exactly → byte-identical.
-    // Growth only advances t FASTER, so it strictly reduces the iteration count and
-    // never trips the maxIter sentinel.
+    // Geometric in-march step growth. A fixed sampling comb pays full detail
+    // cost for far shell samples that subtend one or two pixels, so the step
+    // grows geometrically with distance from the layer entry: near samples stay
+    // crisp and far samples coarsen. `pow(growth, k)` with k the number of fine
+    // steps travelled is stateless and exact. At marchStepGrowth 1.0 the guard
+    // is false, the pow is never evaluated and curFineStep equals fineStep.
+    // Growth only advances t faster, so it strictly reduces the iteration count
+    // and cannot trip the maxIter sentinel.
     var curFineStep = fineStep;
     if (cloud.marchStepGrowth > 1.0) {
       curFineStep = fineStep * pow(cloud.marchStepGrowth, (t - tStart) / max(fineStep, 1.0));
@@ -2346,9 +2315,9 @@ fn marchDeck(
     let curCoarseStep = curFineStep * 4.0;
 
     let curStep = select(curCoarseStep, curFineStep, fine);
-    // C13-36 shifts only the sample within the current interval. `t`,
-    // `tProcessed`, coarse backtracking, and the interval bounds remain
-    // unchanged; base/full density still share this exact sample position.
+    // The sample phase shifts only the sample within the current interval. `t`,
+    // `tProcessed`, the coarse backtracking and the interval bounds are
+    // untouched, and the base and full density share this exact position.
     let sampleDistance = t + marchSamplePhase * curStep;
     let sampleOffset = rayDir * sampleDistance;
     let samplePos = rayOrigin + sampleOffset;
@@ -2366,10 +2335,10 @@ fn marchDeck(
       );
     }
 
-    // C13-37 — only the new baked planet domain takes the single-evaluation
-    // macro route. LIVE and bit-13-off BAKED execute the literal pre-change
-    // functions above, making them a trustworthy same-build functionality
-    // oracle rather than merely a coordinate toggle.
+    // Only the baked planet domain takes the single-evaluation macro route. The
+    // live-noise and bit-13-off baked routes run the standalone functions above,
+    // which is what makes them a same-build functionality oracle rather than
+    // just a coordinate toggle.
     var densityCoordinates = CloudDensityCoordinates(
       vec3<f32>(0.0),
       vec3<f32>(0.0),
@@ -2441,12 +2410,13 @@ fn marchDeck(
       continue;
     }
 
-    // Fine phase. Snap back to coarse only once the BASE shape has been gone for
-    // EMPTY_RUN samples — base is smooth, so this fires when we truly leave the
-    // cloud, not inside an erosion pocket (base>0, full density 0).
+    // Fine phase. Snap back to coarse only once the base shape has been gone for
+    // two consecutive samples. Base density is smooth, so that fires on leaving
+    // the cloud rather than inside an erosion pocket, where base is above 0 and
+    // the full density is 0.
     if (base <= 0.0001) {
       emptyRun = emptyRun + 1;
-      if (emptyRun >= 2) { // EMPTY_RUN = 2 (base is reliable; no long confirm needed)
+      if (emptyRun >= 2) { // base is reliable, so no longer confirmation is needed
         fine = false;
         emptyRun = 0;
       }
@@ -2456,8 +2426,8 @@ fn marchDeck(
     }
     emptyRun = 0;
 
-    // Inside the cloud shape — integrate the FULL (eroded) density. An erosion
-    // pocket (full density 0) contributes nothing but keeps us in the fine phase.
+    // Inside the cloud shape — integrate the full eroded density. An erosion
+    // pocket, where that is 0, contributes nothing but stays in the fine phase.
     var density: f32;
     if (usePlanetDensity) {
       // The coarse/base probe never reads erosion detail. Materialize the third
@@ -2478,9 +2448,8 @@ fn marchDeck(
       );
     }
     if (density > 0.001) {
-      // Light contribution. V5 — Frostbite multi-scatter octaves with the phase
-      // folded per-octave (softer lit-from-within interiors; deeper octaves more
-      // isotropic) so the returned value already carries the phase.
+      // Light contribution. The multi-scatter octaves fold the phase in per
+      // octave, so the returned value already carries it.
       let lightOpticalDepth = lightMarch(
         samplePos,
         heightFraction,
@@ -2500,18 +2469,18 @@ fn marchDeck(
       // Height-based color gradient (darker base, brighter top)
       let cloudColor = mix(cloud.cloudBaseColor, cloud.cloudTopColor, heightFraction);
 
-      // Accumulate. V11 — scale the view-ray extinction by the per-genus
-      // profileExtinction (CUMULUS = 1.0 neutral) so the SAME genus that absorbs
-      // more in the light march is also more opaque along the view ray — denser
-      // genera read consistently darker AND more opaque, thin genera wispier.
+      // Accumulate. The view-ray extinction carries the same per-genus
+      // profileExtinction the light march uses, so a genus that absorbs more is
+      // also more opaque along the view ray: denser genera read consistently
+      // darker and more opaque, thin genera wispier.
       let sampleTransmittance = exp(-density * curFineStep * effectiveAbsorption());
       let sampleWeight = (1.0 - sampleTransmittance) * transmittance;
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
-      // C13-10 — accumulate the reconstruction depth from the SAME weight the
-      // radiance uses, at the SAME sample position. Nothing here re-derives a
-      // distance or re-samples the density: the emission is a running sum over
-      // work the march already did, which is why the added cost is two FMAs and
-      // a compare rather than another traversal.
+      // Accumulate the reconstruction depth from the weight the radiance uses,
+      // at the same sample position. Nothing here re-derives a distance or
+      // re-samples the density: the emission is a running sum over work the
+      // march already did, which is why the added cost is two fused multiply-adds
+      // and a compare rather than another traversal.
       if (result.frontDistance < 0.0) {
         result.frontDistance = sampleDistance;
       }
@@ -2519,26 +2488,27 @@ fn marchDeck(
         result.weightedDistanceSum + sampleWeight * sampleDistance;
 //>>endif
 
-      // W2 — sky-ambient gradient + ground bounce. The blue sky lights the cloud
-      // TOPS (heightFraction -> 1) and the warm ground bounce lights the BOTTOMS
-      // (-> 0), so the anti-sun shadow side reads as soft grey-blue instead of
-      // near-black. Part of the HDR radiance, so it tone-maps with the sun term.
+      // Sky-ambient gradient and ground bounce. The blue sky lights the cloud
+      // tops, at heightFraction 1, and the warm ground bounce lights the bottoms,
+      // at 0, so the anti-sun shadow side reads as soft grey-blue instead of
+      // near-black. It is part of the HDR radiance, so it tone-maps with the sun
+      // term.
       //
-      // Batch 434 (3.4 CLOUD-AMBIENT-LUT) — when `ambientLutMode` is set AND the MS
-      // sky LUT is baked, REPLACE the constant blue/grey lerp with the real
-      // time-of-day sky radiance: sample the multiple-scattering sky LUT in the UP
-      // hemisphere for the sky fill (cloud tops) and the DOWN hemisphere for the
-      // ground bounce (cloud bottoms), then lerp by heightFraction exactly as the
-      // constant path does. Self-heals to the constant lerp when the LUT reads ~0.
+      // When `ambientLutMode` is set and the multiple-scattering sky LUT is
+      // baked, the constant blue/grey lerp is replaced by real time-of-day sky
+      // radiance: the LUT is sampled in the up hemisphere for the sky fill on
+      // cloud tops and in the down hemisphere for the ground bounce on their
+      // bottoms, then lerped by heightFraction as the constant path does. It
+      // falls back to the constant lerp when the LUT reads ~0.
       var skyAmbColor = cloud.skyAmbientColor;
       var groundAmbColor = cloud.groundAmbientColor;
       if ((u32(cloud.qualityFlags) & QF_AMBIENT_LUT) != 0u) {
         let localUp = normalize(samplePos);
-        // Total sky radiance in each hemisphere = sun-relative single-scatter
-        // sky-view + the multiple-scattering residual (both share the same
-        // sky-view domain). The single-scatter term carries the WARM sunset / cool
-        // noon color; MS adds the diffuse fill. The UP hemisphere lights the cloud
-        // TOPS, DOWN the ground-bounce BOTTOMS.
+        // Total sky radiance in each hemisphere is the sun-relative
+        // single-scatter sky-view term plus the multiple-scattering residual,
+        // which share a sky-view domain. The single-scatter term carries the
+        // warm sunset and cool noon color; multiple scattering adds the diffuse
+        // fill. The up hemisphere lights the cloud tops, down the bottoms.
         let skyHDR =
           cloudSampleSkyViewLut(localUp, localUp, sunDir)
           + cloudSampleMultipleScatterLut(localUp, localUp, sunDir);
@@ -2548,10 +2518,11 @@ fn marchDeck(
             cloudSampleSkyViewLut(localUp, -localUp, sunDir)
             + cloudSampleMultipleScatterLut(localUp, -localUp, sunDir);
           let groundLum = max(cloudLutLuminance(groundHDR), 1e-5);
-          // Replace ONLY the ambient COLOR (hue/chroma) with the real sky's, keeping
-          // each constant ambient's nominal BRIGHTNESS — so `ambientIntensity` stays
-          // the magnitude knob (no blowout, parity-preserving energy) while the tint
-          // tracks the true time-of-day sky: warm undersides at sunset, blue at noon.
+          // Replace only the ambient hue and chroma with the real sky's, keeping
+          // each constant ambient's nominal brightness, so `ambientIntensity`
+          // remains the magnitude knob and the energy cannot blow out while the
+          // tint tracks the true time-of-day sky: warm undersides at sunset,
+          // blue at noon.
           skyAmbColor = (skyHDR / skyLum) * cloudLutLuminance(cloud.skyAmbientColor);
           groundAmbColor = (groundHDR / groundLum) * cloudLutLuminance(cloud.groundAmbientColor);
         }
@@ -2559,16 +2530,16 @@ fn marchDeck(
       let ambient = mix(groundAmbColor, skyAmbColor, heightFraction)
                   * cloud.ambientIntensity;
 
-      // W3 — tint the direct-sun term by the time-of-day sun color (warm near the
-      // horizon, neutral at noon). Ambient keeps its own sky/ground color.
-      // E3 special (Batch 612) — the noctilucent/nacreous iridescent tint reshades
-      // the WHOLE sample radiance (direct sun + ambient), not just the albedo, so
-      // the tint has full authority over the sample color (a multiplicative-albedo
-      // tint is overwhelmed by the additive ambient/silver-lining terms). Default
-      // OFF → specialShadeTint() returns vec3(1.0) so the radiance is multiplied by
-      // exactly 1.0 (byte-identical). The control lane retains the historical
-      // unadvected samplePos coordinate; the new route uses its stable encoded
-      // morphology origin, never a wrapped/rotated texture domain.
+      // Tint the direct-sun term by the time-of-day sun color, warm near the
+      // horizon and neutral at noon; the ambient keeps its own sky and ground
+      // color. The noctilucent and nacreous iridescent tint then reshades the
+      // whole sample radiance, direct sun and ambient together, rather than the
+      // albedo alone — a multiplicative albedo tint is overwhelmed by the
+      // additive ambient and silver-lining terms, so it would have no authority
+      // over the sample color. With the mode off, specialShadeTint() returns
+      // vec3(1.0). The comparison route uses the unadvected samplePos
+      // coordinate; the planet-anchored route uses its stable encoded morphology
+      // origin, never a wrapped or rotated texture domain.
       var specialShadeCoordinate = samplePos * 0.0003;
       if (usePlanetDensity) {
         specialShadeCoordinate = morphologyCoordinate;
@@ -2589,39 +2560,39 @@ fn marchDeck(
     tProcessed = t;
   }
 
-  // W1 — HDR tone-map the accumulated cloud radiance before compositing. The
-  // dual-lobe phase peaks ~6x at the forward lobe and is multiplied by
-  // sunIntensity (~10), so the radiance is HDR (peaks ~20-30) and was clipping
-  // EVERY cloud to flat white — hiding the silver lining and, more importantly,
-  // every lighting term the rest of Arc A adds (ambient, time-of-day, aerial).
-  // Exposure + Reinhard maps it to [0,1) so the bright sun-facing edges read as
-  // a rim over a darker body (the silver lining) instead of a white-out.
+  // HDR tone-map the accumulated cloud radiance before compositing. The
+  // dual-lobe phase peaks around 6× at the forward lobe and is multiplied by a
+  // sun intensity of ~10, so the radiance peaks around 20-30 and clips every
+  // cloud to flat white without this, hiding the silver lining along with the
+  // ambient, time-of-day and aerial terms. Exposure plus Reinhard maps it to
+  // [0,1), so the bright sun-facing edges read as a rim over a darker body.
   let exposed = weightedColor * cloud.exposure;
   let toneMapped = exposed / (exposed + vec3<f32>(1.0));
 
-  // W4 — aerial perspective. Distant clouds lose contrast and tint toward the
+  // Aerial perspective. Distant clouds lose contrast and tint toward the
   // atmosphere inscatter color; without it far clouds keep their full white and
-  // "pop" against the hazed horizon. Key the haze on the march MIDPOINT distance
-  // (tStart + 0.5*(tEnd-tStart)), NOT tStart alone: from below the layer tStart
-  // collapses to ~0 for every pixel, so keying on it would haze by view angle
-  // rather than true range. Both operands are LDR (post-tonemap color vs the
-  // packed horizon tint), so the lerp stays in display space. 60 km ≈ horizon
-  // haze scale; cap at 0.85 so the densest near clouds never fully dissolve.
+  // stand out against the hazed horizon. The haze is keyed on the march midpoint
+  // distance, tStart + 0.5·(tEnd - tStart), rather than on tStart: from below the
+  // layer tStart collapses to ~0 for every pixel, so keying on it hazes by view
+  // angle rather than by true range. Both operands are LDR — the post-tonemap
+  // color against the packed horizon tint — so the lerp stays in display space.
+  // 60 km is roughly the horizon haze scale; the 0.85 cap keeps the densest near
+  // clouds from fully dissolving.
   let midDist = tStart + 0.5 * (tEnd - tStart);
   let aerial = clamp(midDist / 60000.0 * cloud.aerialStrength, 0.0, 0.85);
-  // Legacy heuristic haze — the default ('heuristic') path runs this VERBATIM.
+  // Heuristic haze, the path taken when `aerialLutMode` is 'heuristic'.
   var hazed = mix(toneMapped, cloud.aerialColor, aerial);
 
-  // Batch 434 (3.3 CLOUD-AERIAL-LUT) — PHYSICAL aerial perspective. When
-  // `aerialLutMode` is set AND the atmosphere LUTs are baked, replace the flat-tint
-  // lerp with a real inscatter + transmittance lookup at the march MIDPOINT:
-  //   - transmittance(midpoint altitude, view cosZenith) ATTENUATES the cloud color
-  //     toward the horizon (distant clouds dim + redden like real aerial perspective),
-  //   - the sun-relative SKY-VIEW inscatter LUT adds the in-between AIR LIGHT (warm
-  //     toward a low sun, cooler away), scaled by the same midpoint-range fraction as
-  //     the heuristic so the near deck stays crisp and the far deck dissolves into
-  //     the true sky color.
-  // Self-heals to the heuristic `hazed` when the sky-view LUT reads ~0 (unbaked).
+  // Physical aerial perspective. When `aerialLutMode` is set and the atmosphere
+  // LUTs are baked, the flat-tint lerp is replaced by an inscatter and
+  // transmittance lookup at the march midpoint:
+  //   - transmittance(midpoint altitude, view cosZenith) attenuates the cloud
+  //     color toward the horizon, so distant clouds dim and redden,
+  //   - the sun-relative sky-view inscatter LUT adds the in-between air light,
+  //     warm toward a low sun and cooler away, scaled by the same midpoint-range
+  //     fraction the heuristic uses, so the near deck stays crisp and the far
+  //     deck dissolves into the true sky color.
+  // Falls back to the heuristic `hazed` when the sky-view LUT reads ~0.
   if ((u32(cloud.qualityFlags) & QF_AERIAL_LUT) != 0u) {
     let midPos = rayOrigin + rayDir * midDist;
     let midUp = normalize(midPos);
@@ -2644,19 +2615,21 @@ fn marchDeck(
         deckBottom + midHeightFraction * (deckTop - deckBottom);
       let midCosZenith = dot(rayDir, midUp);
       let trans = cloudSampleTransmittance(max(midAltitude, 0.0), midCosZenith);
-      // The sky-view LUT radiance is in the SAME pre-tonemap HDR space the sky dome
-      // uses (SkyAtmosphere tone-maps it AFTER sampling). The cloud's `toneMapped`
-      // is already LDR, so bring the inscatter into the cloud's display space with
-      // the SAME Reinhard+exposure operator before compositing — otherwise the HDR
-      // air light blows the far clouds to white. (Hue ratios survive Reinhard, so
-      // the warm-toward-sun / cool-away directionality — the whole point — is kept.)
+      // The sky-view LUT radiance is in the pre-tonemap HDR space the sky dome
+      // uses, since SkyAtmosphere tone-maps after sampling. `toneMapped` is
+      // already LDR, so the inscatter is brought into the same display space
+      // with the same Reinhard and exposure operator before compositing;
+      // otherwise the HDR air light blows the far clouds to white. Hue ratios
+      // survive Reinhard, so the warm-toward-sun and cool-away directionality
+      // that motivates the term is preserved.
       let inscatterExposed = inscatterHDR * cloud.exposure;
       let inscatterLDR = inscatterExposed / (inscatterExposed + vec3<f32>(1.0));
-      // Energy-correct aerial perspective: the air light FILLS exactly the fraction
-      // of cloud radiance lost to extinction (avgTrans), so the far target is a
-      // convex blend of attenuated cloud + sky air light — BOUNDED in [0,1], never a
-      // white-out. `aerial` (the same 0..0.85 midpoint-range fraction the heuristic
-      // uses) ramps from crisp near cloud to fully-fogged far cloud.
+      // Energy-correct aerial perspective: the air light fills exactly the
+      // fraction of cloud radiance lost to extinction, avgTrans, so the far
+      // target is a convex blend of attenuated cloud and sky air light, bounded
+      // in [0,1] and never a white-out. `aerial`, the same 0..0.85
+      // midpoint-range fraction the heuristic uses, ramps from crisp near cloud
+      // to fully-fogged far cloud.
       let avgTrans = (trans.r + trans.g + trans.b) / 3.0;
       let farTarget = toneMapped * trans + inscatterLDR * (1.0 - avgTrans);
       hazed = mix(toneMapped, farTarget, aerial);
@@ -2668,19 +2641,19 @@ fn marchDeck(
   return result;
 }
 
-// Batch 443 (4.9 CLOUD-MULTIDECK) — is the multi-deck shell march active?
-// (qualityFlags bit 11). When clear (DEFAULT), fragmentMain marches EXACTLY ONE
-// shell with cloud.cloudLayerBottom/Top + the legacy composite → byte-identical.
+// Is the multi-deck shell march active? (qualityFlags bit 11). When clear, which
+// is the default, fragmentMain marches exactly one shell from
+// cloud.cloudLayerBottom/Top and composites it over the scene directly.
 fn multiDeckEnabled() -> bool {
   return (u32(cloud.qualityFlags) & QF_MULTI_DECK) != 0u;
 }
 
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
-// C13-10 — the emitting march's MRT. `@location(0)` is bit-for-bit the target
-// the historical single-output `fragmentMain` wrote; `@location(1)` is the
-// C13-09 `depth` attachment (slot 1, rg32float), written by the march itself
-// instead of by the producer's estimator. The producer cannot write it in the
-// same pass it reads it from, so ownership moves rather than duplicating.
+// The emitting march's multiple render targets. `@location(0)` carries exactly
+// what the single-output `fragmentMain` writes; `@location(1)` is the `depth`
+// attachment, slot 1, rg32float, written by the march itself rather than
+// estimated afterwards. The estimating producer cannot write it in the same pass
+// it reads it from, so ownership moves here rather than being duplicated.
 struct CloudMarchOutput {
   @location(0) color: vec4<f32>,
   // R = front (nearest contributing) distance, G = transmittance-weighted mean
@@ -2688,10 +2661,10 @@ struct CloudMarchOutput {
   @location(1) depth: vec2<f32>,
 };
 
-// Resolve ONE deck's emission into the attachment's (front, weighted) pair.
+// Resolve one deck's emission into the attachment's (front, weighted) pair.
 // `Σwᵢ = α` by construction, so the division is the exact weighted mean of the
-// marched sample distances; the floor only keeps a zero-alpha deck (which is
-// already screened by the sentinel) from dividing by zero.
+// marched sample distances; the floor only keeps a zero-alpha deck, already
+// screened by the sentinel, from dividing by zero.
 fn deckReconstructionDepth(result: DeckResult) -> vec2<f32> {
   if (result.frontDistance < 0.0 || result.alpha <= 0.0) {
     return vec2<f32>(-1.0, -1.0);
@@ -2715,15 +2688,15 @@ fn fragmentMain(input: VertexOutput) -> CloudMarchOutput {
 //>>else
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 //>>endif
-  // V9 (Batch 432) — half-res jitter. In the half-res path each output texel
-  // covers a 2×2 full-res block; offset the marched ray within that texel by a
-  // per-frame Bayer pattern so consecutive frames (and neighbouring half-res
-  // texels via the bilateral upscale) sample DIFFERENT sub-pixel positions,
-  // decorrelating the under-sampling. `cloud.resolution` here is the HALF-RES
-  // target size, so one texel = (1/halfW, 1/halfH) in UV; the Bayer offset stays
-  // within ±0.5 texel. Full-res path: no sub-pixel UV jitter (resolution = full
-  // canvas, bit clear), so `uv` remains the legacy `input.uv`; C13-36's separate
-  // ray sample phase is resolved below.
+  // Half-res jitter. In the half-res path each output texel covers a 2×2
+  // full-res block, so the marched ray is offset within that texel by a
+  // per-frame Bayer pattern: consecutive frames, and neighbouring half-res
+  // texels through the bilateral upscale, sample different sub-pixel positions
+  // and the under-sampling decorrelates. `cloud.resolution` is the half-res
+  // target size here, so one texel is (1/halfW, 1/halfH) in UV and the Bayer
+  // offset stays within ±0.5 texel. The full-res path takes no sub-pixel UV
+  // jitter — resolution is the full canvas and the bit is clear — so `uv` stays
+  // `input.uv`; its separate ray sample phase is resolved below.
   var uv = input.uv;
   if (halfResEnabled()) {
     let bIndex = u32(cloud.frameCounter) & 15u;
@@ -2741,22 +2714,21 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // compositing cannot introduce inter-deck sampling shimmer.
   let marchSamplePhase = cloudRaySamplePhase(input.position.xy);
 
-  // Batch 445 (4.12 CLOUD-RTE) — the planet center relative to the camera is
-  // -cameraWorldPos, supplied as a high/low split so `marchDeck`'s high-precision
-  // branch can subtract the large term before the small refinement. Cheap to form
-  // unconditionally (a negate); `marchDeck` only READS it when the bit is set, so
-  // the OFF path is byte-identical.
+  // The planet centre relative to the camera is -cameraWorldPos, supplied as a
+  // high/low split so `marchDeck`'s high-precision branch can subtract the large
+  // term before the small refinement. Forming it is one negate, so it is done
+  // unconditionally; `marchDeck` reads it only when the bit is set.
   let centerHigh = -cloud.encodedCameraHigh;
   let centerLow = -cloud.encodedCameraLow;
 
-  // V5 — multi-scatter octave count from qualityFlags bits 4-6 (tier-driven:
-  // T1=2, T2/T3=3). The dual-lobe phase is folded PER-OCTAVE inside
-  // multiScatterLight, so it is not applied separately in the march.
+  // Multi-scatter octave count, from qualityFlags bits 4-6: the lowest tier
+  // passes 2 and the rest 3. The dual-lobe phase is folded in per octave inside
+  // multiScatterLight, so the march does not apply it separately.
   let msOctaves = i32((u32(cloud.qualityFlags) >> QF_OCTAVES_SHIFT) & 7u);
 
   if (!multiDeckEnabled()) {
-    // ── DEFAULT single-shell topology. March exactly ONE shell with today's
-    // bounds, then run the established composite formula. ──
+    // Single-shell topology: march one shell with the primary layer bounds, then
+    // composite it over the scene.
     let r = marchDeck(
       rayOrigin, rayDir, sceneDepth,
       cloud.cloudLayerBottom, cloud.cloudLayerTop, msOctaves,
@@ -2766,7 +2738,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let cloudAlpha = r.alpha;
     let hazed = r.hazed;
 
-    // V9 (Batch 432) — half-res path: emit PREMULTIPLIED cloud radiance + alpha.
+    // Half-res path: emit premultiplied cloud radiance and alpha.
     if (halfResEnabled()) {
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
       return CloudMarchOutput(
@@ -2777,7 +2749,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       return vec4<f32>(hazed * cloudAlpha, cloudAlpha);
 //>>endif
     }
-    // Full-res path — unchanged scene/cloud composite formula.
+    // Full-res path — composite the cloud over the scene here.
     let finalColor = mix(sceneColor.rgb, hazed, cloudAlpha);
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
     return CloudMarchOutput(
@@ -2789,35 +2761,35 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 //>>endif
   }
 
-  // ── Batch 443 multi-deck path — march up to 3 shells (LOW/MID/HIGH) and
-  // composite FRONT-TO-BACK with premultiplied alpha so the NEAR deck occludes the
-  // FAR one (a low cumulus layer reads BENEATH a high cirrus veil). The decks are
-  // ordered by their MEAN ALTITUDE relative to the camera height (front = closest
-  // to the camera's vertical position) so the ordering is correct whether the
-  // camera is below all decks (looking up: LOW first), between them, or above
-  // (looking down: HIGH first). Front-to-back accumulation with an opaque
-  // early-terminate (accAlpha >= 0.995) keeps the worst case at 3 marches and the
-  // common case (a clear far deck, or full near coverage) far cheaper. The B (deck)
-  // weather channel can later gate empty decks; for now each deck early-outs inside
-  // marchDeck when the shell is missed / fully thin (alpha 0 → no contribution). ──
-  // CPU-f64 WGS84 Cartographic height is the stable multi-deck sort key.
+  // Multi-deck path: march up to three shells — low, mid, high — and composite
+  // front-to-back with premultiplied alpha so the near deck occludes the far one
+  // and a low cumulus layer reads beneath a high cirrus veil. The decks are
+  // ordered by their mean altitude relative to the camera height, front being
+  // closest to the camera's vertical position, so the ordering holds whether the
+  // camera is below all decks and looking up (low first), between them, or above
+  // and looking down (high first). Front-to-back accumulation with an opaque
+  // early terminate keeps the worst case at three marches, and the common case —
+  // a clear far deck, or full near coverage — much cheaper. Each deck also
+  // early-outs inside marchDeck when the shell is missed or fully thin, alpha 0
+  // contributing nothing.
+  // The CPU-f64 WGS84 Cartographic height is the stable multi-deck sort key.
   let camAlt = cloud.cameraGeodeticHeight;
   let midLow = 0.5 * (cloud.deckBoundsLow.x + cloud.deckBoundsLow.y);
   let midMid = 0.5 * (cloud.deckBoundsMid.x + cloud.deckBoundsMid.y);
   let midHigh = 0.5 * (cloud.deckBoundsHigh.x + cloud.deckBoundsHigh.y);
 
   // Distance of each deck's mid-altitude from the camera altitude = front-to-back
-  // sort key (smaller = nearer the camera's vertical band = composited FIRST).
+  // sort key: smaller is nearer the camera's vertical band, so composited first.
   let dLow = abs(camAlt - midLow);
   let dMid = abs(camAlt - midMid);
   let dHigh = abs(camAlt - midHigh);
 
-  // Bounds + sort keys packed per deck so we can order them without dynamic arrays
-  // of structs. index 0 = LOW, 1 = MID, 2 = HIGH.
+  // Bounds and sort keys packed per deck, so ordering needs no dynamic array of
+  // structs. Index 0 is low, 1 mid, 2 high.
   var bottoms = array<f32, 3>(cloud.deckBoundsLow.x, cloud.deckBoundsMid.x, cloud.deckBoundsHigh.x);
   var tops = array<f32, 3>(cloud.deckBoundsLow.y, cloud.deckBoundsMid.y, cloud.deckBoundsHigh.y);
   var keys = array<f32, 3>(dLow, dMid, dHigh);
-  // Insertion-sort order[] by key ascending (front-to-back). 3 elements → trivial.
+  // Insertion-sort order[] by key ascending, front-to-back; three elements.
   var order = array<i32, 3>(0, 1, 2);
   for (var i: i32 = 1; i < 3; i = i + 1) {
     let oi = order[i];
@@ -2833,25 +2805,25 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 
   // Front-to-back premultiplied accumulation: C = Σ Tᵢ·αᵢ·colorᵢ, A = Σ Tᵢ·αᵢ,
-  // with running transmittance T *= (1-αᵢ). Premultiplied so a far deck seen
-  // THROUGH a partly-covered near deck is attenuated by exactly (1 - nearAlpha) —
-  // no double-darkening seam at the deck boundary.
+  // with running transmittance T *= (1 - αᵢ). Premultiplied so a far deck seen
+  // through a partly-covered near deck is attenuated by exactly (1 - nearAlpha),
+  // leaving no double-darkening seam at the deck boundary.
   var accColor = vec3<f32>(0.0);
   var accAlpha: f32 = 0.0;
   var trans: f32 = 1.0;
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
-  // C13-10 — multi-deck emission. The FRONT is the MINIMUM contributing sample
-  // distance over the visible decks, not the first deck in composite order:
-  // the composite is ordered by |cameraAltitude - deckMidAltitude|, which is a
-  // vertical-band key and is not the same as ray order for an oblique view.
-  // The WEIGHTED mean composes exactly, because each deck enters the composite
-  // with weight `trans` and its own Σwᵢ sums to its alpha, so
-  // `Σₖ transₖ·Σᵢwₖᵢtₖᵢ / accAlpha` is the weighted mean over the whole stack.
+  // Multi-deck emission. The front is the minimum contributing sample distance
+  // over the visible decks, not the first deck in composite order: the composite
+  // is ordered by |cameraAltitude - deckMidAltitude|, a vertical-band key that
+  // is not ray order for an oblique view. The weighted mean composes exactly,
+  // because each deck enters the composite with weight `trans` and its own Σwᵢ
+  // sums to its alpha, so `Σₖ transₖ·Σᵢwₖᵢtₖᵢ / accAlpha` is the weighted mean
+  // over the whole stack.
   var emitFront: f32 = -1.0;
   var emitWeightedSum: f32 = 0.0;
 //>>endif
   for (var k: i32 = 0; k < 3; k = k + 1) {
-    if (trans < 0.005) { break; } // opaque — far decks fully occluded, early-out
+    if (trans < 0.005) { break; } // opaque — far decks are fully occluded
     let di = order[k];
     let r = marchDeck(
       rayOrigin, rayDir, sceneDepth,
@@ -2859,7 +2831,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       centerHigh, centerLow,
       marchSamplePhase,
     );
-    if (r.alpha <= 0.0) { continue; } // empty deck (missed shell / fully thin) — skip
+    if (r.alpha <= 0.0) { continue; } // empty deck — missed shell, or fully thin
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
     if (r.frontDistance >= 0.0 &&
         (emitFront < 0.0 || r.frontDistance < emitFront)) {
@@ -2881,9 +2853,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 //>>endif
 
-  // V9 (Batch 432) — half-res path: emit the PREMULTIPLIED multi-deck radiance +
-  // composited alpha (same contract as the single-shell path; the bilateral
-  // upscale over-composites against the scene). accColor is already premultiplied.
+  // Half-res path: emit the premultiplied multi-deck radiance and composited
+  // alpha, the same contract as the single-shell path, leaving the bilateral
+  // upscale to over-composite against the scene. accColor is already
+  // premultiplied.
   if (halfResEnabled()) {
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
     return CloudMarchOutput(vec4<f32>(accColor, accAlpha), emitDepth);
@@ -2900,21 +2873,19 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 //>>endif
 }
 
-// ─── TAKRAM-9 (cloud-aware god rays) — screen-space transmittance mask ───
-// A dedicated full-res pass that re-marches the cloud shell(s) for the CURRENT
-// camera view and emits ONLY the per-pixel view-ray TRANSMITTANCE (1 = clear
-// sky, 0 = fully opaque cloud) into a single-channel r8unorm target. The
-// procedural cloud renderer runs this pass ONLY when cloud-aware god rays are
-// active (an opt-in-on-opt-in cinematic combo). C13-36 deliberately retains
-// exact midpoint sampling in this unfiltered mask rather than introducing
-// frame-to-frame shaft shimmer. The god-ray generate pass samples this mask to
-// attenuate the light shaft where clouds block the sun (crepuscular rays
-// through gaps).
+// Screen-space cloud transmittance mask, for cloud-aware god rays.
+// A dedicated full-res pass that re-marches the cloud shells for the current
+// camera view and emits only the per-pixel view-ray transmittance — 1 for clear
+// sky, 0 for fully opaque cloud — into a single-channel r8unorm target. The
+// procedural cloud renderer runs it only when cloud-aware god rays are active.
+// The god-ray generate pass samples the mask to attenuate the light shaft where
+// clouds block the sun, giving crepuscular rays through gaps.
 //
-// This mirrors `fragmentMain`'s full-res branches (single-shell + multi-deck)
-// but skips half-res UV jitter and passes the exact midpoint phase (the mask is
-// always full-res and unfiltered), plus it skips the scene-color composite (we
-// want transmittance, not radiance). Transmittance:
+// This mirrors `fragmentMain`'s full-res branches, single-shell and multi-deck,
+// with three differences: no half-res UV jitter, an exact midpoint sample phase
+// rather than the jittered one — the mask is unfiltered, and a temporal phase
+// here would shimmer the shafts frame to frame — and no scene-color composite,
+// since the output is transmittance rather than radiance. Transmittance:
 //   single-shell: 1 - alpha
 //   multi-deck:   Πᵢ (1 - alphaᵢ)  (the running `trans` product)
 @fragment
@@ -2978,43 +2949,40 @@ fn fragmentCloudMaskMain(input: VertexOutput) -> @location(0) f32 {
   return clamp(trans, 0.0, 1.0);
 }
 
-// ─── Batch 437 (CLOUD-SHADOWS) / C13-06 — sun-view beer shadow map ───
-// Rasterized from the SUN's orthographic view into a low-res single-channel target.
-// For each shadow-map texel we reconstruct the CAMERA-RELATIVE point on the
-// texel's column (via the frame owner's eye-relative inverse VP), then march the
-// cloud DENSITY along the sun ray across the full shell thickness, accumulating
-// OPTICAL DEPTH (Sum density*stepSize). Consumers project a point into this map and
-// read transmittance = exp(-opticalDepth*absorption): the cloud thickness between
-// that point and the sun.
+// Sun-view beer shadow map.
+// Rasterized from the sun's orthographic view into a low-res single-channel
+// target. Each shadow-map texel reconstructs the camera-relative point on its
+// column, through the frame owner's eye-relative inverse view-projection, then
+// marches the cloud density along the sun ray across the full shell thickness,
+// accumulating optical depth as Σ density·stepSize. Consumers project a point
+// into the map and read transmittance = exp(-opticalDepth · absorption), the
+// cloud thickness between that point and the sun.
 //
-// C13-06 closed two defects the audit convicted here:
+// Both branches intersect the same expanded oblate shells `cloudShellAxes` gives
+// the primary march. Treating the shell as two equatorial-radius spheres with a
+// height of `length(p) - planetRadius` instead marches, at high latitude, a slab
+// several deck thicknesses above the shell the visible march renders — WGS84's
+// polar axis is ~21.4 km shorter — so the sun ray meets no cloud and the cast
+// shadow silently vanishes.
 //
-//  1. WGS84. The shell was two SPHERES of the equatorial radius and the height
-//     was `length(p) - planetRadius`. WGS84's polar axis is ~21.4 km shorter, so
-//     at high latitude this marched a slab several deck thicknesses ABOVE the
-//     shell the visible march renders — the sun ray met no cloud and the cast
-//     shadow silently vanished. Both branches now intersect the SAME expanded
-//     oblate shells `cloudShellAxes` gives the primary march.
-//  2. RTE. The column point was a full-ECEF `vec3<f32>` from an `f32` matrix
-//     whose translation column was itself ~6.4e6 m, and the density domains were
-//     rebuilt from that raw coordinate. Both are now camera-relative, so the map
-//     is cast by exactly the field the visible march renders.
+// The `cloudHighPrecision = false` escape route reconstructs the column point in
+// absolute coordinates as a comparison oracle, on the same WGS84 geometry,
+// mirroring how `marchDeck` handles its own branch. The high-precision route
+// keeps the column point and the density domains camera-relative, so the map is
+// cast by the field the visible march renders; an absolute `vec3<f32>` from an
+// `f32` matrix whose translation column is itself ~6.4e6 m is not.
 //
-// The explicit `cloudHighPrecision = false` escape route retains the absolute
-// reconstruction as an A/B oracle — but on the SAME WGS84 geometry, mirroring
-// how `marchDeck` handles its own A/B branch.
-//
-// Clamp the accumulated optical depth (f16 target — keep it well under 65504 and in
-// a range that exp() resolves; absorption is applied in the consumers so this stores
-// the raw density*length integral).
+// The accumulated optical depth is clamped for an f16 target: well under 65504
+// and inside a range exp() resolves. Absorption is applied by the consumers, so
+// what is stored is the raw density-times-length integral.
 @fragment
 fn cloudShadowMain(input: VertexOutput) -> @location(0) f32 {
   let deckBottom = cloud.cloudLayerBottom;
   let deckTop = cloud.cloudLayerTop;
 
-  // C13-06 — the same oblate boundaries the visible march intersects. Batch 443
-  // keeps the map SINGLE-SHELL (the cast shadow tracks the primary cloud layer),
-  // so the deck bounds are the primary layer's.
+  // The same oblate boundaries the visible march intersects. The map stays
+  // single-shell — the cast shadow tracks the primary cloud layer — so the deck
+  // bounds are that layer's.
   let innerAxes = cloudShellAxes(deckBottom);
   let outerAxes = cloudShellAxes(deckTop);
   let innerInverseAxes = vec3<f32>(1.0) / innerAxes;
@@ -3022,17 +2990,17 @@ fn cloudShadowMain(input: VertexOutput) -> @location(0) f32 {
   let centerHigh = -cloud.encodedCameraHigh;
   let centerLow = -cloud.encodedCameraLow;
 
-  // Reconstruct the column this shadow texel covers. NDC z=0 is an arbitrary
-  // plane in the ortho frustum; we only need a ray ORIGIN on the column, then we
-  // re-anchor it onto the shell by intersecting the sun ray with the boundaries.
-  // UV (0..1) -> NDC (-1..1), WebGPU y-down -> flip.
+  // Reconstruct the column this shadow texel covers. NDC z = 0 is an arbitrary
+  // plane in the orthographic frustum, and only a ray origin on the column is
+  // needed: intersecting the sun ray with the boundaries re-anchors it onto the
+  // shell. UV 0..1 maps to NDC -1..1, flipped for WebGPU's y-down convention.
   let ndc = vec3<f32>(input.uv.x * 2.0 - 1.0, 1.0 - input.uv.y * 2.0, 0.0);
   let columnH = cloudShadow.sunViewInvVpRelativeToEye * vec4<f32>(ndc, 1.0);
   let columnRelative = columnH.xyz / columnH.w;
 
   let sunDir = normalize(cloudShadow.sunDirAndSteps.xyz);
-  // The sun ray travels TOWARD the surface as -sunDir (sunDir points to the sun).
-  // March from the column's entry at the OUTER shell down through to the INNER shell.
+  // `sunDir` points at the sun, so the sun ray travels toward the surface as
+  // -sunDir. March from the column's entry at the outer shell down to the inner.
   let rayDir = -sunDir;
 
   var tOuter: vec2<f32>;
@@ -3098,7 +3066,8 @@ fn cloudShadowMain(input: VertexOutput) -> @location(0) f32 {
     }
   }
   // Clamp to keep the f16 store finite and the consumer's exp() in range. The
-  // raw integral over a dense ~2.5 km shell with densityMultiplier~0.3 is O(10^2-10^3);
-  // cap well under f16 max so a runaway density can't NaN the map.
+  // raw integral over a dense ~2.5 km shell at densityMultiplier ~0.3 is of
+  // order 10² to 10³, so a cap well under the f16 maximum leaves headroom while
+  // stopping a runaway density from writing a NaN into the map.
   return clamp(opticalDepth, 0.0, 8000.0);
 }

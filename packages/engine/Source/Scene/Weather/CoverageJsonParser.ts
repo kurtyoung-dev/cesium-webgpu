@@ -1,32 +1,32 @@
 /**
- * Shared CoverageJSON → grid parse (Weather Phase 3 — Batch 425). Extracted from
- * {@link EdrWeatherSource} so BOTH the OGC API-EDR source AND the OGC API-Coverages
- * (WCS) source ({@link WcsCoveragesWeatherSource}) parse the SAME wire shape — no
- * copy-paste, one place to fix orientation / null-handling / units. CoverageJSON
- * parses natively in the browser, so neither source needs a GRIB2/NetCDF/GeoTIFF
- * binary decoder.
+ * Shared CoverageJSON-to-grid parse. Both the OGC API-EDR source
+ * ({@link EdrWeatherSource}) and the OGC API-Coverages source
+ * ({@link WcsCoveragesWeatherSource}) read the same wire shape, so orientation,
+ * null handling and units are fixed in one place. CoverageJSON parses natively
+ * in the browser, so neither source needs a GRIB2, NetCDF or GeoTIFF binary
+ * decoder.
  *
- * Output orientation matches the {@link WeatherField} convention: row 0 = NORTH
- * (lat descending), column 0 = WEST (lon ascending), so the packer is a straight
- * resample.
+ * Output orientation matches the {@link WeatherField} convention: row 0 is north
+ * with latitude descending, column 0 is west with longitude ascending, so the
+ * packer is a straight resample.
  *
- * C13-08 — two contract corrections here, both on the PROVIDER side of the
- * bounds/no-data contract:
+ * Two parts of the bounds and no-data contract are settled on this, the provider,
+ * side:
  *
- *   1. The field's `bounds` are DERIVED from `domain.axes.x/y` (the coverage's
- *      own sample coordinates) instead of being stamped with the bbox the caller
- *      REQUESTED. A server is free to snap a request to its native grid, and now
- *      that the packer places a field on its true rectangle, the requested bbox
- *      is the wrong answer. `options.bounds` remains the fallback for a coverage
- *      whose axes are degenerate or outside the valid lon/lat range.
- *      CoverageJSON axis values are CRS84 DEGREES for these collections, which is
- *      also the unit the two shipped sources put in their `bbox` query.
- *   2. A `null` range value is NO-DATA (`NaN`), not `0`. Zero is an OBSERVATION
- *      of clear sky; a gap in the coverage is not, and the packer must be able to
- *      tell them apart.
+ *   1. The field's `bounds` are derived from `domain.axes.x/y`, the coverage's
+ *      own sample coordinates, rather than stamped with the bbox the caller
+ *      requested. A server is free to snap a request to its native grid, and
+ *      since the packer places a field on its true rectangle, the requested bbox
+ *      would be the wrong answer. `options.bounds` remains the fallback for a
+ *      coverage whose axes are degenerate or outside the valid lon/lat range.
+ *      CoverageJSON axis values are CRS84 degrees for these collections, which
+ *      is also the unit both shipped sources put in their `bbox` query.
+ *   2. A `null` range value is no-data (`NaN`), not `0`. Zero is an observation
+ *      of clear sky, a gap in the coverage is not, and the packer has to tell
+ *      them apart.
  *
- * Axis values are sample COORDINATES, so the parsed field is node-registered —
- * see {@link WeatherFieldGrid} for what that means.
+ * Axis values are sample coordinates, so the parsed field is node-registered;
+ * {@link WeatherFieldGrid} defines what that means.
  *
  * @module Scene/Weather/CoverageJsonParser
  */
@@ -57,8 +57,8 @@ export interface CoverageJsonParseOptions {
   /** Source units: "percent" (0-100) → scaled by 1/100, or "fraction" (0-1). */
   units?: "percent" | "fraction";
   /**
-   * FALLBACK bounds, used only when `domain.axes.x/y` cannot yield a usable
-   * rectangle. C13-08: the field's real bounds come from the axis values.
+   * Fallback bounds, used only when `domain.axes.x/y` cannot yield a usable
+   * rectangle. The field's real bounds come from the axis values.
    */
   bounds: WeatherBounds;
   /** Source id stamped on the field + used for attribution lookup. */
@@ -156,17 +156,17 @@ function canonicalWrappedWest(west: number): number {
 }
 
 /**
- * Derive the field's true bounds from the coverage's own axis values (C13-08).
+ * Derives the field's true bounds from the coverage's own axis values.
  *
  * Axis values are node coordinates in CRS84 degrees, so the rectangle is
- * `[min(x), max(x)] x [min(y), max(y)]` — the WEST/EAST/SOUTH/NORTH samples
- * themselves. Returns null when the axes cannot describe a rectangle (a single
- * sample on either axis, non-finite values, or a latitude range outside +-90),
- * in which case the caller falls back to the requested bbox.
+ * `[min(x), max(x)] x [min(y), max(y)]` — the west, east, south and north
+ * samples themselves. Returns null when the axes cannot describe a rectangle,
+ * meaning a single sample on either axis, non-finite values, or a latitude range
+ * outside +-90, in which case the caller falls back to the requested bbox.
  *
  * A grid that straddles the antimeridian legitimately carries longitudes beyond
- * +-180 (e.g. `170 .. 190`); that is preserved, and `weatherFieldLonSpan` reads
- * it correctly as a 20-degree window.
+ * +-180, such as `170 .. 190`. That is preserved, and `weatherFieldLonSpan`
+ * reads it correctly as a 20-degree window.
  */
 function boundsFromAxes(
   longitudeAxis: UnwrappedLongitudeAxis,
@@ -289,7 +289,7 @@ export function parseCoverageJson(
     for (let ox = 0; ox < gw; ox++) {
       const sx = xAscending ? ox : gw - 1 - ox;
       const v = values[sy * gw + sx];
-      // C13-08: a null/absent/non-finite range value is NO-DATA, not clear sky.
+      // A null, absent or non-finite range value is no-data, not clear sky.
       coverage[oy * gw + ox] =
         v === null || v === undefined || !Number.isFinite(v)
           ? NaN

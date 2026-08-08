@@ -1,13 +1,12 @@
 /**
- * Weather-ingest types (Phase 0 — backend-agnostic Scene layer).
+ * Weather-ingest types, in the backend-agnostic Scene layer.
  *
- * A {@link WeatherSource} fetches a normalized {@link WeatherField} (a coarse
- * geographic grid of cloud cover, today; type/base/density later) which the
- * {@link WeatherTexPacker} bakes into the WebGPU cloud renderer's weather-map
- * texture (the C2-16 seam). NOTHING here imports the renderer — the packer just
- * emits the rgba8 byte layout the renderer already uploads.
- *
- * See migration_doc/WEATHER_DATA_INGEST_ROADMAP.md.
+ * A {@link WeatherSource} fetches a normalized {@link WeatherField} — a coarse
+ * geographic grid carrying cloud cover today, with type, base height and
+ * density reserved for later — which the {@link WeatherTexPacker} bakes into
+ * the WebGPU cloud renderer's weather-map texture. Nothing here imports the
+ * renderer; the packer emits the rgba8 byte layout the renderer already
+ * uploads.
  */
 import type {
   WeatherGridRegistration,
@@ -15,12 +14,12 @@ import type {
 } from "./WeatherFieldGrid.js";
 
 /**
- * Geographic bounds in RADIANS.
+ * Geographic bounds in radians.
  *
- * C13-08: these are LOAD-BEARING — the packer places the field on exactly this
- * rectangle of the global weather texture. What the bounds mean relative to the
- * grid samples (node-centred vs cell-centred) and what happens outside them is
- * decided in ONE place: {@link WeatherFieldGrid}. `west > east` is legal and
+ * These are load-bearing: the packer places the field on exactly this rectangle
+ * of the global weather texture. What the bounds mean relative to the grid
+ * samples — node-centred against cell-centred — and what happens outside them
+ * is decided in one place, {@link WeatherFieldGrid}. `west > east` is legal and
  * means the rectangle straddles the antimeridian.
  */
 export interface WeatherBounds {
@@ -39,12 +38,13 @@ export const GLOBAL_WEATHER_BOUNDS: WeatherBounds = {
 };
 
 /**
- * A normalized weather grid. MVP carries cloud COVERAGE only (the only channel
- * the cloud shader reads today); `type`/`base`/`densityBias` are optional and
- * fill the G/B/A channels in a later phase.
+ * A normalized weather grid. Only cloud coverage is carried, because it is the
+ * only channel the cloud shader reads; `type`, `base` and `densityBias` are
+ * optional and fill the G, B and A channels once consumers for them exist.
  *
- * Row 0 is the NORTH edge and column 0 is the WEST edge, matching the weather
- * texture's row0 = north-pole convention, so the packer is a straight resample.
+ * Row 0 is the north edge and column 0 is the west edge, matching the weather
+ * texture's row-0-is-north-pole convention, so the packer is a straight
+ * resample.
  */
 export interface WeatherField {
   gridWidth: number;
@@ -53,65 +53,67 @@ export interface WeatherField {
   coverage: Float32Array;
   /** Optional cloud-type index per cell (CloudType enum), 0..10. */
   type?: Float32Array;
-  /** Optional cloud-base height per cell, METRES. */
+  /** Optional cloud-base height per cell, in metres. */
   baseMeters?: Float32Array;
   /** Optional density bias per cell in [0,1] (0.5 = neutral). */
   densityBias?: Float32Array;
   /**
-   * Optional PRESENT-WEATHER code per cell, WMO Table 4677 `ww` (00..99). Drives
-   * the data-driven precipitation path (PRECIP-DATA, Batch 444): the cell's `ww`
-   * code maps to a {@link PrecipitationType} + intensity. NaN / undefined cell →
-   * "no observation" (treated as no precipitation). Optional so the legacy
-   * coverage-only field is unchanged when a source doesn't carry it.
+   * Optional present-weather code per cell, WMO Table 4677 `ww` (00..99). Drives
+   * the data-driven precipitation path: the cell's `ww` code maps to a
+   * {@link PrecipitationType} and an intensity. A NaN or undefined cell means no
+   * observation, which is treated as no precipitation. Optional, so a
+   * coverage-only field is unaffected when a source does not carry it.
    */
   ww?: Float32Array;
   /**
-   * Optional aggregate horizontal VISIBILITY of the field, KILOMETRES. Couples to
-   * particle density / fog in the data-driven precip path (low visibility → denser
-   * particles). A field-level scalar (not per-cell) because the precip override is
-   * an aggregate present-weather read; sources without it leave it undefined and
-   * the visibility coupling is a no-op (multiplier 1).
+   * Optional aggregate horizontal visibility of the field, in kilometres.
+   * Couples to particle density and fog in the data-driven precipitation path,
+   * where lower visibility means denser particles. It is a field-level scalar
+   * rather than per-cell because the precipitation override is an aggregate
+   * present-weather read; sources without it leave it undefined and the
+   * visibility coupling becomes a multiplier of 1.
    */
   visibilityKm?: number;
   /**
-   * Optional aggregate / representative PRESENT-WEATHER code (WMO `ww`, 00..99)
-   * for the whole field. The data-driven precip override reads THIS scalar (a
-   * single dominant `ww`) rather than re-sampling the per-cell `ww` grid at the
-   * camera — the particle system is a single global type/intensity. Sources that
-   * fill the per-cell `ww` grid should also set this to the dominant code.
+   * Optional aggregate present-weather code (WMO `ww`, 00..99) for the whole
+   * field. The data-driven precipitation override reads this single dominant
+   * scalar rather than re-sampling the per-cell `ww` grid at the camera, because
+   * the particle system carries one global type and intensity. A source that
+   * fills the per-cell `ww` grid should also set this to the dominant code.
    */
   representativeWw?: number;
   bounds: WeatherBounds;
   /**
-   * C13-08 — where this grid's samples sit relative to {@link bounds}. Omitted →
+   * Where this grid's samples sit relative to {@link bounds}. Omitting it means
    * `"node"` (gridline-registered), the convention every shipped source uses.
-   * See {@link WeatherFieldGrid} for the decision and its rationale.
+   * {@link WeatherFieldGrid} owns that decision and its rationale.
    */
   registration?: WeatherGridRegistration;
   /**
-   * C13-08 — an extra no-data sentinel for wire formats that carry one (e.g.
-   * `-9999`). `NaN` is ALWAYS no-data and needs no declaration; prefer emitting
-   * `NaN` from a source over declaring a sentinel.
+   * An extra no-data sentinel for wire formats that carry one, such as `-9999`.
+   * `NaN` is always no-data and needs no declaration, so a source should prefer
+   * emitting `NaN` over declaring a sentinel.
    */
   noDataValue?: number;
   /**
-   * C13-08 — what the packer writes into texels this field does not observe
-   * (outside {@link bounds}, or no-data inside them). Omitted → the procedural
-   * map, i.e. the same bytes the renderer shows with no provider at all. NEVER
-   * silently "clear": a gap is not an observation of clear sky.
+   * What the packer writes into texels this field does not observe — outside
+   * {@link bounds}, or no-data inside them. Omitting it selects the procedural
+   * map, which is the same bytes the renderer shows with no provider attached at
+   * all. A gap is never filled with clear sky, because an absence of data is not
+   * an observation of a clear sky.
    */
   noDataFill?: WeatherNoDataFill;
   /**
-   * C13-08 — relative precedence when several sources cover the same texel
-   * (higher wins). DECLARED here so the packer/provider contract carries it;
-   * the composition that CONSUMES it is `C13-20` and is not built yet, so a
-   * single field's priority currently has no effect.
+   * Relative precedence when several sources cover the same texel; higher wins.
+   * It is declared here so the packer and provider contract carries it, but
+   * nothing composes multiple sources yet, so a single field's priority has no
+   * effect.
    */
   priority?: number;
   /**
-   * ISO-8601 valid time of the data (for caching / display). This doubles as the
-   * field's REVISION in the C13-08 contract: two packs of the same source with
-   * the same `validTime` describe the same observation.
+   * ISO-8601 valid time of the data, for caching and display. It doubles as the
+   * field's revision: two packs of the same source with the same `validTime`
+   * describe the same observation.
    */
   validTime?: string;
   /** Source id (e.g. "edr:noaa-gfs"). */
@@ -121,9 +123,9 @@ export interface WeatherField {
 }
 
 /**
- * The temporal stance the {@link WeatherProvider} takes when resolving a slice
- * (Phase 2). `null` (the provider default) = the legacy single-request behavior
- * (whatever `WeatherFieldRequest.time` holds, usually `"latest"`).
+ * The temporal stance the {@link WeatherProvider} takes when resolving a slice.
+ * `null`, the provider default, issues one request for whatever
+ * `WeatherFieldRequest.time` holds, usually `"latest"`.
  *   - `"live"`       : the latest analysis, advanced by `tick(now)`.
  *   - `"historical"` : a fixed past instant set via `setTime(date)`.
  *   - `"projected"`  : `now + forecastOffset`, advanced by `tick(now)`.
@@ -142,16 +144,17 @@ export interface WeatherFieldRequest {
 
 /**
  * Aggregate present-weather read the {@link WeatherProvider} exposes for the
- * data-driven precipitation path (PRECIP-DATA, Batch 444). A single dominant
- * `ww` code + an aggregate visibility describe the field's precipitation as one
- * global type/intensity (the particle system isn't per-cell). `ww` undefined →
- * the active field carries no present-weather → the data-driven override is a
- * no-op and the manual/auto precip selection stands.
+ * data-driven precipitation path. A single dominant `ww` code and an aggregate
+ * visibility describe the field's precipitation as one global type and
+ * intensity, because the particle system is not per-cell. An undefined `ww`
+ * means the active field carries no present weather, so the data-driven
+ * override does nothing and the manual or automatic precipitation selection
+ * stands.
  */
 export interface WeatherPresentWeather {
   /** Dominant WMO Table 4677 `ww` code (00..99), or undefined if not carried. */
   ww?: number;
-  /** Aggregate horizontal visibility, KILOMETRES, or undefined if not carried. */
+  /** Aggregate horizontal visibility in kilometres, or undefined if not carried. */
   visibilityKm?: number;
 }
 

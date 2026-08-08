@@ -1,54 +1,49 @@
 /**
- * C13-02 — cloud CPU/GPU observability and temporal-cost counters.
+ * Cloud CPU and GPU observability, and temporal-cost counters.
  *
- * WHAT WAS ALREADY THERE, AND WHY IT DID NOT CLOSE THE ROW. Batch 762 (the
- * C13-39 negative result) landed byte-inert `timestampWrites` on all seven
- * cloud render passes plus the environment Sky Fill, so `CesiumDebug
- * .gpuPassCost()` could finally attribute GPU time to the cloud march at all.
- * That is a GPU-timer wiring, not an observability surface: it says nothing
- * about how many pixels the march dispatched, how much of the frame the cloud
- * lane actually occupied, whether the temporal history accepted or reset, what
- * the weather cache did, or what the CPU spent scheduling any of it. Gate A's
- * evidence requirement is "counters prove present target sizes and work" —
- * pass timings alone cannot prove either.
- *
- * WHAT THIS MODULE IS. The pure, allocation-bounded half of the surface:
+ * The byte-inert `timestampWrites` on the cloud render passes and on the
+ * environment Sky Fill let `CesiumDebug.gpuPassCost()` attribute GPU time to
+ * the cloud march. That is GPU-timer wiring, not an observability surface: it
+ * says nothing about how many pixels the march dispatched, how much of the
+ * frame the cloud lane occupied, whether the temporal history accepted or
+ * reset, what the weather cache did, or what the CPU spent scheduling any of
+ * it. This module is the pure, allocation-bounded half that answers those:
  *
  *   1. {@link CloudFrameCounters} — one mutable record, created once per
- *      context and RESET IN PLACE at the top of every cloud execute. Reset is
- *      `for` over a fixed field list, so a culled or early-returned frame
- *      reports zeros rather than last frame's numbers, and no frame allocates.
+ *      context and reset in place at the top of every cloud execute. The reset
+ *      is a `for` over a fixed field list, so a culled or early-returned frame
+ *      reports zeros rather than the previous frame's numbers, and no frame
+ *      allocates.
  *   2. {@link CloudCpuStageAccumulator} — fixed-slot `Float64Array` timing for
- *      the named CPU stages. DISABLED by default: `beginStage`/`endStage`
- *      return on one boolean read, so the shipped path pays no `performance
- *      .now()` and the render result cannot depend on the instrumentation
- *      (C13-02's own removability clause).
- *   3. {@link summarizeCloudGpuCoverage} — the CLOUD-SCOPED unique-sample fold.
+ *      the named CPU stages, disabled by default. `beginStage` and `endStage`
+ *      return on one boolean read, so the shipped path pays no
+ *      `performance.now()` and the render result cannot depend on the
+ *      instrumentation.
+ *   3. {@link summarizeCloudGpuCoverage} — the cloud-scoped unique-sample fold.
  *
- * ★ (3) IS WHY THIS FILE CONSUMES `WebGPUTimestampAccounting` RATHER THAN
- * SUMMING PASS TIMES. C11-140 (Batch 903) established that adding per-pass
- * durations double-counts every nanosecond two passes share, and that clamping
- * the resulting ratio to 1 hides the double-count instead of reporting it. A
- * cloud lane is exactly where that bites: the shadow map, the cascade atlas and
- * the half-res march are separate passes that a driver may overlap. So the
- * cloud total is the UNION of the cloud passes' intervals, folded by the same
- * `summarizeFrameCoverage` the whole-frame ledger uses, and the excess of the
- * sum over the union is surfaced as `overlapMs`. A cloud GPU claim built on the
- * naive sum is not falsifiable; a claim built on the union is.
+ * The third is why this file consumes `WebGPUTimestampAccounting` rather than
+ * summing pass times. Adding per-pass durations double-counts every nanosecond
+ * two passes share, and clamping the resulting ratio to 1 hides the
+ * double-count instead of reporting it. A cloud lane is exactly where that
+ * bites: the shadow map, the cascade atlas and the half-res march are separate
+ * passes a driver may overlap. The cloud total is therefore the union of the
+ * cloud passes' intervals, folded by the same `summarizeFrameCoverage` the
+ * whole-frame ledger uses, and the excess of the sum over the union is surfaced
+ * as `overlapMs`. A cloud GPU claim built on the naive sum is not falsifiable;
+ * one built on the union is.
  *
- * The eight pass names below are the render-pass DESCRIPTOR LABELS, because
+ * The eight pass names below are the render-pass descriptor labels, because
  * that is the key `WebGPUPerformanceManager.withRenderPassTimestamps` records
- * timings under. They are data, not a re-derivation: `cloud-observability
- * -counters.spec.mjs` reads the renderer source and fails if a label here has
- * no `timedCloudPass` site, or if a site's label is absent from this list.
+ * timings under. They are data, not a re-derivation:
+ * `cloud-observability-counters.spec.mjs` reads the renderer source and fails
+ * if a label here has no `timedCloudPass` site, or if a site's label is absent
+ * from this list.
  *
- * NOTHING HERE TOUCHES WGSL. C13-39's negative result binds the campaign: WGSL
- * register allocation is static, so a runtime-gated shader counter still costs
- * occupancy on the default path. Every counter in this module is CPU-side
- * bookkeeping over numbers the renderer already computes, and the sample-count
- * fields are therefore explicitly BOUNDED PROXIES (dispatched pixels x the
- * resolved step budget), which is the form C13-02's own text asks for
- * ("primary/light-march sample counts or bounded proxy counters").
+ * Nothing here touches WGSL. Register allocation is static, so a runtime-gated
+ * shader counter would still cost occupancy on the default path. Every counter
+ * is CPU-side bookkeeping over numbers the renderer already computes, and the
+ * sample-count fields are therefore bounded proxies — dispatched pixels times
+ * the resolved step budget — rather than true sample counts.
  *
  * @module WebGPUCloudObservability
  */
@@ -56,9 +51,9 @@
 import type { DebugStatsObject } from "../GraphicsContext.js";
 import { summarizeFrameCoverage } from "./WebGPUTimestampAccounting.js";
 import type { TimedPassSample } from "./WebGPUTimestampAccounting.js";
-// C13-09 — the attachment CONTRACT is published alongside the counters so a
-// reader of the debug surface can see what each target is for without opening
-// the renderer. Pure data: this module still touches no WGSL and no device.
+// The attachment contract is published alongside the counters so a reader of
+// the debug surface can see what each target is for without opening the
+// renderer. Pure data: this module still touches no WGSL and no device.
 import { CLOUD_RECONSTRUCTION_ATTACHMENTS } from "./WebGPUCloudReconstructionAttachments.js";
 
 /**
@@ -69,10 +64,10 @@ export const CLOUD_TIMED_PASS_NAMES: readonly string[] = Object.freeze([
   "CloudShadow map pass",
   "CloudShadow cascade atlas pass",
   "ProceduralClouds half-res pass",
-  // C13-09 — the reconstruction attachment producer, encoded between the
-  // raymarch and the resolve so C13-12 can read the set inside the resolve.
-  // Present only when the opt-in attachment set is enabled; the registry is
-  // ADD-ONLY, so its absence from a frame is reported through
+  // The reconstruction attachment producer, encoded between the raymarch and
+  // the resolve so the set can be read inside the resolve. Present only when
+  // the opt-in attachment set is enabled; entries may be added to this
+  // registry but never removed, so absence from a frame is reported through
   // `missingPassNames` rather than by shrinking the table.
   "CloudReconstructionAttachments pass",
   "CloudTemporalResolve pass",
@@ -82,10 +77,9 @@ export const CLOUD_TIMED_PASS_NAMES: readonly string[] = Object.freeze([
 ]);
 
 /**
- * The environment pass the cloud deck feeds but does not own. Kept SEPARATE
- * from the list above: folding it into the cloud union would attribute the
- * whole sky bake to the cloud lane, which is the attribution error C11-146's
- * settle-window rule exists to prevent. Reported as its own scope.
+ * The environment pass the cloud deck feeds but does not own. Kept apart from
+ * the list above and reported as its own scope: folding it into the cloud
+ * union would attribute the whole sky bake to the cloud lane.
  */
 export const CLOUD_ENVIRONMENT_TIMED_PASS_NAMES: readonly string[] =
   Object.freeze(["DynEnvMap Sky Fill"]);
@@ -147,9 +141,12 @@ export interface CloudFrameCounters {
   maxSteps: number;
   /** Resolved light-march step budget (`CloudUniforms.lightSteps`). */
   lightSteps: number;
-  /** BOUNDED PROXY: `marchPixels * maxSteps`. Upper bound, never a sample count. */
+  /**
+   * Bounded proxy: `marchPixels * maxSteps`. An upper bound, never a sample
+   * count.
+   */
   primarySampleBudget: number;
-  /** BOUNDED PROXY: `marchPixels * maxSteps * lightSteps`. */
+  /** Bounded proxy: `marchPixels * maxSteps * lightSteps`. */
   lightSampleBudget: number;
 
   /** 1 when the temporal resolve accepted the reprojected history this frame. */
@@ -161,11 +158,10 @@ export interface CloudFrameCounters {
   /** Reset-reason bitmask observed this frame (0 when accepted). */
   historyResetReasons: number;
 
-  // ── C13-09 reconstruction attachments ──
-  // The set is OPT-IN and default OFF, so all of these read 0 on the shipped
-  // path. That zero is load-bearing evidence rather than an absence: Gate A
-  // reads it as "the producer encoded nothing and allocated nothing", which is
-  // the claim the default path makes.
+  // The reconstruction attachment set is opt-in and default off, so all of the
+  // fields below read 0 on the shipped path. That zero is evidence rather than
+  // an absence: it is how the default path reports that the producer encoded
+  // nothing and allocated nothing.
   /** Reconstruction attachment width; 0 when the set was not produced. */
   attachmentWidth: number;
   /** Reconstruction attachment height; 0 when the set was not produced. */
@@ -193,37 +189,36 @@ export interface CloudFrameCounters {
   weatherLiveBytes: number;
 
   /**
-   * Bytes the OWNED reconstruction attachments currently occupy. Like
-   * `weatherLiveBytes` this describes a RESIDENT resource, so it survives the
+   * Bytes the owned reconstruction attachments currently occupy. Like
+   * `weatherLiveBytes` this describes a resident resource, so it survives the
    * per-frame reset — zeroing it would report the set as freed on every
-   * quiescent frame. The shared half-res colour target is deliberately
-   * excluded: it is not cost this row added, and reporting it here would
-   * overstate the attachment set's footprint.
+   * quiescent frame. The shared half-res colour target is excluded: it is not
+   * cost the attachment set added, and reporting it here would overstate the
+   * set's footprint.
    */
   attachmentLiveBytes: number;
 
-  // ── C13-10 march-emitted reconstruction ──
-  // Gate C asks for evidence that the current work and the reconstruction
-  // topology are what they are claimed to be. These four are the minimum that
-  // distinguishes "the variant was requested" from "the variant actually ran",
-  // which is the distinction a half-built pipeline would otherwise hide.
+  // The four fields below are what distinguishes a frame that requested the
+  // march-emitted reconstruction variant from one that actually ran it, which
+  // is the distinction a half-built pipeline would otherwise hide.
   /**
-   * RESIDENT: 1 when `reconstructionEnabled` is set on the cache, published
-   * every execute. `requested = 1` beside `emitted = 0` is the honest report of
-   * a frame that asked for the variant and fell back — a full-resolution tier,
-   * an orthographic/morph frame, or a pipeline that could not build.
+   * Resident: 1 when `reconstructionEnabled` is set on the cache, published
+   * every execute. A `requested` of 1 beside an `emitted` of 0 is the honest
+   * report of a frame that asked for the variant and fell back — a
+   * full-resolution tier, an orthographic or morph frame, or a pipeline that
+   * could not build.
    */
   reconstructionRequested: number;
-  /** 1 when the EMITTING march pipeline encoded this frame. */
+  /** 1 when the emitting march pipeline encoded this frame. */
   reconstructionEmitted: number;
-  /** 1 when the CONSUMING temporal resolve encoded this frame. */
+  /** 1 when the consuming temporal resolve encoded this frame. */
   reconstructionConsumed: number;
   /**
    * Colour targets the producer pass wrote this frame: 3 on the estimator path
-   * and 2 when the march emitted contract slot 1 itself. Not derivable from
-   * `attachmentCount` (which is the CONTRACT size and does not change), and it
-   * is the counter that proves ownership of the depth slot actually moved
-   * rather than the set quietly being written twice.
+   * and 2 when the march emitted contract slot 1 itself. It is not derivable
+   * from `attachmentCount`, which is the contract size and does not change,
+   * and it is the counter that proves ownership of the depth slot moved rather
+   * than the set quietly being written twice.
    */
   reconstructionProducerTargets: number;
 
@@ -245,8 +240,8 @@ export interface CloudFrameCounters {
 /**
  * The scalar fields of {@link CloudFrameCounters} that {@link
  * resetCloudFrameCounters} zeroes each frame. `frames` and `culledFrames` are
- * deliberately ABSENT: they are lifetime counters and resetting them would
- * erase the only evidence that the lane ran at all.
+ * absent: they are lifetime counters, and resetting them would erase the only
+ * evidence that the lane ran at all.
  */
 const RESET_FIELDS: readonly (keyof CloudFrameCounters)[] = Object.freeze([
   "marchWidth",
@@ -270,10 +265,10 @@ const RESET_FIELDS: readonly (keyof CloudFrameCounters)[] = Object.freeze([
   "attachmentPixels",
   "attachmentCount",
   "attachmentGeneration",
-  // C13-10 — per-frame verdicts. `reconstructionRequested` is deliberately
-  // ABSENT for the same reason `attachmentLiveBytes` is: it describes the
-  // RESIDENT request, and zeroing it every frame would report the variant as
-  // un-asked-for on any frame that fell back.
+  // Per-frame verdicts. `reconstructionRequested` is absent for the same
+  // reason `attachmentLiveBytes` is: it describes the resident request, and
+  // zeroing it every frame would report the variant as un-asked-for on any
+  // frame that fell back.
   "reconstructionEmitted",
   "reconstructionConsumed",
   "reconstructionProducerTargets",
@@ -338,7 +333,7 @@ export function createCloudFrameCounters(): CloudFrameCounters {
 
 /**
  * Zeroes the per-frame fields in place. No allocation, and `weatherLiveBytes`
- * and `attachmentLiveBytes` survive because they describe RESIDENT resources
+ * and `attachmentLiveBytes` survive because they describe resident resources
  * rather than this frame's work — zeroing them would report the textures as
  * freed on every quiescent frame.
  *
@@ -366,8 +361,8 @@ export function resetCloudFrameCounters(
 /**
  * Records one encoded cloud render pass by its descriptor label.
  *
- * Called from the ONE `timedCloudPass` helper every cloud pass already routes
- * through, so the count cannot drift from the encode sites the way seven
+ * Called from the single `timedCloudPass` helper every cloud pass already
+ * routes through, so the count cannot drift from the encode sites the way
  * hand-placed increments could. An unrecognised label increments `passCount`
  * only — a new pass shows up in the total immediately and in the per-pass
  * breakdown once it is registered above, which is a visible gap rather than a
@@ -396,11 +391,11 @@ export function recordCloudPass(
 /**
  * Fixed-slot CPU stage timing.
  *
- * DISABLED BY DEFAULT, and that is a correctness property rather than a
- * performance one: C13-02 requires the instrumentation to be removable without
- * changing the render result, and a `performance.now()` pair straddling the
- * pack stage is observable work on the shipped path. Enabled, each stage costs
- * two clock reads per frame.
+ * Disabled by default, which is a correctness property rather than a
+ * performance one: the instrumentation has to be removable without changing
+ * the render result, and a `performance.now()` pair straddling the pack stage
+ * is observable work on the shipped path. Enabled, each stage costs two clock
+ * reads per frame.
  *
  * Re-entrant begins are not merged: a second `beginStage` for a slot that is
  * already open overwrites the open timestamp and increments `reentries`, which
@@ -430,7 +425,7 @@ export class CloudCpuStageAccumulator {
   }
 
   /**
-   * Turns stage timing on or off. Turning it OFF clears the accumulated
+   * Turns stage timing on or off. Turning it off clears the accumulated
    * statistics, so a later read cannot present numbers from an older,
    * differently-configured run as current.
    */
@@ -520,7 +515,7 @@ export interface CloudGpuCoverage extends DebugStatsObject {
   readonly matchedPassCount: number;
   /** Registered cloud pass names that produced no sample this frame. */
   readonly missingPassNames: readonly string[];
-  /** UNION of the cloud passes' GPU intervals — each nanosecond counted once. */
+  /** Union of the cloud passes' GPU intervals — each nanosecond counted once. */
   readonly cloudCoveredMs: number;
   /** Naive sum of the cloud passes' durations. */
   readonly cloudSummedMs: number;
@@ -528,7 +523,7 @@ export interface CloudGpuCoverage extends DebugStatsObject {
   readonly cloudOverlapMs: number;
   /** Span from the first cloud pass begin to the last cloud pass end. */
   readonly cloudSpanMs: number;
-  /** GPU span of the WHOLE frame, from the unscoped fold. */
+  /** GPU span of the entire frame, from the unscoped fold. */
   readonly frameSpanMs: number;
   /** `cloudCoveredMs / frameSpanMs`, or null for a degenerate frame span. */
   readonly cloudFrameFraction: number | null;
@@ -538,12 +533,12 @@ export interface CloudGpuCoverage extends DebugStatsObject {
 
 /**
  * Folds the cloud subset of one frame's timed passes into unique-sample
- * measures, and expresses the result as a fraction of the WHOLE frame's span.
+ * measures, and expresses the result as a fraction of the entire frame's span.
  *
- * The two folds are deliberately separate calls to the same pure function: the
- * cloud fold answers "how much unique GPU time did the cloud lane occupy", the
- * unscoped fold answers "out of how much". Deriving the second from the first
- * would make the fraction a tautology.
+ * The two folds are separate calls to the same pure function: the cloud fold
+ * answers how much unique GPU time the cloud lane occupied, the unscoped fold
+ * answers out of how much. Deriving the second from the first would make the
+ * fraction a tautology.
  *
  * @param samples One frame's timed passes, relative to the frame origin.
  * @param names Cloud pass names to scope to. Defaults to every cloud pass.
@@ -601,8 +596,7 @@ export interface CloudObservabilityInputs {
  * Allocation-bearing by design; it is a read surface, not a render-path call.
  * `gpu` is `null` rather than a zero-filled object when the adapter has no
  * timestamp support, because a zeroed timing block is indistinguishable from a
- * genuinely idle lane and the fleet has already been misled by exactly that
- * shape once (the settle-window attribution finding, C11-146).
+ * genuinely idle lane.
  */
 export function snapshotCloudObservability(
   inputs: CloudObservabilityInputs,
@@ -635,16 +629,16 @@ export function snapshotCloudObservability(
       historyRejected: c.historyRejected,
       historyReset: c.historyReset,
       historyResetReasons: c.historyResetReasons,
-      // Per-frame acceptance is 0 or 1, so this is the frame's own verdict —
-      // the LIFETIME ratio lives under `lifetime` where its denominator is
+      // Per-frame acceptance is 0 or 1, so this is the frame's own verdict.
+      // The lifetime ratio lives under `lifetime`, where its denominator is
       // unambiguous.
       acceptanceThisFrame:
         acceptance > 0 ? c.historyAccepted / acceptance : null,
-      // C13-09 — the attachment set. `produced` false with `liveBytes` > 0 is
-      // a real and readable state: the targets are resident but this frame did
-      // not run the producer (culled, or a full-resolution tier). The contract
-      // is published alongside the numbers so a reader does not have to open
-      // the source to learn what each channel means.
+      // The attachment set. `produced` false with `liveBytes` above 0 is a real
+      // and readable state: the targets are resident but this frame did not run
+      // the producer, having been culled or on a full-resolution tier. The
+      // contract is published alongside the numbers so a reader does not have
+      // to open the source to learn what each channel means.
       attachments: {
         produced: c.attachmentPixels > 0,
         width: c.attachmentWidth,
@@ -660,24 +654,24 @@ export function snapshotCloudObservability(
           bytesPerTexel: spec.bytesPerTexel,
           ownedHere: spec.ownedHere,
           producer: spec.producer,
-          // C13-10 — non-null only on the depth slot, whose ownership moves to
-          // the march under the emission variant. Published so a reader of the
-          // debug surface can see WHICH pass wrote the target they are looking
-          // at without opening the renderer.
+          // Non-null only on the depth slot, whose ownership moves to the
+          // march under the emission variant. Published so a reader of the
+          // debug surface can tell which pass wrote the target they are
+          // looking at without opening the renderer.
           variantProducer: spec.variantProducer ?? null,
-          // C13-10 gave the owned set its first consumer (the temporal
-          // resolve). C13-12 adds no new READER — it adds POLICY inside that
-          // same pass — so this list is expected to stay as it is.
+          // The temporal resolve is the owned set's only consumer. Further
+          // rejection work adds policy inside that same pass rather than a new
+          // reader, so this list is expected to stay as it is.
           consumers: spec.consumers.slice(),
           channels: spec.channels,
         })),
       },
-      // C13-10 — the emission/consumption verdicts, kept BESIDE the attachment
+      // The emission and consumption verdicts, kept beside the attachment
       // block rather than inside it: the attachments are a resource, this is
       // what happened to them this frame. `requested` true with `emitted` false
       // is the honest report of a fallback, and `producerTargets` is what
-      // proves ownership of the depth slot moved (3 -> 2) rather than the set
-      // being written twice.
+      // proves ownership of the depth slot moved, going from 3 to 2, rather
+      // than the set being written twice.
       emission: {
         requested: c.reconstructionRequested > 0,
         emitted: c.reconstructionEmitted > 0,

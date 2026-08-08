@@ -7,27 +7,24 @@ import {
 } from "./StarFieldMath.js";
 
 /**
- * AtmosphericConditions — canonical facade (Phase 0.3).
+ * Canonical, domain-grouped facade for the atmosphere, fog, cloud, weather and
+ * night-lighting state, reached as `scene.globe.atmosphericConditions`.
  *
- * Accessed as `scene.globe.atmosphericConditions`. This class is a **facade**:
- * its getters/setters read and write through to the existing legacy storage
- * on `Scene.atmosphere`, `Scene.fog`, `Scene.skyAtmosphere`, and `Globe` (plus
- * a handful of `Scene._weather*` fields). NO data migration occurs. The
- * legacy properties remain the source of truth; internal Cesium code is not
- * rewired in this PR.
+ * Its getters and setters read and write through to whichever object already
+ * owns each value — `Scene.atmosphere`, `Scene.fog`, `Scene.skyAtmosphere`,
+ * `Globe`, and a handful of `Scene._weather*` fields. Nothing is copied or
+ * migrated: those properties stay the source of truth and the rest of the
+ * engine keeps reading them directly, so the existing Cesium APIs continue to
+ * work unchanged.
  *
- * Pattern rationale (see `migration_doc/WATER_RENDERING_DESIGN.md §5.1`):
- *  - Existing upstream Cesium APIs must keep working unchanged.
- *  - New code (and user code going forward) gets a single canonical home for
- *    atmosphere/fog/cloud/weather/night state, grouped by domain.
- *  - Phase 1+ state that has no legacy backing (volumetricFog,
- *    varyingAtmosphereDensity, the new lighting flags, cloud volumetrics,
- *    skyAtmosphere.starModulationCurve, groundAtmosphere.perFragment) lives
- *    directly on the facade.
+ * State with no such owner — `volumetricFog`, `varyingAtmosphereDensity`, the
+ * lighting flags, the cloud volumetrics, `skyAtmosphere.starModulationCurve`
+ * and `groundAtmosphere.perFragment` — is stored directly on the facade
+ * instead.
  *
- * Leaf objects are all plain objects with get/set thunks installed by the
+ * Leaf objects are plain objects with get/set thunks installed by the
  * constructor via {@link Object.defineProperties}. Sub-facades never close
- * over `this` — they close over the `scene` and `globe` captured at
+ * over `this`; they close over the `scene` and `globe` captured at
  * construction time.
  *
  * @alias AtmosphericConditions
@@ -69,12 +66,12 @@ class AtmosphericConditions {
   }
 
   /**
-   * Returns a JSON-serializable snapshot of the facade state. Used by future
-   * snapshot/record modes. Implementation is intentionally minimal for now.
+   * Returns a JSON-serializable snapshot of the facade state. The snapshot
+   * covers the scattering leaf only, and flattens its `Cartesian3` values to
+   * plain `{x, y, z}` objects so the result survives `JSON.stringify`.
    * @returns {object} a plain-object snapshot (deep-cloned)
    */
   clone() {
-    // TODO(Phase 2): full structured snapshot including Cartesian3 serialization.
     const snapshot = {
       scattering: {
         rayleighCoefficient: cloneCartesian3(
@@ -90,10 +87,10 @@ class AtmosphericConditions {
   }
 
   /**
-   * Unified scattering coefficients (Option A). Setters fan out to
-   * `scene.atmosphere`, `scene.skyAtmosphere`, and the `Globe` atmosphere
-   * fields so all three legacy consumers stay in lock-step. Getters read
-   * from `scene.atmosphere` as the canonical reader.
+   * Unified scattering coefficients. Setters fan out to `scene.atmosphere`,
+   * `scene.skyAtmosphere`, and the `Globe` atmosphere fields so all three
+   * consumers stay in lock-step. Getters read from `scene.atmosphere` as the
+   * canonical reader.
    * @type {object}
    * @readonly
    */
@@ -103,49 +100,51 @@ class AtmosphericConditions {
 
   /**
    * Lighting flags. `lambertDiffuseMultiplier`, `vertexShadowDarkness`,
-   * `dynamicAtmosphereLighting`, and `dynamicAtmosphereLightingFromSun`
-   * delegate to `Globe`. `enableSunLight`, `enableMoonLight`,
-   * `enableMoonPhase`, and `enableEarthshine` are new Phase 1 state stored
-   * on the facade. The C12 moon-wave toggles `enableLunarBRDF`,
-   * `enableOppositionSurge`, `enableMoonSkyWash`, and `enableLunarNormalMap`
-   * (all default ON, both backends) also live here, as do the C12-29 toggles
-   * `enableEclipse`
-   * (default ON, both backends — gates application of
-   * `frameState.eclipseState`) and `eclipseAutoExposure` (default OFF —
-   * ruling E2's camera-metering alternative to the human-eye impression).
-   * The C12 sun-wave toggles `enableSolarLimbDarkening` (C12-15) and
-   * `enableSolarGlareFalloff` (C12-16) are here too — both default ON, both
-   * backends, both resolved once per frame by `Scene/SunDiscAppearance.js`
-   * and published as `frameState.sunDiscAppearance`, and both with an EXACT
-   * identity position when false. The C12 moon-phase toggles
-   * `enableEarthshinePhase` (C12-21) and `enableSoftTerminator` (C12-22) sit
-   * alongside them — both default ON, both backends, both resolved once per
-   * frame by `Scene/MoonPhaseAppearance.js` and published as
-   * `frameState.moonEarthshinePhaseScale` / `frameState.moonTerminatorSoftness`,
-   * and both with an EXACT identity position when false. The C12-27 toggle
-   * `enableAngularSolarGlare` joins them — default ON, both backends, resolved
-   * once per frame by `Scene/SolarGlareAppearance.js` and published as
-   * `frameState.solarGlareAppearance`, with an EXACT identity position when
-   * false (strength 0 makes every consumer skip its whole glare block).
+   * `dynamicAtmosphereLighting` and `dynamicAtmosphereLightingFromSun`
+   * delegate to `Globe`; every other property on this leaf is stored on the
+   * facade itself.
    *
-   * FACADE-ABSENT BEHAVIOUR IS NOT UNIFORM ACROSS THIS REGISTRY, and every
-   * default above describes the value stored HERE, not what a globe-less scene
-   * gets. `Scene.js` publishes `frameState.atmosphericConditions` as `undefined`
-   * when there is no globe (a supported configuration: pure 3D-Tiles / CAD /
-   * model-viewer scenes), so each resolver's absent-facade convention decides
-   * the effective position:
-   *   - `!== false` — ON without a facade: `enableSolarLimbDarkening`,
-   *     `enableSolarGlareFalloff` (`Scene/SunDiscAppearance.js`),
-   *     `enableTrueSolarDiscSize`, `enableScreenSpaceSunHalo`
-   *     (`Scene/SunHaloAppearance.js`), `enableEclipse` (`Scene.js`).
-   *   - `=== true` — OFF without a facade, DELIBERATELY, so such a scene keeps
-   *     the pre-C12 look exactly: `enableEarthshinePhase`, `enableSoftTerminator`
-   *     (`Scene/MoonPhaseAppearance.js`), `enableAngularSolarGlare`
-   *     (`Scene/SolarGlareAppearance.js`), and the four moon-wave toggles plus
-   *     `enableMoonPhase` / `enableEarthshine` (`Scene/Moon.js`).
-   * So a globe-less scene really does get the C12-15/16 sun disc alongside the
-   * pre-C12 lunar terminator — the two pairs above are alike in default and in
-   * identity-when-false, but NOT in what happens when the facade is missing.
+   * `enableSunLight`, `enableMoonLight`, `enableMoonPhase` and
+   * `enableEarthshine` gate the basic light contributions. The moon-appearance
+   * toggles `enableLunarBRDF`, `enableOppositionSurge`, `enableMoonSkyWash` and
+   * `enableLunarNormalMap` all default on and are implemented on both backends.
+   * `enableEclipse` (default on, both backends) gates whether consumers apply
+   * `frameState.eclipseState`, and `eclipseAutoExposure` (default off) selects
+   * the camera-metering transfer function in place of the human-eye impression.
+   *
+   * `enableSolarLimbDarkening` and `enableSolarGlareFalloff` are resolved once
+   * per frame by `Scene/SunDiscAppearance.js` and published as
+   * `frameState.sunDiscAppearance`. `enableEarthshinePhase` and
+   * `enableSoftTerminator` are resolved by `Scene/MoonPhaseAppearance.js` and
+   * published as `frameState.moonEarthshinePhaseScale` and
+   * `frameState.moonTerminatorSoftness`. `enableAngularSolarGlare` is resolved
+   * by `Scene/SolarGlareAppearance.js` and published as
+   * `frameState.solarGlareAppearance`. All five default on, run on both
+   * backends, and take an exact identity position when false: a glare strength
+   * of 0, for instance, makes every consumer skip its whole glare block rather
+   * than evaluate a near-zero one.
+   *
+   * Every default named above is the value stored here, which is not the same
+   * as the value a globe-less scene sees. `Scene.js` publishes
+   * `frameState.atmosphericConditions` as `undefined` when there is no globe —
+   * a supported configuration for pure 3D Tiles, CAD and model-viewer scenes —
+   * so each resolver's own absent-facade convention decides the effective
+   * position, and those conventions differ:
+   *   - Read as `!== false`, hence on without a facade:
+   *     `enableSolarLimbDarkening` and `enableSolarGlareFalloff`
+   *     (`Scene/SunDiscAppearance.js`), `enableTrueSolarDiscSize` and
+   *     `enableScreenSpaceSunHalo` (`Scene/SunHaloAppearance.js`),
+   *     `enableEclipse` (`Scene.js`).
+   *   - Read as `=== true`, hence off without a facade, which leaves such a
+   *     scene's lunar appearance unmodified: `enableEarthshinePhase` and
+   *     `enableSoftTerminator` (`Scene/MoonPhaseAppearance.js`),
+   *     `enableAngularSolarGlare` (`Scene/SolarGlareAppearance.js`), and the
+   *     four moon-appearance toggles plus `enableMoonPhase` and
+   *     `enableEarthshine` (`Scene/Moon.js`).
+   *
+   * A globe-less scene therefore renders the shaped sun disc alongside a hard
+   * lunar terminator. The two groups match in stored default and in
+   * identity-when-false, but not in what happens when the facade is missing.
    * @type {object}
    * @readonly
    */
@@ -154,8 +153,8 @@ class AtmosphericConditions {
   }
 
   /**
-   * Sky atmosphere facade over `scene.skyAtmosphere`. Also holds the new
-   * Phase 1 `starModulationCurve` state.
+   * Sky atmosphere facade over `scene.skyAtmosphere`. Also holds the
+   * `starModulationCurve` state, which has no backing store elsewhere.
    * @type {object}
    * @readonly
    */
@@ -164,8 +163,8 @@ class AtmosphericConditions {
   }
 
   /**
-   * Ground atmosphere facade over the matching `Globe` fields. Adds new
-   * `perFragment` state for Phase 1.
+   * Ground atmosphere facade over the matching `Globe` fields. Adds
+   * `perFragment` state, which is stored on the facade itself.
    * @type {object}
    * @readonly
    */
@@ -193,7 +192,7 @@ class AtmosphericConditions {
   }
 
   /**
-   * Volumetric fog — Phase 1 state only, no legacy backing.
+   * Volumetric fog. Stored on the facade; there is no backing store elsewhere.
    * @type {object}
    * @readonly
    */
@@ -202,7 +201,8 @@ class AtmosphericConditions {
   }
 
   /**
-   * Varying atmosphere density — Phase 1 state only, no legacy backing.
+   * Varying atmosphere density. Stored on the facade; there is no backing
+   * store elsewhere.
    * @type {object}
    * @readonly
    */
@@ -241,15 +241,16 @@ class AtmosphericConditions {
   }
 
   /**
-   * Unified atmospheric EFFECTS hierarchy (Phase B+). Nests the screen-space /
-   * overlay effects (`shimmer`, `groundFog`, `optics`, `precipitation`) that the
-   * weather {@link AtmosphericConditions#weather} drives. The master `auto` flag,
-   * when true, makes {@link applyAtmosphericConditions} derive each effect's
-   * `enabled` + intensity from the conditions (temperature / dew-point spread /
-   * precipitation). Off by default so existing scenes are byte-neutral until
-   * opted in. Each effect leaf is plain state (no legacy backing); a backend
-   * (e.g. the WebGPU heat-shimmer post-process) reads it via the scene flags
-   * the auto-apply pushes.
+   * Unified atmospheric effects hierarchy. Nests the screen-space and overlay
+   * effects (`shimmer`, `groundFog`, `optics`, `precipitation`) that the
+   * weather state {@link AtmosphericConditions#weather} drives. The master
+   * `auto` flag, when true, makes {@link applyAtmosphericConditions} derive
+   * each effect's `enabled` flag and intensity from the conditions
+   * (temperature, dew-point spread, precipitation). Off by default, so an
+   * existing scene renders unchanged until it opts in. Each effect leaf is
+   * plain state with no backing store; a backend such as the WebGPU
+   * heat-shimmer post-process reads it through the scene flags the auto-apply
+   * pushes.
    * @type {object}
    * @readonly
    */
@@ -264,8 +265,6 @@ function cloneCartesian3(v) {
   }
   return { x: v.x, y: v.y, z: v.z };
 }
-
-// ───────────────────────────── leaf builders ─────────────────────────────
 
 function buildScattering(scene, globe) {
   const leaf = {};
@@ -340,189 +339,151 @@ function buildScattering(scene, globe) {
 }
 
 function buildLighting(globe) {
-  // New Phase 1 state — stored directly on the leaf (no legacy backing).
-  // Phase 1.3c adds `enableDualLightAtmosphere` (B12 lock) and the
-  // `moonIntensity` scale so the sky atmosphere shader's dual-light
-  // path can be tuned without code changes. Defaults: dual-light ON
-  // (the moon contribution is gated to zero when the moon is below
-  // the horizon AND scaled by phase fraction, so "ON by default" is
-  // visually identical to today during the day and at new moon).
-  // C12 moon wave (2026-07-24) — three moon-appearance toggles, all
-  // default ON and implemented on BOTH backends in lockstep (never a
-  // WebGPU-only default-ON multiplier — the C11-176/C12 exit-gate class):
-  //  - enableLunarBRDF (C12-20): Lommel-Seeliger regolith reflectance in
-  //    place of Lambert, so the full moon is a flat bright disc.
-  //  - enableOppositionSurge (C12-23): CPU-side Hapke-SHOE brightness
-  //    surge within a few degrees of opposition.
-  //  - enableMoonSkyWash (C12-30): additive in-scattered sky radiance over
-  //    the disc (disc = disc × extinction + inscatter), so the daytime
-  //    moon reads pale/sky-washed instead of a dark cutout. Only active
-  //    while the sky atmosphere is visible; exactly zero from orbit.
+  // The fields in the literal below are stored on the leaf itself; the four
+  // properties installed after it delegate to `Globe`.
   //
-  // C12-25 (2026-08-02) — `enableLunarNormalMap`, DEFAULT ON. Routes the
-  // LOLA-derived tangent-space relief onto the disc's lighting normal. It is
-  // additionally gated by the moon VARIANT: `Moon.Variant.SMALL` ships no
-  // normal map, so this toggle has no effect there and the legacy flat look
-  // is preserved. Visible primarily near the terminator, where N·L is small
-  // and a few degrees of surface tilt is the difference between lit and
-  // unlit; nearly invisible at full phase, where N·L ≈ 1 and the cosine is
-  // flat. Turning it off drives the shader's strength uniform to exactly 0,
-  // which is the exact identity perturbation on both backends.
+  // `enableDualLightAtmosphere` and the `moonIntensity` scale tune the
+  // sky-atmosphere shader's dual-light path without a code change. Dual light
+  // defaults on: the moon contribution is gated to zero while the moon is below
+  // the horizon and is scaled by phase fraction, so the on position is
+  // indistinguishable during the day and at new moon.
   //
-  // C12-29 S5 (2026-07-25) — `enableEclipseGlobeShadow`, DEFAULT ON. Gates
-  // only the per-fragment lunar umbra on the globe surface, leaving S1's sun
-  // fade and S2's observer-anchored scene dimming untouched. S5 deliberately
-  // supersedes S2 on the globe: the surface dims by G(O_fragment), not
-  // uniformly by G(O_camera). Turning this sub-effect off preserves the
-  // complete S1/S2 contract for isolation and equivalence probes.
+  // The moon-appearance toggles default on and are implemented on both
+  // backends in lockstep, never as a WebGPU-only default-on multiplier:
   //
-  // C12-29 S1 (2026-07-24) — `enableEclipse`, DEFAULT ON by maintainer
-  // ruling E1 ("this is the actual simulation that needs to be there",
-  // ECLIPSE_EFFECTS_RESEARCH_2026-07-24.md §6a). It gates only whether
-  // consumers APPLY the active logical View's
-  // `frameState.eclipseState.sunVisibleFraction`; the eclipse geometry itself
-  // is computed unconditionally whenever that View is prepared so probes and
-  // tooling can read the physics with the effect switched off.
-  // With it false, every consumer multiplies by exactly 1.0 and the frame
-  // is byte-identical to the pre-C12-29 engine on both backends.
+  //  - enableLunarBRDF: Lommel-Seeliger regolith reflectance in place of
+  //    Lambert, so the full moon reads as a flat bright disc.
+  //  - enableOppositionSurge: CPU-side Hapke shadow-hiding brightness surge
+  //    within a few degrees of opposition.
+  //  - enableMoonSkyWash: additive in-scattered sky radiance over the disc
+  //    (disc = disc × extinction + inscatter), so the daytime moon reads pale
+  //    rather than as a dark cutout. Active only while the sky atmosphere is
+  //    visible, and exactly zero from orbit.
+  //  - enableLunarNormalMap: routes the LOLA-derived tangent-space relief onto
+  //    the disc's lighting normal. Additionally gated by the moon variant:
+  //    `Moon.Variant.SMALL` ships no normal map, so the toggle has no effect
+  //    there and that variant stays flat-shaded. Visible mainly near the
+  //    terminator, where N·L is small and a few degrees of surface tilt
+  //    decides lit from unlit, and nearly invisible at full phase where
+  //    N·L ≈ 1 and the cosine is flat. Off drives the shader's strength
+  //    uniform to exactly 0, an identity perturbation on both backends.
   //
-  // C12-29 S2 (2026-07-24) — `eclipseAutoExposure`, DEFAULT OFF by maintainer
-  // ruling E2 (ECLIPSE_EFFECTS_RESEARCH_2026-07-24.md §6a): "human-eye
-  // impression (preserved darkness) is the DEFAULT; camera-autoexposure
-  // compensation becomes a togglable alternative mode". The two modes differ
-  // in the TRANSFER FUNCTION `EclipseState.getEclipseSceneLightFactor`
-  // applies to the flux fraction, not in whether dimming happens:
+  // The eclipse response is split across separate flags so each part can be
+  // probed in isolation:
   //
-  //   false (default, human eye) — the flux fraction is carried through the
-  //     eye's own adaptation exponent (CIE L* / Stevens, ~1/3) before it
-  //     reaches the lights, because with no auto-exposure in the chain
-  //     nothing else will perform that adaptation. Totality lands on the
-  //     documented ~5-lux twilight floor (render factor ~0.0368) and the
-  //     plunge from 99% obscuration is a ~6x collapse. This is the AE-EXEMPT
-  //     state: the darkness is preserved by construction.
+  //  - enableEclipse gates only whether consumers apply the active logical
+  //    view's `frameState.eclipseState.sunVisibleFraction`. The eclipse
+  //    geometry is computed unconditionally whenever that view is prepared, so
+  //    tooling can read the physics with the effect switched off. With the
+  //    flag false every consumer multiplies by exactly 1.0.
+  //  - enableEclipseGlobeShadow gates only the per-fragment lunar umbra on the
+  //    globe surface, leaving the sun fade and the observer-anchored scene
+  //    dimming untouched. On the globe it supersedes the uniform dimming: the
+  //    surface dims by G(O_fragment) rather than uniformly by G(O_camera).
+  //  - eclipseAutoExposure selects which transfer function
+  //    `EclipseState.getEclipseSceneLightFactor` applies to the flux fraction.
+  //    Both positions dim; they differ only in the curve.
   //
-  //   true (camera) — the LINEAR radiometric flux fraction is handed to the
-  //     lights instead, and the re-metering is left to the exposure chain,
-  //     which is precisely what a camera does. With
-  //     `scene.highDynamicRange` plus the AutoExposure stage on
-  //     (`PostProcessStageCollection._autoExposureEnabled`, off by default),
-  //     that stage measures the dimmed scene and compensates it, washing the
-  //     darkness out exactly as ruling E2 describes. Without an exposure
-  //     stage it renders the true radiometric plunge — which is what a
-  //     FIXED-exposure camera shows, and is not a degenerate case.
+  //    false (human eye) — the flux fraction is carried through the eye's own
+  //      adaptation exponent (CIE L* / Stevens, ~1/3) before it reaches the
+  //      lights, because with no auto-exposure in the chain nothing else
+  //      performs that adaptation. Totality lands on the ~5-lux twilight floor
+  //      (render factor ~0.0368) and the plunge from 99% obscuration is a ~6x
+  //      collapse, so the darkness is preserved by construction.
   //
-  // C12-19 SEAM: C12-19's AE lanes have not landed, so there is no
-  // eclipse-aware metering window, no AE clamp and no eclipse term in the AE
-  // debounce yet. When they land, this flag is the switch they read: the
-  // false path must stay exempt from (or clamped in) the new AE lanes, and
-  // the true path must feed the eclipse-dimmed luminance into them. The
-  // transfer-function split above is the complete, shipped default path;
-  // everything C12-19 adds attaches to the `true` branch.
-  // C12 sun wave (2026-07-25) — two sun-BAKE toggles, both DEFAULT ON and
-  // implemented on BOTH backends in lockstep (the C11-176/C12 exit-gate
-  // class: never a WebGPU-only default-ON celestial change). Both feed the
-  // bake through `Scene/SunDiscAppearance.js`, which reads the numbers from
-  // `Scene/SolarDiscModel.js` — the single constants source the C12-15 row
-  // required, shared with `computeSolarObscuration.js`.
+  //    true (camera) — the linear radiometric flux fraction is handed to the
+  //      lights and the re-metering is left to the exposure chain, which is
+  //      what a camera does. With `scene.highDynamicRange` and the auto-exposure
+  //      stage on (`PostProcessStageCollection._autoExposureEnabled`, off by
+  //      default), that stage measures the dimmed scene and compensates,
+  //      washing the darkness out. With no exposure stage it renders the true
+  //      radiometric plunge, which is what a fixed-exposure camera shows.
   //
-  //  - enableSolarLimbDarkening (C12-15): the disc's radiance follows the
-  //    quadratic law I(mu) = 0.3 + 0.93*mu - 0.23*mu^2 instead of the
-  //    binary `step()` flat disc. Turning it off passes (1, 0, 0), which is
-  //    the exact flat disc again — an identity, not an approximation.
-  //    HONEST NOTE: at SDR defaults the bake clamps alpha to 1 and the glare
-  //    term alone is ~0.73 over the disc, so limb darkening is arithmetically
-  //    masked until C12-19 removes that clamp (or C12-18 moves the halo to
-  //    the post-process chain). It ships now so C12-19 only has to remove
-  //    clamps, not re-derive the law — and the clamp count is ASYMMETRIC:
-  //    ONE site in `SunTextureFS.glsl` (the final `clamp(color, 0, 1)`) but
-  //    SIX in the WebGPU CPU twin (`WebGPUEnvironmentRenderer.js` — four
-  //    `Math.min(1, Math.max(0, …))` calls in the half-float branch plus two
-  //    `Math.min(255, …)` in the 8-bit branch, and the 8-bit branch cannot
-  //    carry >1 at all, so C12-19 must also force the float format there).
+  // The sun-bake toggles default on, run on both backends, and feed the bake
+  // through `Scene/SunDiscAppearance.js`, which reads its numbers from
+  // `Scene/SolarDiscModel.js` — one constants source, shared with
+  // `computeSolarObscuration.js`:
   //
-  //  - enableSolarGlareFalloff (C12-16): the halo uses a Lorentzian /
-  //    inverse-square veiling-glare profile that decays as 1/theta^2 and
-  //    reaches zero only at the billboard's inscribed circle (11.0 solar
-  //    radii), replacing `1 - smoothstep(0, 0.55, r)` which terminated hard
-  //    at 8.556 solar radii. Turning it off selects the historical
-  //    expression verbatim. Measured delta inside 6 solar radii: at most
-  //    0.098 in profile units (0.074 in alpha) — the table is in
-  //    `SolarDiscModel.solarGlareProfile`'s JSDoc.
+  //  - enableSolarLimbDarkening: the disc's radiance follows the quadratic law
+  //    I(mu) = 0.3 + 0.93*mu - 0.23*mu^2 instead of a binary `step()` flat
+  //    disc. Off passes (1, 0, 0), which is the flat disc exactly, not an
+  //    approximation of it. At SDR defaults the effect is arithmetically
+  //    masked: the bake clamps alpha to 1 and the glare term alone is ~0.73
+  //    over the disc. The clamp count is asymmetric — one site in
+  //    `SunTextureFS.glsl` (the final `clamp(color, 0, 1)`) against six in the
+  //    WebGPU CPU twin `WebGPUEnvironmentRenderer.js`, and that file's 8-bit
+  //    branch cannot carry values above 1 at all, so lifting the clamp there
+  //    also means forcing the float format.
   //
-  // C12-18 (2026-08-07) — two more sun toggles, both DEFAULT ON, both on
-  // BOTH backends, resolved once per frame by `Scene/SunHaloAppearance.js`:
+  //  - enableSolarGlareFalloff: the halo uses a Lorentzian inverse-square
+  //    veiling-glare profile that decays as 1/theta^2 and reaches zero only at
+  //    the billboard's inscribed circle (11.0 solar radii), in place of
+  //    `1 - smoothstep(0, 0.55, r)`, which terminated hard at 8.556 solar
+  //    radii. Off selects that earlier expression verbatim. The delta inside 6
+  //    solar radii is at most 0.098 in profile units (0.074 in alpha);
+  //    `SolarDiscModel.solarGlareProfile`'s JSDoc carries the table.
   //
-  //  - enableTrueSolarDiscSize (C12-18): the baked disc terminates where the
-  //    Sun's TRUE angular radius falls, instead of at 1/sqrt(2) of it. Both
-  //    bakes compared the CORNER-normalised `radius` against a `radiusTS`
-  //    expressed as a fraction of the quad's HALF-EXTENT, so the shipped disc
-  //    subtended 0.3767 deg of diameter instead of 0.5327 deg. Off returns
-  //    the historical `0.5 / (1 + 2*glowLengthTS)` bit-for-bit.
+  // Two more sun toggles default on, run on both backends, and are resolved
+  // once per frame by `Scene/SunHaloAppearance.js`:
   //
-  //  - enableScreenSpaceSunHalo (C12-18, absorbing C11-160): the halo is
-  //    drawn by the post-process chain (`SolarHalo.glsl` inside
-  //    `SunPostProcess` on WebGL, `SunHaloEffect` on WebGPU) instead of being
-  //    baked into the billboard, so its veiling-glare tail decays as
-  //    1/theta^2 without the truncation a finite quad forces. Off keeps the
-  //    baked halo verbatim and adds no post-process stage. EXACTLY ONE halo
-  //    source is live at a time by construction — the bake's gain is DERIVED
-  //    from this toggle, never set beside it. The screen-space halo also
-  //    requires `scene.sunBloom` (default true): with sun bloom off the
-  //    baked halo is kept rather than the Sun silently losing its glow.
-  // C12 moon-phase wave (2026-08-06) — two more toggles, both DEFAULT ON and
-  // implemented on BOTH backends in lockstep, resolved once per frame by
-  // `Scene/MoonPhaseAppearance.js`:
+  //  - enableTrueSolarDiscSize: the baked disc terminates where the Sun's true
+  //    angular radius falls rather than at 1/sqrt(2) of it. Both bakes compare
+  //    a corner-normalised `radius` against a `radiusTS` expressed as a
+  //    fraction of the quad's half-extent, which subtends 0.3767 deg of
+  //    diameter instead of 0.5327 deg. Off returns
+  //    `0.5 / (1 + 2*glowLengthTS)` bit-for-bit.
   //
-  //  - enableEarthshinePhase (C12-21): scales earthshine by Earth's
-  //    illuminated fraction as seen FROM the Moon, which is the exact
-  //    COMPLEMENT of the Moon's phase seen from Earth. Earthshine therefore
-  //    peaks at new moon and is exactly zero at full; the shipped term was a
-  //    constant, i.e. physically backwards. Off passes a scale of exactly
-  //    1.0 — the historical constant, not an approximation of it.
-  //    The same batch also gave earthshine a GLSL implementation for the
-  //    first time (it had been WGSL-only, a standing Principle-5 gap the
-  //    C11-176b row flagged). MAINTAINER RULING 2026-08-06 (R5): with both
-  //    original reasons for the FALSE default removed (WebGPU-only,
-  //    phase-backwards), `enableEarthshine` now defaults ON, making the
-  //    phase-correct term live on BOTH backends at defaults. Apps opt out
-  //    the same way they previously opted in.
+  //  - enableScreenSpaceSunHalo: the halo is drawn by the post-process chain
+  //    (`SolarHalo.glsl` inside `SunPostProcess` on WebGL, `SunHaloEffect` on
+  //    WebGPU) instead of being baked into the billboard, so its veiling-glare
+  //    tail decays as 1/theta^2 without the truncation a finite quad forces.
+  //    Off keeps the baked halo verbatim and adds no post-process stage.
+  //    Exactly one halo source is live at a time by construction: the bake's
+  //    gain is derived from this toggle rather than set beside it. The
+  //    screen-space halo also requires `scene.sunBloom` (default true) — with
+  //    sun bloom off the baked halo is kept, so the Sun does not silently lose
+  //    its glow.
   //
-  //  - enableSoftTerminator (C12-22): the Sun subtends an angular RADIUS of
-  //    ~0.2664 deg (4.649e-3 rad) from the Moon, so the terminator is a
-  //    penumbra, not a step. Replaces `max(N.L, 0)` with the finite-disc
-  //    irradiance inside that band, in the Lommel-Seeliger path only (the
-  //    phong fallbacks run through shared czm builtins on WebGL and stay
-  //    hard-clipped on BOTH backends). Off passes softness exactly 0.0,
-  //    which the shader function returns the legacy clip for.
-  //    HONEST NOTE: physically real but SUB-PIXEL at rendered disc sizes.
-  //    The band spans 2*R*w screen pixels at a face-on terminator: 0.88 px
-  //    at the ~190 px zoomed disc, 0.07 px at the default ~16 px disc. What
-  //    it buys is the removal of a hard binary edge, not a visibly wide
-  //    penumbra — the real Moon's soft-looking terminator is topography
-  //    (C12-25's LOLA relief), not the Sun's angular size.
-  // C12-27 (2026-08-06) — one more toggle, DEFAULT ON, on BOTH backends and in
-  // BOTH star paths (the cube map and the sprite catalogue), resolved once per
-  // frame by `Scene/SolarGlareAppearance.js`:
+  // Two moon-phase toggles default on, run on both backends, and are resolved
+  // once per frame by `Scene/MoonPhaseAppearance.js`:
   //
-  //  - enableAngularSolarGlare (C12-27): washes out stars as a function of
-  //    their ANGULAR SEPARATION FROM THE SUN, using the same
-  //    pedestal-subtracted Lorentzian (`1/theta^2` Stiles-Holladay / CIE
-  //    veiling-glare form) that C12-16 already ships for the sun billboard —
-  //    the one curve lives in `Scene/SolarDiscModel.js`, parameterised over
-  //    bake radius there and over radians here. Replaces the model C11-176
-  //    deleted, which keyed the dim to the SUN'S ELEVATION and therefore dimmed
-  //    the whole sky uniformly (including stars 180 deg away) and did nothing
-  //    at all in orbit. Off passes strength exactly 0.0, which every shader
-  //    reads as "skip the block" — byte-identical, not approximately so.
-  //    DELIBERATELY NOT gated by the 111 km atmospheric-column factor that
-  //    makes the C12-29 S6 star modulation inert in orbit: sky glow needs a
-  //    column, veiling glare needs an observer, and orbit is exactly the case
-  //    this row was reported from.
-  //    HONEST NOTE: measurable only near the Sun, by construction. At the
-  //    shipped constants a star loses 3.2% of its radiance at 30 deg
-  //    separation, 6.6% at 20 deg, 22.8% at 10 deg, 49.8% at 5.477 deg
-  //    (the half-amplitude angle) and 96.8% at 1 deg; at and beyond 90 deg the
-  //    multiplier is exactly 1.0.
+  //  - enableEarthshinePhase: scales earthshine by Earth's illuminated
+  //    fraction as seen from the Moon, which is the exact complement of the
+  //    Moon's phase seen from Earth. Earthshine therefore peaks at new moon
+  //    and is exactly zero at full, where a constant term would be backwards.
+  //    Off passes a scale of exactly 1.0, which is that constant.
+  //  - enableSoftTerminator: the Sun subtends an angular radius of ~0.2664 deg
+  //    (4.649e-3 rad) from the Moon, so the terminator is a penumbra rather
+  //    than a step. Replaces `max(N.L, 0)` with the finite-disc irradiance
+  //    inside that band, in the Lommel-Seeliger path only; the phong fallbacks
+  //    run through shared czm builtins on WebGL and stay hard-clipped on both
+  //    backends. Off passes a softness of exactly 0.0, for which the shader
+  //    function returns the hard clip. The band is physically real but
+  //    sub-pixel at rendered disc sizes: it spans 2*R*w screen pixels at a
+  //    face-on terminator, so 0.88 px at a ~190 px zoomed disc and 0.07 px at
+  //    the default ~16 px disc. It removes a hard binary edge rather than
+  //    producing a visibly wide penumbra — the real Moon's soft-looking
+  //    terminator is topography, carried by the lunar normal map, not the
+  //    Sun's angular size.
+  //
+  // enableAngularSolarGlare defaults on, runs on both backends and in both
+  // star paths (the cube map and the sprite catalogue), and is resolved once
+  // per frame by `Scene/SolarGlareAppearance.js`. It washes stars out as a
+  // function of their angular separation from the Sun, using the same
+  // pedestal-subtracted Lorentzian (the 1/theta^2 Stiles-Holladay / CIE
+  // veiling-glare form) that the sun billboard uses: one curve in
+  // `Scene/SolarDiscModel.js`, parameterised over bake radius there and over
+  // radians here. Keying the dim to the Sun's elevation instead would dim the
+  // whole sky uniformly, including stars 180 deg away, and would do nothing at
+  // all in orbit. Off passes a strength of exactly 0.0, which every shader
+  // reads as a signal to skip the block. It is not gated by the 111 km
+  // atmospheric-column factor that makes the eclipse star modulation inert in
+  // orbit: sky glow needs a column, veiling glare needs only an observer, and
+  // orbit is the case this exists for. The effect is measurable
+  // only near the Sun — at the shipped constants a star loses 3.2% of its
+  // radiance at 30 deg separation, 6.6% at 20 deg, 22.8% at 10 deg, 49.8% at
+  // 5.477 deg (the half-amplitude angle) and 96.8% at 1 deg, and at or beyond
+  // 90 deg the multiplier is exactly 1.0.
   const leaf = {
     enableSunLight: true,
     enableMoonLight: true,
@@ -544,16 +505,15 @@ function buildLighting(globe) {
     enableTrueSolarDiscSize: true,
     enableScreenSpaceSunHalo: true,
     enableAngularSolarGlare: true,
-    // C12-29 S6 — the 360-degree horizon twilight. Inside the umbra the
-    // observer is surrounded by penumbra: the umbral ground track is only
-    // 100-160 km wide, so in EVERY azimuth the still-sunlit atmosphere begins
+    // The 360-degree horizon twilight of totality. An observer inside the
+    // umbra is surrounded by penumbra: the umbral ground track is only
+    // 100-160 km wide, so in every azimuth the still-sunlit atmosphere begins
     // ~50-80 km away and its scattered light arrives as a sunset-coloured band
-    // hugging the horizon. It is the most recognisable totality cue after the
-    // corona. Default ON per ruling E1's precedent (eclipse-driven effects are
-    // "the actual simulation that needs to be there"); the geometry is still
-    // computed with it off so tooling can read the physics, and the strength is
-    // exactly 0 in every frame that is not a near-total eclipse, so the off
-    // position is byte-identical rather than merely close.
+    // hugging the horizon — the most recognisable totality cue after the
+    // corona. The geometry is computed with the flag off as well, so tooling
+    // can read the physics either way, and the strength is exactly 0 in every
+    // frame that is not a near-total eclipse, which makes the off position an
+    // identity rather than merely close to one.
     enableEclipseHorizonTwilight: true,
   };
   Object.defineProperties(leaf, {
@@ -598,70 +558,35 @@ function buildLighting(globe) {
 }
 
 function buildSkyAtmosphere(scene) {
-  // New Phase 1 state: star modulation curve parameters (plain container).
-  // Phase 1.3b adds `enableStarBrightnessModulation`, which gates the cubemap
-  // panorama shader's smoothstep dim. The curve parameters use B4-locked
-  // defaults — apps that want a sharper twilight transition (clearer dark-sky
-  // preset) override `inflection` and `steepness` directly.
-  //
-  // C11-176 (2026-07-19) — DEFAULT FLIPPED TO FALSE FOR WEBGL PARITY.
-  // This shipped `true`, which silently contradicted the consuming renderer:
-  // `WebGPUCubeMapPanoramaRenderer.js:539-548` documents the flag as "Default
-  // OFF for WebGL parity" and gates on `=== true` as a fail-safe against an
-  // ABSENT property — shipping it present-and-true defeated that fail-safe.
-  // WebGL's `SkyBoxFS.glsl` is nine lines and applies NO such term, so this was
-  // a pure unmatched WebGPU divergence: star colour was multiplied by
+  // `enableStarBrightnessModulation` gates the twilight dim applied to the
+  // star field, multiplying star colour by
   //   factor = 1 - smoothstep(0, 1, clamp((skyBrightness - inflection) * steepness, 0, 1))
-  // which at skyBrightness = 1.0 (sun >= ~23.6 deg above the camera's local
-  // horizon — i.e. most of the sunlit hemisphere for an orbital camera) equals
-  // exactly 0.5, halving the star map.
+  // Both backends apply it on the default path: the cube-map panorama shader
+  // on WebGPU and `SkyBoxFS.glsl` on WebGL, the latter fed by
+  // `u_starModulation` and `u_skyBrightness` from `CubeMapPanorama.js`.
   //
-  // MEASURED (probe-skybox-star-modulation, camera placed along the sun
-  // direction so skyBrightness = 1.0): WebGPU/WebGL mean luminance 0.493,
-  // contrast (stddev) 0.552, and visible star pixels 21.06% -> 4.01% — five
-  // times fewer stars. Forcing this flag false at runtime restored 1.001 /
-  // 1.009 / 1.000 respectively, which is what proved causation.
+  // The curve only dims where there is an atmosphere to glow.
+  // `SkyBrightness.computeSkyBrightness` multiplies by
+  // `computeAtmosphericColumnFactor`, which is 0 above the engine's 111 km
+  // scattering shell, so an orbital camera on the day side gets a factor of
+  // exactly 1.0 and keeps its full star map even with the Sun in frame.
   //
-  // The capability is NOT removed — only its default. Setting it back to true
-  // re-enables the dim exactly as before (the probe's A/B relies on that).
-  //
-  // C12-29 S6 / ruling E3 (2026-07-25) — DEFAULT FLIPPED BACK TO TRUE, and the
-  // two things that made the C11-176 default WRONG are fixed rather than
-  // worked around:
-  //
-  //   (a) NO WEBGL CONSUMER. C11-176's stated reason was "WebGL's SkyBoxFS.glsl
-  //       is nine lines and applies NO such term, so this was a pure unmatched
-  //       WebGPU divergence" — correct at the time. `SkyBoxFS.glsl` now carries
-  //       the identical expression, fed by `u_starModulation` /
-  //       `u_skyBrightness` from `CubeMapPanorama.js`, so the flag is a
-  //       both-backend default-path multiplier and satisfies C12 exit-gate
-  //       item 2.
-  //   (b) THE CURVE ZEROED ORBITAL STARS. The measured C11-176 failure was at
-  //       `skyBrightness = 1.0` for a camera "along the sun direction" — an
-  //       ORBITAL camera on the day side, where the sky is genuinely black and
-  //       the stars are genuinely there. `SkyBrightness.computeSkyBrightness`
-  //       now multiplies by `computeAtmosphericColumnFactor`, which is 0 above
-  //       the engine's own 111 km scattering shell, so that camera gets factor
-  //       1.0 and is byte-identical to today.
-  //
-  // The curve defaults move from the C11-176 pair {0.5, 1.0} (which merely
-  // HALVED the star map at full daylight — neither a correct day sky nor a
-  // usable totality reveal) to the derived pair below. The derivation, the
-  // rural-sky "countryside" anchor and the measured off-anchor consequences
-  // live with the constants in `StarFieldMath.ts`; do not edit one without the
-  // other (`eclipse-sky-totality.spec.mjs` pins that they agree).
+  // The derivation of the two curve constants, the rural-sky anchor they are
+  // fitted to, and the measured consequences of moving off that anchor live
+  // beside the constants in `StarFieldMath.ts`; the two must not be edited
+  // independently, and `eclipse-sky-totality.spec.mjs` pins that they agree.
+  // Apps that want a sharper twilight transition override `inflection` and
+  // `steepness` directly.
   const leaf = {
     starModulationCurve: {
       inflection: STAR_MODULATION_INFLECTION,
       steepness: STAR_MODULATION_STEEPNESS,
     },
     enableStarBrightnessModulation: true,
-    // NOTE: reserved, currently UNWIRED — this is the only reference to
-    // `enableNightSkyDimming` in packages/engine/Source. It was intended for
-    // night-sky dimming in the sky-atmosphere shader (see Scene.js:5760-5762
-    // "and (later) by night-sky dimming") but no consumer was ever added.
-    // Left in place per the scaffolding rule rather than deleted; do not
-    // assume it does anything until a reader exists.
+    // Reserved and currently unwired: this is the only reference to
+    // `enableNightSkyDimming` under `packages/engine/Source`. It is intended
+    // for a night-side dim in the sky-atmosphere shader, but no consumer reads
+    // it, so setting it has no effect until one exists.
     enableNightSkyDimming: true,
   };
   Object.defineProperties(leaf, {
@@ -746,7 +671,8 @@ function buildSkyAtmosphere(scene) {
 }
 
 function buildGroundAtmosphere(globe) {
-  // New Phase 1 state: per-fragment ground atmosphere flag.
+  // The per-fragment ground-atmosphere flag has no backing store on `Globe`
+  // and is held here.
   const leaf = {
     perFragment: false,
   };
@@ -977,28 +903,26 @@ function buildFog(scene) {
 }
 
 function buildVolumetricFog() {
-  // Phase 5a — froxel-grid participating media renderer.
-  // Defaults from the design doc §4.8 + B-series locks. Off by default
-  // (B18) so users see no perf regression. The full set:
+  // Configuration for the froxel-grid participating-media renderer. The master
+  // toggle is off by default so no scene pays for the grid unless it asks:
   //
-  //   enabled                — master toggle (B18: default FALSE)
-  //   quality                — "low" | "medium" | "high" | "auto"
-  //                            (B7/B17: auto picks via VPT init benchmark)
-  //   maxDistance            — far plane of the froxel grid (m). Past
-  //                            this, the existing Nishita atmosphere
-  //                            takes over smoothly.
+  //   enabled                — master toggle
+  //   quality                — "low" | "medium" | "high" | "auto";
+  //                            "auto" picks from a volumetric-path-tracing
+  //                            benchmark run at renderer init
+  //   maxDistance            — far plane of the froxel grid (m). Past this the
+  //                            Nishita atmosphere takes over smoothly.
   //   density                — base fog density multiplier
-  //   falloff                — exponential height falloff coefficient
-  //                            (1/m); larger = thinner air
-  //   fogAnisotropy          — Henyey-Greenstein g parameter (-1..1).
-  //                            +0.3 = mild forward scattering (water
-  //                            droplets); 0 = isotropic.
-  //   fogAlbedo              — vec3 single-scatter albedo. Slightly
-  //                            blue-tinted by default to suggest moist
-  //                            air.
-  //   enableScatteringOcclusion — independently toggleable shadow-aware
-  //                            in-scattering (B20: default FALSE).
-  //                            Silent no-op when enabled is false (B9).
+  //   falloff                — exponential height falloff coefficient (1/m);
+  //                            larger means thinner air
+  //   fogAnisotropy          — Henyey-Greenstein g parameter (-1..1). +0.3 is
+  //                            mild forward scattering, as for water droplets;
+  //                            0 is isotropic.
+  //   fogAlbedo              — vec3 single-scatter albedo, tinted slightly
+  //                            blue to suggest moist air
+  //   enableScatteringOcclusion — shadow-aware in-scattering, toggled
+  //                            independently; a silent no-op while `enabled`
+  //                            is false
   return {
     enabled: false,
     quality: "auto",
@@ -1008,77 +932,69 @@ function buildVolumetricFog() {
     fogAnisotropy: 0.3,
     fogAlbedo: { r: 0.9, g: 0.92, b: 0.95 },
     enableScatteringOcclusion: false,
-    // Phase 5c — constant ambient term for the scattering kernel.
-    // Soft fill light that prevents shadow volumes from going hard
-    // black. Phase 5e (future) can replace this constant with a
-    // proper sample of the SkyAtmosphere inscatter LUT at
-    // `(altitude, up direction)` for physically motivated ambient.
+    // Constant ambient term for the scattering kernel: a soft fill light that
+    // keeps shadow volumes from going hard black.
     ambientStrength: 0.05,
-    // Batch 431 (FOG-IBL-AMBIENT, improvement-plan 2.4) — opt-in
-    // sky-LUT / IBL-driven fog ambient. When TRUE, the scattering
-    // kernel replaces the flat-constant `ambientStrength` ambient with
-    // an altitude- + time-of-day-correct ambient: a sample of the
-    // Bruneton TRANSMITTANCE LUT at `(froxel altitude, view-up)` tinted
-    // by the atmosphere-derived SH-L2 irradiance probe
-    // (`environmentMapManager._webgpuSHBuffer`). Result: at sunset the
-    // fog picks up warm sky color low + cool zenith ambient instead of
-    // a flat grey. DEFAULT FALSE keeps the existing constant ambient
-    // byte-identical (B18-style opt-in; no perf/visual regression).
+    // Opt-in sky-LUT ambient. When true, the scattering kernel replaces the
+    // flat `ambientStrength` constant with an altitude- and
+    // time-of-day-correct term: a sample of the Bruneton transmittance LUT at
+    // `(froxel altitude, view-up)`, tinted by the atmosphere-derived SH-L2
+    // irradiance probe in `environmentMapManager._webgpuSHBuffer`. At sunset
+    // the fog then picks up warm sky colour low down and cool zenith ambient
+    // above, instead of a flat grey. False leaves the constant ambient
+    // untouched.
     iblAmbient: false,
-    // Batch 435 (FOG-TEMPORAL, improvement-plan 3.5) — opt-in temporal
-    // reprojection + blue-noise jitter for the froxel integrate pass. When
-    // TRUE, the integrate pass jitters each ray's slice-depth phase by blue
-    // noise per frame, reprojects the PREVIOUS frame's integrated 3D
-    // scattering volume via `previousViewProjection`, and exponentially
+    // Opt-in temporal reprojection and blue-noise jitter for the froxel
+    // integrate pass. When true, the pass jitters each ray's slice-depth phase
+    // by blue noise per frame, reprojects the previous frame's integrated 3D
+    // scattering volume through `previousViewProjection`, and exponentially
     // blends (alpha ~0.05) the current march with the neighborhood-clamped
-    // reprojected history. This amortizes the volume integration across
-    // frames — each frame only needs a fraction of the samples — so the
-    // grazing-ray march cap (Batch 421) is lifted on the temporal path
-    // (the jitter + accumulation reconstruct the full march over N frames).
-    // The history is a DOUBLE-BUFFERED (ping-pong) 3D froxel texture pair,
-    // allocated ONLY when this flag is set; DEFAULT FALSE skips the
-    // reprojection + history blend entirely and leaves the integrate pass
-    // BYTE-IDENTICAL to pre-Batch-435 (the placeholder 1×1 history keeps the
-    // bind-group layout from forking). Fast camera motion is handled by a
-    // neighborhood clamp + disocclusion reject so the volume doesn't ghost.
-    temporal: false,
-    // Batch 440 (FOG-MS, improvement-plan 4.3) — opt-in MULTIPLE-SCATTERING
-    // octaves in the light-scattering (in-scatter source) pass. When TRUE (and
-    // `msOctaves` > 1), the scattering kernel sums Frostbite-style multi-octave
-    // in-scatter on top of the existing energy-conserving SINGLE-scatter term:
-    // each octave scales the contribution, the directional-occlusion bleed, and
-    // the Henyey-Greenstein phase eccentricity by geometric factors (a/b/c ~
-    // 0.5), summed and NORMALIZED by the contribution total — mirroring the
-    // procedural cloud renderer's `multiScatterLight`. A dense valley mist then
-    // reads as a LIT VOLUME (the sun light bleeds deeper into the dense core)
-    // instead of a flat dark mass — without blowing out (the normalization caps
-    // a thin layer at the single-scatter value, so it CANNOT over-brighten).
-    // DEFAULT FALSE keeps the existing single-scatter term byte-identical: at
-    // `msOctaves` 1 the octave loop's single iteration with a/b/c scale = 1 IS
-    // the current single-scatter, and the kernel simply skips the loop when
-    // `msOctaves` <= 1 — so the OFF default is byte-identical to pre-Batch-440.
-    multiScatter: false,
-    // Number of multiple-scattering octaves (Frostbite). Clamped to [1, 8] by
-    // the renderer. 1 == single-scatter (parity). 2-3 give the lit-volume look
-    // for thick mist; beyond ~4 the geometric decay makes added octaves
-    // negligible. Only consumed when `multiScatter` is TRUE.
-    msOctaves: 1,
-    // NEW-WEBGPU-BASE-HEIGHT-FOG-INSCRIBED-SPHERE-DATUM (Batch 845) — opt-in
-    // correction of the BASE height fog's altitude datum. The froxel altitude
-    // is measured from the ellipsoid's INSCRIBED SPHERE (the polar radius), so
-    // sea level sits 21,385 m above that frame at the equator and 0 m at a
-    // pole. `density * exp(-altitude * falloff)` therefore scales the SAME
-    // configured fog by 0.118x at the equator and 1.0x at a pole (default
-    // falloff 1e-4) — an 8.5x latitude-dependent error that has been present
-    // since the froxel fog landed. When TRUE the density pass measures the base
-    // fog from the ellipsoid surface along the camera's radial instead, so
-    // `falloff` means what it says at every latitude.
+    // reprojected history. Amortizing the integration this way means each
+    // frame needs only a fraction of the samples, which is what allows the
+    // grazing-ray march cap to be lifted on the temporal path: the jitter and
+    // accumulation reconstruct the full march over several frames. Fast camera
+    // motion is handled by a neighborhood clamp and a disocclusion reject so
+    // the volume does not ghost.
     //
-    // DEFAULT FALSE, and deliberately so: this is a visible density change on
-    // the master-on path, and every scene tuned against the current behaviour
-    // would shift (denser everywhere but the poles). The OFF path packs a 0.0
-    // datum and the shader's subtraction is bit-exact, so the default frame is
-    // byte-identical. WebGPU only.
+    // The history is a ping-pong pair of 3D froxel textures, allocated only
+    // while this flag is set; when it is false a placeholder 1x1 history keeps
+    // the bind-group layout from forking and the integrate pass skips the
+    // reprojection and blend entirely.
+    temporal: false,
+    // Opt-in multiple-scattering octaves in the light-scattering (in-scatter
+    // source) pass. When true and `msOctaves` is above 1, the kernel sums
+    // Frostbite-style multi-octave in-scatter on top of the energy-conserving
+    // single-scatter term: each octave scales the contribution, the
+    // directional-occlusion bleed and the Henyey-Greenstein phase eccentricity
+    // by geometric factors near 0.5, and the sum is normalized by the
+    // contribution total, mirroring the procedural cloud renderer's
+    // `multiScatterLight`. Dense valley mist then reads as a lit volume,
+    // because sunlight bleeds deeper into the core, without blowing out — the
+    // normalization caps a thin layer at the single-scatter value, so it
+    // cannot over-brighten. At `msOctaves` 1 the loop's single iteration with
+    // scale 1 is exactly the single-scatter term, and the kernel skips the
+    // loop altogether for `msOctaves` <= 1.
+    multiScatter: false,
+    // Number of multiple-scattering octaves, clamped to [1, 8] by the
+    // renderer. 1 is single-scatter; 2-3 give the lit-volume look for thick
+    // mist; beyond about 4 the geometric decay makes further octaves
+    // negligible. Read only while `multiScatter` is true.
+    msOctaves: 1,
+    // Opt-in correction of the base height fog's altitude datum, on WebGPU.
+    // Froxel altitude is measured from the ellipsoid's inscribed sphere — the
+    // polar radius — so sea level sits 21,385 m above that frame at the
+    // equator and 0 m at a pole. `density * exp(-altitude * falloff)`
+    // therefore scales the same configured fog by 0.118x at the equator and
+    // 1.0x at a pole at the default falloff of 1e-4, an 8.5x
+    // latitude-dependent difference. When true, the density pass measures the
+    // base fog from the ellipsoid surface along the camera's radial instead,
+    // so `falloff` means the same thing at every latitude.
+    //
+    // It defaults false because turning it on is a visible density change on
+    // the master-on path: every scene tuned against the inscribed-sphere datum
+    // shifts denser everywhere but the poles. The false path packs a datum of
+    // 0.0 and the shader's subtraction is bit-exact, so the default frame is
+    // unchanged.
     surfaceRelativeAltitude: false,
   };
 }
@@ -1092,27 +1008,22 @@ function buildVaryingAtmosphereDensity() {
 }
 
 function buildClouds(globe) {
-  // Phase 1 + Phase 6 state. The Cesium WebGPU fork ships a single
-  // Schneider-style volumetric raymarched cloud renderer
-  // (`WebGPUProceduralCloudRenderer`) — the legacy "procedural" name is
-  // historical; the kernel HAS been volumetric (HG dual-lobe + Beer-
-  // Powder lighting + 3D FBM density field + light-ray marching) since
-  // it landed. The `enableProcedural` and `enableVolumetric` toggles
-  // therefore both route to the same underlying master gate — they are
-  // aliases, not separate render paths. Future Phase 6b work may introduce
-  // a fast 2D fallback at high altitude (≥`volumetricDisableAltitude`); the
-  // existing hysteresis range fields stay so that work is non-breaking.
+  // There is one cloud renderer, `WebGPUProceduralCloudRenderer`: a
+  // Schneider-style volumetric raymarcher with a Henyey-Greenstein dual lobe,
+  // Beer-Powder lighting, a 3D FBM density field and light-ray marching.
+  // `enableProcedural` and `enableVolumetric` are therefore aliases onto one
+  // master gate, not two render paths. The `volumetricEnableAltitude` and
+  // `volumetricDisableAltitude` hysteresis range is what the `auto` quality
+  // preset interpolates over, and is also the range a future high-altitude 2D
+  // fallback would key off.
   //
-  // Cloud-unification epic slice 4A — these proxies RE-HOME off the historical
-  // `globe.cloud*` / `globe.showProceduralClouds` fields onto the Scene/Globe
-  // managed default {@link CloudCollection} (`globe.defaultCloudCollection`).
-  // The master `enable*` aliases flip that collection's exclusive
-  // `renderMode` (BILLBOARD⇄VOLUMETRIC) + `volumetric.enabled`; every dial
-  // proxies to the collection's `.volumetric` {@link CloudVolumetrics} (whose
-  // defaults are byte-equal to the old `globe.cloud*` defaults). The env-effects
-  // phase reads the collection as the volumetric-deck source of truth, so
-  // driving these facade fields turns the WebGPU deck on/off exactly as before —
-  // now through the collection. WebGPU only (documented no-op on WebGL).
+  // Every property here proxies to the Scene- and Globe-managed default
+  // {@link CloudCollection} at `globe.defaultCloudCollection`, which is the
+  // source of truth for the volumetric deck. The master aliases flip that
+  // collection's exclusive `renderMode` between `BILLBOARD` and `VOLUMETRIC`
+  // together with `volumetric.enabled`; every dial proxies to the collection's
+  // `.volumetric` {@link CloudVolumetrics}. WebGPU only — a documented no-op
+  // on WebGL.
   const leaf = {
     volumetricEnableAltitude: 50000,
     volumetricDisableAltitude: 100000,
@@ -1135,10 +1046,7 @@ function buildClouds(globe) {
           : CloudRenderMode.BILLBOARD;
       },
     },
-    // Session 65 Batch 43 (Phase 6 wiring) — alias to the same
-    // underlying master gate. Pre-Batch-43 this was a plain field
-    // that did nothing; now flipping it from JS turns the actual
-    // renderer on/off and reading it reflects current state.
+    // Alias for `enableProcedural`: both read and write the same master gate.
     enableVolumetric: {
       enumerable: true,
       get: function () {
@@ -1201,31 +1109,26 @@ function buildClouds(globe) {
         globe.defaultCloudCollection.volumetric.cloudQuality = v;
       },
     },
-    // Session 65 Batch 45 — Phase 6d quality dial. Higher-level than
-    // `clouds.quality` (a raw `maxSteps` numeric): accepts the four
-    // string presets `"low" | "medium" | "high" | "auto"` that the
-    // celestial-atmosphere design specs in §6 Phase 6d.
+    // Quality dial one level above `clouds.quality`, which is a raw `maxSteps`
+    // number. Accepts four string presets:
     //
-    //   low    — maxSteps 24,  lightSteps 3 (mobile / low-power)
-    //   medium — maxSteps 48,  lightSteps 4 (default desktop)
-    //   high   — maxSteps 96,  lightSteps 8 (power-user / cinematic)
-    //   auto   — pick by camera altitude, mirroring the Phase 6b
-    //            crossfade design. Below `volumetricEnableAltitude`
-    //            (default 50 km) use high; above
-    //            `volumetricDisableAltitude` (default 100 km) use low;
-    //            linear blend in between. The existing
-    //            volumetricEnable/DisableAltitude leaf-fields already
-    //            on this same object are reused so users can tune the
-    //            crossfade without changing the resolution.
+    //   low    — maxSteps 24, lightSteps 3 (mobile and low-power)
+    //   medium — maxSteps 48, lightSteps 4 (desktop default)
+    //   high   — maxSteps 96, lightSteps 8 (cinematic)
+    //   auto   — chosen by camera altitude: high below
+    //            `volumetricEnableAltitude` (default 50 km), low above
+    //            `volumetricDisableAltitude` (default 100 km), linearly
+    //            blended in between. Reusing those two leaf fields lets a
+    //            caller tune the crossfade without also changing the
+    //            resolution.
     //
-    // When the renderer can't resolve a preset (string is neither one
-    // of the four, e.g. user typed "ultra") it falls back to "auto" so
-    // typos degrade gracefully instead of breaking the render.
+    // A string that is none of the four resolves to "auto", so a typo degrades
+    // instead of breaking the render.
     //
-    // The raw `clouds.quality` field is preserved as an escape hatch
-    // — when set to a non-default value (≠ 64) the renderer uses it
-    // verbatim and ignores `volumetricQuality`. This lets power users
-    // hand-tune `maxSteps` without fighting the preset enum.
+    // `clouds.quality` remains an escape hatch: set to anything other than its
+    // default of 64, the renderer uses it verbatim and ignores
+    // `volumetricQuality`, which allows `maxSteps` to be hand-tuned outside the
+    // preset set.
     volumetricQuality: {
       enumerable: true,
       get: function () {
@@ -1235,10 +1138,9 @@ function buildClouds(globe) {
         globe.defaultCloudCollection.volumetric.cloudVolumetricQuality = v;
       },
     },
-    // ── Live appearance dials (weather-configurability surface) ──
-    // Each proxies to the managed collection's `.volumetric` config; setting it
-    // re-packs next frame (no rebuild). `undefined` means "use the renderer's
-    // built-in default".
+    // Live appearance dials. Each proxies to the managed collection's
+    // `.volumetric` config and re-packs on the next frame without a rebuild.
+    // `undefined` selects the renderer's built-in default.
     aerialStrength: {
       enumerable: true,
       get: function () {
@@ -1348,8 +1250,8 @@ function buildClouds(globe) {
         globe.defaultCloudCollection.volumetric.cloudMsDecayPhase = v;
       },
     },
-    // Collection-level WMO genus (not a `.volumetric` dial — the volumetric
-    // deck reads the collection's own `cloudType`). Re-homed off `globe.cloudType`.
+    // Collection-level WMO genus rather than a `.volumetric` dial: the
+    // volumetric deck reads the collection's own `cloudType`.
     cloudType: {
       enumerable: true,
       get: function () {
@@ -1359,9 +1261,9 @@ function buildClouds(globe) {
         globe.defaultCloudCollection.cloudType = v;
       },
     },
-    // Weather-map / provider ingest surface (cloud-unification slice 4A). These
-    // re-home the weather ingest onto the collection's `.volumetric` so a data
-    // provider attached here drives the volumetric deck through the collection.
+    // Weather-map and provider ingest surface. Both proxy to the collection's
+    // `.volumetric`, so a data provider attached here drives the volumetric
+    // deck through the collection.
     weatherMap: {
       enumerable: true,
       get: function () {
@@ -1385,22 +1287,22 @@ function buildClouds(globe) {
 }
 
 function buildWeather(scene, globe) {
-  // Phase 1.4 — plain weather state scalars consumed by the sky/fog/star
-  // shaders. Defaults match a "clear, average atmosphere" so the change
-  // is invisible until an app starts setting them.
-  //   humidity   — 0=dry desert, 1=tropical jungle. Default 0.5 = no change
-  //                because the consumers map (0.5 + humidity) to a
-  //                multiplier (0.5..1.5×) and 0.5+0.5 = 1.0.
-  //   airQuality — 1=clean, <1=dust/haze, >1=very clean. Default 1.0.
-  //   temperature — air temperature, °C. Default 15 (mild). Feeds the Phase-A
-  //                atmospheric-effects mapper (cold-dry = crisp; warm-moist =
-  //                hazy) via {@link AtmosphericEffects}.
-  //   dewpoint    — dew point, °C. Default 5. The temperature−dewpoint spread
-  //                drives fog/mist formation in the mapper.
-  //   cloudCover — 0..1, fraction of sky covered by clouds. Delegates to
-  //                `globe.cloudCoverage` so the procedural cloud renderer
-  //                and the star occlusion path stay in sync (single
-  //                source of truth).
+  // Plain weather scalars consumed by the sky, fog and star shaders. The
+  // defaults describe a clear, average atmosphere, so they have no visible
+  // effect until an app sets them.
+  //   humidity    — 0 is dry desert, 1 is tropical jungle. The default of 0.5
+  //                 is the neutral point: consumers map (0.5 + humidity) to a
+  //                 multiplier over 0.5..1.5, and 0.5 + 0.5 is 1.0.
+  //   airQuality  — 1 is clean, below 1 is dust or haze, above 1 is very
+  //                 clean.
+  //   temperature — air temperature in °C. Feeds the atmospheric-effects
+  //                 mapper {@link AtmosphericEffects}, where cold and dry maps
+  //                 to crisp and warm and moist maps to hazy.
+  //   dewpoint    — dew point in °C. The temperature minus dew-point spread is
+  //                 what drives fog and mist formation in that mapper.
+  //   cloudCover  — 0..1, the fraction of sky covered by cloud. Delegates to
+  //                 the managed cloud collection so the volumetric renderer
+  //                 and the star-occlusion path read one value.
   const leaf = {
     humidity: 0.5,
     airQuality: 1.0,
@@ -1444,8 +1346,8 @@ function buildWeather(scene, globe) {
         scene.weatherIntensity = v;
       },
     },
-    // Unified wind: setters fan out to Globe cloud wind fields as well, so
-    // there is a single wind source of truth from the user's perspective.
+    // Unified wind: the setters fan out to the cloud wind fields as well, so a
+    // caller has one place to set wind rather than two that can disagree.
     windSpeed: {
       enumerable: true,
       get: function () {
@@ -1471,28 +1373,28 @@ function buildWeather(scene, globe) {
 }
 
 function buildEffects() {
-  // Phase B+ — the unified conditions→effects hierarchy. `auto` is the master
-  // switch: when true, applyAtmosphericConditions() derives each effect's
-  // enabled + intensity from the weather conditions; when false the effects are
-  // whatever the app set them to. Default auto=false + all effects off → the
-  // facade is byte-neutral until a user opts in (Principle: no surprise change).
+  // The conditions-to-effects hierarchy. `auto` is the master switch: when
+  // true, applyAtmosphericConditions() derives each effect's enabled flag and
+  // intensity from the weather conditions; when false the effects hold
+  // whatever the app set them to. With `auto` false and every effect off, the
+  // facade changes nothing until a caller opts in.
   //
-  //   shimmer       — heat-haze screen-space UV warp (Phase B, SHIPPED). Gated
-  //                   on high temperature.
-  //   groundFog     — low-altitude mist (Phase C scaffold). Gated on a small
-  //                   temperature−dewpoint spread (near-surface saturation).
-  //   optics        — cold-air ice-crystal sky overlay: 22° halo / sun-dogs /
-  //                   pillars (Phase D scaffold). Gated on sub-freezing temps.
-  //   precipitation — rain/snow/hail particles (Phase E scaffold). Driven by
-  //                   weather.type / weather.intensity. PRECIP-DATA (Batch 444)
-  //                   adds the opt-in `dataDriven` flag: when true AND a
-  //                   `globe.weatherProvider` reporting present-weather is
-  //                   attached, applyAtmosphericConditions() overrides the precip
-  //                   type/intensity from the ingest field's WMO `ww` code (and
-  //                   scales density by visibility). `snowAccumulation` (also
-  //                   opt-in) time-integrates a ground `snowCover` scalar (0..1)
-  //                   that ramps under snow + melts otherwise. Both default
-  //                   FALSE so the precip path is byte-identical until opted in.
+  //   shimmer       — heat-haze screen-space UV warp, gated on high
+  //                   temperature.
+  //   groundFog     — low-altitude mist, gated on a small temperature minus
+  //                   dew-point spread, which is near-surface saturation.
+  //   optics        — cold-air ice-crystal sky overlay: 22° halo, sun-dogs and
+  //                   pillars, gated on sub-freezing temperatures.
+  //   precipitation — rain, snow and hail particles, driven by `weather.type`
+  //                   and `weather.intensity`.
+  //
+  // Two precipitation sub-flags are opt-in and default false, so the precip
+  // path is unchanged until one is set. With `dataDriven` true and a
+  // `globe.weatherProvider` that reports present weather attached,
+  // applyAtmosphericConditions() overrides the precipitation type and
+  // intensity from the ingest field's WMO `ww` code and scales density by
+  // visibility. `snowAccumulation` time-integrates a ground `snowCover` scalar
+  // over 0..1 that ramps under snow and melts otherwise.
   return {
     auto: false,
     shimmer: { enabled: false, intensity: 0.6 },

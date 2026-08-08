@@ -857,6 +857,8 @@ defect that no existing gate could have seen.
   Track-D row in `CELESTIAL_LIGHT_TRANSPORT_PLAN_2026-08-07.md` §9, to be
   ruled at that epic's launch BEFORE its twilight probes bake their bands.
 
+- **`SKYATMOSPHERE-NIGHT-SKY-DIMMING-UNWIRED` — `skyAtmosphere.enableNightSkyDimming` has no consumer (confirmed 2026-08-08, C16-03 comment audit).** The option exists on the public surface but nothing under `packages/engine/Source` reads it — grep-confirmed during the cloud comment rewrite. Left in place per the dead-code rule (it is API scaffolding, and removal would be a breaking surface change); its comment now states current behaviour plainly. Next step: either wire it to the twilight sky-brightness ladder (natural consumer) or deprecate it explicitly — a maintainer call. **Effort: S.**
+
 - **`G4-DISC-RADIANCE-EXCESS-UNEXPLAINED` — the rendered flat disc recovers
   +30–36% above the frame's resolved `discRadiance` (filed 2026-08-08, at the
   limb-shape criterion fix).** Offline inversion of the G4 capture PNGs

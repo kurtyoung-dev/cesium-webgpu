@@ -2,14 +2,13 @@
 /**
  * WebGPU Procedural Cloud Renderer
  *
- * Renders volumetric clouds as a full-screen pass using ray marching.
- * Activated by a VOLUMETRIC {@link CloudCollection} (the Scene/Globe managed
- * `globe.defaultCloudCollection`, or a user collection) — cloud-unification epic
- * slice 4B removed the legacy `globe.showProceduralClouds` / `globe.cloud*` API.
+ * Renders volumetric clouds as a full-screen pass using ray marching. Activated
+ * by a {@link CloudCollection} whose render mode is volumetric — either the
+ * Scene/Globe-managed `globe.defaultCloudCollection` or a user collection.
  *
- * Configuration is carried by the collection's `.volumetric` {@link CloudVolumetrics}
- * (identical field names to the former `globe.cloud*`), resolved into a
- * {@link CloudVolumetricsConfig} snapshot each frame:
+ * Configuration is carried by the collection's `.volumetric`
+ * {@link CloudVolumetrics}, resolved into a {@link CloudVolumetricsConfig}
+ * snapshot each frame:
  *   - enabled: boolean (default false) → collection renderMode VOLUMETRIC
  *   - cloudCoverage: number 0-1 (default 0.5)
  *   - cloudLayerBottom: number meters (default 1500)
@@ -19,33 +18,28 @@
  *   - cloudDensity: number (default 0.3)
  *   - cloudQuality: number 32-128 steps (default 64)
  *
- * ── C13-09 RECONSTRUCTION ATTACHMENTS: WHAT IS LIVE, WHAT IS PENDING ──
+ * Reconstruction attachments. The attachment pass writes front and
+ * transmittance-weighted cloud depth, screen-space motion with an explicit
+ * validity channel, and the depth/coverage moment pair, at the half-resolution
+ * march size, with full creation, resize and device-swap lifecycle behind a
+ * monotonic generation key. It is opt-in and off by default
+ * (`setCloudReconstructionAttachments`, surfaced as
+ * `CesiumDebug.cloudReconstructionAttachments(true)`): with it off nothing
+ * allocates and no pass is encoded, so the cloud lane is unchanged in both
+ * pixels and cost.
  *
- * LIVE. `CloudReconstructionAttachments pass` writes front / transmittance-
- * weighted cloud depth, screen-space motion with an explicit validity channel,
- * and the depth/coverage moment pair, at the half-resolution march size, with
- * full creation / resize / device-swap lifecycle and a monotonic generation
- * key. It is OPT-IN and DEFAULT OFF (`setCloudReconstructionAttachments`,
- * surfaced as `CesiumDebug.cloudReconstructionAttachments(true)`): with it off
- * nothing allocates and no pass is encoded, so the shipped cloud lane is
- * identical in pixels AND in cost.
+ * The set is written but nothing samples it yet, so those targets are
+ * producer-side scaffolding rather than unused resources. Cloud depth still
+ * comes from the analytic estimator — the shell interval under the march's own
+ * resolved alpha — rather than from per-sample accumulation emitted by the
+ * march, and the temporal resolve does not read the motion, moment or depth
+ * channels for rejection, variance clipping, reactive history, wind advection
+ * or disocclusion.
  *
- * PENDING, and deliberately so — this row is infrastructure and NOTHING READS
- * THE SET YET (CLAUDE.md Principle 7: the producer half exists, the consumer
- * half is the follow-up, and deleting the targets because no pass samples them
- * is the documented anti-pattern):
- *
- *   - C13-10 owns the true 1/16-rate current-frame march. It replaces the
- *     analytic depth ESTIMATOR (shell interval under the march's own resolved
- *     alpha) with per-sample accumulation emitted by the march itself, and it
- *     is the row permitted to change `ProceduralClouds.wgsl`.
- *   - C13-12 owns every consumer: attachment-aware motion/depth rejection,
- *     variance clipping from the moment pair, reactive history, wind advection
- *     in reprojection, and disocclusion.
- *   - Orthographic and morph frames still produce NO attachments, because the
- *     producer needs a usable inverse current view-projection-relative-to-eye
- *     for its per-pixel ray. That is the same residual C13-05 recorded; it
- *     closes when reconstruction carries a per-pixel ray origin.
+ * Orthographic and morph frames produce no attachments: the producer needs a
+ * usable inverse current view-projection-relative-to-eye for its per-pixel ray,
+ * which those projections do not supply. Carrying a per-pixel ray origin
+ * through reconstruction instead would lift the restriction.
  *
  * @private
  */
@@ -88,8 +82,8 @@ import {
   writeCloudDensityAdvectedOriginPhases,
   writeCloudMorphologyOriginHighLow,
 } from "./WebGPUCloudDensityDomain.js";
-// C13-06 — the one RTE/WGS84 frame owner shared by the beer-shadow-map producer
-// and every consumer that projects into it.
+// The single owner of the relative-to-eye WGS84 frame, shared by the
+// beer-shadow-map producer and every consumer that projects into it.
 import {
   CLOUD_SHADOW_WGS84_A,
   CLOUD_SHADOW_WGS84_B,
@@ -99,21 +93,23 @@ import {
   writeCloudShadowInverseViewProjectionRelativeToEye,
   writeCloudShadowViewProjection,
 } from "./WebGPUCloudShadowFrame.js";
-// Batch 445 (4.12 CLOUD-RTE) — RTE high/low camera split for the camera-relative
-// high-precision cloud march. Only the encoded floats (slots 120-127) are sourced
-// from this; the WGSL reads them solely inside the CLOUD_QF_HIGH_PRECISION branch.
+// Supplies the relative-to-eye high/low camera split for the camera-relative
+// high-precision march. Only the encoded floats in uniform slots 120-127 come
+// from here, and the shader reads them solely inside the
+// CLOUD_QF_HIGH_PRECISION branch.
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import OrthographicFrustum from "../../Core/OrthographicFrustum.js";
 import OrthographicOffCenterFrustum from "../../Core/OrthographicOffCenterFrustum.js";
 import SceneMode from "../../Scene/SceneMode.js";
-// V9 (Batch 432) — half-res bilateral-upscale composite shader.
+// Half-resolution bilateral-upscale composite shader.
 import CloudUpscaleWGSL from "../../Shaders/WebGPU/Environment/CloudUpscale.js";
-// V10 (Batch 433) — temporal reprojection + accumulation resolve shader.
+// Temporal reprojection and accumulation resolve shader.
 import CloudTemporalResolveWGSL from "../../Shaders/WebGPU/Environment/CloudTemporalResolve.js";
-// C13-09 — the reconstruction attachment producer. A SEPARATE WGSL module and a
-// SEPARATE pipeline on purpose: C13-39 proved WGSL register allocation is
-// static, so this must never reach `ProceduralClouds.wgsl`.
+// The reconstruction attachment producer, kept in its own shader module and its
+// own pipeline. WGSL register allocation is static across a module, so folding
+// this into `ProceduralClouds.wgsl` would charge every march variant for
+// registers only the attachment producer uses.
 import CloudReconstructionAttachmentsWGSL from "../../Shaders/WebGPU/Environment/CloudReconstructionAttachments.js";
 import {
   CLOUD_ATTACHMENT_DEFAULT_DEPTH_NORMALIZATION_METERS,
@@ -128,10 +124,10 @@ import {
   packCloudAttachmentUniforms,
   releaseCloudAttachmentGeneration,
 } from "./WebGPUCloudReconstructionAttachments.js";
-// C13-10 — the reconstruction EMISSION/CONSUMPTION axes. Two compile-time bits,
-// never a uniform: C13-39 proved WGSL register allocation is static, so gating
-// the march's emission on a uniform would charge the shadow map, the cascade
-// atlas, the god-ray mask and the full-resolution march for registers only the
+// The reconstruction emission and consumption axes. Two compile-time bits
+// rather than a uniform: WGSL register allocation is static, so gating the
+// march's emission on a uniform would charge the shadow map, the cascade atlas,
+// the god-ray mask and the full-resolution march for registers only the
 // half-resolution march uses.
 import { ShaderDefineHi } from "./WebGPUShaderDefines.js";
 import { preprocess } from "./WebGPUShaderPreprocessor.js";
@@ -153,46 +149,36 @@ import type {
   CloudTemporalHistorySample,
   CloudTemporalHistoryState,
 } from "./WebGPUCloudTemporalHistory.js";
-// V11 (Batch 408) — per-genus vertical-density profiles. Backend-neutral Scene
-// data (the WGSL just reads the packed profile floats).
+// Per-genus vertical-density profiles. Backend-neutral scene data; the shader
+// only reads the packed profile floats.
 import CloudTypeProfile from "../../Scene/CloudTypeProfile.js";
 import CloudType from "../../Scene/CloudType.js";
-// C13-07 — the DEFAULT global weather map. Backend-neutral Scene data, shared
-// with the real-data packer so both producers write ONE dateline/pole-safe
-// equirectangular convention (Scene/Weather/WeatherMapSeam.ts).
+// The default global weather map. Shared with the real-data packer so both
+// producers write the one dateline- and pole-safe equirectangular convention
+// defined in `Scene/Weather/WeatherMapSeam.ts`.
 import { buildProceduralWeatherMap } from "../../Scene/Weather/ProceduralWeatherMap.js";
-// C13-41 — the eclipse response for this subsystem. Backend-neutral Scene math
-// over C12-29's published state; nothing about the eclipse is recomputed here.
+// The eclipse response for this subsystem: backend-neutral scene math over the
+// eclipse state published by the frame. Nothing about the eclipse geometry is
+// recomputed here.
 import {
   applyEclipseCloudDimming,
   eclipseCloudDirectionalFraction,
   resolveEclipseCloudFactor,
 } from "../../Scene/EclipseCloudResponse.js";
 
-// CloudUniforms float count — grown ADD-ONLY: 64→80 (weather seam) → 96 (W1-W8
-// lighting) → 104 (Batch 407 dials 96-103) → 108 (Batch 408 V11 profile 104-107;
-// Batch 409 renamed pads 105-106 → nearPlane/farPlane, no count change) → 112
-// (Batch 434 atmosphere-LUT coupling: aerialLutMode/ambientLutMode/atmosphereThickness/pad 108-111)
-// → 120 (Batch 443 multi-deck: multiDeck/pad + deckBoundsLow/Mid/High vec2 112-119)
-// → 128 (Batch 445 CLOUD-RTE: encodedCameraHigh.xyz+pad 120-123, encodedCameraLow.xyz+pad 124-127)
-// → 132 (Batch 555 E2 CLOUD-MAMMATUS: mammatusStrength/Scale/Depth+pad 128-131).
-// → 136 (Batch 610 E1 CLOUD-EXOTIC-SPECIES: speciesMode/Strength/Scale/Param 132-135).
-// → 140 (Batch 611 E2 CLOUD-EXOTIC-FEATURES-REMAINING: featureMode/Strength/Scale/Param 136-139).
-// → 144 (Batch 612 E3 CLOUD-EXOTIC-SPECIAL: specialShadeMode/Strength/Scale/Param 140-143).
-// → 148 (Batch 634 C6-CLOUD-STBN-TAAU LOD half: marchStepGrowth/maxRayDistance+2 pads 144-147).
-// → 160 (C13-37: CPU-f64 texture-domain phases, 148-159).
-// → 168 (C13-37: encoded canonical morphology origin, 160-167).
-// → 172 (C13-16 per-genus morphology: genusFibreStrength/Anisotropy/Shear +
-//        genusPhaseDelta, 168-171).
+// Float count of the `CloudUniforms` block. The layout is append-only: the WGSL
+// struct and this count are two spellings of one memory image, so a slot may be
+// renamed or repurposed in place but never moved, and new fields extend the
+// tail. The trailing terms name the two blocks that already do so.
 const CLOUD_GENUS_MORPHOLOGY_FLOATS = 4;
 const CLOUD_UNIFORM_FLOATS =
   148 + CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS + CLOUD_GENUS_MORPHOLOGY_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${ProceduralCloudsWGSL}`;
-// C13-10 — the hi-word masks for the emitting march / producer and the
-// consuming resolve. Named once so no call site spells a bit inline, and so a
-// spec can assert the renderer preprocesses with the SAME axis the registry
-// documents rather than with a literal that happens to match today.
+// High-word define masks for the emitting march and the consuming resolve.
+// Named once so no call site spells a bit inline, and so a spec can assert the
+// renderer preprocesses with the axis the registry documents rather than with a
+// literal that happens to match it today.
 const CLOUD_MARCH_EMIT_DEFINES_HI =
   ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION as number;
 const CLOUD_RECONSTRUCTION_CONSUME_DEFINES_HI =
@@ -202,17 +188,17 @@ const CLOUD_RECONSTRUCTION_CONSUME_DEFINES_HI =
 // the texture and the WGSL output must agree by construction.
 const CLOUD_MARCH_EMITTED_FORMAT: GPUTextureFormat =
   CLOUD_OWNED_ATTACHMENTS[CLOUD_MARCH_EMITTED_SLOT - 1].format;
-// C13-06 — the shell axes the WGSL march reads and the axes the sun-view frame
-// projects the footprint centre onto MUST be one value, or the shadow map lands
-// on a different deck than the one the visible march renders.
+// The shell axes the march reads and the axes the sun-view frame projects the
+// footprint centre onto have to be one value, or the shadow map lands on a
+// different deck than the one the visible march renders.
 const WGS84_EQUATORIAL_RADIUS = CLOUD_SHADOW_WGS84_A;
 const WGS84_POLAR_RADIUS = CLOUD_SHADOW_WGS84_B;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
 const WEATHER_TEX_H = 128;
-// Batch 445 (4.12 CLOUD-RTE) — reused EncodedCartesian3 result for the per-frame
-// camera high/low split (avoids a per-frame allocation). Only written when the
-// camera position is defined; read into the cloud UB slots 120-127.
+// Reused result for the per-frame camera high/low split, avoiding a per-frame
+// allocation. Written only when the camera position is defined, and read into
+// cloud uniform slots 120-127.
 const scratchEncodedCamera = new EncodedCartesian3();
 const scratchInverseViewRelativeToEye = new Matrix4();
 const scratchInverseCurrentViewProjectionRelativeToEye = new Matrix4();
@@ -267,29 +253,28 @@ function matrix4HasNonZeroEntry(matrix: ArrayLike<number>): boolean {
 }
 
 /**
- * C13-05 / C13-09 — resolve the inverse current view-projection-relative-to-eye
- * into the shared scratch matrix and report whether the result is usable.
+ * Resolves the inverse current view-projection-relative-to-eye into the shared
+ * scratch matrix and reports whether the result is usable.
  *
- * inverse(P * Vrot) = inverse(Vrot) * inverse(P), so this reuses the inverse
- * view/projection `UniformState` already produced and removes the inverse-view
- * translation instead of generally inverting the relative-to-eye matrix — the
- * cheaper form in the perspective hot path. Unsupported orthographic/morph
- * projections are gated by the caller's `supported` flag before any resource is
- * allocated.
+ * Since inverse(P * Vrot) = inverse(Vrot) * inverse(P), this reuses the inverse
+ * view and inverse projection `UniformState` already produced and drops the
+ * inverse-view translation, rather than generally inverting the
+ * relative-to-eye matrix — the cheaper form in the perspective hot path.
+ * Orthographic and morph projections are unsupported and are gated by the
+ * caller's `supported` flag before any resource is allocated.
  *
- * EXTRACTED AT C13-09 rather than copied: the reconstruction attachment
- * producer needs the SAME current-ray transform the temporal resolve uses, and
- * two independently maintained RTE inversions is exactly the drift C13-03's
- * coordinate contract exists to prevent. The body is unchanged from the C13-05
- * temporal site it was lifted from.
+ * Both the temporal resolve and the reconstruction attachment producer need
+ * this same current-ray transform, so it lives in one place; two independently
+ * maintained relative-to-eye inversions would drift out of the shared
+ * coordinate contract.
  *
- * The PREVIOUS-frame transform is deliberately NOT part of this predicate. It
- * is a reprojection input, not a current-ray input, and the two consumers need
- * different things: the temporal resolve cannot run without it (so it checks it
- * alongside this call, preserving C13-05's behaviour exactly), while the
- * attachment producer's depth and moment channels are perfectly well defined on
- * a frame that has no usable history — only its velocity channel is not, and
- * that channel carries its own validity flag for precisely this case.
+ * The previous-frame transform is not part of this predicate. It is a
+ * reprojection input rather than a current-ray input, and the two callers need
+ * different things from it: the temporal resolve cannot run without it and
+ * checks it alongside this call, while the attachment producer's depth and
+ * moment channels are well defined on a frame with no usable history. Only its
+ * velocity channel is not, and that channel carries its own validity flag for
+ * exactly this case.
  */
 function resolveCloudInverseCurrentVpRte(
   supported: boolean,
@@ -317,9 +302,9 @@ function resolveCloudInverseCurrentVpRte(
 }
 
 /**
- * C13-05 / C13-09 — true when both camera positions exist and are finite, i.e.
- * when the CPU-`f64` `currentCameraWC - previousCameraWC` delta the shaders
- * add before the previous-frame projection is meaningful.
+ * True when both camera positions exist and are finite, that is, when the
+ * `f64` `currentCameraWC - previousCameraWC` delta the shaders add before the
+ * previous-frame projection is meaningful.
  */
 function cloudCameraPairIsFinite(
   currentCamera: { x: number; y: number; z: number } | undefined,
@@ -349,28 +334,29 @@ export interface CloudCache {
   ];
   mainBindGroupNextSlot: number;
   initialized: boolean;
-  // Weather Phase 0 — clock-bind. Day-seconds of the first frame, cached so the
-  // cloud `time` uniform starts near 0 (keeps the wind offset in f32 precision).
+  // Day-seconds of the first frame, cached so the cloud `time` uniform starts
+  // near 0 and the accumulated wind offset stays inside f32 precision.
   timeEpoch: number | null;
-  // Weather Phase 1 — weather-map seam.
+  // Global coverage field sampled by the march.
   weatherTexture: GPUTexture | null; // 2d-array depth-1 coverage field
   weatherView: GPUTextureView | null;
   weatherFallbackView: GPUTextureView | null; // 1×1 white, bound when disabled
   weatherSampler: GPUSampler | null;
-  // Weather ingest (Phase 1) — which bytes the weatherTexture currently holds:
-  // -2 = nothing, -1 = procedural map, >=0 = WeatherProvider.version uploaded.
+  // Which bytes `weatherTexture` currently holds: -2 = nothing, -1 = the
+  // procedural map, >= 0 = the uploaded `WeatherProvider.version`.
   weatherProviderVersion: number;
-  // V2 — 3D noise bake (bound at 6/7/8; INERT until V3 samples it).
+  // Baked 3D shape and detail noise, bound at 6, 7 and 8.
   noise: CloudNoiseResources | null;
   noiseBaked: boolean;
   noiseFallbackTexture: GPUTexture | null;
   noiseFallbackView: GPUTextureView | null; // 1×1×1 white 3D, bound until baked
   noiseFallbackSampler: GPUSampler | null;
-  // V9 (Batch 432) — half-res cloud target + bilateral-upscale pass. ALL null on
-  // the default full-res path (allocated lazily only when a tier resolves
-  // renderResScale<1). `halfPipeline` renders the raymarch into `halfView`
-  // (rgba16float); `upscalePipeline` reads it + full-res scene/depth and
-  // composites to the canvas. The half-res target is re-created on canvas resize.
+  // Half-resolution cloud target and its bilateral-upscale pass, all null on the
+  // full-resolution path and allocated lazily only when a tier resolves
+  // `renderResScale` below 1. `halfPipeline` marches into `halfView`
+  // (rgba16float); `upscalePipeline` reads that together with the full-resolution
+  // scene and depth and composites to the canvas. The half-resolution target is
+  // recreated on canvas resize.
   halfTexture: GPUTexture | null;
   halfView: GPUTextureView | null;
   halfWidth: number;
@@ -386,17 +372,18 @@ export interface CloudCache {
     CloudUpscaleBindGroupEntry | null,
   ];
   upscaleBindGroupNextSlot: number;
-  // Shared exact integer phase: low 4 bits preserve the Bayer/cone 16-phase
-  // sequence; all 6 bits drive C13-36's animated IGN sequence.
+  // Shared exact integer phase: the low 4 bits carry the Bayer and light-cone
+  // 16-phase sequence, and all 6 bits drive the animated interleaved-gradient
+  // noise sequence.
   frameCounter: number;
-  // V10 (Batch 433) — temporal reprojection + accumulation. ALL null on the
-  // default / cinematic / escape-hatch path (temporal OFF → byte-identical). The
-  // history is DOUBLE-BUFFERED (ping-pong) at HALF-RES (it accumulates the
-  // premultiplied half-res cloud): `temporalHistory[read]` is reprojected + blended
-  // with this frame's freshly-marched `halfTexture` by the resolve pass, which
-  // writes `temporalHistory[write]`; the upscale pass then reads that written
-  // history instead of `halfTexture`. Re-created on canvas/half-res resize. `temporalFirstFrame`
-  // forces an identity-history seed (no startup flash, TAA/CSM first-frame convention).
+  // Temporal reprojection and accumulation, all null while temporal is off. The
+  // history is ping-ponged at half resolution and accumulates the premultiplied
+  // half-resolution cloud: the resolve pass reprojects `temporalHistory[read]`,
+  // blends it with this frame's freshly marched `halfTexture` and writes
+  // `temporalHistory[write]`, and the upscale pass then reads that written
+  // history instead of `halfTexture`. Recreated on canvas or half-resolution
+  // resize. `temporalFirstFrame` forces an identity-history seed, matching the
+  // first-frame convention used by TAA and CSM, so there is no startup flash.
   temporalHistory: [GPUTexture | null, GPUTexture | null];
   temporalHistoryView: [GPUTextureView | null, GPUTextureView | null];
   temporalWidth: number;
@@ -405,20 +392,21 @@ export interface CloudCache {
   temporalFirstFrame: boolean;
   temporalPipeline: GPURenderPipeline | null; // reproject + clamp + blend → new history
   temporalBindGroupLayout: GPUBindGroupLayout | null;
-  // One bind group per history READ parity. Rebuilt only when the half/history
-  // views are reallocated; the hot temporal path selects by parity with no
-  // per-frame bind-group allocation.
+  // One bind group per history-read parity, rebuilt only when the
+  // half-resolution or history views are reallocated, so the temporal path
+  // selects by parity and allocates no bind group per frame.
   temporalBindGroups: [GPUBindGroup | null, GPUBindGroup | null];
   temporalUniformBuffer: GPUBuffer | null;
   temporalUniformData: Float32Array;
   temporalSampler: GPUSampler | null;
-  // C13-05 — allocation-free coarse history compatibility and probe-visible
-  // diagnostics. Advanced wind/weather/depth rejection remains C13-12.
+  // Allocation-free coarse history compatibility and its externally visible
+  // diagnostics. Wind, weather and depth rejection are not part of it.
   temporalHistoryState: CloudTemporalHistoryState;
   temporalHistorySample: CloudTemporalHistorySample;
   // Reset reasons observed continuously in the current reset episode. A new
   // reason bit starts a new generation even on an adjacent reset frame, while a
-  // persistent reason (for example MORPH) does not increment every frame.
+  // persistent reason, such as an in-progress morph, does not increment it
+  // every frame.
   temporalHistoryLatchedResetReasons: number;
   // Renderer-owned reasons such as history texture reallocation are ORed with
   // the pure classifier on the next resolve and then consumed.
@@ -427,25 +415,26 @@ export interface CloudCache {
   temporalHistoryResetReasons: number;
   temporalHistoryResetCount: number;
   temporalHistoryAcceptedFrames: number;
-  // Batch 434 (3.3 + 3.4) — atmosphere-LUT coupling. The cloud BGL ALWAYS declares
-  // the three LUT textures (sky-view / MS / transmittance) + a linear sampler at
-  // bindings 9-12 so the pipeline layout never forks. When the modes are off (or the
-  // LUTs aren't baked) a 1×1 BLACK rgba16float placeholder is bound — the WGSL gates
-  // each LUT sample on its mode bit AND a non-zero radiance, so a black placeholder
-  // is the same as "unbaked" and the legacy heuristic/constant path runs.
+  // Atmosphere-LUT coupling. The cloud bind-group layout always declares the
+  // three LUT textures — sky-view, multiple-scattering and transmittance — plus
+  // a linear sampler at bindings 9-12, so the pipeline layout never forks on
+  // whether the LUTs are in use. When the modes are off, or the LUTs are not
+  // baked, a 1×1 black rgba16float placeholder is bound instead: the shader
+  // gates each LUT sample on both its mode bit and a non-zero radiance, so a
+  // black placeholder reads as unbaked and the heuristic constant path runs.
   lutPlaceholderTexture: GPUTexture | null;
   lutPlaceholderView: GPUTextureView | null; // 1×1 black, bound when off/unbaked
   lutSampler: GPUSampler | null;
-  // ── Batch 437 (CLOUD-SHADOWS) — sun-view "beer shadow map" ──
-  // Allocated ONLY when `globe.cloudCastShadows` is on; otherwise everything here
-  // stays null and consumers read the shared 1×1-white placeholder
-  // (`shadowPlaceholderView`, optical depth 0 → transmittance 1). The map stores the
-  // cloud optical depth (Σ density·length) along the sun ray, rasterized from the
-  // sun's orthographic view by the `cloudShadowMain` entry point. C13-06 — the
-  // authoritative projection is `shadowFrame` (CPU f64); consumers derive their
-  // own eye-relative matrix from it, and `shadowSunViewVP` is the absolute matrix
-  // kept for the planar scene modes. `shadowActive` is the per-frame "real map is
-  // bound" flag (consumers gate on it so the off path never samples a stale map).
+  // Sun-view Beer shadow map, allocated only when `globe.cloudCastShadows` is
+  // on. Otherwise everything here stays null and consumers read the shared 1×1
+  // placeholder `shadowPlaceholderView`, whose optical depth of 0 gives
+  // transmittance 1. The map stores cloud optical depth, the sum of density
+  // times segment length along the sun ray, rasterized from the sun's
+  // orthographic view by the `cloudShadowMain` entry point. `shadowFrame` is the
+  // authoritative f64 projection: consumers derive their own eye-relative matrix
+  // from it, and `shadowSunViewVP` is the absolute matrix kept for the planar
+  // scene modes. Consumers gate on `shadowActive` so the off path never samples
+  // a stale map.
   shadowTexture: GPUTexture | null;
   shadowView: GPUTextureView | null; // r16float, sun-view optical depth
   shadowPlaceholderTexture: GPUTexture | null;
@@ -458,31 +447,31 @@ export interface CloudCache {
   shadowSize: number; // current square shadow-map resolution
   // Stashed each frame for the consumers (globe terrain / aerial / fog / env):
   shadowSunViewVP: Float32Array; // 16 floats, column-major world→sun-clip
-  // C13-06 — the f64 sun-view frame the matrix above is derived from. Consumers
-  // read THIS and emit their own eye-relative matrix against their own camera
-  // (`writeCloudShadowViewProjectionRelativeToEye`), so no consumer forms a
-  // planet-scale `f32` matrix product. `shadowSunViewVP` remains the absolute
-  // fallback for planar scene modes, whose fragments have no ECEF eye-relative
-  // position.
+  // The f64 sun-view frame the matrix above is derived from. Consumers read this
+  // and emit their own eye-relative matrix against their own camera through
+  // `writeCloudShadowViewProjectionRelativeToEye`, so no consumer forms a
+  // planet-scale f32 matrix product. `shadowSunViewVP` remains the absolute
+  // fallback for the planar scene modes, whose fragments have no ECEF
+  // eye-relative position.
   shadowFrame: CloudShadowFrame;
   shadowCascadeFrames: CloudShadowFrame[];
   shadowActive: boolean; // true when the real map was rendered this frame
   shadowAbsorption: number; // absorptionCoeff used so consumers' exp() matches
-  // C13-41 — the cast-shadow `strength` all four consumers mix with, published
-  // through this ONE seam exactly as `shadowAbsorption` already is, so the
-  // globe terrain, the cascaded atlas branch, aerial perspective and the
-  // volumetric-fog hi-fi path cannot drift apart. 1.0 outside a solar eclipse
-  // (byte-identical to the literal the consumers used to write); it falls to 0
-  // at totality because the umbral sky is nonlocal multiple scattering that no
-  // local cloud can shadow. See `Scene/EclipseCloudResponse.js`.
+  // The cast-shadow strength all four consumers mix with, published through this
+  // one seam exactly as `shadowAbsorption` is, so the globe terrain, the
+  // cascaded atlas branch, aerial perspective and the high-fidelity volumetric
+  // fog path cannot drift apart. It is 1.0 outside a solar eclipse and falls to
+  // 0 at totality, because the umbral sky is nonlocal multiple scattering that
+  // no local cloud can shadow. See `Scene/EclipseCloudResponse.js`.
   shadowStrength: number;
-  // ── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP — opt-in 3-cascade atlas ──
-  // Allocated ONLY when `config.cloudShadowCascades` is on (and cast shadows).
-  // The atlas is 512×1536 r16float: three 512² tiles stacked (tile 0 = top =
-  // finest near cascade). Rendered by three viewport-scoped draws of the same
-  // `cloudShadowMain` entry point, each fed its own cascade uniforms via a
-  // 256-aligned slice of `shadowCascadeUniformBuffer`. The globe terrain reads
-  // this atlas (via the cascade branch); aerial/fog keep reading the single map.
+  // Opt-in three-cascade shadow atlas, allocated only when
+  // `config.cloudShadowCascades` is on and clouds cast shadows. The atlas is a
+  // 512×1536 r16float texture holding three stacked 512² tiles, tile 0 being the
+  // finest near cascade. It is rendered by three viewport-scoped draws of the
+  // same `cloudShadowMain` entry point, each fed its own cascade uniforms
+  // through a 256-aligned slice of `shadowCascadeUniformBuffer`. The globe
+  // terrain reads this atlas through its cascade branch; aerial perspective and
+  // fog keep reading the single map.
   shadowCascadeTexture: GPUTexture | null;
   shadowCascadeView: GPUTextureView | null; // r16float atlas, 3 stacked tiles
   shadowCascadeUniformBuffer: GPUBuffer | null; // 3×256B CloudShadowUniforms
@@ -490,26 +479,26 @@ export interface CloudCache {
   shadowCascadeVP: Float32Array; // 48 floats, 3 forward VPs for the consumers
   shadowCascadeActive: boolean; // true when the atlas was rendered this frame
   shadowCascadeSize: number; // per-tile square resolution currently allocated
-  // Item 4.2 (CLOUD-IBL, Batch 441) — effective cloud coverage in [0, 1] that
-  // the dynamic-env-map sky fill darkens + flattens its radiance toward, so an
-  // overcast procedural-cloud sky yields a dim, flat ambient on lit glTF models
-  // / 3D tiles (via the SH-L2 projection of the env cube) and the sky-LUT fog
-  // ambient. Published every frame by the environmental-effects dispatch
-  // (`publishCloudIblCoverage`) — REGARDLESS of frustum culling or whether the
-  // cloud raymarch ran — so toggling `showProceduralClouds` / `cloudContributesIBL`
-  // off resets it to 0 (no staleness). 0 (default / both flags off) → the env
-  // fill's overcast blend is skipped → byte-identical to the pre-4.2 cube.
+  // Effective cloud coverage in [0, 1] that the dynamic environment map's sky
+  // fill darkens and flattens its radiance toward, so an overcast procedural
+  // sky produces a dim, flat ambient on lit glTF models and 3D tiles through
+  // the SH-L2 projection of the environment cube, and on the sky-LUT fog
+  // ambient. Published every frame by the environmental-effects dispatch in
+  // `publishCloudIblCoverage`, independently of frustum culling and of whether
+  // the raymarch ran, so turning `showProceduralClouds` or
+  // `cloudContributesIBL` off resets it to 0 rather than leaving a stale value.
+  // At 0 the fill's overcast blend is skipped entirely.
   iblCoverage: number;
-  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — the real visible-cloud march params,
-  // published every frame alongside `iblCoverage` from the env-effects dispatch
-  // (where `scene.globe` is genuinely in scope). The dynamic-env-map manager
-  // reads THESE (not the nonexistent `frameState.globe`) so the reflected IBL
-  // cloud deck tracks the user's live cloud customization (deck altitude, wind,
-  // density) instead of frozen constructor defaults. `iblPWActive` mirrors the
-  // visible renderer's `cloudNoiseMorphology === "perlin-worley"` decision so
-  // the IBL march samples the SAME baked base shape view the visible deck does.
-  // These are inert on the OFF path — the manager only consumes them when the
-  // `cloudsInReflections` flag is on AND coverage > 0 (the march gate).
+  // The visible march parameters, published every frame alongside
+  // `iblCoverage` from the environmental-effects dispatch, which is where
+  // `scene.globe` is in scope. The dynamic environment map manager reads these
+  // rather than `frameState.globe`, which does not exist, so the reflected
+  // cloud deck tracks live deck altitude, wind and density instead of frozen
+  // constructor defaults. `iblPWActive` mirrors the visible renderer's
+  // `cloudNoiseMorphology === "perlin-worley"` decision so the reflection march
+  // samples the same baked base shape the visible deck does. They are inert
+  // while reflections are off: the manager consumes them only when the
+  // `cloudsInReflections` flag is on and coverage exceeds 0.
   iblDeckBottom: number;
   iblDeckTop: number;
   iblWindX: number;
@@ -519,25 +508,26 @@ export interface CloudCache {
   iblDensity: number;
   iblPuffSize: number;
   iblPWActive: boolean;
-  // C13-37 IBL-refill debounce — the discrete "does the cloud deck contribute to
-  // reflections at all" state (showProceduralClouds AND cloudContributesIBL). Held
-  // separately from `iblCoverage` and compared EXACTLY so toggling either flag
-  // always bumps `iblRevision` immediately, even when the deck's coverage is below
-  // the coverage quantization step. Continuous inputs are snapped/debounced.
+  // The discrete "does the cloud deck contribute to reflections at all" state,
+  // that is `showProceduralClouds` and `cloudContributesIBL` together. Held
+  // separately from `iblCoverage` and compared exactly, so toggling either flag
+  // bumps `iblRevision` immediately even when the deck's coverage sits below the
+  // coverage quantization step that debounces the continuous inputs.
   iblContributesIbl: boolean;
-  // C13-37 — bounded invalidation signal for the expensive environment-cube
-  // cloud march. Static cloud-appearance changes increment immediately; pure
-  // advection increments only after a meaningful world-space displacement.
+  // Bounded invalidation signal for the expensive environment-cube cloud march.
+  // Static appearance changes increment it immediately; pure advection
+  // increments it only after a meaningful world-space displacement.
   iblRevision: number;
   iblRevisionAdvectionX: number;
   iblRevisionAdvectionZ: number;
-  // ── TAKRAM-9 (cloud-aware god rays) — screen-space transmittance mask ──
-  // Allocated ONLY when a consumer (the PP god-ray pass) requests the mask via
-  // `setCloudTransmittanceCapture(context, true)`. Everything here stays null on
-  // the default path so the shipped cloud composite pass is byte-identical. When
-  // capture is on, a dedicated full-res r8unorm target is rendered by the
-  // `fragmentCloudMaskMain` entry point (transmittance = Πᵢ(1-αᵢ)) right after
-  // the composite pass, sharing the SAME per-frame bind group / uniforms.
+  // Screen-space cloud transmittance mask for cloud-aware god rays, allocated
+  // only when a consumer — the post-process god-ray pass — requests it through
+  // `setCloudTransmittanceCapture(context, true)`. Everything here stays null
+  // otherwise, so the composite pass is unchanged when nothing wants the mask.
+  // With capture on, a dedicated full-resolution r8unorm target is rendered by
+  // the `fragmentCloudMaskMain` entry point, holding transmittance Πᵢ(1-αᵢ),
+  // immediately after the composite pass and sharing its per-frame bind group
+  // and uniforms.
   maskCaptureEnabled: boolean;
   maskTexture: GPUTexture | null;
   maskView: GPUTextureView | null; // r8unorm, 1=clear 0=opaque cloud
@@ -546,22 +536,19 @@ export interface CloudCache {
   maskPipeline: GPURenderPipeline | null;
   maskShaderModule: GPUShaderModule | null;
   maskRenderedThisFrame: boolean;
-  // ── C13-09 — reconstruction attachments (front/weighted depth, velocity,
-  // moments) ──
-  // DEFAULT OFF: `attachmentsEnabled` starts false, so nothing here allocates,
-  // no pass is encoded, and the shipped cloud lane is byte-identical AND
-  // cost-identical. Turned on through `setCloudReconstructionAttachments`
-  // (surfaced as `CesiumDebug.cloudReconstructionAttachments(true)`), the
-  // producer writes the set at the HALF-RES march resolution — the attachments
-  // are defined at the reconstruction resolution, and on the full-res path
-  // there is no intermediate march target to derive them from.
+  // Reconstruction attachments: front and transmittance-weighted depth,
+  // velocity, and the depth/coverage moment pair. `attachmentsEnabled` starts
+  // false, so nothing here allocates and no pass is encoded until it is turned
+  // on through `setCloudReconstructionAttachments`, surfaced as
+  // `CesiumDebug.cloudReconstructionAttachments(true)`. The producer writes the
+  // set at the half-resolution march size, because the attachments are defined
+  // at the reconstruction resolution and the full-resolution path has no
+  // intermediate march target to derive them from.
   //
-  // ★ AT C13-09 NOTHING READ THEM. `reconstructionEnabled` below is C13-10's
-  //   SEPARATE opt-in that makes the march emit and the resolve consume; with
-  //   only `attachmentsEnabled` set the set is still produced-and-unread, which
-  //   is what keeps C13-09's own acceptance legs meaningful. Removing the
-  //   targets because "no render pass reads them" is the exact anti-pattern
-  //   CLAUDE.md Principle 7 documents.
+  // With only `attachmentsEnabled` set, the attachments are produced and never
+  // read: `reconstructionEnabled` below is the separate opt-in that makes the
+  // march emit and the resolve consume. The targets are the producer half of an
+  // unfinished pair, not unused resources.
   attachmentsEnabled: boolean;
   attachmentTextures: (GPUTexture | null)[];
   attachmentViews: (GPUTextureView | null)[];
@@ -580,20 +567,18 @@ export interface CloudCache {
   /** Reused packing record — the per-frame path must not allocate one. */
   attachmentUniformInputs: CloudAttachmentUniformInputs;
   attachmentRenderedThisFrame: boolean;
-  // ── C13-10 — march-emitted reconstruction + the first consumer ──
-  // A SECOND opt-in, DEFAULT OFF, layered on C13-09's. When it is set the
-  // half-resolution march compiles with `CLOUD_MARCH_EMIT_RECONSTRUCTION` and
-  // writes contract slot 1 (depth) as a second colour target; the producer
-  // compiles with the same bit, READS that target and drops the depth slot from
-  // its own MRT; and the temporal resolve compiles with
-  // `CLOUD_RECONSTRUCTION_CONSUME` and validates history against the set.
+  // March-emitted reconstruction and its first consumer: a second opt-in, off by
+  // default, layered on `attachmentsEnabled`. When it is set, the half-resolution
+  // march compiles with `CLOUD_MARCH_EMIT_RECONSTRUCTION` and writes contract
+  // slot 1, depth, as a second colour target; the producer compiles with the
+  // same bit, reads that target and drops the depth slot from its own MRT; and
+  // the temporal resolve compiles with `CLOUD_RECONSTRUCTION_CONSUME` and
+  // validates history against the set.
   //
-  // ★ EVERY VARIANT PIPELINE IS A SEPARATE OBJECT BESIDE THE HISTORICAL ONE
-  //   (`halfEmitPipeline` beside `halfPipeline`, and so on). Nothing is
-  //   rebuilt, invalidated or recompiled when the flag flips, so the shipped
-  //   pipelines are the same GPU objects they would have been without this row
-  //   — which is what makes "default byte-identical" a structural property
-  //   rather than a promise.
+  // Each variant pipeline is a separate object alongside the base one —
+  // `halfEmitPipeline` beside `halfPipeline`, and so on. Nothing is rebuilt,
+  // invalidated or recompiled when the flag flips, so the base pipelines are the
+  // same GPU objects whether or not the variants exist.
   reconstructionEnabled: boolean;
   /** Half-res march compiled with the emission bit; 2 colour targets. */
   halfEmitPipeline: GPURenderPipeline | null;
@@ -616,21 +601,21 @@ export interface CloudCache {
   reconstructionEmittedThisFrame: boolean;
   /** True when the consuming resolve actually ran this frame. */
   reconstructionConsumedThisFrame: boolean;
-  // C13-02 — the observability surface. `observability` is reset IN PLACE at
-  // the top of every execute (including the culled early return, so a skipped
-  // frame reports zeros rather than the last drawn frame's numbers), and
-  // `cpuStages` is DISABLED by default so the shipped path pays no clock reads
-  // and the render result cannot depend on the instrumentation.
+  // The observability surface. `observability` is reset in place at the top of
+  // every execute, including the culled early return, so a skipped frame reports
+  // zeros rather than the last drawn frame's numbers. `cpuStages` is disabled by
+  // default so the normal path pays no clock reads and the render result cannot
+  // depend on the instrumentation.
   observability: CloudFrameCounters;
   cpuStages: CloudCpuStageAccumulator;
 }
 
 /**
- * C13-09 — the mutable record {@link packCloudAttachmentUniforms} reads.
+ * The mutable record {@link packCloudAttachmentUniforms} reads.
  *
- * The interface is `readonly` so consumers cannot mutate a published contract;
- * the cache holds this widened alias so the ONE per-context instance can be
- * rewritten in place every frame without allocating.
+ * The published interface is `readonly` so consumers cannot mutate the
+ * contract; the cache holds this widened alias so the single per-context
+ * instance can be rewritten in place every frame without allocating.
  */
 type MutableCloudAttachmentUniformInputs = {
   -readonly [
@@ -758,8 +743,8 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       shadowCascadeActive: false,
       shadowCascadeSize: 0,
       iblCoverage: 0.0,
-      // Item 3-C (CLOUD-IBL-FULL, Batch 450) — seed with the Globe constructor
-      // defaults so a pre-publish read still matches the visible defaults.
+      // Seeded with the Globe constructor defaults so a read taken before the
+      // first publish still matches the visible deck.
       iblDeckBottom: 1500.0,
       iblDeckTop: 4000.0,
       iblWindX: 0.7,
@@ -961,12 +946,12 @@ export function clearCloudCompositeBindGroupCaches(
 }
 
 /**
- * TAKRAM-9 — request (or release) the per-frame screen-space cloud
- * transmittance mask. The PP god-ray pass turns this on when cloud-aware god
- * rays are active AND procedural clouds are enabled; the cloud renderer then
- * renders the `fragmentCloudMaskMain` pass into a dedicated full-res r8unorm
- * target after the composite pass. Default OFF → no mask pipeline/texture is
- * allocated and the cloud render is byte-identical.
+ * Requests or releases the per-frame screen-space cloud transmittance mask. The
+ * post-process god-ray pass turns this on when cloud-aware god rays are active
+ * and procedural clouds are enabled; the cloud renderer then renders the
+ * `fragmentCloudMaskMain` pass into a dedicated full-resolution r8unorm target
+ * after the composite pass. While it is off, no mask pipeline or texture is
+ * allocated and the cloud render is unaffected.
  */
 export function setCloudTransmittanceCapture(
   context: CesiumGraphicsContext,
@@ -983,10 +968,11 @@ export function setCloudTransmittanceCapture(
 }
 
 /**
- * TAKRAM-9 — the screen-space cloud transmittance view rendered THIS frame, or
- * null when capture is off / no cloud pass ran (the god-ray pass then falls
- * back to its white 1×1 = no attenuation). `maskRenderedThisFrame` guards
- * against a consumer reading a stale map on a frame the cloud march was culled.
+ * The screen-space cloud transmittance view rendered this frame, or null when
+ * capture is off or no cloud pass ran, in which case the god-ray pass falls back
+ * to its white 1×1 texture and applies no attenuation. `maskRenderedThisFrame`
+ * is what stops a consumer reading a stale map on a frame the cloud march was
+ * culled.
  */
 export function getCloudTransmittanceView(
   context: CesiumGraphicsContext,
@@ -997,13 +983,12 @@ export function getCloudTransmittanceView(
 }
 
 /**
- * C13-09 — request (or release) the reconstruction attachment set.
+ * Requests or releases the reconstruction attachment set.
  *
- * DEFAULT OFF, and that is a correctness claim rather than a caution: with it
- * off nothing allocates and no pass is encoded, so the shipped cloud lane is
- * byte-identical in pixels AND identical in cost. With it on the producer runs
- * and the counters report, but NO consumer exists yet — the composite is
- * unchanged either way. C13-10 and C13-12 are the rows that read the set.
+ * Off by default: nothing allocates and no pass is encoded, so the cloud lane
+ * is unchanged in both pixels and cost. Turning it on runs the producer and
+ * populates the counters, but on its own it changes no output, because nothing
+ * samples the set until {@link setCloudReconstruction} is also on.
  *
  * @param context The owning graphics context.
  * @param enabled True to allocate and produce the attachments.
@@ -1027,35 +1012,33 @@ export function setCloudReconstructionAttachments(
 }
 
 /**
- * C13-10 — request (or release) MARCH-EMITTED reconstruction and its first
- * consumer.
+ * Requests or releases march-emitted reconstruction and its first consumer.
  *
- * This is a SECOND opt-in layered on {@link setCloudReconstructionAttachments},
- * and the separation is deliberate. C13-09 landed the set as "produced but not
- * consumed, by design"; folding both behind one switch would make that recorded
- * claim untestable, because there would no longer be a build that produces
- * without consuming. With this flag set:
+ * A second opt-in layered on {@link setCloudReconstructionAttachments}, kept
+ * separate so a build exists that produces the attachment set without consuming
+ * it — with both behind one switch, the produced-but-unread state would not be
+ * reachable and could not be tested. With this flag set:
  *
  *   - the half-resolution march compiles with
  *     `ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION` and writes contract slot
- *     1 itself, accumulating the TRUE transmittance-weighted depth from the same
+ *     1 itself, accumulating true transmittance-weighted depth from the same
  *     weights its radiance uses rather than leaving the producer to estimate it
  *     from the resolved alpha;
  *   - the producer compiles with the same bit, reads that target, and drops the
- *     depth slot from its own MRT (a pass cannot sample what it writes);
+ *     depth slot from its own MRT, since a pass cannot sample what it writes;
  *   - the temporal resolve compiles with
  *     `ShaderDefineHi.CLOUD_RECONSTRUCTION_CONSUME` and validates history
  *     against the set.
  *
- * ★ THE OUTPUT MAY CHANGE WHEN THIS IS ON, and that is the point — it is the
- *   first time anything reads the attachments. C13-09's own acceptance legs
- *   (attachments on, output byte-identical) remain valid with this flag CLEAR.
+ * Output can change while this is on, since it is the only configuration in
+ * which anything reads the attachments; with it clear, producing the set leaves
+ * the composite untouched.
  *
  * Enabling implies {@link setCloudReconstructionAttachments}: the consumer
  * cannot read a set that was never allocated.
  *
  * @param context The owning graphics context.
- * @param enabled True to compile and run the emitting/consuming variants.
+ * @param enabled True to compile and run the emitting and consuming variants.
  */
 export function setCloudReconstruction(
   context: CesiumGraphicsContext,
@@ -1077,10 +1060,10 @@ export function setCloudReconstruction(
 }
 
 /**
- * C13-09 — the attachment view for `slot`, or null when the set was not
- * produced this frame. `attachmentRenderedThisFrame` is what stops a consumer
- * reading a stale generation on a frame the cloud march was culled or the
- * tier resolved to the full-resolution path.
+ * The attachment view for `slot`, or null when the set was not produced this
+ * frame. `attachmentRenderedThisFrame` is what stops a consumer reading a stale
+ * generation on a frame the cloud march was culled or the tier resolved to the
+ * full-resolution path.
  *
  * @param context The owning graphics context.
  * @param slot A {@link CloudAttachmentSlot} value. Slot 0 (the shared march
@@ -1098,10 +1081,10 @@ export function getCloudReconstructionAttachmentView(
 }
 
 /**
- * C13-09 — the generation the resident attachment set was built under, or 0
- * when nothing is resident. Monotonic across resize and device swap, so a
- * retained bind group captured under an earlier generation can be recognised
- * as stale rather than served (the key C13-40's retirement work needs).
+ * The generation the resident attachment set was built under, or 0 when nothing
+ * is resident. Monotonic across resize and device swap, so a retained bind group
+ * captured under an earlier generation is recognisable as stale rather than
+ * being served.
  *
  * @param context The owning graphics context.
  */
@@ -1137,21 +1120,20 @@ function resolveCloudTimeSeconds(
   return performance.now() / 1000.0;
 }
 
-// C13-37 IBL-refill debounce — the env-cube cloud march is expensive (full cube
-// fill + IBL prefilter + SH-L2 projection), and `publishCloudIblCoverage` runs
-// every frame, edge-triggering that refill through `iblRevision`. Comparing the
-// raw continuous inputs with `!==` bumped the revision on ANY float wobble, so an
-// app animating `cloudCoverage` (or density / wind) refilled the whole cube every
-// frame — defeating the consume-side `CLOUD_COVERAGE_REFRESH_EPSILON` gate once
-// `iblRevision` began edge-triggering the same refill. We instead SNAP each
-// continuous input to a per-input quantization grid and compare the snapped
-// values: sub-step jitter is inert, while a genuine drift still crosses a grid
-// boundary and refills (unlike a per-frame delta test, snapping accumulates). The
-// gate lives here at the single publish site so EVERY consumer benefits. Discrete
-// inputs (enable flags, PW morphology, tier switches that move a param past its
-// step) still bump immediately. The snapped values are also what the manager
-// binds — the deviation from the exact input is at most half a step and is
-// imperceptible after the low-resolution env-cube prefilter + SH projection.
+// Debounce grid for the environment-cube refill. The env-cube cloud march is
+// expensive — a full cube fill, an image-based-lighting prefilter and an SH-L2
+// projection — and `publishCloudIblCoverage` runs every frame, edge-triggering
+// that refill through `iblRevision`. Comparing the raw continuous inputs with
+// `!==` would bump the revision on any float wobble, so an application animating
+// coverage, density or wind refills the whole cube every frame. Each continuous
+// input is therefore snapped to a per-input quantization grid and the snapped
+// values are compared: sub-step jitter is inert, while a genuine drift still
+// crosses a grid boundary and refills, which a per-frame delta test would miss
+// because snapping accumulates. Discrete inputs — the enable flags, the
+// Perlin-Worley morphology switch, a tier change that moves a parameter past its
+// step — bump immediately. The snapped values are also what the manager binds:
+// the deviation from the exact input is at most half a step, which the
+// low-resolution prefilter and SH projection cannot resolve.
 const IBL_REVISION_UNIT_STEP = 1.0 / 256.0; // coverage / density / puff (∈ [0,1])
 const IBL_REVISION_WIND_DIR_STEP = 1.0 / 256.0; // wind-direction components
 const IBL_REVISION_WIND_SPEED_STEP_MPS = 0.05; // wind speed (m/s)
@@ -1162,27 +1144,26 @@ function quantizeCloudIblInput(value: number, step: number): number {
 }
 
 /**
- * Item 4.2 (CLOUD-IBL, Batch 441) — publish the effective cloud coverage the
- * dynamic-env-map sky fill uses to darken + flatten its radiance. Called every
- * frame from the environmental-effects dispatch (NOT from the culled raymarch),
- * so flipping `showProceduralClouds` / `cloudContributesIBL` off immediately
- * resets the published coverage to 0 (the env fill's overcast blend is then
- * skipped → byte-identical to the pre-4.2 cube).
+ * Publishes the effective cloud coverage the dynamic environment map's sky fill
+ * uses to darken and flatten its radiance. Called every frame from the
+ * environmental-effects dispatch rather than from the cullable raymarch, so
+ * turning `showProceduralClouds` or `cloudContributesIBL` off resets the
+ * published coverage to 0 on that frame and the fill's overcast blend is
+ * skipped.
  *
- * The coverage is a COARSE global scalar: `globe.cloudCoverage` modulated by a
- * mild `cloudDensity` term (a thin high-coverage haze dims/flattens less than a
- * dense deck). This is deliberately not a per-face cloud raymarch — that is
- * deferred (CLOUD-IBL-FULL). Returns 0 unless BOTH `showProceduralClouds` AND
- * `cloudContributesIBL` are true.
+ * The coverage is a coarse global scalar: cloud coverage modulated by a mild
+ * density term, since a thin high-coverage haze dims and flattens less than a
+ * dense deck. It is not a per-face raymarch. It is 0 unless both
+ * `showProceduralClouds` and `cloudContributesIBL` are true.
  *
- * Item 3-C (CLOUD-IBL-FULL, Batch 450) — ALSO publishes the real deck altitude,
- * wind dir+speed, density, and the PW-shape-active state onto `_cloudCache`, so
- * the dynamic-env-map manager's per-face cloud march reads the user's live cloud
- * customization (`scene.globe` is in scope HERE; it is NOT a `FrameState` field).
- * These extra fields are inert on the OFF path (the manager gates its march on
- * `cloudsInReflections` AND coverage > 0); they always reflect the current globe
- * so a customization shows up in the reflected deck the same frame it shows up in
- * the visible deck.
+ * Also publishes deck altitude, wind direction and speed, density and the
+ * Perlin-Worley-shape state onto the cloud cache, so the environment map
+ * manager's per-face march reads live cloud customization; `scene.globe` is in
+ * scope here and is not a `FrameState` field. Those fields are inert while
+ * reflections are off, because the manager gates its march on
+ * `cloudsInReflections` and a coverage above 0, and they always reflect the
+ * current globe so a customization reaches the reflected deck on the same frame
+ * it reaches the visible one.
  */
 export function publishCloudIblCoverage(
   context: CesiumGraphicsContext,
@@ -1213,10 +1194,10 @@ export function publishCloudIblCoverage(
     ? clampUnit(coverage * densityWeight)
     : 0.0;
 
-  // Snap the continuous inputs to their per-input debounce grid (see the
-  // IBL_REVISION_* rationale above). These snapped values are what gets published
-  // AND compared, so sub-step jitter neither bumps `iblRevision` nor perturbs the
-  // bound reflection, while a genuine drift crosses a grid step and refills.
+  // Snap the continuous inputs to their per-input debounce grid. The snapped
+  // values are both what is published and what is compared, so sub-step jitter
+  // neither bumps `iblRevision` nor perturbs the bound reflection, while a
+  // genuine drift crosses a grid step and refills.
   const quantDeckBottom = quantizeCloudIblInput(
     deckBottom,
     IBL_REVISION_DECK_STEP_M,
@@ -1235,12 +1216,12 @@ export function publishCloudIblCoverage(
     IBL_REVISION_UNIT_STEP,
   );
 
-  // Bump the revision immediately for DISCRETE changes — the enable flag
-  // (compared exactly, so a flag toggle refreshes even below the coverage step)
-  // and the PW base-shape morphology — and for any CONTINUOUS input whose snapped
-  // value crossed a grid step. Pure wind advection is debounced separately below:
-  // it displaces the field without changing any of these snapped appearance
-  // inputs, so a fixed-sun scene still re-darkens reflected clouds as they drift.
+  // Bump the revision immediately for a discrete change — the enable flag, which
+  // is compared exactly so a toggle refreshes even below the coverage step, and
+  // the base-shape morphology — and for any continuous input whose snapped value
+  // crossed a grid step. Pure wind advection is debounced separately below: it
+  // displaces the field without changing any of these snapped appearance inputs,
+  // so a fixed-sun scene still re-darkens reflected clouds as they drift.
   const staticStateChanged =
     cache.iblContributesIbl !== contributesIbl ||
     cache.iblPWActive !== pwActive ||
@@ -1277,8 +1258,8 @@ export function publishCloudIblCoverage(
   cache.iblTimeSeconds = cloudTimeSeconds;
   cache.iblDensity = quantDensity;
   cache.iblPuffSize = quantPuffSize;
-  // Mirror WebGPUProceduralCloudRenderer's PW selection so the IBL march binds
-  // the SAME base shape view (PW vs value-FBM) the visible deck samples.
+  // Mirror the visible renderer's Perlin-Worley selection so the reflection
+  // march binds the same base shape view the visible deck samples.
   cache.iblPWActive = pwActive;
   cache.iblCoverage = quantCoverage;
   cache.iblContributesIbl = contributesIbl;
@@ -1306,10 +1287,8 @@ function clampUnit(v: number): number {
   return v;
 }
 
-// ── Batch 437 (CLOUD-SHADOWS) — beer-shadow-map constants ──
-// CloudShadowUniforms = sunViewInvVpRelativeToEye(16) + sunDirAndSteps(4) = 20
-// floats. C13-06 changed only the MEANING of the matrix (the inverse sun-view VP
-// is now eye-relative), not the layout — no uniform buffer or bind group grew.
+// `CloudShadowUniforms` is `sunViewInvVpRelativeToEye` (16 floats) plus
+// `sunDirAndSteps` (4), so 20 floats. The matrix is eye-relative.
 const CLOUD_SHADOW_UNIFORM_FLOATS = 20;
 const CLOUD_SHADOW_UNIFORM_BYTES = CLOUD_SHADOW_UNIFORM_FLOATS * 4;
 // Square low-res shadow map. 512² is plenty for the soft, slowly-moving cloud
@@ -1326,19 +1305,19 @@ const CLOUD_SHADOW_FOOTPRINT_M = 60000.0;
 // Light-march steps for the optical-depth accumulation along the sun ray.
 const CLOUD_SHADOW_LIGHT_STEPS = 16;
 
-// ── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP — opt-in 3-cascade constants ──
-// Three cascades reusing a geometric (÷3) CSM-style split: cascade 2 (far)
-// matches the single-map footprint (±60 km); cascades 1/0 tighten to ±20 km and
-// ±6.67 km, so the finest cascade packs the same 512² over 9× less ground → ~3×
-// the effective shadow resolution near the camera. Uniform-buffer offsets must be
-// 256-aligned, so each cascade's CloudShadowUniforms (20 floats) is padded to a
-// 64-float (256-byte) stride.
+// Constants for the opt-in cascaded shadow atlas. Three cascades on a geometric
+// CSM-style split by thirds: the far cascade matches the single-map footprint of
+// ±60 km, and the mid and near cascades tighten to ±20 km and ±6.67 km, so the
+// finest cascade packs the same 512² over nine times less ground and roughly
+// triples the effective shadow resolution near the camera. Uniform-buffer
+// offsets must be 256-aligned, so each cascade's 20-float `CloudShadowUniforms`
+// is padded to a 64-float stride.
 const CLOUD_SHADOW_CASCADE_COUNT = 3;
 const CLOUD_SHADOW_CASCADE_STRIDE_FLOATS = 64; // 256 bytes (uniform offset align)
 const CLOUD_SHADOW_CASCADE_STRIDE_BYTES =
   CLOUD_SHADOW_CASCADE_STRIDE_FLOATS * 4;
-// Per-cascade footprint HALF-extent (metres): near, mid, far. Far == the single
-// map; each step is ÷3 (geometric split).
+// Per-cascade footprint half-extent in metres: near, mid, far. The far cascade
+// equals the single map and each step divides by three.
 const CLOUD_SHADOW_CASCADE_FOOTPRINTS_M = [
   CLOUD_SHADOW_FOOTPRINT_M / 9.0,
   CLOUD_SHADOW_FOOTPRINT_M / 3.0,
@@ -1348,25 +1327,28 @@ const CLOUD_SHADOW_CASCADE_FOOTPRINTS_M = [
 // cheaper far cascades (they cover coarse coverage where step count barely reads).
 const CLOUD_SHADOW_CASCADE_STEPS = [CLOUD_SHADOW_LIGHT_STEPS, 12, 8];
 
-// V9 (Batch 432) — half-res target format. rgba16float so the premultiplied HDR
-// cloud radiance survives the bilateral interpolation without banding.
+// Half-resolution target format. rgba16float so the premultiplied HDR cloud
+// radiance survives the bilateral interpolation without banding.
 const CLOUD_HALF_FORMAT: GPUTextureFormat = "rgba16float";
-// UpscaleUniforms float count — MUST equal the WGSL struct length (CloudUpscale.wgsl).
+// `UpscaleUniforms` float count; has to equal the struct length in
+// `CloudUpscale.wgsl`.
 const UPSCALE_UNIFORM_FLOATS = 16;
 const UPSCALE_UNIFORM_BYTES = UPSCALE_UNIFORM_FLOATS * 4;
-// Bilateral depth-similarity falloff, tuned in the renderer-wide NONLINEAR log
-// depth space ([0,1], NOT metres). Small enough that a cloud/terrain edge rejects
-// the far-side taps (crisp silhouette) but not so small that cloud interiors over
-// a smooth depth gradient lose all four taps.
+// Bilateral depth-similarity falloff, expressed in the renderer-wide nonlinear
+// log depth space over [0, 1] rather than in metres. Small enough that a
+// cloud/terrain edge rejects the far-side taps and keeps a crisp silhouette, but
+// not so small that cloud interiors over a smooth depth gradient lose all four
+// taps.
 const CLOUD_UPSCALE_DEPTH_SIGMA = 5.0e-3;
-// V10 (Batch 433) — temporal history format MUST match the half-res target
-// (rgba16float, premultiplied HDR cloud) since the history accumulates that buffer.
+// The history accumulates the half-resolution buffer, so its format has to match
+// that target exactly.
 const CLOUD_TEMPORAL_FORMAT: GPUTextureFormat = CLOUD_HALF_FORMAT;
-// TemporalUniforms float count — MUST equal the WGSL struct length
-// (CloudTemporalResolve.wgsl): previousVpRte(16) + inverseCurrentVpRte(16) +
-// seven vec4 rows carrying encoded camera, f64 camera delta, deck topology,
-// resolution, validity, and diagnostics = 60. This remains within WebGPU's
-// 256-byte minimum uniform-buffer alignment without growing the allocation.
+// `TemporalUniforms` float count; has to equal the struct length in
+// `CloudTemporalResolve.wgsl`: `previousVpRte` (16) plus `inverseCurrentVpRte`
+// (16) plus seven vec4 rows carrying encoded camera, f64 camera delta, deck
+// topology, resolution, validity and diagnostics, so 60. That stays inside
+// WebGPU's 256-byte minimum uniform-buffer alignment without growing the
+// allocation.
 const TEMPORAL_UNIFORM_FLOATS = 60;
 const TEMPORAL_UNIFORM_BYTES = TEMPORAL_UNIFORM_FLOATS * 4;
 
@@ -1389,14 +1371,15 @@ function markCloudTemporalInactive(cache: CloudCache): void {
 }
 
 /**
- * V10 (Batch 433) — (re)allocate the DOUBLE-BUFFERED (ping-pong) half-res cloud
- * HISTORY targets + the reproject/clamp/blend resolve pipeline. Called ONLY when a
- * temporal tier is active (T1 low / T2 medium); T3 cinematic + the escape hatch keep
- * temporal OFF so none of this allocates → byte-identical default. The history pair
- * is sized to the HALF-RES target (it accumulates the premultiplied half-res cloud)
- * and re-created on resize (size validation per CLAUDE.md). On (re)allocation the
- * first-frame flag is reset so the next resolve seeds identity history (no flash).
- * Returns false (caller falls back to plain half-res) if anything can't build.
+ * Allocates or reallocates the ping-pong half-resolution history targets and the
+ * reproject, clamp and blend resolve pipeline. Called only while a temporal tier
+ * is active; the cinematic tier and the escape hatch keep temporal off, so none
+ * of this allocates there. The history pair is sized to the half-resolution
+ * target, since it accumulates the premultiplied half-resolution cloud, and is
+ * recreated on resize. On reallocation the first-frame flag is reset so the next
+ * resolve seeds identity history and no flash is visible. Returns false when
+ * anything cannot be built, and the caller then falls back to plain
+ * half-resolution.
  */
 function ensureTemporalResources(
   device: GPUDevice,
@@ -1428,7 +1411,7 @@ function ensureTemporalResources(
     cache.temporalHeight = halfH;
     cache.temporalRead = 0;
     cache.temporalBindGroups = [null, null];
-    // C13-10 — the consuming groups reference the SAME history views.
+    // The consuming groups reference the same history views.
     cache.temporalConsumeBindGroups = [null, null];
     cache.temporalConsumeAttachmentGeneration = 0;
     // History contents are undefined after (re)allocation — seed identity next frame.
@@ -1449,10 +1432,9 @@ function ensureTemporalResources(
     );
     const resolveModule = device.createShaderModule({
       label: "CloudTemporalResolve shader",
-      // C13-10 aftermath (Batch 942): the source now carries //>>ifdef
-      // blocks, so RAW text is both branches concatenated — invalid WGSL
-      // ("redeclaration of 'previousUv'"). defines=0 emits the //>>else
-      // branch, byte-identical to the pre-C13-10 module (spec F1b).
+      // The source carries preprocessor blocks, so its raw text is both
+      // branches concatenated and is not valid WGSL — it redeclares
+      // `previousUv`. Preprocessing with no defines emits the else branch.
       code: preprocess(CloudTemporalResolveWGSL, 0, 0),
     });
     cache.temporalPipeline = device.createRenderPipeline({
@@ -1509,10 +1491,10 @@ function ensureTemporalResources(
     }
   }
 
-  // ── C13-10 — the CONSUMING resolve ──
-  // Beside the historical pipeline, never replacing it. The extra bindings are
-  // the C13-09 attachment set; the base bind group cannot be reused because a
-  // bind-group layout is part of a pipeline's identity.
+  // The consuming resolve, built alongside the base pipeline rather than
+  // replacing it. Its extra bindings are the attachment set; the base bind group
+  // cannot be reused because a bind-group layout is part of a pipeline's
+  // identity.
   if (cache.reconstructionEnabled && !cache.temporalConsumePipeline) {
     cache.temporalConsumeBindGroupLayout = makeBindGroupLayout(
       device,
@@ -1561,19 +1543,19 @@ function ensureTemporalResources(
 }
 
 /**
- * C13-10 — (re)build the CONSUMING resolve's bind groups, and report whether
- * this frame may use them.
+ * Rebuilds the consuming resolve's bind groups and reports whether this frame
+ * may use them.
  *
- * Called from the composite block AFTER the producer has run, not from
+ * Called from the composite block after the producer has run, not from
  * `ensureTemporalResources`: the attachment textures do not exist when the
- * temporal gate is resolved, and building the groups there would leave the
- * first enabled frame silently on the historical path.
+ * temporal gate is resolved, so building the groups there would leave the first
+ * enabled frame silently on the non-consuming path.
  *
- * The groups are keyed on the ATTACHMENT GENERATION rather than on being
+ * The groups are keyed on the attachment generation rather than on merely being
  * non-null. A resize or a device swap advances that counter and reallocates the
- * three textures the groups reference; the counter is monotonic by C13-09's
- * contract (`releaseCloudAttachmentGeneration` never rewinds it), so a group
- * captured under generation N can never key as current under a later one.
+ * three textures the groups reference, and the counter is monotonic —
+ * `releaseCloudAttachmentGeneration` never rewinds it — so a group captured
+ * under one generation can never key as current under a later one.
  */
 function ensureCloudTemporalConsumeBindGroups(
   device: GPUDevice,
@@ -1624,14 +1606,13 @@ function ensureCloudTemporalConsumeBindGroups(
 }
 
 /**
- * C13-09 — release the owned reconstruction attachments WITHOUT rewinding the
- * generation counter.
+ * Releases the owned reconstruction attachments without rewinding the generation
+ * counter.
  *
- * Rewinding would let a retired bind group's key collide with a future one,
- * which is exactly the confusion C13-40's post-submit retirement work has to
- * be able to rule out. The pipeline, layout and uniform buffer are size- and
- * device-independent, so they survive a resize; only a device teardown
- * (`destroyProceduralCloudResources`) drops them.
+ * Rewinding would let a retired bind group's key collide with a future one. The
+ * pipeline, layout and uniform buffer are independent of both size and device,
+ * so they survive a resize; only a device teardown through
+ * `destroyProceduralCloudResources` drops them.
  */
 function releaseCloudAttachmentResources(cache: CloudCache): void {
   for (let i = 0; i < cache.attachmentTextures.length; i++) {
@@ -1642,10 +1623,10 @@ function releaseCloudAttachmentResources(cache: CloudCache): void {
   cache.attachmentBindGroup = null;
   cache.attachmentBindGroupSourceView = null;
   cache.attachmentRenderedThisFrame = false;
-  // C13-10 — the emitting group and BOTH consuming groups reference textures
-  // that were just destroyed. Dropping them here (rather than trusting the
-  // generation check) is what keeps a resize from submitting a bind group whose
-  // depth attachment no longer exists.
+  // The emitting group and both consuming groups reference textures that were
+  // just destroyed. Dropping them here rather than relying on the generation
+  // check is what keeps a resize from submitting a bind group whose depth
+  // attachment no longer exists.
   cache.attachmentEmitBindGroup = null;
   cache.attachmentEmitBindGroupSourceView = null;
   cache.attachmentEmitBindGroupDepthView = null;
@@ -1657,24 +1638,26 @@ function releaseCloudAttachmentResources(cache: CloudCache): void {
 }
 
 /**
- * C13-09 — (re)allocate the owned reconstruction attachments plus the producer
- * pipeline, and rebuild the one bind group that reads the current march target.
+ * Allocates or reallocates the owned reconstruction attachments and the producer
+ * pipeline, and rebuilds the one bind group that reads the current march target.
  *
- * Lifecycle, all three cases the row requires:
+ * Three cases advance the set:
  *
- *   CREATION — first enabled frame. `generation` goes 0 -> 1 and the live-byte
- *     figure the debug surface reports becomes non-zero.
- *   RESIZE — the half-res target changed size (canvas resize or a tier that
- *     resolved a different `renderResScale`). Every owned texture is destroyed
- *     and recreated and the generation advances, because the previous contents
- *     describe a different pixel grid and a consumer must not blend across it.
- *   DEVICE SWAP — `deviceKey` identity differs. Textures created on a lost
- *     device are unusable even at an unchanged size, so identity (not size) is
- *     the comparison. The teardown path additionally drops the pipeline.
+ *   Creation — the first enabled frame. The generation goes from 0 to 1 and the
+ *     live-byte figure the debug surface reports becomes non-zero.
+ *   Resize — the half-resolution target changed size, through a canvas resize or
+ *     a tier that resolved a different `renderResScale`. Every owned texture is
+ *     destroyed and recreated and the generation advances, because the previous
+ *     contents describe a different pixel grid and a consumer must not blend
+ *     across it.
+ *   Device swap — the `deviceKey` identity differs. Textures created on a lost
+ *     device are unusable even at an unchanged size, so the comparison is on
+ *     identity rather than size. The teardown path additionally drops the
+ *     pipeline.
  *
- * `sourceView` is the freshly marched half-res target: the bind group is
- * rebuilt whenever that view is reallocated, which is what the identity check
- * against `attachmentBindGroupSourceView` detects.
+ * `sourceView` is the freshly marched half-resolution target: the bind group is
+ * rebuilt whenever that view is reallocated, which the identity check against
+ * `attachmentBindGroupSourceView` detects.
  *
  * @returns True when a producer pass can be encoded this frame.
  */
@@ -1704,8 +1687,8 @@ function ensureCloudAttachmentResources(
       cache.attachmentTextures[i] = attachmentTexture;
       cache.attachmentViews[i] = attachmentTexture.createView();
     }
-    // Only after EVERY owned texture exists, so a partially built set never
-    // advertises itself as a complete generation.
+    // Committed only after every owned texture exists, so a partially built set
+    // never advertises itself as a complete generation.
     commitCloudAttachmentGeneration(cache.attachmentGeneration, w, h, device);
     cache.attachmentBindGroup = null;
   }
@@ -1721,8 +1704,8 @@ function ensureCloudAttachmentResources(
     );
     const attachmentModule = device.createShaderModule({
       label: "CloudReconstructionAttachments shader",
-      // C13-10 aftermath (Batch 942): raw ifdef-bearing text is invalid WGSL;
-      // defines=0 is byte-identical to the pre-C13-10 producer (spec F1b).
+      // The source carries preprocessor blocks, so its raw text is not valid
+      // WGSL; preprocessing with no defines emits the estimating branch.
       code: preprocess(CloudReconstructionAttachmentsWGSL, 0, 0),
     });
     cache.attachmentPipeline = device.createRenderPipeline({
@@ -1765,13 +1748,12 @@ function ensureCloudAttachmentResources(
     cache.attachmentBindGroupSourceView = sourceView;
   }
 
-  // ── C13-10 — the EMITTING producer ──
-  // Built beside the estimating one, never in place of it, so clearing the
-  // flag returns to exactly the pipeline C13-09 shipped. Binding 2 is the depth
-  // attachment the MARCH wrote this frame; the pass therefore writes only the
-  // remaining two targets, because sampling an attachment it also writes is not
-  // expressible in a single render pass and duplicating the target to make it
-  // expressible would cost 8 B/texel for a copy.
+  // The emitting producer, built beside the estimating one rather than in place
+  // of it, so clearing the flag returns to exactly the estimating pipeline.
+  // Binding 2 is the depth attachment the march wrote this frame, so the pass
+  // writes only the remaining two targets: sampling an attachment it also writes
+  // is not expressible in a single render pass, and duplicating the target to
+  // make it expressible would cost 8 bytes per texel for the copy.
   if (cache.reconstructionEnabled && !cache.attachmentEmitPipeline) {
     cache.attachmentEmitBindGroupLayout = makeBindGroupLayout(
       device,
@@ -1843,13 +1825,14 @@ function ensureCloudAttachmentResources(
 }
 
 /**
- * C13-10 — is the emitting/consuming variant fully built and usable this frame?
+ * True when the emitting and consuming variant is fully built and usable this
+ * frame.
  *
  * Both halves of the handshake are required together: a march that emits into a
- * depth target no producer reads would leave the attachment stale, and a
- * producer compiled for the emitting layout cannot run against a march that did
- * not write slot 1. Anything missing falls the whole frame back to C13-09's
- * estimator path, which is always correct — never to a half-applied variant.
+ * depth target no producer reads leaves the attachment stale, and a producer
+ * compiled for the emitting layout cannot run against a march that did not write
+ * slot 1. Anything missing falls the whole frame back to the estimator path,
+ * which is always correct, rather than to a half-applied variant.
  */
 function cloudReconstructionVariantReady(cache: CloudCache): boolean {
   return (
@@ -1862,10 +1845,11 @@ function cloudReconstructionVariantReady(cache: CloudCache): boolean {
 }
 
 /**
- * V9 (Batch 432) — (re)allocate the half-res cloud target at `floor(w·scale) ×
- * floor(h·scale)`. Re-created on canvas resize (size validation per CLAUDE.md). A
- * null device or a zero size is a no-op (the caller falls back to full-res). The
- * half-res pipeline + the upscale pipeline/BGL/UBO/sampler are built once, lazily.
+ * Allocates or reallocates the half-resolution cloud target at
+ * `floor(w·scale) × floor(h·scale)`, recreating it on canvas resize. A null
+ * device or a zero size is a no-op and the caller falls back to full resolution.
+ * The half-resolution pipeline and the upscale pipeline, bind-group layout,
+ * uniform buffer and sampler are built once, lazily.
  */
 function ensureHalfResResources(
   device: GPUDevice,
@@ -1902,8 +1886,8 @@ function ensureHalfResResources(
   if (!cache.halfPipeline && cache.bindGroupLayout) {
     const shaderModule = device.createShaderModule({
       label: "ProceduralClouds shader (half-res)",
-      // C13-10 aftermath (Batch 942): raw ifdef-bearing text is invalid WGSL;
-      // defines=0 is byte-identical to the pre-C13-10 march (spec F1b).
+      // The source carries preprocessor blocks, so its raw text is not valid
+      // WGSL; preprocessing with no defines emits the non-emitting march.
       code: preprocess(PROCEDURAL_CLOUDS_SOURCE, 0, 0),
     });
     const layout = device.createPipelineLayout({
@@ -1923,14 +1907,13 @@ function ensureHalfResResources(
     });
   }
 
-  // C13-10 — the EMITTING half-res march. A SEPARATE pipeline built from a
-  // SEPARATE module, beside the historical one rather than replacing it, so a
-  // runtime flip never invalidates or recompiles the shipped pipeline. It is
-  // the ONLY pipeline in this renderer compiled with the emission bit: the
-  // full-resolution march, the beer-shadow map, the cascade atlas and the
-  // god-ray mask all keep compiling `PROCEDURAL_CLOUDS_SOURCE` verbatim at
-  // `definesHi = 0`, which is what holds their register footprint at the value
-  // C13-39 measured.
+  // The emitting half-resolution march: a separate pipeline from a separate
+  // module, built beside the non-emitting one rather than replacing it, so a
+  // runtime flip never invalidates or recompiles the base pipeline. It is the
+  // only pipeline in this renderer compiled with the emission bit — the
+  // full-resolution march, the Beer shadow map, the cascade atlas and the
+  // god-ray mask all keep compiling `PROCEDURAL_CLOUDS_SOURCE` at
+  // `definesHi = 0`, which is what holds their register footprint down.
   if (
     cache.reconstructionEnabled &&
     !cache.halfEmitPipeline &&
@@ -1954,9 +1937,9 @@ function ensureHalfResResources(
       fragment: {
         module: emitModule,
         entryPoint: "fragmentMain",
-        // @location(0) is the historical colour target; @location(1) is
-        // contract slot 1, whose format comes from the contract table so the
-        // pipeline and the texture can never disagree.
+        // @location(0) is the colour target; @location(1) is contract slot 1,
+        // whose format comes from the contract table so the pipeline and the
+        // texture cannot disagree.
         targets: [
           { format: CLOUD_HALF_FORMAT },
           { format: CLOUD_MARCH_EMITTED_FORMAT },
@@ -2014,13 +1997,11 @@ function ensureHalfResResources(
   return !!cache.halfView && !!cache.halfPipeline && !!cache.upscalePipeline;
 }
 
-// ─── Weather Phase 1 — procedural weather-map producer ───
-// The default global map now lives in Scene/Weather/ProceduralWeatherMap.ts
-// (C13-07) so it and the real-data packer share ONE seam/pole convention.
-
-// Returns the weather texture VIEW to bind this frame, building (once) the
-// procedural map when enabled and a 1×1 white fallback otherwise. The bind group
-// always has a valid 2d-array texture at binding 4.
+// Returns the weather texture view to bind this frame, building the procedural
+// map once when enabled and a 1×1 white fallback otherwise, so the bind group
+// always has a valid 2d-array texture at binding 4. The default global map lives
+// in `Scene/Weather/ProceduralWeatherMap.ts` so that it and the real-data packer
+// share one seam and pole convention.
 function ensureWeatherView(
   device: GPUDevice,
   cache: CloudCache,
@@ -2074,14 +2055,15 @@ function ensureWeatherView(
     height: WEATHER_TEX_H,
     depthOrArrayLayers: 1,
   };
-  // Weather ingest (Phase 1) — real data from a WeatherProvider wins; (re)upload
-  // only when its version changes. Otherwise fall back to the procedural map
-  // (uploaded once, sentinel -1). Switching back from provider to procedural
-  // re-uploads the procedural fill.
-  // C13-02 — weather texture cache accounting. A "hit" is a frame on which the
-  // resident version already matched the requested one, so no upload was
-  // encoded; a "miss" is a frame that had to re-upload. `liveBytes` describes
-  // the RESIDENT texture and therefore survives the per-frame reset.
+  // Real data from a `WeatherProvider` wins and is re-uploaded only when its
+  // version changes; otherwise the procedural map is used, uploaded once under
+  // sentinel -1. Switching back from provider to procedural re-uploads the
+  // procedural fill.
+  //
+  // A cache hit is a frame on which the resident version already matched the
+  // requested one, so no upload was encoded; a miss is a frame that had to
+  // re-upload. `weatherLiveBytes` describes the resident texture and therefore
+  // survives the per-frame counter reset.
   const counters = cache.observability;
   const weatherBytes = WEATHER_TEX_W * WEATHER_TEX_H * 4;
   counters.weatherLiveBytes = weatherBytes;
@@ -2111,15 +2093,15 @@ function ensureWeatherView(
   return cache.weatherView!;
 }
 
-// ─── Batch 434 (3.3 + 3.4) — atmosphere-LUT view resolver ───
-// Returns the three LUT views to bind at 9/10/11 this frame. The 1×1 black
-// placeholder is built once (lazily) and bound when EITHER mode is off OR the
-// atmosphere LUTs haven't been allocated. When at least one mode is on AND the
-// perfManager has the LUT resources, the REAL sky-view / MS / transmittance views
-// are bound. The WGSL still gates each sample on its mode bit + a non-zero radiance,
-// so a real-but-unbaked LUT (all-zero textures before SkyAtmosphere dispatches the
-// bake) self-heals to the legacy heuristic/constant path (mirrors the globe fog
-// drape's "bind whatever's there, let the shader's luminance test decide" pattern).
+// Returns the three atmosphere LUT views to bind at 9, 10 and 11 this frame. The
+// 1×1 black placeholder is built lazily and bound when either mode is off or the
+// atmosphere LUTs have not been allocated; when at least one mode is on and the
+// performance manager holds the LUT resources, the real sky-view,
+// multiple-scattering and transmittance views are bound. The shader gates each
+// sample on its mode bit and a non-zero radiance, so a real but unbaked LUT —
+// all-zero textures before SkyAtmosphere dispatches the bake — falls back to the
+// heuristic constant path on its own, the same way the globe's fog drape lets
+// the shader's luminance test decide.
 interface CloudLutViews {
   skyView: GPUTextureView;
   multipleScatter: GPUTextureView;
@@ -2132,9 +2114,10 @@ function ensureCloudLutViews(
   wantLut: boolean,
 ): CloudLutViews {
   if (!cache.lutPlaceholderView) {
-    // 1×1 BLACK rgba16float (float16 zero = 8 zero bytes). Black == "no radiance"
-    // == the unbaked-LUT sentinel, so a bound placeholder is safe even if a mode
-    // bit is set: the WGSL luminance test fails and the legacy branch runs.
+    // A 1×1 black rgba16float, which is eight zero bytes. Black means no
+    // radiance, which is also the unbaked-LUT sentinel, so binding the
+    // placeholder is safe even with a mode bit set: the shader's luminance test
+    // fails and the analytic branch runs.
     const ph = device.createTexture({
       size: { width: 1, height: 1, depthOrArrayLayers: 1 },
       format: "rgba16float",
@@ -2196,13 +2179,11 @@ function ensureCloudLutViews(
   };
 }
 
-// ─── V2 — 3D noise bake ───
-// Ensure the shape/detail noise textures are baked ONCE and return the views to
-// bind at 6/7/8. INERT in V2: the bind group must supply valid 3D views (the BGL
-// declares them), but the shader keeps `noiseSource = 0` and never samples them,
-// so the live march produces every pixel → byte-identical. A 1×1×1 white 3D
-// fallback keeps the bind group valid if the bake is unavailable. V3 flips
-// `cloudDensity`/`cloudBaseDensity` to sample these.
+// Bakes the shape and detail noise textures once and returns the views to bind
+// at 6, 7 and 8. The bind-group layout declares 3D textures at those bindings,
+// so valid views are always required; a 1×1×1 white 3D fallback keeps the bind
+// group valid when the bake is unavailable, and the shader then marches live
+// noise instead.
 function ensureNoiseBaked(
   device: GPUDevice,
   cache: CloudCache,
@@ -2234,11 +2215,12 @@ function ensureNoiseBaked(
       minFilter: "linear",
     });
   }
-  // Batch 439 (4.8 CLOUD-PW-NOISE) — (re)bake when not yet baked OR when the PW
-  // variant is requested for the first time (the initial bake may have been
-  // value-only). The default value `shapeTexture` is always baked identically, so a
-  // re-bake to add the PW variant doesn't change the default output. We re-bake by
-  // destroying the prior resources (one-shot upgrade; the flag rarely toggles).
+  // Bake when nothing is baked yet, or when the Perlin-Worley variant is
+  // requested for the first time and the initial bake was value-noise only. The
+  // value `shapeTexture` bakes identically either way, so adding the
+  // Perlin-Worley variant does not change the value-noise output. The upgrade
+  // destroys the prior resources and rebakes, which is affordable because the
+  // flag is effectively one-shot.
   const needPW =
     perlinWorley && !(cache.noise && cache.noise.shapePWSampleView);
   if (!cache.noiseBaked || needPW) {
@@ -2281,12 +2263,12 @@ function initializeCloudPipeline(
 
   const shaderModule = device.createShaderModule({
     label: "ProceduralClouds shader",
-    // C13-10 aftermath (Batch 942): raw ifdef-bearing text is invalid WGSL;
-    // defines=0 is byte-identical to the pre-C13-10 march (spec F1b).
+    // The source carries preprocessor blocks, so its raw text is not valid
+    // WGSL; preprocessing with no defines emits the non-emitting march.
     code: preprocess(PROCEDURAL_CLOUDS_SOURCE, 0, 0),
   });
-  // TAKRAM-9 — retained so the (lazy) transmittance-mask pipeline can reuse the
-  // same module + BGL without recompiling the WGSL.
+  // Retained so the lazily built transmittance-mask pipeline can reuse the same
+  // module and bind-group layout without recompiling the shader.
   cache.maskShaderModule = shaderModule;
 
   cache.bindGroupLayout = makeBindGroupLayout(device, "ProceduralClouds BGL", [
@@ -2294,17 +2276,17 @@ function initializeCloudPipeline(
     texture(1, Stage.FRAGMENT),
     sampler(2, Stage.FRAGMENT),
     uniformBuffer(3, Stage.FRAGMENT),
-    // Weather Phase 1 — weather map (2d-array depth-1) + its sampler.
+    // Weather map, a depth-1 2d-array, and its sampler.
     texture(4, Stage.FRAGMENT, { viewDimension: "2d-array" }),
     sampler(5, Stage.FRAGMENT),
-    // V2 — 3D noise textures (shape + detail) + sampler. Bound but NOT sampled
-    // until V3 (noiseSource stays 0); the live march still produces every pixel.
+    // Baked 3D shape and detail noise, and their sampler.
     texture(6, Stage.FRAGMENT, { viewDimension: "3d" }),
     texture(7, Stage.FRAGMENT, { viewDimension: "3d" }),
     sampler(8, Stage.FRAGMENT),
-    // Batch 434 (3.3 + 3.4) — atmosphere LUTs (sky-view / MS / transmittance) +
-    // a linear sampler. Bound UNCONDITIONALLY (1×1 black placeholders when off /
-    // unbaked) so the BGL never forks; the WGSL gates the samples on the mode bits.
+    // Atmosphere LUTs — sky-view, multiple-scattering, transmittance — and a
+    // linear sampler. Declared unconditionally, with 1×1 black placeholders when
+    // off or unbaked, so the layout never forks; the shader gates the samples on
+    // the mode bits.
     texture(9, Stage.FRAGMENT),
     texture(10, Stage.FRAGMENT),
     texture(11, Stage.FRAGMENT),
@@ -2335,8 +2317,8 @@ function initializeCloudPipeline(
     addressModeV: "clamp-to-edge",
   });
 
-  // Weather Phase 1 — global equirect map: wrap in longitude (U), clamp at the
-  // poles (V).
+  // The weather map is a global equirectangular image, so it wraps in longitude
+  // and clamps at the poles.
   cache.weatherSampler = device.createSampler({
     magFilter: "linear",
     minFilter: "linear",
@@ -2344,9 +2326,9 @@ function initializeCloudPipeline(
     addressModeV: "clamp-to-edge",
   });
 
-  // Batch 434 (3.3 + 3.4) — linear clamp sampler for the atmosphere LUTs (matches
-  // SkyAtmosphere's lutSampler / AerialPerspective's texSampler conventions so the
-  // cloud air-light / ambient sample the LUTs identically to the visible sky).
+  // Linear clamp sampler for the atmosphere LUTs, matching SkyAtmosphere's
+  // `lutSampler` and AerialPerspective's `texSampler` conventions so the cloud
+  // air-light and ambient terms sample the LUTs identically to the visible sky.
   cache.lutSampler = device.createSampler({
     label: "ProceduralClouds LUT Sampler",
     magFilter: "linear",
@@ -2365,34 +2347,25 @@ function initializeCloudPipeline(
 }
 
 /**
- * Session 65 Batch 45 — Phase 6d quality-dial resolver. Maps the
- * `clouds.volumetricQuality` preset string to a `(maxSteps,
- * lightSteps)` pair, with `"auto"` reading camera altitude to pick a
- * preset on the fly (Phase 6b altitude crossfade — high quality below
- * `volumetricEnableAltitude`, dropping to low above
- * `volumetricDisableAltitude`).
+ * Inputs to the quality-dial resolver, which maps the
+ * `clouds.volumetricQuality` preset string to a `(maxSteps, lightSteps)` pair.
  *
  * Preset table:
- *   low    — (24, 3)  mobile / power-saving
+ *   low    — (24, 3)  mobile and power-saving
  *   medium — (48, 4)  default desktop
  *   high   — (96, 8)  cinematic
- *   auto   — altitude-driven (see below)
+ *   auto   — altitude-driven
  *
- * Auto mode (Phase 6b):
- *   altitude ≤ enableAltitude  → high
- *   altitude ≥ disableAltitude → low
- *   in-between                 → medium (no per-pixel blend yet; the
- *                                 transition is a single step at the
- *                                 midpoint, with hysteresis applied at
- *                                 the caller scale via globe field
- *                                 stickiness — sample-count changes
- *                                 every frame would shimmer at the
- *                                 transition).
+ * In auto mode an altitude at or below `enableAltitude` resolves to high, an
+ * altitude at or above `disableAltitude` resolves to low, and anything between
+ * resolves to medium. The transition is a single step rather than a per-pixel
+ * blend, and hysteresis is applied by the caller through the stickiness of the
+ * globe fields, because changing the sample count every frame shimmers at the
+ * transition.
  *
- * Escape hatch: if the user has set `globe.cloudQuality` to a
- * non-default value (≠ 64), the resolver returns that verbatim and
- * ignores the preset — power users tuning maxSteps by hand don't get
- * fought by the preset enum.
+ * A `cloudQuality` set to anything other than the default of 64 is returned
+ * verbatim and the preset is ignored, so hand-tuned step counts are not
+ * overridden by the preset enum.
  */
 interface QualityResolverInputs {
   preset: string | undefined;
@@ -2406,11 +2379,11 @@ function resolveCloudQuality(inputs: QualityResolverInputs): {
   maxSteps: number;
   lightSteps: number;
 } {
-  // Power-user escape hatch.
+  // A hand-set step count overrides the preset.
   const raw = inputs.rawCloudQuality;
   if (typeof raw === "number" && raw !== 64) {
-    // Light steps default scales with sqrt(maxSteps / 64) so a custom
-    // value gets a sensible light-march count without an extra knob.
+    // Light steps scale with sqrt(maxSteps / 64) so a custom value gets a
+    // sensible light-march count without a second knob.
     const lightSteps = Math.max(2, Math.round(6 * Math.sqrt(raw / 64)));
     return { maxSteps: raw, lightSteps };
   }
@@ -2430,22 +2403,19 @@ function resolveCloudQuality(inputs: QualityResolverInputs): {
   return { maxSteps: 48, lightSteps: 4 };
 }
 
-// ─── C13-06 — the sun-view frame is owned by WebGPUCloudShadowFrame.ts ───
-// The former local mat4 helpers (mul4 / invert4 / buildSunViewOrthoVP) built the
-// world-to-sun-clip matrix and its inverse in f32 from a SPHERICAL 6378137 m
-// footprint centre. Both defects are now closed by the shared f64 frame owner:
-// the centre is a WGS84 geodetic surface projection, and the matrices are
-// emitted relative to a caller-supplied eye so no planet-scale magnitude reaches
-// an f32 matrix entry. See WebGPUCloudShadowFrame.ts for the full contract.
-
-// (Re)allocate the shadow map + pipeline + uniform buffer + placeholder. Builds the
-// dedicated shadow BGL (only the bindings `cloudShadowMain` references: CloudUniforms
-// at 3, weather 4/5, noise 6/7/8, CloudShadowUniforms at 13). Returns false (caller
-// falls back to the placeholder) if anything can't allocate. Size validation per
-// CLAUDE.md: the placeholder is built once; the map is fixed-size (re-create only
-// guarded by `shadowSize`).
+// Allocates or reallocates the shadow map, its pipeline, uniform buffer and
+// placeholder, building the dedicated shadow bind-group layout with only the
+// bindings `cloudShadowMain` references: `CloudUniforms` at 3, weather at 4 and
+// 5, noise at 6, 7 and 8, and `CloudShadowUniforms` at 13. Returns false when
+// anything cannot allocate, and the caller then falls back to the placeholder.
+// The placeholder is built once and the map is fixed-size, so recreation is
+// guarded only by `shadowSize`. The sun-view frame itself is owned by
+// `WebGPUCloudShadowFrame.ts`, which computes the footprint centre as a WGS84
+// geodetic surface projection in f64 and emits the matrices relative to a
+// caller-supplied eye, so no planet-scale magnitude reaches an f32 matrix entry.
 function ensureShadowResources(device: GPUDevice, cache: CloudCache): boolean {
-  // 1×1 r16float ZERO placeholder (optical depth 0 → transmittance 1 = no shadow).
+  // 1×1 r16float zero placeholder: optical depth 0 gives transmittance 1, which
+  // is no shadow.
   if (!cache.shadowPlaceholderView) {
     const ph = device.createTexture({
       label: "CloudShadow Placeholder (1x1 zero r16float)",
@@ -2512,8 +2482,8 @@ function ensureShadowResources(device: GPUDevice, cache: CloudCache): boolean {
     );
     const shaderModule = device.createShaderModule({
       label: "ProceduralClouds shader (shadow pass)",
-      // C13-10 aftermath (Batch 942): raw ifdef-bearing text is invalid WGSL;
-      // defines=0 is byte-identical to the pre-C13-10 march (spec F1b).
+      // The source carries preprocessor blocks, so its raw text is not valid
+      // WGSL; preprocessing with no defines emits the non-emitting march.
       code: preprocess(PROCEDURAL_CLOUDS_SOURCE, 0, 0),
     });
     cache.shadowPipeline = device.createRenderPipeline({
@@ -2581,19 +2551,18 @@ function ensureCascadeResources(device: GPUDevice, cache: CloudCache): boolean {
 }
 
 /**
- * C13-39 — route a cloud render pass through the opt-in GPU timestamp profiler.
+ * Routes a cloud render pass through the opt-in GPU timestamp profiler.
  *
- * Every raymarching pass this module opens (shadow map, shadow cascade atlas,
- * half-res march, temporal resolve, bilateral upscale, full-res march,
- * transmittance mask) is a separate measurable lane. Without this the passes
- * carried no `timestampWrites`, so `CesiumDebug.gpuPassCost()` could not
- * attribute any GPU time to the cloud march at all — which is what the C13-39
- * baked / LIVE / single-shadow / cascaded-shadow acceptance lanes need.
+ * Every raymarching pass this module opens — shadow map, shadow cascade atlas,
+ * half-resolution march, temporal resolve, bilateral upscale, full-resolution
+ * march, transmittance mask — is a separate measurable lane. Passes that carry
+ * no `timestampWrites` are invisible to `CesiumDebug.gpuPassCost()`, which then
+ * attributes no GPU time to the cloud march at all.
  *
- * `withRenderPassTimestamps` returns the EXACT descriptor object when the
- * profiler is not armed for the frame, so the default path allocates nothing and
- * the emitted commands are unchanged. The optional-call guard keeps this safe on
- * any context that predates the accessor.
+ * `withRenderPassTimestamps` returns the same descriptor object when the
+ * profiler is not armed for the frame, so an unprofiled frame allocates nothing
+ * and the emitted commands are unchanged. The optional-call guard keeps this
+ * safe on a context that predates the accessor.
  *
  * Pass results are keyed by the descriptor's `label`.
  */
@@ -2601,10 +2570,10 @@ function timedCloudPass(
   context: CesiumGraphicsContext,
   descriptor: GPURenderPassDescriptor,
 ): GPURenderPassDescriptor {
-  // C13-02 — pass ACCOUNTING rides the same single seam as pass TIMING. Every
-  // cloud pass already routes through here, so the counts cannot drift from the
-  // encode sites the way seven hand-placed increments could, and a pass count
-  // exists even on adapters with no `timestamp-query` support.
+  // Pass accounting rides the same seam as pass timing. Every cloud pass already
+  // routes through here, so the counts cannot drift away from the encode sites
+  // the way seven hand-placed increments could, and a pass count exists even on
+  // adapters with no `timestamp-query` support.
   recordCloudPass(context._cloudCache?.observability, descriptor.label);
   return context.withRenderPassTimestamps?.(descriptor) ?? descriptor;
 }
@@ -2624,40 +2593,35 @@ export function executeProceduralClouds(
   const device = context._device;
   if (!device) return false;
 
-  // TAKRAM-9 — reset the per-frame "mask rendered" flag up front so a culled or
-  // early-returned frame reports null to the god-ray consumer (no stale map).
-  //
-  // C13-02 — the per-frame counters follow the same up-front convention, and
-  // for the same reason: a culled frame that kept last frame's target sizes and
-  // pass counts would read as work that never happened. `resetCloudFrameCounters`
-  // zeroes in place (no allocation) and bumps the lifetime `frames` count. The
-  // very first execute has no cache yet, so it is reset just below instead —
-  // the two branches are exclusive, so `frames` counts every execute once.
-  //
-  // C13-09 — `attachmentRenderedThisFrame` is reset here for the same reason:
-  // a culled frame that left it set would hand a C13-10/12 consumer an
-  // attachment set describing a frame that was never marched.
+  // Everything a consumer reads per frame is cleared up front, so a culled or
+  // early-returned frame reports nothing rather than last frame's state: the
+  // god-ray consumer gets a null mask instead of a stale map, and a reconstruction
+  // consumer gets no attachment set instead of one describing a frame that was
+  // never marched. The counters follow the same convention, since a culled frame
+  // that kept the previous target sizes and pass counts would read as work that
+  // never happened. `resetCloudFrameCounters` zeroes in place without allocating
+  // and bumps the lifetime frame count; the very first execute has no cache yet
+  // and is reset just below instead, and the two branches are exclusive so every
+  // execute is counted once.
   const existingCache = context._cloudCache;
   if (existingCache) {
     existingCache.maskRenderedThisFrame = false;
     existingCache.attachmentRenderedThisFrame = false;
-    // C13-10 — same reason, one level up: a culled frame must not report that
-    // the march emitted or that the resolve consumed.
     existingCache.reconstructionEmittedThisFrame = false;
     existingCache.reconstructionConsumedThisFrame = false;
     resetCloudFrameCounters(existingCache.observability);
     existingCache.cpuStages.beginStage(CloudCpuStage.TOTAL);
   }
 
-  // Frustum cull (Batch 413) — the cloud shell is a sphere at the planet origin
-  // (radius = planetRadius + cloudLayerTop). Skip the full-screen raymarch
-  // entirely when that sphere is outside the view frustum (e.g. the config panned
-  // off-screen in space). For a sphere centered at the world origin the signed
-  // distance to each frustum plane is just `plane.w` (dot(normal, 0) + w), so the
-  // shell is OUTSIDE iff some plane has w < -outerR — matching Cesium
-  // BoundingSphere.intersectPlane (OUTSIDE when distanceToPlane < -radius).
-  // Perf-only: ZERO visual change while any of the shell is in view (so the
-  // cloud probes, which all look at the config, stay green).
+  // Frustum cull. The cloud shell is a sphere at the planet origin with radius
+  // `planetRadius + cloudLayerTop`, so the full-screen raymarch can be skipped
+  // entirely when that sphere is outside the view frustum, for example with the
+  // globe panned off-screen in space. For a sphere centred at the world origin
+  // the signed distance to each frustum plane reduces to `plane.w`, since
+  // dot(normal, 0) is zero, so the shell is outside exactly when some plane has
+  // `w < -outerR`. That matches `BoundingSphere.intersectPlane`, which reports
+  // OUTSIDE when the distance to the plane is below `-radius`. The test changes
+  // nothing visually while any part of the shell is in view.
   const planes = frameState.cullingVolume?.planes;
   if (planes !== undefined && planes.length > 0) {
     const outerR = 6378137.0 + (config.cloudLayerTop ?? 4000.0);
@@ -2684,14 +2648,15 @@ export function executeProceduralClouds(
   stages.beginStage(CloudCpuStage.PACK);
   initializeCloudPipeline(device, cache, context._canvasFormat || "bgra8unorm");
 
-  // V2/V3 — bake (once) + resolve the 3D noise views, BEFORE packing so the
-  // qualityFlags noiseSource bit can reflect the same-frame baked state (no
-  // one-frame-late flip). The bake's one-shot submit runs before this frame's
-  // cloud pass, so the textures are populated when sampled.
-  // Batch 439 (4.8 CLOUD-PW-NOISE) — 'perlin-worley' selects the PW shape variant
-  // (a separate baked texture); 'value'/undefined keeps the value-FBM bake (default,
-  // byte-identical). The flag drives the bake (alloc the PW texture) AND which shape
-  // view binds at 6.
+  // Bake once and resolve the 3D noise views before packing, so the
+  // `qualityFlags` noise-source bit reflects the same frame's baked state rather
+  // than flipping a frame late. The bake's one-shot submit runs before this
+  // frame's cloud pass, so the textures are populated when sampled.
+  //
+  // A `cloudNoiseMorphology` of `"perlin-worley"` selects the Perlin-Worley
+  // shape variant, which is a separately baked texture; `"value"` or undefined
+  // keeps the value-FBM bake. The flag drives both the bake, which allocates the
+  // Perlin-Worley texture, and which shape view binds at 6.
   const perlinWorley =
     (config as unknown as { cloudNoiseMorphology?: string })
       .cloudNoiseMorphology === "perlin-worley";
@@ -2700,9 +2665,9 @@ export function executeProceduralClouds(
   // Pack uniforms
   const data = cache.uniformData;
   const us = frameState.context?.uniformState ?? context.uniformState;
-  // C13-41 — resolved ONCE per pack so the direct term (float 27) and the
-  // ambient term (float 73) provably carry the same scalar. Exactly 1.0 outside
-  // an enabled solar eclipse.
+  // Resolved once per pack so the direct term at float 27 and the ambient term
+  // at float 73 carry the same scalar by construction. Exactly 1.0 outside an
+  // enabled solar eclipse.
   const eclipseCloudFactor = resolveEclipseCloudFactor(frameState);
   let offset = 0;
 
@@ -2727,12 +2692,12 @@ export function executeProceduralClouds(
   data[offset++] = camPos?.x ?? 0;
   data[offset++] = camPos?.y ?? 0;
   data[offset++] = camPos?.z ?? 0;
-  // Weather Phase 0 — clock-bind cloud motion. Derive `time` (seconds) from
-  // `frameState.time` (the scene-clock JulianDate) instead of wall-clock
-  // performance.now(), so wind/advection scrubs with the timeline, pauses when
-  // `clock.shouldAnimate` is false, and scales with `clock.multiplier`. The
-  // day-seconds are computed in f64 and the first-frame epoch is subtracted
-  // BEFORE the f32 store (raw day-seconds ~1.9e14 would destroy f32 precision).
+  // Cloud motion is bound to the scene clock: `time` in seconds comes from
+  // `frameState.time` rather than from `performance.now()`, so wind and
+  // advection scrub with the timeline, pause when `clock.shouldAnimate` is
+  // false, and scale with `clock.multiplier`. The day-seconds are computed in
+  // f64 and the first-frame epoch is subtracted before the f32 store, since raw
+  // day-seconds of around 1.9e14 leave no usable f32 precision.
   const cloudTimeSeconds = resolveCloudTimeSeconds(cache, frameState);
   data[offset++] = cloudTimeSeconds;
   // Keep the environment-capture consumer synchronized even if its update is
@@ -2744,13 +2709,13 @@ export function executeProceduralClouds(
   data[offset++] = sunDir?.x ?? 0;
   data[offset++] = sunDir?.y ?? 1;
   data[offset++] = sunDir?.z ?? 0;
-  // C13-41 — the deck's DIRECT term is `(msLight + silverLining) * sunIntensity`,
-  // and this is its only scale, so S2's eclipse factor belongs exactly here. The
-  // source is `config.atmosphereLightIntensity` — the globe's UNDIMMED user
-  // field, not the per-frame `tileProvider.atmosphereLightIntensity` mirror
-  // `Globe.js` dims for the ground atmosphere — so without this multiply the
-  // deck stayed at full midday brightness over a world at the twilight floor.
-  // `* 1.0` is bit-exact, so every non-eclipse frame is byte-identical.
+  // The deck's direct term is `(msLight + silverLining) * sunIntensity` and this
+  // is its only scale, so the eclipse factor applies here. The source is
+  // `config.atmosphereLightIntensity`, the undimmed user field, not the
+  // per-frame `tileProvider.atmosphereLightIntensity` mirror that `Globe.js`
+  // dims for the ground atmosphere; without this multiply the deck stays at full
+  // midday brightness over a world already at the twilight floor. A factor of
+  // 1.0 is bit-exact, so a non-eclipse frame is unaffected.
   data[offset++] = applyEclipseCloudDimming(
     config.atmosphereLightIntensity ?? 10.0,
     eclipseCloudFactor,
@@ -2762,11 +2727,10 @@ export function executeProceduralClouds(
   data[offset++] = WGS84_EQUATORIAL_RADIUS; // planetRadius
   data[offset++] = config.cloudCoverage ?? 0.5;
 
-  // Quality params (Phase 6d/6b resolver).
-  // Reads `config.cloudVolumetricQuality` preset string + camera
-  // altitude + the AtmosphericConditions enable/disable altitudes for
-  // auto mode. Falls back verbatim to `config.cloudQuality` when the
-  // user has hand-tuned that field to a non-default value.
+  // Quality parameters. The resolver reads the `config.cloudVolumetricQuality`
+  // preset string, the camera altitude, and the enable and disable altitudes
+  // from `AtmosphericConditions` for auto mode, and returns `config.cloudQuality`
+  // verbatim when that field has been set to a non-default value.
   const atmoClouds = (
     config as unknown as {
       atmosphericConditions?: {
@@ -2789,20 +2753,18 @@ export function executeProceduralClouds(
     enableAltitudeMeters: atmoClouds?.volumetricEnableAltitude ?? 50_000,
     disableAltitudeMeters: atmoClouds?.volumetricDisableAltitude ?? 100_000,
   };
-  // maxSteps/lightSteps stay on the legacy resolver verbatim (byte-identity).
+  // Step counts stay on the quality resolver; the tier preset supplies the
+  // remaining dials, which reach the shader through the `qualityFlags` lane at
+  // float 74.
   const qualityResolved = resolveCloudQuality(qualityInputs);
-  // V1 — tier preset for the qualityFlags@74 lane. No shader reads qualityFlags
-  // yet (inert spine), so this is byte-identical; feature batches make the WGSL
-  // consume each bit in turn (V3 noiseSource, V5 octaves, V6 jitter, V9 halfRes,
-  // V10 temporal, V11 profile).
   const cloudPreset = resolveCloudPreset(qualityInputs);
-  // V9 (Batch 432) — half-res gate. A tier that resolves renderResScale<1 (T1 low
-  // / T2 high / auto-far) renders the raymarch into a 0.5× target + bilateral
-  // upscale; the cinematic tier (T3) and the cloudQuality escape hatch keep
-  // renderResScale=1.0 → the legacy full-res draw(3)→canvas composite, BYTE-
-  // IDENTICAL. `halfResActive` is also gated on the half-res resources actually
-  // allocating (self-healing: if the target/pipeline can't be built we fall back
-  // to full-res rather than skip the clouds).
+  // Half-resolution gate. A tier that resolves `renderResScale` below 1 marches
+  // into a half-size target and bilaterally upscales; the cinematic tier and the
+  // `cloudQuality` escape hatch keep it at 1.0 and take the full-resolution
+  // composite straight to the canvas. `halfResActive` is additionally gated on
+  // the half-resolution resources actually allocating, so a target or pipeline
+  // that cannot be built falls back to full resolution rather than dropping the
+  // clouds.
   const canvasW = context._canvas?.width ?? 1920;
   const canvasH = context._canvas?.height ?? 1080;
   let halfResActive =
@@ -2817,25 +2779,25 @@ export function executeProceduralClouds(
       context._canvasFormat || "bgra8unorm",
     );
     if (!allocated) {
-      // Permanent sentinel (CLAUDE.md null-target guard): the tier asked for the
-      // half-res path but the target/pipelines couldn't allocate — fall back to
-      // the full-res composite so the clouds still render (degraded, not absent).
-      // Real bug → no pragma; the user needs to see it.
+      // The tier asked for the half-resolution path but the target or pipelines
+      // could not allocate, so the full-resolution composite runs instead and
+      // the clouds render degraded rather than absent. Reported unconditionally
+      // because it indicates a real allocation failure.
       console.error(
         `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud half-res target/pipeline allocation failed (${canvasW}x${canvasH} @${cloudPreset.renderResScale}); falling back to full-res.`,
       );
     }
     halfResActive = allocated;
   }
-  // V10 (Batch 433) — temporal gate. A tier with `temporalEnabled` (T1 low / T2
-  // medium) layers temporal reprojection/accumulation ON TOP of the half-res march:
-  // the history accumulates the premultiplied half-res cloud and is reprojected via
-  // the previous relative-to-eye VP + CPU-f64 camera delta, then neighborhood-
-  // clamped each frame. T3 cinematic and the cloudQuality escape hatch keep
-  // `temporalEnabled=false` → NO history allocates →
-  // byte-identical. Temporal REQUIRES the half-res path (the history is half-res), so
-  // it is additionally gated on `halfResActive`; self-healing: if the history pair /
-  // resolve pipeline can't allocate we fall back to plain half-res (no accumulation).
+  // Temporal gate. A tier with `temporalEnabled` layers reprojection and
+  // accumulation on top of the half-resolution march: the history accumulates
+  // the premultiplied half-resolution cloud, is reprojected through the previous
+  // relative-to-eye view-projection and the f64 camera delta, and is
+  // neighbourhood-clamped each frame. The cinematic tier and the `cloudQuality`
+  // escape hatch leave it false and allocate no history. The history is
+  // half-resolution, so temporal additionally requires `halfResActive`, and a
+  // history pair or resolve pipeline that cannot allocate falls back to plain
+  // half resolution with no accumulation.
   const temporalFrustum = frameState.camera?.frustum;
   const temporalProjectionOrthographic =
     temporalFrustum instanceof OrthographicFrustum ||
@@ -2859,9 +2821,10 @@ export function executeProceduralClouds(
       cache.halfHeight,
     );
     if (!tAllocated) {
-      // Permanent sentinel (CLAUDE.md null-target guard): the tier asked for
-      // temporal but the history/resolve couldn't allocate — fall back to plain
-      // half-res so the clouds still render. Real bug → no pragma.
+      // The tier asked for temporal accumulation but the history or resolve
+      // pipeline could not allocate, so plain half resolution runs instead and
+      // the clouds still render. Reported unconditionally because it indicates a
+      // real allocation failure.
       console.error(
         `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud temporal history/pipeline allocation failed (${cache.halfWidth}x${cache.halfHeight}); falling back to half-res (no accumulation).`,
       );
@@ -2873,15 +2836,14 @@ export function executeProceduralClouds(
     // Even an adjacent re-entry must therefore seed from the current march.
     markCloudTemporalInactive(cache);
   }
-  // C13-02 — the raymarch geometry and step budgets, recorded at the ONE point
-  // where the half-res gate, the temporal gate and the quality resolver have
-  // all settled. Everything here is already computed; nothing is derived twice.
+  // Raymarch geometry and step budgets, recorded at the one point where the
+  // half-resolution gate, the temporal gate and the quality resolver have all
+  // settled, so nothing here is derived twice.
   //
-  // The sample "counts" are explicitly BOUNDED PROXIES (dispatched pixels x the
-  // resolved budgets), which is the form C13-02 asks for. A true per-sample
-  // count would need a shader-side atomic — and C13-39's negative result rules
-  // that out: WGSL register allocation is static, so even a runtime-gated
-  // counter costs occupancy on the default path.
+  // The sample counts are bounded proxies — dispatched pixels times the resolved
+  // budgets — not true sample counts. A true count needs a shader-side atomic,
+  // and WGSL register allocation is static, so even a runtime-gated counter would
+  // cost occupancy on every frame.
   counters.marchWidth = halfResActive ? cache.halfWidth : canvasW;
   counters.marchHeight = halfResActive ? cache.halfHeight : canvasH;
   counters.marchPixels = counters.marchWidth * counters.marchHeight;
@@ -2895,27 +2857,26 @@ export function executeProceduralClouds(
   counters.resolveHeight = temporalActive ? cache.temporalHeight : 0;
   counters.resolvePixels = counters.resolveWidth * counters.resolveHeight;
   counters.upscalePixels = halfResActive ? canvasW * canvasH : 0;
-  // C13-09 — SELF-HEALING RELEASE. `attachmentsEnabled` is also writable from
-  // the debug surface without going through `setCloudReconstructionAttachments`,
-  // so a set that has been switched off must free itself on the next execute
-  // rather than stay resident and keep reporting live bytes.
+  // `attachmentsEnabled` is also writable from the debug surface without going
+  // through `setCloudReconstructionAttachments`, so a set switched off that way
+  // frees itself on the next execute rather than staying resident and continuing
+  // to report live bytes.
   if (!cache.attachmentsEnabled && cache.attachmentGeneration.liveBytes > 0) {
     releaseCloudAttachmentResources(cache);
   }
-  // C13-10 — the same self-heal one level up. Consuming a set that is not being
-  // produced is the stale-read failure the whole per-frame flag discipline
-  // exists to prevent, so a directly-cleared `attachmentsEnabled` also clears
-  // the dependent flag rather than leaving a half-armed variant.
+  // Consuming a set that is not being produced is the stale read the per-frame
+  // flag discipline exists to prevent, so clearing `attachmentsEnabled` directly
+  // also clears the dependent flag instead of leaving a half-armed variant.
   if (!cache.attachmentsEnabled && cache.reconstructionEnabled) {
     cache.reconstructionEnabled = false;
   }
-  // C13-09 — a RESIDENT figure, so it is published every execute rather than
-  // only on frames the producer ran. `liveBytes > 0` with `attachmentPixels`
-  // 0 is the real state "the set is allocated but this frame produced none".
+  // A resident figure, published every execute rather than only on frames the
+  // producer ran: live bytes above 0 with `attachmentPixels` at 0 is the real
+  // state "allocated, but this frame produced none".
   counters.attachmentLiveBytes = cache.attachmentGeneration.liveBytes;
-  // C13-10 — RESIDENT too: the requested state, published every execute so a
-  // frame that requested the variant but could not build it reads as
-  // `requested=1, emitted=0` rather than as "nobody asked".
+  // Resident as well: the requested state, published every execute so a frame
+  // that requested the variant but could not build it reads as requested with
+  // nothing emitted rather than as never having been asked for.
   counters.reconstructionRequested = cache.reconstructionEnabled ? 1 : 0;
 
   data[offset++] = qualityResolved.maxSteps;
@@ -2931,7 +2892,7 @@ export function executeProceduralClouds(
   data[offset++] = cloudWindX;
   data[offset++] = cloudWindY;
   data[offset++] = cloudWindSpeed;
-  // Config — silver-lining intensity (live via atmosphericConditions.clouds.silverLining).
+  // Silver-lining intensity, live from `atmosphericConditions.clouds.silverLining`.
   data[offset++] = config.cloudSilverLiningIntensity ?? 0.8; // silverLiningIntensity
 
   // cloudBaseColor (vec3 + pad)
@@ -2945,23 +2906,24 @@ export function executeProceduralClouds(
   data[offset++] = 0.97;
   data[offset++] = 0;
 
-  // resolution + WGS84 coordinate data. V9 (Batch 432) — when half-res is active this is the HALF-RES
-  // target size so the shader's Bayer jitter step (1/resolution) is one half-res
-  // texel; the full-res path keeps the canvas size (jitter branch is skipped, so
-  // the value is byte-irrelevant there but stays the canvas size as before).
+  // Resolution and WGS84 coordinate data. While half resolution is active this
+  // carries the half-resolution target size, so the shader's Bayer jitter step
+  // of 1/resolution is one half-resolution texel; the full-resolution path skips
+  // the jitter branch and keeps the canvas size.
   data[offset++] = halfResActive ? cache.halfWidth : canvasW;
   data[offset++] = halfResActive ? cache.halfHeight : canvasH;
-  // C13-04 — reuse the aligned resolution-row pads without growing the uniform:
-  // WGS84 semi-minor axis + CPU-f64 geodetic camera height. The latter avoids
-  // reclassifying a 20 km polar camera as being below the cloud deck.
+  // The aligned pads of the resolution row carry the WGS84 semi-minor axis and
+  // the f64 geodetic camera height, so neither needs its own row. The geodetic
+  // height is what stops a 20 km polar camera being classified as below the
+  // cloud deck.
   data[offset++] = WGS84_POLAR_RADIUS;
   data[offset++] = cameraHeightM;
 
-  // Weather Phase 1 — weather-map seam lanes (floats 64-79).
-  // Ingest (Phase 1): if a WeatherProvider has real data, use it AND auto-enable
-  // the weather map (so real cloud-cover drives the deck without the user setting
-  // cloudWeatherMap). getPackedTexture returns null until the async fetch lands —
-  // until then the renderer keeps the procedural map (no overcast-everywhere flash).
+  // Weather-map seam lanes, floats 64-79. A `WeatherProvider` holding real data
+  // both supplies the texture and auto-enables the weather map, so observed
+  // cloud cover drives the deck without `cloudWeatherMap` being set explicitly.
+  // `getPackedTexture` returns null until the asynchronous fetch lands, and the
+  // procedural map is kept until then, which avoids an overcast-everywhere flash.
   const weatherProvider = config.weatherProvider;
   const providerBytes =
     weatherProvider?.getPackedTexture(WEATHER_TEX_W, WEATHER_TEX_H) ?? null;
@@ -2972,8 +2934,8 @@ export function executeProceduralClouds(
   // 65 weatherStrength — the global cloudCoverage folded in as a per-cell
   // multiplier (default coverage 0.5 → 1.0 neutral so the map's R drives directly).
   data[offset++] = (config.cloudCoverage ?? 0.5) * 2.0;
-  // 66/67 — W1 dual-lobe phase: back-scatter g + forward/back blend. Config —
-  // live via atmosphericConditions.clouds.phaseBackG / .phaseBlend.
+  // 66/67 — dual-lobe phase: back-scatter g and the forward/back blend, live
+  // from `atmosphericConditions.clouds.phaseBackG` and `.phaseBlend`.
   data[offset++] = config.cloudPhaseBackG ?? -0.3; // 66 phaseG2
   data[offset++] = config.cloudPhaseBlend ?? 0.7; // 67 phaseBlend
   // 68-71 weatherTexBounds — global equirect (radians): minLon, minLat, lonRange, latRange.
@@ -2981,54 +2943,50 @@ export function executeProceduralClouds(
   data[offset++] = -Math.PI / 2.0;
   data[offset++] = 2.0 * Math.PI;
   data[offset++] = Math.PI;
-  // 72 — W1 forward-scatter g. Sharper than the old hardcoded 0.8 for a stronger
-  // silver lining toward the sun (HG forward peak at g=0.85 is ~1.8x g=0.8).
+  // 72 — forward-scatter g. The Henyey-Greenstein forward peak at g = 0.85 is
+  // about 1.8 times the peak at g = 0.8, which is what gives a strong silver
+  // lining toward the sun.
   data[offset++] = config.cloudPhaseForwardG ?? 0.85; // 72 phaseG1 (config: .phaseForwardG)
-  // 73 — W2 ambient intensity (sky/ground fill on the shadow side; config: .ambientIntensity).
-  // C13-41 — the ambient term dims too, and it MUST. `skyAmbientColor` (80-82)
-  // and `groundAmbientColor` (84-86) are hard-coded constants that track no
-  // scene light on any path (the `ambientLutMode` route replaces only their
-  // hue/chroma and deliberately keeps the constants' nominal BRIGHTNESS), so
-  // this scalar is the only lever the deck's ambient has. Dimming the direct
-  // term alone would leave a fully-lit ambient deck glowing over a darkened
-  // world at totality — the same default-ON single-subsystem divergence the
-  // C12 exit gate names.
+  // 73 — ambient intensity: the sky and ground fill on the shadow side, from
+  // `.ambientIntensity`. The eclipse factor applies here too. `skyAmbientColor`
+  // at 80-82 and `groundAmbientColor` at 84-86 are fixed constants that track no
+  // scene light on any path — the `ambientLutMode` route replaces only their hue
+  // and chroma and keeps their nominal brightness — so this scalar is the only
+  // lever the deck's ambient has. Dimming the direct term alone leaves a fully
+  // lit ambient deck glowing over a darkened world at totality.
   data[offset++] = applyEclipseCloudDimming(
     config.cloudAmbientIntensity ?? 1.5,
     eclipseCloudFactor,
   ); // 73 ambientIntensity
-  // 74 — qualityFlags bitfield. V3 sets bit 0 (noiseSource) when the tier wants
-  // the baked 3D-texture core AND the bake actually succeeded — SELF-HEALING:
-  // if the bake is unavailable (cache.noise null), the bit stays 0 and the WGSL
-  // falls back to the live march. (halfRes/temporal/profile bits land in
-  // V9/V10/V11; C13-36 consumes jitter bit 3; the octaves bits carry the preset
-  // value, read by V5.)
+  // 74 — the `qualityFlags` bitfield. Bit 0 selects the baked 3D-texture core,
+  // and it is set only when the tier asks for it and the bake succeeded; with no
+  // baked noise resident the bit stays clear and the shader marches live noise
+  // instead.
   const noiseBakedBit =
     cloudPreset.noiseSource === CloudNoiseSource.BAKED &&
     cache.noiseBaked &&
     cache.noise !== null
       ? CLOUD_QF_NOISE_BAKED
       : 0;
-  // V9 (Batch 432) — set bit 1 (QF_HALF_RES) ONLY when the half-res path is active
-  // (tier renderResScale<1 AND the target/pipelines allocated). The shader keys its
-  // premultiplied-emit + jitter branch on this bit; the full-res tiers leave it
-  // clear → byte-identical legacy composite.
+  // Bit 1 marks the half-resolution path and is set only when that path is
+  // actually running, meaning the tier asked for it and the target and pipelines
+  // allocated. The shader keys its premultiplied-emit and jitter branch on this
+  // bit, and the full-resolution tiers leave it clear.
   const halfResBit = halfResActive ? CLOUD_QF_HALF_RES : 0;
-  // V10 (Batch 433) — set bit 2 (QF_TEMPORAL) when temporal accumulation is active.
-  // The raymarch shader's emit is IDENTICAL whether or not this is set (temporal
-  // adds a separate resolve pass, not a march-branch), so it's byte-irrelevant to
-  // the half-res target; it stays clear on the default / cinematic / escape-hatch
-  // path. Carried for flag self-consistency with the tier presets + future readers.
+  // Bit 2 marks active temporal accumulation. The march emits identically either
+  // way, since temporal adds a separate resolve pass rather than a march branch;
+  // the bit exists so the flags stay consistent with the tier presets and with
+  // what any reader of the field would expect.
   const temporalBit = temporalActive ? CLOUD_QF_TEMPORAL : 0;
-  // C13-36 — wire the tier's existing jitter contract. T1/T2 animate the
-  // per-pixel IGN phase only when temporal accumulation is actually active; T3
-  // receives deterministic frame-zero spatial IGN. The power-user escape preset
-  // keeps jitterEnabled=false and therefore retains exact midpoint sampling.
+  // Bit 3 carries the tier's jitter contract: the lower tiers animate the
+  // per-pixel interleaved-gradient-noise phase only while temporal accumulation
+  // is active, the cinematic tier gets deterministic frame-zero spatial noise,
+  // and the hand-tuned escape preset leaves jitter off and keeps exact midpoint
+  // sampling.
   const jitterBit = cloudPreset.jitterEnabled ? CLOUD_QF_JITTER : 0;
-  // Batch 436 (3.6 CLOUD-CONE-LIGHT) — set bit 10 (QF_LIGHT_CONE) when the resolved
-  // tier wants the cone-sampled light march (T1 low / T2 medium). T3 cinematic + the
-  // escape hatch have `lightConeSampling=false` → the bit stays clear → the WGSL
-  // takes the verbatim straight light march → byte-identical to pre-436.
+  // Bit 10 selects the cone-sampled light march, which the lower tiers use. The
+  // cinematic tier and the escape hatch leave it clear and take the straight
+  // light march.
   const lightConeBit = cloudPreset.lightConeSampling ? CLOUD_QF_LIGHT_CONE : 0;
   data[offset++] =
     noiseBakedBit |
@@ -3038,49 +2996,48 @@ export function executeProceduralClouds(
     lightConeBit |
     ((Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
       CLOUD_QF_OCTAVES_SHIFT); // 74 qualityFlags
-  // 75 — Batch 439 (4.7 CLOUD-CURL) curl-warp amplitude. Default undefined →
-  // packs 0.0 → the BAKED-path detail-erosion curl warp is SKIPPED in WGSL (the
-  // `if (curlAmplitude > 0.0)` guard), so the default render is byte-identical.
-  // `config.cloudCurlAmplitude` is the sole opt-in (the tier preset's curlAmplitude
-  // stays 0 so every DEFAULT tier renders byte-identically — the flag, not the
-  // tier, turns curl on). The warp only perturbs where the detail texture is
-  // SAMPLED (subtractive erosion), so it can carve wispier edges but never add
-  // density — same safety property as the live-path Worley erosion.
+  // 75 — curl-warp amplitude. At 0 the shader's `curlAmplitude > 0.0` guard
+  // skips the baked-path detail-erosion warp entirely, and
+  // `config.cloudCurlAmplitude` is the only thing that raises it: the tier
+  // presets leave their own `curlAmplitude` at 0, so curl is a property of the
+  // configuration rather than of the tier. The warp perturbs only where the
+  // detail texture is sampled, and that erosion is subtractive, so it can carve
+  // wispier edges but never add density.
   data[offset++] = config.cloudCurlAmplitude ?? 0.0; // 75 curlAmplitude
-  // 76 — shared temporal phase. The low 4 bits preserve the Bayer/cone 16-phase
-  // sequence; all 6 bits drive animated IGN. Full-res T3 still stores zero so
-  // its spatial IGN remains deterministic and cannot sparkle without history.
+  // 76 — the shared temporal phase. The low 4 bits carry the Bayer and cone
+  // 16-phase sequence and all 6 bits drive the animated interleaved-gradient
+  // noise. The full-resolution cinematic path stores zero so its spatial noise
+  // stays deterministic and cannot sparkle with no history to average it.
   cache.frameCounter = (cache.frameCounter + 1) & 63;
   data[offset++] = halfResActive ? cache.frameCounter : 0; // 76 frameCounter
-  // 77 — Batch 439 (4.7 CLOUD-CURL) curl-noise swirl wavelength (noise-space
-  // scale). Byte-irrelevant when curlAmplitude is 0 (the warp is guarded off), so
-  // writing the default frequency on the default path is a no-op. Dialable via
-  // `config.cloudCurlFrequency`; default 2.0 ≈ the base-shape feature scale.
+  // 77 — curl-noise swirl wavelength in noise space, read only while
+  // `curlAmplitude` is above 0. The default of 2.0 is about the base-shape
+  // feature scale.
   data[offset++] = config.cloudCurlFrequency ?? 2.0; // 77 curlFrequency
-  // 78 — V5 light-march step scale. LIVE/escape + T3 keep 1.0 (full light march,
-  // unchanged); the lower baked tiers march at 0.5 for cheaper shadowing.
+  // 78 — light-march step scale. The live-noise and cinematic paths march the
+  // full light ray; the lower baked tiers halve it for cheaper shadowing.
   data[offset++] =
     cloudPreset.noiseSource === CloudNoiseSource.LIVE || cloudPreset.tier >= 3
       ? 1.0
       : 0.5; // 78 lightSampleScale
-  // 79 — V4 mean-preserving erosion floor (BAKED path only; the live march
-  // ignores it). Low tier = fibrous (0.10), high/cinematic = puffy (0.18).
-  // Config — explicit override wins; else the tier default (low fibrous / high puffy).
+  // 79 — mean-preserving erosion floor, read on the baked path only. An explicit
+  // override wins; otherwise the tier decides, low tiers being fibrous at 0.10
+  // and the higher tiers puffy at 0.18.
   data[offset++] =
     config.cloudErosionStrength ?? (cloudPreset.tier <= 1 ? 0.1 : 0.18); // 79 erosionStrength
-  // 80-83 — W2 sky ambient (blue, lights cloud tops).
+  // 80-83 — sky ambient: blue, lighting cloud tops.
   data[offset++] = 0.5; // 80
   data[offset++] = 0.65; // 81
   data[offset++] = 0.95; // 82
   data[offset++] = 0; // 83 pad
-  // 84-87 — W2 ground-bounce ambient (warm grey, lights cloud bottoms).
+  // 84-87 — ground-bounce ambient: warm grey, lighting cloud bottoms.
   data[offset++] = 0.35; // 84
   data[offset++] = 0.34; // 85
   data[offset++] = 0.3; // 86
   data[offset++] = 0; // 87 pad
-  // 88-90 — W3 time-of-day sun color. Keyed on the LOCAL sun elevation
-  // (sunDir · local-up at the camera), NOT raw ECEF Y: warm orange near the
-  // horizon, neutral white by ~20deg up. 91 — W4 aerialStrength (1.0 = neutral).
+  // 88-90 — time-of-day sun colour, keyed on the local sun elevation, that is
+  // `sunDir` dotted with local up at the camera, rather than on raw ECEF Y:
+  // warm orange near the horizon, neutral white by about 20 degrees up.
   let sinElev = 0.5;
   if (camPos && sunDir) {
     const len = Math.hypot(camPos.x, camPos.y, camPos.z) || 1.0;
@@ -3097,86 +3054,81 @@ export function executeProceduralClouds(
   data[offset++] = 1.0 + (1.0 - 1.0) * todT; // 88 R (warm 1.0 -> noon 1.0)
   data[offset++] = 0.55 + (1.0 - 0.55) * todT; // 89 G (warm 0.55 -> noon 1.0)
   data[offset++] = 0.25 + (0.98 - 0.25) * todT; // 90 B (warm 0.25 -> noon 0.98)
-  // 91 — W4 aerial-perspective strength (1.0 = full horizon haze at the 60 km
-  // scale baked into the shader; 0 disables). Dialable via config.cloudAerialStrength.
+  // 91 — aerial-perspective strength, from `config.cloudAerialStrength`. At 1.0
+  // the horizon haze is applied in full at the 60 km scale the shader assumes;
+  // at 0 it is off.
   data[offset++] = config.cloudAerialStrength ?? 1.0; // 91 aerialStrength
-  // 92-94 — W4 horizon inscatter haze tint. Distant clouds blend toward this so
+  // 92-94 — horizon inscatter haze tint. Distant clouds blend toward this so
   // they fade into the sky instead of popping. Keyed on the same local sun
   // elevation (todT) as the sun color: warm orange-grey at the horizon (twilight
   // band) -> desaturated sky-blue at day. This roughly tracks the rendered sky's
   // horizon color so far clouds dissolve into it rather than a fixed blue.
   //
-  // C13-41-CLOUD-AERIAL-TINT-UNDIMMED — this tint is an ADDEND, not a scale:
-  // the shader computes `mix(toneMapped, cloud.aerialColor, aerial)`
-  // (`ProceduralClouds.wgsl:2557`), so the `aerial` fraction of every deck pixel
-  // is this colour REGARDLESS of the deck's own radiance. It models the skylight
-  // in-scattered between camera and cloud, and during an eclipse that inscatter
-  // dims with the sky it comes from — exactly the argument
-  // `C13-41-ENV-GROUND-INSCATTER-ADDEND-UNDIMMED` makes for the bakes' ground
-  // texels. Left undimmed, a distant deck keeps a full-brightness horizon tint
-  // at totality and the measured deck ratio is biased upward by
-  // `aerial * (1 - F) * A / H(1)`. `* 1.0` is bit-exact, so every non-eclipse
-  // frame is byte-identical.
+  // The tint is an addend rather than a scale: `ProceduralClouds.wgsl` computes
+  // `mix(toneMapped, cloud.aerialColor, aerial)`, so the `aerial` fraction of
+  // every deck pixel is this colour irrespective of the deck's own radiance. It
+  // models the skylight in-scattered between camera and cloud, and that
+  // inscatter dims with the sky it comes from, so the eclipse factor applies
+  // here too. Left undimmed, a distant deck keeps a full-brightness horizon tint
+  // at totality and the deck's measured brightness ratio is biased upward by
+  // `aerial * (1 - F) * A / H(1)`. A factor of 1.0 is bit-exact, so a
+  // non-eclipse frame is unaffected.
   //
-  // Named rather than inlined so the probe's provenance guard has a
-  // NUMERAL-FREE marker to search the bundle for: every literal in this block is
-  // a float, and esbuild normalises those on the way in.
+  // Named rather than inlined so the dimming is greppable in a built bundle:
+  // every literal in this block is a float, and esbuild normalises those.
   const dimAerialTint = (channel: number): number =>
     applyEclipseCloudDimming(channel, eclipseCloudFactor);
   data[offset++] = dimAerialTint(0.8 + (0.62 - 0.8) * todT); // 92 R (warm 0.80 -> day 0.62)
   data[offset++] = dimAerialTint(0.62 + (0.72 - 0.62) * todT); // 93 G (warm 0.62 -> day 0.72)
   data[offset++] = dimAerialTint(0.5 + (0.85 - 0.5) * todT); // 94 B (warm 0.50 -> day 0.85)
   data[offset++] = 0; // 95 pad
-  // ── Batch 407 — promoted shader consts → live dials (96-100) + V11-reserved
-  // pads (101-103). The ?? defaults EXACTLY match the former WGSL consts
-  // (SHAPE_SCALE 0.45, CLOUD_EXPOSURE 0.22, MS a/b/c 0.5/0.5/0.85), so with the
-  // config fields unset this is byte-identical to the pre-407 render.
+  // 96-100 — shape scale, exposure and the three multiple-scattering decay
+  // terms, all live dials whose defaults are the values the shader would
+  // otherwise hard-code.
   const cloudPuffSize = config.cloudPuffSize ?? 0.45;
-  data[offset++] = cloudPuffSize; // 96 puffSize (was SHAPE_SCALE)
+  data[offset++] = cloudPuffSize; // 96 puffSize
   cache.iblPuffSize = cloudPuffSize;
-  data[offset++] = config.cloudExposure ?? 0.22; // 97 exposure (was CLOUD_EXPOSURE)
+  data[offset++] = config.cloudExposure ?? 0.22; // 97 exposure
   data[offset++] = config.cloudMsDecayScatter ?? 0.5; // 98 msDecayA
   data[offset++] = config.cloudMsDecayExtinction ?? 0.5; // 99 msDecayB
   data[offset++] = config.cloudMsDecayPhase ?? 0.85; // 100 msDecayC
-  // ── Batch 408 — V11 per-genus vertical-density profile. config.cloudType
-  // (default CUMULUS) selects a CloudTypeProfile; CUMULUS → shape BILLOWY(1) +
-  // densityScale 1.0, so the default render is byte-identical (the WGSL BILLOWY
-  // branch is the literal old gradient).
+  // 101-104 — the per-genus vertical-density profile. `config.cloudType` selects
+  // a {@link CloudTypeProfile}; cumulus resolves to the billowy shape at density
+  // scale 1.0, which is the shader's baseline gradient.
   const profile = CloudTypeProfile.get(config.cloudType ?? CloudType.CUMULUS);
   const cumulusProfile = CloudTypeProfile.get(CloudType.CUMULUS);
   const cumulusBase = cumulusProfile.baseDensity; // 0.7
   const cumulusExtinction = cumulusProfile.extinction; // 0.6
   data[offset++] = profile.shape; // 101 profileShape (0 SLAB / 1 BILLOWY / 2 TOWER)
   data[offset++] = cumulusBase > 0 ? profile.baseDensity / cumulusBase : 1.0; // 102 profileDensityScale (CUMULUS=1.0)
-  // 103 profileExtinction — per-genus optical extinction NORMALIZED against the
-  // DEFAULT genus (CUMULUS, extinction 0.6) so CUMULUS → 1.0 (the WGSL multiplies
-  // cloud.absorptionCoeff by this, so a value of 1.0 is byte-identical to the
-  // pre-activation render). Mirrors profileDensityScale@102's CUMULUS-relative
-  // normalization. Thin genera (cirrus 0.1 → 0.167x) absorb less → wispier; dense
-  // genera (cumulonimbus 0.95 → 1.583x) absorb more → darker/more opaque cores.
+  // 103 — per-genus optical extinction, normalised against cumulus at 0.6 so
+  // cumulus resolves to 1.0, mirroring how `profileDensityScale` at 102 is
+  // normalised. The shader multiplies `cloud.absorptionCoeff` by this, so thin
+  // genera such as cirrus at 0.167× absorb less and read wispier, while dense
+  // genera such as cumulonimbus at 1.583× absorb more and read as darker, more
+  // opaque cores.
   data[offset++] =
     cumulusExtinction > 0 ? profile.extinction / cumulusExtinction : 1.0; // 103 profileExtinction (CUMULUS=1.0)
   data[offset++] =
     profile.shape === CloudTypeProfile.CloudHeightGradientShape.TOWERING_ANVIL
       ? 1.0
       : 0.0; // 104 anvilBias
-  // ── Batch 409 — depth occlusion: camera near/far so the shader can reverse
-  // the renderer-wide log depth (same source as AerialPerspective).
+  // 105/106 — camera near and far, so the shader can reverse the renderer-wide
+  // log depth for occlusion. Same source as AerialPerspective uses.
   data[offset++] = frameState.camera?.frustum?.near ?? 1.0; // 105 nearPlane
   data[offset++] = frameState.camera?.frustum?.far ?? 1e8; // 106 farPlane
-  // ── Batch 424 — Weather Phase 3: how strongly the weather map's G/B/A channels
-  // (genus, base, density-bias) modulate the cloud model. Default 1.0; a NEUTRAL
-  // map cell (G=0.5,B=0,A=0.5) is a no-op at ANY strength, so an R-only map or
-  // weatherMapEnabled=0 reproduces today's pixels. `config.cloudWeatherChannelStrength`
-  // tunes it live (0 = legacy R-only).
+  // 107 — how strongly the weather map's green, blue and alpha channels, which
+  // carry genus, base altitude and density bias, modulate the cloud model. A
+  // neutral map cell of (0.5, 0, 0.5) in those channels is a no-op at any
+  // strength, so a red-only map behaves the same at every setting; 0 reduces the
+  // map to its red coverage channel.
   data[offset++] = config.cloudWeatherChannelStrength ?? 1.0; // 107 weatherChannelStrength
-  // ── Batch 434 (3.3 CLOUD-AERIAL-LUT + 3.4 CLOUD-AMBIENT-LUT) — atmosphere-LUT
-  // coupling modes (108-111). Both default to the legacy path: 'heuristic' aerial +
-  // 'constant' ambient → mode floats 0 → the WGSL takes the verbatim legacy branch,
-  // byte-identical. The qualityFlags bits (8/9) carry the same on/off below; the
-  // mode floats are belt-and-suspenders for shader readers. atmosphereThickness MUST
-  // match the LUT bake (ATMOSPHERE_THICKNESS = 111e3) so the transmittance v-lookup
-  // lands on the right row.
+  // 108-111 — atmosphere-LUT coupling modes. Both default to the analytic path,
+  // a heuristic aerial term and a constant ambient, which the shader selects when
+  // these mode floats are 0. The `qualityFlags` bits 8 and 9 carry the same
+  // on/off state; the mode floats make it legible from the shader side.
+  // `atmosphereThickness` has to match the LUT bake, so the transmittance
+  // v-lookup lands on the right row.
   const globeForLut = config as unknown as {
     cloudAerialMode?: string;
     cloudAmbientSource?: string;
@@ -3188,12 +3140,11 @@ export function executeProceduralClouds(
   data[offset++] = 111000.0; // 110 atmosphereThickness (matches the LUT bake)
   data[offset++] = 0.0; // 111 pad
 
-  // ── Batch 443 (4.9 CLOUD-MULTIDECK) — multi-deck shell march. Slots 112-119.
-  // Default OFF (multiDeck=0) → the WGSL marches exactly ONE shell with
-  // cloudLayerBottom/Top + the legacy composite, and these deck-bounds floats are
-  // never read → byte-identical. Opt-in via `config.cloudMultiDeck`. The deck bounds
-  // come from CloudTypeProfile.CloudDeck.bounds (LOW/MID/HIGH; JS-authoritative —
-  // the same table the per-genus deck assignment uses). ──
+  // 112-119 — the multi-deck shell march. With `multiDeck` at 0 the shader
+  // marches exactly one shell between `cloudLayerBottom` and `cloudLayerTop` and
+  // never reads the deck bounds. The bounds come from
+  // `CloudTypeProfile.CloudDeck.bounds`, the same table the per-genus deck
+  // assignment uses, so the two cannot disagree.
   const multiDeckOn =
     (config as unknown as { cloudMultiDeck?: boolean }).cloudMultiDeck === true;
   const deckBounds = CloudTypeProfile.CloudDeck.bounds as number[][];
@@ -3206,18 +3157,18 @@ export function executeProceduralClouds(
   data[offset++] = deckBounds[2][0]; // 118 deckBoundsHigh.x (HIGH bottom)
   data[offset++] = deckBounds[2][1]; // 119 deckBoundsHigh.y (HIGH top)
 
-  // ── Batch 445 (4.12 CLOUD-RTE) — camera-relative high-precision march. Slots
-  // 120-127: the RTE high/low split of the SAME camera world position that feeds
-  // `cloud.cameraPosition` (slots ~50-52 above). These 8 floats are written EVERY
-  // frame but the WGSL READS them ONLY inside the CLOUD_QF_HIGH_PRECISION branch.
-  // Planetary precision is automatic; explicit false retains the legacy A/B
-  // intersection path. ──
+  // 120-127 — the camera-relative high-precision march: the relative-to-eye
+  // high/low split of the same camera world position that feeds
+  // `cloud.cameraPosition`. All eight floats are written every frame, but the
+  // shader reads them only inside the CLOUD_QF_HIGH_PRECISION branch. The branch
+  // is on unless it is explicitly disabled, which returns the march to the
+  // direct shell-intersection form.
   const highPrecisionOn =
     (config as unknown as { cloudHighPrecision?: boolean })
       .cloudHighPrecision !== false;
-  // Encode the camera world position into a high/low f32 pair so the WGSL can
-  // subtract the large `high` term before the small `low` refinement (cancellation
-  // reduction). `camPos` is the same `frameState.camera.positionWC` packed above.
+  // Encode the camera world position into a high/low f32 pair so the shader can
+  // subtract the large high term before applying the small low refinement, which
+  // is what keeps the subtraction from cancelling into noise.
   if (camPos !== undefined) {
     const enc = EncodedCartesian3.fromCartesian(camPos, scratchEncodedCamera);
     data[offset++] = enc.high.x; // 120 encodedCameraHigh.x
@@ -3229,7 +3180,8 @@ export function executeProceduralClouds(
     data[offset++] = enc.low.z; // 126 encodedCameraLow.z
     data[offset++] = 0.0; // 127 pad
   } else {
-    // No camera — leave the split zeroed (off path never reads it anyway).
+    // With no camera the split has nothing to encode; the branch that reads it
+    // cannot run either.
     data[offset++] = 0.0; // 120
     data[offset++] = 0.0; // 121
     data[offset++] = 0.0; // 122
@@ -3240,10 +3192,9 @@ export function executeProceduralClouds(
     data[offset++] = 0.0; // 127 pad
   }
 
-  // ── Batch 555 (E2 CLOUD-MAMMATUS) — pendulous underside pouches. Slots 128-131.
-  // Default OFF (mammatusStrength=0) → the WGSL mammatusFactor() early-returns 1.0
-  // so density is untouched and these floats are never read past the guard →
-  // byte-identical. Opt-in via config.cloudMammatusStrength (+ Scale/Depth dials).
+  // 128-131 — mammatus, the pendulous pouches on a cloud's underside. At a
+  // strength of 0 the shader's `mammatusFactor()` returns 1.0 immediately and the
+  // remaining floats are never read past that guard.
   const globeMamma = config as unknown as {
     cloudMammatusStrength?: number;
     cloudMammatusScale?: number;
@@ -3254,12 +3205,12 @@ export function executeProceduralClouds(
   data[offset++] = globeMamma.cloudMammatusDepth ?? 0.25; // 130 mammatusDepth (underside band)
   data[offset++] = 0.0; // 131 pad
 
-  // ── Batch 610 (E1 CLOUD-EXOTIC-SPECIES) — species/varieties density shaping.
-  // Slots 132-135. Default OFF (speciesMode=0) → the WGSL speciesFactor() early-
-  // returns 1.0 so density is untouched and these floats are never read past the
-  // guard → byte-identical. Opt-in via config.cloudSpecies (a genus-gated name) or
-  // the numeric config.cloudSpeciesMode; default genera leave it unset → mode 0.
-  //   name "lenticularis" → 1 ; "fibratus"/"uncinus" → 2 (uncinus adds the hook).
+  // 132-135 — species and variety density shaping. At mode 0 the shader's
+  // `speciesFactor()` returns 1.0 immediately and the remaining floats are never
+  // read past that guard. `cloudSpecies` takes a genus-gated name, or
+  // `cloudSpeciesMode` the numeric equivalent: "lenticularis" is mode 1, and
+  // "fibratus" and "uncinus" are both mode 2, with uncinus adding the hook
+  // through its parameter.
   const globeSpecies = config as unknown as {
     cloudSpecies?: string;
     cloudSpeciesMode?: number;
@@ -3287,14 +3238,14 @@ export function executeProceduralClouds(
   data[offset++] = globeSpecies.cloudSpeciesScale ?? 1.0; // 134 speciesScale
   data[offset++] = globeSpecies.cloudSpeciesParam ?? speciesParamDefault; // 135 speciesParam (uncinus hook)
 
-  // ── Batch 611 (E2 CLOUD-EXOTIC-FEATURES-REMAINING) — supplementary features
-  // (asperitas / fluctus / arcus / virga) as bounded density shaping. Slots 136-139.
-  // Default OFF (featureMode=0) → the WGSL featureFactor() early-returns 1.0 so
-  // density is untouched and these floats are never read past the guard →
-  // byte-identical. Opt-in via config.cloudFeature (a genus-gated name) or the numeric
-  // config.cloudFeatureMode; default genera leave it unset → mode 0.
-  //   "asperitas" → 1 ; "fluctus"/"kelvin-helmholtz" → 2 ; "arcus" → 3 ;
-  //   "virga" → 4 ; "praecipitatio" → 4 (param 1 = denser/reaching streaks).
+  // 136-139 — the supplementary features asperitas, fluctus, arcus and virga, as
+  // bounded density shaping. At mode 0 the shader's `featureFactor()` returns
+  // 1.0 immediately and the remaining floats are never read past that guard.
+  // `cloudFeature` takes a genus-gated name, or `cloudFeatureMode` the numeric
+  // equivalent: "asperitas" is 1, "fluctus" and "kelvin-helmholtz" are 2,
+  // "arcus" is 3, and "virga" and "praecipitatio" are both 4, praecipitatio
+  // differing only in its parameter, which gives denser, further-reaching
+  // streaks.
   const globeFeature = config as unknown as {
     cloudFeature?: string;
     cloudFeatureMode?: number;
@@ -3332,14 +3283,13 @@ export function executeProceduralClouds(
   data[offset++] = globeFeature.cloudFeatureScale ?? 1.0; // 138 featureScale
   data[offset++] = globeFeature.cloudFeatureParam ?? featureParamDefault; // 139 featureParam
 
-  // ── Batch 612 (E3 CLOUD-EXOTIC-SPECIAL) — noctilucent / nacreous iridescent
-  // SHADING. Slots 140-143. Default OFF (specialShadeMode=0) → the WGSL
-  // specialShadeTint() early-returns vec3(1.0) so the cloud color is multiplied by
-  // exactly 1.0 and these floats are never read past the guard → byte-identical.
-  // Opt-in via config.cloudSpecial (a name) or the numeric config.cloudSpecialShadeMode:
-  //   "noctilucent"/"nlc" → 1 ; "nacreous"/"polar-stratospheric"/"psc" → 2.
-  // The high-altitude deck is placed via the existing multi-deck deckBoundsHigh
-  // bounds (Batch 443); this only supplies the iridescent shading half.
+  // 140-143 — noctilucent and nacreous iridescent shading. At mode 0 the
+  // shader's `specialShadeTint()` returns `vec3(1.0)` immediately, so the cloud
+  // colour is multiplied by exactly 1.0 and the remaining floats are never read
+  // past that guard. `cloudSpecial` takes a name, or `cloudSpecialShadeMode` the
+  // numeric equivalent: "noctilucent" and "nlc" are 1, and "nacreous",
+  // "polar-stratospheric" and "psc" are 2. This supplies only the shading; the
+  // high-altitude deck itself is placed through the multi-deck high bounds.
   const globeSpecial = config as unknown as {
     cloudSpecial?: string;
     cloudSpecialShadeMode?: number;
@@ -3364,15 +3314,15 @@ export function executeProceduralClouds(
   data[offset++] = globeSpecial.cloudSpecialShadeScale ?? 1.0; // 142 specialShadeScale
   data[offset++] = globeSpecial.cloudSpecialShadeParam ?? specialParamDefault; // 143 specialShadeParam
 
-  // ── Batch 634 (C6-CLOUD-STBN-TAAU, LOD half) — two orbit-cost march dials, slots
-  // 144-147. WebGPU-only (no WebGL twin — the WebGL cloud path is a separate,
-  // simpler renderer). Default is a NO-OP → byte-identical:
-  //   marchStepGrowth defaults 1.0 → WGSL `> 1.0` guard false → curStep == fineStep.
-  //   maxRayDistance defaults 0.0  → WGSL `> 0.0` far-cap guard false → tEnd untouched.
-  // Opt-in via config.cloudMarchStepGrowth (geometric per-fine-step growth; clamped
-  // to [1.0, 1.1] — near samples stay crisp, far shell samples coarsen) and
-  // config.cloudMaxRayDistance (meters; the view march stops past this distance
-  // where clouds are sub-pixel; clamped >= 0). Both are pure perf/quality knobs.
+  // 144-147 — two march dials that trade quality for cost at orbital distance,
+  // both no-ops at their defaults: `marchStepGrowth` at 1.0 fails the shader's
+  // `> 1.0` guard and every step stays the fine step, and `maxRayDistance` at 0
+  // fails its `> 0.0` guard and the ray end is untouched. `cloudMarchStepGrowth`
+  // is geometric growth per fine step, clamped to [1.0, 1.1] so near samples stay
+  // crisp while far shell samples coarsen; `cloudMaxRayDistance` is a distance
+  // in metres past which the view march stops, where clouds are sub-pixel
+  // anyway. The WebGL cloud path is a separate, simpler renderer and has no
+  // equivalent.
   const globeLod = config as unknown as {
     cloudMarchStepGrowth?: number;
     cloudMaxRayDistance?: number;
@@ -3387,11 +3337,11 @@ export function executeProceduralClouds(
   data[offset++] = 0.0; // 146 pad
   data[offset++] = 0.0; // 147 pad
 
-  // C13-37 — CPU-f64 planet-domain origin phases, three vec4 rows 148-159.
-  // The visible march reconstructs density coordinates from these camera-origin
-  // phases plus its small camera-relative sample offset. Wind advection is
-  // folded into the origin in CPU f64, so long timeline scrubs never construct a
-  // planet-scale f32 displacement in WGSL.
+  // 148-159 — f64 planet-domain origin phases, three vec4 rows. The march
+  // reconstructs density coordinates from these camera-origin phases plus its
+  // own small camera-relative sample offset. Wind advection is folded into the
+  // origin here in f64, so a long timeline scrub never constructs a
+  // planet-scale f32 displacement in the shader.
   writeCloudDensityAdvectedOriginPhases(
     data,
     offset,
@@ -3406,9 +3356,10 @@ export function executeProceduralClouds(
   );
   offset += CLOUD_DENSITY_ORIGIN_PHASE_FLOATS;
 
-  // 160-167 — encoded canonical morphology origin (high.xyz+pad,
-  // low.xyz+pad). Analytic species/features retain their historical unrotated
-  // x/z wind plane without consuming wrapped texture coordinates.
+  // 160-167 — the encoded canonical morphology origin, as high xyz plus pad and
+  // low xyz plus pad. The analytic species and feature terms work in an
+  // unrotated x/z wind plane, which this supplies without them having to consume
+  // the wrapped texture coordinates.
   writeCloudMorphologyOriginHighLow(
     data,
     offset,
@@ -3422,19 +3373,18 @@ export function executeProceduralClouds(
   );
   offset += CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS;
 
-  // ── C13-16 — per-genus morphology, slots 168-171. This is the renderer half of
-  // the two CloudTypeProfile axes that previously had no consumer: the
-  // FIBROUS/PUFFY `erosion` style (which becomes an anisotropic, wind-sheared
-  // filament carve so the cirrus family reads as ice streaks instead of faint
-  // cumulus lobes) and the per-genus Henyey-Greenstein `phaseG` (which becomes a
-  // forward-lobe offset, since ice scatters far more forward-peaked than water).
+  // 168-171 — per-genus morphology, carrying two {@link CloudTypeProfile} axes
+  // into the shader: the fibrous or puffy erosion style, which becomes an
+  // anisotropic wind-sheared filament carve so the cirrus family reads as ice
+  // streaks rather than faint cumulus lobes, and the per-genus
+  // Henyey-Greenstein `phaseG`, which becomes a forward-lobe offset because ice
+  // scatters far more forward-peaked than water.
   //
-  // Both are derived from the JS-authoritative table, NOT from new public dials —
-  // `cloudType` is already the user's selector and the profile is what it selects.
-  // Default byte-identity: the default genus is CUMULUS, which is PUFFY (fibre
-  // strength exactly 0 → both WGSL guards early-return the historical
-  // expressions) and whose phaseG is its own reference (delta exactly 0 →
-  // genusForwardG early-returns cloud.phaseG1).
+  // Both are derived from the profile table rather than from separate public
+  // dials, since `cloudType` is already the selector and the profile is what it
+  // selects. Cumulus, the default genus, is puffy with a fibre strength of
+  // exactly 0 and is its own phase reference, so both shader guards return their
+  // unmodified expressions for it.
   const fibreMorphology = CloudTypeProfile.getFibreMorphology(
     config.cloudType ?? CloudType.CUMULUS,
   );
@@ -3443,40 +3393,39 @@ export function executeProceduralClouds(
   data[offset++] = fibreMorphology.shear; // 170 genusFibreShear (0 = no fallstreak tilt)
   data[offset++] = profile.phaseG - cumulusProfile.phaseG; // 171 genusPhaseDelta (CUMULUS = 0)
 
-  // Fold the two LUT-coupling bits into qualityFlags (slot 74, already packed
-  // above). Add-only bits 8/9; set ONLY when the mode is on so the default render
-  // leaves them clear → the WGSL gates stay closed → byte-identical.
+  // Fold the two LUT-coupling bits into `qualityFlags` at slot 74, already
+  // packed above. Bits 8 and 9 are set only while the corresponding mode is on,
+  // so with both off the shader's gates stay closed.
   if (aerialLutOn || ambientLutOn) {
     let qf = data[74];
     if (aerialLutOn) qf = qf | CLOUD_QF_AERIAL_LUT;
     if (ambientLutOn) qf = qf | CLOUD_QF_AMBIENT_LUT;
     data[74] = qf;
   }
-  // Batch 443 — fold the multi-deck bit (11) into qualityFlags. Set ONLY when
-  // opted in so the default leaves it clear → the WGSL takes the single-shell
-  // branch → byte-identical.
+  // Bit 11 selects the multi-deck march; clear, the shader takes the
+  // single-shell branch.
   if (multiDeckOn) {
     data[74] = data[74] | CLOUD_QF_MULTI_DECK;
   }
-  // Batch 445 / C13-04 — fold the high-precision bit (12) into qualityFlags.
-  // Production/default sets it; explicit cloudHighPrecision=false retains the
-  // one-part f32 WGS84 precision A/B.
+  // Bit 12 selects the high-precision march, which is on unless
+  // `cloudHighPrecision` is explicitly false; clear, the shell intersection is
+  // computed in single-part f32.
   if (highPrecisionOn) {
     data[74] = data[74] | CLOUD_QF_HIGH_PRECISION;
   }
-  // C13-37 — enable the planet-domain only for a realized baked resource. The
-  // LIVE fallback retains its historical formula. Unlike cloudHighPrecision this
-  // bit has NO public override: the only way to flip it in isolation is the
-  // same-build density-domain characterization probe poking data[74] directly
-  // after upload — a diagnostic route, not a user-facing CloudVolumetrics flag.
+  // Bit 13 selects the planet-scale density domain, and only a realized baked
+  // resource can supply it; the live-noise fallback keeps its own formula.
+  // Unlike the high-precision bit this one has no public override, so the only
+  // way to flip it in isolation is a diagnostic that writes slot 74 directly
+  // after upload.
   if (noiseBakedBit !== 0) {
     data[74] = data[74] | CLOUD_QF_PLANET_DENSITY;
   }
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
-  // Weather Phase 1 — resolve the weather view (procedural map when enabled,
-  // 1×1 white fallback otherwise).
+  // Resolve the weather view: the procedural map when enabled, a 1×1 white
+  // fallback otherwise.
   const weatherView = ensureWeatherView(
     device,
     cache,
@@ -3487,9 +3436,10 @@ export function executeProceduralClouds(
   // `noise` (the 3D shape/detail views + sampler) was resolved up-front so the
   // qualityFlags noiseSource bit reflects the same-frame baked state.
 
-  // Batch 434 (3.3 + 3.4) — resolve the atmosphere-LUT views (real when a mode is
-  // on AND the LUTs are allocated, 1×1 black placeholders otherwise). Bound
-  // unconditionally at 9/10/11 so the BGL never forks; the WGSL gates the samples.
+  // Resolve the atmosphere-LUT views: the real textures when a mode is on and
+  // the LUTs are allocated, 1×1 black placeholders otherwise. They are bound
+  // unconditionally at 9, 10 and 11 so the bind-group layout never forks, and
+  // the shader gates the samples.
   const lutViews = ensureCloudLutViews(
     device,
     context,
@@ -3509,10 +3459,10 @@ export function executeProceduralClouds(
     lutViews,
   );
 
-  // Slice 5c-B Batch 127 — record into the main frame encoder so the
-  // composite-over-post-process ordering survives. Same fix pattern as
-  // NPR + SSR in this batch (see NPR's call site comment for the full
-  // explanation of the encoder-submission ordering issue).
+  // Record into the main frame encoder so the composite lands over the
+  // post-process output; a separate encoder submits in its own order and the
+  // composite would be overwritten. The NPR and SSR passes bind their work the
+  // same way.
   const mainEncoder = (
     context as unknown as { _currentCommandEncoder?: GPUCommandEncoder }
   )._currentCommandEncoder;
@@ -3521,42 +3471,43 @@ export function executeProceduralClouds(
     mainEncoder ??
     device.createCommandEncoder({ label: "ProceduralClouds (orphan)" });
 
-  // ── Batch 437 (CLOUD-SHADOWS) — render the sun-view beer shadow map ──
-  // Opt-in via `config.cloudCastShadows`. Default OFF → `shadowActive` stays false,
-  // the real map is never rendered, and consumers read the 1×1-white placeholder
-  // (transmittance 1, no shadow) → byte-identical. When ON we rasterize the cloud
-  // optical depth from the sun's ortho view into `cache.shadowView` using the SAME
-  // CloudUniforms + weather/noise the visible march uses, so the cast shadow tracks
-  // the rendered cloud field exactly. The sun-view ortho VP is stashed on the cache
-  // for the consumers (config terrain reads last frame's; aerial/fog this frame's).
+  // The sun-view Beer shadow map, opted into through `config.cloudCastShadows`.
+  // With it off, `shadowActive` stays false, the real map is never rendered, and
+  // consumers read the 1×1 placeholder at transmittance 1. With it on, the cloud
+  // optical depth is rasterized from the sun's orthographic view into
+  // `cache.shadowView` using the same `CloudUniforms`, weather and noise the
+  // visible march uses, so the cast shadow tracks the rendered field exactly.
+  // The sun-view projection is stashed on the cache for the consumers; the globe
+  // terrain reads the previous frame's, while aerial perspective and fog read
+  // this frame's.
   cache.shadowActive = false;
   cache.shadowCascadeActive = false;
-  // C13-41 — publish the cast-shadow strength through the SAME `_cloudCache`
-  // seam `shadowAbsorption` already travels through, unconditionally (so a
-  // frame that skips the shadow block can never leave a stale value behind for
-  // the consumers). It tracks the DIRECTIONAL share of the surviving
-  // illumination, NOT S2's scene-light factor: scaling the strength by the
-  // scene factor makes shadowed ground `F * (1 - 0.65F)`, which peaks at
-  // F = 0.769 ABOVE its un-eclipsed value — a shadowed patch would brighten as
-  // the eclipse deepened. See `Scene/EclipseCloudResponse.js` for the
-  // derivation. Exactly 1.0 outside an eclipse, so the consumers' former
-  // literal `1.0` is reproduced bit-for-bit.
+  // Publish the cast-shadow strength through the same cache seam
+  // `shadowAbsorption` travels through, and do it unconditionally so a frame
+  // that skips the shadow block cannot leave a stale value behind. It tracks the
+  // directional share of the surviving illumination, not the scene-light factor:
+  // scaling the strength by the scene factor gives shadowed ground
+  // `F * (1 - 0.65F)`, which peaks at F = 0.769 above its un-eclipsed value, so
+  // a shadowed patch would brighten as the eclipse deepened. See
+  // `Scene/EclipseCloudResponse.js` for the derivation. It is exactly 1.0
+  // outside an eclipse.
   cache.shadowStrength = eclipseCloudDirectionalFraction(frameState);
   stages.endStage(CloudCpuStage.PACK);
   stages.beginStage(CloudCpuStage.SHADOW);
   if (config.cloudCastShadows === true) {
     const shadowOk = ensureShadowResources(device, cache);
     if (!shadowOk) {
-      // Permanent null-target sentinel (CLAUDE.md): the feature is on but the map
-      // couldn't allocate — fall back to the placeholder (no shadow). Real bug.
+      // Cast shadows are on but the map could not allocate, so the placeholder
+      // is used and nothing is shadowed. Reported unconditionally because it
+      // indicates a real allocation failure.
       console.error(
         `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow map allocation failed; falling back to no-shadow placeholder.`,
       );
     } else {
-      // C13-06 — footprint centre = the camera's WGS84 GEODETIC surface point.
-      // The previous radial projection onto a 6378137 m sphere placed the centre
-      // up to ~21.4 km off in the radial direction at the poles, which at a low
-      // sun swung the whole ±60 km footprint tens of kilometres away from the
+      // The footprint centre is the camera's WGS84 geodetic surface point. A
+      // radial projection onto a 6378137 m sphere instead lands up to about
+      // 21.4 km off in the radial direction at the poles, which at a low sun
+      // swings the whole ±60 km footprint tens of kilometres away from the
       // ground the camera is looking at.
       const cpx = camPos?.x ?? 0;
       const cpy = camPos?.y ?? 0;
@@ -3577,8 +3528,8 @@ export function executeProceduralClouds(
         WGS84_POLAR_RADIUS,
       );
       if (!frameOk) {
-        // Permanent sentinel (CLAUDE.md): degenerate camera/sun input would
-        // otherwise upload a garbage projection every consumer then samples.
+        // A degenerate camera or sun input would otherwise upload a meaningless
+        // projection that every consumer then samples.
         console.error(
           `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow sun-view frame is degenerate; leaving the shadow map inert this frame.`,
         );
@@ -3590,9 +3541,11 @@ export function executeProceduralClouds(
         0,
         cache.shadowFrame,
       );
-      // CloudShadowUniforms: [0..15] = inverse VP RELATIVE TO THE CAMERA, so the
-      // shadow FS reconstructs a camera-relative column point and stays in the
-      // same RTE frame as the visible march. [16..19] sunDir + light steps.
+      // `CloudShadowUniforms` holds the camera-relative inverse view-projection
+      // in floats 0-15, so the shadow fragment shader reconstructs a
+      // camera-relative column point and stays in the same relative-to-eye frame
+      // as the visible march, and the sun direction plus the light-step count in
+      // floats 16-19.
       writeCloudShadowInverseViewProjectionRelativeToEye(
         cache.shadowUniformData,
         0,
@@ -3644,22 +3597,23 @@ export function executeProceduralClouds(
       // A degenerate frame leaves the map inert rather than publishing an
       // identity projection every consumer would then sample as a real shadow.
       cache.shadowActive = frameOk;
-      // C13-02 — the single beer-shadow map: one pass, at this resolution.
+      // The single Beer shadow map is one pass, at this resolution.
       counters.shadowPassCount++;
       counters.shadowSize = cache.shadowSize;
 
-      // ── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP — opt-in 3-cascade atlas ──
-      // Additive on top of the single map (which aerial/fog still read): render
-      // three geometrically-split cascades into a stacked 512×1536 atlas the
-      // globe terrain samples. Each cascade reuses the single-map pipeline with
-      // its own footprint + march-step count, fed from a 256-aligned slice of the
-      // cascade uniform buffer. Default OFF → this whole block is skipped and the
-      // render is byte-identical to the single-map path.
+      // The opt-in three-cascade atlas, additive on top of the single map that
+      // aerial perspective and fog keep reading: three geometrically split
+      // cascades rendered into a stacked 512×1536 atlas the globe terrain
+      // samples. Each cascade reuses the single-map pipeline with its own
+      // footprint and march-step count, fed from a 256-aligned slice of the
+      // cascade uniform buffer.
       if (config.cloudShadowCascades === true) {
         const cascadeOk = ensureCascadeResources(device, cache);
         if (!cascadeOk) {
-          // Real bug: the tier is on but the atlas couldn't allocate. The globe
-          // falls back to the single map (shadowCascadeActive stays false).
+          // Cascades are on but the atlas could not allocate, so
+          // `shadowCascadeActive` stays false and the globe falls back to the
+          // single map. Reported unconditionally because it indicates a real
+          // allocation failure.
           console.error(
             `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow cascade atlas allocation failed; falling back to single beer-shadow-map.`,
           );
@@ -3671,10 +3625,10 @@ export function executeProceduralClouds(
             // Reuse the shared invVP scratch region (cud[base..base+15]) as the
             // per-cascade inverse VP the shadow FS reconstructs columns from.
             const invVP = cud.subarray(base, base + 16);
-            // C13-06 — each cascade is the same geodetic-centred sun frame at a
-            // tighter half-extent. The FS reconstructs camera-relative columns
-            // from its own inverse VP; the forward matrix stays absolute for the
-            // planar-mode consumer branch.
+            // Each cascade is the same geodetic-centred sun frame at a tighter
+            // half-extent. The fragment shader reconstructs camera-relative
+            // columns from its own inverse view-projection, while the forward
+            // matrix stays absolute for the planar-mode consumer branch.
             const cascadeFrame = cache.shadowCascadeFrames[ci];
             computeCloudShadowFrame(
               cascadeFrame,
@@ -3754,10 +3708,10 @@ export function executeProceduralClouds(
           }
           cascadePass.end();
           cache.shadowCascadeActive = frameOk;
-          // C13-02 — the atlas is ONE render pass carrying
-          // CLOUD_SHADOW_CASCADE_COUNT viewport-scoped draws. Counting it as
-          // one pass and recording the tile count separately keeps
-          // `shadowPassCount` comparable with the profiler's pass ledger.
+          // The atlas is one render pass carrying `CLOUD_SHADOW_CASCADE_COUNT`
+          // viewport-scoped draws. Counting it as one pass and recording the
+          // tile count separately keeps `shadowPassCount` comparable with the
+          // profiler's pass ledger.
           counters.shadowPassCount++;
           counters.shadowCascadeSize = cache.shadowCascadeSize;
           counters.shadowCascadeCount = CLOUD_SHADOW_CASCADE_COUNT;
@@ -3777,12 +3731,10 @@ export function executeProceduralClouds(
     cache.upscaleUniformBuffer &&
     cache.upscaleSampler
   ) {
-    // ── C13-09/C13-10 — ATTACHMENT RESOURCES, RESOLVED BEFORE THE MARCH ──
-    // The transform check and the allocation are hoisted above the raymarch
-    // because C13-10's emitting variant needs contract slot 1 to EXIST as a
-    // colour attachment of the march pass itself. With the attachment stage off
-    // (the default) neither call runs and the block below is exactly the
-    // pre-C13-09 encode.
+    // Attachment resources are resolved before the march: the transform check
+    // and the allocation sit above the raymarch because the emitting variant
+    // needs contract slot 1 to exist as a colour attachment of the march pass
+    // itself. With the attachment stage off, neither call runs.
     const attachmentStageActive = cache.attachmentsEnabled && !!cache.halfView;
     let attachmentsReady = false;
     if (attachmentStageActive) {
@@ -3801,19 +3753,19 @@ export function executeProceduralClouds(
           cache.halfView,
         );
     }
-    // C13-10 — the emitting march runs only when BOTH halves of the handshake
-    // built. A half-applied variant (a march that emits into a target no
-    // producer reads, or a producer expecting a slot the march never wrote) is
-    // never encoded; the frame falls back to the estimator path instead.
+    // The emitting march runs only when both halves of the handshake built. A
+    // half-applied variant — a march emitting into a target no producer reads,
+    // or a producer expecting a slot the march never wrote — is never encoded,
+    // and the frame falls back to the estimator path instead.
     const emitReconstruction =
       attachmentsReady && cloudReconstructionVariantReady(cache);
 
-    // ── V9 (Batch 432) — HALF-RES PATH ──
-    // Pass 1: raymarch into the 0.5× rgba16float target (CLEAR to transparent so
-    // non-cloud texels stay 0; the shader emits premultiplied cloud + alpha).
-    // C13-10 — when emitting, the SAME pass additionally writes contract slot 1
-    // from the march's own per-sample accumulation. One pass, one traversal:
-    // the depth is a by-product of work already done, not a second march.
+    // Half-resolution path, first pass: raymarch into the half-size rgba16float
+    // target, cleared to transparent so non-cloud texels stay at 0, with the
+    // shader emitting premultiplied cloud colour and alpha. When emitting, the
+    // same pass also writes contract slot 1 from the march's own per-sample
+    // accumulation, so the depth is a by-product of one traversal rather than a
+    // second march.
     const halfPass = encoder.beginRenderPass(
       timedCloudPass(context, {
         label: "ProceduralClouds half-res pass",
@@ -3854,34 +3806,30 @@ export function executeProceduralClouds(
     halfPass.end();
     cache.reconstructionEmittedThisFrame = emitReconstruction;
 
-    // ── C13-09 — RECONSTRUCTION ATTACHMENT PRODUCER (opt-in, default OFF) ──
-    // Runs between the raymarch and the temporal resolve, so C13-12 can read
-    // the set inside the resolve without reordering anything. Writes front /
-    // transmittance-weighted cloud depth, screen-space motion with its
-    // validity, and the depth/coverage moment pair.
+    // The reconstruction attachment producer. It runs between the raymarch and
+    // the temporal resolve, so a consumer can read the set inside the resolve
+    // without anything being reordered, and it writes front and
+    // transmittance-weighted cloud depth, screen-space motion with its validity
+    // flag, and the depth/coverage moment pair.
     //
-    // ★ WITH `attachmentsEnabled` FALSE (the default) this block does not run
-    //   at all: no target is allocated, no pass is encoded, and the cloud lane
-    //   is identical in pixels AND in cost. With it on but C13-10's
-    //   `reconstructionEnabled` CLEAR, the producer writes and the counters
-    //   report while the upscale still reads exactly what it read before —
-    //   C13-09's "produced but not consumed" state, preserved deliberately so
-    //   its acceptance legs stay meaningful. With BOTH on, the march wrote slot
-    //   1 itself, this pass reads it and writes the remaining two, and the
-    //   resolve below validates history against the set.
+    // With `attachmentsEnabled` false this block does not run at all: no target
+    // is allocated and no pass is encoded. With it on but `reconstructionEnabled`
+    // clear, the producer writes and the counters report while the upscale still
+    // reads what it read before, which is the produced-but-unconsumed state.
+    // With both on, the march wrote slot 1 itself, this pass reads it and writes
+    // the remaining two, and the resolve below validates history against the set.
     //
-    // A usable current inverse view-projection-relative-to-eye is REQUIRED:
+    // A usable current inverse view-projection-relative-to-eye is required:
     // without it the per-pixel ray direction is meaningless and every channel
     // would be noise. Orthographic and morph frames therefore produce no
-    // attachments, which is the same residual C13-05 recorded — they stay
-    // current-only until reconstruction carries a per-pixel ray origin.
+    // attachments until reconstruction carries a per-pixel ray origin.
     if (attachmentStageActive) {
       if (attachmentsReady && cache.attachmentUniformBuffer) {
         const attachmentCurrentCamera = us?.cameraPosition ?? camPos;
         const attachmentPreviousCamera = us?.previousCameraPosition;
-        // Only the VELOCITY channel needs history. Depth and moments are well
-        // defined on a frame with none (first use, a reset, a teleport), so a
-        // missing previous transform marks velocity invalid rather than
+        // Only the velocity channel needs history. Depth and moments are well
+        // defined on a frame that has none — first use, a reset, a teleport — so
+        // a missing previous transform marks velocity invalid rather than
         // suppressing the whole set.
         const attachmentReprojectionValid =
           matrix4IsFinite(us?.previousViewProjectionRelativeToEye) &&
@@ -3896,8 +3844,8 @@ export function executeProceduralClouds(
           : null;
         inputs.inverseCurrentViewProjectionRelativeToEye =
           scratchInverseCurrentViewProjectionRelativeToEye;
-        // The SAME encoded high/low camera split the primary march packed, so
-        // both derive the planet centre from one origin (slots 120-127).
+        // The same encoded high/low camera split the primary march packed into
+        // slots 120-127, so both derive the planet centre from one origin.
         inputs.encodedCameraHighX = data[120];
         inputs.encodedCameraHighY = data[121];
         inputs.encodedCameraHighZ = data[122];
@@ -3944,15 +3892,15 @@ export function executeProceduralClouds(
           cache.attachmentUniformData,
         );
 
-        // The label is spelled out rather than routed through
-        // `CLOUD_ATTACHMENT_PASS_LABEL` because C13-02's D1 check reads the
-        // encode sites as SOURCE TEXT and requires them to agree with the
-        // registry in both directions. The constant and this literal are
+        // The emitting variant's target list starts at contract slot 2, because
+        // slot 1 was already written by the march this pass reads it from. Both
+        // lists come from the contract table, so the pipeline's formats and the
+        // attachment list cannot disagree.
+        //
+        // The pass label below is spelled out rather than routed through
+        // `CLOUD_ATTACHMENT_PASS_LABEL` because the observability check reads
+        // the encode sites as source text; the constant and the literal are
         // pinned equal by `cloud-reconstruction-attachments.spec.mjs`.
-        // C13-10 — the emitting variant's target list starts at contract slot 2,
-        // because slot 1 was already written by the march this pass reads it
-        // from. Derived from `CLOUD_EMITTED_ATTACHMENTS` so the pipeline's
-        // formats and the attachment list come from one table.
         const producedAttachments = emitReconstruction
           ? CLOUD_EMITTED_ATTACHMENTS
           : CLOUD_OWNED_ATTACHMENTS;
@@ -3960,9 +3908,9 @@ export function executeProceduralClouds(
         const attachmentPass = encoder.beginRenderPass(
           timedCloudPass(context, {
             label: "CloudReconstructionAttachments pass",
-            // CLEAR every target: a texel the full-screen triangle somehow
-            // misses must read as "no cloud, no motion, no variance" rather
-            // than as the previous generation's contents.
+            // Every target is cleared, so a texel the full-screen triangle
+            // somehow misses reads as no cloud, no motion and no variance
+            // rather than as the previous generation's contents.
             colorAttachments: producedAttachments.map((spec, index) => ({
               view: cache.attachmentViews[index + producedViewOffset]!,
               clearValue: spec.clearValue,
@@ -3989,7 +3937,7 @@ export function executeProceduralClouds(
         counters.attachmentWidth = cache.halfWidth;
         counters.attachmentHeight = cache.halfHeight;
         counters.attachmentPixels = cache.halfWidth * cache.halfHeight;
-        // The CONTRACT set is always three targets; what changes with the
+        // The contract set is always three targets; what changes with the
         // variant is which pass wrote each one, not how many exist.
         counters.attachmentCount = cache.attachmentViews.length;
         counters.attachmentGeneration = cache.attachmentGeneration.generation;
@@ -3998,13 +3946,13 @@ export function executeProceduralClouds(
       }
     }
 
-    // V10 (Batch 433) — TEMPORAL RESOLVE (optional, between raymarch and upscale).
-    // Reproject the previous accumulated history through the RTE
-    // `previousViewProjectionRelativeToEye`, neighborhood-clamp it to the current
-    // 3×3 freshly-marched AABB (ghost rejection), and blend → write the new
-    // accumulated history. The upscale then reads THAT history instead of the
-    // raw half-res march. When temporal is OFF (default / cinematic / escape
-    // hatch) this whole block is skipped → byte-identical.
+    // The temporal resolve, between the raymarch and the upscale. It reprojects
+    // the previous accumulated history through the relative-to-eye
+    // `previousViewProjectionRelativeToEye`, clamps it to the axis-aligned
+    // bounding box of the current 3×3 freshly marched neighbourhood to reject
+    // ghosting, blends, and writes the new accumulated history. The upscale then
+    // reads that history instead of the raw half-resolution march. With temporal
+    // off the whole block is skipped.
     let upscaleSourceView: GPUTextureView = cache.halfView;
     if (
       temporalActive &&
@@ -4022,18 +3970,18 @@ export function executeProceduralClouds(
       const writeIdx = readIdx ^ 1;
       const writeView = cache.temporalHistoryView[writeIdx]!;
 
-      // C13-05 — compare with the last frame that actually WROTE cloud
-      // history, not merely UniformState's immediately preceding Scene frame.
-      // This catches culling/disable gaps and tier re-entry while preserving
-      // ordinary bounded camera motion.
+      // Compare against the last frame that actually wrote cloud history rather
+      // than against `UniformState`'s immediately preceding scene frame. That
+      // catches culling and disable gaps and tier re-entry, while leaving
+      // ordinary bounded camera motion accepted.
       const previousVpRte = us?.previousViewProjectionRelativeToEye;
       const inverseProjection = us?.inverseProjection;
       const inverseView = us?.inverseView;
       const currentCamera = us?.cameraPosition ?? camPos;
       const previousCamera = us?.previousCameraPosition;
-      // The previous transform is checked HERE rather than inside the helper:
-      // the temporal resolve genuinely cannot run without it, while the C13-09
-      // producer can (its velocity channel carries its own validity flag).
+      // The previous transform is checked here rather than inside the helper:
+      // the temporal resolve cannot run without it, while the attachment
+      // producer can, since its velocity channel carries its own validity flag.
       const inverseCurrentVpRteValid =
         matrix4IsFinite(previousVpRte) &&
         resolveCloudInverseCurrentVpRte(
@@ -4087,11 +4035,11 @@ export function executeProceduralClouds(
           historySample,
         ) | cache.temporalHistoryPendingResetReasons;
       cache.temporalHistoryPendingResetReasons = 0;
-      // C13-02 — the per-frame reconstruction verdict, recorded on the SAME
-      // branches that maintain the lifetime totals so the two can never
-      // disagree. `historyReset` follows `temporalHistoryResetCount` exactly:
-      // it marks only the rejections that started a NEW generation, so a
-      // persistent reason (MORPH) does not read as a fresh reset every frame.
+      // The per-frame history verdict, recorded on the same branches that
+      // maintain the lifetime totals so the two cannot disagree. `historyReset`
+      // follows `temporalHistoryResetCount` exactly and marks only the
+      // rejections that started a new generation, so a persistent reason such as
+      // an in-progress morph does not read as a fresh reset every frame.
       counters.historyResetReasons = temporalResetReasons;
       if (temporalResetReasons !== 0) {
         cache.temporalFirstFrame = true;
@@ -4175,13 +4123,11 @@ export function executeProceduralClouds(
       td[to++] = 0.0;
       device.queue.writeBuffer(cache.temporalUniformBuffer, 0, td);
 
-      // ── C13-10 — THE FIRST CONSUMER THE ATTACHMENTS HAVE EVER HAD ──
-      // Gated on the attachments having been PRODUCED THIS FRAME
-      // (`attachmentRenderedThisFrame`), not merely on being allocated: a frame
-      // whose producer was skipped (no usable inverse transform, a culled
-      // march) would otherwise validate this frame's history against last
-      // frame's motion vectors, which is precisely the stale-set failure
-      // C13-09's per-frame flag exists to make impossible.
+      // Consumption is gated on the attachments having been produced this frame
+      // through `attachmentRenderedThisFrame`, not merely on their being
+      // allocated. A frame whose producer was skipped — no usable inverse
+      // transform, or a culled march — would otherwise validate this frame's
+      // history against the previous frame's motion vectors.
       const consumeReconstruction =
         cache.reconstructionEnabled &&
         cache.attachmentRenderedThisFrame &&
@@ -4215,7 +4161,7 @@ export function executeProceduralClouds(
 
       // The upscale reads the freshly-written, accumulated history.
       upscaleSourceView = writeView;
-      // Ping-pong: next frame reads what we just wrote.
+      // Ping-pong the history: the next frame reads what this one wrote.
       cache.temporalRead = writeIdx;
       commitCloudTemporalHistoryState(
         cache.temporalHistoryState,
@@ -4266,7 +4212,7 @@ export function executeProceduralClouds(
     upscalePass.draw(3);
     upscalePass.end();
   } else {
-    // ── Full-res path (default / cinematic / escape hatch) — UNCHANGED ──
+    // Full-resolution path: march straight into the output view.
     const pass = encoder.beginRenderPass(
       timedCloudPass(context, {
         label: "ProceduralClouds pass",
@@ -4285,11 +4231,11 @@ export function executeProceduralClouds(
     pass.end();
   }
 
-  // ── TAKRAM-9 (cloud-aware god rays) — screen-space transmittance mask ──
-  // Rendered ONLY when a consumer requested it (the PP god-ray pass). Reuses the
-  // main per-frame `bindGroup` (same layout/inputs) but a dedicated r8unorm
-  // pipeline + target driven by the `fragmentCloudMaskMain` entry point. The
-  // shipped composite passes above are untouched → byte-identical when off.
+  // The screen-space cloud transmittance mask, rendered only when a consumer has
+  // requested it. It reuses the main per-frame bind group, which has the layout
+  // and inputs it needs, with a dedicated r8unorm pipeline and target driven by
+  // the `fragmentCloudMaskMain` entry point, so the composite passes above are
+  // untouched.
   if (cache.maskCaptureEnabled) {
     ensureCloudMaskResources(device, cache, canvasW, canvasH);
     if (cache.maskPipeline && cache.maskView) {
@@ -4325,10 +4271,10 @@ export function executeProceduralClouds(
 }
 
 /**
- * TAKRAM-9 — lazily allocate the transmittance-mask target + pipeline (only
- * reached when a consumer enabled capture). The r8unorm target is re-created on
- * canvas resize; the pipeline (size-independent) is built once from the retained
- * cloud shader module + the shared cloud BGL.
+ * Lazily allocates the transmittance-mask target and pipeline; only reached once
+ * a consumer has enabled capture. The r8unorm target is recreated on canvas
+ * resize, while the pipeline is size-independent and is built once from the
+ * retained cloud shader module and the shared cloud bind-group layout.
  */
 function ensureCloudMaskResources(
   device: GPUDevice,
@@ -4380,7 +4326,7 @@ export function destroyProceduralCloudResources(
     cache.uniformBuffer = null;
     cache.bindGroupLayout = null;
     cache.sampler = null;
-    // V9 (Batch 432) — release the half-res target + upscale resources.
+    // Half-resolution target and upscale resources.
     cache.halfTexture?.destroy();
     cache.halfTexture = null;
     cache.halfView = null;
@@ -4393,7 +4339,7 @@ export function destroyProceduralCloudResources(
     cache.upscaleBindGroupLayout = null;
     cache.upscaleSampler = null;
     clearCloudCompositeBindGroupCaches(cache);
-    // V10 (Batch 433) — release the temporal ping-pong history + resolve resources.
+    // Temporal ping-pong history and resolve resources.
     cache.temporalHistory[0]?.destroy();
     cache.temporalHistory[1]?.destroy();
     cache.temporalHistory = [null, null];
@@ -4416,13 +4362,13 @@ export function destroyProceduralCloudResources(
     cache.temporalHistoryResetReasons = 0;
     cache.temporalHistoryResetCount = 0;
     cache.temporalHistoryAcceptedFrames = 0;
-    // Batch 434 (3.3 + 3.4) — release the LUT placeholder + sampler. The real LUT
-    // textures are owned by the performance manager, not this cache.
+    // The LUT placeholder and its sampler. The real LUT textures are owned by
+    // the performance manager, not by this cache.
     cache.lutPlaceholderTexture?.destroy();
     cache.lutPlaceholderTexture = null;
     cache.lutPlaceholderView = null;
     cache.lutSampler = null;
-    // Batch 437 (CLOUD-SHADOWS) — release the beer-shadow-map resources.
+    // Beer shadow map resources.
     cache.shadowTexture?.destroy();
     cache.shadowTexture = null;
     cache.shadowView = null;
@@ -4436,7 +4382,7 @@ export function destroyProceduralCloudResources(
     cache.shadowUniformBuffer = null;
     cache.shadowSize = 0;
     cache.shadowActive = false;
-    // CLOUD-LOD-R5 — release the cascade atlas + cascade uniform buffer.
+    // Cascade atlas and its uniform buffer.
     cache.shadowCascadeTexture?.destroy();
     cache.shadowCascadeTexture = null;
     cache.shadowCascadeView = null;
@@ -4444,7 +4390,7 @@ export function destroyProceduralCloudResources(
     cache.shadowCascadeUniformBuffer = null;
     cache.shadowCascadeActive = false;
     cache.shadowCascadeSize = 0;
-    // TAKRAM-9 — release the transmittance-mask target + pipeline.
+    // Transmittance-mask target and pipeline.
     cache.maskTexture?.destroy();
     cache.maskTexture = null;
     cache.maskView = null;
@@ -4453,20 +4399,19 @@ export function destroyProceduralCloudResources(
     cache.maskPipeline = null;
     cache.maskShaderModule = null;
     cache.maskRenderedThisFrame = false;
-    // C13-09 — release the reconstruction attachments. The targets and the
-    // bind group go through the shared release (which keeps the generation
-    // counter monotonic, so a retired bind group's key can never be reused);
-    // the pipeline, layout and uniform buffer are device-owned and only a
-    // teardown drops them.
+    // Reconstruction attachments. The targets and the bind group go through the
+    // shared release, which keeps the generation counter monotonic so a retired
+    // bind group's key can never be reused; the pipeline, layout and uniform
+    // buffer are device-owned and only a teardown drops them.
     releaseCloudAttachmentResources(cache);
     cache.attachmentPipeline = null;
     cache.attachmentBindGroupLayout = null;
     cache.attachmentUniformBuffer?.destroy();
     cache.attachmentUniformBuffer = null;
-    // C13-10 — the variant pipelines and layouts are device-owned exactly like
-    // the historical ones, so they are dropped HERE and only here. A flag flip
-    // must never destroy them: rebuilding a pipeline on a user toggle is the
-    // hitch the separate-object design exists to avoid.
+    // The variant pipelines and layouts are device-owned exactly as the base
+    // ones are, so they are dropped here and only here. Destroying them on a
+    // flag flip would rebuild a pipeline on a user toggle, which is the hitch
+    // the separate-object design avoids.
     cache.halfEmitPipeline = null;
     cache.attachmentEmitPipeline = null;
     cache.attachmentEmitBindGroupLayout = null;

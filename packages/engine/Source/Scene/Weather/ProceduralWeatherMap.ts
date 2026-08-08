@@ -1,15 +1,16 @@
 /**
- * The DEFAULT global weather map — a coarse procedural cloud-cover field so the
- * volumetric cloud deck has geographic weather with ZERO data pipeline. A
- * {@link WeatherProvider} with real data overwrites the same texture bytes.
+ * The default global weather map: a coarse procedural cloud-cover field that
+ * gives the volumetric cloud deck geographic weather with no data pipeline at
+ * all. A {@link WeatherProvider} carrying real data overwrites the same texture
+ * bytes.
  *
- * Moved out of `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts` by C13-07 so
- * the procedural producer and the real-data {@link packWeatherField} producer
- * share ONE seam/pole convention (`WeatherMapSeam`) and can be pinned by a
- * pure-Node contract instead of only by a GPU probe. Nothing here imports the
- * renderer.
+ * It lives here, outside `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`, so
+ * that the procedural producer and the real-data {@link packWeatherField}
+ * producer share one seam and pole convention (`WeatherMapSeam`) and can be
+ * pinned by a pure-Node contract rather than only by a GPU probe. Nothing here
+ * imports the renderer.
  *
- * Byte layout (must stay identical to the packer's):
+ * Byte layout, which must stay identical to the packer's:
  *   R = coverage, G = cloud type/genus (128 neutral), B = cloud base, A = density
  *   bias (128 neutral). 256x128 rgba8unorm equirectangular, row 0 = north.
  *
@@ -32,16 +33,17 @@ function smoothstep01(t: number): number {
 /**
  * Build the procedural global weather map.
  *
- * Two octave stacks give continental cloudy/clear REGIONS with finer internal
- * variation; the high-contrast smoothstep keeps clear regions genuinely clear
- * (R ~ 0) and storm regions genuinely overcast (R ~ 1) rather than a gentle wash.
+ * Two octave stacks give continental cloudy and clear regions with finer
+ * internal variation; the high-contrast smoothstep keeps clear regions genuinely
+ * clear (R near 0) and storm regions genuinely overcast (R near 1), rather than
+ * a gentle wash.
  *
- * C13-07: the noise is evaluated at TEXEL CENTRES (the convention the GPU's
- * `linear` sampler reconstructs) and is exactly periodic in longitude, and the
- * result is run through the pole-safe wrap-aware low-pass. Before this, the fBM
- * was aperiodic in `u`, so texel 0 and texel `w-1` — which `addressModeU:
- * "repeat"` filters together — held unrelated values and the antimeridian showed
- * a full-contrast wall of cloud.
+ * The noise is evaluated at texel centres, the convention the GPU's `linear`
+ * sampler reconstructs, is exactly periodic in longitude, and the result is run
+ * through the pole-safe wrap-aware low-pass. An fBM that is aperiodic in `u`
+ * leaves texel 0 and texel `w-1` — which `addressModeU: "repeat"` filters
+ * together — holding unrelated values, and the antimeridian then shows a
+ * full-contrast wall of cloud.
  *
  * @param w Texture width in texels.
  * @param h Texture height in texels.

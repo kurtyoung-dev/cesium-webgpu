@@ -1,23 +1,22 @@
 /**
- * OGC API - Coverages weather source (Phase 3 — Batch 425). Pulls a gridded
- * cloud-cover field from MSC GeoMet's OGC API-Coverages endpoint, requesting
- * **CoverageJSON** (NOT binary WCS GeoTIFF) so it reuses the SAME
- * {@link parseCoverageJson} helper as {@link EdrWeatherSource} — no GeoTIFF /
- * NetCDF binary decoder needed in the browser.
+ * OGC API - Coverages weather source. Pulls a gridded cloud-cover field from MSC
+ * GeoMet's OGC API-Coverages endpoint, requesting CoverageJSON rather than
+ * binary WCS GeoTIFF so it can reuse the {@link parseCoverageJson} helper that
+ * {@link EdrWeatherSource} uses; no GeoTIFF or NetCDF binary decoder is needed in
+ * the browser, and none is implemented.
  *
- * Default target: MSC GeoMet (Environment and Climate Change Canada open data),
- * the GDPS total-cloud-cover collection, which serves the OGC API-Coverages
- * `/collections/{id}/coverage` operation with a `bbox` + `f=json` (CoverageJSON)
- * query. The source primarily fills the R coverage channel; G/B/A are left to the
- * packer defaults unless the collection later provides genus/base/density ranges.
+ * The default target is MSC GeoMet, the Environment and Climate Change Canada
+ * open-data service, and its GDPS total-cloud-cover collection, which serves the
+ * OGC API-Coverages `/collections/{id}/coverage` operation with a `bbox` and
+ * `f=json` query. The source fills the R coverage channel; G, B and A are left to
+ * the packer defaults unless the collection later provides genus, base and
+ * density ranges.
  *
- * NOTE (see migration_doc/WEATHER_DATA_INGEST_ROADMAP.md): GeoTIFF/NetCDF binary
- * coverage decode is a DEFERRED follow-up — this source deliberately requests the
- * CoverageJSON representation. The live call is opt-in + CORS-gated; the source
- * supports an optional same-origin `proxy` and an `AbortSignal`, and the
- * {@link WeatherProvider} treats a rejected fetch as "no data" (the cloud renderer
- * falls back to its procedural map). Verified end-to-end against a committed mock
- * fixture (`/mock-wcs`); the live call is opt-in.
+ * The live call is opt-in and gated on CORS. The source supports an optional
+ * same-origin `proxy` and an `AbortSignal`, and the {@link WeatherProvider}
+ * treats a rejected fetch as no data, so the cloud renderer falls back to its
+ * procedural map. A committed mock fixture at `/mock-wcs` exercises the path
+ * end to end without the network.
  *
  * @module Scene/Weather/WcsCoveragesWeatherSource
  */

@@ -1,48 +1,47 @@
 /**
- * Campaign 13 C13-06 — the single RTE/WGS84 frame owner for the cloud beer
- * shadow map and every consumer that reads it.
+ * The single RTE and WGS84 frame owner for the cloud beer shadow map and every
+ * consumer that reads it.
  *
- * Before this module each consumer of the cloud shadow map carried its own
- * approximation of where the cloud deck is:
+ * Two failures this centralization prevents, both of which appear as soon as a
+ * consumer derives its own idea of where the cloud deck is:
  *
- * - the producer projected the camera onto a `6378137` m SPHERE to centre the
- *   sun-view footprint, then intersected two more spheres of the same
- *   equatorial radius for the deck shell. WGS84's polar semi-minor axis is
- *   ~21.4 km shorter, which is several deck thicknesses — at high latitude the
- *   shadow pass marched empty space above the deck the visible march renders,
- *   so the cast shadow silently vanished;
- * - the producer and all three consumers multiplied a full-magnitude ECEF
- *   `vec3<f32>` by an `f32` matrix whose translation column was itself ~6.4e6 m
- *   (`mvp * vec4(position, 1.0)`), which the fork's RTE law forbids.
+ * - projecting the camera onto a sphere of radius `6378137` m to centre the
+ *   sun-view footprint, and intersecting two more spheres of that equatorial
+ *   radius for the deck shell, ignores that WGS84's polar semi-minor axis is
+ *   ~21.4 km shorter — several deck thicknesses. At high latitude the shadow
+ *   pass then marches empty space above the deck the visible march renders, and
+ *   the cast shadow silently vanishes;
+ * - multiplying a full-magnitude ECEF `vec3<f32>` by an `f32` matrix whose
+ *   translation column is itself ~6.4e6 m (`mvp * vec4(position, 1.0)`) is what
+ *   the fork's RTE rule forbids.
  *
- * The frame below is computed once per frame in CPU `f64` and is the ONLY
- * source of the shadow projection. Its origin is the camera position — the same
- * origin `CloudUniforms.encodedCameraHigh/Low` (C13-04) and the density origin
- * phases (C13-37) already use, so the shadow producer samples the density field
- * through the identical camera-relative coordinate the visible march uses.
+ * The frame below is computed once per frame in CPU `f64` and is the only
+ * source of the shadow projection. Its origin is the camera position, the same
+ * origin `CloudUniforms.encodedCameraHigh/Low` and the density origin phases
+ * use, so the shadow producer samples the density field through the same
+ * camera-relative coordinate as the visible march.
  *
  * Contract:
  *
- * - producer: `invVpRelativeToEye * vec4(ndc, 1)` yields a CAMERA-RELATIVE
- *   column point. Every downstream quantity (shell roots, height fraction,
- *   density coordinates) stays camera-relative;
+ * - producer: `invVpRelativeToEye * vec4(ndc, 1)` yields a camera-relative
+ *   column point. Every downstream quantity — shell roots, height fraction,
+ *   density coordinates — stays camera-relative;
  * - consumer: `vpRelativeToEye * vec4(fragment - camera, 1)` is algebraically
  *   identical to the absolute `vp * vec4(fragment, 1)` but never forms a
- *   planet-scale `f32` product. Each consumer packs the matrix against ITS OWN
+ *   planet-scale `f32` product. Each consumer packs the matrix against its own
  *   camera, so consumers with different cameras remain consistent;
  * - `writeCloudShadowViewProjection` retains the absolute form for the planar
- *   scene modes, whose fragments have no ECEF camera-relative position. That
- *   branch is byte-identical to the pre-C13-06 matrix.
+ *   scene modes, whose fragments have no ECEF camera-relative position.
  *
- * The module is deliberately dependency-free `f64` arithmetic so the Node
- * contract spec can exercise it directly (same pattern as
- * `WebGPUCloudDensityDomain.ts` and `WebGPUCloudTemporalHistory.ts`).
+ * The module is dependency-free `f64` arithmetic so the Node contract spec can
+ * exercise it directly, following the same pattern as
+ * `WebGPUCloudDensityDomain.ts` and `WebGPUCloudTemporalHistory.ts`.
  */
 
 /** WGS84 semi-major axis (m) — the default cloud-shell equatorial radius. */
 export const CLOUD_SHADOW_WGS84_A = 6378137.0;
 
-/** WGS84 semi-minor axis (m). The ~21.4 km the spherical producer ignored. */
+/** WGS84 semi-minor axis (m), ~21.4 km shorter than the semi-major axis. */
 export const CLOUD_SHADOW_WGS84_B = 6356752.314245179;
 
 /**
@@ -51,7 +50,7 @@ export const CLOUD_SHADOW_WGS84_B = 6356752.314245179;
  */
 const GEODETIC_SURFACE_EPSILON = 1e-12;
 
-/** Iteration ceiling — a permanent loop sentinel (CLAUDE.md). */
+/** Iteration ceiling, a permanent loop sentinel. */
 const GEODETIC_SURFACE_MAX_ITERATIONS = 32;
 
 /**
@@ -352,8 +351,7 @@ export function computeCloudShadowFrame(
  * Write the world→sun-clip matrix (column-major, 16 floats).
  *
  * Retained for the planar scene modes, whose globe fragments carry no ECEF
- * camera-relative position. Identical to the pre-C13-06 matrix except that the
- * footprint centre is now geodetic.
+ * camera-relative position. The footprint centre is geodetic.
  */
 export function writeCloudShadowViewProjection(
   target: Float32Array,

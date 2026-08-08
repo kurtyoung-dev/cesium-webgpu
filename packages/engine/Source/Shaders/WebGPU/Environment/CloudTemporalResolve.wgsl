@@ -3,30 +3,28 @@
 // Third pass of the cloud reconstruction stack, between the half-resolution
 // raymarch and bilateral upscale.
 //
-// TWO VARIANTS, SELECTED AT COMPILE TIME:
+// Two variants, selected at compile time:
 //
-//   DEFAULT (`//>>else`) — the history is a half-resolution, COLOR-ONLY proxy
-//     and the anchor is the shell-interval midpoint. Byte-for-byte the
-//     pre-C13-10 shader.
-//   `CLOUD_RECONSTRUCTION_CONSUME` (C13-10) — the first consumer the C13-09
-//     attachment set has ever had. The anchor becomes the march's TRUE
+//   Default (`//>>else`) — the history is a half-resolution, color-only proxy
+//     and the anchor is the shell-interval midpoint.
+//   `CLOUD_RECONSTRUCTION_CONSUME` — the anchor is the march's
 //     transmittance-weighted depth, the previous UV comes from the producer's
 //     motion vector rather than being re-derived, and history reuse is gated on
-//     the producer's own validity flag and on the moment record's internal
+//     the producer's validity flag and on the moment record's internal
 //     consistency.
 //
-// STILL OPEN AFTER C13-10's FIRST SLICE: the history remains HALF-RESOLUTION
-// (the row's full-resolution reconstruction and true 1/16 current work are its
-// follow-up), and every THRESHOLDED rejection — motion/depth bounds, variance
-// clipping, reactive history, wind advection, disocclusion proper — is C13-12.
+// Current limitations, in both variants: the history is half-resolution, and no
+// thresholded rejection is implemented — no motion or depth bound, no variance
+// clipping, no reactive history, no wind advection in the reprojection, and no
+// disocclusion test beyond the validity checks below.
 //
-// C13-05 makes this existing proxy planet-correct:
+// The reprojection is planet-correct:
 //   1. reconstruct the current anchor in current-camera-relative coordinates;
 //   2. intersect expanded WGS84 shells from an encoded high/low planet center;
 //   3. add CPU-f64 `currentCameraWC - previousCameraWC`;
 //   4. project through the previous relative-to-eye view-projection matrix.
 //
-// No full-ECEF vec3<f32> is ever formed. The current-only path remains the safe
+// No full-ECEF vec3<f32> is ever formed. The current-only path is the safe
 // fallback for first use, discontinuities, missing transforms, shell misses,
 // behind-camera reprojection, and off-screen history.
 
@@ -34,11 +32,11 @@ const WGS84_EQUATORIAL_RADIUS: f32 = 6378137.0;
 const WGS84_POLAR_RADIUS: f32 = 6356752.314245179;
 
 //>>ifdef CLOUD_RECONSTRUCTION_CONSUME
-// C13-10 — rgba16float's relative quantum near 1 (`2^-10`). The moment
-// attachment stores four half-floats independently, so `E[x²]` and `E[x]²` can
-// disagree by about this much from rounding alone. It is a STORAGE tolerance,
-// not a quality threshold: nothing about the cloud changes if it moves, only
-// what counts as a self-consistent record.
+// rgba16float's relative quantum near 1, `2^-10`. The moment attachment stores
+// four half-floats independently, so `E[x²]` and `E[x]²` can disagree by about
+// this much from rounding alone. It is a storage tolerance rather than a quality
+// threshold: nothing about the cloud changes if it moves, only what counts as a
+// self-consistent record.
 const CLOUD_MOMENT_F16_QUANTUM: f32 = 0.0009765625;
 //>>endif
 
@@ -69,10 +67,10 @@ struct TemporalUniforms {
 @group(0) @binding(2) var linearSampler: sampler;
 @group(0) @binding(3) var<uniform> u: TemporalUniforms;
 //>>ifdef CLOUD_RECONSTRUCTION_CONSUME
-// C13-10 — the C13-09 attachment set, produced this frame between the march
-// and this pass. All three are read with `textureLoad`: `depth` is rg32float
-// and is NOT filterable without the optional `float32-filterable` feature, and
-// the other two carry per-texel facts (a validity flag, a moment pair) that a
+// The reconstruction attachment set, produced this frame between the march and
+// this pass. All three are read with `textureLoad`: `depth` is rg32float and is
+// not filterable without the optional `float32-filterable` feature, and the
+// other two carry per-texel facts — a validity flag, a moment pair — that a
 // linear tap would silently average into nonsense.
 @group(0) @binding(4) var reconstructionDepthTex: texture_2d<f32>;
 @group(0) @binding(5) var reconstructionVelocityTex: texture_2d<f32>;
@@ -143,8 +141,8 @@ fn rayEllipsoidIntersectRTE(
 }
 
 // Return the nearest visible interval through one WGS84 cloud shell. This is a
-// representative geometric proxy, not physical cloud depth; per-pixel
-// front/weighted depth remains C13-09.
+// representative geometric proxy rather than physical cloud depth; the
+// per-pixel front and weighted depths come from the reconstruction attachments.
 fn shellIntervalRTE(
   rd: vec3<f32>,
   deckBottom: f32,
@@ -257,25 +255,22 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 
 //>>ifdef CLOUD_RECONSTRUCTION_CONSUME
-  // ── C13-10 — ATTACHMENT-DRIVEN HISTORY VALIDATION ──
+  // Attachment-driven history validation.
   //
-  // The historical path below re-derives the anchor from a GEOMETRIC PROXY (the
-  // shell-interval midpoint) and re-projects it itself. Here the producer
-  // already published the facts: a real transmittance-weighted cloud depth, the
+  // The `//>>else` path below re-derives the anchor from a geometric proxy, the
+  // shell-interval midpoint, and re-projects it itself. Here the producer has
+  // already published the facts: a transmittance-weighted cloud depth, the
   // screen-space motion that depth implies, whether that motion was
   // reprojectable at all, and the moment pair over the current neighbourhood.
   // This pass reads them instead of guessing.
   //
-  // ★ WHERE C13-10 STOPS AND C13-12 STARTS. The ledger gives `C13-12`
-  //   "attachment-aware motion/depth rejection, variance clipping, reactive
-  //   history, wind advection in reprojection, disocclusion". So every
-  //   THRESHOLDED test — a depth-delta bound, a variance-clip width, a
-  //   reactivity ramp, a wind-advected reprojection — is that row's. What is
-  //   implemented here is the READ path and NON-PARAMETRIC validity: a fact the
-  //   producer recorded (validity 0, the no-cloud sentinel), an internal
-  //   consistency requirement on the moment record, and one early-out that is
-  //   EXACTLY output-equivalent to running the full path. No number below is a
-  //   quality knob; the only tolerance is the storage format's own quantum.
+  // What this branch implements is the read path and non-parametric validity: a
+  // fact the producer recorded (validity 0, the no-cloud sentinel), an internal
+  // consistency requirement on the moment record, and one early-out that is
+  // output-equivalent to running the full path. No number below is a quality
+  // knob; the only tolerance is the storage format's own quantum. Thresholded
+  // tests — a depth-delta bound, a variance-clip width, a reactivity ramp, a
+  // wind-advected reprojection — are not implemented in either variant.
   let resolutionF = max(
     vec2<f32>(
       u.cameraDeltaAndWidth.w,
@@ -294,12 +289,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let depthVariance = moments.g - moments.r * moments.r;
   let coverageVariance = moments.a - moments.b * moments.b;
 
-  // WELL-FORMEDNESS, NOT POLICY. A real distribution always has
-  // `E[x²] >= E[x]²`; the attachment stores all four in rgba16float, whose
-  // relative quantum near 1 is `2^-10`, so the two moments can disagree by that
-  // much purely from rounding. A record that violates the inequality by MORE
+  // A well-formedness check, not a policy. A real distribution always has
+  // `E[x²] >= E[x]²`; the attachment stores all four moments in rgba16float,
+  // whose relative quantum near 1 is `2^-10`, so the two can disagree by that
+  // much purely from rounding. A record that violates the inequality by more
   // than the format can explain did not come from a distribution, and nothing
-  // downstream (least of all C13-12's clip) can be built on it — so the frame
+  // downstream — least of all a variance clip — can be built on it, so the frame
   // falls back to current-only, the same safe route every other failure takes.
   if (
     depthVariance < -CLOUD_MOMENT_F16_QUANTUM ||
@@ -308,17 +303,17 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     return current;
   }
 
-  // EXACTLY OUTPUT-EQUIVALENT EARLY-OUT, and the first real work reduction the
+  // An output-equivalent early-out, and the first real work reduction the
   // attachments buy. `moments.b` is the mean alpha over the producer's 3×3
-  // neighbourhood — the SAME nine texels, under the same clamp-to-edge, that
-  // the neighbourhood clamp below reads. When it is zero every neighbour had
-  // alpha 0, and the march emits PREMULTIPLIED radiance, so every neighbour's
-  // RGB is 0 too: the clamp bounds collapse to (0,0,0,0), history clamps to
-  // zero, and `mix(0, current, blend)` returns `current` regardless of blend.
-  // Returning here skips the history fetch and eight texture taps for a
-  // provably identical pixel. The variance is required to agree that the
-  // neighbourhood is empty — a zero mean beside a non-zero second moment is an
-  // inconsistent record, and this early-out must not fire on one.
+  // neighbourhood — the same nine texels, under the same clamp-to-edge, that the
+  // neighbourhood clamp below reads. When it is zero every neighbour had alpha
+  // 0, and the march emits premultiplied radiance, so every neighbour's RGB is 0
+  // too: the clamp bounds collapse to (0,0,0,0), history clamps to zero, and
+  // `mix(0, current, blend)` returns `current` for any blend. Returning here
+  // skips the history fetch and eight texture taps for a provably identical
+  // pixel. The variance has to agree that the neighbourhood is empty — a zero
+  // mean beside a non-zero second moment is an inconsistent record, and this
+  // early-out must not fire on one.
   if (moments.b <= 0.0 && coverageVariance <= CLOUD_MOMENT_F16_QUANTUM) {
     return current;
   }
@@ -333,17 +328,17 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 
   // The no-cloud sentinel must propagate, never read as distance zero. `G` is
-  // the transmittance-weighted mean the MARCH accumulated in this variant, so
+  // the transmittance-weighted mean the march accumulated in this variant, so
   // this is a physical cloud depth rather than the shell midpoint.
   let reconstructionDepth = textureLoad(reconstructionDepthTex, center, 0);
   if (reconstructionDepth.g < 0.0) {
     return current;
   }
 
-  // `RG` is current UV minus reprojected previous UV, so the previous sample
-  // sits at `uv - motion`. No re-projection here: re-deriving it would be a
-  // second implementation of the producer's transform and exactly the drift the
-  // C13-03 contract exists to prevent.
+  // `RG` is the current UV minus the reprojected previous UV, so the previous
+  // sample sits at `uv - motion`. Nothing is re-projected here: re-deriving it
+  // would be a second implementation of the producer's transform, and the two
+  // would drift apart.
   let previousUv = uv - velocity.rg;
   if (
     previousUv.x < 0.0 ||

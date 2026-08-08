@@ -1,32 +1,33 @@
 /**
- * METAR weather source (Phase 3 — Batch 425). Parses surface station METAR cloud
- * groups and IDW-rasterizes them onto a coarse lon/lat grid, filling the FULL
- * RGBA weather field — coverage (R), genus (G), cloud base (B), AND density bias
- * (A) — so a source driven from a real format visibly exercises every channel the
- * cloud shader now reads (Batch 424).
+ * METAR weather source. Parses surface-station METAR cloud groups and
+ * IDW-rasterizes them onto a coarse lon/lat grid, filling all four channels of
+ * the weather field — coverage (R), genus (G), cloud base (B) and density bias
+ * (A) — so a source driven from a real format exercises every channel the cloud
+ * shader reads.
  *
- * METAR cloud groups parsed (per WMO/FM 15 + US conventions):
+ * The cloud groups parsed, following WMO FM 15 and US conventions:
  *   - Amount:  SKC / CLR / NSC / NCD (clear), FEW, SCT, BKN, OVC.
  *   - Height:  3 digits = base in hundreds of feet AGL (e.g. `BKN040` = 4000 ft).
  *   - Genus suffix: `CB` (cumulonimbus), `TCU` (towering cumulus). Otherwise the
  *     genus is inferred from the amount (OVC→stratus, SCT/FEW→cumulus, …).
  *   - `VV` (vertical visibility, e.g. `VV002`) → overcast obscuration.
  *
- * Each station's LOWEST cloud base (the ceiling-relevant layer) drives B, and its
- * MAX amount drives R + the density bias. Stations are interpolated with
- * inverse-distance weighting (IDW, power 2) onto the grid.
+ * Each station's lowest cloud base, which is the ceiling-relevant layer, drives
+ * B, and its maximum amount drives R and the density bias. Stations are
+ * interpolated onto the grid with inverse-distance weighting at power 2.
  *
- * C13-08: cells with NO station inside the influence radius are NO-DATA (`NaN`),
- * not clear. METAR is a sparse point network — "no station reported here" is the
- * absence of an observation, and emitting `0` made every unobserved cell claim an
- * observed clear sky, which then rendered as a real hole in the deck. The packer
- * fills those cells from the declared no-data fill (the procedural map by
- * default). An SKC/CLR/NSC/NCD station still produces an observed coverage of
- * exactly `0` — clear sky OBSERVED is data, and is unaffected.
+ * A cell with no station inside the influence radius is no-data (`NaN`), not
+ * clear. METAR is a sparse point network, so no station reporting at a cell is
+ * the absence of an observation; emitting `0` there would make every unobserved
+ * cell claim an observed clear sky, which renders as a real hole in the deck.
+ * The packer fills those cells from the declared no-data fill, the procedural
+ * map by default. An SKC, CLR, NSC or NCD station still produces an observed
+ * coverage of exactly `0`, because an observed clear sky is data.
  *
- * The live fetch (aviationweather.gov text feed) is optional + network-gated: a
- * `MetarWeatherSource` can be constructed from a provided obs array (the offline
- * probe path) OR from a fetch URL serving raw METAR text (one report per line).
+ * The live fetch, from the aviationweather.gov text feed, is optional and
+ * network-gated: a `MetarWeatherSource` can be constructed either from a
+ * provided observation array, which is the offline path, or from a fetch URL
+ * serving raw METAR text, one report per line.
  *
  * @module Scene/Weather/MetarWeatherSource
  */
@@ -342,10 +343,10 @@ export class MetarWeatherSource implements WeatherSource {
           densityBias[i] = clamp01(dAcc / wSum);
           type[i] = nearestType;
         } else {
-          // C13-08 — no station in range → NO OBSERVATION, not clear sky. The
-          // packer replaces this cell from the field's no-data fill. G/B/A are
-          // undefined at a no-data cell (coverage carries the validity), so the
-          // neutral values here are never read.
+          // No station in range means no observation, not clear sky. The packer
+          // replaces this cell from the field's no-data fill. G, B and A are
+          // undefined at a no-data cell, since coverage carries the validity, so
+          // the neutral values written here are never read.
           coverage[i] = NaN;
           baseMeters[i] = 0;
           densityBias[i] = 0.5;
@@ -362,8 +363,9 @@ export class MetarWeatherSource implements WeatherSource {
       baseMeters,
       densityBias,
       bounds,
-      // The loops above place cell 0 ON `west`/`north` and cell `w-1`/`h-1` ON
-      // `east`/`south` — node registration (C13-08), declared rather than assumed.
+      // The loops above place cell 0 on `west` and `north` and cell `w-1`,
+      // `h-1` on `east` and `south`: node registration, declared rather than
+      // left to the default.
       registration: "node",
       source: this.getCapabilities().id,
       attribution: this.getCapabilities().attribution,

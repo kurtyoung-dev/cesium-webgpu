@@ -1,25 +1,25 @@
 /**
  * Orchestrates weather ingest: holds the active {@link WeatherSource}, fetches a
  * {@link WeatherField} asynchronously, bakes it into the weather-map bytes via
- * {@link packWeatherField}, and exposes a SYNCHRONOUS accessor the WebGPU cloud
- * renderer calls each frame. A cache miss kicks a background fetch and returns
- * null (the renderer keeps its procedural map until data arrives, so there's no
- * overcast-everywhere flash). Swapping the source is how the user switches
- * between open data sources at runtime.
+ * {@link packWeatherField}, and exposes a synchronous accessor the WebGPU cloud
+ * renderer calls each frame. A cache miss kicks off a background fetch and
+ * returns null, so the renderer keeps its procedural map until data arrives and
+ * there is no overcast-everywhere flash. Swapping the source is how a user
+ * switches between open data sources at runtime.
  *
- * Phase 2 — TIME MODEL. By default the provider serves a single request
- * (`time: "latest"`, the legacy behavior). Engaging a {@link WeatherTimeMode}
- * (`setTimeMode` / `setTime` / `setForecastOffsetHours`) makes it resolve a
- * quantized time SLICE each frame: `live` = the latest analysis advanced by
- * `tick(now)`, `historical` = a fixed past instant, `projected` = `now + offset`.
- * Slices are quantized (default 1 h) + held in a small LRU cache so scrubbing
- * reuses already-fetched data, and `version` bumps ONLY when the active slice's
- * bytes change (not every tick) so the renderer re-uploads only when needed.
+ * By default the provider serves a single request, `time: "latest"`. Engaging a
+ * {@link WeatherTimeMode} through `setTimeMode`, `setTime` or
+ * `setForecastOffsetHours` makes it resolve a quantized time slice each frame
+ * instead: `live` is the latest analysis advanced by `tick(now)`, `historical` a
+ * fixed past instant, `projected` `now + offset`. Slices are quantized to 1 hour
+ * by default and held in a small LRU cache, so scrubbing reuses already-fetched
+ * data, and `version` bumps only when the active slice's bytes change rather
+ * than on every tick, so the renderer re-uploads only when it has to.
  *
- * Attach it via `scene.globe.atmosphericConditions.clouds.weatherProvider` (or
- * directly on the managed default collection's
- * `globe.defaultCloudCollection.volumetric.weatherProvider`); the renderer
- * auto-enables the weather map once real bytes are ready.
+ * Attach it through `scene.globe.atmosphericConditions.clouds.weatherProvider`,
+ * or directly on the managed default collection's
+ * `globe.defaultCloudCollection.volumetric.weatherProvider`; the renderer
+ * enables the weather map by itself once real bytes are ready.
  *
  * @module Scene/Weather/WeatherProvider
  */
@@ -36,7 +36,7 @@ import type {
   WeatherTimeMode,
 } from "./WeatherTypes.js";
 
-/** What the last successful pack did — bounds/no-data evidence for probes. */
+/** What the last successful pack did — bounds and no-data evidence for probes. */
 export type WeatherPackStats = Omit<WeatherPackResult, "bytes">;
 
 const HOUR_MS = 3600000;
@@ -49,24 +49,25 @@ export class WeatherProvider {
   private _fetching = false;
   private _lastError: string | null = null;
   private _validTime: string | undefined = undefined;
-  // PRECIP-DATA (Batch 444) — the aggregate present-weather read of the LAST
-  // successfully-applied field. `applyAtmosphericConditions` reads this (when the
-  // data-driven precip flag is set) to override the precip type/intensity. Null
-  // until the first field carrying `representativeWw` lands; stays null for
-  // coverage-only sources so the data-driven override is a no-op for them.
+  // The aggregate present-weather read of the last successfully applied field.
+  // `applyAtmosphericConditions` reads it, when the data-driven precipitation
+  // flag is set, to override the precipitation type and intensity. Null until
+  // the first field carrying `representativeWw` lands, and null forever for
+  // coverage-only sources, which makes the override a no-op for them.
   private _presentWeather: WeatherPresentWeather | null = null;
-  // C13-08 — what the packer writes where the active field has no observation.
-  // Undefined → the packer's procedural default (the same bytes the renderer
-  // shows with no provider at all), which is what a regional field's remainder
-  // must look like: synthetic, never a fabricated "observed clear".
+  // What the packer writes where the active field has no observation. Undefined
+  // selects the packer's procedural default — the same bytes the renderer shows
+  // with no provider at all — which is what a regional field's remainder has to
+  // look like: synthetic, never a fabricated observation of clear sky.
   private _noDataFill: WeatherNoDataFill | undefined = undefined;
   private _packStats: WeatherPackStats | null = null;
-  // Bumped ONLY by setSource/setRequest/refresh (NOT by a successful fetch). An
-  // in-flight fetch captures it and discards its result if it changed mid-flight,
-  // so swapping the source during a slow (network) fetch can't apply stale data.
+  // Bumped by setSource, setRequest and refresh, and not by a successful fetch.
+  // An in-flight fetch captures it and discards its result if it changed
+  // mid-flight, so swapping the source during a slow network fetch cannot apply
+  // stale data.
   private _invalidation = 0;
 
-  // --- Phase 2 time model (entirely inactive while _timeMode === null) ---
+  // Time model, entirely inactive while `_timeMode` is null.
   private _timeMode: WeatherTimeMode | null = null;
   private _explicitTime: Date | null = null;
   private _forecastOffsetMs = 0;
@@ -107,27 +108,27 @@ export class WeatherProvider {
     return this._source;
   }
   /**
-   * PRECIP-DATA (Batch 444) — the aggregate present-weather (dominant WMO `ww` +
-   * visibility) of the active field, or null if the active source carries none.
-   * The data-driven precipitation path reads this to override precip
-   * type/intensity. Returns null in legacy / coverage-only setups, so the
-   * override is a no-op and the manual/auto precip selection stands.
+   * The aggregate present weather — dominant WMO `ww` code and visibility — of
+   * the active field, or null when the active source carries none. The
+   * data-driven precipitation path reads it to override the precipitation type
+   * and intensity. A coverage-only source returns null, so the override does
+   * nothing and the manual or automatic precipitation selection stands.
    */
   getPresentWeather(): WeatherPresentWeather | null {
     return this._presentWeather;
   }
   /**
-   * C13-08 — how many texels of the last pack came from an observation vs the
-   * no-data fill, plus the resolved registration/fill/global flags. Null until a
-   * field has been packed. This is the cheap, pixel-free way for a probe to prove
-   * a regional field was PLACED rather than stretched.
+   * How many texels of the last pack came from an observation rather than the
+   * no-data fill, plus the resolved registration, fill and global flags. Null
+   * until a field has been packed. This is the cheap, pixel-free way for a probe
+   * to prove a regional field was placed rather than stretched.
    */
   getPackStats(): WeatherPackStats | null {
     return this._packStats;
   }
 
   /**
-   * C13-08 — override what the packer writes where the field has no observation.
+   * Override what the packer writes where the field has no observation.
    * `undefined` restores the procedural default. Drops the cache, because every
    * cached slice was packed with the previous fill.
    */
@@ -390,12 +391,13 @@ export class WeatherProvider {
 }
 
 /**
- * PRECIP-DATA (Batch 444) — distill a field's present-weather into the aggregate
- * the data-driven precip path reads. Prefers the field-level `representativeWw`;
- * if absent but a per-cell `ww` grid is present, picks the cell with the
- * STRONGEST precip `ww` (the max code among precip ranges 50..99) so a sparse but
- * intense system still registers. Returns null when no present-weather is carried
- * (coverage-only sources) so the override stays a no-op for them.
+ * Distils a field's present weather into the aggregate the data-driven
+ * precipitation path reads. Prefers the field-level `representativeWw`; where
+ * that is absent but a per-cell `ww` grid is present, picks the cell with the
+ * strongest precipitation code — the maximum over the precipitation ranges
+ * 50..99 — so a sparse but intense system still registers. Returns null when no
+ * present weather is carried at all, which keeps the override a no-op for
+ * coverage-only sources.
  */
 function extractPresentWeather(
   field: WeatherField,

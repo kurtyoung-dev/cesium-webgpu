@@ -1,40 +1,43 @@
 /**
- * Campaign 13 C13-37 — planet-stable cloud-density domains.
+ * Planet-stable cloud-density domains.
  *
  * The baked cloud textures are periodic. Sampling every texture from aligned,
  * axis-aligned multiples of raw ECEF exposes that periodicity as a planetary
- * lattice. These campaign-fixed rotations, offsets, and non-harmonic scales
- * decorrelate the shape, slow-warp, and detail domains without adding a texture
+ * lattice. The fixed rotations, offsets and non-harmonic scales below
+ * decorrelate the shape, slow-warp and detail domains without adding a texture
  * tap.
  *
- * Provenance: the shape and detail transforms retain the original xorshift32 +
- * Shoemake draws (seeds 0xc1337001/0xc1337003). The WARP transform was
- * re-drawn from a splitmix32 stream (state = the exported generation seed
- * XOR 0x5eed7a3b; 16 warm-up draws, one Shoemake uniform-quaternion draw,
- * one phase-offset draw) because the original adjacent per-domain seeds
- * produced correlated draws — all three rotations shared m22 ≈ -0.427
- * (Shoemake's m22 = 2*u1 - 1) — and the correlated warp orientation left a
- * warp-texel-lattice combination (the 32-texel granularity of the warp vector
- * field, ~1.03 km world period at default puff size) within 3 degrees of
- * screen-horizontal at the C13-37 grazing acceptance camera. That projection
- * read as coherent horizontal tiling: the measured 0-degree/40-52px
- * baked-periodicity regression tracked the warp draw across probe A/B trials,
- * not the shape or detail draws. The replacement warp minimizes a documented
- * suppression penalty — the pair-mass of visible distance rows where any
- * low-order warp-texel lattice combination lands an in-range screen repeat
- * within 8px of a metric-aligned direction — at BOTH acceptance cameras
- * simultaneously. All matrices are stored row-major and rounded to f32 so CPU
- * origin phases use the exact coefficients visible to WGSL. They are data,
- * not regenerated at runtime.
+ * Provenance. The shape and detail transforms come from an xorshift32 stream
+ * with Shoemake uniform-quaternion draws, seeded 0xc1337001 and 0xc1337003. The
+ * warp transform comes from a separate splitmix32 stream — state is the
+ * exported generation seed XOR 0x5eed7a3b, followed by 16 warm-up draws, one
+ * Shoemake uniform-quaternion draw and one phase-offset draw — and must not be
+ * re-drawn from a seed adjacent to the other two. Adjacent per-domain seeds
+ * produce correlated draws: all three rotations then share m22 ≈ -0.427, since
+ * Shoemake's m22 is `2*u1 - 1`, and the correlated warp orientation leaves a
+ * warp-texel-lattice combination — the 32-texel granularity of the warp vector
+ * field, about a 1.03 km world period at the default puff size — within 3
+ * degrees of screen-horizontal at a grazing camera, which reads as coherent
+ * horizontal tiling. The warp draw in use minimizes the pair-mass of visible
+ * distance rows where any low-order warp-texel lattice combination lands an
+ * in-range screen repeat within 8 px of a metric-aligned direction, at both
+ * acceptance cameras at once.
+ *
+ * All matrices are stored row-major and rounded to f32, so the CPU origin
+ * phases use the exact coefficients WGSL sees. They are data, not regenerated
+ * at runtime.
+ *
+ * Reference: Ken Shoemake, "Uniform Random Rotations", Graphics Gems III
+ * (1992) — the uniform-quaternion draw the rotations use.
  */
 
 /** Nominally 0.0003 noise units per world-space metre, rounded to WGSL f32. */
 export const CLOUD_DENSITY_WORLD_TO_NOISE = 0.0003000000142492354;
 
-/** Replaces the harmonic 0.32 slow-warp ratio with f32(1 / pi). */
+/** Slow-warp ratio: f32(1 / pi), non-harmonic where 0.32 would be. */
 export const CLOUD_DENSITY_WARP_RATIO = 0.31830987334251404;
 
-/** Replaces the integer 5x detail ratio with f32(3.5 * sqrt(2)). */
+/** Detail ratio: f32(3.5 * sqrt(2)), non-integer where 5 would be. */
 export const CLOUD_DENSITY_DETAIL_RATIO = 4.949747562408447;
 
 export const CLOUD_DENSITY_SHAPE_ROTATION_SEED = 0xc1337001;
@@ -62,7 +65,7 @@ export const CLOUD_DENSITY_DETAIL_ROTATION = Object.freeze([
   0.9001373648643494, -0.08670981228351593, -0.4268888533115387,
 ]);
 
-/** Fixed phase offsets; the warp offset comes from the warp re-draw. */
+/** Fixed phase offsets; the warp offset comes from the warp stream above. */
 export const CLOUD_DENSITY_SHAPE_OFFSET = Object.freeze([
   0.6620869040489197, 0.2922023832798004, 0.697387158870697,
 ]);
@@ -100,7 +103,7 @@ export const CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS =
 
 /**
  * Coverage anchor at and above which the cloud density gate is bit-identical to
- * its historical `1 - coverage` threshold. See `cloudEffectiveCoverage`.
+ * a plain `1 - coverage` threshold. See `cloudEffectiveCoverage`.
  */
 export const CLOUD_COVERAGE_ANCHOR = 0.55;
 
@@ -118,13 +121,13 @@ export const CLOUD_COVERAGE_EXPONENT = 0.25;
  * cube).
  *
  * The cloud density gate is `smoothstep(1 - cEff, 1, base)`. Feeding it
- * `cEff = coverage` assumes the base noise is uniform over [0, 1]; the baked
- * shape channel is a 4-octave value-fBM measuring mean 0.4307 / sigma 0.0896 /
- * max 0.7176, so the historical threshold left the field's support entirely
- * below coverage 0.283 and rendered every fair-weather sky clear
- * (CLOUD-LOW-COVERAGE-CUTOFF). The re-derived response makes the cloudy volume
- * fraction a constant-elasticity function of coverage below the anchor while
- * reproducing the historical response exactly at and above it.
+ * `cEff = coverage` assumes the base noise is uniform over [0, 1]. The baked
+ * shape channel is a 4-octave value-fBM measuring mean 0.4307, sigma 0.0896 and
+ * max 0.7176, so a plain `1 - coverage` threshold leaves the field's support
+ * entirely below coverage 0.283 and renders every fair-weather sky clear. The
+ * response here instead makes the cloudy volume fraction a constant-elasticity
+ * function of coverage below the anchor, and reproduces `1 - coverage` exactly
+ * at and above it.
  *
  * f32-faithful: every intermediate is rounded the way WGSL evaluates it, so a
  * spec can compare this against the shader's arithmetic rather than against an
@@ -156,9 +159,9 @@ export function cloudEffectiveCoverage(coverage: number): number {
  * octaves) measured over a 60^3 grid of its full period: 0.43067.
  *
  * This is the number that makes `cloudEffectiveCoverage`'s threshold mean
- * something: the response was derived against THIS field, so any other density
- * field that wants to use the same response has to be expressed in the same
- * units first. See {@link normalizeFogCheapCloudField}.
+ * something: the response is derived against this field, so any other density
+ * field using the same response has to be expressed in the same units first.
+ * See {@link normalizeFogCheapCloudField}.
  */
 export const CLOUD_SHAPE_FIELD_MEAN = 0.4307;
 
@@ -172,32 +175,31 @@ export const FOG_CHEAP_FIELD_MEAN = 0.5;
 
 /**
  * Standard deviation of the fog cheap field divided by that of the baked shape
- * channel: 0.12063 / 0.08963. EMPIRICAL — octave weights alone predict only
- * 1.065; the bake's periodic `pmod` lattice at base frequency 2 and its
- * different hash supply the rest.
+ * channel: 0.12063 / 0.08963. Measured rather than derived — octave weights
+ * alone predict only 1.065, and the bake's periodic `pmod` lattice at base
+ * frequency 2 together with its different hash supply the rest.
  */
 export const FOG_CHEAP_FIELD_SIGMA_RATIO = 1.3459;
 
 /**
  * CPU twin of `normalizeFogCheapCloudField` in VolumetricFog.wgsl.
  *
- * CLOUD-LOW-COVERAGE-CUTOFF, fog cheap-path arm. The volumetric fog's cheap
- * (non-hi-fi) cloud shadow approximates the visible cloud deck with its own
- * local 3-octave value fBM, then gates it on cloud coverage. That gate used
- * the raw `1 - coverage` threshold, which is only transferable between two
- * density fields when the fields share a distribution — and these do not: the
+ * The volumetric fog's cheap, non-hi-fi cloud shadow approximates the visible
+ * cloud deck with its own local 3-octave value fBM, then gates it on cloud
+ * coverage. A raw `1 - coverage` threshold is only transferable between two
+ * density fields when the fields share a distribution, and these do not: the
  * fog field is 35% wider and centred 0.07 higher than the baked shape channel
- * the shared response was derived against. The result mistracked in both
- * directions (0.1% of ground shadowed at coverage 0.15 against the visible
- * deck's 2.2%; 65.0% at coverage 0.55 against 41.2%).
+ * the shared response is derived against. Left unnormalized it mistracks in
+ * both directions — 0.1% of ground shadowed at coverage 0.15 against the
+ * visible deck's 2.2%, and 65.0% at coverage 0.55 against 41.2%.
  *
- * Standardising the SAMPLE onto the baked field's first two moments — rather
- * than shifting the threshold — lets the shared response apply unmodified and
+ * Standardising the sample onto the baked field's first two moments, rather
+ * than shifting the threshold, lets the shared response apply unmodified and
  * matches the smoothstep ramp as well as its support.
  *
- * f32-faithful: every intermediate is rounded the way WGSL evaluates it.
- * Deliberately unclamped, exactly like the shader — `smoothstep` clamps its
- * own interpolant, and clamping here would fold the tails the match preserves.
+ * f32-faithful: every intermediate is rounded the way WGSL evaluates it. It is
+ * unclamped, exactly like the shader — `smoothstep` clamps its own
+ * interpolant, and clamping here would fold the tails the match preserves.
  *
  * @param {number} value One sample of the fog cheap field, nominally in [0, 1].
  * @returns {number} The same sample expressed in baked-shape-field units.

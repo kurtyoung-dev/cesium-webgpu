@@ -24,21 +24,19 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
-// Slice 5c-B Phase 1 (Batch 106) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
-// NEW-COLLECTION-RENDERER-BASE (Phase 11 finisher, Batch 307) — shared
-// per-frame scaffolding. Cloud uses the genuinely-shared pieces only:
-//   - the per-device shader-module-cache accessor (was an inline WeakMap),
-//   - the re-entry / infinite-loop sentinel (Sentinel 1).
-// Cloud keeps its OWN unique logic: the count-only rebuild gate, the
-// `buildInstanceBuffer` non-resident packing, the velocity lifecycle, and
-// the format/log-depth full-re-init invalidation (which nulls the single
-// `pipelineDescriptor` + velocity pipelines, not defines→entry Maps, so the
-// base's Map-clearing `invalidatePipelinesOnSceneFormatChange` doesn't fit).
+// Shared per-frame scaffolding from the collection renderer base. Only the
+// genuinely shared pieces are taken from it: the per-device
+// shader-module-cache accessor and the re-entry sentinel. The count-only
+// rebuild gate, the `buildInstanceBuffer` non-resident packing, the velocity
+// lifecycle and the format/log-depth full-re-init invalidation stay local —
+// that invalidation nulls a single `pipelineDescriptor` plus the velocity
+// pipelines rather than defines-to-entry maps, so the base's map-clearing
+// `invalidatePipelinesOnSceneFormatChange` does not fit.
 import {
   beginCollectionFrame,
   endCollectionFrame,
@@ -50,9 +48,7 @@ import {
 
 // Per-device shader module cache so multiple CloudCollections sharing the
 // same GPUDevice reuse a single compiled `GPUShaderModule`. Mirrors the
-// per-renderer WeakMap pattern used by Polyline / Billboard / Label /
-// PointPrimitive (C-R7-SHADER-MODULE-DEDUP, Batch 72). Folded onto the
-// shared base accessor (NEW-COLLECTION-RENDERER-BASE).
+// per-renderer pattern used by Polyline, Billboard, Label and PointPrimitive.
 const getCloudShaderModuleCache = makeDeviceShaderModuleCacheAccessor();
 
 interface CloudCache extends CollectionRenderCache {
@@ -62,9 +58,9 @@ interface CloudCache extends CollectionRenderCache {
   pipeline: GPURenderPipeline | null;
   shaderModule: GPUShaderModule | null;
   bindGroup: GPUBindGroup | null;
-  // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — group-0 layout
-  // (stashed for the per-slice resolver to rebuild bind groups) + the
-  // per-collection per-slice camera-UB pool/resolver factory.
+  // Group-0 layout, retained so the per-slice resolver can rebuild bind
+  // groups, plus the per-collection per-slice camera-UB pool and resolver
+  // factory.
   bindGroupLayout?: GPUBindGroupLayout | null;
   cameraUB?: WebGPUCollectionCameraUB;
   noiseTexture: GPUTexture | null;
@@ -74,37 +70,38 @@ interface CloudCache extends CollectionRenderCache {
   command: CesiumAnyDrawCommand | null;
   initialized: boolean;
   lastCloudCount: number;
-  // C-R7-RENDERER-MIGRATION (Batch 72) — pipeline arrives asynchronously
-  // from `WebGPURenderPipelineCache.getPipeline()`. Tracks whether the
-  // request is in flight so we don't re-issue it every frame.
+  // The pipeline arrives asynchronously from
+  // `WebGPURenderPipelineCache.getPipeline()`; this tracks whether a request
+  // is in flight so it is not re-issued every frame.
   pipelineRequestPending: boolean;
   pipelineDescriptor: WebGPURenderPipelineDescriptor | null;
 
-  // Batch 170 - B.10 NEW-ADVANCED-MOTION-VECTORS (CloudCollection).
-  // Same lifecycle as PointCloud Batch 168/169:
-  //   - `instanceData` tracks THIS frame's interleaved Float32Array.
-  //   - `prevInstanceData` is promoted from `instanceData` AFTER the
-  //     velocity dispatch (PointPrimitive Batch 148 pattern).
-  //   - `prevInstanceBuffer` is the GPU mirror of prev positions.
-  //   - `velocityPipelineDescriptor` + `velocityPipeline` resolve via
+  // Motion-vector slots, on the same lifecycle as the point-cloud renderer:
+  //   - `instanceData` tracks this frame's interleaved Float32Array.
+  //   - `prevInstanceData` is promoted from `instanceData` after the velocity
+  //     dispatch.
+  //   - `prevInstanceBuffer` is the GPU mirror of the previous positions.
+  //   - `velocityPipelineDescriptor` and `velocityPipeline` resolve through
   //     the central pipeline cache.
-  // Static cloud collections have prev=curr → velocity=0 (camera-only
-  // TAA fallback handles motion). Animated clouds (per-frame position
-  // updates by the application) get real per-cloud velocity.
+  // Static cloud collections have previous equal to current, so velocity is
+  // zero and the camera-only TAA fallback carries the motion. Collections
+  // whose positions the application updates per frame get real per-cloud
+  // velocity.
   instanceData: Float32Array | null;
   prevInstanceData: Float32Array | null;
   prevInstanceBuffer: GPUBuffer | null;
   velocityPipeline: GPURenderPipeline | null;
   velocityPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
   velocityPipelineRequestPending: boolean;
-  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY. Monotonic counter bumped at the
-  // single `instanceBuffer` content-write (rebuild) site — which fires on
-  // cloud count change OR per-cloud property edits (the rebuild gate reads
-  // the collection dirty state). The identity-case prev buffer re-seeds once
-  // via copyBufferToBuffer then skips the per-frame CPU re-upload.
+  // Monotonic counter bumped at the single `instanceBuffer` content-write
+  // site, which fires on a cloud count change or on per-cloud property edits
+  // (the rebuild gate reads the collection dirty state). The identity-case
+  // prev buffer re-seeds once via `copyBufferToBuffer` and then skips the
+  // per-frame CPU re-upload.
   instanceDataRevision: number;
-  // The `instanceDataRevision` resident in `prevInstanceBuffer`; `undefined` =
-  // unknown/stale → re-seed. Reset on prev-buffer realloc (T-4).
+  // The `instanceDataRevision` resident in `prevInstanceBuffer`; `undefined`
+  // means unknown or stale and forces a re-seed. Reset when the prev buffer is
+  // reallocated.
   prevBufferRevision: number | undefined;
 }
 
@@ -518,22 +515,22 @@ const scratchMVP = new Matrix4();
 // translation-free MVP correctly (must zero before projecting).
 const scratchMVRTE = new Matrix4();
 
-// NEW-WEBGPU-CLOUD-WORLEY-TEXTURE-PARITY (Batch 365) — 3-channel worley-FBM
-// noise baked into a 3D→2D atlas, a faithful CPU port of CloudNoiseFS.glsl
-// (worley) + CloudCollection.js (packing). The cloud FS samples it at
-// `NOISE_DETAIL * cloudPoint` via the WGSL voxelToUV + manual trilinear
-// (csm_cloudSampleNoise) — exactly like WebGL — so the erosion grain matches
-// instead of the B363 inline approximation.
+// Three-channel worley-FBM noise baked into a 3D-to-2D atlas, a CPU port of
+// `CloudNoiseFS.glsl`'s worley plus `CloudCollection.js`'s packing. The cloud
+// fragment shader samples it at `NOISE_DETAIL * cloudPoint` through the WGSL
+// `voxelToUV` and a manual trilinear blend, matching the WebGL path so the
+// erosion grain agrees.
 //
-// SLICE=64 cube (vs WebGL's 128) + DETAIL=8 (vs 16) reproduces WebGL's grain
-// frequency (cells/tile = SLICE/DETAIL = 8) and tile period (SLICE/DETAIL = 8
-// in cloudPoint space) at 1/8 the gen cost. The packing dims MUST stay in
-// lock-step with the WGSL constants (NOISE_SLICE/ROWS/INV_ROWS/DETAIL).
+// A 64-voxel cube at detail 8 reproduces the WebGL 128-voxel/detail-16 grain
+// frequency (cells per tile = slice / detail = 8) and tile period (also 8, in
+// `cloudPoint` space) at an eighth of the generation cost. These packing
+// dimensions have to stay in lock-step with the WGSL constants
+// `NOISE_SLICE`, `NOISE_ROWS`, `NOISE_INV_ROWS` and `NOISE_DETAIL`.
 //
-// The worley cell points (`random3(cell)`) only depend on cells wrapped to
-// [0, SLICE/DETAIL) = [0, 8) per axis → 8³ = 512 unique points, precomputed
-// once so the per-voxel hot loop has NO trig (keeps the one-time generation
-// well under a frame-budget hitch even at 1024×256).
+// The worley cell points depend only on cells wrapped to [0, slice / detail),
+// that is [0, 8) per axis, so the 8³ = 512 unique points are precomputed once
+// and the per-voxel loop runs without trigonometry, which keeps the one-time
+// generation well under a frame-budget hitch even at 1024 by 256.
 const NOISE_TEX_SLICE = 64;
 const NOISE_TEX_ROWS = 4;
 const NOISE_TEX_DETAIL = 8.0;
@@ -691,7 +688,7 @@ function buildInstanceBuffer(
     };
   }
   // Per instance: posHigh(12) + posLow(12) + scaleAndBrightness(16) + color(16)
-  //             + maximumSize(12) = 68 bytes (NEW-CLOUD-IMPOSTOR-FS-PARITY).
+  //             + maximumSize(12) = 68 bytes.
   const data = new Float32Array(count * 17);
   let visibleCount = 0;
   for (let i = 0; i < count; i++) {
@@ -709,8 +706,7 @@ function buildInstanceBuffer(
       color?: CesiumColor;
       maximumSize?: CesiumCartesian3;
     };
-    // Per-cloud show flag — WebGL reads it, we previously rendered every
-    // cloud regardless of show.
+    // Per-cloud show flag, honoured here as it is on the WebGL path.
     if (cloud.show === false) {
       continue;
     }
@@ -743,34 +739,31 @@ function buildInstanceBuffer(
     visibleCount++;
   }
   const buffer = device.createBuffer({
-    // C10-09 - COPY_SRC so the velocity prev-buffer identity-seed / count-change
-    // seed can copyBufferToBuffer(instanceBuffer -> prevInstanceBuffer) on the
-    // GPU (the identical bytes already reside here). Mirrors the splat renderer.
+    // `COPY_SRC` so the velocity prev-buffer identity seed and count-change
+    // seed can `copyBufferToBuffer` from here into `prevInstanceBuffer` on the
+    // GPU, where the identical bytes already reside. Mirrors the splat
+    // renderer.
     size: data.byteLength,
     usage:
       GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
   });
   device.queue.writeBuffer(buffer, 0, data);
-  // Return visibleCount (clouds with show:true) as the instance count.
-  // The buffer itself is still sized for the full collection slot count
-  // so the next frame's rewrite doesn't have to reallocate on toggle.
-  // Batch 170 - hand the interleaved data back so the velocity helper
-  // can keep a CPU-side prev mirror.
+  // The instance count is `visibleCount`, the clouds whose `show` is true,
+  // while the buffer stays sized for the full collection slot count so
+  // toggling `show` does not force a reallocation on the next rewrite. The
+  // interleaved data is handed back so the velocity helper can keep a
+  // CPU-side prev mirror.
   return { buffer, count: visibleCount, instanceData: data };
 }
 
 /**
  * Resolve the cloud pipeline through the central pipeline cache. If the
  * cache is unavailable (no WebGPU context, or device not yet present),
- * falls back to direct `device.createRenderPipeline()` so behavior remains
- * unchanged.
+ * falls back to a direct `device.createRenderPipeline()`.
  *
  * Returns synchronously when the pipeline is already cached; otherwise
  * kicks off async creation and returns false so the caller can skip the
- * frame and try again next tick.
- *
- * C-R7-RENDERER-MIGRATION (Batch 72). Mirrors the
- * `tryResolveEllipsoidPipelines` pattern from Batch 56.
+ * frame and try again next tick. Mirrors `tryResolveEllipsoidPipelines`.
  */
 function tryResolveCloudPipeline(
   device: GPUDevice,
@@ -809,8 +802,8 @@ function tryResolveCloudPipeline(
     return false;
   }
 
-  // Fallback: no central cache (e.g. WebGL-backed graphics context). Mirror
-  // the historical synchronous path so behavior matches pre-migration.
+  // Fallback for when there is no central cache, such as a WebGL-backed
+  // graphics context: create the pipeline synchronously.
   cache.pipeline = device.createRenderPipeline({
     label: desc.name,
     layout: desc.layout ?? "auto",
@@ -858,24 +851,23 @@ function updateWebGPUCloudCollection(
       lastCloudCount: -1,
       pipelineRequestPending: false,
       pipelineDescriptor: null,
-      // Batch 170 - velocity slots (lazy, allocated when TAA is on).
+      // Velocity slots, allocated lazily when TAA is on.
       instanceData: null,
       prevInstanceData: null,
       prevInstanceBuffer: null,
       velocityPipeline: null,
       velocityPipelineDescriptor: null,
       velocityPipelineRequestPending: false,
-      // C10-09 - prev-buffer revision-skip.
+      // Prev-buffer revision skip.
       instanceDataRevision: 0,
       prevBufferRevision: undefined,
     } as CloudCache;
   }
 
-  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 1, NEW-COLLECTION-RENDERER-BASE)
-  // — re-entry / infinite-loop guard around the whole update. Increments a
-  // per-collection depth and `console.error`s (throttled) if the cloud update
-  // re-enters itself for the same collection before settling; the `finally`
-  // always settles the depth back to 0.
+  // Re-entry guard around the whole update: it increments a per-collection
+  // depth and logs a throttled `console.error` if the cloud update re-enters
+  // itself for the same collection before settling. The `finally` always
+  // settles the depth back to zero.
   const sentinelCache = collection._webgpuCache as unknown as CloudCache;
   beginCollectionFrame(sentinelCache, "CloudCollection");
   try {
@@ -894,8 +886,9 @@ function _updateWebGPUCloudCollectionInner(
   const commandList = frameState.commandList;
 
   const cache = collection._webgpuCache as CloudCache;
-  // Batch 110 — clouds draw into scene FB; use scenePipelineFormat
-  // so HDR mode targets rgba16float instead of canvas bgra8unorm.
+  // Clouds draw into the scene framebuffer, so the pipeline follows
+  // `scenePipelineFormat`: HDR mode targets rgba16float rather than the
+  // canvas bgra8unorm.
   const canvasFormat: GPUTextureFormat =
     (
       context as unknown as {
@@ -909,7 +902,7 @@ function _updateWebGPUCloudCollectionInner(
       }
     ).presentationFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
-  // Batch 110 — invalidate cache on scene format change.
+  // Invalidate the cache on a scene format change.
   const sceneGen =
     (context as unknown as { _scenePipelineFormatGeneration?: number })
       ._scenePipelineFormatGeneration ?? 0;
@@ -923,8 +916,8 @@ function _updateWebGPUCloudCollectionInner(
     cache.pipelineDescriptor = null;
     cache.pipeline = null;
     cache.pipelineRequestPending = false;
-    // Batch 170 - velocity pipeline references the same shader module
-    // built against the now-invalid format; force rebuild.
+    // The velocity pipeline references the same shader module, built against
+    // the format that just changed, so it has to be rebuilt as well.
     cache.velocityPipeline = null;
     cache.velocityPipelineDescriptor = null;
     cache.velocityPipelineRequestPending = false;
@@ -933,10 +926,9 @@ function _updateWebGPUCloudCollectionInner(
     )._pipelineFormatGeneration = sceneGen;
   }
 
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — bake the
-  // LOG_DEPTH define into the cloud module + pipelines when active; force
-  // a full re-init when the master switch flips (mirrors the
-  // scene-format-generation invalidation above).
+  // Renderer-wide log depth: the LOG_DEPTH define is baked into the cloud
+  // module and pipelines while it is active, and a flip of the switch forces
+  // a full re-init, mirroring the scene-format-generation invalidation above.
   const logDepthActive = isWebGPULogDepthActive(
     context as unknown as { _logDepthWriteEnabled?: boolean },
     frameState as unknown as { useLogDepth?: boolean },
@@ -959,9 +951,8 @@ function _updateWebGPUCloudCollectionInner(
     logDepthActive;
 
   if (!cache.initialized) {
-    // C-R7-SHADER-MODULE-DEDUP (Batch 72) — route module compilation
-    // through the per-device shader module cache so two CloudCollections
-    // share a single `GPUShaderModule`.
+    // Route module compilation through the per-device shader module cache so
+    // two CloudCollections share a single `GPUShaderModule`.
     const moduleCache = getCloudShaderModuleCache(device);
     cache.shaderModule = moduleCache.getOrCreate(
       ShaderSourceId.CLOUD_COLLECTION,
@@ -976,9 +967,9 @@ function _updateWebGPUCloudCollectionInner(
     const noise = createNoiseTexture(device);
     cache.noiseTexture = noise.texture;
     cache.noiseTextureView = noise.view;
-    // NEAREST — the worley atlas is a 3D→2D packed cube; the FS does its own
-    // trilinear blend in csm_cloudSampleNoise, so hardware filtering would
-    // bleed across slice seams (NEW-WEBGPU-CLOUD-WORLEY-TEXTURE-PARITY).
+    // Nearest filtering: the worley atlas is a 3D cube packed into 2D and the
+    // fragment shader does its own trilinear blend in `csm_cloudSampleNoise`,
+    // so hardware filtering would bleed across the slice seams.
     cache.sampler = device.createSampler({
       minFilter: "nearest",
       magFilter: "nearest",
@@ -992,23 +983,22 @@ function _updateWebGPUCloudCollectionInner(
       texture(1, Stage.FRAGMENT),
       sampler(2, Stage.FRAGMENT),
     ]);
-    // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — stash the
-    // group-0 layout so the per-slice resolver can rebuild the bind group.
+    // Retain the group-0 layout so the per-slice resolver can rebuild the
+    // bind group.
     cache.bindGroupLayout = bgl;
 
-    // C-R7-RENDERER-MIGRATION (Batch 72) — descriptor-only construction;
-    // the pipeline itself materializes through `webgpuPipelineCache` so
-    // two CloudCollections sharing the same descriptor share a single
-    // `GPURenderPipeline`. The descriptor object is held on the cache
-    // sidecar so re-resolution attempts use a stable key (cache key
-    // hashes the full descriptor shape).
-    // NEW-CLOUD-SCENEFB-PIPELINE-MISMATCH — bake the scene-FB MSAA sample
-    // count into the pipeline (mirrors the Billboard Batch-134 fix). Without
-    // it the pipeline defaults to count=1 and fails attachment-state
-    // validation against the MSAA scene framebuffer pass — which invalidates
-    // the WHOLE pass encoder, so adding a single cloud blanked every other
-    // primitive in the scene. `ms=` is keyed into the name so the central
-    // pipeline cache distinguishes sample-count variants.
+    // Descriptor-only construction: the pipeline itself materializes through
+    // `webgpuPipelineCache`, so two CloudCollections sharing a descriptor
+    // share a single `GPURenderPipeline`. The descriptor is held on the cache
+    // sidecar so re-resolution attempts use a stable key, the cache key being
+    // a hash of the full descriptor shape.
+    //
+    // The scene framebuffer's MSAA sample count is baked into the pipeline, as
+    // it is for billboards. Left at the default of 1 it fails attachment-state
+    // validation against the MSAA scene framebuffer pass, and that invalidates
+    // the entire pass encoder, so a single cloud blanks every other primitive
+    // in the scene. `ms=` is keyed into the name so the central pipeline cache
+    // distinguishes sample-count variants.
     const sampleCount =
       (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1;
     cache.pipelineDescriptor = {
@@ -1065,14 +1055,12 @@ function _updateWebGPUCloudCollectionInner(
       fragment: {
         module: cache.shaderModule,
         entryPoint: "fragmentMain",
-        // Slice 5c-B Phase 1 (Batch 106) — routed through
-        // `makeSceneFBTargets` so Phase 2 picks up the 2nd null slot
-        // automatically. Verbatim blend preserves the existing
-        // descriptor shape (no `operation` field) so the pipeline-cache
-        // hash for this shader stays stable across the conversion.
-        // The velocity pipeline below (line 901) targets rg16float
-        // (TAA velocity texture), NOT scene-FB, and intentionally
-        // stays single-target.
+        // Routed through `makeSceneFBTargets` so a second scene-framebuffer
+        // slot is picked up automatically. The blend is spelled out without an
+        // `operation` field, which keeps the pipeline-cache hash for this
+        // shader stable. The velocity pipeline below targets rg16float, the
+        // TAA velocity texture, rather than the scene framebuffer, and stays
+        // single-target.
         targets: makeSceneFBTargets(canvasFormat, {
           blend: {
             color: {
@@ -1106,11 +1094,10 @@ function _updateWebGPUCloudCollectionInner(
     cache.initialized = true;
   }
 
-  // C-R7-RENDERER-MIGRATION (Batch 72) — resolve the pipeline through the
-  // central cache. On first frame this kicks off async creation and
-  // returns false; subsequent frames pick up the cached pipeline
-  // synchronously and return true. Skip the draw on not-yet-ready frames
-  // so we never enqueue a draw command with a null pipeline.
+  // Resolve the pipeline through the central cache. The first frame kicks off
+  // async creation and returns false; later frames pick the cached pipeline up
+  // synchronously and return true. The draw is skipped until then, so no draw
+  // command is ever enqueued with a null pipeline.
   if (!cache.pipeline) {
     const ctxAny = context as unknown as {
       webgpuPipelineCache?: WebGPURenderPipelineCache | null;
@@ -1126,14 +1113,12 @@ function _updateWebGPUCloudCollectionInner(
     }
   }
 
-  // NEW-CLOUD-REBUILD-DIRTY-GATE (Batch 233) — capture the collection's
-  // dirty state BEFORE the per-frame consume below clears it (the consume
-  // comment has documented this ordering requirement since Batch 228).
-  // `_cloudsToUpdateIndex > 0` covers every property setter routed through
-  // `_updateCloud` (show/position/scale/maximumSize/slice/brightness/color);
-  // `_createVertexArray` covers add/remove/removeAll — count changes are
-  // already caught by the count gate, but a same-frame add+remove nets to
-  // an equal count with different members.
+  // Capture the collection's dirty state before the per-frame consume below
+  // clears it. `_cloudsToUpdateIndex > 0` covers every property setter routed
+  // through `_updateCloud` — show, position, scale, maximumSize, slice,
+  // brightness and color — while `_createVertexArray` covers add, remove and
+  // removeAll. Count changes are already caught by the count gate, but a
+  // same-frame add and remove nets to an equal count with different members.
   const dirtyState = collection as unknown as {
     _cloudsToUpdateIndex?: number;
     _createVertexArray?: boolean;
@@ -1142,10 +1127,10 @@ function _updateWebGPUCloudCollectionInner(
     (dirtyState._cloudsToUpdateIndex ?? 0) > 0 ||
     dirtyState._createVertexArray === true;
 
-  // Rebuild instance buffer when clouds change — count change OR per-cloud
-  // property edits. Pre-Batch-233 this keyed only on the count, so property
-  // edits (position/scale/brightness/color) never re-uploaded and rendered
-  // stale forever.
+  // Rebuild the instance buffer when clouds change: either a count change or
+  // a per-cloud property edit. Keying on the count alone leaves property edits
+  // — position, scale, brightness, color — never re-uploaded, so they render
+  // stale indefinitely.
   const cloudCount = collection.length;
   if (cloudCount !== cache.lastCloudCount || hasDirtyEdits) {
     if (cache.instanceBuffer) {
@@ -1156,27 +1141,26 @@ function _updateWebGPUCloudCollectionInner(
     cache.instanceCount = result.count;
     cache.lastCloudCount = cloudCount;
     cache.command = null;
-    // Batch 170 - track THIS frame's instance data so the velocity
-    // helper can promote it to `prevInstanceData` AFTER its dispatch.
-    // Same lifecycle as PointCloud Batch 168/169 — see the long doc
-    // comment on the `attachCloudVelocityCommand` helper for the
-    // first-frame-seed and revision-change-mismatch cases.
+    // Track this frame's instance data so the velocity helper can promote it
+    // to `prevInstanceData` after its dispatch. `attachCloudVelocityCommand`
+    // documents the first-frame-seed and count-mismatch cases.
     cache.instanceData = result.instanceData;
-    // C10-09 - single `instanceBuffer` content-write site (count change OR
-    // property edit via the dirty-state gate). Bump so the velocity prev
-    // buffer re-seeds once for this content then skips per-frame uploads.
+    // The single `instanceBuffer` content-write site, reached on a count
+    // change or on a property edit through the dirty-state gate. Bumping the
+    // revision makes the velocity prev buffer re-seed once for this content
+    // and then skip the per-frame uploads.
     cache.instanceDataRevision++;
   }
 
-  // Phase 0 dirty-consume (NEW-DIRTY-CONSUME-CLOUD). The WebGPU renderer
-  // replaces the WebGL vertex build, so CloudCollection's per-cloud `_dirty`,
-  // `_cloudsToUpdateIndex`, `_createVertexArray`, and `_propertiesChanged`
-  // are never cleared on this path — settled clouds get re-dirtied every
-  // frame and the update queue grows unbounded. Consume every frame (not
-  // just on rebuild). ORDERING (load-bearing): the rebuild gate above reads
-  // `_cloudsToUpdateIndex` / `_createVertexArray` BEFORE this consume clears
-  // them (NEW-CLOUD-REBUILD-DIRTY-GATE, Batch 233) — never move this call
-  // above the gate.
+  // The WebGPU renderer replaces the WebGL vertex build, so CloudCollection's
+  // per-cloud `_dirty`, `_cloudsToUpdateIndex`, `_createVertexArray` and
+  // `_propertiesChanged` are never cleared on this path: settled clouds are
+  // re-dirtied every frame and the update queue grows without bound. The
+  // consume therefore runs every frame, not only on a rebuild.
+  //
+  // The ordering is load-bearing. The rebuild gate above reads
+  // `_cloudsToUpdateIndex` and `_createVertexArray` before this consume clears
+  // them, so moving this call above the gate silently disables the gate.
   if (typeof collection._consumeDirtyState === "function") {
     collection._consumeDirtyState();
   }
@@ -1187,17 +1171,16 @@ function _updateWebGPUCloudCollectionInner(
 
   // Pack camera uniforms.
   //
-  // RTE: zero the translation column of VIEW *before* multiplying by
-  // projection. Zeroing the result's col3 after the multiply wipes out
-  // projection's P23 depth-mapping term, producing incorrect NDC depth.
-  // See `UniformStateComputations.cleanModelViewProjectionRelativeToEye`
-  // for the canonical pattern.
+  // RTE: zero the translation column of the view matrix *before* multiplying
+  // by projection. Zeroing column 3 of the result after the multiply wipes out
+  // projection's P23 depth-mapping term and produces incorrect NDC depth. See
+  // `UniformStateComputations.cleanModelViewProjectionRelativeToEye` for the
+  // canonical pattern.
   //
-  // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — the body is a
-  // closure so the per-slice resolver can re-invoke it at draw time against
-  // the slice's refreshed `uniformState.view`/`.projection`. Called once here
-  // to fill the static (slice-0 / single-frustum) buffer, then again per slice
-  // by the resolver into the slice's own buffer.
+  // The body is a closure so the per-slice resolver can re-invoke it at draw
+  // time against the slice's refreshed `uniformState.view` and `.projection`.
+  // It is called once here to fill the single-frustum buffer, then again per
+  // slice by the resolver into the slice's own buffer.
   const us = context.uniformState;
   const packCloud = (data: Float32Array): void => {
     const view = us.view;
@@ -1216,9 +1199,9 @@ function _updateWebGPUCloudCollectionInner(
     data[16] = scratchEncoded.high.x;
     data[17] = scratchEncoded.high.y;
     data[18] = scratchEncoded.high.z;
-    // Projection diagonal for meters-based quad sizing
-    // (NEW-CLOUD-SCALE-METERS, Batch 253) — column-major m00/m11. Valid for
-    // both perspective (3D) and orthographic (2D/CV) frusta.
+    // Projection diagonal for metre-based quad sizing: column-major m00 and
+    // m11. Valid for both perspective (3D) and orthographic (2D and Columbus
+    // view) frusta.
     data[19] = proj[0];
     data[20] = scratchEncoded.low.x;
     data[21] = scratchEncoded.low.y;
@@ -1231,11 +1214,11 @@ function _updateWebGPUCloudCollectionInner(
     data[26] = frameState.frameNumber * 0.016; // approximate time for animation
     data[27] = 0;
 
-    // Batch 170 - DP-H41 prev viewProjection at floats 28..43.
-    // UniformState swaps `_previousViewProjection := viewProjection` at
-    // the END of `update()` AFTER returning the prior frame's value, so
-    // on frame N this slot holds frame N-1's VP. First frame falls
-    // through to identity.
+    // Previous view-projection at floats 28 to 43. `UniformState` assigns
+    // `_previousViewProjection` from `viewProjection` at the end of
+    // `update()`, after returning the prior frame's value, so on frame N this
+    // slot holds frame N-1's matrix. The first frame falls through to
+    // identity.
     const prevVP = (us as { previousViewProjection?: Matrix4 })
       .previousViewProjection;
     if (prevVP) {
@@ -1285,11 +1268,12 @@ function _updateWebGPUCloudCollectionInner(
   packCloud(data);
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
-  // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice camera
-  // UB resolver. Cloud's group 0 carries the camera UB (binding 0) plus the
-  // STABLE noise texture + sampler (bindings 1-2, created once at init), so the
-  // resolver rebuilds group 0 with the slice's own buffer + those same texture
-  // refs as extraEntries. The static `cache.bindGroup` is the slice-0 fallback.
+  // Per-slice camera uniform-buffer resolver. Group 0 carries the camera
+  // uniform buffer at binding 0 plus the noise texture and sampler at bindings
+  // 1 and 2, which are created once at init and never change, so the resolver
+  // rebuilds group 0 from the slice's own buffer and those same texture
+  // references as extra entries. The static `cache.bindGroup` is the
+  // single-frustum fallback.
   if (!cache.cameraUB) {
     cache.cameraUB = new WebGPUCollectionCameraUB(device, "Cloud");
   }
@@ -1304,10 +1288,10 @@ function _updateWebGPUCloudCollectionInner(
     ],
   });
 
-  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 2, null-target guard) — both
-  // the quad and instance vertex buffers must be live at the render-pass
-  // boundary; a null here would hand the WebGPU validation layer a draw with
-  // no vertex buffer. Skip the draw this frame instead (permanent log).
+  // Both the quad and instance vertex buffers have to be live at the
+  // render-pass boundary; a null here hands the WebGPU validation layer a draw
+  // with no vertex buffer. The draw is skipped for this frame instead, and the
+  // failure is logged unconditionally.
   if (
     !validateDrawTargets(
       [cache.quadVertexBuffer, cache.instanceBuffer],
@@ -1317,12 +1301,11 @@ function _updateWebGPUCloudCollectionInner(
     return;
   }
 
-  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 3, size-validation/overflow) —
-  // each cloud instance reads 68 bytes (`arrayStride: 68`); clamp the drawn
-  // instance count to what the instance buffer physically holds so a drift
-  // between `instanceCount` and the last buffer grow can't issue an
-  // out-of-range instanced draw (BUG-15 family). On the happy path the
-  // buffer is sized for the full slot count, so this is inert.
+  // Each cloud instance reads 68 bytes (`arrayStride: 68`), so the drawn
+  // instance count is clamped to what the instance buffer physically holds:
+  // a drift between `instanceCount` and the last buffer growth would otherwise
+  // issue an out-of-range instanced draw. On the happy path the buffer is
+  // sized for the full slot count and the clamp is inert.
   const safeCloudInstanceCount = validateInstancedDrawBuffer(
     cache.instanceBuffer,
     cache.instanceCount,
@@ -1341,35 +1324,34 @@ function _updateWebGPUCloudCollectionInner(
       pass: Pass.TRANSLUCENT,
     });
   } else {
-    // `cache.command` is built once; refresh the resolver each frame so it
-    // re-packs against THIS frame's camera + the current texture refs.
+    // `cache.command` is built once; the resolver is refreshed each frame so
+    // it re-packs against this frame's camera and the current texture
+    // references.
     (cache.command as { bindGroupResolvers?: unknown[] }).bindGroupResolvers = [
       cloudCameraResolver,
     ];
   }
 
-  // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward CloudCollection's
-  // `_rs` so the translucent cloud pass uses the same alpha-blend +
-  // depth-test configuration as the WebGL path. Written per-frame (not
-  // only at command creation) because the collection could in principle
-  // rebuild its render state if a future feature adds one.
+  // Forward CloudCollection's `_rs` so the translucent cloud pass uses the
+  // same alpha-blend and depth-test configuration as the WebGL path. Written
+  // per frame rather than only at command creation, because the collection can
+  // rebuild its render state.
   (cache.command as { renderState?: unknown }).renderState = (
     collection as unknown as { _rs?: unknown }
   )._rs;
 
-  // Batch 170 - B.10 NEW-ADVANCED-MOTION-VECTORS attach. Maintain a
-  // one-frame-lagged prev mirror of the instance buffer so the
-  // velocity VS reads (current, previous) position pairs.
+  // Maintain a one-frame-lagged mirror of the instance buffer so the velocity
+  // vertex shader reads current and previous position pairs.
   attachCloudVelocityCommand(device, context, frameState, cache);
 
-  // Cloud-unification epic slice 3 — exclusive VOLUMETRIC toggle. A collection
-  // whose `renderMode` is VOLUMETRIC (CloudRenderMode.VOLUMETRIC === 1) drives
-  // the full-screen volumetric deck (published from CloudCollection.update) and
-  // suppresses its OWN billboards. All the buffer + dirty-state bookkeeping
-  // above still runs (so `_consumeDirtyState` clears each frame and the
-  // instance buffer stays coherent for a future BILLBOARD flip) — only the draw
-  // command is withheld from the command list. BILLBOARD (default) is
-  // byte-identical: the mode is 0, the guard is false, the push happens.
+  // Exclusive volumetric toggle. A collection whose `renderMode` is
+  // `CloudRenderMode.VOLUMETRIC` (1) drives the full-screen volumetric deck
+  // published from `CloudCollection.update` and suppresses its own billboards.
+  // The buffer and dirty-state bookkeeping above still runs, so
+  // `_consumeDirtyState` clears each frame and the instance buffer stays
+  // coherent for a flip back to billboards; only the draw command is withheld
+  // from the command list. In the default billboard mode the value is 0, the
+  // guard is false, and the push happens.
   const CLOUD_RENDER_MODE_VOLUMETRIC = 1;
   const collectionRenderMode = (
     collection as unknown as { renderMode?: number }
@@ -1382,26 +1364,25 @@ function _updateWebGPUCloudCollectionInner(
 }
 
 /**
- * Batch 170 - upload prev positions, build (or fetch) the velocity
- * pipeline, attach `velocityCommand` to the cache's color command. The
- * TAA pass walks the command list for `cmd.velocityCommand` and
- * dispatches it into the rg16float velocity texture. Mirrors PointCloud
- * Batch 168/169.
+ * Upload previous positions, build or fetch the velocity pipeline, and attach
+ * `velocityCommand` to the cache's color command. The TAA pass walks the
+ * command list for `cmd.velocityCommand` and dispatches it into the rg16float
+ * velocity texture. Mirrors the point-cloud renderer.
  *
- * Skips entirely when TAA is off and no prev buffer has been allocated
- * yet — keeps the off-path zero-cost.
+ * Skipped entirely when TAA is off and no prev buffer has been allocated yet,
+ * which keeps the off path free.
  *
- * Two ways to fall into the GPU self-copy fallback below:
- *   1. First frame ever — `prevInstanceData` is null. Seed by copying
- *      curr → prev so this frame emits velocity = 0; the post-dispatch
- *      promotion at the end of this function then captures THIS
- *      frame's data as prev for next frame's real delta.
- *   2. Cloud-count change — animated cloud collection adds or removes
- *      clouds across frames. The prev buffer carried last frame's
- *      smaller/larger data; falling through to the self-copy emits
- *      velocity = 0 for this transition (correct: no continuous index
- *      correspondence between OLD and NEW clouds at the same i).
- *      Subsequent frames at the new count restore real delta capture.
+ * Two cases fall into the GPU self-copy below:
+ *   1. The first frame, where `prevInstanceData` is null. Seeding by copying
+ *      current onto previous makes this frame emit a velocity of zero; the
+ *      promotion at the end of this function then captures this frame's data
+ *      as previous, so the next frame has a real delta.
+ *   2. A cloud-count change, where the collection added or removed clouds
+ *      across frames. The prev buffer carries the old count's data, and the
+ *      self-copy emits a velocity of zero for the transition — correct,
+ *      because there is no index correspondence between the old and new
+ *      clouds at the same slot. Subsequent frames at the new count resume
+ *      real delta capture.
  *
  * @private
  */
@@ -1436,11 +1417,11 @@ function attachCloudVelocityCommand(
       size: requiredBytes,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
-    // C10-09 T-4 - prev buffer reallocated; resident revision is stale.
+    // The prev buffer was reallocated, so the resident revision is stale.
     cache.prevBufferRevision = undefined;
   }
 
-  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY — revision-skip + GPU self-copy.
+  // Revision skip plus GPU self-copy.
   const prevSrc = cache.prevInstanceData;
   const isIdentity = prevSrc === cache.instanceData; // static: prev IS curr
   if (
@@ -1448,9 +1429,10 @@ function attachCloudVelocityCommand(
     cache.prevInstanceBuffer &&
     cache.prevInstanceBuffer.size >= requiredBytes
   ) {
-    // Identity (static clouds): the bytes already reside in `instanceBuffer`
-    // on the GPU. Seed `prevInstanceBuffer` from it ONCE then SKIP while the
-    // data revision is unchanged (INV-1). Geometry velocity is 0 either way.
+    // Identity case, meaning static clouds: the bytes already reside in
+    // `instanceBuffer` on the GPU. Seed `prevInstanceBuffer` from it once,
+    // then skip while the data revision is unchanged. Geometry velocity is
+    // zero either way.
     if (cache.prevBufferRevision !== cache.instanceDataRevision) {
       const encoder = device.createCommandEncoder({
         label: "Cloud prev identity-seed",
@@ -1465,9 +1447,10 @@ function attachCloudVelocityCommand(
       device.queue.submit([encoder.finish()]);
       cache.prevBufferRevision = cache.instanceDataRevision;
     }
-    // else: static & already resident → NOTHING. This is the per-frame win.
+    // Otherwise the content is static and already resident, so nothing is
+    // uploaded; that is where the per-frame saving comes from.
   } else if (prevSrc && prevSrc.byteLength >= requiredBytes) {
-    // Animated distinct-array path (INV-2) — unchanged.
+    // Animated path, where previous and current are distinct arrays.
     device.queue.writeBuffer(
       cache.prevInstanceBuffer,
       0,
@@ -1477,7 +1460,7 @@ function attachCloudVelocityCommand(
     );
     cache.prevBufferRevision = undefined;
   } else {
-    // First-frame seed OR count mismatch (INV-4) — existing GPU copy.
+    // First-frame seed or count mismatch, handled by a GPU copy.
     const encoder = device.createCommandEncoder({
       label: "Cloud prev seed",
     });
@@ -1492,9 +1475,9 @@ function attachCloudVelocityCommand(
     cache.prevBufferRevision = undefined;
   }
 
-  // Lazy velocity pipeline build. Reuses the same color BGL since the
-  // velocity VS reads from the same uniform buffer (camera struct
-  // includes prevViewProjection now).
+  // Lazy velocity pipeline build. It reuses the color bind-group layout
+  // because the velocity vertex shader reads the same uniform buffer, whose
+  // camera struct carries `prevViewProjection`.
   if (!cache.velocityPipelineDescriptor && cache.shaderModule) {
     // The velocity pipeline shares the color pipeline's layout (BGL).
     // Pull it from the existing color descriptor for layout consistency.
@@ -1641,10 +1624,10 @@ function attachCloudVelocityCommand(
     cache.prevInstanceBuffer &&
     cache.quadVertexBuffer
   ) {
-    // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 3) — clamp the velocity
-    // instanced draw to what the current + prev instance buffers hold
-    // (each 68 B/instance). The prev buffer is grown to `instanceCount*68`
-    // just above, so this is inert on the happy path.
+    // Clamp the velocity instanced draw to what the current and previous
+    // instance buffers hold, at 68 bytes per instance. The prev buffer is
+    // grown to `instanceCount * 68` just above, so this is inert on the happy
+    // path.
     const safeVelocityInstanceCount = validateInstancedDrawBuffer(
       cache.instanceBuffer,
       cache.instanceCount,
@@ -1686,7 +1669,7 @@ function destroyWebGPUCloudResources(
   cache.instanceBuffer?.destroy();
   cache.uniformBuffer?.destroy();
   cache.noiseTexture?.destroy();
-  // Batch 170 - release the velocity-path GPU buffer.
+  // Release the velocity-path GPU buffer.
   cache.prevInstanceBuffer?.destroy();
   collection._webgpuCache = undefined;
 }

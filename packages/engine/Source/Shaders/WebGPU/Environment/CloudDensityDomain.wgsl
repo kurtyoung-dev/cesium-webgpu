@@ -1,13 +1,14 @@
-// Campaign 13 C13-37 — planet-stable cloud-density coordinate domains.
+// Planet-stable cloud-density coordinate domains.
 //
-// The three periodic baked-texture domains use campaign-fixed seeded SO(3)
-// rotations, offsets, and non-harmonic scale ratios. This breaks the aligned
-// ECEF repeat lattice without adding texture taps, bindings, or samplers.
+// The three periodic baked-texture domains use fixed seeded SO(3) rotations,
+// offsets, and non-harmonic scale ratios. This breaks the aligned ECEF repeat
+// lattice without adding texture taps, bindings, or samplers.
 //
 // Matrix columns below are the WGSL column-major spelling of the row-major TS
-// constants in WebGPUCloudDensityDomain.ts. Shape/detail keep the original
-// seeded draws; the warp transform was re-drawn decorrelated (splitmix32
-// generation seed 45296) — see the TS module docstring for the full provenance.
+// constants in WebGPUCloudDensityDomain.ts. The shape and detail transforms come
+// from the original seeded draws; the warp transform comes from an independent
+// draw decorrelated from them, splitmix32 generation seed 45296 — that module's
+// docstring carries the full provenance.
 
 const CLOUD_DENSITY_WORLD_TO_NOISE: f32 = 0.0003000000142492354;
 const CLOUD_DENSITY_WARP_RATIO: f32 = 0.31830987334251404;
@@ -49,8 +50,8 @@ const CLOUD_DENSITY_DETAIL_OFFSET: vec3<f32> = vec3<f32>(
 
 struct CloudDensityCoordinates {
   // The caller's untransformed coordinate. On the raw route this is full
-  // world-noise; on the RTE route it is origin-relative noise. Texture lookup
-  // sites consume the three bounded periodic domains below.
+  // world-noise; on the relative-to-eye route it is origin-relative noise.
+  // Texture lookup sites consume the three bounded periodic domains below.
   canonical: vec3<f32>,
   shape: vec3<f32>,
   warp: vec3<f32>,
@@ -62,7 +63,8 @@ fn wrapCloudDensityDomain(value: vec3<f32>) -> vec3<f32> {
 }
 
 // Construct all domains from a raw world coordinate already converted to noise
-// units. This is the direct/non-RTE route and a useful CPU-oracle equivalent.
+// units. This is the direct, non-relative-to-eye route, and the one a CPU oracle
+// can reproduce.
 fn cloudDensityCoordinatesFromWorldNoise(
   worldNoise: vec3<f32>,
   puffSize: f32,
@@ -82,10 +84,11 @@ fn cloudDensityCoordinatesFromWorldNoise(
   );
 }
 
-// Reconstruct periodic domains from CPU-f64 origin phases plus a small,
-// camera-relative noise delta. The phases are packed as three vec3+pad rows:
-// shape, warp, detail. Keeping the large origin out of shader f32 arithmetic
-// makes these texture coordinates stable at every planetary camera location.
+// Reconstruct periodic domains from CPU-f64 origin phases plus a small
+// camera-relative noise delta. The phases are packed as three vec3-plus-pad
+// rows: shape, warp, detail. Keeping the large origin out of shader f32
+// arithmetic is what makes these texture coordinates stable at every planetary
+// camera location.
 fn cloudDensityCoordinatesFromOriginPhases(
   relativeNoise: vec3<f32>,
   puffSize: f32,
@@ -135,51 +138,52 @@ fn advanceCloudDensityCoordinates(
   );
 }
 
-// ─── Coverage → density-gate threshold (CLOUD-LOW-COVERAGE-CUTOFF) ──────────
+// Coverage to density-gate threshold.
 //
 // Every cloud density evaluation gates the base noise with
 // `smoothstep(1 - cEff, 1, base)`, so `1 - cEff` is the base value a sample has
-// to exceed to be cloud at all. The historical gate used `cEff = coverage`
-// directly, which silently assumes the base noise is UNIFORM over [0, 1].
+// to exceed to be cloud at all. Passing coverage straight through as `cEff`
+// assumes the base noise is uniform over [0, 1].
 //
-// It is not. The baked shape channel is a 4-octave periodic value-fBM
-// (`valueFBM(p, 2)` in CloudNoiseBake.wgsl), and its rgba8 values over the
-// whole 128^3 bake measure mean 0.4307, sigma 0.0896, MAXIMUM 0.7176 — a narrow
-// near-Gaussian, not a uniform. A linear threshold therefore walks off the top
-// of the field's support at coverage < 0.283 (1 - c exceeds the field maximum,
-// so the gate is identically zero for every sample in the world), and at 0.35
-// only the top 0.5% of voxels clear it — each with a gate amplitude BELOW the
-// subtractive erosion floor (mean 0.525 * erosionStrength), so the few
-// survivors are zeroed as well. Measured by the C13-01 tour's isolated coverage
-// sweep: contribution exactly 0 at coverage <= 0.40 and 0.0009 at 0.45, i.e.
-// every real-world fair-weather scattered-cumulus sky rendered CLEAR.
+// It is not. The baked shape channel is a 4-octave periodic value-fBm,
+// `valueFBM(p, 2)` in CloudNoiseBake.wgsl, and its rgba8 values over the whole
+// 128³ bake measure mean 0.4307, sigma 0.0896, maximum 0.7176 — a narrow
+// near-Gaussian. A linear threshold therefore walks off the top of the field's
+// support below coverage 0.283, where 1 - c exceeds the field maximum and the
+// gate is identically zero for every sample in the world; and at 0.35 only the
+// top 0.5% of voxels clear it, each with a gate amplitude below the subtractive
+// erosion floor of mean 0.525 × erosionStrength, so those survivors are zeroed
+// too. An isolated coverage sweep measured contribution exactly 0 at coverage of
+// 0.40 or less and 0.0009 at 0.45 — every fair-weather scattered-cumulus sky
+// rendering clear.
 //
-// Re-derivation (not a rescale of the old line): require the cloudy VOLUME
-// fraction P(base > 1 - cEff) to be a smooth, strictly increasing,
-// CONSTANT-ELASTICITY function of coverage instead of a Gaussian tail composed
-// with a linear threshold. Constant elasticity in threshold space is a power
-// law, and three anchors fix it:
+// The curve below instead requires the cloudy volume fraction
+// P(base > 1 - cEff) to be a smooth, strictly increasing, constant-elasticity
+// function of coverage rather than a Gaussian tail composed with a linear
+// threshold. Constant elasticity in threshold space is a power law, and three
+// anchors fix it:
 //   A1  cEff(c) = c for c >= CLOUD_COVERAGE_ANCHOR. The two branches cross
-//       exactly at the anchor, so `max` of them reproduces the historical
-//       response bit-for-bit at and above it — every currently-working
-//       high-coverage scene is untouched.
-//   A2  1 - cEff(0.15) = 0.6025 ~ the field's 98th percentile: the sparsest
+//       exactly at the anchor, so `max` of them reproduces the linear response
+//       bit-for-bit at and above it and every working high-coverage scene is
+//       untouched.
+//   A2  1 - cEff(0.15) = 0.6025, about the field's 98th percentile: the sparsest
 //       threshold whose surviving cores still clear the erosion floor, so 0.15
 //       is genuinely sparse yet nonzero rather than a wall.
-//   A3  cEff(0) = 0 -> threshold 1 -> a zero-coverage sky is structurally clear.
-// A1 + A2 give exponent 1/4 at anchor 0.55. The resulting curve is monotone on
-// all of [0, 1], leaves coverage <= 0.08 visually clear (the negative-space
-// control still reads as clear sky), and lifts 0.35 to ~40% of the anchor's sky
-// cover with ~80% of its peak density — scattered puffs, not overcast.
+//   A3  cEff(0) = 0, so the threshold is 1 and a zero-coverage sky is
+//       structurally clear.
+// A1 and A2 give exponent 1/4 at anchor 0.55. The resulting curve is monotone on
+// all of [0, 1], leaves coverage of 0.08 or less visually clear, and lifts 0.35
+// to ~40% of the anchor's sky cover with ~80% of its peak density — scattered
+// puffs, not overcast.
 //
 // Spelled as `anchor * pow(c / anchor, exponent)` rather than a pre-multiplied
 // constant: at c == anchor the ratio is exactly 1 and `pow(1, e)` is exactly 1,
-// so the anchor reproduces itself EXACTLY in f32 and the >= anchor preservation
-// is exact rather than approximate.
+// so the anchor reproduces itself exactly in f32 and the preservation at and
+// above the anchor is exact rather than approximate.
 //
 // CPU twin: `cloudEffectiveCoverage` in WebGPUCloudDensityDomain.ts. The two are
-// pinned together by Tools/visual-regression/cloud-coverage-response.spec.mjs —
-// do not edit one alone.
+// pinned together by `cloud-coverage-response.spec.mjs`, so neither can be
+// edited alone.
 const CLOUD_COVERAGE_ANCHOR: f32 = 0.55;
 const CLOUD_COVERAGE_EXPONENT: f32 = 0.25;
 

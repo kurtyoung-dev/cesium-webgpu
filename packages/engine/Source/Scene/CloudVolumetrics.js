@@ -8,28 +8,26 @@ import Frozen from "../Core/Frozen.js";
  * <p><b>WebGPU only.</b> Every field on this object is consumed exclusively by
  * the WebGPU procedural / volumetric cloud renderer. On the WebGL renderer these
  * fields are inert stores with no rendering effect and never throw — the
- * collection's billboard path ignores them entirely. This mirrors the fork's
- * opt-in / default-off / graceful-no-op convention (see FORK_OVERVIEW principle
- * 10) so a scene authored for both backends renders byte-identically on WebGL.</p>
+ * collection's billboard path ignores them entirely. This follows the fork's
+ * opt-in, default-off, graceful-no-op convention, so a scene authored for both
+ * backends renders byte-identically on WebGL.</p>
  *
- * <p>The field names are deliberately <b>identical</b> to the historical
- * <code>globe.cloud*</code> fields that the volumetric renderer already reads
- * (<code>cloudCoverage</code>, <code>cloudLayerBottom</code>/<code>Top</code>,
- * <code>cloudDensity</code>, <code>cloudWindSpeed</code>, …). A
- * <code>CloudVolumetrics</code> instance is therefore structurally
- * interchangeable with the globe as a config source, letting the byte-locked
- * 136-float <code>CloudUniforms</code> packer and its ~50 read sites stay
- * unchanged (see migration_doc/CLOUD_UNIFICATION_DESIGN.md §1.2).</p>
+ * <p>The field names match the <code>globe.cloud*</code> fields the volumetric
+ * renderer reads (<code>cloudCoverage</code>,
+ * <code>cloudLayerBottom</code>/<code>Top</code>, <code>cloudDensity</code>,
+ * <code>cloudWindSpeed</code>, …) exactly. A <code>CloudVolumetrics</code>
+ * instance is therefore structurally interchangeable with the globe as a config
+ * source, which is what lets the byte-locked 136-float
+ * <code>CloudUniforms</code> packer and its roughly 50 read sites stay
+ * unchanged.</p>
  *
- * <p>This class also formalizes the three fields that previously lived only
- * behind <code>globe as unknown as {…}</code> casts inside the renderer —
+ * <p>It also gives public, documented homes to three fields the renderer
+ * otherwise reaches only through <code>globe as unknown as {…}</code> casts:
  * <code>cloudMultiDeck</code>, <code>cloudHighPrecision</code>, and the
- * <code>cloudSpecies*</code> family — giving them real, documented public homes
- * on the collection.</p>
+ * <code>cloudSpecies*</code> family.</p>
  *
  * <p>Instances are created lazily by {@link CloudCollection} and exposed as
- * <code>collection.volumetric</code>. Nothing reads this object yet — the
- * publish/consume wiring lands in a later slice of the cloud-unification epic.</p>
+ * <code>collection.volumetric</code>.</p>
  *
  * @alias CloudVolumetrics
  * @constructor
@@ -316,7 +314,7 @@ function CloudVolumetrics(options) {
   /** Mode-specific iridescence parameter. WebGPU only. @type {number|undefined} */
   this.cloudSpecialShadeParam = options.cloudSpecialShadeParam;
 
-  // ── LOD / orbit-cost march dials (Batch 634, C6-CLOUD-STBN-TAAU LOD half) ──
+  // LOD dials that bound the march cost from orbit.
 
   /**
    * Geometric growth of the view-ray march step per fine step. <code>1.0</code>

@@ -1,50 +1,49 @@
-// Cloud Reconstruction Attachments — WebGPU (C13-09)
+// Cloud Reconstruction Attachments — WebGPU
 //
-// Writes the reconstruction attachment set the temporal chain will read:
-// front / transmittance-weighted cloud depth, screen-space motion with its
-// validity, and the moment pair a variance clip needs. NOTHING READS THESE
-// YET — C13-10 owns the true 1/16-rate current-frame march and C13-12 owns the
-// consumers (motion/depth rejection, variance clipping, reactive history,
-// wind-aware reprojection, disocclusion).
+// Writes the reconstruction attachment set the temporal chain reads: front and
+// transmittance-weighted cloud depth, screen-space motion with its validity, and
+// the moment pair a variance clip needs. `CloudTemporalResolve.wgsl` consumes
+// them in its `CLOUD_RECONSTRUCTION_CONSUME` variant. The thresholded consumers
+// — motion and depth rejection, variance clipping, reactive history, wind-aware
+// reprojection, disocclusion — are not implemented yet.
 //
-// ★ WHY THIS IS A SEPARATE MODULE. C13-39's negative result established that
-//   WGSL register allocation is STATIC: code added to `ProceduralClouds.wgsl`
-//   inflates the register footprint of EVERY pipeline compiled from it — the
-//   visible march, the shadow map, the cascade atlas, the god-ray mask. None of
-//   those want a reconstruction attachment. So this producer is its own module
-//   with its own pipeline, and it RE-DERIVES the WGS84 shell intersection
-//   rather than importing the march's. The duplication is deliberate and is the
-//   cheaper side of the trade.
+// This is a separate module rather than part of `ProceduralClouds.wgsl` because
+// WGSL register allocation is static: code added there inflates the register
+// footprint of every pipeline compiled from it — the visible march, the shadow
+// map, the cascade atlas, the god-ray mask — and none of those want a
+// reconstruction attachment. Having its own pipeline is why this producer
+// re-derives the WGS84 shell intersection rather than sharing the march's; that
+// duplication is the cheaper side of the trade.
 //
-// ★ THE DEPTH HAS TWO PRODUCERS, SELECTED AT COMPILE TIME.
+// The depth has two producers, selected at compile time.
 //
-//   DEFAULT (`//>>else`, C13-09) — an ESTIMATOR. The march resolved this
-//   pixel's alpha; this pass recovers the depth that alpha implies over the
-//   geometric shell interval under uniform extinction, which is strictly more
-//   than C13-05's midpoint proxy and strictly less than per-sample
-//   accumulation. Its CPU twin lives in
-//   `WebGPUCloudReconstructionAttachments.ts`
-//   (`cloudTransmittanceWeightedDepth`) and is pinned against this expression.
+//   Default (`//>>else`) — an estimator. The march resolved this pixel's alpha,
+//   and this pass recovers the depth that alpha implies over the geometric shell
+//   interval under uniform extinction, which is more than an interval-midpoint
+//   proxy and less than per-sample accumulation. Its CPU twin,
+//   `cloudTransmittanceWeightedDepth` in
+//   `WebGPUCloudReconstructionAttachments.ts`, is pinned against this
+//   expression.
 //
-//   `CLOUD_MARCH_EMIT_RECONSTRUCTION` (C13-10) — an ACCUMULATION. The march
-//   itself sums `Σ wᵢ·tᵢ` over the SAME transmittance weights its radiance
-//   uses and writes contract slot 1 directly, so this pass reads the depth at
-//   binding 2 instead of estimating it, and its own MRT drops the depth slot
-//   (a pass cannot sample what it writes). The estimator stays as the `//>>else`
-//   and as the CPU twin — it is still the only depth available to a build that
-//   does not compile the emitting march, and it is the reference the emission
-//   is checked against. Its CPU twin `cloudMarchWeightedDepth` is pinned
-//   against the emitting expression the same way.
+//   `CLOUD_MARCH_EMIT_RECONSTRUCTION` — an accumulation. The march itself sums
+//   `Σ wᵢ·tᵢ` over the same transmittance weights its radiance uses and writes
+//   contract slot 1 directly, so this pass reads the depth at binding 2 instead
+//   of estimating it, and its own render targets drop the depth slot, a pass
+//   being unable to sample what it writes. The estimator remains as the
+//   `//>>else` and as the CPU twin: it is the only depth available to a build
+//   that does not compile the emitting march, and it is the reference the
+//   emission is checked against. Its CPU twin `cloudMarchWeightedDepth` is
+//   pinned against the emitting expression the same way.
 //
-//   The variant costs the MARCH two FMAs and a compare per contributing sample
-//   and SAVES this pass a per-pixel ellipsoid-shell intersection plus nine
-//   estimator evaluations. Any occupancy claim about that trade is owed the
-//   interleaved-A/B protocol and is not asserted here.
+//   The variant costs the march two fused multiply-adds and a compare per
+//   contributing sample, and saves this pass a per-pixel ellipsoid-shell
+//   intersection plus nine estimator evaluations. Nothing here claims a net
+//   occupancy result; establishing one needs an interleaved A/B measurement.
 //
-// RTE contract, inherited unchanged from C13-04/05: no full-ECEF vec3<f32> is
-// ever formed. The planet centre arrives as an encoded high/low split relative
-// to the camera, the high part cancels before the low refinement, and the
-// previous-frame projection is relative to eye with a CPU-f64 camera delta.
+// Relative-to-eye contract: no full-ECEF vec3<f32> is ever formed. The planet
+// centre arrives as an encoded high/low split relative to the camera, the high
+// part cancels before the low refinement, and the previous-frame projection is
+// relative to eye with a CPU-f64 camera delta.
 
 const WGS84_EQUATORIAL_RADIUS: f32 = 6378137.0;
 const WGS84_POLAR_RADIUS: f32 = 6356752.314245179;
@@ -53,11 +52,11 @@ const WGS84_POLAR_RADIUS: f32 = 6356752.314245179;
 // span/alpha and their difference loses most of its significant digits; the
 // interval midpoint is the exact limit there.
 const MIN_RESOLVED_ALPHA: f32 = 1.0e-4;
-// Transmittance floor. `log(0)` is an INDETERMINATE VALUE in WGSL and `1 - a`
+// Transmittance floor. `log(0)` is an indeterminate value in WGSL and `1 - a`
 // stops resolving in f32 within ~6e-8 of one, so the floor keeps the logarithm
-// finite without a branch — and a branch is exactly what must be avoided here,
-// because the estimator approaches the front face only logarithmically and a
-// snap-to-t0 would put a tenth-of-a-deck discontinuity at full opacity.
+// finite without a branch — and a branch is what has to be avoided here, because
+// the estimator approaches the front face only logarithmically and a snap to t0
+// would put a tenth-of-a-deck discontinuity at full opacity.
 const MIN_RESOLVED_TRANSMITTANCE: f32 = 1.0e-6;
 
 struct AttachmentUniforms {
@@ -88,14 +87,14 @@ struct AttachmentUniforms {
 @group(0) @binding(0) var currentTex: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> u: AttachmentUniforms;
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
-// C13-10 — the depth attachment the MARCH wrote this frame (contract slot 1,
-// rg32float: front distance, transmittance-weighted mean distance, metres).
-// In this variant the estimator below is not evaluated at all: the march
-// accumulated the true per-sample weighted depth from the same weights its
-// radiance used, and this pass reads it rather than re-deriving it from alpha.
-// It is bound READ-ONLY and is NOT in this pass's attachment list — a pass
-// cannot sample a target it also writes, which is exactly why ownership of the
-// depth slot MOVES to the march instead of being duplicated here.
+// The depth attachment the march wrote this frame: contract slot 1, rg32float,
+// front distance and transmittance-weighted mean distance in metres. In this
+// variant the estimator below is not evaluated at all — the march accumulated
+// the per-sample weighted depth from the same weights its radiance used, and
+// this pass reads it rather than re-deriving it from alpha. It is bound
+// read-only and is absent from this pass's attachment list, since a pass cannot
+// sample a target it also writes; that is why ownership of the depth slot sits
+// with the march rather than being duplicated here.
 @group(0) @binding(2) var marchDepthTex: texture_2d<f32>;
 //>>endif
 
@@ -105,8 +104,8 @@ struct VertexOutput {
 };
 
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
-// C13-10 — the emitting variant's MRT. `depth` is ABSENT because the march
-// wrote contract slot 1 directly; this pass reads it at binding 2. The
+// The emitting variant's render targets. `depth` is absent because the march
+// wrote contract slot 1 directly and this pass reads it at binding 2. The
 // remaining two keep their contract order, so slot 2 -> @location(0) and
 // slot 3 -> @location(1).
 struct AttachmentOutput {
@@ -116,8 +115,8 @@ struct AttachmentOutput {
   @location(1) moments: vec4<f32>,
 };
 //>>else
-// MRT order matches the owned attachments in
-// `CLOUD_RECONSTRUCTION_ATTACHMENTS` (contract slots 1, 2, 3).
+// Target order matches the owned attachments in
+// `CLOUD_RECONSTRUCTION_ATTACHMENTS`, contract slots 1, 2 and 3.
 struct AttachmentOutput {
   // rg32float — front and transmittance-weighted distance, metres.
   @location(0) depth: vec2<f32>,
@@ -236,12 +235,12 @@ fn shellIntervalRTE(
   return vec2<f32>(tStart, tEnd);
 }
 
-// The interval the FRONT-MOST composited deck occupies. Multi-deck output is
-// composited front-to-back, so the nearest hit shell is the one that owns the
-// front depth; the weighted depth is then that interval under the composited
-// alpha. This is exactly the case C13-09 exists for: one mean depth across
-// separated overlapping volumes cannot be reconstructed from, so the front and
-// the weighted mean are carried as SEPARATE channels rather than averaged.
+// The interval the front-most composited deck occupies. Multi-deck output is
+// composited front-to-back, so the nearest hit shell owns the front depth, and
+// the weighted depth is that interval under the composited alpha. Separated
+// overlapping volumes cannot be reconstructed from a single mean depth, which is
+// why the front and the weighted mean are carried as separate channels rather
+// than averaged into one.
 fn nearestShellInterval(rd: vec3<f32>) -> vec2<f32> {
   if (u.deckBoundsHighAndFlags.z < 0.5) {
     return shellIntervalRTE(
@@ -325,13 +324,13 @@ fn fragmentMain(input: VertexOutput) -> AttachmentOutput {
 //>>endif
   let farCap = max(u.encodedCameraHighAndFarCap.w, 1.0);
 
-  // ── Depth ──
+  // Depth.
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
-  // C13-10 — the march already wrote contract slot 1. The anchor the velocity
-  // channel needs is the MARCH's transmittance-weighted mean, so this pass only
-  // reads it back; the shell intersection, the estimator and the centre alpha
-  // fetch are not evaluated at all in this variant, which is why the producer
-  // gets CHEAPER here even though the march gets slightly more expensive.
+  // The march already wrote contract slot 1, and the anchor the velocity channel
+  // needs is that transmittance-weighted mean, so this pass only reads it back.
+  // The shell intersection, the estimator and the centre alpha fetch are not
+  // evaluated in this variant, which is why this producer is cheaper here even
+  // though the march is slightly more expensive.
   let weighted = textureLoad(marchDepthTex, center, 0).g;
 //>>else
   // A shell miss leaves (-1, -1): "this ray carries no cloud", which a consumer
@@ -343,21 +342,21 @@ fn fragmentMain(input: VertexOutput) -> AttachmentOutput {
   }
 //>>endif
 
-  // ── Moments ──
+  // Moments.
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
-  // C13-10 — with the march emitting, each neighbour has its OWN
-  // transmittance-weighted depth, so the depth moment pair stops being an
-  // approximation over one shared interval and becomes the real spatial
-  // distribution. The no-cloud sentinel contributes 0 (the same value the
-  // estimator variant contributes on a shell miss), so an empty neighbourhood
-  // still reports a zero mean and a zero variance rather than a negative one.
+  // With the march emitting, each neighbour carries its own
+  // transmittance-weighted depth, so the depth moment pair is the real spatial
+  // distribution rather than an approximation over one shared interval. The
+  // no-cloud sentinel contributes 0, the same value the estimator variant
+  // contributes on a shell miss, so an empty neighbourhood reports a zero mean
+  // and a zero variance rather than a negative one.
 //>>else
   // Coverage moments are exact over the 3x3 neighbourhood. Depth moments reuse
-  // the CENTRE ray's interval with each neighbour's alpha: the shell interval
-  // is a smooth geometric function of direction, so across three half-
-  // resolution texels it varies far less than the alpha does, and re-deriving
-  // nine ray directions plus nine ellipsoid intersections to capture that
-  // difference would cost more than the variance it recovers is worth.
+  // the centre ray's interval with each neighbour's alpha: the shell interval is
+  // a smooth geometric function of direction, so across three half-resolution
+  // texels it varies far less than the alpha does, and re-deriving nine ray
+  // directions plus nine ellipsoid intersections to capture that difference
+  // would cost more than the variance it recovers is worth.
 //>>endif
   var sumDepth = 0.0;
   var sumDepthSq = 0.0;
@@ -402,12 +401,11 @@ fn fragmentMain(input: VertexOutput) -> AttachmentOutput {
     sumAlphaSq * inverseSamples
   );
 
-  // ── Velocity ──
-  // Anchored on the weighted depth rather than the interval midpoint: the point
-  // that actually carries this pixel's radiance is the point whose motion a
-  // reprojection has to follow. B stays 0 whenever the anchor, the transform,
-  // or the reprojected position is unusable, so a consumer can tell "did not
-  // move" from "could not be reprojected" — which two channels cannot express.
+  // Velocity, anchored on the weighted depth rather than the interval midpoint:
+  // the point that carries this pixel's radiance is the point whose motion a
+  // reprojection has to follow. B stays 0 whenever the anchor, the transform or
+  // the reprojected position is unusable, so a consumer can tell "did not move"
+  // from "could not be reprojected" — a distinction two channels cannot express.
   if (u.primaryDeckAndResolutionY.w > 0.5 && weighted >= 0.0) {
     let currentEyeRelative = rayDirection * weighted;
     let previousEyeRelative = currentEyeRelative + u.cameraDeltaAndWidth.xyz;

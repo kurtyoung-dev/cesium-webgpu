@@ -209,11 +209,8 @@ class CloudCollection {
     this.debugEllipsoids = options.debugEllipsoids ?? false;
     this._compiledDebugEllipsoids = false;
 
-    // ── Cloud-unification epic (WebGPU volumetric via CloudCollection) ──
-    // All three additions below are opt-in, default-off, and inert on the WebGL
-    // renderer + when renderMode is BILLBOARD. Nothing reads them yet — the
-    // publish/consume wiring lands in a later slice. See
-    // migration_doc/CLOUD_UNIFICATION_DESIGN.md.
+    // The three volumetric additions below are opt-in, default-off, and inert on
+    // the WebGL renderer and whenever `renderMode` is `BILLBOARD`.
 
     // Exclusive render mode. BILLBOARD (default) keeps the classic behavior on
     // both backends; VOLUMETRIC drives the WebGPU volumetric deck and suppresses
@@ -511,10 +508,10 @@ class CloudCollection {
    *  - `_cloudsRemoved = false` (`removeClouds`, CloudCollection.js:518)
    *  - zero `_propertiesChanged[]`
    *
-   * NOTE: WebGPUCloudRenderer's rebuild gate reads `_cloudsToUpdateIndex` /
-   * `_createVertexArray` BEFORE calling this consume so per-cloud property
-   * edits trigger an instance-buffer re-upload (NEW-CLOUD-REBUILD-DIRTY-GATE,
-   * Batch 233). Callers must preserve that read-before-consume ordering.
+   * `WebGPUCloudRenderer`'s rebuild gate reads `_cloudsToUpdateIndex` and
+   * `_createVertexArray` before calling this consume, which is what makes a
+   * per-cloud property edit trigger an instance-buffer re-upload. Callers must
+   * preserve that read-before-consume ordering.
    *
    * @private
    */

@@ -180,12 +180,12 @@ CloudTypeProfile.get = function (cloudType) {
 };
 
 /**
- * C13-16 — per-genus FIBROUS morphology parameters (the cirrus family's SHAPE,
- * not just its density scale).
+ * Per-genus fibrous morphology parameters: the shape of the cirrus family, not
+ * just its density scale.
  *
- * Until this table existed the {@link CloudErosionStyle} axis of `PROFILES` had
- * no renderer consumer at all: every genus rendered the same cumuliform lobes
- * differing only in `baseDensity`/`extinction`, so cirrus read as a faint
+ * This table is what gives the {@link CloudErosionStyle} axis of `PROFILES` a
+ * renderer consumer. Without it every genus renders the same cumuliform lobes,
+ * differing only in `baseDensity` and `extinction`, so cirrus reads as a faint
  * scaled-down cumulus rather than as ice.
  *
  * The three numbers describe how the raymarcher carves a deck into ice
@@ -196,16 +196,16 @@ CloudTypeProfile.get = function (cloudType) {
  * downstream as it descends, and the cloud is drawn out into long streaks
  * trailing beneath and downwind of its generating head — the "mare's tail".
  *
- * - `strength` — how deeply the filament field carves the deck (0 keeps the
- *   cumuliform field untouched, and is the value every PUFFY water-droplet
- *   genus takes, so a default render is unchanged). Kept CONSERVATIVE on
- *   purpose: the streak read comes entirely from `anisotropy` (the measured
- *   elongation is independent of `strength`), while `strength` only removes
- *   optical mass — and the cirrus family is already thin twice over
- *   (`baseDensity` 0.15 against cumulus 0.7, `extinction` 0.1 against 0.6). A
- *   deep carve on top of that walks straight back into the C13-01 tour's
- *   "CIRRUS renders ~nothing" finding, so every row here retains more than half
- *   the deck's mean mass. That floor is asserted, not just intended.
+ * - `strength` — how deeply the filament field carves the deck. 0 leaves the
+ *   cumuliform field untouched and is the value every puffy water-droplet genus
+ *   takes, so a default render is unchanged. The values here stay conservative:
+ *   the streak read comes entirely from `anisotropy`, since the measured
+ *   elongation is independent of `strength`, while `strength` only removes
+ *   optical mass — and the cirrus family is already thin twice over, at
+ *   `baseDensity` 0.15 against cumulus 0.7 and `extinction` 0.1 against 0.6. A
+ *   deep carve on top of that renders cirrus as very nearly nothing, so every
+ *   row here retains more than half the deck's mean mass, and that floor is
+ *   asserted rather than merely intended.
  * - `anisotropy` — the filament length:width aspect ratio along the wind.
  *   Observed cirrus streaks run roughly 5:1 to 20:1.
  * - `shear` — the along-wind lag of the streak's lower end relative to its

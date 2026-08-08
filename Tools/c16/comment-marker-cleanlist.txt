@@ -35,3 +35,32 @@ packages/engine/Source/Shaders/Materials
 packages/engine/Source/Shaders/Voxels
 packages/engine/Source/Shaders/Appearances
 packages/engine/Source/Renderer/ResourceOwnership
+
+# Procedural clouds, cloud shaders, the CloudCollection scene family, and the
+# weather ingest that feeds them. Knowledge moved to
+# migration_doc/DEV_NOTES_clouds.md.
+packages/engine/Source/Scene/Weather
+packages/engine/Source/Renderer/WebGPU/WebGPUCloudDensityDomain.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUCloudNoiseResources.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUCloudObservability.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUCloudReconstructionAttachments.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUCloudShadowFrame.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUCloudTemporalHistory.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUCloudTierPresets.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts
+packages/engine/Source/Scene/AtmosphericConditions.js
+packages/engine/Source/Scene/CloudCollection.js
+packages/engine/Source/Scene/CloudRenderMode.js
+packages/engine/Source/Scene/CloudTypeProfile.d.ts
+packages/engine/Source/Scene/CloudTypeProfile.js
+packages/engine/Source/Scene/CloudVolumetrics.js
+packages/engine/Source/Scene/EclipseCloudResponse.d.ts
+packages/engine/Source/Scene/EclipseCloudResponse.js
+packages/engine/Source/Shaders/WebGPU/Compute/CloudNoiseBake.wgsl
+packages/engine/Source/Shaders/WebGPU/Compute/CloudNoiseMipmap.wgsl
+packages/engine/Source/Shaders/WebGPU/Environment/CloudDensityDomain.wgsl
+packages/engine/Source/Shaders/WebGPU/Environment/CloudReconstructionAttachments.wgsl
+packages/engine/Source/Shaders/WebGPU/Environment/CloudTemporalResolve.wgsl
+packages/engine/Source/Shaders/WebGPU/Environment/CloudUpscale.wgsl
+packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl
