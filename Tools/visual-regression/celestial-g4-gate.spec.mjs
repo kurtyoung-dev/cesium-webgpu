@@ -65,6 +65,7 @@ import {
   ARM_STATE,
   C12_19_HDR_PEAK_DISCRIMINATOR,
   DISC_AIM_TOLERANCE_PX,
+  DISC_BRACKET_EXPOSURES,
   DISC_EPHEMERIS_TOLERANCE,
   EARTHSHINE_INERTNESS_FACTOR,
   EARTHSHINE_INERTNESS_MIN_MUTANT_CODES,
@@ -90,7 +91,9 @@ import {
   HALO_TAIL_SLOPE_BAND,
   HDR_EXPECTED_POLICY,
   LIMB_ABSOLUTE_RATIO_BAND,
+  LIMB_BAND_MODEL_DISC_RADIUS_PX,
   LIMB_CENTRE_MAX_RELATIVE,
+  LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE,
   LIMB_MIN_DROP_LINEAR,
   LIMB_SHAPE_MAX_REL_DEV,
   LIMB_SHAPE_SAMPLE_X,
@@ -108,6 +111,8 @@ import {
   SOLAR_ANGULAR_DIAMETER_NOMINAL_DEG,
   SOLAR_ANGULAR_DIAMETER_TOLERANCE,
   STRUCTURAL_NON_VERDICT_MARKER,
+  SUN_BAKE_BLUE_HUE_OFFSET,
+  SUN_BAKE_GAMMA_NOMINAL,
   SURGE_REACHABLE_MAX_PHASE_ANGLE_DEG,
   TERMINATOR_DELTA_EPS,
   TERMINATOR_MAX_BAND_FRACTION,
@@ -124,6 +129,7 @@ import {
   buildG4Summary,
   captureCodeQuantumLinear,
   chooseBracketLeg,
+  deriveDiscOnlyLimbBand,
   describeAimMiss,
   discDeltaCensus,
   discIntegratedBrightness,
@@ -149,6 +155,7 @@ import {
   relativeSpread,
   screenMinusBakedPeak,
   shapeDeviation,
+  solarDiscChainLuminance,
   unlitLimbDelta,
 } from "./lib/celestial-g4-gate.mjs";
 
@@ -161,6 +168,49 @@ const readNormalized = (relative) =>
 const GLOW_LENGTH_TS = 5.0;
 // The bake's own corner distance in solar radii, `sqrt(2) * (1 + 2*glowLengthTS)`.
 const BILLBOARD_CORNER_RSUN = Math.SQRT2 * (1 + 2 * GLOW_LENGTH_TS);
+
+// The shipped appearance scalars the disc-only band is derived against —
+// `SunHaloAppearance`'s resolution at the shipped defaults (`SunLight`, white,
+// `intensity = 2`, HDR on). Written as the module's own derivations, never as
+// literals, so a change to either propagates here.
+const SHIPPED_DISC_RADIANCE = SolarDiscModel.solarDiscHdrRadiance(true, {
+  intensity: 2.0,
+  color: { red: 1, green: 1, blue: 1 },
+});
+const SHIPPED_HALO_CORE_RADII =
+  SolarDiscModel.solarHaloCoreRadii(GLOW_LENGTH_TS);
+const SHIPPED_HALO_AMPLITUDE =
+  SolarDiscModel.SOLAR_HALO_AMPLITUDE * SHIPPED_DISC_RADIANCE;
+
+/** The disc-only band derivation at the shipped state and modelled geometry. */
+const shippedDiscOnlyBand = (model = SolarDiscModel, overrides = {}) =>
+  deriveDiscOnlyLimbBand(model, {
+    discRadiance: SHIPPED_DISC_RADIANCE,
+    haloAmplitude: SHIPPED_HALO_AMPLITUDE,
+    haloCoreRadii: SHIPPED_HALO_CORE_RADII,
+    discRadiusPx: LIMB_BAND_MODEL_DISC_RADIUS_PX,
+    exposures: DISC_BRACKET_EXPOSURES,
+    ...overrides,
+  });
+
+/**
+ * The arm's inputs for a LANDED C12-19 build with a healthy disc lane. The
+ * disc-only reading defaults to the shipped prediction, so a test that wants a
+ * red only has to override `discOnlyRatio`.
+ */
+const landedArmInputs = (overrides = {}) => {
+  const derived = shippedDiscOnlyBand();
+  return {
+    bakeClampPresent: false,
+    discPeakLinear: 1.2e5,
+    ratioI095overI0: 0.9,
+    discOnlyRatio: derived.predicted,
+    discRadianceMeasured: SHIPPED_DISC_RADIANCE,
+    discRadianceResolved: SHIPPED_DISC_RADIANCE,
+    derivedBand: derived,
+    ...overrides,
+  };
+};
 
 // ===========================================================================
 // 1. THE SHIPPED MODEL — every DERIVED constant recomputed from the real files
@@ -469,15 +519,25 @@ test("the C12-19 peak discriminator separates the clamped ceiling from the SHIPP
  * Render one synthetic solar leg into a linear-light RGBA image. Neutral, so
  * the Rec.709 luminance of every pixel is exactly its scalar value.
  */
-function renderSun({ size, radiusPx, limbOn, haloFn }) {
+function renderSun({ size, radiusPx, limbOn, haloFn, haloRadiusPx }) {
   const data = new Float64Array(size * size * 4);
   const c = size / 2;
+  // The screen halo's own scale is `SunHaloAppearance.limbPx`, computed from
+  // the EPHEMERIS angular radius and the projection — it reads neither
+  // `enableSolarLimbDarkening` nor `enableTrueSolarDiscSize`, so it is
+  // IDENTICAL in all three legs of the real capture. The legacy leg therefore
+  // has to be rendered with the true-size leg's halo scale; normalising the
+  // halo by the leg's own (undersized) disc radius would put a halo mismatch
+  // into `flat - legacy` that the shipped chain does not have, and the R-2
+  // disc-only reading divides by exactly that difference.
+  const haloScale = haloRadiusPx ?? radiusPx;
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const rho = Math.hypot(x + 0.5 - c, y + 0.5 - c) / radiusPx;
+      const r = Math.hypot(x + 0.5 - c, y + 0.5 - c);
+      const rho = r / radiusPx;
       const disc =
         rho <= 1 ? (limbOn ? SolarDiscModel.solarLimbIntensity(rho) : 1) : 0;
-      const v = disc + (haloFn ? haloFn(rho) : 0);
+      const v = disc + (haloFn ? haloFn(r / haloScale) : 0);
       const i = 4 * (y * size + x);
       data[i] = v;
       data[i + 1] = v;
@@ -525,6 +585,7 @@ function synthDiscLegs(overrides = {}) {
       radiusPx: DISC_RADIUS_PX / TRUE_SIZE_RATIO_NOMINAL,
       limbOn: false,
       haloFn: SYNTH_HALO,
+      haloRadiusPx: DISC_RADIUS_PX,
     });
   return { flat, limb, legacy };
 }
@@ -581,6 +642,93 @@ test("SYNTHETIC DISC: the differential recovers the radius, the sqrt(2) ratio an
   // And the ABSOLUTE ratio is NOT in §5's band on this (clamp-free but
   // halo-loaded) frame, which is the pending arm's whole point.
   assert.ok(m.ratioI095overI0_DIAGNOSTIC > LIMB_ABSOLUTE_RATIO_BAND.hi);
+});
+
+test("SYNTHETIC DISC (R-2): the DISC-ONLY reading recovers the law with the halo removed", () => {
+  const m = measureSynthDisc();
+  // The synthetic disc is drawn at unit radiance, so the `flat - legacy`
+  // annulus must recover exactly 1 — that is the measurement claiming, and
+  // proving, that it knows what it divided by.
+  assert.ok(
+    Math.abs(m.discRadianceMeasured - 1) < 0.02,
+    `recovered disc radiance ${m.discRadianceMeasured}`,
+  );
+  assert.ok(
+    m.discRadiancePlateauPixels > 5000,
+    `the annulus must have samples: ${m.discRadiancePlateauPixels}`,
+  );
+  // These frames carry no bake hue term (they are neutral by construction), so
+  // the disc-only reading must recover the PURE law at 0.95R.
+  const pure =
+    SolarDiscModel.solarLimbIntensity(0.95) /
+    SolarDiscModel.solarLimbIntensity(0);
+  assert.ok(
+    relativeDeviation(m.discOnlyRatio_I095_over_I0, pure) < 0.03,
+    `disc-only ${m.discOnlyRatio_I095_over_I0} vs law ${pure}`,
+  );
+  // …while the COMPOSITE reading on the very same frames is 27% higher. That
+  // gap IS the confound §5's old bound was being measured through.
+  assert.ok(
+    m.ratioI095overI0_DIAGNOSTIC > 1.2 * m.discOnlyRatio_I095_over_I0,
+    `composite ${m.ratioI095overI0_DIAGNOSTIC} vs disc-only ${m.discOnlyRatio_I095_over_I0}`,
+  );
+});
+
+test("SYNTHETIC DISC (R-2): the disc-only reading is INVARIANT to the halo", () => {
+  // The strongest available statement of the cancellation: quadruple the halo
+  // — a change four times larger than the entire limb signal — and the
+  // disc-only reading must not move, while the composite moves a great deal.
+  const base = measureSynthDisc();
+  const fatHalo = (rho) => 4 * SYNTH_HALO(rho);
+  const legs = {
+    flat: renderSun({
+      size: DISC_SIZE,
+      radiusPx: DISC_RADIUS_PX,
+      limbOn: false,
+      haloFn: fatHalo,
+    }),
+    limb: renderSun({
+      size: DISC_SIZE,
+      radiusPx: DISC_RADIUS_PX,
+      limbOn: true,
+      haloFn: fatHalo,
+    }),
+    legacy: renderSun({
+      size: DISC_SIZE,
+      radiusPx: DISC_RADIUS_PX / TRUE_SIZE_RATIO_NOMINAL,
+      limbOn: false,
+      haloFn: fatHalo,
+      haloRadiusPx: DISC_RADIUS_PX,
+    }),
+  };
+  const fat = measureDiscDifferential({
+    ...legs,
+    model: SolarDiscModel,
+    fovXDeg: DISC_FOV_X_DEG,
+    canvasWidth: DISC_SIZE,
+    ephemerisDiameterDeg:
+      2 * angleDegForPixelOffset(DISC_RADIUS_PX, DISC_FOV_X_DEG, DISC_SIZE),
+  });
+  assert.ok(
+    relativeDeviation(
+      fat.discOnlyRatio_I095_over_I0,
+      base.discOnlyRatio_I095_over_I0,
+    ) < 1e-9,
+    `disc-only moved from ${base.discOnlyRatio_I095_over_I0} to ${fat.discOnlyRatio_I095_over_I0}`,
+  );
+  assert.ok(
+    relativeDeviation(
+      fat.ratioI095overI0_DIAGNOSTIC,
+      base.ratioI095overI0_DIAGNOSTIC,
+    ) > 0.1,
+    "the composite reading must be the one that moves",
+  );
+  // The recovered radiance is likewise untouched: it is the disc's own step
+  // across the annulus, not the level the halo sits at.
+  assert.ok(
+    relativeDeviation(fat.discRadianceMeasured, base.discRadianceMeasured) <
+      1e-9,
+  );
 });
 
 test("MUTANT REJECTED — a FLAT disc (limb darkening removed) has no differential", () => {
@@ -1156,21 +1304,319 @@ test("PENDING ARM: the clamped build reports STRUCTURAL-pending-content BY NAME"
 });
 
 test("PENDING ARM: it ACTIVATES when C12-19 lands, and then certifies", () => {
-  const pass = evaluateLimbAbsoluteArm({
-    bakeClampPresent: false,
-    discPeakLinear: 1.2e5,
-    ratioI095overI0: 0.42,
-  });
+  const pass = evaluateLimbAbsoluteArm(landedArmInputs());
   assert.equal(pass.state, ARM_STATE.ACTIVE);
   assert.equal(pass.pending, null);
-  assert.equal(pass.criteria.limb_absoluteRatio_I095_over_I0_in_band, true);
-  const fail = evaluateLimbAbsoluteArm({
-    bakeClampPresent: false,
-    discPeakLinear: 1.2e5,
-    ratioI095overI0: 0.9,
-  });
+  assert.equal(pass.criteria.limb_discOnlyRatio_I095_over_I0_in_band, true);
+  // R-2 — the CERTIFYING reading is the disc-only one. The composite ratio is
+  // carried and printed but no longer decides anything: a composite reading
+  // way outside the old band cannot fail the arm on its own.
+  const fail = evaluateLimbAbsoluteArm(landedArmInputs({ discOnlyRatio: 0.9 }));
   assert.equal(fail.state, ARM_STATE.ACTIVE);
-  assert.equal(fail.criteria.limb_absoluteRatio_I095_over_I0_in_band, false);
+  assert.equal(fail.criteria.limb_discOnlyRatio_I095_over_I0_in_band, false);
+  assert.equal(
+    "limb_absoluteRatio_I095_over_I0_in_band" in pass.criteria,
+    false,
+    "the SUPERSEDED composite criterion must not still be emitted",
+  );
+});
+
+test("R-2: the halo-contaminated composite no longer decides the arm", () => {
+  // Batch 950's actual readings, which failed the superseded [0.3, 0.5] band
+  // on BOTH backends. With a healthy disc-only reading the arm now certifies,
+  // and the composite is still on the record.
+  for (const composite of [0.7138, 0.7181]) {
+    const arm = evaluateLimbAbsoluteArm(
+      landedArmInputs({ ratioI095overI0: composite }),
+    );
+    assert.equal(arm.state, ARM_STATE.ACTIVE);
+    assert.equal(arm.criteria.limb_discOnlyRatio_I095_over_I0_in_band, true);
+    assert.equal(arm.measured.ratioI095overI0, composite);
+    assert.deepEqual(arm.measured.supersededBand, LIMB_ABSOLUTE_RATIO_BAND);
+  }
+  // MUTANT — the disc-only arm fed the halo-CONTAMINATED number. This is the
+  // exact failure R-2 exists to prevent, and it must be refused.
+  for (const contaminated of [0.7138, 0.7181, 0.733]) {
+    const mutant = evaluateLimbAbsoluteArm(
+      landedArmInputs({ discOnlyRatio: contaminated }),
+    );
+    assert.equal(
+      mutant.criteria.limb_discOnlyRatio_I095_over_I0_in_band,
+      false,
+      `a halo-contaminated reading (${contaminated}) must not certify`,
+    );
+  }
+});
+
+test("R-2: an unrecovered disc radiance is STRUCTURAL, never a red", () => {
+  // The ratio's denominator is the radiance recovered from the flat-minus-
+  // legacy annulus. If that is not the frame's own resolved radiance, the
+  // quotient is not I(0.95R)/I(0) — and reporting it as a product FAILURE
+  // would file an instrument defect as a physics defect.
+  const off =
+    SHIPPED_DISC_RADIANCE * (1 + 2 * LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE);
+  const arm = evaluateLimbAbsoluteArm(
+    landedArmInputs({ discRadianceMeasured: off }),
+  );
+  assert.equal(arm.state, ARM_STATE.RADIANCE_UNRECOVERED);
+  assert.deepEqual(arm.criteria, {});
+  assert.equal(arm.measured.discRadianceMeasured, off);
+  assert.equal(arm.measured.discOnlyRatio, shippedDiscOnlyBand().predicted);
+  // Just inside the bound still certifies — the gate is on the INSTRUMENT, and
+  // it must not be so tight that ordinary recovery error trips it.
+  const near = evaluateLimbAbsoluteArm(
+    landedArmInputs({
+      discRadianceMeasured:
+        SHIPPED_DISC_RADIANCE *
+        (1 + 0.9 * LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE),
+    }),
+  );
+  assert.equal(near.state, ARM_STATE.ACTIVE);
+});
+
+test("R-2: a band that could not be derived is STRUCTURAL, not a pass", () => {
+  const arm = evaluateLimbAbsoluteArm(
+    landedArmInputs({ derivedBand: { band: { lo: NaN, hi: NaN } } }),
+  );
+  assert.equal(arm.state, ARM_STATE.BAND_UNDERIVED);
+  assert.deepEqual(arm.criteria, {});
+  assert.match(arm.reason, /cannot be derived is STRUCTURAL/);
+});
+
+// ===========================================================================
+// 3b. THE DISC-ONLY BAND DERIVATION (ruling R-2026-08-10-2)
+//
+// The band is not a literal, so the spec's job is not to restate it — it is to
+// prove the derivation READS each input it claims to read (a mutant on any one
+// of them must move the band), that the chain model it is built on matches the
+// shipped shader text, and that the band separates the shipped physics from
+// every wrong reading it has to refuse.
+// ===========================================================================
+
+test("R-2 chain model: `solarDiscChainLuminance` matches the SHIPPED bake text", () => {
+  const glsl = readNormalized(
+    "../../packages/engine/Source/Shaders/SunTextureFS.glsl",
+  );
+  const cpu = readNormalized(
+    "../../packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js",
+  );
+  const sunFs = readNormalized(
+    "../../packages/engine/Source/Shaders/SunFS.glsl",
+  );
+  // The hue term the chain model carries, in BOTH bakes.
+  assert.match(
+    glsl,
+    /vec4 color = vec4\(vec2\(1\.0\), surface \+ 0\.2, surface\);/,
+    "the GLSL bake's rgb/alpha construction moved — re-derive the chain model",
+  );
+  assert.match(
+    cpu,
+    /let cb = surface \+ 0\.2;/,
+    "the WebGPU CPU bake's blue term moved — re-derive the chain model",
+  );
+  assert.equal(SUN_BAKE_BLUE_HUE_OFFSET, 0.2);
+  // The decode order the chain model assumes: gamma FIRST, radiance AFTER.
+  // Anchored on the STATEMENTS, not the uniform declaration, which is above
+  // both.
+  const gammaAt = sunFs.indexOf("out_FragColor = czm_gammaCorrect(color);");
+  const radianceAt = sunFs.indexOf("out_FragColor.rgb *= u_discRadiance;");
+  assert.ok(gammaAt > 0 && radianceAt > gammaAt, "gamma must precede radiance");
+
+  // And the model itself, recomputed here from the shipped weights.
+  const w = [0.2126, 0.7152, 0.0722];
+  for (const limb of [0.0, 0.15, 0.3, 0.5679674069255255, 0.8, 1.0]) {
+    const blue = Math.min(1, limb + 0.2) ** SUN_BAKE_GAMMA_NOMINAL;
+    const expected = limb * (w[0] + w[1] + w[2] * blue);
+    assert.ok(
+      Math.abs(solarDiscChainLuminance(limb) - expected) < 1e-15,
+      `chain(${limb})`,
+    );
+  }
+  // It is EXACTLY the identity at disc centre (blue clamps to 1 there), which
+  // is what makes the ratio's denominator the law's own I(0).
+  assert.equal(solarDiscChainLuminance(1.0), 1.0);
+});
+
+test("R-2 band: the shipped derivation, recomputed independently", () => {
+  const d = shippedDiscOnlyBand();
+  // The centre is the shipped law through the shipped chain, and nothing else.
+  const pure =
+    SolarDiscModel.solarLimbIntensity(0.95) /
+    SolarDiscModel.solarLimbIntensity(0);
+  assert.ok(Math.abs(d.pureLaw - pure) < 1e-15);
+  assert.ok(
+    Math.abs(
+      d.predicted -
+        solarDiscChainLuminance(pure) / solarDiscChainLuminance(1.0),
+    ) < 1e-15,
+    "the band centre must be chain(I(0.95)) / chain(I(0))",
+  );
+  // The hue term is REAL and is worth ~3.2% — the whole reason the band is
+  // centred at 0.5499 rather than at the law's own 0.5680.
+  assert.ok(d.predicted < d.pureLaw);
+  assert.ok(Math.abs(d.predicted / d.pureLaw - 1) > 0.02);
+  assert.ok(Math.abs(d.predicted / d.pureLaw - 1) < 0.05);
+  // The two constraints the width sits between, both recomputed.
+  assert.ok(Math.abs(d.terms.loBar - 3 * d.modelledRel) < 1e-15);
+  assert.ok(Math.abs(d.terms.hiBar - d.separationRel / 3) < 1e-15);
+  assert.ok(
+    Math.abs(d.tolRel - Math.sqrt(d.terms.loBar * d.terms.hiBar)) < 1e-15,
+    "the bar is the GEOMETRIC midpoint of its two constraints",
+  );
+  assert.ok(d.tolRel >= d.terms.loBar / 3);
+  assert.ok(d.tolRel <= d.terms.hiBar * 3);
+  // T1 (radial binning) must DOMINATE — if it ever stops dominating, the
+  // derivation's stated story is wrong even if the number is not.
+  assert.ok(
+    d.terms.t1 > 5 * (d.terms.t2 + d.terms.t3),
+    "radial binning must dominate the modelled error",
+  );
+  assert.ok(Math.abs(d.band.lo - d.predicted * (1 - d.tolRel)) < 1e-15);
+  assert.ok(Math.abs(d.band.hi - d.predicted * (1 + d.tolRel)) < 1e-15);
+});
+
+test("R-2 band ADMITS the shipped physics and every published law", () => {
+  const d = shippedDiscOnlyBand();
+  const inBandLocal = (v) => v >= d.band.lo && v <= d.band.hi;
+  assert.ok(inBandLocal(d.predicted), "the shipped prediction");
+  assert.ok(inBandLocal(d.pureLaw), "the pure law without the hue term");
+  // The published references from the CO-35 audit, transported to 550 nm and
+  // pushed through the SAME chain. The band is a check on the RENDERING, so it
+  // must not be tight enough to vote between defensible coefficient sets.
+  const chainRatio = (law) =>
+    solarDiscChainLuminance(law) / solarDiscChainLuminance(1.0);
+  for (const [name, law] of [
+    ["Pierce & Slaughter 1977", 0.572463],
+    ["Neckel & Labs 1994", 0.574291],
+    ["Hestroffer & Magnan 1998 power law", 0.553669],
+  ]) {
+    assert.ok(inBandLocal(chainRatio(law)), `${name} must be admitted`);
+  }
+});
+
+test("R-2 band MUTANTS: wrong radiance, wrong law, halo contamination", () => {
+  const shipped = shippedDiscOnlyBand();
+
+  // MUTANT 1 — WRONG RADIANCE. The disc-only RATIO is radiance-invariant, so a
+  // derivation that never read the radiance would produce an identical band and
+  // the "derived from the shipped radiance 2.0" claim would be false. Radiance
+  // enters through the display quantum, so it must move the WIDTH.
+  for (const L of [1.0, 10.0, 1.0e5]) {
+    const mutant = shippedDiscOnlyBand(SolarDiscModel, {
+      discRadiance: L,
+      haloAmplitude: SolarDiscModel.SOLAR_HALO_AMPLITUDE * L,
+    });
+    assert.ok(
+      Math.abs(mutant.predicted - shipped.predicted) < 1e-15,
+      "the ratio itself is radiance-INVARIANT (that is the point of it)",
+    );
+    assert.ok(
+      Math.abs(mutant.tolRel - shipped.tolRel) > 1e-6,
+      `radiance ${L} must move the derived tolerance`,
+    );
+  }
+  // A derivation handed no radiance at all cannot produce a band.
+  const noRadiance = shippedDiscOnlyBand(SolarDiscModel, {
+    discRadiance: undefined,
+  });
+  assert.ok(!Number.isFinite(noRadiance.band.lo));
+
+  // MUTANT 2 — WRONG LAW. Two plausible wrong implementations, each of which
+  // must land OUTSIDE the shipped band AND generate its own, disjoint band.
+  const mutantLaws = {
+    "linear limb law 1 - 0.7x": (x) => 1 - 0.7 * Math.min(Math.max(x, 0), 1),
+    "no limb darkening (flat disc)": () => 1.0,
+    "extreme-limb a0 mistaken for 0.95R": (x) => (x > 0.5 ? 0.3 : 1.0),
+  };
+  for (const [name, law] of Object.entries(mutantLaws)) {
+    const model = { ...SolarDiscModel, solarLimbIntensity: law };
+    const mutant = shippedDiscOnlyBand(model);
+    assert.ok(
+      mutant.predicted < shipped.band.lo || mutant.predicted > shipped.band.hi,
+      `${name}: its own prediction must fail the SHIPPED band`,
+    );
+    // And symmetrically the shipped reading must not survive the mutant's own
+    // band — either because it falls outside it, or because the mutant law
+    // admits no band at all. The flat disc is the second case by construction:
+    // with `I == 1` the composite sits BELOW the disc-only value (the halo is
+    // dimmer than the disc everywhere), so there is no contamination to
+    // separate from and the derivation refuses to emit a bound rather than
+    // inventing one.
+    const refused =
+      !Number.isFinite(mutant.band.lo) ||
+      shipped.predicted < mutant.band.lo ||
+      shipped.predicted > mutant.band.hi;
+    assert.ok(
+      refused,
+      `${name}: the SHIPPED reading must not survive ITS band`,
+    );
+  }
+  // A coefficient nudge INSIDE the published spread must NOT flip the verdict —
+  // the band is a rendering check, not a coefficient vote.
+  for (const a0 of [SolarDiscModel.SOLAR_LIMB_DARKENING_A0 - 0.016, 0.30505]) {
+    const a1 = SolarDiscModel.SOLAR_LIMB_DARKENING_A1;
+    const a2 = 1 - a0 - a1;
+    const model = {
+      ...SolarDiscModel,
+      solarLimbIntensity: (x) => {
+        const xc = Math.min(Math.max(x, 0), 1);
+        const mu = Math.sqrt(Math.max(0, 1 - xc * xc));
+        return a0 + a1 * mu + a2 * mu * mu;
+      },
+    };
+    const near = shippedDiscOnlyBand(model);
+    assert.ok(
+      near.predicted >= shipped.band.lo && near.predicted <= shipped.band.hi,
+      `a0 = ${a0} is inside the published spread and must stay admitted`,
+    );
+  }
+
+  // MUTANT 3 — HALO-CONTAMINATED MEASUREMENT. The composite is what the old
+  // arm read; feeding it to the disc-only criterion must fail, in BOTH its
+  // modelled and its measured forms.
+  const composite = expectedCompositeLimbRatio(SolarDiscModel, {
+    discRadiance: SHIPPED_DISC_RADIANCE,
+    haloAmplitude: SHIPPED_HALO_AMPLITUDE,
+    haloCoreRadii: SHIPPED_HALO_CORE_RADII,
+  });
+  for (const v of [
+    composite.compositeRatio,
+    composite.compositeRatioChroma,
+    0.7138,
+    0.7181,
+    0.6509,
+  ]) {
+    assert.ok(
+      v < shipped.band.lo || v > shipped.band.hi,
+      `a halo-contaminated reading (${v}) must be refused`,
+    );
+  }
+  // And the derivation's own separation term is measured against exactly that
+  // contamination, with the stated 3x margin.
+  assert.ok(shipped.separationRel > 3 * shipped.tolRel * 0.999);
+});
+
+test("R-2: the SUPERSEDED [0.3, 0.5] band fits the EXTREME limb, not 0.95R", () => {
+  // The old bound is not deleted, and this is why: it is the right band for
+  // I(R)/I(0), which is `a0`. Pierce & Slaughter 1977 give 0.30505 and the
+  // shipped law 0.30 — both inside — while NOTHING lands there at 0.95R.
+  assert.ok(
+    SolarDiscModel.solarLimbIntensity(1.0) >= LIMB_ABSOLUTE_RATIO_BAND.lo &&
+      SolarDiscModel.solarLimbIntensity(1.0) <= LIMB_ABSOLUTE_RATIO_BAND.hi,
+    "I(R)/I(0) = a0 sits inside the old band",
+  );
+  const at095 =
+    SolarDiscModel.solarLimbIntensity(0.95) /
+    SolarDiscModel.solarLimbIntensity(0);
+  assert.ok(
+    at095 > LIMB_ABSOLUTE_RATIO_BAND.hi,
+    "I(0.95R)/I(0) is above the old ceiling before any halo — the recorded 0.568",
+  );
+  // Every published reference at ~550 nm is above it too, so the old bound was
+  // unreachable for physics reasons, not for rendering reasons.
+  for (const ref of [0.553669, 0.567967, 0.572463, 0.574291, 0.59397]) {
+    assert.ok(ref > LIMB_ABSOLUTE_RATIO_BAND.hi);
+  }
 });
 
 test("PENDING ARM: disagreeing discriminators are STRUCTURAL, not a guess", () => {
@@ -1555,11 +2001,7 @@ test("cross-backend disagreement on a headline scalar is a FAIL", () => {
 
 test("a pending arm resolving differently per backend is a FAIL", () => {
   const landed = goodBackend("webgpu");
-  landed.limbAbsolute = {
-    bakeClampPresent: false,
-    discPeakLinear: 1e5,
-    ratioI095overI0: 0.42,
-  };
+  landed.limbAbsolute = landedArmInputs();
   const folded = foldG4Verdict({
     webgl: evaluateG4Backend(goodBackend("webgl")),
     webgpu: evaluateG4Backend(landed),
@@ -2549,19 +2991,21 @@ test("FOLLOWUP-EXPOSURE: the phase-scaled bound is UNMEASURABLE alone — which 
 // --- FIX-4: the limb arm is gated on the lane its number comes from ---------
 
 test("FIX-4 MUTANT REJECTED — a certifying limb read on a STRUCTURAL disc lane", () => {
-  const landed = {
-    bakeClampPresent: false,
+  // Batch 941's actual readings, taken about a centroid 112 px from where the
+  // Sun was, plus a disc-only reading that would otherwise certify — so the
+  // ONLY thing keeping this out of the criteria set is the aim gate.
+  const landed = landedArmInputs({
     discPeakLinear: 4.175617896405583,
     ratioI095overI0: 0.6790315872185032,
-  };
+  });
   // The mutant is the shipped Batch-941 arm: content landed, so certify —
   // regardless of whether the disc lane could see the disc.
   const ungated = evaluateLimbAbsoluteArm(landed);
   assert.equal(ungated.state, ARM_STATE.ACTIVE);
   assert.equal(
-    ungated.criteria.limb_absoluteRatio_I095_over_I0_in_band,
-    false,
-    "the ungated arm produced Batch 941's red off a mis-aimed capture",
+    ungated.criteria.limb_discOnlyRatio_I095_over_I0_in_band,
+    true,
+    "the ungated arm certified off a mis-aimed capture",
   );
 
   // The SHIPPED arm, gated.
@@ -2581,11 +3025,11 @@ test("FIX-4 MUTANT REJECTED — a certifying limb read on a STRUCTURAL disc lane
     limbAbsolute: landed,
   });
   assert.equal(
-    backend.criteria.limb_absoluteRatio_I095_over_I0_in_band,
+    backend.criteria.limb_discOnlyRatio_I095_over_I0_in_band,
     undefined,
   );
   assert.equal(
-    backend.pendingArms.limb_absoluteRatio_I095_over_I0_in_band.state,
+    backend.pendingArms.limb_discOnlyRatio_I095_over_I0_in_band.state,
     ARM_STATE.PENDING_AIM,
   );
 });

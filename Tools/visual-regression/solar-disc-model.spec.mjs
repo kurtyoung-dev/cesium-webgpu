@@ -762,3 +762,363 @@ test("C12-17: half-float packing round-trips the bake's value range", async () =
   );
   assert.equal(Math.floor(tiny * 255), 0, "…which rgba8unorm truncates to 0");
 });
+
+// ===========================================================================
+// CO-35 — THE LIMB-DARKENING LAW AGAINST PUBLISHED SOLAR PHOTOMETRY
+//
+// Maintainer ruling R-2026-08-10-2 re-ratifies §5's limb band on the disc-only
+// measurement, CONDITIONAL on "first confirming the shipped physics is as
+// accurate as possible while remaining performant". This section is that
+// confirmation, executed rather than asserted: the shipped law is sampled and
+// compared against reference data, and a mutant law is required to fail the
+// same comparison so the tolerance is a test rather than a restatement.
+//
+// SOURCES (C16-01 Reference entries):
+//
+//   [R1] Cox, A. N. (ed.), *Allen's Astrophysical Quantities*, 4th ed., AIP
+//        Press / Springer, 2000, ISBN 0-387-98746-0 — solar limb darkening,
+//        `I(psi)/I(0) = sum a_k cos^k psi`; the 550 nm row is the shipped
+//        `(0.30, 0.93, -0.23)`. THIS IS THE SHIPPED LAW'S OWN SOURCE.
+//   [R2] Hestroffer, D. & Magnan, C., "Wavelength dependency of the Solar limb
+//        darkening", A&A **333**, 338-342 (1998). Table 1 gives the two
+//        independent 5th-order fits below at lambda = 579.88 nm; Table 2 gives
+//        the power-law exponent vs. wavelength; Eq. 5 gives the average
+//        relation `alpha ~ -0.023 + 0.292 / lambda[um]` for 416-1099 nm,
+//        "accurate to a few +/- 0.02".
+//   [R3] Pierce, A. K. & Slaughter, C. D., "Solar limb darkening", Solar
+//        Physics **51**, 25 (1977) — the PS coefficients, via [R2] Table 1.
+//   [R4] Neckel, H. & Labs, D., "On the wavelength dependency of solar limb
+//        darkening (ll 303 to 1099 nm)", Solar Physics **153**, 91 (1994) —
+//        the NL coefficients, via [R2] Table 1.
+//
+// [R2] states the PS and NL representations agree "excellently" for r <= 0.9
+// and that a polynomial fit AT the limb "is difficult to achieve from a
+// numerical as well as an observational point of view" — so r <= 0.9 is where
+// the references are evidence, and the 0.95R sample point §5 names is where
+// they are least certain. Both facts are asserted below.
+// ===========================================================================
+
+// [R2] Table 1, lambda = 579.88 nm. `sum a_k == 1` by construction.
+const REF_PS_579_88 = Object.freeze([
+  0.30505, 1.13123, -0.78604, 0.4056, 0.02297, -0.0788,
+]);
+const REF_NL_579_88 = Object.freeze([
+  0.28392, 1.36896, -1.75998, 2.22154, -1.56074, 0.4463,
+]);
+const REF_LAMBDA_NM = 579.88;
+/** The wavelength [R1]'s shipped row is quoted at. */
+const SHIPPED_LAMBDA_NM = 550.0;
+/** [R2] Eq. 5, lambda in micron. */
+const refAlpha = (lambdaNm) => -0.023 + 0.292 / (lambdaNm / 1000);
+const refP5 = (a, mu) => a.reduce((s, c, k) => s + c * Math.pow(mu, k), 0);
+/**
+ * Transport a profile from one wavelength to another through [R2]'s own
+ * measured exponent relation. Exact for a pure power law and first-order
+ * elsewhere; used ONLY because [R2] publishes its 5th-order pair at 579.88 nm
+ * while [R1]'s shipped row is at 550 nm.
+ */
+const refTransported = (a, mu, fromNm, toNm) =>
+  refP5(a, mu) * Math.pow(mu, refAlpha(toNm) - refAlpha(fromNm));
+const muAt = (x) => Math.sqrt(Math.max(0, 1 - x * x));
+
+/**
+ * Largest and RMS absolute deviation of a law from a reference over r <= 0.9.
+ */
+function profileDeviation(law, reference) {
+  let max = 0;
+  let sse = 0;
+  let n = 0;
+  for (let i = 0; i <= 900; i++) {
+    const x = i / 1000;
+    const d = Math.abs(law(x) - reference(muAt(x)));
+    if (d > max) {
+      max = d;
+    }
+    sse += d * d;
+    n++;
+  }
+  return { max, rms: Math.sqrt(sse / n) };
+}
+
+/**
+ * The tolerance this audit states, in units of disc-centre intensity.
+ *
+ * DERIVED from the references' own disagreement rather than chosen: [R3] and
+ * [R4] are completely independent reductions of independent observations, and
+ * over r <= 0.9 they differ from each other by at most 0.00136. A law cannot
+ * be asked to match "the" profile more tightly than the profile is known, so
+ * the bar is 5x that spread — 0.0068 — which is also ~1/6 of one 8-bit code at
+ * the sample point once the shipped display chain is applied.
+ */
+const REFERENCE_MAX_DEVIATION = 0.0068;
+
+test("CO-35: the two independent references agree over r <= 0.9 — and NOT at the limb", async () => {
+  let max09 = 0;
+  let max10 = 0;
+  for (let i = 0; i <= 1000; i++) {
+    const mu = muAt(i / 1000);
+    const d = Math.abs(refP5(REF_PS_579_88, mu) - refP5(REF_NL_579_88, mu));
+    if (i <= 900) {
+      max09 = Math.max(max09, d);
+    }
+    max10 = Math.max(max10, d);
+  }
+  // [R2]'s "excellent for r <= 0.9", as a number.
+  assert.ok(max09 < 0.002, `PS vs NL over r<=0.9: ${max09}`);
+  // …and its warning about the limb, also as a number: the two references
+  // diverge by 10x more once r passes 0.9. THIS is why §5's 0.95R sample point
+  // is the least certain place on the disc to bind a bound, and why the
+  // derived band's tolerance has to exceed the reference spread.
+  assert.ok(max10 > 10 * max09, `PS vs NL over r<=1.0: ${max10}`);
+  // Both are normalised the same way the shipped law is.
+  assert.ok(Math.abs(refP5(REF_PS_579_88, 1) - 1) < 1e-4);
+  assert.ok(Math.abs(refP5(REF_NL_579_88, 1) - 1) < 1e-4);
+});
+
+test("CO-35: the shipped a0 is BRACKETED by the two primary datasets", async () => {
+  const M = await importEngine("Scene/SolarDiscModel.js");
+  const a0 = M.SOLAR_LIMB_DARKENING_A0;
+  assert.ok(
+    REF_NL_579_88[0] < a0 && a0 < REF_PS_579_88[0],
+    `shipped a0 ${a0} must lie between NL ${REF_NL_579_88[0]} and PS ${REF_PS_579_88[0]}`,
+  );
+  // `a0` IS the extreme-limb ratio, which is what §5's original [0.3, 0.5]
+  // band actually fits — the sample point, not the bound, is what moved.
+  assert.equal(M.solarLimbIntensity(1.0), a0);
+});
+
+test("CO-35: the shipped law tracks BOTH references within the stated tolerance", async () => {
+  const M = await importEngine("Scene/SolarDiscModel.js");
+  const law = (x) => M.solarLimbIntensity(x);
+  const ps = profileDeviation(law, (mu) =>
+    refTransported(REF_PS_579_88, mu, REF_LAMBDA_NM, SHIPPED_LAMBDA_NM),
+  );
+  const nl = profileDeviation(law, (mu) =>
+    refTransported(REF_NL_579_88, mu, REF_LAMBDA_NM, SHIPPED_LAMBDA_NM),
+  );
+  const power = profileDeviation(law, (mu) =>
+    Math.pow(mu, refAlpha(SHIPPED_LAMBDA_NM)),
+  );
+  for (const [name, d] of [
+    ["Pierce & Slaughter 1977", ps],
+    ["Neckel & Labs 1994", nl],
+    ["Hestroffer & Magnan 1998 power law", power],
+  ]) {
+    assert.ok(
+      d.max <= REFERENCE_MAX_DEVIATION,
+      `${name}: max deviation ${d.max} exceeds ${REFERENCE_MAX_DEVIATION}`,
+    );
+    assert.ok(d.rms <= 0.5 * REFERENCE_MAX_DEVIATION, `${name}: rms ${d.rms}`);
+  }
+
+  // MUTANT — the tolerance must be a TEST, not a restatement. The linear limb
+  // law is the obvious wrong implementation and the flat disc is the "not
+  // implemented" state; both must blow through the same bar.
+  for (const [name, mutant] of [
+    ["linear 1 - 0.7x", (x) => 1 - 0.7 * Math.min(Math.max(x, 0), 1)],
+    ["flat disc", () => 1.0],
+    [
+      "a0 = 0.4 (outside the published spread)",
+      (x) => {
+        const mu = muAt(Math.min(Math.max(x, 0), 1));
+        return 0.4 + 0.93 * mu - 0.33 * mu * mu;
+      },
+    ],
+  ]) {
+    const d = profileDeviation(mutant, (mu) =>
+      refTransported(REF_PS_579_88, mu, REF_LAMBDA_NM, SHIPPED_LAMBDA_NM),
+    );
+    assert.ok(
+      d.max > REFERENCE_MAX_DEVIATION,
+      `${name} must FAIL the reference tolerance (got ${d.max})`,
+    );
+  }
+});
+
+test("CO-35: I(0.95R)/I(0) agrees with the references to better than 1.5%", async () => {
+  const M = await importEngine("Scene/SolarDiscModel.js");
+  const mu = muAt(0.95);
+  const shipped = M.solarLimbIntensity(0.95) / M.solarLimbIntensity(0);
+  const refs = [
+    refTransported(REF_PS_579_88, mu, REF_LAMBDA_NM, SHIPPED_LAMBDA_NM),
+    refTransported(REF_NL_579_88, mu, REF_LAMBDA_NM, SHIPPED_LAMBDA_NM),
+  ];
+  const mid = 0.5 * (refs[0] + refs[1]);
+  assert.ok(
+    Math.abs(shipped / mid - 1) < 0.015,
+    `shipped ${shipped} vs transported reference midpoint ${mid}`,
+  );
+  // The full spread of everything credible at ~550 nm, including the
+  // untransported 579.88 nm pair and the power law. The shipped value must sit
+  // INSIDE it — that is what makes "no better law is available" a measurement.
+  const spread = [
+    Math.pow(mu, refAlpha(SHIPPED_LAMBDA_NM)),
+    refs[0],
+    refs[1],
+    refP5(REF_PS_579_88, mu),
+    refP5(REF_NL_579_88, mu),
+  ];
+  assert.ok(shipped > Math.min(...spread) && shipped < Math.max(...spread));
+  // …and the whole spread is ABOVE §5's original 0.5 ceiling, which is why no
+  // coefficient change could ever have satisfied the superseded bound here.
+  for (const v of spread) {
+    assert.ok(v > 0.5, `${v} must exceed the superseded 0.5 ceiling`);
+  }
+});
+
+test("CO-35: 550 nm is the right band centre for a BROADBAND visual render", async () => {
+  // CIE 1931 photopic V(lambda) at 10 nm steps, times a Planck spectrum at the
+  // IAU nominal solar effective temperature (5772 K) as the disc-centre
+  // weighting. [R2]'s alpha is linear in 1/lambda, so the effective wavelength
+  // for this quantity is the reciprocal of the weighted mean of 1/lambda.
+  const V = {
+    400: 0.0004,
+    410: 0.0012,
+    420: 0.004,
+    430: 0.0116,
+    440: 0.023,
+    450: 0.038,
+    460: 0.06,
+    470: 0.091,
+    480: 0.139,
+    490: 0.208,
+    500: 0.323,
+    510: 0.503,
+    520: 0.71,
+    530: 0.862,
+    540: 0.954,
+    550: 0.995,
+    560: 0.995,
+    570: 0.952,
+    580: 0.87,
+    590: 0.757,
+    600: 0.631,
+    610: 0.503,
+    620: 0.381,
+    630: 0.265,
+    640: 0.175,
+    650: 0.107,
+    660: 0.061,
+    670: 0.032,
+    680: 0.017,
+    690: 0.0082,
+    700: 0.0041,
+  };
+  const planck = (lambdaNm, T) => {
+    const l = lambdaNm * 1e-9;
+    const h = 6.62607015e-34;
+    const c = 2.99792458e8;
+    const kB = 1.380649e-23;
+    return (
+      (2 * h * c * c) /
+      (Math.pow(l, 5) * (Math.exp((h * c) / (l * kB * T)) - 1))
+    );
+  };
+  let wSum = 0;
+  let wInv = 0;
+  for (const [key, v] of Object.entries(V)) {
+    const lambda = Number(key);
+    const w = v * planck(lambda, 5772);
+    wSum += w;
+    wInv += w / lambda;
+  }
+  const effectiveNm = wSum / wInv;
+  assert.ok(
+    Math.abs(effectiveNm - SHIPPED_LAMBDA_NM) < 10,
+    `photopic effective wavelength ${effectiveNm} nm vs the shipped ${SHIPPED_LAMBDA_NM} nm`,
+  );
+  // …and what that offset is worth on the quantity §5 measures.
+  const mu = muAt(0.95);
+  const delta =
+    Math.pow(mu, refAlpha(effectiveNm)) /
+      Math.pow(mu, refAlpha(SHIPPED_LAMBDA_NM)) -
+    1;
+  assert.ok(
+    Math.abs(delta) < 0.01,
+    `the broadband correction to I(0.95R)/I(0) is ${delta}`,
+  );
+});
+
+test("CO-35: the radiance-2.0 derivation survives every published coefficient set", async () => {
+  const M = await importEngine("Scene/SolarDiscModel.js");
+  // `SOLAR_DISC_RADIANCE_CONTRAST_CEILING` is solved from `a0` alone, so the
+  // question the ruling asks — "is the radiance derivation still sound under
+  // any coefficient change?" — is answered by re-solving it across the
+  // published spread of `a0` and checking the shipped 2.0 stays close.
+  const ceilingFor = (a0) => {
+    const ideal = 255 * (1 - Math.pow(a0, 1 / 2.2));
+    const target = M.SOLAR_DISC_LIMB_CONTRAST_FRACTION * ideal;
+    const contrast = (L) =>
+      M.solarDiscDisplayCode(L, 2.2) - M.solarDiscDisplayCode(a0 * L, 2.2);
+    let lo = 1;
+    let hi = 64;
+    for (let i = 0; i < 200; i++) {
+      const mid = 0.5 * (lo + hi);
+      if (contrast(mid) > target) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    return 0.5 * (lo + hi);
+  };
+  // The shipped constant must be exactly what this solve returns for the
+  // shipped `a0` — otherwise the module's own derivation has drifted.
+  assert.ok(
+    Math.abs(
+      ceilingFor(M.SOLAR_LIMB_DARKENING_A0) -
+        M.SOLAR_DISC_RADIANCE_CONTRAST_CEILING,
+    ) < 1e-9,
+  );
+  // Across the two primary datasets' `a0`, the ceiling stays within 5% of the
+  // shipped radiance of 2.0 — so the "two independent derivations agree"
+  // argument is robust, not a knife edge.
+  for (const a0 of [
+    REF_NL_579_88[0],
+    M.SOLAR_LIMB_DARKENING_A0,
+    REF_PS_579_88[0],
+  ]) {
+    const c = ceilingFor(a0);
+    assert.ok(
+      Math.abs(2.0 - c) / c < 0.05,
+      `a0 = ${a0} gives a ceiling of ${c}, which is more than 5% from 2.0`,
+    );
+  }
+  // The ceiling IS sensitive to `a0` — the check above would be vacuous if it
+  // were not. A law 33% darker at the limb moves it by more than 15%.
+  assert.ok(Math.abs(2.0 - ceilingFor(0.4)) / ceilingFor(0.4) > 0.15);
+});
+
+test("CO-35: the law is a BAKE cost, never a per-frame one", async () => {
+  // The performance half of the ruling's condition, pinned STRUCTURALLY rather
+  // than timed: both bakes run the law only inside a rebuild branch guarded by
+  // an appearance key, so a frame that changes nothing evaluates it zero times.
+  const sun = readEngine("Scene/Sun.js").replaceAll("\r\n", "\n");
+  const wgpu = readEngine(
+    "Renderer/WebGPU/WebGPUEnvironmentRenderer.js",
+  ).replaceAll("\r\n", "\n");
+  assert.match(
+    sun,
+    /this\._bakedAppearanceKey !== appearance\.key \+ \(halo\.key << 2\)/,
+    "the WebGL bake must be gated on the appearance+halo key",
+  );
+  assert.match(
+    wgpu,
+    /cache\.lastAppearanceKey !== appearanceKey/,
+    "the WebGPU bake must be gated on the appearance key",
+  );
+  assert.match(
+    wgpu,
+    /Rebuild only on change to avoid a per-frame CPU bake/,
+    "the WebGPU bake's own statement of the invariant must survive",
+  );
+  // The one per-frame consumer is the eclipse quadrature, and it is bounded:
+  // a fixed Gauss order over at most four radial segments, and only while an
+  // eclipse is in progress.
+  const obs = readEngine("Scene/computeSolarObscuration.js").replaceAll(
+    "\r\n",
+    "\n",
+  );
+  assert.match(obs, /const QUADRATURE_ORDER = 16;/);
+  assert.match(obs, /breakpoints\[count\+\+\] = rs;/);
+});

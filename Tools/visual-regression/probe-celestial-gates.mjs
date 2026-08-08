@@ -303,6 +303,7 @@ import {
   foldVariant,
 } from "./lib/celestial-g3-gate.mjs";
 import {
+  DISC_BRACKET_EXPOSURES,
   EARTHSHINE_INERTNESS_QUANTILE,
   HALO_AIM_SEARCH_RADIUS_PX,
   MOON_DISC_MASK_FRACTION,
@@ -312,6 +313,7 @@ import {
   TERMINATOR_DELTA_EPS,
   bracketQuantumAt,
   buildG4Summary,
+  deriveDiscOnlyLimbBand,
   discDeltaCensus,
   discIntegratedBrightness,
   evaluateG4Backend,
@@ -3365,7 +3367,9 @@ const G4_MOON_SEARCH_DAYS = 32;
 //     light and the FAINT end is what needs the gain;
 //   moon    — 1x and 8x for the same reason (earthshine is ~0.05, the
 //     terminator softening ~1e-3).
-const G4_DISC_EXPOSURES = [1, 0.125];
+// ONE definition, in the lib, because `deriveDiscOnlyLimbBand`'s quantization
+// term has to be derived against the exposures the capture actually used.
+const G4_DISC_EXPOSURES = DISC_BRACKET_EXPOSURES;
 const G4_HALO_EXPOSURES = [1, 8];
 const G4_MOON_EXPOSURES = [1, 8];
 // The terminator lane gets a third, deeper step. The C12-22 softening peaks at
@@ -4404,10 +4408,27 @@ async function runG4(browser, git) {
         bakeClampPresent: s.bakeClampPresent,
         discPeakLinear: disc.discPeakLinear,
         ratioI095overI0: disc.ratioI095overI0_DIAGNOSTIC,
+        // R-2 — the CERTIFYING reading. Halo-free by construction (see the
+        // disc-only block in `measureDiscDifferential`), radiance-invariant,
+        // and read against a band derived from the SHIPPED model and THIS
+        // frame's resolved appearance scalars rather than a fixed literal.
+        discOnlyRatio: disc.discOnlyRatio_I095_over_I0,
+        discRadianceMeasured: disc.discRadianceMeasured,
+        discRadianceResolved: disc?.shippedHaloState?.discRadiance,
+        derivedBand: deriveDiscOnlyLimbBand(solarModel, {
+          discRadiance: disc?.shippedHaloState?.discRadiance,
+          haloAmplitude: disc?.shippedHaloState?.haloAmplitude,
+          haloCoreRadii: disc?.shippedHaloState?.haloCoreRadii,
+          // The RUN's own disc radius, so the dominant (radial-binning) term
+          // is derived against the geometry the reading was taken at rather
+          // than against the lane's modelled 170 px.
+          discRadiusPx: disc.discRadiusPx,
+          exposures: G4_DISC_EXPOSURES,
+        }),
         // The named halo-over-disc confound, computed from the SHIPPED laws
         // against the LIVE-resolved appearance scalars (`G4-FIRSTRUN-FIX-4`).
         // Reported whatever the arm's state, so the maintainer decision has the
-        // arithmetic rather than an assertion.
+        // arithmetic rather than an assertion. NO LONGER CERTIFYING (R-2).
         expectedComposite: expectedCompositeLimbRatio(solarModel, {
           discRadiance: disc?.shippedHaloState?.discRadiance,
           haloAmplitude: disc?.shippedHaloState?.haloAmplitude,

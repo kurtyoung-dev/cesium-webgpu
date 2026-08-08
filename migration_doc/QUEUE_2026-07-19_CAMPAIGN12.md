@@ -717,6 +717,120 @@ default-off recommendation). **R-7:** `C12-26` defers OUT of the C12 gate;
 `C12-32` defers INTO C14 W1. Alternatives + revisit triggers preserved in
 the rulings doc.
 
+### 2026-08-10 CO-35 — R-2's CONDITION DISCHARGED: the shipped limb law SURVIVES its audit, and §5's limb band is re-ratified DISC-ONLY
+
+**R-2 made the band re-ratification conditional on "first confirming the
+shipped physics is as accurate as possible while remaining performant". That
+confirmation is done, and the answer is that nothing about the physics
+changes.** Instruments + docs + one comment-only engine block; zero engine
+arithmetic touched, so the change is byte-inert on both backends by
+construction.
+
+**ACCURACY — the law stands, with numbers.** The shipped triple
+`(a0,a1,a2) = (0.30, 0.93, -0.23)` is not tuned and is not ours: it is the
+**550 nm row of Cox (2000), *Allen's Astrophysical Quantities* 4th ed.
+(ISBN 0-387-98746-0)**, in the identical form `I(ψ)/I(0) = Σ a_k cos^k ψ`,
+corroborated by NASA SPDF's independent `AllenCurve.cpp` implementation of
+the same table (its 0.50/0.60 μm rows interpolate to `a0 = 0.30000` at
+550 nm). Checked against two INDEPENDENT primary datasets published as
+5th-order fits at 579.88 nm and tabulated side by side in **Hestroffer &
+Magnan 1998 (A&A 333, 338)** Table 1 — **Pierce & Slaughter 1977 (Sol.
+Phys. 51, 25)** and **Neckel & Labs 1994 (Sol. Phys. 153, 91)**:
+
+- the shipped `a0 = 0.30` is **BRACKETED** by them (NL 0.28392 < 0.30 < PS
+  0.30505);
+- over `r ≤ 0.9` — the range H&M state the two datasets agree over — the
+  shipped law tracks PS to **max 0.00498** and NL to **max 0.00517** in
+  disc-centre-intensity units (RMS 0.0025 / 0.0033), after transporting each
+  to 550 nm through H&M's own measured `α ≈ −0.023 + 0.292/λ[μm]`;
+- at §5's own sample point, shipped `I(0.95R)/I(0) = 0.567967` against a
+  transported PS/NL midpoint of **0.573377 — −0.94%**;
+- the two references disagree with **each other** by 0.00136 over `r ≤ 0.9`
+  and by **0.0211 over `r ≤ 1`** — i.e. the reference data are least certain
+  exactly at the 0.95R point §5 binds, which is now recorded as a first-class
+  fact of the band derivation;
+- **wavelength choice checked, not assumed:** weighting H&M's `α(λ)` by CIE
+  1931 `V(λ)` × a 5772 K Planck disc-centre spectrum gives an effective
+  wavelength of **555.7 nm**, 5.7 nm from the shipped 550 nm and worth
+  **+0.63%** on the ratio.
+
+**WOULD A BETTER LAW MATTER? NO — it is worth under one 8-bit code.** The
+full spread of everything credible at ~550 nm is `[0.5537, 0.5940]`, i.e.
+±3.5%. At the shipped radiance 2.0 the 0.95R sample renders at code **242.3**
+where one code is worth 0.0416 of linear radiance, so the entire available
+improvement is **0.3–1.2 display codes out of 255**. Adopting a 5th-order fit
+would also trade one verbatim citable row AT THE RIGHT WAVELENGTH for a
+hand-transported hybrid of two datasets published 30 nm away.
+
+**RADIANCE 2.0 RE-CHECKED under coefficient change.** The half-power ceiling
+is solved from `a0` alone; re-solving it across the published spread gives
+**1.9915 (a0 = 0.30505) … 2.0148 (0.30) … 2.0938 (0.28392)**, so 2.0 is
+within **4.5% worst case** of the ceiling for every credible coefficient set.
+The two-derivations-agree argument is robust, not a knife edge. (It is also
+genuinely sensitive: `a0 = 0.4` moves the ceiling to 1.653.)
+
+**PERFORMANCE — the accuracy is free, and the frontier says so.** The law
+runs in the BAKE, never per frame: WebGL's bake is a `ComputeCommand` gated on
+`this._bakedAppearanceKey !== appearance.key + (halo.key << 2)` (plus
+drawing-buffer / glowFactor / HDR), and WebGPU's CPU bake is gated on the same
+signature ("Rebuild only on change to avoid a per-frame CPU bake"). Both are
+now pinned structurally by `solar-disc-model.spec.mjs`. Measured in Node at
+the 512² bake size a 1280×720 canvas selects: shipped quadratic **5.52 ms**,
+5th-order **6.34 ms (+15%)**, single-`pow` power law **24.26 ms (+340%)** —
+so the power law is strictly dominated (worse accuracy AND 4.4× the cost) and
+the 5th-order's +0.8 ms once-per-appearance-key buys ≤1% of profile accuracy
+that no display code can carry. **Shipped point is the best performant
+point.** The only per-frame consumer is the eclipse quadrature — a fixed
+Gauss order 16 over ≤4 radial segments = **≤64 evaluations/frame (0.0014 ms)**
+and only while an eclipse is in progress. **Bake cost delta of this batch:
+exactly zero — no engine arithmetic changed.**
+
+**THE BAND, AND HOW IT IS MEASURED.** See §5's G4 row for the full
+derivation. Headline: certifying criterion renamed
+`limb_absoluteRatio_I095_over_I0_in_band` →
+**`limb_discOnlyRatio_I095_over_I0_in_band`**, band **[0.512431, 0.587371]**
+about a derived centre of **0.549901** (tolerance 6.81%), computed per run
+from the shipped model and the frame's own scalars. The reading is built from
+the two differentials the lane ALREADY captures, so the probe gains no
+capture and no runtime. Validated on synthetic frames: the `flat − legacy`
+annulus recovers the disc radiance to **1.00000000** over 10,792 px, the
+disc-only ratio recovers the pure law to **0.564921 vs 0.567967 (−0.54%)**,
+and **quadrupling the halo moves the disc-only reading by < 1e-9 while moving
+the composite by > 10%**.
+
+**One instrument fidelity defect found and fixed on the way:** the G4 spec's
+synthetic legs normalised the screen halo by *each leg's own* disc radius, so
+the legacy leg carried a halo the shipped chain does not have — a 2.7% error
+in exactly the annulus the new reading divides by. `SunHaloAppearance.limbPx`
+is ephemeris-derived and reads neither toggle, so all three legs must share
+one halo scale; the synthetic now does.
+
+**PRE-REGISTERED FOR THE NEXT G4 RUN.** Both backends still evaluate **43
+criteria**; `structural[]` empty; `nonVerdictMisroutes []`. The two
+`limb_absoluteRatio_I095_over_I0_in_band` reds are **replaced** by
+`limb_discOnlyRatio_I095_over_I0_in_band`, which is expected to **CERTIFY on
+both backends** (predicted reading ≈ 0.55 ± 0.02 against [0.5124, 0.5874];
+the composite readings 0.6509/0.7138/0.7181 are diagnostics now). The
+composite ratio should still print near 0.72 — note the chroma-carrying
+composite model 0.7227 is a better predictor than the old 0.7330 (B950
+residuals −1.2% webgpu / −0.6% webgl vs −2.6% / −2.0%). Expected exit is
+therefore **1 with exactly ONE red — `webgl:limb_shape_matches_shipped_law`,
+the unmirrored-bloom watch item now owned by `C12-34`** — and **exit 0 on
+both backends once C12-34 lands**. Anything else is news.
+
+**Gates:** `celestial-g4-gate.spec.mjs` **104/104** (10 new: disc-only
+recovery, halo invariance, band derivation, three mutant families, two new
+structural states); `solar-disc-model.spec.mjs` **21/21** (7 new: the
+law-vs-reference table executed as a test, with mutant laws required to fail
+the same tolerance); whole celestial + sun family + `probe-fleet-contract`
+**472/472**; `npx tsc --noEmit` clean; prettier + eslint clean on all five
+touched files. **Files:** `Tools/visual-regression/lib/celestial-g4-gate.mjs`,
+`Tools/visual-regression/probe-celestial-gates.mjs`,
+`Tools/visual-regression/celestial-g4-gate.spec.mjs`,
+`Tools/visual-regression/solar-disc-model.spec.mjs`, this queue, and a
+comment-only PROVENANCE block in
+`packages/engine/Source/Scene/SolarDiscModel.js`.
+
 | ID | Work | Size | Status |
 | --- | --- | --- | --- |
 | `C12-34` | **WEBGPU-SUN-BLOOM-MIRROR (R-2026-08-10-3).** Implement the WebGPU equivalent of WebGL's `SunPostProcess` bright-pass sun bloom (sun-region bright pass feeding the existing PP chain), so both backends carry the effect at defaults. Must compose with the C12-18 screen halo without double-counting (derive the shared-energy story, don't dial it); expected to clear the G4 `webgl:limb_shape_matches_shipped_law` watch-red at its source. Both-backends acceptance via the G4 sun half. Fallback (documented, R-3): default WebGL's bloom off and make C12-18 the single glow source — trigger: the mirror double-counts in a way tuning cannot reconcile. | M | PENDING |
@@ -1479,7 +1593,7 @@ unchanged).
 | **G1** | Skybox fade | Camera **on the sunlit side, Sun ≥ 25° above local horizon** — the only framing that reaches the failure state. M1 source-count ratio ≥ 0.90; RMS-contrast and P99.9−P50 ratios ∈ [0.85, 1.15]. **Mean luminance is diagnostic only and explicitly non-certifying.** *Expected already-green at HEAD: Batch 722 landed the fix and the §6 Q2 measurements are effectively this gate passing — G1 is held as a REGRESSION gate, baselined by `C12-01` in W1.* |
 | **G2** | White blobs | **`r_1e-3 / r_core ≥ 8`** — a Gaussian truncated at `d=1.0` cannot exceed ~1.8, so this one number separates blob from star. Plus: two agreeing log-log slopes in [−5,−2]; <25 clipped px/star; rendered brightest:faintest ≥ 15:1 (today **4:1** by construction). ✅ **BROWSER LANE BUILT 2026-08-07 (CO-3) — `probe-celestial-gates.mjs --g2`; Edge acceptance OWED (first run ever).** Per ruling `C12-G2-DEF` the browser gate binds the ratio on the **composite-HWHM** definition at **≥ 4** (analytic core-component ≥ 8 stays in `starfield-psf.spec.mjs`); simulated through the shipped display chain at the lane's telescope framing the shipped PSF scores **7.20** and the OLD truncated Gaussian **1.79**, so the bar separates with 1.8× margin both ways. "<25 clipped px/star" is evaluated in **linear scene radiance against the LDR white point of 1.0**, not against 8-bit code 250 — under PBR Neutral radiance 1.0 renders as code 239 and code 250 is radiance ~1.91, so the two definitions differ by ~1.9×. "Rendered brightest:faintest" is `min(peak_brightest, 1.0) / peak_faintest`, exactly the quantity `StarFieldMath.ts` anchors the exposure against (16.7:1). **C12-27's acceptance criterion is carried verbatim as the third sub-lane.** See the 2026-08-07 CO-3 overlay above for the full predicate list. |
 | **G3** | Asset upgrade | ≤ 2.0 arcmin/px; ≥10× sources/steradian vs the t3 baseline; median chroma ≥ 0.20 (**fails immediately under 4:2:0 JPEG**, so it doubles as the format gate); **dust-lane structure** via low-pass residual IQR ≥ 3× current. ✅ **BROWSER LANE BUILT 2026-08-07 (CO-24) — `probe-celestial-gates.mjs --g3`; Edge acceptance OWED (first run ever).** Five sub-lanes per backend (`asset`, `split`, `catalogue`, `adversarial`, `motion`), 18 bound predicates, must pass IDENTICALLY on both. **⚠ PRE-REGISTERED RED, and the red is in the ASSET, not the instrument:** measured offline from the bundled bytes, the shipped `TYCHO_T5_DIFFUSE` faces score **2.637 arcmin/px** (2048/face against the ≥2700 bar), **median chroma 0.000** (against 0.20), and a dust-lane IQR ratio of **0.585×** t3 (against 3×) — and the **un-blurred t5 misses the same three**, so criteria (1)/(3)/(4) were never reachable with the SVS product Q1 selected at the size C12-10 encoded. **This is not a DR-01 consequence.** Criterion (2) is superseded as certifying by DR-01 (the cube map carries no resolved sources by ruling) and re-pointed onto the split + catalogue arms, with the literal ratio still measured and reported as reversal trigger `spriteDensity` (delivered **228/sr** vs t3's **1,311/sr** = 0.174×). Bars marked RATIFIED are held unmoved; the research text's own "the σ and 3× need one calibration pass against the chosen asset" is now discharged — **that pass says the bar is missed.** See the 2026-08-07 CO-24 overlay above. |
-| **G4** | Sun + Moon | Sun: `r_1e-3/r_core ≥ 10`; angular diameter within 5% of 0.5334°; `I(0.95R)/I(0)` ∈ [0.3,0.5]. Moon: full:quarter integrated-brightness ratio must exceed the Lambertian ~3:1. ✅ **BROWSER LANE BUILT 2026-08-07 (CO-27) — `probe-celestial-gates.mjs --g4`; Edge acceptance OWED (first run ever), and that first run IS `C12-21`/`C12-22`'s owed acceptance.** Six sub-lanes per backend (`policy`, `disc`, `halo`, `earthshine`, `terminator`, `phase`), **41 bound predicates per backend** at this commit (43 counting the two gated arms), plus 8 cross-backend fold predicates, must pass IDENTICALLY on both. Three §5 clauses are re-pointed or gated and each says so in its own row below: **(a)** `r_1e-3/r_core ≥ 10` is the STAR PSF and is already bound by G2 under ruling `C12-G2-DEF` — it is not re-measured on the Sun, whose profile is a limb-darkened disc plus a veiling-glare halo, not a point spread function; **(b)** `I(0.95R)/I(0) ∈ [0.3,0.5]` is a **PENDING ARM on `C12-19`** — both sun bakes still `clamp(...,0,1)`, which their own comments say makes limb darkening arithmetically invisible in the default bake, so the ABSOLUTE ratio is dominated by the C12-18 screen halo. The arm self-activates from two independent live discriminators, reports `STRUCTURAL-pending-content:C12-19` BY NAME, and the ratio is measured and printed every run. Limb darkening's PRESENCE and SHAPE are certified meanwhile by a differential (`limbDarkening` OFF passes `(1,0,0)`, i.e. `I ≡ 1`, so the halo cancels EXACTLY); **(c)** the moon full:quarter bar is **REACHABILITY-GATED** on the phase angle — the C12-20 row requires the LS + C12-23 surge PAIR to be gated together, and the shipped surge contributes ≥10% only within 5.0° of opposition (derived from its own `h = tan(0.5°)`), so outside that the arm reports STRUCTURAL and prints the number rather than failing the gate for a framing it could not reach. Adds the B906 pin `disc_trueSizeRatio_is_sqrt2` (1.41421 ± 5%, measured at PIXELS from the two toggle positions) and the C12-28 SDR leg with a LIVE positive control. See the 2026-08-07 CO-27 overlay above. |
+| **G4** | Sun + Moon | Sun: `r_1e-3/r_core ≥ 10`; angular diameter within 5% of 0.5334°; `I(0.95R)/I(0)` ∈ [0.3,0.5]. Moon: full:quarter integrated-brightness ratio must exceed the Lambertian ~3:1. ✅ **BROWSER LANE BUILT 2026-08-07 (CO-27) — `probe-celestial-gates.mjs --g4`; Edge acceptance OWED (first run ever), and that first run IS `C12-21`/`C12-22`'s owed acceptance.** Six sub-lanes per backend (`policy`, `disc`, `halo`, `earthshine`, `terminator`, `phase`), **41 bound predicates per backend** at this commit (43 counting the two gated arms), plus 8 cross-backend fold predicates, must pass IDENTICALLY on both. Three §5 clauses are re-pointed or gated and each says so in its own row below: **(a)** `r_1e-3/r_core ≥ 10` is the STAR PSF and is already bound by G2 under ruling `C12-G2-DEF` — it is not re-measured on the Sun, whose profile is a limb-darkened disc plus a veiling-glare halo, not a point spread function; **(b)** `I(0.95R)/I(0)` is **RE-RATIFIED 2026-08-10 per maintainer ruling `R-2026-08-10-2` (CO-35)** onto the **DISC-ONLY** measurement against a **DERIVED** band. **SUPERSEDED VALUE, preserved: `[0.3, 0.5]`** — which is not wrong, it is ratified for the wrong SAMPLE POINT: `[0.3, 0.5]` is exactly where the EXTREME limb sits (`I(R)/I(0) = a0`; shipped 0.30, Pierce & Slaughter 1977 0.30505, Neckel & Labs 1994 0.28392), while at `0.95R` **every** published law lands in `[0.5537, 0.5940]`, so no coefficient change could ever have satisfied it there. **New certifying criterion: `limb_discOnlyRatio_I095_over_I0_in_band` ∈ [0.5124, 0.5874]** (derived per run; the quoted pair is at the lane's modelled 170 px disc radius and the shipped radiance 2.0). Derivation, in `deriveDiscOnlyLimbBand`: centre `= chain(I(0.95))/chain(I(0)) = 0.549901`, where `chain` is the four shipped lines of the sun path (bake rgb `(1,1,clamp(limb+0.2))`, `pow(rgb,γ)`, `× discRadiance`, `× alpha=limb`, Rec.709 luma) — the bake's `+0.2` HUE term is worth −3.2% and is modelled, not tolerated; width `= √(3·modelled × separation/3) = 6.81%` from modelled terms T1 radial binning 1.26% (dominant), T2 display quantization 0.13%, T3 fp16 bake 0.10%, against a separation of 31.4% to the halo-contaminated composite it must refuse. **The measurement needs no new capture**: `D2 = flat − legacy` recovers the disc's own radiance `L` on the annulus between the legacy and true edges, `D1 = flat − limb` gives `L·(1 − chain(I))`, and both differentials cancel the C12-18 screen halo EXACTLY (every `SolarHalo` uniform is camera geometry + resolved radiance; none reads either toggle). It is also **radiance-invariant**, unlike the composite. The composite ratio (`0.6509`/`0.7138`/`0.7181` at B948/B950) is still measured and printed as a diagnostic and is **no longer certifying**. The arm keeps its C12-19 discriminators and aim gate and gains two structural states: `STRUCTURAL-disc-radiance-unrecovered` (the recovered `L` disagrees with the frame's resolved `discRadiance` by >35%) and `STRUCTURAL-band-underived`. Limb darkening's PRESENCE and SHAPE remain separately certified by the same differential (`limbDarkening` OFF passes `(1,0,0)`, i.e. `I ≡ 1`); **(c)** the moon full:quarter bar is **REACHABILITY-GATED** on the phase angle — the C12-20 row requires the LS + C12-23 surge PAIR to be gated together, and the shipped surge contributes ≥10% only within 5.0° of opposition (derived from its own `h = tan(0.5°)`), so outside that the arm reports STRUCTURAL and prints the number rather than failing the gate for a framing it could not reach. Adds the B906 pin `disc_trueSizeRatio_is_sqrt2` (1.41421 ± 5%, measured at PIXELS from the two toggle positions) and the C12-28 SDR leg with a LIVE positive control. See the 2026-08-07 CO-27 overlay above. |
 
 **C12 closes when all four gates pass on both backends at HEAD, with:**
 

@@ -35,25 +35,33 @@
 //           claim about them — that is `probe-moon-atmosphere-appearance.mjs`)
 //   C12-33  (caveat) the albedo/normal-map asset chain is not re-certified here
 //
-// ─── THE ONE THING THAT IS NOT LANDED: C12-19 ──────────────────────────────
+// ─── THE C12-19 ARM, AND WHAT RULING R-2026-08-10-2 CHANGED ────────────────
 //
 // `C12-19` (true HDR sun radiance) removes the `clamp(..., 0, 1)` from both sun
-// bakes. Until it lands, the §5 headline `I(0.95R)/I(0) in [0.3, 0.5]` is
-// NOT MEASURABLE AS AN ABSOLUTE RATIO on a rendered frame, and both bake
-// sources say so in their own comments: with the clamp in place the disc's
-// alpha saturates and, once C12-18 hands the halo to the post-process chain,
-// what sits over the disc is a screen-space veil of amplitude 0.75 that the
-// absolute ratio cannot be separated from without modelling it away.
+// bakes. It LANDED at Batch 937, and the arm below still self-activates from
+// two independent live discriminators (the bake's source text and the measured
+// peak radiance) with a DISAGREEMENT between them reported as STRUCTURAL rather
+// than resolved by preferring one — the reference-disagreement rule.
 //
-// So the criterion is carried as a PENDING ARM. It is neither failed (the
-// content does not exist) nor silently skipped: {@link evaluateLimbAbsoluteArm}
-// reports `STRUCTURAL-pending-content:C12-19` BY NAME, the fold surfaces it in
-// its own `pendingArms` block, and the ratio is measured and printed as a
-// diagnostic every run so the number is on the record before the content lands.
-// The arm ACTIVATES on its own, from two independent live discriminators (the
-// bake's source text and the measured peak radiance), and a DISAGREEMENT
-// between them is STRUCTURAL rather than a guess — the reference-disagreement
-// rule.
+// What the arm then CERTIFIES ON changed. Batches 941-950 measured the §5
+// ratio on the shipped leg with no differencing and read 0.651-0.718 against
+// `[0.3, 0.5]`, and {@link expectedCompositeLimbRatio} put the reason on the
+// record as a number: at the shipped defaults a camera sees the disc PLUS the
+// C12-18 screen halo, and the halo is a near-flat pedestal over the disc that
+// lifts the ratio toward 1. The §5 band was ratified for the DISC-ONLY law.
+//
+// Ruling R-2026-08-10-2 (2026-08-10) re-ratified it "via the disc-only
+// measurement arm — conditional on first confirming the shipped physics is as
+// accurate as possible while remaining performant". CO-35 discharged that
+// condition (the shipped Cox 2000 / Allen 550 nm coefficients are bracketed by
+// Pierce & Slaughter 1977 and Neckel & Labs 1994 and stand unchanged — see the
+// PROVENANCE block in `Scene/SolarDiscModel.js`), so the certifying criterion
+// is now `limb_discOnlyRatio_I095_over_I0_in_band`: the halo-free reading built
+// from the lane's own two differentials, against the band
+// {@link deriveDiscOnlyLimbBand} derives from the shipped law and the frame's
+// own resolved radiance. The composite ratio is still measured and printed
+// every run, and `[0.3, 0.5]` is still carried in the record as
+// `measured.supersededBand`.
 //
 // What IS measurable pre-C12-19 is limb darkening's PRESENCE and SHAPE, via a
 // differential the toggle makes exact: `enableSolarLimbDarkening = false`
@@ -82,7 +90,9 @@
 // measures was stitched from.
 import {
   BRACKET_SATURATION_CODE,
+  DISPLAY_GAMMA,
   displayToLinear,
+  pbrNeutralTonemap,
 } from "./celestial-g2-gate.mjs";
 
 // ---------------------------------------------------------------------------
@@ -117,6 +127,13 @@ export const ARM_STATE = Object.freeze({
   // lane's own captures, so a disc lane that could not see its subject cannot
   // hand it a certifying number — the ratio is still measured and printed.
   PENDING_AIM: "STRUCTURAL-pending-aim",
+  // R-2. The disc-only ratio divides by a disc radiance recovered from the
+  // frame; if that recovery disagrees with the frame's own resolved radiance,
+  // the quotient is not the quantity §5 names.
+  RADIANCE_UNRECOVERED: "STRUCTURAL-disc-radiance-unrecovered",
+  // R-2. The band is DERIVED per run from the shipped model and the frame's
+  // appearance scalars. A bound that could not be derived certifies nothing.
+  BAND_UNDERIVED: "STRUCTURAL-band-underived",
 });
 
 // ---------------------------------------------------------------------------
@@ -337,8 +354,19 @@ export const DISC_LIT_FLOOR = 3.0e-3;
 export const LIMB_MIN_DROP_LINEAR = 0.01;
 
 /**
- * §5's absolute limb ratio band, `I(0.95R) / I(0)`. RATIFIED — the PENDING ARM
- * activates against exactly this and nothing else.
+ * §5's original absolute limb ratio band, `I(0.95R) / I(0)`.
+ *
+ * ⚠ SUPERSEDED as the certifying bound by maintainer ruling R-2026-08-10-2
+ * (see {@link deriveDiscOnlyLimbBand}). PRESERVED, not deleted, because the
+ * run record has to show what moved and because the bound is not WRONG — it is
+ * ratified for the wrong SAMPLE POINT. `[0.3, 0.5]` is exactly the band the
+ * EXTREME limb sits in: the shipped `I(R)/I(0) = a0 = 0.30`, Pierce & Slaughter
+ * (1977) give 0.30505 and Neckel & Labs (1994) 0.28392. At `0.95R` no shipped
+ * or published law can enter it — every credible reference lands in
+ * [0.5537, 0.5940] — so the old arm was measuring a real quantity against a
+ * bound derived for a different radius.
+ *
+ * Still reported on every arm state as `measured.supersededBand`.
  * @type {{lo:number,hi:number}}
  */
 export const LIMB_ABSOLUTE_RATIO_BAND = Object.freeze({ lo: 0.3, hi: 0.5 });
@@ -351,6 +379,137 @@ export const LIMB_ABSOLUTE_RATIO_BAND = Object.freeze({ lo: 0.3, hi: 0.5 });
  * @type {number}
  */
 export const LIMB_ABSOLUTE_RATIO_SAMPLE_X = 0.95;
+
+// ---------------------------------------------------------------------------
+// SUN — THE DISC-ONLY LIMB RATIO (ruling R-2026-08-10-2, CO-35)
+//
+// §5's `I(0.95R)/I(0) in [0.3, 0.5]` was ratified for the DISC-ONLY radial
+// law, and {@link expectedCompositeLimbRatio} put the reason it could never be
+// met on the record as a number: what a camera sees at the shipped defaults is
+// disc PLUS the C12-18 screen halo, and the halo is a near-flat pedestal
+// across the disc (`P(0.95)/P(0) = 0.953`) that lifts the ratio toward 1.
+// Batch 950 measured 0.7138 / 0.7181 against a modelled 0.7330.
+//
+// THE FIX IS A MEASUREMENT, NOT A MOVED BOUND. The disc lane already captures
+// three legs, and TWO differentials between them are halo-free BY
+// CONSTRUCTION, because every uniform the halo reads (`limbPx`,
+// `haloCoreRadii`, `haloIntensity`, `haloCenter` in `SolarHalo.glsl` /
+// `SolarHalo.wgsl`) is a function of camera geometry and the resolved
+// radiance, and NONE of them reads `enableSolarLimbDarkening` or
+// `enableTrueSolarDiscSize`:
+//
+//   D1 = flat - limb    = L * (1 - chain(I(x)))      halo cancels exactly
+//   D2 = flat - legacy  = L                          on 1/sqrt(2) < x < 1
+//
+// D2's annulus is the disc's OWN radiance in the lane's measured linear units
+// (both legs are FLAT discs, so the limb law is absent from both, and only the
+// disc EDGE differs), which makes `(L - D1(x)) / L` the disc's radial law with
+// no halo in it at all. That is the disc-only measurement this ruling asks
+// for, and it needs no new capture.
+//
+// AND IT IS RADIANCE-INVARIANT. `L` divides out of the ratio, so — unlike the
+// composite — the disc-only reading does not move when the disc's radiance
+// moves. Radiance enters only through the display quantum in the tolerance.
+// That is precisely why this is the measurement that tests the LAW.
+// ---------------------------------------------------------------------------
+
+/**
+ * Rec.709 luma weights — the ONE definition this lane reduces an RGB triple
+ * with. Exported because {@link solarDiscChainLuminance} models the same
+ * reduction in closed form and the two must not drift; {@link luminanceAt}
+ * reads this array, so there is no second literal.
+ * @type {readonly number[]}
+ */
+export const LUMINANCE_WEIGHTS = Object.freeze([0.2126, 0.7152, 0.0722]);
+
+/**
+ * The `+0.2` in `SunTextureFS.glsl`'s `vec4 color = vec4(vec2(1.0), surface +
+ * 0.2, surface)` and its WebGPU CPU twin — the bake's HUE term.
+ *
+ * ⚠ IT IS NOT INERT ON THE DISC. Both bakes write rgb `(1, 1, clamp(limb +
+ * 0.2))`, `SunFS.glsl`/`SunFS.wgsl` decode that with `pow(rgb, gamma)` under
+ * HDR, and the billboard is then weighted by its own alpha (`= limb`). Over
+ * the inner disc `limb + 0.2 > 1` and the clamp makes blue equal to red and
+ * green — the core is white — but at `x = 0.95` the shipped law puts `limb` at
+ * 0.568, so blue lands at `0.768^2.2 = 0.5593` and the pixel's LUMA is
+ * 0.9682x the disc's own radial law rather than 1.0x. Modelling it is what
+ * makes the derived band a prediction of the SHIPPED CHAIN instead of a
+ * prediction of the law with a 3.2% systematic left in.
+ * @type {number}
+ */
+export const SUN_BAKE_BLUE_HUE_OFFSET = 0.2;
+
+/**
+ * `scene.gamma`'s shipped default, which `czm_gammaCorrect` raises the sun
+ * bake's rgb to under HDR (`Scene.js` sets `this.gamma = 2.2`; the WebGPU twin
+ * passes the same number as `u.gamma`).
+ * @type {number}
+ */
+export const SUN_BAKE_GAMMA_NOMINAL = 2.2;
+
+/**
+ * Radial band, as a fraction of the measured disc radius, over which `D2 =
+ * flat - legacy` is averaged to recover the disc's linear radiance `L`.
+ *
+ * DERIVED from the two edges it must sit between: the legacy disc terminates
+ * at `1/sqrt(2) = 0.7071` R (that IS the C12-18 defect) and the true-size disc
+ * at 1.0 R. On the lane's modelled 170 px radius, 0.78 clears the inner edge
+ * by 12.4 px and 0.92 clears the outer by 13.6 px — each ~6x the +/-2 px the
+ * antialiased edge occupies — while still enclosing ~21,600 px, enough that
+ * the annulus mean's quantization error is 1.2% / sqrt(21600) = 0.008%.
+ * @type {{lo:number,hi:number}}
+ */
+export const LIMB_DISC_ONLY_ANNULUS = Object.freeze({ lo: 0.78, hi: 0.92 });
+
+/**
+ * Radius in pixels of the tight centre disc `D1` is averaged over for the
+ * disc-only ratio's DENOMINATOR.
+ *
+ * 2 px, matching the convention the composite diagnostic already uses and for
+ * the same reason: aiming at a source puts it at NDC (0,0), which for an
+ * even-sized crop is a pixel CORNER, so a radial profile's radius-0 bin is
+ * EMPTY and reads NaN. Over 2 px of a 170 px disc the true law is 0.99997, so
+ * the denominator is the disc centre to within 3e-5.
+ * @type {number}
+ */
+export const LIMB_DISC_ONLY_CENTRE_RADIUS_PX = 2;
+
+/**
+ * Disc radius, in pixels, the band's tolerance terms are modelled at.
+ *
+ * The lane's own established framing figure — `DISC_EPHEMERIS_TOLERANCE`,
+ * `TRUE_SIZE_RATIO_TOLERANCE` and `LIMB_SHAPE_MAX_REL_DEV` all derive against
+ * "a modelled 170 px radius", which is what `G4_SUN_DISC_FOV_X_DEG = 2.0` over
+ * a 1280 px crop puts a 0.5334 deg disc at. Callers that have the RUN's own
+ * `discRadiusPx` should pass it; this is the fallback the ratified band is
+ * quoted at.
+ * @type {number}
+ */
+export const LIMB_BAND_MODEL_DISC_RADIUS_PX = 170;
+
+/**
+ * The disc lane's exposure bracket. ONE definition, imported by the probe, so
+ * the exposures the band's quantization term is derived against are the
+ * exposures the capture actually used.
+ * @type {readonly number[]}
+ */
+export const DISC_BRACKET_EXPOSURES = Object.freeze([1, 0.125]);
+
+/**
+ * Factor by which the measured `D2` annulus plateau may differ from the
+ * frame's RESOLVED `discRadiance` before the disc-only arm reports STRUCTURAL.
+ *
+ * DERIVED as an instrument check, not a product bound: the plateau is a mean
+ * over ~21,600 px whose per-pixel quantum is 1.2% of its own value, i.e. an
+ * expected agreement of ~0.01%, and the whole display-chain inversion is what
+ * would have to be wrong for it to drift. 0.35 is ~4000x that expectation —
+ * it cannot fire on measurement noise, only on a plateau that is not the
+ * disc's radiance at all (a mis-located edge, a missing leg, or a halo that
+ * failed to cancel). A miss is STRUCTURAL because the ratio's denominator
+ * would then not be `L`, so the reading would not be of `I(0.95R)/I(0)`.
+ * @type {number}
+ */
+export const LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE = 0.35;
 
 /**
  * Peak linear scene radiance above which the sun bake CANNOT be the shipped
@@ -1134,7 +1293,11 @@ export function angleDegForPixelOffset(offsetPx, fovXDeg, widthPx) {
 
 /** Rec.709 luminance of the pixel starting at `i`. */
 export function luminanceAt(data, i) {
-  return 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+  return (
+    LUMINANCE_WEIGHTS[0] * data[i] +
+    LUMINANCE_WEIGHTS[1] * data[i + 1] +
+    LUMINANCE_WEIGHTS[2] * data[i + 2]
+  );
 }
 
 /**
@@ -1709,14 +1872,270 @@ export function expectedCompositeLimbRatio(model, o) {
   const p0 = model.solarScreenHaloProfile(0.0, core);
   const num = d * iX + h * pX;
   const den = d * i0 + h * p0;
+  // The same composite with the bake's HUE term carried (see
+  // `SUN_BAKE_BLUE_HUE_OFFSET`). Reported alongside rather than replacing
+  // `compositeRatio`, because the 0.7330 figure is the one the B948/B950
+  // stamps and the maintainer pack quote. It is the better model of the two:
+  // against Batch 950 it lands at 0.7227 (webgpu measured 0.7138, -1.2%;
+  // webgl 0.7181, -0.6%) where the hue-free form reads 0.7330 (-2.6% / -2.0%).
+  const numC = d * solarDiscChainLuminance(iX) + h * pX;
+  const denC = d * solarDiscChainLuminance(i0) + h * p0;
   return {
     x,
     discOnlyRatio,
     compositeRatio: den > 0 ? num / den : NaN,
+    compositeRatioChroma: denC > 0 ? numC / denC : NaN,
     haloShareAtX: num > 0 ? (h * pX) / num : NaN,
     haloShareAtCentre: den > 0 ? (h * p0) / den : NaN,
     haloProfileAtX: pX,
     haloProfileAtCentre: p0,
+  };
+}
+
+/**
+ * The LUMA the shipped chain renders a disc pixel at, per unit disc radiance,
+ * when the limb law evaluates to `limb` there.
+ *
+ * Forward model of exactly four shipped lines and nothing else:
+ *
+ *   bake      rgb = (1, 1, clamp(limb + 0.2))          alpha = limb
+ *   SunFS     rgb = pow(rgb, gamma) * discRadiance     (HDR only)
+ *   blend     out = rgb * alpha                        (over a dark sky)
+ *   reduce    luma = 0.2126 R + 0.7152 G + 0.0722 B
+ *
+ * so `chain(limb) = limb * (wr + wg + wb * clamp(limb + 0.2)^gamma)`. It is
+ * exactly `limb` at the disc centre (`limb = 1` clamps blue to 1) and 0.9682 x
+ * `limb` at `x = 0.95`.
+ *
+ * @param {number} limb The limb law's value, `I(x)/I(0)`.
+ * @param {number} [gamma=SUN_BAKE_GAMMA_NOMINAL] `scene.gamma`.
+ * @returns {number} Luma per unit disc radiance.
+ */
+export function solarDiscChainLuminance(limb, gamma = SUN_BAKE_GAMMA_NOMINAL) {
+  if (!Number.isFinite(limb)) {
+    return NaN;
+  }
+  const raw = limb + SUN_BAKE_BLUE_HUE_OFFSET;
+  const blue = Math.pow(raw < 0 ? 0 : raw > 1 ? 1 : raw, gamma);
+  return (
+    limb *
+    (LUMINANCE_WEIGHTS[0] + LUMINANCE_WEIGHTS[1] + LUMINANCE_WEIGHTS[2] * blue)
+  );
+}
+
+/**
+ * The display code a neutral linear radiance lands on, and the linear worth of
+ * ONE code there, under the lane's own exposure bracket.
+ *
+ * Composed entirely of shipped pieces: the FORWARD chain is the G2 lib's
+ * `pbrNeutralTonemap` (the transcription `displayToLinear` inverts) followed by
+ * `czm_inverseGamma`; the leg is picked by the same "highest unsaturated"
+ * rule `stitchBracketLinear` and {@link chooseBracketLeg} use; and the quantum
+ * itself is {@link captureCodeQuantumLinear}, so the resolution this bound is
+ * built from is the resolution the stitch is built from.
+ *
+ * Evaluated on a NEUTRAL triple: over the disc the operator's `min` and `max`
+ * are the same channel (the bake's blue clamps to red and green over the inner
+ * disc), and at `x = 0.95` the hue term moves the peak channel not at all —
+ * blue is the DIMMEST channel there, and `captureCodeQuantumLinear` already
+ * takes the worst of the three steps.
+ *
+ * @param {number} linear Scene-linear radiance.
+ * @param {readonly number[]} exposures The lane's bracket.
+ * @returns {{exposure:number,code:number,oneCodeLinear:number}}
+ * @private
+ */
+function bracketQuantum(linear, exposures) {
+  const ordered = exposures.slice().sort((a, b) => b - a);
+  const codeAt = (v, e) =>
+    255 *
+    Math.pow(
+      Math.max(pbrNeutralTonemap([v * e, v * e, v * e])[0], 0),
+      1 / DISPLAY_GAMMA,
+    );
+  let exposure = ordered[ordered.length - 1];
+  for (const e of ordered) {
+    if (codeAt(linear, e) < BRACKET_SATURATION_CODE) {
+      exposure = e;
+      break;
+    }
+  }
+  const code = codeAt(linear, exposure);
+  return {
+    exposure,
+    code,
+    oneCodeLinear: captureCodeQuantumLinear([code, code, code], exposure),
+  };
+}
+
+/**
+ * §5's disc-only limb ratio, DERIVED — the band the arm certifies against,
+ * plus every term that set its width.
+ *
+ * ⚠ THE BAND IS A PREDICTION OF THE SHIPPED CHAIN, computed from the model
+ * passed in. It is a pure function of `(model, appearance scalars, geometry)`,
+ * so a MUTANT model (wrong coefficients, wrong radiance) produces a different
+ * band and the spec can prove the derivation actually reads each input.
+ *
+ * CENTRE. `chain(I(0.95)) / chain(I(0))` — 0.549901 at the shipped law, whose
+ * pure-law value is 0.567967; the 3.2% difference is the bake's own hue term
+ * (see {@link SUN_BAKE_BLUE_HUE_OFFSET}), not an error.
+ *
+ * WIDTH, from three modelled terms and two constraints:
+ *
+ *   T1  radial binning — the profile bin is +/-0.5 px, so the sample point is
+ *       `x = 0.95 * (1 +/- 0.5/R)`; at the lane's modelled R = 170 px that is
+ *       `dx = 0.00279` against a local slope `d(ratio)/dx = -2.4736`, i.e.
+ *       0.00691 (1.26%). THE DOMINANT TERM.
+ *   T2  display quantization — one 8-bit code at each of the two samples,
+ *       taken through the lane's own bracket, divided by sqrt(N) for the
+ *       annulus the profile bin averages. At radiance 2.0 the samples land at
+ *       codes 125.4 (0.125x) and 242.3 (1x), worth 1.47% and 3.73% of their
+ *       own values, over N ~ 1014 px: 0.13%.
+ *   T3  the fp16 bake — both sun bakes store HDR as binary16, whose
+ *       significand is 11 bits, over two samples: 0.10%.
+ *
+ * Modelled total 1.48%. The bar is then pinned between two requirements that
+ * both have to hold, in the style `EARTHSHINE_INERTNESS_QUANTILE` uses:
+ *
+ *   * at least 3x the modelled error, so modelling slop cannot fail a real
+ *     measurement (4.44%);
+ *   * at most one third of the distance to the nearest thing it must REFUSE —
+ *     the halo-contaminated composite this arm exists to stop reading, at
+ *     31.4% relative (10.47%).
+ *
+ * and set to their GEOMETRIC MIDPOINT, 6.82%. Band `[0.512395, 0.587407]`.
+ *
+ * WHAT THAT BAND ADMITS AND REFUSES, all computed, none fitted: it admits the
+ * shipped prediction (0.5499) and the pure law (0.5680), and it admits every
+ * credible published law transported to 550 nm through the same chain
+ * (Pierce & Slaughter 1977: 0.5546; Neckel & Labs 1994: 0.5565; Hestroffer &
+ * Magnan 1998's power law: 0.5352) — so it is a check on the RENDERING, not a
+ * vote between references. It refuses a flat disc (1.0), a linear limb law
+ * (0.3169), the extreme-limb value §5's old bound actually fits (0.30), and
+ * the halo-contaminated composite in both its modelled (0.7227) and measured
+ * (0.7138 / 0.7181) forms.
+ *
+ * ⚠ FIRST-PASS DERIVED. No Edge run has produced a disc-only reading yet.
+ *
+ * @param {{solarLimbIntensity:Function,solarScreenHaloProfile:Function,
+ *          solarHaloCoreRadii:Function}} model The shipped `SolarDiscModel`
+ *        namespace, or a mutant of it.
+ * @param {{discRadiance:number,haloAmplitude:number,haloCoreRadii:number,
+ *          discRadiusPx?:number,x?:number,gamma?:number,
+ *          exposures?:readonly number[]}} o Live-resolved appearance scalars
+ *        and the run's own geometry.
+ * @returns {{x:number,predicted:number,pureLaw:number,band:{lo:number,hi:number},
+ *            tolRel:number,terms:object,separationRel:number,
+ *            modelledRel:number,discRadiusPx:number}}
+ */
+export function deriveDiscOnlyLimbBand(model, o) {
+  const x = Number.isFinite(o?.x) ? o.x : LIMB_ABSOLUTE_RATIO_SAMPLE_X;
+  const gamma = Number.isFinite(o?.gamma) ? o.gamma : SUN_BAKE_GAMMA_NOMINAL;
+  const discRadiusPx =
+    o?.discRadiusPx > 0 ? o.discRadiusPx : LIMB_BAND_MODEL_DISC_RADIUS_PX;
+  const exposures = o?.exposures ?? DISC_BRACKET_EXPOSURES;
+  const chain = (v) => solarDiscChainLuminance(v, gamma);
+  const ratioAt = (xx) =>
+    chain(model.solarLimbIntensity(xx)) / chain(model.solarLimbIntensity(0.0));
+  const pureLaw = model.solarLimbIntensity(x) / model.solarLimbIntensity(0.0);
+  const predicted = ratioAt(x);
+  const fail = {
+    x,
+    predicted,
+    pureLaw,
+    band: { lo: NaN, hi: NaN },
+    tolRel: NaN,
+    terms: null,
+    separationRel: NaN,
+    modelledRel: NaN,
+    discRadiusPx,
+  };
+  if (!(predicted > 0)) {
+    return fail;
+  }
+
+  // T1 — radial binning. Central difference on the model itself, so a mutant
+  // law's own slope sets its own band width.
+  const h = 1e-6;
+  const slope = (ratioAt(x + h) - ratioAt(x - h)) / (2 * h);
+  const t1 = Math.abs(slope) * x * (0.5 / discRadiusPx);
+
+  // T2 — display quantization at the two samples, averaged over the annulus
+  // bin. Needs the RADIANCE: this is the only place it enters, and it is why
+  // a wrong radiance produces a wrong band even though the RATIO is
+  // radiance-invariant.
+  const L = o?.discRadiance;
+  let t2 = NaN;
+  let quantum = null;
+  if (L > 0) {
+    const centreLinear = L * chain(model.solarLimbIntensity(0.0));
+    const edgeLinear = L * chain(model.solarLimbIntensity(x));
+    const qc = bracketQuantum(centreLinear, exposures);
+    const qe = bracketQuantum(edgeLinear, exposures);
+    const relC = qc.oneCodeLinear / centreLinear;
+    const relE = qe.oneCodeLinear / edgeLinear;
+    const nAnnulus = Math.max(1, Math.floor(2 * Math.PI * x * discRadiusPx));
+    t2 = (Math.hypot(relC, relE) / Math.sqrt(nAnnulus)) * predicted;
+    quantum = {
+      centreLinear,
+      edgeLinear,
+      centre: qc,
+      edge: qe,
+      relCentre: relC,
+      relEdge: relE,
+      annulusPixels: nAnnulus,
+    };
+  }
+  if (!Number.isFinite(t2)) {
+    return fail;
+  }
+
+  // T3 — the binary16 bake, two samples.
+  const t3 = predicted * 2 * Math.pow(2, -11);
+
+  const modelledRel = (t1 + t2 + t3) / predicted;
+
+  // The nearest thing the band must REFUSE: the halo-over-disc composite,
+  // modelled through the same chain from the same scalars. Deliberately the
+  // chroma-carrying form, which is the CLOSER of the two composite models and
+  // therefore the more conservative bound.
+  const composite = expectedCompositeLimbRatio(model, {
+    discRadiance: o?.discRadiance,
+    haloAmplitude: o?.haloAmplitude,
+    haloCoreRadii: o?.haloCoreRadii,
+    x,
+  });
+  const contaminated = composite.compositeRatioChroma;
+  if (!(contaminated > predicted)) {
+    return { ...fail, terms: { t1, t2, t3, quantum }, modelledRel };
+  }
+  const separationRel = (contaminated - predicted) / predicted;
+  const loBar = 3 * modelledRel;
+  const hiBar = separationRel / 3;
+  const tolRel = Math.sqrt(loBar * hiBar);
+  return {
+    x,
+    predicted,
+    pureLaw,
+    band: {
+      lo: predicted * (1 - tolRel),
+      hi: predicted * (1 + tolRel),
+    },
+    tolRel,
+    terms: {
+      t1,
+      t2,
+      t3,
+      slope,
+      quantum,
+      loBar,
+      hiBar,
+      contaminated,
+    },
+    separationRel,
+    modelledRel,
+    discRadiusPx,
   };
 }
 
@@ -2061,6 +2480,40 @@ export function measureDiscDifferential(o) {
     radius: Math.max(3, 0.2 * discRadiusPx),
   });
 
+  // ─── THE DISC-ONLY LIMB RATIO (ruling R-2026-08-10-2) ────────────────────
+  // Built from the SAME two differentials the shape arm already runs on, so
+  // it costs no capture and inherits their exact halo cancellation:
+  //
+  //   L          = mean of D2 over the annulus between the legacy edge
+  //                (1/sqrt(2) R) and the true edge (R). Both legs are FLAT
+  //                discs, so the annulus carries the disc's own radiance and
+  //                nothing else.
+  //   discOnly(x)= (L - D1(x)) / L, i.e. the disc's radial law with the
+  //                C12-18 screen halo subtracted rather than modelled.
+  //
+  // `L` divides out of the ratio, so this reading is RADIANCE-INVARIANT — the
+  // property the composite reading lacks and the reason this is the one that
+  // tests the LAW.
+  const radiancePlateau = annulusMean(
+    d2,
+    ux,
+    uy,
+    LIMB_DISC_ONLY_ANNULUS.lo * discRadiusPx,
+    LIMB_DISC_ONLY_ANNULUS.hi * discRadiusPx,
+  );
+  const discRadianceMeasured = radiancePlateau.mean;
+  const d1CentreMean = annulusMean(
+    d1,
+    ux,
+    uy,
+    0,
+    LIMB_DISC_ONLY_CENTRE_RADIUS_PX,
+  ).mean;
+  const discOnlyCentreValue = discRadianceMeasured - d1CentreMean;
+  const discOnlyEdgeValue = discRadianceMeasured - limbAnchorDelta;
+  const discOnlyRatio =
+    discOnlyCentreValue > 0 ? discOnlyEdgeValue / discOnlyCentreValue : NaN;
+
   const aim = buildAimDiagnostic({
     measuredPx: Number.isFinite(centroid.x)
       ? { x: centroid.x, y: centroid.y }
@@ -2102,6 +2555,12 @@ export function measureDiscDifferential(o) {
     limbOutsidePixels: outside.pixels,
     ratioI095overI0_DIAGNOSTIC: centreValue > 0 ? edgeValue / centreValue : NaN,
     discPeakLinear: discPeak.peak,
+    // R-2 — the certifying reading and everything it was built from.
+    discRadianceMeasured,
+    discRadiancePlateauPixels: radiancePlateau.pixels,
+    discOnlyCentreValue,
+    discOnlyEdgeValue,
+    discOnlyRatio_I095_over_I0: discOnlyRatio,
   };
 }
 
@@ -2217,7 +2676,20 @@ export function evaluateLimbAbsoluteArm(m) {
     ratioI095overI0: Number.isFinite(m?.ratioI095overI0)
       ? m.ratioI095overI0
       : null,
-    band: LIMB_ABSOLUTE_RATIO_BAND,
+    // R-2 — the CERTIFYING reading (disc-only) and the derived band it is read
+    // against, plus the radiance plateau the ratio's denominator came from.
+    discOnlyRatio: Number.isFinite(m?.discOnlyRatio) ? m.discOnlyRatio : null,
+    discRadianceMeasured: Number.isFinite(m?.discRadianceMeasured)
+      ? m.discRadianceMeasured
+      : null,
+    discRadianceResolved: Number.isFinite(m?.discRadianceResolved)
+      ? m.discRadianceResolved
+      : null,
+    derivedBand: m?.derivedBand ?? null,
+    // The SUPERSEDED §5 bound, preserved so the run record shows what moved.
+    // It was ratified for the EXTREME limb (`I(R)/I(0) = a0 = 0.30`), not for
+    // 0.95R, which is why no shipped or published law could ever meet it here.
+    supersededBand: LIMB_ABSOLUTE_RATIO_BAND,
     // THE NAMED CONFOUND, AS A NUMBER. See `expectedCompositeLimbRatio`: the
     // §5 band was ratified for the DISC-ONLY law, and what this ratio is taken
     // over is disc PLUS the C12-18 screen halo (amplitude x2 under C12-19).
@@ -2289,19 +2761,67 @@ export function evaluateLimbAbsoluteArm(m) {
       measured,
     };
   }
+  // R-2 — THE INSTRUMENT CHECK THAT GATES THE READING. The disc-only ratio's
+  // denominator is `L`, recovered from the `flat - legacy` annulus. If that
+  // plateau is not the frame's own resolved `discRadiance`, the denominator is
+  // not `L` and the number is not `I(0.95R)/I(0)` — structural, by name, with
+  // the reading still printed.
+  const lMeasured = measured.discRadianceMeasured;
+  const lResolved = measured.discRadianceResolved;
+  const recovered =
+    lMeasured > 0 &&
+    lResolved > 0 &&
+    Math.abs(lMeasured / lResolved - 1) <=
+      LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE;
+  if (!recovered) {
+    return {
+      state: ARM_STATE.RADIANCE_UNRECOVERED,
+      pending: null,
+      criteria: {},
+      reason:
+        `the disc-only ratio's denominator is the disc radiance recovered ` +
+        `from the flat-minus-legacy annulus, and that plateau (${lMeasured}) ` +
+        `is not within ${LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE} of the ` +
+        `frame's resolved discRadiance (${lResolved}) — so what was divided ` +
+        "by is not the disc's radiance and the quotient is not " +
+        "I(0.95R)/I(0). The reading is MEASURED and printed; it certifies " +
+        "nothing. Limb darkening's presence and shape are unaffected — the " +
+        "differential arm is gated separately.",
+      measured,
+    };
+  }
+  const band = measured.derivedBand?.band;
+  if (!(band?.lo > 0) || !(band?.hi > band.lo)) {
+    return {
+      state: ARM_STATE.BAND_UNDERIVED,
+      pending: null,
+      criteria: {},
+      reason:
+        "the disc-only band could not be derived from the shipped model and " +
+        "this frame's resolved appearance scalars, so there is nothing to " +
+        "certify against. A bound that cannot be derived is STRUCTURAL, not " +
+        "a pass.",
+      measured,
+    };
+  }
   return {
     state: ARM_STATE.ACTIVE,
     pending: null,
     criteria: {
-      limb_absoluteRatio_I095_over_I0_in_band: inBand(
-        m.ratioI095overI0,
-        LIMB_ABSOLUTE_RATIO_BAND,
+      limb_discOnlyRatio_I095_over_I0_in_band: inBand(
+        measured.discOnlyRatio,
+        band,
       ),
     },
     reason:
       "C12-19 has landed (the bake clamp is gone and the disc carries " +
-      "radiance above the LDR white point), so §5's absolute limb ratio is " +
-      "now measurable and CERTIFYING",
+      "radiance above the LDR white point), so §5's limb ratio is measurable " +
+      "— and per ruling R-2026-08-10-2 it is certified on the DISC-ONLY " +
+      "reading, which subtracts the C12-18 screen halo through the lane's " +
+      "own differentials rather than modelling it away, against a band " +
+      "DERIVED from the shipped law and the frame's own radiance. The " +
+      "halo-contaminated composite ratio is still measured and printed as a " +
+      "diagnostic; it is no longer certifying.",
     measured,
   };
 }
@@ -2897,7 +3417,7 @@ export function evaluateG4Backend(backend) {
   ];
   const pendingArms = {};
   if (limbArm.state !== ARM_STATE.ACTIVE) {
-    pendingArms.limb_absoluteRatio_I095_over_I0_in_band = {
+    pendingArms.limb_discOnlyRatio_I095_over_I0_in_band = {
       state: limbArm.state,
       pending: limbArm.pending,
       reason: limbArm.reason,
@@ -3246,6 +3766,13 @@ export function buildG4Summary(result) {
       LIMB_OUTSIDE_MAX_RELATIVE,
       LIMB_MIN_DROP_LINEAR,
       LIMB_ABSOLUTE_RATIO_BAND,
+      LIMB_DISC_ONLY_ANNULUS,
+      LIMB_DISC_ONLY_CENTRE_RADIUS_PX,
+      LIMB_BAND_MODEL_DISC_RADIUS_PX,
+      LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE,
+      DISC_BRACKET_EXPOSURES,
+      SUN_BAKE_BLUE_HUE_OFFSET,
+      SUN_BAKE_GAMMA_NOMINAL,
       C12_19_HDR_PEAK_DISCRIMINATOR,
       HALO_DELTA_PEAK_NOMINAL_RSUN,
       HALO_DELTA_PEAK_TOLERANCE_RSUN,
@@ -3323,6 +3850,8 @@ export default {
   buildAimDiagnostic,
   describeAimMiss,
   expectedCompositeLimbRatio,
+  solarDiscChainLuminance,
+  deriveDiscOnlyLimbBand,
   findRetainedImageBuffers,
   screenMinusBakedPeak,
   limbShapeExpectation,
