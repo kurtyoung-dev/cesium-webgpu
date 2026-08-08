@@ -65,11 +65,11 @@ export const VECTOR_TILE_PLACEHOLDER_BYTES = VECTOR_TILE_HEADER_WORDS * 4;
  */
 export interface VectorTileCpuData {
   /** Packed RGBA line segments (ax, ay, bx, by) in tile UV space, -1 filled. */
-  segmentTexels?: Float32Array;
+  polylineSegmentTexels?: Float32Array;
   /** Primitive index per packed segment, -1 filled. */
-  segmentPrimitiveIndicesTexels?: Float32Array;
+  polylineSegmentPrimitiveIndicesTexels?: Float32Array;
   /** `[gridWidth, gridHeight, ...per-cell end offsets]`. */
-  gridCellIndices?: Uint32Array;
+  polylineGridCellIndices?: Uint32Array;
   /** Per-collection primitive widths, in collection order. */
   widths?: Uint8Array[];
   /** Per-collection primitive RGBA bytes, in collection order. */
@@ -132,9 +132,9 @@ function concatByteArrays(arrays: Uint8Array[]): Uint8Array {
 export function packVectorTileWords(
   data: VectorTileCpuData | null | undefined,
 ): Uint32Array | null {
-  const grid = data?.gridCellIndices;
-  const segmentTexels = data?.segmentTexels;
-  const segmentPrimitiveTexels = data?.segmentPrimitiveIndicesTexels;
+  const grid = data?.polylineGridCellIndices;
+  const segmentTexels = data?.polylineSegmentTexels;
+  const segmentPrimitiveTexels = data?.polylineSegmentPrimitiveIndicesTexels;
   if (!grid || !segmentTexels || !segmentPrimitiveTexels) {
     return null;
   }
@@ -227,7 +227,7 @@ export function packVectorTileWords(
  * data object as `rendererResources`.
  *
  * Registered on the `GLOBE_SURFACE` feature-renderer descriptor as
- * `prepareVectorTileData`, so `VectorPipeline.packPolylineTextures` can hand
+ * `prepareVectorTileData`, so `VectorPipeline.packPrimitiveTextures` can hand
  * the bake to whichever backend is active without importing this module or
  * testing `isWebGPU` (CLAUDE.md Principle 2).
  *

@@ -3,6 +3,7 @@ import Cartesian2 from "../Core/Cartesian2.js";
 import Cartesian3 from "../Core/Cartesian3.js";
 import Cartesian4 from "../Core/Cartesian4.js";
 import Cartographic from "../Core/Cartographic.js";
+import Check from "../Core/Check.js";
 import Frozen from "../Core/Frozen.js";
 import defined from "../Core/defined.js";
 import DeveloperError from "../Core/DeveloperError.js";
@@ -107,6 +108,11 @@ const pitchScratch = new Cartesian3();
 const scratchFlyToDestination = new Cartesian3();
 const scratchflyToBoundingSphereTransform = new Matrix4();
 const scratchflyToBoundingSphereDestination = new Cartesian3();
+const scratchLookAtHeadingPitchRangeOffset = new Cartesian3();
+const scratchLookAtWorldPositionTransform = new Matrix4();
+const scratchLookAtWorldPositionDirection = new Cartesian3();
+const scratchLookAtWorldPositionWorldUp = new Cartesian3();
+const scratchLookAtWorldPositionRight = new Cartesian3();
 const scratchflyToBoundingSphereDirection = new Cartesian3();
 const scratchflyToBoundingSphereUp = new Cartesian3();
 const scratchflyToBoundingSphereRight = new Cartesian3();
@@ -1423,6 +1429,7 @@ class Camera {
         offset.heading,
         offset.pitch,
         offset.range,
+        scratchLookAtHeadingPitchRangeOffset,
       );
     } else {
       cartesianOffset = offset;
@@ -1467,6 +1474,64 @@ class Camera {
     Cartesian3.normalize(this.up, this.up);
 
     this._adjustOrthographicFrustum(true);
+  }
+
+  /**
+   * Sets the camera orientation to look at a target position in world coordinates. The camera's up vector will be oriented to the world up vector at the target position.
+   * If the camera is at the target position, the camera will be oriented to the world up vector at the target position.
+   * @param {Cartesian3} target The target position in world coordinates.
+   * @param {Ellipsoid} [ellipsoid=Ellipsoid.default] The ellipsoid to use for determining the world up.
+   */
+  lookAtWorldPosition(target, ellipsoid = Ellipsoid.default) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("target", target);
+    Check.typeOf.object("ellipsoid", ellipsoid);
+    //>>includeEnd('debug');
+
+    const transform = Matrix4.clone(
+      this._transform,
+      scratchLookAtWorldPositionTransform,
+    );
+
+    this._setTransform(Matrix4.IDENTITY);
+
+    // Get direction to look at target
+    let direction = Cartesian3.subtract(
+      target,
+      this.positionWC,
+      scratchLookAtWorldPositionDirection,
+    );
+
+    // If the camera is at the target position, we can't look at it, but we should still continue to re-orient the camera to the world up vector at the target position.
+    if (Cartesian3.magnitudeSquared(direction) < CesiumMath.EPSILON8) {
+      direction = Cartesian3.clone(
+        this.directionWC,
+        scratchLookAtWorldPositionDirection,
+      );
+    }
+
+    direction = Cartesian3.normalize(direction, this.direction);
+
+    // Orient the camera to the world up vector at the target position
+    const worldUp = ellipsoid.geodeticSurfaceNormal(
+      target,
+      scratchLookAtWorldPositionWorldUp,
+    );
+
+    let right = Cartesian3.cross(
+      direction,
+      worldUp,
+      scratchLookAtWorldPositionRight,
+    );
+    if (Cartesian3.magnitudeSquared(right) < CesiumMath.EPSILON8) {
+      right = Cartesian3.clone(this.rightWC, scratchLookAtWorldPositionRight);
+    }
+    Cartesian3.normalize(right, this.right);
+
+    const up = Cartesian3.cross(right, direction, this.up);
+    Cartesian3.normalize(up, this.up);
+
+    this._setTransform(transform);
   }
 
   /**
@@ -1924,6 +1989,7 @@ class Camera {
         offset.heading,
         offset.pitch,
         offset.range,
+        scratchflyToBoundingSphereDestination,
       );
     }
 

@@ -287,6 +287,10 @@ class Framebuffer {
     }
 
     this._unBind();
+
+    // _bind and _unBind bypass the context's framebuffer binding cache. The GL
+    // binding is now the default framebuffer; update the cache to match.
+    context._currentFramebuffer = undefined;
   }
 
   /**

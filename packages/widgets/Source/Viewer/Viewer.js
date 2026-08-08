@@ -1215,6 +1215,30 @@ class Viewer {
    * This function is called automatically as needed unless
    * <code>useDefaultRenderLoop</code> is set to false.
    */
+  /**
+   * Adds a controller— an implementation of the {@link Controller} interface used to handle input events, camera animations, and other interactions— to the viewer's scene.
+   * @param {Controller} controller An implementation of the <code>Controller</code> interface.
+   * @example
+   * viewer.scene.screenSpaceCameraController.enableInputs = false;
+   * viewer.scene.screenSpaceCameraController.enableCollisionDetection = false;
+   *
+   * const tiltOrbitController = new Cesium.ScreenSpaceTiltOrbitCameraController();
+   * viewer.addController(tiltOrbitController);
+   */
+  addController(controller) {
+    return this._cesiumWidget.addController(controller);
+  }
+
+  /**
+   * Removes a controller— an implementation of the {@link Controller} interface used to handle input events, camera animations, and other interactions— from the viewer's scene.
+   * @param {Controller} controller An implementation of the <code>Controller</code> interface.
+   * @example
+   * viewer.removeController(tiltOrbitController);
+   */
+  removeController(controller) {
+    return this._cesiumWidget.removeController(controller);
+  }
+
   resize() {
     const cesiumWidget = this._cesiumWidget;
     const container = this._container;

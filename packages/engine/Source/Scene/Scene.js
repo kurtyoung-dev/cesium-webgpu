@@ -29,6 +29,7 @@ import RequestScheduler from "../Core/RequestScheduler.js";
 import TaskProcessor from "../Core/TaskProcessor.js";
 import ClearCommand from "../Renderer/ClearCommand.js";
 import ComputeEngine from "../Renderer/ComputeEngine.js";
+import ControllerHost from "./Controllers/ControllerHost.js";
 import Context from "../Renderer/Context.js";
 import ContextFactory from "../Renderer/ContextFactory.js";
 import RendererType, {
@@ -318,6 +319,7 @@ class Scene {
 
     this._id = createGuid();
     this._jobScheduler = new JobScheduler();
+    this._controllerHost = new ControllerHost();
     this._frameState = new FrameState(
       context,
       new CreditDisplay(creditContainer, "•", creditViewport),
@@ -1757,6 +1759,22 @@ class Scene {
    */
   get canvas() {
     return this._canvas;
+  }
+
+  /**
+   * Collects an array of <code>Controller</code> objects that can be registered with the scene to handle input events, camera animations, and other interactions.
+   * @see {@link Controller}
+   * @type {ControllerHost}
+   * @readonly
+   * @example
+   * scene.screenSpaceCameraController.enableInputs = false;
+   * scene.screenSpaceCameraController.enableCollisionDetection = false;
+   *
+   * const tiltOrbitController = new Cesium.ScreenSpaceTiltOrbitCameraController();
+   * scene.controllerHost.registerController(tiltOrbitController, scene.canvas.parentNode);
+   */
+  get controllerHost() {
+    return this._controllerHost;
   }
 
   /**
@@ -4435,6 +4453,8 @@ class Scene {
     if (!defined(time)) {
       time = JulianDate.now();
     }
+
+    this._controllerHost.update(this, time);
 
     const cameraChanged = this._view.checkForCameraUpdates(this);
     if (cameraChanged) {

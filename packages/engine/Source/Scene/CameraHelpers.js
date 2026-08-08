@@ -871,7 +871,6 @@ export { cartoArray };
 
 // ---- Flight helpers ----
 
-const scratchLookAtHeadingPitchRangeOffset = new Cartesian3();
 const scratchLookAtHeadingPitchRangeQuaternion1 = new Quaternion();
 const scratchLookAtHeadingPitchRangeQuaternion2 = new Quaternion();
 const scratchHeadingPitchRangeMatrix3 = new Matrix3();
@@ -879,7 +878,7 @@ const scratchHeadingPitchRangeMatrix3 = new Matrix3();
 /**
  * @private
  */
-export function offsetFromHeadingPitchRange(heading, pitch, range) {
+export function offsetFromHeadingPitchRange(heading, pitch, range, result) {
   pitch = CesiumMath.clamp(
     pitch,
     -CesiumMath.PI_OVER_TWO,
@@ -903,10 +902,7 @@ export function offsetFromHeadingPitchRange(heading, pitch, range) {
     scratchHeadingPitchRangeMatrix3,
   );
 
-  const offset = Cartesian3.clone(
-    Cartesian3.UNIT_X,
-    scratchLookAtHeadingPitchRangeOffset,
-  );
+  const offset = Cartesian3.clone(Cartesian3.UNIT_X, result);
   Matrix3.multiplyByVector(rotMatrix, offset, offset);
   Cartesian3.negate(offset, offset);
   Cartesian3.multiplyByScalar(offset, range, offset);

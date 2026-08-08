@@ -636,7 +636,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     getShaderCode: () => GlobeTerrainShaderCode,
     // C11-213 (UP144-VECTOR-LAYER-WGSL) — how `VectorPipeline` hands a baked
     // terrain-draped vector tile to this backend. The WebGL fallback in
-    // `VectorPipeline.packPolylineTextures` creates five `Texture`s for
+    // `VectorPipeline.packPrimitiveTextures` creates five `Texture`s for
     // `VectorCommon.glsl`; WebGPU realizes ONE read-only storage buffer
     // instead (see `WebGPUVectorTileResources.ts` for why five sampled
     // textures cannot fit the globe layout). Routed through the feature-

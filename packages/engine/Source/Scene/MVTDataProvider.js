@@ -24,6 +24,7 @@ import defined from "../Core/defined.js";
  * This object is normally not instantiated directly, use {@link MVTDataProvider.fromUrl}.
  * </div>
  *
+ * @extends UrlTemplate3DTilesDataProvider
  * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
  */
 class MVTDataProvider extends UrlTemplate3DTilesDataProvider {
@@ -52,6 +53,7 @@ class MVTDataProvider extends UrlTemplate3DTilesDataProvider {
    * @param {Rectangle} [options.extent] Optional geographic extent in radians to constrain the generated tile tree.
    * @param {string} [options.featureIdProperty] MVT property name to use as feature ID.
    * @param {boolean} [options.decodeInWorker=false] When true, decode MVT tiles on a web worker (off the main thread) instead of synchronously. Falls back to synchronous decode when the worker pool is saturated or unavailable.
+   * @returns {Promise<MVTDataProvider>}
    */
   static async fromUrl(url, options) {
     return /** @type {Promise<MVTDataProvider>} */ (
