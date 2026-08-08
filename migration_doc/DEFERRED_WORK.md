@@ -12815,3 +12815,14 @@ W1, C13-16 signed off (CIRRUS residual), exit-3 = yellow + named reason +
 **Addendum (same day):** C16-01 scope expanded — packaging legality
 (ThirdParty.json/extra + shipped-artifact notices, build-output proof) and
 a README bottom References & Credits section linking author repos.
+
+## NEW-WEBGPU-VECTOR-POLYGON-DRAPING (filed 2026-08-10, Batch 959, from the v1.144 sync)
+
+Upstream 1.144 added vector-terrain POLYGON draping (polygon edge/grid
+tables + three new globe uniforms, WebGL `texelFetch` path). The fork's
+C11-213 renderer-claim path (`WebGPUVectorTileResources.ts` storage-buffer
+bake) handles POLYLINES ONLY: on WebGPU the claim succeeds and polygon
+tables are ignored, so polygon draping is a WebGL-only feature until the
+storage-buffer layout learns the polygon tables and the WGSL twin gains the
+polygon distance test. Principle-5 gap, M-sized; the WebGL path is correct
+on both counts today. Owner: C11 W1 tail (vector lane).
