@@ -857,6 +857,26 @@ defect that no existing gate could have seen.
   Track-D row in `CELESTIAL_LIGHT_TRANSPORT_PLAN_2026-08-07.md` §9, to be
   ruled at that epic's launch BEFORE its twilight probes bake their bands.
 
+- **`G4-DISC-RADIANCE-EXCESS-UNEXPLAINED` — the rendered flat disc recovers
+  +30–36% above the frame's resolved `discRadiance` (filed 2026-08-08, at the
+  limb-shape criterion fix).** Offline inversion of the G4 capture PNGs
+  recovers the flat disc at 2.59 (D2 plateau) to 2.72 (centre minus fitted
+  halo) linear against the frame's resolved `discRadiance = 2.0`, and
+  `discPeakLinear = 4.176` against the gate's modelled `2.0 + 1.5 = 3.5`
+  (+19% — the same figure `C12_19_HDR_PEAK_DISCRIMINATOR`'s derivation is
+  built on). NOT a bloom or second halo: D1/D2 are exactly 0 beyond 190 px,
+  D2 exactly 0 inside 85 px, and the far-field pedestal recovers 1.503
+  against the shipped `haloIntensity = 1.5`, so the display-chain inversion
+  is sound and the excess sits on the disc's own contribution. It cancels in
+  the limb-shape normalisation, and
+  `LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE = 0.35` currently absorbs it at
+  0.296 — the disc-only limb-ratio arm is certifying with only 0.054 of
+  headroom on a discrepancy nobody has explained. Next concrete step: walk
+  the shipped disc chain (`SunFS.glsl`/WGSL twin: `pow(rgb, 2.2) ·
+  discRadiance` under ALPHA_BLEND) against the gate's forward model at the
+  operating point and find the missing ×1.3 term; if it is real engine
+  behaviour, the C12-19 discriminator derivation inherits it. **Effort: M.**
+
 - **`PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS` — ✅ RE-SCOPED IN CODE **FIRST EDGE RUN 2026-08-07 (tip `c810dbace2`): the re-scope is VALIDATED — Lane A passes per-mode with the DR-01 zero-census assertion live and its positive controls non-vacuous; G1's only red is the KNOWN shell-extent-coupled Lane B. The twilight probe's engine leg PASSES on both backends; its star-pixel leg is STRUCTURAL (see TWILIGHT-STAR-REACHABILITY-BLACK-BOX below).**
   2026-08-07 (CO-3); EDGE ACCEPTANCE OWED.** The original filing is preserved
   below unchanged. **What now exists:**

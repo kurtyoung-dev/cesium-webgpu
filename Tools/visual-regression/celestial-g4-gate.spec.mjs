@@ -58,7 +58,9 @@ import {
   softTerminatorMu0,
 } from "../../packages/engine/Source/Scene/MoonPhaseAppearance.js";
 import {
+  DISPLAY_GAMMA,
   displayToLinear,
+  pbrNeutralTonemap,
   stitchBracketLinear,
 } from "./lib/celestial-g2-gate.mjs";
 import {
@@ -96,6 +98,8 @@ import {
   LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE,
   LIMB_MIN_DROP_LINEAR,
   LIMB_SHAPE_MAX_REL_DEV,
+  LIMB_SHAPE_MIN_EXPECTATION,
+  LIMB_SHAPE_QUANTUM_ANCHOR_UNITS,
   LIMB_SHAPE_SAMPLE_X,
   MOON_AIM_TOLERANCE_PX,
   MOON_DISC_MASK_FRACTION,
@@ -123,6 +127,7 @@ import {
   TRUE_SIZE_RATIO_NOMINAL,
   TRUE_SIZE_RATIO_TOLERANCE,
   angleDegForPixelOffset,
+  bracketQuantum,
   bracketQuantumAt,
   brightestWithinRadius,
   buildAimDiagnostic,
@@ -142,6 +147,7 @@ import {
   evaluatePolicySubLane,
   evaluateTerminatorSubLane,
   expectedCompositeLimbRatio,
+  flooredDeviation,
   findRetainedImageBuffers,
   foldG4Verdict,
   haloShapeExpectation,
@@ -345,6 +351,252 @@ test("MUTANT REJECTED — a LINEAR limb law fails the shape bar", () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// THE SHAPE BAR'S DENOMINATOR FLOOR. The shape profile is normalised by its own
+// last sample, so the inner samples are small fractions of the anchor and the
+// relative form divides the measurement error by those fractions. These pin
+// (a) that the floor is the arithmetic it claims, (b) that the constant is
+// re-derivable from shipped pieces rather than chosen, and (c) that it buys
+// exactly one code of absolute slack and hides nothing larger.
+// ---------------------------------------------------------------------------
+
+test("flooredDeviation is the relative form above the floor and an absolute one below it", () => {
+  // Above the floor: identical to `relativeDeviation`, to the bit.
+  assert.equal(flooredDeviation(1.1, 1.0, 0.5), relativeDeviation(1.1, 1.0));
+  assert.equal(flooredDeviation(0.4, 0.5, 0.2), relativeDeviation(0.4, 0.5));
+  // Below it: the denominator is the floor, so the reading is the absolute
+  // error measured in floors.
+  assert.ok(Math.abs(flooredDeviation(0.05, 0.01, 0.2) - 0.2) < 1e-15);
+  // A non-positive / non-finite floor is a no-op.
+  assert.equal(flooredDeviation(0.05, 0.01, 0), relativeDeviation(0.05, 0.01));
+  assert.equal(
+    flooredDeviation(0.05, 0.01, NaN),
+    relativeDeviation(0.05, 0.01),
+  );
+  // An expectation of exactly 0 is Infinity without a floor and finite with one
+  // — which is the point: "the model predicts nothing here" is a statement
+  // about resolution, not an automatic failure.
+  assert.equal(relativeDeviation(0.01, 0), Infinity);
+  assert.ok(Math.abs(flooredDeviation(0.01, 0, 0.2) - 0.05) < 1e-15);
+  assert.equal(flooredDeviation(0, 0, 0), 0);
+});
+
+test("shapeDeviation's default floor reproduces the pure relative form exactly", () => {
+  const measured = [0.05, 0.16, 0.37, 0.83, 1.0];
+  const expected = limbShapeExpectation(SolarDiscModel, LIMB_SHAPE_SAMPLE_X);
+  const bare = shapeDeviation(measured, expected, 4);
+  assert.equal(bare.floor, 0);
+  bare.deviations.forEach((d, i) => {
+    assert.equal(d, relativeDeviation(bare.normalized[i], expected[i]));
+  });
+  // …and so does an explicitly zero / negative floor, so no caller can acquire
+  // the allowance by accident.
+  assert.deepEqual(
+    shapeDeviation(measured, expected, 4, 0).deviations,
+    bare.deviations,
+  );
+  assert.deepEqual(
+    shapeDeviation(measured, expected, 4, -1).deviations,
+    bare.deviations,
+  );
+});
+
+test("the floor moves ONLY the samples whose expectation is below it", () => {
+  const measured = [0.05, 0.16, 0.37, 0.83, 1.0];
+  const expected = limbShapeExpectation(SolarDiscModel, LIMB_SHAPE_SAMPLE_X);
+  const bare = shapeDeviation(measured, expected, 4);
+  const floored = shapeDeviation(
+    measured,
+    expected,
+    4,
+    LIMB_SHAPE_MIN_EXPECTATION,
+  );
+  assert.equal(floored.floor, LIMB_SHAPE_MIN_EXPECTATION);
+  expected.forEach((e, i) => {
+    if (e >= LIMB_SHAPE_MIN_EXPECTATION) {
+      assert.equal(floored.deviations[i], bare.deviations[i], `sample ${i}`);
+    } else {
+      assert.ok(floored.deviations[i] < bare.deviations[i], `sample ${i}`);
+    }
+  });
+  // The normalisation itself is untouched — the floor is a denominator, not a
+  // rescaling of the measurement.
+  assert.deepEqual(floored.normalized, bare.normalized);
+});
+
+test("LIMB_SHAPE_QUANTUM_ANCHOR_UNITS re-derives from the shipped chain", () => {
+  // Recomputed from the shipped model and the lane's own bracket rather than
+  // pasted, so a change to the radiance, the halo amplitude, the bracket or the
+  // hue term fails HERE rather than silently rescaling the bar.
+  const discRadiance = SolarDiscModel.solarDiscHdrRadiance(true, {
+    intensity: 2.0,
+  });
+  const brightestDiscPixel =
+    discRadiance * (1 + SolarDiscModel.SOLAR_HALO_AMPLITUDE);
+  const quantum = bracketQuantum(brightestDiscPixel, DISC_BRACKET_EXPOSURES);
+  const anchorLinear =
+    discRadiance *
+    (solarDiscChainLuminance(1) -
+      solarDiscChainLuminance(SolarDiscModel.solarLimbIntensity(0.95)));
+  const derived = quantum.oneCodeLinear / anchorLinear;
+  assert.ok(
+    Math.abs(derived - LIMB_SHAPE_QUANTUM_ANCHOR_UNITS) < 1e-5,
+    `derived ${derived} vs constant ${LIMB_SHAPE_QUANTUM_ANCHOR_UNITS}`,
+  );
+  // And the floor is the satisfiability point of the ratified bar, exactly.
+  assert.ok(
+    Math.abs(
+      LIMB_SHAPE_MAX_REL_DEV * LIMB_SHAPE_MIN_EXPECTATION -
+        LIMB_SHAPE_QUANTUM_ANCHOR_UNITS,
+    ) < 1e-15,
+  );
+});
+
+test("the derivation's premise holds: every disc pixel is served by the LOW bracket leg", () => {
+  // The budget is only as large as it is because the disc saturates the 1x
+  // capture end to end, which forces the 0.125x leg and its coarse code. If a
+  // future bracket or radiance breaks that, the constant above is wrong.
+  const discRadiance = SolarDiscModel.solarDiscHdrRadiance(true, {
+    intensity: 2.0,
+  });
+  const haloAmplitude = discRadiance * SolarDiscModel.SOLAR_HALO_AMPLITUDE;
+  const core = SolarDiscModel.solarHaloCoreRadii(GLOW_LENGTH_TS);
+  const brightest = discRadiance + haloAmplitude;
+  const dimmest =
+    discRadiance *
+      solarDiscChainLuminance(SolarDiscModel.solarLimbIntensity(0.95)) +
+    haloAmplitude * SolarDiscModel.solarScreenHaloProfile(0.95, core);
+  const lowLeg = Math.min(...DISC_BRACKET_EXPOSURES);
+  for (const [label, linear] of [
+    ["brightest", brightest],
+    ["dimmest", dimmest],
+  ]) {
+    const q = bracketQuantum(linear, DISC_BRACKET_EXPOSURES);
+    assert.equal(
+      q.exposure,
+      lowLeg,
+      `${label} disc pixel served at ${q.exposure}x`,
+    );
+  }
+  // The quantum grows monotonically up the display curve, so reading it at the
+  // brightest pixel bounds every other sample in the frame.
+  assert.ok(
+    bracketQuantum(brightest, DISC_BRACKET_EXPOSURES).oneCodeLinear >
+      bracketQuantum(dimmest, DISC_BRACKET_EXPOSURES).oneCodeLinear,
+  );
+});
+
+test("bracketQuantum picks the leg chooseBracketLeg would have picked", () => {
+  // ⚠ MIRRORED RULE. `bracketQuantum` selects from the LINEAR side and
+  // `chooseBracketLeg` from the captured codes; both claim to be
+  // `stitchBracketLinear`'s rule. Encode known radiances through the forward
+  // chain and require the two to agree on every one of them.
+  const encode = (linear, exposure) => {
+    const t = pbrNeutralTonemap([
+      linear * exposure,
+      linear * exposure,
+      linear * exposure,
+    ]);
+    const code = Math.min(
+      255,
+      Math.max(0, Math.round(255 * Math.pow(Math.max(t[0], 0), 2.2 ** -1))),
+    );
+    return code;
+  };
+  for (const linear of [0.02, 0.2, 0.9, 1.75, 2.5, 3.5, 8, 40]) {
+    const captures = DISC_BRACKET_EXPOSURES.map((e) => {
+      const c = encode(linear, e);
+      return { data: [c, c, c, 255], exposureFactor: e };
+    });
+    const byCode = chooseBracketLeg(captures, 0);
+    const byLinear = bracketQuantum(linear, DISC_BRACKET_EXPOSURES);
+    assert.equal(
+      byLinear.exposure,
+      byCode.exposureFactor,
+      `disagreed at ${linear}: linear side ${byLinear.exposure}x, code side ${byCode.exposureFactor}x`,
+    );
+    // And the quantum the two report at that leg is the same number — asked
+    // only where the display curve is not near-vertical. The linear-side helper
+    // keeps a FRACTIONAL code and the code side has already rounded, and above
+    // ~240 one code is worth so much linear light that a third of a code is a
+    // double-digit relative gap. That is the instrument, not a disagreement.
+    if (byLinear.code < 240) {
+      assert.ok(
+        relativeDeviation(
+          byLinear.oneCodeLinear,
+          bracketQuantumAt(captures, 0),
+        ) < 0.05,
+        `quantum disagreed at ${linear}`,
+      );
+    }
+  }
+});
+
+test("the floor buys ONE code of slack and refuses anything larger", () => {
+  const expected = limbShapeExpectation(SolarDiscModel, LIMB_SHAPE_SAMPLE_X);
+  // A measurement offset at x = 0.3 by exactly the budget passes; twice the
+  // budget does not. This is the whole claim the constant makes, stated as a
+  // pair rather than as a one-sided bound that a huge floor would also satisfy.
+  const within = expected.slice();
+  within[0] = expected[0] - 0.99 * LIMB_SHAPE_QUANTUM_ANCHOR_UNITS;
+  const beyond = expected.slice();
+  beyond[0] = expected[0] - 2.0 * LIMB_SHAPE_QUANTUM_ANCHOR_UNITS;
+  assert.ok(
+    shapeDeviation(within, expected, 4, LIMB_SHAPE_MIN_EXPECTATION).maxRelDev <=
+      LIMB_SHAPE_MAX_REL_DEV,
+  );
+  assert.ok(
+    shapeDeviation(beyond, expected, 4, LIMB_SHAPE_MIN_EXPECTATION).maxRelDev >
+      LIMB_SHAPE_MAX_REL_DEV,
+  );
+  // A limb term that simply does not exist over the inner disc — the mutant the
+  // floored sample is closest to admitting — is still refused.
+  const dead = expected.slice();
+  dead[0] = 0;
+  assert.ok(
+    shapeDeviation(dead, expected, 4, LIMB_SHAPE_MIN_EXPECTATION).maxRelDev >
+      LIMB_SHAPE_MAX_REL_DEV,
+    "a dead inner-disc differential must still fail the shape bar",
+  );
+});
+
+test("MUTANT REJECTED (floored) — the linear law and a 10% a1 error still fail", () => {
+  const expected = limbShapeExpectation(SolarDiscModel, LIMB_SHAPE_SAMPLE_X);
+  const mutants = {
+    "linear law 1 - 0.7x": (x) => 1 - 0.7 * x,
+    "a1 x 1.1": (x) => {
+      const mu = Math.sqrt(Math.max(0, 1 - x * x));
+      return (
+        SolarDiscModel.SOLAR_LIMB_DARKENING_A0 +
+        1.1 * SolarDiscModel.SOLAR_LIMB_DARKENING_A1 * mu +
+        SolarDiscModel.SOLAR_LIMB_DARKENING_A2 * mu * mu
+      );
+    },
+    "a1 x 0.9": (x) => {
+      const mu = Math.sqrt(Math.max(0, 1 - x * x));
+      return (
+        SolarDiscModel.SOLAR_LIMB_DARKENING_A0 +
+        0.9 * SolarDiscModel.SOLAR_LIMB_DARKENING_A1 * mu +
+        SolarDiscModel.SOLAR_LIMB_DARKENING_A2 * mu * mu
+      );
+    },
+    "flat disc (no limb darkening at all)": () => 1,
+  };
+  for (const [label, law] of Object.entries(mutants)) {
+    const measured = LIMB_SHAPE_SAMPLE_X.map((x) => 1 - law(x));
+    const dev = shapeDeviation(
+      measured,
+      expected,
+      LIMB_SHAPE_SAMPLE_X.length - 1,
+      LIMB_SHAPE_MIN_EXPECTATION,
+    );
+    assert.ok(
+      dev.maxRelDev > LIMB_SHAPE_MAX_REL_DEV,
+      `${label} deviated only ${dev.maxRelDev} with the floor applied`,
+    );
+  }
+});
+
 test("halo shape expectation is the shipped Lorentzian, and its tail slope is ~-1.92", () => {
   const expected = haloShapeExpectation(
     SolarDiscModel,
@@ -519,7 +771,15 @@ test("the C12-19 peak discriminator separates the clamped ceiling from the SHIPP
  * Render one synthetic solar leg into a linear-light RGBA image. Neutral, so
  * the Rec.709 luminance of every pixel is exactly its scalar value.
  */
-function renderSun({ size, radiusPx, limbOn, haloFn, haloRadiusPx }) {
+function renderSun({
+  size,
+  radiusPx,
+  limbOn,
+  haloFn,
+  haloRadiusPx,
+  limbFn = SolarDiscModel.solarLimbIntensity,
+  radiance = 1,
+}) {
   const data = new Float64Array(size * size * 4);
   const c = size / 2;
   // The screen halo's own scale is `SunHaloAppearance.limbPx`, computed from
@@ -535,9 +795,8 @@ function renderSun({ size, radiusPx, limbOn, haloFn, haloRadiusPx }) {
     for (let x = 0; x < size; x++) {
       const r = Math.hypot(x + 0.5 - c, y + 0.5 - c);
       const rho = r / radiusPx;
-      const disc =
-        rho <= 1 ? (limbOn ? SolarDiscModel.solarLimbIntensity(rho) : 1) : 0;
-      const v = disc + (haloFn ? haloFn(r / haloScale) : 0);
+      const disc = rho <= 1 ? (limbOn ? limbFn(rho) : 1) : 0;
+      const v = radiance * (disc + (haloFn ? haloFn(r / haloScale) : 0));
       const i = 4 * (y * size + x);
       data[i] = v;
       data[i + 1] = v;
@@ -729,6 +988,246 @@ test("SYNTHETIC DISC (R-2): the disc-only reading is INVARIANT to the halo", () 
     relativeDeviation(fat.discRadianceMeasured, base.discRadianceMeasured) <
       1e-9,
   );
+});
+
+// ---------------------------------------------------------------------------
+// THE SAME FRAMES, THROUGH THE DIGITIZER. Every synthetic above is a float
+// image, which is the one thing the shipped capture is not: the probe reads
+// back 8-bit codes and inverts them, and the disc is bright enough that one
+// code costs more linear light than the inner samples of `1 - I(x)` carry. The
+// pair below renders at the SHIPPED radiance, pushes the legs through the
+// forward display chain at the lane's own bracket, quantises, and stitches back
+// — so the criterion is exercised against the instrument it actually runs on.
+// ---------------------------------------------------------------------------
+
+// `SunHaloAppearance`'s shipped resolution: the disc composites at
+// `solarDiscHdrRadiance` and the screen halo at `SOLAR_HALO_AMPLITUDE` times
+// it, which is what `SYNTH_HALO` already carries per unit disc.
+const SYNTH_DISC_RADIANCE = SolarDiscModel.solarDiscHdrRadiance(true, {
+  intensity: 2.0,
+});
+
+/** Forward display chain — `exposure -> PBR-Neutral -> gamma -> 8 bit`. */
+function digitizeBracket(image, exposures) {
+  return exposures.map((exposure) => {
+    const data = new Uint8ClampedArray(image.data.length);
+    for (let i = 0; i < image.data.length; i += 4) {
+      const t = pbrNeutralTonemap([
+        image.data[i] * exposure,
+        image.data[i + 1] * exposure,
+        image.data[i + 2] * exposure,
+      ]);
+      for (let k = 0; k < 3; k++) {
+        data[i + k] = Math.round(
+          255 * Math.pow(Math.max(t[k], 0), 1 / DISPLAY_GAMMA),
+        );
+      }
+      data[i + 3] = 255;
+    }
+    return {
+      data,
+      width: image.width,
+      height: image.height,
+      exposureFactor: exposure,
+    };
+  });
+}
+
+function measureDigitizedDisc(limbFn) {
+  const leg = (o) =>
+    stitchBracketLinear(
+      digitizeBracket(
+        renderSun({
+          size: DISC_SIZE,
+          radiusPx: DISC_RADIUS_PX,
+          haloFn: SYNTH_HALO,
+          radiance: SYNTH_DISC_RADIANCE,
+          ...o,
+        }),
+        DISC_BRACKET_EXPOSURES,
+      ),
+    );
+  return measureDiscDifferential({
+    flat: leg({ limbOn: false }),
+    limb: leg({ limbOn: true, limbFn }),
+    legacy: leg({
+      limbOn: false,
+      radiusPx: DISC_RADIUS_PX / TRUE_SIZE_RATIO_NOMINAL,
+      haloRadiusPx: DISC_RADIUS_PX,
+    }),
+    model: SolarDiscModel,
+    fovXDeg: DISC_FOV_X_DEG,
+    canvasWidth: DISC_SIZE,
+    ephemerisDiameterDeg:
+      2 * angleDegForPixelOffset(DISC_RADIUS_PX, DISC_FOV_X_DEG, DISC_SIZE),
+  });
+}
+
+test("DIGITIZED DISC: the shipped law survives its own 8-bit capture", () => {
+  const m = measureDigitizedDisc(SolarDiscModel.solarLimbIntensity);
+  // The premise: the disc really is served from the low bracket leg, and one
+  // code there really is a large fraction of the anchor. If either stops being
+  // true this test is no longer testing the thing it was written for.
+  assert.equal(
+    m.limbShapeQuantumExposure,
+    Math.min(...DISC_BRACKET_EXPOSURES),
+    "the disc must saturate the high bracket leg",
+  );
+  assert.ok(
+    m.limbShapeQuantumAnchorUnits >
+      0.5 * limbShapeExpectation(SolarDiscModel, LIMB_SHAPE_SAMPLE_X)[0],
+    `one code is ${m.limbShapeQuantumAnchorUnits} of the anchor — too small for ` +
+      "this frame to exercise the budget the criterion is floored with",
+  );
+  // The floor never exceeds the value the constant was derived and reviewed at.
+  assert.ok(
+    m.limbShapeMinExpectation <= LIMB_SHAPE_MIN_EXPECTATION + 1e-12,
+    `floor ${m.limbShapeMinExpectation}`,
+  );
+  assert.ok(
+    m.limbShapeMaxRelDev <= LIMB_SHAPE_MAX_REL_DEV,
+    `shape deviation ${m.limbShapeMaxRelDev} on a digitized capture of the ` +
+      "shipped law — the criterion is failing its own subject",
+  );
+  // The shape of the problem, on a frame clean enough to still pass without
+  // the floor: the unfloored deviations are largest at the sample carrying the
+  // LEAST signal and smallest at the ones carrying most, which is the ordering
+  // a denominator hazard produces and the opposite of what a law error would.
+  // (The shipped capture is the same ordering with the inner term over the bar
+  // — see the recorded-run test below.)
+  const bare = shapeDeviation(
+    m.limbShapeMeasured,
+    m.limbShapeExpected,
+    LIMB_SHAPE_SAMPLE_X.length - 1,
+  );
+  assert.ok(
+    bare.deviations[0] > bare.deviations[2] &&
+      bare.deviations[0] > bare.deviations[3],
+    `the unfloored bar must break hardest at x = ${LIMB_SHAPE_SAMPLE_X[0]}: ` +
+      `${bare.deviations.join(", ")}`,
+  );
+  const verdict = evaluateDiscSubLane({
+    ...m,
+    hdrEngaged: true,
+    ephemerisDiameterDeg: m.discDiameterDeg,
+  });
+  assert.equal(verdict.criteria.limb_shape_matches_shipped_law, true);
+  assert.deepEqual(verdict.structural, []);
+});
+
+test("DIGITIZED DISC — MUTANT REJECTED: a 10% error in a1 is still caught", () => {
+  // The coefficient the shape arm is most sensitive to, perturbed both ways,
+  // measured through the identical capture chain the passing case used.
+  for (const scale of [1.1, 0.9]) {
+    const law = (x) => {
+      const mu = Math.sqrt(Math.max(0, 1 - x * x));
+      return (
+        SolarDiscModel.SOLAR_LIMB_DARKENING_A0 +
+        scale * SolarDiscModel.SOLAR_LIMB_DARKENING_A1 * mu +
+        SolarDiscModel.SOLAR_LIMB_DARKENING_A2 * mu * mu
+      );
+    };
+    const m = measureDigitizedDisc(law);
+    assert.ok(
+      m.limbShapeMaxRelDev > LIMB_SHAPE_MAX_REL_DEV,
+      `a1 x ${scale} deviated only ${m.limbShapeMaxRelDev}`,
+    );
+    const verdict = evaluateDiscSubLane({
+      ...m,
+      hdrEngaged: true,
+      ephemerisDiameterDeg: m.discDiameterDeg,
+    });
+    assert.equal(verdict.criteria.limb_shape_matches_shipped_law, false);
+  }
+});
+
+/**
+ * The disc lane's own first Edge run, both backends — the raw `D1` samples
+ * `measureDiscDifferential` read off the shipped capture, and the flat leg's
+ * peak radiance the budget is derived from. Recorded rather than synthesised
+ * because no synthetic reproduces the ONE thing that made this criterion red:
+ * an inner sample whose whole signal is a single 8-bit code.
+ */
+const RECORDED_DISC_RUN = {
+  webgl: {
+    flatPeakLinear: 4.222121615022485,
+    shape: [
+      0.046199773226060614, 0.1829787570123028, 0.4253755910984467,
+      0.9582565038187536, 1.1486804524262706,
+    ],
+  },
+  webgpu: {
+    flatPeakLinear: 4.222121615022485,
+    shape: [
+      0.046199773226060614, 0.18297875701230282, 0.43991498148306185,
+      0.9874815385881526, 1.1787914876744359,
+    ],
+  },
+};
+
+test("RECORDED RUN: the shipped capture was red on its smallest sample and is green now", () => {
+  const expected = limbShapeExpectation(SolarDiscModel, LIMB_SHAPE_SAMPLE_X);
+  const anchorIndex = LIMB_SHAPE_SAMPLE_X.length - 1;
+  for (const [backend, run] of Object.entries(RECORDED_DISC_RUN)) {
+    const anchor = run.shape[anchorIndex];
+    // The budget, re-derived from the run's own peak through the lane's bracket
+    // — not pasted, so a change to the bracket or the display chain moves it.
+    const quantum = bracketQuantum(run.flatPeakLinear, DISC_BRACKET_EXPOSURES);
+    const quantumAnchorUnits = quantum.oneCodeLinear / anchor;
+    const floor =
+      Math.min(quantumAnchorUnits, LIMB_SHAPE_QUANTUM_ANCHOR_UNITS) /
+      LIMB_SHAPE_MAX_REL_DEV;
+
+    const bare = shapeDeviation(run.shape, expected, anchorIndex);
+    assert.ok(
+      bare.maxRelDev > LIMB_SHAPE_MAX_REL_DEV,
+      `${backend}: the recorded run must reproduce the red — ${bare.maxRelDev}`,
+    );
+    assert.equal(
+      bare.deviations.indexOf(bare.maxRelDev),
+      0,
+      `${backend}: the red must be at x = ${LIMB_SHAPE_SAMPLE_X[0]}, the ` +
+        `smallest-signal sample: ${bare.deviations.join(", ")}`,
+    );
+    // …and the miss there is smaller than one code of the instrument, i.e. the
+    // renderer was never outside the resolution the capture could assert on.
+    assert.ok(
+      Math.abs(bare.normalized[0] - expected[0]) < quantumAnchorUnits,
+      `${backend}: miss ${Math.abs(bare.normalized[0] - expected[0])} vs one ` +
+        `code ${quantumAnchorUnits}`,
+    );
+
+    const floored = shapeDeviation(run.shape, expected, anchorIndex, floor);
+    assert.ok(
+      floored.maxRelDev <= LIMB_SHAPE_MAX_REL_DEV,
+      `${backend}: still red after flooring — ${floored.maxRelDev}`,
+    );
+    // The floor did exactly the arithmetic it claims and nothing else: the one
+    // sample below it is rescaled by `expected/floor`, and every sample above
+    // it is untouched.
+    assert.ok(
+      Math.abs(
+        floored.deviations[0] - bare.deviations[0] * (expected[0] / floor),
+      ) < 1e-12,
+    );
+    for (let i = 1; i < expected.length; i++) {
+      if (expected[i] >= floor) {
+        assert.equal(floored.deviations[i], bare.deviations[i], `sample ${i}`);
+      }
+    }
+    // And the pass is not a squeaker: the bar is met with better than 2x margin
+    // on every sample, so it certifies rather than merely clears.
+    assert.ok(
+      floored.maxRelDev < 0.5 * LIMB_SHAPE_MAX_REL_DEV,
+      `${backend}: margin is thin — ${floored.maxRelDev}`,
+    );
+    // And the same floor still refuses the linear law on the same frame.
+    const linear = LIMB_SHAPE_SAMPLE_X.map((x) => 0.7 * x * anchor);
+    assert.ok(
+      shapeDeviation(linear, expected, anchorIndex, floor).maxRelDev >
+        LIMB_SHAPE_MAX_REL_DEV,
+    );
+  }
 });
 
 test("MUTANT REJECTED — a FLAT disc (limb darkening removed) has no differential", () => {

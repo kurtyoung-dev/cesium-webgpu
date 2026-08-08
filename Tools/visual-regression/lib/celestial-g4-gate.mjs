@@ -258,10 +258,95 @@ export const LIMB_SHAPE_SAMPLE_X = Object.freeze([0.3, 0.5, 0.7, 0.9, 0.95]);
  * [0.30, 0.50, 0.70, 0.90, 1.0] against the shipped
  * [0.051, 0.155, 0.355, 0.783, 1.0] and is rejected at four of five samples.
  *
- * ⚠ FIRST-PASS DERIVED. No Edge run has produced this profile yet.
+ * A RELATIVE bar alone cannot be met at every sample, which is what
+ * {@link LIMB_SHAPE_QUANTUM_ANCHOR_UNITS} exists to repair. The clause above
+ * priced the sampling error correctly and then priced the DIGITIZER at nothing:
+ * the sun disc is the brightest thing in its own frame, it composites onto a
+ * radially near-flat field, and one 8-bit code at that brightness is worth more
+ * linear light than the whole `1 - I(x)` signal at the inner samples. The bar
+ * is therefore evaluated against `max(expected, LIMB_SHAPE_MIN_EXPECTATION)`,
+ * which is a 20% relative bar wherever the signal exceeds the instrument's own
+ * resolution and a fixed ABSOLUTE allowance of one code below it.
  * @type {number}
  */
 export const LIMB_SHAPE_MAX_REL_DEV = 0.2;
+
+/**
+ * Worst-case error one 8-bit code step puts on a single limb-shape sample,
+ * expressed in ANCHOR units (i.e. as a fraction of `D1(0.95R)`).
+ *
+ * WHY A SAMPLE CAN CARRY LESS SIGNAL THAN THE INSTRUMENT CAN RESOLVE. The
+ * shape arm normalises by its own last sample, so the inner samples are
+ * fractions of the anchor: the shipped law puts `x = 0.3` at 0.0512 of it. The
+ * relative form then divides the error at that sample by 0.0512, which turns
+ * any fixed absolute error into a twenty-fold relative one — the smallest
+ * signal carries the tightest absolute demand. That is only sound while the
+ * absolute error is small compared with 0.0512 of the anchor. It is not:
+ *
+ *   1. The disc is served from the LOW bracket leg. At the shipped defaults
+ *      the disc composites at `discRadiance = 2.0` and the C12-18 screen halo
+ *      adds `SOLAR_HALO_AMPLITUDE * discRadiance = 1.5` on axis, so the
+ *      BRIGHTEST disc pixel is 3.5 and the DIMMEST (the shipped leg at 0.95R,
+ *      halo included) is 2.53. Both encode above {@link BRACKET_SATURATION_CODE}
+ *      at 1x — codes 252.7 and 251.6 — so `stitchBracketLinear` serves every
+ *      disc pixel, in every leg, from the 0.125x capture.
+ *   2. One code there is coarse. {@link bracketQuantum} at 3.5 linear lands on
+ *      code 167.7 of the 0.125x leg, where {@link captureCodeQuantumLinear}
+ *      values one code at 0.02995 of linear luma.
+ *   3. The annulus mean does NOT dither it away. `D1` is measured on a field
+ *      that is radially flat to far better than one code over a bin's width,
+ *      so every pixel in the bin rounds the same way: the error is a
+ *      deterministic offset, not a population that averages down with
+ *      `sqrt(N)`. This is why the two backends agree with each other to ~0.001
+ *      normalised units at `x = 0.3` while both sit below the analytic law —
+ *      they are reading the same rounding, not the same noise.
+ *
+ * ANCHOR. `D1(0.95R) = discRadiance * (chain(1) - chain(I(0.95)))` through
+ * {@link solarDiscChainLuminance} = 2.0 * (1 - 0.549901) = 0.900197.
+ *
+ * So one code is `0.029951 / 0.900197 = 0.033271` of the anchor. `D1 = flat -
+ * limb` differences two independently rounded legs at half a code each, which
+ * is where the budget stops: one code, not two. Against it the shipped law's
+ * inner samples are 1.5 anchor-quanta (`x = 0.3`, 0.0512) and 4.7 (`x = 0.5`,
+ * 0.1553) tall — signals a 20% relative bar cannot be evaluated on.
+ *
+ * The strict worst case is larger still and is deliberately NOT taken:
+ * {@link captureCodeQuantumLinear} prices a code as the largest SINGLE-channel
+ * step, but the disc's pixels are near-neutral, so all three channels round
+ * together and a real worst case is `1 / 0.7152 = 1.4x` this. Pricing the
+ * budget at the single-channel step keeps the bar 1.4x tighter than the physics
+ * strictly allows, and keeps ONE definition of "a code" in the lane.
+ *
+ * ⚠ CONSERVATIVE BY CONSTRUCTION, in the direction that keeps the bar TIGHT.
+ * {@link measureDiscDifferential} re-derives this from the frame's own peak
+ * radiance and takes the SMALLER of the two, so a brighter frame (the shipped
+ * run reads 4.22 at disc centre, not 3.5) tightens the allowance rather than
+ * loosening it, and the run's own reading is published as
+ * `limbShapeQuantumAnchorUnits` so this constant is checkable against every
+ * capture.
+ * @type {number}
+ */
+export const LIMB_SHAPE_QUANTUM_ANCHOR_UNITS = 0.033271;
+
+/**
+ * Smallest expectation {@link LIMB_SHAPE_MAX_REL_DEV} is evaluated against.
+ *
+ * DERIVED, not chosen: it is the expectation at which a
+ * `LIMB_SHAPE_MAX_REL_DEV` relative bar first becomes SATISFIABLE, i.e. the
+ * point where `LIMB_SHAPE_MAX_REL_DEV * expected` equals the one-code error
+ * budget above. Below it the criterion could only ever fail, whatever the
+ * renderer did; at and above it the bar is the relative one it was ratified as.
+ *
+ * The effect is exactly an absolute allowance of
+ * {@link LIMB_SHAPE_QUANTUM_ANCHOR_UNITS} — one code, no more — on the samples
+ * the instrument cannot resolve, and NO change at all on the samples it can.
+ * It does not soften the criterion against a wrong law: the linear law is
+ * 0.2646 of the anchor away at `x = 0.3` and 0.3710 away at `x = 0.5`, i.e. 8x
+ * and 11x this allowance, so it is still rejected at both.
+ * @type {number}
+ */
+export const LIMB_SHAPE_MIN_EXPECTATION =
+  LIMB_SHAPE_QUANTUM_ANCHOR_UNITS / LIMB_SHAPE_MAX_REL_DEV;
 
 /**
  * The differential must VANISH at disc centre: `I(0) = 1` in both legs, so
@@ -1207,6 +1292,38 @@ export function relativeDeviation(measured, expected) {
 }
 
 /**
+ * {@link relativeDeviation} with a lower bound on the denominator.
+ *
+ * The relative form silently assumes the expectation is large compared with the
+ * instrument's resolution. Where it is not, the quotient reports how many times
+ * the digitizer's own step fits into a signal smaller than that step — a number
+ * about the instrument, not about the subject. `floor` is the expectation below
+ * which that is true, so dividing by `max(|expected|, floor)` reads as a
+ * relative deviation above it and as an absolute one (in units of
+ * `floor`) below it.
+ *
+ * @param {number} measured
+ * @param {number} expected
+ * @param {number} floor Lower bound on the denominator; must be positive to
+ *        have any effect.
+ * @returns {number} `|m-e| / max(|e|, floor)`, or Infinity when either input is
+ *          non-finite or the denominator is not positive.
+ */
+export function flooredDeviation(measured, expected, floor) {
+  if (!Number.isFinite(measured) || !Number.isFinite(expected)) {
+    return Infinity;
+  }
+  const denominator = Math.max(
+    Math.abs(expected),
+    Number.isFinite(floor) && floor > 0 ? floor : 0,
+  );
+  if (!(denominator > 0)) {
+    return measured === expected ? 0 : Infinity;
+  }
+  return Math.abs(measured - expected) / denominator;
+}
+
+/**
  * Median of a numeric array. Does not mutate the input.
  *
  * @param {ArrayLike<number>} values
@@ -1940,13 +2057,18 @@ export function solarDiscChainLuminance(limb, gamma = SUN_BAKE_GAMMA_NOMINAL) {
  * blue is the DIMMEST channel there, and `captureCodeQuantumLinear` already
  * takes the worst of the three steps.
  *
+ * `code` is deliberately left FRACTIONAL — it is where a radiance lands on the
+ * display curve, not a readback — so the quantum is evaluated at the exact
+ * operating point rather than at the nearest integer. Above ~code 240 the curve
+ * is steep enough that the two differ by double digits, which is why the spec
+ * pins this against {@link bracketQuantumAt} only below that.
+ *
  * @param {number} linear Scene-linear radiance.
  * @param {readonly number[]} exposures The lane's bracket.
  * @returns {{exposure:number,code:number,oneCodeLinear:number}}
- * @private
  */
-function bracketQuantum(linear, exposures) {
-  const ordered = exposures.slice().sort((a, b) => b - a);
+export function bracketQuantum(linear, exposures) {
+  const ordered = Array.from(exposures).sort((a, b) => b - a);
   const codeAt = (v, e) =>
     255 *
     Math.pow(
@@ -2216,15 +2338,37 @@ export function haloShapeExpectation(
  * Largest relative deviation between a measured, anchor-normalised profile and
  * its expectation.
  *
+ * `floor` puts a lower bound on the DENOMINATOR, and nothing else. It exists
+ * because an anchor-normalised profile has samples whose expectation is a small
+ * fraction of the anchor, and dividing by that fraction converts a fixed
+ * absolute error into an arbitrarily large relative one — the smallest signal
+ * ends up carrying the tightest absolute demand, which is backwards. Flooring
+ * the denominator makes the bar `max(tol * expected, tol * floor)`: unchanged
+ * wherever the expectation exceeds the floor, a fixed absolute allowance below
+ * it. Callers pass the ABSOLUTE error budget divided by their own tolerance, so
+ * the allowance is that budget exactly — see {@link LIMB_SHAPE_MIN_EXPECTATION}.
+ *
+ * The default of 0 is the pure relative form, so a caller with no error budget
+ * to name gets the historical behaviour bit-for-bit.
+ *
  * @param {ArrayLike<number>} measured Raw (un-normalised) measurements.
  * @param {readonly number[]} expected Normalised expectation.
  * @param {number} anchorIndex Index the measurement is normalised against.
- * @returns {{maxRelDev:number,normalized:number[],deviations:number[]}}
+ * @param {number} [floor=0] Lower bound on the denominator, in the same
+ *        (anchor-normalised) units as `expected`.
+ * @returns {{maxRelDev:number,normalized:number[],deviations:number[],
+ *            floor:number}}
  */
-export function shapeDeviation(measured, expected, anchorIndex) {
+export function shapeDeviation(measured, expected, anchorIndex, floor = 0) {
   const anchor = measured[anchorIndex];
+  const guard = Number.isFinite(floor) && floor > 0 ? floor : 0;
   if (!Number.isFinite(anchor) || anchor === 0) {
-    return { maxRelDev: Infinity, normalized: [], deviations: [] };
+    return {
+      maxRelDev: Infinity,
+      normalized: [],
+      deviations: [],
+      floor: guard,
+    };
   }
   const normalized = [];
   const deviations = [];
@@ -2232,13 +2376,16 @@ export function shapeDeviation(measured, expected, anchorIndex) {
   for (let i = 0; i < expected.length; i++) {
     const norm = measured[i] / anchor;
     normalized.push(norm);
-    const dev = relativeDeviation(norm, expected[i]);
+    const dev =
+      guard > 0
+        ? flooredDeviation(norm, expected[i], guard)
+        : relativeDeviation(norm, expected[i]);
     deviations.push(dev);
     if (!(dev <= maxRelDev)) {
       maxRelDev = dev;
     }
   }
-  return { maxRelDev, normalized, deviations };
+  return { maxRelDev, normalized, deviations, floor: guard };
 }
 
 /**
@@ -2447,12 +2594,45 @@ export function measureDiscDifferential(o) {
     profileAt(p1, x * discRadiusPx),
   );
   const expectedShape = limbShapeExpectation(o.model, LIMB_SHAPE_SAMPLE_X);
+  const limbAnchorDelta = measuredShape[LIMB_SHAPE_SAMPLE_X.length - 1];
+
+  // THE INSTRUMENT'S OWN RESOLUTION, read off this frame rather than assumed.
+  // The bound is set by the BRIGHTEST disc pixel — one code is worth more
+  // linear light the further up the display curve it sits, and the flat leg's
+  // centre is the top of this frame's disc — taken through the lane's own
+  // bracket so the resolution the bar is floored with is the resolution the
+  // stitch that produced these images was built from. Expressed in anchor
+  // units, because that is what the shape profile is normalised in.
+  const flatPeakLinear = annulusMean(
+    o.flat,
+    ux,
+    uy,
+    0,
+    LIMB_DISC_ONLY_CENTRE_RADIUS_PX,
+  ).mean;
+  const limbShapeQuantum = bracketQuantum(
+    flatPeakLinear,
+    o.exposures ?? DISC_BRACKET_EXPOSURES,
+  );
+  const limbShapeQuantumAnchorUnits =
+    limbAnchorDelta > 0 && Number.isFinite(limbShapeQuantum.oneCodeLinear)
+      ? limbShapeQuantum.oneCodeLinear / limbAnchorDelta
+      : NaN;
+  // The SMALLER of the frame's own budget and the authored one. A frame
+  // brighter than the derivation modelled tightens the allowance; a frame that
+  // is not digitised at all (the spec's float synthetics) cannot invent an
+  // arbitrarily large one, so the floor can never grow past the value
+  // `LIMB_SHAPE_QUANTUM_ANCHOR_UNITS` was derived and reviewed at.
+  const limbShapeMinExpectation =
+    (Number.isFinite(limbShapeQuantumAnchorUnits)
+      ? Math.min(limbShapeQuantumAnchorUnits, LIMB_SHAPE_QUANTUM_ANCHOR_UNITS)
+      : LIMB_SHAPE_QUANTUM_ANCHOR_UNITS) / LIMB_SHAPE_MAX_REL_DEV;
   const shape = shapeDeviation(
     measuredShape,
     expectedShape,
     LIMB_SHAPE_SAMPLE_X.length - 1,
+    limbShapeMinExpectation,
   );
-  const limbAnchorDelta = measuredShape[LIMB_SHAPE_SAMPLE_X.length - 1];
   const centreMean = annulusMean(d1, ux, uy, 0, 0.1 * discRadiusPx).mean;
   const outside = annulusMean(
     d1,
@@ -2547,7 +2727,17 @@ export function measureDiscDifferential(o) {
     limbShapeMeasured: measuredShape,
     limbShapeNormalized: shape.normalized,
     limbShapeExpected: expectedShape,
+    limbShapeDeviations: shape.deviations,
     limbShapeMaxRelDev: shape.maxRelDev,
+    // The error budget the bar was floored with, and everything it was read
+    // from — published so `LIMB_SHAPE_QUANTUM_ANCHOR_UNITS` is checkable
+    // against every capture instead of standing on its authoring arithmetic.
+    limbShapeMinExpectation: shape.floor,
+    limbShapeQuantumLinear: limbShapeQuantum.oneCodeLinear,
+    limbShapeQuantumAnchorUnits,
+    limbShapeQuantumExposure: limbShapeQuantum.exposure,
+    limbShapeQuantumCode: limbShapeQuantum.code,
+    limbShapeQuantumPeakLinear: flatPeakLinear,
     limbCentreRelative:
       limbAnchorDelta > 0 ? Math.abs(centreMean) / limbAnchorDelta : Infinity,
     limbOutsideRelative:
@@ -3762,6 +3952,8 @@ export function buildG4Summary(result) {
       TRUE_SIZE_RATIO_TOLERANCE,
       LIMB_SHAPE_SAMPLE_X,
       LIMB_SHAPE_MAX_REL_DEV,
+      LIMB_SHAPE_QUANTUM_ANCHOR_UNITS,
+      LIMB_SHAPE_MIN_EXPECTATION,
       LIMB_CENTRE_MAX_RELATIVE,
       LIMB_OUTSIDE_MAX_RELATIVE,
       LIMB_MIN_DROP_LINEAR,
@@ -3830,6 +4022,7 @@ export default {
   inBand,
   relativeSpread,
   relativeDeviation,
+  flooredDeviation,
   median,
   logLogSlope,
   angleDegForPixelOffset,
@@ -3847,6 +4040,7 @@ export default {
   captureCodeQuantumLinear,
   chooseBracketLeg,
   bracketQuantumAt,
+  bracketQuantum,
   buildAimDiagnostic,
   describeAimMiss,
   expectedCompositeLimbRatio,
