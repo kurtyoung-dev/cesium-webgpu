@@ -3662,12 +3662,15 @@ test("FIX-5 MUTANT REJECTED — a retained capture is FOUND and NAMED", () => {
 
 test("FIX-5: the probe reduces and RELEASES each lane as it completes", () => {
   const src = readNormalized("./probe-celestial-gates.mjs");
-  // The hook exists, the captures are dropped after it, and `runG4` uses it.
+  // The lane driver is shared by the whole celestial fleet, so the hook and the
+  // release live in the harness; only the G4-specific USE of them is the
+  // probe's.
+  const harness = readNormalized("./lib/celestial-capture-harness.mjs");
   assert.match(
-    src,
+    harness,
     /async function runBackendLanes\(browser, renderer, laneDefs, onLane\)/,
   );
-  assert.match(src, /lane\.captures = null;/);
+  assert.match(harness, /lane\.captures = null;/);
   assert.match(src, /writeLaneCaptures\(laneKey, lane, renderer\);/);
   assert.match(src, /reduceLane\(laneKey, lane, sinks\[renderer\]\);/);
   // The permanent sentinel is wired.
@@ -3684,23 +3687,31 @@ test("FIX-5: the probe reduces and RELEASES each lane as it completes", () => {
 
 test("FIX-1: the probe writes the REQUESTED basis back after setView", () => {
   const src = readNormalized("./probe-celestial-gates.mjs");
+  // `setupScene` is the shared harness's; `setupMoonScene` is G4's own. The
+  // repair must be present in BOTH, which is why each half is asserted against
+  // the file that now owns it — a single-file assertion would go quietly green
+  // if either copy lost it.
+  const harness = readNormalized("./lib/celestial-capture-harness.mjs");
   // One aim helper in `setupScene`, used by all three aim modes — no branch may
   // call `setView` with an orientation on its own any more.
-  assert.match(src, /const aimCamera = \(position, direction, up\) => \{/);
-  assert.match(src, /aimCamera\(eye, dir, realUp\);/);
-  assert.match(src, /aimCamera\(position, direction, perp\);/);
-  assert.match(src, /aimCamera\(position, perp, up\);/);
-  // The repair itself, in both `setupScene` and `setupMoonScene`.
-  const repairs = src.match(
-    /C\.Cartesian3\.clone\(direction, scene\.camera\.direction\);/g,
-  );
-  assert.equal(repairs.length, 2, "setupScene and setupMoonScene");
+  assert.match(harness, /const aimCamera = \(position, direction, up\) => \{/);
+  assert.match(harness, /aimCamera\(eye, dir, realUp\);/);
+  assert.match(harness, /aimCamera\(position, direction, perp\);/);
+  assert.match(harness, /aimCamera\(position, perp, up\);/);
+  // The repair itself — once in `setupScene`, once in `setupMoonScene`.
+  const REPAIR =
+    /C\.Cartesian3\.clone\(direction, scene\.camera\.direction\);/g;
+  assert.equal(harness.match(REPAIR).length, 1, "setupScene");
+  assert.equal(src.match(REPAIR).length, 1, "setupMoonScene");
   // The residual is measured BEFORE the repair, so the defect's own magnitude
   // is reported every run rather than being silently corrected away.
-  assert.match(src, /hprRoundTripResidualDeg/);
-  assert.match(src, /appliedResidualDeg/);
-  assert.match(src, /localVerticalSeparationDeg/);
+  for (const text of [harness, src]) {
+    assert.match(text, /hprRoundTripResidualDeg/);
+    assert.match(text, /appliedResidualDeg/);
+    assert.match(text, /localVerticalSeparationDeg/);
+  }
   // The ephemeris projection reaches both sun lanes' measurements.
+  assert.match(harness, /sunProjectionCropPx/);
   assert.match(src, /sunProjectionCropPx/);
   assert.match(
     src,

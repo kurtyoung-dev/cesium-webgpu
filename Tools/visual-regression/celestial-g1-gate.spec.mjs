@@ -48,6 +48,13 @@ const readNormalized = (relative) =>
 const PROBE = readNormalized(
   "Tools/visual-regression/probe-celestial-gates.mjs",
 );
+// The settle/warm-up/same-task recipe is shared by the whole celestial fleet
+// and lives in `lib/celestial-capture-harness.mjs`, so the assertions that pin
+// it read the HARNESS. They are still source anchors on the code this gate
+// runs — the code just has one home instead of one copy per probe.
+const HARNESS = readNormalized(
+  "Tools/visual-regression/lib/celestial-capture-harness.mjs",
+);
 // Executable lines only. The header deliberately NAMES the retired proxy in
 // prose ("NOT `sunElevationDeg >= 25`"), so an assertion that the proxy is gone
 // has to look at code, not at the comment explaining its removal.
@@ -1049,7 +1056,7 @@ for (const [name, impl] of Object.entries(MUTANTS)) {
 // ---------------------------------------------------------------------------
 
 test("settle is a wall-clock budget covering the measured compile cost", () => {
-  const match = PROBE.match(/const SETTLE_BUDGET_MS = (\d+);/);
+  const match = HARNESS.match(/export const SETTLE_BUDGET_MS = (\d+);/);
   assert.ok(match, "SETTLE_BUDGET_MS must exist");
   assert.ok(
     Number(match[1]) >= 2674,
@@ -1058,23 +1065,24 @@ test("settle is a wall-clock budget covering the measured compile cost", () => {
   // The yield must be setTimeout, not requestAnimationFrame: a starved rAF in a
   // headless browser would silently shorten the budget.
   assert.match(
-    PROBE,
+    HARNESS,
     /await new Promise\(\(r\) => setTimeout\(r, settleYieldMs\)\)/,
   );
+  assert.doesNotMatch(HARNESS, /const SETTLE_FRAMES = /);
   assert.doesNotMatch(PROBE, /const SETTLE_FRAMES = /);
 });
 
 test("every capture is preceded by a discarded warm-up capture", () => {
-  assert.match(PROBE, /WARM-UP CAPTURE/);
+  assert.match(HARNESS, /WARM-UP CAPTURE/);
   assert.match(
-    PROBE,
+    HARNESS,
     /const warmupFrames = await settle\(\);\s*\n\s*grab\(\);/,
   );
-  assert.match(PROBE, /warmupDiscarded: true/);
+  assert.match(HARNESS, /warmupDiscarded: true/);
   // The warm-up must come BEFORE the measured capture.
   assert.ok(
-    PROBE.indexOf("const warmupFrames = await settle();") <
-      PROBE.indexOf("const full = grab();"),
+    HARNESS.indexOf("const warmupFrames = await settle();") <
+      HARNESS.indexOf("const full = grab();"),
   );
 });
 

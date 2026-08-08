@@ -75,6 +75,13 @@ const readNormalized = (relative) =>
 const PROBE = readNormalized(
   "Tools/visual-regression/probe-celestial-gates.mjs",
 );
+// The page/settle/capture recipe is shared by the whole celestial fleet and
+// lives in `lib/celestial-capture-harness.mjs`. Assertions that pin CAMERA
+// PLACEMENT or per-lane state restoration read the HARNESS; assertions about
+// what the G2 lanes ASK FOR still read the probe.
+const HARNESS = readNormalized(
+  "Tools/visual-regression/lib/celestial-capture-harness.mjs",
+);
 
 // ---------------------------------------------------------------------------
 // FORWARD MODEL — transcribed from the shipped chain, used to round-trip the
@@ -895,10 +902,10 @@ test("the G2 glare legs both sit on the SUNLIT side of the Earth", () => {
   // Sun, `sunVisibleFraction` would resolve 0, the veil strength would be 0 and
   // every glare criterion would pass vacuously. Pinned in source because it is
   // a property of the CAMERA PLACEMENT, which no fixture can observe.
-  assert.match(PROBE, /aimMode === "sun-facing" \|\| aimMode === "anti-sun"/);
-  const block = PROBE.slice(
-    PROBE.indexOf('aimMode === "sun-facing" || aimMode === "anti-sun"'),
-    PROBE.indexOf("} else {", PROBE.indexOf('aimMode === "sun-facing"')),
+  assert.match(HARNESS, /aimMode === "sun-facing" \|\| aimMode === "anti-sun"/);
+  const block = HARNESS.slice(
+    HARNESS.indexOf('aimMode === "sun-facing" || aimMode === "anti-sun"'),
+    HARNESS.indexOf("} else {", HARNESS.indexOf('aimMode === "sun-facing"')),
   );
   assert.match(
     block,
@@ -987,19 +994,19 @@ test("multi-lane state is restored, not left behind", () => {
   // and glare lanes, and a left-on HDR path would put the tonemap +
   // inverse-gamma stage in front of the glare legs, which read RAW 8-bit codes
   // on the stated grounds that the SDR canvas carries clamp(linear).
-  assert.match(PROBE, /window\.__probeOriginalFovRad/);
+  assert.match(HARNESS, /window\.__probeOriginalFovRad/);
   assert.match(
-    PROBE,
+    HARNESS,
     /frustum\.fov = Number\.isFinite\(fovX\)\s*\?\s*C\.Math\.toRadians\(fovX\)\s*:\s*window\.__probeOriginalFovRad;/,
     "the FOV must be RESTORED when a lane requests no override",
   );
   assert.match(
-    PROBE,
+    HARNESS,
     /\} else \{\s*\n\s*scene\.highDynamicRange = false;/,
     "highDynamicRange must be set in BOTH directions",
   );
   assert.match(
-    PROBE,
+    HARNESS,
     /scene\.postProcessStages\.exposure = 1\.0;/,
     "the exposure must be reset — the last bracket step is 64x",
   );
