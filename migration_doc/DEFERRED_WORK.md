@@ -12796,3 +12796,22 @@ So the row's "~10^5 energy" warning understates the problem: that radiance does 
 ### C12-19-SUNPOSTPROCESS-HDR-STAGE-VRAM - the HDR datatype fix costs three full-resolution half-float targets (FILED 2026-08-07, CO-26)
 
 **Status: OPEN / LOW (measure).** Closing the `SunPostProcess` 8-bit vacuity blocker means stages 4, 5 and 6 (full resolution, no `textureScale`) plus the pipeline's own scene framebuffer now allocate `HALF_FLOAT` instead of `UNSIGNED_BYTE` whenever `highDynamicRange` is on. Estimated at 1920x1080 that is about +25 MB of VRAM, HDR-only, and it buys the frame back its HDR range end-to-end. Stages 0-3 run at 0.125 scale and are negligible. Not measured on hardware. If it ever matters, stages 1-3 could stay 8-bit (their output is `brightness = b/(offset+b)`, bounded below 1 by construction) while stage 0 and stages 4-6 must remain HDR - stage 0 because it is the bright pass's only view of the scene, and 4-6 because they carry the composite back to the scene framebuffer.
+
+## RULING-2026-08-10 (maintainer, seven decisions + one same-day addendum)
+
+Authority record: [MAINTAINER_RULINGS_2026-08-10.md](MAINTAINER_RULINGS_2026-08-10.md)
+(every alternative option preserved with its revisit trigger, per the
+maintainer's instruction). Summary: **R-1** C12-29 keeps the MAXIMAL exit
+gate — C12 stays open until all slices incl. S3 land, so `C13-41` is now the
+C14 critical path; **R-2** §5 limb band re-ratified via disc-only
+derivation, CONDITIONAL on a SolarDiscModel accuracy+performance
+verification first; **R-3** WebGPU sun-bloom MIRROR (new row `C12-34`);
+**R-4** star map: 4096 re-bake first, DR-01 decided only after, fallbacks
+staged; **R-5** `C13-11` unblocked — in-repo STBN generator, ground-up,
+moon-albedo-bake pattern; **R-6** upstream v1.144 sync NOW, before C16
+rewrites; **R-7** confirmations — C12-26 defers out, C12-32 defers into C14
+W1, C13-16 signed off (CIRRUS residual), exit-3 = yellow + named reason +
+30-batch staleness escalation (first-pass), 4096+HDR one manual session.
+**Addendum (same day):** C16-01 scope expanded — packaging legality
+(ThirdParty.json/extra + shipped-artifact notices, build-output proof) and
+a README bottom References & Credits section linking author repos.

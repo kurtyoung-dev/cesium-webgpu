@@ -92,7 +92,7 @@ renumber, reuse, or mint a `C13-*` identifier elsewhere without adding it here f
 | `C13-08` | Honor `WeatherField.bounds`, missing-data semantics, and regional packing | P0 | correctness/data | M | W1 | `C13-01` |
 | `C13-09` | Cloud reconstruction attachments: front depth, weighted depth, velocity, and moments | P0 | architecture/perf | L | W2 | `C13-04`, `C13-05` |
 | `C13-10` | True 1/16-rate current-frame raymarch with full-resolution temporal reconstruction | P0 | perf/quality | L | W2 | `C13-02`, `C13-09` |
-| `C13-11` | License-clean STBN generation/import and stochastic cloud jitter | P1 | quality/perf | M | W2 | provenance-approved asset path |
+| `C13-11` | License-clean STBN generation/import and stochastic cloud jitter | P1 | quality/perf | M | W2 | provenance-approved asset path | **UNBLOCKED — RULING R-2026-08-10-5: generate our own STBN in-repo, ground-up (void-and-cluster/simulated-annealing per the published algorithms) as a reproducible build tool with hash-pinned output + Fourier-spectrum validation, following the moon-albedo-bake pattern. Dispatched CO-36. Fallbacks (NVIDIA textures w/ cleared license; ship without) preserved in MAINTAINER_RULINGS_2026-08-10.md.**
 | `C13-12` | Disocclusion, variance clipping, reactive history, and wind-aware reprojection | P0 | correctness/quality | L | W2 | `C13-09`, `C13-10` |
 | `C13-13` | Decouple lighting fidelity from spatial raymarch tier | P1 | quality/perf | M | W2 | `C13-10` |
 | `C13-14` | Globe-quadtree weather tile schema, gutters, cache, atlas, and LOD | P0 | architecture/data | XL | W3 | `C13-07`, `C13-08` |

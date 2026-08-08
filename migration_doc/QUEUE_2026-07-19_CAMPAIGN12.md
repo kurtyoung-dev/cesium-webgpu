@@ -705,6 +705,22 @@ the 0.95R signal, discOnlyRatio 0.568 > the 0.5 ceiling before any halo);
 (2) the bloom-mirror decision on the filed MEDIUM row. Four runs, four
 pre-registrations, the last one exact.
 
+### 2026-08-10 MAINTAINER RULINGS (Batch 957) — see MAINTAINER_RULINGS_2026-08-10.md
+
+**R-1:** `C12-29` keeps the **MAXIMAL exit gate** — C12 stays open until all
+slices land, incl. S3 via `C13-41` (now the C14 critical path); S4 remainder
+and S5 verification are ACTIVE work. **R-2:** the §5 limb band will be
+re-ratified via the disc-only derivation, **conditional on a SolarDiscModel
+accuracy+performance verification landing first** (dispatched CO-35).
+**R-3:** new row `C12-34` below — WebGPU sun-bloom MIRROR (supersedes the
+default-off recommendation). **R-7:** `C12-26` defers OUT of the C12 gate;
+`C12-32` defers INTO C14 W1. Alternatives + revisit triggers preserved in
+the rulings doc.
+
+| ID | Work | Size | Status |
+| --- | --- | --- | --- |
+| `C12-34` | **WEBGPU-SUN-BLOOM-MIRROR (R-2026-08-10-3).** Implement the WebGPU equivalent of WebGL's `SunPostProcess` bright-pass sun bloom (sun-region bright pass feeding the existing PP chain), so both backends carry the effect at defaults. Must compose with the C12-18 screen halo without double-counting (derive the shared-energy story, don't dial it); expected to clear the G4 `webgl:limb_shape_matches_shipped_law` watch-red at its source. Both-backends acceptance via the G4 sun half. Fallback (documented, R-3): default WebGL's bloom off and make C12-18 the single glow source — trigger: the mirror double-counts in a way tuning cannot reconcile. | M | PENDING |
+
 ### 2026-08-09 CO-30 verdict (Batch 947) — the B946 filing is REFUTED AND REPLACED; the fix is landed
 
 **WEBGL-SUN-APPEARANCE-STACK-DISENGAGED is REFUTED**: outside a rectangle
