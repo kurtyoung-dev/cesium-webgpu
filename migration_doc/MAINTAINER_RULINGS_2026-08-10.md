@@ -6,6 +6,24 @@ verbatim-in-substance per the maintainer's instruction** ("Document all of
 the other options, this we might need to come back to depending on the
 success of each sub-item"). Each ruling names its fallback trigger.
 
+> **⚠ DATING NOTE (added 2026-08-09 by the handover-readiness audit, FIX 9) — and the
+> global evidence-ordering convention it anchors.**
+>
+> **These rulings were ruled and landed on 2026-08-08 per `git log`.** The `2026-08-10`
+> label in the filename and in every `R-2026-08-10-N` identifier is retained **for ruling-ID
+> stability** — those IDs are cited from four campaign queues, `DEFERRED_WORK.md` and the
+> close-out plan, and renaming them would break more than it fixes. Read the date as a
+> **label, not a timestamp**.
+>
+> **The convention this anchors, fork-wide: order evidence by BATCH NUMBER, never by printed
+> date.** Document and ruling date stamps across `migration_doc/**` run two to three days
+> ahead of their git commit dates, are non-monotonic against batch order, and are not even in
+> positional order within a single queue document (the C12 queue carries `2026-08-11` stamps
+> on batches that landed 2026-08-08). Batch numbers are global, monotonic and never reused —
+> they are the spine of the entire evidence system. When ordering matters, confirm against
+> `git log`. Recorded in [`ORCHESTRATION_HANDBOOK.md`](ORCHESTRATION_HANDBOOK.md) §6 as a
+> [HARD] rule.
+
 ---
 
 ## R-2026-08-10-1 — C12-29 scope vs. the C12 exit gate: **Option B, maximal gate**

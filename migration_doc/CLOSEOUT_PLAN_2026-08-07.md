@@ -1,5 +1,26 @@
 # Campaign Close-Out Dispatch Plan — 2026-08-07 (Batch 899)
 
+> **⚠ SNAPSHOT OF 2026-08-07 — SUBSTANTIALLY EXECUTED. QUEUE ROWS WIN.**
+>
+> _Banner added 2026-08-09 by the handover-readiness audit
+> ([`HANDOVER_AUDIT_2026-08-09.md`](HANDOVER_AUDIT_2026-08-09.md) FIX 8)._
+>
+> Roughly a hundred batches have landed since this plan was written and much of it is
+> **spent**. Specifically: **gate G2 PASSED its first run at Batch 905** (`ced8c1256f`),
+> **gate G3's first run executed at Batch 934** (`4f6d3c9751`), **gate G4 CLOSED at Batch 984**
+> (`943e13b571`, ninth run, first exit 0), and **every item in the §3 maintainer decision
+> queue was ruled on 2026-08-10** as `R-2026-08-10-1..7`
+> ([`MAINTAINER_RULINGS_2026-08-10.md`](MAINTAINER_RULINGS_2026-08-10.md)) — see the §3
+> addendum below for the item-by-item mapping.
+>
+> **Lane E's owed-run order is stale and must not be trusted as current.** To rebuild the
+> machine lane's queue, grep the campaign queues for `OWED`, order by **batch number**, and
+> honour any recorded pre-registrations (`ORCHESTRATION_HANDBOOK.md` §9).
+>
+> This document remains a **dispatch grouping only**. On any status conflict the campaign
+> queue row wins — that rule was always in force and the passage of time has only made it
+> load-bearing.
+
 Maintainer directive 2026-08-07: _"queue up the remaining work to close out the
 open campaigns … get everything queued into organized batches and just keep
 working at it."_ Executed under the Fable-orchestrator / Opus-worker pattern
@@ -94,9 +115,13 @@ Batch numbering.
   tooling-blocked — see §3 maintainer items).
 - **CO-8 (worker): G4 lane construction** after CO-6 lands (sun half) + the
   moon half binds the already-landed C12-21/22 work.
-- **Machine (Lane E): the C12 owed-acceptance stack** — moon cluster
+- **Machine (Lane E): the C12 owed-acceptance stack** ⚠ **STALE — see the header banner;
+  rebuild by grepping the queues for `OWED` and ordering by batch number** — moon cluster
   (C12-21/22 + earthshine R5 rider), C12-27 glare, C12-33 calibration,
-  C12-34 pixel leg, star-census live calibration, IBL PARITY_MAX re-baseline,
+  **C12-36 star-pixel leg** *(corrected 2026-08-09: written here as "C12-34 pixel leg"; that
+  row was renumbered to `C12-36` at Batch 967 / CO-37 because ruling `R-2026-08-10-3`
+  assigned `C12-34` to the WebGPU sun-bloom mirror — the two `C12-34`s are different work)*,
+  star-census live calibration, IBL PARITY_MAX re-baseline,
   C12-G1F2 re-measure **+ the shell-extent frustum measurement** (feeds the
   canonical-coverage decision), then the G1 gate re-run at HEAD once CO-3
   lands.
@@ -194,7 +219,12 @@ Blocking decisions, ranked by scheduling impact (everything else keeps moving):
    contract fleet-wide beats 20 per-probe patches.
 6. **Celestial Light Transport & Eye Adaptation epic** (maintainer-requested
    2026-08-07, researched + queued in
-   [CELESTIAL_LIGHT_TRANSPORT_PLAN_2026-08-07.md](CELESTIAL_LIGHT_TRANSPORT_PLAN_2026-08-07.md)):
+   [CELESTIAL_LIGHT_TRANSPORT_PLAN_2026-08-07.md](CELESTIAL_LIGHT_TRANSPORT_PLAN_2026-08-07.md)).
+   ⚠ **IDENTITY RESOLVED 2026-08-10 by `R-2026-08-10-7`: CLT is proposed
+   Campaign 17, NOT Campaign 16.** Campaign 16 is Comment Remediation &
+   Attribution; the "proposed Campaign 16" reading below is superseded and
+   the epic remains **PROPOSED, not launched**. *(Stamped 2026-08-09,
+   handover audit FIX 8.)* Original text follows:
    launch/identity decision (proposed Campaign 16; recommended hold until C12
    closes, per the R4 principle) plus the six embedded rulings in that doc's
    §7. Its §2 bug list (night-lights sentinel no-op that voids C11-159, the
@@ -209,6 +239,80 @@ Blocking decisions, ranked by scheduling impact (everything else keeps moving):
    C11-205 ledger-vs-certification tension; weather constant-fill seam
    contract; MOON-ALBEDO-KTX2 encoder install.
 
+### §3 addendum — every decision-queue item is SPENT (added 2026-08-09, handover audit FIX 8)
+
+The blocking decisions above were ruled on 2026-08-10 and recorded verbatim, with every
+alternative preserved and a revisit trigger per option, in
+[`MAINTAINER_RULINGS_2026-08-10.md`](MAINTAINER_RULINGS_2026-08-10.md). **Do not re-file any
+of them.** (Dating: the rulings landed 2026-08-08 per `git log`; the `2026-08-10` label is
+retained for ruling-ID stability — order by batch number.)
+
+| §3 item | Ruling | What was ruled | Landed |
+| --- | --- | --- | --- |
+| 1. C12-29 scope vs. the C12 exit gate | `R-2026-08-10-1` | **Option B, maximal gate** — C12 stays open until every C12-29 slice lands **including S3**, canonically owned by `C13-41`. Consequence: `C13-41` is the **C14 critical path**. | Batch 957 stamp in the C12 queue |
+| 2. C13-16 carve-before-erosion pair sign-off | `R-2026-08-10-7` | **Signed off**, with CIRRUS carried as the named residual; W3 rows may build on the pair. | Batch 957 |
+| 3. Defer C12-26 (airglow) + C12-32 (shared ephemeris) out of C12 closure | `R-2026-08-10-7` | **Adopted.** C12-26 defers out as its own future row; **C12-32 defers INTO C14 W1** (not W0 as written here) — rider stamped in `OCEAN_DYNAMICS_PLAN_2026-07-24.md` §5. | Batch 957 |
+| 4. C13-11 STBN provenance | `R-2026-08-10-5` | **Option A — generate our own**, in-repo void-and-cluster/simulated-annealing generator with hash-pinned output + Fourier validation. Part 1 LANDED Batch 961 (`b288bfc7bb`); Part 2 (cloud consumption) is a named open row. | B961 |
+| 5. `PROBE-FLEET-EXIT3-CONTRACT-ADOPTION` | `R-2026-08-10-7` | **Adopted fleet-wide:** STRUCTURAL exits are **yellow**, each carrying a named reason; any structural line older than **30 batches** (first-pass number, revisable) escalates to the maintainer queue. | Batch 957 |
+| 6. Celestial Light Transport epic | `R-2026-08-10-7` | **CLT renumbers to proposed Campaign 17** (C16 = Comment Remediation). Still **PROPOSED, not launched**; the §2 bug list stays dispatchable under Lanes F/G. | Batch 957 |
+| 7. Lower-stakes recorded items | mixed | The star-map arm is `R-2026-08-10-4` (**4096/face re-bake + G3 re-run ordered, NOT YET EXECUTED**); the §5 limb band is `R-2026-08-10-2` (re-ratified **disc-only**, condition discharged at Batch 962/CO-35); WebGL sun-bloom parity is `R-2026-08-10-3` (**mirror it** — `C12-34`, landed Batch 967). The remaining items in this bullet are still open and stay in their owning queues. | B962/B967 |
+
+**Not covered by the ruling set and still open** (surfaced by the 2026-08-09 handover audit as
+maintainer asks, not doc edits): the quiet-hours history question; **CLT-D10 (shell-extent
+canonicity), which blocks C12's gate G1 while its owning campaign C17 is unlaunched**; the
+in/out-of-gate calls owed on `C11-79` and `C12-31` FOLLOWUP-A/B/C; and branch/stash inventory.
+
+### §3b addendum — executed CO assignments (added 2026-08-09, handover audit FIX 8)
+
+`CO-*` labels are stamped through four campaign queues and `DEFERRED_WORK.md` with no index
+anywhere, so a successor reading "CO-24" in a C12 row had no way to resolve it. This table is
+built from commit subjects (`git log`), which carry the label verbatim. **Note the numbering
+drifted:** this plan's Lane-A/B labels `CO-4`…`CO-8` were never used as commit labels — the
+work landed under later CO numbers, mapped below.
+
+| CO | Batch | Hash | What landed |
+| --- | --- | --- | --- |
+| CO-1 | 901 | `123d809d25` | Docs-drift reconciliation — 19 items verified against git/HEAD, `C11-214` minted |
+| CO-2 | 903 | `d9a8e39eeb` | C11 W1 falsifiability tooling (`C11-132`/`134`/`140`/`146`) — label defined in Lane A, not in the subject |
+| CO-3 | 904 | `c810dbace2` | C12 gate instruments: PRE-DR01 star re-scope + **G2 lane construction** |
+| CO-4 | — | — | **Never defined** — this plan's Lane B skips from CO-3 to CO-5 |
+| CO-5 | → CO-24 | — | G3 lane construction; executed under label **CO-24** |
+| CO-6 | 906 / 937 | `ca964bc1da` / `794ece043a` | Sun cluster: `C12-18` (B906) then `C12-19` (B937, landed under label **CO-26**) |
+| CO-7 | → CO-22 | — | `C12-28` + `C12-12`; executed under label **CO-22** |
+| CO-8 | → CO-27 | — | G4 lane construction; executed under label **CO-27** |
+| CO-9 | 907 | `ec2c6e9801` | `C13-02` observability counters + the `C13-41` acceptance probe finally EXISTS |
+| CO-10 | 909 | `1970806a59` | Eclipse deck 2.937 was an isolation artefact; ambient mechanism REFUTED |
+| CO-11 | 912 | `8419471a33` | Aerial addend real and dimmed; the deck's own Reinhard swallows the eclipse dim |
+| CO-12 | 914 | `6e9c997287` | WebGPU collection picking dispatched by nothing + the three lanes that arm G8 |
+| CO-13 | 913 | `a4bf558f1b` | `nightIntensity` sentinel collision fixed; terminator-law probe ships |
+| CO-14 | 917 | `b1cea3e371` | B914's broken shape fixed; the real pick blocker was a B739 pipeline-key mismatch |
+| CO-15 | 920 | `679cbf5173` | WebGPU day/night term reads a real per-fragment analytic geocentric normal |
+| CO-16 | 923 | `f443ee71db` | Both filed pick candidates REFUTED with file:line; SHAPE fix closes three defects |
+| CO-17 | 922 | `be6b477f04` | Shadow band does not move; the tonemap entry closes NEGATIVE, ruling ask withdrawn |
+| CO-18 | 927 | `3d1c397af4` | Day/night ramp law RECONCILED; the ×0.30 derived in closed form |
+| CO-19 | 925 | `3e8f265659` | Eclipse fifth-run discriminator legs — two verdict shapes differing by one predicate |
+| CO-20 | 928 | `5aec156b93` | Five probe-hygiene fleet sweeps; ratcheted watchdog allowlist |
+| CO-21 | 930 | `016ed5d5dc` | The ×0.44 is NOT attributable from run 5; settled-twin control makes run 6 the discriminator |
+| CO-22 | 932 | `0736c12f08` | `C12-28` HDR defaults + `C12-12` skybox VRAM policy (this plan's CO-7) |
+| CO-23 | 935 | `3cb301e32d` | `C13-09` reconstruction attachments as honest scaffolding, SHA-256 pin on the march module |
+| CO-24 | 933 | `4f6d3c9751` | **G3's first browser lane ever** (this plan's CO-5) |
+| CO-25 | 939 | `f02d1cc3c0` | `C13-10` first slice — march emission variant |
+| CO-26 | 937 | `794ece043a` | `C12-19` true HDR sun radiance as a DERIVED linear scale |
+| CO-27 | 938 | `786d115487` | **G4 gate lane** — the last missing C12 lane (this plan's CO-8) |
+| CO-28 | 945 | `4b933d57c2` | The five G4 fixes; the aim defect root-caused to `Camera.setView` gimbal-lock azimuth swap |
+| CO-29 | 943 | `fdf04d59c9` | `C13-10` consume-legs probe with the interleaved A/B protocol built in |
+| CO-30 | 947 | `33061e84ea` | The NaN black rectangle — B946's filing refuted, real B937 regression fixed at the builtin |
+| CO-31 | 949 | `58f6cb25cb` | Two G4 follow-ups; earthshine census moved to rank with 250× mutant margin |
+| CO-32 | 952 | `a1d73aeb5f` | Refresh-skip unification — one mechanism, three prior verdicts corrected |
+| CO-33 | 954 | `cb8d1acbdd` | Pixel-inertness instrument: tri-state identity + in-run-calibrated tolerance bands |
+| CO-34 | 960 | `21b7bb6354` | **`C16-00`** — comment standard, marker guard with warn-to-strict ratchet, comment-only-diff verifier |
+| CO-35 | 962 | `99e6e0d5c0` | R-2's condition discharged; §5 band re-ratified **disc-only** at [0.5124, 0.5874] |
+| CO-36 | 961 | `b288bfc7bb` | **`C13-11` part 1** — the in-repo STBN generator, certified against published spectra |
+| CO-37 | 967 | `68bf6e78d4` | **`C12-34`** WebGPU sun-bloom mirror + the `C12-34`→`C12-36` renumber |
+| CO-38 | 963 | `94d48e5132` | **`C16-01`** — 20 licence determinations, packaging defect fixed, 246 citation lines |
+| CO-39 | 972 | `1d976e654f` | **`UX-01`** — viewer starts upstream-shaped, WebGPU default, fork chrome behind `?devUi=true` |
+| CO-40 | 973 | `50b1b0aef8` | **`DOC-01`** — README overhaul, 39-row honest feature table, manifest-driven screenshots |
+
 ## 4. Process contract (unchanged, restated for workers)
 
 Workers implement in orchestrator-created worktrees and **never run git
@@ -219,5 +323,13 @@ packages/engine/tsconfig.json --noEmit` (non-TS2307 = 0), `npx prettier
 naga validation for WGSL. One Edge at a time, 5-minute watchdogs, probes
 follow the pinning doctrine (`lib/weather-probe-pinning.mjs` shape: offline
 globe, pinned clock, same-task capture, exit 0/1/2/3, watchdog + finally).
-Every landed batch updates its queue-ledger row in the same commit. Landed
-commits push as `kurtyoung-dev`.
+Every landed batch updates its queue-ledger row in the same commit.
+~~Landed commits push as `kurtyoung-dev`.~~ **CORRECTED 2026-08-09 (handover audit FIX 8) —
+author identity and push authentication are deliberately DIFFERENT things, and this line
+conflated them.** **Commit author:** the dedicated agent identity
+`cesium-webgpu-agent <cesium-webgpu-agent@users.noreply.github.com>`, in force since
+Batch 977 (`a36672d50c`) and attested in [`AUTOMATION.md`](../AUTOMATION.md) policy 1 — do
+not "fix" it back to a personal identity. **Push authentication:** the active `gh` account
+must be **`kurtyoung-dev`**; a 403 on push means the wrong `gh` account is active
+(`gh auth switch`), not a permission loss. `AUTOMATION.md` policy 2 also restates the
+quiet-hours window as a machine-enforced policy.
