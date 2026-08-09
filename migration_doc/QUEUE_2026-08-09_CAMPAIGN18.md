@@ -55,6 +55,13 @@ comment-only-diff gate that cannot be satisfied and a rewrite shard that has to
 re-census mid-flight. The orchestrator picks the side at dispatch and records it
 in the row's status cell.
 
+## First V2 scene run (2026-08-09, orchestrator Edge) - two findings, filed not normalized
+
+- **`gsplat-sh-unit-cube`: crossBackend PASS 0.41% vs 2.00%, expectation MET.** Clean first record; baseline promotion owed after PNG review.
+- **`pointcloud-timedynamic-edl`: crossBackend PASS 0.55% - expectation UNMET in the SURPRISING direction.** The scene pre-registered FAIL tracked by `PARITY-POINTCLOUD-COLOR-TINT` (27-45% recorded divergence), and the tint DID NOT MANIFEST. Investigation dispatched before any conclusion: candidate explanations are (a) the tint is conditional on state this scene does not enter, (b) the recorded divergence lives in the probe metric (per-channel ds4 gains) and the suite tolerance-16 pixel comparison cannot see it, (c) the defect was incidentally fixed since 2026-07. Do NOT close the tint row and do NOT promote this baseline until the investigation names the mechanism.
+- **`voxel-box-procedural`: exit 99 STRUCTURAL** - "voxel primitive did not become ready within 45000 ms" on the shared page. The readiness predicate or the procedural provider needs diagnosis; the throw is the designed honest outcome (an empty frame on both backends would have read as a cross-backend PASS).
+
+
 ---
 
 ## 1. Wave V — verification honesty FIRST
