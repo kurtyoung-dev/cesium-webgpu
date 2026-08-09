@@ -33,6 +33,18 @@
 //   D1 = flat - limb     the limb law      (halo cancels: no halo uniform is a
 //   D2 = flat - legacy   the disc radiance  function of either disc toggle)
 //
+// ⚠ THE SUN BLOOM DOES NOT CANCEL, AND IT IS NOT SMALL. `SunPostProcess` and
+// its WebGPU mirror bright-pass the SCENE, blur it and ADD it back before the
+// halo stage, which puts `solarBloomCentreAmplitude(discRadiance)` — 0.48 at
+// radiance 1, 0.71 at radiance 2 — on the disc itself. It survives both
+// differentials because the bright pass reads through a THRESHOLD and the three
+// legs present it three different sources: the limb-darkened disc falls below
+// it partway out, and the legacy disc ends at 1/sqrt(2) R. The first
+// two-radiance run modelled disc + halo only, and its four red criteria are all
+// that omission. Every reading below carries the glow explicitly, derived from
+// the shipped chain in `lib/sun-radiance-delta.mjs`; there is no configuration
+// that removes it, for the same reason there is none that removes the halo.
+//
 // WHAT IS MEASURED, per backend, per radiance leg:
 //
 //   1. D1 in DISPLAY CODES at x = 0 / 0.95 / 1.0 on the 1/8 exposure leg,
@@ -104,6 +116,8 @@ import {
   buildRadianceDeltaSummary,
   d1DiscriminationPower,
   deriveDiscDifferentialCodes,
+  discBloomPlateauDifferential,
+  discBloomSourceEdgeUncertaintyPx,
   discriminateRadianceExcess,
   evaluateRadianceDeltaBackend,
   foldRadianceDeltaVerdict,
@@ -266,6 +280,25 @@ function reduceRadianceLeg(lane, solarModel) {
         })
       : null;
 
+  // THE SUN BLOOM'S GEOMETRY, all of it live. The blur buffer's size is a
+  // function of the drawing buffer alone, and `limbPx` is the same scalar
+  // `SunHaloAppearance` hands the halo stage — so the glow this derivation
+  // models is built from the numbers the frame was drawn with, not from a
+  // framing assumption. The Sun is aimed at, so the composite is centred on the
+  // drawing buffer; `centerX/centerY` are read anyway rather than assumed.
+  const bloomGeometry =
+    halo?.limbPx > 0 &&
+    lane.setup.canvasWidth > 0 &&
+    lane.setup.canvasHeight > 0
+      ? {
+          viewportWidth: lane.setup.canvasWidth,
+          viewportHeight: lane.setup.canvasHeight,
+          limbPx: halo.limbPx,
+          centerX: halo.centerX,
+          centerY: halo.centerY,
+        }
+      : null;
+
   const derived = deriveDiscDifferentialCodes(solarModel, {
     discRadiance: halo?.discRadiance,
     haloAmplitude: halo?.haloAmplitude,
@@ -274,7 +307,39 @@ function reduceRadianceLeg(lane, solarModel) {
     // geometry the reading was taken at rather than against a modelled one.
     discRadiusPx: measured.discRadiusPx,
     exposure: RADIANCE_DELTA_EXPOSURE,
+    bloom: bloomGeometry,
   });
+
+  // The glow the bright-pass chain adds ACROSS THE D2 PLATEAU, plus the bracket
+  // its hard-edged source approximation is only known to. Both travel with the
+  // leg so the discrimination subtracts a number this frame produced.
+  const glowDifferential = bloomGeometry
+    ? discBloomPlateauDifferential(solarModel, {
+        discRadiance: halo.discRadiance,
+        ...bloomGeometry,
+      })
+    : undefined;
+  const edgeShiftPx = bloomGeometry
+    ? discBloomSourceEdgeUncertaintyPx(solarModel, bloomGeometry)
+    : 0;
+  const glowDifferentialError = bloomGeometry
+    ? Math.max(
+        Math.abs(
+          discBloomPlateauDifferential(solarModel, {
+            discRadiance: halo.discRadiance,
+            ...bloomGeometry,
+            discEdgeShiftPx: -edgeShiftPx,
+          }) - glowDifferential,
+        ),
+        Math.abs(
+          discBloomPlateauDifferential(solarModel, {
+            discRadiance: halo.discRadiance,
+            ...bloomGeometry,
+            discEdgeShiftPx: edgeShiftPx,
+          }) - glowDifferential,
+        ),
+      )
+    : undefined;
 
   return {
     hdrEngaged: flat.hdrEngaged && legacy.hdrEngaged && limb.hdrEngaged,
@@ -297,6 +362,10 @@ function reduceRadianceLeg(lane, solarModel) {
     resolvedRadiance: halo?.discRadiance,
     haloAmplitude: halo?.haloAmplitude,
     haloCoreRadii: halo?.haloCoreRadii,
+    limbPx: halo?.limbPx,
+    bloomGeometry,
+    glowDifferential,
+    glowDifferentialError,
     trueRadianceRequested: limb.lead.lightingRequested ?? null,
     shippedHaloState: halo,
     codes,
@@ -407,6 +476,8 @@ async function run(browser, git) {
         plateau: legs[key]?.plateau,
         plateauPixels: legs[key]?.plateauPixels,
         plateauQuantumLinear: legs[key]?.plateauQuantumLinear,
+        glowDifferential: legs[key]?.glowDifferential,
+        glowDifferentialError: legs[key]?.glowDifferentialError,
       })),
     });
     // How sharply the display-code criteria could have separated the two
@@ -423,6 +494,7 @@ async function run(browser, git) {
             haloCoreRadii: shipped.haloCoreRadii,
             discRadiusPx: shipped.discRadiusPx,
             exposure: RADIANCE_DELTA_EXPOSURE,
+            bloom: shipped.bloomGeometry,
           })
         : null;
     const evaluated = evaluateRadianceDeltaBackend({
@@ -441,6 +513,9 @@ async function run(browser, git) {
               plateau: v.plateau,
               plateauPixels: v.plateauPixels,
               plateauQuantumLinear: v.plateauQuantumLinear,
+              glowDifferential: v.glowDifferential,
+              glowDifferentialError: v.glowDifferentialError,
+              limbPx: v.limbPx,
               discRadiusPx: v.discRadiusPx,
               trueSizeRatio: v.trueSizeRatio,
               aimDistancePx: v.aimDistancePx,
@@ -515,6 +590,18 @@ async function run(browser, git) {
       continue;
     }
     console.log(`  ${renderer}`);
+    console.log(
+      `    plateau (raw)               ${ex.terms?.plateauLo} / ${ex.terms?.plateauHi}`,
+    );
+    console.log(
+      `    sun-bloom glow, subtracted  ${ex.terms?.glowLo} / ${ex.terms?.glowHi}  (modelled: ${ex.glowModelled})`,
+    );
+    console.log(
+      `    the DISC's own plateau      ${ex.terms?.discPlateauLo} / ${ex.terms?.discPlateauHi}`,
+    );
+    console.log(
+      `    recovered / resolved        ${JSON.stringify(ex.recoveredResidual)} against ${JSON.stringify(ex.recoveryBar)}`,
+    );
     console.log(
       `    plateau ratio measured      ${ex.ratioMeasured} (+/- ${ex.tolerance})`,
     );

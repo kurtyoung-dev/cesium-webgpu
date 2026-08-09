@@ -46,12 +46,39 @@
 // no uniform the halo reads is a function of either disc toggle, so the
 // cancellation is structural rather than configured.
 //
+// ⚠ THE THIRD LIGHT SOURCE, AND THE ONE THAT DOES **NOT** CANCEL. The sun
+// composite is not two terms, it is THREE. `SunPostProcess` (WebGL) and its
+// WebGPU mirror run a bright-pass -> blur -> ADDITIVE-BLEND chain BEFORE the
+// halo stage, and that chain adds a fourth-order-of-nothing glow to the disc
+// itself: `SolarDiscModel.solarBloomCentreAmplitude` is the shipped closed form
+// of its centre value, and it is 0.4815 at `discRadiance = 1` and 0.7071 at
+// `discRadiance = 2` — i.e. between a third and a half of the disc's own
+// radiance, sitting ON the disc.
+//
+// It does not cancel in EITHER differential, because the bright pass reads the
+// scene through a THRESHOLD and each leg presents it a different source:
+//
+//   D1 = flat - limb     the limb-darkened leg falls below the bright pass's
+//                        threshold partway out, so its glow dies at
+//                        `x = 0.847` (radiance 1) / `x = 0.974` (radiance 2)
+//                        while the flat leg's runs to the limb.
+//   D2 = flat - legacy   the legacy leg's disc ENDS at `1/sqrt(2) R`, so over
+//                        the plateau annulus (0.78 R to 0.92 R) the flat leg is
+//                        still glowing and the legacy leg is not.
+//
+// And it is neither proportional to the radiance nor independent of it: the
+// bright pass is a saturating rational bounded by 1, so the glow grows by 47%
+// while the disc doubles. A model that omits it therefore sees an "excess"
+// that is MULTIPLICATIVE in neither shape and ADDITIVE in neither shape —
+// which is exactly the verdict the first run returned.
+//
 // WHY D1 IS READ IN DISPLAY CODES. The halo cancels EXACTLY in linear light and
 // only approximately in codes, because the display transform is non-linear and
 // the halo shifts both legs' operating point along it. Reading D1 in codes is
 // therefore the STRICTER test: it is sensitive to the absolute radiance as well
 // as to the limb law, which is exactly the sensitivity a radiance question
-// needs. The forward model below carries the halo explicitly for that reason.
+// needs. The forward model below carries the halo AND the glow explicitly for
+// that reason.
 //
 // @module sun-radiance-delta
 
@@ -178,6 +205,26 @@ export const RADIANCE_DELTA_MIN_RESOLVED_SEPARATION = 0.5;
  * @type {Readonly<Record<string, readonly number[]>>}
  */
 export const PRE_REGISTERED_D1_CODES = Object.freeze({
+  trueRadiance: Object.freeze([0.04, 27.62, 43.23]),
+  sdrRadiance: Object.freeze([0.14, 28.83, 39.34]),
+});
+
+/**
+ * The table the FIRST two-radiance run was scored against, kept because it is
+ * the evidence for what changed rather than a number to be quietly replaced.
+ *
+ * It was computed from a composite of DISC + SCREEN HALO. The measured `D1` at
+ * `x = 0.95` came in at 28.05 and 28.18 codes against its 17.92 and 22.88 — and
+ * the sign of that miss is the finding: a two-term model cannot be short by ten
+ * codes on the low-radiance leg and by five on the high one unless the missing
+ * term SATURATES, which the sun bloom's bright pass does. The rows above are
+ * the same arithmetic with that third term carried; the null sample moves off
+ * exactly zero for the same reason (the flat leg glows very slightly more than
+ * the limb leg even at the disc centre, because the blur reaches a little
+ * further out than the centre pixel).
+ * @type {Readonly<Record<string, readonly number[]>>}
+ */
+export const PRE_REGISTERED_D1_CODES_NO_BLOOM = Object.freeze({
   trueRadiance: Object.freeze([0.0, 22.88, 39.69]),
   sdrRadiance: Object.freeze([0.0, 17.92, 31.46]),
 });
@@ -193,6 +240,42 @@ export const PRE_REGISTERED_D1_CODES = Object.freeze({
  */
 export const PRE_REGISTRATION_AGREEMENT_CODES = 1.0;
 
+/**
+ * Allowance, in display codes, a `D1` sample carries when NEITHER of its bins
+ * dithers at all.
+ *
+ * Not a tolerance and not tuned: it is the exact worst case of the arithmetic.
+ * A bin over which the leg's own code does not move renders as one integer on
+ * each leg; each of those integers is within 0.5 of the value it quantized, so
+ * their difference is within 1.0 of the true difference. There is no
+ * `1/sqrt(N)` to be had — the pixels do not disagree, so averaging them cannot
+ * average anything down. A bin that sweeps a full code contributes nothing, and
+ * the derivation interpolates between the two rather than switching.
+ *
+ * The first two-radiance run is the case this exists for: at `x = 0` the twelve
+ * centre pixels read `flat - limb = 1` EXACTLY on the shipped radiance leg and
+ * `0` EXACTLY on the SDR one, both integers, against a band of 0.612 built on
+ * `N = 12`. The two legs disagree because they sit at different points on the
+ * display curve, which is the signature of deterministic rounding rather than
+ * of a differential.
+ * @type {number}
+ */
+export const ZERO_DITHER_QUANTUM_CODES = 1.0;
+
+/**
+ * Fraction of the resolved disc radiance the glow-corrected recovery may miss
+ * by before it is a finding rather than a modelling residual.
+ *
+ * DERIVED at evaluation time from {@link discBloomSourceEdgeUncertaintyPx} —
+ * the glow's source edge is quantized twice (the bake's texel and the blur
+ * buffer's), and moving it across that bracket moves the recovered radiance by
+ * a computable amount. This constant is only the CEILING on that derivation, so
+ * a run cannot invent an arbitrarily generous bar out of a degenerate geometry;
+ * the derived number at the shipped framing is well inside it.
+ * @type {number}
+ */
+export const DISC_RADIANCE_RECOVERY_CEILING = 0.05;
+
 /** Verdicts {@link discriminateRadianceExcess} can return. */
 export const EXCESS_SHAPE = Object.freeze({
   MULTIPLICATIVE: "MULTIPLICATIVE",
@@ -202,17 +285,295 @@ export const EXCESS_SHAPE = Object.freeze({
 });
 
 // ---------------------------------------------------------------------------
-// FORWARD MODEL
+// FORWARD MODEL — THE SUN BLOOM
+// ---------------------------------------------------------------------------
+
+/**
+ * Angular samples the glow field is averaged over when it is read at a radius.
+ *
+ * The glow is NOT radially symmetric and cannot be made so: the blur runs on a
+ * SQUARE power-of-two buffer covering a non-square viewport, so its one `step`
+ * uniform is a different number of screen pixels on each axis (10.0 px in x
+ * against 5.625 px in y at 1280x720). The measurement it is compared against is
+ * an annulus MEAN, so the model has to take the same mean rather than evaluate
+ * one direction and call it the radius.
+ * @type {number}
+ */
+export const BLOOM_FIELD_ANGULAR_SAMPLES = 256;
+
+/**
+ * Radius, in drawing-buffer pixels, out to which ONE leg's disc still crosses
+ * the bright pass's extraction threshold — i.e. the support of the source the
+ * sun bloom is built from on that leg.
+ *
+ * `BrightPass.glsl` computes `scaled = key(avg) * luminance / avg` and extracts
+ * `max(scaled - threshold, 0)`, so extraction starts at
+ * `luminance = threshold / (key(avg)/avg)` exactly. On the FLAT and LEGACY legs
+ * the disc's luminance is the constant `discRadiance`, so the source is the
+ * disc or nothing; on the LIMB leg it is `discRadiance * limb(x)`, which crosses
+ * the threshold at a radius strictly inside the limb. That crossing is why the
+ * glow does not cancel out of `D1` and it is solved here in closed form from
+ * the shipped quadratic law rather than searched for.
+ *
+ * @param {object} model The shipped `SolarDiscModel` namespace, or a mutant.
+ * @param {{discRadiance:number,limbDarkened:boolean,discEdgePx:number}} o
+ * @returns {number} Source radius in pixels; 0 when the leg never extracts.
+ */
+export function brightPassSourceRadiusPx(model, o) {
+  const avg = model.SUN_BRIGHT_PASS_AVG_LUMINANCE;
+  const scale = model.sunBrightPassKey(avg) / avg;
+  const tuning = model.solarBrightPassTuning(o.discRadiance, avg);
+  const needed = tuning.threshold / scale;
+  const edge = o.discEdgePx;
+  if (!(edge > 0)) {
+    return 0;
+  }
+  if (o.limbDarkened !== true) {
+    return o.discRadiance > needed ? edge : 0;
+  }
+  // `a0 + a1*mu + a2*mu^2 = needed / L`, with `a2 < 0`. The disc is brightest
+  // at `mu = 1` and dims outward, so the crossing is the root the law reaches
+  // FIRST going out from the centre, which is the larger `mu`.
+  const target = needed / o.discRadiance;
+  const a0 = model.SOLAR_LIMB_DARKENING_A0;
+  const a1 = model.SOLAR_LIMB_DARKENING_A1;
+  const a2 = model.SOLAR_LIMB_DARKENING_A2;
+  if (!(model.solarLimbIntensity(0) > target)) {
+    return 0;
+  }
+  if (model.solarLimbIntensity(1) >= target) {
+    return edge;
+  }
+  const disc = a1 * a1 - 4 * a2 * (a0 - target);
+  if (!(disc >= 0)) {
+    return edge;
+  }
+  const mu = (-a1 + Math.sqrt(disc)) / (2 * a2);
+  if (!(mu > 0 && mu < 1)) {
+    return mu >= 1 ? 0 : edge;
+  }
+  return edge * Math.sqrt(Math.max(0, 1 - mu * mu));
+}
+
+/**
+ * The sun bloom's additive glow, as a field that can be read at any radius.
+ *
+ * Every line of the shipped chain, in order, with nothing dialled:
+ *
+ *   stage 0  down-sample to `solarBloomBlurBufferSize(w, h)` square texels
+ *   stage 1  `BrightPass.glsl` on that buffer
+ *   stage 2  `GaussianBlur1D.glsl`, x, `sigma = SUN_BLOOM_BLUR_SIGMA`, and its
+ *   stage 3  y twin, both at `step = 1 / bufferSize` (isotropic in TEXELS)
+ *   stage 4  up-sample, bilinear
+ *   stage 5  `AdditiveBlend.glsl` — `mix(glow + scene, scene, smoothstep(0.5,
+ *            0.8, dist / solarBloomCompositeRadiusPx(limbPx)))`
+ *
+ * The blur weights are the un-normalised incremental Gaussian the shader
+ * actually evaluates (its 15 taps sum to 0.99983, not to 1), because a model
+ * that renormalised them would be describing a different picture.
+ *
+ * The bright pass is evaluated on the leg's OWN radial luminance rather than on
+ * an indicator of its disc — that is the whole reason the glow does not cancel,
+ * and an indicator would put the limb leg's source at full strength right up to
+ * where it crosses the threshold instead of letting it decay into it.
+ *
+ * ⚠ THE ONE APPROXIMATION, AND WHERE ITS ERROR BAR COMES FROM. The disc's edge
+ * is treated as a hard cut at `discEdgePx`. The real edge is soft twice over —
+ * the bake's own texel (the disc's alpha is a bilinear reconstruction of a
+ * `step()` across one bake texel) and the down-sample's point sampling (the
+ * edge lands on a blur-buffer texel centre or it does not).
+ * {@link discBloomSourceEdgeUncertaintyPx} states that bracket, and the callers
+ * that need a tolerance derive it by moving the edge across it rather than by
+ * choosing a number.
+ *
+ * @param {object} model The shipped `SolarDiscModel` namespace, or a mutant.
+ * @param {{discRadiance:number,limbDarkened:boolean,discEdgePx:number,
+ *          viewportWidth:number,viewportHeight:number,limbPx?:number,
+ *          centerX?:number,centerY?:number}} o
+ * @returns {{sampleAtRadiusPx:Function,bufferSize:number,
+ *            sourceRadiusPx:number,centreAmplitude:number}}
+ */
+export function discBloomGlowField(model, o) {
+  const width = o.viewportWidth;
+  const height = o.viewportHeight;
+  const n = model.solarBloomBlurBufferSize(width, height);
+  const cx = Number.isFinite(o.centerX) ? o.centerX : width / 2;
+  const cy = Number.isFinite(o.centerY) ? o.centerY : height / 2;
+  const avg = model.SUN_BRIGHT_PASS_AVG_LUMINANCE;
+  const scale = model.sunBrightPassKey(avg) / avg;
+  const tuning = model.solarBrightPassTuning(o.discRadiance, avg);
+  const edge = o.discEdgePx;
+  // The scene luminance this leg presents the bright pass, at one radius. On a
+  // dark sky the sun billboard's peak channel is `discRadiance * alpha` and
+  // `alpha` IS the limb law, so this is the disc and nothing else — the screen
+  // halo is stage 6, downstream of the whole bright-pass chain, and is not in
+  // the picture the glow is extracted from.
+  const luminanceAt = (r) => {
+    if (!(edge > 0) || r > edge) {
+      return 0;
+    }
+    return o.limbDarkened === true
+      ? o.discRadiance * model.solarLimbIntensity(r / edge)
+      : o.discRadiance;
+  };
+  const sourceRadiusPx = brightPassSourceRadiusPx(model, o);
+
+  // The shipped incremental Gaussian, weights included, exactly as the shader
+  // builds them: `g.x` starts at `1/(sqrt(2pi)*sigma)` and is stepped by `g.y`.
+  const sigma = model.SUN_BLOOM_BLUR_SIGMA;
+  const delta = model.SUN_BLOOM_BLUR_DELTA;
+  const taps = [];
+  {
+    let gx = 1.0 / (Math.sqrt(2.0 * Math.PI) * sigma);
+    let gy = Math.exp((-0.5 * delta * delta) / (sigma * sigma));
+    const gz = gy * gy;
+    taps.push([0, gx]);
+    for (let i = 1; i < 8; i++) {
+      gx *= gy;
+      gy *= gz;
+      taps.push([i, gx]);
+    }
+  }
+
+  const src = new Float64Array(n * n);
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const px = ((i + 0.5) / n) * width - cx;
+      const py = ((j + 0.5) / n) * height - cy;
+      // `BrightPass.glsl`, verbatim, on this texel's luminance.
+      const bright = Math.max(
+        scale * luminanceAt(Math.hypot(px, py)) - tuning.threshold,
+        0,
+      );
+      src[j * n + i] = bright / (tuning.offset + bright);
+    }
+  }
+  const clamp = (v) => (v < 0 ? 0 : v > n - 1 ? n - 1 : v);
+  const pass = (input, horizontal) => {
+    const out = new Float64Array(n * n);
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        let acc = 0;
+        for (const [k, w] of taps) {
+          if (k === 0) {
+            acc += input[j * n + i] * w;
+            continue;
+          }
+          const a = horizontal
+            ? input[j * n + clamp(i - k)]
+            : input[clamp(j - k) * n + i];
+          const b = horizontal
+            ? input[j * n + clamp(i + k)]
+            : input[clamp(j + k) * n + i];
+          acc += (a + b) * w;
+        }
+        out[j * n + i] = acc;
+      }
+    }
+    return out;
+  };
+  const blurred = pass(pass(src, true), false);
+
+  // Stage 5's radial fade. `limbPx` is the same scalar `SunHaloAppearance`
+  // publishes; without it the composite radius is unknown and the honest
+  // reading is "no fade", which is what the disc sees anyway (the fade starts
+  // at 4.5 solar radii).
+  const compositeRadius = model.solarBloomCompositeRadiusPx(
+    Number.isFinite(o.limbPx) ? o.limbPx : 0,
+  );
+  const fadeAt = (r) => {
+    if (!(compositeRadius > 0)) {
+      return 1;
+    }
+    const t = r / compositeRadius;
+    const u = Math.min(1, Math.max(0, (t - 0.5) / 0.3));
+    return 1 - u * u * (3 - 2 * u);
+  };
+
+  const bilinear = (px, py) => {
+    const u = (px / width) * n - 0.5;
+    const v = (py / height) * n - 0.5;
+    const i0 = Math.floor(u);
+    const j0 = Math.floor(v);
+    const tu = u - i0;
+    const tv = v - j0;
+    const g = (i, j) => blurred[clamp(j) * n + clamp(i)];
+    return (
+      g(i0, j0) * (1 - tu) * (1 - tv) +
+      g(i0 + 1, j0) * tu * (1 - tv) +
+      g(i0, j0 + 1) * (1 - tu) * tv +
+      g(i0 + 1, j0 + 1) * tu * tv
+    );
+  };
+
+  const sampleAtRadiusPx = (r) => {
+    if (!(r >= 0)) {
+      return NaN;
+    }
+    let acc = 0;
+    for (let a = 0; a < BLOOM_FIELD_ANGULAR_SAMPLES; a++) {
+      const th = (2 * Math.PI * a) / BLOOM_FIELD_ANGULAR_SAMPLES;
+      acc += bilinear(cx + r * Math.cos(th), cy + r * Math.sin(th));
+    }
+    return (acc / BLOOM_FIELD_ANGULAR_SAMPLES) * fadeAt(r);
+  };
+
+  return {
+    sampleAtRadiusPx,
+    bufferSize: n,
+    sourceRadiusPx,
+    centreAmplitude: model.solarBloomCentreAmplitude(o.discRadiance),
+  };
+}
+
+/**
+ * How far the bright pass's source edge is genuinely UNKNOWN, in drawing-buffer
+ * pixels — the error bar {@link discBloomGlowField}'s hard-edge approximation
+ * carries.
+ *
+ * Two quantized edges, added in quadrature because they are independent:
+ *
+ *   * THE BAKE TEXEL. The bake is `2^(ceil(log2(max(w,h))) - 2)` texels across
+ *     a quad `2 * limbPx * (1 + 2*glowLengthTS)` pixels wide, and a bilinear
+ *     reconstruction of the disc's `step()` spreads it over exactly one texel.
+ *     Half of that is the distance the threshold crossing can sit from the
+ *     geometric edge.
+ *   * THE BLUR TEXEL. Stage 0 POINT-samples, so the source edge is resolved
+ *     only to the blur buffer's own grid. Its coarser axis (the viewport's
+ *     larger dimension) sets the bound.
+ *
+ * @param {object} model The shipped `SolarDiscModel` namespace, or a mutant.
+ * @param {{limbPx:number,glowLengthTS?:number,viewportWidth:number,
+ *          viewportHeight:number}} o
+ * @returns {number} Half-width of the bracket, in pixels.
+ */
+export function discBloomSourceEdgeUncertaintyPx(model, o) {
+  const glowLengthTS = Number.isFinite(o.glowLengthTS) ? o.glowLengthTS : 5.0;
+  const w = o.viewportWidth;
+  const h = o.viewportHeight;
+  const bakeTexels = Math.max(
+    1,
+    Math.pow(2, Math.ceil(Math.log2(Math.max(w, h))) - 2),
+  );
+  const quadPx = 2 * o.limbPx * (1 + 2 * glowLengthTS);
+  const bakeTexelPx = quadPx / bakeTexels;
+  const blurTexelPx = Math.max(w, h) / model.solarBloomBlurBufferSize(w, h);
+  return Math.hypot(0.5 * bakeTexelPx, 0.5 * blurTexelPx);
+}
+
+// ---------------------------------------------------------------------------
+// FORWARD MODEL — THE COMPOSITE
 // ---------------------------------------------------------------------------
 
 /**
  * The display code the sun composite lands on at one radius, on one disc leg.
  *
- * Four shipped lines and nothing else:
+ * Five shipped lines and nothing else:
  *
  *   bake        rgb = (1, 1, clamp(limb + 0.2))     alpha = limb
  *   SunFS       rgb = pow(rgb, gamma) * discRadiance
  *   blend       out = rgb * alpha                   (over a dark sky)
+ *   sun bloom   out += glow                         (bright pass -> blur -> add)
  *   screen halo out += haloAmplitude * P(rho)
  *
  * evaluated on the PEAK channel, which is red and green: the bake writes those
@@ -221,12 +582,17 @@ export const EXCESS_SHAPE = Object.freeze({
  * tonemapper's compression is a function of the triple's maximum, and it is the
  * one the measurement reads for the same reason.
  *
+ * `glow` is a per-point INPUT rather than something computed here, for the same
+ * reason `haloAmplitude` is: this function is the composite, not the chain that
+ * produces one of its terms. {@link discBloomGlowField} is that chain, and
+ * {@link deriveDiscDifferentialCodes} is what wires the two together.
+ *
  * @param {{solarLimbIntensity:Function,solarScreenHaloProfile:Function,
  *          solarDiscDisplayCode:Function}} model The shipped `SolarDiscModel`
  *        namespace, or a mutant of it.
  * @param {{x:number,limbDarkened:boolean,discRadiance:number,
  *          haloAmplitude:number,haloCoreRadii:number,exposure:number,
- *          gamma?:number}} o
+ *          glow?:number,gamma?:number}} o
  * @returns {{linear:number,code:number}} Peak-channel radiance and its code.
  */
 export function discDifferentialCodeModel(model, o) {
@@ -234,7 +600,8 @@ export function discDifferentialCodeModel(model, o) {
   const limb = o.limbDarkened ? model.solarLimbIntensity(o.x) : 1.0;
   const halo =
     o.haloAmplitude * model.solarScreenHaloProfile(o.x, o.haloCoreRadii);
-  const linear = o.discRadiance * limb + halo;
+  const glow = Number.isFinite(o?.glow) ? o.glow : 0.0;
+  const linear = o.discRadiance * limb + halo + glow;
   return {
     linear,
     code: model.solarDiscDisplayCode(o.exposure * linear, gamma),
@@ -264,6 +631,16 @@ export function discDifferentialCodeModel(model, o) {
  *   T3  THE fp16 BAKE — both sun bakes store HDR as binary16, whose significand
  *       is 11 bits, over two legs.
  *
+ *   T4  THE UNDITHERED REMAINDER — `1/sqrt(N)` is earned only where the bin's
+ *       pixels round DIFFERENTLY, which needs the leg's own code to sweep at
+ *       least one code across the bin. At the null sample it sweeps none: the
+ *       disc centre is flat, all twelve pixels render the SAME integer on each
+ *       leg, and their difference is an INTEGER whose smallest non-zero value
+ *       is 1.0 — three times a band built on `N = 12`. T4 is the part of the
+ *       quantum that no amount of averaging reaches, `(1 - sweep)/2` per leg,
+ *       and it is a HARD bound rather than a sigma so it joins the bar OUTSIDE
+ *       the 3x margin. A fully swept bin contributes exactly zero.
+ *
  * The bar is then pinned between two requirements that both have to hold, in
  * the style this lane's other derived bounds use:
  *
@@ -277,6 +654,13 @@ export function discDifferentialCodeModel(model, o) {
  * expectation is exactly zero and there is no multiplicative separation to
  * halve, so the band there is the modelled error alone — which is the correct
  * and stricter statement: the disc centre must show NO differential.
+ *
+ * ⚠ THE GLOW IS PART OF THE PREDICTION, NOT AN ERROR TERM. When `bloom`
+ * geometry is supplied the derivation builds {@link discBloomGlowField} once per
+ * leg and adds each leg's own glow to that leg's composite. Omitting it is not
+ * a smaller model, it is a WRONG one — the flat and limb legs glow differently
+ * by construction — so a call without `bloom` returns samples that are
+ * explicitly NON-CERTIFYING rather than quietly scoring a two-term picture.
  *
  * ⚠ NOT EVERY SAMPLE CAN CERTIFY, AND THE DERIVATION SAYS WHICH. The limb law
  * has a VERTICAL TANGENT at the extreme limb — it is built on
@@ -295,7 +679,10 @@ export function discDifferentialCodeModel(model, o) {
  * @param {object} model The shipped `SolarDiscModel` namespace, or a mutant.
  * @param {{discRadiance:number,haloAmplitude:number,haloCoreRadii:number,
  *          exposure?:number,discRadiusPx:number,xs?:readonly number[],
- *          gamma?:number}} o Live-resolved appearance scalars and geometry.
+ *          gamma?:number,bloom?:{viewportWidth:number,viewportHeight:number,
+ *          limbPx:number,centerX?:number,centerY?:number}}} o Live-resolved
+ *        appearance scalars, geometry, and the viewport the sun bloom's blur
+ *        buffer is sized from.
  * @returns {{exposure:number,discRadiusPx:number,
  *            samples:Array<{x:number,flatCode:number,limbCode:number,
  *              d1Codes:number,band:{lo:number,hi:number},tolCodes:number,
@@ -315,9 +702,61 @@ export function deriveDiscDifferentialCodes(model, o) {
     exposure,
     gamma,
   };
+
+  // THE GLOW, built ONCE per leg. The disc's edge in pixels is the leg's own
+  // `limbPx` — both D1 legs carry the true-size disc — and the two fields
+  // differ only in whether the limb law is applied to the bright pass's input.
+  const bloom = o?.bloom ?? null;
+  const bloomUsable =
+    bloom !== null &&
+    bloom.viewportWidth > 0 &&
+    bloom.viewportHeight > 0 &&
+    bloom.limbPx > 0 &&
+    o?.discRadiance > 0;
+  const fields = bloomUsable
+    ? {
+        flat: discBloomGlowField(model, {
+          discRadiance: o.discRadiance,
+          limbDarkened: false,
+          discEdgePx: bloom.limbPx,
+          limbPx: bloom.limbPx,
+          viewportWidth: bloom.viewportWidth,
+          viewportHeight: bloom.viewportHeight,
+          centerX: bloom.centerX,
+          centerY: bloom.centerY,
+        }),
+        limb: discBloomGlowField(model, {
+          discRadiance: o.discRadiance,
+          limbDarkened: true,
+          discEdgePx: bloom.limbPx,
+          limbPx: bloom.limbPx,
+          viewportWidth: bloom.viewportWidth,
+          viewportHeight: bloom.viewportHeight,
+          centerX: bloom.centerX,
+          centerY: bloom.centerY,
+        }),
+      }
+    : null;
+  // The glow is read at the SAME physical radius the disc law is evaluated at,
+  // so a sample at `x` reads `x * limbPx` and not `x * discRadiusPx`: the two
+  // differ, and `discRadiusPx` is a MEASUREMENT while `limbPx` is the geometry
+  // the engine drew with.
+  const glowAt = (x, leg) =>
+    fields ? fields[leg].sampleAtRadiusPx(Math.abs(x) * bloom.limbPx) : 0.0;
+
   const d1At = (x) =>
-    discDifferentialCodeModel(model, { ...base, x, limbDarkened: false }).code -
-    discDifferentialCodeModel(model, { ...base, x, limbDarkened: true }).code;
+    discDifferentialCodeModel(model, {
+      ...base,
+      x,
+      limbDarkened: false,
+      glow: glowAt(x, "flat"),
+    }).code -
+    discDifferentialCodeModel(model, {
+      ...base,
+      x,
+      limbDarkened: true,
+      glow: glowAt(x, "limb"),
+    }).code;
 
   const usable =
     o?.discRadiance > 0 &&
@@ -330,11 +769,13 @@ export function deriveDiscDifferentialCodes(model, o) {
       ...base,
       x,
       limbDarkened: false,
+      glow: glowAt(x, "flat"),
     });
     const limb = discDifferentialCodeModel(model, {
       ...base,
       x,
       limbDarkened: true,
+      glow: glowAt(x, "limb"),
     });
     const d1Codes = flat.code - limb.code;
     if (!usable || !Number.isFinite(d1Codes)) {
@@ -349,6 +790,24 @@ export function deriveDiscDifferentialCodes(model, o) {
         nonCertifyingReason:
           "the appearance scalars or the disc geometry were not usable, so no " +
           "band could be derived",
+        terms: null,
+      };
+    }
+    if (!bloomUsable) {
+      return {
+        x,
+        flatCode: flat.code,
+        limbCode: limb.code,
+        d1Codes,
+        band: { lo: NaN, hi: NaN },
+        tolCodes: NaN,
+        certifying: false,
+        nonCertifyingReason:
+          "no sun-bloom geometry was supplied, so the composite was modelled " +
+          "as disc + halo only. The bright-pass chain adds a glow to the disc " +
+          "that is between a third and a half of its own radiance and that " +
+          "DIFFERS between the two legs, so a two-term prediction is wrong " +
+          "rather than approximate. Measured and reported, not scored",
         terms: null,
       };
     }
@@ -373,11 +832,41 @@ export function deriveDiscDifferentialCodes(model, o) {
                 LIMB_DISC_ONLY_CENTRE_RADIUS_PX,
             ),
           );
+    // T2 — the difference of two 8-bit readbacks, over the annulus population.
     const t2 = (Math.SQRT2 * 0.5) / Math.sqrt(nBin);
     // T3 — the binary16 bake, two legs.
     const t3 = Math.abs(d1Codes) * 2 * Math.pow(2, -11);
+    // ⚠ HOW MUCH OF THE BIN CANNOT DITHER, which is the part `1/sqrt(N)` never
+    // reaches. Averaging beats quantization down only where the pixels round
+    // DIFFERENTLY. Over a bin across which one leg's own code sweeps `s` codes,
+    // the mean of the rounded values differs from the mean of the true ones by
+    // at most `(1 - s)/2` — at `s = 1` a full ramp averages exactly and the
+    // bound is 0, at `s = 0` every pixel is the same integer and the bound is
+    // the half code that integer stands for. Each leg contributes its own, so
+    // the difference carries their sum, and the sweep is asked of the MODEL at
+    // the same radial half-bin T1 is derived over.
+    //
+    // This is a HARD bound, not a sigma, so it is added OUTSIDE the 3x
+    // stochastic margin: exactly the allowance a sample the instrument cannot
+    // resolve is owed, and none on a sample it can.
+    const legCodeAt = (xx, leg) =>
+      discDifferentialCodeModel(model, {
+        ...base,
+        x: xx,
+        limbDarkened: leg === "limb",
+        glow: glowAt(xx, leg),
+      }).code;
+    const dx = RADIANCE_DELTA_BIN_HALF_PX / discRadiusPx;
+    const spreadOf = (leg) =>
+      Math.abs(legCodeAt(x + dx, leg) - legCodeAt(Math.max(0, x - dx), leg));
+    const codeSpread = { flat: spreadOf("flat"), limb: spreadOf("limb") };
+    const quantum =
+      0.5 *
+      ZERO_DITHER_QUANTUM_CODES *
+      (Math.max(0, 1 - codeSpread.flat) + Math.max(0, 1 - codeSpread.limb));
+    const dithers = quantum <= 0;
     const modelled = t1 + t2 + t3;
-    const loBar = 3 * modelled;
+    const loBar = 3 * modelled + quantum;
     // The nearest thing the band must refuse is a FLAT disc, `D1 = 0`.
     const hiBar = Math.abs(d1Codes) / 3;
     const tolCodes = hiBar > loBar ? Math.sqrt(loBar * hiBar) : loBar;
@@ -400,10 +889,34 @@ export function deriveDiscDifferentialCodes(model, o) {
           `itself (${d1Codes}), so it would admit a FLAT disc; the limb law's ` +
           "radial derivative diverges as x approaches 1, which is where this " +
           "width comes from. Measured and reported, not scored",
-      terms: { t1, t2, t3, slope, binPixels: nBin, modelled, loBar, hiBar },
+      terms: {
+        t1,
+        t2,
+        t3,
+        slope,
+        binPixels: nBin,
+        codeSpread,
+        dithers,
+        quantum,
+        glowFlat: glowAt(x, "flat"),
+        glowLimb: glowAt(x, "limb"),
+        modelled,
+        loBar,
+        hiBar,
+      },
     };
   });
-  return { exposure, discRadiusPx, gamma, samples };
+  return {
+    exposure,
+    discRadiusPx,
+    gamma,
+    bloomModelled: bloomUsable,
+    bloomSourceRadiusPx: fields
+      ? { flat: fields.flat.sourceRadiusPx, limb: fields.limb.sourceRadiusPx }
+      : null,
+    bloomCentreAmplitude: fields ? fields.flat.centreAmplitude : null,
+    samples,
+  };
 }
 
 /**
@@ -433,6 +946,7 @@ export function d1DiscriminationPower(model, o) {
     exposure: o.exposure,
     xs: o.xs,
     gamma: o.gamma,
+    bloom: o.bloom,
   };
   // The halo's amplitude is a fixed multiple of the disc radiance, so a
   // hypothesis about the radiance is a hypothesis about the whole composite —
@@ -553,8 +1067,78 @@ export function measureDiscDifferentialCodes(o) {
 // ---------------------------------------------------------------------------
 
 /**
+ * The sun bloom's contribution to the `D2` PLATEAU, in the same linear units
+ * the plateau is measured in — i.e. the number that has to come OFF the plateau
+ * before it is read as a disc radiance.
+ *
+ * `D2 = flat - legacy` over the annulus between `LIMB_DISC_ONLY_ANNULUS.lo` and
+ * `.hi` sits INSIDE the true-size disc and OUTSIDE the legacy one. Both legs
+ * carry the identical screen halo there and it cancels exactly; the flat leg
+ * carries the disc and the legacy leg does not, which is the reading the lane
+ * wants. But the flat leg is also still GLOWING there and the legacy leg has
+ * stopped, because the legacy disc — the bright pass's whole source on that leg
+ * — ended at `1/sqrt(2) R`, several blur widths inside. That difference is a
+ * pure addition to the plateau and is what an uncorrected recovery reads as a
+ * radiance excess.
+ *
+ * The average is weighted by radius, because an annulus mean over pixels is.
+ *
+ * @param {object} model The shipped `SolarDiscModel` namespace, or a mutant.
+ * @param {{discRadiance:number,limbPx:number,viewportWidth:number,
+ *          viewportHeight:number,centerX?:number,centerY?:number,
+ *          annulus?:{lo:number,hi:number},discEdgeShiftPx?:number,
+ *          samples?:number}} o
+ * @returns {number} Linear light the glow adds to the plateau.
+ */
+export function discBloomPlateauDifferential(model, o) {
+  const band = o.annulus ?? LIMB_DISC_ONLY_ANNULUS;
+  const shift = Number.isFinite(o.discEdgeShiftPx) ? o.discEdgeShiftPx : 0;
+  const geometry = {
+    discRadiance: o.discRadiance,
+    limbPx: o.limbPx,
+    viewportWidth: o.viewportWidth,
+    viewportHeight: o.viewportHeight,
+    centerX: o.centerX,
+    centerY: o.centerY,
+    limbDarkened: false,
+  };
+  const flat = discBloomGlowField(model, {
+    ...geometry,
+    discEdgePx: Math.max(0, o.limbPx + shift),
+  });
+  // The legacy disc is the true disc divided by the bakes' own length scalar —
+  // `solarDiscBakeEdge` multiplies the legacy edge by it, so the ratio is that
+  // constant and not a re-typed `sqrt(2)`.
+  const legacyEdgePx = o.limbPx / model.SOLAR_DISC_BAKE_LENGTH_SCALAR;
+  const legacy = discBloomGlowField(model, {
+    ...geometry,
+    discEdgePx: Math.max(0, legacyEdgePx + shift),
+  });
+  const n = Number.isFinite(o.samples) ? o.samples : 128;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < n; i++) {
+    const r = (band.lo + ((band.hi - band.lo) * (i + 0.5)) / n) * o.limbPx;
+    num += r * (flat.sampleAtRadiusPx(r) - legacy.sampleAtRadiusPx(r));
+    den += r;
+  }
+  return den > 0 ? num / den : NaN;
+}
+
+/**
  * Decide whether the disc's rendered-versus-resolved radiance excess is
  * MULTIPLICATIVE or ADDITIVE, from the two legs' recovered plateaus.
+ *
+ * ⚠ WHAT THE PLATEAU IS, BEFORE ANY SHAPE QUESTION IS ASKED. The annulus does
+ * not carry the disc alone: it carries the disc PLUS the sun bloom's glow
+ * differential between the two legs (see
+ * {@link discBloomPlateauDifferential}). A leg's `glowDifferential` is
+ * therefore subtracted before its radiance is recovered. Omitting it does not
+ * bias the answer by a constant — the glow is a saturating function of the
+ * radiance, so it inflates the LOW leg by proportionally more than the high one
+ * and the ratio lands between the two hypotheses, matching neither. That is
+ * exactly the `NEITHER` the first two-radiance run returned, and it is a
+ * statement about the model rather than about the engine.
  *
  * The separating statistic is the plateau RATIO, which under the multiplicative
  * shape equals the ratio of the two RESOLVED radiances exactly and contains no
@@ -571,7 +1155,8 @@ export function measureDiscDifferentialCodes(o) {
  * own verdict rather than as a coin flip between two shapes.
  *
  * @param {{legs:Array<{key:string,resolvedRadiance:number,plateau:number,
- *          plateauPixels:number,plateauQuantumLinear:number}>}} o
+ *          plateauPixels:number,plateauQuantumLinear:number,
+ *          glowDifferential?:number,glowDifferentialError?:number}>}} o
  * @returns {object} Every quantity the verdict was built from.
  */
 export function discriminateRadianceExcess(o) {
@@ -598,13 +1183,27 @@ export function discriminateRadianceExcess(o) {
   if (!(hi.plateau > 0) || !(lo.plateau > 0)) {
     return fail;
   }
-  const recovered = {};
-  for (const leg of legs) {
-    recovered[leg.key] = leg.plateau / leg.resolvedRadiance;
+  // THE DISC'S OWN PLATEAU. The glow the bright-pass chain adds over the
+  // annulus is not the disc and must come off before anything divides by the
+  // resolved radiance. A leg that did not supply one contributes 0, and
+  // `glowModelled` records that so a reader can see whether the correction was
+  // applied rather than infer it from the numbers.
+  const glowOf = (leg) =>
+    Number.isFinite(leg.glowDifferential) ? leg.glowDifferential : 0;
+  const discOf = (leg) => leg.plateau - glowOf(leg);
+  const glowModelled = legs.every((l) => Number.isFinite(l.glowDifferential));
+  if (!(discOf(hi) > 0) || !(discOf(lo) > 0)) {
+    return { ...fail, glowModelled };
   }
-  const ratioMeasured = hi.plateau / lo.plateau;
+  const recovered = {};
+  const recoveredResidual = {};
+  for (const leg of legs) {
+    recovered[leg.key] = discOf(leg) / leg.resolvedRadiance;
+    recoveredResidual[leg.key] = recovered[leg.key] - 1;
+  }
+  const ratioMeasured = discOf(hi) / discOf(lo);
   const ratioMultiplicative = hi.resolvedRadiance / lo.resolvedRadiance;
-  const additiveConstant = hi.plateau - hi.resolvedRadiance;
+  const additiveConstant = discOf(hi) - hi.resolvedRadiance;
   const ratioAdditive =
     lo.resolvedRadiance + additiveConstant !== 0
       ? (hi.resolvedRadiance + additiveConstant) /
@@ -614,11 +1213,20 @@ export function discriminateRadianceExcess(o) {
   // INSTRUMENT ERROR ON THE RATIO. Each plateau is an annulus mean whose
   // per-pixel resolution is one display code at that brightness, so its own
   // relative error is `oneCode / plateau / sqrt(N)`; the ratio carries both in
-  // quadrature.
-  const relOf = (leg) =>
-    leg.plateauQuantumLinear > 0 && leg.plateauPixels > 0
-      ? leg.plateauQuantumLinear / leg.plateau / Math.sqrt(leg.plateauPixels)
-      : NaN;
+  // quadrature. Where a glow correction was applied, ITS OWN error bar joins
+  // them — the correction is a model, and a model's residual belongs in the
+  // band that certifies what it corrected.
+  const relOf = (leg) => {
+    if (!(leg.plateauQuantumLinear > 0) || !(leg.plateauPixels > 0)) {
+      return NaN;
+    }
+    const quantization =
+      leg.plateauQuantumLinear / discOf(leg) / Math.sqrt(leg.plateauPixels);
+    const glowError = Number.isFinite(leg.glowDifferentialError)
+      ? Math.abs(leg.glowDifferentialError) / discOf(leg)
+      : 0;
+    return Math.hypot(quantization, glowError);
+  };
   const relHi = relOf(hi);
   const relLo = relOf(lo);
   const sigmaRatio = ratioMeasured * Math.hypot(relHi, relLo);
@@ -637,26 +1245,57 @@ export function discriminateRadianceExcess(o) {
     hiBar,
     plateauHi: hi.plateau,
     plateauLo: lo.plateau,
+    glowHi: glowOf(hi),
+    glowLo: glowOf(lo),
+    discPlateauHi: discOf(hi),
+    discPlateauLo: discOf(lo),
     resolvedHi: hi.resolvedRadiance,
     resolvedLo: lo.resolvedRadiance,
+  };
+  // THE ABSOLUTE ARM, published alongside the shape arm because a ratio cannot
+  // see a gain both legs share. `recoveredResidual` is what the excess actually
+  // WAS; the bar is derived per leg from the glow correction's own bracket and
+  // the plateau's quantization, capped so a degenerate geometry cannot buy
+  // itself a generous one.
+  const recoveryBar = {};
+  for (const leg of legs) {
+    const glowError = Number.isFinite(leg.glowDifferentialError)
+      ? Math.abs(leg.glowDifferentialError)
+      : 0;
+    const quant =
+      leg.plateauQuantumLinear > 0 && leg.plateauPixels > 0
+        ? leg.plateauQuantumLinear / Math.sqrt(leg.plateauPixels)
+        : 0;
+    recoveryBar[leg.key] = Math.min(
+      DISC_RADIANCE_RECOVERY_CEILING,
+      (glowError + 3 * quant) / leg.resolvedRadiance,
+    );
+  }
+  const recoveryAgrees = legs.every(
+    (l) => Math.abs(recoveredResidual[l.key]) <= recoveryBar[l.key],
+  );
+
+  const common = {
+    usable: true,
+    glowModelled,
+    recovered,
+    recoveredResidual,
+    recoveryBar,
+    recoveryAgrees,
+    ratioMeasured,
+    ratioMultiplicative,
+    ratioAdditive,
+    additiveConstant,
+    separation,
+    sigmaRatio,
+    tolerance,
+    terms,
   };
 
   // The two hypotheses are only distinguishable when their predictions are
   // further apart than the band that certifies either of them.
   if (!(separation > 2 * tolerance)) {
-    return {
-      verdict: EXCESS_SHAPE.NONE,
-      usable: true,
-      recovered,
-      ratioMeasured,
-      ratioMultiplicative,
-      ratioAdditive,
-      additiveConstant,
-      separation,
-      sigmaRatio,
-      tolerance,
-      terms,
-    };
+    return { verdict: EXCESS_SHAPE.NONE, ...common };
   }
 
   const nearMultiplicative =
@@ -668,19 +1307,7 @@ export function discriminateRadianceExcess(o) {
       : nearAdditive && !nearMultiplicative
         ? EXCESS_SHAPE.ADDITIVE
         : EXCESS_SHAPE.NEITHER;
-  return {
-    verdict,
-    usable: true,
-    recovered,
-    ratioMeasured,
-    ratioMultiplicative,
-    ratioAdditive,
-    additiveConstant,
-    separation,
-    sigmaRatio,
-    tolerance,
-    terms,
-  };
+  return { verdict, ...common };
 }
 
 // ---------------------------------------------------------------------------
@@ -845,8 +1472,24 @@ export function evaluateRadianceDeltaBackend(m) {
   const ex = m.excess;
   criteria.radiance_excess_shape_is_decided =
     ex?.usable === true && ex.verdict !== EXCESS_SHAPE.NEITHER;
+  // (b2) THE ABSOLUTE ARM. A ratio is blind to a gain both legs share, so the
+  // shape verdict alone cannot say the disc renders at the radiance the frame
+  // resolved — and `NO-EXCESS` is only meaningful if the recovery LANDS. This
+  // is the criterion that turns the formerly-unexplained excess into a scored
+  // claim instead of a diagnostic.
+  criteria.disc_radiance_recovers_resolved =
+    ex?.usable === true &&
+    ex.glowModelled === true &&
+    ex.recoveryAgrees === true;
   diagnostics.excessVerdict = ex?.verdict ?? null;
   diagnostics.recovered = ex?.recovered ?? null;
+  diagnostics.recoveredResidual = ex?.recoveredResidual ?? null;
+  diagnostics.recoveryBar = ex?.recoveryBar ?? null;
+  diagnostics.glowModelled = ex?.glowModelled ?? false;
+  diagnostics.glowDifferential = {
+    hi: ex?.terms?.glowHi ?? NaN,
+    lo: ex?.terms?.glowLo ?? NaN,
+  };
   diagnostics.ratioMeasured = ex?.ratioMeasured ?? NaN;
 
   // ⚠ HOW MUCH THE CODE CRITERIA ABOVE ACTUALLY SEPARATE THE TWO HYPOTHESES.
@@ -972,6 +1615,9 @@ export function buildRadianceDeltaSummary(result) {
       RADIANCE_DELTA_MIN_RESOLVED_SEPARATION,
       PRE_REGISTERED_D1_CODES,
       PRE_REGISTRATION_AGREEMENT_CODES,
+      ZERO_DITHER_QUANTUM_CODES,
+      DISC_RADIANCE_RECOVERY_CEILING,
+      BLOOM_FIELD_ANGULAR_SAMPLES,
       DISC_AIM_TOLERANCE_PX,
       DISC_MIN_DIFFERENTIAL_PIXELS,
       DISC_MIN_LIT_PIXELS,
@@ -1022,8 +1668,16 @@ export default {
   RADIANCE_DELTA_MIN_PLATEAU_PIXELS,
   RADIANCE_DELTA_MIN_RESOLVED_SEPARATION,
   PRE_REGISTERED_D1_CODES,
+  PRE_REGISTERED_D1_CODES_NO_BLOOM,
   PRE_REGISTRATION_AGREEMENT_CODES,
+  ZERO_DITHER_QUANTUM_CODES,
+  DISC_RADIANCE_RECOVERY_CEILING,
+  BLOOM_FIELD_ANGULAR_SAMPLES,
   EXCESS_SHAPE,
+  brightPassSourceRadiusPx,
+  discBloomGlowField,
+  discBloomPlateauDifferential,
+  discBloomSourceEdgeUncertaintyPx,
   discDifferentialCodeModel,
   deriveDiscDifferentialCodes,
   d1DiscriminationPower,

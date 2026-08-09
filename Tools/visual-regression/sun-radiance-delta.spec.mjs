@@ -39,14 +39,20 @@ import {
 import {
   EXCESS_SHAPE,
   PRE_REGISTERED_D1_CODES,
+  PRE_REGISTERED_D1_CODES_NO_BLOOM,
   PRE_REGISTRATION_AGREEMENT_CODES,
   RADIANCE_DELTA_BIN_HALF_PX,
   RADIANCE_DELTA_EXPOSURE,
   RADIANCE_DELTA_LEGS,
   RADIANCE_DELTA_MIN_RESOLVED_SEPARATION,
   RADIANCE_DELTA_SAMPLE_X,
+  ZERO_DITHER_QUANTUM_CODES,
+  brightPassSourceRadiusPx,
   d1DiscriminationPower,
   deriveDiscDifferentialCodes,
+  discBloomGlowField,
+  discBloomPlateauDifferential,
+  discBloomSourceEdgeUncertaintyPx,
   discDifferentialCodeModel,
   discriminateRadianceExcess,
   evaluateRadianceDeltaBackend,
@@ -72,6 +78,18 @@ const HALO_PER_RADIANCE = SolarDiscModel.SOLAR_HALO_AMPLITUDE;
 // The disc radius a 2-degree field puts a 0.5334-degree disc at on a 1280 px
 // canvas — the geometry the recorded table was derived at.
 const MODEL_DISC_RADIUS_PX = 170;
+// The drawing buffer the shipped run captures at, which is what sizes the sun
+// bloom's blur buffer and therefore the glow's screen footprint.
+const MODEL_VIEWPORT = { width: 1280, height: 720 };
+// The sun bloom's geometry at that framing. `limbPx` is the disc's own edge in
+// pixels, which for the true-size disc is the solar limb.
+const BLOOM = Object.freeze({
+  viewportWidth: MODEL_VIEWPORT.width,
+  viewportHeight: MODEL_VIEWPORT.height,
+  limbPx: MODEL_DISC_RADIUS_PX,
+  centerX: MODEL_VIEWPORT.width / 2,
+  centerY: MODEL_VIEWPORT.height / 2,
+});
 // The two shipped radiance positions.
 const RESOLVED = { trueRadiance: 2.0, sdrRadiance: 1.0 };
 
@@ -79,6 +97,7 @@ const derivedAt = (
   L,
   model = SolarDiscModel,
   radiusPx = MODEL_DISC_RADIUS_PX,
+  bloom = BLOOM,
 ) =>
   deriveDiscDifferentialCodes(model, {
     discRadiance: L,
@@ -86,7 +105,12 @@ const derivedAt = (
     haloCoreRadii: CORE,
     discRadiusPx: radiusPx,
     exposure: RADIANCE_DELTA_EXPOSURE,
+    bloom,
   });
+
+/** The sun bloom's plateau contribution at one radiance, at the model framing. */
+const glowAt = (L, model = SolarDiscModel) =>
+  discBloomPlateauDifferential(model, { discRadiance: L, ...BLOOM });
 
 // ===========================================================================
 // 1. THE PRE-REGISTRATION, AGAINST THE SHIPPED MODULE
@@ -153,8 +177,34 @@ test("the derivation READS the law — a flat mutant produces a flat prediction"
 test("the derivation READS the radiance — the band moves with it", () => {
   const a = derivedAt(1.0).samples[1];
   const b = derivedAt(2.0).samples[1];
-  assert.ok(b.d1Codes > a.d1Codes);
+  assert.ok(b.d1Codes !== a.d1Codes);
   assert.ok(b.tolCodes !== a.tolCodes);
+  // WITHOUT the glow the composite's differential rises with the radiance, and
+  // that is what the pre-bloom table recorded. WITH it the ordering at x=0.95
+  // reverses, for a reason that is arithmetic rather than noise: the bright
+  // pass's threshold is `start at display white`, so at radiance 2 the LIMB leg
+  // still extracts out to x=0.974 while at radiance 1 it stops at x=0.847. The
+  // high-radiance leg therefore keeps more of its own glow at the sample and
+  // the differential closes. Both halves are asserted so a future reader can
+  // see the inversion is modelled and not an accident.
+  const aNoBloom = derivedAt(1.0, SolarDiscModel, MODEL_DISC_RADIUS_PX, null)
+    .samples[1];
+  const bNoBloom = derivedAt(2.0, SolarDiscModel, MODEL_DISC_RADIUS_PX, null)
+    .samples[1];
+  assert.ok(bNoBloom.d1Codes > aNoBloom.d1Codes);
+  assert.ok(b.d1Codes < a.d1Codes);
+  assert.ok(
+    brightPassSourceRadiusPx(SolarDiscModel, {
+      discRadiance: 2.0,
+      limbDarkened: true,
+      discEdgePx: MODEL_DISC_RADIUS_PX,
+    }) >
+      brightPassSourceRadiusPx(SolarDiscModel, {
+        discRadiance: 1.0,
+        limbDarkened: true,
+        discEdgePx: MODEL_DISC_RADIUS_PX,
+      }),
+  );
 });
 
 // ===========================================================================
@@ -196,13 +246,26 @@ test("every certifying non-null band EXCLUDES the flat disc", () => {
 
 test("the null control's band is the instrument error alone", () => {
   const s = derivedAt(2.0).samples[0];
-  assert.equal(s.d1Codes, 0);
+  // The limb law is exactly 1 at the centre, so the only differential there is
+  // the glow's — and the blur reaches a little further out than the centre
+  // pixel, so it is small but not identically zero.
+  assert.ok(Math.abs(s.d1Codes) < 0.5, `centre differential ${s.d1Codes}`);
   // The limb law is stationary at the disc centre, so the binning term is zero
   // to within the central difference's own rounding — it is not merely small.
   assert.ok(s.terms.t1 < 1e-6, `centre slope term ${s.terms.t1}`);
   assert.ok(s.terms.t1 < s.terms.t2 / 1000);
   assert.equal(s.tolCodes, s.terms.loBar);
-  assert.ok(s.tolCodes > 0 && s.tolCodes < 1, `${s.tolCodes} codes`);
+  // The centre bin is FLAT on both legs, so neither dithers and the band is
+  // three sigmas of nothing plus the full undithered code.
+  assert.ok(
+    Math.abs(s.terms.quantum - ZERO_DITHER_QUANTUM_CODES) < 1e-3,
+    `centre quantum ${s.terms.quantum}`,
+  );
+  assert.equal(s.terms.dithers, false);
+  assert.ok(
+    Math.abs(s.tolCodes - (3 * s.terms.modelled + s.terms.quantum)) < 1e-12,
+  );
+  assert.ok(s.tolCodes > 1 && s.tolCodes < 2, `${s.tolCodes} codes`);
 });
 
 test("the dominant band term is radial binning, and it is one bin wide", () => {
@@ -217,6 +280,216 @@ test("the dominant band term is radial binning, and it is one bin wide", () => {
     "the binning term must scale as 1/R",
   );
   assert.equal(RADIANCE_DELTA_BIN_HALF_PX, 0.5);
+});
+
+test("the undithered quantum is charged where averaging cannot work, and only there", () => {
+  // The B979-era null control read `flat - limb = 1` EXACTLY on the shipped
+  // radiance leg and `0` EXACTLY on the SDR one — both integers over twelve
+  // identical pixels — against a band of 0.612 built on `N = 12`. Averaging
+  // twelve copies of the same rounding averages nothing, so the honest budget
+  // there is the full code.
+  const centre = derivedAt(2.0).samples[0];
+  assert.ok(centre.terms.codeSpread.flat < 1e-3);
+  assert.ok(centre.terms.codeSpread.limb < 1e-3);
+  assert.ok(centre.terms.quantum > 0.99);
+  assert.ok(
+    centre.tolCodes > 1,
+    "a full code must fit inside the null control's band",
+  );
+  // ...and a leg that DOES sweep a full code is charged NOTHING, so the
+  // allowance cannot be spent where the instrument can resolve. A disc a tenth
+  // the size puts ten times the radial gradient inside one pixel bin, and the
+  // limb leg — the one with a law under it — crosses the threshold while the
+  // flat leg, which is only halo and glow out there, does not.
+  const tiny = derivedAt(2.0, SolarDiscModel, MODEL_DISC_RADIUS_PX / 10, {
+    ...BLOOM,
+    limbPx: MODEL_DISC_RADIUS_PX / 10,
+  }).samples[1];
+  assert.ok(
+    tiny.terms.codeSpread.limb > 1,
+    `limb sweep ${tiny.terms.codeSpread.limb}`,
+  );
+  assert.ok(
+    tiny.terms.codeSpread.flat < 1,
+    `flat sweep ${tiny.terms.codeSpread.flat}`,
+  );
+  // The charge is exactly the per-leg formula, so the swept leg contributes
+  // zero and the still one contributes the part of its half-code that no
+  // averaging reaches.
+  const charge = (spread) => 0.5 * Math.max(0, 1 - spread);
+  for (const s of [centre, tiny]) {
+    assert.ok(
+      Math.abs(
+        s.terms.quantum -
+          (charge(s.terms.codeSpread.flat) + charge(s.terms.codeSpread.limb)),
+      ) < 1e-12,
+      `x=${s.x} quantum ${s.terms.quantum}`,
+    );
+  }
+  assert.equal(charge(tiny.terms.codeSpread.limb), 0);
+  assert.ok(tiny.terms.quantum < centre.terms.quantum);
+  assert.equal(ZERO_DITHER_QUANTUM_CODES, 1.0);
+});
+
+// ===========================================================================
+// 2b. THE SUN BLOOM — the term the first run was missing
+// ===========================================================================
+
+test("the glow's centre is the SHIPPED closed form, to a part in a thousand", () => {
+  // `solarBloomCentreAmplitude` states what the bright-pass chain contributes at
+  // the disc centre in one line of algebra. The field built here runs the whole
+  // chain numerically — down-sample, bright pass, two blurs, up-sample — and at
+  // the centre of a disc many blur widths across the two must agree. If they
+  // ever stop, one of them has drifted from the shipped shader.
+  for (const L of [1.0, 2.0]) {
+    const field = discBloomGlowField(SolarDiscModel, {
+      discRadiance: L,
+      limbDarkened: false,
+      discEdgePx: MODEL_DISC_RADIUS_PX,
+      ...BLOOM,
+    });
+    const closedForm = SolarDiscModel.solarBloomCentreAmplitude(L);
+    assert.ok(
+      Math.abs(field.sampleAtRadiusPx(0) / closedForm - 1) < 1e-3,
+      `L=${L}: field ${field.sampleAtRadiusPx(0)} vs closed form ${closedForm}`,
+    );
+    assert.equal(field.centreAmplitude, closedForm);
+  }
+});
+
+test("the glow SATURATES — it is neither proportional to L nor constant in it", () => {
+  // This is the whole reason a two-term model produced `NEITHER`. Between the
+  // two shipped positions the disc doubles; the glow must grow, but by strictly
+  // less than double, or the omission would have looked multiplicative and been
+  // absorbed into the gain instead of showing up as an unnamed shape.
+  const g1 = glowAt(1.0);
+  const g2 = glowAt(2.0);
+  assert.ok(g1 > 0 && g2 > 0);
+  assert.ok(g2 > g1, "the glow must grow with the radiance");
+  assert.ok(g2 < 2 * g1, "and by strictly less than the radiance does");
+  // The FLAT and LEGACY legs both present the bright pass a uniform disc, so the
+  // shape of their difference is purely geometric and the radiance enters only
+  // through the closed-form amplitude. That makes the ratio an identity, and it
+  // is a much sharper statement than an inequality.
+  const ratio =
+    SolarDiscModel.solarBloomCentreAmplitude(2.0) /
+    SolarDiscModel.solarBloomCentreAmplitude(1.0);
+  assert.ok(
+    Math.abs(g2 / g1 - ratio) < 1e-3,
+    `${g2 / g1} must be the amplitude ratio ${ratio}`,
+  );
+});
+
+test("the glow does NOT cancel out of D1 — the legs present different sources", () => {
+  // The premise the two-term model rested on. The screen halo cancels because
+  // no halo uniform reads either disc toggle; the glow does not, because the
+  // bright pass reads the SCENE and the limb-darkened leg falls below its
+  // threshold partway out.
+  for (const L of [1.0, 2.0]) {
+    const support = {
+      flat: brightPassSourceRadiusPx(SolarDiscModel, {
+        discRadiance: L,
+        limbDarkened: false,
+        discEdgePx: MODEL_DISC_RADIUS_PX,
+      }),
+      limb: brightPassSourceRadiusPx(SolarDiscModel, {
+        discRadiance: L,
+        limbDarkened: true,
+        discEdgePx: MODEL_DISC_RADIUS_PX,
+      }),
+    };
+    assert.equal(support.flat, MODEL_DISC_RADIUS_PX);
+    assert.ok(
+      support.limb > 0 && support.limb < support.flat,
+      `L=${L}: limb support ${support.limb} must sit inside the disc`,
+    );
+    // The crossing is a solve, not a search: the luminance there IS the
+    // threshold the shipped tuning names.
+    const avg = SolarDiscModel.SUN_BRIGHT_PASS_AVG_LUMINANCE;
+    const scale = SolarDiscModel.sunBrightPassKey(avg) / avg;
+    const needed =
+      SolarDiscModel.solarBrightPassTuning(L, avg).threshold / scale;
+    const atCrossing =
+      L *
+      SolarDiscModel.solarLimbIntensity(support.limb / MODEL_DISC_RADIUS_PX);
+    assert.ok(
+      Math.abs(atCrossing - needed) < 1e-9,
+      `L=${L}: ${atCrossing} must be the threshold luminance ${needed}`,
+    );
+  }
+  // And the consequence, in the quantity the lane scores: at the sample the
+  // limb law is read on, the two legs' glows differ by codes, not by rounding.
+  const s = derivedAt(1.0).samples[1];
+  assert.ok(
+    s.terms.glowFlat - s.terms.glowLimb > 0.1,
+    `glow differential ${s.terms.glowFlat - s.terms.glowLimb} at x=0.95`,
+  );
+});
+
+test("OMITTING the glow is a WRONG model, not a smaller one — and it says so", () => {
+  // The fail-loud posture. A call with no bloom geometry must not quietly score
+  // a two-term prediction, because that is exactly what produced the first
+  // run's four red criteria.
+  const d = derivedAt(2.0, SolarDiscModel, MODEL_DISC_RADIUS_PX, null);
+  assert.equal(d.bloomModelled, false);
+  for (const s of d.samples) {
+    assert.equal(s.certifying, false, `x=${s.x} must not certify`);
+    assert.match(s.nonCertifyingReason, /bright-pass chain/);
+    assert.ok(Number.isNaN(s.tolCodes));
+  }
+  assert.equal(derivedAt(2.0).bloomModelled, true);
+});
+
+test("the recorded table SUPERSEDES a two-term one, and the gap is the glow", () => {
+  // Both tables are carried. The superseded one is what the first two-radiance
+  // run was scored against; the shipped one is the same arithmetic with the
+  // glow. The difference must be large — it is what eight red criteria were
+  // made of — and it must be LARGER on the low-radiance leg, because the glow's
+  // share of a dimmer disc is bigger.
+  const gapAt = (key) =>
+    Math.abs(
+      PRE_REGISTERED_D1_CODES[key][1] -
+        PRE_REGISTERED_D1_CODES_NO_BLOOM[key][1],
+    );
+  assert.ok(gapAt("sdrRadiance") > 5, `${gapAt("sdrRadiance")} codes`);
+  assert.ok(gapAt("trueRadiance") > 3, `${gapAt("trueRadiance")} codes`);
+  assert.ok(gapAt("sdrRadiance") > gapAt("trueRadiance"));
+  // The superseded table must NOT still describe the shipped chain, or nothing
+  // would have changed and this whole term would be decoration.
+  const d = derivedAt(1.0);
+  assert.ok(
+    Math.abs(
+      d.samples[1].d1Codes - PRE_REGISTERED_D1_CODES_NO_BLOOM.sdrRadiance[1],
+    ) > PRE_REGISTRATION_AGREEMENT_CODES,
+  );
+});
+
+test("the source edge's bracket is derived from BOTH quantized edges", () => {
+  const u = discBloomSourceEdgeUncertaintyPx(SolarDiscModel, BLOOM);
+  // The bake is 512 texels across a quad 22 solar radii wide at glowFactor 1,
+  // and the blur buffer is 128 texels across the drawing buffer's long axis.
+  const bakeTexelPx = (2 * MODEL_DISC_RADIUS_PX * 11) / 512;
+  const blurTexelPx =
+    MODEL_VIEWPORT.width /
+    SolarDiscModel.solarBloomBlurBufferSize(
+      MODEL_VIEWPORT.width,
+      MODEL_VIEWPORT.height,
+    );
+  assert.ok(
+    Math.abs(u - Math.hypot(0.5 * bakeTexelPx, 0.5 * blurTexelPx)) < 1e-9,
+  );
+  // It must be a real bracket, not a rounding: moving the edge across it moves
+  // the plateau's glow by a measurable amount.
+  const nominal = glowAt(2.0);
+  const shifted = discBloomPlateauDifferential(SolarDiscModel, {
+    discRadiance: 2.0,
+    ...BLOOM,
+    discEdgeShiftPx: u,
+  });
+  assert.ok(Math.abs(shifted - nominal) > 1e-3, `${shifted} vs ${nominal}`);
+  // And it must be SMALL against the thing it corrects, or the correction would
+  // be worthless.
+  assert.ok(Math.abs(shifted - nominal) < 0.1 * nominal);
 });
 
 // ===========================================================================
@@ -433,6 +706,84 @@ test("an unusable leg set yields NEITHER, never a confident verdict", () => {
   assert.equal(oneLeg.usable, false);
 });
 
+test("a world that is disc + GLOW is named NO-EXCESS once the glow comes off", () => {
+  // The generating law of the shipped picture, and the mutation that produced
+  // the first run's verdict. With the glow subtracted the plateaus land on the
+  // resolved radiances and there is nothing to name; WITHOUT it — the same
+  // numbers, the correction dropped — the ratio matches neither hypothesis and
+  // the verdict is NEITHER. One term, both verdicts.
+  const legs = RADIANCE_DELTA_LEGS.map((leg) => {
+    const L = RESOLVED[leg.key];
+    const glowDifferential = glowAt(L);
+    return {
+      key: leg.key,
+      resolvedRadiance: L,
+      glowDifferential,
+      ...plateauResolution({
+        plateau: L + glowDifferential,
+        plateauPixels: 21600,
+        exposures: DISC_BRACKET_EXPOSURES,
+      }),
+    };
+  });
+  const corrected = discriminateRadianceExcess({ legs });
+  assert.equal(corrected.verdict, EXCESS_SHAPE.NONE);
+  assert.equal(corrected.glowModelled, true);
+  assert.equal(corrected.recoveryAgrees, true);
+  for (const leg of legs) {
+    assert.ok(
+      Math.abs(corrected.recovered[leg.key] - 1) < 1e-9,
+      `${leg.key} recovered ${corrected.recovered[leg.key]}`,
+    );
+  }
+  const uncorrected = discriminateRadianceExcess({
+    legs: legs.map(({ glowDifferential, ...rest }) => rest),
+  });
+  assert.equal(uncorrected.verdict, EXCESS_SHAPE.NEITHER);
+  assert.equal(uncorrected.glowModelled, false);
+  assert.ok(uncorrected.ratioMeasured < uncorrected.ratioMultiplicative);
+  assert.ok(uncorrected.ratioMeasured > uncorrected.ratioAdditive);
+});
+
+test("the absolute arm REFUSES a gain the ratio arm cannot see", () => {
+  // A ratio is blind to a factor both legs share, which is precisely the shape
+  // the row this lane exists for hypothesised. A 30% multiplicative gain on top
+  // of the correct glow reads as MULTIPLICATIVE and must still be REFUSED.
+  const legs = RADIANCE_DELTA_LEGS.map((leg) => {
+    const L = RESOLVED[leg.key];
+    const glowDifferential = glowAt(L);
+    return {
+      key: leg.key,
+      resolvedRadiance: L,
+      glowDifferential,
+      glowDifferentialError: 0.02,
+      ...plateauResolution({
+        plateau: 1.3 * L + glowDifferential,
+        plateauPixels: 21600,
+        exposures: DISC_BRACKET_EXPOSURES,
+      }),
+    };
+  });
+  const r = discriminateRadianceExcess({ legs });
+  assert.equal(r.verdict, EXCESS_SHAPE.MULTIPLICATIVE);
+  assert.equal(r.recoveryAgrees, false, "a 30% gain must not be absorbed");
+  const e = evaluateRadianceDeltaBackend({
+    legs: {
+      sdrRadiance: goodLeg("sdrRadiance"),
+      trueRadiance: goodLeg("trueRadiance"),
+    },
+    excess: r,
+  });
+  assert.equal(e.criteria.disc_radiance_recovers_resolved, false);
+  // ...and the healthy world passes the same criterion, so it is not simply
+  // impossible to satisfy.
+  assert.equal(
+    evaluateRadianceDeltaBackend(backendPayload()).criteria
+      .disc_radiance_recovers_resolved,
+    true,
+  );
+});
+
 test("the display-code criteria CANNOT separate the two laws — and say so", () => {
   // The honesty receipt. Their band is set by the need to refuse a flat disc,
   // which is much coarser than the code-level gap between the two radiance
@@ -444,6 +795,7 @@ test("the display-code criteria CANNOT separate the two laws — and say so", ()
     haloCoreRadii: CORE,
     discRadiusPx: MODEL_DISC_RADIUS_PX,
     exposure: RADIANCE_DELTA_EXPOSURE,
+    bloom: BLOOM,
   });
   const at95 = power.samples.find((s) => s.x === 0.95);
   assert.ok(at95.separationCodes > 0, "the two hypotheses do differ in codes");
@@ -461,13 +813,20 @@ test("the display-code criteria CANNOT separate the two laws — and say so", ()
 function goodLeg(key, overrides = {}) {
   const L = RESOLVED[key];
   const derived = derivedAt(L);
+  // A HEALTHY world is the disc at exactly the radiance the frame resolved,
+  // PLUS the glow the bright-pass chain adds over the plateau annulus. Writing
+  // `1.295 * L` here — which is what the plateau reads before the correction —
+  // would build a payload that only looks healthy to a model missing the same
+  // term the measurement was missing.
+  const glowDifferential = glowAt(L);
   return {
     hdrEngaged: true,
     limbLegLitPixels: 90000,
     differentialPositivePixels: 90000,
     aimDistancePx: 1.2,
     plateauPixels: 21600,
-    plateau: 1.295 * L,
+    plateau: L + glowDifferential,
+    glowDifferential,
     resolvedRadiance: L,
     derived,
     codes: {
@@ -501,6 +860,7 @@ function backendPayload(overrides = {}) {
         resolvedRadiance: legs[l.key].resolvedRadiance,
         plateau: legs[l.key].plateau,
         plateauPixels: legs[l.key].plateauPixels,
+        glowDifferential: legs[l.key].glowDifferential,
         plateauQuantumLinear: plateauResolution({
           plateau: legs[l.key].plateau,
           plateauPixels: legs[l.key].plateauPixels,

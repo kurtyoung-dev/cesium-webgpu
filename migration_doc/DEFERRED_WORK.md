@@ -859,25 +859,68 @@ defect that no existing gate could have seen.
 
 - **`SKYATMOSPHERE-NIGHT-SKY-DIMMING-UNWIRED` — `skyAtmosphere.enableNightSkyDimming` has no consumer (confirmed 2026-08-08, C16-03 comment audit).** The option exists on the public surface but nothing under `packages/engine/Source` reads it — grep-confirmed during the cloud comment rewrite. Left in place per the dead-code rule (it is API scaffolding, and removal would be a breaking surface change); its comment now states current behaviour plainly. Next step: either wire it to the twilight sky-brightness ladder (natural consumer) or deprecate it explicitly — a maintainer call. **Effort: S.**
 
-- **`G4-DISC-RADIANCE-EXCESS-UNEXPLAINED` — the rendered flat disc recovers
-  +30–36% above the frame's resolved `discRadiance` (filed 2026-08-08, at the
-  limb-shape criterion fix).** Offline inversion of the G4 capture PNGs
-  recovers the flat disc at 2.59 (D2 plateau) to 2.72 (centre minus fitted
-  halo) linear against the frame's resolved `discRadiance = 2.0`, and
-  `discPeakLinear = 4.176` against the gate's modelled `2.0 + 1.5 = 3.5`
-  (+19% — the same figure `C12_19_HDR_PEAK_DISCRIMINATOR`'s derivation is
-  built on). NOT a bloom or second halo: D1/D2 are exactly 0 beyond 190 px,
-  D2 exactly 0 inside 85 px, and the far-field pedestal recovers 1.503
-  against the shipped `haloIntensity = 1.5`, so the display-chain inversion
-  is sound and the excess sits on the disc's own contribution. It cancels in
-  the limb-shape normalisation, and
-  `LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE = 0.35` currently absorbs it at
-  0.296 — the disc-only limb-ratio arm is certifying with only 0.054 of
-  headroom on a discrepancy nobody has explained. Next concrete step: walk
-  the shipped disc chain (`SunFS.glsl`/WGSL twin: `pow(rgb, 2.2) ·
-  discRadiance` under ALPHA_BLEND) against the gate's forward model at the
-  operating point and find the missing ×1.3 term; if it is real engine
-  behaviour, the C12-19 discriminator derivation inherits it. **Effort: M.**
+- **`G4-DISC-RADIANCE-EXCESS-UNEXPLAINED` — ✅ RESOLVED 2026-08-08. IT IS THE
+  SUN BLOOM, AND IT WAS INSTRUMENT-SIDE. NO ENGINE DEFECT.** The missing term
+  is `SunPostProcess`'s bright-pass → blur → `AdditiveBlend` chain (stages 1–5,
+  and its WebGPU mirror), which runs BEFORE the halo stage and adds
+  `SolarDiscModel.solarBloomCentreAmplitude(discRadiance)` to the disc itself —
+  0.481481 at radiance 1, 0.707107 at radiance 2. The gate's forward model
+  carried disc + screen halo and nothing else.
+
+  **The arithmetic, measured offline from the run's own capture PNGs (the
+  measurement was reproduced bit-exactly first, 52/52 scalars):** subtracting
+  the gate's own two-term model from every leg leaves a residual that equals
+  the shipped closed form to within one display code on **all twelve**
+  (2 backends × 2 radiances × 3 toggle legs) — worst |err| 0.94 codes, best
+  0.036. The filing's own headline is the same number: `discPeakLinear` 4.176
+  − modelled 3.5 = 0.676 against `solarBloomCentreAmplitude(2) = 0.7071`,
+  i.e. 0.67 of a code.
+
+  **The original refutation used the wrong test.** "D1/D2 are exactly 0 beyond
+  190 px, D2 exactly 0 inside 85 px" does not refute a bloom, because D1 and D2
+  are DIFFERENCES: the glow is present on all three legs and cancels wherever
+  the legs present the bright pass the same source. It does not cancel where
+  they do not — the limb-darkened leg drops below the bright pass's threshold
+  at `x = 0.847` (radiance 1) / `x = 0.974` (radiance 2), and the legacy leg's
+  disc ends at `1/sqrt(2) R`, several blur widths inside the D2 plateau annulus.
+  (D1/D2 are also not *exactly* zero beyond 190 px — 0.023 and 0.012 linear at
+  192 and 196 px; they reach the 8-bit floor at ~210.)
+
+  **Why it read as an unexplained EXCESS rather than as a gain:** the bright
+  pass is a saturating rational bounded by 1, so the glow grows 47% while the
+  disc doubles. Omitting it inflates the low-radiance leg proportionally more
+  than the high one, which is exactly why the first two-radiance run
+  (`probe-sun-hdr-radiance`, 2026-08-08) returned `NEITHER` — the recovered
+  factor was 1.3910 at `L = 1` but 1.2964 at `L = 2`.
+
+  **With the glow subtracted the excess is gone:** recovered radiance
+  0.98837 / 1.00071 (WebGL) and 0.98890 / 1.00082 (WebGPU) against the resolved
+  1.0 and 2.0. The shipped disc renders at the radiance the frame resolved.
+
+  **Fix landed (instrument only, no engine change):**
+  `lib/sun-radiance-delta.mjs` gains `discBloomGlowField` (the shipped chain,
+  line for line: down-sample → `BrightPass.glsl` → two `GaussianBlur1D.glsl`
+  passes at the un-normalised incremental-Gaussian weights → up-sample →
+  `AdditiveBlend.glsl`'s radial fade), `brightPassSourceRadiusPx` (the
+  threshold crossing, solved in closed form from the shipped quadratic limb
+  law), `discBloomPlateauDifferential` and `discBloomSourceEdgeUncertaintyPx`.
+  `deriveDiscDifferentialCodes` now REQUIRES the bloom geometry and marks every
+  sample non-certifying without it, so the omission can never recur silently.
+  New scored criterion `disc_radiance_recovers_resolved` turns the formerly
+  unexplained excess into a claim. `PRE_REGISTERED_D1_CODES` is re-derived;
+  the superseded two-term table is kept as `PRE_REGISTERED_D1_CODES_NO_BLOOM`.
+  Spec 42/42 (9 new, incl. the mutation that reproduces `NEITHER` by dropping
+  the correction, and the absolute arm refusing a 30% gain the ratio arm names
+  MULTIPLICATIVE). Regression: `celestial-g4-gate` 115/115,
+  `sun-halo-composition` 22/22, `sun-hdr-radiance` 34/34.
+
+  **Recomputed on the real report data, all four backends' criteria go from
+  8 FAIL to 0** — the re-run is expected green. The reading is owed on Edge.
+  **The neighbouring `LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE = 0.35` in
+  `celestial-g4-gate.mjs` still absorbs the same glow at 0.296 of its budget**
+  and should be re-derived against `solarBloomCentreAmplitude` rather than left
+  standing on the headroom — that is the one piece of this that remains open.
+  **Effort: S.**
 
 - **`PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS` — ✅ RE-SCOPED IN CODE **FIRST EDGE RUN 2026-08-07 (tip `c810dbace2`): the re-scope is VALIDATED — Lane A passes per-mode with the DR-01 zero-census assertion live and its positive controls non-vacuous; G1's only red is the KNOWN shell-extent-coupled Lane B. The twilight probe's engine leg PASSES on both backends; its star-pixel leg is STRUCTURAL (see TWILIGHT-STAR-REACHABILITY-BLACK-BOX below).**
   2026-08-07 (CO-3); EDGE ACCEPTANCE OWED.** The original filing is preserved
