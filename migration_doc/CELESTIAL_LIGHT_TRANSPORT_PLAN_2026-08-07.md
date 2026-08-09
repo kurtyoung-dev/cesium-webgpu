@@ -447,3 +447,48 @@ per-position cloud optical extinction (C13-23), earth-limb airglow
 instrument gap — which must close before any Track-D acceptance that
 asserts star pixels.
 
+## 10. Reference pre-registration (2026-08-09)
+
+Seeded from
+[`REFERENCE_VISUALS_CATALOG_2026-08-09.md`](REFERENCE_VISUALS_CATALOG_2026-08-09.md),
+whose §4 recommends pre-registering references in the campaign plan doc
+**before** any implementation batch derives from them, so licence verification
+is a plan-time gate rather than a landing-time scramble. Appended as a new
+section — §1-§9 above are unchanged and no section is renumbered.
+
+**Legend:** ✔ = licence file read verbatim this pass; △ = repo-declared only,
+**MUST be upgraded to ✔ at intake before any file-level reuse**; STUDY-ONLY =
+techniques only, never copy code.
+
+Every derivation still follows the house norm: a `Reference:` block at the
+derivation site, a verbatim entry in root `LICENSE.md` plus the
+`packages/engine` mirror, a numbered L-xx determination in
+[`LICENSE_DETERMINATIONS_2026-08-10.md`](LICENSE_DETERMINATIONS_2026-08-10.md),
+and author credit by name in the README — with the C16 comment standard keeping
+the in-source attribution seamless (no tracker IDs in `packages/*/Source`).
+
+| Name | Ecosystem | Licence (as recorded) | Author | What it guides |
+|---|---|---|---|---|
+| JolifantoBambla/webgpu-sky-atmosphere | WebGPU/WGSL library | MIT ✔ | Lukas Herzberger | **`CLT-D6`** (multiple-scattering series), **`CLT-D7`** (sky-view bake), **`CLT-D8`** (aerial-perspective froxel certification) — the complete Hillaire-2020 LUT family already expressed in WGSL compute. The catalog's single most directly reusable asset for Track D. |
+| sebh/UnrealEngineSkyAtmosphere | D3D11/HLSL reference | MIT ✔ | Sébastien Hillaire (© Epic Games) | **Track D acceptance probes `CLT-D6`-`CLT-D8`** — paper-author LUT parameterization plus a volumetric path tracer usable as ground truth. |
+| ebruneton/precomputed_atmospheric_scattering | C++ / WebGL2 | BSD-3 ✔ | Eric Bruneton | **`CLT-D3`/`CLT-D5`** (ozone) and `CLT-D6` validation — documented radiometry, ozone layer, unit-tested LUT precompute. |
+| MinimalAtmosphere | Unity HLSL (engine-agnostic) | MIT ✔ | Felix Westin | **`CLT-D1`** (cloud direct-sun extinction) and **`CLT-D9`** (cross-limb gradient) — transmittance-attenuated *directional* sun light, i.e. the terminator-red sun. |
+| glsl-atmosphere | GLSL module | **Unlicense** (public domain) ✔ | Rye Terrell | **`CLT-D4`** GLSL-twin work and the cheap tiers — minimal single-scatter march. |
+| three.js Sky | three | MIT ✔ | three.js authors (Preetham lineage) | **Track A** exposure chain and the analytic tier — analytic-sky uniform surface paired with tone-mapped exposure. |
+| Babylon Sky Material | babylon | Apache-2.0 ✔ | BabylonJS | **Track A (`CLT-A` eye adaptation)** API shape — sky as a scene-level API; the same repo carries an HDR auto-exposure pipeline. |
+| cosinekitty/astronomy (Astronomy Engine) | JS/TS library | MIT ✔ | Don Cross | **Track C (`CLT-C` eclipse visuals)** and **Track B** twilight boundaries — ±1-arcmin ephemeris, eclipse circumstances, lunar libration, twilight times. Also the data authority for C12-adjacent celestial placement. |
+| Stellarium Web Engine | C → WASM/WebGL | **STUDY-ONLY** AGPL-3.0 △ — techniques only, **never copy code** | Chereau / Noctua / Stellarium | **`CLT-A9`** (Schaefer NELM) concepts and the night-sky quality bar — mag→PSF photometry, extinction, zodiacal light, airglow. Strictly clean-room. |
+| threejs-earth | three | MIT △ | bobbyroe | **Track B (`CLT-B1`..`CLT-B9`, day/night imagery interpolation)** — night-lights layer revealed on the dark hemisphere plus a Fresnel rim. |
+| three.js `webgpu_volume_lighting` | three WebGPU/TSL | MIT △ | three.js (sunag et al.) | **`CLT-C5a`/b** (crepuscular rays) and the volumetric-fog post-process — raymarched volumetrics integrated with native lights and shadows. |
+| three-good-godrays | three | MIT △ | Ameobea (from n8python) | **`CLT-C5a`/b** — shadow-map-sampled raymarched god rays, not a radial blur. |
+| pmndrs/postprocessing | three | **Zlib** △ — permissive but **notice-bearing** | Poimandres / vanruesc | **Track A** exposure/post-process chain architecture — effect-merging pass fusion and mipmap bloom. The notice obligation must be carried into the shipped bundles, per the `C16-01` packaging-legality standard. |
+| R3F-Ultimate-Lens-Flare | three | **CC0** (public domain) △ | Anderson Mancini | Sun-flare polish adjacent to C12 — ghost/halo/starburst flare with raycast occlusion including transmissives. **The corona itself is `CLT-C3` and is not this reference's territory.** |
+
+**Gaps the catalog recorded honestly for this epic** (do not spend intake time
+re-searching): no quality permissive web reference exists for **moon rendering**
+(libration + earthshine) — the fork's C12 work is ahead of open peers and
+Astronomy Engine covers only the math; **photometric night sky** (mag→PSF,
+zodiacal light, airglow) is seriously implemented only by Stellarium, so
+`CLT-A9`-class work is strictly clean-room; and no clearly-licensed reference
+was found for a **light-pollution sky-glow dome**.
+

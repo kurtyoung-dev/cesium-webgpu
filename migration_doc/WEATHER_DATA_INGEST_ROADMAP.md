@@ -191,6 +191,36 @@ Weather Inspector demo) so the user picks the open source at runtime.
 - **EDR `cube` may return native (large) grids** ignoring requested width/height — resample off the
   render path; verify subsampling or request a coarse bbox.
 
+## Reference pre-registration (2026-08-09)
+
+Seeded from
+[`REFERENCE_VISUALS_CATALOG_2026-08-09.md`](REFERENCE_VISUALS_CATALOG_2026-08-09.md),
+whose §4 recommends pre-registering references in the plan doc **before** any
+implementation batch derives from them, so licence verification is a plan-time
+gate rather than a landing-time scramble. This table covers **code/technique
+references**; the *data-source* licensing for this roadmap stays in the
+"Honest caveats" section above (NOAA PD, MSC GeoMet OGL-Canada, ECMWF
+CC-BY-4.0 with mandatory attribution, ERA5 key-gated) and is unchanged.
+
+**Legend:** ✔ = licence file read verbatim this pass; △ = repo-declared only,
+**MUST be upgraded to ✔ at intake before any file-level reuse**; STUDY-ONLY =
+techniques only, never copy code; UNKNOWN = no reuse until cleared.
+
+| Name | Ecosystem | Licence (as recorded) | Author | What it guides |
+|---|---|---|---|---|
+| byrd-polar/fluid-earth | WebGL / Svelte | MIT △ | Byrd Polar and Climate Research Center, OSU | **The whole roadmap's backend phases (3-4)** — the only fully-open nullschool-class stack that *includes* the GRIB2/NetCDF → fp16-tile pipeline, mapping straight onto the C2-16 seam and the runtime source-swap architecture. |
+| Weacast | Node platform | MIT △ | Kalisio | **Backend phases** — GFS/ARPEGE GRIB2 downloaders, tiling, and a probe API; the closest match to the proxy path this roadmap needs for Phase 4. |
+| earth (nullschool) | D3 / Canvas | MIT △ | Cameron Beccario | **Ingest format reference** — the canonical particle wind map; grib2json conventions and projection-aware velocity handling. |
+| mapbox/webgl-wind | WebGL | ISC △ | Vladimir Agafonkin / Mapbox | **GPU consumption of the ingested field** — all-GPU particle state in textures (RGBA ping-pong) with trail fading; the cleanest WGSL porting target for the flow-field lanes that consume this pipeline's output. |
+| leaflet-velocity | Canvas | **UNKNOWN** — CSIRO variant licence, SPDX NOASSERTION; **no reuse until cleared** | Dan Wild / CSIRO | **Format reference only** — grib2json interpolation conventions. No code moves under UNKNOWN, and it is listed here precisely so a future batch does not assume the usual MIT. |
+| WeatherLayers GL | deck.gl | **FILE-COPYLEFT** MPL-2.0, dual-commercial △ — **technique study only, no wholesale copy** | Petr Sloup | Particle/raster/contour/barb layer suite and client-side GeoTIFF decode. MPL carries file-level obligations, so any derived file would inherit them — study the approach, write our own. |
+
+**Gap the catalog recorded:** most of the rows above are △ repo-declared only.
+Each needs its LICENSE file read verbatim (the L-xx determination step, recorded
+in [`LICENSE_DETERMINATIONS_2026-08-10.md`](LICENSE_DETERMINATIONS_2026-08-10.md))
+**before any code moves** — that read is a prerequisite of the phase that
+derives from it, not a landing-time formality.
+
 ## Pointers
 
 - Code seam: `packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`

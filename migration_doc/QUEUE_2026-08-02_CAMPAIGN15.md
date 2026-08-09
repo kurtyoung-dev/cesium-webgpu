@@ -278,6 +278,56 @@ an official statement before `C15-05` normalizes against a fixed ceiling.
 
 ---
 
+## 2b. Reference pre-registration (2026-08-09)
+
+Seeded from
+[`REFERENCE_VISUALS_CATALOG_2026-08-09.md`](REFERENCE_VISUALS_CATALOG_2026-08-09.md),
+whose §4 recommends pre-registering references in the campaign doc **before**
+any implementation batch derives from them, so licence verification is a
+plan-time gate rather than a landing-time scramble. Nothing in §2/§2a or the §3
+ledger changes; this section adds the reference half both lanes were missing.
+
+**Legend:** ✔ = licence file read verbatim this pass; △ = repo-declared only,
+**MUST be upgraded to ✔ at intake before any file-level reuse**; STUDY-ONLY =
+techniques only, never copy code.
+
+### Aurora lane (`C15-01..08`)
+
+| Name | Ecosystem | Licence (as recorded) | Author | What it guides |
+|---|---|---|---|---|
+| olawlor/AuroraRendererUnity | Unity + WebGL | **Unlicense** (public domain) △ | Lawlor & Genetti (UAF) | `C15-02` synthetic oval and `C15-03` layered emission kernel — the GPU aurora volume-rendering paper implemented by its own authors, with a live WebGL demo. **Dormancy note: the project is dormant (2016-2019 era)**, so it is a licensed anchor for the physics and the vertical emission profile (557.7 nm green / red tops) and the curtain footprints, not a maintained dependency. |
+
+**The honest gap, recorded so it is not rediscovered later:** the catalog's §3
+states that **both licensed aurora references are dormant and no modern WebGPU
+aurora implementation exists anywhere**. `C15-03`/`C15-04` are therefore
+**first-of-kind** — there is no contemporary reference renderer to diff against,
+which raises the burden on `C15-08`'s own certification rather than lowering it.
+Plan the acceptance evidence accordingly: the gate cannot lean on "matches the
+reference implementation" because there is no reference implementation.
+
+### GSPLAT lane (§6, `C15-G1..G8`)
+
+**The catalog found ZERO vetted gsplat references.** Its §3 records the gap
+verbatim: the gsplat ecosystem (antimatter15/splat, mkkellogg/GaussianSplats3D,
+PlayCanvas supersplat, and the research implementations) "needs its own
+dedicated license-verification pass before `C15-G3`/`C15-G5` derive from
+anything external."
+
+**That vetting pass is `C18-S0`**
+([`QUEUE_2026-08-09_CAMPAIGN18.md`](QUEUE_2026-08-09_CAMPAIGN18.md) §4) — a
+documentation/licence row with no engine change, deliberately **not** gated by
+`C15-G8` so it can run early. Until `C18-S0` populates a table here with ✔ rows,
+**every G-track row is implement-from-technique only** under the house norm:
+no external file is copied, each derivation site carries a `Reference:` block,
+and each source gets a numbered L-xx determination in
+[`LICENSE_DETERMINATIONS_2026-08-10.md`](LICENSE_DETERMINATIONS_2026-08-10.md).
+
+| Name | Ecosystem | Licence (as recorded) | Author | What it guides |
+|---|---|---|---|---|
+| _(empty — pending the `C18-S0` verification pass)_ | gsplat | — | — | `C15-G3` record format, `C15-G5` spherical harmonics, and the post-G8 `C18-S1..S3` adoption rows |
+
+---
+
 ## 3. Queue ledger
 
 | ID | Work | Priority | Status | Depends on |

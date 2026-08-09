@@ -150,6 +150,37 @@ Frame context: current WebGPU characterization ~12.18-12.53 ms/frame (`QUEUE_202
 | Sea of Thieves (SIGGRAPH 2018) | Talk paywalled; implementation details conflict across secondary sources | **UNCONFIRMED — do not cite specifics in the design** |
 | Already verified in-repo (no re-verification needed) | gasgiant/FFT-Ocean, Popov72/OceanDemo, WebTide, dli/waves all MIT; EncinoWaves Apache-2.0; Tessendorf notes = published math, derive-don't-copy (`RESEARCH_REGISTER_2026-07-06.md:147`; `DEFERRED_WORK.md:5256`) | BUNDLE-OK per prior verification |
 
+### 4a. Reference pre-registration (2026-08-09)
+
+Seeded from
+[`REFERENCE_VISUALS_CATALOG_2026-08-09.md`](REFERENCE_VISUALS_CATALOG_2026-08-09.md),
+whose §4 recommends pre-registering references in the campaign plan doc
+**before** any implementation batch derives from them — licence verification as
+a plan-time gate rather than a landing-time scramble. §4 above (data sources and
+the projects verified during the 2026-07-24 planning pass) is unchanged and
+still governs; this table is the code-reference half, carried at the catalog's
+own verification level.
+
+**Legend:** ✔ = licence file read verbatim this pass; △ = repo-declared only,
+**MUST be upgraded to ✔ at intake before any file-level reuse**; STUDY-ONLY =
+techniques only, never copy code; UNKNOWN = no reuse until cleared.
+
+| Name | Ecosystem | Licence (as recorded) | Author | What it guides |
+|---|---|---|---|---|
+| Popov72/OceanDemo | babylon WebGPU | MIT △ — **port of gasgiant/FFT-Ocean; verify the upstream licence and carry dual attribution before any file-level reuse** | Evgeni Popov; algorithm I. Pensionerov | **W3** structural template — 3-cascade compute FFT, Jacobian foam, buoyancy. (§4's last row records prior in-repo MIT verification; the port/dual-attribution caveat is new from the catalog and is not discharged by it.) |
+| BarthPaleologue/WebTide | babylon WebGPU | MIT △ | Barthélemy Paléologue | **W3 globe wrap** — Phillips + JONSWAP selectable and the only spherical planet-ocean with triplanar wrap found anywhere; the most Cesium-relevant find in the survey. |
+| 2Retr0/GodotOceanWaves | godot GLSL compute | MIT △ (catalog) — **already upgraded to ✔ by §4 above**, LICENSE fetched 2026-07-24 | Ethan Truong | **W3 spectrum stack** — TMA spectrum + Hasselmann directional spreading + foam accumulate/decay, matching W3's two-layer spec. |
+| dli/waves | WebGL | MIT △ | David Li | **W3 reference baseline** — minimal fragment-shader Stockham FFT chain; also the feasibility proof cited by `NEW-FFT-OCEAN-WEBGL2-FALLBACK`. |
+| jbouny/fft-ocean | three | MIT △ | Jérémy Bouny | **W3 clipmap-alternative study** — screen-space projected grid (infinite horizon without a giant mesh), against `C6-FFT-OCEAN-CLIPMAP`. |
+| three.js Water / Water2 | three | MIT △ | three.js authors (Bouny lineage) | **W2** — flow-map rivers/lakes: dual scrolling normals + cycle cross-fade, for the water-mask wind modulation and inland water. |
+| evanw/webgl-water | WebGL | MIT △ — **declared only in an `index.html` header; there is no LICENSE file**, so the ✔ upgrade requires an author-confirmed source | Evan Wallace | Underwater / caustics (W3 follow-on) — light-front caustics, raytraced refraction. |
+| threejs-caustics | three | BSD-3 △ | Martin Renou | Underwater / caustics (W3 follow-on) — caustics projected onto arbitrary meshes, method documented. |
+| matsuoka-601/WebGPU-Ocean | WebGPU | MIT △ | matsuoka-601 | Shoreline / interactive water — MLS-MPM/SPH particles + screen-space fluid shading. **No current row**; recorded so a future shoreline lane starts vetted. |
+| Toon Water tutorial | playcanvas | **UNKNOWN** — technique study only until cleared | Omar Shehata (ex-Cesium) | Shoreline foam concept (depth-intersection foam line). No code moves under UNKNOWN. |
+| mapbox/webgl-wind | WebGL | ISC △ (catalog) — §4 above already records a prior in-repo verification | Agafonkin / Mapbox | **W4 flow-field lanes** — 1M particles via RGBA-texture state ping-pong with trail fading; the cleanest WGSL porting target. |
+| byrd-polar/fluid-earth | WebGL/Svelte | MIT △ | Byrd Polar Center, OSU | **W5** and the weather-ingest backend — the only fully-open nullschool-class stack that includes the GRIB2/NetCDF → fp16-tile pipeline. |
+| earth (nullschool) | D3/Canvas | MIT △ (catalog) — §4 above records `cambecc/earth` MIT from the GitHub licence API, not from the LICENSE file | Cameron Beccario | **W4 presets** + grib2json format reference; projection-aware velocity. Our GPU path already exceeds its rendering. |
+
 ---
 
 ## 5. Epic structure proposal
