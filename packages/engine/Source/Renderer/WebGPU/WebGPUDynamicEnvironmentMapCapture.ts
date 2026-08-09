@@ -1,43 +1,41 @@
 /// <reference types="@webgpu/types" />
 /**
- * C2-25 ENV-SCENE-CAPTURE (Batch 446) — globe slice.
+ * Scene capture into the dynamic environment map — globe and model sources.
  *
  * Renders the opaque globe surface into the dynamic-environment-map cube's 6
  * faces from 6 ENU cube-face cameras centered on the reflective owner, so
  * terrain reflects in water / PBR models instead of only the procedural sky.
- * Companion of `WebGPUDynamicEnvironmentMapManager` (kept separate to keep both
- * files focused + under the size budget).
+ * Companion of `WebGPUDynamicEnvironmentMapManager`, kept separate so both
+ * files stay focused and under the size budget.
  *
- * Mechanism (Approach B — generalize the CSM override-camera pass to color):
+ * Mechanism — the CSM override-camera pass generalized to color:
  *
  *   1. Snapshot the main camera (`uniformState.camera` proxy fields).
  *   2. For each cube face: build the ENU 90° face camera, repoint
- *      `uniformState.updateCamera(faceCamera)` (the SAME seam the WebGL shadow
- *      loop uses — the globe camera-UB packer reads view/proj/RTE EXCLUSIVELY
- *      from `uniformState`), then ask the globe renderer to build its OWN
+ *      `uniformState.updateCamera(faceCamera)` (the same seam the WebGL shadow
+ *      loop uses — the globe camera-UB packer reads view/proj/RTE exclusively
+ *      from `uniformState`), then ask the globe renderer to build its own
  *      single-target capture commands for the visible tile set
  *      (`getOrCreateCaptureTileCommands`), open a render pass on
  *      `cache.faceViews[face]` (`loadOp: 'load'` to preserve the compute sky),
  *      and replay the commands.
  *   3. In a `finally`, restore the main camera via
- *      `uniformState.updateCamera(mainCamera)` — BEFORE any later frame stage
- *      reads `uniformState` — so the DP-H41 `previousViewProjection` tail AND
- *      the `_logDepthEncodeNearFar` stash never leak the face camera into the
- *      main scene's motion-vector / depth-classify decode.
+ *      `uniformState.updateCamera(mainCamera)`, before any later frame stage
+ *      reads `uniformState`, so neither the `previousViewProjection` tail nor
+ *      the `_logDepthEncodeNearFar` stash leaks the face camera into the main
+ *      scene's motion-vector / depth-classify decode.
  *
- * Default-OFF byte-identity: `runSceneCapture` is only reached when BOTH the
- * context flag AND the manager flag are true AND the scene is SCENE3D. OFF it
- * is never entered → no encoder/pass/submit, no `uniformState.updateCamera`,
- * no allocation.
+ * `runSceneCapture` is reached only when the context flag and the manager flag
+ * are both true and the scene is SCENE3D. Off, it is never entered: no
+ * encoder, pass or submit, no `uniformState.updateCamera`, no allocation.
  *
- * Tile-set fidelity (V1): reuses the MAIN-camera-selected visible tile set (the
- * CSM precedent). Faces pointing away from the main view get coarse/absent
- * tiles; back faces may show only the compute sky. Per-face quadtree
- * re-selection is explicitly deferred (DEFERRED_WORK: ENV-CAPTURE-PER-FACE-LOD).
+ * Tile-set fidelity: the main-camera-selected visible tile set is reused, as
+ * CSM does. Faces pointing away from the main view get coarse or absent tiles,
+ * and back faces may show only the compute sky. Per-face quadtree re-selection
+ * is deferred.
  *
- * Face-basis convention (TOP correctness risk — verify with a colored-landmark
- * ON probe, not just a diff drop): the cube is filled + sampled in the IBL
- * reference frame (a planet-local +Y-up frame), and `faceUVToLocalDir` in
+ * Face-basis convention: the cube is filled and sampled in the IBL reference
+ * frame (a planet-local +Y-up frame), and `faceUVToLocalDir` in
  * `ProceduralSkyCubemap.wgsl` maps (face, uv) → a direction in that local frame
  * with local +X = East, local +Y = Up (geodetic), local +Z = North. The 6
  * face cameras are built so face index == `cache.faceViews[i].baseArrayLayer`
@@ -78,8 +76,8 @@ export interface SceneCaptureManager {
 }
 
 /**
- * C11-193 — minimal view of {@link WebGPUEnvironmentTargetPool} this module
- * needs. Structural so the capture pass keeps no dependency on the pool module.
+ * Minimal view of {@link WebGPUEnvironmentTargetPool} this module needs.
+ * Structural, so the capture pass keeps no dependency on the pool module.
  */
 export interface SceneCaptureTargetPool {
   acquireDepthTarget(
@@ -144,9 +142,9 @@ interface ModelCaptureCommand {
   pipeline: GPURenderPipeline;
   bindGroups: GPUBindGroup[];
   /**
-   * C11-195 — the model group-0 camera layout declares `hasDynamicOffset`,
-   * so this face's camera slice is addressed by offset rather than by a
-   * per-record bind group. Always present for arena-built records.
+   * The model group-0 camera layout declares `hasDynamicOffset`, so this face's
+   * camera slice is addressed by offset rather than by a per-record bind group.
+   * Always present for arena-built records.
    */
   bindGroup0DynamicOffsets?: number[];
   vertexBuffers: GPUBuffer[];
@@ -157,12 +155,11 @@ interface ModelCaptureCommand {
 }
 
 /**
- * C2-25 ENV-SCENE-CAPTURE (Batch 447) — published per-frame by the WebGPU model
- * feature renderer (`updateWebGPUModel`) when `context.sceneCaptureReflections`
- * is true. Carries the visible models' camera-independent draw records plus the
- * builder that turns them into per-face single-target draw descriptors. glTF +
- * 3D Tiles BOTH flow through the model renderer, so this covers both in one
- * producer.
+ * Published per-frame by the WebGPU model feature renderer (`updateWebGPUModel`)
+ * when `context.sceneCaptureReflections` is true. Carries the visible models'
+ * camera-independent draw records plus the builder that turns them into
+ * per-face single-target draw descriptors. glTF and 3D Tiles both flow through
+ * the model renderer, so this covers both in one producer.
  */
 interface SceneCaptureModels {
   frameNumber: number;
@@ -190,9 +187,9 @@ interface FaceCamera {
   frustum: PerspectiveFrustum;
 }
 
-// ── Local face basis (IBL reference frame, +Y up) ──
-// Per face: [forward, up, right] in the cube's local frame. Derived directly
-// from `faceUVToLocalDir` (ProceduralSkyCubemap.wgsl): forward = the face's
+// Local face basis in the IBL reference frame (+Y up). Per face:
+// [forward, up, right] in the cube's local frame, derived directly from
+// `faceUVToLocalDir` (ProceduralSkyCubemap.wgsl): forward = the face's
 // center direction (s=t=0); right = +∂s; up = −∂t (so screen-up maps to
 // decreasing texel-v, matching WebGPU's top-left framebuffer origin). Face
 // index == cube layer == faceUvToDirection case index.
@@ -425,7 +422,7 @@ export function runSceneCapture(
   commandEncoder?: GPUCommandEncoder,
   targetPool?: SceneCaptureTargetPool | null,
 ): SceneCaptureResultValue {
-  // ── Gate: double opt-in + SCENE3D ──
+  // Gate: both opt-in flags plus SCENE3D.
   const ctx = frameState.context as unknown as {
     sceneCaptureReflections?: boolean;
     _webgpuSceneCaptureSources?: SceneCaptureSources | null;
@@ -478,9 +475,9 @@ export function runSceneCapture(
   }
 
   // The retained source array is mutable and belongs to the previous globe
-  // selection. Refine the one View-owned S5 block against those exact meshes
-  // before any face command snapshots it. If exaggeration changed since the
-  // list was produced, retain the conservative coarse result instead.
+  // selection. Refine the one View-owned eclipse-shadow block against those
+  // exact meshes before any face command snapshots it. If exaggeration changed
+  // since the list was produced, retain the conservative coarse result instead.
   if (sources && tiles) {
     const tileProvider = sources.tileProvider;
     const retainedBoundsCurrent =
@@ -502,7 +499,7 @@ export function runSceneCapture(
   const faceFormat = cache.cubemapFormat ?? "rgba8unorm";
   const size = cache.size || 256;
 
-  // Eye = the reflective owner's bounding-sphere center (NOT the scene camera).
+  // Eye = the reflective owner's bounding-sphere center, not the scene camera.
   // Near/far span the planet surface so the 90° face frustum reaches the
   // visible terrain on the sky-facing hemisphere (back faces show only sky).
   scratchEye.x = eye.x;
@@ -512,18 +509,17 @@ export function runSceneCapture(
   const near = 1.0;
   const far = radius * 2.5;
 
-  // C2-25 ENV-SCENE-CAPTURE (Batch 447) — model / 3D-Tiles capture sources
-  // published by the WebGPU model FR last frame (frame-stable refs). When
-  // capture is OFF the model FR never publishes (byte-identical), so this is
-  // null and the model replay below is skipped — globe-only capture (Batch 446)
-  // is unchanged.
+  // Model / 3D-Tiles capture sources are published by the WebGPU model feature
+  // renderer on the previous frame, as frame-stable refs. With capture off the
+  // model feature renderer never publishes, so `captureModels` is null and the
+  // model replay below is skipped, leaving globe-only capture unchanged.
   const ownsEncoder = commandEncoder === undefined;
   let encoder: GPUCommandEncoder | null = commandEncoder ?? null;
   let globeDrawCount = 0;
   let modelDrawCount = 0;
-  // C11-193 — borrowed depth target for this replay. Non-null only when the
-  // context pool is available; the manager-local fallback below is unchanged so
-  // standalone/spec callers keep the historical lifetime.
+  // Borrowed depth target for this replay. Non-null only when the context pool
+  // is available; standalone and spec callers fall back to the manager-local
+  // target below and keep its lifetime.
   let pooledDepth: PooledDepthTarget | null = null;
 
   try {
@@ -535,8 +531,8 @@ export function runSceneCapture(
       buildCubeFaceCamera(faceCameraScratch, eye, face, near, far);
       uniformState.updateCamera(faceCameraScratch);
 
-      // Build this face's globe commands AFTER repointing uniformState so the
-      // camera-UB packer bakes the FACE-camera RTE matrices.
+      // Build this face's globe commands after repointing uniformState, so the
+      // camera-UB packer bakes the face camera's RTE matrices.
       const allCommands: CaptureCommand[] = [];
       if (includeGlobe && sources && tiles && globeRenderer) {
         for (let t = 0; t < tiles.length; t++) {
@@ -568,11 +564,12 @@ export function runSceneCapture(
         }
       }
 
-      // C2-25 (Batch 447) — build this face's MODEL / 3D-Tiles commands AFTER
-      // repointing uniformState (so the per-face camera UB bakes the FACE-camera
-      // RTE eye via the ring allocator). Replayed AFTER the globe in the SAME
-      // pass on the shared depth target: globe depth-writes first, models
-      // depth-test+write over it (model occludes globe, globe occludes sky).
+      // Build this face's model / 3D-Tiles commands after repointing
+      // uniformState, so the per-face camera UB bakes the face camera's RTE eye
+      // through the ring allocator. They are replayed after the globe in the
+      // same pass on the shared depth target: the globe depth-writes first and
+      // models depth-test and write over it, so a model occludes the globe and
+      // the globe occludes the sky.
       const modelCommands: ModelCaptureCommand[] = [];
       if (captureModels) {
         const pubModels = captureModels.models;
@@ -600,20 +597,20 @@ export function runSceneCapture(
       // indexed draw exists. An empty replay must not submit six empty passes
       // or report a successful scene composite.
       //
-      // C11-193 — this target is `depthStoreOp: "discard"` and every face pass
-      // clears it, so it has no cross-refresh contents worth owning per manager.
-      // When the context pool is available, borrow one context-wide target for
-      // the whole replay and give it back in the `finally` below; several
-      // managers then share a single `size x size` depth allocation.
+      // This target is `depthStoreOp: "discard"` and every face pass clears it,
+      // so it has no cross-refresh contents worth owning per manager. When the
+      // context pool is available, borrow one context-wide target for the whole
+      // replay and give it back in the `finally` below; several managers then
+      // share a single `size x size` depth allocation.
       if (pooledDepth === null && targetPool) {
         pooledDepth = targetPool.acquireDepthTarget(
           size,
           "depth24plus",
           "DynEnvMap Capture Depth",
         );
-        // A manager that previously owned a private target must release it, or
-        // it would sit resident for the rest of the manager's life alongside
-        // the pooled one.
+        // A manager still holding a private target must release it here, or it
+        // sits resident for the rest of the manager's life alongside the
+        // pooled one.
         if (cache.captureDepthTexture) {
           cache.captureDepthTexture.destroy();
           cache.captureDepthTexture = null;
@@ -688,14 +685,14 @@ export function runSceneCapture(
         globeDrawCount++;
       }
 
-      // C2-25 (Batch 447) — replay the MODEL / 3D-Tiles commands AFTER the globe
-      // so the shared depth buffer occludes correctly (model over globe, globe
-      // over sky). Each model command carries its own 4 bind groups
-      // (neutral-IBL material + instance + effects, plus the shared group-0
-      // camera arena page) and full vertex buffer list. C11-195 — group 0 is
-      // now a dynamic-offset binding: the per-face, per-record camera slice
-      // is selected by `bindGroup0DynamicOffsets`, so it MUST be forwarded or
-      // every record would read the same (wrong) block.
+      // Replay the model / 3D-Tiles commands after the globe so the shared
+      // depth buffer occludes correctly: model over globe, globe over sky. Each
+      // model command carries its own 4 bind groups (neutral-IBL material,
+      // instance and effects, plus the shared group-0 camera arena page) and
+      // full vertex buffer list. Group 0 is a dynamic-offset binding — the
+      // per-face, per-record camera slice is selected by
+      // `bindGroup0DynamicOffsets`, so forwarding it is what keeps each record
+      // from reading the same wrong block.
       for (let i = 0; i < modelCommands.length; i++) {
         const cmd = modelCommands[i];
         pass.setPipeline(cmd.pipeline);
@@ -720,17 +717,17 @@ export function runSceneCapture(
       pass.end();
     }
   } finally {
-    // Restore the main camera BEFORE any later frame stage reads uniformState.
-    // Restoring with the LIVE main camera object reproduces the exact
-    // main-camera view / proj / frustum (its projectionMatrix getter recomputes
-    // from its own unchanged fov/aspect/near/far). Covers the DP-H41
-    // previousViewProjection tail AND the _logDepthEncodeNearFar stash; a throw
-    // mid-loop must not leak the face camera into the main scene.
+    // Restore the main camera before any later frame stage reads uniformState.
+    // Restoring with the live main camera object reproduces the exact
+    // main-camera view / proj / frustum, because its projectionMatrix getter
+    // recomputes from its own unchanged fov/aspect/near/far. This covers both
+    // the previousViewProjection tail and the _logDepthEncodeNearFar stash, and
+    // a throw mid-loop must not leak the face camera into the main scene.
     uniformState.updateCamera(mainCamera);
-    // C11-193 — give the borrowed depth target back on EVERY exit, including a
-    // throw. Release is not destroy: the pool retains the texture, so the
-    // commands recorded against it above stay valid until they are submitted
-    // (and the pool's idle trim refuses to destroy anything used this frame).
+    // Give the borrowed depth target back on every exit, including a throw.
+    // Release is not destroy: the pool retains the texture, so the commands
+    // recorded against it above stay valid until they are submitted, and the
+    // pool's idle trim refuses to destroy anything used this frame.
     if (pooledDepth !== null && targetPool) {
       targetPool.releaseDepthTarget(pooledDepth);
       pooledDepth = null;
@@ -743,12 +740,12 @@ export function runSceneCapture(
       : SceneCaptureResult.SKY_ONLY;
   }
 
-  // Camera/tile/S5 payloads above were staged in the frame-owned uniform ring,
-  // whose normal flush is endFrame — too late for either a private capture
-  // submit or the manager-owned refresh submit. Flush those queue writes first,
-  // then imagery mip jobs, so queue order is uniforms → mips → capture passes.
-  // Multiple managers may flush incrementally; the ring uploader tracks the
-  // already-flushed prefix.
+  // The camera, tile and eclipse-shadow payloads above were staged in the
+  // frame-owned uniform ring, whose normal flush is endFrame — too late for
+  // either a private capture submit or the manager-owned refresh submit. Flush
+  // those queue writes first, then imagery mip jobs, so queue order is
+  // uniforms → mips → capture passes. Multiple managers may flush
+  // incrementally; the ring uploader tracks the already-flushed prefix.
   ctx.flushPendingUniformUploads?.();
   ctx.flushPendingTextureMipJobs?.();
   if (ownsEncoder) {

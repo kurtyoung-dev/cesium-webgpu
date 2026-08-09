@@ -1,23 +1,19 @@
-// SunDiscAppearance.js — C12-15 / C12-16 shared resolver.
+// Shared resolver for the two sun-bake appearance toggles.
 //
-// Scene Logic Extractor pattern (CLAUDE.md): the two sun-bake toggles are
-// resolved HERE, once, before `Sun.update` branches into the feature
-// renderer, and the resolved numbers are published on `frameState` exactly
-// the way C7-SUN-STARS-EXTINCTION publishes `sunAtmosphereExtinction` and
-// C12-29 S1 publishes `sunEclipseAlpha`. That is what makes the two bakes
-// (GLSL `SunTextureFS.glsl` on WebGL, the CPU loop in
-// `WebGPUEnvironmentRenderer.createSunTexture` on WebGPU) provably read the
-// same values instead of each re-deriving them from
-// `atmosphericConditions`.
+// Following the scene-logic-extractor pattern, they are resolved here, once,
+// before `Sun.update` branches into the feature renderer, and the resolved
+// numbers are published on `frameState` the same way
+// `sunAtmosphereExtinction` and `sunEclipseAlpha` are. That is what makes the
+// two bakes — GLSL `SunTextureFS.glsl` on WebGL, the CPU loop in
+// `WebGPUEnvironmentRenderer.createSunTexture` on WebGPU — read the same
+// values instead of each re-deriving them from `atmosphericConditions`.
 //
-// Both toggles default ON (C12-15 / C12-16 are the shipped appearance), and
-// both have an exact identity position:
+// Both toggles default on, and both have an exact identity position:
 //   enableSolarLimbDarkening === false -> (a0, a1, a2) = (1, 0, 0), so
-//     I(mu) == 1 everywhere and the disc is the historical flat step().
+//     I(mu) == 1 everywhere and the disc is a flat step().
 //   enableSolarGlareFalloff  === false -> `glareLegacy` = 1, selecting the
-//     historical `1 - smoothstep(0, 0.55, radius)` expression verbatim.
-// With both false the bake is byte-identical to the pre-C12-15 engine on
-// both backends.
+//     `1 - smoothstep(0, 0.55, radius)` expression verbatim.
+// With both false the bake is byte-identical on both backends.
 //
 // @private
 // @module SunDiscAppearance
@@ -51,16 +47,16 @@ function createSunDiscAppearance() {
     glarePedestal: SOLAR_GLARE_PEDESTAL,
     glareLegacyEdge: SOLAR_GLARE_LEGACY_EDGE,
     glareLegacy: 0.0,
-    // 2-bit cache key: bit 0 = limb darkening, bit 1 = glare falloff. Both
+    // Two-bit cache key: bit 0 = limb darkening, bit 1 = glare falloff. Both
     // bakes rebuild their texture when this changes.
     key: 3,
   };
 }
 
 /**
- * Resolves the two C12 sun-bake toggles from the frame's
- * `atmosphericConditions.lighting` leaf, defaulting both to ON when the
- * facade is absent (no globe attached).
+ * Resolves the two sun-bake toggles from the frame's
+ * `atmosphericConditions.lighting` leaf, defaulting both to on when the
+ * facade is absent because no globe is attached.
  *
  * @param {object} frameState The frame state.
  * @param {object} result A `createSunDiscAppearance()` object to fill.
@@ -86,10 +82,10 @@ function readSunDiscAppearance(frameState, result) {
 }
 
 export { createSunDiscAppearance, readSunDiscAppearance };
-// Default export REQUIRED by the generated barrel: `packages/engine/index.js`
+// Default export required by the generated barrel: `packages/engine/index.js`
 // is produced by `scripts/build.js`, which emits `export { default as X }`
-// for every `Source/**/*.js` with no exclusion mechanism, so a named-exports-
-// only module fails `npx gulp build` with "No matching export ... for import
-// default". `npx tsc --noEmit` does NOT catch it (it never checks the
-// generated barrel) — a gulp build is the only gate for this class.
+// for every `Source/**/*.js` with no exclusion mechanism, so a module with
+// named exports only fails `npx gulp build` with "No matching export ... for
+// import default". `npx tsc --noEmit` does not catch it, because it never
+// checks the generated barrel; a gulp build is the only gate for this class.
 export default readSunDiscAppearance;

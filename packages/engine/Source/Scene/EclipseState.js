@@ -1,33 +1,23 @@
-// C12-29 S1 — per-frame eclipse / occultation state (backend-agnostic CPU).
+// Per-frame eclipse and occultation state, computed on the CPU and shared by
+// both backends.
 //
-// WHAT THIS REPLACES. Sun occlusion in this engine was a boolean with no
-// intensity path. WebGL culled the whole sun billboard once its bounding
-// sphere (SOLAR_RADIUS * (1 + glowLengthTS), roughly 6 solar radii — see
-// `Sun.js`) fell entirely inside the Earth occluder's horizon cone
-// (`Occluder.isBoundingSphereVisible` via `Scene.updateEnvironment`), so the
-// glow snapped from absent to full in a single frame. WebGPU built its sun
-// command with NO bounding volume at all (`WebGPUEnvironmentRenderer.js`),
-// so it never culled and instead hard-clipped per pixel against the globe's
-// depth. Neither backend treated the Moon as an occluder anywhere: a solar
-// eclipse rendered as two independent bodies with zero light coupling.
+// This module computes, once per frame in f64, how much of the sun the camera
+// can actually see, and publishes it on `frameState.eclipseState`. It runs
+// unconditionally — a few tens of flops in the common case where nothing
+// occludes anything — and the `enableEclipse` toggle gates only the
+// application of the result, so a probe can read the physics with the effect
+// switched off.
 //
-// This module computes, once per frame in f64, how much of the sun the
-// camera can actually see, and publishes it on `frameState.eclipseState`.
-// It is deliberately unconditional (a few tens of flops in the common case
-// where nothing occludes anything); the `enableEclipse` toggle gates only
-// the APPLICATION of the result, so probes can read the physics with the
-// effect switched off.
-//
-// PUBLISHED CONTRACT (`frameState.eclipseState`, one object mutated in
-// place — never reallocated, so consumers may hold the reference):
+// Published contract (`frameState.eclipseState`, one object mutated in place
+// and never reallocated, so consumers may hold the reference):
 //
 //   enabled                 boolean  atmosphericConditions.lighting.enableEclipse
 //   autoExposure            boolean  atmosphericConditions.lighting.eclipseAutoExposure
 //   sunVisibleFraction      [0,1]    limb-darkened surviving flux, camera-anchored
 //   earthOcclusionFraction  [0,1]    flux removed by the Earth limb alone
 //   moonObscuration         [0,1]    flux removed by the lunar disc alone
-//   moonPositionWC          Cartesian3  ECEF metres (S5's per-fragment umbra input)
-//   sunPositionWC           Cartesian3  ECEF metres (the position actually used)
+//   moonPositionWC          Cartesian3  ECEF metres, the per-fragment umbra input
+//   sunPositionWC           Cartesian3  ECEF metres, the position actually used
 //   sunAngularRadius        radians
 //   earthAngularRadius      radians  (0 when the Earth term is gated off)
 //   moonAngularRadius       radians
@@ -35,118 +25,110 @@
 //   moonSeparation          radians  camera->moon vs camera->sun
 //   eclipseMagnitude        >= 0     lunar magnitude, >= 1 means totality
 //   horizonTwilightEnabled  boolean  atmosphericConditions.lighting.enableEclipseHorizonTwilight
-//   horizonTwilightStrength [0,1]    S6's 360-degree horizon glow, geometry only
+//   horizonTwilightStrength [0,1]    the 360-degree horizon glow, geometry only
 //   valid                   boolean  false when inputs were missing this frame
 //
-// TWO OCCLUDERS, ONE INTEGRAND. Both terms come from
-// `computeSolarObscuration` (limb-darkened circle-circle overlap); see that
-// module for the dual-cone umbra/penumbra/antumbra mapping and the C12-15
+// Two occluders, one integrand. Both terms come from
+// `computeSolarObscuration` — limb-darkened circle-circle overlap; see that
+// module for the dual-cone umbra/penumbra/antumbra mapping and the
 // limb-darkening law. Combining them uses the independent-attenuation form
 //
 //   sunVisibleFraction = (1 - earthOcclusionFraction) * (1 - moonObscuration)
 //
-// which is EXACT whenever either term is 0 or 1 — i.e. every single-occluder
-// configuration, which is every configuration that actually occurs outside a
-// lunar transit happening within a fraction of a degree of the Earth limb.
-// It is continuous, monotone in both inputs and cannot leave [0,1]. The
-// spatially correct treatment of simultaneous overlapping occluders is S5
-// territory (per-fragment), not a camera-anchored scalar's job.
+// which is exact whenever either term is 0 or 1 — every single-occluder
+// configuration, which is every configuration that occurs outside a lunar
+// transit happening within a fraction of a degree of the Earth limb. It is
+// continuous, monotone in both inputs and cannot leave [0,1]. Spatially
+// correct treatment of simultaneous overlapping occluders is a per-fragment
+// problem and not a camera-anchored scalar's job.
 //
-// GUARD PARITY. The Earth term is gated on exactly the conditions that
-// produced the legacy occluder — SCENE3D, globe shown, camera not
-// underground, globe not translucent (`SceneUtilities.getOccluder`) plus
+// The Earth term is gated on exactly the conditions that build the engine's
+// occluder — SCENE3D, globe shown, camera not underground, globe not
+// translucent (`SceneUtilities.getOccluder`) plus
 // `GlobeTranslucencyState.sunVisibleThroughGlobe` (`Scene.js`). The caller
 // passes `earthOccluderRadius = undefined` when any of those fails, and the
-// Earth term is then exactly 0 — identity, matching today's "sun always
-// visible" behaviour in translucent/hidden-globe scenes.
+// Earth term is then exactly 0, which keeps the sun always visible in
+// translucent and hidden-globe scenes.
 //
-// FRAME PARITY. The whole computation additionally requires
-// `options.active` — the caller passes false outside `SceneMode.SCENE3D`,
-// because in 2D/Columbus view/MORPHING the camera position is in PROJECTED
-// MAP coordinates while the sun and moon are ECEF. Gating only the Earth
-// term there would leave the MOON term running on mixed frames (direction
-// errors up to ~1.5 deg, several solar diameters). Legacy had no sun
-// occlusion in those modes, so full identity is correct by definition.
+// The whole computation additionally requires `options.active`, which the
+// caller passes false outside `SceneMode.SCENE3D`: in 2D, Columbus view and
+// MORPHING the camera position is in projected map coordinates while the sun
+// and moon are ECEF. Gating only the Earth term there would leave the moon
+// term running on mixed frames, with direction errors up to about 1.5 deg —
+// several solar diameters.
 //
-// EPHEMERIS. The Moon's world position is computed here rather than read
-// from `Moon.js`, for two reasons verified in the C12-29 research: (a)
-// `UniformState` keeps only the moon's EYE-space direction, discarding the
-// world-fixed position, and (b) `Moon.update` runs only when `moon.show` is
-// true — an eclipse must dim the sun whether or not the decorative moon
-// primitive is being drawn. The result is memoised on the frame time so
-// multi-view scenes pay for it once.
+// The Moon's world position is computed here rather than read from
+// `Moon.js`, for two reasons: `UniformState` keeps only the moon's eye-space
+// direction and discards the world-fixed position, and `Moon.update` runs
+// only when `moon.show` is true, while an eclipse must dim the sun whether or
+// not the decorative moon primitive is being drawn. The result is memoised on
+// the frame time so multi-view scenes pay for it once.
 //
-// The SUN's world position is derived the same way when the caller does not
-// supply one (S2). `Scene.render` now publishes the eclipse state BEFORE
-// `uniformState.update(frameState)` — it has to, because `UniformState`
-// itself is one of the S2 consumers and `uniformState.update` is re-entered
-// several times per frame (picking, viewport executor, offscreen views), so a
-// factor applied after the fact would be silently dropped by every one of
-// those re-entries. Before that call `uniformState.sunPositionWC` still holds
-// the PREVIOUS frame's value, which is harmless at 60 Hz but wrong by a whole
-// step under the stepped/pinned clocks every probe uses. The derivation here
-// is `setSunAndMoonDirections`' own pair of calls (Simon1994 in the inertial
-// frame, then ICRF->fixed with the TEME fallback), so the two agree to the
-// bit for a given time.
+// The sun's world position is derived the same way when the caller does not
+// supply one. `Scene.render` publishes the eclipse state before
+// `uniformState.update(frameState)`, and must: `UniformState` is itself one
+// of the consumers, and `uniformState.update` is re-entered several times per
+// frame — picking, viewport executor, offscreen views — so a factor applied
+// afterwards would be silently dropped by every one of those re-entries.
+// Before that call `uniformState.sunPositionWC` still holds the previous
+// frame's value, which is harmless at 60 Hz but wrong by a whole step under a
+// stepped or pinned clock. The derivation here is `setSunAndMoonDirections`'
+// own pair of calls — Simon1994 in the inertial frame, then ICRF-to-fixed
+// with the TEME fallback — so the two agree to the bit for a given time.
 //
-// ── S2: SCENE DIMMING (`getEclipseSceneLightFactor`) ───────────────────────
-//
-// S1 fades the sun BILLBOARD by `sunVisibleFraction`, which correctly folds
-// in the Earth limb: the disc is genuinely hidden behind the Earth from that
-// camera. S2 dims the WORLD, and for that the Earth term must NOT be used.
+// Scene dimming (`getEclipseSceneLightFactor`) uses a different combination.
+// Fading the sun billboard by `sunVisibleFraction` correctly folds in the
+// Earth limb, because the disc is genuinely hidden behind the Earth from that
+// camera. Dimming the world must not use the Earth term at all:
 //
 //   `earthOcclusionFraction` is 1 for every night frame and for most of
-//   twilight — a ground camera's Earth occluder subtends ~85-86 deg (it is
-//   built from `ellipsoid.minimumRadius`, so its limb sits several degrees
-//   below the true horizon), so the term saturates once the sun is a few
+//   twilight. A ground camera's Earth occluder subtends about 85-86 deg — it
+//   is built from `ellipsoid.minimumRadius`, so its limb sits several degrees
+//   below the true horizon — and the term saturates once the sun is a few
 //   degrees below the horizontal. Multiplying scene light or atmosphere
-//   intensity by `1 - earthOcclusionFraction` would therefore black out
-//   civil twilight, every sunrise/sunset gradient, and the day side of the
-//   globe as seen from a night-side orbital camera. The engine ALREADY
-//   models "the Earth is between me and the sun" per fragment, via N·L and
-//   the day/night terminator; a global multiplier would double-count it.
+//   intensity by `1 - earthOcclusionFraction` would black out civil twilight,
+//   every sunrise and sunset gradient, and the day side of the globe as seen
+//   from a night-side orbital camera. The engine already models "the Earth is
+//   between me and the sun" per fragment, through N dot L and the day/night
+//   terminator, and a global multiplier would double-count it.
 //
 // So the scene factor is driven by `moonObscuration` alone — the solar
-// eclipse proper. It is still camera-anchored (the spatially correct
-// per-fragment umbra is S5), which is the right first order: the umbra is
-// only 100-160 km wide, so a camera that sees a 100%-obscured sun is, to
-// within the approximation, standing in the shadow.
+// eclipse proper. It stays camera-anchored, which is the right first order:
+// the umbra is only 100-160 km wide, so a camera that sees a fully obscured
+// sun is, to within the approximation, standing in the shadow.
 //
-// THE CURVE. Linear in the limb-darkened flux fraction — no smoothstep, no
-// invented easing (the research is explicit that Stellarium's magnitude-keyed
-// darkening was the wrong quantity; obscuration is the right one):
+// The curve is linear in the limb-darkened flux fraction, with no smoothstep
+// and no invented easing. Obscuration is the physical quantity; a
+// magnitude-keyed darkening would not be.
 //
 //   f    = 1 - moonObscuration                              (photometric)
 //   flux = f + ECLIPSE_RADIOMETRIC_FLOOR * (1 - f)          (== f exactly at f == 1)
 //
-// THE FLOOR. Totality is civil twilight, not night: ~5 lux against ~100,000
-// lux full sun (AAS; Optica sky-brightness survey), and a full-moon night is
-// ~10x darker still. `ECLIPSE_RADIOMETRIC_FLOOR = 5 / 100000` stands in for
-// the light the camera-anchored model cannot compute — the umbral sky lit by
-// multiple scattering from OUTSIDE the umbra (nonlocal; the exact treatment
-// is Schneegans' precomputed eclipse-shadow Bruneton extension, recorded as a
-// future L-item). It is what makes the multiplier bounded away from zero.
+// Totality is civil twilight, not night: about 5 lux against about 100,000
+// lux for full sun, and a full-moon night is roughly ten times darker still.
+// `ECLIPSE_RADIOMETRIC_FLOOR = 5 / 100000` stands in for the light the
+// camera-anchored model cannot compute — the umbral sky lit by multiple
+// scattering from outside the umbra, which is nonlocal and would need a
+// precomputed eclipse-shadow extension of the atmosphere model. It is what
+// keeps the multiplier bounded away from zero.
 //
-// THE ADAPTATION EXPONENT. Ruling E2 makes the human-eye impression the
-// DEFAULT: no camera re-metering, the plunge is preserved. But the default
-// display transform then performs none of the adaptation the eye performs
-// between the 1e5-lux and 5-lux states, so shipping the raw 5e-5 radiometric
-// ratio would render a pure-black frame — the one outcome the research
-// forbids. The factor is therefore expressed in PERCEIVED brightness with the
-// standard cube-root lightness relation (CIE L*, Stevens' brightness exponent
-// ~1/3), which is a single documented constant applied to the curve, not a
-// reshaping of it. What that buys, against the three documented perceptual
-// anchors:
+// The default is the human-eye impression: no camera re-metering, so the
+// plunge is preserved. The default display transform performs none of the
+// adaptation the eye performs between the 1e5-lux and 5-lux states, so the
+// raw 5e-5 radiometric ratio would render a pure-black frame. The factor is
+// therefore expressed in perceived brightness through the standard cube-root
+// lightness relation (CIE L*, Stevens' brightness exponent near 1/3), a
+// single constant applied to the curve rather than a reshaping of it. Against
+// the three published perceptual anchors:
 //
-//   50% obscured  -> 0.794   ("no visible change until ~75%")
+//   50% obscured  -> 0.794   (no visible change until about 75%)
 //   75% obscured  -> 0.630   (a light haze)
-//   99% obscured  -> 0.216   ("overcast day")
-//   totality      -> 0.0368  (a ~6x collapse from 99% in the last seconds)
+//   99% obscured  -> 0.216   (an overcast day)
+//   totality      -> 0.0368  (about a sixfold collapse in the last seconds)
 //
-// `eclipseAutoExposure = true` (ruling E2's togglable alternative) returns
-// the LINEAR radiometric `flux` instead and hands the re-metering to the
-// exposure chain, which is exactly what a camera does. See the toggle's
-// documentation in `AtmosphericConditions.js` for the C12-19 seam.
+// `eclipseAutoExposure = true` returns the linear radiometric `flux` instead
+// and hands the re-metering to the exposure chain, which is what a camera
+// does. `AtmosphericConditions.js` documents that toggle.
 //
 // @private
 // @module EclipseState
@@ -173,16 +155,16 @@ const toBodyScratch = new Cartesian3();
 // Simon1994 series plus the ICRF rotation is the only non-trivial cost in
 // this module, so it is computed at most once per simulation instant.
 //
-// `usedIcrf` is PART OF THE KEY, not a diagnostic. `Transforms` silently
-// falls back to the TEME pseudo-fixed rotation while the IAU2006 XYS data is
-// still loading asynchronously, and the two rotations disagree by ~0.3-0.4
-// deg in 2026 — LARGER than the ~0.53 deg solar disc. Keyed on time alone,
-// a memo built during the fallback window would be permanently retained
-// under a pinned/paused clock (every probe, and a common user pattern)
-// while `Moon.update` and `UniformState` recompute every frame and switch to
-// true ICRF the moment the data lands. The rendered moon and the eclipse
-// fade would then disagree by more than a solar diameter: a moon sitting on
-// the sun with no dimming, or dimming with the moon visibly off-sun.
+// `usedIcrf` is part of the key rather than a diagnostic. `Transforms`
+// silently falls back to the TEME pseudo-fixed rotation while the IAU2006 XYS
+// data is still loading asynchronously, and the two rotations disagree by
+// 0.3-0.4 deg in 2026, which is more than the 0.53 deg solar disc. Keyed on
+// time alone, a memo built during the fallback window would be permanently
+// retained under a pinned or paused clock while `Moon.update` and
+// `UniformState` recompute every frame and switch to true ICRF the moment the
+// data lands. The rendered moon and the eclipse fade would then disagree by
+// more than a solar diameter: a moon sitting on the sun with no dimming, or
+// dimming with the moon visibly off-sun.
 const moonMemo = {
   time: new JulianDate(),
   hasTime: false,
@@ -190,10 +172,10 @@ const moonMemo = {
   position: new Cartesian3(),
 };
 
-// C12-29 S2 — the same memo for the solar ephemeris, used only when the
-// caller does not supply `sunPositionWC`. Separate object (not a second field
-// on `moonMemo`) so the two bodies can be sourced independently: the specs
-// pass an explicit sun and let the moon be derived, and vice versa.
+// The same memo for the solar ephemeris, used only when the caller does not
+// supply `sunPositionWC`. A separate object rather than a second field on
+// `moonMemo` so the two bodies can be sourced independently: a caller may
+// pass an explicit sun and let the moon be derived, or the reverse.
 const sunMemo = {
   time: new JulianDate(),
   hasTime: false,
@@ -328,7 +310,7 @@ function getMoonPositionWC(time, result) {
 }
 
 /**
- * Memoised solar ephemeris lookup (C12-29 S2).
+ * Memoised solar ephemeris lookup.
  *
  * @param {JulianDate} time
  * @param {Cartesian3} result
@@ -349,8 +331,8 @@ function getSunPositionWC(time, result) {
 function createEclipseState() {
   return {
     enabled: true,
-    // C12-29 S2 — ruling E2's togglable alternative mode. False (the default)
-    // is the human-eye impression: the plunge is preserved.
+    // False, the default, is the human-eye impression, which preserves the
+    // plunge; true hands re-metering to the exposure chain.
     autoExposure: false,
     valid: false,
     sunVisibleFraction: 1.0,
@@ -364,8 +346,8 @@ function createEclipseState() {
     earthSeparation: Math.PI,
     moonSeparation: Math.PI,
     eclipseMagnitude: 0.0,
-    // C12-29 S6 — 360-degree horizon twilight. Geometry only (0 outside a
-    // near-total eclipse and above the atmosphere); the toggles are applied by
+    // The 360-degree horizon twilight, geometry only: 0 outside a near-total
+    // eclipse and above the atmosphere. The toggles are applied by
     // `getEclipseHorizonTwilightFactor`.
     horizonTwilightEnabled: true,
     horizonTwilightStrength: 0.0,
@@ -445,17 +427,17 @@ function angleBetween(a, b) {
  *   degrees — comfortably larger than the solar disc. The legacy engine had
  *   no sun occlusion in those modes at all, so identity (`valid = false`,
  *   factor 1.0) is correct by definition rather than a compromise.
- * @param {boolean} options.enabled Whether the EFFECT is enabled
+ * @param {boolean} options.enabled Whether the effect is enabled
  *   (`atmosphericConditions.lighting.enableEclipse`). The physics is
  *   computed either way; consumers read this flag to decide whether to
  *   apply `sunVisibleFraction`.
  * @param {boolean} [options.autoExposure=false] Whether the eclipse dimming
- *   should be handed to the exposure chain in LINEAR radiometric form
- *   (`atmosphericConditions.lighting.eclipseAutoExposure`, ruling E2's
- *   togglable camera mode) instead of the default eye-adapted form. Recorded
- *   on the state; read by {@link getEclipseSceneLightFactor}.
- * @param {boolean} [options.horizonTwilightEnabled=true] Whether S6's
- *   360-degree horizon twilight should be APPLIED
+ *   should be handed to the exposure chain in linear radiometric form
+ *   (`atmosphericConditions.lighting.eclipseAutoExposure`) instead of the
+ *   default eye-adapted form. Recorded on the state; read by
+ *   {@link getEclipseSceneLightFactor}.
+ * @param {boolean} [options.horizonTwilightEnabled=true] Whether the
+ *   360-degree horizon twilight should be applied
  *   (`atmosphericConditions.lighting.enableEclipseHorizonTwilight`). Like
  *   `enabled`, it gates application only — `horizonTwilightStrength` is
  *   computed either way. Read by
@@ -495,12 +477,11 @@ function updateEclipseState(state, options) {
     );
   }
 
-  // C12-29 S2 — the sun is either supplied (specs, and any caller that
-  // already has `uniformState.sunPositionWC` for the CURRENT frame) or
-  // derived from the clock, which is what `Scene.render` does now that the
-  // publication moved ahead of `uniformState.update`. Resolved AFTER the
-  // gates above so 2D/Columbus-view frames do not pay for an ephemeris whose
-  // result they discard.
+  // The sun is either supplied — by a caller that already holds
+  // `uniformState.sunPositionWC` for the current frame — or derived from the
+  // clock, which is what `Scene.render` does, since it publishes the eclipse
+  // state ahead of `uniformState.update`. Resolved after the gates above so
+  // 2D and Columbus-view frames do not pay for an ephemeris they discard.
   let sunPositionWC;
   if (defined(options.sunPositionWC)) {
     sunPositionWC = Cartesian3.clone(
@@ -606,9 +587,9 @@ function updateEclipseState(state, options) {
   state.enabled = enabled;
   state.autoExposure = autoExposure;
   state.horizonTwilightEnabled = horizonTwilightEnabled;
-  // C12-29 S6 — geometry only; the toggles are applied by the accessor, per
-  // the S1 convention that the physics is always computed so tooling can read
-  // it with the effect switched off.
+  // Geometry only; the toggles are applied by the accessor, following this
+  // module's convention that the physics is always computed so tooling can
+  // read it with the effect switched off.
   state.horizonTwilightStrength =
     computeHorizonTwilightStrength(moonObscuration, rs, moonAngular) *
     computeAtmosphericColumnFactor(options.cameraHeight);
@@ -643,13 +624,14 @@ function getEclipseSunFactor(state) {
   return typeof f === "number" && f >= 0.0 && f <= 1.0 ? f : 1.0;
 }
 
-// ─── C12-29 S2: the scene-dimming constants ────────────────────────────────
-// Documented, not tuned by eye. See the module header for the derivation and
-// for why the exponent exists at all.
-
 /**
- * Horizontal illuminance under an unobstructed midday sun, lux. AAS eclipse
- * basics; corroborated by the Optica sky-brightness survey.
+ * Horizontal illuminance under an unobstructed midday sun, lux. The first of
+ * the scene-dimming constants, all of which are published figures rather than
+ * values tuned by eye; the module header derives the curve they feed.
+ *
+ * References:
+ *   - American Astronomical Society, "Eclipse basics".
+ *   - Optica sky-brightness survey.
  * @type {number}
  * @private
  */
@@ -665,8 +647,8 @@ const ECLIPSE_TOTALITY_ILLUMINANCE = 5.0;
 
 /**
  * The radiometric floor the eclipse multiplier is bounded away from zero by:
- * the totality/full-sun illuminance ratio, 5e-5. It stands in for the umbral
- * sky lit by multiple scattering from OUTSIDE the umbra, which a
+ * the totality-to-full-sun illuminance ratio, 5e-5. It stands in for the
+ * umbral sky lit by multiple scattering from outside the umbra, which a
  * camera-anchored scalar cannot compute.
  * @type {number}
  * @private
@@ -699,7 +681,7 @@ const ECLIPSE_TWILIGHT_FLOOR = Math.pow(
 );
 
 /**
- * S2's scene-light transfer curve, isolated so the globe-shadow path can
+ * The scene-light transfer curve, isolated so the globe-shadow path can
  * evaluate the identical law at a fragment's obscuration.
  *
  * @param {number} obscuration Blocked solar flux fraction in [0, 1].
@@ -716,10 +698,10 @@ function eclipseSceneLightCurve(obscuration, autoExposure) {
 }
 
 /**
- * The multiplier S2's consumers apply to every SUN-DRIVEN light and
- * atmosphere intensity: scene light colour (`UniformState`), the sky
- * atmosphere shell (both backends), the globe's ground atmosphere and its
- * fog (one `tileProvider` mirror, both backends), and `frameState.skyBrightness`.
+ * The multiplier every consumer applies to a sun-driven light or atmosphere
+ * intensity: scene light colour (`UniformState`), the sky atmosphere shell on
+ * both backends, the globe's ground atmosphere and its fog (one
+ * `tileProvider` mirror, both backends), and `frameState.skyBrightness`.
  *
  * Returns exactly 1.0 — the multiplicative identity, hence byte-identical
  * output — when the state is absent, invalid, switched off, or simply has no
@@ -727,10 +709,10 @@ function eclipseSceneLightCurve(obscuration, autoExposure) {
  * eclipse. Consumers additionally short-circuit on `=== 1.0` so the
  * no-eclipse path is untouched by construction rather than by arithmetic.
  *
- * DELIBERATELY NOT `sunVisibleFraction`: that includes the Earth-limb term,
- * which saturates at 1 through twilight and all night, and using it here
- * would black out every sunset and the day side seen from a night-side
- * orbital camera. See the module header.
+ * Not `sunVisibleFraction`: that includes the Earth-limb term, which
+ * saturates at 1 through twilight and all night, and using it here would
+ * black out every sunset and the day side seen from a night-side orbital
+ * camera. The module header derives that.
  *
  * @param {object|undefined} state
  * @returns {number} in [ECLIPSE_TWILIGHT_FLOOR, 1]
@@ -747,74 +729,73 @@ function getEclipseSceneLightFactor(state) {
   return eclipseSceneLightCurve(obscuration, state.autoExposure === true);
 }
 
-// ─── C12-29 S6: the 360-degree horizon twilight ────────────────────────────
+// The constants below parameterise the 360-degree horizon twilight of a total
+// eclipse.
 //
-// WHAT IT IS. Standing in the umbra you are surrounded by penumbra. The umbral
-// ground track is only 100-160 km wide (2017: ~115 km; path widths up to
-// ~270 km — NASA/EclipseWise), so in EVERY azimuth the still-sunlit
-// atmosphere begins a few tens of km away and its scattered light arrives as a
-// sunset-coloured band hugging the horizon, all the way round. It is the most
-// recognisable totality cue after the corona, and no camera-anchored dimming
-// scalar can produce it: S2 makes the whole sky darker, uniformly.
+// Standing in the umbra an observer is surrounded by penumbra. The umbral
+// ground track is only 100-160 km wide — about 115 km in 2017, with path
+// widths reaching 270 km (NASA/EclipseWise) — so in every azimuth the
+// still-sunlit atmosphere begins a few tens of km away and its scattered
+// light arrives as a sunset-coloured band hugging the horizon, all the way
+// round. It is the most recognisable totality cue after the corona, and a
+// camera-anchored dimming scalar cannot produce it, because that darkens the
+// whole sky uniformly.
 //
-// THE SHAPE IS GEOMETRIC, NOT TUNED. From the umbra centre the near edge of
-// the bright penumbral atmosphere is ~50-80 km away (half the track width) and
-// the scattering layer that carries the glow is the troposphere plus lower
-// stratosphere, ~25 km deep. So the lit region subtends elevations from the
-// horizon up to roughly
+// The shape is geometric rather than tuned. From the umbra centre the near
+// edge of the bright penumbral atmosphere is 50-80 km away, half the track
+// width, and the scattering layer that carries the glow is the troposphere
+// plus lower stratosphere, about 25 km deep. The lit region therefore subtends
+// elevations from the horizon up to roughly
 //
 //   atan(25 km / 60 km) = 22.6 degrees
 //
 // which is the shader's `ECLIPSE_TWILIGHT_ELEVATION_RAD`. Above that the
-// observer is looking at umbral sky and the term is exactly 0 — that is why
-// the effect reads as a BAND rather than a wash, and why it cannot drown the
-// star reveal happening overhead.
+// observer is looking at umbral sky and the term is exactly 0, which is what
+// makes the effect read as a band rather than a wash and keeps it from
+// drowning the stars appearing overhead.
 //
-// THE ONSET is keyed to obscuration, the same quantity S2 dims by (never
-// magnitude — the Stellarium #3720 trap is about driving the DIMMING SCALAR
-// from magnitude, and it still applies). Below `ECLIPSE_TWILIGHT_ONSET` the
-// strength is exactly 0, so every partial eclipse is byte-identical.
+// The onset is keyed to obscuration, the same quantity the scene dimming uses,
+// and never to magnitude. Below `ECLIPSE_TWILIGHT_ONSET` the strength is
+// exactly 0, so every partial eclipse is byte-identical.
 //
-// ANNULAR EXCLUSION IS A SEPARATE, TYPE-LEVEL CLASSIFIER, and obscuration
-// cannot do that job. Measured from this module: a concentric annular ring at
-// radius ratio 0.98 obscures 0.9794, at 0.99 it obscures 0.9905, at 0.995
-// 0.9955 and at 0.999 0.9992 — all above the 0.98 onset. Real hybrid and
-// near-hybrid eclipses (~5% of solar eclipses) run annular phases right
-// through that band, so an obscuration-only gate would fire an umbra-only
-// effect at near-full gain over a track with NO UMBRA AT ALL.
+// Excluding annular eclipses is a separate, type-level decision, and
+// obscuration cannot make it. A concentric annular ring at radius ratio 0.98
+// obscures 0.9794, at 0.99 it obscures 0.9905, at 0.995 0.9955 and at 0.999
+// 0.9992 — all above the 0.98 onset. Hybrid and near-hybrid eclipses, about
+// 5% of solar eclipses, run annular phases right through that band, so an
+// obscuration-only gate would fire an umbra-only effect at near-full gain
+// over a track with no umbra on it.
 //
 // The discriminator is the angular-radius ratio `ro / rs`: the moon's disc is
-// larger than the sun's if and only if the eclipse is total, and that is a
-// property of the eclipse TYPE rather than of the instant. It is exactly the
-// eclipse magnitude evaluated at central alignment — `M(d=0) = (rs+ro)/(2rs)
-// >= 1  <=>  ro >= rs` — which is why it is the right form of "magnitude is
-// the total-vs-annular discriminator". The INSTANTANEOUS magnitude is not: for
-// a total eclipse `M >= 1` is algebraically identical to `d <= ro - rs`, i.e.
-// to the umbra branch, i.e. to obscuration being EXACTLY 1.0, so gating on it
-// would collapse the whole obscuration ramp into a step at second contact.
-// Using the ratio keeps the ramp and still excludes every annular geometry
-// exactly.
+// larger than the sun's if and only if the eclipse is total, which is a
+// property of the eclipse type rather than of the instant. It is exactly the
+// eclipse magnitude evaluated at central alignment, `M(d=0) = (rs+ro)/(2rs)
+// >= 1  <=>  ro >= rs`. The instantaneous magnitude will not do: for a total
+// eclipse `M >= 1` is algebraically identical to `d <= ro - rs`, i.e. to the
+// umbra branch, i.e. to obscuration being exactly 1.0, so gating on it would
+// collapse the whole obscuration ramp into a step at second contact. The
+// ratio keeps the ramp and still excludes every annular geometry exactly.
 //
 // The ratio gate carries a narrow smoothstep rather than a hard step so a
 // hybrid eclipse — annular at the ends of its track, total in the middle —
-// crosses it continuously, which is what a hybrid physically does. A true
-// total eclipse sits at ro/rs ~ 1.01-1.08 at greatest eclipse and is fully
-// inside the gate; every annular ratio (< 1 by definition) is exactly 0.
+// crosses it continuously, which is what a hybrid physically does. A total
+// eclipse sits at `ro/rs` between about 1.01 and 1.08 at greatest eclipse and
+// is fully inside the gate; every annular ratio is below 1 by definition and
+// is exactly 0.
 //
-// THE AMPLITUDE is a perceptual constant, and is labelled as one. The
-// mechanism fixes the shape and the direction; it does not hand us a radiance
-// ratio, and the totality sky-brightness literature reports illuminances
-// rather than the zenith-to-horizon contrast a shader needs. The term is
-// therefore expressed as a multiple of the sky's OWN luminance along the same
-// ray — which makes it self-scaling under the S2 dimming, the tonemap, the
-// user's `atmosphereLightIntensity` and any future exposure work, with no
-// calibration to drift — and the probe gates on SHAPE (present at every
-// azimuth, monotone in obscuration, confined to the band, absent when the
-// toggle is off) rather than on this number.
+// The amplitude is a perceptual constant and is labelled as one. The mechanism
+// fixes the shape and the direction but not a radiance ratio, and the totality
+// sky-brightness literature reports illuminances rather than the
+// zenith-to-horizon contrast a shader needs. The term is expressed as a
+// multiple of the sky's own luminance along the same ray, which makes it
+// self-scaling under the eclipse dimming, the tonemap and the user's
+// `atmosphereLightIntensity` with no calibration to drift, and the probe gates
+// on shape — present at every azimuth, monotone in obscuration, confined to
+// the band, absent when the toggle is off — rather than on the number.
 
 /**
  * Obscuration below which there is no 360-degree twilight at all. This is the
- * STRENGTH ramp only — annular exclusion is
+ * strength ramp only — annular exclusion is
  * {@link ECLIPSE_TWILIGHT_TOTAL_RATIO_LO}'s job, because annular obscuration
  * reaches 0.9992 at a 0.999 radius ratio and cannot be separated here.
  * @type {number}
@@ -823,7 +804,7 @@ function getEclipseSceneLightFactor(state) {
 const ECLIPSE_TWILIGHT_ONSET = 0.98;
 
 /**
- * Moon/sun angular-radius ratio at and below which the eclipse is ANNULAR and
+ * Moon/sun angular-radius ratio at and below which the eclipse is annular and
  * the 360-degree twilight is exactly 0 — there is no umbra on the ground, so
  * there is no surrounding penumbral horizon to see. Equivalently, the eclipse
  * magnitude at central alignment is below 1.
@@ -834,9 +815,9 @@ const ECLIPSE_TWILIGHT_TOTAL_RATIO_LO = 1.0;
 
 /**
  * Ratio at and above which the eclipse is fully total for this purpose. The
- * narrow band between the two exists so a HYBRID eclipse — annular at the ends
+ * narrow band between the two exists so a hybrid eclipse — annular at the ends
  * of its track, total in the middle — crosses continuously instead of popping.
- * A normal total eclipse sits at 1.01-1.08 at greatest eclipse.
+ * A total eclipse sits at 1.01-1.08 at greatest eclipse.
  * @type {number}
  * @private
  */
@@ -876,18 +857,19 @@ const ECLIPSE_TWILIGHT_TINT = [1.0, 0.784, 0.424];
 /**
  * Geometric strength of the 360-degree horizon twilight, before the toggles.
  *
- * TWO factors, and they answer two different questions. The obscuration ramp
- * answers "how close to totality is this instant"; the angular-radius ratio
- * answers "is this eclipse capable of casting an umbra at all". Obscuration
- * alone cannot do the second — a 0.999-ratio annular ring obscures 0.9992 —
- * and the instantaneous magnitude cannot do the first, because `M >= 1` is
- * algebraically the umbra branch and so is true only where obscuration is
- * already exactly 1. See the section header for the full derivation.
+ * Two factors, answering two different questions. The obscuration ramp
+ * answers how close to totality this instant is; the angular-radius ratio
+ * answers whether the eclipse is capable of casting an umbra at all.
+ * Obscuration alone cannot do the second — a 0.999-ratio annular ring
+ * obscures 0.9992 — and the instantaneous magnitude cannot do the first,
+ * because `M >= 1` is algebraically the umbra branch and so is true only
+ * where obscuration is already exactly 1. The block above the constants
+ * derives both.
  *
  * @param {number} moonObscuration
  * @param {number} [sunAngularRadius] Solar angular radius, radians. Omitted or
- *   non-positive means "type unknown", and the type factor is 1 — which is the
- *   behaviour the pure-obscuration callers (the spec's curve checks) expect.
+ *   non-positive leaves the type unknown, and the type factor is then 1,
+ *   which is what a caller supplying obscuration alone expects.
  * @param {number} [moonAngularRadius] Lunar angular radius, radians.
  * @returns {number} in [0, 1]
  * @private

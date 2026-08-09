@@ -1,6 +1,6 @@
-// SolarDiscModel.js — C12-15 / C12-16 / C12-27. THE single source of truth for
-// the solar-disc photometry constants and the radial profiles the sun-disc bake
-// and the angular star washout are built from.
+// The single source of truth for the solar-disc photometry constants and the
+// radial profiles the sun-disc bake and the angular star washout are built
+// from.
 //
 // References:
 //   - A. Claret, "A new non-linear limb-darkening law for LTE stellar
@@ -12,55 +12,46 @@
 //   - CIE 135/1:1999, "Disability Glare", for the 1/theta^2 veiling-glare
 //     falloff the screen halo profile is regularised from.
 //
-// WHY THIS MODULE EXISTS. Before it, the limb-darkening triple lived only in
-// `computeSolarObscuration.js` (C12-29 S1's eclipse photometry) and the sun
-// billboard's own disc was a *binary* `step()` with no limb darkening at all,
-// while the glare falloff was a bare `1.0 - smoothstep(0.0, 0.55, r)` literal
-// duplicated between `Shaders/SunTextureFS.glsl` (WebGL) and the CPU bake in
-// `Renderer/WebGPU/WebGPUEnvironmentRenderer.js` (WebGPU). The C12-15 queue
-// row requires ONE constants source once the sun wave lands. Three consumers
-// now read this module:
+// Four consumers read this module, and none of them carries a numeric copy of
+// anything in it:
 //
 //   1. `computeSolarObscuration.js` — the eclipse flux quadrature.
-//   2. `Scene/Sun.js` — feeds the values to `SunTextureFS.glsl` as UNIFORMS
+//   2. `Scene/Sun.js` — feeds the values to `SunTextureFS.glsl` as uniforms
 //      (`u_limbDarkening`, `u_glareCore`, `u_glarePedestal`, `u_glareLegacy`),
-//      so the GLSL carries no numeric copy of them at all.
+//      so the GLSL carries no literal of its own.
 //   3. `Renderer/WebGPU/WebGPUEnvironmentRenderer.js` — imports the pure
 //      functions directly for its CPU bake.
-//   4. `Scene/SolarGlareAppearance.js` — C12-27's per-frame resolver, which
-//      feeds the ANGULAR parameterisation of the same veiling-glare curve to
-//      four shaders (star sprites + star cube map, both backends) as uniforms.
+//   4. `Scene/SolarGlareAppearance.js` — the per-frame resolver that feeds the
+//      angular parameterisation of the same veiling-glare curve to four
+//      shaders (star sprites and star cube map, both backends) as uniforms.
 //
-// That makes "one constants source" structural rather than a comment: there
-// is no second literal to drift.
+// That makes "one constants source" structural rather than a convention:
+// there is no second literal to drift.
 //
-// ─── ONE CURVE, TWO PARAMETERISATIONS (C12-27) ─────────────────────────────
+// One curve, two parameterisations. `solarGlareProfile` and
+// `solarAngularGlareVeil` are the same pedestal-subtracted Lorentzian,
+// `{@link pedestalLorentzian}`, evaluated over two different domains:
 //
-// C12-16's `solarGlareProfile` and C12-27's `solarAngularGlareVeil` are the
-// SAME pedestal-subtracted Lorentzian, `{@link pedestalLorentzian}`, evaluated
-// over two different domains:
-//
-//   C12-16  x = bake `radius` (the billboard's own texture coordinate)
-//   C12-27  x = ANGULAR separation from the Sun, in radians
+//   `solarGlareProfile`      x = bake `radius`, the billboard's own texture
+//                                coordinate
+//   `solarAngularGlareVeil`  x = angular separation from the Sun, in radians
 //
 // Both decay as `1/x^2` — the Stiles-Holladay / CIE disability-glare form
-// `L_veil ∝ E / theta^2`. The C12-27 queue row prescribes reusing "the C12-05
-// Stiles-Holladay math"; that identification is WRONG and is recorded here so
-// nobody re-derives it. `C12-05` DID land (Batch 748), but its Moffat wing is
-// `(1 + (r/alpha)^2)^(-beta)` with `STAR_PSF_BETA = 2.0`, i.e. a log-log slope
-// of `-2*beta = -4`: an inverse-FOURTH-power wing, deliberately, because it
-// models a single unresolved star's point-spread function and not the veiling
-// luminance across the sky. The landed inverse-SQUARE veiling form in this fork
-// is C12-16's, right here. So the glare curve has exactly one home, and it is
+// `L_veil ∝ E / theta^2`. This is not the star point-spread function in
+// `StarField.wgsl`: that one is a Moffat wing, `(1 + (r/alpha)^2)^(-beta)`
+// with `STAR_PSF_BETA = 2.0`, whose log-log slope is `-2*beta = -4`. An
+// inverse-fourth-power wing models a single unresolved star's point spread;
+// it is not the veiling luminance across the sky, and the two must not be
+// conflated. The inverse-square veiling form has exactly one home, and it is
 // this module.
 //
-// COORDINATE CONVENTION (shared by both bakes, do not change without changing
-// both). The bake runs over the square billboard texture; with
+// Coordinate convention, shared by both bakes and not changeable in one of
+// them alone. The bake runs over the square billboard texture; with
 // `p = uv - vec2(0.5)` and `lengthScalar = 2 / sqrt(2)`, the shaders use
 //
 //     radius = length(p) * lengthScalar
 //
-// so `radius == 1` at the texture CORNER and `radius == 1/sqrt(2)` at the
+// so `radius == 1` at the texture corner and `radius == 1/sqrt(2)` at the
 // edge midpoint. Because the billboard spans `1 + 2*glowLengthTS` solar
 // radii per half-extent (11 R_sun at the default `glowFactor = 1`), the
 // map from `radius` to solar radii is
@@ -74,19 +65,17 @@
 // @module SolarDiscModel
 
 /**
- * C12-15 quadratic limb-darkening coefficients, `I(mu) = a0 + a1*mu + a2*mu^2`
- * with `mu = cos(heliocentric angle)`, normalised so `I(1) = a0+a1+a2 = 1` at
- * disc centre and `I(0) = a0 = 0.30` at the limb (the limb is ~30% of centre
- * in the broadband visual, the figure the C12-15 row quotes).
+ * Quadratic limb-darkening coefficients, `I(mu) = a0 + a1*mu + a2*mu^2` with
+ * `mu = cos(heliocentric angle)`, normalised so `I(1) = a0+a1+a2 = 1` at disc
+ * centre and `I(0) = a0 = 0.30` at the limb — the limb is about 30% of centre
+ * in the broadband visual.
  *
- * Passing `(1, 0, 0)` instead reproduces the historical flat disc EXACTLY
- * (`I == 1` everywhere), which is how the `enableSolarLimbDarkening = false`
- * position stays byte-identical without a shader branch.
- *
- * ─── PROVENANCE AND ACCURACY (CO-35, ruling R-2026-08-10-2) ───────────────
+ * Passing `(1, 0, 0)` instead reproduces a flat disc exactly (`I == 1`
+ * everywhere), which is how the `enableSolarLimbDarkening = false` position
+ * stays byte-identical without a shader branch.
  *
  * These three numbers are not tuned and are not this fork's. They are the
- * PUBLISHED solar limb-darkening coefficients for lambda = 550 nm, in the
+ * published solar limb-darkening coefficients for lambda = 550 nm, in the
  * identical functional form `I(psi)/I(0) = sum a_k cos^k psi`:
  *
  *   [R1] Cox, A. N. (ed.), *Allen's Astrophysical Quantities*, 4th ed.,
@@ -99,9 +88,9 @@
  * `U`/`V` entries at 0.50 and 0.60 micron interpolate to `(a0, a1, a2) =
  * (0.30000, 0.90500, -0.20500)` at 550 nm — the same `a0` to five digits.
  *
- * Checked against two INDEPENDENT primary datasets, both published as 5th-
- * order polynomials in `mu` at lambda = 579.88 nm (same functional family,
- * three more terms), tabulated side by side in
+ * Checked against two independent primary datasets, both published as
+ * 5th-order polynomials in `mu` at lambda = 579.88 nm (same functional
+ * family, three more terms), tabulated side by side in
  *
  *   [R2] Hestroffer, D. & Magnan, C., "Wavelength dependency of the Solar
  *        limb darkening", *Astron. Astrophys.* **333**, 338-342 (1998),
@@ -113,34 +102,34 @@
  *        darkening (ll 303 to 1099 nm)", *Solar Physics* **153**, 91 (1994)
  *        — `a0 = 0.28392`.
  *
- * THE SHIPPED `a0 = 0.30` IS BRACKETED BY THOSE TWO (0.28392 < 0.30 <
+ * The shipped `a0 = 0.30` is bracketed by those two (0.28392 < 0.30 <
  * 0.30505). Over `r <= 0.9` — the range [R2] states the two datasets agree
  * over, and outside which a polynomial fit at the limb "is difficult to
  * achieve from a numerical as well as an observational point of view" — the
- * shipped law tracks [R3] to a maximum absolute deviation of **0.00498** and
- * [R4] to **0.00517** in units of disc-centre intensity (RMS 0.0025 /
- * 0.0033), after transporting each to 550 nm through [R2]'s own measured
- * exponent relation `alpha ~ -0.023 + 0.292 / lambda[um]`.
+ * shipped law tracks [R3] to a maximum absolute deviation of 0.00498 and [R4]
+ * to 0.00517 in units of disc-centre intensity (RMS 0.0025 / 0.0033), after
+ * transporting each to 550 nm through [R2]'s own measured exponent relation
+ * `alpha ~ -0.023 + 0.292 / lambda[um]`.
  *
- * At the §5 sample point `x = 0.95` the shipped law gives 0.567967 against a
- * transported [R3]/[R4] midpoint of 0.573377 — **-0.94%**. Every credible
- * reference at ~550 nm lands in [0.5537, 0.5940], and 0.567967 is inside it.
+ * At the sample point `x = 0.95` the shipped law gives 0.567967 against a
+ * transported [R3]/[R4] midpoint of 0.573377, a difference of -0.94%. Every
+ * credible reference at about 550 nm lands in [0.5537, 0.5940], and 0.567967
+ * is inside it.
  *
- * WAVELENGTH CHOICE IS ALSO CHECKED, not assumed. Weighting [R2]'s
+ * The wavelength is checked rather than assumed. Weighting [R2]'s
  * `alpha(lambda)` by the CIE 1931 photopic `V(lambda)` times a 5772 K Planck
- * disc-centre spectrum gives an effective wavelength of **555.7 nm** for this
- * quantity — 5.7 nm from the shipped 550 nm, worth **+0.63%** on
+ * disc-centre spectrum gives an effective wavelength of 555.7 nm for this
+ * quantity — 5.7 nm from the shipped 550 nm, worth +0.63% on
  * `I(0.95R)/I(0)`. 550 nm is the right band centre for a broadband visual
  * render to within a percent.
  *
- * WHY NOT A "BETTER" LAW. The full spread above is 4.6% at `x = 0.95`. At the
- * shipped disc radiance (2.0) the sample point renders at 8-bit code 242.3,
- * where one code is worth 0.0416 of linear radiance — so the ENTIRE available
- * accuracy improvement is **0.3 to 1.2 display codes out of 255**, i.e. at or
- * below the quantum the picture is delivered in. Adopting a 5th-order fit
- * would additionally replace one verbatim citable table entry AT THE RIGHT
- * WAVELENGTH with a hand-transported hybrid of two datasets published 30 nm
- * away. The law stands.
+ * A higher-order law would buy nothing. The full spread above is 4.6% at
+ * `x = 0.95`; at the shipped disc radiance (2.0) that sample point renders at
+ * 8-bit code 242.3, where one code is worth 0.0416 of linear radiance, so the
+ * entire available accuracy improvement is 0.3 to 1.2 display codes out of
+ * 255 — at or below the quantum the picture is delivered in. A 5th-order fit
+ * would also replace one verbatim citable table entry at the right wavelength
+ * with a hand-transported hybrid of two datasets published 30 nm away.
  *
  * @private
  */
@@ -149,11 +138,10 @@ const SOLAR_LIMB_DARKENING_A1 = 0.93;
 const SOLAR_LIMB_DARKENING_A2 = -0.23;
 
 /**
- * Half-amplitude radius of the C12-16 glare core, in the `radius` units
- * described in the module header. 0.275 is the legacy profile's own
- * half-amplitude point (`1 - smoothstep(0, 0.55, r) == 0.5` at `r = 0.275`),
- * chosen so the new curve is anchored to the shipped look rather than to a
- * free parameter.
+ * Half-amplitude radius of the glare core, in the `radius` units described in
+ * the module header. 0.275 is the legacy profile's own half-amplitude point
+ * (`1 - smoothstep(0, 0.55, r) == 0.5` at `r = 0.275`), so the Lorentzian is
+ * anchored to the shipped look rather than to a free parameter.
  *
  * @private
  */
@@ -161,17 +149,15 @@ const SOLAR_GLARE_CORE = 0.275;
 
 /**
  * Outer support of the glare profile: the largest radius whose full circle
- * still fits inside the square billboard. A veiling-glare PSF falls as
- * `1/theta^2` and never truly terminates (the C12-16 row's complaint about
- * `1 - smoothstep(0, 0.55, r)`, which hits exactly zero at 0.55 and stays
- * there), but a FINITE quad must reach zero somewhere or the halo shows the
- * billboard's straight edges. Taking the inscribed circle is the widest
- * support the existing geometry allows and keeps the termination circular,
- * so no square edge is ever visible.
+ * still fits inside the square billboard. A veiling-glare point spread falls
+ * as `1/theta^2` and never truly terminates, but a finite quad must reach
+ * zero somewhere or the halo shows the billboard's straight edges. Taking the
+ * inscribed circle is the widest support the geometry allows and keeps the
+ * termination circular, so no square edge is ever visible.
  *
- * The genuinely non-terminating tail is C12-18's job — the screen-space halo
- * from the post-process chain, which has no quad to fall off. This constant
- * is the honest bound of what a baked billboard can carry.
+ * A baked billboard can carry no more than this. The genuinely
+ * non-terminating tail is {@link solarScreenHaloProfile}, evaluated in the
+ * post-process chain, which has no quad to fall off.
  *
  * @private
  */
@@ -204,10 +190,10 @@ function lorentzianPedestal(support, core) {
  * 0.0 — not "small", zero. Callers that need a byte-identical no-op outside
  * the support rely on that.
  *
- * The operation ORDER here is byte-for-byte the expression `solarGlareProfile`
- * carried before C12-27 factored it out; `solar-glare-star-washout.spec.mjs`
- * pins the two against a frozen copy of the pre-C12-27 body over a dense sweep
- * and requires EXACT equality, so the refactor cannot have moved a bit.
+ * The operation order is load-bearing: `solar-glare-star-washout.spec.mjs`
+ * pins this body against a frozen copy of the expression `solarGlareProfile`
+ * inlines over a dense sweep and requires exact equality, so a reassociation
+ * that is mathematically neutral is still a failure.
  *
  * @param {number} x Position in the profile's own domain.
  * @param {number} core Half-amplitude radius.
@@ -266,40 +252,33 @@ function solarLimbIntensity(x) {
 }
 
 /**
- * C12-16 glare profile — a Lorentzian core with a `1/radius^2` tail, the
- * shape a veiling-glare / disability-glare point-spread function takes
+ * Baked glare profile — a Lorentzian core with a `1/radius^2` tail, the shape
+ * a veiling-glare / disability-glare point-spread function takes
  * (`L_veil ∝ E / theta^2`, the CIE stray-light form). Pedestal-subtracted so
  * it is exactly 0 at {@link SOLAR_GLARE_SUPPORT}.
  *
  *   raw(r)     = 1 / (1 + (r / core)^2)
  *   profile(r) = (raw(r) - pedestal) / (1 - pedestal), clamped to [0, 1]
  *
- * Measured against the legacy curve at the default `glowFactor = 1`
- * (`radius = 0.0642824 * rho_Rsun`):
+ * Measured against {@link solarGlareProfileLegacy} at the default
+ * `glowFactor = 1` (`radius = 0.0642824 * rho_Rsun`):
  *
- *   rho (R_sun) | radius  | legacy  | C12-16  | delta
+ *   rho (R_sun) | radius  | legacy  | this    | delta
  *   ------------+---------+---------+---------+-------
  *          0.0  | 0.0000  | 1.0000  | 1.0000  |  0.000
  *          1.5  | 0.0964  | 0.9186  | 0.8740  | -0.045
  *          3.11 | 0.2000  | 0.6995  | 0.6017  | -0.098  (round radius 0.2)
- *          3.23 | 0.2077  | 0.6798  | 0.5818  | -0.0981 <- TRUE extremum
+ *          3.23 | 0.2077  | 0.6798  | 0.5818  | -0.0981 <- extremum
  *          4.28 | 0.2750  | 0.5000  | 0.4244  | -0.076
  *          6.0  | 0.3857  | 0.2144  | 0.2367  | +0.022
  *          8.56 | 0.5500  | 0.0000  | 0.0790  | +0.079
  *         11.0  | 0.7071  | 0.0000  | 0.0000  |  0.000
  *
- * So the visible support grows from 8.556 R_sun to 11.0 R_sun and the tail
- * decays as an inverse square instead of terminating, at the cost of at most
- * 0.09805 profile units (0.0735 in alpha, ~19/255) in the mid halo, located
- * at rho = 3.2313 R_sun (radius 0.2077) — found by a 600k-sample sweep, not
- * by reading the nearest round row. That table
- * is also the arithmetic that rules C12-16 OUT as the cause of
- * `probe-eclipse-sun-fade`'s `glowOffRaw == 0` on WebGPU over the 1.5x..6x
- * annulus: BOTH curves put alpha (0.75 x profile) between 0.16 and 0.69
- * there, two orders of magnitude above the 1/255 quantisation floor and far
- * inside either support radius. Reshaping the falloff cannot turn a measured
- * zero into a non-zero, so the zero has a different cause — see
- * `probe-sun-glow-profile.mjs`.
+ * So the visible support is 11.0 R_sun rather than the legacy 8.556, and the
+ * tail decays as an inverse square instead of terminating, at the cost of at
+ * most 0.09805 profile units (0.0735 in alpha, about 19/255) in the mid halo,
+ * at rho = 3.2313 R_sun (radius 0.2077). That extremum is the result of a
+ * 600k-sample sweep and does not sit on any round row of the table.
  *
  * @param {number} radius Bake radius (module-header convention).
  * @returns {number} Glare weight in [0, 1].
@@ -339,26 +318,6 @@ function solarBakeRadiusToSolarRadii(radius, glowLengthTS) {
   return radius * Math.SQRT2 * halfExtentRsun;
 }
 
-// ─── C12-18 — THE DISC IS UNDERSIZED BY EXACTLY sqrt(2) ────────────────────
-//
-// Both bakes compare the CORNER-normalised `radius` against `radiusTS`, but
-// `radiusTS = 0.5 / (1 + 2*glowLengthTS)` is expressed as a fraction of the
-// quad's HALF-EXTENT (`|p| <= 0.5`), not of the corner distance. Concretely,
-// with `p = uv - 0.5` the on-screen offset of a texel is `p * quadWidth`, the
-// quad half-width is `(1 + 2*glowLengthTS)` solar limbs, and so
-//
-//   |p| == radiusTS   <=>   on-screen offset == 1.0 solar limb  (correct)
-//   radius == radiusTS  <=>  |p| == radiusTS / lengthScalar
-//                        <=>  offset == 1/sqrt(2) == 0.7071 solar limbs
-//
-// i.e. the shipped disc subtends 0.7071 x the Sun's true angular radius —
-// 0.3767 deg of diameter instead of 0.5327 deg. `solarBakeRadiusToSolarRadii`
-// above says the same thing in one line: it maps the shipped `radiusTS` to
-// 0.70711 R_sun. WebGPU's CPU bake reproduced the WebGL expression faithfully,
-// so BOTH backends are undersized by the same factor and the defect is
-// invisible to any WebGL-vs-WebGPU diff. This is the "disc at true 0.53 deg"
-// half of the C12-18 row.
-
 /**
  * The `lengthScalar` both bakes apply to `length(uv - 0.5)`.
  *
@@ -375,8 +334,24 @@ function solarBakeRadiusToSolarRadii(radius, glowLengthTS) {
 const SOLAR_DISC_BAKE_LENGTH_SCALAR = 2.0 / Math.sqrt(2.0);
 
 /**
- * Historical (undersized) disc edge in bake-`radius` units:
- * `0.5 / (1 + 2*glowLengthTS)`, which lands at 1/sqrt(2) solar radii.
+ * Legacy disc edge in bake-`radius` units, `0.5 / (1 + 2*glowLengthTS)`, which
+ * lands at 1/sqrt(2) solar radii rather than at 1.
+ *
+ * The shortfall is a units mismatch, and it is the whole reason
+ * {@link solarDiscBakeEdge} exists. Both bakes compare the corner-normalised
+ * `radius` against this value, but the value is a fraction of the quad's
+ * half-extent (`|p| <= 0.5`), not of the corner distance. With `p = uv - 0.5`
+ * the on-screen offset of a texel is `p * quadWidth` and the quad half-width
+ * is `(1 + 2*glowLengthTS)` solar limbs, so
+ *
+ *   |p| == this        <=>  on-screen offset == 1.0 solar limb
+ *   radius == this     <=>  |p| == this / lengthScalar
+ *                      <=>  offset == 1/sqrt(2) == 0.7071 solar limbs
+ *
+ * i.e. a disc terminated here subtends 0.7071 times the Sun's true angular
+ * radius — 0.3767 deg of diameter instead of 0.5327 deg. Both backends
+ * compute it identically, so the shortfall does not show up in a
+ * WebGL-against-WebGPU diff.
  *
  * @param {number} glowLengthTS `glowFactor * 5`, as both bakes compute it.
  * @returns {number} Bake radius at which the legacy disc terminates.
@@ -387,16 +362,16 @@ function solarDiscBakeEdgeLegacy(glowLengthTS) {
 }
 
 /**
- * C12-18 disc edge in bake-`radius` units — the radius at which the disc
- * terminates so that it subtends the Sun's TRUE angular radius.
+ * Disc edge in bake-`radius` units — the radius at which the disc terminates
+ * so that it subtends the Sun's true angular radius.
  *
  * `solarBakeRadiusToSolarRadii(solarDiscBakeEdge(g), g) === 1` to within a
  * binary64 ULP, by construction; `solar-sun-halo-model.spec.mjs` pins that.
  *
  * @param {number} glowLengthTS `glowFactor * 5`, as both bakes compute it.
- * @param {boolean} [trueSize=true] `false` returns the legacy edge EXACTLY
- *        (`solarDiscBakeEdgeLegacy`), which is the byte-identical off
- *        position of `lighting.enableTrueSolarDiscSize`.
+ * @param {boolean} [trueSize=true] `false` returns
+ *        {@link solarDiscBakeEdgeLegacy} exactly, which is the
+ *        byte-identical off position of `lighting.enableTrueSolarDiscSize`.
  * @returns {number} Bake radius at which the disc terminates.
  * @private
  */
@@ -405,25 +380,10 @@ function solarDiscBakeEdge(glowLengthTS, trueSize) {
   return trueSize === false ? legacy : legacy * SOLAR_DISC_BAKE_LENGTH_SCALAR;
 }
 
-// ─── C12-18 — THE SCREEN-SPACE HALO ────────────────────────────────────────
-//
-// `SOLAR_GLARE_SUPPORT` above records the honest bound of a BAKED halo: a
-// finite quad must reach zero somewhere or its straight edges show, so the
-// C12-16 profile is pedestal-subtracted to terminate on the inscribed circle
-// at 11 R_sun. Its own doc comment names the sequel: "The genuinely
-// non-terminating tail is C12-18's job — the screen-space halo from the
-// post-process chain, which has no quad to fall off."
-//
-// This is that tail. It is the SAME Lorentzian, evaluated in ANGULAR units
-// (solar radii from the projected solar centre) and WITHOUT the pedestal
-// subtraction or the support clamp, because in screen space there is no quad
-// to fall off. Amplitude is the bake's own `0.75` glare weight, so the two
-// compositions are continuous at the centre by construction.
-
 /**
  * Alpha weight the bake gives its glare halo (`color.ba += glow * 0.75`).
- * The screen-space halo inherits it so the hand-off changes the halo's
- * SHAPE (non-terminating) and not its overall level.
+ * The screen-space halo inherits it, so moving the halo off the billboard
+ * changes its shape — it stops terminating — and not its overall level.
  *
  * @private
  */
@@ -447,18 +407,19 @@ function solarHaloCoreRadii(glowLengthTS) {
 }
 
 /**
- * C12-18 screen-space veiling-glare profile — the REFERENCE IMPLEMENTATION of
- * the shader math. `SolarHalo.glsl` and `SolarHalo.wgsl` are line-for-line
- * translations of this body and `solar-sun-halo-model.spec.mjs` extracts,
+ * Screen-space veiling-glare profile, and the reference implementation of the
+ * shader math: `SolarHalo.glsl` and `SolarHalo.wgsl` are line-for-line
+ * translations of this body, and `solar-sun-halo-model.spec.mjs` extracts,
  * compiles and compares all three.
  *
  *   veil(rho) = 1 / (1 + (rho / core)^2)
  *
- * NO pedestal subtraction and NO support clamp, unlike
- * {@link solarGlareProfile}. That is the entire point of moving the halo off
- * the billboard: the profile decays as `1/rho^2` forever instead of being
- * truncated at the quad's inscribed circle. Measured difference against the
- * baked profile at `glowFactor = 1` (in ALPHA units, i.e. x0.75):
+ * The same Lorentzian as {@link solarGlareProfile} but evaluated in solar
+ * radii from the projected solar centre, and with neither the pedestal
+ * subtraction nor the support clamp: in screen space there is no quad whose
+ * corners could show, so the profile decays as `1/rho^2` forever instead of
+ * being truncated at the billboard's inscribed circle. Measured difference
+ * against the baked profile at `glowFactor = 1`, in alpha units (x0.75):
  *
  *   rho (R_sun) | baked  | screen | delta alpha | 8-bit codes
  *   ------------+--------+--------+-------------+------------
@@ -471,9 +432,9 @@ function solarHaloCoreRadii(glowLengthTS) {
  *         50.0  | 0.0000 | 0.0073 |     0.0055  |   1.4
  *        100.0  | 0.0000 | 0.0018 |     0.0014  |   0.35  <- sub-LSB
  *
- * The worst-case brightening is therefore EXACTLY at the old support radius
+ * The worst-case brightening is exactly at the baked profile's support radius
  * (11 R_sun = 2.93 deg) and is 25/255; the halo stays above one 8-bit code
- * out to ~57 R_sun (15 deg) and falls below it beyond. Both facts are
+ * out to about 57 R_sun (15 deg) and falls below it beyond. Both figures are
  * pinned by the spec, because "non-terminating" must not be allowed to mean
  * "washes the whole sky".
  *
@@ -487,47 +448,33 @@ function solarScreenHaloProfile(rhoRsun, coreRsun) {
   return 1.0 / (1.0 + t * t);
 }
 
-// ─── C12-19 — TRUE HDR SUN RADIANCE ────────────────────────────────────────
-//
-// TWO PREMISE CORRECTIONS, recorded here because the row's own text and the
-// Batch-906 record both carry the older reading:
-//
-// (1) THE BAKE CLAMP IS NOT WHAT MASKS LIMB DARKENING. `SunTextureFS.glsl`
-//     writes `rgb = (1, 1, surface + 0.2)` and `alpha = surface + 0.75*glow`,
-//     and the C12-18 default hands the halo to the post-process chain, which
-//     sets `bakeHaloGain = 0` and deletes the `0.75*glow` term. What is left
-//     is `alpha = surface = limb(x)`, which NEVER reaches the clamp, so the
-//     limb law composites straight through: over a dark sky the disc runs
-//     255 codes at centre to 77 at the extreme limb on BOTH backends AT HEAD.
-//     C12-18 was its own unmasking row. The clamp still binds on exactly one
-//     channel at the default — BLUE, over the inner disc, where
-//     `surface + 0.2 > 1` — and there it is doing real work: the `+0.2` is a
-//     HUE term (it makes the halo orange and the core white), so "removing
-//     the clamp" on blue turns the sun's core blue. It is a WHITE POINT, not
-//     a radiance clamp.
-//
-// (2) REMOVING THE CLAMP FROM ALPHA IS UNSAFE. Since C11-115/C12-18 both
-//     backends blend the sun ALPHA_BLEND, where alpha is the DESTINATION
-//     weight: `dst = src.rgb*a + dst*(1 - a)`. An alpha above 1 makes
-//     `1 - a` negative and SUBTRACTS the sky — a dark ring around the sun,
-//     i.e. exactly the Batch-364 black-sky class this row's own warning
-//     names. On the `sunBloom = false` path the legacy baked halo drives
-//     alpha to ~1.9, so the ring would be strong. The alpha saturation is a
-//     BLEND WEIGHT clamp and must stay.
-//
-// So the radiance that the single old `clamp(color, 0, 1)` conflated with
-// chroma and coverage is delivered as an EXPLICIT SCALE, applied in the sun
-// fragment shaders AFTER `czm_gammaCorrect` — i.e. in linear space, where a
-// radiance belongs — and is exactly 1.0 whenever the scene is not HDR, so the
-// SDR frame is `x * 1.0 === x` for every finite float rather than merely
-// "close".
-
 /**
  * Disc radiance in the SDR position: the multiplicative identity.
  *
  * Stated as a constant rather than an inline `1.0` because it is the whole
  * SDR-safety argument — under `highDynamicRange = false` the sun path is not
- * "retuned to look similar", it is arithmetically unchanged.
+ * retuned to look similar, it is arithmetically unchanged.
+ *
+ * Radiance is carried as an explicit scale applied in the sun fragment
+ * shaders after `czm_gammaCorrect`, i.e. in linear space, rather than by
+ * relaxing the `clamp(color, 0, 1)` those shaders end with. That clamp is two
+ * different things at once and neither of them is a radiance limit:
+ *
+ *   - On blue it is a white point. `SunTextureFS.glsl` writes
+ *     `rgb = (1, 1, surface + 0.2)`, where the `+0.2` is a hue term that
+ *     makes the halo orange and the core white; over the inner disc
+ *     `surface + 0.2 > 1`, so lifting the clamp there turns the sun's core
+ *     blue.
+ *   - On alpha it is a blend weight. Both backends blend the sun
+ *     `ALPHA_BLEND`, where alpha is the destination weight
+ *     (`dst = src.rgb*a + dst*(1 - a)`), so an alpha above 1 makes `1 - a`
+ *     negative and subtracts the sky, ringing the sun in black. With
+ *     `sunBloom = false` the baked halo drives alpha to about 1.9, so the
+ *     ring would be strong.
+ *
+ * The limb law is not masked by that clamp either: at the default the halo
+ * goes to the post-process chain, `bakeHaloGain` is 0, and what reaches the
+ * blend is `alpha = surface = limb(x)`, which never saturates.
  *
  * @private
  */
@@ -592,9 +539,9 @@ function solarDiscDisplayCode(linearRadiance, gamma) {
 }
 
 /**
- * Display-code difference between the disc CENTRE and the extreme LIMB at a
- * given disc radiance — i.e. how much of the C12-15 limb-darkening law
- * survives the display transform.
+ * Display-code difference between the disc centre and the extreme limb at a
+ * given disc radiance — how much of the limb-darkening law survives the
+ * display transform.
  *
  * The composited disc is `L * limb(x)` (the bake carries `limb` in alpha and
  * ALPHA_BLEND multiplies by it), so centre and limb are `L` and `a0 * L`.
@@ -636,12 +583,12 @@ const SOLAR_DISC_LIMB_CONTRAST_IDEAL =
 const SOLAR_DISC_LIMB_CONTRAST_FRACTION = 0.5;
 
 /**
- * THE CEILING THIS ROW EXISTS TO NAME: the largest disc radiance at which more
- * than half of the limb-darkening law survives the default display transform.
+ * The largest disc radiance at which more than half of the limb-darkening law
+ * survives the default display transform.
  *
- * ⚠ RAISING THE SUN'S RADIANCE **DESTROYS** LIMB DARKENING; IT DOES NOT
- * UNMASK IT. PBR Neutral compresses everything above `startCompression` toward
- * a single white, so the centre and the limb converge as `L` grows. Measured
+ * Raising the sun's radiance destroys limb darkening rather than revealing
+ * it: PBR Neutral compresses everything above `startCompression` toward a
+ * single white, so the centre and the limb converge as `L` grows. Measured
  * with the functions above (gamma 2.2, exposure 1, over a dark sky):
  *
  *   L      | centre code | limb code | contrast | fraction of ideal
@@ -653,13 +600,12 @@ const SOLAR_DISC_LIMB_CONTRAST_FRACTION = 0.5;
  *    10.0  |    254.29   |   252.25  |    2.05  |  0.019
  *   100.0  |    254.93   |   254.77  |    0.16  |  0.001
  *
- * i.e. the "~10^5 energy" the row's warning contemplates would render the
- * solar disc a flat white circle with the C12-15 law arithmetically invisible
- * — the inverse of the Batch-364 failure by a different route.
+ * so a radiance of the order of the Sun's true energy ratio would render the
+ * disc a flat white circle with the limb law arithmetically invisible.
  *
- * Solved by bisection over `[1, 64]` with a FIXED 200-iteration budget (the
+ * Solved by bisection over `[1, 64]` with a fixed 200-iteration budget: the
  * function is strictly decreasing in `L` over that interval, and a fixed trip
- * count is what keeps this a bounded loop at module scope). The result is
+ * count is what keeps this a bounded loop at module scope. The result is
  * 2.0148, and the reason that number is not the shipped default is the next
  * constant.
  *
@@ -687,7 +633,7 @@ const SOLAR_DISC_RADIANCE_CONTRAST_CEILING = (() => {
  *
  * The scene buffer is `rgba16float` (`PixelDatatype.HALF_FLOAT`), whose
  * largest finite value is 65504. The brightest pixel the sun path can produce
- * is the disc (`L`) plus the C12-18 screen halo at its centre
+ * is the disc (`L`) plus the screen halo at its centre
  * (`SOLAR_HALO_AMPLITUDE * L`) plus the sun bloom's additive contribution,
  * which `BrightPass.glsl` bounds by 1 (`b / (offset + b) < 1`). Requiring that
  * sum to stay two stops below the format's ceiling — headroom for the
@@ -707,30 +653,27 @@ const SOLAR_DISC_RADIANCE_FP16_CEILING =
 /**
  * The disc's linear radiance for this frame.
  *
- * DERIVED FROM THE ENGINE'S OWN STATEMENT OF SOLAR RADIANCE, not dialled.
- * `UniformState.updateFrameState` builds `czm_lightColorHdr` as
+ * Derived from the engine's own statement of solar radiance rather than
+ * dialled. `UniformState.updateFrameState` builds `czm_lightColorHdr` as
  * `light.color * light.intensity` and then publishes `czm_lightColor` as that
- * value renormalised so its brightest channel is <= 1. Every PBR surface in
- * the scene is already lit by the HDR one and shaded by the LDR one; the two
- * differ by exactly this factor. The disc that EMITS `czm_lightColorHdr` must
- * HAVE `czm_lightColorHdr` — anything else asserts that the sun is dimmer
- * than the light it casts.
+ * value renormalised so its brightest channel is at most 1. Every PBR surface
+ * in the scene is lit by the HDR one and shaded by the LDR one, and the two
+ * differ by exactly this factor. A disc that emits `czm_lightColorHdr` must
+ * have `czm_lightColorHdr`, or it is dimmer than the light it casts.
  *
- * At the shipped defaults (`SunLight`, white, `intensity = 2.0`) that is
- * **2.0**, which lands within 0.74% of
- * {@link SOLAR_DISC_RADIANCE_CONTRAST_CEILING} (2.0148) — two derivations
- * with nothing in common agreeing on the same number, which is the reason
- * this row ships a radiance of 2 and not of 10^5. The engine's own light
- * intensity is, to within a percent, the largest radiance at which the
- * C12-15 limb law still survives the default tonemapper.
+ * At the shipped defaults (`SunLight`, white, `intensity = 2.0`) that is 2.0,
+ * within 0.74% of {@link SOLAR_DISC_RADIANCE_CONTRAST_CEILING} (2.0148) — two
+ * derivations with nothing in common agreeing on the same number. The
+ * engine's own light intensity is, to within a percent, the largest radiance
+ * at which the limb law still survives the default tonemapper.
  *
- * EXPLICITLY NOT the eclipse-dimmed light. `UniformState` applies
- * `eclipseSceneLightFactor` to BOTH `_lightColorHdr` and `_lightColor` after
- * the renormalisation, so their RATIO — this function's value — is invariant
+ * Not the eclipse-dimmed light. `UniformState` applies
+ * `eclipseSceneLightFactor` to both `_lightColorHdr` and `_lightColor` after
+ * the renormalisation, so their ratio — this function's value — is invariant
  * to the eclipse. That is required, not incidental: `Sun.update` already
- * scales the billboard's ALPHA by `sunEclipseAlpha`, and a radiance that also
- * dimmed would SQUARE the fade, the same failure `SunHaloAppearance`'s header
- * records for the halo.
+ * scales the billboard's alpha by `sunEclipseAlpha`, so a radiance that also
+ * dimmed would square the fade, which is the same trap
+ * `SunHaloAppearance` documents for the halo.
  *
  * @param {boolean} useHdr `frameState.useHDR` — whether the scene renders
  *        into a float framebuffer at all.
@@ -759,15 +702,6 @@ function solarDiscHdrRadiance(useHdr, light) {
   }
   return Math.min(radiance, SOLAR_DISC_RADIANCE_FP16_CEILING);
 }
-
-// ─── C12-19 — BRIGHT-PASS RETUNE (WebGL sun bloom) ─────────────────────────
-//
-// `SunPostProcess` stage 1 is `BrightPass.glsl`, the ONLY consumer of that
-// shader in the engine. (The file named `BrightPass.wgsl` on the WebGPU side
-// is a port of `ContrastBias.glsl` — the global `scene.bloom` stage, default
-// OFF on both backends — and is NOT this curve.) Its three uniforms were
-// tuned against an input that could not exceed 1, which is no longer true
-// once the disc carries HDR radiance.
 
 /**
  * `avgLuminance` as `SunPostProcess` has always set it — "a guess at the
@@ -800,39 +734,42 @@ function sunBrightPassKey(avg) {
 }
 
 /**
- * C12-19 bright-pass tuning, DERIVED from the disc radiance.
+ * Bright-pass tuning for the WebGL sun bloom, derived from the disc radiance.
  *
- * `BrightPass.glsl` computes
+ * `SunPostProcess` stage 1 is `BrightPass.glsl`, the only consumer of that
+ * shader in the engine — the file named `BrightPass.wgsl` on the WebGPU side
+ * is a port of `ContrastBias.glsl`, the global `scene.bloom` stage, and is a
+ * different curve. It computes
  *
  *   scaled = key(avg) * luminance / avg          (a pure scale, s = key/avg)
  *   bright = max(scaled - threshold, 0)
  *   out    = bright / (offset + bright)
  *
- * so `threshold` names the luminance at which extraction STARTS and
- * `threshold + offset` names the luminance at which it reaches one half. Two
- * derivations, no free parameters:
+ * so `threshold` names the luminance at which extraction starts and
+ * `threshold + offset` names the luminance at which it reaches one half. Both
+ * are derived from `L`, with no free parameters:
  *
- *   * START AT DISPLAY WHITE. `threshold = s * 1.0`. The shipped 0.25 starts
- *     at luminance 0.7292 — BELOW white — so an ordinary bright sky was
- *     already blooming. Under SDR that is merely the shipped look; under HDR,
- *     where the scene legitimately contains values at and above 1, it washes
- *     the frame. (`s = key(0.5)/0.5 = 0.342857`, so `threshold = 0.342857`.)
+ *   * Extraction starts at display white: `threshold = s * 1.0`. The legacy
+ *     0.25 starts at luminance 0.7292, below white, so an ordinary bright sky
+ *     blooms. Under SDR that is only a look; under HDR, where the scene
+ *     legitimately contains values at and above 1, it washes the frame.
+ *     (`s = key(0.5)/0.5 = 0.342857`, so `threshold = 0.342857`.)
  *
- *   * HALF-SATURATE AT THE GEOMETRIC MEAN OF THE RANGE. The curve must span
- *     `[1, L]`; the value that splits a multiplicative range in half is
- *     `sqrt(L)`, so `offset = s * (sqrt(L) - 1)`. That places `out = 0.5`
+ *   * Half-saturation sits at the geometric mean of the range. The curve must
+ *     span `[1, L]`, and the value that splits a multiplicative range in half
+ *     is `sqrt(L)`, so `offset = s * (sqrt(L) - 1)`. That places `out = 0.5`
  *     exactly at `luminance = sqrt(L)` and `out = 1/sqrt(2)` exactly at
- *     `luminance = L`, both checkable identities rather than measurements.
- *     At the shipped `L = 2`: `offset = 0.142016`, half-saturation at 1.4142.
+ *     `luminance = L`, both checkable identities rather than measurements. At
+ *     `L = 2`: `offset = 0.142016`, half-saturation at 1.4142.
  *
- * With the shipped pair the sun's own range is FLAT: 0.4815 at white against
- * 0.8133 at L = 2, i.e. two thirds of the extraction is spent below display
+ * With the legacy pair the sun's own range is flat — 0.4815 at white against
+ * 0.8133 at `L = 2`, so two thirds of the extraction is spent below display
  * white and the sun itself moves the output by only 0.33. The derived pair
  * spends the whole range on the sun.
  *
- * `L <= 1` returns the historical pair BIT-FOR-BIT — both because that is the
- * SDR identity position and because `offset` would otherwise be 0, which
- * turns the final divide into a hard step at the threshold.
+ * `L <= 1` returns the legacy pair bit for bit, both because that is the SDR
+ * identity position and because `offset` would otherwise be 0, which turns
+ * the final divide into a hard step at the threshold.
  *
  * @param {number} linearRadiance {@link solarDiscHdrRadiance}.
  * @param {number} [avgLuminance] The stage's `avgLuminance` uniform.
@@ -854,21 +791,17 @@ function solarBrightPassTuning(linearRadiance, avgLuminance, result) {
   return out;
 }
 
-// ─── The sun-bloom chain's shape, shared by both backends ──────────────────
-//
-// `SunPostProcess` (WebGL) and `WebGPUSunBloomEffect` draw the same glow from
-// the same numbers. The constants below are that glow's shape; the WebGL
-// pipeline states them as stage options and instance fields, and
-// `Tools/visual-regression/webgpu-sun-bloom-mirror.spec.mjs` parses the shipped
-// `SunPostProcess.js` text and fails if any of them drifts from the value here.
-// A second set of literals in the WebGPU effect is the failure this section
-// exists to make impossible.
-
 /**
  * Fraction of the drawing buffer the bright pass and the two blur passes run
  * at. The blur's screen-space footprint is `sigma` texels of this buffer, so
  * the pair `(scale, sigma)` — not `sigma` alone — is what sets the glow's
  * radius in pixels.
+ *
+ * This and the four constants that follow are the shape of the sun-bloom
+ * chain, which `SunPostProcess` and `WebGPUSunBloomEffect` both draw from.
+ * The WebGL pipeline restates them as stage options and instance fields;
+ * `webgpu-sun-bloom-mirror.spec.mjs` parses that file and fails if any of them
+ * drifts, so the WebGPU effect never grows a second set of literals.
  *
  * @private
  */
@@ -967,33 +900,23 @@ function solarBloomCentreAmplitude(linearRadiance) {
   return bright / (tuning.offset + bright);
 }
 
-// ─── C12-27 — ANGULAR parameterisation (star washout near the Sun) ─────────
-//
-// The deleted `enableStarBrightnessModulation` global dim was keyed to the
-// SUN'S ELEVATION above the camera's local horizon, so it dimmed stars 180 deg
-// away from the Sun just as hard as stars beside it, and it did nothing at all
-// in orbit. What actually washes out stars near the Sun is veiling glare —
-// light scattered inside the eye/optics — and that is a function of ANGULAR
-// SEPARATION, which is what the constants below parameterise.
-//
-// NOT GATED BY `computeAtmosphericColumnFactor`, DELIBERATELY. The C12-29 S6
-// star-brightness modulation is inert above the engine's 111 km scattering
-// shell, by design: it models sky glow from the atmospheric COLUMN, and above
-// the column there is no glow. Veiling glare is a DIFFERENT physical mechanism
-// — scattering in the observer's eye and optics, which travel with the
-// observer — so it must NOT inherit that gate. An astronaut looking 5 deg from
-// the Sun sees no stars there; that is exactly the case the column factor
-// switches off. (Stated here because this is the first question any auditor
-// comparing the two terms will ask.)
-
 /**
  * Lower and upper bounds of the angular band over which the Stiles-Holladay
  * inverse-square disability-glare law `L_veil = k * E / theta^2` (theta in
- * degrees) is the accepted description. Inside ~1 deg the point-source
- * idealisation breaks down against the source's own angular size; past
- * ~30 deg the CIE general equation's other terms take over. Recorded as
- * constants because {@link SOLAR_GLARE_ANGULAR_CORE} is DERIVED from them
- * rather than dialled.
+ * degrees) is the accepted description. Inside about 1 deg the point-source
+ * idealisation breaks down against the source's own angular size; past about
+ * 30 deg the CIE general equation's other terms take over. They are constants
+ * because {@link SOLAR_GLARE_ANGULAR_CORE} is derived from them rather than
+ * dialled.
+ *
+ * These parameterise the washout of stars near the Sun, which is veiling
+ * glare — light scattered inside the observer's eye and optics — and so is a
+ * function of angular separation from the Sun and of nothing else. In
+ * particular it is not gated by `computeAtmosphericColumnFactor`. The
+ * star-brightness modulation is gated by it, because that term models sky
+ * glow from the atmospheric column and there is no column above the 111 km
+ * scattering shell; veiling glare travels with the observer, so an astronaut
+ * looking 5 deg from the Sun still sees no stars there.
  *
  * @private
  */
@@ -1009,15 +932,15 @@ const SOLAR_GLARE_ANGULAR_VALID_MAX_DEG = 30.0;
  * description, so the whole of that band is carried by a genuine `1/theta^2`
  * tail rather than by the regularised core.
  *
- * WHY NOT THE SUN'S OWN ANGULAR RADIUS. A Lorentzian regularised at the
- * source's angular size (0.2664 deg, the figure `MoonPhaseAppearance` derives)
- * is the "pure" Stiles-Holladay reading, but it puts the veil at
- * `(0.2664/10)^2 = 7e-4` at 10 deg — three orders of magnitude below one 8-bit
- * code value, i.e. arithmetically inert everywhere it is supposed to act. The
- * observed washout is dominated by ocular/instrument stray light, whose
- * effective source size is the glare spread of the optics, not the disc. The
- * amplitude of that spread is an APPEARANCE parameter and is disclosed as one;
- * the SHAPE and the SUPPORT are not.
+ * Not the Sun's own angular radius. A Lorentzian regularised at the source's
+ * angular size (0.2664 deg, the figure `MoonPhaseAppearance` derives) is the
+ * strict Stiles-Holladay reading, but it puts the veil at
+ * `(0.2664/10)^2 = 7e-4` at 10 deg — three orders of magnitude below one
+ * 8-bit code, so it is arithmetically inert everywhere it is meant to act.
+ * The observed washout is dominated by ocular and instrument stray light,
+ * whose effective source size is the glare spread of the optics rather than
+ * the disc. The amplitude of that spread is an appearance parameter and is
+ * disclosed as one; the shape and the support are not.
  *
  * @private
  */
@@ -1031,16 +954,16 @@ const SOLAR_GLARE_ANGULAR_CORE =
 /**
  * Outer support of the angular veil, in radians — exactly 90 degrees.
  *
- * This is a GATE constant, not a photometric one. The C12-27 acceptance
- * criterion is "stars at >90 deg separation are byte-identical to the no-Sun
- * frame", so the curve is pedestal-subtracted to reach exactly 0.0 at
- * `PI/2` and every consumer additionally early-outs on `cos(theta) <= 0`,
- * which is the same half-space. The multiplier there is exactly 1.0, and
+ * A gate constant, not a photometric one: stars more than 90 deg from the Sun
+ * must be byte-identical to the frame with no Sun at all. The curve is
+ * pedestal-subtracted to reach exactly 0.0 at `PI/2`, and every consumer
+ * additionally early-outs on `cos(theta) <= 0`, which is the same half-space.
+ * The multiplier there is exactly 1.0, and
  * `x * 1.0 === x` for every finite IEEE-754 `x` — byte-identical, not close.
  *
- * A real veiling-glare PSF of course does not terminate at 90 deg; the
- * pedestal subtraction is the same honest bound C12-16 documents for the
- * finite billboard, applied to a finite acceptance criterion.
+ * A real veiling-glare point spread does not terminate at 90 deg; the
+ * pedestal subtraction is the same bound {@link SOLAR_GLARE_SUPPORT} applies
+ * to the finite billboard, applied here to a finite acceptance criterion.
  *
  * @private
  */
@@ -1057,27 +980,28 @@ const SOLAR_GLARE_ANGULAR_PEDESTAL = lorentzianPedestal(
 );
 
 /**
- * C12-27 REFERENCE IMPLEMENTATION of the shader math — the JS twin of
+ * Reference implementation of the shader math — the JS twin of
  * `solarGlareVeil` in `StarField.wgsl`, `StarFieldVS.glsl`,
- * `CubeMapPanorama.wgsl` and `SkyBoxFS.glsl`. Written FLAT (rather than
- * delegating to {@link pedestalLorentzian}) so the four shader bodies are a
+ * `CubeMapPanorama.wgsl` and `SkyBoxFS.glsl`. Written flat, rather than
+ * delegating to {@link pedestalLorentzian}, so the four shader bodies are a
  * line-for-line translation of it and `solar-glare-star-washout.spec.mjs` can
- * extract, compile and compare them; the spec separately proves this flat form
- * and `pedestalLorentzian` agree, so "one curve" stays a measured fact.
+ * extract, compile and compare them; the spec separately proves this flat
+ * form and `pedestalLorentzian` agree, so "one curve" stays a measured fact.
  *
- * Takes the COSINE of the separation because that is what every consumer
+ * Takes the cosine of the separation because that is what every consumer
  * already has — a dot product of two unit vectors in the star (TEME) frame —
- * and because `cos <= 0` is exactly the ">= 90 deg" half-space the gate needs.
+ * and because `cos <= 0` is exactly the "at least 90 deg" half-space the gate
+ * needs.
  *
- * THREE REDUNDANT ZERO-GUARDS, DELIBERATELY. The `cos <= 0` early-out, the
- * `theta >= support` test and the lower clamp all return exact zero over the
- * same half-space at the shipped `support == PI/2`, so removing any ONE of
- * them leaves this function bit-identical (measured — see the "mutually
- * REDUNDANT" test in `solar-glare-star-washout.spec.mjs`, which also proves
- * the redundancy is CONDITIONAL: at a support below 90 deg the early-out alone
- * is not sufficient). Keep all three: the early-out is a real fast path that
- * skips an `acos` for half the sky, and the other two are what keep the
- * function correct if the support ever moves.
+ * The three zero-guards are redundant at the shipped support and all three
+ * are wanted. The `cos <= 0` early-out, the `theta >= support` test and the
+ * lower clamp return exact zero over the same half-space when
+ * `support == PI/2`, so dropping any one of them leaves this function
+ * bit-identical; `solar-glare-star-washout.spec.mjs` measures that, and also
+ * shows the redundancy is conditional — below a 90 deg support the early-out
+ * alone is not sufficient. The early-out is a real fast path that skips an
+ * `acos` for half the sky, and the other two are what keep the function
+ * correct if the support moves.
  *
  * @param {number} cosSeparation `dot(starDirection, sunDirection)`, both unit.
  * @param {number} core Half-amplitude angle in radians.
@@ -1118,11 +1042,11 @@ function solarAngularGlareVeil(cosSeparation) {
 }
 
 /**
- * The multiplier every C12-27 consumer applies to star radiance.
+ * The multiplier every consumer applies to star radiance.
  *
- * `1 - strength * veil`: exactly 1.0 (a byte-identical no-op) when the toggle
+ * `1 - strength * veil`: exactly 1.0, a byte-identical no-op, when the toggle
  * is off (`strength === 0`) or the star is at or beyond the support angle,
- * exactly `1 - strength` dead on the Sun.
+ * and exactly `1 - strength` dead on the Sun.
  *
  * @param {number} cosSeparation `dot(starDirection, sunDirection)`, both unit.
  * @param {number} strength Washout strength; 0 disables, 1 fully extinguishes
@@ -1137,18 +1061,18 @@ function solarAngularGlareFactor(cosSeparation, strength) {
 /**
  * Frozen namespace default export.
  *
- * REQUIRED, not stylistic: `packages/engine/index.js` is GENERATED and
+ * Required rather than stylistic: `packages/engine/index.js` is generated and
  * gitignored, and `scripts/build.js` emits `export { default as X } from
- * './<path>.js'` for EVERY file under `Source/**` with no exclusion
- * mechanism. A module with named exports only therefore fails
- * `npx gulp build` with "No matching export ... for import default" — and
- * `npx tsc --noEmit` does NOT catch it, because tsc never type-checks the
- * generated barrel. A gulp build is the only gate that catches this class.
+ * './<path>.js'` for every file under `Source/**` with no exclusion
+ * mechanism. A module with named exports only therefore fails `npx gulp
+ * build` with "No matching export ... for import default", and
+ * `npx tsc --noEmit` does not catch it because tsc never type-checks the
+ * generated barrel. A gulp build is the only gate that does.
  *
- * A frozen object rather than "one of the functions" because this module is
- * a constants + profile bundle with no single primary entry point; the
- * sibling modules that DO have one (`computeSolarObscuration`,
- * `EclipseState`, `SkyBrightness`) default-export that function instead.
+ * A frozen object rather than one of the functions because this module is a
+ * bundle of constants and profiles with no single primary entry point; the
+ * sibling modules that have one (`computeSolarObscuration`, `EclipseState`,
+ * `SkyBrightness`) default-export that function instead.
  *
  * @private
  */

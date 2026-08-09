@@ -1,57 +1,52 @@
-// SunHaloAppearance.js — C12-18 shared resolver (absorbs C11-160, C11-115).
+// Shared resolver for the sun's disc size and for where its halo comes from.
 //
-// Scene Logic Extractor pattern (CLAUDE.md): everything the two backends need
-// in order to agree about the sun's DISC SIZE and about WHERE ITS HALO COMES
-// FROM is resolved HERE, once, before `Sun.update` branches into the feature
-// renderer, and published on `frameState.sunHalo` exactly the way
-// C7-SUN-STARS-EXTINCTION publishes `sunAtmosphereExtinction`, C12-29 S1
-// publishes `sunEclipseAlpha` and C12-15/16 publish `sunDiscAppearance`.
+// Following the scene-logic-extractor pattern, everything the two backends
+// need in order to agree about those two questions is resolved here, once,
+// before `Sun.update` branches into the feature renderer, and published on
+// `frameState.sunHalo` the same way `sunAtmosphereExtinction`,
+// `sunEclipseAlpha` and `sunDiscAppearance` are.
 //
-// ─── THE ONE INVARIANT THIS MODULE EXISTS TO ENFORCE ───────────────────────
-//
-//   EXACTLY ONE HALO SOURCE IS ACTIVE AT A TIME.
-//
-// Before C12-18 the halo was baked into the sun billboard's texture (a
+// The invariant the module enforces is that exactly one halo source is active
+// at a time. The halo can be baked into the sun billboard's texture — a
 // pedestal-subtracted Lorentzian truncated at the quad's inscribed circle,
-// 11 R_sun) AND, on WebGL only, bloomed a second time by `SunPostProcess`.
-// C12-18 moves the halo into the post-process chain on BOTH backends. The
-// failure mode of a half-done move is a DOUBLE halo (bake + screen space),
-// and the failure mode of an over-eager move is NO halo at all (bake removed
-// on a path where the screen-space stage never runs — e.g. `sunBloom = false`).
-// So `bakeHaloGain` is derived from `screenHalo`, never set independently:
+// 11 R_sun — or drawn by the post-process chain in screen space. Both at once
+// is a double halo; neither, which is what happens if the bake is stripped on
+// a path where the screen-space stage never runs (`sunBloom = false`), leaves
+// the sun with no glow. So `bakeHaloGain` is derived from `screenHalo` and is
+// never assigned independently:
 //
 //   screenHalo === true   ->  bakeHaloGain = 0   (halo from the PP chain)
-//   screenHalo === false  ->  bakeHaloGain = 1   (historical baked halo)
+//   screenHalo === false  ->  bakeHaloGain = 1   (halo from the bake)
 //
 // `sun-halo-composition.spec.mjs` pins that as an exhaustive truth table and
-// REJECTS a mutant that leaves the bake halo on while the screen halo runs.
+// rejects a mutant that leaves the bake halo on while the screen halo runs.
 //
-// ─── WHAT ELSE IS RESOLVED HERE ────────────────────────────────────────────
+// Also resolved here:
 //
-//   * `discEdge` — the bake radius at which the solar disc terminates. The
-//     shipped value made the disc subtend 1/sqrt(2) of the Sun's true angular
-//     radius; see the C12-18 derivation block in `SolarDiscModel.js`.
+//   * `discEdge` — the bake radius at which the solar disc terminates.
+//     `SolarDiscModel.solarDiscBakeEdgeLegacy` derives why the legacy value
+//     makes the disc subtend 1/sqrt(2) of the Sun's true angular radius.
 //   * `haloAmplitude` / `haloCoreRadii` — the screen-space veiling-glare
-//     profile's two parameters, both derived from the SAME C12-16 curve.
-//     C12-19 scales `haloAmplitude` by `discRadiance`; see the block at its
-//     assignment for why that is required rather than cosmetic.
-//   * `discRadiance` — C12-19's linear disc radiance, and the
-//     `brightPassThreshold` / `brightPassOffset` pair derived from it. NOT
-//     bake payload: both are consumed downstream of the bake, and neither
-//     joins `key`.
-//   * `eclipseFactor` — CLT-C4. The eclipse factor must multiply the PP halo's
-//     INPUT or the halo survives totality; a corona inside an undimmed halo is
-//     the named failure mode. Because the screen-space halo is SYNTHESISED
-//     rather than extracted from the framebuffer, "multiply the input" is
-//     literally "multiply the amplitude", which is what `haloIntensity` is.
-//     The DERIVED bloom paths (WebGL `SunPostProcess`'s bright-pass chain,
-//     WebGPU's global `BloomEffect`) inherit the factor for free, because what
-//     they bloom is the sun billboard whose ALPHA `Sun.update` already scaled
-//     by `sunEclipseAlpha` — so nothing there needs a second multiply, and
-//     adding one would square the fade.
+//     profile's two parameters, both derived from the same curve the bake
+//     uses. `haloAmplitude` is scaled by `discRadiance`; the block at its
+//     assignment says why that is required rather than cosmetic.
+//   * `discRadiance` — the disc's linear radiance, and the
+//     `brightPassThreshold` / `brightPassOffset` pair derived from it.
+//     Neither is bake payload: both are consumed downstream of the bake, and
+//     neither joins `key`.
+//   * `eclipseFactor` — the eclipse factor multiplies the post-process halo's
+//     input, or the halo survives totality and the corona sits inside an
+//     undimmed glow. Because the screen-space halo is synthesised rather than
+//     extracted from the framebuffer, multiplying its input is literally
+//     multiplying its amplitude, which is what `haloIntensity` is. The bloom
+//     paths — WebGL's `SunPostProcess` bright-pass chain and WebGPU's global
+//     `BloomEffect` — inherit the factor without a second multiply, because
+//     what they bloom is the sun billboard whose alpha `Sun.update` has
+//     already scaled by `sunEclipseAlpha`; adding one there would square the
+//     fade.
 //   * screen geometry (`centerX`, `centerY`, `limbPx`, `visible`) — computed
-//     once here so the WebGL stage and the WebGPU effect cannot disagree about
-//     where the Sun is.
+//     once here so the WebGL stage and the WebGPU effect cannot disagree
+//     about where the Sun is.
 //
 // @private
 // @module SunHaloAppearance
@@ -74,7 +69,7 @@ import {
 
 const scratchSunEC = new Cartesian4();
 const scratchSunClip = new Cartesian4();
-// C12-19 — reused every frame so the bright-pass derivation allocates nothing.
+// Reused every frame so the bright-pass derivation allocates nothing.
 const scratchBrightPass = { threshold: 0.0, offset: 0.0 };
 
 /**
@@ -94,16 +89,16 @@ function createSunHaloAppearance() {
     // `WebGPUEnvironmentRenderer.createSunTexture` (as plain numbers).
     discEdge: 0.0,
     bakeHaloGain: 1.0,
-    // C12-19 — the disc's LINEAR radiance, applied in the sun fragment
-    // shaders AFTER `czm_gammaCorrect` (`u_discRadiance` on WebGL, the
-    // `discRadiance` uniform slot on WebGPU). NOT part of the bake and
-    // deliberately NOT part of `key`: it is a per-frame scalar, so folding it
-    // into the rebuild signature would re-run the WebGPU CPU bake every frame
-    // that `scene.light` moves (the `aerialPerspective` path swaps in a
-    // continuously-varying derived SunLight).
+    // The disc's linear radiance, applied in the sun fragment shaders after
+    // `czm_gammaCorrect` — `u_discRadiance` on WebGL, the `discRadiance`
+    // uniform slot on WebGPU. Not part of the bake, and deliberately not part
+    // of `key`: it is a per-frame scalar, so folding it into the rebuild
+    // signature would re-run the WebGPU CPU bake every frame that
+    // `scene.light` moves, and the `aerialPerspective` path swaps in a
+    // continuously varying derived `SunLight`.
     discRadiance: SOLAR_DISC_SDR_RADIANCE,
-    // C12-19 — `SunPostProcess` stage-1 bright-pass tuning, derived from
-    // `discRadiance`. Exactly the historical (0.25, 0.1) in the SDR position.
+    // `SunPostProcess` stage-1 bright-pass tuning, derived from
+    // `discRadiance`. Exactly (0.25, 0.1) in the SDR position.
     brightPassThreshold: 0.25,
     brightPassOffset: 0.1,
     // Screen-space payload — consumed by the WebGL `SolarHalo` stage inside
@@ -112,12 +107,11 @@ function createSunHaloAppearance() {
     haloCoreRadii: 0.0,
     eclipseFactor: 1.0,
     haloIntensity: 0.0,
-    // Halo tint = the SAME per-channel atmospheric transmittance the disc is
-    // multiplied by (`frameState.sunAtmosphereExtinction`, C7-SUN-STARS-
-    // EXTINCTION). Veiling glare is the observer's response to the light that
-    // actually arrives, so a sun reddened by a long slant path must have a
-    // reddened halo, and a fully extinguished sun must have none at all.
-    // (1, 1, 1) from orbit / with the atmosphere hidden.
+    // Halo tint: the same per-channel atmospheric transmittance the disc is
+    // multiplied by, `frameState.sunAtmosphereExtinction`. Veiling glare is
+    // the observer's response to the light that actually arrives, so a sun
+    // reddened by a long slant path must have a reddened halo, and a fully
+    // extinguished sun none at all. (1, 1, 1) with the atmosphere hidden.
     haloColorR: 1.0,
     haloColorG: 1.0,
     haloColorB: 1.0,
@@ -133,9 +127,9 @@ function createSunHaloAppearance() {
     // halo are independent stages of the same chain, and an app that turns the
     // halo off still gets a glow around a Sun the projection can locate.
     geometryValid: false,
-    // 2-bit bake-rebuild signature: bit 0 = true disc size, bit 1 = the bake
-    // still owns the halo. Both bakes rebuild their texture when it changes,
-    // exactly like `sunDiscAppearance.key` does.
+    // Two-bit bake-rebuild signature: bit 0 = true disc size, bit 1 = the
+    // bake still owns the halo. Both bakes rebuild their texture when it
+    // changes, exactly as they do for `sunDiscAppearance.key`.
     key: 1,
   };
 }
@@ -223,24 +217,24 @@ function computeSunScreenGeometry(frameState, result) {
 }
 
 /**
- * Resolves the C12-18 disc-size and halo-source decisions for this frame.
+ * Resolves the disc-size and halo-source decisions for this frame.
  *
- * Both toggles live on the same `atmosphericConditions.lighting` leaf as the
- * C12-15/16 pair and follow the same `!== false` convention (ON without a
- * facade), with exact identity in the OFF position:
+ * The toggles live on the same `atmosphericConditions.lighting` leaf as the
+ * disc-appearance pair and follow the same `!== false` convention — on
+ * without a facade — with an exact identity in the off position:
  *
- *   `enableTrueSolarDiscSize === false`  -> `discEdge` is the legacy
- *      `0.5 / (1 + 2*glowLengthTS)` EXACTLY, i.e. the historical undersized
- *      disc, bit-for-bit.
+ *   `enableTrueSolarDiscSize === false`  -> `discEdge` is
+ *      `0.5 / (1 + 2*glowLengthTS)` exactly, the undersized disc, bit for
+ *      bit.
  *   `enableScreenSpaceSunHalo === false` -> `bakeHaloGain = 1` and
- *      `haloIntensity = 0`, i.e. the historical baked halo and no
- *      screen-space stage at all.
+ *      `haloIntensity = 0`: the halo stays in the bake and no screen-space
+ *      stage runs.
  *   `enableTrueSolarRadiance === false`  -> `discRadiance = 1.0` and the
- *      historical `(0.25, 0.1)` bright-pass pair, i.e. C12-19 is an exact
- *      identity in both dynamic ranges.
+ *      `(0.25, 0.1)` bright-pass pair, an exact identity in both dynamic
+ *      ranges.
  *
- * With both false the sun bake is byte-identical to the pre-C12-18 engine on
- * both backends and no post-process stage is added.
+ * With all three false the sun bake is byte-identical on both backends and no
+ * post-process stage is added.
  *
  * @param {object} frameState The frame state.
  * @param {number} glowLengthTS `glowFactor * 5`, as both bakes compute it.
@@ -252,20 +246,19 @@ function readSunHaloAppearance(frameState, glowLengthTS, result) {
   const lighting = frameState?.atmosphericConditions?.lighting;
   const trueDiscSize = lighting?.enableTrueSolarDiscSize !== false;
   const haloRequested = lighting?.enableScreenSpaceSunHalo !== false;
-  // C12-19 — the third toggle on the same leaf, same `!== false` convention.
-  // OFF pins the disc radiance at exactly 1.0 and the bright pass at the
-  // historical pair, which together make the whole row an identity in BOTH
-  // dynamic ranges — the escape hatch for an app that wants the pre-C12-19
-  // HDR picture back without leaving HDR.
+  // The third toggle on the same leaf, same `!== false` convention. Off pins
+  // the disc radiance at exactly 1.0 and the bright pass at (0.25, 0.1),
+  // which together make the radiance path an identity in both dynamic
+  // ranges — the escape hatch for an app that wants an unbrightened sun
+  // without leaving HDR.
   const trueRadiance = lighting?.enableTrueSolarRadiance !== false;
 
   // The screen-space halo only exists where the post-process chain that draws
   // it actually runs. `frameState.sunBloomActive` is published by
-  // `Scene.updateEnvironment` from `scene.sunBloom` (the same flag that gates
-  // `SunPostProcess` on WebGL and, since C11-160, the `SunHaloEffect` on
-  // WebGPU). Reading it here is what keeps `bakeHaloGain` honest: an app that
-  // sets `sunBloom = false` keeps the historical baked halo instead of
-  // silently losing the sun's glow.
+  // `Scene.updateEnvironment` from `scene.sunBloom`, the same flag that gates
+  // `SunPostProcess` on WebGL and `SunHaloEffect` on WebGPU. Reading it here
+  // is what keeps `bakeHaloGain` honest: an app that sets `sunBloom = false`
+  // keeps the baked halo instead of silently losing the sun's glow.
   const chainAvailable = frameState?.sunBloomActive === true;
   const geometryOk = computeSunScreenGeometry(frameState, result);
   const screenHalo = haloRequested && chainAvailable;
@@ -278,10 +271,10 @@ function readSunHaloAppearance(frameState, glowLengthTS, result) {
   // DERIVED, never assigned independently — see the module header.
   result.bakeHaloGain = screenHalo ? 0.0 : 1.0;
 
-  // C12-19 — the disc's linear radiance, and the bright-pass pair derived
-  // from it. Resolved HERE, with the rest of the sun's per-frame appearance,
-  // so the WebGL uniform, the WebGPU uniform slot and the `SunPostProcess`
-  // stage all read ONE number instead of three derivations of it.
+  // The disc's linear radiance, and the bright-pass pair derived from it.
+  // Resolved here, with the rest of the sun's per-frame appearance, so the
+  // WebGL uniform, the WebGPU uniform slot and the `SunPostProcess` stage all
+  // read one number instead of three derivations of it.
   result.trueRadiance = trueRadiance;
   result.discRadiance = trueRadiance
     ? solarDiscHdrRadiance(frameState?.useHDR === true, frameState?.light)
@@ -294,21 +287,20 @@ function readSunHaloAppearance(frameState, glowLengthTS, result) {
   result.brightPassThreshold = scratchBrightPass.threshold;
   result.brightPassOffset = scratchBrightPass.offset;
 
-  // C12-19 — THE B906 RE-DERIVATION THIS ROW OWED. `SOLAR_HALO_AMPLITUDE` is
-  // the bake's own `0.75` glare weight, and B906 adopted it for the screen
-  // halo so "the two compositions are continuous at the centre by
-  // construction". That construction was written against a disc whose
-  // composited peak was 1.0. Once the disc peaks at `discRadiance`, an
-  // unscaled 0.75 halo is `0.75 / discRadiance` of the disc — at the shipped
-  // radiance a sun less than half as glowing as its own C12-16 curve says it
-  // is, and the discontinuity grows with any app that brightens its light.
-  // Scaling by the SAME scalar the disc is scaled by is what keeps the
-  // invariant an identity rather than a coincidence at one radiance.
+  // `SOLAR_HALO_AMPLITUDE` is the bake's own 0.75 glare weight, adopted by
+  // the screen halo so the two compositions are continuous at the centre.
+  // That continuity holds only for a disc whose composited peak is 1.0: once
+  // the disc peaks at `discRadiance`, an unscaled 0.75 halo is
+  // `0.75 / discRadiance` of the disc — less than half as glowing as the
+  // glare curve says at the shipped radiance, and worse for any app that
+  // brightens its light. Scaling by the same scalar the disc is scaled by
+  // keeps the continuity an identity rather than a coincidence at one
+  // radiance.
   result.haloAmplitude = SOLAR_HALO_AMPLITUDE * result.discRadiance;
   result.haloCoreRadii = solarHaloCoreRadii(glowLengthTS);
 
-  // CLT-C4 — the eclipse factor multiplies the halo's amplitude, which for a
-  // synthesised halo IS its input. `sunEclipseAlpha` is published by
+  // The eclipse factor multiplies the halo's amplitude, which for a
+  // synthesised halo is its input. `sunEclipseAlpha` is published by
   // `Sun.update` immediately above this call and is exactly 1.0 whenever
   // nothing occults the Sun or `enableEclipse` is off.
   const eclipseAlpha = frameState?.sunEclipseAlpha;
@@ -337,10 +329,10 @@ export {
   readSunHaloAppearance,
   computeSunScreenGeometry,
 };
-// Default export REQUIRED by the generated barrel: `packages/engine/index.js`
+// Default export required by the generated barrel: `packages/engine/index.js`
 // is produced by `scripts/build.js`, which emits `export { default as X }`
-// for every `Source/**/*.js` with no exclusion mechanism, so a named-exports-
-// only module fails `npx gulp build` with "No matching export ... for import
-// default". `npx tsc --noEmit` does NOT catch it (it never checks the
-// generated barrel) — a gulp build is the only gate for this class.
+// for every `Source/**/*.js` with no exclusion mechanism, so a module with
+// named exports only fails `npx gulp build` with "No matching export ... for
+// import default". `npx tsc --noEmit` does not catch it, because it never
+// checks the generated barrel; a gulp build is the only gate for this class.
 export default readSunHaloAppearance;

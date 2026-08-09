@@ -11,9 +11,9 @@
  *
  * Three structural points, each of which the arithmetic depends on:
  *
- *  - The bright pass reads the scene WITHOUT the screen halo. The halo effect
- *    runs after this one for that reason: bright-passing the halo would bloom
- *    the glow of the glow, and the two terms would stop being separable.
+ *  - The bright pass reads the scene without the screen halo, which is why the
+ *    halo effect runs after this one: bright-passing the halo would bloom the
+ *    glow of the glow, and the two terms would stop being separable.
  *  - The blur runs on a square power-of-two buffer at
  *    `SUN_BLOOM_TEXTURE_SCALE` of the drawing buffer, because the shipped blur
  *    feeds one step to both directions and that only describes an isotropic
@@ -115,8 +115,8 @@ export class SunBloomEffect implements PostProcessEffect {
   private _bgCache = new WebGPUBindGroupCache();
 
   // Mirrors `SunBrightPassUniforms`: avgLuminance, threshold, offset, unused.
-  // The historical pair is the initial value, so a frame that arrives before
-  // `setFrameState` extracts exactly as the engine always has.
+  // The legacy pair is the initial value, so a frame that arrives before
+  // `setFrameState` extracts at the untuned settings rather than at zero.
   private _brightData = new Float32Array([
     SUN_BRIGHT_PASS_AVG_LUMINANCE,
     SUN_BRIGHT_PASS_THRESHOLD_LEGACY,
@@ -256,7 +256,7 @@ export class SunBloomEffect implements PostProcessEffect {
       this._brightData,
     );
     // The blur's `step` is `stepSize * pixelRatio * texelSize`, and the WebGL
-    // twin feeds `1 / bufferSize` to BOTH directions. On a square buffer the
+    // twin feeds `1 / bufferSize` to both directions. On a square buffer the
     // per-axis form below is that same number, so a step size of one texel and
     // a pixel ratio of one reproduce the shipped kernel exactly.
     const texel = 1.0 / n;

@@ -1,5 +1,5 @@
 /**
- * C11-193 context-owned bounded environment-refresh job drain.
+ * Context-owned bounded environment-refresh job drain.
  *
  * A dynamic-environment refresh is six cube-face compute dispatches plus an
  * IBL prefilter chain plus an SH projection. With several managers alive, every
@@ -10,12 +10,10 @@
  *
  * ## The hard constraint this module is built around
  *
- * A defect fixed on 2026-08-01 (`WEBGPU_DEBUGGING_LOG.md`,
- * `C11-REVIEW-2026-08-01` defect 3) came from gating an environment-map tick on
- * consumer selection: hiding a tileset froze a partially generated map and
- * suppressed the regeneration its consumers needed on re-show. Scheduling
- * authority here may therefore only ever **reorder and bound** work. It may
- * never drop it. Concretely:
+ * Gating an environment-map tick on consumer selection freezes a partially
+ * generated map the moment a tileset is hidden, and suppresses the regeneration
+ * its consumers need on re-show. Scheduling authority here may therefore only
+ * ever **reorder and bound** work. It may never drop it. Concretely:
  *
  * 1. **Deferral is never a skip.** A deferred request keeps its pending entry,
  *    ages, and is re-offered every frame the producer still wants it.
@@ -163,7 +161,7 @@ function createTelemetry(
 /**
  * Per-context bounded drain queue for dynamic-environment refreshes.
  *
- * The scheduler is an ONLINE admission controller, not an offline sorter:
+ * The scheduler is an online admission controller, not an offline sorter:
  * producers call it one at a time during traversal, so it cannot know which
  * managers will request later in the same frame. Fairness therefore comes from
  * two mechanisms that need no lookahead — a one-frame yield by whoever ran last

@@ -1,6 +1,5 @@
 /**
- * WebGPU bright-star catalog starfield renderer (Track V-C, Batch 313 —
- * NEW-STARS-BRIGHT-CATALOG).
+ * WebGPU bright-star catalog starfield renderer.
  *
  * Renders the Yale Bright Star Catalog subset
  * ({@link BrightStarCatalog}) as instanced HDR point sprites drawn into
@@ -18,15 +17,10 @@
  *     same matrix SkyBox uses — so constellations land at the correct
  *     RA/Dec for the scene clock.
  *
- * Lifecycle: the per-instance star buffer is built ONCE (catalog is
+ * Lifecycle: the per-instance star buffer is built once (the catalog is
  * static). Only the uniform buffer (view-projection + sizing + fade) is
  * repacked per frame. The renderer is a singleton per scene, owned by
  * SkyBox via the FeatureRenderer seam (FeatureRendererKey.STAR_FIELD).
- *
- * NEW-TS-CONVERT-JS-RENDERERS (Batch 314) — converted from JS to
- * TypeScript with ZERO behavior change. Types annotate the existing
- * logic; the module-level function shapes, exports, and runtime paths are
- * byte-for-byte equivalent to the prior `.js`.
  *
  * @private
  * @module WebGPUStarFieldRenderer
@@ -153,15 +147,16 @@ function getStarShaderModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
 // the WebGL renderer packs the identical record.
 const STAR_VERTEX_STRIDE = FLOATS_PER_STAR * 4; // 32 bytes
 // Uniform buffer: mat4 (16) + pointSize.xy (2) + intensityScale (1) +
-// minPointSize (1) + C7 extinction (8) + C12-27 solar glare (8) = 36 floats
-// (144 bytes) → the 256-byte allocation is unchanged. C12-27 is ADD-ONLY at
-// the tail (floats 28..35, bytes 112..143), so no BGL or bind-group churn.
+// minPointSize (1) + extinction (8) + solar glare (8) = 36 floats (144
+// bytes), inside the 256-byte allocation. The solar-glare pair sits at the
+// tail (floats 28..35, bytes 112..143) so every earlier member keeps its
+// offset and the bind-group layout is unchanged.
 const STAR_UNIFORM_BUFFER_SIZE = 256;
 
 const scratchTemeToFixed3 = new Matrix3();
 const scratchTemeToFixed4 = new Matrix4();
 const scratchVPNoTranslation = new Matrix4();
-// C7-SUN-STARS-EXTINCTION scratch — camera up (Earth-fixed), the TEME→fixed
+// Star-extinction scratch — camera up (Earth-fixed), the TEME→fixed
 // transpose, and camera up rotated into the TEME instance frame.
 const scratchTemeToFixedT = new Matrix3();
 const scratchCamUpFixed = new Cartesian3();
@@ -178,9 +173,9 @@ const scratchCamUpTeme = new Cartesian3();
  * that incorporates the TEME→fixed rotation, point sizing, and the
  * daytime fade.
  *
- * Star directions in the instance buffer are TEME/inertial. We bake the
- * TEME→fixed rotation into the matrix here so the shader can apply
- * one transform: viewProjection(noTranslation) · temeToFixed · dir.
+ * Star directions in the instance buffer are TEME/inertial. The TEME→fixed
+ * rotation is baked into the matrix here so the shader applies a single
+ * transform: viewProjection(noTranslation) · temeToFixed · dir.
  *
  * @private
  */
@@ -243,11 +238,11 @@ function packStarUniforms(
   // Minimum NDC half-extent so faint stars stay ≥ ~1 px on a 1080p frame.
   uniformData[19] = starField._minPointSize;
 
-  // C7-SUN-STARS-EXTINCTION — zenith transmittance (floats 20..22) + camera
-  // local-up in the TEME instance frame (floats 24..26). Published by
-  // StarField.update via the shared B629 integrator. (1,1,1) / no extinction
-  // from orbit / atmosphere-hidden → the shader's pow(1, airmass) is a byte-
-  // identical no-op.
+  // Zenith transmittance (floats 20..22) + camera local-up in the TEME
+  // instance frame (floats 24..26). Published by StarField.update through the
+  // shared extinction integrator. (1,1,1), i.e. no extinction, from orbit or
+  // with the atmosphere hidden, so the shader's pow(1, airmass) is a
+  // byte-identical no-op.
   const zenithT = frameState.starZenithTransmittance;
   if (defined(zenithT)) {
     uniformData[20] = zenithT.x;
@@ -289,7 +284,7 @@ function packStarUniforms(
   }
   uniformData[27] = 0.0;
 
-  // C12-27 — angular solar-glare washout (floats 28..35). Resolved once per
+  // Angular solar-glare washout (floats 28..35). Resolved once per
   // frame by `Scene.updateEnvironment` (`Scene/SolarGlareAppearance.js`) and
   // read here exactly as `starZenithTransmittance` is, so this pack and the
   // WebGL uniform closures consume the identical numbers. The Sun direction is
@@ -415,12 +410,12 @@ function ensureStarFieldResources(
   }
   const cache = starField._webgpuCache;
 
-  // ── Invalidate ALL cached GPU resources on device-loss recovery ──
+  // Every cached GPU resource is invalidated on device-loss recovery.
   // Buffers, bind groups, and pipelines built by a prior GPUDevice are
-  // unusable after recovery even when formats/limits are identical. The
-  // scene-format epoch below does NOT advance on a same-format device swap,
-  // so key device-resource lifetime off the physical-device generation
-  // separately, then let the `!defined(...)` guards re-create each slot.
+  // unusable after recovery even when formats and limits are identical. The
+  // scene-format epoch below does not advance on a same-format device swap,
+  // so device-resource lifetime keys off the physical-device generation
+  // separately, and the `!defined(...)` guards then re-create each slot.
   const deviceGen = context.resourceGeneration ?? 0;
   if (
     defined(cache._deviceResourceGeneration) &&
@@ -443,7 +438,7 @@ function ensureStarFieldResources(
   }
   cache._deviceResourceGeneration = deviceGen;
 
-  // ── One-time instance buffer (catalog is static) ──
+  // One-time instance buffer; the catalog is static.
   if (!defined(cache.instanceBuffer)) {
     const data = buildStarInstanceData();
     cache.instanceBuffer = WebGPUBuffer.createVertexBuffer(
@@ -454,7 +449,7 @@ function ensureStarFieldResources(
     cache.starCount = BrightStarCatalog.count;
   }
 
-  // ── Invalidate pipeline on scene-format change (HDR toggle / resize) ──
+  // The pipeline is invalidated on a scene-format change (HDR toggle, resize).
   const currentGen = context._scenePipelineFormatGeneration ?? 0;
   if (
     defined(cache.pipelineEntry) &&
@@ -506,7 +501,7 @@ function ensureStarFieldResources(
         // Scene-FB target with premultiplied additive blend so bright
         // stars feed bloom. The FS already multiplies rgb by the radial
         // falloff (premultiplied), so srcFactor = "one" — using
-        // "src-alpha" here would attenuate by the falloff TWICE, crushing
+        // "src-alpha" here would attenuate by the falloff twice, crushing
         // every star to a sub-threshold smudge.
         targets: makeSceneFBTargets(format, {
           blend: {
@@ -549,7 +544,7 @@ function ensureStarFieldResources(
   }
   cache.pipeline = pipeline;
 
-  // ── Uniform buffer + bind group (per-frame data is written by update) ──
+  // Uniform buffer and bind group; the per-frame data is written by update.
   if (!defined(cache.uniformBuffer)) {
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
       device,
@@ -656,13 +651,12 @@ function updateWebGPUStarField(
     STAR_UNIFORM_BUFFER_SIZE,
   );
 
-  // C12-29 S6 — one cached command, not a binned+injected pair. The prior
-  // dual path allocated two commands per contributing frame, pushed one into
-  // the command list, then made Scene scan and splice it back out because
-  // both copies would execute additively. Batch 761's
-  // `EnvironmentFrustumDemand.hasInjectedEnvironmentContent` already treats
-  // the returned `starFieldCommand` as sufficient sky-only frustum demand, so
-  // the transient binned copy provides no remaining functionality.
+  // One cached command, not a binned-and-injected pair. Two copies of this
+  // command execute additively, so binning one and returning the other
+  // requires Scene to scan the command list and splice the binned copy back
+  // out. `EnvironmentFrustumDemand.hasInjectedEnvironmentContent` treats the
+  // returned `starFieldCommand` as sufficient sky-only frustum demand, so a
+  // binned copy would buy nothing to offset that.
   if (!defined(cache.command)) {
     cache.command = new WebGPUDrawCommand({
       pipeline: cache.pipeline,

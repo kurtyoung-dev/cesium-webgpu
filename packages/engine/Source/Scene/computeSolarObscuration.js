@@ -1,37 +1,37 @@
-// C12-29 S1 — solar-disc obscuration photometry (pure f64 CPU math).
+// Solar-disc obscuration photometry, pure f64 CPU math.
 //
-// One integrand serves BOTH occluders (the Moon during an eclipse and the
-// Earth limb during an orbital sunset), because in the camera-anchored
+// One integrand serves both occluders — the Moon during an eclipse and the
+// Earth limb during an orbital sunset — because in the camera-anchored
 // angular frame they are the same problem: a circular occluder of angular
 // radius `ro` whose centre sits `d` radians from the centre of the solar
-// disc of angular radius `rs`. That is exactly the aerospace "dual-cone"
-// shadow model written in angles instead of cone half-angles:
+// disc of angular radius `rs`. That is the aerospace dual-cone shadow model
+// written in angles instead of cone half-angles:
 //
 //   d >= rs + ro          → no contact          (full sun, fraction 1)
-//   |rs - ro| < d < rs+ro → PENUMBRA            (partial, 0 < fraction < 1)
-//   d + rs <= ro          → UMBRA               (total, fraction 0)
-//   d + ro <= rs          → ANTUMBRA / annular  (ring of sun survives)
+//   |rs - ro| < d < rs+ro → penumbra            (partial, 0 < fraction < 1)
+//   d + rs <= ro          → umbra               (total, fraction 0)
+//   d + ro <= rs          → antumbra / annular  (ring of sun survives)
 //
-// The transitions are continuous in `d` by construction, which is the whole
-// point of the slice: the engine's pre-existing sun occlusion was a boolean
-// (`Occluder.isBoundingSphereVisible`, Scene.js) that stepped from "no sun
-// at all" to "full glow" in one frame.
+// The transitions are continuous in `d` by construction, which is what makes
+// this usable as an intensity: the engine's other sun-occlusion test,
+// `Occluder.isBoundingSphereVisible` in `Scene.js`, is a boolean that steps
+// from no sun at all to full glow in one frame.
 //
-// LIMB DARKENING. A uniform-brightness disc over-predicts the surviving
-// broadband flux near second/third contact by roughly 2x (measured 2017
-// spectro-irradiance: actual/geometric = 22% at 306 nm, 67% at 1020 nm —
-// ACP 19:4703). The solar disc is limb-darkened, so a partial phase that
-// covers the bright CENTRE removes far more flux than its area share. The
-// intensity law is the C12-15 quadratic in mu = cos(heliocentric angle):
+// A uniform-brightness disc over-predicts the surviving broadband flux near
+// second and third contact by roughly a factor of two — 2017
+// spectro-irradiance measurements put actual/geometric at 22% at 306 nm and
+// 67% at 1020 nm (ACP 19:4703). The solar disc is limb-darkened, so a partial
+// phase that covers the bright centre removes far more flux than its area
+// share. The intensity law is quadratic in mu = cos(heliocentric angle):
 //
 //   I(mu) = a0 + a1*mu + a2*mu^2,   a0 = 0.3, a1 = 0.93, a2 = -0.23
 //
 // normalised so I(1) = 1 at disc centre. mu is recovered from the projected
 // radius x = r/rs by mu = sqrt(1 - x^2).
 //
-// THE INTEGRAL. Blocked flux is a 1-D radial quadrature over rings of the
-// solar disc, each weighted by the fraction of its circumference that falls
-// inside the occluder disc:
+// Blocked flux is a one-dimensional radial quadrature over rings of the solar
+// disc, each weighted by the fraction of its circumference that falls inside
+// the occluder disc:
 //
 //   blocked = ∫₀^rs I(r) * c(r) * 2*pi*r dr
 //   total   = ∫₀^rs I(r)          * 2*pi*r dr
@@ -43,31 +43,31 @@
 //   c(r) = 0                                      when d >= r + ro or r >= d + ro
 //   c(r) = acos( (d² + r² - ro²) / (2*d*r) ) / pi  otherwise
 //
-// Both integrals are evaluated on the SAME quadrature nodes, so when the
-// occluder covers every ring (c ≡ 1) the ratio is exactly 1.0 — totality is
-// bit-exact, not "1.0 within quadrature error". `c` has kinks at
-// r = |d - ro| and r = d + ro, so the domain is split at those breakpoints
-// and Gauss-Legendre is applied per smooth sub-interval; that is what buys
-// the accuracy at a fixed low node count rather than raising the order.
+// Both integrals are evaluated on the same quadrature nodes, so when the
+// occluder covers every ring (c is identically 1) the ratio is exactly 1.0:
+// totality is bit-exact rather than 1.0 within quadrature error. `c` has
+// kinks at r = |d - ro| and r = d + ro, so the domain is split at those
+// breakpoints and Gauss-Legendre is applied per smooth sub-interval, which is
+// what buys the accuracy at a fixed low node count rather than raising the
+// order.
 //
-// ACCURACY, honestly. Splitting removes the kinks but NOT the sqrt-type
-// derivative singularities that sit exactly AT those sub-interval endpoints
-// (c behaves like sqrt near each contact), so Gauss-Legendre does not reach
-// its usual spectral rate there and raising the order buys little. Measured
-// worst-case absolute error against a 20,000-point-per-sub-interval midpoint
-// reference, swept over ro/rs in {0.5, 0.7, 0.9, 1.0, 1.05, 1.2, 2.0} and 60
-// separations each: ~2.8e-5 in obscuration (worst near ro/rs = 0.7,
-// d/rs = 0.31; a second cluster near ro/rs = 0.9, d/rs = 0.57). That is
-// ~1e-5 of a magnitude — three orders below 8-bit display quantisation and
-// far below the ±2.5-4% spread of published limb-darkening fits, so it is
-// visually and physically irrelevant. The EXACT endpoints (0.0 disjoint,
-// 1.0 umbra) are branch results, not quadrature results, and carry no error.
+// Splitting removes the kinks but not the sqrt-type derivative singularities
+// that sit exactly at those sub-interval endpoints, since `c` behaves like a
+// square root near each contact. Gauss-Legendre therefore does not reach its
+// usual spectral rate there and raising the order buys little. Worst-case
+// absolute error against a 20,000-point-per-sub-interval midpoint reference,
+// swept over ro/rs in {0.5, 0.7, 0.9, 1.0, 1.05, 1.2, 2.0} and 60 separations
+// each, is 2.8e-5 in obscuration — worst near ro/rs = 0.7, d/rs = 0.31, with
+// a second cluster near ro/rs = 0.9, d/rs = 0.57. That is about 1e-5 of a
+// magnitude, three orders below 8-bit display quantisation and far below the
+// 2.5-4% spread of published limb-darkening fits. The endpoints, 0.0 when
+// disjoint and 1.0 in umbra, are branch results rather than quadrature
+// results and carry no error at all.
 //
-// Everything here is pure: no allocation per call (scratch arrays are
-// module-level and sized at load), no state, and the one import
-// (`SolarDiscModel.js`, the C12-15 constants source) is itself pure with no
-// Cesium dependencies. That keeps this module directly unit-testable under
-// `node --test`.
+// Everything here is pure: no allocation per call, since the scratch arrays
+// are module-level and sized at load; no state; and the one import,
+// `SolarDiscModel.js`, is itself pure with no Cesium dependencies. That keeps
+// this module directly unit-testable under `node --test`.
 //
 // @private
 // @module computeSolarObscuration
@@ -80,13 +80,12 @@ import {
 } from "./SolarDiscModel.js";
 
 /**
- * C12-15 quadratic limb-darkening coefficients. The C12-15 row required that
- * the eclipse photometry and the sun-disc BAKE read one constants source
- * when the sun wave landed; they now both come from `SolarDiscModel.js`
- * (which additionally feeds `SunTextureFS.glsl` through uniforms, so the
- * GLSL carries no numeric copy either). Re-exported below so the existing
- * importers of this module keep working unchanged.
- * I(1) = a0+a1+a2 = 1.
+ * Quadratic limb-darkening coefficients, normalised so I(1) = a0+a1+a2 = 1.
+ *
+ * The eclipse photometry and the sun-disc bake read one constants source,
+ * `SolarDiscModel.js`, which also feeds `SunTextureFS.glsl` through uniforms
+ * so the GLSL carries no numeric copy either. Re-exported below so importers
+ * of this module keep working.
  * @private
  */
 const LIMB_DARKENING_A0 = SOLAR_LIMB_DARKENING_A0;
@@ -96,8 +95,8 @@ const LIMB_DARKENING_A2 = SOLAR_LIMB_DARKENING_A2;
 /**
  * Gauss-Legendre order per smooth sub-interval. Three sub-intervals at most
  * (breakpoints at |d-ro| and d+ro), so the worst case is 3*16 = 48 integrand
- * evaluations — the ~200 f64 flops per frame budgeted in the C12-29 research
- * report. 16 is the knee, not a convergence point: the sqrt-type derivative
+ * evaluations, or a few hundred f64 flops per frame. 16 is the knee rather
+ * than a convergence point: the sqrt-type derivative
  * singularities at the contact radii (see the module header) cap the
  * achievable rate, so the measured ~2.8e-5 worst-case error barely improves
  * with a higher order. Spending nodes here would buy nothing visible.
@@ -202,10 +201,9 @@ function ringCoverage(r, ro, d) {
  * @private
  */
 function limbIntensity(x) {
-  // Delegates to the C12-15 constants source so the bake and the photometry
+  // Delegates to the shared constants source so the bake and the photometry
   // cannot drift. `solarLimbIntensity` clamps x to [0, 1]; the quadrature
-  // never leaves that range, so the result is unchanged from the previous
-  // inline form.
+  // never leaves that range, so the clamp never binds here.
   return solarLimbIntensity(x);
 }
 

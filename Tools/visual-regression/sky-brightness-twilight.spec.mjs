@@ -893,7 +893,7 @@ test("F: inside the star window the transfer exactly inverts the curve", () => {
 
 test("G: the measured-consequences block states the derived values", () => {
   const block = starFieldMathTs.slice(
-    starFieldMathTs.indexOf("// OFF-ANCHOR VALUES"),
+    starFieldMathTs.indexOf("The steepness is set by the totality anchor"),
     starFieldMathTs.indexOf("/** Default modulation-curve inflection"),
   );
   assert.ok(block.length > 500, "the derivation block is missing");
@@ -907,7 +907,6 @@ test("G: the measured-consequences block states the derived values", () => {
     "0.363078",
     "0.604705",
     "0.098257",
-    "0.018176",
     "0.062810",
     "0.664912",
   ]) {
@@ -916,10 +915,18 @@ test("G: the measured-consequences block states the derived values", () => {
       `the measured-consequences block must state ${literal}`,
     );
   }
-  // The single number that names the defect.
-  assert.ok(
-    block.includes("0.973697") && /EXACTLY 0\.000000/.test(block),
-    "the block must state the −18°→−6° span, old and new",
+  // The two endpoints that make the curve's range claim checkable: the
+  // documented daylight zero, and the statement that the bands stay separated
+  // above −6°. A curve with no twilight range satisfies neither.
+  assert.match(
+    block,
+    /\+23\.6 \|\s*0\.000000/,
+    "the block must state the daylight endpoint as exactly zero",
+  );
+  assert.match(
+    block,
+    /bands are monotone and separated across the full range/,
+    "the block must state the band-separation property the range check enforces",
   );
   // And the numbers must still be true.
   assert.ok(Math.abs(modulation(shipped(-15.0)) - 0.604705) < 5e-6);

@@ -26,29 +26,27 @@ import SceneFramebuffer from "./SceneFramebuffer.js";
 
 class SunPostProcess {
   /**
-   * @param {PixelDatatype} [pixelDatatype=PixelDatatype.UNSIGNED_BYTE] The
-   *        output datatype of every stage AND of this pipeline's own scene
-   *        framebuffer.
+   * The datatype reaches both every stage below and this pipeline's own scene
+   * framebuffer, and both are required. With `scene.sunBloom` on — the shipped
+   * default — the scene renders into that framebuffer, so an `UNSIGNED_BYTE`
+   * one clamps the whole scene to 8 bits before any tonemapper sees it, every
+   * 8-bit stage output re-clamps it, and `copy()` hands that back to the scene
+   * framebuffer. `highDynamicRange` defaults on for HDR-capable displays, so
+   * this path is reached at defaults.
    *
-   * C12-19 — THE VACUITY BLOCKER THIS PARAMETER EXISTS TO CLOSE. Every stage
-   * below was constructed at `PostProcessStage`'s default `UNSIGNED_BYTE`, and
-   * `update()` called `sceneFramebuffer.update(context, viewport)` with no
-   * `hdr` argument. So with `scene.sunBloom = true` — the shipped default —
-   * the WHOLE SCENE was rendered into an 8-bit framebuffer even under
-   * `highDynamicRange = true`, every stage output re-clamped it to 8 bits, and
-   * `copy()` handed that back to the HDR scene framebuffer. HDR was defeated
-   * on WebGL at defaults, which C12-28 (Batch 932) made load-bearing by
-   * defaulting `highDynamicRange` ON for HDR-capable displays.
+   * Three things follow from that single clamp: the disc radiance cannot
+   * exceed 1 on this path, the screen halo is clipped at 1 by stage 6's own
+   * output texture, and the bright pass cannot see a luminance above display
+   * white however it is tuned. The bright-pass tuning is therefore only
+   * meaningful once the datatype is carried through.
    *
-   * Consequences that are all one bug: the C12-19 disc radiance could never
-   * exceed 1 on this path, the C12-18 screen halo was clipped at 1 by stage
-   * 6's own output texture, and the bright pass below could never see a
-   * luminance above display white no matter how it was tuned — which is why
-   * the retune and the datatype land together rather than separately.
-   *
-   * The caller resolves the datatype (it is the one that has a `Context` and
-   * can ask about float-texture support) and reconstructs this object when it
+   * The caller resolves the datatype, being the one that holds a `Context` and
+   * can ask about float-texture support, and reconstructs this object when it
    * changes; `FramebufferOrchestrator` does both.
+   *
+   * @param {PixelDatatype} [pixelDatatype=PixelDatatype.UNSIGNED_BYTE] The
+   *        output datatype of every stage and of this pipeline's own scene
+   *        framebuffer.
    */
   constructor(pixelDatatype) {
     const datatype = pixelDatatype ?? PixelDatatype.UNSIGNED_BYTE;
@@ -56,9 +54,9 @@ class SunPostProcess {
     this._useHdr = datatype !== PixelDatatype.UNSIGNED_BYTE;
     this._sceneFramebuffer = new SceneFramebuffer();
 
-    // C12-18 — resolved screen-space halo state, refreshed every `update()`
-    // from `frameState.sunHalo` (Scene/SunHaloAppearance.js). The zero
-    // intensity below is the safe default: `SolarHalo.glsl` adds
+    // Resolved screen-space halo state, refreshed every `update()` from
+    // `frameState.sunHalo` (`Scene/SunHaloAppearance.js`). The zero intensity
+    // below is the safe default: `SolarHalo.glsl` adds
     // `haloColor * veil * intensity`, so an un-refreshed frame adds exactly
     // 0.0 rather than a stale halo at the wrong screen position.
     this._haloCenter = new Cartesian2();
@@ -67,10 +65,10 @@ class SunPostProcess {
     this._haloIntensity = 0.0;
     this._haloColor = new Cartesian3(1.0, 1.0, 1.0);
 
-    // C12-19 — bright-pass tuning, refreshed every `update()` from
-    // `frameState.sunHalo`. The historical pair is the initial value, so an
-    // un-refreshed frame (or a caller that passes no `frameState`) bright-
-    // passes exactly as the engine always has.
+    // Bright-pass tuning, refreshed every `update()` from
+    // `frameState.sunHalo`. The legacy pair is the initial value, so an
+    // un-refreshed frame — or a caller that passes no `frameState` — extracts
+    // at the untuned settings rather than at zero.
     this._brightPassThreshold = SUN_BRIGHT_PASS_THRESHOLD_LEGACY;
     this._brightPassOffset = SUN_BRIGHT_PASS_OFFSET_LEGACY;
 
@@ -90,17 +88,17 @@ class SunPostProcess {
       fragmentShader: BrightPass,
       uniforms: {
         // A guess at the average luminance across the entire scene. This is
-        // `key()`'s argument — a scene-exposure heuristic, not a bright-pass
-        // parameter — and C12-19 deliberately leaves it alone.
+        // `key()`'s argument, a scene-exposure heuristic rather than a
+        // bright-pass parameter, so it is not derived from the disc.
         avgLuminance: SUN_BRIGHT_PASS_AVG_LUMINANCE,
-        // C12-19 — DERIVED from the disc's radiance in
-        // `SolarDiscModel.solarBrightPassTuning`, not dialled: `threshold`
-        // puts the extraction's foot exactly on display white (the shipped
-        // 0.25 started at luminance 0.729, i.e. an ordinary bright sky was
-        // already blooming) and `offset` puts its half-saturation point on
+        // Derived from the disc's radiance in
+        // `SolarDiscModel.solarBrightPassTuning` rather than dialled:
+        // `threshold` puts the extraction's foot exactly on display white,
+        // where the legacy 0.25 starts at luminance 0.729 and so blooms an
+        // ordinary bright sky, and `offset` puts the half-saturation point on
         // `sqrt(discRadiance)`, the geometric centre of the range it has to
-        // span. Both collapse to the historical (0.25, 0.1) bit-for-bit
-        // whenever the radiance is 1 — every SDR frame, and every frame with
+        // span. Both collapse to the legacy pair, bit for bit, whenever the
+        // radiance is 1 — every SDR frame, and every frame with
         // `lighting.enableTrueSolarRadiance === false`.
         threshold: function () {
           return that._brightPassThreshold;
@@ -185,16 +183,16 @@ class SunPostProcess {
       pixelDatatype: datatype,
     });
 
-    // C12-18 (absorbs C11-160) — the screen-space solar veiling glare, run
-    // LAST so it is added to the fully composited scene rather than being fed
-    // back into the bright pass (which would bloom the halo of the halo).
+    // The screen-space solar veiling glare, run last so it is added to the
+    // fully composited scene rather than being fed back into the bright pass,
+    // which would bloom the halo of the halo.
     //
-    // CLT-C4 is satisfied here without a second multiply anywhere: the
-    // eclipse factor is folded into `u_haloIntensity` for this SYNTHESISED
-    // halo, and the bright-pass chain above it derives its bloom from the sun
-    // billboard whose ALPHA `Sun.update` already scaled by `sunEclipseAlpha`.
-    // At totality both therefore go to zero, which is the whole point of the
-    // rider: a corona inside an undimmed halo is the failure mode.
+    // The eclipse fade needs no second multiply anywhere. For this synthesised
+    // halo the eclipse factor is folded into `u_haloIntensity`, and the
+    // bright-pass chain above derives its bloom from the sun billboard whose
+    // alpha `Sun.update` has already scaled by `sunEclipseAlpha`, so at
+    // totality both go to zero. A corona sitting inside an undimmed halo is
+    // the failure mode that requires.
     stages[6] = new PostProcessStage({
       fragmentShader: SolarHalo,
       uniforms: {
@@ -232,7 +230,7 @@ class SunPostProcess {
   }
 
   /**
-   * C12-19 — the datatype this pipeline was built with. `FramebufferOrchestrator`
+   * The datatype this pipeline was built with. `FramebufferOrchestrator`
    * compares it against the datatype the current `scene._hdr` implies and
    * reconstructs on a mismatch, because `PostProcessStage._pixelDatatype` is
    * fixed at construction.
@@ -269,10 +267,10 @@ class SunPostProcess {
     const viewport = passState.viewport;
 
     const sceneFramebuffer = this._sceneFramebuffer;
-    // C12-19 — pass the HDR flag through. Without it this framebuffer was
-    // always `UNSIGNED_BYTE`, and since the scene renders INTO it whenever
-    // `sunBloom` is on, that single missing argument clamped the entire HDR
-    // scene to 8 bits before any tonemapper saw it.
+    // The HDR flag has to be passed through. The scene renders into this
+    // framebuffer whenever `sunBloom` is on, so omitting the argument leaves
+    // it `UNSIGNED_BYTE` and clamps the entire HDR scene to 8 bits before any
+    // tonemapper sees it.
     sceneFramebuffer.update(context, viewport, this._useHdr);
     const framebuffer = sceneFramebuffer.framebuffer;
 
@@ -280,11 +278,11 @@ class SunPostProcess {
     this._stages.update(context, false);
 
     updateSunPosition(this, context, viewport);
-    // C12-18 — the halo's screen geometry, amplitude and tint are resolved
-    // ONCE per frame in Scene/SunHaloAppearance.js and consumed identically
-    // here and by the WebGPU `SunHaloEffect`. `frameState` is optional so an
-    // older caller (or a frame before `Sun.update` has run) leaves the stage
-    // arithmetically inert rather than throwing.
+    // The halo's screen geometry, amplitude and tint are resolved once per
+    // frame in `Scene/SunHaloAppearance.js` and consumed identically here and
+    // by the WebGPU `SunHaloEffect`. `frameState` is optional so that a caller
+    // that does not supply one, or a frame before `Sun.update` has run, leaves
+    // the stage arithmetically inert rather than throwing.
     updateSolarHalo(this, frameState);
 
     return framebuffer;
@@ -420,10 +418,10 @@ function updateSunPosition(postProcess, context, viewport) {
 }
 
 /**
- * C12-18 — copy the frame's resolved halo state onto the instance so the
- * stage's uniform closures read it. Pure transfer: every number here is
- * computed in `Scene/SunHaloAppearance.js` before the backend branch, which
- * is what makes the WebGL stage and the WebGPU effect provably agree.
+ * Copies the frame's resolved halo state onto the instance so the stage's
+ * uniform closures read it. Pure transfer: every number here is computed in
+ * `Scene/SunHaloAppearance.js` before the backend branch, which is what makes
+ * the WebGL stage and the WebGPU effect provably agree.
  *
  * @param {SunPostProcess} postProcess The instance.
  * @param {object} [frameState] The frame state.
@@ -431,10 +429,10 @@ function updateSunPosition(postProcess, context, viewport) {
  */
 function updateSolarHalo(postProcess, frameState) {
   const halo = frameState?.sunHalo;
-  // C12-19 — the bright-pass pair is transferred even when the halo is not
-  // visible. The two are independent: the halo stage can be off (the Sun
-  // behind the camera, `enableScreenSpaceSunHalo === false`) while the
-  // bright-pass chain above it is still extracting a genuinely HDR sun.
+  // The bright-pass pair is transferred even when the halo is not visible.
+  // The two are independent: the halo stage can be off — the Sun behind the
+  // camera, or `enableScreenSpaceSunHalo === false` — while the bright-pass
+  // chain above it is still extracting a genuinely HDR sun.
   if (defined(halo) && typeof halo.brightPassThreshold === "number") {
     postProcess._brightPassThreshold = halo.brightPassThreshold;
     postProcess._brightPassOffset = halo.brightPassOffset;

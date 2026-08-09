@@ -42,16 +42,16 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // Offset in screen space for billboard corners
   clipPos.x += input.direction.x * u.sunSize.x * clipPos.w;
   clipPos.y += input.direction.y * u.sunSize.y * clipPos.w;
-  // AUDIT_2026_05_02 A.10 — horizon occlusion. From a surface-level
-  // camera, the Sun should disappear when below the local horizon
-  // (occluded by Earth). Approximate the local-up direction as
-  // normalize(cameraECEF); the dot of that with the sun direction is
-  // negative when the sun is below the horizon. Collapse the vertex
-  // to a degenerate position to discard the draw without touching the
-  // FS. Soft-twilight band (0.06 ≈ 3.4° below horizon) prevents an
-  // abrupt pop. Orbital cameras (high altitude) almost always satisfy
-  // dot > 0 since the local-up basis loses meaning, so this gates
-  // gracefully without a hard altitude threshold.
+  // Horizon occlusion. From a surface-level camera the Sun must disappear
+  // once it is below the local horizon, where the Earth occludes it. The
+  // local-up direction is approximated as normalize(cameraECEF); its dot
+  // with the sun direction is negative when the sun is below the horizon.
+  // Collapsing the vertex to a degenerate position discards the draw
+  // without touching the fragment shader. The soft-twilight band, 0.06 or
+  // about 3.4 degrees below the horizon, prevents an abrupt pop. Orbital
+  // cameras almost always satisfy dot > 0 because the local-up basis loses
+  // meaning at altitude, so this gates gracefully without a hard altitude
+  // threshold.
   let cameraECEF = u.encodedCameraHigh + u.encodedCameraLow;
   let cameraECEFLen = length(cameraECEF);
   if (cameraECEFLen > 1.0) {

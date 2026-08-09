@@ -86,38 +86,38 @@ class Sun {
 
     this._useHdr = undefined;
 
-    // C7-SUN-STARS-EXTINCTION — per-frame RGB atmospheric transmittance
-    // along the camera→sun ray. Cartesian3.ONE (the default) leaves the
-    // sun byte-identical (color * 1.0), so the effect is inert until the
-    // sky atmosphere is visible and the sun sits low over the horizon.
+    // Per-frame RGB atmospheric transmittance along the camera-to-sun ray.
+    // `Cartesian3.ONE` leaves the sun byte-identical (`color * 1.0`), so the
+    // effect is inert until the sky atmosphere is visible and the sun sits
+    // low over the horizon.
     this._atmosphereExtinction = Cartesian3.clone(Cartesian3.ONE);
     this._atmosphereExtinctionCache = createAtmosphereExtinctionCache();
 
-    // C12-29 S1 — continuous occlusion fade. 1.0 (the multiplicative
-    // identity) whenever nothing occults the sun or the effect is off, so
-    // the shader multiply is byte-identical in those frames.
+    // Continuous occlusion fade. 1.0, the multiplicative identity, whenever
+    // nothing occults the sun or the effect is off, so the shader multiply is
+    // byte-identical in those frames.
     this._eclipseAlpha = 1.0;
 
-    // C12-15 / C12-16 — resolved sun-bake appearance, published to
-    // frameState before the backend branch so the GLSL bake (uniforms below)
-    // and the WebGPU CPU bake consume one identical resolution. `_bakedKey`
-    // is the 2-bit toggle signature the texture was last baked with; a
-    // mismatch forces a rebuild exactly like `_glowFactorDirty` does.
+    // Resolved sun-bake appearance, published to frameState before the
+    // backend branch so the GLSL bake (uniforms below) and the WebGPU CPU
+    // bake consume one identical resolution. `_bakedAppearanceKey` is the
+    // toggle signature the texture was last baked with; a mismatch forces a
+    // rebuild exactly as `_glowFactorDirty` does.
     this._discAppearance = createSunDiscAppearance();
     this._bakedAppearanceKey = undefined;
     this._limbDarkening = new Cartesian3(1.0, 0.0, 0.0);
     this._glareProfile = new Cartesian4(0.0, 0.0, 0.0, 1.0);
 
-    // C12-18 — disc size + halo-source resolution, published on frameState
-    // before the backend branch (same convention as `_discAppearance`).
-    // `_haloGain` is the bake's halo weight: 1.0 keeps the historical baked
-    // halo, 0.0 hands the halo to the post-process chain.
+    // Disc size and halo-source resolution, published on frameState before
+    // the backend branch by the same convention as `_discAppearance`.
+    // `_haloGain` is the bake's halo weight: 1.0 keeps the halo in the bake,
+    // 0.0 hands it to the post-process chain.
     this._haloAppearance = createSunHaloAppearance();
     this._haloGain = 1.0;
 
-    // C12-19 — the disc's linear radiance, applied in `SunFS.glsl` AFTER
+    // The disc's linear radiance, applied in `SunFS.glsl` after
     // `czm_gammaCorrect`. Exactly 1.0 in SDR, so the billboard is unchanged
-    // bit-for-bit there. Not a bake input: it never touches
+    // bit for bit there. Not a bake input: it never touches
     // `_bakedAppearanceKey`.
     this._discRadiance = 1.0;
 
@@ -176,54 +176,32 @@ class Sun {
       return undefined;
     }
 
-    // C7-SUN-STARS-EXTINCTION — attenuate + redden the sun by the
-    // atmospheric optical path along the camera→sun ray, mirroring the Moon
-    // (B629). Gated on the sky atmosphere actually being rendered so the sun
-    // is byte-identical when the atmosphere is hidden. Published to
+    // Attenuate and redden the sun by the atmospheric optical path along the
+    // camera-to-sun ray, as the Moon does. Gated on the sky atmosphere
+    // actually being rendered, so the sun is byte-identical when the
+    // atmosphere is hidden. Computed before the backend branch, published to
     // frameState for the WebGPU sun renderer and stored on the primitive for
-    // the WebGL uniform below. Computed here (before the backend branch) so
-    // both paths read the same transmittance.
+    // the WebGL uniform below, so both paths read the same transmittance.
     //
-    // C12-29 S4 CORRECTION (2026-07-25). This block used to claim "the
-    // physics yields exactly Cartesian3.ONE from orbit (the ray never
-    // crosses the shell), so the from-orbit case is byte-identical too".
-    // That is FALSE in exactly the geometry S4 exists for. From a 400 km
-    // vantage the 111 km shell subtends 73.1° from nadir and the solid
-    // Earth 70.2°, so a 2.9°-wide annulus of directions produces
-    // limb-GRAZING rays that traverse the entire atmosphere — the band the
-    // sun crosses during an orbital sunset. Measured over that band
-    // (`Tools/visual-regression/sun-orbital-limb-extinction.spec.mjs`): the
-    // transmittance is EXACTLY (1,1,1) for tangent heights above 111 km,
-    // then ramps monotonically to blue 8.3e-12 / red 1.7e-5 at a grazing
-    // altitude of 0 km, with the red/blue ratio climbing 1.0 → 2.0e6. The
-    // orbital-sunset reddening ramp S4 was scoped to build ALREADY EXISTS
-    // here; what kept it invisible was the legacy binary cull (replaced by
-    // S1's continuous fade) — see the S4 verdict in the debugging log.
+    // It is not inert from orbit. From a 400 km vantage the 111 km shell
+    // subtends 73.1 deg from nadir and the solid Earth 70.2 deg, so a
+    // 2.9-deg-wide annulus of directions produces limb-grazing rays that
+    // traverse the whole atmosphere — the band the sun crosses during an
+    // orbital sunset. Over that band the transmittance is exactly (1,1,1)
+    // for tangent heights above 111 km and then ramps monotonically to blue
+    // 8.3e-12 / red 1.7e-5 at a grazing altitude of 0 km, with the red/blue
+    // ratio climbing from 1.0 to 2.0e6; `sun-orbital-limb-extinction.spec.mjs`
+    // pins that ramp.
     //
-    // KNOWN LIMIT (deferred polish, recorded on the C12-29 S4 row): the
-    // integral is evaluated on the camera→sun-CENTRE ray only, so the whole
-    // billboard receives ONE uniform tint. A real setting sun is graded
-    // ACROSS its disc. At this vantage the sun's 0.5327° angular diameter
-    // maps to a 21.33 km span in tangent height, and the upper-limb /
-    // lower-limb transmittance ratio measured with THIS integrator is
-    // strongly altitude- and channel-dependent:
-    //
-    //   tangent h | ratio red | ratio green | ratio blue
-    //   ----------+-----------+-------------+-----------
-    //      60 km  |    1.02   |     1.05    |    1.12
-    //      40 km  |    1.18   |     1.47    |    2.33
-    //      25 km  |    2.27   |     6.16    |   4.8e1
-    //      20 km  |    5.03   |     2.6e1   |   7.7e2
-    //      15 km  |    5.1e1  |     7.7e2   |   2.0e5
-    //      10 km  |    1.7e5  |     1.4e7   |   1.2e11
-    //       0 km  |    2.6e9  |     9.7e11  |   1.9e17
-    //
-    // An earlier revision of this comment quoted "~5.6x in blue" as if it
-    // were the figure; it is only reached in a narrow ~31.75–34.25 km band
-    // and UNDERSTATES the deferred limit by many orders of magnitude across
-    // the 0–15 km band, which is exactly where an orbital sunset is
-    // visually interesting. Differential extinction across the disc and
-    // refraction lift/flattening are deliberately not implemented.
+    // The integral is evaluated on the camera-to-sun-centre ray only, so the
+    // whole billboard receives one uniform tint where a real setting sun is
+    // graded across its disc. At this vantage the sun's 0.5327 deg angular
+    // diameter maps to a 21.33 km span in tangent height, over which the
+    // upper-limb to lower-limb transmittance ratio is strongly altitude- and
+    // channel-dependent — 1.12 in blue at a 60 km tangent height, 2.33 at
+    // 40 km, 2.0e5 at 15 km and 1.9e17 at 0 km. Differential extinction
+    // across the disc, and refraction lift and flattening, are not
+    // implemented.
     const uniformState = frameState.context.uniformState;
     const sunPositionWC = uniformState.sunPositionWC;
     const camPos = defined(frameState.camera)
@@ -247,45 +225,44 @@ class Sun {
       extinction,
       frameState.sunAtmosphereExtinction,
     );
-    // WebGL uniform source. ONE when the atmosphere is hidden / from orbit,
-    // making the shader multiply a no-op (byte-identical).
+    // WebGL uniform source. One when the atmosphere is hidden, making the
+    // shader multiply byte-identical.
     this._atmosphereExtinction = Cartesian3.clone(
       extinction,
       this._atmosphereExtinction,
     );
 
-    // C12-29 S1 — CONTINUOUS OCCLUSION FADE (the pop killer).
+    // Continuous occlusion fade, which is what makes the sun set rather than
+    // vanish.
     //
-    // Premise: `Scene.updateEnvironment` still runs the legacy binary cull
-    // (`environmentState.isSunVisible = isVisible(..., occluder)`), and it
-    // is deliberately left alone. That test culls only when the sun's
-    // ~6-solar-radii glow bounding sphere lies ENTIRELY inside the Earth
-    // occluder's horizon cone, which strictly implies the far smaller solar
-    // DISC is fully occluded too — i.e. the cull can only fire in frames
-    // where `sunVisibleFraction` is already exactly 0. So the cull boundary
-    // now sits well inside the alpha-zero region instead of being the
-    // moment the sun snapped to full brightness, and the visible transition
-    // is the fade below. Keeping the cull also keeps the disabled position
-    // trivially byte-identical and preserves the culling perf.
+    // `Scene.updateEnvironment` still runs its binary cull
+    // (`environmentState.isSunVisible = isVisible(..., occluder)`) and is
+    // deliberately left alone. That test culls only when the sun's
+    // six-solar-radii glow bounding sphere lies entirely inside the Earth
+    // occluder's horizon cone, which implies the far smaller solar disc is
+    // fully occluded, so the cull can only fire in frames where
+    // `sunVisibleFraction` is already exactly 0. The cull boundary therefore
+    // sits well inside the alpha-zero region and the visible transition is
+    // the fade below; keeping it also keeps the disabled position trivially
+    // byte-identical and preserves the culling cost saving.
     //
-    // ALPHA, not RGB: WebGL blends the sun with ALPHA_BLEND (below) where
-    // dimming rgb produces a black disc over the sky, while WebGPU blends
-    // additively with src-alpha (`WebGPUEnvironmentRenderer.js`). An
-    // alpha-only multiply fades correctly under BOTH, so the design is
-    // invariant to the C11-115 blend flip.
+    // The fade multiplies alpha, not rgb. WebGL blends the sun `ALPHA_BLEND`
+    // (below), where dimming rgb produces a black disc over the sky, while
+    // WebGPU blends additively with source alpha
+    // (`WebGPUEnvironmentRenderer.js`). An alpha-only multiply fades
+    // correctly under both, so this does not have to be revisited if either
+    // blend mode changes.
     //
-    // Published to frameState before the backend branch (the
-    // C7-SUN-STARS-EXTINCTION convention) so the WebGL uniform and the
-    // WebGPU uniform buffer read one identical scalar.
+    // Published to frameState before the backend branch so the WebGL uniform
+    // and the WebGPU uniform buffer read one identical scalar.
     const eclipseAlpha = getEclipseSunFactor(frameState.eclipseState);
     frameState.sunEclipseAlpha = eclipseAlpha;
     this._eclipseAlpha = eclipseAlpha;
 
-    // C12-15 (limb-darkened disc) + C12-16 (inverse-square glare falloff).
-    // Resolved BEFORE the backend branch and published on frameState, the
-    // C7-SUN-STARS-EXTINCTION convention, so the WebGL uniform payload below
-    // and the WebGPU CPU bake are provably fed the same numbers rather than
-    // each reading `atmosphericConditions` independently.
+    // The limb-darkened disc and the inverse-square glare falloff. Resolved
+    // before the backend branch and published on frameState so the WebGL
+    // uniform payload below and the WebGPU CPU bake are fed the same numbers
+    // rather than each reading `atmosphericConditions` independently.
     const appearance = readSunDiscAppearance(frameState, this._discAppearance);
     frameState.sunDiscAppearance = appearance;
     this._limbDarkening.x = appearance.a0;
@@ -296,17 +273,17 @@ class Sun {
     this._glareProfile.z = appearance.glareLegacyEdge;
     this._glareProfile.w = appearance.glareLegacy;
 
-    // C12-18 (absorbs C11-160 + C11-115) — the disc's true angular size and
-    // the halo-source decision. Resolved here, BEFORE the feature-renderer
-    // branch, for the same reason C12-15/16 are: the GLSL bake takes these as
-    // uniforms and the WebGPU CPU bake reads the published object, so they are
-    // provably the same numbers rather than two independent derivations. The
-    // screen-space consumers (`SunPostProcess`'s `SolarHalo` stage on WebGL,
-    // `SunHaloEffect` on WebGPU) read the same publication.
+    // The disc's true angular size and the halo-source decision, resolved
+    // before the feature-renderer branch for the same reason the disc
+    // appearance is: the GLSL bake takes these as uniforms and the WebGPU CPU
+    // bake reads the published object, so they are the same numbers rather
+    // than two independent derivations. The screen-space consumers —
+    // `SunPostProcess`'s `SolarHalo` stage on WebGL, `SunHaloEffect` on
+    // WebGPU — read the same publication.
     //
-    // `glowLengthTS` is hoisted out of the texture-rebuild block below because
-    // the halo geometry needs it on the WebGPU path too, which returns before
-    // that block ever runs.
+    // `glowLengthTS` is hoisted out of the texture-rebuild block below
+    // because the halo geometry needs it on the WebGPU path too, which
+    // returns before that block ever runs.
     const glowLengthTS = this._glowFactor * 5.0;
     const halo = readSunHaloAppearance(
       frameState,
@@ -315,9 +292,9 @@ class Sun {
     );
     frameState.sunHalo = halo;
     this._haloGain = halo.bakeHaloGain;
-    // C12-19 — read from the SAME publication both bakes and the
-    // `SunPostProcess` bright pass read, so the WebGL uniform below cannot
-    // disagree with WebGPU's uniform slot about how bright the sun is.
+    // Read from the same publication both bakes and the `SunPostProcess`
+    // bright pass read, so the WebGL uniform below cannot disagree with
+    // WebGPU's uniform slot about how bright the sun is.
     this._discRadiance = halo.discRadiance;
 
     // Backend-specific rendering via Feature Renderer. Environment commands
@@ -346,10 +323,10 @@ class Sun {
       drawingBufferHeight !== this._drawingBufferHeight ||
       this._glowFactorDirty ||
       useHdr !== this._useHdr ||
-      // C12-15 / C12-16 / C12-18 — a toggle flip changes the baked profile,
-      // so the texture must be re-baked exactly as a glowFactor change does.
-      // The C12-18 halo key is folded into the same signature (bits 2-3) so
-      // one comparison still covers every bake-shaping toggle.
+      // A toggle flip changes the baked profile, so the texture must be
+      // re-baked exactly as a glowFactor change does. The halo key is folded
+      // into the same signature at bits 2-3, so one comparison covers every
+      // bake-shaping toggle.
       this._bakedAppearanceKey !== appearance.key + (halo.key << 2)
     ) {
       this._texture = this._texture && this._texture.destroy();
@@ -381,13 +358,13 @@ class Sun {
       });
 
       this._glowLengthTS = glowLengthTS;
-      // C12-18 — the disc's terminating radius, resolved by
-      // `SunHaloAppearance`. The historical expression
-      // `0.5 / (1 + 2*glowLengthTS)` is the `enableTrueSolarDiscSize = false`
-      // position and is returned bit-for-bit there; the default position
-      // multiplies it by the bakes' own `lengthScalar` so the disc subtends
-      // the Sun's TRUE angular radius instead of 1/sqrt(2) of it. See the
-      // C12-18 derivation block in `SolarDiscModel.js`.
+      // The disc's terminating radius, resolved by `SunHaloAppearance`. The
+      // expression `0.5 / (1 + 2*glowLengthTS)` is the
+      // `enableTrueSolarDiscSize = false` position and is returned bit for
+      // bit there; the default multiplies it by the bakes' own `lengthScalar`
+      // so the disc subtends the Sun's true angular radius instead of
+      // 1/sqrt(2) of it. `SolarDiscModel.solarDiscBakeEdgeLegacy` derives the
+      // shortfall.
       this._radiusTS = halo.discEdge;
 
       const that = this;
@@ -395,16 +372,16 @@ class Sun {
         u_radiusTS: function () {
           return that._radiusTS;
         },
-        // C12-18 — 1.0 keeps the historical baked halo + lens-flare bursts;
-        // 0.0 removes them from the bake because the post-process chain is
-        // drawing the halo this frame. Derived in `SunHaloAppearance`, never
-        // set independently, so a double halo is unrepresentable.
+        // 1.0 keeps the baked halo and its lens-flare bursts; 0.0 removes
+        // them from the bake because the post-process chain is drawing the
+        // halo this frame. Derived in `SunHaloAppearance` and never set
+        // independently, so a double halo is unrepresentable.
         u_haloGain: function () {
           return that._haloGain;
         },
-        // C12-15 / C12-16 — the bake's only numeric source. `SunTextureFS`
-        // holds no copy of the limb-darkening triple or the glare
-        // parameters; they arrive here from `Scene/SolarDiscModel.js` via
+        // The bake's only numeric source. `SunTextureFS` holds no copy of the
+        // limb-darkening triple or the glare parameters; they arrive here
+        // from `Scene/SolarDiscModel.js` through
         // `SunDiscAppearance.readSunDiscAppearance` above.
         u_limbDarkening: function () {
           return that._limbDarkening;
@@ -606,14 +583,14 @@ const scratchPositionWC = new Cartesian2();
 const scratchLimbWC = new Cartesian2();
 const scratchPositionEC = new Cartesian4();
 const scratchCartesian4 = new Cartesian4();
-// C7-SUN-STARS-EXTINCTION scratch. The exact-input cache writes identity when
-// the atmosphere gate is disabled and reuses this result object every frame.
+// Extinction scratch. The exact-input cache writes identity when the
+// atmosphere gate is disabled and reuses this result object every frame.
 const scratchExtinction = new Cartesian3();
 
-// Batch 247 — return shape for the feature-renderer (WebGPU) path:
-// mirrors the WebGL `{ drawCommand, computeCommand }` pair so Scene
-// routes the FR command through `environmentState.sunDrawCommand`
-// (ordered after skyAtmosphere by the ENVIRONMENT injection).
+// Return shape for the feature-renderer path. Mirrors the WebGL
+// `{ drawCommand, computeCommand }` pair so Scene routes the command through
+// `environmentState.sunDrawCommand`, which the environment injection orders
+// after the sky atmosphere.
 const scratchBackendCommands = {
   drawCommand: undefined,
   computeCommand: undefined,

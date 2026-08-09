@@ -1,29 +1,26 @@
 /**
  * WebGPU producer for authored KTX2 specular environment cube maps.
  *
- * NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU (item 375).
- *
- * STATUS (Batch 371, C2-2): LIVE — wired from
- * `WebGPUImageBasedLighting.ensureWebGPUSpecularSource` now that C2-1
- * (NEW-WEBGPU-KTX2-TRANSCODER-FORMATS) lets `loadKTX2()` resolve on a
- * WebGPUContext. The upload is format-adaptive: it honors the KTX2's actual
- * datatype (UNSIGNED_BYTE → rgba8unorm 4 bpp, HALF_FLOAT → rgba16float 8 bpp,
- * FLOAT → rgba32float 16 bpp) and computes the writeTexture stride as w*bpp.
- *
- * The Scene-side `SpecularEnvironmentCubeMap` builds a WebGL `CubeMap` whose
- * texture never carries a `_webgpuTexture`, so on a WebGPU context the model
- * IBL consumer (`WebGPUImageBasedLighting` -> `generateIBLMaps`) always fell
- * back to the 1x1 black procedural placeholder. This module turns the loaded
- * KTX2 buffers into an on-device `rgba16float` cube `WebGPUTexture` and returns
- * a thin wrapper matching the field shape the consumer already reads:
+ * Reached from `WebGPUImageBasedLighting.ensureWebGPUSpecularSource`, and only
+ * once `loadKTX2()` can resolve on a WebGPUContext. The Scene-side
+ * `SpecularEnvironmentCubeMap` builds a WebGL `CubeMap` whose texture carries
+ * no `_webgpuTexture`, so without this module the WebGPU model IBL consumer
+ * (`WebGPUImageBasedLighting` -> `generateIBLMaps`) has nothing to sample and
+ * falls back to the 1x1 black procedural placeholder. This turns the loaded
+ * KTX2 buffers into an on-device cube `WebGPUTexture` and returns a thin
+ * wrapper matching the field shape the consumer already reads:
  *   `specEnvMap._texture._webgpuTexture.view` -> the "cube" dimension view.
  *
- * We only upload the BASE mip (roughness 0) of the 6 faces. `generateIBLMaps`
+ * The upload is format-adaptive: it honors the KTX2's own datatype
+ * (UNSIGNED_BYTE → rgba8unorm 4 bpp, HALF_FLOAT → rgba16float 8 bpp,
+ * FLOAT → rgba32float 16 bpp) and computes the writeTexture stride as w*bpp.
+ *
+ * Only the base mip (roughness 0) of the 6 faces is uploaded. `generateIBLMaps`
  * re-prefilters irradiance + a 6-mip radiance chain on-device from that base
  * level, so the KTX2's pre-baked mip chain is not needed on the WebGPU path.
  *
  * Backend-neutral by construction (it only touches a GPUDevice it is handed),
- * but it is NOT consumable from a webgl-only build because it imports
+ * but it is not consumable from a webgl-only build because it imports
  * WebGPUTexture. It is reached exclusively from the WebGPU IBL feature
  * renderer, so it is never pulled into the webgl-only bundle.
  *
@@ -86,8 +83,8 @@ export function buildWebGPUSpecularCubeFromKTX2Buffers(
   const baseMip = cubeMapBuffers[0] as KTX2MipLevel;
   const baseFace = baseMip?.positiveX;
   if (!baseFace || !baseFace.arrayBufferView) {
-    // Either no base face or it's a compressed/GPU-only payload we can't
-    // re-upload byte-wise; keep the procedural fallback.
+    // Either no base face, or a compressed / GPU-only payload that cannot be
+    // re-uploaded byte-wise; keep the procedural fallback.
     return null;
   }
 
@@ -96,13 +93,13 @@ export function buildWebGPUSpecularCubeFromKTX2Buffers(
     return null;
   }
 
-  // Respect the KTX2's ACTUAL pixel datatype — IBL env maps ship as UNSIGNED_BYTE
-  // (rgba8unorm, e.g. the kiara sample), HALF_FLOAT, or FLOAT. Only fall back to
-  // half-float when the buffer carried no datatype at all (matches
-  // SpecularEnvironmentCubeMap.js's undefined-datatype convention). The earlier
-  // "force half-float unless float" branch corrupted RGBA8 maps: it built an
-  // rgba16float (8 bpp) cube but the face buffer is a 4 bpp Uint8Array, so the
-  // writeTexture stride (w*bpp) overran the source rows.
+  // Respect the KTX2's own pixel datatype — IBL env maps ship as UNSIGNED_BYTE
+  // (rgba8unorm, e.g. the kiara sample), HALF_FLOAT, or FLOAT. Half-float is the
+  // fallback only when the buffer carried no datatype at all, matching
+  // `SpecularEnvironmentCubeMap.js`'s undefined-datatype convention. Forcing
+  // half-float for everything that is not float corrupts RGBA8 maps: it builds
+  // an rgba16float (8 bpp) cube over a 4 bpp Uint8Array face buffer, so the
+  // `w * bpp` writeTexture stride overruns the source rows.
   let pixelDatatype = baseFace.pixelDatatype;
   if (pixelDatatype === undefined || pixelDatatype === null) {
     pixelDatatype = PD_HALF_FLOAT_OES;
@@ -141,8 +138,8 @@ export function buildWebGPUSpecularCubeFromKTX2Buffers(
       },
       view,
       {
-        // CRITICAL: rgba16float is 8 bytes/pixel — WebGPUTexture.write()
-        // hardcodes *4 and would corrupt this. Compute the real stride.
+        // rgba16float is 8 bytes per pixel and `WebGPUTexture.write()` hardcodes
+        // a `w * 4` stride, so the real stride is computed here instead.
         bytesPerRow: w * bpp,
         rowsPerImage: h,
       },

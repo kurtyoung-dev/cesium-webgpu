@@ -1,29 +1,23 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU SunHaloEffect — C12-18 screen-space solar veiling glare.
+ * WebGPU SunHaloEffect — the screen-space solar veiling glare, and the WebGPU
+ * consumer of `scene.sunBloom`. `WebGPUContext.supportsLegacySunBloom` returns
+ * `false`, so `FramebufferOrchestrator` skips the WebGL `SunPostProcess`
+ * allocation entirely and this effect is the only thing on the WebGPU side
+ * that reads the flag.
  *
- * This is the C11-160 half of the C12-18 row (`NEW-WEBGPU-SUNBLOOM-PP-WIRING`,
- * transferred into Campaign 12 by ruling LD-1). Before it, `scene.sunBloom`
- * had NO consumer on WebGPU at all: `WebGPUContext.supportsLegacySunBloom`
- * returns `false` so `FramebufferOrchestrator` skips the WebGL
- * `SunPostProcess` allocation, and nothing on the WebGPU side read the flag.
- * The whole halo therefore lived in the baked billboard texture, which is
- * exactly the composition C12-18 exists to undo.
+ * One pass, no blur. The WebGL `SunPostProcess` derives its glow by
+ * bright-passing and blurring the framebuffer; this effect synthesises the
+ * veiling-glare profile analytically around the projected solar centre,
+ * because a blur of a finite source cannot produce a `1/rho^2` tail that
+ * survives past the source's own footprint. That non-terminating tail is
+ * precisely what a halo baked into the billboard cannot carry — see
+ * `SOLAR_GLARE_SUPPORT` in `Scene/SolarDiscModel.js`. The same analytic stage
+ * runs on WebGL as `SolarHalo.glsl` inside `SunPostProcess`, so the two
+ * backends draw one curve from one set of published numbers rather than two
+ * approximations of it.
  *
- * ONE PASS, NO BLUR. The WebGL `SunPostProcess` derives its glow by
- * bright-passing and blurring the framebuffer; this effect SYNTHESISES the
- * veiling-glare profile analytically around the projected solar centre. That
- * is not a WebGPU shortcut — it is the C12-18 requirement. A blur of a finite
- * source cannot produce a `1/rho^2` tail that survives past the source's own
- * footprint, and "a genuinely non-terminating tail" is precisely what the
- * baked halo could not carry (see `SOLAR_GLARE_SUPPORT` in
- * `Scene/SolarDiscModel.js`). The same analytic stage runs on WebGL as
- * `SolarHalo.glsl` inside `SunPostProcess`, so the two backends draw the same
- * curve from the same published numbers rather than two different
- * approximations of one.
- *
- * NO NEW ShaderDefine BIT (C12 exit condition 5) — every parameter is a
- * runtime uniform.
+ * Every parameter is a runtime uniform, so no ShaderDefine bit is claimed.
  *
  * @module WebGPUSunHaloEffect
  */
@@ -59,7 +53,7 @@ export interface SunHaloFrameState {
   limbPx: number;
   /** Half-amplitude radius of the veil, in solar radii. */
   coreRadii: number;
-  /** Amplitude x eclipse factor (CLT-C4). Exactly 0 makes the add a no-op. */
+  /** Amplitude times the eclipse factor. Exactly 0 makes the add a no-op. */
   intensity: number;
   /** Per-channel atmospheric transmittance; (1,1,1) from orbit. */
   colorR: number;
@@ -188,7 +182,7 @@ export class SunHaloEffect implements PostProcessEffect {
     sampler_: GPUSampler,
   ): GPUTextureView {
     // No depth input: veiling glare is scattering inside the observer's
-    // optics, so it is deliberately NOT occluded by scene geometry. The Sun
+    // optics, so it is deliberately not occluded by scene geometry. The Sun
     // going behind the Earth is handled upstream, by the same
     // `environmentState.isSunVisible` test that gates the WebGL stage.
     if (!this._device || !this._pipeline || this.inert) {

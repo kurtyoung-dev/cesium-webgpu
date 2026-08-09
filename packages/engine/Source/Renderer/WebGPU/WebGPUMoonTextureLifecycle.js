@@ -1,6 +1,6 @@
 /**
- * C12-35 — generation-safe asynchronous texture lifecycle for the WebGPU
- * Moon. This module deliberately owns no decoded-source cache and no GPU
+ * Generation-safe asynchronous texture lifecycle for the WebGPU Moon.
+ * This module deliberately owns no decoded-source cache and no GPU
  * sharing: it only decides whether one Moon/cache/device request is still
  * allowed to stage or publish its candidate. When hooks provide a decoded
  * source lease, the lifecycle retains that lease synchronously so retirement
@@ -808,8 +808,8 @@ function commitWebGPUMoonTextureCandidate(lifecycle, channelName, callbacks) {
     return false;
   }
 
-  // C12-33 — mip generation is frame-owned work, so it can only be queued
-  // here, immediately before transactional publication from Moon.update.
+  // Mip generation is frame-owned work, so it can only be queued here,
+  // immediately before transactional publication from Moon.update.
   // Revalidate after the hook as well: a test double or future scheduler hook
   // may synchronously retire/supersede the tuple while preparing the texture.
   // Any queued job for the now-dead candidate is canceled by the renderer's

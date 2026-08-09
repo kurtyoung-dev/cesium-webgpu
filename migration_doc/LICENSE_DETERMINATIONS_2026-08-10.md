@@ -396,8 +396,8 @@ provenance C16-03 had to drop — and `GodRayGenerate.wgsl`, whose existing
 `References:` block gained a Takram line. The `TAKRAM-9` codename is gone from
 `GodRayGenerate.wgsl` and `GodRayGenerate_f16.wgsl`.
 
-**Deliberately left for the owning shards.** Six files still route their Takram
-credit to the internal research document, or still carry the `TAKRAM-9`
+**Deliberately left for the owning shards.** Eight files still route their
+Takram credit to the internal research document, or still carry the `TAKRAM-9`
 codename: `AtmosphereLUT.wgsl`, `AerialPerspective.wgsl`, `StarField.wgsl`,
 `WebGPUAerialPerspectiveEffect.ts`, `AtmosphereDerivedLighting.js`,
 `WebGPUGodRayEffect.ts`, `WebGPUPostProcessStageCollection.ts` and `Scene.js`.
@@ -410,6 +410,20 @@ entries above, which name those files explicitly. What remains for the shards
 is the local citation quality, and this paragraph is the instruction for it —
 replace the `migration_doc/…` routing and the `TAKRAM-9` tag with a reference
 block in the shape used in `ProceduralClouds.wgsl`.
+
+**Shard follow-through, C16-04 (celestial).** One of the eight is celestial
+scope and is now done: `StarField.wgsl`'s blackbody colour-temperature credit
+no longer routes to `migration_doc/RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md` and
+instead carries a reference block naming Shota Matsuda, Takram, the
+`three-geospatial` project, MIT and
+<https://github.com/takram-design-engineering/three-geospatial>, in the
+`ProceduralClouds.wgsl` shape. The sentence stating that the fit was
+reimplemented with no third-party code copied is retained, because that is
+what makes the block a citation rather than an open licensing question, and it
+matches this determination's DERIVED-TECHNIQUE classification of the star
+colour site. The remaining seven belong to the atmosphere, post-process and
+scene shards (C16-05, C16-07, C16-11) and are untouched here — this shard does
+not edit files outside its own subsystem.
 
 ## 3. Outstanding items, and exactly what closes each
 

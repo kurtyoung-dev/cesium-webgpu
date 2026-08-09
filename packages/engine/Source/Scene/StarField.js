@@ -16,7 +16,7 @@ import {
 } from "./StarFieldMath.js";
 
 /**
- * A real bright-star catalog starfield (Track V-C, NEW-STARS-BRIGHT-CATALOG).
+ * A real bright-star catalog starfield.
  *
  * Renders the brightest stars from the Yale Bright Star Catalog
  * ({@link BrightStarCatalog}) as HDR point sprites placed at their actual
@@ -65,15 +65,15 @@ class StarField {
     // the daytime fade by the feature renderer).
     this._intensity = options.intensity ?? 1.0;
 
-    // Angular radius of a BASE star point sprite, in radians. 0.0030 rad
-    // (~0.172°) — just enough quad to hold the C12-05 PSF core (σ = 0.12
-    // of the base quad ≈ 0.6 px at 1920×1080) plus its edge AA window;
-    // stars are unresolved point sources, so the core never needs more.
-    // Bright stars do NOT get a bigger core: the per-star sizeBoost packed
-    // in the instance buffer grows the QUAD as glare-halo extent (C12-06),
-    // capped so the total glare diameter stays ≤ 1° — see the derivation
-    // in StarFieldMath.buildStarInstanceData, whose MAX_QUAD_SCALE bakes
-    // in 2× this value (starfield-psf.spec.mjs cross-checks the pair).
+    // Angular radius of a base star point sprite, in radians. 0.0030 rad
+    // (~0.172°) — just enough quad to hold the PSF core (σ = 0.12 of the
+    // base quad ≈ 0.6 px at 1920×1080) plus its edge AA window; stars are
+    // unresolved point sources, so the core never needs more. Bright stars
+    // get no bigger core: the per-star sizeBoost packed in the instance
+    // buffer grows the quad as glare-halo extent, capped so the total glare
+    // diameter stays ≤ 1° — see the derivation in
+    // StarFieldMath.buildStarInstanceData, whose MAX_QUAD_SCALE bakes in
+    // 2× this value (starfield-psf.spec.mjs cross-checks the pair).
     this._pointAngularSize = 0.003;
 
     // Floor on the NDC half-extent so faint stars never collapse to a
@@ -92,9 +92,9 @@ class StarField {
     this._effectiveIntensityScale = 0.0;
     this._atmosphereExtinctionCache = createAtmosphereExtinctionCache();
 
-    // C7-SUN-STARS-EXTINCTION debug mirror of the per-frame zenith
-    // transmittance (undefined when the effect is disabled). Read by the
-    // acceptance probe; the renderers use frameState.starZenithTransmittance.
+    // Debug mirror of the per-frame zenith transmittance (undefined when the
+    // effect is disabled). Read by the acceptance probe; the renderers use
+    // frameState.starZenithTransmittance.
     this._zenithTransmittance = undefined;
     this._zenithTransmittanceStorage = undefined;
     this._frameStateZenithTransmittanceStorage = undefined;
@@ -154,24 +154,24 @@ class StarField {
       frameState.camera?.positionWC,
       frameState.camera?.positionCartographic?.height,
     );
-    // C12-29 S6 / ruling E3 — ONE reveal law for both star paths.
+    // One reveal law for both star paths.
     //
     // The sprites' own gate (`computeStarDayFade`) is purely geometric: it
-    // returns exactly 0 once the sun is ~2.9 deg above the local horizon. That
-    // is right for an ordinary day and WRONG during a total eclipse, where the
-    // sun is up but its light is gone — a totality frame would have shown the
-    // revealed star CUBEMAP with none of the catalogue sprites on top of it.
+    // returns exactly 0 once the sun is ~2.9 deg above the local horizon.
+    // That is right for an ordinary day and wrong during a total eclipse,
+    // where the sun is up but its light is gone — such a frame would show the
+    // revealed star cubemap with none of the catalogue sprites on top of it.
     //
-    // When enabled, the shared modulation REPLACES the legacy geometric fade:
-    // both cubemap and catalogue then react identically to daylight, lunar sky
-    // brightness, eclipse dimming, and the ellipsoidal-height column ramp.
-    // Multiplying by the old fade would double-dim twilight; taking a maximum
-    // would leave catalogue sprites at full strength under a full moon while
-    // the cubemap falls to ~1.8%. Replacement is the only one-law result.
+    // When enabled, the shared modulation replaces the geometric fade rather
+    // than combining with it, so cubemap and catalogue react identically to
+    // daylight, lunar sky brightness, eclipse dimming, and the
+    // ellipsoidal-height column ramp. Multiplying the two together
+    // double-dims twilight; taking a maximum leaves catalogue sprites at full
+    // strength under a full moon while the cubemap falls to ~1.8%.
     //
     // Gated on the same two conditions as the cubemap consumer, so the
-    // `enableStarBrightnessModulation = false` position leaves this line
-    // returning `dayFade` unchanged — bit-for-bit the historical value.
+    // `enableStarBrightnessModulation = false` position leaves `reveal`
+    // exactly equal to `dayFade`.
     const ac = frameState.atmosphericConditions;
     const skyLeaf =
       defined(ac) && defined(ac.skyAtmosphere) ? ac.skyAtmosphere : undefined;
@@ -193,16 +193,16 @@ class StarField {
     this._effectiveIntensityScale = effectiveIntensityScale;
     const zeroContribution = effectiveIntensityScale === 0.0;
 
-    // C7-SUN-STARS-EXTINCTION — publish the ZENITH atmospheric transmittance
-    // so the backend starfield renderers can extinguish stars per direction.
-    // The star extinction is an analytic Bouguer model (see StarFieldVS /
-    // StarField.wgsl): each star's slant transmittance is
-    // `zenithTransmittance^airmass(elevation)`, so one zenith ray drives the
-    // whole field. Gated on the sky atmosphere actually being rendered; the
-    // physics returns exactly Cartesian3.ONE from orbit (the zenith ray never
-    // crosses the shell), so from-orbit / atmosphere-hidden stays byte-
-    // identical (pow(1, x) === 1). This shared helper is the SAME integrator
-    // the Moon (B629) and Sun use, keeping all three consistent.
+    // Publish the zenith atmospheric transmittance so the backend starfield
+    // renderers can extinguish stars per direction. The star extinction is an
+    // analytic Bouguer model (see StarFieldVS / StarField.wgsl): each star's
+    // slant transmittance is `zenithTransmittance^airmass(elevation)`, so one
+    // zenith ray drives the whole field. Gated on the sky atmosphere actually
+    // being rendered; the physics returns exactly Cartesian3.ONE from orbit
+    // (the zenith ray never crosses the shell), so from orbit or with the
+    // atmosphere hidden the field stays byte-identical (pow(1, x) === 1).
+    // This shared helper is the same integrator the Moon and Sun use, keeping
+    // all three consistent.
     if (!zeroContribution) {
       // `FrameState.mapProjection` is the backend-neutral owner Scene already
       // publishes for the active ellipsoid. The extinction helper remains a
@@ -326,8 +326,8 @@ function clearPublishedStarExtinction(starField, frameState) {
   starField._zenithTransmittance = undefined;
 }
 
-// C7-SUN-STARS-EXTINCTION scratch — zenith direction, synthesized far body,
-// and the resulting per-channel zenith transmittance.
+// Star-extinction scratch — zenith direction, synthesized far body, and the
+// resulting per-channel zenith transmittance.
 const scratchZenithDir = new Cartesian3();
 const scratchZenithBody = new Cartesian3();
 const scratchZenithT = new Cartesian3();

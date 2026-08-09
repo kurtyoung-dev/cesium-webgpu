@@ -1,9 +1,9 @@
 // SunBrightPass.wgsl — luminance bright pass for the sun glow.
 //
 // Twin of Shaders/PostProcessStages/BrightPass.glsl, the first stage of the
-// WebGL `SunPostProcess` chain. Keep the two in lockstep
-// (SHADER_PAIRS_LOCKSTEP.md); the extraction curve is what sets the glow's
-// amplitude, so a change on one backend alone is a visible split.
+// WebGL `SunPostProcess` chain. The two must stay in lockstep: the extraction
+// curve is what sets the glow's amplitude, so a change on one backend alone is
+// a visible split.
 //
 // Not to be confused with BrightPass.wgsl in this directory, which is a port of
 // ContrastBias.glsl and drives the scene-wide bloom stage. That shader shifts

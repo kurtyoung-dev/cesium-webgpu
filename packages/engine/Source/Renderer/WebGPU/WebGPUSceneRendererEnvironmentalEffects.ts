@@ -1,13 +1,7 @@
 /**
- * Environmental-effects orchestration extracted from
- * `WebGPUSceneRenderer`.
+ * Environmental-effects orchestration for `WebGPUSceneRenderer`.
  *
- * Batch 134 of the audit-recommended SceneRenderer decomposition (see
- * `migration_doc/WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md`,
- * SceneRenderer "post-process plumbing" candidate — environmental
- * effects are the leading slice of that work).
- *
- * Composites onto the post-processed scene snapshot AFTER all geometry and
+ * Composites onto the post-processed scene snapshot after all geometry and
  * display-space post-processing passes. Order is fixed:
  *
  *   1. Procedural Clouds — volumetric ray-marched clouds
@@ -15,7 +9,7 @@
  *   2. NPR outlines and contact shadows — optional screen-space overlays.
  *   3. Screen-Space Reflections — surface reflections.
  *   4. Weather Particles — GPU compute rain/snow/fog/hail + render.
- *   5. Volumetric Fog — froxel-grid populate + composite (Phase 5a).
+ *   5. Volumetric Fog — froxel-grid populate + composite.
  *
  * Each stage is independently feature-gated:
  *   - Procedural Clouds: a VOLUMETRIC `CloudCollection` (the managed
@@ -30,9 +24,8 @@
  * `context.log("warn", ...)` and the default render pass resumes
  * even on the catch path so subsequent passes see a consistent state.
  *
- * The function takes ZERO `this.*` dependencies on the SceneRenderer,
- * so it's a pure free function over the render-frame config (verified
- * pre-extraction by grep).
+ * The function takes no `this` dependencies on the scene renderer, so it is a
+ * pure free function over the render-frame config.
  *
  * @module WebGPUSceneRendererEnvironmentalEffects
  */
@@ -61,10 +54,10 @@ const WEATHER_TYPE_STRINGS: readonly string[] = ["rain", "snow", "fog", "hail"];
 
 /**
  * Build the WebGPU weather renderer's `CesiumWeatherConfig` from the flat
- * `scene.weather*` fields (Phase E, Batch 423). These are the fields the
- * `atmosphericConditions.weather` facade writes and the 417a auto-master pushes,
- * so this is the single control surface that drives the particle renderer for
- * both the manual and automatic precipitation paths.
+ * `scene.weather*` fields. These are the fields the
+ * `atmosphericConditions.weather` facade writes and the automatic precipitation
+ * master pushes, so this is the single control surface that drives the particle
+ * renderer for both the manual and automatic paths.
  *
  * @param scene - The Cesium scene carrying the flat weather fields.
  * @returns A `CesiumWeatherConfig` the renderer can read directly.
@@ -85,9 +78,9 @@ function buildWeatherConfig(
       z: wind?.z ?? 0,
     } as CesiumCartesian3,
     // Remaining tuning fields keep the renderer's built-in defaults — the flat
-    // scene surface only exposes type/intensity/wind today. The renderer applies
-    // its own `?? default` for every field below, so leaving them at their
-    // defaults here is intentional (and matches the pre-Phase-E config shape).
+    // scene surface only exposes type/intensity/wind. The renderer applies its
+    // own `?? default` for every field below, so leaving them at their defaults
+    // here is intentional.
     maxParticles: 50000,
     particleLifetime: 5.0,
     particleSize: 1.0,
@@ -95,9 +88,9 @@ function buildWeatherConfig(
     spawnRadius: 500,
     groundAltitude: 0,
     humidity: 0.5,
-    // PRECIP-DATA (Batch 444) — data-driven extras. Undefined in the manual/auto
-    // path (applyAtmosphericConditions only sets these when the `dataDriven` flag
-    // is on); the renderer reads `?? 1` / `?? 0`, so the OFF path is unchanged.
+    // Data-driven extras. Undefined on the manual and automatic paths
+    // (`applyAtmosphericConditions` sets these only when the `dataDriven` flag
+    // is on); the renderer reads `?? 1` / `?? 0`, so an unset field is inert.
     densityScale: scene.weatherDensityScale,
     snowCover: scene.weatherSnowCover,
   };
@@ -117,23 +110,20 @@ export function executeEnvironmentalEffects(
   const globe = scene.globe;
   const frameState = scene._frameState;
 
-  // Item 4.2 (CLOUD-IBL, Batch 441) — publish the effective cloud coverage the
-  // dynamic-env-map sky fill darkens + flattens its radiance toward. Done FIRST,
-  // before the view-availability early-return and the cloud-render gate, so it
-  // tracks the globe's flags every frame (resets to 0 when clouds /
-  // cloudContributesIBL are off → the env fill stays byte-identical).
-  // CLOUD-U2-CONFIG-INDIRECTION — `publishCloudIblCoverage` now takes a
-  // structural `CloudVolumetricsConfig` (identical field names to `globe.cloud*`),
-  // so the globe passes through directly with no inline cast. Behavior is
-  // byte-identical — same object, same fields, same `?? default` reads.
+  // Publish the effective cloud coverage the dynamic-env-map sky fill darkens
+  // and flattens its radiance toward. This runs before the view-availability
+  // early-return and the cloud-render gate so it tracks the globe's flags every
+  // frame, resetting to 0 when clouds or `cloudContributesIBL` are off.
+  // `publishCloudIblCoverage` takes a structural `CloudVolumetricsConfig` whose
+  // field names match `globe.cloud*`, so the globe passes through with no cast.
   //
-  // Cloud-unification epic slice 3 — consume the frame's volumetric cloud
-  // request published by a VOLUMETRIC CloudCollection (first one wins; see
-  // CloudCollection.update / GraphicsContext#requestVolumetricClouds). Consumed
-  // UNCONDITIONALLY here — even when the request is ignored — so a stale request
+  // The frame's volumetric cloud request is published by a volumetric
+  // `CloudCollection` (first one wins; see `CloudCollection.update` /
+  // `GraphicsContext#requestVolumetricClouds`). It is consumed here
+  // unconditionally, even when the request is then ignored, so a stale request
   // never leaks into the next frame. When no collection publishes, `cloudConfig`
-  // is `undefined` and `publishCloudIblCoverage` resets the IBL coverage to 0
-  // (byte-identical clear-sky env source).
+  // stays `undefined` and `publishCloudIblCoverage` resets the IBL coverage to
+  // 0, giving a clear-sky env source.
   const collectionRequest = context.consumeVolumetricCloudRequest();
   let useCollectionDeck =
     collectionRequest !== undefined && collectionRequest.enabled === true;
@@ -141,14 +131,14 @@ export function executeEnvironmentalEffects(
     ? (collectionRequest as unknown as CloudVolumetricsConfig)
     : undefined;
 
-  // Cloud-unification epic slice 4A/4B — when no USER-added VOLUMETRIC collection
-  // published a deck this frame, fall back to the Scene/Globe MANAGED default
-  // cloud collection (`globe.defaultCloudCollection`). Its `.volumetric` config
-  // is the single source of truth for the `atmosphericConditions` cloud facade,
-  // the atmospheric-effects genus bias, and the weather ingest. It only drives a
-  // deck when its exclusive `renderMode` is VOLUMETRIC (=== 1) AND
-  // `volumetric.enabled`; otherwise no deck is active and `cloudConfig` stays
-  // `undefined` (the `globe.showProceduralClouds` field was removed in 4B).
+  // When no user-added volumetric collection published a deck this frame, fall
+  // back to the Scene/Globe managed default cloud collection
+  // (`globe.defaultCloudCollection`). Its `.volumetric` config is the single
+  // source of truth for the `atmosphericConditions` cloud facade, the
+  // atmospheric-effects genus bias, and the weather ingest. It drives a deck
+  // only when its exclusive `renderMode` is volumetric (=== 1) and
+  // `volumetric.enabled` is set; otherwise no deck is active and `cloudConfig`
+  // stays `undefined`.
   if (!useCollectionDeck) {
     const managed = (
       globe as unknown as {
@@ -170,17 +160,16 @@ export function executeEnvironmentalEffects(
   }
   publishCloudIblCoverage(context, cloudConfig, frameState);
 
-  // Get texture views needed by all environmental effects.
+  // Texture views needed by all environmental effects.
   //
-  // Slice 5c-B Batch 129 — `colorView` (the SOURCE that env effects
-  // sample for reflection / composite-base / cloud-blend) now comes
-  // from the post-process snapshot — a copyTextureToTexture mirror
-  // of the canvas AFTER post-process ran (PostFrustumChain). So env
-  // effects sample display-space, tonemapped, FXAA'd color, the same
-  // color the viewer sees. Pre-Batch-129 they sampled the raw HDR
-  // scene FB which produced color-space-mismatched reflections /
-  // cloud composites. Falls back to scene color view in early frames
-  // before the snapshot is allocated.
+  // `colorView` — the source env effects sample for reflection, composite base
+  // and cloud blend — comes from the post-process snapshot, a
+  // copyTextureToTexture mirror of the canvas taken after post-process ran
+  // (PostFrustumChain), so env effects sample display-space, tonemapped, FXAA'd
+  // color, the same color the viewer sees. Sampling the raw HDR scene
+  // framebuffer instead produces colour-space-mismatched reflections and cloud
+  // composites. Falls back to the scene color view in early frames, before the
+  // snapshot is allocated.
   const ctxAny = context as unknown as {
     _postProcessSnapshotView?: GPUTextureView | null;
   };
@@ -331,11 +320,11 @@ export function executeEnvironmentalEffects(
   }
 
   // 3. Weather geometry has an explicit composition point between SSR and fog.
-  // It does not sample scene color, so with fog after it we draw in-place into
-  // the graph's current side. With no following fog, retain the fast path:
-  // weather-only draws directly to canvas with no ping texture/final blit; if
-  // prior full-screen effects exist, present them once and append weather to
-  // that same tail canvas pass.
+  // It does not sample scene color, so when fog follows it draws in-place into
+  // the graph's current side. With no following fog the fast path applies:
+  // weather alone draws directly to the canvas with no ping texture or final
+  // blit; when prior full-screen effects exist, they are presented once and
+  // weather is appended to that same tail canvas pass.
   if (scene._enableWeather) {
     const weatherFR = context.getFeatureRenderer(
       FeatureRendererKey.WEATHER_PARTICLES,

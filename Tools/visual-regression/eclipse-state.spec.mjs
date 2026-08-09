@@ -904,8 +904,15 @@ test("Scene.environmentState still exposes the binary-cull result", () => {
 test("the toggle exists on AtmosphericConditions and defaults ON", () => {
   assert.match(conditions, /enableEclipse: true,/);
   assert.match(conditions, /enableEclipseGlobeShadow: true,/);
-  // Ruling E1 (research report §6a) — default-on, both backends.
-  assert.match(conditions, /C12-29 S1/);
+  // The lighting registry must state the default-on, both-backends position
+  // and say what the toggle actually gates. Anchored on that sentence rather
+  // than on a tracker id, so the assertion fails when the DOCUMENTED
+  // BEHAVIOUR is deleted rather than when a comment is reworded.
+  assert.match(
+    conditions,
+    /`enableEclipse`[^.]*default on, both backends[^.]*gates whether consumers apply\s+\*\s*`frameState\.eclipseState`/,
+    "the registry must document enableEclipse as default-on on both backends and name what it gates",
+  );
 });
 
 test("FrameState declares the active-View eclipse aliases", () => {

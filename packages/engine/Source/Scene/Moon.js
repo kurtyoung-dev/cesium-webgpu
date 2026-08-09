@@ -166,10 +166,10 @@ class Moon {
       url = Moon.getVariantTextureUrl(options.variant);
     }
 
-    // C12-25. `null` is meaningful here and `undefined` is not: an explicit
-    // null is "I want a flat moon", while an omitted option means "give me
-    // whatever the variant pairs with". `??` collapses both, so the presence
-    // of the key is what is tested.
+    // `null` is meaningful here and `undefined` is not: an explicit null
+    // requests a flat moon, while an omitted option means "whatever the
+    // variant pairs with". `??` collapses both, so the presence of the key
+    // is what is tested.
     const normalMapUrl = Object.prototype.hasOwnProperty.call(
       options,
       "normalMapUrl",
@@ -197,16 +197,16 @@ class Moon {
     this.textureUrl = url;
 
     /**
-     * A tangent-space normal map supplying the moon's surface relief (C12-25),
-     * in the same equirectangular projection and orientation as
+     * A tangent-space normal map supplying the moon's surface relief, in the
+     * same equirectangular projection and orientation as
      * {@link Moon#textureUrl}, with x = east, y = north, z = up (the geodetic
      * surface normal) encoded as <code>n * 0.5 + 0.5</code>.
      *
-     * Its visible effect is concentrated at the TERMINATOR, where N·L is near
+     * Its visible effect is concentrated at the terminator, where N·L is near
      * zero and a few degrees of surface tilt is the difference between a lit
      * and an unlit facet; at full phase the cosine is flat and the relief is
-     * nearly invisible. `undefined` renders a geometrically smooth sphere —
-     * the pre-C12-25 look, and what {@link Moon.Variant.SMALL} selects.
+     * nearly invisible. `undefined` renders a geometrically smooth sphere,
+     * which is what {@link Moon.Variant.SMALL} selects.
      * @type {string|undefined}
      * @default the normal map of {@link Moon.defaultVariant}
      */
@@ -263,20 +263,20 @@ class Moon {
 
     this._axes = new IauOrientationAxes();
 
-    // C9-06 — per-primitive scalar cache for the shared camera→Moon
-    // atmospheric extinction integration. Reused across frames so the
-    // 16-sample optical-depth march only recomputes when an exact physical
-    // input (camera, Moon position, atmosphere coefficients/scale heights,
-    // inner radius, or the enabled gate) changes. Keeps the Moon consistent
-    // with the Sun/star extinction, which use the same cached integrator.
+    // Per-primitive scalar cache for the shared camera→Moon atmospheric
+    // extinction integration. Reused across frames so the 16-sample
+    // optical-depth march only recomputes when an exact physical input
+    // (camera, Moon position, atmosphere coefficients/scale heights, inner
+    // radius, or the enabled gate) changes. Keeps the Moon consistent with
+    // the Sun/star extinction, which use the same cached integrator.
     this._atmosphereExtinctionCache = createAtmosphereExtinctionCache();
 
-    // C12-30 — cache for the additive in-scattering (sky-wash) integral,
-    // the extinction's additive twin. Same exact-input caching contract.
+    // Cache for the additive in-scattering (sky-wash) integral, the
+    // extinction's additive twin. Same exact-input caching contract.
     this._atmosphereInscatterCache = createAtmosphereInscatterCache();
 
-    // C12-21 / C12-22 — reusable result object for the shared moon-phase
-    // appearance resolver. Allocated once; never reallocated per frame.
+    // Reusable result object for the shared moon-phase appearance resolver.
+    // Allocated once; never reallocated per frame.
     this._phaseAppearance = createMoonPhaseAppearance();
   }
 
@@ -325,11 +325,11 @@ class Moon {
       ellipsoidPrimitive.modelMatrix,
     );
 
-    // Phase 1.2: publish moon ephemeris onto frameState for renderers
-    // (Moon fragment shader, atmosphere, night-side lighting). `translation`
-    // is the moon position in world coords (earth-centered fixed frame),
-    // so its normalized form is the world-space direction from the earth
-    // center toward the moon.
+    // Publish moon ephemeris onto frameState for renderers (Moon fragment
+    // shader, atmosphere, night-side lighting). `translation` is the moon
+    // position in world coords (earth-centered fixed frame), so its
+    // normalized form is the world-space direction from the earth center
+    // toward the moon.
     const moonDirWC = Cartesian3.normalize(translation, scratchMoonDirWC);
 
     // Pull sun direction (WC) from the per-frame uniform state. Scene.js
@@ -353,8 +353,8 @@ class Moon {
     }
 
     // Gate on atmospheric-conditions lighting toggle. When disabled or when
-    // no globe is attached, fall back to "always full" (1.0) — simpler flat
-    // disc shading that matches pre-Phase-1 behavior.
+    // no globe is attached, fall back to "always full" (1.0) — the simpler
+    // flat disc shading.
     const ac = frameState.atmosphericConditions;
     const enableMoonPhase =
       defined(ac) && defined(ac.lighting) ? ac.lighting.enableMoonPhase : false;
@@ -368,14 +368,14 @@ class Moon {
     );
     frameState.moonPhaseFraction = phaseFraction;
 
-    // NS-MOON-ATMOSPHERE-EXTINCTION — attenuate and redden the moon by the
-    // atmospheric optical path along the view ray. `translation` is the moon
-    // position in Earth-centered fixed coordinates; the extinction integrates
-    // the Rayleigh/Mie optical depth from the camera to the moon through the
-    // atmosphere shell. Gated on the sky atmosphere actually being rendered so
-    // the moon is byte-identical when the atmosphere is hidden, and the
-    // physics yields exactly Cartesian3.ONE from orbit (ray never crosses the
-    // shell) — so the off-gate is byte-identical there too.
+    // Attenuate and redden the moon by the atmospheric optical path along the
+    // view ray. `translation` is the moon position in Earth-centered fixed
+    // coordinates; the extinction integrates the Rayleigh/Mie optical depth
+    // from the camera to the moon through the atmosphere shell. Gated on the
+    // sky atmosphere actually being rendered so the moon is byte-identical
+    // when the atmosphere is hidden, and the physics yields exactly
+    // Cartesian3.ONE from orbit (ray never crosses the shell) — so the
+    // off-gate is byte-identical there too.
     const camPos = defined(frameState.camera)
       ? frameState.camera.positionWC
       : undefined;
@@ -383,10 +383,9 @@ class Moon {
       frameState.skyAtmosphereVisible === true &&
       defined(frameState.atmosphere) &&
       defined(camPos);
-    // Cached shared integrator (C9-06). When disabled it returns the exact
-    // multiplicative identity (1,1,1) — byte-identical to the prior
-    // `scratchExtinctionOne` fallback — and from orbit the ray never crosses
-    // the shell so the physics also yields ONE.
+    // Cached shared integrator. When disabled it returns the exact
+    // multiplicative identity (1,1,1), and from orbit the ray never crosses
+    // the shell so the physics also yields that identity.
     const extinction = computeAtmosphereExtinctionCached(
       this._atmosphereExtinctionCache,
       scratchExtinction,
@@ -405,13 +404,13 @@ class Moon {
     ellipsoidPrimitive.atmosphereExtinction =
       frameState.skyAtmosphereVisible === true ? extinction : undefined;
 
-    // C12-30 — atmospheric IN-SCATTERING (sky-wash), the additive half of
-    // the transfer the extinction above is the multiplicative half of. The
-    // opaque disc is drawn OVER the sky-atmosphere shell, so without this
-    // term the disc loses the sky radiance its neighboring pixels keep and
-    // a daytime moon reads as a dark cutout. The CPU integral mirrors the
-    // sky shader's own single-scattering model (see
-    // computeAtmosphereInscatter) so the disc blends into the rendered sky:
+    // Atmospheric in-scattering (sky-wash), the additive half of the transfer
+    // the extinction above is the multiplicative half of. The opaque disc is
+    // drawn over the sky-atmosphere shell, so without this term the disc
+    // loses the sky radiance its neighboring pixels keep and a daytime moon
+    // reads as a dark cutout. The CPU integral mirrors the sky shader's own
+    // single-scattering model (see computeAtmosphereInscatter) so the disc
+    // blends into the rendered sky:
     //     disc = discColor × extinction + inscatter.
     // Gated on the same skyAtmosphereVisible condition as the extinction
     // plus the atmosphericConditions.lighting.enableMoonSkyWash toggle;
@@ -458,17 +457,17 @@ class Moon {
       ? inscatter
       : undefined;
 
-    // C12-20 — Lommel-Seeliger lunar reflectance toggle. The shader-side
-    // branch (both backends) replaces the Lambert disc law with the lunar
-    // regolith law; the flag just routes it. Default ON via
+    // Lommel-Seeliger lunar reflectance toggle. The shader-side branch (both
+    // backends) replaces the Lambert disc law with the lunar regolith law;
+    // the flag just routes it. Defaults on through
     // AtmosphericConditions.lighting.enableLunarBRDF.
     const lunarBRDF = defined(lighting) && lighting.enableLunarBRDF === true;
     ellipsoidPrimitive.lunarBRDF = lunarBRDF;
 
-    // C12-23 — opposition surge: one CPU-side Hapke-SHOE multiplier from
-    // the true Sun–Moon–observer phase angle (constant across the distant
-    // disc), passed as a single uniform. 1.0 (identity) when disabled or
-    // away from opposition.
+    // Opposition surge: one CPU-side Hapke-SHOE multiplier from the true
+    // Sun–Moon–observer phase angle (constant across the distant disc),
+    // passed as a single uniform. 1.0 (identity) when disabled or away from
+    // opposition.
     const surgeEnabled =
       defined(lighting) && lighting.enableOppositionSurge === true;
     let oppositionSurge = 1.0;
@@ -503,13 +502,13 @@ class Moon {
       ? oppositionSurge
       : undefined;
 
-    // C12-25 — resolve the LOLA relief strength ONCE here, before the
-    // backend branch (Scene Logic Extractor pattern), folding together the
-    // three things that can switch it off: the lighting toggle, the variant
-    // gate (Moon.Variant.SMALL ships no map), and the user's own dial. Both
-    // backends then read this single number, so they cannot disagree about
-    // whether relief is on — the failure mode where one backend is subtly
-    // rougher than the other is exactly what a per-backend gate produces.
+    // The LOLA relief strength is resolved once here, before the backend
+    // branch, folding together the three things that can switch it off: the
+    // lighting toggle, the variant gate (Moon.Variant.SMALL ships no map),
+    // and the user's own dial. Both backends then read this single number, so
+    // they cannot disagree about whether relief is on — the failure mode
+    // where one backend is subtly rougher than the other is exactly what a
+    // per-backend gate produces.
     const normalMapEnabled =
       defined(lighting) && lighting.enableLunarNormalMap === true;
     const normalMapStrength = resolveMoonNormalMapStrength(
@@ -520,14 +519,12 @@ class Moon {
     const normalMapDemand = normalMapStrength > 0.0;
     frameState.moonNormalMapStrength = normalMapStrength;
 
-    // C12-21 / C12-22 — resolve BOTH moon-phase appearance terms ONCE here,
-    // before the backend branch (Scene Logic Extractor pattern), for exactly
-    // the reason C12-25 resolves the relief strength here: two independently
-    // derived gates are how one backend ends up subtly different from the
-    // other, and the C11-176b `phaseGate` was precisely that failure (a
-    // WGSL-only phase multiplier with no GLSL counterpart).
+    // Both moon-phase appearance terms are resolved once here, before the
+    // backend branch, for the same reason the relief strength is: two
+    // independently derived gates are how one backend ends up subtly
+    // different from the other.
     //
-    // The solar angular radius uses the TRUE Sun→Moon distance, which varies
+    // The solar angular radius uses the true Sun→Moon distance, which varies
     // ±1.7% over a year with Earth's orbital eccentricity; the mean value is
     // the fallback when the frame carries no sun position.
     const sunPositionWC = defined(uniformState)
@@ -576,11 +573,11 @@ class Moon {
         : undefined;
     }
 
-    // C12-35 — only the WebGL fallback consumes the shared decoded-source
-    // cache here. Promise callbacks stage sources; this update synchronously
-    // realizes and publishes the WebGL textures. The Material uniform is
-    // always either a Texture or its default sentinel, never a URL, so the
-    // legacy Material loader cannot issue a duplicate request.
+    // Only the WebGL fallback consumes the shared decoded-source cache here.
+    // Promise callbacks stage sources; this update synchronously realizes and
+    // publishes the WebGL textures. The Material uniform is always either a
+    // Texture or its default sentinel, never a URL, so the legacy Material
+    // loader cannot issue a duplicate request.
     const webGLTexturesPending = this._updateWebGLMoonTextures(
       context,
       normalMapDemand,
@@ -599,10 +596,10 @@ class Moon {
       frameState.afterRender.push(requestRenderForWebGLMoonTextureLifecycle);
     }
 
-    // C12-33 — the exact predicate that admitted each texture's mip chain
-    // also selects its explicit-gradient shader branch. Keep the channels
-    // independent so a custom NPOT normal map cannot make a legal albedo mip
-    // chain lose its seam-safe gradient sampling (or vice versa).
+    // The exact predicate that admitted each texture's mip chain also selects
+    // its explicit-gradient shader branch. Keep the channels independent so a
+    // custom NPOT normal map cannot make a legal albedo mip chain lose its
+    // seam-safe gradient sampling (or vice versa).
     const albedoTexture = this._albedoMapTexture;
     ellipsoidPrimitive.lunarAlbedoExplicitGradients =
       defined(albedoTexture) &&
@@ -761,13 +758,12 @@ class Moon {
   }
 
   /**
-   * Phase 6 debug surface — returns a diagnostic snapshot of the moon's
-   * current per-frame state. Backend-agnostic dispatch: routes through
-   * the registered MOON feature renderer's `getStatistics(moon)` entry
-   * point so Scene code can call this without importing from
-   * `Renderer/WebGPU/`. Returns `null` when no feature renderer is
-   * registered (e.g., WebGL backend) or when the moon hasn't yet had
-   * its first `update()` call.
+   * Returns a diagnostic snapshot of the moon's current per-frame state.
+   * Backend-agnostic dispatch: routes through the registered moon feature
+   * renderer's `getStatistics(moon)` entry point so Scene code can call this
+   * without importing from `Renderer/WebGPU/`. Returns `null` when no feature
+   * renderer is registered (e.g., WebGL backend) or when the moon hasn't yet
+   * had its first `update()` call.
    *
    * @param {Scene} scene The owning scene; used to obtain the active
    *   GraphicsContext for the feature renderer lookup.
@@ -888,12 +884,12 @@ class Moon {
  * instead of silently 404-ing the moon into its placeholder. Mirrors
  * {@link SkyBox.Variant}, which does the same for the bundled star maps.
  *
- * Both variants use the SAME projection — equirectangular, centred on 0°
+ * Both variants use the same projection — equirectangular, centred on 0°
  * longitude, east right, north at the top of the image — so switching between
  * them changes only resolution and source, never orientation.
  *
- * A variant selects a PAIRING, not just an albedo: since C12-25 it also
- * decides whether the moon carries LOLA-derived surface relief. See
+ * A variant selects a pairing, not just an albedo: it also decides whether the
+ * moon carries LOLA-derived surface relief. See
  * {@link Moon.getVariantNormalMapUrl}.
  *
  * @enum {string}
@@ -903,14 +899,14 @@ Moon.Variant = Object.freeze({
   /**
    * The historical 256×128 `moonSmall.jpg` inherited from upstream Cesium.
    * At the ~190 px disc of a zoomed-in view its visible hemisphere is only
-   * 128 texels — 0.67 texels/px, i.e. under-resolved (C12-24). Retained as
-   * the low-bandwidth option (17.8 KB) and as the fallback if an application
+   * 128 texels — 0.67 texels/px, i.e. under-resolved. Retained as the
+   * low-bandwidth option (17.8 KB) and as the fallback if an application
    * prefers the historical look.
    */
   SMALL: "SMALL",
   /**
-   * NASA/GSFC SVS 4720 "CGI Moon Kit" 2019 colour map at 2048×1024 — the
-   * default as of C12-24. Derived from the LROC Wide Angle Camera "Hapke
+   * NASA/GSFC SVS 4720 "CGI Moon Kit" 2019 colour map at 2048×1024, the
+   * default variant. Derived from the LROC Wide Angle Camera "Hapke
    * normalized" mosaic, gamma corrected and white balanced by SVS to
    * approximate human vision. Bundled offline at 550 KB (JPEG q90 4:4:4) by
    * the reproducible pipeline at `Tools/moon-albedo-bake/`. The asset's terms
@@ -925,20 +921,17 @@ const moonVariants = {
 };
 
 /**
- * Normal map paired with each variant (C12-25). `SMALL` deliberately has
- * none: it is the historical low-bandwidth option, and bolting 664 KB of
- * relief onto a 17.8 KB albedo would defeat its only reason to exist — so
- * selecting it preserves the legacy flat look exactly.
+ * Normal map paired with each variant. `SMALL` deliberately has none: it is
+ * the historical low-bandwidth option, and bolting 664 KB of relief onto a
+ * 17.8 KB albedo would defeat its only reason to exist, so selecting it
+ * preserves the legacy flat look exactly.
  *
- * The 2K variant's map remains 1024x512 until C12-33's moving-camera gate is
- * certified. Before C12-33 neither backend generated Moon mip chains, so at
- * the default ~16 px disc a 2048-wide normal map would have paid ~64:1
- * minification from mip 0 and visibly shimmered the lighting. The runtime now
- * generates complete chains and supplies seam-correct explicit gradients on
- * both backends; the smaller map is retained as the accepted baseline until
- * the close/seam/limb/minified motion probe proves that behavior in real Edge.
- * `--width 2048` in `Tools/moon-albedo-bake/bake-lola-normals.mjs` performs
- * the optional higher-resolution re-bake only after that gate passes.
+ * The 2K variant pairs with a 1024x512 map rather than a 2048-wide one. At the
+ * default ~16 px disc a 2048-wide map pays roughly 64:1 minification from
+ * mip 0, so it shimmers the lighting unless the mip chain and the explicit
+ * gradients hold up under camera motion. `--width 2048` in
+ * `Tools/moon-albedo-bake/bake-lola-normals.mjs` re-bakes at the higher
+ * resolution.
  */
 const moonNormalMapVariants = {
   [Moon.Variant.SMALL]: undefined,
@@ -949,9 +942,9 @@ const moonNormalMapVariants = {
  * The variant {@link Moon} uses when neither `textureUrl` nor `variant` is
  * passed.
  *
- * `LROC_COLOR_2K` is the default as of `C12-24` (Campaign 12): the historical
- * 256×128 map is under-resolved at any zoomed view. `SMALL` remains bundled
- * and selectable; both are offline.
+ * `LROC_COLOR_2K` is the default because the historical 256×128 map is
+ * under-resolved at any zoomed view. `SMALL` remains bundled and selectable;
+ * both are offline.
  *
  * @type {string}
  * @default Moon.Variant.LROC_COLOR_2K

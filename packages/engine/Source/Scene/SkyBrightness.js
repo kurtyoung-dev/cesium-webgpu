@@ -1,23 +1,29 @@
 /**
- * CPU-side estimator that maps sun + moon altitude (relative to the local
- * up at the camera) to a 0..1 sky brightness scalar. Phase 1.3 of the
- * celestial atmosphere design uses this to drive star modulation in the
- * cubemap panorama shader and (later) night-sky dimming in the sky
+ * CPU-side estimator that maps sun and moon altitude, relative to the local
+ * up at the camera, to a 0..1 sky brightness scalar. It drives star
+ * modulation in the cubemap panorama shader and night-sky dimming in the sky
  * atmosphere shader.
  *
- * C12-34 (NEW-SKY-BRIGHTNESS-ESTIMATOR-NO-TWILIGHT-RANGE) replaced the
- * original double-smoothstep with a log-luminance model: the sun term is a
- * published zenith sky-brightness-vs-solar-depression curve (V mag/arcsec²,
- * the standard twilight photometry of Patat et al. 2006-class measurements),
- * the moon term is the published full-moon sky brightness scaled by a
- * measured phase-flux law, the two are summed in LINEAR luminance, and the
- * combined log-luminance is mapped to the published 0..1 scalar through a
- * perceptual transfer derived from the naked-eye limiting-magnitude (NELM)
- * relation (Crumey 2014). The original sun smoothstep reached EXACTLY 0 once
- * the sun was below −5.74° and therefore carried no dynamic range at all
- * across the twilight decade — civil twilight, nautical twilight and
- * astronomical night all collapsed to the same input value. See
- * `computeSkyBrightnessFromZenithMagnitude` for the full derivation.
+ * The model is a log-luminance one. The sun term is a published zenith
+ * sky-brightness-against-solar-depression curve in V magnitudes per arcsec²,
+ * the unit standard twilight photometry is measured in; the moon term is the
+ * published full-moon sky brightness scaled by a measured phase-flux law; the
+ * two are summed in linear luminance, and the combined log-luminance is
+ * mapped to the 0..1 scalar through a perceptual transfer derived from the
+ * naked-eye limiting-magnitude (NELM) relation.
+ * `computeSkyBrightnessFromZenithMagnitude` carries the full derivation.
+ *
+ * A pair of smoothsteps will not do the same job: any such curve reaches
+ * exactly 0 a few degrees below the horizon, so civil twilight, nautical
+ * twilight and astronomical night all collapse to one input value and the
+ * whole twilight decade carries no dynamic range.
+ *
+ * References:
+ *   - Patat, F. et al., "Optical atmospheric extinction over Cerro Paranal",
+ *     A&A 455:385 (2006) — the twilight photometry class the sun anchors
+ *     come from.
+ *   - Crumey, A., "Human contrast threshold and astronomical visibility",
+ *     MNRAS 442:2600 (2014) — the NELM relation the transfer is built on.
  *
  * The estimate is intentionally cheap — a few dot products, one or two
  * pow/log pairs and a trig inverse — so it can run unconditionally in
@@ -26,10 +32,9 @@
  * for star modulation this approximation is indistinguishable from the
  * truth at any reasonable viewing distance.
  *
- * Why not put this on `AtmosphericConditions`? It's a derived per-frame
- * value, not a configuration knob. The B-series toggles live on
- * `AtmosphericConditions`; the *result* of running them lives on
- * `frameState`.
+ * It lives on `frameState` rather than on `AtmosphericConditions` because it
+ * is a derived per-frame value, not a configuration knob: the toggles live on
+ * the facade, the result of running them lives on the frame.
  *
  * @private
  * @module SkyBrightness
@@ -63,18 +68,17 @@ const ATMOSPHERIC_COLUMN_FADE_END = 111000.0;
  * How much scattering column sits above the camera, as a 0..1 scale on the
  * whole sky-brightness estimate.
  *
- * C12-29 S6 / ruling E3. `computeSkyBrightness` is a SKY brightness — it is
- * produced by sunlight scattering in the air above the observer. Above the
- * atmosphere there is no such air, the sky is black, and stars are visible on
- * the day side; that is why `StarFieldMath.computeStarDayFade` has carried a
- * 100 km cutoff for the sprite starfield since it was written. Without the
- * same gate here, flipping `enableStarBrightnessModulation` on by default
- * would have zeroed the star cubemap across the entire sunlit hemisphere for
- * an orbital camera — the exact regression C11-176 turned the flag off for.
+ * `computeSkyBrightness` is a sky brightness: it is produced by sunlight
+ * scattering in the air above the observer. Above the atmosphere there is no
+ * such air, the sky is black, and stars are visible on the day side, which is
+ * why `StarFieldMath.computeStarDayFade` carries a 100 km cutoff for the
+ * sprite starfield. Without the same gate here,
+ * `enableStarBrightnessModulation` would zero the star cubemap across the
+ * entire sunlit hemisphere for an orbital camera.
  *
  * A ramp rather than `computeStarDayFade`'s hard cut, so a camera climbing
- * through the boundary does not pop; the sibling's 100 km step sits inside the
- * band.
+ * through the boundary does not pop; the sibling's 100 km step sits inside
+ * the band.
  *
  * The caller supplies ellipsoidal height rather than asking this helper to
  * subtract a hard-coded Earth radius from an ECEF magnitude. Scene already
@@ -127,11 +131,10 @@ function inverseSmoothstep(x) {
   return 0.5 - Math.sin(Math.asin(1.0 - 2.0 * y) / 3.0);
 }
 
-// ─── C12-34 — log-luminance twilight model ──────────────────────────────────
-//
-// The model works in zenith sky brightness μ, V magnitudes per arcsec² — the
-// unit published twilight photometry is measured in. Larger μ = darker sky;
-// μ is a LOG-luminance (each +2.5 μ is a 10× drop in luminance).
+// The constants below parameterise the log-luminance twilight model. It works
+// in zenith sky brightness μ, V magnitudes per arcsec², the unit published
+// twilight photometry is measured in. Larger μ is a darker sky, and μ is a
+// log-luminance: each +2.5 in μ is a tenfold drop in luminance.
 
 /**
  * Zenith sky brightness of the reference moonless rural night, V mag/arcsec².
@@ -157,8 +160,8 @@ export const DAY_ZENITH_MAGNITUDE = 4.0;
  * Zenith sky brightness under a full moon at the zenith, V mag/arcsec².
  * The published moonlit-sky value (~18) sits ~3.9 magnitudes above the
  * moonless night sky. Through the NELM slope below this reproduces the
- * published full-moon naked-eye limit of ≈4.5 — the anchor the C12-34 queue
- * row cites — as a DERIVED value: 6.5 − 0.5·(21.9 − 18.0) = 4.55.
+ * published full-moon naked-eye limit of about 4.5 as a derived value rather
+ * than a second constant: 6.5 − 0.5·(21.9 − 18.0) = 4.55.
  * @type {number}
  * @private
  */
@@ -219,9 +222,9 @@ const DAY_SATURATION_SINE = 0.4;
  * et al. 2006, A&A 455:385, and the classical twilight-illuminance ladder:
  * sunset ~400 lux, end of civil ~3.4 lux, end of nautical ~0.008 lux):
  * sunset ≈ 8, end of civil twilight (−6°) ≈ 14, end of nautical (−12°)
- * ≈ 19.7 — a ~1 mag/degree decay through civil+nautical twilight — then a
- * flattening tail into the −18° night level. This is the dynamic range the
- * pre-C12-34 estimator did not have.
+ * ≈ 19.7 — about 1 mag per degree of decay through civil and nautical
+ * twilight — then a flattening tail into the −18° night level. That decade is
+ * the dynamic range a smoothstep-based estimator cannot represent.
  * @type {number[][]}
  * @private
  */
@@ -283,12 +286,12 @@ const STAR_WINDOW_FLOOR_BRIGHTNESS =
 
 /**
  * sin(altitude) of a world-space direction above the local horizon at the
- * camera — THE single home of the solar-elevation derivation (C12-34; the
- * C15 aurora campaign reuses this edge). Local up is approximated as the
- * normalized camera position vector, which is exact on a sphere and within
- * sub-degree of accurate on the WGS84 ellipsoid for any near-surface camera.
+ * camera, and the single home of the solar-elevation derivation. Local up is
+ * approximated as the normalized camera position vector, which is exact on a
+ * sphere and accurate to within a degree on the WGS84 ellipsoid for any
+ * near-surface camera.
  *
- * DEGENERATE-INPUT POLICY (one policy for the whole module): anything this
+ * One degenerate-input policy covers the whole module: anything this
  * helper cannot answer becomes `undefined`, and every caller resolves
  * `undefined` toward the FULL-BRIGHT end. That is the historical contract the
  * origin-camera guard in {@link computeSkyBrightness} already stated — a
@@ -377,35 +380,32 @@ export function computeTwilightZenithMagnitude(sinAltitude) {
  * Perceptual transfer: combined zenith log-luminance μ → the published 0..1
  * sky-brightness scalar.
  *
- * The scalar's ONLY shipped consumer contract is the star-brightness
- * modulation curve `1 − smoothstep(0, 1, (B − inflection)·steepness)`
- * (ruling E3; four lockstep implementations), and Scene's published channel
- * multiplies the scalar by S2's `eclipseSceneLightFactor` whose totality
- * value `ECLIPSE_TWILIGHT_FLOOR = 0.0368403` must keep mapping to the
- * ratified −3.00 mag star reveal. Those two fixed points pin the curve
- * constants at (inflection 0, steepness 23.0) — the C12-34 re-derivation
- * CONFIRMS the shipped pair rather than moving it — and therefore pin the
- * star-visibility window of the scalar to [0, 1/23]. The published
- * photometry consequently enters through THIS transfer: for every μ in the
- * star window the transfer emits exactly the scalar whose curve output is
- * the NELM-chain star-visibility factor
+ * The scalar has one shipped consumer contract, the star-brightness
+ * modulation curve `1 − smoothstep(0, 1, (B − inflection)·steepness)` in its
+ * four lockstep implementations, and Scene's published channel multiplies the
+ * scalar by `eclipseSceneLightFactor`, whose totality value
+ * `ECLIPSE_TWILIGHT_FLOOR = 0.0368403` must map to a −3.00 mag star reveal.
+ * Those two fixed points pin the curve constants at inflection 0 and
+ * steepness 23.0, and therefore pin the star-visibility window of the scalar
+ * to [0, 1/23]. The published photometry consequently enters through this
+ * transfer: for every μ in the star window the transfer emits exactly the
+ * scalar whose curve output is the NELM-chain star-visibility factor
  *
  *   factor(μ) = 10^(−0.4 · NELM_PER_ZENITH_MAGNITUDE · (μ_night − μ))
  *
  * i.e. `B(μ) = inflection + invSmoothstep(1 − factor(μ)) / steepness`. That
  * makes the composition `modulation(B(μ))` reproduce published naked-eye
- * limits EXACTLY at every anchor: μ 21.9 → NELM 6.5 (rural night), μ 18.0
- * → 4.55 (full moon, published ≈ 4.5), μ 14 (−6°) → 2.55, μ 10 (−2°) →
- * 0.55 — "Venus and one or two first-magnitude stars", the C12-34 civil
- * twilight demand — with monotone, band-separated values through the whole
- * twilight decade the old estimator collapsed to 0.
+ * limits exactly at every anchor: μ 21.9 → NELM 6.5 (rural night), μ 18.0 →
+ * 4.55 (full moon, published about 4.5), μ 14 (−6°) → 2.55, μ 10 (−2°) →
+ * 0.55, which is Venus and one or two first-magnitude stars — monotone,
+ * band-separated values through the whole twilight decade.
  *
  * Above the μ = 8 sunset anchor (NELM −0.45; no naked-eye stars) the
  * transfer leaves the star window and sweeps the remaining scalar range
  * linearly to 1.0 at the μ = 4 full-daylight level, preserving the "0 =
- * night, 1 = noon" semantic for future consumers. Both endpoints are exact:
+ * night, 1 = noon" semantic for other consumers. Both endpoints are exact:
  * μ ≥ 21.9 → 0.0 and μ ≤ 4 → 1.0 bit-exactly, which keeps deep night
- * byte-identical and keeps the S2 totality product exactly
+ * byte-identical and keeps the eclipse totality product exactly
  * `1.0 × ECLIPSE_TWILIGHT_FLOOR`.
  *
  * @param {number} zenithMagnitude Combined zenith sky brightness μ in
@@ -512,10 +512,10 @@ export function computeSkyBrightness(
     const sunAlt = computeCelestialElevationSine(sunDirWC, cameraPositionWC);
     if (sunAlt === undefined) {
       // A sun direction was supplied but yields no finite elevation. The
-      // pre-C12-34 double-smoothstep answered that with 1.0 (NaN failed its
-      // final `total < 1.0` test); the log-luminance model's own "no sun"
-      // value is the DARK end, so the policy has to be restated explicitly
-      // here or a NaN would invert it into a bright, starry midnight.
+      // module's degenerate-input policy is the bright end, so it has to be
+      // restated here: the log-luminance model's own "no sun" value is the
+      // dark end, and letting a NaN fall through to it would turn a
+      // degenerate input into a bright, starry midnight.
       return 1.0;
     }
     sunMagnitude = computeTwilightZenithMagnitude(sunAlt);
@@ -557,9 +557,9 @@ export function computeSkyBrightness(
   }
 
   const clamped = computeSkyBrightnessFromZenithMagnitude(zenithMagnitude);
-  // C12-29 S6 / ruling E3 — no scattering column above the camera means no
-  // sky brightness, whatever the sun is doing. Exactly 1.0 (bit-exact
-  // multiply) for every camera below 60 km, i.e. every in-atmosphere frame.
+  // No scattering column above the camera means no sky brightness, whatever
+  // the sun is doing. Exactly 1.0, a bit-exact multiply, for every camera
+  // below 60 km — every in-atmosphere frame.
   return clamped * computeAtmosphericColumnFactor(cameraHeight);
 }
 

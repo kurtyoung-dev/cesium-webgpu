@@ -49,7 +49,10 @@ test("the environment-map cache edge-triggers fills from cloud revisions", () =>
   const refreshGate = sourceSection(
     manager,
     "const liveCloudState =",
-    "// C2-25 ENV-SCENE-CAPTURE",
+    // End the slice on a declaration rather than on comment prose: a comment
+    // can be reworded, a declaration is what the comment-only gate holds
+    // byte-identical.
+    "const sceneCaptureEnabled =",
   );
   assert.match(refreshGate, /iblRevision\?:\s*number/);
   assert.match(

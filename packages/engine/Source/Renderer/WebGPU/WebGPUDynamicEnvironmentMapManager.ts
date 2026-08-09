@@ -1,20 +1,17 @@
 /**
  * WebGPU Dynamic Environment Map Manager
  *
- * Audit A.12 (Batch 131) -- replaces the placeholder mid-grey fill
- * with a procedural Hosek-Wilkie-style sky compute pass that paints
- * all 6 cubemap faces, then invokes the existing
- * `WebGPUIBLPipeline.generateIBLMaps` to produce prefiltered
- * irradiance + radiance for IBL consumption. Models without an
- * explicit `imageBasedLighting.specularEnvironmentMaps` get a real
- * diffuse + specular reflection out of the box.
+ * A procedural Hosek-Wilkie-style sky compute pass paints all 6 cubemap faces,
+ * then `WebGPUIBLPipeline.generateIBLMaps` produces prefiltered irradiance +
+ * radiance for IBL consumption. Models without an explicit
+ * `imageBasedLighting.specularEnvironmentMaps` therefore get a real diffuse +
+ * specular reflection out of the box.
  *
- * The procedural sky is sun/zenith/ground gradient + sun disc; not a
- * full atmospheric capture (which would require routing the WebGPU
- * sky/atmosphere/sun renderers through 6 cubemap faces -- tracked as
- * `NEW-DYNAMIC-ENVMAP-SCENE-CAPTURE` in DEFERRED_WORK). The procedural
- * fill gives correct directional-IBL relationships (bright top, dim
- * bottom, sun-driven specular highlights) at near-zero cost.
+ * The procedural sky is a sun/zenith/ground gradient plus a sun disc rather
+ * than a full atmospheric capture, which would mean routing the WebGPU
+ * sky/atmosphere/sun renderers through 6 cubemap faces. The procedural fill
+ * gives correct directional-IBL relationships — bright top, dim bottom,
+ * sun-driven specular highlights — at near-zero cost.
  *
  * @module WebGPUDynamicEnvironmentMapManager
  */
@@ -56,9 +53,9 @@ import {
   CLOUD_DENSITY_ORIGIN_PHASE_FLOATS,
   writeCloudDensityAdvectedOriginPhases,
 } from "./WebGPUCloudDensityDomain.js";
-// C13-41 — the eclipse response for the cloud/environment subsystem. The WebGL
-// `Scene/DynamicEnvironmentMapManager.js` imports the SAME module, so the two
-// backends provably share one factor, one composition and one refresh grid.
+// The eclipse response for the cloud/environment subsystem. The WebGL
+// `Scene/DynamicEnvironmentMapManager.js` imports this same module, so the two
+// backends share one factor, one composition and one refresh grid.
 import {
   applyEclipseCloudDimming,
   quantizeEclipseEnvironmentRefreshInput,
@@ -79,31 +76,30 @@ interface DynEnvMapManagerLike {
     _webgpuTextureView: GPUTextureView | null;
     _webgpuSampler: GPUSampler | null;
   } | null;
-  // Audit A.12 (Batch 131) -- prefiltered IBL views exposed for the
-  // model material BG. Read by `buildModelIBLEntries` in
-  // `WebGPUModelRenderer` when the model has no explicit IBL set up.
+  // Prefiltered IBL views exposed for the model material bind group. Read by
+  // `buildModelIBLEntries` in `WebGPUModelRenderer` when the model has no
+  // explicit IBL set up.
   _webgpuIBLDiffuseView?: GPUTextureView | null;
   _webgpuIBLSpecularView?: GPUTextureView | null;
   _webgpuIBLSampler?: GPUSampler | null;
   _webgpuIBLMaxMipLevel?: number;
-  // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- atmosphere-derived
-  // diffuse-IBL spherical-harmonic coefficients (9 vec4 + control vec4),
-  // projected from the radiance cube. Bound by `buildModelIBLEntries` at
-  // SHUniforms binding 36 so models evaluate SH instead of sampling the
-  // irradiance cubemap (matching WebGL's czm_sphericalHarmonics path).
+  // Atmosphere-derived diffuse-IBL spherical-harmonic coefficients (9 vec4 +
+  // control vec4), projected from the radiance cube. Bound by
+  // `buildModelIBLEntries` at SHUniforms binding 36 so models evaluate SH
+  // instead of sampling the irradiance cubemap, matching WebGL's
+  // czm_sphericalHarmonics path.
   _webgpuSHBuffer?: GPUBuffer | null;
-  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — opt-in (WebGPU only). When true AND
-  // `context.sceneCaptureReflections` is true, `runSceneCapture` renders the
-  // opaque globe surface into the env cube's 6 faces so terrain reflects in
-  // water / PBR models. Default false → no capture pass (byte-identical).
+  // Opt-in, WebGPU only. When this and `context.sceneCaptureReflections` are
+  // both true, `runSceneCapture` renders the opaque globe surface into the env
+  // cube's 6 faces so terrain reflects in water / PBR models. Default false
+  // leaves no capture pass at all.
   enableSceneCapture?: boolean;
   // Optional sky tuning. When undefined the manager uses sensible
   // studio-HDR defaults (warm zenith, cool ground, white sun).
   skyColor?: { red: number; green: number; blue: number };
   groundColor?: { red: number; green: number; blue: number };
-  // NEW-MODEL-PBR-DIRECT-LIGHT-IBL-PARITY D1 — atmosphere-derived sky
-  // fill needs the same lighting controls the WebGL ComputeRadianceMapFS
-  // reads from the manager. These live on the upstream
+  // The atmosphere-derived sky fill needs the same lighting controls the WebGL
+  // ComputeRadianceMapFS reads from the manager. These live on the upstream
   // DynamicEnvironmentMapManager (defaults: 2.0 / 1.0 / 0.31).
   atmosphereScatteringIntensity?: number;
   gamma?: number;
@@ -120,120 +116,114 @@ interface DynEnvMapCache {
   cubemapTexture: GPUTexture | null;
   cubemapTextureView: GPUTextureView | null;
   faceViews: GPUTextureView[];
-  // Audit A.12 (Batch 131) -- 2d-array view of the cubemap (dimension
-  // "2d-array") used as the storage-texture write target for the
-  // procedural sky compute. Distinct from `cubemapTextureView`
-  // (dimension "cube") which is used by IBL prefilter as a source.
+  // 2d-array view of the cubemap used as the storage-texture write target for
+  // the procedural sky compute. Distinct from `cubemapTextureView` (dimension
+  // "cube"), which the IBL prefilter reads as a source; "cube" is not a valid
+  // storage-binding view dimension.
   storageView: GPUTextureView | null;
   sampler: GPUSampler | null;
   size: number;
   mipmapLevels: number;
-  // Item 1.2 (IBL-HDR, Batch 426) — the env-cube texture format the
-  // current resources were built against. `undefined` until the first
-  // create; flipping `hdrEnvironmentMap` changes this, triggering a full
-  // texture + sky-pipeline + sky-BGL rebuild (the format token is baked
-  // into all three). Parity default is "rgba8unorm".
+  // The env-cube texture format the current resources were built against.
+  // `undefined` until the first create; flipping `hdrEnvironmentMap` changes
+  // it, triggering a full texture + sky-pipeline + sky-BGL rebuild, because the
+  // format token is baked into all three. The parity default is "rgba8unorm".
   cubemapFormat?: GPUTextureFormat;
   needsUpdate: boolean;
   framesSinceUpdate: number;
-  // Audit re-review (Batch 134) -- last sun direction the procedural
-  // sky was rendered against. The update path re-runs the sky +
-  // prefilter when the current sun direction differs from this by
-  // more than `SUN_REFRESH_EPSILON` so day/night cycles refresh the
-  // cubemap without burning compute every frame. NaN sentinel forces
-  // the first-frame re-run.
+  // Last sun direction the procedural sky was rendered against. The update path
+  // re-runs the sky + prefilter when the current sun direction differs from
+  // this by more than `SUN_REFRESH_EPSILON`, so day/night cycles refresh the
+  // cubemap without burning compute every frame. A NaN sentinel forces the
+  // first-frame re-run.
   lastSunDirX: number;
   lastSunDirY: number;
   lastSunDirZ: number;
-  // Audit A.12 (Batch 131) -- compute pipeline for procedural sky
-  // fill + uniform buffer + bind group. Kept on the cache so device
-  // creation costs are paid once.
+  // Compute pipeline for the procedural sky fill, plus its uniform buffer and
+  // bind group. Kept on the cache so device creation costs are paid once.
   skyPipeline: GPUComputePipeline | null;
   skyBGL: GPUBindGroupLayout | null;
   skyUniformBuffer: GPUBuffer | null;
   skyBindGroup: GPUBindGroup | null;
-  // Audit A.12 (Batch 131) -- IBL prefilter cache. Reuses the
-  // existing `IBLPipelineCache` shape from `WebGPUIBLPipeline.ts` so
-  // the prefilter runs through the same compute pipelines as
-  // explicit-source IBL.
+  // IBL prefilter cache. Reuses the `IBLPipelineCache` shape from
+  // `WebGPUIBLPipeline.ts` so the prefilter runs through the same compute
+  // pipelines as explicit-source IBL.
   iblCache: IBLPipelineCache | null;
-  // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- SH-L2 projection
-  // pass. Pipeline + BGL are built once; `shBuffer` (9 vec4 + control,
-  // STORAGE|UNIFORM) receives the projected coefficients and is published
-  // as `manager._webgpuSHBuffer`. `shParamBuffer` carries the
-  // atmosphereScatteringIntensity second-multiply. `shBindGroup` is reset
-  // to null on cube recreation (the cube view it references changes).
+  // SH-L2 projection pass. Pipeline + BGL are built once; `shBuffer` (9 vec4 +
+  // control, STORAGE|UNIFORM) receives the projected coefficients and is
+  // published as `manager._webgpuSHBuffer`. `shParamBuffer` carries the
+  // atmosphereScatteringIntensity second multiply. `shBindGroup` is reset to
+  // null on cube recreation, because the cube view it references changes.
   shPipeline: GPUComputePipeline | null;
   shBGL: GPUBindGroupLayout | null;
   shBuffer: GPUBuffer | null;
   shParamBuffer: GPUBuffer | null;
   shBindGroup: GPUBindGroup | null;
-  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — sun-relative sky-view + MS LUT
-  // sampler + a 1×1 white placeholder texture/view. The sky compute pass binds
-  // the real LUT views (shared from the perf manager) when `envMapMultiScatter`
-  // is on; otherwise it binds the placeholder so the BGL + bind group stay
-  // constant (and the WGSL `useMultiScatterLut` flag keeps them unsampled →
-  // byte-identical parity). The LUT views the bind group was last built against
-  // are tracked so it rebuilds when they first appear / change.
+  // Sun-relative sky-view + multiple-scattering LUT sampler, plus a 1×1 white
+  // placeholder texture/view. The sky compute pass binds the real LUT views
+  // (shared from the perf manager) when `envMapMultiScatter` is on; otherwise
+  // it binds the placeholder so the BGL and bind group stay constant, and the
+  // WGSL `useMultiScatterLut` flag keeps them unsampled. The LUT views the bind
+  // group was last built against are tracked so it rebuilds when they first
+  // appear or change.
   lutSampler: GPUSampler | null;
   lutPlaceholderTex: GPUTexture | null;
   lutPlaceholderView: GPUTextureView | null;
   lutSkyViewView: GPUTextureView | null;
   lutMsView: GPUTextureView | null;
-  // Item 2.2 — whether the LAST sky fill used the LUT path. When the effective
+  // Whether the previous sky fill used the LUT path. When the effective
   // LUT-path availability flips (flag toggled, or the LUTs finished baking a
-  // frame after the first fill), force a re-fill so the cube isn't stuck on the
-  // wrong path on a static (non-sun-moving) scene.
+  // frame after the first fill), force a re-fill so the cube is not stuck on
+  // the wrong path on a static, non-sun-moving scene.
   lastUsedMultiScatterLut: boolean;
-  // Item 4.2 (CLOUD-IBL, Batch 441) — the effective cloud coverage the LAST sky
-  // fill was packed with. The update gate re-fills when the live coverage moves
-  // by more than `CLOUD_COVERAGE_REFRESH_EPSILON` so a static (non-sun-moving)
-  // scene still re-darkens its IBL when cloud cover changes. NaN sentinel forces
-  // the first-frame run (same convention as `lastSunDir*`).
+  // The effective cloud coverage the previous sky fill was packed with. The
+  // update gate re-fills when the live coverage moves by more than
+  // `CLOUD_COVERAGE_REFRESH_EPSILON`, so a static, non-sun-moving scene still
+  // re-darkens its IBL when cloud cover changes. A NaN sentinel forces the
+  // first-frame run, matching `lastSunDir*`.
   lastCloudCoverage: number;
-  // C13-37 — monotonic revision of the complete cloud state used by the IBL
-  // march. Coverage has its own epsilon gate above, but wind/time/deck/density/
+  // Monotonic revision of the complete cloud state used by the IBL march.
+  // Coverage has its own epsilon gate above, but wind, time, deck, density and
   // morphology changes also alter the reflected formation. Tracking one
   // publisher-owned revision keeps that gate O(1) and edge-triggered.
   lastCloudRevision: number;
-  // C13-41 — the quantized eclipse factor the LAST sky fill was packed with.
-  // Compared as an exact integer LEVEL (`!==`), never a one-way "got darker"
-  // test, which is what makes eclipse RECOVERY automatic: the factor returning
+  // The quantized eclipse factor the previous sky fill was packed with.
+  // Compared as an exact integer level (`!==`), never a one-way "got darker"
+  // test, which is what makes eclipse recovery automatic: the factor returning
   // to 1.0 walks the bucket back to the identity bucket, which differs from the
-  // committed dark one, which fires exactly one final re-fill. Deliberately NOT
-  // gated on the cloud march (unlike `lastCloudRevision`) — the eclipse dims the
-  // whole sky bake, and `cloudsInReflections` is off by default. NaN sentinel
+  // committed dark one, which fires exactly one final re-fill. Deliberately not
+  // gated on the cloud march, unlike `lastCloudRevision` — the eclipse dims the
+  // whole sky bake, and `cloudsInReflections` is off by default. A NaN sentinel
   // forces the first-frame run, matching `lastCloudRevision`.
   lastEclipseEnvBucket: number;
-  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — full per-face cloud march. A 1×1×1
-  // white 3D placeholder + sampler back bindings 5/6/7 whenever the march is off
-  // (or the cloud noise hasn't baked), mirroring the LUT placeholder. The bound
-  // cloud-noise views/sampler the bind group was last built against are tracked
-  // so it rebuilds when they first appear / flip with the march activation.
+  // Full per-face cloud march. A 1×1×1 white 3D placeholder and sampler back
+  // bindings 5/6/7 whenever the march is off, or the cloud noise has not baked,
+  // mirroring the LUT placeholder. The bound cloud-noise views and sampler the
+  // bind group was last built against are tracked so it rebuilds when they
+  // first appear or flip with the march activation.
   cloudPlaceholderTex: GPUTexture | null;
   cloudPlaceholderView: GPUTextureView | null;
   cloudPlaceholderSampler: GPUSampler | null;
   cloudShapeBoundView: GPUTextureView | null;
   cloudDetailBoundView: GPUTextureView | null;
   cloudSamplerBound: GPUSampler | null;
-  // Whether the LAST sky fill used the full cloud march. When this flips (flag
-  // toggled, cloud noise finished baking, or coverage crossed 0) force a re-fill
-  // so a static (non-sun-moving) scene isn't stuck on the wrong path.
+  // Whether the previous sky fill used the full cloud march. When this flips —
+  // flag toggled, cloud noise finished baking, or coverage crossed 0 — force a
+  // re-fill so a static, non-sun-moving scene is not stuck on the wrong path.
   lastUsedCloudMarch: boolean;
-  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — transient `size×size` depth target
-  // shared across the 6 capture face passes (cleared per face). Lazily
-  // allocated INSIDE `runSceneCapture` (OFF allocates nothing) and reallocated
-  // when `size` changes. Format `depth24plus` (no stencil) — matches the
-  // capture pipeline variant, deliberately different from the on-screen
-  // `depth24plus-stencil8`.
+  // Transient `size×size` depth target shared across the 6 capture face passes
+  // and cleared per face. Lazily allocated inside `runSceneCapture`, so the off
+  // path allocates nothing, and reallocated when `size` changes. Format
+  // `depth24plus` with no stencil matches the capture pipeline variant, and is
+  // deliberately different from the on-screen `depth24plus-stencil8`.
   captureDepthTexture: GPUTexture | null;
   captureDepthView: GPUTextureView | null;
   captureDepthSize: number;
-  // C2-25 — frames since the last capture pass ran, for the every-K-frames
-  // debounce (behind the capture flags, so OFF gating is byte-identical).
+  // Frames since the last capture pass ran, for the every-K-frames debounce.
+  // It sits behind the capture flags, so the off path never advances it.
   framesSinceCapture: number;
-  // C2-25 — world-space eye the last capture was run from, for the
-  // camera-translation debounce. NaN sentinel forces the first capture.
+  // World-space eye the last capture was run from, for the camera-translation
+  // debounce. A NaN sentinel forces the first capture.
   lastCaptureCameraX: number;
   lastCaptureCameraY: number;
   lastCaptureCameraZ: number;
@@ -252,26 +242,25 @@ interface DynEnvMapCache {
   lastSceneCaptureMode: number;
   lastSceneCaptureSourceRevision: number;
   lastSceneCaptureResult: SceneCaptureResultValue;
-  // C2-25 ENV-TEMPORAL (Batch 449) — temporal-accumulation resources. ALL of
-  // these stay null/0 when `envMapTemporalAccumulation` is OFF (the lazy
-  // allocation lives entirely inside `runEnvCubeTemporalBlend`, which is only
-  // reached on the ON path) → byte-identical default parity.
+  // Temporal-accumulation resources. Every one of these stays null or 0 while
+  // `envMapTemporalAccumulation` is off, because the lazy allocation lives
+  // entirely inside `runEnvCubeTemporalBlend`, which the off path never reaches.
   //
-  // Temporal accumulation uses THREE same-format/size 2d cube textures plus the
-  // main cube, with NO texture read+written in the same pass (WebGPU forbids
-  // aliasing a writable storage binding with a sampled binding on the same
-  // subresource):
-  //   • main cube (`cubemapTexture`) — the freshly-captured "current", read
-  //     SAMPLED only by the blend (never written by it).
-  //   • `historyCube` — LAST frame's accumulated cube, read SAMPLED only.
-  //   • `accumCube` — the blend's WRITE target (STORAGE). After the pass it is
-  //     copied → main cube (so prefilter/SH read the accumulated cube) AND →
-  //     history cube (next frame's history).
+  // Temporal accumulation uses three same-format, same-size 2d cube textures
+  // plus the main cube, and no texture is read and written in the same pass —
+  // WebGPU forbids aliasing a writable storage binding with a sampled binding
+  // on the same subresource:
+  //   • main cube (`cubemapTexture`) — the freshly-captured "current", which
+  //     the blend only samples and never writes.
+  //   • `historyCube` — the previous frame's accumulated cube, sampled only.
+  //   • `accumCube` — the blend's storage write target. After the pass it is
+  //     copied to the main cube, so prefilter and SH read the accumulated
+  //     result, and to the history cube for the next frame.
   historyCube: GPUTexture | null;
-  historyArrayView: GPUTextureView | null; // 2d-array SAMPLED view of historyCube
-  currentArrayView: GPUTextureView | null; // 2d-array SAMPLED view of the main cube
+  historyArrayView: GPUTextureView | null; // 2d-array sampled view of historyCube
+  currentArrayView: GPUTextureView | null; // 2d-array sampled view of the main cube
   accumCube: GPUTexture | null;
-  accumStorageView: GPUTextureView | null; // 2d-array STORAGE write view of accumCube
+  accumStorageView: GPUTextureView | null; // 2d-array storage write view of accumCube
   blendPipeline: GPUComputePipeline | null;
   blendBGL: GPUBindGroupLayout | null;
   blendUniformBuffer: GPUBuffer | null;
@@ -281,20 +270,20 @@ interface DynEnvMapCache {
   // token in the blend shader is baked per-format, so a format flip rebuilds
   // the pipeline (mirrors `cubemapFormat` on the sky pipeline).
   blendFormat?: GPUTextureFormat;
-  // True once the history cube holds a valid accumulated frame. False on first
-  // ON frame OR after a cube recreate → the blend runs with alpha=1 (current
-  // only, no smear) and seeds history. Also forced true→reset on large
-  // sun/camera deltas via the gate below.
+  // True once the history cube holds a valid accumulated frame. False on the
+  // first enabled frame and after a cube recreate, so the blend runs with
+  // alpha=1 — current only, no smear — and seeds history. Also cleared on
+  // large sun or camera deltas by the gate below.
   historyValid: boolean;
   // Monotonic frame index for the per-face Hammersley jitter rotation.
   temporalFrameIndex: number;
-  // Eye the LAST accumulated frame was blended from, for the large-camera-delta
-  // history reset (distinct from the capture debounce, which is coarser).
+  // Eye the previous accumulated frame was blended from, for the
+  // large-camera-delta history reset, which is finer than the capture debounce.
   lastBlendCameraX: number;
   lastBlendCameraY: number;
   lastBlendCameraZ: number;
-  // Sun direction the LAST accumulated frame was blended against, for the
-  // large-sun-delta history reset. NaN sentinel forces a reset on the first run.
+  // Sun direction the previous accumulated frame was blended against, for the
+  // large-sun-delta history reset. A NaN sentinel resets on the first run.
   lastBlendSunX: number;
   lastBlendSunY: number;
   lastBlendSunZ: number;
@@ -324,7 +313,7 @@ let dynamicEnvironmentKernelPacks = new WeakMap<
   DynEnvMapDeviceKernelPacks
 >();
 
-// C11-193 — literals mirroring `WebGPUEnvironmentDemandRegistry` /
+// Literals mirroring `WebGPUEnvironmentDemandRegistry` and
 // `WebGPUEnvironmentRefreshScheduler`. Kept as literals here so this module
 // keeps its structural (duck-typed) relationship with the context and stays
 // loadable when the scheduler seams are absent.
@@ -348,7 +337,7 @@ type EnvironmentRefreshTargetPool = IBLParameterArenaPool &
   SceneCaptureTargetPool;
 
 /**
- * C11-193 resume path. Re-arms a render so a `requestRenderMode` scene cannot
+ * Refresh resume path. Re-arms a render so a `requestRenderMode` scene cannot
  * idle while deferred refresh work is still owed a frame. One callback per
  * frame at most: the context arms the flag only for the frame's first deferral,
  * and `afterRender` is drained (and its truthy return turned into
@@ -362,10 +351,9 @@ function requestRenderForEnvironmentRefreshResume(): boolean {
  * Offer a refresh to the context-owned bounded drain.
  *
  * Returns true when the caller must run the refresh now. A context without the
- * seam (a WebGL stub, or a context predating this slice) always runs, which is
- * the historical unconditional behavior.
+ * seam — a WebGL stub, for instance — always runs, unconditionally.
  *
- * On a deferral this arms the resume path BEFORE returning false, so there is
+ * On a deferral this arms the resume path before returning false, so there is
  * no path on which work is deferred without a frame to resume on.
  */
 function scheduleEnvironmentRefresh(
@@ -443,10 +431,10 @@ function updateWebGPUDynamicEnvironmentMap(
   ).observeEnvironmentMapDemand;
   let demand = ENV_DEMAND_UNKNOWN;
   if (typeof observeDemand === "function") {
-    // C11-193 — the classification is now read, but it may only influence
-    // PRIORITY inside the bounded drain. It can never decide whether a refresh
-    // happens: PROVEN_NONE goes last, never nowhere. See
-    // `WebGPUEnvironmentRefreshScheduler` and `C11-REVIEW-2026-08-01` defect 3.
+    // The classification may only influence priority inside the bounded drain.
+    // It can never decide whether a refresh happens: `proven-none` goes last,
+    // never nowhere. See `WebGPUEnvironmentRefreshScheduler` for why gating an
+    // environment tick on consumer visibility freezes a partial map.
     demand = observeDemand.call(context, manager);
   }
   const device: GPUDevice = context.device;
@@ -519,8 +507,8 @@ function updateWebGPUDynamicEnvironmentMap(
       lastCloudCoverage: NaN,
       lastCloudRevision: NaN,
       lastEclipseEnvBucket: NaN,
-      // Item 3-C (CLOUD-IBL-FULL, Batch 450) — cloud-march placeholder + bound
-      // views (all null until the first fill builds the placeholder).
+      // Cloud-march placeholder and bound views, all null until the first fill
+      // builds the placeholder.
       cloudPlaceholderTex: null,
       cloudPlaceholderView: null,
       cloudPlaceholderSampler: null,
@@ -528,7 +516,7 @@ function updateWebGPUDynamicEnvironmentMap(
       cloudDetailBoundView: null,
       cloudSamplerBound: null,
       lastUsedCloudMarch: false,
-      // C2-25 ENV-SCENE-CAPTURE (Batch 446) — lazy capture-depth + debounce.
+      // Lazy capture-depth target and its debounce state.
       captureDepthTexture: null,
       captureDepthView: null,
       captureDepthSize: 0,
@@ -545,7 +533,7 @@ function updateWebGPUDynamicEnvironmentMap(
       lastSceneCaptureMode: SCENE_CAPTURE_MODE_DISABLED,
       lastSceneCaptureSourceRevision: -1,
       lastSceneCaptureResult: SceneCaptureResult.SKY_ONLY,
-      // C2-25 ENV-TEMPORAL (Batch 449) — temporal accumulation (all inert OFF).
+      // Temporal accumulation; all of it stays inert while the flag is off.
       historyCube: null,
       historyArrayView: null,
       currentArrayView: null,
@@ -571,13 +559,13 @@ function updateWebGPUDynamicEnvironmentMap(
   const size = manager._cubemapSize || 256;
   const mipmapLevels = manager._mipmapLevels || 1;
 
-  // Item 1.2 (IBL-HDR, Batch 426) — opt-in HDR env cube. Default false →
-  // `rgba8unorm` (WebGL-parity, byte-identical). True → `rgba16float` so
-  // the HDR sun disc + bright sky survive into the GGX prefilter. Read
-  // off the WebGPU context's `hdrEnvironmentMap` getter (threaded from
-  // `contextOptions.webgpu.hdrEnvironmentMap`). rgba16float is in core
-  // WebGPU's storage-write-capable + render-attachment list, so the same
-  // STORAGE_BINDING | RENDER_ATTACHMENT usage stays valid.
+  // Opt-in HDR env cube. Default false gives `rgba8unorm`, matching WebGL;
+  // true gives `rgba16float` so the HDR sun disc and bright sky survive into
+  // the GGX prefilter. Read off the WebGPU context's `hdrEnvironmentMap`
+  // getter, threaded from `contextOptions.webgpu.hdrEnvironmentMap`.
+  // rgba16float is in core WebGPU's storage-write-capable and
+  // render-attachment lists, so the same STORAGE_BINDING | RENDER_ATTACHMENT
+  // usage stays valid.
   const hdrEnvironmentMap =
     (
       context as unknown as {
@@ -606,10 +594,9 @@ function updateWebGPUDynamicEnvironmentMap(
       size: { width: size, height: size, depthOrArrayLayers: 6 },
       format: cubemapFormat,
       mipLevelCount,
-      // Audit A.12 (Batch 131) -- adds STORAGE_BINDING so the
-      // procedural sky compute pass can write directly into the
-      // cubemap. The IBL prefilter consumes the same texture as
-      // TEXTURE_BINDING via the cube view.
+      // STORAGE_BINDING lets the procedural sky compute pass write directly
+      // into the cubemap. The IBL prefilter consumes the same texture as
+      // TEXTURE_BINDING through the cube view.
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.STORAGE_BINDING |
@@ -622,9 +609,9 @@ function updateWebGPUDynamicEnvironmentMap(
       dimension: "cube",
     });
 
-    // Audit A.12 -- 2d-array view for storage-write from the compute
-    // shader. WebGPU requires the storage binding's view dimension to
-    // match the BGL declaration; "cube" isn't valid for storage.
+    // 2d-array view for storage-write from the compute shader. WebGPU requires
+    // the storage binding's view dimension to match the BGL declaration, and
+    // "cube" is not valid for storage.
     cache.storageView = cache.cubemapTexture.createView({
       dimension: "2d-array",
       baseMipLevel: 0,
@@ -647,27 +634,25 @@ function updateWebGPUDynamicEnvironmentMap(
 
     cache.size = size;
     cache.mipmapLevels = mipmapLevels;
-    // Item 1.2 (Batch 426) — if the HDR format flipped, the sky storage
-    // BGL + pipeline encode the storage-texture format token, so force a
-    // full pipeline rebuild (not just the bind group). The recreate
-    // condition above already covers the format-change case.
+    // The sky storage BGL and pipeline encode the storage-texture format token,
+    // so a format flip forces a full pipeline rebuild rather than only a bind
+    // group rebuild. The recreate condition above already covers it.
     if (cache.cubemapFormat !== cubemapFormat) {
       cache.skyPipeline = null;
       cache.skyBGL = null;
     }
     cache.cubemapFormat = cubemapFormat;
     cache.needsUpdate = true;
-    // Force pipeline rebuild on size change (BGL/pipeline don't depend
-    // on size but the bind group references the storage view which DID
-    // change, so rebuild it).
+    // The BGL and pipeline do not depend on size, but the bind group references
+    // the storage view, which a size change replaced.
     cache.skyBindGroup = null;
-    // SH bind group references the recreated cube view -- rebuild it too.
+    // The SH bind group references the recreated cube view.
     cache.shBindGroup = null;
-    // C2-25 ENV-TEMPORAL (Batch 449) — the history cube + the cached 2d-array
-    // views reference the old (now-destroyed) cube AND are sized/formatted to
-    // the old config. Drop the history texture + all blend bind state so the
-    // ON path lazily reallocates against the new cube; mark history invalid so
-    // the next blend seeds (alpha=1) instead of mixing a stale frame.
+    // The history cube and the cached 2d-array views reference the old,
+    // now-destroyed cube and are sized and formatted to the old config. Drop
+    // the history texture and all blend bind state so the enabled path lazily
+    // reallocates against the new cube, and mark history invalid so the next
+    // blend seeds at alpha=1 instead of mixing a stale frame.
     if (cache.historyCube) {
       cache.historyCube.destroy();
       cache.historyCube = null;
@@ -700,14 +685,12 @@ function updateWebGPUDynamicEnvironmentMap(
     });
   }
 
-  // Audit A.12 (Batch 131) + re-review (Batch 134) -- procedural sky
-  // compute pass + IBL prefilter. Runs when:
-  //   1. cubemap was just (re)created (`cache.needsUpdate`), OR
-  //   2. sun direction has moved by more than `SUN_REFRESH_EPSILON`
-  //      since the last fill (day/night cycle refresh).
-  // The squared-distance check is cheap (3 mults + 2 adds + sqrt-skip)
-  // so this runs every frame; the actual compute + prefilter is
-  // gated by the threshold.
+  // The procedural sky compute pass and IBL prefilter run when either the
+  // cubemap was just (re)created (`cache.needsUpdate`), or the sun direction
+  // has moved by more than `SUN_REFRESH_EPSILON` since the last fill, for the
+  // day/night cycle refresh. The squared-distance check is cheap — three
+  // multiplies, two adds, no square root — so it runs every frame while the
+  // compute and prefilter stay behind the threshold.
   const sunDir = (
     frameState.context as unknown as {
       uniformState?: { sunDirectionWC?: { x: number; y: number; z: number } };
@@ -716,27 +699,26 @@ function updateWebGPUDynamicEnvironmentMap(
   const dx = sunDir.x - cache.lastSunDirX;
   const dy = sunDir.y - cache.lastSunDirY;
   const dz = sunDir.z - cache.lastSunDirZ;
-  // NaN-against-anything is NaN -> coerces > epsilon, so the first
-  // frame always runs.
+  // Any comparison against NaN is false, so the negation makes the first frame
+  // always run.
   const sunMoved = !(dx * dx + dy * dy + dz * dz < SUN_REFRESH_EPSILON_SQ);
-  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — re-fill when the effective LUT-path
-  // availability flips so a static (non-sun-moving) scene isn't stuck on the
-  // wrong path. `wantLut` mirrors the predicate `runProceduralSkyFill` uses
-  // (context flag on AND a scene-light dynamic-lighting mode); if the LUTs
-  // aren't baked yet the fill falls back to the placeholder and leaves
-  // `lastUsed...` false, so this keeps re-trying until the LUTs land, then
-  // settles. C12-31: `usesSceneLightDirection` replaced `!== 0` so the new
-  // LEGACY_OVERHEAD enum (3), whose IBL light direction is per-texel local up,
-  // is treated like NONE. Byte-identical for enums 0/1/2.
+  // Re-fill when the effective LUT-path availability flips, so a static,
+  // non-sun-moving scene is not stuck on the wrong path. `wantLut` mirrors the
+  // predicate `runProceduralSkyFill` uses — context flag on and a scene-light
+  // dynamic-lighting mode. If the LUTs are not baked yet the fill falls back to
+  // the placeholder and leaves `lastUsed...` false, so this keeps re-trying
+  // until the LUTs land, then settles. `usesSceneLightDirection` rather than
+  // `!== 0` so the LEGACY_OVERHEAD enum (3), whose IBL light direction is
+  // per-texel local up, is treated like NONE; enums 0/1/2 are unaffected.
   const wantLut =
     (frameState.context as unknown as { envMapMultiScatter?: boolean })
       .envMapMultiScatter === true &&
     usesSceneLightDirection(frameState.atmosphere?.dynamicLighting ?? 0);
   const lutPathChanged = wantLut !== cache.lastUsedMultiScatterLut;
-  // Item 4.2 (CLOUD-IBL, Batch 441) — re-fill when the live cloud coverage moved
-  // (so a static scene re-darkens its IBL as cloud cover changes). The published
-  // coverage is already 0 when the cloud-IBL flags are off, so the off path's
-  // `cloudCoverage` is a constant 0 → this never trips → byte-identical gating.
+  // Re-fill when the live cloud coverage moved, so a static scene re-darkens
+  // its IBL as cloud cover changes. The published coverage is already 0 when
+  // the cloud-IBL flags are off, so on that path `cloudCoverage` is a constant
+  // 0 and this term never trips.
   const liveCloudState = (
     frameState.context as unknown as {
       _cloudCache?: { iblCoverage?: number; iblRevision?: number };
@@ -748,55 +730,55 @@ function updateWebGPUDynamicEnvironmentMap(
     Math.abs(liveCloudCoverage - cache.lastCloudCoverage) <
     CLOUD_COVERAGE_REFRESH_EPSILON
   );
-  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — re-fill when the full cloud-march
-  // path becomes available/unavailable (flag toggled, or the cloud noise just
-  // finished baking) so a static scene doesn't stay on the wrong path. `wantMarch`
-  // mirrors the predicate the fill uses (context flag on AND a non-zero published
-  // coverage); the fill self-heals to the placeholder if the noise isn't baked
-  // yet and leaves `lastUsedCloudMarch` false, so this keeps re-trying until the
-  // noise lands, then settles. When the flag is off, `wantMarch` is a constant
-  // false → this never trips → byte-identical gating.
+  // Re-fill when the full cloud-march path becomes available or unavailable —
+  // flag toggled, or the cloud noise just finished baking — so a static scene
+  // does not stay on the wrong path. `wantMarch` mirrors the predicate the fill
+  // uses: context flag on and a non-zero published coverage. The fill self-heals
+  // to the placeholder if the noise is not baked yet and leaves
+  // `lastUsedCloudMarch` false, so this keeps re-trying until the noise lands,
+  // then settles. With the flag off, `wantMarch` is a constant false and this
+  // term never trips.
   const wantMarch =
     (frameState.context as unknown as { cloudsInReflections?: boolean })
       .cloudsInReflections === true && liveCloudCoverage > 0.0;
-  // C13-37 — coverage alone cannot detect a moving or reconfigured density
-  // field. The cloud renderer advances this revision at a controlled cadence
-  // when any full-march-visible input changes. A revision is relevant only while
-  // the full reflected-cloud march is requested, or while the previous fill
-  // still contains that march and needs one final teardown fill. This keeps
-  // visible-cloud-only animation from launching an otherwise inert cube fill +
-  // prefilter + SH projection. Revisions published while the march is off remain
-  // unconsumed, so the next opt-in observes the latest state immediately.
+  // Coverage alone cannot detect a moving or reconfigured density field. The
+  // cloud renderer advances this revision at a controlled cadence when any
+  // full-march-visible input changes. A revision is relevant only while the
+  // full reflected-cloud march is requested, or while the previous fill still
+  // contains that march and needs one final teardown fill. That keeps
+  // visible-cloud-only animation from launching an otherwise inert cube fill,
+  // prefilter and SH projection. Revisions published while the march is off
+  // stay unconsumed, so the next opt-in observes the latest state immediately.
   const cloudRevisionChanged =
     (wantMarch || cache.lastUsedCloudMarch) &&
     liveCloudRevision !== cache.lastCloudRevision;
   const cloudMarchPathChanged = wantMarch !== cache.lastUsedCloudMarch;
-  // C13-41 — the eclipse-keyed refresh input. `runProceduralSkyFill` now dims
-  // its whole bake by S2's scene-light factor, and the rest of this gate cannot
-  // see that: `sunMoved` needs ~0.3 degrees of arc, which a total eclipse's
+  // The eclipse-keyed refresh input. `runProceduralSkyFill` dims its whole bake
+  // by the scene-light eclipse factor, and the rest of this gate cannot see
+  // that: `sunMoved` needs about 0.3 degrees of arc, which a total eclipse's
   // few minutes of totality does not supply under a stepped or paused clock,
   // and the cloud terms are gated on a march that is off by default. Without
-  // this term a dimmed bake would latch dark and stay dark after third contact.
+  // this term a dimmed bake latches dark and stays dark after third contact.
   //
-  // Quantized on the SAME 1/256 unit grid every other unit-interval IBL input
-  // uses (C13-37's publish-side snap, `CLOUD_COVERAGE_REFRESH_EPSILON`) — a snap
-  // and compare, not a per-frame delta, so a slow fade still accumulates across
-  // a grid edge instead of never firing. The comparison is a LEVEL against
-  // committed bookkeeping like every other term here, which is what keeps the
-  // C11-193 deferral lossless AND makes recovery symmetric with dimming.
+  // Quantized on the same 1/256 unit grid every other unit-interval IBL input
+  // uses, alongside the cloud publish-side snap and
+  // `CLOUD_COVERAGE_REFRESH_EPSILON`. It is a snap and compare, not a per-frame
+  // delta, so a slow fade still accumulates across a grid edge instead of never
+  // firing. The comparison is a level against committed bookkeeping like every
+  // other term here, which is what keeps a deferral lossless and makes recovery
+  // symmetric with dimming.
   const eclipseEnvBucket = quantizeEclipseEnvironmentRefreshInput(
     resolveEclipseCloudFactor(frameState),
   );
   const eclipseEnvChanged = eclipseEnvBucket !== cache.lastEclipseEnvBucket;
-  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — capture refresh gate. Stable OFF has
-  // no capture work. An ON→OFF transition deliberately contributes one mode
-  // edge so a fresh procedural sky erases captured terrain. While ON, a moving
-  // eye, source epoch, or every-K-frames cadence re-runs the FULL refresh,
-  // because each
-  // `runProceduralSkyFill` rewrites the whole cube (erasing last capture's
-  // terrain), so the terrain composite (`runSceneCapture`, below) must re-run
-  // whenever the sky is re-filled, and conversely a camera move must force a
-  // sky-fill + re-composite so the reflection tracks the eye.
+  // Capture refresh gate. Steadily off, there is no capture work. A transition
+  // from on to off deliberately contributes one mode edge so a fresh procedural
+  // sky erases captured terrain. While on, a moving eye, a new source epoch, or
+  // the every-K-frames cadence re-runs the full refresh: each
+  // `runProceduralSkyFill` rewrites the whole cube and erases the last
+  // capture's terrain, so the terrain composite (`runSceneCapture`, below) must
+  // re-run whenever the sky is re-filled, and conversely a camera move must
+  // force a sky fill plus re-composite so the reflection tracks the eye.
   const sceneCaptureEnabled =
     (frameState.context as unknown as { sceneCaptureReflections?: boolean })
       .sceneCaptureReflections === true &&
@@ -824,18 +806,17 @@ function updateWebGPUDynamicEnvironmentMap(
   const captureRefresh =
     wantCapture &&
     shouldRefreshSceneCapture(cache, manager._position, captureSourceRevision);
-  // C11-193 — the complete dirty predicate, hoisted so the bounded drain sees
-  // exactly the same condition the refresh body used to be inlined under. Every
-  // term is a LEVEL comparison of live state against committed `cache.last*`
-  // bookkeeping, never a consumed edge, which is what makes a deferral lossless:
-  // the deferred path commits no bookkeeping, so this identical expression
-  // re-evaluates true on the next frame.
+  // The complete dirty predicate, hoisted so the bounded drain sees exactly the
+  // condition the refresh body runs under. Every term is a level comparison of
+  // live state against committed `cache.last*` bookkeeping, never a consumed
+  // edge, which is what makes a deferral lossless: the deferred path commits no
+  // bookkeeping, so this identical expression re-evaluates true next frame.
   const refreshRequested =
     cache.needsUpdate ||
     sunMoved ||
     lutPathChanged ||
-    // C13-41 — grouped with the other SKY-BAKE terms above rather than with the
-    // cloud terms below, because it is deliberately not march-gated.
+    // Grouped with the sky-bake terms above rather than with the cloud terms
+    // below, because it is deliberately not march-gated.
     eclipseEnvChanged ||
     cloudCoverageMoved ||
     cloudRevisionChanged ||
@@ -845,8 +826,8 @@ function updateWebGPUDynamicEnvironmentMap(
     captureRefresh;
 
   // A refresh is only deferrable while this manager still has valid, published
-  // resources for its consumers to keep reading. Anything else is MANDATORY and
-  // bypasses the per-frame budget entirely.
+  // resources for its consumers to keep reading. Anything else requests
+  // `ENV_REFRESH_URGENCY_MANDATORY` and bypasses the per-frame budget entirely.
   const hasPublishedResources =
     !cache.needsUpdate && cache.iblCache !== null && cache.shBuffer !== null;
   const refreshUrgency = !hasPublishedResources
@@ -942,11 +923,11 @@ function updateWebGPUDynamicEnvironmentMap(
     cache.lastSceneCaptureMode = sceneCaptureMode;
     cache.lastSceneCaptureSourceRevision = captureSourceRevision;
     cache.lastSceneCaptureResult = sceneCaptureResult;
-    // Item 4.2 (CLOUD-IBL, Batch 441) — record the coverage this fill used.
+    // Record the coverage this fill used.
     cache.lastCloudCoverage = liveCloudCoverage;
     cache.lastCloudRevision = liveCloudRevision;
-    // C13-41 — committed ONLY here, alongside every other consumed level, so a
-    // budget-deferred refresh re-evaluates true next frame (C11-193).
+    // Committed only here, alongside every other consumed level, so a
+    // budget-deferred refresh re-evaluates true next frame.
     cache.lastEclipseEnvBucket = eclipseEnvBucket;
   }
 
@@ -963,10 +944,9 @@ function updateWebGPUDynamicEnvironmentMap(
     // RADIANCE_MIP_LEVELS = 6 in WebGPUIBLPipeline; max mip index = 5.
     manager._webgpuIBLMaxMipLevel = 5;
   }
-  // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- expose the SH
-  // coefficient buffer for `buildModelIBLEntries`. Present once the first
-  // projection has run; the buffer's own control.w gate keeps it inert
-  // until the compute pass populates it.
+  // Expose the SH coefficient buffer for `buildModelIBLEntries`. Present once
+  // the first projection has run; the buffer's own control.w gate keeps it
+  // inert until the compute pass populates it.
   if (cache.shBuffer) {
     manager._webgpuSHBuffer = cache.shBuffer;
   }
@@ -974,23 +954,22 @@ function updateWebGPUDynamicEnvironmentMap(
   cache.framesSinceUpdate++;
 }
 
-// Audit re-review (Batch 134) -- minimum sun-direction movement that
-// triggers a sky + IBL refresh. (0.005)^2 ~= 0.3 degrees of arc on the
-// unit sphere; small enough that day/night progressions feel smooth,
-// large enough that a stationary scene doesn't burn a compute pass +
-// IBL prefilter on every frame.
+// Minimum sun-direction movement that triggers a sky + IBL refresh.
+// (0.005)^2 is about 0.3 degrees of arc on the unit sphere: small enough that
+// day/night progressions feel smooth, large enough that a stationary scene does
+// not burn a compute pass and IBL prefilter on every frame.
 const SUN_REFRESH_EPSILON_SQ = 0.005 * 0.005;
 
-// Item 4.2 (CLOUD-IBL, Batch 441) — minimum cloud-coverage change that triggers
-// an env-cube re-fill. 1/256 ~ one rgba8 quantization step on the cube, so
-// smaller moves are visually imperceptible after the SH projection. NaN-against-
-// anything coerces > epsilon, so the first frame always runs.
+// Minimum cloud-coverage change that triggers an env-cube re-fill. 1/256 is one
+// rgba8 quantization step on the cube, so smaller moves are visually
+// imperceptible after the SH projection. Any comparison against NaN is false,
+// so the negated test makes the first frame always run.
 const CLOUD_COVERAGE_REFRESH_EPSILON = 1.0 / 256.0;
 
-// C2-25 ENV-SCENE-CAPTURE (Batch 446) — capture debounce (behind the double
-// flag, so OFF gating is byte-identical). Re-capture when the reflective owner's
-// eye moves > 500 m, OR at least every K frames so a slow drift / sun-static
-// scene still keeps the reflected terrain fresh. Caps the 6-pass capture cost.
+// Capture debounce, sitting behind both capture flags. Re-capture when the
+// reflective owner's eye moves more than 500 m, or at least every K frames so a
+// slow drift or sun-static scene still keeps the reflected terrain fresh. This
+// caps the cost of the six-pass capture.
 const CAPTURE_CAMERA_MOVE_SQ = 500.0 * 500.0;
 const CAPTURE_EVERY_K_FRAMES = 8;
 const SCENE_CAPTURE_MODE_DISABLED = 0;
@@ -1124,40 +1103,38 @@ function updateSceneCaptureBookkeeping(
   cache.lastCaptureSourceRevision = captureSourceRevision;
 }
 
-// C2-25 ENV-TEMPORAL (Batch 449) — temporal-accumulation tuning.
-//
-// Per-frame EMA blend fraction of the freshly-captured cube folded in (history
-// keeps 1-α). 0.15 ≈ a ~6-frame e-folding time: fast enough to track a moving
-// sun without visible lag, slow enough to crossfade smoothly between the
-// debounced single-frame refreshes. The fixed point of the EMA for a CONSTANT
-// (static-scene) capture is that constant → the accumulated cube converges to
-// the same look as the OFF single-frame cube.
+// Per-frame EMA blend fraction of the freshly-captured cube folded in; history
+// keeps 1-α. 0.15 is roughly a six-frame e-folding time: fast enough to track a
+// moving sun without visible lag, slow enough to crossfade smoothly between the
+// debounced single-frame refreshes. The fixed point of the EMA for a constant
+// static-scene capture is that constant, so the accumulated cube converges to
+// the same look as the single-frame cube produced with accumulation off.
 const ENV_TEMPORAL_ALPHA = 0.15;
-// Large sun-direction delta (unit-sphere squared distance) that RESETS the
-// history so a day→night-scale jump doesn't smear. (0.05)^2 ≈ 2.9° — an order
-// of magnitude above the per-frame `SUN_REFRESH_EPSILON_SQ` refresh threshold,
-// so ordinary smooth sun progression accumulates while a large jump snaps.
+// Sun-direction delta (unit-sphere squared distance) large enough to reset the
+// history so a day-to-night-scale jump does not smear. (0.05)^2 is about 2.9°,
+// an order of magnitude above the per-frame `SUN_REFRESH_EPSILON_SQ` refresh
+// threshold, so ordinary smooth sun progression accumulates while a large jump
+// snaps.
 const ENV_TEMPORAL_SUN_RESET_SQ = 0.05 * 0.05;
-// Large camera/eye-translation delta (m^2) that RESETS the history. 2 km — well
-// above the 500 m capture-refresh debounce, so a small drift accumulates while
-// a teleport-scale move snaps the env map to the new view (no smear).
+// Camera/eye-translation delta (m^2) large enough to reset the history. 2 km is
+// well above the 500 m capture-refresh debounce, so a small drift accumulates
+// while a teleport-scale move snaps the env map to the new view without smear.
 const ENV_TEMPORAL_CAMERA_RESET_SQ = 2000.0 * 2000.0;
 
-// ─── Temporal env-cube accumulation pass (ENV-TEMPORAL, Batch 449) ────────
+// The temporal env-cube accumulation pass, inserted between the cube capture
+// and the IBL prefilter only while `envMapTemporalAccumulation` is on — the
+// caller gates the whole call. It:
 //
-// Inserted between the cube capture and the IBL prefilter ONLY on the
-// `envMapTemporalAccumulation` ON path (the caller gates the whole call). It:
-//
-//   1. Lazily allocates the history cube (same format/size as the main cube)
-//      + the blend pipeline / bind state INSIDE this function — OFF allocates
-//      nothing (the function is never reached).
-//   2. Decides α: 1.0 on the first ON frame, after a cube recreate, or on a
-//      LARGE sun/camera delta (history reset → current only, no smear);
-//      otherwise `ENV_TEMPORAL_ALPHA` (EMA crossfade).
-//   3. Runs a compute pass: out = mix(history, current_jittered, α), writing
-//      the blended result into the MAIN cube's storage view (so the prefilter
-//      + SH downstream read the accumulated cube).
-//   4. Copies the accumulated main cube → history for next frame.
+//   1. Lazily allocates the history cube (same format and size as the main
+//      cube) and the blend pipeline / bind state inside this function, so the
+//      disabled path, which never reaches it, allocates nothing.
+//   2. Decides α: 1.0 on the first enabled frame, after a cube recreate, or on
+//      a large sun or camera delta — a history reset, current only, no smear;
+//      otherwise `ENV_TEMPORAL_ALPHA` for the EMA crossfade.
+//   3. Runs a compute pass, out = mix(history, current_jittered, α), writing
+//      the blended result into the main cube's storage view so the downstream
+//      prefilter and SH read the accumulated cube.
+//   4. Copies the accumulated main cube into history for the next frame.
 function runEnvCubeTemporalBlend(
   device: GPUDevice,
   cache: DynEnvMapCache,
@@ -1170,18 +1147,18 @@ function runEnvCubeTemporalBlend(
   }
   const format: GPUTextureFormat = cache.cubemapFormat ?? "rgba8unorm";
 
-  // ── Lazy history cube (same format/size as the main cube) ──
-  // The main cube + history cube are read SAMPLED by the blend; the WRITE
-  // target is the SEPARATE accumCube. No texture is both read and written in
-  // the pass (WebGPU usage-scope hazard avoided).
+  // Lazy history cube, same format and size as the main cube. The blend samples
+  // the main cube and the history cube; its write target is the separate
+  // accumCube. No texture is both read and written in the pass, which is what
+  // avoids the WebGPU usage-scope hazard.
   if (!cache.historyCube) {
     cache.historyCube = device.createTexture({
       label: "DynEnvMap History Cube",
       size: { width: cache.size, height: cache.size, depthOrArrayLayers: 6 },
       format,
       mipLevelCount: 1,
-      // SAMPLED (blend reads it) + COPY_DST (JS copies the accumulated cube
-      // into it each frame).
+      // TEXTURE_BINDING because the blend reads it, COPY_DST because the
+      // accumulated cube is copied into it each frame.
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       dimension: "2d",
     });
@@ -1192,19 +1169,20 @@ function runEnvCubeTemporalBlend(
       baseMipLevel: 0,
       mipLevelCount: 1,
     });
-    // First history allocation → no valid accumulated frame yet.
+    // A first history allocation has no valid accumulated frame yet.
     cache.historyValid = false;
     cache.blendBindGroup = null;
   }
 
-  // ── Lazy accumulation cube (the blend's STORAGE write target) ──
+  // Lazy accumulation cube: the blend's storage write target.
   if (!cache.accumCube) {
     cache.accumCube = device.createTexture({
       label: "DynEnvMap Accum Cube",
       size: { width: cache.size, height: cache.size, depthOrArrayLayers: 6 },
       format,
       mipLevelCount: 1,
-      // STORAGE (blend writes it) + COPY_SRC (copied → main cube + history).
+      // STORAGE_BINDING because the blend writes it, COPY_SRC because it is
+      // copied into both the main cube and the history cube.
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
       dimension: "2d",
     });
@@ -1218,9 +1196,9 @@ function runEnvCubeTemporalBlend(
     cache.blendBindGroup = null;
   }
 
-  // 2d-array SAMPLED view of the MAIN cube (the just-captured "current"). The
-  // existing `storageView` is the 2d-array WRITE target; a sampled texture
-  // binding needs a non-storage view, so cache a dedicated one.
+  // 2d-array sampled view of the main cube, the just-captured "current". The
+  // existing `storageView` is the 2d-array write target, and a sampled texture
+  // binding needs a non-storage view, so a dedicated one is cached here.
   if (!cache.currentArrayView) {
     cache.currentArrayView = cache.cubemapTexture.createView({
       dimension: "2d-array",
@@ -1232,7 +1210,7 @@ function runEnvCubeTemporalBlend(
     cache.blendBindGroup = null;
   }
 
-  // ── Blend pipeline + BGL (once per cache; rebuilt on format flip) ──
+  // Blend pipeline and BGL: built once per cache, rebuilt on a format flip.
   if (!cache.blendPipeline || !cache.blendBGL) {
     cache.blendBGL = device.createBindGroupLayout({
       label: "DynEnvMap Temporal Blend BGL",
@@ -1313,14 +1291,14 @@ function runEnvCubeTemporalBlend(
     });
   }
 
-  // ── Decide α (reset vs EMA) ──
-  // Reset when: no valid history yet (first ON frame / post-recreate), OR a
-  // large sun delta, OR a large camera/eye translation. Reset → α=1 (current
-  // only; history is seeded by the copy below) so a big change can't smear.
+  // Decide α: reset or EMA. Reset when there is no valid history yet (first
+  // enabled frame, or after a recreate), on a large sun delta, or on a large
+  // camera/eye translation. A reset uses α=1 — current only, with history
+  // seeded by the copy below — so a big change cannot smear.
   const sdx = sunDir.x - cache.lastBlendSunX;
   const sdy = sunDir.y - cache.lastBlendSunY;
   const sdz = sunDir.z - cache.lastBlendSunZ;
-  // NaN (first run) coerces > threshold → reset on the first run.
+  // Any comparison against NaN is false, so the first run always resets.
   const sunReset = !(
     sdx * sdx + sdy * sdy + sdz * sdz <
     ENV_TEMPORAL_SUN_RESET_SQ
@@ -1336,12 +1314,12 @@ function runEnvCubeTemporalBlend(
   const reset = !cache.historyValid || sunReset || cameraReset;
   const alpha = reset ? 1.0 : ENV_TEMPORAL_ALPHA;
 
-  // ── Per-face Hammersley-rotated sub-texel jitter ──
-  // Radical-inverse (base 2) of the frame index gives a low-discrepancy 1-D
-  // sequence; pair it with the golden-ratio fractional sequence for the second
-  // axis → a Hammersley-like 2-D point, recentred to [-0.5,0.5] texels. Subtle
-  // for the deterministic capture; load-bearing for the future stochastic
-  // cloud-in-IBL consumer (3-C). Zeroed on reset (current is sampled exactly).
+  // Per-face Hammersley-rotated sub-texel jitter. The base-2 radical inverse of
+  // the frame index gives a low-discrepancy 1-D sequence; pairing it with the
+  // golden-ratio fractional sequence for the second axis gives a
+  // Hammersley-like 2-D point, recentred to [-0.5, 0.5] texels. It is subtle
+  // for the deterministic capture and load-bearing for a stochastic
+  // cloud-in-IBL consumer. Zeroed on reset, so current is sampled exactly.
   let jx = 0.0;
   let jy = 0.0;
   if (!reset) {
@@ -1389,11 +1367,11 @@ function runEnvCubeTemporalBlend(
   pass.setBindGroup(0, cache.blendBindGroup);
   pass.dispatchWorkgroups(groupsXY, groupsXY, 6);
   pass.end();
-  // Copy the accumulated cube → the MAIN cube (so the downstream prefilter + SH
-  // read the accumulated result) AND → the history cube (next frame's history).
-  // Both are same-format/size 2d textures with 6 array layers. Done outside the
-  // compute pass (copy commands are encoder-level), so no read/write alias with
-  // the blend dispatch's storage write.
+  // Copy the accumulated cube into the main cube, so the downstream prefilter
+  // and SH read the accumulated result, and into the history cube for the next
+  // frame. Both are same-format, same-size 2d textures with 6 array layers.
+  // Copy commands are encoder-level, so running them outside the compute pass
+  // avoids any read/write alias with the blend dispatch's storage write.
   encoder.copyTextureToTexture(
     { texture: cache.accumCube!, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
     {
@@ -1419,19 +1397,10 @@ function runEnvCubeTemporalBlend(
   cache.lastBlendSunZ = sunDir.z;
 }
 
-// ─── Procedural sky compute pass (Audit A.12, Batch 131) ─────────────────
-//
-// Builds (lazily) and dispatches the procedural sky shader to fill the
-// cubemap's 6 faces in a single dispatch (Z dimension == 6). The
-// uniform encodes sun direction + sky/ground/sun colors; sun direction
-// comes from `frameState.context.uniformState.sunDirectionWC` so the
-// procedural sky tracks the scene's sun.
-
-// NEW-MODEL-PBR-DIRECT-LIGHT-IBL-PARITY D1 — atmosphere-derived sky
-// fill. The SkyUniforms struct is now 9 vec4 = 144 bytes. Byte-exact
-// lockstep with `ProceduralSkyCubemap.wgsl`'s SkyUniforms (WGSL uniform
-// layout: each vec3 occupies a 16-byte slot, the trailing f32 packs into
-// the slot's 4th lane). Float32Array index = byte offset / 4:
+// The atmosphere-derived sky fill's uniform block, in byte-exact lockstep with
+// `ProceduralSkyCubemap.wgsl`'s SkyUniforms. In the WGSL uniform layout each
+// vec3 occupies a 16-byte slot and the trailing f32 packs into that slot's
+// fourth lane, so the Float32Array index is the byte offset divided by 4:
 //   0..2  positionWC      3  faceSize
 //   4..6  enuX            7  innerRadius
 //   8..10 enuY           11  outerRadius
@@ -1449,13 +1418,10 @@ function runEnvCubeTemporalBlend(
 //   56..59 densityShapeOriginPhase
 //   60..63 densityWarpOriginPhase
 //   64..67 densityDetailOriginPhase
-// Item 4.2 (CLOUD-IBL, Batch 441) grew the struct 144→160 bytes (one new vec4
-// slot) for the effective cloud-coverage scalar. Item 3-C (CLOUD-IBL-FULL,
-// Batch 450) grew it 160→224 bytes (four new vec4 rows) for the full per-face
-// cloud-march controls. Add-only; the off path packs cloudMarch = 0 → the WGSL
-// march branch is skipped + the noise bindings are 1×1×1 placeholders →
-// byte-identical to the 4.2 fill. C13-37 grows it 224→272 bytes with three
-// CPU-f64 planet-domain origin-phase rows shared with the visible cloud march.
+// The block is add-only: rows are appended, never reordered or reused, so an
+// existing offset stays valid. With the reflected-cloud march off, slot 37
+// packs cloudMarch = 0, the WGSL march branch is never taken, and the noise
+// bindings are 1×1×1 placeholders, so the fill is unchanged by the march rows.
 const SKY_UNIFORM_FLOATS = 56 + CLOUD_DENSITY_ORIGIN_PHASE_FLOATS;
 const SKY_UNIFORM_SIZE = SKY_UNIFORM_FLOATS * 4;
 const PROCEDURAL_SKY_SOURCE = `${CloudDensityDomainWGSL}\n${ProceduralSkyCubemapWGSL}`;
@@ -1464,10 +1430,9 @@ const PROCEDURAL_SKY_SOURCE = `${CloudDensityDomainWGSL}\n${ProceduralSkyCubemap
 const scratchPosition = new Cartesian3();
 const scratchSurfacePosition = new Cartesian3();
 
-// NEW-MODEL-IBL-AMBIENT (re-land of the audited-GO B3 fix) — minimal shape of
-// `frameState.mapProjection.ellipsoid` (opaque in cesium-js-types.d.ts) for
-// the WebGL-parity radii derivation (DynamicEnvironmentMapManager.js
-// `atmosphereNeedsUpdate`).
+// Minimal shape of `frameState.mapProjection.ellipsoid`, which is opaque in
+// cesium-js-types.d.ts, for the WebGL-parity radii derivation in
+// `DynamicEnvironmentMapManager.js`'s `atmosphereNeedsUpdate`.
 interface EllipsoidLike {
   scaleToGeodeticSurface?: (
     cartesian: Cartesian3,
@@ -1483,10 +1448,11 @@ const DEFAULT_RAYLEIGH_SCALE_HEIGHT = 10000.0;
 const DEFAULT_MIE_SCALE_HEIGHT = 3200.0;
 const DEFAULT_MIE_ANISOTROPY = 0.9;
 const DEFAULT_LIGHT_INTENSITY = 10.0;
-// DP-H47 (Campaign-7) — the model IBL sky fill's fallback set, passed to the
-// shared `resolveAtmosphereScattering` resolver. These are the same historical
-// `DEFAULT_*` constants above, so resolving through the shared seam is
-// byte-identical when `scene.atmosphere` leaves a field unset.
+// The model IBL sky fill's fallback set, passed to the shared
+// `resolveAtmosphereScattering` resolver. These are the same `DEFAULT_*`
+// constants declared above, so resolving through the shared seam produces the
+// same values an inline `?? DEFAULT` read would when `scene.atmosphere` leaves
+// a field unset.
 const MODEL_ATMOSPHERE_DEFAULTS: AtmosphereScatteringDefaults = {
   rayleighCoefficient: DEFAULT_RAYLEIGH_COEFFICIENT,
   mieCoefficient: DEFAULT_MIE_COEFFICIENT,
@@ -1499,10 +1465,10 @@ const MODEL_ATMOSPHERE_DEFAULTS: AtmosphereScatteringDefaults = {
 // unavailable (mirrors WebGL's `ellipsoid.maximumRadius` fallback in
 // DynamicEnvironmentMapManager.js `atmosphereNeedsUpdate`).
 const DEFAULT_MAX_RADIUS = 6378137.0;
-// WebGL's outer-atmosphere shell scale (DynamicEnvironmentMapManager.js
-// `atmosphereNeedsUpdate`: `const outerEllipsoidScale = 1.025`). NOT the
-// 111 km czm_computeScattering shell — that one lives inside the WGSL
-// scattering march (ATMOSPHERE_THICKNESS in ProceduralSkyCubemap.wgsl).
+// WebGL's outer-atmosphere shell scale (`DynamicEnvironmentMapManager.js`
+// `atmosphereNeedsUpdate`: `const outerEllipsoidScale = 1.025`). This is not
+// the 111 km czm_computeScattering shell, which lives inside the WGSL
+// scattering march as ATMOSPHERE_THICKNESS in ProceduralSkyCubemap.wgsl.
 const OUTER_ELLIPSOID_SCALE = 1.025;
 
 /**
@@ -1662,6 +1628,11 @@ function resetDynamicEnvironmentKernelPacksForSpecs(): void {
   dynamicEnvironmentKernelPacks = new WeakMap();
 }
 
+// Lazily builds and dispatches the procedural sky shader, filling the cubemap's
+// 6 faces in a single dispatch whose Z dimension is 6. The uniform encodes sun
+// direction plus sky, ground and sun colors; the sun direction comes from
+// `frameState.context.uniformState.sunDirectionWC`, so the procedural sky
+// tracks the scene's sun.
 function runProceduralSkyFill(
   device: GPUDevice,
   cache: DynEnvMapCache,
@@ -1692,12 +1663,11 @@ function runProceduralSkyFill(
     });
   }
 
-  // ── Atmosphere-derived uniforms (mirrors ComputeRadianceMapFS) ──
-  //
-  // Sun direction: SUNLIGHT uses frameState.sunDirectionWC; SCENE_LIGHT
-  // uses uniformState.lightDirectionWC; NONE (default) resolves to the
-  // local zenith per-direction inside the shader (so sunDirectionWC is a
-  // safe placeholder on that path).
+  // Atmosphere-derived uniforms, mirroring ComputeRadianceMapFS. For the sun
+  // direction, SUNLIGHT uses frameState.sunDirectionWC, SCENE_LIGHT uses
+  // uniformState.lightDirectionWC, and NONE — the default — resolves to the
+  // local zenith per direction inside the shader, so sunDirectionWC is a safe
+  // placeholder on that path.
   const uniformState = (
     frameState.context as unknown as {
       uniformState?: {
@@ -1710,10 +1680,10 @@ function runProceduralSkyFill(
   const sunDir = uniformState?.sunDirectionWC ??
     frameState.sunDirectionWC ?? { x: 0.3, y: 0.0, z: 0.95 };
 
-  // DP-H47 (Campaign-7) — resolve the scattering terms + dynamicLighting
-  // through the shared `WebGPUAtmosphereUniforms` seam. Byte-identical to the
-  // former inline `frameState.atmosphere?.X ?? DEFAULT` reads (same source,
-  // same fallbacks via MODEL_ATMOSPHERE_DEFAULTS).
+  // Resolve the scattering terms and dynamicLighting through the shared
+  // `WebGPUAtmosphereUniforms` seam. It reads the same source with the same
+  // fallbacks, supplied through MODEL_ATMOSPHERE_DEFAULTS, as an inline
+  // `frameState.atmosphere?.X ?? DEFAULT` would.
   const resolvedAtmosphere = resolveAtmosphereScattering(
     frameState,
     MODEL_ATMOSPHERE_DEFAULTS,
@@ -1730,13 +1700,13 @@ function runProceduralSkyFill(
   // packed sunDirectionWC / local zenith respectively.
   const lightVec = dynamicLighting === 1 && sceneLight ? sceneLight : sunDir;
 
-  // Position + ENU->fixed basis (WGS84 default, matching the WebGL
-  // DynamicEnvironmentMapManager). NEW-MODEL-IBL-AMBIENT (re-land of the
-  // audited-GO B3 fix) — radii per DynamicEnvironmentMapManager.js
-  // `atmosphereNeedsUpdate` (u_radiiAndDynamicAtmosphereColor semantics):
-  //   inner = |scaleToGeodeticSurface(position)|  (surface radius under the
-  //           model, NOT the model position's magnitude)
-  //   outer = inner × 1.025                       (NOT inner + 111 km — the
+  // Position and ENU-to-fixed basis, WGS84 by default, matching the WebGL
+  // DynamicEnvironmentMapManager. Radii follow
+  // `DynamicEnvironmentMapManager.js`'s `atmosphereNeedsUpdate`, with
+  // u_radiiAndDynamicAtmosphereColor semantics:
+  //   inner = |scaleToGeodeticSurface(position)|  (the surface radius under
+  //           the model, not the model position's magnitude)
+  //   outer = inner × 1.025                       (not inner + 111 km — the
   //           111 km shell is internal to the WGSL scattering march)
   //   ellipsoidHeight = max(|position| − inner, 0) (slot 39; view-origin
   //           scaling + skyAlpha / ground-blend height terms)
@@ -1759,20 +1729,20 @@ function runProceduralSkyFill(
   const ellipsoidHeight = Math.max(positionHeight - innerRadius, 0.0);
   const enu = Transforms.eastNorthUpToFixedFrame(scratchPosition);
 
-  // C13-41 — the eclipse dims this bake. `scatteringIntensity` is the
-  // manager-level multiplier applied to the FINAL sky, ground and reflected-
-  // cloud radiance (WGSL lines `skyColor * scatteringIntensity`,
-  // `lit * u.scatteringIntensity`), and its exact WebGL twin is
-  // `adjustments.w` / `u_brightnessSaturationGammaIntensity.w` in
-  // `Scene/DynamicEnvironmentMapManager.js` — so both backends dim the same
-  // documented lockstep scalar and neither one needs a shader edit. The SH
-  // projection's step-3 multiply is deliberately NOT dimmed on either backend:
-  // it projects THIS cube, so it inherits the dimming exactly once.
+  // The eclipse dims this bake. `scatteringIntensity` is the manager-level
+  // multiplier applied to the final sky, ground and reflected-cloud radiance
+  // (the WGSL lines `skyColor * scatteringIntensity` and
+  // `lit * u.scatteringIntensity`), and its WebGL twin is `adjustments.w` /
+  // `u_brightnessSaturationGammaIntensity.w` in
+  // `Scene/DynamicEnvironmentMapManager.js`, so both backends dim the same
+  // lockstep scalar and neither needs a shader edit. The SH projection's
+  // intensity multiply is deliberately left undimmed on both backends: it
+  // projects this cube, so it inherits the dimming exactly once.
   //
-  // This is only safe because `eclipseEnvBucket` below gives the refresh gate an
-  // eclipse-keyed input. Dimming a debounced bake without one is the stale-dark
-  // latch — the same trap that (correctly) keeps the eclipse factor OUT of the
-  // sun-direction-debounced sky-atmosphere LUT bake at C12-29 S2.
+  // This is only safe because `eclipseEnvBucket` gives the refresh gate an
+  // eclipse-keyed input. Dimming a debounced bake without one produces the
+  // stale-dark latch — the same trap that keeps the eclipse factor out of the
+  // sun-direction-debounced sky-atmosphere LUT bake.
   const skyColorScattering = applyEclipseCloudDimming(
     manager.atmosphereScatteringIntensity ?? 2.0,
     resolveEclipseCloudFactor(frameState),
@@ -1785,14 +1755,14 @@ function runProceduralSkyFill(
   };
   const groundAlbedo = manager.groundAlbedo ?? 0.31;
 
-  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — opt-in: source the sky color from
-  // the sun-relative sky-view + MS LUTs (the SAME tables the visible
-  // SkyAtmosphere samples) instead of the inline march, so reflected env sky
-  // matches the visible MS sky. Read off the context's getter (threaded from
-  // `contextOptions.webgpu.envMapMultiScatter`). The LUT path is gated in the
-  // shader to non-NONE dynamic lighting (it bakes a single light direction);
-  // when dynamicLighting is NONE (the default smooth ambient) we leave the flag
-  // off so the radially-symmetric inline march keeps the at-rest IBL look.
+  // Opt-in: source the sky color from the sun-relative sky-view and
+  // multiple-scattering LUTs — the same tables the visible SkyAtmosphere
+  // samples — instead of the inline march, so the reflected env sky matches the
+  // visible multiple-scattering sky. Read off the context's getter, threaded
+  // from `contextOptions.webgpu.envMapMultiScatter`. The shader gates the LUT
+  // path to non-NONE dynamic lighting because it bakes a single light
+  // direction; under NONE, the default smooth ambient, the flag stays off so
+  // the radially-symmetric inline march keeps the at-rest IBL look.
   const ctx = frameState.context as unknown as {
     envMapMultiScatter?: boolean;
     performanceManager?: {
@@ -1813,12 +1783,13 @@ function runProceduralSkyFill(
     lutSkyViewView = lutRes?.skyViewView ?? null;
     lutMsView = lutRes?.multipleScatterView ?? null;
   }
-  // The shader path is active only when both real LUT views are bound. When off
-  // (or the LUTs aren't baked yet) the 1×1 placeholder is bound and the flag is
-  // 0 → byte-identical inline march.
+  // The shader path is active only when both real LUT views are bound. When it
+  // is off, or the LUTs are not baked yet, the 1×1 placeholder is bound and the
+  // flag is 0, leaving the inline march.
   const useMultiScatterLut = lutSkyViewView !== null && lutMsView !== null;
-  // Record the effective path so the update gate re-fills when it flips (e.g.
-  // the LUTs finish baking a frame after the first fill on a static scene).
+  // Record the effective path so the update gate re-fills when it flips, for
+  // instance when the LUTs finish baking a frame after the first fill on an
+  // otherwise static scene.
   cache.lastUsedMultiScatterLut = useMultiScatterLut;
 
   const data = new Float32Array(SKY_UNIFORM_FLOATS);
@@ -1866,23 +1837,22 @@ function runProceduralSkyFill(
   data[32] = groundAlbedo;
   data[33] = dynamicLighting;
   data[34] = skyColorScattering;
-  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — the WGSL flag (was _pad0). 1 only
-  // when the real LUT views are bound; 0 (default / LUTs unbaked) → the inline
-  // march, byte-identical parity.
+  // The WGSL LUT flag: 1 only when the real LUT views are bound, otherwise 0 —
+  // the default, and the value while the LUTs are unbaked — which selects the
+  // inline march.
   data[35] = useMultiScatterLut ? 1.0 : 0.0;
-  // Item 4.2 (CLOUD-IBL, Batch 441) — effective cloud coverage [0,1]. The cloud
-  // renderer publishes it onto `context._cloudCache.iblCoverage` every frame,
-  // already gated to 0 unless BOTH `globe.showProceduralClouds` AND
-  // `globe.cloudContributesIBL` are on. 0 (default) → the WGSL overcast blend is
-  // skipped → byte-identical fill.
+  // Effective cloud coverage in [0,1]. The cloud renderer publishes it onto
+  // `context._cloudCache.iblCoverage` every frame, already gated to 0 unless
+  // both `globe.showProceduralClouds` and `globe.cloudContributesIBL` are on.
+  // At 0, the default, the WGSL overcast blend is skipped.
   const cloudCache = (
     frameState.context as unknown as {
       _cloudCache?: {
         iblCoverage?: number;
-        // Item 3-C (CLOUD-IBL-FULL, Batch 450) — the real visible-cloud march
-        // params, published every frame from the env-effects dispatch (where
-        // `scene.globe` is in scope). Read HERE instead of the nonexistent
-        // `frameState.globe`, so the reflected deck tracks live customization.
+        // The real visible-cloud march params, published every frame from the
+        // env-effects dispatch, where `scene.globe` is in scope. `FrameState`
+        // has no `globe` field, so reading them here is what lets the reflected
+        // deck track live customization.
         iblDeckBottom?: number;
         iblDeckTop?: number;
         iblWindX?: number;
@@ -1904,23 +1874,22 @@ function runProceduralSkyFill(
   )._cloudCache;
   data[36] = cloudCache?.iblCoverage ?? 0.0;
 
-  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — the full per-face cloud march. Gated
-  // on the `cloudsInReflections` context flag AND the baked cloud noise actually
-  // existing on `_cloudCache.noise` (the cloud renderer bakes it once the
-  // volumetric clouds run). When EITHER is missing the march flag is 0 → the
-  // WGSL march branch is never taken + the 1×1×1 placeholder noise is bound →
-  // byte-identical to the 4.2 path. `wantCloudMarch` is also AND-ed with a
-  // non-zero published coverage so a flag set on a clear scene stays inert.
+  // The full per-face cloud march. Gated on the `cloudsInReflections` context
+  // flag and on the baked cloud noise existing on `_cloudCache.noise`, which
+  // the cloud renderer bakes once the volumetric clouds run. With either
+  // missing, the march flag is 0, the WGSL march branch is never taken, and the
+  // 1×1×1 placeholder noise is bound. The gate is also combined with a non-zero
+  // published coverage, so the flag set on a clear scene stays inert.
   const ctxClouds = frameState.context as unknown as {
     cloudsInReflections?: boolean;
   };
   const cloudNoise = cloudCache?.noise ?? null;
-  // Item 3-C (CLOUD-IBL-FULL, Batch 450, FIX 3) — match the visible renderer's
-  // PW-shape selection: only sample the Perlin-Worley base shape view when the
-  // visible clouds are in PW morphology AND it actually baked; otherwise sample
-  // the value-FBM shape view (the visible default). This keeps the reflected
-  // clouds on the SAME base shape as the rendered clouds instead of always
-  // preferring the PW view when present.
+  // Match the visible renderer's Perlin-Worley shape selection: sample the
+  // Perlin-Worley base shape view only when the visible clouds are in that
+  // morphology and the view actually baked, and otherwise sample the value-FBM
+  // shape view, which is the visible default. Always preferring the
+  // Perlin-Worley view when present would put the reflected clouds on a
+  // different base shape from the rendered clouds.
   const usePWShape =
     cloudCache?.iblPWActive === true && !!cloudNoise?.shapePWSampleView;
   const cloudNoiseShapeView =
@@ -1935,27 +1904,27 @@ function runProceduralSkyFill(
     cloudNoiseShapeView !== null &&
     cloudNoiseDetailView !== null &&
     cloudNoiseSampler !== null;
-  // Record the effective march path so the update gate re-fills when it flips
-  // (e.g. the cloud noise finishes baking a frame after the first sky fill, or
-  // the flag toggles on a static scene).
+  // Record the effective march path so the update gate re-fills when it flips,
+  // for instance when the cloud noise finishes baking a frame after the first
+  // sky fill, or the flag toggles on a static scene.
   cache.lastUsedCloudMarch = cloudMarchActive;
 
-  // Item 3-C (CLOUD-IBL-FULL, Batch 450, FIX 1) — cloud-march params read from
-  // `_cloudCache` (the SAME channel as `iblCoverage`), published every frame by
-  // the cloud renderer's `publishCloudIblCoverage` where `scene.globe` is in
-  // scope. `FrameState` has NO `globe` field, so the prior `frameState.globe`
-  // cast always read undefined and every param froze at the constructor default
-  // — silently decoupling the reflected deck from any user cloud customization.
-  // The cache seeds with the Globe constructor defaults, so the OFF/pre-publish
-  // value still equals the visible default. All inert when `cloudMarch` is 0.
+  // Cloud-march params read from `_cloudCache`, the same channel as
+  // `iblCoverage`, published every frame by the cloud renderer's
+  // `publishCloudIblCoverage` where `scene.globe` is in scope. `FrameState` has
+  // no `globe` field, so reading these through a `frameState.globe` cast would
+  // yield undefined and freeze every param at its constructor default, silently
+  // decoupling the reflected deck from user cloud customization. The cache
+  // seeds with the Globe constructor defaults, so the pre-publish value still
+  // equals the visible default. All of it is inert when `cloudMarch` is 0.
   const deckBottom = cloudCache?.iblDeckBottom ?? 1500.0;
   const deckTop = cloudCache?.iblDeckTop ?? 4000.0;
   const cloudDensity = cloudCache?.iblDensity ?? 0.3;
   const windX = cloudCache?.iblWindX ?? 0.7;
   const windY = cloudCache?.iblWindY ?? 0.3;
   const windSpeed = cloudCache?.iblWindSpeed ?? 15.0;
-  // C13-37 — use the visible renderer's scene-clock-relative time. Wall-clock
-  // capture drift made reflected formations disagree with paused/scrubbed scenes.
+  // The visible renderer's scene-clock-relative time. A wall-clock capture
+  // drifts, so reflected formations disagree with paused or scrubbed scenes.
   const cloudTime = cloudMarchActive
     ? (cloudCache?.iblTimeSeconds ?? 0.0)
     : 0.0;
@@ -1971,13 +1940,13 @@ function runProceduralSkyFill(
   const sunLocalLen = Math.hypot(sunLocalX, sunLocalY, sunLocalZ) || 1.0;
 
   data[37] = cloudMarchActive ? 1.0 : 0.0;
-  // data[38] cloudPlanetRadius — DEAD (Batch 450, FIX 4): the WGSL march uses the
-  // passed `innerR`/`u.innerRadius`, never this slot. Packed for documentation
-  // only; kept add-only so the row layout + later offsets stay stable.
+  // data[38] cloudPlanetRadius is unread: the WGSL march takes the radius from
+  // the passed `innerR` / `u.innerRadius`, never this slot. It is packed for
+  // documentation and kept add-only so the row layout and every later offset
+  // stay stable.
   data[38] = innerRadius;
-  // data[39] — NEW-MODEL-IBL-AMBIENT: ellipsoidHeight (was the always-0
-  // reserved pad; a ground-level model still packs 0). View-origin scaling +
-  // skyAlpha / ground-blend height terms in the WGSL.
+  // data[39] ellipsoidHeight feeds the view-origin scaling and the skyAlpha /
+  // ground-blend height terms in the WGSL. A ground-level model packs 0.
   data[39] = ellipsoidHeight;
   // 40..42 cloudSunLocal (normalized) + 43 cloudDeckBottom
   data[40] = sunLocalX / sunLocalLen;
@@ -2017,9 +1986,9 @@ function runProceduralSkyFill(
   );
   device.queue.writeBuffer(cache.skyUniformBuffer, 0, data);
 
-  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — LUT sampler + 1×1 white placeholder
-  // (built once). The placeholder backs bindings 3/4 whenever the real sky-view
-  // / MS LUT views aren't available, keeping the bind group valid + constant.
+  // LUT sampler and 1×1 white placeholder, built once. The placeholder backs
+  // bindings 3 and 4 whenever the real sky-view / multiple-scattering LUT views
+  // are unavailable, keeping the bind group valid and constant.
   if (!cache.lutSampler) {
     cache.lutSampler = device.createSampler({
       label: "DynEnvMap LUT Sampler",
@@ -2036,8 +2005,8 @@ function runProceduralSkyFill(
       format: "rgba16float",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
-    // rgba16float black (0) — never sampled when the flag is off, so the value
-    // is irrelevant to parity; zero is the safe inert default.
+    // rgba16float black. It is never sampled while the flag is off, so the
+    // value does not reach the output; zero is the safe inert default.
     const zero = new Uint16Array([0, 0, 0, 0]);
     device.queue.writeTexture(
       { texture: cache.lutPlaceholderTex },
@@ -2050,10 +2019,10 @@ function runProceduralSkyFill(
   const boundSkyView = lutSkyViewView ?? cache.lutPlaceholderView;
   const boundMsView = lutMsView ?? cache.lutPlaceholderView;
 
-  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — 1×1×1 white 3D placeholder + sampler
-  // (built once). Backs bindings 5/6/7 whenever the cloud march is off (or the
-  // cloud noise hasn't baked), keeping the bind group valid + constant; the WGSL
-  // `cloudMarch` flag keeps them unsampled → byte-identical parity.
+  // 1×1×1 white 3D placeholder and sampler, built once. They back bindings 5,
+  // 6 and 7 whenever the cloud march is off, or the cloud noise has not baked,
+  // keeping the bind group valid and constant; the WGSL `cloudMarch` flag keeps
+  // them unsampled.
   if (!cache.cloudPlaceholderView) {
     cache.cloudPlaceholderTex = device.createTexture({
       label: "DynEnvMap Cloud Noise Placeholder",
@@ -2062,8 +2031,8 @@ function runProceduralSkyFill(
       dimension: "3d",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
-    // White (255) — never sampled when the march is off; the value is irrelevant
-    // to parity, white is the inert "no erosion / full shape" default.
+    // White. It is never sampled while the march is off, and white is the inert
+    // "no erosion, full shape" default.
     const white = new Uint8Array([255, 255, 255, 255]);
     device.queue.writeTexture(
       { texture: cache.cloudPlaceholderTex },
@@ -2085,9 +2054,9 @@ function runProceduralSkyFill(
       addressModeW: "repeat",
     });
   }
-  // Bind the REAL baked cloud noise (shared from the cloud renderer) only when
-  // the march is active; otherwise the placeholder. The shape view prefers the
-  // Perlin-Worley variant (the cloud renderer's own preference) when present.
+  // Bind the baked cloud noise shared from the cloud renderer only while the
+  // march is active, and the placeholder otherwise. The shape view follows the
+  // cloud renderer's own Perlin-Worley preference.
   const boundCloudShapeView = cloudMarchActive
     ? (cloudNoiseShapeView ?? cache.cloudPlaceholderView)
     : cache.cloudPlaceholderView;
@@ -2133,10 +2102,10 @@ function runProceduralSkyFill(
 
   // Dispatch: workgroup_size(8, 8, 1); grid covers face × face × 6.
   const groupsXY = Math.ceil(cache.size / 8);
-  // C13-39 — this dispatch is the environment/IBL leg of the cloud march (it
-  // runs `marchCloudFaceIBL` when `cloudMarch > 0`), so it needs its own GPU
+  // This dispatch is the environment/IBL leg of the cloud march — it runs
+  // `marchCloudFaceIBL` when `cloudMarch > 0` — so it carries its own GPU
   // timestamp lane. `withComputePassTimestamps` returns the exact descriptor
-  // when the profiler is not armed, so the default path is unchanged; the
+  // when the profiler is not armed, leaving the default path unchanged, and the
   // optional-call guard keeps it safe on contexts without the accessor.
   const skyPassDescriptor: GPUComputePassDescriptor = {
     label: "DynEnvMap Sky Fill",
@@ -2151,14 +2120,12 @@ function runProceduralSkyFill(
   pass.end();
 }
 
-// ─── SH-L2 projection pass (Batch 354) ───────────────────────────────────
-//
-// NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT. Projects the freshly-filled
-// radiance cube onto 9 SH-L2 coefficients and writes them (×
-// atmosphereScatteringIntensity, WebGL's step-3 multiply) into a
-// STORAGE|UNIFORM buffer the model binds at SHUniforms binding 36. Mirrors
-// WebGL's `ComputeIrradianceFS` + `updateSphericalHarmonicCoefficients`,
-// but writes the buffer directly instead of a render-to-texture + readback.
+// The SH-L2 projection pass. Projects the freshly-filled radiance cube onto 9
+// SH-L2 coefficients and writes them, scaled by atmosphereScatteringIntensity
+// to match WebGL's third-step multiply, into a STORAGE|UNIFORM buffer the model
+// binds at SHUniforms binding 36. This mirrors WebGL's `ComputeIrradianceFS`
+// plus `updateSphericalHarmonicCoefficients`, but writes the buffer directly
+// instead of rendering to a texture and reading it back.
 function runSphericalHarmonicProjection(
   device: GPUDevice,
   cache: DynEnvMapCache,
@@ -2208,8 +2175,8 @@ function runSphericalHarmonicProjection(
     new Float32Array([intensity, 0.0, 0.0, 0.0]),
   );
 
-  // (Re)build bind group when the cube view changed (cube recreate resets
-  // shBindGroup to null).
+  // Rebuild the bind group when the cube view changed; a cube recreate resets
+  // `shBindGroup` to null.
   if (!cache.shBindGroup) {
     cache.shBindGroup = device.createBindGroup({
       label: "DynEnvMap SH BG",
@@ -2231,12 +2198,6 @@ function runSphericalHarmonicProjection(
   pass.end();
 }
 
-// ─── IBL prefilter trigger (Audit A.12, Batch 131) ───────────────────────
-//
-// Reuses `WebGPUIBLPipeline.generateIBLMaps` -- the same compute path
-// that `WebGPUImageBasedLighting` runs for explicit-source IBL. The
-// only difference is the source: here it's the procedural cubemap we
-// just filled; for explicit IBL it's a user-supplied HDR cubemap.
 function resolveIBLHQOptions(
   cache: DynEnvMapCache,
   frameState: CesiumFrameState,
@@ -2256,6 +2217,10 @@ function resolveIBLHQOptions(
     : undefined;
 }
 
+// Runs `WebGPUIBLPipeline.generateIBLMaps`, the same compute path
+// `WebGPUImageBasedLighting` uses for explicit-source IBL. The only difference
+// is the source: here it is the procedural cubemap just filled above, where for
+// explicit IBL it is a user-supplied HDR cubemap.
 function runIBLPrefilter(
   device: GPUDevice,
   cache: DynEnvMapCache,
@@ -2277,18 +2242,17 @@ function runIBLPrefilter(
       sourceVersion: -1,
     };
   }
-  // Audit re-review (Batch 134) -- `generateIBLMaps` itself doesn't
-  // read `sourceVersion` (only the explicit-IBL `WebGPUImageBasedLighting`
-  // caller uses it as a regen gate), so the previous bump here was
-  // dead. Existing C-P17 cleanup at `WebGPUIBLPipeline.ts:149/239`
-  // destroys the old irradiance + radiance textures before recreating
-  // them, so re-running prefilter on each sun-direction refresh does
-  // not leak GPU memory.
-  // Item 1.3 (IBL-PREFILTER-HQ, Batch 426) — opt-in high-quality prefilter.
-  // Default 'parity' → pass `undefined` so `generateIBLMaps` takes the
-  // byte-identical mip-0 path (no source-mip pass, `main` entry point).
-  // 'high' → pass the source cube + format so the prefilter box-downsamples
-  // the source mip chain and samples a GGX-pdf-derived LOD (`mainHQ`).
+  // `generateIBLMaps` does not read `sourceVersion`; only the explicit-IBL
+  // `WebGPUImageBasedLighting` caller uses it as a regeneration gate, so there
+  // is nothing to bump here. `WebGPUIBLPipeline` destroys the old irradiance
+  // and radiance textures before recreating them, so re-running the prefilter
+  // on each sun-direction refresh does not leak GPU memory.
+  //
+  // The prefilter quality is opt-in. The default 'parity' passes `undefined`,
+  // so `generateIBLMaps` takes the mip-0 path with no source-mip pass and the
+  // `main` entry point; 'high' passes the source cube and format so the
+  // prefilter box-downsamples the source mip chain and samples a
+  // GGX-pdf-derived LOD through `mainHQ`.
   generateIBLMaps(
     device,
     cache.iblCache,
@@ -2326,17 +2290,17 @@ function destroyWebGPUDynamicEnvironmentMapResources(
   if (cache.shParamBuffer) {
     cache.shParamBuffer.destroy();
   }
-  // C2-25 ENV-SCENE-CAPTURE — the manager owns the lazily allocated capture
-  // depth attachment. It is not reachable through the IBL cache and therefore
-  // must be released explicitly on manager destruction or device recovery.
+  // The manager owns the lazily allocated capture depth attachment. It is not
+  // reachable through the IBL cache, so it must be released explicitly on
+  // manager destruction or device recovery.
   if (cache.captureDepthTexture) {
     cache.captureDepthTexture.destroy();
   }
   cache.captureDepthTexture = null;
   cache.captureDepthView = null;
   cache.captureDepthSize = 0;
-  // C2-25 ENV-TEMPORAL (Batch 449) — release the history + accum cubes + blend
-  // uniform buffer (all null on the OFF path → branches skip).
+  // Release the history and accumulation cubes and the blend uniform buffer.
+  // All three are null while temporal accumulation is off, so the branches skip.
   if (cache.historyCube) {
     cache.historyCube.destroy();
   }
@@ -2346,15 +2310,15 @@ function destroyWebGPUDynamicEnvironmentMapResources(
   if (cache.blendUniformBuffer) {
     cache.blendUniformBuffer.destroy();
   }
-  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — the manager owns only the 1×1 LUT
-  // placeholder; the real sky-view / MS LUT textures are owned by the perf
-  // manager and must NOT be destroyed here.
+  // The manager owns only the 1×1 LUT placeholder. The real sky-view and
+  // multiple-scattering LUT textures belong to the perf manager and must not be
+  // destroyed here.
   if (cache.lutPlaceholderTex) {
     cache.lutPlaceholderTex.destroy();
   }
-  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — the manager owns only the 1×1×1 cloud
-  // noise placeholder; the real baked cloud noise is owned by the cloud renderer
-  // (`_cloudCache.noise`) and must NOT be destroyed here.
+  // The manager owns only the 1×1×1 cloud noise placeholder. The real baked
+  // cloud noise belongs to the cloud renderer (`_cloudCache.noise`) and must
+  // not be destroyed here.
   if (cache.cloudPlaceholderTex) {
     cache.cloudPlaceholderTex.destroy();
   }

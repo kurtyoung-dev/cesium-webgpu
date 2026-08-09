@@ -1,15 +1,15 @@
 /// <reference types="@webgpu/types" />
 /**
- * C11-193 persistent target pool for the dynamic-environment refresh path.
+ * Persistent target pool for the dynamic-environment refresh path.
  *
- * Before this module every refresh created and destroyed its own packed
- * parameter arena buffer (`createIBLCommandEncodingScope` /
- * `destroyIBLCommandEncodingScope`), and every manager privately owned a
- * `size x size` capture depth target for a resource that is `depthStoreOp:
- * "discard"` and therefore has no cross-refresh contents worth keeping
- * per-owner. With the bounded drain in front of it, a small context-owned pool
- * lets the whole refresh path settle on a handful of long-lived objects instead
- * of one create/destroy pair per refresh per manager.
+ * Without it, every refresh creates and destroys its own packed parameter arena
+ * buffer (`createIBLCommandEncodingScope` / `destroyIBLCommandEncodingScope`),
+ * and every manager privately owns a `size x size` capture depth target for a
+ * resource that is `depthStoreOp: "discard"` and therefore has no cross-refresh
+ * contents worth keeping per-owner. Behind the bounded refresh drain, this
+ * small context-owned pool lets the whole refresh path settle on a handful of
+ * long-lived objects instead of one create/destroy pair per refresh per
+ * manager.
  *
  * ## Ownership and device generation
  *
@@ -25,7 +25,7 @@
  *
  * ## In-flight safety
  *
- * A released handle is NOT destroyed; it returns to a free list. That is what
+ * A released handle is not destroyed; it returns to a free list. That is what
  * makes release-before-submit safe: WebGPU keeps a texture or buffer alive for
  * commands already recorded against it as long as `destroy()` is not called.
  * Re-issuing the same depth target to another consumer inside one frame is

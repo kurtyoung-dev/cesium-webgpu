@@ -1,6 +1,5 @@
 /**
- * WebGL bright-star catalog starfield renderer
- * (NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK, Batch 324).
+ * WebGL bright-star catalog starfield renderer.
  *
  * The WebGL counterpart to {@link WebGPUStarFieldRenderer}: draws the same
  * Yale Bright Star Catalog subset ({@link BrightStarCatalog}) as instanced
@@ -11,7 +10,7 @@
  *
  * Parity with WebGPU is guaranteed structurally: the per-instance vertex
  * records (RA/Dec → inertial direction, Pogson magnitude → HDR brightness,
- * B−V → blackbody RGB, brightness-driven size boost) come from the SAME
+ * B−V → blackbody RGB, brightness-driven size boost) come from the same
  * backend-neutral {@link module:StarFieldMath} the WebGPU renderer uses.
  * Only the draw path differs — GLSL point sprites (`StarFieldVS/FS.glsl`)
  * vs the WGSL pipeline (`Shaders/WebGPU/Catalog/StarField.wgsl`).
@@ -26,7 +25,7 @@
  *     uniform — the same rotation SkyBox uses for its cubemap.
  *
  * Lifecycle: the per-instance star buffer + VertexArray + ShaderProgram +
- * RenderState are built ONCE (catalog is static); only the per-frame
+ * RenderState are built once (the catalog is static); only the per-frame
  * uniforms (point sizing + day-fade-modulated intensity) change. The
  * resources are cached on `starField._webglCache`. The renderer is
  * registered as the WebGL {@link FeatureRendererKey.STAR_FIELD} feature
@@ -63,7 +62,7 @@ import StarFieldFS from "../Shaders/StarFieldFS.js";
 
 const STAR_VERTEX_STRIDE = FLOATS_PER_STAR * 4; // 32 bytes
 
-// Attribute locations. Attribute 0 MUST be the per-vertex (non-instanced)
+// Attribute locations. Attribute 0 must be the per-vertex (non-instanced)
 // corner — VertexArray forbids an instanceDivisor on attribute zero.
 const attributeLocations = {
   corner: 0,
@@ -168,11 +167,11 @@ function buildResources(context, cache) {
   });
 
   // Background at infinity, no depth test/write — mirrors the SkyBox
-  // cubemap. The stars run in the ENVIRONMENT pass BEFORE the globe/opaque
-  // passes, which overwrite them wherever solid geometry is present; with
-  // the depth test disabled, the dead-ahead star can't be far-plane clipped
-  // (WebGL's [-1,1] NDC z is prone to that — see StarFieldVS.glsl). The
-  // blend is premultiplied additive (srcRGB = ONE) — matching the WGSL
+  // cubemap. The stars run in the environment pass, before the globe and
+  // opaque passes, which overwrite them wherever solid geometry is present;
+  // with the depth test disabled, the dead-ahead star can't be far-plane
+  // clipped (WebGL's [-1,1] NDC z is prone to that — see StarFieldVS.glsl).
+  // The blend is premultiplied additive (srcRGB = ONE) — matching the WGSL
   // pipeline; the FS premultiplies rgb by the radial falloff, so
   // SOURCE_ALPHA here would double-attenuate. cullFace disabled (the quad
   // faces the camera).
@@ -202,11 +201,11 @@ function buildResources(context, cache) {
   cache.shaderProgram = shaderProgram;
   cache.renderState = renderState;
   cache.starCount = BrightStarCatalog.count;
-  // C7-SUN-STARS-EXTINCTION — persistent uniform-backing vectors.
+  // Persistent uniform-backing vectors for the star extinction.
   cache.zenithTransmittance = new Cartesian3(1.0, 1.0, 1.0);
   cache.cameraUpFixed = new Cartesian3(0.0, 0.0, 1.0);
-  // C12-27 — persistent backing for the angular solar-glare uniforms. The
-  // strength (`w = 0`) is the exact identity: the VS skips the whole block.
+  // Persistent backing for the angular solar-glare uniforms. The strength
+  // (`w = 0`) is the exact identity: the VS skips the whole block.
   cache.solarGlare = new Cartesian4(0.0, 0.0, 1.0, 0.0);
   cache.solarGlareCurve = new Cartesian4(1.0, 0.0, 0.0, 0.0);
 }
@@ -293,9 +292,9 @@ function updateWebGLStarField(starField, frameState) {
   cache.intensityScale = effectiveIntensityScale;
   cache.minPointSize = starField._minPointSize;
 
-  // C7-SUN-STARS-EXTINCTION — per-frame zenith transmittance + camera up
-  // (Earth-fixed). Published by StarField.update (shared B629 integrator).
-  // ONE / no extinction when the atmosphere is hidden or from orbit → the
+  // Per-frame zenith transmittance + camera up (Earth-fixed), published by
+  // StarField.update through the shared extinction integrator. Cartesian3.ONE
+  // (no extinction) when the atmosphere is hidden or from orbit, so the
   // shader's pow(1, airmass) leaves every star byte-identical.
   const zenithT = frameState.starZenithTransmittance;
   if (defined(zenithT)) {
@@ -311,7 +310,7 @@ function updateWebGLStarField(starField, frameState) {
     Cartesian3.clone(Cartesian3.UNIT_Z, cache.cameraUpFixed);
   }
 
-  // C12-27 — angular solar-glare washout. Resolved once per frame by
+  // Angular solar-glare washout. Resolved once per frame by
   // `Scene.updateEnvironment` (`Scene/SolarGlareAppearance.js`) and read here
   // exactly as `starZenithTransmittance` is, so the WebGPU pack and this one
   // consume the identical numbers. Strength 0 (toggle off, or no resolution

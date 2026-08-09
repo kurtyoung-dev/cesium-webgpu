@@ -127,7 +127,7 @@ function createCompositorCache(
     },
     primitive: { topology: "triangle-list" },
     // The final blit is drawn into `resumeDefaultRenderPass()`'s canvas pass,
-    // which ALWAYS carries a depth-stencil attachment (`_beginDefaultRenderPass`
+    // which always carries a depth-stencil attachment (`_beginDefaultRenderPass`
     // attaches `_depthTextureView`, which `beginFrame` populates every frame).
     // A pipeline with no depthStencil state is incompatible with that pass, so
     // `setPipeline` fails validation, the pass is invalidated, and the whole

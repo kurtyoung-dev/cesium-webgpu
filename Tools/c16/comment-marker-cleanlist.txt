@@ -64,3 +64,57 @@ packages/engine/Source/Shaders/WebGPU/Environment/CloudReconstructionAttachments
 packages/engine/Source/Shaders/WebGPU/Environment/CloudTemporalResolve.wgsl
 packages/engine/Source/Shaders/WebGPU/Environment/CloudUpscale.wgsl
 packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl
+
+# Celestial: the sun disc and its photometry, the sun bloom and screen-space
+# halo, the moon and its appearance modules, the star catalogue and starfield
+# renderers, the eclipse family, the celestial extinction and sky-brightness
+# estimators, and the WebGPU environment-map renderers that bake them.
+# Knowledge moved to migration_doc/DEV_NOTES_celestial.md.
+packages/engine/Source/Core/MoonDecodedSourceCache.js
+packages/engine/Source/Renderer/WebGLStarFieldRenderer.js
+packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentDemandRegistry.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRefreshScheduler.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js
+packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentTargetPool.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentalEffectsCompositor.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUMoonTextureLifecycle.js
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentDemand.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentalEffects.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSpecularEnvironmentCubeMap.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUStarFieldRenderer.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSunBloomEffect.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSunHaloEffect.ts
+packages/engine/Source/Scene/BrightStarCatalog.js
+packages/engine/Source/Scene/EclipseGlobeShadow.js
+packages/engine/Source/Scene/EclipseState.js
+packages/engine/Source/Scene/Moon.js
+packages/engine/Source/Scene/MoonLight.js
+packages/engine/Source/Scene/MoonPhaseAppearance.js
+packages/engine/Source/Scene/SkyBrightness.js
+packages/engine/Source/Scene/SolarDiscModel.js
+packages/engine/Source/Scene/StarCubeMapResource.js
+packages/engine/Source/Scene/StarField.js
+packages/engine/Source/Scene/StarFieldMath.ts
+packages/engine/Source/Scene/Sun.js
+packages/engine/Source/Scene/SunDiscAppearance.js
+packages/engine/Source/Scene/SunHaloAppearance.js
+packages/engine/Source/Scene/SunLight.js
+packages/engine/Source/Scene/SunPostProcess.js
+packages/engine/Source/Scene/WebGLMoonImageMaterial.js
+packages/engine/Source/Scene/WebGLMoonTextureLifecycle.js
+packages/engine/Source/Scene/WebGLMoonTextureMipPolicy.js
+packages/engine/Source/Scene/computeAtmosphereExtinction.js
+packages/engine/Source/Scene/computeSolarObscuration.js
+packages/engine/Source/Scene/resolveMoonNormalMapStrength.js
+packages/engine/Source/Shaders/StarFieldFS.glsl
+packages/engine/Source/Shaders/StarFieldVS.glsl
+packages/engine/Source/Shaders/SunFS.glsl
+packages/engine/Source/Shaders/SunTextureFS.glsl
+packages/engine/Source/Shaders/SunVS.glsl
+packages/engine/Source/Shaders/WebGPU/Catalog/StarField.wgsl
+packages/engine/Source/Shaders/WebGPU/Environment/Moon.wgsl
+packages/engine/Source/Shaders/WebGPU/Environment/Sun.wgsl
+packages/engine/Source/Shaders/WebGPU/PostProcess/SunBrightPass.wgsl

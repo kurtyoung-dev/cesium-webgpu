@@ -606,16 +606,27 @@ test("the moon UB's inline offset comments describe the SHIPPED tail", () => {
 
   // 1. The allocation comment. It must not still advertise a smaller tail than
   //    the code writes — that is the number a next author appends after.
-  const allocationStart = envRenderer.indexOf(
-    "// Uniform buffer (Phase 1.2c v2",
+  //    Located by walking back from the allocation itself to the blank line
+  //    above its comment block, rather than by matching the comment's opening
+  //    words: anchoring on prose means a reworded comment silently skips this
+  //    check, and the whole point of the test is that the comment stays true.
+  const allocationEnd = envRenderer.indexOf(
+    "cache.uniformData = new Float32Array(MOON_UNIFORM_BUFFER_SIZE / 4)",
   );
+  assert.ok(allocationEnd > 0, "the moon uniform allocation must be locatable");
+  const allocationStart =
+    envRenderer.slice(0, allocationEnd).lastIndexOf("\n\n") + 1;
   assert.ok(allocationStart > 0, "the allocation comment must be locatable");
-  const allocation = envRenderer.slice(
-    allocationStart,
-    envRenderer.indexOf(
-      "cache.uniformData = new Float32Array(",
-      allocationStart,
-    ),
+  const allocation = envRenderer.slice(allocationStart, allocationEnd);
+  assert.match(
+    allocation,
+    /MOON_UNIFORM_BUFFER_SIZE/,
+    "the allocation comment must name the constant the buffer size lives on",
+  );
+  assert.match(
+    allocation,
+    /ud\[86\]/,
+    "the allocation comment must name the last float the pack writes",
   );
   const advertisedBytes = [...allocation.matchAll(/(\d+) bytes/g)].map(
     (match) => Number(match[1]),

@@ -2,18 +2,17 @@
  * Naked-eye subset of the Yale Bright Star Catalog (BSC5, Hoffleit & Warren
  * 1991), as served by NASA HEASARC.
  *
- * ⚠ PROVENANCE CORRECTION (2026-07-19). This docblock previously asserted that
- * BSC5 "is in the PUBLIC DOMAIN". **That claim was not supported and has been
- * withdrawn.** A primary-source licensing review found no copyright notice,
- * licence, or public-domain dedication in the CDS V/50 ReadMe, the HEASARC
- * BSC5P page, or the BSC5 documentation — the catalogue is demonstrably
- * *freely available*, which is not the same thing as public domain. In
- * particular **17 U.S.C. §105 does not apply**: §105 covers works of US
- * Government *employees*, whereas BSC5's authors are Hoffleit (Yale, a private
- * university) and Warren (ST Systems Corporation, a contractor). Federal
- * hosting confers no PD status.
+ * Provenance. BSC5 is not public domain, and the docblock must not say that it
+ * is without a written grant. A primary-source licensing review found no
+ * copyright notice, licence, or public-domain dedication in the CDS V/50
+ * ReadMe, the HEASARC BSC5P page, or the BSC5 documentation — the catalogue is
+ * demonstrably *freely available*, which is not the same thing. 17 U.S.C. §105
+ * does not reach it either: §105 covers works of US Government *employees*,
+ * whereas BSC5's authors are Hoffleit (Yale, a private university) and Warren
+ * (ST Systems Corporation, a contractor), and federal hosting confers no
+ * public-domain status.
  *
- * What IS accurate: the vendored fields below are RA/Dec/Vmag/B−V —
+ * What the vendoring does rest on: the fields below are RA/Dec/Vmag/B−V —
  * measurements of physical reality, which are uncopyrightable *facts* in the US
  * under *Feist v. Rural*; BSC5 is a 1991 pre-satellite compilation carrying no
  * ESA-catalogue encumbrance (unlike Hipparcos/Tycho/Gaia, which ESA distributes
@@ -22,23 +21,22 @@
  * Residual exposure is low in the US and higher in the EU, where the Database
  * Directive protects substantial extraction independently of copyright.
  *
- * **Do not restore the public-domain assertion without a written grant.**
- * The C12-09 ingest below **satisfied** DR-02's three conditions rather than
- * clearing the underlying question: it is sourced from **NASA HEASARC** (US
- * federal; no EU database-right maker) rather than VizieR/CDS, it vendors
- * **only** the four factual columns, and it is re-sorted under this file's own
- * schema rather than shipping V/50's row order. The terms verification — the
- * verbatim HEASARC quote, what it does and does not establish, and the
- * residual that remains — is in `LICENSE.md` → *Bundled Engine Assets* →
- * *Bright-star catalogue*, and in `Tools/star-catalog-bake/README.md` §2. The
- * cheap route to actual clearance is still a one-line written confirmation
- * from CDS (`cds-question@unistra.fr`) and/or Yale.
+ * The ingest is shaped to keep that residual small rather than to settle the
+ * underlying question: it is sourced from NASA HEASARC (US federal, with no EU
+ * database-right maker) rather than VizieR/CDS, it vendors only the four
+ * factual columns, and it is re-sorted under this file's own schema rather than
+ * shipping V/50's row order. The terms verification — the verbatim HEASARC
+ * quote, what it does and does not establish, and the residual that remains —
+ * is in `LICENSE.md` → *Bundled Engine Assets* → *Bright-star catalogue*, and
+ * in `Tools/star-catalog-bake/README.md` §2. The cheap route to actual
+ * clearance is a one-line written confirmation from CDS
+ * (`cds-question@unistra.fr`) and/or Yale.
  *
  * This module embeds 2,868 catalog entries spanning visual magnitude -1.46
  * through 5.5 as a flat numeric table so the starfield renderer can build a
- * GPU point set without a network fetch. Under DR-01 the star cubemap carries
- * diffuse light only, so this table is the **sole** source of resolved stars
- * on both backends — its depth is load-bearing, not decorative.
+ * GPU point set without a network fetch. The star cubemap carries diffuse
+ * light only, so this table is the sole source of resolved stars on both
+ * backends — its depth is load-bearing, not decorative.
  *
  * Each star is four consecutive numbers in {@link BrightStarCatalog.data}:
  *
@@ -55,26 +53,22 @@
  *
  * ## Layout of the table below
  *
- * The first 263 rows are the hand-curated, name-annotated core the fork
- * shipped through C12-08, in their historical order. **24 of them carried
- * transcription errors** — a named star placed where no BSC5 star of that
- * brightness exists, almost always a wrong right ascension with the
- * declination and photometry copied correctly (displacements 0.07° to 29.5°,
- * ν Hya the worst). C12-09 repositioned all 24 from the source; the pinned
- * correction table, and the evidence identifying each star, are in
- * `Tools/star-catalog-bake/bake-star-catalog.mjs` and the manifest beside it.
- * This mattered little while the cubemap painted every star anyway; under
- * DR-01 it is a named star visibly in the wrong constellation, drawn twice.
+ * The first 263 rows are the hand-curated, name-annotated core, in their
+ * original order. Their positions are pinned against the source by
+ * `Tools/star-catalog-bake/bake-star-catalog.mjs` and the manifest beside it,
+ * because a hand-transcribed row is one wrong right ascension away from
+ * putting a named star in the wrong constellation — a mistake the cubemap
+ * used to hide but the sprite catalogue does not.
  *
  * Everything after the `BEGIN GENERATED` marker is machine-emitted, sorted
- * brightest-first. **Do not hand-edit that region** — re-run
+ * brightest-first, and must not be hand-edited — re-run
  * `node Tools/star-catalog-bake/bake-star-catalog.mjs`, which is idempotent.
  *
- * ## Extension contract (unchanged)
+ * ## Extension contract
  *
  * The list stays intentionally augmentable: appending more
- * `[ra, dec, vmag, bv]` rows at any magnitude limit requires **no renderer
- * change** — both starfield renderers read `data.length / STRIDE` to size
+ * `[ra, dec, vmag, bv]` rows at any magnitude limit requires no renderer
+ * change — both starfield renderers read `data.length / STRIDE` to size
  * their buffers, and they draw with additive premultiplied blending and depth
  * writes disabled, so row order does not affect the composite. The one
  * coupled constant is `MAG_CUTOFF` in {@link StarFieldMath}, which is

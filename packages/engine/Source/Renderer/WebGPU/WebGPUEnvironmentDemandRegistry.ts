@@ -1,10 +1,10 @@
 /**
- * C11-193 environment-map consumer demand telemetry.
+ * Environment-map consumer demand telemetry.
  *
  * This registry is deliberately observe-only. It records what Scene producers
  * know about consumers of a {@link DynamicEnvironmentMapManager}, but it does
- * not gate refresh work, change update ordering, or retain GPU resources. The
- * later shared-job-scheduler slice can use the same classifications after its
+ * not gate refresh work, change update ordering, or retain GPU resources. A
+ * shared job scheduler can consume the same classifications once its
  * visibility and ordering gates are proven.
  *
  * A manager is a WeakMap key, so the registry never extends its lifetime. Each

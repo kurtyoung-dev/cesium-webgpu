@@ -1,4 +1,4 @@
-// C12-29 S5 — camera-independent lunar shadow data for globe fragments.
+// Camera-independent lunar shadow data for globe fragments.
 //
 // Raw f32 Sun/Moon ECEF positions make the shader subtract Earth-scale and
 // astronomical values before normalizing. High/low pairs do not repair that

@@ -1,5 +1,5 @@
 /**
- * C12-35 — frame-owned WebGL Moon texture lifecycle.
+ * Frame-owned WebGL Moon texture lifecycle.
  *
  * The shared cache owns decoded pixel sources. This lifecycle owns an
  * immediate cache lease while a source is pending or staged, but asynchronous

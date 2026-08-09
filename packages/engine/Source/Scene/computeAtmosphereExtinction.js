@@ -13,9 +13,9 @@ const ATMOSPHERE_THICKNESS = 111e3;
 // negligible.
 const EXTINCTION_STEPS = 16;
 
-// C12-30 — number of samples for the in-scattering (sky-wash) integral.
-// Primary matches EXTINCTION_STEPS / the sky shader's PRIMARY_STEPS_MAX;
-// the light (secondary) march matches the sky shader's LIGHT_STEPS_MAX.
+// Number of samples for the in-scattering (sky-wash) integral. The primary
+// march matches EXTINCTION_STEPS and the sky shader's PRIMARY_STEPS_MAX; the
+// secondary light march matches the sky shader's LIGHT_STEPS_MAX.
 const INSCATTER_PRIMARY_STEPS = 16;
 const INSCATTER_LIGHT_STEPS = 4;
 
@@ -336,47 +336,47 @@ function computeAtmosphereExtinctionCached(
   return result;
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// C12-30 — atmospheric IN-SCATTERING (sky-wash) for celestial bodies.
+// Atmospheric in-scattering, the sky wash in front of a celestial body.
 //
-// Extinction (above) is the multiplicative half of the atmospheric transfer
-// along the camera→body ray: how much body light survives the path. This is
-// the ADDITIVE half: how much sunlight is scattered INTO the path — the sky
-// radiance rendered "in front of" the body's disc. Because the Moon/Sun
-// discs are drawn opaquely OVER the sky-atmosphere shell, the disc pixels
-// lose the sky radiance the neighboring pixels keep, so a daytime moon
-// reads as a dark cutout against the bright sky. The correct composite is
+// Extinction above is the multiplicative half of the atmospheric transfer
+// along the camera-to-body ray: how much body light survives the path. This
+// is the additive half: how much sunlight is scattered into the path, the sky
+// radiance rendered in front of the body's disc. The Moon and Sun discs are
+// drawn opaquely over the sky-atmosphere shell, so the disc pixels lose the
+// sky radiance their neighbours keep and a daytime moon reads as a dark
+// cutout against a bright sky. The composite that fixes it is
 //
 //     pixel = discColor × extinction + inscatter
 //
-// mirroring the radiative transfer solution L = L0·T + ∫ S·T dt.
+// mirroring the radiative-transfer solution L = L0·T + ∫ S·T dt.
 //
 // The integral below is a CPU port of the sky-atmosphere shader's own
-// single-scattering model (AtmosphereCommon.glsl `computeScattering` +
-// `computeAtmosphereColor`, and the WGSL twin in SkyAtmosphere.wgsl):
-// same 111 km shell, same Rayleigh/Mie coefficients + scale heights, same
-// 16-step primary / 4-step light march, same Rayleigh + Henyey-Greenstein
-// phase functions, same lightIntensity scale — so the disc wash matches
-// the sky the atmosphere pass actually renders around it. Deliberate
+// single-scattering model — `computeScattering` and `computeAtmosphereColor`
+// in AtmosphereCommon.glsl, and the WGSL twin in SkyAtmosphere.wgsl. It uses
+// the same 111 km shell, the same Rayleigh and Mie coefficients and scale
+// heights, the same 16-step primary and 4-step light march, the same Rayleigh
+// and Henyey-Greenstein phase functions and the same lightIntensity scale, so
+// the disc wash matches the sky the atmosphere pass renders around it. Three
 // simplifications, each documented at its site:
-//   - primary sample heights clamp to >= 0 (matches the sibling extinction
-//     integrator; avoids over-dense samples when the reference sphere sits
-//     above local terrain);
-//   - the light march does NOT clamp heights — a light path through the
-//     planet accumulates enormous optical depth and the attenuation goes
-//     to zero, which IS the earth-shadow / night behavior (the shader's
-//     `nightAlpha` stylistic gate is not replicated; the physics covers it);
-//   - the shader's adaptive step-count/step-length heuristics are perf
-//     optimizations for the GPU and are skipped (fixed 16/4 CPU steps).
+//   - primary sample heights clamp to >= 0, matching the sibling extinction
+//     integrator, which avoids over-dense samples when the reference sphere
+//     sits above local terrain;
+//   - the light march does not clamp heights: a light path through the planet
+//     accumulates enormous optical depth and the attenuation goes to zero,
+//     which is the earth-shadow and night behaviour. The shader's
+//     `nightAlpha` stylistic gate is not replicated because the physics
+//     already covers it;
+//   - the shader's adaptive step-count and step-length heuristics are GPU
+//     optimisations and are skipped in favour of a fixed 16/4 march.
 //
-// Display-space matching: with HDR off (the default) the sky FS tonemaps
-// in-shader (czm_pbrNeutralTonemapping + czm_inverseGamma in GLSL; the
-// unconditional tonemap chain in SkyAtmosphere.wgsl) and alpha-blends with
-// `alpha = mix(color.b, 1.0, heightOpacity)` over the (near-black) space
-// background. The wash reproduces that exact chain when `applyTonemap` is
-// true so the disc blends seamlessly into the rendered sky; when HDR is on
-// the caller passes false and the linear radiance rides the PP tonemap.
-// ─────────────────────────────────────────────────────────────────────────
+// Display space is matched as well. With HDR off, the default, the sky
+// fragment shader tonemaps in-shader — `czm_pbrNeutralTonemapping` plus
+// `czm_inverseGamma` in GLSL, the unconditional tonemap chain in
+// SkyAtmosphere.wgsl — and alpha-blends with
+// `alpha = mix(color.b, 1.0, heightOpacity)` over the near-black space
+// background. The wash reproduces that chain when `applyTonemap` is true, so
+// the disc blends seamlessly into the rendered sky; with HDR on the caller
+// passes false and the linear radiance rides the post-process tonemap.
 
 // JS port of czm_pbrNeutralTonemapping (KhronosGroup PBR Neutral).
 // Operates on the result Cartesian3 in place.

@@ -31,7 +31,7 @@ import {
   retireWebGPUMoonPublishedTexture,
   retireWebGPUMoonTextureLifecycle,
 } from "./WebGPUMoonTextureLifecycle.js";
-// Slice 5c-B Phase 1 (Batch 106) — scene-FB target helper.
+// Scene-framebuffer target helper.
 import {
   makeSceneFBTargets,
   isSceneFBMrtMode,
@@ -44,9 +44,9 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
-// Phase 1.x consolidation — shared bounding-cube + base uniform pack
-// for ellipsoid bodies. Moon is the first consumer; future Sun-as-
-// ellipsoid and custom planet renderers will share these helpers.
+// Shared bounding-cube geometry and base uniform pack for ellipsoid bodies.
+// The Moon is the only consumer today; the helpers are shaped so that a
+// sun-as-ellipsoid or a custom planet renderer can share them unchanged.
 import {
   createEllipsoidBoundingCube,
   createEllipsoidBindGroupLayout,
@@ -57,7 +57,6 @@ import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
 // Per-device shader module cache so two Sun / Moon instances on the same
 // `GPUDevice` share one compiled `GPUShaderModule`.
-// (C-R7-SHADER-MODULE-DEDUP, Batch 74.)
 const _envShaderModuleCaches = new WeakMap();
 
 function getEnvShaderModuleCache(device) {
@@ -69,8 +68,8 @@ function getEnvShaderModuleCache(device) {
   return cache;
 }
 
-// Sun WGSL hoisted out of the per-update block so the module cache can
-// dedupe it by source id. Pure relocation — content is unchanged.
+// The sun's WGSL lives at module scope rather than inside the per-update
+// block so the module cache can dedupe it by source id across instances.
 const SUN_SHADER_WGSL = `
 struct Uniforms {
   mvpRTE: mat4x4<f32>,
@@ -189,7 +188,7 @@ function _envDescriptorToGPU(d) {
  * kicks off async creation and returns null. Falls back to direct
  * synchronous creation when `pipelineCache` is null.
  *
- * C-R7-RENDERER-MIGRATION (Batch 74). Mirrors `tryResolvePolylinePipeline`.
+ * Mirrors `tryResolvePolylinePipeline`.
  * @private
  */
 function tryResolveEnvPipeline(device, pipelineCache, entry) {
@@ -225,26 +224,25 @@ function tryResolveEnvPipeline(device, pipelineCache, entry) {
 }
 
 const UNIFORM_BUFFER_SIZE = 256;
-// Moon uses a slightly larger uniform buffer to fit the full Phase 1.2c v2
-// state (RTE moon center + camera split + 3x3 inverse-modelView + radii +
-// 2 light directions + celestial state + Phong tunables + log-depth far).
-// 320 → 336 for the C12 moon wave (lunarBRDF flag reuses the old spare at
-// byte 316; inscatter vec3 + oppositionSurge appended at 320..335) —
-// ADD-ONLY at the tail, existing offsets frozen (phaseFraction stays at
-// float offset 67 / byte 268).
-// 336 → 352 for C12-25's `normalStrength` (byte 336 / float offset 84): the
-// 320..335 slot was already full (inscatter vec3 + oppositionSurge), so the
-// new scalar opens a fresh 16-byte slot. Still add-only at the tail.
+// The Moon's uniform buffer is larger than the Sun's because it carries the
+// whole ray-march state: the RTE moon centre and camera split, the 3x3
+// inverse model-view, the radii, two light directions, the celestial state,
+// the Phong tunables and the log-depth far plane, then the lunar BRDF flag at
+// byte 316, the in-scatter vec3 and opposition surge at 320..335, and the
+// relief strength and phase pair from byte 336.
+//
+// Growth is add-only at the tail and existing offsets stay frozen — the phase
+// fraction remains at float offset 67, byte 268 — because the `U` struct in
+// Moon.wgsl and `_packMoonUniforms` both address this buffer by absolute
+// offset, so moving one field silently reinterprets every field after it.
 const MOON_UNIFORM_BUFFER_SIZE = 352;
 const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
-// Phase 1.x consolidation — the inverseModelView3, cameraMC, sunMC,
-// sceneLightMC, inverseModelMatrix, and inverseModelRot3 scratches that
-// the old `_packMoonUniforms` body used were moved into
-// `WebGPUEllipsoidRenderer.ts` along with the base uniform pack. The
-// scratches kept here are still used by the Sun renderer
-// (`scratchEncodedPos`, `scratchEncodedCamera`) and the Moon
+// The inverseModelView3, cameraMC, sunMC, sceneLightMC, inverseModelMatrix
+// and inverseModelRot3 scratches live in `WebGPUEllipsoidRenderer.ts` with the
+// base uniform pack that uses them. The ones below belong to the Sun renderer
+// (`scratchEncodedPos`, `scratchEncodedCamera`) and to the Moon's
 // behind-camera early-out (`scratchMoonPositionWC`, `scratchCameraToMoon`).
 const scratchEncodedCamera = new EncodedCartesian3();
 const scratchMoonPositionWC = new Cartesian3();
@@ -257,19 +255,19 @@ const defaultSunPosition = Object.freeze(new Cartesian3(1.5e11, 0.0, 0.0));
 // ============================================================
 
 /**
- * C12-17 — WebGL's sun texture is sized from the drawing buffer
- * (`Sun.js`: `2^(ceil(log2(max(w, h))) - 2)`, clamped to >= 1). WebGPU
- * hardcoded 256. This reproduces the WebGL rule so the two backends bake at
- * the same resolution, with ONE deliberate difference: an upper cap.
+ * Edge length of the sun bake, reproducing WebGL's rule
+ * (`Sun.js`: `2^(ceil(log2(max(w, h))) - 2)`, clamped to >= 1) so that the two
+ * backends bake at the same resolution, with one deliberate difference: an
+ * upper cap of 1024.
  *
- * WHY THE CAP. WebGL bakes on the GPU (a ComputeCommand full-screen pass);
- * WebGPU bakes on the CPU in a JS double loop, so an uncapped 8K canvas
- * would ask for a 2048^2 = 4.2 Mpx loop on the main thread at every resize.
- * The cap costs nothing visually: the billboard's on-screen footprint is
- * `22 * limbPx` pixels and `limbPx` is ~4.3 px at 1080p / 60 deg FOV, i.e.
- * the quad is ~95 px wide, so even 256^2 is already ~2.7x oversampled and
- * 1024^2 is ~11x. Resolution is not the visual lever here — FORMAT is, which
- * is the other half of C12-17.
+ * The cap exists because WebGL bakes on the GPU, in a full-screen
+ * `ComputeCommand` pass, while this backend bakes on the CPU in a JS double
+ * loop; uncapped, an 8K canvas would ask for a 2048^2 = 4.2 Mpx loop on the
+ * main thread at every resize. It costs nothing visually: the billboard's
+ * on-screen footprint is `22 * limbPx` pixels and `limbPx` is about 4.3 px at
+ * 1080p and a 60 deg field of view, so the quad is about 95 px across and even
+ * 256^2 is already about 2.7x oversampled, 1024^2 about 11x. Resolution is not
+ * the visual lever here; the bake format is.
  *
  * @param {number} width Drawing buffer width in pixels.
  * @param {number} height Drawing buffer height in pixels.
@@ -285,10 +283,10 @@ function sunTextureSize(width, height) {
   return Math.min(1024, Math.max(1.0, size));
 }
 
-// C12-17 — IEEE-754 binary32 -> binary16 conversion for the HDR bake.
-// `Float16Array` is too new to rely on in the browsers this fork targets, so
-// the packing is explicit. Every value this bake produces is a finite number
-// in [0, 1] (main() clamps), so the Inf/NaN paths are unreachable and the
+// IEEE-754 binary32 to binary16 conversion for the HDR bake. `Float16Array`
+// is too new to rely on in the browsers this fork targets, so the packing is
+// explicit. Every value this bake produces is a finite number in [0, 1],
+// because the bake saturates, so the Inf/NaN paths are unreachable and the
 // only special case that matters is flushing values below the smallest
 // binary16 subnormal (2^-24) to zero.
 const _f32Scratch = new Float32Array(1);
@@ -329,11 +327,11 @@ function floatToHalfBits(value) {
  * @param {GPUDevice} device The device.
  * @param {number} size Edge length in texels ({@link sunTextureSize}).
  * @param {number} glowFactor `Sun.glowFactor`.
- * @param {string} format `"rgba16float"` under HDR, otherwise `"rgba8unorm"`
- *        (C12-17 parity with WebGL's HALF_FLOAT/UNSIGNED_BYTE selection).
- * @param {object} appearance Resolved `frameState.sunDiscAppearance`
- *        (C12-15 / C12-16); see `Scene/SunDiscAppearance.js`.
- * @param {object} halo Resolved `frameState.sunHalo` (C12-18); see
+ * @param {string} format `"rgba16float"` under HDR, otherwise `"rgba8unorm"`,
+ *        matching WebGL's HALF_FLOAT/UNSIGNED_BYTE selection.
+ * @param {object} appearance Resolved `frameState.sunDiscAppearance`; see
+ *        `Scene/SunDiscAppearance.js`.
+ * @param {object} halo Resolved `frameState.sunHalo`; see
  *        `Scene/SunHaloAppearance.js`. Supplies the disc's terminating radius
  *        and the bake halo gain, so this loop and `SunTextureFS.glsl` are fed
  *        the same two numbers rather than each re-deriving them.
@@ -350,22 +348,22 @@ function createSunTexture(device, size, glowFactor, format, appearance, halo) {
       GPUTextureUsage.COPY_DST,
   });
 
-  // BUG-1 fix — bake the sun texture exactly like WebGL SunTextureFS.glsl
-  // instead of the old disc-fills-85%-of-texture procedural (which left no
-  // room for a glow halo or lens flare). The disc occupies a SMALL central
-  // radius (u_radiusTS), a soft glow halo fills the rest, and six pre-rotated
-  // lens-flare bursts radiate out. RGB is ~white; the disc+glow+flare shape
-  // lives in alpha (and blue), so additive blending paints a glowing sun.
-  // glowLengthTS mirrors WebGL Sun.update (Sun.js:182-183): glowFactor * 5,
-  // which shrinks the central disc (radiusTS) and widens the glow halo as
-  // glowFactor rises. Sun default glowFactor = 1 -> glowLengthTS = 5.
+  // The bake is the CPU twin of `SunTextureFS.glsl`: the disc occupies a small
+  // central radius (`radiusTS` here, `u_radiusTS` there), a soft glow halo
+  // fills the rest, and six pre-rotated lens-flare bursts radiate out. RGB is
+  // close to white and the disc, glow and flare shape lives in alpha and blue,
+  // so the blend paints a glowing sun. A disc sized to fill most of the
+  // texture instead leaves no room for either the halo or the flare.
+  // `glowLengthTS` mirrors `Sun.update`'s `glowFactor * 5`, which shrinks the
+  // central disc and widens the glow halo as `glowFactor` rises; the default
+  // `glowFactor = 1` gives 5.
   const glowLengthTS = glowFactor * 5.0;
-  // C12-18 — the disc's terminating radius and the bake halo gain arrive
-  // resolved from `Scene/SunHaloAppearance.js`, published on frameState before
-  // the backend branch. The fallbacks below are the HISTORICAL positions
-  // (undersized disc + baked halo), matching what `SunTextureFS.glsl` renders
-  // when its uniforms carry the disabled toggle values — so an unpublished
-  // frame degrades to the pre-C12-18 picture rather than to a sun with no glow.
+  // The disc's terminating radius and the bake halo gain arrive resolved from
+  // `Scene/SunHaloAppearance.js`, published on `frameState` before the backend
+  // branch. The fallbacks below are the disabled-toggle positions — undersized
+  // disc, baked halo — matching what `SunTextureFS.glsl` renders when its
+  // uniforms carry those values, so an unpublished frame degrades to a sun
+  // that still has a glow rather than to one with none.
   const radiusTS = halo ? halo.discEdge : 0.5 / (1.0 + 2.0 * glowLengthTS);
   const haloGain = halo ? halo.bakeHaloGain : 1.0;
   const lengthScalar = 2.0 / Math.sqrt(2.0);
@@ -373,11 +371,10 @@ function createSunTexture(device, size, glowFactor, format, appearance, halo) {
     const t = Math.min(1.0, Math.max(0.0, (x - e0) / (e1 - e0)));
     return t * t * (3.0 - 2.0 * t);
   };
-  // C12-15 / C12-16 — the SAME resolution the WebGL bake receives as
-  // uniforms (`frameState.sunDiscAppearance`, published by `Sun.update`
-  // before the backend branch). `a1 = a2 = 0, a0 = 1` is the disabled
-  // position and reproduces the historical flat disc exactly;
-  // `glareLegacy = 1` selects the historical smoothstep halo.
+  // The same resolution the WebGL bake receives as uniforms
+  // (`frameState.sunDiscAppearance`, published by `Sun.update` before the
+  // backend branch). `a1 = a2 = 0, a0 = 1` is the disabled position and gives
+  // a flat disc exactly; `glareLegacy = 1` selects the smoothstep halo.
   const a0 = appearance ? appearance.a0 : 1.0;
   const a1 = appearance ? appearance.a1 : 0.0;
   const a2 = appearance ? appearance.a2 : 0.0;
@@ -395,7 +392,8 @@ function createSunTexture(device, size, glowFactor, format, appearance, halo) {
     const shaped = (raw - glarePedestal) / (1.0 - glarePedestal);
     return Math.min(1.0, Math.max(0.0, shaped));
   };
-  // Six manually-unrolled burst directions from SunTextureFS.glsl:42-48.
+  // Six manually-unrolled burst directions, matching the unrolled loop in
+  // `SunTextureFS.glsl`.
   const bursts = [
     [0.38942, 0.92106, 0.4],
     [0.99235, 0.12348, 0.4],
@@ -413,10 +411,10 @@ function createSunTexture(device, size, glowFactor, format, appearance, halo) {
       const px = (x + 0.5) / size - 0.5;
       const py = (y + 0.5) / size - 0.5;
       const radius = Math.sqrt(px * px + py * py) * lengthScalar;
-      // C12-15 — limb-darkened disc radiance in place of the binary step.
-      // See the SDR-clamp caveat in SunTextureFS.glsl's main(): with the
-      // 0..1 clamp below still in place this is masked at defaults and
-      // becomes visible under C12-19.
+      // Limb-darkened disc radiance in place of a binary step. The saturation
+      // further down leaves this visible at defaults, because `haloGain` is 0
+      // there and the alpha written is `surface` alone; `SunTextureFS.glsl`'s
+      // `main()` carries the same reasoning for the GLSL bake.
       const xr = Math.min(radius / radiusTS, 1.0);
       const muSq = 1.0 - xr * xr;
       const mu = muSq > 0.0 ? Math.sqrt(muSq) : 0.0;
@@ -427,15 +425,16 @@ function createSunTexture(device, size, glowFactor, format, appearance, halo) {
       let cg = 1.0;
       let cb = surface + 0.2;
       let ca = surface;
-      // glow halo into blue + alpha. C12-18 — `haloGain` is 0 whenever the
+      // Glow halo into blue and alpha. `haloGain` is 0 whenever the
       // post-process chain owns the halo, which makes the bake disc-only;
       // the GLSL twin gates the same term with `u_haloGain`.
       const glow = sunGlare(radius);
       cb += glow * (0.75 * haloGain);
       ca += glow * (0.75 * haloGain);
-      // lens-flare bursts (rotate(position, dir) * (25, 0.75), then radius).
-      // Aperture diffraction, not veiling glare — unchanged by C12-16, and
-      // reading `glareLegacyEdge` for the same 0.55 the GLSL twin uses.
+      // Lens-flare bursts: rotate(position, dir) * (25, 0.75), then radius.
+      // Aperture diffraction rather than veiling glare, so the envelope stays
+      // a smoothstep, reading `glareLegacyEdge` for the same 0.55 the GLSL
+      // twin uses.
       let burst = 0.0;
       for (let b = 0; b < bursts.length; b++) {
         const dx = bursts[b][0];
@@ -445,25 +444,25 @@ function createSunTexture(device, size, glowFactor, format, appearance, halo) {
         const rb = Math.sqrt(rx * rx + ry * ry) * lengthScalar;
         burst += bursts[b][2] * (1.0 - smoothstep(0.0, glareLegacyEdge, rb));
       }
-      // C12-18 — bursts follow `haloGain` with the halo (GLSL twin does the
-      // same); a disc with six spikes and no surrounding glow reads as a bug.
+      // The bursts follow `haloGain` with the halo, as the GLSL twin does: a
+      // disc left with six spikes and no surrounding glow reads as a bug.
       burst = Math.min(1.0, Math.max(0.0, burst)) * (0.15 * haloGain);
       cr += burst;
       cg += burst;
       cb += burst;
       ca += burst;
 
-      // C12-19 — the twin of the SPLIT saturation at the bottom of
-      // `SunTextureFS.glsl`'s main(). Componentwise identical to the
-      // historical clamp; split so both halves are named:
-      //   * rgb is CHROMA (a white point — `+0.2` on blue is the hue term
-      //     that makes the halo orange and the core white),
-      //   * alpha is the ALPHA_BLEND DESTINATION WEIGHT — above 1 it makes
-      //     `1 - a` negative and subtracts the sky (the Batch-364 class).
-      // The disc's true HDR radiance is NOT baked here: it is a linear
-      // multiply in the sun fragment shader (`u.discRadiance`), so the bake
-      // stays a shape and the radiance stays a per-frame scalar. See the
-      // C12-19 block in Scene/SolarDiscModel.js.
+      // The twin of the split saturation at the bottom of
+      // `SunTextureFS.glsl`'s `main()`. Componentwise a clamp to [0, 1], split
+      // so that both halves are named:
+      //   * rgb is chroma, a white point — the `+0.2` on blue is the hue term
+      //     that makes the halo orange and the core white,
+      //   * alpha is the ALPHA_BLEND destination weight, and above 1 it makes
+      //     `1 - a` negative and subtracts the sky.
+      // The disc's HDR radiance is not baked here: it is a linear multiply in
+      // the sun fragment shader (`u.discRadiance`), so the bake stays a shape
+      // and the radiance stays a per-frame scalar.
+      // `SolarDiscModel.SOLAR_DISC_SDR_RADIANCE` states both constraints.
       const chromaR = Math.min(1.0, Math.max(0.0, cr));
       const chromaG = Math.min(1.0, Math.max(0.0, cg));
       const chromaB = Math.min(1.0, Math.max(0.0, cb));
@@ -471,22 +470,21 @@ function createSunTexture(device, size, glowFactor, format, appearance, halo) {
 
       const idx = (y * size + x) * 4;
       if (isHalf) {
-        // C12-17 — HDR bake. Half-float buys PRECISION in the glare tail,
-        // which is exactly where 8-bit quantisation truncated the profile.
-        // Measured: rgba8unorm cannot represent alpha below 1/255 = 0.00392,
-        // which clips the legacy halo at 8.199 solar radii instead of its
-        // true 8.556 — a 4.2% radial loss, and 100% of the C12-16 tail
-        // beyond it.
+        // HDR bake. Half-float buys precision in the glare tail, which is
+        // where 8-bit quantisation truncates the profile: `rgba8unorm` cannot
+        // represent an alpha below 1/255 = 0.00392, which clips the legacy
+        // halo at 8.199 solar radii instead of its true 8.556 — a 4.2% radial
+        // loss, and the whole of the veiling-glare tail beyond it.
         pixels[idx + 0] = floatToHalfBits(chromaR);
         pixels[idx + 1] = floatToHalfBits(chromaG);
         pixels[idx + 2] = floatToHalfBits(chromaB);
         pixels[idx + 3] = floatToHalfBits(blendWeight);
       } else {
         // The 8-bit store is its own saturation — `rgba8unorm` cannot carry
-        // anything outside [0, 1] at all — so this branch would be unchanged
-        // even if the split above were removed. That is the structural half
-        // of C12-19's SDR-safety argument: on an SDR display the sun path is
-        // range-limited by the FORMAT, not by a tuning decision.
+        // anything outside [0, 1] at all — so this branch is unchanged even if
+        // the split above is removed. On an SDR display the sun path is
+        // therefore range-limited by the format rather than by a tuning
+        // decision.
         pixels[idx + 0] = chromaR * 255;
         pixels[idx + 1] = chromaG * 255;
         pixels[idx + 2] = chromaB * 255;
@@ -545,17 +543,18 @@ function packSunUniforms(uniformData, frameState, glowFactor, gamma) {
   uniformData[22] = scratchEncodedCamera.low.z;
   uniformData[23] = 0.0;
 
-  // BUG-1 fix — size the sun quad from its true angular radius + glow length,
-  // aspect-corrected, instead of the old fixed (0.02, 0.02) NDC half-extent
-  // (which, applied equally to a non-square viewport, made the sun a tiny
-  // glow-less ellipse easily lost against the stars — the "sun absent"
-  // symptom). Mirrors WebGL Sun.update (Sun.js:301-317): on-screen size =
-  // 2 * solarLimbPixels * (1 + 2*glowLengthTS), glowLengthTS = glowFactor*5.
-  // NDC half-extent = (SOLAR_RADIUS / camera->sun distance) * projection focal
-  // term * (1 + 2*glowLengthTS). Using projection[0] for X and [5] for Y
-  // auto-corrects aspect (proj[0] = proj[5]/aspect for a perspective frustum),
-  // so the quad is circular. The texture (createSunTexture) carries the small
-  // central disc + soft glow halo + lens-flare bursts across the full quad.
+  // The quad is sized from the sun's true angular radius and glow length, and
+  // aspect-corrected, mirroring `Sun.update`: the on-screen size is
+  // 2 * solarLimbPixels * (1 + 2*glowLengthTS) with glowLengthTS =
+  // glowFactor * 5, so the NDC half-extent is
+  // (SOLAR_RADIUS / camera-to-sun distance) * projection focal term *
+  // (1 + 2*glowLengthTS). Taking `projection[0]` for X and `[5]` for Y
+  // corrects the aspect on its own, because `proj[0] = proj[5]/aspect` for a
+  // perspective frustum, so the quad stays circular. A fixed NDC half-extent
+  // applied equally to a non-square viewport instead renders the sun as a
+  // small glow-less ellipse that is easily lost against the stars.
+  // `createSunTexture` fills the whole quad with the central disc, the glow
+  // halo and the lens-flare bursts.
   const glowLengthTS = glowFactor * 5.0;
   const sunSizeScale = 1.0 + 2.0 * glowLengthTS;
   const sunPos = uniformState.sunPositionWC ?? defaultSunPosition;
@@ -569,19 +568,19 @@ function packSunUniforms(uniformData, frameState, glowFactor, gamma) {
   uniformData[26] = glowFactor;
   uniformData[27] = gamma;
 
-  // C7-SUN-STARS-EXTINCTION — RGB atmospheric transmittance at offsets 28..30
-  // (vec3 `extinction`, 16-byte aligned at byte 112). Defaults to (1,1,1) when
-  // the atmosphere is hidden or the sun is viewed from orbit, making the shader
-  // multiply an exact no-op (byte-identical). Published by Sun.update.
+  // RGB atmospheric transmittance at offsets 28..30 — vec3 `extinction`,
+  // 16-byte aligned at byte 112. Defaults to (1,1,1) when the atmosphere is
+  // hidden or the sun is viewed from orbit, making the shader multiply a
+  // byte-identical no-op. Published by `Sun.update`.
   const extinction = frameState.sunAtmosphereExtinction;
   uniformData[28] = defined(extinction) ? extinction.x : 1.0;
   uniformData[29] = defined(extinction) ? extinction.y : 1.0;
   uniformData[30] = defined(extinction) ? extinction.z : 1.0;
 
-  // C12-29 S1 — eclipse fade at offset 31 (the former `_p2` pad, byte 124).
-  // `Sun.update` publishes this before the backend branch, so WebGL's
-  // `u_eclipseAlpha` and this slot always carry the same scalar. Falls back
-  // to 1.0 (exact identity) when the publisher hasn't run.
+  // Eclipse fade at offset 31, byte 124. `Sun.update` publishes it before the
+  // backend branch, so WebGL's `u_eclipseAlpha` and this slot always carry the
+  // same scalar. Falls back to 1.0, an exact identity, when the publisher has
+  // not run.
   const eclipseAlpha = frameState.sunEclipseAlpha;
   uniformData[31] = typeof eclipseAlpha === "number" ? eclipseAlpha : 1.0;
 
@@ -594,10 +593,10 @@ function packSunUniforms(uniformData, frameState, glowFactor, gamma) {
   uniformData[37] = scratchEncodedPos.low.y;
   uniformData[38] = scratchEncodedPos.low.z;
 
-  // C12-19 — disc radiance at offset 39 (the former `_sunPad1`, byte 156).
-  // `Sun.update` resolves it before the backend branch, so this slot and
-  // WebGL's `u_discRadiance` always carry the same scalar. Falls back to 1.0
-  // (exact identity) when the publisher hasn't run.
+  // Disc radiance at offset 39, byte 156. `Sun.update` resolves it before the
+  // backend branch, so this slot and WebGL's `u_discRadiance` always carry the
+  // same scalar. Falls back to 1.0, an exact identity, when the publisher has
+  // not run.
   const discRadiance = frameState.sunHalo?.discRadiance;
   uniformData[39] = typeof discRadiance === "number" ? discRadiance : 1.0;
 }
@@ -622,43 +621,42 @@ function updateWebGPUSun(sun, frameState) {
   }
   const cache = sun._webgpuCache;
 
-  // Parity with WebGL Sun (Sun.js) — the user-tunable glowFactor drives both
-  // the baked texture (disc radius + glow-halo length) and the on-screen quad
-  // size. Sun.glowFactor's setter clamps to >= 0; default 1.0 reproduces the
-  // historical hardcoded bake, so default scenes stay byte-identical.
+  // Parity with WebGL's `Sun`: the user-tunable `glowFactor` drives both the
+  // baked texture — disc radius and glow-halo length — and the on-screen quad
+  // size. `Sun.glowFactor`'s setter clamps it to >= 0.
   const glowFactor = defined(sun.glowFactor) ? sun.glowFactor : 1.0;
 
-  // C12-17 — bake size + format parity with WebGL (`Sun.update`): size from
-  // the drawing buffer, HALF_FLOAT-equivalent storage under HDR. Previously
-  // hardcoded 256^2 rgba8unorm regardless of canvas or HDR state.
+  // Bake size and format parity with WebGL's `Sun.update`: the size comes from
+  // the drawing buffer, and the storage is the HALF_FLOAT equivalent under
+  // HDR.
   const bakeSize = sunTextureSize(
     context.drawingBufferWidth,
     context.drawingBufferHeight,
   );
   const bakeFormat = frameState.useHDR === true ? "rgba16float" : "rgba8unorm";
-  // C12-15 / C12-16 — resolved by `Sun.update` before the backend branch, so
-  // this is the identical payload the WebGL bake's uniforms carry.
+  // Resolved by `Sun.update` before the backend branch, so this is the
+  // identical payload the WebGL bake's uniforms carry.
   const appearance = frameState.sunDiscAppearance;
-  // Fallback key MUST be 0 (both toggles OFF), because that is exactly what
-  // `createSunTexture` bakes when `appearance` is undefined (a0 = 1, a1 = a2
-  // = 0, glareLegacy = 1 — the historical disc + smoothstep halo). Using 3
-  // here would cache a LEGACY bake under a "both ON" signature and never
-  // rebuild it once a real appearance arrived carrying the same key.
-  // Unreachable today (`Sun.update` publishes before the FR branch), which is
-  // precisely why the mismatch would have been permanent if it ever fired.
+  // The fallback key has to be 0, both toggles off, because that is what
+  // `createSunTexture` bakes when `appearance` is undefined: a0 = 1,
+  // a1 = a2 = 0, glareLegacy = 1, i.e. the flat disc with the smoothstep halo.
+  // A fallback of 3 would cache that bake under a both-on signature and never
+  // rebuild it once a real appearance arrived carrying the same key. The
+  // branch is unreachable while `Sun.update` publishes before the
+  // feature-renderer branch, which is exactly why the mismatch would be
+  // permanent if it ever did fire.
   const appearanceKey = defined(appearance) ? appearance.key : 0;
-  // C12-18 — the halo state also shapes the bake (disc edge + halo gain), so
-  // it joins the rebuild signature in bits 2-3, exactly as `Sun.js` does for
-  // the WebGL bake. Fallback 2 = the historical position this function bakes
-  // when `halo` is undefined (legacy disc edge + baked halo), by the same
-  // reasoning that forced `appearanceKey`'s fallback to 0: caching a legacy
-  // bake under a "default" signature would pin it permanently.
+  // The halo state also shapes the bake — disc edge and halo gain — so it
+  // joins the rebuild signature in bits 2-3, exactly as `Sun.js` does for the
+  // WebGL bake. The fallback of 2 is the position this function bakes when
+  // `halo` is undefined, the legacy disc edge with a baked halo, by the same
+  // reasoning that fixes `appearanceKey`'s fallback at 0.
   const halo = frameState.sunHalo;
   const haloKey = defined(halo) ? halo.key : 2;
 
-  // Regenerate the baked texture when glowFactor, the drawing-buffer-derived
-  // size, the HDR format or the C12-15/16 toggle signature changes (mirrors
-  // WebGL's `_glowFactorDirty` / drawing-buffer / `_useHdr` rebuild set).
+  // Regenerate the baked texture when `glowFactor`, the drawing-buffer-derived
+  // size, the HDR format or the appearance toggle signature changes, mirroring
+  // WebGL's `_glowFactorDirty` / drawing-buffer / `_useHdr` rebuild set.
   // Rebuild only on change to avoid a per-frame CPU bake.
   if (
     defined(cache.sunTexture) &&
@@ -698,9 +696,9 @@ function updateWebGPUSun(sun, frameState) {
     }
   }
 
-  // Batch 110 \u2014 invalidate cached pipeline when scene format changes
-  // (HDR toggle). The Sun pipeline targets the scene FB, so its
-  // fragment-output format must match the recreated scene FB.
+  // Invalidate the cached pipeline when the scene format changes, as an HDR
+  // toggle does. The Sun pipeline targets the scene framebuffer, so its
+  // fragment-output format must match the recreated one.
   const currentGen = context._scenePipelineFormatGeneration ?? 0;
   if (
     defined(cache.pipelineEntry) &&
@@ -712,9 +710,8 @@ function updateWebGPUSun(sun, frameState) {
     cache.command = undefined;
   }
 
-  // C-R7 (Batch 74) \u2014 descriptor + central pipeline cache. Two Sun
-  // instances on the same device share one compiled shader module + one
-  // pipeline.
+  // Descriptor plus the central pipeline cache, so two Sun instances on the
+  // same device share one compiled shader module and one pipeline.
   if (!defined(cache.pipelineEntry)) {
     const moduleCache = getEnvShaderModuleCache(device);
     const shaderModule = moduleCache.getOrCreate(
@@ -733,10 +730,10 @@ function updateWebGPUSun(sun, frameState) {
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFormat = context.depthFormat || "depth24plus-stencil8";
     const descriptor = {
-      // `, alphaBlend` is a readability marker in the CLAUDE.md sense: the
-      // pipeline key already folds shader-module + target identity
-      // structurally, so this exists so `describeCacheKey()` and devtools
-      // say WHICH blend a row is, not to keep two rows apart (C11-115).
+      // `, alphaBlend` is a readability marker. The pipeline key already folds
+      // shader-module and target identity structurally, so this is here to let
+      // `describeCacheKey()` and devtools say which blend a row is, not to
+      // keep two rows apart.
       name: `Sun pipeline [${format}/${depthFormat}, alphaBlend]`,
       layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
       vertex: {
@@ -752,28 +749,21 @@ function updateWebGPUSun(sun, frameState) {
       fragment: {
         module: shaderModule,
         entryPoint: "fs",
-        // C11-115 (NS-SUN-BLEND-MODE-DIVERGENCE) — WebGPU now blends the sun
-        // ALPHA_BLEND, matching WebGL. This is the ratified direction (C11
-        // §7.0, 2026-07-18; transferred to C12-18 by LD-1) and the exact
-        // twin of `BlendingState.ALPHA_BLEND`, which `Sun.js` sets on the
-        // WebGL draw command: SRC_ALPHA / ONE_MINUS_SRC_ALPHA for colour and
+        // The sun blends ALPHA_BLEND on both backends, the exact twin of
+        // `BlendingState.ALPHA_BLEND` which `Sun.js` sets on the WebGL draw
+        // command: SRC_ALPHA / ONE_MINUS_SRC_ALPHA for colour and
         // ONE / ONE_MINUS_SRC_ALPHA for alpha.
         //
-        // WHAT THIS FIXES, measured (C12-29 round 3, recorded on the
-        // C12-15/16/17 rows). Under the previous additive blend
-        // (`src-alpha` / `one`) the composite was `dst + src.rgb*src.a`, so a
-        // BLACK billboard — which is exactly what the sun becomes once
-        // atmospheric extinction drives its rgb to zero near the horizon —
-        // was an EXACT IDENTITY on WebGPU while WebGL's ALPHA_BLEND darkened
-        // the sky by `a*dst`. That single divergence reproduced every
-        // observation in that investigation: a residual that appeared only
-        // where the billboard was black, tracked `bgMean`, and collapsed to 0
-        // at the one step where no billboard was drawn.
+        // An additive blend (`src-alpha` / `one`) is not equivalent here. Its
+        // composite is `dst + src.rgb*src.a`, so a black billboard — which is
+        // what the sun becomes once atmospheric extinction drives its rgb to
+        // zero near the horizon — is an exact identity, while ALPHA_BLEND
+        // darkens the sky by `a*dst`. The two backends then disagree by a
+        // residual that appears only where the billboard is black.
         //
-        // The C12-29 S1 eclipse fade is invariant to this flip by
-        // construction — it scales ALPHA, which is the blend weight under
-        // both functions — and so is the C12-18 disc/halo split for the same
-        // reason.
+        // The eclipse fade is invariant to that choice by construction, since
+        // it scales alpha, which is the blend weight under both functions, and
+        // so is the disc/halo split for the same reason.
         targets: makeSceneFBTargets(format, {
           blend: {
             color: {
@@ -795,7 +785,7 @@ function updateWebGPUSun(sun, frameState) {
         depthWriteEnabled: false,
         depthCompare: "less-equal",
       },
-      // Session 65 Batch 21 — match scene FB sample count.
+      // Matches the scene framebuffer's sample count.
       multisample:
         (context._msaaSamples ?? 1) > 1
           ? { count: context._msaaSamples }
@@ -869,22 +859,21 @@ function updateWebGPUSun(sun, frameState) {
 }
 
 // ============================================================
-// Moon Renderer — Ray-Marched Analytic Ellipsoid (Phase 1.2c)
+// Moon Renderer — Ray-Marched Analytic Ellipsoid
 // ============================================================
 
 /**
- * Bounding cube for the ray-marched moon shader. Phase 1.x consolidation:
- * the geometry was extracted to `WebGPUEllipsoidRenderer.ts` so future
- * ellipsoid bodies (Sun-as-ellipsoid, custom planets) can share the
- * same 8-vert / 36-index unit cube. The vertex shader still scales by
- * `radii` to wrap the moon ellipsoid, mirroring WebGL's
- * `EllipsoidPrimitive` which uses `BoxGeometry.fromDimensions({2,2,2})`.
+ * Bounding cube for the ray-marched moon shader. The geometry lives in
+ * `WebGPUEllipsoidRenderer.ts` so that other ellipsoid bodies can share the
+ * same 8-vertex / 36-index unit cube. The vertex shader scales it by `radii`
+ * to wrap the moon ellipsoid, mirroring WebGL's `EllipsoidPrimitive`, which
+ * uses `BoxGeometry.fromDimensions({2,2,2})`.
  *
- * Why a cube and not a full-screen quad: the cube's screen footprint is
- * the moon's actual on-screen size, so the fragment shader runs only on
- * pixels that could possibly contain the moon. A full-screen quad would
- * run the FS on every pixel of the canvas (~8M FS invocations at 4K),
- * all of which would discard early but still cost rasterizer scheduling.
+ * A cube rather than a full-screen quad because the cube's screen footprint is
+ * the moon's actual on-screen size, so the fragment shader runs only on pixels
+ * that could contain the moon. A full-screen quad would run it on every pixel
+ * of the canvas — around 8M invocations at 4K — all of which would discard
+ * early but still cost rasterizer scheduling.
  *
  * @private
  */
@@ -898,7 +887,6 @@ function createMoonBoundingCube(device) {
  * is materialized through `webgpuPipelineCache.getPipeline()` so two
  * Moon instances on the same device share one pipeline.
  *
- * C-R7-RENDERER-MIGRATION (Batch 74).
  * @private
  */
 function buildMoonPipelineResources(device, format, depthFormat, sampleCount) {
@@ -912,9 +900,9 @@ function buildMoonPipelineResources(device, format, depthFormat, sampleCount) {
     "Moon shader",
   );
 
-  // Phase 1.x consolidation — use the shared bind group layout from
-  // WebGPUEllipsoidRenderer so future ellipsoid bodies match exactly.
-  // C12-25 — the moon opts into binding 3 (tangent-space normal map).
+  // The shared bind group layout from `WebGPUEllipsoidRenderer`, so that other
+  // ellipsoid bodies match it exactly. The moon opts into binding 3, the
+  // tangent-space normal map.
   const bgl = createEllipsoidBindGroupLayout(device, { normalTexture: true });
 
   const descriptor = {
@@ -923,8 +911,8 @@ function buildMoonPipelineResources(device, format, depthFormat, sampleCount) {
     vertex: {
       module: mod,
       entryPoint: "vs",
-      // Phase 1.2c v2 — bounding cube vertex layout. 12 bytes per vertex,
-      // 8 vertices, 36 indices.
+      // Bounding cube vertex layout: 12 bytes per vertex, 8 vertices,
+      // 36 indices.
       buffers: [
         {
           arrayStride: 12,
@@ -937,8 +925,8 @@ function buildMoonPipelineResources(device, format, depthFormat, sampleCount) {
     fragment: {
       module: mod,
       entryPoint: "fs",
-      // Slice 5c-B Phase 1 (Batch 106) — scene-FB target. Overwrite
-      // blend (1 × src + 0 × dst) for the bounding-cube ray-march pass.
+      // Scene-framebuffer target, with an overwrite blend
+      // (1 x src + 0 x dst) for the bounding-cube ray-march pass.
       targets: makeSceneFBTargets(format, {
         blend: {
           color: {
@@ -954,24 +942,23 @@ function buildMoonPipelineResources(device, format, depthFormat, sampleCount) {
         },
       }),
     },
-    // Bounding cube — cull back faces. We render the front faces of the
-    // cube and the FS ray-marches inward. If the camera enters the cube
-    // (close-up moon flythrough), back-face culling would discard the
-    // visible faces — handled in JS by switching cullMode dynamically OR
-    // by accepting that close-up flythroughs are out of scope. For now
-    // we cull back faces; close-up flythrough is a follow-up.
+    // Bounding cube with back faces culled: the front faces rasterize and the
+    // fragment shader ray-marches inward. A camera inside the cube — a
+    // close-up moon flythrough — would have its visible faces discarded by
+    // that cull, which would need `cullMode` switched dynamically. Close-up
+    // flythrough is out of scope here.
     primitive: { topology: "triangle-list", cullMode: "back" },
     depthStencil: {
       format: depthFormat,
-      // Moon is rendered at the far plane (vertex shader forces z/w=1)
-      // and composited with `less-equal`, so it only draws in pixels
-      // not already occluded by closer geometry. This is draw-order
-      // agnostic — unlike the prior `depthCompare: always` path which
-      // relied on the moon being issued before terrain.
+      // The moon is rendered at the far plane, the vertex shader forcing
+      // z/w = 1, and composited with `less-equal`, so it only draws in pixels
+      // not already occluded by closer geometry. That makes it draw-order
+      // agnostic; `depthCompare: always` would instead require the moon to be
+      // issued before terrain.
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
-    // Session 65 Batch 21 — match scene FB sample count.
+    // Matches the scene framebuffer's sample count.
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 
@@ -979,13 +966,13 @@ function buildMoonPipelineResources(device, format, depthFormat, sampleCount) {
 }
 
 /**
- * C12-35 L2 — renderer hooks for one exact Moon texture request. The generic
- * lifecycle controller owns the deferred state and stale-candidate rules;
- * these hooks are the only layer that knows how to fetch and realize a
+ * Renderer hooks for one exact Moon texture request. The generic lifecycle
+ * controller owns the deferred state and the stale-candidate rules; these
+ * hooks are the only layer that knows how to fetch and realize a
  * `GPUTexture`.
  *
- * The orientation convention remains the C12-24/C12-25 WebGL parity rule:
- * both albedo and relief upload with `flipY: true`.
+ * The orientation convention matches WebGL: both albedo and relief upload
+ * with `flipY: true`.
  *
  * @private
  */
@@ -1236,14 +1223,13 @@ function createMoonTexturePublicationCallbacks(cache, device, channelName) {
 }
 
 /**
- * C12-25 — 1x1 FLAT tangent-space normal (128, 128, 255), i.e. (0, 0, 1).
+ * A 1x1 flat tangent-space normal, (128, 128, 255), i.e. (0, 0, 1).
  *
- * Bound whenever the moon has no normal map (the `Moon.Variant.SMALL` case)
- * or while the real map is still loading. Paired with `normalStrength = 0`
- * the shader skips the fetch entirely, so this exists to satisfy the bind
- * group layout — a layout binding must always have an entry — and to be
- * harmless in the one frame ordering where strength is non-zero before the
- * real texture lands.
+ * Bound whenever the moon has no normal map — the `Moon.Variant.SMALL` case —
+ * or while the real map is still loading. Paired with `normalStrength = 0` the
+ * shader skips the fetch entirely, so this exists to satisfy the bind group
+ * layout, where a binding must always have an entry, and to be harmless in the
+ * one frame ordering where strength is non-zero before the real texture lands.
  *
  * @private
  */
@@ -1398,28 +1384,28 @@ function getMoonTexturePairKey(cache, moon) {
 }
 
 /**
- * Updates WebGPU Moon rendering — Phase 1.2c v2.
+ * Updates WebGPU Moon rendering.
  *
- * Architecture: bounding-cube rasterization + analytic ray-marched
- * ellipsoid in model space + RTE 64-bit precision in the VS. Mirrors the
- * WebGL EllipsoidPrimitive moon path with full feature parity, plus the
- * Phase 1.2 earthshine improvement. (The Phase 1.2 phase-gating multiplier
- * was deleted by C11-176b — it double-counted N·L phase and blacked out
- * the daytime moon; phaseFraction is still packed for C12-21 earthshine.)
+ * Bounding-cube rasterization, an analytic ray-marched ellipsoid in model
+ * space, and RTE 64-bit precision in the vertex shader. Mirrors the WebGL
+ * `EllipsoidPrimitive` moon path with full feature parity, plus earthshine.
+ * There is no phase-gating multiplier on the lit term: it double-counts the
+ * N·L phase and blacks out the daytime moon. `phaseFraction` is still packed,
+ * because earthshine reads it.
  *
- * Performance leverage from Phase 0:
- *   - Render bundle pre-encoding via WebGPURenderBundleManager. The
- *     pipeline + bind group + vertex/index buffer + draw call sequence
- *     is identical every frame; we cache the encoded bundle and replay
- *     it. The uniform buffer contents change each frame (writeBuffer),
- *     but the bundle reads from the same buffer object so the new data
- *     just shows up on the next replay.
- *   - SnapshotModeService freezable registration. When snapshot mode is
- *     active, the moon's per-frame uniform writes still happen on the
- *     first frame after entering, then become a no-op until thaw — the
- *     bundle replays the captured uniforms verbatim.
- *   - Behind-camera early-out before any work, so a moon below the
- *     horizon doesn't even submit a draw command.
+ * Performance:
+ *   - Render bundle pre-encoding through `WebGPURenderBundleManager`. The
+ *     pipeline, bind group, vertex and index buffers and draw call are
+ *     identical every frame, so the encoded bundle is cached and replayed.
+ *     The uniform buffer contents change each frame through `writeBuffer`,
+ *     but the bundle reads from the same buffer object, so the new data shows
+ *     up on the next replay.
+ *   - `SnapshotModeService` freezable registration. While snapshot mode is
+ *     active the moon's per-frame uniform writes still happen on the first
+ *     frame after entering, then become a no-op until thaw, and the bundle
+ *     replays the captured uniforms verbatim.
+ *   - Behind-camera early-out before any work, so a moon below the horizon
+ *     does not even submit a draw command.
  *
  * @private
  */
@@ -1433,12 +1419,12 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     return;
   }
 
-  // C12-35 L2 — every handle below is owned by this exact tuple. A device
-  // replacement or same-device resource-generation bump retires the entire
-  // old cache before any of its GPU objects can be inspected or submitted.
+  // Every handle below is owned by this exact owner/context/device/generation
+  // tuple. A device replacement or a same-device resource-generation bump
+  // retires the whole old cache before any of its GPU objects can be inspected
+  // or submitted.
   const cache = ensureWebGPUMoonCache(moon, context, device);
 
-  // ── Behind-camera early-out ─────────────────────────────────────────
   // If the moon is fully behind the camera, don't submit anything. The
   // bounding cube would be culled by the rasterizer anyway, but skipping
   // the draw command avoids the bundle execute and the per-frame uniform
@@ -1461,18 +1447,16 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     return; // moon is fully behind the camera
   }
 
-  // ── One-time resource creation ──────────────────────────────────────
-
-  // Bounding cube geometry (8 verts, 36 indices)
+  // Bounding cube geometry (8 vertices, 36 indices).
   if (!defined(cache.geometry)) {
     cache.geometry = createMoonBoundingCube(device);
   }
 
-  // Batch 110 — invalidate cached pipeline + bundle when scene format
-  // changes. The bundleKey includes scenePipelineFormat so a stale
-  // bundle for the old format won't match anyway, but flagging
-  // _bundleStale forces explicit invalidation in the manager so the
-  // old bundle's GPU memory is released promptly.
+  // Invalidate the cached pipeline and bundle when the scene format changes.
+  // The bundle key includes `scenePipelineFormat`, so a stale bundle for the
+  // old format would not match anyway, but flagging `_bundleStale` forces an
+  // explicit invalidation in the manager and releases the old bundle's GPU
+  // memory promptly.
   const currentMoonGen = context._scenePipelineFormatGeneration ?? 0;
   if (
     defined(cache.pipelineEntry) &&
@@ -1483,15 +1467,13 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache._bundleStale = true;
   }
 
-  // C-R7 (Batch 74) — descriptor + central pipeline cache. The cache's
-  // `createRenderPipelineAsync()` path catches shader/pipeline validation
-  // errors and surfaces them through its `.catch` handler (logs + clears
-  // the in-flight flag). The previous `pushErrorScope` wrapper is
-  // redundant under that pattern, so it's been dropped — the
-  // `_pipelineFailed` sentinel is also no longer needed because the
-  // entry's own `pending` slot stays stable on failure (a retry will
-  // simply attempt creation again next frame, matching the prior
-  // behavior for transient errors).
+  // Descriptor plus the central pipeline cache. The cache's
+  // `createRenderPipelineAsync()` path catches shader and pipeline validation
+  // errors and surfaces them through its `.catch` handler, which logs and
+  // clears the in-flight flag, so no `pushErrorScope` wrapper is needed here.
+  // Nor is a failure sentinel: the entry's own `pending` slot stays stable on
+  // failure, so a retry simply attempts creation again on the next frame,
+  // which is the behaviour a transient error wants.
   if (!defined(cache.pipelineEntry)) {
     const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
@@ -1549,8 +1531,8 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache.sampler = sampler;
   }
 
-  // C12-25 — normal map at binding 3. Always bound: the flat placeholder is
-  // the identity, so there is one pipeline and no shader variant.
+  // Normal map at binding 3, always bound: the flat placeholder is the
+  // identity, so there is one pipeline and no shader variant.
   if (!defined(cache.normalPlaceholderTexture)) {
     const normalPlaceholderTexture = createFlatNormalPlaceholderTexture(device);
     const normalPlaceholderView = createTextureViewOrDestroy(
@@ -1566,7 +1548,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache.normalTextureMaxLod = 0;
   }
 
-  // C12-35 L0/L2 — reconcile independent request serials against one exact
+  // Reconcile independent request serials against one exact
   // owner/context/device/generation/cache/pair identity. A normal strength of
   // zero starts no work, but matching current or in-flight work is retained.
   // Candidates only publish here, on the frame-owned update path; promise
@@ -1621,11 +1603,11 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache._normalPublicationCallbacks,
   );
 
-  // Uniform buffer (Phase 1.2c v2 + C12 moon-wave tail + C12-25/21/22 =
-  // MOON_UNIFORM_BUFFER_SIZE, currently 352 bytes / 88 floats; floats 0..86 are
-  // in use, 87 is tail padding). The size lives ONLY on that constant — the
-  // next add-only uniform reads it here and appends after the last USED float,
-  // which is `ud[86]` in `_packMoonUniforms`, not float 84.
+  // Uniform buffer sized by `MOON_UNIFORM_BUFFER_SIZE`, currently 352 bytes /
+  // 88 floats, of which floats 0..86 are in use and 87 is tail padding. The
+  // size lives on that constant alone, and an add-only uniform appends after
+  // the last used float, which is `ud[86]` in `_packMoonUniforms`, not
+  // float 84.
   if (!defined(cache.uniformBuffer)) {
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
       device,
@@ -1646,7 +1628,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
         { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
         { binding: 1, resource: cache.moonTextureView },
         { binding: 2, resource: cache.sampler },
-        // C12-25 — normal map; reuses the binding-2 sampler.
+        // Normal map; reuses the binding-2 sampler.
         { binding: 3, resource: cache.normalTextureView },
       ],
     });
@@ -1661,12 +1643,10 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   // unregister later — without it, the closure would leak after the
   // moon's GPU resources are destroyed.
   if (!cache._snapshotRegistered) {
-    // Batch 244 — read the canonical `frameState.snapshotMode`
-    // publication (Scene.updateFrameState). The old `frameState.scene`
-    // read was ALWAYS undefined (that property is never populated —
-    // same dormant-gate bug class as Batch 234's `taaEnabled` fix), so
-    // this registration silently never fired and the moon kept packing
-    // + uploading uniforms every frame while the scene was frozen.
+    // The canonical publication is `frameState.snapshotMode`, written by
+    // `Scene.updateFrameState`. `frameState.scene` is never populated, so a
+    // registration gated on that property never fires, and the moon then keeps
+    // packing and uploading uniforms every frame while the scene is frozen.
     const snapshotMode = frameState.snapshotMode;
     if (defined(snapshotMode)) {
       snapshotMode.registerFreezable(
@@ -1678,11 +1658,9 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     }
   }
 
-  // ── Per-frame uniform pack ──────────────────────────────────────────
-  //
-  // Skip the entire pack-and-write when the snapshot service has frozen
-  // us. The bundle's recorded `setBindGroup` still points at the same
-  // GPU uniform buffer, so it reads whatever was last written.
+  // The whole per-frame pack-and-write is skipped while the snapshot service
+  // has this cache frozen. The bundle's recorded `setBindGroup` still points
+  // at the same GPU uniform buffer, so it reads whatever was last written.
   if (!cache._frozen) {
     _packMoonUniforms(moon, frameState, cache);
     device.queue.writeBuffer(
@@ -1694,29 +1672,28 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     );
   }
 
-  // ── Render bundle: pre-encoded draw sequence ────────────────────────
+  // The pipeline, bind group, vertex and index buffers and indexed draw are
+  // identical every frame, so the sequence is recorded once into a
+  // `GPURenderBundle` and replayed through `executeBundles`;
+  // `WebGPURenderBundleManager` handles caching and eviction. The bundle
+  // becomes stale on:
+  //   - the first frame for this moon
+  //   - a texture upgrade, which replaces `cache.bindGroup`
+  //   - an explicit invalidation
+  // The bundle key includes the surface format set, so different render passes
+  // such as picking get their own bundles.
   //
-  // The pipeline + bind group + vertex/index buffer + indexed draw is
-  // identical every frame, so we record it once into a GPURenderBundle
-  // and replay it via executeBundles. WebGPURenderBundleManager handles
-  // caching and eviction. The bundle becomes stale on:
-  //   - first frame for this moon
-  //   - texture upgrade (cache.bindGroup replaced)
-  //   - explicit invalidation
-  // Bundle key includes the surface format set so different render passes
-  // (e.g. picking) get their own bundles.
-  // Skip bundle creation if the pipeline failed validation — prevents
-  // an invalid pipeline from producing an invalid bundle that would
-  // poison the entire command encoder on executeBundles.
+  // Bundle creation is skipped when the pipeline failed validation, because an
+  // invalid pipeline produces an invalid bundle that poisons the entire
+  // command encoder on `executeBundles`.
   const bundleMgr = context.renderBundleManager;
   if (defined(bundleMgr) && defined(cache.pipeline) && !cache._pipelineFailed) {
-    // Session 65 Batch 37 — bundle encoder MUST match the recorded
-    // pipeline's multisample state. The Moon pipeline now bakes
-    // sampleCount = context._msaaSamples (Phase MSAA-FLEET), so the
-    // bundle's encoder needs the same value or executeBundles fails
-    // with "Attachment state ... is not compatible". The sampleCount
-    // is also part of the bundle key so a mid-session MSAA toggle
-    // evicts the prior bundle instead of replaying a stale one.
+    // The bundle encoder has to match the recorded pipeline's multisample
+    // state. The Moon pipeline bakes `sampleCount = context._msaaSamples`, so
+    // the bundle's encoder needs the same value or `executeBundles` fails with
+    // "Attachment state ... is not compatible". The sample count is also part
+    // of the bundle key, so a mid-session MSAA toggle evicts the prior bundle
+    // instead of replaying a stale one.
     const sampleCount = context._msaaSamples ?? 1;
     const bundleKey = `moon:${moon._cacheId ?? (moon._cacheId = createGuid())}:${context.scenePipelineFormat}:${context.depthFormat}:${sampleCount}`;
     cache._bundleKey = bundleKey;
@@ -1725,13 +1702,11 @@ function updateWebGPUMoon(moon, frameState, commandList) {
       cache._bundleInvalidationCount++;
       cache._bundleStale = false;
     }
-    // Slice 5c-B Batch 121 — bundle colorFormats must match the Moon
-    // pipeline's target count. Phase 1 conversion (Batch 106) made the
-    // Moon pipeline declare a slot-1 placeholder via makeSceneFBTargets
-    // when MRT mode is on; the bundle needs the matching format entry.
-    // Without this, the bundle's attachmentState is incompatible with
-    // the pipeline → "Attachment state not compatible" at recording.
-    // (Same fix pattern as the Globe bundle in Batch 117.)
+    // The bundle's `colorFormats` must match the Moon pipeline's target count.
+    // `makeSceneFBTargets` makes the pipeline declare a slot-1 placeholder
+    // while MRT mode is on, so the bundle needs the matching format entry;
+    // without it the bundle's attachment state is incompatible with the
+    // pipeline and recording fails with "Attachment state not compatible".
     const moonColorFormats = isSceneFBMrtMode()
       ? [
           context.scenePipelineFormat || "bgra8unorm",
@@ -1758,13 +1733,10 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache.bundle = bundle;
   }
 
-  // ── Submit ──────────────────────────────────────────────────────────
-  //
-  // Build a draw command that carries the bundle. The Pass.ENVIRONMENT
-  // executor will call executeBundles when it sees `command.bundle` set.
-  // For renderers that don't yet support bundle execution, the command
-  // also carries the pipeline/bindgroup/buffers so it can fall back to
-  // a normal indexed draw.
+  // The draw command carries the bundle: the `Pass.ENVIRONMENT` executor calls
+  // `executeBundles` when it sees `command.bundle` set. The command also
+  // carries the pipeline, bind group and buffers, so an executor without
+  // bundle support falls back to a normal indexed draw.
   cache.command = new WebGPUDrawCommand({
     pipeline: cache.pipeline,
     bindGroups: [cache.bindGroup],
@@ -1788,11 +1760,11 @@ function updateWebGPUMoon(moon, frameState, commandList) {
  * Packs the moon uniform buffer for one frame. Pulled out of
  * updateWebGPUMoon so the snapshot-mode skip path is a single conditional.
  *
- * Layout matches the `U` struct in Moon.wgsl (Phase 1.2c v2):
+ * Layout matches the `U` struct in Moon.wgsl:
  *   mvpRTE             0..15  (mat4)
- *   camH + pad         16..19  (camera in moon MODEL coords, RTE high)
- *   camL + pad         20..23  (camera in moon MODEL coords, RTE low)
- *   moonH + pad        24..27  (world center split — unused by the VS)
+ *   camH + pad         16..19  (camera in moon model coords, RTE high)
+ *   camL + pad         20..23  (camera in moon model coords, RTE low)
+ *   moonH + pad        24..27  (world centre split — unused by the VS)
  *   moonL + pad        28..31
  *   ivmRow0 + pad      32..35
  *   ivmRow1 + pad      36..39
@@ -1805,13 +1777,13 @@ function updateWebGPUMoon(moon, frameState, commandList) {
  *   moonDirWC + phase  64..67
  *   shineFlag/log/shin/spec 68..71
  *   farPlane + 3 pad   72..75
- *   extinction         76..78  (NS-MOON-ATMOSPHERE-EXTINCTION)
- *   lunarBRDF flag     79      (C12-20; was spare)
- *   inscatter          80..82  (C12-30 sky-wash, additive)
- *   oppositionSurge    83      (C12-23)
- *   normalStrength     84      (C12-25 LOLA relief; 0 = exact identity)
- *   earthshinePhase    85      (C12-21 Earth-phase complement; 1 = identity)
- *   terminatorSoftness 86      (C12-22 solar angular radius; 0 = identity)
+ *   extinction         76..78  (atmospheric transmittance)
+ *   lunarBRDF flag     79
+ *   inscatter          80..82  (sky-wash, additive)
+ *   oppositionSurge    83
+ *   normalStrength     84      (relief strength; 0 = exact identity)
+ *   earthshinePhase    85      (Earth-phase complement; 1 = identity)
+ *   terminatorSoftness 86      (solar angular radius; 0 = identity)
  *
  * @private
  */
@@ -1823,9 +1795,9 @@ function _packMoonUniforms(moon, frameState, cache) {
   const viewMatrix = uniformState.view;
   const projMatrix = uniformState.projection;
 
-  // Compute mvpRelativeToEye: projection × (view × model with the moon
-  // translation zeroed). Same math as before; the body translation is
-  // applied via the RTE position split written by the shared packer.
+  // mvpRelativeToEye is projection x (view x model, with the moon translation
+  // zeroed). The body translation is applied instead through the RTE position
+  // split that the shared packer writes.
   Matrix4.multiply(viewMatrix, modelMatrix, scratchModelView);
   Matrix4.clone(scratchModelView, scratchMVRTE);
   scratchMVRTE[12] = 0.0;
@@ -1836,10 +1808,9 @@ function _packMoonUniforms(moon, frameState, cache) {
   const ud = cache.uniformData;
   ud.fill(0);
 
-  // ── Phase 1.x consolidation: shared base uniform pack (offsets 0..63) ──
-  // Fills mvpRTE, camH/L split, centerH/L split, ivmRow0..2, cameraPosMC,
-  // radii, oneOverRadiiSq, sunDirMC, sceneLightDirMC. Body-specific
-  // writes follow at offsets 64+.
+  // Shared base uniform pack, offsets 0..63: mvpRTE, the camH/camL split, the
+  // centerH/centerL split, ivmRow0..2, cameraPosMC, radii, oneOverRadiiSq,
+  // sunDirMC and sceneLightDirMC. Body-specific writes follow at offset 64.
   packEllipsoidBaseUniforms(ud, {
     mvpRelativeToEye: scratchMVPRTE,
     viewMatrix: viewMatrix,
@@ -1857,7 +1828,7 @@ function _packMoonUniforms(moon, frameState, cache) {
   // The Moon shader uses that slot for the `onlySunLighting` flag.
   ud[59] = moon.onlySunLighting === false ? 0.0 : 1.0;
 
-  // ── Moon-specific uniforms (offsets 64..79) ──
+  // Moon-specific uniforms, offsets 64..79.
   const moonDirWC = frameState.moonDirectionWC;
   const ac = frameState.atmosphericConditions;
   const earthshineOn =
@@ -1874,11 +1845,11 @@ function _packMoonUniforms(moon, frameState, cache) {
   // earthshine, useLogDepth, shininess, specularStrength — offsets 68..71
   ud[68] = earthshineOn;
   ud[69] = frameState.useLogDepth === true ? 1.0 : 0.0;
-  // Parity (ENV-MOON-SLIVER): WebGL's moon material is
-  // Material.fromType(Material.ImageType) whose czm_getDefaultMaterial
-  // specular is 0.0 — the WebGL moon has NO specular highlight. Keep the
-  // shininess exponent sane but zero the strength so the disc shading
-  // matches czm_private_phong exactly.
+  // WebGL's moon material is `Material.fromType(Material.ImageType)`, whose
+  // `czm_getDefaultMaterial` specular is 0.0, so the WebGL moon carries no
+  // specular highlight. The shininess exponent stays at a sane value while
+  // the strength is zeroed, which makes the disc shading match
+  // `czm_private_phong` exactly.
   ud[70] = 5.0; // shininess (Phong exponent; inert while strength is 0)
   ud[71] = 0.0; // specularStrength — 0 to match Material.ImageType
 
@@ -1890,55 +1861,57 @@ function _packMoonUniforms(moon, frameState, cache) {
   ud[74] = 0;
   ud[75] = 0;
 
-  // NS-MOON-ATMOSPHERE-EXTINCTION — RGB atmospheric transmittance at offsets
-  // 76..78 (vec3 `extinction`, 16-byte aligned at byte 304). Defaults to
-  // (1,1,1) when the atmosphere is hidden or the moon is viewed from orbit,
-  // making the multiply in the shader an exact no-op (byte-identical).
+  // RGB atmospheric transmittance at offsets 76..78 — vec3 `extinction`,
+  // 16-byte aligned at byte 304. Defaults to (1,1,1) when the atmosphere is
+  // hidden or the moon is viewed from orbit, making the multiply in the
+  // shader a byte-identical no-op.
   const extinction = frameState.moonAtmosphereExtinction;
   ud[76] = defined(extinction) ? extinction.x : 1.0;
   ud[77] = defined(extinction) ? extinction.y : 1.0;
   ud[78] = defined(extinction) ? extinction.z : 1.0;
 
-  // C12-20 — Lommel-Seeliger runtime flag at offset 79 (byte 316; was the
-  // spare). Same source expression as the WebGL path's Moon.js wiring
-  // (atmosphericConditions.lighting.enableLunarBRDF, false when no globe),
-  // so both backends select the same disc law every frame.
+  // Lommel-Seeliger runtime flag at offset 79, byte 316. Same source
+  // expression as the WebGL path's `Moon.js` wiring —
+  // `atmosphericConditions.lighting.enableLunarBRDF`, false when there is no
+  // globe — so both backends select the same disc law every frame.
   ud[79] =
     defined(ac) && defined(ac.lighting) && ac.lighting.enableLunarBRDF === true
       ? 1.0
       : 0.0;
 
-  // C12-30 — additive in-scattered sky-wash at offsets 80..82 (vec3
-  // `inscatter`, 16-byte aligned at byte 320). Published by Moon.update via
-  // the shared CPU integral; (0,0,0) — the additive identity — when the
-  // wash is disabled, the atmosphere is hidden, or the view ray misses the
-  // shell (orbit), keeping the legacy output byte-identical there.
+  // Additive in-scattered sky-wash at offsets 80..82 — vec3 `inscatter`,
+  // 16-byte aligned at byte 320. Published by `Moon.update` through the shared
+  // CPU integral, and (0,0,0) — the additive identity — when the wash is
+  // disabled, the atmosphere is hidden, or the view ray misses the shell from
+  // orbit, so the output there is byte-identical to a frame without it.
   const inscatter = frameState.moonAtmosphereInscatter;
   ud[80] = defined(inscatter) ? inscatter.x : 0.0;
   ud[81] = defined(inscatter) ? inscatter.y : 0.0;
   ud[82] = defined(inscatter) ? inscatter.z : 0.0;
 
-  // C12-23 — opposition-surge multiplier at offset 83 (byte 332). 1.0 =
-  // identity (disabled / away from opposition). Published by Moon.update.
+  // Opposition-surge multiplier at offset 83, byte 332; 1.0 is the identity,
+  // used when it is disabled or the moon is away from opposition. Published by
+  // `Moon.update`.
   ud[83] = frameState.moonOppositionSurge ?? 1.0;
 
-  // C12-25 — LOLA relief strength at offset 84 (byte 336). Resolved ONCE,
-  // backend-agnostically, by Moon.update — it already folds in the
-  // atmosphericConditions.lighting.enableLunarNormalMap toggle AND the
-  // variant gate (SMALL ships no map), so both backends read the same
-  // number and cannot disagree about whether relief is on. Exactly 0.0
-  // disables the perturbation as an exact identity.
+  // Relief strength at offset 84, byte 336. Resolved once, backend-agnostically,
+  // by `Moon.update`, which folds in both the
+  // `atmosphericConditions.lighting.enableLunarNormalMap` toggle and the
+  // variant gate, since the small variant ships no map, so the two backends
+  // read one number and cannot disagree about whether relief is on. Exactly
+  // 0.0 disables the perturbation as an exact identity.
   ud[84] = frameState.moonNormalMapStrength ?? 0.0;
 
-  // C12-21 — earthshine phase scale at offset 85 (byte 340) and C12-22 —
-  // solar angular radius at offset 86 (byte 344). Both resolved ONCE,
-  // backend-agnostically, by Moon.update via Scene/MoonPhaseAppearance.js and
-  // handed to the WebGL twin as u_earthshinePhaseScale / u_terminatorSoftness,
-  // so the two backends cannot derive different numbers. The `??` fallbacks
-  // are the two exact identities: 1.0 leaves earthshine at its historical
-  // constant, 0.0 makes softTerminatorMu0 return the legacy max(N·L, 0).
-  // Both live inside the 336..351 slot C12-25 already opened, so the buffer
-  // size and the bind-group layout are unchanged.
+  // Earthshine phase scale at offset 85, byte 340, and the solar angular
+  // radius at offset 86, byte 344. Both are resolved once,
+  // backend-agnostically, by `Moon.update` through
+  // `Scene/MoonPhaseAppearance.js` and handed to the WebGL twin as
+  // `u_earthshinePhaseScale` and `u_terminatorSoftness`, so the two backends
+  // cannot derive different numbers. The `??` fallbacks are the two exact
+  // identities: 1.0 leaves earthshine at a constant, and 0.0 makes
+  // `softTerminatorMu0` return `max(N·L, 0)`. Both live inside the 336..351
+  // slot the relief strength already opened, so the buffer size and the
+  // bind-group layout are unchanged.
   ud[85] = frameState.moonEarthshinePhaseScale ?? 1.0;
   ud[86] = frameState.moonTerminatorSoftness ?? 0.0;
 }
@@ -1969,10 +1942,10 @@ function createMoonFreezable(cache) {
 }
 
 /**
- * Phase 6 debug surface — return a diagnostic snapshot of a Moon's
- * WebGPU cache. Returns `null` when the moon hasn't yet had its first
- * `update()` call (cache absent) or when called against a non-WebGPU
- * scene. Pure read; safe to call from `Scene.getDebugSnapshot()`.
+ * Returns a diagnostic snapshot of a Moon's WebGPU cache, or `null` when the
+ * moon has not yet had its first `update()` call, so the cache is absent, or
+ * when called against a non-WebGPU scene. Pure read; safe to call from
+ * `Scene.getDebugSnapshot()`.
  *
  * @param {Moon} moon
  * @returns {object|null}
@@ -1982,11 +1955,11 @@ function getWebGPUMoonStatistics(moon) {
     return null;
   }
   const cache = moon._webgpuCache;
-  // Pull the moon-specific uniforms back out of the packed buffer for
-  // a quick "what got pushed to the GPU last frame" view. The offsets
-  // here mirror `_packMoonUniforms()` (offsets 64..86 are the moon tail:
-  // 64..75 the Phase-1.2c block, 76..83 the C12 moon wave, 84 C12-25's
-  // relief strength, 85/86 the C12-21/22 phase pair).
+  // Pull the moon-specific uniforms back out of the packed buffer for a quick
+  // view of what was pushed to the GPU last frame. The offsets here
+  // mirror `_packMoonUniforms()` (offsets 64..86 are the moon tail: 64..75 the
+  // base block, 76..83 the atmosphere and BRDF terms, 84 the relief strength,
+  // and 85/86 the phase pair).
   const ud = cache.uniformData;
   const moonDirWC =
     defined(ud) && ud.length > 67
@@ -1997,8 +1970,8 @@ function getWebGPUMoonStatistics(moon) {
   const useLogDepth = defined(ud) && ud.length > 69 ? ud[69] === 1.0 : null;
   const shininess = defined(ud) && ud.length > 70 ? ud[70] : null;
   const specularStrength = defined(ud) && ud.length > 71 ? ud[71] : null;
-  // C12 moon-wave tail (offsets 76..83) — extinction, lunar BRDF flag,
-  // sky-wash, opposition surge, as last pushed to the GPU.
+  // Offsets 76..83 — extinction, lunar BRDF flag, sky-wash and opposition
+  // surge, as last pushed to the GPU.
   const extinction =
     defined(ud) && ud.length > 78
       ? Object.freeze({ x: ud[76], y: ud[77], z: ud[78] })
@@ -2009,11 +1982,11 @@ function getWebGPUMoonStatistics(moon) {
       ? Object.freeze({ x: ud[80], y: ud[81], z: ud[82] })
       : null;
   const oppositionSurge = defined(ud) && ud.length > 83 ? ud[83] : null;
-  // C12-25 — relief strength as last pushed, plus whether the bound normal
-  // texture is the real map or the flat identity placeholder.
+  // Relief strength as last pushed, alongside whether the bound normal texture
+  // is the real map or the flat identity placeholder.
   const normalMapStrength = defined(ud) && ud.length > 84 ? ud[84] : null;
-  // C12-21 / C12-22 — as last pushed. The Edge acceptance probe reads these
-  // to prove the CPU-resolved numbers actually reached the GPU.
+  // The phase pair as last pushed. Acceptance probes read these to prove the
+  // CPU-resolved numbers actually reached the GPU.
   const earthshinePhaseScale = defined(ud) && ud.length > 85 ? ud[85] : null;
   const terminatorSoftness = defined(ud) && ud.length > 86 ? ud[86] : null;
   const lifecycle = cache._moonTextureLifecycle;
@@ -2126,11 +2099,11 @@ function destroyWebGPUMoonResources(moon) {
   cache.bindGroup = undefined;
   cache.bundle = undefined;
 
-  // Phase 6 audit fix — the moon registers a "moon-renderer" freezable
-  // with `scene.snapshotMode` during update(). The closure captures the
-  // `cache` object; without explicit unregistration, the registration
-  // outlives the moon's GPU resources and freeze()/thaw() would mutate
-  // a destroyed cache on the next snapshot enter/exit.
+  // The moon registers a "moon-renderer" freezable with `scene.snapshotMode`
+  // during `update()`, and that closure captures the `cache` object. Without
+  // an explicit unregistration the registration outlives the moon's GPU
+  // resources, and `freeze()`/`thaw()` would then mutate a destroyed cache on
+  // the next snapshot enter or exit.
   if (cache._snapshotRegistered && defined(cache._snapshotService)) {
     try {
       cache._snapshotService.unregisterFreezable("moon-renderer");

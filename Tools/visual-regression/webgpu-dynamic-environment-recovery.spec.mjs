@@ -64,7 +64,10 @@ test("dynamic environment caches are owned by one device generation", () => {
   const update = sourceSection(
     managerSource,
     "function updateWebGPUDynamicEnvironmentMap(",
-    "// Audit re-review (Batch 134)",
+    // End the slice on a declaration rather than on comment prose: a comment
+    // can be reworded, a declaration is what the comment-only gate holds
+    // byte-identical.
+    "const SUN_REFRESH_EPSILON_SQ",
   );
   const mismatchIndex = update.indexOf("existingCache.device !== device ||");
   const generationIndex = update.indexOf(
@@ -231,7 +234,10 @@ test("recovered scene capture wakes from a frame/content-stamped producer edge",
   const update = sourceSection(
     managerSource,
     "function updateWebGPUDynamicEnvironmentMap(",
-    "// Audit re-review (Batch 134)",
+    // End the slice on a declaration rather than on comment prose: a comment
+    // can be reworded, a declaration is what the comment-only gate holds
+    // byte-identical.
+    "const SUN_REFRESH_EPSILON_SQ",
   );
   assert.match(
     update,
@@ -267,7 +273,10 @@ test("hidden and opt-out transitions erase retained globe state without a retry 
   const update = sourceSection(
     managerSource,
     "function updateWebGPUDynamicEnvironmentMap(",
-    "// Audit re-review (Batch 134)",
+    // End the slice on a declaration rather than on comment prose: a comment
+    // can be reworded, a declaration is what the comment-only gate holds
+    // byte-identical.
+    "const SUN_REFRESH_EPSILON_SQ",
   );
   assert.match(
     update,

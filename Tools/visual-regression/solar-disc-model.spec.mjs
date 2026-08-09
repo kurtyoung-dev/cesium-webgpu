@@ -379,16 +379,20 @@ test("the lighting registry documents the facade-absent split it actually has", 
   }
 
   // 3. The registry JSDoc must sort every one of them into the right bucket.
+  //    The three delimiters below are the registry's own statement of the
+  //    split — the two bucket headings and the conclusion it draws from them.
+  //    Deleting any of the three fails this test, which is the point: the
+  //    anchor bites on the DOCUMENTED SPLIT, not on the prose around it.
   const registry = ac_lightingRegistry();
   const onList = between(
     registry,
-    "`!== false` — ON without a facade",
-    "`=== true` — OFF without a facade",
+    "Read as `!== false`, hence on without a facade",
+    "Read as `=== true`, hence off without a facade",
   );
   const offList = between(
     registry,
-    "`=== true` — OFF without a facade",
-    "So a globe-less scene",
+    "Read as `=== true`, hence off without a facade",
+    "A globe-less scene therefore",
   );
   for (const buckets of Object.values(FACADE_ABSENT_CONVENTION)) {
     for (const name of buckets.on) {

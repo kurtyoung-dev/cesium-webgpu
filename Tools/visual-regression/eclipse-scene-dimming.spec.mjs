@@ -810,8 +810,16 @@ test("sites 1 and 5 apply the SAME transfer, in either multiply order", () => {
 
 test("the E2 toggle exists on AtmosphericConditions and defaults OFF", () => {
   assert.match(conditions, /eclipseAutoExposure: false,/);
-  assert.match(conditions, /C12-29 S2/);
-  // enableEclipse stays default-ON (ruling E1) — S2 must not have flipped it.
+  // The registry must state what the default-off position of the toggle
+  // MEANS — camera metering versus the human-eye impression. Anchored on that
+  // sentence rather than on a tracker id, so the assertion fails when the
+  // documented behaviour is deleted rather than when a comment is reworded.
+  assert.match(
+    conditions,
+    /`eclipseAutoExposure`\s*\(default off\)\s*selects\s*\*\s*the camera-metering transfer function in place of the human-eye impression/,
+    "the registry must document what eclipseAutoExposure selects",
+  );
+  // enableEclipse stays default-ON — scene dimming must not have flipped it.
   assert.match(conditions, /enableEclipse: true,/);
 });
 

@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 /**
- * Dedicated WebGPU globe carrier for C12-29 S5 eclipse uniforms.
+ * Dedicated WebGPU globe carrier for the eclipse uniforms.
  *
  * The four vectors are terrain-global for one logical View/frame. Keeping
  * them out of `CameraUniforms` avoids repacking and uploading the same
