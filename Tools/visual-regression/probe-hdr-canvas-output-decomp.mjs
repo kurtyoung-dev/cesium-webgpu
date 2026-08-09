@@ -325,6 +325,9 @@ async function run() {
       ? "[probe-hdr-canvas-output-decomp] PASS"
       : "[probe-hdr-canvas-output-decomp] FAIL",
   );
+  // A printed verdict that leaves with status 0 is read as green by anything
+  // that scores runs by exit code, so the verdict carries the code.
+  process.exit(pass ? 0 : 1);
 }
 
 run();

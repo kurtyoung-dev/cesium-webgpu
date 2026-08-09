@@ -251,4 +251,41 @@ console.log(
 );
 console.log(`(D) 0 WebGPU device errors: ${noErrs ? "PASS" : "FAIL"}`);
 const pass = renders && bsReady && memAccounted && noErrs;
+
+// Exit contract: 0 PASS, 1 FAIL, 2 the harness broke, 3 STRUCTURAL — the lane
+// ran but could not see its subject. The verdict used to be printed and then
+// dropped: with no exit anywhere in this file the process left with status 0,
+// so a runner reading exit codes recorded a printed FAIL as green.
+//
+// STRUCTURAL preconditions below are the states in which neither verdict is
+// earned. The claim under test is "WebGPU loads zero content while WebGL loads
+// at frame 1", so a WebGL reference that also renders nothing means the sample
+// never reached the page — that cannot be scored against WebGPU in either
+// direction.
+const structural = [];
+if (gpu.info.rendererType !== "webgpu") {
+  structural.push(
+    `the WebGPU lane resolved rendererType="${gpu.info.rendererType}" — nothing measured below is about the WebGPU load path`,
+  );
+}
+if (!gpu.decoded || !gl.decoded) {
+  structural.push(
+    "a capture produced no image, so the pixel gates have no subject",
+  );
+}
+if (glPx === 0) {
+  structural.push(
+    `the WebGL reference rendered 0 non-black pixels — the PointCloudTimeDynamic sample is not reaching the page (check ${BASE} serves Apps/SampleData), so a zero WebGPU count cannot be attributed to WebGPU`,
+  );
+}
+if (structural.length > 0) {
+  for (const s of structural) {
+    console.log(`  STRUCTURAL: ${s}`);
+  }
+  console.log(
+    "GATE STRUCTURAL — acceptance INCOMPLETE. This probe certifies nothing in this state.",
+  );
+  process.exit(3);
+}
 console.log(pass ? "GATE PASS" : "GATE FAIL");
+process.exit(pass ? 0 : 1);

@@ -237,3 +237,8 @@ const cvParity =
 console.log(
   `CV PARITY ${cvParity ? "PASS" : "FAIL"} (need varRatio>=0.3, litRatio in [0.5,2.0], 0 device errors). READ THE PNGs: ld-stripe-cv-{webgl,webgpu-OFF}.png`,
 );
+// The CV parity line is this probe's verdict. Printed without an exit code it
+// left with status 0, so anything scoring runs by exit code read a FAIL as
+// green; the payoff section above states a finding, not a verdict, and is
+// deliberately not folded in.
+process.exit(cvParity ? 0 : 1);

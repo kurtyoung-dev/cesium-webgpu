@@ -232,6 +232,10 @@ async function analyze(a, b) {
   console.log(
     `  hole webgpu=${holeGpu} webgl=${holeGl} boundaryAligned=${aligned}`,
   );
-  console.log(`  PARITY: ${holeGpu && holeGl && aligned ? "PASS" : "FAIL"}`);
+  const parity = holeGpu && holeGl && aligned;
+  console.log(`  PARITY: ${parity ? "PASS" : "FAIL"}`);
   console.log("[probe-clippoly] done");
+  // A printed verdict that leaves with status 0 is read as green by anything
+  // that scores runs by exit code, so the verdict carries the code.
+  process.exit(parity ? 0 : 1);
 })();

@@ -286,4 +286,7 @@ const PROC = { coverage: 0.6, density: 0.9, bottom: 1500, top: 4200 };
       : "\nno new console errors",
   );
   console.log(allPass ? "\nRESULT: PASS" : "\nRESULT: FAIL");
+  // A printed verdict that leaves with status 0 is read as green by anything
+  // that scores runs by exit code, so the verdict carries the code.
+  process.exit(allPass ? 0 : 1);
 })();

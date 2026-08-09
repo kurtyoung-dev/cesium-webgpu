@@ -248,4 +248,7 @@ function summarizePick(scan) {
     glPick.total > 0;
   console.log(`  PICK PARITY: ${pickParity ? "PASS" : "FAIL"}`);
   console.log("[probe-clip] done");
+  // A printed verdict that leaves with status 0 is read as green by anything
+  // that scores runs by exit code, so the verdict carries the code.
+  process.exit(pickParity ? 0 : 1);
 })();

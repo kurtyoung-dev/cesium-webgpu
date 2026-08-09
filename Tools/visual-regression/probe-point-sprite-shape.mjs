@@ -514,4 +514,59 @@ const pass =
   ppRendered &&
   ppPass &&
   noErrs;
+
+// Exit contract: 0 PASS, 1 FAIL, 2 the harness broke, 3 STRUCTURAL — the lane
+// ran but could not see its subject. The verdict used to be printed and then
+// dropped: with no exit anywhere in this file the process left with status 0,
+// so a runner reading exit codes recorded a printed FAIL as green.
+//
+// Every gate here is a WebGL-vs-WebGPU comparison, so the WebGL leg is the
+// reference and not part of the subject. A reference that rendered nothing, or
+// a mismatch percentage computed over zero lit pixels, leaves the comparison
+// undefined rather than failed. An empty WEBGPU leg is the opposite: that is
+// the regression this probe was written to catch, and it stays a FAIL.
+const structural = [];
+for (const [name, cap] of [
+  ["point cloud", pcGPU],
+  ["attenuation-only cloud", pcaGPU],
+  ["point primitives", ppGPU],
+]) {
+  if (cap.info?.rendererType !== "webgpu") {
+    structural.push(
+      `the ${name} WebGPU lane resolved rendererType="${cap.info?.rendererType}" — its comparison is not against a WebGPU render`,
+    );
+  }
+}
+for (const [name, ref] of [
+  ["point cloud", pcGL],
+  ["attenuation-only cloud", pcaGL],
+  ["point primitives", ppGL],
+]) {
+  if (nonBlack(ref.decoded) === 0) {
+    structural.push(
+      `the ${name} WebGL reference rendered 0 non-black pixels — the fixture is not reaching the page (check ${BASE} serves Apps/SampleData), so there is nothing to compare WebGPU against`,
+    );
+  }
+}
+for (const [name, stats] of [
+  ["point cloud", pcNorm],
+  ["attenuation-only cloud", pcaNorm],
+  ["point primitives", ppDiffDS],
+]) {
+  if (!stats || stats.pct === null) {
+    structural.push(
+      `the ${name} mismatch percentage could not be computed (no overlapping lit pixels, or mismatched capture sizes)`,
+    );
+  }
+}
+if (structural.length > 0) {
+  for (const s of structural) {
+    console.log(`  STRUCTURAL: ${s}`);
+  }
+  console.log(
+    "GATE STRUCTURAL — acceptance INCOMPLETE. This probe certifies nothing in this state.",
+  );
+  process.exit(3);
+}
 console.log(pass ? "GATE PASS" : "GATE FAIL");
+process.exit(pass ? 0 : 1);

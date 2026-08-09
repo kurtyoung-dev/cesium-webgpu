@@ -210,7 +210,9 @@ async function diffPngs(a, b) {
   console.log(
     `\n  VERDICT: offGate=${offOk ? "PASS" : "FAIL"} on=${onOk ? "PASS" : "FAIL"} motion=${motionOk ? "PASS" : "FAIL"}`,
   );
-  console.log(
-    `  ${offOk && onOk && motionOk ? "ALL PASS" : "*** CHECK FAILED ***"}`,
-  );
+  const allOk = offOk && onOk && motionOk;
+  console.log(`  ${allOk ? "ALL PASS" : "*** CHECK FAILED ***"}`);
+  // A printed verdict that leaves with status 0 is read as green by anything
+  // that scores runs by exit code, so the verdict carries the code.
+  process.exit(allOk ? 0 : 1);
 })();

@@ -21,6 +21,14 @@
 // urgent: Playwright reaps the browser on process exit, so a missing `finally`
 // leaks nothing past exit and matters only on the throw path, while a missing
 // watchdog is the only reason a hung probe never ends. Fix watchdogs first.
+//
+// A reason may also be CORRECTED without the probe changing, when the analyzer
+// stops mis-reading it. `probe-edge-emitter.mjs` was recorded as never closing
+// its browser; it closes it on the line after the `try`, and only looked
+// close-free because the scanner treated the unpaired quote inside a regex
+// literal above as a string opener and went blind for the rest of the file.
+// Correcting the reason is not a relaxation — the row still names a real,
+// unrepaired violation, which is what the ratchet asserts.
 
 /**
  * Probe file name -> one-line reason it is exempt.
@@ -463,7 +471,7 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
   "probe-edge-display-mode-tri.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-19, pre-dates the spec",
   "probe-edge-emitter.mjs":
-    "no watchdog; never closes the browser — added 2026-05-13, pre-dates the spec",
+    "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
   "probe-edge-percolor.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-20, pre-dates the spec",
   "probe-ellipsoid-mrt.mjs":

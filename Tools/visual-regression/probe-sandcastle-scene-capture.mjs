@@ -168,4 +168,7 @@ const OUT_DIR = "Tools/visual-regression/output";
   console.log(
     `  VERDICT: ${ok ? "PASS — demo logic runs clean (mirror ready, tileset active, cube allocated, capture records published, 0 console errors)" : "FAIL"}`,
   );
+  // A printed verdict that leaves with status 0 is read as green by anything
+  // that scores runs by exit code, so the verdict carries the code.
+  process.exit(ok ? 0 : 1);
 })();

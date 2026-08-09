@@ -516,7 +516,36 @@ Three probes print `GATE FAIL` and then **exit 0** — no `process.exit` and no
 A silently-passing FAIL is strictly worse than an unattributed one: an
 orchestrator or CI loop reading exit codes records these as green. **NOT fixed
 here — adding a non-zero exit CHANGES the verdict a runner observes**, which is
-outside this batch's mandate. **Status: OPEN / MEDIUM. Effort: XS each.**
+outside this batch's mandate. ~~**Status: OPEN / MEDIUM. Effort: XS each.**~~
+
+> **DISCHARGED by `C18-V1` (Batch 1005).** All three now exit `0` on a passing
+> run, `1` on a printed FAIL, and `3` on a named STRUCTURAL precondition (the
+> WebGL reference leg blind, a capture missing, a mismatch percentage computed
+> over zero lit pixels). **The recorded count of THREE was low: the fleet sweep
+> that closed this found 15**, because the analyzer's own scanner was going
+> blind mid-file. A regex literal may legally carry an unpaired quote
+> (`/Destroyed texture \[Texture "GlobeDepth-DepthCopy/`), and reading that
+> quote as a string opener blanked every construct below it — which is why the
+> original manual sweep saw three files and not fifteen, and why
+> `probe-edge-emitter.mjs` was recorded as never closing its browser when it
+> closes it outside a `finally`. The other twelve (`classifier-logdepth-flip`,
+> `clipping-planes-parity`, `cloud-shadow-cascades`, `flowfield-wind`,
+> `globe-clippoly-geodetic`, `hdr-canvas-output-decomp`,
+> `hdr-toggle-invalidation`, `model-capture-camera-parity`,
+> `model-capture-reflection`, `sandcastle-scene-capture`, `scene-capture-off`,
+> `tileset-capture-reflection`) got their printed verdict bound to an exit code
+> without an invented structural tier — inventing one requires knowing which of
+> their preconditions can go blind, which is per-probe work nobody has done.
+> `probe-all-materials.mjs` and `probe-khr-extensions.mjs` were examined and
+> ruled OUT of the class: their `CONSTRUCT-FAIL` / `LOAD-FAIL` strings are
+> per-item status columns on a diagnostic dump, and neither file prints a PASS
+> anywhere. The class is now anchored: `probe-fleet-contract.spec.mjs` asserts
+> over the WHOLE fleet with no allowlist that a probe printing a PASS/FAIL
+> verdict can leave with a non-zero code, and that the scanner reaches the end
+> of every probe still reading code. **The caveat in the paragraph above still
+> stands and is now live: these fifteen probes report verdicts a runner has
+> never observed, so a newly-red leg at the next fleet run is a finding to FILE,
+> not to normalize.**
 
 ### §2 — SATURATED-DIFFERENCE SWEEP (`NEW-PROBE-SATURATED-DIFFERENCE-METRIC`)
 
@@ -867,7 +896,7 @@ defect that no existing gate could have seen.
 
 - **`GSPLAT-SPLITDIRECTION-MISSING` (filed 2026-08-09) — splats ignore `splitDirection`**: the WebGL VS discards across the split line (`PrimitiveGaussianSplatVS.glsl:195`) but the WebGPU renderer/WGSL has no equivalent, so ImagerySplitter-style comparisons show splats on BOTH sides. Natural post-G8 G-track rider (every G row carries a byte-identical-off gate until the terminal gate closes). **Effort: S.**
 
-- **`VR-BASELINE-SCENES-VOXEL-POINTCLOUD-SPLAT` (filed 2026-08-09) — none of the three subsystems has a capture-and-diff baseline scene**, so cross-backend certification is one-shot probe history (voxel/pointcloud probes stale since 2026-07-02..17) instead of a continuously-re-run gate. Add one scene each to the split-screen baseline suite. Highest leverage per hour alongside the tracked exit-0 probe-verdict fix (NEW-PROBE-VERDICT-PRINTS-FAIL-AND-EXITS-ZERO, near line 512). **Effort: S.**
+- **`VR-BASELINE-SCENES-VOXEL-POINTCLOUD-SPLAT` (filed 2026-08-09) — none of the three subsystems has a capture-and-diff baseline scene**, so cross-backend certification is one-shot probe history (voxel/pointcloud probes stale since 2026-07-02..17) instead of a continuously-re-run gate. Add one scene each to the split-screen baseline suite. Highest leverage per hour alongside the tracked exit-0 probe-verdict fix (NEW-PROBE-VERDICT-PRINTS-FAIL-AND-EXITS-ZERO, near line 512 — now DISCHARGED by `C18-V1`). **Effort: S.**
 
 - **`G4-DISC-RADIANCE-EXCESS-UNEXPLAINED` — ✅ RESOLVED 2026-08-08. IT IS THE
   SUN BLOOM, AND IT WAS INSTRUMENT-SIDE. NO ENGINE DEFECT.** The missing term

@@ -45,7 +45,10 @@ import {
   hasWatchdog,
   innermostGuard,
   matchBrace,
+  scanEndsInCode,
+  stringLiteralSpans,
   structuralRoutedToTwo,
+  verdictExitViolations,
 } from "./lib/probe-fleet-contract.mjs";
 import { PROBE_CONTRACT_ALLOWLIST } from "./lib/probe-fleet-contract-allowlist.mjs";
 
@@ -296,6 +299,60 @@ test("A9: innermostGuard returns null for an unguarded site", () => {
   assert.equal(innermostGuard(code, findExitSites(code)[0].index), null);
 });
 
+test("A10: stringLiteralSpans reads the verdict out of a template hole", () => {
+  // This is where the fleet actually spells its per-leg verdicts, so a span
+  // reader that stopped at the outer backtick would see no PASS and no FAIL.
+  const spans = stringLiteralSpans(
+    'console.log(`(A) renders: ${ok ? "PASS" : "FAIL"}`);',
+  );
+  const contents = spans.map((s) => s.content);
+  assert.ok(contents.includes("PASS"), `no PASS span: ${contents}`);
+  assert.ok(contents.includes("FAIL"), `no FAIL span: ${contents}`);
+  // The outer literal contributes its own text with the hole blanked, so the
+  // identifiers inside `${…}` cannot be mistaken for printed words.
+  const outer = contents.find((c) => c.includes("(A) renders:"));
+  assert.ok(outer !== undefined);
+  assert.ok(!/\bok\b/.test(outer), `hole leaked into printed text: ${outer}`);
+});
+
+test("A11: a regex literal with an unpaired quote does not blind the scanner", () => {
+  // A regex may legally carry a lone quote. Read as a string opener it puts the
+  // scanner into string mode for the whole REST OF THE FILE, and every
+  // construct below reads as absent — which is how one real probe's
+  // `process.exit` and another's `browser.close` disappeared from the census.
+  const src = [
+    'const PATTERNS = [/Destroyed texture \\[Texture "GlobeDepth-DepthCopy/];',
+    "const pass = PATTERNS.length === 1;",
+    "process.exit(pass ? 0 : 1);",
+    "",
+  ].join("\n");
+  assert.equal(scanEndsInCode(src), true);
+  const sites = findExitSites(blankNonCode(src));
+  assert.equal(sites.length, 1);
+  assert.equal(sites[0].expression, "pass ? 0 : 1");
+});
+
+test("A11b: division is still division, and a quoted exit is still quoted", () => {
+  // The control for A11: a scanner that treats every `/` as a regex opener
+  // would swallow the code between two divisions, and one that treats regex
+  // bodies as code would resurrect the exits A2 requires it to erase.
+  const divided =
+    "const half = total / 2;\nconst r = (a + b) / c;\nprocess.exit(1);\n";
+  assert.equal(scanEndsInCode(divided), true);
+  assert.equal(findExitSites(blankNonCode(divided)).length, 1);
+  const quoted = 'const hint = "call process.exit(1) yourself";\n';
+  assert.deepEqual(findExitSites(blankNonCode(quoted)), []);
+  const inRegex = "const re = /process\\.exit\\(1\\)/;\n";
+  assert.deepEqual(findExitSites(blankNonCode(inRegex)), []);
+});
+
+test("A12 mutant: an unterminated string is reported, not papered over", () => {
+  // scanEndsInCode is the canary for A11's failure mode, so it has to be able
+  // to say no.
+  assert.equal(scanEndsInCode('const s = "never closed;\n'), false);
+  assert.equal(scanEndsInCode("const s = 1;\n"), true);
+});
+
 // ---------------------------------------------------------------------------
 // B. Mutants — every rule stated once, then run against the wrong implementation
 // ---------------------------------------------------------------------------
@@ -422,6 +479,100 @@ test("B10 mutant rejection: every mutant is caught by at least one rule", () => 
       `mutant ${name} escaped every rule`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// B'. The verdict-exit rule — a printed FAIL must be able to leave non-zero
+// ---------------------------------------------------------------------------
+
+/** The canonical shape: legs printed, verdict printed, verdict exited. */
+const VERDICT_BOUND = [
+  "const pass = renders && noErrs;",
+  'console.log(`(A) renders: ${renders ? "PASS" : "FAIL"}`);',
+  'console.log(pass ? "GATE PASS" : "GATE FAIL");',
+  "process.exit(pass ? 0 : 1);",
+  "",
+].join("\n");
+
+/** The defect: the verdict is computed, printed, and then dropped. */
+const VERDICT_DROPPED = VERDICT_BOUND.replace(
+  "process.exit(pass ? 0 : 1);\n",
+  "",
+);
+
+/** The subtler defect: the only non-zero exit sits ABOVE the verdict. */
+const VERDICT_EXIT_ABOVE = [
+  "if (fatal) {",
+  "  process.exit(2);",
+  "}",
+  'console.log(pass ? "GATE PASS" : "GATE FAIL");',
+  "",
+].join("\n");
+
+/** Correct: an exitCode ASSIGNMENT applies wherever in the file it sits. */
+const VERDICT_EXITCODE_ABOVE = [
+  "process.exitCode = pass ? 0 : 1;",
+  'console.log(pass ? "GATE PASS" : "GATE FAIL");',
+  "",
+].join("\n");
+
+/** A per-item status column on a diagnostic dump is not a verdict. */
+const DIAGNOSTIC_LABELS = [
+  "for (const r of results) {",
+  '  const status = r.error ? "CONSTRUCT-FAIL" : r.slow ? "PRIM-FAIL" : "OK";',
+  "  console.log(status);",
+  "}",
+  "",
+].join("\n");
+
+test("B11: a verdict bound to an exit is clean", () => {
+  assert.deepEqual(verdictExitViolations(VERDICT_BOUND), []);
+  assert.deepEqual(analyzeProbeSource(VERDICT_BOUND).verdictExitViolations, []);
+});
+
+test("B12 mutant: a printed verdict with no non-zero exit is detected", () => {
+  assert.deepEqual(verdictExitViolations(VERDICT_DROPPED), [
+    "prints a PASS/FAIL verdict but no exit path can be non-zero",
+  ]);
+});
+
+test("B13 mutant: a non-zero exit ABOVE the verdict does not carry it", () => {
+  // `exit(2)` on a fatal branch is correct and stays; it just says nothing
+  // about the verdict printed after it, which still leaves with status 0.
+  assert.deepEqual(verdictExitViolations(VERDICT_EXIT_ABOVE), [
+    "the last FAIL verdict print is followed by no non-zero exit",
+  ]);
+});
+
+test("B14: process.exitCode above the print DOES carry the verdict", () => {
+  // Position-independent by construction: the process leaves with whatever the
+  // assignment last set, so demanding it appear below the print would be a
+  // false rule that forces authors to move correct code.
+  assert.deepEqual(verdictExitViolations(VERDICT_EXITCODE_ABOVE), []);
+});
+
+test("B15: a diagnostic dump with FAIL labels is NOT a verdict", () => {
+  // Adoption of the exit-code contract is a maintainer ruling, so this rule
+  // must fire on probes that took a POSITION (they print both outcomes), never
+  // on probes that merely tabulate per-item status.
+  assert.deepEqual(verdictExitViolations(DIAGNOSTIC_LABELS), []);
+});
+
+test("B16 mutant: FAIL in a comment or a regex is not a printed verdict", () => {
+  const prose = [
+    "// prints PASS or FAIL depending on the run",
+    "/* FAIL means the gate is red, PASS means green */",
+    "const re = /PASS|FAIL/;",
+    "",
+  ].join("\n");
+  assert.deepEqual(verdictExitViolations(prose), []);
+});
+
+test("B17 mutant: exit(0) after the verdict is not an exit code", () => {
+  const zeroOnly = `${VERDICT_DROPPED}process.exit(0);\n`;
+  assert.deepEqual(verdictExitViolations(zeroOnly), [
+    "prints a PASS/FAIL verdict but no exit path can be non-zero",
+  ]);
 });
 
 // ---------------------------------------------------------------------------
@@ -603,5 +754,90 @@ test("C9 MUTATION control: moving a close out of finally is detected", () => {
     a.closeInFinally,
     false,
     `${donor}: finally survived its own removal`,
+  );
+});
+
+test("C10: every probe that prints a verdict can leave with a non-zero code", () => {
+  // NOT allowlisted, and deliberately so. A probe that prints GATE FAIL and
+  // exits 0 does not merely fail to attribute a red — it reports one as GREEN
+  // to every runner that scores by exit code, which is worse than printing
+  // nothing at all. The fleet is clean of it, so the rule holds with no
+  // exemptions and a new probe inherits the requirement automatically.
+  const offenders = [];
+  for (const f of probeFiles) {
+    const v = analyses.get(f).verdictExitViolations;
+    if (v.length > 0) {
+      offenders.push(`${f}: ${v.join("; ")}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `A probe that prints PASS/FAIL must carry that verdict in its exit status:
+0 pass, 1 gate fail, 2 the harness broke, 3 structural. Bind the verdict to
+process.exit (or process.exitCode); do NOT delete the printed verdict to satisfy
+this rule. Offenders:\n  ${offenders.join("\n  ")}`,
+  );
+});
+
+test("C11 MUTATION control: deleting a probe's exits brings the violation back", () => {
+  // C10 passes trivially if the rule cannot see a violation in real source.
+  // Take a probe that prints a verdict and carries it TODAY, delete the exits
+  // from a copy, and require the violation to reappear.
+  const donor = probeFiles.find((f) => {
+    const src = readProbe(f);
+    return (
+      /GATE (?:PASS|FAIL)/.test(src) &&
+      analyses.get(f).verdictExitViolations.length === 0 &&
+      analyses.get(f).exitCodes.length > 0
+    );
+  });
+  assert.ok(donor, "no verdict-printing probe left to mutate");
+  const src = readProbe(donor).replaceAll("\r\n", "\n");
+  // `recordVerdict` is not a prefix or a superstring of the construct being
+  // removed: the detector matches `process.exit` / `process.exitCode`, and
+  // neither survives inside the replacement.
+  const mutated = src.replaceAll("process.exit", "recordVerdict");
+  assert.notEqual(mutated, src, `${donor}: mutation did not apply`);
+  assert.ok(
+    !/process\.exit/.test(mutated),
+    `${donor}: an exit survived its own removal`,
+  );
+  assert.deepEqual(verdictExitViolations(mutated), [
+    "prints a PASS/FAIL verdict but no exit path can be non-zero",
+  ]);
+});
+
+test("C12 MUTATION control: the rule keys on the VERDICT, not on the exits", () => {
+  // The converse direction. A probe with no exits and no verdict is silent —
+  // adding ONLY the verdict print must make it speak, which proves C10 is not
+  // secretly asserting "every probe must exit".
+  const donor = probeFiles.find((f) => {
+    const a = analyses.get(f);
+    return (
+      a.exitCodes.length === 0 &&
+      a.verdictExitViolations.length === 0 &&
+      !/\bFAIL\b/.test(readProbe(f))
+    );
+  });
+  assert.ok(donor, "no exit-free diagnostic probe left to mutate");
+  const src = readProbe(donor).replaceAll("\r\n", "\n");
+  assert.deepEqual(verdictExitViolations(src), []);
+  const mutated = `${src}\nconsole.log(ok ? "GATE PASS" : "GATE FAIL");\n`;
+  assert.deepEqual(verdictExitViolations(mutated), [
+    "prints a PASS/FAIL verdict but no exit path can be non-zero",
+  ]);
+});
+
+test("C13: the scanner reaches the end of every probe still reading code", () => {
+  // The analyzer reports what it cannot see as ABSENT, so a scan that dies
+  // mid-file manufactures violations below the wound and hides real ones. A
+  // source file cannot legally end inside a string, which makes this cheap to
+  // assert and impossible to satisfy by accident.
+  const blind = probeFiles.filter((f) => !scanEndsInCode(readProbe(f)));
+  assert.deepEqual(
+    blind,
+    [],
+    `the source scanner went blind partway through: ${blind.join(", ")}`,
   );
 });

@@ -320,4 +320,46 @@ console.log(
 );
 console.log(`(E) 0 WebGPU device errors: ${noErrs ? "PASS" : "FAIL"}`);
 const pass = rendered && edlDarkens && comparable && offGate && noErrs;
+
+// Exit contract: 0 PASS, 1 FAIL, 2 the harness broke, 3 STRUCTURAL — the lane
+// ran but could not see its subject. The verdict used to be printed and then
+// dropped: with no exit anywhere in this file the process left with status 0,
+// so a runner reading exit codes recorded a printed FAIL as green.
+//
+// Gate (C) asks whether WebGPU's EDL darkening is the same order as WebGL's.
+// That question is unanswerable — not answered NO — when the WebGL reference
+// produced no darkening or no image to difference, so those states route to
+// STRUCTURAL. A WebGPU lane that fails to darken against a WebGL lane that does
+// stays a FAIL: that is the defect the gate exists to catch.
+const structural = [];
+if (gpuOn.info.rendererType !== "webgpu") {
+  structural.push(
+    `the WebGPU lane resolved rendererType="${gpuOn.info.rendererType}" — nothing measured below is about the WebGPU EDL path`,
+  );
+}
+if (!gpuEdl || !glEdl) {
+  structural.push(
+    "an ON/OFF pair could not be differenced (missing or mismatched capture), so the darkening metric does not exist",
+  );
+}
+if (nonBlack(glOn.decoded) === 0) {
+  structural.push(
+    `the WebGL reference rendered 0 non-black pixels — the point cloud is not reaching the page (check ${BASE} serves Apps/SampleData), so there is no reference darkening to compare against`,
+  );
+}
+if (glEdl && !glDarkens) {
+  structural.push(
+    `the WebGL reference itself did not darken (darkerPct ${glEdl.darkerPct}) — with no reference effect, gate (C) compares WebGPU against nothing`,
+  );
+}
+if (structural.length > 0) {
+  for (const s of structural) {
+    console.log(`  STRUCTURAL: ${s}`);
+  }
+  console.log(
+    "GATE STRUCTURAL — acceptance INCOMPLETE. This probe certifies nothing in this state.",
+  );
+  process.exit(3);
+}
 console.log(pass ? "GATE PASS" : "GATE FAIL");
+process.exit(pass ? 0 : 1);

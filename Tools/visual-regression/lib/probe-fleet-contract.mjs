@@ -30,24 +30,160 @@
 // `probe-fleet-contract.spec.mjs` runs the analyzer against synthetic mutants
 // before it runs it against the fleet.
 
+/** Characters after which a `/` opens a regex literal rather than dividing. */
+const REGEX_MAY_FOLLOW = /[=(,:[!&|?{};+\-*%~^<>]$/;
+/** Keywords after which a `/` opens a regex literal rather than dividing. */
+const REGEX_MAY_FOLLOW_KEYWORD =
+  /\b(?:return|typeof|case|in|of|do|else|yield|await|new|delete|void|instanceof)$/;
+
 /**
- * Line-ending–normalized source with line comments, block comments and string
- * literals blanked out (length-preserving, so offsets and line numbers survive).
+ * Index of the `/` closing the regex literal opened at `open`, or -1 when the
+ * run is not a regex literal after all (no close before end of line).
  *
- * Blanking strings matters: several probes print the word "structural" or
- * "watchdog" inside a `console.error` on an EXCEPTION path, and a naive text
- * scan reads those as contract constructs.
+ * @param {string} text Line-ending–normalized source.
+ * @param {number} open Index of the opening slash.
+ * @returns {number} Index of the closing slash, or -1.
+ */
+function regexLiteralEnd(text, open) {
+  let i = open + 1;
+  let inClass = false;
+  const LIMIT = text.length + 1;
+  let guard = 0;
+  while (i < text.length && guard++ < LIMIT) {
+    const c = text[i];
+    if (c === "\\") {
+      i += 2;
+      continue;
+    }
+    if (c === "\n") {
+      return -1;
+    }
+    if (c === "[") {
+      inClass = true;
+    } else if (c === "]") {
+      inClass = false;
+    } else if (c === "/" && !inClass) {
+      return i;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+/**
+ * Index of the quote closing the string literal opened at `open`, or -1.
+ *
+ * Template holes are skipped whole so a quote inside `${…}` cannot be mistaken
+ * for the terminator.
+ *
+ * @param {string} text Line-ending–normalized source.
+ * @param {number} open Index of the opening quote.
+ * @returns {number} Index of the closing quote, or -1.
+ */
+function stringLiteralEnd(text, open) {
+  const quote = text[open];
+  let i = open + 1;
+  let holeDepth = 0;
+  const LIMIT = text.length + 1;
+  let guard = 0;
+  while (i < text.length && guard++ < LIMIT) {
+    const c = text[i];
+    if (c === "\\") {
+      i += 2;
+      continue;
+    }
+    if (quote === "`" && c === "$" && text[i + 1] === "{") {
+      holeDepth += 1;
+      i += 2;
+      continue;
+    }
+    if (quote === "`" && holeDepth > 0) {
+      if (c === "}") {
+        holeDepth -= 1;
+      }
+      i += 1;
+      continue;
+    }
+    if (c === quote) {
+      return i;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+/**
+ * Template-hole interiors replaced by spaces, so a literal's PRINTED text can be
+ * matched without the code inside `${…}` contributing tokens of its own.
+ *
+ * @param {string} content String-literal interior.
+ * @returns {string} Same length, holes blanked.
+ */
+function blankTemplateHoles(content) {
+  const out = content.split("");
+  let i = 0;
+  const LIMIT = content.length + 1;
+  let guard = 0;
+  while (i < content.length && guard++ < LIMIT) {
+    if (content[i] === "$" && content[i + 1] === "{") {
+      let depth = 1;
+      let j = i + 2;
+      out[i] = " ";
+      out[i + 1] = " ";
+      let g2 = 0;
+      while (j < content.length && depth > 0 && g2++ < LIMIT) {
+        if (content[j] === "{") {
+          depth += 1;
+        } else if (content[j] === "}") {
+          depth -= 1;
+        }
+        if (content[j] !== "\n") {
+          out[j] = " ";
+        }
+        j += 1;
+      }
+      i = j;
+      continue;
+    }
+    i += 1;
+  }
+  return out.join("");
+}
+
+/**
+ * One pass over the source producing both views the analyzer needs: the CODE
+ * view (comments, string interiors and regex bodies blanked) and the inventory
+ * of string literals with their printed text.
+ *
+ * Regex bodies are blanked because they are neither code nor printed output,
+ * and because a regex is allowed to contain an unpaired quote. Before this was
+ * handled, one such regex — `/Destroyed texture \[Texture "GlobeDepth-DepthCopy/`
+ * — put the scanner into string mode for the ENTIRE REMAINDER of its file, so
+ * every construct below it (watchdog, close-in-finally, exit sites) read as
+ * absent. A scanner that goes silently blind mid-file is exactly the kind of
+ * instrument this spec exists to prevent.
  *
  * @param {string} source Raw file text.
- * @returns {string} Same length, with comment/string interiors replaced by spaces.
+ * @returns {{code: string, strings: Array<{start: number, end: number, content: string}>, endedInCode: boolean}} Both views plus the terminal scanner state.
  */
-export function blankNonCode(source) {
+function scanSource(source) {
   const text = source.replaceAll("\r\n", "\n");
   const out = text.split("");
+  const strings = [];
+  /** Trailing code characters, used to tell a regex literal from a division. */
+  let lastCode = "";
+  const recordString = (start, end) => {
+    strings.push({
+      start,
+      end,
+      content: blankTemplateHoles(text.slice(start + 1, end)),
+    });
+  };
   let i = 0;
   let mode = "code";
   let quote = "";
   let templateDepth = 0;
+  let stringStart = -1;
   const LIMIT = text.length + 1;
   let guard = 0;
   while (i < text.length && guard++ < LIMIT) {
@@ -68,12 +204,35 @@ export function blankNonCode(source) {
         i += 2;
         continue;
       }
+      if (
+        c === "/" &&
+        (lastCode === "" ||
+          REGEX_MAY_FOLLOW.test(lastCode) ||
+          REGEX_MAY_FOLLOW_KEYWORD.test(lastCode))
+      ) {
+        const end = regexLiteralEnd(text, i);
+        if (end > i) {
+          for (let j = i + 1; j < end; j++) {
+            if (out[j] !== "\n") {
+              out[j] = " ";
+            }
+          }
+          lastCode = `${lastCode}x`.slice(-12);
+          i = end + 1;
+          continue;
+        }
+        // No terminator on this line: it was a division after all.
+      }
       if (c === '"' || c === "'" || c === "`") {
         mode = "string";
         quote = c;
         templateDepth = 0;
+        stringStart = i;
         i += 1;
         continue;
+      }
+      if (!/\s/.test(c)) {
+        lastCode = `${lastCode}${c}`.slice(-12);
       }
       i += 1;
       continue;
@@ -117,6 +276,16 @@ export function blankNonCode(source) {
       continue;
     }
     if (quote === "`" && templateDepth > 0) {
+      // Hole interiors stay CODE (a probe can call a helper there), but a
+      // string inside a hole is still printed text and is recorded as one.
+      if (c === '"' || c === "'" || c === "`") {
+        const end = stringLiteralEnd(text, i);
+        if (end > i) {
+          recordString(i, end);
+          i = end + 1;
+          continue;
+        }
+      }
       if (c === "}") {
         templateDepth -= 1;
       }
@@ -124,8 +293,10 @@ export function blankNonCode(source) {
       continue;
     }
     if (c === quote) {
+      recordString(stringStart, i);
       mode = "code";
       quote = "";
+      lastCode = `${lastCode}x`.slice(-12);
       i += 1;
       continue;
     }
@@ -134,7 +305,53 @@ export function blankNonCode(source) {
     }
     i += 1;
   }
-  return out.join("");
+  return { code: out.join(""), strings, endedInCode: mode === "code" };
+}
+
+/**
+ * Whether the scanner reached the end of the file still reading CODE.
+ *
+ * A file cannot legally end inside a string or a block comment, so a `false`
+ * here means the scanner mistook something for an opening delimiter and blanked
+ * every construct after it. That is not a cosmetic parse gripe: the analyzer
+ * reports missing constructs as contract violations, so a blind scanner both
+ * invents violations and hides real ones.
+ *
+ * @param {string} source Raw file text.
+ * @returns {boolean} True when the scan closed cleanly.
+ */
+export function scanEndsInCode(source) {
+  return scanSource(source).endedInCode;
+}
+
+/**
+ * Line-ending–normalized source with line comments, block comments, regex
+ * bodies and string literals blanked out (length-preserving, so offsets and
+ * line numbers survive).
+ *
+ * Blanking strings matters: several probes print the word "structural" or
+ * "watchdog" inside a `console.error` on an EXCEPTION path, and a naive text
+ * scan reads those as contract constructs.
+ *
+ * @param {string} source Raw file text.
+ * @returns {string} Same length, with comment/string/regex interiors replaced by spaces.
+ */
+export function blankNonCode(source) {
+  return scanSource(source).code;
+}
+
+/**
+ * Every string literal in the source, with its PRINTED text — template holes
+ * blanked, and the strings nested inside those holes listed as literals of
+ * their own. `console.log(\`x: ${ok ? "PASS" : "FAIL"}\`)` therefore yields the
+ * "PASS" and "FAIL" literals, which is where the fleet actually spells its
+ * verdicts.
+ *
+ * @param {string} source Raw file text.
+ * @returns {Array<{start: number, end: number, content: string}>} Literal spans.
+ */
+export function stringLiteralSpans(source) {
+  return scanSource(source).strings;
 }
 
 /**
@@ -171,8 +388,12 @@ const EXIT_CALL = /process\.exit(?:Code)?\s*(?:\(|=)/g;
  * Every `process.exit(...)` / `process.exitCode = ...` in `code`, with the
  * expression text that supplies the code.
  *
+ * The two forms differ in WHEN they take effect, which the verdict-exit rule
+ * depends on: a call terminates at that point in the program, an assignment
+ * sets the code the process will eventually leave with no matter where it sits.
+ *
  * @param {string} code Comment/string-blanked source.
- * @returns {Array<{index: number, expression: string}>} Exit sites.
+ * @returns {Array<{index: number, expression: string, form: string}>} Exit sites.
  */
 export function findExitSites(code) {
   const sites = [];
@@ -202,9 +423,69 @@ export function findExitSites(code) {
       const end = code.indexOf(";", m.index);
       expression = code.slice(m.index + m[0].length, end < 0 ? undefined : end);
     }
-    sites.push({ index: m.index, expression: expression.trim() });
+    sites.push({
+      index: m.index,
+      expression: expression.trim(),
+      form: isCall ? "call" : "assignment",
+    });
   }
   return sites;
+}
+
+/** Printed text that announces a run FAILED. */
+const VERDICT_FAIL = /\bFAIL(?:S|ED|URE|URES)?\b/;
+/** Printed text that announces a run PASSED. */
+const VERDICT_PASS = /\bPASS(?:ES|ED)?\b/;
+
+/**
+ * Whether an exit-code expression can evaluate to something other than 0.
+ *
+ * @param {string} expression Exit-code expression text.
+ * @returns {boolean} True unless the code is the literal 0.
+ */
+function canBeNonZero(expression) {
+  return expression.trim() !== "0";
+}
+
+/**
+ * Ways a probe prints a PASS/FAIL verdict that no exit code can carry.
+ *
+ * A probe that announces FAIL and then leaves with status 0 is worse than one
+ * that announces nothing: an orchestrator or CI loop reading exit codes records
+ * it as GREEN, so the failure is not merely unattributed, it is inverted. The
+ * rule keys on the PAIR: a lone "LOAD-FAIL"-style status column on a diagnostic
+ * dump is not a verdict and is not required to carry an exit code, while a
+ * source that prints both outcomes of a gate is one that has taken a position.
+ *
+ * Position matters as much as presence. An `exit(1)` on some early fatal branch
+ * does not rescue a verdict printed below it, so the check demands a non-zero
+ * exit REACHABLE FROM the last FAIL print — either an exit call after it, or a
+ * `process.exitCode` assignment, which applies wherever it sits.
+ *
+ * @param {string} source Raw probe source text.
+ * @returns {string[]} Violations, empty when the verdict is carried by an exit.
+ */
+export function verdictExitViolations(source) {
+  const { code, strings } = scanSource(source);
+  const fails = strings
+    .filter((s) => VERDICT_FAIL.test(s.content))
+    .sort((a, b) => a.start - b.start);
+  const prints = strings.some((s) => VERDICT_PASS.test(s.content));
+  if (fails.length === 0 || !prints) {
+    return [];
+  }
+  const nonZero = findExitSites(code).filter((s) => canBeNonZero(s.expression));
+  if (nonZero.length === 0) {
+    return ["prints a PASS/FAIL verdict but no exit path can be non-zero"];
+  }
+  const lastFail = fails[fails.length - 1];
+  const reachable = nonZero.some(
+    (s) => s.form === "assignment" || s.index > lastFail.start,
+  );
+  if (!reachable) {
+    return ["the last FAIL verdict print is followed by no non-zero exit"];
+  }
+  return [];
 }
 
 /** A `setTimeout` whose callback terminates the process is a watchdog. */
@@ -449,8 +730,15 @@ export function hasStructuralTier(code) {
 /**
  * Analyze one probe's source against the authoring contract.
  *
+ * `verdictExitViolations` is reported ALONGSIDE `violations` rather than inside
+ * it. `violations` is what the shrink-only allowlist exempts, and that list
+ * carries inherited machine-safety debt from before the contract was checkable;
+ * a verdict that exits 0 has no such amnesty — the spec asserts it over the
+ * whole fleet with no exemptions, so folding it in would hide it behind 560
+ * allowlist rows.
+ *
  * @param {string} source Raw probe source text.
- * @returns {{launchesBrowser: boolean, hasWatchdog: boolean, closesBrowser: boolean, closeInFinally: boolean, exitCodes: string[], declaresStructuralExit: boolean, structuralRoutedToTwo: number[], violations: string[]}} Analysis.
+ * @returns {{launchesBrowser: boolean, hasWatchdog: boolean, closesBrowser: boolean, closeInFinally: boolean, exitCodes: string[], declaresStructuralExit: boolean, structuralRoutedToTwo: number[], verdictExitViolations: string[], violations: string[]}} Analysis.
  */
 export function analyzeProbeSource(source) {
   const code = blankNonCode(source);
@@ -488,6 +776,7 @@ export function analyzeProbeSource(source) {
     exitCodes,
     declaresStructuralExit,
     structuralRoutedToTwo: badTwo,
+    verdictExitViolations: verdictExitViolations(source),
     violations,
   };
 }

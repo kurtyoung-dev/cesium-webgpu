@@ -197,6 +197,9 @@ async function run() {
       ? "[probe-hdr-toggle-invalidation] PASS (0 post-toggle validation errors)"
       : "[probe-hdr-toggle-invalidation] FAIL (toggle still invalidates pipelines)",
   );
+  // A printed verdict that leaves with status 0 is read as green by anything
+  // that scores runs by exit code, so the verdict carries the code.
+  process.exit(totalPostToggle === 0 ? 0 : 1);
 }
 
 run();

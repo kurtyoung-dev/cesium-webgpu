@@ -153,4 +153,7 @@ async function diffPngs(a, b) {
   console.log(
     `[probe-scene-capture-off] VERDICT: ${ok ? "PASS — capture inert (no sources published, flag false, no errors)" : "FAIL — see state above"}`,
   );
+  // A printed verdict that leaves with status 0 is read as green by anything
+  // that scores runs by exit code, so the verdict carries the code.
+  process.exit(ok ? 0 : 1);
 })();

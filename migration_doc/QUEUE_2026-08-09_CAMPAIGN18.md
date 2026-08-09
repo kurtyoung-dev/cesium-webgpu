@@ -70,6 +70,26 @@ on a gate that exits 0 on failure is how a green becomes unauditable.
 | `C18-V2` | Capture-and-diff baseline scenes for all three subsystems | None of the three subsystems has a `capture-and-diff` baseline scene, so cross-backend certification is one-shot probe history instead of a continuously re-run gate. Add one voxel, one point-cloud and one splat scene to the split-screen baseline suite. **Discharges `VR-BASELINE-SCENES-VOXEL-POINTCLOUD-SPLAT`** (filed 2026-08-09). | `node Tools/visual-regression/capture-and-diff.mjs` runs all three new scenes on Edge and stores baselines; each scene's non-vacuity is proven by a source mutation that pushes its mismatch above threshold and is then reverted. Scene selection must exercise a path the existing probes do not (the splat scene rides the in-tree tilesets, not synthetic `_splatData`). | S | `C18-V1` |
 | `C18-V3` | Re-arm freshness: re-run the stale voxel + point-cloud probe fleets at HEAD | Every recorded voxel run is 2026-07-02..17 and the point-cloud visual-parity numbers are 2026-07-01..02 — 3-5 weeks stale, against a tree that has since taken an upstream v1.144 sync. Re-run the 11-probe voxel fleet and the point-cloud fleet at HEAD on Edge, with the `C18-V1` exit codes live. Record dated results in the ledger. | Every probe in both fleets has a dated 2026-08 result at HEAD with an honest verdict. Any newly-red probe is FILED as its own row (or attached to the owning C11/C18 row) — a red is never normalized away, and a gate is never widened to accommodate one. | S | `C18-V1` |
 
+**`C18-V1` LANDED — and the row's own count was wrong.** The three named probes
+were fixed (0 pass / 1 gate fail / 3 structural with a named reason each), but a
+static sweep of all 623 probes found **15** members of the class, not 3. The
+twelve extra are `probe-classifier-logdepth-flip`, `probe-clipping-planes-parity`,
+`probe-cloud-shadow-cascades`, `probe-flowfield-wind`,
+`probe-globe-clippoly-geodetic`, `probe-hdr-canvas-output-decomp`,
+`probe-hdr-toggle-invalidation`, `probe-model-capture-camera-parity`,
+`probe-model-capture-reflection`, `probe-sandcastle-scene-capture`,
+`probe-scene-capture-off`, `probe-tileset-capture-reflection`; each had its
+printed verdict bound to an exit code, with no structural tier invented for it.
+**The reason the original count was low is itself the finding:** the contract
+analyzer's source scanner treated a regex literal's unpaired quote as a string
+opener and went blind for the rest of the file, so constructs below such a regex
+read as absent. That is fixed, and two fleet-wide anchors now hold with no
+allowlist — a probe that prints a PASS/FAIL verdict must be able to leave with a
+non-zero code, and the scanner must reach the end of every probe still reading
+code. **Consequence for `C18-V3`:** fifteen probes will now report verdicts a
+runner has never observed. A newly-red leg there is a finding to FILE, not to
+normalize, and not evidence that this row broke something.
+
 ---
 
 ## 2. Wave P — point-cloud correctness
@@ -237,7 +257,7 @@ gated); LiDAR-surfel rendering through the splat renderer (M, post-G8).
 
 | ID | Wave | Size | Status |
 |---|---|---|---|
-| `C18-V1` | V | S | PENDING |
+| `C18-V1` | V | S | **DONE** — 15 probes fixed, not 3 (see the row); fleet-wide anchor + scanner-blindness fix landed; spec 32 → 47 tests |
 | `C18-V2` | V | S | PENDING |
 | `C18-V3` | V | S | PENDING |
 | `C18-P1` | P | M | PENDING |

@@ -310,4 +310,7 @@ async function diffPngs(a, b) {
       "  NOTE: multi-view scene construction threw (env limitation); the 3 morph-mode parity checks still gate the swap.",
     );
   }
+  // A printed verdict that leaves with status 0 is read as green by anything
+  // that scores runs by exit code, so the verdict carries the code.
+  process.exit(ok ? 0 : 1);
 })();

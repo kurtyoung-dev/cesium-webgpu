@@ -384,4 +384,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   console.log(
     "  output: probe-model-capture-reflection-faces-on.png / -off.png",
   );
+  // A printed verdict that leaves with status 0 is read as green by anything
+  // that scores runs by exit code, so the verdict carries the code.
+  process.exit(ok ? 0 : 1);
 })();
