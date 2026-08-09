@@ -313,18 +313,43 @@ PlayCanvas supersplat, and the research implementations) "needs its own
 dedicated license-verification pass before `C15-G3`/`C15-G5` derive from
 anything external."
 
-**That vetting pass is `C18-S0`**
+**That vetting pass was `C18-S0`**
 ([`QUEUE_2026-08-09_CAMPAIGN18.md`](QUEUE_2026-08-09_CAMPAIGN18.md) §4) — a
 documentation/licence row with no engine change, deliberately **not** gated by
-`C15-G8` so it can run early. Until `C18-S0` populates a table here with ✔ rows,
-**every G-track row is implement-from-technique only** under the house norm:
-no external file is copied, each derivation site carries a `Reference:` block,
+`C15-G8` so it could run early. **It RAN on 2026-08-09**; the full record —
+20 vetted projects, the Inria provenance-chain verdict per candidate, honest
+gaps, and a recommendation per row — is
+[`GSPLAT_REFERENCE_VETTING_2026-08-09.md`](GSPLAT_REFERENCE_VETTING_2026-08-09.md).
+It did **not** hand the G-track a borrowable reference, and that is the finding:
+**every G-track row remains implement-from-technique only** under the house norm
+— no external file is copied, each derivation site carries a `Reference:` block,
 and each source gets a numbered L-xx determination in
 [`LICENSE_DETERMINATIONS_2026-08-10.md`](LICENSE_DETERMINATIONS_2026-08-10.md).
 
+**The gsplat ecosystem's licence shape, in one line:** the reference
+implementation (`graphdeco-inria/gaussian-splatting`), its CUDA rasterizer
+(`diff-gaussian-rasterization`), and the two research follow-ups most relevant to
+this fork (`mip-splatting`, `StopThePop`) all carry the **Inria/MPII
+"Gaussian-Splatting License"** — "research and/or evaluation purposes only",
+no right to sublicense, restriction propagating to derivatives. That is
+irreconcilable with an Apache-2.0 engine. The browser/engine implementations
+(antimatter15, mkkellogg, gsplat.js, PlayCanvas, Spark) are permissive but are
+paper-derived re-implementations with nothing the G-track needs.
+
+**What `C15-G3`/`C15-G5` actually touched, retrospectively cleared.** Both rows
+have landed, and their external surface was two projects that were **already
+licence-determined before this pass ran**: `@cesium/wasm-splats` (Apache-2.0,
+`L-22b`) for the radix sort and SH texture generation, and `@spz-loader/core`
+(Apache-2.0, `L-22a`) for SPZ decoding. Neither derived from an unvetted project.
+The asset side is likewise clean — §6b's two CesiumGS-shipped gate tilesets,
+not externally trained scenes.
+
 | Name | Ecosystem | Licence (as recorded) | Author | What it guides |
 |---|---|---|---|---|
-| _(empty — pending the `C18-S0` verification pass)_ | gsplat | — | — | `C15-G3` record format, `C15-G5` spherical harmonics, and the post-G8 `C18-S1..S3` adoption rows |
+| KHR_gaussian_splatting (glTF extension) | Khronos spec | **CC-BY-4.0** ✔ `Copyright 2026 The Khronos Group Inc.`; status **Release Candidate** | Khronos; contributors incl. Sean Lilley (Cesium), Niantic Spatial, Esri, Nvidia | `C15-G3` record format — the **format** authority. A documentation licence, not a code licence: implementing a specification from its normative prose raises no code-licence question. |
+| `@cesium/wasm-splats` (CesiumGS/cesium-wasm-utils) | Rust → WASM | **Apache-2.0** △ (host-declared, `LICENSE.md`) — already determined as `L-22b` | Cesium GS | `C15-G4` sort order and `C15-G5` SH texture generation. Already a shipped `packages/engine` dependency; the notice obligation is discharged. |
+| `@spz-loader/core` (drumath2237/spz-loader) | WASM (Emscripten wrap of nianticlabs/spz) | **Apache-2.0** △ (host-declared, `LICENSE.txt`) — already determined as `L-22a`; wrapped project `nianticlabs/spz` is **MIT** ✔ `Copyright (c) 2024 Niantic Labs` | Ryosuke Nomura; Niantic Labs | SPZ decoding. Already a shipped dependency. |
+| graphdeco-inria/gaussian-splatting + diff-gaussian-rasterization — **STRUCK, research-only** | research | **Gaussian-Splatting License** (Inria + MPII) ✔ | Kerbl, Kopanas, Leimkühler, Drettakis | **Never copy, never transliterate, never port.** Listed so the boundary is on the record; the published paper is the only permitted route to any technique it contains. |
 
 ---
 

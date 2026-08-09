@@ -130,7 +130,7 @@ C18-S work borrows externally.
 
 | ID | Title | Scope | Acceptance (probe-verifiable) | Size | Deps |
 |---|---|---|---|---|---|
-| `C18-S0` | Dedicated license-verification pass over the gsplat ecosystem | The reference catalog's honest §3 gap: **zero vetted gsplat candidates exist** — the whole ecosystem (antimatter15/splat, mkkellogg/GaussianSplats3D, PlayCanvas supersplat, and the Mip-Splatting / StochasticSplats research implementations) has never had its LICENSE files read verbatim by this fork. Run the L-xx determination process over it: fetch and read each LICENSE file verbatim (never a paraphrase — the L-24 lesson), record a numbered determination, and pre-register the survivors in this queue's §6 table. **No engine change.** | A determination row per candidate in `LICENSE_DETERMINATIONS_2026-08-10.md` with the licence text quoted from the fetched file, a USABLE / FILE-COPYLEFT / STUDY-ONLY / UNKNOWN verdict, and the §6 table below updated from △ to ✔ (or the reference struck). A row that stays UNKNOWN blocks derivation from that project, full stop. | S | — (not gated by `C15-G8`) |
+| `C18-S0` | **DONE 2026-08-09** — dedicated license-verification pass over the gsplat ecosystem. **Result: 20 projects vetted; Mip-Splatting AND StopThePop both carry the Inria research-only licence byte-for-byte, so `C18-S2` is clean-room-from-paper MANDATORY; `C18-S1`/`C18-S4` need no external reference and `C18-S3` needs at most one (GPUSorting, MIT).** Full record: [`GSPLAT_REFERENCE_VETTING_2026-08-09.md`](GSPLAT_REFERENCE_VETTING_2026-08-09.md) | The reference catalog's honest §3 gap: **zero vetted gsplat candidates exist** — the whole ecosystem (antimatter15/splat, mkkellogg/GaussianSplats3D, PlayCanvas supersplat, and the Mip-Splatting / StochasticSplats research implementations) has never had its LICENSE files read verbatim by this fork. Run the L-xx determination process over it: fetch and read each LICENSE file verbatim (never a paraphrase — the L-24 lesson), record a numbered determination, and pre-register the survivors in this queue's §6 table. **No engine change.** | A determination row per candidate in `LICENSE_DETERMINATIONS_2026-08-10.md` with the licence text quoted from the fetched file, a USABLE / FILE-COPYLEFT / STUDY-ONLY / UNKNOWN verdict, and the §6 table below updated from △ to ✔ (or the reference struck). A row that stays UNKNOWN blocks derivation from that project, full stop. | S | — (not gated by `C15-G8`) |
 | `C18-S1` | SH distance-band truncation | Evaluate spherical harmonics at degree 1 far / degree 3 near through the **backend-neutral `applySphericalHarmonicsBudget` seam** — the `C15-G5` option-(a) precedent, where both backends degrade together by construction. Cuts the tower asset's 8.6M-word SH buffer traffic and VS ALU at globe zoom-out. Quality-preserving at the near band; a distance-graded budget, not a feature removal. | Parity-harness near/far azimuth legs identical cross-backend, plus byte-identical-off. | S | `C15-G8`, `C18-S0` |
 | `C18-S2` | Mip-Splatting opt-in (both backends) | Both backends currently ship vanilla +0.3 dilation with no compensation, which aliases and over-brightens distant splats — the globe-critical splat quality item, since a geospatial camera spends most of its time far from the asset. Shader-only, portable across GLSL and WGSL, **default-off**. | Cross-backend parity with the feature ON at both gate assets, plus off-gate byte-identical on both backends. | S-M | `C15-G8`, `C18-S0` |
 | `C18-S3` | GPU radix sort for splats | Removes sort-staleness popping during fast slews (the current throttle is ~0.5° / 1 m / 3 frames). Subgroups now ship and are already auto-requested. WebGPU-side performance path; WebGL keeps the shared worker sort — the orders converge, so there is no visual divergence. **Discharges the `WEBGPU_MIGRATION_BACKLOG.md` §11 "Gaussian Splat sort — radix sort on GPU" item** (near line 799), which `C15-G4` named as an explicit non-goal until now (`QUEUE_2026-08-02_CAMPAIGN15.md` §6d) — cross-reference both, do not re-file. | Frozen-camera index byte-equivalence versus the worker sort, **plus interleaved A/B timing in one run** — do not repeat the `C15-G4` count-for-timing substitution. | M | `C15-G8`, `C18-S0` |
@@ -176,15 +176,41 @@ pass"). Therefore:
 
 - **No Wave V, Wave P or Wave A row derives from an external project.** They
   are in-tree correctness and in-tree additive work.
-- **`C18-S0` IS the pre-registration pass for Wave S.** No `C18-S1..S3` row may
-  borrow externally until `C18-S0` has populated the table below with ✔ rows.
-  Until then, Wave S is implement-from-technique only (the house norm), with
-  every derivation site carrying a `Reference:` block and a numbered L-xx
-  determination.
+- **`C18-S0` IS the pre-registration pass for Wave S**, and it has now run — see
+  immediately below. It populated the table with two ✔ rows and **struck two
+  candidates outright**. No `C18-S1..S3` row may borrow from anything absent
+  from that table. Wave S remains implement-from-technique (the house norm),
+  with every derivation site carrying a `Reference:` block and a numbered L-xx
+  determination — the difference is that this is now a conclusion backed by read
+  licence text, not a placeholder pending verification.
+
+**`C18-S0` RAN 2026-08-09.** Twenty projects surveyed, licence artifacts fetched
+and transcribed literally; the full record — candidate table, Inria
+provenance-chain verdicts, honest gaps and per-row recommendations — is
+[`GSPLAT_REFERENCE_VETTING_2026-08-09.md`](GSPLAT_REFERENCE_VETTING_2026-08-09.md).
+**The headline is a constraint, not a shopping list:** the two references that map
+most directly onto Wave S — `autonomousvision/mip-splatting` and
+`r4dl/StopThePop` — **both carry the Inria/MPII "Gaussian-Splatting License"
+byte-for-byte** ("The *Software* may be used \"non-commercially\", i.e., for
+research and/or evaluation purposes only"), which cannot be reconciled with an
+Apache-2.0 engine. The pass's standing rule: **every splat repository whose
+`LICENSE` opens with `Gaussian-Splatting License` is research-only, whoever's
+name is on the paper.** The result is that Wave S stays implement-from-technique
+by evidence rather than by default — three of its four rows need no external
+reference at all.
 
 | Name | Ecosystem | Licence (as recorded) | Author | What it guides |
 |---|---|---|---|---|
-| _(empty pending `C18-S0`)_ | gsplat | — | — | `C18-S1` SH truncation, `C18-S2` Mip-Splatting, `C18-S3` GPU radix sort |
+| aras-p/UnityGaussianSplatting | Unity HLSL | **MIT** ✔ `Copyright (c) 2023 Aras Pranckevičius` | Aras Pranckevičius | `C18-S1` — SH quantization/bit-budget ladders, **only if** the row grows a bit-budget dimension. The distance-graded band LOD itself has no reference anywhere. |
+| b0nes164/GPUSorting | HLSL / CUDA | **MIT** ✔ `Copyright (c) 2024 Thomas Smith` — ⚠ multi-part LICENSE, one bundled component (bb_segsort) is **LGPL-2.1** | Thomas Smith | `C18-S3` — OneSweep / DeviceRadixSort digit-pass structure, as a **structural cross-check only**: it contains no WGSL, so it cannot be a porting source, and nothing may be read from the LGPL component. |
+| autonomousvision/mip-splatting — **STRUCK, research-only** | research | **Gaussian-Splatting License** (Inria + MPII) ✔ | Yu, Chen, Huang, Sattler, Geiger | `C18-S2` — **struck as a code reference.** Derive from the paper only: *Mip-Splatting: Alias-free 3D Gaussian Splatting*, CVPR 2024, arXiv:2311.16493. |
+| r4dl/StopThePop — **STRUCK, research-only** | research | **Gaussian-Splatting License** (Inria + MPII) ✔; the MIT carve-out sits inside a fork of the Inria rasterizer and stays UNKNOWN | Radl, Steiner, Parger, Weinrauch, Kerbl, Steinberger | Not pre-registered for any row. If hierarchical per-pixel resort is ever wanted it is a separate row, clean-room from arXiv:2402.00525. |
+
+**Rows needing no external reference at all**, per the vetting doc §5:
+`C18-S1` (the `applySphericalHarmonicsBudget` seam already exists in-tree),
+`C18-S3` (the Onesweep algorithm is published and `DecoupledLookbackScan.wgsl` —
+`L-18` — already provides the decoupled-lookback primitive), and `C18-S4` (a WGSL
+port of the fork's own `PrimitiveGaussianSplatFS.glsl` discard).
 
 ---
 
@@ -225,7 +251,7 @@ gated); LiDAR-surfel rendering through the splat renderer (M, post-G8).
 | `C18-A4` | A | M | PENDING |
 | `C18-A5` | A | M-L | PENDING — cross-refs FORK-41 / `C11-98` |
 | `C18-A6` | A | S-M | PENDING — coordinated with `C11-100` |
-| `C18-S0` | S | S | PENDING — **not** gated by `C15-G8` |
+| `C18-S0` | S | S | **DONE — 2026-08-09.** 20 projects vetted, licence artifacts transcribed literally. Mip-Splatting + StopThePop are both Inria research-only ⇒ `C18-S2` is clean-room-from-paper MANDATORY; `C18-S1`/`C18-S4` need no external reference, `C18-S3` needs at most one (GPUSorting, MIT, LGPL component excluded). Record: [`GSPLAT_REFERENCE_VETTING_2026-08-09.md`](GSPLAT_REFERENCE_VETTING_2026-08-09.md) |
 | `C18-S1` | S | S | PENDING — **GATED post-`C15-G8`** |
 | `C18-S2` | S | S-M | PENDING — **GATED post-`C15-G8`** |
 | `C18-S3` | S | M | PENDING — **GATED post-`C15-G8`** |
@@ -237,6 +263,7 @@ certified subsystem and it discharges the standing R-7 escalation clock); in
 parallel run `C18-V1 → C18-V2 → C18-V3`, then `C18-P1 → C18-P2` and
 `C18-P3 → C18-P4` (`C18-P5` is independent and can ride any slot); start
 `C18-A1` and `C18-A2` immediately since both are self-contained and additive;
-`C18-S0` can run at any time and should run early, because its answer bounds
-how Wave S is implemented. `C11-13` (P0) stays a C11 dispatch and is the single
+~~`C18-S0` can run at any time and should run early, because its answer bounds
+how Wave S is implemented~~ — **`C18-S0` ran 2026-08-09 and its answer is now
+recorded in §6.** `C11-13` (P0) stays a C11 dispatch and is the single
 highest user-impact item this audit found.
