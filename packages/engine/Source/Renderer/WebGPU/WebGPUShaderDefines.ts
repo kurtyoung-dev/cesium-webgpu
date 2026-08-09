@@ -17,31 +17,31 @@
  * sources whose WGSL text is generated dynamically and therefore needs
  * an additional content fingerprint beyond `(sourceId, defines)`.
  *
- * # Two-word (lo/hi) widening — C11-149
+ * # Two-word (lo/hi) widening
  *
- * The lo-word `ShaderDefine` registry is EXHAUSTED: bits 0-30 are all
- * occupied, and bit 31 is deliberately left unclaimed (it was
- * historically squatted by the collections' `noDepthTest`
- * pipeline-key fold — see `pipelineKeyWithDepthFlag` in
- * `WebGPUCollectionRendererBase` — and stays reserved so any stale
- * folded value can never alias a real define). New specialization
- * axes claim bits in the **`ShaderDefineHi`** registry instead: a
- * DISTINCT second-word namespace threaded through
+ * The lo-word `ShaderDefine` registry is exhausted: bits 0-30 are all
+ * occupied, and bit 31 is deliberately left unclaimed: the
+ * collections' `noDepthTest` pipeline-key fold folds a flag into that
+ * position — see `pipelineKeyWithDepthFlag` in
+ * `WebGPUCollectionRendererBase` — so leaving it reserved guarantees a
+ * folded value can never alias a real define. New specialization
+ * axes claim bits in the `ShaderDefineHi` registry instead: a
+ * distinct second-word namespace threaded through
  * `preprocess(source, defines, definesHi)` and the module cache's
  * two-level `(definesHi → loKey)` map. Hi-word bit 31 is likewise
  * reserved (never claim it). The branded `ShaderDefineHiMask` type
  * makes passing a hi-word bit where a lo-word mask is expected a
- * compile error in TypeScript; the reverse direction (a lo bit passed
- * as a `definesHi` argument) is not compile-checked — reviewers must
- * watch for it at hi-word call sites.
+ * compile error in TypeScript; the reverse direction — a lo bit passed
+ * as a `definesHi` argument — is not compile-checked, so hi-word call
+ * sites need review.
  *
  * # Add-only rule
  *
  * All three tables (`ShaderDefine`, `ShaderDefineHi`, `ShaderSourceId`)
- * are **add-only**. Never reorder, renumber, or remove an
+ * are add-only. Never reorder, renumber, or remove an
  * entry even if its last consumer disappears. Reordering silently
  * aliases cached modules across rebuilds; removal breaks any pipeline
- * that still references the bit. Deprecated entries should be marked
+ * that still references the bit. Deprecated entries are marked
  * in a comment and left in place.
  *
  * @private
@@ -53,25 +53,25 @@
  * authored WGSL. Each entry occupies one bit of the LO-word Uint32
  * bitmask.
  *
- * **FULL** as of C11-149: bits 0-30 are all claimed and bit 31 is
- * permanently reserved (historically aliased by the collections'
- * noDepthTest pipeline-key fold; keeping it unclaimed guarantees no
- * stale folded key can ever alias a real define). New defines go in
+ * This word is full: bits 0-30 are all claimed and bit 31 is
+ * permanently reserved, because the collections' noDepthTest
+ * pipeline-key fold uses that position and an unclaimed bit is what
+ * keeps a folded key from aliasing a real define. New defines go in
  * {@link ShaderDefineHi}.
  *
- * **Add-only; never reorder or remove.**
+ * Add-only; never reorder or remove.
  */
 export const ShaderDefine = Object.freeze({
   /**
    * Terrain vertex stride includes `geodeticSurfaceNormal: vec3<f32>`
    * at `@location(2)`. Exaggeration math in `processVertex` uses the
    * true WGS84 geodetic normal instead of the ellipsocentric
-   * `normalize(position3D)` fallback (DP-H25).
+   * `normalize(position3D)` fallback.
    */
   GEODETIC_NORMAL: 1 << 0,
 
   /**
-   * Per-primitive depth-test override (DP-H42). When active, the
+   * Per-primitive depth-test override. When active, the
    * vertex stage reads the per-instance `disableDepthTestDistance`
    * attribute, falls back to the frame-wide
    * `camera.minimumDisableDepthTestDistance` when the per-instance
@@ -86,7 +86,7 @@ export const ShaderDefine = Object.freeze({
   DISABLE_DEPTH_DISTANCE: 1 << 1,
 
   /**
-   * Split-screen rendering (DP-H40). When active, the vertex stage
+   * Split-screen rendering. When active, the vertex stage
    * forwards `splitDirection` to the fragment stage and the fragment
    * stage discards pixels on the wrong side of
    * `frameState.splitPosition`. `splitDirection` interpretation:
@@ -95,12 +95,12 @@ export const ShaderDefine = Object.freeze({
    *   +1  — render only when `fragCoord.x > splitPosition * viewport`
    * Matches the WebGL `czm_splitPosition` path applied per-primitive.
    * Consumers: BillboardCollection, LabelCollection,
-   * PointPrimitiveCollection, PolylineCollection (Batch 22).
+   * PointPrimitiveCollection, PolylineCollection.
    */
   SPLIT_ENABLED: 1 << 2,
 
   /**
-   * GPU-side compressed-vertex decode (DP-H19-SHADER-DECODE, Batch 27).
+   * GPU-side compressed-vertex decode.
    *
    * When this bit is set, the vertex stage accepts the
    * `compressedAttributes: vec4<f32>` input emitted by
@@ -126,7 +126,7 @@ export const ShaderDefine = Object.freeze({
   COMPRESSED_VERTICES: 1 << 3,
 
   /**
-   * Per-primitive distance display gating (AUDIT_2026_05_02 A.14, Batch 135).
+   * Per-primitive distance display gating.
    * When active, the vertex stage reads a per-instance
    * `distanceDisplayCondition` (nearSq, farSq) and pushes the vertex
    * behind the near plane (`positionEC.xyz = vec3(0.0)`) when the
@@ -135,16 +135,16 @@ export const ShaderDefine = Object.freeze({
    * `#ifdef DISTANCE_DISPLAY_CONDITION` branch in
    * BillboardCollectionVS / LabelCollectionVS / PointPrimitiveCollectionVS.
    *
-   * Consumers: BillboardCollection.wgsl (Batch 135),
-   * PolylineCollection.wgsl + PointPrimitiveColor.wgsl (Batch 136).
+   * Consumers: BillboardCollection.wgsl,
+   * PolylineCollection.wgsl + PointPrimitiveColor.wgsl.
    * Label inherits via Billboard (LabelCollection renders glyphs as
    * billboards under the hood).
    */
   DISTANCE_DISPLAY_CONDITION: 1 << 4,
 
   /**
-   * Per-primitive `translucencyByDistance` ramp (AUDIT_2026_05_02 A.14,
-   * Batch 136). Reads a per-instance NearFarScalar
+   * Per-primitive `translucencyByDistance` ramp. Reads a per-instance
+   * NearFarScalar
    * (`(near, nearAlpha, far, farAlpha)`) and computes
    * `czm_nearFarScalar(translucencyByDistance, lengthSq)` to scale
    * the fragment alpha. Vertex pushed behind near plane when result
@@ -156,8 +156,8 @@ export const ShaderDefine = Object.freeze({
   EYE_DISTANCE_TRANSLUCENCY: 1 << 5,
 
   /**
-   * Per-primitive `pixelOffsetScaleByDistance` ramp (AUDIT_2026_05_02
-   * A.14, Batch 136). Reads a per-instance NearFarScalar and scales
+   * Per-primitive `pixelOffsetScaleByDistance` ramp. Reads a
+   * per-instance NearFarScalar and scales
    * the per-billboard pixelOffset by the resulting scalar. Used by
    * KML/GeoJSON entities that want labels to drift toward / away from
    * their pinned position based on camera distance.
@@ -168,8 +168,8 @@ export const ShaderDefine = Object.freeze({
   EYE_DISTANCE_PIXEL_OFFSET: 1 << 6,
 
   /**
-   * Per-primitive `scaleByDistance` ramp (AUDIT_2026_05_02 A.14, Batch
-   * 136). Reads a per-instance NearFarScalar and scales the
+   * Per-primitive `scaleByDistance` ramp. Reads a per-instance
+   * NearFarScalar and scales the
    * billboard / point quad size by the resulting scalar. Vertex pushed
    * behind near plane when scale is exactly 0.
    *
@@ -181,7 +181,7 @@ export const ShaderDefine = Object.freeze({
 
   /**
    * Three-point globe-depth occlusion check for clamp-to-ground
-   * billboards / labels (Batch 138). Mirrors WebGL's
+   * billboards / labels. Mirrors WebGL's
    * `VS_THREE_POINT_DEPTH_CHECK` define: when active, the vertex
    * stage samples the globe depth texture at three "key points" of
    * the quad (origin, top, top-right) and collapses the vertex to a
@@ -225,8 +225,8 @@ export const ShaderDefine = Object.freeze({
   MODEL_HAS_KHR_TEXTURES: 1 << 9,
 
   /**
-   * Stochastic / dithered alpha-test for translucent rendering
-   * (Batch 192, C-R9-MODEL-PICK-TRANSLUCENT second slice). When set,
+   * Stochastic / dithered alpha-test for translucent rendering.
+   * When set,
    * the fragment stage discards translucent fragments based on a
    * blue-noise threshold lookup keyed by `fragCoord % 256` against the
    * fragment's effective alpha (`baseColor.a × batchColor.a`).
@@ -237,23 +237,21 @@ export const ShaderDefine = Object.freeze({
    *   - Stochastic translucent pick (`scene.pickHover()` path) —
    *     guaranteed stutter-free at 60fps hover frequency. Single-pass,
    *     no extra render passes, no extra MRT targets.
-   *   - Future: foliage / particle alpha-test rendering, translucent
-   *     shadow casts (CSM cube depth), voxel ray-march acceleration.
+   *   - Foliage / particle alpha-test rendering, translucent shadow
+   *     casts (CSM cube depth) and voxel ray-march acceleration are
+   *     the other intended consumers.
    *
    * The blue noise texture lives at `@group(N) @binding(M)` per
    * consumer — the variant doesn't dictate the binding slot, only
    * that the FS reads the threshold and discards. Consumers wire the
    * texture via their own bind-group layout.
    *
-   * Consumers (Batch 192): ModelPBRComplete.wgsl pick FS variant.
-   * Future consumers: PrimitivePhongTexturedColor.wgsl (foliage),
-   * voxel ray-march, CSM cast shaders.
+   * Consumers: ModelPBRComplete.wgsl pick FS variant.
    */
   STOCHASTIC_DITHER_ALPHA: 1 << 10,
 
   /**
-   * Stencil-based pick winner-selection (Batch 192,
-   * C-R9-MODEL-PICK-TRANSLUCENT precise path). When set, the fragment
+   * Stencil-based pick winner-selection. When set, the fragment
    * stage participates in a 2-pipeline single-render-pass coordination
    * where:
    *   - Pipeline 1 writes stencil = 1 + depth (closest translucent
@@ -267,14 +265,13 @@ export const ShaderDefine = Object.freeze({
    * pipeline-switch cost but reuses a single render-pass setup.
    * Click-pick frequency makes the cost invisible to UX.
    *
-   * Consumers (Batch 192): ModelPBRComplete.wgsl precise pick FS
-   * variant; future translucent geometry primitives.
+   * Consumer: ModelPBRComplete.wgsl precise pick FS variant.
    */
   STENCIL_PICK_WINNER: 1 << 11,
 
   /**
-   * Model has TEXCOORD_1 vertex attribute (Session 62 NEW-VR-VERTEX-BUFFER-VARIANT
-   * fix). When set, `ModelPBRComplete.wgsl` declares
+   * Model has a TEXCOORD_1 vertex attribute. When set,
+   * `ModelPBRComplete.wgsl` declares
    * `@location(7) texCoord1: vec2<f32>` in the FragmentInput struct AND
    * the pipeline binds a buffer at vertex slot 7. When clear, slot 7 is
    * absent — the WGSL preprocessor strips the location declaration and
@@ -306,19 +303,18 @@ export const ShaderDefine = Object.freeze({
    * omits slot 8 (the f32 featureId0) and the vertex shader assigns
    * `output.featureId0 = 0.0` directly.
    *
-   * Why variant-conditional (Session 65, Batch follow-up to NEW-VR-VERTEX-BUFFER-VARIANT):
-   * the full Model PBR layout had 9 vertex slots (position, normal,
-   * tangent, texCoord0, color, joints, weights, texCoord1, featureId0).
-   * Session 62's `MODEL_HAS_TEXCOORD_1` made slot 7 conditional,
-   * dropping the common case to 8. But primitives that ALSO carry a
-   * feature ID (every batched 3D Tiles tileset — BIM, AEC, Photogrammetry,
-   * Clipping Planes etc.) still hit 9 and refuse to compile on Edge's
-   * 8-slot adapter limit. Dropping slot 8 for primitives without a
-   * feature ID brings the most-common case (standard glTF models with
-   * no batch table) to 7 slots; primitives with feature IDs but no
-   * texCoord1 land at 8; primitives with both stay at 9 (a small
-   * sub-cluster — multi-UV models that are also batched — still needs
-   * the deeper restructure noted in DEFERRED_WORK).
+   * Why variant-conditional: the full Model PBR layout is 9 vertex
+   * slots (position, normal, tangent, texCoord0, color, joints,
+   * weights, texCoord1, featureId0), and `MODEL_HAS_TEXCOORD_1` alone
+   * only drops the common case to 8. Primitives that also carry a
+   * feature ID — every batched 3D Tiles tileset: BIM, AEC,
+   * photogrammetry, clipping planes — are back at 9 and refuse to
+   * compile against Edge's 8-slot adapter limit. Dropping slot 8 for
+   * primitives without a feature ID brings standard glTF models with
+   * no batch table to 7 slots; primitives with feature IDs but no
+   * texCoord1 land at 8; primitives with both stay at 9 and remain
+   * uncompilable on an 8-slot adapter until the layout is restructured
+   * more deeply.
    *
    * Per-primitive selection: `WebGPUModelRenderer` checks the loaded
    * primitive for a `_FEATURE_ID_0` accessor (or its legacy `_BATCHID`
@@ -331,8 +327,8 @@ export const ShaderDefine = Object.freeze({
   MODEL_HAS_FEATURE_ID_0: 1 << 13,
 
   /**
-   * Globe `czm_getMaterial` hook (Session 65 Cluster 3 — parallel WGSL
-   * fabric API). When set, `GlobeTerrain.wgsl` activates the
+   * Globe `czm_getMaterial` hook, the WGSL side of the material fabric
+   * API. When set, `GlobeTerrain.wgsl` activates the
    * `//>>ifdef MATERIAL_APPLY` block in its fragment shader: it builds
    * a `czm_MaterialInput` from per-fragment values (st, normalEC,
    * slope/height/aspect) and calls `czm_getMaterial(materialInput)` —
@@ -351,38 +347,33 @@ export const ShaderDefine = Object.freeze({
   MATERIAL_APPLY: 1 << 14,
 
   /**
-   * Renderer-wide logarithmic depth (Approach A for
-   * NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION). When set, a depth-writing
+   * Renderer-wide logarithmic depth. When set, a depth-writing
    * fragment shader emits `@builtin(frag_depth)` via
    * `csm_writeLogDepth(depthFromNearPlusOne, oneOverLog2FarDepthFromNearPlusOne)`
    * and its vertex stage interpolates `csm_vertexLogDepth(clipPos, near)` +
-   * applies `csm_updatePositionDepth`. Depth CONSUMERS (classifier eye-space
-   * reconstruct, pick, SSAO/SSR/DoF/TAA/etc.) reverse it via
-   * `csm_reverseLogDepth` / `csm_reverseLogDepthToEyeDistance`. This puts ALL
+   * applies `csm_updatePositionDepth`. Depth consumers — the classifier
+   * eye-space reconstruct, pick, SSAO/SSR/DoF/TAA — reverse it via
+   * `csm_reverseLogDepth` / `csm_reverseLogDepthToEyeDistance`. This puts all
    * geometry into one logarithmic depth space (matching WebGL's
    * `#ifdef LOG_DEPTH`), eliminating the 24-bit hyperbolic-NDC precision crush
    * that makes textured-material classification and far-distance pick imprecise.
    *
-   * Gating (single flip point): the define is set when
-   * `isWebGPULogDepthActive(context, frameState)` is true — i.e.
+   * Gating happens at a single flip point: the define is set when
+   * `isWebGPULogDepthActive(context, frameState)` is true — that is,
    * `context._logDepthWriteEnabled && frameState.useLogDepth`. The
-   * `_logDepthWriteEnabled` master switch now defaults TRUE — Batch 251
-   * (NEW-COLLECTIONS-LOG-DEPTH master-switch) flipped it on, so renderer-wide
-   * log depth is LIVE by default. It historically defaulted FALSE while the
-   * epic was landed slice-by-slice (every producer/consumer change was inert
-   * until the flip); the switch survives as a one-line kill switch. See
-   * `WebGPULogDepth.ts`.
+   * `_logDepthWriteEnabled` master switch defaults true, so renderer-wide
+   * log depth is live by default; it exists as a one-line kill switch.
+   * See `WebGPULogDepth.ts`.
    *
-   * Consumers (rolled out across the epic): GlobeTerrain.wgsl + every other
-   * depth-writing WGSL producer; the 4 depth-sample classifiers; pick;
-   * post-process eye-space reconstructors.
+   * Consumers: GlobeTerrain.wgsl and every other depth-writing WGSL
+   * producer; the four depth-sample classifiers; pick; post-process
+   * eye-space reconstructors.
    */
   LOG_DEPTH: 1 << 15,
 
   /**
-   * Reduced globe imagery layout for default-limit adapters
-   * (NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT, Batch 246). The full globe
-   * terrain pipeline layout needs 28 fragment-stage sampled textures
+   * Reduced globe imagery layout for default-limit adapters. The full
+   * globe terrain pipeline layout needs 28 fragment-stage sampled textures
    * (16 imagery + 5 water/ocean/material/cloud + 7 globe effects), which exceeds
    * the WebGPU spec floor `maxSampledTexturesPerShaderStage = 16`
    * (SwiftShader CI, compat-mode adapters, low-end mobile). When set,
@@ -410,7 +401,7 @@ export const ShaderDefine = Object.freeze({
   GLOBE_IMAGERY_REDUCED: 1 << 16,
 
   /**
-   * C2-25 ENV-SCENE-CAPTURE (Batch 446). Single-color-target globe fragment
+   * Single-color-target globe fragment
    * variant for the dynamic-environment-map scene-capture pass. The on-screen
    * globe pipeline emits a 2-location `FragOutput { @location(0) color,
    * @location(1) normalRoughness }` into the scene G-buffer (color + MRT
@@ -434,8 +425,7 @@ export const ShaderDefine = Object.freeze({
   CAPTURE_MODE: 1 << 17,
 
   /**
-   * Model has EXT_structural_metadata that maps to the shader (DP-H46a,
-   * first increment of the DP-H46 metadata epic). When set,
+   * Model has EXT_structural_metadata that maps to the shader. When set,
    * `ModelPBRComplete.wgsl` activates the `//>>ifdef MODEL_HAS_METADATA`
    * blocks: a `struct Metadata` declaration, a `fn initializeMetadata()`
    * initializer, a flat-interpolated `metadataValue` varying carrying a
@@ -443,20 +433,17 @@ export const ShaderDefine = Object.freeze({
    * fragment stage, and (when `material.metadataDebug != 0`) a debug
    * fragment-color override that paints the scalar metadata value so the
    * data path is visually verifiable. When clear, every one of those
-   * blocks is stripped at preprocess time and the shader is
-   * byte-identical to the pre-DP-H46a source — the `//>>else` branches
-   * are empty / the historical (absent) code, so a non-metadata model's
-   * compiled module hash is unchanged.
+   * blocks is stripped at preprocess time and the `//>>else` branches
+   * are empty, so a non-metadata model's compiled module hash is the
+   * same as it would be if the blocks did not exist at all.
    *
-   * In DP-H46a this is the STUB increment: the struct is a single
-   * `_placeholder` plus the proven scalar field, and `initializeMetadata`
-   * is a no-op pass-through of the varying. DP-H46b replaces the stub
-   * with a generated WGSL chunk (one field per property + a real
-   * `initializeMetadata` that samples textures / reads varyings /
-   * `textureLoad`s the property-table). The generated chunk is prepended
-   * at the single injection point in
-   * `WebGPUModelPipelineCache._getOrCreateShaderModule` and REPLACES the
-   * stub only when this bit is set.
+   * The declarations the blocks expose are a placeholder that a
+   * generated WGSL chunk replaces: one field per property plus an
+   * `initializeMetadata` that samples textures, reads varyings and
+   * `textureLoad`s the property table. The chunk is prepended at the
+   * single injection point in
+   * `WebGPUModelPipelineCache._getOrCreateShaderModule`, and only when
+   * this bit is set.
    *
    * Per-primitive selection: `WebGPUModelRenderer` sets this bit only
    * when `model.structuralMetadata` is defined AND the primitive maps to
@@ -471,101 +458,104 @@ export const ShaderDefine = Object.freeze({
   MODEL_HAS_METADATA: 1 << 18,
 
   /**
-   * Model has EXT_structural_metadata property TEXTURES that map to the
-   * shader (DP-H46c). When set, the model material BGL gains a contiguous
+   * Model has EXT_structural_metadata property textures that map to the
+   * shader. When set, the model material BGL gains a contiguous
    * block of property-texture (sampled `texture_2d<f32>`) + sampler
    * bindings starting at group-1 binding 39 (the
    * `PROPERTY_TEXTURE_BINDING_BASE` in `WebGPUModelPipelineCache`), and the
-   * GENERATED metadata WGSL chunk
+   * generated metadata WGSL chunk
    * (`MetadataWGSLPipelineStage.generateMetadataWGSL`) declares those
    * bindings + emits `textureSample(...)` accessors inside
    * `initializeMetadata` for each GPU-compatible property-texture property
    * (channel swizzle + `czm_unpackTexture*` unpack + class offset/scale,
    * mirroring `MetadataPipelineStage.addPropertyTexturePropertyMetadata`).
    *
-   * Unlike property ATTRIBUTES (`MODEL_HAS_METADATA`, vertex-buffer
-   * transport), property textures are sampled in the FRAGMENT stage at the
-   * property's interpolated `texCoord` — so this bit changes only the
-   * material BGL / pipeline layout (a NEW `materialBGL` variant) + the
-   * fragment-stage codegen, NOT the vertex layout. Non-property-texture
-   * models (plain glTF OR attribute-only-metadata) never set the bit, keep
-   * the minimal BGL, and stay byte-identical: the `//>>else` of every gated
-   * block is the historical (absent) code, and the prepended chunk declares
-   * no property-texture bindings.
+   * Unlike property attributes (`MODEL_HAS_METADATA`, vertex-buffer
+   * transport), property textures are sampled in the fragment stage at the
+   * property's interpolated `texCoord`, so this bit changes only the
+   * material BGL / pipeline layout — a distinct `materialBGL` variant —
+   * and the fragment-stage codegen, not the vertex layout. Models with no
+   * property texture, whether plain glTF or attribute-only metadata, never
+   * set the bit, keep the minimal BGL, and compile a module identical to
+   * one built without the gated blocks: the `//>>else` of every gated
+   * block is empty, and the prepended chunk declares no property-texture
+   * bindings.
    *
    * Per-primitive selection: `WebGPUModelRenderer` sets this bit only when
-   * `model.structuralMetadata` is defined AND the primitive maps to ≥1
-   * GPU-compatible property-texture property (the same predicate
+   * `model.structuralMetadata` is defined and the primitive maps to at
+   * least one GPU-compatible property-texture property (the same predicate
    * `MetadataPipelineStage.getPropertyTexturesInfo` uses). The bit
    * participates in the model material BGL / pipeline / shader-module cache
    * key (folded into `MATERIAL_DEFINE_MASK`).
    *
-   * Consumers: `ModelPBRComplete.wgsl` (metadata debug call site) + the
-   * GENERATED metadata chunk.
+   * Consumers: `ModelPBRComplete.wgsl` (metadata debug call site) and the
+   * generated metadata chunk.
    */
   MODEL_HAS_PROPERTY_TEXTURES: 1 << 19,
 
   /**
-   * Model has EXT_structural_metadata property TABLES that map to the shader
-   * (DP-H46d). A property table packs each GPU-compatible class property into
-   * one ROW of a tightly-packed RGBA8 texture (built once by the loader,
+   * Model has EXT_structural_metadata property tables that map to the
+   * shader. A property table packs each GPU-compatible class property into
+   * one row of a tightly-packed RGBA8 texture (built once by the loader,
    * `parseStructuralMetadata.createTextureForPropertyTable`): row =
    * `propertyInfoIndex` (index among GPU-compatible class properties), column =
-   * feature ID. When set, the model material BGL gains ONE sampled
+   * feature ID. When set, the model material BGL gains one sampled
    * `texture_2d<f32>` binding for the table at group-1 binding
    * {@link PROPERTY_TABLE_BINDING} (in `WebGPUModelMetadata` /
-   * `WebGPUModelPipelineCache`), and the GENERATED metadata WGSL chunk
+   * `WebGPUModelPipelineCache`), and the generated metadata WGSL chunk
    * (`MetadataWGSLPipelineStage.generateMetadataWGSL`) emits a
    * `textureLoad(propertyTableTexture, vec2<i32>(featureId, propertyInfoIndex), 0)`
    * accessor inside `initializeMetadata` for each GPU-compatible property
    * (RGBA→u32 little-endian unpack + bit-reinterpret/normalize + class
    * offset/scale, mirroring
    * `MetadataPipelineStage.addPropertyTablePropertyMetadata`). The feature ID is
-   * the per-vertex `_FEATURE_ID_0` attribute (flat-interpolated to the FS) — the
-   * SAME variable `MODEL_HAS_FEATURE_ID_0` carries, so a property-table primitive
-   * also sets `MODEL_HAS_FEATURE_ID_0`.
+   * the per-vertex `_FEATURE_ID_0` attribute, flat-interpolated to the
+   * fragment stage — the same variable `MODEL_HAS_FEATURE_ID_0` carries, so a
+   * property-table primitive also sets `MODEL_HAS_FEATURE_ID_0`.
    *
-   * Like property TEXTURES (`MODEL_HAS_PROPERTY_TEXTURES`), this bit changes
-   * only the material BGL / pipeline layout (a NEW `materialBGL` variant: one
-   * extra sampled texture + one shared sampler) + the codegen, NOT the vertex
-   * layout (the feature-ID slot is owned by `MODEL_HAS_FEATURE_ID_0`).
-   * Non-property-table models (plain glTF, attribute-only, OR
-   * property-texture-only metadata) never set the bit, keep the minimal BGL, and
-   * stay byte-identical: the prepended chunk declares no table binding and emits
-   * no `textureLoad`, and the gated material-BGL block is absent.
+   * Like property textures (`MODEL_HAS_PROPERTY_TEXTURES`), this bit changes
+   * only the material BGL / pipeline layout — a distinct `materialBGL`
+   * variant with one extra sampled texture and one shared sampler — and the
+   * codegen, not the vertex layout, whose feature-ID slot is owned by
+   * `MODEL_HAS_FEATURE_ID_0`. Models with no property table, whether plain
+   * glTF, attribute-only or property-texture-only metadata, never set the
+   * bit and keep the minimal BGL: the prepended chunk declares no table
+   * binding and emits no `textureLoad`, and the gated material-BGL block is
+   * absent.
    *
    * Per-primitive selection: `WebGPUModelRenderer` sets this bit only when
-   * `model.structuralMetadata` is defined AND the primitive maps to ≥1
-   * GPU-compatible property-table property reachable via a feature-ID set (the
+   * `model.structuralMetadata` is defined and the primitive maps to at least
+   * one GPU-compatible property-table property reachable via a feature-ID
+   * set (the
    * same predicate `MetadataPipelineStage.getPropertyTablesInfo` uses). The bit
    * participates in the model material BGL / pipeline / shader-module cache key
    * (folded into `MATERIAL_DEFINE_MASK`).
    *
-   * Consumers: `ModelPBRComplete.wgsl` (metadata debug call site) + the
-   * GENERATED metadata chunk.
+   * Consumers: `ModelPBRComplete.wgsl` (metadata debug call site) and the
+   * generated metadata chunk.
    */
   MODEL_HAS_PROPERTY_TABLES: 1 << 20,
 
   /**
-   * Metadata-pick producer for `scene.pickMetadata` on WebGPU (DP-H46e). This
+   * Metadata-pick producer for `scene.pickMetadata` on WebGPU. This
    * is the WGSL sibling of the GLSL `MetadataPickingPipelineStage` +
    * `DerivedCommand.createPickMetadataDerivedCommand`. When set,
    * `ModelPBRComplete.wgsl` activates its `//>>ifdef METADATA_PICKING_ENABLED`
-   * fragment entry (`fragmentPickMetadataMain`), which calls the GENERATED
+   * fragment entry (`fragmentPickMetadataMain`), which calls the generated
    * `metadataPickingStage(metadata)` — appended to the metadata WGSL chunk by
    * `MetadataWGSLPipelineStage.generateMetadataPickWGSL` — and writes the
    * selected property's components (offset/scale + normalization UN-applied,
    * mirroring `getSourceValueStringComponent`) into the pick-FBO RGBA8 channels
    * that `MetadataPicking.decodeMetadataValues` decodes back to the value.
    *
-   * Like `CAPTURE_MODE` and `LOG_DEPTH`, this bit is a render-MODE bit
-   * intentionally OUTSIDE `MATERIAL_DEFINE_MASK`: it does NOT add a material
-   * binding, change the vertex layout, or alter the pipeline layout — it only
-   * forks the shader MODULE (the extra fragment entry + the appended
-   * `metadataPickingStage`). `WebGPUModelPipelineCache._getOrCreateShaderModule`
-   * preserves it from the raw `materialDefines` arg (like the capture bit) so
-   * the pick-metadata pipeline gets a module that compiles the entry, while
-   * on-screen / display callers never set it and keep a byte-identical module.
+   * Like `CAPTURE_MODE` and `LOG_DEPTH`, this is a render-mode bit and sits
+   * outside `MATERIAL_DEFINE_MASK`: it adds no material binding, changes
+   * neither the vertex layout nor the pipeline layout, and forks only the
+   * shader module — the extra fragment entry plus the appended
+   * `metadataPickingStage`. `WebGPUModelPipelineCache._getOrCreateShaderModule`
+   * preserves it from the raw `materialDefines` argument, as it does the
+   * capture bit, so the pick-metadata pipeline gets a module that compiles the
+   * entry while on-screen callers never set it and keep an unchanged module.
    *
    * The pick-metadata module is additionally keyed by a hash that folds in the
    * picked property name (via `_metadataClassHash`), so the module is cached
@@ -573,8 +563,8 @@ export const ShaderDefine = Object.freeze({
    * pick of that property regardless of pick coordinate (no per-component
    * pipeline explosion).
    *
-   * Consumers: `ModelPBRComplete.wgsl` (`fragmentPickMetadataMain`) + the
-   * GENERATED metadata-pick chunk.
+   * Consumers: `ModelPBRComplete.wgsl` (`fragmentPickMetadataMain`) and the
+   * generated metadata-pick chunk.
    */
   METADATA_PICKING_ENABLED: 1 << 21,
 
@@ -673,17 +663,17 @@ export const ShaderDefine = Object.freeze({
    * front-to-back integral (`colorAccum += (1 - colorAccum.a) *
    * vec4(diffuse * alpha, alpha)`) and normalised by `ALPHA_ACCUM_MAX = 0.98`
    * exactly as `Shaders/Voxels/VoxelFS.glsl` does. This makes an un-styled
-   * WebGPU voxel box match the WebGL colour (gray for VoxelBox3DTiles) instead
-   * of the previous raw-texel green/teal.
+   * WebGPU voxel box match the WebGL colour — gray for VoxelBox3DTiles —
+   * rather than the raw texel it would otherwise show.
    *
-   * Per-primitive selection: `WebGPUVoxelRenderer` ORs this bit into the COLOR
-   * pipeline's shader-module + pipeline cache keys ONLY when a real voxel
+   * Per-primitive selection: `WebGPUVoxelRenderer` ORs this bit into the color
+   * pipeline's shader-module and pipeline cache keys only when a real voxel
    * provider's root tile has been uploaded (`cache.usingRealData === true`).
-   * The pick + velocity pipelines never set it. When clear (the placeholder /
-   * no-provider off-gate, and every pick/velocity variant) the `//>>else`
-   * branch of the gated block is the historical accumulation source
+   * The pick and velocity pipelines never set it. When clear — the
+   * placeholder / no-provider off-gate, and every pick or velocity variant —
+   * the `//>>else` branch of the gated block is the plain accumulation source
    * byte-for-byte, so `preprocess(VOXEL_WGSL, 0)` is unchanged and the
-   * placeholder module hash + off-gate render are byte-identical to Batch 475.
+   * placeholder module hash and off-gate render do not move.
    *
    * Consumer: `WebGPUVoxelRenderer.ts` (inline `VOXEL_WGSL` fragmentMain).
    */
@@ -819,7 +809,7 @@ export const ShaderDefine = Object.freeze({
    * `wgslFragmentShaderText` and no uniforms (uniform/texture support is a
    * documented follow-up — such shaders warn + fall back to the default gray
    * path, as do GLSL-only voxel customShaders). When clear the nested
-   * `//>>else` branch is the Batch 476 default-gray block byte-for-byte, so
+   * `//>>else` branch is the default-gray block byte-for-byte, so
    * both `preprocess(VOXEL_WGSL, 0)` and
    * `preprocess(VOXEL_WGSL, VOXEL_CUSTOM_SHADER_COLOR)` are unchanged —
    * off-gate byte-identical.
@@ -833,14 +823,14 @@ export const ShaderDefine = Object.freeze({
   VOXEL_USER_CUSTOM_SHADER: 1 << 29,
 
   /**
-   * Model's transported EXT_structural_metadata property ATTRIBUTE is a
-   * MAT3/MAT4 — full 9/16-component transport (NEW-MODEL-METADATA-MAT3-MAT4).
-   * The base `MODEL_HAS_METADATA` transport is ONE `float32x4` vertex
+   * Model's transported EXT_structural_metadata property attribute is a
+   * MAT3 or MAT4, needing full 9- or 16-component transport.
+   * The base `MODEL_HAS_METADATA` transport is one `float32x4` vertex
    * attribute at shader location 9 (vertex buffer slot appended last), which
-   * carries at most four components; MAT3 (9) / MAT4 (16) properties
-   * previously zero-filled everything past the first four. When THIS bit is
-   * set (always alongside `MODEL_HAS_METADATA`), the slot-9 vertex buffer
-   * widens to `arrayStride = 64` carrying FOUR `float32x4` attributes at
+   * carries at most four components, so a MAT3 (9) or MAT4 (16) property
+   * would zero-fill everything past the first four. When this bit is
+   * set — always alongside `MODEL_HAS_METADATA` — the slot-9 vertex buffer
+   * widens to `arrayStride = 64` carrying four `float32x4` attributes at
    * shader locations 9-12 (offsets 0/16/32/48 — 16 floats per vertex,
    * column-major matrix elements, MAT3 zero-pads elements 9..15), and
    * `ModelPBRComplete.wgsl` activates the nested
@@ -868,13 +858,13 @@ export const ShaderDefine = Object.freeze({
    * cache key; the generated metadata class still supplies `keySalt` for its
    * dynamic source content. The pipeline maps append a `:m34` key suffix.
    *
-   * Consumers: `ModelPBRComplete.wgsl` + the GENERATED metadata chunk.
+   * Consumers: `ModelPBRComplete.wgsl` and the generated metadata chunk.
    */
   MODEL_METADATA_MAT_TRANSPORT: 1 << 30,
 } as const);
 
 // ============================================================================
-// Hi-word registry (C11-149 / NEW-WEBGPU-SHADERDEFINE-WIDTH-EXPANSION)
+// Hi-word registry
 // ============================================================================
 
 declare const shaderDefineHiBrand: unique symbol;
@@ -927,55 +917,53 @@ function hiDefineBit(bitIndex: number): ShaderDefineHiMask {
 }
 
 /**
- * HI-word preprocessor defines — the second Uint32 of the widened
- * `(defines, definesHi)` pair (C11-149). A DISTINCT namespace from
- * {@link ShaderDefine}: names must be unique across BOTH tables (asserted
+ * Hi-word preprocessor defines — the second Uint32 of the widened
+ * `(defines, definesHi)` pair. A distinct namespace from
+ * {@link ShaderDefine}: names must be unique across both tables (asserted
  * at module load), and a hi-word `//>>ifdef FLAG` resolves against the
  * `definesHi` argument of `preprocess`, never against the lo word.
  *
- * Claim bits here for every NEW specialization axis (the lo word is
- * full): enhanced-ocean (C11-158), model uber-shader axes
- * (C11-81/88/89/92), tiles (C11-131), etc. Bits 0-30 of this word are
- * claimable; bit 31 stays reserved.
+ * Every new specialization axis claims a bit here, because the lo word is
+ * full. Bits 0-30 of this word are claimable; bit 31 stays reserved.
  *
- * **Add-only; never reorder or remove.**
+ * Add-only; never reorder or remove.
  */
 export const ShaderDefineHi = Object.freeze({
   /**
-   * Permanently-reserved validation probe (C11-149). Consumed ONLY by
+   * Permanently-reserved validation probe. Consumed only by
    * the widening specs (`WebGPUShaderDefinesSpec`,
    * `WebGPUShaderPreprocessorHiSpec`, `WebGPUShaderModuleCacheSpec`) to
-   * exercise the hi-word resolve → preprocess → cache-key path
-   * end-to-end against a REAL registry entry; no production renderer
-   * ever sets it and no shipped WGSL gates on it. Kept forever per the
+   * exercise the hi-word resolve, preprocess and cache-key path
+   * end-to-end against a real registry entry; no production renderer
+   * ever sets it and no shipped WGSL gates on it. Kept forever under the
    * add-only rule — without it the hi path would only be testable
-   * against an empty table (i.e., not at all).
+   * against an empty table, which is to say not at all.
    */
   HI_WORD_PROBE: hiDefineBit(0),
 
   /**
-   * Globe enhanced-ocean STYLING variant (C11-158 /
-   * NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE). The FIRST production
-   * consumer of the hi-word registry. When set, `GlobeTerrain.wgsl`'s
+   * Globe enhanced-ocean styling variant.
+   * When set, `GlobeTerrain.wgsl`'s
    * `computeEnhancedOcean` emits its `//>>ifdef ENHANCED_OCEAN` branch — the
    * WebGPU-only enhanced ocean look (foam whitecaps layered over the
    * full-strength wave-perturbed diffuse / non-diffuse / Phong-specular
-   * highlight composite). When clear (the DEFAULT, matching WebGL), it emits
+   * highlight composite). When clear — the default, matching WebGL — it emits
    * the `//>>else` branch: a faithful port of WebGL's classic
-   * `computeWaterColor` (GlobeFS.glsl L807-878) — imagery preserved, the same
-   * wave-diffuse + non-diffuse + Phong-specular highlights added on top, but
-   * NO foam / SSS / GGX / deep-colour styling.
+   * `computeWaterColor` in `GlobeFS.glsl`, with imagery preserved and the same
+   * wave-diffuse, non-diffuse and Phong-specular highlights added on top, but
+   * no foam, subsurface scattering, GGX or deep-colour styling.
    *
-   * The gate is STYLING-ONLY. The shared wave-normal march
-   * (`sampleOceanWaveNormals` → perturbed `waterNormal` / `tsPerturbationRatio`)
-   * runs UNCONDITIONALLY and feeds BOTH branches, so the toggle never touches
-   * the waves — those stay parity-preserving under the same default-true
-   * `globe.showWaterEffect` on both backends. Only how the perturbed surface
-   * is coloured changes.
+   * The gate covers styling only. The shared wave-normal march
+   * (`sampleOceanWaveNormals` producing the perturbed `waterNormal` and
+   * `tsPerturbationRatio`) runs unconditionally and feeds both branches, so the
+   * toggle never touches the waves — those stay parity-preserving under the
+   * same default-true `globe.showWaterEffect` on both backends. Only how the
+   * perturbed surface is coloured changes.
    *
-   * Gating (single flip point): OR'd in when `host._enhancedOceanEnabled` is
-   * true, mirrored each frame from `Globe.enableEnhancedOcean` (default
-   * FALSE → classic WebGL-parity water). The bit participates in the
+   * Gating happens at a single flip point: the bit is OR'd in when
+   * `host._enhancedOceanEnabled` is true, mirrored each frame from
+   * `Globe.enableEnhancedOcean`, which defaults false so the classic
+   * WebGL-parity water is what ships. The bit participates in the
    * shader-module cache's hi-word level (`getOrCreate(..., definesHi)`) and the
    * globe pipeline's descriptor-name cache key; a runtime flip wipes the
    * renderer-local globe pipeline caches so the module + pipeline re-resolve
@@ -986,27 +974,28 @@ export const ShaderDefineHi = Object.freeze({
   ENHANCED_OCEAN: hiDefineBit(1),
 
   /**
-   * Gaussian-splat attribute-record LAYOUT axis (`C15-G3` /
-   * `NEW-WEBGPU-SPLAT-DATA-PRODUCER`). Selects which record the splat VS
-   * decodes out of the group-0 binding-1 storage buffer, which is declared
-   * `array<u32>` in BOTH variants so the binding type never changes:
+   * Gaussian-splat attribute-record layout axis. Selects which record the
+   * splat vertex stage decodes out of the group-0 binding-1 storage buffer,
+   * which is declared `array<u32>` in both variants so the binding type never
+   * changes:
    *
-   *   * SET — the WASM `generate_splat_texture` output consumed VERBATIM:
+   *   * Set — the WASM `generate_splat_texture` output consumed verbatim:
    *     8 u32 (32 bytes) per splat, laid out exactly as
-   *     `PrimitiveGaussianSplatVS.glsl:152-173` decodes it (w0-w2 =
+   *     `PrimitiveGaussianSplatVS.glsl` decodes it (w0-w2 =
    *     `bitcast<f32>` model-space position, w3 unused, w4-w6 = three
    *     `unpack2x16float` covariance pairs, w7 = RGBA8 colour). This is the
-   *     PRODUCTION path: it forks no worker format, halves splat GPU memory
+   *     production path: it forks no worker format, halves splat GPU memory
    *     versus the expanded record, and keeps the covariance bit-identical to
-   *     WebGL — which is what makes the `C15-G8` parity threshold reachable.
-   *   * CLEAR (the `//>>else`, and the DEFAULT) — the historical 16-f32 /
-   *     64-byte `SplatRecord`: `positionHigh(3) + positionLow(3) + covA(3) +
+   *     WebGL, which is what puts the parity threshold in reach.
+   *   * Clear — the `//>>else`, and the default: the 16-f32 / 64-byte
+   *     `SplatRecord` of `positionHigh(3) + positionLow(3) + covA(3) +
    *     covB(3) + rgba(4)`. Nothing in `packages/` emits it; the three
    *     synthetic splat probes (`probe-splat-sort.mjs`,
    *     `probe-splat-globe-occlusion.mjs`, `probe-oit-transparency.mjs`) do,
-   *     and they are the Batch-288 sort-consume evidence, so the branch stays.
+   *     and they are the only sort-consume evidence, so the branch stays.
    *
-   * Gating (single flip point): OR'd in by `buildSplatPipelineResources` when
+   * Gating happens at a single flip point: `buildSplatPipelineResources` ORs
+   * the bit in when
    * the primitive's data source is the packed WASM payload
    * (`_packedSplatTextureData`) rather than the legacy `_splatData`. The bit
    * participates in the shader-module cache's hi-word level
@@ -1020,36 +1009,35 @@ export const ShaderDefineHi = Object.freeze({
   SPLAT_PACKED_WASM: hiDefineBit(2),
 
   /**
-   * Gaussian-splat VIEW-DEPENDENT COLOUR axis (`C15-G5`). The WGSL twin of
-   * the GLSL `HAS_SPHERICAL_HARMONICS` define
-   * (`PrimitiveGaussianSplatVS.glsl:10-101, 189-194`).
+   * Gaussian-splat view-dependent colour axis. The WGSL twin of
+   * the GLSL `HAS_SPHERICAL_HARMONICS` define in
+   * `PrimitiveGaussianSplatVS.glsl`.
    *
-   *   * SET — `vertexMain` evaluates spherical-harmonics bands 1-3 against the
-   *     model-space view direction and ADDS the result to the base colour,
+   *   * Set — `vertexMain` evaluates spherical-harmonics bands 1-3 against the
+   *     model-space view direction and adds the result to the base colour,
    *     exactly as the GLSL does. The per-band coefficients come from the
    *     group-0 binding-4 storage buffer, which holds
-   *     `GaussianSplatPrimitive._shData` VERBATIM (the same f16-packed
-   *     `Uint32Array` the WebGL path copies into its `RG32UI` SH texture), and
-   *     the active degree comes from the `u.shDegree` uniform — the twin of
+   *     `GaussianSplatPrimitive._shData` verbatim — the same f16-packed
+   *     `Uint32Array` the WebGL path copies into its `RG32UI` SH texture — and
+   *     the active degree comes from the `u.shDegree` uniform, the twin of
    *     GLSL's `u_sphericalHarmonicsDegree`, so a snapshot that degrades to
    *     degree 0 degrades identically on both backends.
-   *   * CLEAR (the `//>>else`, and the DEFAULT) — no SH term at all; the splat
-   *     colour is the base RGBA8 alone. Byte-identical to the pre-`C15-G5`
-   *     shader, and the only variant the three synthetic splat probes (which
-   *     carry no SH data) ever compile.
+   *   * Clear — the `//>>else`, and the default: no SH term at all, so the
+   *     splat colour is the base RGBA8 alone. This is the only variant the
+   *     three synthetic splat probes, which carry no SH data, ever compile.
    *
-   * There is deliberately NO degree-0 / DC term in either branch. The DC band
-   * is already folded into the base RGBA8 colour by the SPZ decode
-   * (`GltfSpzLoader.js:23-24`: "Degree 0 has no extra SH data (base colour is
-   * stored separately in the 'colors' attribute)"), the writer's per-degree
-   * offsets start at band 1 (`GaussianSplat3DTileContent.js` `base = [0, 9,
-   * 24]`), and the GLSL likewise only ever ADDS bands 1-3. Re-applying a DC
-   * term here would roughly double every splat's brightness.
+   * Neither branch applies a degree-0 (DC) term. The DC band is already folded
+   * into the base RGBA8 colour by the SPZ decode — `GltfSpzLoader.js` records
+   * that "Degree 0 has no extra SH data (base colour is stored separately in
+   * the 'colors' attribute)" — the writer's per-degree offsets start at band 1
+   * (`GaussianSplat3DTileContent.js`, `base = [0, 9, 24]`), and the GLSL
+   * likewise only adds bands 1-3. Re-applying a DC term here would roughly
+   * double every splat's brightness.
    *
-   * The group-0 binding-4 declaration is UNCONDITIONAL — it sits outside every
-   * `//>>ifdef` — so the bind-group layout, the bind group and the pipeline
-   * layout are the same objects for either state of this bit. Only the
-   * arithmetic inside `vertexMain` changes (the `C15-G3` discipline).
+   * The group-0 binding-4 declaration sits outside every `//>>ifdef`, so the
+   * bind-group layout, the bind group and the pipeline layout are the same
+   * objects for either state of this bit. Only the arithmetic inside
+   * `vertexMain` changes.
    *
    * Gating (single flip point): OR'd in by `buildSplatPipelineResources` when
    * the primitive commits a non-empty `_shData` at a degree >= 1. The bit
@@ -1063,40 +1051,37 @@ export const ShaderDefineHi = Object.freeze({
   SPLAT_SPHERICAL_HARMONICS: hiDefineBit(3),
 
   /**
-   * Cloud RECONSTRUCTION-EMISSION axis (`C13-10`). The march becomes the
-   * producer of the `C13-09` depth attachment instead of the analytic
-   * estimator that stands in for it.
+   * Cloud reconstruction-emission axis. The march becomes the producer of the
+   * depth attachment instead of the analytic estimator that stands in for it.
    *
-   *   * SET — `ProceduralClouds.wgsl`'s `marchDeck` additionally accumulates
-   *     the FRONT (nearest contributing sample) distance and the running
+   *   * Set — `ProceduralClouds.wgsl`'s `marchDeck` additionally accumulates
+   *     the front (nearest contributing sample) distance and the running
    *     `Σ wᵢ·tᵢ` over its own transmittance weights, `fragmentMain` returns a
    *     second `@location(1) vec2<f32>` carrying `(front, Σwᵢtᵢ/α)` in metres,
-   *     and `CloudReconstructionAttachments.wgsl` READS that target instead of
-   *     estimating (its own output struct then drops `depth`, because the
-   *     march already wrote it and a pass cannot read what it writes).
-   *   * CLEAR (the `//>>else`, and the DEFAULT) — every branch emits the
-   *     historical code: the march returns one colour target and the producer
-   *     computes `weightedDepthFromAlpha` over the geometric shell interval.
+   *     and `CloudReconstructionAttachments.wgsl` reads that target instead of
+   *     estimating. Its own output struct then drops `depth`, because the
+   *     march already wrote it and a pass cannot read what it writes.
+   *   * Clear — the `//>>else`, and the default: the march returns one colour
+   *     target and the producer computes `weightedDepthFromAlpha` over the
+   *     geometric shell interval.
    *
-   * ★ WHY THIS IS A COMPILE-TIME VARIANT AND NOT A UNIFORM. `C13-39`'s
-   *   negative result established that WGSL register allocation is STATIC:
-   *   anything added to the shared `ProceduralClouds` module inflates EVERY
-   *   pipeline compiled from it — the visible march, the full-resolution
-   *   march, the shadow map, the cascade atlas and the god-ray mask, four of
-   *   which want nothing to do with a reconstruction attachment. Gating the
-   *   emission on a uniform would pay the registers on all of them
-   *   unconditionally. Gating it on this bit means the four non-emitting
-   *   pipelines compile the module at `definesHi = 0`, where the preprocessor
-   *   has already deleted the emission text, so their register footprint is
-   *   exactly what C13-39 measured. Any occupancy claim about the EMITTING
-   *   pipeline is owed the interleaved-A/B protocol.
+   * This is a compile-time variant rather than a uniform because WGSL register
+   * allocation is static: anything added to the shared `ProceduralClouds`
+   * module inflates every pipeline compiled from it — the visible march, the
+   * full-resolution march, the shadow map, the cascade atlas and the god-ray
+   * mask, four of which have no use for a reconstruction attachment. Gating
+   * the emission on a uniform would pay those registers on all of them
+   * unconditionally. Gating it here means the four non-emitting pipelines
+   * compile the module at `definesHi = 0`, where the preprocessor has already
+   * deleted the emission text, so their register footprint is unchanged.
    *
-   * Gating (single flip point): OR'd in by the cloud renderer when
-   * `cache.reconstructionEnabled` is set, and ONLY for the half-resolution
-   * march pipeline and the attachment producer. The emitting pipelines are
-   * SEPARATE objects (`halfEmitPipeline`, `attachmentEmitPipeline`) built
-   * lazily beside the historical ones, so the default pipeline is never
-   * rebuilt, never invalidated, and never recompiled by a runtime flip.
+   * Gating happens at a single flip point: the cloud renderer ORs the bit in
+   * when `cache.reconstructionEnabled` is set, and only for the
+   * half-resolution march pipeline and the attachment producer. The emitting
+   * pipelines are separate objects (`halfEmitPipeline`,
+   * `attachmentEmitPipeline`) built lazily beside the non-emitting ones, so
+   * the default pipeline is never rebuilt, never invalidated, and never
+   * recompiled by a runtime flip.
    *
    * Consumers: `ProceduralClouds.wgsl` (`DeckResult` / `marchDeck` /
    * `fragmentMain`), `CloudReconstructionAttachments.wgsl`
@@ -1105,27 +1090,27 @@ export const ShaderDefineHi = Object.freeze({
   CLOUD_MARCH_EMIT_RECONSTRUCTION: hiDefineBit(4),
 
   /**
-   * Cloud RECONSTRUCTION-CONSUMPTION axis (`C13-10`). Kept SEPARATE from
+   * Cloud reconstruction-consumption axis. Kept separate from
    * {@link ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION} on purpose: the
-   * two halves of the handshake gate different modules, and `C13-09`'s
-   * recorded state — "produced but NOT consumed, by design" — is only
-   * A/B-testable while a build can produce without consuming.
+   * two halves of the handshake gate different modules, and a build that
+   * produces the attachments without consuming them is the only way to A/B
+   * the producer on its own.
    *
-   *   * SET — `CloudTemporalResolve.wgsl` binds the depth / velocity /
+   *   * Set — `CloudTemporalResolve.wgsl` binds the depth, velocity and
    *     moments attachments and reconstructs from them: the history anchor
-   *     becomes the march's TRUE transmittance-weighted depth rather than the
+   *     becomes the march's transmittance-weighted depth rather than the
    *     shell-interval midpoint proxy, the previous UV comes from the
    *     producer's motion vector rather than being re-derived, and the
    *     producer's validity flag gates history reuse.
-   *   * CLEAR (the `//>>else`, and the DEFAULT) — the historical
+   *   * Clear — the `//>>else`, and the default: the
    *     `representativeShellDistance` proxy path, byte-for-byte.
    *
-   * ★ THE POLICY BOUNDARY IS THE LEDGER'S. `C13-12` "owns attachment-aware
-   *   motion/depth rejection, variance clipping, reactive history, wind
-   *   advection in reprojection, disocclusion". So every THRESHOLDED test
-   *   belongs to that row; this bit gates only the READS and the non-parametric
-   *   validity plumbing (the producer's own validity flag, and the exactly-
-   *   equivalent empty-neighbourhood early-out the coverage moment licenses).
+   * The bit gates the reads and the non-parametric validity plumbing only —
+   * the producer's own validity flag, and the exactly equivalent
+   * empty-neighbourhood early-out the coverage moment licenses. Thresholded
+   * tests (attachment-aware motion and depth rejection, variance clipping,
+   * reactive history, wind advection in reprojection, disocclusion) are not
+   * gated here.
    *
    * Consumer: `CloudTemporalResolve.wgsl` (`fragmentMain`).
    */
@@ -1166,131 +1151,111 @@ export const ShaderSourceId = Object.freeze({
   POLYLINE_DASH: 10,
   POLYLINE_GLOW: 11,
   POLYLINE_OUTLINE: 12,
-  // C-R7-SHADER-MODULE-DEDUP — Batch 72. Source IDs 13-15 cover the
-  // first sweep of additional render-family adoption (Cloud + Voxel +
-  // Weather render). Keep numbering monotonic; add-only.
+  // Cloud, voxel and weather render families. Keep numbering monotonic;
+  // add-only.
   CLOUD_COLLECTION: 13,
   VOXEL_PRIMITIVE: 14,
   WEATHER_PARTICLE_RENDER: 15,
   /**
-   * The compute-shader source feeding `WebGPUWeatherRenderer`'s reset /
-   * update / emit pipelines. Compute pipelines themselves are NOT yet
-   * routed through a central cache (no `WebGPUComputePipelineCache`
-   * exists), but the underlying `GPUShaderModule` is still deduped via
+   * The compute-shader source feeding `WebGPUWeatherRenderer`'s reset,
+   * update and emit pipelines. Those pipelines are created directly rather
+   * than through `WebGPUComputePipelineCache`, but the underlying
+   * `GPUShaderModule` is still deduped via
    * `WebGPUShaderModuleCache.getOrCreate()` so two contexts with weather
-   * enabled don't recompile the same WGSL.
+   * enabled do not recompile the same WGSL.
    */
   WEATHER_PARTICLES_COMPUTE: 16,
-  // C-R7-SHADER-MODULE-DEDUP — Batch 74. Source IDs 17-22 cover the
-  // third sweep of additional render-family adoption (Environment +
-  // VolumetricFog + PointCloud). Add-only; never renumber.
+  // Environment, volumetric-fog and point-cloud families. Add-only; never
+  // renumber.
   ENVIRONMENT_SUN: 17,
   ENVIRONMENT_MOON: 18,
   /**
    * `VolumetricFog.wgsl` — single source feeding all three compute
-   * entry points (densityInjection / lightScattering / integrate). As
-   * with `WEATHER_PARTICLES_COMPUTE`, the compute pipelines stay on
-   * direct `device.createComputePipeline()` until a
-   * `WebGPUComputePipelineCache` exists; the module is deduped here.
+   * entry points (densityInjection, lightScattering, integrate). As
+   * with `WEATHER_PARTICLES_COMPUTE`, the compute pipelines are created
+   * directly with `device.createComputePipeline()`; only the module is
+   * deduped here.
    */
   VOLUMETRIC_FOG_COMPUTE: 19,
   VOLUMETRIC_FOG_COMPOSITE: 20,
   POINT_CLOUD: 21,
   POINT_CLOUD_LOD: 22,
-  // C-R7-SHADER-MODULE-DEDUP — Batch 162 (2026-05-02). The combined
-  // glTF model VS+FS PBR shader (`ModelPBRComplete.wgsl`). One
-  // `WebGPUModelPipelineCache` is created per `Model` instance, so a
-  // 100-glTF tileset previously compiled the same WGSL 100 times — this
-  // ID reuses one `GPUShaderModule` across all model instances on a
-  // device. Pipelines themselves stay per-cache (still need per-model
-  // formats, `alphaMode`, `doubleSided` keys); only the module is shared.
+  // The combined glTF model VS+FS PBR shader (`ModelPBRComplete.wgsl`). One
+  // `WebGPUModelPipelineCache` is created per `Model` instance, so without an
+  // id here a 100-glTF tileset compiles the same WGSL 100 times; this reuses
+  // one `GPUShaderModule` across every model instance on a device. Pipelines
+  // stay per-cache, since they still key on per-model formats, `alphaMode`
+  // and `doubleSided`; only the module is shared.
   MODEL_PBR_COMPLETE: 23,
-  // C-R7-SHADER-MODULE-DEDUP — Batch 163 (2026-05-02). Vector 3D Tile
-  // family. WGSL is built inline in each `build*PipelineResources()`
-  // function and is constant per build (only interpolates one chunk).
-  // Each renderer creates its resources per-primitive, so a tileset
-  // with N visible vector tiles previously compiled the same WGSL N
-  // times — these IDs reuse one `GPUShaderModule` per device.
+  // Vector 3D Tile family. The WGSL is built inline in each
+  // `build*PipelineResources()` function and is constant per build — it
+  // interpolates one chunk. Each renderer creates its resources
+  // per-primitive, so a tileset with N visible vector tiles would otherwise
+  // compile the same WGSL N times.
   VECTOR_3DTILE_PRIMITIVE: 24,
   VECTOR_3DTILE_POLYLINES: 25,
   VECTOR_3DTILE_CLAMPED_POLYLINES: 26,
-  // C-R7-SHADER-MODULE-DEDUP — Batch 164 (2026-05-02). BufferPrimitive
-  // family. Each `BufferPrimitiveCollection` builds its own cache and
-  // compiles the same WGSL — small Sandcastle setups have multiple
-  // collections (point + polyline + polygon) and re-add them on
-  // re-bind. Deduping is a modest win per scene but free given the
-  // pattern is already established.
+  // BufferPrimitive family. Each `BufferPrimitiveCollection` builds its own
+  // cache and compiles the same WGSL, and a scene commonly holds several
+  // collections (point, polyline, polygon) that re-add on re-bind.
   BUFFER_POINT_MATERIAL: 27,
   BUFFER_POLYLINE_MATERIAL: 28,
   BUFFER_POLYGON_MATERIAL: 29,
-  // C-R7-SHADER-MODULE-DEDUP — Batch 185 (2026-05-06). Final low-win
-  // remainders: GroundPrimitive + GroundPolyline classifier renderers
-  // (typically few-per-scene, but we just touched both files in
-  // Batches 180 and 183 so the ride-along has zero marginal cost),
-  // SkyAtmosphere (singleton per scene; module cache is a no-op
-  // optimization but unifies the pattern), and EllipsoidPrimitive
-  // (few-per-scene; same rationale). Closes the C-R7-SHADER-MODULE-DEDUP
-  // adoption sweep — every Cesium-authored WGSL source now resolves
-  // through `WebGPUShaderModuleCache.getOrCreate`.
+  // GroundPrimitive and GroundPolyline classifier renderers, SkyAtmosphere
+  // and EllipsoidPrimitive. These are few-per-scene or singletons, so the
+  // dedupe wins little on its own; the ids exist so that every
+  // Cesium-authored WGSL source resolves through
+  // `WebGPUShaderModuleCache.getOrCreate` without exception.
   GROUND_PRIMITIVE: 30,
   GROUND_POLYLINE: 31,
   SKY_ATMOSPHERE: 32,
   ELLIPSOID_PRIMITIVE: 33,
-  // Phase 3 — GPU-resident compute-instance system (Batch 231,
-  // NEW-COMPUTE-INSTANCE-SYSTEM). RENAMED in place from the Batch-230
-  // ORBITAL_PROPAGATE_COMPUTE / ORBITAL_CATALOG_RENDER labels when the
-  // orbital catalog was generalized and its domain math moved out of the
-  // engine — numbers kept per the add-only registry rule; never renumber.
-  // 34 labels the engine-side kernel scaffold
-  // (`Compute/ComputeInstanceScaffold.wgsl`). NOTE: composed user-kernel
-  // modules are NOT cached under this id — `WebGPUComputeInstanceRenderer`
-  // caches them per composed-source string, because the (sourceId, defines)
-  // key can't represent arbitrary user kernel strings. 35 is the instanced
-  // storage-buffer-vertex-pull render shader
+  // GPU-resident compute-instance system. 34 labels the engine-side kernel
+  // scaffold (`Compute/ComputeInstanceScaffold.wgsl`); composed user-kernel
+  // modules are not cached under it, because the `(sourceId, defines)` key
+  // cannot represent an arbitrary user kernel string —
+  // `WebGPUComputeInstanceRenderer` caches those per composed-source string
+  // instead. 35 is the instanced storage-buffer-vertex-pull render shader
   // (`Compute/ComputeInstanceRender.wgsl`).
   COMPUTE_INSTANCE_SCAFFOLD: 34,
   COMPUTE_INSTANCE_RENDER: 35,
-  // NEW-SPLAT-SORT-CONSUME-INDEXES / NEW-LOG-DEPTH-REMAINING-PRODUCERS-
-  // POINTCLOUD-SPLAT (Batch 288). The inline Gaussian-splat WGSL
-  // (`WebGPUGaussianSplatRenderer.ts` SPLAT_WGSL) now resolves through the
-  // module cache so its `//>>ifdef LOG_DEPTH` blocks preprocess and the
-  // log-depth color/depth-write variants dedupe per (sourceId, defines).
+  // The inline Gaussian-splat WGSL (`WebGPUGaussianSplatRenderer.ts`
+  // SPLAT_WGSL), so its `//>>ifdef LOG_DEPTH` blocks preprocess and the
+  // log-depth colour and depth-write variants dedupe per
+  // `(sourceId, defines)`.
   GAUSSIAN_SPLAT: 36,
-  // NEW-STARS-BRIGHT-CATALOG (Track V-C, Batch 313). The Yale Bright
-  // Star Catalog starfield shader (`Catalog/StarField.wgsl`). One
-  // `GPUShaderModule` per device — the starfield is a singleton per
-  // scene (owned by SkyBox), so this is a no-op dedupe today, but it
-  // keeps the every-Cesium-WGSL-source-resolves-through-the-cache
-  // invariant intact (closed in Batch 185).
+  // The Yale Bright Star Catalog starfield shader (`Catalog/StarField.wgsl`).
+  // One `GPUShaderModule` per device. The starfield is a singleton per scene,
+  // owned by SkyBox, so this dedupes nothing on its own; it keeps the
+  // invariant that every Cesium-authored WGSL source resolves through the
+  // cache.
   STAR_FIELD_CATALOG: 37,
-  // PARITY-PC-EDL. Point-cloud Eye-Dome Lighting depth-writing draw
-  // shader (`PointCloud/PointCloudEDLDepth.wgsl`, source 38) + the
-  // neighbor-depth blend/composite shader
-  // (`Advanced/PointCloudEDL.wgsl`, source 39). Both compile ONLY when
-  // the user enables `pointCloudShading.eyeDomeLighting`; add-only.
+  // Point-cloud eye-dome lighting: the depth-writing draw shader
+  // (`PointCloud/PointCloudEDLDepth.wgsl`, source 38) and the neighbour-depth
+  // blend/composite shader (`Advanced/PointCloudEDL.wgsl`, source 39). Both
+  // compile only when `pointCloudShading.eyeDomeLighting` is enabled;
+  // add-only.
   POINT_CLOUD_EDL_DEPTH: 38,
   POINT_CLOUD_EDL_BLEND: 39,
-  // C6-FLOWFIELD-WIND (Campaign 6). The instanced storage-buffer-vertex-pull
-  // wind-particle render shader (`FlowFieldRender.wgsl`). Resolves through the
-  // module cache so its `//>>ifdef LOG_DEPTH` blocks preprocess and the
-  // log-depth color/depth-write variant dedupes per (sourceId, defines).
-  // The advection compute module (`FlowFieldAdvect.wgsl`) has no ifdef blocks
-  // and is created directly by the renderer, so it needs no source id.
-  // Add-only.
+  // The instanced storage-buffer-vertex-pull wind-particle render shader
+  // (`FlowFieldRender.wgsl`), so its `//>>ifdef LOG_DEPTH` blocks preprocess
+  // and the log-depth colour and depth-write variants dedupe per
+  // `(sourceId, defines)`. The advection compute module
+  // (`FlowFieldAdvect.wgsl`) has no ifdef blocks and is created directly by
+  // the renderer, so it needs no source id. Add-only.
   FLOW_FIELD_RENDER: 40,
-  // C6-FFT-OCEAN (Campaign 6/7). The displaced ocean-surface render shader
-  // (`Ocean/OceanSurface.wgsl`). Resolves through the module cache so its
-  // `//>>ifdef LOG_DEPTH` blocks preprocess and the log-depth variant dedupes
-  // per (sourceId, defines). The FFT compute modules (initial-spectrum, twiddle,
-  // time-evolve, IFFT, merge) have no ifdef blocks and are created directly by
-  // the renderer, so they need no source id. Add-only.
-  OCEAN_SURFACE: 41,
-  // UP144-SNAP-WEBGPU-EDGES (C11-212 edge tier). The inline edge-visibility
-  // emitter WGSL (`WebGPUEdgeVisibilityEmitter.ts` EDGE_EMITTER_WGSL) now
-  // resolves through the module cache so its `//>>ifdef LOG_DEPTH` block (the
-  // snap-payload fragment entry's pick-fleet log `frag_depth` write)
-  // preprocesses and the log/non-log variants dedupe per (sourceId, defines).
+  // The displaced ocean-surface render shader (`Ocean/OceanSurface.wgsl`), so
+  // its `//>>ifdef LOG_DEPTH` blocks preprocess and the log-depth variant
+  // dedupes per `(sourceId, defines)`. The FFT compute modules
+  // (initial-spectrum, twiddle, time-evolve, IFFT, merge) have no ifdef blocks
+  // and are created directly by the renderer, so they need no source id.
   // Add-only.
+  OCEAN_SURFACE: 41,
+  // The inline edge-visibility emitter WGSL
+  // (`WebGPUEdgeVisibilityEmitter.ts` EDGE_EMITTER_WGSL), so its
+  // `//>>ifdef LOG_DEPTH` block — the snap-payload fragment entry's pick-fleet
+  // log `frag_depth` write — preprocesses and the log and non-log variants
+  // dedupe per `(sourceId, defines)`. Add-only.
   EDGE_EMITTER: 42,
 } as const);
 
@@ -1321,16 +1286,15 @@ export function defineHiKeyToNames(definesHi: number): string[] {
 }
 
 /**
- * Resolve a LO-word define flag name to its bit. Returns `undefined` for
+ * Resolve a lo-word define flag name to its bit. Returns `undefined` for
  * unknown names so the preprocessor can produce a clear error.
  *
- * C11-149 fail-loud rule: if `name` is a HI-word define
- * ({@link ShaderDefineHi}), this THROWS instead of returning `undefined`
- * — a legacy caller that resolved a hi name through the lo path and
- * tested the result against a lo mask would silently read the wrong bit
- * (and a silent `undefined` would misreport a REGISTERED define as
- * unknown). Callers that legitimately handle both words must check
- * {@link resolveDefineBitHi} FIRST (as the preprocessor does).
+ * A hi-word name ({@link ShaderDefineHi}) throws instead of returning
+ * `undefined`: a caller that resolved a hi name through the lo path and
+ * tested the result against a lo mask would silently read the wrong bit,
+ * and returning `undefined` would misreport a registered define as
+ * unknown. Callers that handle both words must check
+ * {@link resolveDefineBitHi} first, as the preprocessor does.
  */
 export function resolveDefineBit(name: string): number | undefined {
   if ((ShaderDefineHi as Record<string, number>)[name] !== undefined) {

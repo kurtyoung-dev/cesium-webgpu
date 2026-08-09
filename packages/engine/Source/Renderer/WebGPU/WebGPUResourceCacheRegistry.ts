@@ -1,11 +1,8 @@
 /**
  * Registry of cache-clear callbacks owned by a WebGPU context.
  *
- * Extracted from `WebGPUContext._clearAllCaches`'s inline cache list
- * as Batch 131 of the audit-recommended Context decomposition. See
- * `migration_doc/WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md` for the
- * roadmap and `migration_doc/BATCH_131_PLAN_RESOURCE_CACHE_REGISTRY.md`
- * for this specific extraction.
+ * Holds what would otherwise be an inline cache list in
+ * `WebGPUContext._clearAllCaches`.
  *
  * The Context registers each of its caches once at init; the
  * recovery path calls `clearAll()` to drop stale GPU handles after

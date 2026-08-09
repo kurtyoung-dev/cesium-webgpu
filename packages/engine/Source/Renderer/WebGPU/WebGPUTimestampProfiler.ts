@@ -75,7 +75,7 @@ export interface ProfilingResults extends DebugStatsObject {
   readonly profiledPassAvgMs: number;
   /**
    * Union of the latest frame's timed pass intervals: every GPU nanosecond
-   * inside the frame span counted exactly once (C11-140).
+   * inside the frame span counted exactly once.
    */
   readonly coveredMs: number;
   /** Rolling average of the unique-sample covered span. */
@@ -120,7 +120,7 @@ export interface ProfilingResults extends DebugStatsObject {
   readonly pendingReadbackCount: number;
   /**
    * True when sampled + skipped + empty + failed + lost + pending equals the
-   * attempted frame count — i.e. no sample vanished silently (C11-140).
+   * attempted frame count — that is, no sample vanished silently.
    */
   readonly sampleLedgerBalanced: boolean;
   /** Attempts with no recorded terminal outcome. Must be zero. */
@@ -215,9 +215,9 @@ export class WebGPUTimestampProfiler {
   private _latestInvertedSampleCount: number = 0;
   private _overlappingFrameCount: number = 0;
   /**
-   * C13-02 — the most recently READ frame's raw pass intervals, retained so a
-   * consumer can fold a SCOPED union (e.g. only the cloud passes) through the
-   * same `summarizeFrameCoverage` this class uses for the whole frame.
+   * The most recently read frame's raw pass intervals, retained so a
+   * consumer can fold a scoped union — only the cloud passes, say — through
+   * the same `summarizeFrameCoverage` this class uses for the whole frame.
    *
    * Retention costs nothing: `_readSubmittedFrame` already builds this array
    * per readback and used to drop it after the unscoped fold. Summing the
@@ -239,7 +239,7 @@ export class WebGPUTimestampProfiler {
    * Readbacks started by `afterSubmit()` that have not reached a terminal
    * outcome yet. Held so the capture tail can be drained instead of dropped —
    * the frames in here are real samples that a naive "stop capturing" would
-   * lose (C11-140).
+   * lose.
    */
   private _activeReadbacks: Set<Promise<void>> = new Set();
 
@@ -582,11 +582,11 @@ export class WebGPUTimestampProfiler {
         this._addToRollingWindow(timings, passMs);
       }
 
-      // Unique-sample fold (C11-140): the union of the pass intervals, not
-      // their sum, is what the frame span can be divided into. Any excess of
-      // the sum over the union is overlap, reported rather than clamped away.
+      // Unique-sample fold: the union of the pass intervals, not their sum, is
+      // what the frame span can be divided into. Any excess of the sum over
+      // the union is overlap, reported rather than clamped away.
       const coverage = summarizeFrameCoverage(samples);
-      // C13-02 — retain the intervals the fold consumed so a scoped consumer
+      // Retain the intervals the fold consumed so a scoped consumer
       // can re-fold a subset. Assignment only; the array was allocated above.
       this._latestFrameSamples = samples;
       this._addToRollingWindow(this._frameTimings, coverage.frameSpanMs);
@@ -794,7 +794,7 @@ export class WebGPUTimestampProfiler {
   }
 
   /**
-   * C13-02 — the most recently read frame's raw pass intervals, in nanoseconds
+   * The most recently read frame's raw pass intervals, in nanoseconds
    * relative to that frame's origin. Empty until a readback completes and
    * after `reset()`.
    *

@@ -30,7 +30,7 @@
  * closure-free {@link WebGPUCpuPassProfiler.beginPass} /
  * {@link WebGPUCpuPassProfiler.endPass} pair instead, so a disabled
  * profiler costs a single boolean test per pass with **no** `() => …`
- * wrapper allocated every frame (C9-18).
+ * wrapper allocated every frame.
  *
  * @module WebGPUCpuPassProfiler
  */
@@ -103,7 +103,7 @@ export class WebGPUCpuPassProfiler {
   /**
    * Closure-free equivalent of {@link time}, for hot render-pass call
    * sites that must not allocate a `() => …` wrapper every frame while
-   * profiling is disabled (C9-18). Pair with {@link endPass}:
+   * profiling is disabled. Pair with {@link endPass}:
    *
    * ```ts
    * profiler.beginPass("globe");

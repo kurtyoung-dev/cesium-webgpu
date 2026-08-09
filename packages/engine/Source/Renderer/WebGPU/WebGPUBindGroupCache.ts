@@ -23,8 +23,6 @@
  * When any input changes (typical after a texture resize), the cache
  * produces a new bind group and evicts the stale one lazily.
  *
- * Fix sketch: **C-R11** of the Renderer-Deep principal-engineer review.
- *
  * @private
  */
 
@@ -145,7 +143,7 @@ export class WebGPUBindGroupCache {
   private _hits = 0;
   private _misses = 0;
   private _invalidations = 0;
-  // NEW-BINDGROUPCACHE-EVICTION — bounded growth guards.
+  // Bounded-growth guards.
   private _evictions = 0;
   private _maxEntries: number;
   private _maxIdleFrames: number;

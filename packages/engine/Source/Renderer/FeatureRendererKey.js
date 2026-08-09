@@ -70,12 +70,11 @@ const FeatureRendererKey = {
   IMAGERY_REPROJECTION: 28,
 
   // ── Atmosphere ──
-  // RETIRED (Batch 239) — superseded by in-GlobeTerrain.wgsl ground
-  // atmosphere (csm_computeGroundAtmosphereScattering + WebGPUAtmosphereLUT,
-  // params in the globe camera/tile uniform buffers), matching WebGL's
-  // in-GlobeFS integration. The separate-pass WebGPUGroundAtmosphereRenderer
-  // was deleted (full Nishita reference in git history at 05b6da60d1).
-  // Keys are positional — keep slot 29 reserved; do NOT reuse the number.
+  // Retired: the ground atmosphere is computed inside GlobeTerrain.wgsl by
+  // `csm_computeGroundAtmosphereScattering` against `WebGPUAtmosphereLUT`,
+  // with its parameters in the globe camera and tile uniform buffers, matching
+  // WebGL's in-GlobeFS integration. Keys are positional, so slot 29 stays
+  // reserved and the number is never reused.
   GROUND_ATMOSPHERE: 29,
 
   // ── Screen-space effects ──
@@ -128,18 +127,14 @@ const FeatureRendererKey = {
   // sorted indices don't need a readback to CPU.
   POINT_CLOUD_SORT: 40,
 
-  // ── Ground polyline classifier (Migration Session 4, 2026-04-28) ──
+  // ── Ground polyline classifier ──
   // WebGPU equivalent of GroundPolylinePrimitive's classification path.
-  // Same depth-texture sampling plumbing as GROUND_PRIMITIVE +
-  // 5-plane fragment-side intersection tests (start/end/right miter
-  // planes, plus aligned-plane checks for tex coord). Renderer
-  // skeleton lands in Batch 84; the full WGSL VS/FS port of
-  // PolylineShadowVolumeVS/FS.glsl is tracked as Session 4b in
-  // DEFERRED_WORK.md (~250 LOC of plane-distance math + per-vertex
-  // volume extrusion).
+  // Same depth-texture sampling plumbing as GROUND_PRIMITIVE, plus
+  // five-plane fragment-side intersection tests: start, end and right miter
+  // planes, and aligned-plane checks for the texture coordinate.
   GROUND_POLYLINE: 41,
 
-  // ── Vector 3D Tile classification renderers (Batch 112) ──
+  // ── Vector 3D Tile classification renderers ──
   // WebGPU classifiers for the three Vector3DTile* feature families that
   // ride the depth-sample architecture (ADR-2026-04-28) alongside
   // GROUND_PRIMITIVE / GROUND_POLYLINE:
@@ -167,9 +162,8 @@ const FeatureRendererKey = {
   // skip the WebGL-only `ShaderProgram.fromCache` setup without checking
   // backend identity.
   //
-  // CLASSIFICATION_PRIMITIVE (Batch 130, verified by
-  // probe-classification-primitive-parity): standalone
-  // ClassificationPrimitive is a REAL renderer now — its `createCommands`
+  // CLASSIFICATION_PRIMITIVE: standalone
+  // ClassificationPrimitive is a real renderer — its `createCommands`
   // is `WebGPUGroundPrimitiveRenderer.createWebGPUGroundPrimitiveCommands`,
   // which walks the depth-2 wrapping chain (ClassificationPrimitive →
   // ._primitive (Primitive) → ._webgpuGeometryData) and emits the same
@@ -179,7 +173,7 @@ const FeatureRendererKey = {
   DEPTH_PLANE: 45,
   CLASSIFICATION_PRIMITIVE: 46,
 
-  // ── NPR Outlines (Slice 5c-B Batch 123) ──
+  // ── NPR Outlines ──
   // Cheap post-process pass that reads G-buffer normal-roughness +
   // depth to detect silhouette / crease edges and paints them as
   // a configurable edge color. Opt-in via `scene.enableNPROutlines`;
@@ -187,7 +181,7 @@ const FeatureRendererKey = {
   // globe default.
   NPR_OUTLINES: 47,
 
-  // ── Contact Shadows (Slice 5c-B Batch 133) ──
+  // ── Contact Shadows ──
   // Screen-space contact shadows. For each fragment, reads the
   // G-buffer normal + depth, unprojects to eye-space, then ray-marches
   // a short distance toward the sun direction sampling the depth
@@ -198,22 +192,20 @@ const FeatureRendererKey = {
   // Opt-in via `scene.enableContactShadows`.
   CONTACT_SHADOWS: 48,
 
-  // ── GPU-resident compute-instance collection (Phase 3, Batch 231) ──
-  // `ComputeInstanceCollection` routes here. Renamed from
-  // ORBITAL_CATALOG_COLLECTION (Batch 230) in Batch 231 — same slot 49;
-  // the orbital catalog was generalized into this feature-agnostic system
-  // and the orbital math moved out of the engine into Sandcastle demo
-  // content. The renderer keeps per-instance data GPU-resident: parameter
+  // ── GPU-resident compute-instance collection ──
+  // `ComputeInstanceCollection` routes here; the orbital catalog that once
+  // owned this slot was generalized into this feature-agnostic system, with
+  // its orbital math moved out of the engine into Sandcastle demo content.
+  // The renderer keeps per-instance data GPU-resident: parameter
   // floats upload once to a storage buffer, a USER-SUPPLIED WGSL kernel
   // (composed with `ComputeInstanceScaffold.wgsl`) repopulates an instance
   // record buffer each frame via compute, and the instanced draw
   // vertex-pulls `instances[instance_index]` — positions never leave the
   // GPU; the CPU uploads only the simulation time per frame. WebGPU-only
-  // for now — the WebGL2 fallback (worker/WASM kernel host) is tracked as
-  // NEW-COMPUTE-INSTANCE-WEBGL2-FALLBACK in DEFERRED_WORK.md.
+  // for now; a WebGL2 fallback would need a worker or WASM kernel host.
   COMPUTE_INSTANCE_COLLECTION: 49,
 
-  // ── Entity-cluster GPU bin/count (Phase 10, Batch 301) ──
+  // ── Entity-cluster GPU bin/count ──
   // `EntityCluster` (screen-space proximity declutter of billboard/label/
   // point entities) routes its binning half here on WebGPU. The dispatcher
   // (`WebGPUEntityClusterDispatcher`) runs `EntityClusterGridGPU.wgsl`: a
@@ -223,11 +215,10 @@ const FeatureRendererKey = {
   // The SEQUENTIAL representative-selection + 3×3-neighbourhood merge stays on
   // the CPU but iterates the (far smaller) non-empty-cell set rather than every
   // point — replacing the per-frame KDBush build that doesn't scale to 50k+
-  // markers. WebGL2 keeps the full CPU KDBush path. A fully-GPU parallel merge
-  // is tracked as NEW-ENTITYCLUSTER-GPU-MERGE in DEFERRED_WORK.md.
+  // markers. WebGL2 keeps the full CPU KDBush path.
   ENTITY_CLUSTER_GPU: 50,
 
-  // ── Bright-star catalog starfield (Track V-C, Batch 313 / 324) ──
+  // ── Bright-star catalog starfield ──
   // `StarField` (owned by SkyBox) routes here on BOTH backends. The
   // renderers (`WebGPUStarFieldRenderer` for WGSL, `WebGLStarFieldRenderer`
   // for GLSL) upload the Yale Bright Star Catalog subset (RA/Dec/magnitude/
@@ -240,11 +231,11 @@ const FeatureRendererKey = {
   // by the same TEME→pseudo-fixed matrix SkyBox uses, so constellations
   // land at the correct RA/Dec for the scene clock. The catalog data +
   // intensity/color/fade math are backend-neutral (`Scene/BrightStarCatalog`
-  // + `Scene/StarFieldMath`) and REUSED by both renderers — only the draw
-  // path differs (Batch 324, NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK).
+  // + `Scene/StarFieldMath`) and reused by both renderers; only the draw
+  // path differs.
   STAR_FIELD: 51,
 
-  // ── GPU flow-field wind particles (Campaign 6, C6-FLOWFIELD-WIND) ──
+  // ── GPU flow-field wind particles ──
   // `FlowFieldWindLayer` routes here. WebGPU-only (documented no-op on
   // WebGL — the layer simply renders nothing when no FR resolves). A
   // ping-pong compute pass advects N particles across a velocity field
@@ -257,7 +248,7 @@ const FeatureRendererKey = {
   // MIT) — technique only; GFS sample data is NOAA public domain.
   FLOW_FIELD: 52,
 
-  // ── GPU FFT spectral ocean (Campaign 6/7, C6-FFT-OCEAN) ──
+  // ── GPU FFT spectral ocean ──
   // `OceanSurfacePrimitive` routes here. WebGPU-only (documented no-op on
   // WebGL — the primitive renders nothing when no FR resolves). A per-frame
   // compute chain (initial-spectrum → twiddle → time-evolve → inverse FFT →
@@ -266,15 +257,12 @@ const FeatureRendererKey = {
   // default-off: nothing is allocated until an enabled OceanSurfacePrimitive is
   // updated. See WebGPUOceanRenderer.ts. License: gasgiant/FFT-Ocean +
   // Popov72/OceanDemo + WebTide (all MIT) FFT/packing; Phillips spectrum derived
-  // from Tessendorf's published notes. A WebGL2 fragment-FFT fallback is tracked
-  // in DEFERRED_WORK.
+  // from Tessendorf's published notes.
   FFT_OCEAN: 53,
 
-  // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
-  // sessions for a planned deferred renderer. It was never registered and
-  // never consumed by any scene code, so it was removed and the subsequent
-  // keys were shifted down by one to keep the lookup array dense. If a
-  // deferred path is added in the future, append it after GPU_SORT_KEYS.
+  // There is no `DEFERRED_GBUFFER` slot: nothing ever registered or consumed
+  // one, and the lookup array stays dense. A deferred path would append after
+  // GPU_SORT_KEYS rather than reclaim an interior index.
 
   /**
    * Total number of feature renderer keys (excluding COUNT itself).

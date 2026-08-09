@@ -5,8 +5,7 @@
  * support for:
  *   - Sync hit-check + async pipeline creation (`createComputePipelineAsync`)
  *   - Cross-renderer dedup of identical (shaderModule, entryPoint, layout)
- *     tuples, mirroring the `WebGPURenderPipelineCache` pattern from
- *     Batches 33-34 / 56 / 62 / 72-75
+ *     tuples, mirroring the `WebGPURenderPipelineCache` pattern
  *   - Cache statistics
  *   - Device-loss invalidation
  *
@@ -27,21 +26,19 @@
  *     a structural hash because `GPUPipelineLayout` has no structural
  *     introspection API; the caller is responsible for not creating
  *     redundant layout objects.
- *   - `descriptor.compute.module` identity
- *     (`NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL`, 2026-08-06). Compute
- *     pipelines carry the SAME define-aliasing class the render cache did:
- *     a `ShaderDefine` flip recompiles the module but changes neither the
- *     caller-supplied `name`, nor the layout, nor the entry point, so the
- *     pre-fix key handed back the pipeline built from the previous module.
- *     Folding module identity (via the render cache's shared
- *     `webgpuObjectIdentity` table, so ids mean the same thing in both
- *     caches) makes that structurally impossible here too.
+ *   - `descriptor.compute.module` identity. Without it, compute pipelines
+ *     alias on the define axis: a `ShaderDefine` flip recompiles the module
+ *     but changes neither the caller-supplied `name`, nor the layout, nor the
+ *     entry point, so the key would hand back the pipeline built from the
+ *     previous module. Module identity comes from the render cache's shared
+ *     `webgpuObjectIdentity` table, so an id means the same thing in both
+ *     caches.
  *   - `descriptor.compute.constants` — pipeline-overridable constants are
  *     baked into the pipeline.
  *
  * # Adoption
  *
- * Compute pipeline consumers in CesiumJS WebGPU as of Batch 76:
+ * Compute pipeline consumers in CesiumJS WebGPU:
  *   - WebGPUWeatherRenderer — reset/update/emit (3 pipelines)
  *   - WebGPUVolumetricFogRenderer — density/scattering/integrate (3 pipelines)
  *   - WebGPUAutoExposure — histogram/avgLuminance (2-3 pipelines)
@@ -130,7 +127,7 @@ export class WebGPUComputePipelineCache {
   private cache: Map<string, ComputePipelineCacheEntry>;
   private pendingPipelines: Map<string, Promise<GPUComputePipeline>>;
   private logPrefix: string;
-  // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 2) — see render-pipeline cache for rationale.
+  // See the render-pipeline cache for the wakeup-event rationale.
   private monitor: AsyncResourceMonitor | null;
 
   // Layout-identity table: maps a `GPUPipelineLayout` (or the literal
@@ -204,10 +201,10 @@ export class WebGPUComputePipelineCache {
 
     // Create new pipeline
     this.stats.misses++;
-    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 2 + audit fix) — see
-    // render-pipeline cache for ordering rationale: pendingPipelines
-    // gets set BEFORE monitor.begin so re-entrant subscribers see
-    // consistent cache state. Compute pipelines use a `compute|` key
+    // See the render-pipeline cache for the ordering rationale:
+    // `pendingPipelines` is set before `monitor.begin` so a re-entrant
+    // subscriber sees consistent cache state. Compute pipelines use a
+    // `compute|` key
     // prefix so they don't collide with render-pipeline keys in
     // monitor diagnostics if both share a base name.
     const pipelinePromise = this.createPipelineAsync(descriptor);
@@ -365,7 +362,7 @@ export class WebGPUComputePipelineCache {
    * (callers must keep names stable for dedup), layout identity, shader
    * MODULE identity, and entry point.
    *
-   * NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL — the `m:` segment is what
+   * The `m:` segment is what
    * makes a define flip a keyed miss rather than a silent alias. It costs one
    * `WeakMap.get` (no allocation) on a path that already builds a template
    * string, and it cannot cost hit rate: `WebGPUShaderModuleCache` returns the

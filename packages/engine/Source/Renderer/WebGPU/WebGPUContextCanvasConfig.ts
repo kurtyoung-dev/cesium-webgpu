@@ -2,10 +2,8 @@
  * Canvas-configuration + HDR-output helpers extracted from
  * `WebGPUContext`.
  *
- * Batch 593 of the audit-recommended Context decomposition
- * (`migration_doc/WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md`). Peels the
- * HDR-DISPLAY (Batch 206/213/219/225/230) canvas-config cluster off the
- * ~5.5K-LOC `WebGPUContext.ts` into a self-contained module:
+ * Holds the HDR canvas-config cluster as a self-contained module rather than
+ * inside the much larger `WebGPUContext.ts`:
  *
  *   - `buildCanvasConfig(host)` — assemble the `GPUCanvasConfiguration`
  *     for the current `_hdrCanvasOutput` flag + `_presentationFormat`.
@@ -46,8 +44,8 @@ export interface CanvasConfigHost {
 }
 
 /**
- * HDR-DISPLAY (Batch 206) — build the `GPUCanvasConfiguration` based on the
- * current `_hdrCanvasOutput` flag + `_presentationFormat`. Centralizes the
+ * Build the `GPUCanvasConfiguration` from the current `_hdrCanvasOutput` flag
+ * and `_presentationFormat`. Centralizes the
  * configure body so the three call sites (initialize, resize,
  * reconfigureCanvas) stay consistent.
  *
@@ -80,14 +78,14 @@ export function buildCanvasConfig(
 }
 
 /**
- * HDR-DISPLAY (Batch 213, B206-N1 audit fix) — apply the canvas config with
- * a fallback path when the browser rejects HDR-only fields.
- * `toneMapping: { mode: "extended" }` and `colorSpace: "display-p3"` are
- * Chrome 129+ additions; older Chrome / Safari / Firefox builds either throw
- * a TypeError or fail validation. On failure we strip the HDR-only fields and
- * retry with just `format: "rgba16float"` so HDR storage still works. If even
- * the rgba16float fallback fails, we drop back to SDR and fire the fallback
- * listeners so every attached Scene syncs its flag.
+ * Apply the canvas config with a fallback path for a browser that rejects the
+ * HDR-only fields. `toneMapping: { mode: "extended" }` and
+ * `colorSpace: "display-p3"` are Chrome 129+ additions; older Chrome, Safari
+ * and Firefox builds either throw a TypeError or fail validation. On failure
+ * the HDR-only fields are stripped and the configure retried with just
+ * `format: "rgba16float"`, so HDR storage still works. If that fallback also
+ * fails, the canvas drops back to SDR and the fallback listeners fire so every
+ * attached Scene syncs its flag.
  */
 export function applyCanvasConfig(host: CanvasConfigHost): void {
   if (!host._context || !host._device) {
@@ -122,9 +120,8 @@ export function applyCanvasConfig(host: CanvasConfigHost): void {
         host._hdrCanvasOutput = false;
         host._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
         host._context.configure(buildCanvasConfig(host));
-        // B213-O2 (Batch 219) + B219-N4 (Batch 225) — fan out to every
-        // listener so multi-Scene-per-context setups (split-screen,
-        // picture-in-picture) all sync.
+        // Fan out to every listener so a multi-Scene-per-context setup —
+        // split-screen, picture-in-picture — syncs all of them.
         for (const listener of host._hdrFallbackListeners) {
           try {
             listener(false);
@@ -148,23 +145,22 @@ export function applyCanvasConfig(host: CanvasConfigHost): void {
  * Re-configure the canvas context after device-loss recovery. Called by
  * `WebGPUDeviceLossRecovery` via the `DeviceLossRecoveryHost` interface.
  *
- * HDR-DISPLAY (Batch 206) — when HDR is on we keep the rgba16float format;
- * otherwise re-query the browser's preferred format (typically bgra8unorm on
- * Windows / rgba8unorm on macOS).
+ * With HDR on the format stays `rgba16float`; otherwise the browser's
+ * preferred format is re-queried, typically `bgra8unorm` on Windows and
+ * `rgba8unorm` on macOS.
  */
 export function reconfigureCanvas(host: CanvasConfigHost): void {
   if (host._context && host._device) {
     if (!host._hdrCanvasOutput) {
       host._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
     }
-    // Batch 213 (B206-N1 audit fix) — fallback chain for unsupported
-    // extended toneMapping.
+    // Routed through the fallback chain for unsupported extended toneMapping.
     applyCanvasConfig(host);
   }
 }
 
 /**
- * HDR-DISPLAY (Batch 206) — request an HDR-output canvas. Matches
+ * Request an HDR-output canvas. Matches
  * `Scene.useHDRCanvasOutput` and is invoked by the Scene setter.
  *
  * Switching the canvas format invalidates every pipeline that targets the
@@ -186,9 +182,9 @@ export function setHDRCanvasOutput(
     ? "rgba16float"
     : navigator.gpu.getPreferredCanvasFormat();
   if (host._context && host._device && !host._isDestroyed) {
-    // Batch 213 (B206-N1 audit fix) — fallback chain. If extended toneMapping
-    // fails, `applyCanvasConfig` may flip `_hdrCanvasOutput` back to false;
-    // that's the correct behavior — the canvas couldn't honor the request.
+    // If extended toneMapping fails, `applyCanvasConfig` flips
+    // `_hdrCanvasOutput` back to false, which is correct: the canvas could not
+    // honour the request.
     applyCanvasConfig(host);
     // Format-keyed cache invalidation. Identity-blit + canvas-targeted
     // pipelines must recompile against the new format. Effects bind groups
@@ -199,22 +195,22 @@ export function setHDRCanvasOutput(
 }
 
 /**
- * B213-O2 (Batch 219) + B219-N4 (Batch 225) + B225-N2 audit fix (Batch 230) —
- * register a callback fired when the HDR canvas configure fails and the
- * context demotes itself to SDR. `Scene.js` installs this so its
- * `_useHDRCanvasOutput` flag stays in sync with the canvas reality. Returns an
- * unsubscribe function so the Scene can clean up at destruction.
+ * Register a callback fired when the HDR canvas configure fails and the
+ * context demotes itself to SDR. `Scene.js` installs one so its
+ * `_useHDRCanvasOutput` flag stays in sync with the canvas reality, and the
+ * returned unsubscribe function lets it clean up at destruction.
  *
- * Multiple Scenes per Context (split-screen, picture-in-picture) each register
- * their own listener — they all fire on demotion.
+ * Several Scenes can share one Context — split-screen, picture-in-picture —
+ * and each registers its own listener; all of them fire on demotion.
  *
- * **B225-N2 (Batch 230 audit fix)** — `null` is no longer a magic
- * "clear all listeners" value. Callers should use the returned unsubscribe
- * function for per-listener cleanup. To clear ALL listeners (e.g., context
- * teardown), call `clearAllHDRFallbackListeners()` explicitly.
+ * `null` is not a "clear all listeners" value: per-listener cleanup goes
+ * through the returned unsubscribe function, and clearing all listeners, as at
+ * context teardown, goes through `clearAllHDRFallbackListeners()`.
  *
- * Returns the unsubscribe function on success, or null when `listener` was
- * nullish.
+ * @param {object} host The canvas-config host.
+ * @param {Function|null} listener Called with the new HDR state on demotion.
+ * @returns {Function|null} The unsubscribe function, or null when `listener`
+ *   was nullish.
  */
 export function setHDRFallbackListener(
   host: CanvasConfigHost,
@@ -230,10 +226,9 @@ export function setHDRFallbackListener(
 }
 
 /**
- * B225-N2 (Batch 230 audit fix) — explicit "clear every registered HDR
- * fallback listener" entry point. Used at context teardown. Distinct from
- * `setHDRFallbackListener(null)` so the intent is unambiguous and can't
- * accidentally fire from a Scene that just wanted to remove its own listener.
+ * Clear every registered HDR fallback listener. Used at context teardown, and
+ * kept distinct from `setHDRFallbackListener(null)` so a Scene removing only
+ * its own listener cannot trigger it by accident.
  */
 export function clearAllHDRFallbackListeners(host: CanvasConfigHost): void {
   host._hdrFallbackListeners.clear();

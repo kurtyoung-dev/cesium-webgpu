@@ -1,33 +1,26 @@
 /**
  * GPU frustum-culler pool helpers extracted from `WebGPUContext`.
  *
- * Second slice of the audit-recommended Context decomposition
- * (`migration_doc/WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md`, Q35 epic — follows
- * the Batch 593 HDR canvas-output extraction). Peels the compute-culler pool
- * cluster off the ~5.4K-LOC `WebGPUContext.ts` into a self-contained module:
+ * Holds the compute-culler pool as a self-contained module rather than inside
+ * the much larger `WebGPUContext.ts`, whose getters and methods of the same
+ * names are one-line delegators to these functions:
  *
- *   - `getGpuCuller(host)` — lazy-init the main opaque frustum culler
- *     (frustum 0). Async-loads `WebGPUGPUCuller` + `FrustumCull.wgsl`.
- *   - `getGpuCullerForOpaqueFrustum(host, idx)` — per-frustum culler pool
- *     (NEW-MULTIFRUSTUM-CULL-RESULTS, Batch 220). Frustum 0 reuses the main
- *     culler; 1..N get their own instances so same-encoder `prepareReadback`
- *     calls don't clobber each other's staging buffers.
- *   - `getGpuCullerForCascade(host, idx)` — per-cascade CSM-shadow culler pool
- *     (NEW-SHADOW-CAST-GPU-CULL, Batch 221).
- *   - `getGpuCullerTranslucent(host)` — dedicated translucent-pass culler
- *     (B216-N1, Batch 218).
- *   - `reapIdleAuxCullers(host)` — idle-decay reaper (NEW-AUX-CULLER-IDLE-DECAY,
- *     Batch 229). Destroys instances idle >= IDLE_DECAY_FRAMES.
- *   - `reapAllAuxCullers(host)` — immediate teardown of every aux culler
- *     (B225-N1, Batch 230). Used by `setGpuCullingHint('never')`.
+ *   - `getGpuCuller(host)` — lazily initialize the main opaque frustum culler
+ *     (frustum 0). Async-loads `WebGPUGPUCuller` and `FrustumCull.wgsl`.
+ *   - `getGpuCullerForOpaqueFrustum(host, idx)` — per-frustum culler pool.
+ *     Frustum 0 reuses the main culler; 1..N get their own instances so
+ *     same-encoder `prepareReadback` calls do not clobber each other's staging
+ *     buffers.
+ *   - `getGpuCullerForCascade(host, idx)` — per-cascade CSM-shadow culler pool.
+ *   - `getGpuCullerTranslucent(host)` — dedicated translucent-pass culler.
+ *   - `reapIdleAuxCullers(host)` — idle-decay reaper. Destroys instances idle
+ *     for at least `IDLE_DECAY_FRAMES`.
+ *   - `reapAllAuxCullers(host)` — immediate teardown of every auxiliary
+ *     culler, used by `setGpuCullingHint('never')`.
  *
- * The extraction is behavior-preserving: the `WebGPUContext` getters/methods of
- * the same names become one-line delegators; the moved bodies are byte-for-byte
- * equivalent (identical lazy-import paths, identical debug pragmas, identical
- * device-loss re-touch ordering, identical defensive caps). Culling is opt-in
- * and gated (`_gpuCullingHint`, feature-renderer gates). FAR-003 changes the
- * default to `'never'`, so merely touching the getter chain cannot allocate a
- * culler until the owning Scene explicitly selects `auto` or `always`.
+ * Culling is opt-in and gated by `_gpuCullingHint` and the feature-renderer
+ * gates, and the hint defaults to `'never'`, so touching the getter chain
+ * cannot allocate a culler until the owning Scene selects `auto` or `always`.
  *
  * @module WebGPUContextCullerPool
  */
@@ -50,17 +43,16 @@ export interface GPUCullerInstance {
 }
 
 /**
- * B220-O1 (Batch 225) — defensive cap on auxiliary culler allocation. Real
- * Cesium scenes top out at 6 frustums + 4 CSM cascades; 16 is a generous
- * safety bound. Without this cap a malformed scene that reports an
- * unreasonable `frustumCommandsList.length` could allocate hundreds of
- * cullers (~1 MB VRAM each).
+ * Defensive cap on auxiliary culler allocation. Real Cesium scenes top out at
+ * six frustums plus four CSM cascades, so 16 is a generous bound. Without the
+ * cap a malformed scene reporting an unreasonable `frustumCommandsList.length`
+ * allocates hundreds of cullers at roughly 1 MB of VRAM each.
  */
 export const MAX_AUX_CULLER_INDEX = 16;
 
 /**
- * NEW-AUX-CULLER-IDLE-DECAY (Batch 229) — reap auxiliary cullers idle for
- * this many internal frames. ≈10s at 60fps.
+ * Reap auxiliary cullers idle for this many internal frames, about 10 seconds
+ * at 60 fps.
  */
 export const IDLE_DECAY_FRAMES = 600;
 
@@ -100,7 +92,7 @@ export interface CullerPoolHost {
  * `.initialized`).
  */
 export function getGpuCuller(host: CullerPoolHost): GPUCullerInstance | null {
-  // Batch 229 — touch usage timestamp for idle-decay reaper.
+  // Touch the usage timestamp for the idle-decay reaper.
   host._gpuCullerLastUsed = host._internalFrameId;
   if (
     !host._gpuCuller &&
@@ -123,12 +115,11 @@ export function getGpuCuller(host: CullerPoolHost): GPUCullerInstance | null {
         .then(() => {
           host._gpuCuller = culler;
           host._gpuCullerInitializing = false;
-          // B229-N1 (Batch 230 audit) — re-touch LastUsed on resolve.
+          // Re-touch LastUsed on resolve.
           host._gpuCullerLastUsed = host._internalFrameId;
-          // B219-A1 (Batch 225 audit fix) — clear on device loss
-          // so the lazy getter re-creates against the recovered
-          // device. Without this the JS instance persists with
-          // dead GPU buffer handles and next dispatch fails.
+          // Clear on device loss so the lazy getter re-creates against the
+          // recovered device. Without this the JS instance persists with dead
+          // GPU buffer handles and the next dispatch fails.
           host.onDeviceInvalidated(() => {
             host._gpuCuller = null;
           });
@@ -148,8 +139,8 @@ export function getGpuCuller(host: CullerPoolHost): GPUCullerInstance | null {
 }
 
 /**
- * NEW-MULTIFRUSTUM-CULL-RESULTS (Batch 220) — return the GPU culler instance
- * for opaque-pass frustum `idx`. Frustum 0 reuses the original `gpuCuller` so
+ * Return the GPU culler instance for opaque-pass frustum `idx`. Frustum 0
+ * reuses the original `gpuCuller` so
  * single-frustum scenes don't pay extra VRAM; frustums 1..N get their own
  * lazy-init instances so their `prepareReadback` calls in the same encoder
  * don't clobber each other's staging buffers.
@@ -162,15 +153,14 @@ export function getGpuCullerForOpaqueFrustum(
 ): GPUCullerInstance | null {
   if (idx === 0) return getGpuCuller(host);
   if (!host._device || host._isDestroyed) return null;
-  // B219-N3 (Batch 225) — refuse allocation when hint forbids.
+  // Refuse allocation when the hint forbids it.
   if (host._gpuCullingHint === "never") return null;
-  // B220-O1 (Batch 225) — defensive cap. Real Cesium scenes top
-  // out at ~6 frustums (`Scene.farToNearRatio` driven; typical
-  // 1-4 with log-depth, up to 6 without). Refuse allocation
-  // beyond a sane max so a runaway value (bug or malformed
-  // input) can't burn unbounded VRAM.
+  // Defensive cap. Real Cesium scenes top out around six frustums, driven by
+  // `Scene.farToNearRatio` — typically one to four with log depth, up to six
+  // without. Refusing allocation beyond a sane maximum keeps a runaway value
+  // from burning unbounded VRAM.
   if (idx >= MAX_AUX_CULLER_INDEX) return null;
-  // Batch 229 — touch usage timestamp for idle-decay reaper.
+  // Touch the usage timestamp for the idle-decay reaper.
   host._gpuCullerByFrustumLastUsed.set(idx, host._internalFrameId);
   if (host._gpuCullerByFrustum.has(idx)) {
     return host._gpuCullerByFrustum.get(idx) ?? null;
@@ -191,14 +181,12 @@ export function getGpuCullerForOpaqueFrustum(
       .then(() => {
         host._gpuCullerByFrustum.set(idx, culler);
         host._gpuCullerByFrustumInitializing.delete(idx);
-        // B229-N1 (Batch 230 audit) — re-touch LastUsed on
-        // resolve so post-init reaper iterations see the slot.
-        // The first-call `set` happened at INVOKE time; if the
-        // reaper fired between invoke + resolve it would have
-        // deleted that entry, leaving the freshly-installed
-        // instance orphaned in the reap walk.
+        // Re-touch LastUsed on resolve so a post-init reaper iteration sees
+        // the slot. The first `set` happens at invoke time, and a reaper that
+        // fires between invoke and resolve deletes that entry, leaving the
+        // freshly installed instance orphaned in the reap walk.
         host._gpuCullerByFrustumLastUsed.set(idx, host._internalFrameId);
-        // B219-A1 (Batch 225) — clear on device loss.
+        // Clear on device loss.
         host.onDeviceInvalidated(() => {
           host._gpuCullerByFrustum.delete(idx);
         });
@@ -217,27 +205,27 @@ export function getGpuCullerForOpaqueFrustum(
 }
 
 /**
- * NEW-SHADOW-CAST-GPU-CULL Phase 1 (Batch 221) — per-cascade GPU culler
- * instances for CSM shadow cast. Each cascade gets its own `_visibilityBuffer`
- * + `_readbackBuffer` so the per-cascade `prepareReadback` calls don't collide
- * in the same encoder. Lazy-init on first request per cascade index.
+ * Per-cascade GPU culler instances for the CSM shadow cast. Each cascade gets
+ * its own `_visibilityBuffer` and `_readbackBuffer` so the per-cascade
+ * `prepareReadback` calls do not collide in one encoder. Lazily initialized on
+ * the first request per cascade index.
  *
- * Phase 2 (Batches 225-230) wired the live dispatch — `WebGPUCSMCastPass`
- * packs per-cascade cull planes, runs the hysteresis gate, dispatches this
- * culler, and filters the cast list by the prior-frame readback.
+ * `WebGPUCSMCastPass` packs per-cascade cull planes, runs the hysteresis gate,
+ * dispatches this culler, and filters the cast list by the prior frame's
+ * readback.
  */
 export function getGpuCullerForCascade(
   host: CullerPoolHost,
   idx: number,
 ): GPUCullerInstance | null {
   if (!host._device || host._isDestroyed) return null;
-  // B219-N3 (Batch 225) — refuse allocation when hint forbids.
+  // Refuse allocation when the hint forbids it.
   if (host._gpuCullingHint === "never") return null;
-  // B220-O1 (Batch 225) — defensive cap. CSM cascades top out
-  // at 4 in stock Cesium; the cap matches frustum cap for
-  // simplicity. See `getGpuCullerForOpaqueFrustum`.
+  // Defensive cap. CSM cascades top out at four in stock Cesium; the cap
+  // matches the frustum cap for simplicity. See
+  // `getGpuCullerForOpaqueFrustum`.
   if (idx < 0 || idx >= MAX_AUX_CULLER_INDEX) return null;
-  // Batch 229 — touch usage timestamp for idle-decay reaper.
+  // Touch the usage timestamp for the idle-decay reaper.
   host._gpuCullerByCascadeLastUsed.set(idx, host._internalFrameId);
   if (host._gpuCullerByCascade.has(idx)) {
     return host._gpuCullerByCascade.get(idx) ?? null;
@@ -258,9 +246,9 @@ export function getGpuCullerForCascade(
       .then(() => {
         host._gpuCullerByCascade.set(idx, culler);
         host._gpuCullerByCascadeInitializing.delete(idx);
-        // B229-N1 (Batch 230 audit) — re-touch LastUsed on resolve.
+        // Re-touch LastUsed on resolve.
         host._gpuCullerByCascadeLastUsed.set(idx, host._internalFrameId);
-        // B219-A1 (Batch 225) — clear on device loss.
+        // Clear on device loss.
         host.onDeviceInvalidated(() => {
           host._gpuCullerByCascade.delete(idx);
         });
@@ -279,15 +267,15 @@ export function getGpuCullerForCascade(
 }
 
 /**
- * B216-N1 (Batch 218 audit fix) — second GPU frustum culler used exclusively
- * for the translucent pass. Gives translucent its own `_visibilityBuffer` +
+ * Second GPU frustum culler, used exclusively for the translucent pass. Gives
+ * translucent its own `_visibilityBuffer` and
  * `_readbackBuffer` so its `prepareReadback` doesn't clobber the opaque pass's
  * pending readback in the same encoder. Same lazy-init pattern as `gpuCuller`.
  */
 export function getGpuCullerTranslucent(
   host: CullerPoolHost,
 ): GPUCullerInstance | null {
-  // Batch 229 — touch usage timestamp for idle-decay reaper.
+  // Touch the usage timestamp for the idle-decay reaper.
   host._gpuCullerTranslucentLastUsed = host._internalFrameId;
   if (
     !host._gpuCullerTranslucent &&
@@ -310,9 +298,9 @@ export function getGpuCullerTranslucent(
         .then(() => {
           host._gpuCullerTranslucent = culler;
           host._gpuCullerTranslucentInitializing = false;
-          // B229-N1 (Batch 230 audit) — re-touch LastUsed on resolve.
+          // Re-touch LastUsed on resolve.
           host._gpuCullerTranslucentLastUsed = host._internalFrameId;
-          // B219-A1 (Batch 225) — clear on device loss.
+          // Clear on device loss.
           host.onDeviceInvalidated(() => {
             host._gpuCullerTranslucent = null;
           });
@@ -332,13 +320,12 @@ export function getGpuCullerTranslucent(
 }
 
 /**
- * NEW-AUX-CULLER-IDLE-DECAY (Batch 229) — destroy auxiliary culler instances
- * idle for >= IDLE_DECAY_FRAMES. Called at IDLE_DECAY_CHECK_INTERVAL-frame
- * intervals from `beginFrame()`.
+ * Destroy auxiliary culler instances idle for at least `IDLE_DECAY_FRAMES`.
+ * Called at `IDLE_DECAY_CHECK_INTERVAL`-frame intervals from `beginFrame()`.
  *
- * Sweep order: per-frustum (idx >= 1, since 0 reuses _gpuCuller), per-cascade,
- * then translucent culler, then the main _gpuCuller. Each destroy nullifies
- * the slot so the lazy getter reallocates on demand.
+ * Sweep order: per-frustum for `idx >= 1`, since 0 reuses `_gpuCuller`, then
+ * per-cascade, then the translucent culler, then the main `_gpuCuller`. Each
+ * destroy nullifies its slot so the lazy getter reallocates on demand.
  */
 export function reapIdleAuxCullers(host: CullerPoolHost): void {
   const now = host._internalFrameId;
@@ -409,10 +396,9 @@ export function reapIdleAuxCullers(host: CullerPoolHost): void {
 }
 
 /**
- * B225-N1 (Batch 230 audit fix) — destroy every auxiliary culler instance
- * immediately. Used by `setGpuCullingHint('never')` to honor the opt-out
- * without waiting for idle-decay. Distinct from `reapIdleAuxCullers`
- * (Batch 229) which is selective by last-used age.
+ * Destroy every auxiliary culler instance immediately. Used by
+ * `setGpuCullingHint('never')` to honour the opt-out without waiting for idle
+ * decay, unlike `reapIdleAuxCullers`, which is selective by last-used age.
  */
 export function reapAllAuxCullers(host: CullerPoolHost): void {
   for (const culler of host._gpuCullerByFrustum.values()) {

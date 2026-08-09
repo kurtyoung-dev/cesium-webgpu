@@ -101,12 +101,12 @@ const defaultCreationHooks: ContextCreationHooks = {
     return new Context(canvas, options);
   },
   async createWebGPU(canvas, options) {
-    // C10-06 Step B (INV-06-1) — kick GPU-process adapter negotiation BEFORE
-    // awaiting the ~3 MB WebGPU chunk import so the two slow lanes overlap
-    // instead of running serially. `WebGPUDevicePool.acquireDevice` consumes
-    // this in-flight promise and falls back to its own `requestAdapter` on any
-    // mismatch/rejection (conservative). Only reached on the WebGPU path, so it
-    // never spuriously wakes the GPU process on a WebGL-only page (T-06-e).
+    // Kick GPU-process adapter negotiation before awaiting the WebGPU chunk
+    // import, so the two slow lanes overlap instead of running serially.
+    // `WebGPUDevicePool.acquireDevice` consumes this in-flight promise and
+    // falls back to its own `requestAdapter` on any mismatch or rejection.
+    // Only reached on the WebGPU path, so it never spuriously wakes the GPU
+    // process on a WebGL-only page.
     let prefetchedAdapter: Promise<GPUAdapter | null> | undefined;
     try {
       const powerPreference: GPUPowerPreference =

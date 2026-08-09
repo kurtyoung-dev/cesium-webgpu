@@ -1,8 +1,7 @@
 /**
  * Strategy B: WebGPU Device Sharing — One GPUDevice, Multiple Canvases.
  *
- * AUDIT_2026_05_02 C.1 — **Status: ACTIVE (adopted Batch 135).**
- * `WebGPUContext._initialize` routes adapter + device acquisition
+ * `WebGPUContext._initialize` routes adapter and device acquisition
  * through `WebGPUDevicePool.instance.acquireDevice(...)`. The pool owns
  * the adaptive limit / feature negotiation that used to live inline in
  * the context init: it inspects the adapter's exposed ceilings, scales
@@ -10,8 +9,7 @@
  * `WebGPUFeatureFlags.DESIRED_FEATURES` list with any user-supplied
  * `requiredFeatures` before calling `requestDevice`.
  *
- * Batch 135 re-audit fixes (Path A — full correctness on the
- * capability-keyed sharing model):
+ * The capability-keyed sharing model rests on four properties:
  *
  *   1. **Concurrent-acquire race**: in-flight `_pendingPrimary` Promise
  *      dedups concurrent first-time acquires. Without this, two
@@ -97,8 +95,6 @@ import { RendererInitializationError } from "../RendererType.js";
  * fits within the per-cap limit and the cap leaves headroom for the
  * next-tier expansion without re-tuning per-stage budgets.
  *
- * Origin: `WebGPUContext._initialize` adaptive opt-in block (2026-04-30).
- * Hoisted to `WebGPUDevicePool` in Batch 135 per AUDIT_2026_05_02 C.1.
  */
 const ADAPTIVE_LIMIT_CAPS: Readonly<Record<string, number>> = Object.freeze({
   maxSampledTexturesPerShaderStage: 64,
@@ -150,9 +146,8 @@ const SPEC_DEFAULT_LIMITS: Readonly<Record<string, number>> = Object.freeze({
  * any limit the user might pass (not just the ones we adaptively
  * negotiate). Sourced from the `GPUSupportedLimits` interface in the
  * WebGPU spec (current as of 2026-04-30); re-verify on spec revisions.
- *
- * Audit fix #4 (Batch 135) — previously only 9 limits were snapshotted,
- * leaving silent compat gaps for the other ~20.
+ * Snapshotting only the adaptively negotiated subset leaves silent compat
+ * gaps for every other limit a user might pass.
  */
 const ALL_WEBGPU_LIMITS: readonly string[] = Object.freeze([
   "maxTextureDimension1D",
@@ -250,8 +245,8 @@ export interface DeviceAcquisitionOptions {
   forceNewDevice?: boolean;
 
   /**
-   * C10-06 Step B — an in-flight `requestAdapter()` promise the caller kicked
-   * off before the WebGPU chunk was parsed (see `ContextFactory.createWebGPU`).
+   * An in-flight `requestAdapter()` promise the caller kicked
+   * off before the WebGPU chunk was parsed; see `ContextFactory.createWebGPU`.
    * When present and it resolves to a usable adapter, `_createNewDevice`
    * reuses it instead of issuing its own serial `requestAdapter`, overlapping
    * GPU-process negotiation with chunk parse. Consumed ONLY on the `"core"`
@@ -348,9 +343,8 @@ function snapshotLimits(
  *     `<=` required value (a primary requiring alignment of 32
  *     satisfies a candidate that can tolerate `<=64`).
  *
- * Audit fix #4 (Batch 135) — adds min-style handling. Previously all
- * limits used `enabled >= required`, which was wrong for the two
- * min-style alignment limits.
+ * Applying `enabled >= required` to every limit is wrong for the two
+ * min-style alignment limits, hence the split.
  */
 function limitsAreCompatible(
   required: Record<string, number> | undefined,
@@ -402,7 +396,7 @@ export class WebGPUDevicePool {
   private _additionalDevices: PooledDevice[] = [];
 
   /**
-   * Audit fix #1 (Batch 135) — in-flight Promise for primary device
+   * In-flight Promise for primary device
    * creation. Set when the first acquireDevice call starts creating the
    * primary; cleared when creation resolves (success or failure).
    * Concurrent acquireDevice callers see this set and await it instead
@@ -464,11 +458,10 @@ export class WebGPUDevicePool {
       return await this._createNewDevice(opts, false);
     }
 
-    // Audit fix #1 (Batch 135) — if a primary creation is in flight,
-    // wait for it then re-enter so we re-evaluate against the
-    // (now-resolved) primary. This prevents the race where two
+    // If a primary creation is in flight, wait for it and re-enter so the
+    // evaluation happens against the resolved primary. Without this, two
     // concurrent first-time acquires both observe `_primaryDevice ===
-    // null` and both kick off their own _createNewDevice. The
+    // null` and both kick off their own `_createNewDevice`. The
     // re-entrant call path picks up the freshly-created primary on the
     // sharing path and increments refcount the normal way.
     if (this._pendingPrimary) {
@@ -487,7 +480,7 @@ export class WebGPUDevicePool {
     // needing a larger maxBufferSize than the primary's negotiated
     // value. featureLevel must match exactly because "core" and
     // "compatibility" expose fundamentally different adapter
-    // capability sets (audit fix #2, Batch 135).
+    // capability sets.
     //
     // Acknowledged race window: between the browser's internal
     // device-loss decision and the resolution of `device.lost`
@@ -522,7 +515,7 @@ export class WebGPUDevicePool {
       }
     }
 
-    // Audit fix #3 (Batch 135) — treat lost primary as missing for
+    // Treat a lost primary as missing for
     // promotion. Without this, a primary that's been marked lost stays
     // in the slot and every subsequent acquire takes the
     // `isPrimary=false` branch, relegating new devices to
@@ -531,8 +524,8 @@ export class WebGPUDevicePool {
       this._primaryDevice === null || this._primaryDevice.isLost;
 
     if (isPrimary) {
-      // Audit fix #1 (Batch 135) — capture the in-flight Promise so
-      // concurrent callers can dedup. Resolved Promise is cleared in
+      // Capture the in-flight Promise so concurrent callers can dedup. The
+      // resolved Promise is cleared in
       // the finally to allow subsequent acquires after this one
       // completes.
       this._pendingPrimary = this._createNewDevice(opts, true);
@@ -547,7 +540,7 @@ export class WebGPUDevicePool {
   }
 
   /**
-   * Audit fix #5 (Batch 135) — recovery entry point used by
+   * Recovery entry point used by
    * `WebGPUDeviceLossRecovery` after a pool-managed device is lost.
    * Routes through the pool so concurrent per-context recoveries
    * deduplicate: the first recovering context creates the new shared
@@ -726,13 +719,11 @@ export class WebGPUDevicePool {
           (adapter.limits as unknown as Record<string, number>)[name] ??
           SPEC_DEFAULT_LIMITS[name];
         const specDefault = SPEC_DEFAULT_LIMITS[name];
-        // Batch 152 — maxBindGroups opt-up reverted. The probe environment
-        // (Chromium on Windows, both D3D12 + Vulkan backends) caps
-        // maxBindGroups at the spec default of 4. Forward+ clustered
-        // lighting's planned @group(4) addition can't land as a separate
-        // bind group on this platform; the eventual integration must
-        // merge clustered lighting bindings into one of the existing
-        // 4 groups (camera/material/instance/effects) instead. Falls
+        // `maxBindGroups` is not opted up. Chromium on Windows, on both the
+        // D3D12 and Vulkan backends, caps it at the spec default of 4, so
+        // Forward+ clustered lighting cannot add a separate `@group(4)`
+        // there; its bindings have to merge into one of the existing four
+        // groups (camera, material, instance, effects). Falls
         // through to the generic "opt up only when adapter exceeds
         // spec default" branch below.
         if (adapterValue > specDefault) {
@@ -774,10 +765,10 @@ export class WebGPUDevicePool {
 
     let adapter: GPUAdapter | null = null;
 
-    // C10-06 Step B: reuse a prefetched adapter when one was handed in and the
-    // request is core (compatibility needs its own adapter — different
-    // capability set). A rejection or null falls through to the pool's own
-    // `requestAdapter` below (conservative — never force a mismatched prefetch).
+    // Reuse a prefetched adapter when one was handed in and the request is
+    // core; a compatibility request needs its own adapter because the
+    // capability set differs. A rejection or null falls through to the pool's
+    // own `requestAdapter` below rather than forcing a mismatched prefetch.
     if (opts.prefetchedAdapter && opts.featureLevel !== "compatibility") {
       try {
         adapter = await opts.prefetchedAdapter;
@@ -836,17 +827,17 @@ export class WebGPUDevicePool {
       enabledLimits,
       featureLevel,
       // Snapshot the originating options so recovery can re-negotiate
-      // with the same parameters. Audit fix #5 (Batch 135). C10-06 Step B:
-      // strip `prefetchedAdapter` — an adapter is single-use, so device-loss
-      // recovery must always issue a fresh `requestAdapter` rather than await
-      // the already-consumed prefetch promise (T-06-f).
+      // with the same parameters. `prefetchedAdapter` is stripped: an adapter
+      // is single-use, so device-loss recovery must issue a fresh
+      // `requestAdapter` rather than await the already-consumed prefetch
+      // promise.
       originalOptions: { ...opts, prefetchedAdapter: undefined },
       isLost: false,
       isIntentionallyDestroyed: false,
     };
 
-    // Listen for device loss. Audit fix #3 (Batch 135) — clear the
-    // primary slot when the lost device IS the primary so subsequent
+    // Listen for device loss and clear the
+    // primary slot when the lost device is the primary, so subsequent
     // acquires promote a fresh device into the slot. Other contexts
     // still hold pool references to the lost device; their
     // `releaseDevice` calls fall through to no-ops (device not in

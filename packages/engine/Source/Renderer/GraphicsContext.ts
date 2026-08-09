@@ -334,7 +334,7 @@ export interface FeatureRenderer {
   composite?(...args: unknown[]): void;
 
   /**
-   * C-R9-VOXEL-CELL-PICK-TAIL — resolve a keyframe-node handle for a picked
+   * Resolve a keyframe-node handle for a picked
    * tile index. Implemented by the WebGPU voxel renderer so `Scene.pickVoxel`
    * can build a `VoxelCell` without the CPU-side `VoxelTraversal` that only the
    * WebGL path constructs. Returns undefined when no tile resolves.
@@ -342,7 +342,7 @@ export interface FeatureRenderer {
   getPickKeyframeNode?(primitive: unknown, tileIndex: number): unknown;
 
   /**
-   * C11-213 (`UP144-VECTOR-LAYER-WGSL`) — realize a terrain tile's baked
+   * Realize a terrain tile's baked
    * clamped vector-polyline lookup (`VectorTileData`) into backend-native GPU
    * resources, hung off the data object.
    *
@@ -578,14 +578,13 @@ export interface GraphicsContextOptions {
   /**
    * WebGPU-renderer-specific opt-in quality options. Every field here
    * defaults to the WebGL-parity behavior — the off path is byte-neutral.
-   * See `migration_doc/ATMOSPHERE_CLOUD_IMPROVEMENT_PLAN.md`.
    */
   webgpu?: WebGPURendererOptions;
 }
 
 /**
- * Opt-in WebGPU renderer quality flags. Defaults reproduce today's
- * WebGL-parity pixels exactly (Batch 426, atmosphere/cloud plan Phase 1).
+ * Opt-in WebGPU renderer quality flags. Defaults reproduce the WebGL-parity
+ * pixels exactly.
  */
 export interface WebGPURendererOptions {
   /**
@@ -625,41 +624,40 @@ export interface WebGPURendererOptions {
   envMapMultiScatter?: boolean;
 
   /**
-   * C2-25 ENV-SCENE-CAPTURE (Batch 446). When true, AND a
+   * When true, and when a
    * {@link DynamicEnvironmentMapManager} has `enableSceneCapture = true`, the
    * dynamic environment cube is refreshed each update by rendering the opaque
-   * globe surface (later: 3D Tiles + glTF) into its 6 faces from 6 ENU
-   * cube-face cameras centered on the reflective owner — so terrain shows up in
-   * water / PBR reflections rather than only the procedural sky. Default
-   * `false` runs ZERO extra GPU passes and leaves the env cube filled solely by
-   * the procedural sky (byte-identical to the shipped parity path). Read by
+   * globe surface into its six faces from six ENU cube-face cameras centred on
+   * the reflective owner, so terrain shows up in water and PBR reflections
+   * rather than only the procedural sky. The default `false` adds no GPU
+   * passes and leaves the env cube filled solely by the procedural sky. Read by
    * `WebGPUDynamicEnvironmentMapManager`.
    * @default false
    */
   sceneCaptureReflections?: boolean;
 
   /**
-   * C2-25 ENV-TEMPORAL (Batch 449). When true, the dynamic environment cube is
-   * temporally accumulated: a history cube + an exponential-moving-average
-   * blend pass is inserted between the cube capture (procedural sky +
-   * optional scene-capture composite) and the IBL mip/prefilter + SH
-   * projection. The env map then crossfades smoothly on small sun/camera
-   * change (no popping between debounced refreshes) and amortizes the 6-face
-   * capture across frames — the temporal SUBSTRATE that later makes
-   * clouds-in-reflections (3-C) affordable. On a LARGE sun or camera delta the
-   * history is reset (blend α=1 that frame) so the env map can't smear across
-   * a big change. A static scene converges to the same look as OFF (the EMA
-   * fixed point of the deterministic capture). Default `false` allocates NO
-   * history cube and runs NO blend pass — the cube flows straight to the
-   * prefilter (byte-identical to the shipped parity path). Read by
+   * When true, the dynamic environment cube is accumulated temporally: a
+   * history cube and an exponential-moving-average blend pass sit between the
+   * cube capture — procedural sky plus any scene-capture composite — and the
+   * IBL mip prefilter and SH projection. The env map then crossfades smoothly
+   * on a small sun or camera change, instead of popping between debounced
+   * refreshes, and amortizes the six-face capture across frames, which is what
+   * makes a per-face cloud raymarch affordable. A large sun or camera delta
+   * resets the history, blending at α = 1 for that frame, so the env map
+   * cannot smear across the change. A static scene converges to the same look
+   * as the off path, since that is the EMA fixed point of a deterministic
+   * capture. The default `false` allocates no history cube and runs no blend
+   * pass, sending the cube straight to the prefilter. Read by
    * `WebGPUDynamicEnvironmentMapManager`.
    * @default false
    */
   envMapTemporalAccumulation?: boolean;
 
   /**
-   * C2-25 item 3-C ENV-CLOUDS / CLOUD-IBL-FULL (Batch 450). When true, the
-   * dynamic environment cube's procedural sky fill runs a LOW-RES per-face
+   * When true, the
+   * dynamic environment cube's procedural sky fill runs a low-resolution
+   * per-face
    * procedural cloud raymarch (reusing the baked cloud shape/detail noise +
    * the same `cloudDensity` model the visible volumetric clouds use) and
    * composites it OVER the sky BEFORE the IBL prefilter + SH projection. An
@@ -1001,17 +999,16 @@ export abstract class GraphicsContext {
 
   /**
    * Capability getter for the encoding of the packed pick-depth texture this
-   * context publishes to `PickDepth` (NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION,
-   * Batch 252).
+   * context publishes to `PickDepth`.
    *
-   * `true` means ONE packed depth texture is shared by all frustum slices and
-   * its values are LOGARITHMIC depth encoded against the FULL camera frustum
-   * (`log2(eyeDistFromNear + 1) / log2(far - near + 1)` with the persistent
-   * `scene.camera.frustum` near/far — the renderer-wide log-depth convention
-   * of Batches 249-251). `Picking.pickPositionWorldCoordinates` uses this to
-   * pick the full-frustum reconstruction path instead of the per-frustum-slice
-   * loop (per-slice near/far against a full-frustum encode produced the
-   * ~85,000 km antipode garbage of Batch 221).
+   * `true` means one packed depth texture is shared by all frustum slices and
+   * its values are logarithmic depth encoded against the full camera frustum:
+   * `log2(eyeDistFromNear + 1) / log2(far - near + 1)` against the persistent
+   * `scene.camera.frustum` near and far, the renderer-wide log-depth
+   * convention. `Picking.pickPositionWorldCoordinates` uses this to select the
+   * full-frustum reconstruction path instead of the per-frustum-slice loop;
+   * decoding a full-frustum encode with per-slice near/far reconstructs
+   * positions tens of thousands of kilometres away.
    *
    * Default `false` (WebGL packs per-slice depth into per-slice PickDepth
    * framebuffers, reconstructed per slice); WebGPU overrides to mirror its
@@ -1031,8 +1028,6 @@ export abstract class GraphicsContext {
    * to store the request for the env-effects phase to consume via
    * {@link GraphicsContext#consumeVolumetricCloudRequest}.
    *
-   * Nothing calls this yet — the publish/consume wiring lands in a later slice
-   * of the epic. See migration_doc/CLOUD_UNIFICATION_DESIGN.md §2.4.
    *
    * @param config - A {@link CloudVolumetrics}-shaped config snapshot for the
    *   frame's primary volumetric deck.
@@ -1322,7 +1317,6 @@ export abstract class GraphicsContext {
    *
    * Mirrors the {@link WebGPUContext#onDeviceLost} callback chain but
    * focuses on cache invalidation rather than "stop drawing" semantics.
-   * Fix sketch: **C-R12** of the Renderer-Deep principal-engineer review.
    *
    * @param _callback Called once per device-loss event before the
    *   recovery path attempts to resume rendering.
@@ -1488,8 +1482,7 @@ export abstract class GraphicsContext {
   }
 
   /**
-   * UP144-SNAP-WEBGPU (C11-212) — creates a backend-appropriate snap
-   * framebuffer for {@link Scene#snap}.
+   * Creates a backend-appropriate snap framebuffer for {@link Scene#snap}.
    *
    * WebGL: returns null (`Snapping.js` falls back to `SnapFramebuffer`).
    * WebGPU: returns a `WebGPUSnapFramebuffer` instance.

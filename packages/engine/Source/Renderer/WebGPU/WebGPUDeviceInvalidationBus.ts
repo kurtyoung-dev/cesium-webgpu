@@ -1,17 +1,10 @@
 /**
  * Subscriber bus for device-invalidation events on a WebGPU context.
  *
- * Extracted from `WebGPUContext._deviceInvalidatedListeners` /
- * `onDeviceInvalidated` / `_fireDeviceInvalidated` as Batch 130 of
- * the audit-recommended Context decomposition. See
- * `migration_doc/WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md` for the
- * roadmap and `migration_doc/BATCH_130_PLAN_DEVICE_INVALIDATION_BUS.md`
- * for this specific extraction.
- *
- * Originally landed under C-R12 (Batch 33). The bus fires once per
- * device-loss event after the Context-owned caches drop their stale
- * GPU handles, giving subscribed subsystems a single hook to do the
- * same with their private caches.
+ * Backs `WebGPUContext.onDeviceInvalidated` and
+ * `_fireDeviceInvalidated`. The bus fires once per device-loss event, after
+ * the Context-owned caches drop their stale GPU handles, giving subscribed
+ * subsystems a single hook to do the same with their private caches.
  *
  * Subscriber errors are caught + logged so one failing subsystem
  * doesn't block the rest from cleaning up. The error log includes

@@ -2,20 +2,15 @@
  * Device-loss host-adapter builder extracted from
  * `WebGPUContext._setupDeviceLostHandler`.
  *
- * Batch 143 of the audit-recommended Context decomposition. The
- * heavy lifting for device-loss recovery already lives in
- * `WebGPUDeviceLossRecovery.ts` (~150 LOC of recovery logic). This
- * batch peels off the host-adapter literal that the Context's
- * `_setupDeviceLostHandler` builds — a 30-line state-proxy
- * construction that maps the recovery class's
+ * The recovery logic itself lives in `WebGPUDeviceLossRecovery.ts`; what sits
+ * here is the host-adapter literal, a state proxy mapping that class's
  * {@link DeviceLossRecoveryHost} interface onto the Context's
  * underscore-prefixed fields and methods.
  *
- * Extraction shape mirrors Batch 129's WebGL-stub builder: a
- * `WebGPUDeviceLossHost` interface that a Context-like object
- * satisfies, plus a `buildDeviceLossRecoveryFor(host)` function
- * that produces the live state-proxy and wraps it in a fresh
- * `WebGPUDeviceLossRecovery` instance.
+ * The shape mirrors the WebGL-stub builder: a `WebGPUDeviceLossHost`
+ * interface a Context-like object satisfies, plus a
+ * `buildDeviceLossRecoveryFor(host)` function that produces the live state
+ * proxy and wraps it in a fresh `WebGPUDeviceLossRecovery` instance.
  *
  * The Context's own `_setupDeviceLostHandler` becomes a 3-line
  * delegator. `_reconfigureCanvas`, `onDeviceLost`, `deviceLossState`,
@@ -42,8 +37,8 @@ export interface WebGPUDeviceLossHost {
   _adapter: GPUAdapter | null;
   _device: GPUDevice | null;
   /**
-   * AUDIT_2026_05_02 C.1 audit fix #5 (Batch 135) — read by the
-   * recovery class to decide between pool-routed recovery (when true)
+   * Read by the recovery class to decide between pool-routed recovery
+   * (when true)
    * and the legacy direct `adapter.requestDevice` path (when false).
    * Recovery's `_setDevice` callback updates this flag based on which
    * path was taken so the destroy path consults it correctly.
@@ -123,8 +118,7 @@ export function buildDeviceLossRecoveryFor(
     },
     _setDevice: (d: GPUDevice | null) => {
       host._device = d;
-      // AUDIT_2026_05_02 C.1 audit fix #5 (Batch 135) — recovery now
-      // routes through `WebGPUDevicePool` when the original device
+      // Recovery routes through `WebGPUDevicePool` when the original device
       // was pool-managed (the common case). The pool's `acquireDevice`
       // handles the dedup of concurrent per-context recoveries: the
       // first recovering context creates the new shared primary;

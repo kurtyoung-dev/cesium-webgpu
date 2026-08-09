@@ -14,8 +14,8 @@ import {
 export interface WebGPUModelDeviceResources {
   /**
    * Group-0 view layout: camera at binding 0, model/view light at binding 1.
-   * C11-195 — BOTH declare `hasDynamicOffset`, so EVERY bind group built
-   * against it must be bound with a TWO-element dynamic-offset array ordered
+   * Both declare `hasDynamicOffset`, so every bind group built
+   * against it must be bound with a two-element dynamic-offset array ordered
    * by binding index (`[cameraOffset, lightOffset]`).
    * `WebGPUModelCameraArena` is the only sanctioned producer; see its module
    * docs for why the offsets are dynamic and why the light lives here rather
@@ -130,8 +130,9 @@ function createResources(device: GPUDevice): WebGPUModelDeviceResources {
   };
 
   try {
-    // C11-195 — dynamic-offset group 0. One bind group per ring page serves
-    // every model/node/IDL/capture camera AND light block on this device; the
+    // Dynamic-offset group 0. One bind group per ring page serves
+    // every model, node, IDL and capture camera and light block on this
+    // device; the
     // per-draw slices are selected by the offsets supplied at setBindGroup time.
     // `minBindingSize` makes a short binding a layout-creation error instead of
     // a silent out-of-range read in the vertex stage.

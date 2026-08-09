@@ -40,7 +40,7 @@ import ShaderCache from "../ShaderCache.js";
 import TextureCache from "../TextureCache.js";
 import { WebGPUShaderCache } from "./WebGPUShaderCache.js";
 import { WebGPURenderPipelineCache } from "./WebGPURenderPipelineCache.js";
-// C11-174 — type-only: bind-group cache counters surfaced by
+// Type-only: bind-group cache counters surfaced by
 // `getRendererStatistics()`. No runtime dependency on the cache module.
 import type { BindGroupCacheStats } from "./WebGPUBindGroupCache.js";
 import { AsyncResourceMonitor } from "./AsyncResourceMonitor.js";
@@ -55,11 +55,11 @@ import {
   type WebGPUTextureMipGenerationOptions,
 } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
-// C10-06 Step A: statically imported so the WGF-6 primitive-index utils cache
-// is populated synchronously during `_initialize` instead of paying an inline
+// Statically imported so the primitive-index utils cache is populated
+// synchronously during `_initialize` instead of paying an inline
 // dynamic-import round-trip serialized into every boot. The module is a pure
-// static-method class with zero top-level imports and no module-level side
-// effects, so folding it into the (already-lazy) WebGPU chunk is a net win.
+// static-method class with no top-level imports and no module-level side
+// effects, so folding it into the already-lazy WebGPU chunk costs nothing.
 import { WebGPUPrimitiveIndexUtils } from "./WebGPUPrimitiveIndexUtils.js";
 import { WebGPUPickFramebuffer } from "./WebGPUPickFramebuffer.js";
 import { WebGPUSnapFramebuffer } from "./WebGPUSnapFramebuffer.js";
@@ -95,11 +95,9 @@ import {
   type ViewportQuadCommand,
   type ViewportQuadCommandOptions,
 } from "./WebGPUViewportQuad.js";
-// `createWebGLCompatibilityStub` import retained for the `_gl` field's
-// `ReturnType<typeof ...>` annotation. The state-literal that used to
-// live in `_initializeWebGLStub` (and the `webglToWebGPU*` /
-// `WebGLStubState` symbols it consumed) moved to
-// `WebGPUContextWebGLStubInit.ts` in Batch 129.
+// `createWebGLCompatibilityStub` is imported for the `_gl` field's
+// `ReturnType<typeof ...>` annotation; the state literal it builds lives in
+// `WebGPUContextWebGLStubInit.ts`.
 import { createWebGLCompatibilityStub } from "./WebGLCompatibilityStub.js";
 import { buildWebGLCompatibilityStubFor } from "./WebGPUContextWebGLStubInit.js";
 import { WebGPUDeviceInvalidationBus } from "./WebGPUDeviceInvalidationBus.js";
@@ -120,15 +118,13 @@ import type {
   StubAttachment,
   StubBufferHandle,
 } from "./Stubs/WebGLStubTypes.js";
-// `DeviceLossRecoveryHost` no longer imported — the host literal that
-// used it moved to `WebGPUContextDeviceLoss.ts` in Batch 143.
+// `DeviceLossRecoveryHost` is not imported here: the host literal that uses it
+// lives in `WebGPUContextDeviceLoss.ts`.
 import {
   DeviceLossState,
   WebGPUDeviceLossRecovery,
   type DeviceLostCallback,
 } from "./WebGPUDeviceLossRecovery.js";
-// FORK-2 fix: WebGPUResourceManager and WebGPUPickManager were unused imports — removed.
-// They can be re-added when their intended usage is implemented.
 import { WebGPURenderBundleManager } from "./WebGPURenderBundleManager.js";
 import WebGPUComputeEngine from "./WebGPUComputeEngine.js";
 import { WebGPUTimestampProfiler } from "./WebGPUTimestampProfiler.js";
@@ -268,19 +264,17 @@ function supportsExternalImageCopyDestination(
   );
 }
 
-// `WebGPUFrameStatistics` interface moved to `WebGPUFrameStatistics.ts`
-// in Batch 144 (audit candidate #6). Imported below.
-
-// (ViewportQuadCommandOptions shape lives in WebGPUViewportQuad.ts and is
-// imported at the top of the file.)
+// The `WebGPUFrameStatistics` interface is declared in
+// `WebGPUFrameStatistics.ts` and imported above, as is the
+// `ViewportQuadCommandOptions` shape from `WebGPUViewportQuad.ts`.
 
 /** Shader source that can be a string or an object with _wgslCode. */
 type ShaderSource =
   string | { _wgslCode?: string; sources?: string[]; defines?: string[] };
 
-// `GPUCullerInstance` moved to `WebGPUContextCullerPool.ts` (Q35 decomposition
-// slice) and is imported type-only above. The culler-pool lazy-init +
-// idle-decay logic now lives in that module as host-interface free functions.
+// `GPUCullerInstance` is declared in `WebGPUContextCullerPool.ts` and imported
+// type-only above; the culler-pool lazy init and idle decay live there as
+// host-interface free functions.
 
 // Point cloud LOD processor contract — import the type-only reference
 // so TS knows the shape without eagerly pulling the 30KB compute-shader
@@ -302,7 +296,7 @@ interface CesiumClearCommand {
 }
 
 /**
- * C11-174 — minimal structural surface of `WebGPUPostProcessPipeline`
+ * Minimal structural surface of `WebGPUPostProcessPipeline`
  * consumed by `getRendererStatistics()` to expose the per-effect
  * bind-group cache counters. Registered by
  * `WebGPUSceneRendererEnsureResources` when the pipeline is (re)created.
@@ -323,8 +317,8 @@ interface PostProcessCacheStatsSource {
 export { DeviceLossState, type DeviceLostCallback };
 
 /**
- * Explicit classification of the currently-open render pass (C9-07 /
- * FAR-405-C0). Scene-FB pass opens declare "scene-framebuffer"; the
+ * Explicit classification of the currently-open render pass.
+ * Scene-FB pass opens declare "scene-framebuffer"; the
  * default swap-chain pass is "default-canvas"; every other custom pass
  * (shadow, pick, OIT, clear, post-process helpers, …) is "external".
  * The `clear()` guard keys off this instead of inferring from pass labels.
@@ -364,7 +358,7 @@ export interface WebGPUContextOptions extends GraphicsContextOptions {
   requiredLimits?: Record<string, number>;
 
   /**
-   * C10-06 Step B — an in-flight `requestAdapter()` promise kicked off by
+   * An in-flight `requestAdapter()` promise kicked off by
    * `ContextFactory.createWebGPU` *before* the ~3 MB WebGPU chunk is parsed,
    * so GPU-process adapter negotiation overlaps chunk parse/eval instead of
    * being gated behind it. Consumed by `WebGPUDevicePool.acquireDevice`; a
@@ -375,7 +369,7 @@ export interface WebGPUContextOptions extends GraphicsContextOptions {
   prefetchedAdapter?: Promise<GPUAdapter | null>;
 
   /**
-   * AUDIT_2026_05_02 C.1 (Batch 135) — when true (default), route
+   * When true (the default), route
    * adapter + device acquisition through `WebGPUDevicePool` so multi-
    * canvas scenarios (split-screen, multi-monitor, picture-in-picture)
    * share a single GPUDevice. Set to false to force a fresh device for
@@ -461,12 +455,11 @@ export class WebGPUContext extends GraphicsContext {
   // access the fields directly for performance. Marking public is honest
   // about the actual access pattern across the WebGPU renderer module.
   public _canvas: HTMLCanvasElement;
-  // Public underscore: shared with the device-loss host-adapter
-  // builder (Batch 143).
+  // Public underscore: shared with the device-loss host-adapter builder.
   public _adapter: GPUAdapter | null = null;
   public _device: GPUDevice | null = null;
   /**
-   * AUDIT_2026_05_02 C.1 (Batch 135) — true when `_device` was acquired
+   * True when `_device` was acquired
    * via `WebGPUDevicePool.acquireDevice`, false when an external caller
    * supplied the device directly (e.g., the recovery path that hands a
    * fresh device into the existing context). The destroy path uses this
@@ -476,32 +469,29 @@ export class WebGPUContext extends GraphicsContext {
    * device exclusively).
    */
   public _deviceFromPool: boolean = false;
-  // Public underscore: shared with the WebGL-stub state proxy (Batch 129
-  // extraction).
+  // Public underscore: shared with the WebGL-stub state proxy.
   public _context: GPUCanvasContext | null = null;
   public _presentationFormat: GPUTextureFormat = "bgra8unorm";
-  // HDR-DISPLAY (Batch 206) — when true, the canvas is configured with
+  // When true, the canvas is configured with
   // `format: 'rgba16float' + colorSpace: 'display-p3' + toneMapping:
-  // {mode: 'extended'}`. Driven by `Scene.useHDRCanvasOutput`. Toggle
-  // path clears the pipeline cache because every pipeline targeting
-  // the canvas format must be recompiled.
+  // {mode: 'extended'}`. Driven by `Scene.useHDRCanvasOutput`. Toggling it
+  // clears the pipeline cache because every pipeline targeting the canvas
+  // format must be recompiled.
   // Public underscore: shared with the canvas-config helper
-  // (`WebGPUContextCanvasConfig.ts`, Batch 593 decomposition slice).
+  // (`WebGPUContextCanvasConfig.ts`).
   public _hdrCanvasOutput: boolean = false;
-  // B213-O2 (Batch 219 audit fix) + B219-N4 (Batch 225 audit fix) —
-  // Scene-installed listeners called when the context's HDR fallback
-  // chain (B206-N1) trips and demotes `_hdrCanvasOutput` from true →
-  // false. Each Scene.js instance attached to this context registers
-  // its own listener so its `_useHDRCanvasOutput` flag follows the
-  // demotion. Without the Set the prior single-slot design only
-  // synced the LAST-installed scene; multi-scene-per-context
-  // configurations (split-screen, picture-in-picture) ended up with
-  // stale Scene flags on all but the last viewer.
+  // Scene-installed listeners called when the context's HDR fallback chain
+  // trips and demotes `_hdrCanvasOutput` from true to false. Each Scene.js
+  // instance attached to this context registers its own listener so its
+  // `_useHDRCanvasOutput` flag follows the demotion. A set rather than a
+  // single slot because a single-slot design only syncs the last-installed
+  // scene, leaving multi-scene-per-context configurations — split-screen,
+  // picture-in-picture — with stale Scene flags on every other viewer.
   // Public underscore: shared with the canvas-config helper
-  // (`WebGPUContextCanvasConfig.ts`, Batch 593 decomposition slice).
+  // (`WebGPUContextCanvasConfig.ts`).
   public _hdrFallbackListeners: Set<(newValue: boolean) => void> = new Set();
   private _depthFormat: GPUTextureFormat = "depth24plus-stencil8";
-  // Public underscore: shared with the device-loss host-adapter (Batch 143).
+  // Public underscore: shared with the device-loss host-adapter.
   public _isDestroyed: boolean = false;
   private _terminallyLost: boolean = false;
   // Public underscore accessor: FATAL device state is distinct from completed
@@ -519,7 +509,7 @@ export class WebGPUContext extends GraphicsContext {
       this._drainAfterFrameSubmitCallbacks(false);
     }
   }
-  // Public underscore: shared with the device-loss host-adapter (Batch 143).
+  // Public underscore: shared with the device-loss host-adapter.
   public _options: WebGPUContextOptions;
 
   // Deferred GPU-texture destruction. Textures the SCENE evicts mid-frame
@@ -532,8 +522,8 @@ export class WebGPUContext extends GraphicsContext {
   // after the just-submitted GPU work completes (`onSubmittedWorkDone`).
   private _pendingTextureDestroys: GPUTexture[] = [];
 
-  // C11-184 — native shadow rendering consumes a unique command set, not the
-  // legacy per-cascade/per-cube-face lists flattened with duplicates. Both
+  // Native shadow rendering consumes a unique command set, not the
+  // per-cascade/per-cube-face lists flattened with duplicates. Both
   // containers persist with the context so the shadow hot path allocates
   // neither a temporary array nor a Set each frame.
   private _shadowCastCommandsScratch: CesiumAnyDrawCommand[] = [];
@@ -544,58 +534,56 @@ export class WebGPUContext extends GraphicsContext {
   private _shadowReceiveUniformRefreshes: unknown[] = [];
   private _shadowReceiveUniformRefreshSet: Set<GPUBuffer> = new Set();
 
-  // C9-12A (hardened Batch 686, generalized by C12-33) — texture mip-generation
-  // jobs deferred out of draw emission. A renderer that realizes a new
-  // GPUTexture during command building enqueues a job here instead of opening
-  // a private encoder + private submit. `endFrame` encodes every pending job
-  // into ONE `"TextureMipPreparation"` encoder submitted immediately BEFORE the frame
-  // encoder's own submit (F8: two submits — same-queue ordering guaranteed, an
-  // invalid prep buffer cannot invalidate the frame), so the queue orders
-  // `copyExternalImageToTexture` → mip passes → scene passes and the realizing
-  // frame samples complete mips. Renderers that privately submit mid-frame
-  // work sampling newly realized textures MUST call `flushPendingTextureMipJobs`
-  // first (F3). Zero private submits from the draw path.
+  // Texture mip-generation jobs deferred out of draw emission. A renderer that
+  // realizes a new GPUTexture during command building enqueues a job here
+  // instead of opening a private encoder and a private submit. `endFrame`
+  // encodes every pending job into one `"TextureMipPreparation"` encoder
+  // submitted immediately before the frame encoder's own submit — two submits
+  // on one queue, so ordering is guaranteed and an invalid prep buffer cannot
+  // invalidate the frame — which makes the queue order
+  // `copyExternalImageToTexture`, then mip passes, then scene passes, so the
+  // realizing frame samples complete mips. A renderer that privately submits
+  // mid-frame work sampling newly realized textures must call
+  // `flushPendingTextureMipJobs` first. The draw path performs no private
+  // submits.
   private _pendingTextureMipJobs: PendingTextureMipJob[] = [];
   // Exact duplicate coalescing for the current pending batch. Kept weak by
   // texture identity and replaced wholesale whenever the batch drains.
   private _pendingTextureMipJobKeys = new WeakMap<GPUTexture, Set<string>>();
 
-  // F7 (Batch 686) — textures destroyed INLINE (dead immediately). Consulted
-  // by the pending-mip encode step: only these are skipped. Scheduled destroys
-  // (`_pendingTextureDestroys`) remain live through the frame submit and MUST
-  // still get their mip chains. WeakSet — entries vanish with the texture.
+  // Textures destroyed inline, and therefore dead immediately. Consulted by
+  // the pending-mip encode step: only these are skipped. Scheduled destroys
+  // (`_pendingTextureDestroys`) remain live through the frame submit and still
+  // need their mip chains. A WeakSet, so entries vanish with the texture.
   private _inlineDestroyedTextures = new WeakSet<GPUTexture>();
 
   // Frame state for command recording — public for cross-renderer access
   public _currentCommandEncoder: GPUCommandEncoder | null = null;
   public _currentRenderPassEncoder: GPURenderPassEncoder | null = null;
 
-  // C11-76 — callbacks that must start only after the frame command buffer is
+  // Callbacks that must start only after the frame command buffer is
   // actually submitted. Readback clients use this seam to record copies on the
   // shared encoder without calling mapAsync while the staging buffer is still
   // referenced by an unsubmitted command buffer.
   private _afterFrameSubmitCallbacks: Array<(submitted: boolean) => void> = [];
 
-  // C9-07 / FAR-405-C0 — explicit render-pass target tracking. The
-  // clear() guard used to infer "is a scene-owned pass active?" from
-  // `_currentRenderPassEncoder.label.startsWith("Scene")`; the target is
-  // now tracked explicitly at every pass open/end site instead:
+  // Explicit render-pass target tracking, declared at every pass open and end
+  // site so the `clear()` guard never has to infer "is a scene-owned pass
+  // active?" from a pass label:
   //   "default-canvas"    — the swap-chain pass (`_beginDefaultRenderPass`)
-  //   "scene-framebuffer" — the scene-FB pass (declared by its 3 open sites)
+  //   "scene-framebuffer" — the scene-FB pass, declared by its 3 open sites
   //   "external"          — every other custom pass (shadow, pick, clear, …)
   private _activePassTarget: WebGPUPassTarget | null = null;
 
-  // C9-07 / FAR-405-C0 — per-frame canvas demand flags. `beginFrame` no
-  // longer opens the canvas pass eagerly; the FIRST open of a frame clears
-  // each untouched channel (historically beginFrame cleared exactly once,
-  // then every re-open loaded). Depth is the load-bearing half: an
-  // untouched "Scene Depth Texture" read with depthLoadOp:"load" yields
-  // WebGPU lazy-zero 0.0, not the historical clear value 1.0. Color is
-  // set by any canvas-color write, including the post-process blit (which
-  // encodes raw passes the context cannot observe — see
-  // `markCanvasContentWritten`). Reset in `beginFrame`/`beginPickFrame`
-  // ONLY, never in `endFrame`, so a pick mini-frame between render frames
-  // cannot corrupt the next render frame's state.
+  // Per-frame canvas demand flags. `beginFrame` does not open the canvas pass
+  // eagerly; the first open of a frame clears each untouched channel. Depth is
+  // the load-bearing half: an untouched "Scene Depth Texture" read with
+  // `depthLoadOp: "load"` yields WebGPU's lazy zero, 0.0, not the 1.0 a clear
+  // would have written. Color is set by any canvas-color write, including the
+  // post-process blit, which encodes raw passes the context cannot observe —
+  // see `markCanvasContentWritten`. Reset in `beginFrame` and
+  // `beginPickFrame` only, never in `endFrame`, so a pick mini-frame between
+  // render frames cannot corrupt the next render frame's state.
   private _canvasColorTouchedThisFrame: boolean = false;
   private _canvasDepthTouchedThisFrame: boolean = false;
   private _currentTextureView: GPUTextureView | null = null;
@@ -613,7 +601,7 @@ export class WebGPUContext extends GraphicsContext {
   // and constant list; JS callers are unaffected.
   public _gl!: ReturnType<typeof createWebGLCompatibilityStub>;
 
-  // WGF-6: Cached reference to WebGPUPrimitiveIndexUtils so Scene.js can probe
+  // Cached reference to WebGPUPrimitiveIndexUtils so Scene.js can probe
   // `@builtin(primitive_index)` support without importing from Renderer/WebGPU.
   // Populated lazily by initialize() — Scene reads it via the public
   // `triangulationDebugSupported` getter.
@@ -622,64 +610,62 @@ export class WebGPUContext extends GraphicsContext {
   // WebGPU-specific caches and managers
   private _webgpuShaderCache: WebGPUShaderCache | null = null;
   // Public underscore: read by the canvas-config helper's HDR-toggle
-  // cache invalidation (`WebGPUContextCanvasConfig.ts`, Batch 593).
+  // cache invalidation (`WebGPUContextCanvasConfig.ts`).
   public _webgpuPipelineCache: WebGPURenderPipelineCache | null = null;
-  // C11-174 — back-reference to the active post-process pipeline's
+  // Back-reference to the active post-process pipeline's
   // cache-stats surface (see `PostProcessCacheStatsSource`). Public
   // underscore: written by `WebGPUSceneRendererEnsureResources` when the
   // pipeline is (re)created. Read-only debug exposure.
   public _postProcessCacheStatsSource: PostProcessCacheStatsSource | null =
     null;
   private _webgpuComputePipelineCache: WebGPUComputePipelineCache | null = null;
-  // NEW-WEBGPU-PIPELINE-READY-SIGNAL — Phase 1 scaffolding. Per-context
-  // registry of inflight async GPU work. Lazy-initialized via the
-  // `asyncResources` getter so contexts that never trigger async work
-  // pay zero cost. Survives device-loss (subscribers stay attached);
-  // device-loss callbacks call `reset()` to reject every inflight
-  // token in one sweep.
+  // Per-context registry of inflight async GPU work. Lazily initialized via
+  // the `asyncResources` getter so a context that never triggers async work
+  // pays nothing. It survives device loss with its subscribers attached;
+  // device-loss callbacks call `reset()` to reject every inflight token in one
+  // sweep.
   private _asyncResources: AsyncResourceMonitor | null = null;
-  // NEW-WEBGPU-PERF-MONITOR-SUBSCRIBER — perf-side aggregator that
-  // subscribes to the monitor and tracks per-kind p50/p95/p99 latency,
-  // throughput, failure rates, and peak inflight pressure. Read by the
-  // perf manager (or any consumer) to decide whether to throttle
-  // pipeline-variant generation, defer non-critical compute work, etc.
-  // Always-on; cost is one subscriber + ~1 KB resident.
+  // Perf-side aggregator that subscribes to the monitor and tracks per-kind
+  // p50/p95/p99 latency, throughput, failure rates and peak inflight pressure.
+  // Read by the perf manager, or any other consumer, to decide whether to
+  // throttle pipeline-variant generation or defer non-critical compute work.
+  // Always on; the cost is one subscriber and about 1 KB resident.
   private _asyncResourceTelemetry: AsyncResourceTelemetry | null = null;
-  // C11-193 — observe-only, GPU-free selected-consumer ledger. This does not
-  // gate refresh work in this slice; it establishes conservative admission
-  // semantics and evidence for the later context-owned bounded job scheduler.
+  // Observe-only, GPU-free selected-consumer ledger. It does not gate refresh
+  // work; it supplies the conservative admission semantics the context-owned
+  // bounded job scheduler reads.
   private _environmentDemandRegistry = new WebGPUEnvironmentDemandRegistry();
-  // C11-193 — context-owned bounded refresh drain. It may reorder and bound
-  // environment-refresh work; it may never drop it. See the module docs for the
-  // no-starvation contract the 2026-08-01 review defect established.
+  // Context-owned bounded refresh drain. It may reorder and bound
+  // environment-refresh work; it may never drop it. See the module docs for
+  // the no-starvation contract.
   private _environmentRefreshScheduler =
     new WebGPUEnvironmentRefreshScheduler();
-  // C11-193 — persistent, generation-keyed pool for the refresh path's
-  // transient parameter arenas and capture depth targets. Lazily created on
-  // first use so a context that never runs a dynamic environment map (and a
-  // failed device create) pays nothing.
+  // Persistent, generation-keyed pool for the refresh path's transient
+  // parameter arenas and capture depth targets. Lazily created on first use so
+  // a context that never runs a dynamic environment map — and a context whose
+  // device create failed — pays nothing.
   private _environmentTargetPool: WebGPUEnvironmentTargetPool | null = null;
-  // Public underscore: shared with the frame-statistics extract (Batch 144).
+  // Public underscore: shared with the frame-statistics extract.
   public _samplerCache: Map<string, GPUSampler> = new Map();
   public _bindGroupLayoutCache: Map<string, GPUBindGroupLayout> = new Map();
   private _bindGroupCache: Map<string, GPUBindGroup> = new Map();
 
   // Resource pools for efficient reuse
   private _bufferPool: Map<string, GPUBuffer[]> = new Map();
-  // Public underscore: shared with the frame-statistics extract (Batch 144).
+  // Public underscore: shared with the frame-statistics extract.
   public _uniformBufferPool: GPUBuffer[] = [];
   private _mipmapGenerator: WebGPUMipmapGenerator | null = null;
 
   // GPU statistics and debugging
   public _frameCount: number = 0;
-  // Public underscore: shared with the frame-statistics extract (Batch 144).
+  // Public underscore: shared with the frame-statistics extract.
   public _drawCallCount: number = 0;
   public _triangleCount: number = 0;
 
-  // WebGPU optional features that were successfully enabled.
-  // Body extracted to `WebGPUFeatureFlags` in Batch 132. The Context
-  // retains `hasFeature` / `enabledFeatures` as 1-line delegators so
-  // external callers and the debug snapshot don't move.
+  // WebGPU optional features that were successfully enabled. The table lives
+  // in `WebGPUFeatureFlags`; the context keeps `hasFeature` and
+  // `enabledFeatures` as one-line delegators so external callers and the debug
+  // snapshot address it here.
   private _featureFlags = new WebGPUFeatureFlags();
 
   // Dynamic rendering state set by WebGPUSceneRenderer during frame execution
@@ -689,22 +675,19 @@ export class WebGPUContext extends GraphicsContext {
   public _msaaSamples: number = 1;
   public useIndirectDrawForTiles: boolean = false;
 
-  // ── C9-09-ATTACHMENT-DEMAND-REGISTRY (FAR-401-C0) ──
-  // Conservative force switch. While `true` the frame is forced to the
-  // historical full-MRT scene-FB topology regardless of consumer demand,
-  // preserving today's exact behavior. It stays `true` until C9-10 lands
-  // the demand-driven topology flip behind the Gate-B decision point
-  // (queue §3). Any un-enumerable consumer is covered by keeping this true
-  // (campaign 9 rule 3 — unknown demand keeps MRT).
+  // Conservative force switch for the attachment-demand registry. While `true`
+  // the frame is forced to the full-MRT scene-FB topology regardless of
+  // consumer demand. Demand-driven topology selection is not wired yet, and
+  // keeping this true is what covers a consumer the registry cannot enumerate:
+  // unknown demand keeps MRT.
   public forceSceneMRT: boolean = true;
-  // Frozen per-frame demand record (computed once in
-  // updateAndClearFramebuffers, immutable for the rest of the frame). Both
-  // the legacy executor and the future FAR-400/401 graph read this. Null
+  // Frozen per-frame demand record, computed once in
+  // `updateAndClearFramebuffers` and immutable for the rest of the frame. Null
   // before the first frame.
   public _attachmentDemand: AttachmentDemandRecord | null = null;
   // Actual measured scene-FB attachment behavior for this frame, so the
-  // debug snapshot can assert the registry record matches reality
-  // (C9-09 acceptance). Reset at the top of updateAndClearFramebuffers.
+  // debug snapshot can assert the registry record matches reality.
+  // Reset at the top of `updateAndClearFramebuffers`.
   public _attachmentDemandActual: {
     gbufferAllocated: boolean;
     gbufferBytes: number;
@@ -712,11 +695,11 @@ export class WebGPUContext extends GraphicsContext {
     sceneColorAttachmentCount: number;
     slot1AttachmentOpens: number;
     slot1ResolveOpens: number;
-    // C10-03-MSAA-BOUNDARY-BYTES — measured demand-driven scene-COLOR resolve
-    // passes this frame (label `SceneFramebuffer-Color_demand_resolve`). Under
-    // the elision this is exactly 1 on the default globe (the pre-post-process
-    // ensure); 0 when `_msaaSamples <= 1`. Slot-1 (G-buffer) resolves are
-    // counted separately by `slot1ResolveOpens` and are out of scope here.
+    // Measured demand-driven scene-color resolve passes this frame, labelled
+    // `SceneFramebuffer-Color_demand_resolve`. Under the elision this is
+    // exactly 1 on the default globe — the pre-post-process ensure — and 0
+    // when `_msaaSamples <= 1`. Slot-1 (G-buffer) resolves are counted
+    // separately by `slot1ResolveOpens`.
     sceneColorResolveOpens: number;
   } = {
     gbufferAllocated: false,
@@ -728,72 +711,63 @@ export class WebGPUContext extends GraphicsContext {
     sceneColorResolveOpens: 0,
   };
 
-  // C10-03-MSAA-BOUNDARY-BYTES — intra-frame scene-COLOR resolve staleness.
-  // Set `true` whenever a `"scene-framebuffer"` pass opens (new draws make the
-  // single-sample resolve texture stale) and cleared only by
+  // Intra-frame scene-color resolve staleness. Set `true` whenever a
+  // `"scene-framebuffer"` pass opens, because new draws make the single-sample
+  // resolve texture stale, and cleared only by
   // `WebGPUSceneRenderer._ensureSceneColorResolved`. Reset conservatively to
-  // `true` at frame begin / pick begin / scene-FB recreate. A per-frame pure
-  // demand record (`_attachmentDemand`) cannot own this because it is immutable
-  // for the frame; this single flag, anchored on the existing C9-07
-  // `_activePassTarget` tracking, is the executor of the resolved-scene-color
-  // demand. Conservative default `true` (Rule 3: unknown demand resolves).
+  // `true` at frame begin, pick begin and scene-FB recreate. The per-frame
+  // demand record (`_attachmentDemand`) cannot own this because it is
+  // immutable for the frame; this flag, anchored on `_activePassTarget`, is
+  // what executes the resolved-scene-color demand. The conservative default is
+  // `true`: unknown demand resolves.
   public _sceneColorResolvePending: boolean = true;
 
-  // C10-03-MSAA-BOUNDARY-BYTES — elision kill switch. Default `true` =
-  // demand-driven "resolve-on-consume" (the shipped behavior). Set `false` to
-  // restore the historical eager per-segment resolve (the scene-FB open sites
-  // bake `resolveTarget` again and `_ensureSceneColorResolved` becomes inert),
-  // so the two paths differ ONLY in resolve timing. Kept because the clean
-  // one-commit revert boundary cannot be exercised without git; this bool is
-  // the on/off/restored oracle mechanism (identical-build A/B) and a runtime
-  // safety fallback. Reverting the batch removes it together with the elision.
+  // Elision kill switch. `true` selects demand-driven resolve-on-consume, the
+  // shipped behavior. `false` restores the eager per-segment resolve — the
+  // scene-FB open sites bake `resolveTarget` again and
+  // `_ensureSceneColorResolved` becomes inert — so the two paths differ only
+  // in resolve timing. That makes it both a runtime safety fallback and the
+  // only way to A/B the elision within one build.
   public _sceneColorResolveElisionEnabled: boolean = true;
 
-  // Renderer-wide log-depth master switch (Approach A for
-  // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION / NEW-COLLECTIONS-LOG-DEPTH).
-  // Default TRUE since Batch 251: the globe (Batch 183), lit Phong
-  // primitives (Batch 188), depth plane (Batch 249), the five collections +
-  // compute-instance system (Batch 250), and the Model PBR pipeline family
-  // (Batch 251) all write csm_writeLogDepth-encoded `@builtin(frag_depth)`
-  // when `isWebGPULogDepthActive(context, frameState)` is true — matching
-  // WebGL's LOG_DEPTH path. Far-range depth ties (a billboard 1000 m above
-  // terrain at a 220 km camera was ~0.03 hyperbolic quanta — Batch 229
-  // measurement) now resolve at sub-meter precision. This remains a
-  // one-line kill switch: flipping it false restores hyperbolic NDC depth
-  // everywhere (every producer/consumer is define-gated and rebuilds
-  // through keyed cache misses / per-renderer flip guards). Remaining
-  // hyperbolic writers (Mat* primitives, Buffer* family,
-  // EllipsoidPrimitive, Vector3DTile, GroundPolyline's depth-sample read)
-  // are tracked under NEW-LOG-DEPTH-REMAINING-PRODUCERS in
-  // migration_doc/DEFERRED_WORK.md. See WebGPULogDepth.ts.
+  // Renderer-wide log-depth master switch, `true` by default: the globe, lit
+  // Phong primitives, the depth plane, the five collections, the
+  // compute-instance system and the Model PBR pipeline family all write
+  // `csm_writeLogDepth`-encoded `@builtin(frag_depth)` when
+  // `isWebGPULogDepthActive(context, frameState)` is true, matching WebGL's
+  // LOG_DEPTH path. That is what resolves far-range depth ties at sub-metre
+  // precision: a billboard 1000 m above terrain seen from a 220 km camera
+  // separates by about 0.03 of a hyperbolic quantum. Flipping this false is a
+  // one-line kill switch restoring hyperbolic NDC depth everywhere, since
+  // every producer and consumer is define-gated and rebuilds through keyed
+  // cache misses and per-renderer flip guards. Mat* primitives, the Buffer*
+  // family, EllipsoidPrimitive, Vector3DTile and GroundPolyline's
+  // depth-sample read still write hyperbolic depth. See `WebGPULogDepth.ts`.
   public _logDepthWriteEnabled: boolean = true;
 
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-fleet log-depth master
-  // switch, SEPARATE from `_logDepthWriteEnabled` (scene). The pick mini-frame
-  // owns its own single shared depth attachment (WebGPUSceneRendererPickPass,
-  // INV-2), so the whole native pick fleet must be uniformly hyperbolic OR
-  // uniformly log — a mixed FBO depth-tests incoherently. Historically this
-  // defaulted FALSE while the fleet was still uniformly hyperbolic. Batch 708
-  // (NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH) cleared the last blocker (voxel had zero
-  // log-depth infra); C10-11 then converted EVERY remaining native pick producer
-  // (globe, model incl. hover/metadata/precise-pass, ellipsoid, splat, buffer
-  // point/polygon/polyline, billboard/point/polyline collections, primitive
-  // pick families) to write log `@builtin(frag_depth)` gated on
-  // `isWebGPUPickLogDepthActive`, so this flips TRUE in one coordinated change:
-  // the shared pick FBO is now uniformly log. OPAQUE picks write the log depth;
-  // BLEND/translucent picks keep depth-test-only (Batch-186 opaque-behind-
-  // translucent pickability). Flipping this false restores the uniformly-
-  // hyperbolic pick FBO (kill switch) — proven byte-identical (gate-off).
+  // Pick-fleet log-depth master switch, separate from the scene's
+  // `_logDepthWriteEnabled`. The pick mini-frame owns a single shared depth
+  // attachment (`WebGPUSceneRendererPickPass`), so the whole native pick fleet
+  // must be uniformly hyperbolic or uniformly log — a mixed attachment
+  // depth-tests incoherently, which is why this is one switch rather than a
+  // per-producer opt-in. Every native pick producer — globe, model including
+  // the hover, metadata and precise passes, ellipsoid, splat, buffer
+  // point/polygon/polyline, the billboard, point and polyline collections and
+  // the primitive pick families — writes log `@builtin(frag_depth)` gated on
+  // `isWebGPUPickLogDepthActive`. Opaque picks write the log depth; blend and
+  // translucent picks stay depth-test-only, which is what keeps opaque
+  // geometry behind translucent geometry pickable. Flipping this false
+  // restores the uniformly hyperbolic pick attachment.
   public _pickLogDepthWriteEnabled: boolean = true;
 
-  // Slice 5c-B Batch 129 — post-process snapshot. After the post-process
-  // pipeline has blitted scene FB to canvas, a 1-pass copyTextureToTexture
-  // mirrors the canvas into this view so env effects (SSR, NPR, Clouds,
-  // Weather, Volumetric Fog) sample a POST-processed, tonemapped,
-  // display-space color source instead of the raw HDR scene FB. The
-  // env effects then composite their output BACK onto the canvas;
-  // WebGPU forbids read+write of the same texture in a single pass, so
-  // the intermediate is required.
+  // Post-process snapshot. After the post-process pipeline has blitted the
+  // scene framebuffer to the canvas, a single-pass `copyTextureToTexture`
+  // mirrors the canvas into this view so environment effects — SSR, NPR,
+  // clouds, weather, volumetric fog — sample a post-processed, tonemapped,
+  // display-space colour source instead of the raw HDR scene framebuffer.
+  // Those effects then composite their output back onto the canvas, and WebGPU
+  // forbids reading and writing one texture in a single pass, so the
+  // intermediate is required.
   //
   // Allocated lazily by `WebGPUSceneRendererEnsureResources` when the
   // canvas size or format changes. Width/height tracked alongside.
@@ -802,17 +776,16 @@ export class WebGPUContext extends GraphicsContext {
   public _postProcessSnapshotWidth: number = 0;
   public _postProcessSnapshotHeight: number = 0;
 
-  // C-R8-EDGE-FBO (Batch 44) — edge-framebuffer texture views, set by
+  // Edge-framebuffer texture views, set by
   // `WebGPUSceneRenderer._execute3DTilePasses` after the edges pass
-  // resolves its MRT attachments. Consumers (edge composite stage,
-  // future per-fragment edge detection in model shaders) read these
-  // as the WebGPU equivalent of WebGL's
+  // resolves its MRT attachments. Consumers such as the edge composite stage
+  // read these as the WebGPU equivalent of WebGL's
   // `uniformState.edge{Color,Id,Depth}Texture`. `null` when no edge
   // commands ran this frame, signalling downstream consumers to skip.
   public _edgeColorView: GPUTextureView | null = null;
   public _edgeIdView: GPUTextureView | null = null;
   public _edgeDepthView: GPUTextureView | null = null;
-  // C-R8-EDGE-INLINE — packed globe depth view from
+  // Packed globe depth view from
   // `WebGPUGlobeDepth.executeCopyDepth`. Published each frame after
   // `executeCopyDepth` runs so downstream effects (the inline edge
   // detection stage in Model FS) have a single place to read it from. The
@@ -821,21 +794,20 @@ export class WebGPUContext extends GraphicsContext {
   public _globeDepthView: GPUTextureView | null = null;
   /** Pick-scoped packed depth; never falls back to a previous render frame. */
   public _pickClassificationDepthView: GPUTextureView | null = null;
-  // Batch 139 (NEW-LABEL-SDF-BIND-GROUP-CACHING) — published
-  // alongside `_globeDepthView` so collection renderers with their own view
-  // policy can compare the underlying texture identity. Both rotate only on
-  // target recreation. `null` when globe depth was not computed this frame.
+  // Published alongside `_globeDepthView` so collection renderers with their
+  // own view policy can compare the underlying texture identity. Both rotate
+  // only on target recreation. `null` when globe depth was not computed this
+  // frame.
   public _globeDepthTexture: GPUTexture | null = null;
-  // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — per-slice
-  // frustum state published by the multi-frustum loop right after
+  // Per-slice frustum state published by the multi-frustum loop right after
   // `_updateFrustumUniforms` refreshes `uniformState` for the slice.
-  // Depth-sample classifiers (GroundPrimitive textured-material FS, and
-  // the GroundPolyline / Vector3DTile classifiers as they adopt the
-  // same path) recover eye-space from the sampled globe depth via
-  // `invProj`, but their per-primitive UBO is packed ONCE per frame at
-  // command-build time and so carries the WRONG slice's projection in
-  // multi-frustum scenes. These fields let a per-slice bind-group
-  // resolver bind the correct `invProj` + `(near, far)` at draw time.
+  // Depth-sample classifiers — the GroundPrimitive textured-material FS, and
+  // the GroundPolyline and Vector3DTile classifiers as they adopt the same
+  // path — recover eye space from the sampled globe depth via `invProj`, but
+  // their per-primitive UBO is packed once per frame at command-build time and
+  // so carries the wrong slice's projection in a multi-frustum scene. These
+  // fields let a per-slice bind-group resolver bind the correct `invProj` and
+  // `(near, far)` at draw time.
   // `_currentFrustumInvProj` is a 16-float column-major matrix (reused
   // buffer, overwritten per slice); `_currentFrustumNearFar` is a
   // length-2 `[near, far]`. `_currentFrustumIndex` (already published as
@@ -846,21 +818,21 @@ export class WebGPUContext extends GraphicsContext {
   public _currentFrustumInvProj: Float32Array | null = null;
   public _currentFrustumNearFar: Float32Array | null = null;
   public _currentFrustumIndex: number = 0;
-  // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — the FULL camera frustum
-  // `[near, far]` the globe used to LOG-encode the entire depth texture this
-  // frame. The globe DrawCommand is built once at scene-update (with
-  // `uniformState.currentFrustum === camera.frustum`) and REPLAYED unchanged
-  // across every slice, so there is exactly ONE log-encode near/far for the
-  // whole globe depth texture. Depth-sample classifiers MUST decode eye
-  // distance with THIS, then unproject with the per-slice `invProj`/`(near,
-  // far)` above — decoding with the per-slice band reconstructs garbage
-  // (~1e12 m) → flat textured-material UV. Captured pre-loop in
-  // `WebGPUSceneRendererFrustumLoop` before the per-slice `updateFrustum`
-  // mutates `camera.frustum`; consumed via the classifier `fstate` UBO.
+  // The full camera frustum `[near, far]` the globe used to log-encode the
+  // entire depth texture this frame. The globe DrawCommand is built once at
+  // scene update, with `uniformState.currentFrustum === camera.frustum`, and
+  // replayed unchanged across every slice, so one log-encode near/far covers
+  // the whole globe depth texture. Depth-sample classifiers decode eye
+  // distance with this, then unproject with the per-slice `invProj` and
+  // `(near, far)` above; decoding with the per-slice band instead
+  // reconstructs distances around 1e12 m and flattens the textured-material
+  // UV. Captured before the loop in `WebGPUSceneRendererFrustumLoop`, ahead of
+  // the per-slice `updateFrustum` that mutates `camera.frustum`, and consumed
+  // via the classifier `fstate` UBO.
   public _logDepthEncodeNearFar: Float32Array | null = null;
-  // Migration Session 2 — packed translucent depth view from
+  // Packed translucent depth view from
   // `WebGPUTranslucentTileClassification.executePackDepth`. Published
-  // each frame after the pack-depth pipeline runs IF translucent depth
+  // each frame after the pack-depth pipeline runs, if translucent depth
   // was captured this frame (gated on `tcc.hasTranslucentDepth`).
   // `null` on frames without translucent 3D-tile content. The
   // depth-sample classifier (`WebGPUGroundPrimitiveRenderer`) prefers
@@ -870,38 +842,34 @@ export class WebGPUContext extends GraphicsContext {
   // for translucent-on-translucent classification.
   public _packedTranslucentDepthView: GPUTextureView | null = null;
 
-  // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — set to `true` by
-  // WebGPUModelRenderer when emitting a primitive whose material
-  // declares KHR_materials_transmission. SceneRenderer reads it
-  // between OPAQUE and TRANSLUCENT passes to decide whether to
-  // run the refraction capture (copyTextureToTexture from scene
-  // color into the refraction target). Reset per-frame by the
-  // SceneRenderer at the start of the frame so stale flags from
-  // a previous render don't trigger spurious copies. The flag is
-  // a coarse "any transmissive primitive in scene"; a future
-  // refinement can scope to "transmissive primitive in this
-  // frustum's TRANSLUCENT pass".
+  // Set to `true` by `WebGPUModelRenderer` when emitting a primitive whose
+  // material declares KHR_materials_transmission. SceneRenderer reads it
+  // between the opaque and translucent passes to decide whether to run the
+  // refraction capture, a `copyTextureToTexture` from scene colour into the
+  // refraction target. Reset per frame by the SceneRenderer at the start of
+  // the frame so a stale flag cannot trigger a spurious copy. The flag is
+  // coarse — any transmissive primitive anywhere in the scene sets it — and
+  // could be scoped to a transmissive primitive in this frustum's translucent
+  // pass.
   public _sceneHasTransmission: boolean = false;
-  // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — view of the scene-FB
-  // refraction capture, published by SceneRenderer at the end of
-  // the capture step. `null` until first capture; consumed by the
-  // Model textureBindGroup builder at @group(2)@binding(23). When
-  // null the bind group falls back to the white placeholder and
-  // the FS sees a constant white "background" for transmission —
-  // visually wrong but doesn't cause a binding error.
+  // View of the scene-FB refraction capture, published by SceneRenderer at
+  // the end of the capture step. `null` until the first capture; consumed by
+  // the model textureBindGroup builder at `@group(2) @binding(23)`. When
+  // null the bind group falls back to the white placeholder, so the fragment
+  // stage sees a constant white background for transmission — visually wrong,
+  // but not a binding error.
   public _refractionSceneView: GPUTextureView | null = null;
 
-  // Batch 110 — scene pipeline format generation. Bumped by
-  // `WebGPUSceneRenderer.update` whenever `_sceneColorFormat` changes
-  // (HDR toggle, MSAA toggle, canvas format change). Renderers that
-  // cache pipelines targeting scene FB (model PBR, globe terrain,
-  // sky atmosphere, billboards, polylines, ground primitives, etc.)
-  // compare against their last-built generation; when the value
-  // differs, they clear and rebuild their pipeline caches against
-  // the current `scenePipelineFormat`. This is what makes runtime
-  // HDR toggle actually work — pre-Batch 110 every cached pipeline
-  // had the canvas format baked in, producing format-mismatch
-  // validation warnings + black scene FB writes when HDR toggled.
+  // Scene pipeline format generation, bumped by
+  // `WebGPUSceneRenderer.update` whenever `_sceneColorFormat` changes, which
+  // an HDR toggle, an MSAA toggle or a canvas format change all do. Renderers
+  // that cache pipelines targeting the scene framebuffer — model PBR, globe
+  // terrain, sky atmosphere, billboards, polylines, ground primitives and the
+  // rest — compare against their last-built generation and, when it differs,
+  // clear and rebuild their pipeline caches against the current
+  // `scenePipelineFormat`. Without it a cached pipeline keeps the canvas
+  // format it was built with, and toggling HDR produces format-mismatch
+  // validation warnings and black scene-FB writes.
   public _scenePipelineFormatGeneration: number = 0;
 
   // Physical-device resource generation. Unlike the scene-format epoch above,
@@ -1038,8 +1006,8 @@ export class WebGPUContext extends GraphicsContext {
   // storage buffer indexed by `instance_index` (WebGPUModelInstancing),
   // and collection instancing bakes `stepMode: "instance"` into each
   // pipeline's vertex-buffer layout — but the cache must exist so the
-  // shared bookkeeping is absorbed instead of crashing the render loop
-  // (NEW-WEBGPU-INSTANCED-VA-DIVISORS, Batch 245). Sized from device
+  // shared bookkeeping is absorbed instead of crashing the render loop.
+  // Sized from device
   // limits in `_initializeContextLimits` (re-run on device-loss recovery,
   // which also resets it — fresh-context semantics, matching Context.js).
   public _vertexAttribDivisors: number[] = [];
@@ -1078,8 +1046,8 @@ export class WebGPUContext extends GraphicsContext {
   private _defaultCubeMap: WebGPUTexture | undefined;
 
   // Render state
-  // Public underscore: shared with the WebGL-stub state proxy (Batch 129
-  // extraction). Same convention as `public _device`, `public _canvas`.
+  // Public underscore: shared with the WebGL-stub state proxy, the same
+  // convention as `public _device` and `public _canvas`.
   public _clearColor: CesiumColor;
   public _clearDepth: number = 1.0;
   public _clearStencil: number = 0;
@@ -1105,9 +1073,8 @@ export class WebGPUContext extends GraphicsContext {
     height: number;
   } = { x: 0, y: 0, width: 0, height: 0 };
 
-  // WebGPU pipeline state tracking (for creating pipelines with correct
-  // state). Public underscore: shared with the WebGL-stub state proxy
-  // (Batch 129 extraction).
+  // WebGPU pipeline state tracking, for creating pipelines with the correct
+  // state. Public underscore: shared with the WebGL-stub state proxy.
   public _depthTestEnabled: boolean = true;
   public _depthWriteEnabled: boolean = true;
   // Default depthCompare is `less-equal`, not `less`. At planetary scale
@@ -1135,13 +1102,12 @@ export class WebGPUContext extends GraphicsContext {
   // Pick objects — managed by GraphicsContext base class
   // (_pickObjects Map and _nextPickColor counter are inherited)
 
-  // Device loss recovery — delegated to WebGPUDeviceLossRecovery (FORK-1 fix)
+  // Device loss recovery — delegated to WebGPUDeviceLossRecovery.
   private _deviceLossRecovery: WebGPUDeviceLossRecovery | null = null;
   private _releaseShaderValidation: (() => void) | null = null;
 
-  // GL compatibility - bound buffer/texture tracking for legacy code.
-  // Public underscore: shared with the WebGL-stub state proxy
-  // (Batch 129 extraction).
+  // GL compatibility: bound buffer and texture tracking for legacy code.
+  // Public underscore: shared with the WebGL-stub state proxy.
   public _boundVertexBuffer: StubBufferHandle | null = null;
   public _boundIndexBuffer: StubBufferHandle | null = null;
   public _activeTextureUnit: number = 0;
@@ -1280,9 +1246,8 @@ export class WebGPUContext extends GraphicsContext {
    */
   private async _initialize(): Promise<void> {
     try {
-      // AUDIT_2026_05_02 C.1 (Batch 135) — adapter + device acquisition
-      // routes through `WebGPUDevicePool`. The pool owns the adaptive
-      // limit + feature negotiation that used to live inline here:
+      // Adapter and device acquisition route through `WebGPUDevicePool`.
+      // The pool owns the adaptive limit and feature negotiation:
       // it inspects the adapter's exposed ceilings, scales requested
       // limits up (capped at sane upper bounds), merges
       // `WebGPUFeatureFlags.DESIRED_FEATURES` with user-supplied
@@ -1305,19 +1270,18 @@ export class WebGPUContext extends GraphicsContext {
         requiredFeatures: this._options.requiredFeatures,
         requiredLimits: this._options.requiredLimits,
         forceNewDevice: !useDevicePool,
-        // C10-06 Step B: hand the pre-kicked adapter request to the pool so
-        // negotiation that started during chunk parse is reused instead of
-        // re-requested serially. Pool falls back on any mismatch/rejection.
+        // Hand the pre-kicked adapter request to the pool so negotiation that
+        // started during chunk parse is reused instead of re-requested
+        // serially. The pool falls back on any mismatch or rejection.
         prefetchedAdapter: this._options.prefetchedAdapter,
       });
 
       this._adapter = acquired.adapter;
       this._device = acquired.device;
       retainEffectsPlaceholderCacheForContext(this._device, this);
-      // Track whether we pulled a shared device or got our own — this
-      // flag drives the destroy path's choice between `pool.releaseDevice`
-      // (refcount-aware) and a direct `device.destroy()` (only safe if
-      // we own the device exclusively).
+      // Records that the device came from the pool, which drives the destroy
+      // path's choice between the refcount-aware `pool.releaseDevice` and a
+      // direct `device.destroy()`, safe only for an exclusively owned device.
       this._deviceFromPool = true;
 
       if (!this._adapter) {
@@ -1328,14 +1292,13 @@ export class WebGPUContext extends GraphicsContext {
         );
       }
 
-      // Record which features were actually enabled (Batch 132).
+      // Record which features were actually enabled.
       this._featureFlags.markEnabled(this._device.features);
 
-      // Log enabled optional features for debugging. Pull the list from
-      // the device's actual `features` set so the message reflects what
-      // the pool's negotiator + adapter granted (which may differ from
-      // user-requested features when the adapter doesn't support all of
-      // them).
+      // Log enabled optional features for debugging. The list comes from
+      // the device's own `features` set so the message reflects what the
+      // pool's negotiator and the adapter granted, which can differ from the
+      // user-requested features when the adapter supports only some of them.
       const enabledFeatures = Array.from(this._device.features) as string[];
       //>>includeStart('debug', pragmas.debug);
       if (enabledFeatures.length > 0) {
@@ -1355,7 +1318,6 @@ export class WebGPUContext extends GraphicsContext {
 
       // Populate the resource-cache registry so device-loss recovery's
       // first `_clearAllCaches()` call sees a fully-wired registry.
-      // (Batch 131.)
       this._registerResourceCaches();
 
       // Capture this context generation's immutable device capabilities.
@@ -1364,12 +1326,12 @@ export class WebGPUContext extends GraphicsContext {
       // Update capability flags based on enabled features
       this._updateFeatureFlags();
 
-      // WGF-6: Cache the primitive_index utility module so backend-agnostic
+      // Cache the primitive_index utility module so backend-agnostic
       // Scene code can probe support without importing from Renderer/WebGPU.
-      // C10-06 Step A: assigned synchronously from the static import above —
-      // the former inline `await import(...)` serialized an extra module
-      // round-trip into every boot for a dependency-free utility. Consumers
-      // (`supportsTriangulationDebug`, :1734) already tolerate a null cache.
+      // Assigned synchronously from the static import above; an inline
+      // `await import(...)` would serialize an extra module round-trip into
+      // every boot for a dependency-free utility. Consumers such as
+      // `supportsTriangulationDebug` tolerate a null cache.
       this._primitiveIndexUtilsCache = WebGPUPrimitiveIndexUtils;
 
       // Configure canvas context
@@ -1382,11 +1344,10 @@ export class WebGPUContext extends GraphicsContext {
       // Get preferred format
       this._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
 
-      // Configure the canvas. HDR-DISPLAY (Batch 206) — `_hdrCanvasOutput`
-      // is false by default at init; the helper still routes through
-      // here so a follow-up `setHDRCanvasOutput(true)` and the helper
-      // share one configure path. Batch 213 (B206-N1 audit fix) routes
-      // through `_applyCanvasConfig` for browser-compat fallback.
+      // Configure the canvas. `_hdrCanvasOutput` is false at init; routing
+      // through `_applyCanvasConfig` keeps a later `setHDRCanvasOutput(true)`
+      // on the same configure path, which is also where the browser-compat
+      // fallback chain lives.
       this._applyCanvasConfig();
 
       // Initialize default textures
@@ -1403,11 +1364,10 @@ export class WebGPUContext extends GraphicsContext {
       // via context.getFeatureRenderer('name') instead of importing directly
       registerWebGPUFeatureRenderers(this);
 
-      // C10-06 Step A (INV-06-6): the former `initPrimitiveShaders` /
-      // `initCollectionShaders` awaits were removed. Both bodies are no-ops
-      // (`WebGPUPrimitiveShaders.js:246` / `WebGPUCollectionShaders.js:66` —
-      // "shaders are statically imported and always available"), so awaiting
-      // them only added two dead microtask turns to the boot critical path.
+      // No shader-init await here: the primitive and collection shader
+      // modules are statically imported and always available, so
+      // `initPrimitiveShaders` / `initCollectionShaders` are no-ops and
+      // awaiting them would add two dead microtask turns to the boot path.
 
       // Pipeline warm-up: proactively initialize common renderers to avoid
       // first-frame stutter from synchronous pipeline compilation.
@@ -1436,31 +1396,19 @@ export class WebGPUContext extends GraphicsContext {
    * @private
    */
   private _warmUpPipelines(): void {
-    // Batch 71 — globe-surface warmup removed (was dead code).
-    //
-    // Previously this method did:
-    //   globeFR._instance = new globeFR.RendererClass(this);
-    //
-    // intending to pre-compile the terrain shader module + pipeline
-    // layout. But the actual render path in
-    // `GlobeSurfaceTileProviderRendering.addWebGPUDrawCommandsForTile`
-    // creates its OWN per-device renderer instance via a module-scoped
-    // `_webgpuGlobeRenderers` WeakMap and calls `.initialize(device,
-    // shaderCode, fmt)` on it. The `globeFR._instance` created here was
-    // never reached at render time, AND the constructor alone doesn't
-    // perform any GPU work (it just allocates a Float32Array scratch).
-    // So the warmup achieved nothing for globe.
-    //
-    // C10-06 Step C.1 — the fix is now wired. `warmUpGlobeRenderer` (a
-    // top-level export in `GlobeSurfaceTileProviderRendering.js`) populates the
-    // module-scoped `_webgpuGlobeRenderers` WeakMap and calls `.initialize`,
-    // which runs the 2-variant GlobeTerrain shader-module prewarm during this
-    // idle init window instead of on the first tile draw (measured ~176 ms
-    // `rendererReady→firstFrame` on WebGPU vs ~16 ms WebGL — the +146-200 ms
-    // stall the comment below wrongly called "below the perceptible
-    // threshold"). Fire-and-forget via a dynamic import so this never blocks
-    // `_initialize` from returning and never introduces an eager Renderer→Scene
-    // cycle (INV-06-2). Every failure mode is caught and dropped — the lazy
+    // `warmUpGlobeRenderer`, a top-level export in
+    // `GlobeSurfaceTileProviderRendering.js`, populates the module-scoped
+    // `_webgpuGlobeRenderers` WeakMap and calls `.initialize`, which runs the
+    // two-variant GlobeTerrain shader-module prewarm in this idle init window
+    // instead of on the first tile draw. Constructing the feature renderer
+    // instance here would not do it: the render path in
+    // `addWebGPUDrawCommandsForTile` builds its own per-device instance
+    // through that WeakMap, and the constructor performs no GPU work. Without
+    // the prewarm the first tile draw costs about 176 ms from
+    // `rendererReady` to `firstFrame` on WebGPU against about 16 ms on WebGL.
+    // Fire-and-forget through a dynamic import so it never blocks
+    // `_initialize` from returning and never introduces an eager
+    // Renderer-to-Scene cycle. Every failure is caught and dropped; the lazy
     // first-frame path stays correct.
     void import("../../Scene/GlobeSurfaceTileProviderRendering.js")
       .then((m) => {
@@ -1469,52 +1417,27 @@ export class WebGPUContext extends GraphicsContext {
       .catch(() => {
         /* prewarm is best-effort — the lazy first-frame path still works */
       });
-    //
-    // AUDIT_2026_05_02 C.2 (Batch 135) — eager `void this.gpuCuller`
-    // trigger removed. The lazy getter remains; consumers wired in
-    // Batches 209-211 trigger initialization on first use. Eager
-    // warm-up is now opt-in via `warmUpHighDensityDispatchers()`
-    // (Batch 215) so users with known-dense scenes can amortize the
-    // pipeline-compile cost into a load frame.
+    // The GPU cullers are not warmed here. Their lazy getters initialize on
+    // first use, and eager warm-up is opt-in through
+    // `warmUpHighDensityDispatchers()` so only a caller that knows its scene
+    // is dense pays the pipeline-compile cost in a load frame.
   }
 
   /**
-   * Batch 215 — proactively initialize the three high-density GPU
-   * dispatchers (gpuCuller, HiZ occlusion, GPUSortKeys) so their
-   * compute-shader pipeline compiles + buffer allocations happen
-   * during scene load instead of the first frame where command count
-   * crosses the activation threshold. Without this warm-up the first
-   * threshold crossing hitches by 5-50 ms (compile + alloc).
-   *
-   * Triggered by `Scene.gpuCullingHint = 'always'`. The contained
-   * default is 'never'; 'auto' remains an explicit characterization
-   * mode for users who anticipate >10K visible commands.
-   *
-   * Fire-and-forget: each dispatcher's init is async; failures are
-   * non-fatal (lazy path still works).
-   *
-   * @param hintViewportWidth  expected canvas width for HiZ pyramid
-   *    sizing. Pass the current `drawingBufferWidth` if you have it;
-   *    HiZ resizes when the actual canvas changes.
-   * @param hintViewportHeight expected canvas height for HiZ pyramid
-   * @param hintMaxCommands    expected peak opaque command count
-   *    (sets the buffer capacity for all three dispatchers).
-   */
-  /**
-   * B219-N3 (Batch 225 audit fix) — Scene-level GPU culling hint
-   * mirror. Called by `Scene.gpuCullingHint` setter.
+   * Scene-level GPU culling hint mirror. Called by the
+   * `Scene.gpuCullingHint` setter.
    *
    * When set to `'never'`:
    *   - Lazy getters refuse to allocate new culler instances.
-   *   - Any existing aux-culler instances are immediately reaped
-   *     (B225-N1 audit fix, Batch 230) instead of waiting up to
-   *     10 seconds for the idle-decay sweep (Batch 229). The user
-   *     explicitly opted out — honor that immediately.
+   *   - Any existing aux-culler instances are reaped immediately rather than
+   *     waiting up to 10 seconds for the idle-decay sweep, because the caller
+   *     has explicitly opted out.
    *
-   * Mid-render reap is safe because the next render frame's
-   * gate-update reads the hint and short-circuits to false, so the
-   * filter chain skips even if the prior frame's commands were
-   * sized to a now-destroyed buffer.
+   * Reaping mid-render is safe because the next render frame's gate update
+   * reads the hint and short-circuits to false, so the filter chain skips even
+   * if the prior frame's commands were sized to a now-destroyed buffer.
+   *
+   * @param hint The culling hint to apply.
    */
   public setGpuCullingHint(hint: "auto" | "always" | "never"): void {
     const prev = this._gpuCullingHint;
@@ -1525,14 +1448,13 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * B225-N1 (Batch 230 audit fix) — destroy every auxiliary culler
-   * instance immediately. Used by `setGpuCullingHint('never')` to
-   * honor the opt-out without waiting for idle-decay. Distinct from
-   * `_reapIdleAuxCullers` (Batch 229) which is selective by
+   * Destroy every auxiliary culler instance immediately. Used by
+   * `setGpuCullingHint('never')` to honour the opt-out without waiting for
+   * idle decay, unlike `_reapIdleAuxCullers`, which is selective by
    * last-used age.
    */
   private _reapAllAuxCullers(): void {
-    // Body extracted to `WebGPUContextCullerPool.ts` (Q35 slice).
+    // Body lives in `WebGPUContextCullerPool.ts`.
     reapAllAuxCullersExt(this);
   }
 
@@ -1540,33 +1462,54 @@ export class WebGPUContext extends GraphicsContext {
     return this._gpuCullingHint;
   }
 
+  /**
+   * Proactively initialize the three high-density GPU dispatchers — the GPU
+   * culler, HiZ occlusion and GPU sort keys — so their compute-shader pipeline
+   * compiles and buffer allocations happen during scene load instead of on the
+   * first frame whose command count crosses the activation threshold. Without
+   * the warm-up that first crossing hitches by 5-50 ms for the compile and
+   * allocation.
+   *
+   * Triggered by `Scene.gpuCullingHint = 'always'`; the contained default is
+   * `'never'`, and `'auto'` is an explicit characterization mode for scenes
+   * expected to exceed 10,000 visible commands.
+   *
+   * Fire-and-forget: each dispatcher's init is async and a failure is
+   * non-fatal, since the lazy path still works.
+   *
+   * @param {number} [hintViewportWidth=1920] Expected canvas width, used to
+   *   size the HiZ pyramid. Pass the current `drawingBufferWidth` when it is
+   *   known; HiZ resizes when the actual canvas changes.
+   * @param {number} [hintViewportHeight=1080] Expected canvas height for the
+   *   HiZ pyramid.
+   * @param {number} [hintMaxCommands=16384] Expected peak opaque command
+   *   count, which sets the buffer capacity for all three dispatchers.
+   */
   public warmUpHighDensityDispatchers(
     hintViewportWidth: number = 1920,
     hintViewportHeight: number = 1080,
     hintMaxCommands: number = 16384,
   ): void {
     if (!this._device || this._isDeviceUnavailable) return;
-    // B219-N3 — refuse warm-up when the hint forbids it. Symmetric
-    // with the lazy-getter guards so both eager + lazy paths agree.
+    // Refuse warm-up when the hint forbids it, symmetric with the lazy-getter
+    // guards so the eager and lazy paths agree.
     if (this._gpuCullingHint === "never") return;
 
     // gpuCuller — touching the getter triggers the dynamic import +
     // pipeline compile. Errors are caught inside the getter chain.
     void this.gpuCuller;
-    // B215-N2 (Batch 219 audit fix) — warm the dedicated translucent
-    // culler too. Without this, the first activation of the
-    // translucent path still pays the 5-50 ms compile hitch even
-    // though the user opted into eager warm-up.
+    // The dedicated translucent culler too: without it the first activation
+    // of the translucent path still pays the 5-50 ms compile hitch the caller
+    // opted into eager warm-up to avoid.
     void this.gpuCullerTranslucent;
-    // Batch 220 — per-frustum opaque cullers (1..3 typical) so a
-    // multi-frustum log-depth scene doesn't hitch as later frustums
-    // first activate.
+    // Per-frustum opaque cullers, one to three in a typical scene, so a
+    // multi-frustum log-depth scene does not hitch as later frustums first
+    // activate.
     for (let i = 1; i < 4; i++) {
       this.getGPUCullerForOpaqueFrustum(i);
     }
-    // Batch 221 — per-cascade shadow cullers (4 typical CSM
-    // cascades). No-op until Phase 2 activation but the compile
-    // cost amortizes here regardless.
+    // Per-cascade shadow cullers, four for typical CSM cascades. Inert until
+    // the cascades activate, but the compile cost amortizes here regardless.
     for (let i = 0; i < 4; i++) {
       this.getGPUCullerForCascade(i);
     }
@@ -1606,7 +1549,7 @@ export class WebGPUContext extends GraphicsContext {
    * Initialize default textures (white, black, normal, cubemap)
    * @internal
    */
-  // Public underscore: shared with the device-loss host-adapter (Batch 143).
+  // Public underscore: shared with the device-loss host-adapter.
   public _initializeDefaultTextures(): void {
     if (!this._device) {
       return;
@@ -1715,76 +1658,73 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * Item 1.2 (IBL-HDR, Batch 426). When true, the dynamic environment
-   * map allocates its source cube + procedural-sky storage texture as
-   * `rgba16float`. Default `false` → `rgba8unorm` (WebGL-parity, byte-
-   * identical). Read by `WebGPUDynamicEnvironmentMapManager`.
+   * When true, the dynamic environment map allocates its source cube and
+   * procedural-sky storage texture as `rgba16float`. The default `false`
+   * selects `rgba8unorm`, matching WebGL. Read by
+   * `WebGPUDynamicEnvironmentMapManager`.
    */
   get hdrEnvironmentMap(): boolean {
     return this._options.webgpu?.hdrEnvironmentMap ?? false;
   }
 
   /**
-   * Item 1.3 (IBL-PREFILTER-HQ, Batch 426). `'parity'` (default) samples
-   * the source cube at mip 0 in the radiance prefilter; `'high'` builds a
-   * source mip chain and samples a GGX-pdf-derived LOD. Read by
-   * `WebGPUDynamicEnvironmentMapManager` / `WebGPUIBLPipeline`.
+   * `'parity'`, the default, samples the source cube at mip 0 in the radiance
+   * prefilter; `'high'` builds a source mip chain and samples a
+   * GGX-pdf-derived LOD. Read by `WebGPUDynamicEnvironmentMapManager` and
+   * `WebGPUIBLPipeline`.
    */
   get iblPrefilterQuality(): "parity" | "high" {
     return this._options.webgpu?.iblPrefilterQuality ?? "parity";
   }
 
   /**
-   * Item 2.2 (ENV-AERIAL-MS, Batch 430). When true, the dynamic
-   * environment-map procedural sky fill AND the aerial-perspective
-   * post-process source their sky radiance from the sun-relative sky-view +
-   * multiple-scattering LUTs (the same tables the visible SkyAtmosphere
-   * samples) instead of their own inline single-scatter approximations, so
-   * reflected sky (env cube → model IBL) and hazed distance (aerial
-   * perspective) match the visible MS sky. Default `false` keeps both
-   * shaders' inline ports verbatim (byte-identical). Read by
-   * `WebGPUDynamicEnvironmentMapManager` + `WebGPUPostProcessStageCollection`.
+   * When true, both the dynamic environment-map procedural sky fill and the
+   * aerial-perspective post-process source their sky radiance from the
+   * sun-relative sky-view and multiple-scattering LUTs — the same tables the
+   * visible SkyAtmosphere samples — instead of their own inline
+   * single-scatter approximations, so reflected sky and hazed distance match
+   * the visible multiple-scattering sky. The default `false` leaves both
+   * shaders on their inline ports. Read by
+   * `WebGPUDynamicEnvironmentMapManager` and
+   * `WebGPUPostProcessStageCollection`.
    */
   get envMapMultiScatter(): boolean {
     return this._options.webgpu?.envMapMultiScatter ?? false;
   }
 
   /**
-   * C2-25 ENV-SCENE-CAPTURE (Batch 446). When true (AND a
-   * `DynamicEnvironmentMapManager` opts in via `enableSceneCapture`), the
-   * dynamic env cube refresh renders the opaque globe surface into its 6 faces
-   * from 6 ENU cube-face cameras so terrain reflects in water / PBR models.
-   * Default `false` keeps the env cube filled by the procedural sky alone
-   * (byte-identical to the shipped parity path; zero extra GPU passes). Read by
-   * `WebGPUDynamicEnvironmentMapManager`.
+   * When true, and when a `DynamicEnvironmentMapManager` opts in through
+   * `enableSceneCapture`, the dynamic env cube refresh renders the opaque
+   * globe surface into its six faces from six ENU cube-face cameras, so
+   * terrain reflects in water and PBR models. The default `false` leaves the
+   * env cube filled by the procedural sky alone and adds no GPU passes. Read
+   * by `WebGPUDynamicEnvironmentMapManager`.
    */
   get sceneCaptureReflections(): boolean {
     return this._options.webgpu?.sceneCaptureReflections ?? false;
   }
 
   /**
-   * C2-25 ENV-TEMPORAL (Batch 449). When true, the dynamic env cube refresh
-   * temporally accumulates: a history cube + an exponential-moving-average
-   * blend pass is inserted between the cube capture and the IBL prefilter, so
-   * the env map crossfades smoothly on small sun/camera change and the 6-face
-   * capture amortizes across frames (resetting history on a large sun/camera
-   * delta so it can't smear). Default `false` allocates no history cube and
-   * runs no blend pass — byte-identical to the shipped parity path. Read by
-   * `WebGPUDynamicEnvironmentMapManager`.
+   * When true, the dynamic env cube refresh accumulates temporally: a history
+   * cube and an exponential-moving-average blend pass sit between the cube
+   * capture and the IBL prefilter, so the env map crossfades smoothly on a
+   * small sun or camera change and the six-face capture amortizes across
+   * frames. History resets on a large sun or camera delta so it cannot smear.
+   * The default `false` allocates no history cube and runs no blend pass.
+   * Read by `WebGPUDynamicEnvironmentMapManager`.
    */
   get envMapTemporalAccumulation(): boolean {
     return this._options.webgpu?.envMapTemporalAccumulation ?? false;
   }
 
   /**
-   * C2-25 item 3-C ENV-CLOUDS / CLOUD-IBL-FULL (Batch 450). When true, the
-   * dynamic env cube's procedural sky fill runs a LOW-RES per-face procedural
-   * cloud raymarch and composites it over the sky before the IBL prefilter, so
-   * a cloudy/overcast sky produces a genuinely cloudier reflection + diffuse
-   * IBL (visible cloud structure), not just the 4.2 coarse darkening. Pairs
-   * with `envMapTemporalAccumulation` to smooth the march over frames. Default
-   * `false` binds placeholder noise and never takes the march branch
-   * (byte-identical). Read by `WebGPUDynamicEnvironmentMapManager`.
+   * When true, the dynamic env cube's procedural sky fill runs a low-resolution
+   * per-face procedural cloud raymarch and composites it over the sky before
+   * the IBL prefilter, so a cloudy or overcast sky produces a reflection and
+   * diffuse IBL with visible cloud structure rather than a uniform darkening.
+   * Pairs with `envMapTemporalAccumulation` to smooth the march over frames.
+   * The default `false` binds placeholder noise and never takes the march
+   * branch. Read by `WebGPUDynamicEnvironmentMapManager`.
    */
   get cloudsInReflections(): boolean {
     return this._options.webgpu?.cloudsInReflections ?? false;
@@ -1902,7 +1842,7 @@ export class WebGPUContext extends GraphicsContext {
    * Store this frame's volumetric cloud config (first VOLUMETRIC collection
    * wins — the primary deck; later requests this frame are ignored). Overrides
    * the base no-op so scene code can publish unconditionally without branching
-   * on `isWebGPU`. See migration_doc/CLOUD_UNIFICATION_DESIGN.md §1.3.
+   * on `isWebGPU`.
    */
   override requestVolumetricClouds(config: VolumetricCloudRequest): void {
     if (this._volumetricCloudRequest === undefined) {
@@ -1933,26 +1873,23 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION (Batch 252) — the single packed
-   * pick-depth texture (`WebGPUGlobeDepth.globeDepthTexture`, shared across
-   * all frustum slices) carries full-frustum LOG depth whenever the
-   * renderer-wide log-depth master switch is on (Batch 251 default). Mirrors
-   * `_logDepthWriteEnabled` so flipping the kill switch automatically returns
-   * `Picking` to its SAFE undefined → ray-pick fallback (the per-slice
-   * hyperbolic depth written with the switch off has no consistent
-   * single-texture reconstruction).
+   * The single packed pick-depth texture — `WebGPUGlobeDepth.globeDepthTexture`,
+   * shared across all frustum slices — carries full-frustum log depth whenever
+   * the renderer-wide log-depth master switch is on. This mirrors
+   * `_logDepthWriteEnabled` so flipping the kill switch returns `Picking` to
+   * its undefined, ray-pick fallback: the per-slice hyperbolic depth written
+   * with the switch off has no consistent single-texture reconstruction.
    */
   override get pickDepthFullFrustumLogEncode(): boolean {
     return this._logDepthWriteEnabled;
   }
 
   /**
-   * AUDIT_2026_05_02 — WebGPU scene renderer hard-codes the full-canvas
-   * viewport (`setViewport(0, 0, _width, _height)`); the per-eye split
-   * `executeWebVRCommands` performs has no effect. Until the per-eye
-   * viewport plumb lands, fail loudly when `scene.useWebVR = true`
-   * rather than silently producing single-eye output. Replaces the
-   * `isWebGPU` guard in `Scene.useWebVR` setter.
+   * The WebGPU scene renderer hard-codes the full-canvas viewport,
+   * `setViewport(0, 0, _width, _height)`, so the per-eye split
+   * `executeWebVRCommands` performs has no effect. Reporting no stereo
+   * support makes `scene.useWebVR = true` fail loudly rather than silently
+   * produce single-eye output.
    */
   override get supportsStereoViewport(): boolean {
     return false;
@@ -2068,14 +2005,14 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * Begin a new frame - creates the command encoder and acquires the canvas
-   * swap-chain view. The default canvas render pass is NOT opened here
-   * (C9-07 / FAR-405-C0): it opens on first demand — a consumer calling
-   * `resumeDefaultRenderPass()`/`_beginDefaultRenderPass()`, a canvas draw
-   * via `executeDrawCommand`, or the `endFrame` clear/present fallback for
-   * frames where nothing else touches the canvas. The first open of a
-   * frame clears each untouched channel, so the historical
-   * clear-once-then-load sequence is preserved exactly.
+   * Begin a new frame: creates the command encoder and acquires the canvas
+   * swap-chain view. The default canvas render pass is not opened here. It
+   * opens on first demand — a consumer calling
+   * `resumeDefaultRenderPass()` or `_beginDefaultRenderPass()`, a canvas draw
+   * through `executeDrawCommand`, or the `endFrame` clear/present fallback for
+   * a frame where nothing else touches the canvas. The first open of a
+   * frame clears each untouched channel, which reproduces a
+   * clear-once-then-load sequence exactly.
    *
    * Use `beginRenderPass()` to start additional render passes within the frame
    * (e.g., for shadow maps, pick framebuffers, post-processing).
@@ -2117,7 +2054,7 @@ export class WebGPUContext extends GraphicsContext {
     this._triangleCount = 0;
     this._frameCount++;
     this._environmentDemandRegistry.beginFrame(this._deviceResourceGeneration);
-    // C11-193 — advance the bounded refresh drain and re-anchor the target pool
+    // Advance the bounded refresh drain and re-anchor the target pool
     // on the current device generation before any producer can request work.
     this._environmentRefreshScheduler.beginFrame(
       this._deviceResourceGeneration,
@@ -2134,13 +2071,12 @@ export class WebGPUContext extends GraphicsContext {
     this._shadowReceiveUniformRefreshes.length = 0;
     this._shadowReceiveUniformRefreshSet.clear();
 
-    // C9-07 / FAR-405-C0 — reset the canvas demand flags + pass target.
-    // Reset here (and in beginPickFrame), never in endFrame — see the
-    // field docs.
+    // Reset the canvas demand flags and the pass target. Reset here and in
+    // `beginPickFrame`, never in `endFrame` — see the field docs.
     this._activePassTarget = null;
     this._canvasColorTouchedThisFrame = false;
     this._canvasDepthTouchedThisFrame = false;
-    // C10-03 — a fresh frame starts with no valid resolved scene color.
+    // A fresh frame starts with no valid resolved scene color.
     this._sceneColorResolvePending = true;
 
     // Advance ring buffer allocator to next page
@@ -2148,14 +2084,13 @@ export class WebGPUContext extends GraphicsContext {
       this._uniformAllocator.beginFrame();
     }
 
-    // NEW-AUX-CULLER-IDLE-DECAY (Batch 229) — bump internal frame
-    // counter + periodically prune idle auxiliary culler instances.
-    // The check runs every `IDLE_DECAY_CHECK_INTERVAL` frames so the
-    // walk cost amortizes to ~zero per frame.
+    // Bump the internal frame counter and periodically prune idle auxiliary
+    // culler instances. The check runs every `IDLE_DECAY_CHECK_INTERVAL`
+    // frames so the walk cost amortizes to nearly zero per frame.
     this._internalFrameId++;
     if (this._internalFrameId % WebGPUContext.IDLE_DECAY_CHECK_INTERVAL === 0) {
       this._reapIdleAuxCullers();
-      // C11-193 — same amortized cadence for the environment target pool. The
+      // The same amortized cadence for the environment target pool. The
       // trim refuses to destroy anything used on the current frame, so it can
       // never race a recorded-but-unsubmitted command.
       this._environmentTargetPool?.trim(this._frameCount);
@@ -2179,20 +2114,19 @@ export class WebGPUContext extends GraphicsContext {
     // Create or recreate depth texture if needed
     this._ensureDepthTexture();
 
-    // C9-07 / FAR-405-C0 — the default (canvas) render pass is no longer
-    // opened here. On the default route the scene renderer immediately
-    // redirected to the scene framebuffer, making this an empty pass
-    // (2/frame measured empty on the moving route, C9-05 API lane); it
-    // now opens on first demand and `endFrame` presents a cleared canvas
-    // for frames where no consumer touches it.
+    // The default canvas render pass is not opened here. On the default route
+    // the scene renderer immediately redirects to the scene framebuffer, so
+    // opening it here produces two empty passes per frame; it opens on first
+    // demand instead, and `endFrame` presents a cleared canvas for a frame no
+    // consumer touches.
 
-    // NEW-WEBGPU-UNIFORMSTATE-VIEWPORT (Batch 368, item 371): seed
-    // uniformState.viewport once per frame. The WebGL path seeds it in
-    // RenderState.applyViewport (alongside gl.viewport); the WebGPU path never
-    // did, so uniformState.viewportOrthographic / viewportTransformation stayed
-    // at IDENTITY and every screen-space WGSL shader had to hand-build them
-    // from drawingBufferWidth/Height. Seeding here makes the canonical
-    // UniformState getters correct for ALL screen-space WebGPU shaders.
+    // Seed `uniformState.viewport` once per frame. The WebGL path seeds it in
+    // `RenderState.applyViewport`, alongside `gl.viewport`; without the
+    // equivalent here `uniformState.viewportOrthographic` and
+    // `viewportTransformation` stay at identity and every screen-space WGSL
+    // shader has to hand-build them from drawingBufferWidth/Height. Seeding
+    // here makes the canonical UniformState getters correct for every
+    // screen-space WebGPU shader.
     // UniformState owns this context's immutable ClipSpaceConvention, so the
     // lazy viewport-orthographic matrix uses WebGPU's 0..1 depth range without
     // any process-global renderer ordering. The setter only reads
@@ -2212,13 +2146,14 @@ export class WebGPUContext extends GraphicsContext {
    * `Scene.pick`/`pickAsync` render via `pickBegin → updateAndExecuteCommands`,
    * which never calls {@link WebGPUContext#beginFrame} — so there is no command
    * encoder, and the WebGPU pick pass (`executePickPass`) would early-return on
-   * the missing encoder, leaving the pick framebuffer empty (every pick returns
-   * `undefined` — FORK-34). This creates just the encoder + advances the uniform
-   * ring-buffer page (the non-canvas half of `beginFrame`); it deliberately
-   * does NOT acquire the canvas texture or open the default canvas render pass
-   * (the pick pass renders to the pick FBO and manages its own pass). The
-   * matching submit/finalize is `pickEnd → context.endFrame()`. No-op if an
-   * encoder already exists (e.g. re-entrant call within one pick).
+   * the missing encoder, leaving the pick framebuffer empty and every pick
+   * returning `undefined`. This creates just the encoder and advances the
+   * uniform ring-buffer page — the non-canvas half of `beginFrame`. It does
+   * not acquire the canvas texture or open the default canvas render pass,
+   * because the pick pass renders to the pick framebuffer and manages its own
+   * pass. The matching submit and finalize is `pickEnd → context.endFrame()`.
+   * A no-op if an encoder already exists, as in a re-entrant call within one
+   * pick.
    */
   beginPickFrame(): void {
     if (
@@ -2228,32 +2163,32 @@ export class WebGPUContext extends GraphicsContext {
     ) {
       return;
     }
-    // C9-07 / FAR-405-C0 — pick mini-frames never acquire the swap view,
-    // so the endFrame present fallback (gated on `_currentTextureView`)
-    // can never fabricate a canvas pass here. Reset the tracking state
-    // anyway so a stale target from a truncated frame can't leak in.
+    // A pick mini-frame never acquires the swap view, so the `endFrame`
+    // present fallback, gated on `_currentTextureView`, cannot fabricate a
+    // canvas pass here. The tracking state is reset anyway so a stale target
+    // from a truncated frame cannot leak in.
     //
-    // C9-AUDIT-P1-SWEEP (Batch 684) edge (b): if a render frame still holds
-    // the swap view (its endFrame has not run), its canvas-touched flags
-    // describe the PP-blit that already wrote the canvas this frame — a pick
-    // mini-frame must NOT wipe them, or the render's present fallback would
-    // re-clear the blit. Only reset the demand flags for a standalone pick.
+    // If a render frame still holds the swap view — its `endFrame` has not run
+    // — its canvas-touched flags describe the post-process blit that already
+    // wrote the canvas this frame, and wiping them would make the render's
+    // present fallback re-clear the blit. So only a standalone pick resets the
+    // demand flags.
     const renderFrameInFlight = this._currentTextureView !== null;
     if (!renderFrameInFlight) {
       this._shadowReceiveUniformRefreshes.length = 0;
       this._shadowReceiveUniformRefreshSet.clear();
     }
     this._activePassTarget = null;
-    // C10-03 — pick mini-frames render to a single-sample pick FBO, so the
-    // ensure helper is inert (I5); reset conservatively regardless.
+    // A pick mini-frame renders to a single-sample pick framebuffer, so the
+    // ensure helper is inert; reset conservatively regardless.
     this._sceneColorResolvePending = true;
     if (!renderFrameInFlight) {
       this._canvasColorTouchedThisFrame = false;
       this._canvasDepthTouchedThisFrame = false;
     }
-    // C9-AUDIT-P1-SWEEP (Batch 684) edge (a): drop any swap view a prior
-    // (possibly truncated) render frame left behind so a pick pass cannot
-    // lazily open the stale canvas view during this mini-frame.
+    // Drop any swap view a prior, possibly truncated, render frame left behind
+    // so a pick pass cannot lazily open the stale canvas view during this
+    // mini-frame.
     this._currentTextureView = null;
     if (this._uniformAllocator) {
       this._uniformAllocator.beginFrame();
@@ -2322,16 +2257,14 @@ export class WebGPUContext extends GraphicsContext {
   /**
    * Starts the default render pass targeting the canvas surface.
    *
-   * C9-07 / FAR-405-C0 — no longer called from `beginFrame()`; the canvas
-   * pass opens on first demand (`resumeDefaultRenderPass`, the lazy
-   * `executeDrawCommand` open, or the `endFrame` present fallback). Load
-   * ops derive from the per-frame demand flags: the FIRST open of a frame
-   * clears each untouched channel (exactly what the historical beginFrame
-   * open did once per frame), every subsequent open loads. Callers no
-   * longer choose clear-vs-load — the flags make it deterministic.
+   * Not called from `beginFrame()`: the canvas pass opens on first demand,
+   * through `resumeDefaultRenderPass`, the lazy `executeDrawCommand` open, or
+   * the `endFrame` present fallback. Load ops derive from the per-frame demand
+   * flags — the first open of a frame clears each untouched channel and every
+   * subsequent open loads — so a caller never chooses between clear and load.
    *
-   * @param {string} [label] - Pass label; the endFrame present fallback
-   *   passes a distinct label so API-lane evidence is self-describing.
+   * @param {string} [label] - Pass label; the `endFrame` present fallback
+   *   passes a distinct label so a captured pass list is self-describing.
    */
   private _beginDefaultRenderPass(
     label: string = "Scene Main Render Pass",
@@ -2343,9 +2276,9 @@ export class WebGPUContext extends GraphicsContext {
     // A pass must never be re-opened on top of an already-active pass. The
     // browser validation layer raises "cannot begin a render pass while
     // another is encoding" asynchronously, which is hard to trace back to
-    // the JS caller. In debug builds we throw synchronously with the stack
-    // pointing at whoever called us; in release we defensively end the
-    // orphan pass so production keeps rendering.
+    // the JS caller. A debug build throws synchronously with the stack
+    // pointing at the caller; a release build defensively ends the orphan pass
+    // so production keeps rendering.
     //>>includeStart('debug', pragmas.debug);
     if (this._currentRenderPassEncoder) {
       throw new DeveloperError(
@@ -2361,13 +2294,11 @@ export class WebGPUContext extends GraphicsContext {
       this._activePassTarget = null;
     }
 
-    // First-open-clears rule (C9-07 / FAR-405-C0): today's frame always
-    // cleared these channels exactly once (at beginFrame) and loaded
-    // thereafter; deriving from the flags clears each channel exactly once
-    // at its first actual open instead. Depth is load-bearing: an
-    // untouched depth texture read with "load" yields lazy-zero 0.0, not
-    // the historical clear value 1.0, and every depth-tested canvas draw
-    // would fail.
+    // First open of a frame clears; every later open loads. Deriving the load
+    // op from the demand flags clears each channel exactly once, at its first
+    // actual open. Depth is the load-bearing half: an untouched depth texture
+    // read with "load" yields WebGPU's lazy zero, 0.0, rather than the 1.0 a
+    // clear writes, and every depth-tested canvas draw then fails.
     const colorLoadOp: GPULoadOp = this._canvasColorTouchedThisFrame
       ? "load"
       : "clear";
@@ -2441,8 +2372,8 @@ export class WebGPUContext extends GraphicsContext {
    *
    * @param {GPURenderPassDescriptor} descriptor - The render pass descriptor
    * @param {WebGPUPassTarget} [target="external"] - Explicit pass-target
-   *   classification (C9-07 / FAR-405-C0). The three scene-FB open sites
-   *   declare "scene-framebuffer"; everything else defaults to "external".
+   *   classification. The three scene-FB open sites declare
+   *   "scene-framebuffer"; everything else defaults to "external".
    * @returns {GPURenderPassEncoder | null} The new render pass encoder, or null if no command encoder
    *
    * @example
@@ -2477,9 +2408,9 @@ export class WebGPUContext extends GraphicsContext {
 
     // Same invariant as `_beginDefaultRenderPass`: opening a pass while
     // another is encoding is a JS-side bug that the browser surfaces only
-    // as an async validation error. Throw loudly in debug so the stack
-    // points at the caller; fall through to the silent defensive end in
-    // release so production keeps rendering.
+    // as an async validation error. A debug build throws so the stack points
+    // at the caller; a release build falls through to the defensive end so
+    // production keeps rendering.
     //>>includeStart('debug', pragmas.debug);
     if (this._currentRenderPassEncoder) {
       throw new DeveloperError(
@@ -2504,24 +2435,23 @@ export class WebGPUContext extends GraphicsContext {
       );
     this._activePassTarget = target;
 
-    // C10-03-MSAA-BOUNDARY-BYTES — opening a scene-framebuffer segment means
-    // new draws will land in the multisampled color attachment, making the
-    // single-sample resolve texture stale. Mark it so the next resolved-color
-    // consumer's `_ensureSceneColorResolved` performs the (now demand-driven)
-    // resolve. This single hook, keyed on the C9-07 pass target, replaces the
-    // eager per-`pass.end()` resolve that `getColorAttachments({resolve:false})`
-    // removed. Canvas / external / pick passes never dirty scene color.
+    // Opening a scene-framebuffer segment means new draws will land in the
+    // multisampled color attachment, making the single-sample resolve texture
+    // stale. Marking it here is what makes the next resolved-color consumer's
+    // `_ensureSceneColorResolved` perform the demand-driven resolve, in place
+    // of an eager resolve at every `pass.end()`. Canvas, external and pick
+    // passes never dirty scene color.
     if (target === "scene-framebuffer") {
       this._sceneColorResolvePending = true;
     }
 
-    // Canvas-touch MECHANISM (C9-07 / FAR-405-C0): a pass whose color or
-    // depth attachment IS the current swap-chain view has, by construction,
-    // written canvas content — record it structurally so the next
-    // default-pass open loads (never clears) the channel and the endFrame
-    // present fallback preserves the blit. This is the belt to the manual
-    // `markCanvasContentWritten()` suspenders (still called at every existing
-    // site). The scan is over ≤8 attachments — no allocation, no logging.
+    // A pass whose color or depth attachment is the current swap-chain view
+    // has, by construction, written canvas content. Recording that here
+    // structurally is what makes the next default-pass open load rather than
+    // clear the channel, and what makes the `endFrame` present fallback
+    // preserve the blit; the manual `markCanvasContentWritten()` calls at each
+    // write site are the redundant half. The scan covers at most eight
+    // attachments and neither allocates nor logs.
     const colorAttachments = descriptor.colorAttachments;
     if (defined(colorAttachments)) {
       for (const attachment of colorAttachments) {
@@ -2720,7 +2650,7 @@ export class WebGPUContext extends GraphicsContext {
 
   /**
    * Declare that this frame's canvas color content has been written by a
-   * pass the context cannot observe (C9-07 / FAR-405-C0). The post-process
+   * pass the context cannot observe. The post-process
    * pipeline and the debug overlays blit to `currentTextureView` through
    * raw `encoder.beginRenderPass` calls, bypassing the context pass
    * helpers — without this marker the next default-pass open would use
@@ -2865,8 +2795,8 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * Compatibility alias for the original C9-12A imagery-specific surface.
-   * New renderer-neutral consumers must use
+   * Compatibility alias for the imagery-specific form of this surface.
+   * Renderer-neutral consumers use
    * {@link WebGPUContext#enqueueTextureMipGeneration}.
    */
   enqueueImageryMipGeneration(
@@ -3043,13 +2973,12 @@ export class WebGPUContext extends GraphicsContext {
    * submit and must establish ordering before it samples newly realized
    * textures. Ordinary renderers enqueue work and let `endFrame()` own submit.
    *
-   * F3 (Batch 686) originally exposed this as an imagery-specific API.
-   * MUST be called by every renderer that privately `queue.submit`s work which
-   * samples globe imagery textures mid-frame (e.g. the dynamic environment-map
-   * capture): without the flush, a texture realized earlier in the same frame
-   * would be sampled with mips 1..N still zero-initialized, because the
+   * Every renderer that privately `queue.submit`s work sampling globe imagery
+   * textures mid-frame — the dynamic environment-map capture, for instance —
+   * must call this. Without the flush, a texture realized earlier in the same
+   * frame is sampled with mips 1..N still zero-initialized, because the
    * frame-owned `"TextureMipPreparation"` submit only happens in `endFrame`.
-   * No-op when nothing is pending.
+   * A no-op when nothing is pending.
    */
   flushPendingTextureMipJobs(): void {
     if (this._pendingTextureMipJobs.length === 0) {
@@ -3140,15 +3069,14 @@ export class WebGPUContext extends GraphicsContext {
         this._activePassTarget = null;
       }
 
-      // C9-07 / FAR-405-C0 — deferred clear/present fallback. An acquired
-      // swap texture that nothing writes presents WebGPU lazy-zeros; the
-      // historical behavior was one beginFrame clear pass every frame. The
-      // ONLY frames that pay this open+end are frames where no consumer
-      // touched the canvas color (empty scene, post-process missing,
-      // exception-truncated frames). Pick mini-frames never acquire a swap
-      // view (`beginPickFrame`), so `_currentTextureView === null` excludes
-      // them naturally. The distinct label keeps API-lane evidence
-      // self-describing (nothing in live code matches pass labels).
+      // Deferred clear and present fallback. An acquired swap texture that
+      // nothing writes presents WebGPU lazy zeros, so a frame where no
+      // consumer touched the canvas colour — an empty scene, a missing
+      // post-process, an exception-truncated frame — needs this open and end.
+      // Every other frame skips it. A pick mini-frame never acquires a swap
+      // view in `beginPickFrame`, so `_currentTextureView === null` excludes
+      // it naturally. The distinct label keeps a captured pass list
+      // self-describing; no live code matches on pass labels.
       if (
         this._currentTextureView !== null &&
         !this._canvasColorTouchedThisFrame
@@ -3173,15 +3101,15 @@ export class WebGPUContext extends GraphicsContext {
       // idempotent, so pick/empty frames that never began profiling are no-ops.
       this._performanceManager?.endFrame(this._currentCommandEncoder);
 
-      // C9-12A/C12-33 — encode all texture mip jobs deferred out
-      // of draw emission into one prep encoder and submit it BEFORE the frame
-      // encoder as its OWN submit (F8 — same-queue ordering is guaranteed, and
-      // an invalid prep buffer can no longer invalidate the whole frame submit).
-      // Queue ordering (copyExternalImageToTexture at update time → these mip
-      // passes → scene passes) guarantees the frame that realized the texture
-      // samples complete mips. Only textures destroyed INLINE this frame are
-      // skipped (F7); scheduled-destroy textures are live through this submit
-      // and still get their mips.
+      // Encode every texture mip job deferred out of draw emission into one
+      // prep encoder and submit it as its own submit, before the frame
+      // encoder: same-queue ordering is guaranteed, and an invalid prep buffer
+      // then cannot invalidate the whole frame submit. The resulting queue
+      // order — `copyExternalImageToTexture` at update time, then these mip
+      // passes, then the scene passes — is what lets the frame that realized
+      // the texture sample complete mips. Only textures destroyed inline this
+      // frame are skipped; scheduled-destroy textures are live through this
+      // submit and still get their mips.
       this._submitPendingTextureMipJobs();
 
       // Submit command buffer
@@ -3224,9 +3152,10 @@ export class WebGPUContext extends GraphicsContext {
       this._currentCommandEncoder = null;
       this._currentTextureView = null;
     } catch (error) {
-      // C11-76 — any failure before the frame submit completes abandons every
-      // frame-owned readback copy. Do not leave promises queued for a future
-      // beginFrame: request-render scenes may stop immediately after an error.
+      // Any failure before the frame submit completes abandons every
+      // frame-owned readback copy. Leaving the promises queued for a future
+      // `beginFrame` would strand them: a request-render scene may stop
+      // rendering immediately after an error.
       this._drainAfterFrameSubmitCallbacks(false);
       this._currentRenderPassEncoder = null;
       this._activePassTarget = null;
@@ -3264,17 +3193,11 @@ export class WebGPUContext extends GraphicsContext {
       }
 
       // Create new depth texture. TEXTURE_BINDING is added so compute
-      // shaders (Hi-Z pyramid, occlusion test, G-buffer producer in
-      // Phase 8a Slice 2) can sample the depth after the render pass
-      // stores it.
-      //
-      // Batch 86 (Phase 8a Slice 2b) — flipped on unconditionally
-      // (previously the comment said "guarded by opt-in" but no opt-in
-      // logic was ever implemented; the accessor `depthOnlyTextureView`
-      // always returned null, silently disabling HiZ and the G-buffer
-      // producer). Enabling unconditionally has negligible perf cost
-      // (one extra texture-usage bit, no per-frame work) and unblocks
-      // every compute-sampled-depth consumer.
+      // shaders — the Hi-Z pyramid, the occlusion test, the G-buffer producer
+      // — can sample the depth after the render pass stores it. It is
+      // unconditional: the bit costs one texture-usage flag and no per-frame
+      // work, while gating it leaves `depthOnlyTextureView` returning null and
+      // silently disables every compute-sampled-depth consumer.
       const depthUsage =
         GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
       this._depthTexture = this._device.createTexture({
@@ -3369,7 +3292,7 @@ export class WebGPUContext extends GraphicsContext {
    *   through from `scene.cascadedShadowMapResolution`. The CSM renderer
    *   clamps the value, so callers need not pre-clamp.
    * @param softShadows Whether the receive shaders soften cascade edges
-   *   with a 3x3 PCF box kernel (NEW-CSM-SOFT-SHADOW-PCF). Passed through
+   *   with a 3x3 PCF box kernel. Passed through
    *   from `scene.cascadedShadowMapSoftShadows`. Defaults to true.
    */
   private _initCSMRenderer(resolution?: number, softShadows?: boolean): void {
@@ -3386,12 +3309,10 @@ export class WebGPUContext extends GraphicsContext {
 
   // ====================================================================================
 
-  // `DESIRED_FEATURES` constant + `_buildFeatureList` wrapper moved
-  // to `WebGPUFeatureFlags.ts` in Batch 132. The Context calls
-  // `this._featureFlags.buildRequestList(adapter, userRequested)`
-  // directly from `_initialize` now; there's no longer a private
-  // method on the class for building the request list because there
-  // was only ever one caller.
+  // The `DESIRED_FEATURES` constant and the request-list builder live in
+  // `WebGPUFeatureFlags.ts`. `_initialize` calls
+  // `this._featureFlags.buildRequestList(adapter, userRequested)` directly;
+  // with one caller there is no reason for a private wrapper method here.
 
   /**
    * Updates internal capability flags based on which features were
@@ -3477,7 +3398,7 @@ export class WebGPUContext extends GraphicsContext {
    * Replaces this context's immutable capability snapshot from device limits.
    * @internal
    */
-  // Public underscore: shared with the device-loss host-adapter (Batch 143).
+  // Public underscore: shared with the device-loss host-adapter.
   public _initializeContextLimits(): void {
     if (!this._device) {
       this._graphicsCapabilities = GraphicsCapabilities.EMPTY;
@@ -3509,10 +3430,10 @@ export class WebGPUContext extends GraphicsContext {
    * @private
    */
   private _initializeWebGLStub(): void {
-    // Live state proxy + factory call moved to
-    // `WebGPUContextWebGLStubInit.ts` (Batch 129). The 26 underscore-
-    // prefixed fields the proxy reads/writes are now `public _xxx` on
-    // this class — same convention as `public _device`, `public _canvas`,
+    // The live state proxy and the factory call live in
+    // `WebGPUContextWebGLStubInit.ts`. The 26 underscore-prefixed fields the
+    // proxy reads and writes are `public _xxx` on this class, the same
+    // convention as `public _device`, `public _canvas` and
     // `public _frameCount`.
     this._gl = buildWebGLCompatibilityStubFor(this);
   }
@@ -3685,13 +3606,10 @@ export class WebGPUContext extends GraphicsContext {
    * so consumers stay backend-agnostic.
    */
   override createSync(_options?: object) {
-    // Batch 187 — pre-existing TS error fix. `WebGPUSync.create` accepts
-    // `{ context }` and reads `context._device` internally; the prior
-    // call passed `{ device, timeoutFrames }` which doesn't match
-    // `WebGPUSyncOptions`. The `device`/`timeoutFrames` fields had no
-    // consumers (verified by grep) — `options` is part of the abstract
-    // base signature and currently has no caller-provided fields, so
-    // pass `this` as the context and let WebGPUSync resolve the device.
+    // `WebGPUSync.create` accepts `{ context }` and reads `context._device`
+    // internally, so this passes `this` and lets it resolve the device.
+    // `options` is part of the abstract base signature and carries no
+    // caller-provided fields on this backend.
     if (this._isDeviceUnavailable || !this._device) {
       throw new DeveloperError(
         this._isDestroyed
@@ -3975,10 +3893,11 @@ export class WebGPUContext extends GraphicsContext {
       // their staged writes would only land at endFrame's flush, AFTER this
       // submit. Mirrors the endFrame() flush.
       this._uniformAllocator?.flush();
-      // F3 (Batch 686) — this mid-frame submit executes draws already encoded
-      // into the frame encoder, which may sample an imagery texture realized
-      // THIS frame whose mip chain is still pending for endFrame. Flush the
-      // pending mip jobs first (own submit) so the queue orders mips → draws.
+      // This mid-frame submit executes draws already encoded into the frame
+      // encoder, which may sample an imagery texture realized this frame whose
+      // mip chain is still pending for `endFrame`. Flushing the pending mip
+      // jobs first, as their own submit, orders mips before draws on the
+      // queue.
       this.flushPendingTextureMipJobs();
       const commandBuffer = this._currentCommandEncoder.finish();
       this._device!.queue.submit([commandBuffer]);
@@ -4243,11 +4162,10 @@ export class WebGPUContext extends GraphicsContext {
     const cmd = clearCommand as CesiumClearCommand;
     const ps = passState as CesiumPassState | undefined;
 
-    // ── Infinite-loop guard (permanent, not debug-only) ──
-    // BUG-12 proved that a mis-ordered guard can cause clear() to be
-    // called hundreds of times per frame, freezing the tab. This counter
-    // is cheap (one increment + comparison) and catches the failure mode
-    // immediately with a clear error message.
+    // Infinite-loop guard, permanent rather than debug-only. A mis-ordered
+    // guard elsewhere can make `clear()` run hundreds of times in one frame
+    // and freeze the tab. One increment and one comparison catch that
+    // immediately with a diagnosable error.
     this._clearCallsThisFrame++;
     if (this._clearCallsThisFrame > 50) {
       if (!this._clearOverflowWarned) {
@@ -4274,21 +4192,18 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
-    // ── Scene-owned pass guard (MUST run BEFORE ending the pass) ──
+    // Scene-owned pass guard. It has to run before the pass is ended.
     //
-    // When a scene-owned pass (the scene framebuffer pass or the default
-    // canvas pass) is active, ClearCommands must NOT tear it down and
-    // replace it with a canvas-targeting clear pass. Those passes were
-    // opened with the correct load ops, so these clears are redundant —
-    // and tearing down the scene-FB pass mid-frame is the documented
-    // all-black failure mode.
+    // While a scene-owned pass — the scene framebuffer pass or the default
+    // canvas pass — is active, a ClearCommand must not tear it down and
+    // replace it with a canvas-targeting clear pass. Those passes are opened
+    // with the correct load ops, so the clear is redundant, and tearing down
+    // the scene-FB pass mid-frame renders the scene all black.
     //
-    // C9-07 / FAR-405-C0 — the guard used to infer this from
-    // `_currentRenderPassEncoder.label.startsWith("Scene")` (matching
-    // exactly "Scene Main Render Pass" + "Scene Framebuffer Render
-    // Pass"); it now reads the explicitly tracked pass target, which is
-    // nulled at every `.end()` site, so the historical moved-below-end
-    // bug (guard always seeing null) cannot silently recur.
+    // The guard reads the explicitly tracked pass target, which is nulled at
+    // every `.end()` site. Inferring it from the pass label instead would put
+    // the guard at the mercy of label spelling, and placing it after the
+    // `.end()` would make it read null and never fire.
     if (
       this._activePassTarget === "scene-framebuffer" ||
       this._activePassTarget === "default-canvas"
@@ -4332,28 +4247,27 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
-    // ── Canvas clear-state capture (NEW-WEBGPU-ENV-PASS-DROP / C12-G1F1) ──
-    // WebGL's `Context.clear` records EVERY requested clear value into GL
-    // clear-state (`gl.clearColor` / `clearDepth` / `clearStencil`) before
-    // issuing `gl.clear`, so the state outlives the call that set it. The WebGPU
-    // port kept only the `gl.clear` half: nothing ever wrote `_clearColor` from
-    // a clear command, so it stayed at its constructor value — transparent
-    // black — for the life of the context. Every frame whose canvas is FIRST
-    // opened by `_beginDefaultRenderPass` (the `endFrame` present fallback, the
-    // lazy `executeDrawCommand` open, `resumeDefaultRenderPass`) therefore
-    // presented transparent black no matter what `scene.backgroundColor` was.
+    // Canvas clear-state capture. WebGL's `Context.clear` records every
+    // requested clear value into GL clear state — `gl.clearColor`,
+    // `clearDepth`, `clearStencil` — before issuing `gl.clear`, so the state
+    // outlives the call that set it. Without the same capture here,
+    // `_clearColor` never moves off its constructor value of transparent
+    // black, and every frame whose canvas is first opened by
+    // `_beginDefaultRenderPass` — the `endFrame` present fallback, the lazy
+    // `executeDrawCommand` open, `resumeDefaultRenderPass` — presents
+    // transparent black regardless of `scene.backgroundColor`.
     //
-    // Content-free frames are exactly that case:
+    // A content-free frame is exactly that case:
     // `WebGPUSceneRenderer.executeCommands` early-returns when
-    // `shouldExecuteWebGPUSceneFrame` is false, so the scene-framebuffer pass —
-    // the only other consumer of `frameState.backgroundColor` — never opens and
+    // `shouldExecuteWebGPUSceneFrame` is false, so the scene-framebuffer pass,
+    // the only other consumer of `frameState.backgroundColor`, never opens and
     // the present fallback is the sole writer of the canvas.
     //
-    // Rationale for the per-channel/canvas-only shape lives in
-    // `WebGPUCanvasClearState`; keep the decision there so it stays testable
-    // without a device. `null` is that module's ONLY "no change" sentinel, so
-    // these are `!== null` tests and never truthiness tests — a transparent
-    // black capture and a `depth: 0` capture are both real values.
+    // The per-channel, canvas-only shape is decided in
+    // `WebGPUCanvasClearState` so it stays testable without a device. `null`
+    // is that module's only "no change" sentinel, so these are `!== null`
+    // tests rather than truthiness tests: a transparent-black capture and a
+    // `depth: 0` capture are both real values.
     const clearStateUpdate = canvasClearStateUpdate(
       cmd,
       colorView === this._currentTextureView,
@@ -4368,18 +4282,14 @@ export class WebGPUContext extends GraphicsContext {
       this._clearStencil = clearStateUpdate.stencil;
     }
 
-    // ── Deferred canvas clear (C9-07 / FAR-405-C0) ──
-    // A default-framebuffer clear arriving while no pass is active and the
-    // canvas is still untouched this frame (the background
-    // `scene._clearColorCommand` on the new deferred-open timeline) is
-    // subsumed by the pending first-open clear (or the endFrame present
-    // fallback), which delivers the same `_clearColor`/`_clearDepth`/
-    // `_clearStencil` values. This reproduces the historical behavior
-    // where that command arrived while the beginFrame canvas pass was
-    // active and was swallowed by the guard above. The capture block above
-    // is what makes "the same values" true for color — before it, the
-    // deferral silently substituted transparent black for the scene
-    // background on every content-free frame.
+    // Deferred canvas clear. A default-framebuffer clear arriving while no
+    // pass is active and the canvas is still untouched this frame — the
+    // background `scene._clearColorCommand` on the deferred-open timeline — is
+    // subsumed by the pending first-open clear, or by the `endFrame` present
+    // fallback, which delivers the same `_clearColor`, `_clearDepth` and
+    // `_clearStencil` values. The capture block above is what makes "the same
+    // values" true for colour; without it this deferral substitutes
+    // transparent black for the scene background on every content-free frame.
     if (
       !hadActivePass &&
       colorView === this._currentTextureView &&
@@ -4389,11 +4299,10 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
-    // C9-07 / FAR-405-C0 — when this clear pass attaches the CONTEXT
-    // (canvas) depth texture and that texture is untouched this frame, a
-    // "load" op would read lazy-zero 0.0 instead of the historical 1.0
-    // (the beginFrame pass used to clear it every frame). Force a clear
-    // to the default values — byte-identical to what "load" used to see.
+    // When this clear pass attaches the context (canvas) depth texture and
+    // that texture is untouched this frame, a "load" op reads WebGPU's lazy
+    // zero, 0.0, rather than the 1.0 a clear writes. Force a clear to the
+    // default values instead.
     if (
       depthStencilView === this._depthTextureView &&
       depthStencilView !== null &&
@@ -4482,11 +4391,10 @@ export class WebGPUContext extends GraphicsContext {
    * Resize the drawing buffer
    */
   resize(): void {
-    // Canvas resizing is handled automatically by the browser
-    // Just need to reconfigure if needed. HDR-DISPLAY (Batch 206)
-    // routes through `_applyCanvasConfig` (Batch 213 audit fix) so
-    // the HDR mode survives resize and a browser without extended
-    // toneMapping support degrades to rgba16float-only or SDR.
+    // The browser handles canvas resizing; only the configuration needs
+    // reapplying. Routing through `_applyCanvasConfig` is what makes the HDR
+    // mode survive a resize, and what degrades a browser without extended
+    // toneMapping support to rgba16float-only or SDR.
     if (this._context && this._device && !this._isDeviceUnavailable) {
       this._applyCanvasConfig();
     }
@@ -4517,14 +4425,13 @@ export class WebGPUContext extends GraphicsContext {
    * WebGPU override: dispatch draw commands through the active render pass encoder.
    * Silently skips non-WebGPU commands (expected during transition).
    *
-   * C9-07 / FAR-405-C0 — demand-open: a WebGPU draw command arriving with
-   * no active pass during a render frame (legacy overlay commands from
-   * `Scene._overlayCommandList`, executed after post-process) lazily opens
-   * the default canvas pass. Historically those commands landed in the
-   * canvas pass the post-process tail unconditionally re-opened; the tail
-   * resume is now demand-driven, so the open happens here instead — same
-   * target, same load ops (canvas already marked written by the PP blit).
-   * Pick mini-frames (`_currentTextureView === null`) keep the silent skip.
+   * A WebGPU draw command arriving with no active pass during a render frame
+   * — the overlay commands from `Scene._overlayCommandList`, executed after
+   * post-process — lazily opens the default canvas pass here, since the
+   * post-process tail resume is demand-driven and no longer re-opens it
+   * unconditionally. Same target and same load ops: the post-process blit has
+   * already marked the canvas written. A pick mini-frame, where
+   * `_currentTextureView === null`, keeps the silent skip.
    */
   override executeDrawCommand(
     command: CesiumAnyDrawCommand,
@@ -4579,12 +4486,12 @@ export class WebGPUContext extends GraphicsContext {
       return true; // Handled (no-op if no shadow renderer registered)
     }
     const { shadowState } = scene.frameState;
-    // DP-H43 — honor `viewer.shadows = false` / scene-wide shadow gate.
-    // WebGL's Scene.js per-command check (`shadowsEnabled && command.castShadows`)
-    // skips the entire cast derivation when the flag is off. Mirror that
-    // here at the pass entry so we don't iterate shadowMaps for nothing
-    // (and so users don't pay the GPU cost of a depth-only pass when
-    // shadows are disabled globally).
+    // Honour `viewer.shadows = false` and the scene-wide shadow gate.
+    // WebGL's per-command check in Scene.js,
+    // `shadowsEnabled && command.castShadows`, skips the whole cast
+    // derivation when the flag is off; testing it at the pass entry here
+    // avoids iterating shadowMaps for nothing and avoids the GPU cost of a
+    // depth-only pass when shadows are globally disabled.
     if (!shadowState || shadowState.shadowsEnabled === false) {
       return true;
     }
@@ -4645,7 +4552,7 @@ export class WebGPUContext extends GraphicsContext {
         csm.setEllipsoid(
           scene.ellipsoid?.radii ?? scene.globe?.ellipsoid?.radii,
         );
-        // NEW-CSM-CASCADE-GROUND-FIT — clamp the split distribution to the
+        // Clamp the split distribution to the
         // visible ground depth so the near cascade fits the actual receiver
         // patch (sub-metre/texel) instead of spreading over the whole
         // [near, maxShadowDistance] range. Mirrors WebGL ShadowMap clamping
@@ -4697,9 +4604,9 @@ export class WebGPUContext extends GraphicsContext {
           // secondary shadows). Slice 3 wires moon-light cascade pairs.
           if (i === 0) {
             const camera = scene.frameState.camera;
-            // Batch 226 — pass the context so the CSM cast helper
-            // can look up per-cascade culler instances + read the
-            // gpuCullingHint for `'never'` short-circuit.
+            // The context is passed so the CSM cast helper can look up
+            // per-cascade culler instances and read `gpuCullingHint` for the
+            // `'never'` short-circuit.
             this._csmRenderer.renderCastPass(
               encoder,
               castCommands as ReadonlyArray<unknown>,
@@ -4769,18 +4676,15 @@ export class WebGPUContext extends GraphicsContext {
       scene.mode === 3 /* SceneMode.SCENE3D */ &&
       scene._globeTranslucencyState.useDepthPlane;
 
-    // C-R8-GLOBE-DEPTH-ENABLE (Batch 42) + C-R8-GLOBE-DEPTH-MSAA (Batch
-    // 43) — flip the flag on for WebGPU so the globe-depth-framebuffer
-    // path runs (matches WebGL's `FramebufferOrchestrator.js:59-60`
-    // which sets this to `defined(view.globeDepth)`, i.e., always on
-    // when not picking). Concrete user-visible effect:
+    // On for WebGPU whenever not picking, so the globe-depth-framebuffer path
+    // runs. This matches `FramebufferOrchestrator.js`, which sets the flag to
+    // `defined(view.globeDepth)` on the WebGL side. The effect is that
     // `WebGPUSceneRenderer` instantiates `_globeDepth`, the post-tile
-    // depth-copy hook fires (writing a sampleable packed depth
-    // texture), and `pickPosition` reads that texture to translate
-    // screen-space picks into world coordinates. Batch 43 added the
-    // MSAA depth-sampling variant (`texture_depth_multisampled_2d` +
-    // `textureLoad` sample-index-0) so the flag no longer needs an
-    // MSAA gate — both sample counts are wired.
+    // depth-copy hook fires and writes a sampleable packed depth texture, and
+    // `pickPosition` reads that texture to translate a screen-space pick into
+    // world coordinates. Both sample counts are wired — the MSAA variant
+    // samples through `texture_depth_multisampled_2d` and `textureLoad` at
+    // sample index 0 — so the flag needs no MSAA gate.
     environmentState.useGlobeDepthFramebuffer = !picking;
 
     environmentState.useOIT =
@@ -4800,15 +4704,12 @@ export class WebGPUContext extends GraphicsContext {
       !picking && scene.invertClassification;
     environmentState.renderTranslucentDepthForPick = false;
 
-    // ── C9-09-ATTACHMENT-DEMAND-REGISTRY (FAR-401-C0) ──
-    // Compute the ONE canonical attachment-demand record for this frame,
-    // once, before any scene pass opens or any pipeline builds. Observe-only
-    // in this slice: the record is frozen on the context and reported through
-    // the debug snapshot, but nothing in the render path gates on it yet
-    // (C9-10 is the slice that acts on `gbufferDemanded`). `forceSceneMRT`
-    // defaults true, so `topology` is `"mrt"` every frame — matching the
-    // always-MRT legacy executor. Reset the per-frame actual counters here so
-    // the snapshot reflects only this frame.
+    // Compute the one canonical attachment-demand record for this frame,
+    // before any scene pass opens or any pipeline builds. The record is
+    // observe-only: it is frozen on the context and reported through the debug
+    // snapshot, and nothing in the render path gates on it. `forceSceneMRT`
+    // defaults true, so `topology` is `"mrt"` every frame. Reset the per-frame
+    // actual counters here so the snapshot reflects only this frame.
     const actual = this._attachmentDemandActual;
     actual.gbufferAllocated = false;
     actual.gbufferBytes = 0;
@@ -4827,16 +4728,14 @@ export class WebGPUContext extends GraphicsContext {
       },
     );
 
-    // Phase 8a Slice 1 (Batch 80) + Slice 2b (Batch 86) — G-buffer
-    // allocation. Mirrors the gating block in
-    // `FramebufferOrchestrator.js` which DOES NOT run on WebGPU
-    // because the WebGPU context overrides `updateAndClearFramebuffers`
-    // to return `true` (handled here, skip the rest of the orchestrator).
-    // Without this block the `useDeferredLighting` flag has no effect
-    // on the WebGPU backend — the framebuffer never allocates and the
-    // producer dispatcher early-outs because `outputView` is null.
-    // `Scene._view` is a JS module without an ambient type; structurally
-    // unpack just the slots this block needs.
+    // G-buffer allocation, mirroring the gating block in
+    // `FramebufferOrchestrator.js`, which does not run on WebGPU because this
+    // context overrides `updateAndClearFramebuffers` to return `true` and skip
+    // the rest of the orchestrator. Without this block the
+    // `useDeferredLighting` flag has no effect on WebGPU: the framebuffer
+    // never allocates and the producer dispatcher early-outs on a null
+    // `outputView`. `Scene._view` is a JS module with no ambient type, so this
+    // structurally unpacks just the slots the block needs.
     const view = (
       scene as unknown as {
         _view?: {
@@ -4853,14 +4752,13 @@ export class WebGPUContext extends GraphicsContext {
         };
       }
     )._view;
-    // `useDeferredLighting` is a CONSUMER flag — it controls whether
-    // AO / SSR / future clustered lighting opt into reading G-buffer
-    // normals vs falling back to depth-derived. The G-buffer texture
-    // itself is now allocated UNCONDITIONALLY (Slice 5c-B Phase 2 v2
-    // Sub-B, Batch 115b) so the MRT render pass in Sub-C can bind it
-    // as a slot-1 color attachment every frame without checking the
-    // consumer flag. Memory cost: 1 single-sample rgba16float texture
-    // (~16 MB at 1080p) plus an MSAA companion when scene.msaaSamples > 1.
+    // `useDeferredLighting` is a consumer flag: it controls whether AO, SSR
+    // and clustered lighting read G-buffer normals or fall back to
+    // depth-derived ones. The G-buffer texture itself is allocated
+    // unconditionally so the MRT render pass can bind it as a slot-1 colour
+    // attachment every frame without consulting the consumer flag. The cost is
+    // one single-sample rgba16float texture, about 16 MB at 1080p, plus an
+    // MSAA companion when `scene.msaaSamples > 1`.
     const useDeferredLighting =
       !picking &&
       frameState.useDeferredLighting === true &&
@@ -4879,16 +4777,13 @@ export class WebGPUContext extends GraphicsContext {
       const sceneExt = scene as unknown as {
         _hdr: boolean;
       };
-      // Batch 244 (NEW-TAA-EFFECT-NEVER-ADDED first activation) — use
-      // the EFFECTIVE sample count (`this._msaaSamples`, written by
-      // `WebGPUSceneRenderer.prepareFrame`; TAA forces it to 1 per the
-      // Batch 234 coupling), NOT the raw user `scene.msaaSamples`.
-      // This was the lone scene-pass attachment producer still reading
-      // the user setting: on the first taaEnabled frame it kept the
-      // G-buffer's MSAA x4 companion bound as colorAttachments[1]
-      // while every other attachment dropped to single-sample —
-      // "sample count (4) does not match" killed the WHOLE scene pass
-      // and the canvas went black for as long as TAA stayed on.
+      // Use the effective sample count, `this._msaaSamples`, written by
+      // `WebGPUSceneRenderer.prepareFrame` and forced to 1 while TAA is on —
+      // not the raw user `scene.msaaSamples`. Reading the user setting here
+      // keeps the G-buffer's 4x MSAA companion bound as
+      // `colorAttachments[1]` on the first TAA-enabled frame while every other
+      // attachment drops to single-sample, and the resulting sample-count
+      // mismatch kills the whole scene pass for as long as TAA stays on.
       view.gBufferFramebuffer.update(
         this,
         view.viewport,
@@ -4897,11 +4792,11 @@ export class WebGPUContext extends GraphicsContext {
       );
       view.gBufferFramebuffer.clear(this, passState);
 
-      // C9-09 truthful reporting: record the ACTUAL G-buffer byte cost this
-      // frame so the debug snapshot can assert the demand record matches
-      // reality. rgba16float = 8 bytes/texel; the MSAA companion multiplies
-      // by the effective sample count. `narrow` re-reads the allocated
-      // dimensions/sample count that `update()` just committed.
+      // Record the actual G-buffer byte cost this frame so the debug snapshot
+      // can assert the demand record matches reality. rgba16float is 8 bytes
+      // per texel, and the MSAA companion multiplies by the effective sample
+      // count. This re-reads the dimensions and sample count `update()` just
+      // committed.
       const gbfDims = view.gBufferFramebuffer as unknown as {
         _width?: number;
         _height?: number;
@@ -4923,8 +4818,8 @@ export class WebGPUContext extends GraphicsContext {
     // (pick) frames use the single-target pick topology.
     actual.sceneColorAttachmentCount = picking ? 1 : isSceneFBMrtMode() ? 2 : 1;
 
-    // Batch 95 — drive the PostProcessStageCollection sync. The WebGL
-    // orchestrator at `FramebufferOrchestrator.js:126` calls
+    // Drive the PostProcessStageCollection sync. The WebGL
+    // orchestrator in `FramebufferOrchestrator.js` calls
     // `postProcess.update(context, useLogDepth, useHdr)` to populate the
     // `_webgpuCache` slot (via the POST_PROCESS_COLLECTION FR). Because
     // this override returns `true`, the orchestrator's call is skipped,
@@ -4974,10 +4869,9 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * UP144-SNAP-WEBGPU (C11-212) — WebGPU override: create the RGBA32F snap
-   * framebuffer behind `Scene.snap`. `Snapping.js` calls this factory instead
-   * of importing the WebGPU class directly (CLAUDE.md §2: Scene code stays
-   * backend-agnostic).
+   * WebGPU override: create the RGBA32F snap framebuffer behind `Scene.snap`.
+   * `Snapping.js` calls this factory rather than importing the WebGPU class
+   * directly, so scene code stays backend-agnostic.
    *
    * Constructing this object latches the `_snapEnabled` ever-used diagnostic.
    * The model renderer emits derived draws only while the current mini-frame's
@@ -4989,7 +4883,7 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * UP144-SNAP-WEBGPU (C11-212) — true once a `WebGPUSnapFramebuffer` has been
+   * True once a `WebGPUSnapFramebuffer` has been
    * constructed against this context. This is an ever-used diagnostic latch,
    * not an ordinary-frame command-demand signal; current demand comes from
    * `frameState.passes.snap`.
@@ -5032,7 +4926,7 @@ export class WebGPUContext extends GraphicsContext {
     this._pendingTextureMipJobKeys = new WeakMap();
     this._isDestroyed = true;
 
-    // C11-76 — reject readbacks that recorded a copy into the current frame
+    // Reject readbacks that recorded a copy into the current frame
     // but were waiting for endFrame() to submit it. Context teardown can occur
     // before endFrame (and a pooled GPUDevice may remain alive), so leaving the
     // callbacks queued would strand their promises and retain feature buffers.
@@ -5059,12 +4953,11 @@ export class WebGPUContext extends GraphicsContext {
       this._deviceLossRecovery = null;
     }
 
-    // C-R13 (2026-04-16 renderer-deep review): destroy all subsystems
-    // that own GPU resources BEFORE destroying the device. Each
-    // `destroy()` below calls `.destroy()` on its owned buffers /
-    // textures / query sets, and those calls require the device to
-    // still be alive. Previously this block ran after `_device.destroy()`
-    // which made the GPU validator flag teardown as an error and
+    // Destroy every subsystem that owns GPU resources before destroying the
+    // device. Each `destroy()` below calls `.destroy()` on its own buffers,
+    // textures and query sets, and those calls require a live device. Running
+    // this block after `_device.destroy()` instead makes the GPU validator
+    // flag teardown as an error and
     // leaked transient buffer contents on long-lived multi-viewer apps.
 
     // Destroy viewport quad utility
@@ -5093,11 +4986,10 @@ export class WebGPUContext extends GraphicsContext {
     const gpuCuller = this._gpuCuller;
     this._gpuCuller = null;
     continueFinalCleanupAfter(() => gpuCuller?.destroy());
-    // Batch 222 — destroy the auxiliary culler instances added in
-    // Batches 218 (translucent), 220 (per-opaque-frustum), and 221
-    // (per-cascade). Without this they leak on context destruction
-    // — at peak (1 translucent + 3 per-frustum + 4 per-cascade)
-    // that's ~4 MB of orphaned VRAM per leaked context.
+    // Destroy the auxiliary culler instances — translucent, per-opaque-frustum
+    // and per-cascade. Without this they leak on context destruction: at peak,
+    // one translucent plus three per-frustum plus four per-cascade, roughly
+    // 4 MB of orphaned VRAM per leaked context.
     const translucentCuller = this._gpuCullerTranslucent;
     this._gpuCullerTranslucent = null;
     continueFinalCleanupAfter(() => translucentCuller?.destroy());
@@ -5193,18 +5085,16 @@ export class WebGPUContext extends GraphicsContext {
 
     // Drop device-invalidation subscribers so their closures release
     // immediately even if a long-lived holder keeps this Context
-    // reference alive. Batch 130 — explicit lifecycle cleanup that the
-    // pre-extraction `Set<() => void>` field relied on GC for.
+    // reference alive, rather than relying on GC.
     continueFinalCleanupAfter(() => this._deviceInvalidationBus.clear());
 
     // Drop the resource-cache registry's registered closures so they
     // don't keep this Context's own fields alive past destroy.
-    // (Batch 131.)
     continueFinalCleanupAfter(() => this._cacheRegistry.clear());
 
-    // Drop the feature-flags enabled set. (Batch 132.) The Set is
-    // small and would die with the Context anyway; explicit clear
-    // matches the lifecycle pattern used by the bus + cache registry.
+    // Drop the feature-flags enabled set. The Set is small and would die with
+    // the Context anyway; clearing it explicitly matches the lifecycle pattern
+    // the bus and the cache registry use.
     continueFinalCleanupAfter(() => this._featureFlags.clear());
 
     // Remove this context's lease from the device-level shader validation
@@ -5238,8 +5128,8 @@ export class WebGPUContext extends GraphicsContext {
     continueFinalCleanupAfter(() => this._context?.unconfigure());
 
     // NOW destroy the device — everything that needed it has already run.
-    // AUDIT_2026_05_02 C.1 (Batch 135) — when the device came from the
-    // pool, release the reference so refcount drops; the pool destroys
+    // When the device came from the pool, release the reference so the
+    // refcount drops; the pool destroys
     // the underlying GPUDevice only when the last context releases it.
     // When the device was supplied externally (e.g., legacy direct
     // injection or the recovery path before it switches to the pool),
@@ -5279,12 +5169,9 @@ export class WebGPUContext extends GraphicsContext {
   // Delegates to standalone functions in WebGLStateConverters.ts
   // ====================================================================================
 
-  // The previous `_webglToWebGPUBlendFactor` / `_webglToWebGPUBlendOp` /
-  // `_webglToWebGPUCompareFunction` wrapper methods existed only to feed
-  // the WebGL-stub state literal. After the literal moved to
-  // `WebGPUContextWebGLStubInit.ts` (Batch 129) the stub points
-  // straight at the module-level functions in `WebGLStateConverters.ts`,
-  // so the wrappers are gone.
+  // There are no `_webglToWebGPU*` conversion wrappers on this class: the
+  // WebGL-stub state literal in `WebGPUContextWebGLStubInit.ts` points
+  // straight at the module-level functions in `WebGLStateConverters.ts`.
 
   /**
    * Get current pipeline state for pipeline creation
@@ -5926,8 +5813,8 @@ export class WebGPUContext extends GraphicsContext {
     }
 
     const { WebGPUImageUpload } = await import("./WebGPUImageUpload.js");
-    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 5) — pass the monitor so
-    // the bitmap decode publishes a wakeup event when it lands. Without
+    // Pass the monitor so the bitmap decode publishes a wakeup event when it
+    // lands. Without
     // this, an environment-map decode that finishes after the scene
     // hibernates leaves the canvas frozen with the missing texture.
     const decoded = await WebGPUImageUpload.decodeWithOrientation(
@@ -6065,49 +5952,46 @@ export class WebGPUContext extends GraphicsContext {
   // ====================================================================================
 
   private _renderBundleManager: WebGPURenderBundleManager | null = null;
-  // NEW-WEBGPU-COMPUTE-ENGINE-WIRING (Batch 367, item 370) — general-purpose
-  // compute dispatch engine. Lazy-initialized via the `computeEngine` getter
-  // so contexts that never run compute pay zero cost. Dropped on device loss
-  // (caches dead GPUComputePipelines). Mirrors `_renderBundleManager`.
+  // General-purpose compute dispatch engine. Lazily initialized via the
+  // `computeEngine` getter so a context that never runs compute pays nothing,
+  // and dropped on device loss because it caches GPUComputePipelines. Mirrors
+  // `_renderBundleManager`.
   private _computeEngine: WebGPUComputeEngine | null = null;
   private _timestampProfiler: WebGPUTimestampProfiler | null = null;
   private _storageBufferPool: WebGPUStorageBufferPool | null = null;
   private _indirectDrawManager: WebGPUIndirectDrawManager | null = null;
   private _bufferMapper: WebGPUBufferMapper | null = null;
   private _performanceManager: WebGPUPerformanceManager | null = null;
-  // C11-195 — mutable bind-group state is context-owned because every cached
+  // Mutable bind-group state is context-owned because every cached
   // group references pages from this context's uniform allocator. Immutable
   // cameraBGL remains shared through WebGPUModelDeviceResources.
   private _modelCameraArena: WebGPUModelCameraArena | null = null;
   private _uniformAllocator: WebGPURingBufferAllocator | null = null;
-  // B220-O1 (Batch 225) — defensive cap on auxiliary culler allocation.
-  // Moved to `WebGPUContextCullerPool.ts` as `MAX_AUX_CULLER_INDEX` (Q35
-  // decomposition slice); the culler-pool free functions own it now.
+  // The defensive cap on auxiliary culler allocation lives in
+  // `WebGPUContextCullerPool.ts` as `MAX_AUX_CULLER_INDEX`, with the
+  // culler-pool free functions that enforce it.
 
-  // B219-N3 (Batch 225 audit fix) — Scene-level GPU culling hint
-  // mirrored on the context so lazy aux-culler getters can refuse
-  // allocation when the user set `Scene.gpuCullingHint = 'never'`.
-  // Previously 'never' was stored on Scene but never read by the
-  // allocation path; if a render frame ever hit a gate-active code
-  // path (e.g., a partial regression), the lazy getter would still
-  // burn VRAM. Closes the asymmetry — 'never' truly disables.
-  // Public-underscore: read+written by the culler-pool helpers
+  // Scene-level GPU culling hint, mirrored on the context so the lazy
+  // aux-culler getters can refuse allocation when
+  // `Scene.gpuCullingHint = 'never'`. Storing it only on Scene leaves the
+  // allocation path unaware of the opt-out, and any code path that reaches a
+  // gate-active branch then burns VRAM anyway.
+  // Public-underscore: read and written by the culler-pool helpers
   // (`WebGPUContextCullerPool.ts`) and `setGpuCullingHint`.
   public _gpuCullingHint: "auto" | "always" | "never" = "never";
 
-  // NEW-AUX-CULLER-IDLE-DECAY (Batch 229) — track when each
-  // auxiliary culler instance was last used, and periodically reap
-  // cullers idle for >= IDLE_DECAY_FRAMES. The destroy() walk
-  // (Batch 222) handles context teardown, but during a long-running
-  // session that transitions from high-density → low-density and
-  // stays there, the auxiliary cullers stay allocated forever
-  // (~1 MB/instance × up to 8 = ~8 MB VRAM). The decay reaps them
-  // automatically; lazy getters reallocate on demand if usage
-  // returns. The internal frame id is bumped from `beginFrame()`
-  // so the comparison is purely against this context's lifetime.
-  // IDLE_DECAY_FRAMES moved to `WebGPUContextCullerPool.ts` (Q35 slice); the
-  // reaper free function owns the threshold. IDLE_DECAY_CHECK_INTERVAL stays
-  // here — it drives the `beginFrame()` cadence that calls the reaper.
+  // Track when each auxiliary culler instance was last used, so cullers idle
+  // for at least `IDLE_DECAY_FRAMES` can be reaped periodically. The
+  // `destroy()` walk covers context teardown, but a long-running session that
+  // moves from high density to low density and stays there would otherwise
+  // hold the auxiliary cullers forever — about 1 MB per instance across up to
+  // eight instances. The decay reaps them and the lazy getters reallocate on
+  // demand if usage returns. The internal frame id is bumped from
+  // `beginFrame()`, so the comparison is purely against this context's
+  // lifetime.
+  // `IDLE_DECAY_FRAMES` lives in `WebGPUContextCullerPool.ts` with the reaper
+  // that applies it. `IDLE_DECAY_CHECK_INTERVAL` stays here because it drives
+  // the `beginFrame()` cadence that calls the reaper.
   private static readonly IDLE_DECAY_CHECK_INTERVAL = 120; // 2s
   // Public-underscore: the culler-pool helpers read/write these.
   public _internalFrameId: number = 0;
@@ -6118,31 +6002,25 @@ export class WebGPUContext extends GraphicsContext {
 
   public _gpuCuller: GPUCullerInstance | null = null;
   public _gpuCullerInitializing: boolean = false;
-  // B216-N1 (Batch 218 audit fix) — separate culler instance for the
-  // translucent pass. The dispatcher reuses ONE staging buffer
-  // (`_readbackBuffer`); if opaque + translucent both
-  // `prepareReadback` against the same instance in the same encoder,
-  // the second copy clobbers the first, corrupting opaque's readback.
-  // Using a second instance gives translucent its own buffers.
+  // A separate culler instance for the translucent pass. The dispatcher reuses
+  // one staging buffer, `_readbackBuffer`, so if opaque and translucent both
+  // `prepareReadback` against the same instance in one encoder the second copy
+  // clobbers the first and corrupts the opaque readback. A second instance
+  // gives translucent its own buffers.
   public _gpuCullerTranslucent: GPUCullerInstance | null = null;
   public _gpuCullerTranslucentInitializing: boolean = false;
-  // NEW-MULTIFRUSTUM-CULL-RESULTS (Batch 220) — per-frustum culler
-  // instances for the opaque pass. Same root cause as B216-N1: the
-  // shared `_visibilityBuffer` + `_readbackBuffer` get clobbered when
-  // multiple frustums call `prepareReadback` in the same encoder.
-  // Frustum 0 reuses `_gpuCuller` (the original instance) so existing
-  // single-frustum scenes don't pay extra VRAM. Frustums 1..N get
-  // their own instances on first use. Typical scene has 1-4 frustums
-  // → at most 3 extra instances ≈ ~1.5 MB total VRAM.
+  // Per-frustum culler instances for the opaque pass, for the same reason as
+  // the translucent instance above: the shared `_visibilityBuffer` and
+  // `_readbackBuffer` get clobbered when several frustums call
+  // `prepareReadback` in one encoder. Frustum 0 reuses `_gpuCuller`, so a
+  // single-frustum scene pays no extra VRAM; frustums 1..N get their own
+  // instances on first use. A typical scene has one to four frustums, so at
+  // most three extra instances, around 1.5 MB of VRAM.
   public _gpuCullerByFrustum: Map<number, GPUCullerInstance> = new Map();
   public _gpuCullerByFrustumInitializing: Set<number> = new Set();
-  // NEW-SHADOW-CAST-GPU-CULL Phase 1 (Batch 221) — per-cascade
-  // culler instances for CSM shadow cast. Same B216-N1 / Batch 220
-  // pattern: each cascade needs its own staging buffer to avoid
-  // collision in the encoder. Phase 1 ships infrastructure ONLY;
-  // activation (filter dispatch in `WebGPUCSMCastPass`) is deferred
-  // pending Gribb-Hartmann plane extraction + visual verification.
-  // See `NEW-SHADOW-CAST-GPU-CULL-PHASE-2` in DEFERRED_WORK.md.
+  // Per-cascade culler instances for the CSM shadow cast, on the same pattern:
+  // each cascade needs its own staging buffer to avoid colliding in the
+  // encoder.
   public _gpuCullerByCascade: Map<number, GPUCullerInstance> = new Map();
   public _gpuCullerByCascadeInitializing: Set<number> = new Set();
   private _pointCloudLOD: WebGPUPointCloudLODProcessorInstance | null = null;
@@ -6234,8 +6112,8 @@ export class WebGPUContext extends GraphicsContext {
     }
     if (!this._renderBundleManager && this._device) {
       this._renderBundleManager = new WebGPURenderBundleManager(this._device);
-      // C-R12 (Batch 33) — bundles hold references to pipelines /
-      // buffers that are invalid after device loss. Drop them.
+      // Bundles hold references to pipelines and buffers that are invalid
+      // after device loss. Drop them.
       this.onDeviceInvalidated(() => {
         this._renderBundleManager = null;
       });
@@ -6244,16 +6122,16 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * NEW-WEBGPU-COMPUTE-ENGINE-WIRING (Batch 367, item 370) — general-purpose
-   * WebGPU compute engine. Until this getter existed, `WebGPUContext.computeEngine`
-   * was `undefined`, so every `WebGPUPerformanceManager.dispatchCompute()` call
-   * (atmosphere LUT bake, frustum cull, point-cloud sort/LOD, GPU sort keys,
-   * Hi-Z, normal-from-depth, polygon SDF) returned early as a silent no-op.
-   * Lazy-initialized on first access once the device exists; returns `null`
-   * during early bring-up. Wired to the per-context central compute-pipeline
-   * cache (cross-instance dedup for layout-explicit callers) and the
-   * async-resource monitor (the `createPipelineAsync` path). Dropped on device
-   * loss — it caches GPUComputePipelines invalid after the device is recreated.
+   * General-purpose WebGPU compute engine. Every
+   * `WebGPUPerformanceManager.dispatchCompute()` caller — the atmosphere LUT
+   * bake, frustum cull, point-cloud sort and LOD, GPU sort keys, Hi-Z,
+   * normal-from-depth, polygon SDF — resolves its engine through here, and
+   * returns early as a silent no-op if this is `undefined`. Lazily initialized
+   * on first access once the device exists, and `null` during early bring-up.
+   * Wired to the per-context central compute-pipeline cache, which dedupes
+   * across instances for layout-explicit callers, and to the async-resource
+   * monitor on the `createPipelineAsync` path. Dropped on device loss: it
+   * caches GPUComputePipelines that a recreated device invalidates.
    */
   get computeEngine(): WebGPUComputeEngine | null {
     if (this._isDeviceUnavailable) {
@@ -6274,9 +6152,9 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * C9-09-ATTACHMENT-DEMAND-REGISTRY debug surface. Returns the frozen
-   * per-frame demand record (the registry's prediction) alongside the
-   * ACTUAL measured scene-FB attachment behavior this frame, so callers can
+   * Attachment-demand debug surface. Returns the frozen
+   * per-frame demand record — the registry's prediction — alongside the
+   * measured scene-FB attachment behavior this frame, so callers can
    * assert the two agree (`record.topology` vs `actual.sceneColorAttachmentCount`,
    * `record.gbufferDemanded` vs `actual.gbufferAllocated`). Read by
    * `Scene.getDebugSnapshot().attachmentDemand`. Pure read.
@@ -6312,11 +6190,11 @@ export class WebGPUContext extends GraphicsContext {
       record.topology === "mrt"
         ? a.sceneColorAttachmentCount === 2
         : a.sceneColorAttachmentCount === 1;
-    // C9-AUDIT-P1-SWEEP (Batch 684): the attachment-count comparison above is
-    // near-tautological with the same demand flag the record was derived from.
-    // Fold the INDEPENDENTLY-MEASURED slot-1 open counter in so a non-pick
-    // frame only "matches" when the predicted MRT topology also coincides with
-    // slot-1 attachments having actually opened this frame (mrt <=> opens>0).
+    // The attachment-count comparison above is near-tautological with the
+    // demand flag the record was derived from. Folding in the independently
+    // measured slot-1 open counter means a non-pick frame only matches when
+    // the predicted MRT topology coincides with slot-1 attachments having
+    // actually opened this frame.
     const slot1Opened = a.slot1AttachmentOpens > 0;
     const recordMatchesActual =
       record.other.picking === true
@@ -6340,8 +6218,9 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * C11-193 observe-only registration seam used by backend-neutral Scene
-   * producers. No refresh work is gated here; UNKNOWN remains conservative.
+   * Observe-only registration seam used by backend-neutral Scene
+   * producers. No refresh work is gated here, and an unknown demand stays
+   * conservative.
    */
   recordEnvironmentMapDemand(
     manager: object,
@@ -6385,7 +6264,7 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * C11-193 bounded-drain admission seam.
+   * Bounded-drain admission seam.
    *
    * Returns `"run"` when the caller must perform the refresh this frame, or
    * `"defer"` when it must skip the refresh, commit NO bookkeeping (so its
@@ -6572,11 +6451,11 @@ export class WebGPUContext extends GraphicsContext {
         stats.csmShadows = { error: String((e as Error)?.message ?? e) };
       }
     }
-    // C11-174 — render-pipeline + post-process bind-group cache
+    // Render-pipeline and post-process bind-group cache
     // effectiveness counters. Pure exposure of bookkeeping both caches
-    // already pay for on their lookup paths — no new per-frame work. A
-    // near-zero bind-group hitRate is the Batch-717 churn shape (resource
-    // identities recreated every frame without cache invalidation).
+    // already pay for on their lookup paths, with no new per-frame work. A
+    // near-zero bind-group hit rate means resource identities are being
+    // recreated every frame without cache invalidation.
     if (this._webgpuPipelineCache) {
       try {
         stats.pipelineCache = { ...this._webgpuPipelineCache.getStats() };
@@ -6584,12 +6463,12 @@ export class WebGPUContext extends GraphicsContext {
         stats.pipelineCache = { error: String((e as Error)?.message ?? e) };
       }
     }
-    // C13-02 — cloud CPU/GPU observability. The counters are bookkeeping the
+    // Cloud CPU and GPU observability. The counters are bookkeeping the
     // cloud renderer already pays for on its own encode path; this is pure
     // exposure. `gpu` is scoped to the seven cloud pass labels and folded
-    // through the SAME `summarizeFrameCoverage` union the whole-frame ledger
-    // uses (C11-140), so `clouds.cloudCoveredMs` is a unique-sample measure
-    // rather than a sum that double-counts overlapping passes.
+    // through the same `summarizeFrameCoverage` union the whole-frame ledger
+    // uses, so `clouds.cloudCoveredMs` is a unique-sample measure rather than
+    // a sum that double-counts overlapping passes.
     const cloudCache = (
       this as unknown as {
         _cloudCache?: {
@@ -6622,7 +6501,7 @@ export class WebGPUContext extends GraphicsContext {
     stats.environmentMapDemand = {
       ...this._environmentDemandRegistry.getTelemetry(),
     };
-    // C11-193 — bounded-drain + target-pool credit. `deferred` with a zero
+    // Bounded-drain and target-pool credit. `deferred` with a zero
     // `maxDeferredFramesObserved` past the cap is the healthy shape; a non-zero
     // `staleReleases` after a recovery is expected exactly once per borrower.
     stats.environmentRefreshDrain = {
@@ -6684,7 +6563,7 @@ export class WebGPUContext extends GraphicsContext {
         this._device,
         this.hasFeature("timestamp-query"),
       );
-      // C-R12 (Batch 33) — query sets are device-scoped; drop on loss.
+      // Query sets are device-scoped; drop on loss.
       this.onDeviceInvalidated(() => {
         this._timestampProfiler = null;
       });
@@ -6702,7 +6581,7 @@ export class WebGPUContext extends GraphicsContext {
     }
     if (!this._storageBufferPool && this._device) {
       this._storageBufferPool = new WebGPUStorageBufferPool(this._device);
-      // C-R12 (Batch 33) — pooled buffers are bound to the dead device.
+      // Pooled buffers are bound to the dead device.
       this.onDeviceInvalidated(() => {
         this._storageBufferPool = null;
       });
@@ -6720,7 +6599,7 @@ export class WebGPUContext extends GraphicsContext {
     }
     if (!this._indirectDrawManager && this._device) {
       this._indirectDrawManager = new WebGPUIndirectDrawManager(this._device);
-      // C-R12 (Batch 33) — indirect args staging buffer is device-scoped.
+      // The indirect-args staging buffer is device-scoped.
       this.onDeviceInvalidated(() => {
         this._indirectDrawManager = null;
       });
@@ -6738,7 +6617,7 @@ export class WebGPUContext extends GraphicsContext {
     }
     if (!this._bufferMapper && this._device) {
       this._bufferMapper = new WebGPUBufferMapper(this._device);
-      // C-R12 (Batch 33) — staging + readback caches hold device buffers.
+      // The staging and readback caches hold device buffers.
       this.onDeviceInvalidated(() => {
         this._bufferMapper = null;
       });
@@ -6752,37 +6631,34 @@ export class WebGPUContext extends GraphicsContext {
    * creation to dedupe across renderers. Lazy-initialized on first
    * access so the cache isn't built until someone needs it.
    *
-   * C-R7 (Batch 34). Previously the field was declared but never
-   * instantiated, so every feature renderer built and cached its own
-   * pipelines in its own local Map. Centralising the cache lets
-   * cross-renderer variants (e.g. the same depth-cast layout used by
-   * both CSM and point-light shadows) share a single pipeline.
+   * Centralising the cache is what lets cross-renderer variants — the same
+   * depth-cast layout used by both CSM and point-light shadows, for instance —
+   * share a single pipeline instead of each feature renderer keeping its own
+   * local map.
    *
-   * The cache key already covers depth/blend/stencil/cull/polygonOffset
-   * (Batch 30) and was extended in Batch 34 to include multisample
-   * count, per-target color format + writeMask, depth format, and
-   * vertex buffer layout signature. Two pipelines that differ in any
-   * of those fields now materialize as distinct pipeline objects.
+   * The cache key covers depth, blend, stencil, cull and polygon-offset state,
+   * multisample count, per-target colour format and write mask, depth format,
+   * and the vertex-buffer layout signature, so two pipelines differing in any
+   * of those fields materialize as distinct pipeline objects.
    */
   get webgpuPipelineCache(): WebGPURenderPipelineCache | null {
     if (this._isDeviceUnavailable) {
       return null;
     }
     if (!this._webgpuPipelineCache && this._device) {
-      // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 2) — pass the
-      // context's async monitor so every async pipeline creation
-      // publishes wakeup events. The monitor getter is lazy and
-      // returns the same instance across device-loss cycles, so
-      // wiring it in the constructor is safe — the cache is
-      // recreated on device loss and picks up the same monitor.
+      // Pass the context's async monitor so every async pipeline creation
+      // publishes wakeup events. The monitor getter is lazy and returns the
+      // same instance across device-loss cycles, so wiring it in the
+      // constructor is safe: the cache is recreated on device loss and picks
+      // up the same monitor.
       this._webgpuPipelineCache = new WebGPURenderPipelineCache(
         this._device,
         this._id,
         undefined,
         this.asyncResources,
       );
-      // C-R12 — drop the pipeline cache on device loss so the next
-      // access rebuilds against the recovered device.
+      // Drop the pipeline cache on device loss so the next access rebuilds
+      // against the recovered device.
       this.onDeviceInvalidated(() => {
         this._webgpuPipelineCache = null;
       });
@@ -6801,8 +6677,6 @@ export class WebGPUContext extends GraphicsContext {
    * Lazy-initialized on first access; dropped on device loss along
    * with the render pipeline cache. Returns `null` when the device
    * isn't yet present (early bring-up) or has been invalidated.
-   *
-   * C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
    */
   get webgpuComputePipelineCache(): WebGPUComputePipelineCache | null {
     if (this._isDeviceUnavailable) {
@@ -6822,13 +6696,12 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 1) — async resource
-   * registry for this context. Returns the same instance for the
-   * lifetime of the context (survives device loss; only inflight
-   * tokens are reset, subscribers stay attached). Producers (the
-   * pipeline caches, image-decode helper, shader-module cache) call
-   * `monitor.begin / resolve / reject`; consumers (typically the
-   * attached Scene) call `monitor.subscribe`.
+   * Async resource registry for this context. Returns the same instance for
+   * the lifetime of the context: it survives device loss, where only inflight
+   * tokens are reset and subscribers stay attached. Producers — the pipeline
+   * caches, the image-decode helper, the shader-module cache — call
+   * `monitor.begin`, `resolve` and `reject`; consumers, typically the attached
+   * Scene, call `monitor.subscribe`.
    *
    * See `AsyncResourceMonitor.ts` for the design rationale.
    */
@@ -6856,12 +6729,11 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * NEW-WEBGPU-PERF-MONITOR-SUBSCRIBER — per-context async-resource
-   * telemetry. Eagerly attached when the monitor is first created
-   * (see `asyncResources` getter) so events fired before the first
-   * read aren't lost. Survives device loss for the same reason the
-   * monitor does (subscriber stays attached; only inflight tokens
-   * are reset on `monitor.reset`).
+   * Per-context async-resource telemetry. Attached eagerly when the monitor is
+   * first created — see the `asyncResources` getter — so events fired before
+   * the first read are not lost. Survives device loss for the same reason the
+   * monitor does: the subscriber stays attached and only inflight tokens are
+   * reset on `monitor.reset`.
    *
    * Consumers: `WebGPUPerformanceManager.getAsyncResourceStats()` for
    * budget decisions, `CesiumDebug.asyncResources()` for live-snapshot
@@ -6883,13 +6755,13 @@ export class WebGPUContext extends GraphicsContext {
    * @returns The culler instance (may not be initialized yet — check .initialized)
    */
   get gpuCuller(): GPUCullerInstance | null {
-    // Body extracted to `WebGPUContextCullerPool.ts` (Q35 slice).
+    // Body lives in `WebGPUContextCullerPool.ts`.
     return getGpuCullerExt(this);
   }
 
   /**
-   * NEW-MULTIFRUSTUM-CULL-RESULTS (Batch 220) — return the GPU
-   * culler instance for opaque-pass frustum `idx`. Frustum 0 reuses
+   * Return the GPU culler instance for opaque-pass frustum `idx`. Frustum 0
+   * reuses
    * the original `gpuCuller` so single-frustum scenes don't pay
    * extra VRAM; frustums 1..N get their own lazy-init instances so
    * their `prepareReadback` calls in the same encoder don't clobber
@@ -6898,42 +6770,36 @@ export class WebGPUContext extends GraphicsContext {
    * Returns `null` if init is still pending or the device is gone.
    */
   public getGPUCullerForOpaqueFrustum(idx: number): GPUCullerInstance | null {
-    // Body extracted to `WebGPUContextCullerPool.ts` (Q35 slice).
+    // Body lives in `WebGPUContextCullerPool.ts`.
     return getGpuCullerForOpaqueFrustumExt(this, idx);
   }
 
   /**
-   * NEW-SHADOW-CAST-GPU-CULL Phase 1 (Batch 221) — per-cascade GPU
-   * culler instances for CSM shadow cast. Each cascade gets its own
-   * `_visibilityBuffer` + `_readbackBuffer` so the per-cascade
-   * `prepareReadback` calls don't collide in the same encoder.
-   * Lazy-init on first request per cascade index.
+   * Per-cascade GPU culler instances for the CSM shadow cast. Each cascade
+   * gets its own `_visibilityBuffer` and `_readbackBuffer` so the per-cascade
+   * `prepareReadback` calls do not collide in one encoder. Lazily initialized
+   * on the first request per cascade index.
    *
-   * Phase 1 (Batch 221) shipped the infrastructure; Phase 2 (commit
-   * `2302859f0f`, Batches 225-230) WIRED THE LIVE DISPATCH —
-   * `WebGPUCSMCastPass` now packs per-cascade cull planes
-   * (`packCascadeCullPlanes`, a correctness-safe cube-around-sphere
-   * over-include rather than tight Gribb-Hartmann), runs the hysteresis
-   * gate, dispatches this culler, and filters the cast list by the
-   * prior-frame readback. The only owed follow-up is a dense-shadow
-   * Playwright visual diff (NEW-SHADOW-CAST-GPU-CULL-PHASE-2 residual,
-   * doc-synced Batch 172). This comment previously claimed "Phase 1
-   * only / does NOT yet dispatch" — that was stale.
+   * The dispatch is live: `WebGPUCSMCastPass` packs per-cascade cull planes
+   * with `packCascadeCullPlanes` — a correctness-safe cube-around-sphere
+   * over-include rather than a tight Gribb-Hartmann extraction — runs the
+   * hysteresis gate, dispatches this culler, and filters the cast list by the
+   * prior frame's readback.
    */
   public getGPUCullerForCascade(idx: number): GPUCullerInstance | null {
-    // Body extracted to `WebGPUContextCullerPool.ts` (Q35 slice).
+    // Body lives in `WebGPUContextCullerPool.ts`.
     return getGpuCullerForCascadeExt(this, idx);
   }
 
   /**
-   * B216-N1 (Batch 218 audit fix) — second GPU frustum culler used
-   * exclusively for the translucent pass. Gives translucent its own
+   * Second GPU frustum culler, used exclusively for the translucent pass.
+   * Gives translucent its own
    * `_visibilityBuffer` + `_readbackBuffer` so its `prepareReadback`
    * doesn't clobber the opaque pass's pending readback in the same
    * encoder. Same lazy-init pattern as `gpuCuller`.
    */
   get gpuCullerTranslucent(): GPUCullerInstance | null {
-    // Body extracted to `WebGPUContextCullerPool.ts` (Q35 slice).
+    // Body lives in `WebGPUContextCullerPool.ts`.
     return getGpuCullerTranslucentExt(this);
   }
 
@@ -6995,7 +6861,7 @@ export class WebGPUContext extends GraphicsContext {
    * @returns {object} Statistics object
    */
   getStatistics(): WebGPUFrameStatistics {
-    // Body extracted to `WebGPUFrameStatistics.ts` in Batch 144.
+    // Body lives in `WebGPUFrameStatistics.ts`.
     return getFrameStatistics(this);
   }
 
@@ -7027,9 +6893,8 @@ export class WebGPUContext extends GraphicsContext {
    */
   private _setupDeviceLostHandler(): void {
     if (!this._device) return;
-    // Host-adapter literal extracted to `WebGPUContextDeviceLoss.ts`
-    // in Batch 143. The wrapper stays so `_initialize` keeps calling
-    // it as `this._setupDeviceLostHandler()`.
+    // The host-adapter literal lives in `WebGPUContextDeviceLoss.ts`; this
+    // wrapper keeps the call site on the class.
     this._deviceLossRecovery = buildDeviceLossRecoveryFor(this, 3);
     this._deviceLossRecovery.onDeviceLost((info) => {
       if (info.reason !== "recovered") {
@@ -7047,25 +6912,24 @@ export class WebGPUContext extends GraphicsContext {
    * Called by WebGPUDeviceLossRecovery via the DeviceLossRecoveryHost interface.
    * @internal
    */
-  // Public underscore: shared with the device-loss host-adapter (Batch 143).
+  // Public underscore: shared with the device-loss host-adapter.
   public _reconfigureCanvas(): void {
-    // Body extracted to `WebGPUContextCanvasConfig.ts` (Batch 593).
+    // Body lives in `WebGPUContextCanvasConfig.ts`.
     reconfigureCanvasExt(this);
   }
 
   /**
-   * HDR-DISPLAY (Batch 213, B206-N1 audit fix) — apply the canvas
-   * config with a fallback path when the browser rejects HDR-only
-   * fields. Body extracted to `WebGPUContextCanvasConfig.ts` (Batch
-   * 593); see that module for the full fallback-chain rationale
-   * (extended toneMapping → rgba16float → SDR).
+   * Apply the canvas config with a fallback path for a browser that rejects
+   * HDR-only fields. The body lives in `WebGPUContextCanvasConfig.ts`, which
+   * documents the fallback chain: extended toneMapping, then rgba16float,
+   * then SDR.
    */
   private _applyCanvasConfig(): void {
     applyCanvasConfigExt(this);
   }
 
   /**
-   * HDR-DISPLAY (Batch 206) — request an HDR-output canvas. Matches
+   * Request an HDR-output canvas. Matches
    * `Scene.useHDRCanvasOutput` and is invoked by the Scene setter.
    *
    * Switching the canvas format invalidates every pipeline that
@@ -7077,18 +6941,18 @@ export class WebGPUContext extends GraphicsContext {
    * No-ops if the flag is unchanged or the context is uninitialized.
    */
   public setHDRCanvasOutput(enabled: boolean): void {
-    // Body extracted to `WebGPUContextCanvasConfig.ts` (Batch 593).
+    // Body lives in `WebGPUContextCanvasConfig.ts`.
     setHDRCanvasOutputExt(this, enabled);
   }
 
-  /** HDR-DISPLAY (Batch 206) — current canvas-output HDR state. */
+  /** Current canvas-output HDR state. */
   public get hdrCanvasOutput(): boolean {
     return this._hdrCanvasOutput;
   }
 
   /**
-   * NEW-AUX-CULLER-IDLE-DECAY (Batch 229) — destroy auxiliary
-   * culler instances idle for >= IDLE_DECAY_FRAMES. Called at
+   * Destroy auxiliary culler instances idle for at least
+   * `IDLE_DECAY_FRAMES`. Called at
    * IDLE_DECAY_CHECK_INTERVAL-frame intervals from `beginFrame()`.
    *
    * Sweep order: per-frustum (idx >= 1, since 0 reuses _gpuCuller),
@@ -7097,48 +6961,43 @@ export class WebGPUContext extends GraphicsContext {
    * on demand.
    */
   private _reapIdleAuxCullers(): void {
-    // Body extracted to `WebGPUContextCullerPool.ts` (Q35 slice).
+    // Body lives in `WebGPUContextCullerPool.ts`.
     reapIdleAuxCullersExt(this);
   }
 
   /**
-   * B213-O2 (Batch 219) + B219-N4 (Batch 225) + B225-N2 audit fix
-   * (Batch 230) — register a callback fired when the HDR canvas
-   * configure fails and the context demotes itself to SDR.
-   * Scene.js installs this so its `_useHDRCanvasOutput` flag stays
-   * in sync with the canvas reality. Returns an unsubscribe
-   * function so the Scene can clean up at destruction.
+   * Register a callback fired when the HDR canvas configure fails and the
+   * context demotes itself to SDR. Scene.js installs one so its
+   * `_useHDRCanvasOutput` flag stays in sync with the canvas reality, and the
+   * returned unsubscribe function lets it clean up at destruction.
    *
-   * Multiple Scenes per Context (split-screen, picture-in-picture)
-   * each register their own listener — they all fire on demotion.
+   * Several Scenes can share one Context — split-screen, picture-in-picture —
+   * and each registers its own listener; all of them fire on demotion.
    *
-   * **B225-N2 (Batch 230 audit fix)** — `null` is no longer a magic
-   * "clear all listeners" value. The legacy single-slot path that
-   * accepted `null` could nuke other Scenes' listeners when one
-   * Scene called it for cleanup. Callers should use the returned
-   * unsubscribe function for per-listener cleanup. To clear ALL
-   * listeners (e.g., context teardown), call
-   * `clearAllHDRFallbackListeners()` explicitly.
+   * `null` is not a "clear all listeners" value: a single-slot design that
+   * accepted it would let one Scene's cleanup remove every other Scene's
+   * listener. Per-listener cleanup goes through the returned unsubscribe
+   * function, and clearing all listeners, as at context teardown, goes
+   * through `clearAllHDRFallbackListeners()`.
    *
-   * Returns the unsubscribe function on success, or null when
-   * `listener` was nullish.
+   * @param {Function|null} listener Called with the new HDR state on demotion.
+   * @returns {Function|null} The unsubscribe function, or null when `listener`
+   *   was nullish.
    */
   public setHDRFallbackListener(
     listener: ((newValue: boolean) => void) | null,
   ): (() => void) | null {
-    // Body extracted to `WebGPUContextCanvasConfig.ts` (Batch 593).
+    // Body lives in `WebGPUContextCanvasConfig.ts`.
     return setHDRFallbackListenerExt(this, listener);
   }
 
   /**
-   * B225-N2 (Batch 230 audit fix) — explicit "clear every
-   * registered HDR fallback listener" entry point. Used at context
-   * teardown. Distinct from `setHDRFallbackListener(null)` so the
-   * intent is unambiguous and can't accidentally fire from a Scene
-   * that just wanted to remove its own listener.
+   * Clear every registered HDR fallback listener. Used at context teardown,
+   * and kept distinct from `setHDRFallbackListener(null)` so a Scene removing
+   * only its own listener cannot trigger it by accident.
    */
   public clearAllHDRFallbackListeners(): void {
-    // Body extracted to `WebGPUContextCanvasConfig.ts` (Batch 593).
+    // Body lives in `WebGPUContextCanvasConfig.ts`.
     clearAllHDRFallbackListenersExt(this);
   }
 
@@ -7232,7 +7091,7 @@ export class WebGPUContext extends GraphicsContext {
    * Called by WebGPUDeviceLossRecovery via the DeviceLossRecoveryHost interface.
    * @internal
    */
-  // Public underscore: shared with the device-loss host-adapter (Batch 143).
+  // Public underscore: shared with the device-loss host-adapter.
   public _clearAllCaches(previousDevice?: GPUDevice | null): void {
     // Jobs are exact `(GPUDevice, resourceGeneration)` work. Recovery swaps
     // `_device` before entering this hook, so discard the old tuple before any
@@ -7250,8 +7109,8 @@ export class WebGPUContext extends GraphicsContext {
     this._currentCommandEncoder = null;
     this._currentTextureView = null;
 
-    // Per-cache try/catch + named error logs live inside the registry
-    // (Batch 131). What stays inline:
+    // Per-cache try/catch and named error logs live inside the registry.
+    // What stays inline:
     //   - effects-cache lease transfer — moves this context from the lost
     //     physical device generation to the recovered one.
     //   - `_fireDeviceInvalidated` — the side-effect that notifies
@@ -7259,12 +7118,12 @@ export class WebGPUContext extends GraphicsContext {
     //     handles.
     this._cacheRegistry.clearAll();
 
-    // C9-AUDIT-P1-SWEEP (Batch 684) — the globe renderer's per-(context, frame)
-    // effects memo (Batch 677 `_globeEffectsHandle`) is a context expando that
-    // pins a bind group + shadowMap/clipping/tileProvider refs from the lost
-    // device generation. Drop it on invalidation so recovery does not reuse a
-    // stale-device bind group; it is intra-frame by design and rebuilt next
-    // frame, so nulling here is safe by construction.
+    // The globe renderer's per-context, per-frame effects memo
+    // (`_globeEffectsHandle`) is a context expando pinning a bind group and
+    // shadowMap, clipping and tileProvider references from the lost device
+    // generation. Drop it on invalidation so recovery cannot reuse a
+    // stale-device bind group. It is intra-frame by design and rebuilt next
+    // frame, so nulling it here is safe by construction.
     (this as unknown as { _globeEffectsHandle?: unknown })._globeEffectsHandle =
       null;
 
@@ -7340,7 +7199,7 @@ export class WebGPUContext extends GraphicsContext {
     // still-valid resource lifetime.
     this._deviceResourceGeneration += 1;
     this._environmentDemandRegistry.reset(this._deviceResourceGeneration);
-    // C11-193 — every queued refresh described work against the lost device.
+    // Every queued refresh described work against the lost device.
     // Drop the queue; each producer re-derives a MANDATORY post-recovery
     // request from its own invalidated cache, so nothing is lost. The pool
     // destroys its entire cache for the old generation before it can hand out
@@ -7353,7 +7212,7 @@ export class WebGPUContext extends GraphicsContext {
       );
     }
 
-    // C-R12 (Batch 33) — fire the invalidation event so every
+    // Fire the invalidation event so every
     // subscribed subsystem / feature renderer / per-object cache
     // drops its stale GPU handles. The context-level caches above
     // cover the `WebGPUContext`-owned set; subscribers cover
@@ -7423,17 +7282,16 @@ export class WebGPUContext extends GraphicsContext {
     this._previousDrawInstanced = false;
   }
 
-  // C-R12 (Batch 33) — Device-invalidation subscriber registry.
-  // Body extracted to `WebGPUDeviceInvalidationBus` in Batch 130. The
-  // public `onDeviceInvalidated` method + private
-  // `_fireDeviceInvalidated` keep the same signatures so the 8
-  // internal callsites and the one external caller
-  // (WebGPUSceneRenderer.ts:747) don't move.
+  // Device-invalidation subscriber registry. The body lives in
+  // `WebGPUDeviceInvalidationBus`; the public `onDeviceInvalidated` method and
+  // the private `_fireDeviceInvalidated` keep the subscription surface on the
+  // context, where its internal call sites and `WebGPUSceneRenderer` address
+  // it.
   private _deviceInvalidationBus = new WebGPUDeviceInvalidationBus(
     () => this.id,
   );
 
-  // Resource-cache registry (Batch 131). Populated by
+  // Resource-cache registry. Populated by
   // `_registerResourceCaches()` during `_initialize` after the caches
   // exist. `_clearAllCaches` walks it in registration order during
   // device-loss recovery; each entry runs inside its own try/catch.

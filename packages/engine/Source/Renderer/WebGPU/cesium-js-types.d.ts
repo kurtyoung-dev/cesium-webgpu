@@ -46,8 +46,8 @@ type CesiumOpaqueFramebuffer = Partial<WebGPURenderTargetLike> & {
   depthView?: GPUTextureView;
   width?: number;
   height?: number;
-  // UP144-SNAP-WEBGPU (C11-212) — snap FBO marker + payload attachment (see
-  // WebGPUSnapFramebuffer.ts). A snap FBO also sets `_isWebGPUPickFBO`: its
+  // Snap FBO marker and payload attachment; see
+  // `WebGPUSnapFramebuffer.ts`. A snap FBO also sets `_isWebGPUPickFBO`: its
   // occluder phase IS the ordinary pick pass, and the snap marker is what
   // upgrades `executePickPass` to the two-phase (occluder, payload) schedule.
   _isWebGPUSnapFBO?: boolean;
@@ -257,11 +257,11 @@ interface CesiumWeatherConfig {
   spawnRadius: number;
   groundAltitude: number;
   humidity: number;
-  // PRECIP-DATA (Batch 444) — optional data-driven extras. `densityScale` (≥1)
-  // multiplies the effective particle density (heavy precip = lower visibility =
-  // denser particles); `snowCover` (0..1) is the time-integrated ground
-  // snow-cover scalar. Both optional → renderer applies `?? 1` / `?? 0`, so the
-  // pre-444 config shape and OFF behavior are unchanged.
+  // Optional data-driven extras. `densityScale`, at least 1, multiplies the
+  // effective particle density, so heavy precipitation means lower visibility
+  // and denser particles; `snowCover`, 0 to 1, is the time-integrated ground
+  // snow-cover scalar. Both are optional and the renderer applies `?? 1` and
+  // `?? 0`, so a config that omits them behaves as if they were absent.
   densityScale?: number;
   snowCover?: number;
 }
@@ -279,8 +279,8 @@ interface CesiumEnvironmentState {
   useInvertClassification: boolean;
   renderTranslucentDepthForPick: boolean;
   useWebVR: boolean;
-  // Phase 8a Slice 1+2b (Batch 80 + 86) — gates the G-buffer producer
-  // and downstream consumers (SSAO/SSR/clustered lighting in Slice 4+).
+  // Gates the G-buffer producer and its downstream consumers: SSAO, SSR and
+  // clustered lighting.
   useDeferredLighting?: boolean;
 }
 
@@ -300,15 +300,13 @@ interface CesiumFrameStatePasses {
   depth: boolean;
   postProcess: boolean;
   offscreen: boolean;
-  // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — pick variant routing.
-  // Set by Scene.pickHover() / pickPrecise() before invoking the
-  // pick render. Read by `selectCommandVariant` to choose between
-  // default / hover (Option D dither) / precise (Option C 2-pass)
-  // pick command derivations. Undefined or "default" routes to the
-  // existing pickCommand (B186 first slice).
+  // Pick variant routing. Set by `Scene.pickHover()` and `pickPrecise()`
+  // before invoking the pick render, and read by `selectCommandVariant` to
+  // choose between the default, hover (dithered) and precise (two-pass) pick
+  // command derivations. Undefined or `"default"` routes to `pickCommand`.
   pickMode?: "default" | "hover" | "precise";
-  // UP144-SNAP-WEBGPU (C11-212) — true while the current pick mini-frame is a
-  // SNAPPING pass (Scene.snap). Only ever true while `pick` is also true. Set
+  // True while the current pick mini-frame is a snapping pass
+  // (`Scene.snap`). Only ever true while `pick` is also true. Set
   // by `Picking.pickBegin` from `Snapping.snap`'s `{ snap: true }` option and
   // cleared in `pickEnd`. Read by the model feature renderer (to materialize
   // the snap draw command) and by `WebGPUSceneRendererPickPass`.
@@ -385,20 +383,20 @@ interface CesiumFrameState {
           fogAnisotropy?: number;
           ambientStrength?: number;
           enableScatteringOcclusion?: boolean;
-          // Batch 431 (FOG-IBL-AMBIENT) — opt-in sky-LUT/IBL fog ambient.
-          // Default false keeps the flat-constant ambient byte-identical.
+          // Opt-in sky-LUT / IBL fog ambient. The default false keeps the
+          // flat-constant ambient.
           iblAmbient?: boolean;
-          // Batch 435 (FOG-TEMPORAL) — opt-in temporal reprojection + blue-
-          // noise jitter accumulation for the froxel integrate pass. Default
-          // false skips the resolve pass + history blend (byte-identical).
+          // Opt-in temporal reprojection and blue-noise jitter accumulation
+          // for the froxel integrate pass. The default false skips the
+          // resolve pass and the history blend.
           temporal?: boolean;
-          // Batch 437 (CLOUD-SHADOWS) — opt-in hi-fi cloud shadow in fog. When
-          // true AND `globe.cloudCastShadows` is on, the fog scattering pass
-          // samples the procedural cloud renderer's beer shadow map instead of
-          // the cheap 1-sample local-fbm `sampleCloudShadow`. Default false keeps
-          // the local-fbm path verbatim (byte-identical).
+          // Opt-in high-fidelity cloud shadow in fog. When true, and when
+          // `globe.cloudCastShadows` is on, the fog scattering pass samples
+          // the procedural cloud renderer's beer shadow map instead of the
+          // cheap one-sample local-fbm `sampleCloudShadow`. The default false
+          // keeps the local-fbm path.
           cloudShadowHiFi?: boolean;
-          // Batch 440 (FOG-MS) — opt-in multiple-scattering octaves in the fog
+          // Opt-in multiple-scattering octaves in the fog
           // light-scattering pass. When true AND `msOctaves` > 1, the in-scatter
           // sun/moon term is replaced by a Frostbite multi-octave sum so a dense
           // mist reads as a lit volume. Default false (or octaves 1) keeps the
@@ -407,11 +405,10 @@ interface CesiumFrameState {
           // Number of MS octaves (renderer-clamped to [1, 8]). 1 == single-
           // scatter (parity). Only consumed when `multiScatter` is true.
           msOctaves?: number;
-          // NEW-WEBGPU-BASE-HEIGHT-FOG-INSCRIBED-SPHERE-DATUM (Batch 845) —
-          // opt-in: measure the BASE height fog from the ellipsoid surface
-          // instead of the inscribed sphere, removing an 8.5x latitude-
-          // dependent density error. Default false packs a 0.0 datum, which the
-          // shader subtracts bit-exactly (byte-identical).
+          // Opt-in: measure the base height fog from the ellipsoid surface
+          // instead of the inscribed sphere, removing an 8.5x
+          // latitude-dependent density error. The default false packs a 0.0
+          // datum, which the shader subtracts bit-exactly.
           surfaceRelativeAltitude?: boolean;
         };
         lighting?: { enabled?: boolean; moonIntensity?: number };
@@ -419,10 +416,10 @@ interface CesiumFrameState {
           | number
           | { enabled?: boolean; noiseScale?: number; noiseStrength?: number };
         weather?: CesiumWeatherConfig;
-        // Phase B+ unified atmospheric-effects hierarchy. Batch 420 wires
-        // `effects.groundFog` into the WebGPU froxel fog renderer (a
-        // near-surface mist density boost). The other leaves are consumed
-        // by their own backends (shimmer → heat-shimmer post-process).
+        // Unified atmospheric-effects hierarchy. `effects.groundFog` feeds
+        // the WebGPU froxel fog renderer as a near-surface mist density
+        // boost; the other leaves are consumed by their own backends, with
+        // shimmer going to the heat-shimmer post-process.
         effects?: {
           auto?: boolean;
           groundFog?: { enabled?: boolean; intensity?: number };
@@ -459,29 +456,28 @@ interface CesiumFrameState {
   useLogDepth: boolean;
   /**
    * Canonical per-frame mirror of `scene.taaEnabled`, published by
-   * `Scene.updateFrameState` (Batch 234). Velocity-emission gates in
-   * every WebGPU feature renderer read THIS flag — never
-   * `frameState.scene` (which does not exist at runtime).
+   * `Scene.updateFrameState`. Velocity-emission gates in
+   * every WebGPU feature renderer read this flag, never
+   * `frameState.scene`, which does not exist at runtime.
    */
   taaEnabled: boolean;
   /**
    * Canonical per-frame mirror of `scene.snapshotMode`, published by
-   * `Scene.updateFrameState` (Batch 244 — same dormant-`frameState.scene`
-   * family as `taaEnabled`). Renderers registering snapshot freezables
-   * read THIS — never `frameState.scene`.
+   * `Scene.updateFrameState`, for the same reason as `taaEnabled`. A renderer
+   * registering snapshot freezables reads this, never `frameState.scene`.
    */
   snapshotMode?: CesiumScene["snapshotMode"];
   minimumTerrainHeight: number;
   invertClassification: boolean;
-  // Phase 8a (Batch 80 + 86) — gates the WebGPU G-buffer producer
-  // (`scene.deferredLighting` flag forwarded by `Scene.updateFrameState`).
+  // Gates the WebGPU G-buffer producer; the `scene.deferredLighting` flag
+  // forwarded by `Scene.updateFrameState`.
   useDeferredLighting?: boolean;
   invertClassificationColor: CesiumColor | undefined;
   highDynamicRange: boolean;
   sunDirectionWC: CesiumCartesian3;
   moonDirectionWC: CesiumCartesian3;
   /**
-   * C12-29 S5 per-View globe-shadow carrier. Geocentric directions and
+   * Per-view globe-shadow carrier. Geocentric directions and
    * inverse ranges keep the payload independent of terrain tile and capture
    * camera while preserving RTE precision in the fragment shader.
    */
@@ -493,13 +489,14 @@ interface CesiumFrameState {
     params2: CesiumCartesian4;
   };
   moonPhaseFraction: number;
-  // C7-SUN-STARS-EXTINCTION — per-frame zenith atmospheric transmittance for
+  // Per-frame zenith atmospheric transmittance for
   // the starfield (published by StarField.update). Undefined when the effect
   // is disabled (atmosphere hidden / from orbit).
   starZenithTransmittance?: CesiumCartesian3 | undefined;
-  // C12-27 — angular solar-glare star washout, resolved once per frame by
-  // Scene.updateEnvironment (Scene/SolarGlareAppearance.js) and read by BOTH
-  // star paths on both backends. Undefined when the environment is not drawn.
+  // Angular solar-glare star washout, resolved once per frame by
+  // `Scene.updateEnvironment` (`Scene/SolarGlareAppearance.js`) and read by
+  // both star paths on both backends. Undefined when the environment is not
+  // drawn.
   solarGlareAppearance?:
     | {
         enabled: boolean;
@@ -590,7 +587,7 @@ interface CesiumUniformState {
   readonly viewProjectionRelativeToEye: CesiumMatrix4;
   /**
    * Last frame's `viewProjection`, cloned before current-frame state is
-   * written. Consumed by the TAA / motion-vector path (DP-H41, Batch 27).
+   * written. Consumed by the TAA and motion-vector path.
    */
   readonly previousViewProjection: CesiumMatrix4;
   /** Previous frame's model-independent relative-to-eye view-projection. */
@@ -622,20 +619,20 @@ interface CesiumUniformState {
   /**
    * `1 / log2((far - near) + 1)` for the current frustum — the per-frustum
    * log-depth factor (`czm_oneOverLog2FarDepthFromNearPlusOne`). Consumed by
-   * the renderer-wide log-depth producers (NEW-COLLECTIONS-LOG-DEPTH and the
-   * EllipsoidPrimitive / Vector3DTile classifiers).
+   * the renderer-wide log-depth producers, including the collections and the
+   * EllipsoidPrimitive and Vector3DTile classifiers.
    */
   readonly oneOverLog2FarDepthFromNearPlusOne: number;
   /**
-   * Frame-stable log-depth ENCODE frustum stash `[near, far]` — the FULL
+   * Frame-stable log-depth encode frustum stash `[near, far]` — the full
    * camera frustum every renderer-wide log-depth producer must encode
    * against. Published by the globe camera-UB pack
-   * (`WebGPUGlobeSurfaceCameraUB`) and by both frustum loops BEFORE any
+   * (`WebGPUGlobeSurfaceCameraUB`) and by both frustum loops before any
    * per-slice `updateFrustum` remap
    * (`WebGPUSceneRendererFrustumState.publishLogDepthEncodeNearFar`); see
-   * the NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT note in
-   * `WebGPUDepthPlane.ts`. Absent/`null` only before the first publication
-   * (very early frames) — producers fall back to `currentFrustum` then.
+   * also `WebGPUDepthPlane.ts`. Absent or `null` only before the first
+   * publication, on very early frames, where producers fall back to
+   * `currentFrustum`.
    */
   readonly _logDepthEncodeNearFar?: Float32Array | null;
   /**
@@ -685,18 +682,16 @@ interface CesiumGraphicsContext {
    *  attachment-state mismatch. `1` (or absent) on WebGL / before MSAA is
    *  configured. */
   readonly _msaaSamples?: number;
-  /** WebGPU-only: renderer-wide log-depth master switch (Approach A for
-   *  NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION). Default false; flipped true in
-   *  the final epic commit. Gate producer/consumer log-depth code on
-   *  `isWebGPULogDepthActive(context, frameState)` (WebGPULogDepth.ts), not on
-   *  this directly. Absent on WebGL. */
+  /** WebGPU-only: renderer-wide log-depth master switch. Gate producer and
+   *  consumer log-depth code on
+   *  `isWebGPULogDepthActive(context, frameState)` (`WebGPULogDepth.ts`), not
+   *  on this directly. Absent on WebGL. */
   readonly _logDepthWriteEnabled?: boolean;
-  /** WebGPU-only: pick-fleet log-depth master switch (SEPARATE from the scene
-   *  `_logDepthWriteEnabled`; NEW-WEBGPU-PICK-FLEET-LOG-DEPTH). Default false —
-   *  the pick mini-frame's shared depth attachment is all-or-nothing (INV-2), so
-   *  it stays false until every pick producer writes log frag_depth (C10-11).
-   *  Gate pick-path log-depth on `isWebGPUPickLogDepthActive(context, frameState)`
-   *  (WebGPULogDepth.ts), not on this directly. Absent on WebGL. */
+  /** WebGPU-only: pick-fleet log-depth master switch, separate from the scene
+   *  `_logDepthWriteEnabled`, because the pick mini-frame's shared depth
+   *  attachment is all-or-nothing. Gate pick-path log-depth on
+   *  `isWebGPUPickLogDepthActive(context, frameState)` (`WebGPULogDepth.ts`),
+   *  not on this directly. Absent on WebGL. */
   readonly _pickLogDepthWriteEnabled?: boolean;
   readonly drawingBufferWidth: number;
   readonly drawingBufferHeight: number;
@@ -726,7 +721,7 @@ interface CesiumGraphicsContext {
   /** WebGPU-only: lazy-initialized ring buffer for per-frame uniform
    *  uploads. Present as `object | null` on WebGPUContext; absent on
    *  WebGL Context. Touched eagerly by GlobeSurfaceRenderer to force
-   *  construction (BUG-9 guard). */
+   *  construction. */
   readonly uniformAllocator?: object | null;
   /** WebGPU-only: context-owned model camera/light bind-group arena paired
    *  with `uniformAllocator`. Mutable arena state is never device-shared. */
@@ -783,8 +778,7 @@ interface CesiumGraphicsContext {
    *  GPUCuller, PointCloudLODProcessor) route their
    *  `device.createComputePipeline()` calls through this cache so
    *  identical (name, layout, entryPoint) tuples dedupe across renderer
-   *  instances. `null` on WebGL and before the WebGPU device exists.
-   *  Added Batch 76. */
+   *  instances. `null` on WebGL and before the WebGPU device exists. */
   readonly webgpuComputePipelineCache?:
     import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache | null;
   /** WebGPU-only: attach opt-in GPU timestamp queries to a render-pass
@@ -827,7 +821,7 @@ interface CesiumFeatureRenderer {
   composite?(...args: unknown[]): void;
   destroy?(): void;
   isDestroyed?(): boolean;
-  /** ComputeInstanceCollection pickPosition (NEW-COMPUTE-INSTANCE-PICKPOSITION):
+  /** ComputeInstanceCollection pickPosition:
    *  reconstruct a picked instance's world position. WebGPU reads it back from
    *  the GPU record buffer (one-frame-stale sync cache); WebGL2 re-runs the
    *  cpuKernel. Returns a Cartesian3 or undefined while cold/unavailable. */
@@ -914,7 +908,7 @@ interface CesiumTerrainEncoding {
   maximumHeight: number;
   hasVertexNormals: boolean;
   hasWebMercatorT: boolean;
-  // DP-H25 — true when the terrain tile carries the true WGS84 geodetic
+  // True when the terrain tile carries the true WGS84 geodetic
   // surface normal as an extra per-vertex attribute. When set, the
   // WebGPU pipeline adds the attribute at shaderLocation 2 with 12B
   // trailing stride, and the vertex shader consumes it via the
@@ -947,7 +941,7 @@ interface CesiumGlobeSurfaceTile {
   clippedByBoundaries: boolean;
   data: CesiumOpaqueObject;
   /**
-   * C11-213 — the tile's baked clamped vector-polyline data
+   * The tile's baked clamped vector-polyline data
    * (`VectorPipeline`'s `VectorTileData`), or undefined when nothing is
    * draped here. Opaque at this boundary: the globe renderer only forwards it
    * to `resolveVectorTileBuffer`, which reads the backend-owned
@@ -1025,8 +1019,9 @@ interface CesiumImageBasedLighting {
   imageBasedLightingFactor: CesiumCartesian2;
   sphericalHarmonicCoefficients: CesiumCartesian3[] | undefined;
   // Either the WebGL SpecularEnvironmentCubeMap instance, or the lightweight
-  // WebGPU stand-in published by WebGPUImageBasedLighting.ensureWebGPUSpecularSource
-  // (C2-2). All fields optional so both shapes assign without casts.
+  // WebGPU stand-in published by
+  // `WebGPUImageBasedLighting.ensureWebGPUSpecularSource`. All fields optional
+  // so both shapes assign without casts.
   _specularEnvironmentCubeMap:
     | {
         ready?: boolean;
@@ -1051,7 +1046,7 @@ interface CesiumImageBasedLighting {
   _webgpuHasSH?: boolean;
   _webgpuMaxMipLevel?: number;
   _webgpuIBLFactor?: Float32Array | number;
-  // C2-2 authored-KTX2 specular env-map sidecar state
+  // Authored-KTX2 specular env-map sidecar state
   _specularEnvironmentMaps?: string;
   _webgpuSpecularKTX2Buffers?: unknown;
   _webgpuSpecularKTX2Loading?: boolean;
@@ -1135,7 +1130,7 @@ interface CesiumScene {
   readonly cascadedShadowMapResolution?: number;
   /**
    * Whether the CSM receive shaders soften cascade edges with a 3x3 PCF
-   * box kernel (NEW-CSM-SOFT-SHADOW-PCF). Read lazily at CSM init time.
+   * box kernel. Read lazily at CSM init time.
    * Defaults to true when omitted.
    */
   readonly cascadedShadowMapSoftShadows?: boolean;
@@ -1183,19 +1178,19 @@ interface CesiumScene {
   _globeTranslucencyState: CesiumGlobeTranslucencyState;
   _environmentState: CesiumEnvironmentState;
   _enableWeather: boolean;
-  // Flat weather-particle config fields (Phase E, Batch 423). The
-  // `atmosphericConditions.weather` facade + the auto-master both write these;
-  // the environmental-effects dispatch reads them to build the renderer's
-  // `CesiumWeatherConfig`. `weatherType` is the legacy index (0=rain … 3=hail).
+  // Flat weather-particle config fields. The `atmosphericConditions.weather`
+  // facade and the auto-master both write these; the environmental-effects
+  // dispatch reads them to build the renderer's `CesiumWeatherConfig`.
+  // `weatherType` is an index: 0 is rain through 3 for hail.
   enableWeather: boolean;
   weatherType: number;
   weatherIntensity: number;
   weatherWindSpeed: number;
   weatherWindDirection: { x: number; y: number; z?: number };
-  // PRECIP-DATA (Batch 444) — data-driven precip extras pushed by
-  // applyAtmosphericConditions when the `effects.precipitation.dataDriven` flag is
-  // set. Optional → undefined in the default (manual/auto) path; the
-  // environmental-effects dispatch reads them as `?? 0` / `?? 1`.
+  // Data-driven precipitation extras pushed by
+  // `applyAtmosphericConditions` when `effects.precipitation.dataDriven` is
+  // set. Undefined on the manual and auto paths; the environmental-effects
+  // dispatch reads them as `?? 0` and `?? 1`.
   weatherSnowCover?: number;
   weatherDensityScale?: number;
   _enableSSR: boolean;
@@ -1254,27 +1249,22 @@ interface CesiumGlobe {
 
 // ─── CloudVolumetricsConfig ──────────────────────────────────────────────
 //
-// Structural config carrier for the WebGPU procedural / volumetric cloud
-// renderer (CLOUD-U2-CONFIG-INDIRECTION, cloud-unification epic slice 2).
+// Structural config carrier for the WebGPU procedural and volumetric cloud
+// renderer.
 //
-// The renderer's `executeProceduralClouds` + `publishCloudIblCoverage` used to
-// take a `CesiumGlobe` and read config off its `cloud*` fields directly. This
-// interface is the structural SUBSET of those reads, letting the renderer be
-// driven by ANY object with the same field names (the globe today; a
-// `CloudCollection`-owned `CloudVolumetrics` in a later slice) without a
-// `CesiumGlobe` type dependency. Field names are IDENTICAL to `globe.cloud*`
-// and to `Scene/CloudVolumetrics.js`, so the 136-float `CloudUniforms` packer
-// and its ~50 read sites stay byte-locked (see
-// migration_doc/CLOUD_UNIFICATION_DESIGN.md §1.2). All fields optional — every
-// read site already applies a `?? default`. Cast-only expanded knobs
-// (`cloudMultiDeck`, `cloudHighPrecision`, `cloudSpecies*`, mammatus/feature/
-// special, quality presets) stay accessed via local `config as unknown as {…}`
-// casts inside the renderer, exactly as they were off the globe.
+// `executeProceduralClouds` and `publishCloudIblCoverage` read config through
+// this interface rather than off a `CesiumGlobe`, so the renderer can be driven
+// by any object with the same field names and carries no `CesiumGlobe` type
+// dependency. Field names are identical to those in
+// `Scene/CloudVolumetrics.js`, which keeps the 136-float `CloudUniforms` packer
+// and its roughly 50 read sites byte-locked to the source. Every field is
+// optional because every read site applies a `?? default`. Expanded knobs —
+// `cloudMultiDeck`, `cloudHighPrecision`, `cloudSpecies*`, the mammatus,
+// feature and special groups, and the quality presets — are reached through
+// local `config as unknown as {…}` casts inside the renderer.
 //
-// The config source is a `CloudCollection`-owned `CloudVolumetrics` snapshot
-// (`_resolveVolumetricConfig()`); the historical `globe.cloud*` config source was
-// removed in cloud-unification slice 4B. Field names remain IDENTICAL to
-// `Scene/CloudVolumetrics.js` so the 136-float packer stays byte-locked.
+// The config source is a `CloudCollection`-owned `CloudVolumetrics` snapshot,
+// resolved by `_resolveVolumetricConfig()`.
 interface CloudVolumetricsConfig {
   showProceduralClouds?: boolean;
   cloudContributesIBL?: boolean;
@@ -1330,15 +1320,15 @@ interface CesiumGlobeTileProvider {
   clippingPolygons: { enabled: boolean; length: number } | undefined;
   showWaterEffect: boolean;
   /**
-   * C11-158 (NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE) — mirrored from
-   * `Globe.enableEnhancedOcean` each frame. Gates the enhanced ocean STYLING
-   * branch of `computeEnhancedOcean` (via `ShaderDefineHi.ENHANCED_OCEAN`);
-   * default false = classic WebGL-parity water. Does NOT gate the waves.
+   * Mirrored from `Globe.enableEnhancedOcean` each frame. Gates the enhanced
+   * ocean styling branch of `computeEnhancedOcean`, through
+   * `ShaderDefineHi.ENHANCED_OCEAN`; the default false selects the classic
+   * WebGL-parity water. It does not gate the waves.
    */
   enableEnhancedOcean?: boolean;
   oceanNormalMap: CesiumOpaqueTexture | undefined;
   /**
-   * CLT-B2 — mirrored RAW from `Globe`, never pre-gated. `enableEnhancedOcean`
+   * Mirrored raw from `Globe`, never pre-gated. `enableEnhancedOcean`
    * carries the enable; `WebGPUGlobeSurfaceTileUB` owns the encoding of "off"
    * and "unset" (`resolveGlobeTunable` / `GLOBE_UB_UNSET`). Optional because a
    * frame can be packed before `Globe.update()` has populated the provider.
@@ -1373,7 +1363,7 @@ interface CesiumGlobeTileProvider {
   /**
    * `Globe.baseColor` — the color rendered where no imagery is available
    * (WebGL `u_initialColor` / `_firstPassInitialColor`). Read by the
-   * terrain tile UB writer (Batch 247, NEW-GROUND-VIEW-ENV-DIVERGENCES).
+   * terrain tile UB writer.
    */
   baseColor?: CesiumColor;
   [key: string]: unknown;
@@ -1455,7 +1445,7 @@ interface CesiumObjectWithWebGPUCache {
 // ─── Duck-typed command dispatch ─────────────────────────────────────────
 
 interface CesiumAnyDrawCommand {
-  /** Per-bind-group dynamic offsets (C11-195 camera arena); index = group,
+  /** Per-bind-group dynamic offsets from the camera arena; index = group,
    *  value = the offsets array passed to setBindGroup, undefined = none. */
   bindGroupDynamicOffsets?: Array<number[] | undefined>;
   /** Bounding sphere — typed loosely because JS-sourced DrawCommand
@@ -1510,8 +1500,7 @@ interface CesiumAnyDrawCommand {
   instanceCount?: number;
   _blendEnabled?: boolean;
   _oitPipeline?: GPURenderPipeline;
-  // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) + NEW-GS-CLASSIFICATION-DEPTH
-  // (Batch 176) — depth-write variant of the color pipeline. The
+  // Depth-write variant of the color pipeline. The
   // dispatcher (`WebGPUDrawCommand.execute`) swaps to it when
   // `depthForTranslucentClassification` is set on the command (flipped
   // by `Cesium3DTile.update` for translucent + Gaussian-Splat passes).
@@ -1549,7 +1538,7 @@ interface CesiumAnyDrawCommand {
   _webgpuTranslucencyDerivedCount?: number;
   _webgpuDerivedTranslucent?: boolean;
   /**
-   * C-R1 (Batch 30) — optional WebGL-style `renderState` forwarded to
+   * Optional WebGL-style `renderState` forwarded to
    * `WebGPUDrawCommand.execute()` so `applyPerEncoderState()` runs
    * stencilRef / blendConstant / viewport / scissor before the draw.
    * Typed loose (opaque object) at the ambient boundary because
@@ -1572,16 +1561,16 @@ interface CesiumAnyDrawCommand {
     hdr?: { command?: CesiumAnyDrawCommand };
     picking?: {
       pickCommand?: CesiumAnyDrawCommand;
-      // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — second-slice pick variants.
+      // Translucent-model pick variants.
       pickHoverCommand?: CesiumAnyDrawCommand;
       pickPrecisePass1Command?: CesiumAnyDrawCommand;
       pickPrecisePass2Command?: CesiumAnyDrawCommand;
-      // C-R9-VOXEL-CELL-PICK — per-cell voxel pick variant dispatched only
+      // Per-cell voxel pick variant, dispatched only
       // during `passes.pickVoxel` (mirrors WebGL's _drawCommandPickVoxel).
       pickVoxelCommand?: CesiumAnyDrawCommand;
     };
     pickingMetadata?: { pickMetadataCommand?: CesiumAnyDrawCommand };
-    // UP144-SNAP-WEBGPU (C11-212) — snapping-pass variant. Same slot name and
+    // Snapping-pass variant. Same slot name and
     // shape as WebGL's `DerivedCommand.createSnapDerivedCommand` result, so
     // `SceneRenderer.executeCommand` (WebGL) and `selectCommandVariant`
     // (WebGPU) read the same key. Populated only for commands that carry a
@@ -1703,7 +1692,7 @@ interface CesiumTextureWithSource extends CesiumOpaqueObject {
   texture?: GPUTexture;
   _texture?: GPUTexture;
   /**
-   * NEW-GLOBE-BELOWSURFACE-FIX — water-mask source retained by
+   * Water-mask source retained by
    * GlobeSurfaceTile.js at texture-creation time (the WebGL Texture class
    * does not keep its source after upload). ImageBitmap for bitmap masks;
    * `{width, height, arrayBufferView}` for typed-array LUMINANCE masks
@@ -1715,7 +1704,7 @@ interface CesiumTextureWithSource extends CesiumOpaqueObject {
     | ImageBitmap
     | CesiumLuminanceTexelSource;
   /**
-   * NEW-GLOBE-BELOWSURFACE-FIX — registered by the WebGPU water-mask
+   * Registered by the WebGPU water-mask
    * uploader; invoked by GlobeSurfaceTile.freeResources when the WebGL
    * texture's refcount hits zero, releasing the cached GPU copy.
    */

@@ -29,7 +29,7 @@
  *
  * Nesting is supported to arbitrary depth. Flag names must be
  * registered in `WebGPUShaderDefines.ShaderDefine` (lo word) or
- * `ShaderDefineHi` (hi word — C11-149 widening); unknown names throw
+ * `ShaderDefineHi` (hi word); unknown names throw
  * at preprocess time (better to fail loudly than silently emit the
  * wrong branch). A hi-word flag tests against the `definesHi`
  * argument; legacy 1-/2-arg callers implicitly pass `definesHi = 0`,
@@ -81,10 +81,9 @@ interface Frame {
  *   `//>>ifdef` block. Pass `0` for "no conditional blocks active."
  *   Typed as `ShaderDefineLoMask` so a branded `ShaderDefineHi` bit
  *   passed here is a compile error (it would silently test false).
- * @param definesHi Active HI-word defines bitmask (C11-149 widening).
+ * @param definesHi Active hi-word defines bitmask.
  *   Each set bit corresponds to an entry in `ShaderDefineHi`. Defaults
- *   to `0`, keeping every existing lo-only call site source-compatible
- *   and byte-identical in output.
+ *   to `0`, which leaves a lo-only call site's output unchanged.
  * @returns Preprocessed WGSL, ready for `device.createShaderModule`.
  * @throws {Error} when the source contains an unknown `//>>ifdef FLAG`
  *   (registered in neither word's registry), an unbalanced directive
@@ -128,8 +127,8 @@ export function preprocess(
             `WGSL preprocessor: //>>ifdef at line ${i + 1} missing flag name`,
           );
         }
-        // C11-149 — probe the HI-word registry FIRST: `resolveDefineBit`
-        // (the lo resolver) deliberately THROWS on hi-word names, so a
+        // Probe the hi-word registry first: the lo resolver
+        // `resolveDefineBit` deliberately throws on a hi-word name, so a
         // hi flag must never reach it. The hi table is tiny, so this is
         // one failed property lookup per lo-flag directive — and the
         // preprocessor result is cached per (source, defines, definesHi)

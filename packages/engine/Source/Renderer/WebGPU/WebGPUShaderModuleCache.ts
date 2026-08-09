@@ -28,11 +28,11 @@
  * non-zero generated-source `keySalt` still uses a string key because that
  * is a separate identity dimension, not an overflow escape hatch.
  *
- * # Hi-word widening (C11-149)
+ * # Hi-word widening
  *
- * The define space is now the two-word `(defines, definesHi)` pair (see
- * `ShaderDefineHi` in `WebGPUShaderDefines`). The hi word is a SECOND
- * cache level, not a wider packed integer — packing 64 define bits + 8
+ * The define space is the two-word `(defines, definesHi)` pair; see
+ * `ShaderDefineHi` in `WebGPUShaderDefines`. The hi word is a second
+ * cache level, not a wider packed integer — packing 64 define bits plus 8
  * source-id bits into one number would exceed the 53-bit safe-integer
  * range and force string keys (allocation on the hot path, the design
  * point this cache exists to avoid). Instead:
@@ -73,11 +73,10 @@ import type { ShaderDefineLoMask } from "./WebGPUShaderDefines.js";
 
 /**
  * Pure lo-level key packing: `((defines >>> 0) * 0x100) + sourceId`, with
- * the DP-H46b string form `"<numericKey>#<salt>"` when a non-zero
+ * the string form `"<numericKey>#<salt>"` when a non-zero
  * `keySalt` is supplied. Exported so `WebGPUShaderModuleCacheSpec` can
- * pin the hi=0 key against the historical (pre-C11-149) formula without
- * reaching into cache internals. Callers must validate ranges first —
- * this helper only packs.
+ * pin the hi=0 key against the formula without reaching into cache
+ * internals. Callers must validate ranges first — this helper only packs.
  *
  * @private
  */
@@ -96,22 +95,21 @@ export function computeShaderModuleCacheLoKey(
 export class WebGPUShaderModuleCache {
   private _device: GPUDevice;
   // Keys are exact numeric `(sourceId, full Uint32 defines)` identities for
-  // the common, source-stable path. DP-H46b — when a caller passes a non-zero
-  // `keySalt` (a per-source content fingerprint, e.g. the metadata-class hash
-  // for the GENERATED `struct Metadata` chunk), the key becomes the STRING
-  // `"<numericKey>#<salt>"` so two callers that share `(sourceId, defines)`
-  // but supply DIFFERENT source content don't alias one compiled module.
-  // `keySalt === 0` (the default) keeps the allocation-free numeric path.
+  // the common, source-stable path. When a caller passes a non-zero
+  // `keySalt` — a per-source content fingerprint, such as the metadata-class
+  // hash for the generated `struct Metadata` chunk — the key becomes the
+  // string `"<numericKey>#<salt>"`, so two callers sharing
+  // `(sourceId, defines)` but supplying different source content do not alias
+  // one compiled module. `keySalt === 0`, the default, keeps the
+  // allocation-free numeric path.
   //
-  // C11-149 — `_modules` is the `definesHi === 0` level of the two-level
-  // (hi → loKey) scheme. Keeping it as its own field (rather than an entry
-  // of `_modulesByHi`) keeps the hi=0 hot path structurally identical to
-  // the pre-widening cache: one integer compare, then the same single
-  // `Map.get`.
+  // `_modules` is the `definesHi === 0` level of the two-level (hi, loKey)
+  // scheme. Keeping it as its own field rather than an entry of
+  // `_modulesByHi` keeps the hi=0 hot path down to one integer compare and a
+  // single `Map.get`.
   private _modules = new Map<number | string, GPUShaderModule>();
-  // C11-149 — outer level for `definesHi !== 0` variants, keyed by the hi
-  // word. Lazily created: callers that never pass a hi word (all of them,
-  // until the first hi-word consumer lands) never allocate it.
+  // Outer level for `definesHi !== 0` variants, keyed by the hi word. Lazily
+  // created, so a caller that never passes a hi word never allocates it.
   private _modulesByHi: Map<
     number,
     Map<number | string, GPUShaderModule>
@@ -139,16 +137,15 @@ export class WebGPUShaderModuleCache {
    * @param label Devtools label for `createShaderModule`. Callers
    *   should include the define set in the label (see `prewarm`) for
    *   easier browser-side diagnostic output.
-   * @param keySalt DP-H46b — optional per-source content fingerprint. When
-   *   non-zero, it's folded into the cache key so two callers that share
-   *   `(sourceId, defines)` but pass DIFFERENT `source` strings (e.g. two
-   *   metadata classes whose generated `Metadata` chunk differs) get
-   *   distinct compiled modules. Defaults to `0` → numeric key unchanged
-   *   (parity for all existing callers).
-   * @param definesHi C11-149 — active hi-word defines bitmask
-   *   (`ShaderDefineHi` bits OR'd together). Defaults to `0`, which keeps
-   *   every existing call site source-compatible AND keeps the lookup on
-   *   the structurally-unchanged hi=0 hot path. Unlike `defines`, the hi
+   * @param keySalt Optional per-source content fingerprint. When
+   *   non-zero, it is folded into the cache key so two callers that share
+   *   `(sourceId, defines)` but pass different `source` strings — two
+   *   metadata classes whose generated `Metadata` chunk differs, say — get
+   *   distinct compiled modules. Defaults to `0`, which leaves the numeric
+   *   key unchanged.
+   * @param definesHi Active hi-word defines bitmask,
+   *   `ShaderDefineHi` bits OR'd together. Defaults to `0`, which keeps
+   *   the lookup on the hi=0 hot path. Unlike `defines`, the hi
    *   word is a fresh namespace with no signed legacy, so only
    *   `0..0x7fffffff` is accepted (hi bit 31 is reserved — see
    *   `ShaderDefineHi`).
@@ -181,9 +178,8 @@ export class WebGPUShaderModuleCache {
       );
     }
 
-    // C11-149 — select the cache level. `definesHi === 0` stays the
-    // pre-widening hot path: same `_modules` field, same 40-bit key, one
-    // `Map.get`.
+    // Select the cache level. `definesHi === 0` is the hot path: the
+    // `_modules` field, a 40-bit key, one `Map.get`.
     let level: Map<number | string, GPUShaderModule>;
     if (definesHi === 0) {
       level = this._modules;
@@ -217,10 +213,9 @@ export class WebGPUShaderModuleCache {
    * end of renderer `_initDevice` with the define sets that your first
    * 30 frames are known to exercise.
    *
-   * C11-149 — each entry is either a lo-word mask (hi = 0, the historical
-   * form; existing callers are source-compatible and produce byte-identical
-   * labels) or a `[definesLo, definesHi]` pair for hi-word variants, whose
-   * labels carry both hex masks.
+   * Each entry is either a lo-word mask, which implies hi = 0, or a
+   * `[definesLo, definesHi]` pair for a hi-word variant, whose label carries
+   * both hex masks.
    *
    * Idempotent — already-cached entries are a no-op.
    */

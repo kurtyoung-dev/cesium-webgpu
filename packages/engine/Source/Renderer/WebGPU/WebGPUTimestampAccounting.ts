@@ -1,6 +1,5 @@
 /**
- * Unique-sample accounting for GPU timestamp profiling — C11-140
- * (NEW-GPU-TIMESTAMP-UNIQUE-SAMPLE-ACCOUNTING).
+ * Unique-sample accounting for GPU timestamp profiling.
  *
  * Two accounting invariants have to hold before any GPU-lane performance claim
  * is falsifiable, and both live here as pure functions so they can be proven

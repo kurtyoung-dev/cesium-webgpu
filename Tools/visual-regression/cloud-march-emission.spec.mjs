@@ -165,17 +165,56 @@ test("A1 both axes are REGISTERED hi-word defines, added without disturbing the 
   assert.equal(ShaderDefineHi.SPLAT_SPHERICAL_HARMONICS, 1 << 3);
   assert.equal(EMIT, 1 << 4);
   assert.equal(CONSUME, 1 << 5);
-  // ...and the new entries are documented against C13-39 rather than dropped in.
+  // ...and the new entries carry the C13-39 rationale rather than being
+  // dropped in. C16 removed tracker ids from `packages/*/Source`, so this
+  // anchors on the SUBSTANCE the id used to stand next to: the doc must say
+  // that the axis is compile-time rather than a uniform, and must give the
+  // static-register-allocation reason. Both are prose the rewrite preserved;
+  // A1-MUTATION below proves each assertion still bites.
   const emitDoc = definesSource.slice(
     definesSource.indexOf("SPLAT_SPHERICAL_HARMONICS: hiDefineBit(3),"),
     definesSource.indexOf("CLOUD_MARCH_EMIT_RECONSTRUCTION: hiDefineBit(4),"),
   );
-  assert.match(emitDoc, /C13-39/);
+  const emitProse = emitDoc.replace(/\s*\*\s*/g, " ");
   assert.match(
-    emitDoc.replace(/\s*\*\s*/g, " "),
-    /register allocation is STATIC/,
+    emitProse,
+    /compile-time variant rather than a uniform/,
     "a new specialization axis must record WHY it is compile-time and not a uniform",
   );
+  assert.match(
+    emitProse,
+    /register allocation is static/,
+    "the reason must be the static register allocation of the shared module",
+  );
+});
+
+test("A1-MUTATION removing either rationale sentence makes A1 fail", () => {
+  const emitDoc = definesSource.slice(
+    definesSource.indexOf("SPLAT_SPHERICAL_HARMONICS: hiDefineBit(3),"),
+    definesSource.indexOf("CLOUD_MARCH_EMIT_RECONSTRUCTION: hiDefineBit(4),"),
+  );
+  const emitProse = emitDoc.replace(/\s*\*\s*/g, " ");
+  // Precondition: the unmutated prose satisfies both anchors, or the mutants
+  // below prove nothing.
+  assert.match(emitProse, /compile-time variant rather than a uniform/);
+  assert.match(emitProse, /register allocation is static/);
+
+  for (const [label, anchor] of [
+    ["compile-time-vs-uniform", "compile-time variant rather than a uniform"],
+    ["static-register-allocation", "register allocation is static"],
+  ]) {
+    const mutated = emitProse.split(anchor).join("");
+    assert.notEqual(
+      mutated,
+      emitProse,
+      `${label}: the mutation did not change the prose, so this control is vacuous`,
+    );
+    assert.equal(
+      new RegExp(anchor).test(mutated),
+      false,
+      `${label}: A1 would still pass with the rationale removed`,
+    );
+  }
 });
 
 test("A2 EXACTLY ONE march pipeline compiles the emission bit", () => {

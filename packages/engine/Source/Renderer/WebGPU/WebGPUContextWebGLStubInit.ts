@@ -3,12 +3,8 @@
  * WebGLRenderingContext for legacy JS resources (Texture.js, CubeMap.js,
  * Framebuffer.js, etc.) that read `context._gl.FLOAT`, `gl.RGBA`, etc.
  *
- * Extracted from `WebGPUContext._initializeWebGLStub` as Batch 129 of
- * the audit-recommended Context decomposition (4427-line file →
- * single-responsibility helpers). See
- * `migration_doc/BATCH_129_PLAN_WEBGL_STUB_EXTRACTION.md` for the plan
- * and `migration_doc/WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md` for the
- * roadmap.
+ * Lives here rather than on `WebGPUContext`, which delegates to
+ * `buildWebGLCompatibilityStubFor`.
  *
  * The state object is a *live* proxy: getters/setters read/write
  * through to the Context's underscore-prefixed public fields. Cesium's

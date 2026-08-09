@@ -62,8 +62,8 @@ export interface DeviceLossRecoveryHost {
     useDevicePool?: boolean;
   };
   /**
-   * AUDIT_2026_05_02 C.1 audit fix #5 (Batch 135) — true when the
-   * pre-loss device came from `WebGPUDevicePool`. The recovery path
+   * True when the pre-loss device came from `WebGPUDevicePool`. The recovery
+   * path
    * routes through the pool when this is set so concurrent per-context
    * recoveries dedup to a single new shared primary, preserving
    * cross-context sharing across the loss event. False contexts
