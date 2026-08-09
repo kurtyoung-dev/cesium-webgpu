@@ -916,11 +916,53 @@ defect that no existing gate could have seen.
 
   **Recomputed on the real report data, all four backends' criteria go from
   8 FAIL to 0** — the re-run is expected green. The reading is owed on Edge.
-  **The neighbouring `LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE = 0.35` in
-  `celestial-g4-gate.mjs` still absorbs the same glow at 0.296 of its budget**
-  and should be re-derived against `solarBloomCentreAmplitude` rather than left
-  standing on the headroom — that is the one piece of this that remains open.
-  **Effort: S.**
+
+  **THE G4 TOLERANCE FOLLOW-UP IS CLOSED (2026-08-08).**
+  `LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE = 0.35` no longer gates anything. The
+  G4 disc lane now EXPECTS `discRadiance + glow` and carries a derived band:
+
+  * The glow model moved to a shared `lib/solar-bloom-glow.mjs` that both lanes
+    import (`discBloomGlowField`, `brightPassSourceRadiusPx`,
+    `discBloomSourceEdgeUncertaintyPx`, `discBloomPlateauDifferentialOver`,
+    `DISC_RADIANCE_RECOVERY_CEILING`, `deriveGlowCorrectedRecoveryBar`);
+    `sun-radiance-delta.mjs` re-exports its old surface unchanged and its
+    per-leg recovery bar is the shared derivation (byte-identical arithmetic).
+  * New `deriveDiscRadianceRecoveryBand` in `celestial-g4-gate.mjs`. It
+    integrates the glow over the MEASUREMENT's own radii (the annulus is binned
+    at the measured `discRadiusPx`, the field is built in the engine's
+    `limbPx` — 0.4% apart on a real frame) and budgets three terms: the
+    source-edge bracket walked across `discBloomSourceEdgeUncertaintyPx`
+    (HARD, 1.137%, 97.8% of the bar), per-leg display quantization in
+    quadrature over the annulus population (STOCHASTIC, 3x, 0.0086%), and the
+    undithered remainder per leg (HARD, exactly 0 at the shipped framing
+    because both legs sweep 5.6 and 190 codes across the annulus — a
+    narrow-band mutant earns it). Bar **1.163% / 1.134%**, capped by the shared
+    5% ceiling, i.e. **30x tighter** than the 0.35.
+  * A miss is now a SCORED RED (`disc_radiance_recovers_resolved`), not a
+    silent structural note — while the glow was unmodelled a miss was ambiguous
+    between instrument and product; against a prediction of the shipped chain
+    it is a statement about the render. The ratio criterion is still WITHHELD
+    on a miss (its denominator is what is in doubt), and an underivable band is
+    `ARM_STATE.RECOVERY_UNDERIVED` with no criterion at all.
+  * **Recomputed on the banked `celestial-g4.json`:** recovered radiance
+    **1.000689 (WebGL) / 1.000743 (WebGPU)** against the resolved 2.0 — 5.9% /
+    6.6% of the new budget, where the old reading sat at 84.7% of the old one.
+    Both backends stay ACTIVE and both criteria stay green.
+  * **What the old band actually admitted, now on the record:** symmetric about
+    `L` while the truth sat at `1.296 L`, it passed every radiance defect from
+    `0.354 L` to `1.054 L` — and read a disc at **`0.704 L` (a 29.6% DEFICIT)
+    as a PERFECT recovery**, because the missing light and the unmodelled glow
+    cancel exactly there. The new band refuses that at 25x its tolerance.
+    Mutation coverage: +5%, −5%, −20%, −40% and the exact blind spot all
+    ADMITTED by 0.35 and REFUSED now. (Premise correction: a **+20% excess also
+    failed the old band** — the old bound's blind side was the DEFICIT
+    direction, not the excess one.)
+  * Specs: `celestial-g4-gate` **123/123** (was 115; 8 new/rewritten incl. the
+    mutation set, the reads-every-input set, the earned-vs-assumed undithered
+    term, the ceiling, and a probe-wiring tripwire), `sun-radiance-delta`
+    **42/42** unchanged.
+
+  **Effort: S. DONE.**
 
 - **`PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS` — ✅ RE-SCOPED IN CODE **FIRST EDGE RUN 2026-08-07 (tip `c810dbace2`): the re-scope is VALIDATED — Lane A passes per-mode with the DR-01 zero-census assertion live and its positive controls non-vacuous; G1's only red is the KNOWN shell-extent-coupled Lane B. The twilight probe's engine leg PASSES on both backends; its star-pixel leg is STRUCTURAL (see TWILIGHT-STAR-REACHABILITY-BLACK-BOX below).**
   2026-08-07 (CO-3); EDGE ACCEPTANCE OWED.** The original filing is preserved

@@ -63,6 +63,11 @@ import {
   pbrNeutralTonemap,
   stitchBracketLinear,
 } from "./lib/celestial-g2-gate.mjs";
+import { VIEWPORT } from "./lib/celestial-capture-harness.mjs";
+import {
+  DISC_RADIANCE_RECOVERY_CEILING,
+  discBloomPlateauDifferentialOver,
+} from "./lib/solar-bloom-glow.mjs";
 import {
   ARM_STATE,
   C12_19_HDR_PEAK_DISCRIMINATOR,
@@ -95,6 +100,7 @@ import {
   LIMB_ABSOLUTE_RATIO_BAND,
   LIMB_BAND_MODEL_DISC_RADIUS_PX,
   LIMB_CENTRE_MAX_RELATIVE,
+  LIMB_DISC_ONLY_ANNULUS,
   LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE,
   LIMB_MIN_DROP_LINEAR,
   LIMB_SHAPE_MAX_REL_DEV,
@@ -135,6 +141,7 @@ import {
   captureCodeQuantumLinear,
   chooseBracketLeg,
   deriveDiscOnlyLimbBand,
+  deriveDiscRadianceRecoveryBand,
   describeAimMiss,
   discDeltaCensus,
   discIntegratedBrightness,
@@ -199,21 +206,57 @@ const shippedDiscOnlyBand = (model = SolarDiscModel, overrides = {}) =>
     ...overrides,
   });
 
+// The drawing buffer the G4 lanes capture into, which is what sizes the sun
+// bloom's blur buffer and therefore the glow's screen footprint. Imported
+// rather than restated so a change to the capture framing moves the fixture.
+const MODEL_VIEWPORT = VIEWPORT;
+
+/** The plateau's radiance-recovery band at the shipped state and framing. */
+const shippedRecoveryBand = (model = SolarDiscModel, overrides = {}) =>
+  deriveDiscRadianceRecoveryBand(model, {
+    discRadiance: SHIPPED_DISC_RADIANCE,
+    limbPx: LIMB_BAND_MODEL_DISC_RADIUS_PX,
+    discRadiusPx: LIMB_BAND_MODEL_DISC_RADIUS_PX,
+    viewportWidth: MODEL_VIEWPORT.width,
+    viewportHeight: MODEL_VIEWPORT.height,
+    centerX: MODEL_VIEWPORT.width / 2,
+    centerY: MODEL_VIEWPORT.height / 2,
+    // The annulus population at the modelled radius, which is what the
+    // quantization term is averaged over.
+    plateauPixels: Math.floor(
+      Math.PI *
+        LIMB_BAND_MODEL_DISC_RADIUS_PX *
+        LIMB_BAND_MODEL_DISC_RADIUS_PX *
+        (LIMB_DISC_ONLY_ANNULUS.hi * LIMB_DISC_ONLY_ANNULUS.hi -
+          LIMB_DISC_ONLY_ANNULUS.lo * LIMB_DISC_ONLY_ANNULUS.lo),
+    ),
+    exposures: DISC_BRACKET_EXPOSURES,
+    ...overrides,
+  });
+
 /**
  * The arm's inputs for a LANDED C12-19 build with a healthy disc lane. The
  * disc-only reading defaults to the shipped prediction, so a test that wants a
  * red only has to override `discOnlyRatio`.
+ *
+ * ⚠ `discRadianceMeasured` IS THE PLATEAU, not the radiance. The `flat - legacy`
+ * annulus carries the disc PLUS the sun bloom's glow, so a healthy frame reads
+ * `L + glow` there — feeding it `L` would be feeding it a 29.6% radiance
+ * DEFICIT, which is exactly what the superseded flat tolerance could not tell
+ * apart from a healthy disc.
  */
 const landedArmInputs = (overrides = {}) => {
   const derived = shippedDiscOnlyBand();
+  const recovery = shippedRecoveryBand();
   return {
     bakeClampPresent: false,
     discPeakLinear: 1.2e5,
     ratioI095overI0: 0.9,
     discOnlyRatio: derived.predicted,
-    discRadianceMeasured: SHIPPED_DISC_RADIANCE,
+    discRadianceMeasured: recovery.expectedPlateau,
     discRadianceResolved: SHIPPED_DISC_RADIANCE,
     derivedBand: derived,
+    radianceRecovery: recovery,
     ...overrides,
   };
 };
@@ -1847,30 +1890,300 @@ test("R-2: the halo-contaminated composite no longer decides the arm", () => {
   }
 });
 
-test("R-2: an unrecovered disc radiance is STRUCTURAL, never a red", () => {
+test("an unrecovered disc radiance withholds the ratio AND is scored red", () => {
   // The ratio's denominator is the radiance recovered from the flat-minus-
-  // legacy annulus. If that is not the frame's own resolved radiance, the
-  // quotient is not I(0.95R)/I(0) — and reporting it as a product FAILURE
-  // would file an instrument defect as a physics defect.
+  // legacy annulus, so a plateau that is not `L + glow` means the quotient is
+  // not I(0.95R)/I(0) and the ratio criterion is withheld. The RECOVERY itself
+  // is scored, because its expectation is now a prediction of the shipped
+  // chain rather than a tolerance wide enough to hide the missing term.
+  const recovery = shippedRecoveryBand();
   const off =
-    SHIPPED_DISC_RADIANCE * (1 + 2 * LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE);
+    recovery.expectedPlateau + 2 * recovery.tolRel * SHIPPED_DISC_RADIANCE;
   const arm = evaluateLimbAbsoluteArm(
     landedArmInputs({ discRadianceMeasured: off }),
   );
   assert.equal(arm.state, ARM_STATE.RADIANCE_UNRECOVERED);
-  assert.deepEqual(arm.criteria, {});
+  assert.deepEqual(arm.criteria, { disc_radiance_recovers_resolved: false });
+  assert.equal(
+    "limb_discOnlyRatio_I095_over_I0_in_band" in arm.criteria,
+    false,
+    "the ratio must be WITHHELD, not scored, when its denominator is in doubt",
+  );
   assert.equal(arm.measured.discRadianceMeasured, off);
   assert.equal(arm.measured.discOnlyRatio, shippedDiscOnlyBand().predicted);
-  // Just inside the bound still certifies — the gate is on the INSTRUMENT, and
-  // it must not be so tight that ordinary recovery error trips it.
+  // Just inside the derived band still certifies — the bar is an error budget,
+  // and it must not be so tight that modelling residue trips it.
   const near = evaluateLimbAbsoluteArm(
     landedArmInputs({
       discRadianceMeasured:
-        SHIPPED_DISC_RADIANCE *
-        (1 + 0.9 * LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE),
+        recovery.expectedPlateau +
+        0.9 * recovery.tolRel * SHIPPED_DISC_RADIANCE,
     }),
   );
   assert.equal(near.state, ARM_STATE.ACTIVE);
+  assert.equal(near.criteria.disc_radiance_recovers_resolved, true);
+});
+
+test("a recovery band that could not be derived is STRUCTURAL, not a pass", () => {
+  // A bound that cannot be derived certifies nothing — and comparing the
+  // plateau against the radiance ALONE would be off by ~30% of the radiance by
+  // construction, so falling back to that is not an option either.
+  for (const recovery of [
+    null,
+    { usable: false },
+    shippedRecoveryBand(SolarDiscModel, { limbPx: 0 }),
+    shippedRecoveryBand(SolarDiscModel, { viewportWidth: 0 }),
+  ]) {
+    const arm = evaluateLimbAbsoluteArm(
+      landedArmInputs({ radianceRecovery: recovery }),
+    );
+    assert.equal(arm.state, ARM_STATE.RECOVERY_UNDERIVED);
+    assert.deepEqual(arm.criteria, {});
+    assert.match(arm.reason, /could not be derived/);
+  }
+});
+
+// ===========================================================================
+// 3a-bis. THE PLATEAU'S EXPECTATION — `resolved radiance + the sun bloom's
+// glow`, and the derived band that replaced the flat 0.35.
+//
+// The old bound was symmetric about the RESOLVED radiance while the plateau's
+// truth sits 29.6% above it, so it was spending 0.296 of its 0.35 on a term
+// nobody had modelled. These tests prove the term is now modelled from the
+// shipped chain, that the derivation reads every input it claims to, and — the
+// point of the exercise — that the new band REFUSES radiance defects the old
+// one admitted.
+// ===========================================================================
+
+test("the plateau's expectation is the radiance PLUS the shipped glow", () => {
+  const r = shippedRecoveryBand();
+  assert.equal(r.usable, true);
+  // The glow half is the shared bright-pass model, recomputed here from the
+  // shipped module over the same annulus — not a number this file carries.
+  const glow = discBloomPlateauDifferentialOver(SolarDiscModel, {
+    discRadiance: SHIPPED_DISC_RADIANCE,
+    limbPx: LIMB_BAND_MODEL_DISC_RADIUS_PX,
+    viewportWidth: MODEL_VIEWPORT.width,
+    viewportHeight: MODEL_VIEWPORT.height,
+    centerX: MODEL_VIEWPORT.width / 2,
+    centerY: MODEL_VIEWPORT.height / 2,
+    annulus: LIMB_DISC_ONLY_ANNULUS,
+  });
+  assert.equal(r.glow, glow);
+  assert.equal(r.expectedPlateau, SHIPPED_DISC_RADIANCE + glow);
+  // And it is the size the closed rider names: between a quarter and a third
+  // of the disc's own radiance at the shipped position.
+  const share = glow / SHIPPED_DISC_RADIANCE;
+  assert.ok(
+    share > 0.25 && share < 0.35,
+    `the glow is ${share} of the disc radiance, expected ~0.296`,
+  );
+  // The old bound was 0.35 and the reading it was compared against was this
+  // share — i.e. it was 84.6% spent before any error was allowed for.
+  assert.ok(
+    share / LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE > 0.8,
+    "the superseded bound was NOT mostly spent on the unmodelled glow",
+  );
+});
+
+test("the recovery band READS every input it claims to", () => {
+  const base = shippedRecoveryBand();
+  const moved = (overrides, pick) => {
+    const m = shippedRecoveryBand(SolarDiscModel, overrides);
+    return Math.abs(pick(m) - pick(base)) > 0;
+  };
+  // The radiance sets the bright pass's operating point AND the pedestal.
+  assert.ok(
+    moved({ discRadiance: SHIPPED_DISC_RADIANCE * 0.5 }, (m) => m.glow),
+    "the glow did not move with the disc radiance",
+  );
+  // The blur buffer is sized from the drawing buffer.
+  assert.ok(
+    moved({ viewportWidth: 1920, viewportHeight: 1080 }, (m) => m.glow),
+    "the glow did not move with the drawing buffer",
+  );
+  // The source's screen footprint is the disc's limb.
+  assert.ok(
+    moved({ limbPx: LIMB_BAND_MODEL_DISC_RADIUS_PX * 0.5 }, (m) => m.glow),
+    "the glow did not move with the disc's limb in pixels",
+  );
+  // The annulus is placed at the MEASURED radius, not the engine's.
+  assert.ok(
+    moved(
+      { discRadiusPx: LIMB_BAND_MODEL_DISC_RADIUS_PX * 1.05 },
+      (m) => m.glow,
+    ),
+    "the model integrated over the engine's radii rather than the measured ones",
+  );
+  // The quantization term is averaged over the annulus population.
+  assert.ok(
+    moved({ plateauPixels: 100 }, (m) => m.tolRel),
+    "the band did not move with the annulus population",
+  );
+  // A MUTANT chain changes the glow: a wider blur spreads the same extracted
+  // light differently across the annulus, and a legacy disc that ended at the
+  // true limb would leave nothing for the differential to carry at all.
+  const wider = {
+    ...SolarDiscModel,
+    SUN_BLOOM_BLUR_SIGMA: SolarDiscModel.SUN_BLOOM_BLUR_SIGMA * 3,
+  };
+  assert.notEqual(shippedRecoveryBand(wider).glow, base.glow);
+  const noLegacyGap = {
+    ...SolarDiscModel,
+    SOLAR_DISC_BAKE_LENGTH_SCALAR: 1.0,
+  };
+  assert.ok(shippedRecoveryBand(noLegacyGap).glow < 1e-9);
+});
+
+test("MUTATION: radiance defects the flat 0.35 ADMITTED are now refused", () => {
+  const r = shippedRecoveryBand();
+  const L = SHIPPED_DISC_RADIANCE;
+  // A pure radiance defect of `delta`: the disc renders at `(1+delta) L`, so
+  // the plateau reads `(1+delta) L + glow`.
+  const plateauAt = (delta) => r.expectedPlateau + delta * L;
+  const oldReading = (delta) => Math.abs(plateauAt(delta) / L - 1);
+  const oldAdmits = (delta) =>
+    oldReading(delta) <= LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE;
+
+  // THE HEADLINE. The old bound sat symmetric about `L` while the truth sat at
+  // `1.296 L`, so it admitted defects all the way down to `0.354 L` — and it
+  // read the disc at `0.704 L` as a PERFECT recovery, because the missing
+  // light and the unmodelled glow cancel exactly there.
+  const blindSpot = -r.glow / L;
+  assert.ok(
+    oldReading(blindSpot) < 1e-9,
+    `the old bound's blind spot is not at ${blindSpot}`,
+  );
+
+  for (const delta of [0.05, -0.05, -0.2, blindSpot, -0.4]) {
+    assert.ok(
+      oldAdmits(delta),
+      `the superseded bound is claimed to admit a ${delta} radiance defect`,
+    );
+    const arm = evaluateLimbAbsoluteArm(
+      landedArmInputs({ discRadianceMeasured: plateauAt(delta) }),
+    );
+    assert.equal(
+      arm.state,
+      ARM_STATE.RADIANCE_UNRECOVERED,
+      `a ${delta} radiance defect still certified`,
+    );
+    assert.equal(
+      arm.criteria.disc_radiance_recovers_resolved,
+      false,
+      `a ${delta} radiance defect was not scored red`,
+    );
+    // And by how much, so "it fails" is not read as "it barely fails".
+    assert.ok(Math.abs(delta) / r.tolRel > 3);
+  }
+
+  // The 20% excess the follow-up named. It fails the new band by 17x — and,
+  // stated honestly, it ALSO failed the old one: the old bound's blind side
+  // was the DEFICIT direction, where the unmodelled glow masked the loss.
+  const excess = evaluateLimbAbsoluteArm(
+    landedArmInputs({ discRadianceMeasured: plateauAt(0.2) }),
+  );
+  assert.equal(excess.criteria.disc_radiance_recovers_resolved, false);
+  assert.ok(0.2 / r.tolRel > 15);
+  assert.equal(oldAdmits(0.2), false);
+
+  // The tightening, as one number: ~30x.
+  assert.ok(
+    LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE / r.tolRel > 20,
+    `the band only tightened by ${LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE / r.tolRel}x`,
+  );
+});
+
+test("MUTATION: a build whose bloom never reached the disc is refused", () => {
+  // The nearest competing picture to `L + glow` is `L` — the sun bloom absent
+  // from the composite. It is what `powerVsGlowAbsent` measures the distance
+  // to, and the criterion has to actually refuse it.
+  const r = shippedRecoveryBand();
+  const arm = evaluateLimbAbsoluteArm(
+    landedArmInputs({ discRadianceMeasured: SHIPPED_DISC_RADIANCE }),
+  );
+  assert.equal(arm.state, ARM_STATE.RADIANCE_UNRECOVERED);
+  assert.equal(arm.criteria.disc_radiance_recovers_resolved, false);
+  // The doctrine bar: a band must sit at most a third of the way to the thing
+  // it refuses, i.e. the separation must be at least 3 tolerances.
+  assert.ok(
+    r.powerVsGlowAbsent > 3,
+    `the band is only ${r.powerVsGlowAbsent} tolerances from the glow-absent picture`,
+  );
+});
+
+test("the band's error budget is three terms, one of them stochastic", () => {
+  const r = shippedRecoveryBand();
+  // E1 dominates and is a HARD bracket walked across the source-edge
+  // uncertainty, so it enters at 1x.
+  assert.ok(r.terms.glowError > 0);
+  assert.ok(r.terms.edgeUncertaintyPx > 0);
+  assert.ok(
+    r.terms.glowError / (SHIPPED_DISC_RADIANCE * r.tolRel) > 0.8,
+    "the source-edge bracket is no longer the dominant term",
+  );
+  // E2 is one code per leg, in quadrature, over the annulus population.
+  assert.ok(r.terms.quant > 0);
+  assert.ok(3 * r.terms.quant < r.terms.glowError);
+  // E3 is EARNED, not assumed: at the shipped framing both legs sweep many
+  // codes across the annulus, so the undithered residue is exactly zero.
+  assert.equal(r.terms.undithered, 0);
+  assert.ok(r.terms.legs.flat.sweepCodes > 1);
+  assert.ok(r.terms.legs.legacy.sweepCodes > 1);
+  assert.equal(r.terms.legs.flat.dithers, true);
+  // ... and a band too narrow for either leg's code to move across DOES earn
+  // it, which is what makes it a modelled term rather than a constant zero.
+  const narrow = shippedRecoveryBand(SolarDiscModel, {
+    annulus: { lo: 0.85, hi: 0.8501 },
+  });
+  assert.ok(narrow.terms.undithered > 0);
+  assert.equal(narrow.terms.legs.flat.dithers, false);
+  assert.ok(narrow.tolRel > r.tolRel);
+  // The budget is the sum, capped.
+  assert.equal(
+    r.terms.budgetRel,
+    (r.terms.glowError + r.terms.undithered + 3 * r.terms.quant) /
+      SHIPPED_DISC_RADIANCE,
+  );
+  assert.equal(r.terms.capped, false);
+  assert.ok(r.tolRel < DISC_RADIANCE_RECOVERY_CEILING);
+});
+
+test("the probe feeds the recovery band the FRAME's own bloom geometry", () => {
+  // The derivation is only as good as what it is handed: the drawing buffer
+  // (which sizes the blur buffer), the engine's own `limbPx`, and the MEASURED
+  // disc radius the annulus was binned at. A probe that passed the crop, or
+  // the modelled radius, would derive a glow for a picture nobody rendered.
+  const src = readNormalized("./probe-celestial-gates.mjs");
+  const call = src.slice(
+    src.indexOf("radianceRecovery: deriveDiscRadianceRecoveryBand("),
+  );
+  const body = call.slice(0, call.indexOf("}),"));
+  for (const line of [
+    "discRadiance: disc?.shippedHaloState?.discRadiance",
+    "limbPx: disc?.shippedHaloState?.limbPx",
+    "discRadiusPx: disc.discRadiusPx",
+    "viewportWidth: disc.canvasWidth",
+    "viewportHeight: disc.canvasHeight",
+    "plateauPixels: disc.discRadiancePlateauPixels",
+  ]) {
+    assert.ok(body.includes(line), `the probe does not pass \`${line}\``);
+  }
+  // ...and the drawing buffer reaches the disc metrics in the first place.
+  assert.match(src, /canvasWidth: lane\.setup\.canvasWidth,/);
+  assert.match(src, /canvasHeight: lane\.setup\.canvasHeight,/);
+});
+
+test("a degenerate geometry cannot buy itself a generous band", () => {
+  // The source-edge bracket scales with the disc's screen size, so a frame
+  // whose disc fills the buffer would derive a huge one. The shared ceiling is
+  // what stops that from becoming a licence.
+  const huge = shippedRecoveryBand(SolarDiscModel, {
+    limbPx: 1000,
+    discRadiusPx: 1000,
+  });
+  assert.equal(huge.terms.capped, true);
+  assert.equal(huge.tolRel, DISC_RADIANCE_RECOVERY_CEILING);
 });
 
 test("R-2: a band that could not be derived is STRUCTURAL, not a pass", () => {

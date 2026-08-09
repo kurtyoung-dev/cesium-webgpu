@@ -717,10 +717,35 @@ and the x=0 anomaly were all the same two instrument terms — the
 threshold-gated sun-bloom glow and the zero-dither 8-bit quantum — now
 modelled with closed-form derivations and mutation coverage. The x=1
 samples remain non-certifying by the derivation’s own rule and say so
-in the report. Open follow-ups riding elsewhere: the trueSizeRatio
-edge-ramp residual (+0.32–0.48%, reported not scored) and the
-`LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE` re-derivation against
-`solarBloomCentreAmplitude` (noted on the closed DEFERRED_WORK rider).
+in the report. Open follow-up riding elsewhere: the trueSizeRatio
+edge-ramp residual (+0.32–0.48%, reported not scored). The
+`LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE` re-derivation is **CLOSED** —
+see the next entry.
+
+### 2026-08-08 G4 DISC RADIANCE RECOVERY RE-DERIVED (Batch 995) — the flat 0.35 is superseded by a modelled expectation and a 1.16% band, 30x tighter
+
+The G4 disc lane's radiance-recovery check compared the `flat - legacy`
+plateau to the frame's resolved `discRadiance` inside ±0.35 — and the
+plateau is not the radiance, it is `radiance + the sun bloom's glow`, so
+0.296 of that 0.35 was being spent on an unmodelled TERM. The check now
+EXPECTS `discRadiance + glow`, with the glow computed from the same
+shipped bright-pass chain the delta lane uses (lifted to a shared
+`lib/solar-bloom-glow.mjs`, no duplication), and carries a derived band
+of **1.163% / 1.134%** built from a source-edge bracket (hard, dominant),
+per-leg quantization over the annulus population (3σ) and an undithered
+remainder that is EARNED (exactly 0 at the shipped framing, non-zero for
+a narrow-band mutant), capped by the shared 5% ceiling.
+
+Recomputed on the banked run: recovered radiance **1.000689 (WebGL) /
+1.000743 (WebGPU)** against the resolved 2.0 — 5.9% / 6.6% of the new
+budget against 84.7% of the old one; both backends stay green. The
+tightening is not cosmetic: symmetric about `L` while the truth sat at
+`1.296 L`, the old bound read a disc rendering at **0.704 L — a 29.6%
+radiance deficit — as a PERFECT recovery**, and admitted everything from
+`0.354 L` to `1.054 L`. A miss is now a scored red
+(`disc_radiance_recovers_resolved`) rather than a silent structural note,
+because the expectation is a prediction of the shipped chain rather than
+a tolerance. `celestial-g4-gate` 123/123, `sun-radiance-delta` 42/42.
 
 ### 2026-08-08 C12-19 DELTA PROBE FIRST RUN (Batch 992) — exit 1 on BOTH backends identically; the radiance-excess shape is NEITHER pure multiplicative NOR pure additive; D1 at x=0.95 reads low on both legs
 

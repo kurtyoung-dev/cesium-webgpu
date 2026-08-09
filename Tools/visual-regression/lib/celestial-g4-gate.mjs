@@ -63,6 +63,22 @@
 // every run, and `[0.3, 0.5]` is still carried in the record as
 // `measured.supersededBand`.
 //
+// ─── THE PLATEAU THE RATIO DIVIDES BY IS `RADIANCE + GLOW` ─────────────────
+//
+// The disc-only ratio's denominator is a disc radiance recovered from the
+// `flat - legacy` annulus, and that annulus does not carry the disc alone. The
+// sun bloom's bright-pass chain runs BEFORE the halo stage and is still feeding
+// off the flat leg's disc over this band while the legacy leg's disc — the
+// bright pass's whole source on that leg — ended at `1/sqrt(2) R`, several blur
+// widths inside. The plateau therefore reads `L + glow`, with the glow ~29.6%
+// of `L` at the shipped radiance. {@link deriveDiscRadianceRecoveryBand} models
+// both terms from the shipped chain and bounds what is left at ~1.2%, and the
+// recovery is SCORED (`disc_radiance_recovers_resolved`) rather than only
+// gating the ratio: against a prediction of the shipped chain, a miss is a
+// statement about the render. The superseded flat bound is preserved as
+// {@link LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE}, whose own note records what it
+// could not see.
+//
 // What IS measurable pre-C12-19 is limb darkening's PRESENCE and SHAPE, via a
 // differential the toggle makes exact: `enableSolarLimbDarkening = false`
 // passes `(a0,a1,a2) = (1,0,0)`, i.e. `I == 1` everywhere, so
@@ -94,6 +110,18 @@ import {
   displayToLinear,
   pbrNeutralTonemap,
 } from "./celestial-g2-gate.mjs";
+
+// The sun bloom's bright-pass -> blur -> additive-blend chain, as a forward
+// model. It is a shared module rather than this lane's own because the
+// two-radiance delta lane reads the same glow off the same shipped chain; the
+// disc's radiance-recovery band below is a PREDICTION built from it, not a
+// tolerance sized to absorb it.
+import {
+  deriveGlowCorrectedRecoveryBar,
+  discBloomGlowField,
+  discBloomPlateauDifferentialOver,
+  discBloomSourceEdgeUncertaintyPx,
+} from "./solar-bloom-glow.mjs";
 
 // ---------------------------------------------------------------------------
 // EXIT CONTRACT — the same one G1/G2/G3 use.
@@ -134,6 +162,11 @@ export const ARM_STATE = Object.freeze({
   // R-2. The band is DERIVED per run from the shipped model and the frame's
   // appearance scalars. A bound that could not be derived certifies nothing.
   BAND_UNDERIVED: "STRUCTURAL-band-underived",
+  // The plateau's expectation is `resolved radiance + the sun bloom's glow`,
+  // and the glow half needs the frame's own bloom geometry. Without it there is
+  // no expectation to compare against — structural, and NOT a criterion, for
+  // the same reason `BAND_UNDERIVED` is.
+  RECOVERY_UNDERIVED: "STRUCTURAL-recovery-band-underived",
 });
 
 // ---------------------------------------------------------------------------
@@ -581,17 +614,29 @@ export const LIMB_BAND_MODEL_DISC_RADIUS_PX = 170;
 export const DISC_BRACKET_EXPOSURES = Object.freeze([1, 0.125]);
 
 /**
- * Factor by which the measured `D2` annulus plateau may differ from the
- * frame's RESOLVED `discRadiance` before the disc-only arm reports STRUCTURAL.
+ * SUPERSEDED. The flat factor by which the measured `D2` annulus plateau was
+ * allowed to differ from the frame's RESOLVED `discRadiance`.
  *
- * DERIVED as an instrument check, not a product bound: the plateau is a mean
- * over ~21,600 px whose per-pixel quantum is 1.2% of its own value, i.e. an
- * expected agreement of ~0.01%, and the whole display-chain inversion is what
- * would have to be wrong for it to drift. 0.35 is ~4000x that expectation —
- * it cannot fire on measurement noise, only on a plateau that is not the
- * disc's radiance at all (a mis-located edge, a missing leg, or a halo that
- * failed to cancel). A miss is STRUCTURAL because the ratio's denominator
- * would then not be `L`, so the reading would not be of `I(0.95R)/I(0)`.
+ * PRESERVED, not deleted, because the run record has to show what moved: the
+ * arm publishes it as `measured.supersededRecoveryTolerance` beside the derived
+ * band that replaced it, and the spec pins the tightening against it.
+ *
+ * WHY IT HAD TO GO. Its width was sized against measurement noise — a plateau
+ * mean over ~21,600 px whose per-pixel quantum is ~1.2% of its own value agrees
+ * with itself to ~0.01%, and 0.35 is ~4000x that — but the plateau does not
+ * carry the disc alone. `SunPostProcess`'s bright-pass chain is still glowing
+ * over that annulus on the flat leg and has stopped on the legacy leg (whose
+ * disc, the bright pass's whole source there, ended at `1/sqrt(2) R`), so the
+ * plateau reads `L + glow` and the glow is 29.6% of `L` at the shipped
+ * radiance. The bound was therefore spending 0.296 of its 0.35 on an unmodelled
+ * TERM rather than on error, with 0.054 left for everything else.
+ *
+ * WHAT THAT COST. Symmetric about `L` while the truth sat at `1.296 L`, the
+ * band admitted a disc rendering anywhere from `0.354 L` to `1.054 L` — and it
+ * read a disc at `0.704 L` (a 29.6% radiance DEFICIT) as a perfect recovery,
+ * because the missing light and the unmodelled glow cancel exactly there.
+ * {@link deriveDiscRadianceRecoveryBand} models the glow instead of absorbing
+ * it and bounds what remains at ~1.2%.
  * @type {number}
  */
 export const LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE = 0.35;
@@ -2262,6 +2307,219 @@ export function deriveDiscOnlyLimbBand(model, o) {
 }
 
 /**
+ * What the `D2` annulus plateau is EXPECTED to read, and the derived band that
+ * expectation is certified against.
+ *
+ * ⚠ THE PLATEAU IS NOT THE DISC'S RADIANCE. `D2 = flat - legacy` over
+ * {@link LIMB_DISC_ONLY_ANNULUS} cancels the screen halo exactly — both legs
+ * carry it identically — and it carries the flat leg's disc, which is what the
+ * reading wants. It ALSO carries a third light the two legs do not share:
+ * `SunPostProcess`'s bright-pass -> blur -> additive-blend chain runs before the
+ * halo stage, and over this annulus the flat leg's disc is still feeding it
+ * while the legacy leg's disc — the bright pass's whole source on that leg —
+ * ended at `1/sqrt(2) R`, several blur widths inside. So
+ *
+ *     plateau  =  discRadiance  +  glow
+ *
+ * with `glow` computed here from the shipped chain
+ * ({@link discBloomPlateauDifferentialOver}) at the frame's own radiance and
+ * geometry. It is 0.591 at the shipped `discRadiance = 2` and a 1280x720
+ * drawing buffer — 29.6% of the disc — which is what the superseded flat
+ * {@link LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE} was quietly absorbing.
+ *
+ * THE MODEL IS INTEGRATED OVER THE MEASUREMENT'S OWN RADII. The annulus is
+ * binned at the MEASURED `discRadiusPx` while the glow field is built in the
+ * engine's `limbPx`; the two differ by ~0.4% on a real frame, so the band is
+ * scaled by `discRadiusPx / limbPx` rather than evaluated at the geometry the
+ * engine drew with and compared to pixels somewhere else.
+ *
+ * WIDTH, from three terms, of which only one is stochastic:
+ *
+ *   E1  THE GLOW MODEL'S SOURCE EDGE — HARD. The field treats the disc's edge
+ *       as a cut at one radius; the real edge is quantized twice (the bake's
+ *       texel and the blur buffer's point sampling), and
+ *       {@link discBloomSourceEdgeUncertaintyPx} states that bracket. The term
+ *       is the largest |change| in the correction when the edge is moved across
+ *       it — derived by MOVING it, not by picking a number. THE DOMINANT TERM
+ *       at ~1.14% of the radiance.
+ *   E2  DISPLAY QUANTIZATION — STOCHASTIC, enters at 3x. One code on each leg,
+ *       in quadrature (the plateau is their difference), through the lane's own
+ *       bracket at each leg's own brightness, over the annulus population.
+ *       ~0.009% at ~21,400 px: the reason the plateau is an annulus mean.
+ *   E3  THE UNDITHERED REMAINDER — HARD. `1/sqrt(N)` is earned only where the
+ *       bin's pixels round DIFFERENTLY. Over a band across which a leg's own
+ *       code does not sweep a full code, every pixel renders the same integer
+ *       and averaging reaches nothing; the residue is `(1 - sweep)/2` codes per
+ *       leg. At the shipped framing both legs sweep many codes across the
+ *       annulus (5.6 and 190) and the term is EXACTLY ZERO — but a flat-glow
+ *       mutant earns it, which is what makes it a modelled term rather than an
+ *       assumption.
+ *
+ * The bar is `E1 + E3 + 3*E2`, capped by the shared
+ * `DISC_RADIANCE_RECOVERY_CEILING` so a degenerate geometry cannot buy itself a
+ * generous one, and it lands at ~1.2% — 30x tighter than the 0.35 it replaces.
+ * `powerVsGlowAbsent` publishes what that buys: the distance to the nearest
+ * competing picture (a build whose bloom never reached the disc, i.e.
+ * `plateau = L`) measured in units of the bar, ~25.
+ *
+ * @param {object} model The shipped `SolarDiscModel` namespace, or a mutant.
+ * @param {{discRadiance:number,limbPx:number,discRadiusPx:number,
+ *          viewportWidth:number,viewportHeight:number,centerX?:number,
+ *          centerY?:number,plateauPixels?:number,exposures?:readonly number[],
+ *          annulus?:{lo:number,hi:number}}} o The frame's resolved appearance
+ *        scalars and the geometry it was drawn and measured at.
+ * @returns {{usable:boolean,resolvedRadiance:number,glow:number,
+ *            expectedPlateau:number,tolRel:number,band:{lo:number,hi:number},
+ *            annulus:{lo:number,hi:number},powerVsGlowAbsent:number,
+ *            terms:object|null}}
+ */
+export function deriveDiscRadianceRecoveryBand(model, o) {
+  const L = o?.discRadiance;
+  const limbPx = o?.limbPx;
+  const discRadiusPx = o?.discRadiusPx;
+  const width = o?.viewportWidth;
+  const height = o?.viewportHeight;
+  const exposures = o?.exposures ?? DISC_BRACKET_EXPOSURES;
+  const unusable = {
+    usable: false,
+    resolvedRadiance: Number.isFinite(L) ? L : NaN,
+    glow: NaN,
+    expectedPlateau: NaN,
+    tolRel: NaN,
+    band: { lo: NaN, hi: NaN },
+    annulus: { lo: NaN, hi: NaN },
+    powerVsGlowAbsent: NaN,
+    terms: null,
+  };
+  if (!(L > 0) || !(limbPx > 0) || !(discRadiusPx > 0)) {
+    return unusable;
+  }
+  if (!(width > 0) || !(height > 0)) {
+    return unusable;
+  }
+  const geometry = {
+    limbPx,
+    viewportWidth: width,
+    viewportHeight: height,
+    centerX: o?.centerX,
+    centerY: o?.centerY,
+  };
+  // The measurement's radii, expressed in the units the glow field integrates
+  // in. `LIMB_DISC_ONLY_ANNULUS` is a fraction of the MEASURED disc radius.
+  const measuredBand = o?.annulus ?? LIMB_DISC_ONLY_ANNULUS;
+  const scale = discRadiusPx / limbPx;
+  const annulus = {
+    lo: measuredBand.lo * scale,
+    hi: measuredBand.hi * scale,
+  };
+  const glowAtShift = (shift) =>
+    discBloomPlateauDifferentialOver(model, {
+      discRadiance: L,
+      ...geometry,
+      annulus,
+      discEdgeShiftPx: shift,
+    });
+  const glow = glowAtShift(0);
+  if (!(glow >= 0)) {
+    return unusable;
+  }
+
+  // E1 — the source-edge bracket, walked rather than assumed.
+  const edgeUncertaintyPx = discBloomSourceEdgeUncertaintyPx(model, geometry);
+  const glowError = Math.max(
+    Math.abs(glowAtShift(-edgeUncertaintyPx) - glow),
+    Math.abs(glowAtShift(edgeUncertaintyPx) - glow),
+  );
+
+  // E2 + E3 — per LEG, because the two legs sit at very different brightness
+  // over this annulus (disc + glow against glow alone) and therefore land on
+  // different bracket exposures with different code values.
+  const legField = (discEdgePx) =>
+    discBloomGlowField(model, {
+      ...geometry,
+      discRadiance: L,
+      limbDarkened: false,
+      discEdgePx,
+    });
+  const legs = {
+    flat: { pedestal: L, field: legField(limbPx) },
+    legacy: {
+      pedestal: 0,
+      field: legField(limbPx / model.SOLAR_DISC_BAKE_LENGTH_SCALAR),
+    },
+  };
+  const samples = 128;
+  let quantSquared = 0;
+  let undithered = 0;
+  const legTerms = {};
+  for (const [key, leg] of Object.entries(legs)) {
+    // The leg's own mean over the annulus, radius-weighted the same way an
+    // annulus mean over pixels is.
+    let num = 0;
+    let den = 0;
+    for (let i = 0; i < samples; i++) {
+      const r =
+        (annulus.lo + ((annulus.hi - annulus.lo) * (i + 0.5)) / samples) *
+        limbPx;
+      num += r * leg.field.sampleAtRadiusPx(r);
+      den += r;
+    }
+    const level = leg.pedestal + (den > 0 ? num / den : NaN);
+    const quantum = bracketQuantum(level, exposures);
+    const sweepCodes =
+      Math.abs(
+        leg.field.sampleAtRadiusPx(annulus.hi * limbPx) -
+          leg.field.sampleAtRadiusPx(annulus.lo * limbPx),
+      ) / quantum.oneCodeLinear;
+    quantSquared += quantum.oneCodeLinear * quantum.oneCodeLinear;
+    undithered += 0.5 * Math.max(0, 1 - sweepCodes) * quantum.oneCodeLinear;
+    legTerms[key] = {
+      level,
+      exposure: quantum.exposure,
+      code: quantum.code,
+      oneCodeLinear: quantum.oneCodeLinear,
+      sweepCodes,
+      dithers: sweepCodes >= 1,
+    };
+  }
+  const bar = deriveGlowCorrectedRecoveryBar({
+    resolvedRadiance: L,
+    glowError,
+    undithered,
+    plateauQuantumLinear: Math.sqrt(quantSquared),
+    plateauPixels: o?.plateauPixels,
+  });
+  if (!(bar.tolRel > 0)) {
+    return unusable;
+  }
+  const expectedPlateau = L + glow;
+  return {
+    usable: true,
+    resolvedRadiance: L,
+    glow,
+    expectedPlateau,
+    tolRel: bar.tolRel,
+    // The same statement in plateau units, so a reader can put the measured
+    // plateau against a band without redoing the subtraction.
+    band: { lo: L * (1 - bar.tolRel) + glow, hi: L * (1 + bar.tolRel) + glow },
+    annulus,
+    // The nearest competing picture: a build whose bloom never reached the
+    // disc, whose plateau would be `L` exactly. Published so a green criterion
+    // cannot be read as evidence against a defect it was never sharp enough
+    // to see.
+    powerVsGlowAbsent: glow / L / bar.tolRel,
+    terms: {
+      ...bar.terms,
+      edgeUncertaintyPx,
+      scale,
+      legs: legTerms,
+      plateauPixels: o?.plateauPixels ?? null,
+      supersededTolerance: LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE,
+    },
+  };
+}
+
+/**
  * Radius, in solar radii, at which `screenHalo(rho) - bakedHalo(rho)` peaks.
  *
  * @param {{solarScreenHaloProfile:Function,solarGlareProfile:Function,
@@ -2853,7 +3111,7 @@ export function measureHaloProfile(o) {
  *
  * @param {{bakeClampPresent:boolean|null,discPeakLinear:number,
  *          ratioI095overI0:number,discLaneStructural:boolean,
- *          expectedComposite:object}} m
+ *          expectedComposite:object,radianceRecovery:object}} m
  * @returns {{state:string,pending:string|null,criteria:Object<string,boolean>,
  *            reason:string,measured:object}}
  */
@@ -2876,6 +3134,15 @@ export function evaluateLimbAbsoluteArm(m) {
       ? m.discRadianceResolved
       : null,
     derivedBand: m?.derivedBand ?? null,
+    // The plateau's own expectation — `resolved radiance + the sun bloom's
+    // modelled glow` — and the derived band around it. Reported on every arm
+    // state so the run record carries the arithmetic, not just the verdict.
+    radianceRecovery: m?.radianceRecovery ?? null,
+    // The SUPERSEDED flat recovery bound, preserved so the run record shows
+    // what moved. It was symmetric about the resolved radiance while the
+    // plateau's truth sits ~29.6% above it, which is why it could read a large
+    // radiance DEFICIT as a perfect recovery.
+    supersededRecoveryTolerance: LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE,
     // The SUPERSEDED §5 bound, preserved so the run record shows what moved.
     // It was ratified for the EXTREME limb (`I(R)/I(0) = a0 = 0.30`), not for
     // 0.95R, which is why no shipped or published law could ever meet it here.
@@ -2951,32 +3218,66 @@ export function evaluateLimbAbsoluteArm(m) {
       measured,
     };
   }
-  // R-2 — THE INSTRUMENT CHECK THAT GATES THE READING. The disc-only ratio's
-  // denominator is `L`, recovered from the `flat - legacy` annulus. If that
-  // plateau is not the frame's own resolved `discRadiance`, the denominator is
-  // not `L` and the number is not `I(0.95R)/I(0)` — structural, by name, with
-  // the reading still printed.
+  // THE READING'S DENOMINATOR, AGAINST A MODELLED EXPECTATION. The disc-only
+  // ratio divides by `L`, recovered from the `flat - legacy` annulus — and that
+  // plateau carries `L + glow`, the glow being the sun bloom's bright-pass
+  // chain, which is still feeding off the flat leg's disc over this annulus and
+  // has lost the legacy leg's. `deriveDiscRadianceRecoveryBand` predicts both
+  // terms from the shipped chain, so the comparison is against
+  // `L + glow` and not against `L` with the glow inside the tolerance.
   const lMeasured = measured.discRadianceMeasured;
   const lResolved = measured.discRadianceResolved;
+  const recovery = measured.radianceRecovery;
+  if (recovery?.usable !== true || !(recovery.tolRel > 0)) {
+    return {
+      state: ARM_STATE.RECOVERY_UNDERIVED,
+      pending: null,
+      criteria: {},
+      reason:
+        "the plateau's expectation is the frame's resolved discRadiance PLUS " +
+        "the sun bloom's glow over the annulus, and the glow half could not " +
+        "be derived (it needs the frame's own bloom geometry: the drawing " +
+        "buffer the blur buffer is sized from, the disc's limb in pixels, and " +
+        "the resolved radiance). Comparing the plateau to the radiance alone " +
+        "would be off by ~30% of the radiance BY CONSTRUCTION, so nothing is " +
+        "scored. The reading is MEASURED and printed. Limb darkening's " +
+        "presence and shape are unaffected — the differential arm is gated " +
+        "separately.",
+      measured,
+    };
+  }
+  // The disc's own radiance, with the modelled glow taken off, as a fraction of
+  // what the frame resolved. 1.0 is the claim.
+  const recoveredRadiance = (lMeasured - recovery.glow) / lResolved;
+  measured.discRadianceRecovered = recoveredRadiance;
+  measured.discRadianceRecoveredResidual = recoveredRadiance - 1;
   const recovered =
     lMeasured > 0 &&
     lResolved > 0 &&
-    Math.abs(lMeasured / lResolved - 1) <=
-      LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE;
+    Math.abs(recoveredRadiance - 1) <= recovery.tolRel;
   if (!recovered) {
     return {
       state: ARM_STATE.RADIANCE_UNRECOVERED,
       pending: null,
-      criteria: {},
+      // ⚠ THIS IS A SCORED RED, not a silent structural note. While the glow
+      // was unmodelled a plateau miss was ambiguous between "the instrument
+      // mis-read the annulus" and "the disc did not render at the radiance the
+      // frame resolved", so it could only be reported as structural. The
+      // expectation is now a PREDICTION OF THE SHIPPED CHAIN, so a miss is a
+      // statement about the render and is scored as one. The ratio criterion
+      // is still withheld — its denominator is the thing in doubt.
+      criteria: { disc_radiance_recovers_resolved: false },
       reason:
         `the disc-only ratio's denominator is the disc radiance recovered ` +
-        `from the flat-minus-legacy annulus, and that plateau (${lMeasured}) ` +
-        `is not within ${LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE} of the ` +
-        `frame's resolved discRadiance (${lResolved}) — so what was divided ` +
-        "by is not the disc's radiance and the quotient is not " +
-        "I(0.95R)/I(0). The reading is MEASURED and printed; it certifies " +
-        "nothing. Limb darkening's presence and shape are unaffected — the " +
-        "differential arm is gated separately.",
+        `from the flat-minus-legacy annulus. That plateau (${lMeasured}) ` +
+        `carries the disc PLUS the sun bloom's modelled glow ` +
+        `(${recovery.glow}); with the glow removed it implies a radiance of ` +
+        `${recoveredRadiance} times the frame's resolved discRadiance ` +
+        `(${lResolved}), outside the derived band of +/-${recovery.tolRel}. ` +
+        "So the disc did not render at the radiance the frame resolved, and " +
+        "what the ratio divided by is not `L`. The reading is MEASURED and " +
+        "printed; the ratio certifies nothing. Limb darkening's presence and " +
+        "shape are unaffected — the differential arm is gated separately.",
       measured,
     };
   }
@@ -2998,6 +3299,10 @@ export function evaluateLimbAbsoluteArm(m) {
     state: ARM_STATE.ACTIVE,
     pending: null,
     criteria: {
+      // The plateau's own claim, scored in its own right rather than only
+      // gating the ratio: the disc renders at the radiance the frame resolved,
+      // once the sun bloom's modelled glow is off the annulus.
+      disc_radiance_recovers_resolved: true,
       limb_discOnlyRatio_I095_over_I0_in_band: inBand(
         measured.discOnlyRatio,
         band,
@@ -4046,6 +4351,7 @@ export default {
   expectedCompositeLimbRatio,
   solarDiscChainLuminance,
   deriveDiscOnlyLimbBand,
+  deriveDiscRadianceRecoveryBand,
   findRetainedImageBuffers,
   screenMinusBakedPeak,
   limbShapeExpectation,

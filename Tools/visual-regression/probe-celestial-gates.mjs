@@ -313,6 +313,7 @@ import {
   bracketQuantumAt,
   buildG4Summary,
   deriveDiscOnlyLimbBand,
+  deriveDiscRadianceRecoveryBand,
   discDeltaCensus,
   discIntegratedBrightness,
   evaluateG4Backend,
@@ -2926,6 +2927,11 @@ function discMetrics(lane, solarModel) {
     hdrEngaged: flat.hdrEngaged && legacy.hdrEngaged && limb.hdrEngaged,
     aimSetup: lane.setup.aimDiagnostics ?? null,
     fovXDeg: lane.setup.appliedFovXDeg,
+    // The DRAWING BUFFER, not the crop. The sun bloom's blur buffer is sized
+    // from it, so the glow the radiance-recovery band models has to be built
+    // against the buffer the frame was actually drawn into.
+    canvasWidth: lane.setup.canvasWidth,
+    canvasHeight: lane.setup.canvasHeight,
     lightingFlats: flat.lead.lightingRequested,
     lightingLimb: limb.lead.lightingRequested,
     lightingLegacy: legacy.lead.lightingRequested,
@@ -3262,6 +3268,23 @@ async function runG4(browser, git) {
         discOnlyRatio: disc.discOnlyRatio_I095_over_I0,
         discRadianceMeasured: disc.discRadianceMeasured,
         discRadianceResolved: disc?.shippedHaloState?.discRadiance,
+        // The plateau's EXPECTATION. It is not the resolved radiance: the sun
+        // bloom is still glowing over this annulus on the flat leg and has
+        // stopped on the legacy one, so the plateau carries `L + glow`. Every
+        // input is the frame's own — the drawing buffer the blur buffer is
+        // sized from, the limb the engine drew, and the disc radius the
+        // measurement binned at.
+        radianceRecovery: deriveDiscRadianceRecoveryBand(solarModel, {
+          discRadiance: disc?.shippedHaloState?.discRadiance,
+          limbPx: disc?.shippedHaloState?.limbPx,
+          centerX: disc?.shippedHaloState?.centerX,
+          centerY: disc?.shippedHaloState?.centerY,
+          discRadiusPx: disc.discRadiusPx,
+          viewportWidth: disc.canvasWidth,
+          viewportHeight: disc.canvasHeight,
+          plateauPixels: disc.discRadiancePlateauPixels,
+          exposures: G4_DISC_EXPOSURES,
+        }),
         derivedBand: deriveDiscOnlyLimbBand(solarModel, {
           discRadiance: disc?.shippedHaloState?.discRadiance,
           haloAmplitude: disc?.shippedHaloState?.haloAmplitude,
