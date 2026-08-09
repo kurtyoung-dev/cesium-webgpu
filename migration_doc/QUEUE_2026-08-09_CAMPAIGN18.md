@@ -246,7 +246,7 @@ port of the fork's own `PrimitiveGaussianSplatFS.glsl` discard).
 
 **Watch — surveyed, ranked, deliberately NOT queued** (revisit at C18 intake or
 a later campaign, do not treat as approved work): SPZ-4 loader compatibility
-check (S); StochasticSplats sort-free spike (M-L, post-G8, fits the existing
+check (S); StochasticSplats sort-free spike — UPGRADED 2026-08-09: Gaussian Point Splatting (BSD-3, see reference pre-registration) is the named primary candidate; StochasticSplats was never license-vetted (M-L, post-G8, fits the existing
 STBN + TAA infrastructure); temporal half-res voxel march reusing the cloud
 reconstruction (M); NanoVDB ingest (M-L, strategic); 2DGS (asset-ecosystem
 gated); LiDAR-surfel rendering through the splat renderer (M, post-G8).
@@ -287,3 +287,13 @@ parallel run `C18-V1 → C18-V2 → C18-V3`, then `C18-P1 → C18-P2` and
 how Wave S is implemented~~ — **`C18-S0` ran 2026-08-09 and its answer is now
 recorded in §6.** `C11-13` (P0) stays a C11 dispatch and is the single
 highest user-impact item this audit found.
+
+## Reference pre-registration additions (2026-08-09, SIGGRAPH 2026 scout)
+
+Legend per the reference catalog: ✔ license verbatim-read; STUDY-ONLY = techniques/paper only, never copy code.
+
+| Reference | License | Author | Guides |
+| --- | --- | --- | --- |
+| Gaussian Point Splatting (TOG/SIGGRAPH 2026) | BSD-3-Clause ✔ (independent implementation — no Inria lineage; vendored /packages unaudited, re-check at intake) | Joris Rijsdijk, TU Delft | PRIMARY candidate for the sort-free splat direction (Wave S adjacent, post-`C15-G8`); the two-pass/packed-u32 adaptation is required — WGSL has no 64-bit atomics, and the recorded single-pass non-goal STANDS |
+| RaDe-GS closed-form splat depth/normals (TOG 45) | **STUDY-ONLY** — code is Inria/MPII non-commercial; clean-room from arXiv 2406.01467 only | Baowen Zhang, HKUST | The `C15-G7`/depth-composite problem space (splat-vs-globe z, pickPosition); registered BEFORE anyone needs it per this queue's own rule |
+

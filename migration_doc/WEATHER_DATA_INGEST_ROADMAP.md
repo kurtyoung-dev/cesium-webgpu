@@ -214,6 +214,7 @@ techniques only, never copy code; UNKNOWN = no reuse until cleared.
 | mapbox/webgl-wind | WebGL | ISC △ | Vladimir Agafonkin / Mapbox | **GPU consumption of the ingested field** — all-GPU particle state in textures (RGBA ping-pong) with trail fading; the cleanest WGSL porting target for the flow-field lanes that consume this pipeline's output. |
 | leaflet-velocity | Canvas | **UNKNOWN** — CSIRO variant licence, SPDX NOASSERTION; **no reuse until cleared** | Dan Wild / CSIRO | **Format reference only** — grib2json interpolation conventions. No code moves under UNKNOWN, and it is listed here precisely so a future batch does not assume the usual MIT. |
 | WeatherLayers GL | deck.gl | **FILE-COPYLEFT** MPL-2.0, dual-commercial △ — **technique study only, no wholesale copy** | Petr Sloup | Particle/raster/contour/barb layer suite and client-side GeoTIFF decode. MPL carries file-level obligations, so any derived file would inherit them — study the approach, write our own. |
+| Advanced Real-Time Volume Graphics (SIGGRAPH 2026 course) | course + samples | Apache-2.0 ✔ (samples; license-identical to the fork) | Zellmann, Sahistan, Wald | Technique authority for the eventual GRIB2/EDR volume renderer (DDA traversal, space skipping, LoD); code is CUDA/OptiX — math reference, not port source |
 
 **Gap the catalog recorded:** most of the rows above are △ repo-declared only.
 Each needs its LICENSE file read verbatim (the L-xx determination step, recorded
