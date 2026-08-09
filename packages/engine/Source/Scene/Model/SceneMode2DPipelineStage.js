@@ -317,17 +317,16 @@ function createPositionBufferFor2D(
   return buffer;
 }
 
-// ── WebGPU accurate-2D reuse surface (NEW-MODEL-PROJECT2D-BV-MORPH / B11) ──
+// The WebGPU model renderer cannot consume the WebGL `positionBuffer2D`,
+// because it builds its own GPU buffers from the retained CPU-side loader
+// positions (see the `requiresVertexTypedArrayRetention` guard in `.process`
+// above). It still needs the same per-vertex ellipsoid-to-projected
+// reprojection WebGL bakes into `positionBuffer2D`, so the two pure math
+// helpers are exported for reuse rather than duplicated.
 //
-// The WebGPU model renderer cannot consume the WebGL `positionBuffer2D` (it
-// builds its own GPU buffers from the retained CPU-side loader positions —
-// see the `requiresVertexTypedArrayRetention` guard in `.process` above). It
-// still needs the SAME per-vertex ellipsoid→projected reprojection WebGL bakes
-// into `positionBuffer2D`, so the two pure math helpers are exported here for
-// reuse rather than duplicated. Both force COLUMBUS_VIEW internally (matching
-// `createPositionBufferFor2D`) so the resulting projected positions keep their
-// height component and one buffer serves both SCENE2D (the ortho view drops the
-// height) and COLUMBUS_VIEW.
+// Both force COLUMBUS_VIEW internally, matching `createPositionBufferFor2D`, so
+// the projected positions keep their height component and one buffer serves
+// both SCENE2D — whose ortho view drops the height — and COLUMBUS_VIEW.
 
 const scratchCVProjected = new Cartesian3();
 

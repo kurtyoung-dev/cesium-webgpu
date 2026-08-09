@@ -36,22 +36,20 @@ const MaterialFlags = Object.freeze({
   HAS_FEATURE_ID_TEXTURE: 65536, // Bit 16 — feature IDs from texture (EXT_mesh_features)
   HAS_FEATURE_ID_ATTRIBUTE: 131072, // Bit 17 — feature IDs from vertex attribute
   HAS_BATCH_TABLE: 262144, // Bit 18 — batch texture for per-feature styling
-  // C-R4-GLTF-KHR (slices 2-7). One bit per extension enable; the FS
-  // skips each extension's lighting contribution when the bit is unset
-  // so identity-default values are branch-light. Texture availability
-  // for each extension lives in a separate per-extension flags word
-  // (extensionTextureFlags), not here.
+  // One bit per extension enable. The fragment shader skips an extension's
+  // lighting contribution when its bit is unset, so identity-default values
+  // stay branch-light. Texture availability for each extension lives in a
+  // separate per-extension flags word, `extensionTextureFlags`, not here.
   HAS_CLEARCOAT: 524288, // Bit 19 — KHR_materials_clearcoat
   HAS_SPECULAR: 1048576, // Bit 20 — KHR_materials_specular
   HAS_ANISOTROPY: 2097152, // Bit 21 — KHR_materials_anisotropy
   HAS_IRIDESCENCE: 4194304, // Bit 22 — KHR_materials_iridescence
   HAS_SHEEN: 8388608, // Bit 23 — KHR_materials_sheen
   HAS_VOLUME: 16777216, // Bit 24 — KHR_materials_volume
-  // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — gates the FS refraction
-  // sampling branch. Transmission samples the prior-pass scene color
-  // (see refraction MRT scaffolding in WebGPUSceneFramebuffer) at a
-  // refracted UV offset. When the bit is unset the transmission
-  // factor is 0 and the FS path is dead code.
+  // Gates the fragment shader's refraction sampling branch. Transmission
+  // samples the prior-pass scene colour — see the refraction MRT scaffolding in
+  // WebGPUSceneFramebuffer — at a refracted UV offset. When the bit is unset the
+  // transmission factor is 0 and the branch is unreachable.
   HAS_TRANSMISSION: 33554432, // Bit 25 — KHR_materials_transmission
 });
 
@@ -108,14 +106,11 @@ function extractMaterialInfo(material, hasVertexColors, hasNormals) {
     materialInfoCacheDiagnostics.descriptorBuildCount++;
   }
   const info = {
-    // Material type
-    // Upstream parity (MaterialPipelineStage.js): a primitive without a
-    // NORMAL attribute cannot be lit — `material.unlit || !hasNormals`
-    // selects LightingModel.UNLIT. Without this, the WebGPU FS lights
-    // against the single-element default normal buffer (robust-access
-    // zeros past vertex 0) and the model renders black
-    // (NEW-WEBGPU-INSTANCED-VA-DIVISORS verification surfaced this,
-    // Batch 245 — BoxInstancedNoNormals rendered black-on-black).
+    // Material type. Matching `MaterialPipelineStage`: a primitive without a
+    // NORMAL attribute cannot be lit, so `material.unlit || !hasNormals`
+    // selects LightingModel.UNLIT. Without it the WebGPU fragment shader lights
+    // against the single-element default normal buffer — robust access zeroes
+    // everything past vertex 0 — and the model renders black.
     isUnlit: material?.unlit === true || !hasNormals,
     isSpecularGlossiness: defined(material?.specularGlossiness),
     isDoubleSided: material?.doubleSided === true,
@@ -160,16 +155,14 @@ function extractMaterialInfo(material, hasVertexColors, hasNormals) {
     specGlossTextureReader: null,
     diffuseTextureReader: null,
 
-    // C-R4-GLTF-KHR (slices 2-7). KHR material extensions: each block is
-    // populated only when the asset advertises the corresponding
-    // extension; otherwise factors retain identity-default values and
-    // the matching `materialFlags` bit stays unset so the FS skips the
-    // extension's contribution.
+    // KHR material extensions. Each block is populated only when the asset
+    // advertises the corresponding extension; otherwise its factors retain
+    // identity-default values and the matching `materialFlags` bit stays unset,
+    // so the fragment shader skips the extension's contribution.
     //
-    // KHR_materials_clearcoat (slice 2, Batch 95) — second specular lobe
-    // simulating an automotive-grade clear coating over the base
-    // material. Independent roughness from the base; uses the standard
-    // F0 = 0.04 air-coat fresnel term.
+    // KHR_materials_clearcoat — a second specular lobe simulating a clear
+    // coating over the base material, with roughness independent of the base
+    // and the standard F0 = 0.04 air-coat Fresnel term.
     hasClearcoat: false,
     clearcoatFactor: 0.0,
     clearcoatRoughnessFactor: 0.0,
@@ -238,12 +231,12 @@ function extractMaterialInfo(material, hasVertexColors, hasNormals) {
     thicknessTextureReader: null,
     hasThicknessTexture: false,
 
-    // KHR_materials_transmission (Batch 105) — light passing through
-    // a thin or thick volume. The FS samples a copy of the prior-pass
-    // scene color (refraction MRT) at an offset based on the surface
-    // normal + IOR, then blends with the diffuse contribution by
-    // `transmissionFactor`. transmissionTexture (R) modulates the
-    // factor per-pixel.
+    // KHR_materials_transmission — light passing through a thin or thick
+    // volume. The fragment shader samples a copy of the prior-pass scene colour
+    // (the refraction MRT) at an offset derived from the surface normal and
+    // IOR, then blends it with the diffuse contribution by
+    // `transmissionFactor`. The R channel of transmissionTexture modulates that
+    // factor per pixel.
     hasTransmission: false,
     transmissionFactor: 0.0,
     transmissionTextureReader: null,
@@ -352,12 +345,11 @@ function extractMaterialInfo(material, hasVertexColors, hasNormals) {
     }
   }
 
-  // C-R4-GLTF-KHR (slices 2-7). The model loader (`GltfLoader`) sets the
-  // matching slot on `material.*` only when the asset declares the
-  // corresponding KHR extension; the same slot is populated for both
-  // metallic-roughness and spec-gloss workflows. We read identity
-  // defaults when an extension is absent (no flag bit set, FS branch
-  // is skipped).
+  // `GltfLoader` sets the matching slot on `material.*` only when the asset
+  // declares the corresponding KHR extension, and populates the same slot for
+  // both the metallic-roughness and spec-gloss workflows. An absent extension
+  // reads identity defaults, leaves its flag bit unset, and its fragment-shader
+  // branch is skipped.
   const cc = material.clearcoat;
   if (defined(cc) && cc.clearcoatFactor > 0.0) {
     info.hasClearcoat = true;
@@ -476,8 +468,7 @@ function extractMaterialInfo(material, hasVertexColors, hasNormals) {
     }
   }
 
-  // C-R4-GLTF-KHR-TRANSMISSION (Batch 105). The loader populates
-  // `material.transmission` as a plain object with
+  // The loader populates `material.transmission` as a plain object with
   // `{ transmissionFactor, transmissionTexture }`.
   const tr = material.transmission;
   if (defined(tr) && tr.transmissionFactor > 0.0) {

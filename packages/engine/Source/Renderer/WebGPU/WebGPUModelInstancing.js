@@ -6,19 +6,20 @@
  * from TRANSLATION/ROTATION/SCALE attributes and cached for the lifetime
  * of the model.
  *
- * Storage buffer layout: array<InstanceTransform> (DP-H36, Batch 325)
+ * Storage buffer layout: array&lt;InstanceTransform&gt;.
  *   Each instance is 24 floats / 96 bytes:
  *     linear:          mat4x4<f32>  floats  0..15  (rotation+scale, col3 zeroed)
  *     translationHigh: vec4<f32>    floats 16..19  (.xyz used, .w pad)
  *     translationLow:  vec4<f32>    floats 20..23  (.xyz used, .w pad)
  *
- * RTE precision (DP-H36): the per-instance translation places each instance
+ * Relative-to-eye precision: the per-instance translation places each instance
  * at its tile-relative ECEF offset, which at Earth scale (~6.4e6 m) exceeds
- * f32's ~2^23 mantissa and loses sub-meter precision. The translation is
- * split into high/low (EncodedCartesian3) so the vertex shader can RTE it
- * against the encoded camera instead of adding a raw f32 column — which
- * caused stationary-camera i3dm jitter. The linear (rotation+scale) part
- * stays single-precision (small magnitude, no precision risk).
+ * f32's ~2^23 mantissa and loses sub-metre precision. The translation is split
+ * into high and low halves (EncodedCartesian3) so the vertex shader can
+ * subtract the encoded camera before summing, instead of adding a raw f32
+ * column — which produces i3dm jitter under a stationary camera. The linear
+ * rotation-and-scale part stays single-precision; its magnitude is small enough
+ * to carry no precision risk.
  *
  * The WebGL InstancingPipelineStage caches packed transforms as a 12-float
  * per-instance format (3 rows of vec4, column-major); we read column 3 as
@@ -33,9 +34,9 @@ import ModelComponents from "../../Scene/ModelComponents.js";
 import ModelUtility from "../../Scene/Model/ModelUtility.js";
 import InstanceAttributeSemantic from "../../Scene/InstanceAttributeSemantic.js";
 
-// DP-H36 (Batch 325) — per-instance storage stride. MUST stay byte-consistent
-// with the WGSL `InstanceTransform` struct in ModelPBRComplete.wgsl and the
-// default-buffer size in WebGPUModelPipelineCache.js.
+// Per-instance storage stride. Must stay byte-consistent with the WGSL
+// `InstanceTransform` struct in ModelPBRComplete.wgsl and with the
+// default-buffer size in WebGPUModelPipelineCache.
 const FLOATS_PER_INSTANCE = 24;
 
 const scratchEncodeX = { high: 0.0, low: 0.0 };
@@ -199,7 +200,7 @@ function ensureInstancingResources(device, nodeCache, runtimeNode, model) {
 
 /**
  * Expands the 12-float packed transform format (from InstancingPipelineStage)
- * into the 24-float `InstanceTransform` storage layout (DP-H36).
+ * into the 24-float `InstanceTransform` storage layout.
  *
  * Input format (per instance, 12 floats — transposed 3x4):
  *   [col0.x, col1.x, col2.x, col3.x,  // row 0
@@ -210,8 +211,8 @@ function ensureInstancingResources(device, nodeCache, runtimeNode, model) {
  *
  * @param {Float32Array} packed - 12 floats per instance, transposed row format
  * @param {number} count - Number of instances
- * @param {Float32Array|null} [featureIds] - PARITY-METADATA-TABLE-INSTANCE-
- *   SOURCE: per-instance feature IDs to transport in the pad slot, or null.
+ * @param {Float32Array|null} [featureIds] - Per-instance feature IDs to
+ *   transport in the pad slot, or null.
  * @returns {Float32Array} FLOATS_PER_INSTANCE floats per instance
  * @private
  */
@@ -252,8 +253,8 @@ function expandPackedTransforms(packed, count, featureIds) {
  *
  * @param {object} instances - node.instances from ModelComponents
  * @param {number} count
- * @param {Float32Array|null} [featureIds] - PARITY-METADATA-TABLE-INSTANCE-
- *   SOURCE: per-instance feature IDs to transport in the pad slot, or null.
+ * @param {Float32Array|null} [featureIds] - Per-instance feature IDs to
+ *   transport in the pad slot, or null.
  * @returns {Float32Array|null} FLOATS_PER_INSTANCE floats per instance, or null
  * @private
  */
@@ -295,8 +296,8 @@ function extractTransformsFromAttributes(instances, count, featureIds) {
     const sy = defined(scaleData) ? scaleData[i * 3 + 1] : 1;
     const sz = defined(scaleData) ? scaleData[i * 3 + 2] : 1;
 
-    // Linear (rotation+scale) part as three columns; translation is split
-    // separately inside writeInstance (DP-H36).
+    // Linear (rotation+scale) part as three columns; the translation is split
+    // separately inside writeInstance.
     let c0x, c0y, c0z, c1x, c1y, c1z, c2x, c2y, c2z;
     if (defined(rotationData)) {
       // Build rotation*scale columns from quaternion (column-major)

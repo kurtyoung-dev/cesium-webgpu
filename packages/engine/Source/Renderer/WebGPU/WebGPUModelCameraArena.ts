@@ -1,133 +1,109 @@
 /// <reference types="@webgpu/types" />
 /**
- * C11-195 — group-0 view dynamic-offset arena for the WebGPU model path.
+ * Group-0 view dynamic-offset arena for the WebGPU model path.
  *
  * Group 0 carries the two blocks that are a property of the (model, view) pair
- * rather than of any primitive: the 320-byte RTE camera block at binding 0 and
- * the 864-byte punctual/IBL/ambient light block at binding 1. Both are
- * camera-relative — the camera block carries the encoded RTE eye, and the
- * light block's punctual positions, reflection-proxy center, and
- * eye→world rotation are all expressed against THAT eye — so binding them
- * together from one acquisition is what makes the RTE pairing structural
- * instead of a convention two call sites have to remember.
+ * rather than of any primitive: the 320-byte relative-to-eye camera block at
+ * binding 0, and the 864-byte punctual/IBL/ambient light block at binding 1.
+ * Both are camera-relative — the camera block carries the encoded eye, and the
+ * light block's punctual positions, reflection-proxy centre and eye-to-world
+ * rotation are all expressed against that same eye — so binding them together
+ * from one acquisition makes the pairing structural rather than a convention
+ * two call sites have to remember.
  *
- * Before this module every model wrote its 320-byte RTE camera block into a
- * PERSISTENT per-model (and per-transformed-node, and per-2D/IDL-duplicate)
- * `GPUBuffer` with one `device.queue.writeBuffer` call each, every frame,
- * unconditionally. A scene with `M` models and `N` transformed nodes paid
- * `M * (1 + N)` queue writes per frame — plus a second `M * N` for the SCENE2D
- * IDL duplicate — even when nothing but the camera moved. The environment
- * capture path avoided the persistent buffers (it must, because the main pass
- * reads them later in the same frame) but paid a fresh `createBindGroup` per
- * primitive per cube face instead.
- *
- * The light block was worse: it was packed, byte-compared, and uploaded once
- * PER PRIMITIVE (`primCache.lightBuffer`) even though every primitive of a
- * model packs byte-identical contents. An `N`-primitive model paid `N` packs
- * and — because camera-relative light positions change whenever the camera
- * moves — `N` real uploads per frame, with the unchanged-write suppression
- * that guarded them succeeding only while the camera was perfectly still.
- *
- * This arena replaces all of it with one per-frame allocation arena:
+ * The arena is a per-frame allocator:
  *
  *   - Bytes come from the context's shared per-frame ring
- *     (`WebGPURingBufferAllocator`, reached through `context.uniformAllocator`)
- *     — the SAME allocator the globe's group-0 camera/tile UBs and the landed
- *     capture-camera slices already ride. Reuse, not new machinery: the ring
- *     already gives 256-byte alignment, CPU staging, page rotation, overflow
- *     pages, and one `queue.writeBuffer` per dirty page at `flush()`.
- *   - The bind group is built ONCE per (layout, camera page, light page) tuple
- *     and reused via a context-local identity-keyed cache. The per-allocation byte offsets
- *     never enter the key; they are supplied per-draw as WebGPU dynamic
- *     offsets. Under sustained camera motion the page identities cycle through
- *     the ring's `pageCount` and recur every `pageCount` frames, so the cache
- *     converges to ~`pageCount` entries at ~100% hit rate while the offsets
- *     shift each frame. This is exactly the shape proven for the globe by
- *     NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292).
- *   - Acquisition itself allocates almost nothing (C11-195 tail): the
- *     `[cameraOffset, lightOffset]` pair is interned per value into a frozen
- *     shared tuple, and the bind-group cache key string is memoized per
- *     resource-identity tuple, so the per-acquire cost in steady state is one
- *     small binding record.
+ *     (`WebGPURingBufferAllocator`, reached through `context.uniformAllocator`),
+ *     the same allocator the globe's group-0 camera and tile uniform buffers
+ *     ride. The ring already provides 256-byte alignment, CPU staging, page
+ *     rotation, overflow pages, and one `queue.writeBuffer` per dirty page at
+ *     `flush()`.
+ *   - The bind group is built once per (layout, camera page, light page) tuple
+ *     and reused through a context-local identity-keyed cache. Per-allocation
+ *     byte offsets never enter the key; they are supplied per draw as WebGPU
+ *     dynamic offsets. Under sustained camera motion the page identities cycle
+ *     through the ring's `pageCount` and recur every `pageCount` frames, so the
+ *     cache converges to about `pageCount` entries at close to a 100% hit rate
+ *     while the offsets shift each frame.
+ *   - Acquisition allocates almost nothing: the `[cameraOffset, lightOffset]`
+ *     pair is interned per value into a frozen shared tuple, and the
+ *     bind-group cache key string is memoized per resource-identity tuple, so
+ *     the steady-state cost of an acquire is one small binding record.
  *
  * ## Why the light rides group 0 and not the merged group 1
  *
- * The light block used to be binding 1 of the merged, `materialDefines`-keyed
- * group-1 layout, whose bind group is PER PRIMITIVE and cached on exact
- * resource identity (C9-17 Slice A). Two shapes were possible once the bytes
- * moved onto the ring:
+ * Group 1 is the merged, `materialDefines`-keyed layout, whose bind group is
+ * per primitive and cached on exact resource identity. Putting the light there
+ * as a dynamic binding would make that bind group reference a ring page, so
+ * page identity would join its cache key; because the page rotates every frame,
+ * each primitive would need one cached group-1 bind group per page — several
+ * times the resident ~40-entry bind groups of every loaded primitive — or it
+ * would rebuild all of them every frame. It would also make group 1 a
+ * dynamic-offset group everywhere it is bound, adding a second class of offset
+ * consumer to audit across capture replay, OIT accumulation and the
+ * indirect-merge run guard.
  *
- *   1. Keep binding 1 in group 1 and make it dynamic. The group-1 bind group
- *      then references a ring PAGE, so page identity necessarily joins its
- *      cache key — and because the page rotates every frame, each primitive
- *      needs one cached group-1 bind group PER PAGE (`pageCount`x the resident
- *      ~40-entry bind groups of every loaded primitive) or it thrashes and
- *      rebuilds all of them every frame. It would also make group 1 a
- *      dynamic-offset group everywhere it is bound, adding a second offset
- *      consumer class to audit (capture replay, OIT accumulation, the
- *      indirect-merge run guard).
- *   2. Give the light its own bind group. Impossible: models already occupy
- *      groups 0-3 and Chromium-on-Windows caps `maxBindGroups` at the spec
- *      floor of 4 (the Batch-152 opt-up was reverted for exactly this).
+ * Giving the light its own bind group is not available: models already occupy
+ * groups 0-3, and `maxBindGroups` cannot be relied on above the spec floor of 4.
  *
  * So the light joins the block it is already semantically bound to. Group 0 is
  * the only group whose contents are per (model, view) rather than per
- * primitive, its bind group is shared across the owning context, and its dynamic-offset
- * plumbing is already threaded and audited through all seven command variants.
- * The per-primitive group-1 cache keeps its single 100%-hit record and loses a
- * binding; the resident bind-group count does not grow anywhere.
+ * primitive, its bind group is shared across the owning context, and its
+ * dynamic-offset plumbing is threaded through all seven command variants. The
+ * per-primitive group-1 cache loses a binding and keeps its hit rate, and the
+ * resident bind-group count does not grow anywhere.
  *
- * ## RTE law
+ * ## Relative-to-eye law
  *
- * The arena moves BYTES, never MEANING. The 320-byte block it carries is
- * whatever `packCameraUniforms` produced: `mvpRelativeToEye`, the
- * model-space encoded camera high/low pair, and the `previousViewProjection`
- * tail mandated by the `CameraUniforms` doctrine. The 864-byte light block is
- * whatever `packLightUniforms` produced, including the camera-relative
- * punctual positions that pair with that same encoded eye. The arena never
- * inspects, reorders, or defaults any of it.
+ * The arena moves bytes, never meaning. The 320-byte block it carries is
+ * whatever `packCameraUniforms` produced: `mvpRelativeToEye`, the model-space
+ * encoded camera high/low pair, and the `previousViewProjection` tail every
+ * `CameraUniforms` struct must carry. The 864-byte light block is whatever
+ * `packLightUniforms` produced, including the camera-relative punctual
+ * positions that pair with that same encoded eye. The arena never inspects,
+ * reorders, or defaults any of it.
  *
  * ## Isolation contracts
  *
- * Every distinct camera view that a single frame renders must land on its own
- * slice, because a slice is written once and read by the GPU later:
+ * Every distinct camera view a single frame renders must land on its own slice,
+ * because a slice is written once and read by the GPU later:
  *
- *   - main view vs. SCENE2D IDL duplicate — two matrices, two slices, two
- *     dynamic offsets, one shared bind group. The light is NOT duplicated:
+ *   - main view against the SCENE2D IDL duplicate — two matrices, two slices,
+ *     two dynamic offsets, one shared bind group. The light is not duplicated:
  *     the wrapped copy shifts the model matrix, not the eye, so both views
  *     address the same light slice;
- *   - main view vs. each environment-capture cube face — the capture pass
+ *   - main view against each environment-capture cube face — the capture pass
  *     repoints `UniformState` to a face camera and packs against the same
- *     staging array, so it MUST acquire a fresh camera slice per record AND a
- *     fresh light slice per face (its punctual positions are relative to the
- *     face eye, which is not the main eye);
- *   - first vs. second SCENE2D split viewport — `beginSecondaryViewport()`
+ *     staging array, so it must acquire a fresh camera slice per record and a
+ *     fresh light slice per face, whose punctual positions are relative to the
+ *     face eye rather than the main eye;
+ *   - first against second SCENE2D split viewport — `beginSecondaryViewport()`
  *     flushes the ring and submits the first segment while keeping the same
  *     logical-frame page, so the second viewport's acquires occupy distinct
- *     slices instead of rewriting bytes the first viewport has recorded but
- *     not yet consumed.
+ *     slices instead of rewriting bytes the first viewport has recorded but not
+ *     yet consumed.
  *
  * A binding is therefore valid only for the allocation epoch that produced it.
- * Callers must hold bindings in per-frame locals and re-acquire every update;
- * they must never memoize one on a model/node cache across frames.
+ * Callers must hold bindings in per-frame locals and re-acquire on every
+ * update, and must never memoize one on a model or node cache across frames.
  *
- * ## Device / allocator generation
+ * ## Device and allocator generation
  *
  * The arena is owned by the exact `WebGPUContext` whose ring pages it binds.
  * Multiple contexts may share one pooled `GPUDevice` and immutable camera
- * layout, but they have independent allocators, frame epochs, and arenas. The
+ * layout, but they have independent allocators, frame epochs and arenas. The
  * context invalidates and detaches the arena before destroying or rebuilding
- * its allocator; `beginFrame` also retains an allocator-identity guard so an
+ * its allocator, and `beginFrame` retains an allocator-identity guard so an
  * unexpected same-context allocator swap clears every cached bind group.
  *
  * @private
  */
 
-// Generic identity-keyed bind-group cache with age-based eviction and
-// per-frame stat windows. Named for its first consumer (the globe surface),
-// but it carries no globe-specific state and no imports of its own — reused
-// here rather than growing a second copy. Folding it and the generic
-// post-process cache together is tracked as NEW-BINDGROUPCACHE-EVICTION.
+// Generic identity-keyed bind-group cache with age-based eviction and per-frame
+// stat windows. It is named for its first consumer, the globe surface, but
+// carries no globe-specific state and no imports of its own, so it is reused
+// here rather than copied.
 import WebGPUGlobeBindGroupCache from "./WebGPUGlobeBindGroupCache.js";
 
 // `GPUBufferUsage` only exists on WebGPU-capable hosts. The engine bundle is
@@ -205,13 +181,13 @@ export interface ModelCameraBinding {
    * `hasDynamicOffset` binding. Never mutated after `acquire` returns, so the
    * same array instance is safely shared by every command variant of one draw.
    *
-   * C11-195 allocation trim: the array is identity-cached by its VALUE pair
-   * and frozen, so two acquisitions whose offsets coincide (the same slice
-   * positions recurring as the ring rotates) receive the SAME instance and the
-   * steady state allocates nothing. Consumers already compare offsets by value
-   * (`sameDynamicOffsetArray`) and clone before deriving, so sharing is
-   * observationally identical — and freezing turns a rogue write into a loud
-   * TypeError instead of a silent cross-draw corruption.
+   * The array is identity-cached by its value pair and frozen, so two
+   * acquisitions whose offsets coincide — the same slice positions recurring as
+   * the ring rotates — receive the same instance and the steady state allocates
+   * nothing. Consumers compare offsets by value (`sameDynamicOffsetArray`) and
+   * clone before deriving, so sharing is observationally identical, and
+   * freezing turns a rogue write into a TypeError instead of a silent
+   * cross-draw corruption.
    */
   readonly dynamicOffsets: number[];
   /**
@@ -231,9 +207,9 @@ export interface ModelCameraArenaStats {
   /** Lifetime `acquire()` calls served in the current frame. */
   acquisitionsThisFrame: number;
   /**
-   * Lifetime `acquireLightSlice()` calls. One per model per view per frame —
-   * NOT one per primitive. A count that tracks the primitive count is the
-   * regression this half of C11-195 exists to prevent.
+   * Lifetime `acquireLightSlice()` calls. One per model per view per frame, not
+   * one per primitive; a count that tracks the primitive count instead is the
+   * regression this arena exists to prevent.
    */
   lightAcquisitions: number;
   /** Lifetime `acquireLightSlice()` calls served in the current frame. */
@@ -280,10 +256,9 @@ export class WebGPUModelCameraArena {
   private _misalignedRejections = 0;
   private _staleLightSliceRejections = 0;
 
-  // C11-195 allocation trim — the hot path used to allocate one template
-  // string (the bind-group cache key) and one two-element offset array PER
-  // ACQUIRE, i.e. per node per model per view per frame. Both are retained
-  // instead:
+  // The acquire path runs per node per model per view per frame, so neither the
+  // bind-group cache key string nor the two-element offset array may be
+  // allocated there. Both are retained instead:
   //
   //   - `_offsetTuples` interns the `[cameraOffset, lightOffset]` pair by
   //     value. Ring offsets recur every rotation, so the map converges to the
@@ -293,12 +268,12 @@ export class WebGPUModelCameraArena {
   //   - `_bindGroupKey*` memoizes the last (layout, camera page, light page,
   //     sizes) identity tuple with its computed key string. Within a frame
   //     every acquire normally lands on one ring page, so the string is built
-  //     ~once per page transition instead of once per acquire. `idOf`
-  //     identities are stable for the life of `_bindGroups` (its WeakMap is
-  //     never reset, only the entry map is cleared), so a memoized string can
+  //     about once per page transition rather than once per acquire. `idOf`
+  //     identities are stable for the life of `_bindGroups` — its WeakMap is
+  //     never reset, only the entry map is cleared — so a memoized string can
   //     never alias a different resource tuple.
   //
-  // Both retain references to GPU objects / plain arrays only; they are
+  // Both retain references to GPU objects and plain arrays only, and both are
   // dropped on allocator swap and `invalidate()` so dead ring pages are not
   // kept reachable.
   private _offsetTuples: Map<number, Map<number, number[]>> = new Map();
@@ -519,8 +494,8 @@ export class WebGPUModelCameraArena {
     lightByteSize: number,
   ): GPUBindGroup {
     const cache = this._bindGroups;
-    // C11-195 allocation trim — reuse the last computed key while the
-    // resource-identity tuple is unchanged (the within-frame common case).
+    // Reuse the last computed key while the resource-identity tuple is
+    // unchanged, which is the common case within a frame.
     let key: string;
     if (
       layout === this._bindGroupKeyLayout &&

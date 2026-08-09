@@ -4,8 +4,9 @@
  * Architecture:
  * - Model.update() runs the WebGL pipeline stages → populates renderResources
  * - Model.submitDrawCommands() delegates to this renderer via feature renderer
- * - We use shared extractors (ModelMaterialInfo, ModelPrimitiveGeometry,
- *   ModelSkinData) for renderer-agnostic data, then create WebGPU GPU resources
+ * - Shared extractors (ModelMaterialInfo, ModelPrimitiveGeometry,
+ *   ModelSkinData) supply renderer-agnostic data, from which WebGPU GPU
+ *   resources are created
  *
  * Supports:
  * - Metallic-Roughness PBR (baseColor, normal, MR, emissive, occlusion textures)
@@ -30,8 +31,8 @@ import Matrix4 from "../../Core/Matrix4.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import { getWebGPUTextureForDevice } from "./Stubs/WebGLStubTexture.js";
 import type { StubTextureWrapper } from "./Stubs/WebGLStubTypes.js";
-// C11-90 — the glTF-mode → WebGPU-topology decision lives in ONE module. This
-// renderer no longer knows which modes map where; it stores what it is handed.
+// The glTF-mode → WebGPU-topology decision lives in a single module. This
+// renderer does not know which modes map where; it stores what it is handed.
 import { realizeModelPrimitiveTopology } from "./WebGPUModelTopology.js";
 import {
   createMaterialInfoView,
@@ -77,8 +78,8 @@ import {
 } from "./WebGPUModelMetadata.js";
 import { resolveWebGPUModelMetadata } from "./WebGPUModelMetadataCache.js";
 import { generateMetadataPickWGSL } from "../../Scene/Model/MetadataWGSLPipelineStage.js";
-// PARITY-CUSTOM-SHADER-WGSL — native-WGSL customShader codegen + uniform packing
-// + shared binding numbers.
+// Native-WGSL customShader codegen, uniform packing, and the shared binding
+// numbers both sides agree on.
 import {
   generateCustomShaderWGSL,
   packUniformBuffer,
@@ -87,11 +88,11 @@ import {
   CUSTOM_SHADER_SAMPLER_BINDING,
   MAX_CUSTOM_TEXTURES,
 } from "../../Scene/Model/CustomShaderWGSLPipelineStage.js";
-// PARITY-CUSTOM-SHADER-WGSL (translucencyMode slice) — the CustomShader
-// translucency knob that WebGL's CustomShaderPipelineStage applies via
-// alphaOptions.pass. Values: INHERIT (0) / OPAQUE (1) / TRANSLUCENT (2).
+// The CustomShader translucency knob that WebGL's CustomShaderPipelineStage
+// applies via alphaOptions.pass. Values: INHERIT (0) / OPAQUE (1) /
+// TRANSLUCENT (2).
 import CustomShaderTranslucencyMode from "../../Scene/Model/CustomShaderTranslucencyMode.js";
-// C10-02-TILES-STYLE-COMMAND-ECONOMICS — the enum the WebGL model FR consults
+// The enum the WebGL model feature renderer consults
 // (ModelDrawCommand.pushCommands) to decide whether the per-feature translucent
 // twin is needed. Values: ALL_OPAQUE (0) / ALL_TRANSLUCENT (1) /
 // OPAQUE_AND_TRANSLUCENT (2).
@@ -100,27 +101,25 @@ import Pass from "../Pass.js";
 import ColorBlendMode from "../../Scene/ColorBlendMode.js";
 import SceneMode from "../../Scene/SceneMode.js";
 import ShadowMode from "../../Scene/ShadowMode.js";
-// C12-29 S2 — the eclipse dimming of model direct lighting is gated on the
-// frame's light being the scene SUN, exactly as `UniformState` gates its own
-// multiply. `SunLight` is a two-import leaf (Color, Frozen), so this cannot
-// introduce a cycle.
+// Eclipse dimming of model direct lighting is gated on the frame's light being
+// the scene sun, exactly as `UniformState` gates its own multiply. `SunLight`
+// is a two-import leaf (Color, Frozen), so this cannot introduce a cycle.
 import SunLight from "../../Scene/SunLight.js";
-// WIRE-MODEL-SILHOUETTE — shared silhouette-ID counter (WebGL's
-// ModelSilhouettePipelineStage assigns `model._silhouetteId` from this
-// static counter; on WebGPU the same stage runs during the shared
-// scene-graph draw-command build, so we only assign here as a fallback
-// when the stage hasn't run yet — sharing the counter keeps stencil
-// references unique across both backends).
+// Shared silhouette-ID counter. WebGL's ModelSilhouettePipelineStage assigns
+// `model._silhouetteId` from this static counter; on WebGPU the same stage runs
+// during the shared scene-graph draw-command build, so the assignment here is
+// only a fallback for when the stage has not run yet. Sharing the counter keeps
+// stencil references unique across both backends.
 import ModelSilhouettePipelineStage from "../../Scene/Model/ModelSilhouettePipelineStage.js";
 import EdgeDisplayMode from "../../Scene/EdgeDisplayMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import type { WebGPUPipelineConfig } from "./WebGPUDrawCommand.js";
-// C11-195 — every group-0 block (the camera for the main view / a transformed
-// node / the SCENE2D IDL duplicate / an env-capture face, and the ONE
-// model-and-view-wide light block those cameras pair with) is acquired here.
-// Both `cameraBGL` bindings declare `hasDynamicOffset`, so this is the ONLY
+// Every group-0 block — the camera for the main view, a transformed node, the
+// SCENE2D IDL duplicate or an env-capture face, plus the single
+// model-and-view-wide light block those cameras pair with — is acquired here.
+// Both `cameraBGL` bindings declare `hasDynamicOffset`, so this is the only
 // sanctioned producer of a group-0 bind group for the model path.
 import {
   MODEL_CAMERA_UNIFORM_BYTES,
@@ -175,11 +174,11 @@ import type { DrawCommandWithDerivedSlot } from "./WebGPUPickCommandHelpers.js";
 // intentionally does not narrow.
 type WebGPUDrawArgs = ConstructorParameters<typeof WebGPUDrawCommand>[0];
 
-// ─── JS-interop typed façades ────────────────────────────────────────────────
+// JS-interop typed façades.
 // Type-only shapes over the untyped-JS extractor output (ModelMaterialInfo /
 // extractPrimitiveGeometry / extractSkinData) and the per-model / per-primitive
-// GPU-resource caches this renderer owns. They carry no runtime code — the TS
-// conversion emits byte-identical JavaScript.
+// GPU-resource caches this renderer owns. They carry no runtime code, so the
+// emitted JavaScript is unaffected by them.
 
 type TypedArray =
   | Float32Array
@@ -294,9 +293,9 @@ interface PrimitiveGeometry {
   indexCount: number;
   indexType: string | number;
   indexData?: Uint16Array | Uint32Array | null;
-  // C11-90 — byte width of the ORIGINAL glTF index accessor (1 / 2 / 4). Only
-  // `1` changes behavior: it tells the topology realization that `0x00FF`
-  // entries in `indexData` were `0xFF` primitive-restart sentinels before the
+  // Byte width of the original glTF index accessor (1 / 2 / 4). Only `1`
+  // changes behavior: it tells the topology realization that `0x00FF` entries
+  // in `indexData` were `0xFF` primitive-restart sentinels before the
   // extractor's mandatory uint8 → uint16 upcast.
   indexSourceComponentBytes?: number;
   primitiveType: number;
@@ -384,8 +383,8 @@ interface PrimitiveRenderData {
   indexFormat: GPUIndexFormat;
   vertexCount: number;
   topology: GPUPrimitiveTopology;
-  // C11-90 — the strip index format is HALF the topology axis and travels with
-  // it everywhere: pipeline descriptor, pipeline cache key, shadow cast key.
+  // The strip index format is half the topology axis and travels with it
+  // everywhere: pipeline descriptor, pipeline cache key, shadow cast key.
   // `undefined` for every non-strip topology.
   stripIndexFormat: GPUIndexFormat | undefined;
   materialBindGroup: GPUBindGroup | null;
@@ -393,8 +392,8 @@ interface PrimitiveRenderData {
   pipeline: GPUPipelineOrNull;
   depthWritePipeline?: GPUPipelineOrNull;
   pickPipeline?: GPUPipelineOrNull;
-  // UP144-SNAP-WEBGPU (C11-212) — RGBA32F snap-payload pipeline, allocated only
-  // for scenes whose app has called `Scene.snap`.
+  // RGBA32F snap-payload pipeline, allocated only for scenes whose app has
+  // called `Scene.snap`.
   snapPipeline?: GPUPipelineOrNull;
   pickHoverPipeline?: GPUPipelineOrNull;
   pickPrecisePass1Pipeline?: GPUPipelineOrNull;
@@ -428,8 +427,8 @@ interface PrimitiveRenderData {
   _featureIdData?: Float32Array | null;
   _metadataDescriptor?: ModelMetadataDescriptor;
   _mergedInstanceBindGroupCache?: MergedInstanceBindGroupCache;
-  // C9-17 Slice A — merged group-1 (material) bind-group cache, one slot per
-  // material-buffer variant so silhouette/translucent never alias the primary.
+  // Merged group-1 (material) bind-group cache, one slot per material-buffer
+  // variant so silhouette/translucent never alias the primary.
   _mergedMaterialBindGroupCache?: MergedMaterialBindGroupCache;
   _mergedMaterialBindGroupCacheSilhouette?: MergedMaterialBindGroupCache;
   _mergedMaterialBindGroupCacheTranslucent?: MergedMaterialBindGroupCache;
@@ -587,9 +586,9 @@ interface SkinData {
 // Fields shared by the per-node cache and (for identity-transform models) the
 // model-level cache when hosting the SCENE2D IDL-duplicate camera resources.
 interface Idl2DHost {
-  // C11-195 — CPU staging only. The IDL duplicate's camera block rides the
-  // per-frame arena exactly like the primary view's; only the pack target is
-  // retained here so the y-shifted matrix does not re-allocate per frame.
+  // CPU staging only. The IDL duplicate's camera block rides the per-frame
+  // arena exactly like the primary view's; only the pack target is retained
+  // here so the y-shifted matrix does not re-allocate per frame.
   cameraData2DIdl?: Float32Array | null;
   idlModelMatrix2D?: Matrix4 | null;
   idlBoundingSphere2D?: BoundingSphere | null;
@@ -602,9 +601,9 @@ interface NodeCache extends Idl2DHost, ModelShadowCastUniformHost {
   jointBufferSize?: number;
   packedJointMatrices?: Float32Array | null;
   prevPackedJointMatrices?: Float32Array | null;
-  // C11-195 — CPU staging for this node's packed camera block. Retained (the
-  // shadow-cast UB reads the model-space RTE eye back out of it); the GPU
-  // bytes live in the per-frame arena, never in a per-node buffer.
+  // CPU staging for this node's packed camera block. Retained because the
+  // shadow-cast UB reads the model-space RTE eye back out of it; the GPU bytes
+  // live in the per-frame arena, never in a per-node buffer.
   cameraData?: Float32Array | null;
   skinningBG?: GPUBindGroup | null;
   prevNodeModelMatrix?: Matrix4 | null;
@@ -645,11 +644,11 @@ interface PipelineCacheLike {
   _errorSwapGeneration: number;
   _sceneFormatGeneration: number;
   _pendingColorPipelines: Map<string | number, Promise<GPURenderPipeline>>;
-  // C10-07 — the on-screen color pipeline resolves async through the central
-  // cache and returns null while the variant is still compiling (ready-gate).
+  // The on-screen color pipeline resolves asynchronously through the central
+  // cache and returns null while the variant is still compiling.
   getPipeline(...args: unknown[]): GPURenderPipeline | null;
-  // C11-157 Slice C — OIT accumulation variant inputs for a translucent model
-  // color/twin command (non-LOG_DEPTH source + shared-layout pipeline config).
+  // OIT accumulation variant inputs for a translucent model color/twin command
+  // (non-LOG_DEPTH source plus shared-layout pipeline config).
   getOITColorConfig(
     alphaMode: number,
     doubleSided: boolean,
@@ -659,7 +658,7 @@ interface PipelineCacheLike {
   getClassificationPipeline(...args: unknown[]): GPURenderPipeline;
   getCapturePipeline(...args: unknown[]): GPURenderPipeline;
   getPickPipeline(...args: unknown[]): GPURenderPipeline;
-  // UP144-SNAP-WEBGPU (C11-212) — RGBA32F snap-payload pipeline.
+  // RGBA32F snap-payload pipeline.
   getSnapPipeline(...args: unknown[]): GPURenderPipeline;
   getPickHoverPipeline(...args: unknown[]): GPURenderPipeline;
   getPickMetadataPipeline(...args: unknown[]): GPURenderPipeline;
@@ -684,8 +683,8 @@ interface PipelineCacheLike {
 }
 
 interface ModelWebGPUCache extends Idl2DHost, ModelShadowCastUniformHost {
-  // C11-194 — exact native-resource ownership. A GPUDevice may be reused
-  // across a context recovery, so both values participate in validity.
+  // Exact native-resource ownership. A GPUDevice may be reused across a
+  // context recovery, so both values participate in validity.
   device: GPUDevice;
   resourceGeneration: number;
   _deviceInvalidationUnsub?: (() => void) | null;
@@ -703,21 +702,21 @@ interface ModelWebGPUCache extends Idl2DHost, ModelShadowCastUniformHost {
   geometryViews?: { [key: string]: PrimitiveGeometryViewRecord };
   nodes: { [key: string]: NodeCache };
   pipelineCache: PipelineCacheLike;
-  // C11-195 — CPU staging for the model-level (identity-transform) camera
-  // block. See NodeCache.cameraData; the GPU bytes live in the arena.
+  // CPU staging for the model-level (identity-transform) camera block. See
+  // NodeCache.cameraData; the GPU bytes live in the arena.
   cameraData?: Float32Array | null;
-  // C11-195 — CPU staging for the model-and-view-wide light block, packed at
-  // most once per update. Model-level because the block is: it was previously
-  // duplicated byte-for-byte into one UB per primitive.
+  // CPU staging for the model-and-view-wide light block, packed at most once
+  // per update. It is model-level because the block itself is: the same bytes
+  // would otherwise be duplicated into one uniform buffer per primitive.
   lightData?: Float32Array | null;
   effectsBG?: GPUBindGroup | null;
   edgeEmitterCache?: EdgeEmitterCache | null;
   hasEdgeFeatureIds?: boolean;
   prevModelMatrix?: Matrix4 | null;
-  // C11-202 — set once `updateWebGPUModel` has walked the whole scene graph
-  // (i.e. reached its tail rather than bailing at the missing-`_sceneGraph`
-  // guard). Distinguishes "this model genuinely caches no primitives" from
-  // "the primitive map is not populated yet" for the readiness check.
+  // Set once `updateWebGPUModel` has walked the whole scene graph (i.e.
+  // reached its tail rather than bailing at the missing-`_sceneGraph` guard).
+  // Distinguishes "this model genuinely caches no primitives" from "the
+  // primitive map is not populated yet" for the readiness check.
   _warmupTraversalComplete?: boolean;
   _project2DActive?: boolean;
   _project2DBoundingSphere?: BoundingSphere | null;
@@ -725,8 +724,8 @@ interface ModelWebGPUCache extends Idl2DHost, ModelShadowCastUniformHost {
   _project2DRefKey?: string | number | null;
   _project2DReference?: Cartesian3 | null;
   _customShader?: CustomShaderResourcesLike | null;
-  // C9-17 Slice A — memoized per-model IBL entries array + the five resolved
-  // identities that produced it (see getOrCreateModelIBLEntries).
+  // Memoized per-model IBL entries array plus the five resolved identities
+  // that produced it (see getOrCreateModelIBLEntries).
   _iblEntriesMemo?: IBLEntriesMemo;
 }
 
@@ -804,7 +803,7 @@ interface ModelLike {
   silhouetteSize?: number;
   silhouetteColor?: ColorLike;
   opaquePass?: number;
-  // C10-02 — StyleCommandsNeeded enum (0 ALL_OPAQUE / 1 ALL_TRANSLUCENT /
+  // StyleCommandsNeeded enum (0 ALL_OPAQUE / 1 ALL_TRANSLUCENT /
   // 2 OPAQUE_AND_TRANSLUCENT), or undefined before the feature table realizes.
   styleCommandsNeeded?: number;
   structuralMetadata?: unknown;
@@ -840,9 +839,9 @@ interface ModelLike {
 type ModelDrawCommand = WebGPUDrawCommand & {
   _shadowCastLayout?: string;
   _shadowCastTopology?: GPUPrimitiveTopology;
-  // C11-90 — the shadow cast pipeline bakes the same topology axis as the
-  // color pipeline, so it needs the same second field. Without it a uint16 and
-  // a uint32 strip caster would share one cast pipeline entry.
+  // The shadow cast pipeline bakes the same topology axis as the color
+  // pipeline, so it needs the same second field. Without it a uint16 and a
+  // uint32 strip caster would share one cast pipeline entry.
   _shadowCastStripIndexFormat?: GPUIndexFormat;
   _shadowCastModelUB?: unknown;
   _shadowCastJointMatricesSB?: unknown;
@@ -947,8 +946,8 @@ declare global {
   interface CesiumFrameState {
     useHDR?: boolean;
     atmosphereSkyIrradiance?: { x: number; y: number; z: number } | null;
-    // C12-29 S2 — the per-frame eclipse dimming multiplier published by
-    // `Scene.render`. Exactly 1.0 outside a solar eclipse.
+    // The per-frame eclipse dimming multiplier published by `Scene.render`.
+    // Exactly 1.0 outside a solar eclipse.
     eclipseSceneLightFactor?: number;
     scene?: {
       _webgpuPickHoverEnabled?: boolean;
@@ -1036,11 +1035,11 @@ interface SceneCaptureModelsLike {
 }
 
 /**
- * C10-05 — frame-owned mip-generation sink (C9-12A `WebGPUContext`
- * `enqueueTextureMipGeneration`). A texture upgraded to a real mip chain in the
- * `createGPUTextureFromReader` fallback registers its blit here so the mips are
- * generated in the shared pre-frame `"TextureMipPreparation"` submit — never a
- * private `queue.submit` from draw emission.
+ * Frame-owned mip-generation sink (`WebGPUContext.enqueueTextureMipGeneration`).
+ * A texture upgraded to a real mip chain in the `createGPUTextureFromReader`
+ * fallback registers its blit here so the mips are generated in the shared
+ * pre-frame `"TextureMipPreparation"` submit, never in a private
+ * `queue.submit` issued from draw emission.
  */
 type EnqueueMipFn = (
   texture: GPUTexture,
@@ -1062,18 +1061,18 @@ interface ModelRenderContext {
   ) => void;
   uniformState: CesiumUniformState;
   /**
-   * C11-195 — the context's shared per-frame uniform ring. Null while the
-   * device is unavailable; the camera arena degrades to private buffers then.
+   * The context's shared per-frame uniform ring. Null while the device is
+   * unavailable; the camera arena degrades to private buffers then.
    */
   uniformAllocator?: ModelCameraArenaAllocator | null;
   /**
    * Mutable model camera/light arena paired with this context's allocator.
    * Immutable cameraBGL identity remains device-generation shared.
    *
-   * Null carries the SAME meaning as a null `uniformAllocator`: the getter on
+   * Null carries the same meaning as a null `uniformAllocator`: the getter on
    * `WebGPUContext` returns null exactly while the device is unavailable
    * (destroyed / terminally lost / torn down). Model draws must degrade by
-   * SKIPPING, not throw — see {@link resolveModelCameraArenaOwner}.
+   * skipping rather than throwing — see {@link resolveModelCameraArenaOwner}.
    */
   modelCameraArena?: WebGPUModelCameraArena | null;
   /**
@@ -1102,8 +1101,8 @@ interface ModelRenderContext {
   _edgeIdView?: GPUTextureView | null;
   _edgeDepthView?: GPUTextureView | null;
   _globeDepthView?: GPUTextureView | null;
-  // C10-07 — central async render-pipeline cache, threaded into the model
-  // pipeline cache so the on-screen color pipeline compiles via
+  // Central async render-pipeline cache, threaded into the model pipeline
+  // cache so the on-screen color pipeline compiles via
   // `createRenderPipelineAsync`.
   webgpuPipelineCache?:
     import("./WebGPURenderPipelineCache.js").WebGPURenderPipelineCache | null;
@@ -1151,16 +1150,16 @@ interface CustomShaderResourcesLike {
   uboByteLength?: number;
 }
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+// Constants.
 
 // Camera uniform buffer: mat4(mvpRTE) + mat4(mvRTE) + mat4(normal) +
 //   vec3+pad(camHighMC) + vec3+pad(camLowMC) + vec3+pad(camWC) +
 //   mat4(previousViewProjection)  = 320 bytes.
-// DP-H41 (Batch 27) — previousViewProjection added at the tail for TAA /
-// motion-vector reprojection. 16-byte alignment preserved (20 vec4s).
-// C11-195 — the width now also drives the layout's `minBindingSize`, so it
-// lives with the arena that owns the layout and is re-exported here for the
-// existing call sites.
+// `previousViewProjection` sits at the tail for TAA / motion-vector
+// reprojection; 16-byte alignment is preserved (20 vec4s).
+// The width also drives the layout's `minBindingSize`, so it lives with the
+// arena that owns the layout and is re-exported here for the existing call
+// sites.
 const CAMERA_UNIFORM_SIZE = MODEL_CAMERA_UNIFORM_BYTES;
 // Material uniform buffer: mat4(model) + vec4(baseColor) + vec3+f(emissive+metallic)
 //   + 4f(rough/alpha/normal/occ) + u32(flags) + 3f(specRGB) + f(gloss) +
@@ -1175,7 +1174,7 @@ const CAMERA_UNIFORM_SIZE = MODEL_CAMERA_UNIFORM_BYTES;
 //   floats  32    : glossinessFactor
 //   floats  33-36 : diffuseFactor        (vec4)
 //   floats  37    : texCoordFlags        (u32)
-//   floats  38-39 : padding — reused by WIRE-MODEL-SPLITTER: 38 =
+//   floats  38-39 : padding — carries the splitter lanes: 38 =
 //                   model.splitDirection (-1/0/+1), 39 = czm_splitPosition
 //                   in framebuffer pixels. Read only by the
 //                   `//>>ifdef MODEL_SPLIT_ENABLED` FS blocks.
@@ -1186,34 +1185,37 @@ const CAMERA_UNIFORM_SIZE = MODEL_CAMERA_UNIFORM_BYTES;
 //   floats  80-91 : emissive texture transform
 //   floats  92-103: occlusion texture transform
 //   floats 104    : textureTransformFlags (u32)
-//   floats 105-107: padding
+//   floats 105-107: padding — carries the silhouette lanes in the
+//                   silhouette-variant buffer: 105 = expandX, 106 = expandY,
+//                   107 = silhouette-pass flag. Zero in the primary buffer.
 //
-// C-R4-GLTF-KHR (slices 2-7): each KHR extension occupies a contiguous
-// 8-float (32-byte) slot at a 16-byte boundary so the WGSL std140 layout
-// matches without internal padding. Factors only — texture readers are
-// resolved through the existing texture binding path in a follow-up
-// slice (bind-group restructure required to add the per-extension
-// sampled textures).
+// Each KHR extension occupies a contiguous 8-float (32-byte) slot at a
+// 16-byte boundary so the WGSL std140 layout matches without internal
+// padding. Factors only — texture readers are resolved through the existing
+// texture binding path, since adding the per-extension sampled textures
+// requires a bind-group restructure.
 //
 //   floats 108-115: clearcoat   (factor, roughness, normalScale, _, _, _, _, _)
+//                   The trailing four (112-115) carry silhouetteColor RGBA in
+//                   the silhouette-variant buffer; zero in the primary buffer.
 //   floats 116-123: specular    (factor, colorR, colorG, colorB, _, _, _, _)
 //   floats 124-131: anisotropy  (strength, rotation, _, _, _, _, _, _)
 //   floats 132-139: iridescence (factor, ior, thickMin, thickMax, _, _, _, _)
 //   floats 140-147: sheen       (colorR, colorG, colorB, roughness, _, _, _, _)
 //   floats 148-155: volume      (thickness, attenDistance, attColorR, attColorG, attColorB, _, _, _)
-//   floats 156-171: previousModelMatrix (mat4x4) — TAA Slice 2c (Batch 96)
+//   floats 156-171: previousModelMatrix (mat4x4), for TAA reprojection
 //   floats 172-175: motionFlags         (vec4: enabled, scale, _, _)
-//   floats 176-179: tileBatchFlags      (vec4: passClass, opaqueThreshold, _, _) — C-R1-TILE-BATCH (Batch 100)
+//   floats 176-179: tileBatchFlags      (vec4: passClass, opaqueThreshold, _, _)
 //   floats 180-183: transmissionFactors  (vec4: factor, ior, _, _)
-//   floats 184-187: reserved (_pad_reserved8) — reused by WIRE-MODEL-COLOR:
-//                   model.color RGBA. Blend scalar rides motionFlags.w
-//                   (float 175). Read only by the `//>>ifdef
-//                   MODEL_HAS_COLOR` FS blocks; zero-filled otherwise.
+//   floats 184-187: reserved (_pad_reserved8) — carries model.color RGBA.
+//                   The blend scalar rides motionFlags.w (float 175). Read
+//                   only by the `//>>ifdef MODEL_HAS_COLOR` FS blocks;
+//                   zero-filled otherwise.
 //   floats 188-191: reserved (texture transform extensions for KHR slots,
 //                             KHR_materials_pbrSpecularGlossiness lookups, etc.)
 const MATERIAL_UNIFORM_SIZE = 768;
-// Light uniform buffer layout (Audit B.3 -- Batch 131; Batch 134
-// bumped per-light record from 16 to 20 floats for spot direction):
+// Light uniform buffer layout. Each per-light record is 20 floats; the four
+// beyond the base 16 carry the spot direction:
 //   bytes 0-63   : sun + ambient + IBL block (16 floats)
 //                  - 0-3   sunDirectionEC (vec3+pad)
 //                  - 4-7   sunColor (vec3) + sunIntensity
@@ -1234,10 +1236,9 @@ const MATERIAL_UNIFORM_SIZE = 768;
 //                  - +14..15 padding
 //                  - +16..18 spotDirection xyz (spot lights only)
 //                  - +19    padding
-//   bytes 720-767: iblReferenceFrameMatrix (mat3x3) — NEW-MODEL-IBL-
-//                  REFERENCE-FRAME (Batch 287). 3 vec4-padded columns:
+//   bytes 720-767: iblReferenceFrameMatrix (mat3x3). 3 vec4-padded columns:
 //                  col0 @ floats 180-182, col1 @ 184-186, col2 @ 188-190.
-//   bytes 768-863: C2-25 ENV-PARALLAX (Batch 451) — reflection proxy block.
+//   bytes 768-863: reflection proxy block for environment parallax.
 //                  - 768-783 (floats 192-195) reflectionProxyControl (vec4):
 //                       x=mode (0 off / 1 box / 2 sphere), y=sphere radius, zw pad
 //                  - 784-799 (floats 196-198+pad) proxyCenter (vec3) — camera-
@@ -1249,9 +1250,9 @@ const MATERIAL_UNIFORM_SIZE = 768;
 // Total: 64 + 656 + 48 + 96 = 864 bytes. Keep in sync with struct
 // LightUniforms in ModelPBRComplete.wgsl.
 //
-// C11-195 — the width itself now lives with the arena that binds it (group 0
-// binding 1 declares it as `minBindingSize`), so there is exactly one number
-// to keep in lockstep with the WGSL struct.
+// The width itself lives with the arena that binds it (group 0 binding 1
+// declares it as `minBindingSize`), so there is exactly one number to keep in
+// lockstep with the WGSL struct.
 const LIGHT_UNIFORM_SIZE = MODEL_LIGHT_UNIFORM_BYTES;
 
 // materialFlags bit for skinning (bit 13 = 8192)
@@ -1259,25 +1260,23 @@ const FLAG_HAS_SKINNING = 8192;
 // materialFlags bit for instancing (bit 15 = 32768)
 const FLAG_HAS_INSTANCING = 32768;
 
-// Batch 174 — B.4 KHR materialBGL split. Aggregate mask of all
-// KHR-extension bits the FS gates on. Mirrors the FLAG_HAS_*
-// constants in ModelPBRComplete.wgsl (bits 19-25). When the
-// material's flags AND this mask is zero, the renderer routes
-// through the basic shader/BGL/pipeline-layout variant — bindings
-// 12-25 of the materialBGL are stripped, dropping the sampled-
-// texture count from 23 to 10 so the pipeline fits within the
-// WebGPU spec floor `maxSampledTexturesPerShaderStage = 16`.
+// Aggregate mask of all KHR-extension bits the FS gates on. Mirrors the
+// FLAG_HAS_* constants in ModelPBRComplete.wgsl (bits 19-25). When the
+// material's flags AND this mask is zero, the renderer routes through the
+// basic shader/BGL/pipeline-layout variant — bindings 12-25 of the
+// materialBGL are stripped, dropping the sampled-texture count from 23 to 10
+// so the pipeline fits within the WebGPU spec floor
+// `maxSampledTexturesPerShaderStage = 16`.
 //
-// **Scalability note:** today this is a coarse OR — any KHR bit set
-// routes through the full variant. The architecture (manifest-driven
-// BGL builder + per-variant pipeline cache + per-variant shader-module
-// cache, all keyed on `materialDefines: number`) supports per-extension
-// granular splits without further refactoring. When the WGSL ifdefs
-// are split per-extension (follow-up to Batch 174), this helper can
-// return a granular `materialDefines` like
-// `MODEL_HAS_KHR_SPECULAR | MODEL_HAS_KHR_CLEARCOAT` — the cache will
-// build a minimal layout for that exact subset that fits a 16-texture
-// device even if the asset uses some KHR extensions.
+// Scalability note: this is a coarse OR — any KHR bit set routes through the
+// full variant. The architecture (manifest-driven BGL builder + per-variant
+// pipeline cache + per-variant shader-module cache, all keyed on
+// `materialDefines: number`) supports per-extension granular splits without
+// further refactoring. Once the WGSL ifdefs are split per-extension, this
+// helper can return a granular `materialDefines` such as
+// `MODEL_HAS_KHR_SPECULAR | MODEL_HAS_KHR_CLEARCOAT`, and the cache will build
+// a minimal layout for that exact subset that fits a 16-texture device even
+// when the asset uses some KHR extensions.
 const FLAG_HAS_KHR_MASK =
   524288 | // FLAG_HAS_CLEARCOAT (bit 19)
   1048576 | // FLAG_HAS_SPECULAR_EXT (bit 20)
@@ -1288,20 +1287,20 @@ const FLAG_HAS_KHR_MASK =
   33554432; // FLAG_HAS_TRANSMISSION (bit 25)
 
 /**
- * Batch 174 — Computes the `materialDefines` bitmask for a primitive
- * given its material flags. The pipeline cache + BGL builder + shader-
- * module cache all key on this value.
+ * Computes the `materialDefines` bitmask for a primitive given its material
+ * flags. The pipeline cache, BGL builder and shader-module cache all key on
+ * this value.
  *
- * Today the result is binary: `0` (basic, no KHR — fits the 16-sampled-
- * texture spec floor) or `MODEL_HAS_KHR_TEXTURES` (full, all KHR
- * bindings present — needs the device to opt up
- * `maxSampledTexturesPerShaderStage` past the spec floor).
+ * The result is binary: `0` (basic, no KHR — fits the 16-sampled-texture spec
+ * floor) or `MODEL_HAS_KHR_TEXTURES` (full, all KHR bindings present — needs
+ * the device to opt `maxSampledTexturesPerShaderStage` up past the spec
+ * floor).
  *
- * Future: when the WGSL ifdefs are split per-KHR-extension and a new
- * `MODEL_HAS_KHR_SPECULAR` / `MODEL_HAS_KHR_CLEARCOAT` / etc. set of
- * `ShaderDefine` bits is added, this function returns the exact OR of
- * the bits the primitive's flags activate, and the cache builds a
- * minimal layout fitting within `device.limits.maxSampledTexturesPerShaderStage`.
+ * Once the WGSL ifdefs are split per-KHR-extension and a
+ * `MODEL_HAS_KHR_SPECULAR` / `MODEL_HAS_KHR_CLEARCOAT` set of `ShaderDefine`
+ * bits exists, this function can return the exact OR of the bits the
+ * primitive's flags activate, and the cache can build a minimal layout fitting
+ * within `device.limits.maxSampledTexturesPerShaderStage`.
  *
  * @private
  * @param {number} materialFlags
@@ -1314,7 +1313,7 @@ function computeMaterialDefines(materialFlags: number): number {
   return 0;
 }
 
-// ─── Scratch Variables ───────────────────────────────────────────────────────
+// Scratch variables.
 
 const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
@@ -1324,34 +1323,34 @@ const scratchInverseModel = new Matrix4();
 const scratchCameraMC = new Cartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
 const scratchShadowModelLinear = new Matrix4();
-// NEW-MODEL-PROJECT2D-BV-MORPH (B11) — scratch for the accurate-2D 3D normal
-// matrix override (see overrideProject2DNormalMatrix).
+// Scratch for the accurate-2D 3D normal matrix override (see
+// overrideProject2DNormalMatrix).
 const scratchModelView3D = new Matrix4();
 const scratchNormal3D = new Matrix4();
-// AUDIT_2026_05_02 B.8 (Batch 152, fixed Batch 154) — per-runtime-node
-// modelMatrix scratch for `modelMatrix * runtimeNode.computedTransform`.
-// Reused per node per frame. Originally cited `transformToRoot` here, which
-// is wrong: per `ModelRuntimeNode.js:19` `transformToRoot` excludes the
-// node's own transform. WebGL's `ModelMatrixUpdateStage.updateRuntimeNode`
-// (`ModelMatrixUpdateStage.js:82-86`) multiplies in `runtimeNode.transform`
-// before consuming, equivalent to using `runtimeNode.computedTransform`.
+// Per-runtime-node modelMatrix scratch for
+// `modelMatrix * runtimeNode.computedTransform`. Reused per node per frame.
+// `transformToRoot` is not the correct factor here: per `ModelRuntimeNode` it
+// excludes the node's own transform. WebGL's
+// `ModelMatrixUpdateStage.updateRuntimeNode` multiplies in
+// `runtimeNode.transform` before consuming, which is equivalent to using
+// `runtimeNode.computedTransform`.
 const scratchNodeModelMatrix = new Matrix4();
 
-// NEW-MODEL-PROJECT2D-BV-MORPH (B11) — reused per-frame scratch for the
-// accurate-2D (`projectTo2D:true`) path: the model's ECEF world origin, the
-// per-node 3D world matrix used to reproject positions, and a corner-point
-// accumulator for the morphed 2D bounding volume.
+// Reused per-frame scratch for the accurate-2D (`projectTo2D:true`) path: the
+// model's ECEF world origin, the per-node 3D world matrix used to reproject
+// positions, and a corner-point accumulator for the morphed 2D bounding
+// volume.
 const scratchProject2DWorldOrigin = new Cartesian3();
 const scratchProject2DNodeWorld = new Matrix4();
 
-// C-MODEL-2DIDL-DUPLICATE — reused scratch for the SCENE2D IDL-crossing
-// duplicate command (mirrors WebGL `ModelDrawCommand.updateModelMatrix2D` /
-// `derive2DCommand`). Only touched when `idlDuplicateActive` is armed.
+// Reused scratch for the SCENE2D IDL-crossing duplicate command (mirrors
+// WebGL `ModelDrawCommand.updateModelMatrix2D` / `derive2DCommand`). Only
+// touched when `idlDuplicateActive` is armed.
 const scratchIdl2DModelMatrix = new Matrix4();
 
-// NEW-MODEL-PROJECT2D-BV-MORPH (B11) — union the per-primitive accurate 2D
-// bounding spheres (computed by SceneMode2DPipelineStage into
-// `runtimePrimitive.boundingSphere2D`) into a single model-level 2D volume.
+// Union the per-primitive accurate 2D bounding spheres (computed by
+// SceneMode2DPipelineStage into `runtimePrimitive.boundingSphere2D`) into a
+// single model-level 2D volume.
 // This is the "morphed" flat bounding box the accurate-2D command culls
 // against, in the same projected frame as the camera. Returns undefined when
 // no 2D spheres are available yet (caller falls back to the ECEF sphere).
@@ -1390,20 +1389,20 @@ function computeModel2DBoundingVolume(
   return started ? out : undefined;
 }
 
-// C2-25 ENV-SCENE-CAPTURE (Batch 447) — reused per-primitive-per-face capture
-// camera UB staging buffer. The pack writes into this, the ring allocator
-// copies the bytes to a per-frame slice, so a single module-scope scratch
-// suffices for all 6 faces × N primitives.
+// Reused per-primitive-per-face capture camera UB staging buffer. The pack
+// writes into this and the ring allocator copies the bytes to a per-frame
+// slice, so a single module-scope scratch suffices for all 6 faces × N
+// primitives.
 const captureCameraData = new Float32Array(CAMERA_UNIFORM_SIZE / 4);
-// C11-195 — capture faces cannot bind the primitive's persistent on-screen
-// light UB. Punctual positions and the eye-to-world rotation are view-owned,
-// and capture is recorded before the main view in the same submission. Pack one
-// immutable ring slice per model/face so neither view can overwrite bytes that
-// an already-recorded draw will consume later.
+// Capture faces cannot bind the primitive's persistent on-screen light UB.
+// Punctual positions and the eye-to-world rotation are view-owned, and capture
+// is recorded before the main view in the same submission. Pack one immutable
+// ring slice per model/face so neither view can overwrite bytes that an
+// already-recorded draw will consume later.
 const captureLightData = new Float32Array(LIGHT_UNIFORM_SIZE / 4);
 
-// AUDIT_2026_05_02 B.8 — cheap "is identity" check used to skip per-node
-// camera resource allocation when the node has no parent-chain transform
+// Cheap "is identity" check used to skip per-node camera resource allocation
+// when the node has no parent-chain transform
 // (the common case for single-node models). Inlined comparison avoids the
 // O(16) `Matrix4.equalsEpsilon` and the closure cost of an exact-equals path
 // when called per-node per-frame.
@@ -1428,20 +1427,20 @@ function isIdentityMatrix4(m: ArrayLike<number>) {
   );
 }
 
-// ─── Camera Uniform Packing ─────────────────────────────────────────────────
+// Camera uniform packing.
 
 /**
- * C11-195 — resolve the exact context that owns BOTH the mutable model arena
- * and its uniform ring. A pooled GPUDevice can back multiple contexts, so
- * neither mutable owner may come from the device-shared pipeline cache.
+ * Resolves the exact context that owns both the mutable model arena and its
+ * uniform ring. A pooled GPUDevice can back multiple contexts, so neither
+ * mutable owner may come from the device-shared pipeline cache.
  *
- * Returns null — the documented DEGRADATION, callers skip the draw — when the
- * arena getter reports a dead device (`WebGPUContext.modelCameraArena` is null
- * exactly while the context is destroyed or terminally lost; nothing can
- * render there anyway, matching the pre-arena graceful posture). A null arena
- * on a context whose device still claims to be HEALTHY, or a context that has
- * no arena property at all, remains a loud structural error: that is a wiring
- * failure feeding an active model draw, not a device lifecycle state.
+ * Returns null — the documented degradation, where callers skip the draw —
+ * when the arena getter reports a dead device (`WebGPUContext.modelCameraArena`
+ * is null exactly while the context is destroyed or terminally lost, and
+ * nothing can render there anyway). A null arena on a context whose device
+ * still claims to be healthy, or a context that has no arena property at all,
+ * remains a loud structural error: that is a wiring failure feeding an active
+ * model draw, not a device lifecycle state.
  */
 function resolveModelCameraArenaOwner(
   frameState: CesiumFrameState,
@@ -1464,12 +1463,12 @@ function resolveModelCameraArenaOwner(
 }
 
 /**
- * C11-195 — acquire one group-0 binding pair for `data` + `lightSlice` from
- * the device arena. Ticks the arena on the current frame first, which is
- * idempotent within a frame and clears the bind-group cache when the context
- * has rebuilt its ring (device recovery on the same `GPUDevice`).
+ * Acquires one group-0 binding pair for `data` + `lightSlice` from the device
+ * arena. Ticks the arena on the current frame first, which is idempotent
+ * within a frame and clears the bind-group cache when the context has rebuilt
+ * its ring (device recovery on the same `GPUDevice`).
  *
- * `lightSlice` is the caller's ONE light block for this model and view (see
+ * `lightSlice` is the caller's single light block for this model and view (see
  * {@link acquireModelLightSlice}). It is not re-staged here: several camera
  * blocks (root, each transformed node, the IDL duplicate) address the same
  * light bytes, which is the entire point of hoisting the pack out of the
@@ -1506,18 +1505,18 @@ function acquireModelCameraBinding(
 }
 
 /**
- * C11-195 — pack and stage the ONE light block this model and view share.
+ * Packs and stages the single light block this model and view share.
  *
  * The block depends only on `frameState` (scene light, eclipse factor, sky
  * irradiance, punctual lights, active RTE eye) and `model` (IBL factors,
- * asset lights, reflection proxy) — never on the primitive — so a model with
- * `N` primitives packed and uploaded `N` byte-identical copies of it before
- * this. Camera-relative punctual positions also meant the byte-comparison
- * that guarded those uploads only suppressed anything while the camera stood
- * perfectly still, so under motion the per-primitive cost was real.
+ * asset lights, reflection proxy) — never on the primitive — so packing it
+ * per primitive would produce `N` byte-identical copies for an `N`-primitive
+ * model. A byte-comparison guard cannot recover that cost either, because
+ * camera-relative punctual positions change on every moving-camera frame and
+ * only suppress an upload while the camera stands perfectly still.
  *
- * Callers memoize the result in an UPDATE-SCOPED local (never on the model
- * cache): the slice belongs to one allocation epoch, so a later frame would
+ * Callers memoize the result in an update-scoped local, never on the model
+ * cache: the slice belongs to one allocation epoch, so a later frame would
  * bind bytes the ring has already handed to someone else.
  */
 function acquireModelLightSlice(
@@ -1549,14 +1548,14 @@ interface ModelLightWorkCounters {
 }
 
 /**
- * C11-195 — realize this update's single light slice: allocate the model-level
- * staging array on first use, pack it, and stage it into the frame arena.
+ * Realizes this update's single light slice: allocates the model-level staging
+ * array on first use, packs it, and stages it into the frame arena.
  *
  * Called at most once per model per update through the callers' update-scoped
  * memo. `lightPacks` therefore counts models, not primitives, and `lightWrites`
- * counts light blocks that reached the GPU (staged into the ring page the
- * context flushes once before submit) rather than individual `writeBuffer`
- * calls, which this path no longer makes.
+ * counts light blocks that reached the GPU — staged into the ring page the
+ * context flushes once before submit — rather than individual `writeBuffer`
+ * calls, which this path does not make.
  *
  * Returns null on the dead-device degradation (see
  * {@link resolveModelCameraArenaOwner}): nothing was staged, `lightWrites`
@@ -1678,20 +1677,20 @@ function packCameraUniforms(
   Matrix4.transpose(scratchNormal, scratchNormal);
   Matrix4.pack(scratchNormal, data, 32); // [32-47]
 
-  // Camera position in MODEL coordinates (key RTE fix!)
+  // Camera position in model coordinates, which is what the RTE encode needs:
   // inverse(model) * cameraPositionWC → camera in model space.
   //
-  // C2-25 ENV-SCENE-CAPTURE (Batch 447) — read the eye from
-  // `uniformState.cameraPosition` instead of `frameState.camera.positionWC`
-  // so the model eye is fully `uniformState`-driven (like the globe). This is
-  // PARITY-NEUTRAL on-screen: `UniformState.update` calls
-  // `updateCamera(frameState.camera)` every frame, which clones
-  // `camera.positionWC` into `_cameraPosition`, so the two are bit-for-bit
-  // identical in every scene mode. The payoff: the env scene-capture pass's
-  // per-face `uniformState.updateCamera(faceCamera)` + finally-restore now
-  // repoint the model eye for free, exactly as they already do for the globe.
-  // KEEP the `inverse(model) * eyeWC` math — do NOT substitute
-  // `encodedCameraPositionMC` (that's the ellipsoid-ENU encode, wrong frame).
+  // The eye comes from `uniformState.cameraPosition` rather than
+  // `frameState.camera.positionWC` so the model eye is fully
+  // `uniformState`-driven, like the globe. The two are parity-neutral
+  // on-screen: `UniformState.update` calls `updateCamera(frameState.camera)`
+  // every frame, which clones `camera.positionWC` into `_cameraPosition`, so
+  // they are bit-for-bit identical in every scene mode. The payoff is that the
+  // env scene-capture pass's per-face `uniformState.updateCamera(faceCamera)`
+  // and its finally-restore repoint the model eye for free, exactly as they
+  // already do for the globe.
+  // Keep the `inverse(model) * eyeWC` math; `encodedCameraPositionMC` is not a
+  // substitute, because it is the ellipsoid-ENU encode and so the wrong frame.
   const eyeWC = uniformState.cameraPosition;
   Matrix4.inverse(modelMatrix, scratchInverseModel);
   Matrix4.multiplyByPoint(scratchInverseModel, eyeWC, scratchCameraMC);
@@ -1707,8 +1706,8 @@ function packCameraUniforms(
   data[55] = 0.0;
 
   // Camera position WC (for specular/IBL effects). Same `uniformState`-driven
-  // eye as the MC encode above (C2-25 Batch 447) — parity-neutral on-screen,
-  // and face-camera-aware during env scene capture.
+  // eye as the model-coordinate encode above: parity-neutral on-screen, and
+  // face-camera-aware during env scene capture.
   const camWC = eyeWC;
   data[56] = camWC.x;
   data[57] = camWC.y;
@@ -1716,13 +1715,13 @@ function packCameraUniforms(
   data[59] = 0.0;
 
   // Renderer-wide log depth — floats 51/55/59 carry (factor, near, far)
-  // per the WebGPULogDepth.ts lane convention. Fills previously-zero pad
+  // per the WebGPULogDepth.ts lane convention. These are otherwise-zero pad
   // lanes; only the LOG_DEPTH module variant reads them.
   packCameraLogDepthLanes(data, 0, uniformState);
 
-  // DP-H41 (Batch 27) — previousViewProjection at offset 60..75 (16 floats).
+  // previousViewProjection at offset 60..75 (16 floats).
   // `UniformState.update()` clones the current viewProjection into
-  // `_previousViewProjection` BEFORE overwriting it with the new camera
+  // `_previousViewProjection` before overwriting it with the new camera
   // state, so on frame N this slot holds frame N-1's viewProjection.
   // TAA / motion-vector shaders consume it via `camera.previousViewProjection`.
   const prevVP = uniformState.previousViewProjection;
@@ -1748,28 +1747,27 @@ function packCameraUniforms(
     data[75] = 1;
   }
 
-  // Q13-PLAIN-HDR-GAMMA-CORE — HDR gate at float 76 (camera.hdrControl.x),
-  // packed into pre-existing trailing padding of the 320-byte camera UB.
-  // Mirrors WebGL's `#ifdef HDR` in LightingStageFS: when
-  // `scene.highDynamicRange` is on (`frameState.useHDR`) the model shader's
-  // `tonemapAndGamma` skips the inline tonemap + gamma encode so the
-  // post-process Tonemap stage does it once. Zero on the default SDR path →
-  // byte-identical.
+  // HDR gate at float 76 (camera.hdrControl.x), packed into trailing padding
+  // of the 320-byte camera UB. Mirrors WebGL's `#ifdef HDR` in
+  // LightingStageFS: when `scene.highDynamicRange` is on
+  // (`frameState.useHDR`) the model shader's `tonemapAndGamma` skips the
+  // inline tonemap and gamma encode so the post-process Tonemap stage does it
+  // once. Zero on the default SDR path, which leaves that path byte-identical.
   data[76] = frameState.useHDR === true ? 1.0 : 0.0;
 }
 
-// NEW-MODEL-PROJECT2D-BV-MORPH (B11) — override the normal matrix (slots
-// 32-47) with the 3D normal matrix for the accurate-2D path. `packCameraUniforms`
-// derives the normal matrix from the translate(reference) 2D clip matrix, which
-// has no model orientation — so `normalEC` loses the model's world rotation and
-// diffuse lighting goes wrong. WebGL shades projectTo2D models entirely in the
-// 3D eye frame (`czm_normal3D`, ModelVS.glsl:62) while only the CLIP position is
-// remapped to 2D; the light direction the renderer packs
-// (`uniformState.lightDirectionEC`) is ALWAYS in the view3D frame
-// (UniformState.js:850 `viewRotation3D`), so `normalEC` must match it. This
-// recomputes `transpose(inverse(view3D × model3DWorld))` — the model-level 3D
-// world matrix (per-node rotation for normals is a documented B12 residual).
-// The clip position, RTE camera encode, and mvp remain the 2D values.
+// Overrides the normal matrix (slots 32-47) with the 3D normal matrix for the
+// accurate-2D path. `packCameraUniforms` derives the normal matrix from the
+// translate(reference) 2D clip matrix, which carries no model orientation, so
+// `normalEC` would lose the model's world rotation and diffuse lighting would
+// be wrong. WebGL shades projectTo2D models entirely in the 3D eye frame
+// (`czm_normal3D` in ModelVS.glsl) while only the clip position is remapped to
+// 2D; the light direction the renderer packs
+// (`uniformState.lightDirectionEC`) is always in the view3D frame
+// (`viewRotation3D` in UniformState.js), so `normalEC` must match it. This
+// recomputes `transpose(inverse(view3D × model3DWorld))` from the model-level
+// 3D world matrix; per-node rotation for normals is a known residual. The clip
+// position, RTE camera encode, and mvp remain the 2D values.
 function overrideProject2DNormalMatrix(
   data: Float32Array,
   frameState: CesiumFrameState,
@@ -1782,31 +1780,31 @@ function overrideProject2DNormalMatrix(
   Matrix4.pack(scratchNormal3D, data, 32);
 }
 
-// ─── C2-25 ENV-SCENE-CAPTURE (Batch 447) — Model capture command builder ──────
+// Model capture command builder.
 
 /**
- * C2-25 ENV-SCENE-CAPTURE (Batch 447) — turns one published model entry's
- * per-primitive draw records into single-target capture draw descriptors for
- * the current cube face. Invoked by `WebGPUDynamicEnvironmentMapCapture.run-
- * SceneCapture` (via the published `buildCaptureCommands` slot) AFTER it has
- * repointed `uniformState` to the face camera — so the per-primitive camera UB
- * packed here bakes the FACE-camera RTE eye.
+ * Turns one published model entry's per-primitive draw records into
+ * single-target capture draw descriptors for the current cube face. Invoked by
+ * `WebGPUDynamicEnvironmentMapCapture.runSceneCapture` (via the published
+ * `buildCaptureCommands` slot) after it has repointed `uniformState` to the
+ * face camera, so the per-primitive camera UB packed here bakes the face-camera
+ * RTE eye.
  *
  * Per record:
- *   - acquire a FRESH per-frame arena slice for the face-camera UB (C11-195).
- *     The slice must be its own: `captureCameraData` is a shared staging array
- *     the next record overwrites, and the main pass renders later in this same
- *     frame from its own slices.
+ *   - acquire a fresh per-frame arena slice for the face-camera UB. The slice
+ *     must be its own: `captureCameraData` is a shared staging array the next
+ *     record overwrites, and the main pass renders later in this same frame
+ *     from its own slices.
  *   - reuse the arena's shared group-0 bind group and address this record's
- *     camera block AND the face light block by dynamic offset
+ *     camera block and the face light block by dynamic offset
  *     (`bindGroup0DynamicOffsets`, ordered `[camera, light]`).
- *   - pack ONE face-view light UB into another ring slice before the first
- *     record and pair it with every camera slice of this model replay; NEVER
- *     reuse the on-screen light block, whose camera-relative
- *     positions/rotation belong to another view.
- *   - rebuild the material bind group with a NEUTRAL IBL (`iblEntries = null` →
- *     `defaultIBLEntries`) to avoid a 1-frame recursive self-reflection (the
- *     model sampling the env cube it is being captured INTO).
+ *   - pack one face-view light UB into another ring slice before the first
+ *     record and pair it with every camera slice of this model replay. The
+ *     on-screen light block must never be reused, because its camera-relative
+ *     positions and rotation belong to another view.
+ *   - rebuild the material bind group with a neutral IBL (`iblEntries = null` →
+ *     `defaultIBLEntries`) to avoid a one-frame recursive self-reflection,
+ *     where the model samples the env cube it is being captured into.
  *   - fetch the single-target `CAPTURE_MODE` pipeline (`getCapturePipeline`).
  *   - reuse the record's already-built merged instance bind group and
  *     vertex/index buffers. Ordinary effects reuse the on-screen group;
@@ -1865,27 +1863,27 @@ function getOrCreateModelCaptureCommands(
     }).bindGroup;
   }
   const commands = [];
-  // C11-195 — ONE face-view light block per model replay, shared by every
-  // record of this face. NEVER the on-screen light: its camera-relative
-  // positions and eye→world rotation belong to another view.
+  // One face-view light block per model replay, shared by every record of this
+  // face. It is never the on-screen light: those camera-relative positions and
+  // the eye→world rotation belong to another view.
   let captureLightSlice: ModelViewLightSlice | null = null;
   for (let r = 0; r < records.length; r++) {
     const rec = records[r];
     if (!rec.indexBuffer || rec.indexCount === 0) {
       continue;
     }
-    // Pack the FACE-camera UB against the record's snapshot model matrix. The
+    // Pack the face-camera UB against the record's snapshot model matrix. The
     // eye-swap (uniformState.cameraPosition) means the repointed face camera
     // reaches the model eye automatically.
     //
-    // C11-195 — one fresh arena slice PER RECORD PER FACE. The slice must be
-    // distinct because `captureCameraData` is a single shared staging array
-    // that the next record immediately overwrites, and because the main pass
-    // renders later in this same frame from its own slices. The bind group,
-    // by contrast, is shared: it addresses the whole ring page, and the
-    // dynamic offset selects this record's block. That collapses what used to
-    // be one `createBindGroup` per primitive per cube face into ~one per ring
-    // page for the entire refresh.
+    // One fresh arena slice per record per face. The slice must be distinct
+    // because `captureCameraData` is a single shared staging array that the
+    // next record immediately overwrites, and because the main pass renders
+    // later in this same frame from its own slices. The bind group, by
+    // contrast, is shared: it addresses the whole ring page, and the dynamic
+    // offset selects this record's block. That keeps the bind-group count at
+    // roughly one per ring page for the entire refresh instead of one per
+    // primitive per cube face.
     if (!captureLightSlice) {
       packLightUniforms(captureLightData, frameState, model);
       captureLightSlice = acquireModelLightSlice(
@@ -1922,9 +1920,9 @@ function getOrCreateModelCaptureCommands(
       rec.materialDefines,
       frameState,
     );
-    // DP-H46b — feed the published metadata chunk before building the capture
-    // pipeline so a MODEL_HAS_METADATA capture variant compiles with its
-    // generated `struct Metadata`. Clears for non-metadata records.
+    // Feed the published metadata chunk before building the capture pipeline
+    // so a MODEL_HAS_METADATA capture variant compiles with its generated
+    // `struct Metadata`. Clears for non-metadata records.
     if (defined(rec.metadataWGSL)) {
       pipelineCache.setMetadataWGSL(
         rec.metadataWGSL,
@@ -1934,9 +1932,9 @@ function getOrCreateModelCaptureCommands(
     } else {
       pipelineCache.clearMetadataWGSL();
     }
-    // GLTF-POINTS-MODE / C11-90 — sticky-topology contract: set per record
-    // before the capture pipeline build (records from older publishes default
-    // triangle). Both halves of the axis travel on the record.
+    // Sticky-topology contract: set per record before the capture pipeline
+    // build, since records from older publishes default to triangle. Both
+    // halves of the axis travel on the record.
     pipelineCache.setPrimitiveTopology(
       rec.topology ?? "triangle-list",
       rec.stripIndexFormat,
@@ -1955,8 +1953,8 @@ function getOrCreateModelCaptureCommands(
         rec.mergedInstanceBG,
         captureEffectsBG ?? rec.effectsBG,
       ],
-      // C11-195 — `cameraBGL` is a dynamic-offset layout; the capture replay
-      // loop in `WebGPUDynamicEnvironmentMapCapture` must forward this.
+      // `cameraBGL` is a dynamic-offset layout, so the capture replay loop in
+      // `WebGPUDynamicEnvironmentMapCapture` must forward this.
       bindGroup0DynamicOffsets: cameraBinding.dynamicOffsets,
       vertexBuffers: rec.vertexBuffers,
       indexBuffer: rec.indexBuffer,
@@ -1968,7 +1966,7 @@ function getOrCreateModelCaptureCommands(
   return commands;
 }
 
-// ─── Material Uniform Packing ────────────────────────────────────────────────
+// Material uniform packing.
 
 /**
  * Creates the byte-comparison state for one concrete material uniform buffer.
@@ -2135,11 +2133,11 @@ function packMaterialUniforms(
   data[38] = 0;
   data[39] = 0;
 
-  // C-R9-MODEL-PICK (Batch 54) — pickColor slot (floats 40-43). Zero
-  // when no pick ID has been registered yet (e.g., a non-pick render
-  // pass before the model first enters a pick pass). The pick command
-  // itself is only attached to derivedCommands.picking when a pick
-  // color is available, so the zeros never reach the pick FBO.
+  // pickColor slot (floats 40-43). Zero when no pick ID has been
+  // registered yet (e.g. a non-pick render pass before the model first
+  // enters a pick pass). The pick command itself is only attached to
+  // derivedCommands.picking when a pick color is available, so the
+  // zeros never reach the pick FBO.
   if (pickColor) {
     data[40] = pickColor.red;
     data[41] = pickColor.green;
@@ -2152,7 +2150,7 @@ function packMaterialUniforms(
     data[43] = 0;
   }
 
-  // C-R4-GLTF-KHR (slice 1) — KHR_texture_transform per-texture 3x3.
+  // KHR_texture_transform per-texture 3x3.
   // GltfLoaderUtil.createModelTextureReader extracts the
   // `KHR_texture_transform` extension into a Matrix3 stored on the
   // reader's `.transform` slot when the asset uses the extension.
@@ -2178,7 +2176,7 @@ function packMaterialUniforms(
   data[106] = 0;
   data[107] = 0;
 
-  // C-R4-GLTF-KHR (slices 2-7) — KHR material extension factors.
+  // KHR material extension factors.
   // Each block is 8 floats (32 B); identity values for the inactive
   // case are written so a stale buffer never stamps garbage into a
   // newly-promoted "extension active" frame.
@@ -2274,7 +2272,7 @@ function packMaterialUniforms(
   data[154] = 0;
   data[155] = 0;
 
-  // TAA Slice 2c (Batch 96) — previousModelMatrix (slots 156-171). Pack
+  // previousModelMatrix (slots 156-171). Pack
   // the prev-frame matrix when one is provided; otherwise mirror the
   // current matrix so a model in its first rendered frame produces
   // zero velocity (no spurious motion blur on initial display). The
@@ -2291,17 +2289,17 @@ function packMaterialUniforms(
   //   x: motion-vector output enabled (0 / 1) — the WGSL FS
   //      `computeMotionVectorScreenSpace` early-outs to zero when 0.
   //   y: motion-vector scale (default 1.0)
-  //   z, w: reserved (sky reprojection / disocclusion params, slice 2d)
+  //   z, w: reserved (sky reprojection / disocclusion params)
   data[172] = motionEnabled ? 1.0 : 0.0;
   data[173] = 1.0;
-  // DP-H46a — motionFlags.z doubles as the metadata-debug toggle. When
-  // the test hook `globalThis.CesiumWebGPUMetadataDebug` is set, flip it
-  // to 1.0 so the `MODEL_HAS_METADATA` fragment branch paints the scalar
-  // metadata value to the fragment color (the de-risking proof that the
-  // property-ATTRIBUTE value reached the shader). The WGSL branch is
-  // stripped for non-metadata models, so setting this globally is safe —
-  // only metadata models react. Reusing the reserved slot avoids growing
-  // the material UBO (which would break non-metadata byte-identity).
+  // motionFlags.z doubles as the metadata-debug toggle. When the test hook
+  // `globalThis.CesiumWebGPUMetadataDebug` is set, flip it to 1.0 so the
+  // `MODEL_HAS_METADATA` fragment branch paints the scalar metadata value to
+  // the fragment color, which shows that the property-attribute value reached
+  // the shader. The WGSL branch is stripped for non-metadata models, so
+  // setting this globally is safe — only metadata models react. Reusing the
+  // reserved slot avoids growing the material UBO, which would break
+  // non-metadata byte-identity.
   data[174] =
     (globalThis as { CesiumWebGPUMetadataDebug?: boolean })
       .CesiumWebGPUMetadataDebug === true
@@ -2309,7 +2307,7 @@ function packMaterialUniforms(
       : 0.0;
   data[175] = 0;
 
-  // C-R1-TILE-BATCH (Batch 100) — tileBatchFlags (slot 176-179):
+  // tileBatchFlags (slot 176-179):
   //   x: passClass (0 = opaque pass, 1 = translucent pass) — only
   //      consumed when the FLAG_HAS_BATCH_TABLE bit is set; otherwise
   //      the FS branch is short-circuited.
@@ -2321,8 +2319,7 @@ function packMaterialUniforms(
   data[178] = 0;
   data[179] = 0;
 
-  // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — transmissionFactors
-  // (slot 180-183):
+  // transmissionFactors (slot 180-183):
   //   x: transmissionFactor [0, 1]
   //   y: ior (default 1.5 — common dielectric / glass refractive index)
   //   z, w: reserved
@@ -2378,9 +2375,9 @@ function writeTextureTransform(
     return true;
   }
   // Identity (no transform). The FS guard skips the multiply when the
-  // slot's "has transform" bit is unset, so these slots are technically
-  // never read — but writing the identity keeps the buffer
-  // self-consistent and makes the dump readable in PIX/RenderDoc.
+  // slot's "has transform" bit is unset, so these slots are never read,
+  // but writing the identity keeps the buffer self-consistent and makes
+  // the dump readable in PIX/RenderDoc.
   data[offsetFloats + 0] = 1;
   data[offsetFloats + 1] = 0;
   data[offsetFloats + 2] = 0;
@@ -2396,7 +2393,7 @@ function writeTextureTransform(
   return false;
 }
 
-// ─── Light Uniform Packing ───────────────────────────────────────────────────
+// Light uniform packing.
 
 function resolveActiveModelCameraPosition(
   frameState: CesiumFrameState,
@@ -2413,19 +2410,17 @@ function packLightUniforms(
   frameState: CesiumFrameState,
   model: ModelLike,
 ) {
-  // Session 65 Batch 18 — pack `lightDirectionEC` (the SCENE LIGHT
-  // direction) instead of `sunDirectionEC`. When the scene uses a
-  // SunLight, these are identical (see `UniformState.update` line
-  // 836-844). When the scene overrides `scene.light` with a custom
-  // `DirectionalLight` (e.g., a hillshade direction or an artist-
-  // controlled key light), only `lightDirectionEC` reflects the
-  // user-set value. Mirrors upstream PBR shaders which reference
-  // `czm_lightDirectionEC`, not `czm_sunDirectionEC`. The previous
-  // sun-direction code path caused custom-lit models to receive sun
-  // illumination regardless of `scene.light`, identical in shape to
-  // the Globe lighting bug fixed in Batch 17. Variable name kept as
-  // `sunDir` for back-compat with the WGSL uniform field — renaming
-  // is a separate refactor.
+  // Pack `lightDirectionEC` (the scene-light direction) rather than
+  // `sunDirectionEC`. When the scene uses a `SunLight` the two are
+  // identical, as `UniformState.update` shows. When the scene overrides
+  // `scene.light` with a custom `DirectionalLight` (a hillshade
+  // direction, or an artist-controlled key light), only
+  // `lightDirectionEC` reflects the user-set value; packing the sun
+  // direction would light custom-lit models from the sun regardless of
+  // `scene.light`. This mirrors the upstream PBR shaders, which
+  // reference `czm_lightDirectionEC` rather than `czm_sunDirectionEC`.
+  // The local is still named `sunDir` to match the WGSL uniform field;
+  // renaming both is a separate refactor.
   const sunDir =
     frameState.context?.uniformState?.lightDirectionEC ||
     new Cartesian3(0, 0, 1);
@@ -2438,31 +2433,31 @@ function packLightUniforms(
   const light = frameState.light;
   const lightColor = light?.color;
 
-  // C12-29 S2 injection site 5 — eclipse dimming of WebGPU MODEL direct
-  // lighting.
+  // Eclipse dimming of WebGPU model direct lighting.
   //
-  // WHY THIS SITE EXISTS AT ALL. Sites 1-4 all route through a shared JS
-  // uniform source, so one multiply serves both backends. This one does not:
-  // WebGL models read `czm_lightColorHdr` (`Model/LightingStageFS.glsl`), which
+  // The other eclipse dimming sites route through a shared JS uniform source,
+  // so one multiply there serves both backends. This one cannot: WebGL models
+  // read `czm_lightColorHdr` (`Model/LightingStageFS.glsl`), which
   // `UniformState` already dims, but `ModelPBRComplete.wgsl` never reads
   // `csm_lightColor*` — its direct term is `light.sunColor *
-  // light.sunIntensity * NdotL`, fed RAW from `frameState.light` right here.
-  // Without this multiply, a solar eclipse would dim the WebGL scene AND the
-  // WebGPU globe/sky while leaving WebGPU glTF + 3D-Tiles models at full
-  // brightness on top of a darkened world — exactly the cross-backend
-  // divergence class the C12 exit gate forbids for a default-ON multiplier.
+  // light.sunIntensity * NdotL`, fed raw from `frameState.light` right here.
+  // Without this multiply a solar eclipse would dim the WebGL scene and the
+  // WebGPU globe/sky while leaving WebGPU glTF and 3D-Tiles models at full
+  // brightness on top of a darkened world, which is exactly the cross-backend
+  // divergence a default-on multiplier must not introduce.
   //
-  // COLOR, not intensity: the shader's product is `sunColor * sunIntensity`,
-  // so scaling the colour is algebraically identical to scaling the intensity
-  // and leaves `data[7]` carrying the user's own `light.intensity` unmodified.
-  // One multiply here covers all four direct terms in the WGSL (base,
-  // anisotropy, clearcoat, sheen).
+  // The colour is scaled rather than the intensity: the shader's product is
+  // `sunColor * sunIntensity`, so the two are algebraically identical, and
+  // scaling the colour leaves `data[7]` carrying the user's own
+  // `light.intensity` unmodified. One multiply here covers all four direct
+  // terms in the WGSL (base, anisotropy, clearcoat, sheen).
   //
-  // GATED EXACTLY LIKE SITE 1 (`UniformState`): only when the frame's light
-  // IS the scene sun. A user-supplied `DirectionalLight` is never touched. The
-  // aerial-perspective derived light takes the dimming too, because
-  // `Scene._atmosphereDerivedLight` is itself a `SunLight` — which is what
-  // keeps the WebGPU aerial-perspective sub-case in step with the plain one.
+  // The gate matches the one `UniformState` applies: dim only when the frame's
+  // light is the scene sun. A user-supplied `DirectionalLight` is never
+  // touched. The aerial-perspective derived light takes the dimming too,
+  // because `Scene._atmosphereDerivedLight` is itself a `SunLight`, which is
+  // what keeps the WebGPU aerial-perspective sub-case in step with the plain
+  // one.
   const eclipseFactorRaw = frameState.eclipseSceneLightFactor;
   const eclipseFactor =
     light instanceof SunLight && typeof eclipseFactorRaw === "number"
@@ -2480,28 +2475,26 @@ function packLightUniforms(
   }
   data[7] = light?.intensity ?? 2.0;
 
-  // ambientColor — small floor so unlit faces aren't pitch black. Track V-A3
-  // (NEW-ATMO-DERIVED-LIGHTING): when the unified aerial-perspective
-  // atmosphere is active, Scene publishes a sky-irradiance ambient
-  // (`frameState.atmosphereSkyIrradiance`) derived from the same atmosphere
-  // that lights the sun (`frameState.light`) and produces the post-process
-  // haze — so the model's ambient is a plausible day/night-aware blue-tinted
-  // sky term, consistent with its direct sun, rather than a flat grey. Falls
-  // back to the historical neutral 0.2 floor when aerial perspective is off
-  // (or on WebGL).
+  // ambientColor — small floor so unlit faces aren't pitch black. When the
+  // unified aerial-perspective atmosphere is active, Scene publishes a
+  // sky-irradiance ambient (`frameState.atmosphereSkyIrradiance`) derived from
+  // the same atmosphere that lights the sun (`frameState.light`) and produces
+  // the post-process haze, so the model's ambient is a plausible
+  // day/night-aware blue-tinted sky term consistent with its direct sun rather
+  // than a flat grey. Falls back to the neutral 0.2 floor when aerial
+  // perspective is off, and on WebGL.
   //
-  // C12-29 S2 — the sky-irradiance branch takes the eclipse factor too. It is
-  // a genuinely sun-driven quantity (`Scene.updateFrameState` derives it from
-  // the same atmosphere that produces `frameState.light`, and only publishes
-  // it when the scene light is a `SunLight`), and it is computed BEFORE the
-  // eclipse state is published, so this is its single dimming site. Leaving it
-  // undimmed would keep a full-brightness blue sky bounce on models through
-  // totality.
+  // The sky-irradiance branch takes the eclipse factor too. It is a genuinely
+  // sun-driven quantity — `Scene.updateFrameState` derives it from the same
+  // atmosphere that produces `frameState.light`, and only publishes it when
+  // the scene light is a `SunLight` — and it is computed before the eclipse
+  // state is published, so this is its single dimming site. Leaving it undimmed
+  // would keep a full-brightness blue sky bounce on models through totality.
   //
-  // The 0.2 neutral FALLBACK is deliberately left alone: it is a non-physical
+  // The 0.2 neutral fallback is deliberately left alone: it is a non-physical
   // "unlit faces aren't pitch black" floor, not a sun term, and dimming it
-  // would drive models to black at totality — the one outcome the S2 twilight
-  // floor exists to prevent.
+  // would drive models to black at totality, which is the one outcome the
+  // twilight floor exists to prevent.
   const skyIrradiance = frameState.atmosphereSkyIrradiance;
   if (skyIrradiance) {
     data[8] = skyIrradiance.x * eclipseFactor;
@@ -2515,14 +2508,15 @@ function packLightUniforms(
   data[11] = 0.0;
 
   // IBL factors — consumed by ModelPBRComplete.wgsl for split-sum ambient.
-  // When the model's ImageBasedLighting is disabled or absent we still write a
-  // sensible default so the ambient term isn't silently zeroed (shader
-  // multiplies ambientColor * iblDiffuseFactor; a zero factor drops the term).
+  // When the model's ImageBasedLighting is disabled or absent a sensible
+  // default is still written so the ambient term isn't silently zeroed: the
+  // shader multiplies ambientColor * iblDiffuseFactor, and a zero factor drops
+  // the term.
   const ibl = model?._imageBasedLighting;
   const iblFactor = ibl?._imageBasedLightingFactor; // Cartesian2 (x=diffuse, y=specular)
   data[12] = iblFactor?.x ?? 1.0;
   data[13] = iblFactor?.y ?? 1.0;
-  // Audit A.9 (Batch 130) — max mip level of the prefiltered specular
+  // Max mip level of the prefiltered specular
   // cubemap. The WebGPU IBL pipeline (`WebGPUImageBasedLighting`)
   // exposes `_webgpuMaxMipLevel` after generation; falls back to the
   // upstream `_specularEnvironmentMapAtlas` mip count for compatibility
@@ -2534,7 +2528,7 @@ function packLightUniforms(
     5.0;
   data[15] = ibl?._sphericalHarmonicCoefficients ? 1.0 : 0.0;
 
-  // Audit B.3 (Batch 131) + re-review (Batch 134) -- punctual lights.
+  // Punctual lights.
   // Merges `frameState.lights` (scene-level, world-space) with
   // `model.lightsFromGltf` (KHR_lights_punctual asset lights, model
   // space transformed through `model.modelMatrix` here). Caps at 8
@@ -2549,7 +2543,7 @@ function packLightUniforms(
     activeCameraPosition,
   );
 
-  // NEW-MODEL-IBL-REFERENCE-FRAME (Batch 287) — eye→IBL-frame rotation
+  // Eye→IBL-frame rotation
   // (`model._iblReferenceFrameMatrix`, a column-major Cesium Matrix3 set
   // by `updateReferenceMatrices` every frame). Mirrors WebGL's
   // `model_iblReferenceFrameMatrix` mat3 uniform. Packed at the tail of
@@ -2559,17 +2553,17 @@ function packLightUniforms(
   // configured samples the placeholder cubemap unrotated.
   packIBLReferenceFrame(data, 180, model);
 
-  // C2-25 ENV-PARALLAX (Batch 451) — reflection proxy block (floats 192-215).
+  // Reflection proxy block (floats 192-215).
   // Always writes mode (float 192); defaults to 0 (raw reflection vector) so
   // stale proxy data cannot leak when the proxy is cleared. The eye-to-world
   // rotation remains populated whenever punctual-light vectors consume it.
   packReflectionProxy(data, 192, frameState, model, activeCameraPosition);
 }
 
-// C2-25 ENV-PARALLAX (Batch 451) — pack the per-manager reflection proxy into
-// the LightUniforms tail. Reads `model.environmentMapManager.reflectionProxy`
-// (the opt-in box/sphere proxy). Center + half-extents are converted to
-// CAMERA-RELATIVE world space (proxy minus camera position) so the WGSL box
+// Packs the per-manager reflection proxy into the LightUniforms tail. Reads
+// `model.environmentMapManager.reflectionProxy` (the opt-in box/sphere proxy).
+// Center and half-extents are converted to camera-relative world space
+// (proxy minus camera position) so the WGSL box
 // intersection runs in the same frame as the fragment's camera-relative world
 // position, preserving f32 precision at Earth scale. Also packs the eye→world
 // rotation (`uniformState.inverseViewRotation`) the shader uses to lift the
@@ -2646,9 +2640,8 @@ function packReflectionProxy(
   // float 203 = pad
 }
 
-// NEW-MODEL-IBL-REFERENCE-FRAME (Batch 287) — writes the model's
-// `_iblReferenceFrameMatrix` (column-major Matrix3) into a WGSL
-// std140 mat3x3 slot (3 vec4-padded columns).
+// Writes the model's `_iblReferenceFrameMatrix` (column-major Matrix3) into a
+// WGSL std140 mat3x3 slot (3 vec4-padded columns).
 function packIBLReferenceFrame(
   data: Float32Array,
   floatOffset: number,
@@ -2681,19 +2674,17 @@ function packIBLReferenceFrame(
   data[floatOffset + 10] = m[8];
 }
 
-// Audit B.3 (Batch 131) + re-review (Batch 134) -- pre-allocated
-// scratch matching `LightCollection.pack()`'s output (164 floats =
-// 656 bytes; 4-float header + 8 lights × 20 floats). Re-used per-
-// call to avoid GC pressure on every model draw.
+// Pre-allocated scratch matching `LightCollection.pack()`'s output (164 floats
+// = 656 bytes; 4-float header + 8 lights × 20 floats). Reused per call to
+// avoid GC pressure on every model draw.
 const scratchLightPack = new Float32Array(164);
 
-// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- pack scene-level
-// `LightCollection` lights AND glTF KHR_lights_punctual lights
-// (model-space, transformed by model.modelMatrix here) into the
-// per-model UBO's punctual region starting at `floatOffset`. Scene
-// lights take priority when the combined count exceeds MAX_LIGHTS=8. Point and
-// spot positions are packed camera-relative after f64 CPU subtraction; light
-// directions remain in world space.
+// Packs scene-level `LightCollection` lights together with glTF
+// KHR_lights_punctual lights (model-space, transformed by model.modelMatrix
+// here) into the per-model UBO's punctual region starting at `floatOffset`.
+// Scene lights take priority when the combined count exceeds MAX_LIGHTS=8.
+// Point and spot positions are packed camera-relative after f64 CPU
+// subtraction; light directions remain in world space.
 const MAX_PUNCTUAL_LIGHTS = 8;
 const FLOATS_PER_PUNCTUAL_LIGHT = 20;
 function packPunctualLights(
@@ -2714,7 +2705,7 @@ function packPunctualLights(
   let writeIndex = 0;
 
   // 1. Scene lights. Read the concrete light objects when available so point
-  // and spot positions stay f64 until AFTER subtracting the active camera.
+  // and spot positions stay f64 until after subtracting the active camera.
   // Packing absolute ECEF into LightCollection's Float32Array first loses
   // sub-meter deltas before the renderer has a chance to make them relative.
   if (sceneLights && sceneLights.length > 0) {
@@ -2757,11 +2748,11 @@ function packPunctualLights(
     }
   }
 
-  // 2. glTF KHR_lights_punctual lights -- model space, transform with
+  // 2. glTF KHR_lights_punctual lights -- model space, transformed with
   // model.modelMatrix to get world space. Each entry's
   // position/direction is already model-space (node hierarchy applied
-  // at parse time); we just multiply by the model matrix to lift to
-  // world coords.
+  // at parse time), so multiplying by the model matrix is all that is
+  // needed to lift it to world coords.
   const gltfLights = model?.lightsFromGltf;
   if (
     Array.isArray(gltfLights) &&
@@ -2863,10 +2854,10 @@ function packPunctualLightRecord(
 const scratchLightVec3a = new Cartesian3();
 const scratchLightVec3b = new Cartesian3();
 
-// ─── GPU Texture Creation from glTF TextureReader ────────────────────────────
+// GPU texture creation from a glTF TextureReader.
 
 /**
- * C10-05 — true when the reader's glTF/CesiumJS sampler requests a mipmapped
+ * True when the reader's glTF/CesiumJS sampler requests a mipmapped
  * minification filter (the four `*_MIPMAP_*` variants, GL 9984-9987). Mirrors
  * `GltfTextureLoader`'s `samplerRequiresMipmap` / `WebGLStubTexture`'s
  * `wantsMipmaps` gate so the fallback allocation path matches WebGL parity: it
@@ -2903,15 +2894,12 @@ function createGPUTextureFromReader(
     return null;
   }
 
-  // Session 65 fix for "3D Tiles base color white" (Mars / Moon /
-  // Aerometrex SF / BIM photogrammetry): in WebGPU mode the CesiumJS
-  // Texture is backed by WebGLStubTexture, which uploads the image to
-  // a real `GPUTexture` and stashes it on `texture._texture._webgpuTexture.texture`.
-  // The previous implementation only looked at `cesiumTexture._source`
-  // (the original ImageBitmap), which CesiumJS Texture does NOT
-  // retain after upload — so every glTF / 3D Tiles texture fell back
-  // to the white placeholder, which is exactly the symptom reported.
-  // Reuse the already-uploaded GPU texture directly when available.
+  // In WebGPU mode the CesiumJS Texture is backed by WebGLStubTexture, which
+  // uploads the image to a real `GPUTexture` and stashes it on
+  // `texture._texture._webgpuTexture.texture`. That upload must be consulted
+  // first: `cesiumTexture._source` (the original ImageBitmap) is not retained
+  // after upload, so reading only that slot leaves every glTF / 3D Tiles
+  // texture on the white placeholder.
   const stubWrapper = cesiumTexture._texture;
   const stubGPU = getWebGPUTextureForDevice(
     stubWrapper,
@@ -2944,18 +2932,18 @@ function createGPUTextureFromReader(
   //            occlusion / data textures that must not be gamma-corrected).
   const format = colorSpace === "srgb" ? "rgba8unorm-srgb" : "rgba8unorm";
 
-  // C10-05-MODEL-TEXTURE-MIP-CHAIN — secondary allocation path (only reached
-  // when the CesiumJS Texture has no stub-owned `_webgpuTexture`; the stub path
-  // above already allocates + generates a real chain for mipmap-sampler
-  // textures). Give this branch a real mip chain too when the source sampler
-  // requests mipmaps, so distant tiles trilinear-filter instead of aliasing
-  // mip 0 — matching the stub path and WebGL. The source here is always an
-  // uncompressed ImageBitmap (compressed KTX2 arrives with `internalFormat` and
-  // takes `Texture.create` with its own transcoded chain, never this branch),
-  // so `rgba8unorm[-srgb]` is RENDER_ATTACHMENT-capable for the blit. Mip
-  // generation is routed through the frame-owned `enqueueTextureMipGeneration`
-  // (C9-12A) — never a private submit from draw emission. Falls back to a
-  // single level when no sink is provided or mipmaps are not requested.
+  // Secondary allocation path, reached only when the CesiumJS Texture has no
+  // stub-owned `_webgpuTexture`; the stub path above already allocates and
+  // generates a real chain for mipmap-sampler textures. This branch gets a real
+  // mip chain too when the source sampler requests mipmaps, so distant tiles
+  // trilinear-filter instead of aliasing mip 0, matching the stub path and
+  // WebGL. The source here is always an uncompressed ImageBitmap — compressed
+  // KTX2 arrives with `internalFormat` and takes `Texture.create` with its own
+  // transcoded chain, never this branch — so `rgba8unorm[-srgb]` is
+  // RENDER_ATTACHMENT-capable for the blit. Mip generation is routed through
+  // the frame-owned `enqueueTextureMipGeneration`, never a private submit from
+  // draw emission. Falls back to a single level when no sink is provided or
+  // mipmaps are not requested.
   const wantsMips = defined(enqueueMip) && readerRequestsMipmap(textureReader);
   const mipLevelCount = wantsMips
     ? WebGPUMipmapGenerator.calculateMipLevelCount(width, height)
@@ -3032,7 +3020,7 @@ function isTextureOwnedByCompatibilityStub(
   );
 }
 
-// ─── Vertex Buffer Creation ──────────────────────────────────────────────────
+// Vertex buffer creation.
 
 function createVertexBuffer(
   device: GPUDevice,
@@ -3058,8 +3046,8 @@ function createVertexBuffer(
 }
 
 /**
- * NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — expand a flat per-vertex color
- * array to dense RGBA (4 floats per vertex). glTF COLOR_0 may be VEC3 (RGB,
+ * Expands a flat per-vertex color array to dense RGBA (4 floats per vertex).
+ * glTF COLOR_0 may be VEC3 (RGB,
  * opaque) or VEC4 (RGBA); the edge emitter expects RGBA. RGB sources get an
  * implicit alpha of 1.0 (matching WebGL `collectVertexColors`, which pads
  * 3-component colors to opaque).
@@ -3103,7 +3091,7 @@ function expandColorsToRGBA(
   return rgba;
 }
 
-// ─── Joint Matrix Buffer ─────────────────────────────────────────────────────
+// Joint matrix buffer.
 
 /**
  * Creates or updates GPU storage buffer for joint matrices.
@@ -3131,9 +3119,9 @@ function ensureJointMatricesBuffer(
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     nodeCache.jointBufferSize = byteLength;
-    // NEW-BG-CONSOLIDATION (Batch 122) — no standalone skinning BG
-    // anymore. The renderer composes the merged group 2 BG per-frame
-    // using `nodeCache.jointBuffer` directly.
+    // There is no standalone skinning bind group: the renderer composes the
+    // merged group 2 bind group per frame from `nodeCache.jointBuffer`
+    // directly.
   }
 
   // Upload joint matrices
@@ -3145,7 +3133,7 @@ function ensureJointMatricesBuffer(
 }
 
 /**
- * Audit A.5 (Batch 130) — lazily allocates the per-node prev-frame
+ * Lazily allocates the per-node prev-frame
  * joint matrix storage buffer that the WGSL velocity pass binds
  * at group(2) binding(4). Sized to match the current `jointBuffer`
  * (`prevPackedJointMatrices` length × 4 bytes); recreated when the
@@ -3173,16 +3161,16 @@ function ensurePrevJointMatricesBuffer(
   }
 }
 
-// ─── Per-Primitive Cache ─────────────────────────────────────────────────────
+// Per-primitive cache.
 
 /**
- * DP-H46b — push a primitive's generated metadata WGSL chunk + class hash
- * into the (per-Model) pipeline cache immediately before any `getPipeline*`
- * build, so the compiled module prepends the right `struct Metadata` and is
- * keyed by the right class. For non-metadata primitives this CLEARS the
- * cache's metadata state so a stale chunk from a sibling metadata primitive
- * can't leak in. Cheap (two field writes); must run before every pipeline
- * (re)build that could compile a fresh module for this primitive.
+ * Pushes a primitive's generated metadata WGSL chunk and class hash into the
+ * per-Model pipeline cache immediately before any `getPipeline*` build, so the
+ * compiled module prepends the right `struct Metadata` and is keyed by the
+ * right class. For non-metadata primitives this clears the cache's metadata
+ * state so a stale chunk from a sibling metadata primitive cannot leak in. It
+ * costs two field writes, and must run before every pipeline (re)build that
+ * could compile a fresh module for this primitive.
  *
  * @param {WebGPUModelPipelineCache} pipelineCache
  * @param {object} primCache per-primitive cache slot
@@ -3192,11 +3180,11 @@ function applyPrimitiveMetadataToPipelineCache(
   pipelineCache: PipelineCacheLike,
   primCache: PrimitiveRenderData,
 ) {
-  // GLTF-POINTS-MODE / C11-90 — sticky topology rides the same "set before
-  // every getPipeline* build" contract as the metadata/customShader chunks
-  // below. Both halves of the axis are replayed together; the decision itself
-  // was made once in preparation by `realizeModelPrimitiveTopology`. Defaults
-  // to triangle-list for records that predate the field.
+  // Sticky topology rides the same "set before every getPipeline* build"
+  // contract as the metadata/customShader chunks below. Both halves of the axis
+  // are replayed together; the decision itself is made once in preparation by
+  // `realizeModelPrimitiveTopology`. Defaults to triangle-list for records that
+  // carry no topology field.
   pipelineCache.setPrimitiveTopology(
     primCache?.topology ?? "triangle-list",
     primCache?.stripIndexFormat,
@@ -3210,9 +3198,9 @@ function applyPrimitiveMetadataToPipelineCache(
   } else {
     pipelineCache.clearMetadataWGSL();
   }
-  // PARITY-CUSTOM-SHADER-WGSL — set/clear the customShader chunk the same way so
-  // `_getOrCreateShaderModule` prepends it + keys the module by the customShader
-  // class for every pipeline (re)build of this primitive.
+  // Set/clear the customShader chunk the same way, so
+  // `_getOrCreateShaderModule` prepends it and keys the module by the
+  // customShader class for every pipeline (re)build of this primitive.
   if (defined(primCache?._customShaderWGSL)) {
     pipelineCache.setCustomShaderWGSL(
       primCache._customShaderWGSL,
@@ -3224,8 +3212,8 @@ function applyPrimitiveMetadataToPipelineCache(
 }
 
 /**
- * PARITY-CUSTOM-SHADER-WGSL — (re)build the model-level native-WGSL customShader
- * resources onto `cache._customShader`:
+ * (Re)builds the model-level native-WGSL customShader resources onto
+ * `cache._customShader`:
  *   - `chunk` / `classHash` — the generated WGSL (prepended per-primitive).
  *   - `defines` — MODEL_HAS_WGSL_CUSTOM_SHADER (+ _VERTEX) OR-mask.
  *   - `uboBuffer` — the packed uniforms UBO (refreshed every frame from the
@@ -3240,24 +3228,23 @@ function applyPrimitiveMetadataToPipelineCache(
  * @private
  */
 /**
- * PARITY-CUSTOM-SHADER-WGSL (translucencyMode slice) — a model's
- * {@link CustomShader#translucencyMode} overrides the primitive's effective
- * alpha mode, matching WebGL's {@link CustomShaderPipelineStage} (which sets
- * `alphaOptions.pass`). TRANSLUCENT forces the primitive into the blended
- * translucent pass; OPAQUE forces the opaque pass; INHERIT (the default) leaves
- * the glTF material's alpha mode untouched.
+ * A model's {@link CustomShader#translucencyMode} overrides the primitive's
+ * effective alpha mode, matching WebGL's {@link CustomShaderPipelineStage}
+ * (which sets `alphaOptions.pass`). TRANSLUCENT forces the primitive into the
+ * blended translucent pass; OPAQUE forces the opaque pass; INHERIT (the
+ * default) leaves the glTF material's alpha mode untouched.
  *
  * `baseInfo` is an immutable renderer-neutral descriptor. `matInfo` is a
  * renderer-owned view for exactly one model primitive generation. Resetting its
  * effective alpha from the base on every update makes a dynamic transition from
  * TRANSLUCENT/OPAQUE back to INHERIT correct without rebuilding the base or
- * leaking mutable state into another view. The effective alpha cascades to EVERY
- * downstream consumer — pipeline blend state, tile-batch passClass, draw-pass
+ * leaking mutable state into another view. The effective alpha cascades to every
+ * downstream consumer: pipeline blend state, tile-batch passClass, draw-pass
  * selection, and the BLEND depth-write variant.
  *
- * DEFAULT-OFF byte-identical: a model with no customShader, or one whose
- * translucencyMode is INHERIT, takes the early return so matInfo is unchanged
- * and the primitive keeps its authored alpha mode.
+ * A model with no customShader, or one whose translucencyMode is INHERIT, takes
+ * the early return, so matInfo is unchanged and the primitive keeps its
+ * authored alpha mode.
  *
  * @param {object} matInfo renderer-owned effective view
  * @param {object} baseInfo immutable authored material descriptor
@@ -3420,7 +3407,7 @@ function shouldPrepareModelCustomShaderResources(
 }
 
 /**
- * PARITY-CUSTOM-SHADER-WGSL — build the customShader group-1 bind-group entries
+ * Builds the customShader group-1 bind-group entries
  * (UBO at binding 50 + `MAX_CUSTOM_TEXTURES` texture/sampler pairs at 51+). Real
  * custom textures are resolved from the customShader's TextureManager (WebGPU
  * view); unused / not-yet-loaded slots fall back to the pipeline cache's 1×1
@@ -3466,7 +3453,7 @@ function getCustomShaderEntries(
       resource: view,
     });
   }
-  // ONE shared sampler for all custom textures.
+  // A single shared sampler serves all custom textures.
   entries.push({
     binding: CUSTOM_SHADER_SAMPLER_BINDING,
     resource: pipelineCache.defaultSampler,
@@ -3521,9 +3508,9 @@ function ensurePrimitiveCache(
     return cache.primitives[primKey];
   }
 
-  // C11-90 — THE topology realization, computed ONCE per primitive here in
-  // preparation and never revisited at draw time. It resolves the glTF draw
-  // mode to a WebGPU topology, decides the strip index format, repairs uint8
+  // The topology realization, computed once per primitive here in preparation
+  // and never revisited at draw time. It resolves the glTF draw mode to a
+  // WebGPU topology, decides the strip index format, repairs uint8
   // primitive-restart sentinels for the restart-capable modes, closes
   // LINE_LOOPs, expands TRIANGLE_FANs, and synthesizes indices for the
   // non-indexed modes that need them. Everything downstream — the index
@@ -3545,22 +3532,22 @@ function ensurePrimitiveCache(
     jointsBuffer: null,
     weightsBuffer: null,
     featureIdBuffer: null,
-    // DP-H46a — per-vertex scalar metadata buffer (EXT_structural_metadata
-    // property ATTRIBUTE), bound at vertex slot 9 when MODEL_HAS_METADATA
-    // is set. Created from `geometry.metadataData` below; owned by
+    // Per-vertex scalar metadata buffer (EXT_structural_metadata property
+    // attribute), bound at vertex slot 9 when MODEL_HAS_METADATA is set.
+    // Created from `geometry.metadataData` below; owned by
     // `WebGPUModelMetadata.ensureMetadataResources` for the GPU upload.
     _metadataBuffer: null,
-    // NEW-MODEL-METADATA-MAT3-MAT4 — true when the slot-9 buffer carries the
-    // widened 16-float MAT3/MAT4 transport (stride 64, locations 9-12).
-    // Persisted from `geometry.metadataMatTransport` below and fed to the
-    // pipeline cache's sticky state on every pipeline (re)build.
+    // True when the slot-9 buffer carries the widened 16-float MAT3/MAT4
+    // transport (stride 64, locations 9-12). Persisted from
+    // `geometry.metadataMatTransport` below and fed to the pipeline cache's
+    // sticky state on every pipeline (re)build.
     _metadataMatTransport: false,
-    // DP-H46c — property-texture bind-group entries (bindings 39..),
-    // resolved + uploaded by `ensurePropertyTextureResources`. Spliced into
-    // the merged group-1 bind group when MODEL_HAS_PROPERTY_TEXTURES is set.
+    // Property-texture bind-group entries (bindings 39..), resolved and
+    // uploaded by `ensurePropertyTextureResources`. Spliced into the merged
+    // group-1 bind group when MODEL_HAS_PROPERTY_TEXTURES is set.
     _propertyTextureResources: null,
     propertyTextureEntries: null,
-    // DP-H46d — property-table bind-group entries (bindings 44-45), resolved +
+    // Property-table bind-group entries (bindings 44-45), resolved and
     // uploaded by `ensurePropertyTableResources`. Spliced into the merged
     // group-1 bind group when MODEL_HAS_PROPERTY_TABLES is set.
     _propertyTableResources: null,
@@ -3569,8 +3556,8 @@ function ensurePrimitiveCache(
     indexCount: 0,
     indexFormat: "uint16",
     vertexCount: geometry.vertexCount,
-    // GLTF-POINTS-MODE / C11-90 — the realized topology axis. Every pipeline
-    // (re)build for this primitive feeds BOTH fields to the pipeline cache via
+    // The realized topology axis. Every pipeline (re)build for this primitive
+    // feeds both fields to the pipeline cache via
     // `applyPrimitiveMetadataToPipelineCache`.
     topology: topologyRealization.topology,
     stripIndexFormat: topologyRealization.stripIndexFormat,
@@ -3582,7 +3569,7 @@ function ensurePrimitiveCache(
   };
 
   try {
-    // Position buffer (model-space, 3 floats per vertex — NOT high/low split)
+    // Position buffer (model-space, 3 floats per vertex, not a high/low split)
     primCache.positionBuffer = createVertexBuffer(
       device,
       geometry.positionData,
@@ -3637,13 +3624,14 @@ function ensurePrimitiveCache(
         geometry.color0ComponentType,
         geometry.color0Normalized,
       );
-      // DP-H37 — the slot-4 vertex layout is float32x4 (16-byte stride), but a
-      // glTF COLOR_0 accessor may be VEC3 (12-byte stride). `normalizeColorData`
-      // converts the component TYPE but preserves the component COUNT, so a VEC3
-      // source produces a 12-byte-stride buffer that the GPU reads at a 16-byte
-      // stride → progressively shifted, corrupted vertex colors. Widen RGB→RGBA
-      // (alpha = 1.0) so the stride matches the layout, mirroring the edge
-      // emitter's path; `expandColorsToRGBA` is a no-op for VEC4 sources.
+      // The slot-4 vertex layout is float32x4 (16-byte stride), but a glTF
+      // COLOR_0 accessor may be VEC3 (12-byte stride). `normalizeColorData`
+      // converts the component type but preserves the component count, so a
+      // VEC3 source produces a 12-byte-stride buffer that the GPU reads at a
+      // 16-byte stride, giving progressively shifted, corrupted vertex colors.
+      // Widen RGB→RGBA (alpha = 1.0) so the stride matches the layout,
+      // mirroring the edge emitter's path; `expandColorsToRGBA` is a no-op for
+      // VEC4 sources.
       // Component count is detected from the buffer length (the geometry's
       // `color0ComponentCount` is not plumbed through the WebGPU path).
       const color0Components =
@@ -3687,7 +3675,7 @@ function ensurePrimitiveCache(
       );
     }
 
-    // Audit B.2 (Batch 130) — `_FEATURE_ID_0` (b3dm `_BATCHID`) vertex
+    // `_FEATURE_ID_0` (b3dm `_BATCHID`) vertex
     // buffer. Required for per-feature pick / per-feature styling on
     // tilesets that encode feature IDs as a vertex attribute (the
     // dominant b3dm case). Without this slot bound, the FS pick path
@@ -3702,11 +3690,11 @@ function ensurePrimitiveCache(
       );
     }
 
-    // DP-H46a — EXT_structural_metadata property-ATTRIBUTE vertex buffer
-    // (slot 9). `geometry.metadataData` is the per-vertex scalar resolved
-    // at the extractPrimitiveGeometry call site; the GPU upload is owned by
-    // `WebGPUModelMetadata.ensureMetadataResources` (parallel to how the
-    // featureId path splits buffer ownership). Only present when the model
+    // EXT_structural_metadata property-attribute vertex buffer (slot 9).
+    // `geometry.metadataData` is the per-vertex scalar resolved at the
+    // extractPrimitiveGeometry call site; the GPU upload is owned by
+    // `WebGPUModelMetadata.ensureMetadataResources`, parallel to how the
+    // featureId path splits buffer ownership. Only present when the model
     // has structural metadata mapping to this primitive — otherwise
     // `geometry.metadataData` is undefined and slot 9 is omitted from the
     // layout, keeping non-metadata models byte-identical.
@@ -3717,10 +3705,10 @@ function ensurePrimitiveCache(
         geometry.metadataData as Float32Array,
       );
     }
-    // DP-H46c — property-TEXTURE GPU resources. Upload each unique physical
-    // property texture (sourced from the glTF texture reader, like PBR
-    // textures) + the shared property sampler, producing the bind-group entries
-    // spliced into group 1 below. Only when the primitive maps ≥1 property
+    // Property-texture GPU resources. Upload each unique physical property
+    // texture (sourced from the glTF texture reader, like PBR textures) plus
+    // the shared property sampler, producing the bind-group entries spliced
+    // into group 1 below. Only when the primitive maps at least one property
     // texture; non-property-texture models leave `propertyTextureEntries` null
     // and stay byte-identical.
     if (
@@ -3767,8 +3755,8 @@ function ensurePrimitiveCache(
         );
       }
     }
-    // DP-H46d — property-TABLE GPU resources. Re-upload the loader's retained
-    // packed RGBA8 bytes into ONE rgba8unorm GPUTexture (rows = properties,
+    // Property-table GPU resources. Re-upload the loader's retained packed
+    // RGBA8 bytes into a single rgba8unorm GPUTexture (rows = properties,
     // columns = features), producing the (texture, sampler) bind-group entries
     // spliced into group 1 below. Only when the primitive maps a GPU-compatible
     // property table via an attribute feature-ID set; non-property-table models
@@ -3786,12 +3774,12 @@ function ensurePrimitiveCache(
         );
       }
     }
-    // DP-H46b/c — persist the generated WGSL chunk + class hash on the primitive
-    // cache so every pipeline (re)build for this primitive (color / pick /
-    // depth-write / velocity / classification) prepends the same chunk and keys
-    // its module by the same class. The renderer feeds them to the pipeline
-    // cache via `setMetadataWGSL` immediately before each `getPipeline*` call
-    // below. Persisted when the primitive has EITHER attributes or textures.
+    // Persist the generated WGSL chunk and class hash on the primitive cache so
+    // every pipeline (re)build for this primitive (color / pick / depth-write /
+    // velocity / classification) prepends the same chunk and keys its module by
+    // the same class. The renderer feeds them to the pipeline cache via
+    // `setMetadataWGSL` immediately before each `getPipeline*` call below.
+    // Persisted when the primitive has either attributes or textures.
     if (
       (geometry.hasMetadata ||
         geometry.hasPropertyTextures ||
@@ -3800,34 +3788,31 @@ function ensurePrimitiveCache(
     ) {
       primCache._metadataWGSL = geometry.metadataWGSL;
       primCache._metadataClassHash = geometry.metadataClassHash | 0;
-      // NEW-MODEL-METADATA-MAT3-MAT4 — persist the widened-transport flag so
-      // every pipeline (re)build for this primitive feeds the pipeline cache's
-      // sticky `metadataMatTransport` state alongside the chunk.
+      // Persist the widened-transport flag so every pipeline (re)build for this
+      // primitive feeds the pipeline cache's sticky `metadataMatTransport`
+      // state alongside the chunk.
       primCache._metadataMatTransport = geometry.metadataMatTransport === true;
     }
 
-    // GLTF-POINTS-MODE / C11-90 — the realized index list. `realizedIndexData`
-    // is the source array BY REFERENCE whenever nothing had to change, so the
-    // TRIANGLES and already-native paths allocate nothing here.
+    // The realized index list. `realizedIndexData` is the source array by
+    // reference whenever nothing had to change, so the TRIANGLES and
+    // already-native paths allocate nothing here.
     //
-    // The non-indexed synthesis this replaces was introduced for POINTS and now
-    // covers every mode except TRIANGLES. Rationale (unchanged): WebGPU
-    // validates a non-indexed `draw(vertexCount)` CPU-side against EVERY
+    // Index synthesis covers every non-indexed mode except TRIANGLES, because
+    // WebGPU validates a non-indexed `draw(vertexCount)` CPU-side against every
     // vertex-step buffer's bound size, and the missing-attribute slots
     // (normal/tangent/uv/joints/weights on a typical point cloud) bind the
-    // pipeline cache's 1-element default buffers — fine for `drawIndexed`,
-    // whose out-of-range vertex fetches clamp to zero via robust access
-    // (the Batch 245 BoxInstancedNoNormals precedent), but a hard
-    // validation error for `draw()` ("Vertex range requires a larger
-    // buffer"). Sequential indices are GPU-equivalent for every topology.
-    // Non-indexed TRIANGLES primitives keep the historical draw() path
-    // untouched; they share the same validation gap when attributes are
-    // missing — tracked as follow-up, not papered over here.
+    // pipeline cache's 1-element default buffers. That is fine for
+    // `drawIndexed`, whose out-of-range vertex fetches clamp to zero via robust
+    // access, but a hard validation error for `draw()` ("Vertex range requires
+    // a larger buffer"). Sequential indices are GPU-equivalent for every
+    // topology. Non-indexed TRIANGLES primitives keep the plain draw() path and
+    // share the same validation gap when attributes are missing.
     //
-    // The realized list is written to the geometry VIEW (never the cached base
-    // descriptor — `resetPrimitiveGeometryView` restores these three fields from
-    // the base on every reuse) so downstream readers see the list that was
-    // actually uploaded.
+    // The realized list is written to the geometry view, never to the cached
+    // base descriptor — `resetPrimitiveGeometryView` restores these three
+    // fields from the base on every reuse — so downstream readers see the list
+    // that was actually uploaded.
     const realizedIndexData = topologyRealization.indexData;
     if (defined(realizedIndexData)) {
       geometry.indexData = realizedIndexData;
@@ -3839,14 +3824,13 @@ function ensurePrimitiveCache(
 
       primCache.indexFormat = topologyRealization.indexFormat;
       primCache.indexCount = topologyRealization.indexCount;
-      // WebGPU requires `writeBuffer` source byteLength to be a multiple
-      // of 4. Uint16 index buffers with an odd index count produce
-      // `byteLength % 4 === 2`, which the original code passed straight
-      // to `writeBuffer` and crashed under glTF models that have one —
-      // CZML Model Articulations is one such asset. Pad the buffer +
-      // source to the nearest 4 bytes; the extra slot is never read
-      // because `indexCount` stays at the geometry's authoritative
-      // value (Session 65 Batch 5, 2026-05-11).
+      // WebGPU requires the `writeBuffer` source byteLength to be a
+      // multiple of 4. Uint16 index buffers with an odd index count
+      // produce `byteLength % 4 === 2`, which `writeBuffer` rejects, and
+      // real glTF assets have them — CZML Model Articulations is one.
+      // Pad both the buffer and the source to the nearest 4 bytes; the
+      // extra slot is never read, because `indexCount` stays at the
+      // geometry's authoritative value.
       const indexByteLength = realizedIndexData.byteLength;
       const alignedIndexByteLength = (indexByteLength + 3) & ~3;
       primCache.indexBuffer = device.createBuffer({
@@ -3869,27 +3853,27 @@ function ensurePrimitiveCache(
       }
     }
 
-    // Pipeline (varies by alpha mode and double-sided)
-    // Batch 174 — B.4 select the materialDefines bitmask based on the
-    // primitive's material flags. Track the value on primCache so
-    // subsequent pipeline lookups (pick, velocity, classification,
-    // depth-write) stay consistent across passes for this primitive.
-    // This same value is also used to filter the texture-entries array
-    // and select the matching per-variant materialBGL when building
-    // the merged group 1 bind group below.
-    // Session 62 NEW-VR-VERTEX-BUFFER-VARIANT — primitive's TEXCOORD_1
-    // attribute presence drives MODEL_HAS_TEXCOORD_1. When unset, the
-    // pipeline omits vertex buffer slot 7 (8-slot layout, fitting Edge's
-    // adapter cap of `maxVertexBuffers = 8`); when set, the layout
-    // includes slot 7 (9 slots, requires adapter ≥ 9).
+    // Pipeline (varies by alpha mode and double-sided).
+    // Select the materialDefines bitmask from the primitive's material
+    // flags. The value is tracked on primCache so subsequent pipeline
+    // lookups (pick, velocity, classification, depth-write) stay
+    // consistent across passes for this primitive. It also filters the
+    // texture-entries array and selects the matching per-variant
+    // materialBGL when building the merged group 1 bind group below.
     //
-    // Session 65 follow-up — same treatment for slot 8 (featureId0). With
-    // both flags off (the common case for standard glTF models without
-    // multi-UV or batched feature IDs) the pipeline lands at 7 slots,
-    // leaving headroom on Edge's adapter. The implicit-range synthesis
-    // above sets `geometry.hasFeatureId0 = true` when a batched 3D Tile
-    // expects feature IDs but the glTF accessor is missing, so this read
-    // sees the final, post-synthesis value.
+    // The primitive's TEXCOORD_1 attribute presence drives
+    // MODEL_HAS_TEXCOORD_1. When unset, the pipeline omits vertex buffer
+    // slot 7 (an 8-slot layout, fitting Edge's adapter cap of
+    // `maxVertexBuffers = 8`); when set, the layout includes slot 7
+    // (9 slots, requiring an adapter with 9 or more).
+    //
+    // Slot 8 (featureId0) works the same way. With both flags off — the
+    // common case for standard glTF models without multi-UV or batched
+    // feature IDs — the pipeline lands at 7 slots, leaving headroom on
+    // Edge's adapter. The implicit-range synthesis above sets
+    // `geometry.hasFeatureId0 = true` when a batched 3D Tile expects
+    // feature IDs but the glTF accessor is missing, so this read sees the
+    // final, post-synthesis value.
     let materialDefines = computeMaterialDefines(matInfo.materialFlags);
     if (geometry.hasTexCoord1) {
       materialDefines |= ShaderDefine.MODEL_HAS_TEXCOORD_1;
@@ -3897,54 +3881,56 @@ function ensurePrimitiveCache(
     if (geometry.hasFeatureId0) {
       materialDefines |= ShaderDefine.MODEL_HAS_FEATURE_ID_0;
     }
-    // DP-H46a — presence gate. Flip MODEL_HAS_METADATA only when the
-    // primitive actually carries a property-ATTRIBUTE scalar (resolved into
-    // `geometry.metadataData` upstream + uploaded above). This adds vertex
-    // slot 9 to the layout + activates the WGSL metadata ifdef blocks. When
+    // Presence gate. Flip MODEL_HAS_METADATA only when the primitive
+    // actually carries a property-attribute scalar (resolved into
+    // `geometry.metadataData` upstream and uploaded above). That adds vertex
+    // slot 9 to the layout and activates the WGSL metadata ifdef blocks. When
     // unset (the common case), the bit is absent, the layout omits slot 9,
     // the WGSL preprocessor strips every metadata block, and the model is
-    // byte-identical to the pre-DP-H46a path.
+    // byte-identical to a build without metadata support.
     if (geometry.hasMetadata && defined(primCache._metadataBuffer)) {
       materialDefines |= ShaderDefine.MODEL_HAS_METADATA;
     }
-    // DP-H46c — presence gate. Flip MODEL_HAS_PROPERTY_TEXTURES only when the
-    // primitive actually maps ≥1 GPU-compatible property texture AND its
-    // bind-group entries resolved. This selects the property-texture materialBGL
-    // variant (extra sampled-texture bindings 39..) + activates the generated
-    // chunk's binding/sampling code. Independent of MODEL_HAS_METADATA (a model
-    // can have property textures without property attributes, and vice versa).
+    // Presence gate. Flip MODEL_HAS_PROPERTY_TEXTURES only when the primitive
+    // maps at least one GPU-compatible property texture and its bind-group
+    // entries resolved. That selects the property-texture materialBGL variant
+    // (extra sampled-texture bindings 39..) and activates the generated chunk's
+    // binding/sampling code. It is independent of MODEL_HAS_METADATA: a model
+    // can have property textures without property attributes, and vice versa.
     // When unset (the common case), the bit is absent, the minimal materialBGL
-    // is used, and the model is byte-identical to the pre-DP-H46c path.
+    // is used, and the model is byte-identical to a build without property
+    // textures.
     if (
       geometry.hasPropertyTextures &&
       defined(primCache.propertyTextureEntries)
     ) {
       materialDefines |= ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES;
     }
-    // DP-H46d — presence gate. Flip MODEL_HAS_PROPERTY_TABLES only when the
-    // primitive maps a GPU-compatible property table AND its bind-group entries
-    // resolved. This selects the property-table materialBGL variant (extra
-    // sampled-texture binding 44 + sampler 45) + activates the generated chunk's
-    // textureLoad code. Independent of the attribute/texture metadata bits. When
-    // unset (the common case), the bit is absent, the minimal materialBGL is
-    // used, and the model is byte-identical to the pre-DP-H46d path.
+    // Presence gate. Flip MODEL_HAS_PROPERTY_TABLES only when the primitive
+    // maps a GPU-compatible property table and its bind-group entries
+    // resolved. That selects the property-table materialBGL variant (extra
+    // sampled-texture binding 44 and sampler 45) and activates the generated
+    // chunk's textureLoad code. It is independent of the attribute and texture
+    // metadata bits. When unset (the common case), the bit is absent, the
+    // minimal materialBGL is used, and the model is byte-identical to a build
+    // without property tables.
     if (geometry.hasPropertyTables && defined(primCache.propertyTableEntries)) {
       materialDefines |= ShaderDefine.MODEL_HAS_PROPERTY_TABLES;
     }
-    // PARITY-CUSTOM-SHADER-WGSL — OR in the model-level customShader defines
-    // (MODEL_HAS_WGSL_CUSTOM_SHADER + optional _VERTEX) + stash the generated
-    // chunk/hash on the primitive so every pipeline (re)build for this primitive
-    // prepends it and keys its module by the customShader class. When the model
-    // has no native-WGSL customShader, `cache._customShader` is null → no bits,
-    // no chunk, byte-identical.
+    // OR in the model-level customShader defines (MODEL_HAS_WGSL_CUSTOM_SHADER
+    // plus an optional _VERTEX) and stash the generated chunk and hash on the
+    // primitive, so every pipeline (re)build for this primitive prepends it and
+    // keys its module by the customShader class. When the model has no
+    // native-WGSL customShader, `cache._customShader` is null: no bits, no
+    // chunk, byte-identical.
     if (defined(cache._customShader)) {
       materialDefines |= cache._customShader.defines;
       primCache._customShaderWGSL = cache._customShader.chunk;
       primCache._customShaderClassHash = cache._customShader.classHash | 0;
     }
     primCache.materialDefines = materialDefines;
-    // DP-H46b — feed the generated metadata chunk + class hash to the pipeline
-    // cache before the build (no-op clear for non-metadata primitives).
+    // Feed the generated metadata chunk and class hash to the pipeline cache
+    // before the build; this is a no-op clear for non-metadata primitives.
     applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache);
     primCache.pipeline = pipelineCache.getPipeline(
       matInfo.alphaMode,
@@ -3952,9 +3938,8 @@ function ensurePrimitiveCache(
       materialDefines,
     );
 
-    // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — for translucent BLEND
-    // primitives we eagerly cache the depth-write variant too. A 3D-tile
-    // model whose content carries this primitive may set
+    // Translucent BLEND primitives eagerly cache the depth-write variant
+    // too. A 3D-tile model whose content carries this primitive may set
     // `depthForTranslucentClassification = true` on its WebGPUDrawCommand
     // (per `Cesium3DTile.update`); when that flag is set the command will
     // bind this variant in `WebGPUDrawCommand.execute()` so the tile
@@ -4007,11 +3992,11 @@ function ensurePrimitiveCache(
     const occlusionSampler = pipelineCache.getSamplerForReader(
       matInfo.occlusionTextureReader,
     );
-    // Cache per-binding views + samplers on the prim cache so the
+    // Cache per-binding views and samplers on the prim cache so the
     // texture bind group can be rebuilt cheaply when the SceneRenderer's
-    // refraction capture (Batch 107) publishes a new
-    // `_refractionSceneView`. Without this cache the rebuild would have
-    // to re-create the views every frame from `textures.*`.
+    // refraction capture publishes a new `_refractionSceneView`. Without
+    // this cache the rebuild would have to re-create the views every
+    // frame from `textures.*`.
     primCache.textureViews = {
       baseColor: pipelineCache.getDefaultTextureView(textures.baseColor),
       normal: pipelineCache.getDefaultTextureView(textures.normal),
@@ -4056,12 +4041,11 @@ function ensurePrimitiveCache(
       occlusion: occlusionSampler || defSampler,
       def: defSampler,
     };
-    // NEW-BG-CONSOLIDATION (Batch 122) — track texture entries on the
-    // primCache. The full merged group 1 bind group is built per-frame
-    // at the draw command emission site; this is just the cached
-    // texture portion.
-    // Batch 174 — entries are now filtered by `primCache.materialDefines`:
-    // basic variant emits bindings 2-11 only; full variant emits 2-25.
+    // Track texture entries on the primCache. The full merged group 1
+    // bind group is built per frame at the draw command emission site;
+    // this is just the cached texture portion.
+    // Entries are filtered by `primCache.materialDefines`: the basic
+    // variant emits bindings 2-11 only, the full variant emits 2-25.
     // The matching per-variant `materialBGL` is selected at bind-group
     // construction time via `pipelineCache.getOrCreateMaterialBGL(materialDefines)`.
     primCache.textureEntries = getModelTextureEntries(
@@ -4090,22 +4074,19 @@ function ensurePrimitiveCache(
 }
 
 /**
- * NEW-BG-CONSOLIDATION (Batch 122) — returns the texture portion of the
- * merged group 1 bind group as an `entries[]` array. Bindings 0-1
- * (material+light UBOs) and 26-32 (featureId) are spliced in at the
- * renderer's per-frame draw-command emission site.
+ * Returns the texture portion of the merged group 1 bind group as an
+ * `entries[]` array. Bindings 0-1 (material+light UBOs) and 26-32 (featureId)
+ * are spliced in at the renderer's per-frame draw-command emission site.
+ * Texture binding numbers start at 2 because slots 0-1 are occupied by the
+ * merged material/light UBOs.
  *
- * Was the standalone "texture bind group" prior to NEW-BG-CONSOLIDATION;
- * binding numbers are shifted by +2 because slots 0-1 are now occupied
- * by the merged material/light UBOs.
- *
- * Batch 174 — KHR materialBGL split. The texture entries for bindings
- * 12-25 are gated on the variant's `materialDefines` mask: basic
- * variant (`materialDefines = 0`) emits PBR bindings 2-11 only; full
- * variant (`MODEL_HAS_KHR_TEXTURES` set) emits 2-25. The returned
- * array MUST match the layout of the per-variant `materialBGL`
- * fetched via `pipelineCache.getOrCreateMaterialBGL(materialDefines)`,
- * or `device.createBindGroup` will reject the entry list.
+ * The texture entries for bindings 12-25 are gated on the variant's
+ * `materialDefines` mask: the basic variant (`materialDefines = 0`) emits PBR
+ * bindings 2-11 only, while the full variant (`MODEL_HAS_KHR_TEXTURES` set)
+ * emits 2-25. The returned array must match the layout of the per-variant
+ * `materialBGL` fetched via
+ * `pipelineCache.getOrCreateMaterialBGL(materialDefines)`, or
+ * `device.createBindGroup` will reject the entry list.
  *
  * @private
  * @param {object} primCache
@@ -4139,8 +4120,8 @@ function getModelTextureEntries(
   ];
 
   // 12-25: KHR — gated on materialDefines. Emitted only when the
-  // matching gate define is set. Today every KHR slot shares a single
-  // gate (`MODEL_HAS_KHR_TEXTURES`); when the WGSL ifdefs are split
+  // matching gate define is set. Every KHR slot shares a single gate
+  // (`MODEL_HAS_KHR_TEXTURES`); once the WGSL ifdefs are split
   // per-extension this branching mirrors the manifest in the pipeline
   // cache so each KHR group's slots only emit when its specific gate
   // bit is in the variant.
@@ -4170,8 +4151,8 @@ function getModelTextureEntries(
     );
   }
 
-  // 39..: DP-H46c — property-texture block. The renderer resolved + padded
-  // these to the full MAX_PROPERTY_TEXTURES slot count (real textures + 1×1
+  // 39..: property-texture block. The renderer resolved and padded these to
+  // the full MAX_PROPERTY_TEXTURES slot count (real textures plus 1×1
   // placeholders) in `ensurePrimitiveCache`. Emitted only when the variant
   // includes MODEL_HAS_PROPERTY_TEXTURES so non-property-texture models keep
   // the minimal entry list matching their materialBGL.
@@ -4184,7 +4165,7 @@ function getModelTextureEntries(
     }
   }
 
-  // 44-45: DP-H46d — property-table block (texture + sampler). Emitted only when
+  // 44-45: property-table block (texture + sampler). Emitted only when
   // the variant includes MODEL_HAS_PROPERTY_TABLES so non-property-table models
   // keep the minimal entry list matching their materialBGL.
   if (
@@ -4196,7 +4177,7 @@ function getModelTextureEntries(
     }
   }
 
-  // 50+: PARITY-CUSTOM-SHADER-WGSL — customShader UBO + custom texture pairs.
+  // 50+: customShader UBO plus custom texture pairs.
   // Emitted only when the variant includes MODEL_HAS_WGSL_CUSTOM_SHADER so
   // non-customShader models keep the minimal entry list matching their
   // materialBGL. `customShaderEntries` is built per-frame by
@@ -4214,16 +4195,15 @@ function getModelTextureEntries(
 }
 
 /**
- * NEW-BG-CONSOLIDATION (Batch 122) — builds the merged group 1 bind
- * group. Per-frame allocation; cheap because the entry objects are
- * small and the underlying GPU resources are reused.
+ * Builds the merged group 1 bind group. Per-frame allocation; cheap because the
+ * entry objects are small and the underlying GPU resources are reused.
  *
- * Batch 174 (B.4 KHR materialBGL split) — the layout is now per-variant.
- * Caller passes the primitive's `materialDefines` mask; this function
- * fetches (or builds, on first use) the matching `GPUBindGroupLayout`
- * via `pipelineCache.getOrCreateMaterialBGL(materialDefines)`. The
- * `textureEntries` array MUST already be filtered to match the layout
- * — `getModelTextureEntries` honors the same mask.
+ * The layout is per-variant. The caller passes the primitive's
+ * `materialDefines` mask, and this function fetches (or builds, on first use)
+ * the matching `GPUBindGroupLayout` via
+ * `pipelineCache.getOrCreateMaterialBGL(materialDefines)`. The `textureEntries`
+ * array must already be filtered to match the layout;
+ * `getModelTextureEntries` honors the same mask.
  *
  * @private
  */
@@ -4238,13 +4218,13 @@ function buildMergedMaterialBindGroup(
   frameState: CesiumFrameState,
 ) {
   return device.createBindGroup({
-    // C9-17 Slice A — label group 1 so the settled-frame bind-group probe
-    // (and the API-instrumentation lane) can attribute merged-material creates
-    // by label, exactly like the Batch-665 group-2 instance cache.
+    // Label group 1 so the settled-frame bind-group probe, and the
+    // API-instrumentation lane, can attribute merged-material creates by
+    // label, exactly like the group-2 instance cache.
     label: "Model merged material bind group",
     layout: pipelineCache.getOrCreateMaterialBGL(materialDefines | 0),
     entries: [
-      // C11-195 — binding 1 (light) is gone from this group; it is a per
+      // Binding 1 (light) does not belong to this group: it is a per
       // (model, view) block bound from the group-0 arena. Every resource left
       // here is per-primitive, which is what keeps this bind group's identity
       // stable across frames and its cache at a 100% hit rate.
@@ -4257,7 +4237,7 @@ function buildMergedMaterialBindGroup(
 }
 
 /**
- * Audit A.9 (Batch 130) -- placeholder IBL bind-group entries (33-36).
+ * Placeholder IBL bind-group entries (33-36).
  * Used when a model has no `imageBasedLighting` configured or its
  * source environment cubemap hasn't generated yet. The defaults
  * produce mid-grey ambient sampling so the FS doesn't have to gate
@@ -4278,7 +4258,7 @@ function defaultIBLEntries(
 }
 
 /**
- * NEW-MODEL-IBL-BRDF-LUT (Batch 287) — bindings 37/38 (split-sum
+ * Bindings 37/38 (split-sum
  * environment BRDF integration LUT + non-filtering sampler). The LUT is
  * device-global (generated once by `BrdfLutGenerator`); the WebGPU
  * generator stores its view + sampler on `_colorTexture` (see
@@ -4307,12 +4287,11 @@ function brdfLutEntries(
 }
 
 /**
- * C9-17 Slice A — resolved per-model IBL identities. These five identities
- * fully determine the group-1 IBL bind-group entries (bindings 33-38). A stable
- * identity tuple lets {@link getOrCreateModelIBLEntries} hand back a
- * byte-identical entries array whose OBJECT IDENTITY is stable across settled
- * frames, which in turn lets the merged-material bind-group cache key on a
- * single array reference (invariant 2).
+ * Resolved per-model IBL identities. These five identities fully determine the
+ * group-1 IBL bind-group entries (bindings 33-38). A stable identity tuple lets
+ * {@link getOrCreateModelIBLEntries} hand back a byte-identical entries array
+ * whose object identity is stable across settled frames, which in turn lets the
+ * merged-material bind-group cache key on a single array reference.
  * @private
  */
 interface ResolvedModelIBL {
@@ -4324,19 +4303,18 @@ interface ResolvedModelIBL {
 }
 
 /**
- * Audit A.9 (Batch 130) -- resolves the per-model IBL identities from the
- * model's `imageBasedLighting` cache + environment-map manager, falling back to
- * the pipeline cache's neutral placeholders when the prefilter hasn't run yet.
+ * Resolves the per-model IBL identities from the model's `imageBasedLighting`
+ * cache and environment-map manager, falling back to the pipeline cache's
+ * neutral placeholders when the prefilter has not run yet.
  * `WebGPUImageBasedLighting.update` populates `_webgpuSpecularView`,
  * `_webgpuDiffuseView`, `_webgpuSampler`, `_webgpuSHBuffer` on the model's IBL
- * instance once the radiance + irradiance prefilter has generated mips.
+ * instance once the radiance and irradiance prefilter has generated mips.
  *
- * C9-17 Slice A refactor: this was `buildModelIBLEntries` (which allocated a
- * fresh array every frame and returned null on the placeholder path). It now
- * returns the resolved IDENTITIES so the memoizing wrapper can compare them and
- * keep the entries-array identity stable. The neutral-placeholder path returns
- * the same bindings `defaultIBLEntries` produces (bindings 33/34 both point at
- * `defaultIBLCubemapView`), so the built entries are byte-identical to before.
+ * Returning the resolved identities rather than a freshly built entries array
+ * is what lets the memoizing wrapper compare them and keep the entries-array
+ * identity stable. The neutral-placeholder path returns the same bindings
+ * `defaultIBLEntries` produces (bindings 33/34 both point at
+ * `defaultIBLCubemapView`).
  * @private
  */
 function resolveModelIBL(
@@ -4344,8 +4322,9 @@ function resolveModelIBL(
   pipelineCache: PipelineCacheLike,
   frameState: CesiumFrameState,
 ): ResolvedModelIBL {
-  // NEW-MODEL-IBL-BRDF-LUT (Batch 287) — binding 37 split-sum environment BRDF
-  // LUT; flips ONCE from the 1x1 placeholder to the generated table (trap #3).
+  // Binding 37 is the split-sum environment BRDF LUT. It flips exactly once,
+  // from the 1x1 placeholder to the generated table, so any memo keyed on the
+  // IBL identities has to include it or that upgrade is never observed.
   const lutTex = (
     frameState?.brdfLutGenerator as
       | { _colorTexture?: { _webgpuTextureView?: GPUTextureView | null } }
@@ -4362,8 +4341,7 @@ function resolveModelIBL(
   let sampler = ibl?._webgpuSampler;
   let shBuffer = ibl?._webgpuSHBuffer;
 
-  // NEW-MODEL-PBR-DIRECT-LIGHT-IBL-PARITY D1 (Batch 346) -- precedence
-  // fix mirroring WebGL's ImageBasedLightingPipelineStage:
+  // Source precedence, mirroring WebGL's ImageBasedLightingPipelineStage:
   //   specular = explicit specularEnvironmentMaps if configured,
   //              else environmentMapManager.radianceCubeMap,
   //              else the (black) default.
@@ -4371,16 +4349,15 @@ function resolveModelIBL(
   //              else environmentMapManager irradiance / SH,
   //              else the (low-gray) default.
   //
-  // Previously the env-manager was used ONLY when the explicit
-  // `_webgpuSpecularView` / `_webgpuDiffuseView` were *undefined*. But
-  // `WebGPUImageBasedLighting.update` always resolves those to its 1x1
-  // BLACK specular + 30/255 GRAY diffuse PLACEHOLDERS when no explicit
-  // `specularEnvironmentMaps` is configured -- so the env-manager's real
-  // atmosphere-derived IBL was being shadowed by the placeholder. That
-  // left at-rest models with a flat gray ambient + no sky reflection,
-  // the dominant cause of the WebGPU-vs-WebGL ~7.6% luminance / ~9%
-  // blue-tint gap. We now treat the placeholder as "no explicit source"
-  // and prefer the env-manager exactly like WebGL.
+  // Presence of `_webgpuSpecularView` / `_webgpuDiffuseView` is not a usable
+  // test for "an explicit source is configured".
+  // `WebGPUImageBasedLighting.update` always resolves those to its 1x1 black
+  // specular and 30/255 gray diffuse placeholders when no explicit
+  // `specularEnvironmentMaps` is configured, so keying on definedness would
+  // let the placeholder shadow the env-manager's real atmosphere-derived IBL,
+  // leaving at-rest models with a flat gray ambient and no sky reflection.
+  // The placeholder must therefore count as "no explicit source", so that the
+  // env-manager wins exactly as it does on WebGL.
   const hasExplicitSpecular =
     defined(ibl?._specularEnvironmentCubeMap) &&
     (ibl._webgpuMaxMipLevel ?? 0) > 0;
@@ -4390,12 +4367,11 @@ function resolveModelIBL(
   if (defined(envManager)) {
     if (!hasExplicitDiffuse && defined(envManager._webgpuIBLDiffuseView)) {
       diffuseView = envManager._webgpuIBLDiffuseView;
-      // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- prefer the
-      // env-manager's atmosphere-derived SH-L2 coefficients, matching
-      // WebGL's czm_sphericalHarmonics diffuse-IBL path. The SH buffer's
-      // own `control.w` gate makes the shader evaluate SH instead of
-      // sampling the irradiance cubemap (which over-brightened the diffuse
-      // by ~20-30%, worst in blue). The irradiance cubemap above stays
+      // Prefer the env-manager's atmosphere-derived SH-L2 coefficients,
+      // matching WebGL's czm_sphericalHarmonics diffuse-IBL path. The SH
+      // buffer's own `control.w` gate makes the shader evaluate SH instead
+      // of sampling the irradiance cubemap, which over-brightens the diffuse
+      // by roughly 20-30%, worst in blue. The irradiance cubemap above stays
       // bound as the fallback for frames before the SH projection has run.
       if (defined(envManager._webgpuSHBuffer)) {
         shBuffer = envManager._webgpuSHBuffer;
@@ -4416,7 +4392,8 @@ function resolveModelIBL(
   if (!defined(specularView) || !defined(diffuseView) || !defined(sampler)) {
     // Neutral placeholder path — mid-grey ambient sampling so the FS doesn't
     // have to gate the cubemap sample on an explicit "iblEnabled" flag. Mirrors
-    // `defaultIBLEntries` (bindings 33 AND 34 → defaultIBLCubemapView).
+    // `defaultIBLEntries`, where bindings 33 and 34 both point at
+    // `defaultIBLCubemapView`.
     return {
       diffuseView: pipelineCache.defaultIBLCubemapView,
       specularView: pipelineCache.defaultIBLCubemapView,
@@ -4425,11 +4402,11 @@ function resolveModelIBL(
       brdfLutView,
     };
   }
-  // SH falls back to the cache's default (zeros + inactive flag) when
-  // neither the explicit IBL nor the env manager publishes one. The
-  // shader gates on `sh.control.w` so the default just makes the
-  // diffuse path use the irradiance cubemap (which is what we want
-  // when the env manager is the source).
+  // SH falls back to the cache's default (zeros plus an inactive flag) when
+  // neither the explicit IBL nor the env manager publishes one. The shader
+  // gates on `sh.control.w`, so the default simply makes the diffuse path use
+  // the irradiance cubemap, which is the correct source when the env manager
+  // is driving.
   const shResolved = defined(shBuffer)
     ? shBuffer
     : pipelineCache.defaultSHBuffer;
@@ -4444,8 +4421,8 @@ function resolveModelIBL(
 
 /**
  * Builds the group-1 IBL bind-group entries (bindings 33-38) from resolved
- * identities. Binding order + resources are byte-identical to the historical
- * `buildModelIBLEntries` / `defaultIBLEntries` + `brdfLutEntries` output.
+ * identities. Binding order and resources match what `defaultIBLEntries` plus
+ * `brdfLutEntries` produce.
  * @private
  */
 function buildIBLEntriesFromResolved(
@@ -4463,14 +4440,13 @@ function buildIBLEntriesFromResolved(
 }
 
 /**
- * C9-17 Slice A — memoized per-model IBL entries. Resolves the five IBL
- * identities every frame (cheap object reads) but returns the SAME entries
- * array while they are unchanged, so the merged-material bind-group cache can
- * treat the array reference as a single revision token (invariant 2). Trap
- * #2/#3: without this memo the merged-material cache would miss every settled
- * frame on a fresh array and "work" while still creating just as many bind
- * groups; the memo also carries the brdf-LUT + env-manager view flips so a
- * placeholder→real upgrade rebuilds exactly once.
+ * Memoized per-model IBL entries. Resolves the five IBL identities every frame
+ * (cheap object reads) but returns the same entries array while they are
+ * unchanged, so the merged-material bind-group cache can treat the array
+ * reference as a single revision token. Without the memo that cache would miss
+ * on a fresh array every settled frame and appear to work while still creating
+ * just as many bind groups. The memo also carries the brdf-LUT and env-manager
+ * view flips, so a placeholder-to-real upgrade rebuilds exactly once.
  * @private
  */
 function getOrCreateModelIBLEntries(
@@ -4504,12 +4480,11 @@ function getOrCreateModelIBLEntries(
 }
 
 /**
- * NEW-BG-CONSOLIDATION (Batch 122) — builds the merged group 2 bind
- * group (7 entries: current joint/morph/instance data plus their previous-
- * frame counterparts). Falls through to default placeholder buffers
- * when a primitive has no skinning / no morph targets / no instancing
- * — the shader gates on FLAG_HAS_SKINNING / FLAG_HAS_MORPH_TARGETS /
- * FLAG_HAS_INSTANCING so placeholder contents are never sampled.
+ * Builds the merged group 2 bind group (7 entries: current joint/morph/instance
+ * data plus their previous-frame counterparts). Falls through to default
+ * placeholder buffers when a primitive has no skinning, no morph targets or no
+ * instancing — the shader gates on FLAG_HAS_SKINNING / FLAG_HAS_MORPH_TARGETS /
+ * FLAG_HAS_INSTANCING, so placeholder contents are never sampled.
  *
  * @private
  */
@@ -4605,29 +4580,29 @@ function getOrCreateMergedInstanceBindGroup(
         resource: { buffer: resolvedInstanceBuffer },
       },
       {
-        // Audit A.5 (Batch 130) -- previous-frame joint matrices for
-        // TAA velocity. Falls back to the identity buffer (same as
-        // binding 0's default) so non-skinned primitives produce no
-        // skinning velocity contribution. Skinned primitives that
-        // haven't yet captured a previous frame fall back to the
-        // CURRENT joint buffer so velocity is zero on the first frame
-        // of an animation rather than wildly wrong from the identity.
+        // Previous-frame joint matrices for TAA velocity. Falls back to
+        // the identity buffer (the same default as binding 0) so
+        // non-skinned primitives produce no skinning velocity
+        // contribution. Skinned primitives that have not yet captured a
+        // previous frame fall back to the current joint buffer, so
+        // velocity is zero on the first frame of an animation rather
+        // than wildly wrong from the identity.
         binding: 4,
         resource: { buffer: resolvedPrevJointBuffer },
       },
       {
-        // NEW-TAA-MORPH-PREV (Batch 134) -- previous-frame morph
-        // weights uniform. Falls back to the CURRENT weights when no
-        // prev mirror exists yet (first morphed frame); zero-weights
-        // default when no morph at all.
+        // Previous-frame morph weights uniform. Falls back to the
+        // current weights when no prev mirror exists yet (the first
+        // morphed frame), and to the zero-weights default when there is
+        // no morph at all.
         binding: 5,
         resource: { buffer: resolvedPrevMorphWeightBuffer },
       },
       {
-        // NEW-TAA-INSTANCE-PREV (Batch 134) -- previous-frame instance
-        // transforms. Static GPU instancing (today's only case) aliases
-        // the current buffer for zero velocity contribution. Animated
-        // EXT_mesh_gpu_instancing assets would override.
+        // Previous-frame instance transforms. Static GPU instancing, the
+        // only case currently produced, aliases the current buffer for a
+        // zero velocity contribution. Animated EXT_mesh_gpu_instancing
+        // assets would override it.
         binding: 6,
         resource: { buffer: resolvedPrevInstanceBuffer },
       },
@@ -4648,38 +4623,38 @@ function getOrCreateMergedInstanceBindGroup(
   return bindGroup;
 }
 
-// C9-17 Slice A — the three merged-material variants share one builder but must
-// NOT alias each other's cache: they differ only by material buffer
-// (primary / silhouette / translucent — trap #1). Each variant gets its own
-// per-primitive cache slot.
+// The three merged-material variants share one builder but must not alias each
+// other's cache: they differ only by material buffer (primary / silhouette /
+// translucent). Each variant gets its own per-primitive cache slot.
 const MERGED_MATERIAL_SLOT_PRIMARY = 0;
 const MERGED_MATERIAL_SLOT_SILHOUETTE = 1;
 const MERGED_MATERIAL_SLOT_TRANSLUCENT = 2;
 
 /**
- * C9-17 Slice A (FAR-309 / audit #21) — per-primitive merged group-1 (material +
- * textures + featureId + IBL) bind-group cache, mirroring the Batch-665
- * group-2 instance cache. Bind groups are immutable but the buffers/textures
- * they reference are updated in place every frame (material UBO writeBuffer,
- * etc.), so rebuilding this group every frame provides no freshness
- * benefit. Exact resource identity catches every real replacement:
- *   - `layout`          — per-`materialDefines` variant BGL (Batch 174)
+ * Per-primitive merged group-1 (material + textures + featureId + IBL)
+ * bind-group cache, mirroring the group-2 instance cache. Bind groups are
+ * immutable but the buffers and textures they reference are updated in place
+ * every frame (material UBO writeBuffer and similar), so rebuilding this group
+ * every frame provides no freshness benefit. Exact resource identity catches
+ * every real replacement:
+ *   - `layout`          — per-`materialDefines` variant BGL
  *   - `materialBuffer`  — primary / silhouette / translucent UB (slot-keyed)
- *   - `textureEntries`  — rebuilt only on deferred-placeholder upgrade /
- *                         refraction-view change, so its ARRAY IDENTITY is the
- *                         invalidation token (trap #4 — never clone it)
+ *   - `textureEntries`  — rebuilt only on a deferred-placeholder upgrade or a
+ *                         refraction-view change, so its array identity is the
+ *                         invalidation token; it must never be cloned
  *   - `featureIdEntries`— stable `primCache._featureIdEntries` array or null;
  *                         null (default entries spliced by the builder) is its
- *                         own cache state (trap #6)
- *   - `iblEntries`      — the memoized array from {@link getOrCreateModelIBLEntries}
- *                         (invariant 2), one reference summarising the five IBL
- *                         identities
- * Cache hit ⇒ zero `createBindGroup`; any identity change ⇒ exactly one rebuild.
+ *                         own cache state
+ *   - `iblEntries`      — the memoized array from {@link getOrCreateModelIBLEntries},
+ *                         one reference summarising the five IBL identities
+ * A cache hit performs zero `createBindGroup` calls; any identity change costs
+ * exactly one rebuild.
  *
- * C11-195 — the light UB left this key with the binding. Had it stayed and
- * merely become a ring slice, this cache would have had to key on the ring
- * PAGE (which rotates every frame), multiplying every loaded primitive's
- * resident group-1 bind groups by the ring's page count.
+ * The light UB is deliberately absent from this key, because it is bound from
+ * the group-0 arena. Were it a ring slice in this group instead, the cache
+ * would have to key on the ring page, which rotates every frame, multiplying
+ * every loaded primitive's resident group-1 bind groups by the ring's page
+ * count.
  * @private
  */
 function getOrCreateMergedMaterialBindGroup(
@@ -4777,15 +4752,13 @@ function createMaterialTextures(
   const defWhite = pipelineCache.defaultWhiteTexture;
   const defNormal = pipelineCache.defaultNormalTexture;
   const defBlack = pipelineCache.defaultBlackTexture;
-  // Session 65 BUG-WEBGPU-MODEL-TEXTURE-PLACEHOLDER-STUCK fix.
   // Track which slots fell back to the default placeholder texture
-  // because the matching reader hadn't resolved its image source yet.
+  // because the matching reader had not resolved its image source yet.
   // The per-frame `refreshDeferredTextures` helper polls these slots
   // and swaps in the real GPUTexture as soon as the reader is ready.
-  // Without this, models whose textures load AFTER the first
-  // `ensurePrimitiveCache` call (Mars, Moon, Aerometrex SF
-  // photogrammetry, BIM base color) render with white-fallback
-  // bind groups for their entire lifetime.
+  // Without this, models whose textures load after the first
+  // `ensurePrimitiveCache` call render with white-fallback bind groups
+  // for their entire lifetime.
   const placeholderSlots = new Set<string>();
 
   function tryCreate(
@@ -4831,11 +4804,11 @@ function createMaterialTextures(
   //   srgb: baseColor (and specGloss diffuse), emissive.
   //   linear: normal, metallic-roughness (and specGloss specular), occlusion.
   // Storing sRGB slots as `rgba8unorm-srgb` makes the GPU sampler auto-decode
-  // gamma, which is both perceptually correct for linear filtering AND
-  // removes the need for in-shader pow(2.2) approximation.
+  // gamma, which is both perceptually correct for linear filtering and
+  // removes the need for an in-shader pow(2.2) approximation.
   //
-  // C-R4-GLTF-KHR-TEXTURES (Batch 102) — KHR extension texture
-  // color-space defaults per the relevant Khronos extension specs:
+  // KHR extension texture color-space defaults, per the relevant Khronos
+  // extension specs:
   //   srgb: specularColor (chromatic F0 tint), sheenColor.
   //   linear: clearcoat (intensity scalar), anisotropy (RG = direction
   //           encoded as f32 trig), iridescence (R = factor scalar),
@@ -4909,7 +4882,7 @@ function createMaterialTextures(
         defWhite,
         "linear",
       ),
-      // C-R4-GLTF-KHR-TEXTURES (Batch 103) — KHR secondary maps. Each
+      // KHR secondary maps. Each
       // is linear-encoded scalar/normal data per the relevant Khronos
       // extension specs (clearcoat normal uses the standard normal-map
       // default placeholder so the FS perturbNormal call passes through
@@ -4944,12 +4917,12 @@ function createMaterialTextures(
         defWhite,
         "linear",
       ),
-      // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — transmission texture
-      // (R = factor scalar) + refraction scene-color sample source. The
-      // refractionScene fallback is the white placeholder; the actual
-      // refraction MRT populated by the SceneRenderer is bound through
-      // a separate per-frame rebuild in update(). Here we just stamp the
-      // placeholder so the bind group is always valid.
+      // Transmission texture (R = factor scalar) plus the refraction
+      // scene-color sample source. The refractionScene fallback is the
+      // white placeholder; the actual refraction MRT populated by the
+      // SceneRenderer is bound through a separate per-frame rebuild in
+      // update(). Stamping the placeholder here keeps the bind group
+      // valid at all times.
       transmission: tryCreate(
         "transmission",
         matInfo.transmissionTextureReader,
@@ -5068,9 +5041,9 @@ const TEXTURE_SLOT_SCHEMA = [
  * rebuild `primCache.textureEntries` so the bind group references
  * the new view instead of the white placeholder.
  *
- * Session 65 fix for the "Mars/Moon render solid white" cluster:
- * before this, the bind group was built once with whatever textures
- * had loaded by the first frame, and never refreshed.
+ * Without this poll the bind group would be built once from whatever
+ * textures had loaded by the first frame and never refreshed, leaving
+ * late-loading assets solid white.
  *
  * @private
  */
@@ -5112,9 +5085,10 @@ function refreshDeferredModelTextures(
     if (!defined(tex)) {
       continue;
     }
-    // Only track in gpuTextures if we own the lifetime — see tryCreate
-    // for the same stub-ownership check. Stub-owned GPUTextures are
-    // shared with the CesiumJS Texture wrapper and would double-destroy.
+    // Only track in gpuTextures when this renderer owns the lifetime —
+    // see tryCreate for the same stub-ownership check. Stub-owned
+    // GPUTextures are shared with the CesiumJS Texture wrapper and would
+    // double-destroy.
     const reusedFromStub = isTextureOwnedByCompatibilityStub(
       device,
       resourceGeneration,
@@ -5143,7 +5117,7 @@ function refreshDeferredModelTextures(
   return changed;
 }
 
-// ─── Main Entry Points ───────────────────────────────────────────────────────
+// Main entry points.
 
 /**
  * Drop a cache whose native ownership tuple no longer matches the context.
@@ -5183,7 +5157,7 @@ function subscribeWebGPUModelCacheInvalidation(
   cache._deviceInvalidationUnsub = context.onDeviceInvalidated(() => {
     // The scene-level recovery walk can clear the public slot before this
     // subscriber runs. Undefined therefore still means this captured cache
-    // must be drained; a DIFFERENT live cache is the identity that must never
+    // must be drained; a different live cache is the identity that must never
     // be destroyed by a delayed old-generation callback.
     const activeCache = model._webgpuCache;
     if (
@@ -5217,15 +5191,14 @@ function updateWebGPUModel(
     return;
   }
 
-  // AUDIT_2026_05_02 A.7 — surface silent feature gaps that the WebGPU
-  // model path doesn't yet honor. Each warning fires once per process to
-  // alert users instead of letting the feature appear "working" when it
-  // silently no-ops.
+  // Surface silent feature gaps that the WebGPU model path does not yet
+  // honor. Each warning fires once per process to alert users instead of
+  // letting the feature appear to work when it silently no-ops.
   //>>includeStart('debug', pragmas.debug);
-  // PARITY-CUSTOM-SHADER-WGSL — a customShader with native WGSL text runs the
-  // real native-WGSL path below; only a GLSL-only customShader (no
-  // `wgslFragmentShaderText`) still warns + no-ops on WebGPU (transpile
-  // deferred by design).
+  // A customShader with native WGSL text runs the real native-WGSL path
+  // below. Only a GLSL-only customShader (no `wgslFragmentShaderText`)
+  // warns and no-ops on WebGPU; the GLSL-to-WGSL transpile is deferred by
+  // design.
   if (
     defined(model.customShader) &&
     !defined(model.customShader.wgslFragmentShaderText) &&
@@ -5242,8 +5215,8 @@ function updateWebGPUModel(
   }
   //>>includeEnd('debug');
 
-  // C11-185 Slice 1 — reject only a provably camera-outside standalone model
-  // during an ordinary SCENE3D render. The classifier is intentionally
+  // Reject only a provably camera-outside standalone model during an ordinary
+  // SCENE3D render. The classifier is intentionally
   // conservative: shadow casters, scene capture, tiles, classifiers, pick,
   // offscreen, non-3D, stereo-capable, and malformed/unknown state all retain
   // the existing renderer unchanged. This gate precedes the first device read,
@@ -5283,16 +5256,15 @@ function updateWebGPUModel(
     ? frameState.commandList.length
     : 0;
 
-  // PARITY-CUSTOM-SHADER-WGSL — compute (or refresh) the model-level native-WGSL
-  // customShader resources: the generated WGSL chunk + class hash, the packed
-  // uniforms UBO, and the resolved custom-texture bind-group entries. Stored on
-  // the model cache below so every primitive of this model prepends the same
-  // chunk and binds the same UBO/textures. Rebuilt when the customShader
-  // reference changes; the UBO contents are refreshed every frame (cheap) so
-  // `setUniform` updates take effect.
+  // Compute (or refresh) the model-level native-WGSL customShader resources:
+  // the generated WGSL chunk and class hash, the packed uniforms UBO, and the
+  // resolved custom-texture bind-group entries. Stored on the model cache below
+  // so every primitive of this model prepends the same chunk and binds the same
+  // UBO and textures. Rebuilt when the customShader reference changes; the UBO
+  // contents are refreshed every frame, which is cheap, so `setUniform` updates
+  // take effect.
   //>>includeStart('debug', pragmas.debug);
-  // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER — resolved):
-  // model.classificationType now routes through
+  // model.classificationType routes through
   // `pipelineCache.getClassificationPipeline` and emits at the matching
   // TERRAIN/3D-Tile classification pass. The depth-sample classifier
   // FS samples the same `globeDepthTex` (group 3 binding 15) the four
@@ -5329,11 +5301,11 @@ function updateWebGPUModel(
     frameState.camera?.positionWC ??
     Cartesian3.ZERO;
 
-  // C10-05 — frame-owned mip-generation sink for the fallback texture path
-  // (createGPUTextureFromReader when a model texture is NOT stub-backed). The
-  // stub path already generates its own chain at upload; this only covers the
-  // secondary branch. Undefined if the context predates C9-12A, in which case
-  // the fallback keeps its historical single-level behavior.
+  // Frame-owned mip-generation sink for the fallback texture path
+  // (createGPUTextureFromReader when a model texture is not stub-backed). The
+  // stub path already generates its own chain at upload, so this only covers
+  // the secondary branch. Undefined on a context that exposes no sink, in
+  // which case the fallback stays single-level.
   // Initialize model cache
   if (!defined(model._webgpuCache)) {
     const fmt = context.scenePipelineFormat || "bgra8unorm";
@@ -5342,10 +5314,10 @@ function updateWebGPUModel(
       device,
       fmt,
       depthFmt,
-      // C10-07 — central async pipeline cache so the color pipeline resolves
-      // through `createRenderPipelineAsync` instead of a synchronous mid-draw
-      // `device.createRenderPipeline`. Null (WebGL stub / older context) keeps
-      // the synchronous fallback.
+      // Central async pipeline cache, so the color pipeline resolves through
+      // `createRenderPipelineAsync` instead of a synchronous mid-draw
+      // `device.createRenderPipeline`. Null (a WebGL stub, or a context that
+      // exposes no cache) keeps the synchronous fallback.
       context.webgpuPipelineCache ?? null,
       resourceGeneration,
     ) as unknown as PipelineCacheLike;
@@ -5354,8 +5326,8 @@ function updateWebGPUModel(
       resourceGeneration,
       pipelineCache,
       // Bind the context sinks once per exact model-cache generation. Binding
-      // them in every update allocated two fresh functions on the render hot
-      // path even after every texture had reached steady state.
+      // them in every update would allocate two fresh functions on the render
+      // hot path even after every texture had reached steady state.
       _enqueueTextureMipGeneration:
         typeof context.enqueueTextureMipGeneration === "function"
           ? context.enqueueTextureMipGeneration.bind(context)
@@ -5364,10 +5336,10 @@ function updateWebGPUModel(
         typeof context.cancelTextureMipGeneration === "function"
           ? context.cancelTextureMipGeneration.bind(context)
           : undefined,
-      // C11-195 — CPU staging only; the camera and light GPU bytes live in
-      // the context-owned per-frame arena. `lightData` is model-level because
-      // the block it stages is model-level: every primitive used to own a
-      // byte-identical copy of it.
+      // CPU staging only; the camera and light GPU bytes live in the
+      // context-owned per-frame arena. `lightData` is model-level because the
+      // block it stages is model-level: one byte-identical copy serves every
+      // primitive.
       cameraData: null,
       lightData: null,
       primitives: {}, // keyed by "nodeIdx_primIdx"
@@ -5388,8 +5360,7 @@ function updateWebGPUModel(
   const enqueueMip = cache._enqueueTextureMipGeneration;
   const pipelineCache = cache.pipelineCache;
 
-  // PARITY-CUSTOM-SHADER-WGSL — (re)build the model-level native-WGSL
-  // customShader resources.
+  // (Re)build the model-level native-WGSL customShader resources.
   if (shouldPrepareModelCustomShaderResources(model, cache)) {
     if (defined(preparationWork)) {
       preparationWork.customShaderPreparations++;
@@ -5397,16 +5368,16 @@ function updateWebGPUModel(
     ensureModelCustomShaderResources(device, model, cache, pipelineCache);
   }
 
-  // C2-25 ENV-SCENE-CAPTURE (Batch 447) — publish this model's camera-
-  // independent draw records so the dynamic-environment-map capture pass can
-  // replay it into the 6 cube faces next frame. GATED on the context flag
-  // (`context.sceneCaptureReflections`); when OFF, nothing is published and
-  // `_webgpuSceneCaptureModels` stays null → the capture pass's model replay is
-  // a no-op (byte-identical to globe-only Batch 446). The publish object is
-  // RESET once per frame (frameNumber guard) and APPENDED to for every model
-  // the FR processes this frame; `buildCaptureCommands` is a stable function
-  // ref so the capture pass can build per-face descriptors without a static
-  // import of this renderer (avoids a circular import).
+  // Publish this model's camera-independent draw records so the
+  // dynamic-environment-map capture pass can replay it into the 6 cube faces
+  // next frame. Gated on the context flag `context.sceneCaptureReflections`;
+  // when it is off nothing is published, `_webgpuSceneCaptureModels` stays
+  // null, and the capture pass's model replay is a no-op that leaves the
+  // globe-only capture byte-identical. The publish object is reset once per
+  // frame (frameNumber guard) and appended to for every model the feature
+  // renderer processes this frame. `buildCaptureCommands` is a stable function
+  // reference so the capture pass can build per-face descriptors without a
+  // static import of this renderer, which would be a circular import.
   const wantCapturePublish =
     !pipelineWarmupOnly && context.sceneCaptureReflections === true;
   let captureRecords: CaptureRecord[] | null = null;
@@ -5432,41 +5403,41 @@ function updateWebGPUModel(
     pub.models.push(capturePublishEntry);
   }
 
-  // Batch 110 — drop per-primitive pipeline refs when the scene
-  // pipeline format generation bumps (HDR toggle, MSAA toggle). The
-  // pipelineCache wipes its own cache via maybeUpdateForSceneFormat;
-  // the per-primitive cache holds direct references that still point
-  // at the OLD pipeline objects, so we re-fetch them from the now-
-  // empty pipelineCache below per primitive (in the per-frame loop
-  // each primitive sees `pc.pipeline = pipelineCache.getPipeline(...)`
-  // re-fired). Lazy-allocated variants (pick/velocity/translucent/
-  // depth-write) drop to undefined and are re-fetched on next use.
+  // Drop per-primitive pipeline refs when the scene pipeline format
+  // generation bumps (an HDR or MSAA toggle). The pipelineCache wipes
+  // its own cache via maybeUpdateForSceneFormat, but the per-primitive
+  // cache holds direct references that still point at the old pipeline
+  // objects, so they are re-fetched from the now-empty pipelineCache
+  // per primitive in the per-frame loop below, where each primitive
+  // re-fires `pc.pipeline = pipelineCache.getPipeline(...)`.
+  // Lazy-allocated variants (pick/velocity/translucent/depth-write)
+  // drop to undefined and are re-fetched on next use.
   const previousGen = pipelineCache._sceneFormatGeneration;
   pipelineCache.maybeUpdateForSceneFormat(context);
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — mirror the master
-  // switch into the pipeline cache; a flip wipes pipelines so modules
-  // recompile with/without the LOG_DEPTH define.
+  // Renderer-wide log depth: mirror the master switch into the pipeline
+  // cache. A flip wipes pipelines so modules recompile with or without the
+  // LOG_DEPTH define.
   const logDepthFlipped = pipelineCache.maybeUpdateForLogDepth(
     isWebGPULogDepthActive(
       context as unknown as Parameters<typeof isWebGPULogDepthActive>[0],
       frameState,
     ),
   );
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — mirror the SEPARATE pick-fleet
-  // master switch into the pipeline cache; a flip wipes ONLY the pick pipeline
-  // maps so the 3 pick fragment entries (+ the 2 BLEND precise-pass pipelines)
-  // recompile their module with/without the LOG_DEPTH define. Default false →
-  // pick modules carry no LOG_DEPTH define, byte-identical hyperbolic pick.
+  // Mirror the separate pick-fleet master switch into the pipeline cache. A
+  // flip wipes only the pick pipeline maps, so the 3 pick fragment entries and
+  // the 2 BLEND precise-pass pipelines recompile their module with or without
+  // the LOG_DEPTH define. It defaults to false, leaving pick modules without a
+  // LOG_DEPTH define and the hyperbolic pick byte-identical.
   const pickLogDepthFlipped = pipelineCache.maybeUpdateForPickLogDepth(
     isWebGPUPickLogDepthActive(
       context as unknown as Parameters<typeof isWebGPUPickLogDepthActive>[0],
       frameState,
     ),
   );
-  // WIRE-MODEL-SPLITTER — mirror model.splitDirection into the per-model
-  // pipeline cache; a flip wipes pipelines so modules recompile
-  // with/without MODEL_SPLIT_ENABLED (WebGL ModelSplitterPipelineStage
-  // parity). splitDirection: -1 LEFT / 0 NONE / +1 RIGHT.
+  // Mirror model.splitDirection into the per-model pipeline cache. A flip
+  // wipes pipelines so modules recompile with or without
+  // MODEL_SPLIT_ENABLED, matching WebGL's ModelSplitterPipelineStage.
+  // splitDirection: -1 LEFT / 0 NONE / +1 RIGHT.
   const modelSplitDirection =
     typeof model.splitDirection === "number" ? model.splitDirection : 0.0;
   const splitFlipped = pipelineCache.maybeUpdateForSplit(
@@ -5479,9 +5450,9 @@ function updateWebGPUModel(
     (typeof frameState?.splitPosition === "number"
       ? frameState.splitPosition
       : 0.0) * (context?.drawingBufferWidth ?? 0.0);
-  // WIRE-MODEL-COLOR — mirror `defined(model.color)` into the per-model
-  // pipeline cache; a flip wipes pipelines so modules recompile
-  // with/without MODEL_HAS_COLOR (WebGL ModelColorPipelineStage parity).
+  // Mirror `defined(model.color)` into the per-model pipeline cache. A flip
+  // wipes pipelines so modules recompile with or without MODEL_HAS_COLOR,
+  // matching WebGL's ModelColorPipelineStage.
   // The blend scalar matches WebGL's `ColorBlendMode.getColorBlend`:
   // 0 = HIGHLIGHT, 1 = REPLACE, (0,1] = MIX amount (0 reserved for
   // HIGHLIGHT, so MIX clamps to EPSILON4).
@@ -5496,13 +5467,12 @@ function updateWebGPUModel(
         }
       ).getColorBlend(model.colorBlendMode, model.colorBlendAmount) ?? 0.0)
     : 0.0;
-  // WIRE-MODEL-SILHOUETTE — mirror WebGL's `Model.hasSilhouette()`
-  // predicate (silhouetteSize > 0 && silhouetteColor.alpha > 0 &&
-  // !classificationType && stencil support) into the per-model pipeline
-  // cache; a flip wipes pipelines so modules recompile with/without
-  // MODEL_SILHOUETTE. The scene depth format is `depth24plus-stencil8`
-  // by construction, but guard anyway so a future depth-only format
-  // can't request stencil-state pipelines.
+  // Mirror WebGL's `Model.hasSilhouette()` predicate (silhouetteSize > 0 &&
+  // silhouetteColor.alpha > 0 && !classificationType && stencil support) into
+  // the per-model pipeline cache. A flip wipes pipelines so modules recompile
+  // with or without MODEL_SILHOUETTE. The scene depth format is
+  // `depth24plus-stencil8` by construction, but the guard stays so a
+  // depth-only format cannot request stencil-state pipelines.
   const silhouetteSupported =
     `${context.depthFormat ?? "depth24plus-stencil8"}`.includes("stencil");
   const modelHasSilhouette =
@@ -5518,9 +5488,9 @@ function updateWebGPUModel(
   // standalone projection/viewport):
   //   expandX/Y = proj[0][0] / proj[1][1] · silhouetteSize · pixelRatio
   //               / drawingBufferWidth   (czm_viewport.z ≡ buffer width)
-  // Uses `context.drawingBufferWidth` directly — NOT
+  // Uses `context.drawingBufferWidth` directly rather than
   // `uniformState.viewportCartesian4`, which is zero-initialized at
-  // FR-update time (same pitfall the edge-overlay wiring hit).
+  // feature-renderer update time.
   let silhouetteStencilRef = 0;
   let silhouetteExpandX = 0.0;
   let silhouetteExpandY = 0.0;
@@ -5547,18 +5517,19 @@ function updateWebGPUModel(
     silhouetteTranslucent = model.silhouetteColor.alpha < 1.0;
   }
   // Derived silhouette-colour commands are collected per model and
-  // pushed AFTER every base command of this model (WebGL
-  // `ModelSceneGraph.pushDrawCommands` ordering — the rim must not draw
-  // on top of the model's own later primitives).
+  // pushed after every base command of this model, matching WebGL
+  // `ModelSceneGraph.pushDrawCommands` ordering, so the rim does not
+  // draw on top of the model's own later primitives.
   const silhouetteColorCommands = [];
-  // A log-depth flip needs the SAME per-primitive direct-reference drop as
-  // a scene-format change (pc.pipeline & friends point at wiped pipelines).
+  // A log-depth flip needs the same per-primitive direct-reference drop as
+  // a scene-format change: `pc.pipeline` and its siblings point at wiped
+  // pipelines.
   const sceneFormatChanged =
     previousGen !== pipelineCache._sceneFormatGeneration ||
     logDepthFlipped ||
-    // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — a pick-log flip wiped the pick
-    // pipeline maps, so the per-primitive `pc.pickPipeline` direct refs must be
-    // dropped + re-fetched, same as a scene-format / scene-log flip.
+    // A pick-log flip wipes the pick pipeline maps, so the per-primitive
+    // `pc.pickPipeline` direct refs must be dropped and re-fetched, the same
+    // as for a scene-format or scene-log flip.
     pickLogDepthFlipped ||
     splitFlipped ||
     modelColorFlipped ||
@@ -5573,7 +5544,7 @@ function updateWebGPUModel(
         pc.depthWritePipeline = undefined;
         pc.velocityPipeline = undefined;
         pc.translucentPipeline = undefined;
-        // WIRE-MODEL-SILHOUETTE — direct refs into the wiped maps.
+        // Silhouette variants are direct refs into the wiped maps too.
         pc.silhouettePipeline = undefined;
         pc.silhouetteColorPipeline = undefined;
         // Tag for the per-frame loop so it re-fetches pc.pipeline
@@ -5593,33 +5564,33 @@ function updateWebGPUModel(
   // models render at the wrong scale (typically 1× instead of computedScale,
   // e.g. CesiumAir.glb collapsing to a few pixels at scale=4) and with the
   // wrong axis orientation. The same field is what the upstream WebGL
-  // ModelDrawCommand uses (see ModelSceneGraph.js:823).
-  // MODEL-SCENE-MODES — in SCENE2D / COLUMBUS_VIEW / MORPHING use the
-  // scene graph's projected-frame matrix instead. WebGL's
-  // ModelMatrixUpdateStage (ModelMatrixUpdateStage.js:31-39) swaps to
+  // ModelDrawCommand uses (see ModelSceneGraph).
+  // In SCENE2D / COLUMBUS_VIEW / MORPHING the scene graph's projected-frame
+  // matrix is used instead. WebGL's ModelMatrixUpdateStage swaps to
   // `_computedModelMatrix2D` (Transforms.basisTo2D over the 3D matrix,
   // computed by ModelSceneGraph.updateModelMatrix whenever the mode or
-  // model matrix changes — Model.js updateSceneMode sets
+  // model matrix changes; Model.updateSceneMode sets
   // `_updateModelMatrix = true` on every mode flip, so it is never stale
-  // here). All downstream consumers (packCameraUniforms RTE encode,
-  // per-node matrices, shadow-cast UB, edge-emitter MVP, TAA prev-matrix)
+  // here). All downstream consumers — the packCameraUniforms RTE encode,
+  // per-node matrices, shadow-cast UB, edge-emitter MVP, TAA prev-matrix —
   // derive from this one local, so the substitution is complete.
   // `uniformState.view/projection/cameraPosition` are already in the same
   // projected frame in these modes, keeping the RTE chain consistent.
-  // NEW-MODEL-PROJECT2D-BV-MORPH (B11) — `projectTo2D:true` accurate-2D path.
-  // When the model opts into accurate 2D projection, WebGL bakes a per-vertex
-  // ellipsoid→projected reprojection into a dedicated position buffer and
-  // morphs the 3D bounding volume into a flat 2D box (SceneMode2DPipelineStage);
-  // critically, with `projectTo2D` set the scene graph does NOT compute
-  // `_computedModelMatrix2D` at all (Model.js:2471 resets draw commands on a
-  // mode flip instead of arming `_updateModelMatrix`), so the affine 2D path
-  // below has no matrix to use and the model would fall back to its ECEF 3D
-  // matrix under a 2D/CV camera — culled to nothing. Instead we reproject each
-  // primitive's positions on the CPU (relative to a single model-level
-  // reference point) and drive the camera UB with a pure translate(reference)
-  // matrix; the existing model-space RTE chain then resolves clip space
-  // correctly (`rte = projAbs - eyeProj`). Per-primitive reference frames +
-  // the IDL-crossing duplicate command are the B12 follow-up.
+  //
+  // The `projectTo2D:true` accurate-2D path is different again. When the model
+  // opts into accurate 2D projection, WebGL bakes a per-vertex
+  // ellipsoid-to-projected reprojection into a dedicated position buffer and
+  // morphs the 3D bounding volume into a flat 2D box
+  // (SceneMode2DPipelineStage). Critically, with `projectTo2D` set the scene
+  // graph does not compute `_computedModelMatrix2D` at all — Model resets draw
+  // commands on a mode flip instead of arming `_updateModelMatrix` — so the
+  // affine 2D path below has no matrix to use and the model would fall back to
+  // its ECEF 3D matrix under a 2D/CV camera and be culled to nothing. Instead
+  // each primitive's positions are reprojected on the CPU relative to a single
+  // model-level reference point, and the camera UB is driven with a pure
+  // translate(reference) matrix; the existing model-space RTE chain then
+  // resolves clip space correctly (`rte = projAbs - eyeProj`). Per-primitive
+  // reference frames and the IDL-crossing duplicate command remain open.
   const projectTo2DActive =
     model._projectTo2D === true &&
     frameState.mode !== SceneMode.SCENE3D &&
@@ -5634,9 +5605,9 @@ function updateWebGPUModel(
   // structural test hosts that do not expose Cesium's private field.
   const modelBoundingSphere =
     model._boundingSphere ?? (model.ready ? model.boundingSphere : undefined);
-  // C-MODEL-2DIDL-DUPLICATE — armed only for a non-projectTo2D model that
-  // crosses the antimeridian in SCENE2D (mirror of WebGL
-  // `shouldUse2DCommands`). When set, the emission loop pushes a second,
+  // Armed only for a non-projectTo2D model that crosses the antimeridian in
+  // SCENE2D, mirroring WebGL's `shouldUse2DCommands`. When set, the emission
+  // loop pushes a second,
   // y-shifted copy of each surface command so the half of the model clipped
   // by one viewport is drawn wrapped into the other. Default-off: every other
   // mode/position leaves this false and emits an unchanged command stream.
@@ -5690,8 +5661,8 @@ function updateWebGPUModel(
         ? model._sceneGraph._boundingSphere2D
         : modelBoundingSphere;
 
-    // C-MODEL-2DIDL-DUPLICATE — decide whether the model straddles the IDL in
-    // SCENE2D. Byte-for-byte port of WebGL `shouldUse2DCommands`
+    // Decide whether the model straddles the IDL in SCENE2D. This mirrors
+    // WebGL `shouldUse2DCommands`
     // (ModelDrawCommand.js): SCENE2D only, never for `projectTo2D` models,
     // tested against the scene graph's model-level `_boundingSphere2D` (the
     // per-command sphere is too tight to detect the crossing). `2πR` is the
@@ -5733,13 +5704,12 @@ function updateWebGPUModel(
     );
   }
 
-  // ── Effects bind group (shadow receive + clipping + CSM) ──
+  // Effects bind group (shadow receive + clipping + CSM).
   //
-  // CSM Slice 2c — the model pipeline layout now includes the effects
-  // BGL at @group(7). Rebuild the bind group each frame so the effects
-  // UBO (shadow darkness, csmControl flag, clipping plane count,
-  // atmosphere LUT control, etc.) reflects the current scene state.
-  // Mirrors the pattern in WebGPUGlobeSurfaceRenderer ~line 1554.
+  // The model pipeline layout includes the effects BGL at @group(7). Rebuild
+  // the bind group each frame so the effects UBO (shadow darkness, csmControl
+  // flag, clipping plane count, atmosphere LUT control, and so on) reflects the
+  // current scene state. Mirrors the pattern in WebGPUGlobeSurfaceRenderer.
   //
   // Scope note: called per-model per-frame. The UB write is 272 bytes
   // and the bind group is a thin metadata wrapper, so the cost is
@@ -5775,17 +5745,17 @@ function updateWebGPUModel(
           enabled: true,
           paramsBuffer: csmCandidate.cascadeParamsBuffer,
           cascadeArrayView: csmCandidate.cascadeArrayView,
-          // NEW-CSM-SOFT-SHADOW-PCF — soft-shadow kernel radius (texels).
+          // Soft-shadow kernel radius, in texels.
           pcfRadius: csmCandidate.pcfRadius,
         }
       : undefined;
-  // C-R8-EDGE-INLINE — gather edge-detection inputs for the inline
-  // stage in `ModelPBRComplete.wgsl`. The scene renderer publishes
-  // resolved edge MRT views (CESIUM_3D_TILE_EDGES pass) AND the globe
-  // packed-depth view (`executeCopyDepth`) on the context each frame.
-  // Both need to be populated for the gate to flip — when either is
-  // missing we fall through to the placeholder bind group and the
-  // shader's `edgeControl.x <= 0.5` early-out keeps the stage benign.
+  // Gather edge-detection inputs for the inline stage in
+  // `ModelPBRComplete.wgsl`. The scene renderer publishes resolved edge
+  // MRT views (the CESIUM_3D_TILE_EDGES pass) and the globe packed-depth
+  // view (`executeCopyDepth`) on the context each frame. Both must be
+  // populated for the gate to flip; when either is missing the code
+  // falls through to the placeholder bind group, and the shader's
+  // `edgeControl.x <= 0.5` early-out keeps the stage benign.
   const ctx = frameState.context as unknown as ModelRenderContext;
   const edgeColorView = ctx?._edgeColorView ?? null;
   const edgeIdView = ctx?._edgeIdView ?? null;
@@ -5793,21 +5763,21 @@ function updateWebGPUModel(
   const globeDepthView = ctx?._globeDepthView ?? null;
   const uniformState = ctx?.uniformState;
   const currentFrustum = uniformState?.currentFrustum;
-  // Viewport — source from context.drawingBufferWidth/Height directly.
-  // `uniformState.viewportCartesian4` is zero-initialized at FR-update
-  // time (FR runs during Scene primitive update, before per-frame
-  // viewport is established). The bug-pattern hunt 2026-04-30 found
-  // four other classification renderers reading zero viewports through
-  // the same path; here Model uses it for edge-overlay readiness gating
-  // — `!!viewportPx` reads truthy on a zero-init Cartesian4 (the object
-  // exists), so edges shipped with zw=0 ⇒ NaN screenUV ⇒ broken edge
-  // overlay. Match the canvas dimensions instead.
+  // Viewport — sourced from context.drawingBufferWidth/Height directly.
+  // `uniformState.viewportCartesian4` is zero-initialized at
+  // feature-renderer update time, because the feature renderer runs
+  // during Scene primitive update, before the per-frame viewport is
+  // established. Reading it here would break edge-overlay readiness
+  // gating: `!!viewportPx` is truthy on a zero-init Cartesian4 because
+  // the object exists, so edges would ship with zw=0, giving a NaN
+  // screenUV and a broken edge overlay. Match the canvas dimensions
+  // instead.
   const dbw = ctx?.drawingBufferWidth || 1;
   const dbh = ctx?.drawingBufferHeight || 1;
   const edgesReady =
     !!edgeColorView && !!edgeDepthView && !!globeDepthView && !!currentFrustum;
-  // C-R8-EDGE-FEATURE-ID — the inline stage gates on the same flag the
-  // emitter side toggles when feature IDs are populated. The flag
+  // The inline stage gates on the same flag the emitter side toggles
+  // when feature IDs are populated. The flag
   // is set sticky-true in the per-primitive edge extraction below
   // when at least one primitive in this model emitted a non-zero
   // feature ID, so per-feature gating activates as soon as a model
@@ -5829,16 +5799,13 @@ function updateWebGPUModel(
       }
     : undefined;
 
-  // AUDIT_2026_05_02 A.6 — wire model.clippingPlanes / model.clippingPolygons
-  // through to the effects bind group. The previous comment claimed
-  // "Models don't carry their own clipping-plane set" but
-  // `Model.js:369-388` shows both APIs are supported. Without this
-  // wiring, `model.clippingPlanes = …` produced no visual change
-  // (the scene-wide clipping never applied to models) and
-  // `model.clippingPolygons = …` was a complete no-op. The model's
-  // collections also need their per-frame `update(frameState)` to
-  // run so `_webgpuCache` is populated; that already happens inside
-  // `Model.update()` (lines 2774-2775 / 917-924).
+  // Wire model.clippingPlanes / model.clippingPolygons through to the
+  // effects bind group. `Model` supports both APIs, and without this
+  // wiring `model.clippingPlanes = …` produces no visual change, because
+  // the scene-wide clipping never applies to models, and
+  // `model.clippingPolygons = …` is a complete no-op. The model's
+  // collections also need their per-frame `update(frameState)` to run so
+  // `_webgpuCache` is populated; `Model.update()` already does that.
   const modelClippingPlanes = model._clippingPlanes;
   const modelClippingPolygons = model._clippingPolygons;
   const effectsOptions = {
@@ -5861,12 +5828,12 @@ function updateWebGPUModel(
         : undefined,
     cameraInPlaneSpace: frameState.context.uniformState.cameraPosition,
     edges: edgesPayload,
-    // Slice 5d Batch 153 — Forward+ clustered lighting. SceneRenderer's
+    // Forward+ clustered lighting. SceneRenderer's
     // _dispatchClusteredLighting hook stashes the dispatcher's per-
     // frame buffers on context._clusteredLightingBuffers each frame.
-    // When omitted (e.g., scene without WebGPUSceneRenderer hooked up),
-    // the effects bind group falls back to per-device placeholders and
-    // the FS chunk early-outs via activeLightCount=0.
+    // When omitted — for instance in a scene without WebGPUSceneRenderer
+    // hooked up — the effects bind group falls back to per-device
+    // placeholders and the FS chunk early-outs via activeLightCount=0.
     clusteredLighting: (frameState.context as unknown as ModelRenderContext)
       ._clusteredLightingBuffers,
   };
@@ -5897,9 +5864,9 @@ function updateWebGPUModel(
     );
   }
 
-  // Process model by iterating nodes → primitives
-  // This is the correct traversal that gives us access to each node's
-  // skinning data (computedJointMatrices) alongside its primitives.
+  // Process the model by iterating nodes → primitives. This traversal is what
+  // exposes each node's skinning data (computedJointMatrices) alongside its
+  // primitives.
   const sceneGraph = model._sceneGraph;
   if (!defined(sceneGraph) || !defined(sceneGraph._runtimeNodes)) {
     if (defined(preparationWork)) {
@@ -5909,20 +5876,20 @@ function updateWebGPUModel(
   }
 
   const runtimeNodes = sceneGraph._runtimeNodes;
-  // C11-185 Slice 3 — this memo is set only at the first emitted identity-node
-  // command. Transformed tile-owned nodes bind their own node camera block and
-  // never realize/pack the unused model-level block.
+  // This memo is set only at the first emitted identity-node command.
+  // Transformed tile-owned nodes bind their own node camera block and never
+  // realize or pack the unused model-level block.
   let rootCameraPreparedThisFrame = false;
-  // C11-195 — the model-level camera binding for this update. Deliberately an
-  // update-scoped local, NOT a cache field: an arena slice belongs to one
-  // allocation epoch, so persisting it would let a later frame bind bytes the
-  // ring has already handed to someone else.
+  // The model-level camera binding for this update. Deliberately an
+  // update-scoped local rather than a cache field: an arena slice belongs to
+  // one allocation epoch, so persisting it would let a later frame bind bytes
+  // the ring has already handed to someone else.
   let rootCameraBinding: ModelCameraBinding | undefined;
-  // C11-195 (light slice) — the ONE light block this model and view share,
-  // under the same update-scoped-local rule and the same lazy realization as
-  // the camera above: a model whose primitives all skip (pipelines still
-  // cooking, warmup-only pass) never packs or stages it. Every camera
-  // acquisition of this update pairs with this exact slice.
+  // The single light block this model and view share, under the same
+  // update-scoped-local rule and the same lazy realization as the camera
+  // above: a model whose primitives all skip — pipelines still cooking, or a
+  // warmup-only pass — never packs or stages it. Every camera acquisition of
+  // this update pairs with this exact slice.
   let modelLightSlice: ModelViewLightSlice | undefined;
   // Shadow transform buffers are demand-created at the first emitted caster.
   // Identity-transform nodes share the model host; this per-update memo avoids
@@ -5941,32 +5908,31 @@ function updateWebGPUModel(
       continue;
     }
 
-    // AUDIT_2026_05_02 B.8 (Batch 152, fixed Batch 154) — apply per-
-    // runtime-node `computedTransform = transformToRoot × transform` to
-    // the model matrix so multi-node hierarchies and AGI_articulations /
+    // Apply the per-runtime-node
+    // `computedTransform = transformToRoot × transform` to the model
+    // matrix so multi-node hierarchies and AGI_articulations /
     // non-skinned animated rigs render at their correct world position.
-    // Mirrors WebGL's `ModelMatrixUpdateStage.updateRuntimeNode` which
+    // Mirrors WebGL's `ModelMatrixUpdateStage.updateRuntimeNode`, which
     // multiplies `runtimeNode.transform` into the inherited
-    // `transformToRoot` BEFORE forwarding to `updateDrawCommand`; the
+    // `transformToRoot` before forwarding to `updateDrawCommand`; the
     // result it forwards is `transformToRoot × transform`, exactly what
-    // `runtimeNode.computedTransform` returns (`ModelRuntimeNode.js:252-258`).
+    // `runtimeNode.computedTransform` returns.
     //
-    // Original Batch 152 used `runtimeNode.transformToRoot` directly,
-    // which excludes the node's own transform — wrong for any rig with a
-    // non-identity local transform (the entire point of articulations).
+    // `runtimeNode.transformToRoot` is not a substitute: it excludes the
+    // node's own transform, which is wrong for any rig with a
+    // non-identity local transform — the entire point of articulations.
     //
-    // Skinning compatibility: `runtimeNode.computedJointMatrices` (Batch 130
-    // TAA velocity input) is built with `inverseNodeWorldTransform =
-    // inverse(transformToRoot × transform)` baked in
-    // (`ModelRuntimeNode.js:283-298`); the cancellation only works when
-    // the per-primitive modelMatrix carries the matching
-    // `(transformToRoot × transform) = computedTransform`, so this fix is
-    // also a correctness fix for skinned rigs whose skin root has any
-    // non-identity local OR ancestor transform.
+    // Skinning depends on the same factor. `runtimeNode.computedJointMatrices`
+    // (the TAA velocity input) is built with `inverseNodeWorldTransform =
+    // inverse(transformToRoot × transform)` baked in, and the cancellation
+    // only works when the per-primitive modelMatrix carries the matching
+    // `(transformToRoot × transform) = computedTransform`. Skinned rigs whose
+    // skin root has any non-identity local or ancestor transform therefore
+    // depend on this too.
     const computedTransform = runtimeNode.computedTransform;
     const computedTransformIsIdentity =
       !defined(computedTransform) || isIdentityMatrix4(computedTransform);
-    // NEW-MODEL-PROJECT2D-BV-MORPH (B11) — in the accurate-2D path the node
+    // In the accurate-2D path the node
     // transform is baked per-vertex into the reprojected 2D positions, so the
     // camera UB uses the model-level translate(reference) matrix directly and
     // the per-node transform is collapsed to identity here (the 3D node world
@@ -6002,12 +5968,11 @@ function updateWebGPUModel(
     const skinData = extractSkinData(runtimeNode);
     const hasSkinning = defined(skinData);
 
-    // AUDIT_2026_05_02 B.8 (Batch 152, fixed Batch 154) — allocate the
-    // per-node cache slot unconditionally for any node with non-identity
-    // computedTransform, so the camera buffer + bind group below can be
-    // lazily attached to it even when the node has neither skinning nor
-    // instancing. Skinning / instancing branches further down extend the
-    // same nodeCache shape.
+    // Allocate the per-node cache slot unconditionally for any node with a
+    // non-identity computedTransform, so the camera buffer and bind group
+    // below can be lazily attached to it even when the node has neither
+    // skinning nor instancing. Skinning and instancing branches further down
+    // extend the same nodeCache shape.
     if (!transformIsIdentity && !defined(cache.nodes[nodeIdx])) {
       cache.nodes[nodeIdx] = {
         jointBuffer: null,
@@ -6016,17 +5981,16 @@ function updateWebGPUModel(
         packedJointMatrices: null,
         prevJointBuffer: null,
         prevPackedJointMatrices: null,
-        // Per-node camera staging (Batch 152, NEW-MODEL-NODE-TRANSFORMS;
-        // C11-195 moved the GPU bytes to the per-frame arena).
+        // Per-node camera staging; the GPU bytes live in the per-frame
+        // arena.
         cameraData: null,
-        // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175) — per-node previous
-        // frame's `nodeModelMatrix`. Pre-Batch-175 the velocity pack
-        // pulled `cache.prevModelMatrix` (the model-level matrix), which
-        // was correct for static articulations (set once, then locked)
-        // but produced ghosting under TAA when articulation animations
-        // mutate `runtimeNode.transform` per-frame. The per-node slot
-        // is captured at the END of each node iteration so the next
-        // frame's pack reads this frame's value as `prev`.
+        // The per-node previous frame's `nodeModelMatrix`. The
+        // model-level `cache.prevModelMatrix` is not a substitute: it is
+        // correct for static articulations, which are set once and then
+        // locked, but produces ghosting under TAA when articulation
+        // animations mutate `runtimeNode.transform` per frame. The
+        // per-node slot is captured at the end of each node iteration so
+        // the next frame's pack reads this frame's value as `prev`.
         prevNodeModelMatrix: null,
       };
     }
@@ -6039,10 +6003,10 @@ function updateWebGPUModel(
           jointBufferSize: 0,
           skinningBG: null,
           packedJointMatrices: null,
-          // Audit A.5 (Batch 130) — prev-frame mirrors for TAA velocity.
+          // Prev-frame mirrors for TAA velocity.
           prevJointBuffer: null,
           prevPackedJointMatrices: null,
-          // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175). See above.
+          // Per-node previous `nodeModelMatrix`. See above.
           prevNodeModelMatrix: null,
         };
       }
@@ -6053,9 +6017,9 @@ function updateWebGPUModel(
         nodeCache.packedJointMatrices = skinData.packedJointMatrices;
         ensureJointMatricesBuffer(device, pipelineCache, nodeCache, skinData);
       } else {
-        // Audit A.5 (Batch 130) — capture the about-to-be-overwritten
-        // current matrices as "previous" BEFORE applying this frame's
-        // pose. Reuses a persistent Float32Array to avoid per-frame
+        // Capture the about-to-be-overwritten current matrices as
+        // "previous" before applying this frame's pose. Reuses a
+        // persistent Float32Array to avoid per-frame
         // allocation. The first capture (no prevPackedJointMatrices
         // yet) lazily allocates a same-size buffer + GPU storage so
         // the velocity pass has a real `t-1` pose to skin against;
@@ -6080,17 +6044,17 @@ function updateWebGPUModel(
       }
     }
 
-    // NEW-BG-CONSOLIDATION (Batch 122) — track raw GPU buffers instead
-    // of standalone bind groups. The merged group 2 bind group is built
-    // per-frame at the draw command emission site.
+    // Track raw GPU buffers instead of standalone bind groups. The
+    // merged group 2 bind group is built per frame at the draw command
+    // emission site.
     const nodeJointBuffer =
       hasSkinning && !pipelineWarmupOnly
         ? cache.nodes[nodeIdx].jointBuffer
         : null;
-    // Audit A.5 (Batch 130) — prev-frame joint matrices for TAA
-    // velocity. Falls through to null on the first frame so the BG
-    // builder can substitute the current buffer (zero skinning
-    // velocity contribution, never identity which would explode).
+    // Prev-frame joint matrices for TAA velocity. Falls through to null
+    // on the first frame so the bind-group builder can substitute the
+    // current buffer, which contributes zero skinning velocity — never
+    // the identity, which would explode.
     const nodePrevJointBuffer =
       hasSkinning && !pipelineWarmupOnly
         ? cache.nodes[nodeIdx].prevJointBuffer
@@ -6129,25 +6093,25 @@ function updateWebGPUModel(
     // below. This remains undefined for nodes whose pipelines are still
     // cooking or whose primitives never emit a command.
     let nodeCameraBG: GPUBindGroup | null | undefined;
-    // C11-195 — the group-0 dynamic offset that pairs with `nodeCameraBG`.
-    // Every command variant built for this node (color, IDL duplicate,
-    // classifier second pass, pick + its variants, velocity, silhouette,
-    // translucent twin) shares this one array; it is never mutated after the
-    // arena returns it, so sharing the reference is allocation-free and safe.
+    // The group-0 dynamic offset that pairs with `nodeCameraBG`. Every command
+    // variant built for this node (color, IDL duplicate, classifier second
+    // pass, pick and its variants, velocity, silhouette, translucent twin)
+    // shares this one array; it is never mutated after the arena returns it,
+    // so sharing the reference is allocation-free and safe.
     let nodeCameraOffsets: number[] | undefined;
 
-    // C-MODEL-2DIDL-DUPLICATE — build the y-shifted camera bind group for the
-    // IDL-crossing duplicate. Mirrors WebGL `updateModelMatrix2D`: clone the
-    // matrix the primary command's camera UB was packed against
-    // (`nodeModelMatrix`) and move its translation to the opposite side of the
-    // map (`ty -= sign(ty)·2πR`), then pack an RTE camera UB from it. C11-195 —
-    // the duplicate takes its own slice from the same per-frame arena as the
-    // primary view, so it usually shares the primary command's @group(0) bind
-    // group and differs only in the dynamic offset; no pipeline change either
-    // way. The CPU staging array is lazy-allocated on the same cache object
-    // that hosts the primary view's (`cache` for identity nodes,
-    // `cache.nodes[nodeIdx]` otherwise) and only when `idlDuplicateActive` —
-    // off-IDL / 3D / CV never allocate or write anything here.
+    // Build the y-shifted camera bind group for the IDL-crossing duplicate.
+    // Mirrors WebGL `updateModelMatrix2D`: clone the matrix the primary
+    // command's camera UB was packed against (`nodeModelMatrix`) and move its
+    // translation to the opposite side of the map (`ty -= sign(ty)·2πR`), then
+    // pack an RTE camera UB from it. The duplicate takes its own slice from the
+    // same per-frame arena as the primary view, so it usually shares the
+    // primary command's @group(0) bind group and differs only in the dynamic
+    // offset; no pipeline change either way. The CPU staging array is
+    // lazy-allocated on the same cache object that hosts the primary view's
+    // (`cache` for identity nodes, `cache.nodes[nodeIdx]` otherwise) and only
+    // when `idlDuplicateActive` — off-IDL, 3D and CV never allocate or write
+    // anything here.
     let nodeIdlCameraBG: GPUBindGroup | null = null;
     let nodeIdlCameraOffsets: number[] | null = null;
     let nodeIdlModelMatrix2D = null;
@@ -6166,13 +6130,13 @@ function updateWebGPUModel(
       if (defined(preparationWork)) {
         preparationWork.cameraWrites++;
       }
-      // C11-195 — the IDL duplicate is a SECOND view of the same node in the
-      // same frame. It takes its own arena slice, so its dynamic offset is
-      // necessarily distinct from the primary view's while both share one
-      // group-0 bind group over the ring page. The LIGHT offset is deliberately
-      // the SAME: the wrapped copy shifts the model matrix, not the eye, so the
+      // The IDL duplicate is a second view of the same node in the same frame.
+      // It takes its own arena slice, so its dynamic offset is necessarily
+      // distinct from the primary view's while both share one group-0 bind
+      // group over the ring page. The light offset is deliberately the same:
+      // the wrapped copy shifts the model matrix, not the eye, so the
       // camera-relative light block is byte-identical for both halves of the
-      // IDL — exactly as it was when both read one per-primitive light UB.
+      // IDL.
       if (!defined(modelLightSlice)) {
         modelLightSlice =
           prepareModelViewLightSlice(
@@ -6183,10 +6147,10 @@ function updateWebGPUModel(
             preparationWork,
           ) ?? undefined;
       }
-      // A still-undefined slice here is the dead-device degradation
-      // (resolveModelCameraArenaOwner): leave `nodeIdlCameraBG` null so the
-      // duplicate is never emitted — the primary draw skips below for the
-      // same reason.
+      // A still-undefined slice here is the dead-device degradation described
+      // in `resolveModelCameraArenaOwner`: leave `nodeIdlCameraBG` null so the
+      // duplicate is never emitted. The primary draw skips below for the same
+      // reason.
       const idlBinding = !defined(modelLightSlice)
         ? null
         : acquireModelCameraBinding(
@@ -6224,25 +6188,23 @@ function updateWebGPUModel(
       }
     }
 
-    // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175) — resolve the per-node
-    // PREVIOUS-frame nodeModelMatrix for the velocity pack. Pre-Batch-175
-    // every primitive's pack pulled `cache.prevModelMatrix` (the model-
-    // level matrix), which was correct for static articulations (set
-    // once, then locked) but produced ghosting under TAA when articulation
-    // animations mutate `runtimeNode.transform` per-frame. Examples that
-    // hit this path: satellite solar-panel deploy animations, robot-arm
-    // articulations, AGI_articulations rigs whose nodes animate while
-    // TAA is on.
+    // Resolve the per-node previous-frame nodeModelMatrix for the
+    // velocity pack. The model-level `cache.prevModelMatrix` is correct
+    // for static articulations, which are set once and then locked, but
+    // produces ghosting under TAA when articulation animations mutate
+    // `runtimeNode.transform` per frame. Satellite solar-panel deploy
+    // animations, robot-arm articulations and AGI_articulations rigs
+    // whose nodes animate while TAA is on all hit this path.
     //
     // For identity-transform nodes the per-node `nodeModelMatrix` equals
     // the model-level `modelMatrix`, so `cache.prevModelMatrix` is also
-    // the correct prev — fall back to it (no per-node storage cost on
-    // the common single-node-or-static-articulation case).
+    // the correct prev; falling back to it costs no per-node storage in
+    // the common single-node or static-articulation case.
     //
     // For non-identity nodes, read the per-node slot. First frame
     // (`prevNodeModelMatrix === null`) initializes from this frame's
-    // `nodeModelMatrix` so velocity is exactly zero — equivalent to
-    // "no history yet", matching TAA's first-frame fallback.
+    // `nodeModelMatrix` so velocity is exactly zero, which is what "no
+    // history yet" means and matches TAA's first-frame fallback.
     let prevNodeModelMatrixForPack = nodeModelMatrix;
     if (!pipelineWarmupOnly) {
       const nodeCacheForPrev = cache.nodes[nodeIdx];
@@ -6298,14 +6260,13 @@ function updateWebGPUModel(
 
       // Get material from the primitive's glTF data
       const glTFPrimitive = rp.primitive || rp._primitive;
-      // NEW-FEATURE-ID-VERTEX-ATTR (Batch 188) — `FeatureIdImplicitRange`
-      // primitives have no `_FEATURE_ID_0` accessor, so
-      // `extractPrimitiveGeometry` leaves `featureId0Data` null. Synthesize
-      // the per-vertex array here (`offset + floor(v / repeat)`) when the
-      // model's selected feature ID is implicit; the existing slot-8
-      // upload path then carries it like a regular vertex attribute, and
-      // the FS lights up the same `FLAG_HAS_FEATURE_ID_ATTRIBUTE` branch.
-      // Closes the implicit-range follow-up after Batch 130's audit B.2.
+      // `FeatureIdImplicitRange` primitives have no `_FEATURE_ID_0`
+      // accessor, so `extractPrimitiveGeometry` leaves `featureId0Data`
+      // null. Synthesize the per-vertex array here
+      // (`offset + floor(v / repeat)`) when the model's selected feature
+      // ID is implicit; the existing slot-8 upload path then carries it
+      // like a regular vertex attribute, and the FS lights up the same
+      // `FLAG_HAS_FEATURE_ID_ATTRIBUTE` branch.
       if (!geometry.hasFeatureId0 && defined(glTFPrimitive)) {
         const implicitSource = getSelectedImplicitFeatureId(
           model,
@@ -6433,12 +6394,12 @@ function updateWebGPUModel(
         ? retainedPrim._materialView
         : (createMaterialInfoView(baseMaterialInfo) as MaterialInfo);
 
-      // PARITY-CUSTOM-SHADER-WGSL (translucencyMode slice) — apply the
-      // per-update reset + customShader override BEFORE the primitive cache /
-      // pipeline is built so the forced alpha mode cascades to the pipeline
-      // blend state, passClass, and draw-pass selection. Resetting from the
-      // immutable authored value makes TRANSLUCENT/OPAQUE -> INHERIT dynamic
-      // transitions correct without mutating or rebuilding the shared base.
+      // Apply the per-update reset and customShader override before the
+      // primitive cache and pipeline are built, so the forced alpha mode
+      // cascades to the pipeline blend state, passClass, and draw-pass
+      // selection. Resetting from the immutable authored value makes
+      // TRANSLUCENT/OPAQUE -> INHERIT dynamic transitions correct without
+      // mutating or rebuilding the shared base.
       applyCustomShaderTranslucency(
         matInfo,
         baseMaterialInfo,
@@ -6468,13 +6429,13 @@ function updateWebGPUModel(
       primCache._featureIdData = geometry.featureId0Data;
       primCache._metadataDescriptor = metadataDescriptor;
 
-      // NEW-MODEL-PROJECT2D-BV-MORPH (B11) — lazily build (and cache) the
-      // accurate-2D position buffer for this primitive: reproject every vertex
-      // from model space through the 3D node world matrix into the projected
-      // frame, relative to the shared model-level reference. Keyed by the
-      // reference so a reference shift (rare — projectTo2D locks the matrix in
-      // 2D/CV) rebuilds it. The 3D `positionBuffer` is retained untouched, so
-      // returning to SCENE3D is byte-identical.
+      // Lazily build (and cache) the accurate-2D position buffer for this
+      // primitive: reproject every vertex from model space through the 3D node
+      // world matrix into the projected frame, relative to the shared
+      // model-level reference. Keyed by the reference so a reference shift
+      // rebuilds it, which is rare because projectTo2D locks the matrix in
+      // 2D/CV. The 3D `positionBuffer` is retained untouched, so returning to
+      // SCENE3D is byte-identical.
       if (project2DActive && defined(project2DNodeWorld)) {
         if (
           !defined(primCache.positionBuffer2D) ||
@@ -6496,27 +6457,29 @@ function updateWebGPUModel(
         }
       }
 
-      // DP-H46b — set the pipeline cache's metadata chunk for THIS primitive
-      // before any subsequent pipeline (re)build in this loop iteration
-      // (refetch / depth-write / pick / velocity / classification / translucent
-      // all reuse this primCache). No-op clear for non-metadata primitives.
+      // Set the pipeline cache's metadata chunk for this primitive before any
+      // subsequent pipeline (re)build in this loop iteration; the refetch,
+      // depth-write, pick, velocity, classification and translucent paths all
+      // reuse this primCache. This is a no-op clear for non-metadata
+      // primitives.
       applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache);
 
-      // Batch 110 — re-fetch the primary color pipeline when the
-      // scene pipeline format generation has bumped since this
-      // primitive was first set up. The pipelineCache was already
-      // cleared by `maybeUpdateForSceneFormat` above, so the
-      // getPipeline call below builds a fresh pipeline against the
-      // current `_presentationFormat` (which now mirrors the scene
-      // FB color format, e.g., rgba16float in HDR). Lazy variants
-      // (pick / velocity / translucent / depth-write) refresh
-      // themselves on their next-use sites — they're already
-      // undefined-tagged for re-fetch, the existing
-      // `if (!defined(primCache.X))` gates handle them.
-      // C2-22 — also re-fetch when the cache swapped a color pipeline to its
-      // magenta error fallback (async failure detection bumps the cache's
-      // _errorSwapGeneration). primCache caches the pipeline reference, so
-      // without this the swap never reaches the built command (render-hole stays).
+      // Re-fetch the primary color pipeline when the scene pipeline
+      // format generation has bumped since this primitive was first set
+      // up. The pipelineCache was already cleared by
+      // `maybeUpdateForSceneFormat` above, so the getPipeline call below
+      // builds a fresh pipeline against the current
+      // `_presentationFormat`, which mirrors the scene framebuffer color
+      // format (rgba16float in HDR, for example). Lazy variants (pick /
+      // velocity / translucent / depth-write) refresh themselves at
+      // their next-use sites: they are already undefined-tagged for
+      // re-fetch, and the existing `if (!defined(primCache.X))` gates
+      // handle them.
+      // Also re-fetch when the cache swapped a color pipeline to its
+      // magenta error fallback, which async failure detection signals by
+      // bumping the cache's `_errorSwapGeneration`. primCache caches the
+      // pipeline reference, so without this the swap never reaches the
+      // built command and the render hole persists.
       const errorSwapped =
         primCache._fetchedErrorGen !== pipelineCache._errorSwapGeneration;
       if (
@@ -6524,8 +6487,8 @@ function updateWebGPUModel(
         primCache.pipeline === null ||
         errorSwapped
       ) {
-        // Batch 174 — preserve the materialDefines variant across the
-        // format-change refetch.
+        // Preserve the materialDefines variant across the format-change
+        // refetch.
         const md = primCache.materialDefines | 0;
         primCache.pipeline = pipelineCache.getPipeline(
           matInfo.alphaMode,
@@ -6543,8 +6506,8 @@ function updateWebGPUModel(
         primCache._fetchedErrorGen = pipelineCache._errorSwapGeneration;
       }
 
-      // C11-202 — initial standalone-model preparation starts native async
-      // pipeline compilation before Model publishes its ready event. Resource
+      // Initial standalone-model preparation starts native async pipeline
+      // compilation before Model publishes its ready event. Resource
       // extraction/cache creation above is the shared preparation boundary;
       // camera/light/material uploads and command realization below remain on
       // the first renderable frame. In particular this path emits no command,
@@ -6553,14 +6516,13 @@ function updateWebGPUModel(
         continue;
       }
 
-      // Session 65 BUG-WEBGPU-MODEL-TEXTURE-PLACEHOLDER-STUCK fix.
       // Per-frame poll: any slot that fell back to a default
       // placeholder texture during the initial ensurePrimitiveCache
       // call gets re-checked here. As soon as the matching glTF
-      // texture reader resolves its image source we upload the real
-      // GPU texture and force a textureEntries rebuild below so the
+      // texture reader resolves its image source, the real GPU texture
+      // is uploaded and a textureEntries rebuild is forced below so the
       // bind group picks up the new view.
-      // Cheap when nothing's pending (single Set.size check); the
+      // Cheap when nothing is pending (a single Set.size check); the
       // upload cost only fires once per slot per primitive.
       const texturesUpgraded = refreshDeferredModelTextures(
         device,
@@ -6571,17 +6533,15 @@ function updateWebGPUModel(
         cache._cancelTextureMipGeneration,
       );
 
-      // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — when the primitive
-      // declares transmission AND the SceneRenderer has published a
-      // refraction view this frame, ensure the texture bind group
-      // points at the latest view. Cheap: a reference compare against
-      // the last-bound view; rebuild only on first use OR when the
-      // scene framebuffer reallocates the refraction texture (resize,
-      // HDR toggle). Also publishes the per-frame "scene has
-      // transmission" flag so the SceneRenderer's capture pass fires.
-      // NEW-BG-CONSOLIDATION (Batch 122) — track texture entries
-      // instead of a standalone bind group. Rebuilt only when the
-      // refraction view changes (per-frame ref compare).
+      // When the primitive declares transmission and the SceneRenderer
+      // has published a refraction view this frame, ensure the texture
+      // bind group points at the latest view. This costs a reference
+      // compare against the last-bound view; the rebuild happens only on
+      // first use, or when the scene framebuffer reallocates the
+      // refraction texture (a resize or HDR toggle). It also publishes
+      // the per-frame "scene has transmission" flag so the
+      // SceneRenderer's capture pass fires. Texture entries are tracked
+      // instead of a standalone bind group.
       if (matInfo.hasTransmission) {
         context._sceneHasTransmission = true;
         const currentRefractionView = context._refractionSceneView ?? null;
@@ -6600,8 +6560,7 @@ function updateWebGPUModel(
       // placeholder slot above — the textureViews map now points at
       // a real GPU texture but textureEntries still references the
       // stale placeholder view. Without this rebuild, the bind group
-      // keeps the white fallback even after the real texture loads
-      // (root cause of Mars/Moon/Aerometrex/BIM "all-white" cluster).
+      // keeps the white fallback even after the real texture loads.
       if (!defined(primCache.textureEntries) || texturesUpgraded) {
         primCache.textureEntries = getModelTextureEntries(
           primCache,
@@ -6615,10 +6574,10 @@ function updateWebGPUModel(
       // group 1 bind group is built per-frame at the draw command emission
       // site (material UBO + texture entries + featureId entries in one BG).
       //
-      // C11-195 — there is deliberately no per-primitive LIGHT buffer here
-      // any more. The light block is a property of the (model, view) pair, so
-      // every primitive of a model held a byte-identical copy of it and paid
-      // its own pack + upload; it now rides one arena slice on group 0.
+      // There is deliberately no per-primitive light buffer here. The light
+      // block is a property of the (model, view) pair, so a per-primitive copy
+      // would be byte-identical across the model and would pay its own pack
+      // and upload; it rides one arena slice on group 0 instead.
       if (!defined(primCache.materialBuffer)) {
         primCache.materialBuffer = WebGPUBuffer.createUniformBuffer(
           device,
@@ -6630,8 +6589,8 @@ function updateWebGPUModel(
           primCache.materialData,
         );
       }
-      // Determine if this specific primitive has skinning
-      // (node has skin AND primitive has joints/weights attributes)
+      // Determine if this specific primitive has skinning: the node has a skin
+      // and the primitive has joints/weights attributes.
       const primHasSkinning = hasSkinning && primCache.hasSkinningAttributes;
 
       // Morph targets: create/update GPU resources per-primitive
@@ -6641,14 +6600,13 @@ function updateWebGPUModel(
         geometry.morphTargetCount > 0 &&
         defined(morphWeights) &&
         morphWeights.length > 0;
-      // NEW-BG-CONSOLIDATION (Batch 122) — track morph target buffers
-      // instead of a standalone bind group. The merged group 2 bind
-      // group at the draw command emission site composes them with
-      // skinning + instancing into one bind group.
+      // Track morph target buffers instead of a standalone bind group.
+      // The merged group 2 bind group at the draw command emission site
+      // composes them with skinning and instancing into one bind group.
       let morphDeltaBuffer = null;
       let morphWeightBuffer = null;
-      // NEW-TAA-MORPH-PREV (Batch 134) -- prev-frame mirror for TAA
-      // velocity. Same swap pattern as `prevPackedJointMatrices`.
+      // Prev-frame mirror for TAA velocity. Same swap pattern as
+      // `prevPackedJointMatrices`.
       let prevMorphWeightBuffer = null;
       if (primHasMorphTargets) {
         const morphRes = ensureMorphTargetResources(
@@ -6667,15 +6625,15 @@ function updateWebGPUModel(
         }
       }
 
-      // C-R9-MODEL-PICK (Batch 54 / refactored Batch 59) — per-glTF-
-      // primitive pick ID allocation delegated to {@link ensurePickId} in
-      // multi-id mode (`idKey = primKey`). Each glTF primitive of a model
-      // gets its own pick color so `scene.pick()` can resolve back to
-      // {primitive: model, id: primKey}. Per-feature pick (each
-      // EXT_mesh_features feature → one pick target) is the larger
-      // workstream tracked as `C-R9-MODEL-FEATURE-PICK`. The cache key
-      // `nodeIdx_primIdx` matches `primKey` so pick IDs follow primitive
-      // identity stably across re-extractions.
+      // Per-glTF-primitive pick ID allocation, delegated to
+      // {@link ensurePickId} in multi-id mode (`idKey = primKey`). Each
+      // glTF primitive of a model gets its own pick color so
+      // `scene.pick()` can resolve back to
+      // `{primitive: model, id: primKey}`. Per-feature pick, mapping each
+      // EXT_mesh_features feature to its own pick target, is a separate
+      // and larger workstream. The cache key `nodeIdx_primIdx` matches
+      // `primKey` so pick IDs follow primitive identity stably across
+      // re-extractions.
       const passes = frameState.passes;
       const allowAllocate = !!(passes && (passes.pick || passes.render));
       const modelPickId = ensurePickId(
@@ -6685,7 +6643,7 @@ function updateWebGPUModel(
         {
           idKey: primKey,
           allowAllocate,
-          // DP-H46e — fold a `detail.model` into the pick object so the
+          // Fold a `detail.model` into the pick object so the
           // backend-agnostic `Scene.pickMetadata` orchestration (which reads
           // `pickedObject.detail.model.structuralMetadata` — see
           // `Scene.pickMetadata`/`Scene.pickMetadataSchema`) resolves the model's
@@ -6701,38 +6659,38 @@ function updateWebGPUModel(
       );
       const pickColor = modelPickId?.color;
 
-      // TAA Slice 2c (Batch 96) — track per-model previousModelMatrix on
-      // the model's WebGPU cache (one slot for the whole model — every
-      // primitive shares the same matrix per frame). The motion-vector
-      // output gates on `frameState.taaEnabled` so static scenes don't
-      // pay the per-fragment velocity cost. Capturing the matrix on the
-      // model rather than the primitive avoids storing it once per
-      // primitive of a multi-mesh asset (ECS behavior — per model).
+      // Track per-model previousModelMatrix on the model's WebGPU cache:
+      // one slot for the whole model, because every primitive shares the
+      // same matrix per frame. The motion-vector output gates on
+      // `frameState.taaEnabled` so static scenes do not pay the
+      // per-fragment velocity cost. Capturing the matrix on the model
+      // rather than the primitive avoids storing it once per primitive of
+      // a multi-mesh asset.
       if (!defined(cache.prevModelMatrix)) {
         cache.prevModelMatrix = Matrix4.clone(modelMatrix);
       }
       const motionEnabled = frameState?.taaEnabled === true;
 
-      // C-R1-TILE-BATCH (Batch 100) — primary command class. The model
-      // emits the OPAQUE-class command first (passClass=0). When the
-      // model carries a Cesium3DTileBatchTable AND its alphaMode is
-      // OPAQUE/MASK, the renderer emits a SECOND translucent-class
-      // command (passClass=1, pass=Pass.TRANSLUCENT) so per-feature
-      // styling can flip individual features to translucent without
-      // pipeline state changes — see the dual-command emission block
-      // below for the second command. Models whose alphaMode is BLEND
-      // already land in TRANSLUCENT pass; their primary command is the
-      // translucent-class one and no derivation is needed.
+      // Primary command class. The model emits the OPAQUE-class command
+      // first (passClass=0). When the model carries a
+      // Cesium3DTileBatchTable and its alphaMode is OPAQUE or MASK, the
+      // renderer emits a second translucent-class command (passClass=1,
+      // pass=Pass.TRANSLUCENT) so per-feature styling can flip individual
+      // features to translucent without pipeline state changes; see the
+      // dual-command emission block below. Models whose alphaMode is
+      // BLEND already land in the TRANSLUCENT pass, so their primary
+      // command is the translucent-class one and no derivation is needed.
       const passClass = matInfo.alphaMode === AlphaModes.BLEND ? 1 : 0;
 
-      // Update material uniforms (includes skinning + morph flags +
-      // pick color slot + TAA per-model motion + tile-batch passClass).
-      // AUDIT_2026_05_02 B.8 (Batch 152, fixed Batch 154) — passes the
-      // per-runtime-node modelMatrix (`modelMatrix * runtimeNode.computedTransform`,
-      // where `computedTransform = transformToRoot × transform`) so the
-      // FS world-space reconstructions (`material.modelMatrix * input.rteMC`
-      // — see ModelPBRComplete.wgsl:1600/2016/2029/2072/2233) compose with
-      // the correct parent-chain + local transform for articulated rigs.
+      // Update material uniforms: skinning and morph flags, the pick
+      // color slot, TAA per-model motion, and the tile-batch passClass.
+      // The per-runtime-node modelMatrix
+      // (`modelMatrix * runtimeNode.computedTransform`, where
+      // `computedTransform = transformToRoot × transform`) is what gets
+      // passed, so the FS world-space reconstructions
+      // (`material.modelMatrix * input.rteMC` in ModelPBRComplete.wgsl)
+      // compose with the correct parent-chain and local transform for
+      // articulated rigs.
       if (defined(preparationWork)) {
         preparationWork.materialPacks++;
       }
@@ -6749,25 +6707,25 @@ function updateWebGPUModel(
         primHasSkinning,
         primHasMorphTargets,
         pickColor,
-        // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175) — per-node prev.
+        // Per-node previous transform.
         prevNodeModelMatrixForPack,
         motionEnabled,
         passClass,
       );
 
-      // WIRE-MODEL-SPLITTER — the split scalars ride the material UB's
-      // historical pad lanes (floats 38/39, `_pad_end2`/`_pad_end3` in
-      // ModelPBRComplete.wgsl — packMaterialUniforms zeroes them just
-      // above). Packed unconditionally (the log-depth-lane precedent);
-      // only the `//>>ifdef MODEL_SPLIT_ENABLED` FS blocks read them.
+      // The split scalars ride the material UB's pad lanes (floats 38/39,
+      // `_pad_end2`/`_pad_end3` in ModelPBRComplete.wgsl, which
+      // packMaterialUniforms zeroes just above). They are packed
+      // unconditionally, like the log-depth lanes; only the
+      // `//>>ifdef MODEL_SPLIT_ENABLED` FS blocks read them.
       primCache.materialData[38] = modelSplitDirection;
       primCache.materialData[39] = modelSplitPositionPx;
 
-      // WIRE-MODEL-COLOR — model.color rides the material UB's reserved
-      // tail lane (floats 184-187, `_pad_reserved8`) and the blend scalar
-      // rides `motionFlags.w` (float 175). packMaterialUniforms zero-fills
-      // both just above, so the undefined-color default stays byte-
-      // identical; only the `//>>ifdef MODEL_HAS_COLOR` FS blocks read them.
+      // model.color rides the material UB's reserved tail lane (floats
+      // 184-187, `_pad_reserved8`) and the blend scalar rides
+      // `motionFlags.w` (float 175). packMaterialUniforms zero-fills both
+      // just above, so the undefined-color default stays byte-identical;
+      // only the `//>>ifdef MODEL_HAS_COLOR` FS blocks read them.
       if (modelHasColor) {
         primCache.materialData[175] = modelColorBlend;
         primCache.materialData[184] = modelColor.red;
@@ -6776,12 +6734,11 @@ function updateWebGPUModel(
         primCache.materialData[187] = modelColor.alpha;
       }
 
-      // Feature ID textures + batch texture (for per-feature styling).
-      // C-R9-MODEL-FEATURE-PICK (Batch 101) — threads `context` +
-      // `cache` (per-model cache) + a `pickPassActive` hint so
-      // `ensurePerFeaturePickIds` can allocate per-feature pickIds.
-      // NEW-BG-CONSOLIDATION (Batch 122) — `featureIdRes.featureIdEntries`
-      // are entries (bindings 26-32) spliced into the merged group 1.
+      // Feature ID textures and batch texture, for per-feature styling.
+      // `context`, the per-model `cache`, and a `pickPassActive` hint are
+      // threaded through so `ensurePerFeaturePickIds` can allocate
+      // per-feature pickIds. `featureIdRes.featureIdEntries` are entries
+      // (bindings 26-32) spliced into the merged group 1.
       let featureIdEntries = null;
       const pickPassActive = !!(passes && passes.pick);
       const featureIdRes = ensureFeatureIdResources(
@@ -6798,7 +6755,7 @@ function updateWebGPUModel(
         pickPassActive,
       ) as FeatureIdResourcesLike | undefined;
 
-      // Set instancing + feature ID flags AFTER packMaterialUniforms
+      // Set instancing and feature ID flags after packMaterialUniforms.
       {
         let currentFlags = primaryMaterialUploadState.currentWords[28];
         if (hasInstancing && instanceCount > 1) {
@@ -6824,16 +6781,15 @@ function updateWebGPUModel(
         }
       }
 
-      // C11-195 — the per-primitive light pack + byte-compare + upload that
-      // used to sit here is gone. It ran once per primitive for a block that
-      // depends only on `frameState` + `model`, and its unchanged-write
-      // suppression could only ever fire while the camera was perfectly still
-      // (the block's punctual positions and eye→world rotation are relative to
-      // the live RTE eye). `prepareModelViewLightSlice` now packs it once per
-      // model per view, ahead of the first group-0 acquisition.
+      // There is deliberately no per-primitive light pack, byte-compare and
+      // upload here. It would run once per primitive for a block that depends
+      // only on `frameState` and `model`, and its unchanged-write suppression
+      // could only ever fire while the camera was perfectly still, because the
+      // block's punctual positions and eye→world rotation are relative to the
+      // live RTE eye. `prepareModelViewLightSlice` packs it once per model per
+      // view instead, ahead of the first group-0 acquisition.
 
-      // Session 62 NEW-VR-VERTEX-BUFFER-VARIANT (+ Session 65 follow-up)
-      // — variant-aware vertex buffer slots. When MODEL_HAS_TEXCOORD_1
+      // Variant-aware vertex buffer slots. When MODEL_HAS_TEXCOORD_1
       // is unset, the pipeline omits slot 7 (texCoord1); when
       // MODEL_HAS_FEATURE_ID_0 is unset, slot 8 (featureId0) is also
       // omitted. The buffers array must match the pipeline layout count
@@ -6846,8 +6802,8 @@ function updateWebGPUModel(
       //   - feat0 only   → 8 slots (positions 0-6, 8; slot 7 = featureId0)*
       //   - both set     → 9 slots (positions 0-8)
       //
-      // (*) When tex1 is unset but feat0 is set we still have to push
-      // featureId0 — but at the SAME `shaderLocation = 8` per the
+      // (*) When tex1 is unset but feat0 is set, featureId0 still has to
+      // be pushed, at the same `shaderLocation = 8` per the
       // `createVertexBufferLayout` contract. WebGPU keys buffer slots
       // by their position in the `buffers` array, not by shader
       // location; the binding order here matches the array index, so
@@ -6858,14 +6814,15 @@ function updateWebGPUModel(
         (primCache.materialDefines & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
       const hasFeatureId0 =
         (primCache.materialDefines & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
-      // DP-H46a — slot 9 (metadata scalar) is present only on metadata
-      // models. The vertexBuffers array must match the pipeline layout's
-      // slot count exactly or `setVertexBuffer` errors.
+      // Slot 9 (metadata scalar) is present only on metadata models. The
+      // vertexBuffers array must match the pipeline layout's slot count
+      // exactly or `setVertexBuffer` errors.
       const hasMetadata =
         (primCache.materialDefines & ShaderDefine.MODEL_HAS_METADATA) !== 0;
-      // NEW-MODEL-PROJECT2D-BV-MORPH (B11) — bind the reprojected accurate-2D
-      // position buffer when the model is projectTo2D-active and it has been
-      // built; otherwise the untouched 3D position buffer (byte-identical off).
+      // Bind the reprojected accurate-2D position buffer when the model is
+      // projectTo2D-active and the buffer has been built; otherwise the
+      // untouched 3D position buffer, which keeps the off case
+      // byte-identical.
       const positionBuffer0 =
         project2DActive && defined(primCache.positionBuffer2D)
           ? primCache.positionBuffer2D
@@ -6891,8 +6848,8 @@ function updateWebGPUModel(
           primCache.featureIdBuffer || pipelineCache.defaultFeatureIdBuffer,
         );
       }
-      // DP-H46a — metadata scalar at slot 9. Pushed LAST so the array
-      // index matches the layout's final buffer slot. The
+      // Metadata scalar at slot 9. Pushed last so the array index
+      // matches the layout's final buffer slot. The
       // `createVertexBufferLayout(... hasMetadata)` declares
       // `shaderLocation = 9` for this slot regardless of the array
       // position (WebGPU keys slots by array index, not shaderLocation),
@@ -6910,42 +6867,41 @@ function updateWebGPUModel(
       // Use model.opaquePass to get the correct pass:
       //   - Pass.CESIUM_3D_TILE for 3D Tiles content (set by Model3DTileContent)
       //   - Pass.OPAQUE for standalone models
-      // Alpha blend primitives override to TRANSLUCENT
-      // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) —
-      // when `model.classificationType` is set, the model becomes a
-      // classification volume: route the command into the appropriate
-      // classifier pass and use the depth-sample classifier pipeline
+      // Alpha blend primitives override to TRANSLUCENT.
+      // When `model.classificationType` is set, the model becomes a
+      // classification volume: the command routes into the appropriate
+      // classifier pass and uses the depth-sample classifier pipeline
       // instead of the lit PBR pipeline. Mirrors WebGL's
       // `ClassificationModelDrawCommand` pass routing
       // (`Source/Scene/Model/ClassificationModelDrawCommand.js`).
-      // AUDIT_2026_05_02 A.3 (Batch 146) — `classificationType: BOTH`
-      // now emits TWO commands per primitive (one for TERRAIN, one for
-      // 3D Tile) instead of collapsing to a single 3D Tile pass. The
-      // non-classifier path still emits a single command. Both paths
-      // run through the same `passes` loop below.
-      // C-R8-EDGE-DISPLAY-MODE (§5 P2) — resolve the model's
-      // EdgeDisplayMode for this edge-bearing primitive. Mirrors WebGL's
-      // `ModelDrawCommand.pushCommands` / `pushEdgeCommands`
-      // (`ModelDrawCommand.js:185-265`):
+      // `classificationType: BOTH` emits two commands per primitive, one
+      // for TERRAIN and one for 3D Tile, rather than collapsing to a
+      // single 3D Tile pass. The non-classifier path emits a single
+      // command. Both paths run through the same `passes` loop below.
+      //
+      // Resolve the model's EdgeDisplayMode for this edge-bearing
+      // primitive. Mirrors WebGL's `ModelDrawCommand.pushCommands` /
+      // `pushEdgeCommands`:
       //   - SURFACES_ONLY (default): surface renders, edges suppressed.
-      //   - SURFACES_AND_EDGES: surface renders, edges → MRT
-      //     (`CESIUM_3D_TILE_EDGES`) for the Batch 44 composite.
+      //   - SURFACES_AND_EDGES: surface renders, edges go to the MRT
+      //     (`CESIUM_3D_TILE_EDGES`) for the composite pass.
       //   - EDGES_ONLY: surface suppressed for edge-bearing primitives,
-      //     edges → `CESIUM_3D_TILE_EDGES_DIRECT` (renders straight onto
-      //     the scene framebuffer — CAD wireframe).
-      // `_needsEdgeCommands` on WebGL ⇔ this primitive actually produced
-      // edge geometry. WebGL gates on `defined(renderResources.edgeGeometry)`
-      // (`ModelDrawCommand.js:81`), NOT just the extension's presence — a
-      // primitive that declares `EXT_mesh_primitive_edge_visibility` but
-      // yields no extractable edges keeps its surface (`_needsEdgeCommands`
-      // is false). We mirror that: the edge emitter below sets
-      // `primCache.edgeResources = false` (a sentinel distinct from
-      // `undefined` = "not yet checked") once it confirms a primitive has
-      // no edges. Suppress the surface only when edges are present OR not
-      // yet determined (`!== false`) — on the steady-state frame after the
-      // first, a degenerate edge-less primitive falls back to rendering its
-      // surface exactly like WebGL. Classifiers never run the edge stage
-      // (see Batch 142 note below), so the suppression skips them.
+      //     edges go to `CESIUM_3D_TILE_EDGES_DIRECT`, which renders
+      //     straight onto the scene framebuffer as a CAD wireframe.
+      // WebGL's `_needsEdgeCommands` means "this primitive actually
+      // produced edge geometry": it gates on
+      // `defined(renderResources.edgeGeometry)`, not merely on the
+      // extension's presence, so a primitive that declares
+      // `EXT_mesh_primitive_edge_visibility` but yields no extractable
+      // edges keeps its surface. The same rule holds here: the edge
+      // emitter below sets `primCache.edgeResources = false` — a sentinel
+      // distinct from `undefined`, which means "not yet checked" — once it
+      // confirms a primitive has no edges. Suppress the surface only when
+      // edges are present or not yet determined (`!== false`), so that on
+      // the steady-state frame after the first, a degenerate edge-less
+      // primitive falls back to rendering its surface exactly like WebGL.
+      // Classifiers never run the edge stage, so the suppression skips
+      // them.
       const edgeDisplayMode =
         model.edgeDisplayMode ?? EdgeDisplayMode.SURFACES_ONLY;
       const primitiveHasEdges =
@@ -6976,31 +6932,29 @@ function updateWebGPUModel(
         );
       }
 
-      // C-R1 (Batch 37) — forward the source JS-side renderState so our
-      // Batch 30 `applyPerEncoderState` hook fires per-draw
-      // stencilRef / blendConstant / viewport / scissor. Model
-      // primitives set distinct renderStates for silhouette / shadow /
-      // backface / classification variants (`ModelDrawCommand.js` lines
-      // 626, 641, 767, 818, 868, 925, 950); forwarding the base-color
+      // Forward the source JS-side renderState so the
+      // `applyPerEncoderState` hook fires per-draw stencilRef /
+      // blendConstant / viewport / scissor. Model primitives set distinct
+      // renderStates for silhouette, shadow, backface and classification
+      // variants in `ModelDrawCommand.js`; forwarding the base-color
       // renderState covers the primary draw. Derived-variant coverage
-      // (silhouette / shadow-receive / depth-fail) remains follow-up
-      // per the Batch 29 `selectCommandVariant` dispatcher — when
-      // populators land they'll pull renderState from their
-      // corresponding derived ModelDrawCommand slot.
-      // C11-202 — a native MODEL feature renderer receives the same shared
+      // (silhouette / shadow-receive / depth-fail) is still open in the
+      // `selectCommandVariant` dispatcher: once populators exist they
+      // will pull renderState from their corresponding derived
+      // ModelDrawCommand slot.
+      // A native model feature renderer receives the same shared
       // pipeline-stage semantics through the backend-neutral descriptor and
       // does not realize an unused WebGL ShaderProgram/VertexArray/DrawCommand.
-      // Keep the legacy fallback for a model built before that descriptor path
-      // (and for compatibility with isolated renderer specs).
+      // The fallback covers a model built without that descriptor path, and
+      // isolated renderer specs.
       const modelRenderState =
         rp.backendNeutralDescriptor?.renderState ??
         rp.drawCommand?._command?.renderState;
 
-      // NEW-BG-CONSOLIDATION (Batch 122) — 4 merged bind groups.
-      // Batch 174 — `materialDefines` selects the per-variant materialBGL.
-      // C9-17 Slice A — memoized IBL entries (stable array identity while the
-      // five resolved IBL identities are unchanged) so the group-1 cache below
-      // keys on one array reference.
+      // Four merged bind groups. `materialDefines` selects the per-variant
+      // materialBGL, and the memoized IBL entries keep a stable array identity
+      // while the five resolved IBL identities are unchanged, so the group-1
+      // cache below keys on one array reference.
       const iblEntries = getOrCreateModelIBLEntries(
         cache,
         model,
@@ -7029,23 +6983,22 @@ function updateWebGPUModel(
         instanceBuffer,
         nodePrevJointBuffer,
         prevMorphWeightBuffer,
-        // NEW-TAA-INSTANCE-PREV (Batch 134) -- static GPU instancing
-        // (today's only case) aliases the current buffer for zero
-        // velocity contribution. When animated instancing lands the
-        // node cache will hold a separate `prevInstancingBuffer`.
+        // Static GPU instancing, the only case currently produced,
+        // aliases the current buffer for a zero velocity contribution.
+        // Animated instancing would give the node cache a separate
+        // `prevInstancingBuffer`.
         instanceBuffer,
       );
 
-      // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) —
-      // route through the classification pipeline when the model is a
-      // classifier. Same vertex stage / bind groups / vertex buffers /
-      // index buffer; only the fragment entry differs (samples globe
-      // depth, discards on sky, emits `material.baseColorFactor`).
-      // WIRE-MODEL-SILHOUETTE — when the silhouette is active, the BASE
-      // draw swaps to the stencil-write variant (WebGL
-      // `deriveSilhouetteModelCommand`: same shading, stencil ALWAYS /
-      // zPass REPLACE stamps `model._silhouetteId % 255`; invisible
-      // models zero the colour writeMask). The derived colour command is
+      // Route through the classification pipeline when the model is a
+      // classifier. Same vertex stage, bind groups, vertex buffers and
+      // index buffer; only the fragment entry differs, sampling globe
+      // depth, discarding on sky, and emitting `material.baseColorFactor`.
+      // When the silhouette is active, the base draw swaps to the
+      // stencil-write variant, matching WebGL
+      // `deriveSilhouetteModelCommand`: same shading, stencil ALWAYS and
+      // zPass REPLACE stamp `model._silhouetteId % 255`, and invisible
+      // models zero the colour writeMask. The derived colour command is
       // built after the primary push below. hasSilhouette() excludes
       // classifiers, so the two branches never coincide.
       if (modelHasSilhouette && !defined(primCache.silhouettePipeline)) {
@@ -7060,7 +7013,7 @@ function updateWebGPUModel(
         ? pipelineCache.getClassificationPipeline(
             matInfo.alphaMode,
             matInfo.isDoubleSided,
-            // Batch 174 — preserve materialDefines variant for the
+            // Preserve the materialDefines variant for the
             // classification pipeline so it pairs with the matching
             // per-variant materialBGL the bind group above was
             // constructed against.
@@ -7070,28 +7023,27 @@ function updateWebGPUModel(
           ? primCache.silhouettePipeline
           : primCache.pipeline;
 
-      // C10-07-ASYNC-MODEL-PIPELINES — ready-gate. The on-screen color
-      // pipeline (`primCache.pipeline`) is now compiled via
-      // `createRenderPipelineAsync` and is null while the variant is still
-      // cooking. Skip this primitive's draw for the cooking frame — never bind
-      // a null pipeline (`WebGPUDrawCommand` requires one; a null
-      // `setPipeline` is a validation error). The per-frame refetch guard
-      // above re-polls `primCache.pipeline`, so the draw appears within ≤1
-      // frame of the async compile landing (matches the globe's
-      // `resolveGlobePipelineEntry` skip-a-frame behavior). The classifier +
+      // Ready gate. The on-screen color pipeline (`primCache.pipeline`) is
+      // compiled via `createRenderPipelineAsync` and is null while the variant
+      // is still cooking. Skip this primitive's draw for the cooking frame; a
+      // null pipeline must never be bound, since `WebGPUDrawCommand` requires
+      // one and a null `setPipeline` is a validation error. The per-frame
+      // refetch guard above re-polls `primCache.pipeline`, so the draw appears
+      // within one frame of the async compile landing, matching the globe's
+      // `resolveGlobePipelineEntry` skip-a-frame behavior. The classifier and
       // silhouette paths build their pipelines synchronously, so only the
       // normal color path can be null here.
       if (!defined(activePipeline)) {
         continue;
       }
 
-      // AUDIT_2026_05_02 B.8 + C11-185 Slice 3 — prepare the exact RTE camera
-      // block at the first command that consumes it. Identity nodes share one
-      // model-level block per update; transformed nodes own one node block.
+      // Prepare the exact RTE camera block at the first command that consumes
+      // it. Identity nodes share one model-level block per update; transformed
+      // nodes own one node block.
       if (!defined(nodeCameraBG)) {
-        // C11-195 — realize this model's ONE light block at the first command
-        // that will bind it, mirroring the camera's lazy realization. Both
-        // branches below pair their camera slice with this exact slice.
+        // Realize this model's single light block at the first command that
+        // will bind it, mirroring the camera's lazy realization. Both branches
+        // below pair their camera slice with this exact slice.
         if (!defined(modelLightSlice)) {
           modelLightSlice =
             prepareModelViewLightSlice(
@@ -7103,9 +7055,9 @@ function updateWebGPUModel(
             ) ?? undefined;
         }
         if (!defined(modelLightSlice)) {
-          // Dead-device degradation (resolveModelCameraArenaOwner): skip this
-          // primitive's draw. Nothing can render on a dead device, and the
-          // arena helpers stay loud for every non-lifecycle null.
+          // Dead-device degradation, per `resolveModelCameraArenaOwner`: skip
+          // this primitive's draw. Nothing can render on a dead device, and
+          // the arena helpers stay loud for every non-lifecycle null.
           continue;
         }
         if (transformIsIdentity) {
@@ -7129,10 +7081,10 @@ function updateWebGPUModel(
             if (defined(preparationWork)) {
               preparationWork.cameraWrites++;
             }
-            // C11-195 — one arena slice per model per update instead of one
-            // persistent buffer plus one `queue.writeBuffer` per frame. The
-            // staged bytes reach the queue in the ring's single per-page
-            // flush, which the context runs before the frame is submitted.
+            // One arena slice per model per update, rather than one persistent
+            // buffer plus one `queue.writeBuffer` per frame. The staged bytes
+            // reach the queue in the ring's single per-page flush, which the
+            // context runs before the frame is submitted.
             rootCameraBinding =
               acquireModelCameraBinding(
                 device,
@@ -7143,7 +7095,7 @@ function updateWebGPUModel(
                 modelLightSlice,
               ) ?? undefined;
             if (!defined(rootCameraBinding)) {
-              // Dead-device skip — deliberately NOT marked prepared, so a
+              // Dead-device skip. Deliberately not marked prepared, so a
               // later primitive re-attempts instead of binding undefined.
               continue;
             }
@@ -7180,8 +7132,8 @@ function updateWebGPUModel(
         }
       }
 
-      // WIRE-MODEL-SILHOUETTE — the stencil-write pipeline needs the
-      // model's stencil reference set per-draw (`applyPerEncoderState`
+      // The stencil-write pipeline needs the model's stencil reference
+      // set per-draw (`applyPerEncoderState`
       // reads `renderState.stencilTest.reference` →
       // `setStencilReference`). Shallow-merge over the forwarded WebGL
       // renderState so its other dynamic state (viewport / scissor /
@@ -7193,24 +7145,23 @@ function updateWebGPUModel(
           }
         : modelRenderState;
 
-      // AUDIT_2026_05_02 A.3 (Batch 146) — `passes[0]` is the primary
-      // pass. The non-classifier path always has length 1, so the
-      // existing pick/velocity/dual/translucent/edge code below operates
-      // on `webgpuCmd` (the primary command). The classifier path may
-      // have length 2 for BOTH; the second command is built from the
-      // same args after the primary push and goes straight onto the
-      // commandList without pick/velocity attachments (classifier
-      // doesn't pick or emit velocity).
+      // `passes[0]` is the primary pass. The non-classifier path always
+      // has length 1, so the pick, velocity, dual, translucent and edge
+      // code below operates on `webgpuCmd`, the primary command. The
+      // classifier path may have length 2 for BOTH; the second command is
+      // built from the same args after the primary push and goes straight
+      // onto the commandList without pick or velocity attachments,
+      // because a classifier neither picks nor emits velocity.
       const primaryPass = drawPasses[0];
       const webgpuCmdArgs = {
         pipeline: activePipeline,
         bindGroups: [
-          nodeCameraBG, // group 0 — per-runtime-node when computedTransform != I (B.8)
+          nodeCameraBG, // group 0 — per-runtime-node when computedTransform != I
           mergedMaterialBG, // group 1 (material + light + textures + featureId)
           mergedInstanceBG, // group 2 (skinning + morph + instancing)
-          cache.effectsBG, // group 3 (was group 7)
+          cache.effectsBG, // group 3
         ],
-        // C11-195 — group 0 is a dynamic-offset layout; groups 1-3 are not.
+        // Group 0 is a dynamic-offset layout; groups 1-3 are not.
         bindGroupDynamicOffsets: [
           nodeCameraOffsets,
           undefined,
@@ -7230,8 +7181,8 @@ function updateWebGPUModel(
         cull: model._cull ?? true,
         renderState: activeRenderState,
         ...colorShadowFlags,
-        // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — depth-write variant
-        // pipeline for BLEND primitives. Only consumed when the command's
+        // Depth-write variant pipeline for BLEND primitives. Only
+        // consumed when the command's
         // `depthForTranslucentClassification` flag is set (forwarded by
         // `Cesium3DTile.update` for translucent tile content). Undefined
         // for OPAQUE/MASK because they already write depth.
@@ -7239,16 +7190,17 @@ function updateWebGPUModel(
       };
       const webgpuCmd: ModelDrawCommand = new WebGPUDrawCommand(webgpuCmdArgs);
 
-      // C11-157 Slice C — OIT reachability for a natively-translucent (BLEND
-      // alphaMode) model primary command. Attach the OIT variant inputs so
-      // `executeTranslucentPass` auto-builds the MRT accumulation pipeline under
-      // the FAR-003 gate. Skips classifiers (draw via globe-depth, not a
-      // reflective/translucent surface) and silhouetted models (the silhouette
-      // OIT "body wash" is deferred to C11-157 Slice D / C11-91). The command is
-      // only reached once `activePipeline` is ready (the async ready-gate above
-      // `continue`s otherwise), and the OIT variant is built synchronously
-      // on-demand in the translucent pass, so it never renders during pipeline
-      // warmup. Inert when the FAR-003 gate is off → gate-OFF byte-identical.
+      // OIT reachability for a natively-translucent (BLEND alphaMode) model
+      // primary command. Attach the OIT variant inputs so
+      // `executeTranslucentPass` auto-builds the MRT accumulation pipeline
+      // under the containment gate. Classifiers are skipped because they draw
+      // via globe depth rather than as a reflective or translucent surface, and
+      // silhouetted models are skipped because the silhouette OIT body wash is
+      // not implemented. The command is only reached once `activePipeline` is
+      // ready, since the async ready gate above continues otherwise, and the
+      // OIT variant is built synchronously on demand in the translucent pass,
+      // so it never renders during pipeline warmup. It is inert when the gate
+      // is off, leaving that path byte-identical.
       if (
         primaryPass === Pass.TRANSLUCENT &&
         !isClassifier &&
@@ -7265,18 +7217,17 @@ function updateWebGPUModel(
         }
       }
 
-      // C2-25 ENV-SCENE-CAPTURE (Batch 447) — collect this primitive's
-      // camera-independent draw resources so the env-map capture pass can
-      // replay it per cube face. Skips:
+      // Collect this primitive's camera-independent draw resources so the
+      // env-map capture pass can replay it per cube face. Skips:
       //   - classifiers (`isClassifier`): they draw via globe-depth sampling,
       //     not as reflective surfaces.
       //   - edge-only suppressed surfaces (`suppressSurfaceForEdgesOnly`): the
       //     surface command exists only to seed edges, not to be reflected.
-      //   - translucent (BLEND) primitives (audit fix): the capture pipeline is
-      //     OPAQUE (no blend state) + depth-write, so a translucent surface
+      //   - translucent (BLEND) primitives: the capture pipeline is opaque,
+      //     with no blend state, and writes depth, so a translucent surface
       //     captured opaquely would write a wrong, fully-opaque reflection and
       //     occlude geometry behind it. Reflecting translucency correctly needs
-      //     a blended capture variant — deferred.
+      //     a blended capture variant, which does not exist.
       if (
         captureRecords !== null &&
         !isClassifier &&
@@ -7287,27 +7238,28 @@ function updateWebGPUModel(
           alphaMode: matInfo.alphaMode,
           doubleSided: matInfo.isDoubleSided,
           materialDefines: primCache.materialDefines | 0,
-          // GLTF-POINTS-MODE / C11-90 — capture replay builds its pipeline
-          // next frame from the record alone, so carry BOTH halves of the
-          // topology axis with it. A strip record without its index format
-          // would build an invalid pipeline.
+          // Capture replay builds its pipeline next frame from the record
+          // alone, so both halves of the topology axis travel with it. A
+          // strip record without its index format would build an invalid
+          // pipeline.
           topology: primCache.topology,
           stripIndexFormat: primCache.stripIndexFormat,
-          // DP-H46b — carry the generated metadata chunk + class hash so the
-          // capture replay (`getOrCreateModelCaptureCommands`) can prepend the
-          // same `struct Metadata` before building the capture pipeline.
-          // Otherwise a metadata model in the env-capture set would compile a
+          // Carry the generated metadata chunk and class hash so the capture
+          // replay (`getOrCreateModelCaptureCommands`) can prepend the same
+          // `struct Metadata` before building the capture pipeline. Otherwise
+          // a metadata model in the env-capture set would compile a
           // MODEL_HAS_METADATA module with no `initializeMetadata` declared.
-          // undefined for non-metadata primitives (capture build clears).
+          // Undefined for non-metadata primitives, where the capture build
+          // clears it.
           metadataWGSL: primCache._metadataWGSL,
           metadataClassHash: primCache._metadataClassHash | 0,
-          // NEW-MODEL-METADATA-MAT3-MAT4 — the capture replay must rebuild
-          // its pipeline with the same widened-transport variant.
+          // The capture replay must rebuild its pipeline with the same
+          // widened-transport variant.
           metadataMatTransport: primCache._metadataMatTransport === true,
           materialBuffer: primCache.materialBuffer,
-          // C11-195 — no light buffer travels with the record: the replay
-          // packs its OWN face-view light block, which it must, because the
-          // block is relative to the face eye.
+          // No light buffer travels with the record: the replay packs its own
+          // face-view light block, which it must, because the block is
+          // relative to the face eye.
           textureEntries: primCache.textureEntries,
           featureIdEntries,
           mergedInstanceBG,
@@ -7320,15 +7272,15 @@ function updateWebGPUModel(
           instanceCount,
           // The model-matrix this primitive's camera UB was packed against
           // (model-level, or per-runtime-node when computedTransform != I).
-          // CLONE: for non-identity nodes `nodeModelMatrix` aliases the shared
-          // `scratchNodeModelMatrix`, overwritten on the next node iteration —
-          // and capture runs NEXT frame (reads last frame's published refs), so
-          // a live reference would be stale. The clone is a stable snapshot.
+          // The clone is required: for non-identity nodes `nodeModelMatrix`
+          // aliases the shared `scratchNodeModelMatrix`, which the next node
+          // iteration overwrites, and capture runs the following frame from
+          // last frame's published refs, so a live reference would be stale.
           nodeModelMatrix: Matrix4.clone(nodeModelMatrix),
         });
       }
 
-      // ── Shadow cast tagging ──
+      // Shadow cast tagging.
       //
       // Three variants cover the model path:
       //
@@ -7402,9 +7354,9 @@ function updateWebGPUModel(
             primCache._shadowCastBindGroupCacheHost ??
             (primCache._shadowCastBindGroupCacheHost = {});
           webgpuCmd._shadowCastLayout = shadowCastLayout;
-          // C11-90 — the shadow caster rasterizes the SAME realized topology as
-          // the color pass. Both halves travel together so a strip caster gets
-          // its own pipeline per index format instead of aliasing.
+          // The shadow caster rasterizes the same realized topology as the
+          // color pass. Both halves travel together so a strip caster gets its
+          // own pipeline per index format instead of aliasing.
           webgpuCmd._shadowCastTopology = primCache.topology;
           webgpuCmd._shadowCastStripIndexFormat = primCache.stripIndexFormat;
           webgpuCmd._shadowCastModelUB = nodeShadowCastModelUB;
@@ -7416,28 +7368,28 @@ function updateWebGPUModel(
         }
       }
 
-      // C-R9-MODEL-PICK (Batch 54) — pick command. Same layout, vertex
-      // stage, vertex buffers, bind groups, and index buffer as the
-      // color command; only the pipeline differs (pick fragment entry,
-      // no blend, depth write forced on). Wired onto the color command's
-      // `derivedCommands.picking.pickCommand` so the Batch 29 dispatcher
+      // Pick command. Same layout, vertex stage, vertex buffers, bind
+      // groups, and index buffer as the color command; only the pipeline
+      // differs, with a pick fragment entry, no blend, and depth write
+      // forced on. Wired onto the color command's
+      // `derivedCommands.picking.pickCommand` so the dispatcher
       // (`selectCommandVariant` in `WebGPUSceneRenderer.ts`) routes here
-      // during pick passes. Only materialized when a pick ID exists —
+      // during pick passes. Only materialized when a pick ID exists:
       // models in non-pick render passes (frameState.passes.pick=false
       // and passes.render=false) skip pick-id allocation, so `pickColor`
-      // can be undefined here for an OFFSCREEN/UPDATE-only frame.
-      // AUDIT_2026_05_02 A.8 (Batch 142) — classifiers don't pick. The
-      // WebGL `ClassificationModelDrawCommand` doesn't allocate a pick
-      // command either; classifier draws into TERRAIN/3D-Tile pass on
-      // the scene FB, not the pick FBO.
+      // can be undefined here on an offscreen or update-only frame.
+      // Classifiers do not pick. WebGL's
+      // `ClassificationModelDrawCommand` allocates no pick command
+      // either; a classifier draws into the TERRAIN or 3D-Tile pass on
+      // the scene framebuffer, not the pick FBO.
       if (pickColor && !isClassifier) {
         if (!defined(primCache.pickPipeline)) {
           primCache.pickPipeline = pipelineCache.getPickPipeline(
             matInfo.alphaMode,
             matInfo.isDoubleSided,
-            // Batch 174 — pick pipeline must use the same per-variant
-            // pipeline layout as the color pipeline so it pairs with
-            // the same merged group-1 bind group at draw time.
+            // The pick pipeline must use the same per-variant pipeline
+            // layout as the color pipeline so it pairs with the same
+            // merged group-1 bind group at draw time.
             primCache.materialDefines | 0,
           );
         }
@@ -7447,13 +7399,13 @@ function updateWebGPUModel(
         // index buffer apply to every variant.
         const sharedPickDrawArgs = {
           bindGroups: [
-            nodeCameraBG, // B.8 (Batch 152) — per-runtime-node camera BG
+            nodeCameraBG, // per-runtime-node camera bind group
             mergedMaterialBG,
             mergedInstanceBG,
             cache.effectsBG,
           ],
-          // C11-195 — pick renders the same view as the color command, so it
-          // binds the same group-0 slice.
+          // Pick renders the same view as the color command, so it binds the
+          // same group-0 slice.
           bindGroupDynamicOffsets: webgpuCmdArgs.bindGroupDynamicOffsets,
           vertexBuffers: vertexBuffers,
           indexBuffer: primCache.indexBuffer || undefined,
@@ -7476,17 +7428,17 @@ function updateWebGPUModel(
         });
         attachPickToColorCommand(webgpuCmd, pickCmd);
 
-        // UP144-SNAP-WEBGPU (C11-212) — snapping-pass variant. Same draw args
-        // as every pick variant (only the pipeline differs), so the snap draw
-        // rasterizes exactly the geometry the pick draw does; the pipeline
-        // swaps the fragment entry to `fragmentSnapMain` and the color target
-        // to the RGBA32F snap-payload format.
+        // Snapping-pass variant. Same draw args as every pick variant, with
+        // only the pipeline differing, so the snap draw rasterizes exactly the
+        // geometry the pick draw does; the pipeline swaps the fragment entry
+        // to `fragmentSnapMain` and the color target to the RGBA32F
+        // snap-payload format.
         //
-        // Materialize the derived draw only for the CURRENT snap mini-frame.
+        // Materialize the derived draw only for the current snap mini-frame.
         // `pickBegin` sets `passes.snap` before updating model commands, so the
         // first snap remains synchronous on the command-production side. The
         // context's ever-used diagnostic latch must not make every later color
-        // frame allocate a snap command after one historical Scene.snap call.
+        // frame allocate a snap command after a single earlier Scene.snap call.
         if (frameState?.passes?.snap === true) {
           if (!defined(primCache.snapPipeline)) {
             primCache.snapPipeline = pipelineCache.getSnapPipeline(
@@ -7502,12 +7454,12 @@ function updateWebGPUModel(
           attachSnapToColorCommand(webgpuCmd, snapCmd);
         }
 
-        // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option D / hover
-        // pick variant. Lazily build pipeline on first frame the scene
-        // requests hover-mode pick. Built unconditionally here for
-        // BLEND alphaMode so the cost is paid up-front (1 pipeline
-        // alloc); for OPAQUE/MASK the factory delegates to the regular
-        // pick pipeline so no extra alloc happens (cache hit).
+        // Hover pick variant. The pipeline is built lazily on the first
+        // frame the scene requests hover-mode pick. For BLEND alphaMode
+        // it is built unconditionally here so the cost is one pipeline
+        // allocation paid up front; for OPAQUE/MASK the factory delegates
+        // to the regular pick pipeline, so the lookup is a cache hit and
+        // no extra allocation happens.
         //
         // Scene flag `_webgpuPickHoverEnabled` is set to true the first
         // time `Scene.pickHoverAsync` is called on the scene; once
@@ -7535,13 +7487,12 @@ function updateWebGPUModel(
           });
         }
 
-        // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option C precise
-        // pick variant. For OPAQUE/MASK, pass 1 IS the regular pick
-        // pipeline (factory delegates) and pass 2 is null — dispatcher
-        // handles the null fall-through by skipping pass 2. For BLEND,
-        // both passes are real with depth-only pass 1 + depth-EQUAL
-        // color pass 2, sharing the pick FBO depth attachment within
-        // a single render pass.
+        // Precise pick variant. For OPAQUE/MASK, pass 1 is the regular
+        // pick pipeline, because the factory delegates, and pass 2 is
+        // null; the dispatcher handles the null fall-through by skipping
+        // pass 2. For BLEND, both passes are real, with a depth-only
+        // pass 1 and a depth-EQUAL color pass 2 sharing the pick FBO
+        // depth attachment within a single render pass.
         //
         // Scene flag `_webgpuPickPreciseEnabled` set on first
         // `Scene.pickPreciseAsync` call. The 2× translucent
@@ -7569,17 +7520,16 @@ function updateWebGPUModel(
                 primCache.materialDefines | 0,
               );
           }
-          // Batch 194 (B192-D1 audit fix) — both precise passes need
-          // stencilReference=1 set on the render pass encoder before
-          // their draw. Pass 1's `passOp: replace` writes 1 (replacing
-          // the cleared 0); pass 2's `compare: equal` matches stencil
-          // == 1 (only pass-1-covered pixels). Without this, the
+          // Both precise passes need stencilReference=1 set on the
+          // render pass encoder before their draw. Pass 1's
+          // `passOp: replace` writes 1, replacing the cleared 0, and
+          // pass 2's `compare: equal` matches stencil == 1, so only
+          // pass-1-covered pixels survive. Without the reference the
           // stencil mechanism is non-functional: pass 1 writes 0 (the
-          // default ref) which is identical to the FBO clear value, so
-          // pass 2 fires on every pixel rather than only pass-1
-          // winners. `applyPerEncoderState` reads `renderState.
-          // stencilTest.reference` and calls `passEncoder.
-          // setStencilReference()` when nonzero.
+          // default ref), which is identical to the FBO clear value, so
+          // pass 2 fires on every pixel rather than only pass-1 winners.
+          // `applyPerEncoderState` reads `renderState.stencilTest.reference`
+          // and calls `passEncoder.setStencilReference()` when nonzero.
           const preciseRenderState = {
             ...modelRenderState,
             stencilTest: { reference: 1 },
@@ -7603,17 +7553,18 @@ function updateWebGPUModel(
         }
       }
 
-      // DP-H46e — metadata-pick command (scene.pickMetadata producer). Built
-      // ONLY during a metadata-pick pass (`frameState.pickingMetadata`) AND only
-      // for a metadata-bearing, non-classifier primitive. The
+      // Metadata-pick command, the producer behind scene.pickMetadata. Built
+      // only during a metadata-pick pass (`frameState.pickingMetadata`) and
+      // only for a metadata-bearing, non-classifier primitive. The
       // `selectCommandVariant` dispatcher returns this command from
       // `derivedCommands.pickingMetadata.pickMetadataCommand` when
-      // `frameState.pickingMetadata` is set. It reuses the SAME bind groups +
-      // vertex buffers + index buffer as the color/pick command (no new pipeline
-      // layout); only the pipeline (its fragment writes the metadata RGBA) and
-      // the prepended GENERATED metadata-pick chunk differ. Gated tightly so a
-      // normal render / regular pick pass is byte-identical (the block is never
-      // entered unless pickMetadata is actively running).
+      // `frameState.pickingMetadata` is set. It reuses the same bind groups,
+      // vertex buffers and index buffer as the color and pick commands, so no
+      // new pipeline layout is needed; only the pipeline, whose fragment writes
+      // the metadata RGBA, and the prepended generated metadata-pick chunk
+      // differ. The gate is tight so a normal render or regular pick pass is
+      // byte-identical: the block is never entered unless pickMetadata is
+      // actively running.
       const pickedMetadataInfo = frameState.pickedMetadataInfo;
       const primitiveHasMetadata =
         (primCache.materialDefines &
@@ -7636,8 +7587,8 @@ function updateWebGPUModel(
           runtimeNode,
         );
         if (defined(pickWGSL)) {
-          // Publish the pick chunk + its (property-folded) hash so the pipeline
-          // cache prepends it + keys the pick module per picked property.
+          // Publish the pick chunk and its property-folded hash so the pipeline
+          // cache prepends it and keys the pick module per picked property.
           pipelineCache.setMetadataPickWGSL(pickWGSL.wgsl, pickWGSL.classHash);
           const pickMetadataPipeline = pipelineCache.getPickMetadataPipeline(
             matInfo.alphaMode,
@@ -7672,25 +7623,23 @@ function updateWebGPUModel(
         }
       }
 
-      // TAA Slice 2e (Batch 106) — velocity command derivation. When
-      // TAA is on (frameState.taaEnabled), attach a velocity-only draw
-      // command alongside the color command. The SceneRenderer's
-      // velocity pass (`_runVelocityPass`) walks the frustum command
-      // lists, picks any command carrying a `.velocityCommand` slot,
-      // and dispatches it into a single-target rg16float render pass
-      // sharing scene depth read-only. Reuses the color command's
-      // bind groups, vertex buffers, index buffer, and instance count
-      // — the only differences are the pipeline (velocity variant)
-      // and the absence of blend / depth-write state. Materialized
-      // ONCE per primitive per frame.
+      // Velocity command derivation. When TAA is on
+      // (frameState.taaEnabled), attach a velocity-only draw command
+      // alongside the color command. The SceneRenderer's velocity pass
+      // (`_runVelocityPass`) walks the frustum command lists, picks any
+      // command carrying a `.velocityCommand` slot, and dispatches it
+      // into a single-target rg16float render pass sharing scene depth
+      // read-only. It reuses the color command's bind groups, vertex
+      // buffers, index buffer and instance count; the only differences
+      // are the velocity-variant pipeline and the absence of blend and
+      // depth-write state. Materialized once per primitive per frame.
       //
-      // Translucent (BLEND) primitives skip velocity emission for now —
-      // they don't write scene depth in the color pass, so the
-      // velocity pass's read-only depth attachment can't establish
-      // visibility for them. A future follow-up could route translucent
-      // velocity through OIT-style accumulation, but that needs more
-      // architectural work (the rg16float resolve target doesn't
-      // accumulate cleanly with src-alpha blending).
+      // Translucent (BLEND) primitives emit no velocity: they do not
+      // write scene depth in the color pass, so the velocity pass's
+      // read-only depth attachment cannot establish visibility for them.
+      // Routing translucent velocity through OIT-style accumulation
+      // needs more architectural work, because the rg16float resolve
+      // target does not accumulate cleanly with src-alpha blending.
       if (
         motionEnabled &&
         matInfo.alphaMode !== AlphaModes.BLEND &&
@@ -7700,22 +7649,22 @@ function updateWebGPUModel(
           primCache.velocityPipeline = pipelineCache.getVelocityPipeline(
             matInfo.alphaMode,
             matInfo.isDoubleSided,
-            // Batch 174 — velocity pipeline must use the same
-            // per-variant pipeline layout as the color pipeline so it
-            // pairs with the same merged group-1 bind group at draw time.
+            // The velocity pipeline must use the same per-variant
+            // pipeline layout as the color pipeline so it pairs with the
+            // same merged group-1 bind group at draw time.
             primCache.materialDefines | 0,
           );
         }
         const velocityCmd = new WebGPUDrawCommand({
           pipeline: primCache.velocityPipeline,
           bindGroups: [
-            nodeCameraBG, // B.8 (Batch 152) — per-runtime-node camera BG
+            nodeCameraBG, // per-runtime-node camera bind group
             mergedMaterialBG,
             mergedInstanceBG,
             cache.effectsBG,
           ],
-          // C11-195 — motion vectors are derived from the same camera block
-          // (including its `previousViewProjection` tail), so same slice.
+          // Motion vectors are derived from the same camera block, including
+          // its `previousViewProjection` tail, so they bind the same slice.
           bindGroupDynamicOffsets: webgpuCmdArgs.bindGroupDynamicOffsets,
           vertexBuffers: vertexBuffers,
           indexBuffer: primCache.indexBuffer || undefined,
@@ -7734,22 +7683,22 @@ function updateWebGPUModel(
         webgpuCmd.velocityCommand = velocityCmd;
       }
 
-      // C-R8-EDGE-DISPLAY-MODE (§5 P2) — EDGES_ONLY suppresses the
-      // surface command for edge-bearing primitives so only the edge
-      // pass renders (CAD wireframe). Mirrors WebGL's early-return in
-      // `ModelDrawCommand.pushCommands` (`ModelDrawCommand.js:187-192`)
-      // which skips `_originalCommand` while still pushing the edge
-      // command via `pushEdgeCommands`. The edge emitter below is still
-      // reached (it gates separately on the same mode). Velocity / pick
-      // variants attached to `webgpuCmd` ride along on the un-pushed
-      // command and are harmless. The `isClassifier` second-pass block
-      // below never coincides with this (classifiers don't emit edges).
+      // EDGES_ONLY suppresses the surface command for edge-bearing
+      // primitives so only the edge pass renders, giving a CAD
+      // wireframe. Mirrors WebGL's early return in
+      // `ModelDrawCommand.pushCommands`, which skips `_originalCommand`
+      // while still pushing the edge command via `pushEdgeCommands`. The
+      // edge emitter below is still reached, since it gates separately on
+      // the same mode. Velocity and pick variants attached to
+      // `webgpuCmd` ride along on the un-pushed command and are
+      // harmless. The `isClassifier` second-pass block below never
+      // coincides with this, because classifiers emit no edges.
       if (!suppressSurfaceForEdgesOnly) {
         commandList.push(webgpuCmd);
       }
 
-      // C-MODEL-2DIDL-DUPLICATE — emit the wrapped copy of the surface command
-      // (WebGL `derive2DCommand`). Same pipeline / material / instance / effects
+      // Emit the wrapped copy of the surface command, mirroring WebGL's
+      // `derive2DCommand`. Same pipeline / material / instance / effects
       // bind groups and geometry as the primary command; only @group(0) (the
       // camera UB) is swapped for the y-shifted one and the bounding volume is
       // moved to match, so the half of the model clipped by one 2D viewport is
@@ -7763,12 +7712,13 @@ function updateWebGPUModel(
       ) {
         const idlBindGroups = webgpuCmdArgs.bindGroups.slice();
         idlBindGroups[0] = nodeIdlCameraBG;
-        // C11-195 — under the arena the duplicate usually shares the primary
-        // command's group-0 bind group (same ring page) and differs ONLY in
-        // its dynamic offsets. Swap both so the wrapped copy can never read
-        // the primary view's camera slice. The LIGHT offset inside that array
-        // is deliberately identical: the duplicate shifts the model matrix,
-        // not the eye, so it reads the same camera-relative light block.
+        // Under the arena the duplicate usually shares the primary command's
+        // group-0 bind group, because both sit on the same ring page, and
+        // differs only in its dynamic offsets. Swap both so the wrapped copy
+        // can never read the primary view's camera slice. The light offset
+        // inside that array is deliberately identical: the duplicate shifts the
+        // model matrix, not the eye, so it reads the same camera-relative light
+        // block.
         const idlDynamicOffsets = webgpuCmdArgs.bindGroupDynamicOffsets.slice();
         idlDynamicOffsets[0] = nodeIdlCameraOffsets ?? undefined;
         const idlCmd = new WebGPUDrawCommand({
@@ -7782,14 +7732,14 @@ function updateWebGPUModel(
         commandList.push(idlCmd);
       }
 
-      // AUDIT_2026_05_02 A.3 (Batch 146) — for `classificationType: BOTH`
-      // emit a SECOND command targeting the second pass. Same args as
-      // the primary command except the `pass` field. Both commands share
-      // the same pipeline / bind groups / vertex buffers — the renderer
-      // already computed those for the primary command and they're
-      // identical for the second pass (depth-sample classifier doesn't
-      // distinguish TERRAIN vs 3D Tile in its pipeline state, only in
-      // the pass enum the dispatcher routes through).
+      // For `classificationType: BOTH`, emit a second command targeting
+      // the second pass. Same args as the primary command except the
+      // `pass` field. Both commands share the same pipeline, bind groups
+      // and vertex buffers: the renderer already computed those for the
+      // primary command and they are identical for the second pass,
+      // because the depth-sample classifier does not distinguish TERRAIN
+      // from 3D Tile in its pipeline state, only in the pass enum the
+      // dispatcher routes through.
       if (isClassifier && drawPasses.length > 1) {
         for (let p = 1; p < drawPasses.length; p++) {
           const extraCmd = new WebGPUDrawCommand({
@@ -7800,34 +7750,33 @@ function updateWebGPUModel(
         }
       }
 
-      // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) —
-      // when the model is a classifier, we've already pushed the
-      // classification command(s). The remaining variants (tile-batch
-      // dual command, translucent depth-write, edge emitter) don't
-      // apply: classifiers don't pick (no pick FBO entry needed —
-      // ClassificationModelDrawCommand on WebGL also skips pick),
-      // they don't emit velocity (no TAA on classified content),
-      // and they don't run the edge stage (the classifier FS is a
-      // depth-sample emit, not the lit PBR FS that hosts the edge
-      // overlay). Skip the rest of this primitive's emission.
+      // When the model is a classifier the classification commands have
+      // already been pushed. The remaining variants — the tile-batch dual
+      // command, translucent depth-write, and the edge emitter — do not
+      // apply: classifiers do not pick, so no pick FBO entry is needed
+      // and WebGL's ClassificationModelDrawCommand also skips pick; they
+      // emit no velocity, since classified content has no TAA; and they
+      // do not run the edge stage, because the classifier FS is a
+      // depth-sample emit rather than the lit PBR FS that hosts the edge
+      // overlay. Skip the rest of this primitive's emission.
       if (isClassifier) {
         continue;
       }
 
-      // WIRE-MODEL-SILHOUETTE — derived silhouette-colour command (WebGL
-      // `deriveSilhouetteColorCommand` parity). Uses a SEPARATE material
-      // UB so the base command keeps `_pad_tt2 = 0` (normal shading,
-      // stencil write) while this one carries `_pad_tt2 = 1` (VS inflates
-      // clip xy along the eye-space normal, FS emits silhouetteColor) —
-      // the same one-shader-two-uniform-states trick WebGL uses via its
-      // `model_silhouettePass` uniform clone. The pipeline's stencil
-      // NOT-EQUAL test (against the same per-draw reference the base
-      // command stamped) cuts the model body out of the inflated draw so
-      // only the rim survives. Follows the batch-table translucent-class
-      // second-UB precedent below. EDGES_ONLY suppresses the surface —
-      // and therefore its rim. During pick passes the command is skipped
-      // by the FORK-34 gate (no pick variant, not pickOnly), matching
-      // WebGL's `hasSilhouette && !passes.pick`.
+      // Derived silhouette-colour command, matching WebGL's
+      // `deriveSilhouetteColorCommand`. It uses a separate material UB so
+      // the base command keeps `_pad_tt2 = 0` (normal shading, stencil
+      // write) while this one carries `_pad_tt2 = 1`, where the VS
+      // inflates clip xy along the eye-space normal and the FS emits
+      // silhouetteColor. This is the same one-shader-two-uniform-states
+      // approach WebGL takes via its `model_silhouettePass` uniform
+      // clone. The pipeline's stencil NOT-EQUAL test, against the same
+      // per-draw reference the base command stamped, cuts the model body
+      // out of the inflated draw so only the rim survives. It follows the
+      // batch-table translucent-class second-UB pattern below. EDGES_ONLY
+      // suppresses the surface, and therefore its rim. During pick passes
+      // the command is skipped because it has no pick variant and is not
+      // pickOnly, matching WebGL's `hasSilhouette && !passes.pick`.
       if (modelHasSilhouette && !suppressSurfaceForEdgesOnly) {
         if (!defined(primCache.materialBufferSilhouette)) {
           primCache.materialBufferSilhouette = WebGPUBuffer.createUniformBuffer(
@@ -7846,9 +7795,9 @@ function updateWebGPUModel(
         // frame's flags / split / model-color lanes), then stamp the
         // silhouette lanes on top.
         silData.set(primCache.materialData);
-        // No real NORMAL attribute → no inflation (WebGL strips the
-        // stage via `#ifndef HAS_NORMALS`); zero expand keeps the WGSL
-        // helper's early-return path NaN-free.
+        // Without a real NORMAL attribute there is no inflation; WebGL
+        // strips the stage via `#ifndef HAS_NORMALS`, and a zero expand
+        // keeps the WGSL helper's early-return path NaN-free.
         const silhouetteHasNormals = defined(primCache.normalBuffer);
         silData[105] = silhouetteHasNormals ? silhouetteExpandX : 0.0;
         silData[106] = silhouetteHasNormals ? silhouetteExpandY : 0.0;
@@ -7874,7 +7823,7 @@ function updateWebGPUModel(
         }
 
         // Render the rim in the translucent pass if either the base
-        // command or the silhouette colour is translucent (WebGL parity).
+        // command or the silhouette colour is translucent, matching WebGL.
         const silhouettePassTranslucent =
           matInfo.alphaMode === AlphaModes.BLEND || silhouetteTranslucent;
         if (!defined(primCache.silhouetteColorPipeline)) {
@@ -7928,56 +7877,51 @@ function updateWebGPUModel(
         silhouetteColorCommands.push(silhouetteCmd);
       }
 
-      // C-R1-TILE-BATCH (Batch 101) — dual-command emission. When the
-      // primary command class is opaque (passClass === 0) AND the
-      // primitive has a batch table active, also emit a TRANSLUCENT-
-      // class derived command so per-feature styling can flip
-      // individual features to translucent without pipeline state
-      // changes. Mirrors WebGL's `deriveTranslucentCommand` at
-      // `Cesium3DTileBatchTable.js:497`. The FS uses
-      // `material.tileBatchFlags.x` (passClass) to discard the wrong-
-      // class features at each pass — see the WGSL gate added in
-      // Batch 100. Uses a SEPARATE material UB so the two commands
-      // can hold passClass = 0 / passClass = 1 independently without
-      // a per-frame second writeBuffer collision.
+      // Dual-command emission. When the primary command class is opaque
+      // (passClass === 0) and the primitive has a batch table active,
+      // also emit a translucent-class derived command so per-feature
+      // styling can flip individual features to translucent without
+      // pipeline state changes. Mirrors WebGL's
+      // `deriveTranslucentCommand` in `Cesium3DTileBatchTable.js`. The FS
+      // uses `material.tileBatchFlags.x` (passClass) to discard the
+      // wrong-class features at each pass. A separate material UB lets
+      // the two commands hold passClass = 0 and passClass = 1
+      // independently without a per-frame second writeBuffer collision.
       const hasBatchTable =
         defined(featureIdRes) &&
         (featureIdRes.flags & MaterialFlags.HAS_BATCH_TABLE) !== 0;
-      // C10-02-TILES-STYLE-COMMAND-ECONOMICS — mirror WebGL's
-      // ModelDrawCommand.pushCommands economics (`ModelDrawCommand.js:149-160`):
-      // only emit the TRANSLUCENT-class twin when the applied style actually
-      // mixes per-feature opacity. Read `model.styleCommandsNeeded` FRESH every
-      // frame — it is a cheap field read that Model.updateFeatureTables keeps
-      // current on style mutation (`Model.js:2361-2386`); caching it would go
-      // stale across a style change (Trap T-2), so do not cache. For an
-      // unstyled batch-table tile this is ALL_OPAQUE(0) at steady state
-      // (Model.applyStyle sets it defined on first feature-table realization,
-      // `Model.js:1118-1125`), so the default all-discard phantom twin — which
-      // re-ran the full VS + rasterization + per-fragment batch fetch only to
-      // `discard` 100% of fragments — is now suppressed. INV-6 (conservative):
-      // an `undefined` signal (feature table not yet realized) still emits the
-      // twin, matching today's behavior and WebGL's `defined()` guard — never
-      // skip on an unknown signal.
-      // INV-3 (ALL_TRANSLUCENT opaque-primary suppression) is intentionally
-      // shipped PARTIAL: the opaque primary is NOT suppressed here. The primary
-      // command carries this primitive's pick derivative
-      // (`attachPickToColorCommand`, ~:5892) while the twin carries none, and
-      // pick dispatch is per-command from the command list
-      // (`WebGPUSceneRenderer.executeWebGPUCommand`), so suppressing the primary
-      // would drop feature pick on all-translucent tiles (INV-5). In
-      // ALL_TRANSLUCENT the primary's passClass=0 shader discards 100% of
-      // fragments, so the residual opaque draw is visually correct (the twin
-      // renders the geometry) — only a small redundant draw in a rare case.
-      // Full INV-3 needs the twin to carry a pick derivative; filed as
-      // NEW-WEBGPU-ALLTRANSLUCENT-PRIMARY-SUPPRESS.
+      // Mirror WebGL's ModelDrawCommand.pushCommands economics: only emit the
+      // translucent-class twin when the applied style actually mixes
+      // per-feature opacity. `model.styleCommandsNeeded` must be read fresh
+      // every frame. It is a cheap field read that Model.updateFeatureTables
+      // keeps current on style mutation, and caching it would go stale across a
+      // style change. For an unstyled batch-table tile it is ALL_OPAQUE(0) at
+      // steady state, because Model.applyStyle sets it defined on the first
+      // feature-table realization, which suppresses an all-discard phantom twin
+      // that would re-run the full VS, rasterization and per-fragment batch
+      // fetch only to `discard` every fragment. An `undefined` signal, meaning
+      // the feature table is not yet realized, still emits the twin, matching
+      // WebGL's `defined()` guard: never skip on an unknown signal.
+      //
+      // The opaque primary is deliberately not suppressed under
+      // ALL_TRANSLUCENT. The primary command carries this primitive's pick
+      // derivative (`attachPickToColorCommand`) while the twin carries none,
+      // and pick dispatch is per-command from the command list
+      // (`WebGPUSceneRenderer.executeWebGPUCommand`), so suppressing the
+      // primary would drop feature pick on all-translucent tiles. Under
+      // ALL_TRANSLUCENT the primary's passClass=0 shader discards every
+      // fragment, so the residual opaque draw is visually correct — the twin
+      // renders the geometry — and costs only a small redundant draw in a rare
+      // case. Suppressing it would first require the twin to carry a pick
+      // derivative.
       const scn = model.styleCommandsNeeded;
       const emitTranslucentTwin =
         !defined(scn) || scn !== StyleCommandsNeeded.ALL_OPAQUE;
-      // C-R8-EDGE-DISPLAY-MODE (§5 P2) — the dual translucent-class
-      // command is a SURFACE derivative (per-feature styling of the same
-      // geometry), so EDGES_ONLY must suppress it alongside the primary
-      // surface command above; otherwise the surface would still render
-      // through the batch-table styling path in wireframe mode.
+      // The dual translucent-class command is a surface derivative —
+      // per-feature styling of the same geometry — so EDGES_ONLY must
+      // suppress it alongside the primary surface command above;
+      // otherwise the surface would still render through the batch-table
+      // styling path in wireframe mode.
       if (
         passClass === 0 &&
         hasBatchTable &&
@@ -7996,16 +7940,17 @@ function updateWebGPUModel(
           );
           primCache.materialUploadStateTranslucent =
             createPackedMaterialUploadState(primCache.materialDataTranslucent);
-          // NEW-BG-CONSOLIDATION (Batch 122) — the translucent-class
-          // material UB is an alternate buffer; the merged group 1 BG
-          // for this pass is built per-frame at the draw command site
-          // below using `materialBufferTranslucent` instead of the
-          // primary `materialBuffer`.
+          // The translucent-class material UB is an alternate buffer;
+          // the merged group 1 bind group for this pass is built per
+          // frame at the draw command site below using
+          // `materialBufferTranslucent` instead of the primary
+          // `materialBuffer`.
         }
-        // Pack with passClass=1 (the only field that differs from the
-        // primary). Re-running the full packer is the simplest path —
-        // costs ~768 B/frame extra writeBuffer per batch-table primitive,
-        // negligible vs. the per-fragment savings of correct classification.
+        // Pack with passClass=1, the only field that differs from the
+        // primary. Re-running the full packer costs about 768 extra
+        // bytes of writeBuffer per batch-table primitive per frame,
+        // which is negligible against the per-fragment savings of
+        // correct classification.
         if (defined(preparationWork)) {
           preparationWork.materialPacks++;
         }
@@ -8025,17 +7970,16 @@ function updateWebGPUModel(
           motionEnabled,
           1, // passClass = translucent
         );
-        // WIRE-MODEL-SPLITTER — mirror the primary UB's split-scalar pad
-        // lanes (floats 38/39 = _pad_end2/_pad_end3); packMaterialUniforms
-        // just zeroed them, so without this the derived translucent-class
-        // command of a split batch-table model would render unsplit.
+        // Mirror the primary UB's split-scalar pad lanes (floats 38/39 =
+        // _pad_end2/_pad_end3). packMaterialUniforms just zeroed them, so
+        // without this the derived translucent-class command of a split
+        // batch-table model would render unsplit.
         primCache.materialDataTranslucent[38] = modelSplitDirection;
         primCache.materialDataTranslucent[39] = modelSplitPositionPx;
-        // WIRE-MODEL-COLOR — mirror the primary UB's model-colour lanes
-        // (floats 184-187 = _pad_reserved8, float 175 = motionFlags.w);
-        // packMaterialUniforms just zeroed them, so without this the
-        // derived translucent-class command of a coloured batch-table
-        // model would render untinted.
+        // Mirror the primary UB's model-colour lanes (floats 184-187 =
+        // _pad_reserved8, float 175 = motionFlags.w). packMaterialUniforms
+        // just zeroed them, so without this the derived translucent-class
+        // command of a coloured batch-table model would render untinted.
         if (modelHasColor) {
           primCache.materialDataTranslucent[175] = modelColorBlend;
           primCache.materialDataTranslucent[184] = modelColor.red;
@@ -8076,15 +8020,15 @@ function updateWebGPUModel(
           primCache.translucentPipeline = pipelineCache.getPipeline(
             AlphaModes.BLEND,
             matInfo.isDoubleSided,
-            // Batch 174 — translucent dual-command pipeline shares the
-            // same per-variant materialBGL as the primary so the
+            // The translucent dual-command pipeline shares the same
+            // per-variant materialBGL as the primary so the
             // mergedMaterialBGTranslucent below validates against it.
             primCache.materialDefines | 0,
           );
         }
-        // NEW-BG-CONSOLIDATION (Batch 122) — translucent-class merged
-        // group 1 BG. Same shape as the primary `mergedMaterialBG` but
-        // with the alternate `materialBufferTranslucent` instead.
+        // Translucent-class merged group 1 bind group. Same shape as the
+        // primary `mergedMaterialBG` but with the alternate
+        // `materialBufferTranslucent` instead.
         const mergedMaterialBGTranslucent = getOrCreateMergedMaterialBindGroup(
           primCache,
           MERGED_MATERIAL_SLOT_TRANSLUCENT,
@@ -8097,18 +8041,18 @@ function updateWebGPUModel(
           primCache.materialDefines | 0,
           frameState,
         );
-        // C10-07-ASYNC-MODEL-PIPELINES — translucent-twin ready-gate. The
-        // twin's color pipeline (`getPipeline(BLEND,...)` above) is compiled
-        // via `createRenderPipelineAsync` and is null while cooking. Only
-        // build + push the twin once its pipeline is ready — never bind a null
-        // pipeline into `WebGPUDrawCommand` (it requires one). The
+        // Translucent-twin ready gate. The twin's color pipeline
+        // (`getPipeline(BLEND,...)` above) is compiled via
+        // `createRenderPipelineAsync` and is null while cooking. Build and push
+        // the twin only once its pipeline is ready; a null pipeline must never
+        // be bound into `WebGPUDrawCommand`, which requires one. The
         // `if (!defined(...translucentPipeline))` block above re-polls each
-        // frame, so the twin appears within ≤1 frame of the compile landing.
+        // frame, so the twin appears within one frame of the compile landing.
         if (defined(primCache.translucentPipeline)) {
           const translucentCmd: ModelDrawCommand = new WebGPUDrawCommand({
             pipeline: primCache.translucentPipeline,
             bindGroups: [
-              nodeCameraBG, // B.8 (Batch 152) — per-runtime-node camera BG
+              nodeCameraBG, // per-runtime-node camera bind group
               mergedMaterialBGTranslucent,
               mergedInstanceBG,
               cache.effectsBG,
@@ -8133,17 +8077,17 @@ function updateWebGPUModel(
           // retained even for ALL_TRANSLUCENT styling, so it is the single
           // geometric caster and the visible twin only receives shadows. This
           // avoids a second identical depth raster without removing coverage.
-          // TODO(NEW-WEBGPU-STYLE-AWARE-SHADOW-COVERAGE): replace both with one
-          // dedicated style-aware cast command that binds feature visibility,
-          // alpha, and clipping inputs.
-          // C11-157 Slice C — OIT reachability for the per-feature-styled
-          // translucent TWIN — the actual translucent-model case (an OPAQUE
-          // primary + this BLEND-class twin, gated on `styleCommandsNeeded`
-          // mixing opacity). The twin is always Pass.TRANSLUCENT and is only
-          // built inside the `defined(primCache.translucentPipeline)` async
-          // ready-gate, so attaching the OIT variant here respects that gate.
-          // The BLEND-alphaMode config matches the twin's own pipeline. Inert
-          // when the FAR-003 gate is off → gate-OFF byte-identical.
+          // A dedicated style-aware cast command that binds feature
+          // visibility, alpha and clipping inputs would replace both.
+          // OIT reachability for the per-feature-styled translucent twin,
+          // which is the real translucent-model case: an opaque primary plus
+          // this BLEND-class twin, gated on `styleCommandsNeeded` mixing
+          // opacity. The twin is always Pass.TRANSLUCENT and is only built
+          // inside the `defined(primCache.translucentPipeline)` async ready
+          // gate, so attaching the OIT variant here respects that gate. The
+          // BLEND-alphaMode config matches the twin's own pipeline. It is
+          // inert when the containment gate is off, leaving that path
+          // byte-identical.
           const twinOIT = pipelineCache.getOITColorConfig(
             AlphaModes.BLEND,
             matInfo.isDoubleSided,
@@ -8153,15 +8097,16 @@ function updateWebGPUModel(
             translucentCmd._shaderCode = twinOIT.shaderCode;
             translucentCmd._pipelineConfig = twinOIT.pipelineConfig;
           }
-          // AUDIT_2026_05_02 B.7 — Batch 79's selective depth-write fix
-          // previously only fired for tile-owned models (Cesium3DTile.js sets
-          // `depthForTranslucentClassification = true`). Standalone Models —
-          // including any glTF added via `viewer.scene.primitives.add(...)` and
-          // any Model used as a classifier — also need the depth-write variant
-          // so `pickPosition` and ground/Vector3DTile classifiers don't see
-          // through them. Opt-in via `model.depthWriteForTranslucentPicking`
-          // (default false to preserve existing performance), or
-          // automatically when `model.classificationType !== undefined`.
+          // The selective depth-write variant is not only for tile-owned
+          // models, where Cesium3DTile sets
+          // `depthForTranslucentClassification = true`. Standalone Models —
+          // including any glTF added via `viewer.scene.primitives.add(...)`
+          // and any Model used as a classifier — need it too, so that
+          // `pickPosition` and ground/Vector3DTile classifiers do not see
+          // through them. It is opt-in via
+          // `model.depthWriteForTranslucentPicking`, which defaults to false
+          // to preserve performance, and automatic when
+          // `model.classificationType !== undefined`.
           if (
             primCache.depthWritePipeline &&
             (model.depthWriteForTranslucentPicking === true ||
@@ -8175,26 +8120,24 @@ function updateWebGPUModel(
         }
       }
 
-      // C-R8-EDGE-EMITTER (Batch 45) — Emit edge visibility commands
-      // for primitives that carry `EXT_mesh_primitive_edge_visibility`
-      // data. The edges render into the WebGPUEdgeFramebuffer MRT via
-      // the redirect in `WebGPUSceneRenderer._execute3DTilePasses`,
-      // and the Batch 44 composite overlays them onto scene color.
+      // Emit edge visibility commands for primitives that carry
+      // `EXT_mesh_primitive_edge_visibility` data. The edges render into
+      // the WebGPUEdgeFramebuffer MRT via the redirect in
+      // `WebGPUSceneRenderer._execute3DTilePasses`, and the composite
+      // pass overlays them onto scene color.
       //
       // Resources are built once per primitive and reused across
-      // frames; per-frame cost is two `writeBuffer` calls for the
-      // camera + edge uniform UBs. Primitives without edge data skip
-      // the whole block (the `extractEdgeGeometry` early-returns).
+      // frames; the per-frame cost is two `writeBuffer` calls for the
+      // camera and edge uniform UBs. Primitives without edge data skip
+      // the whole block, because `extractEdgeGeometry` early-returns.
       //
-      // C-R8-EDGE-DISPLAY-MODE (§5 P2) — gate the whole emitter on
-      // `edgeDisplayMode !== SURFACES_ONLY`. SURFACES_ONLY is the DEFAULT
-      // (`EdgeDisplayMode.js:26`, `Model.js:437-438`), so until the host
-      // app opts into SURFACES_AND_EDGES / EDGES_ONLY, extension edges
-      // are fully suppressed — matching WebGL's early-return in
-      // `ModelDrawCommand.pushEdgeCommands` (`ModelDrawCommand.js:245-248`).
-      // Previously this gated only on `defined(edgeVisibility)`, so edges
-      // always drew regardless of the mode (the SURFACES_ONLY regression
-      // this batch fixes).
+      // The whole emitter is gated on
+      // `edgeDisplayMode !== SURFACES_ONLY`. SURFACES_ONLY is the
+      // default, so until the host app opts into SURFACES_AND_EDGES or
+      // EDGES_ONLY, extension edges are fully suppressed, matching
+      // WebGL's early return in `ModelDrawCommand.pushEdgeCommands`.
+      // Gating only on `defined(edgeVisibility)` would draw edges
+      // regardless of the mode.
       const edgeGltfPrimitive = rp.primitive || rp._primitive;
       if (
         defined(edgeGltfPrimitive?.edgeVisibility) &&
@@ -8216,13 +8159,13 @@ function updateWebGPUModel(
         // edge data hasn't been extracted yet, do it now; otherwise
         // reuse the cached GPUBuffers.
         if (!defined(primCache.edgeResources)) {
-          // C-R8-EDGE-FEATURE-ID — pull per-vertex feature IDs from the
-          // glTF FEATURE_ID_0 attribute when present. Mirrors the
-          // WebGL edge stage at `EdgeVisibilityPipelineStage.js:1242-
-          // 1281` (lookup by `featureIds[0].setIndex` → matching
-          // `attributes` entry → `typedArray`). When absent, the
-          // emitter falls back to writing 0 in id.g and the consumer's
-          // gate stays off.
+          // Pull per-vertex feature IDs from the glTF FEATURE_ID_0
+          // attribute when present. Mirrors the WebGL edge stage in
+          // `EdgeVisibilityPipelineStage`: look up by
+          // `featureIds[0].setIndex`, find the matching `attributes`
+          // entry, then read its `typedArray`. When absent, the emitter
+          // falls back to writing 0 in id.g and the consumer's gate
+          // stays off.
           let edgeFeatureIdData = null;
           const fidSets = edgeGltfPrimitive.featureIds;
           if (defined(fidSets) && fidSets.length > 0) {
@@ -8247,12 +8190,12 @@ function updateWebGPUModel(
               }
             }
           }
-          // NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — pass per-vertex
-          // COLOR_0 (as normalized RGBA) so the emitter can resolve
-          // per-edge colors the same way WebGL does (override →
-          // vertex color → no-override sentinel). The primitive-level
-          // and per-lineString `materialColor` overrides are read inside
-          // `extractEdgeGeometry` directly off the edgeVisibility object.
+          // Pass per-vertex COLOR_0 as normalized RGBA so the emitter can
+          // resolve per-edge colors the same way WebGL does: override,
+          // then vertex color, then the no-override sentinel. The
+          // primitive-level and per-lineString `materialColor` overrides
+          // are read inside `extractEdgeGeometry` directly off the
+          // edgeVisibility object.
           let edgeVertexColors = null;
           if (geometry.hasColor0 && defined(geometry.color0Data)) {
             const colorFloat = normalizeColorData(
@@ -8294,23 +8237,25 @@ function updateWebGPUModel(
               }
             }
           } else {
-            // Mark this primitive as having no edges so we don't
-            // re-extract every frame. Use `false` as a sentinel
-            // distinct from `undefined` (meaning "not yet checked").
+            // Mark this primitive as having no edges so the extraction
+            // does not repeat every frame. `false` is a sentinel
+            // distinct from `undefined`, which means "not yet checked".
             primCache.edgeResources = false;
           }
         }
 
         if (primCache.edgeResources) {
           // Compute MVP = projection * view * nodeModelMatrix and
-          // MV = view * nodeModelMatrix. Use the NODE-level matrix (the SAME
-          // one the surface packs via packCameraUniforms) — NOT the model-
-          // level `modelMatrix`. Edge positions are model-space, so for a glTF
-          // whose node carries a scale (the EXT_mesh_primitive_edge_visibility
-          // sample's ~1e4 model-space coords scale ~0.0012 to world) the
-          // model-level matrix omits that scale and projects every edge ~1e4 m
-          // off-screen — the EDGES_ONLY non-render the 14-batch review
-          // surfaced. RTE still isn't applied (fine at typical distances).
+          // MV = view * nodeModelMatrix. This must use the node-level
+          // matrix, the same one the surface packs via
+          // packCameraUniforms, rather than the model-level
+          // `modelMatrix`. Edge positions are model-space, so for a glTF
+          // whose node carries a scale — the
+          // EXT_mesh_primitive_edge_visibility sample's ~1e4 model-space
+          // coords scale by ~0.0012 to reach world — the model-level
+          // matrix omits that scale and projects every edge roughly
+          // 1e4 m off-screen. RTE is not applied here, which is
+          // acceptable at typical distances.
           const us = context.uniformState;
           const vp = us?.viewProjection;
           const view = us?.view;
@@ -8330,16 +8275,14 @@ function updateWebGPUModel(
           }
           const mvData = Matrix4.toArray(mv, scratchEdgeMVArray);
 
-          // Edge color: this uniform is now the FALLBACK surface color used
+          // Edge color: this uniform is the fallback surface color, used
           // only when an edge writes the `a_edgeColor.a < 0` "no override"
           // sentinel. The per-primitive `materialColor`, per-lineString
-          // `materialColor`, and per-vertex COLOR_0 overrides are now carried
-          // per-edge in the @location(7) vertex attribute
-          // (NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU), matching WebGL's
-          // `a_edgeColor`. So this fallback is just the model's base color
-          // (WebGL's FS keeps the surface/fragment color when no per-edge
-          // override is authored — NOT black — see
-          // EdgeVisibilityStageFS.glsl:32-36).
+          // `materialColor`, and per-vertex COLOR_0 overrides are carried
+          // per-edge in the @location(7) vertex attribute, matching WebGL's
+          // `a_edgeColor`. The fallback is therefore the model's base color,
+          // not black, because WebGL's EdgeVisibilityStageFS keeps the
+          // surface fragment color when no per-edge override is authored.
           const mc = model.color;
           const edgeColor = {
             r: mc?.red ?? 1.0,
@@ -8359,14 +8302,14 @@ function updateWebGPUModel(
           // ready for `_edgeLinePattern` to land later.
           const linePattern = (model._edgeLinePattern ?? 0xffff) & 0xffff;
 
-          // UP144-SNAP-WEBGPU-EDGES — snap lanes. The pick color is the SAME
-          // per-glTF-primitive ID the surface's pick/snap draws emit
-          // (ensurePickId keyed nodeIdx_primIdx, resolved above as
-          // `pickColor`); the log-depth encode pair is derived by the one
-          // enforceable home (packCameraLogDepthLanes) from the same
-          // uniformState the model's camera UB lanes read at this exact
-          // update moment, so the edge snap frag_depth compares coherently
-          // against the occluder-phase depth the pick fleet wrote.
+          // Snap lanes. The pick color is the same per-glTF-primitive ID the
+          // surface's pick and snap draws emit — `ensurePickId` keyed on
+          // nodeIdx_primIdx, resolved above as `pickColor`. The log-depth
+          // encode pair is derived by `packCameraLogDepthLanes`, the single
+          // home for that math, from the same uniformState the model's camera
+          // UB lanes read at this exact update moment, so the edge snap
+          // frag_depth compares coherently against the occluder-phase depth
+          // the pick fleet wrote.
           packCameraLogDepthLanes(scratchEdgeLogLanes, 0, us);
           const snapLogFactor = scratchEdgeLogLanes[CAMERA_LOG_FACTOR_FLOAT];
           const snapLogNear = scratchEdgeLogLanes[CAMERA_LOG_NEAR_FLOAT];
@@ -8386,43 +8329,38 @@ function updateWebGPUModel(
             snapLogNear,
           );
 
-          // Session 65 Batch 13 (NEW-VR-DEPTHPLANE-EDGEEMITTER-
-          // PIPELINE-FORMAT) — pick the MRT pipeline when the scene's
-          // edge framebuffer redirect is active, otherwise the
-          // single-target variant so edges draw safely onto the
-          // regular 1-attachment scene framebuffer. Tracks
-          // `scene._enableEdgeVisibility` (the same flag that gates
-          // `_edgeFramebuffer` allocation in
-          // `WebGPUSceneRendererEnsureResources`). The transient
-          // "_enableEdgeVisibility flipped on this frame but the FBO
-          // hasn't finished allocating yet" race resolves naturally:
-          // the 3D-tile dispatcher falls back to the scene FB pass
-          // when `edgeFB.isReady` is false (see
-          // `WebGPUSceneRenderer3DTilePasses.ts:185`), and since the
-          // pipeline was selected for the MRT layout, the validation
-          // catches it. The fallback isn't visually critical (one
-          // frame of clipped edges on toggle); the pipeline mismatch
-          // we ARE fixing is the steady-state case where edge
-          // visibility is off entirely.
+          // Pick the MRT pipeline when the scene's edge framebuffer
+          // redirect is active, otherwise the single-target variant so
+          // edges draw safely onto the regular one-attachment scene
+          // framebuffer. This tracks `scene._enableEdgeVisibility`, the
+          // same flag that gates `_edgeFramebuffer` allocation in
+          // `WebGPUSceneRendererEnsureResources`. The transient case
+          // where `_enableEdgeVisibility` flips on this frame but the
+          // FBO has not finished allocating resolves naturally: the
+          // 3D-tile dispatcher falls back to the scene FB pass when
+          // `edgeFB.isReady` is false, and because the pipeline was
+          // selected for the MRT layout, validation catches it. One
+          // frame of clipped edges on toggle is not visually critical;
+          // the mismatch that matters is the steady-state case where
+          // edge visibility is off entirely.
           const sceneForEdge = frameState?.scene;
           const edgeVisibilityOn = sceneForEdge?._enableEdgeVisibility === true;
 
-          // C-R8-EDGE-DISPLAY-MODE (§5 P2) — pick the destination pass +
-          // pipeline by mode. Mirrors WebGL's
-          // `ModelDrawCommand.pushEdgeCommands` (`ModelDrawCommand.js:250-
-          // 257`):
+          // Pick the destination pass and pipeline by mode, mirroring
+          // WebGL's `ModelDrawCommand.pushEdgeCommands`:
           //   - EDGES_ONLY → `CESIUM_3D_TILE_EDGES_DIRECT` (Pass slot 12).
-          //     The DIRECT pass renders straight onto the SCENE
-          //     framebuffer (1 color attachment), so it ALWAYS uses the
-          //     single-target pipeline regardless of `_enableEdgeVisibility`
-          //     — the MRT pipeline's 3 color targets would mismatch the
-          //     scene render pass's single attachment and fail validation.
+          //     The direct pass renders straight onto the scene
+          //     framebuffer, which has one color attachment, so it always
+          //     uses the single-target pipeline regardless of
+          //     `_enableEdgeVisibility`; the MRT pipeline's 3 color
+          //     targets would mismatch that single attachment and fail
+          //     validation.
           //   - SURFACES_AND_EDGES → `CESIUM_3D_TILE_EDGES` (Pass slot 4):
-          //     keep the existing MRT-vs-single selection (MRT when the
-          //     edge FBO is allocated, single-target as the fallback the
-          //     3D-tile dispatcher runs on the scene FB).
-          // (SURFACES_ONLY never reaches here — the emitter is gated off
-          // above.)
+          //     keep the MRT-versus-single selection, using MRT when the
+          //     edge FBO is allocated and single-target as the fallback
+          //     the 3D-tile dispatcher runs on the scene FB.
+          // SURFACES_ONLY never reaches here, because the emitter is
+          // gated off above.
           const edgesOnly = edgeDisplayMode === EdgeDisplayMode.EDGES_ONLY;
           const edgePass = edgesOnly
             ? Pass.CESIUM_3D_TILE_EDGES_DIRECT
@@ -8451,15 +8389,15 @@ function updateWebGPUModel(
           });
           commandList.push(edgeCmd);
 
-          // UP144-SNAP-WEBGPU-EDGES — snapping-pass edge variant. Same draw
-          // args as the edge color command (same quads, same bind groups);
-          // only the pipeline differs: `fragmentSnapMain` targets the
-          // RG32Uint payload attachment and writes the pick key with the
-          // edge flag SET. Riding `derivedCommands.snapping.snapCommand`
-          // means `executeSnapPayloadBatch`'s strict resolved-snap-variant
-          // admission (the FORK-34 guard) accepts it without loosening, and
-          // `Snapping.selectBestHit`'s edge-over-surface preference becomes
-          // live on WebGPU. Materialized only for the CURRENT snap
+          // Snapping-pass edge variant. Same draw args as the edge color
+          // command — same quads, same bind groups — with only the
+          // pipeline differing: `fragmentSnapMain` targets the RG32Uint
+          // payload attachment and writes the pick key with the edge flag
+          // set. Riding `derivedCommands.snapping.snapCommand` means
+          // `executeSnapPayloadBatch`'s strict resolved-snap-variant
+          // admission accepts it without loosening, which makes
+          // `Snapping.selectBestHit`'s edge-over-surface preference live
+          // on WebGPU. Materialized only for the current snap
           // mini-frame, exactly like the surface snap command above.
           if (frameState?.passes?.snap === true && pickColor) {
             const edgeSnapPipeline = ensureEdgeEmitterSnapPipeline(
@@ -8499,13 +8437,12 @@ function updateWebGPUModel(
       }
     }
 
-    // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175) — capture THIS frame's
-    // `nodeModelMatrix` into the per-node cache slot so the NEXT frame's
-    // pack reads it as `prev`. Mirrors the model-level capture at the
-    // end of `update()`. Only fires for non-identity nodes (identity
-    // nodes share `cache.prevModelMatrix`); the slot lives on the
-    // already-allocated `cache.nodes[nodeIdx]` (Batch 152 NEW-MODEL-
-    // NODE-TRANSFORMS allocation). Clones the scratch matrix because
+    // Capture this frame's `nodeModelMatrix` into the per-node cache
+    // slot so the next frame's pack reads it as `prev`. Mirrors the
+    // model-level capture at the end of `update()`. Only fires for
+    // non-identity nodes, since identity nodes share
+    // `cache.prevModelMatrix`; the slot lives on the already-allocated
+    // `cache.nodes[nodeIdx]`. The scratch matrix is cloned because
     // `scratchNodeModelMatrix` is reused across nodes per frame.
     if (
       !pipelineWarmupOnly &&
@@ -8521,23 +8458,22 @@ function updateWebGPUModel(
     }
   }
 
-  // WIRE-MODEL-SILHOUETTE — push the derived silhouette-colour commands
-  // AFTER every base command of this model (WebGL
-  // `ModelSceneGraph.pushDrawCommands` gathers them separately and
-  // appends for the same reason: the rim must not draw on top of the
-  // model's own later primitives before those have stamped stencil).
+  // Push the derived silhouette-colour commands after every base command
+  // of this model. WebGL's `ModelSceneGraph.pushDrawCommands` gathers
+  // them separately and appends for the same reason: the rim must not
+  // draw on top of the model's own later primitives before those have
+  // stamped stencil.
   for (let i = 0; i < silhouetteColorCommands.length; i++) {
     commandList.push(silhouetteColorCommands[i]);
   }
 
-  // TAA Slice 2c (Batch 96) — capture this frame's modelMatrix as
-  // `prevModelMatrix` so the next frame's primitive pack reads the
-  // correct previous value. Done at the END of update so every
-  // primitive saw the same prev-frame value during its pack call.
-  // For static models the value never changes; for animated entities
-  // (transforms updated by the host app each frame) the per-frame
-  // delta drives the per-pixel velocity output gated on
-  // `frameState.taaEnabled`.
+  // Capture this frame's modelMatrix as `prevModelMatrix` so the next
+  // frame's primitive pack reads the correct previous value. This runs
+  // at the end of update so every primitive saw the same prev-frame
+  // value during its pack call. For static models the value never
+  // changes; for animated entities, whose transforms the host app
+  // updates each frame, the per-frame delta drives the per-pixel
+  // velocity output gated on `frameState.taaEnabled`.
   if (!pipelineWarmupOnly) {
     if (!defined(cache.prevModelMatrix)) {
       cache.prevModelMatrix = Matrix4.clone(modelMatrix);
@@ -8545,11 +8481,12 @@ function updateWebGPUModel(
       Matrix4.clone(modelMatrix, cache.prevModelMatrix);
     }
   }
-  // C11-202 — the node→primitive traversal above ran to completion, so
+  // The node→primitive traversal above ran to completion, so
   // `cache.primitives` now holds every primitive this model will ever cache
-  // for the current scene graph. Recorded here (the single tail shared by the
-  // warmup and normal paths) rather than at the call site, because the
-  // `_sceneGraph`/`_runtimeNodes` guard returns early without visiting a node.
+  // for the current scene graph. This is recorded here, at the single tail
+  // shared by the warmup and normal paths, rather than at the call site,
+  // because the `_sceneGraph`/`_runtimeNodes` guard returns early without
+  // visiting a node.
   cache._warmupTraversalComplete = true;
   if (defined(preparationWork)) {
     preparationWork.commandsEmitted += commandList.length - commandListStart;
@@ -8567,15 +8504,16 @@ function areWebGPUModelColorPipelinesReady(model: ModelLike): boolean {
   }
   const primitiveKeys = Object.keys(cache.primitives);
   if (primitiveKeys.length === 0) {
-    // C11-202 — an empty primitive map is only "still preparing" until the
-    // warmup traversal has walked the scene graph. A mesh-less glTF (camera /
-    // light / empty-node documents) and one whose every primitive was dropped
-    // because `extractPrimitiveGeometry` returned null (no POSITION or zero
-    // vertices — a structural property of the loaded source, not a pending
-    // async fetch) both legitimately cache nothing, and nothing can appear
-    // later without a scene-graph rebuild, which drops the whole cache. Such a
-    // model has no pipeline left to wait on, so treating it as never-ready
-    // stalls `Model._ready` (and re-runs a full warmup pass) forever.
+    // An empty primitive map is only "still preparing" until the warmup
+    // traversal has walked the scene graph. A mesh-less glTF (a camera, light
+    // or empty-node document) and one whose every primitive was dropped
+    // because `extractPrimitiveGeometry` returned null — no POSITION or zero
+    // vertices, a structural property of the loaded source rather than a
+    // pending async fetch — both legitimately cache nothing, and nothing can
+    // appear later without a scene-graph rebuild, which drops the whole cache.
+    // Such a model has no pipeline left to wait on, so treating it as
+    // never-ready would stall `Model._ready` and re-run a full warmup pass
+    // forever.
     return cache._warmupTraversalComplete === true;
   }
   for (let i = 0; i < primitiveKeys.length; i++) {
@@ -8588,7 +8526,7 @@ function areWebGPUModelColorPipelinesReady(model: ModelLike): boolean {
 
 /**
  * Start or poll renderer-native preparation for a newly loaded standalone
- * model. Tile-owned and hidden models keep the historical resource-ready
+ * model. Tile-owned and hidden models keep the plain resource-ready
  * contract: their visibility scheduler starts native work only on demand.
  *
  * The first call realizes immutable native geometry resources and kicks the
@@ -8643,10 +8581,10 @@ const scratchEdgeMVP = new Matrix4();
 const scratchEdgeMVPArray = new Float32Array(16);
 const scratchEdgeMV = new Matrix4();
 const scratchEdgeMVArray = new Float32Array(16);
-// UP144-SNAP-WEBGPU-EDGES — scratch CameraUniforms-shaped lane carrier so the
-// edge UB's snap log-depth pair is derived by the ONE home
-// (packCameraLogDepthLanes) rather than a re-implementation. Sized to reach
-// the highest lane the packer writes (CAMERA_LOG_FAR_FLOAT = 59).
+// Scratch CameraUniforms-shaped lane carrier, so the edge UB's snap
+// log-depth pair is derived by `packCameraLogDepthLanes` rather than a
+// re-implementation. Sized to reach the highest lane the packer writes
+// (CAMERA_LOG_FAR_FLOAT = 59).
 const scratchEdgeLogLanes = new Float32Array(60);
 
 /**
@@ -8656,9 +8594,9 @@ const scratchEdgeLogLanes = new Float32Array(60);
  * Destroys one primitive cache slot's GPU resources (vertex/index/material
  * buffers, created textures, morph/featureId/metadata/edge resources).
  * Shared by full-model teardown ({@link destroyWebGPUModelResources}) and the
- * METADATA-TABLE-SOURCES late-metadata rebuild path (a primitive whose
- * structural-metadata resolution materializes AFTER its cache froze a
- * metadata-less pipeline variant is destroyed + rebuilt in place).
+ * late-metadata rebuild path, where a primitive whose structural-metadata
+ * resolution materializes after its cache froze a metadata-less pipeline
+ * variant is destroyed and rebuilt in place.
  *
  * @param {object|undefined} pc per-primitive cache slot
  * @private
@@ -8687,9 +8625,9 @@ function destroyPrimitiveCacheResources(
   // Bind groups do not have an explicit destroy operation. Release the cache
   // record before destroying any of the buffers it references.
   pc._mergedInstanceBindGroupCache = undefined;
-  // C9-17 Slice A — release the merged group-1 records too; a late-metadata
-  // rebuild (METADATA-TABLE-SOURCES) destroys+recreates the material buffers,
-  // so the cached bind groups must drop their now-dangling buffer references.
+  // Release the merged group-1 records too: a late-metadata rebuild destroys
+  // and recreates the material buffers, so the cached bind groups must drop
+  // their now-dangling buffer references.
   pc._mergedMaterialBindGroupCache = undefined;
   pc._mergedMaterialBindGroupCacheSilhouette = undefined;
   pc._mergedMaterialBindGroupCacheTranslucent = undefined;
@@ -8712,9 +8650,9 @@ function destroyPrimitiveCacheResources(
     pc.featureIdBuffer,
     pc.indexBuffer,
     pc.materialBuffer,
-    // C-R1-TILE-BATCH — translucent-class alternate material UB.
+    // Translucent-class alternate material UB.
     pc.materialBufferTranslucent,
-    // WIRE-MODEL-SILHOUETTE — silhouette-pass alternate material UB.
+    // Silhouette-pass alternate material UB.
     pc.materialBufferSilhouette,
   ];
   pc.positionBuffer = null;
@@ -8737,7 +8675,7 @@ function destroyPrimitiveCacheResources(
       destroyBestEffort(() => buffer.destroy());
     }
   }
-  // C11-195 — no per-primitive light UB to destroy: the light block rides the
+  // There is no per-primitive light UB to destroy: the light block rides the
   // context-owned per-frame ring, which no model owns or frees.
 
   // Destroy created GPU textures (not default ones)
@@ -8758,12 +8696,11 @@ function destroyPrimitiveCacheResources(
   // Destroy feature ID resources
   destroyBestEffort(() => destroyFeatureIdResources(pc));
 
-  // DP-H46a — destroy metadata GPU resources (slot-9 vertex buffer).
+  // Destroy metadata GPU resources (the slot-9 vertex buffer).
   destroyBestEffort(() => destroyMetadataResources(pc));
 
-  // C-R8-EDGE-EMITTER (Batch 45) — destroy per-primitive edge
-  // buffers. `edgeResources === false` is the sentinel for
-  // "primitive had no edges"; skip in that case.
+  // Destroy per-primitive edge buffers. `edgeResources === false` is
+  // the sentinel for "primitive had no edges"; skip in that case.
   const edgeResources = pc.edgeResources;
   pc.edgeResources = null;
   if (edgeResources && (edgeResources as unknown) !== false) {
@@ -8823,19 +8760,19 @@ function disposeWebGPUModelCache(
     }
   };
 
-  // C11-195 — the model-level and 2D/IDL camera GPU buffers no longer exist:
-  // their bytes come from the context-owned per-frame arena, which is torn
-  // down before that context's ring allocator. Only the CPU staging
-  // arrays live on this cache, and those are plain GC.
+  // There are no model-level or 2D/IDL camera GPU buffers to release: their
+  // bytes come from the context-owned per-frame arena, which is torn down
+  // before that context's ring allocator. Only the CPU staging arrays live on
+  // this cache, and those are plain GC.
   const modelShadowCastUB = cache.shadowCastUB;
   cache.shadowCastUB = undefined;
   if (defined(modelShadowCastUB)) {
     destroyBestEffort(() => modelShadowCastUB.destroy());
   }
 
-  // C-R9-MODEL-PICK (Batch 54 / refactored Batch 59) — release every
-  // per-primitive pick ID back to the registry so its slot can be reused.
-  // No-op if the model never entered a render or pick pass.
+  // Release every per-primitive pick ID back to the registry so its slot can
+  // be reused. This is a no-op if the model never entered a render or pick
+  // pass.
   destroyBestEffort(() =>
     destroyPickIds(cache as unknown as Parameters<typeof destroyPickIds>[0]),
   );
@@ -8859,7 +8796,7 @@ function disposeWebGPUModelCache(
   // and drain every registry ID even if an earlier one throws.
   destroyBestEffort(() => destroyPerFeaturePickResources(cache));
 
-  // C-R8-EDGE-EMITTER (Batch 45) — destroy the shared edge pipeline cache.
+  // Destroy the shared edge pipeline cache.
   const edgeEmitterCache = cache.edgeEmitterCache;
   cache.edgeEmitterCache = null;
   if (defined(edgeEmitterCache)) {
@@ -8889,7 +8826,7 @@ function disposeWebGPUModelCache(
     if (defined(nodeShadowCastUB)) {
       destroyBestEffort(() => nodeShadowCastUB.destroy());
     }
-    // C11-195 — per-node camera buffers are gone; see the model-level note
+    // There are no per-node camera buffers either; see the model-level note
     // above. Nothing per-node to release for the camera block.
     destroyBestEffort(() => destroyInstancingResources(nc));
   }

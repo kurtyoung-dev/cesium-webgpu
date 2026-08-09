@@ -449,9 +449,9 @@ function makeAttribute(loader, attributeInfo, context) {
     attribute.typedArray = typedArray;
   }
 
-  // C9-17 Slice B — a point-cloud attribute's buffer / typed array is now set;
-  // stamp the geometry revision so the WebGPU geometry cache's positive-path
-  // validation can short-circuit its deep field walk.
+  // The attribute's buffer and typed array are now set, so stamp the geometry
+  // revision: it lets the WebGPU geometry cache's positive-path validation
+  // short-circuit its deep field walk.
   bumpGeometryRevision(attribute);
 
   return attribute;

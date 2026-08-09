@@ -38,12 +38,13 @@ const primitiveGeometryCacheDiagnostics = {
   attributeConversionCount: 0,
   morphAttributeConversionCount: 0,
   uint8IndexUpcastCount: 0,
-  // C9-17 Slice B — positive-path validation attribution. A cache HIT that the
-  // loader-owned revision tokens proved without the deep field walk increments
-  // `revisionHitCount`; a HIT that still needed the full signature walk (some
-  // attribute/index/morph token absent — an uninstrumented producer)
-  // increments `walkHitCount`. On settled frames of fully-instrumented glTF
-  // primitives, revisionHitCount should climb while walkHitCount stays flat.
+  // Attribution for positive-path validation. A cache hit the loader-owned
+  // revision tokens proved without the deep field walk increments
+  // `revisionHitCount`; a hit that still needed the full signature walk —
+  // because some attribute, index or morph token was absent, i.e. an
+  // uninstrumented producer — increments `walkHitCount`. On settled frames of
+  // fully-instrumented glTF primitives `revisionHitCount` should climb while
+  // `walkHitCount` stays flat.
   revisionHitCount: 0,
   walkHitCount: 0,
 };
@@ -63,11 +64,12 @@ function getGeometryRevision(value) {
 }
 
 /**
- * C9-17 Slice B (FAR-204) — loader-owned monotonic geometry revision token.
- * Producers that REPLACE a primitive attribute's or index accessor's typed
- * array / buffer (GltfLoader's finalize callbacks, PntsLoader's attribute
- * build, and the CESIUM_primitive_outline post-process in PrimitiveLoadPlan)
- * call this after the mutation so the positive-path validation in
+ * Stamps the loader-owned monotonic geometry revision token.
+ *
+ * Producers that replace a primitive attribute's or index accessor's typed
+ * array or buffer — GltfLoader's finalize callbacks, PntsLoader's attribute
+ * build, and the CESIUM_primitive_outline post-process in PrimitiveLoadPlan —
+ * call this after the mutation, so the positive-path validation in
  * {@link geometrySignatureMatches} can short-circuit the deep per-field walk
  * when nothing has mutated since the signature was captured.
  *
@@ -251,11 +253,12 @@ function captureGeometrySignature(runtimePrimitive, source, gltfPrimitive) {
 }
 
 /**
- * C9-17 Slice B — positive-path revision check for one attribute signature.
- * A HIT requires the loader to have stamped a DEFINED revision AND the
- * attribute + its data (typed array / buffer) to still have the captured
- * identity. When the revision is absent (an uninstrumented producer) this
- * returns false so the caller falls back to the deep field walk.
+ * Positive-path revision check for one attribute signature.
+ *
+ * A hit requires the loader to have stamped a defined revision, and the
+ * attribute and its data (typed array or buffer) to still hold the captured
+ * identity. An absent revision means an uninstrumented producer, so this
+ * returns false and the caller falls back to the deep field walk.
  * @private
  */
 function attributeRevisionMatches(signature, attribute) {
@@ -269,11 +272,12 @@ function attributeRevisionMatches(signature, attribute) {
 }
 
 /**
- * C9-17 Slice B — the deep per-field signature walk (attributes + indices +
- * morph targets). Correct for every producer, instrumented or not; this is the
+ * The deep per-field signature walk over attributes, indices and morph targets.
+ *
+ * Correct for every producer, instrumented or not; this is the
  * O(attributes × fields) fallback and the debug cross-check oracle. Assumes the
  * caller already validated the top-level identities and the attributes-array
- * identity/length.
+ * identity and length.
  * @private
  */
 function geometryDeepWalkMatches(signature, source, gltfPrimitive, attributes) {
@@ -334,15 +338,16 @@ function geometryDeepWalkMatches(signature, source, gltfPrimitive, attributes) {
 }
 
 /**
- * C9-17 Slice B — O(objects) positive-path fast path. Returns true ONLY when
- * every attribute (base + morph) and the index accessor carry a defined,
- * unchanged loader-owned revision token AND every captured object identity
- * still holds — which provably implies the deep field walk would also match, so
- * the per-field/per-quantization-component comparisons are skipped. Returns
- * false (fall through to the walk) the instant any token is absent or any
- * identity/revision differs — so an uninstrumented producer, or a genuine
- * mutation, is always caught by the walk. Assumes the caller already validated
- * the top-level identities and the attributes-array identity/length.
+ * The O(objects) positive-path fast path.
+ *
+ * Returns true only when every attribute — base and morph — and the index
+ * accessor carry a defined, unchanged loader-owned revision token, and every
+ * captured object identity still holds. That implies the deep field walk would
+ * also match, so the per-field and per-quantization-component comparisons are
+ * skipped. It returns false the instant any token is absent or any identity or
+ * revision differs, so an uninstrumented producer or a genuine mutation always
+ * falls through to the walk. Assumes the caller already validated the top-level
+ * identities and the attributes-array identity and length.
  * @private
  */
 function geometryRevisionFastPathMatches(
@@ -439,8 +444,8 @@ function geometrySignatureMatches(
     return false;
   }
 
-  // C9-17 Slice B — positive path: when the loader-owned revision tokens prove
-  // the geometry is unchanged, skip the deep per-field walk entirely.
+  // Positive path: when the loader-owned revision tokens prove the geometry is
+  // unchanged, skip the deep per-field walk entirely.
   if (
     geometryRevisionFastPathMatches(
       signature,
@@ -583,15 +588,14 @@ function buildPrimitiveGeometry(runtimePrimitive, source, gltfPrim) {
     indexCount: 0,
     indexType: null, // "UNSIGNED_SHORT" or "UNSIGNED_INT"
 
-    // C11-90 — byte width of the ORIGINAL glTF index accessor (1 / 2 / 4),
-    // recorded because `indexType` cannot express it: WebGPU has no uint8
-    // index format, so a UNSIGNED_BYTE accessor is upcast to Uint16Array
-    // below and its type is reported as "UNSIGNED_SHORT". That upcast turns
-    // the uint8 primitive-restart sentinel 0xFF into the ordinary index
-    // 0x00FF. The WebGPU topology realization repairs that — but ONLY for the
-    // four modes `KHR_mesh_primitive_restart` permits, which is a decision
-    // that belongs to the renderer, not the extractor. So the extractor
-    // records the fact and stays backend-agnostic.
+    // Byte width of the original glTF index accessor (1, 2 or 4), recorded
+    // because `indexType` cannot express it: WebGPU has no uint8 index format,
+    // so an UNSIGNED_BYTE accessor is upcast to Uint16Array below and its type
+    // is reported as "UNSIGNED_SHORT". That upcast turns the uint8
+    // primitive-restart sentinel 0xFF into the ordinary index 0x00FF. Repairing
+    // it is the renderer's decision — it applies only to the modes
+    // `KHR_mesh_primitive_restart` permits — so the extractor records the fact
+    // and stays backend-agnostic.
     indexSourceComponentBytes: 0,
 
     // GLTF-POINTS-MODE — the glTF primitive draw mode (`PrimitiveType` /
@@ -731,10 +735,10 @@ function buildPrimitiveGeometry(runtimePrimitive, source, gltfPrim) {
             true,
           );
         } else if (tSemantic === "TANGENT") {
-          // C2-4: glTF morph TANGENT deltas are VEC3 (the .w handedness is NOT
-          // morphed), so extract 3 components — matches WebGL getMorphedTangent.
-          // Without this, a normal-mapped morphed mesh keeps its rest-pose
-          // tangent frame and the tangent-space normal drifts as it deforms.
+          // glTF morph TANGENT deltas are VEC3 — the .w handedness is not
+          // morphed — so extract 3 components, matching getMorphedTangent.
+          // Otherwise a normal-mapped morphed mesh keeps its rest-pose tangent
+          // frame and the tangent-space normal drifts as the mesh deforms.
           morphTarget.tangentData = convertAttributeToFloat32(
             tData,
             tAttr,
@@ -755,28 +759,19 @@ function buildPrimitiveGeometry(runtimePrimitive, source, gltfPrim) {
   if (defined(indices)) {
     let idxData = indices.typedArray || indices.buffer;
     if (defined(idxData)) {
-      // glTF allows UNSIGNED_BYTE indices (componentType 5121), and
-      // CZML Model Articulations is one of the few production assets
-      // that ships them — the hinge meshes for the cesium_air control
-      // surfaces compile down to 18 byte-indices each. WebGPU's
-      // `IndexFormat` only accepts "uint16" and "uint32"; there is no
-      // uint8 path. Upcast Uint8Array → Uint16Array at extract time so
-      // the cache build site (`primCache.indexBuffer`) sizes the GPU
-      // buffer at 2 bytes per index instead of 1. Without this, the
-      // buffer is sized for `idxData.byteLength` (== count) bytes,
-      // padded to a multiple of 4, but the draw command tags the
-      // format as uint16 and walks 2 bytes per index — overflowing
-      // the buffer on the first draw call. (Symptom pre-fix on the
-      // CZML Model Articulations demo: `Index range (first: 0,
-      // count: 18, format: Uint16) does not fit in index buffer
-      // size (20)` warning every frame, model never renders.)
-      // Session 65 Batch 7 (2026-05-12) — NEW-VR-CZML-MODEL-
-      // ARTICULATIONS-INDEXCOUNT.
+      // glTF allows UNSIGNED_BYTE indices (componentType 5121), but WebGPU's
+      // `IndexFormat` accepts only "uint16" and "uint32" — there is no uint8
+      // path. Upcast Uint8Array to Uint16Array at extract time so the cache
+      // build site (`primCache.indexBuffer`) sizes the GPU buffer at 2 bytes
+      // per index rather than 1. Without the upcast the buffer is sized for
+      // `idxData.byteLength` (equal to the index count) padded to a multiple of
+      // 4, while the draw command tags the format as uint16 and walks 2 bytes
+      // per index, overflowing the buffer on the first draw call.
       //
-      // C11-90 — record the ORIGINAL accessor width before the upcast erases
-      // it. `indexType` below can only report "UNSIGNED_SHORT"/"UNSIGNED_INT",
-      // so without this the restart-sentinel repair downstream would have no
-      // way to know a 0x00FF used to be a 0xFF restart.
+      // Record the original accessor width before the upcast erases it.
+      // `indexType` below can only report "UNSIGNED_SHORT" or "UNSIGNED_INT",
+      // so without it the restart-sentinel repair downstream cannot tell that a
+      // 0x00FF used to be a 0xFF restart.
       result.indexSourceComponentBytes = idxData.BYTES_PER_ELEMENT;
       if (idxData instanceof Uint8Array) {
         const upcast = new Uint16Array(idxData.length);
@@ -885,10 +880,10 @@ function resetPrimitiveGeometryView(view, baseGeometry) {
   view.indexData = baseGeometry.indexData;
   view.indexCount = baseGeometry.indexCount;
   view.indexType = baseGeometry.indexType;
-  // C11-90 — restored with the rest of the index tuple so a renderer that
-  // rewrites the view's index list (LINE_LOOP closure, TRIANGLE_FAN expansion,
-  // restart repair, non-indexed synthesis) can never leave the view claiming a
-  // source width that no longer describes `view.indexData`.
+  // Restored with the rest of the index tuple, so a renderer that rewrites the
+  // view's index list — LINE_LOOP closure, TRIANGLE_FAN expansion, restart
+  // repair, non-indexed synthesis — can never leave the view claiming a source
+  // width that no longer describes `view.indexData`.
   view.indexSourceComponentBytes = baseGeometry.indexSourceComponentBytes;
   view.featureId0Data = baseGeometry.featureId0Data;
   view.hasFeatureId0 = baseGeometry.hasFeatureId0;

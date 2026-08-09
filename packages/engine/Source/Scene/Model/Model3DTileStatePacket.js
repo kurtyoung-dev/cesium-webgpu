@@ -1,10 +1,10 @@
 import Cartesian3 from "../../Core/Cartesian3.js";
 
 /**
- * C11-205 — immutable, versioned snapshot of the broad tileset state copied
- * into every Model3DTileContent. Dynamic per-tile state (model matrix,
- * clipping, reference matrix, and environment-map ownership) deliberately
- * remains outside this packet.
+ * An immutable, versioned snapshot of the broad tileset state copied into every
+ * Model3DTileContent. Dynamic per-tile state — model matrix, clipping,
+ * reference matrix, and environment-map ownership — deliberately stays outside
+ * this packet.
  *
  * @private
  */

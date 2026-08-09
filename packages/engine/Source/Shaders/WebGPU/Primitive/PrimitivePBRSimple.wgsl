@@ -3,16 +3,15 @@
 // Uses RTE (Relative-To-Eye) for 64-bit precision at planetary scale
 // Vertex: posHigh(3) + posLow(3) + normal(3) + color(4) = 13 floats = 52 bytes
 //
-// CSM Slice 2d — receives cascaded shadows through the primitive
-// effects bind group at `@group(2)` (no texture group between material
-// and effects for this shader). The fragment path routes the direct
-// (light-driven) radiance through `computeShadowFactorCSM` when
-// `effects.csmControl.x > 0.5`; ambient stays unshadowed per PBR
-// convention.
+// Receives cascaded shadows through the primitive effects bind group at
+// `@group(2)`; this shader has no texture group between material and effects.
+// The fragment path routes direct, light-driven radiance through
+// `computeShadowFactorCSM` when `effects.csmControl.x > 0.5`, while ambient
+// stays unshadowed per PBR convention.
 //
-// Batch 165 - B.12 chunk usage. Point-light path calls
-// `csm_samplePointShadow` from chunks/functions; the marker below tells
-// WebGPUPrimitiveShaders.js to prepend the chunk's WGSL at load time.
+// The point-light path calls `csm_samplePointShadow` from chunks/functions; the
+// marker below tells WebGPUPrimitiveShaders to prepend that chunk's WGSL at
+// load time.
 // @chunk csm_samplePointShadow
 
 struct VertexInput {
@@ -47,9 +46,8 @@ struct CameraUniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     lightDirection: vec4<f32>,
-    // DP-H41 (Batch 27) — previous frame's viewProjection for
-    // TAA / motion-vector reprojection. Sourced from
-    // `UniformState._previousViewProjection` (f32 mat4).
+    // The previous frame's viewProjection, for TAA and motion-vector
+    // reprojection. Sourced from `UniformState.previousViewProjection`.
     previousViewProjection: mat4x4<f32>,
     inverseViewQuaternion: vec4<f32>,
     //>>ifdef LOG_DEPTH
@@ -71,13 +69,12 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
-// ─── Effects bind group (shadow receive + CSM + point-light cube depth) ───
-// PBRSimple has no texture group, so effects lands at `@group(2)` —
-// matches PrimitivePhongColor's convention. Layout MUST match the
-// 480-byte UBO in WebGPUEffectsBindGroup.js. Struct extends through
-// `pointLightPositionRTE` (offset 336) to expose the Batch 161
-// point-light fields; the Batch 160 polygon-clipping array tail isn't
-// used by primitives.
+// Effects bind group: shadow receive, CSM, and point-light cube depth. This
+// shader has no texture group, so effects lands at `@group(2)`, matching
+// PrimitivePhongColor. The layout must match the 480-byte uniform buffer in
+// WebGPUEffectsBindGroup. The struct extends through `pointLightPositionRTE`
+// (offset 336) to expose the point-light fields; the polygon-clipping array
+// tail beyond it is not used by primitives.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -97,7 +94,7 @@ struct EffectsUniforms {
     // correct UBO offsets.
     edgeControl: vec4<f32>,
     edgeViewport: vec4<f32>,
-    // Batch 161 — B.12 point-light cube-shadow receive control.
+    // Point-light cube-shadow receive control.
     pointLightControl: vec4<f32>,
     pointLightPositionRTE: vec4<f32>,
 }
@@ -125,9 +122,9 @@ struct CSMParams {
 @group(2) @binding(9) var atmosphereLutSampler: sampler;
 @group(2) @binding(10) var<uniform> csmParams: CSMParams;
 @group(2) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
-// Batch 161 — B.12 point-light cube depth target (placeholder 1×1×6
-// cube cleared to 1.0 when point-light shadows are off; gated by
-// `effects.pointLightControl.x > 0.5`).
+// Point-light cube depth target. When point-light shadows are off this is a
+// placeholder 1x1x6 cube cleared to 1.0; sampling is gated by
+// `effects.pointLightControl.x > 0.5`.
 @group(2) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 const PI: f32 = 3.14159265359;
@@ -280,10 +277,9 @@ fn computeShadowFactorCSM(
     return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
-// Batch 165 — B.12 chunk-based point-light receive. The Batch 161
-// inline implementation has been replaced by a call to the reusable
-// `csm_samplePointShadow` chunk function. See PrimitivePhongTexturedColor
-// for the same pattern.
+// Chunk-based point-light receive: a call into the reusable
+// `csm_samplePointShadow` chunk function rather than an inline implementation.
+// PrimitivePhongTexturedColor follows the same pattern.
 fn computeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
     let visibility = csm_samplePointShadow(
@@ -359,13 +355,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // Direct lighting contribution (modulated by shadow factor below).
     var direct = (diffuse + specular) * material.lightColor.rgb * NdotL;
 
-    // CSM Slice 2d / Batch 161 — route direct radiance through the
-    // active shadow path when one is configured. Point-light cube
-    // shadows take precedence over CSM (only one shadow map is active
-    // at a time; checking pointLight first matches the Model FS gate
-    // order so transitions stay coherent). Ambient stays unshadowed
-    // per standard PBR convention (environment irradiance isn't
-    // occluded by the active shadow map).
+    // Route direct radiance through the active shadow path when one is
+    // configured. Point-light cube shadows take precedence over CSM: only one
+    // shadow map is active at a time, and testing the point light first matches
+    // the model fragment shader's gate order, so transitions stay coherent.
+    // Ambient stays unshadowed per standard PBR convention — environment
+    // irradiance is not occluded by the active shadow map.
     if (effects.pointLightControl.x > 0.5) {
         let shadowFactor = computeShadowFactorPointLight(input.eyePosition);
         direct = direct * shadowFactor;
@@ -392,9 +387,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
     var finalColor = vec4<f32>(gamma, input.color.a);
 
-    // FEAT-GAP-09 — Aerial-perspective fog blend (Session 34 pattern).
-    // Applied AFTER tonemap+gamma so the fog color is blended in display
-    // space — matches how the PhongTexturedColor reference composites.
+    // Aerial-perspective fog blend, applied after tonemap and gamma so the fog
+    // colour is blended in display space, matching how PhongTexturedColor
+    // composites.
     if (effects.atmosphereLutControl.x > 0.5) {
         let innerRadius = effects.atmosphereLutControl.y;
         let thickness = max(1.0, effects.atmosphereLutControl.z);

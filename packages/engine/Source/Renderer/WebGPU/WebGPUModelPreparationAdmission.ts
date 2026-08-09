@@ -109,17 +109,17 @@ interface WebGPUModelPreparationWorkStatistics {
   materialPacks: number;
   materialUploads: number;
   /**
-   * C11-195 — light blocks packed this frame. ONE per model per view since the
-   * block moved to the group-0 arena; it was one per PRIMITIVE before, so a
-   * count that tracks primitive count again is a regression, not a workload
+   * Light blocks packed this frame. One per model per view, because the block
+   * lives in the group-0 arena rather than in each primitive's bind group. A
+   * count that tracks primitive count instead is a regression, not a workload
    * change.
    */
   lightPacks: number;
   /**
-   * C11-195 — light blocks staged into the per-frame ring. No longer a count
-   * of `queue.writeBuffer` calls: the ring emits one write per dirty page for
-   * the whole frame. Equals `lightPacks` by construction (a staged block is
-   * never suppressed — its camera-relative contents change with the camera).
+   * Light blocks staged into the per-frame ring. Not a count of
+   * `queue.writeBuffer` calls: the ring emits one write per dirty page for the
+   * whole frame. Equals `lightPacks` by construction, because a staged block is
+   * never suppressed — its camera-relative contents change with the camera.
    */
   lightWrites: number;
   commandsEmitted: number;

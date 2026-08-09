@@ -249,11 +249,11 @@ class Model3DTileContent {
     const model = this._model;
     const tile = this._tile;
 
-    // C11-205 — Cesium3DTileset refreshes this shared immutable packet once
-    // per pass (and after a mutating tileVisible callback). A newly loaded or
-    // newly selected content applies the complete current packet once; steady
-    // frames avoid sixteen setters and the unconditional lightColor clone per
-    // selected tile. The fallback keeps direct/private content updates safe.
+    // Cesium3DTileset refreshes this shared immutable packet once per pass, and
+    // again after a mutating tileVisible callback. Newly loaded or newly
+    // selected content applies the complete current packet once, so steady
+    // frames avoid sixteen setters and an unconditional lightColor clone per
+    // selected tile. The fallback keeps direct or private content updates safe.
     const modelStatePacket =
       tileset._model3DTileStatePacket ?? refreshModel3DTileStatePacket(tileset);
     if (this._modelStatePacket !== modelStatePacket) {

@@ -268,12 +268,12 @@ class ModelRuntimePrimitive {
 
     const hasEdgeVisibility = defined(primitive.edgeVisibility);
 
-    // C11-202 — the native MODEL feature renderer realizes picking and
-    // extension-edge resources directly from the shared runtime primitive.
-    // Running the legacy stages as well creates WebGL pick IDs/buffers and a
-    // second copy of derived edge geometry that the native renderer never
-    // consumes. Keep every backend-neutral stage below, and keep the Scene MRT
-    // demand signal, while leaving WebGL's pipeline completely unchanged.
+    // The native MODEL feature renderer realizes picking and extension-edge
+    // resources directly from the shared runtime primitive. Running the legacy
+    // stages as well would create WebGL pick IDs and buffers plus a second copy
+    // of derived edge geometry that the native renderer never consumes. Every
+    // backend-neutral stage below still runs, as does the Scene MRT demand
+    // signal, so WebGL's pipeline is unchanged.
     const featureIdFlags = inspectFeatureIds(model, node, primitive);
 
     const hasClassification = defined(model.classificationType);

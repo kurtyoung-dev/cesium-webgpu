@@ -541,11 +541,11 @@ class ModelSceneGraph {
     const disableAnimations =
       frameState.mode !== SceneMode.SCENE3D && this._model._projectTo2D;
 
-    // C11-211 — update every node transform before deriving any skinning
-    // matrix. The old loop called updateJointMatrices() once per runtime node,
-    // and each call walked every skinned node and joint. Besides multiplying
-    // animation cost, early primitives could observe joint transforms before
-    // later runtime nodes had completed their update stages.
+    // Every node transform must settle before any skinning matrix is derived.
+    // Calling updateJointMatrices() once per runtime node walks every skinned
+    // node and joint on each call, which multiplies animation cost and — worse
+    // — lets early primitives observe joint transforms before later runtime
+    // nodes have finished their update stages.
     for (i = 0; i < this._runtimeNodes.length; i++) {
       const runtimeNode = this._runtimeNodes[i];
 

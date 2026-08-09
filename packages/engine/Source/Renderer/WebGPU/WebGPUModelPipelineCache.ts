@@ -5,19 +5,17 @@
  *
  * All variants share the same vertex layout (7 attribute slots) and the
  * 4 bind group layouts composed from device-shared model layouts:
- *   Group 0 — camera UBO + model/view light UBO (per-frame, both
- *             dynamic-offset — C11-195).
- *   Group 1 — merged material UBO + 24 PBR/KHR textures +
- *             7 featureId entries (per-material).
- *   Group 2 — merged joint matrices + morph deltas + morph weights +
- *             instance transforms (per-instance vertex).
- *   Group 3 — effects BGL shared with globe + primitive (shadow +
- *             clipping + atmosphere + CSM + edges + globe depth).
+ *   Group 0 — camera uniform buffer and model/view light uniform buffer,
+ *             per frame, both dynamic-offset.
+ *   Group 1 — merged material uniform buffer, 24 PBR and KHR textures, and
+ *             7 featureId entries, per material.
+ *   Group 2 — merged joint matrices, morph deltas, morph weights and instance
+ *             transforms, per instance vertex.
+ *   Group 3 — the effects layout shared with globe and primitive: shadow,
+ *             clipping, atmosphere, CSM, edges and globe depth.
  *
- * Consolidated from 8 logical groups in NEW-BG-CONSOLIDATION (Batch 122)
- * to fit within the WebGPU spec-mandated `maxBindGroups: 4` limit
- * (universal in Chromium, April 2026 — verified via
- * `Tools/visual-regression/probe-adapter-limits.mjs`).
+ * Eight logical groups are consolidated into these four to fit the WebGPU
+ * spec-mandated `maxBindGroups: 4` limit.
  *
  * Skinning support: joints0 (vec4<u32>) and weights0 (vec4<f32>) are always
  * present in the vertex layout. Non-skinned primitives bind default zero
@@ -34,22 +32,21 @@ import ModelPBRCompleteWGSL from "../../Shaders/WebGPU/Model/ModelPBRComplete.js
 // WIRE-MODEL-SILHOUETTE — the inflate/colour helper chunk, prepended to
 // the module source only when the MODEL_SILHOUETTE bit is active.
 import ModelSilhouetteStageWGSL from "../../Shaders/WebGPU/Model/ModelSilhouetteStage.js";
-// C2-22 — flat-magenta fallback shader for failed model PBR pipelines.
+// Flat-magenta fallback shader for a model PBR pipeline that failed validation.
 import ErrorPipelineWGSL from "../../Shaders/WebGPU/Model/ErrorPipeline.js";
-// Slice 5d Batch 153 — Forward+ clustered lighting FS chunk. Prepended
-// to the Model PBR shader source unconditionally so the @group(3)
-// binding declarations (slots 18..22) + evalClusteredLights() function
-// are available. The bindings live on the existing effects BGL
-// (extended in Batch 153); runtime enabling is gated by
-// `clusterParams.activeLightCount.x` (zero when no lights or
-// scene.clusteredLightingEnabled === false → FS chunk early-out).
+// The Forward+ clustered lighting fragment chunk, prepended to the model PBR
+// shader source unconditionally so the `@group(3)` binding declarations at
+// slots 18 to 22 and the `evalClusteredLights()` function are available. Those
+// bindings live on the existing effects layout, and runtime enabling is gated
+// by `clusterParams.activeLightCount.x`, which is zero when there are no lights
+// or clustered lighting is disabled, so the chunk early-outs.
 import ClusteredLightingChunk from "../../Shaders/WebGPU/chunks/structs/ClusteredLighting.js";
-// C11-157 Slice C — preprocess the composed color source (LOG_DEPTH cleared)
-// for the model OIT accumulation variant. The module cache preprocesses
-// internally; the OIT path needs the concrete WGSL for injectOITOutput.
+// Preprocess the composed colour source, with LOG_DEPTH cleared, for the model
+// OIT accumulation variant. The module cache preprocesses internally, but the
+// OIT path needs the concrete WGSL to hand to `injectOITOutput`.
 import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
-// C11-90 — the topology axis (topology + stripIndexFormat) has ONE home. This
-// file neither spells those two fields out nor builds the key segment itself.
+// The topology axis — topology plus stripIndexFormat — has one home. This file
+// neither spells those two fields out nor builds the key segment itself.
 import {
   MODEL_TOPOLOGY_TRIANGLE_LIST,
   buildModelTopologyVariantKey,
@@ -66,26 +63,28 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { getEffectsBindGroupLayout } from "./WebGPUEffectsBindGroup.js";
-// Slice 5d Batch 154 — group-token substitution for the ClusteredLighting
-// chunk. Model PBR's effects BGL is always at group 3, so we substitute 3.
+// Group-token substitution for the ClusteredLighting chunk. Model PBR's effects
+// layout is always at group 3.
 import { substituteClusteredLightingGroup } from "./WebGPUClusteredLightingBGL.js";
-// Slice 5c-B Phase 1 (Batch 114) — scene-FB target helper. Used for
-// the color + classification pipelines; pick / hover / precise-pick /
-// velocity pipelines stay single-target.
+// Scene-framebuffer target helper, used for the colour and classification
+// pipelines. The pick, hover, precise-pick and velocity pipelines stay
+// single-target.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
-// UP144-SNAP-WEBGPU (C11-212) — the snap payload attachment format lives in the
-// shared encoding module so the pipeline target and the framebuffer attachment
-// cannot drift (WebGPU validates that pairing at DRAW time, not creation time).
+// The snap payload attachment format lives in the shared encoding module so the
+// pipeline target and the framebuffer attachment cannot drift. WebGPU validates
+// that pairing at draw time rather than creation time, so a drift would surface
+// only when a snap actually runs.
 import { SNAP_PAYLOAD_FORMAT } from "./WebGPUSnapPayload.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
-// C10-07-ASYNC-MODEL-PIPELINES (Batch 704) — central render-pipeline cache.
-// The on-screen model COLOR pipeline now resolves through this cache's
-// `createRenderPipelineAsync` path (with a ready-gate) instead of a
-// synchronous `device.createRenderPipeline` mid-draw, mirroring the globe's
-// `resolveGlobePipelineEntry`. Pick / velocity / classification / capture /
-// silhouette / depth-write stay synchronous (documented must-render escape
-// hatch — a cooking frame must not return a wrong pick / miss a must-run pass).
+// The central render-pipeline cache. The on-screen model colour pipeline
+// resolves through its `createRenderPipelineAsync` path behind a ready-gate,
+// rather than a synchronous `device.createRenderPipeline` mid-draw, mirroring
+// the globe's `resolveGlobePipelineEntry`.
+//
+// Pick, velocity, classification, capture, silhouette and depth-write stay
+// synchronous: a frame still cooking its pipelines must not return a wrong pick
+// or skip a pass that has to run.
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -96,8 +95,8 @@ import {
   releaseWebGPUModelDeviceResources,
   type WebGPUModelDeviceResources,
 } from "./WebGPUModelDeviceResources.js";
-// DP-H46c/d — property-texture + property-table binding numbers, shared with
-// the codegen + renderer so the BGL, shader, and bind-group entries all agree.
+// Property-texture and property-table binding numbers, shared with the codegen
+// and the renderer so the layout, the shader and the bind-group entries agree.
 import {
   PROPERTY_TEXTURE_BINDING_BASE,
   PROPERTY_TEXTURE_SAMPLER_BINDING,
@@ -115,11 +114,11 @@ import {
   MAX_CUSTOM_TEXTURES,
 } from "../../Scene/Model/CustomShaderWGSLPipelineStage.js";
 
-// C-R7-SHADER-MODULE-DEDUP (Batch 162) — per-device shader-module cache so
-// every `WebGPUModelPipelineCache` (one per `Model`) on the same `GPUDevice`
-// shares a single compiled `GPUShaderModule` for `ModelPBRComplete.wgsl`.
-// Pipelines themselves stay per-cache (their formats + alphaMode + doubleSided
-// keys differ); only the WGSL compilation is shared.
+// A per-device shader-module cache, so every `WebGPUModelPipelineCache` — one
+// per `Model` — on the same `GPUDevice` shares one compiled `GPUShaderModule`
+// for `ModelPBRComplete.wgsl`. The pipelines themselves stay per-cache, since
+// their format, alphaMode and doubleSided keys differ; only the WGSL
+// compilation is shared.
 /**
  * A single KHR-extension binding entry in {@link KHR_BINDING_MANIFEST}.
  * @private
@@ -139,18 +138,18 @@ interface KhrBinding {
 interface SceneFormatContext {
   _scenePipelineFormatGeneration?: number;
   scenePipelineFormat?: GPUTextureFormat;
-  /** NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the context's byte-object-ID
-   *  pick attachment authority (`WebGPUContext.pickPipelineFormat`). */
+  /** The context's byte-object-ID pick attachment authority, from
+   *  `WebGPUContext.pickPipelineFormat`. */
   pickPipelineFormat?: GPUTextureFormat;
   _msaaSamples?: number;
 }
 
 /**
- * NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — local mirror of the context's
- * pick-format clamp for construction time (before the first
- * `maybeUpdateForSceneFormat` can read `context.pickPipelineFormat`).
- * Must match `WebGPUContext.pickPipelineFormat`: 8-bit unorm scene formats
- * pass through; anything else (float/HDR) clamps to `rgba8unorm`.
+ * A local mirror of the context's pick-format clamp, for construction time —
+ * before the first `maybeUpdateForSceneFormat` can read
+ * `context.pickPipelineFormat`. It must match that property: 8-bit unorm scene
+ * formats pass through, and anything else, float or HDR, clamps to
+ * `rgba8unorm`.
  * @private
  */
 function clampToPickFormat(format: GPUTextureFormat): GPUTextureFormat {
@@ -204,10 +203,10 @@ const ALPHA_MASK = 1;
 const ALPHA_BLEND = 2;
 
 /**
- * Batch 174 — B.4 KHR materialBGL split. Declarative manifest of the
- * KHR-extension bindings on group 1 (slots 12-25). Each entry pairs a
- * group-1 binding number with the `ShaderDefine` bit that gates whether
- * the binding lands in the BGL / shader source / texture-entries array.
+ * Declarative manifest of the KHR-extension bindings on group 1, slots 12 to
+ * 25. Each entry pairs a group-1 binding number with the `ShaderDefine` bit
+ * that gates whether the binding lands in the bind-group layout, the shader
+ * source and the texture-entries array.
  *
  * Today every KHR binding shares a single coarse gate
  * (`ShaderDefine.MODEL_HAS_KHR_TEXTURES`), giving two variants:
@@ -218,21 +217,19 @@ const ALPHA_BLEND = 2;
  *     sampled textures, requires opting up
  *     `maxSampledTexturesPerShaderStage` past the spec floor.
  *
- * The manifest is the contract: future KHR extensions add new bindings
- * AND a new gate define (`MODEL_HAS_KHR_TRANSMISSION_VOLUMETRIC`, etc.)
- * — the BGL builder, the texture-entries builder, the pipeline cache
- * key, and the WGSL ifdef preprocessor all consume the same gate bit.
- * That's the scalable axis: the device may opt up its sampled-texture
- * limit (Chromium currently allows 64; future devices may go higher);
- * the renderer builds whichever subset of KHR extensions a primitive
- * actually uses, capped against `device.limits.maxSampledTexturesPerShaderStage`.
+ * The manifest is the contract: a new KHR extension adds both its bindings and
+ * a new gate define, and the layout builder, the texture-entries builder, the
+ * pipeline cache key and the WGSL ifdef preprocessor all consume that same gate
+ * bit. That is the scalable axis — a device may opt its sampled-texture limit
+ * up well past the floor, and the renderer builds whichever subset of KHR
+ * extensions a primitive actually uses, capped against
+ * `device.limits.maxSampledTexturesPerShaderStage`.
  *
- * Once the WGSL ifdefs are split per-extension (follow-up to Batch 174),
- * the renderer can compute `materialDefines` as the OR of only the
- * extension bits the primitive's material flags activate, and the BGL
- * builder will produce a minimal layout that fits a 16-texture device
- * even if the asset uses ONE KHR extension. The current "basic / full"
- * binary is a stepping-stone to that fully granular state.
+ * Splitting the WGSL ifdefs per extension would let the renderer compute
+ * `materialDefines` as the OR of only the extension bits a primitive's material
+ * flags activate, so the layout builder could produce a minimal layout that
+ * fits a 16-texture device even for an asset using one KHR extension. The
+ * basic-or-full binary is the coarser form of that.
  *
  * Entry shape:
  *   { binding, type: "texture" | "sampler", viewDimension?, gateDefine }
@@ -274,35 +271,33 @@ const MATERIAL_DEFINE_MASK = (() => {
   for (let i = 0; i < KHR_BINDING_MANIFEST.length; i++) {
     m |= KHR_BINDING_MANIFEST[i].gateDefine;
   }
-  // Session 62 NEW-VR-VERTEX-BUFFER-VARIANT — MODEL_HAS_TEXCOORD_1 also
-  // discriminates pipelines (different vertex buffer layout: 9 vs 8
-  // slots). Not a KHR-binding flag, but participates in the cache key
-  // the same way.
+  // MODEL_HAS_TEXCOORD_1 also discriminates pipelines, because it changes the
+  // vertex buffer layout from 8 slots to 9. It is not a KHR-binding flag, but
+  // it participates in the cache key the same way.
   m |= ShaderDefine.MODEL_HAS_TEXCOORD_1;
-  // Session 65 — same treatment for MODEL_HAS_FEATURE_ID_0. Distinct
-  // vertex buffer layout (slot 8 present vs absent) needs its own
-  // pipeline variant.
+  // The same treatment for MODEL_HAS_FEATURE_ID_0: slot 8 present or absent is
+  // a distinct vertex buffer layout and needs its own pipeline variant.
   m |= ShaderDefine.MODEL_HAS_FEATURE_ID_0;
-  // DP-H46a — MODEL_HAS_METADATA adds vertex slot 9 (property-ATTRIBUTE
-  // scalar) AND forks the shader module (struct Metadata + initializer +
-  // the metadataValue varying behind the ifdef). Distinct vertex layout
-  // + distinct module → its own pipeline + shader-module variant, the
-  // same way MODEL_HAS_FEATURE_ID_0 does. Folded into the mask only here;
-  // for non-metadata models the bit is never set so the key is unchanged.
+  // MODEL_HAS_METADATA adds vertex slot 9, the property-attribute value, and
+  // forks the shader module with `struct Metadata`, its initializer and the
+  // metadataValue varying behind the ifdef. A distinct vertex layout and a
+  // distinct module means its own pipeline and shader-module variant, as
+  // MODEL_HAS_FEATURE_ID_0 gets. A model without metadata never sets the bit,
+  // so its key is unaffected.
   m |= ShaderDefine.MODEL_HAS_METADATA;
-  // DP-H46c — MODEL_HAS_PROPERTY_TEXTURES adds the property-texture
-  // (texture, sampler) binding block (39..) to the material BGL +
-  // pipeline layout AND the generated chunk's binding/sampling code. It's
-  // a NEW materialBGL variant (more sampled textures) + a distinct module,
-  // so it participates in the key the same way MODEL_HAS_KHR_TEXTURES does.
-  // For non-property-texture models the bit is never set → key unchanged.
+  // MODEL_HAS_PROPERTY_TEXTURES adds the property-texture binding block from
+  // slot 39 to the material layout and pipeline layout, and the generated
+  // chunk's binding and sampling code. That is a new material layout variant,
+  // with more sampled textures, plus a distinct module, so it participates in
+  // the key as MODEL_HAS_KHR_TEXTURES does. A model without property textures
+  // never sets the bit.
   m |= ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES;
-  // DP-H46d — MODEL_HAS_PROPERTY_TABLES adds the property-table (texture,
-  // sampler) binding block (44..45) to the material BGL + pipeline layout AND
-  // the generated chunk's textureLoad code. A NEW materialBGL variant + a
+  // MODEL_HAS_PROPERTY_TABLES adds the property-table binding block at slots 44
+  // and 45 to the material layout and pipeline layout, and the generated
+  // chunk's textureLoad code. Again a new material layout variant and a
   // distinct module, so it participates in the key like
-  // MODEL_HAS_PROPERTY_TEXTURES. For non-property-table models the bit is never
-  // set → key unchanged.
+  // MODEL_HAS_PROPERTY_TEXTURES, and a model without property tables never sets
+  // the bit.
   m |= ShaderDefine.MODEL_HAS_PROPERTY_TABLES;
   // PARITY-CUSTOM-SHADER-WGSL — MODEL_HAS_WGSL_CUSTOM_SHADER (+ the optional
   // vertex sibling) adds the customShader UBO (binding 50) + custom texture
@@ -316,17 +311,17 @@ const MATERIAL_DEFINE_MASK = (() => {
   return m;
 })();
 
-// C11-149 BOOT ASSERTION — `computeKey` packs the masked material defines
-// as `md << 3` inside a Uint32-normalized key. A masked bit at index 29+
-// would shift to bit 32+ and be TRUNCATED by JavaScript's 32-bit shift,
-// silently ALIASING that variant's pipelines with the variant that lacks
-// the bit (wrong pipeline served, no error — exactly how the
-// MODEL_METADATA_MAT_TRANSPORT bit-30 case was dodged by keeping it out of
-// materialDefines). Fail at module load, before any pipeline can be keyed.
-// If this fires: route the new axis through sticky per-primitive state /
-// a key suffix (the `:m34` pattern) or the hi-word registry instead of
-// MATERIAL_DEFINE_MASK. PERMANENT (no debug pragma) — silent pipeline
-// aliasing is broken output.
+// Boot assertion. `computeKey` packs the masked material defines as `md << 3`
+// inside a Uint32-normalized key, so a masked bit at index 29 or above shifts
+// past bit 32 and is truncated by JavaScript's 32-bit shift. That silently
+// aliases the variant carrying the bit with the variant lacking it: the wrong
+// pipeline is served and nothing reports an error. This fails at module load,
+// before any pipeline can be keyed.
+//
+// If it fires, route the new axis through sticky per-primitive state, a key
+// suffix such as `:m34`, or the hi-word registry, rather than through
+// MATERIAL_DEFINE_MASK. It carries no debug pragma on purpose: silent pipeline
+// aliasing is broken output, so the check must survive into production.
 if ((MATERIAL_DEFINE_MASK & ~0x1fffffff) !== 0) {
   throw new Error(
     `WebGPUModelPipelineCache: MATERIAL_DEFINE_MASK 0x${(MATERIAL_DEFINE_MASK >>> 0).toString(16)} ` +
@@ -345,9 +340,9 @@ if ((MATERIAL_DEFINE_MASK & ~0x1fffffff) !== 0) {
  *   bits 3+    : materialDefines bitmask (shifted left 3). Currently
  *                only `ShaderDefine.MODEL_HAS_KHR_TEXTURES` (1<<9) is
  *                consumed, but the cache scales to any future
- *                model-material define bit added to the manifest UP TO
- *                bit 28 — bit 29+ would shift past the Uint32 and alias
- *                (guarded by the C11-149 boot assertion above).
+ *                model-material define bit added to the manifest, up to
+ *                bit 28. Bit 29 or above would shift past the Uint32 and
+ *                alias; the boot assertion above guards that.
  *
  * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
  * @param {boolean} doubleSided - true = no backface culling
@@ -365,16 +360,16 @@ function computeKey(
 }
 
 /**
- * GLTF-POINTS-MODE / C11-90 — folds the primitive topology axis into a
- * pipeline cache key. Delegates to the single home in `WebGPUModelTopology`
- * so this file cannot drift from the shadow path's copy of the same axis;
- * kept as a local alias only because ~10 call sites read better with the
- * short name.
+ * Folds the primitive topology axis into a pipeline cache key.
  *
- * Triangle-list still returns the key UNCHANGED, so every pre-existing
- * triangle pipeline keeps a byte-identical cache key. Strips additionally
- * carry their `stripIndexFormat` — a uint16 and a uint32 `triangle-strip`
- * are different pipelines and must not share an entry.
+ * Delegates to the single home in `WebGPUModelTopology`, so this file cannot
+ * drift from the shadow path's copy of the same axis. It exists as a local
+ * alias only because the short name reads better at its many call sites.
+ *
+ * Triangle-list returns the key unchanged, so a triangle pipeline keeps a
+ * byte-identical cache key. Strips additionally carry their `stripIndexFormat`:
+ * a uint16 and a uint32 `triangle-strip` are different pipelines and must not
+ * share an entry.
  *
  * @param {number|string} key base cache key
  * @param {ModelTopologyRealization} topology realized topology axis
@@ -416,12 +411,13 @@ function buildMaterialBGL(
   materialDefines: number,
 ): GPUBindGroupLayout {
   const entries = [
-    // 0: Material UBO (always). C11-195 — binding 1 (the light UBO) MOVED to
-    // group 0 binding 1: it is a per (model, view) block, not a per-primitive
-    // one, and leaving it here would have forced this per-primitive bind group
-    // to reference a rotating ring page. Binding 1 is intentionally left
-    // vacant rather than renumbered — the KHR/featureId/IBL binding numbers
-    // are load-bearing across the layout, the WGSL, and the entries arrays.
+    // 0: the material uniform buffer, always present. Binding 1 is deliberately
+    // vacant: the light block is per (model, view) rather than per primitive,
+    // so it lives at group 0 binding 1; keeping it here would force this
+    // per-primitive bind group to reference a rotating ring page. The slot is
+    // left vacant rather than renumbered, because the KHR, featureId and IBL
+    // binding numbers are load-bearing across the layout, the WGSL and the
+    // entries arrays.
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
     // 2-11: Five PBR texture + sampler pairs (always)
     texture(2, Stage.FRAGMENT),
@@ -483,30 +479,35 @@ function buildMaterialBGL(
     uniformBuffer(36, Stage.FRAGMENT),
   );
 
-  // 37-38: NEW-MODEL-IBL-BRDF-LUT (Batch 287) — split-sum environment
-  // BRDF integration LUT (`WebGPUBrdfLutGenerator`, rg32float 256×256).
-  // R = scale, G = bias for F0, indexed by (NdotV, roughness). The FS
-  // applies `radiance * (F0 * scale + bias)` to match WebGL's
-  // `computeSpecularIBL` (ImageBasedLightingStageFS.glsl) instead of the
-  // prior `radiance * fresnelSchlickRoughness(...)` hack. rg32float is
-  // non-filterable without the optional `float32-filterable` feature, so
-  // the LUT binds as `unfilterable-float` + a non-filtering sampler;
-  // nearest sampling of a smooth 256×256 table is visually indistinct.
+  // 37-38: the split-sum environment BRDF integration LUT that
+  // `WebGPUBrdfLutGenerator` produces, rg32float at 256x256. R is the scale and
+  // G the bias for F0, indexed by (NdotV, roughness), and the fragment shader
+  // applies `radiance * (F0 * scale + bias)` to match `computeSpecularIBL` in
+  // ImageBasedLightingStageFS.glsl.
+  //
+  // rg32float is non-filterable without the optional `float32-filterable`
+  // feature, so the LUT binds as `unfilterable-float` with a non-filtering
+  // sampler; nearest sampling of a smooth 256x256 table is visually
+  // indistinguishable.
   entries.push(
     texture(37, Stage.FRAGMENT, { sampleType: "unfilterable-float" }),
     sampler(38, Stage.FRAGMENT, "non-filtering"),
   );
 
-  // 39..: DP-H46c — property-texture block. Gated on
-  // MODEL_HAS_PROPERTY_TEXTURES. When set, append `MAX_PROPERTY_TEXTURES`
-  // texture bindings (39 + k) + ONE shared sampler binding
-  // (PROPERTY_TEXTURE_SAMPLER_BINDING). The generated metadata chunk declares
-  // only the texture bindings it actually samples (≤ the cap); the extra BGL
-  // entries are bound to a 1×1 placeholder by the renderer (a pipeline is
-  // allowed to use a subset of its layout's bindings, but the bind group must
-  // satisfy every BGL entry). Fragment-stage only — property textures are
-  // sampled at the interpolated fragment texCoord. ONE sampler (not one per
-  // texture) keeps the per-stage sampler count under the spec floor of 16.
+  // 39 onward: the property-texture block, gated on
+  // MODEL_HAS_PROPERTY_TEXTURES. When set it appends `MAX_PROPERTY_TEXTURES`
+  // texture bindings at 39 + k plus one shared sampler binding at
+  // PROPERTY_TEXTURE_SAMPLER_BINDING.
+  //
+  // The generated metadata chunk declares only the texture bindings it actually
+  // samples, at most the cap, and the renderer binds the remaining layout
+  // entries to a 1x1 placeholder: a pipeline may use a subset of its layout's
+  // bindings, but the bind group must satisfy every layout entry.
+  //
+  // Fragment stage only, since property textures are sampled at the
+  // interpolated fragment texCoord. The sampler is shared rather than one per
+  // texture, which keeps the per-stage sampler count under the spec floor
+  // of 16.
   if ((materialDefines & ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES) !== 0) {
     for (let k = 0; k < MAX_PROPERTY_TEXTURES; k++) {
       entries.push(texture(PROPERTY_TEXTURE_BINDING_BASE + k, Stage.FRAGMENT));
@@ -514,14 +515,16 @@ function buildMaterialBGL(
     entries.push(sampler(PROPERTY_TEXTURE_SAMPLER_BINDING, Stage.FRAGMENT));
   }
 
-  // 44-45: DP-H46d — property-table block. Gated on MODEL_HAS_PROPERTY_TABLES.
-  // ONE sampled `texture_2d<f32>` (the tightly-packed RGBA8 table, rows =
-  // properties, columns = features) + ONE sampler (a placeholder — the shader
-  // reads via `textureLoad`, which ignores filtering, but the BGL binds a
-  // sampler to keep the declaration shape uniform with the property-texture
-  // block). Fragment-stage only — the metadata debug / styling consumer reads
-  // the table in the FS at the per-fragment feature ID. Independent of the
-  // property-texture block (a model can have tables without textures).
+  // 44-45: the property-table block, gated on MODEL_HAS_PROPERTY_TABLES. One
+  // sampled `texture_2d<f32>` holding the tightly-packed RGBA8 table, rows for
+  // properties and columns for features, plus one placeholder sampler: the
+  // shader reads through `textureLoad`, which ignores filtering, but the layout
+  // binds a sampler to keep the declaration shape uniform with the
+  // property-texture block.
+  //
+  // Fragment stage only, since the metadata debug and styling consumers read
+  // the table at the per-fragment feature ID. It is independent of the
+  // property-texture block: a model can carry tables without textures.
   if ((materialDefines & ShaderDefine.MODEL_HAS_PROPERTY_TABLES) !== 0) {
     entries.push(texture(PROPERTY_TABLE_BINDING, Stage.FRAGMENT));
     entries.push(sampler(PROPERTY_TABLE_SAMPLER_BINDING, Stage.FRAGMENT));
@@ -549,7 +552,7 @@ function buildMaterialBGL(
     entries.push(sampler(CUSTOM_SHADER_SAMPLER_BINDING, Stage.FRAGMENT));
   }
 
-  // ── Capability check ──
+  // Capability check.
   // Count sampled textures in the assembled layout and compare against
   // the device's reported limit. Fires LOUDLY (a permanent error log
   // + thrown Error) if a build would exceed — that's how a future
@@ -575,11 +578,11 @@ function buildMaterialBGL(
     throw new Error(msg);
   }
 
-  // DP-H46c — also bound the SAMPLER count. The property-texture block uses one
-  // shared sampler, but the cross-stage `maxSamplersPerShaderStage` limit (16)
-  // counts samplers across ALL bind groups (group 1 here + the effects group
-  // 3). This local check fires if THIS BGL's samplers alone exceed the floor;
-  // the device's pipeline-creation validation is the cross-group backstop.
+  // Bound the sampler count too. The property-texture block uses one shared
+  // sampler, but the `maxSamplersPerShaderStage` limit of 16 counts samplers
+  // across all bind groups — group 1 here plus the effects group 3. This local
+  // check fires when this layout's samplers alone exceed the floor; the
+  // device's pipeline-creation validation is the cross-group backstop.
   let samplerCount = 0;
   for (let i = 0; i < entries.length; i++) {
     if (entries[i].sampler) {
@@ -604,36 +607,32 @@ function buildMaterialBGL(
 /**
  * Builds the four bind group layouts shared by all Model pipelines.
  *
- * **NEW-BG-CONSOLIDATION (2026-04-30, Batch 122):** Consolidated from 8
- * logical groups to 4 physical groups so the Model PBR pipeline fits
- * within the WebGPU spec-mandated `maxBindGroups: 4` limit (universal
- * across Chromium configs in April 2026 — verified via
- * `Tools/visual-regression/probe-adapter-limits.mjs`).
+ * Eight logical groups are consolidated into four physical ones, so the model
+ * PBR pipeline fits the WebGPU spec-mandated `maxBindGroups: 4` limit.
  *
- * **Batch 174 (B.4 KHR materialBGL split):** the materialBGL is now
- * built per-variant on demand — `materialBGL` here is just the
- * "default" full-KHR variant cached for callers that don't care about
- * the variant axis. Per-primitive variants live in
- * `_materialBGLCache` keyed by `materialDefines: number`.
+ * The material layout is built per variant on demand; `materialBGL` here is the
+ * default full-KHR variant, cached for callers that do not care about the
+ * variant axis. Per-primitive variants live in `_materialBGLCache`, keyed by
+ * `materialDefines`.
  *
  * Layout:
- *   Group 0 — CAMERA + LIGHT (2 dynamic-offset bindings; 0 = camera V+F,
- *             1 = model/view light F). C11-195.
- *   Group 1 — MATERIAL+TEXTURES+FEATURE (per-variant, 22-36 bindings)
- *     0     : material UBO (binding 1 vacated by C11-195)
+ *   Group 0 — camera and light: two dynamic-offset bindings, 0 the camera in
+ *             vertex and fragment, 1 the model/view light in fragment.
+ *   Group 1 — material, textures and feature IDs, per variant, 22-36 bindings
+ *     0     : material uniform buffer (binding 1 is vacant)
  *     2-11  : 5 PBR texture+sampler pairs
- *     12-25 : KHR textures + sampler (gated per-variant via manifest)
- *     26-32 : featureId / batch / featurePick
- *     33-36 : IBL cubemaps + SH UBO
- *   Group 2 — INSTANCE (7 bindings, all VERTEX)
+ *     12-25 : KHR textures and sampler, gated per variant by the manifest
+ *     26-32 : featureId, batch and featurePick
+ *     33-36 : IBL cubemaps and the SH uniform buffer
+ *   Group 2 — instance data, 7 bindings, all vertex stage
  *     0 : joint matrices storage
  *     1 : morph deltas storage
- *     2 : morph weights UBO
+ *     2 : morph weights uniform buffer
  *     3 : instance transforms
- *     4 : PREV joint matrices (TAA velocity)
- *     5 : PREV morph weights (TAA velocity)
- *     6 : PREV instance transforms (TAA velocity)
- *   Group 3 — EFFECTS (shared with globe + primitive)
+ *     4 : previous joint matrices, for TAA velocity
+ *     5 : previous morph weights, for TAA velocity
+ *     6 : previous instance transforms, for TAA velocity
+ *   Group 3 — effects, shared with globe and primitive
  *     Layout owned by `WebGPUEffectsBindGroup.getEffectsBindGroupLayout`.
  *
  * @param {GPUDevice} device
@@ -701,35 +700,33 @@ function _mapGLWrap(glEnum: number): GPUAddressMode {
 /**
  * Creates the vertex buffer layout descriptor.
  *
- * Variant-aware (Session 62 NEW-VR-VERTEX-BUFFER-VARIANT + Session 65
- * follow-up): two flags drive the slot count.
+ * Two flags drive the slot count:
  *
  *   - `hasTexCoord1` — when false, slot 7 is omitted.
  *   - `hasFeatureId0` — when false, slot 8 is omitted.
  *
- * Brings the common-case layout from 9 → 7 buffer slots (most glTF
- * models lack both TEXCOORD_1 and feature IDs), fitting Edge's adapter
- * `maxVertexBuffers = 8` cap with headroom. Both flags also drive a
- * matching `//>>ifdef` block in `ModelPBRComplete.wgsl` so the
- * `@location(7)` / `@location(8)` declarations are stripped when the
- * corresponding slot isn't bound. Caller MUST pass the same flags to
- * the shader preprocessor when fetching the shader module — the
- * pipeline cache key includes both bits so distinct variants get
- * distinct pipelines.
+ * Most glTF models lack both TEXCOORD_1 and feature IDs, so the common-case
+ * layout falls from 9 buffer slots to 7 and clears a `maxVertexBuffers = 8`
+ * adapter cap with headroom. Both flags also drive a matching `//>>ifdef` block
+ * in `ModelPBRComplete.wgsl`, so the `@location(7)` and `@location(8)`
+ * declarations are stripped when their slot is not bound. The caller must pass
+ * the same flags to the shader preprocessor when fetching the shader module;
+ * the pipeline cache key includes both bits, so distinct variants get distinct
+ * pipelines.
  *
- * Missing attributes that aren't TEXCOORD_1 / featureId0 still use a
- * 1-element instance-step buffer with defaults — the shader's
- * `@location(N)` declarations stay unconditional for those, and the
- * renderer always binds something at every declared location.
+ * A missing attribute that is neither TEXCOORD_1 nor featureId0 still uses a
+ * one-element instance-step buffer of defaults: the shader's `@location(N)`
+ * declarations stay unconditional for those, and the renderer always binds
+ * something at every declared location.
  *
  * @param {boolean} [hasTexCoord1=true] — when false, slot 7 is omitted.
  * @param {boolean} [hasFeatureId0=true] — when false, slot 8 is omitted.
- * @param {number|boolean} [metadataSlotMode=0] — 0/false: no metadata slot;
- *   1/true: the historical single `float32x4` at shader location 9;
- *   2: NEW-MODEL-METADATA-MAT3-MAT4 widened MAT3/MAT4 transport — ONE
- *   buffer slot with `arrayStride = 64` carrying FOUR `float32x4`
- *   attributes at shader locations 9-12 (buffer COUNT is unchanged vs
- *   mode 1, so Edge's `maxVertexBuffers = 8` budget is unaffected).
+ * @param {number|boolean} [metadataSlotMode=0] — 0 or false for no metadata
+ *   slot; 1 or true for a single `float32x4` at shader location 9; 2 for the
+ *   widened MAT3 and MAT4 transport, one buffer slot with `arrayStride = 64`
+ *   carrying four `float32x4` attributes at shader locations 9-12. The buffer
+ *   count is the same as mode 1, so the `maxVertexBuffers` budget is
+ *   unaffected.
  */
 function createVertexBufferLayout(
   hasTexCoord1: boolean = true,
@@ -781,11 +778,10 @@ function createVertexBufferLayout(
     },
   ];
   if (hasTexCoord1) {
-    // Slot 7: texCoord1 (vec2<f32>) — used by textures whose
-    // glTF textureInfo.texCoord == 1 (occlusion + clearcoat-normal are
-    // the usual cases). Variant-conditional in Session 62 — primitives
-    // without TEXCOORD_1 omit this slot entirely, fitting Edge's
-    // 8-slot adapter cap.
+    // Slot 7: texCoord1, a vec2<f32> read by textures whose glTF
+    // `textureInfo.texCoord` is 1 — usually occlusion and clearcoat-normal.
+    // Variant-conditional: a primitive without TEXCOORD_1 omits the slot
+    // entirely, which keeps the layout inside an 8-slot adapter cap.
     layout.push({
       arrayStride: 8,
       stepMode: "vertex",
@@ -793,19 +789,18 @@ function createVertexBufferLayout(
     });
   }
   if (hasFeatureId0) {
-    // Slot 8: featureId0 (f32) — Audit B.2 (Batch 130). Per-vertex
-    // glTF `_FEATURE_ID_0` (or b3dm `_BATCHID`) cast to f32. The FS
-    // reads it as a `flat`-interpolated varying and indexes the batch
-    // texture / per-feature pick texture when
-    // `FLAG_HAS_FEATURE_ID_ATTRIBUTE` is set in materialFlags.
+    // Slot 8: featureId0, the per-vertex glTF `_FEATURE_ID_0` — or b3dm's
+    // `_BATCHID` — cast to f32. The fragment shader reads it as a
+    // flat-interpolated varying and indexes the batch texture and the
+    // per-feature pick texture when `FLAG_HAS_FEATURE_ID_ATTRIBUTE` is set in
+    // materialFlags.
     //
-    // Variant-conditional in Session 65 — primitives without a feature
-    // ID accessor (the common case for standard glTF models) omit this
-    // slot, dropping the layout to 7 slots and fitting Edge's
-    // `maxVertexBuffers = 8` cap with headroom. The shader's
+    // Variant-conditional: a primitive with no feature-ID accessor, the common
+    // case for standard glTF models, omits the slot and drops the layout to 7,
+    // clearing a `maxVertexBuffers = 8` cap with headroom. The shader's
     // `//>>ifdef MODEL_HAS_FEATURE_ID_0` block strips the matching
-    // `@location(8)` declaration when this flag is unset, and the
-    // vertex shader assigns `output.featureId0 = 0.0` directly.
+    // `@location(8)` declaration when the flag is unset, and the vertex shader
+    // assigns `output.featureId0 = 0.0` directly.
     layout.push({
       arrayStride: 4,
       stepMode: "vertex",
@@ -813,27 +808,25 @@ function createVertexBufferLayout(
     });
   }
   if (metadataSlotMode) {
-    // Slot 9: metadataValue (vec4<f32>) — DP-H46a, widened to float32x4 by
-    // METADATA-MULTICOMPONENT so VEC2/3/4 (and MAT2) property attributes
-    // transport every component (scalars zero-pad the tail; the packing is
-    // `WebGPUModelMetadata.resolvePropertyAttributeVec4`). Per-vertex value
-    // from an EXT_structural_metadata property ATTRIBUTE.
-    // Variant-conditional on MODEL_HAS_METADATA so non-metadata models never
-    // allocate it; the shader's `//>>ifdef MODEL_HAS_METADATA` block strips
-    // the matching `@location(9)` declaration when the flag is unset. The
-    // BoxTexturedWithPropertyAttributes proof model uses 0..6 + this slot
-    // = 8 buffers (no texCoord1, no featureId0), fitting Edge's
-    // `maxVertexBuffers = 8` cap. A primitive that simultaneously carries
-    // texCoord1 + featureId0 + metadata would need 10 slots — out of
-    // scope for DP-H46a (no such test asset); DP-H46b's generated path
-    // can pack metadata into fewer slots if that combination arises.
+    // Slot 9: metadataValue, a per-vertex `float32x4` from an
+    // EXT_structural_metadata property attribute. The vec4 width lets VEC2,
+    // VEC3, VEC4 and MAT2 properties transport every component, with scalars
+    // zero-padding the tail; `WebGPUModelMetadata.resolvePropertyAttributeVec4`
+    // does the packing.
     //
-    // NEW-MODEL-METADATA-MAT3-MAT4 (mode 2) — the SAME buffer slot widens
-    // to arrayStride 64 with FOUR float32x4 attributes at shader locations
-    // 9-12 (offsets 0/16/32/48) so a MAT3/MAT4 property attribute
-    // transports all 9/16 column-major elements (MAT3 zero-pads 9..15 on
-    // the CPU pack). Mode 1 keeps the historical single-attribute layout
-    // byte-identical.
+    // Variant-conditional on MODEL_HAS_METADATA, so a model without metadata
+    // never allocates it and the shader's `//>>ifdef MODEL_HAS_METADATA` block
+    // strips the matching `@location(9)` declaration. A metadata primitive with
+    // neither texCoord1 nor featureId0 uses slots 0-6 plus this one, 8 buffers,
+    // which fits a `maxVertexBuffers = 8` cap. A primitive carrying texCoord1,
+    // featureId0 and metadata at once would need 10 slots and is not supported
+    // by this layout.
+    //
+    // In mode 2 the same buffer slot widens to `arrayStride` 64 with four
+    // `float32x4` attributes at shader locations 9-12, offsets 0, 16, 32 and
+    // 48, so a MAT3 or MAT4 property attribute transports all 9 or 16
+    // column-major elements; MAT3 zero-pads elements 9 to 15 in the CPU pack.
+    // Mode 1 keeps the single-attribute layout.
     if (metadataSlotMode === 2) {
       layout.push({
         arrayStride: 64,
@@ -867,10 +860,11 @@ function createVertexBufferLayout(
  * @param {boolean} doubleSided
  * @returns {GPURenderPipeline}
  */
-// C10-07 — the raw color-pipeline descriptor, extracted so the SYNC path
-// (`createPipeline`, used by `getDepthWritePipeline` + the no-central-cache
-// fallback) and the ASYNC path (`getPipeline` → central cache) build a
-// BYTE-IDENTICAL descriptor (INV-07-4: same pipeline, one-frame-later at most).
+// The raw colour-pipeline descriptor, extracted so the synchronous path —
+// `createPipeline`, used by `getDepthWritePipeline` and the no-central-cache
+// fallback — and the asynchronous path through the central cache build a
+// byte-identical descriptor. The two must produce the same pipeline; the async
+// path may only arrive a frame later.
 function buildColorPipelineDescriptor(
   shaderModule: GPUShaderModule,
   pipelineLayout: GPUPipelineLayout,
@@ -881,12 +875,10 @@ function buildColorPipelineDescriptor(
   forceDepthWrite: boolean,
   hasTexCoord1: boolean,
   hasFeatureId0: boolean,
-  // Session 65 Batch 28 — MSAA sample count. Default 1 matches the
-  // pre-bridge behavior; when the bridge re-enables this gets the
-  // current `context._msaaSamples` value baked into the pipeline.
+  // MSAA sample count. When multisampling is active this carries the context's
+  // current sample count, baked into the pipeline.
   sampleCount: number = 1,
-  // DP-H46a — metadata vertex slot 9. Default false keeps every existing
-  // caller's layout unchanged.
+  // Metadata vertex slot 9. False leaves the caller's layout unchanged.
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE — GPUPrimitiveTopology keyed off the glTF
   // primitive.mode. Default preserves the historical hardcoded value.
@@ -911,11 +903,11 @@ function buildColorPipelineDescriptor(
     };
   }
 
-  // Depth write: disabled for transparent objects to avoid depth conflicts.
-  // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — translucent 3D-tile commands
-  // tagged for classification need a depth-write variant so the existing
-  // stencil-based GroundPrimitive classifier can clip volumes against the
-  // tile surface. Caller passes forceDepthWrite=true to fetch that variant.
+  // Depth write is disabled for transparent objects, to avoid depth conflicts.
+  // A translucent 3D-tile command tagged for classification is the exception:
+  // it needs a depth-write variant so the stencil-based GroundPrimitive
+  // classifier can clip volumes against the tile surface. The caller passes
+  // `forceDepthWrite = true` to fetch that variant.
   const depthWriteEnabled = forceDepthWrite || alphaMode !== ALPHA_BLEND;
 
   const variantTag = forceDepthWrite ? ",dwForceOn" : "";
@@ -936,17 +928,16 @@ function buildColorPipelineDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Batch 119 — emit G-buffer slot 1 (eye-space normal +
-      // roughness). The shader's fragmentMain returns FragOutput from
-      // every path: main lit path emits the post-normal-map N and the
-      // real material roughness (the wide-divergence pixel class);
-      // clipping-edge + unlit early-out paths emit the geometric vertex
-      // normal + 0.5 roughness placeholder.
-      // `presentationFormat` is actually wired to
-      // `context.scenePipelineFormat` per `maybeUpdateForSceneFormat()`
-      // at L1526. Pick / velocity / classification have separate
-      // builders and stay single-target (they don't draw into the
-      // scene FB).
+      // Emit G-buffer slot 1, the eye-space normal and roughness. The shader's
+      // fragmentMain returns FragOutput from every path: the main lit path
+      // emits the post-normal-map N and the real material roughness, while the
+      // clipping-edge and unlit early-outs emit the geometric vertex normal and
+      // a 0.5 roughness placeholder.
+      //
+      // `presentationFormat` is wired to `context.scenePipelineFormat` through
+      // `maybeUpdateForSceneFormat()`. Pick, velocity and classification have
+      // separate builders and stay single-target, since they do not draw into
+      // the scene framebuffer.
       targets: makeSceneFBTargets(presentationFormat, {
         emitsGBuffer: true,
         blend,
@@ -960,9 +951,8 @@ function buildColorPipelineDescriptor(
       depthWriteEnabled,
       depthCompare: "less-equal",
     },
-    // Session 65 Batch 28 — multisample state matches the scene FB's
-    // sample count. Default 1 produces `undefined` (no multisample
-    // block), preserving pre-MSAA behavior.
+    // Multisample state matches the scene framebuffer's sample count. A count
+    // of 1 produces `undefined`, i.e. no multisample block at all.
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 }
@@ -1105,9 +1095,9 @@ function createSilhouetteModelPipeline(
  *
  *   - Cull disabled (WebGL sets `renderState.cull.enabled = false` so
  *     back-facing inflated geometry still contributes to the rim).
- *   - Stencil test: compare NOT-EQUAL against the model's stencil
- *     reference, all ops KEEP — only pixels NOT covered by the base
- *     draw (the inflated rim) survive.
+ *   - Stencil test: compare not-equal against the model's stencil
+ *     reference, with every op set to keep, so only pixels the base
+ *     draw did not cover — the inflated rim — survive.
  *   - `translucent = true` (command pass is TRANSLUCENT or
  *     `silhouetteColor.alpha < 1`) adds the standard alpha blend and
  *     disables depth write, mirroring WebGL's derived render state.
@@ -1172,24 +1162,21 @@ function createSilhouetteColorPipeline(
 }
 
 /**
- * C-R9-MODEL-PICK (Batch 54) — pick pipeline. Mirrors `createPipeline` for
- * vertex stage, layout, and depth state, but the fragment entry is
- * `fragmentPickMain` (writes `material.pickColor`) and there's no blend
- * (pick FBO must receive byte-exact pick IDs for the readback).
+ * The pick pipeline. It mirrors `createPipeline` for vertex stage, layout and
+ * depth state, but its fragment entry is `fragmentPickMain`, which writes
+ * `material.pickColor`, and it has no blend: the pick framebuffer must receive
+ * byte-exact pick IDs for the readback.
  *
- * Depth write is forced ON for ALL alpha modes, even ALPHA_BLEND. The
- * lit path disables depth write for blend so translucent layers
- * composite without z-fighting; the pick path however needs depth
- * write so the front-most fragment wins the pick (matches WebGL's
- * `RenderState.depthMask = true` for pick passes). Translucent
- * picking is intentionally simplified to "first non-discarded
- * fragment wins" in this first cut — depth-correct alpha-blended
- * picking would need OIT integration on the pick FBO and is tracked
- * separately as `C-R9-MODEL-PICK-TRANSLUCENT`.
+ * Depth write is forced on for every alpha mode, including ALPHA_BLEND. The lit
+ * path disables depth write for blend so translucent layers composite without
+ * z-fighting, but the pick path needs it so the front-most fragment wins the
+ * pick, matching `RenderState.depthMask = true` on the WebGL pick pass.
+ * Translucent picking resolves to the first non-discarded fragment;
+ * depth-correct alpha-blended picking would need OIT integration on the pick
+ * framebuffer.
  *
- * Cull mode follows the doubleSided flag, same as the lit pipeline,
- * so a back face that wouldn't render also wouldn't pick — matching
- * WebGL's behaviour.
+ * Cull mode follows the doubleSided flag, as the lit pipeline does, so a back
+ * face that would not render also does not pick.
  *
  * @private
  */
@@ -1206,42 +1193,29 @@ function createPickPipeline(
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — when the pick-fleet switch is on
-  // the passed `shaderModule` is the LOG_DEPTH variant (fragmentPickMain writes
-  // log `@builtin(frag_depth)`); tag the label `[ld]`. Only OPAQUE/MASK picks
-  // WRITE that log depth (they already wrote depth); BLEND stays depth-test-only
-  // (depthWriteEnabled below is `!isBlend`, independent of this flag). Default
-  // false → byte-identical.
+  // When log depth is active the supplied `shaderModule` is the LOG_DEPTH
+  // variant, whose `fragmentPickMain` writes a log `@builtin(frag_depth)`, and
+  // the label is tagged `[ld]`. Only OPAQUE and MASK picks write that log
+  // depth, since they already write depth; BLEND stays depth-test-only, because
+  // `depthWriteEnabled` below is `!isBlend` regardless of this flag.
   pickLogActive: boolean = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
-  // C-R9-MODEL-PICK-TRANSLUCENT (Batch 186) — first slice. Translucent
-  // (BLEND) primitives must NOT write depth on the pick FBO. With
-  // depth-write ON, the first translucent fragment to draw at a given
-  // pixel writes both color and depth; later fragments (including
-  // opaque geometry visible THROUGH the translucent surface) fail
-  // `less-equal` against the translucent's z and never reach the pick
-  // FBO. Toggling depth-write OFF for BLEND (matching the existing
-  // color-pipeline pattern at line 535) keeps the OPAQUE depth as the
-  // gate — translucent fragments pass less-equal against opaque z,
-  // and opaque-behind-translucent stays pickable. Among multiple
-  // translucents at varying depths between the camera and opaque,
-  // last-drawn wins (depth-test passes for all, color overwrites).
+  // A translucent (BLEND) primitive must not write depth on the pick
+  // framebuffer. With depth write on, the first translucent fragment drawn at a
+  // pixel writes both colour and depth, and every later fragment — including
+  // opaque geometry visible through the translucent surface — fails
+  // `less-equal` against the translucent's z and never reaches the pick
+  // framebuffer. Leaving depth write off for BLEND, matching the colour
+  // pipeline, keeps the opaque depth as the gate: translucent fragments pass
+  // less-equal against opaque z, and opaque-behind-translucent stays pickable.
   //
-  // Net effect of this slice:
-  //   - Opaque geometry seen through translucent surfaces is now pickable
-  //     (the previously-blocking depth-write is gone).
-  //   - Translucent-vs-translucent stacking changes from "first-drawn
-  //     wins" to "last-drawn wins"; both are arbitrary but neither is
-  //     strictly better than the other — that's what OIT-quality
-  //     resolve is for.
-  //
-  // What this slice DOES NOT do: weighted OIT-quality accumulation +
-  // composite resolve sorting by perceptual visibility. That remains
-  // the second slice — it would let the user pick the visually-
-  // dominant feature when translucent layers blend (e.g., picking the
-  // building behind a tinted glass facade should select the building,
-  // not the glass).
+  // Among several translucents at different depths in front of opaque geometry
+  // the last drawn wins, since all pass the depth test and each overwrites the
+  // colour. That is arbitrary, but no more so than first-drawn-wins; resolving
+  // it by perceptual visibility would need weighted OIT-quality accumulation
+  // and a composite resolve, which is what would let a pick select the building
+  // behind a tinted glass facade rather than the glass.
   const isBlend = alphaMode === 2;
   const label = `Model PBR pick [alpha=${alphaMode},ds=${doubleSided}]${
     pickLogActive ? " [ld]" : ""
@@ -1266,15 +1240,14 @@ function createPickPipeline(
     primitive: modelPrimitiveState(topology, cullMode),
     depthStencil: {
       format: depthFormat,
-      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — the pick-log switch changes the
-      // ENCODING of the depth a pick pipeline writes, NOT which pipelines write.
-      // OPAQUE/MASK picks (`!isBlend`) already write depth, so under the switch
-      // their `fragmentPickMain` writes LOG frag_depth into the shared pick FBO.
-      // BLEND/translucent picks keep the historical Batch-186 depth-test-only
-      // behavior (`depthWriteEnabled:false`) so opaque-behind-translucent stays
-      // pickable — the log module still runs so its frag_depth compares
-      // COHERENTLY against the (log) buffer, it just isn't written. Same both
-      // states → the pick-fleet switch never forces a blend pick to write depth.
+      // The pick-log switch changes the encoding of the depth a pick pipeline
+      // writes, not which pipelines write. OPAQUE and MASK picks (`!isBlend`)
+      // already write depth, so under the switch their `fragmentPickMain`
+      // writes a log frag_depth into the shared pick framebuffer. BLEND picks
+      // stay depth-test-only so opaque-behind-translucent remains pickable; the
+      // log module still runs, so its frag_depth compares coherently against
+      // the log buffer, it is simply not written. The switch therefore never
+      // forces a blend pick to write depth.
       depthWriteEnabled: !isBlend,
       depthCompare: "less-equal",
     },
@@ -1282,9 +1255,9 @@ function createPickPipeline(
 }
 
 /**
- * UP144-SNAP-WEBGPU (C11-212) — snapping-pass pipeline. Structurally the pick
- * pipeline (same layout, vertex stage, cull mode, depth state, no blend) with
- * two differences:
+ * The snapping-pass pipeline: structurally the pick pipeline, with the same
+ * layout, vertex stage, cull mode and depth state and no blend, differing in
+ * two respects:
  *
  *   - the fragment entry is `fragmentSnapMain`, which writes the compact
  *     RG32Uint snap payload (exact pick key / edge-tagged f32 eye-depth bits)
@@ -1293,7 +1266,7 @@ function createPickPipeline(
  *     of `WebGPUSnapFramebuffer`'s payload attachment. WebGPU validates a
  *     pipeline's attachment state against the render pass at draw time, so a
  *     pick-format pipeline dispatched into the snap payload pass would
- *     invalidate the whole command buffer (the FORK-34 failure mode).
+ *     invalidate the whole command buffer.
  *
  * `rg32uint` is a core renderable integer format and is not blendable; the snap
  * payload must reach the attachment byte-exact anyway, so no blend state is
@@ -1306,10 +1279,9 @@ function createPickPipeline(
  * occlude snappable geometry behind them, which is upstream's depth-only
  * fallback expressed with WebGPU's attachment-compatibility rules.
  *
- * The label carries BOTH distinguishing axes — the snap payload format and the
- * pick-fleet log-depth state — per the descriptor-name convention guarded by
- * `Tools/visual-regression/pipeline-key-aliasing.spec.mjs`. Like every other
- * model pipeline except the color one, this uses the direct
+ * The label carries both distinguishing axes, the snap payload format and the
+ * log-depth state, following the descriptor-name convention. Like every model
+ * pipeline except the colour one, this uses the direct
  * `device.createRenderPipeline` hatch and never consults the central pipeline
  * cache, so name aliasing is structurally impossible here; the markers are kept
  * so a future migration onto the central cache inherits a correct name.
@@ -1362,14 +1334,16 @@ function createSnapPipeline(
 }
 
 /**
- * DP-H46e — model metadata-PICK pipeline (`scene.pickMetadata` producer). Same
- * vertex stage / layout / single-target pick FBO color attachment / depth state
- * as {@link createPickPipeline}; the ONLY difference is the fragment entry
- * (`fragmentPickMetadataMain`, which writes the picked property's components into
- * the RGBA8 pick FBO via the GENERATED `metadataPickingStage`). The depth setup
- * matches the regular pick pipeline so the VISIBLE surface's metadata wins
- * (depth-write on for opaque/mask, off for blend, less-equal compare) — the
- * picked pixel is the same surface a regular pick would select.
+ * The model metadata-pick pipeline that produces `scene.pickMetadata`. It has
+ * the same vertex stage, layout, single-target pick colour attachment and depth
+ * state as {@link createPickPipeline}, differing only in its fragment entry:
+ * `fragmentPickMetadataMain` writes the picked property's components into the
+ * RGBA8 pick framebuffer through the generated `metadataPickingStage`.
+ *
+ * The depth setup matches the regular pick pipeline — depth write on for opaque
+ * and mask, off for blend, less-equal compare — so the visible surface's
+ * metadata wins and the picked pixel is the surface a regular pick would
+ * select.
  *
  * @private
  */
@@ -1386,7 +1360,7 @@ function createPickMetadataPipeline(
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — see createPickPipeline.
+  // See createPickPipeline.
   pickLogActive: boolean = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
@@ -1413,9 +1387,9 @@ function createPickMetadataPipeline(
     primitive: modelPrimitiveState(topology, cullMode),
     depthStencil: {
       format: depthFormat,
-      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — see createPickPipeline. Opaque/mask
-      // metadata-pick writes LOG frag_depth under the switch; BLEND keeps the
-      // depth-test-only behavior. The switch never changes which pipeline writes.
+      // See createPickPipeline. An opaque or mask metadata-pick writes log
+      // frag_depth under the switch; BLEND stays depth-test-only, and the
+      // switch never changes which pipeline writes.
       depthWriteEnabled: !isBlend,
       depthCompare: "less-equal",
     },
@@ -1423,28 +1397,29 @@ function createPickMetadataPipeline(
 }
 
 /**
- * C2-25 ENV-SCENE-CAPTURE (Batch 447) — model CAPTURE pipeline. Renders the
- * model's lit `fragmentMain` into ONE cube-face color attachment (no MRT
- * slot-1), a transient no-stencil `depth24plus` depth target, and NO MSAA —
- * matching the `WebGPUDynamicEnvironmentMapCapture` per-face render pass shape.
- * The `CAPTURE_MODE` shader define (folded into the module fetched by the
- * caller) drops the `@location(1) normalRoughness` output so the fragment stage
- * matches the single target (a MRT/target-count mismatch would be a HARD WebGPU
- * validation error).
+ * The model capture pipeline. It renders the model's lit `fragmentMain` into a
+ * single cube-face colour attachment with no MRT slot 1, a transient
+ * no-stencil `depth24plus` depth target and no MSAA, matching the
+ * `WebGPUDynamicEnvironmentMapCapture` per-face render pass shape. The
+ * `CAPTURE_MODE` shader define, folded into the module the caller fetches,
+ * drops the `@location(1) normalRoughness` output so the fragment stage matches
+ * that single target; a target-count mismatch is a hard WebGPU validation
+ * error.
  *
- * Differences from the on-screen color pipeline (`createPipeline`):
- *   - single color target = `faceFormat` (no G-buffer slot 1)
- *   - `depthFormat = depth24plus` (no stencil)
- *   - `sampleCount = 1` (no MSAA)
+ * Differences from the on-screen colour pipeline (`createPipeline`):
+ *   - a single colour target, `faceFormat`, with no G-buffer slot 1
+ *   - `depthFormat = depth24plus`, no stencil
+ *   - `sampleCount = 1`, no MSAA
  *   - `cullMode = "none"` (disableCulling): the 6 ENU cube-face cameras render
  *     left-handed for the screen-matched basis, which flips triangle winding;
  *     rather than fight the winding sign per face the capture pass disables
  *     culling and lets the depth test pick the nearest surface (correct for a
  *     reflection source — mirrors the globe capture pipeline).
  *
- * Opaque write (no blend): the per-face pass composites the model OVER the
- * already-captured globe + sky via the render pass `loadOp: 'load'` and the
- * shared depth buffer (model depth-tests against globe), not a blend op.
+ * The write is opaque, with no blend: the per-face pass composites the model
+ * over the already-captured globe and sky through the render pass's
+ * `loadOp: 'load'` and the shared depth buffer, so the model depth-tests
+ * against the globe rather than blending against it.
  *
  * @private
  */
@@ -1490,13 +1465,12 @@ function createCapturePipeline(
 }
 
 /**
- * C-R9-MODEL-PICK-TRANSLUCENT Option D (Batch 192) — hover-pick
- * pipeline variant for BLEND primitives. Uses `fragmentPickHoverMain`
- * which discards translucent fragments stochastically via Interleaved
- * Gradient Noise (probability of survival = effective alpha). With
- * dither doing the alpha gating, depth-write can stay ON and standard
- * depth-test picks the closest survived fragment — same render-pass
- * cost as default opaque pick. Stutter-free at 60fps hover frequency.
+ * The hover-pick pipeline variant for BLEND primitives. It uses
+ * `fragmentPickHoverMain`, which discards translucent fragments stochastically
+ * through Interleaved Gradient Noise, with survival probability equal to the
+ * effective alpha. Because the dither does the alpha gating, depth write can
+ * stay on and the standard depth test picks the closest surviving fragment, at
+ * the same render-pass cost as an opaque pick.
  *
  * @private
  */
@@ -1512,8 +1486,8 @@ function createPickHoverPipeline(
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — see createPickPipeline. Depth-write
-  // is already true here (dither-gated blend competes on the standard depth test).
+  // See createPickPipeline. Depth write is already true here, because
+  // dither-gated blend competes on the standard depth test.
   pickLogActive: boolean = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
@@ -1547,17 +1521,16 @@ function createPickHoverPipeline(
 }
 
 /**
- * C-R9-MODEL-PICK-TRANSLUCENT Option C precise pass 1 (Batch 192).
- * Depth pre-pass for BLEND primitives — writes depth + stencil but no
- * color so a subsequent pass 2 (`createPickPrecisePass2Pipeline`) can
- * identify the geometrically-closest translucent fragment per pixel.
+ * The precise-pick depth pre-pass for BLEND primitives. It writes depth and
+ * stencil but no colour, so that `createPickPrecisePass2Pipeline` can identify
+ * the geometrically closest translucent fragment per pixel.
  *
  * State:
- *   - depthWriteEnabled: true   — record closest translucent depth
- *   - depthCompare: less-equal  — standard depth test
- *   - stencil writes ref=1 on pass — marks "this pixel had a translucent
- *     fragment that won the depth test"
- *   - colorWriteMask: 0         — no color output; pass 2 writes color
+ *   - depthWriteEnabled: true — records the closest translucent depth
+ *   - depthCompare: less-equal — the standard depth test
+ *   - stencil writes ref=1 on pass — marks a pixel whose translucent fragment
+ *     won the depth test
+ *   - colorWriteMask: 0 — no colour output; pass 2 writes colour
  *
  * @private
  */
@@ -1573,9 +1546,9 @@ function createPickPrecisePass1Pipeline(
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — reuses fragmentPickMain, so it
-  // MUST take the same pick-gated module; tag `[ld]` when active. Depth-write is
-  // already true (this pass records the closest translucent log depth).
+  // Reuses `fragmentPickMain`, so it takes the same pick-gated module; the
+  // label carries `[ld]` when active. Depth-write is already true, since this
+  // pass records the closest translucent log depth.
   pickLogActive: boolean = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
@@ -1634,12 +1607,11 @@ function createPickPrecisePass1Pipeline(
 }
 
 /**
- * C-R9-MODEL-PICK-TRANSLUCENT Option C precise pass 2 (Batch 192).
- * Color pass for BLEND primitives — runs in the SAME render pass as
- * pass 1 (sharing the depth + stencil attachments) and writes pickColor
- * only on fragments where stencil==1 AND depth==current. This isolates
- * the single closest translucent fragment per pixel for deterministic
- * pick winner selection.
+ * The precise-pick colour pass for BLEND primitives. It runs in the same
+ * render pass as pass 1, sharing the depth and stencil attachments, and
+ * writes pickColor only on fragments where stencil equals 1 and depth equals
+ * the current value. That isolates the single closest translucent fragment per
+ * pixel, so pick winner selection is deterministic.
  *
  * State:
  *   - depthWriteEnabled: false  — pass 1 already wrote final depth
@@ -1663,11 +1635,11 @@ function createPickPrecisePass2Pipeline(
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — reuses fragmentPickMain, so it
-  // MUST take the same pick-gated module; tag `[ld]` when active. Depth-write
-  // STAYS false: this pass depth-tests `equal` against the log depth pass1 wrote
-  // (both use fragmentPickMain, so the log frag_depth values match) — forcing
-  // depth-write here would corrupt the two-pass equal-test winner selection.
+  // Reuses `fragmentPickMain`, so it takes the same pick-gated module; the
+  // label carries `[ld]` when active. Depth-write stays false: this pass
+  // depth-tests `equal` against the log depth pass 1 wrote, and both use
+  // `fragmentPickMain` so the log frag_depth values match. Enabling depth-write
+  // here would corrupt the two-pass equal-test winner selection.
   pickLogActive: boolean = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
@@ -1723,23 +1695,22 @@ function createPickPrecisePass2Pipeline(
 }
 
 /**
- * TAA Slice 2e (Batch 106) — velocity-only pipeline variant. Single
- * `rg16float` color target matching the scene-FB velocity texture
- * format (Batch 104). Vertex stage and bind-group layout are identical
- * to the color pipeline; only the fragment entry (`fragmentVelocityMain`)
- * and target format differ.
+ * The velocity-only pipeline variant consumed by temporal antialiasing. A
+ * single `rg16float` colour target matches the scene-framebuffer velocity
+ * texture format. The vertex stage and bind-group layout are identical to the
+ * colour pipeline; only the fragment entry (`fragmentVelocityMain`) and the
+ * target format differ.
  *
  * Depth is bound read-only (`depthWriteEnabled: false`,
- * `depthCompare: less-equal`) so the velocity pass shares the scene
- * depth from the main color pass — fragments behind opaque geometry
- * fail the depth test and don't emit velocity. The velocity pass runs
- * AFTER the main color pass closes, so the depth attachment must be
- * loaded with `depthLoadOp: load` at the pass level — that's a render-
- * pass concern, not a pipeline concern.
+ * `depthCompare: less-equal`) so the velocity pass shares the scene depth from
+ * the main colour pass — fragments behind opaque geometry fail the depth test
+ * and don't emit velocity. The velocity pass runs after the main colour pass
+ * closes, so the depth attachment has to be loaded with `depthLoadOp: load` at
+ * the pass level; that's a render-pass concern, not a pipeline concern.
  *
- * Cull mode follows the doubleSided flag (matches the color pipeline)
- * so velocity is emitted from exactly the same fragments the color
- * pass shaded — no risk of velocity for back-faces that weren't drawn.
+ * Cull mode follows the doubleSided flag, matching the colour pipeline, so
+ * velocity is emitted from exactly the same fragments the colour pass shaded —
+ * there is no risk of velocity for back-faces that weren't drawn.
  *
  * @private
  */
@@ -1752,11 +1723,11 @@ function createVelocityPipeline(
   doubleSided: boolean,
   hasTexCoord1: boolean,
   hasFeatureId0: boolean,
-  // Session 65 Batch 28 — MSAA sample count. NO LONGER READ by this
-  // pipeline as of Batch 143; signature kept for back-compat with the
-  // pipeline-cache call site. See multisample comment below.
+  // The MSAA sample count. This pipeline does not read it — the parameter
+  // stays so the pipeline-cache call site keeps a uniform signature across
+  // pipeline builders. See the multisample note below.
   sampleCount: number = 1,
-  // DP-H46a — metadata vertex slot 9.
+  // Metadata vertex slot 9.
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
@@ -1787,35 +1758,30 @@ function createVelocityPipeline(
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
-    // Batch 143 — drop multisample. The velocity pass attaches the
-    // single-sample velocityTexture (per WebGPUSceneFramebuffer.ts:118)
-    // as the only color attachment, so the pipeline must also be
-    // single-sample to match. Pre-Batch-143 this baked
-    // `{count: sampleCount}` (= 4 when scene MSAA is on) which would
-    // trigger a sampleCount-mismatch validation error the moment Model
-    // started emitting velocity commands. This IS now live (TAA-SLICE-2B,
-    // premise-reconciled 2026-07-05): Model primitives DO tag
-    // `.velocityCommand` when `frameState.taaEnabled` (WebGPUModelRenderer
-    // L4967), and `probe-model-taa-msaa.mjs` now reports 1/80 velocity
-    // commands with 0 device errors — the TAA→MSAA=1 coupling in
-    // `prepareFrame` keeps the velocity pass's single-sample attachments
-    // valid against scene depth, so this single-sample pipeline is the
-    // correct match. Do NOT re-add `{count: sampleCount}` here.
+    // No multisample state. The velocity pass attaches the single-sample
+    // velocity texture created by `WebGPUSceneFramebuffer` as its only colour
+    // attachment, so the pipeline has to be single-sample to match. This must
+    // stay that way: baking `{count: sampleCount}` here resolves to 4 whenever
+    // scene MSAA is on, which raises a sampleCount-mismatch validation error as
+    // soon as Model emits velocity commands. Model primitives do tag
+    // `.velocityCommand` when `frameState.taaEnabled`, and the coupling in
+    // `prepareFrame` that forces MSAA to 1 while TAA is on keeps the velocity
+    // pass's single-sample attachments valid against scene depth, so a
+    // single-sample pipeline is the correct match.
     //
-    // Matches the collection renderers' velocity pipelines (Batch 134)
-    // which all leave multisample undefined for the same reason.
+    // The collection renderers' velocity pipelines leave multisample undefined
+    // for the same reason.
   });
 }
 
 /**
- * AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) —
- * classification pipeline variant for `Model.classificationType`. Same
- * vertex stage and pipeline layout as the lit color pipeline (so the
- * model's existing skinning / morph / instancing transforms apply
- * unchanged), but the fragment entry is `fragmentClassificationMain`
- * which samples the globe-depth texture (already bound on
- * `@group(3) @binding(15)` via the effects bind group) and discards
- * pixels that don't have a classifiable surface (sky / no globe data).
+ * The classification pipeline variant for `Model.classificationType`. It
+ * shares the vertex stage and pipeline layout with the lit colour pipeline, so
+ * the model's existing skinning, morph and instancing transforms apply
+ * unchanged, but the fragment entry is `fragmentClassificationMain`, which
+ * samples the globe-depth texture — already bound on `@group(3) @binding(15)`
+ * via the effects bind group — and discards pixels with no classifiable
+ * surface, such as sky or areas with no globe data.
  *
  * Depth state mirrors the regular GroundPrimitive classifier:
  * `depthWriteEnabled: false`, `depthCompare: less-equal`. Standard
@@ -1834,9 +1800,9 @@ function createClassificationPipeline(
   doubleSided: boolean,
   hasTexCoord1: boolean,
   hasFeatureId0: boolean,
-  // Session 65 Batch 28 — MSAA sample count.
+  // The MSAA sample count.
   sampleCount: number = 1,
-  // DP-H46a — metadata vertex slot 9.
+  // Metadata vertex slot 9.
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
@@ -1870,8 +1836,8 @@ function createClassificationPipeline(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentClassificationMain",
-      // Slice 5c-B Phase 1 (Batch 114) — scene-FB color target via
-      // helper. Classification draws translucent overlays into scene FB.
+      // The scene-framebuffer colour target, built through the shared helper.
+      // Classification draws translucent overlays into the scene framebuffer.
       targets: makeSceneFBTargets(presentationFormat, { blend }),
     },
     primitive: modelPrimitiveState(topology, cullMode),
@@ -1888,19 +1854,19 @@ function createClassificationPipeline(
  * WebGPUModelPipelineCache manages GPU pipeline variants for Model rendering.
  */
 class WebGPUModelPipelineCache {
-  // Type-only field declarations (Session-29 interop pattern). Every field
-  // is `declare` so nothing is emitted at runtime — the constructor's
-  // assignments remain the sole runtime writes, keeping the compiled output
-  // byte-identical to the pre-conversion JS.
+  // Type-only field declarations. Every field is `declare` so nothing is
+  // emitted at runtime — the constructor's assignments remain the sole runtime
+  // writes, keeping the compiled output byte-identical to the equivalent
+  // untyped JavaScript.
   declare _device: GPUDevice;
-  // C11-194 recovery ownership. `_device` alone is insufficient when a
-  // context rebuilds native resources on the same physical device object.
+  // Recovery ownership. `_device` alone is insufficient when a context
+  // rebuilds native resources on the same physical device object.
   declare _resourceGeneration: number;
   declare _presentationFormat: GPUTextureFormat;
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick-family pipelines' color
-  // target format, mirrored from `context.pickPipelineFormat` on every
-  // scene-format generation bump. Equals `_presentationFormat` in SDR;
-  // stays an 8-bit unorm when the scene target is float/HDR.
+  // The pick-family pipelines' colour target format, mirrored from
+  // `context.pickPipelineFormat` on every scene-format generation bump. It
+  // equals `_presentationFormat` in SDR and stays an 8-bit unorm when the
+  // scene target is float or HDR.
   declare _pickFormat: GPUTextureFormat;
   declare _depthFormat: GPUTextureFormat;
   declare _sampleCount: number;
@@ -1911,10 +1877,10 @@ class WebGPUModelPipelineCache {
   // error pipeline against a stale device generation.
   declare _lifecycleEpoch: number;
   declare _pipelines: Map<string | number, GPURenderPipeline>;
-  // C10-07 — central async render-pipeline cache (shared across renderer
-  // instances on the same device) + per-key in-flight set for the model
-  // COLOR pipeline's `resolveGlobePipelineEntry`-style ready-gate. Null when
-  // no central cache is available (falls back to the synchronous build path).
+  // The central async render-pipeline cache, shared across renderer instances
+  // on the same device, plus the per-key in-flight set backing the colour
+  // pipeline's ready-gate. Null when no central cache is available, in which
+  // case the synchronous build path runs instead.
   declare _centralPipelineCache: WebGPURenderPipelineCache | null;
   declare _pendingColorPipelines: Map<
     string | number,
@@ -1924,10 +1890,10 @@ class WebGPUModelPipelineCache {
   declare _errorPipelines: Map<string | number, GPURenderPipeline>;
   declare _errorSwapGeneration: number;
   declare _pickPipelines: Map<string | number, GPURenderPipeline>;
-  // UP144-SNAP-WEBGPU (C11-212) — snapping-pass pipeline cache. Same key shape
-  // as `_pickPipelines`; populated only for models in a scene whose app has
-  // called `Scene.snap` at least once. Cleared wherever `_pickPipelines` is,
-  // because it shares the pick-fleet log-depth state and the pipeline layout.
+  // The snapping-pass pipeline cache. Same key shape as `_pickPipelines`;
+  // populated only for models in a scene whose app has called `Scene.snap` at
+  // least once. Cleared wherever `_pickPipelines` is, because it shares the
+  // pick-fleet log-depth state and the pipeline layout.
   declare _snapPipelines: Map<string | number, GPURenderPipeline>;
   declare _depthWritePipelines: Map<string | number, GPURenderPipeline>;
   declare _velocityPipelines: Map<string | number, GPURenderPipeline>;
@@ -1956,14 +1922,15 @@ class WebGPUModelPipelineCache {
   declare _customShaderClassHash: number;
   declare _primitiveTopology: ModelTopologyRealization;
   declare _logDepthEnabled: boolean;
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet log-depth
-  // switch, mirrored from `context._pickLogDepthWriteEnabled` via
-  // maybeUpdateForPickLogDepth() each frame. The 3 pick fragment entries (and
-  // the 2 BLEND precise-pass pipelines reusing fragmentPickMain) compile their
-  // module with LOG_DEPTH gated by THIS flag — NOT the scene `_logDepthEnabled`
-  // — so the shared pick FBO stays uniformly hyperbolic OR log across the whole
-  // fleet (INV-2). Default false → the pick modules carry no LOG_DEPTH define
-  // and the pick pipelines are byte-identical hyperbolic until C10-11's flip.
+  // The pick fleet carries its own log-depth switch, separate from the scene
+  // one, mirrored from `context._pickLogDepthWriteEnabled` by
+  // `maybeUpdateForPickLogDepth()` each frame. The three pick fragment entries,
+  // and the two BLEND precise-pass pipelines that reuse `fragmentPickMain`,
+  // compile their module with LOG_DEPTH gated by this flag rather than the
+  // scene `_logDepthEnabled`, so the shared pick framebuffer stays uniformly
+  // hyperbolic or uniformly logarithmic across the whole fleet. It defaults to
+  // false, leaving the pick modules without a LOG_DEPTH define and the pick
+  // pipelines hyperbolic.
   declare _pickLogDepthEnabled: boolean;
   declare _splitEnabled: boolean;
   declare _modelColorEnabled: boolean;
@@ -2022,10 +1989,10 @@ class WebGPUModelPipelineCache {
     device: GPUDevice,
     presentationFormat: GPUTextureFormat,
     depthFormat: GPUTextureFormat,
-    // C10-07 — central async pipeline cache from the context
-    // (`context.webgpuPipelineCache`). Optional + null-default so the
-    // existing 3-arg call sites and the synchronous fallback path are
-    // unaffected; when present the on-screen COLOR pipeline resolves through
+    // The central async pipeline cache from the context
+    // (`context.webgpuPipelineCache`). Optional, and defaulted to null, so
+    // three-argument call sites and the synchronous fallback path are
+    // unaffected; when present, the on-screen colour pipeline resolves through
     // it via `createRenderPipelineAsync`.
     centralPipelineCache: WebGPURenderPipelineCache | null = null,
     resourceGeneration = 0,
@@ -2035,67 +2002,62 @@ class WebGPUModelPipelineCache {
     this._centralPipelineCache = centralPipelineCache;
     this._pendingColorPipelines = new Map();
     this._presentationFormat = presentationFormat;
-    // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — construction-time clamp; the
-    // authoritative `context.pickPipelineFormat` is mirrored on the first
-    // `maybeUpdateForSceneFormat` (generation sentinel −1 guarantees it runs).
+    // A construction-time clamp; the authoritative `context.pickPipelineFormat`
+    // is mirrored on the first `maybeUpdateForSceneFormat`, which the
+    // generation sentinel of −1 below guarantees will run.
     this._pickFormat = clampToPickFormat(presentationFormat);
     this._depthFormat = depthFormat;
-    // Session 65 Batch 28 — MSAA sample count tracked alongside format
-    // generation. When the bridge in `WebGPUSceneRenderer.prepareFrame`
-    // sets `context._msaaSamples`, the generation counter bumps (Batch
-    // 25), this cache wipes on the next `maybeUpdateForSceneFormat`,
-    // and `createPipeline` reads the new sample count to bake into the
-    // freshly-created pipelines. `_sampleCount = 1` matches the default
-    // hardcoded value of `WebGPUContext._msaaSamples` so pre-bridge
-    // behavior is unchanged.
+    // The MSAA sample count, tracked alongside the format generation. When
+    // `WebGPUSceneRenderer.prepareFrame` sets `context._msaaSamples`, the
+    // generation counter bumps, this cache wipes on the next
+    // `maybeUpdateForSceneFormat`, and `createPipeline` reads the new sample
+    // count to bake into the freshly-created pipelines. The initial value of 1
+    // matches the default of `WebGPUContext._msaaSamples`.
     this._sampleCount = 1;
-    // Batch 110 — track the scene pipeline format generation last
-    // applied so a runtime HDR / canvas-format change can invalidate
-    // every cached pipeline (color, pick, depth-write, velocity).
-    // Pipelines have their fragment target format baked in at
-    // creation; without invalidation the cached entries would
-    // produce validation errors against the recreated scene FB.
-    // -1 sentinel so the first call to `maybeUpdateForSceneFormat`
-    // unconditionally writes the current generation without a clear.
+    // The scene pipeline format generation last applied, so a runtime HDR or
+    // canvas-format change can invalidate every cached pipeline: colour, pick,
+    // depth-write and velocity. Pipelines have their fragment target format
+    // baked in at creation, so without invalidation the cached entries would
+    // produce validation errors against the recreated scene framebuffer. The
+    // -1 sentinel makes the first call to `maybeUpdateForSceneFormat`
+    // unconditionally write the current generation without a clear.
     this._sceneFormatGeneration = -1;
     this._lifecycleEpoch = 0;
     this._pipelines = new Map();
-    // C-22 — flat-magenta error pipelines (per pipeline-layout variant `md`),
-    // substituted into `_pipelines` when a color pipeline fails validation. The
-    // shared error shader module is built lazily on first failure.
+    // Flat-magenta error pipelines, one per pipeline-layout variant `md`,
+    // substituted into `_pipelines` when a colour pipeline fails validation.
+    // The shared error shader module is built lazily on first failure.
     this._errorShaderModule = null;
     this._errorPipelines = new Map();
     // Bumped each time a color pipeline is swapped to its magenta fallback, so
     // the model renderer (which caches the pipeline reference per primitive) can
     // detect the swap and re-fetch. Exceptional path — only changes on failure.
     this._errorSwapGeneration = 0;
-    // C-R9-MODEL-PICK (Batch 54) — pick pipeline cache, keyed by the same
-    // (alphaMode, doubleSided) pair as `_pipelines`. Each pick pipeline
-    // shares the layout + vertex stage of its color sibling and only
-    // differs in the fragment entry + no-blend target state.
+    // The pick pipeline cache, keyed by the same (alphaMode, doubleSided) pair
+    // as `_pipelines`. Each pick pipeline shares the layout and vertex stage of
+    // its colour sibling, and differs only in the fragment entry and the
+    // no-blend target state.
     this._pickPipelines = new Map();
-    // UP144-SNAP-WEBGPU (C11-212) — snapping-pass pipelines, keyed like the
-    // pick cache. Stays empty until an app calls `Scene.snap`.
+    // The snapping-pass pipelines, keyed like the pick cache. Stays empty until
+    // an app calls `Scene.snap`.
     this._snapPipelines = new Map();
-    // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — depth-write variant cache,
-    // populated lazily for translucent commands tagged with
-    // `depthForTranslucentClassification`. Same key shape as `_pipelines`
-    // (alphaMode, doubleSided), so a translucent BLEND primitive that
-    // also needs depth-write gets a separate pipeline that writes depth.
-    // The two variants share layout, vertex, fragment, and blend state;
-    // only `depthWriteEnabled` differs. We cannot reuse `_pipelines`
+    // The depth-write variant cache, populated lazily for translucent commands
+    // tagged with `depthForTranslucentClassification`. It uses the same
+    // (alphaMode, doubleSided) key shape as `_pipelines`, so a translucent
+    // BLEND primitive that also needs depth-write gets a separate pipeline that
+    // writes depth. The two variants share layout, vertex, fragment and blend
+    // state; only `depthWriteEnabled` differs. `_pipelines` cannot hold both,
     // because its key would collide for the same (alphaMode, doubleSided).
     this._depthWritePipelines = new Map();
-    // TAA Slice 2e (Batch 106) — velocity pipeline cache. Same key shape
-    // (alphaMode, doubleSided) as the color cache; entries are built on
-    // demand the first frame TAA is enabled for any primitive carrying
-    // a given (alphaMode, doubleSided) identity. Static scenes (TAA
-    // off) never construct a velocity pipeline.
+    // The velocity pipeline cache, with the same (alphaMode, doubleSided) key
+    // shape as the colour cache. Entries are built on demand the first frame
+    // temporal antialiasing is enabled for any primitive carrying a given
+    // (alphaMode, doubleSided) identity, so a static scene with antialiasing
+    // off never constructs a velocity pipeline.
     this._velocityPipelines = new Map();
-    // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) —
-    // classification pipeline cache. Built on demand the first frame a
-    // model with `classificationType !== undefined` reaches the FR;
-    // models without classificationType (the common case) never
+    // The classification pipeline cache. It is built on demand the first frame
+    // a model with `classificationType !== undefined` reaches the feature
+    // renderer; models without a classification type, the common case, never
     // construct a classification pipeline.
     this._classificationPipelines = new Map();
 
@@ -2109,51 +2071,53 @@ class WebGPUModelPipelineCache {
     this._silhouetteModelPipelines = new Map();
     this._silhouetteColorPipelines = new Map();
 
-    // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — second-slice pipeline
-    // slots. Built lazily; only allocated for primitives whose owning
-    // app calls `scene.pickHover` or `scene.pickPrecise`. The default
-    // `scene.pick` flow uses the existing `_pickPipelines` Map.
+    // The translucent-pick pipeline slots. Built lazily, and only allocated
+    // for primitives whose owning app calls `scene.pickHover` or
+    // `scene.pickPrecise`. The default `scene.pick` flow uses the existing
+    // `_pickPipelines` Map.
     //
-    //   _pickHoverPipelines: Option D (stochastic dither alpha-test).
-    //     For BLEND alphaMode, fragmentPickHoverMain replaces the
-    //     `< 0.004` discard with IGN-dither-driven probabilistic
-    //     survival. For OPAQUE/MASK, identical to `_pickPipelines`.
+    //   _pickHoverPipelines: the stochastic dither alpha-test variant. For
+    //     BLEND alphaMode, `fragmentPickHoverMain` replaces the `< 0.004`
+    //     discard with IGN-dither-driven probabilistic survival. For OPAQUE
+    //     and MASK it is identical to `_pickPipelines`.
     //
-    //   _pickPrecisePass1Pipelines: Option C precise pass 1 (depth
-    //     pre-pass). For BLEND, depth-write=true, depth-compare=
-    //     less-equal, color-write=0. For OPAQUE/MASK, identical to
-    //     `_pickPipelines` (no 2-pass needed).
+    //   _pickPrecisePass1Pipelines: the precise depth pre-pass. For BLEND,
+    //     depth-write=true, depth-compare=less-equal, color-write=0. For
+    //     OPAQUE and MASK it is identical to `_pickPipelines`, since no second
+    //     pass is needed.
     //
-    //   _pickPrecisePass2Pipelines: Option C precise pass 2 (color
-    //     pass with depth-EQUAL test). BLEND only — OPAQUE/MASK never
-    //     hit pass 2 since their precise pick is the same as default.
+    //   _pickPrecisePass2Pipelines: the precise colour pass, with a
+    //     depth-equal test. BLEND only — OPAQUE and MASK never reach pass 2,
+    //     because their precise pick is the same as the default.
     this._pickHoverPipelines = new Map();
     this._pickPrecisePass1Pipelines = new Map();
     this._pickPrecisePass2Pipelines = new Map();
 
-    // C2-25 ENV-SCENE-CAPTURE (Batch 447) — model scene-capture pipeline cache.
-    // Keyed by `(alphaMode, doubleSided, materialDefines, faceFormat)`; built
-    // SYNCHRONOUSLY on first miss (the capture pass is debounced + the env-cube
-    // sky fill rewrites the whole cube each refresh, so an async-pending frame
-    // would read back as a permanently-flat sky-only reflection — same rationale
-    // as the globe's `resolveCapturePipelineEntrySync`). DELIBERATELY separate
-    // from `_pipelines`: a capture build NEVER touches the on-screen color
-    // pipeline cache or `_sceneFormatGeneration`, and is NOT wiped by
-    // `maybeUpdateForSceneFormat` (its target is the env-cube face format, not
-    // the scene FB format). Lazily populated only when capture is active →
-    // default-OFF byte-identical (no allocation, no creation).
+    // The model scene-capture pipeline cache, keyed by
+    // `(alphaMode, doubleSided, materialDefines, faceFormat)`. Entries are
+    // built synchronously on first miss: the capture pass is debounced and the
+    // env-cube sky fill rewrites the whole cube each refresh, so an
+    // async-pending frame would read back as a permanently flat sky-only
+    // reflection — the same rationale as the globe's
+    // `resolveCapturePipelineEntrySync`. It is deliberately separate from
+    // `_pipelines`, since a capture build must not touch the on-screen colour
+    // pipeline cache or `_sceneFormatGeneration`, and `maybeUpdateForSceneFormat`
+    // leaves it alone because its target is the env-cube face format rather
+    // than the scene framebuffer format. It is populated lazily only while
+    // capture is active, so a scene that never captures allocates nothing.
     this._capturePipelines = new Map();
-    // DP-H46e — metadata-PICK pipelines (scene.pickMetadata producer). Keyed by
-    // `(alphaMode, doubleSided, materialDefines)` × the picked-property class
-    // hash (so a re-pick of a DIFFERENT property gets its own pipeline+module).
-    // Lazily populated only during a metadata-pick pass → default-OFF
-    // byte-identical (no allocation when pickMetadata is never called).
+    // The metadata-pick pipelines that produce `scene.pickMetadata` results,
+    // keyed by `(alphaMode, doubleSided, materialDefines)` crossed with the
+    // picked-property class hash, so re-picking a different property gets its
+    // own pipeline and module. Populated lazily only during a metadata-pick
+    // pass, so an app that never calls `pickMetadata` allocates nothing.
     this._pickMetadataPipelines = new Map();
 
-    // C11-194 — immutable placeholders and their camera/instance layouts are
-    // device-generation resources, not model resources. The exact GPUDevice
-    // identity AND context resource generation form the ownership key; the
-    // pool retains them until the last model cache releases that exact lease.
+    // Immutable placeholders and their camera and instance layouts are
+    // device-generation resources, not model resources. The exact `GPUDevice`
+    // identity together with the context resource generation forms the
+    // ownership key; the pool retains them until the last model cache releases
+    // that exact lease.
     const modelDeviceResources = acquireWebGPUModelDeviceResources(
       device,
       resourceGeneration,
@@ -2181,25 +2145,24 @@ class WebGPUModelPipelineCache {
       throw error;
     }
 
-    // Batch 174 — B.4 KHR materialBGL split. Per-variant caches keyed
-    // by `materialDefines: number` (a bitmask of ShaderDefine bits
-    // gating which KHR bindings are present). A primitive's effective
-    // variant = OR of the gate defines for the KHR extensions its
-    // material flags activate (today coarse: all-or-nothing on
-    // `MODEL_HAS_KHR_TEXTURES`; tomorrow per-extension granular). Material
-    // layouts depend only on the normalized mask and are device-shared. Full
-    // pipeline layouts are also shared, but partitioned by the exact effects
-    // BGL identity because that owner generation can roll over on the same
-    // GPUDevice. This shares the common case without ever combining a current
-    // pipeline with a stale group-3 layout.
+    // The KHR material bind-group-layout split: per-variant caches keyed by
+    // `materialDefines: number`, a bitmask of `ShaderDefine` bits gating which
+    // KHR bindings are present. A primitive's effective variant is the bitwise
+    // OR of the gate defines for the KHR extensions its material flags
+    // activate; that gating is currently all-or-nothing on
+    // `MODEL_HAS_KHR_TEXTURES` rather than per-extension. Material layouts
+    // depend only on the normalized mask and are device-shared. Full pipeline
+    // layouts are also shared, but partitioned by the exact effects
+    // bind-group-layout identity, because that owner generation can roll over
+    // on the same `GPUDevice`. That shares the common case without ever
+    // combining a current pipeline with a stale group-3 layout.
     //
-    // The maps are populated lazily from `getOrCreateMaterialBGL` /
-    // `getOrCreatePipelineLayout` so a scene with only basic-variant
-    // models never builds the full layout, and a scene with only
-    // full-variant models never builds the basic layout. Pipelines themselves
-    // (color / pick / depth-write / velocity / classification) cache
-    // independently, keyed on the same `materialDefines` plus
-    // alphaMode / doubleSided.
+    // The maps are populated lazily from `getOrCreateMaterialBGL` and
+    // `getOrCreatePipelineLayout`, so a scene with only basic-variant models
+    // never builds the full layout, and a scene with only full-variant models
+    // never builds the basic layout. The pipelines themselves — colour, pick,
+    // depth-write, velocity and classification — cache independently, keyed on
+    // the same `materialDefines` plus alphaMode and doubleSided.
     this._materialBGLCache = modelDeviceResources.materialBGLCache;
     this._pipelineLayoutCache = getOrCreateWebGPUModelPipelineLayoutCache(
       modelDeviceResources,
@@ -2207,14 +2170,14 @@ class WebGPUModelPipelineCache {
     );
     this._shaderModuleCache = new Map();
 
-    // DP-H46b — per-metadata-class shader-module cache. The generated
-    // metadata WGSL chunk (`MetadataWGSLPipelineStage.generateMetadataWGSL`)
-    // is class-dependent, so two primitives whose metadata classes differ
-    // must NOT share one compiled module. When MODEL_HAS_METADATA is set,
-    // `_getOrCreateShaderModule` keys here by `${effectiveDefines}:${hash}`
-    // (the class hash supplied by the renderer via `setMetadataWGSL`) instead
-    // of the bitmask-only `_shaderModuleCache`. Non-metadata primitives never
-    // touch this map → their module hash + cache key are unchanged (parity).
+    // The per-metadata-class shader-module cache. The generated metadata WGSL
+    // chunk (`MetadataWGSLPipelineStage.generateMetadataWGSL`) is
+    // class-dependent, so two primitives whose metadata classes differ must not
+    // share one compiled module. When `MODEL_HAS_METADATA` is set,
+    // `_getOrCreateShaderModule` keys here by `${effectiveDefines}:${hash}`,
+    // where the class hash is supplied by the renderer via `setMetadataWGSL`,
+    // instead of the bitmask-only `_shaderModuleCache`. Non-metadata primitives
+    // never touch this map, so their module hash and cache key are unchanged.
     this._metadataShaderModuleCache = new Map();
     // The generated chunk + its hash for the primitive whose pipeline is
     // currently being (re)built. The renderer sets these via `setMetadataWGSL`
@@ -2223,18 +2186,18 @@ class WebGPUModelPipelineCache {
     // leak into a non-metadata module.
     this._metadataWGSL = "";
     this._metadataClassHash = 0;
-    // NEW-MODEL-METADATA-MAT3-MAT4 — sticky per-primitive widened MAT3/MAT4
-    // transport flag (same set-before-every-getPipeline* contract as the
-    // chunk above). Drives the MODEL_METADATA_MAT_TRANSPORT preprocess bit,
-    // the mode-2 slot-9 vertex layout, and the `:m34` pipeline-key suffix.
+    // The sticky per-primitive widened MAT3/MAT4 transport flag, under the same
+    // set-before-every-`getPipeline*` contract as the chunk above. It drives
+    // the `MODEL_METADATA_MAT_TRANSPORT` preprocess bit, the mode-2 slot-9
+    // vertex layout, and the `:m34` pipeline-key suffix.
     this._metadataMatTransport = false;
-    // DP-H46e — the metadata-PICK chunk (display chunk + the appended
-    // `metadataPickingStage` for the currently-picked property) + its hash. Set
-    // by the renderer via `setMetadataPickWGSL` immediately before building the
-    // metadata-pick pipeline, consumed by `_getOrCreateShaderModule` when the
-    // METADATA_PICKING_ENABLED bit is set. Independent of `_metadataWGSL` so the
-    // display module and the pick module of the same primitive don't clobber each
-    // other within one frame.
+    // The metadata-pick chunk — the display chunk plus the appended
+    // `metadataPickingStage` for the currently-picked property — and its hash.
+    // The renderer sets it via `setMetadataPickWGSL` immediately before
+    // building the metadata-pick pipeline, and `_getOrCreateShaderModule`
+    // consumes it when the `METADATA_PICKING_ENABLED` bit is set. It is
+    // independent of `_metadataWGSL` so the display module and the pick module
+    // of the same primitive don't clobber each other within one frame.
     this._metadataPickWGSL = "";
     this._metadataPickClassHash = 0;
 
@@ -2242,19 +2205,19 @@ class WebGPUModelPipelineCache {
     // hash for the primitive whose pipeline is currently being (re)built. Set by
     // the renderer via `setCustomShaderWGSL` immediately before each customShader
     // `getPipeline*` call, cleared (`clearCustomShaderWGSL`) for non-customShader
-    // primitives so a stale chunk can't leak. Prepended at the SAME injection
-    // point as the metadata chunk; folded into the module cache key when
-    // MODEL_HAS_WGSL_CUSTOM_SHADER / _VERTEX is set.
+    // primitives so a stale chunk can't leak. It is prepended at the same
+    // injection point as the metadata chunk, and folded into the module cache
+    // key when `MODEL_HAS_WGSL_CUSTOM_SHADER` or `_VERTEX` is set.
     this._customShaderWGSL = "";
     this._customShaderClassHash = 0;
 
     // GLTF-POINTS-MODE — the GPUPrimitiveTopology of the primitive whose
     // pipeline is currently being (re)built. Set by the renderer via
     // `setPrimitiveTopology` immediately before each `getPipeline*` call
-    // (the same sticky-state pattern as the metadata/customShader chunks
+    // (the same sticky-state pattern as the metadata and customShader chunks
     // above — `applyPrimitiveMetadataToPipelineCache` writes all three).
-    // "triangle-list" is the historical hardcoded value; triangle
-    // primitives keep byte-identical cache keys + pipeline descriptors.
+    // "triangle-list" is the default, so triangle primitives keep their cache
+    // keys and pipeline descriptors unchanged.
     this._primitiveTopology = MODEL_TOPOLOGY_TRIANGLE_LIST;
 
     // Eagerly build the basic variant (materialDefines = 0). Most
@@ -2262,26 +2225,27 @@ class WebGPUModelPipelineCache {
     // doubles as a `materialBGL_basic` accessor for renderer code that
     // wants to peek at the layout without going through the variant
     // API.
-    // Renderer-wide log depth — OFF until the renderer's first
-    // maybeUpdateForLogDepth() call mirrors the live master switch.
+    // Renderer-wide log depth — off until the renderer's first
+    // `maybeUpdateForLogDepth()` call mirrors the live master switch.
     this._logDepthEnabled = false;
-    // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-fleet log depth, OFF
-    // until the renderer's first maybeUpdateForPickLogDepth() call mirrors the
-    // SEPARATE `context._pickLogDepthWriteEnabled` master switch.
+    // Pick-fleet log depth — off until the renderer's first
+    // `maybeUpdateForPickLogDepth()` call mirrors the separate
+    // `context._pickLogDepthWriteEnabled` master switch.
     this._pickLogDepthEnabled = false;
-    // WIRE-MODEL-SPLITTER — per-model split-screen discard. OFF until the
-    // renderer's first maybeUpdateForSplit() call mirrors
-    // `model.splitDirection !== SplitDirection.NONE`. This cache is
-    // per-Model, so a per-model flag is the right granularity.
+    // WIRE-MODEL-SPLITTER — per-model split-screen discard. Off until the
+    // renderer's first `maybeUpdateForSplit()` call mirrors
+    // `model.splitDirection !== SplitDirection.NONE`. This cache is per-Model,
+    // so a per-model flag is the right granularity.
     this._splitEnabled = false;
-    // WIRE-MODEL-COLOR — per-model model.color blend. OFF until the
-    // renderer's first maybeUpdateForModelColor() call mirrors
-    // `defined(model.color)`. Per-Model flag, same granularity as split.
+    // WIRE-MODEL-COLOR — per-model `model.color` blend. Off until the
+    // renderer's first `maybeUpdateForModelColor()` call mirrors
+    // `defined(model.color)`. A per-Model flag, at the same granularity as
+    // split.
     this._modelColorEnabled = false;
-    // WIRE-MODEL-SILHOUETTE — per-model silhouette state. OFF until the
-    // renderer's first maybeUpdateForSilhouette() call mirrors the WebGL
-    // `Model.hasSilhouette()` predicate. Per-Model flag, same granularity
-    // as split / model-color.
+    // WIRE-MODEL-SILHOUETTE — per-model silhouette state. Off until the
+    // renderer's first `maybeUpdateForSilhouette()` call mirrors the WebGL
+    // `Model.hasSilhouette()` predicate. A per-Model flag, at the same
+    // granularity as split and model colour.
     this._silhouetteEnabled = false;
 
     try {
@@ -2318,9 +2282,9 @@ class WebGPUModelPipelineCache {
       throw error;
     }
 
-    // C11-194 — all immutable fallback textures, views, samplers and buffers
-    // are aliases into the exact-device pool acquired above. Model-specific
-    // pipelines and mutable material/camera data remain privately owned.
+    // All immutable fallback textures, views, samplers and buffers are aliases
+    // into the exact-device pool acquired above. Model-specific pipelines and
+    // mutable material and camera data remain privately owned.
     this._defaultWhiteTexture = modelDeviceResources.defaultWhiteTexture;
     this._defaultWhiteTextureView =
       modelDeviceResources.defaultWhiteTextureView;
@@ -2361,12 +2325,11 @@ class WebGPUModelPipelineCache {
     this._defaultInstanceBG = modelDeviceResources.defaultInstanceBG;
     this._defaultFeatureUniformBuffer =
       modelDeviceResources.defaultFeatureUniformBuffer;
-    // NEW-BG-CONSOLIDATION (Batch 122) — feature ID resources moved into
-    // the merged group 1 (bindings 26-32). The default placeholder
-    // entries are exposed as a function so callers can splice them
-    // into a merged group-1 bind group's `entries[]` array. There's no
-    // standalone feature-ID bind group anymore; the renderer always
-    // builds the merged group 1.
+    // Feature ID resources live in the merged group 1, at bindings 26 to 32.
+    // The default placeholder entries are exposed as a function so callers can
+    // splice them into a merged group-1 bind group's `entries[]` array. There
+    // is no standalone feature-ID bind group; the renderer always builds the
+    // merged group 1.
     this._defaultFeatureIdEntries = () => [
       { binding: 26, resource: this._defaultWhiteTextureView },
       { binding: 27, resource: this._defaultSampler },
@@ -2382,11 +2345,11 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * Batch 174 — Normalize a caller-supplied `materialDefines` value
-   * down to just the model-material gating bits this cache understands.
-   * Defends against callers passing other ShaderDefine bits (e.g. a
-   * primitive-pipeline-level `SPLIT_ENABLED` or `GEODETIC_NORMAL`)
-   * that would inflate the cache key without affecting the layout.
+   * Normalizes a caller-supplied `materialDefines` value down to just the
+   * model-material gating bits this cache understands. This defends against
+   * callers passing other `ShaderDefine` bits, such as a
+   * primitive-pipeline-level `SPLIT_ENABLED` or `GEODETIC_NORMAL`, that would
+   * inflate the cache key without affecting the layout.
    *
    * @param {number} materialDefines
    * @returns {number}
@@ -2397,15 +2360,14 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * Batch 174 — Lazy per-variant materialBGL builder. Keyed by the
+   * A lazy per-variant material bind-group-layout builder, keyed by the
    * normalized `materialDefines` mask so each unique combination of
-   * KHR-extension gates produces exactly one BGL per device.
+   * KHR-extension gates produces exactly one layout per device.
    *
-   * Public API: callers (renderer + bind-group construction) should
-   * use `getOrCreateMaterialBGL` and `getOrCreatePipelineLayout`
-   * rather than the legacy `materialBGL` / `pipelineLayout` getters,
-   * which are retained for backward compatibility and now delegate
-   * through the per-variant cache.
+   * Callers in the renderer and in bind-group construction should use
+   * `getOrCreateMaterialBGL` and `getOrCreatePipelineLayout` rather than the
+   * `materialBGL` and `pipelineLayout` getters, which are retained for
+   * backward compatibility and delegate through the per-variant cache.
    *
    * @param {number} materialDefines
    * @returns {GPUBindGroupLayout}
@@ -2423,7 +2385,7 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * Batch 174 — Lazy per-variant pipeline-layout builder. Composes the
+   * A lazy per-variant pipeline-layout builder. It composes the
    * (camera, materialBGL[variant], instance, effects) tuple into a
    * `GPUPipelineLayout` and caches by `materialDefines`.
    *
@@ -2452,97 +2414,80 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * Batch 174 — Lazy per-variant shader-module fetcher. Routes through
-   * the per-device shader-module cache (Batch 162's
-   * `WebGPUShaderModuleCache`) so two `Model` instances with the same
-   * `materialDefines` share one compiled `GPUShaderModule`. The
-   * preprocessor strips the WGSL declarations + sampling sites whose
-   * gate define isn't set in `materialDefines`, so the binary itself
-   * differs per variant.
-   *
-   * @param {number} materialDefines
-   * @param {boolean} [pickLogOverride] NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11)
-   *   — when supplied, the LOG_DEPTH module bit follows THIS value instead of
-   *   the scene `_logDepthEnabled`. The pick pipelines pass
-   *   `this._pickLogDepthEnabled` so their module's log state is gated by the
-   *   SEPARATE pick-fleet switch (INV-2). Omitted (undefined) for every color /
-   *   velocity / classification / capture / silhouette caller → the LOG_DEPTH
-   *   bit keeps following `_logDepthEnabled` exactly as before (byte-identical).
-   * @returns {GPUShaderModule}
-   * @private
-   */
-  /**
-   * C11-157 Slice C — the color-shader composition (effective defines +
-   * generated chunks + full source + cache keys), extracted verbatim from
-   * `_getOrCreateShaderModule` so BOTH the module build AND `getOITColorConfig`
-   * (the OIT accumulation variant) derive a byte-identical `fullSource` +
-   * `effectiveDefines` for a given `materialDefines` + per-cache render-mode
-   * state. Pure — no module creation, no cache mutation. (`_getOrCreateShaderModule`
-   * still short-circuits on a module-cache hit; this composes unconditionally,
-   * a negligible string cost on the rare pipeline-miss path.)
+   * The colour-shader composition — effective defines, generated chunks, full
+   * source and cache keys — factored out so that both the module build and
+   * `getOITColorConfig`, the OIT accumulation variant, derive a byte-identical
+   * `fullSource` and `effectiveDefines` for a given `materialDefines` and
+   * per-cache render-mode state. It is pure: no module creation, no cache
+   * mutation. `_getOrCreateShaderModule` still short-circuits on a module-cache
+   * hit, whereas this composes unconditionally, a negligible string cost on the
+   * rare pipeline-miss path.
    * @private
    */
   _composeColorSource(materialDefines: number, pickLogOverride?: boolean) {
     const key = this._normalizeMaterialDefines(materialDefines);
-    // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — the module
-    // (NOT the BGL/pipeline-layout, whose bindings don't change) forks on
-    // the LOG_DEPTH bit. `_logDepthEnabled` mirrors
-    // isWebGPULogDepthActive() via maybeUpdateForLogDepth() each frame.
+    // Renderer-wide log depth: the module forks on the LOG_DEPTH bit, while the
+    // bind-group and pipeline layouts do not, since their bindings don't
+    // change. `_logDepthEnabled` mirrors `isWebGPULogDepthActive()` via
+    // `maybeUpdateForLogDepth()` each frame.
     //
-    // C2-25 (Batch 447) — CAPTURE_MODE is a render-mode bit like LOG_DEPTH,
-    // intentionally OUTSIDE MATERIAL_DEFINE_MASK, so `_normalizeMaterialDefines`
-    // above strips it. Preserve it from the raw arg here so the env scene-capture
-    // single-target FragOutput variant (drops `@location(1) normalRoughness`)
-    // actually compiles — otherwise the capture pipeline gets the 2-MRT module
-    // and createCapturePipeline's single color target fails WebGPU validation.
-    // On-screen callers never set CAPTURE_MODE, so their module hash is unchanged.
+    // CAPTURE_MODE is a render-mode bit like LOG_DEPTH, deliberately outside
+    // `MATERIAL_DEFINE_MASK`, so `_normalizeMaterialDefines` above strips it.
+    // It is preserved from the raw argument here so the env scene-capture
+    // single-target `FragOutput` variant, which drops
+    // `@location(1) normalRoughness`, actually compiles; otherwise the capture
+    // pipeline gets the two-target MRT module and `createCapturePipeline`'s
+    // single colour target fails WebGPU validation. On-screen callers never set
+    // CAPTURE_MODE, so their module hash is unaffected.
     const captureBit = (materialDefines & ShaderDefine.CAPTURE_MODE) >>> 0;
-    // DP-H46e — METADATA_PICKING_ENABLED is a render-MODE bit (like CAPTURE_MODE
-    // / LOG_DEPTH) intentionally OUTSIDE MATERIAL_DEFINE_MASK, so the
-    // `_normalizeMaterialDefines` above strips it. Preserve it from the raw arg
-    // so the metadata-pick pipeline gets a module that compiles
-    // `fragmentPickMetadataMain` + the GENERATED `metadataPickingStage`. On-screen
-    // / display / regular-pick callers never set it → their module hash unchanged.
+    // METADATA_PICKING_ENABLED is likewise a render-mode bit, like CAPTURE_MODE
+    // and LOG_DEPTH, deliberately outside `MATERIAL_DEFINE_MASK`, so
+    // `_normalizeMaterialDefines` above strips it. It is preserved from the raw
+    // argument so the metadata-pick pipeline gets a module that compiles
+    // `fragmentPickMetadataMain` together with the generated
+    // `metadataPickingStage`. On-screen, display and regular-pick callers never
+    // set it, so their module hash is unaffected.
     const metadataPickBit =
       (materialDefines & ShaderDefine.METADATA_PICKING_ENABLED) >>> 0;
     // WIRE-MODEL-SPLITTER — MODEL_SPLIT_ENABLED is a render-mode bit like
-    // LOG_DEPTH (per-cache flag, no BGL/layout change). `_splitEnabled`
-    // mirrors `model.splitDirection !== NONE` via maybeUpdateForSplit().
+    // LOG_DEPTH: a per-cache flag with no bind-group or layout change.
+    // `_splitEnabled` mirrors `model.splitDirection !== NONE` via
+    // `maybeUpdateForSplit()`.
     const splitBit = this._splitEnabled ? ShaderDefine.MODEL_SPLIT_ENABLED : 0;
     // WIRE-MODEL-COLOR — MODEL_HAS_COLOR is a render-mode bit like
-    // MODEL_SPLIT_ENABLED (per-cache flag, no BGL/layout change).
-    // `_modelColorEnabled` mirrors `defined(model.color)` via
-    // maybeUpdateForModelColor().
+    // MODEL_SPLIT_ENABLED: a per-cache flag with no bind-group or layout
+    // change. `_modelColorEnabled` mirrors `defined(model.color)` via
+    // `maybeUpdateForModelColor()`.
     const modelColorBit = this._modelColorEnabled
       ? ShaderDefine.MODEL_HAS_COLOR
       : 0;
     // WIRE-MODEL-SILHOUETTE — MODEL_SILHOUETTE is a render-mode bit like
-    // MODEL_HAS_COLOR (per-cache flag, no BGL/layout change).
-    // `_silhouetteEnabled` mirrors the WebGL `Model.hasSilhouette()`
-    // predicate via maybeUpdateForSilhouette().
+    // MODEL_HAS_COLOR: a per-cache flag with no bind-group or layout change.
+    // `_silhouetteEnabled` mirrors the WebGL `Model.hasSilhouette()` predicate
+    // via `maybeUpdateForSilhouette()`.
     const silhouetteBit = this._silhouetteEnabled
       ? ShaderDefine.MODEL_SILHOUETTE
       : 0;
-    // NEW-MODEL-METADATA-MAT3-MAT4 — the widened MAT3/MAT4 attribute
-    // transport is sticky per-primitive state (like the topology / metadata
-    // chunk), NOT a materialDefines bit: bit 30 would overflow computeKey's
-    // `md << 3` pipeline-key packing. Gated on MODEL_HAS_METADATA so the bit
-    // can never leak into a texture-/table-only module (whose call sites use
-    // the 4-arg initializeMetadata signature).
+    // The widened MAT3/MAT4 attribute transport is sticky per-primitive state,
+    // like the topology and metadata chunks, rather than a `materialDefines`
+    // bit: bit 30 would overflow `computeKey`'s `md << 3` pipeline-key packing.
+    // It is gated on MODEL_HAS_METADATA so the bit can never leak into a
+    // texture-only or table-only module, whose call sites use the
+    // four-argument `initializeMetadata` signature.
     const metadataMatBit =
       this._metadataMatTransport === true &&
       (key & ShaderDefine.MODEL_HAS_METADATA) !== 0
         ? ShaderDefine.MODEL_METADATA_MAT_TRANSPORT
         : 0;
-    // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — a PICK caller passes
-    // `pickLogOverride` so its module's LOG_DEPTH bit follows the SEPARATE
-    // pick-fleet switch, decoupled from the scene `_logDepthEnabled`. Nullish
-    // coalescing (not `||`) so an explicit `false` (pick off, scene on) CLEARS
-    // the bit; `undefined` (every non-pick caller) falls through to the scene
-    // switch → byte-identical. Because this bit is part of `effectiveDefines`,
-    // the per-cache `moduleKey` + the device Tier-1 cache key already
-    // distinguish the pick-off variant from the scene-on color module (distinct
-    // modules when scene-on/pick-off; deduped when both agree).
+    // A pick caller passes `pickLogOverride` so its module's LOG_DEPTH bit
+    // follows the separate pick-fleet switch, decoupled from the scene
+    // `_logDepthEnabled`. Nullish coalescing rather than `||` is required here:
+    // an explicit `false`, meaning pick off while the scene is on, has to clear
+    // the bit, while `undefined` from every non-pick caller falls through to
+    // the scene switch. Because this bit is part of `effectiveDefines`, the
+    // per-cache `moduleKey` and the device Tier-1 cache key already distinguish
+    // the pick-off variant from the scene-on colour module — distinct modules
+    // when scene-on meets pick-off, deduped when both agree.
     const logDepthActiveForModule = pickLogOverride ?? this._logDepthEnabled;
     const effectiveDefines =
       (key |
@@ -2554,28 +2499,28 @@ class WebGPUModelPipelineCache {
         metadataMatBit |
         (logDepthActiveForModule ? ShaderDefine.LOG_DEPTH : 0)) >>>
       0;
-    // DP-H46b/c — the generated metadata chunk is class-dependent, so when
-    // MODEL_HAS_METADATA (property attributes) OR MODEL_HAS_PROPERTY_TEXTURES
-    // (DP-H46c) is set the module varies by `_metadataClassHash` (a
-    // fingerprint of the generated WGSL — which folds in the property-texture
-    // binding numbers too) in addition to `effectiveDefines`. Key the
-    // per-cache map (and, below, the device-level Tier-1 cache) by a STRING
-    // composite ONLY in that case; non-metadata modules keep the numeric
-    // `effectiveDefines` key → byte-identical to the pre-metadata path (same
-    // module hash + cache key for plain glTF). The renderer sets
-    // `_metadataWGSL` + `_metadataClassHash` immediately before the metadata
-    // `getPipeline*` call and clears them for non-metadata primitives.
+    // The generated metadata chunk is class-dependent, so when
+    // MODEL_HAS_METADATA, for property attributes, or
+    // MODEL_HAS_PROPERTY_TEXTURES is set, the module varies by
+    // `_metadataClassHash` — a fingerprint of the generated WGSL, which folds
+    // in the property-texture binding numbers too — in addition to
+    // `effectiveDefines`. The per-cache map, and the device-level Tier-1 cache
+    // below, are keyed by a string composite only in that case; non-metadata
+    // modules keep the numeric `effectiveDefines` key, so plain glTF keeps the
+    // same module hash and cache key. The renderer sets `_metadataWGSL` and
+    // `_metadataClassHash` immediately before the metadata `getPipeline*` call
+    // and clears them for non-metadata primitives.
     const hasMetadata =
       (effectiveDefines &
         (ShaderDefine.MODEL_HAS_METADATA |
           ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES |
           ShaderDefine.MODEL_HAS_PROPERTY_TABLES)) !==
       0;
-    // DP-H46e — when the metadata-pick bit is set, the prepended chunk is the
-    // PICK chunk (display chunk + the appended `metadataPickingStage`) and the
-    // class hash folds in the picked property — so the pick module is cached
-    // distinctly from the display module AND per picked property. Otherwise the
-    // display chunk + class hash apply (DP-H46b/c/d, unchanged).
+    // When the metadata-pick bit is set, the prepended chunk is the pick chunk
+    // — the display chunk plus the appended `metadataPickingStage` — and the
+    // class hash folds in the picked property, so the pick module is cached
+    // distinctly from the display module and separately per picked property.
+    // Otherwise the display chunk and its class hash apply.
     const isMetadataPick = metadataPickBit !== 0 && hasMetadata;
     const metadataClassHash = !hasMetadata
       ? 0
@@ -2583,10 +2528,11 @@ class WebGPUModelPipelineCache {
         ? this._metadataPickClassHash >>> 0
         : this._metadataClassHash >>> 0;
     // PARITY-CUSTOM-SHADER-WGSL — the generated customShader chunk is
-    // model-dependent (uniforms + inlined user body), so when
-    // MODEL_HAS_WGSL_CUSTOM_SHADER (fragment) OR _VERTEX is set the module varies
-    // by `_customShaderClassHash` too. Non-customShader modules keep
-    // `customShaderClassHash === 0` → their key is unchanged (parity).
+    // model-dependent, carrying uniforms and the inlined user body, so when
+    // MODEL_HAS_WGSL_CUSTOM_SHADER for the fragment stage, or its `_VERTEX`
+    // counterpart, is set, the module varies by `_customShaderClassHash` too.
+    // Non-customShader modules keep `customShaderClassHash === 0`, so their key
+    // is unchanged.
     const hasCustomShader =
       (effectiveDefines &
         (ShaderDefine.MODEL_HAS_WGSL_CUSTOM_SHADER |
@@ -2600,55 +2546,56 @@ class WebGPUModelPipelineCache {
         ? effectiveDefines
         : `${effectiveDefines}#${metadataClassHash}#${customShaderClassHash}`;
     const variantHex = `0x${effectiveDefines.toString(16)}`;
-    // Slice 5d Batch 153 — prepend the ClusteredLighting chunk so the
-    // Model PBR shader has @group(3) bindings 18..22 declared + the
-    // evalClusteredLights() function defined. The chunk declares the
-    // bindings unconditionally; the effects bind group (extended in
-    // Batch 153 to include slots 18..22) supplies either placeholder
-    // buffers or the dispatcher's live buffers, and the FS chunk gates
-    // its evaluation on `clusterParams.activeLightCount.x`.
+    // Prepend the ClusteredLighting chunk so the Model PBR shader has
+    // `@group(3)` bindings 18 to 22 declared and the `evalClusteredLights()`
+    // function defined. The chunk declares the bindings unconditionally; the
+    // effects bind group, which covers slots 18 to 22, supplies either
+    // placeholder buffers or the dispatcher's live buffers, and the fragment
+    // chunk gates its evaluation on `clusterParams.activeLightCount.x`.
     const clChunk = substituteClusteredLightingGroup(ClusteredLightingChunk, 3);
-    // DP-H46b — metadata WGSL injection seam. `MetadataWGSLPipelineStage`
-    // stashes the generated chunk (the real `struct Metadata` +
-    // `initializeMetadata` + `metadataDebugScalar`, named after the real
-    // metadata class with offset/scale baked) on the cache via
-    // `setMetadataWGSL`; it is prepended here at the SAME single injection
-    // point — the same fork pattern as `clChunk` / CAPTURE_MODE — and
-    // SUPERSEDES the (now-removed) DP-H46a stub: `ModelPBRComplete.wgsl`
-    // keeps only the `//>>ifdef MODEL_HAS_METADATA` CALL SITE.
-    //   • metadata primitive:    `metadataChunk` is the generated string →
-    //     `fullSource` declares the real struct, the gated call site uses it.
-    //   • non-metadata primitive: `_metadataWGSL` is "" (the renderer clears
-    //     it before the call) AND the bit is clear → the prepend is empty AND
-    //     the ifdef call site is stripped → `fullSource` is
-    //     character-for-character identical to the pre-metadata path.
+    // The metadata WGSL injection seam. `MetadataWGSLPipelineStage` stashes the
+    // generated chunk — the real `struct Metadata`, `initializeMetadata` and
+    // `metadataDebugScalar`, named after the real metadata class with offset
+    // and scale baked in — on the cache via `setMetadataWGSL`, and it is
+    // prepended here at the single injection point, following the same fork
+    // pattern as `clChunk` and CAPTURE_MODE. `ModelPBRComplete.wgsl` therefore
+    // carries only the `//>>ifdef MODEL_HAS_METADATA` call site, not a struct
+    // declaration of its own.
+    //   - For a metadata primitive, `metadataChunk` is the generated string, so
+    //     `fullSource` declares the real struct and the gated call site uses it.
+    //   - For a non-metadata primitive, `_metadataWGSL` is "" because the
+    //     renderer clears it before the call, and the bit is clear, so the
+    //     prepend is empty and the ifdef call site is stripped, leaving
+    //     `fullSource` character-for-character identical to the plain path.
     // The class hash (`metadataClassHash`) is passed as the device-level
-    // cache's `keySalt` ONLY when the bit is set, so two metadata classes
-    // sharing `(sourceId, defines)` get distinct compiled modules (no
-    // aliasing); for non-metadata callers `keySalt === 0` → the device cache
-    // key is unchanged.
+    // cache's `keySalt` only when the bit is set, so two metadata classes
+    // sharing `(sourceId, defines)` get distinct compiled modules rather than
+    // aliasing; for non-metadata callers `keySalt === 0`, leaving the device
+    // cache key unchanged.
     const metadataChunk = !hasMetadata
       ? ""
       : isMetadataPick
         ? (this._metadataPickWGSL ?? this._metadataWGSL ?? "")
         : (this._metadataWGSL ?? "");
-    // PARITY-CUSTOM-SHADER-WGSL — prepend the generated customShader chunk at the
-    // SAME injection point, after the metadata chunk. Empty (and the gated call
-    // sites stripped) for non-customShader models → byte-identical source.
+    // PARITY-CUSTOM-SHADER-WGSL — prepend the generated customShader chunk at
+    // the same injection point, after the metadata chunk. It is empty, and the
+    // gated call sites are stripped, for non-customShader models, leaving their
+    // source unchanged.
     const customShaderChunk = !hasCustomShader
       ? ""
       : (this._customShaderWGSL ?? "");
-    // WIRE-MODEL-SILHOUETTE — prepend the inflate/colour helper chunk at
-    // the SAME injection point when the bit is active. Empty (and the
-    // gated call sites stripped) for non-silhouette models →
-    // byte-identical source.
+    // WIRE-MODEL-SILHOUETTE — prepend the inflate and colour helper chunk at
+    // the same injection point when the bit is active. It is empty, and the
+    // gated call sites are stripped, for non-silhouette models, leaving their
+    // source unchanged.
     const silhouetteChunk =
       silhouetteBit !== 0 ? `${ModelSilhouetteStageWGSL}\n` : "";
     const fullSource = `${clChunk}\n${silhouetteChunk}${metadataChunk}${customShaderChunk}${ModelPBRCompleteWGSL}`;
-    // The device-level Tier-1 cache keys by (sourceId, defines, keySalt). Fold
-    // BOTH the metadata + customShader class hashes into one salt so two models
-    // sharing (sourceId, defines) but differing in either generated chunk get
-    // distinct compiled modules. Zero for the plain path → device key unchanged.
+    // The device-level Tier-1 cache keys by (sourceId, defines, keySalt). Both
+    // the metadata and customShader class hashes fold into one salt, so two
+    // models sharing (sourceId, defines) but differing in either generated
+    // chunk get distinct compiled modules. The salt is zero on the plain path,
+    // leaving the device key unchanged.
     const keySalt =
       customShaderClassHash === 0
         ? metadataClassHash
@@ -2664,12 +2611,29 @@ class WebGPUModelPipelineCache {
     };
   }
 
+  /**
+   * A lazy per-variant shader-module fetcher. It routes through the per-device
+   * `WebGPUShaderModuleCache` so two `Model` instances with the same
+   * `materialDefines` share one compiled `GPUShaderModule`. The preprocessor
+   * strips the WGSL declarations and sampling sites whose gate define isn't set
+   * in `materialDefines`, so the compiled binary itself differs per variant.
+   *
+   * @param {number} materialDefines
+   * @param {boolean} [pickLogOverride] When supplied, the LOG_DEPTH module bit
+   *   follows this value instead of the scene `_logDepthEnabled`. The pick
+   *   pipelines pass `this._pickLogDepthEnabled` so their module's log state is
+   *   gated by the separate pick-fleet switch. It is omitted by every colour,
+   *   velocity, classification, capture and silhouette caller, leaving the
+   *   LOG_DEPTH bit following `_logDepthEnabled`.
+   * @returns {GPUShaderModule}
+   * @private
+   */
   _getOrCreateShaderModule(materialDefines: number, pickLogOverride?: boolean) {
     //>>includeStart('debug', pragmas.debug);
-    // C2-22 — test hook: when `globalThis.CesiumWebGPUForcePipelineError` is set,
-    // return a deliberately-invalid module (no entry points, garbage WGSL) so the
-    // downstream createRenderPipeline fails validation and the magenta error
-    // pipeline can be verified. Called inside getPipeline's error scope.
+    // A test hook: when `globalThis.CesiumWebGPUForcePipelineError` is set,
+    // return a deliberately invalid module — no entry points, garbage WGSL — so
+    // the downstream `createRenderPipeline` fails validation and the magenta
+    // error pipeline can be verified. Called inside `getPipeline`'s error scope.
     if (
       (globalThis as { CesiumWebGPUForcePipelineError?: boolean })
         .CesiumWebGPUForcePipelineError === true
@@ -2708,17 +2672,18 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * C11-157 Slice C — build the OIT accumulation variant inputs for a
-   * translucent model color/twin command: the non-LOG_DEPTH preprocessed color
-   * source (`_shaderCode`) + a `_pipelineConfig` reusing the base color
-   * pipeline's SHARED layout + vertex layout + primitive/depth state
-   * (single-sample to match the single-sample OIT accumulation targets). The
+   * Builds the OIT accumulation variant inputs for a translucent model colour
+   * or twin command: the non-LOG_DEPTH preprocessed colour source
+   * (`_shaderCode`), plus a `_pipelineConfig` that reuses the base colour
+   * pipeline's shared layout, vertex layout and primitive and depth state, kept
+   * single-sample to match the single-sample OIT accumulation targets. The
    * renderer attaches these to a `Pass.TRANSLUCENT` model command so
-   * `executeTranslucentPass` auto-builds the MRT accumulation pipeline under the
-   * FAR-003 gate; read ONLY when the gate is on → gate-OFF byte-identical. The
-   * model FS returns a `FragOutput` struct (@location(0) color) → the
-   * `injectOITOutput` struct branch handles it. Returns null defensively when
-   * the composed source is empty (e.g. the C2-22 forced-error test hook).
+   * `executeTranslucentPass` can build the MRT accumulation pipeline. They are
+   * read only while the WebGPU MRT OIT containment flag is on, so a scene with
+   * the flag off is unaffected. The model fragment stage returns a `FragOutput`
+   * struct carrying `@location(0) color`, which the `injectOITOutput` struct
+   * branch handles. Returns null defensively when the composed source is empty,
+   * as it is for the forced-error test hook.
    */
   getOITColorConfig(
     alphaMode: number,
@@ -2774,21 +2739,21 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * DP-H46b — set the generated metadata WGSL chunk + its class hash for the
-   * NEXT `getPipeline*` call. The renderer calls this immediately before
+   * Sets the generated metadata WGSL chunk and its class hash for the next
+   * `getPipeline*` call. The renderer calls this immediately before
    * (re)building a metadata primitive's pipelines so
    * `_getOrCreateShaderModule` prepends the right chunk and keys the module by
-   * the right class. Idempotent; the chunk is consumed by every variant
-   * (color / pick / depth-write / velocity / classification) built for that
-   * primitive in the same pass.
+   * the right class. It is idempotent, and the chunk is consumed by every
+   * variant — colour, pick, depth-write, velocity and classification — built
+   * for that primitive in the same pass.
    *
    * @param {string} wgsl the generated metadata chunk
    * @param {number} classHash a stable fingerprint of the generated chunk
-   * @param {boolean} [matTransport=false] NEW-MODEL-METADATA-MAT3-MAT4 —
-   *   true when the chunk was generated with the widened four-vec4 MAT3/MAT4
-   *   transport (the codegen's `matTransport` result). Drives the
-   *   `MODEL_METADATA_MAT_TRANSPORT` preprocess bit, the widened slot-9
-   *   vertex layout (mode 2), and the `:m34` pipeline-key suffix.
+   * @param {boolean} [matTransport=false] True when the chunk was generated
+   *   with the widened four-vec4 MAT3/MAT4 transport, the codegen's
+   *   `matTransport` result. It drives the `MODEL_METADATA_MAT_TRANSPORT`
+   *   preprocess bit, the widened slot-9 vertex layout (mode 2), and the `:m34`
+   *   pipeline-key suffix.
    * @private
    */
   setMetadataWGSL(wgsl: string, classHash: number, matTransport?: boolean) {
@@ -2798,12 +2763,12 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * DP-H46b — clear the generated metadata WGSL so a subsequent non-metadata
-   * primitive (sharing this per-Model cache) can't inherit a stale chunk. The
-   * MODEL_HAS_METADATA bit gates whether the chunk is prepended at all, so
-   * this is belt-and-suspenders, but it keeps `_metadataClassHash` from
-   * leaking into a metadata primitive of a DIFFERENT class that forgot to set
-   * it. Resets to the byte-identical non-metadata defaults.
+   * Clears the generated metadata WGSL so a subsequent non-metadata primitive
+   * sharing this per-Model cache can't inherit a stale chunk. The
+   * MODEL_HAS_METADATA bit already gates whether the chunk is prepended at all,
+   * so this is belt-and-braces, but it also keeps `_metadataClassHash` from
+   * leaking into a metadata primitive of a different class that failed to set
+   * it. It resets to the plain non-metadata defaults.
    *
    * @private
    */
@@ -2814,13 +2779,14 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * NEW-MODEL-METADATA-MAT3-MAT4 — the slot-9 metadata vertex-layout mode for
-   * a normalized materialDefines mask: 0 = no metadata slot, 1 = historical
-   * single float32x4 (location 9), 2 = widened MAT3/MAT4 transport (stride 64,
-   * locations 9-12). Mode 2 engages only when the sticky per-primitive
-   * `metadataMatTransport` state (set via {@link setMetadataWGSL}) is true AND
-   * the mask carries MODEL_HAS_METADATA — mirroring the module-side
-   * `metadataMatBit` gate exactly so layout and compiled module always agree.
+   * The slot-9 metadata vertex-layout mode for a normalized `materialDefines`
+   * mask: 0 for no metadata slot, 1 for a single float32x4 at location 9, and 2
+   * for the widened MAT3/MAT4 transport with stride 64 across locations 9 to
+   * 12. Mode 2 engages only when the sticky per-primitive
+   * `metadataMatTransport` state, set via {@link setMetadataWGSL}, is true and
+   * the mask carries MODEL_HAS_METADATA. That mirrors the module-side
+   * `metadataMatBit` gate exactly, so the layout and the compiled module always
+   * agree.
    *
    * @param {number} md normalized materialDefines
    * @returns {number} 0 | 1 | 2
@@ -2834,13 +2800,13 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * NEW-MODEL-METADATA-MAT3-MAT4 — appends the `:m34` discriminator to a
-   * pipeline-map key when the widened MAT3/MAT4 transport is active, so a
-   * MAT-transport primitive and a plain-metadata primitive sharing the same
-   * `(alphaMode, doubleSided, materialDefines)` identity in one per-model
-   * cache build distinct pipelines (their vertex layouts + modules differ).
-   * Off path returns the key UNCHANGED — byte-identical cache behaviour for
-   * every non-MAT-transport primitive.
+   * Appends the `:m34` discriminator to a pipeline-map key when the widened
+   * MAT3/MAT4 transport is active, so a MAT-transport primitive and a
+   * plain-metadata primitive sharing the same
+   * `(alphaMode, doubleSided, materialDefines)` identity in one per-model cache
+   * build distinct pipelines, since their vertex layouts and modules differ.
+   * Otherwise the key is returned unchanged, leaving cache behaviour untouched
+   * for every non-MAT-transport primitive.
    *
    * @param {number|string} key base pipeline cache key
    * @param {number} md normalized materialDefines
@@ -2852,11 +2818,11 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * DP-H46e — set the generated metadata-PICK chunk + its (property-folded) hash
-   * for the NEXT metadata-pick `getPickMetadataPipeline` call. The chunk is the
-   * display chunk PLUS the appended `fn metadataPickingStage(metadata) ->
-   * vec4<f32>` for the currently-picked property (built by
-   * `MetadataWGSLPipelineStage.generateMetadataPickWGSL`).
+   * Sets the generated metadata-pick chunk and its property-folded hash for the
+   * next metadata-pick `getPickMetadataPipeline` call. The chunk is the display
+   * chunk plus the appended `fn metadataPickingStage(metadata) -> vec4<f32>`
+   * for the currently-picked property, built by
+   * `MetadataWGSLPipelineStage.generateMetadataPickWGSL`.
    *
    * @param {string} wgsl the generated metadata-pick chunk
    * @param {number} classHash a stable fingerprint folding in the picked property
@@ -2868,9 +2834,9 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * DP-H46e — clear the generated metadata-pick chunk so a later non-pick build
-   * can't inherit a stale chunk. The METADATA_PICKING_ENABLED bit gates whether
-   * the pick chunk is consumed at all, so this is belt-and-suspenders.
+   * Clears the generated metadata-pick chunk so a later non-pick build can't
+   * inherit a stale chunk. The METADATA_PICKING_ENABLED bit already gates
+   * whether the pick chunk is consumed at all, so this is belt-and-braces.
    *
    * @private
    */
@@ -2880,8 +2846,8 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * PARITY-CUSTOM-SHADER-WGSL — set the generated customShader WGSL chunk + its
-   * class hash for the NEXT `getPipeline*` call. The renderer calls this
+   * PARITY-CUSTOM-SHADER-WGSL — sets the generated customShader WGSL chunk and
+   * its class hash for the next `getPipeline*` call. The renderer calls this
    * immediately before (re)building a customShader model's pipelines so
    * `_getOrCreateShaderModule` prepends the right chunk and keys the module by
    * the right customShader class.
@@ -2896,10 +2862,10 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * PARITY-CUSTOM-SHADER-WGSL — clear the generated customShader WGSL so a
-   * subsequent non-customShader primitive (sharing this per-Model cache) can't
-   * inherit a stale chunk. The MODEL_HAS_WGSL_CUSTOM_SHADER bit gates whether the
-   * chunk is prepended at all, so this is belt-and-suspenders.
+   * PARITY-CUSTOM-SHADER-WGSL — clears the generated customShader WGSL so a
+   * subsequent non-customShader primitive sharing this per-Model cache can't
+   * inherit a stale chunk. The MODEL_HAS_WGSL_CUSTOM_SHADER bit already gates
+   * whether the chunk is prepended at all, so this is belt-and-braces.
    *
    * @private
    */
@@ -2909,23 +2875,23 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * GLTF-POINTS-MODE / C11-90 — set the realized topology axis for the
-   * primitive whose pipeline is about to be (re)built. Same sticky-state
-   * contract as `setMetadataWGSL` / `setCustomShaderWGSL`: the renderer writes
-   * it immediately before each primitive's `getPipeline*` calls (via
-   * `applyPrimitiveMetadataToPipelineCache`), and anything that is not a
-   * recognized topology (or a strip missing its index format) resets to the
+   * GLTF-POINTS-MODE — sets the realized topology axis for the primitive whose
+   * pipeline is about to be (re)built. It follows the same sticky-state
+   * contract as `setMetadataWGSL` and `setCustomShaderWGSL`: the renderer
+   * writes it immediately before each primitive's `getPipeline*` calls, via
+   * `applyPrimitiveMetadataToPipelineCache`, and anything that is not a
+   * recognized topology, or is a strip missing its index format, resets to the
    * `triangle-list` default so stale state can never leak into a triangle
    * primitive.
    *
-   * Both fields are decided ONCE in preparation by
+   * Both fields are decided a single time during preparation, by
    * `realizeModelPrimitiveTopology`; this setter only replays that decision.
    * It does not decide anything itself, which is why the strip index format is
    * a required companion rather than something this method could infer.
    *
    * @param {string} topology GPUPrimitiveTopology
-   * @param {string} [stripIndexFormat] GPUIndexFormat — REQUIRED for
-   *   `line-strip` / `triangle-strip`, forbidden otherwise.
+   * @param {string} [stripIndexFormat] GPUIndexFormat — required for
+   *   `line-strip` and `triangle-strip`, forbidden otherwise.
    */
   setPrimitiveTopology(topology: string, stripIndexFormat?: string) {
     this._primitiveTopology = modelTopologyRealizationFrom(
@@ -2961,24 +2927,11 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * Batch 110 — invalidate cached pipelines when the scene pipeline
-   * format generation has changed (HDR toggle, MSAA toggle). Updates
-   * `_presentationFormat` to the new scene-pipeline format so newly
-   * created pipelines target the right fragment-output format.
-   *
-   * Caller (model renderer's update) invokes this once per frame
-   * before any `getPipeline` / `getPickPipeline` / `getVelocityPipeline`
-   * lookup. Cheap reference compare; only the first frame after a
-   * format change pays for the cache wipe.
-   *
-   * @param {object} context WebGPUContext
-   */
-  /**
-   * Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — mirror the
-   * master switch each frame. When the flag flips, wipe every pipeline
-   * map (the cached pipelines reference modules compiled with the wrong
-   * LOG_DEPTH state) and refresh the eagerly-built module fields. Cheap
-   * boolean compare on the steady path; the wipe only fires on a flip.
+   * Mirrors the renderer-wide log depth master switch each frame. When the flag
+   * flips, every pipeline map is wiped, because the cached pipelines reference
+   * modules compiled with the wrong LOG_DEPTH state, and the eagerly-built
+   * module fields are refreshed. This is a cheap boolean compare on the steady
+   * path; the wipe only fires on a flip.
    *
    * @param {boolean} active isWebGPULogDepthActive(context, frameState)
    * @returns {boolean} true when the flag flipped this call (callers use
@@ -2993,8 +2946,8 @@ class WebGPUModelPipelineCache {
     this._logDepthEnabled = enabled;
     this._lifecycleEpoch++;
     this._pipelines.clear();
-    // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
-    // baked the now-stale format / mode; the `.then` also carries a
+    // Drop in-flight colour async compiles too. Their descriptors baked the
+    // now-stale format and mode; the `.then` also carries a
     // scene-format-generation guard so a stale resolve never writes back.
     this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
@@ -3009,7 +2962,7 @@ class WebGPUModelPipelineCache {
     this._pickHoverPipelines.clear();
     this._pickPrecisePass1Pipelines.clear();
     this._pickPrecisePass2Pipelines.clear();
-    // DP-H46e — metadata-pick pipelines bake the depth format / sample count too.
+    // Metadata-pick pipelines bake the depth format and sample count too.
     this._pickMetadataPipelines.clear();
     // Refresh the eager compatibility module fields so legacy callers
     // never see a stale-variant module after a flip.
@@ -3021,23 +2974,25 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — mirror the SEPARATE pick-fleet
-   * master switch (`context._pickLogDepthWriteEnabled`) each frame. Structurally
-   * the maybeUpdateForLogDepth pattern, but scoped to the PICK pipelines only:
+   * Mirrors the separate pick-fleet master switch
+   * (`context._pickLogDepthWriteEnabled`) each frame. It follows the structure
+   * of `maybeUpdateForLogDepth`, but is scoped to the pick pipelines:
    *
-   *   - Wipes ONLY the pick pipeline maps (`_pickPipelines`, `_pickHoverPipelines`,
-   *     `_pickMetadataPipelines`, and the two BLEND precise-pass maps whose
-   *     pipelines reuse `fragmentPickMain`). Those cached pipelines reference a
-   *     module compiled with the wrong pick-log state, so a flip must rebuild
-   *     them — the module cache serves the correct variant because the LOG_DEPTH
-   *     bit is now part of `effectiveDefines` (via the `pickLogOverride` arg).
-   *   - Does NOT touch the color / velocity / classification / capture /
-   *     silhouette maps, nor the eager `_shaderModule*` fields — those follow the
-   *     scene `_logDepthEnabled` and are unaffected by the pick switch.
+   *   - It wipes the pick pipeline maps and nothing else: `_pickPipelines`,
+   *     `_pickHoverPipelines`, `_pickMetadataPipelines`, and the two BLEND
+   *     precise-pass maps whose pipelines reuse `fragmentPickMain`. Those
+   *     cached pipelines reference a module compiled with the wrong pick-log
+   *     state, so a flip has to rebuild them; the module cache serves the
+   *     correct variant because the LOG_DEPTH bit is part of
+   *     `effectiveDefines` via the `pickLogOverride` argument.
+   *   - It leaves the colour, velocity, classification, capture and silhouette
+   *     maps alone, along with the eager `_shaderModule*` fields, since those
+   *     follow the scene `_logDepthEnabled` and are unaffected by the pick
+   *     switch.
    *
-   * With the switch OFF (default) the pick modules carry no LOG_DEPTH define and
-   * the pick pipelines are byte-identical hyperbolic; a flip to true is C10-11's
-   * coordinated fleet conversion.
+   * With the switch off, its default, the pick modules carry no LOG_DEPTH
+   * define and the pick pipelines stay hyperbolic; a flip to true converts the
+   * whole fleet together.
    *
    * @param {boolean} active isWebGPUPickLogDepthActive(context, frameState)
    * @returns {boolean} true when the flag flipped this call (the renderer uses
@@ -3078,8 +3033,8 @@ class WebGPUModelPipelineCache {
     this._splitEnabled = enabled;
     this._lifecycleEpoch++;
     this._pipelines.clear();
-    // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
-    // baked the now-stale format / mode; the `.then` also carries a
+    // Drop in-flight colour async compiles too. Their descriptors baked the
+    // now-stale format and mode; the `.then` also carries a
     // scene-format-generation guard so a stale resolve never writes back.
     this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
@@ -3124,8 +3079,8 @@ class WebGPUModelPipelineCache {
     this._modelColorEnabled = enabled;
     this._lifecycleEpoch++;
     this._pipelines.clear();
-    // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
-    // baked the now-stale format / mode; the `.then` also carries a
+    // Drop in-flight colour async compiles too. Their descriptors baked the
+    // now-stale format and mode; the `.then` also carries a
     // scene-format-generation guard so a stale resolve never writes back.
     this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
@@ -3172,8 +3127,8 @@ class WebGPUModelPipelineCache {
     this._silhouetteEnabled = enabled;
     this._lifecycleEpoch++;
     this._pipelines.clear();
-    // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
-    // baked the now-stale format / mode; the `.then` also carries a
+    // Drop in-flight colour async compiles too. Their descriptors baked the
+    // now-stale format and mode; the `.then` also carries a
     // scene-format-generation guard so a stale resolve never writes back.
     this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
@@ -3196,6 +3151,19 @@ class WebGPUModelPipelineCache {
     return true;
   }
 
+  /**
+   * Invalidates cached pipelines when the scene pipeline format generation has
+   * changed, as an HDR or MSAA toggle does. It updates `_presentationFormat` to
+   * the new scene-pipeline format so newly created pipelines target the right
+   * fragment-output format.
+   *
+   * The model renderer's update calls this once per frame, before any
+   * `getPipeline`, `getPickPipeline` or `getVelocityPipeline` lookup. It is a
+   * cheap reference compare; only the first frame after a format change pays
+   * for the cache wipe.
+   *
+   * @param {object} context WebGPUContext
+   */
   maybeUpdateForSceneFormat(context: SceneFormatContext) {
     const generation = context._scenePipelineFormatGeneration ?? 0;
     if (this._sceneFormatGeneration === generation) {
@@ -3206,15 +3174,14 @@ class WebGPUModelPipelineCache {
     if (newFormat !== this._presentationFormat) {
       this._presentationFormat = newFormat;
     }
-    // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — mirror the context's pick-format
-    // authority alongside the scene format; the wipe below drops every
-    // pick-family pipeline built against the previous format.
+    // Mirror the context's pick-format authority alongside the scene format;
+    // the wipe below drops every pick-family pipeline built against the
+    // previous format.
     this._pickFormat =
       context.pickPipelineFormat ?? clampToPickFormat(newFormat);
-    // Session 65 Batch 28 — read the current MSAA sample count so
-    // newly-created pipelines bake the matching multisample state.
-    // The wipe below covers the previous-generation pipelines that
-    // had the old sample count baked in.
+    // Read the current MSAA sample count so newly-created pipelines bake the
+    // matching multisample state. The wipe below covers the
+    // previous-generation pipelines that had the old sample count baked in.
     this._sampleCount = context._msaaSamples ?? 1;
     this._lifecycleEpoch++;
     // Wipe all cached pipelines so the next lookup creates fresh
@@ -3224,8 +3191,8 @@ class WebGPUModelPipelineCache {
     // for the JS GC to collect them once any in-flight commands
     // referencing them complete.
     this._pipelines.clear();
-    // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
-    // baked the now-stale format / mode; the `.then` also carries a
+    // Drop in-flight colour async compiles too. Their descriptors baked the
+    // now-stale format and mode; the `.then` also carries a
     // scene-format-generation guard so a stale resolve never writes back.
     this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
@@ -3237,11 +3204,11 @@ class WebGPUModelPipelineCache {
     // format / sample-count state as the colour pipeline; wipe together.
     this._silhouetteModelPipelines.clear();
     this._silhouetteColorPipelines.clear();
-    // Batch 192 — second-slice pick pipelines also wipe on format change.
+    // The translucent-pick pipelines also wipe on a format change.
     this._pickHoverPipelines.clear();
     this._pickPrecisePass1Pipelines.clear();
     this._pickPrecisePass2Pipelines.clear();
-    // DP-H46e — metadata-pick pipelines bake the presentation format too.
+    // Metadata-pick pipelines bake the presentation format too.
     this._pickMetadataPipelines.clear();
   }
 
@@ -3249,18 +3216,17 @@ class WebGPUModelPipelineCache {
    * Gets or creates a pipeline for the given material configuration.
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
-   * @param {number} [materialDefines=0] Batch 174 — bitmask of
-   *   ShaderDefine bits gating which KHR bindings the variant uses.
-   *   `0` builds the basic variant (no KHR textures, fits the WebGPU
-   *   spec floor); `MODEL_HAS_KHR_TEXTURES` builds the historical full
-   *   variant (all KHR bindings present). Future per-extension subsets
-   *   build a minimal layout on demand. The renderer computes this
-   *   from the primitive's material flags.
+   * @param {number} [materialDefines=0] A bitmask of `ShaderDefine` bits
+   *   gating which KHR bindings the variant uses. `0` builds the basic variant,
+   *   with no KHR textures, which fits the WebGPU spec floor;
+   *   `MODEL_HAS_KHR_TEXTURES` builds the full variant with all KHR bindings
+   *   present. Per-extension subsets build a minimal layout on demand. The
+   *   renderer computes this from the primitive's material flags.
    * @returns {GPURenderPipeline | null} the pipeline, or `null` when a central
-   *   cache is present and the variant is still compiling asynchronously
-   *   (C10-07 ready-gate — the caller SKIPS the draw for the cooking frame and
-   *   the per-frame refetch guard re-polls; the draw appears within ≤1 frame of
-   *   the compile landing). Returns non-null synchronously on a cache hit or on
+   *   cache is present and the variant is still compiling asynchronously. Under
+   *   that ready-gate the caller skips the draw for the cooking frame and the
+   *   per-frame refetch guard re-polls, so the draw appears within one frame of
+   *   the compile landing. Returns non-null synchronously on a cache hit or on
    *   the no-central-cache fallback path.
    */
   getPipeline(
@@ -3281,7 +3247,7 @@ class WebGPUModelPipelineCache {
       return cached;
     }
 
-    // C11-199 — the local promise already owns descriptor construction and the
+    // The local promise already owns descriptor construction and the
     // central-cache lookup for this exact variant. Rebuilding the descriptor
     // and re-polling `getPipelineSync` while that promise is unresolved cannot
     // produce a different result; it only inflates CPU work and central miss
@@ -3294,13 +3260,14 @@ class WebGPUModelPipelineCache {
 
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
-    // DP-H46a — metadata vertex slot 9 variant (mode 2 = widened MAT3/MAT4
-    // transport, NEW-MODEL-METADATA-MAT3-MAT4).
+    // The metadata vertex slot 9 variant; mode 2 is the widened MAT3/MAT4
+    // transport.
     const metadataSlotMode = this._metadataSlotMode(md);
-    // C10-07 — shared descriptor for both the async and sync paths so a
-    // cooking-frame async compile and the fallback build are byte-identical
-    // (INV-07-4). Pick/velocity/classification/capture/silhouette/depth-write
-    // keep their own synchronous builders (documented must-render hatch).
+    // One shared descriptor serves both the async and sync paths, so a
+    // cooking-frame async compile and the fallback build produce identical
+    // pipelines. The pick, velocity, classification, capture, silhouette and
+    // depth-write variants keep their own synchronous builders as a
+    // must-render hatch.
     const raw = buildColorPipelineDescriptor(
       this._getOrCreateShaderModule(md),
       this._getOrCreatePipelineLayout(md),
@@ -3318,27 +3285,27 @@ class WebGPUModelPipelineCache {
 
     const central = this._centralPipelineCache;
     if (central) {
-      // C10-07-ASYNC-MODEL-PIPELINES — resolve the on-screen COLOR pipeline
-      // through the central `createRenderPipelineAsync` path, exactly like the
-      // globe's `resolveGlobePipelineEntry`. `name` carries the full variant
-      // key so the central cache dedupes per
-      // (alphaMode, doubleSided, materialDefines, topology, metadataSlot); the
-      // format/sampleCount/vertex-layout fields feed the central key too, so a
-      // scene-format change materializes a distinct entry (no collision).
+      // Resolve the on-screen colour pipeline through the central
+      // `createRenderPipelineAsync` path, exactly as the globe's
+      // `resolveGlobePipelineEntry` does. `name` carries the full variant key
+      // so the central cache dedupes per
+      // (alphaMode, doubleSided, materialDefines, topology, metadataSlot), and
+      // the format, sampleCount and vertex-layout fields feed the central key
+      // too, so a scene-format change materializes a distinct entry rather than
+      // colliding.
       const centralDesc: WebGPURenderPipelineDescriptor = {
-        // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `ld=` is load-bearing, not
-        // cosmetic. `raw.label` encodes only (alphaMode, doubleSided,
-        // forceDepthWrite) and `key` only
-        // (alphaMode, doubleSided, materialDefines, topology, :m34) — NEITHER
-        // carries the LOG_DEPTH bit, because that bit is folded into the MODULE
-        // via `effectiveDefines` from `this._logDepthEnabled`, not into `md`.
-        // The central cache keys on this name and never reads
-        // `vertex.module`/`fragment.module`, and `maybeUpdateForLogDepth` wipes
-        // `_pipelines` on a flip — so the rebuilt descriptor (correct new
-        // module) would look up the identical name and be handed the pipeline
-        // compiled against the OLD module. This is the only descriptor in this
-        // file that routes through the central cache; every other model
-        // pipeline uses the direct `createRenderPipeline` hatch and is unaffected.
+        // The `ld=` segment names the log-depth axis in the key. `raw.label`
+        // encodes only (alphaMode, doubleSided, forceDepthWrite), and `key`
+        // only (alphaMode, doubleSided, materialDefines, topology, :m34), so
+        // neither carries the LOG_DEPTH bit: that bit is folded into the shader
+        // module via `effectiveDefines` from `this._logDepthEnabled`, not into
+        // `md`. Separation of the two variants is guaranteed structurally,
+        // because the central key folds `vertex.module` and `fragment.module`
+        // identity and `maybeUpdateForLogDepth` wipes `_pipelines` on a flip;
+        // the marker is what keeps the two rows tellable apart when a key is
+        // read back. This is the only descriptor in this file that routes
+        // through the central cache; every other model pipeline uses the direct
+        // `createRenderPipeline` hatch.
         name: `${raw.label}|${key}|ld=${this._logDepthEnabled === true ? 1 : 0}`,
         layout: raw.layout as GPUPipelineLayout,
         vertex: raw.vertex as WebGPURenderPipelineDescriptor["vertex"],
@@ -3354,9 +3321,9 @@ class WebGPUModelPipelineCache {
         return sync;
       }
       if (!this._pendingColorPipelines.has(key)) {
-        // Capture the scene-format generation so a resolution that lands
-        // AFTER a runtime HDR/log-depth/format toggle (which cleared
-        // `_pipelines` + bumped the generation) is dropped instead of
+        // Capture the scene-format generation so a resolution that lands after
+        // a runtime HDR, log-depth or format toggle — which cleared
+        // `_pipelines` and bumped the generation — is dropped instead of
         // writing a stale-format pipeline back into the cache.
         const kickGeneration = this._sceneFormatGeneration;
         const kickLifecycleEpoch = this._lifecycleEpoch;
@@ -3379,14 +3346,15 @@ class WebGPUModelPipelineCache {
             }
           })
           .catch(() => {
-            // C2-22 magenta contract under async (INV-07-3). The synchronous
-            // path needs an error scope because `createRenderPipeline`
-            // returns an INVALID pipeline silently; `createRenderPipelineAsync`
-            // REJECTS on a validation failure, so the swap lives in `.catch`.
-            // Still swap to the flat-magenta fallback + bump
-            // `_errorSwapGeneration` so the renderer's `errorSwapped` refetch
-            // reaches the built command. `_getOrCreateErrorPipeline` bakes the
-            // current format, so guard on the generation too.
+            // The magenta fallback contract, in its async form. The
+            // synchronous path needs an error scope because
+            // `createRenderPipeline` returns an invalid pipeline silently,
+            // whereas `createRenderPipelineAsync` rejects on a validation
+            // failure, so the swap lives in `.catch` instead. It still swaps to
+            // the flat-magenta fallback and bumps `_errorSwapGeneration` so the
+            // renderer's `errorSwapped` refetch reaches the built command.
+            // `_getOrCreateErrorPipeline` bakes the current format, so the
+            // generation is guarded here too.
             if (this._pendingColorPipelines.get(key) !== pendingPipeline) {
               return;
             }
@@ -3411,8 +3379,8 @@ class WebGPUModelPipelineCache {
       return null;
     }
 
-    // Fallback — no central cache: synchronous build, byte-identical to the
-    // pre-C10-07 path including the C2-22 error-scope magenta swap.
+    // Fallback with no central cache: a synchronous build, including the
+    // error-scope magenta swap.
     const validationEpoch = this._lifecycleEpoch;
     this._device.pushErrorScope("validation");
     const built = this._device.createRenderPipeline(raw);
@@ -3432,12 +3400,12 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * C2-22 — builds (and caches per layout-variant `md`) a flat-magenta fallback
-   * pipeline that is a drop-in for a failed color pipeline: it reuses the
-   * variant's pipeline layout (so the command's bound bind groups stay valid —
-   * the error shader reads only @group(0) camera) and consumes only vertex
-   * slot 0 (positionMC). Matches the color pipeline's MRT targets / depth format
-   * / sample count so it binds in the same render pass.
+   * Builds, and caches per layout-variant `md`, a flat-magenta fallback
+   * pipeline that is a drop-in for a failed colour pipeline. It reuses the
+   * variant's pipeline layout, so the command's bound bind groups stay valid —
+   * the error shader reads only the `@group(0)` camera — and consumes only
+   * vertex slot 0, `positionMC`. It matches the colour pipeline's MRT targets,
+   * depth format and sample count so it binds in the same render pass.
    * @param {number} md Normalized material-defines key.
    * @param {string} [topology="triangle-list"] GLTF-POINTS-MODE — topology of
    *   the failed pipeline, so a failed point-list pipeline's magenta fallback
@@ -3498,18 +3466,18 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — gets or creates a depth-write
-   * variant of the color pipeline for translucent 3D-tile commands tagged
-   * with `depthForTranslucentClassification`. The variant differs from
-   * the standard pipeline only in that `depthWriteEnabled = true` is
-   * forced even for `ALPHA_BLEND`. Used by `WebGPUDrawCommand.execute()`
+   * Gets or creates a depth-write variant of the colour pipeline for
+   * translucent 3D-tile commands tagged with
+   * `depthForTranslucentClassification`. The variant differs from the standard
+   * pipeline only in that `depthWriteEnabled = true` is forced even for
+   * `ALPHA_BLEND`. It is used by `WebGPUDrawCommand.execute()`
    * when the flag is set so flagged tiles populate the scene framebuffer's
    * depth attachment, letting the stencil-based GroundPrimitive classifier
    * clip its volumes against the tile surface instead of the globe behind it.
    *
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
-   * @param {number} [materialDefines=0] Batch 174 — see
+   * @param {number} [materialDefines=0] See
    *   {@link WebGPUModelPipelineCache#getPipeline}.
    * @returns {GPURenderPipeline}
    */
@@ -3531,13 +3499,14 @@ class WebGPUModelPipelineCache {
 
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
-    // DP-H46a — metadata vertex slot 9 variant (mode 2 = MAT3/MAT4 widened).
+    // The metadata vertex slot 9 variant; mode 2 is the widened MAT3/MAT4
+    // transport.
     const metadataSlotMode = this._metadataSlotMode(md);
-    // C2-22 (Batch 418) — the depth-write variant draws into the SAME scene FB
-    // MRT targets as `getPipeline` (`createPipeline` with forceDepthWrite=true
-    // only flips `depthWriteEnabled`), so the flat-magenta error pipeline is a
-    // valid drop-in here too. Wrap the create in the validation error scope and
-    // swap to magenta on failure, mirroring `getPipeline`.
+    // The depth-write variant draws into the same scene-framebuffer MRT targets
+    // as `getPipeline`, because `createPipeline` with `forceDepthWrite=true`
+    // only flips `depthWriteEnabled`, so the flat-magenta error pipeline is a
+    // valid drop-in here too. The create is wrapped in the validation error
+    // scope and swaps to magenta on failure, mirroring `getPipeline`.
     const validationEpoch = this._lifecycleEpoch;
     this._device.pushErrorScope("validation");
     pipeline = createPipeline(
@@ -3572,11 +3541,11 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * WIRE-MODEL-SILHOUETTE — gets or creates the silhouette-MODEL (base
-   * stencil-write) pipeline variant for the given material configuration.
-   * See {@link createSilhouetteModelPipeline}. Only requested when the
-   * per-model silhouette flag is active, so the module already carries
-   * the MODEL_SILHOUETTE define.
+   * WIRE-MODEL-SILHOUETTE — gets or creates the silhouette model pass, the
+   * base stencil-write pipeline variant, for the given material configuration.
+   * See {@link createSilhouetteModelPipeline}. It is requested only when the
+   * per-model silhouette flag is active, so the module already carries the
+   * MODEL_SILHOUETTE define.
    *
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
@@ -3608,8 +3577,8 @@ class WebGPUModelPipelineCache {
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
     const metadataSlotMode = this._metadataSlotMode(md);
-    // Same MRT targets / layout as `getPipeline`, so the flat-magenta
-    // error pipeline is a valid drop-in here too (C2-22 pattern).
+    // Same MRT targets and layout as `getPipeline`, so the flat-magenta error
+    // pipeline is a valid drop-in here too.
     const validationEpoch = this._lifecycleEpoch;
     this._device.pushErrorScope("validation");
     pipeline = createSilhouetteModelPipeline(
@@ -3644,8 +3613,8 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * WIRE-MODEL-SILHOUETTE — gets or creates the silhouette-COLOR
-   * (stencil not-equal inflate/rim) pipeline variant. See
+   * WIRE-MODEL-SILHOUETTE — gets or creates the silhouette colour pass, the
+   * stencil not-equal inflate and rim pipeline variant. See
    * {@link createSilhouetteColorPipeline}.
    *
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
@@ -3714,12 +3683,11 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * C-R9-MODEL-PICK (Batch 54) — gets or creates a pick pipeline for
-   * the given material configuration. Same layout + vertex stage as
-   * the matching color pipeline; the fragment entry is `fragmentPickMain`
-   * which emits `material.pickColor` instead of the lit color, and the
-   * fragment target has no blend (pick FBO must receive byte-exact pick
-   * IDs).
+   * Gets or creates a pick pipeline for the given material configuration. It
+   * shares the layout and vertex stage of the matching colour pipeline; the
+   * fragment entry is `fragmentPickMain`, which emits `material.pickColor`
+   * instead of the lit colour, and the fragment target has no blend, because
+   * the pick framebuffer has to receive byte-exact pick IDs.
    *
    * Keyed identically to `getPipeline` so a primitive's color and pick
    * pipelines share the same `(alphaMode, doubleSided, materialDefines)`
@@ -3727,7 +3695,7 @@ class WebGPUModelPipelineCache {
    *
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
-   * @param {number} [materialDefines=0] Batch 174 — see
+   * @param {number} [materialDefines=0] See
    *   {@link WebGPUModelPipelineCache#getPipeline}.
    * @returns {GPURenderPipeline}
    */
@@ -3747,17 +3715,18 @@ class WebGPUModelPipelineCache {
       return pipeline;
     }
 
-    // TODO(C2-22 follow-up): extend error-pipeline to pick/velocity/classification.
+    // TODO: extend the error-pipeline fallback to the pick, velocity and
+    // classification variants.
     // The flat-magenta error pipeline emits the scene-FB G-buffer target shape and
     // can't be a drop-in here (pick draws into the single-target pick FBO); a pick
     // error fallback needs its own pick-FBO-shaped error pipeline.
     pipeline = createPickPipeline(
       this._device,
-      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-gated module: LOG_DEPTH
-      // follows the pick-fleet switch, NOT the scene `_logDepthEnabled`.
+      // The pick-gated module: its LOG_DEPTH state follows the pick-fleet
+      // switch, not the scene `_logDepthEnabled`.
       this._getOrCreateShaderModule(md, this._pickLogDepthEnabled),
       this._getOrCreatePipelineLayout(md),
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      // The authoritative pick target format.
       this._pickFormat,
       this._depthFormat,
       alphaMode,
@@ -3773,17 +3742,17 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * UP144-SNAP-WEBGPU (C11-212) — gets or creates the snapping-pass pipeline
-   * for the given material configuration. Keyed identically to
-   * {@link WebGPUModelPipelineCache#getPickPipeline} so a primitive's color,
-   * pick, and snap pipelines share one `(alphaMode, doubleSided,
+   * Gets or creates the snapping-pass pipeline for the given material
+   * configuration. It is keyed identically to
+   * {@link WebGPUModelPipelineCache#getPickPipeline} so a primitive's colour,
+   * pick and snap pipelines share one `(alphaMode, doubleSided,
    * materialDefines, topology)` identity.
    *
-   * The module is the SAME pick-gated module the pick pipeline uses — LOG_DEPTH
-   * follows `_pickLogDepthEnabled`, not the scene switch — so `fragmentSnapMain`
-   * writes the same `@builtin(frag_depth)` encoding `fragmentPickMain` does and
-   * the payload phase's depth test stays coherent with the depth the occluder
-   * phase wrote.
+   * The module is the same pick-gated module the pick pipeline uses, with
+   * LOG_DEPTH following `_pickLogDepthEnabled` rather than the scene switch, so
+   * `fragmentSnapMain` writes the same `@builtin(frag_depth)` encoding that
+   * `fragmentPickMain` does and the payload phase's depth test stays coherent
+   * with the depth the occluder phase wrote.
    *
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
@@ -3825,18 +3794,19 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * DP-H46e — gets or creates a metadata-PICK pipeline for `scene.pickMetadata`.
-   * Same layout + vertex stage + vertex buffers + bind groups as the color /
-   * pick pipeline; only the fragment entry differs (`fragmentPickMetadataMain`,
-   * which writes the picked property's components into the pick-FBO RGBA8). The
-   * module is fetched with the METADATA_PICKING_ENABLED bit folded into the raw
-   * `materialDefines` so `_getOrCreateShaderModule` compiles that entry + the
-   * GENERATED `metadataPickingStage` chunk (which the renderer set via
-   * `setMetadataPickWGSL` immediately before this call).
+   * Gets or creates a metadata-pick pipeline for `scene.pickMetadata`. It
+   * shares the layout, vertex stage, vertex buffers and bind groups of the
+   * colour and pick pipelines; only the fragment entry differs, being
+   * `fragmentPickMetadataMain`, which writes the picked property's components
+   * into the pick framebuffer's RGBA8 target. The module is fetched with the
+   * METADATA_PICKING_ENABLED bit folded into the raw `materialDefines` so
+   * `_getOrCreateShaderModule` compiles that entry together with the generated
+   * `metadataPickingStage` chunk the renderer set via `setMetadataPickWGSL`
+   * immediately before this call.
    *
-   * Keyed by `(alphaMode, doubleSided, materialDefines)` × the picked-property
-   * class hash so a re-pick of a DIFFERENT property builds a distinct
-   * pipeline+module rather than serving a stale one.
+   * It is keyed by `(alphaMode, doubleSided, materialDefines)` crossed with the
+   * picked-property class hash, so re-picking a different property builds a
+   * distinct pipeline and module rather than serving a stale one.
    *
    * @param {number} alphaMode 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
@@ -3868,9 +3838,9 @@ class WebGPUModelPipelineCache {
     // The module compiles `fragmentPickMetadataMain` only when the pick bit is
     // present in the raw arg (it's stripped from `md` but preserved in the
     // module fetch — see `_getOrCreateShaderModule`).
-    // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — fold the pick-fleet LOG_DEPTH
-    // override in alongside the metadata-pick bit so the metadata-pick module's
-    // log state follows the pick switch (not the scene `_logDepthEnabled`).
+    // Fold the pick-fleet LOG_DEPTH override in alongside the metadata-pick bit
+    // so the metadata-pick module's log state follows the pick switch rather
+    // than the scene `_logDepthEnabled`.
     const pickModule = this._getOrCreateShaderModule(
       (md | ShaderDefine.METADATA_PICKING_ENABLED) >>> 0,
       this._pickLogDepthEnabled,
@@ -3879,7 +3849,7 @@ class WebGPUModelPipelineCache {
       this._device,
       pickModule,
       this._getOrCreatePipelineLayout(md),
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      // The authoritative pick target format.
       this._pickFormat,
       this._depthFormat,
       alphaMode,
@@ -3895,16 +3865,15 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option D / hover pick.
-   * For OPAQUE / MASK alpha modes this is identical to
-   * `getPickPipeline` (delegates). For BLEND, returns a variant that
-   * uses `fragmentPickHoverMain` (stochastic dither alpha-test) and
-   * `depthWriteEnabled: true` so translucent fragments compete on the
-   * standard depth-test once dither has discarded most of them.
+   * The hover-pick pipeline. For OPAQUE and MASK alpha modes this delegates to
+   * `getPickPipeline` and is identical to it. For BLEND it returns a variant
+   * that uses `fragmentPickHoverMain`, a stochastic dither alpha-test, with
+   * `depthWriteEnabled: true` so translucent fragments compete on the standard
+   * depth test once dither has discarded most of them.
    *
-   * Guaranteed stutter-free at 60fps hover frequency: single-pass,
-   * same render-pass setup cost as the default pick pipeline, no MRT.
-   * Used by `Scene.pickHover()`.
+   * It stays within a hover's per-frame budget: a single pass, the same
+   * render-pass setup cost as the default pick pipeline, and no MRT. It is used
+   * by `Scene.pickHover()`.
    *
    * @param {number} alphaMode 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
@@ -3917,7 +3886,7 @@ class WebGPUModelPipelineCache {
     materialDefines: number,
   ) {
     if (alphaMode !== ALPHA_BLEND) {
-      // OPAQUE/MASK don't need dither — reuse the default pick pipeline.
+      // OPAQUE and MASK don't need dither — reuse the default pick pipeline.
       return this.getPickPipeline(alphaMode, doubleSided, materialDefines);
     }
     const md = this._normalizeMaterialDefines(materialDefines);
@@ -3932,10 +3901,10 @@ class WebGPUModelPipelineCache {
     }
     pipeline = createPickHoverPipeline(
       this._device,
-      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-gated module.
+      // The pick-gated module.
       this._getOrCreateShaderModule(md, this._pickLogDepthEnabled),
       this._getOrCreatePipelineLayout(md),
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      // The authoritative pick target format.
       this._pickFormat,
       this._depthFormat,
       doubleSided,
@@ -3950,12 +3919,11 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option C / precise pick
-   * pass 1 (depth pre-pass). For OPAQUE / MASK alpha modes this is
-   * identical to `getPickPipeline` (delegates — single pass suffices).
-   * For BLEND, returns a variant that writes depth + stencil but no
-   * color (`colorWriteMask: 0`) so subsequent pass 2 can identify the
-   * geometrically-closest translucent fragment per pixel.
+   * The precise-pick depth pre-pass, pass 1. For OPAQUE and MASK alpha modes
+   * this delegates to `getPickPipeline` and is identical to it, since a single
+   * pass suffices. For BLEND it returns a variant that writes depth and stencil
+   * but no colour (`colorWriteMask: 0`), so pass 2 can identify the
+   * geometrically closest translucent fragment per pixel.
    *
    * @param {number} alphaMode 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
@@ -3982,13 +3950,13 @@ class WebGPUModelPipelineCache {
     }
     pipeline = createPickPrecisePass1Pipeline(
       this._device,
-      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — reuses fragmentPickMain, so it
-      // MUST fetch the SAME pick-gated module as getPickPipeline; otherwise the
-      // scene-log module (LOG_DEPTH on by default) would make fragmentPickMain
-      // write log frag_depth even with the pick switch OFF (NOT byte-identical).
+      // This pass reuses `fragmentPickMain`, so it has to fetch the same
+      // pick-gated module `getPickPipeline` does. The scene-log module, whose
+      // LOG_DEPTH is on by default, would otherwise make `fragmentPickMain`
+      // write log frag_depth even while the pick switch is off.
       this._getOrCreateShaderModule(md, this._pickLogDepthEnabled),
       this._getOrCreatePipelineLayout(md),
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      // The authoritative pick target format.
       this._pickFormat,
       this._depthFormat,
       doubleSided,
@@ -4003,10 +3971,10 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option C precise pick
-   * pass 2 (color pass with depth-EQUAL test). BLEND only — for
-   * OPAQUE/MASK there's no pass 2 (single-pass pick handles them).
-   * Returns null for non-BLEND so the renderer can skip pass-2 emission.
+   * The precise-pick colour pass, pass 2, which depth-tests `equal`. It applies
+   * to BLEND only; OPAQUE and MASK have no pass 2, because the single-pass pick
+   * handles them. Returns null for non-BLEND so the renderer can skip pass-2
+   * emission.
    *
    * @param {number} alphaMode 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
@@ -4033,12 +4001,12 @@ class WebGPUModelPipelineCache {
     }
     pipeline = createPickPrecisePass2Pipeline(
       this._device,
-      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — reuses fragmentPickMain; same
-      // pick-gated module as pass1 so their log frag_depth values match for the
-      // equal-test winner selection (and off is byte-identical, see pass1).
+      // This pass reuses `fragmentPickMain` with the same pick-gated module as
+      // pass 1, so their log frag_depth values match for the equal-test winner
+      // selection.
       this._getOrCreateShaderModule(md, this._pickLogDepthEnabled),
       this._getOrCreatePipelineLayout(md),
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      // The authoritative pick target format.
       this._pickFormat,
       this._depthFormat,
       doubleSided,
@@ -4053,17 +4021,16 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * TAA Slice 2e (Batch 106) — gets or creates a velocity pipeline for
-   * the given material configuration. Same vertex stage and pipeline
-   * layout as the color pipeline; the fragment entry is
-   * `fragmentVelocityMain` and the target format is `rg16float` (the
-   * scene-FB velocity texture format). Depth is read-only (color pass
-   * already wrote depth; velocity pass shares the same depth view at
-   * `depthLoadOp: load`).
+   * Gets or creates a velocity pipeline for the given material configuration.
+   * It shares the vertex stage and pipeline layout of the colour pipeline; the
+   * fragment entry is `fragmentVelocityMain` and the target format is
+   * `rg16float`, the scene-framebuffer velocity texture format. Depth is
+   * read-only, since the colour pass already wrote depth and the velocity pass
+   * shares the same depth view at `depthLoadOp: load`.
    *
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
-   * @param {number} [materialDefines=0] Batch 174 — see
+   * @param {number} [materialDefines=0] See
    *   {@link WebGPUModelPipelineCache#getPipeline}.
    * @returns {GPURenderPipeline}
    */
@@ -4082,7 +4049,8 @@ class WebGPUModelPipelineCache {
     if (pipeline) {
       return pipeline;
     }
-    // TODO(C2-22 follow-up): extend error-pipeline to pick/velocity/classification.
+    // TODO: extend the error-pipeline fallback to the pick, velocity and
+    // classification variants.
     // The velocity pass targets `rg16float`, not the scene-FB G-buffer, so the
     // flat-magenta error pipeline can't be a drop-in fallback here.
     pipeline = createVelocityPipeline(
@@ -4103,22 +4071,21 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) — gets or
-   * creates a classification pipeline for the given material configuration.
-   * Same vertex stage and pipeline layout as the lit color pipeline; the
-   * fragment entry is `fragmentClassificationMain` which samples the
-   * globe-depth texture (already bound on the effects bind group at
-   * `@group(3) @binding(15)`) and emits `material.baseColorFactor` only
+   * Gets or creates a classification pipeline for the given material
+   * configuration. It shares the vertex stage and pipeline layout of the lit
+   * colour pipeline; the fragment entry is `fragmentClassificationMain`, which
+   * samples the globe-depth texture — already bound on the effects bind group
+   * at `@group(3) @binding(15)` — and emits `material.baseColorFactor` only
    * where a classifiable surface exists.
    *
-   * Used by `WebGPUModelRenderer` when `model.classificationType !==
-   * undefined`. Routed in place of the standard color command at
+   * `WebGPUModelRenderer` uses it when `model.classificationType !== undefined`,
+   * routing it in place of the standard colour command at
    * `Pass.TERRAIN_CLASSIFICATION` or `Pass.CESIUM_3D_TILE_CLASSIFICATION`
-   * per the model's classificationType setting.
+   * according to the model's classification type.
    *
    * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
-   * @param {number} [materialDefines=0] Batch 174 — see
+   * @param {number} [materialDefines=0] See
    *   {@link WebGPUModelPipelineCache#getPipeline}.
    * @returns {GPURenderPipeline}
    */
@@ -4137,7 +4104,8 @@ class WebGPUModelPipelineCache {
     if (pipeline) {
       return pipeline;
     }
-    // TODO(C2-22 follow-up): extend error-pipeline to pick/velocity/classification.
+    // TODO: extend the error-pipeline fallback to the pick, velocity and
+    // classification variants.
     // The classification pass has its own target/blend/stencil state, so the
     // scene-FB flat-magenta error pipeline can't be a drop-in fallback here.
     pipeline = createClassificationPipeline(
@@ -4159,25 +4127,25 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * C2-25 ENV-SCENE-CAPTURE (Batch 447) — gets or creates the model CAPTURE
-   * pipeline for the dynamic-environment-map scene-capture pass. Renders the
-   * model's lit `fragmentMain` into ONE cube-face color attachment
-   * (`faceFormat`), a transient no-stencil `depth24plus` depth target, and no
-   * MSAA. The `CAPTURE_MODE` shader define drops the G-buffer slot-1 output so
-   * the fragment stage matches the single target.
+   * Gets or creates the model capture pipeline for the
+   * dynamic-environment-map scene-capture pass. It renders the model's lit
+   * `fragmentMain` into a single cube-face colour attachment of `faceFormat`,
+   * against a transient no-stencil `depth24plus` depth target, with no MSAA.
+   * The `CAPTURE_MODE` shader define drops the G-buffer slot-1 output so the
+   * fragment stage matches that single target.
    *
-   * Routes through the SEPARATE `_capturePipelines` cache so it never collides
-   * with — and a capture build never invalidates — the on-screen color
-   * pipelines. The key includes `faceFormat` (an HDR env cube gets its own
-   * variant) plus the same `(alphaMode, doubleSided, materialDefines)` identity
-   * as the color pipeline so the capture command pairs with the SAME per-variant
-   * pipeline layout and merged bind groups at draw time.
+   * It routes through the separate `_capturePipelines` cache, so it never
+   * collides with the on-screen colour pipelines and a capture build never
+   * invalidates them. The key includes `faceFormat`, giving an HDR env cube its
+   * own variant, plus the same `(alphaMode, doubleSided, materialDefines)`
+   * identity as the colour pipeline, so the capture command pairs with the same
+   * per-variant pipeline layout and merged bind groups at draw time.
    *
-   * Built SYNCHRONOUSLY on first miss (the capture pass is debounced + the sky
-   * fill rewrites the cube each refresh, so an async-pending frame would read
-   * back as a flat sky-only reflection). Shares the device's WGSL module cache,
-   * so a face format change only re-runs the cheap pipeline create, not the WGSL
-   * compile.
+   * It is built synchronously on first miss: the capture pass is debounced and
+   * the sky fill rewrites the cube each refresh, so an async-pending frame would
+   * read back as a flat sky-only reflection. It shares the device's WGSL module
+   * cache, so a face format change only re-runs the cheap pipeline create rather
+   * than the WGSL compile.
    *
    * @param {number} alphaMode 0=OPAQUE, 1=MASK, 2=BLEND
    * @param {boolean} doubleSided
@@ -4192,14 +4160,15 @@ class WebGPUModelPipelineCache {
     faceFormat: GPUTextureFormat,
   ) {
     const md = this._normalizeMaterialDefines(materialDefines);
-    // C2-25 (Batch 447) — the capture module forks on LOG_DEPTH downstream in
-    // `_getOrCreateShaderModule` (from the live `_logDepthEnabled`), but
-    // `_capturePipelines` is deliberately NOT wiped by `maybeUpdateForLogDepth`
-    // (so on-screen format churn can't invalidate capture). Mirror the globe
-    // capture key (WebGPUGlobeSurfacePipelines selectCapturePipeline): fold the
-    // effective log-depth bit into the key so a runtime log-depth toggle rebuilds
-    // the capture pipeline instead of serving a stale-depth-encoding variant
-    // (which would break model↔globe occlusion in the shared face depth buffer).
+    // The capture module forks on LOG_DEPTH downstream in
+    // `_getOrCreateShaderModule`, from the live `_logDepthEnabled`, but
+    // `maybeUpdateForLogDepth` deliberately leaves `_capturePipelines` alone so
+    // on-screen format churn can't invalidate capture. Following the globe
+    // capture key in `WebGPUGlobeSurfacePipelines.selectCapturePipeline`, the
+    // effective log-depth bit folds into the key here, so a runtime log-depth
+    // toggle rebuilds the capture pipeline instead of serving a variant with a
+    // stale depth encoding, which would break model-to-globe occlusion in the
+    // shared face depth buffer.
     const topology = this._primitiveTopology;
     const key = this._metadataVariantKey(
       topologyVariantKey(
@@ -4214,9 +4183,9 @@ class WebGPUModelPipelineCache {
     if (pipeline) {
       return pipeline;
     }
-    // CAPTURE_MODE folded into the module fetch → the single-target FragOutput
-    // variant (drops `@location(1) normalRoughness`). The module cache dedupes
-    // across all models on the device.
+    // CAPTURE_MODE folds into the module fetch, selecting the single-target
+    // `FragOutput` variant that drops `@location(1) normalRoughness`. The module
+    // cache dedupes across all models on the device.
     const captureModule = this._getOrCreateShaderModule(
       (md | ShaderDefine.CAPTURE_MODE) >>> 0,
     );
@@ -4246,9 +4215,9 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * Batch 174 — B.4 KHR materialBGL split. Basic variant (no KHR
-   * textures) for materials without any KHR-extension bit set. Pairs
-   * with `pipelineLayout_basic` and the no-KHR shader module.
+   * The basic variant of the KHR material bind-group-layout split, with no KHR
+   * textures, for materials that set no KHR-extension bit. It pairs with
+   * `pipelineLayout_basic` and the no-KHR shader module.
    * @returns {GPUBindGroupLayout}
    */
   get materialBGL_basic() {
@@ -4421,30 +4390,30 @@ class WebGPUModelPipelineCache {
     return this._defaultBrdfLutSampler;
   }
 
-  /** @returns {GPUTextureView} DP-H46c 1×1 black placeholder property texture. */
+  /** @returns {GPUTextureView} 1×1 black placeholder property texture. */
   get defaultPropertyTextureView() {
     return this._defaultPropertyTextureView;
   }
 
-  /** @returns {GPUTexture} DP-H46c 1×1 black placeholder property texture (raw). */
+  /** @returns {GPUTexture} 1×1 black placeholder property texture (raw). */
   get defaultPropertyTexture() {
     return this._defaultPropertyTexture;
   }
 
-  /** @returns {GPUSampler} DP-H46c nearest/clamp sampler for property textures. */
+  /** @returns {GPUSampler} Nearest/clamp sampler for property textures. */
   get propertyTextureSampler() {
     return this._propertyTextureSampler;
   }
 
   /**
-   * DP-H46c — build the full set of `MAX_PROPERTY_TEXTURES` (texture,
-   * sampler) bind-group entries for the property-texture block (bindings
-   * 39..). `realEntries` supplies the resolved physical textures + samplers
-   * (from `WebGPUModelMetadata.ensurePropertyTextureResources`); any slot the
-   * primitive doesn't use is filled with the 1×1 placeholder + the shared
-   * property sampler so the bind group satisfies every BGL entry. The
-   * generated shader only samples the real slots, so the placeholders are
-   * never read.
+   * Builds the full set of `MAX_PROPERTY_TEXTURES` (texture, sampler)
+   * bind-group entries for the property-texture block, which starts at binding
+   * 39. `realEntries` supplies the resolved physical textures and samplers from
+   * `WebGPUModelMetadata.ensurePropertyTextureResources`; any slot the primitive
+   * doesn't use is filled with the 1×1 placeholder and the shared property
+   * sampler, so the bind group satisfies every entry in the layout. The
+   * generated shader samples the real slots alone, so the placeholders are never
+   * read.
    *
    * @param {Array<GPUBindGroupEntry>} [realEntries] resolved property-texture
    *   entries; missing bindings get the placeholder.
@@ -4478,13 +4447,13 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * DP-H46d — build the (texture, sampler) bind-group entries for the
-   * property-TABLE block (bindings 44-45). `realEntries` supplies the resolved
-   * table texture view + sampler (from
-   * `WebGPUModelMetadata.ensurePropertyTableResources`); if a binding is
-   * missing it is filled with the 1×1 placeholder + the shared property sampler
-   * so the bind group satisfies every BGL entry. The shader reads the table via
-   * `textureLoad` (the sampler placeholder is never sampled).
+   * Builds the (texture, sampler) bind-group entries for the property-table
+   * block at bindings 44 and 45. `realEntries` supplies the resolved table
+   * texture view and sampler from
+   * `WebGPUModelMetadata.ensurePropertyTableResources`; a missing binding is
+   * filled with the 1×1 placeholder and the shared property sampler, so the
+   * bind group satisfies every entry in the layout. The shader reads the table
+   * via `textureLoad`, so the placeholder sampler is never sampled.
    *
    * @param {Array<GPUBindGroupEntry>} [realEntries] resolved property-table
    *   entries; missing bindings get the placeholder.
@@ -4530,10 +4499,10 @@ class WebGPUModelPipelineCache {
     return this._defaultInstanceBG;
   }
 
-  // NEW-BG-CONSOLIDATION (Batch 122) — accessors for the underlying
-  // default buffers. The renderer composes merged group 2 bind groups
-  // per-frame; when a primitive lacks one of skinning / morph / instancing,
-  // the corresponding slot binds the default placeholder buffer here.
+  // Accessors for the underlying default buffers. The renderer composes merged
+  // group 2 bind groups per frame; when a primitive lacks skinning, morph or
+  // instancing data, the corresponding slot binds the default placeholder
+  // buffer here.
   /** @returns {GPUBuffer} Identity 4×4 joint matrices storage buffer */
   get defaultJointBuffer() {
     return this._defaultJointBuffer;
@@ -4557,13 +4526,13 @@ class WebGPUModelPipelineCache {
   destroy() {
     this._lifecycleEpoch++;
     this._pipelines.clear();
-    // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
-    // baked the now-stale format / mode; the `.then` also carries a
+    // Drop in-flight colour async compiles too. Their descriptors baked the
+    // now-stale format and mode; the `.then` also carries a
     // scene-format-generation guard so a stale resolve never writes back.
     this._pendingColorPipelines.clear();
-    // C-R9-MODEL-PICK (Batch 54) — drop pick pipelines too. GPUPipelines
-    // are released via GC once all references go away; clearing the map
-    // releases the cache's reference. Same lifecycle as `_pipelines`.
+    // Drop pick pipelines too. A `GPURenderPipeline` is released by the garbage
+    // collector once all references go away, and clearing the map releases the
+    // cache's reference. Same lifecycle as `_pipelines`.
     this._pickPipelines.clear();
     this._snapPipelines.clear();
     this._errorPipelines.clear();
@@ -4581,10 +4550,10 @@ class WebGPUModelPipelineCache {
     this._metadataShaderModuleCache.clear();
     this._errorShaderModule = null;
     if (this._modelDeviceResources) {
-      // C11-194 — the release detaches the shared lease before draining native
-      // owners, then rethrows the first drain error. Null the field in a
-      // finally so a throwing release cannot leave this cache holding a lease
-      // it already gave back (mirrors the constructor error paths above).
+      // The release detaches the shared lease before draining native owners,
+      // then rethrows the first drain error. The field is nulled in a `finally`
+      // so a throwing release cannot leave this cache holding a lease it has
+      // already given back, mirroring the constructor error paths above.
       try {
         releaseWebGPUModelDeviceResources(
           this._device,

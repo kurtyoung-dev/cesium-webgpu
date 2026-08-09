@@ -58,6 +58,30 @@ const readSource = async (relative) =>
 const rendererSource = await readSource(
   "Renderer/WebGPU/WebGPUModelRenderer.ts",
 );
+
+// This spec's own text, so the anchor-shape control below can assert on it.
+const specSource = await readFile(fileURLToPath(import.meta.url), "utf8");
+
+/**
+ * The region between two declarations, with the closing anchor searched for
+ * AFTER the opening one.
+ *
+ * A bare `source.indexOf(close)` finds the FIRST occurrence in the file, which
+ * may sit above `open` — `slice` then returns "" and every assertion over the
+ * region passes vacuously. Both anchors must also be present; a missing one
+ * makes `indexOf` return -1, and `slice(start, -1)` silently returns almost the
+ * whole file rather than nothing.
+ */
+const sliceBetween = (source, open, close) => {
+  const start = source.indexOf(open);
+  assert.ok(start >= 0, `opening anchor \`${open}\` is missing`);
+  const end = source.indexOf(close, start + open.length);
+  assert.ok(
+    end >= 0,
+    `closing anchor \`${close}\` is missing after \`${open}\``,
+  );
+  return source.slice(start, end);
+};
 const deviceResourcesSource = await readSource(
   "Renderer/WebGPU/WebGPUModelDeviceResources.ts",
 );
@@ -587,9 +611,15 @@ test("the WGSL light binding moved to group 0 with the camera", () => {
 });
 
 test("the merged group-1 layout no longer declares a light UBO", () => {
-  const materialBGL = pipelineCacheSource.slice(
-    pipelineCacheSource.indexOf("function buildMaterialBGL("),
-    pipelineCacheSource.indexOf("// 12-25: KHR bindings"),
+  // Both ends of the slice are declarations, not comment text: the KHR loop
+  // header is what actually ends the always-present entries array, and it
+  // stays put when the prose above it is reworded. The same loop header also
+  // appears earlier in the file (inside MATERIAL_DEFINE_MASK), which is why
+  // the search has to start from the opening anchor.
+  const materialBGL = sliceBetween(
+    pipelineCacheSource,
+    "function buildMaterialBGL(",
+    "for (let i = 0; i < KHR_BINDING_MANIFEST.length; i++) {",
   );
   assert.match(materialBGL, /uniformBuffer\(0, Stage\.VERTEX_FRAGMENT\),/);
   assert.equal(
@@ -674,9 +704,10 @@ test("the merged group-1 bind group and its cache dropped the light", () => {
 });
 
 test("the capture replay packs its own face light and shares it per face", () => {
-  const capture = rendererSource.slice(
-    rendererSource.indexOf("function getOrCreateModelCaptureCommands("),
-    rendererSource.indexOf("// ─── Material Uniform Packing"),
+  const capture = sliceBetween(
+    rendererSource,
+    "function getOrCreateModelCaptureCommands(",
+    "function createPackedMaterialUploadState(",
   );
   // One lazily-realized slice per model replay (i.e. per face), reused by
   // every record of that face.
@@ -688,4 +719,71 @@ test("the capture replay packs its own face light and shares it per face", () =>
     false,
     "a capture face must never bind the on-screen view's light block",
   );
+});
+
+// Both slices above are bounded by declarations. Each one previously ended at a
+// COMMENT — `// 12-25: KHR bindings` and a box-drawing section banner — so
+// rewording either comment silently emptied the slice and every assertion over
+// it passed vacuously. These controls fail if that shape ever comes back.
+//
+// The renames are deliberately NOT prefixes of the real anchors: a prefix
+// rename still matches `indexOf`, so a prefix-based control can pass while the
+// anchor is broken.
+test("MUTATION: the slice anchors are declarations, and an absent one is caught", () => {
+  for (const [source, open, close, label] of [
+    [
+      pipelineCacheSource,
+      "function buildMaterialBGL(",
+      "for (let i = 0; i < KHR_BINDING_MANIFEST.length; i++) {",
+      "material BGL",
+    ],
+    [
+      rendererSource,
+      "function getOrCreateModelCaptureCommands(",
+      "function createPackedMaterialUploadState(",
+      "capture replay",
+    ],
+  ]) {
+    // The live region must be non-empty, or the assertions over it prove
+    // nothing. This is the leg that caught the first re-point of the material
+    // BGL anchor, whose closing anchor also occurs ABOVE the opening one.
+    const live = sliceBetween(source, open, close);
+    assert.ok(
+      live.length > 0,
+      `${label}: the live slice is empty, so its assertions are vacuous`,
+    );
+
+    // The mutation: rename the closing anchor to something that shares no
+    // prefix with it. A prefix rename still matches `indexOf`, so a
+    // prefix-based control can pass while the anchor is already broken.
+    //
+    // It has to be the occurrence the slice actually uses. `String.replace`
+    // with a string pattern rewrites the FIRST one in the file, which for the
+    // material BGL is the copy above the opening anchor — mutating that leaves
+    // the real closing anchor in place and the control never bites.
+    const at = source.indexOf(close, source.indexOf(open) + open.length);
+    const mutated = `${source.slice(0, at)}zzzRelocatedAnchorNoLongerPresent(${source.slice(at + close.length)}`;
+    assert.equal(
+      mutated.indexOf(close, mutated.indexOf(open) + open.length),
+      -1,
+      `${label}: the mutation did not actually remove the anchor the slice uses`,
+    );
+    assert.throws(
+      () => sliceBetween(mutated, open, close),
+      /closing anchor/,
+      `${label}: a missing closing anchor must fail loudly, not silently widen the slice`,
+    );
+  }
+});
+
+test("MUTATION: neither slice is bounded by comment text any more", () => {
+  // The two anchors this spec used to depend on. A rewrite shard is free to
+  // delete or reword them; nothing here may read them again.
+  for (const retired of ["// 12-25: KHR bindings", "// ─── Material Uniform"]) {
+    assert.equal(
+      specSource.includes(`indexOf("${retired}`),
+      false,
+      `this spec must not locate a region by the comment \`${retired}\``,
+    );
+  }
 });

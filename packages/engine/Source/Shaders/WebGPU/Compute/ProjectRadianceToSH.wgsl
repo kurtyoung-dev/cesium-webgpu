@@ -1,39 +1,34 @@
 // ProjectRadianceToSH.wgsl — Radiance Cubemap → Spherical-Harmonic (L2) Projection
 //
-// NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354). WebGPU parity for
-// the WebGL diffuse-IBL SH path. WebGL feeds a model's diffuse IBL via 9
-// atmosphere-derived SH-L2 coefficients (czm_sphericalHarmonics); WebGPU
-// previously had no SH producer, so models fell back to sampling the
-// irradiance cubemap — a ~20-30% different energy reconstruction (worst
-// in blue), reading as a +15% luminance / +24% blue overbright vs WebGL.
+// Produces the 9 atmosphere-derived SH-L2 coefficients a model's diffuse IBL
+// reads, the same quantity the WebGL path publishes as
+// `czm_sphericalHarmonics`. Without an SH producer a model has to fall back to
+// sampling the irradiance cubemap, which reconstructs 20-30% different energy —
+// worst in blue, and visible as a +15% luminance / +24% blue overbright.
 //
-// This is a byte-faithful transcription of the WebGL projection in
-// `ComputeIrradianceFS.glsl` (computeShBasis + the 256-sample Monte-Carlo
-// loop), INCLUDING WebGL's `(-x, -y, z)` cube-lookup flip
-// (ComputeIrradianceFS.glsl:94-95). NEW-MODEL-IBL-AMBIENT (re-land of the
-// audited-GO B3 fix): the Batch-354 claim that raw-direction sampling was
-// an intentional backend difference was NUMERICALLY DISPROVEN — a JS
-// re-projection of the live WebGPU radiance cube at the 256 Hammersley
-// directions WITH the flip reproduces WebGL's measured SH c1 blue
-// coefficient (0.151 vs 0.152), while raw sampling gives 0.029 (5x short
-// on the sky-blue directional band = the olive model tint). The flip is
-// required for parity.
+// A byte-faithful transcription of the WebGL projection in
+// `ComputeIrradianceFS.glsl` (computeShBasis plus the 256-sample Monte-Carlo
+// loop), including its `(-x, -y, z)` cube-lookup flip. The flip is required for
+// parity, not incidental: re-projecting the live WebGPU radiance cube at the
+// 256 Hammersley directions reproduces WebGL's blue c1 coefficient (0.151
+// against 0.152) with the flip, and gives 0.029 without it — five times short
+// on the sky-blue directional band, which reads as an olive tint on the model.
 //
-// One backend-specific difference that IS intentional:
+// One backend difference is intentional:
 //
-//   Output is written straight into a storage buffer (9 vec4 + a
-//   control vec4) instead of WebGL's 3×3 render-to-texture + readback.
-//   The same buffer is bound as the model's `SHUniforms` uniform
-//   (binding 36) — no CPU round-trip.
+//   Output is written straight into a storage buffer (9 vec4 plus a control
+//   vec4) instead of WebGL's 3x3 render-to-texture and readback. The same
+//   buffer is bound as the model's `SHUniforms` uniform (binding 36), so there
+//   is no CPU round-trip.
 //
 // Energy: the WebGPU radiance cube already bakes `atmosphereScatteringIntensity`
-// (ProceduralSkyCubemap.wgsl:295), exactly as WebGL's radiance map does
-// (ComputeRadianceMapFS.glsl:85, `.w` = atmosphereScatteringIntensity).
-// WebGL then multiplies the projected coeffs by atmosphereScatteringIntensity
-// AGAIN (DynamicEnvironmentMapManager.js:979) — a deliberate double-apply.
+// (ProceduralSkyCubemap.wgsl), exactly as WebGL's radiance map does
+// (ComputeRadianceMapFS.glsl, where it is the `.w` channel). WebGL then
+// multiplies the projected coefficients by `atmosphereScatteringIntensity` a
+// second time in DynamicEnvironmentMapManager.js — a deliberate double-apply.
 // `params.intensity` carries that second multiply so the result matches.
 //
-// Dispatch: 1 workgroup of 9 invocations — invocation i computes coeff i.
+// Dispatch: 1 workgroup of 9 invocations — invocation i computes coefficient i.
 
 @group(0) @binding(0) var radianceCube: texture_cube<f32>;
 @group(0) @binding(1) var radianceSampler: sampler;

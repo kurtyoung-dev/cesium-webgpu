@@ -280,9 +280,9 @@ class Model {
 
     this._resourcesLoaded = false;
     this._drawCommandsBuilt = false;
-    // C11-202 — records which renderer realization owns the current shared
-    // model descriptors. A Model normally stays on one context, but tracking
-    // the owner keeps an explicit WebGL/WebGPU context switch correct.
+    // Records which renderer realization owns the current shared model
+    // descriptors. A Model normally stays on one context, but tracking the
+    // owner keeps an explicit backend switch correct.
     this._drawCommandsBackend = undefined;
 
     this._ready = false;
@@ -425,9 +425,9 @@ class Model {
     // destroy() can release per-model GPU resources on tile eviction.
     this._featureRenderer = undefined;
 
-    // C11-185 — declared up front so the first off-frustum rejection does not
-    // change the Model object's hidden class. The native renderer flips this
-    // only across a reject/readmit gap to reset temporal history.
+    // Declared up front so the first off-frustum rejection does not change the
+    // Model object's hidden class. The native renderer flips this only across a
+    // reject/readmit gap, to reset temporal history.
     this._webgpuPreparationAdmissionGap = false;
 
     const environmentMapManager = options.environmentMapManager;
@@ -1346,11 +1346,10 @@ class Model {
   }
 
   /**
-   * NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- KHR_lights_punctual lights
-   * loaded from the asset, in MODEL space (node hierarchy already
-   * applied at parse time). The renderer transforms each entry's
-   * position / direction by `model.modelMatrix` to get world-space
-   * values. Empty when the asset declares no extension.
+   * KHR_lights_punctual lights loaded from the asset, in model space with the
+   * node hierarchy already applied at parse time. The renderer transforms each
+   * entry's position and direction by `model.modelMatrix` to obtain world-space
+   * values. Empty when the asset declares no such extension.
    *
    * @type {Array<object>}
    * @readonly
@@ -2346,9 +2345,9 @@ function updateEnvironmentMap(model, frameState) {
   if (model._ready && environmentMapManager.owner === model && !picking) {
     const context = frameState.context;
     if (typeof context.recordEnvironmentMapDemand === "function") {
-      // C11-193 telemetry only. Model.update does not prove camera visibility,
-      // so standalone ownership stays conservative until the future scheduler
-      // has a selected-consumer registry for ordinary primitives.
+      // Telemetry only. `Model.update` does not prove camera visibility, so
+      // standalone ownership stays conservative; a scheduler would need a
+      // selected-consumer registry for ordinary primitives to do better.
       context.recordEnvironmentMapDemand(
         environmentMapManager,
         "unknown",

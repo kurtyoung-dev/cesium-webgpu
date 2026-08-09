@@ -1182,9 +1182,9 @@ function finalizeDracoAttribute(
       vertexBufferLoader.typedArray.buffer,
     );
   }
-  // C9-17 Slice B — this finalize callback replaces the attribute's buffer /
-  // typed array; stamp the geometry revision so the WebGPU geometry cache's
-  // positive-path validation invalidates exactly once when it lands.
+  // This finalize callback replaces the attribute's buffer and typed array, so
+  // stamp the geometry revision: the WebGPU geometry cache's positive-path
+  // validation then invalidates exactly once, when the replacement lands.
   bumpGeometryRevision(attribute);
 }
 
@@ -1238,7 +1238,7 @@ function finalizeSpzAttribute(
     const buffer = attribute.typedArray;
     [attribute.min, attribute.max] = findMinMaxXY(buffer);
   }
-  // C9-17 Slice B — see finalizeDracoAttribute.
+  // Stamp the geometry revision; see finalizeDracoAttribute.
   bumpGeometryRevision(attribute);
 }
 
@@ -1270,7 +1270,7 @@ function finalizeAttribute(
       attribute.byteStride = undefined;
     }
   }
-  // C9-17 Slice B — see finalizeDracoAttribute.
+  // Stamp the geometry revision; see finalizeDracoAttribute.
   bumpGeometryRevision(attribute);
 }
 
@@ -1393,24 +1393,23 @@ function loadVertexAttribute(
   const loadTypedArrayForClassification =
     loader._loadForClassification && isFeatureIdAttribute;
 
-  // NEW-4-A (Batch 67): on WebGPU, EdgeVisibilityPipelineStage cannot fall
-  // back to Buffer.getBufferData() (the WebGL Buffer-only sync readback) so
-  // we must retain CPU-side typed arrays at upload time when the primitive
-  // carries EXT_mesh_primitive_edge_visibility. The pipeline stage reads
-  // POSITION (always), FEATURE_ID_0 (when feature IDs are present), COLOR
-  // (vertex-color override), and BENTLEY_materials_line_style:
-  // CUMULATIVE_DISTANCE (line-pattern shader input) directly off the
-  // attribute's `.typedArray` — when undefined it falls back to
-  // `ModelReader.readAttributeAsTypedArray` which calls
-  // `Buffer.getBufferData`. WebGPU buffers expose no sync readback, so the
-  // fallback would throw mid-frame. We blanket-retain every vertex
-  // attribute for affected primitives because the consuming attributes
-  // vary per-asset (e.g., assets without vertex colors skip COLOR; assets
-  // with line-style use CUMULATIVE_DISTANCE) and the attribute's modelSemantic
-  // alone does not capture the BENTLEY application-specific semantic.
-  // Scope is one primitive at a time — only primitives with the edge
-  // extension pay the memory cost. WebGL keeps the prior behaviour (typed
-  // arrays dropped after upload) since it has Buffer.getBufferData().
+  // A primitive carrying EXT_mesh_primitive_edge_visibility must keep its
+  // CPU-side typed arrays at upload time. EdgeVisibilityPipelineStage reads
+  // POSITION (always), FEATURE_ID_0 (when feature IDs are present), COLOR (the
+  // vertex-colour override), and BENTLEY_materials_line_style's
+  // CUMULATIVE_DISTANCE (the line-pattern shader input) directly off the
+  // attribute's `.typedArray`. When that is undefined it falls back to
+  // `ModelReader.readAttributeAsTypedArray`, which calls
+  // `Buffer.getBufferData` — a WebGL-only synchronous readback that has no
+  // WebGPU equivalent, so the fallback would throw mid-frame.
+  //
+  // Every vertex attribute of an affected primitive is retained, not just the
+  // consumed ones: which attributes are consumed varies per asset, and an
+  // attribute's modelSemantic alone does not capture the Bentley
+  // application-specific semantic. The scope is one primitive at a time, so
+  // only primitives with the edge extension pay the memory cost. WebGL keeps
+  // dropping typed arrays after upload, since `Buffer.getBufferData` is
+  // available to it.
   const gltfExtensions = primitive?.extensions ?? Frozen.EMPTY_OBJECT;
   const hasEdgeVisibility = defined(
     gltfExtensions.EXT_mesh_primitive_edge_visibility,
@@ -1423,22 +1422,18 @@ function loadVertexAttribute(
     hasEdgeVisibility &&
     frameState.context.requiresVertexTypedArrayRetention === true;
 
-  // 2026-04-30 — WebGPU Model renderer needs typed arrays for ALL vertex
-  // attributes, not just edge-visibility primitives. The b3dm load path
-  // uploads attributes to a WebGL `Buffer` (the loader's WebGL-side
-  // resource) and discards typed arrays after upload by default. The
-  // WebGPU side has no equivalent of `Buffer.getBufferData()` so it
-  // needs the typed array preserved at load time. Without this,
-  // `Scene/Model/ModelPrimitiveGeometry.extractPrimitiveGeometry()`
-  // returns null because `runtimePrimitive.renderResources` is never
-  // populated for b3dm content, and the WebGPU model FR's
-  // `cache.primitives[primKey]` stays empty — silently breaking
-  // 3D-Tiles vector / b3dm rendering AND the C-R9-MODEL-FEATURE-PICK
-  // chain that depends on it. Mirrors the rationale for the existing
-  // EdgeVisibilityWebGPU retention; broadens it to "any WebGPU primitive."
-  // WebGL keeps the prior drop-after-upload behaviour because it has
-  // `Buffer.getBufferData`.
-  // Audit 2026-05-02: see line 1379.
+  // The WebGPU model renderer needs typed arrays for every vertex attribute,
+  // not only for edge-visibility primitives. The b3dm load path uploads
+  // attributes to a WebGL `Buffer` and discards typed arrays after upload by
+  // default, and WebGPU has no `Buffer.getBufferData()` equivalent to recover
+  // them. Without retention `extractPrimitiveGeometry` returns null, because
+  // `runtimePrimitive.renderResources` is never populated for b3dm content, and
+  // the model feature renderer's per-primitive cache stays empty — which breaks
+  // 3D-Tiles vector and b3dm rendering along with the per-feature pick chain
+  // that depends on it.
+  //
+  // This broadens the edge-visibility retention above to any WebGPU primitive.
+  // WebGL keeps dropping typed arrays after upload.
   const loadTypedArrayForWebGPU =
     frameState.context.requiresVertexTypedArrayRetention === true;
 
@@ -1647,8 +1642,8 @@ function loadIndices(
     indices.indexDatatype = indexBufferLoader.indexDatatype;
     indices.buffer = indexBufferLoader.buffer;
     indices.typedArray = indexBufferLoader.typedArray;
-    // C9-17 Slice B — index accessor's buffer / typed array replaced; stamp
-    // the geometry revision (see finalizeDracoAttribute).
+    // The index accessor's buffer and typed array are replaced here; stamp the
+    // geometry revision, as finalizeDracoAttribute does.
     bumpGeometryRevision(indices);
   };
 
@@ -1840,11 +1835,10 @@ function loadAnisotropy(loader, anisotropyInfo, frameState) {
   return anisotropy;
 }
 
-// C-R4-GLTF-KHR (Batch 105) — KHR extensions added on the loader side
-// to feed `ModelMaterialInfo.extractMaterialInfo` (Batch 95). Plain
-// object literals (no dedicated ModelComponents classes) — the
-// consumers read by property name and the upstream WebGL path doesn't
-// reference these slots, so a class isn't needed for type clarity.
+// KHR extensions loaded here to feed `ModelMaterialInfo.extractMaterialInfo`.
+// They are plain object literals rather than dedicated ModelComponents classes:
+// consumers read them by property name and the WebGL path does not reference
+// these slots, so a class would add no type clarity.
 
 function loadIridescence(loader, iridescenceInfo, frameState) {
   const {
@@ -2047,13 +2041,10 @@ function loadMaterial(loader, gltfMaterial, frameState) {
   const pbrSpecular = extensions.KHR_materials_specular;
   const pbrAnisotropy = extensions.KHR_materials_anisotropy;
   const pbrClearcoat = extensions.KHR_materials_clearcoat;
-  // C-R4-GLTF-KHR (Batch 105) — additional KHR material extensions
-  // that ModelMaterialInfo.extractMaterialInfo (Batch 95) already
-  // expects on `material.iridescence` / `material.sheen` /
-  // `material.volume` / `material.transmission` but the upstream
-  // loader didn't populate. Wiring them here so factor-only support
-  // (Batch 95) and texture support (Batch 102/103) actually fire
-  // for assets that declare these extensions.
+  // Additional KHR material extensions. `ModelMaterialInfo.extractMaterialInfo`
+  // expects them on `material.iridescence`, `material.sheen`,
+  // `material.volume` and `material.transmission`, so they are populated here
+  // for assets that declare them.
   const pbrIridescence = extensions.KHR_materials_iridescence;
   const pbrSheen = extensions.KHR_materials_sheen;
   const pbrVolume = extensions.KHR_materials_volume;
@@ -3051,10 +3042,9 @@ function loadNode(loader, gltfNode, frameState) {
   const instancingExtension = nodeExtensions.EXT_mesh_gpu_instancing;
   const articulationsExtension = nodeExtensions.AGI_articulations;
   const meshVectorExtension = nodeExtensions.CESIUM_mesh_vector;
-  // NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- per-node light reference.
-  // Stores just the index here; the position/direction resolution
-  // (via node world matrix) happens after `loadNodes` returns and the
-  // hierarchy is walkable.
+  // Per-node light reference. Only the index is stored here; resolving position
+  // and direction through the node world matrix happens after `loadNodes`
+  // returns and the hierarchy is walkable.
   const lightExtension = nodeExtensions.KHR_lights_punctual;
   if (defined(lightExtension) && typeof lightExtension.light === "number") {
     node.lightIndex = lightExtension.light;
@@ -3347,8 +3337,8 @@ function loadScene(gltf, nodes) {
   return scene;
 }
 
-// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- glTF light type strings -> the
-// `LightType` numeric enum used by `LightCollection.pack`.
+// glTF light type strings mapped to the `LightType` numeric enum
+// `LightCollection.pack` uses.
 const KHR_LIGHT_TYPE_DIRECTIONAL = 0;
 const KHR_LIGHT_TYPE_POINT = 1;
 const KHR_LIGHT_TYPE_SPOT = 2;
@@ -3363,10 +3353,10 @@ function khrLightTypeToEnum(typeString) {
   return KHR_LIGHT_TYPE_DIRECTIONAL;
 }
 
-// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- compose the per-node TRS into
-// a 4x4 matrix in column-major order. glTF `node.matrix` (when present)
-// already supplies this; otherwise build from translation / rotation /
-// scale (TRS order, applied as T * R * S to a column-vector point).
+// Compose the per-node TRS into a 4x4 matrix in column-major order. A glTF
+// `node.matrix`, when present, already supplies this; otherwise it is built
+// from translation, rotation and scale, applied as T * R * S to a
+// column-vector point.
 const _scratchLocalMatrix = new Array(16);
 function composeLocalMatrix(node) {
   if (defined(node.matrix)) {
@@ -3385,9 +3375,8 @@ function composeLocalMatrix(node) {
   return Matrix4.toArray(m4, _scratchLocalMatrix);
 }
 
-// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- multiply two column-major
-// 4x4 mat arrays into `out`. Returns `out`. Uses local Matrix4 so the
-// math matches the rest of the loader's matrix usage.
+// Multiply two column-major 4x4 matrix arrays into `out` and return it. Uses
+// `Matrix4` so the arithmetic matches the rest of the loader's matrix usage.
 function multiplyMat4Arrays(parent, local, out) {
   const a = Matrix4.fromColumnMajorArray(parent);
   const b = Matrix4.fromColumnMajorArray(local);
@@ -3395,8 +3384,8 @@ function multiplyMat4Arrays(parent, local, out) {
   return Matrix4.toArray(c, out);
 }
 
-// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- transform a vec3 point by a
-// column-major 4x4 (treats input as a position with w=1).
+// Transform a vec3 point by a column-major 4x4, treating the input as a
+// position with w = 1.
 function transformPoint(matArray, vec3) {
   const x = vec3.x ?? 0;
   const y = vec3.y ?? 0;
@@ -3408,8 +3397,8 @@ function transformPoint(matArray, vec3) {
   };
 }
 
-// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- transform a vec3 direction by
-// a column-major 4x4 (w=0; ignores translation). Result is normalized.
+// Transform a vec3 direction by a column-major 4x4 with w = 0, ignoring
+// translation. The result is normalized.
 function transformDirection(matArray, vec3) {
   const x = vec3.x ?? 0;
   const y = vec3.y ?? 0;
@@ -3426,9 +3415,9 @@ function transformDirection(matArray, vec3) {
   return { x: dx, y: dy, z: dz };
 }
 
-// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- recursive walk over the glTF
-// node tree, accumulating world matrices. Calls `visitor(node, mat)`
-// for each node with its model-space (root-relative) transform.
+// Recursive walk over the glTF node tree, accumulating world matrices. Calls
+// `visitor(node, mat)` for each node with its root-relative model-space
+// transform.
 function walkNodeTree(gltf, nodes, parentMat, sceneNodeIds, visitor) {
   for (let i = 0; i < sceneNodeIds.length; i++) {
     const idx = sceneNodeIds[i];
@@ -3448,16 +3437,15 @@ function walkNodeTree(gltf, nodes, parentMat, sceneNodeIds, visitor) {
 }
 
 /**
- * NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- read the asset's
- * `extensions.KHR_lights_punctual.lights[]` array, walk the node
- * hierarchy applying TRS so each per-node light reference resolves
- * to a model-space position + direction, and emit a flat array of
- * resolved light defs for `Components.lights`.
+ * Read the asset's `extensions.KHR_lights_punctual.lights[]` array, walk the
+ * node hierarchy applying TRS so each per-node light reference resolves to a
+ * model-space position and direction, and emit a flat array of resolved light
+ * definitions for `Components.lights`.
  *
- * The glTF spec puts a light at the origin of its node's local
- * space, pointing along -Z (the standard glTF camera convention).
- * Position transforms with the world matrix; direction transforms
- * with just the rotation (we do this via w=0 transform).
+ * The glTF specification puts a light at the origin of its node's local space
+ * pointing along -Z, the standard glTF camera convention. Position transforms
+ * with the world matrix; direction transforms with the rotation alone, which a
+ * w = 0 transform achieves.
  *
  * @param {object} gltf
  * @param {ModelComponents.Node[]} nodes - already-loaded nodes (with
@@ -3563,11 +3551,10 @@ function parse(loader, frameState) {
   const animations = loadAnimations(loader, nodes);
   const articulations = loadArticulations(gltf);
   const scene = loadScene(gltf, nodes);
-  // NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- read scene-level lights
-  // + walk the node tree to resolve each per-node light reference's
-  // model-space position/direction. Result lands on
-  // `components.lights` for the renderer to pack into the per-model
-  // light UBO. Empty array when the asset declares no extension.
+  // Read scene-level lights and walk the node tree to resolve each per-node
+  // light reference's model-space position and direction. The result lands on
+  // `components.lights`, which the renderer packs into the per-model light
+  // uniform block. Empty when the asset declares no such extension.
   const lights = materializeKhrLightsPunctual(gltf, nodes);
 
   const components = new Components();

@@ -368,12 +368,10 @@ ModelUtility.supportedExtensions = {
   KHR_materials_specular: true,
   KHR_materials_anisotropy: true,
   KHR_materials_clearcoat: true,
-  // C-R4-GLTF-KHR (Batch 105) — additional KHR material extensions
-  // wired through the GltfLoader.loadMaterial path. Factor-only
-  // support shipped in Batch 95; primary + secondary textures in
-  // Batch 102/103. Iridescence/sheen/volume only fire for assets
-  // that declare them; transmission needs the refraction MRT
-  // architecture for correct rendering — see follow-up batch.
+  // Additional KHR material extensions, wired through
+  // `GltfLoader.loadMaterial`. Iridescence, sheen and volume fire only for
+  // assets that declare them; transmission additionally depends on the
+  // refraction MRT to render correctly.
   KHR_materials_iridescence: true,
   KHR_materials_sheen: true,
   KHR_materials_volume: true,

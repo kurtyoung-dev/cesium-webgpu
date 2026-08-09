@@ -1,89 +1,62 @@
 /// <reference types="@webgpu/types" />
 /**
- * C11-90 — the single enforceable home for glTF primitive-mode → WebGPU
- * topology realization on the model path.
+ * The single enforceable home for glTF primitive-mode to WebGPU topology
+ * realization on the model path.
  *
- * WHY THIS MODULE EXISTS
- * ----------------------
- * Before C11-90 the model path recognized exactly two of glTF's seven draw
- * modes. `topologyForPrimitiveType` mapped mode 0 (POINTS) to `"point-list"`
- * and *everything else* — LINES, LINE_LOOP, LINE_STRIP, TRIANGLE_STRIP,
- * TRIANGLE_FAN — to `"triangle-list"`. Those five modes did not merely render
- * imprecisely; they rendered a completely different mesh from the same index
- * list (a LINE_STRIP's `[a,b,c,d,e,f]` became two unrelated triangles). The
- * `KHR_mesh_primitive_restart` merge (upstream `65a194d24e`) brought concrete
- * line-strip / line-loop / triangle-strip / triangle-fan assets into the tree,
- * so the gap is reachable parity debt rather than a hypothetical.
+ * Topology is a two-field pipeline axis — `topology` and `stripIndexFormat` —
+ * and the two are not independent: WebGPU bakes the strip restart value into
+ * the pipeline, so a `triangle-strip` built for a `uint16` index buffer is not
+ * interchangeable with one built for `uint32`. Were the fields writable
+ * separately at the roughly eighteen model and shadow descriptor sites, one
+ * site would eventually carry the topology without the format, and the two
+ * logical pipelines would alias onto a single cache entry — a defect that
+ * raises the hit rate, so no cache counter can report it.
  *
- * The Batch-788 globe lesson (`WebGPUGlobeSurfacePipelineKey.ts`) is the reason
- * this is a MODULE and not five `switch` statements: a pipeline-key axis that
- * lives in more than one place drifts, silently, for as long as nothing can
- * observe the drift. Topology is now a two-field axis — `topology` AND
- * `stripIndexFormat` — and a `triangle-strip` pipeline built for a `uint16`
- * index buffer is *not* interchangeable with one built for `uint32`
- * (WebGPU bakes the strip restart value into the pipeline). If those two
- * fields could be written independently at the ~18 model/shadow descriptor
- * sites, one site would eventually carry the topology without the format and
- * the two logical pipelines would alias onto one cache entry — a defect that
- * RAISES the hit rate and that no cache counter can report.
- *
- * So both fields travel together as one opaque {@link ModelTopologyRealization}
- * value, and both the pipeline `primitive` block and the pipeline cache key are
- * DERIVED from it by {@link modelPrimitiveState} and
+ * Both fields therefore travel together as one opaque
+ * {@link ModelTopologyRealization}, and both the pipeline `primitive` block and
+ * the pipeline cache key are derived from it by {@link modelPrimitiveState} and
  * {@link buildModelTopologyVariantKey}. No consumer spells either field out.
  *
- * PREPARATION, NEVER DRAW
- * -----------------------
- * {@link realizeModelPrimitiveTopology} is called exactly once per primitive,
- * from the per-primitive cache build in `WebGPUModelRenderer`. Its output is
- * stored on the primitive's cache record. Nothing in this module is reachable
- * from a per-frame draw path: LINE_LOOP closure and TRIANGLE_FAN expansion
- * allocate and rewrite an index list, which is a preparation cost paid once,
- * not a per-draw cost.
+ * Realization is preparation, never draw. {@link realizeModelPrimitiveTopology}
+ * runs once per primitive, from the per-primitive cache build in
+ * `WebGPUModelRenderer`, and its output is stored on the primitive's cache
+ * record. LINE_LOOP closure and TRIANGLE_FAN expansion allocate and rewrite an
+ * index list, which is a cost paid once at preparation rather than per draw.
  *
- * WHAT WEBGPU HAS, AND WHAT IT DOES NOT
- * -------------------------------------
- * WebGPU has five topologies; glTF has seven modes. Three map natively
- * (POINTS→point-list, LINES→line-list, TRIANGLES→triangle-list), two map
- * natively but constrain the pipeline (LINE_STRIP→line-strip,
- * TRIANGLE_STRIP→triangle-strip, both of which REQUIRE `stripIndexFormat`),
- * and two have no WebGPU counterpart at all:
+ * WebGPU has five topologies where glTF has seven modes. Three map natively
+ * (POINTS to point-list, LINES to line-list, TRIANGLES to triangle-list); two
+ * map natively but constrain the pipeline (LINE_STRIP to line-strip,
+ * TRIANGLE_STRIP to triangle-strip, both of which require `stripIndexFormat`);
+ * and two have no WebGPU counterpart:
  *
  *   - LINE_LOOP has no `"line-loop"`. Realized as `line-list` with the closing
- *     segment (last→first of each run) appended.
+ *     segment (last to first of each run) appended.
  *   - TRIANGLE_FAN has no `"triangle-fan"`. Realized as `triangle-list` by
  *     expanding each run `[c, v1, v2, v3, ...]` into `(c,v1,v2), (c,v2,v3), …`.
  *
- * PRIMITIVE RESTART
- * -----------------
- * WebGPU enables primitive restart implicitly and unconditionally for strip
- * topologies, using the maximum value of the pipeline's `stripIndexFormat`
+ * Primitive restart is implicit and unconditional for strip topologies in
+ * WebGPU, using the maximum value of the pipeline's `stripIndexFormat`
  * (`0xFFFF` for uint16, `0xFFFFFFFF` for uint32). That matches WebGL2's fixed
- * restart index, so `LINE_STRIP` / `TRIANGLE_STRIP` need no index rewriting —
+ * restart index, so LINE_STRIP and TRIANGLE_STRIP need no index rewriting —
  * only the correct `stripIndexFormat`.
  *
- * The one place the two backends genuinely diverge is UNSIGNED_BYTE indices.
- * glTF allows them; WebGPU has no `uint8` index format, so
- * `ModelPrimitiveGeometry` upcasts `Uint8Array` → `Uint16Array`. That upcast
- * turns the uint8 restart sentinel `0xFF` into the ordinary index `0x00FF`,
- * which is NOT the uint16 restart sentinel — every restart in the asset would
- * silently become a real vertex reference. {@link realizeModelPrimitiveTopology}
- * repairs that by mapping `0x00FF` → `0xFFFF`, and does so ONLY for the four
- * modes `KHR_mesh_primitive_restart` declares restart-capable
- * (LINE_STRIP, LINE_LOOP, TRIANGLE_STRIP, TRIANGLE_FAN — see
- * `Scene/getMeshPrimitives.js`, which rejects any other mode outright).
- * For LINES / TRIANGLES / POINTS the value `255` is a legitimate vertex index
- * and translating it would corrupt the mesh, so those modes are never
- * translated. The caller signals the source width with
- * `indexSourceComponentBytes`; a mode that is not restart-capable ignores it.
+ * The backends genuinely diverge on UNSIGNED_BYTE indices. glTF allows them and
+ * WebGPU has no `uint8` index format, so `ModelPrimitiveGeometry` upcasts
+ * `Uint8Array` to `Uint16Array`. The upcast turns the uint8 restart sentinel
+ * `0xFF` into the ordinary index `0x00FF`, which is not the uint16 sentinel, so
+ * every restart in the asset would silently become a real vertex reference.
+ * {@link realizeModelPrimitiveTopology} repairs that by mapping `0x00FF` to
+ * `0xFFFF`, and only for the four modes `KHR_mesh_primitive_restart` declares
+ * restart-capable: LINE_STRIP, LINE_LOOP, TRIANGLE_STRIP and TRIANGLE_FAN. See
+ * `Scene/getMeshPrimitives.js`, which rejects any other mode outright. For
+ * LINES, TRIANGLES and POINTS the value `255` is a legitimate vertex index and
+ * translating it would corrupt the mesh, so those modes are never translated.
+ * The caller signals the source width with `indexSourceComponentBytes`, which a
+ * mode that is not restart-capable ignores.
  *
- * FEATURE PRESERVATION
- * --------------------
- * TRIANGLES and POINTS are byte-identical to their pre-C11-90 behavior:
- * TRIANGLES yields {@link MODEL_TOPOLOGY_TRIANGLE_LIST} (whose variant key is
- * the base key UNCHANGED, so every already-cached triangle pipeline keeps its
- * key), and POINTS yields point-list plus the same sequential-index synthesis
- * the GLTF-POINTS-MODE batch introduced.
+ * TRIANGLES yields {@link MODEL_TOPOLOGY_TRIANGLE_LIST}, whose variant key is
+ * the base key unchanged, so every already-cached triangle pipeline keeps its
+ * key; POINTS yields point-list plus sequential-index synthesis.
  *
  * @module WebGPUModelTopology
  */
@@ -242,9 +215,9 @@ export interface ModelTopologyRealization {
 }
 
 /**
- * The realization every historical triangle primitive gets. Its variant key is
- * the base key UNCHANGED and its `primitive` block is `{ topology, cullMode }`
- * with no `stripIndexFormat`, so pre-C11-90 pipelines keep their exact keys and
+ * The realization every ordinary triangle primitive gets. Its variant key is the
+ * base key unchanged and its `primitive` block is `{ topology, cullMode }` with
+ * no `stripIndexFormat`, so triangle pipelines keep their exact keys and
  * descriptors.
  */
 export const MODEL_TOPOLOGY_TRIANGLE_LIST: ModelTopologyRealization =
@@ -590,12 +563,11 @@ export function modelTopologyRealizationFrom(
 }
 
 /**
- * THE pipeline `primitive` block for every model + model-shadow pipeline.
+ * The pipeline `primitive` block for every model and model-shadow pipeline.
  * Both topology fields are emitted here or not at all, which is what makes it
  * impossible for a descriptor site to carry the topology without its format.
  *
- * For `triangle-list` the returned object is `{ topology, cullMode }` — the
- * exact shape the ~18 pre-C11-90 descriptor sites wrote inline.
+ * For `triangle-list` the returned object is `{ topology, cullMode }`.
  */
 export function modelPrimitiveState(
   realization: ModelTopologyRealization,
@@ -641,15 +613,15 @@ export function modelTopologyAxisToken(
 }
 
 /**
- * Folds the topology axis into a pipeline cache key. `triangle-list` returns
- * the key UNCHANGED — numeric for the numeric-keyed caches, string for the
- * string-keyed ones — so every pre-C11-90 triangle pipeline keeps a
- * byte-identical key and nothing recompiles on the frame this ships.
+ * Folds the topology axis into a pipeline cache key. `triangle-list` returns the
+ * key unchanged — numeric for the numeric-keyed caches, string for the
+ * string-keyed ones — so a triangle pipeline keeps a byte-identical key and
+ * nothing recompiles.
  *
  * Strips additionally carry their `stripIndexFormat`, which is what stops a
- * uint16 and a uint32 `triangle-strip` from aliasing onto one entry. The
- * central pipeline cache keys off `descriptor.name`, which embeds this key, so
- * the distinction propagates all the way down.
+ * uint16 and a uint32 `triangle-strip` from aliasing onto one entry. The central
+ * pipeline cache keys off `descriptor.name`, which embeds this key, so the
+ * distinction propagates all the way down.
  */
 export function buildModelTopologyVariantKey(
   key: number | string,

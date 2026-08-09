@@ -3,12 +3,11 @@
 // Uses RTE (Relative-To-Eye) for 64-bit precision at planetary scale
 // Vertex: posHigh(3) + posLow(3) + normal(3) + uv(2) = 11 floats = 44 bytes
 //
-// CSM Slice 2d — receives cascaded shadows through the primitive
-// effects bind group at `@group(3)` (texture group occupies @group(2)).
-// Direct radiance is modulated by `computeShadowFactorCSM` when
-// `effects.csmControl.x > 0.5`; ambient remains unshadowed.
+// Receives cascaded shadows through the primitive effects bind group at
+// `@group(3)`; the texture group occupies `@group(2)`. Direct radiance is
+// modulated by `computeShadowFactorCSM` when `effects.csmControl.x > 0.5`,
+// while ambient remains unshadowed.
 //
-// Batch 167 - B.12 chunk usage.
 // @chunk csm_samplePointShadow
 
 struct VertexInput {
@@ -42,9 +41,8 @@ struct CameraUniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     lightDirection: vec4<f32>,
-    // DP-H41 (Batch 27) — previous frame's viewProjection for
-    // TAA / motion-vector reprojection. Sourced from
-    // `UniformState._previousViewProjection` (f32 mat4).
+    // The previous frame's viewProjection, for TAA and motion-vector
+    // reprojection. Sourced from `UniformState.previousViewProjection`.
     previousViewProjection: mat4x4<f32>,
     inverseViewQuaternion: vec4<f32>,
     //>>ifdef LOG_DEPTH
@@ -87,7 +85,8 @@ struct EffectsUniforms {
     atmosphereLutControl: vec4<f32>,
     // .x = csmEnabled flag.
     csmControl: vec4<f32>,
-    // Batch 167 - extends struct through pointLightPositionRTE for B.12.
+    // The tail through `pointLightPositionRTE` must stay byte-consistent with
+    // the effects bind group that fills it.
     edgeControl: vec4<f32>,
     edgeViewport: vec4<f32>,
     pointLightControl: vec4<f32>,
@@ -258,7 +257,7 @@ fn sampleCascadeShadow(
     return s0;
 }
 
-// Batch 167 - B.12 chunk-based point-light receive.
+// Chunk-based point-light receive.
 fn computeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
     let visibility = csm_samplePointShadow(
@@ -349,10 +348,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // Direct lighting contribution (modulated by shadow factor below).
     var direct = (diffuse + specular) * material.lightColor.rgb * NdotL;
 
-    // CSM Slice 2d — modulate direct radiance by cascaded shadow
-    // factor when CSM is active. Ambient stays unshadowed (standard
-    // PBR convention).
-    // Batch 167 - point-light cube shadows take precedence over CSM.
+    // Modulate direct radiance by the cascaded shadow factor when CSM is
+    // active; ambient stays unshadowed per standard PBR convention. Point-light
+    // cube shadows take precedence over CSM.
     if (effects.pointLightControl.x > 0.5) {
         let shadowFactor = computeShadowFactorPointLight(input.eyePosition);
         direct = direct * shadowFactor;
@@ -375,8 +373,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
     var finalColor = vec4<f32>(gamma, alpha);
 
-    // FEAT-GAP-09 — Aerial-perspective fog blend (Session 34 pattern).
-    // Applied AFTER tonemap+gamma so fog color composites in display space.
+    // Aerial-perspective fog blend, applied after tonemap and gamma so the fog
+    // colour composites in display space.
     if (effects.atmosphereLutControl.x > 0.5) {
         let innerRadius = effects.atmosphereLutControl.y;
         let thickness = max(1.0, effects.atmosphereLutControl.z);

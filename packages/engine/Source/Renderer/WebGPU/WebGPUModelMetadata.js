@@ -1,57 +1,38 @@
 /**
- * DP-H46a — WebGPU structural-metadata GPU upload + binding scaffolding
- * (first increment of the DP-H46 metadata epic).
+ * WebGPU structural-metadata GPU upload and binding.
  *
- * This module mirrors {@link WebGPUModelFeatureId} for the
- * `EXT_structural_metadata` property-ATTRIBUTE path: it reads
- * `model.structuralMetadata` + the primitive's property-attributes,
- * resolves each property's backing glTF vertex attribute (via the
- * backend-agnostic `MetadataPipelineStage.getPropertyAttributesInfo`
- * name-resolution convention — `property.attribute` is the glTF
- * attribute name, e.g. `_TEMPERATURES`), and uploads a per-vertex vec4
- * value (METADATA-MULTICOMPONENT — up to four components of the first
- * GPU-compatible property attribute; scalars zero-pad) into a dedicated
- * vertex buffer (slot 9 in the model layout) so `ModelPBRComplete.wgsl`'s
- * `@location(9) metadataValue: vec4<f32>` input is fed.
+ * The counterpart of {@link WebGPUModelFeatureId} for `EXT_structural_metadata`.
+ * Three metadata sources are carried to the GPU, each with its own binding
+ * shape:
  *
- * What ships in DP-H46a:
- *   - Property-ATTRIBUTE → GPU vertex buffer for ONE scalar value (the
- *     `.x` component of the first GPU-compatible property attribute),
- *     proving the property-ATTRIBUTE → GPU → shader path end-to-end.
- *   - `MODEL_HAS_METADATA` presence detection so the renderer can flip
- *     the ShaderDefine bit + bind the extra vertex slot only when the
- *     primitive actually carries a property attribute.
- *
- * What is deferred (NOT in DP-H46a — see DP-H46_METADATA_DESIGN.md):
- *   - DP-H46b: a generated WGSL `Metadata` struct (one field per
- *     property) + the real `initializeMetadata` (replaces the stub in
- *     ModelPBRComplete.wgsl); multi-component / vec property attributes.
- *   - DP-H46c (NOW LANDED below): property-TEXTURE sampler+texture bind slots.
- *   - DP-H46d (NOW LANDED below): property-TABLE tightly-packed RGBA texture
- *     (`resolvePropertyTableLayout` + `ensurePropertyTableResources` —
- *     re-uploads the loader's retained packed bytes into one rgba8unorm
- *     GPUTexture, indexed by `(featureId, propertyInfoIndex)` via textureLoad).
- *
- * DP-H46c additions (property TEXTURES):
- *   - `resolvePropertyTextureLayout(model, primitive, maxTextures)` — the
- *     SHARED layout both the binding side (this module + the renderer) and
- *     the codegen (`MetadataWGSLPipelineStage`) consume. It iterates the
- *     SAME property-textures `MetadataPipelineStage.getPropertyTexturesInfo`
- *     does (GPU-compatible only), de-duplicates the PHYSICAL textures (many
- *     properties share one image), assigns each unique physical texture a
- *     contiguous (texture, sampler) binding slot starting at
- *     `PROPERTY_TEXTURE_BINDING_BASE`, and returns per-property accessor
- *     info (binding index, channel swizzle, texCoord set, optional
- *     KHR_texture_transform, offset/scale). The two sides MUST agree on
- *     this ordering — that's why it lives in one function.
- *   - `ensurePropertyTextureResources(...)` — uploads each unique physical
- *     texture to the GPU + creates a sampler, mirroring how the model's PBR
- *     textures are created. Idempotent per primitive cache.
- *
- * The single scalar this batch uploads is enough to satisfy the
- * de-risking proof: a scalar property-attribute value reaches the WGSL
- * fragment shader (verified via the metadata-debug fragment-color
- * override gated by `globalThis.CesiumWebGPUMetadataDebug`).
+ *   - **Property attributes.** `model.structuralMetadata` and the primitive's
+ *     property-attributes are read, each property's backing glTF vertex
+ *     attribute is resolved through
+ *     `MetadataPipelineStage.getPropertyAttributesInfo` (where
+ *     `property.attribute` is the glTF attribute name, such as
+ *     `_TEMPERATURES`), and a per-vertex vec4 — up to four components of the
+ *     first GPU-compatible property attribute, zero-padded for scalars — is
+ *     uploaded into vertex slot 9, feeding `ModelPBRComplete.wgsl`'s
+ *     `@location(9) metadataValue: vec4<f32>`. `MODEL_HAS_METADATA` presence
+ *     detection lets the renderer set the ShaderDefine bit and bind the extra
+ *     vertex slot only for primitives that actually carry one.
+ *   - **Property textures.** `resolvePropertyTextureLayout` is the shared
+ *     layout that both the binding side — this module and the renderer — and
+ *     the codegen in `MetadataWGSLPipelineStage` consume. It iterates the same
+ *     GPU-compatible property textures `MetadataPipelineStage.getPropertyTexturesInfo`
+ *     does, de-duplicates the physical textures (many properties share one
+ *     image), assigns each unique physical texture a contiguous
+ *     texture-and-sampler slot from `PROPERTY_TEXTURE_BINDING_BASE`, and
+ *     returns per-property accessor info: binding index, channel swizzle,
+ *     texCoord set, optional KHR_texture_transform, and offset/scale. Both
+ *     sides must agree on that ordering, which is why it lives in one
+ *     function. `ensurePropertyTextureResources` then uploads each unique
+ *     physical texture and creates a sampler, mirroring how the model's PBR
+ *     textures are created, and is idempotent per primitive cache.
+ *   - **Property tables.** `resolvePropertyTableLayout` and
+ *     `ensurePropertyTableResources` re-upload the loader's retained packed
+ *     bytes into one rgba8unorm GPUTexture, indexed by
+ *     `(featureId, propertyInfoIndex)` through `textureLoad`.
  *
  * @private
  * @module WebGPUModelMetadata
@@ -181,48 +162,50 @@ import { ensureFloat32 } from "../../Scene/Model/ModelPrimitiveGeometry.js";
  */
 
 /**
- * DP-H46c — first group-1 binding for the property-TEXTURE block. The model
- * material BGL occupies bindings 0-38 (UBOs + PBR + KHR + featureId + IBL +
- * BRDF LUT); the property textures begin here so they never collide with the
- * fixed material bindings. The codegen (`MetadataWGSLPipelineStage`) declares
- * `@group(1) @binding(39 + k)` for the k-th unique physical property texture
- * and a SINGLE shared sampler at `@binding(39 + MAX_PROPERTY_TEXTURES)` —
- * both sides derive the slots from this base + {@link PROPERTY_TEXTURE_SAMPLER_BINDING},
- * so they stay in sync.
+ * The first group-1 binding of the property-texture block.
  *
- * One shared sampler (not one per texture) keeps the fragment-stage sampler
- * count well under the WebGPU spec floor `maxSamplersPerShaderStage = 16`
- * (the model FS already uses ~10-11 samplers across its bind groups; N more
- * texture samplers would blow the budget — and metadata sampling uses the
- * same nearest/clamp state for every property texture anyway).
+ * The model material bind-group layout occupies bindings 0-38 — uniform
+ * buffers, PBR, KHR, featureId, IBL and the BRDF LUT — so property textures
+ * begin past them and never collide. `MetadataWGSLPipelineStage` declares
+ * `@group(1) @binding(39 + k)` for the k-th unique physical property texture,
+ * plus a single shared sampler at `@binding(39 + MAX_PROPERTY_TEXTURES)`. Both
+ * sides derive their slots from this base and
+ * {@link PROPERTY_TEXTURE_SAMPLER_BINDING}, so they stay in sync.
+ *
+ * The sampler is shared rather than one per texture to keep the fragment
+ * stage under the WebGPU spec floor of `maxSamplersPerShaderStage = 16`: the
+ * model fragment shader already uses 10 to 11 samplers across its bind groups,
+ * and metadata sampling uses the same nearest/clamp state for every property
+ * texture regardless.
  *
  * @private
  */
 const PROPERTY_TEXTURE_BINDING_BASE = 39;
 
 /**
- * DP-H46c — cap on the number of UNIQUE physical property textures a single
- * primitive's material BGL will bind. The WebGPU spec floor for
- * `maxSampledTexturesPerShaderStage` is 16; the model FS already uses ~12
- * sampled textures in the full-KHR variant (5 PBR + 7 KHR/refraction +
- * featureId + IBL + BRDF LUT), so ~4-6 remain. We cap at 4 unique property
- * textures (4 sampled textures) so the property-texture variant fits even on
- * a spec-floor device when combined with the basic (non-KHR) material variant
- * (10 sampled + 4 = 14 ≤ 16). The pipeline cache's `buildMaterialBGL`
- * capability check is the hard backstop — it throws loudly if a variant ever
- * exceeds the device limit. Most assets use ONE physical property texture
- * (e.g. SimplePropertyTexture packs 3 properties into channels of one image),
- * so the cap rarely binds; overflow properties are dropped from the codegen
- * (logged once) rather than failing the model.
+ * Cap on the number of unique physical property textures a single primitive's
+ * material bind-group layout will bind.
+ *
+ * The WebGPU spec floor for `maxSampledTexturesPerShaderStage` is 16, and the
+ * model fragment shader already uses about 12 sampled textures in the full-KHR
+ * variant (5 PBR, 7 KHR and refraction, plus featureId, IBL and the BRDF LUT),
+ * leaving four to six. Four keeps the property-texture variant inside the floor
+ * even combined with the basic non-KHR material variant: 10 sampled plus 4 is
+ * 14. The `buildMaterialBGL` capability check is the hard backstop and throws
+ * if a variant ever exceeds the device limit.
+ *
+ * Most assets use one physical property texture — SimplePropertyTexture packs
+ * three properties into channels of a single image — so the cap rarely binds.
+ * Overflow properties are dropped from the codegen, logged once, rather than
+ * failing the model.
  *
  * @private
  */
 const MAX_PROPERTY_TEXTURES = 4;
 
 /**
- * DP-H46c — binding of the SINGLE shared property-texture sampler (one for all
- * property textures). Sits just past the {@link MAX_PROPERTY_TEXTURES} texture
- * bindings.
+ * Binding of the single shared property-texture sampler, which sits just past
+ * the {@link MAX_PROPERTY_TEXTURES} texture bindings.
  *
  * @private
  */
@@ -230,32 +213,32 @@ const PROPERTY_TEXTURE_SAMPLER_BINDING =
   PROPERTY_TEXTURE_BINDING_BASE + MAX_PROPERTY_TEXTURES;
 
 /**
- * DP-H46d — group-1 binding of the SINGLE property-TABLE texture. It sits just
- * past the property-texture block (the textures 39..42 + their shared sampler
- * 43), so the fixed material bindings, the property-texture block, and the
- * property-table block never collide. A primitive maps to at most ONE property
- * table (the EXT_mesh_features mapping is 1:1 within a primitive), and all of
- * that table's GPU-compatible properties are packed into ROWS of this single
- * RGBA8 texture — so one binding suffices.
+ * Group-1 binding of the single property-table texture.
  *
- * The codegen (`MetadataWGSLPipelineStage`) declares
+ * It sits just past the property-texture block — textures 39 to 42 and their
+ * shared sampler at 43 — so the fixed material bindings, the property-texture
+ * block and the property-table block never collide. A primitive maps to at most
+ * one property table, since the EXT_mesh_features mapping is 1:1 within a
+ * primitive, and all of that table's GPU-compatible properties are packed into
+ * rows of this one RGBA8 texture, so a single binding suffices.
+ *
+ * `MetadataWGSLPipelineStage` declares
  * `@group(1) @binding(44) var metadataPropertyTableTexture: texture_2d<f32>;`
- * and reads it via `textureLoad(..., vec2<i32>(featureId, propertyInfoIndex), 0)`
- * — no sampler is needed (texel fetch ignores filtering), but the BGL still
- * binds a non-filtering sampler placeholder at the NEXT slot to keep the
- * declaration shape uniform with the property-texture block and satisfy any
- * future sampled-read path.
+ * and reads it with
+ * `textureLoad(..., vec2<i32>(featureId, propertyInfoIndex), 0)`. No sampler is
+ * needed, because texel fetch ignores filtering, but the layout still binds a
+ * non-filtering sampler placeholder at the next slot to keep the declaration
+ * shape uniform with the property-texture block.
  *
  * @private
  */
 const PROPERTY_TABLE_BINDING = PROPERTY_TEXTURE_SAMPLER_BINDING + 1;
 
 /**
- * DP-H46d — group-1 binding of the property-table's (unused) sampler. Present
- * only to round out the table block; `textureLoad` does not sample, so this is
- * never read by the shader. Kept so the BGL/bind-group/codegen all agree on a
- * stable two-binding table block (texture + sampler), mirroring the
- * property-texture block's (texture, sampler) shape.
+ * Group-1 binding of the property-table's sampler, which the shader never
+ * reads: `textureLoad` does not sample. It exists so the bind-group layout, the
+ * bind group and the codegen all agree on a stable two-binding table block,
+ * mirroring the property-texture block's texture-and-sampler shape.
  *
  * @private
  */
@@ -266,30 +249,28 @@ const PROPERTY_TABLE_SAMPLER_BINDING = PROPERTY_TABLE_BINDING + 1;
  * return its per-vertex data packed as vec4 (Float32Array of length
  * `vertexCount * 4`, vertex slot 9's `float32x4` layout).
  *
- * METADATA-MULTICOMPONENT — up to FOUR components per vertex are
- * transported (SCALAR pads `.yzw` with zero; VEC2/VEC3 pad the tail; VEC4
- * and MAT2 fill all four). This replaces DP-H46a's single-scalar
- * (`.x`-only) transport so VEC2/3/4 property attributes round-trip every
- * component, matching the WebGL `MetadataPipelineStage` attribute path
- * (which reads the full glTF attribute directly).
+ * Up to four components per vertex are transported: SCALAR pads `.yzw` with
+ * zero, VEC2 and VEC3 pad the tail, and VEC4 and MAT2 fill all four. Every
+ * component of a VEC2, VEC3 or VEC4 property attribute therefore round-trips,
+ * matching the WebGL `MetadataPipelineStage` attribute path, which reads the
+ * full glTF attribute directly.
  *
- * NEW-MODEL-METADATA-MAT3-MAT4 — MAT3 (9) / MAT4 (16) property attributes
- * widen the pack to FOUR vec4s per vertex (16 floats, column-major matrix
- * elements; MAT3 zero-pads elements 9..15). The returned `vec4Count` is 4
- * in that case (1 otherwise) and drives the widened `arrayStride = 64`
- * vertex layout (shader locations 9-12) plus the
- * `MODEL_METADATA_MAT_TRANSPORT` shader variant. Every other shape keeps
- * the single-vec4 pack byte-identical.
+ * MAT3 (9 elements) and MAT4 (16) property attributes widen the pack to four
+ * vec4s per vertex — 16 floats of column-major matrix elements, with MAT3
+ * zero-padding elements 9 to 15 — so the full matrix transports. The returned
+ * `vec4Count` is 4 in that case and 1 otherwise, and drives both the widened
+ * `arrayStride = 64` vertex layout at shader locations 9 to 12 and the
+ * `MODEL_METADATA_MAT_TRANSPORT` shader variant. Every other shape keeps the
+ * single-vec4 pack.
  *
- * The property's backing glTF attribute must exist on the primitive AND its
- * typed array must survive to render time (it does on WebGPU — `GltfLoader`
- * retains every vertex attribute's typed array when
- * `context.requiresVertexTypedArrayRetention` is true).
+ * The property's backing glTF attribute must exist on the primitive and its
+ * typed array must survive to render time, which `GltfLoader` guarantees by
+ * retaining every vertex attribute's typed array when
+ * `context.requiresVertexTypedArrayRetention` is true.
  *
- * Normalized-integer attributes are decoded to float per the glTF
- * `accessor.normalized` rule by `ensureFloat32`, matching the WebGL
- * MetadataPipelineStage path (and `MetadataClassProperty.getGlslType`'s
- * normalized-int→float rule).
+ * `ensureFloat32` decodes normalized-integer attributes to float per the glTF
+ * `accessor.normalized` rule, matching the WebGL MetadataPipelineStage path and
+ * `MetadataClassProperty.getGlslType`'s normalized-integer-to-float rule.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
@@ -352,18 +333,17 @@ function resolvePropertyAttributeVec4(model, primitive) {
       if (vertexCount <= 0) {
         continue;
       }
-      // METADATA-MULTICOMPONENT — pack up to four components per vertex
-      // into the vec4 (`float32x4`) buffer the model vertex layout binds
-      // at slot 9. Missing tail components stay zero (the Float32Array is
-      // zero-initialized), so a SCALAR property transports as (x,0,0,0)
-      // and a VEC3 as (x,y,z,0).
+      // Pack up to four components per vertex into the `float32x4` buffer the
+      // model vertex layout binds at slot 9. Missing tail components stay zero,
+      // since the Float32Array is zero-initialized, so a SCALAR property
+      // transports as (x,0,0,0) and a VEC3 as (x,y,z,0).
       //
-      // NEW-MODEL-METADATA-MAT3-MAT4 — MAT3/MAT4 attributes widen the pack
-      // to FOUR vec4s per vertex (16 floats, column-major; MAT3 zero-pads
-      // elements 9..15) so the full matrix transports. Keyed strictly off
-      // the glTF attribute TYPE (not a generic componentCount > 4) so only
-      // real matrix attributes take the widened layout — the codegen's
-      // `matTransport` predicate mirrors this via the same resolve.
+      // MAT3 and MAT4 attributes widen the pack to four vec4s per vertex — 16
+      // column-major floats, with MAT3 zero-padding elements 9 to 15 — so the
+      // full matrix transports. The test is the glTF attribute TYPE rather than
+      // a generic `componentCount > 4`, so only real matrix attributes take the
+      // widened layout; the codegen's `matTransport` predicate mirrors this
+      // through the same resolve.
       const isMatTransport =
         modelAttribute.type === AttributeType.MAT3 ||
         modelAttribute.type === AttributeType.MAT4;
@@ -463,25 +443,26 @@ function ensureMetadataResources(device, primCache, metadataData) {
 }
 
 /**
- * DP-H46c — resolve the SHARED property-TEXTURE layout for a primitive. Both
- * the binding side (this module's {@link ensurePropertyTextureResources} + the
- * renderer's bind-group splice) and the codegen
- * (`MetadataWGSLPipelineStage.generateMetadataWGSL`) consume this identical
- * structure, so the generated WGSL `@group(1) @binding(N)` numbers match the
- * binding manifest the BGL allocates.
+ * Resolve the shared property-texture layout for a primitive.
  *
- * Mirrors `MetadataPipelineStage.getPropertyTexturesInfo` (:204): iterates the
- * model's property textures, keeps only GPU-compatible properties (the
- * `classProperty.isGpuCompatible(channels.length)` predicate), and resolves
- * each property's `textureReader` (texCoord set, channels, physical glTF
- * texture, optional KHR_texture_transform, offset/scale via the class).
+ * Both the binding side — this module's
+ * {@link ensurePropertyTextureResources} and the renderer's bind-group splice —
+ * and the codegen in `MetadataWGSLPipelineStage.generateMetadataWGSL` consume
+ * this identical structure, so the generated WGSL `@group(1) @binding(N)`
+ * numbers match the binding manifest the bind-group layout allocates.
  *
- * Physical textures are de-duplicated by the glTF texture object reference
- * (the SAME object many `PropertyTextureProperty`s share — e.g.
- * SimplePropertyTexture's three properties all read image index 1). Each
- * unique physical texture gets a contiguous (texture, sampler) binding slot
- * starting at {@link PROPERTY_TEXTURE_BINDING_BASE}; the per-property accessor
- * records which slot to sample.
+ * Mirrors `MetadataPipelineStage.getPropertyTexturesInfo`: iterates the model's
+ * property textures, keeps only GPU-compatible properties per the
+ * `classProperty.isGpuCompatible(channels.length)` predicate, and resolves each
+ * property's `textureReader` — texCoord set, channels, physical glTF texture,
+ * optional KHR_texture_transform, and offset/scale from the class.
+ *
+ * Physical textures are de-duplicated by glTF texture object reference, since
+ * many `PropertyTextureProperty` instances share one object; SimplePropertyTexture's
+ * three properties, for instance, all read image index 1. Each unique physical
+ * texture gets a contiguous texture-and-sampler binding slot starting at
+ * {@link PROPERTY_TEXTURE_BINDING_BASE}, and the per-property accessor records
+ * which slot to sample.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
@@ -606,14 +587,15 @@ function primitiveHasPropertyTexture(model, primitive) {
 }
 
 /**
- * DP-H46c — create (or return cached) GPU resources for the property-TEXTURE
- * block on a primitive: one GPU texture view + one sampler per UNIQUE physical
- * property texture in `layout.textures`. Idempotent (stamps
- * `primCache._propertyTextureResources`). The GPU texture is sourced from the
- * glTF `textureReader.texture` exactly like the model's PBR textures
- * (`WebGPUModelRenderer.createGPUTextureFromReader`), which is passed in as
- * `createGpuTexture` to avoid a circular import. Property-texture data is
- * `rgba8unorm` (NOT `-srgb`) — metadata channel values are raw bytes, never
+ * Create, or return cached, GPU resources for a primitive's property-texture
+ * block: one GPU texture view and one sampler per unique physical property
+ * texture in `layout.textures`. Idempotent, stamping
+ * `primCache._propertyTextureResources`.
+ *
+ * The GPU texture is sourced from the glTF `textureReader.texture` exactly as
+ * the model's PBR textures are; that builder arrives as `createGpuTexture`
+ * rather than being imported, to avoid a circular import. Property-texture data
+ * is `rgba8unorm` and never `-srgb`: metadata channel values are raw bytes, not
  * gamma-encoded, so the sampler must not auto-decode sRGB.
  *
  * @param {GPUDevice} device
@@ -692,8 +674,8 @@ function ensurePropertyTextureResources(
   }
 }
 
-// DP-H46d — always 4 channels (RGBA8) for property-table textures, matching
-// `parseStructuralMetadata.NUM_CHANNELS`. Used by `isGpuCompatible` so the
+// Property-table textures are always 4 channels (RGBA8), matching
+// `parseStructuralMetadata.NUM_CHANNELS`. `isGpuCompatible` uses this so the
 // per-row cursor stays aligned with `collectGpuCompatiblePropertyInfo`.
 const PROPERTY_TABLE_NUM_CHANNELS = 4;
 
@@ -817,46 +799,46 @@ function findInstancePropertyTable(model, runtimeNode, propertyTables) {
 }
 
 /**
- * DP-H46d — resolve which property TABLE (if any) the primitive's selected
- * feature ID references, and HOW the WGSL FS resolves the indexing feature ID.
+ * Resolve which property table, if any, the primitive's selected feature ID
+ * references, and how the WGSL fragment shader resolves the indexing feature ID.
  *
  * Mirrors `MetadataPipelineStage.mapPropertyTablesToFeatureIdSets` for the
  * single-primitive case: a primitive's feature ID set carries a
- * `propertyTableId`; the table whose `id` matches is the one this primitive
- * reads. Supported feature-ID sources (METADATA-TABLE-SOURCES extends the
- * original DP-H46d attribute-only scope):
+ * `propertyTableId`, and the table whose `id` matches is the one this primitive
+ * reads. Four feature-ID sources are supported:
  *
- *   - ATTRIBUTE (`FeatureIdAttribute`, the dominant b3dm / BuildingsMetadata
- *     case) — the WGSL FS carries the `_FEATURE_ID_0` attribute
- *     (flat-interpolated) as `input.featureId0`; that is the index variable.
- *   - TEXTURE (`FeatureIdTexture`) — the generated `initializeMetadata`
- *     samples the model's feature-ID texture (group-1 binding 26, the SAME
- *     resource `ensureFeatureIdResources` uploads for batch styling / pick)
- *     at the reader's texCoord and unpacks the ID with the module-scope
+ *   - Attribute (`FeatureIdAttribute`), the dominant b3dm and
+ *     BuildingsMetadata case. The fragment shader carries the
+ *     flat-interpolated `_FEATURE_ID_0` attribute as `input.featureId0`, which
+ *     is the index variable.
+ *   - Texture (`FeatureIdTexture`). The generated `initializeMetadata` samples
+ *     the model's feature-ID texture at group-1 binding 26 — the same resource
+ *     `ensureFeatureIdResources` uploads for batch styling and picking — at the
+ *     reader's texCoord, and unpacks the ID with the module-scope
  *     `unpackFeatureId`. Gated on the referencing set being the model's
- *     SELECTED feature ID set + a live feature table — those are the
- *     conditions under which the binding-26 texture carries THIS set's data.
- *   - IMPLICIT (`FeatureIdImplicitRange`) — the renderer synthesizes the
- *     per-vertex IDs (`offset + floor(vertex / repeat)`) into the same
- *     `featureId0` vertex slot (Batch 188), so the attribute path's WGSL
- *     variable applies. Gated on the set being SELECTED (the synthesis only
- *     runs for the selected set).
- *
- * INSTANCE-sourced feature IDs (PARITY-METADATA-TABLE-INSTANCE-SOURCE): when a
- * `runtimeNode` is supplied and its node carries the model's SELECTED instance
- * feature ID set (EXT_mesh_gpu_instancing + EXT_instance_features), the renderer
- * packs the per-instance ID into the instance transform's pad slot and the VS
- * forwards it to the same flat `featureId0` varying (see
- * `WebGPUModelInstancing.resolveInstanceFeatureIds`). Instance IDs take priority
- * over primitive IDs (matching `model.instanceFeatureIdLabel` precedence), so
- * they are resolved first. The codegen then keys the table exactly like the
- * ATTRIBUTE/IMPLICIT path (`i32(metadataFeatureId)`).
+ *     selected feature ID set with a live feature table, which are the
+ *     conditions under which the binding-26 texture carries this set's data.
+ *   - Implicit (`FeatureIdImplicitRange`). The renderer synthesizes the
+ *     per-vertex IDs as `offset + floor(vertex / repeat)` into the same
+ *     `featureId0` vertex slot, so the attribute path's WGSL variable applies.
+ *     Gated on the set being selected, because the synthesis runs only for the
+ *     selected set.
+ *   - Instance-sourced. When a `runtimeNode` is supplied and its node carries
+ *     the model's selected instance feature ID set (EXT_mesh_gpu_instancing
+ *     with EXT_instance_features), the renderer packs the per-instance ID into
+ *     the instance transform's pad slot and the vertex shader forwards it to
+ *     the same flat `featureId0` varying — see
+ *     `WebGPUModelInstancing.resolveInstanceFeatureIds`. Instance IDs take
+ *     priority over primitive IDs, matching `model.instanceFeatureIdLabel`
+ *     precedence, so they are resolved first; the codegen then keys the table
+ *     exactly as the attribute and implicit paths do, with
+ *     `i32(metadataFeatureId)`.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
  * @param {ModelRuntimeNode} [runtimeNode] - the node this primitive renders
  *   under; enables the instance-sourced path when it carries instance feature
- *   IDs. Optional so non-instanced callers stay byte-identical.
+ *   IDs. Optional, so non-instanced callers need not supply it.
  * @returns {{ propertyTable: PropertyTable, featureIdSource: string,
  *   featureIdWgslVariable: string, featureIdTexCoord: number,
  *   featureIdChannelCount: number }|undefined}
@@ -931,10 +913,10 @@ function findPropertyTableForPrimitive(model, primitive, runtimeNode) {
           ? textureReader.channels.length
           : 1;
     } else if (featureIds instanceof ModelComponents.FeatureIdImplicitRange) {
-      // METADATA-TABLE-SOURCES — implicit-range feature IDs. The renderer
-      // synthesizes the per-vertex IDs into the `featureId0` vertex slot
-      // (Batch 188) ONLY when this set is the model's selected feature ID,
-      // so gate on that; the attribute WGSL variable then applies.
+      // Implicit-range feature IDs. The renderer synthesizes the per-vertex IDs
+      // into the `featureId0` vertex slot only when this set is the model's
+      // selected feature ID, so gate on that; the attribute WGSL variable then
+      // applies.
       if (!isSelectedPrimitiveFeatureIdSet(model, primitive, featureIds)) {
         continue;
       }
@@ -969,29 +951,28 @@ function findPropertyTableForPrimitive(model, primitive, runtimeNode) {
 }
 
 /**
- * DP-H46d — resolve the SHARED property-TABLE layout for a primitive. Both the
- * binding side ({@link ensurePropertyTableResources} + the renderer's
- * bind-group splice) and the codegen
- * (`MetadataWGSLPipelineStage.generateMetadataWGSL`) consume this identical
- * structure, so the generated `@binding(N)` numbers + per-property
+ * Resolve the shared property-table layout for a primitive.
+ *
+ * Both the binding side — {@link ensurePropertyTableResources} and the
+ * renderer's bind-group splice — and the codegen in
+ * `MetadataWGSLPipelineStage.generateMetadataWGSL` consume this identical
+ * structure, so the generated `@binding(N)` numbers and per-property
  * `propertyInfoIndex` rows match the texture the loader packed.
  *
- * Mirrors `MetadataPipelineStage.getPropertyTableInfo` (:289): iterates the
- * table's CLASS-DEFINITION properties (NOT the property-table properties) in
- * order, keeping only GPU-compatible ones, and assigns each a `propertyInfoIndex`
- * (its texture ROW). **The cursor increments ONLY for GPU-compatible
- * properties** — a non-GPU-compatible class property (STRING / variable-length
- * array / 64-bit-vec / BOOLEAN) consumes NO row and is skipped before the
- * increment, exactly as `collectGpuCompatiblePropertyInfo` packs the texture.
- * (Unlike the GLSL stage we do NOT skip used-by-other-stages: the WGSL display
- * proof reads every property, so every GPU-compatible row gets a struct field —
- * and the cursor stays aligned regardless.)
+ * Mirrors `MetadataPipelineStage.getPropertyTableInfo`: iterates the table's
+ * class-definition properties, not the property-table properties, in order,
+ * keeps only GPU-compatible ones, and assigns each a `propertyInfoIndex` — its
+ * texture row. The cursor increments only for GPU-compatible properties: a
+ * STRING, variable-length array, 64-bit vector or BOOLEAN class property
+ * consumes no row and is skipped before the increment, exactly as
+ * `collectGpuCompatiblePropertyInfo` packs the texture. Unlike the GLSL stage,
+ * properties used by other stages are not skipped, so every GPU-compatible row
+ * gets a struct field; the cursor stays aligned either way.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
- * @param {ModelRuntimeNode} [runtimeNode] - PARITY-METADATA-TABLE-INSTANCE-
- *   SOURCE: enables the instance-sourced feature-ID path. Optional so
- *   non-instanced callers stay byte-identical.
+ * @param {ModelRuntimeNode} [runtimeNode] - enables the instance-sourced
+ *   feature-ID path. Optional, so non-instanced callers need not supply it.
  * @returns {PropertyTableLayout|undefined}
  * @private
  */
@@ -1089,18 +1070,20 @@ function primitiveHasPropertyTable(model, primitive, runtimeNode) {
 }
 
 /**
- * DP-H46d — create (or return cached) GPU resources for the property-TABLE
- * block on a primitive: ONE `rgba8unorm` GPUTexture (the tightly-packed table,
- * rows = properties, columns = features) + one non-filtering sampler
- * placeholder. The packed bytes come from the retained
- * `texture._propertyTableTextureData` (stashed by
- * `parseStructuralMetadata.createTextureForPropertyTable` — the source buffer
- * views are freed after load, so this retained copy is the only readable
- * source on WebGPU). Idempotent (stamps `primCache._propertyTableResources`).
+ * Create, or return cached, GPU resources for a primitive's property-table
+ * block: one `rgba8unorm` GPUTexture holding the tightly-packed table, with
+ * rows for properties and columns for features, plus one non-filtering sampler
+ * placeholder. Idempotent, stamping `primCache._propertyTableResources`.
  *
- * The table is `rgba8unorm` (NOT `-srgb`) — the packed property bytes are raw
- * little-endian data, never gamma-encoded — so `textureLoad` returns the
- * normalized channels the codegen reassembles into the raw value.
+ * The packed bytes come from the retained `texture._propertyTableTextureData`
+ * that `parseStructuralMetadata.createTextureForPropertyTable` stashes; the
+ * source buffer views are freed after load, so that retained copy is the only
+ * readable source here.
+ *
+ * The table is `rgba8unorm` and never `-srgb`, because the packed property
+ * bytes are raw little-endian data rather than gamma-encoded colour, so
+ * `textureLoad` returns the normalized channels the codegen reassembles into
+ * the raw value.
  *
  * @param {GPUDevice} device
  * @param {object} primCache per-primitive cache slot
@@ -1181,21 +1164,21 @@ function destroyMetadataResources(primCache) {
   const propertyTextures = primCache._propertyTextureResources?.created;
   const propertyTableTexture = primCache._propertyTableResources?.gpuTexture;
   primCache._metadataBuffer = undefined;
-  // DP-H46b — drop the cached generated WGSL chunk + class hash (plain
-  // references, no GPU resource to destroy).
+  // Drop the cached generated WGSL chunk and class hash; these are plain
+  // references with no GPU resource to destroy.
   primCache._metadataWGSL = undefined;
   primCache._metadataClassHash = 0;
-  // NEW-MODEL-METADATA-MAT3-MAT4 — reset the widened-transport flag so a
-  // rebuild re-derives it from the fresh codegen result.
+  // Reset the widened-transport flag so a rebuild re-derives it from the fresh
+  // codegen result.
   primCache._metadataMatTransport = false;
-  // DP-H46c — views and the shared sampler have no explicit destroy operation.
+  // Views and the shared sampler have no explicit destroy operation.
   // Stub-backed textures remain externally owned, while fallback textures
   // created for this primitive carry an explicit release record and are
   // drained below. Drop the cached entries first so a throwing native release
   // cannot leave dangling resources reachable through the primitive cache.
   primCache._propertyTextureResources = undefined;
-  // DP-H46d — the property-table GPUTexture IS allocated here (re-uploaded from
-  // the loader's retained bytes), so destroy it.
+  // The property-table GPUTexture is allocated here, re-uploaded from the
+  // loader's retained bytes, so it must be destroyed.
   primCache._propertyTableResources = undefined;
 
   destroyBestEffort(metadataBuffer);
@@ -1223,14 +1206,14 @@ export {
   destroyMetadataResources,
   primitiveHasPropertyAttribute,
   resolvePropertyAttributeVec4 as resolveMetadataAttributeData,
-  // DP-H46c — property TEXTURES.
+  // Property textures.
   resolvePropertyTextureLayout,
   primitiveHasPropertyTexture,
   ensurePropertyTextureResources,
   PROPERTY_TEXTURE_BINDING_BASE,
   PROPERTY_TEXTURE_SAMPLER_BINDING,
   MAX_PROPERTY_TEXTURES,
-  // DP-H46d — property TABLES.
+  // Property tables.
   resolvePropertyTableLayout,
   primitiveHasPropertyTable,
   ensurePropertyTableResources,

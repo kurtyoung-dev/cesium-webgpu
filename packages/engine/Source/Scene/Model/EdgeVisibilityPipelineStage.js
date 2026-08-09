@@ -69,15 +69,13 @@ EdgeVisibilityPipelineStage.process = function (
   // Fallback request: mark that edge visibility is needed this frame.
   frameState.edgeVisibilityRequested = true;
 
-  // NEW-4-A (Batch 67): the CPU-side adjacency walk below reads the
-  // primitive's POSITION (and optional FEATURE_ID_0) typed array.
-  // Backends without a sync GPU buffer-readback path (i.e., WebGPU)
-  // need the typed array preserved at load time; WebGL falls back to
-  // `Buffer.getBufferData` if the typed array was discarded.
-  // Audit 2026-05-02: switched the test from `context.isWebGPU` to the
-  // capability getter `requiresVertexTypedArrayRetention` per
-  // CLAUDE.md §2 backend-agnosticism rule. Same effect; the WebGPU
-  // edge emitter (`WebGPUEdgeVisibilityEmitter`) builds adjacency
+  // The CPU-side adjacency walk below reads the primitive's POSITION (and
+  // optional FEATURE_ID_0) typed array. A backend with no synchronous GPU
+  // buffer-readback path needs that typed array preserved at load time; WebGL
+  // falls back to `Buffer.getBufferData` when it was discarded.
+  //
+  // The test is the capability getter rather than a backend check, so scene
+  // code stays backend-agnostic. The WebGPU edge emitter builds its adjacency
   // independently and renders edges through its own path.
   const needsTypedArrayCheck =
     frameState.context.requiresVertexTypedArrayRetention === true;

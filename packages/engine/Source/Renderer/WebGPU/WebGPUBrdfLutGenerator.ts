@@ -277,10 +277,8 @@ function updateWebGPUBrdfLut(
       bindGroupLayouts: [bindGroupLayout],
     });
 
-    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — route through the
-    // central cache. BrdfLut runs once per device but multiple Cesium
-    // viewers (multi-context) sharing the same device share one
-    // pipeline.
+    // Routed through the central cache: BrdfLut runs once per device, but
+    // multiple viewers sharing that device share the one pipeline.
     const computePipelineCache = (
       context as unknown as {
         webgpuComputePipelineCache?:

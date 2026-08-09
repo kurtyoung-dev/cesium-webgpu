@@ -57,18 +57,17 @@ const FLAG_HAS_INSTANCING: u32                 = 32768u;
 const FLAG_HAS_FEATURE_ID_TEXTURE: u32         = 65536u;  // bit 16
 const FLAG_HAS_FEATURE_ID_ATTRIBUTE: u32       = 131072u; // bit 17
 const FLAG_HAS_BATCH_TABLE: u32                = 262144u; // bit 18
-// C-R4-GLTF-KHR (slices 2-7) — KHR material extension activation bits.
-// Each block of factor reads + extension lighting is gated on the
-// matching bit so identity-default values stay branch-light.
+// KHR material extension activation bits. Each block of factor reads and
+// extension lighting is gated on the matching bit, so identity-default values
+// stay branch-light.
 const FLAG_HAS_CLEARCOAT: u32                  = 524288u;  // bit 19
 const FLAG_HAS_SPECULAR_EXT: u32               = 1048576u; // bit 20
 const FLAG_HAS_ANISOTROPY: u32                 = 2097152u; // bit 21
 const FLAG_HAS_IRIDESCENCE: u32                = 4194304u; // bit 22
 const FLAG_HAS_SHEEN: u32                      = 8388608u; // bit 23
 const FLAG_HAS_VOLUME: u32                     = 16777216u; // bit 24
-// C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — gates the FS refraction
-// sampling branch. Transmission samples the prior-pass scene color
-// (refraction MRT) at a refracted UV offset.
+// Gates the refraction sampling branch. Transmission samples the prior-pass
+// scene colour, the refraction MRT, at a refracted UV offset.
 const FLAG_HAS_TRANSMISSION: u32               = 33554432u; // bit 25
 
 // ─── Uniform Structures ──────────────────────────────────────────────────────
@@ -78,9 +77,8 @@ struct CameraUniforms {
   modelViewRelativeToEye: mat4x4<f32>,
   normalMatrix: mat4x4<f32>,
   encodedCameraPositionMCHigh: vec3<f32>,
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — the three
-  // formerly-pad lanes at floats 51/55/59 carry the log-depth scalars in
-  // the WebGPULogDepth.ts packCameraLogDepthLanes convention:
+  // Renderer-wide log depth: the lanes at floats 51, 55 and 59 carry the
+  // log-depth scalars in `WebGPULogDepth.packCameraLogDepthLanes` order:
   //   51 = oneOverLog2FarDepthFromNearPlusOne (factor)
   //   55 = encode frustum near
   //   59 = encode frustum far
@@ -148,24 +146,22 @@ struct MaterialUniforms {
   texCoordFlags: u32,
   _pad_end2: f32,
   _pad_end3: f32,
-  // C-R9-MODEL-PICK (Batch 54) — primitive-granularity pick color. The
-  // pick fragment entry (`fragmentPickMain`) writes this directly to the
-  // pick FBO color attachment so the readback maps the bytes back to the
-  // {primitive: model, id: <primitiveIndex>} target registered via
-  // `context.createPickId(...)`. Lit fragment ignores the slot. Per-
-  // feature picking (KHR_mesh_features / EXT_structural_metadata) is a
-  // separate follow-up — see `C-R9-MODEL-FEATURE-PICK`.
+  // Primitive-granularity pick colour. The pick fragment entry
+  // (`fragmentPickMain`) writes this straight to the pick framebuffer's colour
+  // attachment, so readback maps the bytes back to the
+  // `{primitive: model, id: <primitiveIndex>}` target registered through
+  // `context.createPickId(...)`. The lit fragment entry ignores the slot.
+  // Per-feature picking is resolved separately, through the feature-pick
+  // texture.
   pickColor: vec4<f32>,
-  // C-R4-GLTF-KHR (slice 1, KHR_texture_transform). Per-texture 3x3
-  // affine UV transforms (offset/rotation/scale combined into a 3x3
-  // matrix; identity when the extension is absent). Stored as 3
-  // padded vec4 columns each so std140 alignment lines up. Matches
-  // WebGL's `czm_computeTextureTransform`. Slot bits in
-  // `textureTransformFlags` indicate which slots have non-identity
-  // transforms; the FS skips the multiply for identity slots so the
-  // common no-extension case stays branch-light. Bit layout mirrors
-  // texCoordFlags above (baseColor / normal / metallicRoughness /
-  // emissive / occlusion).
+  // KHR_texture_transform: per-texture 3x3 affine UV transforms, combining
+  // offset, rotation and scale into one matrix, identity when the extension is
+  // absent. Each is stored as three padded vec4 columns so std140 alignment
+  // lines up, matching `czm_computeTextureTransform`. Bits in
+  // `textureTransformFlags` mark which slots carry a non-identity transform,
+  // and the fragment shader skips the multiply for identity slots so the common
+  // no-extension case stays branch-light. The bit layout mirrors `texCoordFlags`
+  // above: baseColor, normal, metallicRoughness, emissive, occlusion.
   baseColorTextureTransform0: vec4<f32>,
   baseColorTextureTransform1: vec4<f32>,
   baseColorTextureTransform2: vec4<f32>,
@@ -193,19 +189,18 @@ struct MaterialUniforms {
   _pad_tt1: f32,
   _pad_tt2: f32,
 
-  // C-R4-GLTF-KHR (slices 2-7). Each block is 8 floats (32 B) at a
-  // 16-byte boundary so std140 sees a vec4-aligned slot. Identity
-  // values are written when the corresponding extension is absent.
-  // The FS gates each block on the matching `materialFlags` bit
-  // (HAS_CLEARCOAT, HAS_SPECULAR, ...) so identity values are
-  // branch-light: the BRDF math never runs.
+  // KHR material extension factors. Each block is 8 floats (32 bytes) on a
+  // 16-byte boundary so std140 sees a vec4-aligned slot, and identity values
+  // are written when the corresponding extension is absent. The fragment shader
+  // gates each block on the matching `materialFlags` bit (HAS_CLEARCOAT,
+  // HAS_SPECULAR and so on), so identity values are branch-light and the BRDF
+  // math never runs.
   //
-  // Slice 2 — KHR_materials_clearcoat.
+  // KHR_materials_clearcoat.
   // x: clearcoatFactor [0, 1]
   // y: clearcoatRoughnessFactor [0, 1]
-  // z: clearcoatNormalScale (multiplier for the per-fragment normal
-  //    if a clearcoat normal map were sampled — left in the layout so
-  //    the texture-binding follow-up slice doesn't need a re-layout)
+  // z: clearcoatNormalScale, the multiplier applied to the per-fragment normal
+  //    when a clearcoat normal map is sampled
   // w: reserved
   clearcoatFactors: vec4<f32>,
   // WIRE-MODEL-SILHOUETTE — historical pad lane (floats 112-115), reused
@@ -242,51 +237,46 @@ struct MaterialUniforms {
   // attenuationColor lives in the second vec4 of this slot.
   volumeFactors0: vec4<f32>,
   volumeFactors1: vec4<f32>,
-  // TAA Slice 2c (Batch 96) — previous-frame model matrix for per-model
-  // motion-vector computation. The TAA shader currently reprojects via
-  // depth + previousViewProjection alone, which treats animated /
-  // skinned / instanced geometry as static and ghosts the motion.
-  // Capturing prev-frame's modelMatrix per primitive lets the VS
-  // reconstruct the previous-frame clip-space position
-  // (`previousViewProjection * previousModelMatrix * positionMC`),
-  // which the FS can then convert to screen-space velocity. The
-  // velocity output (@location(1) MRT) is gated behind the
-  // `motionFlags.x > 0.5` toggle and currently disabled — turning it
-  // on requires the second color attachment to be added to model
-  // pipelines, which is a follow-up slice. Plumbing the data through
-  // first lets the FS-side enablement land without renderer-wide
-  // pipeline format churn.
+  // The previous frame's model matrix, for per-model motion vectors.
+  //
+  // Reprojecting from depth and `previousViewProjection` alone treats animated,
+  // skinned and instanced geometry as static, which ghosts their motion. With
+  // the previous frame's modelMatrix per primitive the vertex shader can
+  // reconstruct the previous clip-space position as
+  // `previousViewProjection * previousModelMatrix * positionMC`, which the
+  // fragment shader converts to screen-space velocity.
+  //
+  // The velocity output at `@location(1)` is gated behind `motionFlags.x > 0.5`
+  // and is off by default; enabling it requires the second colour attachment on
+  // model pipelines.
   previousModelMatrix: mat4x4<f32>,
   // motionFlags.x: motion-vector output enabled (0 / 1)
   // motionFlags.y: motion vector scale (default 1.0)
-  // motionFlags.z: reserved for slice 2d — doubles as the metadata-debug
-  //   toggle (DP-H46a) when MODEL_HAS_METADATA is active.
-  // motionFlags.w: WIRE-MODEL-COLOR — `ColorBlendMode.getColorBlend(mode,
-  //   amount)` scalar (0 = HIGHLIGHT, 1 = REPLACE, (0,1] = MIX). Read only
-  //   by the `//>>ifdef MODEL_HAS_COLOR` blocks; zero otherwise.
+  // motionFlags.z: the metadata-debug toggle, when MODEL_HAS_METADATA is
+  //   active.
+  // motionFlags.w: the `ColorBlendMode.getColorBlend(mode, amount)` scalar
+  //   (0 = HIGHLIGHT, 1 = REPLACE, (0,1] = MIX). Read only by the
+  //   `//>>ifdef MODEL_HAS_COLOR` blocks, and zero otherwise.
   motionFlags: vec4<f32>,
-  // C-R1-TILE-BATCH (Batch 100) — Cesium3DTileBatchTable per-feature
-  // renderState support. The batch texture's per-feature RGBA carries
-  // an alpha that tile styling can flip <1 to make individual features
-  // translucent. WebGL handles this via dual-command emission
-  // (deriveOpaqueCommand + deriveTranslucentCommand at
-  // `Cesium3DTileBatchTable.js:497-507`) — the same primitive draws
-  // twice, once per pass, with each FS instance discarding the wrong-
-  // class features.
+  // Cesium3DTileBatchTable per-feature render state. The batch texture's
+  // per-feature RGBA carries an alpha that tile styling can drop below 1 to
+  // make individual features translucent. WebGL handles this by emitting two
+  // commands — `deriveOpaqueCommand` and `deriveTranslucentCommand` in
+  // `Cesium3DTileBatchTable` — so the same primitive draws twice, once per
+  // pass, each fragment-shader instance discarding the features of the wrong
+  // class.
   //
   // tileBatchFlags layout:
-  //   x: passClass (0 = opaque pass, 1 = translucent pass). Only
-  //      consumed when FLAG_HAS_BATCH_TABLE is set; otherwise the
-  //      historical single-class behavior is preserved.
-  //   y: opaque-alpha threshold for the class discard (default 0.998
-  //      — matches Cesium 3D Tiles' "feature is translucent if
-  //      tile_translucentCommand &&  alpha < 0.998" gate).
+  //   x: passClass (0 = opaque pass, 1 = translucent pass), consumed only when
+  //      FLAG_HAS_BATCH_TABLE is set; otherwise a single class draws.
+  //   y: the opaque-alpha threshold for the class discard, defaulting to 0.998
+  //      to match 3D Tiles' "translucent if tile_translucentCommand and
+  //      alpha < 0.998" gate.
   //   z, w: reserved.
   tileBatchFlags: vec4<f32>,
-  // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — transmission factor +
-  // ior. Replaces _pad_reserved7. Layout:
+  // Transmission factor and index of refraction:
   //   x: transmissionFactor [0, 1]
-  //   y: ior (default 1.5 — index of refraction)
+  //   y: ior, defaulting to 1.5
   //   z, w: reserved
   transmissionFactors: vec4<f32>,
   // WIRE-MODEL-COLOR — historical reserved tail lane, reused to carry
@@ -295,21 +285,17 @@ struct MaterialUniforms {
   _pad_reserved8: vec4<f32>,
 };
 
-// Audit B.3 (Batch 131) + re-review (Batch 134) -- per-light data
-// structure matching the JS `LightCollection.pack()` output (20 floats
-// / 80 bytes per light). Slot semantics depend on `lightType`:
+// Per-light data matching `LightCollection.pack()`: 20 floats, 80 bytes per
+// light. Slot semantics depend on `lightType`:
 //   DIRECTIONAL (0) : posOrDir = world direction; spotDirection ignored
 //   POINT       (1) : posOrDir = camera-relative world position
 //   SPOT        (2) : posOrDir = camera-relative world position;
-//                     spotDirection = world forward
-//                     (the direction the spot is aimed); inner/outer
-//                     cone angles active
+//                     spotDirection = the world forward the spot is aimed
+//                     along; inner and outer cone angles active
 //
-// Slots 16-18 carry the spot direction at vec3 alignment (the next
-// 16-byte boundary after slot 15). Pre-Batch-134 the record was 16
-// floats and spot lights had no direction slot -- the cone math fell
-// back to point falloff. With direction packed, spot cone gating is
-// fully correct.
+// Slots 16-18 carry the spot direction at vec3 alignment, the next 16-byte
+// boundary after slot 15. Without a direction slot the cone math degenerates to
+// point falloff, so the record must stay 20 floats wide.
 struct PunctualLight {
   posOrDir: vec3<f32>,
   lightType: f32,         // cast to int via `i32(lightType)`
@@ -339,70 +325,74 @@ struct LightUniforms {
   iblSpecularFactor: f32,
   iblMaxMipLevel: f32,
   iblHasSH: f32,  // 1.0 if SH coefficients are available
-  // Audit B.3 (Batch 131) -- punctual lights from `scene.lights` (and
-  // future glTF KHR_lights_punctual). Cap is 8 -- matches
-  // `LightCollection.MAX_LIGHTS` and the JS pack budget. The padding
-  // members are deliberately discrete f32s rather than a vec3<f32> --
-  // a vec3 would round up to alignment 16 from offset 64+4=68, jumping
-  // the array's start to byte 96 instead of the byte 80 the JS pack
-  // expects. Discrete f32 padding keeps offset = 4 alignment.
+  // Punctual lights from `scene.lights` and glTF KHR_lights_punctual, capped at
+  // 8 to match `LightCollection.MAX_LIGHTS` and the JS pack budget.
+  //
+  // The padding members are discrete f32s rather than a vec3<f32> on purpose: a
+  // vec3 would round its alignment up to 16 from offset 68, moving the array's
+  // start to byte 96 instead of the byte 80 the JS pack writes. Discrete f32
+  // padding keeps the offset at 4-byte alignment.
   punctualLightCount: f32, // i32 stored as f32 (uniform-buffer alignment)
   _pad2a: f32,
   _pad2b: f32,
   _pad2c: f32,
   punctualLights: array<PunctualLight, 8>,
-  // NEW-MODEL-IBL-REFERENCE-FRAME (Batch 287) — eye→IBL-reference-frame
-  // rotation. Matches WebGL's `model_iblReferenceFrameMatrix`
-  // (ImageBasedLightingPipelineStage.js): `yUpToZUp *
-  // transpose(rotation(view3D * referenceMatrix))`. The diffuse normal
-  // and specular reflection vectors are computed in eye space, then
-  // rotated by this matrix into the fixed environment frame BEFORE the
-  // cubemap sample, so IBL reflections stay world-anchored as the camera
-  // orbits instead of rotating with it. Appended after the punctual-
-  // light array at byte 720 (16-aligned); a mat3x3 occupies 48 bytes
-  // (3 × vec4 columns in std140), so LightUniforms is now 768 bytes.
-  // Identity when no IBL is configured (FS still samples the placeholder
-  // cubemap, which is rotation-invariant grey).
+  // The eye-to-IBL-reference-frame rotation, matching WebGL's
+  // `model_iblReferenceFrameMatrix` in ImageBasedLightingPipelineStage:
+  // `yUpToZUp * transpose(rotation(view3D * referenceMatrix))`.
+  //
+  // The diffuse normal and specular reflection vectors are computed in eye
+  // space, then rotated into the fixed environment frame before the cubemap
+  // sample, so IBL reflections stay world-anchored as the camera orbits rather
+  // than rotating with it.
+  //
+  // It sits after the punctual-light array at byte 720, which is 16-aligned,
+  // and a mat3x3 occupies 48 bytes as three vec4 columns under std140, making
+  // LightUniforms 768 bytes. Identity when no IBL is configured, in which case
+  // the fragment shader samples the placeholder cubemap, which is
+  // rotation-invariant grey.
   iblReferenceFrameMatrix: mat3x3<f32>,
-  // C2-25 ENV-PARALLAX (Batch 451) — Lagarde box/sphere parallax-corrected
-  // localized reflections. Opt-in via
-  // `DynamicEnvironmentMapManager.reflectionProxy`; when unset, `control.x`
-  // (mode) packs to 0.0 and the specular-IBL path takes the raw reflection
-  // vector verbatim. Proxy center/extents are ignored when mode == 0; the
-  // eye-to-world rotation remains live for punctual-light frame conversion.
-  // When set, the reflection ray
-  // (fragment world position + reflection vector R) is intersected with a
-  // per-manager bounding proxy and the cube sample direction is re-projected
-  // as `normalize(P - proxyCenter)`, so nearby geometry/interiors reflect at
-  // the correct parallax instead of as an infinitely-distant cube.
+  // Parallax-corrected localized reflections against a box or sphere proxy,
+  // opt-in through `DynamicEnvironmentMapManager.reflectionProxy`. When it is
+  // unset, `control.x` packs to 0.0 and the specular-IBL path takes the raw
+  // reflection vector; the proxy centre and extents are then ignored, while the
+  // eye-to-world rotation stays live for punctual-light frame conversion.
+  //
+  // When it is set, the reflection ray — fragment world position plus the
+  // reflection vector R — is intersected with the bounding proxy and the cube
+  // sample direction is re-projected as `normalize(P - proxyCenter)`, so nearby
+  // geometry and interiors reflect at the correct parallax rather than as an
+  // infinitely distant cube.
+  //
   //   control.x : mode (0 = off / raw R, 1 = box, 2 = sphere)
-  //   control.y : sphere radius (meters); unused for box
+  //   control.y : sphere radius in metres; unused for box
   //   control.z,w : reserved
-  // `proxyCenter` and `proxyHalfExtents` are CAMERA-RELATIVE WORLD-space
-  // (proxy minus camera position), in the same frame as the fragment's
-  // camera-relative world position `rteWC = modelMatrix * vec4(rteMC, 0)`.
-  // The box is world-axis-aligned (matching the Cartesian3 center/halfExtents
-  // the user supplies). `eyeToWorldRotation` is the eye→world rotation
-  // (UniformState.inverseViewRotation) used by both punctual lighting and to
-  // lift the eye-space reflection R into world space for the intersection,
-  // then transposed to push the
-  // corrected world direction back to eye space so the existing
-  // `iblReferenceFrameMatrix * dir` cube-sample path is reused unchanged.
+  //
+  // `proxyCenter` and `proxyHalfExtents` are camera-relative world space, the
+  // proxy minus the camera position, in the same frame as the fragment's
+  // camera-relative world position `rteWC = modelMatrix * vec4(rteMC, 0)`. The
+  // box is world-axis-aligned, matching the centre and half-extents the caller
+  // supplies. `eyeToWorldRotation` is `UniformState.inverseViewRotation`, used
+  // both by punctual lighting and to lift the eye-space reflection R into world
+  // space for the intersection; transposing it pushes the corrected world
+  // direction back to eye space, so the existing `iblReferenceFrameMatrix * dir`
+  // cube-sample path is reused unchanged.
+  //
+  // Reference: Lagarde and Zanuttini, "Local Image-based Lighting With
+  // Parallax-corrected Cubemaps" (SIGGRAPH 2012).
   reflectionProxyControl: vec4<f32>,
   reflectionProxyCenter: vec3<f32>,
   reflectionProxyHalfExtents: vec3<f32>,
   eyeToWorldRotation: mat3x3<f32>,
 };
 
-// ─── Bind Groups ─────────────────────────────────────────────────────────────
-
-// C11-195 — group 0 carries the two blocks that belong to the (model, view)
-// pair, not to any primitive: the RTE camera and the light. Both are packed
-// once per model per view into the shared per-frame ring and addressed by
-// dynamic offset (`WebGPUModelCameraArena`). The light's punctual positions,
-// proxy center, and eye→world rotation are relative to the SAME encoded eye
-// the camera block carries, so keeping them in one bind group is what makes
-// that RTE pairing structural. Group 1 stays purely per-primitive.
+// Group 0 carries the two blocks that belong to the (model, view) pair rather
+// than to any primitive: the relative-to-eye camera and the light. Both are
+// packed once per model per view into the shared per-frame ring and addressed
+// by dynamic offset through `WebGPUModelCameraArena`. The light's punctual
+// positions, proxy centre and eye-to-world rotation are all relative to the
+// same encoded eye the camera block carries, so keeping them in one bind group
+// makes that pairing structural. Group 1 stays purely per-primitive.
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(0) @binding(1) var<uniform> light: LightUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
@@ -418,20 +408,18 @@ struct LightUniforms {
 @group(1) @binding(9) var emissiveSampler: sampler;
 @group(1) @binding(10) var occlusionTexture: texture_2d<f32>;
 @group(1) @binding(11) var occlusionSampler: sampler;
-// C-R4-GLTF-KHR-TEXTURES (Batch 102) — KHR extension primary textures
-// + shared sampler. Bound to a 1×1 white placeholder when the
-// matching extension is absent; the FS gates each sample on the
-// extension's HAS_* flag so the placeholder is never sampled in
-// production. See WebGPUModelPipelineCache `materialBGL` for the
-// rationale on the shared sampler.
+// KHR extension primary textures and their shared sampler. Each binds a 1x1
+// white placeholder when the matching extension is absent, and the fragment
+// shader gates every sample on the extension's HAS_* flag so the placeholder is
+// never read. See `WebGPUModelPipelineCache`'s `materialBGL` for why the
+// sampler is shared.
 //
-// Batch 174 (B.4) — Wrapped in `//>>ifdef MODEL_HAS_KHR_TEXTURES` so
-// the basic shader variant strips these 14 bindings (12 textures +
-// sampler + 2 transmission). Total sampled-texture count drops 23 →
-// 10, fitting within the WebGPU spec floor `maxSampledTexturesPerShaderStage = 16`
-// for materials without any KHR extension. The renderer pairs the
-// stripped shader with `materialBGL_basic` + the basic pipeline
-// layout (see `WebGPUModelPipelineCache.materialBGL_basic`).
+// The `//>>ifdef MODEL_HAS_KHR_TEXTURES` wrapper lets the basic shader variant
+// strip these 14 bindings — 12 textures, the sampler and 2 transmission slots —
+// dropping the sampled-texture count from 23 to 10 and fitting the WebGPU spec
+// floor of `maxSampledTexturesPerShaderStage = 16` for materials with no KHR
+// extension. The renderer pairs the stripped shader with `materialBGL_basic`
+// and the basic pipeline layout.
 //>>ifdef MODEL_HAS_KHR_TEXTURES
 @group(1) @binding(12) var clearcoatTexture: texture_2d<f32>;
 @group(1) @binding(13) var specularColorTexture: texture_2d<f32>;
@@ -439,42 +427,38 @@ struct LightUniforms {
 @group(1) @binding(15) var iridescenceTexture: texture_2d<f32>;
 @group(1) @binding(16) var sheenColorTexture: texture_2d<f32>;
 @group(1) @binding(17) var thicknessTexture: texture_2d<f32>;
-// C-R4-GLTF-KHR-TEXTURES (Batch 103) — KHR secondary maps. Same
-// placeholder + flag-gated convention as the primary KHR slots.
+// KHR secondary maps, following the same placeholder and flag-gated convention
+// as the primary KHR slots.
 @group(1) @binding(18) var clearcoatRoughnessTexture: texture_2d<f32>;
 @group(1) @binding(19) var clearcoatNormalTexture: texture_2d<f32>;
 @group(1) @binding(20) var sheenRoughnessTexture: texture_2d<f32>;
 @group(1) @binding(21) var specularFactorTexture: texture_2d<f32>;
 @group(1) @binding(22) var iridescenceThicknessTexture: texture_2d<f32>;
 @group(1) @binding(23) var khrSampler: sampler;
-// C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — refraction texture (a copy
-// of the prior-pass scene color) + transmission factor map. The
-// SceneRenderer is responsible for capturing scene color into a
-// dedicated refraction texture before the transmissive draw and
-// binding it here. When KHR_materials_transmission isn't active the
-// placeholder white texture binds (FS branch is gated on
-// FLAG_HAS_TRANSMISSION so the placeholder content is unused).
+// The refraction texture — a copy of the prior-pass scene colour — and the
+// transmission factor map. The scene renderer captures scene colour into a
+// dedicated refraction texture before the transmissive draw and binds it here.
+// When KHR_materials_transmission is inactive the placeholder white texture
+// binds, and FLAG_HAS_TRANSMISSION gates the branch so its content is unused.
 @group(1) @binding(24) var transmissionTexture: texture_2d<f32>;
 @group(1) @binding(25) var refractionSceneTexture: texture_2d<f32>;
 //>>endif
 
 // Joint matrices for skinning (bind group 3, only used when FLAG_HAS_SKINNING is set)
 @group(2) @binding(0) var<storage, read> jointMatrices: array<mat4x4<f32>>;
-// Audit A.5 (Batch 130) -- prev-frame joint matrices for TAA
-// velocity. The vertex shader re-runs skinning with these to produce
-// `prevPositionMC` (otherwise `worldPosPrevious = previousModelMatrix
-// * currentSkinnedPositionMC` produces phantom velocity that ghosts
-// across animated characters).
+// Previous-frame joint matrices for TAA velocity. The vertex shader re-runs
+// skinning against these to produce `prevPositionMC`; without them
+// `worldPosPrevious = previousModelMatrix * currentSkinnedPositionMC` yields a
+// phantom velocity that ghosts across animated characters.
 @group(2) @binding(4) var<storage, read> previousJointMatrices: array<mat4x4<f32>>;
 
 // Morph targets (bind group 4, only used when FLAG_HAS_MORPH_TARGETS is set)
 // Storage buffer: per-target blocks of (vertexCount × 3 × vec4) — for each
-//   vertex an interleaved [positionDelta, normalDelta, tangentDelta] triple
-//   (DP-H35 added normal Batch 329; C2-4 added tangent Batch 373). Index via
-//   base = (t * vertexCount + vid) * 3u; positionDelta = morphDeltas[base],
-//   normalDelta = morphDeltas[base + 1u], tangentDelta = morphDeltas[base + 2u].
-//   The CPU pack (WebGPUModelMorphTargets.js FLOATS_PER_VERTEX_PER_TARGET = 12)
-//   MUST stay byte-consistent with this *3u stride.
+//   vertex an interleaved [positionDelta, normalDelta, tangentDelta] triple.
+//   Index via base = (t * vertexCount + vid) * 3u; positionDelta =
+//   morphDeltas[base], normalDelta = morphDeltas[base + 1u], tangentDelta =
+//   morphDeltas[base + 2u]. The CPU pack, `FLOATS_PER_VERTEX_PER_TARGET = 12`
+//   in WebGPUModelMorphTargets, must stay byte-consistent with this 3u stride.
 // Uniform buffer: weights (2 × vec4 = 8 weights max) + targetCount + vertexCount
 struct MorphWeightsUniforms {
   weights0: vec4<f32>,    // morph weights 0-3
@@ -490,17 +474,16 @@ struct MorphWeightsUniforms {
 // Instance transforms (bind group 5, only used when FLAG_HAS_INSTANCING is set)
 // Storage buffer: array of InstanceTransform — one per instance.
 //
-// DP-H36 (Batch 325) — RTE split for the per-instance TRANSLATION. The
-// instance translation places each instance at its tile-relative ECEF
-// offset, which at Earth scale (~6.4e6 m) overflows f32's ~2^23 mantissa
-// and loses ~1 m of sub-meter precision. Packing the translation as a
-// single f32 column (the old `mat4x4` layout) and adding it to the local
-// vertex position BEFORE the RTE camera subtract destroyed those bits
-// before they could cancel — producing visible i3dm jitter under a
-// stationary camera. The fix keeps the rotation+scale linear part in f32
-// (small magnitude, no precision risk) but carries the translation as a
-// high/low pair (EncodedCartesian3 split on the CPU) so the vertex shader
-// can RTE it directly against the encoded camera via translateRelativeToEye.
+// The per-instance translation is split relative-to-eye. It places each
+// instance at its tile-relative ECEF offset, which at Earth scale (~6.4e6 m)
+// overflows f32's ~2^23 mantissa and loses about a metre of sub-metre
+// precision. Carrying the translation as a single f32 column and adding it to
+// the local vertex position before the camera subtract destroys those bits
+// before they can cancel, which shows as i3dm jitter under a stationary camera.
+// So the rotation-and-scale linear part stays f32, where its magnitude is small
+// enough to carry no precision risk, while the translation travels as a
+// high/low pair split on the CPU, letting the vertex shader subtract the
+// encoded camera through translateRelativeToEye.
 //
 // Layout (std430, 96 bytes / 24 floats per instance):
 //   linear:          mat4x4<f32>  offset 0   (rotation+scale, col3 zeroed)
@@ -514,19 +497,17 @@ struct InstanceTransform {
 }
 @group(2) @binding(3) var<storage, read> instanceTransforms: array<InstanceTransform>;
 
-// NEW-TAA-MORPH-PREV (Batch 134) -- previous-frame morph weights for
-// the velocity pass. The vertex shader runs morph twice (current +
-// prev) so animated facial blendshapes / lipsync produce correct
-// per-vertex velocity instead of stretching whatever the current
-// pose happens to be against the previous-frame model matrix.
+// Previous-frame morph weights for the velocity pass. The vertex shader runs
+// morph twice, current and previous, so animated blendshapes produce a correct
+// per-vertex velocity instead of stretching the current pose against the
+// previous frame's model matrix.
 @group(2) @binding(5) var<uniform> previousMorphWeights: MorphWeightsUniforms;
-// NEW-TAA-INSTANCE-PREV (Batch 134) -- previous-frame instance
-// transforms. For static GPU instancing (today's only case) this
-// aliases the current `instanceTransforms` buffer in JS, so the prev
-// pass produces the same world-space position as the current pass and
-// velocity collapses to camera/model-matrix delta only. Animated
-// EXT_mesh_gpu_instancing assets would publish a separate prev
-// buffer for per-frame per-instance velocity.
+// Previous-frame instance transforms. For static GPU instancing this aliases
+// the current `instanceTransforms` buffer, so the previous pass produces the
+// same world-space position as the current one and velocity collapses to the
+// camera and model-matrix delta alone. An animated EXT_mesh_gpu_instancing
+// asset would publish a separate previous buffer to get per-frame per-instance
+// velocity.
 @group(2) @binding(6) var<storage, read> previousInstanceTransforms: array<InstanceTransform>;
 
 // Feature ID + batch texture (bind group 6, for per-feature styling in 3D Tiles)
@@ -539,12 +520,11 @@ struct FeatureIdUniforms {
   hasMultilineBatchTex: i32,
   textureStep: vec4<f32>,
   textureDimensions: vec2<f32>,
-  // C-R9-MODEL-FEATURE-PICK (Batch 100). When > 0.5 the pickFS routes
-  // through `lookupFeaturePickColor` (the per-feature pick texture
-  // bound at @binding(5)) instead of returning `material.pickColor`.
-  // The JS side flips this on whenever it allocates per-feature pickIds
-  // (via `ensurePerFeaturePickIds`); off otherwise so we don't sample
-  // a placeholder texture and waste bandwidth.
+  // When above 0.5 the pick fragment entry routes through
+  // `lookupFeaturePickColor`, reading the per-feature pick texture, instead of
+  // returning `material.pickColor`. `ensurePerFeaturePickIds` sets it whenever
+  // it allocates per-feature pickIds, and leaves it clear otherwise so no
+  // bandwidth is spent sampling a placeholder texture.
   featurePickEnabled: f32,
   _pad1: f32,
 };
@@ -553,25 +533,23 @@ struct FeatureIdUniforms {
 @group(1) @binding(28) var batchTexture: texture_2d<f32>;
 @group(1) @binding(29) var batchSampler: sampler;
 @group(1) @binding(30) var<uniform> featureId: FeatureIdUniforms;
-// C-R9-MODEL-FEATURE-PICK (Batch 100) — per-feature pick color lookup
-// table. Layout matches the batch texture (RGBA8, 1D for small feature
-// counts and 2D for >1024 features). featureId 0 maps to texel
-// (0.5 / W, 0.5 / H), featureId N maps to (N + 0.5 / W, ...). Entries
-// with alpha == 0 mean "no pickId allocated" and the pickFS falls
-// through to `material.pickColor`. Bound only when
-// `featureId.featurePickEnabled > 0.5`; the placeholder feature-id
-// bind group from Batch 53 carries a 1×1 transparent texel so the
-// binding is always valid.
+// Per-feature pick colour lookup table. The layout matches the batch texture:
+// RGBA8, one-dimensional for small feature counts and two-dimensional past 1024
+// features. featureId 0 maps to texel (0.5 / W, 0.5 / H) and featureId N to
+// ((N + 0.5) / W, ...). An entry with alpha 0 means no pickId was allocated, and
+// the pick fragment entry falls through to `material.pickColor`. It carries real
+// data only when `featureId.featurePickEnabled > 0.5`; the placeholder
+// feature-id bind group holds a 1x1 transparent texel, so the binding is always
+// valid.
 @group(1) @binding(31) var featurePickTexture: texture_2d<f32>;
 @group(1) @binding(32) var featurePickSampler: sampler;
 
-// Audit A.9 (Batch 130) -- IBL cubemap bindings. Irradiance cubemap
-// (33) for diffuse ambient, prefiltered radiance cubemap (34) for
-// specular ambient with mip-based roughness rangefinding, shared
-// sampler (35) configured linear/clamp-to-edge by the JS pipeline
-// cache. SH coefficients (36) are optional (active flag in slot 9.w);
-// when active they short-circuit the irradiance cubemap sample with
-// a 9-coefficient evaluation against the surface normal.
+// IBL cubemap bindings: the irradiance cubemap at 33 for diffuse ambient, the
+// prefiltered radiance cubemap at 34 for specular ambient with mip-based
+// roughness rangefinding, and a shared sampler at 35 that the pipeline cache
+// configures linear and clamp-to-edge. The SH coefficients at 36 are optional,
+// flagged active in slot 9.w; when active they short-circuit the irradiance
+// cubemap sample with a 9-coefficient evaluation against the surface normal.
 @group(1) @binding(33) var iblDiffuseTexture: texture_cube<f32>;
 @group(1) @binding(34) var iblSpecularTexture: texture_cube<f32>;
 @group(1) @binding(35) var iblSampler: sampler;
@@ -595,28 +573,27 @@ struct SHUniforms {
 };
 @group(1) @binding(36) var<uniform> sh: SHUniforms;
 
-// NEW-MODEL-IBL-BRDF-LUT (Batch 287) — split-sum environment BRDF
-// integration LUT (rg32float 256×256, produced once by
-// `WebGPUBrdfLutGenerator`). R = scale factor for F0, G = bias, indexed
-// by (NdotV, roughness). Consumed in the specular-IBL term as
-// `radiance * (FssEss = F0 * scale + bias)` to match WebGL's
-// `computeSpecularIBL`/`textureIBL` (ImageBasedLightingStageFS.glsl).
-// rg32float is non-filterable without `float32-filterable`, so the
-// sampler at binding 38 is non-filtering; the table is smooth enough
-// that nearest sampling is visually indistinct.
+// The split-sum environment BRDF integration LUT: rg32float, 256x256, produced
+// once by `WebGPUBrdfLutGenerator`. R is the scale factor for F0 and G the
+// bias, indexed by (NdotV, roughness), consumed in the specular-IBL term as
+// `radiance * (FssEss = F0 * scale + bias)` to match `computeSpecularIBL` and
+// `textureIBL` in ImageBasedLightingStageFS.glsl.
+//
+// rg32float is non-filterable without the `float32-filterable` feature, so the
+// sampler at binding 38 is non-filtering; the table is smooth enough that
+// nearest sampling is visually indistinguishable.
 @group(1) @binding(37) var brdfLutTexture: texture_2d<f32>;
 @group(1) @binding(38) var brdfLutSampler: sampler;
 
-// ─── Effects bind group (shadow receive + clipping + atmosphere + CSM) ───
-// NEW-BG-CONSOLIDATION (2026-04-30): effects binds at @group(3),
-// matching the slot the globe terrain renderer uses for the same
-// shared BGL. Was @group(7) prior; consolidation merged Model's other
-// groups (camera kept at 0; material+textures+featureId merged into 1;
-// skinning+morphTarget+instancing merged into 2; effects to 3) so the
-// pipeline layout fits within spec-default `maxBindGroups: 4`. Struct
-// layout MUST match the 480-byte EffectsUniforms in
-// WebGPUEffectsBindGroup.js (size bumped from 336 → 480 in Batch 160 to
-// carry polygon-clipping atlas control + per-extent UV remap).
+// Effects bind group: shadow receive, clipping, atmosphere and CSM.
+//
+// Effects binds at `@group(3)`, the same slot the globe terrain renderer uses
+// for this shared layout. The model's groups are consolidated to fit the
+// spec-default `maxBindGroups: 4` — camera at 0; material, textures and
+// featureId merged into 1; skinning, morph targets and instancing merged into
+// 2; effects at 3. The struct layout must match the 480-byte EffectsUniforms in
+// WebGPUEffectsBindGroup, whose tail carries the polygon-clipping atlas control
+// and per-extent UV remap.
 struct EffectsUniforms {
   shadowMatrix: mat4x4<f32>,
   shadowMapSize: vec2<f32>,
@@ -632,45 +609,43 @@ struct EffectsUniforms {
   atmosphereLutControl: vec4<f32>,
   // .x = csmEnabled flag (1.0 → route through CSM path).
   csmControl: vec4<f32>,
-  // C-R8-EDGE-INLINE control. .x = edgeReady (gate the inline stage),
-  // .y = isEdgePass (always 0 from Model FS — kept for parity with
-  // future caller-driven gating), .z/.w = currentFrustum near/far.
+  // Inline edge-stage control. .x = edgeReady, gating the inline stage;
+  // .y = isEdgePass, always 0 from the model fragment shader and kept for
+  // parity with caller-driven gating; .z and .w = the current frustum's near
+  // and far.
   edgeControl: vec4<f32>,
   // .xy = viewport (px), .z = relative depth tolerance, .w =
   // hasEdgeFeatureId flag.
   edgeViewport: vec4<f32>,
-  // C-R10-POINT-LIGHT-RECEIVE — point-light cube shadow control.
-  // .x = enabled flag (>0.5 routes the receive shader through the
-  //      cube path; checked BEFORE the CSM gate so it takes priority
-  //      when both happen to be set — only one shadow map is active
-  //      at a time in Cesium, so this only matters during transitions).
-  // .y = farPlane (`shadowMap._pointLightRadius`, meters).
-  // .z = nearPlane (=1.0 for `computeOmnidirectional`, kept explicit
-  //      so future tunable-near callers don't need a UBO bump).
-  // .w = depthBias (subtracted from refDepth before the comparison
-  //      sample to suppress shadow acne — same role as
-  //      `pointBias.depthBias` in the WebGL ShadowMap pipeline).
+  // Point-light cube shadow control.
+  // .x = enabled flag. Above 0.5 the receive shader takes the cube path; it is
+  //      checked before the CSM gate so it wins when both are set. Only one
+  //      shadow map is active at a time, so that only matters during
+  //      transitions.
+  // .y = farPlane, `shadowMap._pointLightRadius` in metres.
+  // .z = nearPlane, 1.0 for `computeOmnidirectional`, kept explicit so a
+  //      tunable near plane needs no uniform-buffer change.
+  // .w = depthBias, subtracted from refDepth before the comparison sample to
+  //      suppress shadow acne — the same role as `pointBias.depthBias` in the
+  //      WebGL ShadowMap pipeline.
   pointLightControl: vec4<f32>,
   // .xyz = light position relative to the active camera origin, in world
   // axes. JavaScript subtracts f64 ECEF positions before f32 packing; the
   // receive shader subtracts the camera-relative fragment directly.
-  // .w = PCF radius (Batch 63). Units are cube-face texels — the
-  //      receive shader converts texels to a projected cube-face shift of
-  //      `2 * radius / shadowMapSize.x`. 0.0 means hard
-  //      sampling (single tap, identical to Batch 57's behavior); >0
-  //      activates the 5-tap cross PCF kernel. Not the same role as
-  //      `effects.shadowDarkness` — darkness drives `mix()` in the
-  //      caller; pcfRadius drives kernel width here.
+  // .w = PCF radius, in cube-face texels. The receive shader converts texels
+  //      to a projected cube-face shift of `2 * radius / shadowMapSize.x`. 0.0
+  //      selects hard sampling with a single tap; above 0 activates the 5-tap
+  //      cross PCF kernel. This is not the same role as
+  //      `effects.shadowDarkness`: darkness drives `mix()` in the caller, while
+  //      pcfRadius drives kernel width here.
   pointLightPositionRTE: vec4<f32>,
-  // Batch 160 — AUDIT_2026_05_02 A.6 NEW-MODEL-CLIPPING-POLYGONS.
-  // Polygon-clipping atlas control + per-extent UV remap.
-  // .x = extentsCount (number of merged-extent groups in the SDF atlas;
-  //      polygons whose spherical bounding rectangles overlap are
-  //      coalesced into one group on the CPU — see
-  //      `ClippingPolygonCollection.getExtents`).
-  // .y = atlas inverse dimension precomputed on the JS side
-  //      (1.0 / dim where dim = ceil(log2(extentsCount)) for >2,
-  //      else extentsCount). Saves a per-fragment log2.
+  // Polygon-clipping atlas control and per-extent UV remap.
+  // .x = extentsCount, the number of merged-extent groups in the SDF atlas.
+  //      Polygons whose spherical bounding rectangles overlap are coalesced
+  //      into one group on the CPU; see `ClippingPolygonCollection.getExtents`.
+  // .y = the atlas inverse dimension, precomputed as `1.0 / dim` where `dim` is
+  //      `ceil(log2(extentsCount))` above 2 and `extentsCount` otherwise. This
+  //      saves a per-fragment log2.
   // .z, .w = reserved.
   clippingPolygonControl: vec4<f32>,
   // 8 merged-extent groups, each packed as (south, west, invLatRange,
@@ -725,24 +700,23 @@ struct CSMParams {
 @group(3) @binding(9) var atmosphereLutSampler: sampler;
 @group(3) @binding(10) var<uniform> csmParams: CSMParams;
 @group(3) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
-// C-R8-EDGE-INLINE — inline edge-detection resources. The edge MRT
-// views populate at the start of `_execute3DTilePasses` (before the
-// model's OPAQUE pass); the globe packed-depth view is produced by
-// `WebGPUGlobeDepth.executeCopyDepth` even earlier. Sampler at 16 is
-// shared filtering. Gated at call site on `effects.edgeControl.x > 0.5`
-// so dead bindings (placeholder 1×1 transparent textures) never
+// Inline edge-detection resources. The edge MRT views populate at the start of
+// `_execute3DTilePasses`, before the model's OPAQUE pass, and the globe
+// packed-depth view is produced by `WebGPUGlobeDepth.executeCopyDepth` earlier
+// still. The sampler at 16 is shared filtering. The call site gates on
+// `effects.edgeControl.x > 0.5`, so placeholder 1x1 transparent textures never
 // influence the lit fragment.
 @group(3) @binding(12) var edgeColorTex: texture_2d<f32>;
 @group(3) @binding(13) var edgeIdTex: texture_2d<f32>;
 @group(3) @binding(14) var edgeDepthTex: texture_2d<f32>;
 @group(3) @binding(15) var globeDepthTex: texture_2d<f32>;
 @group(3) @binding(16) var edgeSampler: sampler;
-// C-R10-POINT-LIGHT-RECEIVE — 6-face cube depth populated by
-// `_renderPointLightCubeCastPasses` in WebGPUShadowMapRenderer. Sampled
-// via `samplePointShadow` below when `effects.pointLightControl.x > 0.5`.
-// Reuses `shadowCompSampler` at binding 2 for the comparison sample.
-// Placeholder is a 1×1×6 cube cleared to 1.0 (depth = far plane → no
-// occluder closer than the light radius → fragment is lit by default).
+// Six-face cube depth, populated by `_renderPointLightCubeCastPasses` in
+// WebGPUShadowMapRenderer and sampled through `samplePointShadow` below when
+// `effects.pointLightControl.x > 0.5`. It reuses `shadowCompSampler` at binding
+// 2 for the comparison sample. The placeholder is a 1x1x6 cube cleared to 1.0,
+// so depth reads as the far plane, no occluder is closer than the light radius,
+// and the fragment is lit by default.
 @group(3) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 // ─── Vertex Shader ───────────────────────────────────────────────────────────
@@ -757,54 +731,51 @@ struct VertexInput {
   @location(4) color0: vec4<f32>,
   @location(5) joints0: vec4<u32>,
   @location(6) weights0: vec4<f32>,
-  // texCoord1 -- glTF textures carry a per-texture texCoord: 0|1 flag;
-  // occlusion and clearcoat-normal commonly use UV set 1. Wrapped in
-  // `//>>ifdef MODEL_HAS_TEXCOORD_1` (Session 62 NEW-VR-VERTEX-BUFFER-VARIANT)
-  // so primitives without TEXCOORD_1 don't allocate a vertex buffer
-  // slot for it — fits Edge's `maxVertexBuffers = 8` adapter cap. The
-  // FS reads of `input.texCoord1` are also wrapped, falling back to
-  // `texCoord0` when the attribute isn't bound.
+  // glTF textures carry a per-texture texCoord flag of 0 or 1, and occlusion
+  // and clearcoat-normal maps commonly use UV set 1. The
+  // `//>>ifdef MODEL_HAS_TEXCOORD_1` wrapper keeps primitives without
+  // TEXCOORD_1 from allocating a vertex buffer slot for it, which matters
+  // against a `maxVertexBuffers = 8` adapter cap. The fragment-shader reads of
+  // `input.texCoord1` are wrapped too, falling back to `texCoord0` when the
+  // attribute is not bound.
   //>>ifdef MODEL_HAS_TEXCOORD_1
   @location(7) texCoord1: vec2<f32>,
   //>>endif
-  // Audit B.2 (Batch 130) -- per-vertex feature ID (b3dm _BATCHID
-  // renamed to _FEATURE_ID_0 by the loader). f32 cast for
-  // varying-friendly transport; the FS converts back to u32 for the
-  // batch / pick texture lookup. The FS gates the read on
-  // `FLAG_HAS_FEATURE_ID_ATTRIBUTE` so the zero default never reaches
-  // the lookup when no feature ID is present.
+  // Per-vertex feature ID; the loader renames b3dm's `_BATCHID` to
+  // `_FEATURE_ID_0`. It is cast to f32 for varying-friendly transport and the
+  // fragment shader converts back to u32 for the batch and pick texture
+  // lookups, gating the read on `FLAG_HAS_FEATURE_ID_ATTRIBUTE` so the zero
+  // default never reaches a lookup when no feature ID is present.
   //
-  // Session 65 follow-up — variant-conditional. When the primitive has
-  // no `_FEATURE_ID_0` / `_BATCHID` accessor the pipeline omits vertex
-  // buffer slot 8 (see `createVertexBufferLayout` in
-  // `WebGPUModelPipelineCache.js`) and this declaration is stripped so
-  // the WGSL stays in sync with the bound buffer count. Most standard
-  // glTF models lack feature IDs, so this removes the eighth vertex
-  // slot from the common-case pipeline — fits Edge's 8-slot adapter
-  // cap with headroom.
+  // The declaration is variant-conditional: a primitive with no `_FEATURE_ID_0`
+  // or `_BATCHID` accessor omits vertex buffer slot 8 — see
+  // `createVertexBufferLayout` in `WebGPUModelPipelineCache` — and stripping
+  // this keeps the WGSL in sync with the bound buffer count. Most glTF models
+  // carry no feature IDs, so the common-case pipeline drops its eighth vertex
+  // slot and clears the 8-slot adapter cap with headroom.
   //>>ifdef MODEL_HAS_FEATURE_ID_0
   @location(8) featureId0: f32,
   //>>endif
-  // DP-H46a (first increment of the DP-H46 metadata epic), widened to
-  // vec4 by METADATA-MULTICOMPONENT — property-ATTRIBUTE value from
-  // EXT_structural_metadata, uploaded by
-  // `WebGPUModelMetadata.ensureMetadataResources` into vertex buffer
-  // slot 9. Variant-conditional on MODEL_HAS_METADATA so non-metadata
-  // models never allocate the slot (keeps the common-case layout under
-  // Edge's `maxVertexBuffers = 8` cap). The renderer packs up to FOUR
-  // components of the first GPU-compatible property attribute per vertex
-  // (normalized integers are already decoded to f32 on the CPU side per
-  // the glTF `accessor.normalized` rule); scalars zero-pad `.yzw`. The
-  // generated `initializeMetadata` (MetadataWGSLPipelineStage) swizzles
-  // the transported components into the property's real WGSL type.
+  // The EXT_structural_metadata property-attribute value,
+  // `WebGPUModelMetadata.ensureMetadataResources` uploads into vertex buffer
+  // slot 9. Conditional on MODEL_HAS_METADATA, so models without metadata never
+  // allocate the slot and the common-case layout stays under the
+  // `maxVertexBuffers = 8` cap.
+  //
+  // The renderer packs up to four components of the first GPU-compatible
+  // property attribute per vertex, with normalized integers already decoded to
+  // f32 on the CPU per the glTF `accessor.normalized` rule, and scalars
+  // zero-padding `.yzw`. The generated `initializeMetadata` from
+  // MetadataWGSLPipelineStage swizzles the transported components into the
+  // property's real WGSL type.
   //>>ifdef MODEL_HAS_METADATA
   @location(9) metadataValue: vec4<f32>,
-  // NEW-MODEL-METADATA-MAT3-MAT4 — widened transport for MAT3/MAT4 property
-  // attributes: the slot-9 vertex buffer's arrayStride grows to 64 and
-  // carries FOUR float32x4 attributes (locations 9-12, offsets 0/16/32/48;
-  // 16 column-major matrix elements per vertex, MAT3 zero-pads 9..15).
-  // Stripped for every scalar/VEC/MAT2 metadata model so the historical
-  // single-vec4 layout stays byte-identical.
+  // The widened transport for MAT3 and MAT4 property attributes: the slot-9
+  // vertex buffer's arrayStride grows to 64 and carries four float32x4
+  // attributes at locations 9-12, offsets 0, 16, 32 and 48 — 16 column-major
+  // matrix elements per vertex, with MAT3 zero-padding elements 9 to 15.
+  // Stripped for every scalar, vector and MAT2 metadata model, which keep the
+  // single-vec4 layout.
   //>>ifdef MODEL_METADATA_MAT_TRANSPORT
   @location(10) metadataValue1: vec4<f32>,
   @location(11) metadataValue2: vec4<f32>,
@@ -831,34 +802,33 @@ struct VertexOutput {
   // so interpolation stays precise at Earth scale — rotating in FS is
   // a single mat4*vec4 per fragment and preserves the RTE cancellation.
   @location(7) rteMC: vec3<f32>,
-  // TAA Slice 2c (Batch 96) — previous-frame and matched-current clip
-  // positions for per-model motion-vector reconstruction. The current
-  // clip pos is the SAME value `output.position` already holds, but
-  // duplicating it here keeps the prev-frame reprojection self-
-  // contained when MRT velocity output is enabled (so no juggle of
-  // `output.position` semantics). Both are in homogeneous clip space;
-  // FS divides by .w before the screen-space delta.
+  // The previous-frame and matched-current clip positions, for per-model
+  // motion-vector reconstruction. The current clip position duplicates what
+  // `output.position` already holds; carrying it separately keeps the
+  // previous-frame reprojection self-contained when MRT velocity output is
+  // enabled, rather than overloading `output.position`'s semantics. Both are
+  // homogeneous clip space, and the fragment shader divides by `.w` before
+  // taking the screen-space delta.
   @location(8) previousClipPos: vec4<f32>,
   @location(9) currentClipPosForVelocity: vec4<f32>,
-  // Audit B.2 (Batch 130) -- @interpolate(flat) so each fragment sees
-  // its provoking vertex's integer feature ID without averaging across
-  // the triangle. The FS converts back to u32 with `u32(featureId0)`.
+  // `@interpolate(flat)` so each fragment sees its provoking vertex's integer
+  // feature ID rather than an average across the triangle. The fragment shader
+  // converts back with `u32(featureId0)`.
   @location(10) @interpolate(flat) featureId0: f32,
   //>>ifdef LOG_DEPTH
   // Interpolated linear depthFromNearPlusOne; FS converts to frag_depth.
   @location(11) v_logDepth: f32,
   //>>endif
-  // DP-H46a — flat-interpolated metadata value carried VS→FS (vec4 since
-  // METADATA-MULTICOMPONENT: up to four property components per vertex).
-  // @interpolate(flat) matches property-attribute semantics (a metadata
-  // value is per-vertex; flat picks the provoking vertex). Location 12
-  // sits above featureId0 (10) and v_logDepth (11). Variant-conditional
-  // so the OFF path is byte-identical.
+  // The flat-interpolated metadata value carried from vertex to fragment stage,
+  // a vec4 because up to four property components travel per vertex.
+  // `@interpolate(flat)` matches property-attribute semantics: a metadata value
+  // is per-vertex, and flat picks the provoking vertex. Location 12 sits above
+  // featureId0 at 10 and v_logDepth at 11.
   //>>ifdef MODEL_HAS_METADATA
   @location(12) @interpolate(flat) metadataValue: vec4<f32>,
-  // NEW-MODEL-METADATA-MAT3-MAT4 — the widened MAT3/MAT4 transport carries
-  // three more flat vec4 varyings (locations 13-15; with LOG_DEPTH active
-  // this lands exactly at the WebGPU spec-floor 16 inter-stage variables).
+  // The widened MAT3 and MAT4 transport carries three more flat vec4 varyings
+  // at locations 13-15. With LOG_DEPTH active that lands exactly on the WebGPU
+  // spec floor of 16 inter-stage variables.
   //>>ifdef MODEL_METADATA_MAT_TRANSPORT
   @location(13) @interpolate(flat) metadataValue1: vec4<f32>,
   @location(14) @interpolate(flat) metadataValue2: vec4<f32>,
@@ -867,19 +837,20 @@ struct VertexOutput {
   //>>endif
 };
 
-// DP-H46b — the REAL `struct Metadata` + `fn initializeMetadata(...)` +
-// `fn metadataDebugScalar(...)` are now GENERATED per metadata class by
-// `Scene/Model/MetadataWGSLPipelineStage.generateMetadataWGSL` and PREPENDED
-// at the single injection point in
-// `WebGPUModelPipelineCache._getOrCreateShaderModule`. The declarations no
-// longer live here (removing the DP-H46a stub avoids a double-declaration of
-// `struct Metadata`). Only the CALL SITE remains — gated by
-// `//>>ifdef MODEL_HAS_METADATA` so:
-//   • metadata model:    generated chunk prepended → struct/initializer/
-//     accessor exist → the gated call site uses them.
-//   • non-metadata model: bit clear → the prepended chunk is the empty string
-//     AND the ifdef call site is stripped → preprocessed WGSL is
-//     byte-identical to the pre-metadata path (same compiled module).
+// `struct Metadata`, `fn initializeMetadata(...)` and
+// `fn metadataDebugScalar(...)` are generated per metadata class by
+// `Scene/Model/MetadataWGSLPipelineStage.generateMetadataWGSL` and prepended at
+// the single injection point in
+// `WebGPUModelPipelineCache._getOrCreateShaderModule`. Declaring them here as
+// well would double-declare `struct Metadata`, so only the call site lives in
+// this file, gated by `//>>ifdef MODEL_HAS_METADATA`:
+//
+//   - a model with metadata has the generated chunk prepended, so the struct,
+//     initializer and accessor exist and the gated call site uses them;
+//   - a model without metadata leaves the bit clear, so the prepended chunk is
+//     the empty string and the call site is stripped, leaving preprocessed WGSL
+//     byte-identical to a build with no metadata support and sharing its
+//     compiled module.
 
 @vertex fn vertexMain(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
@@ -888,15 +859,14 @@ struct VertexOutput {
   var normalMC = input.normalMC;
   var tangentMC = input.tangentMC;
 
-  // ── Morph Targets ─────────────────────────────────────────────────────────
-  // Must happen BEFORE skinning per glTF spec: morph → skin → RTE.
-  // Reads weighted position + normal deltas from the storage buffer, indexed by
-  // vertex_index. DP-H35 (Batch 329): the storage buffer now interleaves a
-  // [positionDelta, normalDelta] vec4 pair per vertex per target, so morphed
-  // normals re-shade the deformed surface (WebGL morphs normals via
-  // getMorphedNormal; WebGPU previously froze them at the rest pose → frozen
-  // lighting on a morph-animated mesh). Normal accumulation is ADDITIVE and a
-  // no-op for targets with no NORMAL accessor (their packed delta is zero).
+  // Morph targets. The glTF specification requires this before skinning: morph,
+  // then skin, then subtract the camera. Weighted position and normal deltas
+  // are read from the storage buffer, indexed by vertex_index. The buffer
+  // interleaves a [positionDelta, normalDelta, tangentDelta] triple per vertex
+  // per target, so morphed normals re-shade the deformed surface — freezing
+  // them at the rest pose leaves a morph-animated mesh lit for a shape it no
+  // longer has. Normal accumulation is additive, and a no-op for targets with
+  // no NORMAL accessor, whose packed delta is zero.
   var morphedNormal = false;
   if (hasFlag(material.materialFlags, FLAG_HAS_MORPH_TARGETS)) {
     let targetCount = u32(morphWeights.targetCount);
@@ -913,9 +883,10 @@ struct VertexOutput {
         let tanDelta = morphDeltas[base + 2u].xyz;
         positionMC = positionMC + posDelta * w;
         normalMC = normalMC + nrmDelta * w;
-        // C2-4: accumulate the morph TANGENT delta (xyz; .w handedness preserved)
-        // so a normal-mapped morphed mesh re-derives its tangent frame, matching
-        // WebGL getMorphedTangent. Zero for targets/models without TANGENT.
+        // Accumulate the morph TANGENT delta — xyz only, preserving the `.w`
+        // handedness — so a normal-mapped morphed mesh re-derives its tangent
+        // frame, matching getMorphedTangent. Zero for targets and models with
+        // no TANGENT.
         tangentMC = vec4<f32>(tangentMC.xyz + tanDelta * w, tangentMC.w);
         morphedNormal = true;
       }
@@ -949,19 +920,19 @@ struct VertexOutput {
     tangentMC = vec4<f32>(skinMatrix3 * tangentMC.xyz, tangentMC.w);
   }
 
-  // ── GPU Instancing ────────────────────────────────────────────────────────
-  // When FLAG_HAS_INSTANCING is set, apply the per-instance transform from
-  // the storage buffer. This positions each instance in model space.
-  // Applied AFTER morph/skinning, BEFORE RTE (matches glTF EXT_mesh_gpu_instancing spec).
+  // GPU instancing. When FLAG_HAS_INSTANCING is set, the per-instance transform
+  // from the storage buffer positions each instance in model space, applied
+  // after morph and skinning and before the camera subtract, as
+  // EXT_mesh_gpu_instancing requires.
   //
-  // DP-H36 (Batch 325) — only the LINEAR part (rotation+scale, `linear`'s
-  // col3 is zeroed on the CPU) multiplies the local vertex position here;
-  // the per-instance TRANSLATION is carried as a high/low pair and folded
-  // into the RTE subtract below instead of being added in f32. Adding the
-  // full Earth-scale translation to the local position in single precision
-  // (the old `instMat * pos` path) lost ~1 m before the camera could cancel
-  // it → stationary-camera i3dm jitter. Keeping `positionMC` at local
-  // magnitude through the RTE subtract preserves sub-meter precision.
+  // Only the linear rotation-and-scale part multiplies the local vertex
+  // position here; the CPU zeroes `linear`'s column 3. The per-instance
+  // translation travels as a high/low pair and folds into the camera subtract
+  // below rather than being added in f32. Adding the full Earth-scale
+  // translation to the local position in single precision loses about a metre
+  // before the camera can cancel it, which shows as i3dm jitter under a
+  // stationary camera; keeping `positionMC` at local magnitude through the
+  // subtract preserves sub-metre precision.
   var instTransHigh = vec3<f32>(0.0);
   var instTransLow = vec3<f32>(0.0);
   // PARITY-METADATA-TABLE-INSTANCE-SOURCE — per-instance feature ID transported
@@ -1004,20 +975,17 @@ struct VertexOutput {
   output.tangentEC = tangentEC3;
   output.bitangentEC = cross(output.normalEC, tangentEC3) * tangentMC.w;
 
-  // Audit A.5 (Batch 130) + re-review (Batch 134) -- compute
-  // prevPositionMC by re-running the morph -> skin -> instance
-  // pipeline with PREV-FRAME data on every stage:
-  //   - morph weights from `previousMorphWeights` (binding 5,
-  //     NEW-TAA-MORPH-PREV)
+  // Compute prevPositionMC by re-running the morph, skin and instance pipeline
+  // with previous-frame data at every stage:
+  //   - morph weights from `previousMorphWeights` (binding 5)
   //   - joint matrices from `previousJointMatrices` (binding 4)
-  //   - instance transforms from `previousInstanceTransforms`
-  //     (binding 6, NEW-TAA-INSTANCE-PREV)
-  // For rigid (non-skinned, non-morphed, non-instanced) models, all
-  // three prev buffers default to their CURRENT counterparts so
-  // prevPositionMC equals positionMC and velocity captures only the
-  // model-matrix delta + camera motion. Animated rigs now produce
-  // the correct per-vertex motion vector across the full deformation
-  // pipeline.
+  //   - instance transforms from `previousInstanceTransforms` (binding 6)
+  //
+  // For a rigid model — neither skinned, morphed nor instanced — all three
+  // previous buffers default to their current counterparts, so prevPositionMC
+  // equals positionMC and velocity captures only the model-matrix delta and
+  // camera motion. An animated rig gets a correct per-vertex motion vector
+  // across the full deformation pipeline.
   var prevPositionMC = input.positionMC;
   if (hasFlag(material.materialFlags, FLAG_HAS_MORPH_TARGETS)) {
     let targetCount = u32(previousMorphWeights.targetCount);
@@ -1030,9 +998,9 @@ struct VertexOutput {
         t >= 4u,
       );
       if (abs(w) > 0.0001) {
-        // The storage buffer interleaves [pos, nrm, tan] triples (C2-4) — step
-        // the same *3u stride as the current-frame block; the prev-frame
-        // velocity path only needs the POSITION delta (base + 0).
+        // The storage buffer interleaves [position, normal, tangent] triples,
+        // so step the same 3u stride as the current-frame block. The
+        // previous-frame velocity path needs only the position delta.
         let base = (t * vertexCount + vid) * 3u;
         let delta = morphDeltas[base].xyz;
         prevPositionMC = prevPositionMC + delta * w;
@@ -1049,13 +1017,13 @@ struct VertexOutput {
     prevPositionMC = (prevSkinMatrix * vec4<f32>(prevPositionMC, 1.0)).xyz;
   }
   if (hasFlag(material.materialFlags, FLAG_HAS_INSTANCING)) {
-    // DP-H36 (Batch 325) — reconstruct the full prev-frame model-space
-    // position from the split struct. This prev path multiplies by
-    // `previousModelMatrix` (full-magnitude, non-RTE) below, so the
-    // translation is recombined as a full f32 position here; the residual
-    // ~1 m precision loss is irrelevant for motion vectors, and for static
-    // instancing the prev buffer aliases the current one so the instancing
-    // contribution to velocity is zero regardless.
+    // Reconstruct the full previous-frame model-space position from the split
+    // struct. This path multiplies by `previousModelMatrix` at full magnitude
+    // below rather than relative to the eye, so the translation is recombined
+    // as a full f32 position here. The residual metre of precision loss does
+    // not matter for motion vectors, and under static instancing the previous
+    // buffer aliases the current one, so instancing contributes no velocity at
+    // all.
     let prevInst = previousInstanceTransforms[input.instanceIndex];
     let prevLinear3 = mat3x3<f32>(
       prevInst.linear[0].xyz, prevInst.linear[1].xyz, prevInst.linear[2].xyz);
@@ -1063,10 +1031,10 @@ struct VertexOutput {
                    + prevInst.translationHigh.xyz + prevInst.translationLow.xyz;
   }
 
-  // TAA Slice 2c (Batch 96) -- previous- and current-frame world
-  // positions feed the FS reprojection. Both go through the
-  // unencoded-position * matrix path (RTE is a current-frame
-  // optimization that the prev-frame matmul doesn't share).
+  // Previous- and current-frame world positions feed the fragment shader's
+  // reprojection. Both take the unencoded-position-times-matrix path; the
+  // relative-to-eye form is a current-frame optimization the previous-frame
+  // multiply does not share.
   let worldPosCurrent = material.modelMatrix * vec4<f32>(positionMC, 1.0);
   let worldPosPrevious =
     material.previousModelMatrix * vec4<f32>(prevPositionMC, 1.0);
@@ -1075,18 +1043,17 @@ struct VertexOutput {
   output.currentClipPosForVelocity =
     camera.mvpRelativeToEye * vec4<f32>(rte, 1.0);
 
-  // Audit B.2 (Batch 130) -- pass per-vertex feature ID through to
-  // FS as a flat-interpolated varying. The provoking-vertex's value
-  // wins for the entire triangle, which matches the per-feature
-  // semantics (a feature spans whole triangles, never crosses).
+  // Pass the per-vertex feature ID to the fragment stage as a flat-interpolated
+  // varying, so the provoking vertex's value wins for the whole triangle. That
+  // matches per-feature semantics: a feature spans whole triangles and never
+  // crosses one.
   //
-  // Session 65 follow-up — variant-conditional on MODEL_HAS_FEATURE_ID_0.
-  // When the primitive has no feature ID accessor (the common case
-  // for standard glTF models without batching), slot 8 is omitted from
-  // the vertex layout and `input.featureId0` doesn't exist, so we hand
-  // the FS a zero default. The FS only reads `featureId0` when
-  // `FLAG_HAS_FEATURE_ID_ATTRIBUTE` is set in `material.materialFlags`,
-  // so the default never reaches a lookup.
+  // Conditional on MODEL_HAS_FEATURE_ID_0. A primitive with no feature-ID
+  // accessor — the common case for glTF models without batching — omits slot 8
+  // from the vertex layout, so `input.featureId0` does not exist and the
+  // fragment stage receives a zero default. The fragment shader reads
+  // `featureId0` only when `FLAG_HAS_FEATURE_ID_ATTRIBUTE` is set in
+  // `material.materialFlags`, so that default never reaches a lookup.
   //>>ifdef MODEL_HAS_FEATURE_ID_0
   output.featureId0 = input.featureId0;
   //>>else
@@ -1096,9 +1063,9 @@ struct VertexOutput {
   output.featureId0 = instanceFeatureId0;
   //>>endif
 
-  // DP-H46a — forward the per-vertex scalar metadata value to the FS.
-  // The OFF path strips this entirely (no `output.metadataValue`
-  // member exists when MODEL_HAS_METADATA is clear).
+  // Forward the per-vertex metadata value to the fragment stage. With
+  // MODEL_HAS_METADATA clear this is stripped entirely and no
+  // `output.metadataValue` member exists.
   //>>ifdef MODEL_HAS_METADATA
   output.metadataValue = input.metadataValue;
   //>>ifdef MODEL_METADATA_MAT_TRANSPORT
@@ -1188,13 +1155,17 @@ fn fresnelSchlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
   return F0 + (vec3<f32>(1.0) - F0) * (t2 * t2 * t);
 }
 
-// NEW-MODEL-DIRECT-BRDF-PARITY (Batch 355) -- height-correlated Smith-joint
-// visibility (Heitz 2014), byte-faithful to WebGL `pbrLighting.glsl`
-// smithVisibilityGGX. Returns Vis = G / (4·NdotL·NdotV): the 1/(4·NdotL·NdotV)
-// denominator is FOLDED IN, so callers multiply D·Vis·F with NO separate
-// /(4·NdotV·NdotL) term. `alphaRoughness` = perceptualRoughness² (the same
-// convention WebGL passes). Replaces the separable Schlick-GGX `geometrySmith`
-// on the direct-light paths (clearcoat keeps geometrySmith).
+// Height-correlated Smith-joint visibility, byte-faithful to
+// `smithVisibilityGGX` in pbrLighting.glsl. Returns
+// `Vis = G / (4 * NdotL * NdotV)` with the `1 / (4 * NdotL * NdotV)`
+// denominator folded in, so callers multiply D * Vis * F with no separate
+// `/ (4 * NdotV * NdotL)` term. `alphaRoughness` is perceptualRoughness
+// squared, the same convention the GLSL path passes. The direct-light paths use
+// this rather than the separable Schlick-GGX `geometrySmith`, which clearcoat
+// still uses.
+//
+// Reference: Heitz, "Understanding the Masking-Shadowing Function in
+// Microfacet-Based BRDFs" (JCGT 2014).
 fn smithVisibilityGGX(alphaRoughness: f32, NdotL: f32, NdotV: f32) -> f32 {
   let aSq = alphaRoughness * alphaRoughness;
   let GGXV = NdotL * sqrt(NdotV * NdotV * (1.0 - aSq) + aSq);
@@ -1206,11 +1177,11 @@ fn smithVisibilityGGX(alphaRoughness: f32, NdotL: f32, NdotV: f32) -> f32 {
   return 0.0;
 }
 
-// NEW-MODEL-DIRECT-BRDF-PARITY (Batch 355) -- Fresnel-Schlick with an explicit
-// f90 reflectance, byte-faithful to WebGL `pbrLighting.glsl` fresnelSchlick2.
-// The direct-light paths pass f90 = clamp(maxComponent(F0)·25, 0, 1) so
-// near-zero-reflectance dielectrics taper their grazing response instead of
-// the bare `fresnelSchlick`'s implicit f90 = 1 (always white at grazing).
+// Fresnel-Schlick with an explicit f90 reflectance, byte-faithful to
+// `fresnelSchlick2` in pbrLighting.glsl. The direct-light paths pass
+// `f90 = clamp(maxComponent(F0) * 25, 0, 1)`, so a near-zero-reflectance
+// dielectric tapers its grazing response instead of taking the bare
+// `fresnelSchlick`'s implicit `f90 = 1`, which is always white at grazing.
 fn fresnelSchlick2(f0: vec3<f32>, f90: vec3<f32>, VdotH: f32) -> vec3<f32> {
   let versine = clamp(1.0 - VdotH, 0.0, 1.0);
   let v2 = versine * versine;
@@ -1225,17 +1196,20 @@ fn fresnelSchlickRoughness(cosTheta: f32, F0: vec3<f32>, roughness: f32) -> vec3
   return F0 + (max(oneMinusRoughness, F0) - F0) * (t2 * t2 * t);
 }
 
-// C2-25 ENV-PARALLAX (Batch 451) — Lagarde box/sphere parallax correction.
-// Given a fragment world position `originWC` (camera-relative world space)
-// and a world-space reflection direction `dirWC`, intersect the reflection
-// ray with the per-manager bounding proxy and return the re-projected cube
-// sample direction `normalize(P - proxyCenter)`. `mode` is 1 for box, 2 for
-// sphere. The proxy center + half-extents (camera-relative world) live in the
-// same frame as `originWC`. Falls back to the raw `dirWC` when the ray misses
-// the proxy or the geometry degenerates, so a mis-placed proxy can never
-// produce a NaN sample direction. Box uses the standard slab method; sphere
-// uses the analytic ray-sphere far hit (the reflection always exits the
-// proxy in front of the surface).
+// Box and sphere parallax correction.
+//
+// Given a fragment world position `originWC` in camera-relative world space and
+// a world-space reflection direction `dirWC`, intersect the reflection ray with
+// the bounding proxy and return the re-projected cube sample direction
+// `normalize(P - proxyCenter)`. `mode` is 1 for box and 2 for sphere, and the
+// proxy centre and half-extents live in the same camera-relative world frame as
+// `originWC`.
+//
+// It falls back to the raw `dirWC` when the ray misses the proxy or the
+// geometry degenerates, so a misplaced proxy can never produce a NaN sample
+// direction. The box uses the standard slab method; the sphere uses the
+// analytic ray-sphere far hit, since the reflection always exits the proxy in
+// front of the surface.
 fn parallaxCorrectReflection(
   originWC: vec3<f32>,
   dirWC: vec3<f32>,
@@ -1290,13 +1264,12 @@ fn parallaxCorrectReflection(
   return normalize(corrected);
 }
 
-// Audit A.9 (Batch 130) -- L2 spherical-harmonic irradiance.
-// 9 coefficients (3 bands) provide a low-frequency analytic
-// approximation of diffuse irradiance from any direction; cheaper
-// than a 32x32 cubemap convolution sample, sufficient for ambient
-// lighting that doesn't carry high-frequency detail. Coefficient
-// order matches the WebGL `ImageBasedLightingPipelineStage` packing
-// so authors can supply the same SH set across both backends.
+// L2 spherical-harmonic irradiance. Nine coefficients across three bands give a
+// low-frequency analytic approximation of diffuse irradiance from any
+// direction — cheaper than a 32x32 cubemap convolution sample, and sufficient
+// for ambient lighting, which carries no high-frequency detail. The coefficient
+// order matches `ImageBasedLightingPipelineStage`'s packing, so one SH set
+// serves both backends.
 fn evalSphericalHarmonics(N: vec3<f32>) -> vec3<f32> {
   var c = sh.c0.xyz;
   c = c + sh.c1.xyz * N.y;
@@ -1353,22 +1326,25 @@ fn tonemapAndGamma(color: vec3<f32>) -> vec3<f32> {
   return pow(mapped, vec3<f32>(1.0 / 2.2));
 }
 
-// Raw screen-space tangent direction + UV-jacobian determinant for the
-// tangent-less normal-mapping fallback (Slice 5d Batch 159). MUST be called
-// from uniform control flow — it contains derivative built-ins (dpdx/dpdy),
-// which WGSL forbids in non-uniform control flow. `perturbNormal` is reached
-// through non-uniform branches (the double-sided `frontFacing` flip, the
-// unlit early-out), so the derivatives can't live inside it; instead this is
-// invoked once at the uniform entry of `fragmentMain` (mirroring the hoisted
-// `edgePixelStep = fwidth(...)`) and the result is passed down.
+// Raw screen-space tangent direction and UV-jacobian determinant for the
+// tangent-less normal-mapping fallback.
 //
-// The formula is WebGL's computeTangent() in MaterialStageFS.glsl (the
-// glTF-sample-viewer method); the orthogonalization + handedness happen in
-// `perturbNormal` so the two backends agree on the normal-map green-channel
-// sign and the WebGL↔WebGPU diff over a tangent-less asset stays tight.
-// Returns xyz = raw tangent direction (pre-orthogonalization, pre-divide),
-// w = UV-jacobian determinant (used both to finish the divide and to detect
-// degenerate UV gradients).
+// This must be called from uniform control flow: it uses the derivative
+// built-ins dpdx and dpdy, which WGSL forbids under non-uniform control flow.
+// `perturbNormal` is reached through non-uniform branches — the double-sided
+// `frontFacing` flip and the unlit early-out — so the derivatives cannot live
+// inside it. Instead this is invoked once at the uniform entry of
+// `fragmentMain`, mirroring the hoisted `edgePixelStep = fwidth(...)`, and its
+// result is passed down.
+//
+// The formula is `computeTangent()` from MaterialStageFS.glsl. The
+// orthogonalization and handedness happen in `perturbNormal`, so both backends
+// agree on the normal-map green-channel sign and stay close over a tangent-less
+// asset.
+//
+// Returns xyz as the raw tangent direction, before orthogonalization and before
+// the divide, and w as the UV-jacobian determinant, used both to finish that
+// divide and to detect degenerate UV gradients.
 fn deriveTangentRaw(posEC: vec3<f32>, uv: vec2<f32>) -> vec4<f32> {
   let texDx = dpdx(uv);
   let texDy = dpdy(uv);
@@ -1388,37 +1364,38 @@ fn perturbNormal(nEC: vec3<f32>, tEC: vec3<f32>, bEC: vec3<f32>,
   tn = vec3<f32>(tn.xy * scale, tn.z);
   tn = normalize(tn);
 
-  // ── Screen-space derivative tangent frame (Slice 5d Batch 159) ──────────
-  // `derivedTangent` is the raw tangent + UV-jacobian determinant computed
-  // by `deriveTangentRaw` at the uniform entry of `fragmentMain`. This is
-  // the fallback for the case diagnosed in Batch 153: a glTF primitive can
-  // declare a normal texture WITHOUT a TANGENT vertex accessor. The vertex
-  // path then computes `tangentEC = normalize(normalMatrix * tangentMC)`
-  // over a zero tangent → `normalize(vec3(0))` → NaN, so the tEC/bEC
-  // reaching this function are NaN (not zero). Batch 153 fell back to the
-  // flat geometric normal (lighting stayed correct but lost all normal-map
-  // surface detail); this orthogonalizes the derived tangent against N and
-  // takes `B = cross(N, T)` — byte-for-byte WebGL's computeTangent path —
-  // so the detail is preserved with matching handedness. No derivatives
-  // here: they were already taken in uniform control flow upstream.
+  // Screen-space derivative tangent frame. `derivedTangent` is the raw tangent
+  // and UV-jacobian determinant `deriveTangentRaw` computed at the uniform
+  // entry of `fragmentMain`.
+  //
+  // This is the fallback for a glTF primitive that declares a normal texture
+  // without a TANGENT vertex accessor. The vertex path then computes
+  // `tangentEC = normalize(normalMatrix * tangentMC)` over a zero tangent, so
+  // `normalize(vec3(0))` makes the tEC and bEC arriving here NaN rather than
+  // zero. Falling back to the flat geometric normal keeps lighting correct but
+  // loses all normal-map surface detail; orthogonalizing the derived tangent
+  // against N and taking `B = cross(N, T)` — WebGL's computeTangent path
+  // byte for byte — preserves the detail with matching handedness. No
+  // derivatives are taken here; they were already taken in uniform control flow
+  // upstream.
   let det = derivedTangent.w;
   let tRaw = derivedTangent.xyz / det;
   let Td = normalize(tRaw - N * dot(N, tRaw));
   let Bd = normalize(cross(N, Td));
 
-  // NaN-safe degeneracy test: `length(NaN)` is NaN and `NaN > 1e-4` is
-  // false, so `!(len > 1e-4)` catches BOTH the zero-length case (len == 0)
-  // AND the NaN case. A plain `len < 1e-4` would miss NaN (`NaN < 1e-4` is
-  // also false) — the bug the Batch 153 guard originally had.
+  // NaN-safe degeneracy test: `length(NaN)` is NaN and `NaN > 1e-4` is false,
+  // so `!(len > 1e-4)` catches both the zero-length case (len == 0) and the NaN
+  // case. A plain `len < 1e-4` would miss NaN, because `NaN < 1e-4` is also
+  // false.
   let tlen = length(tEC);
   let blen = length(bEC);
   var T: vec3<f32>;
   var B: vec3<f32>;
   if (!(tlen > 1e-4) || !(blen > 1e-4)) {
-    // No usable vertex tangent — use the derived screen-space frame.
-    // Guard degenerate UV derivatives (det ≈ 0 → tRaw is non-finite): with
-    // no UV gradient there is no recoverable tangent, so keep the flat
-    // geometric normal (the Batch 153 behavior) rather than emit a NaN.
+    // No usable vertex tangent, so use the derived screen-space frame. Guard
+    // degenerate UV derivatives, where det is near zero and tRaw is
+    // non-finite: with no UV gradient there is no recoverable tangent, so keep
+    // the flat geometric normal rather than emit a NaN.
     if (!(abs(det) > 1e-10)) {
       return N;
     }
@@ -1472,10 +1449,10 @@ fn lookupBatchColor(fid: i32) -> vec4<f32> {
   return textureSampleLevel(batchTexture, batchSampler, st, 0.0);
 }
 
-// C-R9-MODEL-FEATURE-PICK (Batch 100) — per-feature pick color lookup.
-// Same layout/addressing as `lookupBatchColor` but reads from the
-// per-feature pick texture instead. The pick FS calls this when
-// `featureId.featurePickEnabled > 0.5` AND the batch table is bound.
+// Per-feature pick colour lookup, with the same layout and addressing as
+// `lookupBatchColor` but reading the per-feature pick texture. The pick
+// fragment entry calls this when `featureId.featurePickEnabled > 0.5` and the
+// batch table is bound.
 fn lookupFeaturePickColor(fid: i32) -> vec4<f32> {
   let step = featureId.textureStep;
   if (featureId.hasMultilineBatchTex != 0) {
@@ -1505,25 +1482,23 @@ struct FragmentInput {
   @location(6) texCoord1: vec2<f32>,
   //>>endif
   @location(7) rteMC: vec3<f32>,
-  // TAA Slice 2c (Batch 96) — interpolated previous- and current-frame
-  // clip positions used for per-model motion-vector reconstruction.
+  // Interpolated previous- and current-frame clip positions, used for per-model
+  // motion-vector reconstruction.
   @location(8) previousClipPos: vec4<f32>,
   @location(9) currentClipPosForVelocity: vec4<f32>,
-  // Audit B.2 (Batch 130) -- flat-interpolated per-feature ID
-  // (b3dm _BATCHID). Read by fragmentMain (batch styling discard) +
-  // fragmentPickMain (per-feature pick lookup) when
-  // FLAG_HAS_FEATURE_ID_ATTRIBUTE is set.
+  // The flat-interpolated per-feature ID, b3dm's `_BATCHID`. Read by
+  // fragmentMain for the batch-styling discard and by fragmentPickMain for the
+  // per-feature pick lookup, when FLAG_HAS_FEATURE_ID_ATTRIBUTE is set.
   @location(10) @interpolate(flat) featureId0: f32,
   //>>ifdef LOG_DEPTH
   @location(11) v_logDepth: f32,
   //>>endif
-  // DP-H46a — interpolated (flat) metadata value (vec4 since
-  // METADATA-MULTICOMPONENT). Stripped when MODEL_HAS_METADATA is clear
-  // so the FragmentInput layout is byte-identical for non-metadata models.
+  // The flat-interpolated metadata value, stripped when MODEL_HAS_METADATA is
+  // clear so a model without metadata keeps an unchanged FragmentInput layout.
   //>>ifdef MODEL_HAS_METADATA
   @location(12) @interpolate(flat) metadataValue: vec4<f32>,
-  // NEW-MODEL-METADATA-MAT3-MAT4 — see VertexOutput; locations 13-15 carry
-  // the widened MAT3/MAT4 transport's remaining 12 matrix elements.
+  // Locations 13-15 carry the widened MAT3 and MAT4 transport's remaining 12
+  // matrix elements; see VertexOutput.
   //>>ifdef MODEL_METADATA_MAT_TRANSPORT
   @location(13) @interpolate(flat) metadataValue1: vec4<f32>,
   @location(14) @interpolate(flat) metadataValue2: vec4<f32>,
@@ -1533,12 +1508,11 @@ struct FragmentInput {
   @builtin(front_facing) frontFacing: bool,
 };
 
-// TAA Slice 2c (Batch 96) — converts the interpolated current/previous
-// clip-space positions into a screen-space velocity (NDC delta in
-// [-1, 1] × [-1, 1] units). Returns vec2(0) when motion-vector output
-// is disabled OR when either clip pos is degenerate (w <= 0). Caller
-// is responsible for the @location(1) MRT plumbing — this helper is
-// pure math, no side-effects on the FS color path.
+// Converts the interpolated current and previous clip-space positions into a
+// screen-space velocity, an NDC delta in [-1, 1] by [-1, 1] units. Returns
+// vec2(0) when motion-vector output is disabled, or when either clip position
+// is degenerate with w <= 0. The caller owns the `@location(1)` MRT plumbing;
+// this helper is pure math with no effect on the colour path.
 fn computeMotionVectorScreenSpace(input: FragmentInput) -> vec2<f32> {
   if (material.motionFlags.x < 0.5) {
     return vec2<f32>(0.0);
@@ -1565,11 +1539,10 @@ fn computeMotionVectorScreenSpace(input: FragmentInput) -> vec2<f32> {
 
 fn sampleSingleShadow(positionEC: vec3<f32>) -> f32 {
   let shadowPos = effects.shadowMatrix * vec4<f32>(positionEC, 1.0);
-  // Already WebGPU shadow-texture space — the NDC-to-texture scale/bias comes
-  // from `ShadowMap.getViewProjection` and the v-origin flip from
-  // `toWebGPUShadowReceiveMatrix` (`WebGPUShadowReceiveTransform.ts`). A second
-  // `*0.5 + 0.5` here sampled the wrong quadrant
-  // (NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD).
+  // Already in WebGPU shadow-texture space: the NDC-to-texture scale and bias
+  // come from `ShadowMap.getViewProjection`, and the v-origin flip from
+  // `toWebGPUShadowReceiveMatrix`. A second `*0.5 + 0.5` here would sample the
+  // wrong quadrant.
   let coord = shadowPos.xyz / shadowPos.w;
   let uv = coord.xy;
   let outOfBounds =
@@ -1711,11 +1684,11 @@ fn computeShadowFactorCSM(
   return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
-// ─── C-R10-POINT-LIGHT-RECEIVE — cube shadow sampling ───────────────────────
+// Cube shadow sampling.
 //
-// Mirrors WebGL's USE_CUBE_MAP_SHADOW path (`shadowVisibility.glsl` +
-// `shadowDepthCompare.glsl`) but adapted to WebGPU's `texture_depth_cube`
-// + `textureSampleCompareLevel` semantics. The cast pipeline writes
+// Mirrors the USE_CUBE_MAP_SHADOW path in `shadowVisibility.glsl` and
+// `shadowDepthCompare.glsl`, adapted to WebGPU's `texture_depth_cube` and
+// `textureSampleCompareLevel` semantics. The cast pipeline writes
 // standard window-space depth (the context-owned WebGPU clip convention
 // produces a [0,1] z_ndc, and the convention-aware NDC→texture transform
 // preserves that z range before landing in the depth32float attachment)
@@ -1778,21 +1751,19 @@ fn samplePointShadow(fragRTE: vec3<f32>) -> f32 {
   // The convention-aware shadow transform preserves WebGPU z in [0,1].
   let zAttached = zNdcWebGpu;
   let refDepth = clamp(zAttached - depthBias, 0.0, 1.0);
-  // Batch 63 — Soft point-light shadows via 5-tap cross PCF.
+  // Soft point-light shadows through a 5-tap cross PCF.
   //
-  // `effects.pointLightPositionRTE.w` carries the PCF radius in
-  // cube-face texels (0 → hard sampling; the typical soft setting is
-  // 1.0–2.0 texels). When the radius is zero we drop straight through
-  // to the single comparison sample — identical performance + output
-  // to Batch 57's hard-edge path.
+  // `effects.pointLightPositionRTE.w` carries the PCF radius in cube-face
+  // texels; 0 selects hard sampling and the typical soft setting is 1.0 to 2.0
+  // texels. A zero radius drops straight through to the single comparison
+  // sample, at identical cost and output to the hard-edge path.
   //
-  // For radius > 0 we perturb the cube direction along the two MINOR
-  // axes (the axes that AREN'T the dominant face axis). This keeps
-  // the perturbation tangent to the cube face the dominant ray hits,
-  // so all 5 samples sit on the same face's depth texels rather than
-  // spilling into a neighboring face (which would compare against a
-  // perspective-Z written by a different per-face camera and produce
-  // banding at face seams).
+  // Above zero, the cube direction is perturbed along the two minor axes — the
+  // ones that are not the dominant face axis. That keeps the perturbation
+  // tangent to the cube face the dominant ray hits, so all five samples land on
+  // the same face's depth texels instead of spilling into a neighbouring face,
+  // where they would compare against a perspective-Z written by a different
+  // per-face camera and band at the seams.
   //
   // Perturbation magnitude: a cube face spans projected coordinates [-1, 1],
   // so one texel is 2/N. The sample direction is meter-scale; multiplying by
@@ -1884,14 +1855,13 @@ fn computeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
   return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
-// ─── C-R8-EDGE-INLINE ─────────────────────────────────────────────────────
+// Inline edge detection.
 //
-// Authoritative WGSL port of WebGL's `EdgeDetectionStageFS.glsl`. Runs
-// inline inside the model fragment shader (see `applyEdgeOverlay`
-// callsite in fragmentMain) so per-feature gating, edge color, and
-// alpha all see the correct fragment context. Replaces the post-process
-// overlay composite (`WebGPUEdgeComposite`) which couldn't access per-
-// fragment featureId at composite time.
+// A WGSL port of `EdgeDetectionStageFS.glsl`, run inline inside the model
+// fragment shader — see the `applyEdgeOverlay` call site in fragmentMain — so
+// per-feature gating, edge colour and alpha all see the correct fragment
+// context. A post-process overlay composite cannot, because per-fragment
+// featureId is not available at composite time.
 //
 // Math notes:
 //   * `unpackEdgeDepth` is the inverse of the WGSL `czm_packDepth`
@@ -1910,7 +1880,7 @@ fn computeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
 //     Otherwise (fragment is a 3D-tile surface), the edge composites
 //     only when its depth matches the fragment's.
 //
-// Per-feature gating (C-R8-EDGE-FEATURE-ID):
+// Per-feature gating:
 //   When `effects.edgeViewport.w > 0.5`, the edge passes only over
 //   matching feature IDs OR the background. Three drawEdge cases:
 //     - background → always draw
@@ -2006,14 +1976,13 @@ fn applyEdgeOverlay(
   );
   let isBackground = geomDepthLinear > globeDepthLinear;
 
-  // C-R8-EDGE-FEATURE-ID — compare the edge's stored featureId
-  // against the current fragment's featureId. C-R8-EDGE-ID-FORMAT
-  // (Batch 49): 16-bit IDs split across `id.g` (low byte) + `id.b`
-  // (high byte), each stored 0..1 normalised. Recomposed via
-  // `low + high * 256` after denormalising both channels — round-trips
-  // integer IDs 0..65535 exactly. Beyond 65535 the emitter saturates
-  // and IDs collapse to indistinguishable; practical only for tilesets
-  // that would also strain the GPU batch-table side.
+  // Compare the edge's stored featureId against the current fragment's.
+  // 16-bit IDs are split across `id.g` as the low byte and `id.b` as the high
+  // byte, each stored normalized to 0..1, and recomposed as
+  // `low + high * 256` after denormalizing both channels, which round-trips
+  // integer IDs 0..65535 exactly. Past 65535 the emitter saturates and IDs
+  // become indistinguishable; that only arises for tilesets that would strain
+  // the GPU batch-table side as well.
   var drawEdge = isBackground;
   let hasFeatureGating = effects.edgeViewport.w > 0.5;
   if (hasFeatureGating) {
@@ -2141,21 +2110,14 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   //>>endif
 }
 
-// AUDIT_2026_05_02 A.6 — port of `Shaders/Model/ModelClippingPlanesStageFS.glsl`
-// for the WebGPU model path. WebGL Model rendering supports
-// `model.clippingPlanes`; the WebGPU path declared `clippingPlaneTex` at
-// `@group(3) @binding(3)` and the `EffectsUniforms.clippingPlaneCount` /
-// `clippingUnionMode` / `clippingEdgeWidth` / `clippingEdgeColor` fields
-// but never sampled them — model clipping was a complete no-op.
+// Port of `Shaders/Model/ModelClippingPlanesStageFS.glsl` for the WebGPU model
+// path, backing `model.clippingPlanes`.
 //
-// CRITICAL FRAME: planes in `clippingPlaneTex` are uploaded in EYE SPACE
-// by `WebGPUClippingPlaneCollection.ts` (see its file-level comment at
-// lines 103-119: "Pack plane data transformed into EYE SPACE so the
-// fragment test `dot(eyePos, plane.xyz) + plane.w` matches the frame of
-// eyePos"). The fragment-side test must therefore consume eye-space
-// position, NOT model-space. (An earlier draft of this fix used
-// reconstructed model-space and produced silent wrong output — caught
-// by audit/rereview 2026-05-02.)
+// `WebGPUClippingPlaneCollection` uploads the planes in `clippingPlaneTex` in
+// EYE SPACE, so that the fragment test `dot(eyePos, plane.xyz) + plane.w`
+// matches the frame of `eyePos`. The fragment-side test must therefore consume
+// eye-space position, never model-space; a reconstructed model-space position
+// produces silently wrong output rather than an error.
 //
 // Mirror of `globeClipByPlanes` in `GlobeTerrain.wgsl` but consuming
 // eye-space:
@@ -2170,18 +2132,16 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
 // Returns the smallest signed distance across all planes (positive =
 // inside the kept region) so the caller can render an edge band when
 // `clippingEdgeWidth > 0`.
-// Batch 160 — AUDIT_2026_05_02 A.6 NEW-MODEL-CLIPPING-POLYGONS.
-// Polygon SDF clipping for models. Full mirror of the WebGL pipeline
-// `Shaders/Model/ModelClippingPolygonsStageVS.glsl` (region selection)
-// + `Shaders/Builtin/Functions/clipPolygons.glsl` (atlas sampling),
-// folded into a single FS function since the WebGPU model path has no
-// separate clipping VS pass.
+// Polygon SDF clipping for models. Mirrors
+// `Shaders/Model/ModelClippingPolygonsStageVS.glsl` for region selection and
+// `Shaders/Builtin/Functions/clipPolygons.glsl` for atlas sampling, folded into
+// one fragment function because the WebGPU model path has no separate clipping
+// vertex pass.
 //
-// CRITICAL FRAME: input is WORLD-space position (meters from Earth
-// center). Convert to approximate spherical coords (lat, lon) using
-// the same `czm_fastApproximateAtan2` curve the SDF compute pass packs
-// against — exact `atan2`/`asin` would cause sub-texel mismatch
-// against the precomputed extents.
+// The input is a WORLD-space position, in metres from the Earth's centre. It is
+// converted to approximate spherical (lat, lon) with the same
+// `czm_fastApproximateAtan2` curve the SDF compute pass packs against; exact
+// `atan2` and `asin` would mismatch the precomputed extents at sub-texel scale.
 //
 // Algorithm (mirrors GLSL VS+FS combined):
 //   1. Compute (lat, lon) for the fragment.
@@ -2203,11 +2163,10 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
 //      negative = fragment inside polygon = clipped, matching the
 //      `#ifndef CLIPPING_INVERSE` branch of `czm_clipPolygons`).
 //
-// Note on coverage: capped at 8 merged-extent groups. The CPU coalesces
-// overlapping polygons into one extent group, so a typical
-// BIM-cutaway scene with 1–4 polygons consumes 1–4 groups. Scenes
-// with >8 disjoint polygon groups will silently miss the overflow
-// (JS side warns once via `oneTimeWarning`).
+// Coverage is capped at 8 merged-extent groups. The CPU coalesces overlapping
+// polygons into one extent group, so a typical cutaway scene with one to four
+// polygons consumes one to four groups. A scene with more than 8 disjoint
+// polygon groups misses the overflow; the JS side warns once about it.
 fn czm_fastApproximateAtanScalar(x: f32) -> f32 {
   // ShaderFastLibs Drobot atan over [0, 1]. Same coefficients as
   // `Builtin/Functions/fastApproximateAtan.glsl`.
@@ -2286,16 +2245,14 @@ fn modelClipByPolygon(positionWC: vec3<f32>) -> bool {
       break;
     }
   }
-  // Batch 163 — fragments outside any region's bounding rectangle
-  // must respect the inverse flag. The default (cutout) treats them as
-  // "outside polygon" → keep them; inverse mode treats them as
-  // "outside polygon" → discard them. This matches the GLSL
-  // `czm_clipPolygons` early-return path which does
-  // `#ifdef CLIPPING_INVERSE discard; #endif return;` when
-  // `regionIndex < 0` or `rectUv` is outside [0,1]. Batch 160's
-  // implementation returned `false` unconditionally, leaking the
-  // entire scene-outside-the-polygon region in inverse mode (AEC
-  // "show only inside" demos rendered everything).
+  // A fragment outside every region's bounding rectangle must still respect the
+  // inverse flag. The default cutout mode treats it as outside the polygon and
+  // keeps it; inverse mode treats it as outside the polygon and discards it.
+  // That matches the `czm_clipPolygons` early-return path, which runs
+  // `#ifdef CLIPPING_INVERSE discard; #endif return;` when `regionIndex < 0` or
+  // `rectUv` falls outside [0,1]. Returning `false` unconditionally here leaks
+  // the whole outside-the-polygon region in inverse mode, so a "show only
+  // inside" configuration renders everything.
   let inverseFlagEarly = effects.clippingPolygonControl.z;
   let invertedDiscardOutside = inverseFlagEarly >= 0.5;
   if (bestRegion < 0) { return invertedDiscardOutside; }
@@ -2363,32 +2320,29 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   return minDistance;
 }
 
-// Slice 5c-B Batch 119 — G-buffer MRT output struct for the Model
-// color pipeline. Slot 0 = lit color (the pre-Batch-119 single output);
-// slot 1 = eye-space normal + roughness packed as rgba16float.
+// G-buffer MRT output for the model colour pipeline: slot 0 is the lit colour
+// and slot 1 the eye-space normal plus roughness, packed as rgba16float.
 //
-// Model is the highest-ROI primitive for the G-buffer because its
-// per-fragment N can be post-normal-map (FLAG_HAS_NORMAL_TEXTURE
-// triggers perturbNormal at L1915) — fundamentally divergent from the
-// depth-derived approximation that the AO consumer fallback computes.
-// Roughness is also real material data (metallicRoughnessTexture .g
-// channel × material.roughnessFactor) instead of the 0.5 placeholder
-// other primitives use.
+// The model path is the most valuable G-buffer producer because its
+// per-fragment N can be post-normal-map — FLAG_HAS_NORMAL_TEXTURE routes
+// through perturbNormal — which diverges fundamentally from the depth-derived
+// approximation an AO consumer falls back to. Its roughness is real material
+// data too, the metallicRoughness texture's green channel times
+// `material.roughnessFactor`, rather than the 0.5 placeholder other primitives
+// emit.
 //
-// The pick / velocity / classification entry points stay single-target.
-// They use their own pipelines (createPickPipeline*, createVelocityPipeline,
-// createClassificationPipeline) which build against the pick FB /
-// velocity FB / classification FB — NOT the scene FB — so they don't
-// need slot 1 declarations.
+// The pick, velocity and classification entry points stay single-target. They
+// build their own pipelines against the pick, velocity and classification
+// framebuffers rather than the scene framebuffer, so they need no slot 1
+// declaration.
 //>>ifdef MODEL_HAS_COLOR
-// WIRE-MODEL-COLOR — model.color / colorBlendMode / colorBlendAmount blend
-// (WebGL `ModelColorStageFS.glsl` parity, exact math). The two uniforms ride
-// the material UB's historical reserved lanes (see the WIRE-MODEL-COLOR lane
-// writes in WebGPUModelRenderer.js): `_pad_reserved8` = model.color RGBA,
-// `motionFlags.w` = the `ColorBlendMode.getColorBlend(mode, amount)` scalar
-// (0 = HIGHLIGHT, 1 = REPLACE, (0,1] = MIX amount). HIGHLIGHT (blend 0) makes
-// the mix() a no-op and the ceil() select the multiply-by-colour term;
-// REPLACE/MIX (blend > 0) blend toward the colour and multiply by 1.
+// The `model.color`, `colorBlendMode` and `colorBlendAmount` blend, matching
+// `ModelColorStageFS.glsl` exactly. Two lanes of the material uniform block
+// carry it: `_pad_reserved8` holds the model colour RGBA and `motionFlags.w`
+// the `ColorBlendMode.getColorBlend(mode, amount)` scalar, where 0 is
+// HIGHLIGHT, 1 is REPLACE and (0,1] is a MIX amount. HIGHLIGHT makes the mix()
+// a no-op and lets the ceil() select the multiply-by-colour term; REPLACE and
+// MIX blend toward the colour and multiply by 1.
 fn applyModelColor(color: vec4<f32>) -> vec4<f32> {
   let modelColor = material._pad_reserved8;
   let colorBlend = material.motionFlags.w;
@@ -2425,11 +2379,10 @@ struct FragOutput {
   if (material._pad_end2 > 0.0 && input.fragCoord.x < material._pad_end3) { discard; }
   //>>endif
 
-  // Slice 5c-B Batch 119 — hoisted geometric normal for early-exit
-  // returns (clipping edge band, unlit path). The main lit path
-  // computes a SEPARATE `N` at L1911+ which may be post-normal-map;
-  // those returns emit that better N + the real material roughness
-  // instead of these placeholders.
+  // Geometric normal hoisted for the early-exit returns: the clipping edge band
+  // and the unlit path. The main lit path computes its own `N`, which may be
+  // post-normal-map, and returns that along with the real material roughness
+  // rather than these placeholders.
   let geomNormalEC = normalize(input.normalEC);
 
   // Hoist fwidth() to uniform control flow at the entry of the fragment
@@ -2441,37 +2394,41 @@ struct FragOutput {
   // edge stage is disabled — negligible (one fwidth, ~2 ALU).
   let edgePixelStep = fwidth(abs(input.positionEC.z));
 
-  // Hoist the screen-space derivative tangent to uniform control flow for
-  // the SAME reason as edgePixelStep above (Slice 5d Batch 159): the
-  // tangent-less normal-map fallback in perturbNormal needs dpdx/dpdy of
-  // position + UV, but perturbNormal is reached through non-uniform
-  // branches (the double-sided `frontFacing` normal flip, the unlit
-  // early-out), so WGSL rejects derivative built-ins inside it. Compute the
-  // raw frame here at the uniform entry and thread it down. Two UV sets:
-  // the base normal map uses `normalUV`, the (rare) clearcoat normal uses
-  // `baseColorUV` to mirror its existing sampling site. Cost is a handful
-  // of ALU per fragment even when no normal texture is bound — negligible,
-  // and unconditional evaluation is required for the uniformity guarantee.
+  // Hoist the screen-space derivative tangent to uniform control flow, for the
+  // same reason as edgePixelStep above: the tangent-less normal-map fallback in
+  // perturbNormal needs dpdx and dpdy of position and UV, but perturbNormal is
+  // reached through non-uniform branches — the double-sided `frontFacing`
+  // normal flip and the unlit early-out — so WGSL rejects derivative built-ins
+  // inside it. The raw frame is computed here at the uniform entry and threaded
+  // down.
+  //
+  // Two UV sets: the base normal map uses `normalUV`, and the rare clearcoat
+  // normal uses `baseColorUV` to mirror its existing sampling site. The cost is
+  // a handful of ALU per fragment even with no normal texture bound, and the
+  // unconditional evaluation is what the uniformity guarantee requires.
   let normalDerivTangent = deriveTangentRaw(input.positionEC, normalUV(input));
   let clearcoatDerivTangent = deriveTangentRaw(input.positionEC, baseColorUV(input));
 
-  // C10-05-MODEL-TEXTURE-MIP-CHAIN — per-fragment UV derivatives computed AT
-  // FRAGMENT ENTRY while control flow is still uniform (Batch-57 globe pattern,
-  // `GlobeTerrain.wgsl:3158-3171`). The material texture samples below use
-  // `textureSampleGrad(..., d_dx, d_dy)` instead of `textureSampleLevel(..., 0.0)`
-  // so the sampler picks the correct mip from the (stub-generated) chain — this
-  // removes minification shimmer/aliasing on distant tiles and matches WebGL
-  // trilinear. `textureSampleGrad` is the only mip-selecting sampler legal to
-  // call after the non-uniform discards (clipping / alpha-mask) in this shader,
-  // but the derivatives it consumes MUST be taken here in uniform control flow.
-  // One pair per material UV set (each `*UV()` returns the KHR_texture_transform-
-  // transformed coordinate actually fed to the sampler, so its derivative is the
-  // gradient of the transformed UV — exactly what trilinear selection needs).
-  // Cost: a handful of ALU per fragment even when a slot's texture is unbound —
-  // negligible, and the unconditional evaluation is required for the WGSL
-  // uniformity guarantee. Data-lookup samples (batch table / featureId /
-  // feature-pick / edge / globe-depth / SDF / clipping / IBL explicit-LOD /
-  // atmosphere LUT / refraction screen-space) intentionally stay at LOD 0.
+  // Per-fragment UV derivatives, taken at fragment entry while control flow is
+  // still uniform, following the same pattern as `GlobeTerrain.wgsl`. The
+  // material texture samples below use `textureSampleGrad(..., d_dx, d_dy)`
+  // rather than `textureSampleLevel(..., 0.0)`, so the sampler picks the correct
+  // mip from the generated chain; that removes minification shimmer on distant
+  // geometry and matches WebGL trilinear.
+  //
+  // `textureSampleGrad` is the only mip-selecting sampler legal to call after
+  // this shader's non-uniform discards for clipping and alpha-mask, but the
+  // derivatives it consumes must be taken here, in uniform control flow. There
+  // is one pair per material UV set: each `*UV()` returns the
+  // KHR_texture_transform-transformed coordinate actually fed to the sampler,
+  // so its derivative is the gradient of the transformed UV, which is what
+  // trilinear selection needs.
+  //
+  // The cost is a handful of ALU per fragment even when a slot's texture is
+  // unbound, and the unconditional evaluation is what the WGSL uniformity
+  // guarantee requires. Data-lookup samples — batch table, featureId,
+  // feature-pick, edge, globe-depth, SDF, clipping, IBL explicit-LOD,
+  // atmosphere LUT and refraction screen-space — deliberately stay at LOD 0.
   let baseColorUV_dx = dpdx(baseColorUV(input));
   let baseColorUV_dy = dpdy(baseColorUV(input));
   let normalUV_dx = dpdx(normalUV(input));
@@ -2496,11 +2453,10 @@ struct FragOutput {
     // eye-space meters since both sides of the test live in eye space.
     let edgeWidth = effects.clippingEdgeWidth;
     if (edgeWidth > 0.0 && clipDist < edgeWidth) {
-      // Slice 5c-B Batch 119 — clipping edge: no material work has run
-      // yet (no PBR, no normal map). Emit geometric vertex normal +
-      // 0.5 roughness placeholder. The edge band is typically thin
-      // (clippingEdgeWidth ~ 1m eye-space) so consumer quality impact
-      // of the placeholder is negligible.
+      // Clipping edge: no material work has run yet, so there is no PBR result
+      // and no normal map. Emit the geometric vertex normal and a 0.5 roughness
+      // placeholder. The edge band is thin — `clippingEdgeWidth` is around a
+      // metre in eye space — so the placeholder costs consumers little.
       var out: FragOutput;
       out.color = effects.clippingEdgeColor;
       //>>ifdef CAPTURE_MODE
@@ -2529,25 +2485,24 @@ struct FragOutput {
     if (modelClipByPolygon(worldPos)) { discard; }
   }
 
-  // C-R8-EDGE-FEATURE-ID — resolve the current fragment's featureId
-  // (if any) up-front so both per-feature batch styling AND the inline
-  // edge-detection stage can consume it without redundant texture
-  // samples. Stays at 0.0 when the model has no feature ID texture —
-  // both consumers correctly degrade to "no feature" in that case.
-  // Note: feature IDs are integers in glTF EXT_mesh_features but we
-  // carry as f32 here because the edge texture's `id.g` channel is
-  // an 8-bit normalised float (0..1) — matching keeps both sides of
-  // the comparison in the same encoding.
+  // Resolve the current fragment's featureId, if any, up front, so both
+  // per-feature batch styling and the inline edge-detection stage can consume
+  // it without a redundant texture sample. It stays 0.0 when the model has no
+  // feature ID texture, and both consumers then degrade to "no feature".
+  //
+  // Feature IDs are integers in glTF EXT_mesh_features, but they are carried as
+  // f32 here because the edge texture's `id.g` channel is an 8-bit normalized
+  // float; matching keeps both sides of the comparison in one encoding.
   var currentFeatureId: f32 = 0.0;
   if (hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE)) {
     let fidSampleEarly = textureSampleLevel(featureIdTexture, featureIdSampler, input.texCoord0, 0.0);
     let fidIntEarly = unpackFeatureId(fidSampleEarly, featureId.channelCount);
     currentFeatureId = f32(fidIntEarly);
   } else if (hasFlag(flags, FLAG_HAS_FEATURE_ID_ATTRIBUTE)) {
-    // Audit B.2 (Batch 130) -- vertex-attribute path. b3dm tilesets
-    // encode batch IDs as the per-vertex _BATCHID accessor (renamed
-    // _FEATURE_ID_0 by the loader). Flat-interpolated, so the value
-    // is exact across the triangle without rounding.
+    // Vertex-attribute path. b3dm tilesets encode batch IDs in the per-vertex
+    // `_BATCHID` accessor, which the loader renames `_FEATURE_ID_0`. It is
+    // flat-interpolated, so the value is exact across the triangle with no
+    // rounding.
     currentFeatureId = input.featureId0;
   }
 
@@ -2620,11 +2575,11 @@ struct FragOutput {
       currentFeatureId,
       edgePixelStep,
     );
-    // Slice 5c-B Batch 119 — unlit path: model has no shading normal
-    // by design (FLAG_IS_UNLIT skips the PBR + normal-map block).
-    // Emit the geometric vertex normal so consumers (AO, contact
-    // shadows) still get a usable normal at unlit-painted pixels;
-    // roughness 0.5 placeholder since unlit has no material spec.
+    // Unlit path: the model has no shading normal by design, since FLAG_IS_UNLIT
+    // skips the PBR and normal-map block. Emit the geometric vertex normal so
+    // consumers such as AO and contact shadows still get a usable normal at
+    // unlit-painted pixels, with a 0.5 roughness placeholder because unlit
+    // carries no material specular.
     var out: FragOutput;
     out.color = unlitWithEdge;
     //>>ifdef MODEL_HAS_COLOR
@@ -2684,20 +2639,19 @@ struct FragOutput {
     diffuseColor = baseColor.rgb * (1.0 - metallic);
   }
 
-  // C-R4-GLTF-KHR slice 3 — KHR_materials_specular. Modifies dielectric
-  // F0: scales intensity (specularFactor) and tints chromatically
-  // (specularColorFactor). Spec at
-  // https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_specular
-  // says metallic surfaces ignore the color factor and still use
-  // baseColor for F0; only the dielectric F0 component is recolored.
+  // KHR_materials_specular modifies dielectric F0: `specularFactor` scales its
+  // intensity and `specularColorFactor` tints it chromatically. Per the
+  // specification, a metallic surface ignores the colour factor and still takes
+  // baseColor for F0; only the dielectric F0 component is recoloured.
+  //
+  // Reference: https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_specular
   //>>ifdef MODEL_HAS_KHR_TEXTURES
   if (hasFlag(flags, FLAG_HAS_SPECULAR_EXT)) {
     var sf = material.specularExtFactors.x;
     var sc = material.specularExtFactors.yzw;
-    // C-R4-GLTF-KHR-TEXTURES (Batch 102/103) — sample
-    // specularColorTexture (RGB) and specularFactorTexture (A) per
-    // spec. specularColorTexture modulates the F0 chromatic tint;
-    // specularFactorTexture's alpha channel scales the factor scalar.
+    // Sample specularColorTexture's RGB and specularFactorTexture's alpha, per
+    // the specification: the former modulates the F0 chromatic tint, the
+    // latter's alpha channel scales the factor scalar.
     let scTex = textureSampleGrad(
       specularColorTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
@@ -2712,23 +2666,21 @@ struct FragOutput {
   }
   //>>endif
 
-  // C-R4-GLTF-KHR slice 5 — KHR_materials_iridescence (Belcour 2017
-  // thin-film analytical formula). Pre-Batch-181 used a cheap hue-shift
-  // cos-phase approximation; this is the spec-compliant analytical
-  // integral that the Khronos reference impl implements. No LUT
-  // required — the per-wavelength sensitivity terms are baked as
-  // fixed Gaussian fits per the Belcour paper (Sensitivity tables 1-3),
-  // evaluated analytically.
+  // KHR_materials_iridescence, using the thin-film analytical integral the
+  // Khronos reference implementation evaluates rather than a hue-shift
+  // cos-phase approximation. No LUT is required: the per-wavelength sensitivity
+  // terms are baked as fixed Gaussian fits from the Belcour and Barla
+  // sensitivity tables and evaluated analytically.
   //
-  // Reference: Khronos KHR_materials_iridescence spec / three.js
-  // `iridescenceFresnel`. ~80 LOC of bounded WGSL math; no new
-  // bindings or UBO fields.
+  // Reference: Belcour and Barla, "A Practical Extension to Microfacet Theory
+  // for the Modeling of Varying Iridescence" (SIGGRAPH 2017); the Khronos
+  // KHR_materials_iridescence specification; three.js `iridescenceFresnel`.
   //>>ifdef MODEL_HAS_KHR_TEXTURES
   if (hasFlag(flags, FLAG_HAS_IRIDESCENCE)) {
     var irFactor = material.iridescenceFactors.x;
     let irIor = material.iridescenceFactors.y;
-    // C-R4-GLTF-KHR-TEXTURES (Batch 102/103) — sample iridescenceTexture
-    // (R = mask) and iridescenceThicknessTexture (G) per spec.
+    // Sample iridescenceTexture's red channel as the mask and
+    // iridescenceThicknessTexture's green channel, per the specification.
     let irTex = textureSampleGrad(
       iridescenceTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
@@ -2926,9 +2878,9 @@ struct FragOutput {
   let NdotH = max(dot(N, H), 0.0);
   let VdotH = max(dot(V, H), 0.0);
 
-  // NEW-MODEL-DIRECT-BRDF-PARITY (Batch 355) -- mirror WebGL czm_pbrLighting:
-  // height-correlated Smith-joint visibility (denominator folded in) + f90
-  // Fresnel. specBRDF = F·Vis·D (NO separate /(4·NdotV·NdotL)).
+  // Mirrors `czm_pbrLighting`: height-correlated Smith-joint visibility with the
+  // denominator folded in, plus f90 Fresnel. specBRDF is `F * Vis * D`, with no
+  // separate `/ (4 * NdotV * NdotL)`.
   let alphaRoughness = roughness * roughness;
   let D = distributionGGX(NdotH, roughness);
   let Vis = smithVisibilityGGX(alphaRoughness, NdotL, NdotV);
@@ -2943,15 +2895,14 @@ struct FragOutput {
   let kD = vec3<f32>(1.0) - F;
   var direct = (kD * diffuseColor / PI + specBRDF) * light.sunColor * light.sunIntensity * NdotL;
 
-  // Slice 5d Batch 153 — Forward+ clustered lighting additive
-  // contribution. The ClusteredLighting chunk is prepended to this
-  // shader by `WebGPUModelPipelineCache._getOrCreateShaderModule` and
-  // declares `evalClusteredLights(...)` plus the @group(3) bindings
-  // 18..22 that the effects bind group (extended in Batch 153) carries
-  // the dispatcher's per-frame cluster data on. Early-outs to vec3(0)
-  // when `clusterParams.activeLightCount.x == 0` (zero lights this
-  // frame OR scene.clusteredLightingEnabled === false), so the cost
-  // when off is one uniform compare per fragment.
+  // The Forward+ clustered lighting additive contribution.
+  // `WebGPUModelPipelineCache._getOrCreateShaderModule` prepends the
+  // ClusteredLighting chunk, which declares `evalClusteredLights(...)` and the
+  // `@group(3)` bindings 18 to 22 the effects bind group carries the
+  // dispatcher's per-frame cluster data on. It early-outs to vec3(0) when
+  // `clusterParams.activeLightCount.x == 0` — no lights this frame, or
+  // clustered lighting disabled — so the cost when off is one uniform compare
+  // per fragment.
   let clusteredContrib = evalClusteredLights(
     input.positionEC, N, V, F0, roughness, diffuseColor,
     input.fragCoord.xy, input.positionEC.z,
@@ -2966,42 +2917,34 @@ struct FragOutput {
   );
   direct = direct + ltcAreaContrib;
 
-  // C-R4-GLTF-KHR slice 4 — KHR_materials_anisotropy (factor-level).
-  // Full anisotropic GGX needs the tangent-frame as a per-vertex
-  // attribute (not currently passed through `FragmentInput`). For Slice
-  // 4 we approximate by stretching the GGX D term along the half-vector
-  // projection: rougher highlights along the view's right axis when
-  // strength is positive, along the up axis when negative. Visually
-  // produces the streak shape brushed-metal assets expect; full per-
-  // tangent BRDF lands in a follow-up once tangents are plumbed.
+  // KHR_materials_anisotropy. The GGX D term is stretched along the
+  // half-vector projection: highlights grow rougher along the view's right axis
+  // when strength is positive and along its up axis when negative, producing
+  // the streak shape brushed-metal assets expect.
   //>>ifdef MODEL_HAS_KHR_TEXTURES
   if (hasFlag(flags, FLAG_HAS_ANISOTROPY)) {
     var aniStrength = material.anisotropyFactors.x;
     var aniRotation = material.anisotropyFactors.y;
-    // C-R4-GLTF-KHR-TEXTURES (Batch 102) — sample anisotropyTexture.
-    // RG carries the (cos, sin) of a per-pixel rotation offset; B
-    // scales the strength. Spec stores the trig pair as
-    // (RG * 2 - 1) so 0.5 = no rotation, 1.0 = +pi/2.
+    // Sample anisotropyTexture: RG carries the cosine and sine of a per-pixel
+    // rotation offset and B scales the strength. The specification stores the
+    // trig pair as `RG * 2 - 1`, so 0.5 means no rotation and 1.0 means +pi/2.
     let aniTex = textureSampleGrad(
       anisotropyTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     let aniRotOffset = atan2(aniTex.g * 2.0 - 1.0, aniTex.r * 2.0 - 1.0);
     aniRotation = aniRotation + aniRotOffset;
     aniStrength = aniStrength * aniTex.b;
-    // AUDIT_2026_05_02 B.5 / NEW-KHR-ANISO-TANGENT — use the authored
-    // glTF TANGENT attribute (already plumbed through FragmentInput as
-    // tangentEC + bitangentEC, see VS lines 595-597) rather than the
-    // view-relative approximation. The spec defines the anisotropy
-    // streak along the per-fragment tangent direction; using `cross(N, V)`
-    // produced wrong streaks on brushed-metal materials with authored
-    // anisotropic UVs.
+    // Use the authored glTF TANGENT attribute, carried through FragmentInput as
+    // tangentEC and bitangentEC, rather than a view-relative approximation. The
+    // specification defines the anisotropy streak along the per-fragment
+    // tangent direction, and substituting `cross(N, V)` gives wrong streaks on
+    // brushed-metal materials with authored anisotropic UVs.
     //
-    // Guard `normalize` against zero-length input: primitives WITHOUT an
-    // authored TANGENT attribute upload zeros into the tangent slot, and
-    // `normalize(vec3(0))` is undefined behavior in WGSL. Fall back to
-    // the view-relative basis (the previous approximation) when the
-    // tangent is degenerate so non-tangent-authored anisotropic
-    // materials still get usable streaks.
+    // Guard `normalize` against zero-length input: a primitive with no authored
+    // TANGENT attribute uploads zeros into the tangent slot, and
+    // `normalize(vec3(0))` is undefined in WGSL. A degenerate tangent falls
+    // back to the view-relative basis, so an anisotropic material without
+    // authored tangents still gets usable streaks.
     let tanLenSq = dot(input.tangentEC, input.tangentEC);
     var aniT: vec3<f32>;
     var aniB: vec3<f32>;
@@ -3018,27 +2961,28 @@ struct FragOutput {
     let TdotH = dot(aniDir, H);
     let aniRough = mix(roughness, 1.0, abs(TdotH) * aniStrength);
     let Daniso = distributionGGX(NdotH, aniRough);
-    // NEW-MODEL-DIRECT-BRDF-PARITY (Batch 355) -- reuse the Smith-joint `Vis`
-    // (denominator folded in) instead of the removed separable `G` + explicit
-    // /(4·NdotV·NdotL), matching the new `specBRDF` it is differenced against.
+    // Reuse the Smith-joint `Vis`, whose denominator is folded in, rather than
+    // a separable `G` with an explicit `/ (4 * NdotV * NdotL)`, so this matches
+    // the `specBRDF` it is differenced against.
     let aniBRDF = Daniso * Vis * F;
     direct = direct + (aniBRDF - specBRDF) * light.sunColor *
                        light.sunIntensity * NdotL * aniStrength;
   }
   //>>endif
 
-  // C-R4-GLTF-KHR slice 2 — KHR_materials_clearcoat. Add a second GGX
-  // specular lobe over the base contribution. Clearcoat fresnel uses a
-  // fixed F0 = 0.04 (air-coat interface). The base material is
-  // attenuated by (1 - F_clearcoat) so high-glance angles bias toward
-  // the coat color rather than double-bouncing.
+  // KHR_materials_clearcoat adds a second GGX specular lobe over the base
+  // contribution. Its Fresnel uses a fixed F0 of 0.04 for the air-coat
+  // interface, and the base material is attenuated by `1 - F_clearcoat`, so
+  // high glancing angles bias toward the coat colour instead of
+  // double-bouncing.
   //>>ifdef MODEL_HAS_KHR_TEXTURES
   if (hasFlag(flags, FLAG_HAS_CLEARCOAT)) {
     var ccFactor = material.clearcoatFactors.x;
     var ccRough = clamp(material.clearcoatFactors.y, 0.04, 1.0);
-    // C-R4-GLTF-KHR-TEXTURES (Batch 102/103) — sample clearcoatTexture
-    // (R = intensity), clearcoatRoughnessTexture (G = roughness), and
-    // clearcoatNormalTexture (RGB = tangent-space normal) per spec.
+    // Sample clearcoatTexture's red channel as intensity,
+    // clearcoatRoughnessTexture's green as roughness, and
+    // clearcoatNormalTexture's RGB as a tangent-space normal, per the
+    // specification.
     let ccTex = textureSampleGrad(
       clearcoatTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
@@ -3074,16 +3018,18 @@ struct FragOutput {
   }
   //>>endif
 
-  // C-R4-GLTF-KHR slice 6 — KHR_materials_sheen. Charlie BRDF lobe
-  // approximated with the Estevez/Kulla Charlie distribution. Energy-
-  // additive on top of the base contribution; emulates fabric/velvet
-  // retroreflection at grazing angles.
+  // KHR_materials_sheen. A Charlie BRDF lobe, added on top of the base
+  // contribution, which reproduces the retroreflection fabric and velvet show
+  // at grazing angles.
+  //
+  // Reference: Estevez and Kulla, "Production Friendly Microfacet Sheen BRDF"
+  // (SIGGRAPH 2017).
   //>>ifdef MODEL_HAS_KHR_TEXTURES
   if (hasFlag(flags, FLAG_HAS_SHEEN)) {
     var sheenColor = material.sheenFactors.xyz;
     var sheenRough = clamp(material.sheenFactors.w, 0.07, 1.0);
-    // C-R4-GLTF-KHR-TEXTURES (Batch 102/103) — sample sheenColorTexture
-    // (RGB) and sheenRoughnessTexture (A) per spec.
+    // Sample sheenColorTexture's RGB and sheenRoughnessTexture's alpha, per the
+    // specification.
     let sheenTex = textureSampleGrad(
       sheenColorTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
@@ -3107,43 +3053,33 @@ struct FragOutput {
   }
   //>>endif
 
-  // C-R4-GLTF-KHR slice 7 — KHR_materials_volume. Beer-Lambert
-  // attenuation on the diffuse contribution as a stand-in for the
-  // proper transmission path (which needs KHR_materials_transmission
-  // and a refraction render target — full impl deferred). Mirrors the
-  // attenuation term of the reference implementation when transmission
-  // is 0 and the surface is purely opaque, which is the common case for
-  // KHR_materials_volume on glass/translucent assets in our tilesets.
-  // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — KHR_materials_transmission.
-  // Transmissive surfaces blend the diffuse contribution with a sample
-  // of the refraction texture (a copy of prior-pass scene color),
-  // offset along the refracted view direction. This is a simplified
-  // path: full physically-correct transmission requires a refraction
-  // MRT that captures opaque-only scene color BEFORE transmissive
-  // draws — without that capture the sample reads "this draw's own
-  // contribution" which double-counts. The capture is the architectural
-  // gap the next slice closes; for now the FS samples the placeholder
-  // white texture and the transmission factor scales the existing
-  // diffuse contribution to "fake" the transmissive look.
+  // KHR_materials_volume applies Beer-Lambert attenuation to the diffuse
+  // contribution, mirroring the reference implementation's attenuation term
+  // when transmission is 0 and the surface is opaque — the common case for
+  // KHR_materials_volume on glass and translucent assets.
   //
-  // Branch ordering: applied AFTER volume attenuation so transmissive
-  // glass behind volumetric absorption gets the correct double effect.
+  // KHR_materials_transmission then blends that diffuse contribution with a
+  // sample of the refraction texture, a copy of the prior-pass scene colour,
+  // offset along the refracted view direction. Physically correct transmission
+  // needs a refraction MRT capturing opaque-only scene colour before any
+  // transmissive draw; without that capture the sample reads this draw's own
+  // contribution and double-counts. Where the capture is absent the fragment
+  // shader samples the placeholder white texture and the transmission factor
+  // scales the existing diffuse contribution instead.
+  //
+  // Transmission is applied after volume attenuation, so transmissive glass
+  // behind volumetric absorption receives both effects in the right order.
   //>>ifdef MODEL_HAS_KHR_TEXTURES
-  // NEW-KHR-TRANSMISSION-THICKNESS (Batch 176) — pre-compute KHR_volume
-  // thickness so BOTH the transmission and volume blocks can consume
-  // the same value without duplicating the thicknessTexture sample.
-  // Pre-Batch-176 the transmission block used a fixed `0.05` UV offset
-  // step regardless of the asset's volume thickness, so a thin glass
-  // pane and a thick crystal sphere refracted identically. The volume
-  // thickness now modulates the refraction step so thicker geometry
-  // bends light more — matching the Khronos KHR_volume spec's
-  // expectation that refraction is proportional to the optical path
-  // length through the volume.
+  // Pre-compute the KHR_volume thickness so both the transmission and volume
+  // blocks consume one value without duplicating the thicknessTexture sample.
+  // The thickness modulates the refraction step, so thicker geometry bends
+  // light more, as the KHR_volume specification expects: refraction is
+  // proportional to the optical path length through the volume. A fixed step
+  // would refract a thin glass pane and a thick crystal sphere identically.
   //
-  // Gated on FLAG_HAS_VOLUME — assets that declare KHR_transmission
-  // without KHR_volume don't carry an authored thickness, so the
-  // pre-Batch-176 fixed step stays as the fallback for them. Sampled
-  // once per fragment regardless of which block(s) consume it.
+  // Gated on FLAG_HAS_VOLUME. An asset declaring KHR_transmission without
+  // KHR_volume carries no authored thickness and keeps the fixed step. The
+  // sample is taken once per fragment whichever blocks consume it.
   var thicknessForKHR: f32 = 0.0;
   if (hasFlag(flags, FLAG_HAS_VOLUME)) {
     let thickTex = textureSampleGrad(
@@ -3165,17 +3101,14 @@ struct FragOutput {
       let ior = max(material.transmissionFactors.y, 1.0);
       let eta = 1.0 / ior;
       let refracted = refract(-V, N, eta);
-      // NEW-KHR-TRANSMISSION-THICKNESS (Batch 176) — couple refraction
-      // step to volume thickness. `0.05` is the historical baseline
-      // (kept small so misaligned reads stay near the original pixel
-      // when no thickness is authored). When KHR_volume is active,
-      // scale the step by `(1 + 4 × thickness)` so a thickness of
-      // ~0.25 doubles the step, ~0.5 triples it, etc. The 4× factor
-      // is heuristic — calibrated so a 1m glass pane (typical
-      // `thicknessFactor` ~ 0.01-0.05 in normalized model units)
-      // produces a barely-visible offset, while a thick sphere
-      // (thickness ~ 0.5-1.0) produces a noticeable parallax — both
-      // matching artist expectations from the reference impl.
+      // Couple the refraction step to volume thickness. The 0.05 baseline is
+      // deliberately small, so a misaligned read stays near the original pixel
+      // when no thickness is authored. With KHR_volume active the step scales
+      // by `1 + 4 * thickness`, so a thickness near 0.25 doubles it and 0.5
+      // triples it. The factor of 4 is a heuristic calibrated so a glass pane —
+      // `thicknessFactor` around 0.01 to 0.05 in normalized model units —
+      // produces a barely visible offset, while a thick sphere at 0.5 to 1.0
+      // produces noticeable parallax, matching the reference implementation.
       let baseStep: f32 = 0.05;
       let thicknessStepScale = 1.0 + 4.0 * thicknessForKHR;
       let refractionUV = clamp(
@@ -3201,11 +3134,9 @@ struct FragOutput {
   if (hasFlag(flags, FLAG_HAS_VOLUME)) {
     let attDistance = material.volumeFactors0.y;
     let attColor = material.volumeFactors1.xyz;
-    // NEW-KHR-TRANSMISSION-THICKNESS (Batch 176) — reuse the pre-
-    // computed `thicknessForKHR` instead of re-sampling the
-    // thicknessTexture. C-R4-GLTF-KHR-TEXTURES (Batch 102) note
-    // preserved: per spec the texture stores a unit-normalized
-    // thickness scaled by `thicknessFactor`.
+    // Reuse the pre-computed `thicknessForKHR` rather than re-sampling the
+    // thicknessTexture. Per the specification that texture stores a
+    // unit-normalized thickness scaled by `thicknessFactor`.
     let thickness = thicknessForKHR;
     if (attDistance > 0.0 && thickness > 0.0) {
       let attCoeff = -log(max(attColor, vec3<f32>(1.0e-3))) / attDistance;
@@ -3215,12 +3146,11 @@ struct FragOutput {
   }
   //>>endif
 
-  // C-R10-POINT-LIGHT-RECEIVE — when a point-light shadow map is bound,
-  // route through cube sampling. Checked BEFORE the CSM gate (only one
-  // shadow map is active at a time in Cesium; if both flags ever fire
-  // the cube path takes precedence because point lights can't be
-  // expressed as cascades). The point light is packed relative to the same
-  // camera origin as the RTE-encoded model-space delta:
+  // When a point-light shadow map is bound, route through cube sampling. This
+  // is checked before the CSM gate: only one shadow map is active at a time,
+  // and if both flags ever fire the cube path wins, because a point light
+  // cannot be expressed as cascades. The point light is packed relative to the
+  // same camera origin as the encoded model-space delta:
   //   1. rotate `rteMC` (model-space RTE = positionMC - encodedCameraMC)
   //      through `material.modelMatrix` with w=0 → world-space camera-
   //      relative direction (rteWC). The matrix's translation column
@@ -3258,14 +3188,12 @@ struct FragOutput {
     direct = direct * shadowFactor;
   }
 
-  // ── Punctual lights (Audit B.3, Batch 131) ───────────────────────────────
-  // Accumulate directional / point / spot lights from `scene.lights`.
-  // Uses the baseline Cook-Torrance BRDF (Lambert + GGX) without the
-  // KHR extensions (anisotropy / clearcoat / sheen apply only to the
-  // sun for now -- typical engines treat the directional key light as
-  // the dominant material-detail driver and punctual fill as ambient
-  // augmentation). Loop is bounded by `light.punctualLightCount` so
-  // unused slots don't pay sample cost.
+  // Accumulate directional, point and spot lights from `scene.lights` with the
+  // baseline Cook-Torrance BRDF, Lambert plus GGX, and without the KHR
+  // extensions. Anisotropy, clearcoat and sheen apply to the sun alone, which
+  // follows the usual treatment of the directional key light as the dominant
+  // material-detail driver and punctual lights as fill. The loop is bounded by
+  // `light.punctualLightCount`, so unused slots cost nothing.
   let pCount = i32(light.punctualLightCount);
   var punctualNWC = vec3<f32>(0.0);
   var punctualVWC = vec3<f32>(0.0);
@@ -3310,15 +3238,14 @@ struct FragOutput {
         rangeFalloff = rangeFalloff * rangeFalloff;
       }
       atten = invSqr * rangeFalloff;
-      // Audit re-review (Batch 134) -- spot cone narrowing using the
-      // authored forward direction packed into the per-light record's
-      // slot 16-18 (vec3-aligned). `pl.spotDirection` is the spot's
-      // pointing vector in world space (normalized at JS construction
-      // time). Cosine of the angle between the spot's forward and the
-      // direction TO the fragment (-Lp = light->fragment) gives the
-      // smoothstep gate between cosOuter and cosInner. Outside the
-      // outer cone the result clamps to 0; inside the inner cone it
-      // clamps to 1; in between, linear interpolation in cos space.
+      // Spot cone narrowing, using the authored forward direction packed into
+      // the per-light record's vec3-aligned slots 16-18. `pl.spotDirection` is
+      // the spot's world-space pointing vector, normalized at construction. The
+      // cosine of the angle between that forward and the direction to the
+      // fragment (`-Lp`, light to fragment) drives a smoothstep between
+      // cosOuter and cosInner: outside the outer cone it clamps to 0, inside
+      // the inner cone to 1, and between them it interpolates linearly in
+      // cosine space.
       if (pType == 2) {
         let cosOuter = cos(pl.outerConeAngle);
         let cosInner = cos(pl.innerConeAngle);
@@ -3334,8 +3261,8 @@ struct FragOutput {
       let Hp = normalize(punctualVWC + Lp);
       let NdotHp = max(dot(punctualNWC, Hp), 0.0);
       let VdotHp = max(dot(punctualVWC, Hp), 0.0);
-      // NEW-MODEL-DIRECT-BRDF-PARITY (Batch 355) -- same Smith-joint + f90
-      // BRDF as the sun path above, for analytic point/spot lights.
+      // The same Smith-joint and f90 BRDF as the sun path above, for analytic
+      // point and spot lights.
       let alphaRoughnessP = roughness * roughness;
       let Dp = distributionGGX(NdotHp, roughness);
       let Visp = smithVisibilityGGX(alphaRoughnessP, NdotLp, NdotV);
@@ -3349,22 +3276,24 @@ struct FragOutput {
     }
   }
 
-  // ── Ambient / IBL ─────────────────────────────────────────────────────────
-  // NEW-MODEL-IBL-BRDF-LUT + NEW-MODEL-IBL-REFERENCE-FRAME (Batch 287).
-  // Matches WebGL `textureIBL` (ImageBasedLightingStageFS.glsl): the
-  // split-sum environment BRDF is looked up from the precomputed LUT
-  // (`brdfLutTexture`, R = scale / G = bias) and the diffuse + specular
-  // contributions use the Fdez-Aguera single+multi-scatter model rather
-  // than the prior `fresnelSchlickRoughness` approximation. Both the
-  // diffuse normal and the specular reflection vector are rotated from
-  // eye space into the fixed IBL reference frame
-  // (`light.iblReferenceFrameMatrix`) BEFORE the cubemap sample, so the
-  // reflection stays world-anchored as the camera orbits (previously the
-  // eye-space sample rotated the environment with the camera).
+  // Ambient and IBL, matching `textureIBL` in ImageBasedLightingStageFS.glsl.
+  // The split-sum environment BRDF is looked up from the precomputed LUT —
+  // `brdfLutTexture`, R for scale and G for bias — and the diffuse and specular
+  // contributions use the Fdez-Aguera single- and multi-scatter model rather
+  // than a `fresnelSchlickRoughness` approximation.
   //
-  // Roughness-dependent Fresnel from Fdez-Aguera (see
-  // https://www.jcgt.org/published/0008/01/03/paper.pdf), matching WebGL's
-  // fresnelSchlick2(f0, f90, NdotV) with f90 = max(1 - roughness, f0).
+  // Both the diffuse normal and the specular reflection vector are rotated from
+  // eye space into the fixed IBL reference frame,
+  // `light.iblReferenceFrameMatrix`, before the cubemap sample. Sampling in eye
+  // space instead would rotate the environment with the camera; rotating first
+  // keeps the reflection world-anchored as the camera orbits.
+  //
+  // The roughness-dependent Fresnel matches `fresnelSchlick2(f0, f90, NdotV)`
+  // with `f90 = max(1 - roughness, f0)`.
+  //
+  // Reference: Fdez-Aguera, "A Multiple-Scattering Microfacet Model for
+  // Real-Time Image-Based Lighting" (JCGT 2019),
+  // https://www.jcgt.org/published/0008/01/03/paper.pdf
   let f90 = max(vec3<f32>(1.0 - roughness), F0);
   let fresnelT = clamp(1.0 - NdotV, 0.0, 1.0);
   let fresnelT5 = fresnelT * fresnelT * fresnelT * fresnelT * fresnelT;
@@ -3401,16 +3330,15 @@ struct FragOutput {
   // doesn't align with the prefilter's roughness convention.
   var R = reflect(-V, N);
   //>>ifdef MODEL_HAS_KHR_TEXTURES
-  // NEW-KHR-ANISO-TANGENT (IBL) — bend the reflection normal for
-  // anisotropic materials so the specular IBL streaks along the authored
-  // tangent, matching WebGL `ImageBasedLightingStageFS.glsl` USE_ANISOTROPY
-  // (lines 78-86). WebGL bends about `anisotropicB = cross(N, rotatedTangent)`
-  // (the anisotropy BITANGENT), not the tangent itself — so we compute
-  // `cross(N, aniDir)` here. `aniDir` is the authored tangent rotated by the
-  // anisotropy rotation, derived exactly as the direct-light block above.
-  // `mix(anisotropicNormal, N, bendFactorPow4)` fades the bend out as
-  // roughness -> 1 (bendFactorPow4 -> 1 -> unbent N). Gated under
-  // MODEL_HAS_KHR_TEXTURES because it samples `anisotropyTexture`.
+  // Bend the reflection normal for anisotropic materials, so specular IBL
+  // streaks along the authored tangent, matching `ImageBasedLightingStageFS.glsl`
+  // under USE_ANISOTROPY. That bends about
+  // `anisotropicB = cross(N, rotatedTangent)`, the anisotropy bitangent rather
+  // than the tangent, hence `cross(N, aniDir)` here; `aniDir` is the authored
+  // tangent rotated by the anisotropy rotation, derived exactly as in the
+  // direct-light block above. `mix(anisotropicNormal, N, bendFactorPow4)` fades
+  // the bend out as roughness approaches 1. Gated under MODEL_HAS_KHR_TEXTURES
+  // because it samples `anisotropyTexture`.
   if (hasFlag(flags, FLAG_HAS_ANISOTROPY)) {
     let aniTexIBL = textureSampleGrad(
       anisotropyTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
@@ -3438,15 +3366,14 @@ struct FragOutput {
     R = reflect(-V, bentNormal);
   }
   //>>endif
-  // C2-25 ENV-PARALLAX (Batch 451) — Lagarde box/sphere parallax correction.
-  // Default (no `reflectionProxy` configured) → mode 0 → the `else` branch is
-  // taken and `Rcube` is the verbatim eye-space reflection `R`, so the cube
-  // sample below is byte-identical to the pre-451 path. When a proxy is set,
-  // the eye-space reflection is lifted to world space, intersected with the
-  // proxy, and the corrected world direction pushed back to eye space so the
-  // existing `iblReferenceFrameMatrix * dir` sample is reused unchanged. The
-  // diffuse irradiance/SH path above is intentionally left untouched —
-  // parallax only re-projects the mirror-like specular reflection vector.
+  // Box and sphere parallax correction. With no `reflectionProxy` configured
+  // the mode is 0, the `else` branch runs, and `Rcube` is the verbatim
+  // eye-space reflection `R`. With a proxy set, the eye-space reflection is
+  // lifted to world space, intersected with the proxy, and the corrected world
+  // direction pushed back to eye space, so the existing
+  // `iblReferenceFrameMatrix * dir` sample is reused unchanged. The diffuse
+  // irradiance and SH path above is deliberately untouched: parallax
+  // re-projects only the mirror-like specular reflection vector.
   var Rcube = R;
   let reflectionProxyMode = light.reflectionProxyControl.x;
   if (reflectionProxyMode > 0.5) {
@@ -3481,24 +3408,20 @@ struct FragOutput {
   // `specularContribution = radiance * FssEss * model_iblFactor.y`.
   let specularIBL = radiance * FssEss * light.iblSpecularFactor;
 
-  // `diffuseIBL` already carries the full Fdez-Aguera diffuse term
-  // (FmsEms + dielectricScattering); add it directly alongside the
-  // specular contribution as WebGL does. This MUST match WebGL exactly:
-  // `ImageBasedLightingStageFS.glsl::textureIBL` returns
-  // `diffuseContribution + specularContribution` and `LightingStageFS.glsl`
-  // adds it as `color += computeIBL(...)` — there is NO separate ambient
-  // floor. WebGL's ambient IS the IBL.
+  // `diffuseIBL` already carries the full Fdez-Aguera diffuse term, FmsEms plus
+  // dielectricScattering, so it is added directly alongside the specular
+  // contribution. That has to match the GLSL path exactly:
+  // `ImageBasedLightingStageFS.glsl`'s `textureIBL` returns
+  // `diffuseContribution + specularContribution`, and `LightingStageFS.glsl`
+  // adds it as `color += computeIBL(...)`. There is no separate ambient floor —
+  // the ambient IS the IBL.
   //
-  // NEW-MODEL-PBR-DIRECT-LIGHT-IBL-PARITY (D2): the previous
-  // `+ light.ambientColor * diffuseColor * 0.05` term was a non-physical
-  // floor WebGL does not have; it brightened/flattened the at-rest neutral
-  // model relative to WebGL. Removed for parity. No fallback floor is needed
-  // even when IBL is unconfigured: `diffuseIBL`/`specularIBL` always sample a
-  // cubemap (the mid-grey placeholder when no environment is generated — see
-  // the placeholder IBL bind-group entries in WebGPUModelRenderer.js), so the
-  // ambient is never silently black. Gating a floor on `light.iblHasSH` would
-  // re-introduce a code path WebGL lacks and reproduce the same divergence in
-  // the SH-less case, so it is deliberately omitted.
+  // No fallback floor is needed when IBL is unconfigured: `diffuseIBL` and
+  // `specularIBL` always sample a cubemap, the mid-grey placeholder when no
+  // environment has been generated, so ambient is never silently black. Adding
+  // a floor term, or gating one on `light.iblHasSH`, introduces a code path the
+  // GLSL side lacks and brightens and flattens an at-rest neutral model
+  // relative to it.
   var ambient = diffuseIBL + specularIBL;
 
   // ── Occlusion ─────────────────────────────────────────────────────────────
@@ -3543,16 +3466,14 @@ struct FragOutput {
     if (batchColor.a < 0.004) { discard; } // Feature is hidden
     featureColor = batchColor;
 
-    // C-R1-TILE-BATCH (Batch 100) — per-feature alpha-class discard.
-    // When the batch table has flipped some features to translucent
-    // (their RGBA.a in [0.004, 0.998)) and others to opaque (a >=
-    // 0.998), the JS renderer emits two commands per primitive:
-    //   - opaque pass    (passClass = 0): keep features with a >= 0.998
-    //   - translucent pass (passClass = 1): keep features with a in [0.004, 0.998)
-    // Both passes share the same vertex/index buffers and pipeline
-    // bindings; only `tileBatchFlags.x` differs. Mirrors WebGL's
-    // `tile_translucentCommand` shader uniform path at
-    // `Cesium3DTileBatchTable.js:325-326`.
+    // Per-feature alpha-class discard. When the batch table has flipped some
+    // features translucent, with RGBA alpha in [0.004, 0.998), and others
+    // opaque at 0.998 or above, the renderer emits two commands per primitive:
+    //   - opaque pass (passClass = 0) keeps features with alpha >= 0.998
+    //   - translucent pass (passClass = 1) keeps features in [0.004, 0.998)
+    // Both share the same vertex and index buffers and pipeline bindings; only
+    // `tileBatchFlags.x` differs. Mirrors the `tile_translucentCommand` shader
+    // uniform path in `Cesium3DTileBatchTable`.
     let opaqueThreshold = max(material.tileBatchFlags.y, 0.5);
     let isTranslucentPass = material.tileBatchFlags.x > 0.5;
     if (isTranslucentPass && batchColor.a >= opaqueThreshold) {
@@ -3585,12 +3506,12 @@ struct FragOutput {
     select(1.0, csAlpha, hasFlag(flags, FLAG_ALPHA_MODE_BLEND)) * featureColor.a);
   //>>endif
 
-  // FEAT-GAP-09 — Aerial-perspective fog blend (Session 34 pattern).
-  // Same math as PrimitivePhongTexturedColor but using Model-specific
-  // inputs: `input.rteMC` (model-space RTE) rotated through `modelMatrix`
-  // gives the world-space camera-relative vector, and `cameraPositionWC`
-  // is available directly as a f32 vec3 (no reconstruction needed).
-  // Applied AFTER tonemap+gamma so the fog color composites in display space.
+  // Aerial-perspective fog blend. The same math as PrimitivePhongTexturedColor,
+  // with model-specific inputs: `input.rteMC`, the model-space camera-relative
+  // position, rotated through `modelMatrix` gives the world-space
+  // camera-relative vector, and `cameraPositionWC` is already an f32 vec3, so
+  // nothing is reconstructed. Applied after tonemap and gamma so the fog colour
+  // composites in display space.
   if (effects.atmosphereLutControl.x > 0.5) {
     let innerRadius = effects.atmosphereLutControl.y;
     let thickness = max(1.0, effects.atmosphereLutControl.z);
@@ -3630,12 +3551,11 @@ struct FragOutput {
     }
   }
 
-  // C-R8-EDGE-INLINE — final overlay step, after tonemap/gamma + fog so
-  // the edge color (already authored in display space by the emitter)
-  // composites without a redundant tonemap. WebGL's stage runs in
-  // display space too. Applied here for both lit and unlit fragments
-  // (the unlit early-out above also calls applyEdgeOverlay before
-  // returning).
+  // The final overlay step, after tonemap, gamma and fog, so the edge colour —
+  // which the emitter already authored in display space — composites without a
+  // redundant tonemap. The GLSL stage runs in display space too. This applies
+  // to lit and unlit fragments alike; the unlit early-out above also calls
+  // applyEdgeOverlay before returning.
   finalColor = applyEdgeOverlay(
     finalColor,
     input.positionEC,
@@ -3644,17 +3564,17 @@ struct FragOutput {
     edgePixelStep,
   );
 
-  // Slice 5c-B Batch 119 — main lit path: emit the FULL post-normal-map
-  // eye-space normal + real material roughness. This is the wide-
-  // divergence pixel class the G-buffer was designed for:
-  //   - When FLAG_HAS_NORMAL_TEXTURE is set, `N` was perturbed by
-  //     perturbNormal() at L1915 using the tangent-space normal map.
-  //     This makes per-fragment N diverge SIGNIFICANTLY from the
-  //     depth-derived approximation the AO consumer fallback computes.
-  //   - `roughness` carries either material.roughnessFactor (metallic-
-  //     roughness path) or `clamp(1.0 - gloss, 0.04, 1.0)` (specular-
-  //     glossiness path) × the .g channel of the MR texture. Future
-  //     consumers (SSR) need this for proper specular response.
+  // Main lit path: emit the full post-normal-map eye-space normal and the real
+  // material roughness. This is the pixel class the G-buffer exists for.
+  //   - With FLAG_HAS_NORMAL_TEXTURE set, `perturbNormal` has already perturbed
+  //     `N` using the tangent-space normal map, so per-fragment N diverges
+  //     substantially from the depth-derived approximation an AO consumer would
+  //     otherwise fall back to.
+  //   - `roughness` carries either `material.roughnessFactor` on the
+  //     metallic-roughness path or `clamp(1.0 - gloss, 0.04, 1.0)` on the
+  //     specular-glossiness path, times the metallicRoughness texture's green
+  //     channel. A specular consumer such as SSR needs this for a correct
+  //     response.
   var out: FragOutput;
   out.color = finalColor;
 
@@ -3671,51 +3591,40 @@ struct FragOutput {
   out.color = applyModelColor(out.color);
   //>>endif
 
-  // DP-H46b — metadata data-path proof, now through GENERATED codegen.
-  // When MODEL_HAS_METADATA is set AND the per-model debug toggle is enabled
-  // (`material.motionFlags.z > 0.5`, driven by
-  // `globalThis.CesiumWebGPUMetadataDebug` on the JS side), override the
-  // fragment color with the scalar metadata value so a Playwright probe can
-  // confirm the property-ATTRIBUTE value reached the shader. The value flows
-  // through the GENERATED `struct Metadata` + `initializeMetadata` (named
-  // after the real metadata property + applies the class offset/scale) and
-  // the generated `metadataDebugScalar` accessor (which recovers the RAW
-  // transported scalar in [0,1] so the debug gradient matches DP-H46a's stub
-  // output exactly — now proving the codegen path, not a hand-written stub).
-  // The debug toggle keeps the lit appearance intact when off — the metadata
-  // path is purely additive. DP-H46c/d feed the value into the real
-  // `CustomShader`/styling consumer instead of the fragment color.
+  // The metadata data-path proof. With MODEL_HAS_METADATA set and the per-model
+  // debug toggle enabled — `material.motionFlags.z > 0.5`, driven by
+  // `globalThis.CesiumWebGPUMetadataDebug` — the fragment colour is overridden
+  // with the metadata value, so an automated probe can confirm the value
+  // reached the shader. The toggle is purely additive: with it off the lit
+  // appearance is untouched.
   //
-  // DP-H46c — property TEXTURES also flow through the GENERATED
-  // `initializeMetadata`, which now takes the interpolated texCoords so it can
-  // `textureSample` each property texture. The generated `metadataDebugScalar`
-  // prefers the attribute scalar when present, else the first property-texture
-  // property's value — so a property-texture-only model paints a value that
-  // VARIES across the surface with the sampled metadata. The texCoord1 arg
-  // falls back to texCoord0 when the primitive lacks TEXCOORD_1.
+  // The value flows through the generated `struct Metadata` and
+  // `initializeMetadata`, which is named after the real metadata property and
+  // applies the class offset and scale, and then through the generated
+  // `metadataDebugScalar` accessor, which recovers the raw transported scalar
+  // in [0,1].
   //
-  // Exactly one path emits (nested ifdef): MODEL_HAS_METADATA passes the real
-  // `input.metadataValue` attribute scalar; its `//>>else` covers the
-  // property-texture-ONLY case (no attribute vertex slot → pass 0.0). A model
-  // carrying BOTH bits takes the attribute branch — `metadataDebugScalar`
-  // prefers the attribute scalar there, so the texture fields are still
-  // sampled by `initializeMetadata` but the proof gradient stays attribute-
-  // sourced. No double-paint.
-  // DP-H46d — `initializeMetadata` now also takes the per-fragment feature ID
-  // (flat-interpolated `_FEATURE_ID_0` as f32, defaults 0.0) so it can
-  // `textureLoad` the property-TABLE row at `(featureId, propertyInfoIndex)`.
-  // `input.featureId0` is always present in FragmentInput. The three branches
-  // below are mutually exclusive (nested ifdef): attribute → texture-only →
-  // table-only. `metadataDebugScalar` prefers attribute, then texture, then
-  // table, so each path paints a value that VARIES with the resolved metadata.
-  // METADATA-MULTICOMPONENT — the debug paint goes through the GENERATED
-  // `metadataDebugColor(metadata)` accessor: for a scalar (or matrix)
-  // transported property it emits the historical red/blue gradient
-  // `vec4(s, 0, 1-s, 1)` byte-for-byte, and for a VEC2/3/4 transported
-  // property it paints the RAW per-component values as RGB — so a
-  // Playwright probe can confirm every component round-tripped, not just
-  // `.x`. `initializeMetadata` now takes the vec4 transport (texture-/
-  // table-only branches pass a zero vec4).
+  // `initializeMetadata` takes the interpolated texCoords, so it can
+  // `textureSample` each property texture, and the per-fragment feature ID —
+  // the flat-interpolated `_FEATURE_ID_0` as an f32, defaulting to 0.0 — so it
+  // can `textureLoad` the property-table row at
+  // `(featureId, propertyInfoIndex)`. `input.featureId0` is always present in
+  // FragmentInput, and the texCoord1 argument falls back to texCoord0 when the
+  // primitive lacks TEXCOORD_1.
+  //
+  // The nested ifdefs below make the three branches mutually exclusive:
+  // attribute, then texture-only, then table-only. `metadataDebugScalar`
+  // prefers the attribute scalar, then texture, then table, so each path paints
+  // a value that varies with the resolved metadata and nothing double-paints. A
+  // model carrying both the attribute and texture bits takes the attribute
+  // branch; `initializeMetadata` still samples the texture fields, but the
+  // proof gradient stays attribute-sourced.
+  //
+  // The paint itself goes through the generated `metadataDebugColor(metadata)`
+  // accessor: a scalar or matrix transported property emits the red-to-blue
+  // gradient `vec4(s, 0, 1-s, 1)`, while a VEC2, VEC3 or VEC4 property paints
+  // its raw per-component values as RGB, so a probe can confirm every component
+  // round-tripped rather than only `.x`.
   //>>ifdef MODEL_HAS_METADATA
   if (material.motionFlags.z > 0.5) {
     //>>ifdef MODEL_HAS_TEXCOORD_1
@@ -3723,8 +3632,8 @@ struct FragOutput {
     //>>else
     let metaTC1 = input.texCoord0;
     //>>endif
-    // NEW-MODEL-METADATA-MAT3-MAT4 — the MAT-transport chunk's generated
-    // `initializeMetadata` takes the three extra widened-transport vec4s.
+    // The matrix-transport chunk's generated `initializeMetadata` takes the
+    // three extra widened-transport vec4s.
     //>>ifdef MODEL_METADATA_MAT_TRANSPORT
     let metadata = initializeMetadata(input.metadataValue, input.metadataValue1, input.metadataValue2, input.metadataValue3, input.texCoord0, metaTC1, input.featureId0);
     //>>else
@@ -3773,43 +3682,35 @@ struct FragOutput {
   return out;
 }
 
-// C-R9-MODEL-PICK (Batch 54) — pick fragment entry. Shares the vertex
-// stage and bind-group layout with `fragmentMain`; the only differences
-// are the fragment entry name and the pick pipeline's blend/depth state
-// (no blend, depth write enabled — see WebGPUModelPipelineCache.js).
+// The pick fragment entry shares the vertex stage and bind-group layout with
+// `fragmentMain`; only the entry name and the pick pipeline's blend and depth
+// state differ, with no blend and depth writes enabled.
 //
 // Correctness:
-//   * Alpha-mask discards run (a mask hole must NOT be pickable — it's
-//     not visible, so it shouldn't claim the click). Sampled from the
-//     base-color texture × baseColorFactor, same as the lit path.
-//   * Alpha-blend primitives DO pick on any non-discarded fragment in
-//     this first cut. Transparent picking (depth-sorted alpha pick)
-//     would need OIT integration on the pick FBO and is tracked as a
-//     separate follow-up under `C-R9-MODEL-PICK-TRANSLUCENT`.
-//   * Unlit / metallic-roughness / specular-glossiness all share the
-//     same alpha-mask path so a single discard block covers them all.
-//   * Vertex colors influence baseColor.a the same way they do in the
-//     lit path, so vertex-color-driven masking applies to picking too.
+//   - Alpha-mask discards run, because a mask hole is not visible and must not
+//     claim the click. Alpha is sampled from the base-colour texture times
+//     baseColorFactor, as in the lit path.
+//   - Alpha-blend primitives pick on any non-discarded fragment. Depth-sorted
+//     transparent picking would need OIT integration on the pick framebuffer.
+//   - Unlit, metallic-roughness and specular-glossiness share one alpha-mask
+//     path, so a single discard block covers all three.
+//   - Vertex colours influence baseColor.a exactly as in the lit path, so
+//     vertex-colour-driven masking applies to picking too.
 //
-// Per-feature pick (each glTF feature ID = one pick target instead of
-// one primitive = one target) is the larger workstream — picking up
-// `EXT_mesh_features` / `EXT_structural_metadata` per-fragment feature
-// IDs and rerouting the pick color through the batch table. Tracked
-// separately as `C-R9-MODEL-FEATURE-PICK`.
-// C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option D / hover-pick path.
-// Stochastic dither alpha-test for translucent fragments via Interleaved
-// Gradient Noise (Jorge Jimenez). Survives with probability = effective
-// alpha; multi-frame averaging (under TAA or hover motion) converges to
-// the alpha-weighted appearance. Single-pass — no extra render passes,
-// no extra MRT targets. Translucent fragments become "opaque or
-// discarded" in the pick pass, so the standard depth-test pipeline
-// (depthWriteEnabled: true, depthCompare: less-equal) handles winner
-// selection naturally. Guaranteed stutter-free at 60fps hover frequency.
+// Translucent fragments take a stochastic dither alpha-test through Interleaved
+// Gradient Noise, surviving with probability equal to their effective alpha;
+// multi-frame averaging under TAA or hover motion converges to the
+// alpha-weighted appearance. It is single-pass, needing no extra render passes
+// or MRT targets: a translucent fragment becomes either opaque or discarded in
+// the pick pass, so the standard depth-test pipeline handles winner selection.
 //
-// Note: dither sample-stability is intentionally per-cursor-position
-// — moving the cursor produces different noise patterns across pixels
-// (spatial decorrelation), but a stationary cursor yields the same
-// pick result on every call (no flickering UI feedback).
+// The dither is stable per cursor position by design. Moving the cursor
+// produces different noise patterns across pixels, but a stationary cursor
+// yields the same pick result on every call, so the UI feedback does not
+// flicker.
+//
+// Reference: Jimenez, "Next Generation Post Processing in Call of Duty:
+// Advanced Warfare" (SIGGRAPH 2014), for the Interleaved Gradient Noise.
 fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
   // Jimenez IGN. Standard formula used by UE4/UE5/Frostbite for
   // dithered transparency. The magic constants come from a low-
@@ -3818,17 +3719,17 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
   return fract(52.9829189 * fract(0.06711056 * fragCoord.x + 0.00583715 * fragCoord.y));
 }
 
-// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — shared pick output for the three
-// model pick fragment entries (fragmentPickHoverMain / fragmentPickMain /
-// fragmentPickMetadataMain, and by extension the two BLEND precise-pass
-// pipelines that reuse fragmentPickMain). At defines=0 — the DEFAULT pick-gated
-// module, pick-fleet master switch OFF — this is a single `@location(0)` struct
-// whose output is byte-identical to the historical bare `-> @location(0)
-// vec4<f32>` return. When the pick-fleet gate is active the pick module compiles
-// with LOG_DEPTH and the struct also carries the log-encoded
-// `@builtin(frag_depth)` — the SAME encoding the color FS `fragmentMain` writes
-// (`out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor)`) —
-// so a converted model pick shares the fleet's log depth in the shared pick FBO.
+// Shared pick output for the three model pick fragment entries —
+// fragmentPickHoverMain, fragmentPickMain and fragmentPickMetadataMain, and by
+// extension the two BLEND precise-pass pipelines that reuse fragmentPickMain.
+//
+// With `defines = 0`, the default pick-gated module, this is a single
+// `@location(0)` struct whose output is identical to a bare
+// `-> @location(0) vec4<f32>` return. When the log-depth gate is active the
+// pick module compiles with LOG_DEPTH and the struct also carries a log-encoded
+// `@builtin(frag_depth)`, in the same encoding `fragmentMain` writes as
+// `out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor)`, so
+// a converted model pick shares that log depth in the shared pick framebuffer.
 struct PickFragOutput {
   @location(0) color: vec4<f32>,
   //>>ifdef LOG_DEPTH
@@ -3855,11 +3756,12 @@ fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
   //>>else
   let pickLogDepth = 0.0;
   //>>endif
-  // C10-05 — hoist baseColor UV derivatives at entry (uniform control flow,
-  // before any discard) so the alpha-test baseColor sample below uses
-  // textureSampleGrad and selects the SAME mip as fragmentMain. Keeps the
-  // alpha-mask/blend discard decision consistent across pick/velocity passes at
-  // distance (WebGL mip-samples the alpha test in every pass).
+  // Hoist the baseColor UV derivatives to the entry, in uniform control flow
+  // and before any discard, so the alpha-test baseColor sample below uses
+  // textureSampleGrad and selects the same mip as fragmentMain. That keeps the
+  // alpha-mask and blend discard decisions consistent across the pick and
+  // velocity passes at distance, as the GLSL path does by mip-sampling the
+  // alpha test in every pass.
   let baseColorUV_dx = dpdx(baseColorUV(input));
   let baseColorUV_dy = dpdy(baseColorUV(input));
   var baseColor = material.baseColorFactor;
@@ -3885,9 +3787,8 @@ fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
     if (baseColor.a < material.alphaCutoff) { discard; }
   }
 
-  // Stochastic dither for BLEND. Replaces the Batch 186 first-slice
-  // `< 0.004` discard. Survival probability = alpha; multi-frame
-  // averaging gives the perceptually-correct alpha-weighted pick.
+  // Stochastic dither for BLEND: survival probability equals alpha, and
+  // multi-frame averaging gives a perceptually correct alpha-weighted pick.
   if (hasFlag(flags, FLAG_ALPHA_MODE_BLEND)) {
     let threshold = pickHoverDither(input.fragCoord.xy);
     if (baseColor.a < threshold) { discard; }
@@ -3911,9 +3812,9 @@ fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
     if (batchColor.a < 0.004) { discard; }
     if (featureId.featurePickEnabled > 0.5) {
       let featurePickColor = lookupFeaturePickColor(fidInt);
-      // C-R9-MODEL-FEATURE-PICK fix — gate on RGB, not alpha (see the
-      // detailed note in fragmentPickMain). Pick-ID colors have alpha 0 for
-      // keys below 2^24; a valid pickId is identified by nonzero RGB.
+      // Gate on RGB, not alpha — see the detailed note in fragmentPickMain.
+      // Pick-ID colours have alpha 0 for every key below 2^24, so a valid
+      // pickId is identified by nonzero RGB.
       if (featurePickColor.r > 0.0 || featurePickColor.g > 0.0 || featurePickColor.b > 0.0) {
         return makeModelPickOut(featurePickColor, pickLogDepth);
       }
@@ -3933,10 +3834,11 @@ fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
   //>>else
   let pickLogDepth = 0.0;
   //>>endif
-  // C10-05 — hoist baseColor UV derivatives at entry (uniform control flow,
-  // before the split/clip/alpha discards) so the alpha-test baseColor sample
-  // uses textureSampleGrad and selects the same mip as fragmentMain (consistent
-  // discard across pick and color passes at distance).
+  // Hoist the baseColor UV derivatives to the entry, in uniform control flow
+  // and before the split, clip and alpha discards, so the alpha-test baseColor
+  // sample uses textureSampleGrad and selects the same mip as fragmentMain,
+  // keeping the discard consistent across the pick and colour passes at
+  // distance.
   let baseColorUV_dx = dpdx(baseColorUV(input));
   let baseColorUV_dy = dpdy(baseColorUV(input));
   //>>ifdef MODEL_SPLIT_ENABLED
@@ -3991,15 +3893,12 @@ fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
     if (baseColor.a < material.alphaCutoff) { discard; }
   }
 
-  // C-R9-MODEL-PICK-TRANSLUCENT (Batch 186) — first slice. BLEND
-  // primitives discard near-fully-transparent fragments so glass /
-  // water / ghost overlays don't claim the pick over opaque geometry
-  // visible through them. The 0.004 cutoff matches the per-feature
-  // batch-table hide threshold (`batchColor.a < 0.004 -> discard`)
-  // below — it filters numerical noise, not real translucent surfaces.
-  // Pairs with the BLEND pick pipeline's `depthWriteEnabled: false`
-  // change so depth-test alone picks the closest non-discarded
-  // translucent fragment.
+  // BLEND primitives discard near-fully-transparent fragments, so glass, water
+  // and ghost overlays do not claim the pick over opaque geometry visible
+  // through them. The 0.004 cutoff matches the per-feature batch-table hide
+  // threshold below and filters numerical noise, not real translucent surfaces.
+  // It pairs with the BLEND pick pipeline's `depthWriteEnabled: false`, so the
+  // depth test alone picks the closest non-discarded translucent fragment.
   if (hasFlag(flags, FLAG_ALPHA_MODE_BLEND)) {
     if (baseColor.a < 0.004) { discard; }
   }
@@ -4008,29 +3907,25 @@ fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
   // hidden by `batchColor.a == 0` must not be pickable. Mirrors the
   // discard at the same site in `fragmentMain`.
   //
-  // C-R9-MODEL-FEATURE-PICK (Batch 100) — when the batch table is
-  // active AND the JS-side allocated per-feature pickIds (signaled by
-  // featureId.featurePickEnabled > 0.5), look up the feature's pickColor
-  // from the dedicated feature-pick texture instead of returning the
-  // primitive-granular `material.pickColor`. The feature-pick texture
-  // is laid out the same as the batch texture (one row of RGBA8 entries
-  // indexed by featureId, single-line or multi-line layout); the JS
-  // renderer uploads it whenever pickIds are allocated/changed for the
-  // batch.
+  // When the batch table is active and per-feature pickIds have been allocated
+  // — signalled by `featureId.featurePickEnabled > 0.5` — look up the feature's
+  // pickColor from the dedicated feature-pick texture instead of returning the
+  // primitive-granular `material.pickColor`. That texture is laid out like the
+  // batch texture, a row of RGBA8 entries indexed by featureId in single- or
+  // multi-line layout, and is uploaded whenever pickIds are allocated or change.
   //
-  // Falls back to `material.pickColor` when:
-  //   - no batch table (single-feature primitives, glTF without
-  //     EXT_mesh_features)
-  //   - feature-pick texture not yet built (per-feature pick not
-  //     opted in by the application)
-  //   - feature ID lookup fails (current pixel has no feature ID
-  //     attribute / texture sample)
-  // Audit B.2 (Batch 130) -- resolve feature ID from EITHER the
-  // EXT_mesh_features texture OR the per-vertex _FEATURE_ID_0
-  // attribute (b3dm _BATCHID). The attribute branch was the missing
-  // piece that left every b3dm tileset stuck on the primitive-
-  // granular pick color (no per-feature pick lookup was possible
-  // because the texture-only gate never matched).
+  // It falls back to `material.pickColor` when:
+  //   - there is no batch table, i.e. single-feature primitives and glTF
+  //     without EXT_mesh_features;
+  //   - the feature-pick texture has not been built, because the application
+  //     did not opt into per-feature picking;
+  //   - the feature ID lookup fails, because this pixel has no feature ID
+  //     attribute or texture sample.
+  //
+  // The feature ID resolves from either the EXT_mesh_features texture or the
+  // per-vertex `_FEATURE_ID_0` attribute (b3dm's `_BATCHID`). Both branches are
+  // required: a texture-only gate never matches a b3dm tileset, which would
+  // leave every one of them on the primitive-granular pick colour.
   let pickHasFidTex = hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE);
   let pickHasFidAttr = hasFlag(flags, FLAG_HAS_FEATURE_ID_ATTRIBUTE);
   if ((pickHasFidTex || pickHasFidAttr) && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
@@ -4045,16 +3940,16 @@ fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
     if (batchColor.a < 0.004) { discard; }
     if (featureId.featurePickEnabled > 0.5) {
       let featurePickColor = lookupFeaturePickColor(fidInt);
-      // C-R9-MODEL-FEATURE-PICK fix — gate on RGB, not alpha. Pick-ID colors
-      // come from `Color.fromRgba(key)`, which on a little-endian host packs
-      // the key low-to-high: red=key&0xff, green=(key>>8)&0xff,
-      // blue=(key>>16)&0xff, ALPHA=(key>>24)&0xff. Every key below 2^24
-      // (essentially all of them) therefore has alpha 0, so the old
-      // `a > 0.004` test fell through to the per-primitive pick color for
-      // EVERY feature — the b3dm picks resolved to the Model, not the
-      // Cesium3DTileFeature. Unallocated feature texels are (0,0,0,0); a
-      // valid pickId has a nonzero key → nonzero RGB. Same RGB!=0 decode as
-      // WebGPUPickFramebuffer.pickObjectsFromPixels.
+      // Gate on RGB, not alpha. Pick-ID colours come from `Color.fromRgba(key)`,
+      // which on a little-endian host packs the key low to high: red is
+      // `key & 0xff`, green `(key >> 8) & 0xff`, blue `(key >> 16) & 0xff` and
+      // alpha `(key >> 24) & 0xff`. Every key below 2^24 — in practice all of
+      // them — therefore has alpha 0, so an `a > 0.004` test falls through to
+      // the per-primitive pick colour for every feature, and b3dm picks resolve
+      // to the Model rather than the Cesium3DTileFeature. An unallocated
+      // feature texel is (0,0,0,0), while a valid pickId has a nonzero key and
+      // so nonzero RGB. This is the same nonzero-RGB decode
+      // `WebGPUPickFramebuffer.pickObjectsFromPixels` performs.
       if (featurePickColor.r > 0.0 || featurePickColor.g > 0.0 || featurePickColor.b > 0.0) {
         return makeModelPickOut(featurePickColor, pickLogDepth);
       }
@@ -4064,10 +3959,10 @@ fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
   return makeModelPickOut(material.pickColor, pickLogDepth);
 }
 
-// UP144-SNAP-WEBGPU (C11-212) — snapping-pass fragment output. WGSL twin of the
-// GLSL snap payload that `DerivedCommand.createSnapDerivedCommand` compiles into
-// a snap-derived shader from the `DrawCommand.snapId` expression built by
-// `PickingPipelineStage.snapIdFromPickId`:
+// Snapping-pass fragment output: the WGSL twin of the GLSL snap payload that
+// `DerivedCommand.createSnapDerivedCommand` compiles into a snap-derived shader
+// from the `DrawCommand.snapId` expression `PickingPipelineStage.snapIdFromPickId`
+// builds:
 //
 //     vec4(rgba8UnormToUint32(pickColor), isEdge ? 1.0 : 0.0, -v_positionEC.z, 0.0)
 //
@@ -4087,12 +3982,12 @@ fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
 // the depth channel obeys the RTE law without a separate high/low pair (the
 // quantity written is a CAMERA-RELATIVE distance, never an absolute position).
 //
-// isEdge is always false here: on WebGPU a model's edges are rasterized by the
-// separate `WebGPUEdgeVisibilityEmitter` line pipeline (which carries no pick
-// ID), not by a second model draw with WebGL's `u_isEdgePass` uniform. Edge snap
-// candidates therefore need the emitter to grow a snap payload — tracked as
-// UP144-SNAP-WEBGPU-EDGES. Surface snapping is unaffected: `selectBestHit` falls
-// back to the closest surface when the region contains no edge hits.
+// isEdge is always false here. A model's edges are rasterized by the separate
+// `WebGPUEdgeVisibilityEmitter` line pipeline, which carries no pick ID, rather
+// than by a second model draw with the GLSL path's `u_isEdgePass` uniform, so
+// edge snap candidates would require the emitter to grow a snap payload.
+// Surface snapping is unaffected: `selectBestHit` falls back to the closest
+// surface when a region contains no edge hits.
 struct SnapFragOutput {
   @location(0) payload: vec2<u32>,
   //>>ifdef LOG_DEPTH
@@ -4131,14 +4026,14 @@ fn makeModelSnapOut(
   return out;
 }
 
-// UP144-SNAP-WEBGPU (C11-212) — snapping-pass fragment entry. Structurally the
-// snap twin of `fragmentPickMain`: the identical discard chain (split / clip /
-// alpha-mask / blend-epsilon / batch-table hide) and the identical per-feature
-// pick-color resolution, but the surviving fragment writes the float snap
-// payload above instead of the RGBA8 pick color. The discard chain is duplicated
-// rather than factored out for the same reason `fragmentPickHoverMain`
-// duplicates it — the entries diverge in their outputs and WGSL cannot return a
-// different struct from a shared helper.
+// Snapping-pass fragment entry: structurally the snap twin of
+// `fragmentPickMain`, with the identical discard chain — split, clip,
+// alpha-mask, blend-epsilon, batch-table hide — and identical per-feature
+// pick-colour resolution, except that a surviving fragment writes the float
+// snap payload above instead of the RGBA8 pick colour. The discard chain is
+// duplicated rather than factored out for the same reason
+// `fragmentPickHoverMain` duplicates it: the entries differ in their output
+// struct, and WGSL cannot return a different struct from a shared helper.
 @fragment fn fragmentSnapMain(input: FragmentInput) -> SnapFragOutput {
   let flags = material.materialFlags;
   //>>ifdef LOG_DEPTH
@@ -4146,8 +4041,8 @@ fn makeModelSnapOut(
   //>>else
   let snapLogDepth = 0.0;
   //>>endif
-  // C10-05 — hoist baseColor UV derivatives before any discard (see
-  // fragmentPickMain) so the alpha-test mip selection matches the color pass.
+  // Hoist the baseColor UV derivatives before any discard — see
+  // fragmentPickMain — so the alpha-test mip selection matches the colour pass.
   let baseColorUV_dx = dpdx(baseColorUV(input));
   let baseColorUV_dy = dpdy(baseColorUV(input));
   //>>ifdef MODEL_SPLIT_ENABLED
@@ -4215,27 +4110,27 @@ fn makeModelSnapOut(
   return makeModelSnapOut(material.pickColor, false, input.positionEC, snapLogDepth);
 }
 
-// DP-H46e — metadata-pick fragment entry (scene.pickMetadata producer). The
-// WGSL sibling of the GLSL `metadataPickingStage` path in `ModelFS.glsl` (the
-// `#ifdef METADATA_PICKING_ENABLED` branch that sets `color = metadataValues`).
+// The metadata-pick fragment entry that produces `scene.pickMetadata`. The WGSL
+// sibling of the `metadataPickingStage` path in `ModelFS.glsl`, the
+// `#ifdef METADATA_PICKING_ENABLED` branch that sets `color = metadataValues`.
 //
-// Gated by `//>>ifdef METADATA_PICKING_ENABLED` so the entry only compiles in
-// the pick-metadata module variant — that's the only module where the GENERATED
-// metadata-pick chunk (which appends `fn metadataPickingStage(metadata) ->
-// vec4<f32>`) is prepended. Display / on-screen / regular-pick modules never set
-// the bit, so this entire entry is stripped at preprocess time and their module
-// is byte-identical (the bit is also OUTSIDE MATERIAL_DEFINE_MASK, so it never
-// touches the BGL / pipeline layout / vertex layout).
+// `//>>ifdef METADATA_PICKING_ENABLED` restricts the entry to the pick-metadata
+// module variant, the only module the generated metadata-pick chunk — which
+// appends `fn metadataPickingStage(metadata) -> vec4<f32>` — is prepended to.
+// Display, on-screen and regular-pick modules never set the bit, so the entry
+// is stripped at preprocess time and their modules are unaffected. The bit also
+// sits outside MATERIAL_DEFINE_MASK, so it never touches the bind-group layout,
+// pipeline layout or vertex layout.
 //
-// It populates `metadata` exactly as the display path does (the SAME
-// `initializeMetadata` from the generated chunk, reading the attribute scalar /
-// property textures / property-table row), then `metadataPickingStage` packs the
-// picked property's components — offset/scale + normalization UN-applied — into
-// the RGBA8 pick-FBO channels that `MetadataPicking.decodeMetadataValues` reads
-// back. No lighting / PBR / IBL is evaluated (the pick FBO only carries the
-// metadata bytes). Alpha-mask + blend discards still run so masked / fully
-// transparent fragments don't claim the metadata pick (parity with
-// fragmentPickMain / the GLSL metadata pick).
+// It populates `metadata` exactly as the display path does, through the same
+// generated `initializeMetadata`, reading the attribute scalar, property
+// textures and property-table row. `metadataPickingStage` then packs the picked
+// property's components — with offset, scale and normalization un-applied —
+// into the RGBA8 pick-framebuffer channels
+// `MetadataPicking.decodeMetadataValues` reads back. No lighting, PBR or IBL is
+// evaluated, since the pick framebuffer carries only the metadata bytes.
+// Alpha-mask and blend discards still run, so masked or fully transparent
+// fragments do not claim the metadata pick.
 //>>ifdef METADATA_PICKING_ENABLED
 @fragment fn fragmentPickMetadataMain(input: FragmentInput) -> PickFragOutput {
   let flags = material.materialFlags;
@@ -4247,10 +4142,11 @@ fn makeModelSnapOut(
   //>>else
   let pickLogDepth = 0.0;
   //>>endif
-  // C10-05 — hoist baseColor UV derivatives at entry (uniform control flow,
-  // before the split/alpha discards) so the alpha-test baseColor sample uses
-  // textureSampleGrad and selects the same mip as fragmentMain (consistent
-  // discard across the metadata-pick and color passes at distance).
+  // Hoist the baseColor UV derivatives to the entry, in uniform control flow
+  // and before the split and alpha discards, so the alpha-test baseColor sample
+  // uses textureSampleGrad and selects the same mip as fragmentMain, keeping
+  // the discard consistent across the metadata-pick and colour passes at
+  // distance.
   let baseColorUV_dx = dpdx(baseColorUV(input));
   let baseColorUV_dy = dpdy(baseColorUV(input));
   //>>ifdef MODEL_SPLIT_ENABLED
@@ -4298,8 +4194,8 @@ fn makeModelSnapOut(
   let metaPickTC1 = input.texCoord0;
   //>>endif
   //>>ifdef MODEL_HAS_METADATA
-  // NEW-MODEL-METADATA-MAT3-MAT4 — extended call for the widened MAT3/MAT4
-  // transport, matching the display call site.
+  // The extended call for the widened MAT3 and MAT4 transport, matching the
+  // display call site.
   //>>ifdef MODEL_METADATA_MAT_TRANSPORT
   let pickMetadata = initializeMetadata(input.metadataValue, input.metadataValue1, input.metadataValue2, input.metadataValue3, input.texCoord0, metaPickTC1, input.featureId0);
   //>>else
@@ -4313,33 +4209,30 @@ fn makeModelSnapOut(
 }
 //>>endif
 
-// TAA Slice 2e (Batch 106) — velocity-only fragment entry. Writes per-
-// pixel screen-space motion to a single rg16float color attachment
-// (the scene-FB velocity texture allocated by `ensureVelocityTexture`,
-// Batch 104). Selected by the velocity pipeline variant; the velocity
-// pass runs after the main color pass and shares scene depth as a
-// read-only attachment so fragments occluded by opaque geometry don't
-// emit velocity.
+// Velocity-only fragment entry. Writes per-pixel screen-space motion to a
+// single rg16float colour attachment, the scene framebuffer's velocity texture
+// that `ensureVelocityTexture` allocates. The velocity pipeline variant selects
+// it; the pass runs after the main colour pass and shares scene depth as a
+// read-only attachment, so fragments occluded by opaque geometry emit no
+// velocity.
 //
-// Why a separate pass (not single-pass MRT @location(1)): the main
-// scene render pass is shared by globe / primitives / billboards /
-// model commands, all of which would have to grow a second color
-// target on every pipeline variant just to satisfy WebGPU's
-// pipeline-vs-renderpass attachment-count parity rule. Routing only
-// model commands through a dedicated single-target velocity pass
-// keeps the cross-cutting cost zero — the rest of the renderer stays
-// 1-target — while still delivering the TAA shader the same per-
-// pixel velocity texture it already binds at @binding(5) (Batch 104).
+// This is a separate pass rather than a second MRT target on the main pass
+// because the main scene render pass is shared by globe, primitive, billboard
+// and model commands, all of which would have to grow a second colour target on
+// every pipeline variant to satisfy WebGPU's pipeline-versus-render-pass
+// attachment-count parity rule. Routing only model commands through a dedicated
+// single-target velocity pass keeps that cost at zero — the rest of the
+// renderer stays single-target — while still producing the per-pixel velocity
+// texture the TAA shader binds.
 //
-// Returns NDC-space delta of (clip.xy/clip.w). The TAA shader's
-// `sampleMotionTexture` (Batch 104) converts this to UV delta via
-// `* vec2(0.5, -0.5)`. Returns vec2(0) when motion is disabled at
-// this primitive (motionFlags.x < 0.5) so static models don't emit
-// stale velocity into the texture.
+// It returns the NDC-space delta of `clip.xy / clip.w`, which the TAA shader's
+// `sampleMotionTexture` converts to a UV delta by `* vec2(0.5, -0.5)`. It
+// returns vec2(0) when motion is disabled for the primitive
+// (`motionFlags.x < 0.5`), so a static model emits no stale velocity.
 //
-// Alpha-mask discards run identical to fragmentMain so masked-out
-// texels don't leak velocity into hole pixels. Skips lighting / IBL /
-// atmosphere / edge stages — pure motion vector emission.
+// Alpha-mask discards run exactly as in fragmentMain, so masked-out texels
+// leak no velocity into hole pixels. Lighting, IBL, atmosphere and edge stages
+// are skipped; this emits motion vectors only.
 struct VelocityFragOutput {
   @location(0) velocity: vec2<f32>,
   //>>ifdef LOG_DEPTH
@@ -4349,10 +4242,10 @@ struct VelocityFragOutput {
 
 @fragment fn fragmentVelocityMain(input: FragmentInput) -> VelocityFragOutput {
   let flags = material.materialFlags;
-  // C10-05 — hoist baseColor UV derivatives at entry (uniform control flow) so
-  // the alpha-test baseColor sample uses textureSampleGrad and selects the same
-  // mip as fragmentMain (consistent alpha-mask discard across the velocity and
-  // color passes at distance).
+  // Hoist the baseColor UV derivatives to the entry, in uniform control flow,
+  // so the alpha-test baseColor sample uses textureSampleGrad and selects the
+  // same mip as fragmentMain, keeping the alpha-mask discard consistent across
+  // the velocity and colour passes at distance.
   let baseColorUV_dx = dpdx(baseColorUV(input));
   let baseColorUV_dy = dpdy(baseColorUV(input));
 
@@ -4384,19 +4277,18 @@ struct VelocityFragOutput {
   return velOut;
 }
 
-// AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) — classifier
-// fragment entry point. Drape the model's shape onto terrain or 3D-Tile
+// Classifier fragment entry. Drapes the model's shape onto terrain or 3D-Tile
 // surfaces by sampling the same packed globe-depth texture the depth-sample
-// classifier renderers use (group 3 binding 15) and discarding where the
-// sampled depth is 0 (sky / no surface). Color comes from
-// `material.baseColorFactor` so the user can tune the drape tint via the
-// model's primary material.
+// classifier renderers use, at group 3 binding 15, and discarding where the
+// sampled depth is 0 — sky, or no surface. The colour comes from
+// `material.baseColorFactor`, so the drape tint is tunable through the model's
+// primary material.
 //
-// Unlike `fragmentMain`, this entry skips PBR / IBL / lighting / shadows /
-// edges / atmosphere — it produces a single classification color per pixel.
-// The pipeline pairs it with `vertexMain` (existing — the model's geometry
-// IS the classifier volume; no separate shadow-volume extrusion is needed
-// because the model's mesh already encodes the desired drape shape).
+// Unlike `fragmentMain` this entry skips PBR, IBL, lighting, shadows, edges and
+// atmosphere, producing a single classification colour per pixel. The pipeline
+// pairs it with the existing `vertexMain`: the model's geometry is itself the
+// classifier volume, so no separate shadow-volume extrusion is needed — its
+// mesh already encodes the drape shape.
 //
 // Viewport size is recovered from `textureDimensions(globeDepthTex)`
 // instead of a UBO field — the globe depth texture is sized to the

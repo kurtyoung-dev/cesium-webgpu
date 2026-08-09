@@ -35,11 +35,12 @@ const RADIANCE_BASE_SIZE = 128;
 const RADIANCE_MIP_LEVELS = 6; // log2(128) - 1, roughness 0..1
 
 /**
- * Item 1.3 (IBL-PREFILTER-HQ, Batch 426). Quality mode for the radiance
- * prefilter. `'parity'` (default) samples the source cube at mip 0 exactly
- * as shipped; `'high'` first box-downsamples the source cube into a mip
- * chain, then samples a GGX-pdf-derived LOD (Karis/UE4) to kill bright-sun
- * firefly aliasing at high roughness.
+ * Quality mode for the radiance prefilter. `'parity'`, the default, samples the
+ * source cube at mip 0. `'high'` first box-downsamples the source cube into a
+ * mip chain, then samples a GGX-pdf-derived LOD, which removes the bright-sun
+ * firefly aliasing that mip-0 sampling produces at high roughness.
+ *
+ * Reference: Karis, "Real Shading in Unreal Engine 4" (SIGGRAPH 2013).
  */
 type IBLPrefilterQuality = "parity" | "high";
 
@@ -54,10 +55,10 @@ interface IBLPipelineCache {
   radianceBGL: GPUBindGroupLayout | null;
   sampler: GPUSampler | null;
   sourceVersion: number;
-  // Item 1.3 (IBL-PREFILTER-HQ, Batch 426) — high-quality radiance pipeline
-  // (entry point `mainHQ`) + the source-cube mip-chain downsample pipeline.
-  // Lazily built only when `quality === 'high'`; null on the parity path so
-  // the parity build never references the HQ shaders.
+  // The high-quality radiance pipeline (entry point `mainHQ`) and the
+  // source-cube mip-chain downsample pipeline. Built lazily, only when
+  // `quality === 'high'`, and null on the parity path so a parity build never
+  // references the high-quality shaders.
   radianceHQPipeline?: GPUComputePipeline | null;
   radianceHQBGL?: GPUBindGroupLayout | null;
   mipDownsamplePipeline?: GPUComputePipeline | null;
@@ -85,16 +86,16 @@ interface IBLCommandEncodingScope {
   parameterCapacity: number;
   parameterCount: number;
   destroyed: boolean;
-  // C11-193 — when the arena came from the context-owned pool, teardown returns
-  // it instead of destroying it. `null` keeps the historical own-and-destroy
-  // lifetime for callers that have no pool (specs, standalone entry points).
+  // When the arena came from the context-owned pool, teardown returns it
+  // instead of destroying it. `null` selects the own-and-destroy lifetime, for
+  // callers that have no pool such as specs and standalone entry points.
   parameterPool: IBLParameterArenaPool | null;
   parameterHandle: PooledParameterBuffer | null;
 }
 
 /**
- * C11-193 — minimal view of {@link WebGPUEnvironmentTargetPool} this module
- * needs. Structural so the IBL pipeline keeps no dependency on the pool module.
+ * The minimal view of {@link WebGPUEnvironmentTargetPool} this module needs.
+ * Structural, so the IBL pipeline keeps no dependency on the pool module.
  */
 interface IBLParameterArenaPool {
   acquireParameterBuffer(
@@ -174,9 +175,9 @@ function destroyIBLCommandEncodingScope(scope: IBLCommandEncodingScope): void {
     return;
   }
   scope.destroyed = true;
-  // C11-193 — returning to the pool is safe before submit: WebGPU keeps a
-  // buffer alive for commands already recorded against it unless `destroy()` is
-  // called, and the pool never destroys an entry used on the current frame.
+  // Returning to the pool before submit is safe: WebGPU keeps a buffer alive
+  // for commands already recorded against it unless `destroy()` is called, and
+  // the pool never destroys an entry used on the current frame.
   if (scope.parameterPool !== null && scope.parameterHandle !== null) {
     scope.parameterPool.releaseParameterBuffer(scope.parameterHandle);
     scope.parameterHandle = null;
@@ -237,8 +238,8 @@ function getIBLDeviceKernelPack(device: GPUDevice): IBLDeviceKernelPack {
 /**
  * Creates the compute pipeline for irradiance convolution.
  *
- * C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — routes through the central
- * cache when supplied, sync-creates otherwise.
+ * Routes through the central cache when one is supplied, and creates
+ * synchronously otherwise.
  */
 function createIrradiancePipeline(
   device: GPUDevice,
@@ -324,10 +325,10 @@ function createRadiancePipeline(
 }
 
 /**
- * Item 1.3 (IBL-PREFILTER-HQ, Batch 426). Creates the high-quality radiance
- * prefilter pipeline — identical BGL to the parity pipeline, but compiled
- * against the `mainHQ` entry point which samples the source cube at a
- * GGX-pdf-derived LOD. Only built when `quality === 'high'`.
+ * Creates the high-quality radiance prefilter pipeline: an identical bind-group
+ * layout to the parity pipeline, compiled against the `mainHQ` entry point,
+ * which samples the source cube at a GGX-pdf-derived LOD. Built only when
+ * `quality === 'high'`.
  */
 function createRadianceHQPipeline(
   device: GPUDevice,
@@ -370,14 +371,15 @@ function createRadianceHQPipeline(
 }
 
 /**
- * Item 1.3 (IBL-PREFILTER-HQ, Batch 426). Box-downsamples the source env
- * cube into its already-allocated mip chain (mips 1..N from mip 0), so the
- * HQ prefilter can sample a real LOD. One dispatch per destination mip
- * level. The storage-texture format token must match the source cube
- * format (rgba8unorm LDR / rgba16float HDR); the WGSL declares rgba16float
- * and is string-swapped to rgba8unorm when the source is LDR.
+ * Box-downsamples the source environment cube into its already-allocated mip
+ * chain (mips 1..N from mip 0), so the high-quality prefilter has a real LOD to
+ * sample. One dispatch per destination mip level.
  *
- * @returns true if a mip chain was generated (source has >1 mip level).
+ * The storage-texture format token must match the source cube format —
+ * rgba8unorm for LDR, rgba16float for HDR. The WGSL declares rgba16float and is
+ * string-swapped to rgba8unorm when the source is LDR.
+ *
+ * @returns true if a mip chain was generated, i.e. the source has >1 mip level.
  */
 function dispatchSourceCubeMipChain(
   device: GPUDevice,
@@ -584,9 +586,9 @@ function dispatchIrradianceConvolution(
 }
 
 /**
- * Item 1.3 (IBL-PREFILTER-HQ, Batch 426). Optional high-quality inputs for
- * `dispatchRadiancePrefilter` / `generateIBLMaps`. Undefined / `'parity'`
- * keeps the byte-identical shipped path (mip-0 sample, no downsample).
+ * Optional high-quality inputs for `dispatchRadiancePrefilter` and
+ * `generateIBLMaps`. Undefined, or `'parity'`, keeps the mip-0 sample with no
+ * downsample.
  */
 interface RadianceHQOptions {
   quality?: IBLPrefilterQuality;
@@ -748,10 +750,10 @@ function packSphericalHarmonics(
     return null;
   }
 
-  // Audit A.9 (Batch 130) -- 40 floats / 160 bytes total:
+  // 40 floats / 160 bytes total:
   //   - 0..35  : 9 SH coefficients (vec4 padding)
-  //   - 36..39 : control vec4 -- .w = 1.0 marks SH active so the FS
-  //              evaluates analytically instead of sampling the
+  //   - 36..39 : control vec4, whose .w = 1.0 marks SH active so the fragment
+  //              shader evaluates analytically instead of sampling the
   //              irradiance cubemap.
   const data = new Float32Array(40);
   for (let i = 0; i < 9; i++) {

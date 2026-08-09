@@ -1,28 +1,25 @@
 /**
- * DP-H46b — WGSL type maps + value-transform expression builders + a
- * stable class hash for the WebGPU structural-metadata codegen
- * (`MetadataWGSLPipelineStage`).
+ * WGSL type maps, value-transform expression builders, and a stable class hash
+ * for the WebGPU structural-metadata codegen in `MetadataWGSLPipelineStage`.
  *
  * This is the WGSL sibling of the GLSL type maps that
- * {@link MetadataClassProperty#getGlslType} and `MetadataPipelineStage`
- * rely on. The mapping rules are ported 1:1 from
- * `MetadataClassProperty.js:1308/1310/1318` + `getGlslType:462`:
+ * {@link MetadataClassProperty#getGlslType} and `MetadataPipelineStage` rely
+ * on, and the mapping rules match theirs:
  *
  *   - float-component types  → `f32` / `vec2<f32>` / `vec3<f32>` / `vec4<f32>`
  *   - signed-int types       → `i32` / `vec2<i32>` / `vec3<i32>` / `vec4<i32>`
  *   - unsigned-int types     → `u32` / `vec2<u32>` / `vec3<u32>` / `vec4<u32>`
  *
- * The **normalized-int → f32** rule is preserved: a property whose value
- * type is an integer but which is `normalized` (or a non-integer type)
- * resolves to the float family — exactly as `getGlslType` does — because
- * the normalized integer is decoded to a float on the CPU side (DP-H46a's
- * `ensureFloat32`) before it reaches the shader. So in WGSL such a property
- * is read as `f32`/`vec2<f32>`/... and never as an integer.
+ * A property whose value type is an integer but which is `normalized`, and any
+ * non-integer type, resolves to the float family, exactly as `getGlslType`
+ * does: the normalized integer is decoded to a float on the CPU side before it
+ * reaches the shader, so in WGSL such a property is read as `f32`,
+ * `vec2<f32>` and so on, never as an integer.
  *
- * Matrix property types (MAT2/MAT3/MAT4) map to `mat2x2<f32>` etc. — these
- * are not transported by DP-H46b's single-scalar path (that is later work),
- * but the type map is complete so `MetadataWGSLPipelineStage` can emit a
- * correct struct field for every GPU-compatible property.
+ * Matrix property types (MAT2/MAT3/MAT4) map to `mat2x2<f32>` and friends.
+ * These are not carried by the single-scalar transport path, but the type map
+ * is complete so `MetadataWGSLPipelineStage` can emit a correct struct field
+ * for every GPU-compatible property.
  *
  * @private
  * @module MetadataWGSLHelpers
@@ -88,8 +85,8 @@ function getComponentCount(classProperty) {
 }
 
 /**
- * Resolve the WGSL type for a `MetadataClassProperty`, applying the SAME
- * rules as `MetadataClassProperty.getGlslType` (with WGSL spellings):
+ * Resolve the WGSL type for a `MetadataClassProperty`, applying the same rules
+ * as `MetadataClassProperty.getGlslType` with WGSL spellings:
  *
  *   - matrix types               → `mat2x2<f32>` / `mat3x3<f32>` / `mat4x4<f32>`
  *   - normalized or non-integer  → float family (`f32`/`vec2<f32>`/...)
@@ -97,9 +94,9 @@ function getComponentCount(classProperty) {
  *   - signed integer             → int family (`i32`/`vec2<i32>`/...)
  *
  * @param {MetadataClassProperty} classProperty
- * @returns {string|undefined} The WGSL type, or `undefined` if the property
- *   has a component count outside [1, 4] for vectors (e.g., a long fixed
- *   array, which DP-H46b does not transport).
+ * @returns {string|undefined} The WGSL type, or `undefined` if the property has
+ *   a component count outside [1, 4] for vectors, such as a long fixed array,
+ *   which is not transported.
  * @private
  */
 function getWgslType(classProperty) {
@@ -130,9 +127,9 @@ function getWgslType(classProperty) {
 }
 
 /**
- * Returns true when {@link getWgslType} can produce a valid WGSL type for
- * the property (component count is mappable and the resolved type is
- * defined). DP-H46b only transports float-family scalar/vector values; this
+ * Returns true when {@link getWgslType} can produce a valid WGSL type for the
+ * property, i.e. the component count is mappable and the resolved type is
+ * defined. Only float-family scalar and vector values are transported, so this
  * predicate gates which properties get a generated struct field.
  *
  * @param {MetadataClassProperty} classProperty
@@ -144,12 +141,14 @@ function isWgslCompatible(classProperty) {
 }
 
 /**
- * Build the WGSL literal for an offset/scale vector value of the given WGSL
- * type. The GLSL path passes offset/scale as uniforms; for DP-H46b the
- * transform is folded into the generated source as a compile-time constant
- * (the asset's offset/scale never changes at runtime for a property
- * attribute, and baking it avoids adding a metadata uniform buffer in this
- * increment). Mirrors `czm_valueTransform`'s `scale * value + offset`.
+ * Build the WGSL literal for an offset or scale vector value of the given WGSL
+ * type.
+ *
+ * The GLSL path passes offset and scale as uniforms; here the transform is
+ * folded into the generated source as a compile-time constant, because a
+ * property attribute's offset and scale never change at runtime and baking them
+ * avoids a metadata uniform buffer. Mirrors `czm_valueTransform`'s
+ * `scale * value + offset`.
  *
  * @param {string} wgslType e.g. `f32`, `vec2<f32>`, `vec3<f32>`, `vec4<f32>`
  * @param {number|number[]} value scalar or array from the class definition
@@ -210,16 +209,16 @@ function applyValueTransform(valueExpression, wgslType, classProperty) {
 }
 
 /**
- * DP-H46c — build a WGSL `vec2<f32>` texture-coordinate expression for a
- * property TEXTURE, applying an optional KHR_texture_transform 3×3 matrix as a
- * baked compile-time constant (NOT an injected identity matrix — callers skip
- * this entirely when the transform is identity). Mirrors the GLSL
+ * Build a WGSL `vec2<f32>` texture-coordinate expression for a property
+ * texture, applying an optional KHR_texture_transform 3x3 matrix as a baked
+ * compile-time constant. No identity matrix is ever injected — callers skip
+ * this entirely when the transform is identity. Mirrors the GLSL
  * `vec2(transform * vec3(texCoord, 1.0))` path in
- * `MetadataPipelineStage.addPropertyTexturePropertyMetadata` (:673).
+ * `MetadataPipelineStage.addPropertyTexturePropertyMetadata`.
  *
- * The 3×3 transform is a `Core/Matrix3` stored COLUMN-major (`m[col*3+row]`).
- * WGSL `mat3x3<f32>` constructors also take columns, so the 9 values map
- * directly column-by-column.
+ * The 3x3 transform is a `Core/Matrix3` stored column-major (`m[col*3+row]`),
+ * and WGSL `mat3x3<f32>` constructors also take columns, so the nine values map
+ * directly column by column.
  *
  * @param {string} texCoordExpr a WGSL `vec2<f32>` expression (the raw uv)
  * @param {Matrix3|undefined} transform the KHR_texture_transform matrix, or
@@ -241,28 +240,29 @@ function buildTexCoordExpr(texCoordExpr, transform) {
 }
 
 /**
- * DP-H46c — build a WGSL expression that unpacks a sampled property-TEXTURE
- * value into the property's WGSL type. WGSL texture sampling of an
- * `rgba8unorm` texture returns normalized `[0,1]` floats, exactly like GLSL
- * `texture()`. This is the WGSL sibling of
- * `MetadataClassProperty.unpackTextureInShader` / `unpackTextureInShaderWebGL2`:
+ * Build a WGSL expression that unpacks a sampled property-texture value into
+ * the property's WGSL type.
  *
- *   - normalized integer / float component types → the sampled normalized
- *     channels ARE the value (`[0,1]`); just swizzle + construct the vecN.
+ * WGSL texture sampling of an `rgba8unorm` texture returns normalized `[0,1]`
+ * floats, exactly like GLSL `texture()`, so this is the WGSL sibling of
+ * `MetadataClassProperty.unpackTextureInShader` and
+ * `unpackTextureInShaderWebGL2`:
+ *
+ *   - normalized integer and float component types → the sampled normalized
+ *     channels are the value in `[0,1]`; swizzle and construct the vecN.
  *   - unnormalized integer component types → rescale each channel to its raw
- *     byte (`u32(channel * 255.0 + 0.5)`) and cast to the WGSL int/uint type.
+ *     byte (`u32(channel * 255.0 + 0.5)`) and cast to the WGSL int or uint type.
  *
- * The property's component count drives how many channels feed each component
- * (mirrors `channelsPerComponent` in the GLSL unpacker):
+ * The property's component count drives how many channels feed each component,
+ * mirroring `channelsPerComponent` in the GLSL unpacker:
  *
- *   - 1 channel per component (the common UINT8 case) — each component reads a
- *     single swizzled channel (byte-identical codegen to DP-H46c).
- *   - multi-byte components (METADATA-UINT16-32 — UINT16/UINT32/INT16/INT32/
- *     FLOAT32 packed across 2/4 channels) — each component's channel slice is
- *     reassembled LSB-first into a raw `u32` bit pattern (the SAME little-endian
- *     convention as GLSL `czm_unpackTexture`), then bit-reinterpreted to the
- *     scalar category and optionally normalized, mirroring
- *     `MetadataClassProperty.unpackTextureInShader` exactly.
+ *   - one channel per component, the common UINT8 case — each component reads a
+ *     single swizzled channel.
+ *   - multi-byte components (UINT16, UINT32, INT16, INT32 and FLOAT32, packed
+ *     across 2 or 4 channels) — each component's channel slice is reassembled
+ *     LSB-first into a raw `u32` bit pattern, using the same little-endian
+ *     convention as GLSL `czm_unpackTexture`, then bit-reinterpreted to the
+ *     scalar category and optionally normalized.
  *
  * @param {string} sampleExpr a WGSL `vec4<f32>` expression (the texture sample)
  * @param {string} channels the channel swizzle string, e.g. "r", "rg", "rgb"
@@ -351,12 +351,14 @@ function vecSplat(n, scalar) {
 }
 
 /**
- * DP-H46d — build a WGSL expression that reassembles `channelCount` normalized
- * `[0,1]` float channels of an `rgba8unorm` sample back into the raw little-
- * endian `u32` bit pattern they encode. This is the WGSL sibling of
- * `czm_unpackTexture(...)`: `byte_k = round(channel_k * 255)` and the bytes
- * combine LSB-first (`byte0 | (byte1<<8) | ...`). Self-contained (no shader
- * chunk dependency) so the generated property-table chunk stands alone.
+ * Build a WGSL expression that reassembles `channelCount` normalized `[0,1]`
+ * float channels of an `rgba8unorm` sample back into the raw little-endian
+ * `u32` bit pattern they encode.
+ *
+ * The WGSL sibling of `czm_unpackTexture`: `byte_k = round(channel_k * 255)`,
+ * with the bytes combined LSB-first (`byte0 | (byte1<<8) | ...`). It is
+ * self-contained, with no shader-chunk dependency, so the generated
+ * property-table chunk stands alone.
  *
  * @param {string} channelsExpr a WGSL `f32` / `vec2..4<f32>` expression (the
  *   sampled channel slice in [0,1])
@@ -431,11 +433,11 @@ function buildScalarFromRawBits(rawBitsExpr, classProperty) {
 }
 
 /**
- * DP-H46d — build a WGSL expression that unpacks a property-TABLE
- * `textureLoad` sample (a `vec4<f32>` of normalized rgba8 channels) into the
- * property's WGSL type. This is the WGSL sibling of
- * `MetadataClassProperty.unpackTextureInShader`: the packed bytes are
- * reassembled into a `u32` per component (little-endian), then
+ * Build a WGSL expression that unpacks a property-table `textureLoad` sample —
+ * a `vec4<f32>` of normalized rgba8 channels — into the property's WGSL type.
+ *
+ * The WGSL sibling of `MetadataClassProperty.unpackTextureInShader`: the packed
+ * bytes are reassembled into a `u32` per component, little-endian, then
  * bit-reinterpreted to the scalar category and optionally normalized.
  *
  *   - FLOAT component types            → `bitcast<f32>(rawBits)`
@@ -493,14 +495,15 @@ function buildPropertyTableUnpack(sampleExpr, classProperty, wgslType) {
 }
 
 /**
- * DP-H46e — index a possibly-array offset/scale by component (`x`/`y`/`z`/`w`).
- * In the `MetadataClassProperty`, offset/scale are stored array-based (a flat
- * `number[]`), so component `i` is `value[i]`; a scalar `number` indexes to
- * itself. Mirrors the way `getSourceValueStringComponent` reads
- * `metadataProperty.offset[componentName]` (where the metadata property stores
- * them as object types) — but here we drive off the CLASS property's array form,
- * which is the canonical, always-present representation
- * (`MetadataClassProperty.offset`/`scale` default to per-component arrays).
+ * Index a possibly-array offset or scale by component.
+ *
+ * A `MetadataClassProperty` stores offset and scale array-based, as a flat
+ * `number[]`, so component `i` is `value[i]`; a scalar `number` indexes to
+ * itself. `getSourceValueStringComponent` reads the same quantity as
+ * `metadataProperty.offset[componentName]`, where the metadata property holds
+ * object types; this drives off the class property's array form instead, which
+ * is the canonical always-present representation, since
+ * `MetadataClassProperty.offset` and `scale` default to per-component arrays.
  *
  * @param {number|number[]|undefined} value
  * @param {number} componentIndex 0..3
@@ -518,19 +521,21 @@ function transformComponentAt(value, componentIndex) {
 }
 
 /**
- * DP-H46e — build the WGSL `f32` expression that mirrors the GLSL
- * `getSourceValueStringComponent` / `getSourceValueStringScalar`
- * (`DerivedCommand.js:486/514`): given a raw in-shader metadata component value
- * `valueExpr`, UN-apply the property's offset/scale value transform and
- * UN-normalize it back into the [0,1] range the pick FBO byte channel encodes —
- * the exact inverse of what `MetadataPicking.decodeMetadataValues` re-applies on
- * readback, so the round-trip matches WebGL byte-for-byte.
+ * Build the WGSL `f32` expression mirroring the GLSL
+ * `getSourceValueStringComponent` and `getSourceValueStringScalar` in
+ * `DerivedCommand`.
+ *
+ * Given a raw in-shader metadata component value `valueExpr`, this un-applies
+ * the property's offset/scale value transform and un-normalizes it back into
+ * the [0,1] range the pick framebuffer's byte channel encodes — the exact
+ * inverse of what `MetadataPicking.decodeMetadataValues` re-applies on
+ * readback, so the round trip matches WebGL byte for byte.
  *
  *   inverse offset/scale:  `(value - offset) / scale`     (hasValueTransform)
  *   inverse normalization: `value / max(componentType)`   (!classProperty.normalized)
  *
- * `valueExpr` MUST already be an `f32` (the caller casts integer fields with
- * `f32(...)`). Returns the component's [0,1] channel expression.
+ * `valueExpr` must already be an `f32`; the caller casts integer fields with
+ * `f32(...)`. Returns the component's [0,1] channel expression.
  *
  * @param {MetadataClassProperty} classProperty
  * @param {number} componentIndex 0..3 — the component to read from offset/scale
@@ -590,12 +595,12 @@ export {
   wgslVectorLiteral,
   wgslFloat,
   hashStringFNV1a,
-  // DP-H46c — property-texture WGSL builders.
+  // Property-texture WGSL builders.
   buildTexCoordExpr,
   buildPropertyTextureUnpack,
-  // DP-H46d — property-table WGSL unpacker.
+  // Property-table WGSL unpacker.
   buildPropertyTableUnpack,
-  // DP-H46e — metadata-pick inverse-transform component builder.
+  // Metadata-pick inverse-transform component builder.
   buildPickSourceComponent,
   floatTypesByComponentCount,
   intTypesByComponentCount,

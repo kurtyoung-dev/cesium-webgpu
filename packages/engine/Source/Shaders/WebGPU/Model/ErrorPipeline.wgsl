@@ -1,18 +1,20 @@
 // ErrorPipeline.wgsl
 //
-// C2-22 / MAINT-ERROR-PIPELINE-FALLBACK — flat-magenta fallback for a model PBR
-// pipeline that failed validation. WebGPU's synchronous `createRenderPipeline`
-// does NOT throw on a bad shader/layout; it returns an INVALID pipeline whose
-// draws are silently dropped → a render-hole with no asset and no console hint.
-// WebGPUModelPipelineCache wraps pipeline creation in a validation error scope
-// and, on failure, substitutes a pipeline built from THIS shader so the model
-// renders solid magenta (the universal "shader broke" signal) instead of nothing.
+// Flat-magenta fallback for a model PBR pipeline that failed validation.
 //
-// It is a drop-in for the failed command: same pipeline layout (so the bound
-// bind groups stay valid — it only reads @group(0) camera) and it consumes only
-// vertex slot 0 (positionMC, the always-present model position buffer). The RTE
-// transform mirrors ModelPBRComplete's: subtract the encoded camera position in
-// model coordinates first, then apply mvpRelativeToEye.
+// WebGPU's synchronous `createRenderPipeline` does not throw on a bad shader or
+// layout. It returns an invalid pipeline whose draws are silently dropped,
+// which reads as a hole in the render with no missing asset and no console
+// hint. WebGPUModelPipelineCache therefore wraps pipeline creation in a
+// validation error scope and, on failure, substitutes a pipeline built from
+// this shader, so the model renders solid magenta rather than nothing.
+//
+// It is a drop-in for the failed command: the same pipeline layout, so the bind
+// groups the command already bound stay valid (only the @group(0) camera is
+// read), and only vertex slot 0 — positionMC, the always-present model position
+// buffer — is consumed. The relative-to-eye transform mirrors
+// ModelPBRComplete's: subtract the encoded camera position in model coordinates
+// first, then apply mvpRelativeToEye.
 
 // Byte-locked to ModelPBRComplete.wgsl's CameraUniforms (group 0, binding 0) so
 // the uniform buffer the failed command already bound reads correctly here.

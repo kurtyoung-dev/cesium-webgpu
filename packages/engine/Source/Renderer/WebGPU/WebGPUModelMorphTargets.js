@@ -2,21 +2,24 @@
  * Packs morph target deltas into a GPU storage buffer and morph weights
  * into a uniform buffer for WebGPU model rendering.
  *
- * Storage buffer layout (DP-H35, Batch 329 — interleaved POSITION + NORMAL):
+ * Storage buffer layout, interleaving POSITION, NORMAL and TANGENT:
  *   [target0_posX, target0_posY, target0_posZ, pad,  // vertex 0, target 0 — POSITION
  *    target0_nrmX, target0_nrmY, target0_nrmZ, pad,  // vertex 0, target 0 — NORMAL
+ *    target0_tanX, target0_tanY, target0_tanZ, pad,  // vertex 0, target 0 — TANGENT
  *    target0_posX, target0_posY, target0_posZ, pad,  // vertex 1, target 0 — POSITION
  *    target0_nrmX, target0_nrmY, target0_nrmZ, pad,  // vertex 1, target 0 — NORMAL
+ *    target0_tanX, target0_tanY, target0_tanZ, pad,  // vertex 1, target 0 — TANGENT
  *    ...
  *    target1_posX, target1_posY, target1_posZ, pad,  // vertex 0, target 1 — POSITION
- *    target1_nrmX, target1_nrmY, target1_nrmZ, pad,  // vertex 0, target 1 — NORMAL
  *    ...]
  *
- * Each vertex contributes TWO vec4s per target: [positionDelta, normalDelta].
- * A morph target with no NORMAL accessor writes a zero normal delta, so the
- * WGSL normal accumulation is a no-op for it (matches the WebGL path, which
- * only emits getMorphedNormal when the target carries a NORMAL delta).
- * The CPU pack stride (FLOATS_PER_VERTEX_PER_TARGET = 12) MUST stay in lockstep
+ * Each vertex contributes three vec4s per target: position, normal and tangent
+ * deltas. A target with no NORMAL or TANGENT accessor leaves that slot zero, so
+ * the WGSL accumulation is a no-op for it — matching the WebGL path, which
+ * emits getMorphedNormal and getMorphedTangent only when the target carries the
+ * corresponding delta. The tangent's `.w` handedness is not morphed.
+ *
+ * The CPU pack stride (FLOATS_PER_VERTEX_PER_TARGET = 12) must stay in lockstep
  * with the WGSL morph indexing (base = (t*vertexCount + vid) * 3u).
  *
  * Weights are packed into a vec4 array (4 weights per vec4) in a
@@ -83,12 +86,11 @@ function ensureMorphTargetResources(
     );
     primCache._morphWeightData = new Float32Array(MORPH_UNIFORM_SIZE / 4);
   }
-  // NEW-TAA-MORPH-PREV (Batch 134) -- prev-frame weights mirror for
-  // TAA velocity. The shader runs morph twice in vertexMain (once
-  // current, once prev) and needs the prev weights to compute the
-  // correct prevPositionMC. First-frame: alias prev = current so
-  // velocity is zero on the first morphed frame rather than wildly
-  // wrong from zero deltas.
+  // Previous-frame weights mirror, for TAA velocity. The shader runs morph
+  // twice in vertexMain — once current, once previous — and needs the previous
+  // weights to compute the correct prevPositionMC. On the first frame previous
+  // aliases current, so velocity is zero rather than wildly wrong from zero
+  // deltas.
   if (!defined(primCache._morphWeightBufferPrev)) {
     primCache._morphWeightBufferPrev = WebGPUBuffer.createUniformBuffer(
       device,
@@ -98,9 +100,8 @@ function ensureMorphTargetResources(
     primCache._morphWeightDataPrev = new Float32Array(MORPH_UNIFORM_SIZE / 4);
   }
 
-  // NEW-TAA-MORPH-PREV (Batch 134) -- save current weights as prev
-  // BEFORE overwriting with this frame's weights. Same swap pattern
-  // as `prevPackedJointMatrices` in `WebGPUModelRenderer.js`.
+  // Save the current weights as previous before overwriting them with this
+  // frame's. Same swap pattern as `prevPackedJointMatrices` in the renderer.
   if (!resetPreviousToCurrent) {
     primCache._morphWeightDataPrev.set(primCache._morphWeightData);
     device.queue.writeBuffer(
@@ -134,9 +135,9 @@ function ensureMorphTargetResources(
     MORPH_UNIFORM_SIZE,
   );
 
-  // C11-185 — after one or more rejected frames, the previous GPU pose is the
-  // last visible pose, not t-1. Reset it to the just-packed current pose so TAA
-  // sees zero velocity on readmission instead of a multi-frame jump.
+  // After one or more rejected frames the previous GPU pose is the last visible
+  // pose, not t-1. Reset it to the just-packed current pose so TAA sees zero
+  // velocity on readmission instead of a multi-frame jump.
   if (resetPreviousToCurrent) {
     primCache._morphWeightDataPrev.set(weightData);
     device.queue.writeBuffer(
@@ -156,16 +157,15 @@ function ensureMorphTargetResources(
   };
 }
 
-// DP-H35 (Batch 329) added a NORMAL vec4 after POSITION so morphed normals
-// re-shade the deformed surface (WebGL morphs normals via getMorphedNormal;
-// WebGPU previously froze them at the rest pose → frozen lighting on a
-// morph-animated mesh).
-// C2-4 (Batch 373): +TANGENT vec4 — each vertex now carries POSITION, NORMAL,
-// then TANGENT (12 floats), so a normal-mapped morphed mesh keeps a correct
-// tangent frame (the WebGL path morphs tangents via getMorphedTangent). This
-// constant is the lockstep anchor: it MUST match the *3u stride the WGSL morph
-// blocks (current + TAA-prev) use to step from one vertex's [pos,nrm,tan]
-// triple to the next.
+// Each vertex carries POSITION, then NORMAL, then TANGENT — 12 floats. The
+// normal delta re-shades the deformed surface, and the tangent delta keeps a
+// normal-mapped morphed mesh's tangent frame correct; WebGL morphs both through
+// getMorphedNormal and getMorphedTangent. Freezing either at the rest pose
+// leaves a morph-animated mesh lit for a shape it no longer has.
+//
+// This constant is the lockstep anchor: it must match the `*3u` stride the WGSL
+// morph blocks — current and the TAA previous pass — use to step from one
+// vertex's [position, normal, tangent] triple to the next.
 const FLOATS_PER_VERTEX_PER_TARGET = 12; // POSITION vec4 (4) + NORMAL vec4 (4) + TANGENT vec4 (4)
 
 /**

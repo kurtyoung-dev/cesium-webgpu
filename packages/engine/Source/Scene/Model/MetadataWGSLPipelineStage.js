@@ -1,54 +1,50 @@
 /**
- * DP-H46b — per-model WGSL codegen for `EXT_structural_metadata`
- * property-ATTRIBUTES. This is the WGSL sibling of the GLSL
- * {@link MetadataPipelineStage}: it iterates the SAME property-attributes a
- * primitive maps to and emits a WGSL string declaring
+ * Per-model WGSL codegen for `EXT_structural_metadata`.
+ *
+ * The WGSL sibling of the GLSL {@link MetadataPipelineStage}: it iterates the
+ * same property attributes, textures and tables a primitive maps to, and emits
+ * a WGSL string declaring
  *
  *   struct Metadata { <field per GPU-compatible property> };
- *   fn initializeMetadata(metadataValue: f32) -> Metadata { ... }
+ *   fn initializeMetadata(...) -> Metadata { ... }
  *   fn metadataDebugScalar(metadata: Metadata) -> f32 { ... }
  *
  * The string is prepended at the single injection point in
- * `WebGPUModelPipelineCache._getOrCreateShaderModule`, REPLACING the
- * DP-H46a stub that lived behind `//>>ifdef MODEL_HAS_METADATA` in
- * `ModelPBRComplete.wgsl`. The ifdef call site (the debug fragment-color
- * override) is retained and now uses `metadataDebugScalar(metadata)` —
- * an asset-independent accessor the codegen emits — so the proof exercises
- * the GENERATED struct/initializer, not a hand-written stub.
+ * `WebGPUModelPipelineCache._getOrCreateShaderModule`. The
+ * `//>>ifdef MODEL_HAS_METADATA` call site in `ModelPBRComplete.wgsl` — the
+ * debug fragment-colour override — reads `metadataDebugScalar(metadata)`, an
+ * asset-independent accessor the codegen emits, so it exercises the generated
+ * struct and initializer rather than anything hand-written.
  *
- * Scope: property-ATTRIBUTES (DP-H46b) + property TEXTURES (DP-H46c) +
- * property TABLES (DP-H46d, keyed by attribute / texture / implicit
- * feature-ID sources — METADATA-TABLE-SOURCES; INSTANCE-sourced feature IDs —
- * EXT_mesh_gpu_instancing + EXT_instance_features — via
- * PARITY-METADATA-TABLE-INSTANCE-SOURCE, threaded through the optional
- * `runtimeNode` param).
+ * **Property attributes** transport through the vec4 vertex path,
+ * `@location(9) metadataValue: vec4<f32>`. Up to four components of the first
+ * GPU-compatible property attribute reach the shader: SCALAR pads, and VEC2,
+ * VEC3, VEC4 and MAT2 transport fully. MAT3 and MAT4 carry all their elements
+ * only under the widened four-vec4 transport. The generated struct names its
+ * field after the resolved property and applies the property's offset and scale
+ * component-wise through baked WGSL constants, mirroring `czm_valueTransform`.
  *
- * Property ATTRIBUTES (DP-H46b + METADATA-MULTICOMPONENT): transport is the
- * vec4 vertex path (`@location(9) metadataValue: vec4<f32>`): up to FOUR
- * components of the first GPU-compatible property attribute reach the shader
- * (SCALAR pads, VEC2/3/4 and MAT2 transport fully; MAT3/MAT4 still carry only
- * their first four elements). The generated struct names its field after the
- * REAL resolved property and applies the property's offset/scale via baked
- * WGSL constants component-wise (mirroring `czm_valueTransform`).
+ * **Property textures** are sampled in the fragment stage at the property's
+ * interpolated `texCoord`. The chunk declares one texture-and-sampler binding
+ * pair per unique physical property texture, with binding numbers taken from
+ * the shared `WebGPUModelMetadata.resolvePropertyTextureLayout` so they match
+ * the bind-group-layout manifest the renderer allocates. `initializeMetadata`
+ * then does a `textureSample` at the property's texCoord — with an optional
+ * baked KHR_texture_transform 3x3 multiply, skipped for identity — followed by
+ * the channel swizzle, the `unpackTextureInShader` equivalent, and offset and
+ * scale. Mirrors `MetadataPipelineStage.addPropertyTexturePropertyMetadata`.
  *
- * Property TEXTURES (DP-H46c): sampled in the FRAGMENT stage at the property's
- * interpolated `texCoord`. The chunk declares one (texture, sampler) binding
- * pair per UNIQUE physical property texture — binding numbers from the SHARED
- * `WebGPUModelMetadata.resolvePropertyTextureLayout`, so they match the BGL
- * manifest the renderer allocates — and `initializeMetadata` does
- * `textureSample(...)` at the property's texCoord (optional baked
- * KHR_texture_transform 3×3 multiply, skipped for identity), channel swizzle,
- * `unpackTextureInShader`-equivalent unpacking, then offset/scale. Mirrors
- * `MetadataPipelineStage.addPropertyTexturePropertyMetadata` (:622).
+ * **Property tables** are keyed by attribute, texture, implicit or
+ * instance-sourced feature IDs; the instance path
+ * (EXT_mesh_gpu_instancing with EXT_instance_features) is threaded through the
+ * optional `runtimeNode` parameter.
  *
- * Parity: this module runs ONLY when the primitive maps to ≥1 property
- * attribute with readable per-vertex data OR ≥1 GPU-compatible property
- * texture (the same predicates DP-H46a/c use to flip `MODEL_HAS_METADATA` /
- * `MODEL_HAS_PROPERTY_TEXTURES`). For non-metadata models (and attribute-only
- * models w.r.t. the property-texture path) it returns `undefined` / emits no
- * property-texture bindings, no chunk is prepended where unneeded, the bit
- * stays clear, and the preprocessed WGSL is byte-identical to the pre-metadata
- * path.
+ * This module runs only when the primitive maps to at least one property
+ * attribute with readable per-vertex data, or at least one GPU-compatible
+ * property texture — the same predicates that set `MODEL_HAS_METADATA` and
+ * `MODEL_HAS_PROPERTY_TEXTURES`. Otherwise it returns `undefined`, no chunk is
+ * prepended, the bit stays clear, and the preprocessed WGSL is byte-identical
+ * to a model with no metadata at all.
  *
  * @private
  * @module MetadataWGSLPipelineStage
@@ -192,41 +188,41 @@ function componentAt(value, componentIndex) {
  * vec4 transport (`vecExpr`, the `@location(9)` per-vertex value), applying
  * the property's offset/scale value transform component-wise.
  *
- * METADATA-MULTICOMPONENT — the transport carries up to FOUR components of
- * the property (see `WebGPUModelMetadata.resolvePropertyAttributeVec4`), so:
+ * The transport carries up to four components of the property — see
+ * `WebGPUModelMetadata.resolvePropertyAttributeVec4` — so:
  *
  *   - `f32`        → `vecExpr.x`
  *   - `vec2<f32>`  → `vecExpr.xy`      (both components real)
  *   - `vec3<f32>`  → `vecExpr.xyz`
  *   - `vec4<f32>`  → `vecExpr`
- *   - `mat2x2<f32>`→ all four components (column-major, matching the glTF
- *                    accessor's column-major element order)
- *   - `mat3x3/mat4x4` → NEW-MODEL-METADATA-MAT3-MAT4: when `matTransport`
- *                    is true, ALL 9/16 elements are reassembled from the
- *                    four-vec4 widened transport (`metadataValue` +
- *                    `metadataValue1..3`, column-major). When false (the
- *                    historical single-vec4 transport), first four
- *                    components, rest zero — kept byte-identical as the
- *                    defensive fallback.
- *   - integer families → converted from the transported f32 numeric values
- *                    (the CPU decode keeps unnormalized ints numeric; the
- *                    EXT_structural_metadata spec forbids offset/scale on
- *                    non-float-interpretable types, so no transform)
+ *   - `mat2x2<f32>`→ all four components, column-major, matching the glTF
+ *                    accessor's column-major element order
+ *   - `mat3x3/mat4x4` → when `matTransport` is true, all 9 or 16 elements are
+ *                    reassembled from the widened four-vec4 transport
+ *                    (`metadataValue` plus `metadataValue1..3`, column-major).
+ *                    When false, the single-vec4 transport supplies the first
+ *                    four components and the rest are zero.
+ *   - integer families → converted from the transported f32 numeric values.
+ *                    The CPU decode keeps unnormalized integers numeric, and
+ *                    the EXT_structural_metadata specification forbids offset
+ *                    and scale on non-float-interpretable types, so no
+ *                    transform applies.
  *
- * The value transform (`czm_valueTransform` parity — `scale * value +
- * offset`) is applied per component: for scalar/vecN via
- * {@link applyValueTransform} (WGSL `*`/`+` are component-wise on vectors),
- * and for matrices per element (WGSL `mat * mat` is a matrix product, NOT
- * component-wise, so the transform is baked into each constructor argument).
+ * The value transform, `scale * value + offset` as in `czm_valueTransform`, is
+ * applied per component: for scalars and vectors through
+ * {@link applyValueTransform}, since WGSL `*` and `+` are component-wise on
+ * vectors; and for matrices per element, since WGSL `mat * mat` is a matrix
+ * product rather than component-wise, so the transform is baked into each
+ * constructor argument.
  *
  * @param {string} wgslType
  * @param {string} vecExpr a WGSL `vec4<f32>` expression (the transport).
- *   When `matTransport` is true this MUST be the literal parameter name
- *   `metadataValue` — the extended element reads derive the sibling
- *   parameter names (`metadataValue1..3`) from it by suffixing.
+ *   When `matTransport` is true this must be the literal parameter name
+ *   `metadataValue`: the extended element reads derive the sibling parameter
+ *   names (`metadataValue1..3`) from it by suffixing.
  * @param {MetadataClassProperty} classProperty
- * @param {boolean} [matTransport=false] NEW-MODEL-METADATA-MAT3-MAT4 —
- *   true when the widened four-vec4 transport carries the full matrix.
+ * @param {boolean} [matTransport=false] true when the widened four-vec4
+ *   transport carries the full matrix.
  * @returns {string}
  * @private
  */
@@ -257,12 +253,11 @@ function constructFromTransport(
     const raw = n === 4 ? vecExpr : `${vecExpr}.${"xyzw".slice(0, n)}`;
     return `${wgslType}(${raw})`;
   }
-  // matNxN<f32> — fill the elements from the transport (column-major),
-  // baking the per-element transform. NEW-MODEL-METADATA-MAT3-MAT4: with
-  // the widened transport every element is real (element k reads component
-  // k%4 of the (k/4)-th transport vec4); with the historical single-vec4
-  // transport only the first up-to-4 elements are real and the rest zero
-  // (byte-identical to the pre-MAT-transport codegen — MAT2's only path).
+  // matNxN<f32> — fill the elements from the transport in column-major order,
+  // baking the per-element transform. Under the widened transport every element
+  // is real: element k reads component k%4 of the (k/4)-th transport vec4.
+  // Under the single-vec4 transport, which is MAT2's only path, the first four
+  // elements are real and the rest are zero.
   const matMatch = /^mat([234])x\1<f32>$/.exec(wgslType);
   if (matMatch) {
     const n = parseInt(matMatch[1], 10);
@@ -319,11 +314,11 @@ function firstComponentExpr(fieldExpr, wgslType) {
 }
 
 /**
- * DP-H46c — build the per-property-TEXTURE accessor info the codegen needs:
- * the resolved WGSL type, sanitized field name, and the shared layout entry
- * (binding numbers, channels, texCoord, transform). The layout is
- * {@link resolvePropertyTextureLayout}, the SAME structure the binding side
- * consumes, so the generated `@binding` numbers match the BGL exactly.
+ * Build the per-property-texture accessor info the codegen needs: the resolved
+ * WGSL type, the sanitized field name, and the shared layout entry carrying
+ * binding numbers, channels, texCoord and transform. The layout comes from
+ * {@link resolvePropertyTextureLayout}, the same structure the binding side
+ * consumes, so the generated `@binding` numbers match the bind-group layout.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
@@ -378,19 +373,20 @@ function getPropertyTextureFields(
 }
 
 /**
- * DP-H46d — build the per-property-TABLE accessor info the codegen needs: the
- * resolved WGSL type, sanitized field name, and the shared layout entry
- * (texture binding, per-property `propertyInfoIndex` row, feature-ID variable).
- * The layout is {@link resolvePropertyTableLayout}, the SAME structure the
- * binding side consumes, so the generated `@binding` number + `propertyInfoIndex`
- * rows match the packed texture exactly.
+ * Build the per-property-table accessor info the codegen needs: the resolved
+ * WGSL type, the sanitized field name, and the shared layout entry carrying the
+ * texture binding, the per-property `propertyInfoIndex` row, and the feature-ID
+ * variable. The layout comes from {@link resolvePropertyTableLayout}, the same
+ * structure the binding side consumes, so the generated `@binding` number and
+ * `propertyInfoIndex` rows match the packed texture.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
  * @param {Set<string>} usedFieldNames field names already taken by property
- *   attributes / textures (so a table property colliding on its sanitized name
- *   is disambiguated)
- * @param {ModelRuntimeNode} [runtimeNode] PARITY-METADATA-TABLE-INSTANCE-SOURCE
+ *   attributes or textures, so a table property colliding on its sanitized name
+ *   is disambiguated
+ * @param {ModelRuntimeNode} [runtimeNode] enables the instance-sourced
+ *   feature-ID path
  * @returns {{ layout: object, fields: object[] }|undefined}
  * @private
  */
@@ -444,35 +440,35 @@ function getPropertyTableFields(
  * OR property table.
  *
  * The generated chunk:
- *   1. (DP-H46c) `@group(1) @binding(N) var propTexK: texture_2d<f32>;` +
- *      sampler declarations for each unique physical property TEXTURE; and
- *      (DP-H46d) `@group(1) @binding(44) var metadataPropertyTableTexture:
- *      texture_2d<f32>;` for the single tightly-packed property TABLE — the
- *      binding numbers match the BGL manifest the renderer allocates.
- *   2. `<type>MetadataClass` / `<type>MetadataStatistics` structs (DP-H46d) for
- *      each distinct property type (mirrors `declareMetadataTypeStructs`), then
- *      `struct Metadata { <field per property attribute + texture + table> }`.
+ *   1. `@group(1) @binding(N) var propTexK: texture_2d<f32>;` plus sampler
+ *      declarations for each unique physical property texture, and
+ *      `@group(1) @binding(44) var metadataPropertyTableTexture:
+ *      texture_2d<f32>;` for the single tightly-packed property table. The
+ *      binding numbers match the manifest the renderer allocates.
+ *   2. `<type>MetadataClass` and `<type>MetadataStatistics` structs for each
+ *      distinct property type, mirroring `declareMetadataTypeStructs`, then
+ *      `struct Metadata { <field per property attribute, texture and table> }`.
  *   3. `fn initializeMetadata(metadataValue: vec4<f32>, texCoord0: vec2<f32>,
- *      texCoord1: vec2<f32>, metadataFeatureId: f32) -> Metadata` — assigns the
- *      property-ATTRIBUTE vec4 transport into the property's real WGSL type
- *      (all carried components, offset/scale applied component-wise —
- *      METADATA-MULTICOMPONENT), SAMPLES each property TEXTURE at its texCoord
- *      (DP-H46c), and `textureLoad`s each property TABLE row at
- *      `(featureId, propertyInfoIndex)` then unpacks + offset/scales (DP-H46d).
- *   4. `fn metadataDebugScalar(metadata: Metadata) -> f32` — returns a scalar
- *      proof value in `[0,1]`: the RAW transported attribute scalar when a
- *      property attribute exists, else the first property-texture/-table
- *      property's first component (so the debug override renders a value that
- *      VARIES with the metadata).
- *   5. `fn metadataDebugColor(metadata: Metadata) -> vec4<f32>` — the FS debug
- *      paint (METADATA-MULTICOMPONENT): raw per-component RGB for a VEC2/3/4
- *      transported property; the historical `vec4(s, 0, 1-s, 1)` gradient
- *      around `metadataDebugScalar` for every other shape.
+ *      texCoord1: vec2<f32>, metadataFeatureId: f32) -> Metadata`, which
+ *      assigns the property-attribute vec4 transport into the property's real
+ *      WGSL type with offset and scale applied component-wise, samples each
+ *      property texture at its texCoord, and `textureLoad`s each property-table
+ *      row at `(featureId, propertyInfoIndex)` before unpacking and applying
+ *      offset and scale.
+ *   4. `fn metadataDebugScalar(metadata: Metadata) -> f32`, returning a scalar
+ *      in `[0,1]`: the raw transported attribute scalar when a property
+ *      attribute exists, otherwise the first property-texture or property-table
+ *      property's first component, so the debug override renders a value that
+ *      varies with the metadata.
+ *   5. `fn metadataDebugColor(metadata: Metadata) -> vec4<f32>`, the
+ *      fragment-shader debug paint: raw per-component RGB for a VEC2, VEC3 or
+ *      VEC4 transported property, and a `vec4(s, 0, 1-s, 1)` gradient around
+ *      `metadataDebugScalar` for every other shape.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
- * @param {ModelRuntimeNode} [runtimeNode] PARITY-METADATA-TABLE-INSTANCE-SOURCE
- *   — enables the instance-sourced property-table feature-ID path.
+ * @param {ModelRuntimeNode} [runtimeNode] enables the instance-sourced
+ *   property-table feature-ID path.
  * @param {object} [resolved] Optional pre-resolved CPU metadata inputs. The
  *   renderer hot path supplies these so layouts and attribute packing are
  *   built once per source generation rather than again inside codegen.
@@ -495,8 +491,8 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
     : getPropertyTextureFields(model, primitive, usedFieldNames);
   const textureFields = textureResult?.fields ?? [];
   const propertyTextureLayout = textureResult?.layout;
-  // DP-H46d — property TABLES. Resolved AFTER attributes + textures so the
-  // table field names disambiguate against any earlier collision.
+  // Property tables, resolved after attributes and textures so the table field
+  // names disambiguate against any earlier collision.
   const tableResult = defined(resolved)
     ? getPropertyTableFields(
         model,
@@ -524,14 +520,13 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
   const transported =
     attributeFields.length > 0 ? attributeFields[0] : undefined;
 
-  // NEW-MODEL-METADATA-MAT3-MAT4 — the widened four-vec4 transport engages
-  // only when the transported property is a MAT3/MAT4 AND the CPU pack
-  // (`resolveMetadataAttributeData`) widened to 16 floats for the SAME
-  // property. Deriving both sides from the same resolve keeps the vertex
-  // layout (`arrayStride = 64`, locations 9-12) and this generated signature
-  // in lockstep — they can never disagree on a well-formed or malformed
-  // asset. Scalar/VEC/MAT2 (and texture-/table-only) models keep
-  // `matTransport === false` and a byte-identical chunk.
+  // The widened four-vec4 transport engages only when the transported property
+  // is a MAT3 or MAT4 and the CPU pack in `resolveMetadataAttributeData`
+  // widened to 16 floats for that same property. Deriving both sides from one
+  // resolve keeps the vertex layout (`arrayStride = 64`, locations 9-12) and
+  // this generated signature in lockstep, so they cannot disagree on a
+  // well-formed or a malformed asset. Scalar, vector and MAT2 properties, and
+  // texture- or table-only models, keep `matTransport === false`.
   let matTransport = false;
   if (
     defined(transported) &&
@@ -552,9 +547,9 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
   );
   lines.push("// Replaces the DP-H46a stub; declared real per metadata class.");
 
-  // 1a. Property-texture binding declarations (DP-H46c). One texture per unique
-  //     physical property texture + ONE shared sampler — binding numbers come
-  //     from the shared layout so they match the BGL the renderer allocates.
+  // 1a. Property-texture binding declarations: one texture per unique physical
+  //     property texture plus one shared sampler. Binding numbers come from the
+  //     shared layout, so they match the bind-group layout the renderer builds.
   if (defined(propertyTextureLayout)) {
     for (let i = 0; i < propertyTextureLayout.textures.length; i++) {
       const t = propertyTextureLayout.textures[i];
@@ -571,10 +566,11 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
     lines.push("");
   }
 
-  // 1b. Property-TABLE binding declaration (DP-H46d). ONE tightly-packed RGBA8
-  //     texture (rows = properties, columns = features). Read via `textureLoad`
-  //     (no sampler), but the BGL also binds a sampler placeholder at the next
-  //     slot — declare it so the binding shape matches (the FS never samples it).
+  // 1b. Property-table binding declaration: one tightly-packed RGBA8 texture,
+  //     rows for properties and columns for features, read through
+  //     `textureLoad` with no sampler. The layout still binds a sampler
+  //     placeholder at the next slot, so declare it to keep the binding shape
+  //     matched; the fragment shader never samples it.
   if (defined(propertyTableLayout)) {
     lines.push(
       `@group(1) @binding(${propertyTableLayout.textureBinding}) var metadataPropertyTableTexture: texture_2d<f32>;`,
@@ -585,12 +581,11 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
     lines.push("");
   }
 
-  // 2a. <type>MetadataClass / <type>MetadataStatistics structs (DP-H46d).
-  //     Scaffolding for the CustomShader / pickMetadata consumers (DP-H46e/f);
-  //     declared now so the generated module already carries them. Mirrors
-  //     `MetadataPipelineStage.declareMetadataTypeStructs` (field renamings
-  //     noData/default→noData/defaultValue, min/max→minValue/maxValue, and the
-  //     int→float statistics fields).
+  // 2a. `<type>MetadataClass` and `<type>MetadataStatistics` structs, which the
+  //     CustomShader and pickMetadata consumers read. Mirrors
+  //     `MetadataPipelineStage.declareMetadataTypeStructs`, with the field
+  //     renamings `default` to `defaultValue`, `min`/`max` to
+  //     `minValue`/`maxValue`, and integer statistics fields widened to float.
   const allClassFields = attributeFields
     .concat(textureFields)
     .concat(tableFields);
@@ -615,18 +610,19 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
   lines.push("");
 
   // 3. initializeMetadata. Texture sampling needs the interpolated texCoords,
-  //    so the signature carries texCoord0 + texCoord1 (texCoord1 falls back to
-  //    texCoord0 at the call site when the primitive lacks TEXCOORD_1).
+  //    so the signature carries texCoord0 and texCoord1; texCoord1 falls back
+  //    to texCoord0 at the call site when the primitive lacks TEXCOORD_1.
   //    `metadataValue` is the vec4 attribute transport — up to four components
-  //    of the first GPU-compatible property attribute (zero vec4 for texture-/
-  //    table-only). `metadataFeatureId` is the per-vertex feature ID (flat)
-  //    that indexes the property-table COLUMN (0.0 when the primitive has no
-  //    table).
-  // NEW-MODEL-METADATA-MAT3-MAT4 — the MAT-transport variant takes three
-  // extra vec4 params (`metadataValue1..3`, the widened locations 10-12) so
-  // the full 9/16-element matrix reassembles. The historical 4-arg signature
-  // is byte-identical for every non-MAT-transport chunk, and the call sites
-  // in ModelPBRComplete.wgsl switch on `//>>ifdef MODEL_METADATA_MAT_TRANSPORT`.
+  //    of the first GPU-compatible property attribute, and a zero vec4 for
+  //    texture- or table-only primitives. `metadataFeatureId` is the
+  //    flat-interpolated per-vertex feature ID that indexes the property-table
+  //    column, and is 0.0 when the primitive has no table.
+  //
+  //    The matrix-transport variant takes three extra vec4 parameters,
+  //    `metadataValue1..3` at the widened locations 10-12, so the full 9- or
+  //    16-element matrix reassembles. The four-argument signature applies to
+  //    every other chunk, and the call sites in ModelPBRComplete.wgsl switch on
+  //    `//>>ifdef MODEL_METADATA_MAT_TRANSPORT`.
   const matParams = matTransport
     ? "metadataValue1: vec4<f32>, metadataValue2: vec4<f32>, metadataValue3: vec4<f32>, "
     : "";
@@ -651,7 +647,7 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
       lines.push(`  metadata.${f.fieldName} = ${zeroLiteral(f.wgslType)};`);
     }
   }
-  // Texture fields (DP-H46c) — sample → swizzle/unpack → offset/scale.
+  // Texture fields: sample, then swizzle and unpack, then offset and scale.
   for (let i = 0; i < textureFields.length; i++) {
     const f = textureFields[i];
     const slot = textureSlotForBinding(propertyTextureLayout, f.textureBinding);
@@ -680,8 +676,9 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
     );
     lines.push(`  metadata.${f.fieldName} = ${transformed};`);
   }
-  // Table fields (DP-H46d) — textureLoad(table, (featureId, row)) → RGBA→u32
-  // little-endian unpack → bit-reinterpret/normalize → offset/scale.
+  // Table fields: `textureLoad(table, (featureId, row))`, then a little-endian
+  // RGBA-to-u32 unpack, then bit-reinterpret or normalize, then offset and
+  // scale.
   if (defined(propertyTableLayout) && tableFields.length > 0) {
     // The feature ID indexes the table COLUMN; the row is the per-property
     // `propertyInfoIndex`. `textureLoad` ignores filtering (raw texel fetch),
@@ -736,10 +733,10 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
   lines.push("}");
   lines.push("");
 
-  // 4. metadataDebugScalar — prefer the attribute scalar (DP-H46a/b parity);
-  //    else the first texture property, else the first table property. The
-  //    result is mapped to [0,1] so the FS debug override paints a gradient
-  //    that VARIES with the resolved metadata value.
+  // 4. metadataDebugScalar prefers the attribute scalar, then the first texture
+  //    property, then the first table property. The result is mapped to [0,1]
+  //    so the fragment-shader debug override paints a gradient that varies with
+  //    the resolved metadata value.
   let debugBody;
   if (defined(transported)) {
     const rawScalar = firstComponentExpr(
@@ -806,14 +803,13 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
       ? /^mat([34])x\1<f32>$/.exec(transported.wgslType)
       : null;
   if (matDebugMatch) {
-    // NEW-MODEL-METADATA-MAT3-MAT4 — column-sum paint over the FULL matrix
-    // (post-value-transform field, matching what WebGL's CustomShader
-    // `fsInput.metadata.<field>` exposes, so a WebGL custom shader computing
-    // the same column sums paints the identical color — the cross-backend
-    // probe readout). MAT3: rgb = fract(abs(colSum0..2)). MAT4 folds column
-    // 3 into every channel so a zero-filled tail shifts all three channels
-    // visibly. `fract(abs(...))` matches the table-proof convention for
-    // unbounded raw values.
+    // Column-sum paint over the full matrix, reading the post-value-transform
+    // field that WebGL's CustomShader exposes as `fsInput.metadata.<field>`, so
+    // a WebGL custom shader computing the same column sums paints an identical
+    // colour and the two backends can be compared directly. MAT3 gives
+    // `rgb = fract(abs(colSum0..2))`; MAT4 folds column 3 into every channel so
+    // a zero-filled tail shifts all three channels visibly. `fract(abs(...))`
+    // is the convention for unbounded raw values.
     const n = parseInt(matDebugMatch[1], 10);
     const fieldExpr = `metadata.${transported.fieldName}`;
     const colSum = (c) => {
@@ -863,20 +859,22 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
     fields: attributeFields,
     propertyTextureLayout,
     propertyTableLayout,
-    // NEW-MODEL-METADATA-MAT3-MAT4 — true when the chunk was generated with
-    // the widened four-vec4 matrix transport. The renderer forwards this to
-    // the pipeline cache's sticky `metadataMatTransport` state (vertex layout
-    // + `MODEL_METADATA_MAT_TRANSPORT` preprocess bit + `:m34` pipeline keys).
+    // True when the chunk was generated with the widened four-vec4 matrix
+    // transport. The renderer forwards this to the pipeline cache's sticky
+    // `metadataMatTransport` state, which drives the vertex layout, the
+    // `MODEL_METADATA_MAT_TRANSPORT` preprocess bit, and the `:m34` pipeline
+    // keys.
     matTransport,
   };
 }
 
 /**
- * DP-H46e — resolve the combined ordered field list a primitive's generated
- * `struct Metadata` declares (property ATTRIBUTES, then TEXTURES, then TABLE),
- * with the SAME field-name disambiguation {@link generateMetadataWGSL} uses, so
- * the metadata-pick stage references the exact field names the display chunk
- * emitted. Returns `[]` for non-metadata primitives.
+ * Resolve the combined ordered field list a primitive's generated
+ * `struct Metadata` declares — property attributes, then textures, then the
+ * table — using the same field-name disambiguation
+ * {@link generateMetadataWGSL} applies, so the metadata-pick stage references
+ * the exact field names the display chunk emitted. Returns `[]` for primitives
+ * with no metadata.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
@@ -903,41 +901,41 @@ function getAllMetadataFields(model, primitive, runtimeNode) {
 }
 
 /**
- * DP-H46e — generate the WGSL metadata chunk for `scene.pickMetadata` on
- * WebGPU. This is the GENERATED-codegen sibling of the GLSL
- * `MetadataPickingPipelineStage` + `DerivedCommand.getPickMetadataShaderProgram`
- * (`DerivedCommand.js:561/664`).
+ * Generate the WGSL metadata chunk for `scene.pickMetadata`.
  *
- * It produces the SAME display chunk as {@link generateMetadataWGSL} (so the
- * pick variant declares the identical `struct Metadata` + `initializeMetadata`,
- * meaning the pick command reuses the populated metadata exactly) and APPENDS a
+ * The codegen sibling of the GLSL `MetadataPickingPipelineStage` and
+ * `DerivedCommand.getPickMetadataShaderProgram`. It produces the same display
+ * chunk as {@link generateMetadataWGSL}, so the pick variant declares an
+ * identical `struct Metadata` and `initializeMetadata` and the pick command
+ * reuses the populated metadata exactly, then appends a
  *
  *   fn metadataPickingStage(metadata: Metadata) -> vec4<f32>
  *
- * that reads the picked property's field, un-applies its offset/scale +
- * normalization per component (mirroring `getSourceValueStringComponent`/
- * `getSourceValueStringScalar` — see {@link buildPickSourceComponent}), and
- * packs the [0,1] component values into the RGBA channels the pick FBO encodes
- * as bytes. `MetadataPicking.decodeMetadataValues` re-applies the transform on
- * readback, so the round-trip matches the WebGL byte path exactly.
+ * that reads the picked property's field, un-applies its offset, scale and
+ * normalization per component — mirroring `getSourceValueStringComponent` and
+ * `getSourceValueStringScalar`, see {@link buildPickSourceComponent} — and packs
+ * the [0,1] component values into the RGBA channels the pick framebuffer
+ * encodes as bytes. `MetadataPicking.decodeMetadataValues` re-applies the
+ * transform on readback, so the round trip matches the WebGL byte path.
  *
- * The picked property is resolved by name against the SAME combined field list
- * the display chunk emits. When the property is absent (e.g. a non-GPU-compatible
- * STRING property, or a class with no GPU-readable property of that name) the
- * stage writes `vec4<f32>(0.0)` so the pick decodes to a benign zero rather than
- * failing — matching the GLSL default (`metadataValues = vec4(0.0)`).
+ * The picked property is resolved by name against the same combined field list
+ * the display chunk emits. An absent property — a non-GPU-compatible STRING, or
+ * a class with no GPU-readable property of that name — makes the stage write
+ * `vec4<f32>(0.0)`, so the pick decodes to a benign zero rather than failing,
+ * matching the GLSL default of `metadataValues = vec4(0.0)`.
  *
- * The returned `classHash` folds in the picked property name so the pick module
- * is cached PER (base-module-class, picked-property) — a single compiled module
- * serves every pick of that property regardless of pick coordinate, with no
- * per-component pipeline explosion (the design's runtime-UBO goal is met by
- * baking the property-specific packing into one per-property module, which the
- * WGSL module cache keys distinctly via this hash).
+ * The returned `classHash` folds in the picked property name, so the pick
+ * module is cached per base-module-class and picked-property pair: one compiled
+ * module serves every pick of that property regardless of pick coordinate, and
+ * baking the property-specific packing into a single per-property module avoids
+ * a per-component pipeline explosion. The WGSL module cache keys those modules
+ * apart through this hash.
  *
  * @param {Model} model
  * @param {ModelComponents.Primitive} primitive
  * @param {string} propertyName the picked metadata property name (class property id)
- * @param {ModelRuntimeNode} [runtimeNode] PARITY-METADATA-TABLE-INSTANCE-SOURCE
+ * @param {ModelRuntimeNode} [runtimeNode] enables the instance-sourced
+ *   feature-ID path
  * @returns {{ wgsl: string, classHash: number, found: boolean }|undefined}
  *   `undefined` when the primitive carries no GPU-readable metadata at all.
  * @private
@@ -1015,11 +1013,12 @@ function generateMetadataPickWGSL(model, primitive, propertyName, runtimeNode) {
 }
 
 /**
- * DP-H46e — WGSL expression reading the `componentIndex`-th scalar component of
- * a value of `wgslType` as an `f32`. Vectors index by `.x/.y/.z/.w`; matrices
- * are read column-major (component k → `[k/rows][k%rows]`), matching the
- * array-based component order `MetadataPicking.decodeRawMetadataValues` expects.
- * Integer fields are cast to `f32` (the pick packing operates in float space).
+ * WGSL expression reading the `componentIndex`-th scalar component of a value of
+ * `wgslType` as an `f32`. Vectors index by `.x`, `.y`, `.z` and `.w`; matrices
+ * are read column-major, component k mapping to `[k/rows][k%rows]`, which
+ * matches the array-based component order
+ * `MetadataPicking.decodeRawMetadataValues` expects. Integer fields are cast to
+ * `f32`, since the pick packing operates in float space.
  *
  * @param {string} fieldExpr e.g. `metadata.color`
  * @param {string} wgslType
@@ -1045,11 +1044,12 @@ function componentAccessExpr(fieldExpr, wgslType, componentIndex) {
 }
 
 /**
- * DP-H46d — field renamings + statistics fields for the `<type>MetadataClass` /
+ * Field renamings and statistics fields for the `<type>MetadataClass` and
  * `<type>MetadataStatistics` structs, mirroring
- * `MetadataPipelineStage.METADATA_CLASS_FIELDS` / `METADATA_STATISTICS_FIELDS`.
- * `floatStat: true` marks a statistics field that is ALWAYS float-component even
- * for integer property types (mean / standardDeviation / variance).
+ * `MetadataPipelineStage.METADATA_CLASS_FIELDS` and
+ * `METADATA_STATISTICS_FIELDS`. `floatStat: true` marks a statistics field that
+ * is float-component even for integer property types: mean, standardDeviation
+ * and variance.
  * @private
  */
 const METADATA_CLASS_FIELD_NAMES = [
@@ -1069,9 +1069,9 @@ const METADATA_STATISTICS_FIELD_DEFS = [
 ];
 
 /**
- * DP-H46d — convert a WGSL type with integer components to the float-component
- * type of the same dimension (mirrors `convertToFloatComponents`), used for the
- * always-float MetadataStatistics fields. f32 / vecN<f32> pass through.
+ * Convert a WGSL type with integer components to the float-component type of the
+ * same dimension, mirroring `convertToFloatComponents`, for the always-float
+ * MetadataStatistics fields. `f32` and `vecN<f32>` pass through.
  * @param {string} wgslType
  * @returns {string}
  * @private
@@ -1088,10 +1088,10 @@ function wgslToFloatComponents(wgslType) {
 }
 
 /**
- * DP-H46d — build a WGSL-safe struct-name fragment from a WGSL type (e.g.
- * `f32` → `f32`, `vec3<u32>` → `vec3u32`, `mat2x2<f32>` → `mat2x2f32`). The
- * angle brackets are stripped so the result is a valid identifier prefix for
- * the `<type>MetadataClass` / `<type>MetadataStatistics` struct names.
+ * Build a WGSL-safe struct-name fragment from a WGSL type: `f32` stays `f32`,
+ * `vec3<u32>` becomes `vec3u32`, `mat2x2<f32>` becomes `mat2x2f32`. Stripping
+ * the angle brackets makes the result a valid identifier prefix for the
+ * `<type>MetadataClass` and `<type>MetadataStatistics` struct names.
  * @param {string} wgslType
  * @returns {string}
  * @private
@@ -1101,18 +1101,16 @@ function wgslTypeTag(wgslType) {
 }
 
 /**
- * DP-H46d — emit `<type>MetadataClass` + `<type>MetadataStatistics` struct
- * declarations for each DISTINCT property type across all property infos,
- * mirroring `MetadataPipelineStage.declareMetadataTypeStructs`. These are
- * scaffolding for the CustomShader / pickMetadata consumers (DP-H46e/f) — the
- * display proof reads `Metadata` directly — but the generated module declares
- * them now so the consumer half has the struct types available. Statistics
- * structs are emitted only for non-ENUM types (ENUMs carry an unimplemented
- * "occurrences" statistic in the GLSL path too).
+ * Emit `<type>MetadataClass` and `<type>MetadataStatistics` struct declarations
+ * for each distinct property type across all property infos, mirroring
+ * `MetadataPipelineStage.declareMetadataTypeStructs`. The CustomShader and
+ * pickMetadata consumers read these types; the display path reads `Metadata`
+ * directly. Statistics structs are emitted only for non-ENUM types, because an
+ * ENUM's "occurrences" statistic is unimplemented in the GLSL path as well.
  *
  * @param {string[]} lines the WGSL line buffer to append to
- * @param {object[]} propertyInfos all property infos (attribute + texture +
- *   table) — each carries `{ wgslType, classProperty }`
+ * @param {object[]} propertyInfos all property infos — attribute, texture and
+ *   table — each carrying `{ wgslType, classProperty }`
  * @private
  */
 function emitMetadataTypeStructs(lines, propertyInfos) {
@@ -1197,11 +1195,10 @@ function zeroLiteral(wgslType) {
 }
 
 /**
- * Build a WGSL `f32` expression that recovers the RAW transported scalar in
- * `[0,1]` from a (possibly offset/scaled) field's first component, by
- * inverting `czm_valueTransform` — `raw = (transformed - offset) / scale`.
- * Mirrors `getSourceValueStringComponent`'s inverse (the value DP-H46a's
- * stub passed through untransformed). When the property has no value
+ * Build a WGSL `f32` expression recovering the raw transported scalar in `[0,1]`
+ * from a possibly offset and scaled field's first component, by inverting
+ * `czm_valueTransform`: `raw = (transformed - offset) / scale`. Mirrors the
+ * inverse of `getSourceValueStringComponent`. When the property carries no value
  * transform, the field already holds the raw value.
  *
  * @param {string} valueExpr a WGSL `f32` (the field's first component)

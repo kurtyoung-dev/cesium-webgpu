@@ -29,20 +29,12 @@ import { getWebGPUTextureForDevice } from "./Stubs/WebGLStubTexture.js";
 //   10 : featurePickEnabled (f32, 0/1)
 //   11 : _pad1
 //
-// Batch 141 — pre-fix this was 14 floats (56 bytes) with
-// featurePickEnabled at slot 12. The WGSL struct declared
-// featurePickEnabled directly after textureDimensions (at byte 40 =
-// slot 10), not at byte 48 = slot 12. So the shader read 0 from slot
-// 10 (an unwritten pad) and the per-feature pick path NEVER
-// activated — picking on batch-table tilesets always returned
-// material.pickColor (the primitive-granularity pick id) instead of
-// the per-feature pick id.
-//
-// C-R9-MODEL-FEATURE-PICK (Batch 100) introduced the featurePickEnabled
-// field. The WGSL struct was correct at the time but the JS pack code
-// landed at slot 12 by accident — a comment in the original landed code
-// even mentions "carries featurePickEnabled from offset 10 onward" right
-// next to writing it at offset 12.
+// `featurePickEnabled` sits at slot 10 (byte 40), directly after
+// textureDimensions, because that is where the WGSL struct declares it. Writing
+// it at slot 12 instead leaves slot 10 an unwritten pad, the shader reads 0,
+// and the per-feature pick path never activates — picking a batch-table tileset
+// then returns material.pickColor, the primitive-granularity pick id, rather
+// than the per-feature one.
 const FEATURE_UNIFORM_SIZE = 48;
 
 /**
@@ -137,16 +129,15 @@ function getSelectedImplicitFeatureId(model, runtimeNode, primitive) {
 }
 
 /**
- * NEW-FEATURE-ID-VERTEX-ATTR (Batch 188) — synthesize a per-vertex
- * Float32Array of feature IDs for primitives that select a
- * `FeatureIdImplicitRange`. Such primitives carry no per-vertex
- * `_FEATURE_ID_0` accessor — instead the feature ID is `offset +
- * floor(vertex_index / repeat)`. We materialize that as an explicit
- * vertex-attribute buffer here so the same shader/JS path that handles
- * `_FEATURE_ID_0` (Batch 130 audit B.2) picks it up unchanged. Returns
- * `null` when no implicit feature ID is selected, or when the model's
- * featureIdLabel resolves to a texture / attribute / not-found case
- * — those paths are already handled by their respective branches.
+ * Synthesize a per-vertex Float32Array of feature IDs for primitives that select
+ * a `FeatureIdImplicitRange`.
+ *
+ * Such primitives carry no per-vertex `_FEATURE_ID_0` accessor; the feature ID
+ * is `offset + floor(vertex_index / repeat)`. Materializing it as an explicit
+ * vertex-attribute buffer lets the same shader and JS path that handles
+ * `_FEATURE_ID_0` consume it unchanged. Returns `null` when no implicit feature
+ * ID is selected, or when the model's featureIdLabel resolves to a texture,
+ * attribute or not-found case, which their own branches already handle.
  *
  * @param {Model} model
  * @param {ModelRuntimeNode} runtimeNode
@@ -207,14 +198,13 @@ function createFeatureIdGPUTexture(device, resourceGeneration, textureReader) {
   if (!defined(cesiumTexture)) {
     return null;
   }
-  // METADATA-TABLE-SOURCES — same Session 65 stub-reuse fix as
-  // `createGPUTextureFromReader`: in WebGPU mode the CesiumJS Texture is
-  // backed by WebGLStubTexture, which uploads the image to a real GPUTexture
-  // (`texture._texture._webgpuTexture.texture`) and does NOT retain
-  // `_source`. Without this branch every glTF feature-ID texture fell back
-  // to the white placeholder (feature ID 255 for all fragments). NOTE: the
-  // returned texture is OWNED by the stub — callers must not destroy it
-  // (see destroyFeatureIdResources' ownership guard).
+  // The same stub-reuse path as `createGPUTextureFromReader`: under WebGPU the
+  // CesiumJS Texture is backed by WebGLStubTexture, which uploads the image to
+  // a real GPUTexture and does not retain `_source`. Without this branch every
+  // glTF feature-ID texture falls back to the white placeholder, giving every
+  // fragment feature ID 255. The returned texture is owned by the stub, so
+  // callers must not destroy it — see destroyFeatureIdResources' ownership
+  // guard.
   const stubWrapper = cesiumTexture._texture;
   const stubGPU = getWebGPUTextureForDevice(
     stubWrapper,
@@ -422,16 +412,15 @@ function ensureFeatureIdResources(
   modelCache,
   pickPassActive,
 ) {
-  // Already created — but if the batch texture values changed since last
-  // frame (user called setShow / setColor on a Cesium3DTileFeature), the
-  // per-feature RGBA has to be re-uploaded. BatchTexture flips
-  // `_batchValuesDirty = true` on each such mutation; we mirror the
-  // WebGL updateBatchTexture() behaviour by re-uploading and clearing
-  // the flag here.
-  // NEW-BG-CONSOLIDATION (Batch 122) — early-exit cache hit. Caches
-  // the entries[] returned previously; refreshes the batch texture
-  // upload when the source data is dirty (setShow / setColor on a
-  // Cesium3DTileFeature) so per-feature styling reaches the GPU.
+  // Already created. If the batch texture values changed since the last frame —
+  // an application called setShow or setColor on a Cesium3DTileFeature —
+  // the per-feature RGBA has to be re-uploaded. BatchTexture flips
+  // `_batchValuesDirty` on each such mutation, and this mirrors WebGL's
+  // `updateBatchTexture()` by re-uploading and clearing the flag.
+  //
+  // The previously returned `entries[]` is cached, so this is an early-exit hit
+  // that still refreshes the batch texture when the source data is dirty and
+  // per-feature styling therefore reaches the GPU.
   if (defined(primCache._featureIdEntries)) {
     const featureTableId = model.featureTableId;
     const featureTables = model.featureTables;
@@ -512,24 +501,21 @@ function ensureFeatureIdResources(
     }
   }
 
-  // Audit B.2 (Batch 130) — vertex-attribute path. Sets
-  // `FLAG_HAS_FEATURE_ID_ATTRIBUTE` (bit 17) so the FS reads the
-  // per-vertex featureId varying (slot 8) and indexes the batch /
-  // pick textures with it. The renderer wires
-  // `geometry.featureId0Data` (typed array extracted from the
-  // primitive's `_FEATURE_ID_0` accessor by `extractPrimitiveGeometry`)
-  // into vertex slot 8 in `createPrimitiveResources`. b3dm tilesets
-  // hit this path because the loader renames `_BATCHID` to
-  // `_FEATURE_ID_0`.
+  // Vertex-attribute path. Sets `FLAG_HAS_FEATURE_ID_ATTRIBUTE` (bit 17) so the
+  // fragment shader reads the per-vertex featureId varying at slot 8 and
+  // indexes the batch and pick textures with it. The renderer wires
+  // `geometry.featureId0Data` — the typed array `extractPrimitiveGeometry`
+  // pulls from the primitive's `_FEATURE_ID_0` accessor — into vertex slot 8 in
+  // `createPrimitiveResources`. b3dm tilesets reach this path because the
+  // loader renames `_BATCHID` to `_FEATURE_ID_0`.
   //
-  // NEW-FEATURE-ID-VERTEX-ATTR (Batch 188) — FeatureIdImplicitRange
-  // (no typed array; IDs synthesized from
-  // `offset + floor(vertex_index / repeat)`) now also lands in this
-  // bucket. `extractPrimitiveGeometry` synthesizes the typed array
-  // when an implicit feature ID is selected, so by the time we reach
-  // here `geometry.featureId0Data` is populated and the same flag
-  // applies. The FS branch is identical to the explicit-attribute
-  // path — flat-interpolated f32 lookup at slot 8.
+  // `FeatureIdImplicitRange` lands in the same bucket. It has no typed array of
+  // its own, but `extractPrimitiveGeometry` synthesizes one from
+  // `offset + floor(vertex_index / repeat)` when an implicit feature ID is
+  // selected, so `geometry.featureId0Data` is populated by the time execution
+  // arrives here and the same flag applies. The fragment-shader branch is
+  // identical to the explicit-attribute path: a flat-interpolated f32 lookup at
+  // slot 8.
   if (selected.isAttribute || selected.isImplicit) {
     flags |= 0x20000; // FLAG_HAS_FEATURE_ID_ATTRIBUTE (bit 17)
   }
@@ -584,17 +570,17 @@ function ensureFeatureIdResources(
     uniformData[8] = batchDims.x;
     uniformData[9] = batchDims.y;
   }
-  // C-R9-MODEL-FEATURE-PICK (Batch 100/101) — `featurePickEnabled` flag
-  // at float offset 10 (byte 40 — directly after textureDimensions per
-  // the WGSL struct). Batch 141 corrected this from the buggy offset 12.
-  // Flipped to 1.0 when a feature-pick texture has been allocated for
-  // this model. Allocation is eager when a batch table is present (any
-  // of the model's primitives could enter a pick pass at any time; the
-  // alternative — allocating on first pick pass — races against the
-  // bind group construction below since the BG would bind a placeholder
-  // texture that's wrong when pick fires). Cost is bounded: one
-  // Uint8Array of W*H*4 bytes (matches batch texture dimensions) +
-  // featuresLength pickId allocations, idempotent across re-renders.
+  // The `featurePickEnabled` flag sits at float offset 10 (byte 40), directly
+  // after textureDimensions, matching the WGSL struct. It flips to 1.0 once a
+  // feature-pick texture has been allocated for this model.
+  //
+  // Allocation is eager whenever a batch table is present, because any of the
+  // model's primitives could enter a pick pass at any time. Allocating on the
+  // first pick pass instead would race the bind-group construction below, which
+  // would then bind a placeholder texture that is wrong when pick fires. The
+  // cost is bounded and idempotent across re-renders: one Uint8Array of W*H*4
+  // bytes, matching the batch texture dimensions, plus featuresLength pickId
+  // allocations.
   let featurePickTex = null;
   if (
     defined(context) &&
@@ -623,11 +609,9 @@ function ensureFeatureIdResources(
   });
   device.queue.writeBuffer(featureUniformBuffer, 0, uniformData);
 
-  // NEW-BG-CONSOLIDATION (Batch 122) — feature ID resources moved into
-  // the merged group 1 bind group at bindings 26-32. The renderer
-  // splices the entries returned here into the merged group 1's
-  // `entries[]` array; there's no standalone feature ID bind group
-  // anymore.
+  // Feature ID resources live in the merged group-1 bind group at bindings
+  // 26-32. The renderer splices the entries returned here into that group's
+  // `entries[]` array; there is no standalone feature ID bind group.
   const fallbackTex = pipelineCache.defaultWhiteTexture;
   const fallbackSampler = pipelineCache.defaultSampler;
   // METADATA-TABLE-SOURCES — feature-ID textures carry INTEGER ids in their
@@ -651,10 +635,10 @@ function ensureFeatureIdResources(
     },
     { binding: 29, resource: fallbackSampler },
     { binding: 30, resource: { buffer: featureUniformBuffer } },
-    // C-R9-MODEL-FEATURE-PICK — feature-pick texture + sampler.
-    // Allocated lazily by `ensurePerFeaturePickIds` when a batch table
-    // is present; otherwise placeholder white texture (the FS gates
-    // on `featurePickEnabled` so the placeholder is never sampled).
+    // Feature-pick texture and sampler, allocated by `ensurePerFeaturePickIds`
+    // when a batch table is present. Otherwise this is the placeholder white
+    // texture, which the fragment shader never samples because it gates on
+    // `featurePickEnabled`.
     {
       binding: 31,
       resource: (featurePickTex || fallbackTex).createView(),
@@ -677,28 +661,28 @@ function ensureFeatureIdResources(
 }
 
 /**
- * C-R9-MODEL-FEATURE-PICK (Batch 101) — allocate per-feature pickIds for
- * the model's batch table and upload an RGBA8 GPU texture mapping
- * featureId → pickColor (the same shape as the batch styling texture).
+ * Allocate per-feature pickIds for the model's batch table and upload an RGBA8
+ * GPU texture mapping featureId to pickColor, the same shape as the batch
+ * styling texture.
  *
  * Side effects:
- *  - On the per-PRIMITIVE cache: stamps `_featurePickGPUTexture` with the
- *    allocated GPU texture so subsequent `ensureFeatureIdResources()`
- *    calls bind it at @binding(5) of the FeatureId BGL.
- *  - On the per-MODEL cache: stamps `cache._featurePickIds` (Map of
- *    `featureId → CesiumPickId`) so allocated pickIds survive across
+ *  - On the per-primitive cache: stamps `_featurePickGPUTexture` with the
+ *    allocated GPU texture, so subsequent `ensureFeatureIdResources()` calls
+ *    bind it at binding 31 of the merged group-1 layout.
+ *  - On the per-model cache: stamps `cache._featurePickIds`, a Map of
+ *    `featureId` to `CesiumPickId`, so allocated pickIds survive across
  *    re-renders and pick-pass readback resolves through them.
- *  - Flips `featureUniformData[12]` (`featurePickEnabled`) to 1.0 so the
- *    pickFS routes through `lookupFeaturePickColor`.
+ *  - Sets the `featurePickEnabled` slot of the feature uniform block to 1.0, so
+ *    the pick fragment shader routes through `lookupFeaturePickColor`.
  *
- * Idempotent: subsequent calls reuse the cached texture + pickIds. The
- * texture only re-uploads when the batch table's featuresLength changes
- * (rare — handled by destroying the cache slot and re-running).
+ * Idempotent: subsequent calls reuse the cached texture and pickIds. The texture
+ * re-uploads only when the batch table's featuresLength changes, which is
+ * handled by destroying the cache slot and re-running.
  *
- * Allocation policy: one pickId per feature, eagerly on the FIRST pick
- * pass that reaches a model with a batch table. The pickId target is
- * `{primitive: model, id: featureId}` so `scene.pick()` returns the
- * featureId of the picked feature alongside the model itself.
+ * One pickId is allocated per feature, on the first pick pass that reaches a
+ * model with a batch table. The pickId target is
+ * `{primitive: model, id: featureId}`, so `scene.pick()` returns the featureId
+ * of the picked feature alongside the model itself.
  *
  * @param {GPUDevice} device
  * @param {object} primCache - per-primitive cache slot
@@ -720,11 +704,10 @@ function ensurePerFeaturePickIds(
   if (!defined(batchTexture)) {
     return null;
   }
-  // BatchTexture stores the feature count as `_featuresLength` and does
-  // not expose a public getter; reading `batchTexture.featuresLength`
-  // returned undefined, which caused this function to early-return
-  // before allocating the per-feature pickIds — silently disabling
-  // C-R9-MODEL-FEATURE-PICK on every batched 3D Tile.
+  // BatchTexture stores the feature count as `_featuresLength` and exposes no
+  // public getter. Reading `batchTexture.featuresLength` yields undefined, which
+  // early-returns before the per-feature pickIds are allocated and silently
+  // disables per-feature picking on every batched 3D Tile.
   const featuresLength = batchTexture._featuresLength;
   if (!defined(featuresLength) || featuresLength === 0) {
     return null;
@@ -752,14 +735,14 @@ function ensurePerFeaturePickIds(
   const previousTexture = cache._featurePickGPUTexture;
   const pickIds = new Map();
   const createdPickIds = [];
-  // C-R9-MODEL-FEATURE-PICK — register the SAME object WebGL registers
-  // (BatchTexture.js:528 `context.createPickId(owner.getFeature(i),
-  // "tile-feature")`) so `scene.pick` returns a real Cesium3DTileFeature
-  // (3D Tiles) / ModelFeature (glTF EXT_mesh_features) — matching WebGL —
-  // instead of a bare `{primitive, id}`. `_owner` is the
-  // Cesium3DTileContent / ModelFeatureTable that owns this batch table;
-  // both expose `getFeature(batchId)`. Fall back to the bare descriptor for
-  // any owner that doesn't (keeps the primitive pickable rather than null).
+  // Register the same object `BatchTexture` registers under WebGL —
+  // `context.createPickId(owner.getFeature(i), "tile-feature")` — so
+  // `scene.pick` returns a real Cesium3DTileFeature for 3D Tiles, or a
+  // ModelFeature for glTF EXT_mesh_features, rather than a bare
+  // `{primitive, id}`. `_owner` is the Cesium3DTileContent or
+  // ModelFeatureTable that owns this batch table, and both expose
+  // `getFeature(batchId)`. An owner that does not falls back to the bare
+  // descriptor, which keeps the primitive pickable rather than null.
   const owner = batchTexture._owner;
   const ownerHasGetFeature =
     defined(owner) && typeof owner.getFeature === "function";
@@ -880,9 +863,8 @@ function destroyFeatureIdResources(primCache) {
   primCache._featureIdGPUTextureOwned = undefined;
   primCache._batchGPUTexture = undefined;
   primCache._featureUniformBuffer = undefined;
-  // NEW-BG-CONSOLIDATION (Batch 122) — _featureIdBG was the standalone
-  // bind group from the old layout; replaced by _featureIdEntries
-  // (resource entry array spliced into the merged group 1 BG).
+  // `_featureIdEntries` is the resource entry array spliced into the merged
+  // group-1 bind group; there is no standalone feature ID bind group to clear.
   primCache._featureIdEntries = undefined;
   primCache._featureIdFlags = undefined;
   // The per-feature pick texture is shared by every primitive in the model
