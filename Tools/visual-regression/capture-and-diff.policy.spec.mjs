@@ -1,15 +1,25 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
+  ExpectationOutcome,
+  GateExpectation,
   GateStatus,
+  annotateGateExpectation,
   compareCaptures,
   createSceneIdentity,
   evaluatePixelGate,
+  resolveSceneExpectations,
   resolveSceneThresholds,
+  summarizeExpectations,
   summarizeSceneGates,
   validateManifestEntry,
   validatePromotionRequest,
 } from "./lib/visual-gate-policy.mjs";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 function capture(red = 0, width = 1, height = 1) {
   return { width, height, data: [red, 0, 0, 255] };
@@ -204,6 +214,273 @@ test("manifest entries must be reviewed and match the captured environment", () 
       "MANIFEST_PROVENANCE_NOT_ACCEPTED_CURRENT",
     ),
   );
+});
+
+test("a scene without expectations declares none, and malformed ones are rejected", () => {
+  assert.deepEqual(resolveSceneExpectations({ name: "plain" }), {
+    byGate: {},
+    errors: [],
+  });
+
+  const cases = [
+    [{ expectedMismatch: {} }, "EXPECTATION_NOT_ARRAY:s"],
+    [{ expectedMismatch: [null] }, "EXPECTATION_ENTRY_INVALID:s[0]"],
+    [
+      { expectedMismatch: [{ gate: "nope", expect: "PASS", rationale: "r" }] },
+      "EXPECTATION_GATE_UNKNOWN:s[0]:nope",
+    ],
+    [
+      {
+        expectedMismatch: [
+          { gate: "crossBackend", expect: "MAYBE", rationale: "r" },
+        ],
+      },
+      "EXPECTATION_VALUE_UNKNOWN:s[0]:MAYBE",
+    ],
+    [
+      {
+        expectedMismatch: [
+          { gate: "crossBackend", expect: "PASS", rationale: "   " },
+        ],
+      },
+      "EXPECTATION_RATIONALE_MISSING:s[0]",
+    ],
+    [
+      {
+        expectedMismatch: [
+          { gate: "crossBackend", expect: "PASS", rationale: "r" },
+          {
+            gate: "crossBackend",
+            expect: "FAIL",
+            rationale: "r",
+            trackedBy: "X",
+          },
+        ],
+      },
+      "EXPECTATION_GATE_DUPLICATED:s[1]:crossBackend",
+    ],
+  ];
+  for (const [scene, expected] of cases) {
+    const resolved = resolveSceneExpectations({ name: "s", ...scene });
+    assert.ok(
+      resolved.errors.includes(expected),
+      `expected ${expected}, got ${JSON.stringify(resolved.errors)}`,
+    );
+  }
+});
+
+test("a predicted FAIL must name a tracker; a predicted PASS need not", () => {
+  // This is the rule that keeps `expectedMismatch` from becoming a quieter
+  // form of threshold-widening: "expected to fail" with no filed row behind
+  // it is exactly the silent normalization the field exists to prevent.
+  const untracked = resolveSceneExpectations({
+    name: "s",
+    expectedMismatch: [
+      { gate: "crossBackend", expect: "FAIL", rationale: "known bad" },
+    ],
+  });
+  assert.deepEqual(untracked.errors, ["EXPECTATION_TRACKER_MISSING:s[0]"]);
+  assert.deepEqual(untracked.byGate, {});
+
+  const tracked = resolveSceneExpectations({
+    name: "s",
+    expectedMismatch: [
+      {
+        gate: "crossBackend",
+        expect: "FAIL",
+        rationale: "known bad",
+        trackedBy: "SOME-FILED-ROW",
+      },
+      { gate: "historicalWebgl", expect: "PASS", rationale: "stable" },
+    ],
+  });
+  assert.deepEqual(tracked.errors, []);
+  assert.equal(tracked.byGate.crossBackend.trackedBy, "SOME-FILED-ROW");
+  assert.equal(tracked.byGate.historicalWebgl.trackedBy, null);
+});
+
+test("an expectation annotates a gate and changes nothing about its verdict", () => {
+  const failing = {
+    id: "crossBackend",
+    status: GateStatus.FAIL,
+    certifying: false,
+    ratio: 0.4,
+    threshold: 0.02,
+  };
+  const expected = annotateGateExpectation(failing, {
+    gate: "crossBackend",
+    expect: GateExpectation.FAIL,
+    trackedBy: "SOME-FILED-ROW",
+    rationale: "known bad",
+  });
+  assert.equal(expected.expectation.outcome, ExpectationOutcome.MET);
+  // The whole mechanism rests on this: a red scene stays red, and the run's
+  // exit code is untouched by anything the manifest claims about it.
+  assert.equal(expected.status, GateStatus.FAIL);
+  assert.equal(expected.certifying, false);
+
+  const contradicted = annotateGateExpectation(failing, {
+    gate: "crossBackend",
+    expect: GateExpectation.PASS,
+    trackedBy: null,
+    rationale: "should be clean",
+  });
+  assert.equal(contradicted.expectation.outcome, ExpectationOutcome.UNMET);
+
+  // A defect fixed without the record being updated is equally a finding.
+  const fixed = annotateGateExpectation(
+    { ...failing, status: GateStatus.PASS, certifying: true },
+    {
+      gate: "crossBackend",
+      expect: GateExpectation.FAIL,
+      trackedBy: "SOME-FILED-ROW",
+      rationale: "known bad",
+    },
+  );
+  assert.equal(fixed.expectation.outcome, ExpectationOutcome.UNMET);
+
+  const unmeasured = annotateGateExpectation(failing, {
+    gate: "crossBackend",
+    expect: GateExpectation.UNMEASURED,
+    trackedBy: null,
+    rationale: "never measured in this metric",
+  });
+  assert.equal(unmeasured.expectation.outcome, ExpectationOutcome.FIRST_RECORD);
+  assert.equal(annotateGateExpectation(failing, undefined).expectation, null);
+});
+
+test("the run summary counts expectation outcomes and names the unmet ones", () => {
+  const summary = summarizeExpectations([
+    {
+      name: "known-red",
+      gates: {
+        crossBackend: {
+          id: "crossBackend",
+          status: GateStatus.FAIL,
+          expectation: {
+            expect: GateExpectation.FAIL,
+            trackedBy: "ROW-A",
+            outcome: ExpectationOutcome.MET,
+          },
+        },
+        historicalWebgl: { id: "historicalWebgl", status: GateStatus.PASS },
+      },
+    },
+    {
+      name: "new-red",
+      gates: {
+        crossBackend: {
+          id: "crossBackend",
+          status: GateStatus.FAIL,
+          expectation: {
+            expect: GateExpectation.PASS,
+            trackedBy: null,
+            outcome: ExpectationOutcome.UNMET,
+          },
+        },
+      },
+    },
+  ]);
+  assert.equal(summary.counts.declared, 2);
+  assert.equal(summary.counts.MET, 1);
+  assert.equal(summary.counts.UNMET, 1);
+  assert.deepEqual(summary.unmet, [
+    {
+      scene: "new-red",
+      gate: "crossBackend",
+      expected: GateExpectation.PASS,
+      observed: GateStatus.FAIL,
+      trackedBy: null,
+    },
+  ]);
+});
+
+test("every shipped scene's expectations are valid and its identity is unique", () => {
+  // The shipped manifest is the thing the runner actually reads; a fixture
+  // that validates while `scenes.json` does not would certify nothing.
+  const config = JSON.parse(
+    readFileSync(path.join(HERE, "scenes.json"), "utf8"),
+  );
+  const identities = new Map();
+  for (const scene of config.scenes) {
+    const resolved = resolveSceneExpectations(scene);
+    assert.deepEqual(
+      resolved.errors,
+      [],
+      `${scene.name}: ${resolved.errors.join(", ")}`,
+    );
+    const identity = createSceneIdentity(scene, {
+      baseUrl: config.baseUrl,
+      settleFrames: config.settleFrames,
+      viewport: { width: 1600, height: 800 },
+    });
+    assert.equal(
+      identities.has(identity),
+      false,
+      `${scene.name} shares a scene identity with ${identities.get(identity)}`,
+    );
+    identities.set(identity, scene.name);
+  }
+});
+
+test("the three subsystem scenes are self-sufficient and deterministic", () => {
+  const config = JSON.parse(
+    readFileSync(path.join(HERE, "scenes.json"), "utf8"),
+  );
+  const setupSource = readFileSync(
+    path.join(HERE, "scenes", "subsystem-parity-setup.js"),
+    "utf8",
+  );
+  const subsystemScenes = config.scenes.filter(
+    (scene) => scene.setupFile === "scenes/subsystem-parity-setup.js",
+  );
+  assert.deepEqual(
+    subsystemScenes.map((scene) => scene.setupParams.subsystem).sort(),
+    ["gsplat", "pointcloud", "voxel"],
+  );
+
+  for (const scene of subsystemScenes) {
+    // Determinism: a pinned clock, and no lon/lat camera in the manifest —
+    // all three poses are ECEF and are written to BOTH viewers by the setup.
+    assert.match(scene.setupParams.pinnedTimeIso, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(scene.camera, null);
+    // Every scene must say what it expects of the cross-backend gate. A new
+    // scene that silently omits this is how an unexplained red gets normalized.
+    const resolved = resolveSceneExpectations(scene);
+    assert.ok(
+      resolved.byGate.crossBackend,
+      `${scene.name} declares no crossBackend expectation`,
+    );
+  }
+
+  // Offline: the scenes fetch in-repo paths and nothing else. An absolute URL
+  // or an ion asset id would make the suite's result depend on the network,
+  // which is the failure mode this assertion exists to catch early — long
+  // before a run in an offline lane returns three blank canvases.
+  assert.doesNotMatch(
+    setupSource,
+    /https?:\/\//,
+    "the subsystem setup must not reference a network origin",
+  );
+  assert.doesNotMatch(
+    setupSource,
+    /ionAssetId|IonResource|createWorldTerrain|fromWorldImagery/,
+    "the subsystem setup must not depend on Cesium ion",
+  );
+  assert.match(setupSource, /"\/Apps\/SampleData\/|\/Apps\/SampleData\//);
+  assert.match(setupSource, /"\/Specs\/Data\/Cesium3DTiles\/GaussianSplats\//);
+
+  // Every asset the setup names must exist in this checkout.
+  const repositoryRoot = path.resolve(HERE, "../..");
+  for (const asset of [
+    "Apps/SampleData/Cesium3DTiles/PointCloud/PointCloudTimeDynamic/0.pnts",
+    "Specs/Data/Cesium3DTiles/GaussianSplats/sh_unit_cube/tileset.json",
+  ]) {
+    assert.ok(
+      existsSync(path.join(repositoryRoot, asset)),
+      `${asset} is missing; the scene would capture an empty canvas`,
+    );
+  }
 });
 
 test("--update alone cannot authorize baseline promotion", () => {

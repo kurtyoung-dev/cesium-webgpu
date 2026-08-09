@@ -90,6 +90,54 @@ code. **Consequence for `C18-V3`:** fifteen probes will now report verdicts a
 runner has never observed. A newly-red leg there is a finding to FILE, not to
 normalize, and not evidence that this row broke something.
 
+**`C18-V2` READY-PENDING-RUN (2026-08-09) — the scenes exist; the run is the
+orchestrator's, and NOTHING here claims a measurement.** Three scenes are in
+`Tools/visual-regression/scenes.json`, all driven by one new generator
+`scenes/subsystem-parity-setup.js` (`setupParams.subsystem` selects the
+branch): `voxel-box-procedural` (asset-free procedural BOX `VoxelPrimitive`,
+single root tile), `pointcloud-timedynamic-edl` (`TimeDynamicPointCloud` on the
+DEDICATED path with attenuation + EDL, in-tree `Apps/SampleData` `.pnts`), and
+`gsplat-sh-unit-cube` (the in-tree `Specs/Data` splat tileset the `C15-G`
+harness gates on — the real tileset, not a synthetic `_splatData` primitive, as
+this row required). Each hides every foreign primitive plus globe/sky/sun/moon/
+fog, pins its clock, suppresses the split-screen page's heading/pitch/roll
+camera mirroring (ill-conditioned at the near-nadir poses all three use, and an
+instrument artifact if it fires), and writes the same ECEF pose to both
+viewers — so `--scene <name>` alone renders the same frame as a full sweep. A
+readiness budget that expires THROWS, because an empty frame on both backends
+is a cross-backend PASS and a scene that silently failed to build its subject
+would certify parity by rendering nothing.
+
+**Thresholds: none overridden. All three run at the suite default, and the
+reason is recorded per scene** in a new `expectedMismatch` field
+(`lib/visual-gate-policy.mjs`, 6 new checks in
+`capture-and-diff.policy.spec.mjs`, 10 -> 16). The field pre-registers what a
+gate is expected to do plus a rationale; it is folded into `report.json` and
+printed, and it **never** changes a gate's status, `certifying`, or the exit
+code. A predicted FAIL must name a tracker ID, which is what stops the field
+becoming threshold-widening with extra steps. `pointcloud-timedynamic-edl` is
+therefore RED-FLAGGED-AS-KNOWN-ISSUE against `PARITY-POINTCLOUD-COLOR-TINT`
+rather than given a loose ceiling: that row's recorded divergence DRIFTS
+monotonically within a session (raw ds4 9.34 -> 16.67% over seven consecutive
+runs), so any threshold derived from it would need re-widening as the defect
+grew. `gsplat-sh-unit-cube` predicts PASS, DERIVED from Batch 895's 0.000%
+cross-backend reading under exact per-channel equality (this suite's tolerance
+of 16 is strictly more forgiving). `voxel-box-procedural` declares UNMEASURED —
+the only recorded voxel cross-backend evidence is `probe-voxel-parity`'s
+footprint IoU, a different metric with no pixel-ratio equivalent, and
+transcribing it would be fabricating a derivation.
+
+**What is NOT discharged.** The row's acceptance also asks that each scene's
+non-vacuity be proven by a source mutation that raises its mismatch above
+threshold and is then reverted. That needs Edge and has not run. Neither has
+the baseline capture: all three scenes' historical gates are `NON_CERTIFYING`
+until a reviewer inspects the captures and promotes them **per scene**
+(`--scene`), because the full-sweep promotion path refuses while any scene in
+the run is cross-backend red and has been blocked since
+`high-density-5k-spheres` became red evidence. Any newly-observed red from the
+first run is a finding to FILE under the Wave-V doctrine, not a number to
+normalize.
+
 ---
 
 ## 2. Wave P — point-cloud correctness
@@ -258,7 +306,7 @@ gated); LiDAR-surfel rendering through the splat renderer (M, post-G8).
 | ID | Wave | Size | Status |
 |---|---|---|---|
 | `C18-V1` | V | S | **DONE** — 15 probes fixed, not 3 (see the row); fleet-wide anchor + scanner-blindness fix landed; spec 32 → 47 tests |
-| `C18-V2` | V | S | PENDING |
+| `C18-V2` | V | S | **READY-PENDING-RUN — 2026-08-09.** Three scenes + one shared generator + the `expectedMismatch` mechanism are in the tree and spec-covered (policy spec 10 -> 16). The Edge run, the baseline captures and the per-scene non-vacuity mutations are the orchestrator's and have NOT executed; the row is not DONE until they have |
 | `C18-V3` | V | S | PENDING |
 | `C18-P1` | P | M | PENDING |
 | `C18-P2` | P | M | PENDING |

@@ -70,6 +70,167 @@ export function resolveSceneThresholds(scene, fallback) {
   };
 }
 
+/**
+ * The three gates every scene is evaluated against, in report order.
+ */
+export const GATE_IDS = Object.freeze([
+  "historicalWebgl",
+  "historicalWebgpu",
+  "crossBackend",
+]);
+
+/**
+ * What a scene may pre-register about a gate's outcome.
+ *
+ * `UNMEASURED` is a first-class value, not a placeholder: a scene added for a
+ * subsystem that has never been measured in THIS metric has no honest
+ * prediction to make, and inventing one by transcribing a number from a probe
+ * that measures something else is worse than admitting the gap.
+ */
+export const GateExpectation = Object.freeze({
+  PASS: "PASS",
+  FAIL: "FAIL",
+  UNMEASURED: "UNMEASURED",
+});
+
+/** Outcome of comparing a pre-registered expectation against the real gate. */
+export const ExpectationOutcome = Object.freeze({
+  MET: "MET",
+  UNMET: "UNMET",
+  FIRST_RECORD: "FIRST_RECORD",
+});
+
+/**
+ * Read a scene's `expectedMismatch` declarations.
+ *
+ * WHY THIS EXISTS, AND WHAT IT DELIBERATELY CANNOT DO. Two of the scenes this
+ * was written for sit on top of filed, open defects; their cross-backend gate
+ * is expected to be red until the defect is fixed. The two ways to record that
+ * without this field are both bad: widen the scene's threshold until the red
+ * turns green (which normalizes the defect and silently absorbs any WORSENING
+ * of it), or leave the red unannotated (in which case a reviewer of
+ * `report.json` cannot tell a known defect from a fresh regression).
+ *
+ * So an expectation is DOCUMENTATION THAT IS CHECKED. It is folded into the
+ * report and printed next to the gate, and it never touches `status`,
+ * `certifying`, or the process exit code — a red scene stays red. What it adds
+ * is the third signal the suite could not previously express: an expectation
+ * that is UNMET, which is either a new regression (predicted PASS, got FAIL)
+ * or a defect that has been fixed without anyone updating the record
+ * (predicted FAIL, got PASS). Both are findings.
+ *
+ * A predicted FAIL must name a tracker ID. That rule is what stops the field
+ * becoming the very thing it replaces: "expected to fail" with no filed row
+ * behind it is threshold-widening with extra steps.
+ *
+ * @param {object} scene manifest entry
+ * @returns {{byGate: object, errors: string[]}}
+ */
+export function resolveSceneExpectations(scene) {
+  const declared = scene?.expectedMismatch;
+  const sceneName = scene?.name ?? "<unnamed>";
+  if (declared === undefined || declared === null) {
+    return { byGate: {}, errors: [] };
+  }
+  if (!Array.isArray(declared)) {
+    return { byGate: {}, errors: [`EXPECTATION_NOT_ARRAY:${sceneName}`] };
+  }
+
+  const byGate = {};
+  const errors = [];
+  for (const [index, entry] of declared.entries()) {
+    const where = `${sceneName}[${index}]`;
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      errors.push(`EXPECTATION_ENTRY_INVALID:${where}`);
+      continue;
+    }
+    if (!GATE_IDS.includes(entry.gate)) {
+      errors.push(`EXPECTATION_GATE_UNKNOWN:${where}:${entry.gate}`);
+      continue;
+    }
+    if (byGate[entry.gate] !== undefined) {
+      errors.push(`EXPECTATION_GATE_DUPLICATED:${where}:${entry.gate}`);
+      continue;
+    }
+    if (!Object.values(GateExpectation).includes(entry.expect)) {
+      errors.push(`EXPECTATION_VALUE_UNKNOWN:${where}:${entry.expect}`);
+      continue;
+    }
+    const rationale =
+      typeof entry.rationale === "string" ? entry.rationale.trim() : "";
+    if (rationale.length === 0) {
+      errors.push(`EXPECTATION_RATIONALE_MISSING:${where}`);
+      continue;
+    }
+    const trackedBy =
+      typeof entry.trackedBy === "string" ? entry.trackedBy.trim() : "";
+    if (entry.expect === GateExpectation.FAIL && trackedBy.length === 0) {
+      errors.push(`EXPECTATION_TRACKER_MISSING:${where}`);
+      continue;
+    }
+    byGate[entry.gate] = {
+      gate: entry.gate,
+      expect: entry.expect,
+      trackedBy: trackedBy.length > 0 ? trackedBy : null,
+      rationale,
+    };
+  }
+  return { byGate, errors };
+}
+
+/**
+ * Attach an expectation's outcome to a gate result.
+ *
+ * Returns a NEW gate object carrying an `expectation` field and nothing else
+ * changed. `status` and `certifying` are copied through untouched, which is
+ * the property the whole mechanism rests on.
+ */
+export function annotateGateExpectation(gate, expectation) {
+  if (!expectation) {
+    return { ...gate, expectation: null };
+  }
+  const outcome =
+    expectation.expect === GateExpectation.UNMEASURED
+      ? ExpectationOutcome.FIRST_RECORD
+      : gate.status === expectation.expect
+        ? ExpectationOutcome.MET
+        : ExpectationOutcome.UNMET;
+  return { ...gate, expectation: { ...expectation, outcome } };
+}
+
+/**
+ * Count expectation outcomes across every gate of every scene in a report.
+ * `unmet` is the number a reviewer reads first — it is the count of gates
+ * whose behaviour contradicts what the manifest claims about them.
+ */
+export function summarizeExpectations(scenes) {
+  const counts = {
+    declared: 0,
+    [ExpectationOutcome.MET]: 0,
+    [ExpectationOutcome.UNMET]: 0,
+    [ExpectationOutcome.FIRST_RECORD]: 0,
+  };
+  const unmet = [];
+  for (const scene of scenes ?? []) {
+    for (const gate of Object.values(scene.gates ?? {})) {
+      const expectation = gate.expectation;
+      if (!expectation) continue;
+      counts.declared++;
+      counts[expectation.outcome]++;
+      if (expectation.outcome === ExpectationOutcome.UNMET) {
+        unmet.push({
+          scene: scene.name,
+          gate: gate.id,
+          expected: expectation.expect,
+          observed: gate.status,
+          trackedBy: expectation.trackedBy,
+        });
+      }
+    }
+  }
+  return { counts, unmet };
+}
+
 export function compareCaptures(current, reference, tolerance = 16) {
   if (
     current.width !== reference.width ||

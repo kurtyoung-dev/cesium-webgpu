@@ -1,6 +1,6 @@
 {
   "$schema": "./scenes.schema.json",
-  "description": "Visual regression scene definitions for the WebGL ↔ WebGPU split-screen comparison page. Each entry sets up a camera + flags via window.viewerSetupHelpers (defined in split-screen-comparison.html), waits a settle frame count, then captures both canvases for pixel-diff. The optional `setup` field is a JS source string evaluated in the page context before the camera is positioned — used for synthetic high-density scenes (Batch 224).",
+  "description": "Visual regression scene definitions for the WebGL ↔ WebGPU split-screen comparison page. Each entry sets up a camera + flags via window.viewerSetupHelpers (defined in split-screen-comparison.html), waits a settle frame count, then captures both canvases for pixel-diff. The optional `setup` field is a JS source string evaluated in the page context before the camera is positioned — used for synthetic high-density scenes (Batch 224). Optional `thresholds` overrides the per-gate mismatch ceiling; optional `expectedMismatch` pre-registers what a gate is expected to do and why, is folded into report.json, and never changes a gate's status or the exit code (see README, 'Pre-registered expectations').",
   "baseUrl": "http://localhost:8080/Apps/WebGPUTest/split-screen-comparison.html",
   "settleFrames": 30,
   "scenes": [
@@ -68,6 +68,64 @@
         "destination": [-122.4194, 37.7749, 300000],
         "orientation": { "heading": 0, "pitch": -0.7, "roll": 0 }
       }
+    },
+    {
+      "name": "voxel-box-procedural",
+      "description": "VR-BASELINE-SCENES-VOXEL-POINTCLOUD-SPLAT (C18-V2) — asset-free procedural BOX-shape VoxelPrimitive, single root tile (availableLevels=1), 4x4x4 VEC4/FLOAT32 cells whose colour is a pure function of the cell index, scaled to the WGS84 radius by the provider's globalTransform. Globe/sky/sun/moon hidden, opaque black background, clock pinned, camera fixed off-axis at ~8.5 Earth radii so the box reads as a bounded 3-D silhouette rather than a full-frame fill. Camera lives in the setup file, not here, because it is an ECEF pose with an explicit direction/up rather than a lon/lat/height. EXPECTED MISMATCH: unknown. The only recorded cross-backend voxel evidence is probe-voxel-parity's footprint IoU plus colour-structure overlap — a different metric with no mismatched-pixel-ratio equivalent — so no threshold is overridden here and the crossBackend gate runs at the suite default. The first run of this scene is the first measurement of the voxel path in this metric; replace the UNMEASURED expectation with the measured prediction once it exists.",
+      "setupFile": "scenes/subsystem-parity-setup.js",
+      "setupParams": {
+        "subsystem": "voxel",
+        "sceneName": "voxel-box-procedural",
+        "pinnedTimeIso": "2026-06-01T18:00:00Z",
+        "voxelDimension": 4
+      },
+      "camera": null,
+      "expectedMismatch": [
+        {
+          "gate": "crossBackend",
+          "expect": "UNMEASURED",
+          "trackedBy": "VR-BASELINE-SCENES-VOXEL-POINTCLOUD-SPLAT",
+          "rationale": "The voxel path has never been compared cross-backend in the capture-and-diff mismatched-pixel-ratio metric. probe-voxel-parity gates on footprint IoU and colour-structure overlap instead, and transcribing one of its numbers into a pixel-ratio threshold would be fabricating a derivation. The run records the first honest value."
+        }
+      ]
+    },
+    {
+      "name": "pointcloud-timedynamic-edl",
+      "description": "VR-BASELINE-SCENES-VOXEL-POINTCLOUD-SPLAT (C18-V2) — TimeDynamicPointCloud on the DEDICATED renderer path (not the PNTS/Model path, where WebGPU attenuation and EDL are silently inert per PNTS-MODEL-PATH-EDL-INERT), driving attenuation (maximumAttenuation 10, pointSize 8) and eye-dome lighting (strength 1.0, radius 2.0) together. Frames are the in-tree Apps/SampleData PointCloudTimeDynamic .pnts set; the clock is pinned to the first interval so exactly one frame is ever resolved. Camera is a fixed pose on a hard-coded bounding sphere, because TimeDynamicPointCloud.boundingSphere lags the first render and framing from it would make the capture a function of load timing. EXPECTED MISMATCH: RED, and deliberately not normalized — see expectedMismatch below.",
+      "setupFile": "scenes/subsystem-parity-setup.js",
+      "setupParams": {
+        "subsystem": "pointcloud",
+        "sceneName": "pointcloud-timedynamic-edl",
+        "pinnedTimeIso": "2018-07-19T15:18:00Z"
+      },
+      "camera": null,
+      "expectedMismatch": [
+        {
+          "gate": "crossBackend",
+          "expect": "FAIL",
+          "trackedBy": "PARITY-POINTCLOUD-COLOR-TINT",
+          "rationale": "WebGPU renders this cloud 27-45% brighter with blue lifted most (per-channel gains R 0.78 / G 0.72 / B 0.69), and the magnitude DRIFTS monotonically within a session (raw ds4 9.34 -> 16.67% across seven consecutive same-session runs). The scene therefore keeps the suite-default threshold and is flagged RED-as-known-issue rather than given a loose one: any ceiling derived from a drifting quantity would have to be re-widened as the defect grew, which is exactly the silent normalization the filed row warns about. Turn this expectation to PASS only when the tint mechanism is fixed."
+        }
+      ]
+    },
+    {
+      "name": "gsplat-sh-unit-cube",
+      "description": "VR-BASELINE-SCENES-VOXEL-POINTCLOUD-SPLAT (C18-V2) — the in-tree Specs/Data sh_unit_cube Gaussian-splat tileset (27 splats, SH degree 3, not georeferenced), framed from its own bounding sphere at range = 2x radius, pitch -30 deg. Globe hidden because the tileset sits at the geocentre. The setup waits on three separate signals before the capture: tile content readiness, the splat data commit, and sort quiescence — the last because a scene still re-ordering itself cannot reproduce its own baseline between runs. EXPECTED MISMATCH: none. C15-G5 (Batch 895) measured this asset's cross-backend mismatch at 0.000% under exact per-channel equality; the suite's tolerance-16 comparison can only be looser, so the suite-default 2% ceiling is not a tuned number and PASS is a falsifiable prediction rather than an accommodation.",
+      "setupFile": "scenes/subsystem-parity-setup.js",
+      "setupParams": {
+        "subsystem": "gsplat",
+        "sceneName": "gsplat-sh-unit-cube",
+        "pinnedTimeIso": "2026-06-01T18:00:00Z"
+      },
+      "camera": null,
+      "expectedMismatch": [
+        {
+          "gate": "crossBackend",
+          "expect": "PASS",
+          "trackedBy": "C15-G8",
+          "rationale": "Derived, not assumed: after C15-G5 landed spherical harmonics in WGSL, Batch 895 measured sh_unit_cube at 0.000% cross-backend mismatch under exact per-channel equality on probe-gsplat-parity, and this suite's per-channel tolerance of 16 is strictly more forgiving. The caveats are the page (split-screen viewers, different canvas size and post-process state) rather than the renderer, so a FAIL here is a finding to file, not a threshold to widen."
+        }
+      ]
     }
   ]
 }

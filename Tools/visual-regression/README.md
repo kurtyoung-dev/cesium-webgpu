@@ -71,7 +71,56 @@ Edit `scenes.json`. Each scene needs a `name` and an optional `camera`:
 }
 ```
 
-When `camera` is `null` the page's default initial view is used.
+When `camera` is `null` the page's default initial view is used — or, for a
+scene whose pose is an ECEF position with an explicit direction/up rather than
+a lon/lat/height, the `setupFile` sets the camera on both viewers itself.
+
+Two optional fields tune how a scene is judged:
+
+| Field              | Effect                                                                                                                |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `thresholds`       | Per-gate mismatch ceiling (`historicalWebgl` / `historicalWebgpu` / `crossBackend`). Omitted gates use `--threshold`. |
+| `expectedMismatch` | Pre-registers what a gate is expected to do, and why. Reported, never enforced — see below.                           |
+
+### Pre-registered expectations
+
+`expectedMismatch` is an array of `{ gate, expect, trackedBy, rationale }`.
+`expect` is `PASS`, `FAIL`, or `UNMEASURED`.
+
+```json
+"expectedMismatch": [
+  {
+    "gate": "crossBackend",
+    "expect": "FAIL",
+    "trackedBy": "PARITY-POINTCLOUD-COLOR-TINT",
+    "rationale": "WebGPU renders this cloud 27-45% brighter with blue lifted most, and the magnitude drifts within a session."
+  }
+]
+```
+
+It exists because a scene that sits on an open, filed defect has only two
+other ways to be recorded, and both are bad: widen its threshold until the red
+turns green (which normalizes the defect and silently absorbs any _worsening_
+of it), or leave the red unannotated (in which case nobody reading
+`report.json` can tell a known defect from a fresh regression).
+
+So an expectation is **documentation that is checked**. It is folded into
+`report.json` and printed next to the gate, and it **never** changes a gate's
+`status`, `certifying`, or the process exit code — a red scene stays red, and
+the run still exits `1`. What it adds is the signal the suite could not
+previously express: an expectation that is **UNMET**, which is either a new
+regression (predicted `PASS`, observed `FAIL`) or a defect fixed without the
+record being updated (predicted `FAIL`, observed `PASS`). Both are findings.
+
+A predicted `FAIL` **must** name a `trackedBy` ID. Without that rule the field
+would become the thing it replaces: "expected to fail" with no filed row behind
+it is threshold-widening with extra steps. A malformed declaration fails the
+run with exit `2` before a browser is launched.
+
+`UNMEASURED` is a first-class value, for a scene whose subsystem has never been
+compared in _this_ metric. Transcribing a number from a probe that measures
+something else (an IoU, a per-channel gain) would be fabricating a derivation;
+declaring the gap is honest, and the first run records the real value.
 
 ### Synthetic scenes via `setup` / `setupFile` (Batch 224, refactored Batch 225)
 
@@ -103,6 +152,48 @@ node Tools/visual-regression/capture-and-diff.mjs --scene high-density-5k-sphere
 # This scene is currently characterization/red evidence. Do not promote it
 # until its parity failure is fixed and independently reviewed.
 ```
+
+### Subsystem parity scenes: voxels, point clouds, Gaussian splats
+
+`voxel-box-procedural`, `pointcloud-timedynamic-edl` and `gsplat-sh-unit-cube`
+share one generator, `scenes/subsystem-parity-setup.js`, selected through
+`setupParams.subsystem`. They exist because those three subsystems had no scene
+in this suite at all, so their cross-backend evidence was one-shot probe
+history — the newest voxel and point-cloud runs on record are from 2026-07 —
+instead of a gate that re-runs.
+
+Each of them hides every primitive it does not own plus the globe, sky, sun,
+moon and fog, paints an opaque black background, pins the clock, suppresses
+the split-screen page's camera mirroring, and writes the same ECEF pose to both
+viewers. That makes them **order-independent** (`--scene <name>` alone renders
+the same frame as a full sweep) and makes the captured pixels dominated by the
+subsystem under test rather than by terrain and atmosphere noise. Every asset
+is in-tree (`Apps/SampleData`, `Specs/Data`), so they run offline.
+
+If a scene's content never reaches readiness inside its wall-clock budget the
+setup **throws**, aborting the run with exit `99`. That is deliberate: an empty
+frame on both backends is a cross-backend `PASS`, so a scene that silently
+failed to build its subject would certify parity by rendering nothing.
+
+```bash
+node Tools/visual-regression/capture-and-diff.mjs --scene voxel-box-procedural
+node Tools/visual-regression/capture-and-diff.mjs --scene pointcloud-timedynamic-edl
+node Tools/visual-regression/capture-and-diff.mjs --scene gsplat-sh-unit-cube
+```
+
+Their pre-registered cross-backend expectations, and why each was chosen:
+
+| Scene                        | Expect       | Basis                                                                                                                                                                                                                      |
+| ---------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `voxel-box-procedural`       | `UNMEASURED` | No cross-backend voxel number exists in this metric; `probe-voxel-parity` gates on footprint IoU and colour-structure overlap.                                                                                             |
+| `pointcloud-timedynamic-edl` | `FAIL`       | `PARITY-POINTCLOUD-COLOR-TINT`. Threshold left at the suite default rather than loosened, because the recorded divergence _drifts within a session_ — a ceiling derived from it would need re-widening as the defect grew. |
+| `gsplat-sh-unit-cube`        | `PASS`       | Derived: after `C15-G5`, Batch 895 measured this asset at 0.000% cross-backend under **exact** per-channel equality, and this suite's tolerance of 16 is strictly more forgiving.                                          |
+
+Baselines for all three start missing, so their historical gates are
+`NON_CERTIFYING` until someone reviews the captures and promotes them. Promote
+**per scene** with `--scene`: the full-sweep promotion path refuses while any
+scene in the run is cross-backend red, and it has been blocked since
+`high-density-5k-spheres` became red evidence.
 
 ## How it works
 

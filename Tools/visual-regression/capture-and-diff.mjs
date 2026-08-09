@@ -49,11 +49,15 @@ import {
   attachConsoleErrorGate,
 } from "../lib/webgpu-error-gate.mjs";
 import {
+  ExpectationOutcome,
   GateStatus,
+  annotateGateExpectation,
   createSceneIdentity,
   evaluatePixelGate,
+  resolveSceneExpectations,
   resolveSceneThresholds,
   sha256,
+  summarizeExpectations,
   summarizeSceneGates,
   validateManifestEntry,
   validatePromotionRequest,
@@ -118,6 +122,21 @@ function reportPath(filePath) {
 
 function manifestEntryKey(sceneName, renderer) {
   return `${sceneName}:${renderer}`;
+}
+
+/** Console suffix for a gate's pre-registered expectation. Formatting only. */
+function describeExpectation(expectation) {
+  if (!expectation) return "";
+  const tracker = expectation.trackedBy
+    ? ` tracked=${expectation.trackedBy}`
+    : "";
+  if (expectation.outcome === ExpectationOutcome.FIRST_RECORD) {
+    return ` expected=UNMEASURED (first recorded value)${tracker}`;
+  }
+  if (expectation.outcome === ExpectationOutcome.UNMET) {
+    return ` expected=${expectation.expect} UNMET${tracker}`;
+  }
+  return ` expected=${expectation.expect} met${tracker}`;
 }
 
 function getGitMetadata() {
@@ -628,6 +647,26 @@ async function main() {
     process.exit(2);
   }
 
+  // Validate every pre-registered expectation BEFORE launching a browser. A
+  // malformed declaration — an unknown gate, a predicted FAIL with no tracker
+  // ID behind it — is an argument-class error, and finding it after a
+  // multi-minute capture run would just make it easier to ignore.
+  const sceneExpectations = new Map();
+  const expectationErrors = [];
+  for (const scene of scenes) {
+    const resolved = resolveSceneExpectations(scene);
+    sceneExpectations.set(scene.name, resolved.byGate);
+    expectationErrors.push(...resolved.errors);
+  }
+  if (expectationErrors.length > 0) {
+    console.error(
+      `[visual-regression] invalid expectedMismatch declarations:\n${expectationErrors
+        .map((error) => `  - ${error}`)
+        .join("\n")}`,
+    );
+    process.exit(2);
+  }
+
   await ensureDir(BASELINE_DIR);
   await ensureDir(OUTPUT_DIR);
   const baselineManifest = await loadBaselineManifest();
@@ -736,7 +775,11 @@ async function main() {
 
   const environment = await collectRunEnvironment(browser, page, args.browser);
   const report = {
-    schemaVersion: 2,
+    // 3 — additive only: each gate gained an `expectation` field (null when
+    // the scene declares none) and the run gained `expectations` plus
+    // `summary.expectationCounts`. A version that does not move when the
+    // schema does is worse than no version at all.
+    schemaVersion: 3,
     startedAt: new Date().toISOString(),
     threshold: args.threshold,
     thresholdRole: "migration-fallback",
@@ -872,40 +915,52 @@ async function main() {
       cap.webgl.height,
     );
 
+    const expectations = sceneExpectations.get(scene.name) ?? {};
     const gates = {
-      historicalWebgl: {
-        ...historicalWebglResult.gate,
-        artifacts: {
-          current: reportPath(webglPath),
-          historical: historicalWebgl ? reportPath(baselineWebglPath) : null,
-          expectedHistorical: reportPath(baselineWebglPath),
-          diff: historicalWebglDiff,
+      historicalWebgl: annotateGateExpectation(
+        {
+          ...historicalWebglResult.gate,
+          artifacts: {
+            current: reportPath(webglPath),
+            historical: historicalWebgl ? reportPath(baselineWebglPath) : null,
+            expectedHistorical: reportPath(baselineWebglPath),
+            diff: historicalWebglDiff,
+          },
         },
-      },
-      historicalWebgpu: {
-        ...historicalWebgpuResult.gate,
-        artifacts: {
-          current: reportPath(webgpuPath),
-          historical: historicalWebgpu ? reportPath(baselineWebgpuPath) : null,
-          expectedHistorical: reportPath(baselineWebgpuPath),
-          diff: historicalWebgpuDiff,
+        expectations.historicalWebgl,
+      ),
+      historicalWebgpu: annotateGateExpectation(
+        {
+          ...historicalWebgpuResult.gate,
+          artifacts: {
+            current: reportPath(webgpuPath),
+            historical: historicalWebgpu
+              ? reportPath(baselineWebgpuPath)
+              : null,
+            expectedHistorical: reportPath(baselineWebgpuPath),
+            diff: historicalWebgpuDiff,
+          },
         },
-      },
-      crossBackend: {
-        ...crossBackendResult.gate,
-        artifacts: {
-          webgl: reportPath(webglPath),
-          webgpu: reportPath(webgpuPath),
-          diff: crossDiff,
+        expectations.historicalWebgpu,
+      ),
+      crossBackend: annotateGateExpectation(
+        {
+          ...crossBackendResult.gate,
+          artifacts: {
+            webgl: reportPath(webglPath),
+            webgpu: reportPath(webgpuPath),
+            diff: crossDiff,
+          },
         },
-      },
+        expectations.crossBackend,
+      ),
     };
     const summary = summarizeSceneGates(gates);
     for (const gate of Object.values(gates)) {
       const ratioText =
         gate.ratio === null ? "n/a" : `${(gate.ratio * 100).toFixed(2)}%`;
       console.log(
-        `  ${gate.id}: ${gate.status} comparison=${gate.comparisonStatus} diff=${ratioText} threshold=${(gate.threshold * 100).toFixed(2)}%`,
+        `  ${gate.id}: ${gate.status} comparison=${gate.comparisonStatus} diff=${ratioText} threshold=${(gate.threshold * 100).toFixed(2)}%${describeExpectation(gate.expectation)}`,
       );
     }
     console.log(`  scene: ${summary.status}`);
@@ -1020,11 +1075,34 @@ async function main() {
       : sceneCounts.NON_CERTIFYING > 0
         ? GateStatus.NON_CERTIFYING
         : GateStatus.PASS;
+  // Expectation accounting. This never moves `runStatus` — a scene that is red
+  // on purpose is still red, and a suite that could be talked out of a failure
+  // by a manifest field would not be a gate. What the block adds is the
+  // reviewer's shortcut to the finding: every gate whose observed status
+  // contradicts what the scene pre-registered about it.
+  const expectations = summarizeExpectations(report.scenes);
+  report.expectations = expectations;
+  if (expectations.counts.declared > 0) {
+    console.log(
+      `\n[visual-regression] expectations: ${expectations.counts.MET} met, ` +
+        `${expectations.counts.UNMET} unmet, ` +
+        `${expectations.counts.FIRST_RECORD} first-record ` +
+        `(of ${expectations.counts.declared} declared)`,
+    );
+    for (const entry of expectations.unmet) {
+      console.log(
+        `  · ${entry.scene}/${entry.gate}: expected ${entry.expected}, observed ${entry.observed}` +
+          `${entry.trackedBy ? ` (tracked=${entry.trackedBy})` : ""}`,
+      );
+    }
+  }
+
   report.completedAt = new Date().toISOString();
   report.summary = {
     status: runStatus,
     certifying: runStatus === GateStatus.PASS,
     sceneCounts,
+    expectationCounts: expectations.counts,
     promotionPerformed: report.promotion.performed,
   };
 
