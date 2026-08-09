@@ -30,15 +30,14 @@ struct SSRUniforms {
   params: vec4<f32>,
   // x=fadeScreenEdge, y=fadeDistance, z=reflectionStrength, w=fresnelPower
   params2: vec4<f32>,
-  // AUDIT_2026_05_02 B.15 — flag indicating whether `normalTex` carries
-  // valid eye-space normals or is the placeholder. When .x < 0.5, the
-  // FS computes normals from depth derivatives instead of sampling the
-  // texture (rough approximation, but visually correct for reflective
-  // surfaces vs the all-vertical noise the placeholder produced).
-  // NEW-LOG-DEPTH-PP-SLICEC — y = logActive (>0.5 → the sampled depth is
-  // log-encoded and must be reversed before unproject); z = log-encode
-  // frustum near; w = log-encode frustum far. All zero = byte-identical
-  // pre-Slice-C hyperbolic path.
+  // .x flags whether `normalTex` carries valid eye-space normals or is the
+  // placeholder. Below 0.5 the fragment stage computes normals from depth
+  // derivatives instead of sampling the texture — a rough approximation, but
+  // visually correct on reflective surfaces, where the placeholder instead
+  // yields all-vertical noise.
+  // .y is logActive: above 0.5 the sampled depth is log-encoded and must be
+  // reversed before the unproject. .z and .w are the log-encode frustum near
+  // and far. All zero keeps the hyperbolic path.
   flags: vec4<f32>,
 };
 
@@ -64,9 +63,9 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return out;
 }
 
-// NEW-LOG-DEPTH-PP-SLICEC — inline csm_reverseLogDepth (byte-compatible
-// with chunks/functions/csm_reverseLogDepth.wgsl). Maps a [0,1] log-depth
-// value back to the hyperbolic [0,1] window-space NDC z a standard
+// Inline `csm_reverseLogDepth`, byte-compatible with
+// `chunks/functions/csm_reverseLogDepth.wgsl`. Maps a [0,1] log-depth value
+// back to the hyperbolic [0,1] window-space NDC z a standard
 // inverse-projection consumer expects.
 fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
   if (far <= near) { return logZ; }
@@ -232,31 +231,27 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     normal = n * inverseSqrt(nLenSq);
   } else {
-    // Phase 8a Slice 5 (Batch 88) — read eye-space normal directly
-    // from the G-buffer. The G-buffer is `rgba16float` written by
-    // `GBufferNormalsFromDepth.wgsl` with normals already in signed
-    // [-1, 1] range, so no `* 2 - 1` decode is needed (pre-Batch-88
-    // code did the decode under the assumption of UNORM packing,
-    // which silently halved every component and offset by -1 —
-    // producing wrong-direction reflections on any surface where
-    // the normal wasn't near (0.5, 0.5, 0.5) in encoded space).
+    // Read the eye-space normal directly from the G-buffer. It is rgba16float
+    // written by `GBufferNormalsFromDepth.wgsl` with normals already in the
+    // signed [-1, 1] range, so no `* 2 - 1` decode is needed. Applying one —
+    // as if the packing were UNORM — silently halves every component and
+    // offsets it by -1, producing wrong-direction reflections on any surface
+    // whose normal is not near (0.5, 0.5, 0.5) in encoded space.
     //
-    // Sentinel check: producer emits (0,0,0,*) for sky / depth-clear /
-    // high-gradient pixels. Skip those — no useful normal to reflect.
+    // Sentinel check: the producer emits (0,0,0,*) for sky, depth-clear and
+    // high-gradient pixels. Those are skipped — no useful normal to reflect.
     let normalRoughness = textureSampleLevel(normalTex, texSampler, uv, 0.0);
     let normalSample = normalRoughness.xyz;
     if (length(normalSample) < 0.1) {
       return vec4<f32>(originalColor, 1.0);
     }
     normal = normalize(normalSample);
-    // Phase 8a Slice 5b (Batch 93) — read roughness from the G-buffer
-    // .w channel. The producer writes a depth-gradient-derived
-    // roughness proxy: smooth surfaces (water, building facades) get
-    // values near 0.1 (sharp mirror); rough surfaces (terrain,
-    // vegetation) get values near 0.95 (effectively diffuse, no SSR).
-    // Skip ray-marching entirely for high-roughness surfaces — the
-    // resulting reflection would be blurred to invisibility anyway
-    // and we save the trace cost.
+    // Read roughness from the G-buffer's `.w` channel. The producer writes a
+    // depth-gradient-derived roughness proxy: smooth surfaces such as water
+    // and building facades land near 0.1, a sharp mirror, while rough ones
+    // such as terrain and vegetation land near 0.95, effectively diffuse and
+    // with no reflection. Ray marching is skipped entirely for high-roughness
+    // surfaces, whose reflection would be blurred to invisibility anyway.
     if (normalRoughness.w > 0.6) {
       return vec4<f32>(originalColor, 1.0);
     }
@@ -274,10 +269,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Trace the reflected ray
   let result = traceRay(viewPos, reflectDir);
 
-  // Combine with Fresnel-weighted reflection strength + roughness
-  // attenuation (Phase 8a Slice 5b, Batch 93). Roughness comes from
-  // the G-buffer when `flags.x > 0.5`; falls back to 0.0 (mirror) for
-  // the depth-fallback path because we have no roughness signal there.
+  // Combine with the Fresnel-weighted reflection strength and the roughness
+  // attenuation. Roughness comes from the G-buffer when `flags.x > 0.5`, and
+  // falls back to 0.0, a mirror, on the depth-fallback path, where there is
+  // no roughness signal.
   let reflectionStrength = ssr.params2.z; // default 0.5
   let fresnel = fresnelFade(NdotV);
   var roughness: f32 = 0.0;

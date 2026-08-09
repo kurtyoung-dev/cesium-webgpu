@@ -425,6 +425,36 @@ colour site. The remaining seven belong to the atmosphere, post-process and
 scene shards (C16-05, C16-07, C16-11) and are untouched here — this shard does
 not edit files outside its own subsystem.
 
+**Shard follow-through, C16-07 (post-process & effects), 2026-08-09.** Four
+more of the eight are post-process scope and are now done, leaving three:
+
+| File | Was | Now |
+| --- | --- | --- |
+| `AerialPerspective.wgsl` | prose credit routed to `migration_doc/RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md` | `References:` block naming Shota Matsuda, Takram, `three-geospatial`, MIT, the repository URL |
+| `WebGPUAerialPerspectiveEffect.ts` | headline credit routed to the same research note, in the module docblock | `References:` block, plus a Bruneton & Neyret line for the transmittance LUT it samples |
+| `WebGPUGodRayEffect.ts` | `TAKRAM-9` codename at five sites, no citation anywhere | `References:` block in the module docblock (Mitchell for the radial blur, Takram for the cloud-transmittance occlusion), codename gone |
+| `WebGPUPostProcessStageCollection.ts` | `TAKRAM-9` codename at two sites | codename gone; the technique is cited at its implementation site in `WebGPUGodRayEffect.ts`, which this file only drives |
+
+The wording follows `ProceduralClouds.wgsl` and `StarField.wgsl`: the project,
+the author, the licence, the URL, the specific mechanism adopted, and the
+sentence stating that no source was copied — which is what keeps each block a
+citation rather than an open licensing question, and matches this
+determination's DERIVED-TECHNIQUE classification of every post-process site.
+
+**Still outstanding: three files.** `AtmosphereLUT.wgsl` and
+`AtmosphereDerivedLighting.js` belong to the atmosphere shard; both still route
+their Takram credit to the internal research document, and a repository-wide
+grep for `RESEARCH_TAKRAM_GEOSPATIAL_VISUALS` under `packages/engine/Source`
+now returns those two lines and nothing else. `Scene.js` belongs to the
+scene/architecture shard (`C16-11`) and is a different shape from the other
+seven: it carries no routing and no codename, only a passing prose reference to
+"the Takram talk" in a comment about the aerial-perspective gate. That is a
+naked mention rather than a citation, and the shard that owns the file should
+either point it at the reference block now in
+`WebGPUAerialPerspectiveEffect.ts` or drop it. The licensing obligation remains
+discharged by the `LICENSE.md` entries in every case; what is owed is the local
+citation quality, on the same instruction as above.
+
 ## 3. Outstanding items, and exactly what closes each
 
 Every item below has a complete entry in both `LICENSE.md` files, stating what

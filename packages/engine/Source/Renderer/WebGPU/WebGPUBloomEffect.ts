@@ -2,8 +2,10 @@
 /**
  * WebGPU BloomEffect
  *
- * Per-effect slice extracted from `WebGPUPostProcessEffects`
- * (Batch 160 of the maintainability sweep).
+ * References:
+ *   - Brian Karis, "Tone Mapping" / "Physically Based Shading in Theory and
+ *     Practice" (SIGGRAPH 2013) — bloom as a camera-lens response to scene
+ *     radiance, which is what the altitude gate below models.
  *
  * @module WebGPUBloomEffect
  */
@@ -36,11 +38,11 @@ import type { PostProcessEffect } from "./WebGPUPostProcessEffects.js";
 import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js";
 
 export interface BloomConfig {
-  // NEW-BLOOM-UNIFORM-PARITY (Batch 240) — the bright pass is a port of
-  // WebGL's ContrastBias.glsl (HSB brightness shift + contrast curve),
-  // NOT a luminance threshold. These six fields mirror the six uniforms
-  // of `scene.postProcessStages.bloom.uniforms` 1:1 (defaults from
-  // PostProcessStageLibrary.createBloomStage / createBlur).
+  // The bright pass is a port of WebGL's ContrastBias.glsl — an HSB
+  // brightness shift followed by a contrast curve — not a luminance
+  // threshold. These six fields mirror the six uniforms of
+  // `scene.postProcessStages.bloom.uniforms` one to one, with defaults from
+  // `PostProcessStageLibrary.createBloomStage` and `createBlur`.
   contrast?: number; // Bright-pass contrast curve, (-255, 259) (default 128)
   brightness?: number; // Bright-pass HSB value offset (default -0.3)
   delta?: number; // Blur incremental-Gaussian delta (default 1.0)
@@ -51,64 +53,42 @@ export interface BloomConfig {
   // WebGL's composite is plain `bloom + color`, so 1.0 is parity; the
   // scalar exists as the altitude gate's per-frame lever (below).
   intensity?: number; // Bloom glow intensity (default 1.0)
-  // Session 65 Batch 22 — altitude-gated bloom (orbit polish §13.1).
-  // When `enableAltitudeGate` is true (default), per-frame bloom
-  // intensity is multiplied by an altitude factor that fades from
-  // 1.0 at sea level to 0.0 above `altitudeGateMaxMeters`. Mirrors
-  // industry convention (Frostbite GDC 2016, Karis 2013) of treating
-  // bloom as a CAMERA LENS effect — absent in vacuum-of-space cameras.
-  // Real orbital photography (ISS, Earthrise) shows essentially zero
-  // bloom on the Earth disk; matching that requires fading the effect
-  // as the camera leaves ground altitude. Set to false to disable
-  // altitude gating (matches pre-Batch-22 behavior).
+  // Altitude-gated bloom. When `enableAltitudeGate` is true, the default,
+  // per-frame bloom intensity is multiplied by an altitude factor that fades
+  // from 1.0 at sea level toward zero above `altitudeGateMaxMeters`. Bloom is
+  // a camera-lens effect, and a camera in vacuum has none: real orbital
+  // photography shows essentially no bloom on the Earth disk, so matching it
+  // means fading the effect as the camera leaves ground altitude. Set false
+  // to leave the intensity ungated.
   enableAltitudeGate?: boolean;
-  // Altitude curve: bloom fully active below this height (meters),
+  // Altitude curve: bloom is fully active below this height in metres, and
   // gated to `altitudeGateOrbitFloor × baseIntensity` above
-  // `altitudeGateMaxMeters`. Smoothstep between.
-  // Defaults chosen so high-altitude aerial photogrammetry views
-  // (Aerometrex SF at ~500m, NYC at ~10km) keep full bloom; orbit
-  // views (>1 Earth radius) get a subtle 15% floor — real orbital
-  // photography from ISS/Apollo shows a faint atmospheric halo
-  // (Rayleigh forward-scatter through the limb) that reads
-  // perceptually as a soft bloom. Going to 0 produces a too-sharp
-  // disk edge; the floor restores the subtle haze without the fake
-  // ground-level halo of pre-Batch-22 behavior.
+  // `altitudeGateMaxMeters`, with a smoothstep between. The defaults keep
+  // full bloom for high-altitude aerial photogrammetry views — a city model
+  // at ~500 m, a metropolitan area at ~10 km — while orbit views beyond one
+  // Earth radius fall to a 15% floor. That floor is not zero because real
+  // orbital photography shows a faint atmospheric halo from Rayleigh
+  // forward-scatter through the limb, which reads perceptually as a soft
+  // bloom; taking it to zero gives a too-sharp disk edge.
   altitudeGateMinMeters?: number;
   altitudeGateMaxMeters?: number;
-  // Floor multiplier at fully-gated altitude. 0.0 = pre-Batch-22-tuning
-  // fully off; 1.0 = no gate (matches `enableAltitudeGate: false`).
-  // Default 0.15 = 15% of base intensity at orbit, giving a subtle
-  // residual halo that mirrors real-camera limb scattering.
+  // Floor multiplier at fully-gated altitude. 0.0 turns bloom off entirely at
+  // orbit; 1.0 is equivalent to `enableAltitudeGate: false`. The default 0.15
+  // leaves a subtle residual halo mirroring real-camera limb scattering.
   altitudeGateOrbitFloor?: number;
 
-  // ─────────────────────────────────────────────────────────────────
-  // FUTURE WORK — per-layer reflective bloom (orbit polish §13.x)
-  // ─────────────────────────────────────────────────────────────────
-  // The bloom bright-pass currently runs a SINGLE contrast/brightness
-  // curve over the composite scene color. Real-world bloom is camera-lens
-  // light bleed proportional to per-surface RADIANCE, which varies
-  // sharply by material type:
-  //   - Ocean: high specular at sun-glint angles, low diffuse →
-  //     bright tight glint that SHOULD bloom even at orbit.
-  //   - Clouds: high diffuse reflectance (albedo ~0.7-0.9) → soft
-  //     wide bloom across the cloud band.
-  //   - Land terrain: mid diffuse reflectance (~0.15-0.35) → subtle
-  //     bloom only on direct sun-facing slopes.
-  //   - Snow / ice: very high diffuse (~0.85) → strong bloom.
-  //   - Atmosphere haze (Rayleigh): wavelength-dependent → blue
-  //     channel blooms more than red (matches dusk sky reads).
-  //
-  // Implementing this requires the model + globe fragment shaders to
-  // export a separate "bloom contribution" channel (similar to how
-  // they already export velocity for TAA), feeding a multi-channel
-  // bright-pass that integrates contribution-weighted luminance per
-  // material type. The infrastructure for additional FS output
-  // channels exists (velocity texture) but per-material bloom-weight
-  // tables would be a new design.
-  //
-  // Tracked in `migration_doc/DEFERRED_WORK.md::
-  // NEW-ORBIT-PER-LAYER-REFLECTIVE-BLOOM` for the next celestial /
-  // atmosphere sprint.
+  // The bright pass runs a single contrast and brightness curve over the
+  // composite scene colour. Real bloom is lens light bleed proportional to
+  // per-surface radiance, which varies sharply by material: an ocean's
+  // specular sun glint is a bright tight source that should bloom even at
+  // orbit, cloud tops at albedo 0.7-0.9 give a soft wide bloom, land terrain
+  // at 0.15-0.35 blooms only on sun-facing slopes, snow and ice at ~0.85
+  // bloom strongly, and Rayleigh haze is wavelength-dependent so blue blooms
+  // more than red. Separating those would require the model and globe
+  // fragment shaders to export a bloom-contribution channel, the way they
+  // already export velocity for TAA, feeding a multi-channel bright pass;
+  // the extra-output infrastructure exists, the per-material weight tables
+  // do not.
 }
 
 export class BloomEffect implements PostProcessEffect {
@@ -152,19 +132,18 @@ export class BloomEffect implements PostProcessEffect {
   private _blurVUniforms: GPUBuffer | null = null;
   private _compositeUniforms: GPUBuffer | null = null;
 
-  // C-R11 (Batch 31) — bind group cache. Bloom's four per-frame
-  // createBindGroup sites burn ~240 bind groups / sec at 60 Hz; the
-  // cache replays the same bind group when sourceView / samplers /
-  // intermediate views haven't changed. Invalidated on resize because
-  // texture views become stale.
+  // Bind-group cache. Bloom's four per-frame `createBindGroup` sites burn
+  // roughly 240 bind groups per second at 60 Hz; the cache replays the same
+  // bind group while the source view, samplers and intermediate views are
+  // unchanged. Invalidated on resize, because texture views go stale.
   private _bgCache = new WebGPUBindGroupCache();
 
   private _config: Required<BloomConfig>;
 
-  // Session 65 Batch 22 — base intensity captured at config time so
-  // the altitude gate multiplies AGAINST it each frame rather than
-  // permanently mutating `_config.intensity` (which would lose the
-  // user's authored value on subsequent gate updates).
+  // Base intensity captured at config time, so the altitude gate multiplies
+  // against it each frame rather than permanently mutating
+  // `_config.intensity`, which would lose the user's authored value on every
+  // subsequent gate update.
   private _baseIntensity: number = 1.0;
   // Last value written to the composite UBO. Avoids re-writing the
   // buffer when the gated intensity hasn't changed (e.g., camera
@@ -189,8 +168,8 @@ export class BloomEffect implements PostProcessEffect {
   }
 
   /**
-   * C11-174 — read-only snapshot of the bind-group cache counters for
-   * `WebGPUContext.getRendererStatistics()` / `CesiumDebug.cacheStats()`.
+   * Read-only snapshot of the bind-group cache counters for
+   * `WebGPUContext.getRendererStatistics()` and `CesiumDebug.cacheStats()`.
    * Pure exposure of bookkeeping the cache already maintains.
    */
   getBindGroupCacheStats(): BindGroupCacheStats {
@@ -198,13 +177,11 @@ export class BloomEffect implements PostProcessEffect {
   }
 
   /**
-   * Session 65 Batch 22 — apply the altitude-gated intensity update.
-   * Called per-frame by the SceneRenderer with the current camera
-   * altitude in meters. Multiplies the base intensity by a smoothstep
-   * curve from 1.0 at `altitudeGateMinMeters` (or below) to 0.0 at
-   * `altitudeGateMaxMeters` (or above). Pre-Batch-22 behavior is
-   * preserved when `enableAltitudeGate` is false — the base intensity
-   * is used unchanged.
+   * Apply the altitude-gated intensity update. Called per frame by the scene
+   * renderer with the current camera altitude in metres. Multiplies the base
+   * intensity by a smoothstep from 1.0 at `altitudeGateMinMeters` and below
+   * to the orbit floor at `altitudeGateMaxMeters` and above. With
+   * `enableAltitudeGate` false the base intensity is used unchanged.
    *
    * @param cameraHeightMeters Camera altitude above the WGS84
    *   ellipsoid in meters (`frameState.camera.positionCartographic.height`).
@@ -216,13 +193,12 @@ export class BloomEffect implements PostProcessEffect {
       const min = this._config.altitudeGateMinMeters;
       const max = this._config.altitudeGateMaxMeters;
       const floor = this._config.altitudeGateOrbitFloor;
-      // smoothstep(min, max, h) blends from 0 (ground bloom) to 1
-      // (orbit bloom). Final multiplier blends from 1.0 (ground)
-      // to `floor` (orbit) — defaulting to 0.15 produces a subtle
-      // residual halo at orbit altitudes that mirrors real-camera
-      // limb scattering. Set `altitudeGateOrbitFloor: 0.0` to fully
-      // disable orbit bloom (matches pre-tuning Batch-22 behavior);
-      // set to 1.0 to disable the gate entirely.
+      // `smoothstep(min, max, h)` blends from 0, ground bloom, to 1, orbit
+      // bloom. The final multiplier therefore blends from 1.0 at ground to
+      // the floor at orbit; the default 0.15 leaves the subtle residual halo
+      // that mirrors real-camera limb scattering. Set
+      // `altitudeGateOrbitFloor: 0.0` to remove orbit bloom entirely, or 1.0
+      // to disable the gate.
       const t = Math.max(
         0,
         Math.min(1, (cameraHeightMeters - min) / Math.max(1e-6, max - min)),
@@ -270,9 +246,9 @@ export class BloomEffect implements PostProcessEffect {
     if (!this._device || (width === this._width && height === this._height))
       return;
     this._destroyTextures();
-    // C-R11 (Batch 31) — texture views change on resize, so the cached
-    // bind groups reference stale views. Drop the cache so the next
-    // execute() rebuilds against the fresh views.
+    // Texture views change on resize, so the cached bind groups reference
+    // stale views. Drop the cache and let the next `execute()` rebuild
+    // against the fresh ones.
     this._bgCache.invalidateAll();
     this.initialize(this._device, width, height, this._format);
   }
@@ -286,10 +262,10 @@ export class BloomEffect implements PostProcessEffect {
   ): GPUTextureView {
     if (!this._device) return sourceView;
 
-    // C-R11 (Batch 31) — all four bind groups route through the cache.
-    // When sourceView / sampler / uniform buffers are stable (the typical
-    // case after the first frame), the cache hits and we skip the
-    // createBindGroup syscall entirely.
+    // All four bind groups route through the cache. While the source view,
+    // sampler and uniform buffers are stable, which is the typical case after
+    // the first frame, the cache hits and the `createBindGroup` call is
+    // skipped entirely.
 
     // Pass 1: Bright pass (full-res → half-res)
     const brightBG = this._bgCache.getOrCreate(
@@ -458,19 +434,17 @@ export class BloomEffect implements PostProcessEffect {
     );
   }
 
-  // NEW-BLOOM-UNIFORM-PARITY (Batch 240) — the blur chain runs on
-  // HALF-resolution textures (perf choice), so one blur texel covers 2
-  // full-resolution pixels. WebGL's blur samples in full-res pixels
-  // (`stepSize * czm_pixelRatio / czm_viewport.zw`); halving the user's
-  // stepSize keeps the screen-space blur footprint identical across
+  // The blur chain runs on half-resolution textures, so one blur texel covers
+  // two full-resolution pixels. WebGL's blur samples in full-resolution
+  // pixels, as `stepSize * czm_pixelRatio / czm_viewport.zw`, so halving the
+  // user's stepSize keeps the screen-space blur footprint identical across
   // backends.
   private static readonly _HALF_RES_STEP_SCALE = 0.5;
 
   private _createUniforms(device: GPUDevice, hw: number, hh: number): void {
     const cfg = this._config;
     const step = cfg.stepSize * BloomEffect._HALF_RES_STEP_SCALE;
-    // BrightPass: contrast, brightness (WebGL ContrastBias parity —
-    // NEW-BLOOM-UNIFORM-PARITY, Batch 240)
+    // BrightPass: contrast and brightness, matching WebGL's ContrastBias.
     this._brightUniforms = createUniformBuffer(
       device,
       "Bloom-BrightPass-UB",
@@ -527,9 +501,8 @@ export class BloomEffect implements PostProcessEffect {
     if (config.stepSize !== undefined) cfg.stepSize = config.stepSize;
     if (config.intensity !== undefined) {
       cfg.intensity = config.intensity;
-      // Session 65 Batch 22 — capture as new base intensity so the
-      // altitude gate's per-frame multiplier uses the user's updated
-      // baseline.
+      // Captured as the new base intensity, so the altitude gate's per-frame
+      // multiplier uses the user's updated baseline.
       this._baseIntensity = config.intensity;
       this._lastGatedIntensity = -1.0; // force next applyAltitudeGate to write
     }
@@ -564,10 +537,10 @@ export class BloomEffect implements PostProcessEffect {
         ]) as Float32Array<ArrayBuffer>,
       );
     }
-    // NEW-BLOOM-UNIFORM-PARITY (Batch 240) — delta/sigma/stepSize were
-    // previously baked at init only; runtime changes to the blur
-    // uniforms silently no-oped. Rewrite both blur UBOs (params half —
-    // texel size at offset 16 is owned by initialize/resize).
+    // Rewrite both blur uniform buffers — the params half; the texel size at
+    // offset 16 is owned by `initialize` and `resize`. Baking delta, sigma
+    // and stepSize at init only would make every runtime change to the blur
+    // uniforms a silent no-op.
     if (this._blurHUniforms && this._blurVUniforms) {
       const step = cfg.stepSize * BloomEffect._HALF_RES_STEP_SCALE;
       this._device.queue.writeBuffer(

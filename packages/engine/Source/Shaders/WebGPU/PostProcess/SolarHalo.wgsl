@@ -1,18 +1,17 @@
-// SolarHalo.wgsl — C12-18 screen-space solar veiling glare (WebGPU half).
+// SolarHalo.wgsl — screen-space solar veiling glare, the WebGPU half.
 //
 // Twin of Shaders/PostProcessStages/SolarHalo.glsl; both are translations of
-// `solarScreenHaloProfile` in Scene/SolarDiscModel.js, and
-// Tools/visual-regression/sun-halo-composition.spec.mjs extracts, compiles and
-// compares all three bodies. Keep them in lockstep
-// (SHADER_PAIRS_LOCKSTEP.md).
+// `solarScreenHaloProfile` in Scene/SolarDiscModel.js, and an acceptance spec
+// extracts, compiles and compares all three bodies. A change here must land
+// with the matching change there. See SHADER_PAIRS_LOCKSTEP.md.
 //
-// This is the C11-160 half of the C12-18 row: before it, `scene.sunBloom` was
-// read by nobody on WebGPU (`WebGPUContext.supportsLegacySunBloom` returns
-// false and no WebGPU stage consumed the flag), so the WebGPU sun had no
-// screen-space halo of any kind.
+// This is the WebGPU consumer of `scene.sunBloom`:
+// `WebGPUContext.supportsLegacySunBloom` returns false, so without this stage
+// nothing on the WebGPU backend reads the flag and the sun has no
+// screen-space halo at all.
 //
-// NO NEW ShaderDefine BIT. Everything variable is a runtime uniform, per the
-// C12 exit condition (the low-word registry is exhausted).
+// Everything variable here is a runtime uniform rather than a shader define,
+// because the low-word define registry is exhausted.
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,

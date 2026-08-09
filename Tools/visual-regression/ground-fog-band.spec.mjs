@@ -561,9 +561,13 @@ test("the shader measures the band from the datum the renderer packs", () => {
     rendererSource,
     /r\.paramsData\[69\] = groundFogReferenceAltitude\(/s,
   );
+  // Slot 68 is `altitudeCurvature.x`, the curvature denominator. Pinning it
+  // proves slot 69 really is the SECOND component of that same vec4, which is
+  // what `u.altitudeCurvature.y` above resolves to. Anchored on the packing
+  // statement, not on the prose that describes it.
   assert.match(
     rendererSource,
-    /altitudeCurvature \(oneOverDenom, groundFogReference, pad\)/,
+    /r\.paramsData\[68\] = cMag > 0 \? 1\.0 \/ \(2\.0 \* cMag\) : 0\.0;/,
   );
 
   // The uniform block did NOT grow: the datum claimed an existing pad, so every
@@ -586,8 +590,11 @@ test("the shader measures the band from the datum the renderer packs", () => {
 // it. Batch 843 re-derived slot 87 and left a second copy of the refuted 1.2e-4
 // here, so the two sites described different fogs. These two tests hold them to
 // ONE source — the symbol, textually, and the arithmetic it produces.
+//
+// Both bounds are PACKING STATEMENTS, not comments: a block located by prose
+// stops being locatable the moment the prose is reworded.
 const msScaleBlock = (source) => {
-  const start = source.indexOf("// opticalDepthScale (offset 122)");
+  const start = source.indexOf("r.paramsData[121] = 2.0;");
   const end = source.indexOf("r.paramsData[123]", start);
   assert.ok(start > 0 && end > start, "the MS scale block must be locatable");
   return source.slice(start, end);
@@ -779,6 +786,37 @@ test("MUTATION: a SECOND copy of the extinction in the MS scale is caught by the
     ),
   );
   assert.throws(() => assert.doesNotMatch(mutantExpr, /\d+(?:\.\d+)?e-\d+/));
+});
+
+// Both anchors above used to be COMMENT text. They now sit on packing
+// statements, and these two controls prove the new anchors are load-bearing
+// rather than merely present. Each rename is deliberately NOT a prefix of the
+// anchor it perturbs: a prefix rename leaves the original substring intact and
+// the "control" passes for the wrong reason.
+test("MUTATION: the slot-68 curvature pin bites when the packing statement moves", () => {
+  const mutated = rendererSource.replace(
+    "r.paramsData[68] = cMag > 0 ? 1.0 / (2.0 * cMag) : 0.0;",
+    "r.paramsData[68] = zzMagnitude > 0 ? 1.0 / (2.0 * zzMagnitude) : 0.0;",
+  );
+  assert.notEqual(mutated, rendererSource, "the mutation must actually apply");
+  assert.throws(() =>
+    assert.match(
+      mutated,
+      /r\.paramsData\[68\] = cMag > 0 \? 1\.0 \/ \(2\.0 \* cMag\) : 0\.0;/,
+    ),
+  );
+});
+
+test("MUTATION: the MS-scale block locator bites when its opening statement moves", () => {
+  const mutated = rendererSource.replace(
+    "r.paramsData[121] = 2.0;",
+    "r.paramsData[121] = msLiftClampZZ;",
+  );
+  assert.notEqual(mutated, rendererSource, "the mutation must actually apply");
+  assert.throws(
+    () => msScaleBlock(mutated),
+    /the MS scale block must be locatable/,
+  );
 });
 
 // ── 7b. The calibration question, settled ────────────────────────────────────

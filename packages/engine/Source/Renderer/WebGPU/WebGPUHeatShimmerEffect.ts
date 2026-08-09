@@ -2,7 +2,7 @@
 /**
  * WebGPU HeatShimmerEffect
  *
- * Atmospheric Effects Phase B (Batch 417b). Screen-space animated UV-warp
+ * Screen-space animated UV-warp post-process, a heat haze or mirage.
  * post-process ("heat haze" / mirage). Single-pass — mirrors the structure
  * of `WebGPUGodRayEffect` (config interface, initialize/resize/destroy,
  * execute, set* helpers, _buildUniformData, the shared-helper imports) but

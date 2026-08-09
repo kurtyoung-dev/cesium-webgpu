@@ -1,18 +1,18 @@
 /// <reference types="@webgpu/types" />
 /**
- * Volumetric-fog resource builder extracted from
- * `WebGPUVolumetricFogRenderer` (Batch 158 of the maintainability sweep).
+ * Volumetric-fog resource builder for `WebGPUVolumetricFogRenderer`.
  *
- * Owns the 412-LOC `_ensureResources` body: 3D texture allocation,
- * compute-pipeline creation (density / scattering / integrate), bind-
- * group + bind-group-layout construction, params UBO, sun-shadow
- * placeholder, composite-pipeline descriptor (resolved later via the
- * central pipeline cache), composite uniform buffer + sampler.
+ * Owns the whole `_ensureResources` body: 3D texture allocation,
+ * compute-pipeline creation for the density, scattering and integrate
+ * passes, bind-group and bind-group-layout construction, the params uniform
+ * buffer, the sun-shadow placeholder, the composite-pipeline descriptor
+ * (resolved later through the central pipeline cache), and the composite
+ * uniform buffer and sampler.
  *
- * The renderer's `_ensureResources` becomes a small cache-management
- * wrapper: check whether the existing resources match the requested
- * quality, dispose if they don't, call `buildVolumetricFogResources`
- * to allocate fresh ones, assign to `this._resources`, return.
+ * That leaves the renderer's `_ensureResources` a small cache-management
+ * wrapper: check whether the existing resources match the requested quality,
+ * dispose if they do not, call `buildVolumetricFogResources` to allocate
+ * fresh ones, assign to `this._resources`, return.
  *
  * @module WebGPUVolumetricFogResources
  */
@@ -73,7 +73,7 @@ export function buildVolumetricFogResources(
 ): VolumetricFogResources {
   const dims = QUALITY_RESOLUTIONS[quality];
 
-  // ── 3D textures ──
+  // 3D textures
   // STORAGE_BINDING for the compute write target; TEXTURE_BINDING for
   // the composite shader sample. Both bits are core WebGPU; no
   // optional features required.
@@ -131,18 +131,18 @@ export function buildVolumetricFogResources(
     dimension: "3d",
   });
 
-  // ── Compute shader module + per-pass pipelines ──
-  // Phase 5b uses one shader module containing all three entry points
-  // and disjoint @binding numbers so we can declare write/read access
-  // for the SAME texture without WGSL `@binding` collisions. Each
-  // pipeline gets its own BGL containing only the bindings its entry
-  // point references; WebGPU validates per-entry-point.
-  // C-R7-SHADER-MODULE-DEDUP (Batch 74) — route the compute shader
-  // through the per-device module cache. Pipeline-level dedup is
-  // available via `context.webgpuComputePipelineCache` (Batch 76+) but
-  // VolumetricFog is a scene-singleton, so direct pipeline creation
-  // here is fine; adoption would only matter for the multi-instance
-  // case.
+  // Compute shader module and per-pass pipelines. One shader module carries
+  // all three entry points with disjoint `@binding` numbers, so write and
+  // read access can be declared for the same texture without a `@binding`
+  // collision. Each pipeline gets its own bind-group layout containing only
+  // the bindings its entry point references; WebGPU validates per entry
+  // point.
+  //
+  // The compute shader routes through the per-device module cache.
+  // Pipeline-level dedup is available through
+  // `context.webgpuComputePipelineCache`, but volumetric fog is a scene
+  // singleton, so creating the pipelines directly here costs nothing;
+  // adopting the cache would only matter in a multi-instance case.
   const moduleCache = getVolumetricFogShaderModuleCache(device);
   const computeShaderModule = moduleCache.getOrCreate(
     ShaderSourceId.VOLUMETRIC_FOG_COMPUTE,
@@ -196,19 +196,18 @@ export function buildVolumetricFogResources(
       // Phase 5c — sun shadow map (depth texture + comparison sampler).
       texture(6, Stage.COMPUTE, { sampleType: "depth" }),
       sampler(7, Stage.COMPUTE, "comparison"),
-      // Batch 431 (FOG-IBL-AMBIENT) — atmosphere TRANSMITTANCE LUT
-      // (rgba16float, filterable) + a linear (non-comparison) sampler for
-      // the (cosZenith, altitude) lookup + the atmosphere-derived SH-L2
-      // irradiance buffer (SHUniforms, 160 bytes). Bound unconditionally
-      // (placeholders by default) so the layout never forks; the WGSL only
-      // samples them when `u.iblAmbient.x >= 0.5`.
+      // The atmosphere transmittance LUT (rgba16float, filterable), a linear
+      // non-comparison sampler for the (cosZenith, altitude) lookup, and the
+      // atmosphere-derived SH-L2 irradiance buffer, 160 bytes. Bound
+      // unconditionally, as placeholders by default, so the layout never
+      // forks; the WGSL only samples them when `u.iblAmbient.x >= 0.5`.
       texture(8, Stage.COMPUTE, { sampleType: "float" }),
       sampler(9, Stage.COMPUTE),
       uniformBuffer(10, Stage.COMPUTE),
-      // Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map (binding 11) + a
-      // linear sampler (binding 12). Bound unconditionally (1×1 zero placeholder
-      // when the hi-fi flag is off → the legacy local-fbm path runs) so the layout
-      // never forks; the WGSL samples them only inside `cloudShadowHiFi.x >= 0.5`.
+      // Sun-view beer shadow map at binding 11 and a linear sampler at 12.
+      // Bound unconditionally — a 1×1 zero placeholder when the hi-fi flag is
+      // off, where the local-FBM path runs instead — so the layout never
+      // forks; the WGSL samples them only inside `cloudShadowHiFi.x >= 0.5`.
       texture(11, Stage.COMPUTE, { sampleType: "float" }),
       sampler(12, Stage.COMPUTE),
     ],
@@ -232,10 +231,10 @@ export function buildVolumetricFogResources(
     ],
   );
 
-  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — route the three compute
-  // pipelines through `webgpuComputePipelineCache` (sync path) so two
-  // contexts with volumetric fog enabled share one pipeline per
-  // (label, layout, entryPoint) tuple.
+  // Route the three compute pipelines through
+  // `webgpuComputePipelineCache`, on its synchronous path, so two contexts
+  // with volumetric fog enabled share one pipeline per (label, layout,
+  // entryPoint) tuple.
   const computeCache = computePipelineCache;
   const densityLayout = device.createPipelineLayout({
     bindGroupLayouts: [densityBindGroupLayout],
@@ -289,7 +288,7 @@ export function buildVolumetricFogResources(
     });
   }
 
-  // ── Params UBO ──
+  // Params UBO
   const paramsData = new Float32Array(VOLUMETRIC_FOG_PARAMS_FLOATS);
   const paramsU32 = new Uint32Array(
     paramsData.buffer,
@@ -352,17 +351,17 @@ export function buildVolumetricFogResources(
     addressModeV: "clamp-to-edge",
   });
 
-  // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL ambient placeholders.
-  // The scattering pass binds the atmosphere TRANSMITTANCE LUT (binding 8)
-  // + a linear sampler (binding 9) + the atmosphere-derived SH-L2 buffer
-  // (binding 10) UNCONDITIONALLY so the BGL is constant. Until the real
-  // resources arrive (and on the OFF default forever), placeholders keep
-  // the bind group valid. Mirrors AerialPerspectiveEffect's placeholder
-  // pattern. The WGSL only samples them when `u.iblAmbient.x >= 0.5`, so
-  // the placeholders are never read in the parity-default path.
+  // Sky-LUT / image-based ambient placeholders. The scattering pass binds the
+  // atmosphere transmittance LUT at binding 8, a linear sampler at 9, and the
+  // atmosphere-derived SH-L2 buffer at 10, unconditionally, so the
+  // bind-group layout is constant. Until the real resources arrive — and
+  // forever on the default path — these placeholders keep the bind group
+  // valid, the same arrangement `AerialPerspectiveEffect` uses. The WGSL only
+  // samples them when `u.iblAmbient.x >= 0.5`, so they are never read by
+  // default.
   //
-  // 1×1 white transmittance LUT — white = no extinction (so a stray read
-  // can't darken anything). rgba16float white = 0x3C00 per channel.
+  // The 1×1 white transmittance LUT is white so a stray read cannot darken
+  // anything: no extinction. In rgba16float, white is 0x3C00 per channel.
   const iblTransmittancePlaceholderTexture = device.createTexture({
     label: "VolumetricFog_IBLTransmittancePlaceholder",
     size: { width: 1, height: 1 },
@@ -403,11 +402,12 @@ export function buildVolumetricFogResources(
   // backends that don't zero-init new buffers (160 bytes = 40 floats).
   device.queue.writeBuffer(iblShPlaceholderBuffer, 0, new Float32Array(40));
 
-  // Batch 437 (CLOUD-SHADOWS) — 1×1 ZERO r16float beer-shadow-map placeholder
-  // (optical depth 0 → transmittance 1, no shadow) + a linear sampler. Bound at
-  // bindings 11/12 when the hi-fi flag is off (the WGSL `sampleCloudShadow` then
-  // takes the legacy local-fbm branch and never reads these). The real beer map is
-  // swapped in by the renderer's per-frame bind-group rebuild when hi-fi is on.
+  // A 1×1 zero r16float beer-shadow-map placeholder — optical depth 0, so
+  // transmittance 1 and no shadow — and a linear sampler. Bound at bindings
+  // 11 and 12 while the hi-fi flag is off, where the WGSL
+  // `sampleCloudShadow` takes the local-FBM branch and never reads them. The
+  // real beer map is swapped in by the renderer's per-frame bind-group
+  // rebuild when hi-fi is on.
   const beerShadowPlaceholderTexture = device.createTexture({
     label: "VolumetricFog_BeerShadowPlaceholder",
     size: { width: 1, height: 1 },
@@ -441,11 +441,11 @@ export function buildVolumetricFogResources(
       { binding: 3, resource: scatteringView },
       { binding: 6, resource: shadowPlaceholderView },
       { binding: 7, resource: shadowComparisonSampler },
-      // Batch 431 — sky-LUT / IBL ambient (placeholders until real arrive).
+      // Sky-LUT / image-based ambient: placeholders until the real ones arrive.
       { binding: 8, resource: iblTransmittancePlaceholderView },
       { binding: 9, resource: iblLutSampler },
       { binding: 10, resource: { buffer: iblShPlaceholderBuffer } },
-      // Batch 437 — beer shadow map placeholder until hi-fi flag turns it on.
+      // Beer shadow map placeholder until the hi-fi flag turns it on.
       { binding: 11, resource: beerShadowPlaceholderView },
       { binding: 12, resource: beerShadowSampler },
     ],
@@ -461,17 +461,16 @@ export function buildVolumetricFogResources(
     ],
   });
 
-  // ── Batch 435 (FOG-TEMPORAL) — temporal resolve pass resources ──
-  // The resolve pass reprojects the previous frame's integrated volume,
-  // neighborhood-clamps it, exponentially blends with the current march, and
-  // writes the new history. It is dispatched ONLY when temporal is on; on the
-  // default path the placeholder 1×1×1 history below keeps the BGL valid and
-  // the pass is never recorded (so the integrate output reaches the composite
-  // unchanged → byte-identical parity).
+  // Temporal resolve pass resources. The resolve pass reprojects the previous
+  // frame's integrated volume, neighbourhood-clamps it, exponentially blends
+  // it with the current march, and writes the new history. It is dispatched
+  // only when temporal is on; otherwise the 1×1×1 placeholder history below
+  // keeps the bind-group layout valid, the pass is never recorded, and the
+  // integrate output reaches the composite unchanged.
   //
-  // 1×1×1 placeholder history (storage write + filterable sample) — bound on
-  // the OFF path so the resolve BGL is constant and never forks. Tiny; never
-  // sampled in the parity-default path (the resolve pass doesn't run).
+  // That placeholder history — a storage write plus a filterable sample — is
+  // bound on the off path so the resolve layout is constant and never forks.
+  // It is tiny, and never sampled, because the resolve pass does not run.
   const temporalPlaceholderTexture = device.createTexture({
     label: "VolumetricFog_TemporalPlaceholder",
     size: { width: 1, height: 1, depthOrArrayLayers: 1 },
@@ -544,9 +543,8 @@ export function buildVolumetricFogResources(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // ── Composite pass resources ──
-  // C-R7-SHADER-MODULE-DEDUP (Batch 74) — route the composite shader
-  // through the per-device module cache.
+  // Composite pass resources. The composite shader routes through the
+  // per-device module cache.
   const compositeShaderModule = moduleCache.getOrCreate(
     ShaderSourceId.VOLUMETRIC_FOG_COMPOSITE,
     VolumetricFogCompositeSource,
@@ -561,11 +559,11 @@ export function buildVolumetricFogResources(
       uniformBuffer(0, Stage.VERTEX_FRAGMENT),
       sampler(1, Stage.FRAGMENT),
       texture(2, Stage.FRAGMENT),
-      // Batch 420 — LATENT FIX. Was `{ sampleType: "depth" }`, but the
-      // renderer binds the FLOAT depth-resolve texture here (sample type
-      // Float), so the depth sampleType made the bind group invalid the
-      // first time ground fog activated this composite. Plain float texture
-      // matches the bound view + the WGSL `texture_2d<f32>` declaration.
+      // A plain float texture, not `{ sampleType: "depth" }`: the renderer
+      // binds the float depth-resolve texture here, so a depth sample type
+      // makes the bind group invalid the first time ground fog activates this
+      // composite. Float matches both the bound view and the WGSL
+      // `texture_2d<f32>` declaration.
       texture(3, Stage.FRAGMENT),
       texture(4, Stage.FRAGMENT, { viewDimension: "3d" }),
     ],
@@ -576,10 +574,9 @@ export function buildVolumetricFogResources(
     bindGroupLayouts: [compositeBindGroupLayout],
   });
 
-  // C-R7-RENDERER-MIGRATION (Batch 74) — descriptor-only construction;
-  // the actual pipeline materializes through the central cache via
-  // `tryResolveCompositePipeline` in `composite()`. Two contexts with
-  // volumetric fog enabled share one composite pipeline.
+  // Descriptor-only construction; the pipeline itself materializes through
+  // the central cache in `composite()`'s `tryResolveCompositePipeline`, so
+  // two contexts with volumetric fog enabled share one composite pipeline.
   const compositeDescriptor: WebGPURenderPipelineDescriptor = {
     name: "VolumetricFog_CompositePipeline",
     layout: compositePipelineLayout,
@@ -640,10 +637,10 @@ export function buildVolumetricFogResources(
     integrateBindGroupLayout,
     integratePipeline,
     integrateBindGroup,
-    // Batch 435 (FOG-TEMPORAL) — temporal resolve resources. History pair is
-    // NOT allocated here (only when the flag is set, in the renderer); the
-    // placeholder + resolve pipeline are built up-front (cheap) so enabling
-    // temporal at runtime doesn't need a full resource rebuild.
+    // Temporal resolve resources. The history pair is not allocated here,
+    // only when the flag is set, in the renderer; the placeholder and the
+    // resolve pipeline are built up front, cheaply, so enabling temporal at
+    // runtime needs no full resource rebuild.
     temporalHistoryAllocated: false,
     temporalHistoryTexture: [null, null],
     temporalHistoryStorageView: [null, null],
@@ -663,14 +660,14 @@ export function buildVolumetricFogResources(
     shadowPlaceholderTexture,
     shadowPlaceholderView,
     shadowComparisonSampler,
-    // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL ambient resources.
+    // Sky-LUT / image-based ambient resources.
     iblTransmittancePlaceholderTexture,
     iblTransmittancePlaceholderView,
     iblLutSampler,
     iblShPlaceholderBuffer,
     scatteringBoundTransmittanceView: iblTransmittancePlaceholderView,
     scatteringBoundShBuffer: iblShPlaceholderBuffer,
-    // Batch 437 (CLOUD-SHADOWS) — beer shadow map placeholder + sampler.
+    // Beer shadow map placeholder and sampler.
     beerShadowPlaceholderTexture,
     beerShadowPlaceholderView,
     beerShadowSampler,

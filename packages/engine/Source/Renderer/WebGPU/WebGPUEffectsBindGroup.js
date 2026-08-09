@@ -35,8 +35,8 @@
  *                                    light pipelines that share the BGL stay
  *                                    valid; the shader gates on
  *                                    `pointLightControl.x > 0.5` before
- *                                    sampling — see C-R10-POINT-LIGHT-RECEIVE.)
- *   18: clusterLights         (read-only storage — Slice 5d Forward+,
+ *                                    sampling.)
+ *   18: clusterLights         (read-only storage — Forward+ clustered
  *                              80 B per ClusteredLight record × 1024 caps)
  *   19: clusterAABBs          (read-only storage — eye-space AABBs from
  *                              ClusterBounds compute pass, one per cluster)
@@ -46,9 +46,9 @@
  *                              When `activeLightCount.x = 0`, the FS chunk
  *                              early-outs and 18..21 are never sampled.)
  *   See `WebGPUClusteredLightingBGL.ts` for the canonical declaration of
- *   bindings 18..22 + per-device placeholder buffers used by both the
- *   placeholder bind group AND the active bind group when no dispatcher
- *   is running (Slice 5d Batch 153).
+ *   bindings 18..22 and the per-device placeholder buffers used by both the
+ *   placeholder bind group and the active bind group when no dispatcher is
+ *   running.
  *
  * When no shadow map or clipping planes are active, placeholder resources
  * are used (1×1 depth=1.0, planeCount=0) so the bind group is always
@@ -83,10 +83,9 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
-// Slice 5d Batch 153 — clustered lighting bindings 18..22 fold into the
-// existing effects BGL. See `WebGPUClusteredLightingBGL.ts` for the
-// rationale (Chromium-on-Windows caps `maxBindGroups` at 4; the original
-// `@group(4)` plan didn't fit).
+// The clustered-lighting bindings 18..22 fold into the existing effects
+// bind-group layout because Chromium on Windows caps `maxBindGroups` at 4, so
+// they cannot have a group of their own. See `WebGPUClusteredLightingBGL.ts`.
 import {
   CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES,
   getClusteredLightingPlaceholders,
@@ -113,8 +112,8 @@ import WebGPUEffectsStateCache from "./WebGPUEffectsStateCache.js";
 // path at bindings 1/2). y/z/w reserved. Keeping the vec4 shape lets
 // later slices pack cascade count / moon-light flag without another
 // UBO-size bump. Stays aligned on a vec4 boundary.
-// 272 → 304 bytes (C-R8-EDGE-INLINE): appended two vec4 control blocks
-// for the inline edge-detection stage in Model FS.
+// 272 → 304 bytes: two vec4 control blocks for the inline edge-detection
+// stage in the model fragment shader.
 //   offset 272 — `edgeControl: vec4<f32>` —
 //     x = edgeReady flag (1.0 when emitter populated MRT this frame),
 //     y = isEdgePass flag (always 0 for model FS — emitter uses its
@@ -130,8 +129,8 @@ import WebGPUEffectsStateCache from "./WebGPUEffectsStateCache.js";
 //     w = hasEdgeFeatureId flag (1.0 when the FS should match
 //         `edgeId.g` against the fragment's current featureId — the
 //         `HAS_EDGE_FEATURE_ID` branch from the WebGL stage).
-// 304 → 336 bytes (C-R10-POINT-LIGHT-RECEIVE): appended two vec4 blocks
-// for the point-light cube-shadow-receive path in Model FS.
+// 304 → 336 bytes: two vec4 blocks for the point-light cube-shadow-receive
+// path in the model fragment shader.
 //   offset 304 — `pointLightControl: vec4<f32>` —
 //     x = enabled flag (1.0 when binding 17 is the active cube-depth
 //         view AND the shader should route through `samplePointShadow`
@@ -152,9 +151,9 @@ import WebGPUEffectsStateCache from "./WebGPUEffectsStateCache.js";
 //           is quantized to f32, preserving meter/sub-meter light offsets at
 //           planetary scale. Receiver shaders subtract an already-relative
 //           fragment position in the same world-axis frame.
-//     w   = pcfRadius (Batch 63 — soft point-light shadows). Units are
-//           cube-face texels; 0 = hard sampling (single tap, identical
-//           to Batch 57's behavior). Typical soft values are 1.0–2.0
+//     w   = pcfRadius, for soft point-light shadows. Units are
+//           cube-face texels; 0 is hard sampling, a single tap.
+//           Typical soft values are 1.0–2.0
 //           texels; the receive shader converts this to a projected cube-face
 //           shift of `2 * radius / shadowMapSize.x`, then runs a 5-tap cross
 //           PCF kernel along the two minor cube-face axes. NOT the same role
@@ -166,11 +165,11 @@ import WebGPUEffectsStateCache from "./WebGPUEffectsStateCache.js";
 //     the cube sample direction and dominant-axis distance. Both operands are
 //     camera-relative world-axis vectors, so camera translation cancels while
 //     the cube-face orientation remains aligned with the cast cameras.
-// 336 → 480 bytes (Batch 160, AUDIT_2026_05_02 A.6 NEW-MODEL-CLIPPING-POLYGONS):
-// appended polygon-clipping atlas control + per-extent UV remap so the model FS
-// can sample `clippingPolygonTex` at the correct atlas slot for the fragment's
-// containing extent, instead of the prior whole-globe lon/lat mapping that
-// produced garbage SDF samples for typical small polygons.
+// 336 → 480 bytes: polygon-clipping atlas control and per-extent UV remap, so
+// the model fragment shader can sample `clippingPolygonTex` at the atlas slot
+// belonging to the fragment's containing extent. A whole-globe lon/lat mapping
+// instead produces garbage SDF samples for any polygon small relative to the
+// globe, which is most of them.
 //   offset 336 — `clippingPolygonControl: vec4<f32>` —
 //     x = extentsCount (number of merged-extent groups in the SDF atlas;
 //         polygons with overlapping spherical bounding rectangles get
@@ -199,7 +198,7 @@ import WebGPUEffectsStateCache from "./WebGPUEffectsStateCache.js";
 //     overflow groups (their fragments just won't get clipped).
 const EFFECTS_UNIFORM_SIZE = 480;
 const EFFECTS_UNIFORM_FLOATS = EFFECTS_UNIFORM_SIZE / 4;
-// Polygon clipping atlas control + per-extent remap (Batch 160).
+// Polygon clipping atlas control and per-extent remap.
 const CLIPPING_POLYGON_CONTROL_OFFSET = 84; // 336 bytes / 4
 const CLIPPING_POLYGON_EXTENTS_OFFSET = 88; // 352 bytes / 4
 const CLIPPING_POLYGON_EXTENTS_MAX = 8;
@@ -210,8 +209,8 @@ const ATMOSPHERE_LUT_CONTROL_OFFSET = 60; // 240 bytes / 4
 const CSM_CONTROL_OFFSET = 64; // 256 bytes / 4
 const EDGE_CONTROL_OFFSET = 68; // 272 bytes / 4
 const EDGE_VIEWPORT_OFFSET = 72; // 288 bytes / 4
-// C-R10-POINT-LIGHT-RECEIVE — point-light cube-shadow control + light
-// position. Two vec4 slots = 8 floats appended after the edge block.
+// Point-light cube-shadow control and light position: two vec4 slots, eight
+// floats, after the edge block.
 const POINT_LIGHT_CONTROL_OFFSET = 76; // 304 bytes / 4
 const POINT_LIGHT_POSITION_OFFSET = 80; // 320 bytes / 4
 const CLIP_DPRIME_FLOAT_OFFSET = 28;
@@ -556,10 +555,10 @@ function getEffectsBindGroupLayout(device) {
       sampleType: "depth",
       viewDimension: "2d-array",
     }),
-    // C-R8-EDGE-INLINE — inline edge-detection resources for Model FS.
-    // Always present in the layout (with 1×1 placeholder textures + a
-    // shared filtering sampler when no edges are populated) so all
-    // model pipelines share one BGL. The shader gates sampling on
+    // Inline edge-detection resources for the model fragment shader. Always
+    // present in the layout — with 1×1 placeholder textures and a shared
+    // filtering sampler when no edges are populated — so all model pipelines
+    // share one bind-group layout. The shader gates sampling on
     // `effects.edgeControl.x > 0.5`. Globe / primitive shaders that
     // don't reference these bindings simply don't sample them — the
     // BGL still validates because the bind group has matching entries.
@@ -578,10 +577,10 @@ function getEffectsBindGroupLayout(device) {
     //             textures. Linear filtering matches WebGL's default
     //             texture filter for these targets.
     sampler(16, Stage.FRAGMENT),
-    // C-R10-POINT-LIGHT-RECEIVE — point-light cube depth target. Always
-    // present in the layout (with a 1×1×6 placeholder cleared to 1.0
-    // when point-light shadows are off) so model / primitive pipelines
-    // share one BGL across both light types. The receive shader gates
+    // Point-light cube depth target. Always present in the layout — with a
+    // 1×1×6 placeholder cleared to 1.0 when point-light shadows are off — so
+    // model and primitive pipelines share one bind-group layout across both
+    // light types. The receive shader gates
     // sampling on `effects.pointLightControl.x > 0.5` — when false,
     // this binding is bound but never sampled. Reusing binding 2 as
     // the comparison sampler keeps the binding count from drifting.
@@ -589,8 +588,8 @@ function getEffectsBindGroupLayout(device) {
       sampleType: "depth",
       viewDimension: "cube",
     }),
-    // Slice 5d Batch 153 — Forward+ clustered lighting bindings.
-    // The 5 entries (bindings 18..22) come from
+    // Forward+ clustered lighting bindings.
+    // The five entries, 18..22, come from
     // CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES so the binding numbers
     // + types match the WGSL chunk and the active/placeholder bind group
     // builders below. Always present in the layout (placeholders bound
@@ -674,8 +673,8 @@ function getPlaceholderEffects(device) {
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
   });
   cache.placeholderDepthTex = depthTex;
-  // C-R11-EFFECTS-BGL-COLLECTION-CACHE: cache the view so the hot path
-  // doesn't call `createView()` per bind-group construction.
+  // Cache the view so the hot path does not call `createView()` on every
+  // bind-group construction.
   cache.placeholderDepthView = depthTex.createView();
 
   // Clear placeholder depth to 1.0 via a render pass
@@ -846,7 +845,7 @@ function getPlaceholderEffects(device) {
     arrayLayerCount: 4,
   });
 
-  // C-R8-EDGE-INLINE placeholders. 1×1 transparent textures so the
+  // Edge placeholders: 1×1 transparent textures, so the
   // shader's `edgeColor.a <= 0.0` early-out always triggers when the
   // gate (`edgeControl.x > 0.5`) accidentally fires without populated
   // textures. The shared filtering sampler matches the linear-filtering
@@ -876,7 +875,7 @@ function getPlaceholderEffects(device) {
   });
   cache.edgeSampler = edgeSampler;
 
-  // C-R10-POINT-LIGHT-RECEIVE placeholder. 1×1×6 depth32float cleared
+  // Point-light placeholder: a 1×1×6 depth32float cleared
   // to 1.0 so the shader's comparison sample returns "lit" (refDepth <
   // 1.0 → step→0 → unshadowed) regardless of which face direction is
   // selected. The cube view is bound at binding 17 even when no point
@@ -951,9 +950,9 @@ function getPlaceholderEffects(device) {
   device.queue.writeBuffer(ub, 0, data);
   cache.placeholderUniformBuffer = ub;
 
-  // Slice 5d Batch 153 — per-device clustered-lighting placeholder
-  // buffers. Bound at slots 18..22 of the placeholder BG so the BGL
-  // validates regardless of whether a SceneRenderer's dispatcher is
+  // Per-device clustered-lighting placeholder buffers, bound at slots 18..22
+  // of the placeholder bind group so the layout validates regardless of
+  // whether a scene renderer's dispatcher is
   // running yet. The placeholder `params` is zero-filled, so any
   // pipeline whose WGSL includes the ClusteredLighting chunk reads
   // `activeLightCount = 0` and early-outs without touching slots 18..21.
@@ -979,12 +978,12 @@ function getPlaceholderEffects(device) {
       { binding: 14, resource: cache.placeholderEdgeView },
       { binding: 15, resource: cache.placeholderEdgeView },
       { binding: 16, resource: edgeSampler },
-      // C-R10-POINT-LIGHT-RECEIVE — bind the cleared 1×1×6 cube depth
-      // even in the shared placeholder. The shader's
+      // Bind the cleared 1×1×6 cube depth even in the shared placeholder.
+      // The shader's
       // `pointLightControl.x` gate stays at 0 in this UB so the cube
       // sample never executes; the binding just satisfies BGL validation.
       { binding: 17, resource: cache.placeholderCubeDepthView },
-      // Slice 5d Batch 153 — clustered lighting placeholders.
+      // Clustered lighting placeholders.
       { binding: 18, resource: { buffer: clusteredPH.clusterLights } },
       { binding: 19, resource: { buffer: clusteredPH.clusterAABBs } },
       { binding: 20, resource: { buffer: clusteredPH.perClusterLightCount } },
@@ -1112,7 +1111,7 @@ function shadowReceivePrefixMatches(cached) {
  * @param {object} [options.shadowMap] - CesiumJS ShadowMap object
  * @param {object} [options.clippingPlanes] - ClippingPlaneCollection with _webgpuCache
  * @param {object} [options.clippingPolygons] - ClippingPolygonCollection with _webgpuCache
- * @param {object} [options.cameraInPlaneSpace] - Phase 5 WGF-1: unencoded
+ * @param {object} [options.cameraInPlaneSpace] - Unencoded
  *   camera position in the same coordinate frame the clipping plane
  *   equations were authored in (world-space for globe terrain, model-space
  *   for primitives with non-identity modelMatrix). Required for the
@@ -1127,14 +1126,14 @@ function shadowReceivePrefixMatches(cached) {
  *   - Planet radii (meters) for LUT altitude mapping. Defaults to WGS84
  *   + 2.5% atmosphere thickness.
  * @param {{enabled: boolean, paramsBuffer: GPUBuffer, cascadeArrayView: GPUTextureView, pcfRadius: (number|undefined)}} [options.csm]
- *   - CSM Slice 1: when present with `enabled === true`, binds the cascade
+ *   - When present with `enabled === true`, binds the cascade
  *   params UBO at binding 10 and the cascade depth array at binding 11,
  *   setting `effects.csmControl.x = 1.0` so the shader routes through
  *   `sampleCascadeShadow` instead of the single-map path. Lives on
  *   `WebGPUCSMRenderer` when active. `pcfRadius` (shadow texels, default
  *   from the renderer's `softShadows` config) drives the 3x3 PCF box
- *   kernel via `effects.csmControl.y` (NEW-CSM-SOFT-SHADOW-PCF).
- * @param {object} [options.edges] - C-R8-EDGE-INLINE: when populated AND
+ *   kernel via `effects.csmControl.y`.
+ * @param {object} [options.edges] - When populated AND
  *   `edges.ready === true`, binds the edge MRT views at bindings 12/13/14
  *   and the globe packed-depth at binding 15, then sets
  *   `effects.edgeControl.x = 1.0` so the inline `edgeDetectionStage()`
@@ -1153,7 +1152,7 @@ function shadowReceivePrefixMatches(cached) {
  * @param {number} [options.edges.viewportWidth]
  * @param {number} [options.edges.viewportHeight]
  * @param {boolean} [options.edges.hasFeatureId]
- * @param {object} [options.pointLight] - C-R10-POINT-LIGHT-RECEIVE: when
+ * @param {object} [options.pointLight] - When
  *   present with `enabled === true` AND `cubeDepthView` populated, binds
  *   the 6-face cube-depth view at binding 17 and sets
  *   `effects.pointLightControl.x = 1.0` so the model fragment shader
@@ -1173,14 +1172,14 @@ function shadowReceivePrefixMatches(cached) {
  * @param {number} [options.pointLight.darkness] - 0..1; defaults to
  *   the active shadow map's `darkness` field, or 0.3 when no map is
  *   bound (matches Cesium `ShadowMap` defaults).
- * @param {number} [options.pointLight.pcfRadius] - Batch 63 soft point-
- *   light shadow radius in cube-face texels. 0 (default) preserves the
- *   Batch 57 hard-edge behavior — single comparison sample. >0 enables
+ * @param {number} [options.pointLight.pcfRadius] - Soft point-
+ *   light shadow radius in cube-face texels. 0, the default, is the
+ *   hard-edge path — a single comparison sample. Above 0 enables
  *   the 5-tap cross PCF kernel in `samplePointShadow`. Auto-populated
  *   from `shadowMap._softShadows ? 1.5 : 0.0` when sourced from a
  *   ShadowMap; explicit overrides allow per-call control.
- * @param {object} [options.clusteredLighting] - Slice 5d Batch 153:
- *   the live clustered-lighting dispatcher's GPU buffers from
+ * @param {object} [options.clusteredLighting] - The live
+ *   clustered-lighting dispatcher's GPU buffers from
  *   `WebGPUSceneRenderer._getClusteredLightingBuffers()`. When present,
  *   bindings 18..22 use these handles so the Forward+ FS chunk in
  *   ModelPBRComplete (and follow-on Lit Mat shaders) reads the
@@ -1230,8 +1229,8 @@ function createEffectsBindGroup(device, frameState, options) {
     defined(csm.paramsBuffer) &&
     defined(csm.cascadeArrayView);
 
-  // C-R8-EDGE-INLINE: optional edge resources for the inline detection
-  // stage in Model FS. Counts as an "active feature" for the early-out
+  // Optional edge resources for the inline detection stage in the model
+  // fragment shader. Counts as an active feature for the early-out
   // gate below — the placeholder bind group's `edgeControl.x = 0` would
   // disable the stage even when populated views are passed.
   const edges = options?.edges;
@@ -1241,12 +1240,12 @@ function createEffectsBindGroup(device, frameState, options) {
     defined(edges.edgeColorView) &&
     defined(edges.edgeDepthView);
 
-  // C-R10-POINT-LIGHT-RECEIVE: optional point-light cube depth + light
-  // metadata. The shadow map itself drives the auto-detect path below
-  // (when `shadowMap._isPointLight` is true and the cube view exists);
-  // explicit `options.pointLight` overrides for callers that want fine-
-  // grained control (e.g., split-screen comparisons that pin one side
-  // to a specific light). Like CSM, counts as an "active feature" so
+  // Optional point-light cube depth and light metadata. The shadow map
+  // itself drives the auto-detect path below, when `shadowMap._isPointLight`
+  // is true and the cube view exists; an explicit `options.pointLight`
+  // overrides that, for callers wanting fine-grained control such as a
+  // split-screen comparison pinning one side to a specific light. Like CSM,
+  // counts as an active feature so
   // the placeholder isn't returned when only a point light is bound.
   const pointLightOverride = options?.pointLight;
   let pointLightConfig = null;
@@ -1286,17 +1285,15 @@ function createEffectsBindGroup(device, frameState, options) {
         farPlane,
         nearPlane: 1.0,
         depthBias: shadowMap._pointBias?.depthBias ?? 0.005,
-        // NEW-WEBGPU-SHADOW-DARKNESS-FADE-NOT-APPLIED — read the FADED
-        // `_darkness` that WebGL's `combineUniforms` reads, not the public
-        // unfaded property. Same correction as `getShadowMapResources`.
+        // Read the faded `_darkness` that WebGL's `combineUniforms` reads,
+        // not the public unfaded property, so the two backends fade
+        // identically. `getShadowMapResources` reads the same field.
         darkness: shadowMap._darkness ?? shadowMap.darkness ?? 0.3,
-        // Batch 63 — soft point-light shadows. ShadowMap.softShadows is
-        // the canonical opt-in flag (mirrors the WebGL `softShadows`
-        // path); when set we hand the model FS a 1.5-texel PCF radius,
-        // which gives a noticeably softer edge without dropping below
-        // ~120fps on the 5-tap kernel. Hard sampling stays the default
-        // when softShadows is false so existing demos render bit-exact
-        // to Batch 57.
+        // Soft point-light shadows. `ShadowMap.softShadows` is the opt-in
+        // flag, mirroring the WebGL `softShadows` path; when set, the model
+        // fragment shader gets a 1.5-texel PCF radius, which noticeably
+        // softens the edge and still holds above 120 fps on the 5-tap
+        // kernel. Hard sampling is the default when `softShadows` is false.
         pcfRadius: shadowMap.softShadows ? 1.5 : 0.0,
         // Cube-face edge length in texels — the receive shader scales
         // pcfRadius by `1.0 / cubeFaceSize` to convert texels to a unit-
@@ -1377,12 +1374,12 @@ function createEffectsBindGroup(device, frameState, options) {
     defined(atmosphereLutTransmittanceView) &&
     defined(atmosphereLutInscatterView);
 
-  // Slice 5d Batch 153 — clustered lighting counts as an active feature
-  // when the caller has handed us live dispatcher buffers. The shared
-  // placeholder bind group binds per-device placeholder cluster buffers
-  // (whose params has `activeLightCount = 0` → FS chunk early-out); to
-  // get the dispatcher's *real* buffers at the consumer site we have to
-  // skip the early-return and build the active bind group below.
+  // Clustered lighting counts as an active feature when the caller has
+  // handed over live dispatcher buffers. The shared placeholder bind group
+  // binds per-device placeholder cluster buffers, whose params carry
+  // `activeLightCount = 0` and make the fragment chunk early-out, so
+  // reaching the dispatcher's real buffers at the consumer site means
+  // skipping the early return and building the active bind group below.
   const hasClusteredLighting = defined(options?.clusteredLighting);
 
   // If no features are active, return the shared placeholder
@@ -1425,7 +1422,7 @@ function createEffectsBindGroup(device, frameState, options) {
     // Point-light receive — same `shadowDarkness >= 1.0` early-out
     // concern as CSM. Pull the override from the resolved point-light
     // config (auto-populated from `shadowMap.darkness` when the path
-    // came from the auto-detect branch). Batch 63: shadowMapSize.x
+    // came from the auto-detect branch). `shadowMapSize.x`
     // carries the cube-face edge length so the model FS's PCF kernel
     // can scale `pcfRadius` (texels) to a `2 * radius / shadowMapSize.x`
     // projected cube-face perturbation. .y is unused on this path; we
@@ -1453,7 +1450,7 @@ function createEffectsBindGroup(device, frameState, options) {
   if (defined(clippingPolygons) && clippingPolygons.length > 0) {
     dv.setUint32(23 * 4, clippingPolygons.length, true);
 
-    // Batch 160 — atlas control + per-extent UV remap so
+    // Atlas control and per-extent UV remap, so
     // `modelClipByPolygon` (and the equivalent globe-side helper)
     // sample the SDF at the correct atlas slot. The CPU-side
     // `_extentsFloat32View` already packs `(south, west, invLatRange,
@@ -1466,13 +1463,13 @@ function createEffectsBindGroup(device, frameState, options) {
       // Atlas grid math MUST mirror `PolygonSignedDistance.wgsl:53-56`
       // — the SDF compute pass writes its atlas using the FULL
       //   dim = (extentsCount > 2) ? ceil(log2(extentsCount)) : extentsCount
-      // formula, NOT the capped count. Batch 163 fixes a Batch 160 bug
-      // where `dim` was derived from `usedCount`: in scenes with > 8
-      // merged-extent groups the SDF compute writes (say) a 4×4 atlas
-      // but we'd publish `invDim = 1/3`, sampling the wrong slots for
-      // every region. The UBO array is still capped at
-      // `CLIPPING_POLYGON_EXTENTS_MAX`, so regions ≥ 8 simply don't
-      // clip — but regions 0..7 now sample at the correct slot.
+      // formula, not the capped count. Deriving `dim` from `usedCount`
+      // instead breaks any scene with more than 8 merged-extent groups:
+      // the SDF compute writes, say, a 4×4 atlas while this publishes
+      // `invDim = 1/3`, and every region samples the wrong slot. The
+      // uniform array is still capped at `CLIPPING_POLYGON_EXTENTS_MAX`,
+      // so regions at index 8 and beyond simply do not clip, while
+      // regions 0..7 sample the correct slot.
       // Precompute `1/dim` so the shader skips per-fragment log2.
       const dim =
         extentsCount > 2 ? Math.ceil(Math.log2(extentsCount)) : extentsCount;
@@ -1562,17 +1559,17 @@ function createEffectsBindGroup(device, frameState, options) {
   // Future slices pack cascade count into .y and moon-light flag
   // into .z.
   ud[CSM_CONTROL_OFFSET + 0] = hasCsm ? 1.0 : 0.0;
-  // NEW-CSM-SOFT-SHADOW-PCF — .y = PCF kernel radius in shadow texels.
-  // >0 routes the receive shaders' `sampleOneCascade` through a 3x3 box
-  // kernel (matches WebGL's czm_shadowVisibility USE_SOFT_SHADOWS); 0
-  // keeps a single hardware-comparison tap (hard edge). Sourced from the
+  // .y is the PCF kernel radius in shadow texels. Above 0 it routes the
+  // receive shaders' `sampleOneCascade` through a 3x3 box kernel, matching
+  // WebGL's `czm_shadowVisibility` under `USE_SOFT_SHADOWS`; 0 keeps a
+  // single hardware-comparison tap, a hard edge. Sourced from the
   // CSM renderer's `softShadows` config (default 1.5 texels).
   ud[CSM_CONTROL_OFFSET + 1] = hasCsm ? (csm?.pcfRadius ?? 0.0) : 0.0;
   ud[CSM_CONTROL_OFFSET + 2] = 0.0;
   ud[CSM_CONTROL_OFFSET + 3] = 0.0;
 
-  // C-R8-EDGE-INLINE control blocks — drive the inline edge-detection
-  // stage in Model FS. `edgeControl.x = 1.0` flips the gate; the rest
+  // Control blocks driving the inline edge-detection stage in the model
+  // fragment shader. `edgeControl.x = 1.0` flips the gate; the rest
   // are pure data (near/far for window→linear depth conversion in the
   // stage, viewport for screen-space coord, tolerance + featureId
   // flag). Zero-fill when edges aren't ready so the gate stays off.
@@ -1599,7 +1596,7 @@ function createEffectsBindGroup(device, frameState, options) {
     ud[EDGE_VIEWPORT_OFFSET + 3] = 0.0;
   }
 
-  // C-R10-POINT-LIGHT-RECEIVE — control + light position blocks.
+  // Point-light control and light-position blocks.
   //   pointLightControl.x — gate: 1.0 routes the receive shader through
   //     `samplePointShadow` (cube depth at binding 17). 0.0 keeps the
   //     existing 2D / CSM path active.
@@ -1622,9 +1619,9 @@ function createEffectsBindGroup(device, frameState, options) {
     const farPlane = pointLightConfig.farPlane;
     const nearPlane = pointLightConfig.nearPlane ?? 1.0;
     const depthBias = pointLightConfig.depthBias ?? 0.005;
-    // Batch 63 — PCF radius defaults to 0 (hard sampling). When the
-    // caller wires `pcfRadius > 0` (or the auto-detect branch above
-    // resolved a soft-shadows-enabled ShadowMap to 1.5 texels) the
+    // The PCF radius defaults to 0, hard sampling. When the caller wires
+    // `pcfRadius > 0`, or the auto-detect branch above resolved a
+    // soft-shadows-enabled ShadowMap to 1.5 texels, the
     // model FS runs a 5-tap cross kernel on the cube depth instead
     // of the single-tap hard sample.
     const pcfRadius = pointLightConfig.pcfRadius ?? 0.0;
@@ -1649,8 +1646,6 @@ function createEffectsBindGroup(device, frameState, options) {
     ud[POINT_LIGHT_POSITION_OFFSET + 3] = 0.0;
   }
 
-  // C-R11-EFFECTS-BGL-COLLECTION-CACHE (Batch 55):
-  //
   // Build the resource tuple from the resolved-or-placeholder views/
   // samplers/buffers. Then cache the (UBO + GPUBindGroup) pair under a
   // stable owner/resource identity. Camera, edge, and viewport values live
@@ -1700,15 +1695,15 @@ function createEffectsBindGroup(device, frameState, options) {
     (hasEdges && edges.edgeDepthView) || pCache.placeholderEdgeView;
   const bGlobeDepth =
     (hasEdges && edges.globeDepthView) || pCache.placeholderEdgeView;
-  // C-R10-POINT-LIGHT-RECEIVE — pick the active cube depth view or the
+  // Pick the active cube depth view or the
   // 1×1×6 cleared placeholder. Identity is part of the cache key so
   // toggling point lights on/off allocates a fresh UBO+BG pair.
   const bCubeDepth =
     (hasPointLight && pointLightConfig.cubeDepthView) ||
     pCache.placeholderCubeDepthView;
 
-  // Slice 5d Batch 153 — clustered lighting buffer handles. Active
-  // dispatcher's buffers when the SceneRenderer wires them through
+  // Clustered lighting buffer handles: the active dispatcher's buffers
+  // when the scene renderer wires them through
   // `options.clusteredLighting`; otherwise the per-device placeholders
   // (whose `params` reads `activeLightCount = 0` so the consumer FS
   // chunk early-outs). Identities participate in the resource key so
@@ -1970,13 +1965,13 @@ function updateEffectsUniforms(
   // don't flip this flag from the in-place update path.
   ud[CSM_CONTROL_OFFSET + 0] = 0.0;
 
-  // C-R8-EDGE-INLINE — same rationale as CSM. Toggling on requires
+  // Same reasoning as CSM. Toggling edges on requires a
   // re-bind (new edge texture views), so the in-place updater leaves
   // the gate off. Callers that need edges must go through the full
   // `createEffectsBindGroup` factory each frame.
   ud[EDGE_CONTROL_OFFSET + 0] = 0.0;
 
-  // C-R10-POINT-LIGHT-RECEIVE — same rationale as CSM and edges. The
+  // Same reasoning as CSM and edges. The
   // cube depth view at binding 17 belongs to a specific shadow map; if
   // the caller wants point-light shadows the only correct path is
   // `createEffectsBindGroup` (which rebinds binding 17 to the active

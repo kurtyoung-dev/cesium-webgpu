@@ -1,4 +1,4 @@
-// NPROutlines.wgsl — Slice 5c-B Batch 123.
+// NPROutlines.wgsl — cheap silhouette and crease edge detector.
 //
 // Cheap silhouette + crease edge detector. Reads the G-buffer normal-
 // roughness texture (slot 1) + the scene depth texture, samples each
@@ -42,12 +42,11 @@ struct NPRUniforms {
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
-// Slice 5c-B Batch 128 — depth is now provided as an r16float color
-// texture by SceneFramebuffer's depth-resolve pass (MSAA mode) or
-// directly by the depth-only-aspect view of the single-sample depth
-// texture (which is also bindable as texture_2d<f32> when sample
-// type is unfilterable-float OR filterable-float). Sample as f32
-// and read .r for the depth value.
+// Depth arrives as an r16float colour texture from SceneFramebuffer's
+// depth-resolve pass in MSAA mode, or directly as the depth-only-aspect view
+// of the single-sample depth texture, which is also bindable as
+// `texture_2d<f32>` under either an unfilterable-float or a filterable-float
+// sample type. Sampled as f32, reading `.r` for the depth value.
 @group(0) @binding(1) var depthTex: texture_2d<f32>;
 @group(0) @binding(2) var normalRoughTex: texture_2d<f32>;
 @group(0) @binding(3) var texSampler: sampler;

@@ -11,14 +11,13 @@
 //   - Marco Salvi, "An Excursion in Temporal Supersampling" (GDC 2016) — the
 //     variance form of that clamp, which the neighbourhood bounds follow.
 //
-// Pipeline order: BEFORE Tonemap (linear/HDR domain), before optional
-// FXAA. NEW-TAA-PIPELINE-ORDER-RECONCILE (Batch 290) confirmed this is
-// the correct placement: the resolve below operates in `tonemapWeight`
-// space (c/(1+luma)), whose inverse c/(1-luma) is only well-defined for
-// linear/HDR input — already-tonemapped SDR highlights (luma→1) would
-// divide by ~0 and produce Inf/NaN. So this stage MUST stay upstream of
-// the display tonemapper. See WebGPUPostProcessPipeline.ts pipeline-order
-// header for the full decision record. Do not move post-tonemap.
+// Pipeline order: before Tonemap, in the linear/HDR domain, and before the
+// optional FXAA. The resolve below operates in `tonemapWeight` space,
+// c/(1+luma), whose inverse c/(1-luma) is only well defined for linear
+// input: already-tonemapped SDR highlights approach luma 1 and divide by
+// nearly zero, producing Inf or NaN. This stage must therefore stay
+// upstream of the display tonemapper. The pipeline-order header in
+// WebGPUPostProcessPipeline.ts carries the full argument.
 // Input: current frame color (jittered, linear/HDR), history buffer, depth.
 // Output: resolved anti-aliased color written to the current history slot.
 //
@@ -55,41 +54,37 @@ struct TAAParams {
 @group(0) @binding(2) var depthTex: texture_depth_2d;
 @group(0) @binding(3) var linearSampler: sampler;
 @group(0) @binding(4) var<uniform> params: TAAParams;
-// TAA Slice 2d (Batch 104) — per-pixel motion-vector texture written by
-// the model FS @location(1). Bound to a 1×1 zero placeholder when the
-// model velocity pass is inactive; the FS branch in `reprojectUV` reads
-// the sample and falls back to depth-reprojection when it's zero
-// (placeholder content) or when |motion| is below a threshold.
+// Per-pixel motion-vector texture, written by the model fragment shader at
+// `@location(1)`. Bound to a 1×1 zero placeholder when the model velocity
+// pass is inactive; the branch in `reprojectUV` reads the sample and falls
+// back to depth reprojection when it is zero, which is the placeholder
+// content, or when |motion| is below a threshold.
 //
-// rg16float layout: (R, G) = NDC delta (current - previous), in [-1, 1]
-// per axis. The model FS computes this via
-// `computeMotionVectorScreenSpace` and writes it raw; the TAA shader
-// converts to UV delta via `(curNdc - prevNdc) * vec2(0.5, -0.5)` in
+// rg16float layout: (R, G) is the NDC delta, current minus previous, in
+// [-1, 1] per axis. The model fragment shader computes it through
+// `computeMotionVectorScreenSpace` and writes it raw; this shader converts
+// it to a UV delta as `(curNdc - prevNdc) * vec2(0.5, -0.5)` in
 // `sampleMotionTexture` below.
 @group(0) @binding(5) var motionTex: texture_2d<f32>;
-// Slice 5c-B Batch 126 — G-buffer normal-roughness (slot 1 of the
-// MRT pipeline, Batches 117-121). When the host passes a real
-// G-buffer view, the disocclusion check below adds a 3rd rejection
-// criterion: if the eye-space normal at `prevUV` diverges from the
-// normal at `uv` by more than `normalRejectThreshold`, treat the
-// history as disoccluded. Catches silhouette pixels where the
-// reprojected screen position points at a different surface (e.g. a
-// foreground object moved off a background; the AABB + depth checks
-// can miss this when the depth gap is small but the surface
-// orientation differs). When the host binds the 1×1 sentinel
-// placeholder, the check skips and the prior depth+motion gates run
-// unchanged.
+// G-buffer normal-roughness, slot 1 of the MRT pipeline. When the host passes
+// a real G-buffer view, the disocclusion check below gains a third rejection
+// criterion: if the eye-space normal at `prevUV` diverges from the normal at
+// `uv` by more than `normalRejectThreshold`, the history is treated as
+// disoccluded. That catches silhouette pixels where the reprojected screen
+// position points at a different surface — a foreground object that moved off
+// a background — which the AABB and depth checks can miss when the depth gap
+// is small but the surface orientation differs. When the host binds the 1×1
+// sentinel placeholder the check is skipped and the depth and motion gates
+// run alone.
 @group(0) @binding(6) var gBufferNormalTex: texture_2d<f32>;
-// Batch 244 (NEW-TAA-EFFECT-NEVER-ADDED first activation) — dedicated
-// NEAREST sampler for the depth texture. WebGPU forbids pairing a
-// TextureSampleType::Depth binding with a Filtering sampler (the
-// TAA_Pipeline failed creation silently for the shader's whole dormant
-// life). Nearest is also the CORRECT depth policy: bilinear blends
-// across depth edges fabricate depths belonging to neither surface.
-// Same NEW-4-B (Batch 66) rule as WebGPUGlobeDepth / DebugDepthOverlay.
+// A dedicated nearest sampler for the depth texture. WebGPU forbids pairing a
+// depth sample type with a filtering sampler, and pipeline creation fails on
+// it. Nearest is also the correct depth policy in its own right: bilinear
+// blends across depth edges fabricate depths belonging to neither surface.
+// `WebGPUGlobeDepth` and the debug depth overlay follow the same rule.
 @group(0) @binding(7) var depthSampler: sampler;
 
-// ── Helpers ────────────────────────────────────────────────────────────
+// Helpers
 
 fn rgbToLuminance(c: vec3<f32>) -> f32 {
   return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -105,7 +100,7 @@ fn inverseTonemapWeight(c: vec3<f32>) -> vec3<f32> {
   return c / (1.0 - rgbToLuminance(c));
 }
 
-// ── Neighborhood AABB clamp ────────────────────────────────────────────
+// Neighborhood AABB clamp
 //
 // Sample a 3×3 neighborhood of the current (jittered) frame and compute
 // the min/max AABB in tonemapped color space. Clamp the reprojected
@@ -137,18 +132,18 @@ fn clampToAABB(color: vec3<f32>, aabb: ColorAABB) -> vec3<f32> {
   return clamp(color, aabb.cMin, aabb.cMax);
 }
 
-// ── Per-pixel motion-vector lookup (TAA Slice 2d / Batch 104) ──────────
+// Per-pixel motion-vector lookup.
 //
 // Sample `motionTex` at `uv` and convert the stored NDC delta into a UV
 // delta. The motion texture is rg16float; (R, G) carries the per-pixel
-// (currentClipPos - previousClipPos).xy / w computed by the model FS.
-// The placeholder content for non-velocity-aware geometry is (0, 0),
-// which we treat as "no motion sample available" and fall back to depth
-// reprojection. A small magnitude threshold (~1e-5 NDC ≈ 1/65535 of the
-// texture range) absorbs precision noise.
+// `(currentClipPos - previousClipPos).xy / w` computed by the model fragment
+// shader. The placeholder content for non-velocity-aware geometry is (0, 0),
+// treated here as no motion sample available, falling back to depth
+// reprojection. A small magnitude threshold, ~1e-5 NDC or about 1/65535 of
+// the texture range, absorbs precision noise.
 //
-// Returns vec2(0) when no usable sample is present so the caller can
-// detect the fallback case.
+// Returns vec2(0) when no usable sample is present, so the caller can detect
+// the fallback case.
 fn sampleMotionTexture(uv: vec2<f32>) -> vec2<f32> {
   let m = textureSampleLevel(motionTex, linearSampler, uv, 0.0).rg;
   if (abs(m.x) < 1.0e-5 && abs(m.y) < 1.0e-5) {
@@ -158,25 +153,24 @@ fn sampleMotionTexture(uv: vec2<f32>) -> vec2<f32> {
   return m * vec2<f32>(0.5, -0.5);
 }
 
-// ── RTE depth reprojection ─────────────────────────────────────────────
+// Relative-to-eye depth reprojection.
 //
-// Given a current-frame UV + depth, reproject into the previous frame's
-// UV via eye-relative space. The key RTE property: we never reconstruct
-// world-space position. At Earth scale that reconstruction quantizes to
-// ~1m and produces motion vectors that drift by multiple pixels during
-// orbital fly-to. Here all intermediate values stay within cascade/view
-// magnitudes (≤ km), so FP32 is exact.
+// Given a current-frame UV and depth, reproject into the previous frame's UV
+// through eye-relative space. World-space position is never reconstructed: at
+// Earth scale that reconstruction quantizes to about a metre and produces
+// motion vectors that drift by several pixels during an orbital fly-to. Every
+// intermediate here stays within cascade and view magnitudes, at or below a
+// kilometre, where f32 is exact.
 //
-// Returns previousUV. Falls back to `uv` (motion = 0) when reprojection
-// fails: history invalid, point behind previous camera, or NDC out of
-// [-1,1] which indicates the pixel wasn't visible last frame (disocclusion).
+// Returns the previous UV, falling back to `uv`, a zero motion, when
+// reprojection fails: an invalid history, a point behind the previous camera,
+// or an NDC outside [-1,1], which means the pixel was not visible last frame.
 //
-// TAA Slice 2d (Batch 104) — when the per-pixel motion-vector texture
-// has a non-zero sample for this pixel, prefer it over the depth-
-// reprojection path. Per-pixel velocity correctly handles skinned /
-// morphed / instanced / animated geometry that depth-reprojection
-// treats as static (the depth path only reverses CAMERA motion, not
-// per-vertex transform deltas).
+// When the per-pixel motion-vector texture has a non-zero sample for this
+// pixel, it is preferred over the depth-reprojection path. Per-pixel velocity
+// handles skinned, morphed, instanced and animated geometry that depth
+// reprojection treats as static, because the depth path reverses camera
+// motion only, not per-vertex transform deltas.
 fn reprojectUV(uv: vec2<f32>) -> vec2<f32> {
   if (params.historyValid == 0u) {
     return uv;
@@ -194,15 +188,14 @@ fn reprojectUV(uv: vec2<f32>) -> vec2<f32> {
     // reprojection path's own out-of-bounds guard.
   }
 
-  // Fetch depth at the pixel center. We sample from the depth texture
-  // that the main scene wrote with the JITTERED projection — the inverse
-  // matrix matches, so the unproject is self-consistent.
-  // Batch 244 — texture_depth_2d's textureSampleLevel overload takes an
-  // INTEGER mip level (u32/i32), unlike texture_2d<f32>'s f32 level.
-  // `0.0` here was a compile error that stayed hidden for the shader's
-  // whole life because the TAA effect was never instantiated until
-  // NEW-TAA-EFFECT-NEVER-ADDED landed. Depth also uses the dedicated
-  // non-filtering `depthSampler` (see binding 7).
+  // Fetch depth at the pixel centre, from the depth texture the main scene
+  // wrote with the jittered projection: the inverse matrix matches, so the
+  // unproject is self-consistent.
+  //
+  // `texture_depth_2d`'s `textureSampleLevel` overload takes an integer mip
+  // level, unlike `texture_2d<f32>`'s f32 level, so a `0.0` here is a compile
+  // error. Depth also uses the dedicated non-filtering `depthSampler`; see
+  // binding 7.
   let rawDepth = textureSampleLevel(depthTex, depthSampler, uv, 0u);
 
   // Slice 2 — sky reprojection (rotation-dominated).
@@ -300,8 +293,8 @@ fn reprojectUV(uv: vec2<f32>) -> vec2<f32> {
   }
 
   if (!isSky) {
-    // Batch 244 — integer mip level + non-filtering depth sampler for
-    // texture_depth_2d (see rawDepth).
+    // Integer mip level and the non-filtering depth sampler for
+    // `texture_depth_2d`; see `rawDepth`.
     let prevDepthRaw = textureSampleLevel(depthTex, depthSampler, prevUV, 0u);
     if (prevDepthRaw < 0.99999) {
       // Only check non-sky neighbors. Sky pixels can be near 1.0 even
@@ -322,18 +315,18 @@ fn reprojectUV(uv: vec2<f32>) -> vec2<f32> {
         return uv;
       }
 
-      // Slice 5c-B Batch 126 — G-buffer normal divergence check.
-      // Final disocclusion gate: compare the eye-space normal at the
-      // current pixel against the normal at prevUV. If they diverge
-      // by more than ~30° (1 - dot > 0.13), the reprojected sample
-      // came from a different surface orientation — disocclude. This
-      // catches silhouette pixels where the depth gap is small but
-      // the surface tilt differs (e.g. wall-to-floor corners).
+      // G-buffer normal divergence check, the final disocclusion gate: compare
+      // the eye-space normal at the current pixel against the normal at
+      // `prevUV`. Diverging by more than about 30 degrees, `1 - dot > 0.13`,
+      // means the reprojected sample came from a different surface
+      // orientation, so it is disoccluded. This catches silhouette pixels
+      // where the depth gap is small but the surface tilt differs, such as a
+      // wall meeting a floor.
       //
-      // Sentinel-aware: skip when either normal is the
-      // load-op-clear sentinel (length < 0.1) emitted by Phase 1
-      // non-emitting pipelines (sky / billboards / labels / lines).
-      // The motion + depth gates handle those pixels.
+      // Sentinel-aware: skipped when either normal is the load-op-clear
+      // sentinel, a length below 0.1, emitted by non-emitting pipelines such
+      // as sky, billboards, labels and lines. The motion and depth gates
+      // handle those pixels.
       let nCenter = textureSampleLevel(
         gBufferNormalTex, linearSampler, uv, 0.0,
       ).xyz;
@@ -356,7 +349,7 @@ fn reprojectUV(uv: vec2<f32>) -> vec2<f32> {
   return prevUV;
 }
 
-// ── Main resolve ───────────────────────────────────────────────────────
+// Main resolve
 
 @fragment
 fn fragmentMain(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
@@ -387,7 +380,7 @@ fn fragmentMain(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f3
   return vec4<f32>(result, 1.0);
 }
 
-// ── Fullscreen vertex shader (shared with other post-process effects) ──
+// Fullscreen vertex shader (shared with other post-process effects)
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {

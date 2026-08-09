@@ -40,36 +40,33 @@ export interface AutoExposureConfig {
   adaptationSeconds?: number;
   targetFps?: number;
 
-  // Session 65 Batch 39 — altitude-gated auto-exposure (orbit polish).
-  // Pairs with the bloom altitude gate (Batch 22). At ground level the
-  // adaptive multiplier from `getExposureMultiplier()` is used in full
-  // (the WebGL parity behavior); at orbit the multiplier blends toward
-  // 1.0 (no adaptation) so that the bright atmosphere limb doesn't pull
-  // exposure down and darken the visible disk. Real ISS / Apollo
-  // photography uses fixed-exposure cameras for the disk; eye adaptation
-  // is a CAMERA-LENS / RETINA effect that doesn't make sense for vacuum
-  // viewpoints. Mirrors Frostbite GDC 2016 + Karis 2013 conventions.
+  // Altitude-gated auto-exposure, paired with the bloom altitude gate. At
+  // ground level the adaptive multiplier from `getExposureMultiplier()` is
+  // used in full, matching WebGL; at orbit the multiplier blends toward 1.0,
+  // no adaptation, so the bright atmosphere limb cannot pull exposure down
+  // and darken the visible disk. Eye adaptation is a lens and retina effect,
+  // and orbital photography of the disk is shot at fixed exposure, so the
+  // adaptive path has no meaning at a vacuum viewpoint.
   //
-  // When `enableAltitudeGate` is false (default true), the gate is a
-  // no-op and the raw multiplier from the compute reduction flows
-  // through. Set both `altitudeGateOrbitFloor: 1.0` and leave the gate
-  // on to keep the gate path warm but neutral.
+  // With `enableAltitudeGate` false the gate is a no-op and the raw
+  // multiplier from the compute reduction flows through. Setting
+  // `altitudeGateOrbitFloor: 1.0` while leaving the gate on keeps the gate
+  // path warm but neutral.
   enableAltitudeGate?: boolean;
   altitudeGateMinMeters?: number;
   altitudeGateMaxMeters?: number;
   // Floor multiplier blend at fully-gated altitude:
-  //   0.0 = full adaptation at orbit (pre-Batch-39 behavior)
-  //   1.0 = pure neutral exposure at orbit (no adaptation)
-  // Default 0.75 = 75% of the way toward neutral at orbit, keeping a
-  // small adaptive influence so day/night transitions still smooth.
+  //   0.0 = full adaptation at orbit
+  //   1.0 = pure neutral exposure at orbit, no adaptation
+  // The default 0.75 sits three quarters of the way toward neutral at orbit,
+  // keeping enough adaptive influence for day/night transitions to smooth.
   altitudeGateOrbitFloor?: number;
 }
 
 export class WebGPUAutoExposure {
   private _device: GPUDevice | null = null;
-  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — central cache reference
-  // captured at `initialize()` time so `_createPipelines` can route
-  // through it.
+  // Central compute-pipeline cache reference, captured at `initialize()` so
+  // `_createPipelines` can route through it.
   private _computePipelineCache: WebGPUComputePipelineCache | null = null;
   private _pass1Pipeline: GPUComputePipeline | null = null;
   private _pass2Pipeline: GPUComputePipeline | null = null;
@@ -89,9 +86,9 @@ export class WebGPUAutoExposure {
   private _maximumLuminance: number;
   private _adaptationRate: number;
 
-  // Session 65 Batch 39 — altitude gate config. Mirrors BloomEffect's
-  // pattern. Default `_altitudeBlend = 1.0` means "full adaptive
-  // multiplier"; the per-frame `applyAltitudeGate` updates it.
+  // Altitude gate config, mirroring BloomEffect's. A `_altitudeBlend` of 1.0
+  // means the full adaptive multiplier; the per-frame `applyAltitudeGate`
+  // updates it.
   private _enableAltitudeGate: boolean;
   private _altitudeGateMinMeters: number;
   private _altitudeGateMaxMeters: number;
@@ -103,15 +100,14 @@ export class WebGPUAutoExposure {
   private _altitudeBlend = 1.0;
 
   private _averageLuminance = 0.5;
-  // Batch 110 — ring of 3 readback buffers to avoid the "used while
-  // mapped" race. A single buffer breaks because `mapAsync` resolves
-  // asynchronously (after GPU completes the copy + the JS event loop
-  // returns to microtasks); between two consecutive frames the buffer
-  // can transition into the mapped state while the next frame's
-  // `copyBufferToBuffer` is already queued for submit, and WebGPU
-  // rejects "buffer used in submit while mapped". With 3 buffers we
-  // pick whichever slot is currently idle each frame, leaving older
-  // slots to finish their mapAsync at their own pace.
+  // A ring of three readback buffers, to avoid the used-while-mapped race. A
+  // single buffer breaks because `mapAsync` resolves asynchronously, after
+  // the GPU completes the copy and the JS event loop returns to microtasks:
+  // between two consecutive frames the buffer can enter the mapped state
+  // while the next frame's `copyBufferToBuffer` is already queued for submit,
+  // and WebGPU rejects a buffer used in a submit while mapped. With three
+  // buffers there is always an idle slot to pick, and older slots finish
+  // their `mapAsync` at their own pace.
   private _readbackRing: Array<{
     buffer: GPUBuffer;
     state: "idle" | "queued" | "mapped";
@@ -122,11 +118,11 @@ export class WebGPUAutoExposure {
   // `_readbackBuffer` directly still find a valid resource.
   private _readbackBuffer: GPUBuffer | null = null;
 
-  // C-R11 (Batch 32) — AutoExposure dispatches one bind group per frame
-  // from a stable sceneColorTexture. The naive path does
-  // `sceneColorTexture.createView()` + `device.createBindGroup()` each
-  // frame. We memoize the view by texture identity + cache the bind
-  // group by resource tuple; steady state is zero per-frame allocations.
+  // Auto-exposure dispatches one bind group per frame from a stable
+  // `sceneColorTexture`. The naive path calls `sceneColorTexture.createView()`
+  // and `device.createBindGroup()` every frame; memoizing the view by texture
+  // identity and caching the bind group by resource tuple makes the steady
+  // state allocation-free.
   private _viewCache = new WeakMap<GPUTexture, GPUTextureView>();
   private _bgCache = new WebGPUBindGroupCache();
 
@@ -148,8 +144,8 @@ export class WebGPUAutoExposure {
   }
 
   /**
-   * C11-174 — read-only snapshot of the bind-group cache counters for
-   * `WebGPUContext.getRendererStatistics()` / `CesiumDebug.cacheStats()`.
+   * Read-only snapshot of the bind-group cache counters for
+   * `WebGPUContext.getRendererStatistics()` and `CesiumDebug.cacheStats()`.
    * Pure exposure of bookkeeping the cache already maintains.
    */
   getBindGroupCacheStats(): BindGroupCacheStats {
@@ -178,16 +174,16 @@ export class WebGPUAutoExposure {
   }
 
   /**
-   * Session 65 Batch 39 — apply the per-frame altitude gate. Mirrors
-   * BloomEffect.applyAltitudeGate so the orbit polish gates pair up.
+   * Apply the per-frame altitude gate, mirroring
+   * `BloomEffect.applyAltitudeGate` so the two gates pair up.
    *
-   * Updates the internal `_altitudeBlend` weight: 1.0 at sea level
-   * (full adaptation), `1 - orbitFloor` at and above
-   * `altitudeGateMaxMeters` (mostly neutral). Smoothstep between.
+   * Updates the internal `_altitudeBlend` weight: 1.0 at sea level, full
+   * adaptation, falling to `1 - orbitFloor` at and above
+   * `altitudeGateMaxMeters`, mostly neutral, with a smoothstep between.
    *
-   * The actual multiplier is computed on demand by
-   * `getExposureMultiplier()` so callers don't need to re-pull values
-   * from a uniform buffer — the gate is a CPU-side blend.
+   * The multiplier itself is computed on demand by `getExposureMultiplier()`,
+   * so callers need not re-pull values from a uniform buffer; the gate is a
+   * CPU-side blend.
    *
    * @param cameraHeightMeters Camera altitude above the WGS84
    *   ellipsoid in meters (`frameState.camera.positionCartographic.height`).
@@ -215,10 +211,9 @@ export class WebGPUAutoExposure {
     height: number,
     computePipelineCache: WebGPUComputePipelineCache | null = null,
   ): void {
-    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — accept the central cache
-    // so `_createPipelines` can route through it. Default `null` keeps
-    // the constructor-injected fallback path in callers that haven't
-    // been threaded through yet.
+    // Accepts the central compute-pipeline cache so `_createPipelines` can
+    // route through it. A `null` default keeps the constructor-injected
+    // fallback path for callers that do not supply one.
     this._computePipelineCache = computePipelineCache;
     if (
       this._initialized &&
@@ -256,7 +251,7 @@ export class WebGPUAutoExposure {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
 
-    // Batch 110 — allocate the readback ring (3 slots).
+    // Allocate the readback ring.
     this._readbackRing = [];
     for (let i = 0; i < 3; i++) {
       const buf = device.createBuffer({
@@ -315,9 +310,9 @@ export class WebGPUAutoExposure {
     p[7] = 0; // pad
     device.queue.writeBuffer(this._paramsBuffer, 0, p);
 
-    // C-R11 (Batch 32) — memoize createView() per sceneColorTexture so
-    // its identity is stable across frames, then route the bind group
-    // through the cache. Steady state: 0 per-frame allocations.
+    // Memoize `createView()` per scene colour texture so its identity is
+    // stable across frames, then route the bind group through the cache. The
+    // steady state allocates nothing per frame.
     let sceneView = this._viewCache.get(sceneColorTexture);
     if (!sceneView) {
       sceneView = sceneColorTexture.createView();
@@ -361,13 +356,13 @@ export class WebGPUAutoExposure {
     pass2.dispatchWorkgroups(1, 1, 1);
     pass2.end();
 
-    // Batch 110 — ring-buffered async readback. Pick an idle slot, copy
-    // the current frame's result into it, queue mapAsync. Slots transition
-    // through `idle → queued → mapped → idle` over (typically) 1-2 frames;
-    // having 3 slots ensures at least one is always idle. If somehow none
-    // is idle (e.g., a slot's mapAsync stalled on a hung GPU), we skip
-    // readback this frame — the previous frame's averageLuminance is
-    // reused, which is fine for tonemap stability.
+    // Ring-buffered async readback: pick an idle slot, copy the current
+    // frame's result into it, and queue the `mapAsync`. Slots move through
+    // idle, queued, mapped and back to idle over one or two frames, and three
+    // slots keep at least one idle. If none is idle — a slot's `mapAsync`
+    // stalled on a hung GPU, say — readback is skipped for the frame and the
+    // previous `averageLuminance` is reused, which is what tonemap stability
+    // wants anyway.
     const slot = this._readbackRing.find((s) => s.state === "idle");
     if (slot) {
       encoder.copyBufferToBuffer(this._resultBuffer, 0, slot.buffer, 0, 4);
@@ -377,15 +372,14 @@ export class WebGPUAutoExposure {
       // was destroyed/replaced (resize, device loss) between mapAsync()
       // and resolution.
       const ring = this._readbackRing;
-      // Batch 110 — defer mapAsync to a microtask so it runs AFTER the
-      // SceneRenderer's queue.submit. Calling mapAsync immediately would
-      // put the buffer into "pending-map" state, and any queued submit
-      // that references it (the copyBufferToBuffer above is part of the
-      // same encoder we're about to submit) would fail validation with
-      // "buffer used in submit while mapped". The microtask delay is
-      // free — the synchronous code above queues the copy on the
-      // encoder, the SceneRenderer's submit completes, then this
-      // microtask schedules the mapAsync.
+      // Defer the `mapAsync` to a microtask so it runs after the scene
+      // renderer's `queue.submit`. Calling it immediately puts the buffer into
+      // a pending-map state, and the queued submit referencing it — the
+      // `copyBufferToBuffer` above belongs to the encoder about to be
+      // submitted — then fails validation as a buffer used in a submit while
+      // mapped. The delay costs nothing: the synchronous code above queues
+      // the copy on the encoder, the submit completes, and only then does
+      // this microtask schedule the `mapAsync`.
       Promise.resolve().then(() => {
         if (ring !== this._readbackRing) return;
         slot.buffer
@@ -433,9 +427,9 @@ export class WebGPUAutoExposure {
       bindGroupLayouts: [this._bindGroupLayout],
     });
 
-    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — route both passes through
-    // the central cache. Two PostProcessPipelines (multi-viewer setup)
-    // sharing the same shader + layout will share one pipeline.
+    // Route both passes through the central pipeline cache, so two
+    // post-process pipelines in a multi-viewer setup that share a shader and
+    // layout share one pipeline.
     const computeCache = this._computePipelineCache;
     if (computeCache) {
       this._pass1Pipeline = computeCache.getOrCreateSync({
@@ -465,10 +459,9 @@ export class WebGPUAutoExposure {
   private _destroyBuffers(): void {
     this._intermediateBuffer?.destroy();
     this._resultBuffer?.destroy();
-    // Batch 110 — destroy each ring slot's buffer. Pending mapAsync
-    // promises on these buffers will reject; the .catch handler is a
-    // no-op since the ring identity check filters out resolutions
-    // against a stale ring.
+    // Destroy each ring slot's buffer. Pending `mapAsync` promises on them
+    // reject; the `.catch` handler is a no-op because the ring identity check
+    // filters out resolutions against a stale ring.
     for (const slot of this._readbackRing) {
       try {
         slot.buffer.destroy();
@@ -483,8 +476,8 @@ export class WebGPUAutoExposure {
     this._resultBuffer = null;
     this._paramsBuffer = null;
     this._bindGroup = null;
-    // C-R11 (Batch 32) — the storage/uniform buffers in the cached BG
-    // were just destroyed; drop stale entries so next dispatch rebuilds
+    // The storage and uniform buffers in the cached bind group were just
+    // destroyed, so stale entries are dropped and the next dispatch rebuilds
     // against the fresh buffers.
     this._bgCache.invalidateAll();
   }

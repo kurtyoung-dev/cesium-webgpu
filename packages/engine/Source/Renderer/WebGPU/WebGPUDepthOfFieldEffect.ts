@@ -2,9 +2,6 @@
 /**
  * WebGPU DepthOfFieldEffect
  *
- * Per-effect slice extracted from `WebGPUPostProcessEffects`
- * (Batch 160 of the maintainability sweep).
- *
  * @module WebGPUDepthOfFieldEffect
  */
 
@@ -71,7 +68,7 @@ export class DepthOfFieldEffect implements PostProcessEffect {
   private _blurVUniforms: GPUBuffer | null = null;
   private _dofUniforms: GPUBuffer | null = null;
 
-  // C-R11 (Batch 32) — bind group cache.
+  // Bind-group cache.
   private _bgCache = new WebGPUBindGroupCache();
 
   private _config: Required<DepthOfFieldConfig>;
@@ -113,7 +110,7 @@ export class DepthOfFieldEffect implements PostProcessEffect {
     if (!this._device || (width === this._width && height === this._height))
       return;
     this._destroyTextures();
-    // C-R11 (Batch 32) — texture views change on resize.
+    // Texture views change on resize.
     this._bgCache.invalidateAll();
     this.initialize(this._device, width, height, this._format);
   }
@@ -127,7 +124,7 @@ export class DepthOfFieldEffect implements PostProcessEffect {
   ): GPUTextureView {
     if (!this._device || !depthView) return sourceView;
 
-    // C-R11 (Batch 32) — three bind groups cached.
+    // All three bind groups are cached.
 
     // Pass 1: Horizontal blur
     const blurHBG = this._bgCache.getOrCreate(

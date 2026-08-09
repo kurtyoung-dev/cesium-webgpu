@@ -41,15 +41,13 @@ struct CompositeUniforms {
 @group(0) @binding(0) var<uniform> u: CompositeUniforms;
 @group(0) @binding(1) var samp: sampler;
 @group(0) @binding(2) var sceneColor: texture_2d<f32>;
-// Batch 420 — LATENT FIX. This was `texture_depth_2d`, but the view the
-// renderer actually binds here is the scene framebuffer's FLOAT depth
-// RESOLVE texture (`SceneFramebuffer-Color_depth_resolve_ss`), which has
-// sample type Float — not Depth. A `texture_depth_2d` binding made the
-// composite bind group invalid ("None of the supported sample types
-// (Float|UnfilterableFloat) match the expected sample types (Depth)"),
-// which silently never fired until ground fog (Batch 420) first activated
-// this composite. Mirror the proven ProceduralClouds path: bind depth as
-// a plain `texture_2d<f32>` and read `.r`.
+// The depth binding is a plain `texture_2d<f32>`, not `texture_depth_2d`: the
+// view the renderer binds here is the scene framebuffer's float depth resolve
+// texture, whose sample type is Float rather than Depth. A `texture_depth_2d`
+// binding makes the composite bind group invalid — "None of the supported
+// sample types (Float|UnfilterableFloat) match the expected sample types
+// (Depth)" — and the procedural-cloud composite binds depth the same way,
+// reading `.r`.
 @group(0) @binding(3) var sceneDepth: texture_2d<f32>;
 @group(0) @binding(4) var fogVolume: texture_3d<f32>;
 
@@ -63,17 +61,14 @@ struct VOut {
 // (-1,-1), (3,-1), (-1,3) in clip space, which clips to a full screen.
 @vertex
 fn vertexMain(@builtin(vertex_index) vid: u32) -> VOut {
-  // NOTE: `out` is a WGSL reserved keyword and is invalid as an
-  // identifier; renamed to `vout` (Batch 420 — same latent-compile class
-  // as the `enable` rename in VolumetricFog.wgsl; the froxel fog composite
-  // had never compiled at runtime until ground fog activated it).
+  // `out` is a WGSL reserved keyword and invalid as an identifier, hence
+  // `vout`.
   //
-  // Batch 420 — use the OVERSIZED fullscreen triangle pattern proven by
-  // ProceduralClouds.wgsl::vertexMain (verts (-1,-1),(3,-1),(-1,3)) so the
-  // whole [-1,1] clip square is rasterized. The prior triangle covered the
-  // square's corners but its hypotenuse grazed the (1,-1) corner; the
-  // oversized form is the robust, canonical pattern shared with the other
-  // env-effect composites.
+  // The oversized fullscreen triangle, with vertices (-1,-1), (3,-1) and
+  // (-1,3), rasterizes the whole [-1,1] clip square. A triangle sized to the
+  // square's corners instead leaves its hypotenuse grazing the (1,-1) corner.
+  // `ProceduralClouds.wgsl::vertexMain` and the other environmental-effect
+  // composites use the same oversized form.
   var vout: VOut;
   let x = f32((vid << 1u) & 2u) * 2.0 - 1.0;
   let y = f32(vid & 2u) * 2.0 - 1.0;
@@ -82,13 +77,13 @@ fn vertexMain(@builtin(vertex_index) vid: u32) -> VOut {
   return vout;
 }
 
-// Batch 420 — LATENT FIX. The composite previously used a perspective
-// reverse-Z `linearizeDepth`, but the WebGPU renderer writes LOGARITHMIC
-// depth (the same `SceneFramebuffer-Color_depth_resolve_ss` the procedural
-// clouds reverse). Using the wrong decode would have mapped fragments to
-// the wrong froxel depth band — visibly wrong god rays + height fog. Reuse
-// the renderer-wide log-depth → eye-distance reversal (byte-compatible with
-// ProceduralClouds.wgsl::logDepthToEyeDistance / csm_reverseLogDepthToEye).
+// The renderer writes logarithmic depth to the shared depth-resolve texture,
+// the same one the procedural clouds reverse, so this reuses the
+// renderer-wide log-depth to eye-distance reversal — byte-compatible with
+// `ProceduralClouds.wgsl::logDepthToEyeDistance` and
+// `csm_reverseLogDepthToEye`. A perspective reverse-Z `linearizeDepth` here
+// would map fragments to the wrong froxel depth band, visibly misplacing the
+// god rays and the height fog.
 fn logDepthToEyeDistance(logZ: f32, near: f32, far: f32) -> f32 {
   let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);
   let depthFromNear = exp2(logZ * log2FarDepthFromNearPlusOne) - 1.0;

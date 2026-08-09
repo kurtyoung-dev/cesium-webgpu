@@ -96,13 +96,13 @@ fn modifiedReinhardTonemap(color: vec3<f32>, white: f32) -> vec3<f32> {
   return (color * (vec3<f32>(1.0) + color / white)) / (vec3<f32>(1.0) + color);
 }
 
-// PBR Neutral tonemapping — EXACT port of the Khronos reference used by
-// WebGL's czm_pbrNeutralTonemapping (Builtin/Functions/
-// pbrNeutralTonemapping.glsl, KhronosGroup/ToneMapping PBR_Neutral).
-// NEW-PP-LIBRARY-TONEMAP-ORDER: the previous per-channel soft-clamp
-// approximation mapped 1.0 -> ~0.9535 while the reference maps
-// 1.0 -> ~0.869 (sRGB-encoded 249 vs 239) — a visible cross-backend
-// highlight mismatch under scene.highDynamicRange.
+// PBR Neutral tonemapping — an exact port of the Khronos reference WebGL's
+// `czm_pbrNeutralTonemapping` uses
+// (Builtin/Functions/pbrNeutralTonemapping.glsl, KhronosGroup/ToneMapping
+// PBR_Neutral). A per-channel soft-clamp approximation of it maps 1.0 to
+// about 0.9535 where the reference maps it to about 0.869 — sRGB-encoded 249
+// against 239, a visible cross-backend highlight mismatch under
+// `scene.highDynamicRange`.
 fn pbrNeutralTonemap(colorIn: vec3<f32>) -> vec3<f32> {
   let startCompression = 0.8 - 0.04;
   let desaturation = 0.15;
@@ -177,10 +177,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Apply gamma correction
   let corrected = inverseGamma(mapped, params.gamma);
 
-  // C6-TPDF-DITHER-FINAL / C9-05 — add sub-LSB triangular dither in
-  // display-referred space so banding is broken at the final 8-bit
-  // quantization. The explicit zero-strength branch prevents both hash
-  // evaluations on the default path while returning `corrected` unchanged.
+  // Add sub-LSB triangular dither in display-referred space, so banding is
+  // broken at the final 8-bit quantization. The explicit zero-strength branch
+  // keeps both hash evaluations off the default path while returning
+  // `corrected` unchanged.
   var dithered = corrected;
   if (params.ditherStrength != 0.0) {
     dithered += tpdfDither(input.position.xy, params.ditherStrength);

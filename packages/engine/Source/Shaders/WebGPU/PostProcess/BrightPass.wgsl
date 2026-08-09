@@ -1,21 +1,21 @@
-// BrightPass — bloom bright-pass, WebGL-parity port of ContrastBias.glsl
-// (the `czm_bloom_contrast_bias` stage inside PostProcessStageLibrary.
-// createBloomStage). NEW-BLOOM-UNIFORM-PARITY (Batch 240).
+// BrightPass — bloom bright pass, the WebGL-parity port of ContrastBias.glsl,
+// the `czm_bloom_contrast_bias` stage inside
+// `PostProcessStageLibrary.createBloomStage`.
 //
-// Cesium's WebGL bloom does NOT use a luminance threshold. Its "bright"
-// region is derived by an HSB brightness shift followed by a contrast
-// curve over the scene color:
+// Cesium's WebGL bloom does not use a luminance threshold. Its bright region
+// comes from an HSB brightness shift followed by a contrast curve over the
+// scene colour:
 //
 //   hsb = czm_RGBToHSB(scene); hsb.z += brightness; scene = czm_HSBToRGB(hsb);
 //   factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
 //   out = factor * (scene - 0.5) + 0.5;
 //
-// With the WebGL defaults (contrast = 128, brightness = -0.3) the factor
-// is ~2.97 and only pixels whose HSB value exceeds ~0.67 survive above
-// black — a selective bright region. The previous WGSL shader here used
+// At the WebGL defaults, contrast 128 and brightness -0.3, the factor is
+// about 2.97 and only pixels whose HSB value exceeds roughly 0.67 survive
+// above black — a selective bright region. Substituting
 // `max(color - threshold * avgLum, 0)` with `threshold` fed from WebGL's
-// BRIGHTNESS uniform (-0.3) — a negative threshold that passed every
-// pixel, blooming the whole scene.
+// brightness uniform gives a negative threshold, which passes every pixel and
+// blooms the whole scene.
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,

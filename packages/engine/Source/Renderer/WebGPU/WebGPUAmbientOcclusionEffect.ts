@@ -2,9 +2,6 @@
 /**
  * WebGPU AmbientOcclusionEffect
  *
- * Per-effect slice extracted from `WebGPUPostProcessEffects`
- * (Batch 160 of the maintainability sweep).
- *
  * @module WebGPUAmbientOcclusionEffect
  */
 
@@ -76,7 +73,7 @@ export interface AmbientOcclusionConfig {
   blurSigma?: number; // Blur sigma (default 2.0)
   ambientOcclusionOnly?: boolean; // Debug: show AO only
 
-  // ── C6-SSGI-DIFFUSE — only consumed when algorithm === "ssgi" ──
+  // C6-SSGI-DIFFUSE — only consumed when algorithm === "ssgi"
   /** Indirect-bounce brightness multiplier (default 1.0). */
   giIntensity?: number;
   /** SSGI slice count — overrides directionCount for ssgi (default 2). */
@@ -128,12 +125,11 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
   private _randomTex: GPUTexture | null = null;
   private _randomView: GPUTextureView | null = null;
 
-  // Phase 8a Slice 4 (Batch 87) — 1×1 placeholder texture for the
-  // G-buffer normal binding when `scene.deferredLighting === false`.
-  // Bound to keep the bind-group layout stable across the flag's two
-  // states; the shader's `frustum.w` uniform selects between
-  // depth-reconstruction (placeholder unused) and G-buffer sampling
-  // (real view bound).
+  // A 1×1 placeholder texture for the G-buffer normal binding when
+  // `scene.deferredLighting === false`. Bound so the bind-group layout stays
+  // stable across both states of the flag; the shader's `frustum.w` uniform
+  // selects between depth reconstruction, where the placeholder is unused,
+  // and G-buffer sampling, where the real view is bound.
   private _gBufferPlaceholderTex: GPUTexture | null = null;
   private _gBufferPlaceholderView: GPUTextureView | null = null;
 
@@ -154,8 +150,8 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
   private _blurVUniforms: GPUBuffer | null = null;
   private _modulateUniforms: GPUBuffer | null = null;
 
-  // C-R11 (Batch 32) — bind group cache. 4 BGs per frame → ~0 after
-  // frame 1. Invalidated on resize when texture views rotate.
+  // Bind-group cache: four bind groups per frame drop to about zero after
+  // the first. Invalidated on resize, when texture views rotate.
   private _bgCache = new WebGPUBindGroupCache();
 
   // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — last per-frame frustum near/far + log flag
@@ -205,8 +201,8 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
   }
 
   /**
-   * C11-174 — read-only snapshot of the bind-group cache counters for
-   * `WebGPUContext.getRendererStatistics()` / `CesiumDebug.cacheStats()`.
+   * Read-only snapshot of the bind-group cache counters for
+   * `WebGPUContext.getRendererStatistics()` and `CesiumDebug.cacheStats()`.
    * Pure exposure of bookkeeping the cache already maintains.
    */
   getBindGroupCacheStats(): BindGroupCacheStats {
@@ -240,7 +236,7 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     if (!this._device || (width === this._width && height === this._height))
       return;
     this._destroyTextures();
-    // C-R11 (Batch 32) — texture views change on resize.
+    // Texture views change on resize.
     this._bgCache.invalidateAll();
     this.initialize(this._device, width, height, this._format);
   }
@@ -250,21 +246,20 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     sourceView: GPUTextureView,
     depthView: GPUTextureView | null,
     sampler: GPUSampler,
-    // Phase 8a Slice 4 (Batch 87) — when non-null, the SSAO compute
-    // path reads its surface normals from this G-buffer view instead of
-    // reconstructing them from depth. Caller (the post-process
-    // pipeline) wires the view through from
+    // When non-null, the SSAO compute path reads its surface normals from
+    // this G-buffer view instead of reconstructing them from depth. The
+    // post-process pipeline wires the view through from
     // `view.gBufferFramebuffer.normalRoughnessTexture` only when
-    // `scene.deferredLighting === true` AND the producer ran this
-    // frame; otherwise pass null and the SSAO falls back to depth
+    // `scene.deferredLighting === true` and the producer ran this frame;
+    // otherwise it passes null and the SSAO falls back to depth
     // reconstruction.
     gBufferNormalView?: GPUTextureView | null,
     timestampProvider?: WebGPUPassTimestampProvider,
   ): GPUTextureView {
     if (!this._device || !depthView) return sourceView;
 
-    // ── C6-SSGI-DIFFUSE — SSILVB path (generate radiance+AO → bilateral blur
-    // H/V → additive composite). Kept separate from the hbao/gtao chain. ──
+    // C6-SSGI-DIFFUSE — SSILVB path (generate radiance+AO → bilateral blur
+    // H/V → additive composite). Kept separate from the hbao/gtao chain.
     if (this._isSSGI) {
       return this._executeSSGI(
         encoder,
@@ -287,10 +282,10 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       : this._gBufferPlaceholderView!;
     this._writeGenerateUniforms(useGBuffer);
 
-    // C-R11 (Batch 32) — all four bind groups cached. Depth view is
-    // stable within a frame; sourceView stability depends on whether
-    // post-process stages upstream recreated the framebuffer (rare —
-    // only on resize), so the cache steady-states at 4 entries.
+    // All four bind groups are cached. The depth view is stable within a
+    // frame, and the source view's stability depends on whether an upstream
+    // post-process stage recreated the framebuffer, which happens only on
+    // resize, so the cache steady-states at four entries.
 
     // Pass 1: Generate raw AO from depth. Bind-group cache key now
     // includes the normal source (placeholder vs real G-buffer) so we
@@ -539,13 +534,12 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
   }
 
   /**
-   * Phase 8a Slice 4 (Batch 87) — 1×1 placeholder texture for the
-   * G-buffer normal binding when the producer is off. Format matches
-   * the producer's `rgba16float` so the bind-group layout stays
-   * compatible whether the real G-buffer view or this placeholder is
-   * bound. Cleared to zero so the WGSL sentinel check
-   * (`lenSq > 0.01 → real normal`) treats it correctly if anything
-   * ever samples through it accidentally.
+   * A 1×1 placeholder texture for the G-buffer normal binding when the
+   * producer is off. Its format matches the producer's `rgba16float`, so the
+   * bind-group layout stays compatible whether the real G-buffer view or this
+   * placeholder is bound. Cleared to zero, so the WGSL sentinel check —
+   * `lenSq > 0.01` means a real normal — treats it correctly should anything
+   * ever sample through it.
    */
   private _createGBufferPlaceholder(device: GPUDevice): void {
     this._gBufferPlaceholderTex = device.createTexture({
@@ -566,10 +560,10 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
   }
 
   private _createPipelines(device: GPUDevice, format: GPUTextureFormat): void {
-    // SSAO Generate layout: depthTex + randomTex + sampler + uniforms
-    //   + gBufferNormalTex (Phase 8a Slice 4, Batch 87).
-    // C6-SSGI-DIFFUSE reuses the SAME layout shape — binding 4 (a texture) is
-    // the G-buffer normal for hbao/gtao and the scene-color source for ssgi.
+    // SSAO generate layout: depth texture, random texture, sampler, uniforms,
+    // and the G-buffer normal texture. The screen-space global-illumination
+    // path reuses the same layout shape — binding 4 is the G-buffer normal
+    // for HBAO and GTAO, and the scene-colour source for SSGI.
     this._generateLayout = makeBindGroupLayout(device, "AO-Generate-BGL", [
       texture(0, Stage.FRAGMENT),
       texture(1, Stage.FRAGMENT),
@@ -593,10 +587,10 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       uniformBuffer(3, Stage.FRAGMENT),
     ]);
 
-    // ── C6-SSGI-DIFFUSE — SSILVB path. Distinct pipelines: HDR rgba16float
+    // C6-SSGI-DIFFUSE — SSILVB path. Distinct pipelines: HDR rgba16float
     // generate + a depth-aware bilateral blur (its own layout with a depth
     // binding) + an additive composite. Kept fully separate from the
-    // hbao/gtao pipelines below so those stay byte-identical. ──
+    // hbao/gtao pipelines below so those stay byte-identical.
     if (this._isSSGI) {
       const interFormat: GPUTextureFormat = "rgba16float";
       // Bilateral blur layout: giao(0) + depth(1) + sampler(2) + uniforms(3).
@@ -685,31 +679,28 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
   }
 
   /**
-   * Phase 8a Slice 4 (Batch 87) — write the `useGBufferNormal` flag
-   * into the generate uniform buffer. The flag occupies the .w slot of
-   * `frustum` (offset 11 floats × 4 bytes = 44 bytes). All other
-   * uniform slots are baked once in `_createUniforms` and never change
-   * after init — we only need to flip this one float per frame.
-   *
-   * Cheap: 4-byte queue.writeBuffer() per frame, dwarfed by the SSAO
-   * compute pass itself.
+   * Write the `useGBufferNormal` flag into the generate uniform buffer. The
+   * flag occupies the `.w` slot of `frustum`, at 11 floats or 44 bytes. Every
+   * other uniform slot is baked once in `_createUniforms` and never changes
+   * after init, so only this one float is flipped per frame — a 4-byte
+   * `queue.writeBuffer`, dwarfed by the SSAO compute pass itself.
    */
   /**
-   * C4-LOGDEPTH-PP-FRUSTUM-SLICEA — push the live per-frame camera frustum
-   * near/far plus the `logActive` flag into the generate UB. Previously the
-   * generate UB baked a placeholder `0.1 / 10000` near/far at init, so the
-   * depth-linearization the SSAO march performs was correct only for scenes
-   * whose real frustum happened to match that bracket. This writes the three
-   * scalars in place each frame (`frustum.xyz` = near, far, logActive) at the
-   * `frustum` vec4 offset (32 bytes), leaving `frustum.w` (the useGBuffer flag
-   * written by {@link _writeGenerateUniforms}) untouched.
+   * Push the live per-frame camera frustum near and far, plus the `logActive`
+   * flag, into the generate uniform buffer. Baking a placeholder `0.1 / 10000`
+   * near/far at init instead makes the depth linearization the SSAO march
+   * performs correct only for scenes whose real frustum happens to match that
+   * bracket. This writes the three scalars in place each frame, as
+   * `frustum.xyz` = near, far, logActive, at the `frustum` vec4 offset of 32
+   * bytes, leaving `frustum.w` — the `useGBufferNormal` flag written by
+   * {@link _writeGenerateUniforms} — untouched.
    *
-   * `logActive` is 1.0 when renderer-wide log depth is active this frame. Since
-   * C4-LOGDEPTH-PP-SLICEB the AmbientOcclusionGenerate / GTAOGenerate FS reads
-   * `frustum.z` and reverses the log-depth sample before linearizing (matching
-   * WebGL czm_readDepth → czm_reverseLogDepth); logActive=0 is byte-identical.
-   * Off-gate: AO is opt-in default-off, so this setter is only reached when the
-   * effect is enabled.
+   * `logActive` is 1.0 when renderer-wide log depth is active this frame. The
+   * AmbientOcclusionGenerate and GTAOGenerate fragment stages read `frustum.z`
+   * and reverse the log-depth sample before linearizing, matching WebGL's
+   * `czm_readDepth` into `czm_reverseLogDepth`; a zero leaves the linear path
+   * untouched. AO is opt-in and off by default, so this setter is only
+   * reached when the effect is enabled.
    */
   setFrustum(near: number, far: number, logActive: boolean): void {
     this._near = near;
@@ -728,9 +719,9 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       data.byteLength,
     );
 
-    // ── C6-SSGI-DIFFUSE — also push the frustum into the two bilateral-blur
+    // C6-SSGI-DIFFUSE — also push the frustum into the two bilateral-blur
     // UBs (they linearize depth for edge-stopping) and advance the temporal
-    // slice-rotation frame index in params3.z (generate UB, byte offset 72). ──
+    // slice-rotation frame index in params3.z (generate UB, byte offset 72).
     if (this._isSSGI) {
       if (this._blurHUniforms) {
         this._device.queue.writeBuffer(
@@ -803,8 +794,8 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     const w = this._width;
     const h = this._height;
 
-    // ── C6-SSGI-DIFFUSE — SSILVB uniform layout (5 vec4 generate, 3 vec4 blur,
-    // 1 vec4 composite). Separate from the hbao/gtao packing below. ──
+    // C6-SSGI-DIFFUSE — SSILVB uniform layout (5 vec4 generate, 3 vec4 blur,
+    // 1 vec4 composite). Separate from the hbao/gtao packing below.
     if (this._isSSGI) {
       // generate: params0(aoIntensity,bias,-,stepCount) | params1(sliceCount,
       // 1/w,1/h,randomTexSize) | frustum(near,far,logActive,-) |

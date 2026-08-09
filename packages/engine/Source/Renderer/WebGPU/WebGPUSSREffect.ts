@@ -6,24 +6,20 @@
  * Activated via `scene.screenSpaceReflections = true`.
  *
  * Configuration:
- *   - scene.ssrMaxDistance: number (default 200.0 — Batch 136 tuning)
+ *   - scene.ssrMaxDistance: number (default 200.0)
  *   - scene.ssrThickness: number (default 0.5)
- *   - scene.ssrMaxSteps: number (default 96 — Batch 136 tuning)
+ *   - scene.ssrMaxSteps: number (default 96)
  *   - scene.ssrStride: number (default 2.0)
  *   - scene.ssrReflectionStrength: number 0-1 (default 0.5)
  *
- * Tuning notes (Batch 136):
- *   - Pre-Batch-136 defaults were maxDistance=50m, maxSteps=64. The
- *     50m march budget rarely reached reflectors more than a few
- *     meters from the reflective surface — a typical aerial scene
- *     with an object 50-200m away from a lake produced essentially
- *     zero visible reflection signal. Bumping to 200m + 96 steps
- *     covers the typical mid-range case (urban reflective surfaces
- *     with buildings up to ~200m away) without a major perf hit.
- *   - The trade is per-frame cost: 96 steps × ~1.4-4M ray-marched
- *     pixels per HD frame is bounded by the GPU's texture-sample
- *     throughput. SSR remains opt-in (off by default), so the cost
- *     only applies to scenes that explicitly enable it.
+ * The march budget is sized for mid-range scenes. A 50 m distance over 64
+ * steps rarely reaches a reflector more than a few metres from the
+ * reflective surface, so a typical aerial scene with an object 50 to 200 m
+ * from a lake produces essentially no visible reflection signal; 200 m over
+ * 96 steps covers urban reflective surfaces with buildings up to about 200 m
+ * away. The trade is per-frame cost — 96 steps across a few million
+ * ray-marched pixels per HD frame, bounded by texture-sample throughput —
+ * and SSR is off by default, so only scenes that enable it pay for it.
  *
  * Reference: Morgan McGuire and Michael Mara, "Efficient GPU Screen-Space Ray
  * Tracing", Journal of Computer Graphics Techniques 3(4), 73 (2014) —
@@ -256,10 +252,8 @@ export function executeSSR(
   data[offset++] = 1.0 / w;
   data[offset++] = 1.0 / h;
 
-  // params (vec4): maxDistance, thickness, maxSteps, stride
-  // Batch 136 — bumped maxDistance 50→200 and maxSteps 64→96. See
-  // file header for rationale (the 50m budget was too small for
-  // typical scenes).
+  // params (vec4): maxDistance, thickness, maxSteps, stride. See the file
+  // header for how the march budget is sized.
   data[offset++] = scene.ssrMaxDistance ?? 200.0;
   data[offset++] = scene.ssrThickness ?? 0.5;
   data[offset++] = scene.ssrMaxSteps ?? 96.0;
@@ -277,16 +271,16 @@ export function executeSSR(
   // normals via `cross(dFdy, dFdx)`. Far better than the all-noise
   // placeholder produced by sampling an uninitialized texture.
   data[offset++] = normalTextureView ? 1.0 : 0.0;
-  // NEW-LOG-DEPTH-PP-SLICEC — flags.y = logActive, .z = encode near,
-  // .w = encode far. The shared depth texture is log-encoded by default
-  // (renderer-wide log depth), so the FS must reverse it before the
-  // inverse-projection unproject. Read the globe's FULL-camera encode
-  // frustum (stashed on `uniformState._logDepthEncodeNearFar` by the globe
-  // camera-UB packer) — the same source GroundPolyline/GroundPrimitive use.
-  // Arm only when the master switch + per-frame useLogDepth are on AND a
-  // valid encode frustum is stashed; otherwise leave the lanes zero so the
-  // FS keeps the byte-identical hyperbolic path (SSR is off by default, so
-  // there is no default-scene impact regardless).
+  // `flags.y` is `logActive`, `.z` the encode near and `.w` the encode far.
+  // The shared depth texture is log-encoded by default, under renderer-wide
+  // log depth, so the fragment stage must reverse it before the
+  // inverse-projection unproject. The globe's full-camera encode frustum is
+  // read from `uniformState._logDepthEncodeNearFar`, where the globe
+  // camera-uniform packer stashes it — the same source ground polylines and
+  // ground primitives use. Armed only when the master switch and the
+  // per-frame `useLogDepth` are on and a valid encode frustum is stashed;
+  // otherwise the lanes stay zero and the fragment stage keeps the
+  // hyperbolic path. SSR is off by default either way.
   const logActive = isWebGPULogDepthActive(
     context as unknown as { _logDepthWriteEnabled?: boolean },
     frameState as unknown as { useLogDepth?: boolean },
@@ -334,12 +328,11 @@ export function executeSSR(
     cache.nextBindGroupSlot = (slot + 1) & 1;
   }
 
-  // Slice 5c-B Batch 127 — record into the MAIN frame encoder (parallel
-  // change to NPR outlines in this batch). Pre-fix: SSR created its own
-  // encoder + submitted eagerly → ran BEFORE the main encoder's
-  // post-process blit → SSR's canvas write was overwritten and
-  // invisible. Now SSR records into the main encoder AFTER
-  // _runPostProcessing's commands so the blend-on-top survives.
+  // Record into the main frame encoder. An effect that creates its own
+  // encoder and submits eagerly runs before the main encoder's post-process
+  // blit, so its canvas write is overwritten and invisible. Recording here
+  // puts SSR after `_runPostProcessing`'s commands, where the blend on top
+  // survives.
   const mainEncoder = (
     context as unknown as { _currentCommandEncoder?: GPUCommandEncoder }
   )._currentCommandEncoder;

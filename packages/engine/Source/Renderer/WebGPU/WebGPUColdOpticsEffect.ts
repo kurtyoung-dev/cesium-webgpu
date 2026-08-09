@@ -2,31 +2,31 @@
 /**
  * WebGPU ColdOpticsEffect
  *
- * Atmospheric Effects Phase D (Batch 422). Screen-space sky overlay that
- * draws the 22 ICE-CRYSTAL HALO + SUN-DOGS (parhelia) around the sun. The
- * cold-optics analogue of the heat-shimmer post-process (Phase B, Batch
- * 417b) — same single-pass shape (one output texture + one pipeline + one
- * bind-group layout), but instead of an animated UV-warp it ADDITIVELY draws
- * the halo/parhelia where the per-pixel view ray sits ~22 from the sun, on
- * SKY pixels only, faded out when the sun is below the horizon.
+ * Screen-space sky overlay drawing the 22-degree ice-crystal halo and the
+ * sun dogs, or parhelia, around the sun. The cold-optics analogue of the
+ * heat-shimmer post-process: the same single-pass shape, one output texture,
+ * one pipeline and one bind-group layout, but instead of an animated UV warp
+ * it additively draws the halo and parhelia where the per-pixel view ray sits
+ * about 22 degrees from the sun, on sky pixels only, faded out when the sun
+ * is below the horizon.
  *
- * Mirrors HeatShimmer's bindings (scene color + depth + sampler + uniforms)
- * and AerialPerspective's per-frame `setFrameData` (camera world position,
- * sun direction, inverse projection + inverse-view rotation) so the view-ray
- * reconstruction is the SAME FP32-safe path (rotate an eye-space unit
- * direction to world; never subtract two Earth-scale world positions).
+ * Mirrors HeatShimmer's bindings — scene colour, depth, sampler, uniforms —
+ * and AerialPerspective's per-frame `setFrameData`, carrying the camera world
+ * position, sun direction, inverse projection and inverse-view rotation, so
+ * the view-ray reconstruction takes the same f32-safe path: rotate an
+ * eye-space unit direction to world, and never subtract two Earth-scale world
+ * positions.
  *
- * The effect CONSUMES the ad-hoc `scene.coldOpticsEnabled` /
- * `scene.coldOpticsIntensity` flags pushed upstream (the atmospheric
- * auto-master gates them from sub-freezing temperature); there is no
- * temperature logic in this file.
+ * The effect consumes the `scene.coldOpticsEnabled` and
+ * `scene.coldOpticsIntensity` flags pushed upstream, which the atmospheric
+ * auto-master gates from a sub-freezing temperature; there is no temperature
+ * logic in this file.
  *
- * COLD-OPTICS-HQ (Batch 442) adds an opt-in `advanced` config flag (carried in
- * `ColdOpticsUniforms.params1.w`, default 0). When OFF the legacy 22 halo +
- * sun-dogs render byte-identically; when ON the shader's advanced branch ALSO
- * draws physically-parameterized 22+46 dispersed halos, an upper tangent arc,
- * and light pillars. The flag is pushed from `effects.optics.advanced` via the
- * ad-hoc `scene.coldOpticsAdvanced` scene flag (mirrors the intensity path).
+ * An opt-in `advanced` config flag, carried in `ColdOpticsUniforms.params1.w`
+ * and 0 by default, selects the shader's advanced branch, which also draws
+ * physically parameterized 22 and 46 degree dispersed halos, an upper tangent
+ * arc, and light pillars. It is pushed from `effects.optics.advanced` through
+ * the `scene.coldOpticsAdvanced` scene flag, mirroring the intensity path.
  *
  * @module WebGPUColdOpticsEffect
  */
@@ -67,11 +67,10 @@ export interface ColdOpticsConfig {
    */
   skyCutoff?: number;
   /**
-   * COLD-OPTICS-HQ (Batch 442). When `false` (default) ONLY the legacy 22
-   * halo + sun-dogs render — byte-identical to Batch 422. When `true` the
-   * shader's advanced branch ALSO draws the physically-parameterized 22+46
-   * dispersed halos, the upper tangent arc, and light pillars. Carried in
-   * `ColdOpticsUniforms.params1.w` (0 / 1).
+   * When false, the default, only the 22-degree halo and the sun dogs render.
+   * When true, the shader's advanced branch also draws the physically
+   * parameterized 22 and 46 degree dispersed halos, the upper tangent arc,
+   * and light pillars. Carried in `ColdOpticsUniforms.params1.w` as 0 or 1.
    */
   advanced?: boolean;
 }
@@ -210,9 +209,8 @@ export class ColdOpticsEffect implements PostProcessEffect {
     f[o++] = d.near;
     f[o++] = d.far;
     // params1: skyCutoff, dogRadiusRad, dogSigmaRad, advanced flag (0/1).
-    // COLD-OPTICS-HQ (Batch 442): .w drives the shader's advanced branch.
-    // 0 (default) keeps the legacy halo + sun-dogs byte-identical; the WGSL
-    // never reads .w in the legacy path, so off==off is bit-stable.
+    // `.w` drives the shader's advanced branch; the WGSL never reads it on
+    // the default path, so off is bit-stable.
     f[o++] = this._config.skyCutoff;
     f[o++] = this._config.dogRadiusDeg * DEG2RAD;
     f[o++] = this._config.dogSigmaDeg * DEG2RAD;

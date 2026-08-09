@@ -16,10 +16,10 @@ import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js"
  * @private
  */
 
-// Effect classes have moved to per-effect files (Batch 160). This file
-// retains the shared helper layer + `PostProcessEffect` interface +
-// re-exports the public-API symbols so external callers continue to
-// resolve through the parent module.
+// Effect classes live in per-effect files. This file retains the shared
+// helper layer, the `PostProcessEffect` interface, and re-exports of the
+// public-API symbols, so external callers continue to resolve through the
+// parent module.
 //
 // Per-effect files:
 //   - WebGPUBloomEffect.ts            (BloomConfig, BloomEffect)
@@ -144,7 +144,7 @@ export interface PostProcessEffect {
   destroy(): void;
 }
 
-// ─── Re-exports from per-effect modules ──────────────────────────────────────
+// Re-exports from per-effect modules
 
 export { BloomEffect } from "./WebGPUBloomEffect.js";
 export type { BloomConfig } from "./WebGPUBloomEffect.js";

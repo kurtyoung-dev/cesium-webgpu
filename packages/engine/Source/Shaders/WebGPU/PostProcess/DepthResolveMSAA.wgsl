@@ -1,13 +1,11 @@
-// DepthResolveMSAA.wgsl — Slice 5c-B Batch 128
+// DepthResolveMSAA.wgsl
 //
 // Resolves an MSAA depth texture (texture_depth_multisampled_2d) to a
-// single-sample depth attachment via a fullscreen render pass that
-// writes @builtin(frag_depth). Per-fragment we read sample 0 of the
-// MSAA depth (same convention as GBufferNormalsFromDepthMSAA.wgsl)
-// and emit it as the fragment's depth.
+// single-sample target through a fullscreen render pass. Per fragment it
+// reads sample 0 of the MSAA depth, the same convention
+// GBufferNormalsFromDepthMSAA.wgsl uses.
 //
-// Why this exists (Batch 128):
-//   - WebGPU 1.0 has no `depthResolveTarget` analog for color resolves.
+// Why this exists:
 //   - Env effects (NPR / SSR / Procedural Clouds), AO, DoF, and the
 //     gBuffer compute producer's single-sample variant all want to
 //     bind a `texture_depth_2d` sampleable depth view, but
@@ -49,15 +47,13 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return output;
 }
 
-// Slice 5c-B Batch 128 — write depth as a single-channel color output
-// (NOT @builtin(frag_depth)) so the resolve target can be a
-// filterable-float color texture (r16float) instead of a depth
-// format. Downstream consumers (AO HBAO, NPR, DoF, SSR) bind their
-// depth slot as `texture_2d<f32>` and read `.r` — keeping the
-// existing filterable-float BGL declarations unchanged. Using a
-// depth-format resolve target would force every depth-slot consumer
-// to switch to `unfilterable-float` + non-filtering sampler, a
-// per-shader change of much larger scope.
+// Depth is written as a single-channel colour output rather than through
+// `@builtin(frag_depth)`, so the resolve target can be a filterable-float
+// colour texture, r16float, instead of a depth format. Downstream consumers —
+// AO, NPR, DoF, SSR — bind their depth slot as `texture_2d<f32>` and read
+// `.r`, which keeps their existing filterable-float bind-group declarations.
+// A depth-format resolve target would force every one of them onto
+// `unfilterable-float` with a non-filtering sampler.
 @fragment
 fn fragmentMain(in: VertexOutput) -> @location(0) f32 {
   let pixel = vec2<i32>(i32(in.clipPos.x), i32(in.clipPos.y));

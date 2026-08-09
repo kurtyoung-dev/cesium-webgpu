@@ -2,36 +2,43 @@
 /**
  * WebGPU AerialPerspectiveEffect
  *
- * Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — a fullscreen
- * post-process pass that applies ONE depth-correct atmosphere over the
- * whole composited scene (terrain, 3D tiles, glTF models, geometry),
- * unifying the per-tile ground-atmosphere drape into a single consistent
- * look. This is the "post-process lighting for the terrain" headline of the
- * Takram `three-geospatial` talk (RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md).
+ * A fullscreen post-process pass that applies one depth-correct atmosphere
+ * over the whole composited scene — terrain, 3D tiles, glTF models, geometry —
+ * unifying the per-tile ground-atmosphere drape into a single consistent look.
  *
- * Per pixel (see AerialPerspective.wgsl for the math):
- *   - EXTINCTION: scene colour × transmittance(camera→fragment), sampled
- *     from the Bruneton TRANSMITTANCE LUT (Batch 306 — sound, sun-
- *     independent). Distant terrain dims + reddens.
- *   - INSCATTER: + analytic single-scatter sky radiance along the
- *     camera→fragment ray (Rayleigh + Mie, HG phase vs the sun). Computed
- *     in-shader rather than from the single-inscatter LUT, whose Y-up
- *     baked-sun parameterization can't represent the view–sun azimuth
- *     (WebGPUSkyAtmosphereRenderer ENABLE_SKY_INSCATTER_LUT = false).
+ * Per pixel, with the math in AerialPerspective.wgsl:
+ *   - Extinction: scene colour times transmittance from camera to fragment,
+ *     sampled from the Bruneton transmittance LUT, which is sun-independent.
+ *     Distant terrain dims and reddens.
+ *   - Inscatter: plus the analytic single-scatter sky radiance along the
+ *     camera-to-fragment ray, Rayleigh and Mie with the Henyey-Greenstein
+ *     phase against the sun. Computed in-shader rather than from the
+ *     single-inscatter LUT, whose Y-up baked-sun parameterization cannot
+ *     represent the view-sun azimuth; see
+ *     `WebGPUSkyAtmosphereRenderer ENABLE_SKY_INSCATTER_LUT = false`.
  *
- * ── Composition with the in-globe ground atmosphere (DECISION) ──
- * This pass is the SINGLE owner of distance haze when active. The in-globe
- * GlobeTerrain.wgsl ground-atmosphere/fog drape would DOUBLE-APPLY if both
- * ran, so the scene gates the in-globe path off while aerial perspective is
- * enabled (`scene.aerialPerspective`). The sky/atmosphere shell + sky pixels
- * are left untouched (the shader skips depth≈far pixels), so the limb and
- * sky colour still come from WebGPUSkyAtmosphereRenderer. Enabling aerial
- * perspective is opt-in via `scene.aerialPerspective = true`; default off
- * keeps the existing per-tile drape and full backwards compatibility.
+ * This pass is the single owner of distance haze while it is active. The
+ * in-globe GlobeTerrain.wgsl ground-atmosphere and fog drape double-applies if
+ * both run, so the scene gates the in-globe path off whenever
+ * `scene.aerialPerspective` is set. The sky and atmosphere shell are left
+ * untouched, because the shader skips pixels at the far plane, so the limb and
+ * sky colour still come from WebGPUSkyAtmosphereRenderer. The flag is opt-in
+ * and defaults to off, which keeps the per-tile drape and full backwards
+ * compatibility.
  *
- * The per-frame camera/sun/atmosphere uniforms + the transmittance LUT view
- * are pushed by the configure pass (WebGPUPostProcessStageCollection) via
- * `setFrameData`, mirroring GodRay's `setSunScreenUV` / `setFrustum`.
+ * The per-frame camera, sun and atmosphere uniforms and the transmittance LUT
+ * view are pushed by the configure pass, `WebGPUPostProcessStageCollection`,
+ * through `setFrameData`, mirroring GodRay's `setSunScreenUV` and
+ * `setFrustum`.
+ *
+ * References:
+ *   - Eric Bruneton & Fabrice Neyret, "Precomputed Atmospheric Scattering"
+ *     (EGSR 2008) — the transmittance LUT this samples.
+ *   - Shota Matsuda, Takram — `three-geospatial` (MIT),
+ *     https://github.com/takram-design-engineering/three-geospatial — the
+ *     `AerialPerspectiveEffect` structure this follows: one fullscreen pass
+ *     over the composited frame carrying both extinction and inscatter, in
+ *     place of a per-tile drape. Technique only; no source was copied.
  *
  * @module WebGPUAerialPerspectiveEffect
  */
@@ -91,25 +98,25 @@ export interface AerialPerspectiveFrameData {
    */
   inverseView: ArrayLike<number>;
   /**
-   * Batch 437 (CLOUD-SHADOWS) / C13-06 — sun-view beer shadow map matrix
-   * (column-major mat4), emitted RELATIVE TO THIS EFFECT'S CAMERA by
+   * Sun-view beer shadow map matrix (column-major mat4), emitted relative to
+   * this effect's camera by
    * `WebGPUCloudShadowFrame.writeCloudShadowViewProjectionRelativeToEye`. The
    * fragment shader multiplies the fragment's camera-relative offset, so no
-   * planet-scale `f32` matrix product is formed. Undefined → identity + disabled
-   * (no inscatter shadow).
+   * planet-scale `f32` matrix product is formed. Undefined leaves it an
+   * identity and disables the inscatter shadow.
    */
   cloudShadowVP?: ArrayLike<number>;
   /** True when globe.cloudCastShadows is on AND a real shadow map was rendered. */
   cloudShadowActive?: boolean;
   /** Cloud absorptionCoeff so the inscatter shadow exp() matches the cloud render. */
   cloudShadowAbsorption?: number;
-  /** C13-41 — eclipse-aware cast-shadow strength from the one `_cloudCache` seam. */
+  /** Eclipse-aware cast-shadow strength, from the one `_cloudCache` seam. */
   cloudShadowStrength?: number;
   /**
-   * Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
-   * (per-metre RGB). Added to the analytic march's extinction so distance haze
-   * extinction matches the visible sky's ozone deepening. Undefined → disabled
-   * (identity extinction, byte-identical).
+   * Ozone Chappuis-band absorption coefficient, per-metre RGB. Added to the
+   * analytic march's extinction so the distance-haze extinction matches the
+   * visible sky's ozone deepening. Undefined disables it, leaving an identity
+   * extinction.
    */
   ozoneCoefficient?: [number, number, number];
   /** True when skyAtmosphere.ozone is on (gates the ozone extinction term). */
@@ -141,12 +148,12 @@ export interface AerialPerspectiveConfig {
    */
   skyCutoff?: number;
   /**
-   * Item 2.2 (ENV-AERIAL-MS, Batch 430). When true, the in-scatter term is
-   * sourced from the sun-relative sky-view + multiple-scattering LUTs (the
-   * same tables the visible SkyAtmosphere samples) instead of the analytic
-   * single-scatter march, so the distance haze matches the visible MS sky.
-   * Default false → analytic march (byte-identical parity). Set per-frame by
-   * the configure pass from `contextOptions.webgpu.envMapMultiScatter`.
+   * When true, the in-scatter term is sourced from the sun-relative sky-view
+   * and multiple-scattering LUTs — the same tables the visible SkyAtmosphere
+   * samples — instead of the analytic single-scatter march, so the distance
+   * haze matches the visible sky. False, the default, keeps the analytic
+   * march. Set per frame by the configure pass from
+   * `contextOptions.webgpu.envMapMultiScatter`.
    */
   useMultiScatterLut?: boolean;
   /**
@@ -166,18 +173,17 @@ export interface AerialPerspectiveConfig {
   froxelMaxDistance?: number;
 }
 
-// Float layout of the WGSL `AerialUniforms` struct (std140-ish, all vec4 +
-// two mat4). 6 vec4 (24 floats) + 2×16 mat4 = 56 floats = 224 bytes.
-// Batch 437 (CLOUD-SHADOWS) — +16 for cloudShadowVP (mat4) + 4 for
-// cloudShadowControl (vec4) = 76 floats = 304 bytes (still WebGPU-padded to 320).
-// Appended add-only; defaults (identity + disabled) leave the inscatter untouched
-// → byte-identical when globe.cloudCastShadows is off.
-// Batch 438 (4.5 SKY-OZONE) — +4 for ozoneCoefficient (vec4) = 80 floats = 320
-// bytes. Appended add-only; default (0,0,0,0) → identity extinction → byte-
-// identical when skyAtmosphere.ozone is off.
-// Item 2.3 (AERIAL-FROXEL, Batch Q23) — +4 for froxelParams (vec4) = 84 floats =
-// 336 bytes. Appended add-only; default (0,0,0,0) → analytic march → byte-
-// identical when the froxel path is off.
+// Float layout of the WGSL `AerialUniforms` struct: seven vec4 and two mat4,
+// 84 floats, 336 bytes.
+//   24  six vec4 — the core camera, sun and atmosphere terms
+//   32  two mat4 — inverse view-projection and cloudShadowVP
+//    4  cloudShadowControl (enabled, absorption, strength, reserved)
+//    4  ozoneCoefficient   (per-metre RGB, enabled)
+//    4  froxelParams
+// The last three vec4 each default to a disabled value — an identity matrix
+// with a zero control word, an all-zero ozone coefficient, an all-zero froxel
+// word — so a build with the corresponding feature off produces the same
+// inscatter and extinction as one that never carried the slot.
 const UNIFORM_FLOATS = 84;
 
 // Froxel volume dimensions (32³ per Hillaire 2020). Small — 32³ rgba16float =
@@ -211,17 +217,17 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
   // effect binds a placeholder so the layout is stable, and `execute` no-ops
   // the haze (passthrough) until a real LUT arrives.
   private _transmittanceView: GPUTextureView | null = null;
-  // Item 2.2 (ENV-AERIAL-MS, Batch 430). Sun-relative sky-view + MS LUT views
-  // (group 0, bindings 5/6). Pushed per-frame; null until baked → the white
-  // placeholder is bound so the layout is stable and (with the flag off) they
-  // are never sampled.
+  // Sun-relative sky-view and multiple-scattering LUT views, at group 0
+  // bindings 5 and 6. Pushed per frame, and null until they are baked, at
+  // which point the white placeholder is bound instead so the layout stays
+  // stable; with the flag off they are never sampled.
   private _skyViewView: GPUTextureView | null = null;
   private _multipleScatterView: GPUTextureView | null = null;
   private _placeholderTex: GPUTexture | null = null;
   private _placeholderView: GPUTextureView | null = null;
-  // Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map view (binding 7). Pushed
-  // per-frame from the cloud cache; null → the white placeholder is bound (never
-  // sampled when cloudShadowControl.x is 0 → byte-identical parity).
+  // Sun-view beer shadow map view at binding 7, pushed per frame from the
+  // cloud cache. Null binds the white placeholder, which is never sampled
+  // while `cloudShadowControl.x` is 0.
   private _cloudShadowView: GPUTextureView | null = null;
 
   // Cached bind group; invalidated when the source view, depth view, or LUT
@@ -285,11 +291,11 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
   }
 
   /**
-   * Item 2.2 (ENV-AERIAL-MS, Batch 430). Push the sun-relative sky-view + MS
-   * LUT views the effect samples for in-scatter when `useMultiScatterLut` is
-   * on. Both come from `WebGPUAtmosphereLUT` (perf manager) and are stable for
-   * the device lifetime, so the bind-group cache invalidates at most once.
-   * Null until the LUTs are baked → the white placeholder is bound.
+   * Push the sun-relative sky-view and multiple-scattering LUT views the
+   * effect samples for in-scatter when `useMultiScatterLut` is on. Both come
+   * from `WebGPUAtmosphereLUT` and are stable for the device lifetime, so the
+   * bind-group cache invalidates at most once. Null until the LUTs are baked,
+   * at which point the white placeholder is bound.
    */
   setSkyViewView(view: GPUTextureView | null): void {
     this._skyViewView = view;
@@ -300,10 +306,9 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
   }
 
   /**
-   * Batch 437 (CLOUD-SHADOWS) — push the sun-view beer shadow map view the
-   * effect samples to attenuate the inscatter under the clouds. From
-   * `context._cloudCache.shadowView`; null → the white placeholder is bound and
-   * (with the gate off) never sampled → byte-identical parity.
+   * Push the sun-view beer shadow map view the effect samples to attenuate the
+   * inscatter under the clouds, from `context._cloudCache.shadowView`. Null
+   * binds the white placeholder, which is never sampled while the gate is off.
    */
   setCloudShadowView(view: GPUTextureView | null): void {
     this._cloudShadowView = view;
@@ -368,9 +373,8 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     f[o++] = d.far;
     f[o++] = d.atmosphereThickness;
     // params1: intensity, inscatterScale, useMultiScatterLut flag, skyCutoff.
-    // Item 2.2 (ENV-AERIAL-MS, Batch 430) — params1.z is the LUT-inscatter
-    // gate (replaces the prior unused-reserve=1 slot). 0 (default) → analytic
-    // march (byte-identical parity); 1 → sky-view + MS LUT in-scatter.
+    // `params1.z` is the LUT-inscatter gate: 0, the default, takes the analytic
+    // march; 1 takes the sky-view plus multiple-scattering LUT in-scatter.
     f[o++] = this._config.intensity;
     f[o++] = this._config.inscatterScale;
     f[o++] = this._config.useMultiScatterLut ? 1.0 : 0.0;
@@ -385,8 +389,8 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     for (let i = 0; i < 16; i++) {
       f[o++] = iv[i];
     }
-    // Batch 437 (CLOUD-SHADOWS) — cloudShadowVP (mat4, 16) + cloudShadowControl
-    // (vec4). Identity + disabled when no real map → byte-identical default.
+    // cloudShadowVP (mat4, 16 floats) and cloudShadowControl (vec4). An
+    // identity matrix and a disabled control word when no real map exists.
     const csVP = d.cloudShadowVP;
     const csActive =
       d.cloudShadowActive === true && !!csVP && csVP.length >= 16;
@@ -396,7 +400,7 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       }
       f[o++] = 1.0; // x = enabled
       f[o++] = d.cloudShadowAbsorption ?? 0.04; // y = absorption
-      f[o++] = d.cloudShadowStrength ?? 1.0; // z = strength (C13-41)
+      f[o++] = d.cloudShadowStrength ?? 1.0; // z = strength
       f[o++] = 0.0; // w = reserved
     } else {
       // Identity matrix + disabled.
@@ -421,8 +425,8 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       f[o++] = 0;
       f[o++] = 0;
     }
-    // Batch 438 (4.5 SKY-OZONE) — ozoneCoefficient (vec4): xyz = per-metre RGB,
-    // w = enabled. Default (0,0,0,0) → identity extinction → byte-identical.
+    // ozoneCoefficient (vec4): xyz is the per-metre RGB, w the enable flag.
+    // The default (0,0,0,0) is an identity extinction.
     const ozone = d.ozoneCoefficient;
     const ozoneOn = d.ozoneEnabled === true && !!ozone;
     if (ozoneOn && ozone) {
@@ -609,14 +613,14 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       texture(2, Stage.FRAGMENT), // transmittance LUT
       samplerEntry(3, Stage.FRAGMENT),
       uniformBuffer(4, Stage.FRAGMENT),
-      // Item 2.2 (ENV-AERIAL-MS, Batch 430) — sun-relative sky-view + MS LUTs.
-      // Bound unconditionally (placeholder until baked) so the layout is
-      // constant; only sampled when params1.z (useMultiScatterLut) is on.
+      // Sun-relative sky-view and multiple-scattering LUTs. Bound
+      // unconditionally, as placeholders until baked, so the layout is
+      // constant; only sampled when `params1.z` is on.
       texture(5, Stage.FRAGMENT), // sky-view LUT
       texture(6, Stage.FRAGMENT), // multiple-scattering LUT
-      // Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map (binding 7). Bound
-      // unconditionally (white placeholder when off) so the layout never forks;
-      // sampled only inside the cloudShadowControl.x gate.
+      // Sun-view beer shadow map at binding 7. Bound unconditionally, with a
+      // white placeholder when off, so the layout never forks; sampled only
+      // inside the `cloudShadowControl.x` gate.
       texture(7, Stage.FRAGMENT),
       // Item 2.3 (AERIAL-FROXEL, Batch Q23) — 32³ froxel volume (binding 8).
       // Bound unconditionally (1×1×1 placeholder when off) so the layout never
@@ -711,8 +715,8 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     // until baked. With params1.z off they are never sampled (parity).
     const skyViewView = this._skyViewView ?? this._placeholderView!;
     const msView = this._multipleScatterView ?? this._placeholderView!;
-    // Batch 437 (CLOUD-SHADOWS) — real beer shadow map when active, else the white
-    // placeholder (never sampled with the gate off → parity).
+    // The real beer shadow map when active, else the white placeholder, which
+    // is never sampled while the gate is off.
     const cloudShadowView = this._cloudShadowView ?? this._placeholderView!;
 
     // Item 2.3 (AERIAL-FROXEL, Batch Q23) — when the froxel path is on, lazily

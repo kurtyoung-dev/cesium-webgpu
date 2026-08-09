@@ -1,46 +1,37 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU Contact Shadows Effect — Slice 5c-B Batch 133.
+ * WebGPU Contact Shadows Effect.
  *
- * Screen-space contact shadows post-process pass. Reads the
- * G-buffer normal-roughness (slot 1 of the MRT scene FB pass) +
- * scene depth, unprojects to eye-space, marches a short ray toward
- * the sun direction sampling the depth buffer at each step, and
- * darkens the fragment when an occluder is found within the
- * marched distance.
+ * Screen-space contact shadows post-process pass. Reads the G-buffer
+ * normal-roughness, slot 1 of the MRT scene framebuffer pass, together with
+ * scene depth; unprojects to eye space; marches a short ray toward the sun
+ * direction, sampling the depth buffer at each step; and darkens the fragment
+ * when an occluder is found within the marched distance.
  *
- * Activated via `scene.enableContactShadows = true`. Tunables on
- * `scene`:
- *   - `contactShadowMaxDistance` (default 4.0 eye-space meters —
- *     Batch 136 tuning, was 2.0)
- *   - `contactShadowSteps` (default 16 — Batch 136 tuning, was 12;
- *     clamped to 32 in shader)
- *   - `contactShadowStrength` (default 0.5 — 0 = no darkening, 1 =
- *     fully black at occluded pixels)
- *   - `contactShadowThickness` (default 0.01 — FRACTIONAL: the
- *     allowed front-delta window is `thickness * |eyePosZ|`, so
- *     0.01 = 1% of view-space depth. Batch 136 tuning, was 0.005.
- *     Scales correctly across ground-level and orbital altitudes.)
+ * Activated by `scene.enableContactShadows = true`. Tunables on `scene`:
+ *   - `contactShadowMaxDistance` — default 4.0 eye-space metres.
+ *   - `contactShadowSteps` — default 16, clamped to 32 in the shader.
+ *   - `contactShadowStrength` — default 0.5; 0 is no darkening, 1 is fully
+ *     black at occluded pixels.
+ *   - `contactShadowThickness` — default 0.01, and fractional: the allowed
+ *     front-delta window is `thickness * |eyePosZ|`, so 0.01 is 1% of
+ *     view-space depth, which scales correctly from ground level to orbit.
  *
- * Tuning rationale (Batch 136):
- *   - The original 2m march distance + 0.5% thickness was sized for
- *     ground-level scenes (vehicle wheels meeting road, foliage
- *     bases). At typical Cesium aerial views (300m-orbital) the 2m
- *     budget is invisibly small on most occluders. Doubling to 4m +
- *     1% thickness widens the visible range without producing false-
- *     positive shadows on flat terrain (the front-delta gating still
- *     filters self-shadow).
- *   - Steps 12→16 covers the larger budget with the same per-step
- *     granularity.
+ * The march budget is sized for aerial views rather than ground-level ones.
+ * A 2 m distance with a 0.5% thickness suits a vehicle wheel meeting a road
+ * or a plant base meeting soil, but is invisibly small on most occluders at
+ * the 300 m to orbital altitudes typical here; 4 m with a 1% thickness widens
+ * the visible range without producing false-positive shadows on flat terrain,
+ * because the front-delta gating still filters self-shadow. Sixteen steps
+ * cover the larger budget at the same per-step granularity twelve gave the
+ * smaller one.
  *
- * Architecture notes:
- *   - Modeled on WebGPUNPROutlineEffect.ts. Same cache + init +
- *     execute + destroy shape, same FeatureRenderer hookup.
- *   - Sentinel-aware via `length(N) < 0.1` in shader — sky and
- *     non-emitting Phase 1 pipelines (billboards, labels, lines)
- *     skip the test and return base color unchanged.
- *   - Records into the main frame encoder (Batch 127 pattern) so
- *     the canvas write composites AFTER post-process's blit.
+ * The class is modelled on `WebGPUNPROutlineEffect.ts`: same cache, init,
+ * execute and destroy shape, and the same feature-renderer hookup. It is
+ * sentinel-aware through `length(N) < 0.1` in the shader, so sky and the
+ * non-emitting pipelines — billboards, labels, lines — skip the test and
+ * return the base colour unchanged. It records into the main frame encoder so
+ * the canvas write composites after the post-process blit.
  *
  * @private
  */
@@ -114,9 +105,9 @@ function initializePipeline(
 
   cache.bindGroupLayout = makeBindGroupLayout(device, "ContactShadows BGL", [
     texture(0, Stage.FRAGMENT), // colorTex (filterable-float)
-    // depth slot — same r16float resolved view that NPR consumes
-    // (Batch 128 produces this for both single-sample + MSAA modes).
-    // Filterable-float matches the BGL default.
+    // The depth slot, the same r16float resolved view NPR consumes, produced
+    // for both single-sample and MSAA modes. Filterable-float matches the
+    // bind-group layout default.
     texture(1, Stage.FRAGMENT),
     texture(2, Stage.FRAGMENT), // normalRoughTex (rgba16float, filterable)
     sampler(3, Stage.FRAGMENT),
@@ -157,15 +148,14 @@ function initializePipeline(
 }
 
 /**
- * Execute the contact-shadows pass. Reads colorTextureView (current
- * scene color — post-process snapshot per Batch 129), depthTextureView
- * (NDC depth — MSAA-resolved per Batch 128), normalTextureView
- * (G-buffer slot 1), and writes the darkened result to outputView.
+ * Execute the contact-shadows pass. Reads `colorTextureView`, the current
+ * scene colour as snapshotted by the post-process chain; `depthTextureView`,
+ * the MSAA-resolved NDC depth; and `normalTextureView`, G-buffer slot 1; and
+ * writes the darkened result to `outputView`.
  *
- * Records into `context._currentCommandEncoder` (Batch 127 pattern)
- * so the canvas write composites AFTER post-process's blit. Falls
- * back to ephemeral encoder + immediate submit when no main encoder
- * exists.
+ * Records into `context._currentCommandEncoder` so the canvas write composites
+ * after the post-process blit, falling back to an ephemeral encoder and an
+ * immediate submit when no main encoder exists.
  */
 export function executeContactShadows(
   context: CesiumGraphicsContext,
@@ -228,11 +218,12 @@ export function executeContactShadows(
   } else {
     for (let i = 0; i < 16; i++) data[o++] = i % 5 === 0 ? 1 : 0;
   }
-  // NEW-LOG-DEPTH-PP-SLICEC — arm the log-depth reverse when the master
-  // switch + per-frame useLogDepth are on AND a valid encode frustum is
-  // stashed (the globe's FULL-camera near/far it log-encoded the shared
-  // depth with). sunDirEC.w carries logActive; texelSize.zw carry near/far
-  // below. Off-by-default effect, so no default-scene impact regardless.
+  // Arm the log-depth reverse when the master switch and the per-frame
+  // `useLogDepth` are both on and a valid encode frustum is stashed — the
+  // globe's full-camera near and far, the ones it log-encoded the shared
+  // depth with. `sunDirEC.w` carries `logActive`; `texelSize.zw` carry near
+  // and far below. The effect is off by default, so no default scene is
+  // affected either way.
   const logActive = isWebGPULogDepthActive(
     context as unknown as { _logDepthWriteEnabled?: boolean },
     frameState as unknown as { useLogDepth?: boolean },
@@ -252,8 +243,7 @@ export function executeContactShadows(
     contactShadowStrength?: number;
     contactShadowThickness?: number;
   };
-  // Batch 136 — defaults bumped: maxDistance 2→4, steps 12→16,
-  // thickness 0.005→0.01. See file header for rationale.
+  // Defaults: see the file header for how the march budget is sized.
   data[o++] = sceneAny.contactShadowMaxDistance ?? 4.0;
   data[o++] = sceneAny.contactShadowSteps ?? 16;
   data[o++] = sceneAny.contactShadowStrength ?? 0.5;
@@ -299,7 +289,7 @@ export function executeContactShadows(
     cache.nextBindGroupSlot = (slot + 1) & 1;
   }
 
-  // Main encoder pattern (Batch 127).
+  // Record into the main frame encoder.
   const mainEncoder = (
     context as unknown as { _currentCommandEncoder?: GPUCommandEncoder }
   )._currentCommandEncoder;

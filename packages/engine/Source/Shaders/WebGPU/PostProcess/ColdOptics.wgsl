@@ -1,13 +1,12 @@
 // ColdOptics — ice-crystal sky halos (22 halo + sun-dogs / parhelia).
 //
-// Atmospheric Effects Phase D (Batch 422). A screen-space sky overlay that
-// draws the optical phenomena cold-air hexagonal ice crystals produce around
-// the sun: the 22 HALO ring and the two SUN-DOGS (parhelia) ~22 to the left
-// and right of the sun at the sun's own altitude. Gated on the unified
-// effects hierarchy (417a) via `scene.coldOpticsEnabled` /
-// `scene.coldOpticsIntensity` (sub-freezing temperatures derive these in
-// AtmosphericEffects.ts, mirroring how heat shimmer derives from hot
-// temperatures).
+// A screen-space sky overlay that draws the optical phenomena cold-air
+// hexagonal ice crystals produce around the sun: the 22-degree halo ring and
+// the two sun dogs, or parhelia, about 22 degrees to the left and right of
+// the sun at the sun's own altitude. Gated through the unified effects
+// hierarchy by `scene.coldOpticsEnabled` and `scene.coldOpticsIntensity`,
+// which `AtmosphericEffects.ts` derives from sub-freezing temperatures, the
+// way heat shimmer derives from hot ones.
 //
 // Per pixel:
 //   1. Reconstruct the world-space VIEW RAY the SAME FP32-safe way
@@ -34,10 +33,10 @@
 // Single fullscreen pass, mirrors HeatShimmer's structure (one output
 // texture, one pipeline, scene-color + depth + sampler + uniforms bindings).
 //
-// COLD-OPTICS-HQ (Batch 442) — opt-in ADVANCED branch, gated on
-// `params1.w > 0.5` (driven by `effects.optics.advanced`). When OFF the legacy
-// 22 halo + sun-dogs above run UNCHANGED (byte-identical). When ON, the same
-// per-pixel  is fed through a physically-parameterized ice-crystal model:
+// An opt-in advanced branch, gated on `params1.w > 0.5` and driven by
+// `effects.optics.advanced`. With it off the halo and sun dogs above run
+// unchanged. With it on, the same per-pixel angle feeds a physically
+// parameterized ice-crystal model:
 //   - 22 HALO — random-oriented hexagonal columns, 60 prism, minimum
 //     deviation; SPECTRAL DISPERSION shifts the red ray to ~21.5 and the
 //     blue ray to ~22.5, so the halo has a reddish inner rim fading to
@@ -74,12 +73,12 @@ struct ColdOpticsUniforms {
   // .x = haloRadiusRad (radians(22)), .y = haloWidthRad (gaussian sigma),
   // .z = near, .w = far (depth linearization / sky cutoff context).
   params0: vec4<f32>,
-  // .x = skyCutoff (raw depths >= this are sky), .y = dogRadiusRad
-  // (radians(22) — parhelia horizontal offset), .z = dogSigmaRad (angular
-  // spread of each dog), .w = ADVANCED flag (0 = legacy 22 halo + sun-dogs
-  // only — byte-identical to Batch 422; >0.5 = the COLD-OPTICS-HQ branch:
-  // physically-derived 22+46 halos with spectral dispersion, an upper
-  // tangent arc, and light pillars). Default 0 keeps the legacy path.
+  // .x = skyCutoff (raw depths at or above this are sky), .y = dogRadiusRad,
+  // the parhelia horizontal offset in radians, .z = dogSigmaRad, the angular
+  // spread of each dog, and .w = the advanced flag. Zero, the default, keeps
+  // the halo and sun dogs alone; above 0.5 selects the physically-derived 22
+  // and 46 degree halos with spectral dispersion, the upper tangent arc, and
+  // the light pillars.
   params1: vec4<f32>,
   // Inverse projection — recovers the EYE-space ray direction from NDC.
   inverseProjection: mat4x4<f32>,
@@ -92,7 +91,7 @@ struct ColdOpticsUniforms {
 @group(0) @binding(2) var texSampler: sampler;
 @group(0) @binding(3) var<uniform> uniforms: ColdOpticsUniforms;
 
-// ── COLD-OPTICS-HQ helpers (advanced branch only) ───────────────────────────
+// COLD-OPTICS-HQ helpers (advanced branch only)
 //
 // A spectrally-dispersed gaussian RING. The ice-crystal minimum-deviation
 // angle depends on wavelength (the prism disperses sunlight), so the R/G/B
@@ -170,7 +169,7 @@ fn coldOpticsAdvanced(
     let vUp = dot(rayDir, sunLocalUp);
     let vFwd = dot(rayDir, sunDir);
 
-    // ── UPPER TANGENT ARC ───────────────────────────────────────────────
+    // UPPER TANGENT ARC
     // Column crystals (long axis horizontal) refract light into an arc
     // TANGENT to the 22 halo directly ABOVE the sun. Approximate it as a
     // brightening of the 22 ring weighted toward the TOP of the ring
@@ -186,7 +185,7 @@ fn coldOpticsAdvanced(
     let dArc = (theta - arcRadius) / (haloWidth * 1.3);
     arcAmt = exp(-dArc * dArc) * topWeight * smoothstep(0.0, 0.15, vFwd);
 
-    // ── LIGHT PILLARS ──────────────────────────────────────────────────
+    // LIGHT PILLARS
     // Plate crystals (basal faces horizontal) act as tiny mirrors,
     // reflecting the sun into a VERTICAL column through it. Brightest AT
     // the sun, fading with vertical distance; narrow horizontally so it
@@ -285,7 +284,7 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   let haloRadius = uniforms.params0.x; // radians(22)
   let haloWidth = uniforms.params0.y;  // gaussian sigma (radians)
 
-  // ── 22 HALO ──────────────────────────────────────────────────────────
+  // 22 HALO
   // Thin bright ring at  ~ 22 with a gaussian falloff. Suppress inside the
   // ring (just inside the radius) so it reads as a ring, not a filled disc.
   let dHalo = (theta - haloRadius) / haloWidth;
@@ -307,7 +306,7 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   let edgeMix = clamp((theta - haloRadius) / (2.0 * haloWidth) + 0.5, 0.0, 1.0);
   let haloColor = mix(inner, outer, edgeMix);
 
-  // ── SUN-DOGS (parhelia) ──────────────────────────────────────────────
+  // SUN-DOGS (parhelia)
   // Two bright spots on the parhelic circle (the sun's altitude) ~22 to
   // the left and right of the sun. Decompose the view->sun angular offset
   // into a VERTICAL component (along world up) and a HORIZONTAL component.
@@ -342,18 +341,17 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   // Sun-dogs are warmer + brighter than the ring; same dispersion lean.
   let dogColor = vec3<f32>(1.0, 0.78, 0.55);
 
-  // ── Compose (legacy) ─────────────────────────────────────────────────
+  // Compose (legacy)
   // The halo is the fainter feature; the sun-dogs are brighter. Both fade
   // with the sun-up gate and scale with the master intensity. Additive.
   let haloContribution = haloColor * haloAmt * 0.7;
   let dogContribution = dogColor * dogAmt * 1.5;
   let glow = (haloContribution + dogContribution) * intensity * sunUp;
 
-  // ── COLD-OPTICS-HQ (advanced) ────────────────────────────────────────
-  // Gated on params1.w. When OFF this whole block is skipped and the return
-  // below adds only the legacy `glow` — byte-identical to Batch 422. When ON
-  // it ADDS the dispersed 22/46 halos, the upper tangent arc, and light
-  // pillars on top of the legacy contribution.
+  // Advanced branch, gated on `params1.w`. With it off this whole block is
+  // skipped and the return below adds only the base glow. With it on it adds
+  // the dispersed 22 and 46 degree halos, the upper tangent arc, and the light
+  // pillars on top of that base contribution.
   var advGlow = vec3<f32>(0.0, 0.0, 0.0);
   let advanced = uniforms.params1.w;
   if (advanced > 0.5) {

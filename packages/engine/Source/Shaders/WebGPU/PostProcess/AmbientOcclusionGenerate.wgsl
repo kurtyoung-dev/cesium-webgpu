@@ -3,22 +3,16 @@
 // Based on the CesiumJS GLSL SSAO which uses horizon-based sampling with
 // a random rotation per pixel to reduce banding.
 //
-// Phase 8a Slice 4 (Batch 87) — when `frustum.w > 0.5` (the
-// `useGBufferNormal` flag set by the JS side when
-// `scene.deferredLighting === true`), the shader reads the surface
-// normal from the G-buffer at @binding(4) instead of reconstructing it
-// from depth via central differences. Benefits:
-//   - Silhouette edges produce clean normals (Slice 3 fix in the
-//     producer eliminates the depth-discontinuity ring that the
-//     central-difference path here used to inherit).
-//   - One less function-of-five-depth-samples per fragment in the
-//     `getNormal` path (the SSAO's `getNormal` was already doing the
-//     same screen-space reconstruction the G-buffer producer now does
-//     centrally — duplicate work).
-//   - Consistent normal across all consumers (SSR, clustered lighting
-//     in Slice 5 will read the same G-buffer).
-// When the flag is 0 (default), the shader keeps its original depth-
-// reconstruction path so non-deferred scenes are unchanged.
+// When `frustum.w > 0.5` — the `useGBufferNormal` flag the JS side sets while
+// `scene.deferredLighting === true` — the shader reads the surface normal
+// from the G-buffer at `@binding(4)` rather than reconstructing it from depth
+// by central differences. That gives clean normals at silhouette edges, where
+// the central-difference path inherits the producer's depth-discontinuity
+// ring; drops a five-depth-sample reconstruction per fragment that duplicates
+// what the G-buffer producer already did centrally; and keeps the normal
+// consistent across every consumer, since SSR and clustered lighting read the
+// same G-buffer. With the flag at 0, the default, the depth-reconstruction
+// path runs and non-deferred scenes are unchanged.
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,

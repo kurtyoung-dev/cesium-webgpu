@@ -12,40 +12,27 @@
  * 3. Depth of Field (complex multi-pass effect, depth-gated)
  * 3.5 AutoExposure (compute, feeds Tonemap exposure uniform)
  * 3.7 HeatShimmer + ColdOptics (single-pass overlays, linear/HDR domain)
- * 4. TAA (Audit B.16, Batch 155 — runs in linear/HDR domain BEFORE
- *    Tonemap. NEW-TAA-PIPELINE-ORDER-RECONCILE (Batch 290) — RESOLVED:
- *    pre-tonemap (linear/HDR) is the CORRECT placement and the existing
- *    clamp constants already suit linear input. Rationale:
- *      • TAA.wgsl's resolve does its OWN reversible tonemap-weighting
- *        (`tonemapWeight` = c/(1+luma), the Karis HDR anti-firefly
- *        map [0,∞)→[0,1)) before the neighborhood-AABB clamp + blend,
- *        then `inverseTonemapWeight` = c/(1-luma) to recover HDR. That
- *        weighting is well-defined ONLY for linear/HDR input: on
- *        already-tonemapped SDR [0,1] the inverse divides by (1-luma)
- *        which → 0 / negative as highlights approach luma=1, yielding
- *        Inf/NaN. So the clamp domain is the tonemap-WEIGHT space, not
- *        raw HDR — the constants (3×3 AABB, 0.1 blend, 0.13 normal-
- *        divergence, 0.1 motion-length gate) are already domain-correct
- *        and need NO retune for linear input.
- *      • Running TAA post-tonemap would double-apply a tone curve
- *        (display tonemap, then the internal Reinhard weight) and break
- *        HDR history accumulation — the 8/16-bit history would clamp
- *        highlights the tonemapper hadn't yet rolled off.
- *      • WebGL Cesium has no built-in TAA stage, so there's no upstream
- *        reference that contradicts the linear-domain placement; the
- *        decision rests on the resolve shader's own math + standard
- *        HDR-resolve practice (UE/Frostbite resolve in linear with a
- *        reversible weight).
- *    History buffers therefore use `_intermediateFormat` (rgba16float
- *    in HDR) — see addTAA / NEW-POSTPROCESS-HDR-INTERMEDIATES.)
+ * 4. TAA — runs in the linear/HDR domain, before Tonemap. `TAA.wgsl`'s
+ *    resolve applies its own reversible tonemap weighting, `tonemapWeight` =
+ *    c/(1+luma), the Karis anti-firefly map from [0,∞) to [0,1), before the
+ *    neighbourhood-AABB clamp and blend, then `inverseTonemapWeight` =
+ *    c/(1-luma) to recover HDR. That weighting is well defined only for
+ *    linear input: on already-tonemapped SDR the inverse divides by (1-luma),
+ *    which approaches zero and then goes negative as highlights approach
+ *    luma = 1, yielding Inf or NaN. The clamp therefore lives in
+ *    tonemap-weight space rather than raw HDR, which is why its constants —
+ *    3×3 AABB, 0.1 blend, 0.13 normal divergence, 0.1 motion-length gate —
+ *    suit linear input as they stand. Resolving after the tonemap would also
+ *    double-apply a tone curve and clamp highlights in the 8/16-bit history
+ *    that the tonemapper had not yet rolled off. History buffers accordingly
+ *    use `_intermediateFormat`, rgba16float under HDR; see addTAA.
  * 5. Tonemapping / HDR (single-pass, mode-selectable operator)
- * 6. User WGSL stages + intercepted library builtins
- *    (NEW-PP-LIBRARY-TONEMAP-ORDER — POST-tonemap, matching WebGL's
- *    PostProcessStageCollection.execute(), which runs the stages added
- *    via `scene.postProcessStages.add(...)` on the tonemapped SDR
- *    output, before FXAA. Under HDR canvas output the tonemap stage is
- *    bypassed and these stages see linear HDR — that mode has no WebGL
- *    reference.)
+ * 6. User WGSL stages + intercepted library builtins. These run POST-tonemap
+ *    to match WebGL's `PostProcessStageCollection.execute()`, which runs the
+ *    stages added through `scene.postProcessStages.add(...)` on the tonemapped
+ *    SDR output, before FXAA. Under HDR canvas output the tonemap stage is
+ *    bypassed and these stages see linear HDR; that mode has no WebGL
+ *    counterpart.
  * 7. ColorGrading (single-pass LUT)
  * 8. Custom stages (user-added via addCustomStage)
  * 9. FXAA (single-pass anti-aliasing, always last)
@@ -64,18 +51,17 @@
  */
 
 import TonemappingWGSL from "../../Shaders/WebGPU/PostProcess/Tonemapping.js";
-// Phase 5 WGF-3: hand-tuned f16 variant of the tonemapping shader.
-// Selected at compile time when the device grants `shader-f16` and the
-// caller passes the f16 source via addTonemapping(..., { f16WgslCode }).
+// Hand-tuned f16 variant of the tonemapping shader. Selected at compile time
+// when the device grants `shader-f16` and the caller passes the f16 source via
+// addTonemapping(..., { f16WgslCode }).
 import TonemappingF16WGSL from "../../Shaders/WebGPU/PostProcess/Tonemapping_f16.js";
-// Phase 4 — color grading LUT post-process. See ColorGrading.wgsl.
+// Color grading LUT post-process. See ColorGrading.wgsl.
 import ColorGradingWGSL from "../../Shaders/WebGPU/PostProcess/ColorGrading.js";
 import FXAAWGSL from "../../Shaders/WebGPU/PostProcess/FXAA.js";
-// PARITY-F16-POSTPROCESS — hand-tuned f16 variants for the two
-// single-pass stages compiled directly by _compileStage (the multi-pass
-// effects select their own f16 variants via the effect classes'
-// `useShaderF16` flag). Selected when useShaderF16 is passed through the
-// add* methods (opt-in + device shader-f16); default f32.
+// Hand-tuned f16 variants for the two single-pass stages `_compileStage`
+// compiles directly; the multi-pass effects select their own f16 variants
+// through the effect classes' `useShaderF16` flag. Opt-in through the add*
+// methods and gated on device `shader-f16`; f32 by default.
 import ColorGradingF16WGSL from "../../Shaders/WebGPU/PostProcess/ColorGrading_f16.js";
 import FXAAF16WGSL from "../../Shaders/WebGPU/PostProcess/FXAA_f16.js";
 import {
@@ -90,17 +76,17 @@ import {
 import { WebGPUTAAEffect } from "./WebGPUTAAEffect.js";
 import { WebGPUMotionBlurEffect } from "./WebGPUMotionBlurEffect.js";
 import { WebGPUUserPostProcessStage } from "./WebGPUUserPostProcessStage.js";
-// WIRE-PP-LIBRARY-BUILTINS — named PostProcessStageLibrary built-ins
-// (BlackAndWhite, Brightness, NightVision, Silhouette, EdgeDetection,
-// LensFlare, DepthView) substituted with their WGSL twins.
+// Named PostProcessStageLibrary built-ins — BlackAndWhite, Brightness,
+// NightVision, Silhouette, EdgeDetection, LensFlare, DepthView — substituted
+// with their WGSL twins.
 import {
   WebGPULibraryPostProcessStage,
   getLibraryStageKey,
 } from "./WebGPULibraryPostProcessStage.js";
-// Audit A.11 (Batch 133) -- pipeline-level GodRay registration.
+// Pipeline-level GodRay registration.
 import { GodRayEffect, type GodRayConfig } from "./WebGPUGodRayEffect.js";
-// C12-18 / C11-160 -- pipeline-level SunHalo registration. `scene.sunBloom`
-// had no WebGPU consumer at all before this; see WebGPUSunHaloEffect.ts.
+// Pipeline-level SunHalo registration, the WebGPU consumer of
+// `scene.sunBloom`; see WebGPUSunHaloEffect.ts.
 import {
   SunHaloEffect,
   type SunHaloFrameState,
@@ -111,21 +97,19 @@ import {
   SunBloomEffect,
   type SunBloomFrameState,
 } from "./WebGPUSunBloomEffect.js";
-// Atmospheric Effects Phase B (Batch 417b) -- pipeline-level HeatShimmer
-// registration. Single-pass animated UV-warp; mirrors the GodRay touchpoints.
+// Pipeline-level HeatShimmer registration. Single-pass animated UV warp;
+// mirrors the GodRay touchpoints.
 import {
   HeatShimmerEffect,
   type HeatShimmerConfig,
 } from "./WebGPUHeatShimmerEffect.js";
-// Atmospheric Effects Phase D (Batch 422) -- pipeline-level ColdOptics
-// (22 ice-crystal halo + sun-dogs) registration. Single-pass sky overlay;
-// mirrors the HeatShimmer touchpoints.
+// Pipeline-level ColdOptics registration — the 22-degree ice-crystal halo and
+// sun dogs. Single-pass sky overlay; mirrors the HeatShimmer touchpoints.
 import {
   ColdOpticsEffect,
   type ColdOpticsConfig,
 } from "./WebGPUColdOpticsEffect.js";
-// Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified per-pixel
-// atmosphere over the whole scene.
+// Unified per-pixel atmosphere over the whole scene.
 import {
   AerialPerspectiveEffect,
   type AerialPerspectiveConfig,
@@ -134,8 +118,8 @@ import {
   WebGPUAutoExposure,
   type AutoExposureConfig,
 } from "./WebGPUAutoExposure.js";
-// C11-174 — bind-group cache stats surfaced through
-// `WebGPUContext.getRendererStatistics()` / `CesiumDebug.cacheStats()`.
+// Bind-group cache stats surfaced through
+// `WebGPUContext.getRendererStatistics()` and `CesiumDebug.cacheStats()`.
 import type { BindGroupCacheStats } from "./WebGPUBindGroupCache.js";
 import {
   makeBindGroupLayout,
@@ -153,9 +137,7 @@ export type {
   DepthOfFieldConfig,
   AutoExposureConfig,
   AerialPerspectiveConfig,
-  // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer config.
   HeatShimmerConfig,
-  // Atmospheric Effects Phase D (Batch 422) -- ColdOptics config.
   ColdOpticsConfig,
 };
 
@@ -314,7 +296,7 @@ export class WebGPUPostProcessPipeline {
   // Shared sampler
   private _sampler: GPUSampler | null = null;
 
-  // ── Dedicated identity-blit pipeline ──────────────────────────────────
+  // Dedicated identity-blit pipeline
   // Always available after initialize(). Used to copy the scene
   // framebuffer to the canvas swap chain when zero post-process effects
   // are enabled. This is the ONLY path that makes rendered content
@@ -339,51 +321,48 @@ export class WebGPUPostProcessPipeline {
 
   // Complex multi-pass effects
   private _bloomEffect: BloomEffect | null = null;
-  // C12-18 / C11-160 — screen-space solar veiling glare.
+  // Screen-space solar veiling glare.
   private _sunHaloEffect: SunHaloEffect | null = null;
   private _sunBloomEffect: SunBloomEffect | null = null;
   private _aoEffect: AmbientOcclusionEffect | null = null;
   private _dofEffect: DepthOfFieldEffect | null = null;
   private _taaEffect: WebGPUTAAEffect | null = null;
-  // C6-VELOCITY-MOTION-BLUR — velocity-buffer motion blur (WebGPU-only,
-  // opt-in via `scene.motionBlur`, default off). Runs AFTER TAA (blurs the
-  // resolved color) but BEFORE tonemap, reusing the same MRT velocity view +
-  // depth + current/previous VP-RTE that TAA consumes. Sized/formatted
+  // Velocity-buffer motion blur, opt-in through `scene.motionBlur` and off by
+  // default. Runs after TAA, so it blurs the resolved colour, but before
+  // tonemap, reusing the same MRT velocity view, depth, and current/previous
+  // relative-to-eye view-projection that TAA consumes. Sized and formatted
   // against `_intermediateFormat`, so the recreate-reset block drops it.
   private _motionBlurEffect: WebGPUMotionBlurEffect | null = null;
-  // NEW-POSTPROCESS-USER-WGSL (Batch 198) — first slice. User-supplied
-  // WGSL fragment-shader stages added via `Scene.postProcessStages.add()`.
-  // Run as a chain AFTER built-in stages but BEFORE tonemapping/FXAA
-  // so user effects operate on the post-bloom/AO/DoF HDR output.
+  // User-supplied WGSL fragment-shader stages added through
+  // `Scene.postProcessStages.add()`, run as a chain after the built-in stages
+  // so user effects operate on the post-bloom/AO/DoF output.
   private _userStages: WebGPUUserPostProcessStage[] = [];
-  // WIRE-PP-LIBRARY-BUILTINS — intercepted PostProcessStageLibrary
-  // built-ins (WGSL twins of the named GLSL library stages). Built by the
-  // configure pass's user-stage scan alongside `_userStages`; enabled +
-  // uniforms synced live each frame via `syncLibraryStage`.
+  // Intercepted PostProcessStageLibrary built-ins: WGSL twins of the named
+  // GLSL library stages. Built by the configure pass's user-stage scan
+  // alongside `_userStages`; their enabled flag and uniforms are synced each
+  // frame through `syncLibraryStage`.
   private _libraryStages: WebGPULibraryPostProcessStage[] = [];
-  // Audit A.11 (Batch 133) -- GodRay (volumetric light scattering)
-  // post-process. Activated through `addGodRay` + the configure-pipeline
-  // sync; per-frame sun screen UV updated via
-  // `setSunScreenUV` from the scene-level configure pass.
+  // GodRay (volumetric light scattering) post-process. Activated through
+  // `addGodRay` and the configure-pipeline sync; the per-frame sun screen UV
+  // arrives through `setSunScreenUV` from the scene-level configure pass.
   private _godRayEffect: GodRayEffect | null = null;
-  // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer (animated
-  // screen-space UV-warp) post-process. Activated through `addHeatShimmer`
-  // + the configure-pipeline sync; per-frame elapsed-seconds clock + intensity
-  // pushed by the scene-level configure pass. Sized/formatted against the
-  // intermediate format (HDR-aware), so the recreate-reset block drops it.
+  // HeatShimmer, an animated screen-space UV warp. Activated through
+  // `addHeatShimmer` and the configure-pipeline sync; the per-frame
+  // elapsed-seconds clock and intensity are pushed by the scene-level
+  // configure pass. Sized and formatted against the HDR-aware intermediate
+  // format, so the recreate-reset block drops it.
   private _heatShimmerEffect: HeatShimmerEffect | null = null;
-  // Atmospheric Effects Phase D (Batch 422) -- ColdOptics (22 ice-crystal
-  // halo + sun-dogs) sky overlay. Activated through `addColdOptics` + the
-  // configure-pipeline sync; per-frame camera/sun/inverse-matrix uniforms
-  // pushed by the scene-level configure pass. Sized/formatted against the
-  // intermediate format (HDR-aware), so the recreate-reset block drops it.
+  // ColdOptics, the 22-degree ice-crystal halo and sun-dog sky overlay.
+  // Activated through `addColdOptics` and the configure-pipeline sync; the
+  // per-frame camera, sun and inverse-matrix uniforms are pushed by the
+  // scene-level configure pass. Sized and formatted against the HDR-aware
+  // intermediate format, so the recreate-reset block drops it.
   private _coldOpticsEffect: ColdOpticsEffect | null = null;
-  // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified per-pixel
-  // atmosphere. Runs FIRST in the depth-dependent chain (before AO/bloom) so
-  // the haze participates in bloom + tonemap, matching how WebGL applies the
-  // ground atmosphere in the globe fragment shader before post-process.
-  // Per-frame camera/sun/atmosphere uniforms + the transmittance LUT view are
-  // pushed by the configure pass.
+  // Unified per-pixel atmosphere. Runs first in the depth-dependent chain,
+  // ahead of AO and bloom, so the haze participates in bloom and tonemap, the
+  // way WebGL applies the ground atmosphere in the globe fragment shader
+  // before post-process. The per-frame camera, sun and atmosphere uniforms and
+  // the transmittance LUT view are pushed by the configure pass.
   private _aerialPerspectiveEffect: AerialPerspectiveEffect | null = null;
   // HDR auto-exposure: compute-based luminance reduction that feeds
   // the tonemapping stage's exposure multiplier. Dispatched before
@@ -401,21 +380,20 @@ export class WebGPUPostProcessPipeline {
   // an adapted value into the same slot, so the fixed setter must compare
   // against this value rather than only against the user's manual preference.
   private _tonemapUploadedExposure: number = 1.0;
-  // C9-05 — actual stable values already present in the tonemap UBO. The
-  // configure pass calls the setters every frame; these guards keep unchanged
-  // mode and default-off dither at zero allocation/zero queue-write cost.
+  // The values actually resident in the tonemap uniform buffer. The configure
+  // pass calls the setters every frame, so these guards keep an unchanged mode
+  // and a default-off dither at zero allocations and zero queue writes.
   private _tonemapUniformMode: number = TonemapMode.REINHARD;
   private _tonemapDitherStrength: number = 0.0;
 
-  // HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix; PARITY-HDR-PP-MATH) —
-  // when the canvas is configured for HDR output (extended dynamic
-  // range), tonemapping is skipped so the swap chain receives the raw
-  // HDR signal. ColorGrading and FXAA used to be skipped outright too
-  // (their SDR-tuned pivots/thresholds misbehave on unbounded HDR);
-  // they now RUN in HDR mode with HDR-aware math, switched by an
-  // `hdrMode` uniform (Reinhard-compressed working space — see
-  // ColorGrading.wgsl / FXAA.wgsl headers). False (default) leaves the
-  // SDR path bit-for-bit unchanged. Driven per-frame by
+  // When the canvas is configured for extended-dynamic-range output,
+  // tonemapping is skipped so the swap chain receives the raw HDR signal.
+  // ColorGrading and FXAA still run, switched into HDR-aware math by an
+  // `hdrMode` uniform that puts them in a Reinhard-compressed working space;
+  // see the ColorGrading.wgsl and FXAA.wgsl headers. Their SDR-tuned pivots
+  // and thresholds misbehave on an unbounded signal, which is what that
+  // working space exists to avoid. False, the default, leaves the SDR path
+  // bit-for-bit unchanged. Driven per frame by
   // `WebGPUPostProcessStageCollection.update()`.
   private _hdrOutputMode = false;
 
@@ -438,17 +416,17 @@ export class WebGPUPostProcessPipeline {
     if (this._aoEffect?.enabled) return true;
     if (this._dofEffect?.enabled) return true;
     if (this._godRayEffect?.enabled) return true;
-    // C12-18 — the halo alone must be able to keep the chain alive, because
-    // on a default WebGPU scene with no other effect enabled it is the ONLY
-    // stage between the scene FB and the canvas that draws anything.
+    // The halo alone must be able to keep the chain alive: on a default scene
+    // with no other effect enabled it is the only stage between the scene
+    // framebuffer and the canvas that draws anything.
     if (this._sunHaloEffect?.enabled) return true;
     if (this._sunBloomEffect?.enabled) return true;
     if (this._heatShimmerEffect?.enabled) return true;
     if (this._coldOpticsEffect?.enabled) return true;
     if (this._aerialPerspectiveEffect?.enabled) return true;
-    // NEW-POSTPROCESS-USER-WGSL (Batch 198) — user-supplied WGSL stages.
+    // User-supplied WGSL stages.
     if (this._userStages.some((s) => s.enabled)) return true;
-    // WIRE-PP-LIBRARY-BUILTINS — intercepted library built-ins.
+    // Intercepted library built-ins.
     if (this._libraryStages.some((s) => s.enabled)) return true;
     return this._customStages.some((s) => s.enabled);
   }
@@ -474,10 +452,10 @@ export class WebGPUPostProcessPipeline {
   }
 
   /**
-   * C11-174 — aggregate the per-effect `WebGPUBindGroupCache` counters
-   * (hits/misses/hitRate) for the context debug surface. `null` for an
-   * effect that hasn't been added to the pipeline. Pure read; the caches
-   * already pay for this bookkeeping on their normal lookup path.
+   * Aggregate the per-effect `WebGPUBindGroupCache` counters — hits, misses
+   * and hit rate — for the context debug surface, with `null` for an effect
+   * that has not been added to the pipeline. A pure read: the caches already
+   * pay for this bookkeeping on their normal lookup path.
    */
   getBindGroupCacheStats(): {
     bloom: BindGroupCacheStats | null;
@@ -495,33 +473,31 @@ export class WebGPUPostProcessPipeline {
     return this._dofEffect;
   }
 
-  /** Audit A.11 (Batch 133) -- GodRay effect or null if not added. */
+  /** GodRay effect, or null if it has not been added. */
   get godRayEffect(): GodRayEffect | null {
     return this._godRayEffect;
   }
 
   /**
-   * Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer effect or null
-   * if not added. The configure pass uses this to push the per-frame elapsed-
-   * seconds clock + intensity.
+   * HeatShimmer effect, or null if it has not been added. The configure pass
+   * uses this to push the per-frame elapsed-seconds clock and intensity.
    */
   get heatShimmerEffect(): HeatShimmerEffect | null {
     return this._heatShimmerEffect;
   }
 
   /**
-   * Atmospheric Effects Phase D (Batch 422) -- ColdOptics effect or null if
-   * not added. The configure pass uses this to push the per-frame camera/sun/
-   * inverse-matrix uniforms.
+   * ColdOptics effect, or null if it has not been added. The configure pass
+   * uses this to push the per-frame camera, sun and inverse-matrix uniforms.
    */
   get coldOpticsEffect(): ColdOpticsEffect | null {
     return this._coldOpticsEffect;
   }
 
   /**
-   * Track V-A2 — unified aerial-perspective atmosphere effect, or null if
-   * not added. The configure pass uses this to push per-frame camera/sun/
-   * atmosphere uniforms + the transmittance LUT view.
+   * Unified aerial-perspective atmosphere effect, or null if it has not been
+   * added. The configure pass uses this to push the per-frame camera, sun and
+   * atmosphere uniforms and the transmittance LUT view.
    */
   get aerialPerspectiveEffect(): AerialPerspectiveEffect | null {
     return this._aerialPerspectiveEffect;
@@ -567,39 +543,37 @@ export class WebGPUPostProcessPipeline {
 
     this._destroyTextures();
 
-    // Reset the built-in effects so the configure path recreates them with the
-    // CURRENT intermediate format + size. They are created once (the `addX`
-    // guards `if (this._bloomEffect) return`), so without this an HDR toggle
-    // (or resize) would leave them holding their first-creation 8-bit /
-    // wrong-size intermediate textures — which clamps HDR highlights BEFORE
-    // tonemap (NEW-POSTPROCESS-HDR-INTERMEDIATES). Only runs on a real
-    // recreate (device / size / HDR change), not per frame.
+    // Reset the built-in effects so the configure path recreates them at the
+    // current intermediate format and size. Each is created once — the `addX`
+    // methods guard with `if (this._bloomEffect) return` — so without this an
+    // HDR toggle or a resize would leave them holding their first-creation
+    // 8-bit or wrong-size intermediate textures, which clamps HDR highlights
+    // before the tonemap ever sees them. Only runs on a real recreate, meaning
+    // a device, size or HDR change, never per frame.
     this._bloomEffect?.destroy();
     this._aoEffect?.destroy();
     this._dofEffect?.destroy();
     this._godRayEffect?.destroy();
-    // C12-18 — the halo's output texture is sized + formatted against
-    // `_intermediateFormat`, so a resize / HDR toggle must drop it too. The
-    // configure pass lazily re-adds it on the same frame when
-    // `scene.sunBloom` is on (the gate checks the live slot).
+    // The halo's output texture is sized and formatted against
+    // `_intermediateFormat`, so a resize or HDR toggle must drop it too. The
+    // configure pass lazily re-adds it on the same frame when `scene.sunBloom`
+    // is on, because its gate checks the live slot.
     this._sunHaloEffect?.destroy();
     this._sunBloomEffect?.destroy();
-    // Atmospheric Effects Phase B (Batch 417b) — HeatShimmer's output texture
-    // is sized + formatted against `_intermediateFormat`, so a resize / HDR
-    // toggle must drop it too. The configure pass lazily re-adds it on the
-    // same frame when `scene.heatShimmerEnabled` is on (gate checks the live
-    // slot).
+    // HeatShimmer's output texture is sized and formatted against
+    // `_intermediateFormat`, so a resize or HDR toggle must drop it too. The
+    // configure pass lazily re-adds it on the same frame when
+    // `scene.heatShimmerEnabled` is on, because its gate checks the live slot.
     this._heatShimmerEffect?.destroy();
-    // Atmospheric Effects Phase D (Batch 422) — ColdOptics' output texture is
-    // sized + formatted against `_intermediateFormat`, so a resize / HDR
-    // toggle must drop it too. The configure pass lazily re-adds it on the
-    // same frame when `scene.coldOpticsEnabled` is on (gate checks the live
-    // slot).
+    // ColdOptics' output texture is sized and formatted against
+    // `_intermediateFormat`, so a resize or HDR toggle must drop it too. The
+    // configure pass lazily re-adds it on the same frame when
+    // `scene.coldOpticsEnabled` is on, because its gate checks the live slot.
     this._coldOpticsEffect?.destroy();
-    // Track V-A2 — aerial-perspective output texture is sized + formatted
-    // against `_intermediateFormat`, so a resize / HDR toggle must drop it
-    // too. The configure pass lazily re-adds it on the same frame when
-    // `scene.aerialPerspective` is on (gate checks the live slot).
+    // The aerial-perspective output texture is sized and formatted against
+    // `_intermediateFormat`, so a resize or HDR toggle must drop it too. The
+    // configure pass lazily re-adds it on the same frame when
+    // `scene.aerialPerspective` is on, because its gate checks the live slot.
     this._aerialPerspectiveEffect?.destroy();
     this._bloomEffect = null;
     this._aoEffect = null;
@@ -610,13 +584,12 @@ export class WebGPUPostProcessPipeline {
     this._heatShimmerEffect = null;
     this._coldOpticsEffect = null;
     this._aerialPerspectiveEffect = null;
-    // NEW-TAA-EFFECT-NEVER-ADDED (Batch 244) — TAA joins the recreate
-    // reset list: its history textures + pipeline target are sized and
-    // formatted against `_intermediateFormat`, so a resize / HDR toggle
-    // must drop them too. The configure pass (`WebGPUPostProcess
-    // StageCollection`) lazily re-adds the effect on the same frame
-    // because its gate checks the LIVE `pipeline.taaEffect` slot, not a
-    // sticky cache flag.
+    // TAA belongs on the recreate reset list for the same reason: its history
+    // textures and pipeline target are sized and formatted against
+    // `_intermediateFormat`, so a resize or HDR toggle must drop them too.
+    // `WebGPUPostProcessStageCollection` lazily re-adds the effect on the same
+    // frame because its gate checks the live `pipeline.taaEffect` slot rather
+    // than a sticky cache flag.
     this._taaEffect?.destroy();
     this._taaEffect = null;
     // C6-VELOCITY-MOTION-BLUR — output texture is sized + formatted against
@@ -1000,21 +973,19 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
    * Add Temporal Anti-Aliasing effect. Runs in the linear/HDR domain
    * BEFORE Tonemap (see the pipeline-order header). Requires sub-pixel
    * jitter on the projection matrix (see WebGPUTAAEffect.computeJitter).
-   * Default disabled — toggled via `scene.taaEnabled`, which drives the
-   * lazy-add in `configureWebGPUPostProcessPipeline` (Batch 244,
-   * NEW-TAA-EFFECT-NEVER-ADDED — this method previously had zero
-   * callers, so the resolve stage never ran).
+   * Disabled by default and toggled through `scene.taaEnabled`, which drives
+   * the lazy-add in `configureWebGPUPostProcessPipeline`. That lazy-add is the
+   * only caller: without it the resolve stage never runs.
    */
   addTAA(device: GPUDevice, canvasFormat: GPUTextureFormat): void {
     if (this._taaEffect) {
       return;
     }
     this._taaEffect = new WebGPUTAAEffect();
-    // Intermediate format (rgba16float in HDR) — same
-    // NEW-POSTPROCESS-HDR-INTERMEDIATES (Batch 225) rule as the other
-    // built-in effects: TAA runs pre-tonemap, so an 8-bit history would
-    // clamp HDR highlights before the tonemapper sees them. SDR =
-    // canvasFormat (no-op for the common path).
+    // The intermediate format, rgba16float under HDR, for the same reason as
+    // the other built-in effects: TAA runs pre-tonemap, so an 8-bit history
+    // would clamp HDR highlights before the tonemapper sees them. In SDR this
+    // is the canvas format, so the common path is unaffected.
     this._taaEffect.initialize(
       device,
       this._width,
@@ -1028,7 +999,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   // ================================================================
-  //  Built-in stages: Motion Blur (C6-VELOCITY-MOTION-BLUR)
+  //  Built-in stages: Motion Blur
   // ================================================================
 
   /**
@@ -1044,9 +1015,9 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       return;
     }
     this._motionBlurEffect = new WebGPUMotionBlurEffect();
-    // Intermediate format (rgba16float in HDR) — same
-    // NEW-POSTPROCESS-HDR-INTERMEDIATES rule as TAA: the effect runs
-    // pre-tonemap, so an 8-bit output would clamp HDR highlights.
+    // The intermediate format, rgba16float under HDR, for the same reason as
+    // TAA: the effect runs pre-tonemap, so an 8-bit output would clamp HDR
+    // highlights.
     this._motionBlurEffect.initialize(
       device,
       this._width,
@@ -1124,9 +1095,9 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     // PARITY-F16-POSTPROCESS — flag before initialize() so _createPipelines
     // compiles the f16 variants. Default false = byte-identical f32.
     this._bloomEffect.useShaderF16 = useShaderF16;
-    // Use the intermediate format (rgba16float in HDR) so bloom's bright-pass +
-    // blur chain preserves HDR highlights instead of clamping at 8-bit
-    // (NEW-POSTPROCESS-HDR-INTERMEDIATES). In SDR this equals canvasFormat.
+    // Use the intermediate format, rgba16float under HDR, so bloom's
+    // bright-pass and blur chain preserves HDR highlights instead of clamping
+    // them at 8 bits. In SDR this equals the canvas format.
     this._bloomEffect.initialize(
       device,
       this._width,
@@ -1136,12 +1107,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * C12-18 / C11-160 — add the screen-space solar halo (one fullscreen pass).
+   * Add the screen-space solar halo, a single fullscreen pass.
    *
-   * Idempotent like the other `add*` methods, and it uses the INTERMEDIATE
-   * format for the same reason bloom does: the halo is additive HDR energy
-   * and clamping it at 8 bits before tonemap would flatten exactly the tail
-   * this row exists to produce.
+   * Idempotent like the other `add*` methods, and it uses the intermediate
+   * format for the same reason bloom does: the halo is additive HDR energy,
+   * and clamping it at 8 bits before tonemap flattens its tail.
    */
   addSunHalo(device: GPUDevice, canvasFormat: GPUTextureFormat): void {
     if (this._sunHaloEffect) return;
@@ -1155,8 +1125,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * C12-18 — push this frame's resolved halo state (`frameState.sunHalo`).
-   * No-op when the effect has not been added, so callers need no guard.
+   * Push this frame's resolved halo state (`frameState.sunHalo`). A no-op when
+   * the effect has not been added, so callers need no guard.
    */
   setSunHaloFrameState(state: SunHaloFrameState): void {
     this._sunHaloEffect?.setFrameState(state);
@@ -1213,13 +1183,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * NEW-POSTPROCESS-USER-WGSL (Batch 198 first slice; Batch 199
-   * B198-D1 audit fix) — add a user-supplied WGSL post-process stage
-   * to the pipeline. The stage is appended to the `_userStages` chain
-   * and runs AFTER built-in stages (Bloom, AO, DoF, GodRay) and
-   * AFTER auto-exposure dispatch but BEFORE TAA + tonemap — same
-   * insertion point the WebGL backend uses for `scene.postProcessStages
-   * .add()` user stages.
+   * Add a user-supplied WGSL post-process stage to the pipeline. The stage is
+   * appended to the `_userStages` chain and runs after the built-in stages —
+   * Bloom, AO, DoF, GodRay — and after the auto-exposure dispatch, but before
+   * TAA and tonemap: the same insertion point the WebGL backend uses for
+   * `scene.postProcessStages.add()` stages.
    *
    * The user provides a WGSL fragment shader source (declares
    * `fragmentMain` returning vec4 + bindings per the convention in
@@ -1228,13 +1196,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
    * pipeline (source texture + sampler + 64-byte UBO), and renders
    * fullscreen into its own intermediate texture.
    *
-   * Batch 199 (B198-D1 audit fix) — the stage's intermediate texture
-   * now uses `_intermediateFormat` (rgba16float in HDR mode, canvas
-   * format in SDR) instead of the caller-passed `canvasFormat`. In
-   * HDR mode the prior implementation downconverted user-stage output
-   * to 8-bit, defeating HDR precision. `canvasFormat` is kept on the
-   * API surface for backwards compatibility but is no longer used for
-   * the intermediate allocation.
+   * The stage's intermediate texture uses `_intermediateFormat` — rgba16float
+   * in HDR mode, the canvas format in SDR — rather than the caller-passed
+   * `canvasFormat`, because allocating it at the canvas format downconverts
+   * user-stage output to 8 bits under HDR. `canvasFormat` remains on the API
+   * surface for backwards compatibility but does not size the intermediate.
    *
    * @param device GPUDevice
    * @param canvasFormat Canvas color format (kept for API compat; the
@@ -1259,9 +1225,9 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       schema,
       numberOfPasses,
     );
-    // Batch 199 (B198-D1) — use _intermediateFormat (HDR-aware) so user
-    // stages preserve precision when HDR is on. `canvasFormat` param
-    // retained on the API for backwards compatibility but unused here.
+    // The HDR-aware `_intermediateFormat` keeps user-stage precision when HDR
+    // is on. The `canvasFormat` parameter stays on the API for backwards
+    // compatibility but is unused here.
     void canvasFormat;
     const stageFormat = this._intermediateFormat;
     stage.initialize(device, this._width, this._height, stageFormat);
@@ -1269,9 +1235,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * NEW-POSTPROCESS-USER-WGSL (Batch 198) — drop all user-added WGSL
-   * stages. Called by the configure step when the user collection's
-   * `_stages` array changes (add or remove a stage).
+   * Drop all user-added WGSL stages. Called by the configure step when the
+   * user collection's `_stages` array changes, on either an add or a remove.
    */
   clearUserWGSLStages(): void {
     for (const stage of this._userStages) {
@@ -1281,8 +1246,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * WIRE-PP-LIBRARY-BUILTINS — add an intercepted PostProcessStageLibrary
-   * built-in by its well-known `czm_*` stage name. Returns the created
+   * Add an intercepted PostProcessStageLibrary built-in by its well-known
+   * `czm_*` stage name. Returns the created
    * stage, or null when the name isn't a recognized library built-in.
    * Runs in the same chain slot as user WGSL stages (after the built-in
    * multi-pass effects, before TAA + tonemap) — the same insertion point
@@ -1367,13 +1332,13 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * Audit A.11 (Batch 133) -- Add GodRay effect (radial blur toward
-   * sun + composite). Two-pass: half-res ray generate -> full-res
-   * composite. Caller is expected to feed the per-frame sun screen UV
-   * via `pipeline.godRayEffect.setSunScreenUV(u, v)` (the
-   * `WebGPUPostProcessStageCollection` configure path does this when
-   * the scene has a sun configured). Requires depth texture to
-   * function (the generate pass uses depth as a sky/geometry gate).
+   * Add the GodRay effect: a radial blur toward the sun, then a composite.
+   * Two passes, a half-resolution ray generate followed by a full-resolution
+   * composite. The caller feeds the per-frame sun screen UV through
+   * `pipeline.godRayEffect.setSunScreenUV(u, v)`, which the
+   * `WebGPUPostProcessStageCollection` configure path does when the scene has
+   * a sun configured. A depth texture is required: the generate pass uses
+   * depth as its sky-versus-geometry gate.
    */
   addGodRay(
     device: GPUDevice,
@@ -1383,9 +1348,10 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (this._godRayEffect) return;
     this._godRayEffect = new GodRayEffect(config);
-    // PARITY-F16-POSTPROCESS — default false = byte-identical f32.
+    // False, the default, keeps the f32 shader.
     this._godRayEffect.useShaderF16 = useShaderF16;
-    // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
+    // Intermediate format, rgba16float under HDR; see addBloom. In SDR this is
+    // the canvas format.
     this._godRayEffect.initialize(
       device,
       this._width,
@@ -1395,11 +1361,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * Atmospheric Effects Phase B (Batch 417b) -- Add the HeatShimmer effect
-   * (single-pass animated UV-warp). The configure pass pushes the per-frame
-   * elapsed-seconds clock via `pipeline.heatShimmerEffect.setTime(...)` and
-   * the intensity via `setIntensity(...)`. Depth is optional (the warp is
-   * depth-independent by default); the effect tolerates a null depth view.
+   * Add the HeatShimmer effect, a single-pass animated UV warp. The configure
+   * pass pushes the per-frame elapsed-seconds clock through
+   * `pipeline.heatShimmerEffect.setTime(...)` and the intensity through
+   * `setIntensity(...)`. Depth is optional, since the warp is depth-independent
+   * by default, and the effect tolerates a null depth view.
    */
   addHeatShimmer(
     device: GPUDevice,
@@ -1408,7 +1374,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (this._heatShimmerEffect) return;
     this._heatShimmerEffect = new HeatShimmerEffect(config);
-    // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
+    // Intermediate format, rgba16float under HDR; see addBloom. In SDR this is
+    // the canvas format.
     this._heatShimmerEffect.initialize(
       device,
       this._width,
@@ -1418,12 +1385,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * Atmospheric Effects Phase D (Batch 422) -- Add the ColdOptics effect
-   * (single-pass 22 halo + sun-dogs sky overlay). The configure pass pushes
-   * the per-frame camera/sun/inverse-matrix uniforms via
-   * `pipeline.coldOpticsEffect.setFrameData(...)`. Reads depth to gate the
-   * draw to sky pixels (tolerates a null depth view — the optics simply
-   * don't draw without depth).
+   * Add the ColdOptics effect, a single-pass 22-degree halo and sun-dog sky
+   * overlay. The configure pass pushes the per-frame camera, sun and
+   * inverse-matrix uniforms through
+   * `pipeline.coldOpticsEffect.setFrameData(...)`. Depth gates the draw to sky
+   * pixels; a null depth view is tolerated and the optics simply do not draw.
    */
   addColdOptics(
     device: GPUDevice,
@@ -1432,7 +1398,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (this._coldOpticsEffect) return;
     this._coldOpticsEffect = new ColdOpticsEffect(config);
-    // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
+    // Intermediate format, rgba16float under HDR; see addBloom. In SDR this is
+    // the canvas format.
     this._coldOpticsEffect.initialize(
       device,
       this._width,
@@ -1442,14 +1409,14 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — add the unified
-   * aerial-perspective atmosphere effect. Runs first in the depth-dependent
-   * chain so the haze participates in bloom + tonemap. Requires the scene
-   * depth texture + the per-frame camera/sun/atmosphere uniforms + the
-   * Bruneton transmittance LUT view (all pushed by the configure pass).
+   * Add the unified aerial-perspective atmosphere effect. Runs first in the
+   * depth-dependent chain so the haze participates in bloom and tonemap. It
+   * needs the scene depth texture, the per-frame camera, sun and atmosphere
+   * uniforms, and the Bruneton transmittance LUT view, all pushed by the
+   * configure pass.
    *
-   * Uses the intermediate format (rgba16float in HDR) like the other
-   * built-in effects so HDR highlights survive into the inscatter add.
+   * Uses the intermediate format, rgba16float under HDR, like the other
+   * built-in effects, so HDR highlights survive into the inscatter add.
    */
   addAerialPerspective(
     device: GPUDevice,
@@ -1510,12 +1477,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     depthView?: GPUTextureView | null,
     sourceTexture?: GPUTexture | null,
     motionView?: GPUTextureView | null,
-    // Phase 8a Slice 4 (Batch 87) — when non-null, AO (and Slice 5+:
-    // SSR + clustered lighting) reads surface normals from this
-    // G-buffer view instead of reconstructing them from depth. Caller
-    // wires this only when `scene.deferredLighting === true` AND the
-    // producer ran this frame; otherwise null/undefined keeps the
-    // depth-reconstruction fallback active.
+    // When non-null, AO — and the SSR and clustered-lighting paths that share
+    // it — reads surface normals from this G-buffer view instead of
+    // reconstructing them from depth. The caller wires it only when
+    // `scene.deferredLighting === true` and the producer ran this frame;
+    // null or undefined keeps the depth-reconstruction fallback active.
     gBufferNormalView?: GPUTextureView | null,
   ): void {
     // Store the scene color texture for auto-exposure dispatch.
@@ -1524,9 +1490,9 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     if (sourceTexture) {
       this._lastSceneColorTexture = sourceTexture;
     }
-    // ── Permanent sentinel: catch null views that would produce a black
-    // canvas with no error message (BUG-13 scenario). This is NOT
-    // debug-only — a null view here always means broken output. ──
+    // Permanent sentinel: catch null views, which would otherwise produce a
+    // black canvas with no error message at all. Deliberately not debug-only,
+    // because a null view here always means broken output.
     if (!sourceView || !destView) {
       console.error(
         `[CesiumJS:PostProcess] execute() called with null views — ` +
@@ -1551,12 +1517,12 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     let currentView = sourceView;
     const depth = depthView ?? null;
 
-    // 0. Aerial Perspective (Track V-A2) — unified per-pixel atmosphere over
-    // the whole scene. Runs FIRST so the distance haze + inscatter
-    // participate in AO/bloom/tonemap downstream, matching how WebGL applies
-    // the ground atmosphere inside the globe fragment shader before
-    // post-process. Needs depth to recover per-pixel distance; passes
-    // through unmodified when depth is null.
+    // 0. Aerial Perspective — unified per-pixel atmosphere over the whole
+    // scene. Runs first so the distance haze and inscatter participate in AO,
+    // bloom and tonemap downstream, matching how WebGL applies the ground
+    // atmosphere inside the globe fragment shader before post-process. Needs
+    // depth to recover per-pixel distance, and passes through unmodified when
+    // depth is null.
     if (this._aerialPerspectiveEffect?.enabled && depth) {
       currentView = this._aerialPerspectiveEffect.execute(
         encoder,
@@ -1584,7 +1550,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
-    // 0.5 SunHalo (C12-18 / C11-160) — screen-space solar veiling glare.
+    // 0.5 SunHalo — screen-space solar veiling glare.
     // Runs BEFORE AO/bloom/tonemap, mirroring WebGL, where `SunPostProcess`
     // executes during environment rendering and copies into the scene
     // framebuffer, so everything downstream sees the halo. Needs no depth:
@@ -1601,8 +1567,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
-    // 1. Ambient Occlusion (needs depth; optionally reads G-buffer
-    // normal — Phase 8a Slice 4, Batch 87).
+    // 1. Ambient Occlusion. Needs depth, and optionally reads the G-buffer
+    // normal.
     if (this._aoEffect?.enabled && depth) {
       currentView = this._aoEffect.execute(
         encoder,
@@ -1625,11 +1591,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
-    // 2.5 GodRays (Audit A.11, Batch 133) -- placed after Bloom so
-    // bright shaft pixels participate in the bloom; if a future
-    // Sandcastle wants crisp rays, the placement can flip via a
-    // per-effect "renderAfterBloom" flag (not yet exposed). Needs
-    // depth to gate the radial blur on sky vs. geometry.
+    // 2.5 GodRays, placed after Bloom so bright shaft pixels participate in
+    // the bloom. Needs depth to gate the radial blur on sky versus geometry.
     if (this._godRayEffect?.enabled && depth) {
       currentView = this._godRayEffect.execute(
         encoder,
@@ -1696,18 +1659,13 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       }
     }
 
-    // 3.6/3.65 — the user WGSL stage + library builtin loops used to run
-    // here (pre-TAA, pre-tonemap). NEW-PP-LIBRARY-TONEMAP-ORDER moved
-    // them to step 4.1/4.2 below (post-tonemap) to match WebGL's
-    // insertion point — see the comments there.
-
-    // 3.7 HeatShimmer (Atmospheric Effects Phase B, Batch 417b) — animated
-    // screen-space UV-warp. Placed AFTER aerial-perspective / AO / bloom /
-    // godray / DoF / user stages but BEFORE TAA + tonemap, so the warp lives
-    // in the HDR scene color and participates in temporal AA + the tone
-    // curve (a warp applied post-tonemap would shimmer the SDR signal and
-    // miss TAA accumulation). Depth is passed through but tolerated as null —
-    // the warp is depth-independent unless the depth fade is configured.
+    // 3.7 HeatShimmer, an animated screen-space UV warp. Placed after aerial
+    // perspective, AO, bloom, godray and DoF but before TAA and tonemap, so
+    // the warp lives in the HDR scene colour and participates in temporal AA
+    // and the tone curve. A warp applied post-tonemap would shimmer the SDR
+    // signal and miss TAA accumulation entirely. Depth is passed through but
+    // tolerated as null: the warp is depth-independent unless the depth fade
+    // is configured.
     if (this._heatShimmerEffect?.enabled) {
       currentView = this._heatShimmerEffect.execute(
         encoder,
@@ -1717,12 +1675,12 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
-    // 3.8 ColdOptics (Atmospheric Effects Phase D, Batch 422) — 22 ice-
-    // crystal halo + sun-dogs sky overlay. Placed alongside the other sky/
-    // atmosphere overlays, AFTER aerial-perspective / heat-shimmer but BEFORE
-    // TAA + tonemap, so the additive halo lives in the HDR scene color and
-    // participates in temporal AA + the tone curve. Reads depth to draw only
-    // on sky pixels (geometry passes through); tolerates a null depth view.
+    // 3.8 ColdOptics, the 22-degree ice-crystal halo and sun-dog sky overlay.
+    // Placed alongside the other sky and atmosphere overlays, after aerial
+    // perspective and heat shimmer but before TAA and tonemap, so the additive
+    // halo lives in the HDR scene colour and participates in temporal AA and
+    // the tone curve. Reads depth to draw only on sky pixels, letting geometry
+    // pass through, and tolerates a null depth view.
     if (this._coldOpticsEffect?.enabled) {
       currentView = this._coldOpticsEffect.execute(
         encoder,
@@ -1732,23 +1690,20 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
-    // AUDIT_2026_05_02 B.16 (Batch 155 clarity refactor; Batch 157
-    // comment correction) — TAA executes here, BEFORE tonemap (step 4
-    // below), so it always operates on the pre-tonemap, linear/HDR
-    // `currentView`. See the module docstring for the full rationale
-    // (TAA's internal reversible Karis tonemap-weighting requires
-    // linear input).
+    // TAA executes here, before the tonemap at step 4, so it always operates
+    // on the pre-tonemap linear `currentView`. TAA's internal reversible Karis
+    // tonemap weighting requires linear input; the module docstring carries
+    // the full argument.
     if (this._taaEffect?.enabled) {
-      // TAA Slice 2d (Batch 104) — pass the per-pixel motion-vector
-      // view through. When the SceneRenderer hasn't run a velocity
-      // pass (model velocity output disabled), `motionView` is null
-      // and the TAA effect binds its 1×1 zero placeholder; the FS
-      // falls through to depth reprojection for that frame.
+      // The per-pixel motion-vector view is passed through. When the scene
+      // renderer has not run a velocity pass, because model velocity output is
+      // disabled, `motionView` is null and the TAA effect binds its 1×1 zero
+      // placeholder, so the fragment stage falls through to depth reprojection
+      // for that frame.
       //
-      // Slice 5c-B Batch 126 — also pass `gBufferNormalView` so TAA's
-      // disocclusion test can do a normal-divergence rejection at
-      // silhouette pixels. Null when the G-buffer FB isn't allocated
-      // yet (early frames); the TAA shader's sentinel check handles
+      // `gBufferNormalView` lets TAA's disocclusion test reject on normal
+      // divergence at silhouette pixels. It is null until the G-buffer
+      // framebuffer is allocated, and the TAA shader's sentinel check handles
       // the placeholder transparently.
       currentView = this._taaEffect.execute(
         encoder,
@@ -1760,13 +1715,12 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
-    // 3.9 Motion Blur (C6-VELOCITY-MOTION-BLUR) — velocity-buffer motion
-    // blur. Runs AFTER TAA so it smears the temporally-resolved color, and
-    // BEFORE tonemap (linear/HDR domain) so the depth texture's projection
-    // stays consistent with the effect's unproject. Needs depth; when depth
-    // is null or the effect is inert (`intensity <= 0`) the effect passes
-    // `currentView` through unchanged (no pass recorded). Reuses the same
-    // `motionView` MRT velocity that TAA consumes.
+    // 3.9 Velocity-buffer motion blur. Runs after TAA so it smears the
+    // temporally-resolved colour, and before tonemap so the depth texture's
+    // projection stays consistent with the effect's unproject. Needs depth;
+    // when depth is null or the effect is inert, with `intensity <= 0`, it
+    // passes `currentView` through unchanged and records no pass. Reuses the
+    // same `motionView` MRT velocity that TAA consumes.
     if (this._motionBlurEffect?.enabled && depth) {
       currentView = this._motionBlurEffect.execute(
         encoder,
@@ -1779,36 +1733,31 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 
     // 4. Tonemapping → user/library stages → ColorGrading + Custom + FXAA.
     //
-    // NEW-PP-LIBRARY-TONEMAP-ORDER — the tail order matches WebGL's
-    // PostProcessStageCollection.execute(): ao/bloom → autoExposure →
-    // tonemap → added stages (`_stages`) → FXAA. Tonemap therefore
-    // executes FIRST (when enabled: HDR render, SDR canvas), so
-    // user/library stages receive the tonemapped SDR frame exactly like
-    // WebGL — historically they ran pre-TAA/pre-tonemap and read
-    // unbounded linear color, an HDR-only divergence (in SDR the tonemap
-    // stage is disabled, making this ordering pixel-identical to the old
-    // placement on the default path).
+    // The tail order matches WebGL's `PostProcessStageCollection.execute()`:
+    // ao/bloom, then autoExposure, then tonemap, then the added stages, then
+    // FXAA. Tonemap therefore executes first — when it is enabled, meaning an
+    // HDR render to an SDR canvas — so user and library stages receive the
+    // tonemapped SDR frame exactly as they do on WebGL. Running them ahead of
+    // the tonemap instead would hand them unbounded linear colour, which
+    // diverges from WebGL under HDR.
     //
     // Ping-pong bookkeeping spans the whole tail: `viewIndex` alternates
     // ping/pong across tonemap + the ColorGrading/custom/FXAA chain.
     // User/library stages own their output textures, so they don't
     // consume a ping-pong slot (no read/write hazard either way).
     //
-    // Batch 110 (HDR fix) — every single-pass stage's pipeline is
-    // compiled with `targets: [{ format: _intermediateFormat }]` (see
-    // `_compileStage` callers). When HDR is on, intermediateFormat is
-    // `rgba16float` while the canvas swap chain stays at the canvas
-    // format. Writing the LAST stage straight to `destView` (canvas)
-    // would produce a pipeline-vs-attachment format mismatch and the
-    // canvas would render black with a validation warning.
+    // Every single-pass stage's pipeline is compiled with
+    // `targets: [{ format: _intermediateFormat }]`; see the `_compileStage`
+    // callers. Under HDR that format is `rgba16float` while the canvas swap
+    // chain stays at the canvas format, so writing the last stage straight to
+    // `destView` would mismatch pipeline against attachment and render a black
+    // canvas with a validation warning.
     //
-    // Fix: every single-pass stage writes to a ping-pong view (which
-    // matches `_intermediateFormat`), and an extra identity-blit at
-    // the end downconverts to `destView` (canvas format). The blit is
-    // a single fullscreen-triangle pass with no uniforms — cheap. In
-    // SDR mode `_intermediateFormat === canvasFormat` so the blit is
-    // an over-call, but the cost is negligible compared to one stage's
-    // worth of fragment shading.
+    // Instead every single-pass stage writes to a ping-pong view, which
+    // matches `_intermediateFormat`, and a final identity blit downconverts to
+    // `destView`. The blit is one fullscreen-triangle pass with no uniforms.
+    // In SDR `_intermediateFormat === canvasFormat`, so the blit is redundant
+    // there, at a cost far below one stage's worth of fragment shading.
     const views = [this._pingView!, this._pongView!];
     let viewIndex = 0;
 
@@ -1824,15 +1773,12 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       viewIndex = (viewIndex + 1) % 2;
     }
 
-    // 4.1 NEW-POSTPROCESS-USER-WGSL (Batch 198 first slice; Batch 199
-    // B198-D2 audit fix; NEW-PP-LIBRARY-TONEMAP-ORDER re-placement).
-    // User-supplied WGSL post-process stages run AFTER tonemap and
-    // BEFORE ColorGrading/FXAA — matching the WebGL backend's insertion
-    // point for `scene.postProcessStages.add(...)` stages
-    // (PostProcessStageCollection.execute runs `_stages` on the
-    // tonemapped output, before FXAA). Each stage chains via the
-    // standard `execute(encoder, source, depth, sampler) → newView`
-    // contract.
+    // 4.1 User-supplied WGSL post-process stages run after tonemap and before
+    // ColorGrading and FXAA, matching the WebGL backend's insertion point for
+    // `scene.postProcessStages.add(...)` stages, where
+    // `PostProcessStageCollection.execute` runs `_stages` on the tonemapped
+    // output ahead of FXAA. Each stage chains through the standard
+    // `execute(encoder, source, depth, sampler) → newView` contract.
     for (const stage of this._userStages) {
       if (stage.enabled) {
         currentView = stage.execute(
@@ -1844,14 +1790,13 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       }
     }
 
-    // 4.2 WIRE-PP-LIBRARY-BUILTINS — intercepted PostProcessStageLibrary
-    // built-ins (BlackAndWhite / Brightness / NightVision / Silhouette /
-    // EdgeDetection / LensFlare / DepthView WGSL twins). Same chain slot
-    // as user WGSL stages: post-tonemap, pre-FXAA — matching WebGL's
-    // insertion point for `scene.postProcessStages.add(...)` stages
-    // (NEW-PP-LIBRARY-TONEMAP-ORDER). Depth-dependent stages
-    // (DepthView / EdgeDetection / Silhouette) pass through unchanged
-    // when the sampleable depth copy is unavailable.
+    // 4.2 Intercepted PostProcessStageLibrary built-ins: the BlackAndWhite,
+    // Brightness, NightVision, Silhouette, EdgeDetection, LensFlare and
+    // DepthView WGSL twins. Same chain slot as the user WGSL stages,
+    // post-tonemap and pre-FXAA, matching WebGL's insertion point for
+    // `scene.postProcessStages.add(...)` stages. The depth-dependent ones —
+    // DepthView, EdgeDetection, Silhouette — pass through unchanged when the
+    // sampleable depth copy is unavailable.
     for (const stage of this._libraryStages) {
       if (stage.enabled) {
         currentView = stage.execute(
@@ -1865,18 +1810,16 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 
     // 4.3 ColorGrading + Custom stages + FXAA (single-pass chain)
     const singlePassStages: CompiledStage[] = [];
-    // HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix) + PARITY-HDR-PP-MATH —
-    // when the canvas is configured for HDR output, ColorGrading and FXAA
-    // used to be dropped from the chain entirely (their SDR-calibrated
-    // grading pivots and luma thresholds misbehave on raw HDR). They now
-    // stay in the chain in HDR mode: `setHDROutputMode()` flips each
-    // stage's `hdrMode` uniform so the shaders switch to a Reinhard-
-    // compressed working space (grade pivots / FXAA edge luma operate on
-    // [0, 1) again, output stays linear HDR). Tonemap remains bypassed —
-    // that gate lives in the collection's enabled sync.
+    // ColorGrading and FXAA stay in the chain under HDR canvas output:
+    // `setHDROutputMode()` flips each stage's `hdrMode` uniform so the shaders
+    // switch to a Reinhard-compressed working space, where the grading pivots
+    // and the FXAA edge luma operate on [0, 1) again while the output stays
+    // linear HDR. Without that switch their SDR-calibrated pivots and
+    // thresholds misbehave on a raw HDR signal. Tonemap remains bypassed; that
+    // gate lives in the collection's enabled sync.
     if (this._colorGradingStage?.enabled) {
-      // Phase 4 — runs after tonemap (so it sees SDR) and before custom
-      // stages + FXAA (so the AA pass smooths any contrast-boosted edges).
+      // Runs after tonemap, so it sees SDR, and before the custom stages and
+      // FXAA, so the AA pass smooths any contrast-boosted edges.
       singlePassStages.push(this._colorGradingStage);
     }
 
@@ -1988,15 +1931,15 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix) + PARITY-HDR-PP-MATH.
-   * When true (HDR canvas output active, tonemap bypassed), ColorGrading
-   * and FXAA keep running but switch to their HDR-aware math via the
-   * `hdrMode` uniform each shader carries (Reinhard-compressed working
-   * space — see the WGSL headers). When false (default) the uniform is 0
-   * and both stages run the historical SDR path bit-for-bit. Tonemap is
-   * still gated separately by the collection's enabled sync. Driven
-   * per-frame from `WebGPUPostProcessStageCollection.update()` based on
-   * the scene `useHDRCanvasOutput` + `highDynamicRange` pair.
+   * Switch ColorGrading and FXAA between their SDR and HDR math.
+   *
+   * When true — HDR canvas output active, tonemap bypassed — both stages keep
+   * running but read the `hdrMode` uniform each shader carries, putting them
+   * in a Reinhard-compressed working space; see the WGSL headers. When false,
+   * the default, the uniform is 0 and both run the SDR path bit-for-bit.
+   * Tonemap is gated separately by the collection's enabled sync. Driven per
+   * frame from `WebGPUPostProcessStageCollection.update()` off the scene's
+   * `useHDRCanvasOutput` and `highDynamicRange` pair.
    */
   setHDROutputMode(enabled: boolean): void {
     if (this._hdrOutputMode === enabled) return;
@@ -2277,13 +2220,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._coldOpticsEffect?.destroy();
     this._aerialPerspectiveEffect?.destroy();
     this._autoExposure?.destroy();
-    // Batch 244 — TAA was missing from teardown (the effect was never
-    // instantiated before NEW-TAA-EFFECT-NEVER-ADDED landed, so the
-    // leak was unreachable). History textures + params UBO are real
-    // GPU allocations; drop them with the rest.
+    // TAA's history textures and params uniform buffer are real GPU
+    // allocations, so they are dropped with the rest.
     this._taaEffect?.destroy();
     this._motionBlurEffect?.destroy();
-    // WIRE-PP-LIBRARY-BUILTINS — library-stage intermediates + UBOs.
+    // Library-stage intermediates and uniform buffers.
     this.clearLibraryStages();
     this._bloomEffect = null;
     this._aoEffect = null;

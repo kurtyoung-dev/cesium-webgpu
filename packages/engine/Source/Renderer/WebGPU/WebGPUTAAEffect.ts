@@ -231,8 +231,8 @@ export function _invertMatrix4(
  * Halton sequence evaluator — low-discrepancy quasi-random sequence
  * for sub-pixel jitter offsets. Uses bases 2 and 3 (standard for TAA).
  *
- * Kept exported for backwards compatibility / debug visualizations;
- * the TAA jitter path itself uses `iginJitter` (Batch 195).
+ * Exported for debug visualizations; the TAA jitter path itself uses
+ * `ignJitter`.
  */
 export function halton(index: number, base: number): number {
   let result = 0;
@@ -247,38 +247,34 @@ export function halton(index: number, base: number): number {
 }
 
 /**
- * Batch 195 — Interleaved Gradient Noise jitter, replacing the prior
- * Halton 2/3 sequence as the default TAA sub-pixel jitter generator.
+ * Interleaved gradient noise jitter — the TAA sub-pixel jitter generator.
  *
- * Same Jorge Jimenez IGN formula as the WGSL `csm_stochasticDither`
- * chunk (Batch 192) — keeps the spatial + temporal noise pattern
- * consistent across CPU-side TAA jitter and GPU-side stochastic
- * alpha-test rendering, so future foliage / particle dither work
- * sees the same noise distribution as the camera jitter that's
- * accumulating it.
+ * The same formula as the WGSL `csm_stochasticDither` chunk, so the spatial
+ * and temporal noise pattern is consistent between CPU-side TAA jitter and
+ * GPU-side stochastic alpha-test rendering: foliage and particle dither then
+ * see the same noise distribution as the camera jitter accumulating it.
  *
- * Why blue-noise over Halton 2/3 for TAA jitter:
+ * Halton 2/3 is low-discrepancy but temporally correlated — samples N and
+ * N+1 land near each other in the unit square, so adjacent-frame jitter
+ * offsets are correlated and TAA accumulation carries structured residual
+ * error that reads as mild ghosting on edges. Interleaved gradient noise has
+ * a blue-noise spectrum, so successive samples at the same pixel are nearly
+ * uncorrelated and temporal averaging converges faster with less residual.
  *
- * - Halton 2/3 is low-discrepancy (well-distributed) but
- *   temporally-correlated — samples N and N+1 land near each other
- *   in the unit square. Adjacent-frame jitter offsets are correlated,
- *   so TAA accumulation sees structured residual error that shows up
- *   as mild ghosting on edges.
- * - IGN is high-frequency / blue-noise-spectrum: adjacent samples
- *   (across frames at the same pixel) are nearly uncorrelated.
- *   Accumulation under temporal averaging converges faster with
- *   less residual error — cleaner edges, less perceptible ghosting.
+ * Returns a value in [0, 1), matching Halton's range, so the caller's
+ * `(x - 0.5)` centering math is unaffected.
  *
- * Returns a value in [0, 1) matching Halton's range, so the caller's
- * `(x - 0.5)` centering math at lines 622-623 still works unchanged.
+ * The seed combines a spatial term — the call site uses one `index` per
+ * frame, so the frame index and sample axis are packed into the noise
+ * coordinates — with a frame-counter offset for temporal decorrelation.
  *
- * The seed combines a per-pixel-equivalent spatial term (the call
- * site uses just one `index` per frame, so we pack frame index +
- * sample axis into the IGN coords) with a frame-counter offset for
- * temporal decorrelation across consecutive frames.
+ * References:
+ *   - Jorge Jimenez, "Next Generation Post Processing in Call of Duty:
+ *     Advanced Warfare" (SIGGRAPH 2014) — the interleaved gradient noise
+ *     formula.
  *
  * @param frameIndex Frame counter; advances every render frame
- * @param axis 0 for X jitter, 1 for Y jitter — uses different IGN
+ * @param axis 0 for X jitter, 1 for Y jitter — uses different noise
  *   coordinates so X and Y are uncorrelated within a frame
  * @returns jitter sample in [0, 1)
  */
@@ -337,16 +333,15 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   private _device: GPUDevice | null = null;
   private _pipeline: GPURenderPipeline | null = null;
   private _bindGroupLayout: GPUBindGroupLayout | null = null;
-  // TAA Slice 2d (Batch 104) — 1×1 zero-RG placeholder for the motion
-  // texture binding. Used when no per-pixel velocity is available
-  // (model velocity pass inactive); the FS branch reads `(0, 0)` and
-  // falls back to the existing depth-reprojection path.
+  // A 1×1 zero-RG placeholder for the motion texture binding, used when no
+  // per-pixel velocity is available because the model velocity pass is
+  // inactive. The fragment branch reads `(0, 0)` and falls back to the
+  // depth-reprojection path.
   private _motionPlaceholderView: GPUTextureView | null = null;
-  // Slice 5c-B Batch 126 — 1×1 G-buffer normal-roughness placeholder.
-  // The shader reads (0,0,0,0) as the load-op-clear sentinel and
-  // skips the normal-divergence disocclusion test. Bound when the
-  // host doesn't pass a real G-buffer view (early frames before the
-  // FB is allocated, or non-WebGPU code paths).
+  // A 1×1 G-buffer normal-roughness placeholder. The shader reads (0,0,0,0)
+  // as the load-op-clear sentinel and skips the normal-divergence
+  // disocclusion test. Bound when the host passes no real G-buffer view —
+  // early frames before the framebuffer is allocated, or non-WebGPU paths.
   private _gBufferPlaceholderView: GPUTextureView | null = null;
   private _paramsBuffer: GPUBuffer | null = null;
   private _paramsScratch = new Float32Array(TAA_PARAMS_FLOATS);
@@ -409,12 +404,11 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   private _height = 0;
   private _format: GPUTextureFormat = "bgra8unorm";
   private _sampler: GPUSampler | null = null;
-  // Batch 244 — dedicated NEAREST sampler for the depth binding.
-  // WebGPU forbids TextureSampleType::Depth + a Filtering sampler in
-  // the same static texture/sampler pair; TAA_Pipeline creation failed
-  // on exactly that for the effect's whole dormant life (surfaced on
-  // first activation, NEW-TAA-EFFECT-NEVER-ADDED). NEW-4-B (Batch 66)
-  // pattern, same as WebGPUGlobeDepth / WebGPUDebugDepthOverlay.
+  // A dedicated nearest sampler for the depth binding. WebGPU forbids a
+  // depth texture sample type paired with a filtering sampler in the same
+  // static texture/sampler pair, and pipeline creation fails outright on it.
+  // The same arrangement appears in `WebGPUGlobeDepth` and
+  // `WebGPUDebugDepthOverlay`.
   private _depthSampler: GPUSampler | null = null;
 
   // TAA jitter has two coordinate-space representations. Keeping distinct
@@ -433,13 +427,11 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   /** Blend weight: fraction of current frame in the blend (0.1 = 10%). */
   blendWeight = 0.1;
 
-  // Batch 244 (NEW-TAA-EFFECT-NEVER-ADDED) — debug-only resolve counter.
-  // Counts how many times the temporal-resolve render pass was actually
-  // ENCODED (i.e., past every early-return guard in `execute()`).
-  // Incremented under a debug pragma, so production builds report 0 via
-  // `getStatistics().resolveCount`; unminified builds let probes assert
-  // the resolve stage runs (vs. the pre-Batch-244 dormancy where
-  // `_taaEffect` was never instantiated at all).
+  // Debug-only resolve counter, recording how many times the temporal-resolve
+  // render pass was actually encoded, meaning it passed every early-return
+  // guard in `execute()`. Incremented under a debug pragma, so production
+  // builds report 0 through `getStatistics().resolveCount` while unminified
+  // builds let a probe assert that the resolve stage runs at all.
   private _resolveCount = 0;
 
   initialize(
@@ -467,22 +459,20 @@ export class WebGPUTAAEffect implements PostProcessEffect {
       minFilter: "linear",
     });
 
-    // Batch 244 — nearest sampler for the depth binding (see the
-    // `_depthSampler` field comment). Color/history/motion/G-buffer
-    // keep the linear sampler; ONLY depth routes through this one.
+    // The nearest sampler for the depth binding; see the `_depthSampler`
+    // field comment. Colour, history, motion and G-buffer keep the linear
+    // sampler — only depth routes through this one.
     this._depthSampler = device.createSampler({
       label: "TAA_DepthSampler",
       magFilter: "nearest",
       minFilter: "nearest",
     });
 
-    // Bind group layout
-    // TAA Slice 2d (Batch 104) — adds binding 5 for the per-pixel
-    // motion-vector texture (rg16float, written by the model FS at
-    // @location(1) when MRT velocity output is enabled). Bound to a
-    // 1×1 zero placeholder when the velocity pass is inactive; the
-    // FS branch in `reprojectUV` falls back to depth-reprojection
-    // when the sample reads as zero.
+    // Bind group layout. Binding 5 is the per-pixel motion-vector texture,
+    // rg16float, written by the model fragment shader at `@location(1)` when
+    // MRT velocity output is enabled. Bound to a 1×1 zero placeholder when
+    // the velocity pass is inactive; the branch in `reprojectUV` falls back
+    // to depth reprojection when the sample reads as zero.
     this._bindGroupLayout = makeBindGroupLayout(device, "TAA_BGL", [
       texture(0, Stage.FRAGMENT),
       texture(1, Stage.FRAGMENT),
@@ -490,13 +480,12 @@ export class WebGPUTAAEffect implements PostProcessEffect {
       sampler(3, Stage.FRAGMENT),
       uniformBuffer(4, Stage.FRAGMENT),
       texture(5, Stage.FRAGMENT),
-      // Slice 5c-B Batch 126 — G-buffer normal-roughness texture for
-      // the disocclusion normal-divergence test. Bound to a 1×1
-      // sentinel placeholder when the host doesn't pass a real
-      // G-buffer view; the shader's sentinel check (length < 0.1)
-      // skips the test for those frames.
+      // G-buffer normal-roughness texture for the disocclusion
+      // normal-divergence test. Bound to a 1×1 sentinel placeholder when the
+      // host passes no real G-buffer view; the shader's sentinel check,
+      // `length < 0.1`, skips the test on those frames.
       texture(6, Stage.FRAGMENT),
-      // Batch 244 — non-filtering depth sampler (see `_depthSampler`).
+      // The non-filtering depth sampler; see `_depthSampler`.
       sampler(7, Stage.FRAGMENT, "non-filtering"),
     ]);
 
@@ -525,11 +514,10 @@ export class WebGPUTAAEffect implements PostProcessEffect {
 
     this._allocateHistoryTextures(width, height, format);
 
-    // TAA Slice 2d (Batch 104) — 1×1 zero-filled rg16float placeholder
-    // for the motion-vector binding. The FS treats (0, 0) as "no
-    // sample available" and falls back to depth reprojection, which
-    // is the correct behavior when no model velocity pass populated
-    // the real texture.
+    // A 1×1 zero-filled rg16float placeholder for the motion-vector binding.
+    // The fragment stage treats (0, 0) as no sample available and falls back
+    // to depth reprojection, which is the correct behaviour when no model
+    // velocity pass has populated the real texture.
     const placeholderTex = device.createTexture({
       label: "TAA Motion Placeholder",
       size: [1, 1, 1],
@@ -546,11 +534,11 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     );
     this._motionPlaceholderView = placeholderTex.createView();
 
-    // Slice 5c-B Batch 126 — 1×1 rgba16float G-buffer normal-roughness
-    // placeholder. Matches MRT_NORMAL_ROUGHNESS_FORMAT so the binding
-    // slot's format-compat check passes against the BGL entry. Zero-
-    // fill = (0,0,0,0) which the shader's sentinel check (length < 0.1)
-    // treats as "no real normal here, skip the divergence test".
+    // A 1×1 rgba16float G-buffer normal-roughness placeholder, matching
+    // `MRT_NORMAL_ROUGHNESS_FORMAT` so the binding slot's format check passes
+    // against the layout entry. The zero fill reads as (0,0,0,0), which the
+    // shader's `length < 0.1` sentinel treats as no real normal here, skip
+    // the divergence test.
     const gBufferPlaceholderTex = device.createTexture({
       label: "TAA G-Buffer Placeholder",
       size: [1, 1, 1],
@@ -579,13 +567,12 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   }
 
   /**
-   * Batch 244 (NEW-TAA-EFFECT-NEVER-ADDED) — invalidate the temporal
-   * history without reallocating it. Called by the configure pass on
-   * the disabled→enabled rising edge: while TAA was off the history
-   * textures kept whatever the last enabled frame wrote, and blending
-   * 90% of a stale scene into the first re-enabled frame would flash
-   * old content. The next `execute()` passes the source through
-   * unblended and accumulation restarts clean on the frame after.
+   * Invalidate the temporal history without reallocating it. Called by the
+   * configure pass on the disabled-to-enabled rising edge: while TAA is off
+   * the history textures keep whatever the last enabled frame wrote, and
+   * blending 90% of a stale scene into the first re-enabled frame flashes old
+   * content. The next `execute()` then passes the source through unblended
+   * and accumulation restarts clean on the frame after.
    */
   resetHistory(): void {
     this._skipNextBlend = true;
@@ -597,9 +584,8 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     depthView: GPUTextureView | null,
     _sampler: GPUSampler,
     motionView: GPUTextureView | null = null,
-    // Slice 5c-B Batch 126 — G-buffer normal-roughness view for the
-    // disocclusion normal-divergence test. Null falls back to the
-    // 1×1 sentinel placeholder.
+    // G-buffer normal-roughness view for the disocclusion normal-divergence
+    // test. Null falls back to the 1×1 sentinel placeholder.
     gBufferNormalView: GPUTextureView | null = null,
   ): GPUTextureView {
     if (
@@ -671,11 +657,10 @@ export class WebGPUTAAEffect implements PostProcessEffect {
       return sourceView;
     }
 
-    // Build bind group.
-    // TAA Slice 2d (Batch 104) — binding 5 = per-pixel motion-vector
-    // texture. Falls back to the 1×1 zero placeholder when no
-    // velocity-aware geometry has populated a real texture; the FS
-    // reads zero and routes through depth reprojection.
+    // Build bind group. Binding 5 is the per-pixel motion-vector texture,
+    // falling back to the 1×1 zero placeholder when no velocity-aware
+    // geometry has populated a real one; the fragment stage reads zero and
+    // routes through depth reprojection.
     const motionBindView = motionView ?? this._motionPlaceholderView;
     const gBufferBindView = gBufferNormalView ?? this._gBufferPlaceholderView;
     if (!motionBindView || !gBufferBindView) {
@@ -705,7 +690,7 @@ export class WebGPUTAAEffect implements PostProcessEffect {
           { binding: 4, resource: { buffer: this._paramsBuffer } },
           { binding: 5, resource: motionBindView },
           { binding: 6, resource: gBufferBindView },
-          // Batch 244 — non-filtering depth sampler (see `_depthSampler`).
+          // The non-filtering depth sampler; see `_depthSampler`.
           { binding: 7, resource: this._depthSampler },
         ],
       });
@@ -737,7 +722,7 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     pass.end();
 
     //>>includeStart('debug', pragmas.debug);
-    // Batch 244 — the resolve pass was actually encoded this frame.
+    // The resolve pass was actually encoded this frame.
     this._resolveCount++;
     //>>includeEnd('debug');
 
@@ -788,16 +773,15 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   /**
    * Compute jitter offset for the current frame.
    *
-   * Batch 195 — switched from Halton 2/3 to Interleaved Gradient Noise
-   * for better temporal decorrelation under TAA accumulation. See
-   * `ignJitter` JSDoc for the rationale. Halton retained as exported
-   * helper for backwards compat / debug visualizations but no longer
-   * drives the active TAA path.
+   * Uses interleaved gradient noise rather than Halton 2/3, for the temporal
+   * decorrelation reasons set out in `ignJitter`'s docblock. Halton stays
+   * exported as a helper for debug visualizations but does not drive this
+   * path.
    *
    * Returns both representations explicitly: `projectionNdc*` drives the
    * scratch projection and `resolveUv*` is the exact NDC/2 value uploaded to
-   * the resolve shader. The `frameIndex % 16` modulo from the Halton path is
-   * no longer needed — IGN doesn't have a pattern period; it's pseudo-random
+   * the resolve shader. No `frameIndex % 16` modulo is applied, because
+   * interleaved gradient noise has no pattern period — it is pseudo-random
    * across all frame indices.
    */
   computeJitter(
@@ -850,8 +834,8 @@ export class WebGPUTAAEffect implements PostProcessEffect {
       // `historyIndex` retains its historical meaning: which slot is the
       // WRITE slot this frame (= `frameIndex & 1` for phaseOffset 0).
       historyIndex: this._parityManager.frameIndex & 1,
-      // Batch 244 — debug-pragma counter; always 0 in production builds
-      // (the increment is stripped), real encode count in unminified.
+      // Debug-pragma counter: always 0 in production builds, where the
+      // increment is stripped, and the real encode count in unminified ones.
       resolveCount: this._resolveCount,
     };
   }

@@ -1,16 +1,14 @@
 // AerialPerspective — unified per-pixel atmospheric haze post-process.
 //
-// Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS). Applies a single,
-// depth-correct atmosphere over the WHOLE composited scene (terrain, 3D
-// tiles, glTF models, geometry) AFTER the opaque scene pass, replacing the
-// per-tile ground-atmosphere drape with one consistent look. This is the
-// "post-process lighting for the terrain" the Takram talk describes.
+// Applies a single, depth-correct atmosphere over the whole composited scene —
+// terrain, 3D tiles, glTF models, geometry — after the opaque scene pass,
+// replacing the per-tile ground-atmosphere drape with one consistent look.
 //
-// For each pixel we:
-//   1. Recover the eye-space distance from the (log-depth) scene depth
-//      buffer — `csm_reverseLogDepthToEyeDistance`, the renderer-wide
-//      log-depth contract (CLAUDE.md). Sky pixels (depth at/near the far
-//      plane) get no haze so the sky/atmosphere shell shows through.
+// For each pixel:
+//   1. Recover the eye-space distance from the log-depth scene depth buffer
+//      through `csm_reverseLogDepthToEyeDistance`, the renderer-wide log-depth
+//      contract. Sky pixels, at or near the far plane, get no haze so the
+//      sky/atmosphere shell shows through.
 //   2. Reconstruct the world-space fragment position from the camera world
 //      position + the per-pixel world-space view ray × distance. In ECEF
 //      the ellipsoid centre is the world origin, so altitude is simply
@@ -25,8 +23,8 @@
 //      Mie march with the HG phase against the sun) rather than from the
 //      single-inscatter LUT: that LUT bakes the world-space sun into a
 //      synthetic Y-up frame and cannot represent the view–sun azimuth
-//      (see WebGPUSkyAtmosphereRenderer.js ENABLE_SKY_INSCATTER_LUT = false
-//      / DEFERRED_WORK NEW-ATMOSPHERE-LUT-SUN-RELATIVE). The analytic march
+//      (see WebGPUSkyAtmosphereRenderer.js ENABLE_SKY_INSCATTER_LUT = false).
+//      The analytic march
 //      is the parity port of WebGL's czm_computeScattering /
 //      computeAtmosphereColor (AtmosphereCommon.glsl), so the haze colour +
 //      sun-relative brightening match the WebGL ground-atmosphere look.
@@ -42,9 +40,11 @@
 //   - Eric Bruneton & Fabrice Neyret, "Precomputed Atmospheric Scattering"
 //     (EGSR 2008) — transmittance LUT parameterization. Technique
 //     reimplemented from the paper, not copied from any GPL/BSD source.
-//   - Takram `three-geospatial` (MIT) `AerialPerspectiveEffect` — the
-//     transmittance×color + inscatter post-process structure. Credited per
-//     migration_doc/RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md (technique only).
+//   - Shota Matsuda, Takram — `three-geospatial` (MIT),
+//     https://github.com/takram-design-engineering/three-geospatial — the
+//     `AerialPerspectiveEffect` structure this follows: transmittance times
+//     scene colour, plus an inscatter term, applied as one fullscreen pass
+//     over the composited frame. Technique only; no source was copied.
 //   - CesiumJS AtmosphereCommon.glsl computeScattering / computeAtmosphereColor
 //     — the analytic single-scatter march this inscatter term ports.
 
@@ -74,12 +74,11 @@ struct AerialUniforms {
   params0: vec4<f32>,
   // .x = haze intensity (master multiplier 0..N, default 1),
   // .y = inscatter intensity scale,
-  // .z = Item 2.2 (ENV-AERIAL-MS, Batch 430) useMultiScatterLut flag — when
-  //      > 0.5 the in-scatter term is sourced from the sun-relative sky-view
-  //      LUT (+ MS LUT add), the SAME tables the visible SkyAtmosphere samples,
-  //      so the haze color matches the visible MS sky. When <= 0.5 (default)
-  //      the analytic single-scatter march below runs verbatim (byte-identical
-  //      parity). (Replaces the prior unused-reserve=1 slot.)
+  // .z = useMultiScatterLut flag — above 0.5 the in-scatter term is sourced
+  //      from the sun-relative sky-view LUT plus the multiple-scattering LUT,
+  //      the same tables the visible SkyAtmosphere samples, so the haze
+  //      colour matches the visible sky. At or below 0.5, the default, the
+  //      analytic single-scatter march below runs instead.
   // .w = sky-depth cutoff fraction (depths >= far*this are sky → skipped).
   params1: vec4<f32>,
   // Inverse projection — recovers the EYE-space ray direction for a pixel
@@ -94,24 +93,23 @@ struct AerialUniforms {
   // translation column is ignored (the camera world position is supplied
   // separately via cameraPositionWC).
   inverseViewRotation: mat4x4<f32>,
-  // ── Batch 437 (CLOUD-SHADOWS) / C13-06: sun-view beer shadow map ──
-  // `cloudShadowVP` is `worldToSunClip * translate(camera)` — the shared cloud
-  // shadow frame owner cancels the planet-scale translation in CPU f64, so the FS
-  // projects the fragment's CAMERA-RELATIVE offset rather than a full-ECEF
-  // position; the FS reads the cloud OPTICAL DEPTH column from `cloudShadowTex`
-  // (binding 7) and ATTENUATES the inscatter by transmittance = exp(-depth·
-  // absorption) so the air-light dims under the clouds. `cloudShadowControl`:
-  // x = enabled (1.0 when globe.cloudCastShadows + a real map rendered), y =
-  // absorption, z = strength, w = reserved. Appended add-only; (identity, 0,0,0,0)
-  // by default → the FS gate (`x > 0.5`) stays closed → byte-identical.
+  // Sun-view beer shadow map. `cloudShadowVP` is
+  // `worldToSunClip * translate(camera)`: the shared cloud-shadow frame owner
+  // cancels the planet-scale translation in CPU f64, so this stage projects
+  // the fragment's camera-relative offset rather than a full ECEF position.
+  // It reads the cloud optical-depth column from `cloudShadowTex` at binding
+  // 7 and attenuates the inscatter by `exp(-depth * absorption)`, so the air
+  // light dims under the clouds. `cloudShadowControl`:
+  // x = enabled (1.0 when globe.cloudCastShadows is set and a real map
+  // rendered), y = absorption, z = strength, w = reserved. Defaults to
+  // (identity, 0,0,0,0), which keeps the `x > 0.5` gate closed.
   cloudShadowVP: mat4x4<f32>,
   cloudShadowControl: vec4<f32>,
-  // Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
-  // (per-metre). xyz = RGB coefficient; w = enabled (1.0 when skyAtmosphere.ozone
-  // is on AND aerial perspective is active). Pure absorber added to the analytic
-  // march's extinction term so the distance-haze extinction matches the visible
-  // sky's ozone deepening. Appended add-only; default (0,0,0,0) → exp(-0) =
-  // identity → byte-identical when ozone is off.
+  // Ozone Chappuis-band absorption coefficient, per metre. xyz is the RGB
+  // coefficient; w is 1.0 when `skyAtmosphere.ozone` is on and aerial
+  // perspective is active. A pure absorber added to the analytic march's
+  // extinction term, so the distance-haze extinction matches the visible
+  // sky's ozone deepening. The default (0,0,0,0) makes `exp(-0)` an identity.
   ozoneCoefficient: vec4<f32>,
   // Item 2.3 (AERIAL-FROXEL, Batch Q23) — aerial-perspective froxel LUT gate.
   // x = enabled (> 0.5 → replace the analytic per-pixel march with ONE trilinear
@@ -128,19 +126,18 @@ struct AerialUniforms {
 @group(0) @binding(2) var transmittanceTex: texture_2d<f32>;
 @group(0) @binding(3) var texSampler: sampler;
 @group(0) @binding(4) var<uniform> uniforms: AerialUniforms;
-// Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map (binding 7). Bound
-// UNCONDITIONALLY (1×1 zero placeholder when globe.cloudCastShadows is off →
-// transmittance 1, no attenuation) so the layout never forks. Reuses `texSampler`
-// (linear clamp). Sampled only inside the `cloudShadowControl.x > 0.5` gate.
+// Sun-view beer shadow map at binding 7. Bound unconditionally — a 1×1 zero
+// placeholder reading as transmittance 1 when `globe.cloudCastShadows` is off
+// — so the layout never forks. Reuses `texSampler`, a linear clamp. Sampled
+// only inside the `cloudShadowControl.x > 0.5` gate.
 @group(0) @binding(7) var cloudShadowTex: texture_2d<f32>;
-// Item 2.2 (ENV-AERIAL-MS, Batch 430). Sun-relative sky-view LUT (256x128) +
-// multiple-scattering LUT (256x128) — the SAME tables the visible
-// SkyAtmosphere samples (baked by AtmosphereLUT.wgsl computeSkyView /
-// computeMultipleScattering). Bound UNCONDITIONALLY so the bind-group layout
-// never changes; the effect binds the white 1x1 transmittance placeholder to
-// these slots until the real LUTs arrive, and the `useMultiScatterLut` flag
-// (params1.z) keeps them unsampled (passthrough to the analytic march) when off
-// → byte-identical parity.
+// Sun-relative sky-view LUT (256x128) and multiple-scattering LUT (256x128):
+// the same tables the visible SkyAtmosphere samples, baked by
+// `AtmosphereLUT.wgsl`'s `computeSkyView` and `computeMultipleScattering`.
+// Bound unconditionally so the bind-group layout never changes; the effect
+// binds the white 1x1 transmittance placeholder to these slots until the real
+// LUTs arrive, and the `useMultiScatterLut` flag at `params1.z` keeps them
+// unsampled while it is off, passing through to the analytic march.
 @group(0) @binding(5) var skyViewTex: texture_2d<f32>;
 @group(0) @binding(6) var multipleScatterTex: texture_2d<f32>;
 // Item 2.3 (AERIAL-FROXEL, Batch Q23) — the 32³ aerial-perspective froxel volume
@@ -195,10 +192,10 @@ fn miePhase(cosAngle: f32, g: f32) -> f32 {
   return (1.0 - g2) / (4.0 * PI * pow(max(denom, 1e-4), 1.5));
 }
 
-// Batch 438 (4.5 SKY-OZONE) — ozone tent-profile relative density (matches
-// AtmosphereLUT.wgsl / SkyAtmosphere.wgsl exactly: peak 1.0 at 25 km, 0 at 10/40
-// km). Pure absorber; supplies the unit-less density, the per-metre coefficient
-// supplies the magnitude.
+// Ozone tent-profile relative density, matching `AtmosphereLUT.wgsl` and
+// `SkyAtmosphere.wgsl` exactly: peak 1.0 at 25 km, zero at 10 and 40 km. A
+// pure absorber. This supplies the unit-less density; the per-metre
+// coefficient supplies the magnitude.
 fn ozoneDensity(height: f32) -> f32 {
   let center = 25000.0;
   let halfWidth = 15000.0;
@@ -217,19 +214,20 @@ fn sampleTransmittance(altitude: f32, cosZenith: f32) -> vec3<f32> {
   return textureSampleLevel(transmittanceTex, texSampler, vec2<f32>(u, v), 0.0).rgb;
 }
 
-// Batch 437 (CLOUD-SHADOWS) / C13-06 — sample the sun-view beer shadow map at a
-// CAMERA-RELATIVE position and return the cloud transmittance (0..1) used to
-// attenuate the inscatter under the clouds. Returns 1.0 (no attenuation) outside
-// the shadow-map footprint. Only called inside the `cloudShadowControl.x > 0.5`
-// gate, so the placeholder is never read on the default path. Mirrors
-// GlobeTerrain's `sampleCloudGroundShadow` (same projection + Beer-Lambert + 0.35
-// floor) so the ground shadow and the air-light dimming agree.
+// Sample the sun-view beer shadow map at a camera-relative position and
+// return the cloud transmittance in [0,1] used to attenuate the inscatter
+// under the clouds. Returns 1.0, no attenuation, outside the shadow map's
+// footprint. Only called inside the `cloudShadowControl.x > 0.5` gate, so the
+// placeholder is never read on the default path. Mirrors GlobeTerrain's
+// `sampleCloudGroundShadow` — same projection, same Beer-Lambert, same 0.35
+// floor — so the ground shadow and the air-light dimming agree.
 //
-// C13-06 — `cloudShadowVP` is now `worldToSunClip * translate(camera)`, emitted
-// by the shared frame owner in CPU f64. The operand is therefore the fragment's
-// offset from the camera (`rayDir * eyeDistance`), which this shader already
-// forms, instead of the full-ECEF `fragWC`. That removes the planet-scale
-// `mvp * vec4(position, 1.0)` product the fork's RTE law forbids.
+// `cloudShadowVP` is `worldToSunClip * translate(camera)`, emitted by the
+// shared frame owner in CPU f64. Its operand is therefore the fragment's
+// offset from the camera, `rayDir * eyeDistance`, which this shader already
+// forms, rather than the full-ECEF `fragWC`. That is what keeps the
+// planet-scale `mvp * vec4(position, 1.0)` product out of the shader, as the
+// relative-to-eye precision law requires.
 fn sampleCloudInscatterShadow(offsetFromCamera: vec3<f32>) -> f32 {
   let clip = uniforms.cloudShadowVP * vec4<f32>(offsetFromCamera, 1.0);
   let ndc = clip.xyz / max(abs(clip.w), 1e-6);
@@ -244,9 +242,9 @@ fn sampleCloudInscatterShadow(offsetFromCamera: vec3<f32>) -> f32 {
   return mix(1.0, transmittance, clamp(strength, 0.0, 1.0));
 }
 
-// Item 2.2 (ENV-AERIAL-MS, Batch 430) — sample the sun-relative sky-view LUT.
-// COPIED VERBATIM (same UV/basis derivation) from SkyAtmosphere.wgsl's
-// `sampleSkyViewLut` so the aerial haze color agrees with the visible sky:
+// Sample the sun-relative sky-view LUT. The UV and basis derivation is the
+// same one `SkyAtmosphere.wgsl`'s `sampleSkyViewLut` uses, so the aerial haze
+// colour agrees with the visible sky:
 //   U = relativeAzimuth(rayDir, sunDir) / π   (sky symmetric about the sun
 //       meridian → [0, π] covers all azimuths)
 //   V = 0.5 + 0.5 * sign(cosViewZenith) * sqrt(|cosViewZenith|)  (Hillaire warp)
@@ -350,15 +348,15 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
 
   let cameraWC = uniforms.cameraPositionWC.xyz;
   // Fragment offset from the camera along the ray at the recovered eye distance.
-  // C13-06 keeps this camera-relative vector as the cloud-shadow projection
-  // operand; the absolute position below stays for the atmospheric march.
+    // The cloud-shadow projection takes this camera-relative vector as its
+    // operand; the absolute position below stays for the atmospheric march.
   let fragOffsetWC = rayDir * eyeDistance;
   // Fragment world position along the ray at the recovered eye distance.
   let fragWC = cameraWC + fragOffsetWC;
 
   let camR = max(length(cameraWC), innerRadius);
 
-  // ── Item 2.3 (AERIAL-FROXEL, Batch Q23) — froxel fast path ──
+  // Item 2.3 (AERIAL-FROXEL, Batch Q23) — froxel fast path
   // When enabled, replace the entire analytic per-pixel march below with ONE
   // trilinear fetch of the pre-baked 32³ froxel volume. The froxel column
   // aligns with this pixel's screen UV; the slice coordinate inverts the bake's
@@ -382,7 +380,7 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(froxelColor, sceneColor.a);
   }
 
-  // ── EXTINCTION + INSCATTER via one analytic single-scatter march ──
+  // EXTINCTION + INSCATTER via one analytic single-scatter march
   // The camera→fragment transmittance is computed DIRECTLY from the optical
   // depth accumulated along that exact segment (`exp(-(βR·ODr + βM·ODm))`),
   // NOT from a ratio of the transmittance LUT's path-to-TOA values: for a
@@ -421,8 +419,8 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   var mieAccum = vec3<f32>(0.0);
   var rOpticalDepth = 0.0;
   var mOpticalDepth = 0.0;
-  // Batch 438 (4.5 SKY-OZONE) — ozone extinction along the camera→fragment
-  // segment. Gated by ozoneCoefficient.w; default 0 → identity.
+    // Ozone extinction along the camera-to-fragment segment, gated by
+    // `ozoneCoefficient.w`, whose default of 0 makes this an identity.
   let ozoneEnabled = uniforms.ozoneCoefficient.w > 0.5;
   let ozoneCoeff = select(vec3<f32>(0.0), uniforms.ozoneCoefficient.xyz, ozoneEnabled);
   var oOpticalDepth = 0.0;
@@ -476,14 +474,14 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   let analyticInscatter =
     (rayleighColor + mieColor) * lightIntensity * inscatterScale * hazeIntensity;
 
-  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — in-scatter source select. OFF
-  // (params1.z <= 0.5, default): the analytic march result verbatim →
-  // byte-identical. ON: source the in-scattered sky radiance from the
-  // sun-relative sky-view LUT (+ MS add) — the SAME tables the visible
-  // SkyAtmosphere samples — so the distance haze color matches the visible MS
-  // sky (richer, directional, off-meridian-correct). The LUT already carries
-  // the atmosphere intensity at bake time, so we do NOT re-multiply
-  // `lightIntensity` (that would double-apply it); we DO carry the
+    // In-scatter source select. At or below 0.5, the default, `params1.z`
+    // keeps the analytic march result. Above it, the in-scattered sky radiance
+    // comes from the sun-relative sky-view LUT plus the multiple-scattering
+    // add — the same tables the visible SkyAtmosphere samples — so the
+    // distance haze colour matches the visible sky, directionally and off the
+    // sun meridian. The LUT already carries the atmosphere intensity from bake
+    // time, so `lightIntensity` must not be re-multiplied here or it applies
+    // twice. What does carry across is the
   // `inscatterScale * hazeIntensity` master + a distance ramp so near-field
   // pixels stay clear and distant pixels approach the full sky radiance,
   // matching the analytic term's grow-with-distance shape. `up` is the local
@@ -503,12 +501,12 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
               * (inscatterScale * hazeIntensity * distanceRamp);
   }
 
-  // Batch 437 (CLOUD-SHADOWS) — attenuate the inscatter (air light) where the
-  // fragment sits under the procedural clouds. Project `fragWC` into the sun-view
-  // beer shadow map and scale the inscatter by the cloud transmittance, so the
-  // distance haze dims under the clouds like real shadowed air. Gated so the
-  // default (globe.cloudCastShadows off) leaves `inscatter` untouched → byte-
-  // identical (the placeholder is never read).
+    // Attenuate the inscatter, the air light, where the fragment sits under
+    // the procedural clouds: project `fragWC` into the sun-view beer shadow
+    // map and scale the inscatter by the cloud transmittance, so the distance
+    // haze dims under the clouds the way shadowed air does. Gated, so with
+    // `globe.cloudCastShadows` off `inscatter` is untouched and the
+    // placeholder is never read.
   if (uniforms.cloudShadowControl.x > 0.5) {
     inscatter = inscatter * sampleCloudInscatterShadow(fragOffsetWC);
   }

@@ -1,4 +1,4 @@
-// ContactShadows.wgsl — Slice 5c-B Batch 133.
+// ContactShadows.wgsl — screen-space contact shadows.
 //
 // Screen-space contact shadows. For each fragment with a valid
 // G-buffer normal (length(N) >= 0.1 sentinel check), unproject to
@@ -40,8 +40,8 @@ struct ContactShadowUniforms {
   // projection: project eye-space → NDC for the per-step depth sample.
   projection: mat4x4<f32>,
   // .xyz = sun direction in eye-space.
-  // NEW-LOG-DEPTH-PP-SLICEC — .w = logActive (>0.5 → the sampled depth is
-  // log-encoded and must be reversed before unproject).
+  // .w = logActive: above 0.5 the sampled depth is log-encoded and must be
+  // reversed before the unproject.
   sunDirEC: vec4<f32>,
   // .x = maxDistance (eye-space meters)
   // .y = steps (float, cast to i32 in the loop)
@@ -51,7 +51,7 @@ struct ContactShadowUniforms {
   //      grazes the surface; in eye-space depth units).
   params: vec4<f32>,
   // .xy = 1/width, 1/height (texelSize)
-  // NEW-LOG-DEPTH-PP-SLICEC — .z = log-encode frustum near; .w = far.
+  // .z = log-encode frustum near; .w = far.
   texelSize: vec4<f32>,
 };
 
@@ -72,9 +72,9 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return output;
 }
 
-// NEW-LOG-DEPTH-PP-SLICEC — inline csm_reverseLogDepth (byte-compatible
-// with chunks/functions/csm_reverseLogDepth.wgsl). Maps a [0,1] log-depth
-// value back to the hyperbolic [0,1] window-space NDC z.
+// Inline `csm_reverseLogDepth`, byte-compatible with
+// `chunks/functions/csm_reverseLogDepth.wgsl`. Maps a [0,1] log-depth value
+// back to the hyperbolic [0,1] window-space NDC z.
 fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
   if (far <= near) { return logZ; }
   let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);

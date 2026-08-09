@@ -117,11 +117,11 @@ fn modifiedReinhardTonemap(color: vec3<f16>, white: f16) -> vec3<f16> {
   return (color * (vec3<f16>(1.0h) + color / white)) / (vec3<f16>(1.0h) + color);
 }
 
-// PBR Neutral tonemapping (Khronos reference). Identical structure to
-// the f32 version with f16 types swapped in — EXACT port of
-// czm_pbrNeutralTonemapping (NEW-PP-LIBRARY-TONEMAP-ORDER; the old
-// per-channel soft-clamp approximation over-brightened highlights vs
-// WebGL: 1.0 -> ~0.9535 instead of the reference ~0.869).
+// PBR Neutral tonemapping, the Khronos reference. Identical in structure to
+// the f32 version with f16 types swapped in — an exact port of
+// `czm_pbrNeutralTonemapping`. A per-channel soft-clamp approximation
+// over-brightens highlights against WebGL, mapping 1.0 to about 0.9535
+// instead of the reference 0.869.
 fn pbrNeutralTonemap(colorIn: vec3<f16>) -> vec3<f16> {
   let startCompression: f16 = 0.8h - 0.04h;
   let desaturation: f16 = 0.15h;
@@ -202,10 +202,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Apply gamma correction
   let corrected = inverseGamma(mapped, f16(params.gamma));
 
-  // Convert back to f32 for the fragment output. The render target is
-  // a standard `@location(0) vec4<f32>` so the upcast is mandatory.
-  // C6-TPDF-DITHER-FINAL / C9-05 — the zero-strength branch keeps both
-  // hashes off the default path; enabled math remains the same f32 addition.
+  // Convert back to f32 for the fragment output. The render target is a
+  // standard `@location(0) vec4<f32>`, so the upcast is mandatory.
+  // The zero-strength branch keeps both hashes off the default path; the
+  // enabled math is the same f32 addition.
   var dithered = vec3<f32>(corrected);
   if (params.ditherStrength != 0.0) {
     dithered += tpdfDither(input.position.xy, params.ditherStrength);

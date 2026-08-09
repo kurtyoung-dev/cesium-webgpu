@@ -6,22 +6,18 @@
  * runs a final full-screen composite pass that samples the integrated
  * volume in screen UV + linearized depth and modulates the scene color.
  *
- * **Phase status (current — see VolumetricFog.wgsl for ground truth):**
- *   - **Phase 5b SHIPPED** — real height-fog density (`density × exp(-h × falloff)`),
- *     Henyey-Greenstein sun + moon in-scattering, front-to-back integration with
- *     Beer-Lambert + alpha-over composite. Composite reads the integrated volume.
- *   - **Phase 5c SHIPPED** — sun shadow-map sampling for in-scattering occlusion
- *     (god-ray formation). Falls back to fully-lit when `u.occlusion.x == 0` or
- *     no shadow map is bound.
- *   - **Phase 5d SHIPPED** — varying-density modulation via 3-octave value-noise
- *     FBM. Gated by `u.noise.x` (`enableVaryingDensity`).
- *   - **C-P7-RTE (Batch 26)** — altitude reconstruction via 2nd-order Taylor
- *     expansion around the camera; eliminates the `length(worldPos) - innerRadius`
- *     f32 cancellation that produced fog-density banding at orbital altitudes.
+ * What the kernels compute (`VolumetricFog.wgsl` is the ground truth):
+ *   - Height-fog density, `density × exp(-h × falloff)`, modulated by a
+ *     3-octave value-noise FBM when `u.noise.x` (`enableVaryingDensity`) is set.
+ *   - Henyey-Greenstein sun + moon in-scattering, occluded by the sun shadow
+ *     map to form god rays. Falls back to fully lit when `u.occlusion.x == 0`
+ *     or no shadow map is bound.
+ *   - Front-to-back integration with a Beer-Lambert transmittance and an
+ *     alpha-over composite that reads the integrated volume.
  *
- * The kernels are NOT placeholders. Don't be misled by the prior version of
- * this docstring (which described a Phase 5a no-op contract that no longer
- * matches the WGSL).
+ * Altitude is reconstructed in-shader by a 2nd-order Taylor expansion around
+ * the camera rather than by `length(worldPos) - innerRadius`: at orbital
+ * altitudes that subtraction cancels in f32 and bands the fog density.
  *
  * Architecture:
  *   1. `update(context, frameState, scene)` — runs the three compute
@@ -32,7 +28,7 @@
  *      volume and writes the modulated scene color to the output view.
  *      Wired into `WebGPUSceneRenderer._executeEnvironmentalEffects()`
  *      after procedural clouds / SSR / weather particles, before
- *      post-processing (matches B22 placement).
+ *      post-processing.
  *
  * Resource budget (medium quality, 160×90×128 = 1.8M froxels):
  *   - 2 × rgba16float 3D textures @ 1.8M voxels × 8 bytes = ~28 MB each
@@ -45,7 +41,7 @@
  *   high   → 240 × 135 × 192  ≈  6.2M froxels  ≈  300 MB
  *
  * The `auto` setting picks one of the above based on the
- * VisualPerformanceTargetService's init benchmark (B7/B17 lock).
+ * VisualPerformanceTargetService's init benchmark.
  * @module WebGPUVolumetricFogRenderer
  */
 
@@ -70,9 +66,9 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
-// NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — the ground-fog band's datum + its
-// derived extinction live in a leaf module so `ground-fog-band.spec.mjs` runs
-// the shipped arithmetic instead of a re-implementation of it.
+// The ground-fog band's datum and its derived extinction live in a leaf module
+// so an acceptance spec can execute the shipped arithmetic instead of a
+// re-implementation of it.
 import {
   GROUND_FOG_BAND_HEIGHT,
   GROUND_FOG_PEAK_EXTINCTION,
@@ -86,7 +82,7 @@ import type {
 } from "./WebGPURenderPipelineCache.js";
 import type { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
 import { buildVolumetricFogResources } from "./WebGPUVolumetricFogResources.js";
-// C13-06 — the shared cloud-shadow RTE frame owner.
+// The shared cloud-shadow relative-to-eye frame owner.
 import {
   type CloudShadowFrame,
   writeCloudShadowViewProjectionRelativeToEye,
@@ -94,7 +90,6 @@ import {
 
 // Per-device shader module cache so two contexts with volumetric fog
 // enabled share one compiled `GPUShaderModule` per source.
-// (C-R7-SHADER-MODULE-DEDUP, Batch 74.)
 const _volumetricFogShaderModuleCaches = new WeakMap<
   GPUDevice,
   WebGPUShaderModuleCache
@@ -115,7 +110,7 @@ export function getVolumetricFogShaderModuleCache(
  * The ground-fog band's per-frame inputs, as packed. Reported through
  * {@link WebGPUVolumetricFogRenderer#getStatistics} so an acceptance probe can
  * check the shipped datum against the band model instead of inferring it from
- * pixels. See NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING.
+ * pixels.
  */
 export interface GroundFogDiagnostics {
   /** Whether the band contributed density this frame. */
@@ -153,76 +148,46 @@ export const QUALITY_RESOLUTIONS = {
 
 export type QualityKey = keyof typeof QUALITY_RESOLUTIONS;
 
-/** Number of floats in the VolumetricFogParams uniform buffer.
- *  Phase 5d layout (64 floats, 256 bytes):
- *    0..3   resolution (uint xyzw)
- *    4..7   scattering (near, maxDist, density, falloff)
- *    8..11  albedo + anisotropy
- *    12..27 invViewProj (mat4)
- *    28..43 sunShadowMatrix (mat4)
- *    44..47 cameraXYZ + innerRadius
- *    48..51 sunDirXYZ + sunIntensity
- *    52..55 moonDirXYZ + moonPhase × moonIntensity
- *    56..59 occlusion (enableScatteringOcclusion, ambientStrength,
- *                      shadowMapValid, shadowDarkness)
- *    60..63 noise (enableVaryingDensity, noiseScale, noiseStrength, _pad)
+/**
+ * Number of floats in the `VolumetricFogParams` uniform buffer. Must equal the
+ * WGSL struct length; the slot map below is the authority both sides pack to.
+ *
+ *    0..3     resolution           (uint xyzw)
+ *    4..7     scattering           (near, maxDist, density, falloff)
+ *    8..11    albedo + anisotropy
+ *    12..27   invViewProj          (mat4)
+ *    28..43   sunShadowMatrix      (mat4)
+ *    44..47   cameraXYZ + innerRadius
+ *    48..51   sunDirXYZ + sunIntensity
+ *    52..55   moonDirXYZ + moonPhase × moonIntensity
+ *    56..59   occlusion            (enableScatteringOcclusion, ambientStrength,
+ *                                   shadowMapValid, shadowDarkness)
+ *    60..63   noise                (enableVaryingDensity, noiseScale,
+ *                                   noiseStrength, _pad)
+ *    64..67   cameraAltitudeRTE
+ *    68..71   altitudeCurvature    (oneOverDenom, groundFogReference,
+ *                                   baseSurfaceAltitude, _pad)
+ *    72..75   cloudShadow          (enable, layerBottom, layerTop, coverage)
+ *    76..79   cloudWindAndTime     (windDir.xy, windSpeed, time)
+ *    80..83   cloudDensityShape    (densityMultiplier, absorption,
+ *                                   noiseScale, _pad)
+ *    84..87   groundFog            (enabled, intensity, bandHeight,
+ *                                   peakDensity)
+ *    88..91   iblAmbient           (enable, atmosphereThickness, scale, _pad)
+ *    92..95   temporal             (enableJitter, frameIndex, _pad, _pad)
+ *    96..99   cloudShadowHiFi      (enable, absorption, strength, _pad)
+ *    100..115 cloudShadowSunViewVP (mat4 — world ECEF → sun ortho clip)
+ *    116..119 multiScatter         (enable, octaves, decayA, decayB)
+ *    120..123 multiScatterPhase    (decayC, _pad, _pad, _pad)
+ *
+ * Each of the five opt-in blocks — `iblAmbient`, `temporal`,
+ * `cloudShadowHiFi`, `multiScatter` and the ground-fog datum at slot 69 — is
+ * read by exactly one branch of one kernel and is written as zero when its
+ * flag is clear, so a flag-off frame consumes none of those floats and
+ * produces bytes identical to a build that never had them. Extending the
+ * buffer therefore cannot perturb the default path; reordering it can, because
+ * the WGSL struct offsets are positional.
  */
-// 72 floats (288 bytes) after Batch 26 — added 8 floats at offsets 64–71
-// for the C-P7-RTE altitude reconstruction (cameraAltitudeRTE +
-// altitudeCurvature). See the WGSL `VolumetricFogParams` struct for
-// field layout.
-//
-// 84 floats (336 bytes) after Session 65 Batch 44 — appended 12 floats
-// at offsets 72–83 for the Phase 6c cloud-shadow uniforms:
-//   72..75  cloudShadow      (enable, layerBottom, layerTop, coverage)
-//   76..79  cloudWindAndTime (windDir.xy, windSpeed, time)
-//   80..83  cloudDensityShape (densityMultiplier, absorption,
-//                              noiseScale, _pad)
-//
-// 88 floats (352 bytes) after Batch 420 — appended 4 floats at offsets
-// 84–87 for the Phase C ground-fog uniforms:
-//   84..87  groundFog        (enabled, intensity, bandHeight, peakDensity)
-//
-// 92 floats (368 bytes) after Batch 431 (FOG-IBL-AMBIENT) — appended 4
-// floats at offsets 88–91 for the sky-LUT / IBL fog-ambient uniforms:
-//   88..91  iblAmbient       (enable, atmosphereThickness, scale, _pad)
-// When `enable` (offset 88) < 0.5 the scattering kernel takes the
-// existing `ambientTerm = u.occlusion.y` branch byte-for-byte, so the
-// OFF default consumes NONE of these floats — flag-off output is
-// byte-identical to pre-Batch-431.
-//
-// 96 floats (384 bytes) after Batch 435 (FOG-TEMPORAL) — appended 4 floats
-// at offsets 92–95 for the integrate-pass blue-noise jitter:
-//   92..95  temporal (enableJitter, frameIndex, _pad, _pad)
-// When `enableJitter` (offset 92) < 0.5 the integrate pass adds NO jitter
-// to the slice depth, so the OFF default integrate output is byte-identical
-// to pre-Batch-435 (the jitter is the ONLY thing offsets 92–95 drive, and
-// it is gated to zero on the parity path).
-//
-// 116 floats (464 bytes) after Batch 437 (CLOUD-SHADOWS) — appended 20 floats
-// at offsets 96–115 for the HI-FI cloud shadow (sample the beer shadow map
-// instead of the local-fbm approximation):
-//   96..99   cloudShadowHiFi      (enable, absorption, strength, _pad)
-//   100..115 cloudShadowSunViewVP (mat4 — world ECEF → sun ortho clip)
-// When `enable` (offset 96) < 0.5 the scattering kernel's `sampleCloudShadow`
-// takes the existing local-fbm branch byte-for-byte, so the OFF default
-// consumes NONE of these floats → byte-identical to pre-Batch-437.
-//
-// 124 floats (496 bytes) after Batch 440 (FOG-MS) — appended 8 floats at
-// offsets 116–123 for the opt-in MULTIPLE-SCATTERING octaves:
-//   116..119 multiScatter      (enable, octaves, decayA, decayB)
-//   120..123 multiScatterPhase (decayC, _pad, _pad, _pad)
-// When `enable` (offset 116) < 0.5 OR `octaves` (offset 117) <= 1, the
-// scattering kernel takes the existing single HG-phase term byte-for-byte
-// (octave 1 == single-scatter), so the OFF default consumes NONE of these
-// floats → byte-identical to pre-Batch-440.
-//
-// NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — no growth: the ground-fog band's
-// GROUND DATUM claims the first pad of the existing `altitudeCurvature` vec4
-// (offset 69). It belongs with the other altitude-frame terms and the slot was
-// already reserved, so the buffer size, every bind group, and the WGSL struct
-// size are unchanged. Written as 0 whenever ground fog is off, so the OFF
-// path's uniform bytes are identical to pre-fix.
 export const VOLUMETRIC_FOG_PARAMS_FLOATS = 124;
 export const VOLUMETRIC_FOG_PARAMS_BYTES = VOLUMETRIC_FOG_PARAMS_FLOATS * 4;
 
@@ -231,25 +196,22 @@ export const COMPOSITE_UNIFORMS_FLOATS = 24;
 export const COMPOSITE_UNIFORMS_BYTES = COMPOSITE_UNIFORMS_FLOATS * 4;
 
 /**
- * Batch 435 (FOG-TEMPORAL) — TemporalUniforms float count for the resolve
- * pass. MUST equal the WGSL `TemporalUniforms` struct length:
- *   previousViewProjection (mat4, 16) + invViewProj current (mat4, 16) +
- *   cameraAndInner (4) + resolution+near+far (vec4 ×… see below):
+ * Float count of the temporal resolve pass's uniform block. Must equal the WGSL
+ * `TemporalUniforms` struct length:
  *     0..15   previousViewProjection
  *     16..31  invViewProj (current frame — reconstruct froxel world pos)
  *     32..35  cameraAndInner   (camera.xyz, innerRadius)
  *     36..39  gridParams       (width, height, depth, _pad)  [as f32]
  *     40..43  depthParams      (near, far/maxDist, alpha, firstFrame)
- *   = 44 floats.
  */
 export const FOG_TEMPORAL_UNIFORMS_FLOATS = 44;
 export const FOG_TEMPORAL_UNIFORMS_BYTES = FOG_TEMPORAL_UNIFORMS_FLOATS * 4;
 
 /**
- * Batch 435 (FOG-TEMPORAL) — per-frame exponential-accumulation blend alpha
- * (the fraction of the NEW jittered march folded in each frame; history keeps
- * 1−alpha). ~0.05 → ~20-frame effective history, enough to fully resolve the
- * jittered march while the neighborhood clamp keeps motion crisp.
+ * Per-frame exponential-accumulation blend alpha: the fraction of the new
+ * jittered march folded in each frame, with the history keeping 1−alpha. 0.05
+ * gives roughly a 20-frame effective history, which is long enough to fully
+ * resolve the jittered march while the neighbourhood clamp keeps motion crisp.
  */
 export const FOG_TEMPORAL_BLEND_ALPHA = 0.05;
 
@@ -297,20 +259,19 @@ export interface VolumetricFogResources {
   integratePipeline: GPUComputePipeline;
   integrateBindGroup: GPUBindGroup;
 
-  // Batch 435 (FOG-TEMPORAL) — DOUBLE-BUFFERED (ping-pong) 3D froxel HISTORY
-  // pair + the reproject/clamp/blend resolve pipeline. ALL of this is the
-  // OPT-IN path: on the default (temporal OFF) the history textures are a
-  // shared 1×1×1 PLACEHOLDER (so the resolve BGL never forks and the
-  // integrate pass output is byte-identical), the resolve pass is NEVER
-  // dispatched, and the composite samples `integratedSampleView` exactly as
-  // before. When temporal is ON the full-resolution history pair is
-  // allocated lazily on first use, the integrate pass writes the raw current
+  // Double-buffered (ping-pong) 3D froxel history pair and the
+  // reproject/clamp/blend resolve pipeline. All of it is opt-in. With temporal
+  // off the history textures are a shared 1×1×1 placeholder, so the resolve
+  // bind-group layout never forks and the integrate pass output is unchanged;
+  // the resolve pass is never dispatched and the composite samples
+  // `integratedSampleView`. With temporal on the full-resolution history pair
+  // is allocated lazily on first use, the integrate pass writes the raw current
   // march to `integratedTexture`, the resolve pass reprojects the previous
-  // history + blends + writes the new history, and the composite samples the
+  // history, blends, and writes the new history, and the composite samples that
   // freshly-written history instead.
   //
-  // The history matches the froxel volume format/dims (rgba16float, W×H×D)
-  // because it accumulates the integrated 3D scattering volume directly.
+  // The history matches the froxel volume's format and dimensions (rgba16float,
+  // W×H×D) because it accumulates the integrated 3D scattering volume directly.
   // `temporalHistoryAllocated` is false until the real pair is built.
   temporalHistoryAllocated: boolean;
   temporalHistoryTexture: [GPUTexture | null, GPUTexture | null];
@@ -344,19 +305,19 @@ export interface VolumetricFogResources {
   shadowPlaceholderView: GPUTextureView;
   shadowComparisonSampler: GPUSampler;
 
-  // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL ambient resources for the
-  // scattering pass. Bound UNCONDITIONALLY (placeholders until the real
-  // atmosphere TRANSMITTANCE LUT + atmosphere-derived SH buffer arrive)
-  // so the scattering BGL never forks; the WGSL only samples them when the
-  // `u.iblAmbient.x` flag is set (default 0 → byte-identical flat-constant
-  // ambient).
+  // Sky-LUT / image-based ambient resources for the scattering pass. Bound
+  // unconditionally — as placeholders until the real atmosphere transmittance
+  // LUT and atmosphere-derived spherical-harmonic buffer arrive — so the
+  // scattering bind-group layout never forks; the WGSL only samples them when
+  // the `u.iblAmbient.x` flag is set, and the default of 0 keeps the
+  // flat-constant ambient term.
   //   - 1×1 white rgba16float transmittance placeholder + a linear
   //     sampler for the (cosZenith, altitude) LUT lookup.
   //   - 160-byte zero-filled SH placeholder buffer (9 vec4 coeffs +
-  //     control vec4 with control.w = 0 → SH contributes nothing). The
+  //     control vec4 with control.w = 0, so SH contributes nothing). The
   //     real buffer is the scene env-manager's `_webgpuSHBuffer`.
-  // The scattering bind group is rebuilt (alongside the shadow-view
-  // rebuild) whenever the bound transmittance view or SH buffer changes.
+  // The scattering bind group is rebuilt, alongside the shadow-view rebuild,
+  // whenever the bound transmittance view or SH buffer changes.
   iblTransmittancePlaceholderTexture: GPUTexture;
   iblTransmittancePlaceholderView: GPUTextureView;
   iblLutSampler: GPUSampler;
@@ -365,11 +326,11 @@ export interface VolumetricFogResources {
   // bind group. Tracked so the rebuild only fires on an actual change.
   scatteringBoundTransmittanceView: GPUTextureView | null;
   scatteringBoundShBuffer: GPUBuffer | null;
-  // Batch 437 (CLOUD-SHADOWS) — beer shadow map (binding 11) + sampler (12).
-  // The placeholder (1×1 zero r16float → transmittance 1) is bound when the hi-fi
-  // flag is off; the real cloud beer shadow map is bound when on. `scatteringBound
-  // BeerShadowView` tracks the currently-bound view so the rebuild only fires on a
-  // change.
+  // Beer shadow map (binding 11) and its sampler (binding 12). The placeholder,
+  // a 1×1 zero r16float that reads as transmittance 1, is bound when the hi-fi
+  // flag is off; the real cloud beer shadow map is bound when it is on.
+  // `scatteringBoundBeerShadowView` tracks the currently-bound view so the
+  // rebuild only fires on a change.
   beerShadowPlaceholderTexture: GPUTexture;
   beerShadowPlaceholderView: GPUTextureView;
   beerShadowSampler: GPUSampler;
@@ -383,12 +344,12 @@ export interface VolumetricFogResources {
   // Composite pass resources.
   compositeShaderModule: GPUShaderModule;
   compositeBindGroupLayout: GPUBindGroupLayout;
-  // C-R7-RENDERER-MIGRATION (Batch 74). The render pipeline is now
-  // materialized through `webgpuPipelineCache.getPipeline()`. On the
-  // first frame after enabling fog the pipeline kicks off async; until
-  // it lands, `composite()` early-exits (one-frame visual gap, recovers
-  // next frame). The `compositePipelineEntry` slot tracks the descriptor
-  // + in-flight state for re-resolution.
+  // The render pipeline is materialized through
+  // `webgpuPipelineCache.getPipeline()`, which resolves asynchronously. On the
+  // first frame after fog is enabled the pipeline is still in flight and
+  // `composite()` early-exits, so there is a one-frame visual gap that recovers
+  // on the next frame. The `compositePipelineEntry` slot tracks the descriptor
+  // and in-flight state for re-resolution.
   compositePipeline: GPURenderPipeline | null;
   compositePipelineEntry: {
     descriptor: WebGPURenderPipelineDescriptor;
@@ -572,15 +533,14 @@ class WebGPUVolumetricFogRenderer {
   private _device: GPUDevice;
   private _resources: VolumetricFogResources | null = null;
   private _isDestroyed = false;
-  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — captured lazily on the
-  // first `update()` call so `_ensureResources` can route the three
-  // compute pipeline creations through the central cache.
+  // Captured lazily on the first `update()` call so `_ensureResources` can
+  // route the three compute pipeline creations through the central cache.
   private _computePipelineCache: WebGPUComputePipelineCache | null = null;
-  // Phase 6 audit fix — snapshot mode coordination state. The freezable
-  // is registered on the scene's SnapshotModeService once on first
-  // sight; it just toggles `_frozen`, which the per-frame `update()`
-  // checks to skip the compute passes entirely. The service reference
-  // is stashed so `destroy()` can unregister cleanly.
+  // Snapshot-mode coordination state. The freezable is registered on the
+  // scene's SnapshotModeService once on first sight; it just toggles
+  // `_frozen`, which the per-frame `update()` checks to skip the compute
+  // passes entirely. The service reference is stashed so `destroy()` can
+  // unregister cleanly.
   private _frozen = false;
   private _snapshotRegistered = false;
   private _snapshotService: {
@@ -590,27 +550,25 @@ class WebGPUVolumetricFogRenderer {
     ): void;
     unregisterFreezable(name: string): void;
   } | null = null;
-  // Phase 6 debug surface — frame counters split between "compute
-  // dispatched" and "skipped because frozen". Cheap to maintain and
-  // tells the operator at a glance whether snapshot mode is biting.
+  // Frame counters split between "compute dispatched" and "skipped because
+  // frozen". Cheap to maintain and tells the operator at a glance whether
+  // snapshot mode is biting.
   private _updatesDispatched = 0;
   private _updatesSkippedFrozen = 0;
   private _composites = 0;
   private _lastEnabled = false;
-  // Batch 435 (FOG-TEMPORAL) — monotonic frame counter feeding the
-  // integrate-pass blue-noise jitter seed, and the per-frame "was the resolve
-  // pass run this frame" flag the composite reads to decide which 3D view to
-  // sample (resolved history vs raw integrated volume).
+  // Monotonic frame counter feeding the integrate-pass blue-noise jitter seed,
+  // and the per-frame flag recording whether the resolve pass ran, which the
+  // composite reads to choose between the resolved history and the raw
+  // integrated volume.
   private _temporalFrameIndex = 0;
   private _temporalResolvedThisFrame = false;
-  // NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING (Batch 845) — the ground-fog band's
-  // SHIPPED inputs, recorded as they are packed. Batch 844 measured a rendered
-  // mist ~10x weaker than the band model predicted and could not tell whether
-  // the density was wrong or the datum was, because nothing on the frame
-  // reported what the shader had actually been handed. `probe-ground-fog.mjs`
-  // now reads these back and compares them against the CPU twin, so the same
-  // question is a measurement rather than an argument. Pure recording — nothing
-  // here is read by the render path.
+  // The ground-fog band's shipped inputs, recorded as they are packed, so an
+  // acceptance probe can read back what the shader was handed and compare it
+  // against the CPU twin. Without it, a mist weaker than the band model
+  // predicts is indistinguishable between a wrong density and a wrong datum,
+  // because nothing on the frame reports either. Pure recording: nothing here
+  // is read by the render path.
   private _groundFogDiagnostics: GroundFogDiagnostics = {
     active: false,
     intensity: 0,
@@ -699,12 +657,10 @@ class WebGPUVolumetricFogRenderer {
    *   - When the scene's VisualPerformanceTargetService is ENABLED
    *     (`scene.visualPerformanceTarget.enabled === true`, opt-in), resolve to
    *     the device-appropriate INIT tier via
-   *     {@link VisualPerformanceTargetService#resolveInitialQualityTier}
-   *     (4.13 FOG-AUTO-VPT, Batch 445). This is the one-shot capability
-   *     classification — NOT the continuous frame-budget auto-tuner, which
-   *     stays deferred.
-   *   - Otherwise (VPT disabled — the default) → `"low"`, byte-identical to the
-   *     pre-445 behavior.
+   *     {@link VisualPerformanceTargetService#resolveInitialQualityTier}. That
+   *     is the one-shot capability classification, not the continuous
+   *     frame-budget auto-tuner, which is not wired here.
+   *   - Otherwise, with the service disabled, which is the default, `"low"`.
    */
   private _resolveQuality(
     quality: string | undefined,
@@ -761,13 +717,13 @@ class WebGPUVolumetricFogRenderer {
     r.scatteringTexture.destroy();
     r.integratedTexture.destroy();
     r.shadowPlaceholderTexture.destroy();
-    // Batch 431 (FOG-IBL-AMBIENT) — release the sky-LUT / IBL placeholders.
+    // Release the sky-LUT / image-based ambient placeholders.
     r.iblTransmittancePlaceholderTexture.destroy();
     r.iblShPlaceholderBuffer.destroy();
-    // Batch 437 (CLOUD-SHADOWS) — release the beer-shadow-map placeholder.
+    // Release the beer-shadow-map placeholder.
     r.beerShadowPlaceholderTexture.destroy();
-    // Batch 435 (FOG-TEMPORAL) — release the temporal ping-pong history pair +
-    // placeholder + uniform buffer.
+    // Release the temporal ping-pong history pair, its placeholder, and its
+    // uniform buffer.
     r.temporalHistoryTexture[0]?.destroy();
     r.temporalHistoryTexture[1]?.destroy();
     r.temporalPlaceholderTexture.destroy();
@@ -780,14 +736,15 @@ class WebGPUVolumetricFogRenderer {
   }
 
   /**
-   * Batch 435 (FOG-TEMPORAL) — lazily (re)allocate the DOUBLE-BUFFERED
-   * (ping-pong) 3D froxel HISTORY pair, sized to the current froxel volume
-   * (W×H×D, rgba16float — it accumulates the integrated volume). Re-created
-   * when the dimensions change (quality switch rebuilds the whole resource set
-   * so this only re-fires on the FIRST temporal frame after a rebuild). On
-   * (re)allocation the first-frame flag is reset so the next resolve seeds an
-   * identity history (no startup flash). Returns false (caller falls back to
-   * the non-temporal path → raw integrate result) if anything can't build.
+   * Lazily (re)allocate the double-buffered ping-pong 3D froxel history pair,
+   * sized to the current froxel volume (W×H×D, rgba16float, because it
+   * accumulates the integrated volume). Re-created when the dimensions change;
+   * a quality switch rebuilds the whole resource set, so this only re-fires on
+   * the first temporal frame after such a rebuild. Reallocation resets the
+   * first-frame flag so the next resolve seeds an identity history rather than
+   * flashing at startup. Returns false if anything could not be built, in which
+   * case the caller falls back to the non-temporal path and the raw integrate
+   * result.
    */
   private _ensureTemporalHistory(r: VolumetricFogResources): boolean {
     if (
@@ -865,15 +822,14 @@ class WebGPUVolumetricFogRenderer {
     const _scene = scene;
     const ac = frameState.atmosphericConditions;
     const vf = ac && ac.volumetricFog ? ac.volumetricFog : undefined;
-    // Batch 420 — GROUND FOG owns its OWN activation path. Ground fog
-    // implies fog, so the froxel passes run (and the mist renders) even
-    // when the general `volumetricFog.enabled` master is off. We reuse
-    // ALL the froxel infra (grid, scatter, integrate, composite); only
-    // the density profile differs (the near-surface boost added in the
-    // WGSL `densityInjection` pass). When ground fog is the sole driver,
-    // the base height-fog density still comes from the volumetricFog
-    // config defaults (or its leaf values if the user set them without
-    // flipping `enabled`).
+    // Ground fog owns its own activation path: it implies fog, so the froxel
+    // passes run and the mist renders even when the general
+    // `volumetricFog.enabled` master is off. The whole froxel chain — grid,
+    // scatter, integrate, composite — is shared; only the density profile
+    // differs, by the near-surface boost the WGSL `densityInjection` pass adds.
+    // When ground fog is the sole driver, the base height-fog density still
+    // comes from the volumetricFog config defaults, or from its leaf values if
+    // they were set without flipping `enabled`.
     const groundFog =
       ac && ac.effects && ac.effects.groundFog
         ? ac.effects.groundFog
@@ -889,20 +845,18 @@ class WebGPUVolumetricFogRenderer {
     const device: GPUDevice = context.device;
     if (!device) return;
 
-    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — capture the central cache
-    // before `_ensureResources` runs so the lazy compute-pipeline build
-    // routes through it. The compute pipeline cache is a context-level
-    // resource, so we read it on every update (cheap getter access)
-    // rather than caching the reference indefinitely — this also picks
-    // up the new cache instance after a device-loss invalidation.
+    // Capture the central cache before `_ensureResources` runs so the lazy
+    // compute-pipeline build routes through it. The compute pipeline cache is
+    // a context-level resource, re-read on every update rather than held,
+    // because that also picks up the replacement instance created after a
+    // device-loss invalidation. The getter is cheap.
     this._computePipelineCache = context.webgpuComputePipelineCache ?? null;
 
-    // Batch 420 — `vf` is normally always defined (the AtmosphericConditions
-    // facade always builds `volumetricFog`), but the ground-fog-only
-    // activation path can technically reach here with `vf` falsy. Use
-    // optional chaining + the `?? default` fallbacks already present below
-    // so the base height-fog parameters resolve to their sensible defaults
-    // when only ground fog is driving the render.
+    // `vf` is normally always defined, because the AtmosphericConditions facade
+    // always builds `volumetricFog`, but the ground-fog-only activation path
+    // can reach here with it falsy. Every read below is optional-chained with a
+    // `?? default`, so the base height-fog parameters resolve to their usual
+    // defaults when only ground fog is driving the render.
     const quality = this._resolveQuality(vf?.quality, scene);
     const r = this._ensureResources(quality);
 
@@ -935,7 +889,7 @@ class WebGPUVolumetricFogRenderer {
     }
     this._updatesDispatched++;
 
-    // ── Pack params UBO ──
+    // Pack params UBO
     // Resolution.
     r.paramsU32[0] = r.width;
     r.paramsU32[1] = r.height;
@@ -943,29 +897,23 @@ class WebGPUVolumetricFogRenderer {
     r.paramsU32[3] = 0;
     // Scattering params.
     r.paramsData[4] = frameState.camera?.frustum?.near ?? 1.0;
-    // Froxel march distance — the configured `volumetricFog.maxDistance` (50 km
-    // default) on EVERY path, ground-fog-only included.
-    //
-    // NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — the Batch 421 comment here (and
-    // its mirror in `composite()`) claimed the ground-fog-only path "caps the
-    // march to a few km to keep near terrain see-through". No such cap was
-    // ever written, on either side, and the two sides MUST agree anyway or the
-    // composite samples a different depth slicing than the integrate wrote.
-    // Comment corrected rather than a cap invented: a grazing ray genuinely
-    // saturating over tens of km inside the band is what real fog does, and
-    // the near field stays legible because a descending ray crosses the band
-    // in a few hundred metres. If the horizon proves too opaque in practice,
-    // the fix is a shorter ground-fog march applied to BOTH sides together.
+    // Froxel march distance: the configured `volumetricFog.maxDistance`, 50 km
+    // by default, on every path including ground-fog-only. This value and the
+    // one `composite()` uses must stay equal, or the composite samples a
+    // different depth slicing than the integrate pass wrote. Shortening the
+    // march for ground fog alone would therefore have to be done on both sides
+    // together. A grazing ray saturating over tens of km inside the band is
+    // what real fog does, and the near field stays legible because a descending
+    // ray crosses the band in a few hundred metres.
     const froxelMaxDistance = vf?.maxDistance ?? 50000;
     r.paramsData[5] = froxelMaxDistance;
-    // Batch 420 — base height-fog density. When the volumetricFog master is
-    // OFF and ground fog is the SOLE driver (own-activation path), the base
-    // height fog must contribute NOTHING — otherwise the default
-    // `density = 1.0` floods the whole froxel grid (a full whiteout) and
-    // the ground mist is lost in it. Zero the base density on the
-    // ground-fog-only path so ONLY the near-surface boost (added in the
-    // WGSL density pass) shapes the volume. With the master on, the base
-    // fog keeps its configured density and the ground mist layers on top.
+    // Base height-fog density. When the volumetricFog master is off and ground
+    // fog is the sole driver, the base height fog must contribute nothing: the
+    // default `density = 1.0` would flood the whole froxel grid into a whiteout
+    // and bury the ground mist in it. Zeroing it leaves only the near-surface
+    // boost the WGSL density pass adds to shape the volume. With the master on,
+    // the base fog keeps its configured density and the ground mist layers on
+    // top.
     r.paramsData[6] = fogMasterOn ? (vf?.density ?? 1.0) : 0.0;
     r.paramsData[7] = vf?.falloff ?? 0.0001;
     // Albedo + anisotropy.
@@ -1038,21 +986,19 @@ class WebGPUVolumetricFogRenderer {
       }
     }
 
-    // C-P7 (Batch 2): pick `min(radii)` as the inner radius so a
-    // camera directly over a pole doesn't compute a negative altitude
-    // (WGS84 polar radius is ~21 km smaller than equatorial). The ~21 km
-    // equator undershoot is well inside the atmosphere's ~100 km
-    // thickness.
+    // `min(radii)` is the inner radius, so a camera directly over a pole cannot
+    // compute a negative altitude: the WGS84 polar radius is ~21 km smaller
+    // than the equatorial one. The resulting ~21 km undershoot at the equator
+    // is well inside the atmosphere's ~100 km thickness.
     //
-    // C-P7-RTE (Batch 26): in-shader altitude reconstruction used to
-    // compute `length(worldPos) - innerRadius` in f32 — both terms are
-    // ~6.4e6 m at Earth radius, so the f32 difference had ~1 m ulp and
-    // produced visible fog-density banding at orbital altitudes. We now
-    // precompute `cameraAltitude = length(camPos) - innerRadius` in f64
-    // on the CPU, upload it alongside the unit-length `cameraUp`
-    // direction, and compute per-froxel altitude as a 2nd-order Taylor
-    // expansion around the camera. See `cameraAltitudeRTE` in
-    // VolumetricFog.wgsl for the math.
+    // Altitude is reconstructed from a camera-relative frame rather than as
+    // `length(worldPos) - innerRadius`, because both of those terms are ~6.4e6
+    // m at Earth radius, leaving the f32 difference with a ~1 m ulp that bands
+    // the fog density at orbital altitudes. `cameraAltitude = length(camPos) -
+    // innerRadius` is computed in f64 on the CPU and uploaded alongside the
+    // unit-length `cameraUp` direction; the shader expands per-froxel altitude
+    // to 2nd order around the camera. `cameraAltitudeRTE` in VolumetricFog.wgsl
+    // carries the math.
     const camPos = camera?.positionWC;
     const cx = camPos?.x ?? 0;
     const cy = camPos?.y ?? 0;
@@ -1089,23 +1035,25 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[65] = upY;
     r.paramsData[66] = upZ;
     r.paramsData[67] = cameraAltitude;
-    // Slots 68–71: altitudeCurvature (oneOverDenom, groundFogReference, pad).
-    // The denominator (2 * (innerRadius + cameraAltitude)) = 2 * cMag.
-    // Guard against cMag=0 (not physical, but keeps the shader's
-    // multiply well-behaved during teardown).
+    // Slots 68–71 are `altitudeCurvature`: the curvature denominator, the
+    // ground-fog datum, the base-fog surface datum, and one pad. The
+    // denominator (2 * (innerRadius + cameraAltitude)) is 2 * cMag. The cMag=0
+    // guard is not physical; it keeps the shader's multiply well-behaved during
+    // teardown.
     r.paramsData[68] = cMag > 0 ? 1.0 / (2.0 * cMag) : 0.0;
-    // NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — slot 69 is the GROUND DATUM the
-    // ground-fog band is measured from, in the same inscribed-sphere frame as
-    // `cameraAltitude` above. Without it the band's ~120 m falloff was fed a
-    // 10.2 km (46.4 deg N) to 21.4 km (equator) sphere-vs-ellipsoid offset and
-    // `exp(-offset / 120)` collapsed to a denormal (or an exact f32 zero), making
-    // the whole effect a bit-exact no-op outside ~83 deg of latitude. Both terms carry
-    // the same offset, so the shader's subtraction cancels it.
+    // Slot 69 is the ground datum the ground-fog band is measured from, in the
+    // same inscribed-sphere frame as `cameraAltitude` above. Measuring the band
+    // from the inscribed sphere instead feeds its ~120 m falloff the
+    // sphere-vs-ellipsoid offset — 10.2 km at 46.4 deg N, 21.4 km at the
+    // equator — and `exp(-offset / 120)` then collapses to a denormal or an
+    // exact f32 zero, making the whole effect a bit-exact no-op outside ~83 deg
+    // of latitude. Both terms carry the same offset, so the shader's
+    // subtraction cancels it.
     //
-    // Written ONLY when ground fog is active: the OFF path keeps the historical
-    // 0.0 so its uniform bytes — and therefore its frames — are unchanged.
-    // `globe.getHeight` walks the terrain quadtree to the camera's leaf tile,
-    // which is why it is gated rather than computed unconditionally.
+    // Written only when ground fog is active, so the off path's uniform bytes,
+    // and therefore its frames, are unchanged. `globe.getHeight` walks the
+    // terrain quadtree to the camera's leaf tile, which is why this is gated
+    // rather than computed unconditionally.
     r.paramsData[69] = 0.0;
     let groundFogTerrainHeight = 0.0;
     if (groundFogActive && cMag > 0) {
@@ -1136,19 +1084,19 @@ class WebGPUVolumetricFogRenderer {
         terrainHeight,
       );
     }
-    // NEW-WEBGPU-BASE-HEIGHT-FOG-INSCRIBED-SPHERE-DATUM — slot 70 is the same
-    // idea for the BASE height fog: the ellipsoid surface along the camera's
-    // radial (sea level, NOT terrain), in the inscribed-sphere frame. The base
-    // fog's `exp(-altitude * falloff)` is fed the raw inscribed-sphere altitude,
+    // Slot 70 is the same idea for the base height fog: the ellipsoid surface
+    // along the camera's radial — sea level, not terrain — in the
+    // inscribed-sphere frame. Left at zero, the base fog's
+    // `exp(-altitude * falloff)` is fed the raw inscribed-sphere altitude,
     // which overstates the height of the ground by 21,385 m at the equator and
-    // 0 at a pole — at the default 1e-4 falloff that is a latitude-dependent
-    // density scale from 0.118x to 1.0x, i.e. the SAME configured fog is 8.5x
+    // 0 at a pole; at the default 1e-4 falloff that is a latitude-dependent
+    // density scale from 0.118x to 1.0x, so the same configured fog is 8.5x
     // thinner over the equator than over a pole.
     //
-    // Correcting it unconditionally would change every existing master-on scene,
-    // so it is opt-in (`volumetricFog.surfaceRelativeAltitude`, default false)
-    // and the OFF path packs the historical 0.0. The shader subtracts this slot,
-    // and `max(0.0, altitude - 0.0)` is bit-exact for the already-clamped
+    // Correcting it unconditionally would change every master-on scene, so it
+    // is opt-in through `volumetricFog.surfaceRelativeAltitude`, default false,
+    // and the off path packs 0.0. The shader subtracts this slot, and
+    // `max(0.0, altitude - 0.0)` is bit-exact for the already-clamped
     // `altitude`, so the default path's density field is byte-identical.
     r.paramsData[70] = 0.0;
     const surfaceRelativeAltitude = vf?.surfaceRelativeAltitude === true;
@@ -1189,27 +1137,20 @@ class WebGPUVolumetricFogRenderer {
     const moonIntensity = ac?.lighting?.moonIntensity ?? 0.05;
     r.paramsData[55] = moonPhase * moonIntensity;
 
-    // Phase 5c — occlusion controls (offsets 56..59).
-    //   x = enableScatteringOcclusion (B20: default FALSE)
-    //   y = ambientStrength (constant for now; Phase 5e can wire LUT)
-    //   z = shadowMapValid (kernel skips sample when 0)
+    // Occlusion controls (offsets 56..59).
+    //   x = enableScatteringOcclusion (default false)
+    //   y = ambientStrength (a constant; no LUT is wired here)
+    //   z = shadowMapValid (kernel skips the sample when 0)
     //   w = shadowDarkness (matches the WebGPU shadow renderer's `darkness`)
     const occlusionEnabled = vf?.enableScatteringOcclusion === true;
     r.paramsData[56] = occlusionEnabled ? 1.0 : 0.0;
-    // Batch 421 — ground mist is dominated by sky/ambient in-scatter (it is
-    // lit by the whole sky dome far more than by direct forward sun-scatter),
-    // so a higher ambient floor makes the energy-conserving mist read as a
-    // believable milky fill rather than a dim grey. The base height-fog path
-    // keeps the dimmer 0.05 default. This only runs when fog/ground fog is
-    // active, so the OFF default is unchanged.
-    // Batch 421 — ground mist is dominated by sky/ambient in-scatter: it is
-    // lit by the whole sky dome far more than by direct forward sun-scatter.
-    // A bright ambient floor makes the energy-conserving mist read as a
-    // believable MILKY fill that roughly replaces the scene luminance the
-    // transmittance removes (so a thin mist hazes rather than darkens). The
-    // base height-fog (master-on) path keeps the dimmer configured value.
-    // This branch only runs when fog/ground fog is active, so the OFF default
-    // is unchanged.
+    // Ground mist is dominated by sky and ambient in-scatter: it is lit by the
+    // whole sky dome far more than by direct forward sun-scatter. A bright
+    // ambient floor makes the energy-conserving mist read as a milky fill that
+    // roughly replaces the scene luminance the transmittance removes, so a thin
+    // mist hazes rather than darkens. The base height-fog path, taken when the
+    // master is on, keeps the dimmer configured value. This branch only runs
+    // when fog or ground fog is active.
     const ambientStrengthValue = groundFogActive
       ? Math.max(vf?.ambientStrength ?? 0, 0.7)
       : (vf?.ambientStrength ?? 0.05);
@@ -1217,11 +1158,11 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[58] = realShadowView ? 1.0 : 0.0;
     r.paramsData[59] = activeShadowMap?.darkness ?? 0.3;
 
-    // Phase 5d — varying atmosphere density (offsets 60..63).
-    // Sourced from `atmosphericConditions.varyingAtmosphereDensity` —
-    // a sibling leaf to volumetricFog. Per B21, this is silently a
-    // no-op when volumetricFog is off (we only run the kernels at all
-    // when vf.enabled is true), so reading it here is fine.
+    // Varying atmosphere density (offsets 60..63), sourced from
+    // `atmosphericConditions.varyingAtmosphereDensity`, a sibling leaf to
+    // volumetricFog. Reading it unconditionally here is safe because the
+    // kernels only run at all when fog is active, so the setting is a no-op
+    // when volumetricFog is off.
     const varyingRaw = ac?.varyingAtmosphereDensity;
     const varying = typeof varyingRaw === "object" ? varyingRaw : undefined;
     const varyingEnabled = varying?.enabled === true;
@@ -1230,17 +1171,16 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[62] = varying?.noiseStrength ?? 0.3;
     r.paramsData[63] = 0.0;
 
-    // Phase 6c — Cloud-shadow uniforms (offsets 72..83). Sourced from the managed
-    // default cloud collection's `.volumetric` config (matching what
-    // `WebGPUProceduralCloudRenderer` reads). The feature is gated to "fog is on
-    // AND clouds are on AND coverage > 0" — when any of those are false, the WGSL
-    // `sampleCloudShadow` short-circuits to 1.0 (no attenuation) so the fog
-    // scattering is unchanged from pre-Batch-44 behaviour.
-    // Cloud-unification epic slice 4B — the cloud-shadow config re-homes off the
-    // removed `globe.cloud*` / `globe.showProceduralClouds` fields onto the managed
-    // default cloud collection (`globe.defaultCloudCollection`). Clouds are active
-    // when its exclusive `renderMode` is VOLUMETRIC (=== 1) AND `volumetric.enabled`
-    // — identical to the `atmosphericConditions.clouds.enableVolumetric` facade.
+    // Cloud-shadow uniforms (offsets 72..83), sourced from the managed default
+    // cloud collection's `.volumetric` config, which is the same config
+    // `WebGPUProceduralCloudRenderer` reads. The feature is gated on fog being
+    // on, clouds being on, and coverage above zero; when any of those is false
+    // the WGSL `sampleCloudShadow` short-circuits to 1.0 and the fog scattering
+    // is unattenuated.
+    //
+    // Clouds count as active when the collection's exclusive `renderMode` is
+    // VOLUMETRIC (1) and `volumetric.enabled` is set — the same condition the
+    // `atmosphericConditions.clouds.enableVolumetric` facade resolves.
     const volColl = (
       scene as unknown as {
         globe?: {
@@ -1311,14 +1251,14 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[82] = 0.0003;
     r.paramsData[83] = 0.0;
 
-    // Batch 420 — GROUND FOG uniforms (offsets 84..87). Sourced from
-    // `atmosphericConditions.effects.groundFog` (computed above). When the
-    // master `effects.auto` is on, the AtmosphericEffects mapper derives
-    // `enabled`/`intensity` from the temperature−dewpoint spread in humid
-    // air; otherwise the app sets them directly. The WGSL `densityInjection`
-    // pass adds `intensity × peakDensity × exp(-altitude / bandHeight)` to
-    // the base height-fog density only when `enabled` (offset 84) ≥ 0.5,
-    // so the OFF default leaves the density field byte-identical.
+    // Ground-fog uniforms (offsets 84..87), sourced from
+    // `atmosphericConditions.effects.groundFog` resolved above. With the master
+    // `effects.auto` on, the AtmosphericEffects mapper derives
+    // `enabled`/`intensity` from the temperature−dewpoint spread in humid air;
+    // otherwise the app sets them directly. The WGSL `densityInjection` pass
+    // adds `intensity × peakDensity × exp(-altitude / bandHeight)` to the base
+    // height-fog density only when `enabled` (offset 84) is at least 0.5, so
+    // the off default leaves the density field untouched.
     //
     //   84 = enabled (0/1)
     //   85 = intensity (0..1)
@@ -1336,15 +1276,11 @@ class WebGPUVolumetricFogRenderer {
     //        (`transmittance = exp(-Σσ·Δz)`) and this coefficient is a real
     //        per-metre extinction.
     //
-    //        NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — the value is now DERIVED
-    //        from meteorological visibility (Koschmieder, see
-    //        `GROUND_FOG_PEAK_EXTINCTION`) rather than tuned. Batch 421's
-    //        1.2e-4 was tuned against a whiteout that was DENSITY-INDEPENDENT
-    //        (the pre-421 integrate took a degenerate `select(scattered ×
-    //        sliceThickness, …)` branch for optical depth < 1e-6, which is
-    //        exactly what the then-always-zero ground-fog density produced),
-    //        so it never measured this coefficient. 1.2e-4 is 32 km of
-    //        visibility — clear air, and under the 8-bit floor of a frame.
+    //        The value is derived from meteorological visibility through the
+    //        Koschmieder relation; see `GROUND_FOG_PEAK_EXTINCTION`. It is not
+    //        a tuned constant, and it must not be replaced by one: 1.2e-4, for
+    //        instance, is 32 km of visibility, which is clear air and sits
+    //        under the 8-bit floor of a frame.
     const groundFogIntensity =
       typeof groundFog?.intensity === "number" ? groundFog.intensity : 0.0;
     r.paramsData[84] = groundFogActive ? 1.0 : 0.0;
@@ -1353,8 +1289,8 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[87] = GROUND_FOG_PEAK_EXTINCTION;
 
     // Record what the band was handed, so an acceptance run can compare the
-    // SHIPPED datum against the CPU twin instead of inferring it from pixels
-    // (NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING, Batch 845). Read-only diagnostics.
+    // shipped datum against the CPU twin instead of inferring it from pixels.
+    // Read-only diagnostics.
     const diagnostics = this._groundFogDiagnostics;
     diagnostics.active = groundFogActive === true;
     diagnostics.intensity = groundFogIntensity;
@@ -1371,15 +1307,13 @@ class WebGPUVolumetricFogRenderer {
     diagnostics.surfaceRelativeAltitude = surfaceRelativeAltitude;
     diagnostics.baseSurfaceAltitude = r.paramsData[70];
 
-    // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL fog-ambient uniforms
-    // (offsets 88..91). When `iblAmbient` is on, the scattering kernel
-    // replaces the flat-constant `ambientTerm = u.occlusion.y` with an
-    // altitude- + time-of-day-correct ambient: a sample of the Bruneton
-    // TRANSMITTANCE LUT at `(froxel altitude, view-up)` tinted by the
-    // atmosphere-derived SH-L2 irradiance probe. Gated by offset 88; when
-    // < 0.5 the WGSL takes the existing constant branch byte-for-byte, so
-    // the OFF default is byte-identical to pre-Batch-431 (no float here
-    // affects the flag-off output path).
+    // Sky-LUT / image-based fog-ambient uniforms (offsets 88..91). With
+    // `iblAmbient` on, the scattering kernel replaces the flat-constant
+    // `ambientTerm = u.occlusion.y` with an altitude- and
+    // time-of-day-dependent ambient: a sample of the Bruneton transmittance
+    // LUT at `(froxel altitude, view-up)`, tinted by the atmosphere-derived
+    // SH-L2 irradiance probe. Gated by offset 88; below 0.5 the WGSL takes the
+    // constant branch and none of these floats reach the output.
     //
     //   88 = enable (0/1) — also implicitly 0 when no real transmittance
     //        LUT is bound yet (the placeholder is white = passthrough, so
@@ -1437,43 +1371,41 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[90] = ambientStrengthValue;
     r.paramsData[91] = 0.0;
 
-    // Batch 435 (FOG-TEMPORAL) — integrate-pass blue-noise jitter uniforms
-    // (offsets 92..95). The flag is gated to "fog active AND vf.temporal".
-    // When off, offset 92 is 0.0 → the integrate march adds NO jitter and is
-    // byte-identical to pre-Batch-435 (the jitter is the ONLY consumer of
-    // these floats). `frameIndex` is a monotonic counter feeding the
-    // interleaved-gradient blue-noise seed (golden-ratio frame rotation in
-    // WGSL). This branch only runs when fog is active, so the OFF default is
-    // unchanged.
+    // Integrate-pass blue-noise jitter uniforms (offsets 92..95), gated on fog
+    // being active and `vf.temporal`. With the flag off, offset 92 is 0.0 and
+    // the integrate march adds no jitter; the jitter is the only consumer of
+    // these floats. `frameIndex` is a monotonic counter feeding the
+    // interleaved-gradient blue-noise seed, which the WGSL rotates by the
+    // golden ratio per frame. This branch only runs when fog is active.
     const temporalEnabled = vf?.temporal === true;
     r.paramsData[92] = temporalEnabled ? 1.0 : 0.0;
     r.paramsData[93] = this._temporalFrameIndex % 64;
     r.paramsData[94] = 0.0;
     r.paramsData[95] = 0.0;
 
-    // Batch 437 (CLOUD-SHADOWS) — HI-FI cloud shadow uniforms (offsets 96..115).
-    // Gated to "vf.cloudShadowHiFi AND the cloud renderer rendered a real beer
-    // shadow map this frame (globe.cloudCastShadows on)". When off, offset 96 is
-    // 0.0 → the scattering kernel's `sampleCloudShadow` takes the legacy local-fbm
-    // branch byte-for-byte (parity default). The cloud renderer runs in the same
-    // frame's environmental-effects chain BEFORE the fog, so the map + matrix are
-    // current.
+    // Hi-fi cloud-shadow uniforms (offsets 96..115), gated on
+    // `vf.cloudShadowHiFi` and on the cloud renderer having rendered a real
+    // beer shadow map this frame, which requires `globe.cloudCastShadows`. With
+    // the gate closed, offset 96 is 0.0 and the scattering kernel's
+    // `sampleCloudShadow` takes the local-FBM branch. The cloud renderer runs
+    // earlier in the same frame's environmental-effects chain, so the map and
+    // matrix read here are current.
     const cloudCacheForFog = (
       frameState.context as unknown as {
         _cloudCache?: {
           shadowActive?: boolean;
           shadowView?: GPUTextureView | null;
           shadowAbsorption?: number;
-          // C13-41 — eclipse-aware strength from the one `_cloudCache` seam.
+          // Eclipse-aware strength, published through the one `_cloudCache` seam.
           shadowStrength?: number;
           shadowFrame?: CloudShadowFrame;
         };
       }
     )?._cloudCache;
-    // C13-06 — the hi-fi lookup needs an eye-relative sun-view matrix; without a
-    // valid frame the FS would project a camera-relative froxel offset through an
-    // absolute matrix, so the gate stays closed and the legacy local-fbm branch
-    // runs unchanged.
+    // The hi-fi lookup needs an eye-relative sun-view matrix. Without a valid
+    // frame the fragment stage would project a camera-relative froxel offset
+    // through an absolute matrix, so the gate stays closed and the local-FBM
+    // branch runs instead.
     const cloudShadowHiFiOn =
       vf?.cloudShadowHiFi === true &&
       cloudCacheForFog?.shadowActive === true &&
@@ -1481,12 +1413,12 @@ class WebGPUVolumetricFogRenderer {
       cloudCacheForFog.shadowFrame?.valid === true;
     r.paramsData[96] = cloudShadowHiFiOn ? 1.0 : 0.0;
     r.paramsData[97] = cloudCacheForFog?.shadowAbsorption ?? 0.04;
-    r.paramsData[98] = cloudCacheForFog?.shadowStrength ?? 1.0; // strength (C13-41)
+    r.paramsData[98] = cloudCacheForFog?.shadowStrength ?? 1.0; // strength
     r.paramsData[99] = 0.0;
     if (cloudShadowHiFiOn && cloudCacheForFog?.shadowFrame) {
-      // C13-06 — emitted against THIS pass's camera (`camPos`, packed at slots
-      // 44-46), so the compute kernel projects the froxel's camera-relative
-      // offset. The planet-scale translation cancels here in f64.
+      // Emitted against this pass's camera, packed at slots 44-46, so the
+      // compute kernel projects the froxel's camera-relative offset. The
+      // planet-scale translation cancels here in f64.
       writeCloudShadowViewProjectionRelativeToEye(
         r.paramsData,
         100,
@@ -1504,17 +1436,16 @@ class WebGPUVolumetricFogRenderer {
       ? cloudCacheForFog!.shadowView!
       : r.beerShadowPlaceholderView;
 
-    // Batch 440 (FOG-MS) — MULTIPLE-SCATTERING octave uniforms (offsets
-    // 116..123). Gated to "vf.multiScatter AND msOctaves > 1". When off, offset
-    // 116 is 0.0 AND/OR offset 117 is 1.0 → the scattering kernel takes the
-    // single HG-phase term byte-for-byte (octave 1 == single-scatter), so the
-    // OFF default is byte-identical to pre-Batch-440. The a/b/c geometric-decay
-    // factors mirror the cloud renderer's defaults (msDecayA/B 0.5); decayC is
-    // 0.5 here (a bit stronger isotropy relaxation than the cloud's 0.85) so the
-    // deeper fog octaves fill the dense core softly. The MS term returns a gain
-    // multiplier (>= 1) on the single-scatter forward term, capped by the slot-121
-    // clamp so the dense-core lift can't blow out. This branch only runs when fog
-    // is active, so the OFF default path is unchanged.
+    // Multiple-scattering octave uniforms (offsets 116..123), gated on
+    // `vf.multiScatter` AND `msOctaves > 1`. Off means offset 116 is 0.0 and/or
+    // offset 117 is 1.0, and the scattering kernel then takes the single
+    // Henyey-Greenstein term byte-for-byte, because octave 1 is single-scatter.
+    // The a/b/c geometric-decay factors mirror the cloud renderer's defaults
+    // (0.5); decayC is 0.5 rather than the cloud's 0.85 so the deeper fog
+    // octaves relax toward isotropy faster and fill the dense core softly. The
+    // term is a gain multiplier of at least 1 on the single-scatter forward
+    // term, capped by the slot-121 clamp so the dense-core lift cannot blow out.
+    // This branch only runs when fog is active.
     const multiScatterEnabled = vf?.multiScatter === true;
     // Clamp octaves to [1, 8]: 1 == single-scatter (parity); beyond ~4 the
     // geometric decay makes octaves negligible, and 8 caps the loop cost.
@@ -1531,25 +1462,25 @@ class WebGPUVolumetricFogRenderer {
     // energy-conserving (a tasteful lit volume, not a blowout). 2.0 = at most
     // double the single-scatter forward term in the densest core.
     r.paramsData[121] = 2.0;
-    // opticalDepthScale (offset 122) — maps the per-froxel density value the
-    // `densityInjection` pass writes into a well-conditioned MS optical depth.
-    // The energy-conserving fog spreads opacity over many individually-thin
-    // froxels, so per-froxel density is small even in an opaque column; we tune
-    // the scale so the DENSEST froxel (the near-surface, full-strength fog) lands
-    // at optical depth ~3 (octave-0 Beer dark, deeper octaves lift it). The
-    // densest froxel ≈ the base height-fog `density` (master path) or the ground-
-    // fog `peakDensity × intensity` (ground-fog-only path — a much smaller
-    // per-metre scale). Reference whichever drives the densest froxel so the
-    // optical depth is well-conditioned in both modes; thinner (higher-altitude)
-    // froxels scale down → gain ~1 (no MS there), so the lift bites only the core.
+    // The optical-depth scale at offset 122 maps the per-froxel density the
+    // `densityInjection` pass writes into a well-conditioned multiple-scattering
+    // optical depth. Energy-conserving fog spreads opacity over many
+    // individually-thin froxels, so per-froxel density is small even in an
+    // opaque column; the scale places the densest froxel — near-surface,
+    // full-strength fog — at an optical depth near 3, where octave 0 is
+    // Beer-dark and the deeper octaves lift it. That densest froxel is either
+    // the base height-fog `density` on the master path or `peakDensity ×
+    // intensity` on the ground-fog-only path, whose per-metre scale is far
+    // smaller, so both are referenced and the larger wins. Thinner
+    // higher-altitude froxels scale down to a gain near 1, which is why the
+    // lift bites only the core.
     //
-    // ONE HOME: this reference MUST be the same `GROUND_FOG_PEAK_EXTINCTION` that
-    // slot 87 carries (line ~1353) — the WGSL injects `groundFogIntensity ×
-    // peakDensity × exp(-h/bandHeight)`, so the densest froxel IS slot 85 × slot
-    // 87. Batch 843 re-derived the constant (Koschmieder, 3.912/2000) at slot 87
-    // but left a second copy of the refuted 1.2e-4 here, which overstated the
-    // scale 16.3x and pinned the MS lift at the slot-121 clamp across the whole
-    // band instead of only its core. Do not re-introduce a literal.
+    // The reference must be the same `GROUND_FOG_PEAK_EXTINCTION` slot 87
+    // carries: the WGSL injects `groundFogIntensity × peakDensity ×
+    // exp(-h/bandHeight)`, so the densest froxel is exactly slot 85 × slot 87.
+    // A numeric literal here is a second, silently divergent copy of that
+    // extinction — it pins the lift at the slot-121 clamp across the whole band
+    // instead of only its core.
     const msGroundPeak = groundFogActive
       ? GROUND_FOG_PEAK_EXTINCTION * groundFogIntensity
       : 0.0;
@@ -1561,14 +1492,13 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[122] = 3.0 / msBaseDensity;
     r.paramsData[123] = 0.0;
 
-    // Rebuild the scattering bind group when the shadow view changes OR
-    // (Batch 431) when the IBL transmittance LUT view / SH buffer changes.
-    // The placeholder views are the initial state; once a real shadow map
-    // / atmosphere LUT / atmosphere SH buffer arrives we swap to it. The
-    // bind group rebuild is rare (only when a bound resource's identity
-    // changes — typically once per viewer session) so the cost is
-    // amortized to zero. When `iblAmbient` is off, the placeholder views
-    // stay bound and the WGSL never samples them (flag-gated → parity).
+    // Rebuild the scattering bind group when the shadow view changes, or when
+    // the transmittance LUT view or SH buffer does. The placeholder views are
+    // the initial state and are swapped out once a real shadow map, atmosphere
+    // LUT or atmosphere SH buffer arrives. The rebuild only fires when a bound
+    // resource's identity changes, typically once per viewer session, so its
+    // cost amortizes away. With `iblAmbient` off the placeholders stay bound
+    // and the WGSL never samples them.
     const desiredShadowView = realShadowView ?? r.shadowPlaceholderView;
     const desiredTransmittanceView =
       realTransmittanceView ?? r.iblTransmittancePlaceholderView;
@@ -1588,11 +1518,11 @@ class WebGPUVolumetricFogRenderer {
           { binding: 3, resource: r.scatteringView },
           { binding: 6, resource: desiredShadowView },
           { binding: 7, resource: r.shadowComparisonSampler },
-          // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL ambient.
+          // Sky-LUT / image-based ambient.
           { binding: 8, resource: desiredTransmittanceView },
           { binding: 9, resource: r.iblLutSampler },
           { binding: 10, resource: { buffer: desiredShBuffer } },
-          // Batch 437 (CLOUD-SHADOWS) — beer shadow map + sampler.
+          // Beer shadow map + sampler.
           { binding: 11, resource: desiredBeerShadowView },
           { binding: 12, resource: r.beerShadowSampler },
         ],
@@ -1611,24 +1541,19 @@ class WebGPUVolumetricFogRenderer {
       r.paramsData.byteLength,
     );
 
-    // ── Dispatch the three compute passes ──
+    // Dispatch the three compute passes
     // Density and scattering: full 3D dispatch (W × H × D froxels).
     // Integrate: 2D dispatch (W × H), each thread serial-walks Z.
     //
-    // Batch 420 — PRESENT-PATH FIX. Record the compute passes into the
-    // MAIN frame command encoder when one is active, instead of creating a
-    // private encoder and submitting it mid-frame. The mid-frame
-    // `device.queue.submit()` of a private encoder splits the frame's GPU
-    // work across two command buffers; the canvas write that the
-    // `composite()` pass records into the main encoder afterward was being
-    // lost (the magenta present-path probe showed 0% reaching the canvas,
-    // while ProceduralClouds — which records entirely into the main encoder
-    // and never submits mid-frame — reached the canvas at ~87%). Recording
-    // the compute into the main encoder keeps the whole fog pipeline
-    // (compute → composite → present) in a single ordered command buffer,
-    // matching the proven ProceduralClouds path. Falls back to a private
-    // encoder + immediate submit only when no main encoder exists (test
-    // harnesses that bypass `beginFrame`).
+    // Record the compute passes into the main frame command encoder whenever
+    // one is active, rather than creating a private encoder and submitting it
+    // mid-frame. A mid-frame `device.queue.submit()` of a private encoder
+    // splits the frame's GPU work across two command buffers, and the canvas
+    // write that `composite()` records into the main encoder afterwards is then
+    // lost. Keeping compute, composite and present in a single ordered command
+    // buffer is what makes the fog reach the canvas at all. Falls back to a
+    // private encoder and an immediate submit only when no main encoder exists,
+    // which is the case in harnesses that bypass `beginFrame`.
     const mainComputeEncoder = (
       context as unknown as { _currentCommandEncoder?: GPUCommandEncoder }
     )._currentCommandEncoder;
@@ -1672,14 +1597,13 @@ class WebGPUVolumetricFogRenderer {
       pass.end();
     }
 
-    // ── Batch 435 (FOG-TEMPORAL) — temporal reprojection + accumulation ──
-    // Dispatched ONLY when `vf.temporal` is on. Reprojects the previous
-    // accumulated history via `previousViewProjection`, neighborhood-clamps it
-    // (ghost rejection), and exponentially blends with the freshly-marched
-    // (blue-noise-jittered) integrate result → writes the new history, which
-    // the composite then samples. When off this whole block is skipped, the
-    // composite samples the raw integrated volume, and the integrate output
-    // (no jitter) is byte-identical to pre-Batch-435.
+    // Temporal reprojection and accumulation, dispatched only when
+    // `vf.temporal` is on. Reprojects the previous accumulated history through
+    // `previousViewProjection`, neighbourhood-clamps it to reject ghosting, and
+    // exponentially blends it with the freshly-marched blue-noise-jittered
+    // integrate result, writing the new history for the composite to sample.
+    // With the flag off the whole block is skipped and the composite samples
+    // the raw, unjittered integrated volume.
     this._temporalResolvedThisFrame = false;
     if (temporalEnabled && this._ensureTemporalHistory(r)) {
       const readIdx = r.temporalRead & 1;
@@ -1770,11 +1694,11 @@ class WebGPUVolumetricFogRenderer {
 
     this._temporalFrameIndex++;
 
-    // Batch 420 — only submit when we created a PRIVATE encoder. When the
-    // compute recorded into the main frame encoder, `endFrame()` submits it
-    // together with the composite + present (single ordered command
-    // buffer). Submitting the main encoder here would finish it prematurely
-    // and break the rest of the frame.
+    // Only submit when this call created a private encoder. When the compute
+    // recorded into the main frame encoder, `endFrame()` submits it together
+    // with the composite and the present as one ordered command buffer;
+    // submitting the main encoder here would finish it prematurely and break
+    // the rest of the frame.
     if (!useMainCompute) {
       device.queue.submit([encoder.finish()]);
     }
@@ -1785,9 +1709,8 @@ class WebGPUVolumetricFogRenderer {
    * integrated 3D volume in screen UV + linearized depth and writes
    * `out = sceneColor * transmittance + scatteredLight` to `outputView`.
    *
-   * Phase 5a: with cleared volume contents, this is visually a no-op.
-   * Caller is still responsible for checking `enableVolumetricFog` —
-   * we early-out here as defense in depth.
+   * The caller is responsible for checking `enableVolumetricFog`; the early-out
+   * here is defence in depth.
    */
   composite(
     context: CesiumGraphicsContext,
@@ -1800,10 +1723,10 @@ class WebGPUVolumetricFogRenderer {
     if (this._isDestroyed || !this._resources) return false;
     const ac = frameState.atmosphericConditions;
     const vf = ac && ac.volumetricFog ? ac.volumetricFog : undefined;
-    // Batch 420 — mirror the own-activation gate from `update()`: the
-    // composite must run (to show the mist) whenever EITHER the fog master
-    // is on OR ground fog is active. Otherwise the integrated volume the
-    // ground-fog density pass just wrote would never reach the screen.
+    // Mirrors the own-activation gate in `update()`: the composite must run
+    // whenever either the fog master is on or ground fog is active, or the
+    // integrated volume the ground-fog density pass just wrote never reaches
+    // the screen.
     const groundFogActive = ac?.effects?.groundFog?.enabled === true;
     if (vf?.enabled !== true && !groundFogActive) return false;
 
@@ -1835,11 +1758,9 @@ class WebGPUVolumetricFogRenderer {
       r.compositePipeline = null;
     }
 
-    // C-R7-RENDERER-MIGRATION (Batch 74) — resolve the composite render
-    // pipeline through the central cache. Skip the composite this frame
-    // if the pipeline is still materializing — the integrated volume is
-    // cleared (Phase 5a no-op) so a missed frame is invisible. By next
-    // frame the pipeline is cached.
+    // Resolve the composite render pipeline through the central cache, and skip
+    // the composite for this frame while the pipeline is still materializing.
+    // The pipeline is cached by the next frame, so the gap is one frame.
     if (!r.compositePipeline) {
       const pipelineCache =
         (
@@ -1915,11 +1836,10 @@ class WebGPUVolumetricFogRenderer {
     }
     r.compositeUniformData[16] = camera?.frustum?.near ?? 1.0;
     r.compositeUniformData[17] = camera?.frustum?.far ?? 1.0e9;
-    // Batch 421 — MUST match the compute pass's `froxelMaxDistance` so the
-    // composite samples the integrated volume at the same depth slicing the
-    // integrate pass wrote. Both sides read the same expression; see the
-    // `froxelMaxDistance` comment in `update()` for why no ground-fog-only
-    // shortening exists on either side.
+    // Must match the compute pass's `froxelMaxDistance`, so the composite
+    // samples the integrated volume at the same depth slicing the integrate
+    // pass wrote. Both sides read the same expression; see the
+    // `froxelMaxDistance` comment in `update()`.
     r.compositeUniformData[18] = vf?.maxDistance ?? 50000;
     r.compositeUniformData[19] = 0;
     r.compositeUniformData[20] = context.drawingBufferWidth ?? 1;
@@ -1935,12 +1855,12 @@ class WebGPUVolumetricFogRenderer {
       r.compositeUniformData.byteLength,
     );
 
-    // Batch 435 (FOG-TEMPORAL) — the composite samples the 3D fog volume at
-    // binding 4. When temporal resolved this frame, that source is the
-    // freshly-written history (the accumulated, reprojected, clamped result);
-    // otherwise it's the raw integrated volume (parity-default path). The
-    // resolve writes history index `temporalRead` (it flipped at the end of
-    // `update()`, so `temporalRead` now points at the JUST-WRITTEN buffer).
+    // The composite samples the 3D fog volume at binding 4. When temporal
+    // resolved this frame that source is the freshly-written history — the
+    // accumulated, reprojected, clamped result — and otherwise it is the raw
+    // integrated volume. The resolve writes history index `temporalRead`, which
+    // flipped at the end of `update()` and so now points at the just-written
+    // buffer.
     let fogSourceView: GPUTextureView = r.integratedSampleView;
     if (this._temporalResolvedThisFrame) {
       const writtenIdx = r.temporalRead & 1;
@@ -1959,11 +1879,10 @@ class WebGPUVolumetricFogRenderer {
       fogSourceView,
     );
 
-    // Slice 5c-B Batch 130 — record into the main frame encoder so the
-    // composite ordering survives. Same fix pattern as Batch 127 for
-    // NPR / SSR / ProceduralClouds. Falls back to ephemeral encoder
-    // + immediate submit when no main encoder exists (test harnesses
-    // that bypass `beginFrame`).
+    // Record into the main frame encoder so the composite ordering survives,
+    // the same arrangement the NPR, SSR and procedural-cloud composites use.
+    // Falls back to an ephemeral encoder and an immediate submit when no main
+    // encoder exists, which is the case in harnesses that bypass `beginFrame`.
     const mainEncoder = (
       context as unknown as { _currentCommandEncoder?: GPUCommandEncoder }
     )._currentCommandEncoder;
@@ -2014,7 +1933,7 @@ class WebGPUVolumetricFogRenderer {
   }
 }
 
-// ─── Feature renderer factory + entry points ───────────────────────
+// Feature renderer factory + entry points
 
 const _instances = new WeakMap<
   CesiumGraphicsContext,

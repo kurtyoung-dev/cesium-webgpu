@@ -49,13 +49,13 @@ import {
 // wide log depth is active this frame (threaded into each depth-reading PP
 // effect UB so the Slice-B log-reverse can branch on it).
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
-// TAKRAM-9 (cloud-aware god rays) — request/read the procedural cloud
-// renderer's screen-space transmittance mask.
+// Request and read the procedural cloud renderer's screen-space
+// transmittance mask, which resolves cloud occlusion of the god-ray shaft.
 import {
   setCloudTransmittanceCapture,
   getCloudTransmittanceView,
 } from "./WebGPUProceduralCloudRenderer.js";
-// C13-06 — the shared cloud-shadow RTE frame owner.
+// The shared cloud-shadow relative-to-eye frame owner.
 import {
   type CloudShadowFrame,
   writeCloudShadowViewProjectionRelativeToEye,
@@ -73,17 +73,16 @@ export interface PostProcessCache {
   ambientOcclusionEnabled: boolean;
   bloomEnabled: boolean;
   depthOfFieldEnabled: boolean;
-  // Audit A.11 (Batch 133) -- GodRay (volumetric light scattering)
-  // post-process. Activated via `scene.godRayEnabled = true` (optional
-  // `scene.godRayConfig`); the per-frame configure pass updates the
-  // sun screen UV from `scene.sun.position` projected through
-  // viewProjection.
+  // GodRay (volumetric light scattering) post-process. Activated by
+  // `scene.godRayEnabled = true`, with an optional `scene.godRayConfig`; the
+  // per-frame configure pass updates the sun screen UV from
+  // `scene.sun.position` projected through the view-projection.
   godRayEnabled: boolean;
   godRayInitialized: boolean;
-  // C12-18 / C11-160 -- screen-space solar halo. Driven by `scene.sunBloom`
-  // (default TRUE, the SAME flag that gates WebGL's `SunPostProcess`), which
-  // had NO WebGPU consumer before this row: `supportsLegacySunBloom` returns
-  // false so the legacy allocation is skipped, and nothing replaced it.
+  // Screen-space solar halo, driven by `scene.sunBloom`, which defaults true
+  // and is the same flag that gates WebGL's `SunPostProcess`. On WebGPU
+  // `supportsLegacySunBloom` returns false, so the legacy allocation is
+  // skipped and this effect is what consumes the flag.
   sunHaloEnabled: boolean;
   sunHaloInitialized: boolean;
   // The bright-pass glow half of the same chain, on the SAME `scene.sunBloom`
@@ -92,35 +91,34 @@ export interface PostProcessCache {
   // comparable at all.
   sunBloomEnabled: boolean;
   sunBloomInitialized: boolean;
-  // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer (animated
-  // screen-space UV-warp) post-process. Activated via
-  // `scene.heatShimmerEnabled = true`, intensity via
-  // `scene.heatShimmerIntensity` (ad-hoc scene flags pushed by the
-  // atmospheric auto-master in 417a). The per-frame configure pass pushes
-  // the elapsed-seconds clock + intensity and keeps the scene rendering.
+  // HeatShimmer, an animated screen-space UV warp. Activated by
+  // `scene.heatShimmerEnabled = true`, with intensity from
+  // `scene.heatShimmerIntensity`; both are scene flags the atmospheric
+  // auto-master pushes. The per-frame configure pass pushes the
+  // elapsed-seconds clock and intensity and keeps the scene rendering.
   heatShimmerEnabled: boolean;
   heatShimmerInitialized: boolean;
-  // Atmospheric Effects Phase D (Batch 422) -- ColdOptics (22 ice-crystal
-  // halo + sun-dogs) sky overlay. Activated via `scene.coldOpticsEnabled =
-  // true`, intensity via `scene.coldOpticsIntensity` (ad-hoc scene flags
-  // pushed by the atmospheric auto-master in 417a from sub-freezing
-  // temperature). The per-frame configure pass pushes the camera/sun/inverse-
-  // matrix uniforms and keeps the scene rendering.
+  // ColdOptics, the 22-degree ice-crystal halo and sun-dog sky overlay.
+  // Activated by `scene.coldOpticsEnabled = true`, with intensity from
+  // `scene.coldOpticsIntensity`; both are scene flags the atmospheric
+  // auto-master pushes from a sub-freezing temperature. The per-frame
+  // configure pass pushes the camera, sun and inverse-matrix uniforms and
+  // keeps the scene rendering.
   coldOpticsEnabled: boolean;
   coldOpticsInitialized: boolean;
-  // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified per-pixel
-  // atmosphere. Activated via `scene.aerialPerspective = true` (optional
-  // `scene.aerialPerspectiveConfig`). The per-frame configure pass pushes
-  // camera/sun/atmosphere uniforms + the Bruneton transmittance LUT view.
+  // Unified per-pixel atmosphere. Activated by `scene.aerialPerspective =
+  // true`, with an optional `scene.aerialPerspectiveConfig`. The per-frame
+  // configure pass pushes the camera, sun and atmosphere uniforms and the
+  // Bruneton transmittance LUT view.
   aerialPerspectiveEnabled: boolean;
   aerialPerspectiveInitialized: boolean;
-  // WIRE-COLORGRADING-CALLER (Batch 480) — ColorGrading stage, scene-level
-  // opt-in (`scene.colorGradingEnabled = true`, optional
-  // `scene.colorGradingConfig`). No upstream PostProcessStageCollection
-  // slot exists for grading (WebGL only reaches it via user-added custom
-  // stages), so this mirrors the godRay scene-flag pattern. The stage runs
-  // after Tonemap in the pipeline's single-pass chain (see the
-  // ColorGrading.wgsl header + WebGPUPostProcessPipeline.execute()).
+  // ColorGrading stage, a scene-level opt-in through
+  // `scene.colorGradingEnabled = true` with an optional
+  // `scene.colorGradingConfig`. Upstream `PostProcessStageCollection` has no
+  // grading slot — WebGL only reaches grading through user-added custom
+  // stages — so this mirrors the godRay scene-flag pattern instead. The stage
+  // runs after Tonemap in the pipeline's single-pass chain; see the
+  // ColorGrading.wgsl header and `WebGPUPostProcessPipeline.execute()`.
   colorGradingEnabled: boolean;
   colorGradingInitialized: boolean;
   // Last-applied config object reference — a NEW object assigned to
@@ -132,11 +130,11 @@ export interface PostProcessCache {
   bloomInitialized: boolean;
   aoInitialized: boolean;
   dofInitialized: boolean;
-  // Track bloom/AO uniform values for dirty checking. The bloom set
-  // mirrors ALL six `scene.postProcessStages.bloom.uniforms` 1:1
-  // (NEW-BLOOM-UNIFORM-PARITY, Batch 240). Written ONLY by the
-  // configure pass — `updateWebGPUPostProcessStages` must not refresh
-  // them, or the configure-side dirty check can never fire.
+  // Track bloom and AO uniform values for dirty checking. The bloom set
+  // mirrors all six `scene.postProcessStages.bloom.uniforms` one to one.
+  // Written only by the configure pass: if
+  // `updateWebGPUPostProcessStages` refreshed them, the configure-side dirty
+  // check could never fire.
   bloomContrast: number;
   bloomBrightness: number;
   bloomDelta: number;
@@ -145,30 +143,26 @@ export interface PostProcessCache {
   bloomGlowOnly: boolean;
   aoIntensity: number;
   aoBias: number;
-  // NEW-POSTPROCESS-USER-WGSL (Batch 198 first slice; Batch 199
-  // formalization). Tracks whether `_userStages` on the pipeline has
-  // been populated from `scene.postProcessStages._stages` already this
-  // session. Set on first build, reset to `false` when the user
-  // collection's stage list empties so the configure pass re-builds.
+  // Whether `_userStages` on the pipeline has been populated from
+  // `scene.postProcessStages._stages` yet this session. Set on the first
+  // build, and reset to false when the user collection's stage list empties
+  // so the configure pass rebuilds.
   _userStagesBuilt?: boolean;
-  // NEW-POSTPROCESS-USER-WARN-PROD (Batch 290) — the user-stage list
-  // length last consumed by a (re)build. The prior gate only re-scanned
-  // the list on first build or when it EMPTIED, so a runtime
-  // `postProcessStages.add(...)` (list 1→2, or the first add after the
-  // empty-list first frame already flipped `_userStagesBuilt` true) never
-  // rebuilt — neither compiling a runtime-added WGSL stage NOR firing the
-  // GLSL-drop warning. Tracking the length lets the configure pass detect
-  // any add/remove and re-scan, so the un-stripped warning actually
-  // reaches users (and runtime WGSL stages compile). `undefined` until
-  // the first build.
+  // The user-stage list length last consumed by a (re)build, `undefined`
+  // until the first one. Rebuilding only on the first build or on an emptied
+  // list misses a runtime `postProcessStages.add(...)` — a list going from 1
+  // to 2, or the first add after an empty-list first frame has already set
+  // `_userStagesBuilt` — so neither the runtime WGSL stage compiles nor the
+  // GLSL-drop warning fires. Tracking the length lets the configure pass
+  // detect any add or remove and re-scan.
   _userStagesCount?: number;
-  // NEW-WEBGPU-PP-LIBRARY-DEMO — the stage INSTANCES last consumed by a
-  // (re)build. Count-only detection (above) misses a same-frame
-  // remove()+add() swap (count 1→0→1 between configure calls), which left
-  // the PREVIOUS stage's WGSL twin running — e.g. cycling library builtins
-  // via `stages.remove(old); stages.add(new)` kept rendering the old
-  // effect. Comparing element-wise identity against the live list catches
-  // any composition change at equal length. `undefined` until first build.
+  // The stage instances last consumed by a (re)build, `undefined` until the
+  // first one. Count-only detection misses a same-frame `remove()` then
+  // `add()` swap, where the count goes 1 to 0 to 1 between configure calls
+  // and the previous stage's WGSL twin keeps running — cycling library
+  // builtins through `stages.remove(old); stages.add(new)` renders the old
+  // effect. Comparing element-wise identity against the live list catches any
+  // composition change at equal length.
   _userStagesRefs?: unknown[];
 }
 
@@ -186,27 +180,22 @@ function getDefaultCache(): PostProcessCache {
   return {
     initialized: false,
     fxaaEnabled: false,
-    // Session 65 cont. fix — default to FALSE to match WebGL's
-    // `PostProcessStageCollection` (line 57: `tonemapping.enabled =
-    // false; // will be enabled if necessary in update`).
+    // False by default, matching WebGL's `PostProcessStageCollection`, whose
+    // constructor sets `tonemapping.enabled = false` and lets `update` turn it
+    // on when needed.
     //
-    // Previously defaulted to true, which caused the Tonemap stage to
-    // run with Reinhard + sRGB encode on every frame on the bgra8unorm
-    // SDR pipeline. The result: globe imagery (linear 0.1, 0.2, 0.4)
-    // got tonemapped to (~0.725, 0.831, 0.902) before reaching the
-    // canvas — root cause of NEW-VR2-3 "imagery wash-out" (Session 65
-    // triage). Verified via a debug-return probe: globe shader emits
-    // (0.1, 0.2, 0.4); canvas reads back (185, 212, 230) ≈ same
-    // x/(x+0.087) Reinhard + pow(., 1/2.2) curve.
+    // Defaulting to true instead makes the Tonemap stage run Reinhard plus an
+    // sRGB encode on every frame of an SDR bgra8unorm pipeline: linear globe
+    // imagery at (0.1, 0.2, 0.4) reaches the canvas as roughly
+    // (0.725, 0.831, 0.902), which is the whole frame washed out.
     //
-    // Cesium's WebGL path tonemap.enabled flips to true only when
-    // `useHdr === true` (PostProcessStageCollection.update line 575).
-    // The sync layer below honors that via the `_tonemapping.enabled`
-    // read — but if the WebGL collection has never been touched
-    // (e.g., the WebGPU FR for POST_PROCESS_COLLECTION runs before
-    // PostProcessStageCollection's constructor finishes setting
-    // `_tonemapping`), the cache stays at this default. False matches
-    // SDR-by-default; HDR turns it on via the cache.tonemappingEnabled
+    // WebGL flips `tonemap.enabled` to true only when `useHdr` is true. The
+    // sync layer below honours that through the `_tonemapping.enabled` read,
+    // but if the WebGL collection has never been touched — for instance when
+    // the WebGPU feature renderer for the post-process collection runs before
+    // `PostProcessStageCollection`'s constructor has finished setting
+    // `_tonemapping` — the cache keeps this default. False matches
+    // SDR-by-default, and HDR turns it on through the `cache.tonemappingEnabled`
     // read below.
     tonemappingEnabled: false,
     tonemapMode: TonemapMode.REINHARD,
@@ -244,17 +233,18 @@ function getDefaultCache(): PostProcessCache {
 }
 
 /**
- * Batch 98 — locate the upstream DoF composite stage by name. The
- * fork's `cache.depthOfFieldEnabled = collection._depthOfField?.enabled`
- * read was always false because the upstream `PostProcessStageCollection`
- * never exposed a `_depthOfField` slot — DoF is only available via
- * `scene.postProcessStages.add(PostProcessStageLibrary.createDepthOfFieldStage())`.
- * That helper returns a `PostProcessStageComposite` with the well-known
- * name `czm_depth_of_field` whose own `enabled` flag controls visibility.
+ * Locate the upstream depth-of-field composite stage by name.
  *
- * Returns the composite stage if present, otherwise `null`. The caller
- * uses this to drive `cache.depthOfFieldEnabled` (no separate slot
- * needed) and to source the DoF uniforms during lazy init.
+ * Upstream `PostProcessStageCollection` exposes no `_depthOfField` slot: DoF
+ * is only available through
+ * `scene.postProcessStages.add(PostProcessStageLibrary.createDepthOfFieldStage())`.
+ * That helper returns a `PostProcessStageComposite` with the well-known name
+ * `czm_depth_of_field`, whose own `enabled` flag controls visibility, so a
+ * `collection._depthOfField?.enabled` read is always false.
+ *
+ * Returns the composite stage if present, otherwise `null`. The caller uses it
+ * to drive `cache.depthOfFieldEnabled` and to source the DoF uniforms during
+ * lazy init.
  */
 function findDepthOfFieldStage(collection: unknown): {
   enabled: boolean;
@@ -339,15 +329,14 @@ function updateWebGPUPostProcessStages(
     collection._webgpuCache = getDefaultCache();
   }
 
-  // WIRE-PP-LIBRARY-BUILTINS — compact removed stages. Upstream's
-  // `PostProcessStageCollection.update()` only runs its private
-  // `removeStages()` AFTER the feature-renderer early-return, so on
-  // WebGPU a `postProcessStages.remove(stage)` left an `undefined` hole
-  // and `_stages.length` never shrank — the length-based rebuild gate in
-  // the configure pass (Batch 290) missed removals entirely, leaking
-  // both user WGSL stages and intercepted library stages until the next
-  // ADD. Mirror the upstream compaction here (same algorithm, including
-  // the `_index` re-derivation).
+  // Compact removed stages. Upstream's `PostProcessStageCollection.update()`
+  // only runs its private `removeStages()` after the feature-renderer
+  // early-return, so on WebGPU a `postProcessStages.remove(stage)` leaves an
+  // `undefined` hole and `_stages.length` never shrinks. The length-based
+  // rebuild gate in the configure pass would then miss removals entirely and
+  // leak both user WGSL stages and intercepted library stages until the next
+  // add. This mirrors the upstream compaction, including its `_index`
+  // re-derivation.
   const col = collection as unknown as {
     _stagesRemoved?: boolean;
     _stages?: Array<{ _index?: number } | undefined>;
@@ -373,18 +362,16 @@ function updateWebGPUPostProcessStages(
   cache.tonemapMode = mapTonemapType(collection);
   cache.bloomEnabled = collection.bloom?.enabled ?? false;
   cache.ambientOcclusionEnabled = collection.ambientOcclusion?.enabled ?? false;
-  // Batch 98 — upstream DoF lives in `collection._stages`, not on a
-  // dedicated slot. Walk the list for the well-known composite.
+  // Upstream DoF lives in `collection._stages`, not on a dedicated slot. Walk
+  // the list for the well-known composite.
   const dofStage = findDepthOfFieldStage(collection);
   cache.depthOfFieldEnabled = dofStage?.enabled ?? false;
 
-  // Cache AO uniform values for runtime update.
-  // NEW-BLOOM-UNIFORM-PARITY (Batch 240): the bloom uniforms are
-  // deliberately NOT cached here — `configureWebGPUPostProcessPipeline`
-  // owns the bloom dirty check, and refreshing the cache in this
-  // earlier-running sync masked every runtime uniform change (the
-  // configure pass compared fresh reads against values this function
-  // had already updated).
+  // Cache AO uniform values for runtime update. The bloom uniforms are
+  // deliberately not cached here: `configureWebGPUPostProcessPipeline` owns
+  // the bloom dirty check, and refreshing the cache in this earlier-running
+  // sync masks every runtime uniform change, because the configure pass then
+  // compares fresh reads against values this function has already updated.
   if (cache.ambientOcclusionEnabled) {
     const ao = collection.ambientOcclusion;
     cache.aoIntensity = numU(ao?.uniforms?.intensity, 3.0);
@@ -395,11 +382,11 @@ function updateWebGPUPostProcessStages(
   cache.initialized = true;
 }
 
-// NEW-WEBGPU-PP-LIBRARY-DEMO — true when the live user-stage list differs
-// from the instances consumed by the last (re)build, element-wise by
-// identity. Catches same-frame remove()+add() swaps that leave the list
-// length unchanged (count-only detection kept the removed stage's WGSL twin
-// running). O(n) over a typically tiny list, called once per frame.
+// True when the live user-stage list differs element-wise, by identity, from
+// the instances consumed by the last (re)build. Catches same-frame `remove()`
+// then `add()` swaps that leave the list length unchanged, which count-only
+// detection misses, leaving the removed stage's WGSL twin running. O(n) over a
+// typically tiny list, called once per frame.
 function userStagesIdentityChanged(
   userStages: unknown[] | undefined,
   lastRefs: unknown[] | undefined,
@@ -456,19 +443,19 @@ function configureWebGPUPostProcessPipeline(
   const useShaderF16 =
     !!f16Context?.useShaderF16 && !!f16Context?.hasFeature?.("shader-f16");
 
-  // Audit A.11 (Batch 133) -- GodRay enabled flag, scene-level (no
-  // upstream PostProcessStageCollection slot exists for this fork
-  // addition). Mirrors the `scene.taaEnabled` pattern.
+  // GodRay enabled flag, read at scene level because upstream
+  // `PostProcessStageCollection` has no slot for this fork addition. Mirrors
+  // the `scene.taaEnabled` pattern.
   cache.godRayEnabled =
     (scene as unknown as { godRayEnabled?: boolean })?.godRayEnabled === true;
 
-  // C12-18 / C11-160 -- the screen-space solar halo rides `scene.sunBloom`,
-  // the same public flag WebGL's `SunPostProcess` rides, AND the same
+  // The screen-space solar halo rides `scene.sunBloom`, the same public flag
+  // WebGL's `SunPostProcess` rides, and the same
   // `environmentState.isSunVisible` occlusion test that gates the WebGL
-  // chain -- a Sun behind the Earth must not paint a halo through it.
+  // chain: a Sun behind the Earth must not paint a halo through it.
   // `frameState.sunHalo.visible` additionally covers the behind-camera and
   // degenerate-geometry cases; `Sun.update` publishes it before the backend
-  // branch (`Scene/SunHaloAppearance.js`).
+  // branch, in `Scene/SunHaloAppearance.js`.
   cache.sunHaloEnabled =
     (scene as unknown as { sunBloom?: boolean })?.sunBloom === true &&
     (scene as unknown as { _environmentState?: { isSunVisible?: boolean } })
@@ -480,33 +467,31 @@ function configureWebGPUPostProcessPipeline(
   // where the halo stage is off.
   cache.sunBloomEnabled = cache.sunHaloEnabled;
 
-  // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer enabled flag,
-  // scene-level (ad-hoc `scene.heatShimmerEnabled`, pushed by the 417a
-  // atmospheric auto-master). Mirrors the godRay scene-flag read.
+  // HeatShimmer enabled flag, read at scene level from
+  // `scene.heatShimmerEnabled`, which the atmospheric auto-master pushes.
+  // Mirrors the godRay scene-flag read.
   cache.heatShimmerEnabled =
     (scene as unknown as { heatShimmerEnabled?: boolean })
       ?.heatShimmerEnabled === true;
 
-  // Atmospheric Effects Phase D (Batch 422) -- ColdOptics enabled flag,
-  // scene-level (ad-hoc `scene.coldOpticsEnabled`, pushed by the 417a
-  // atmospheric auto-master from sub-freezing temperature). Mirrors the
-  // heatShimmer scene-flag read.
+  // ColdOptics enabled flag, read at scene level from
+  // `scene.coldOpticsEnabled`, which the atmospheric auto-master pushes from
+  // a sub-freezing temperature. Mirrors the heatShimmer scene-flag read.
   cache.coldOpticsEnabled =
     (scene as unknown as { coldOpticsEnabled?: boolean })?.coldOpticsEnabled ===
     true;
 
-  // --- TAA (controlled by scene.taaEnabled, not the collection) ---
-  // NEW-TAA-EFFECT-NEVER-ADDED (Batch 244) — lazily add the effect on
-  // the first `scene.taaEnabled` frame, mirroring the bloom/AO/DoF
-  // lazy-init below. Before this, `addTAA()` had ZERO callers, so
-  // `setStageEnabled("TAA", true)` no-opped on a null `_taaEffect` and
-  // `scene.taaEnabled = true` paid for velocity passes + the MSAA=1
-  // downgrade while producing no temporal accumulation at all.
+  // TAA is controlled by `scene.taaEnabled`, not by the collection. The
+  // effect is added lazily on the first enabled frame, mirroring the bloom,
+  // AO and DoF lazy inits below. Without that, `setStageEnabled("TAA", true)`
+  // no-ops on a null `_taaEffect` and `scene.taaEnabled = true` pays for the
+  // velocity passes and the MSAA downgrade while producing no temporal
+  // accumulation at all.
   //
-  // The gate checks the LIVE `pipeline.taaEffect` slot (addTAA is also
-  // internally idempotent) rather than a sticky `cache.taaInitialized`
-  // flag so the effect transparently re-adds after any pipeline
-  // recreate (HDR toggle, resize, device loss) that nulls the slot.
+  // The gate checks the live `pipeline.taaEffect` slot — `addTAA` is itself
+  // idempotent — rather than a sticky `cache.taaInitialized` flag, so the
+  // effect transparently re-adds after any pipeline recreate that nulls the
+  // slot: an HDR toggle, a resize, or a device loss.
   const taaEnabled = scene?.taaEnabled === true;
   if (taaEnabled && !pipeline.taaEffect) {
     pipeline.addTAA(device, canvasFormat);
@@ -542,42 +527,35 @@ function configureWebGPUPostProcessPipeline(
   // --- FXAA ---
   pipeline.setStageEnabled("FXAA", fxaaEnabled);
 
-  // --- Tonemapping ---
-  // HDR-DISPLAY (Batch 200; Batch 205 audit fix B200-D1 + D2) +
-  // PARITY-HDR-PP-MATH — HDR canvas output mode. When the user opts
-  // into wide-gamut HDR canvas output, the OS / display handles the
-  // gamut + tone curve, so:
+  // HDR canvas output mode. When the user opts into wide-gamut HDR canvas
+  // output the OS and display handle the gamut and tone curve, so:
   //
-  // - tonemap is bypassed (compressing HDR → SDR defeats the point)
-  // - colorGrading + FXAA now KEEP RUNNING with HDR-aware math: the
-  //   pipeline's setHDROutputMode() flips each stage's `hdrMode`
-  //   uniform so the shaders grade / edge-detect in a Reinhard-
-  //   compressed [0, 1) working space and emit linear HDR (previously
-  //   both stages were skipped outright — users lost grading + AA
-  //   entirely in HDR mode).
+  // - tonemap is bypassed, since compressing HDR to SDR defeats the point;
+  // - colorGrading and FXAA keep running with HDR-aware math, because the
+  //   pipeline's `setHDROutputMode()` flips each stage's `hdrMode` uniform so
+  //   the shaders grade and edge-detect in a Reinhard-compressed [0, 1)
+  //   working space and emit linear HDR. Skipping them outright instead would
+  //   cost the user grading and anti-aliasing entirely in HDR mode.
   //
-  // HDR mode is opt-in via `scene.useHDRCanvasOutput = true` AND
-  // requires `scene.highDynamicRange = true` (the latter ensures the
-  // scene framebuffer is rgba16float so the HDR data actually exists
-  // to forward). Falls through to the standard SDR pipeline when
-  // either gate is off — backwards-compatible by default.
+  // HDR mode is opt-in through `scene.useHDRCanvasOutput = true` and requires
+  // `scene.highDynamicRange = true`, the latter because it is what makes the
+  // scene framebuffer rgba16float so the HDR data exists to forward. With
+  // either gate off this falls through to the standard SDR pipeline.
   const sceneAny = scene as
     { useHDRCanvasOutput?: boolean; highDynamicRange?: boolean } | undefined;
   const hdrOutputMode =
     sceneAny?.useHDRCanvasOutput === true &&
     sceneAny?.highDynamicRange === true;
   pipeline.setHDROutputMode(hdrOutputMode);
-  // NEW-PP-LIBRARY-TONEMAP-ORDER — WebGL's PostProcessStageCollection.
-  // update() assigns `tonemapping.enabled = useHdr` every frame
-  // (PostProcessStageCollection.js ~:575), but on WebGPU that update
-  // early-returns into this feature renderer BEFORE the assignment, so
-  // the tonemap gate never engaged under `scene.highDynamicRange =
-  // true` and the un-tonemapped HDR frame reached the SDR canvas.
-  // Apply the same rule here, and mirror it onto the collection's
-  // stage object + the cache so every observer (the early sync's
-  // `_tonemapping.enabled` read, hasActiveWebGPUPostProcessStages)
-  // agrees. SDR default (`highDynamicRange === false`) keeps the
-  // historical disabled state — byte-identical off path.
+  // WebGL's `PostProcessStageCollection.update()` assigns
+  // `tonemapping.enabled = useHdr` every frame, but on WebGPU that update
+  // early-returns into this feature renderer before the assignment, so the
+  // tonemap gate would never engage under `scene.highDynamicRange = true` and
+  // an un-tonemapped HDR frame would reach the SDR canvas. The same rule is
+  // applied here and mirrored onto the collection's stage object and the
+  // cache, so every observer agrees — the early sync's `_tonemapping.enabled`
+  // read and `hasActiveWebGPUPostProcessStages` included. With
+  // `highDynamicRange === false` the stage stays disabled.
   const useHdr = sceneAny?.highDynamicRange === true;
   if (collection._tonemapping) {
     collection._tonemapping.enabled = useHdr;
@@ -621,15 +599,13 @@ function configureWebGPUPostProcessPipeline(
     : 0.0;
   pipeline.setTonemapDither(ditherStrength);
 
-  // --- Color grading: lazily initialize on first enable ---
-  // WIRE-COLORGRADING-CALLER (Batch 480) — scene-level opt-in
-  // (`scene.colorGradingEnabled`, optional `scene.colorGradingConfig`),
-  // mirroring the godRay scene-flag pattern. Default OFF: the stage is
-  // never compiled/added until the first enabled frame, so untouched
-  // scenes stay byte-identical. Runs after Tonemap in the pipeline's
-  // single-pass chain; under HDR canvas output the pipeline's
-  // setHDROutputMode() flips the stage into HDR-aware math
-  // (PARITY-HDR-PP-MATH, Batch 479).
+  // Color grading: lazily initialized on first enable. A scene-level opt-in
+  // through `scene.colorGradingEnabled`, with an optional
+  // `scene.colorGradingConfig`, mirroring the godRay scene-flag pattern. Off
+  // by default, and the stage is not compiled or added until the first
+  // enabled frame, so untouched scenes are unaffected. Runs after Tonemap in
+  // the pipeline's single-pass chain; under HDR canvas output the pipeline's
+  // `setHDROutputMode()` flips the stage into HDR-aware math.
   cache.colorGradingEnabled =
     (scene as unknown as { colorGradingEnabled?: boolean })
       ?.colorGradingEnabled === true;
@@ -663,33 +639,28 @@ function configureWebGPUPostProcessPipeline(
   }
   pipeline.setStageEnabled("ColorGrading", cache.colorGradingEnabled);
 
-  // --- Auto-exposure: match WebGL (NEW-WEBGPU-SKYBOX-HDR-FAINT-STAR-PARITY,
-  //     Batch 364) ---
-  // WebGL only runs the auto-exposure reduction when the user opts in
-  // (`PostProcessStageCollection._autoExposureEnabled`, default false).
-  // `addAutoExposure` is wired unconditionally on WebGPU (B.14) and
-  // `WebGPUAutoExposure.enabled` defaults true, and nothing here synced the
-  // flag down — so WebGPU auto-exposed EVERY frame. On a near-black HDR
-  // night sky the adaptive exposure collapsed the whole frame to black
-  // (diag-stars-hdr-autoexposure: maxLum 0 with AE-on vs 761 / 5 saturated
-  // bloom-feeding star points with AE-off), crushing the bright catalog
-  // stars and their bloom halos. Honor the same opt-in flag WebGL uses so
-  // the two backends expose identically by default; the always-on B.14
-  // behavior (SDR day/night recovery) is itself a WebGL divergence and is
-  // dropped in favor of parity. Users who set `autoExposure = true` get the
-  // adaptive path on both backends.
+  // Auto-exposure follows WebGL, which only runs the reduction when the user
+  // opts in through `PostProcessStageCollection._autoExposureEnabled`,
+  // default false. `addAutoExposure` is wired unconditionally on WebGPU and
+  // `WebGPUAutoExposure.enabled` defaults true, so without syncing the flag
+  // down WebGPU auto-exposes every frame. On a near-black HDR night sky the
+  // adaptive exposure then collapses the whole frame to black — a measured
+  // maximum luminance of 0 with it on, against 761 and five saturated
+  // bloom-feeding star points with it off — crushing the bright catalog stars
+  // and their bloom halos. Honouring the same opt-in flag WebGL uses makes
+  // the two backends expose identically by default. Users who set
+  // `autoExposure = true` get the adaptive path on both.
   pipeline.autoExposureEnabled =
     (collection as unknown as { _autoExposureEnabled?: boolean })
       ._autoExposureEnabled === true;
 
-  // --- Bloom: lazily initialize on first enable ---
-  // NEW-BLOOM-UNIFORM-PARITY (Batch 240) — map ALL six WebGL bloom
-  // uniforms (contrast, brightness, glowOnly, delta, sigma, stepSize)
-  // 1:1 onto the WebGPU effect. The previous mapping fed WebGL's
-  // BRIGHTNESS (-0.3 default) into a luminance THRESHOLD — a negative
-  // threshold that passed every pixel, blooming the whole scene at
-  // default uniforms. `intensity` is a fork extra (altitude-gate
-  // lever); 1.0 matches WebGL's plain `bloom + color` composite.
+  // Bloom: lazily initialized on first enable. All six WebGL bloom uniforms —
+  // contrast, brightness, glowOnly, delta, sigma, stepSize — map one to one
+  // onto the WebGPU effect. Feeding WebGL's brightness, which defaults to
+  // -0.3, into a luminance threshold instead gives a negative threshold that
+  // passes every pixel and blooms the whole scene at default uniforms.
+  // `intensity` is a fork extra, an altitude-gate lever; 1.0 matches WebGL's
+  // plain `bloom + color` composite.
   if (cache.bloomEnabled && !cache.bloomInitialized) {
     const bloom = collection.bloom;
     pipeline.addBloom(
@@ -796,10 +767,9 @@ function configureWebGPUPostProcessPipeline(
     updateAmbientOcclusionFrameData(pipeline, scene);
   }
 
-  // --- Depth of Field: lazily initialize on first enable ---
-  // Batch 98 — uniforms now come from the upstream DoF composite stage
-  // located by `findDepthOfFieldStage`, not the never-existed
-  // `collection._depthOfField` slot.
+  // Depth of Field: lazily initialized on first enable. Its uniforms come
+  // from the upstream DoF composite stage located by `findDepthOfFieldStage`,
+  // since there is no `collection._depthOfField` slot to read.
   if (cache.depthOfFieldEnabled && !cache.dofInitialized) {
     const dof = findDepthOfFieldStage(collection);
     pipeline.addDepthOfField(
@@ -820,32 +790,31 @@ function configureWebGPUPostProcessPipeline(
     updateDepthOfFieldFrameData(pipeline, scene);
   }
 
-  // NEW-POSTPROCESS-USER-WGSL (Batch 198 first slice; Batch 204
-  // second slice — named-uniform schema + multi-pass) — user-supplied
-  // WGSL stages from `scene.postProcessStages.add(...)`. Build once on
-  // first configure call and rebuild if the user clears/adds stages.
+  // User-supplied WGSL stages from `scene.postProcessStages.add(...)`. Built
+  // once on the first configure call, and rebuilt if the user clears or adds
+  // stages.
   //
-  // Recognized stage uniforms (Batch 204):
-  //   - `wgslFragmentShader: string` — required. WGSL FS source.
-  //   - `wgslUniformSchema: UniformSchema` — optional. Named-uniform
-  //     schema mapping `{ [name]: { type, offset } }`. When present,
-  //     vec3/vec4 uniform values may be `number[]` arrays.
-  //   - `wgslNumberOfPasses: number` — optional. Default 1.
-  //   - All other uniform keys: numeric scalars (or arrays when schema
-  //     declares them as vec2/3/4) packed into the 64-byte UBO.
+  // Recognized stage uniforms:
+  //   - `wgslFragmentShader: string` — required. WGSL fragment source.
+  //   - `wgslUniformSchema: UniformSchema` — optional. Named-uniform schema
+  //     mapping `{ [name]: { type, offset } }`. When present, vec3 and vec4
+  //     uniform values may be `number[]` arrays.
+  //   - `wgslNumberOfPasses: number` — optional, default 1.
+  //   - All other uniform keys: numeric scalars, or arrays when the schema
+  //     declares them as vec2, vec3 or vec4, packed into the 64-byte uniform
+  //     buffer.
   const userStages = (collection as unknown as { _stages?: unknown[] })._stages;
   const userStageCount = Array.isArray(userStages) ? userStages.length : 0;
-  // NEW-POSTPROCESS-USER-WARN-PROD (Batch 290) — rebuild whenever the
-  // user-stage list length changes (add OR remove), not only on first
-  // build / empty-list. A runtime add (e.g. `scene.postProcessStages.add`
-  // after startup) previously left `_userStagesBuilt` stuck true, so the
-  // new stage never compiled (WGSL) and never warned (GLSL). Comparing the
-  // live length against the last-built count detects both directions; on a
-  // mismatch we drop the existing user-stage compiles and re-scan from
-  // scratch so the (re)build below is authoritative.
-  // NEW-WEBGPU-PP-LIBRARY-DEMO — length alone misses a same-frame
-  // remove()+add() swap (net length unchanged between configure calls), so
-  // also compare element-wise stage identity against the last-built list.
+  // Rebuild whenever the user-stage list length changes, on an add or a
+  // remove, not only on the first build or an emptied list. A runtime add
+  // after startup otherwise leaves `_userStagesBuilt` stuck true, so the new
+  // stage never compiles if it is WGSL and never warns if it is GLSL.
+  // Comparing the live length against the last-built count detects both
+  // directions; on a mismatch the existing user-stage compiles are dropped
+  // and the list is re-scanned from scratch, so the rebuild below is
+  // authoritative. Length alone misses a same-frame `remove()` then `add()`
+  // swap, whose net length is unchanged between configure calls, so
+  // element-wise stage identity is compared against the last-built list too.
   const listChanged =
     cache._userStagesBuilt &&
     (userStageCount !== (cache._userStagesCount ?? 0) ||
@@ -865,11 +834,10 @@ function configureWebGPUPostProcessPipeline(
         | null
         | undefined;
       if (!stage) continue;
-      // Batch 98 — skip the upstream DoF composite; it's intercepted
-      // and routed through `pipeline.addDepthOfField` above. Counting
-      // it as a GLSL-only stage would fire a misleading warning and
-      // suggest the user supply a WGSL shader for an effect we
-      // already handle natively.
+      // Skip the upstream DoF composite: it is intercepted and routed through
+      // `pipeline.addDepthOfField` above. Counting it as a GLSL-only stage
+      // would fire a misleading warning and suggest the user supply a WGSL
+      // shader for an effect already handled natively.
       if (
         stage.name === "czm_depth_of_field" ||
         stage.name === "czm_depth_of_field_blur" ||
@@ -892,7 +860,7 @@ function configureWebGPUPostProcessPipeline(
       const wgsl = stage.uniforms?.wgslFragmentShader;
       if (typeof wgsl === "string" && wgsl.length > 0) {
         const u = stage.uniforms as Record<string, unknown>;
-        // Batch 204 — extract schema + numberOfPasses if provided.
+        // Extract the schema and pass count if provided.
         const schemaRaw = u.wgslUniformSchema;
         const schema =
           schemaRaw && typeof schemaRaw === "object"
@@ -940,18 +908,16 @@ function configureWebGPUPostProcessPipeline(
     cache._userStagesBuilt = true;
     cache._userStagesCount = userStageCount;
     cache._userStagesRefs = userStages.slice();
-    // NEW-POSTPROCESS-USER-WARN-PROD (Batch 290) — this warning is
-    // PERMANENT (not pragma-stripped). A user-supplied GLSL
-    // PostProcessStage is silently DROPPED on the WebGPU backend (WebGPU
-    // needs WGSL); the dropped stage produces NO output and the user has
-    // no other signal that their effect didn't run. That's a real,
-    // user-actionable error per the CLAUDE.md logging rules ("Real
-    // errors must always reach the console"), not a debug diagnostic —
-    // stripping it in production left shipping users with silence.
-    // `oneTimeWarning` is production-safe (only its internal
-    // `defined(identifier)` assert is pragma-stripped; the `console.warn`
-    // body runs in every build) and dedupes by identifier so a scene
-    // with the same GLSL stage doesn't spam the console per frame.
+    // This warning is permanent, not pragma-stripped. A user-supplied GLSL
+    // PostProcessStage is silently dropped on the WebGPU backend, which needs
+    // WGSL; the dropped stage produces no output and the user has no other
+    // signal that their effect did not run. That is a real, user-actionable
+    // error rather than a debug diagnostic, so stripping it in production
+    // would leave shipping users with silence. `oneTimeWarning` is
+    // production-safe — only its internal `defined(identifier)` assert is
+    // pragma-stripped, and the `console.warn` body runs in every build — and
+    // it dedupes by identifier, so a scene with the same GLSL stage does not
+    // spam the console every frame.
     if (glslOnlyCount > 0) {
       oneTimeWarning(
         "WebGPUPostProcessStageCollection.userStagesGLSL",
@@ -985,11 +951,11 @@ function configureWebGPUPostProcessPipeline(
   // uniform repack happens GPU-side only for enabled stages at execute.
   syncInterceptedLibraryStages(pipeline, userStages, scene);
 
-  // C12-18 / C11-160 -- SunHalo lazy init + per-frame state push. The gate
-  // checks the LIVE `pipeline.sunHaloEffect` slot rather than a sticky cache
-  // flag so the effect transparently re-adds after any pipeline recreate
-  // (HDR toggle, resize, device loss) that nulls it -- the same pattern the
-  // TAA lazy-add uses.
+  // SunHalo lazy init and per-frame state push. The gate checks the live
+  // `pipeline.sunHaloEffect` slot rather than a sticky cache flag, so the
+  // effect transparently re-adds after any pipeline recreate that nulls it —
+  // an HDR toggle, a resize, a device loss — the same pattern the TAA
+  // lazy-add uses.
   if (cache.sunHaloEnabled && !pipeline.sunHaloEffect) {
     pipeline.addSunHalo(device, canvasFormat);
     cache.sunHaloInitialized = true;
@@ -1013,10 +979,10 @@ function configureWebGPUPostProcessPipeline(
     }
   }
 
-  // Audit A.11 (Batch 133) -- GodRay lazy init + per-frame sun UV
-  // update. Config can be supplied via `scene.godRayConfig` (optional).
-  // Skip when the scene has no sun configured -- the effect needs the
-  // sun's screen-space position to draw the radial blur direction.
+  // GodRay lazy init and per-frame sun UV update. Config can be supplied
+  // through `scene.godRayConfig`. Skipped when the scene has no sun
+  // configured, because the effect needs the sun's screen-space position to
+  // orient the radial blur.
   if (cache.godRayEnabled && !cache.godRayInitialized) {
     const cfg = (
       scene as unknown as {
@@ -1026,12 +992,11 @@ function configureWebGPUPostProcessPipeline(
     pipeline.addGodRay(device, canvasFormat, cfg, useShaderF16);
     cache.godRayInitialized = true;
   }
-  // Audit re-review (Batch 134) -- GodRay enable rides
-  // `pipeline.godRayEffect.enabled` directly; `setStageEnabled` only
-  // recognizes the named slot stages (TAA, FXAA, Bloom, Tonemap, etc.)
-  // and falls through to a no-op for unknown names. The previous
-  // `setStageEnabled("GodRay", false)` call was dead and misleading
-  // -- removed to keep the enable surface single-source.
+  // GodRay's enable rides `pipeline.godRayEffect.enabled` directly.
+  // `setStageEnabled` only recognizes the named slot stages — TAA, FXAA,
+  // Bloom, Tonemap and the rest — and falls through to a no-op for any other
+  // name, so routing the god ray through it would be a silent no-op and a
+  // second, misleading enable surface.
   if (cache.godRayEnabled && pipeline.godRayEffect) {
     pipeline.godRayEffect.enabled = true;
     updateGodRaySunUV(pipeline, scene);
@@ -1039,15 +1004,15 @@ function configureWebGPUPostProcessPipeline(
     pipeline.godRayEffect.enabled = false;
   }
 
-  // TAKRAM-9 (cloud-aware god rays) — when the opt-in `scene.godRayCloudAware`
-  // flag is on AND both god rays and procedural clouds are active, request the
-  // cloud renderer's screen-space transmittance mask and feed it to the god-ray
-  // generate pass so dense clouds attenuate the shaft (crepuscular rays through
-  // gaps). The capture flag is honored by the NEXT cloud pass; the view read
-  // here is the mask the cloud pass rendered THIS frame (null on the warmup
-  // frame / when culled → the effect uses its white 1×1 fallback = no-op).
-  // Default OFF (flag absent / clouds off) → capture is released and the view
-  // cleared → byte-identical depth-only god rays.
+  // When the opt-in `scene.godRayCloudAware` flag is on and both god rays and
+  // procedural clouds are active, request the cloud renderer's screen-space
+  // transmittance mask and feed it to the god-ray generate pass, so dense
+  // clouds attenuate the shaft and crepuscular rays form through the gaps.
+  // The capture flag is honoured by the next cloud pass, while the view read
+  // here is the mask the cloud pass rendered this frame — null on the warmup
+  // frame or when culled, at which point the effect uses its white 1×1
+  // fallback. With the flag absent or clouds off, the capture is released and
+  // the view cleared, leaving depth-only god rays.
   if (pipeline.godRayEffect) {
     const sceneCtx = (scene as unknown as { context?: unknown })?.context;
     // Cloud-unification epic slice 4A/4B — the volumetric-cloud gate reads the
@@ -1081,9 +1046,9 @@ function configureWebGPUPostProcessPipeline(
     }
   }
 
-  // Atmospheric Effects Phase B (Batch 417b) -- HeatShimmer lazy init +
-  // per-frame clock / intensity / continuous-render drive. Config can be
-  // supplied via `scene.heatShimmerConfig` (optional).
+  // HeatShimmer lazy init, plus the per-frame clock, intensity and
+  // continuous-render drive. Config can be supplied through
+  // `scene.heatShimmerConfig`.
   if (cache.heatShimmerEnabled && !cache.heatShimmerInitialized) {
     const cfg = (
       scene as unknown as {
@@ -1100,9 +1065,8 @@ function configureWebGPUPostProcessPipeline(
     pipeline.heatShimmerEffect.enabled = false;
   }
 
-  // Atmospheric Effects Phase D (Batch 422) -- ColdOptics lazy init +
-  // per-frame camera/sun/inverse-matrix push. Config can be supplied via
-  // `scene.coldOpticsConfig` (optional).
+  // ColdOptics lazy init, plus the per-frame camera, sun and inverse-matrix
+  // push. Config can be supplied through `scene.coldOpticsConfig`.
   if (cache.coldOpticsEnabled && !cache.coldOpticsInitialized) {
     const cfg = (
       scene as unknown as {
@@ -1119,11 +1083,11 @@ function configureWebGPUPostProcessPipeline(
     pipeline.coldOpticsEffect.enabled = false;
   }
 
-  // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — unified aerial-
-  // perspective atmosphere. Scene-level flag (`scene.aerialPerspective`), no
-  // upstream PostProcessStageCollection slot. Lazy-init on first enable;
-  // per-frame the configure pass pushes camera/sun/atmosphere uniforms + the
-  // Bruneton transmittance LUT view.
+  // Unified aerial-perspective atmosphere, driven by the scene-level
+  // `scene.aerialPerspective` flag, since upstream
+  // `PostProcessStageCollection` has no slot for it. Lazily initialized on
+  // first enable; per frame the configure pass pushes the camera, sun and
+  // atmosphere uniforms and the Bruneton transmittance LUT view.
   cache.aerialPerspectiveEnabled =
     (scene as unknown as { aerialPerspective?: boolean })?.aerialPerspective ===
     true;
@@ -1342,7 +1306,7 @@ function computeLensFlareFrameContext(
   }
 }
 
-// ── Track V-A2 atmosphere constants ──
+// Track V-A2 atmosphere constants
 // MUST match WebGPUSkyAtmosphereRenderer.js's DEFAULT_* / ATMOSPHERE_*
 // constants so the aerial-perspective haze agrees with the sky shell + the
 // Bruneton LUT bake (which uses the same coefficients). Kept inline here
@@ -1388,15 +1352,14 @@ function updateAerialPerspectiveFrameData(
       performanceManager?: {
         _atmosphereLutResources?: {
           transmittanceView?: GPUTextureView;
-          // Item 2.2 (ENV-AERIAL-MS, Batch 430) — sun-relative sky-view + MS
-          // LUT views shared with the visible SkyAtmosphere.
+          // Sun-relative sky-view and multiple-scattering LUT views, shared
+          // with the visible SkyAtmosphere.
           skyViewView?: GPUTextureView;
           multipleScatterView?: GPUTextureView;
         } | null;
       };
-      // Item 2.2 (ENV-AERIAL-MS, Batch 430) — opt-in flag (default false) read
-      // off the WebGPU context's getter (threaded from
-      // `contextOptions.webgpu.envMapMultiScatter`).
+      // Opt-in flag, false by default, read off the WebGPU context's getter,
+      // which is threaded from `contextOptions.webgpu.envMapMultiScatter`.
       envMapMultiScatter?: boolean;
     };
     camera?: { frustum?: { near?: number; far?: number } };
@@ -1431,12 +1394,12 @@ function updateAerialPerspectiveFrameData(
     sceneAny?.context?.performanceManager?._atmosphereLutResources ?? null;
   fx.setTransmittanceView(lut?.transmittanceView ?? null);
 
-  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — opt-in sky-view-LUT in-scatter
-  // source. Default false → the analytic single-scatter march (byte-identical
-  // parity). When on, push the sun-relative sky-view + MS LUT views (the SAME
-  // tables the visible SkyAtmosphere samples) so the distance haze matches the
-  // visible MS sky. The views/flag are pushed every frame; the effect binds the
-  // white placeholder + keeps params1.z off until both are present.
+  // Opt-in sky-view-LUT in-scatter source, false by default, which leaves the
+  // analytic single-scatter march in place. When on, the sun-relative
+  // sky-view and multiple-scattering LUT views are pushed — the same tables
+  // the visible SkyAtmosphere samples — so the distance haze matches the
+  // visible sky. The views and flag are pushed every frame; the effect binds
+  // the white placeholder and keeps `params1.z` off until both are present.
   const envMapMultiScatter = sceneAny?.context?.envMapMultiScatter === true;
   fx.setSkyViewView(lut?.skyViewView ?? null);
   fx.setMultipleScatterView(lut?.multipleScatterView ?? null);
@@ -1472,12 +1435,12 @@ function updateAerialPerspectiveFrameData(
   const lightIntensity =
     sceneAny?.skyAtmosphere?.atmosphereLightIntensity ?? 50.0;
 
-  // Batch 437 (CLOUD-SHADOWS) — feed the sun-view beer shadow map + its world→
-  // sun-clip matrix from the procedural cloud renderer's cache so the inscatter
-  // dims under the clouds. The cloud renderer runs in the same frame's
-  // environmental-effects chain (BEFORE post-process), so the map + matrix are
-  // current. When globe.cloudCastShadows is off, `shadowActive` is false → the
-  // effect binds the placeholder + the disabled control → byte-identical.
+  // Feed the sun-view beer shadow map and its world-to-sun-clip matrix from
+  // the procedural cloud renderer's cache, so the inscatter dims under the
+  // clouds. The cloud renderer runs earlier in the same frame's
+  // environmental-effects chain, so the map and matrix read here are current.
+  // With `globe.cloudCastShadows` off, `shadowActive` is false and the effect
+  // binds the placeholder and the disabled control.
   const cloudCache = (
     scene as unknown as {
       context?: {
@@ -1485,7 +1448,7 @@ function updateAerialPerspectiveFrameData(
           shadowActive?: boolean;
           shadowView?: GPUTextureView | null;
           shadowAbsorption?: number;
-          // C13-41 — eclipse-aware strength from the one `_cloudCache` seam.
+          // Eclipse-aware strength, from the one `_cloudCache` seam.
           shadowStrength?: number;
           shadowFrame?: CloudShadowFrame;
         };
@@ -1494,8 +1457,8 @@ function updateAerialPerspectiveFrameData(
   )?.context?._cloudCache;
   const csActive = cloudCache?.shadowActive === true && !!cloudCache.shadowView;
   fx.setCloudShadowView(csActive ? cloudCache!.shadowView! : null);
-  // C13-06 — emit the sun-view matrix relative to THIS effect's camera so the
-  // fragment shader multiplies a camera-relative offset instead of a full-ECEF
+  // Emit the sun-view matrix relative to this effect's camera so the fragment
+  // shader multiplies a camera-relative offset instead of a full-ECEF
   // position. The frame owner cancels the planet-scale translation in f64.
   const cloudShadowFrame = cloudCache?.shadowFrame;
   let cloudShadowVpRelativeToEye: Float32Array | undefined;
@@ -1531,18 +1494,18 @@ function updateAerialPerspectiveFrameData(
     // would project a camera-relative offset through an absolute matrix.
     cloudShadowActive: csActive && cloudShadowVpRelativeToEye !== undefined,
     cloudShadowAbsorption: cloudCache?.shadowAbsorption ?? 0.04,
-    // C13-41 — same `_cloudCache` seam as the absorption above.
+    // The same `_cloudCache` seam as the absorption above.
     cloudShadowStrength: cloudCache?.shadowStrength ?? 1.0,
   });
 }
 
 /**
- * C12-18 / C11-160 -- push `frameState.sunHalo` into the WebGPU halo effect.
+ * Push `frameState.sunHalo` into the WebGPU halo effect.
  *
- * PURE TRANSFER, deliberately. Every number is resolved once in
+ * A pure transfer, deliberately. Every number is resolved once in
  * `Scene/SunHaloAppearance.js` before the backend branch and consumed
- * identically by WebGL's `SolarHalo` stage; re-deriving any of it here (the
- * projection, the limb size, the eclipse factor) is exactly the drift the
+ * identically by WebGL's `SolarHalo` stage; re-deriving any of it here — the
+ * projection, the limb size, the eclipse factor — is exactly the drift the
  * publish-then-branch convention exists to prevent. When the publication is
  * missing or reports `visible === false`, the amplitude is pushed as 0, which
  * makes the effect skip its pass entirely.
@@ -1649,12 +1612,11 @@ function pushSunBloomFrameState(
   });
 }
 
-// Audit A.11 (Batch 133) -- per-frame sun screen-space UV computed
-// by projecting `scene.sun.position` (or the directional sun direction
-// when no Sun primitive is configured) through the camera's
-// viewProjection matrix and converting NDC -> UV. Off-screen suns
-// emit UVs outside [0, 1]; the GodRay shader still produces a
-// directional glow across the visible region.
+// The per-frame sun screen-space UV, computed by projecting
+// `scene.sun.position` — or the directional sun direction when no Sun
+// primitive is configured — through the camera's view-projection matrix and
+// converting NDC to UV. Off-screen suns emit UVs outside [0, 1]; the GodRay
+// shader still produces a directional glow across the visible region.
 const _godRayScratchClip = new Float64Array(4);
 function updateGodRaySunUV(
   pipeline: WebGPUPostProcessPipeline,
@@ -1671,13 +1633,12 @@ function updateGodRaySunUV(
         viewProjection?: number[] | Float64Array;
         sunPositionWC?: { x: number; y: number; z: number };
         sunDirectionWC?: { x: number; y: number; z: number };
-        // Audit re-review (Batch 134) -- `currentFrustum` is set
-        // per-frustum during the multi-frustum command-list traversal,
-        // so by the time the post-process configure runs it carries
-        // whichever frustum's near/far was last applied (typically the
-        // far one). The full-scene depth-linearization for GodRay
-        // needs the camera's overall near + far, not the last per-
-        // frustum slice.
+        // `currentFrustum` is set per frustum during the multi-frustum
+        // command-list traversal, so by the time the post-process configure
+        // runs it carries whichever frustum's near and far were last applied,
+        // typically the far one. The full-scene depth linearization for GodRay
+        // needs the camera's overall near and far, not the last per-frustum
+        // slice.
         currentFrustum?: { x: number; y: number };
       }
     | undefined;
@@ -1711,15 +1672,14 @@ function updateGodRaySunUV(
   const u = ndcX * 0.5 + 0.5;
   const v = -ndcY * 0.5 + 0.5;
   fx.setSunScreenUV(u, v);
-  // Audit re-review (Batch 134) -- pull the frustum span from the
-  // camera object, not `uniformState.currentFrustum`. The latter is
-  // mutated per-frustum during command execution and by the time the
-  // configure pass runs it reflects the LAST per-frustum slice (the
-  // far one), so the GodRay generate pass would linearize depth
-  // against the far slice's near/far -- foreground geometry depths
-  // would all collapse to ~0 and gate every sample as "sky", letting
-  // shafts leak through occluders. The camera's overall near/far
-  // bracket the entire scene depth range correctly.
+  // Pull the frustum span from the camera object, not from
+  // `uniformState.currentFrustum`. The latter is mutated per frustum during
+  // command execution, and by the time the configure pass runs it reflects
+  // the last per-frustum slice, the far one. The GodRay generate pass would
+  // then linearize depth against that slice's near and far, collapsing
+  // foreground geometry depths to near zero, gating every sample as sky, and
+  // letting shafts leak through occluders. The camera's overall near and far
+  // bracket the entire scene depth range.
   const cam = (
     scene as unknown as {
       camera?: { frustum?: { near?: number; far?: number } };
@@ -1829,21 +1789,21 @@ function updateDepthOfFieldFrameData(
   if (f) fx.setFrustum(f.near, f.far, f.logActive);
 }
 
-// Atmospheric Effects Phase B (Batch 417b) -- monotonic epoch for the
-// shimmer animation clock. Captured on first use so the shader receives a
-// SMALL elapsed-seconds value: a raw `performance.now()` (or a JulianDate)
-// loses f32 precision in the WGSL noise field and freezes the animation.
+// Monotonic epoch for the shimmer animation clock, captured on first use so
+// the shader receives a small elapsed-seconds value. A raw
+// `performance.now()`, or a JulianDate, loses f32 precision in the WGSL noise
+// field and freezes the animation.
 let _heatShimmerEpochMs = -1;
 
 /**
- * Atmospheric Effects Phase B (Batch 417b) -- push the per-frame HeatShimmer
- * uniforms (elapsed-seconds clock + intensity + frustum near/far for the
- * optional depth fade) and keep the scene rendering.
+ * Push the per-frame HeatShimmer uniforms — the elapsed-seconds clock, the
+ * intensity, and the frustum near and far for the optional depth fade — and
+ * keep the scene rendering.
  *
- * `requestRenderMode` scenes only render when something requests a frame; an
- * animated warp must advance every frame, so while the effect is enabled we
- * call `scene.requestRender()` each frame (the same mechanism TAA-style
- * continuous effects rely on). Without it the warp would freeze on a settled
+ * `requestRenderMode` scenes only render when something requests a frame, and
+ * an animated warp must advance every frame, so while the effect is enabled
+ * this calls `scene.requestRender()` each frame, the same mechanism other
+ * continuous effects rely on. Without it the warp freezes on a settled
  * camera under `requestRenderMode`.
  */
 function updateHeatShimmerFrameData(
@@ -1885,24 +1845,24 @@ function updateHeatShimmerFrameData(
   (scene as unknown as { requestRender?: () => void })?.requestRender?.();
 }
 
-// Atmospheric Effects Phase D (Batch 422) — WGS84 max radius (metres),
-// matches Cartesian3.maximumComponent(WGS84.radii). Used as the inner radius
-// for the world-up reconstruction; the effect only needs the ellipsoid scale
-// to form local up from the camera position.
+// WGS84 max radius in metres, matching
+// `Cartesian3.maximumComponent(WGS84.radii)`. Used as the inner radius for
+// the world-up reconstruction; the effect only needs the ellipsoid scale to
+// form local up from the camera position.
 const COLD_OPTICS_INNER_RADIUS = 6378137.0;
 
 /**
- * Atmospheric Effects Phase D (Batch 422) — push the per-frame camera / sun /
- * inverse-matrix uniforms into the ColdOptics effect and keep the scene
- * rendering. Reads the camera world position, inverse projection, inverse
- * view, and sun direction from `uniformState` (the SAME sources as
- * `updateAerialPerspectiveFrameData`), plus the intensity from the ad-hoc
- * `scene.coldOpticsIntensity` flag (417a auto-master). Mirrors the godRay /
+ * Push the per-frame camera, sun and inverse-matrix uniforms into the
+ * ColdOptics effect and keep the scene rendering. Reads the camera world
+ * position, inverse projection, inverse view and sun direction from
+ * `uniformState` — the same sources as `updateAerialPerspectiveFrameData` —
+ * plus the intensity from `scene.coldOpticsIntensity`. Mirrors the godRay and
  * heat-shimmer per-frame setters.
  *
- * `requestRenderMode` scenes only render on demand; the sun position drifts
- * with the clock, so while the effect is enabled we request a frame each pass
- * so the halo tracks the sun (same mechanism the heat-shimmer clock relies on).
+ * `requestRenderMode` scenes only render on demand, and the sun position
+ * drifts with the clock, so while the effect is enabled this requests a frame
+ * each pass so the halo tracks the sun, the same mechanism the heat-shimmer
+ * clock relies on.
  */
 function updateColdOpticsFrameData(
   pipeline: WebGPUPostProcessPipeline,
@@ -1937,10 +1897,10 @@ function updateColdOpticsFrameData(
     fx.setIntensity(intensity);
   }
 
-  // COLD-OPTICS-HQ (Batch 442): the advanced opt-in from `effects.optics.advanced`
-  // (pushed as `scene.coldOpticsAdvanced`). Drives the shader's advanced branch
-  // (22+46 dispersed halos + tangent arc + light pillars). Default-off keeps
-  // the legacy halo + sun-dogs path byte-identical.
+  // The advanced opt-in from `effects.optics.advanced`, pushed as
+  // `scene.coldOpticsAdvanced`. Drives the shader's advanced branch: the 22
+  // and 46 degree dispersed halos, the tangent arc, and the light pillars.
+  // Off by default, which keeps the halo and sun-dogs path.
   fx.setAdvanced(sceneAny?.coldOpticsAdvanced === true);
 
   const cam = us.cameraPosition;

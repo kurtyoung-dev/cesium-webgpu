@@ -2,15 +2,21 @@
 /**
  * WebGPU GodRayEffect
  *
- * Per-effect slice extracted from `WebGPUPostProcessEffects`
- * (Batch 160 of the maintainability sweep).
+ * References:
+ *   - Kenny Mitchell, "Volumetric Light Scattering as a Post-Process"
+ *     (GPU Gems 3) — the radial-blur formulation the generate pass uses.
+ *   - Shota Matsuda, Takram — `three-geospatial` (MIT),
+ *     https://github.com/takram-design-engineering/three-geospatial — for
+ *     resolving cloud occlusion of the shaft from the cloud march's own
+ *     transmittance rather than from scene depth, which a cloud pass that
+ *     writes no depth cannot supply. Technique only; no source was copied.
  *
  * @module WebGPUGodRayEffect
  */
 
 import GodRayCompositeWGSL from "../../Shaders/WebGPU/PostProcess/GodRayComposite.js";
 import GodRayGenerateWGSL from "../../Shaders/WebGPU/PostProcess/GodRayGenerate.js";
-// PARITY-F16-POSTPROCESS — f16 variants, selected when `useShaderF16`.
+// The f16 variants, selected when `useShaderF16` is set.
 import GodRayCompositeF16WGSL from "../../Shaders/WebGPU/PostProcess/GodRayComposite_f16.js";
 import GodRayGenerateF16WGSL from "../../Shaders/WebGPU/PostProcess/GodRayGenerate_f16.js";
 import {
@@ -79,8 +85,8 @@ export class GodRayEffect implements PostProcessEffect {
   readonly name = "GodRay";
   enabled = true;
 
-  // PARITY-F16-POSTPROCESS — set by the pipeline before initialize().
-  // Default false = byte-identical f32 path.
+  // Set by the pipeline before `initialize()`. False, the default, keeps the
+  // f32 path.
   useShaderF16 = false;
 
   private _device: GPUDevice | null = null;
@@ -102,22 +108,22 @@ export class GodRayEffect implements PostProcessEffect {
 
   private _generateUniforms: GPUBuffer | null = null;
 
-  // TAKRAM-9 (cloud-aware god rays) — screen-space cloud TRANSMITTANCE.
-  // `_cloudTransView` is pushed each frame by the pipeline when both
-  // procedural clouds and cloud-aware god rays are enabled; otherwise the
-  // generate pass binds `_whiteFallbackView` (1×1 r8unorm = 1.0), which
-  // makes the cloud multiply a byte-identical no-op (default OFF).
+  // Screen-space cloud transmittance. `_cloudTransView` is pushed each frame
+  // by the pipeline when both procedural clouds and cloud-aware god rays are
+  // enabled; otherwise the generate pass binds `_whiteFallbackView`, a 1×1
+  // r8unorm texel of exactly 1.0, which makes the cloud multiply a no-op. Off
+  // by default.
   private _cloudTransView: GPUTextureView | null = null;
   private _whiteFallbackTex: GPUTexture | null = null;
   private _whiteFallbackView: GPUTextureView | null = null;
 
-  // C-R11 (Batch 32) — bind group cache for the two per-frame sites.
+  // Bind-group cache for the two per-frame sites.
   private _bgCache = new WebGPUBindGroupCache();
 
-  // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — renderer-wide log-depth flag threaded
-  // per-frame alongside near/far (frustum.z). Since C4-LOGDEPTH-PP-SLICEB the
-  // GodRayGenerate FS reverses the log-depth sample before linearizing when
-  // frustum.z >= 0.5; logActive=0 is byte-identical.
+  // The renderer-wide log-depth flag, threaded per frame alongside near and
+  // far as `frustum.z`. The GodRayGenerate fragment stage reverses the
+  // log-depth sample before linearizing when `frustum.z >= 0.5`; a zero here
+  // leaves the linear path untouched.
   private _logActive = 0.0;
 
   private _config: Required<GodRayConfig>;
@@ -151,11 +157,11 @@ export class GodRayEffect implements PostProcessEffect {
   }
 
   /**
-   * TAKRAM-9 — push the per-frame screen-space cloud transmittance view
-   * (1 = clear, 0 = opaque cloud) produced by the procedural cloud
-   * renderer's mask pass. Pass `null` to fall back to the white 1×1
-   * texture (byte-identical depth-only path). Cheap — just swaps the view
-   * bound at generate-binding 4; the bind-group cache re-keys on identity.
+   * Push the per-frame screen-space cloud transmittance view — 1 is clear, 0
+   * is opaque cloud — produced by the procedural cloud renderer's mask pass.
+   * Pass `null` to fall back to the white 1×1 texture, which is the depth-only
+   * path. This only swaps the view bound at generate-binding 4, and the
+   * bind-group cache re-keys on its identity.
    */
   setCloudTransmittanceView(view: GPUTextureView | null): void {
     this._cloudTransView = view;
@@ -213,12 +219,12 @@ export class GodRayEffect implements PostProcessEffect {
       texture(1, Stage.FRAGMENT),
       sampler(2, Stage.FRAGMENT),
       uniformBuffer(3, Stage.FRAGMENT),
-      // TAKRAM-9 — cloud transmittance (bound to the white fallback when
-      // cloud-aware god rays are off → byte-identical multiply by 1.0).
+      // Cloud transmittance, bound to the white fallback when cloud-aware god
+      // rays are off, so the multiply is by exactly 1.0.
       texture(4, Stage.FRAGMENT),
     ]);
 
-    // TAKRAM-9 — 1×1 white (r8unorm 255 → exactly 1.0) transmittance fallback.
+    // The 1×1 white transmittance fallback: r8unorm 255 decodes to exactly 1.0.
     if (!this._whiteFallbackTex) {
       this._whiteFallbackTex = device.createTexture({
         label: "GodRay-CloudTrans-WhiteFallback",
@@ -278,7 +284,7 @@ export class GodRayEffect implements PostProcessEffect {
     this._outputTex = null;
     this._rayView = null;
     this._outputView = null;
-    // C-R11 (Batch 32) — texture views change on resize.
+    // Texture views change on resize.
     this._bgCache.invalidateAll();
     this.initialize(this._device, width, height, this._format);
   }
@@ -294,8 +300,6 @@ export class GodRayEffect implements PostProcessEffect {
       return sourceView;
     }
 
-    // C-R11 (Batch 32) — both bind groups cached.
-
     // Pass 1: generate rays at half-res into _rayView.
     const genBG = this._bgCache.getOrCreate(
       this._device,
@@ -306,7 +310,7 @@ export class GodRayEffect implements PostProcessEffect {
         { binding: 1, resource: depthView },
         { binding: 2, resource: sampler },
         { binding: 3, resource: { buffer: this._generateUniforms! } },
-        // TAKRAM-9 — real cloud transmittance when set, else white fallback.
+        // The real cloud transmittance when set, else the white fallback.
         {
           binding: 4,
           resource: this._cloudTransView ?? this._whiteFallbackView!,

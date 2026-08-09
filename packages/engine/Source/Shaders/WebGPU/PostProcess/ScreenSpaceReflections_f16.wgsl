@@ -46,9 +46,8 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return out;
 }
 
-// NEW-LOG-DEPTH-PP-SLICEC — inline csm_reverseLogDepth. Precision-critical,
-// kept in f32 (mirrors the f32 SSR variant). See the non-f16 shader for the
-// full contract.
+// Inline `csm_reverseLogDepth`. Precision-critical, so it stays f32, mirroring
+// the f32 SSR variant. See the non-f16 shader for the full contract.
 fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
   if (far <= near) { return logZ; }
   let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);

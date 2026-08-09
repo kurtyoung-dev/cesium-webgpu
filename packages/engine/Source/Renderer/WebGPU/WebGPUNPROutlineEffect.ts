@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU NPR Outline Effect — Slice 5c-B Batch 123.
+ * WebGPU NPR Outline Effect.
  *
  * Reads the always-allocated G-buffer normal-roughness texture (slot 1)
  * + scene depth, samples each fragment's 4 cardinal neighbors, and
@@ -18,14 +18,13 @@
  *     base color at edge pixels.
  *
  * Architecture notes:
+ * Architecture notes:
  *   - Modeled on WebGPUSSREffect.ts. Same cache + initialize +
  *     execute + destroy shape, same FeatureRenderer hookup.
  *   - Sentinel-aware: emits the base color unchanged at G-buffer
- *     sentinel pixels (sky / billboards / labels / lines / any
- *     Phase 1 non-emitting pipeline). Without that, every emitter →
+ *     sentinel pixels — sky, billboards, labels, lines, any
+ *     non-emitting pipeline. Without that, every emitter to
  *     non-emitter boundary would false-positive as a silhouette.
- *   - Renders directly into `outputView` with loadOp="load", so
- *     callers can chain it after other post-process effects.
  *
  * @private
  */
@@ -93,17 +92,15 @@ function initializePipeline(
 
   cache.bindGroupLayout = makeBindGroupLayout(device, "NPR outline BGL", [
     texture(0, Stage.FRAGMENT),
-    // Slice 5c-B Batch 128 — depth slot reverted to default
-    // `texture_2d<f32>` (filterable-float). The MSAA resolve pass
-    // outputs r16float at @location(0); the single-sample path
-    // exposes the depth-only aspect view of the depth texture which
-    // is also bindable as texture_2d<f32> with the matching sample
-    // type. The shader reads `.r` for the depth value.
+    // The depth slot is a default `texture_2d<f32>`, filterable-float. The
+    // MSAA resolve pass outputs r16float at `@location(0)`, and the
+    // single-sample path exposes the depth-only aspect view of the depth
+    // texture, which is also bindable as `texture_2d<f32>` with the matching
+    // sample type. The shader reads `.r` for the depth value.
     texture(1, Stage.FRAGMENT),
     texture(2, Stage.FRAGMENT),
-    // Filtering sampler back in (Batch 127 forced non-filtering for
-    // depth-texture compatibility; Batch 128 swapped the depth slot
-    // to filterable-float so the standard sampler works again).
+    // A filtering sampler, which works because the depth slot above is
+    // filterable-float rather than a depth texture.
     sampler(3, Stage.FRAGMENT),
     uniformBuffer(4, Stage.FRAGMENT),
   ]);
@@ -233,25 +230,24 @@ export function executeNPROutlines(
     cache.nextBindGroupSlot = (slot + 1) & 1;
   }
 
-  // Slice 5c-B Batch 127 — record into the MAIN frame command encoder
-  // instead of a separate one. Pre-fix NPR + SSR + ProceduralClouds
-  // created their own encoder and submitted eagerly via
-  // `device.queue.submit([encoder.finish()])`. The main encoder
-  // (which the SceneRenderer records scene rendering + post-process
-  // into) submits LATER at end-of-frame. GPU executes in submission
-  // order, so post-process's blit-to-canvas overwrote env effects'
-  // canvas writes. Recording into the main encoder makes ordering
-  // explicit: scene → post-process → env effects, all in one stream
-  // where later commands see prior commands' results.
+  // Record into the main frame command encoder rather than a separate one.
+  // An effect that creates its own encoder and submits eagerly through
+  // `device.queue.submit([encoder.finish()])` runs before the main encoder,
+  // which the scene renderer records scene rendering and post-process into
+  // and submits at end of frame. The GPU executes in submission order, so
+  // the post-process blit to canvas overwrites the environmental effects'
+  // canvas writes. Recording into the main encoder makes the ordering
+  // explicit — scene, then post-process, then environmental effects — in one
+  // stream where later commands see earlier commands' results.
   const mainEncoder = (
     context as unknown as {
       _currentCommandEncoder?: GPUCommandEncoder;
     }
   )._currentCommandEncoder;
   if (!mainEncoder) {
-    // No frame in flight — fall back to ephemeral encoder + immediate
-    // submit. Same semantics as pre-Batch-127 (used by render-loop
-    // unit tests that bypass beginFrame).
+    // No frame in flight: fall back to an ephemeral encoder and an immediate
+    // submit, which is what render-loop unit tests bypassing `beginFrame`
+    // exercise.
     const tmp = device.createCommandEncoder({ label: "NPR outline (orphan)" });
     const pass = tmp.beginRenderPass({
       colorAttachments: [
