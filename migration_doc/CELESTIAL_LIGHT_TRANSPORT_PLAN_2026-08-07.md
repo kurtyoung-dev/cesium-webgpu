@@ -216,20 +216,41 @@ Execution order top-to-bottom; sizes are estimates.
 
 ## 4. Track B — Day/night imagery interpolation
 
-- **CLT-B1 (S)** — Premise-verification probe (BLOCKING PREREQ): extend
-  `probe-dusk-terminator.mjs` with a terminator-crossing scanline; pixel-confirm
-  the four static findings (0.5 alpha disagreement; sentinel no-op;
-  vertex-normal gating split; camera-fade split). Numbers table, no fix.
-- **CLT-B2 (S)** — Fix the `nightIntensity` 0.0 sentinel collision (§2 bug 1):
-  carry the enable explicitly, wire or drop the write-only
-  `tileProvider.enableNightLights`, make C11-159 actually flippable; audit the
-  sibling ocean sentinels in the same slice.
+- **CLT-B1 (S)** — ✅ **SUPERSEDED — do not schedule.** *(Stamped 2026-08-09,
+  handover audit FIX 33 — this row still read as the track's BLOCKING PREREQ
+  after the work it gates had landed and been accepted.)* Its four findings were
+  pixel-confirmed by `probe-daynight-terminator-law.mjs` runs 1–3 (Batches 915 /
+  921 `3b9352b950` / 929 `cd7cc079c2`), which is a better instrument than the
+  `probe-dusk-terminator.mjs` scanline this row proposed. **Residual = finding
+  (c) ONLY** — the vertex-normal gating split, which needs a provider reporting
+  `hasVertexNormals === true` (an Ion/network dependency) and is tracked as
+  `CLT-B1-VERTEX-NORMAL-LANE-NEEDS-A-NETWORK-LANE`. *Original scope, retained:*
+  extend `probe-dusk-terminator.mjs` with a terminator-crossing scanline;
+  pixel-confirm the four static findings (0.5 alpha disagreement; sentinel
+  no-op; vertex-normal gating split; camera-fade split). Numbers table, no fix.
+- **CLT-B2 (S)** — ✅ **DONE — Batch 913 (`a4bf558f1b`, CO-13).** *(Stamped
+  2026-08-09, handover audit FIX 33 — the row read as open while §2 bug 1 above
+  already carried the FIXED stamp.)* The enable is carried explicitly via
+  `GLOBE_UB_UNSET = -1.0` (new `WebGPUGlobeTunables.ts` leaf); the write-only
+  `tileProvider.enableNightLights` is now read by the tile-UB packer;
+  `enableNightLights = false` produces zero emission and `nightIntensity = 0` is
+  reachable, so **`C11-159` is flippable at last**; the default look is proven
+  unchanged by enumeration over both laws; and the sibling audit found a LIVE
+  `oceanFoamThreshold` hole, fixed in the same slice. *Original scope, retained:*
+  fix the `nightIntensity` 0.0 sentinel collision (§2 bug 1): carry the enable
+  explicitly, wire or drop the write-only `tileProvider.enableNightLights`, make
+  C11-159 actually flippable; audit the sibling ocean sentinels in the same slice.
 - **CLT-B3 (S)** — Contain `computeTerminatorGlow` (§2 bug 3): port to GLSL as
   a real lockstep pair or gate behind a default-off toggle. Check with the C12
   owner whether it lands via C12 exit-gate-2's audit instead — do not
   double-schedule.
-- **CLT-B4 (M)** — **DONE 2026-08-07 (Batch 927, CO-18), pending the terminator
-  probe's third Edge run as acceptance.** Reconcile the terminator ramp law
+- **CLT-B4 (M)** — ✅ **COMPLETE. Implementation DONE at Batch 927 (`3d1c397af4`,
+  CO-18); ACCEPTANCE MET at terminator run 3 — Batch 929 (`cd7cc079c2`), on tip
+  `5aec156b93`: every pre-registered number hit and the day/night ramp divergence
+  is CLOSED AT PIXELS on both backends.** *(Stamped 2026-08-09, handover audit
+  FIX 33 — the row still showed an already-passed acceptance run as owed, which
+  would have sent a successor to re-run it.)* ~~pending the terminator probe's
+  third Edge run as acceptance~~ Reconcile the terminator ramp law
   across backends (§2 bug 2), untangle the imagery-alpha vs lighting
   expressions, correct the false WGSL comment, decide the camera-fade question;
   write the target law into `SHADER_PAIRS_LOCKSTEP.md`. **PREREQ DISCHARGED
@@ -368,9 +389,12 @@ Execution order top-to-bottom; sizes are estimates.
 
 ## 7. Maintainer decisions embedded in this epic
 
-1. **Launch + identity**: adopt as Campaign 16 (or keep as a deferred epic)?
-   Recommended: hold launch until C12 closes (the R4 principle), but pull the
-   §2 bug rows forward now.
+1. **Launch + identity**: adopt as ~~Campaign 16~~ **Campaign 17** (or keep as a
+   deferred epic)? *(Corrected 2026-08-09, handover audit FIX 33 — C16 is
+   Comment Remediation & Attribution, launched by maintainer directive; this
+   epic renumbers to **proposed C17**, as the doc's own opening reservation
+   note at :11 already records.)* Recommended: hold launch until C12 closes (the
+   R4 principle), but pull the §2 bug rows forward now.
 2. **CLT-A9** Schaefer NELM — moves ratified anchors; needs an explicit
    ruling either way.
 3. **CLT-A4 / CLT-A2 defaults** — star-reveal lag and moon-visibility
@@ -379,6 +403,23 @@ Execution order top-to-bottom; sizes are estimates.
    dimming of city lights / compose-with-night-lights).
 5. **CLT-A5** — wire vs retire `enableNightSkyDimming`.
 6. **CLT-B3 ownership** — epic row vs C12 exit-gate-2 audit sweep.
+7. **CLT-D5** — ozone default-on flip (both backends), after D4. *(Appended
+   2026-08-09, handover audit FIX 33: §9's Track D minted three decisions that
+   this list never picked up, so a successor driving launch from §7 could not
+   see them.)*
+8. **CLT-D8** — aerial-perspective default-on for WebGPU, put to the maintainer
+   as a documented one-way call after the parity certification.
+9. ⛔ **CLT-D10 — REQUIRED *AT* LAUNCH, AND IT IS ALREADY BLOCKING ANOTHER
+   CAMPAIGN.** Shell-extent alpha canonicity: decide whether WebGL's fixed
+   ray-exit clip or WebGPU's full-coverage shell is canonical for the tracked
+   `NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA` parity delta, then conform the
+   loser. **This is the blocker Campaign 12's gate G1 is red on** — G1's
+   `starEnergyRatio` currently measures the shell's alpha rather than the star
+   modulation term, and the standing rule forbids attributing that lane until
+   this is decided. Because this epic is **unlaunched**, C12 cannot close G1
+   from inside C12: the maintainer must either rule D10 out of band or
+   explicitly accept **"G1 stays red at C12 close"**. Unlike the other rows
+   here, deferring this one has a cost that is already being paid.
 
 ## 8. Research provenance
 
@@ -391,6 +432,15 @@ Marble licensing (NASA non-copyright + acknowledgment string), Stellarium/PSI
 corona-rendering practice. Raw reports live in the session workspace
 (workflow `wf_b9b40051-931`); every load-bearing claim above is restated with
 its evidence, so this document stands alone.
+
+⚠ **WORKFLOW IDS ARE SESSION-LOCAL AND UNRECOVERABLE** *(note added 2026-08-09,
+handover audit FIX 33).* `wf_b9b40051-931` (this section) and `wf_20abf089-9c7`
+(§9's 19-agent Track-D audit) name workspaces that do **not** exist in the repo
+and cannot be re-opened by a successor, a different tool, or a later session —
+the same class as C16-20's lost `wf_c6df8ba5-f04` journal. **The restated claims
+in this document are therefore the SOLE evidence**, not a summary of retrievable
+sources. Do not cite a workflow ID as if it were a reference; if a claim needs
+stronger backing, re-derive it from the named external sources or from the tree.
 
 ## 9. Track D — Atmosphere fidelity at dawn/dusk (maintainer directive 2026-08-08)
 

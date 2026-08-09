@@ -46,7 +46,13 @@ notice ships and the terms are stated, but one transcribable detail is
 outstanding. **NEEDS-MAINTAINER** — the project cannot answer this from what it
 holds.
 
-### L-01 — `mulberry32` in `Scene/FlowFieldWindLayer.js` · NEEDS-MAINTAINER
+### L-01 — `mulberry32` in `Scene/FlowFieldWindLayer.js` · ✅ CLOSED (Batch 965, `3c1d4c5a47`) — ~~NEEDS-MAINTAINER~~
+
+> **CLOSED — stamped 2026-08-09, handover audit FIX 31.** The network pass at
+> Batch 965 established mulberry32 as **EXPLICIT CC0**, so **no replacement is
+> needed** and no maintainer answer is outstanding. The "provenance
+> unestablishable offline" framing below is the *pre-closure* state, retained
+> for the reasoning; it fell to going online, not to a ruling.
 
 **What was found.** Lines 13-22 are a verbatim copy of Tommy Ettinger's
 Mulberry32 generator, down to the constants `0x6d2b79f5`, `1 | a`, `61 | t` and
@@ -292,7 +298,12 @@ in `ThirdParty.extra.json`, and since `buildThirdParty` generates
 `ThirdParty.json` *only* from that file, neither appeared in the manifest the
 root package ships. Rows added; both resolve through npm metadata.
 
-### L-23 — the WGSL build strips licence banners · NEEDS-MAINTAINER
+### L-23 — the WGSL build strips licence banners · ✅ CLOSED (Batch 966, `b446b662f1`, maintainer-directed) — ~~NEEDS-MAINTAINER~~
+
+> **CLOSED — stamped 2026-08-09, handover audit FIX 31.** `wgslToJavaScript` now
+> mirrors `glslToJavaScript`'s `@license` extraction, so a notice-bearing WGSL
+> banner survives minification into the shipped bundle. **All 23 determinations
+> in this document are closed.**
 
 Found while tracing how notices reach `Build/**`. `glslToJavaScript` in
 `scripts/build.js` extracts `@license` docblocks before minifying and re-emits
@@ -469,8 +480,8 @@ project has not read and will not guess.
 | L-12 | RaymanNg/3D-Wind-Field | MIT | Transcribe the copyright line from `LICENSE` at <https://github.com/RaymanNg/3D-Wind-Field> |
 | L-13 | Popov72/OceanDemo | MIT | Transcribe the copyright line from `LICENSE` at <https://github.com/Popov72/OceanDemo> |
 | L-18 | linebender/vello | Apache-2.0 OR MIT | Transcribe the copyright line from the chosen half at <https://github.com/linebender/vello> |
-| L-01 | Mulberry32 | unknown | Answer the question in L-01, then either transcribe a grant or schedule the replacement |
-| L-23 | — | — | Answer the question in L-23 |
+| ~~L-01~~ | Mulberry32 | **CC0** | ✅ **CLOSED Batch 965 (`3c1d4c5a47`)** — explicit CC0 established by network pass; no grant to transcribe, no replacement to schedule. *(Stamped 2026-08-09, handover audit FIX 31.)* |
+| ~~L-23~~ | — | — | ✅ **CLOSED Batch 966 (`b446b662f1`, maintainer-directed)** — `wgslToJavaScript` mirrors the `@license` extraction. *(Stamped 2026-08-09, handover audit FIX 31.)* |
 
 None of these blocks release. Each entry already names the project, the licence
 and what was taken, which is what a redistributor needs in order to comply; the
@@ -512,7 +523,7 @@ names a row that must be present in the generated `ThirdParty.json`.
 ```json
 {
   "notices": [
-    { "id": "L-01", "heading": "Mulberry32 pseudo-random generator", "files": ["root", "engine"], "status": "NEEDS-MAINTAINER" },
+    { "id": "L-01", "heading": "Mulberry32 pseudo-random generator", "files": ["root", "engine"], "status": "RESOLVED" },
     { "id": "L-02", "heading": "naga", "files": ["root", "engine"], "thirdPartyJson": "naga", "status": "RESOLVED" },
     { "id": "L-03a", "heading": "gltf-WebGL-PBR", "files": ["root", "engine"], "status": "COVERED" },
     { "id": "L-03b", "heading": "glTF Sample Renderer (Khronos)", "files": ["root", "engine"], "status": "RESOLVED" },

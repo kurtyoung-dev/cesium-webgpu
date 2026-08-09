@@ -56,7 +56,14 @@ per convention (e.g. `ProceduralClouds.wgsl` → Schneider/Nubis,
 1. **Lint guard** — an ast-grep/regex rule (mirroring upstream's ast-grep
    usage) failing any comment in `packages/*/Source` matching the marker
    grammar (`Batch \d`, `C\d{1,2}-\d`, `DP-H\d`, `FAR-\d`, `TAKRAM`,
-   `UP\d{3}-`, `CLOUD-U\d`, ★/⚠ glyphs). Wired into lint-staged and CI.
+   `UP\d{3}-`, `CLOUD-U\d`, ★/⚠ glyphs). Wired into lint-staged ~~and CI~~.
+   ⚠ **AMENDED 2026-08-09 (handover audit FIX 32): "and CI" was never true and
+   is withdrawn.** As shipped (`Tools/c16/comment-marker-guard.mjs`, `npm run
+   lint-comment-markers` / `-strict`), the guard runs in **lint-staged only** —
+   no workflow under `.github/workflows/` invokes it, so a change that bypasses
+   the pre-commit hook regrows the debt silently. Either wire it into the dev
+   workflow or leave this sentence corrected; do not leave it claiming CI it
+   does not have.
 2. **Comment-only-diff verifier** — a tool that strips comments and asserts
    the stripped source is byte-identical before/after a rewrite batch. Every
    rewrite batch MUST pass it: C16 changes comments, never code.

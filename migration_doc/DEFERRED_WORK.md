@@ -1,5 +1,39 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
+## HOW TO READ THIS FILE (conventions — added 2026-08-09, handover audit FIX 35)
+
+This inventory is ~13,000 lines accumulated over dozens of campaigns. Four
+conventions govern it; ignoring them produces confident wrong readings.
+
+1. **THIS FILE IS NOT CHRONOLOGICAL, IN EITHER DIRECTION.** Entries have been
+   both **prepended** (newest first, at the top) and **appended** (newest last,
+   at the bottom) at different points in the fork's history, and sections have
+   been edited in place. **Position tells you nothing about age.** Do not
+   assume the top is current or that the bottom is stale.
+2. **ORDER EVIDENCE BY BATCH NUMBER, NEVER BY PRINTED DATE.** Several stamps
+   carry dates that are session-context artifacts of the authoring session's
+   clock (`2026-08-10`/`2026-08-11` labels on work that landed 2026-08-07/08).
+   When a date and a batch number disagree, **the batch number wins**; when two
+   stamps disagree, the higher batch number wins. This is the fork-wide
+   convention anchored in
+   [MAINTAINER_RULINGS_2026-08-10.md](MAINTAINER_RULINGS_2026-08-10.md).
+3. **THIS FILE IS NOT A STATUS AUTHORITY FOR ANY CAMPAIGN ROW.** Campaign queue
+   documents are. Where a `C1x-nn` row and an entry here disagree, **the queue
+   row wins**. Entries here are the mechanism/design record and the home for
+   items that have no campaign row.
+4. **AN ENTRY WITHOUT A CLOSURE STAMP IS NOT PROOF IT IS OPEN.** Closures are
+   sometimes recorded only in the owning queue or in the commit that closed
+   them. Before acting on an entry, grep the queues and `git log -S '<id>'`.
+
+**Finding the open set.** There is no maintained OPEN index in this file, and
+one has not been generated because it would go stale the same day. Use, in
+order: (a) the campaign queues' `## 0. RESUME HERE` sections — C12, and the
+per-lane headers in C13/C15/C16/C18 — which are the maintained open sets; then
+(b) `grep -n '^## NEW-\|^## C-R\|^## BUG-\|^## UP1\|^## FAR-' migration_doc/DEFERRED_WORK.md`
+to enumerate entry IDs; then (c) grep each candidate id across `migration_doc/**`
+for a closure stamp. **If you build a generated index, generate it — do not
+hand-maintain it.**
+
 ## NEW-PROBE-SCENE-TO-SANDCASTLE-DEMO-PIPELINE
 
 **Standing pipeline, opened 2026-08-07 (demo wave 1, maintainer-approved).** Every
@@ -8359,7 +8393,17 @@ Approach 1 is simpler and lower-risk.
 
 ---
 
-## Cross-cutting priority guide
+## Cross-cutting priority guide — ⚠ HISTORICAL (2026-04), DO NOT PRIORITISE FROM IT
+
+> **HISTORICAL — stamped 2026-08-09, handover audit FIX 35.** This guide was
+> last reconciled at **Batch 71 (2026-04-27)**, roughly 940 batches ago, and
+> its ranking reflects a fork that had not yet run Campaigns 9–18. Several of
+> the items it ranks have since landed or been re-owned by campaign rows. **It
+> is retained for the *reasoning* — why correctness outranks enablers, why
+> KHR extensions do not pair with anything — not for the ranking.** For current
+> priority use the campaign queues and, above them, maintainer rulings; the
+> precedence is: maintainer rulings, then queue rows, then
+> CLAUDE.md/`CAMPAIGN_STATE.md`, then this file.
 
 > **Update 2026-04-27 (Batch 71 reconciliation):** the prior version of this guide led with "C-R5-IMAGERY-16 is the single biggest visual-correctness gap remaining". That citation was lifted from `OVERSIGHT_AUDIT_2026_04_25.md` §2, which was written hours before Batch 58 closed C-R5-IMAGERY-16 (16-layer cap + 5 missing per-layer uniforms shipped — see [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md § C-R5](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md)). The audit's recommendation #2 was acted on; the doc trail just never reconciled the closure into this priority guide. C-R5 is no longer the lead item — the highest-impact open correctness work is now C-R8-TRANSLUCENT-MULTI-FRUSTUM.
 

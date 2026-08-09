@@ -6,13 +6,22 @@ into a new campaign 18"). Source of truth for every claim below:
 [VOXEL_POINTCLOUD_GSPLAT_AUDIT_2026-08-09.md](VOXEL_POINTCLOUD_GSPLAT_AUDIT_2026-08-09.md)
 (parity audit + adoption survey) and
 [REFERENCE_VISUALS_CATALOG_2026-08-09.md](REFERENCE_VISUALS_CATALOG_2026-08-09.md)
-(license-vetted external references). Update this ledger at every completion,
-pause, block, or deferral.
+(license-vetted external references). Update this ledger at every **dispatch**,
+completion, pause, block, or deferral. *("dispatch" added 2026-08-09, handover
+audit FIX 34 — without it, in-flight work is invisible to a successor: the
+ledger had no IN FLIGHT state at all while a `C18-V2` investigation was
+running.)*
 
 **Campaign numbering is ratified add-only.** C18 takes the next free number.
 **Campaign 17 (Celestial Light Transport) remains PROPOSED and NOT LAUNCHED**
-— it holds the C17 identity by ruling R-2026-08-10-7 ("CLT epic renumbers to
-proposed C17") and its plan is
+— it holds the C17 identity by ruling `R-2026-08-10-7` ("CLT epic renumbers to
+proposed C17") — **the `R-2026-08-10-x` ruling set lives in
+[MAINTAINER_RULINGS_2026-08-10.md](MAINTAINER_RULINGS_2026-08-10.md), which is
+the authority for every such citation in this document** *(pointer added
+2026-08-09, handover audit FIX 34 — the ids were cited with no file to resolve
+them against; note also that the `2026-08-10` label is a ruling-ID label, the
+commits are dated 2026-08-08, and evidence orders by BATCH NUMBER)* — and its
+plan is
 [CELESTIAL_LIGHT_TRANSPORT_PLAN_2026-08-07.md](CELESTIAL_LIGHT_TRANSPORT_PLAN_2026-08-07.md).
 C18 launching before C17 does not renumber, launch, or reorder C17 in either
 direction.
@@ -176,6 +185,25 @@ From the audit's §4 ranked payoff/cost list. All rows are additive
 parity ruling. Sizes and acceptance criteria below are the audit's own where
 the audit authored them.
 
+> **WAVE-A GATING — RECONCILED 2026-08-09 (handover audit FIX 34).** Three
+> statements in this document said different things about when Wave A may
+> start: §2's "**No Wave P or Wave A row starts before `C18-V1` lands**" (:71),
+> this section's "approvable without a parity ruling", and the execution order's
+> "start `C18-A1` and `C18-A2` **immediately**". They are reconciled as follows,
+> and this note is the precedence:
+>
+> 1. **The `C18-V1` prerequisite was real and is now DISCHARGED — `C18-V1`
+>    LANDED at Batch 1005 (`423ec649e1`).** The blanket "no Wave A row starts
+>    before V1" no longer gates anything.
+> 2. **"Approvable without a parity ruling" is about APPROVAL, not about
+>    SCHEDULING.** It means these rows need no maintainer parity call because
+>    they are additive or lossless — it never meant they need no instrument.
+> 3. **"Immediately" applies to `C18-A1` and `C18-A2` only**, because those two
+>    are self-contained. It does **not** generalise to the rest of Wave A, and
+>    even for `C18-A2` there is a coordination constraint the ledger already
+>    carries: **`C18-A2` and `C18-A6` consume `C11-100`'s output** and are marked
+>    "PENDING — coordinated with `C11-100`". Read §5 before dispatching either.
+
 | ID | Title | Scope | Acceptance (probe-verifiable) | Size | Deps |
 |---|---|---|---|---|---|
 | `C18-A1` | Continuous LOD (CLOD) keep-function for the point-cloud GPU LOD layer | Replace the 4-band decimation in `PointCloudLOD.wgsl` with a continuous `keep = hash(id) < f(dist)` keep-function, killing band-boundary popping. WebGL has no LOD layer at all, so this is purely additive WEBGPU-EXCEEDS work — parity-principle clean. | Camera-dolly probe asserting no kept-set discontinuity at the former band radii, plus a negative control that restores the bands and makes the discontinuity reappear. | S | — (self-contained; honours the `C16-10` sequencing rule) |
@@ -205,7 +233,7 @@ C18-S work borrows externally.
 
 | ID | Title | Scope | Acceptance (probe-verifiable) | Size | Deps |
 |---|---|---|---|---|---|
-| `C18-S0` | **DONE 2026-08-09** — dedicated license-verification pass over the gsplat ecosystem. **Result: 20 projects vetted; Mip-Splatting AND StopThePop both carry the Inria research-only licence byte-for-byte, so `C18-S2` is clean-room-from-paper MANDATORY; `C18-S1`/`C18-S4` need no external reference and `C18-S3` needs at most one (GPUSorting, MIT).** Full record: [`GSPLAT_REFERENCE_VETTING_2026-08-09.md`](GSPLAT_REFERENCE_VETTING_2026-08-09.md) | The reference catalog's honest §3 gap: **zero vetted gsplat candidates exist** — the whole ecosystem (antimatter15/splat, mkkellogg/GaussianSplats3D, PlayCanvas supersplat, and the Mip-Splatting / StochasticSplats research implementations) has never had its LICENSE files read verbatim by this fork. Run the L-xx determination process over it: fetch and read each LICENSE file verbatim (never a paraphrase — the L-24 lesson), record a numbered determination, and pre-register the survivors in this queue's §6 table. **No engine change.** | A determination row per candidate in `LICENSE_DETERMINATIONS_2026-08-10.md` with the licence text quoted from the fetched file, a USABLE / FILE-COPYLEFT / STUDY-ONLY / UNKNOWN verdict, and the §6 table below updated from △ to ✔ (or the reference struck). A row that stays UNKNOWN blocks derivation from that project, full stop. | S | — (not gated by `C15-G8`) |
+| `C18-S0` | **DONE 2026-08-09** — dedicated license-verification pass over the gsplat ecosystem. **Result: 20 projects vetted; Mip-Splatting AND StopThePop both carry the Inria research-only licence byte-for-byte, so `C18-S2` is clean-room-from-paper MANDATORY; `C18-S1`/`C18-S4` need no external reference and `C18-S3` needs at most one (GPUSorting, MIT).** Full record: [`GSPLAT_REFERENCE_VETTING_2026-08-09.md`](GSPLAT_REFERENCE_VETTING_2026-08-09.md). ⚠ **ACCEPTANCE DEVIATION, RECORDED NOT PAPERED OVER** *(stamped 2026-08-09, handover audit FIX 34 — as written this row was DONE while failing its own acceptance cell, which is the shape of a fabricated close even when the work is real).* The acceptance cell (right) requires "a determination row per candidate **in `LICENSE_DETERMINATIONS_2026-08-10.md`**". **That did not happen and was a conscious call:** the 20 verdicts live in the dedicated `GSPLAT_REFERENCE_VETTING_2026-08-09.md` instead, because `LICENSE_DETERMINATIONS_2026-08-10.md` is the **C16 shipped-notice** ledger (what must appear in `LICENSE.md`/`ThirdParty.json` for code the fork ACTUALLY SHIPS) and none of these 20 projects is shipped — they are candidate references. **Every substantive requirement IS met**: licence text quoted from the fetched file (never paraphrased — the L-24 lesson), a USABLE / FILE-COPYLEFT / STUDY-ONLY / UNKNOWN verdict per project, and the §6 table updated. **The binding rule survives the venue change: an UNKNOWN verdict blocks derivation from that project, full stop.** If the maintainer wants one ledger, the fix is to mint L-xx rows pointing at the vetting doc — a docs task, not a re-run. | The reference catalog's honest §3 gap: **zero vetted gsplat candidates exist** — the whole ecosystem (antimatter15/splat, mkkellogg/GaussianSplats3D, PlayCanvas supersplat, and the Mip-Splatting / StochasticSplats research implementations) has never had its LICENSE files read verbatim by this fork. Run the L-xx determination process over it: fetch and read each LICENSE file verbatim (never a paraphrase — the L-24 lesson), record a numbered determination, and pre-register the survivors in this queue's §6 table. **No engine change.** | A determination row per candidate in `LICENSE_DETERMINATIONS_2026-08-10.md` with the licence text quoted from the fetched file, a USABLE / FILE-COPYLEFT / STUDY-ONLY / UNKNOWN verdict, and the §6 table below updated from △ to ✔ (or the reference struck). A row that stays UNKNOWN blocks derivation from that project, full stop. | S | — (not gated by `C15-G8`) |
 | `C18-S1` | SH distance-band truncation | Evaluate spherical harmonics at degree 1 far / degree 3 near through the **backend-neutral `applySphericalHarmonicsBudget` seam** — the `C15-G5` option-(a) precedent, where both backends degrade together by construction. Cuts the tower asset's 8.6M-word SH buffer traffic and VS ALU at globe zoom-out. Quality-preserving at the near band; a distance-graded budget, not a feature removal. | Parity-harness near/far azimuth legs identical cross-backend, plus byte-identical-off. | S | `C15-G8`, `C18-S0` |
 | `C18-S2` | Mip-Splatting opt-in (both backends) | Both backends currently ship vanilla +0.3 dilation with no compensation, which aliases and over-brightens distant splats — the globe-critical splat quality item, since a geospatial camera spends most of its time far from the asset. Shader-only, portable across GLSL and WGSL, **default-off**. | Cross-backend parity with the feature ON at both gate assets, plus off-gate byte-identical on both backends. | S-M | `C15-G8`, `C18-S0` |
 | `C18-S3` | GPU radix sort for splats | Removes sort-staleness popping during fast slews (the current throttle is ~0.5° / 1 m / 3 frames). Subgroups now ship and are already auto-requested. WebGPU-side performance path; WebGL keeps the shared worker sort — the orders converge, so there is no visual divergence. **Discharges the `WEBGPU_MIGRATION_BACKLOG.md` §11 "Gaussian Splat sort — radix sort on GPU" item** (near line 799), which `C15-G4` named as an explicit non-goal until now (`QUEUE_2026-08-02_CAMPAIGN15.md` §6d) — cross-reference both, do not re-file. | Frozen-camera index byte-equivalence versus the worker sort, **plus interleaved A/B timing in one run** — do not repeat the `C15-G4` count-for-timing substitution. | M | `C15-G8`, `C18-S0` |
@@ -316,7 +344,7 @@ gated); LiDAR-surfel rendering through the splat renderer (M, post-G8).
 | ID | Wave | Size | Status |
 |---|---|---|---|
 | `C18-V1` | V | S | **DONE** — 15 probes fixed, not 3 (see the row); fleet-wide anchor + scanner-blindness fix landed; spec 32 → 47 tests |
-| `C18-V2` | V | S | **READY-PENDING-RUN — 2026-08-09.** Three scenes + one shared generator + the `expectedMismatch` mechanism are in the tree and spec-covered (policy spec 10 -> 16). The Edge run, the baseline captures and the per-scene non-vacuity mutations are the orchestrator's and have NOT executed; the row is not DONE until they have |
+| `C18-V2` | V | S | ★ **IN FLIGHT — diagnosis dispatched and LANDED at Batch 1013; the row does NOT close on it.** *(State added 2026-08-09, handover audit FIX 34 — the ledger had no IN FLIGHT vocabulary, so an active dispatch was invisible.)* **First scene run stamped at Batch 1011:** gsplat clean at **0.41%**; the point-cloud **tint DID NOT MANIFEST** — the pre-registered expectation was UNMET *in the surprising direction* — and the voxel scene reached structural at readiness. **The investigation that surprise triggered landed at Batch 1013 and its verdict is that the point-cloud tint is WebGPU NON-DETERMINISM** (1 of 4 captures; WebGL invariant; the "metric blindness" hypothesis REFUTED by replay at 3.2–3.5% vs 2.0%), plus a separate engine-parity defect FILED: **`VoxelPrimitive.ready` is a WebGL-only signal.** Scene readiness fixed; policy spec 17/17. **NEXT: the certifying Edge run of all three scenes on a build carrying the readiness fix.** ~~READY-PENDING-RUN — 2026-08-09.~~ Three scenes + one shared generator + the `expectedMismatch` mechanism are in the tree and spec-covered (policy spec 10 -> 16). The Edge run, the baseline captures and the per-scene non-vacuity mutations are the orchestrator's and have NOT executed; the row is not DONE until they have |
 | `C18-V3` | V | S | PENDING |
 | `C18-P1` | P | M | PENDING |
 | `C18-P2` | P | M | PENDING |

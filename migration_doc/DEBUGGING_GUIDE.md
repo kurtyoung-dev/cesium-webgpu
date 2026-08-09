@@ -277,7 +277,16 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 
 ## Probe inventory (`Tools/visual-regression/`)
 
-260+ scripts (curated table below — not exhaustive; many are finer-grained bisection variants of the documented gates). Use this table to find an existing probe before writing a new one — most "I need to test X" cases have a template.
+**The count is CENSUS-DERIVED, not typed by hand** *(corrected 2026-08-09, handover audit FIX 36 — this line read "260+" against a disk reality more than twice that, which invited a successor to conclude the fleet was small enough to read).* Re-derive it, never copy it:
+
+```bash
+ls Tools/visual-regression/probe-*.mjs | wc -l          # 624 at tip 161d99950b
+node --test Tools/visual-regression/probe-fleet-contract.spec.mjs
+```
+
+`probe-fleet-contract.spec.mjs` is the fleet's structural authority — it enumerates every probe and enforces the fleet-wide rules (verdict-vs-exit-code agreement, watchdog presence, no allowlisting of structural rules). **If you want to know what the fleet contains or whether a rule holds across it, run that spec; do not trust a prose count anywhere in this guide.**
+
+The curated table below is **not exhaustive** — many probes are finer-grained bisection variants of the documented gates. Use it to find an existing probe before writing a new one; most "I need to test X" cases have a template.
 
 > **PROBE_BASE gotcha:** most probes default to `http://localhost:8080`, but `probe-collections-regression.mjs` and `probe-pick-basic.mjs` default `PROBE_BASE` to `:8134`. Against the standard dev server, run them with `PROBE_BASE=http://localhost:8080` or they fail on connection, not on rendering (this bit the 2026-07-03 campaign audit sweep — both pass at `:8080`).
 
@@ -1051,6 +1060,22 @@ These probes shipped during the 2026-07-23 → 2026-08-06 window and were never 
 | [probe-cloud-reconstruction-consume.mjs](../Tools/visual-regression/probe-cloud-reconstruction-consume.mjs) | Specific subsystems (clouds) | C13-10 Edge acceptance legs B/C/D — the march-EMITTED depth and its first consumer. **Leg B** flips `CesiumDebug.cloudReconstruction(true)` in the march-active window and requires `requested`/`emitted`/`consumed` true with `producerTargets` **measured at 3 in the attachments-only state and 2 under consume, in ONE page** (the counter that proves ownership of the depth slot moved), `liveBytes` unchanged at `w*h*24`, and the cloud pass topology unchanged. **Leg C** rides a resize (monotonic generation, `liveBytes` tracking size, `consumed` back inside a bounded window) and a low→high→low tier flip (the full-resolution tier produces nothing — the documented residual); **device loss is out of scope by design** and is covered as a unit in `cloud-reconstruction-attachments.spec.mjs` B3/B4. **Leg D (`--perf`)** is the interleaved A/B cost lane under the mandatory C13-39 protocol: N iterations of one attachments-only and one consume-on window with the ORDER alternating, `ProceduralClouds half-res pass` and `CloudReconstructionAttachments pass` reported separately (plus the resolve, and the upscale as a drift control), per-arm medians and PAIRED per-iteration deltas. **No pass/fail bar on timing or on the visual delta on the first run** — the diffs and PNGs are recorded for reading; an adapter without timestamp support is STRUCTURAL by name, never a zeroed table. A run without `--perf` exits 3 and says Leg D did not run. Its structure is pinned by `cloud-reconstruction-consume-probe.spec.mjs`. |
 
 > **Correction to the `probe-vector-draping.mjs` note earlier in this section (added 2026-08-07).** That note ends "gate B now fails in the OPPOSITE direction on a pre-existing WebGL-side extent (`NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT`, LOW)". **That is superseded — gate B PASSED at Batch 842** after the Batch-841 rebuild: both backends measure the identical nadir bbox `[451,19,584,747]` (delta **0**), counts 22396 vs 22397, gates A/C/D/E all PASS. `NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT` is RESOLVED; **gate F (non-regression, STRUCTURAL pending a pre-change cross-build baseline) is the only leg still owed.** The note's closing rule is UNCHANGED and still binding: **the bbox predicate is symmetric and must NOT be flipped to a one-sided test** — it was never loosened, and it is what measured every step of 199 → 103 → 0.
+
+### Load-bearing instruments missing from the tables above (added 2026-08-09, handover audit FIX 36)
+
+These five carry campaign acceptance and were absent from this guide entirely — a successor hunting for "the instrument that certifies X" would have concluded none existed and written a rival probe.
+
+| Instrument | What it certifies |
+| --- | --- |
+| [probe-ground-fog.mjs](../Tools/visual-regression/probe-ground-fog.mjs) | The ground-fog arm — the fog band's presence and extent on both backends. Its acceptance is still owed to the machine lane; pair it with `ground-fog-band.spec.mjs` below, which is the offline half. |
+| [probe-timedynamic-pointcloud-load.mjs](../Tools/visual-regression/probe-timedynamic-pointcloud-load.mjs) | Time-dynamic point-cloud loading — the streaming/keyframe path that no other probe exercises. |
+| [sun-radiance-delta.spec.mjs](../Tools/visual-regression/sun-radiance-delta.spec.mjs) | `C12-19`'s delta lane — the NO-EXCESS check on live captures whose second run (Batch 994, `0697b93a5b`) discharged the Edge-delta obligation open since Batch 947. |
+| [webgpu-sun-bloom-mirror.spec.mjs](../Tools/visual-regression/webgpu-sun-bloom-mirror.spec.mjs) | `C12-34`'s mirror — the WebGPU bright-pass bloom pinned to the shipped WebGL text (both shader bodies executed as JavaScript and required to agree to 1e-15, naga on both WGSL files, off-is-off, two mutants). |
+| [ground-fog-band.spec.mjs](../Tools/visual-regression/ground-fog-band.spec.mjs) | The ground-fog band's offline contract. ⚠ Also the file where `C16-07`'s widened anchor sweep found **two live spec anchors into comment text**, one of them an `indexOf` used as a block locator — read it before rewriting comments in the fog path. |
+
+### Instrument doctrine
+
+The verification and instrument rules earned on 2026-07-25 and 2026-08-08 — same-task capture, canvas-element PNGs, pinned clocks, helpers inside `page.evaluate`, interleaved A/B for GPU timing, reference-disagreement = STRUCTURAL, and the WebGPU-canvas capture rule (Playwright element screenshots ONLY; in-page `drawImage` reads transparent even in the same task) — are banked in **[ORCHESTRATION_HANDBOOK.md](ORCHESTRATION_HANDBOOK.md) §7 (Verification and instrument doctrine)**. That is the authority; this guide covers tools and procedures, the handbook covers method. Read it before building any new probe.
 
 ---
 
