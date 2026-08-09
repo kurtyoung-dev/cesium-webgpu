@@ -20,7 +20,11 @@
 //     inside an embedded shader or a user-facing message is always caught;
 //   - build pragmas (`//>>includeStart`, `//>>ifdef`), linter/type directives
 //     and `/*!` license banners RETAINED, because deleting one of those is a
-//     behavioural or legal change that merely looks like a comment edit;
+//     behavioural or legal change that merely looks like a comment edit.
+//     Retention is decided by comment SHAPE as well as leading token — see
+//     `lib/comment-scanner.mjs` — because a retained comment is also a frozen
+//     one, and freezing every prose line that happens to begin with the word
+//     "global" makes the gate an obstacle to the rewrites it exists to check;
 //   - every other whitespace run collapsed to a single newline if it contained
 //     a line break, otherwise to a single space.
 //
@@ -45,16 +49,23 @@
 //   0  every checked file is comment-only
 //   1  at least one file's code changed, was added, removed or renamed
 //   2  the tool itself failed (bad ref, git unavailable, unreadable file)
-//   3  STRUCTURAL: nothing was compared. An empty file set is not a pass —
-//      it is the gate reporting that it could not see its subject, which is
-//      exactly how a rewrite batch would accidentally certify itself.
+//   3  STRUCTURAL: nothing was compared, or the semantic-comment rules stopped
+//      matching their own directives. An empty file set is not a pass — it is
+//      the gate reporting that it could not see its subject, which is exactly
+//      how a rewrite batch would accidentally certify itself — and a rule
+//      table that no longer recognises `//>>includeStart` would report a
+//      green comparison over a deleted build pragma.
 
 import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { canonicalizeCode, languageForPath } from "./lib/comment-scanner.mjs";
+import {
+  canonicalizeCode,
+  languageForPath,
+  selfTestSemanticRules,
+} from "./lib/comment-scanner.mjs";
 import { SCOPE_ROOTS } from "./comment-marker-guard.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -248,6 +259,20 @@ function changedFiles(base, head, paths) {
  */
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+
+  // Negative control first. The canonical form's whole protective claim is
+  // that a deleted pragma, directive or license banner survives the strip and
+  // shows up as a code change. A rule table that had drifted out of agreement
+  // with its own examples would keep reporting comment-only over exactly the
+  // deletions this gate exists to catch, so refuse to compare anything until
+  // the table has proved it still recognises them.
+  const brokenRules = selfTestSemanticRules();
+  if (brokenRules.length > 0) {
+    console.error(
+      `comment-only-diff: STRUCTURAL — semantic-comment rules no longer match their own examples:\n  ${brokenRules.join("\n  ")}`,
+    );
+    return 3;
+  }
 
   git(["rev-parse", "--verify", `${options.base}^{commit}`]);
   if (options.head !== null) {

@@ -22,8 +22,11 @@ import { fileURLToPath } from "node:url";
 
 import { compareSources, runComparison } from "./comment-only-diff.mjs";
 import {
+  SEMANTIC_COMMENT_RULES,
   canonicalizeCode,
+  classifySemanticComment,
   extractComments,
+  selfTestSemanticRules,
   tokenize,
 } from "./lib/comment-scanner.mjs";
 import { collectScopeFiles } from "./comment-marker-guard.mjs";
@@ -319,6 +322,302 @@ export function f(a) {}
     `// The parameter is part of the callback contract.\n${directive}`,
     SUBJECT,
     "prose beside a directive stays editable",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Mutant 4b — the OTHER direction of the same rule. Retaining a directive
+// protects it, and protection is immobility: a comment the canonical form
+// keeps cannot be reworded without the gate calling it a code change. So the
+// rule that decides "this is a directive" has two failure modes, not one, and
+// the tests below pin both. Under-matching drops a real pragma; over-matching
+// freezes a sentence, and a frozen sentence is an obstacle handed to the very
+// rewrite this gate is supposed to be checking.
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap a comment in a trivial file, and the same file with the comment gone.
+ *
+ * @param {string} comment Comment text, delimiters included.
+ * @returns {{withComment: string, without: string}} The pair.
+ */
+function fileAround(comment) {
+  return {
+    withComment: `${comment}\nexport const value = 1;\n`,
+    without: "export const value = 1;\n",
+  };
+}
+
+test("the semantic-comment rule table passes its own negative control", () => {
+  assert.deepEqual(
+    selfTestSemanticRules(),
+    [],
+    "a rule that stopped matching its own directive would unprotect it silently",
+  );
+  assert.ok(
+    SEMANTIC_COMMENT_RULES.length > 5,
+    "an emptied rule table would pass every test above by protecting nothing",
+  );
+  // Each rule must carry a real example, or its self-test proves nothing.
+  for (const rule of SEMANTIC_COMMENT_RULES) {
+    assert.ok(
+      rule.examples.length > 0,
+      `${rule.id} declares no directive example`,
+    );
+  }
+});
+
+test("every directive shape in the tree is STILL protected end to end", () => {
+  // Table-driven over the real rule set rather than a hand-picked sample: a
+  // rule added later without a directive example fails the test above, and one
+  // added with an example it cannot actually protect fails here.
+  for (const rule of SEMANTIC_COMMENT_RULES) {
+    for (const example of rule.examples) {
+      const { withComment, without } = fileAround(example);
+      assertCodeDiffers(
+        withComment,
+        without,
+        SUBJECT,
+        `deleting ${JSON.stringify(example)} must be caught (rule ${rule.id})`,
+      );
+    }
+  }
+});
+
+test("prose that merely begins with a directive word is EDITABLE", () => {
+  for (const rule of SEMANTIC_COMMENT_RULES) {
+    for (const counter of rule.counterExamples) {
+      assert.equal(
+        classifySemanticComment(counter),
+        null,
+        `${JSON.stringify(counter)} is prose, not a ${rule.id} directive`,
+      );
+      const { withComment } = fileAround(counter);
+      assertCommentOnly(
+        withComment,
+        fileAround("// Rewritten during the shard.").withComment,
+        SUBJECT,
+        `prose beginning with a ${rule.id} word must stay rewritable`,
+      );
+    }
+  }
+});
+
+test("a sentence wrapped onto a line beginning `global` is EDITABLE", () => {
+  // Verbatim from `Scene/Weather/WeatherTexPacker.ts`. The rewrite shard that
+  // covered that file left this line alone — not by choice: the gate read
+  // "global field this is the identity" as an ESLint globals declaration and
+  // reported any rewording of it as a code change.
+  const before = `    // Then place that texel inside the field's own window. For a
+    // global field this is the identity, so the expression below is still the
+    // plain \`((ty + 0.5) / texH) * (gh - 1)\`.
+    const fv = weatherFieldV(texelV, bounds);
+`;
+  const after = `    // Places the texel inside the field's own window. A global field makes
+    // that window the whole texture, so the expression reduces to the plain
+    // \`((ty + 0.5) / texH) * (gh - 1)\`.
+    const fv = weatherFieldV(texelV, bounds);
+`;
+  assertCommentOnly(
+    before,
+    after,
+    "packages/engine/Source/Scene/Weather/WeatherTexPacker.ts",
+    "a wrapped sentence is not an ESLint globals declaration",
+  );
+
+  // The declaration ESLint actually reads is the block form, and it is still
+  // protected. This pair is the whole rule in two lines: same leading word,
+  // opposite verdicts, and nothing but the comment's shape separates them.
+  assertCodeDiffers(
+    "/* global CESIUM_BASE_URL */\nexport const value = 1;\n",
+    "export const value = 1;\n",
+    SUBJECT,
+    "`/* global ... */` declares a global to ESLint and must not vanish",
+  );
+});
+
+test("a sentence wrapped onto a line beginning `!` is EDITABLE", () => {
+  // Verbatim from `Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`: a boolean
+  // expression quoted across a line break, whose continuation line opens on
+  // the negation operator. `/^!/` was meant for the `/*!` banner convention,
+  // which is a property of the opening delimiter — so applied per `//` line it
+  // matched only prose, in every occurrence in this repository.
+  const before = `      // WebGL truncates the draw count to \`mesh.indexCountWithoutSkirts\`
+      // when \`showSkirts = tileProvider.showSkirts && !cameraUnderground &&
+      // !translucent\` is false, because skirt indices sit at the tail of the
+      // index buffer.
+      drawSkirts(command);
+`;
+  const after = `      // Skirt indices sit at the tail of the index buffer, so WebGL drops the
+      // skirt walls by truncating the draw count rather than by culling.
+      drawSkirts(command);
+`;
+  assertCommentOnly(
+    before,
+    after,
+    SUBJECT,
+    "a negated expression quoted in prose is not a license banner",
+  );
+
+  // GLSL and WGSL reach the same predicate through a different tokenizer, and
+  // the shader trees hold their own share of these lines.
+  assertCommentOnly(
+    "// !gl_FrontFacing misbehaves on some drivers.\nbool f() { return true; }\n",
+    "// Some drivers evaluate the negation inconsistently.\nbool f() { return true; }\n",
+    "packages/engine/Source/Shaders/SubjectFS.glsl",
+    "the shader grammars share the predicate",
+  );
+
+  // The banner the rule is actually for is still caught.
+  assertCodeDiffers(
+    "/*! Copyright (c) 2008 Some Author. MIT licensed. */\nexport const value = 1;\n",
+    "export const value = 1;\n",
+    SUBJECT,
+    "`/*!` is the banner convention and must survive",
+  );
+});
+
+test("prose beginning `eslint` is EDITABLE; the directive is not", () => {
+  const prose =
+    "// eslint has no WGSL grammar, so the guard is a Node script instead.\n";
+  assertCommentOnly(
+    `${prose}export const value = 1;\n`,
+    "// The guard is a Node script; no linter covers WGSL.\nexport const value = 1;\n",
+    SUBJECT,
+    "naming the linter is not configuring it",
+  );
+
+  // ESLint honours `// eslint-disable-next-line` in line form, so — unlike
+  // `global` — the line shape cannot be the discriminator here. The closed
+  // directive vocabulary is.
+  assertCodeDiffers(
+    "// eslint-disable-next-line no-console\nconsole.log(1);\n",
+    "console.log(1);\n",
+    SUBJECT,
+    "a line-form eslint-disable really does change what the linter reports",
+  );
+});
+
+test("MUTATION: without the shape rule, the wrapped `global` line refreezes", async () => {
+  // The tests above show the prose is editable. They do not show WHY, and a
+  // predicate that had simply stopped protecting everything would pass them
+  // all. Remove the shape check from a copy of the scanner and require the
+  // misclassification to come back.
+  const scannerPath = fileURLToPath(
+    new URL("./lib/comment-scanner.mjs", import.meta.url),
+  );
+  // The working tree is CRLF and the anchors below are written LF, so fold the
+  // terminators before matching. Nothing else about the source is touched.
+  const original = (await fs.readFile(scannerPath, "utf8")).replace(
+    /\r\n/g,
+    "\n",
+  );
+  const guard = `if (rule.shape !== "any" && rule.shape !== shape) {
+      continue;
+    }`;
+  assert.ok(
+    original.includes(guard),
+    "the shape guard moved; this mutation no longer tests anything",
+  );
+  const mutated = original.replace(guard, "");
+  assert.notEqual(mutated, original);
+
+  // The module imports nothing, so a data URL is enough to load the mutant
+  // without writing a second copy into the tree.
+  const mutant = await import(
+    `data:text/javascript;base64,${Buffer.from(mutated, "utf8").toString("base64")}`
+  );
+
+  const proseLine = "// global barrier pass.";
+  assert.equal(
+    classifySemanticComment(proseLine),
+    null,
+    "control: the real scanner treats this as prose",
+  );
+  assert.equal(
+    mutant.classifySemanticComment(proseLine),
+    "eslint-globals",
+    "the shape check is what releases the wrapped sentence",
+  );
+  assert.equal(
+    mutant.classifySemanticComment("/* global CESIUM_BASE_URL */"),
+    "eslint-globals",
+    "the mutant still protects the real directive — only the shape test is gone",
+  );
+});
+
+test("MUTATION: without the delimiter rule, the wrapped `!` line refreezes", async () => {
+  const scannerPath = fileURLToPath(
+    new URL("./lib/comment-scanner.mjs", import.meta.url),
+  );
+  const original = (await fs.readFile(scannerPath, "utf8")).replace(
+    /\r\n/g,
+    "\n",
+  );
+  const bannerRule = `    shape: "block",
+    raw: /^\\/\\*+!/,`;
+  assert.ok(
+    original.includes(bannerRule),
+    "the banner rule moved; this mutation no longer tests anything",
+  );
+  const mutated = original.replace(
+    bannerRule,
+    `    shape: "any",
+    body: /^!/,`,
+  );
+  assert.notEqual(mutated, original);
+
+  const mutant = await import(
+    `data:text/javascript;base64,${Buffer.from(mutated, "utf8").toString("base64")}`
+  );
+
+  const proseLine = "// !exitFromInside && !enterFromOutside";
+  assert.equal(
+    classifySemanticComment(proseLine),
+    null,
+    "control: the real scanner treats this as prose",
+  );
+  assert.equal(
+    mutant.classifySemanticComment(proseLine),
+    "license-banner",
+    "reading `!` from the body rather than the delimiter is what froze it",
+  );
+});
+
+test("no in-scope comment is classified semantic by prose alone", async () => {
+  // The real-corpus form of the same claim. Anything the canonical form keeps
+  // is a comment no rewrite shard may touch, so the set had better contain
+  // only genuine directives — and the cheapest way to be wrong is to hold a
+  // line comment whose leading word is ordinary English.
+  const files = await collectScopeFiles();
+  const frozenProse = [];
+  for (const relPath of files) {
+    const source = await fs.readFile(path.join(ROOT, relPath), "utf8");
+    const language = relPath.endsWith(".wgsl")
+      ? "wgsl"
+      : relPath.endsWith(".glsl")
+        ? "glsl"
+        : "js";
+    for (const comment of extractComments(source, language)) {
+      if (!comment.semantic || comment.block) {
+        continue;
+      }
+      const body = comment.text.replace(/^\/\/\s*/, "");
+      // Every line-form directive in this tree starts with one of these. A
+      // line comment held for any other reason is prose that got frozen.
+      if (
+        !/^(>>|eslint-(disable|enable|env)\b|@ts-(check|nocheck|ignore|expect-error)\b|prettier-ignore|(istanbul|c8|v8)\s+ignore\b)/.test(
+          body,
+        )
+      ) {
+        frozenProse.push(`${relPath}:${comment.line}  ${comment.text.trim()}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    frozenProse,
+    [],
+    "these comments are un-editable under the gate for no reason a tool honours",
   );
 });
 

@@ -32,6 +32,36 @@
 // change wearing a comment's clothes. The canonical form therefore RETAINS
 // them, so "I only touched comments" cannot be used to drop a debug pragma or
 // an attribution banner.
+//
+// ...WHICH MAKES "WHAT COUNTS AS A DIRECTIVE" A LOAD-BEARING QUESTION IN BOTH
+// DIRECTIONS. Retaining a directive protects it, and protection is the same
+// thing as immobility: a comment the canonical form keeps cannot be reworded,
+// because rewording it reports as a code change. Classifying by leading word
+// alone therefore freezes ordinary prose. `// global barrier pass.` is the
+// tail of a wrapped sentence, not an ESLint globals declaration, and the same
+// goes for a line that happens to wrap onto `// !translucent\` is false (...`.
+// Both read as directives under a bare `/^globals?\b/` or `/^!/` test, and
+// both then become permanently un-editable — which is how a rewrite worker
+// meets this file: not as a false alarm they can dismiss, but as a sentence
+// they are forbidden to finish.
+//
+// Classification is therefore by SHAPE as well as by token: each rule below
+// declares the comment forms the owning tool actually honours, and the ones
+// whose leading token is an English word are recognised only in the form that
+// tool reads. ESLint reads `/* global A, B */` and `/* globals A, B */` as
+// block comments only — `// global ...` is prose to ESLint, so it is prose
+// here. The `/*!` banner convention is likewise a property of the opening
+// delimiter, not of the first body character, so the rule matches the raw
+// text. `eslint` is narrowed to its closed directive vocabulary
+// (`eslint-disable` / `-enable` / `-env`, plus block-form inline rule
+// config), so a sentence that merely begins by naming the linter stays
+// editable while `// eslint-disable-next-line no-console` — which ESLint
+// really does obey in line form — stays protected.
+//
+// Every rule carries its own examples and counter-examples, and
+// `selfTestSemanticRules` runs them. A rule table that stopped matching its
+// own directives would quietly unprotect them while still reporting a green
+// gate, so callers check it before they trust a comparison.
 
 /** Extensions this scanner is willing to reason about, mapped to a grammar. */
 const EXTENSION_LANGUAGE = new Map([
@@ -59,29 +89,181 @@ const LINE_BREAK_CHARS = Object.freeze(["\n", "\r", "\u2028", "\u2029"]);
 
 /**
  * Comments whose presence changes build output, tool behaviour, or legal
- * notice. The canonical form keeps these, so removing one is a code change.
+ * notice. The canonical form keeps these, so removing one is a code change —
+ * and, as the header says, so is rewording one.
  *
- * Matched against the comment text with leading `/`, `*` and whitespace
- * already stripped.
+ * Each rule declares:
+ *   - `id`       a stable name, reported by `classifySemanticComment`;
+ *   - `shape`    `"line"` for `//`, `"block"` for `/* *\/`, `"any"` for both.
+ *                This is the field that keeps prose editable: it is set to
+ *                the form the owning tool actually reads, so a directive word
+ *                appearing in the OTHER form is treated as the ordinary
+ *                English it almost always is;
+ *   - `body`     tested against the comment body (delimiters, JSDoc asterisks
+ *                and surrounding whitespace removed), or
+ *   - `raw`      tested against the untouched comment text, for conventions
+ *                that live in the delimiter itself;
+ *   - `examples` / `counterExamples`  the rule's own negative control, run by
+ *                `selfTestSemanticRules`. Counter-examples are drawn from real
+ *                comments in this repository wherever one exists.
+ *
+ * Order matters only for the reported id: the first matching rule names the
+ * result, and every example below is written to match exactly one rule.
  */
-const SEMANTIC_COMMENT_PATTERNS = Object.freeze([
-  // Cesium build pragmas + the fork's WGSL `//>>ifdef` preprocessor.
-  /^>>/,
-  // Linter / formatter / type-checker directives.
-  /^eslint\b/,
-  /^eslint-/,
-  /^globals?\b/,
-  /^prettier-ignore\b/,
-  /^@ts-/,
-  /^istanbul\s+ignore\b/,
-  /^c8\s+ignore\b/,
-  /^v8\s+ignore\b/,
-  /^jshint\b/,
-  /^jslint\b/,
-  // Attribution that must survive a "comment-only" rewrite.
-  /^@license\b/,
-  /^@preserve\b/,
-  /^!/,
+export const SEMANTIC_COMMENT_RULES = Object.freeze([
+  {
+    // Cesium's debug-strip pragmas and the fork's WGSL preprocessor. `>>`
+    // cannot begin an English sentence, so no shape restriction is needed.
+    id: "build-pragma",
+    shape: "any",
+    body: /^>>/,
+    examples: [
+      "//>>includeStart('debug', pragmas.debug);",
+      '//>>includeEnd("debug");',
+      "//>>ifdef LOG_DEPTH",
+      "//>>else",
+      "//>>endif",
+    ],
+    counterExamples: [],
+  },
+  {
+    // ESLint honours these in line form as well as block form, so both are
+    // protected. The vocabulary is closed, which is what separates the
+    // directive from a sentence that merely names the linter.
+    id: "eslint-toggle",
+    shape: "any",
+    body: /^eslint-(disable|enable|env)\b/,
+    examples: [
+      "// eslint-disable-next-line no-console",
+      "// eslint-disable-next-line @typescript-eslint/no-explicit-any",
+      "// eslint-disable-line",
+      "//eslint-disable-next-line no-self-assign",
+      "/* eslint-disable new-cap */",
+      "/*eslint-disable guard-for-in*/",
+      "/*eslint-enable guard-for-in*/",
+      "/* eslint-disable-next-line prefer-const */",
+    ],
+    counterExamples: [
+      "// eslint has no WGSL or GLSL grammar, so the guard is a Node script.",
+      "// eslint-style rule ids key the banned-vocabulary table.",
+    ],
+  },
+  {
+    // Inline rule configuration — `/* eslint quotes: ["error", "double"] */`.
+    // ESLint reads this in block form only.
+    id: "eslint-inline-config",
+    shape: "block",
+    body: /^eslint\s+[\w@$/-]+\s*:/,
+    examples: ['/* eslint quotes: ["error", "double"] */'],
+    counterExamples: [
+      '// eslint quotes: ["error", "double"] is set in the root config.',
+    ],
+  },
+  {
+    // `/* global A, B */`, `/* globals A, B */`, `/* exported name */`. ESLint
+    // reads all three in block form ONLY; the line form is prose, and prose
+    // beginning with the word "global" is common enough in this repository
+    // that the counter-examples below are quoted from it verbatim.
+    id: "eslint-globals",
+    shape: "block",
+    body: /^(globals?|exported)\b/,
+    examples: [
+      "/* global CESIUM_VERSION */",
+      "/*global CESIUM_BASE_URL,define,require*/",
+      "/* globals window, document */",
+      "/* exported handler */",
+    ],
+    counterExamples: [
+      "// global-scale views and is what the ground-primitive vertex shader",
+      "// global field this is the identity, so the expression below is still the",
+      "// global barrier pass.",
+    ],
+  },
+  {
+    // Pre-ESLint linter configuration. Both tools read block comments only.
+    id: "legacy-linter-config",
+    shape: "block",
+    body: /^(jshint|jslint)\b/,
+    examples: ["/*jshint esversion: 6 */", "/* jslint node: true */"],
+    counterExamples: ["// jshint and jslint were retired upstream long ago."],
+  },
+  {
+    // Prettier's suppression is the WHOLE comment in every form it takes, so
+    // this rule can require exactly that and leave every sentence about the
+    // formatter editable.
+    id: "prettier-ignore",
+    shape: "any",
+    body: /^prettier-ignore(-(start|end|attribute))?$/,
+    examples: [
+      "// prettier-ignore",
+      "//prettier-ignore",
+      "/* prettier-ignore */",
+    ],
+    counterExamples: [
+      "// prettier-ignore is deliberately absent: the table reflows cleanly.",
+    ],
+  },
+  {
+    // TypeScript's four suppression comments. `@ts-expect-error` and
+    // `@ts-ignore` carry a free-text explanation after the token, so this is a
+    // prefix rule; the closed vocabulary keeps `@ts-`-prefixed prose editable.
+    id: "typescript-directive",
+    shape: "any",
+    body: /^@ts-(check|nocheck|ignore|expect-error)\b/,
+    examples: [
+      "// @ts-check",
+      "// @ts-expect-error Missing types.",
+      "// @ts-nocheck",
+      "/* @ts-ignore */",
+    ],
+    counterExamples: [
+      "// @ts-migrate annotations from the codemod have all been removed.",
+      "// @typescript-eslint rules are configured at the repository root.",
+    ],
+  },
+  {
+    // Coverage-tool suppressions. istanbul, c8 and v8 all read both forms.
+    id: "coverage-ignore",
+    shape: "any",
+    body: /^(istanbul|c8|v8)\s+ignore\b/,
+    examples: [
+      "/* istanbul ignore next */",
+      "// c8 ignore next 3",
+      "/* v8 ignore start */",
+    ],
+    counterExamples: [
+      "// c8 and v8 spell their suppressions almost, but not quite, alike.",
+    ],
+  },
+  {
+    // Attribution that must survive a "comment-only" rewrite. Both tags are
+    // JSDoc-shaped and appear in block comments; minifiers read them there.
+    id: "license-tag",
+    shape: "block",
+    body: /^@(license|preserve)\b/,
+    examples: [
+      "/**\n * @license\n * Copyright (c) 2014 Some Author\n */",
+      "/* @preserve build banner */",
+    ],
+    counterExamples: [
+      "// @license and @preserve are the two tags minifiers honour.",
+    ],
+  },
+  {
+    // The `/*!` banner convention. It is a property of the OPENING DELIMITER,
+    // so the rule reads the raw text: a body that merely starts with `!` is
+    // almost always a negated expression quoted in prose, and three of the
+    // counter-examples below are exactly that, quoted from this repository.
+    id: "license-banner",
+    shape: "block",
+    raw: /^\/\*+!/,
+    examples: ["/*! Copyright (c) 2008 Some Author. MIT licensed. */"],
+    counterExamples: [
+      "// !gl_FrontFacing doesn't work as expected on Mac/Intel so use the more verbose form instead.",
+      "// !translucent` is false (GlobeSurfaceTileProviderRendering.js:1395-1396,",
+      "// !exitFromInside && !enterFromOutside",
+    ],
+  },
 ]);
 
 /**
@@ -104,19 +286,97 @@ export function languageForPath(filePath) {
 }
 
 /**
+ * A comment's text with its delimiters, JSDoc asterisks and surrounding
+ * whitespace removed.
+ *
+ * @param {string} rawText Comment text including its delimiters.
+ * @returns {string} The body a `body` rule is matched against.
+ */
+function commentBody(rawText) {
+  return rawText
+    .replace(/^\/\*+/, "")
+    .replace(/\*+\/$/, "")
+    .replace(/^\/\//, "")
+    .replace(/^[\s*]+/, "")
+    .replace(/\s+$/, "");
+}
+
+/**
+ * Which semantic rule a comment matches, if any.
+ *
+ * The comment's SHAPE is read from its opening delimiter and checked against
+ * the rule's declared shape before the pattern runs. That check is the whole
+ * fix for prose misclassification: `/* global A *\/` is an ESLint declaration
+ * and `// global barrier pass.` is the end of a wrapped sentence, and nothing
+ * about their leading words tells them apart — only the form does.
+ *
+ * @param {string} rawText Comment text including its delimiters.
+ * @returns {string|null} The matching rule's id, or null when the comment is
+ *   ordinary prose.
+ */
+export function classifySemanticComment(rawText) {
+  const raw = String(rawText);
+  const shape = raw.startsWith("/*") ? "block" : "line";
+  const body = commentBody(raw);
+  for (const rule of SEMANTIC_COMMENT_RULES) {
+    if (rule.shape !== "any" && rule.shape !== shape) {
+      continue;
+    }
+    if (rule.raw !== undefined) {
+      if (rule.raw.test(raw)) {
+        return rule.id;
+      }
+      continue;
+    }
+    if (rule.body.test(body)) {
+      return rule.id;
+    }
+  }
+  return null;
+}
+
+/**
  * Whether a comment carries build, tool, or legal meaning.
  *
  * @param {string} rawText Comment text including its delimiters.
  * @returns {boolean} True when the comment must survive canonicalization.
  */
 export function isSemanticComment(rawText) {
-  const body = rawText
-    .replace(/^\/\*+/, "")
-    .replace(/\*+\/$/, "")
-    .replace(/^\/\//, "")
-    .replace(/^[\s*]+/, "");
-  const head = body.slice(0, 64);
-  return SEMANTIC_COMMENT_PATTERNS.some((pattern) => pattern.test(head));
+  return classifySemanticComment(rawText) !== null;
+}
+
+/**
+ * Negative control for the rule table.
+ *
+ * A rule that stopped matching its own directives would unprotect them while
+ * the gate still reported green — the exact failure a comment-only claim is
+ * supposed to be unable to hide behind. A rule that started matching its own
+ * counter-examples would re-freeze the prose this table exists to release.
+ * Callers run this before trusting a comparison.
+ *
+ * @returns {string[]} One message per broken expectation; empty when healthy.
+ */
+export function selfTestSemanticRules() {
+  const broken = [];
+  for (const rule of SEMANTIC_COMMENT_RULES) {
+    for (const example of rule.examples) {
+      const got = classifySemanticComment(example);
+      if (got !== rule.id) {
+        broken.push(
+          `${rule.id}: directive classified as ${got ?? "prose"} — ${JSON.stringify(example)}`,
+        );
+      }
+    }
+    for (const counter of rule.counterExamples) {
+      const got = classifySemanticComment(counter);
+      if (got !== null) {
+        broken.push(
+          `${rule.id}: prose classified as ${got} — ${JSON.stringify(counter)}`,
+        );
+      }
+    }
+  }
+  return broken;
 }
 
 /** Characters after which a `/` starts a regular-expression literal. */
