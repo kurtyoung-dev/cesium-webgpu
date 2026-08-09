@@ -483,6 +483,48 @@ test("the three subsystem scenes are self-sufficient and deterministic", () => {
   }
 });
 
+test("no subsystem scene waits on a readiness flag one backend never sets", () => {
+  const setupSource = readFileSync(
+    path.join(HERE, "scenes", "subsystem-parity-setup.js"),
+    "utf8",
+  );
+
+  // `VoxelPrimitive.ready` is permanently false on WebGPU: `update` dispatches
+  // to the VOXEL_PRIMITIVE feature renderer and returns before the
+  // `frameState.afterRender` hook that only the legacy branch runs, and nothing
+  // under Renderer/WebGPU sets the flag. Waiting on it across both viewers can
+  // never hold, and the first run of `voxel-box-procedural` burned its whole
+  // 45 s budget proving it. The budget did its job; the signal was the bug.
+  //
+  // This is a structural anchor, not a style rule: a readiness predicate that
+  // one backend cannot satisfy turns an honest throw into a permanent red, and
+  // the next person to reach for `.ready` here gets caught at `node --test`
+  // instead of 45 seconds into a browser run.
+  assert.doesNotMatch(
+    setupSource,
+    /\.ready === true/,
+    "subsystem setup must not gate readiness on `.ready`, which VoxelPrimitive never sets on WebGPU",
+  );
+
+  // The replacement must still be REAL evidence on both backends: a root tile
+  // served through this file's own provider (both traversals go through
+  // `provider.requestData`) plus frames rendered after that delivery.
+  assert.match(
+    setupSource,
+    /onTileDelivered\(\)/,
+    "the voxel scene must count root-tile deliveries as its backend-neutral readiness signal",
+  );
+  assert.match(
+    setupSource,
+    /VOXEL_FRAMES_AFTER_DATA/,
+    "tile delivery alone does not prove the data reached the GPU; post-delivery frames must be required",
+  );
+  // And the budget must still THROW — an empty frame on both backends is a
+  // cross-backend PASS, so a scene that gives up quietly certifies nothing.
+  assert.match(setupSource, /function requireReady\(/);
+  assert.match(setupSource, /throw new Error\(/);
+});
+
 test("--update alone cannot authorize baseline promotion", () => {
   const denied = validatePromotionRequest({ update: true });
   assert.equal(denied.authorized, false);

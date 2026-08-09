@@ -71,6 +71,13 @@ if (viewers.length === 0) {
  */
 const VOXEL_READY_BUDGET_MS = 45_000;
 const POINT_CLOUD_READY_BUDGET_MS = 60_000;
+/**
+ * Frames each viewer must render AFTER its root tile is delivered before the
+ * voxel scene is scored. Tile delivery proves the traversal consumed the
+ * provider; it does not prove the data reached the GPU, and the WebGPU leg
+ * still has a megatexture upload and a cold ray-march pipeline compile to do.
+ */
+const VOXEL_FRAMES_AFTER_DATA = 30;
 const SPLAT_CONTENT_BUDGET_MS = 60_000;
 const SPLAT_DATA_BUDGET_MS = 60_000;
 const SPLAT_SORT_QUIESCE_BUDGET_MS = 20_000;
@@ -221,8 +228,11 @@ const EARTH_RADIUS = Cesium.Ellipsoid.WGS84.maximumRadius;
  * traversal plus megatexture, so a multi-level volume would score that known
  * traversal gap instead of the shared BOX-shape ray-march this scene exists to
  * watch.
+ *
+ * `onTileDelivered` is the scene's backend-neutral readiness signal; see
+ * `setUpVoxelScene` for why the primitive's own `ready` flag cannot be used.
  */
-function createProceduralBoxProvider(dimension) {
+function createProceduralBoxProvider(dimension, onTileDelivered) {
   const dimensions = new Cesium.Cartesian3(dimension, dimension, dimension);
   const scratchColor = new Cesium.Color();
   return {
@@ -264,6 +274,9 @@ function createProceduralBoxProvider(dimension) {
         data[index + 2] = color.blue;
         data[index + 3] = 1.0;
       }
+      // Counted only on the served level — the rejection above is a normal
+      // part of traversal and is not evidence that anything loaded.
+      onTileDelivered();
       return Promise.resolve(Cesium.VoxelContent.fromMetadataArray([data]));
     },
   };
@@ -281,15 +294,50 @@ const VOXEL_CAMERA_POSITION = new Cesium.Cartesian3(
   EARTH_RADIUS * 4.0,
 );
 
+/**
+ * WHY THIS DOES NOT WAIT ON `VoxelPrimitive.ready`.
+ *
+ * It cannot: `ready` is permanently `false` on WebGPU, and that is an engine
+ * defect rather than a harness preference. `VoxelPrimitive.update` resolves
+ * the VOXEL_PRIMITIVE feature renderer first and, when one exists, calls
+ * `fr.update(...)` and RETURNS — before reaching the
+ * `frameState.afterRender.push(() => (this._ready = true))` that only the
+ * legacy branch below it runs. Nothing under `Renderer/WebGPU/` sets the flag
+ * either. A predicate spanning both viewers therefore can never hold, which is
+ * exactly the 45 s timeout the first run of this scene threw: the budget was
+ * working, the signal it waited on was unreachable on one backend.
+ *
+ * What replaces it is evidence BOTH backends must produce. The provider above
+ * is owned by this file, and both traversals fetch through
+ * `provider.requestData` (`VoxelTraversal.js` on WebGL,
+ * `WebGPUVoxelDataUpload.ts` on WebGPU), so a served root tile proves the
+ * primitive is traversing and has consumed its data on either backend. Because
+ * delivery does not prove the tile reached the GPU, each viewer must then
+ * render `VOXEL_FRAMES_AFTER_DATA` further frames — that is what covers the
+ * megatexture upload and the cold ray-march pipeline compile. The budget still
+ * THROWS when it expires, so a scene that never builds its subject still fails
+ * loudly instead of certifying parity on two empty frames.
+ */
 async function setUpVoxelScene(sceneName, dimension) {
-  const primitives = viewers.map((viewer) => {
+  const deliveredTiles = viewers.map(() => 0);
+  const renderedFrames = viewers.map(() => 0);
+  const framesAtDelivery = viewers.map(() => null);
+
+  viewers.forEach((viewer, index) => {
     const primitive = new Cesium.VoxelPrimitive({
-      provider: createProceduralBoxProvider(dimension),
+      provider: createProceduralBoxProvider(dimension, () => {
+        deliveredTiles[index]++;
+      }),
     });
     primitive.nearestSampling = true;
     viewer.scene.primitives.add(own(primitive, sceneName));
-    return primitive;
   });
+
+  const stopCounting = viewers.map((viewer, index) =>
+    viewer.scene.postRender.addEventListener(() => {
+      renderedFrames[index]++;
+    }),
+  );
 
   const direction = Cesium.Cartesian3.normalize(
     Cesium.Cartesian3.negate(VOXEL_CAMERA_POSITION, new Cesium.Cartesian3()),
@@ -302,14 +350,35 @@ async function setUpVoxelScene(sceneName, dimension) {
     });
   }
 
-  requireReady(
-    await waitUntil(
-      () => primitives.every((primitive) => primitive.ready === true),
+  try {
+    requireReady(
+      await waitUntil(() => {
+        for (let index = 0; index < viewers.length; index++) {
+          if (deliveredTiles[index] === 0) {
+            return false;
+          }
+          // Latch the frame number the tile arrived on, so the post-delivery
+          // frames are counted from delivery rather than from scene start.
+          if (framesAtDelivery[index] === null) {
+            framesAtDelivery[index] = renderedFrames[index];
+          }
+          if (
+            renderedFrames[index] - framesAtDelivery[index] <
+            VOXEL_FRAMES_AFTER_DATA
+          ) {
+            return false;
+          }
+        }
+        return true;
+      }, VOXEL_READY_BUDGET_MS),
+      "voxel root tile delivery plus post-delivery frames",
       VOXEL_READY_BUDGET_MS,
-    ),
-    "voxel primitive",
-    VOXEL_READY_BUDGET_MS,
-  );
+    );
+  } finally {
+    for (const stop of stopCounting) {
+      stop();
+    }
+  }
   await settle(SETTLE_AFTER_READY_MS);
 }
 
