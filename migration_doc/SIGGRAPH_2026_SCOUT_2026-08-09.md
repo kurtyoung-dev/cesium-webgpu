@@ -1,0 +1,71 @@
+# SIGGRAPH 2026 Scout — Real-Time Techniques Usable by the Fork (2026-08-09)
+
+**Provenance:** maintainer side-quest 2026-08-09 ("did anything exciting that we could use come out
+of siggraph 2026?"). Executed by an 18-agent web workflow (`wf_63456ccf-fcb`): 5 topic-cluster
+sweeps (incl. co-located HPG 2026), 12 venue+license verifications with literal LICENSE
+transcription, 1 synthesis grounded in the campaign docs. Re-sweep recommended ~2026-09 (empty
+session placeholders remained on the papers list at sweep time).
+
+---
+
+MAINTAINER PACKET — SIGGRAPH 2026 SWEEP (compiled 2026-08-09; verified against live conference artifacts + fork campaign docs)
+
+## 1. HEADLINE
+
+Not a thin year — but the value is concentrated in **splats and volumes**, not our classical lanes. Five usable items:
+
+1. **Gaussian Point Splatting (TU Delft, BSD-3-Clause, code released)** — sort-free stochastic splat rendering, 425M splats interactive. The only license-clean transformative splat result of the year; a direct alternative lineage for the C18 "sort-free spike" watch item.
+2. **RaDe-GS closed-form splat depth/normals (HKUST, TOG journal-track)** — the depth-compositing keystone for splats-vs-terrain z-testing and pickPosition. Code is Inria-poisoned; math is clean-roomable and maps onto `C15-G7`'s problem space.
+3. **Advanced Real-Time Volume Graphics course (Zellmann/Sahistan/Wald) — Apache-2.0 sample code**, same license as the fork. The right technique foundation (DDA traversal, space skipping) for the weather-data-ingest roadmap and `C18-A2`/`C18-A6` voxel-march work.
+4. **Gabor Fields (USI Lugano, TOG, MIT — lineage verified clean)** — kernel-mixture volumes with LOD-by-frequency-pruning and ~100x compression; a genuine research direction for planet-scale cloud/weather volume streaming.
+5. **Smolder (IO Interactive, Advances course; slides published)** — a shipped production recipe for exactly C13's unification thesis: one volumetric framework composing correctly with every scene layer. Clean-room from slides.
+
+**Load-bearing negative results (verified, not assumed):** NO successor to Hillaire-2020 sky model → **Track D (CLT-D6..D8) plan stands as-is**; NO ocean-spectrum or real-time water paper → **C14 plan stands**; NO shadow-mapping/VSM and NO OIT papers this year. Caveat: Ke-Sen's sig2026 list still has empty session placeholders ("Shading, Relighting and Volumes", two fluids sections) — re-sweep in ~4 weeks.
+
+## 2. TABLE — VERIFIED HITS
+
+| Title | Authors (principal) | Technique | Maps onto | Feasibility | Code/License (as declared) |
+|---|---|---|---|---|---|
+| Gaussian Point Splatting (TOG/SIGGRAPH 2026) | Joris Rijsdijk, TU Delft | Sort-free stochastic splatting: pixel-sized opaque points + 64-bit atomic depth test; no global sort, no tile blending | C18 §7 watch item "StochasticSplats sort-free spike" — this is the license-clean candidate; post-`C15-G8` | FEASIBLE with one adaptation: WGSL has no 64-bit atomics → packed-u32 atomicMax or two-pass depth-then-resolve (same shape as `C18-A5`'s u32 form) | **BSD-3-Clause** (LICENSE transcribed; independent impl, replaces Inria rasterizer — no NC lineage). Caveat: unaudited vendored `/packages` |
+| RaDe-GS: Rasterizing Depth in Gaussian Splatting (TOG 45, SIGGRAPH 2026 journal-track presentation) | Baowen Zhang, HKUST | Closed-form per-Gaussian depth+normal inside the rasterizer, ~zero overhead | `C15-G7` (classification depth) problem space; splat-vs-globe z-composite + pickPosition; new candidate row post-G8 | FEASIBLE — closed-form math drops into WGSL splat FS | Code = **Inria/MPII non-commercial (the trap)** — STUDY-ONLY; clean-room from arXiv 2406.01467 |
+| Advanced Real-Time Volume Graphics (SIGGRAPH 2026 Course) | Zellmann (Cologne), Sahistan (Utah SCI), Wald (NVIDIA) | Full state-of-the-art DVR course: structured/unstructured volumes, traversal, space-skipping, LoD; 20MB notes + sample framework | WEATHER_DATA_INGEST_ROADMAP (real GRIB2/EDR volume rendering); background for `C18-A2` empty-space skip + `C18-A6` residency feedback | HIGH for techniques (WGSL-portable, no neural); LOW for code reuse (CUDA/OptiX/NanoVDB) | Samples **Apache-2.0** (LICENSE transcribed, unmodified) — license-identical to the fork; safe as math reference |
+| Gabor Fields (TOG 45(4) Art. 62) | Jorge Condor, USI Lugano | Anisotropic Gabor-kernel volume mixtures; continuous LoD = pruning by frequency band; ~100x compression vs voxels | New candidate — cloud/weather volume LOD + compression research seed (C13 successor territory); composes conceptually with the gsplat lane | MEDIUM — representation is shader-simple, but reference renderer is offline (Mitsuba/CUDA); real-time path is ours to build | **MIT** (LICENSE.md transcribed, USI, zero deviations); deps BSD-3 — clean lineage throughout |
+| Smolder — Real-Time Volumetric Effects in Glacier (Advances course, Part II) | Alexander Mueller, IO Interactive | One unified scalable volumetrics framework (clouds+fog+FX) composing correctly with all lighting + all layers (opaque/transparent/fog) | C13 close-out sanity reference + the C13/C14/Track-D compositing contract; production validation of the unification thesis | HIGH — froxel/raymarch family, no RT, no neural; port cost is the compositing contract | **No code, no license** — proprietary Glacier; slides (PPTX+PDF) published; clean-room only |
+| A LoD of Gaussians (SIGGRAPH 2026 Conf. Papers) | Felix Windisch, TU Graz | Out-of-core hierarchical LOD for ultra-large 3DGS: seamless hierarchy, disk→GPU streaming, render-time LOD cuts | "3D Tiles for splats" — currently OUTSIDE scope by recorded non-goal (C15 §6d: no splat LOD/streaming beyond WebGL parity). New candidate for a future campaign | FEASIBLE runtime half (LOD cut + async streaming ≈ HTTP range requests); training half offline | Code released but **Inria/TUW non-commercial** (LICENSE.md transcribed) — STUDY-ONLY; clean-room from paper (arXiv 2507.01110) |
+| Object-Space Contrast Sensitivity for Hierarchical 3DGS (SIGGRAPH 2026 Conf. Papers) | Naoto Yoshii, Inst. of Science Tokyo | Analytic Fourier/projection-slice frequency estimate per splat-hierarchy node → perceptual LOD selection without rasterizing | Pairs with the above: the principled "which LOD cut" answer, replacing SSE heuristics; same future splat-LOD candidate | FEASIBLE — offline precompute + runtime scalar comparisons, essentially free | **No code**; paper gold OA **CC BY** — clean-room safe |
+| SHARP-GS (SIGGRAPH 2026 Conf. Papers) | JunRan Ding, ShanghaiTech | Resolution-aware adaptive binning + sub-tile culling + Morton layout + forward differencing; 2.55x at 8K | Post-G8 WGSL splat-rasterizer performance ideas (adjacent to `C18-S3` lane, not a current row) | FEASIBLE — purely algorithmic, no RT/tensor cores | **Dual non-commercial** (Inria lineage + CC BY-NC 4.0 additions; LICENSE.md transcribed) — STUDY-ONLY |
+| Environmental Volumetric Neural Shading of Clouds (**HPG 2026** — companion venue, runs July 17-19 immediately before SIGGRAPH; flagged, not a SIGGRAPH paper) | Rikard Olajos, Lund | Neural cloud relighting in a raster pipeline: small MLP + per-pixel thickness + sky-illumination conditioning, ~3.7 ms, no per-frame marching | Hero-cloud relighting adjacent to C13; the sky-illumination conditioning is the interesting piece for a continuously-moving sun | MEDIUM — small-MLP fits the fork's stated budget; per-asset offline training limits it to hero clouds | Paper **CC BY 4.0**; code **none declared** (full text Cloudflare-walled — availability stmt unverified). Lineage = NVIDIA Relightable Neural Assets: don't port NVIDIA samples |
+| Ghost ReSTIR (SIGGRAPH 2026 Posters, Art. 86) | Song Zhang, Utah (+ NVIDIA: Lin, Kettunen, Wyman) | ReSTIR reservoirs extended into participating media via ghost vertices in null-scattering space | Watch-only signal for future volumetric light-transport denoising (god rays, cloud self-shadow) | LOW-MEDIUM — poster-stage, 3-page abstract; fork has no ReSTIR substrate | **No code**; abstract CC BY 4.0; prototype is Falcor 8 + HW RT |
+| GauSmoke (SIGGRAPH 2026 Conf. Papers) | Wenran Zhang, Nankai/Nanjing (Bo Ren corresp.) | Physics-constrained dynamic 3DGS reconstruction of smoke from sparse video | Marginal: a capture route producing splat volumes the C15-G lane could already render | Rendering side HIGH (it's splats); reconstruction offline, out of engine scope | **No code**; paper CC BY 4.0. ("Also demoed" at E-Tech = UNVERIFIED) |
+| Mobile3DGS³ (SIGGRAPH 2026 Conf. Papers) | Fan Gao, USTC (Ligang Liu) | Gradient-aware reduced-resolution rendering + frame interpolation to hit mobile frame rates | Concept-level fit for WebGPU's real deployment surface (integrated GPUs); no current row | FEASIBLE in concept (resolution scheduling + reprojection are backend-agnostic); specific heuristic unread (no preprint) | Repo has **no top-level license** (all-rights-reserved) + vendored Inria submodules — STUDY-ONLY |
+
+## 3. NOT USABLE BUT WORTH KNOWING (deliberately excluded)
+
+- **ReSTIR family main-track papers** (ReSTCV, LoD-ReSTIR, Multi-Layer Reservoir Splatting — NVIDIA/Utah/Tsinghua): RT-pipeline-centric; harvestable machinery someday, no substrate in the fork today.
+- **Generalizable Light Transport 3D Embedding (UCSD/NVIDIA)**: transformer-scale GI — fails the no-large-neural filter.
+- **Memory-efficient BVH / opacity-micromap / massive-foliage path tracing**: RT-core/hardware-architecture work.
+- **LoD-of-Gaussians + SHARP-GS + RaDe-GS code releases**: all confirmed Inria-non-commercial lineage (LICENSE files read verbatim) — the year's clearest demonstration of the Inria trap; papers usable, repos radioactive.
+- **Fluid/terrain simulation block** (ST-FLIP, LBM-MPM sand-water, VEM fluids): offline-scale; terrain-generation papers (InfiniteDiffusion, Stochastic Geomorphological Transport) are authoring-side, not engine-side.
+- **AllSky learned HDRI sky (arXiv, not SIGGRAPH)**: no real-time claim.
+- **HPG 2026 Keynote 1 was Patrick Cozzi + Sean Lilley (Cesium), "Complex Models, Simple Solutions"** — worth watching for ecosystem direction; not a technique.
+
+## 4. RECOMMENDATIONS
+
+**Pre-register NOW (plan-doc edits, no engine work):**
+1. **Gaussian Point Splatting → C18 §6 reference table** (BSD-3, ✔-grade at intake). Upgrade the §7 watch item "StochasticSplats sort-free spike" to name this as the primary candidate — it delivers the same sort-free outcome with a clean license, where StochasticSplats was never vetted. Non-goal check: this does **not** overturn the recorded "single-pass 64-bit-atomic Schuetz rasterization" non-goal — WGSL still lacks 64-bit atomics — but it makes the two-pass/packed-u32 variant strictly more attractive by removing the sort AND the tile-blend. Post-`C15-G8`, per the standing Wave-S gate.
+2. **RaDe-GS (paper-math only, STUDY-ONLY row) → C18 §6**, annotated to `C15-G7`/depth-composite. Per C18 §6's own rule, no Wave-S-adjacent work may borrow from an unregistered reference — register it before anyone needs it. Do NOT register the repo.
+3. **Advanced RT Volume Graphics course (Apache-2.0) → weather-ingest roadmap reference list.** Zero license friction; cite the course notes as the technique authority for the eventual GRIB2/EDR volume renderer.
+
+**Watch — no row now:**
+- **Gabor Fields**: revisit if/when a cloud-volume streaming/LOD campaign is scoped (post-C13-close); MIT code makes it the safest research seed in the volume space.
+- **Smolder**: pull the published slides into the C13 close-out reading list; no row — C13 is ratified clouds-only and in close-out.
+- **LoD-of-Gaussians + Tokyo contrast-sensitivity LOD (as a pair)**: this is the planet-scale splat streaming stack, but splat LOD/streaming is a **recorded C15 §6d non-goal** ("beyond WebGL parity"). These papers justify a *future* campaign, not a silent scope change — flag at the next splat-track intake.
+- **Lund neural cloud relighting**: re-check for a code release; per-asset training caps it at hero clouds regardless.
+- **Ghost ReSTIR, Mobile3DGS³, SHARP-GS ideas, GauSmoke**: signal-level only.
+
+**Non-goals status:** nothing at SIGGRAPH 2026 challenges the ray-traced-3DGS or 4DGS non-goals — both stand. The one recorded non-goal under genuine pressure is C15 §6d's "no splat LOD/streaming" (two strong papers this year); recommend an explicit maintainer re-affirm-or-reopen at C18 Wave-S activation rather than letting it erode.
+
+**Negative-result actions:** none needed — the absence of sky-model, ocean, shadow, and OIT papers means Track D, C14, and the C11 OIT lane proceed on their existing recorded plans with no new competition to evaluate.
+
+---
+UNVERIFIED APPENDIX (found in sweep, venue/details NOT confirmed — do not cite as SIGGRAPH 2026 without verification): Hybrid Gaussian Wang Tiles; Learning View-Dependent Splatting Kernels; Stochastic Geomorphological Transport (TOG, HM; LGPL-3.0 companion `soillib` — copyleft flag); Tube Maps SPH boundaries (code "soon"); Physics-Inspired Procedural Texturing of Deformable Surfaces (real-time, WGSL-attractive — fixes flow-map distortion; license UNKNOWN); InfiniteDiffusion terrain (MIT-declared); Pixels2Peaks; ST-FLIP (HM); LBM-MPM air-water-sand (Desbrun/Inria — license flag); SJTU "Real-Time Interactive Hybrid Ocean" wave-particle/FFT (arXiv 2511.02852, venue UNKNOWN — the closest thing to a C14 W3 companion this year, watch for venue); Generalized SH Products via Spherical Grids (would feed the SH-L2 IBL lane — HIGH interest if confirmed); LightOpt; ReSTCV (BSD-3 NVIDIA lineage declared); LoD-ReSTIR; Multi-Layer Reservoir Splatting; Neural Six-way Lightmaps (venue provisional); Adapting Quality Metrics to Tone Mapping (probe-side HDR parity scoring — Mantiuk group); HPG warp-level culling for 3DGS blending (HPG Best Paper — WGSL-subgroups-portable, output-identical; verify license before Wave-S intake); gCDT GPU constrained Delaunay (repo 404 today — would GPU-ify polygon triangulation); Warnock vector graphics (mesh-shader-bound); implicit strand software rasterization (best compute-raster template seen); Fast Exact Winding Numbers; ParaGram GPU 3D Voronoi (**Apache-2.0 declared, Zenseact** — the license-clean standout of the unverified set).
