@@ -705,6 +705,23 @@ the 0.95R signal, discOnlyRatio 0.568 > the 0.5 ceiling before any halo);
 (2) the bloom-mirror decision on the filed MEDIUM row. Four runs, four
 pre-registrations, the last one exact.
 
+### 2026-08-08 C12-19 DELTA PROBE SECOND RUN (Batch 994) — **PASS, exit 0 on both backends. The Edge-delta obligation open since Batch 947 is DISCHARGED.**
+
+Re-run with the B993 glow-corrected model: every scored criterion green
+on both backends — the disc display codes match the bands derived from
+the shipped model (bake + composite + screen halo + bright-pass glow +
+tonemap + quantum), and the radiance-excess arm resolved to ONE shape:
+**NO-EXCESS** (recovered/resolved 0.988–1.001 per backend). The first
+run’s NEITHER verdict, the +30% rider, the flat-reading differential
+and the x=0 anomaly were all the same two instrument terms — the
+threshold-gated sun-bloom glow and the zero-dither 8-bit quantum — now
+modelled with closed-form derivations and mutation coverage. The x=1
+samples remain non-certifying by the derivation’s own rule and say so
+in the report. Open follow-ups riding elsewhere: the trueSizeRatio
+edge-ramp residual (+0.32–0.48%, reported not scored) and the
+`LIMB_DISC_RADIANCE_RECOVERY_TOLERANCE` re-derivation against
+`solarBloomCentreAmplitude` (noted on the closed DEFERRED_WORK rider).
+
 ### 2026-08-08 C12-19 DELTA PROBE FIRST RUN (Batch 992) — exit 1 on BOTH backends identically; the radiance-excess shape is NEITHER pure multiplicative NOR pure additive; D1 at x=0.95 reads low on both legs
 
 First run of `probe-sun-hdr-radiance.mjs` (built B991, corrected recipe:
