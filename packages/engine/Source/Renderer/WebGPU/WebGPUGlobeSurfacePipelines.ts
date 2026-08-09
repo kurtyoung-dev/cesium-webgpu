@@ -1,41 +1,25 @@
 /// <reference types="@webgpu/types" />
 /**
- * Pipeline-construction helpers extracted from `WebGPUGlobeSurfaceRenderer`.
+ * Pipeline construction and selection for the WebGPU globe surface.
  *
- * Batch 150 of the audit-recommended decomposition (sixth slice of the
- * GlobeSurface decomposition arc — see
- * `migration_doc/BATCH_145_PLAN_GLOBE_SURFACE_DECOMPOSITION.md`).
+ * Each helper takes the renderer as a {@link PipelineHost} instead of living on
+ * it, which is why the renderer declares `_pipelineCache`,
+ * `_debugFragmentPipelineCache` and `_centralPipelineCache` public:
  *
- * Moves the pipeline-creation cluster off the renderer class:
- *
- *   - `buildPipelineDescriptor(host, …)` — produces a cache-friendly
- *     `WebGPURenderPipelineDescriptor` for a given quantization /
- *     normals / blend / clip-distances / debug-fragment combination.
- *     The biggest single helper in this batch (~250 LOC).
- *   - `descriptorToGPU(d)` — pure conversion of our cache-friendly
- *     descriptor back into the WebGPU shape for the central-cache-less
- *     fallback path. Takes no host.
- *   - `resolveGlobePipelineEntry(host, entry)` — resolves a cache entry
- *     to its `GPURenderPipeline` via the central cache (async creation
- *     + cache-result memoization). Returns null while the pipeline is
- *     still resolving so the caller can skip the tile this frame.
+ *   - `buildPipelineDescriptor(host, …)` — a cache-friendly
+ *     `WebGPURenderPipelineDescriptor` for a given quantization / normals /
+ *     blend / clip-distances / debug-fragment combination.
+ *   - `descriptorToGPU(d)` — pure conversion of that descriptor back into the
+ *     WebGPU shape, for the path where no central cache is available.
+ *   - `resolveGlobePipelineEntry(host, entry)` — resolves a cache entry to its
+ *     `GPURenderPipeline` through the central cache, memoizing the result.
+ *     Returns null while creation is still in flight so the caller can skip
+ *     the tile this frame.
  *   - `selectPipeline(host, …)` — entry-based caching for the production
- *     pipeline. Used by `createTileCommands` for color, blend, and the
- *     C-R1-GLOBE-RENDERSTATE no-cull underground variant.
- *   - `selectDebugFragmentPipeline(host, mode, …)` — cold-path selector
- *     for the per-fragment debug variants (TRIANGULATION / LOD / NORMAL).
- *     Returns null when the device probe failed for the augmented module.
- *
- * The 3 outside callers (in `createTileCommands`) now invoke the helpers
- * directly with `this`. The wireframe module's call to
- * `host._resolveGlobePipelineEntry` was also updated to call this
- * module's `resolveGlobePipelineEntry` directly so the renderer no
- * longer needs to expose a `_resolveGlobePipelineEntry` method on the
- * host interface.
- *
- * The 3 host fields these helpers reach into (beyond shader-factory
- * inheritance) are flipped from `private` to `public` on the renderer:
- * `_pipelineCache`, `_debugFragmentPipelineCache`, `_centralPipelineCache`.
+ *     pipeline: color, blend, and the no-cull underground variant.
+ *   - `selectDebugFragmentPipeline(host, mode, …)` — cold-path selector for
+ *     the per-fragment debug variants (TRIANGULATION / LOD / NORMAL). Returns
+ *     null when the device rejects the augmented module.
  *
  * @module WebGPUGlobeSurfacePipelines
  */
@@ -67,25 +51,25 @@ import type {
 export interface PipelineHost extends ShaderFactoryHost {
   readonly _canvasFormat: GPUTextureFormat;
   /**
-   * NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick pipeline color-target
-   * format, mirrored from `context.pickPipelineFormat` by the renderer on
-   * every scene-format generation bump. Equals `_canvasFormat` in SDR;
-   * stays an 8-bit unorm when the scene target is float/HDR.
+   * The pick pipeline color-target format, mirrored from
+   * `context.pickPipelineFormat` by the renderer on every scene-format
+   * generation bump. Equals `_canvasFormat` in SDR; stays an 8-bit unorm when
+   * the scene target is float/HDR.
    */
   readonly _pickFormat?: GPUTextureFormat;
   readonly _pipelineLayout: GPUPipelineLayout | null;
   readonly _pipelineCache: Map<string, GlobePipelineEntry>;
   readonly _debugFragmentPipelineCache: Map<string, GlobePipelineEntry>;
   /**
-   * C2-25 ENV-SCENE-CAPTURE (Batch 446) — SEPARATE cache for the single-target
-   * scene-capture pipeline variants, keyed on
+   * Cache for the single-target scene-capture pipeline variants, keyed on
    * `faceFormat + captureDepthFormat + sampleCount=1 + CAPTURE_MODE`. It is
-   * INTENTIONALLY disjoint from `_pipelineCache` and is NEVER wiped by the
-   * on-screen `createTileCommands` `_scenePipelineFormatGeneration` reset — the
-   * capture format is fixed by the env cube (`rgba8unorm` / `rgba16float`), not
-   * the canvas, so a canvas-format / MSAA flip must not invalidate it, and a
-   * capture build must not bump the on-screen generation (which would force a
-   * full on-screen globe pipeline rebuild every frame capture is active).
+   * deliberately disjoint from `_pipelineCache` and is never wiped by the
+   * on-screen `createTileCommands` `_scenePipelineFormatGeneration` reset: the
+   * capture format is fixed by the env cube (`rgba8unorm` / `rgba16float`)
+   * rather than by the canvas, so a canvas-format or MSAA flip must not
+   * invalidate it, and a capture build must not bump the on-screen generation,
+   * which would force a full on-screen globe pipeline rebuild on every frame
+   * capture is active.
    */
   readonly _capturePipelineCache: Map<string, GlobePipelineEntry>;
   /**
@@ -95,43 +79,40 @@ export interface PipelineHost extends ShaderFactoryHost {
    */
   readonly _centralPipelineCache: WebGPURenderPipelineCache | null;
   /**
-   * Session 65 Batch 32 — MSAA sample count for the scene framebuffer.
-   * The renderer's outer code captures `context._msaaSamples` here so
-   * `buildPipelineDescriptor` can bake the matching `multisample.count`
-   * into each variant. Default 1 (single-sample, no MSAA) matches the
-   * pre-bridge behavior. Bumps with the bridge re-enable (Batch 21
-   * MSAA-FLEET work).
+   * MSAA sample count for the scene framebuffer. The renderer captures
+   * `context._msaaSamples` here so `buildPipelineDescriptor` can bake the
+   * matching `multisample.count` into each variant. Default 1 is
+   * single-sample, no MSAA.
    */
   readonly _sampleCount?: number;
   /**
    * Renderer-wide log-depth state, resolved by the renderer each frame from
    * `isWebGPULogDepthActive(context, frameState)` — the
-   * `_logDepthWriteEnabled` master switch AND `frameState.useLogDepth`
-   * (NEW-WEBGPU-GLOBE-USE-LOG-DEPTH). When true, the pipeline builds OR
-   * `ShaderDefine.LOG_DEPTH` into their defines (+ cache key) so the globe
-   * writes `@builtin(frag_depth)` log depth. False/undefined → the bit is 0 and
-   * the globe writes the rasterizer's hyperbolic NDC z, matching every sibling
-   * producer that shares the depth attachment.
+   * `_logDepthWriteEnabled` master switch and `frameState.useLogDepth`. When
+   * true, pipeline builds OR `ShaderDefine.LOG_DEPTH` into their defines and
+   * cache key so the globe writes `@builtin(frag_depth)` log depth. False or
+   * undefined leaves the bit clear and the globe writes the rasterizer's
+   * hyperbolic NDC z, matching every sibling producer that shares the depth
+   * attachment.
    */
   readonly _logDepthEnabled?: boolean;
   /**
-   * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet state,
-   * resolved from `isWebGPUPickLogDepthActive(context, frameState)`.
-   * `selectPickPipeline` ORs `LOG_DEPTH` from THIS flag (via the
-   * `logDepthOverride` arg to `buildPipelineDescriptor`) so the globe pick
-   * module gates on the pick switch, not the scene switch. False/undefined →
-   * the globe pick writes hyperbolic depth into the shared pick FBO.
+   * Pick-fleet log-depth state, resolved from
+   * `isWebGPUPickLogDepthActive(context, frameState)` and held separately from
+   * `_logDepthEnabled`. `selectPickPipeline` ORs `LOG_DEPTH` from this flag,
+   * through the `logDepthOverride` argument to `buildPipelineDescriptor`, so
+   * the globe pick module gates on the pick switch rather than the scene
+   * switch. False or undefined means the globe pick writes hyperbolic depth
+   * into the shared pick FBO.
    */
   readonly _pickLogDepthEnabled?: boolean;
 }
 
-// ─── Render Pipelines (lazily created per actual vertex stride) ───
-// C-R7-RENDERER-MIGRATION (Batch 75) — returns a cache-friendly
-// `WebGPURenderPipelineDescriptor`; the actual `GPURenderPipeline` is
-// materialized through `webgpuPipelineCache` so that two
-// GlobeSurfaceRenderer instances (split-screen, multi-viewer) sharing
-// the same descriptor share one pipeline. Naming preserved as a
-// private rename: `_createPipelineVariant` → `buildPipelineDescriptor`.
+// Pipelines are built lazily, one per actual vertex stride. This returns a
+// cache-friendly `WebGPURenderPipelineDescriptor`; the `GPURenderPipeline`
+// itself is materialized through `webgpuPipelineCache`, so two
+// GlobeSurfaceRenderer instances (split-screen, multi-viewer) sharing a
+// descriptor share one pipeline.
 export function buildPipelineDescriptor(
   host: PipelineHost,
   isQuantized: boolean,
@@ -143,63 +124,57 @@ export function buildPipelineDescriptor(
   useClipDistances: boolean = false,
   hasGeodeticSurfaceNormals: boolean = false,
   disableCulling: boolean = false,
-  // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — depth-only back-face
-  // pre-pass variant for translucent globe rendering.
+  // Depth-only back-face pre-pass variant for translucent globe rendering.
   depthOnlyBackFace: boolean = false,
-  // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 182) — translucent back-face
-  // variant. Sits between the depth-only pre-pass (Batch 177) and the
-  // standard translucent front-face command, completing the 3-pass
+  // Translucent back-face variant, dispatched between the depth-only back-face
+  // pre-pass and the translucent front-face command to complete the three-pass
   // technique. When `true`:
-  //   - cullMode: "front" (back faces only — blend FAR side first)
-  //   - blend: ALPHA (forced regardless of `isBlend` input)
-  //   - depthWriteEnabled: false (depth was already written by the
-  //     pre-pass; this pass tests against it but doesn't overwrite)
+  //   - cullMode: "front" (back faces only — blend the far side first)
+  //   - blend: ALPHA, forced regardless of the `isBlend` input
+  //   - depthWriteEnabled: false (the pre-pass already wrote depth; this pass
+  //     tests against it without overwriting)
   //   - colorWriteMask: 0xf (full color output)
   //
-  // The caller dispatches this AFTER the depth-only back-face pre-pass
-  // and BEFORE the translucent front-face command. The depth pre-pass
-  // populates depth with the back-face surface; this pass blends the
-  // back-face color over the cleared FB; the front-face command blends
-  // its color over the back-face contribution. Final composite: correct
-  // front-to-back ordering through the translucent planet instead of
-  // the unsorted single-pass alpha blend used pre-Batch-182.
+  // The depth pre-pass populates depth with the back-face surface, this pass
+  // blends the back-face color over the cleared framebuffer, and the front-face
+  // command blends over that. The three together composite front-to-back
+  // through the translucent planet, which a single unsorted alpha-blend pass
+  // cannot.
   translucentBackFace: boolean = false,
-  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — when set to a cube-face texture
-  // format, builds the SINGLE-color-target scene-capture variant: ORs
-  // `ShaderDefine.CAPTURE_MODE` into the defines (the production module then
-  // drops the G-buffer slot-1 `@location(1)` output), emits ONE color target
-  // (`{format: captureFaceFormat}`, no MRT slot-1), a no-stencil `depth24plus`
-  // depth target, and NO MSAA — matching the transient per-face capture render
-  // pass into `cache.faceViews[face]`. `undefined` (the default, every
-  // on-screen call site) is byte-identical to the pre-446 descriptor.
+  // When set to a cube-face texture format, builds the single-color-target
+  // scene-capture variant: ORs `ShaderDefine.CAPTURE_MODE` into the defines, so
+  // the production module drops the G-buffer slot-1 `@location(1)` output, and
+  // emits one color target (`{format: captureFaceFormat}`, no MRT slot-1), a
+  // no-stencil `depth24plus` depth target and no MSAA — matching the transient
+  // per-face capture render pass into `cache.faceViews[face]`. Left undefined
+  // by every on-screen call site.
   captureFaceFormat?: GPUTextureFormat,
-  // GLOBE-TRANSLUCENCY-ALPHA — depth-only FRONT-face pre-pass variant.
-  // Mirrors WebGL's DEPTH_ONLY_FRONT_FACE derived command
-  // (GlobeTranslucencyState.js getDepthOnlyFrontFaceRenderState): cull BACK
-  // faces (front faces only), colorWriteMask 0, depth-write enabled. Used
-  // when the globe is translucent with an OPAQUE back face (the default
-  // backFaceAlpha = 1): the color command switches to the depth-read-only
-  // ALPHA-blend variant, so this pre-pass is what keeps the scene depth
-  // populated with the near globe surface (sky/atmosphere gating, depth
-  // plane, later primitives, pickPosition all read it).
+  // Depth-only front-face pre-pass variant, mirroring WebGL's
+  // DEPTH_ONLY_FRONT_FACE derived command
+  // (GlobeTranslucencyState.js getDepthOnlyFrontFaceRenderState): cull back
+  // faces, colorWriteMask 0, depth-write enabled. Used when the globe is
+  // translucent with an opaque back face (the default backFaceAlpha = 1),
+  // where the color command switches to the depth-read-only ALPHA-blend
+  // variant — this pre-pass is what keeps the scene depth populated with the
+  // near globe surface, which sky/atmosphere gating, the depth plane, later
+  // primitives and pickPosition all read.
   depthOnlyFrontFace: boolean = false,
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — when defined, this replaces
-  // `host._logDepthEnabled` in the LOG_DEPTH define/module decision. The pick
-  // pipeline (selectPickPipeline) passes `host._pickLogDepthEnabled` so the
-  // globe pick module gates on the SEPARATE pick-fleet master switch. undefined
-  // (every color/other call site) is byte-identical to before.
+  // When defined, replaces `host._logDepthEnabled` in the LOG_DEPTH define and
+  // module decision. `selectPickPipeline` passes `host._pickLogDepthEnabled` so
+  // the globe pick module gates on the pick-fleet master switch; every other
+  // call site leaves this undefined.
   logDepthOverride?: boolean,
 ): WebGPURenderPipelineDescriptor {
   let vertexBuffers: GPUVertexBufferLayout[];
   let entryPoint: string;
 
-  // DP-H25 (Batch 19) — when the encoding includes geodetic surface
-  // normals they occupy the trailing 3 floats (12 bytes) of the stride
-  // and the shader's `GEODETIC_NORMAL` define (Batch 20) activates the
-  // `@location(2) geodeticSurfaceNormal` input + the exaggeration
-  // branch override. The entry-point NAMES are unqualified — the
-  // module compiled with `GEODETIC_NORMAL=on` contains the same entry
-  // point names, just with different struct membership.
+  // When the encoding includes geodetic surface normals they occupy the
+  // trailing 3 floats (12 bytes) of the stride, and the shader's
+  // `GEODETIC_NORMAL` define activates the `@location(2)
+  // geodeticSurfaceNormal` input plus the exaggeration branch override. The
+  // entry-point names are unqualified: the module compiled with
+  // `GEODETIC_NORMAL=on` carries the same entry-point names, only with
+  // different struct membership.
   if (isQuantized) {
     // BITS12 quantized: compressed0 layout depends on encoding flags.
     // Three cases (see TerrainEncoding.getAttributes:680-691):
@@ -226,8 +201,8 @@ export function buildPipelineDescriptor(
     }
     // Stride math: base compressed0 is 16 bytes (4 floats) or 12 bytes
     // (3 floats, neither-case). Add 4 more bytes for compressed1 when
-    // both webMercT and normals are present. DP-H25 appends 12 bytes
-    // for the geodetic normal at the end of stride.
+    // both webMercT and normals are present, and 12 more for the geodetic
+    // normal at the end of stride.
     const baseStride = hasWebMercatorT || hasNormals ? 16 : 12;
     const minStride =
       baseStride +
@@ -269,7 +244,7 @@ export function buildPipelineDescriptor(
     //   [6]:   webMercatorT              (if hasWebMercatorT)
     //   [6/7]: encodedNormal             (if hasVertexNormals, after webMercatorT if both)
     //
-    // We read all data after position as a single attribute at location 1:
+    // Everything after position is read as a single attribute at location 1:
     //   - No extras:           float32x2 (u, v)         → vertexMain
     //   - webMercT only:       float32x3 (u, v, mercT)  → vertexMainWebMerc
     //   - normals only:        float32x3 (u, v, normal)  → vertexMain
@@ -288,8 +263,8 @@ export function buildPipelineDescriptor(
       texCoordFormat = "float32x2";
       entryPoint = "vertexMain";
     }
-    // Base uncompressed stride is 24 bytes (pos4 + tex2). DP-H25 adds
-    // 12 more bytes when geodetic normals are present.
+    // Base uncompressed stride is 24 bytes (pos4 + tex2), plus 12 more when
+    // geodetic normals are present.
     const minUncompressedStride = 24 + (hasGeodeticSurfaceNormals ? 12 : 0);
     const actualStride = Math.max(strideBytes, minUncompressedStride);
     const attributes: GPUVertexAttribute[] = [
@@ -332,32 +307,30 @@ export function buildPipelineDescriptor(
       }
     : undefined;
 
-  // Batch 20 — resolve the correct production shader module for the
-  // active-defines set. DP-H25's geodetic-normal path flips the
-  // `GEODETIC_NORMAL` define; the cache hands back the preprocessed
-  // module. Augmented variants (debug fragment / clip distances)
-  // inherit the same define set so their base source stays consistent
-  // with the pipeline's vertex buffer layout. Batch 246 — the reduced-
-  // imagery bit rides along on default-limit devices so the module's
-  // group-1 declarations match the 1-slot pipeline layout.
   const isCapture = captureFaceFormat !== undefined;
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — the pick pipeline overrides the log state
-  // with the SEPARATE pick-fleet master switch; every other call site passes
-  // undefined and keeps the scene `_logDepthEnabled`.
+  // The pick pipeline overrides the log state with the pick-fleet master
+  // switch; every other call site passes undefined and keeps the scene
+  // `_logDepthEnabled`.
   const logDepthOn = logDepthOverride ?? host._logDepthEnabled;
+  // The active-defines set the production shader module is resolved against.
+  // The geodetic-normal path flips `GEODETIC_NORMAL` and the cache hands back
+  // the preprocessed module; augmented variants (debug fragment, clip
+  // distances) inherit the same set so their base source stays consistent with
+  // the pipeline's vertex buffer layout. The reduced-imagery bit rides along on
+  // default-limit devices so the module's group-1 declarations match the
+  // 1-slot pipeline layout.
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (logDepthOn ? ShaderDefine.LOG_DEPTH : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0) |
-    // C2-25 (Batch 446) — capture variant drops the G-buffer slot-1 output so
-    // the fragment stage matches the single-color-target capture pipeline.
+    // The capture variant drops the G-buffer slot-1 output so the fragment
+    // stage matches the single-color-target capture pipeline.
     (isCapture ? ShaderDefine.CAPTURE_MODE : 0);
   const productionModule = getProductionShaderModuleHelper(host, defines);
-  // Phase 5 WGF-1: when the hardware clip-distances variant is requested,
-  // both stages must come from the augmented module — the vertex stage
-  // declares the `@builtin(clip_distances)` output, and the fragment
-  // stage's `globeClipByPlanes` discard has been neutralized to avoid
-  // double-clipping.
+  // When the hardware clip-distances variant is requested, both stages must
+  // come from the augmented module: the vertex stage declares the
+  // `@builtin(clip_distances)` output, and the fragment stage's
+  // `globeClipByPlanes` discard is neutralized there to avoid double-clipping.
   let vertexModule: GPUShaderModule = productionModule;
   let fragmentModule: GPUShaderModule = productionModule;
   let cdLabel: string = "";
@@ -368,10 +341,10 @@ export function buildPipelineDescriptor(
       fragmentModule = cdModule;
       cdLabel = ", clipDist";
     }
-    // If null, the augmentation failed and we silently fall back to the
-    // production module + the legacy fragment-discard path. The caller's
-    // cache key still distinguishes useClipDistances=true variants, so
-    // we just hand back a "production" pipeline under that key.
+    // A null module means the augmentation failed; the production module and
+    // the fragment-discard path are the fallback. The caller's cache key still
+    // distinguishes `useClipDistances=true` variants, so a production pipeline
+    // is handed back under that key.
   }
   let fragmentEntry: string = "fragmentMain";
   let debugLabel: string = "";
@@ -397,22 +370,19 @@ export function buildPipelineDescriptor(
     }
   }
 
-  // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batches 177 + 182) — variant
-  // overrides for the 3-pass globe-translucency technique:
-  //   - depthOnlyBackFace (Batch 177): cullMode=front, color masked,
-  //     depth-write enabled. Populates depth from FAR side.
-  //   - translucentBackFace (Batch 182): cullMode=front, ALPHA blend,
-  //     depth-write disabled. Blends FAR-side color first.
-  //   - default (translucent FF or opaque): cullMode from disableCulling
-  //     toggle.
-  // Cache key suffixes (`_DOB`, `_TBF`) keep the three variants distinct.
+  // Variant overrides for the three-pass globe-translucency technique:
+  //   - depthOnlyBackFace: cullMode=front, color masked, depth-write enabled.
+  //     Populates depth from the far side.
+  //   - translucentBackFace: cullMode=front, ALPHA blend, depth-write
+  //     disabled. Blends far-side color first.
+  //   - default (translucent front face or opaque): cullMode follows the
+  //     `disableCulling` toggle.
+  // The `_DOB` and `_TBF` cache-key suffixes keep the three variants distinct.
   const dobLabel = depthOnlyBackFace ? ", depthOnlyBackFace" : "";
   const dofLabel = depthOnlyFrontFace ? ", depthOnlyFrontFace" : "";
   const tbfLabel = translucentBackFace ? ", translucentBackFace" : "";
-  // Batch 246 — the central pipeline cache keys on the descriptor name
-  // (plus structural fields); the reduced-imagery variant has a
-  // different pipeline layout + shader module, so it MUST carry a
-  // distinct name to avoid stale-pipeline aliasing in any shared cache.
+  // The reduced-imagery variant has a different pipeline layout and shader
+  // module, so it carries a distinct descriptor name.
   const imgLabel = host._imageryReduced ? ", imagery4" : "";
   const cullMode: GPUCullMode =
     depthOnlyBackFace || translucentBackFace
@@ -422,18 +392,11 @@ export function buildPipelineDescriptor(
         : disableCulling
           ? "none"
           : "back";
-  // GLOBE-UNDERGROUND-COLOR — the central pipeline cache keys on the
-  // descriptor NAME (see `generateCacheKey` in WebGPURenderPipelineCache:
-  // `parts = [descriptor.name]` when no variant is passed, and the globe's
-  // `resolveGlobePipelineEntry` passes none). The no-cull (C-R1 underground /
-  // provider-cull-off) variant previously differed ONLY in `primitive.cullMode`
-  // with an identical name, so it ALIASED to whichever same-named pipeline
-  // resolved first — usually the above-ground cull-back one. Symptom: with the
-  // camera underground the terrain-surface back-faces never rasterized (only
-  // the skirt walls, whose winding faces the camera, were visible) and the
-  // result was nondeterministic across sessions (a creation race decided which
-  // cull mode won). The `, noCull` marker keeps the central-cache key distinct,
-  // matching the dob/tbf/cd/img labels that already follow this convention.
+  // The no-cull variant — underground camera, or a provider with back-face
+  // culling switched off — differs from the cull-back variant only in
+  // `primitive.cullMode`, which `generateCacheKey` does not read. The
+  // `, noCull` marker is what names it in the central-cache key, matching the
+  // dob/tbf/cd/img labels that follow the same convention.
   const ncLabel = cullMode === "none" ? ", noCull" : "";
   const depthWriteEnabled =
     depthOnlyBackFace || depthOnlyFrontFace
@@ -468,47 +431,31 @@ export function buildPipelineDescriptor(
   const colorWriteMask: GPUColorWriteFlags =
     depthOnlyBackFace || depthOnlyFrontFace ? 0 : 0xf;
 
-  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — the capture variant renders into a
-  // single cube-face color attachment (no MRT slot-1), a no-stencil
-  // `depth24plus` depth target, and NO MSAA. The CAPTURE_MODE shader define
-  // (folded into `defines` above) drops the `@location(1)` output so the
-  // fragment stage matches the single target. The `_cap_<format>` name suffix
-  // keeps the capture pipeline distinct in any shared cache.
+  // The capture variant renders into a single cube-face color attachment (no
+  // MRT slot-1), a no-stencil `depth24plus` depth target, and no MSAA. The
+  // CAPTURE_MODE define folded into `defines` above drops the `@location(1)`
+  // output so the fragment stage matches the single target.
   const capLabel = isCapture ? `, capture ${captureFaceFormat}` : "";
-  // C11-158 — the enhanced-ocean STYLING variant compiles a DIFFERENT
-  // GlobeTerrain module (the `ENHANCED_OCEAN` hi-word branch, via
-  // `getProductionShaderModule` reading `host._enhancedOceanEnabled`). The
-  // central pipeline cache keys on this descriptor name, so it MUST carry a
-  // distinct marker or the enhanced + classic pipelines would alias. The
-  // renderer-local pipeline caches (keyed without the hi word) are wiped on the
-  // flag flip instead — see `WebGPUGlobeSurfaceRenderer._applyEnhancedOceanState`.
+  // The enhanced-ocean styling variant compiles a different GlobeTerrain
+  // module — the `ENHANCED_OCEAN` hi-word branch, selected inside
+  // `getProductionShaderModule` from `host._enhancedOceanEnabled`. The
+  // renderer-local pipeline caches key without the hi word, so they are wiped
+  // on a flag flip instead; see
+  // `WebGPUGlobeSurfaceRenderer._applyEnhancedOceanState`.
   const oceanLabel = host._enhancedOceanEnabled ? ", enhOcean" : "";
-  // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `logDepthOn` selects a DIFFERENT
-  // GlobeTerrain module (the `//>>ifdef LOG_DEPTH` frag_depth branch) through
-  // the `defines` bitmask above, but the central cache's `generateCacheKey`
-  // hashes only this NAME plus structural fields (multisample / depth format /
-  // target signature / vertex layout) — it never reads `vertex.module`,
-  // `fragment.module`, `entryPoint`, or the define mask. Without this marker the
-  // log-depth and hyperbolic globe pipelines collapse onto one key and whichever
-  // materialized first silently serves both. Same bug class as the `noCull`,
-  // `imagery4` and `enhOcean` markers above. `ld=` matches the spelling already
-  // used by Ocean / Cloud / FlowField / ComputeInstance / GaussianSplat.
-  // Also covers the PICK descriptor (its name derives from this one) and the
-  // env-map CAPTURE descriptor, both of which route through this function.
+  // `logDepthOn` selects a different GlobeTerrain module through the `defines`
+  // bitmask above. `generateCacheKey` folds shader-module identity into every
+  // central-cache key, so the two modules cannot collide on their own; this
+  // marker is what says which of them a key names in `describeCacheKey()`,
+  // `listPipelineVariants()` and devtools labels, where a bare `sh:41.…`
+  // segment separates the variants without identifying them. `ld=` matches the
+  // spelling used by Ocean, Cloud, FlowField, ComputeInstance and
+  // GaussianSplat. The pick descriptor derives its name from this one and the
+  // env-map capture descriptor routes through this function, so both inherit
+  // the marker.
   //
-  // The RENDERER-LOCAL caches are already safe on this axis — Batch 788 moved
-  // their key format into `buildGlobePipelineCacheKey`, which ends every key
-  // with `|${defines.toString(16)}`. This marker closes the CENTRAL cache only.
-  //
-  // NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL (2026-08-06) — the paragraph
-  // above describes the PRE-FIX central cache. `generateCacheKey` now folds
-  // shader-module IDENTITY (`sh:` segment) unconditionally, so this marker —
-  // and `noCull` / `imagery4` / `enhOcean` / `capture` — are no longer what
-  // stands between the two globe modules and a collision. They are retained as
-  // defense-in-depth and, more usefully, as human-readable provenance in
-  // `describeCacheKey()` / `listPipelineVariants()` / devtools labels: a bare
-  // `sh:41.…` tells you the variants are separate but not WHICH variant a row
-  // is. Do not remove them; do not treat a new one as mandatory.
+  // The renderer-local caches carry the mask outright: every key
+  // `buildGlobePipelineCacheKey` builds ends with `|${defines.toString(16)}`.
   const ldLabel = logDepthOn ? ", ld=1" : "";
   return {
     name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${dofLabel}${tbfLabel}${ncLabel}${imgLabel}${capLabel}${oceanLabel}${ldLabel})`,
@@ -527,29 +474,26 @@ export function buildPipelineDescriptor(
     fragment: {
       module: fragmentModule,
       entryPoint: fragmentEntry,
-      // Slice 5c-B Batch 117 — globe pipeline emits BOTH targets now
-      // that GlobeTerrain.wgsl's fragmentMain + the 3 debug variants
-      // were rewired to return `FragOutput { @location(0) color,
-      // @location(1) normalRoughness }` (see migration_doc/
-      // WEBGPU_DEBUGGING_LOG.md Batch 117). Slot 1 is the eye-space
-      // normal + roughness packed as rgba16float; consumers (AO today,
-      // SSR / clustered lighting / contact shadows next) read it via
-      // `gBufferFramebuffer.normalRoughnessTexture` and fall back to
-      // the depth-derived path when the slot-1 sample is the
-      // (0,0,0,*) sentinel emitted by debug-Tri / non-globe pixels.
+      // Both targets are emitted: `GlobeTerrain.wgsl`'s `fragmentMain` and the
+      // three debug variants return `FragOutput { @location(0) color,
+      // @location(1) normalRoughness }`. Slot 1 is the eye-space normal plus
+      // roughness packed as rgba16float; consumers such as the ambient
+      // occlusion pass read it through
+      // `gBufferFramebuffer.normalRoughnessTexture` and fall back to the
+      // depth-derived path when the slot-1 sample is the (0,0,0,*) sentinel
+      // emitted by debug-Tri and non-globe pixels.
       //
-      // Depth-only back-face variant: still 0xf on slot 1 — the
-      // `colorWriteMask=0` applies only to slot 0 (the canvas color)
-      // because the variant is "depth-only" with respect to the SCENE
-      // color, not the G-buffer. The G-buffer normal IS useful even
-      // during the depth-only pre-pass (the back-faces it draws are
-      // real geometry whose normals should populate the G-buffer for
-      // any consumer that needs them). If a follow-up needs to mask
-      // slot 1 too, gate `gbufferWriteMask` on `depthOnlyBackFace`.
+      // The depth-only back-face variant still writes 0xf on slot 1: the
+      // `colorWriteMask=0` applies only to slot 0, the scene color, because
+      // the variant is depth-only with respect to the scene color and not the
+      // G-buffer. The back faces it draws are real geometry whose normals
+      // should populate the G-buffer for any consumer that needs them. Masking
+      // slot 1 as well would mean gating `gbufferWriteMask` on
+      // `depthOnlyBackFace`.
       targets: isCapture
-        ? // C2-25 (Batch 446) — single cube-face color target, no MRT slot-1.
-          // Opaque write (no blend; the per-face pass composites globe OVER the
-          // compute sky via the render-pass `loadOp: 'load'`, not a blend op).
+        ? // Single cube-face color target, no MRT slot-1. An opaque write with
+          // no blend: the per-face pass composites the globe over the compute
+          // sky through the render pass `loadOp: 'load'`, not a blend op.
           [
             {
               format: captureFaceFormat!,
@@ -570,37 +514,35 @@ export function buildPipelineDescriptor(
     },
     primitive: {
       topology: "triangle-list",
-      // C-R1-GLOBE-RENDERSTATE (Batch 99) — `disableCulling` opens
-      // up the under-the-globe / globe-translucent path which needs
-      // both faces visible. Mirrors WebGL's selection between
-      // `_renderState` (cull on) and `_disableCullingRenderState`
-      // (cull off) in `GlobeSurfaceTileProviderRendering.js:1226-1231`.
-      // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — depth-only
-      // back-face overrides to "front" (cull front faces, draw back).
+      // `disableCulling` opens up the under-the-globe / globe-translucent path,
+      // which needs both faces visible. Mirrors WebGL's selection between
+      // `_renderState` (cull on) and `_disableCullingRenderState` (cull off) in
+      // `GlobeSurfaceTileProviderRendering.js:1226-1231`. The depth-only
+      // back-face variant overrides to "front": cull front faces, draw back.
       cullMode,
       frontFace: "ccw",
     },
     depthStencil: {
-      // C2-25 (Batch 446) — capture uses a transient no-stencil `depth24plus`
-      // target (deliberately different from the on-screen
-      // `depth24plus-stencil8`, which is precisely WHY the capture pipeline
-      // variant is mandatory — a single-target/no-stencil mismatch against the
-      // on-screen pipeline would be a WebGPU validation error).
+      // Capture uses a transient no-stencil `depth24plus` target, deliberately
+      // different from the on-screen `depth24plus-stencil8`, which is precisely
+      // why the capture pipeline variant is mandatory: a single-target,
+      // no-stencil mismatch against the on-screen pipeline is a WebGPU
+      // validation error.
       format: isCapture
         ? ("depth24plus" as GPUTextureFormat)
         : "depth24plus-stencil8",
       depthWriteEnabled,
-      // ALWAYS use less-equal (not less), even for the first pass.
-      // Planetary-scale FP32 precision can push the globe's clip-space
-      // Z up against the far plane, and the paired vertex-shader clamp
-      // `position.z = min(position.z, position.w)` produces exactly
-      // z/w=1 for those vertices. `less` would discard them; we need
-      // `less-equal` so they survive the depth test against the
-      // cleared depth buffer (which starts at 1.0).
+      // less-equal rather than less, even for the first pass. Planetary-scale
+      // FP32 precision can push the globe's clip-space z up against the far
+      // plane, and the paired vertex-shader clamp
+      // `position.z = min(position.z, position.w)` produces exactly z/w=1 for
+      // those vertices. `less` would discard them; `less-equal` lets them
+      // survive the depth test against the cleared depth buffer, which starts
+      // at 1.0.
       depthCompare: "less-equal",
     },
-    // Session 65 Batch 32 — match scene FB sample count. C2-25 (Batch 446) —
-    // the capture pass is always single-sample (no MSAA), so force `undefined`.
+    // Match the scene framebuffer sample count. The capture pass is always
+    // single-sample, so it forces `undefined`.
     multisample:
       !isCapture && (host._sampleCount ?? 1) > 1
         ? { count: host._sampleCount! }
@@ -609,9 +551,9 @@ export function buildPipelineDescriptor(
 }
 
 /**
- * Convert our cache-friendly descriptor back into the WebGPU
- * descriptor shape for the fallback path (no central cache available).
- * Pure function — does not need the host.
+ * Convert the cache-friendly descriptor back into the WebGPU descriptor shape,
+ * for the fallback path where no central cache is available. Pure function —
+ * does not need the host.
  * @private
  */
 export function descriptorToGPU(
@@ -644,7 +586,7 @@ export function descriptorToGPU(
  * creation and returns null. Falls back to direct synchronous creation
  * when no central cache is available.
  *
- * C-R7-RENDERER-MIGRATION (Batch 75). Mirrors `tryResolvePolylinePipeline`.
+ * Mirrors `tryResolvePolylinePipeline`.
  * @private
  */
 export function resolveGlobePipelineEntry(
@@ -685,23 +627,23 @@ export function resolveGlobePipelineEntry(
 }
 
 /**
- * C2-25 ENV-SCENE-CAPTURE (Batch 446) — SYNCHRONOUS resolve for the scene-capture
- * pipeline. Unlike {@link resolveGlobePipelineEntry} (which returns null while
- * `createRenderPipelineAsync` cooks), this creates the pipeline synchronously via
- * `device.createRenderPipeline` on the first miss so the very FIRST capture pass
- * renders terrain — there is no "render every frame so a 1-frame pipeline delay
- * is invisible" cover for the capture path: the capture pass runs at most every
- * K frames AND `runProceduralSkyFill` rewrites the whole cube each refresh, so a
- * missed terrain composite leaves the face showing pure sky until the NEXT
- * refresh. A handful of async-pending capture frames therefore reads back as a
- * permanently flat (sky-only) reflection in any short-lived / debounced capture
- * window. The one-time synchronous compile stall (one variant per face format,
- * realistically one) is acceptable for an opt-in, debounced pass and is far
- * preferable to flat reflections.
+ * Synchronous resolve for the scene-capture pipeline. Unlike
+ * {@link resolveGlobePipelineEntry}, which returns null while
+ * `createRenderPipelineAsync` cooks, this creates the pipeline synchronously
+ * through `device.createRenderPipeline` on the first miss, so the first capture
+ * pass already renders terrain. The capture path has no "render every frame, so
+ * a one-frame pipeline delay is invisible" cover: the capture pass runs at most
+ * every K frames and `runProceduralSkyFill` rewrites the whole cube on each
+ * refresh, so a missed terrain composite leaves the face showing pure sky until
+ * the next refresh. A handful of async-pending capture frames therefore reads
+ * back as a permanently flat, sky-only reflection in any short-lived or
+ * debounced capture window. The one-time synchronous compile stall — one variant
+ * per face format, realistically one — is the cheaper trade for an opt-in,
+ * debounced pass.
  *
- * Still seeds the central cache's async path (so later frames + any on-screen
- * sibling that happens to want the same key hit the cache) but does NOT depend on
- * it for correctness.
+ * Still seeds the central cache's async path, so later frames and any on-screen
+ * sibling wanting the same key hit the cache, but does not depend on it for
+ * correctness.
  */
 export function resolveCapturePipelineEntrySync(
   host: PipelineHost,
@@ -731,10 +673,10 @@ export function resolveCapturePipelineEntrySync(
   return entry.pipeline;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Pipeline Selection (lazy creation, keyed by actual vertex stride)
-// ═══════════════════════════════════════════════════════════════════════
-
+// Selects the production globe pipeline for one vertex / blend / cull
+// combination, creating and caching the entry on first request. Returns null
+// while the central cache is still materializing the pipeline, in which case
+// the caller skips this tile this frame.
 export function selectPipeline(
   host: PipelineHost,
   isQuantized: boolean,
@@ -746,34 +688,23 @@ export function selectPipeline(
   hasGeodeticSurfaceNormals: boolean = false,
   disableCulling: boolean = false,
 ): GPURenderPipeline | null {
-  // Phase 5 WGF-1: cache key includes a `C` suffix for the
-  // hardware clip-distances variant so it shares the production cache
-  // map cleanly without colliding with the legacy variants.
-  // Batch 20: the active-defines bitmask (DP-H25's `GEODETIC_NORMAL`
-  // and any future flags) appears as a `|0xNN` hex suffix so the
-  // pipeline cache stays in sync with the shader module cache key.
-  // C-R7-RENDERER-MIGRATION (Batch 75): the local Map now holds entry
-  // slots; the GPU pipeline materializes through `webgpuPipelineCache`.
-  // Returns null when the central cache hasn't materialized the
-  // pipeline yet — the caller should skip this tile this frame.
-  //
-  // C-R1-GLOBE-RENDERSTATE (Batch 99): `disableCulling` adds a `_NC`
-  // (no-cull) suffix to the cache key so underground / globe-
-  // translucent tiles get a separate pipeline variant with
-  // `cullMode: "none"`. Mirrors WebGL's
-  // `tileProvider._disableCullingRenderState` selection at
-  // `GlobeSurfaceTileProviderRendering.js:1226-1231` — picked when
-  // `cameraUnderground || globeTranslucencyState.translucent`.
-  // Without this variant, underground tiles render with cull-back and
-  // their interior faces disappear at the rim.
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
-  // Key format owned by `WebGPUGlobeSurfacePipelineKey` so the diagnostic
-  // readers (`listPipelineVariants`, the four legacy pipeline getters) parse
-  // the same grammar this writes. Building the string inline here is what let
-  // those readers rot for 15 months against a stale copy of the format.
+  // The key format is owned by `WebGPUGlobeSurfacePipelineKey` so the
+  // diagnostic readers — `listPipelineVariants` and the four legacy pipeline
+  // getters — parse the same grammar this writes; building the string inline
+  // here lets a reader drift against a stale copy of the format. The key
+  // carries the clip-distances variant, the active-defines bitmask (which keeps
+  // this map in step with the shader-module cache key), and `disableCulling`,
+  // which selects the `cullMode: "none"` variant underground and
+  // globe-translucent tiles need. That mirrors WebGL's
+  // `tileProvider._disableCullingRenderState` selection at
+  // `GlobeSurfaceTileProviderRendering.js:1226-1231`, picked when
+  // `cameraUnderground || globeTranslucencyState.translucent`. Without a
+  // distinct variant, underground tiles render cull-back and their interior
+  // faces disappear at the rim.
   const cacheKey = buildGlobePipelineCacheKey({
     kind: "color",
     isQuantized,
@@ -806,15 +737,13 @@ export function selectPipeline(
   }
   const pipeline = resolveGlobePipelineEntry(host, entry);
 
-  // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 4) — warm-on-suspicion.
-  // When the OPAQUE variant is requested for the first time, kick off
-  // background creation of the BLEND counterpart so a future
-  // globe-translucency toggle finds a hot pipeline. Only fires on the
-  // first request per (stride, normals, mercator, ...) combo because
-  // the cache.warm() call is no-op once the entry is cached or
-  // pending. Skip the inverse direction (BLEND → OPAQUE warm) because
-  // OPAQUE is the default state and almost always already cached by
-  // the time a BLEND request fires.
+  // Warm on suspicion: when the opaque variant is requested for the first time,
+  // kick off background creation of the blend counterpart so a later
+  // globe-translucency toggle finds a hot pipeline. Only fires on the first
+  // request per (stride, normals, mercator, …) combination, because
+  // `cache.warm()` is a no-op once the entry is cached or pending. The inverse
+  // direction is skipped: opaque is the default state and is almost always
+  // already cached by the time a blend request fires.
   if (
     entryWasJustCreated &&
     !isBlend &&
@@ -840,33 +769,36 @@ export function selectPipeline(
 }
 
 /**
- * C2-25 ENV-SCENE-CAPTURE (Batch 446) — select the single-color-target globe
- * terrain CAPTURE pipeline variant for the dynamic-environment-map scene-capture
- * pass. Renders the opaque globe surface into ONE cube-face color attachment
- * (`captureFaceFormat`), a transient no-stencil `depth24plus` depth target, and
- * no MSAA. The CAPTURE_MODE shader define drops the G-buffer slot-1 output so
- * the fragment stage matches the single target.
+ * Select the single-color-target globe terrain capture pipeline variant for the
+ * dynamic-environment-map scene-capture pass. Renders the opaque globe surface
+ * into one cube-face color attachment (`captureFaceFormat`), a transient
+ * no-stencil `depth24plus` depth target, and no MSAA. The CAPTURE_MODE shader
+ * define drops the G-buffer slot-1 output so the fragment stage matches the
+ * single target.
  *
- * Routes through the SEPARATE `_capturePipelineCache` so it never collides with
- * — and a capture build never invalidates — the on-screen `_pipelineCache`. The
- * cache key includes the face format (so an HDR env cube gets its own pipeline)
- * plus the standard vertex / shader-define dimensions; `isBlend` is hardcoded
- * false (capture is opaque, depth-write, single-pass).
+ * Routes through the separate `_capturePipelineCache`, so it never collides
+ * with — and a capture build never invalidates — the on-screen
+ * `_pipelineCache`. The cache key includes the face format, giving an HDR env
+ * cube its own pipeline, plus the standard vertex and shader-define dimensions;
+ * `isBlend` is hardcoded false because capture is opaque, depth-write and
+ * single-pass.
  *
- * Culling is DISABLED (`cullMode: "none"`). The 6 ENU cube-face cameras are
- * built with a screen-matched basis (camera-right = +∂s, camera-up = −∂t of the
- * cube's `faceUvToDirection` convention) so the rendered texel lands exactly
- * where the sky fill + IBL prefilter sample it back — a cube render is inherently
- * left-handed under that convention, which flips triangle winding. Rather than
- * fight the winding sign per face, the capture pass disables culling and lets the
- * depth test pick the nearest surface (correct for a reflection source). See
+ * Culling is disabled (`cullMode: "none"`). The six ENU cube-face cameras are
+ * built with a screen-matched basis — camera-right = +∂s, camera-up = −∂t of
+ * the cube's `faceUvToDirection` convention — so a rendered texel lands exactly
+ * where the sky fill and IBL prefilter sample it back. A cube render is
+ * inherently left-handed under that convention, which flips triangle winding;
+ * rather than track the winding sign per face, the capture pass disables culling
+ * and lets the depth test pick the nearest surface, which is correct for a
+ * reflection source. See
  * `WebGPUDynamicEnvironmentMapCapture.buildCubeFaceCamera`.
  *
- * Resolves the pipeline SYNCHRONOUSLY (see `resolveCapturePipelineEntrySync`) so
- * the very first capture pass draws terrain: the capture pass is debounced + the
- * sky fill rewrites the whole cube each refresh, so an async-pending capture
- * frame would read back as a permanently-flat (sky-only) reflection. Returns null
- * only if the device is unavailable (then the caller omits this tile this frame).
+ * Resolves the pipeline synchronously (see `resolveCapturePipelineEntrySync`) so
+ * the first capture pass draws terrain: the capture pass is debounced and the
+ * sky fill rewrites the whole cube on each refresh, so an async-pending capture
+ * frame reads back as a permanently flat, sky-only reflection. Returns null only
+ * when the device is unavailable, in which case the caller omits this tile from
+ * this capture frame.
  */
 export function selectCapturePipeline(
   host: PipelineHost,
@@ -912,34 +844,35 @@ export function selectCapturePipeline(
     entry = { descriptor, pipeline: null, pending: false };
     host._capturePipelineCache.set(cacheKey, entry);
   }
-  // Synchronous resolve (NOT the async `resolveGlobePipelineEntry`): the capture
-  // pass is debounced + sky-rewrites each refresh, so an async-pending frame
-  // reads back as a permanently-flat (sky-only) reflection. Build the one capture
-  // variant synchronously on first miss so the first capture draws terrain.
+  // Synchronous resolve rather than the async `resolveGlobePipelineEntry`: the
+  // capture pass is debounced and the sky fill rewrites the cube on each
+  // refresh, so an async-pending frame reads back as a permanently flat,
+  // sky-only reflection. Building the one capture variant synchronously on the
+  // first miss means the first capture draws terrain.
   return resolveCapturePipelineEntrySync(host, entry);
 }
 
 /**
- * DP-H44 (Batch 360) — select the globe terrain PICK pipeline variant.
+ * Select the globe terrain pick pipeline variant.
  *
- * Derives from the OPAQUE color descriptor for the same vertex variant
- * (`buildPickPipelineDescriptor` swaps the fragment entry to
- * `fragmentPickMain`, strips blend + MSAA, stamps exactly one color target
- * with `host._pickFormat` — `context.pickPipelineFormat`, the byte-object-ID
+ * Derives from the opaque color descriptor for the same vertex variant:
+ * `buildPickPipelineDescriptor` swaps the fragment entry to `fragmentPickMain`,
+ * strips blend and MSAA, stamps exactly one color target with
+ * `host._pickFormat` — `context.pickPipelineFormat`, the byte-object-ID
  * authority shared with `WebGPUPickFramebuffer` — and forces
- * `depthWriteEnabled: true`). The result targets the single pick-FBO color
- * attachment in both SDR and HDR and writes standard rasterizer depth,
- * matching the model / primitive pick pipelines.
+ * `depthWriteEnabled: true`. The result targets the single pick-FBO color
+ * attachment in both SDR and HDR and writes standard rasterizer depth, matching
+ * the model and primitive pick pipelines.
  *
- * Cache key shares the layout / vertex / shader-define dimensions with
- * `selectPipeline` and adds a `_PICK` suffix so it doesn't collide. `isBlend`
- * and `disableCulling` are hardcoded false — the pick pass is always opaque
- * with standard back-face culling (mirrors the color first pass).
+ * The cache key shares the layout, vertex and shader-define dimensions with
+ * `selectPipeline` and adds a `_PICK` suffix so it does not collide. `isBlend`
+ * and `disableCulling` are hardcoded false: the pick pass is always opaque with
+ * standard back-face culling, mirroring the color first pass.
  *
  * Returns null while the pipeline is materializing through the central cache;
- * the caller omits the pick command for this tile this frame (the color
- * command still renders, so the only effect is a one-frame gap in globe
- * pick coverage — `scene.pick` over a just-appeared tile variant).
+ * the caller omits the pick command for this tile this frame. The color command
+ * still renders, so the only effect is a one-frame gap in globe pick coverage —
+ * a `scene.pick` over a just-appeared tile variant.
  */
 export function selectPickPipeline(
   host: PipelineHost,
@@ -950,9 +883,9 @@ export function selectPickPipeline(
   useClipDistances: boolean = false,
   hasGeodeticSurfaceNormals: boolean = false,
 ): GPURenderPipeline | null {
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the globe PICK module gates
-  // LOG_DEPTH on the SEPARATE pick-fleet master switch, NOT the scene switch,
-  // so the pick FBO is uniformly hyperbolic OR log across the whole fleet.
+  // The globe pick module gates LOG_DEPTH on the pick-fleet master switch
+  // rather than the scene switch, so the pick FBO is uniformly hyperbolic or
+  // uniformly log across the whole fleet.
   const pickLogActive = host._pickLogDepthEnabled ?? false;
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
@@ -985,16 +918,16 @@ export function selectPickPipeline(
       false, // translucentBackFace
       undefined, // captureFaceFormat
       false, // depthOnlyFrontFace
-      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — force the pick module's LOG_DEPTH to
-      // the pick-fleet switch (the pick reuses this descriptor's vertex + FS
-      // module, so both stages get the pick-gated v_logDepth path).
+      // Force the pick module's LOG_DEPTH to the pick-fleet switch. The pick
+      // reuses this descriptor's vertex and fragment modules, so both stages
+      // get the pick-gated v_logDepth path.
       pickLogActive,
     );
     const descriptor = buildPickPipelineDescriptor(
       colorDescriptor,
       "fragmentPickMain",
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — stamp the context's pick
-      // format authority (mirrored onto the host), never the scene format.
+      // Stamp the context's pick format authority, mirrored onto the host,
+      // never the scene format.
       host._pickFormat ?? "rgba8unorm",
       {
         name: `${colorDescriptor.name} pick`,
@@ -1004,16 +937,15 @@ export function selectPickPipeline(
     entry = { descriptor, pipeline: null, pending: false };
     host._pipelineCache.set(cacheKey, entry);
   }
-  // DP-H44 — create the pick pipeline SYNCHRONOUSLY rather than routing through
-  // the central async cache (`resolveGlobePipelineEntry`). The central cache's
-  // async `getPipeline` path silently never resolves for this pick-descriptor
-  // shape (single color target + `multisample: undefined`, derived by
-  // `buildPickPipelineDescriptor`), leaving the entry permanently null — so the
-  // globe pick command would never attach. Sync creation is the documented
-  // cache-less fallback (`resolveGlobePipelineEntry` uses the same call when no
-  // central cache is present) and is cheap here: the WGSL module is already
-  // compiled for the color pipeline (shared module), so this only assembles the
-  // pipeline object, once per variant (cached in `entry.pipeline`).
+  // Create the pick pipeline synchronously rather than routing through the
+  // central async cache. That cache's async `getPipeline` path never resolves
+  // for this pick-descriptor shape — a single color target plus
+  // `multisample: undefined`, as derived by `buildPickPipelineDescriptor` — so
+  // the entry would stay null and the globe pick command would never attach.
+  // Sync creation is the same call `resolveGlobePipelineEntry` makes when no
+  // central cache is present, and is cheap here: the WGSL module is already
+  // compiled for the color pipeline, so this only assembles the pipeline
+  // object, once per variant, cached in `entry.pipeline`.
   if (!entry.pipeline && host._device) {
     try {
       entry.pipeline = host._device.createRenderPipeline(
@@ -1032,30 +964,27 @@ export function selectPickPipeline(
 }
 
 /**
- * NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 182) — select the translucent
- * back-face pipeline variant. Sits between the depth-only back-face
- * pre-pass (Batch 177) and the regular translucent front-face command,
- * completing the 3-pass globe-translucency technique:
+ * Select the translucent back-face pipeline variant. It sits between the
+ * depth-only back-face pre-pass and the regular translucent front-face command,
+ * completing the three-pass globe-translucency technique:
  *
- *   1. Depth-only back-face: writes depth from FAR side of the globe
- *      (Batch 177's `selectDepthOnlyBackFacePipeline`).
- *   2. Translucent back-face (this variant): blends the FAR-side surface
- *      color over the cleared FB. cullMode: "front", blend: ALPHA,
+ *   1. Depth-only back-face: writes depth from the far side of the globe
+ *      (`selectDepthOnlyBackFacePipeline`).
+ *   2. Translucent back-face, this variant: blends the far-side surface color
+ *      over the cleared framebuffer. cullMode: "front", blend: ALPHA,
  *      depthWriteEnabled: false.
- *   3. Translucent front-face: blends the NEAR-side surface over the
- *      back-face contribution. Uses the existing `selectPipeline` with
- *      `disableCulling=false` (cullMode: "back" front-face only) and
- *      `isBlend=true`.
+ *   3. Translucent front-face: blends the near-side surface over the back-face
+ *      contribution, through `selectPipeline` with `disableCulling=false`
+ *      (cullMode: "back", front faces only) and `isBlend=true`.
  *
- * This produces correct front-to-back compositing through the planet
- * instead of the unsorted single-pass alpha blend (cullMode: "none")
- * used pre-Batch-182 for translucent globe rendering.
+ * The three together composite front-to-back through the planet, which a single
+ * unsorted alpha-blend pass with cullMode: "none" cannot.
  *
- * Returns null while the pipeline is materializing in the central
- * cache. Caller skips the translucent-back-face command for this
- * tile this frame; the regular translucent + depth-only commands
- * still emit, so the visible artifact is "missing back-face
- * contribution for one frame" rather than a black tile.
+ * Returns null while the pipeline is materializing in the central cache; the
+ * caller then skips the translucent back-face command for this tile this frame.
+ * The regular translucent and depth-only commands still emit, so the visible
+ * artifact is one frame without the back-face contribution rather than a black
+ * tile.
  */
 export function selectTranslucentBackFacePipeline(
   host: PipelineHost,
@@ -1070,10 +999,10 @@ export function selectTranslucentBackFacePipeline(
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
-  // `isBlend=true` forces the ALPHA blend state; `_TBF` (translucent
-  // back-face) suffix distinguishes from the standard blend variant
-  // which cullMode: "back" (front-face). _TBF means cullMode: "front"
-  // (back-face) with the same alpha blend.
+  // `isBlend=true` forces the ALPHA blend state; the `_TBF` (translucent
+  // back-face) suffix distinguishes this from the standard blend variant,
+  // which uses cullMode: "back". `_TBF` means cullMode: "front" with the same
+  // alpha blend.
   const cacheKey = buildGlobePipelineCacheKey({
     kind: "translucentBackFace",
     isQuantized,
@@ -1107,35 +1036,31 @@ export function selectTranslucentBackFacePipeline(
 }
 
 /**
- * NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — select the depth-only
- * back-face pre-pass pipeline variant.
+ * Select the depth-only back-face pre-pass pipeline variant.
  *
  * Used by the globe surface renderer when `globeTranslucencyState.translucent`
- * is true: emits one depth-only command per tile BEFORE the imagery-
- * layer translucent commands. Populates the scene-FB depth attachment
- * with the FAR side of the globe (cullMode: "front") so the
- * subsequent translucent passes blend correctly against it. Without
- * this pre-pass, looking through the planet at antipodal terrain
- * produces inside-out z-fight artifacts in the alpha-blended single-
- * pass technique.
+ * is true: it emits one depth-only command per tile before the imagery-layer
+ * translucent commands, populating the scene framebuffer's depth attachment
+ * with the far side of the globe (cullMode: "front") so the subsequent
+ * translucent passes blend correctly against it. Without the pre-pass, looking
+ * through the planet at antipodal terrain produces inside-out z-fight artifacts
+ * in the alpha-blended single-pass technique.
  *
- * Cache key shares the layout / vertex / shader-define dimensions with
- * `selectPipeline` and adds a `_DOB` suffix so it doesn't collide. The
- * variant is independent of imagery-layer multi-pass (no `_B`/`_O`
- * dimension because no color is written) — `isBlend = false` is hard-
- * coded for the cache key, but the depth-only override would produce
- * the same pipeline regardless.
+ * The cache key shares the layout, vertex and shader-define dimensions with
+ * `selectPipeline` and adds a `_DOB` suffix so it does not collide. The variant
+ * is independent of imagery-layer multi-pass — there is no `_B`/`_O` dimension
+ * because no color is written — so `isBlend = false` is hardcoded for the cache
+ * key even though the depth-only override would produce the same pipeline
+ * either way.
  *
- * Doesn't take `disableCulling` because the depth-only variant always
- * culls FRONT faces (back-face only) by definition; combining with
- * `disableCulling: true` (cull none) would defeat the purpose.
+ * Takes no `disableCulling` argument: the depth-only variant always culls front
+ * faces by definition, and combining it with cull-none would defeat the purpose.
  *
- * @returns null while the pipeline is materializing through the central
- *   cache; the caller should skip the depth-only command for this
- *   tile this frame and let the next frame (when the pipeline lands)
- *   start emitting it. The translucent commands continue to render
- *   without the pre-pass — a one-frame degraded artifact instead of
- *   a permanent black tile.
+ * @returns null while the pipeline is materializing through the central cache;
+ *   the caller then skips the depth-only command for this tile this frame and
+ *   starts emitting it once the pipeline lands. The translucent commands
+ *   continue to render without the pre-pass — a one-frame degraded artifact
+ *   rather than a permanent black tile.
  */
 export function selectDepthOnlyBackFacePipeline(
   host: PipelineHost,
@@ -1186,23 +1111,22 @@ export function selectDepthOnlyBackFacePipeline(
 }
 
 /**
- * GLOBE-TRANSLUCENCY-ALPHA — select the depth-only FRONT-face pre-pass
- * pipeline variant.
+ * Select the depth-only front-face pre-pass pipeline variant.
  *
  * Used by the globe surface renderer when the globe is translucent with an
- * OPAQUE back face (the default — `backFaceAlpha = 1`). Mirrors WebGL's
+ * opaque back face, the default `backFaceAlpha = 1`. Mirrors WebGL's
  * DEPTH_ONLY_FRONT_FACE derived command: the translucent color command runs
- * with depth-write OFF (ALPHA blend variant), so this pre-pass is what keeps
- * the scene-FB depth attachment populated with the NEAR globe surface —
- * sky/atmosphere gating, the depth plane, subsequently-rendered primitives,
- * and `pickPosition` all read that depth. Without it, the depth buffer holds
- * no globe surface at all and the sky pass floods the planet disk.
+ * with depth-write off on the ALPHA-blend variant, so this pre-pass is what
+ * keeps the scene framebuffer's depth attachment populated with the near globe
+ * surface, which sky/atmosphere gating, the depth plane, subsequently rendered
+ * primitives and `pickPosition` all read. Without it the depth buffer holds no
+ * globe surface at all and the sky pass floods the planet disk.
  *
- * Cache key mirrors `selectDepthOnlyBackFacePipeline` with a `_DOF` suffix.
+ * The cache key mirrors `selectDepthOnlyBackFacePipeline` with a `_DOF` suffix.
  *
- * @returns null while the pipeline is materializing through the central
- *   cache; the caller skips the pre-pass command for this tile this frame
- *   (one-frame degraded depth instead of a permanent black tile).
+ * @returns null while the pipeline is materializing through the central cache;
+ *   the caller then skips the pre-pass command for this tile this frame, giving
+ *   one frame of degraded depth rather than a permanent black tile.
  */
 export function selectDepthOnlyFrontFacePipeline(
   host: PipelineHost,
@@ -1282,13 +1206,11 @@ export function selectDebugFragmentPipeline(
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
-  // Probe the augmented shader module first; the probe is define-keyed
-  // and the `null` cache entry short-circuits pipeline builds when the
-  // device rejected the augmented source for this define-set. Passing
-  // the actual defines (instead of the pre-Batch 20 zero-arg call that
-  // sat here as a sentinel) gives the per-define cache the right key
-  // AND prevents an accidental compile probe with mismatched defines
-  // from blocking the cache of another set.
+  // Probe the augmented shader module first. The probe is define-keyed, and a
+  // `null` cache entry short-circuits pipeline builds when the device rejected
+  // the augmented source for this define-set. Passing the actual defines gives
+  // the per-define cache the right key and keeps a compile probe with
+  // mismatched defines from blocking the cache of another set.
   if (!getDebugFragmentShaderModuleHelper(host, defines)) {
     return null;
   }

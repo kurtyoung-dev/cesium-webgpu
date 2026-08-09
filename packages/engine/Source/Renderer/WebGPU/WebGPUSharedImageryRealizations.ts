@@ -1,50 +1,47 @@
 /// <reference types="@webgpu/types" />
 /**
- * Per-renderer (= per-`GPUDevice`) table of shared imagery GPU realizations
- * (C9-12A-IMAGERY-SOURCE-REALIZATION-DEDUP-AND-MIP-PREP; hardened Batch 686).
+ * Per-renderer (= per-`GPUDevice`) table of shared imagery GPU realizations.
  *
- * NOTE on scope (Batch-686 F0c): the owning `WebGPUGlobeSurfaceRenderer` is
- * keyed per pooled `GPUDevice` (`GlobeSurfaceTileProviderRendering`), so when
- * two viewers share one device they share ONE renderer and therefore ONE of
- * these tables. The table is NOT per-context — no context object may be
- * captured here (see the clock and destroy invariants below).
+ * The owning `WebGPUGlobeSurfaceRenderer` is keyed per pooled `GPUDevice`
+ * (`GlobeSurfaceTileProviderRendering`), so two viewers sharing one device
+ * share one renderer and therefore one of these tables. The table is not
+ * per-context, and no context object may be captured here — see the clock and
+ * destroy invariants below.
  *
  * A single immutable imagery source (see `Renderer/ImagerySourceIdentity`) is
- * realized into ONE `GPUTexture` + `GPUTextureView`, shared by reference across
+ * realized into one `GPUTexture` + `GPUTextureView`, shared by reference across
  * every terrain-tile imagery cache entry that binds it. Tile entries hold
  * references. When a reference count reaches zero:
  *
- *   - an entry that was EVER shared (peak refCount > 1, or revived/re-leased
- *     after reaching zero) enters a byte-budgeted zero-ref pool so churn (a
- *     tile evicted and re-selected shortly after) revives the same realization
+ *   - an entry that has ever been shared (peak refCount > 1, or revived after
+ *     reaching zero) enters a byte-budgeted zero-ref pool, so churn — a tile
+ *     evicted and re-selected shortly after — revives the same realization
  *     rather than re-uploading;
- *   - an entry that was NEVER shared (a streamed per-tile `ImageBitmap` that
- *     never recurred) is retired PROMPTLY — parity with the owned-texture path
- *     for the streaming class, so unique bitmaps never accumulate in the pool
- *     (Batch-686 F2a).
+ *   - an entry that has never been shared (a streamed per-tile `ImageBitmap`
+ *     that never recurred) is retired promptly, matching the owned-texture
+ *     path for the streaming class so unique bitmaps cannot accumulate in the
+ *     pool.
  *
- * The zero-ref pool is bounded HARD by `BYTE_BUDGET`: whenever the summed
+ * `BYTE_BUDGET` is a hard bound on the zero-ref pool: whenever the summed
  * zero-ref bytes exceed it, `sweep` retires oldest-first regardless of age
- * until at/below budget. While under budget, zero-ref entries are simply kept
- * (Batch-686 F2b — there is no age-based retirement; age orders eviction).
+ * until at or below budget. Under budget, zero-ref entries are kept — age
+ * orders eviction, it does not by itself retire anything.
  *
  * Invariants:
  *   - Active/leased realizations (refCount > 0) are pinned unconditionally.
- *   - The table keeps its OWN monotonic clock (one tick per `sweep` call) for
- *     zero-ref ordering. It never reads any scene's `frameNumber` — multiple
- *     scenes sharing the device each trigger sweeps, which merely advances the
- *     clock faster than wall-frames (shorter effective retention — the safe
- *     direction) and can never produce negative ages or a stuck pool
- *     (Batch-686 F0a).
- *   - Destruction always routes through a `scheduleDestroy` callback supplied
- *     BY THE CALLER at call time (`release`/`sweep`/`destroyAll`), so it uses
- *     a currently-live context's deferred-destroy queue. The table never
- *     stores a context-owned closure — a captured closure would pin the first
- *     context and degrade to inline `texture.destroy()` on a still-live device
- *     after that context dies (Batch-686 F0b).
- *   - The table is keyed to one `GPUDevice`. On device change the owner
- *     rebuilds a fresh table (this one is torn down); GPU handles never cross
- *     device generations.
+ *   - The table keeps its own monotonic clock (one tick per `sweep` call) for
+ *     zero-ref ordering, and never reads any scene's `frameNumber`. Multiple
+ *     scenes sharing the device each trigger sweeps, which only advances the
+ *     clock faster than wall-frames — shorter effective retention, the safe
+ *     direction — and cannot produce negative ages or a stuck pool.
+ *   - Destruction routes through a `scheduleDestroy` callback supplied by the
+ *     caller at call time (`release`/`sweep`/`destroyAll`), so it always uses a
+ *     currently-live context's deferred-destroy queue. Storing a context-owned
+ *     closure instead would pin the first context and degrade to inline
+ *     `texture.destroy()` on a still-live device once that context dies.
+ *   - The table is keyed to one `GPUDevice`. On a device change the owner tears
+ *     this one down and builds a fresh table, so GPU handles never cross device
+ *     generations.
  *
  * @module WebGPUSharedImageryRealizations
  */
@@ -64,9 +61,9 @@ export interface SharedImageryRealization {
   view: GPUTextureView;
   byteSize: number;
   refCount: number;
-  /** True once the realization has ever served more than one simultaneous
-   * reference OR been revived/re-leased after reaching zero — i.e. actual
-   * reuse was observed. Never-shared entries retire promptly at zero refs. */
+  /** True once the realization has served more than one simultaneous
+   * reference, or been revived after reaching zero — either way, reuse was
+   * observed. Never-shared entries retire promptly at zero refs. */
   everShared: boolean;
   /** Internal sweep-clock tick when refCount last reached 0; -1 while
    * referenced. Orders oldest-first eviction; never a scene frame number. */
@@ -86,7 +83,7 @@ export class WebGPUSharedImageryRealizations {
   private readonly _entries = new Map<string, SharedImageryRealization>();
   private _highWaterEntries = 0;
   private _highWaterBytes = 0;
-  // F0a — internal monotonic clock: one tick per sweep() call. The ONLY time
+  // Internal monotonic clock: one tick per sweep() call, and the only time
   // source used for zeroRefSinceTick stamps and eviction ordering.
   private _clock = 0;
 
@@ -162,11 +159,11 @@ export class WebGPUSharedImageryRealizations {
   }
 
   /**
-   * Drop one reference. At zero: an ever-shared realization enters the
-   * zero-ref pool stamped with the current internal clock tick; a never-shared
-   * one (streamed per-tile bitmap that never recurred) is retired PROMPTLY via
-   * the caller's `scheduleDestroy` (F2a). Returns true when the entry was
-   * retired by this call (so callers can hit retirement counters).
+   * Drop one reference. At zero, an ever-shared realization enters the
+   * zero-ref pool stamped with the current internal clock tick, while a
+   * never-shared one — a streamed per-tile bitmap that never recurred — is
+   * retired promptly via the caller's `scheduleDestroy`. Returns true when the
+   * entry was retired by this call, so callers can hit retirement counters.
    */
   release(
     entry: SharedImageryRealization,
@@ -191,9 +188,9 @@ export class WebGPUSharedImageryRealizations {
   /**
    * Byte-budget sweep — call once per frame per owning scene. Advances the
    * internal clock, then, while total zero-ref bytes exceed BYTE_BUDGET,
-   * retires zero-ref realizations oldest-first REGARDLESS of age until
-   * at/below budget (F2b). Active realizations are never touched. Returns the
-   * number retired.
+   * retires zero-ref realizations oldest-first regardless of age until at or
+   * below budget. Active realizations are never touched. Returns the number
+   * retired.
    */
   sweep(scheduleDestroy: ScheduleTextureDestroy): number {
     this._clock++;

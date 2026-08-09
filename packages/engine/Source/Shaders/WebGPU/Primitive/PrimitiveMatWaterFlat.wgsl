@@ -16,9 +16,7 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) texCoord: vec2<f32>,
     @location(1) viewDist: f32,
-    // FEAT-GAP-09 — eye-space position for the aerial-perspective fog block.
-    // Declaration restored (Batch 97 wired the read/write but omitted the
-    // VertexOutput field in 18 of 19 Mat*Flat shaders).
+    // Eye-space position, read by the aerial-perspective fog block in the FS.
     @location(2) eyePosition: vec3<f32>,
     //>>ifdef LOG_DEPTH
     // Interpolated linear depthFromNearPlusOne; the FS converts it to frag_depth.
@@ -38,7 +36,7 @@ struct CameraUniforms {
     time: f32,
         previousViewProjection: mat4x4<f32>,
     //>>ifdef LOG_DEPTH
-    // ─── Renderer-wide log depth (Approach A) ───
+    // Renderer-wide log depth (Approach A):
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsFlat
@@ -64,14 +62,14 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 @group(2) @binding(0) var textureSampler: sampler;
-// DP-H20 (Batch 25) — dual texture layout matching the Lit variant.
+// Dual texture layout, matching the Lit variant.
 @group(2) @binding(1) var normalMapTexture: texture_2d<f32>;
 @group(2) @binding(2) var specularMapTexture: texture_2d<f32>;
 
-// FEAT-GAP-09 (Batch 97) — truncated EffectsUniforms struct, sized to
-// reach the `atmosphereLutControl: vec4<f32>` slot at byte offset 240
-// in the shared 480-byte UBO (see `WebGPUEffectsBindGroup.js`). Reading
-// less than the full UBO is safe — WGSL just sees the prefix.
+// Truncated EffectsUniforms, sized to reach the `atmosphereLutControl:
+// vec4<f32>` slot at byte offset 240 in the shared 480-byte UBO (see
+// `WebGPUEffectsBindGroup.js`). Declaring less than the full UBO is safe —
+// WGSL sees only the prefix.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -87,7 +85,7 @@ struct EffectsUniforms {
 }
 
 @group(3) @binding(0) var<uniform> effects: EffectsUniforms;
-// FEAT-GAP-09 (Batch 97) — aerial-perspective LUT bindings 7/8/9.
+// Aerial-perspective LUT bindings 7/8/9.
 @group(3) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
 @group(3) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
 @group(3) @binding(9) var atmosphereLutSampler: sampler;
@@ -165,7 +163,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let blendFactor = clamp(0.5 + waveIntensity * 0.5, 0.0, 1.0);
     let waterColor = mix(material.baseWaterColor.rgb, material.blendColor.rgb, blendFactor);
 
-    // DP-H20 — gate alpha by the specular mask (see Lit variant).
+    // Gate alpha by the specular mask, as the Lit variant does.
     let waterMask = textureSample(
         specularMapTexture,
         textureSampler,
@@ -173,7 +171,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     ).r;
     var finalColor = vec4<f32>(waterColor, material.baseWaterColor.a * waterMask);
 
-    // FEAT-GAP-09 (Batch 97) — Aerial-perspective fog blend. Mirrors
+    // Aerial-perspective fog blend, mirroring
     // `PrimitiveBasicColor.wgsl::fragmentMain`.
     if (effects.atmosphereLutControl.x > 0.5) {
         let innerRadius = effects.atmosphereLutControl.y;

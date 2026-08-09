@@ -38,22 +38,13 @@ import ShadowMode from "./ShadowMode.js";
 import TerrainFillMesh from "./TerrainFillMesh.js";
 import TileBoundingRegion from "./TileBoundingRegion.js";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Shared execute for WebGPU globe tile draw commands (C9-11 / FAR-309)
-// ═══════════════════════════════════════════════════════════════════════════
-
-// One hoisted `execute` shared by every WebGPU globe tile command (color and
-// pick). The body reads only `this.*` fields — it closes over nothing — so a
-// single module-level function replaces the per-tile-per-pass `execute:
-// function(renderPass){…}` literal that previously allocated one fresh closure
-// per command per frame (~39,300/frame on the FAR-309 audited moving route).
-// All call sites invoke it method-style (`command.execute(renderPass)`), so
-// `this` still binds to the command; behavior is byte-identical to the inlined
-// closures it replaces. The color and pick bodies were already identical, so
-// one function covers both. Retaining the descriptor/command-wrapper objects
-// and per-tile scratch arrays themselves (keyed by mesh/imagery/mode/effect
-// revision) is the remaining FAR-309 lever, tracked as a partial in
-// DEFERRED_WORK — this slice lands the provably byte-identical closure core.
+// One hoisted `execute` shared by every WebGPU globe tile command, colour and
+// pick alike. The body reads only `this.*` fields and closes over nothing, so a
+// single module-level function stands in for a per-tile-per-pass
+// `execute: function(renderPass){…}` literal, which would allocate one closure
+// per command per frame — on the order of 39,000 per frame on a moving-camera
+// globe view. Call sites invoke it method-style
+// (`command.execute(renderPass)`), so `this` still binds to the command.
 function executeWebGPUGlobeTileCommand(renderPass) {
   renderPass.setPipeline(this._pipeline);
   for (let i = 0; i < this._bindGroups.length; i++) {
@@ -177,10 +168,6 @@ function publishWebGPUSceneCaptureSources(
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Scratch variables for rendering
-// ═══════════════════════════════════════════════════════════════════════════
-
 const modifiedModelViewScratch = new Matrix4();
 const modifiedModelViewProjectionScratch = new Matrix4();
 const tileRectangleScratch = new Cartesian4();
@@ -244,10 +231,6 @@ const surfaceShaderSetOptionsScratch = {
 const scratchClippingPlanesMatrix = new Matrix4();
 const scratchInverseTransposeClippingPlanesMatrix = new Matrix4();
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Shared helpers
-// ═══════════════════════════════════════════════════════════════════════════
-
 function isUndergroundVisible(tileProvider, frameState) {
   if (frameState.cameraUnderground) {
     return true;
@@ -308,10 +291,6 @@ function pushCommand(command, frameState) {
     frameState.commandList.push(command);
   }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Bounding region & occludee point computation
-// ═══════════════════════════════════════════════════════════════════════════
 
 function computeOccludeePoint(
   tileProvider,
@@ -507,13 +486,9 @@ function updateTileBoundingRegion(tile, tileProvider, frameState) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Uniform map creation
-// ═══════════════════════════════════════════════════════════════════════════
-
-// C12-29 S5 — immutable fallback for commands produced before a logical View
-// has published its eclipse block. The shader gate is closed and the
-// composition reciprocal is the identity.
+// Immutable fallback for commands produced before a logical view has published
+// its eclipse block: the shader gate is closed and the composition reciprocal
+// is the identity.
 const defaultEclipseGlobeShadow = createEclipseGlobeShadow();
 
 function createTileUniformMap(frameState, globeSurfaceTileProvider) {
@@ -704,10 +679,10 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
     u_minimumBrightness: function () {
       return frameState.fog.minimumBrightness;
     },
-    // C12-29 S5 — the command captures the active logical View's persistent
-    // block through `properties`, rather than lazily following the one mutable
-    // FrameState object. That prevents an offscreen/secondary View prepared
-    // later in the same tick from changing this command's eclipse geometry.
+    // The command captures the active logical view's persistent block through
+    // `properties` rather than lazily following the single mutable FrameState
+    // object, so an offscreen or secondary view prepared later in the same tick
+    // cannot change this command's eclipse geometry.
     u_eclipseGlobeShadow: function () {
       return this.properties.eclipseGlobeShadow.webglPackedUniform;
     },
@@ -856,10 +831,6 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
   return uniformMap;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Wireframe & debug
-// ═══════════════════════════════════════════════════════════════════════════
-
 function createWireframeVertexArrayIfNecessary(context, provider, tile) {
   const surfaceTile = tile.data;
 
@@ -1004,31 +975,30 @@ let debugDestroyPrimitive;
   };
 })();
 
-// ═══════════════════════════════════════════════════════════════════════════
-// WebGPU Globe Terrain Rendering
-// ═══════════════════════════════════════════════════════════════════════════
-
 // Per-device globe renderer cache (supports multi-context / split-screen)
 const _webgpuGlobeRenderers = new WeakMap();
 
 /**
- * C10-06 Step C.1 — proactively construct + initialize the per-device WebGPU
- * globe renderer during context init instead of lazily on the first tile draw.
+ * Construct and initialize the per-device WebGPU globe renderer during context
+ * init rather than lazily on the first tile draw.
  *
- * `.initialize()` runs the 2-variant GlobeTerrain shader-module prewarm
- * (`initShaderCache` — baseline + GEODETIC_NORMAL|reduced) plus the bind-group
- * layouts / samplers / placeholder texture. Those two Tint compiles of the
- * ~239 KB `GlobeTerrain.wgsl` are the dominant first-frame stall on WebGPU
- * (measured ~176 ms `rendererReady→firstFrame` vs ~16 ms on WebGL). Running
- * them in the idle init window means the first `addWebGPUDrawCommandsForTile`
- * finds the already-initialized renderer in `_webgpuGlobeRenderers` and reuses
- * the cached shader modules when it builds its (tile-stride-dependent) pipeline.
+ * <code>initialize</code> runs the two-variant GlobeTerrain shader-module
+ * prewarm (<code>initShaderCache</code> — baseline plus
+ * <code>GEODETIC_NORMAL|reduced</code>) along with the bind-group layouts,
+ * samplers and placeholder texture. Those two Tint compiles of the ~239 KB
+ * <code>GlobeTerrain.wgsl</code> dominate the first-frame stall on WebGPU:
+ * ~176 ms from renderer-ready to first frame, against ~16 ms on WebGL. Running
+ * them in the idle init window lets the first
+ * <code>addWebGPUDrawCommandsForTile</code> find an initialized renderer in
+ * <code>_webgpuGlobeRenderers</code> and reuse the cached shader modules when
+ * it builds its tile-stride-dependent pipeline.
  *
- * This is byte-identical to the lazy path (same `RendererClass`, same static
- * `getShaderCode()` WGSL, same canvas format, same device-keyed WeakMap slot) —
- * it only moves the compile earlier (INV-06-2 / INV-06-3). Multi-context safe:
- * keyed off `context.device`, so a second device prewarms its own renderer
- * (INV-06-5). Every failure mode is a no-op that leaves the lazy path intact.
+ * The result is byte-identical to the lazy path — same
+ * <code>RendererClass</code>, same static <code>getShaderCode()</code> WGSL,
+ * same canvas format, same device-keyed WeakMap slot — only the compile moves
+ * earlier. Keying off <code>context.device</code> keeps it multi-context safe:
+ * a second device prewarms its own renderer. Every failure mode is a no-op that
+ * leaves the lazy path intact.
  *
  * @param {GraphicsContext} context The WebGPU context being initialized. A
  *   no-op on WebGL contexts (no `.device`).
@@ -1140,20 +1110,20 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
     _webgpuGlobeRenderers.set(device, _webgpuGlobeRenderer);
   }
 
-  // C9-01 — the renderer captures the opt-in counter sink once at
-  // construction. Reading that field here avoids a global lookup per tile and
-  // guarantees the adapter-command counters use the same sink as the renderer
-  // and its resource helpers. Clean/production renderers retain null.
+  // The renderer captures the opt-in counter sink once at construction.
+  // Reading that field here avoids a global lookup per tile and guarantees the
+  // adapter-command counters use the same sink as the renderer and its
+  // resource helpers. Production renderers retain null.
   const logicalCounters = _webgpuGlobeRenderer._logicalCounters;
 
-  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — publish the per-device globe renderer
-  // + tile provider so the dynamic-environment-map scene-capture pass
-  // (`runSceneCapture`, which runs in `primitives.update`, BEFORE this globe
-  // render path) can build its own per-face globe commands from the SAME
-  // visible tile set (`tileProvider._quadtree._tilesToRender`). It therefore
-  // reads LAST frame's published refs — fine, since the renderer instance is
-  // frame-stable and the visible tile set barely changes per frame. Gated on
-  // the context flag so OFF (the default) publishes nothing → byte-identical.
+  // Publish the per-device globe renderer and tile provider so the
+  // dynamic-environment-map scene-capture pass can build its own per-face globe
+  // commands from the same visible tile set
+  // (`tileProvider._quadtree._tilesToRender`). `runSceneCapture` runs in
+  // `primitives.update`, ahead of this globe render path, so it reads the
+  // previous frame's published references; the renderer instance is
+  // frame-stable and the visible tile set barely moves between frames. Gated on
+  // the context flag, so the default off state publishes nothing.
   if (context.sceneCaptureReflections === true) {
     publishWebGPUSceneCaptureSources(
       context,
@@ -1183,15 +1153,14 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
         uniformState,
       );
   if (!cmdDescs || cmdDescs.length === 0) {
-    // Empty `cmdDescs` from `createTileCommands` is the WebGPU "pipeline
-    // still cooking async" signal AND the WebGL "no commands to emit"
-    // signal. The wakeup-on-pipeline-ready path is now centralized in
+    // Empty `cmdDescs` from `createTileCommands` is both the WebGPU "pipeline
+    // is still compiling asynchronously" signal and the WebGL "no commands to
+    // emit" signal. The wakeup-on-pipeline-ready path lives in
     // `WebGPURenderPipelineCache` → `AsyncResourceMonitor` →
-    // `Scene.requestRender()` (see NEW-WEBGPU-PIPELINE-READY-SIGNAL),
-    // so this branch no longer needs to push an `afterRender` callback
-    // by hand. WebGL paths fall through correctly because there is no
-    // async-pipeline class on WebGL — empty here genuinely means
-    // "nothing to draw" and re-rendering wouldn't change that.
+    // `Scene.requestRender()`, so this branch does not push an `afterRender`
+    // callback of its own. WebGL has no asynchronous pipeline class, so empty
+    // there genuinely means nothing to draw, and re-rendering would not change
+    // that.
     return;
   }
 
@@ -1207,36 +1176,34 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
 
   for (let p = 0; p < cmdDescs.length; p++) {
     const cmdDesc = cmdDescs[p];
-    // NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM (Batch 167) — in non-3D scene modes
-    // the per-command frustum cull must NOT use the tile's 3D-ECEF bounding
-    // volume. `tileBR.boundingSphere` / `.boundingVolume` live in 3D ECEF
-    // space (centered ~6.4 Mm from the origin); culling them against the
-    // 2D / Columbus PROJECTED frustum rejected EVERY tile at regional zoom
-    // (the small frustum's planes are nowhere near the ECEF sphere), so the
-    // WebGPU globe rendered blank when zoomed in. SCENE3D keeps the 3D
-    // volume for its per-command cull optimization.
+    // In non-3D scene modes the per-command frustum cull must not use the
+    // tile's 3D ECEF bounding volume. `tileBR.boundingSphere` /
+    // `.boundingVolume` live in 3D ECEF space, centred ~6.4 Mm from the origin,
+    // and culling them against the projected 2D or Columbus-view frustum
+    // rejects every tile at regional zoom, because that small frustum's planes
+    // are nowhere near the ECEF sphere. SCENE3D keeps the 3D volume for its
+    // per-command cull.
     //
-    // NEW-SCENE2D-GLOBE-PASS-OVERWRITE (Batch 268) — Batch 167 fixed the cull
-    // by dropping the bounding volume ENTIRELY in non-3D, but a command with
-    // NO bounding volume forces `View.createPotentiallyVisibleSet` down its
-    // worst-case branch: `commandNear = frustum.near (=1 in 2D)`,
-    // `commandFar = frustum.far (=500 Mm)`. That collapses the scene near to 1
-    // and explodes the 2D multi-frustum split from 1 to ~9 uniform frustums,
-    // binning the globe into ALL of them (no-BV commands match every bin in
-    // `insertIntoBin`). Because color accumulates across frustums while depth
-    // clears per-frustum, the OPAQUE globe in the NEAR frustums overwrites the
-    // coplanar translucent billboard/point/label that only binned into the FAR
-    // frustums (their tight bounding volumes sit ~12.76 Mm out) — markers went
-    // to 0 px in SCENE2D. WebGL never hits this: it always supplies a bounding
-    // volume and relies on `command.cull = false` (not a missing volume) to
-    // avoid the 2D-frustum-mismatch cull (`Scene.isVisible` short-circuits on
-    // `!command.cull` BEFORE touching the volume). Mirror WebGL exactly:
-    // supply the 2D-PROJECTED bounding sphere (correct near/far → 1 frustum,
-    // matching WebGL's split) AND set `cull = false` so the projected sphere is
-    // never used to wrongly reject a tile. This keeps Batch 167's fix intact
-    // while restoring the correct frustum count. See WebGL
-    // `addDrawCommandsForTile` (this file, ~line 1721) for the reference 2D
-    // bounding-sphere computation.
+    // Dropping the bounding volume entirely is not the alternative: a command
+    // with no volume forces `View.createPotentiallyVisibleSet` down its
+    // worst-case branch, `commandNear = frustum.near` (1 in 2D) and
+    // `commandFar = frustum.far` (500 Mm). That collapses the scene near to 1,
+    // explodes the 2D multi-frustum split from one to roughly nine uniform
+    // frustums, and bins the globe into all of them, since a command with no
+    // volume matches every bin in `insertIntoBin`. Colour accumulates across
+    // frustums while depth clears per frustum, so the opaque globe in the near
+    // frustums overwrites the coplanar translucent billboard, point and label
+    // commands that only bin into the far frustums, whose tight bounding
+    // volumes sit ~12.76 Mm out.
+    //
+    // WebGL avoids both by always supplying a bounding volume and relying on
+    // `command.cull = false`, rather than a missing volume, to skip the
+    // 2D-frustum mismatch: `Scene.isVisible` short-circuits on `!command.cull`
+    // before touching the volume. Mirror that here — supply the 2D-projected
+    // bounding sphere so the near/far split and frustum count match WebGL's,
+    // and set `cull = false` so the projected sphere can never wrongly reject a
+    // tile. `addDrawCommandsForTile` in this file carries the reference
+    // 2D bounding-sphere computation.
     const non3D = frameState.mode !== SceneMode.SCENE3D;
     let non3DBoundingVolume;
     if (non3D && tileBR) {
@@ -1278,11 +1245,10 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       isWebGPUDrawCommand: true,
       pass: Pass.GLOBE,
       owner: tile,
-      // `cull = false` in non-3D (mirrors WebGL): the 2D-projected sphere is
-      // present only to drive the near/far split + binning, NOT to cull —
-      // `Scene.isVisible` returns true before inspecting the volume when
-      // `cull` is false, so the 2D-frustum mismatch that Batch 167 fixed can
-      // never reject a tile.
+      // `cull = false` in non-3D, mirroring WebGL: the 2D-projected sphere is
+      // present only to drive the near/far split and the binning, not to cull.
+      // `Scene.isVisible` returns true before inspecting the volume when `cull`
+      // is false, so the 2D-frustum mismatch can never reject a tile.
       cull: !non3D,
       enabled: true,
       boundingVolume: non3D
@@ -1297,54 +1263,43 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
           : undefined,
       _pipeline: cmdDesc.pipeline,
       _bindGroups: cmdDesc.bindGroups,
-      // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — group-0 (camera UB +
-      // tile UB) uses a dynamic-offset bind-group layout. The bind group
-      // is built once over the ring page; this 2-element array shifts it
-      // to this command's actual UB slice at draw time. Undefined only
-      // for descriptors that predate the dynamic-offset path (none
-      // currently emit group 0 without it).
+      // Group 0 (camera UB plus tile UB) uses a dynamic-offset bind-group
+      // layout. The bind group is built once over the ring page; this
+      // two-element array shifts it to this command's actual UB slice at draw
+      // time. Undefined only for descriptors that emit group 0 without dynamic
+      // offsets, of which there are currently none.
       _bindGroup0DynamicOffsets: cmdDesc.bindGroup0DynamicOffsets,
       _vertexBuffer: cmdDesc.vertexBuffer,
       _indexBuffer: cmdDesc.indexBuffer,
       _indexCount: cmdDesc.indexCount,
       _indexFormat: cmdDesc.indexFormat,
-      // Shadow-cast tags — routes the command through the right
-      // WebGPUShadowMapRenderer variant when the globe casts shadows.
+      // Shadow-cast tags — route the command through the right
+      // WebGPUShadowMapRenderer variant when the globe casts shadows. Every
+      // globe terrain tile names its layout explicitly:
+      //   * quantized tiles (TerrainQuantization.BITS12) → `quantized12`,
+      //     which decodes BITS12 in the cast shader.
+      //   * uncompressed tiles, whether or not they carry vertex normals,
+      //     web-Mercator T or a geodetic surface normal →
+      //     `terrainUncompressed`, which reads `position3DAndHeight` as a vec4
+      //     at location 0 and is stride-aware, so the variable post-position
+      //     bytes do not misalign the GPU's per-vertex walk.
       //
-      // Batch 24 — every globe terrain tile now uses an explicit
-      // shadow-cast layout:
-      //   * quantized tiles (TerrainQuantization.BITS12) → `quantized12`
-      //     (BITS12 decode in the cast shader).
-      //   * uncompressed tiles, regardless of whether they carry vertex
-      //     normals / webMercT / geodetic surface normal (DP-H25) →
-      //     `terrainUncompressed` (reads `position3DAndHeight` as vec4
-      //     at location 0, stride-aware so the variable post-position
-      //     bytes don't misalign the GPU's per-vertex walk).
-      //
-      // Before Batch 24 uncompressed tiles fell through to the `rte24`
-      // variant via stride inference. `rte24` reads two vec3s at
-      // offsets 0 and 12 — the first hits `position.xyz` correctly but
-      // the second hits `(height, u, v)`, which is tex-coord garbage,
-      // not a positionLow. The resulting RTE math produced shadow
-      // coordinates unrelated to the actual terrain, so shadows
-      // visibly missed the surface. The new `terrainUncompressed`
-      // variant fixes that at the source.
-      //
-      // DP-H25 geodetic-terrain shadow cast — the `__skip_geodetic_terrain`
-      // sentinel from Batch 19 is removed: geodetic tiles have their
-      // stride reported correctly via `vertexStride` below, and the
-      // stride-aware pipeline registry (Batch 24) handles it.
+      // Inferring the layout from stride instead sends uncompressed tiles to
+      // `rte24`, which reads two vec3s at offsets 0 and 12: the first lands on
+      // `position.xyz`, but the second lands on `(height, u, v)` — texture
+      // coordinates rather than a positionLow — and the resulting RTE math
+      // gives shadow coordinates unrelated to the terrain.
       _shadowCastLayout: cmdDesc.isQuantized
         ? "quantized12"
         : "terrainUncompressed",
       _shadowCastTerrainUB: cmdDesc.shadowCastTerrainUB,
-      // Expose the ACTUAL vertex stride so
-      // `_getOrCreateCastPipeline(..., overrideStride)` builds a
-      // pipeline whose `arrayStride` matches the VB. Quantized tiles
-      // use stride 16 (a single compressed vec4); uncompressed tiles
-      // use 24 / 28 / 32 / 36 / 40 / 44 depending on hasVertexNormals /
-      // hasWebMercatorT / hasGeodeticSurfaceNormals — Batch 19's
-      // TileGPUResources.strideBytes already captures the right value.
+      // Expose the real vertex stride so
+      // `_getOrCreateCastPipeline(..., overrideStride)` builds a pipeline whose
+      // `arrayStride` matches the vertex buffer. Quantized tiles use stride 16,
+      // a single compressed vec4; uncompressed tiles use 24, 28, 32, 36, 40 or
+      // 44 depending on hasVertexNormals / hasWebMercatorT /
+      // hasGeodeticSurfaceNormals, which `TileGPUResources.strideBytes` already
+      // captures.
       vertexStride: cmdDesc.isQuantized ? 16 : (cmdDesc.strideBytes ?? 24),
       execute: executeWebGPUGlobeTileCommand,
     };
@@ -1371,26 +1326,27 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       );
     }
 
-    // DP-H44 (Batch 360) — globe terrain pick command. Present only on the
-    // PRIMARY pass (`cmdDesc.pickPipeline` is set by the renderer only when
-    // `!isSubsequentPass`). Reuses the SAME bind groups, VB, IB, and dynamic
-    // offsets as the color command — bind group 0's camera UB carries the pick
-    // color at its tail (zero unless `globe.pickable`, set by Globe.beginFrame).
-    // Attached to `command.derivedCommands.picking.pickCommand` so the WebGPU
-    // pick pass's `selectCommandVariant` swaps to it (writes globe DEPTH +
-    // pickColor into the single-target pick FBO). Marked `isWebGPUDrawCommand`
-    // so the pick-pass dispatcher calls `execute(pickRenderPass, context)`, and
-    // `pickOnly` so it's recognized as a dedicated pick draw whose pipeline
-    // targets the single pick attachment. Build it only while commands are
-    // being rebuilt for an actual pick mini-frame; normal rendering neither
-    // consumes it nor should pay one derived-command allocation per tile.
-    // Even when `globe.pickable` is false the camera UBO supplies a zero pick
-    // color, so terrain remains non-pickable while still contributing DEPTH.
-    // ClassificationPrimitive / GroundPrimitive picks need that private,
-    // query-current terrain depth to decide whether their volume covers the
-    // sampled surface. Omitting the draw leaves the pick depth cleared and
-    // makes every terrain classifier discard. This also mirrors WebGL's
-    // `updateForPick`, which always re-pushes globe commands for depth.
+    // Globe terrain pick command, present only on the primary pass, since the
+    // renderer sets `cmdDesc.pickPipeline` only when `!isSubsequentPass`. It
+    // reuses the colour command's bind groups, vertex buffer, index buffer and
+    // dynamic offsets; bind group 0's camera UB carries the pick colour at its
+    // tail, zero unless `globe.pickable`, which `Globe.beginFrame` sets.
+    // Attaching it to `command.derivedCommands.picking.pickCommand` lets the
+    // WebGPU pick pass's `selectCommandVariant` swap to it, writing globe depth
+    // and the pick colour into the single-target pick framebuffer.
+    // `isWebGPUDrawCommand` makes the pick-pass dispatcher call
+    // `execute(pickRenderPass, context)`, and `pickOnly` marks it as a
+    // dedicated pick draw whose pipeline targets the single pick attachment.
+    // Built only while commands are rebuilt for an actual pick mini-frame, so
+    // normal rendering pays no derived-command allocation per tile.
+    //
+    // The draw happens even when `globe.pickable` is false, where the camera
+    // UBO supplies a zero pick colour: terrain stays non-pickable while still
+    // contributing depth. ClassificationPrimitive and GroundPrimitive picks
+    // need that query-current terrain depth to decide whether their volume
+    // covers the sampled surface, so omitting the draw would leave the pick
+    // depth cleared and make every terrain classifier discard. WebGL's
+    // `updateForPick` re-pushes globe commands for the same reason.
     if (
       cmdDesc.pickPipeline &&
       (frameState.passes.pick || frameState.passes.pickVoxel)
@@ -1398,8 +1354,8 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       const pickCommand = {
         isWebGPUDrawCommand: true,
         pickOnly: true,
-        // C9-02 — derived terrain executables retain the same selected-tile
-        // ownership as their color command for visibility/pick attribution.
+        // Derived terrain executables retain the same selected-tile ownership
+        // as their colour command, so visibility and pick attribution agree.
         owner: tile,
         _pipeline: cmdDesc.pickPipeline,
         _bindGroups: cmdDesc.bindGroups,
@@ -1426,10 +1382,6 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
     frameState.commandList.push(command);
   }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Main draw command creation
-// ═══════════════════════════════════════════════════════════════════════════
 
 function addDrawCommandsForTile(tileProvider, tile, frameState) {
   const surfaceTile = tile.data;
@@ -2249,21 +2201,22 @@ function clipRectangleAntimeridian(tileRectangle, cartographicLimitRectangle) {
   return splitRectangle;
 }
 
-// DP-H44 (Batch 360) — WebGPU globe pick rebuild for the pick frame.
+// Rebuild the WebGPU globe commands for a pick frame.
 //
 // `QuadtreePrimitive.render` only builds globe draw commands under
 // `passes.render`; during a pick pass it calls `tileProvider.updateForPick`,
 // which on WebGL re-pushes the cached `_drawCommands` array. The WebGPU globe
-// never populates `_drawCommands` (it pushes inline command objects straight
-// to `frameState.commandList` from `addWebGPUDrawCommandsForTile`), and its
-// camera UB is baked into a per-frame ring buffer at build time — so a render-
-// frame command can't simply be re-pushed in the pick frame (its ring slice is
-// recycled). Instead we REBUILD fresh commands for the already-selected tiles
-// in the pick frame's ring page; `addWebGPUDrawCommandsForTile` attaches the
-// pick command (writes globe depth + the pick-ID color into the pick FBO).
+// never populates `_drawCommands` — it pushes inline command objects straight
+// to `frameState.commandList` from `addWebGPUDrawCommandsForTile` — and its
+// camera UB is baked into a per-frame ring buffer at build time, so a
+// render-frame command cannot simply be re-pushed in the pick frame: its ring
+// slice has already been recycled. Fresh commands are built instead, for the
+// already-selected tiles, in the pick frame's ring page;
+// `addWebGPUDrawCommandsForTile` attaches the pick command, which writes globe
+// depth and the pick-ID colour into the pick framebuffer.
 //
-// Returns true when the WebGPU path handled the rebuild (so the caller skips
-// the WebGL `_drawCommands` re-push); false on WebGL so the legacy path runs.
+// Returns true when the WebGPU path handled the rebuild, so the caller skips
+// the WebGL `_drawCommands` re-push, and false on WebGL.
 function updateWebGPUForPick(tileProvider, frameState) {
   const context = frameState.context;
   const fr = context.getFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE);

@@ -1,27 +1,31 @@
 /**
- * Backend-neutral imagery source identity (C9-12A-IMAGERY-SOURCE-REALIZATION-DEDUP-AND-MIP-PREP).
+ * Backend-neutral imagery source identity.
  *
  * A single immutable image source (an `HTMLCanvasElement`, `ImageBitmap`, …)
- * can be handed to the renderer once per terrain tile — the `GridImageryProvider`
- * draws its grid canvas ONCE in its constructor and returns that same object for
- * every tile. Without a source-identity concept the WebGPU globe realizes an
- * identical full-mip `GPUTexture` per tile coordinate (measured: 513 identical
- * realizations, 173 MiB retained, 4104 private mip passes).
+ * can be handed to the renderer once per terrain tile — `GridImageryProvider`
+ * draws its grid canvas once in its constructor and returns that same object
+ * for every tile. Without a source-identity concept the WebGPU globe realizes
+ * an identical full-mip `GPUTexture` per tile coordinate: 513 identical
+ * realizations, 173 MiB retained and 4104 private mip passes on a measured
+ * three-altitude grid-imagery route.
  *
  * This module gives each source object a stable identity and a shareability
- * verdict WITHOUT hashing pixels (a false-aliasing correctness trap and a perf
- * trap). Identity is object identity plus an explicit, monotonically-bumped
- * revision. A source is shareable only when it is provably immutable:
+ * verdict without hashing pixels, which is both a false-aliasing correctness
+ * trap and a performance trap. Identity is object identity plus an explicit,
+ * monotonically-bumped revision. A source is shareable only when it is provably
+ * immutable:
  *
- *   - `ImageBitmap` — immutable by spec → shareable by object identity, revision 0.
- *   - A canvas/image/other object that a provider has EXPLICITLY declared
- *     immutable via {@link declareImmutableImagerySource}. Undeclared sources are
- *     never shared: they keep the historical one-owned-texture-per-imagery
- *     behavior exactly (C9 hard rule 3 — mutable/unknown demand stays distinct).
+ *   - `ImageBitmap` — immutable by spec, so shareable by object identity at
+ *     revision 0.
+ *   - A canvas, image or other object that a provider has explicitly declared
+ *     immutable via {@link declareImmutableImagerySource}.
  *
- * The module lives under `Renderer/` (NOT `Renderer/WebGPU/`) so it is available
- * to Scene providers in every build variant without stub redirection, and so the
- * WebGL path can adopt the same identity contract in a later slice.
+ * Undeclared sources are never shared; they keep one owned texture per imagery,
+ * so mutable or unknown demand always stays distinct.
+ *
+ * The module lives under `Renderer/` rather than `Renderer/WebGPU/` so it is
+ * available to Scene providers in every build variant without stub redirection,
+ * and so the WebGL path can adopt the same identity contract.
  *
  * @module ImagerySourceIdentity
  */
@@ -58,10 +62,10 @@ export function declareImmutableImagerySource(source: object): void {
 
 /**
  * Bump the immutable-snapshot revision of a source, invalidating any realization
- * sharing that used the previous revision. Provided for future mutable-snapshot
- * providers per FAR-205 slice 2 (a provider that redraws its canvas and wants a
- * NEW shared realization rather than N distinct ones). Nothing in the tree calls
- * it yet; declared sources currently stay at revision 0.
+ * sharing that used the previous revision. This exists for mutable-snapshot
+ * providers — one that redraws its canvas and wants a single new shared
+ * realization rather than N distinct ones. Nothing in the tree calls it, so
+ * declared sources stay at revision 0.
  */
 export function bumpImagerySourceRevision(source: object): void {
   _revisions.set(source, (_revisions.get(source) ?? 0) + 1);

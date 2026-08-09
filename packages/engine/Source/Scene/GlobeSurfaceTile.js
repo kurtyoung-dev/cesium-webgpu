@@ -159,10 +159,10 @@ class GlobeSurfaceTile {
     if (defined(this.waterMaskTexture)) {
       --this.waterMaskTexture.referenceCount;
       if (this.waterMaskTexture.referenceCount === 0) {
-        // NEW-GLOBE-BELOWSURFACE-FIX — release the WebGPU renderer's
-        // cached GPU copy of this mask (registered by
-        // WebGPUGlobeSurfaceTextures.getOrCreateWaterMaskTexture; never
-        // set on the WebGL backend).
+        // Release the WebGPU renderer's cached GPU copy of this mask,
+        // registered by
+        // `WebGPUGlobeSurfaceTextures.getOrCreateWaterMaskTexture` and never
+        // set on the WebGL backend.
         if (defined(this.waterMaskTexture._webgpuTextureCacheCleanup)) {
           this.waterMaskTexture._webgpuTextureCacheCleanup();
         }
@@ -757,12 +757,11 @@ function processTerrainStateMachine(
   ) {
     const terrainData = surfaceTile.terrainData;
     if (terrainData.waterMask !== undefined) {
-      // C7-LAKE-WATER-MASK — the WaterClassificationProvider Phase-1 seam.
-      // When `globe.lakeWaterMask` is on, the tile provider mirrors the
-      // loaded provider here (undefined otherwise — the default-off path
-      // is byte-identical). This is the single shared upload point both
-      // backends consume (Batch 512), so augmenting the mask BYTES here
-      // keeps WebGL/WebGPU texel-identical by construction.
+      // When `globe.lakeWaterMask` is on, the tile provider mirrors the loaded
+      // water classification provider here, and leaves it undefined otherwise.
+      // This is the single upload point both backends consume, so augmenting
+      // the mask bytes here keeps WebGL and WebGPU texel-identical by
+      // construction.
       const waterClassificationProvider =
         quadtree?.tileProvider?.waterClassificationProvider;
       createWaterMaskTextureIfNeeded(
@@ -991,12 +990,12 @@ function getContextWaterMaskData(context) {
       },
     });
     allWaterTexture.referenceCount = 1;
-    // NEW-GLOBE-BELOWSURFACE-FIX — retain the raw mask payload for the
-    // WebGPU backend. Same-device WebGPU renderers borrow Texture's native
-    // compatibility realization; the retained payload is still required by
-    // the rare cross-device fallback. Without either path the renderer binds
-    // a 1×1 WHITE placeholder — waterMask=1.0 everywhere — which runs the
-    // ocean shader over entire land tiles. A reference only: no extra copy.
+    // Retain the raw mask payload for the WebGPU backend. Same-device WebGPU
+    // renderers borrow Texture's native compatibility realization; the
+    // retained payload covers the rare cross-device fallback. With neither
+    // available the renderer binds a 1×1 white placeholder — waterMask 1.0
+    // everywhere — which runs the ocean shader over entire land tiles. This is
+    // a reference, not a copy.
     allWaterTexture._webgpuSource = {
       arrayBufferView: new Uint8Array([255]),
       width: 1,
@@ -1032,13 +1031,13 @@ function createWaterMaskTextureIfNeeded(
 ) {
   let waterMask = surfaceTile.terrainData.waterMask;
 
-  // C7-LAKE-WATER-MASK — OR-composite the opt-in supplementary lake mask
-  // over the terrain provider's (ocean-only) mask. Operates on a COPY of
-  // the mask bytes (never mutates terrainData.waterMask — it may be
-  // shared with upsampled descendants), expanding the 1-byte all-land
-  // fast path to 256×256 only when a lake actually rasterizes into the
-  // tile. ImageBitmap-shaped masks (non-quantized-mesh providers) are a
-  // documented Phase-1 limitation and pass through un-augmented.
+  // OR-composite the opt-in supplementary lake mask over the terrain
+  // provider's ocean-only mask. This works on a copy of the mask bytes and
+  // never mutates `terrainData.waterMask`, which may be shared with upsampled
+  // descendants, and it expands the one-byte all-land fast path to 256×256
+  // only when a lake actually rasterizes into the tile. ImageBitmap-shaped
+  // masks, which come from providers other than quantized-mesh, pass through
+  // un-augmented.
   if (
     defined(waterClassificationProvider) &&
     waterClassificationProvider.ready &&
@@ -1067,10 +1066,9 @@ function createWaterMaskTextureIfNeeded(
       flipY: false,
       skipColorSpaceConversion: true,
     });
-    // NEW-GLOBE-BELOWSURFACE-FIX — see getContextWaterMaskData: the WebGPU
-    // cross-device fallback needs the source retained. The ImageBitmap is
-    // already retained by terrainData.waterMask, so this adds a reference,
-    // not a copy.
+    // The WebGPU cross-device fallback needs the source retained; see
+    // `getContextWaterMaskData`. The ImageBitmap is already retained by
+    // `terrainData.waterMask`, so this adds a reference, not a copy.
     texture._webgpuSource = waterMask;
   } else if (waterMaskLength === 1) {
     // Length 1 means the tile is entirely land or entirely water.
@@ -1097,10 +1095,9 @@ function createWaterMaskTextureIfNeeded(
     });
 
     texture.referenceCount = 0;
-    // NEW-GLOBE-BELOWSURFACE-FIX — see getContextWaterMaskData: the WebGPU
-    // cross-device fallback needs the source retained. `waterMask` aliases
-    // terrainData.waterMask (already retained), so this is a reference, not
-    // a copy.
+    // The WebGPU cross-device fallback needs the source retained; see
+    // `getContextWaterMaskData`. `waterMask` aliases `terrainData.waterMask`,
+    // which is already retained, so this is a reference, not a copy.
     texture._webgpuSource = {
       width: textureSize,
       height: textureSize,

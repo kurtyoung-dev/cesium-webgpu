@@ -6,12 +6,14 @@
 // Vertex: posHigh(3) + posLow(3) + normal(3) + st(2) = 11 floats = 44 bytes
 // Matches CesiumJS Material.WaterType: normalMap, baseWaterColor, blendColor, etc.
 //
-// CSM Slice 2d — receives cascaded shadows through the primitive
-// effects bind group at `@group(3)` (texture group occupies @group(2)).
+// Receives cascaded shadows through the primitive effects bind group at
+// `@group(3)`; the texture group occupies `@group(2)`. Diffuse and specular
+// are shadowed, while the fresnel blend and ambient stay unshadowed.
 //
-// Batch 167 - B.12 chunk usage.
+// The point-light cube shadow path calls csm_samplePointShadow from
+// chunks/functions; the marker below tells WebGPUPrimitiveShaders.js to
+// prepend that chunk at load time.
 // @chunk csm_samplePointShadow
-// Diffuse + specular shadow; fresnel blend + ambient stay unshadowed.
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,
@@ -48,7 +50,7 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
     inverseViewQuaternion: vec4<f32>,
     //>>ifdef LOG_DEPTH
-    // ─── Renderer-wide log depth (Approach A) ───
+    // Renderer-wide log depth (Approach A):
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsLit
@@ -91,7 +93,8 @@ struct EffectsUniforms {
     clipPlaneEqHW: array<vec4<f32>, 8>,
     atmosphereLutControl: vec4<f32>,
     csmControl: vec4<f32>,
-    // Batch 167 - extends struct through pointLightPositionRTE for B.12.
+    // Declared through pointLightPositionRTE so the point-light cube shadow
+    // path can read its controls from the shared effects UBO.
     edgeControl: vec4<f32>,
     edgeViewport: vec4<f32>,
     pointLightControl: vec4<f32>,
@@ -181,10 +184,10 @@ fn sampleOneCascade(eyePos: vec3<f32>, cascadeIdx: u32, depthBias: f32) -> f32 {
         depth > 1.0 || depth < 0.0) {
         return 1.0;
     }
-    // CSM-PCF-SOFT: soften the cascade edge with a 3x3 PCF box kernel,
-    // matching WebGL's czm_shadowVisibility USE_SOFT_SHADOWS path. The
-    // kernel radius (in shadow texels) is effects.csmControl.y; 0 keeps
-    // the original single hardware-comparison tap (hard edge).
+    // Soften the cascade edge with a 3x3 PCF box kernel, matching WebGL's
+    // czm_shadowVisibility USE_SOFT_SHADOWS path. The kernel radius, in
+    // shadow texels, is effects.csmControl.y; 0 falls back to a single
+    // hardware-comparison tap and a hard edge.
     let csmPcfRadius = effects.csmControl.y;
     if (csmPcfRadius <= 0.0) {
       return textureSampleCompareLevel(
@@ -225,7 +228,7 @@ fn sampleCascadeShadow(
     return s0;
 }
 
-// Batch 167 - B.12 chunk-based point-light receive.
+// Point-light cube shadow receive, through the csm_samplePointShadow chunk.
 fn computeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
     let visibility = csm_samplePointShadow(
@@ -274,11 +277,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     return output;
 }
 
-// Slice 5c-B Batch 121 — G-buffer MRT output struct (added by
-// Tools/batch-121-wrap-lit-shaders.mjs). Slot 0 = lit color, slot 1 =
-// eye-space normal + roughness. NormalMap / BumpMap variants emit the
-// geometric vertex normal for now; a follow-up batch can switch them
-// to their perturbed-normal variable for wider Slice 4 divergence.
+// G-buffer MRT output: slot 0 is the lit color, slot 1 the eye-space normal
+// and roughness.
 struct FragOutput {
     @location(0) color: vec4<f32>,
     @location(1) normalRoughness: vec4<f32>,
@@ -349,7 +349,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     var directTerm = material.baseWaterColor.rgb * diffuse;
     var spec = vec3<f32>(specular);
 
-    // Batch 167 - point-light cube shadows take precedence over CSM.
+    // Point-light cube shadows take precedence over the cascaded shadow map.
     if (effects.pointLightControl.x > 0.5) {
         let shadowFactor = computeShadowFactorPointLight(input.eyePosition);
         directTerm = directTerm * shadowFactor;
@@ -367,9 +367,9 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
 
     // Blend with blendColor using fresnel
     let waterColor = mix(diffuseColor, material.blendColor.rgb, fresnel * 0.6);
-    // Slice 5d Batch 155 — additive Forward+ clustered lighting on the
-    // wave-perturbed eye-space normal. baseColor = base water albedo;
-    // F0/roughness synthesized neutral dielectric (no PBR material).
+    // Additive Forward+ clustered lighting on the wave-perturbed eye-space
+    // normal. Water carries no PBR material, so the base water color stands in
+    // for albedo and F0/roughness are a synthesized neutral dielectric.
     let clusteredContrib = evalClusteredLights(
         input.viewPosition, perturbedNormal, V,
         vec3<f32>(0.04), 0.5, material.baseWaterColor.rgb,
@@ -377,16 +377,16 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     );
     let finalColor = waterColor + spec + clusteredContrib;
 
-    // DP-H20 — sample the specular mask to gate water extent.
+    // Sample the specular mask to gate water extent.
     let waterMask = textureSample(
         specularMapTexture,
         textureSampler,
         input.texCoord,
     ).r;
-    // Slice 5c-B Batch 121 — emit FragOutput. normalRoughness gets the
-    // geometric eye-space normal (vertex shader writes worldNormal as
-    // eye-space via camera.normalMatrix). Roughness 0.5 placeholder —
-    // Lit Mat shaders don't carry material roughness in their UBOs.
+    // normalRoughness carries the geometric eye-space normal — the vertex
+    // shader already writes worldNormal through camera.normalMatrix, so it is
+    // eye-space — and a fixed roughness of 0.5, because the Lit Mat UBOs carry
+    // no material roughness.
     var mrtOut: FragOutput;
     mrtOut.color = vec4<f32>(finalColor, material.baseWaterColor.a * waterMask);
     mrtOut.normalRoughness = vec4<f32>(normalize(input.worldNormal), 0.5);

@@ -38,7 +38,7 @@
 // Vertex data format (quantized, TerrainQuantization.BITS12):
 //   compressed0: vec4 (compressedXY, compressedZH, compressedUV, encodedNormal)
 
-// ─── Camera Uniforms (Group 0, Binding 0) ───
+// Camera uniforms (group 0, binding 0).
 //
 // Scene mode constants (matches SceneMode.js):
 //   0 = MORPHING       — transitional state during mode changes
@@ -75,7 +75,7 @@ struct CameraUniforms {
   // calculations. `.y` stays reserved for a future oblate-ellipsoid pair.
   ellipsoidRadius: f32,
   _pad3: f32,
-  // ─── 2D / Columbus View support ───
+  // 2D / Columbus View support.
   // tileRectangle: west, south, east, north (radians)
   tileRectangle: vec4<f32>,
   // southAndNorthLatitude: x=south, y=north (radians)
@@ -90,16 +90,14 @@ struct CameraUniforms {
   morphTime: f32,
   useWebMercator: f32,
   _pad4: f32,
-  // ─── DP-H41: TAA / motion-vector support ───
   // Last frame's viewProjection, captured by `UniformState.update()` before
   // it overwrites `_viewProjection` with the new camera state. Motion-vector
-  // passes read this as `camera.previousViewProjection` to reproject the
-  // current fragment into the previous frame's NDC. On the first frame it
-  // holds `Matrix4.IDENTITY` (`UniformState` ctor default) — downstream
-  // consumers should gate motion-vector output on a separate "valid
-  // history" flag, not on matrix contents.
+  // passes read this to reproject the current fragment into the previous
+  // frame's NDC. On the first frame it holds `Matrix4.IDENTITY`
+  // (`UniformState` constructor default), which is indistinguishable from a
+  // real identity view, so motion-vector output gates on a separate
+  // valid-history flag rather than on matrix contents.
   previousViewProjection: mat4x4<f32>,
-  // ─── Session 65 Batch 9: Nishita-style ground atmosphere (Cluster 2b/5) ───
   // Atmosphere parameters mirroring WebGL's `u_atmosphere*` automatic
   // uniforms (defaults from `Atmosphere.js`):
   //   xyz = light direction in WORLD coords (sun or scene light)
@@ -125,14 +123,12 @@ struct CameraUniforms {
   //     atmosphere from JS (`scene.fog.enabled = false`, etc.) doesn't
   //     leak into the per-vertex ray-march cost.
   atmosphereParams: vec4<f32>,
-  // ─── Batch 76: czm_lightColor (custom scene light color) ───
-  // Mirrors WebGL's `czm_lightColor` automatic uniform. Used by the
-  // Lambert diffuse path so scene-provided custom light colors (e.g.,
-  // setting `scene.light.color` to a warm sunset orange) propagate to
-  // the globe. Default is white (1,1,1) when no custom light is set.
-  // .w reserved for future use (e.g. ambient color scalar).
+  // Mirrors WebGL's `czm_lightColor` automatic uniform. Read by the Lambert
+  // diffuse path so a scene-provided custom light color (`scene.light.color`)
+  // reaches the globe. White (1,1,1) when no custom light is set. `.w` is
+  // reserved.
   lightColor: vec4<f32>,
-  // ─── Batch 77: custom Lambert coefficients (tile-provider-driven) ───
+  // Custom Lambert coefficients, supplied by the tile provider.
   // Mirrors WebGL's `u_lambertDiffuseMultiplier` and
   // `u_vertexShadowDarkness` fragment uniforms (see GlobeFS.glsl L132-133,
   // L559). When the terrain provider supplies vertex normals (e.g. STK
@@ -145,19 +141,18 @@ struct CameraUniforms {
   //   y = vertexShadowDarkness      (default 0.3 from Globe.js:523)
   //   z = hasVertexNormals flag — when > 0.5, the Lambert path uses the
   //       (x, y) coefficients directly (matches WebGL ENABLE_VERTEX_LIGHTING);
-  //       when ≤ 0.5, the Lambert path runs WebGL's ENABLE_DAYNIGHT_SHADING
-  //       formula `mix(1, clamp(NdotL × 5 + 0.3, 0, 1), fade)` (CLT-B4, CO-18;
-  //       it was a hardcoded `NdotL × 0.88 + 0.12` aesthetic before that).
-  //   w = zoomedOutOceanSpecularIntensity (GLOBE-POLAR-STRETCH-POLISH).
-  //       Mirrors WebGL's `u_zoomedOutOceanSpecularIntensity`, which
-  //       `Globe.beginFrame` sets per-frame: 0.4 when showGroundAtmosphere
-  //       (the default), 0.5 otherwise, 0.0 outside SCENE3D. Consumed by
-  //       `computeEnhancedOcean`'s specular surfaceReflectance. (This slot
-  //       was once reserved for a DAYNIGHT_SHADING `fade` bridge; CO-18 built
-  //       that bridge as `TileUniforms.lightingFade` instead, because the fade
-  //       is a per-tile-UB scalar in the same pass as `nightFade*Distance`.)
+  //       when <= 0.5, the Lambert path runs WebGL's ENABLE_DAYNIGHT_SHADING
+  //       formula `mix(1, clamp(NdotL × 5 + 0.3, 0, 1), fade)`.
+  //   w = zoomedOutOceanSpecularIntensity. Mirrors WebGL's
+  //       `u_zoomedOutOceanSpecularIntensity`, which `Globe.beginFrame` sets
+  //       per-frame: 0.4 when showGroundAtmosphere (the default), 0.5
+  //       otherwise, 0.0 outside SCENE3D. Consumed by `computeEnhancedOcean`'s
+  //       specular surfaceReflectance.
+  // The day/night camera-distance fade is not carried here; it is a
+  // per-tile-UB scalar, `TileUniforms.lightingFade`, packed in the same pass
+  // as `nightFade*Distance`.
   lighting: vec4<f32>,
-  // ─── Renderer-wide log depth (Approach A) ───
+  // Renderer-wide log depth.
   //   x = frustum near, y = frustum far,
   //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
   //   w = reserved.
@@ -170,30 +165,27 @@ struct CameraUniforms {
   // the rasterizer's hyperbolic NDC z, matching every sibling producer sharing
   // the attachment. See WebGPULogDepth.ts.
   logDepth: vec4<f32>,
-  // ─── DP-H44 (Batch 360): globe terrain pick color ───
-  // The globe's registered pick-ID color, read ONLY by `fragmentPickMain`
-  // (the pick-pass entry point). Packed at the camera-UB TAIL by
-  // WebGPUGlobeSurfaceCameraUB so the additive layout shifts no existing
-  // offset. (0,0,0,0) unless `globe.pickable` is set — so by default the
-  // pick FBO receives globe DEPTH (matching WebGL's `updateForPick`
-  // re-push, which is what `scene.pickPosition` needs) but writes a zero
-  // pick color, leaving `scene.pick` undefined over the globe (WebGL
-  // parity). When `globe.pickable` is true this carries the real pick-ID
-  // color and `scene.pick` returns the Globe.
+  // The globe's registered pick-ID color, read only by `fragmentPickMain`.
+  // Packed at the camera-UB tail by WebGPUGlobeSurfaceCameraUB, so it shifts
+  // no existing offset. (0,0,0,0) unless `globe.pickable` is set: the pick
+  // framebuffer still receives globe depth — which is what
+  // `scene.pickPosition` needs, matching WebGL's `updateForPick` re-push —
+  // but writes a zero pick color, leaving `scene.pick` undefined over the
+  // globe as on WebGL. With `globe.pickable` set this carries the real
+  // pick-ID color and `scene.pick` returns the Globe.
   pickColor: vec4<f32>,
-  // ─── Batch 437 (CLOUD-SHADOWS): sun-view beer shadow map projection ───
-  // `cloudShadowVP` maps a WORLD (ECEF) position into the sun's orthographic clip
-  // space; the FS projects the fragment, reads the cloud OPTICAL DEPTH column from
+  // Sun-view cloud beer-shadow-map projection. `cloudShadowVP` maps a world
+  // (ECEF) position into the sun's orthographic clip space; the fragment
+  // shader projects the fragment, reads the cloud optical-depth column from
   // `cloudShadowMap` (group 2 binding 9), and darkens the lit ground by
   // transmittance = exp(-depth·absorption). `cloudShadowControl`: x = enabled
-  // (1.0 when globe.cloudCastShadows AND a real map was rendered), y =
-  // absorptionCoeff (so exp() matches the cloud render), z = strength (0..1
-  // darkening scale), w = reserved. Additive tail-append — no existing offset
-  // shifts; (identity, 0,0,0,0) by default so the FS gate (`x > 0.5`) stays closed
-  // and the render is byte-identical.
+  // (1.0 when globe.cloudCastShadows is set and a real map was rendered), y =
+  // absorptionCoeff, so exp() matches the cloud render, z = strength (0..1
+  // darkening scale), w = reserved. (identity, 0,0,0,0) by default, keeping
+  // the fragment gate (`x > 0.5`) closed and the render unchanged.
   cloudShadowVP: mat4x4<f32>,
   cloudShadowControl: vec4<f32>,
-  // ─── GLOBE-UNDERGROUND-COLOR: underground tint (GlobeFS UNDERGROUND_COLOR) ───
+  // Underground tint, the twin of GlobeFS' UNDERGROUND_COLOR path.
   // Mirrors WebGL's `u_undergroundColor` + `u_undergroundColorAlphaByDistance`
   // (GlobeFS.glsl lines 123-126, applied at lines 735-744).
   //   undergroundColor — globe.undergroundColor RGBA.
@@ -205,15 +197,15 @@ struct CameraUniforms {
   //         && undergroundColor.alpha > 0 && (nearValue > 0 || farValue > 0).
   //     y = max(czm_eyeHeight, 0) — camera height above the ellipsoid
   //         (WebGL reads the `czm_eyeHeight` automatic uniform in the FS;
-  //         we pack the clamped value CPU-side).
+  //         the clamped value is packed CPU-side).
   //     z, w = reserved.
-  // Additive tail-append — no existing offset shifts; all-zero by default so
-  // the FS gate (`undergroundControl.x > 0.5`) stays closed and the render
-  // is byte-identical when the feature is off.
+  // All-zero by default, keeping the fragment gate
+  // (`undergroundControl.x > 0.5`) closed and the render unchanged when the
+  // feature is off.
   undergroundColor: vec4<f32>,
   undergroundColorAlphaByDistance: vec4<f32>,
   undergroundControl: vec4<f32>,
-  // ─── GLOBE-TRANSLUCENCY-ALPHA: per-fragment translucent-globe alpha ───
+  // Per-fragment translucent-globe alpha.
   // Mirrors WebGL's `u_frontFaceAlphaByDistance` / `u_backFaceAlphaByDistance`
   // (GlobeFS.glsl lines 112-114, applied at lines 746-751 under `#ifdef
   // TRANSLUCENT`). Each is a NearFarScalar packed (near, nearValue, far,
@@ -225,52 +217,52 @@ struct CameraUniforms {
   //     compile-time define, emitted exactly when
   //     `globeTranslucencyState.translucent` (front faces translucent).
   //     y, z, w = reserved.
-  // Additive tail-append — no existing offset shifts; all-zero by default so
-  // the FS gate (`translucencyControl.x > 0.5`) stays closed and the render
-  // is byte-identical when globe.translucency is disabled.
+  // All-zero by default, keeping the fragment gate
+  // (`translucencyControl.x > 0.5`) closed and the render unchanged when
+  // globe.translucency is disabled.
   translucencyFrontAlphaByDistance: vec4<f32>,
   translucencyBackAlphaByDistance: vec4<f32>,
   translucencyControl: vec4<f32>,
-  // ─── GLOBE-HDR-GAMMA: czm_gammaCorrect gate (Q13-PLAIN-HDR-GAMMA-CORE) ───
+  // `czm_gammaCorrect` gate.
   // x = 1.0 when `scene.highDynamicRange` is on (`frameState.useHDR`),
-  //     mirroring WebGL's single `HDR` define (DerivedCommand.createHdrCommand
-  //     pushes it on `scene._hdr` alone — NOT gated on an actual HDR canvas).
-  //     Under HDR, `czm_gammaCorrect` decodes sRGB → linear like WebGL's
-  //     `#ifdef HDR` czm_gammaCorrect, so the post-process Tonemap stage
-  //     (enabled on the same `highDynamicRange` flag) can tonemap + re-encode
-  //     the linear radiance. This matches the globe's own atmosphere/fog gate
-  //     (`groundAtmosphereControl.w`, also `frameState.useHDR`). The earlier
-  //     HDR-canvas-only gate left imagery un-decoded under plain HDR while the
-  //     Tonemap still gamma-encoded it — a double-encode → double-bright globe.
+  //     mirroring WebGL's single `HDR` define, which
+  //     `DerivedCommand.createHdrCommand` pushes on `scene._hdr` alone rather
+  //     than on the presence of an HDR canvas. Under HDR, `czm_gammaCorrect`
+  //     decodes sRGB to linear as WebGL's `#ifdef HDR` path does, so the
+  //     post-process Tonemap stage — enabled on the same `highDynamicRange`
+  //     flag — can tonemap and re-encode the linear radiance. Gating instead
+  //     on an actual HDR canvas leaves imagery un-decoded while Tonemap still
+  //     gamma-encodes it, which double-encodes into a twice-bright globe.
+  //     Matches the globe's own atmosphere/fog gate
+  //     (`groundAtmosphereControl.w`, also `frameState.useHDR`).
   // y = czm_gamma (uniformState.gamma, default 2.2).
   // z, w = reserved.
-  // Additive tail-append — no existing offset shifts; all-zero by default so
-  // `czm_gammaCorrect` stays the historical identity no-op and the SDR
-  // render is byte-identical.
+  // All-zero by default, which leaves `czm_gammaCorrect` an identity no-op
+  // and the SDR render unchanged.
   hdrControl: vec4<f32>,
-  // ─── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP: cloud-shadow cascade tail ───
+  // Cloud-shadow cascade tail.
   // When the opt-in `cloudShadowCascades` tier is active, the cloud beer-shadow-
   // map is rendered as three cascades (near/mid/far, geometric ÷3 footprints)
   // stacked into a 512×1536 atlas bound at `cloudShadowMap`. `cloudShadowVP` (the
   // existing mid-struct field) is the NEAR cascade's world→sun-clip matrix;
   // `cloudShadowVP1`/`cloudShadowVP2` are the mid/far ones. `cloudShadowControl.w`
-  // carries the cascade count (3.0 when active, 0 otherwise). The FS picks the
-  // finest cascade whose footprint contains the fragment. Additive tail-append —
-  // no existing offset shifts; all-zero + count 0 by default so `sampleCloudGround-
-  // Shadow` takes the single-map branch → byte-identical when the tier is off.
+  // carries the cascade count (3.0 when active, 0 otherwise). The fragment
+  // shader picks the finest cascade whose footprint contains the fragment.
+  // All-zero with count 0 by default, so `sampleCloudGroundShadow` takes the
+  // single-map branch and the render is unchanged when the tier is off.
   cloudShadowVP1: mat4x4<f32>,
   cloudShadowVP2: mat4x4<f32>,
   // x = atlas tile count (3.0 when the cascade atlas is bound, else 0).
-  // y = C13-06 eye-relative flag: > 0.5 means every `cloudShadowVP*` above is
-  //     `worldToSunClip * translate(camera)`, so the FS must project
-  //     `v_positionRTE`. 0 keeps the absolute matrices + `v_positionMC` for the
-  //     planar scene modes. z, w reserved.
+  // y = eye-relative flag: > 0.5 means every `cloudShadowVP*` above is
+  //     `worldToSunClip * translate(camera)`, so the fragment shader must
+  //     project `v_positionRTE`. 0 keeps the absolute matrices and
+  //     `v_positionMC` for the planar scene modes. z, w reserved.
   cloudShadowCascadeParams: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
-// ─── C12-29 S5 Eclipse Uniforms (Group 0, Binding 2) ───
+// Eclipse uniforms (group 0, binding 2).
 //
 // Dedicated terrain-global carrier, prepared once per logical View/frame and
 // reused by every tile/pass. It deliberately does not live in CameraUniforms:
@@ -283,10 +275,10 @@ struct CameraUniforms {
 //   moonDirectionDeltaAndInvRange.w   = 1 / length(M_ECEF)
 // params.x is the five-state gate (0 inert, 1 active/custom light,
 // 2 active/SunLight, 3 correction-only/SunLight, 4 correction-only/custom);
-// params.y is the S2
-// reciprocal and params.zw + params2.w are the limb-darkening fit. params2.x
-// is the radiometric floor; params2.yz carry the exposure exponent and
-// antumbral lift.
+// params.y is the reciprocal of the camera-anchored eclipse factor already
+// applied at the uniform source, so a fragment-local factor can divide it back
+// out; params.zw and params2.w are the limb-darkening fit. params2.x is the
+// radiometric floor; params2.yz carry the exposure exponent and antumbral lift.
 struct EclipseUniforms {
   sunDirectionAndInvRange: vec4<f32>,
   moonDirectionDeltaAndInvRange: vec4<f32>,
@@ -321,14 +313,13 @@ fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusO
 var<private> g_fragLogDepth: f32;
 //>>endif
 
-// ─── Tile Imagery Uniforms (Group 0, Binding 1) ───
+// Tile imagery uniforms (group 0, binding 1).
 //
-// Batch 58 — C-R5 imagery layer expansion. Per-layer struct now carries
-// the 5 fields previously WebGL-only: hue, oneOverGamma, split, colorToAlpha
-// (vec4 = rgb + threshold; threshold < 0 disables), cutoutRectangle (vec4 in
-// tile-UV space; zero-area disables). Layout below is alignment-driven:
-// vec4 fields first, then a 4-scalar slot, then a second 4-scalar slot for
-// the new per-layer scalars. 24 floats / 96 bytes per layer × 16 = 1536 B.
+// The per-layer struct carries hue, oneOverGamma, split, colorToAlpha
+// (vec4 = rgb + threshold; threshold < 0 disables) and cutoutRectangle (vec4
+// in tile-UV space; zero-area disables). The layout is alignment-driven: vec4
+// fields first, then a 4-scalar slot, then a second 4-scalar slot for the
+// remaining per-layer scalars. 24 floats / 96 bytes per layer × 16 = 1536 B.
 struct ImageryLayer {
   translationAndScale: vec4<f32>,
   texCoordsRect: vec4<f32>,
@@ -379,42 +370,42 @@ struct TileUniforms {
   verticalExaggerationRelativeHeight: f32,
   // Flags: x=hasWaterMask, y=enableClipping, z=showOceanWaves, w=isSubsequentPass
   flags: vec4<f32>,
-  // === Night & Ocean Enhancement Parameters ===
-  // CLT-B2 — every slot in these two vec4s uses a NEGATIVE value as the
-  // "CPU supplied nothing, use the shader default" marker (see the getters
-  // below and `WebGPUGlobeTunables.GLOBE_UB_UNSET`). A zero here is a
-  // real, honoured zero.
+  // Night and ocean enhancement parameters. Every slot in these two vec4s
+  // uses a negative value as the "CPU supplied nothing, use the shader
+  // default" marker (see the getters below and
+  // `WebGPUGlobeTunables.GLOBE_UB_UNSET`); a zero here is a real, honoured
+  // zero.
   // oceanParams: x=deepR, y=deepG, z=deepB, w=fresnelPower
   oceanParams: vec4<f32>,
   // nightOceanParams: x=nightIntensity, y=oceanReflectivity, z=foamThreshold, w=oceanDarkening
   nightOceanParams: vec4<f32>,
   time: f32,
-  // OPEN-5 fix: modulates the fog exponential to match WebGL's
+  // Modulates the fog exponential to match WebGL's
   // `czm_fog(dist, color, fogColor, scalar)`. Default 0.15.
   fogVisualDensityScalar: f32,
   // splitPosition in framebuffer pixels (matches @builtin(position).x).
   // CPU side multiplies `frameState.splitPosition` (a 0..1 fraction) by
   // `drawingBufferWidth`, mirroring WebGL's `czm_splitPosition` auto-uniform.
   splitPosition: f32,
-  // CLT-B4 (CO-18) — WebGL's day/night camera-distance fade, `GlobeFS.glsl:642`
+  // WebGL's day/night camera-distance fade, `GlobeFS.glsl:642`:
   //   fade = clamp((cameraDist - fadeOutDist) / (fadeInDist - fadeOutDist), 0, 1)
-  // computed CPU-side from `globe.lightingFadeOutDistance` /
-  // `lightingFadeInDistance` because the WGSL has neither `czm_view` nor
+  // Computed CPU-side from `globe.lightingFadeOutDistance` /
+  // `lightingFadeInDistance`, because the WGSL has neither `czm_view` nor
   // `czm_frustumPlanes` to reproduce GLSL's per-scene-mode `cameraDist`.
-  // 0 near the ground (the day/night diffuse is mixed to FULL brightness there,
-  // i.e. flat-lit — WebGL's shape), 1 at orbit (the ramp applies in full).
-  // DISTINCT from `groundAtmosphereControl.y`, which carries the same clamp but
-  // is FORCED TO ZERO whenever the ground-atmosphere drape is off; the lighting
-  // fade has no such gate on WebGL, so it needs its own slot. Previously
-  // `_tilePad0` — a scalar pad, so no vec4 alignment moved.
+  // 0 near the ground, where the day/night diffuse is mixed to full brightness
+  // and the globe renders flat-lit as it does on WebGL; 1 at orbit, where the
+  // ramp applies in full. Distinct from `groundAtmosphereControl.y`, which
+  // carries the same clamp but is forced to zero whenever the
+  // ground-atmosphere drape is off; the lighting fade has no such gate on
+  // WebGL, so it needs its own slot.
   lightingFade: f32,
-  // Per-tile debug fields (Tier 2 debug). All zero in production:
+  // Per-tile debug fields. All zero in production:
   //   x = tileLevel — LOD depth integer (read by fragmentDebugLod)
   //   y = isolateImageryLayer — index 0..15 to render alone, or -1 for all
   //                              (read by fragmentMain when set)
   //   z, w = reserved for future debug toggles
   debugFields: vec4<f32>,
-  // DP-H24 — Globe hue/saturation/brightness shift. When any channel
+  // Globe hue/saturation/brightness shift. When any channel
   // is non-zero (|shift| > 0.001) the final composite color is
   // converted to HSB, shifted, and converted back. Matches the
   // WebGL path's `u_hsbShift` in GlobeFS.glsl.
@@ -423,13 +414,12 @@ struct TileUniforms {
   //   z = brightnessShift (-1..+1, clamped)
   //   w = padding
   hsbShift: vec4<f32>,
-  // Session 65 (2026-05-11) — GroundAtmosphere drape control. WebGL has
-  // TWO delivery paths for the atmospheric color over the planet disk:
-  // the FOG branch (close to ground) and the `#else` `lightingFade`
-  // branch (far from ground). Our WGSL shader previously only wired the
-  // FOG branch, so at orbital altitudes (cam > 800 km, fog disabled) the
-  // drape was missing entirely — only the SkyAtmosphere shell at the
-  // limb was visible. This slot enables the far-from-ground drape:
+  // Ground-atmosphere drape control. WebGL delivers atmospheric color over
+  // the planet disk through two paths: the fog branch close to the ground,
+  // and the `#else` `lightingFade` branch far from it. This slot drives the
+  // far-from-ground one; without it, above roughly 800 km — where fog is
+  // disabled — the disk carries no drape at all and only the SkyAtmosphere
+  // shell at the limb remains visible.
   //   x = enable flag (1.0 if showGroundAtmosphere AND fade > 0)
   //   y = fade scalar (pre-computed CPU-side; same formula as
   //       GlobeFS.glsl line 391 — drives the final mix factor between
@@ -437,13 +427,11 @@ struct TileUniforms {
   //   z = atmosphereLightIntensity
   //   w = reserved
   groundAtmosphereControl: vec4<f32>,
-  // Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES) — WebGL's `u_initialColor`:
-  // `globe.baseColor` on the first pass (rendered where no imagery is
-  // available), transparent black on subsequent multi-pass imagery passes
-  // (matching WebGL's `otherPassesInitialColor`). Replaces the previous
-  // hardcoded vec3(0.04, 0.04, 0.06) first-pass base.
+  // WebGL's `u_initialColor`: `globe.baseColor` on the first pass, which is
+  // what shows where no imagery is available, and transparent black on
+  // subsequent multi-pass imagery passes (WebGL's `otherPassesInitialColor`).
   initialColor: vec4<f32>,
-  // GLOBE-TRANSLUCENCY-ALPHA — WebGL's `u_translucencyRectangle`
+  // WebGL's `u_translucencyRectangle`
   // (GlobeFS.glsl `inTranslucencyRectangle()`): `globe.translucency.rectangle`
   // antimeridian-clipped and localized to this tile's UV space
   // (west, south, east, north), packed by WebGPUGlobeSurfaceTileUB. The
@@ -453,11 +441,12 @@ struct TileUniforms {
   // fragment qualifies. All-zero when translucency is off — inert because
   // the `camera.translucencyControl.x` gate is closed then anyway.
   localizedTranslucencyRectangle: vec4<f32>,
-  // C11-172 v3 — ocean-wave RTE phase decomposition (add-only tail). f64-
-  // computed per-tile per-octave phase offsets fract(rectOriginNorm × Rᵢ) keep
-  // the sampled ellipsoid-UV coordinate small (the absolute `euv × Rᵢ` reached
-  // ~2.7e6 for the 15 m ripple → f32 ulp ~0.25 repeat → staircase banding +
-  // frozen advection). See WebGPUGlobeSurfaceTypes.ts offsets 484-491.
+  // Ocean-wave relative-to-eye phase decomposition. The f64-computed per-tile,
+  // per-octave phase offsets fract(rectOriginNorm × Rᵢ) keep the sampled
+  // ellipsoid-UV coordinate small: the absolute `euv × Rᵢ` reaches ~2.7e6 for
+  // the 15 m ripple, where an f32 ulp is ~0.25 of a repeat, which stair-steps
+  // the wave into bands and freezes its advection.
+  // See WebGPUGlobeSurfaceTypes.ts offsets 484-491.
   //   oceanWavePhaseA: (.xy)=octave1 phase (u,v), (.zw)=octave2 phase (u,v)
   oceanWavePhaseA: vec4<f32>,
   //   oceanWavePhaseB: (.xy)=octave3 phase (u,v),
@@ -469,7 +458,7 @@ struct TileUniforms {
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
 
-// ─── Textures (Group 1): Day imagery (16 slots — Batch 58, C-R5) ───
+// Textures (group 1): day imagery, 16 slots.
 // WebGPU minimum guarantee for `maxSampledTexturesPerShaderStage` is 16, so
 // 16 is the safe ceiling without device-limit probing. Tiles with >16 layers
 // fall back to multi-pass rendering (CPU-side, see createTileCommands).
@@ -478,13 +467,13 @@ struct TileUniforms {
 @group(1) @binding(2)  var dayTexture2:  texture_2d<f32>;
 @group(1) @binding(3)  var dayTexture3:  texture_2d<f32>;
 //>>ifdef GLOBE_IMAGERY_REDUCED
-// NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — reduced layout for
-// default-limit adapters (maxSampledTexturesPerShaderStage = 16, e.g.
-// SwiftShader CI / compat mode). dayTexture0..3 are declared; the globe's
-// 12 non-imagery sampled textures bring the total to exactly 16. Multi-layer
-// tiles multi-pass at up to four layers per pass (CPU-side slicing keys off the
-// renderer's `_imagerySlotCount`). `texSampler` stays at @binding(16) in
-// BOTH variants so the JS bind-group builder shares one shape.
+// Reduced layout for default-limit adapters, where
+// `maxSampledTexturesPerShaderStage` is 16 — SwiftShader CI and compat mode.
+// Only dayTexture0..3 are declared; the globe's 12 non-imagery sampled
+// textures bring the total to exactly 16. Multi-layer tiles multi-pass at up
+// to four layers per pass, with the CPU-side slicing keyed off the renderer's
+// `_imagerySlotCount`. `texSampler` stays at @binding(16) in both variants so
+// the JS bind-group builder shares one shape.
 //>>else
 @group(1) @binding(4)  var dayTexture4:  texture_2d<f32>;
 @group(1) @binding(5)  var dayTexture5:  texture_2d<f32>;
@@ -501,42 +490,42 @@ struct TileUniforms {
 //>>endif
 @group(1) @binding(16) var texSampler: sampler;
 
-// ─── Water mask + Ocean normal map (Group 2, merged) ───
+// Water mask and ocean normal map (group 2, merged).
 @group(2) @binding(0) var waterMaskTexture: texture_2d<f32>;
 @group(2) @binding(1) var waterMaskSampler: sampler;
 @group(2) @binding(2) var oceanNormalMap: texture_2d<f32>;
 @group(2) @binding(3) var oceanNormalSampler: sampler;
-// ─── Batch 437 (CLOUD-SHADOWS): sun-view beer shadow map (Group 2, 9/10) ───
-// Single-channel cloud OPTICAL DEPTH rendered from the sun's ortho view. Bound
-// UNCONDITIONALLY (the TS layout always declares 9/10) so the pipeline layout never
-// forks; a 1×1 zero placeholder (optical depth 0 → transmittance 1, no shadow) is
-// bound when globe.cloudCastShadows is off. Sampled only inside the
+// Sun-view cloud beer-shadow map: single-channel cloud optical depth rendered
+// from the sun's orthographic view. Bound unconditionally — the TypeScript
+// layout always declares 9/10 — so the pipeline layout never forks; a 1×1 zero
+// placeholder (optical depth 0, so transmittance 1 and no shadow) is bound when
+// globe.cloudCastShadows is off. Sampled only inside the
 // `cloudShadowControl.x > 0.5` gate, so the off path never reads it.
 @group(2) @binding(9) var cloudShadowMap: texture_2d<f32>;
 @group(2) @binding(10) var cloudShadowSampler: sampler;
 
-// ─── C11-213 (UP144-VECTOR-LAYER-WGSL): draped vector-tile polylines ───
-// WGSL twin of `VectorCommon.glsl`'s five `u_vector*` sampler2D lookup tables.
-// The GLSL side uses `texelFetch` purely as WebGL2's stand-in for a buffer read
-// (nearest sampling, integer coordinates, power-of-two padding, no filtering) —
-// WebGPU has real read-only storage buffers, so the whole per-tile lookup set
-// collapses into ONE binding instead of five sampled textures. That is not a
-// stylistic choice: group 2 already charges 5 of the 12 non-imagery fragment
-// sampled textures the globe layout is allowed
+// Draped vector-tile polylines: the WGSL twin of `VectorCommon.glsl`'s five
+// `u_vector*` sampler2D lookup tables. The GLSL side uses `texelFetch` purely
+// as WebGL2's stand-in for a buffer read — nearest sampling, integer
+// coordinates, power-of-two padding, no filtering — and WebGPU has real
+// read-only storage buffers, so the whole per-tile lookup set collapses into
+// one binding instead of five sampled textures. The collapse is forced, not
+// stylistic: group 2 already charges 5 of the 12 non-imagery fragment sampled
+// textures the globe layout is allowed
 // (`GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES`), and on a default-limit adapter
 // (`maxSampledTexturesPerShaderStage` = 16, the WebGPU spec floor — SwiftShader
-// CI / compat mode) the reduced 4-slot imagery layout already lands on exactly
-// 16. Five more sampled textures would take it to 21 and break the globe
-// pipeline outright on those devices. A storage buffer costs zero
-// sampled-texture budget.
+// CI and compat mode) the reduced 4-slot imagery layout already lands on
+// exactly 16. Five more sampled textures would take it to 21 and break the
+// globe pipeline outright on those devices. A storage buffer costs nothing
+// against that budget.
 //
-// Bound UNCONDITIONALLY (same discipline as the cloud shadow map above) so the
-// pipeline layout never forks per tile: tiles with no clamped vector data bind
-// a 32-byte all-zero placeholder whose `gridWidth` header word is 0, and
-// `vectorPolylineRender` returns the untouched base color after a single u32
-// load. WebGL forks the SHADER instead (`#ifdef HAS_VECTOR_LAYER`, shader-set
-// flag bit `0x400000000`); a per-tile define on WebGPU would fork every globe
-// pipeline variant, so the gate is a runtime header read here.
+// Bound unconditionally, on the same discipline as the cloud shadow map above,
+// so the pipeline layout never forks per tile: tiles with no clamped vector
+// data bind a 32-byte all-zero placeholder whose `gridWidth` header word is 0,
+// and `vectorPolylineRender` returns the untouched base color after a single
+// u32 load. WebGL forks the shader instead (`#ifdef HAS_VECTOR_LAYER`,
+// shader-set flag bit `0x400000000`); a per-tile define here would fork every
+// globe pipeline variant, so the gate is a runtime header read.
 //
 // Word layout (see `WebGPUVectorTileResources.ts` — the packer and this reader
 // are a matched pair; neither may change alone):
@@ -549,11 +538,11 @@ struct TileUniforms {
 //   primitives       : primitiveCount * (f32 lineWidth, u32 packed RGBA8)
 @group(2) @binding(11) var<storage, read> vectorTileData: array<u32>;
 
-// ─── Effects bind group: shadow receive + clipping planes (Group 3) ───
-// Phase 5 WGF-1: trailing two vec4 slots hold the precomputed
+// Effects bind group (group 3): shadow receive and clipping planes.
+// The `clipPlaneEqHW` slots hold the precomputed
 // `dPrime[i] = d + dot(n, camera)` values for the hardware clip-distances
 // pipeline variant. Slots beyond `clippingPlaneCount` (or beyond 8) carry
-// +Infinity so the rasterizer never clips against them. The legacy
+// +Infinity so the rasterizer never clips against them. The
 // fragment-discard path ignores these fields.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
@@ -565,7 +554,7 @@ struct EffectsUniforms {
     clippingEdgeWidth: f32,
     clippingPolygonCount: u32,
     clippingEdgeColor: vec4<f32>,
-    // WGF-1: each entry is (n.xyz, dPrime); unused slots are (0,0,0,+inf).
+    // Each entry is (n.xyz, dPrime); unused slots are (0,0,0,+inf).
     clipPlaneEqHW: array<vec4<f32>, 8>,
     // Atmosphere LUT control:
     //   .x = useAtmosphereLut flag (>0.5 → sample bindings 7/8 for
@@ -577,33 +566,30 @@ struct EffectsUniforms {
     //   .z = atmosphere thickness (outer - inner, meters)
     //   .w = reserved
     atmosphereLutControl: vec4<f32>,
-    // CSM Slice 1 — cascaded shadow map control:
+    // Cascaded shadow map control:
     //   .x = csmEnabled flag (>0.5 → sample cascade depth array at
     //        bindings 10/11 via `sampleCascadeShadow`; otherwise use
     //        the single shadow map at bindings 1/2)
-    //   .y = PCF kernel radius in shadow texels (NEW-CSM-SOFT-SHADOW-PCF).
+    //   .y = PCF kernel radius in shadow texels.
     //        >0 → `sampleOneCascade` runs a 3x3 PCF box kernel (soft
     //        edges, matches WebGL czm_shadowVisibility USE_SOFT_SHADOWS);
     //        0 → single hardware-comparison tap (hard edge).
     //   .z/.w reserved (cascade count, moon-light flag, etc).
     // Matches `CSM_CONTROL_OFFSET` on the JS side.
     csmControl: vec4<f32>,
-    // C-R8-EDGE-INLINE slots (offsets 272/288). The globe shader does NOT
-    // run the inline edge-detection stage — these two vec4s exist purely
-    // to keep byte-parity with the shared 480-byte effects UBO packed by
-    // `WebGPUEffectsBindGroup.js` (the model FS consumes them). Before
-    // GLOBE-CLIPPOLY-GEODETIC the globe struct omitted them, which made
-    // `pointLightControl` below read offset 272 (the edgeControl slot —
-    // always zero for globe bind groups) instead of 304, silently
-    // disabling Batch 108 globe point-light receive.
+    // Inline edge-detection slots at offsets 272/288. The globe shader does
+    // not run that stage; these two vec4s exist to keep byte-parity with the
+    // shared 480-byte effects UBO packed by `WebGPUEffectsBindGroup.js`, which
+    // the model fragment shader consumes. Omitting them slides
+    // `pointLightControl` below onto offset 272 — the edgeControl slot, always
+    // zero for globe bind groups — instead of 304, which silently disables
+    // globe point-light receive.
     edgeControl: vec4<f32>,
     edgeViewport: vec4<f32>,
-    // C-R10-POINT-LIGHT-RECEIVE-GLOBE (Batch 108) — point-light cube
-    // shadow control. Lays out IDENTICAL to the model shader's
-    // EffectsUniforms tail so both shaders read the same bytes from
-    // the shared effects UB. The globe shader previously stopped at
-    // csmControl; extending the struct here lets globe terrain
-    // receive point-light shadows without a separate UB.
+    // Point-light cube shadow control. Laid out identically to the model
+    // shader's EffectsUniforms tail so both shaders read the same bytes from
+    // the shared effects uniform buffer, which is what lets globe terrain
+    // receive point-light shadows without a buffer of its own.
     //   .x = pointLightActive flag (>0.5 → sample binding 17 via
     //        `globeSamplePointShadow`)
     //   .y = far plane (light radius)
@@ -616,9 +602,9 @@ struct EffectsUniforms {
     // .w = PCF radius in cube-face texels (0 → hard sampling). Matches
     // model shader's `pointLightPositionRTE` at offset 320.
     pointLightPositionRTE: vec4<f32>,
-    // GLOBE-CLIPPOLY-GEODETIC — polygon-clipping atlas control + merged-
-    // extent UV remap (offsets 336/352, Batch 160 layout — see the model
-    // shader's EffectsUniforms tail + `WebGPUEffectsBindGroup.js`):
+    // Polygon-clipping atlas control and merged-extent UV remap at offsets
+    // 336/352 — see the model shader's EffectsUniforms tail and
+    // `WebGPUEffectsBindGroup.js`:
     //   clippingPolygonControl = (extentsCount, 1/atlasDim, inverseFlag, _)
     //   clippingPolygonExtents[i] = (south, west, invLatRange, invLonRange)
     // in spherical fastApproximateAtan2 coordinates (matches the CPU pack
@@ -656,12 +642,12 @@ struct CSMParams {
 @group(3) @binding(4) var clippingPlaneSampler: sampler;
 @group(3) @binding(5) var polygonSDFTex: texture_2d<f32>;
 @group(3) @binding(6) var polygonSDFSampler: sampler;
-// Phase 4 — AtmosphereLUT integration for fog color. The transmittance
-// LUT gives Beer-Lambert attenuation for a view ray's altitude + zenith
-// angle; the inscatter LUT gives the scattered sky color along that
-// ray, precomputed by the AtmosphereLUT compute pass using the same
-// scattering parameters the SkyAtmosphere shell uses — so terrain fog
-// now matches the visible atmosphere dome. Gated on
+// Atmosphere lookup tables for fog color. The transmittance LUT gives
+// Beer-Lambert attenuation for a view ray's altitude and zenith angle; the
+// inscatter LUT gives the scattered sky color along that ray. Both are
+// precomputed by the AtmosphereLUT compute pass from the same scattering
+// parameters the SkyAtmosphere shell uses, which is what keeps terrain fog
+// matching the visible atmosphere dome. Gated on
 // `effects.atmosphereLutControl.x > 0.5`; placeholder 1×1 float
 // textures bind here when the LUT isn't ready yet, producing a
 // transmittance of 0 that makes the LUT path a no-op (falls through
@@ -669,33 +655,31 @@ struct CSMParams {
 @group(3) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
 @group(3) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
 @group(3) @binding(9) var atmosphereLutSampler: sampler;
-// CSM Slice 1 — cascaded shadow map bindings. Always present in the
-// layout (zero-filled placeholders when CSM disabled) so we don't need
-// a second pipeline variant. Sampled only when
-// `effects.csmControl.x > 0.5` via `sampleCascadeShadow`.
+// Cascaded shadow map bindings. Always present in the layout, zero-filled
+// with placeholders when cascades are disabled, so no second pipeline variant
+// is needed. Sampled only when `effects.csmControl.x > 0.5` via
+// `sampleCascadeShadow`.
 @group(3) @binding(10) var<uniform> csmParams: CSMParams;
 @group(3) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
-// C-R10-POINT-LIGHT-RECEIVE-GLOBE (Batch 108) — cube depth target
-// shared with the model receive path. The shared `EffectsBindGroupLayout`
-// in WebGPUEffectsBindGroup declares this at binding 17; the globe
-// previously didn't reference it. Bound to a 1×1×6 placeholder
-// (cleared to depth=1.0) when no point light is active so the bind
-// group always validates; the `effects.pointLightControl.x > 0.5`
-// gate skips sampling in that case.
+// Point-light cube depth target, shared with the model receive path. The
+// shared `EffectsBindGroupLayout` in WebGPUEffectsBindGroup declares this at
+// binding 17. Bound to a 1×1×6 placeholder cleared to depth 1.0 when no point
+// light is active, so the bind group always validates; the
+// `effects.pointLightControl.x > 0.5` gate skips sampling in that case.
 @group(3) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
-// ─── Group 2 extension: Globe material slots (Session 65 Cluster 3) ───
-// Material UBO + textures live at bindings 4-8 of Group 2 (alongside
-// the water-mask + ocean-normal bindings 0-3). This keeps the total
-// bind-group count at the WebGPU spec floor of 4, which matters because
-// some implementations (e.g., Edge's adapter) report `maxBindGroups: 4`
-// exactly. Layout matches the JS-side `_bindGroupLayout2` declaration.
+// Globe material slots, a group 2 extension. The material uniform buffer and
+// its textures live at bindings 4-8 of group 2, alongside the water-mask and
+// ocean-normal bindings 0-3. That keeps the total bind-group count at the
+// WebGPU spec floor of 4, which matters because some implementations — Edge's
+// adapter among them — report `maxBindGroups: 4` exactly. The layout matches
+// the JS-side `_bindGroupLayout2` declaration.
 //
-// When MATERIAL_APPLY is NOT set, the JS side still binds placeholder
-// resources to these slots so the pipeline layout doesn't drift between
-// material and non-material pipelines. The WGSL declarations are
-// emitted unconditionally — only the FS *uses* them when MATERIAL_APPLY
-// is set via `//>>ifdef MATERIAL_APPLY` at the call site.
+// When MATERIAL_APPLY is not set, the JS side still binds placeholder
+// resources to these slots so the pipeline layout does not drift between
+// material and non-material pipelines. The WGSL declarations are emitted
+// unconditionally; only the fragment shader's use of them is gated, via
+// `//>>ifdef MATERIAL_APPLY` at the call site.
 //
 // The material's `MaterialUniforms` struct definition + `materialUniforms`
 // var<uniform> binding are emitted by the JS-side prelude builder
@@ -709,15 +693,15 @@ struct CSMParams {
 @group(2) @binding(8) var heightsSampler: sampler;
 //>>endif
 
-// ─── Vertex Input / Output ───
-// DP-H25 — the `@location(2) geodeticSurfaceNormal` slot is conditionally
-// declared in all three input structs via the `GEODETIC_NORMAL` preprocessor
-// define. When active, the TS pipeline builder adds the matching
-// attribute over the trailing 12 bytes of each tile's vertex stride so
-// the exaggeration branch in `processVertex` can use the true WGS84
-// geodetic normal. When inactive, the attribute is absent and callers
-// pass `vec3<f32>(0.0)` as the sentinel — the exaggeration branch
-// falls back to `normalize(position3D)`.
+// Vertex input and output.
+//
+// The `@location(2) geodeticSurfaceNormal` slot is conditionally declared in
+// all three input structs via the `GEODETIC_NORMAL` preprocessor define. When
+// active, the TypeScript pipeline builder adds the matching attribute over the
+// trailing 12 bytes of each tile's vertex stride, so the exaggeration branch
+// in `processVertex` can use the true WGS84 geodetic normal. When inactive the
+// attribute is absent and callers pass `vec3<f32>(0.0)` as the sentinel, on
+// which the exaggeration branch falls back to `normalize(position3D)`.
 struct VertexInput {
   @location(0) position3DAndHeight: vec4<f32>,
   @location(1) textureCoordAndEncodedNormals: vec4<f32>,
@@ -760,25 +744,22 @@ struct VertexOutput {
   // positionHigh + positionLow at Earth scale. Zero in non-SCENE3D modes
   // (the CSM branch is gated on SCENE3D in WebGPUContext).
   @location(5) v_positionRTE: vec3<f32>,
-  // ─── Session 65 Batch 9: per-vertex ground-atmosphere scattering ───
-  // Output of the vertex-stage Nishita ray-march. Per C9-14 the fragment
-  // shader owns the production ground-atmosphere integration (per-fragment
-  // always, Batch 56), so these varyings feed ONLY the per-vertex debug
-  // visualizers (`tile.time ∈ [13.5e9,15.5e9]`); the vertex-stage march
-  // runs only in that debug window and otherwise leaves these zero. When
+  // Output of the vertex-stage ground-atmosphere ray-march. The fragment
+  // shader owns the production ground-atmosphere integration and runs it per
+  // fragment unconditionally, so these varyings feed only the per-vertex debug
+  // visualizers (`tile.time ∈ [13.5e9,15.5e9]`); the vertex-stage march runs
+  // only in that debug window and otherwise leaves them zero. Even when
   // active, the fragment shader still applies the Rayleigh and Mie phase
-  // functions per-fragment (the Mie phase varies sharply with view angle
-  // so it must be evaluated per pixel) and modulates by the global light
+  // functions per fragment — the Mie phase varies sharply with view angle, so
+  // it has to be evaluated per pixel — and modulates by the global light
   // intensity.
   @location(6) v_atmosphereRayleighColor: vec3<f32>,
   @location(7) v_atmosphereMieColor: vec3<f32>,
   @location(8) v_atmosphereOpacity: f32,
-  // ─── Cluster 3 — per-vertex slope/height/aspect for globe materials ───
-  // Mirrors the WebGL GlobeVS outputs `v_slope` / `v_aspect` / `v_height`
-  // gated by `#ifdef APPLY_MATERIAL`. Always emitted by the WGSL VS
-  // because we don't currently dead-strip on the WGSL preprocessor for
-  // these — the cost is 3 floats per vertex and avoids needing a
-  // separate vertex shader variant per material. Consumers:
+  // Per-vertex slope, height and aspect for globe materials, mirroring the
+  // WebGL GlobeVS outputs `v_slope` / `v_aspect` / `v_height` gated by
+  // `#ifdef APPLY_MATERIAL`. Emitted unconditionally: 3 floats per vertex is
+  // cheaper than a separate vertex shader variant per material. Consumers:
   // ElevationRamp (.height), SlopeRamp (.slope), AspectRamp (.aspect),
   // ElevationContour (.height), ElevationBand (.height).
   @location(9) v_slope: f32,
@@ -790,32 +771,22 @@ struct VertexOutput {
   //>>endif
 };
 
-// ─── Constants ───
 // Fallback used only if the CPU never uploads a real ellipsoid radius. WGS84
 // equatorial radius. Shader code should prefer `camera.ellipsoidRadius`.
 const EARTH_RADIUS_FALLBACK: f32 = 6378137.0;
 const PI: f32 = 3.14159265358979;
 
-// ─── Default ocean/night parameters (used when the CPU supplied no value) ───
-//
-// CLT-B2 — "unset" is a NEGATIVE slot, not `0.0`.
-//
-// These six getters used to read `== 0.0` as "the CPU configured nothing,
-// substitute my built-in default". Every tunable below has a legitimate zero
-// (`Globe.nightIntensity = 0` is documented as "no emission"; foam threshold 0
-// is "foam everywhere"; darkening 0 is "no darkening"), so the zero was
-// UNREACHABLE and any off path that wrote 0.0 silently aliased onto default-on.
-// That is what made `globe.enableNightLights = false` a visual no-op on WebGPU.
+// Default ocean and night parameters, substituted when the CPU supplied no
+// value. "Unset" is a negative slot, never `0.0`: every tunable below has a
+// legitimate zero — `Globe.nightIntensity = 0` is documented as no emission, a
+// foam threshold of 0 is foam everywhere, a darkening of 0 is no darkening —
+// so reading zero as "unset" makes the real zero unreachable and aliases every
+// off path that writes 0.0 onto default-on.
 //
 // The domains are all non-negative magnitudes, so the negative half-line is
 // unreachable from the API and carries "unset" without colliding with anything
 // a caller can ask for. `WebGPUGlobeTunables.GLOBE_UB_UNSET` (-1.0) is the
 // CPU twin of this test; the two must move together.
-//
-// Default-path identity: the shipped defaults write real, positive values
-// (nightIntensity 2.5, fresnel 5.0, reflectivity 0.04, foam 0.35, darkening
-// 0.6, deep colour 0.008/0.045/0.12), so both the old `== 0.0` law and this
-// `< 0.0` law take the pass-through arm and emit the same bits.
 fn getOceanDeepColor() -> vec3<f32> {
   let p = tile.oceanParams;
   // Negative red channel = unset (the packer writes the marker to all three).
@@ -850,7 +821,7 @@ fn getOceanDarkening() -> f32 {
   return select(d, 0.6, d < 0.0);
 }
 
-// ─── RTE Translation ───
+// Relative-to-eye translation.
 fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>,
                           camHigh: vec3<f32>, camLow: vec3<f32>) -> vec4<f32> {
   let highDiff = posHigh - camHigh;
@@ -858,21 +829,18 @@ fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>,
   return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
-// ─── Oct-decode normal from single float ───
-// Batch 61 — sanitize per-vertex `webMercatorT` against NaN. The
-// CPU-side formula in `HeightmapTessellator.geodeticLatitudeToMercatorAngle`
-// produces ±Infinity at latitude=±90°, and Cesium's per-tile
-// normalization (`(mercY − southMercY) × oneOverMercatorHeight`) turns
-// that into NaN for polar-spanning tiles whose south or north edge IS
-// at ±90°. WGSL's `step()` and `select()` with NaN follow strict IEEE
-// (false), which collapses the imagery `texCoordsAlpha` mask to zero
-// and produces the polar-black-hole rendering. WebGL's GLSL drivers
-// historically deviate from strict IEEE and treat NaN as "always in
-// range," so polar imagery rasterizes despite the NaN.
-//
-// We replace NaN with the geographic V (the same as the WebGL fallback
-// when `useWebMercatorT == false`). For tiles entirely within ±85° the
-// input is already a valid finite number — passed through unchanged.
+// Sanitizes a per-vertex `webMercatorT` against NaN, substituting the
+// geographic V — the same value WebGL falls back to when `useWebMercatorT` is
+// false. The CPU-side formula in
+// `HeightmapTessellator.geodeticLatitudeToMercatorAngle` produces ±Infinity at
+// latitude ±90°, and Cesium's per-tile normalization
+// (`(mercY − southMercY) × oneOverMercatorHeight`) turns that into NaN for
+// polar-spanning tiles whose south or north edge sits exactly at ±90°. WGSL's
+// `step()` and `select()` follow strict IEEE on NaN and return false, which
+// collapses the imagery `texCoordsAlpha` mask to zero and renders the pole as
+// a black hole. WebGL's GLSL drivers deviate from strict IEEE here and treat
+// NaN as always in range, so polar imagery rasterizes there despite the NaN.
+// Tiles entirely within ±85° arrive finite and pass through unchanged.
 fn sanitizeWebMercatorT(webMercT: f32, geoV: f32) -> f32 {
   // `x != x` is `true` iff `x` is NaN.
   return select(webMercT, geoV, webMercT != webMercT);
@@ -899,7 +867,7 @@ fn octDecode(encoded: f32) -> vec3<f32> {
   return normalize(result);
 }
 
-// ─── Decompress two 12-bit values packed into a single float ───
+// Decompresses two 12-bit values packed into a single float.
 fn decompressTextureCoordinates(compressed: f32) -> vec2<f32> {
   let temp = compressed / 4096.0;
   let xZeroTo4095 = floor(temp);
@@ -909,7 +877,7 @@ fn decompressTextureCoordinates(compressed: f32) -> vec2<f32> {
   );
 }
 
-// ─── Web Mercator latitude conversion ───
+// Web Mercator latitude conversion.
 // Maps a geographic latitude (radians) to the Y position fraction in
 // Web Mercator-projected texture space, given the south Mercator Y and
 // 1/mercatorHeight uniforms (computed CPU-side from the tile rectangle).
@@ -959,7 +927,7 @@ fn computePlanarPosition(height: f32, textureCoordinates: vec2<f32>) -> vec3<f32
   return vec3<f32>(height, lon, lat);
 }
 
-// ─── Shared vertex processing ───
+// Shared vertex processing.
 // webMercatorT: Web Mercator vertical texture coordinate. When no Mercator
 // data is present in the vertex buffer, callers pass textureCoordinates.y
 // (geographic V) as a fallback — the fragment shader's per-layer
@@ -975,7 +943,6 @@ fn computePlanarPosition(height: f32, textureCoordinates: vec2<f32>) -> vec3<f32
 // computation instead of producing zero-height planar positions.
 const HEIGHT_SENTINEL_UNAVAILABLE: f32 = -999999.0;
 
-// ═══════════════════════════════════════════════════════════════════════
 // czm_Material fabric API surface — Cluster 3 (parallel WGSL fabric)
 //
 // These types + helpers mirror the GLSL `czm_material`, `czm_materialInput`,
@@ -996,7 +963,6 @@ const HEIGHT_SENTINEL_UNAVAILABLE: f32 = -999999.0;
 //
 // czm_Material: per-fragment color outputs the material returns to the
 //   compositor. Mirrors `czm_material`.
-// ═══════════════════════════════════════════════════════════════════════
 
 struct czm_MaterialInput {
   st: vec2<f32>,
@@ -1029,22 +995,17 @@ fn czm_getDefaultMaterial(input: czm_MaterialInput) -> czm_Material {
   return m;
 }
 
-// Vector form for gamma-correct on a single vec3.
-// Batch 54 — match the GLSL `czm_gammaCorrect` (gammaCorrect.glsl) which
-// is GATED on `#ifdef HDR` and acts as a NO-OP in the default SDR path.
-// The pre-Batch-54 WGSL unconditionally applied `pow(c, 2.2)` (sRGB →
-// linear decode), making every globe fragment ~4.2x darker than WebGL
-// — verified via probe-saved-view.mjs (meanBrightnessRatio 4.221 on
-// default-3D between WebGL and WebGPU).
+// Vector form of gamma-correct on a single vec3.
 //
-// GLOBE-HDR-GAMMA (Q13-PLAIN-HDR-GAMMA-CORE) — the WebGL `#ifdef HDR`
-// branch is mirrored at runtime via `camera.hdrControl` (x = gate,
-// y = czm_gamma). The gate is raised whenever `scene.highDynamicRange`
-// is on (`frameState.useHDR`), matching WebGL's single HDR define and
-// the WebGPU post-process Tonemap stage (enabled on the same flag). Under
-// HDR the sRGB → linear decode hands linear radiance to the post-process
-// chain to tonemap + re-encode. On the default SDR path the gate is 0 and
-// this stays the identity no-op that matches every published WebGL view.
+// The GLSL `czm_gammaCorrect` (gammaCorrect.glsl) is gated on `#ifdef HDR` and
+// is a no-op on the default SDR path. This mirrors that branch at runtime via
+// `camera.hdrControl` (x = gate, y = czm_gamma). The gate is raised whenever
+// `scene.highDynamicRange` is on (`frameState.useHDR`), matching WebGL's
+// single HDR define and the WebGPU post-process Tonemap stage, which is
+// enabled on the same flag; under HDR the sRGB-to-linear decode hands linear
+// radiance to the post-process chain to tonemap and re-encode. Applying the
+// decode unconditionally instead darkens every globe fragment by roughly 4.2x
+// against WebGL.
 fn czm_gammaCorrect(color: vec3<f32>) -> vec3<f32> {
   if (camera.hdrControl.x > 0.5) {
     return pow(max(color, vec3<f32>(0.0)), vec3<f32>(camera.hdrControl.y));
@@ -1059,29 +1020,24 @@ fn czm_gammaCorrect4(color: vec4<f32>) -> vec4<f32> {
   return vec4<f32>(czm_gammaCorrect(color.rgb), color.a);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Nishita-style ground atmosphere ray-march
-// (Session 65 Batch 9 — Cluster 2b/5 fog/atmosphere parity)
+// Nishita-style ground atmosphere ray-march.
 //
 // Direct port of `computeScattering` from `Source/Shaders/AtmosphereCommon.glsl`
-// + `computeAtmosphereScattering` from `Source/Shaders/GroundAtmosphere.glsl`.
-// Runs in the vertex shader per the WebGL pattern: per-vertex accumulation
-// outputs interpolate cleanly when combined with per-fragment Rayleigh/Mie
-// phase functions in the fragment shader (interpolating *after* phase would
-// be wrong because the Mie phase is sharply forward-peaked).
+// and `computeAtmosphereScattering` from `Source/Shaders/GroundAtmosphere.glsl`.
+// Runs in the vertex shader, following the WebGL pattern: per-vertex
+// accumulation outputs interpolate cleanly when combined with per-fragment
+// Rayleigh and Mie phase functions in the fragment shader. Interpolating after
+// the phase would be wrong, because the Mie phase is sharply forward-peaked.
 //
-// The previous WGSL fragment-side `computeAtmosphereColor` used fixed
-// (0.18, 0.38, 0.72) skyBlue scaled by 0.3 — qualitatively wrong magnitude
-// AND missing the view-direction-dependent thickness integral. That made
-// the fog color collapse to ~(0.04, 0.07, 0.10) at all view angles, which
-// in turn dragged imagery toward the same dark blue at low altitudes
-// (the Cluster 2b "dark-blue close-zoom" symptom).
+// A fixed sky-blue tint in place of this integral is not an adequate
+// substitute: it has neither the right magnitude nor the
+// view-direction-dependent thickness term, so the fog color collapses to the
+// same value at every view angle and drags imagery toward it at low altitudes.
 //
 // Constants match `Source/Shaders/AtmosphereCommon.glsl`:
-//   PRIMARY_STEPS_MAX = 16   ← number of primary-ray sample positions
-//   LIGHT_STEPS_MAX   =  4   ← number of light-ray sample positions per primary
-//   ATMOSPHERE_THICKNESS = 111e3 (matches GLSL — kept in CPU side packing)
-// ═══════════════════════════════════════════════════════════════════════
+//   PRIMARY_STEPS_MAX = 16   — number of primary-ray sample positions
+//   LIGHT_STEPS_MAX   =  4   — number of light-ray sample positions per primary
+//   ATMOSPHERE_THICKNESS = 111e3, matching the GLSL; packed CPU-side.
 
 const ATMOSPHERE_PRIMARY_STEPS_MAX: i32 = 16;
 const ATMOSPHERE_LIGHT_STEPS_MAX: i32 = 4;
@@ -1093,7 +1049,7 @@ struct AtmosphereScattering {
 };
 
 // Tangent approximation matching czm_approximateTanh — quintic polynomial
-// good for the |x| <= 2 range we use it in (`x` is a normalized ratio).
+// good over the |x| <= 2 range it is used in (`x` is a normalized ratio).
 fn approximateTanh(x: f32) -> f32 {
   let x2 = x * x;
   return clamp(
@@ -1108,20 +1064,16 @@ fn approximateTanh(x: f32) -> f32 {
 // vec2(0, 0) when missing (the GLSL `czm_emptyRaySegment` sentinel).
 // Callers check that `stop > start` to detect intersection.
 //
-// Batch 56 — precision-stable formulation: the naive
+// The formulation is precision-stable. The naive
 //   `c = dot(origin, origin) - radius*radius`
-// for a Cesium-scale camera at 1.6e7 m loses ~10m of precision (1.6e7
-// squared = 2.56e14, beyond f32's 24-bit mantissa integer range).
-//
-// Defensive correctness fix only: this did NOT visibly resolve the WGS84
-// orbit catastrophe on its own (the per-vertex-vs-per-fragment ground-
-// atmosphere switch did — see fragmentMain below). WebGL has the same
-// imprecision in its `czm_raySphereIntersectionInterval` and renders
-// correctly via per-fragment scattering at orbit. We keep this fix
-// because (a) it's correct, (b) it's cheap, and (c) ray-sphere
-// intersection shows up in other render paths (sky atmosphere LUT,
-// volumetric clouds, planetary collision) where the precision loss
-// could matter independently.
+// loses about 10 m for a Cesium-scale camera at 1.6e7 m, because 1.6e7 squared
+// is 2.56e14, past the integer range of an f32 24-bit mantissa. WebGL carries
+// the same imprecision in `czm_raySphereIntersectionInterval` and still
+// renders correctly at orbit, so this is not what makes the orbital view work
+// — the per-fragment ground-atmosphere path is. It is kept because it is
+// cheap, and because ray-sphere intersection also serves the sky atmosphere
+// LUT, the volumetric clouds and planetary collision, where the precision loss
+// can matter on its own.
 //
 // Scaling the origin by 1/radius keeps all intermediate quantities in
 // the [-10, 10] range where f32 precision is ~1e-6.
@@ -1228,7 +1180,7 @@ fn computeScatteringGround(
     opticalDepth = opticalDepth + sampleDensity;
 
     // Light ray from samplePosition to its intersection with the outer
-    // shell. We use the segment length to size each LIGHT_STEPS sub-step.
+    // shell. The segment length sizes each LIGHT_STEPS sub-step.
     let lightIntersect = raySphereIntersectionInterval(
       samplePosition, lightDirection, atmosphereOuterRadius,
     );
@@ -1341,23 +1293,24 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   // Scene mode branching
   let mode = camera.sceneMode;
 
-  // ── Vertical exaggeration ──
-  // MORPH-EXAG-SKIRTS (Batch 362) — WebGL applies exaggeration in ALL scene
-  // modes (GlobeVS.glsl:245-258): it exaggerates the vertex HEIGHT ATTRIBUTE
-  // (`newHeight = (height − rel)*exag + rel`), offsets the 3D position along the
-  // ellipsoid normal by `(newHeight − height)`, and feeds `newHeight` to the
-  // planar `getPositionPlanarEarth` (which uses height as the projected X axis).
-  // We mirror that exactly so SCENE3D, COLUMBUS_VIEW, and MORPHING all exaggerate
-  // CONSISTENTLY — the previous code gated the position offset to `sceneMode >
-  // 2.5` and fed the planar legs RAW height, so CV/morph terrain rendered flat
-  // and a morph would have popped between an exaggerated 3D leg and a flat planar
-  // leg. **Crux of the skirt fix:** exaggerate the ATTRIBUTE (`resolvedHeight`),
-  // NOT `length(position3D) − radius`. Skirt vertices carry a REDUCED height
-  // attribute (edgeHeight − skirtHeight, HeightmapTessellator.js:399), so the
-  // (now-taller) skirt quad still points DOWN below the surface and stays
-  // occluded by the adjacent tile exactly as in WebGL; the Batch-216 attempt
-  // exaggerated the geometric `length()` height and shattered skirts into
-  // visible vertical walls.
+  // Vertical exaggeration.
+  //
+  // WebGL applies exaggeration in every scene mode (GlobeVS.glsl:245-258): it
+  // exaggerates the vertex height attribute
+  // (`newHeight = (height − rel)*exag + rel`), offsets the 3D position along
+  // the ellipsoid normal by `(newHeight − height)`, and feeds `newHeight` to
+  // the planar `getPositionPlanarEarth`, which uses height as the projected X
+  // axis. Mirroring it exactly is what keeps SCENE3D, COLUMBUS_VIEW and
+  // MORPHING consistent; gating the position offset to `sceneMode > 2.5` and
+  // feeding the planar legs raw height renders CV and morph terrain flat and
+  // pops a morph between an exaggerated 3D leg and a flat planar one.
+  //
+  // The exaggeration applies to the height attribute (`resolvedHeight`), not
+  // to `length(position3D) − radius`. Skirt vertices carry a reduced height
+  // attribute (edgeHeight − skirtHeight, HeightmapTessellator.js:399), so a
+  // taller skirt quad still points down below the surface and stays occluded
+  // by the adjacent tile as it does in WebGL. Exaggerating the geometric
+  // `length()` height instead shatters the skirts into visible vertical walls.
   let exaggeration = tile.verticalExaggeration;
   let exagRelativeHeight = tile.verticalExaggerationRelativeHeight;
   let fallbackEllipsoidR = select(
@@ -1379,21 +1332,21 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
     useProvidedHeight,
   );
 
-  // Exaggerated height (WebGL `newHeight`), clamped to not pass through earth
-  // center. `== resolvedHeight` when verticalExaggeration == 1.0 (byte-identical
-  // to the pre-fix path). Consumed by the planar legs AND the 3D position offset.
+  // Exaggerated height (WebGL `newHeight`), clamped so it cannot pass through
+  // the earth's centre. Equals `resolvedHeight` when verticalExaggeration is
+  // 1.0. Consumed by the planar legs and by the 3D position offset.
   let exaggeratedHeight =
     (resolvedHeight - exagRelativeHeight) * exaggeration + exagRelativeHeight;
   let planarHeight = max(exaggeratedHeight, -fallbackEllipsoidR);
 
-  // 3D position offset along the (geodetic, DP-H25) ellipsoid normal. Applied
-  // whenever exaggeration is active — the SCENE3D leg and the MORPHING 3D
-  // component both consume `exaggeratedPosition`; CV/2D don't use it for
-  // out.position so the offset is harmless there.
+  // 3D position offset along the geodetic ellipsoid normal. Applied whenever
+  // exaggeration is active: the SCENE3D leg and the MORPHING 3D component both
+  // consume `exaggeratedPosition`, while CV and 2D do not use it for
+  // out.position, so the offset is harmless there.
   var exaggeratedPosition = position;
   if (exaggeration != 1.0) {
-    // DP-H25 — prefer the true geodetic surface normal over the ellipsocentric
-    // `normalize(rawPosition3D)` (they diverge up to 0.2° at mid-latitudes).
+    // Prefer the true geodetic surface normal over the ellipsocentric
+    // `normalize(rawPosition3D)`; they diverge up to 0.2° at mid-latitudes.
     // Callers with no geodetic normal pass vec3(0); dot(n,n) > 0.25 rules out
     // the zero vector AND non-unit debug noise without paying for a `length()`.
     let hasGeoNormal = dot(geodeticSurfaceNormal, geodeticSurfaceNormal) > 0.25;
@@ -1402,10 +1355,9 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
       geodeticSurfaceNormal,
       hasGeoNormal,
     );
-    // WebGL `offset = ellipsoidNormal * (newHeight − height)` — attribute-based.
-    // For non-skirt vertices this equals the prior `length()`-based offset (the
-    // attribute IS the terrain height); skirts differ but are hidden in 3D, so
-    // the SCENE3D look is unchanged.
+    // WebGL's attribute-based `offset = ellipsoidNormal * (newHeight − height)`.
+    // For non-skirt vertices the attribute is the terrain height, so this
+    // matches a `length()`-based offset; skirts differ, but are hidden in 3D.
     exaggeratedPosition =
       position + ellipsoidNormal * (planarHeight - resolvedHeight);
   }
@@ -1413,9 +1365,10 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   let position3DWC = exaggeratedPosition + center3D;
 
   if (mode < 0.5) {
-    // ── MORPHING ── blend between 3D and 2D positions
-    // Note: planar/3D positions are NOT relative-to-eye in this mode, so we
-    // use modifiedModelViewProjection (matches WebGL czm_projection * modelView).
+    // MORPHING: blend between 3D and 2D positions.
+    // Planar and 3D positions are not relative-to-eye in this mode, so this
+    // uses modifiedModelViewProjection, matching WebGL's
+    // czm_projection * modelView.
     let morphTime = camera.morphTime;
     let planar = computePlanarPosition(planarHeight, textureCoordinates);
     let position2DWC = vec4<f32>(planar, 1.0);
@@ -1433,17 +1386,17 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
     out.position = camera.modifiedModelViewProjection * morphPos;
     out.v_positionEC = (camera.modifiedModelView * morphPos).xyz;
   } else if (mode < 1.5) {
-    // ── COLUMBUS_VIEW ── planar with terrain height
+    // COLUMBUS_VIEW: planar with terrain height.
     let planarPos = computePlanarPosition(planarHeight, textureCoordinates);
     out.position = camera.modifiedModelViewProjection * vec4<f32>(planarPos, 1.0);
     out.v_positionEC = (camera.modifiedModelView * vec4<f32>(planarPos, 1.0)).xyz;
   } else if (mode < 2.5) {
-    // ── SCENE2D ── top-down orthographic, height forced to 0
+    // SCENE2D: top-down orthographic, height forced to 0.
     let planarPos = computePlanarPosition(0.0, textureCoordinates);
     out.position = camera.modifiedModelViewProjection * vec4<f32>(planarPos, 1.0);
     out.v_positionEC = (camera.modifiedModelView * vec4<f32>(planarPos, 1.0)).xyz;
   } else {
-    // ── SCENE3D ── RTC (Relative-To-Center) transform, mirroring WebGL
+    // SCENE3D: relative-to-centre transform, mirroring WebGL
     // getPosition3DMode (GlobeVS.glsl:122-124) and the SCENE2D/COLUMBUS
     // branches above. The big Earth-radius center→eye offset is cancelled in
     // f64 ON THE CPU: vertices are encoded tile-local (encoding.center
@@ -1494,45 +1447,38 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   out.position = csm_updatePositionDepth(out.position);
   //>>endif
 
-  // ─── Session 65 Batch 9: per-vertex ground atmosphere ray-march ───
-  // Gated on `camera.atmosphereParams.w > 0.5` (set CPU-side when fog
-  // OR ground atmosphere is enabled). Inside SCENE3D only — 2D /
-  // Columbus / Morph use planar positions so the WC math doesn't apply.
-  // When skipped, the v_atmosphere* outputs stay at zero so the FS
-  // additive contribution evaluates to a no-op.
+  // Per-vertex ground-atmosphere ray-march. Gated on
+  // `camera.atmosphereParams.w > 0.5`, set CPU-side when fog or ground
+  // atmosphere is enabled, and confined to SCENE3D — 2D, Columbus View and
+  // Morph use planar positions, so the world-coordinate math does not apply.
+  // When skipped, the v_atmosphere* outputs stay at zero and the fragment
+  // shader's additive contribution evaluates to a no-op.
   out.v_atmosphereRayleighColor = vec3<f32>(0.0);
   out.v_atmosphereMieColor = vec3<f32>(0.0);
   out.v_atmosphereOpacity = 0.0;
-  // C9-14 (FAR ground-atmosphere de-dup) — the fragment shader OWNS the
-  // production ground-atmosphere integration: `fragmentMain` recomputes
-  // scattering per-fragment via `computeAtmosphereScatteringGround`
-  // unconditionally (Batch 56 chose per-fragment-always to avoid the
-  // orbit-altitude mesh-pattern artifact the per-vertex fast-path
-  // produces). The only consumers of these v_atmosphere* varyings are the
-  // two per-vertex debug visualizers in `fragmentMain`
-  // (`tile.time ∈ [13.5e9, 15.5e9]`, written debug-build-only by
-  // `WebGPUGlobeFragmentDebug`). Running the up-to-16×4 per-vertex ray
-  // march every production frame therefore computes a result nothing
-  // reads — the "duplicate ground-atmosphere integration" flagged by
-  // C9-14. Gate the march on the same debug-visualizer window so exactly
-  // ONE stage owns the work per path: production (`tile.time < 1e6`) does
-  // the march per-fragment only; the per-vertex debug modes still march
-  // here so the visualizers keep showing real per-vertex scattering.
-  // Output stays byte-identical in production because the FS never reads
-  // the varyings outside those debug returns.
+  // The fragment shader owns the production ground-atmosphere integration:
+  // `fragmentMain` recomputes scattering per fragment via
+  // `computeAtmosphereScatteringGround` unconditionally, because the
+  // per-vertex fast path produces a mesh-pattern artifact at orbit altitude.
+  // The only consumers of these v_atmosphere* varyings are the two per-vertex
+  // debug visualizers in `fragmentMain` (`tile.time ∈ [13.5e9, 15.5e9]`,
+  // written debug-build-only by `WebGPUGlobeFragmentDebug`), so marching the
+  // up-to-16×4 per-vertex ray every production frame would compute a result
+  // nothing reads. Gating the march on the same debug window leaves exactly
+  // one stage owning the work per path: production marches per fragment only,
+  // while the per-vertex debug modes still march here so the visualizers show
+  // real per-vertex scattering.
   let perVertexAtmoDebugActive = tile.time > 13.5e9 && tile.time < 15.5e9;
   if (perVertexAtmoDebugActive && camera.atmosphereParams.w > 0.5 && mode > 2.5) {
-    // Session 65 Batch 38 — proper ground-atmosphere integration.
     // `atmosphereParams.w` carries the lighting mode:
     //   1.0 → dynamic lighting OFF → substitute normalize(positionWC)
     //   2.0 → dynamic lighting ON  → use the packed light direction
     // Mirrors WebGL GlobeFS.glsl line 494:
     //   lightDirection = czm_branchFreeTernary(
     //       dynamicLighting, atmosphereLightDirection, normalize(positionWC));
-    // Without this fallback the WGSL march was always tracing toward the
-    // real sun direction, producing 7-10× more scattering on the dayside
-    // than the WebGL no-dynamic-lighting reference and forcing the
-    // empirical cap=1.5 × scale=0.15 in the FS drape branch (now removed).
+    // Without the fallback the march traces toward the real sun direction in
+    // both modes, producing 7-10× more scattering on the dayside than the
+    // WebGL no-dynamic-lighting reference.
     let dynamicLightingActive = camera.atmosphereParams.w > 1.5;
     let lightDir = select(
       normalize(position3DWC),
@@ -1553,7 +1499,7 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
     nm[0][2] * normalMC.x + nm[1][2] * normalMC.y + nm[2][2] * normalMC.z
   ));
 
-  // ─── Cluster 3 — per-vertex slope/aspect/height for globe materials ───
+  // Per-vertex slope, aspect and height for globe materials.
   // Mirrors the WebGL GlobeVS `#ifdef APPLY_MATERIAL` block (lines
   // 272-285). Slope is the angle between the surface normal and the
   // ellipsoid normal; aspect is the heading of the surface normal
@@ -1581,39 +1527,35 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   out.v_aspect = aspectAng;
   out.v_height = resolvedHeight;
 
-  // ── Far-plane clip-space Z clamp (CRITICAL for orbit altitude) ──
-  // FP32 rounding in the SCENE3D clip transform can push a FRONT fragment's
-  // clip-space z just over its w → NDC z > 1 → the rasterizer clips it as
-  // "behind the far plane" → the globe shows radial wedge-gaps (the skybox
-  // shows through). Clamping z ≤ w forces NDC z ≤ 1 so these borderline FRONT
-  // fragments survive. Paired with `depthCompare: less-equal` so a fragment
-  // landing exactly on the far plane still passes against the cleared depth.
+  // Far-plane clip-space z clamp, required at orbit altitude. FP32 rounding in
+  // the SCENE3D clip transform can push a front fragment's clip-space z just
+  // past its w, giving NDC z > 1, which the rasterizer clips as behind the far
+  // plane and which shows on screen as radial wedge-gaps through to the
+  // skybox. Clamping z to w holds NDC z at or below 1 so those borderline
+  // front fragments survive. Paired with `depthCompare: less-equal`, so a
+  // fragment landing exactly on the far plane still passes against the cleared
+  // depth.
   //
-  // VERIFIED LOAD-BEARING (2026-06-22): removing this clamp AFTER the SCENE3D
-  // RTC switch reintroduced the whole-globe wedge-gap tear at 12 Mm — so the
-  // RTC change did NOT eliminate the spurious overflow and the clamp is still
-  // required. (It also pins genuinely-far back-limb L0 fragments to z=1 at
-  // extreme zoom-out, a contributor to the far-cam ring residual — but it is
-  // NOT that residual's root cause: removing it leaves the ring while breaking
-  // 12 Mm, so the ring is an L0-tile vertex PRECISION warp within the frustum,
-  // tracked separately.)
+  // The clamp is load-bearing independently of the SCENE3D relative-to-centre
+  // transform: removing it reintroduces the whole-globe wedge-gap tear at
+  // 12 Mm. It also pins genuinely far back-limb level-0 fragments to z = 1 at
+  // extreme zoom-out, which contributes to — but does not cause — the
+  // far-camera ring residual; that residual is a level-0 vertex precision warp
+  // inside the frustum and survives the clamp's removal.
   out.position.z = min(out.position.z, out.position.w);
 
   return out;
 }
 
-// ┌─────────────────────────────────────────────────────────────────────┐
-// │ PAIR-SECTION: Vertex Shader entry points (WGSL) ↔ GLSL               │
-// │   GLSL: Shaders/GlobeVS.glsl (single `void main()` with #ifdef       │
-// │         variants for all terrain encodings)                          │
-// │ Last lockstep audit: 2026-05-19, Batch 75                            │
-// └─────────────────────────────────────────────────────────────────────┘
-// Any change to these entry points MUST land with a matching change in
-// the GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+// Vertex shader entry points. The GLSL counterpart is
+// `Shaders/GlobeVS.glsl`, a single `void main()` with `#ifdef` variants for
+// every terrain encoding; a change to these entry points has to land with a
+// matching change there. See SHADER_PAIRS_LOCKSTEP.md.
 //
-// ARCHITECTURAL DIVERGENCE (largest in the globe shader pair)
+// The two backends split the work differently, and this is the widest
+// structural divergence in the globe shader pair.
 //
-// - WebGL `GlobeVS.glsl` is a SINGLE `void main()` (~286 lines) that
+// - WebGL `GlobeVS.glsl` is one `void main()` of roughly 286 lines that
 //   handles every terrain encoding via `#ifdef` preprocessor variants:
 //     QUANTIZATION_BITS12 — quantized vertex format
 //     INCLUDE_WEB_MERCATOR_Y — per-vertex Mercator-T
@@ -1626,10 +1568,10 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
 //       — per-vertex atmosphere ray-march + distance varyings
 //     2D modes (Mercator / Geographic / Planar / Columbus / Morphing)
 //       — runtime-generated `getPosition` / `get2DYPositionFraction`
-//   The WebGL pipeline cache compiles a different shader variant per-
-//   tile based on the active defines.
+//   The WebGL pipeline cache compiles a different shader variant per tile
+//   based on the active defines.
 //
-// - WGSL has SIX explicit `@vertex` entry points, all routed through a
+// - WGSL has six explicit `@vertex` entry points, all routed through a
 //   single `processVertex()` helper that contains the shared math:
 //     vertexMain                       — uncompressed, no Mercator-T
 //     vertexMainWebMerc                — uncompressed + Mercator-T
@@ -1641,54 +1583,45 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
 //   encoding. Each entry decodes its specific vertex layout, then hands
 //   off to `processVertex()` for the layout-agnostic math.
 //
-// - WGSL uses a CUSTOM `//>>ifdef FLAG_NAME / //>>else / //>>endif`
-//   preprocessor implemented in `WebGPUShaderPreprocessor.ts` (Batch 23)
-//   for define-bit-driven variants like `GEODETIC_NORMAL`. This is a
-//   MUCH smaller surface than GLSL's full preprocessor — it only
-//   handles boolean ifdefs against a uint32 `ShaderDefine` bitmask
-//   registered in `WebGPUShaderDefines.ts`. Define bits are stable and
-//   add-only (Batch 22 onward).
+// - WGSL uses the custom `//>>ifdef FLAG_NAME / //>>else / //>>endif`
+//   preprocessor implemented in `WebGPUShaderPreprocessor.ts` for
+//   define-bit-driven variants such as `GEODETIC_NORMAL`. Its surface is far
+//   smaller than GLSL's full preprocessor: boolean ifdefs against a uint32
+//   `ShaderDefine` bitmask registered in `WebGPUShaderDefines.ts`, and the
+//   define bits are stable and add-only.
 //
-// WHY THE TWO BACKENDS SPLIT DIFFERENTLY
+// The split follows from those two facts. GLSL's preprocessor is rich enough
+// to handle every variant inline and the WebGL pipeline cache compiles a fresh
+// shader per define-set, so a new variant there costs a few `#ifdef` lines.
+// WGSL has no equivalent preprocessor and WebGPU pipeline creation wants a
+// single shader module with multiple entry points, so the six-entry split
+// makes vertex-attribute layout an entry-point property rather than a
+// preprocessor result, which fits WGSL's typed `@location` model.
 //
-// - GLSL's preprocessor is rich enough to handle every variant inline,
-//   AND the WebGL pipeline cache compiles a fresh shader per
-//   define-set. Adding a new variant costs a few `#ifdef` lines and
-//   the cache picks it up automatically.
-// - WGSL doesn't have an equivalent preprocessor (the `//>>ifdef`
-//   subset is intentionally limited). And WebGPU pipeline creation
-//   wants a single shader module with multiple entry points. The
-//   6-entry split makes vertex-attribute layout an entry-point
-//   property, not a preprocessor result — which is a closer fit to
-//   WGSL's typed `@location` model.
-//
-// SHARED VARYING CONTRACT
-// Both backends produce the SAME `VertexOutput` / out-variables
-// downstream of `main()` / `processVertex()`:
+// Both backends produce the same varyings downstream of `main()` /
+// `processVertex()`:
 //   position (built-in clip-space)
 //   v_textureCoordinates (vec3: u, v, webMercatorT)
 //   v_positionEC, v_positionMC, v_normalEC, v_normalMC
-//   v_distance (when fog / atmosphere / underground active)
+//   v_distance (when fog, atmosphere or underground is active)
 //   v_atmosphereRayleighColor, v_atmosphereMieColor, v_atmosphereOpacity
-//     (when fog + non-per-fragment ground-atmosphere — WGSL keeps the
-//     varyings even when per-fragment atmosphere is the active path
-//     per Batch 56's decision)
-//   v_slope, v_aspect, v_height (when APPLY_MATERIAL active)
-// The downstream FS / per-fragment math (covered by Phases 2.1-2.4
-// pair-sections) consumes the same varyings on both backends, so the
-// fragment-stage parity holds despite the VS architectural split.
+//     (WGSL keeps these varyings even though per-fragment atmosphere is the
+//     active path)
+//   v_slope, v_aspect, v_height (when APPLY_MATERIAL is active)
+// The per-fragment math downstream consumes the same varyings on both
+// backends, so fragment-stage parity holds despite the vertex-stage split.
 //
-// ─── Vertex Shader: Uncompressed Terrain ───
-// Used when hasWebMercatorT=false. Normal (if present) is in .z component.
-// When no normals, .z = 0 (default fill from float32x2 format).
-// webMercatorT defaults to geographic V (textureCoordinates.y).
-// DP-H25 — every entry point routes the geodetic normal into
-// `processVertex` through the same conditional expression. When
-// `GEODETIC_NORMAL` is active the real per-vertex attribute flows
-// through; otherwise the `vec3<f32>(0.0)` sentinel engages the
-// ellipsocentric fallback in the exaggeration branch. Keeping this
-// dispatch conditional inline removes the 6 parallel `*_Geo` entry
-// points that existed before Batch 20.
+// Vertex shader for uncompressed terrain, used when hasWebMercatorT is false.
+// The normal, if present, is in the .z component; with no normals .z is 0, the
+// default fill from the float32x2 format. webMercatorT defaults to the
+// geographic V (textureCoordinates.y).
+//
+// Every entry point routes the geodetic normal into `processVertex` through
+// the same conditional expression: with `GEODETIC_NORMAL` active the real
+// per-vertex attribute flows through, and otherwise the `vec3<f32>(0.0)`
+// sentinel engages the ellipsocentric fallback in the exaggeration branch.
+// Keeping the dispatch inline is what removes the need for six parallel
+// `*_Geo` entry points.
 
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
@@ -1703,19 +1636,18 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
                        //>>endif
 }
 
-// ─── Vertex Shader: Uncompressed Terrain with WebMercatorT (no normals) ───
-// Vertex data: [u, v, webMercatorT] — webMercatorT is in .z, no normal.
+// Vertex shader for uncompressed terrain with webMercatorT and no normals.
+// Vertex data is [u, v, webMercatorT], with webMercatorT in .z.
 //
-// Batch 61 — `sanitizeWebMercatorT` replaces NaN values produced by
-// `HeightmapTessellator.js:325` for vertices exactly at ±90° latitude.
-// `0.5 * log((1+sin(±π/2))/(1-sin(±π/2)))` is `±Infinity` in JS; the
-// CPU formula then computes `±Infinity * (1 / mercatorHeight)` which is
-// `NaN`. WebGL's GLSL silently propagates the NaN through the per-
-// fragment `step()` mask (returning 1.0 in most drivers — non-spec
-// behavior), so the imagery still renders. WGSL is stricter: NaN
-// comparisons in `step()` return 0, which zeroes `texCoordsAlpha`,
-// which zeroes `effectiveAlpha`, which makes the imagery composite
-// contribute nothing — producing a black hole at the pole.
+// `sanitizeWebMercatorT` replaces the NaN that
+// `HeightmapTessellator.js:325` produces for vertices exactly at ±90°
+// latitude: `0.5 * log((1+sin(±π/2))/(1-sin(±π/2)))` is ±Infinity in
+// JavaScript, and the CPU formula then computes `±Infinity * (1 /
+// mercatorHeight)`. WebGL's GLSL propagates the NaN through the per-fragment
+// `step()` mask, which most drivers resolve to 1.0 against the spec, so the
+// imagery still renders. WGSL is stricter: a NaN comparison in `step()`
+// returns 0, which zeroes `texCoordsAlpha`, then `effectiveAlpha`, leaving the
+// imagery composite contributing nothing and the pole rendered as a black hole.
 @vertex
 fn vertexMainWebMerc(input: VertexInput) -> VertexOutput {
   let tc = input.textureCoordAndEncodedNormals;
@@ -1729,7 +1661,7 @@ fn vertexMainWebMerc(input: VertexInput) -> VertexOutput {
                        //>>endif
 }
 
-// ─── Vertex Shader: Uncompressed Terrain with WebMercatorT + Normals ───
+// Vertex shader for uncompressed terrain with webMercatorT and normals.
 // Vertex data: [u, v, webMercatorT, encodedNormal] — normal in .w, webMercT in .z.
 @vertex
 fn vertexMainWebMercNormals(input: VertexInput) -> VertexOutput {
@@ -1753,7 +1685,7 @@ fn decodeQuantizedHeight(normalizedHeight: f32) -> f32 {
   return normalizedHeight * (maxH - minH) + minH;
 }
 
-// ─── Vertex Shader: Quantized Terrain (BITS12) ───
+// Vertex shader for quantized terrain (BITS12).
 // No webMercatorT: compressed0.w = encodedNormal (or default 1.0 if no normals).
 // webMercatorT defaults to geographic V.
 @vertex
@@ -1772,7 +1704,7 @@ fn vertexMainQuantized(input: VertexInputQuantized) -> VertexOutput {
                        //>>endif
 }
 
-// ─── Vertex Shader: Quantized Terrain with WebMercatorT (no normals) ───
+// Vertex shader for quantized terrain with webMercatorT and no normals.
 // When hasWebMercatorT=true but hasNormals=false, compressed0.w stores the
 // COMPRESSED webMercatorT. No normal available \u2014 use a hardcoded up vector.
 @vertex
@@ -1794,7 +1726,7 @@ fn vertexMainQuantizedWebMerc(input: VertexInputQuantized) -> VertexOutput {
                        //>>endif
 }
 
-// ─── Vertex Shader: Quantized Terrain with WebMercatorT AND Normals ───
+// Vertex shader for quantized terrain with webMercatorT and normals.
 // Both present: compressed0.w = compressed webMercatorT; oct-encoded normal
 // lives in a separate single-float attribute at location 1 (compressed1).
 // This is the common production configuration for Cesium ion + Bing: this
@@ -1820,11 +1752,9 @@ fn vertexMainQuantizedWebMercNormals(
                        //>>endif
 }
 
-// ═══════════════════════════════════════════════════════════════════════
 // Fragment shader helpers
-// ═══════════════════════════════════════════════════════════════════════
 
-// ─── Imagery sampling with translation/scale ───
+// Imagery sampling with translation and scale.
 // baseUV: the per-layer UV (geographic or webMercator, selected by caller)
 // Note: WebGL does NOT clamp to texCoordsRect — the sampler's clamp-to-edge
 // mode handles out-of-range values. texCoordsRect is for alpha edge blending
@@ -1834,14 +1764,13 @@ fn sampleImagery(tex: texture_2d<f32>, samp: sampler,
                  baseUV: vec2<f32>, layer: ImageryLayer,
                  baseUV_dx: vec2<f32>, baseUV_dy: vec2<f32>) -> vec4<f32> {
   let uv = baseUV * layer.translationAndScale.zw + layer.translationAndScale.xy;
-  // Batch 57 — textureSampleGrad uses the caller-provided per-fragment UV
-  // derivatives to pick the correct mip level. Required because this
-  // function is called after non-uniform discard/return (clipping planes),
-  // and `textureSample` rejects that, while `textureSampleLevel(uv, 0.0)`
-  // (the previous formulation) hard-locks the sampler to mip 0 — bypassing
-  // the mipmap chain entirely. The latter produced ~4× brightness drop at
-  // orbital altitudes where one fragment covers many texels and the
-  // alias pattern under-samples bright pixels.
+  // `textureSampleGrad` uses the caller-provided per-fragment UV derivatives
+  // to pick the mip level. It is required because this function is called
+  // after a non-uniform discard or return from the clipping planes, which
+  // `textureSample` rejects; `textureSampleLevel(uv, 0.0)` is accepted there
+  // but hard-locks the sampler to mip 0, bypassing the mipmap chain and
+  // dropping brightness roughly 4× at orbital altitudes, where one fragment
+  // covers many texels and the alias pattern under-samples the bright ones.
   //
   // Derivatives are pre-computed at fragmentMain entry (uniform CF) and
   // scaled by the per-layer `translationAndScale.zw` so each layer's
@@ -1857,7 +1786,7 @@ fn selectLayerUV(geoUV: vec2<f32>, webMercT: f32, useWebMerc: f32) -> vec2<f32> 
   return vec2<f32>(geoUV.x, v);
 }
 
-// Batch 57 — pick the derivative pair matching the layer's UV space.
+// Picks the derivative pair matching the layer's UV space.
 // Geographic-sampled layers use the `geoUV` derivative; webMercator-
 // sampled layers use the `webMercUV` derivative (their V is the
 // per-vertex webMercatorT, not geoUV.y, so the derivative differs).
@@ -1887,7 +1816,7 @@ fn adjustColor(color: vec3<f32>, brightness: f32, contrast: f32, saturation: f32
   return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-// Batch 58 — per-layer hue rotation in YIQ space. Mirrors `czm_hue` from
+// Per-layer hue rotation in YIQ space. Mirrors `czm_hue` from
 // the WebGL builtin functions (`Source/Shaders/Builtin/Functions/hue.glsl`)
 // — same matrices, same atan2 + chroma decomposition. `adjustment` is in
 // radians; 0 returns the input unchanged.
@@ -1909,7 +1838,7 @@ fn applyHueShift(rgb: vec3<f32>, adjustment: f32) -> vec3<f32> {
   return toRGB * outYIQ;
 }
 
-// Batch 58 — color-to-alpha keying. Matches WebGL GlobeFS.glsl:
+// Color-to-alpha keying. Matches WebGL GlobeFS.glsl:
 //   colorDiff = abs(color.rgb - colorToAlpha.rgb);
 //   colorDiff.r = max-component(colorDiff);
 //   alpha = (colorDiff.r < threshold) ? 0 : alpha
@@ -1922,7 +1851,7 @@ fn applyColorToAlphaKey(texColor: vec4<f32>, colorToAlpha: vec4<f32>) -> f32 {
   return select(texColor.a, 0.0, maxComp < colorToAlpha.a);
 }
 
-// Batch 58 — cutout rectangle test in tile-UV space. Returns 1.0 (keep) when
+// Cutout rectangle test in tile-UV space. Returns 1.0 (keep) when
 // the texel is OUTSIDE the cutout rectangle, 0.0 (drop) when inside.
 // Disabled (returns 1.0) when the rectangle has zero area — matches the WebGL
 // CPU-side default of `Cartesian4.ZERO` for unset cutouts.
@@ -1933,7 +1862,7 @@ fn applyCutoutMask(tileUV: vec2<f32>, cutout: vec4<f32>) -> f32 {
   return select(1.0, 0.0, hasCutout && inside);
 }
 
-// Batch 58 — split-direction screen-space mask. Mirrors WebGL GlobeFS.glsl:
+// Split-direction screen-space mask. Mirrors WebGL GlobeFS.glsl:
 //   if (split < 0 && fragX > splitPos) alpha = 0;
 //   else if (split > 0 && fragX < splitPos) alpha = 0;
 // Both `fragX` and `splitPositionPx` are framebuffer pixel coords. The CPU
@@ -1952,7 +1881,7 @@ fn applySplitMask(splitDir: f32, fragX: f32, splitPositionPx: f32) -> f32 {
   return select(0.0, 1.0, fragX >= splitPositionPx);
 }
 
-// Batch 58 — composite ONE imagery layer onto the running color/alpha pair.
+// Composites one imagery layer onto the running color/alpha pair.
 // Effect application order matches WebGL `sampleAndBlend` in GlobeFS.glsl:
 //   1. colorToAlpha          (key-color → alpha=0)
 //   2. gamma                 (color = pow(color, 1/gamma))
@@ -1969,88 +1898,64 @@ struct LayerComposite {
   adjustedColor: vec3<f32>,  // post-effects, used for night-lights emission
 };
 
-// ┌─────────────────────────────────────────────────────────────────────┐
-// │ PAIR-SECTION: applyImageryLayer (WGSL) ↔ sampleAndBlend (GLSL)       │
-// │   GLSL: Shaders/GlobeFS.glsl::sampleAndBlend (lines 188-334)         │
-// │ Last lockstep audit: 2026-05-20, Batch 79                            │
-// └─────────────────────────────────────────────────────────────────────┘
-// Any change to this function MUST land with a matching change in the
-// GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+// The GLSL counterpart is `Shaders/GlobeFS.glsl::sampleAndBlend` (lines
+// 188-334); a change to this function has to land with a matching change
+// there. See SHADER_PAIRS_LOCKSTEP.md.
 //
-// STRUCTURAL DIVERGENCE (documented, not fixable in shader)
-// - GLSL samples the imagery texture INSIDE the function via
+// The two differ structurally, in ways the shader language forces:
+// - GLSL samples the imagery texture inside the function via
 //   `texture(textureToSample, ...)`. WGSL receives the pre-sampled
-//   `texSample` as a parameter because WGSL cannot dynamically index a
-//   texture array inside a function — the 16 imagery slots must be
-//   unrolled at the call site in `fragmentMain`. Effect is identical.
-// - GLSL returns `vec4(outColor, outAlpha)`. WGSL returns a struct
-//   `LayerComposite { color, alpha, adjustedColor }` because the
+//   `texSample` as a parameter, because WGSL cannot dynamically index a
+//   texture array inside a function, so the 16 imagery slots are unrolled at
+//   the call site in `fragmentMain`. The effect is identical.
+// - GLSL returns `vec4(outColor, outAlpha)`. WGSL returns a
+//   `LayerComposite { color, alpha, adjustedColor }` struct, because the
 //   downstream night-lights emission path needs the post-effects color
-//   separately. The GLSL backend handles night-lights via a different
-//   code path.
-// - GLSL gates brightness/contrast/hue/saturation behind `#ifdef
-//   APPLY_*` defines emitted by the pipeline cache based on
-//   per-layer-property usage. WGSL evaluates them all unconditionally
-//   (with a near-1.0 fast-path skip for hue and gamma), because WGSL
-//   has no `#ifdef` preprocessor and the pipeline cache is keyed on
-//   bitmask `ShaderDefine` values that don't currently include the
-//   per-effect gates. Net result: WGSL pays a few extra ops per
-//   fragment on average; visible output is identical when the
-//   per-layer property is at the default value.
+//   separately; the GLSL backend reaches night-lights another way.
+// - GLSL gates brightness, contrast, hue and saturation behind `#ifdef
+//   APPLY_*` defines the pipeline cache emits per layer property. WGSL
+//   evaluates all four unconditionally, with a near-1.0 fast-path skip for
+//   hue and gamma, because it has no `#ifdef` preprocessor and the pipeline
+//   cache keys on `ShaderDefine` bits that do not include the per-effect
+//   gates. WGSL pays a few extra ops per fragment; the output matches
+//   whenever the per-layer property sits at its default.
 //
-// BLEND FORMULA (matched across backends since Batch 79)
 // Both backends use the premultiplied-alpha OVER composite:
 //   sourceAlpha = effectiveAlpha
 //   outAlpha    = mix(prevAlpha, 1, sourceAlpha)
 //   outColor    = mix(prevColor * prevAlpha, color, sourceAlpha) / outAlpha
 //
-// Pre-Batch-79 the WGSL used a straight `mix(prev, color, srcA)` +
-// `max(prevA, srcA)` formula. That was algebraically identical to the
-// OVER composite when `prevAlpha = 1` (Batch 69 proved this pixel-
-// equivalent at the default midlat-mid view), but diverged on
-// multi-frustum subsequent passes where the first imagery layer hits
-// with `prevAlpha = 0` and `srcA < 1`. Under straight-mix the first
-// contribution was attenuated by srcA; under OVER it contributes at
-// full brightness with `outAlpha = srcA`. Batch 68 attempted this
-// switch and saw an apparent 1.09 → 7.01% regression that turned out
-// to be probe-level clock-noise (Batch 69). With clock pinning landed
-// in Batch 70 the regression test is now reliable, so the switch is
-// applied here.
+// A straight `mix(prev, color, srcA)` with `max(prevA, srcA)` is algebraically
+// the same composite when `prevAlpha = 1`, but diverges on multi-frustum
+// subsequent passes, where the first imagery layer arrives with
+// `prevAlpha = 0` and `srcA < 1`: straight-mix attenuates that first
+// contribution by srcA, while OVER gives it full brightness at
+// `outAlpha = srcA`.
 //
-// Divide-by-zero handling differs: GLSL uses a `sign()` sentinel trick
-// (L311); WGSL clamps the divisor to a tiny epsilon. End behavior is
-// the same — when `outAlpha = 0` the divided color is unobservable
-// (multiplied by 0 in any downstream blend), and the returned alpha
-// is clamped to 0 via `max(outAlpha, 0.0)`.
+// Divide-by-zero handling differs: GLSL uses a `sign()` sentinel (L311),
+// WGSL clamps the divisor to a small epsilon. The end behaviour is the same,
+// because at `outAlpha = 0` the divided color is unobservable — any
+// downstream blend multiplies it by zero — and the returned alpha is clamped
+// to 0 via `max(outAlpha, 0.0)`.
 //
 // Two bounds coordinates, matching WebGL's `sampleAndBlend`:
 //
-// `texCoordsBoundsUV` is the per-layer SELECTED V (`selectLayerUV` output):
+// `texCoordsBoundsUV` is the per-layer selected V, the `selectLayerUV` output:
 // Mercator-V (`webMercatorT`) for `useWebMercatorT=true` layers, geographic
-// geoUV otherwise. It tests the `texCoordsRect` alpha mask AND is the SAME V
-// the texture sample uses — WebGL passes a single `tileTextureCoordinates`
-// (`useWebMercatorT ? .xz : .xy`, `GlobeSurfaceShaderSet.js:352`) to BOTH the
+// geoUV otherwise. It tests the `texCoordsRect` alpha mask and is the same V
+// the texture sample uses. WebGL passes a single `tileTextureCoordinates`
+// (`useWebMercatorT ? .xz : .xy`, `GlobeSurfaceShaderSet.js:352`) to both the
 // `step()` rect test (`GlobeFS.glsl:250,253`) and the sample (`:262`). The
-// cached `texCoordsRect` is Mercator-V for `useWebMercatorT=true` (the CPU
-// packer converts the rectangles to native/Mercator in-place before taking
-// the minV/maxV fraction — `ImageryLayerHelpers.js:229-247,343-347`), so the
-// test V MUST be the selected (Mercator) V, not geographic.
+// cached `texCoordsRect` is Mercator-V for `useWebMercatorT=true`, since the
+// CPU packer converts the rectangles to native Mercator in place before taking
+// the minV/maxV fraction (`ImageryLayerHelpers.js:229-247,343-347`), so the
+// test V has to be the selected V rather than the geographic one. Testing a
+// Mercator-space rect against a geographic V zeroes the mask and falls back to
+// the imagery base color, which reads as dark blue at the poles.
 //
-// `boundsUV` is the GEOGRAPHIC geoUV, used ONLY for the `cutoutRectangle`
-// test (the cutout packer in `WebGPUGlobeSurfaceTileUB.ts` divides by
-// `tile.rectangle.height` — a geographic latitude span).
-//
-// HISTORY: Session 65 Batch 8 fed geoUV (geographic-V) to the texCoordsRect
-// test to fix "dark blue at close zoom." That was correct ONLY under the then
-// single-texture model (one geographic reprojected texture, but
-// `useWebMercatorT` still true → Mercator-V test vs a geographic-bound rect
-// zeroed the mask → imagery-base fallback = the dark blue). Batch 65's
-// dual-texture model superseded it: the rect now tracks the bound texture's
-// space, so the correct test V is the per-layer selected V (= the sample V),
-// NOT a global geographic-V. For `useWebMercatorT=false` layers `selectLayerUV`
-// returns geoUV, so this is byte-identical to Batch-8 on the polar/reprojected
-// tiles that were the dark-blue victims — dark-blue cannot return. See
-// migration_doc/IMAGERY_PROJECTION.md "Imagery alpha-mask V-space".
+// `boundsUV` is the geographic geoUV, used only for the `cutoutRectangle`
+// test, because the cutout packer in `WebGPUGlobeSurfaceTileUB.ts` divides by
+// `tile.rectangle.height`, a geographic latitude span.
 fn applyImageryLayer(
   prevColor: vec3<f32>,
   prevAlpha: f32,
@@ -2135,42 +2040,25 @@ fn applyImageryLayer(
                        * splitMask
                        * cutoutMask;
 
-  // Batch 79 — premultiplied-alpha OVER composite, matching WebGL
-  // GlobeFS.glsl::sampleAndBlend L309-313. The previous straight-mix
-  // formula was algebraically identical when `prevAlpha = 1` (the
-  // dominant case, verified pixel-equivalent in Batch 69), but diverged
-  // on multi-frustum subsequent passes where `prevAlpha = 0` and the
-  // first layer's `effectiveAlpha < 1`. Under straight-mix the first
-  // contribution gets attenuated by `effectiveAlpha`; under OVER it
-  // contributes at full brightness with `outAlpha = effectiveAlpha`.
-  //
-  // Formula:
+  // Premultiplied-alpha OVER composite, matching WebGL
+  // GlobeFS.glsl::sampleAndBlend L309-313:
   //   sourceAlpha = effectiveAlpha
   //   outAlpha    = mix(prevAlpha, 1, sourceAlpha)
   //              = prevAlpha + (1 - prevAlpha) * sourceAlpha
   //   outColor    = mix(prevColor * prevAlpha, adjusted, sourceAlpha)
   //                / outAlpha
   //
-  // Verification (prevAlpha = 1, no-op case):
-  //   outAlpha = mix(1, 1, sourceAlpha) = 1
-  //   outColor = mix(prevColor * 1, adjusted, sourceAlpha) / 1
-  //            = mix(prevColor, adjusted, effectiveAlpha)
-  //   → identical to the prior WGSL straight-mix output.
+  // At `prevAlpha = 1`, the dominant case, this reduces to
+  // `mix(prevColor, adjusted, effectiveAlpha)`. At `prevAlpha = 0` — the first
+  // layer of a multi-frustum subsequent pass — it reduces to `adjusted` with
+  // `outAlpha = sourceAlpha`, where a straight `mix` would instead return
+  // `adjusted * sourceAlpha` and attenuate that first layer.
   //
-  // Verification (prevAlpha = 0, subsequent-pass first layer):
-  //   outAlpha = mix(0, 1, sourceAlpha) = sourceAlpha
-  //   outColor = mix(0, adjusted, sourceAlpha) / sourceAlpha
-  //            = adjusted   (when sourceAlpha > 0)
-  //   → matches GLSL; the prior WGSL straight-mix would have returned
-  //     `adjusted * sourceAlpha`, attenuating the first layer.
-  //
-  // Divide-by-zero handling: WebGL uses a `sign()` sentinel trick
-  // (GlobeFS.glsl L311). WGSL just clamps the divisor to a tiny epsilon
-  // — when outAlpha is genuinely zero, the resulting color is
-  // multiplied by 0 (or skipped entirely) in any downstream blend stage,
-  // so the divided value is unobservable. The returned alpha is still
-  // clamped to 0 via `max(outAlpha, 0.0)` to handle floating-point
-  // underflow into negative.
+  // Divide-by-zero handling: WebGL uses a `sign()` sentinel (GlobeFS.glsl
+  // L311), this clamps the divisor to a small epsilon. When outAlpha is
+  // genuinely zero the divided color is unobservable, since any downstream
+  // blend multiplies it by 0 or skips it, and the returned alpha is clamped to
+  // 0 via `max(outAlpha, 0.0)` against floating-point underflow to negative.
   let sourceAlpha = effectiveAlpha;
   let outAlpha = mix(prevAlpha, 1.0, sourceAlpha);
   let outAlphaSafe = max(outAlpha, 1e-7);
@@ -2179,20 +2067,21 @@ fn applyImageryLayer(
   return LayerComposite(outColor, max(outAlpha, 0.0), adjusted);
 }
 
-// ─── Perceptual luminance ───
+// Perceptual luminance.
 fn luminance(color: vec3<f32>) -> f32 {
   return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
-// ─── Batch 437 (CLOUD-SHADOWS): sample the sun-view beer shadow map ───
-// Projects the fragment's WORLD (ECEF) position into the sun's ortho clip space,
-// reads the cloud OPTICAL DEPTH column (the cloud thickness between the fragment and
-// the sun), and returns a transmittance multiplier `mix(1, exp(-depth·absorption),
-// strength)` in [0,1]. Returns 1.0 (no shadow) when: the feature is off
-// (`cloudShadowControl.x <= 0.5`), or the fragment projects outside the shadow map
-// footprint (far terrain) — soft local effect, no hard cutoff. The off path never
-// calls this (the call site gates on `cloudShadowControl.x > 0.5`), so the 1×1 zero
-// placeholder is never read in the default render.
+// Samples the sun-view cloud beer-shadow map.
+// Projects the fragment's world (ECEF) position into the sun's orthographic
+// clip space, reads the cloud optical-depth column — the cloud thickness
+// between the fragment and the sun — and returns a transmittance multiplier
+// `mix(1, exp(-depth·absorption), strength)` in [0,1]. Returns 1.0, no shadow,
+// when the feature is off (`cloudShadowControl.x <= 0.5`) or the fragment
+// projects outside the shadow map footprint, which keeps the effect local
+// rather than imposing a hard cutoff. The call site gates on
+// `cloudShadowControl.x > 0.5`, so the 1×1 zero placeholder is never read in
+// the default render.
 // Project `worldPos` with `vp`; return the tile-local [0,1]² UV (y flipped to
 // texture space) and whether it landed inside the ortho footprint.
 fn cloudShadowProjectUV(vp: mat4x4<f32>, worldPos: vec3<f32>) -> vec3<f32> {
@@ -2204,14 +2093,14 @@ fn cloudShadowProjectUV(vp: mat4x4<f32>, worldPos: vec3<f32>) -> vec3<f32> {
   return vec3<f32>(uv, inside);
 }
 
-// C13-06 — pick the position operand that matches the sun-view matrices the CPU
-// published this frame. `cloudShadowCascadeParams.y > 0.5` means the matrices are
-// RELATIVE TO THE EYE, so the fragment must supply `v_positionRTE` — the exact
-// high/low camera-relative vector the vertex stage already builds for CSM.
-// Multiplying the full-ECEF `v_positionMC` by a planet-scale f32 matrix is the
-// `mvp * vec4(position, 1.0)` form the fork's RTE law forbids. Planar scene modes
-// zero `v_positionRTE`, so the CPU keeps them on the absolute matrix and this
-// returns `v_positionMC` — byte-identical to the pre-C13-06 path.
+// Picks the position operand matching the sun-view matrices the CPU published
+// this frame. `cloudShadowCascadeParams.y > 0.5` means those matrices are
+// relative to the eye, so the fragment must supply `v_positionRTE`, the same
+// high/low camera-relative vector the vertex stage already builds for the
+// cascaded shadow map. Multiplying the full-ECEF `v_positionMC` by a
+// planet-scale f32 matrix is the `mvp * vec4(position, 1.0)` form the
+// relative-to-eye rule forbids. Planar scene modes zero `v_positionRTE`, so the
+// CPU keeps them on the absolute matrix and this returns `v_positionMC`.
 fn cloudShadowPositionOperand(
   positionRTE: vec3<f32>,
   positionMC: vec3<f32>,
@@ -2225,10 +2114,11 @@ fn cloudShadowPositionOperand(
 fn sampleCloudGroundShadow(worldPos: vec3<f32>) -> f32 {
   var opticalDepth: f32 = -1.0;
   if (camera.cloudShadowControl.w >= 1.5) {
-    // ─── CLOUD-LOD-R5: cascaded atlas (512×1536, 3 tiles stacked, tile 0 = top,
-    // finest near cascade). Pick the FINEST cascade whose ortho footprint contains
-    // the fragment: near (VP0) → mid (VP1) → far (VP2). Atlas V for tile i is
-    // (uvLocal.y + i) / 3. Missing all three → no shadow. ───
+    // Cascaded atlas: 512×1536, three tiles stacked, tile 0 at the top and the
+    // finest near cascade. Picks the finest cascade whose orthographic
+    // footprint contains the fragment — near (VP0), then mid (VP1), then far
+    // (VP2). The atlas V for tile i is (uvLocal.y + i) / 3; missing all three
+    // means no shadow.
     let p0 = cloudShadowProjectUV(camera.cloudShadowVP, worldPos);
     let p1 = cloudShadowProjectUV(camera.cloudShadowVP1, worldPos);
     let p2 = cloudShadowProjectUV(camera.cloudShadowVP2, worldPos);
@@ -2265,16 +2155,12 @@ fn sampleCloudGroundShadow(worldPos: vec3<f32>) -> f32 {
   return mix(1.0, transmittance, clamp(strength, 0.0, 1.0));
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Enhanced Day/Night Rendering
-// ═══════════════════════════════════════════════════════════════════════
-
-// ─── THE DAY/NIGHT RAMP LAW (CLT-B4, CO-18) ────────────────────────────────
+// Enhanced day/night rendering.
 //
-// ONE LAW, TWO EXPRESSIONS, TWO CONSUMERS — and it is WebGL's law verbatim.
-// `GlobeFS.glsl` has always carried TWO distinct expressions over the same
-// `czm_getLambertDiffuse(L, N) * 5.0` core, and this file used to collapse both
-// consumers onto a single function that matched NEITHER:
+// The day/night ramp law: one law, two expressions, two consumers, taken from
+// WebGL verbatim. `GlobeFS.glsl` carries two distinct expressions over the
+// same `czm_getLambertDiffuse(L, N) * 5.0` core, and each consumer here reads
+// the one its GLSL twin reads:
 //
 //   consumer                        GLSL                       WGSL (here)
 //   imagery day/night alpha +       `1 - clamp(NdotL*5, 0, 1)` `computeDayNightFade`
@@ -2282,49 +2168,44 @@ fn sampleCloudGroundShadow(worldPos: vec3<f32>) -> f32 {
 //   ENABLE_DAYNIGHT_SHADING         `clamp(NdotL*5 + 0.3,      `computeDayNightDiffuse`
 //     diffuse                         0, 1)` (GlobeFS.glsl:851)
 //
-// The `+ 0.3` belongs ONLY to the lighting expression — it is a night-side
-// FLOOR that keeps the unlit hemisphere off pitch black. It is not, and never
-// was, an offset on the alpha ramp. The pre-CO-18 WGSL had a single
-// `clamp(NdotL*5 + 0.5, 0, 1)` serving both, which centred the alpha ramp ON
-// the geometric terminator (0.5 night alpha at N·L = 0 where GLSL says 1.0)
-// and simultaneously drove the lighting term from a ramp WebGL does not use
-// there. MEASURED at pixels by `probe-daynight-terminator-law.mjs` run 2 (tip
-// `679cbf5173`): lane A read WebGL 0.012 vs WebGPU 0.496 day-fade at the
-// terminator, shapes classified `glsl-law` vs `wgsl-offset-law`.
+// The `+ 0.3` belongs to the lighting expression alone: it is a night-side
+// floor that keeps the unlit hemisphere off pitch black, not an offset on the
+// alpha ramp. Collapsing both consumers onto a single
+// `clamp(NdotL*5 + 0.5, 0, 1)` centres the alpha ramp on the geometric
+// terminator — 0.5 night alpha at N·L = 0, where GLSL gives 1.0 — and drives
+// the lighting term from a ramp WebGL does not use there. At the terminator
+// that reads as 0.496 day-fade against WebGL's 0.012.
 //
-// CALLER CONTRACT (NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE, CO-15): `normalEC`
-// MUST be the analytic geocentric surface normal in eye space
+// `normalEC` must be the analytic geocentric surface normal in eye space
 // (`dayNightNormalEC` in `fragmentMain`), never the interpolated mesh normal
-// `input.v_normalEC` — which is a CONSTANT on normal-less terrain and made this
+// `input.v_normalEC`, which is constant on normal-less terrain and makes the
 // whole term globally uniform. See the block above the call site.
 //
-// The imagery day/night alpha + night-lights gate. Byte-for-byte the day-side
-// complement of `GlobeFS.glsl:601`'s `nightBlend`: the caller takes
+// The imagery day/night alpha and night-lights gate is the day-side complement
+// of `GlobeFS.glsl:601`'s `nightBlend`: the caller takes
 // `nightBlend = 1.0 - dayFade`. Fully night at N·L <= 0; the ramp lives
-// ENTIRELY on the day side and saturates at N·L = 0.2.
+// entirely on the day side and saturates at N·L = 0.2.
 fn computeDayNightFade(normalEC: vec3<f32>, sunDirEC: vec3<f32>) -> f32 {
   let lambertDiffuse = max(dot(sunDirEC, normalEC), 0.0);
   return clamp(lambertDiffuse * 5.0, 0.0, 1.0);
 }
 
-// The ENABLE_DAYNIGHT_SHADING diffuse. Byte-for-byte `GlobeFS.glsl:851`'s
+// The ENABLE_DAYNIGHT_SHADING diffuse, matching `GlobeFS.glsl:851`'s
 // `diffuseIntensity`. The `+ 0.3` is this expression's own night floor and
-// MUST NOT leak into `computeDayNightFade` above — that leak was CLT-B4.
-// The caller then applies GLSL:852's `mix(1.0, diffuseIntensity, fade)` with
-// the camera-distance `fade`, so close-camera tiles stay flat-lit.
+// must not leak into `computeDayNightFade` above. The caller then applies
+// GLSL:852's `mix(1.0, diffuseIntensity, fade)` with the camera-distance
+// `fade`, so close-camera tiles stay flat-lit.
 fn computeDayNightDiffuse(normalEC: vec3<f32>, sunDirEC: vec3<f32>) -> f32 {
   let lambertDiffuse = max(dot(sunDirEC, normalEC), 0.0);
   return clamp(lambertDiffuse * 5.0 + 0.3, 0.0, 1.0);
 }
 
-// Compute the terminator glow — warm orange/pink color right at the
-// day-night boundary, simulating atmospheric scattering at the terminator.
+// Computes the terminator glow: a warm orange-pink tint right at the day-night
+// boundary, standing in for atmospheric scattering there.
 //
-// CLT-B4 NOTE: this term takes the raw signed `dot(N, L)`, NOT either ramp, so
-// the CO-18 law reconciliation does not move it — verified rather than assumed.
-// It is WebGPU-only with no GLSL twin (CLT-B3's audit subject) and is
-// deliberately neither expanded nor removed here; its only shared input is the
-// analytic normal, which it already takes.
+// This term takes the raw signed `dot(N, L)` rather than either day/night
+// ramp, so a change to the ramp law does not move it. It is WebGPU-only, with
+// no GLSL twin; its only shared input is the analytic normal.
 fn computeTerminatorGlow(normalEC: vec3<f32>, sunDirEC: vec3<f32>) -> vec3<f32> {
   let NdotL = dot(normalEC, sunDirEC);
   // Peak at the terminator (NdotL ≈ 0), fading on both sides
@@ -2354,9 +2235,7 @@ fn applyNightLightsEmission(
   return color + emission;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Enhanced Ocean/Water Rendering
-// ═══════════════════════════════════════════════════════════════════════
+// Enhanced ocean and water rendering.
 
 // Fresnel-Schlick approximation: water reflects more at grazing angles
 fn fresnelSchlick(cosTheta: f32, F0: f32) -> f32 {
@@ -2372,17 +2251,16 @@ fn distributionGGX(NdotH: f32, roughness: f32) -> f32 {
   return a2 / (PI * denom * denom + 0.0001);
 }
 
-// Batch 79 — east-north-up to eye-coordinates rotation matrix.
+// East-north-up to eye-coordinates rotation matrix.
 // Port of WebGL's `czm_eastNorthUpToEyeCoordinates`
 // (Builtin/Functions/eastNorthUpToEyeCoordinates.glsl). Builds a 3×3
-// rotation that takes a tangent-space (east, north, up) vector to
-// eye-space, where the local up is the ellipsoid surface normal.
-// Used by `computeEnhancedOcean` to transform multi-octave wave
-// normals from tangent space into eye space before perturbing the
-// surface normal — pre-Batch-79 the WGSL was adding a tangent-space
-// vector directly to an eye-space normal, which produced waves that
-// "follow the camera" instead of being anchored to the surface
-// (visible as a subtle mesh-pattern artifact on close-zoom water).
+// rotation that takes a tangent-space (east, north, up) vector to eye space,
+// where the local up is the ellipsoid surface normal. `computeEnhancedOcean`
+// uses it to move multi-octave wave normals from tangent space into eye space
+// before perturbing the surface normal. Adding a tangent-space vector directly
+// to an eye-space normal instead produces waves that follow the camera rather
+// than staying anchored to the surface, which reads as a subtle mesh pattern
+// on close-zoom water.
 //
 // `positionMC` is the world-space position (which equals model-space
 // for the globe since the model matrix is identity). The east tangent
@@ -2409,54 +2287,56 @@ fn eastNorthUpToEyeCoordinates(
   return mat3x3<f32>(tangentEC, bitangentEC, normalEC);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// C11-172 — Ocean-wave PHYSICAL-WAVELENGTH march + footprint LOD (v3, 2026-07-24)
-// ═══════════════════════════════════════════════════════════════════════
-// v1 sampled the octaves in TILE UV (`geoUV × 400/200/800`), which is SCALE-
-// INVARIANT under terrain SSE — sub-pixel at every altitude, so the "waves" were
-// animated mip-0 aliasing (the maintainer's "noisy, not natural" bug). v2
-// anchored them to a GLOBAL ellipsoid (lon/lat) coordinate at PHYSICAL
-// wavelengths (constant real-world scale, resolvable at a 50 m camera). v3 fixes
-// the f32 PRECISION of that global coordinate: the absolute `euv × Rᵢ` reaches
-// ~2.7e6 for the 15 m ripple, whose f32 ulp is ~0.25 of a repeat — staircase
-// bands + frozen (small-delta) time advection. RTE-style fix (the fork's
-// standard pattern): the CPU computes per-tile per-octave phase offsets in f64
-// — fract(rectOriginNorm × Rᵢ) — and packs only the [0,1) remainder + the
-// normalized tile span; the shader reconstructs the coordinate from small
-// quantities: `phaseᵢ + tileLocalUV × spanNorm × Rᵢ + fract(time)`. Every f32
-// term stays ≤ ~(tile screen px) when the octave is resolved ⇒ ulp ≪ 1% of a
-// repeat everywhere (see ocean-wave-lod.spec.mjs (f) at 60 N / 170 E).
+// Ocean-wave march at physical wavelengths, with footprint-driven level of
+// detail.
 //
-//   (1) PHYSICAL-WAVELENGTH, MIP+ANISO-AWARE SAMPLING. Each octave tiles the
-//       normal map Rᵢ = round(circumference / wavelengthᵢ) times per globe;
-//       `textureSampleGrad` (explicit gradients, legal after the non-uniform
-//       coast discard) mip-averages AND — with the ocean sampler's
-//       maxAnisotropy 8 — anisotropic-filters, matching WebGL's auto-LOD. Rᵢ is
-//       INTEGER so the ±180° ellipsoid-UV wrap is an exact repeat (seamless).
-//   (2) CAMERA-HEIGHT-AWARE FADE — SUBSUMED BY the footprint metric (repeats per
-//       pixel): huge on a low camera's grazing horizon, tiny nadir, no hardcoded
-//       distance ramp. Legacy `waveIntensityFade` (70 km–1 Mm) is left intact
-//       ONLY for the tuned orbit sun-glint parity (GLOBE-POLAR-STRETCH-POLISH).
-//   (3) AMPLITUDE FADE + HARD FAR CUTOFF. Each octave's tangent-space `.xy`
-//       (slope amplitude) is scaled by its footprint weight while `.z` is kept,
-//       so the perturbation fades CONTINUOUSLY toward flat (v1 scaled whole
-//       vectors inside `normalize` = a scale-invariant no-op; D3). Once all
-//       weights are negligible the march skips the fetches (perf); the amplitude
-//       fade already drove the blend to ≈flat so the cutoff is continuous.
+// The octaves are anchored to a global ellipsoid (longitude/latitude)
+// coordinate at physical wavelengths, so they hold a constant real-world scale
+// and stay resolvable down to a 50 m camera. Sampling them in tile UV instead
+// is scale-invariant under terrain screen-space error — sub-pixel at every
+// altitude — which turns the waves into animated mip-0 aliasing.
 //
-// ANISOTROPY / WAVELENGTH HONESTY (P4): the sampling normalizes U by 1/2π and V
-// by 1/π, so `Rᵢ` repeats span the full 2π longitude but only the π half-
-// meridian — the MERIDIONAL (north-south) wavelength is HALF the zonal one, and
-// the zonal metric wavelength further shrinks by cos(lat) toward the poles (the
-// standard `czm_ellipsoidTextureCoordinates` distortion WebGL also has). The
-// footprint fade is computed from the ACTUAL per-axis UV derivatives, so it
-// self-tracks this compression (no aliasing) — but the quoted wavelengths are
-// the EQUATORIAL ZONAL values; multiply by 0.5 for meridional / by cos(lat) for
-// the local zonal metric scale.
+// The global coordinate is reconstructed relative-to-eye rather than used
+// absolutely: `euv × Rᵢ` reaches ~2.7e6 for the 15 m ripple, where an f32 ulp
+// is ~0.25 of a repeat, giving staircase bands and time advection so small it
+// freezes. The CPU computes per-tile, per-octave phase offsets in f64 —
+// fract(rectOriginNorm × Rᵢ) — and packs only the [0,1) remainder plus the
+// normalized tile span; the shader rebuilds the coordinate from small
+// quantities as `phaseᵢ + tileLocalUV × spanNorm × Rᵢ + fract(time)`. Every f32
+// term then stays at or below about one tile's screen pixels while the octave
+// is resolved, keeping the ulp far under 1% of a repeat.
 //
-// TUNABLE (shared with GlobeFS.glsl + WebGPUGlobeSurfaceTypes.OCEAN_OCTAVE_REPEATS,
-// pinned by ocean-wave-lod.spec.mjs which EXTRACTS them): integer repeat counts
-// (≈ wavelength) + the fade band (repeats/pixel).
+//   (1) Physical-wavelength, mip- and anisotropy-aware sampling. Each octave
+//       tiles the normal map Rᵢ = round(circumference / wavelengthᵢ) times per
+//       globe. `textureSampleGrad` takes explicit gradients, which is legal
+//       after the non-uniform coast discard, and mip-averages; with the ocean
+//       sampler's maxAnisotropy of 8 it also anisotropic-filters, matching
+//       WebGL's automatic LOD. Rᵢ is an integer, so the ±180° ellipsoid-UV wrap
+//       is an exact repeat and the seam is invisible.
+//   (2) Camera-height awareness comes from the footprint metric, repeats per
+//       pixel: large on a low camera's grazing horizon, small at nadir, with no
+//       hardcoded distance ramp. `waveIntensityFade` (70 km to 1 Mm) is
+//       retained only for the tuned orbit sun-glint parity.
+//   (3) Amplitude fade with a hard far cutoff. Each octave's tangent-space
+//       `.xy` slope amplitude is scaled by its footprint weight while `.z` is
+//       kept, so the perturbation fades continuously toward flat. Scaling whole
+//       vectors inside `normalize` instead is a scale-invariant no-op. Once all
+//       weights are negligible the march skips the fetches; the amplitude fade
+//       has already driven the blend to nearly flat, so the cutoff is
+//       continuous.
+//
+// The sampling normalizes U by 1/2π and V by 1/π, so `Rᵢ` repeats span the full
+// 2π of longitude but only the π half-meridian: the meridional wavelength is
+// half the zonal one, and the zonal metric wavelength shrinks further by
+// cos(lat) toward the poles — the same `czm_ellipsoidTextureCoordinates`
+// distortion WebGL carries. The footprint fade is computed from the actual
+// per-axis UV derivatives, so it self-tracks that compression, but the
+// wavelengths quoted below are equatorial zonal values: multiply by 0.5 for
+// meridional, or by cos(lat) for the local zonal metric scale.
+//
+// The integer repeat counts and the fade band are tunable, shared with
+// GlobeFS.glsl and WebGPUGlobeSurfaceTypes.OCEAN_OCTAVE_REPEATS, and pinned by
+// ocean-wave-lod.spec.mjs, which extracts them from this file.
 const OCEAN_CIRCUMFERENCE_M: f32 = 40075016.0; // WGS84 equatorial circumference
 const OCEAN_OCTAVE_REPEATS_1: f32 = 267167.0;  // swell  ≈ 150.0 m zonal (importance 0.6)
 const OCEAN_OCTAVE_REPEATS_2: f32 = 801500.0;  // medium ≈  50.0 m zonal (importance 0.3)
@@ -2490,13 +2370,14 @@ fn oceanOctaveLodWeight(repeatsPerPixel: f32) -> f32 {
   return 1.0 - smoothstep(OCEAN_OCTAVE_FADE_LO, OCEAN_OCTAVE_FADE_HI, repeatsPerPixel);
 }
 
-// Sample ocean wave normals as 3 physically-scaled octaves in RTE-decomposed
-// ellipsoid UV. `euvLocal` = geoUV × spanNorm (TILE-LOCAL ellipsoid UV, small);
-// `euvDx`/`euvDy` = its per-pixel derivatives; `phaseN` = the f64-computed
-// per-tile per-octave phase offset (from the tile UB). The absolute sample
-// coordinate `phaseN + euvLocal × Rᵢ` stays small so f32 resolves it; adjacent
-// tiles stay phase-continuous because Rᵢ is integer and both the phase and the
-// span come from the same f64 rectangle. Feeds BOTH ocean-styling branches.
+// Samples ocean wave normals as three physically-scaled octaves in
+// relative-to-eye decomposed ellipsoid UV. `euvLocal` is geoUV × spanNorm, the
+// small tile-local ellipsoid UV; `euvDx`/`euvDy` are its per-pixel derivatives;
+// `phaseN` is the f64-computed per-tile, per-octave phase offset from the tile
+// uniform buffer. The absolute sample coordinate `phaseN + euvLocal × Rᵢ` stays
+// small enough for f32 to resolve, and adjacent tiles stay phase-continuous
+// because Rᵢ is an integer and both the phase and the span come from the same
+// f64 rectangle. Feeds both ocean-styling branches.
 fn sampleOceanWaveNormals(
   euvLocal: vec2<f32>,
   euvDx: vec2<f32>,
@@ -2506,18 +2387,18 @@ fn sampleOceanWaveNormals(
   phase3: vec2<f32>,
   t: f32,
 ) -> vec3<f32> {
-  // MIN-axis footprint (repeats/pixel = octave repeats × UV footprint). Min, not
-  // max, because anisotropic sampling resolves the long axis — the short axis
-  // sets the resolution limit (D6c).
-  // Orchestrator refinement at landing (Batch 757, Bering 53N/178E Edge
-  // evidence): keying the octave weight on the pure MIN footprint axis
-  // leaves a visible corduroy aliasing band just under the horizon at
-  // extreme grazing angles - the sampler resolves at most
-  // OCEAN_SAMPLER_MAX_ANISO texels of footprint elongation (it is created
-  // with maxAnisotropy = 8 in WebGPUGlobeSurfaceLayouts.ts; keep the two
-  // constants in lockstep), so beyond that ratio the long axis aliases at
-  // the min-axis LOD. Standard hardware-aniso LOD clamp: the effective
-  // resolvable footprint is max(minAxis, maxAxis / maxAniso).
+  // Minimum-axis footprint, in repeats per pixel: octave repeats × UV
+  // footprint. The minimum rather than the maximum, because anisotropic
+  // sampling resolves the long axis and the short one sets the resolution
+  // limit.
+  //
+  // Keying the octave weight on the pure minimum axis leaves a visible corduroy
+  // aliasing band just under the horizon at extreme grazing angles: the sampler
+  // resolves at most OCEAN_SAMPLER_MAX_ANISO texels of footprint elongation —
+  // it is created with maxAnisotropy 8 in WebGPUGlobeSurfaceLayouts.ts, and the
+  // two constants must stay in lockstep — so past that ratio the long axis
+  // aliases at the min-axis LOD. The standard hardware-anisotropy clamp
+  // applies: the resolvable footprint is max(minAxis, maxAxis / maxAniso).
   let footMinRaw = min(length(euvDx), length(euvDy));
   let footMaxRaw = max(length(euvDx), length(euvDy));
   let footMin = max(footMinRaw, footMaxRaw / OCEAN_SAMPLER_MAX_ANISO);
@@ -2590,23 +2471,21 @@ fn computeSubsurfaceScattering(
   return sssColor * scatter * rimFactor;
 }
 
-// Full enhanced ocean rendering pipeline
-// Batch 58 — rewritten to match WebGL `computeWaterColor` semantics.
-// WebGL's pattern is `color = imageryColor + diffuseHighlight + ... + specular`
-// — imagery is PRESERVED and highlights are added. The previous WGSL
-// formulation `mix(baseColor * darkening, deepColor, 0.6)` REPLACED
-// imagery with a deep-color blend, dimming Bing aerial ocean by ~5×
-// at every ocean fragment and dominating the WebGPU/WebGL brightness
-// gap. See `migration_doc/WEBGPU_DEBUGGING_LOG.md` Batch 58.
+// Full enhanced ocean rendering pipeline, following WebGL
+// `computeWaterColor` semantics: `color = imageryColor + diffuseHighlight +
+// ... + specular`, so imagery is preserved and highlights are added to it.
+// Replacing imagery with a deep-color blend such as
+// `mix(baseColor * darkening, deepColor, 0.6)` instead dims aerial ocean
+// imagery by roughly 5× at every ocean fragment.
 //
-// The new path:
-//   1. Sample wave normals (only at low altitude with ocean waves enabled)
-//   2. Compute diffuse + specular highlights from the active scene light
-//   3. Add highlights to the imagery base color (no replacement)
-//   4. Smooth coast transition by water-mask alpha
+// The path is:
+//   1. Sample wave normals, only at low altitude with ocean waves enabled
+//   2. Compute diffuse and specular highlights from the active scene light
+//   3. Add the highlights to the imagery base color, without replacing it
+//   4. Smooth the coast transition by water-mask alpha
 //
-// At orbit / no-waves / no-lighting we contribute essentially nothing
-// — same as WebGL with default settings.
+// At orbit, with no waves or no lighting, the contribution is essentially
+// nothing, matching WebGL at its default settings.
 fn computeEnhancedOcean(
   baseColor: vec3<f32>,
   positionEC: vec3<f32>,
@@ -2614,10 +2493,10 @@ fn computeEnhancedOcean(
   normalEC: vec3<f32>,
   sunDirEC: vec3<f32>,
   uv: vec2<f32>,
-  // C11-172 — fragment-entry-hoisted derivatives of `uv` (= geoUV) for the
+  // Derivatives of `uv` (= geoUV), hoisted to fragment entry, for the
   // wave-march pixel-footprint octave LOD. `fwidth` is illegal at this call
-  // site (downstream of the non-uniform coast discard), so they are threaded
-  // in from uniform control flow, matching the water-mask AA pattern.
+  // site, downstream of the non-uniform coast discard, so they are threaded in
+  // from uniform control flow, matching the water-mask antialiasing pattern.
   uvDx: vec2<f32>,
   uvDy: vec2<f32>,
   waterMaskValue: f32,
@@ -2626,39 +2505,37 @@ fn computeEnhancedOcean(
 ) -> vec3<f32> {
   let viewDir = normalize(-positionEC);
 
-  // Perturbed normal from multi-octave wave normals. `waveN` is the
-  // sampled tangent-space normal; .z component (tsPerturbationRatio
-  // in WebGL nomenclature) is needed for the nonDiffuseHighlight below
-  // so we capture it outside the gate too.
+  // Perturbed normal from multi-octave wave normals. `waveN` is the sampled
+  // tangent-space normal; its .z component — `tsPerturbationRatio` in WebGL's
+  // nomenclature — is needed for the nonDiffuseHighlight below, so it is
+  // captured outside the gate as well.
   //
-  // Batch 79 — properly transform `waveN` from tangent space to eye
-  // space via the ENU rotation, matching WebGL's
-  //   normalEC_water = enuToEye * normalTangentSpace
-  // pattern at GlobeFS.glsl::computeWaterColor L814. Pre-Batch-79 the
-  // WGSL was doing `normalize(normalEC + waveN * waveStrength)` —
-  // mixing a tangent-space vector into an eye-space vector without
-  // rotation. Visible difference: waves were anchored to camera
-  // orientation instead of the surface, producing a subtle "moving
-  // mesh" pattern when the camera orbited a coastline.
+  // `waveN` is rotated from tangent space to eye space through the ENU matrix,
+  // matching WebGL's `normalEC_water = enuToEye * normalTangentSpace` at
+  // GlobeFS.glsl::computeWaterColor L814. Folding it in as
+  // `normalize(normalEC + waveN * waveStrength)` mixes a tangent-space vector
+  // into an eye-space one without rotating it, which anchors the waves to
+  // camera orientation rather than the surface and shows as a moving mesh
+  // pattern when the camera orbits a coastline.
   var waterNormal = normalEC;
   var foamFactor: f32 = 0.0;
   var tsPerturbationRatio: f32 = 1.0; // 1.0 = flat, 0.0 = vertical wave
   let showOceanWaves = tile.flags.z > 0.5;
   if (showOceanWaves) {
-    // NEW-GLOBE-BELOWSURFACE-DECOMP — under any debug sentinel (tile.time
-    // hijacked to > 1e9) freeze the wave clock at 0 so A/B bypass captures
-    // share an identical wave phase instead of inheriting the sentinel
-    // value. Production (tile.time < 1e6) selects the real clock.
+    // Under any debug sentinel, where tile.time is hijacked past 1e9, the wave
+    // clock freezes at 0 so A/B bypass captures share one wave phase instead of
+    // inheriting the sentinel value. Production, at tile.time below 1e6,
+    // selects the real clock.
     let t = select(tile.time, 0.0, tile.time > 1.0e9);
-    // C11-172 v3 — RTE-decomposed ellipsoid wave UV. The f64-computed per-tile
-    // per-octave phase offsets + the normalized tile span come from the tile UB
-    // (packed to keep every f32 quantity small — see the C11-172 block above).
-    // The shader reconstructs only TILE-LOCAL quantities: euvLocal = geoUV ×
-    // spanNorm (small, tile-relative ellipsoid UV) and its per-pixel derivatives
-    // euvD = spanNorm × geoUV-derivative (seam-free, no f32 east−west
-    // cancellation). Planar (2D/CV) modes pack a projected-meters span → euvD
-    // blows up → the footprint fade collapses every octave → flat ocean
-    // (graceful; 2D ocean waves are a pre-existing edge case).
+    // Relative-to-eye decomposed ellipsoid wave UV. The f64-computed per-tile,
+    // per-octave phase offsets and the normalized tile span come from the tile
+    // uniform buffer, packed to keep every f32 quantity small. The shader
+    // reconstructs only tile-local quantities: euvLocal = geoUV × spanNorm, the
+    // small tile-relative ellipsoid UV, and its per-pixel derivatives
+    // euvD = spanNorm × geoUV-derivative, which are seam-free because they
+    // avoid the f32 east-west cancellation. Planar 2D and Columbus View modes
+    // pack a projected-metres span, so euvD blows up, the footprint fade
+    // collapses every octave, and the ocean renders flat.
     let spanNorm = tile.oceanWavePhaseB.zw;
     let euvLocal = uv * spanNorm;
     let euvDx = uvDx * spanNorm;
@@ -2668,40 +2545,37 @@ fn computeEnhancedOcean(
       tile.oceanWavePhaseA.xy, tile.oceanWavePhaseA.zw, tile.oceanWavePhaseB.xy,
       t,
     );
-    // GLOBE-POLAR-STRETCH-POLISH — fade the wave perturbation to EXACTLY
-    // zero far from the surface, matching WebGL GlobeFS.glsl L794+816:
+    // Fades the wave perturbation to exactly zero far from the surface,
+    // matching WebGL GlobeFS.glsl L794+816:
     //   waveIntensity = waveFade(70000, 1e6, positionToEyeECLength)
     //                 = pow(1 - linearFade(70000, 1e6, dist), 5)
     //   normalTangentSpace.xy *= waveIntensity
-    // The previous floor of 0.05 kept a residual tilt at orbit; the
-    // mip-averaged wave-normal bias then tilted the whole sun-glint lobe
-    // coherently (~10 px limb-ward vs WebGL at 25 Mm).
+    // A non-zero floor leaves a residual tilt at orbit, and the mip-averaged
+    // wave-normal bias then tilts the whole sun-glint lobe coherently — about
+    // 10 px limb-ward of WebGL at 25 Mm.
     let waveFadeLin = clamp(
       (length(positionEC) - 70000.0) / (1000000.0 - 70000.0),
       0.0,
       1.0,
     );
     let waveIntensityFade = pow(1.0 - waveFadeLin, 5.0);
-    // NS-WEBGPU-OCEAN-BRIGHT-NO-WAVES — raise the near-surface wave-normal
-    // strength so the perturbed normal (and the specular sparkle / diffuse
-    // highlight that ride on it) has WebGL-comparable magnitude. WebGL's
-    // computeWaterColor applies the FULL tangent-space wave normal near the
-    // surface (GlobeFS.glsl L818: `normalTangentSpace.xy *= waveIntensity`
-    // with `waveIntensity ≈ 1` below ~70 km), so the animated Phong glint
-    // churns visibly. The previous near value 0.25 mixed only ~24 % toward
-    // the wave normal, leaving the WebGPU ocean ~4× flatter (detail ~0.28×
-    // WebGL) and its frame-driven animation nearly imperceptible — the
-    // "lacks the wave effect" half of the user report. The far value and
-    // `waveIntensityFade` (→ 0 at orbit) are unchanged, so the orbit
-    // sun-glint parity tuned by GLOBE-POLAR-STRETCH-POLISH is preserved.
+    // The near-surface wave-normal strength is set so the perturbed normal —
+    // and the specular sparkle and diffuse highlight riding on it — has a
+    // magnitude comparable to WebGL's. WebGL's computeWaterColor applies the
+    // full tangent-space wave normal near the surface (GlobeFS.glsl L818,
+    // `normalTangentSpace.xy *= waveIntensity` with `waveIntensity ≈ 1` below
+    // roughly 70 km), so the animated Phong glint churns visibly. A near value
+    // around 0.25 mixes only about 24% toward the wave normal, leaving the
+    // ocean roughly 4× flatter and its frame-driven animation nearly
+    // imperceptible. The far value and `waveIntensityFade`, which reaches 0 at
+    // orbit, set the orbit sun-glint parity and are independent of this.
     let waveStrength = mix(0.85, 0.05, smoothstep(10000.0, 500000.0, distance)) *
       waveIntensityFade;
     let enuToEye = eastNorthUpToEyeCoordinates(positionMC, normalEC);
-    // ENU.up = normalEC, so `enuToEye * (0,0,1) = normalEC`. A purely
-    // flat wave normal (0, 0, 1) leaves `waterNormal` equal to
-    // `normalEC` — no perturbation, matching the pre-Batch-79 baseline
-    // when waveN.xy = 0. Non-zero waveN.xy now correctly tilts the
-    // normal around the local east/north tangent frame.
+    // ENU.up is normalEC, so `enuToEye * (0,0,1) = normalEC`: a flat wave
+    // normal of (0, 0, 1) leaves `waterNormal` equal to `normalEC` and
+    // perturbs nothing. Non-zero waveN.xy tilts the normal around the local
+    // east/north tangent frame.
     let waveNormalEC = enuToEye * waveN;
     waterNormal = normalize(mix(normalEC, waveNormalEC, waveStrength));
     foamFactor = computeFoam(waveN, distance);
@@ -2737,23 +2611,24 @@ fn computeEnhancedOcean(
   // over). The caller now passes `tile.groundAtmosphereControl.y` — the
   // identical clamp — for `lightingFade`.
   //
-  // PRE-FIX BUG: the caller passed `dayFade` (the day/night TERMINATOR fade),
-  // which `fragmentMain` forces to 1.0 whenever `enableLighting` is off (the
-  // default). `1.0 - 1.0 = 0` zeroed the bluish `diffuseHighlight` on EVERY
-  // daytime ocean fragment, rendering the WebGPU ocean ~4x darker than WebGL
-  // (bright blue → deep navy) at mid-range while night-side (NdotL≈0) stayed
-  // at parity. The terminator fade and the atmosphere fade are unrelated.
+  // It must not be the day/night terminator fade `dayFade`, which
+  // `fragmentMain` forces to 1.0 whenever `enableLighting` is off — the
+  // default. `1.0 - 1.0 = 0` zeroes the bluish `diffuseHighlight` on every
+  // daytime ocean fragment, taking the ocean from bright blue to deep navy,
+  // roughly 4× darker than WebGL at mid-range, while the night side stays at
+  // parity because NdotL is near zero there anyway. The terminator fade and
+  // the atmosphere fade are unrelated quantities.
   let highlightFade = 1.0 - clamp(lightingFade, 0.0, 1.0);
   let diffuseHighlight = waveHighlightColor * NdotL * waterMaskValue * highlightFade;
 
   var oceanContribution = diffuseHighlight;
 
-  // Batch 78 — port WebGL's `nonDiffuseHighlight` (GlobeFS.glsl L822-829).
-  // Where waves are perturbed AND diffuse light is weak, add a low-light
-  // bluish highlight so the ocean isn't pitch-black at the terminator.
-  // Gated on SHOW_OCEAN_WAVES (= `tile.flags.z > 0.5`) — matches WebGL's
-  // `#ifdef SHOW_OCEAN_WAVES` gate; the WebGL #else branch sets it to
-  // vec3(0.0), which is what we get by leaving the var at zero.
+  // WebGL's `nonDiffuseHighlight` (GlobeFS.glsl L822-829). Where waves are
+  // perturbed and diffuse light is weak, this adds a low-light bluish
+  // highlight so the ocean is not pitch black at the terminator. Gated on
+  // SHOW_OCEAN_WAVES (`tile.flags.z > 0.5`), matching WebGL's
+  // `#ifdef SHOW_OCEAN_WAVES`; WebGL's `#else` branch sets it to vec3(0.0),
+  // which leaving the var at zero reproduces.
   //   formula: mix(waveHighlightColor × 5 × (1 - tsPerturbationRatio),
   //                 vec3(0.0),
   //                 diffuseIntensity)
@@ -2768,33 +2643,33 @@ fn computeEnhancedOcean(
     oceanContribution += nonDiffuseHighlight * waterMaskValue * highlightFade;
   }
 
-  // Specular sun-glint — GLOBE-POLAR-STRETCH-POLISH: ported 1:1 from WebGL
-  // GlobeFS.glsl::computeWaterColor L839-842. WebGL runs this
-  // UNCONDITIONALLY — `czm_lightDirectionEC` is always defined (the default
-  // scene light is the sun even when `globe.enableLighting` is false) — and
-  // has NO orbit-altitude attenuation: the broad Phong lobe (shininess 10)
-  // IS the zoomed-out ocean glint, modulated only by
-  // `u_zoomedOutOceanSpecularIntensity` (0.5 in SCENE3D, set by
-  // `Globe.beginFrame`). The previous WGSL shape (enableLighting gate +
-  // GGX(0.08)×NdotL + smoothstep orbit fade above 100 km) suppressed the
-  // glint entirely in default scenes; at 25 Mm the missing Pacific glint
-  // blob was 63% of the WebGL↔WebGPU far-zoom pixel mismatch.
+  // Specular sun-glint, ported one-to-one from WebGL
+  // GlobeFS.glsl::computeWaterColor L839-842. WebGL runs it unconditionally,
+  // because `czm_lightDirectionEC` is always defined — the default scene light
+  // is the sun even when `globe.enableLighting` is false — and it has no
+  // orbit-altitude attenuation: the broad Phong lobe at shininess 10 is the
+  // zoomed-out ocean glint, modulated only by
+  // `u_zoomedOutOceanSpecularIntensity`, which `Globe.beginFrame` sets. Gating
+  // this on enableLighting, or fading it out above 100 km, suppresses the glint
+  // entirely in default scenes; at 25 Mm the missing Pacific glint blob alone
+  // accounted for 63% of the far-zoom pixel mismatch against WebGL.
   //
   //   czm_getSpecular(L, V, N, 10) = pow(max(dot(reflect(-L, N), V), 0), 10)
   //   surfaceReflectance = mix(0, mix(zoomedOutSpec, oceanSpec, waveIntensity), mask)
   //   waveIntensity = waveFade(70000, 1e6, |toEyeEC|) = pow(1 - linearFade(...), 5)
   //
-  // NEW-GLOBE-BELOWSURFACE-DECOMP — 'bypass-glint' (26e9) skips this B506
-  // Phong sun-glint term so its share of the below-surface residual can be
-  // measured in isolation. Always taken in production (tile.time < 1e6).
+  // The 26e9 debug sentinel skips this term so its share of the below-surface
+  // residual can be measured in isolation. Production, below tile.time 1e6,
+  // always takes it.
   if (!globe_debugBypassActive(26.0e9)) {
     let toReflectedLight = reflect(-sunDirEC, waterNormal);
     let specularIntensity = pow(max(dot(toReflectedLight, viewDir), 0.0), 10.0);
-    // `camera.lighting.w` mirrors WebGL's `u_zoomedOutOceanSpecularIntensity`
-    // — NOT a constant: `Globe.beginFrame` sets 0.4 when showGroundAtmosphere
-    // (the default) vs 0.5 otherwise, and 0.0 outside SCENE3D. Hardcoding 0.5
-    // here made the WebGPU orbit glint 25% brighter than WebGL's.
-    // `nearSpec` matches the GLSL const `oceanSpecularIntensity = 0.5`.
+    // `camera.lighting.w` mirrors WebGL's `u_zoomedOutOceanSpecularIntensity`,
+    // which is not a constant: `Globe.beginFrame` sets 0.4 when
+    // showGroundAtmosphere is on — the default — 0.5 otherwise, and 0.0
+    // outside SCENE3D. Hardcoding 0.5 here makes the orbit glint 25% brighter
+    // than WebGL's. `nearSpec` matches the GLSL const
+    // `oceanSpecularIntensity = 0.5`.
     let zoomedOutSpec: f32 = camera.lighting.w;
     let nearSpec: f32 = 0.5;
     let positionToEyeECLength = length(positionEC);
@@ -2813,28 +2688,28 @@ fn computeEnhancedOcean(
   let foamColor = vec3<f32>(0.85, 0.9, 0.92);
 
   // Match WebGL: imagery preserved, highlights added on top, foam mixed in.
-  // NS-WATER-MASK-COAST-AA — the coastline feather (mix vs baseColor) now
-  // lives at the CALL SITE, where a screen-space-adaptive coverage is
-  // computed with `fwidth(mask)` in uniform control flow. Returning the
-  // full effect color here keeps this helper a pure "ocean over imagery"
-  // shader; the caller decides how much of it survives near the coast.
+  // The coastline feather, a mix against baseColor, lives at the call site,
+  // where a screen-space-adaptive coverage is computed with `fwidth(mask)` in
+  // uniform control flow. Returning the full effect color here keeps this
+  // helper a pure ocean-over-imagery shader and leaves the caller to decide
+  // how much of it survives near the coast.
   var color = baseColor + oceanContribution;
   color = mix(color, foamColor, foamFactor);
   return color;
 //>>else
-  // ── Classic WebGL-parity ocean styling (C11-158 DEFAULT) ──
-  // Faithful port of GlobeFS.glsl::computeWaterColor (non-HDR path,
-  // L807-878). The gate is STYLING-ONLY: the shared wave march above already
+  // Classic WebGL-parity ocean styling, the default.
+  // Faithful port of GlobeFS.glsl::computeWaterColor, non-HDR path L807-878.
+  // The gate covers styling only: the shared wave march above has already
   // produced the perturbed eye-space normal (`waterNormal`, WebGL's
   // `enuToEye * normalTangentSpace`) and `tsPerturbationRatio` (WebGL's
-  // `normalTangentSpace.z`), so BOTH branches ride the identical waves — only
-  // the colour derivation differs. This branch reproduces WebGL's exact
-  // shading model (imagery preserved; wave-diffuse + non-diffuse + Phong
-  // specular ADDED) and OMITS the WebGPU-only enhanced additions (foam
-  // whitecaps / SSS / GGX / deep-colour) so default WebGPU water reads like
-  // WebGL water. WebGPU tone-maps HDR downstream, so — like the enhanced
-  // branch — the WebGL `#ifdef HDR` composition is intentionally not
-  // reproduced. See WebGPUShaderDefines.ShaderDefineHi.ENHANCED_OCEAN.
+  // `normalTangentSpace.z`), so both branches ride identical waves and differ
+  // only in how they derive colour. This branch reproduces WebGL's shading
+  // model — imagery preserved, with wave-diffuse, non-diffuse and Phong
+  // specular added — and omits the WebGPU-only additions (foam whitecaps,
+  // subsurface scattering, GGX, deep colour), so default water reads like
+  // WebGL water. WebGPU tone-maps HDR downstream, so like the enhanced branch
+  // this does not reproduce the WebGL `#ifdef HDR` composition. See
+  // WebGPUShaderDefines.ShaderDefineHi.ENHANCED_OCEAN.
   let classicWaveHighlightColor = vec3<f32>(0.3, 0.45, 0.6);
   // czm_getLambertDiffuse(sunDirEC, waterNormal) * maskValue (GlobeFS L849).
   let classicDiffuseIntensity =
@@ -2888,9 +2763,7 @@ fn computeEnhancedOcean(
 //>>endif
 }
 
-// ═══════════════════════════════════════════════════════════════════════
 // Fog & Atmosphere
-// ═══════════════════════════════════════════════════════════════════════
 
 // OPEN-5 fix: matches WebGL's `czm_fog(distance, color, fogColor, modifier)`
 // formula from `fog.glsl`. The modifier (fogVisualDensityScalar, default 0.15)
@@ -2928,7 +2801,7 @@ fn sampleAtmosphereFogLut(
 ) -> vec4<f32> {
   let innerRadius = effects.atmosphereLutControl.y;
   let thickness = max(1.0, effects.atmosphereLutControl.z);
-  // Camera altitude + view direction drive the LUT lookup. We use the
+  // Camera altitude and view direction drive the LUT lookup, through the
   // CAMERA's altitude + the camera-to-fragment view direction, which
   // matches how SkyAtmosphere samples the same table for the visible
   // shell. Ground fog then matches the sky color the user sees
@@ -2941,7 +2814,7 @@ fn sampleAtmosphereFogLut(
   let uCoord = clamp(cosViewZenith * 0.5 + 0.5, 0.0, 1.0);
   let vCoord = clamp(cameraAltitude / thickness, 0.0, 1.0);
 
-  // Transmittance LUT: .rgb = attenuation along the ray. We take the
+  // Transmittance LUT: .rgb = attenuation along the ray. Take the
   // average channel for a scalar extinction factor (most terrain fog
   // blends monochromatically along the view ray).
   let tSample = textureSampleLevel(
@@ -2969,20 +2842,18 @@ fn sampleAtmosphereFogLut(
   let orbitScaleHeight = max(thickness, effects.atmosphereLutControl.y);
   let orbitFalloff = exp(-excessAltitude / orbitScaleHeight);
 
-  // Intensity scaling (Session 65, 2026-05-11): the inscatter LUT is
-  // baked intensity-free — `SkyAtmosphere::sampleScatteringLut` multiplies
-  // by `u.intensity` at fragment time. Globe fog wants the same texel
-  // scaled by `Globe.atmosphereLightIntensity` (CPU side packs it into
-  // `tile.groundAtmosphereControl.z`, default 10.0).
+  // Intensity scaling. The inscatter LUT is baked intensity-free —
+  // `SkyAtmosphere::sampleScatteringLut` multiplies by `u.intensity` at
+  // fragment time — and globe fog wants the same texel scaled by
+  // `Globe.atmosphereLightIntensity`, which the CPU packs into
+  // `tile.groundAtmosphereControl.z` (default 10.0).
   //
-  // Previous code used a hardcoded `GROUND_INTENSITY_RESCALE = 0.2`
-  // tuned for the default-config case (sky=50, globe=10, ratio=0.2).
-  // That broke `Atmosphere.html`, which sets `globe.atmosphereLightIntensity
-  // = 20`: the rescale stayed 0.2 (assumed globe=10), the ground fog ended
-  // up half as bright as expected, and the post-tonemap mix saturated the
-  // imagery to a uniform tan. Scaling by `groundAtmosphereControl.z`
-  // directly closes the parity gap and is also the correct math for any
-  // user-customized intensity.
+  // Scaling by that uniform rather than by a constant rescale factor is what
+  // makes a customized intensity work at all: a constant tuned for the default
+  // configuration keeps assuming the default globe intensity, so a scene
+  // setting `globe.atmosphereLightIntensity = 20` gets ground fog half as
+  // bright as it asked for, and the post-tonemap mix saturates the imagery to
+  // a uniform tan.
   let groundIntensity = max(0.0, tile.groundAtmosphereControl.z);
   return vec4<f32>(iSample.rgb * orbitFalloff * groundIntensity, transmittance);
 }
@@ -3033,9 +2904,7 @@ fn pbrNeutralTonemapAtmosphere(color: vec3<f32>) -> vec3<f32> {
   return mix(c, vec3<f32>(newPeak), vec3<f32>(g));
 }
 
-// ═══════════════════════════════════════════════════════════════════════
 // Shadow & Clipping (unchanged from previous version)
-// ═══════════════════════════════════════════════════════════════════════
 
 fn globeShadowPCF(uv: vec2<f32>, depth: f32, texelSize: vec2<f32>) -> f32 {
   // Sample unconditionally (uniform control flow). Use
@@ -3171,11 +3040,11 @@ fn globeComputeShadowFactorCSM(
   return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
-// C-R10-POINT-LIGHT-RECEIVE-GLOBE (Batch 108) — cube-shadow sample
-// adapted from `samplePointShadow` in ModelPBRComplete.wgsl. Math is
-// identical: pick the dominant cube-face axis, derive the depth value
-// the cast pipeline wrote at that axis distance, sample the cube with
-// `direction = fragRTE - lightRTE`. The 5-tap cross PCF runs when
+// Point-light cube-shadow sample, adapted from `samplePointShadow` in
+// ModelPBRComplete.wgsl. The math is identical: pick the dominant cube-face
+// axis, derive the depth value the cast pipeline wrote at that axis distance,
+// and sample the cube with `direction = fragRTE - lightRTE`. A 5-tap cross PCF
+// runs when
 // `pointLightPositionRTE.w > 0` for soft shadows; zero radius drops
 // to a single hardware-comparison sample.
 //
@@ -3264,10 +3133,10 @@ fn globeComputeShadowFactor(positionEC: vec3<f32>) -> f32 {
   // `ShadowMap.getViewProjection` already folds in the NDC-to-texture
   // scale/bias and `toWebGPUShadowReceiveMatrix` applies the v-origin flip on
   // the CPU (see `WebGPUShadowReceiveTransform.ts`). Re-applying `*0.5 + 0.5`
-  // here squeezed every lookup into the wrong quadrant, which is why the globe
-  // received no sun shadow at all (NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD).
-  // The CSM path below is different on purpose: it is handed a RAW clip-space
-  // cascade VP and does the full remap itself.
+  // here squeezes every lookup into the wrong quadrant, which leaves the globe
+  // receiving no sun shadow at all. The cascade path below differs on purpose:
+  // it is handed a raw clip-space cascade view-projection and does the full
+  // remap itself.
   let coord = shadowPos.xyz / shadowPos.w;
   let uv = coord.xy;
   let texelSize = 1.0 / effects.shadowMapSize;
@@ -3308,22 +3177,21 @@ fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
   return false;
 }
 
-// GLOBE-CLIPPOLY-GEODETIC — polygon SDF clipping, parity port of
-// `modelClipByPolygon` (ModelPBRComplete.wgsl, Batch 160/163), which in
-// turn mirrors the WebGL pipeline `GlobeVS.glsl` ENABLE_CLIPPING_POLYGONS
-// (region selection via `czm_approximateSphericalCoordinates`) +
-// `Builtin/Functions/clipPolygons.glsl` (atlas sampling) folded into a
-// single FS function.
+// Polygon signed-distance-field clipping, a parity port of
+// `modelClipByPolygon` in ModelPBRComplete.wgsl, which in turn folds the WebGL
+// pipeline's `GlobeVS.glsl` ENABLE_CLIPPING_POLYGONS region selection (via
+// `czm_approximateSphericalCoordinates`) and `Builtin/Functions/clipPolygons.glsl`
+// atlas sampling into a single fragment function.
 //
-// CRITICAL FRAME: input is the fragment's full ECEF WORLD-space position
-// (`v_positionMC`, which the vertex stage assigns from `position3DWC` —
-// same input WebGL feeds `czm_approximateSphericalCoordinates`). The
-// (lat, lon) must be computed with the SAME `fastApproximateAtan2` curve
-// the CPU pack (`ClippingPolygonCollection.packPolygonsAsFloats`) and the
-// SDF compute pass use — NOT exact `atan2`/geodetic conversion — or the
-// lookup drifts against the precomputed extents. (The pre-fix code used
-// exact geocentric `atan2` against a whole-globe equirect UV mapping,
-// which never matched the per-extent atlas the SDF is authored in.)
+// The input frame is load-bearing: it is the fragment's full ECEF world-space
+// position (`v_positionMC`, which the vertex stage assigns from `position3DWC`,
+// the same input WebGL feeds `czm_approximateSphericalCoordinates`). The
+// (lat, lon) has to be computed with the same `fastApproximateAtan2` curve used
+// by the CPU pack (`ClippingPolygonCollection.packPolygonsAsFloats`) and by the
+// SDF compute pass, not an exact `atan2` or geodetic conversion, or the lookup
+// drifts against the precomputed extents. An exact geocentric `atan2` against a
+// whole-globe equirectangular UV mapping never matches the per-extent atlas the
+// SDF is authored in.
 
 fn czm_fastApproximateAtanScalar(x: f32) -> f32 {
   // ShaderFastLibs Drobot atan over [0, 1]. Same coefficients as
@@ -3348,9 +3216,7 @@ fn czm_fastApproximateAtan2(x: f32, y: f32) -> f32 {
   return t;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// C12-29 S5 — per-fragment lunar shadow on the globe
-// ═══════════════════════════════════════════════════════════════════════
+// Per-fragment lunar shadow on the globe.
 //
 // The CPU owns the expensive once-per-View limb-darkening fit and publishes
 // geocentric body directions/inverse ranges. The fragment path reconstructs
@@ -3614,25 +3480,20 @@ fn globeClipByPolygon(positionWC: vec3<f32>) -> bool {
   return sdfValue > 0.5;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Fragment Shader
-// ═══════════════════════════════════════════════════════════════════════
+// Fragment shader.
 
-// Slice 5c-B Batch 117 — G-buffer MRT output struct.
+// G-buffer multiple-render-target output struct.
 //
-// Slot 0 (@location(0)) is the scene framebuffer color (unchanged from
-// the original 1-target shape). Slot 1 (@location(1)) is the G-buffer
-// normal-roughness texture: xyz = eye-space normal, w = roughness.
+// Slot 0 (@location(0)) is the scene framebuffer color. Slot 1 (@location(1))
+// is the G-buffer normal-roughness texture: xyz = eye-space normal,
+// w = roughness.
 //
-// The pipeline's slot-1 target is `{format: "rgba16float", writeMask:
-// 0xf}` whenever MRT mode is on (see WebGPUGlobeSurfacePipelines.ts).
-// Every return path in the fragment entry points below MUST go through
-// `makeFragOutput` so the slot-1 emit is consistent — declaring a
-// writable target slot without emitting the matching @location trips
-// `GPUPipelineError: Color target has no corresponding fragment output`
-// at pipeline creation time (the silent failure mode the original
-// Sub-C dry-run hit; see migration_doc/WEBGPU_DEBUGGING_LOG.md
-// Batch 116 postmortem).
+// The pipeline's slot-1 target is `{format: "rgba16float", writeMask: 0xf}`
+// whenever MRT mode is on (see WebGPUGlobeSurfacePipelines.ts). Every return
+// path in the fragment entry points below must go through `makeFragOutput` so
+// the slot-1 emit is consistent: declaring a writable target slot without
+// emitting the matching @location raises `GPUPipelineError: Color target has
+// no corresponding fragment output` at pipeline creation time.
 struct FragOutput {
   @location(0) color: vec4<f32>,
   //>>ifdef CAPTURE_MODE
@@ -3644,12 +3505,11 @@ struct FragOutput {
   //>>endif
 };
 
-// Helper to pack the slot-1 attachment. Roughness is a 0.5 placeholder
-// until per-material roughness is piped through the globe pipeline
-// (covered by NEW-GBUFFER-MRT-PRIMITIVE-EMIT material-aware work).
-// Debug entry points pass a sentinel (0,0,0,*) when no real normal is
-// available; consumers (AO, future SSR) check `length(xyz) < 0.01` and
-// fall back to the depth-derived path for sentinel pixels.
+// Packs the slot-1 attachment. Roughness is a 0.5 placeholder until per-material
+// roughness is piped through the globe pipeline. Debug entry points pass a
+// sentinel (0,0,0,*) when no real normal is available; consumers such as
+// ambient occlusion check `length(xyz) < 0.01` and fall back to the
+// depth-derived path for those pixels.
 fn makeFragOutput(color: vec4<f32>, normalEC: vec3<f32>) -> FragOutput {
   var out: FragOutput;
   out.color = color;
@@ -3667,29 +3527,32 @@ fn makeFragOutput(color: vec4<f32>, normalEC: vec3<f32>) -> FragOutput {
   return out;
 }
 
-// DP-H44 (Batch 360) — globe terrain pick entry point. Outputs the globe's
+// Globe terrain pick entry point. Outputs the globe's
 // pick color (packed at the camera-UB tail) into the single-target pick FBO.
-// Rendered by the pick-pass pick pipeline (buildPickPipelineDescriptor strips
-// the G-buffer slot-1 target + blend + MSAA from the color descriptor). Writes
-// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — under the pick-fleet LOG_DEPTH
-// module (compiled only when isWebGPUPickLogDepthActive, the SEPARATE pick
-// master switch — NOT the scene log switch), the globe pick writes the SAME
-// log frag_depth its color sibling (makeFragOutput) writes: the interpolated
-// `input.v_logDepth` through `csm_writeLogDepth` with factor `camera.logDepth.z`.
-// This keeps the whole pick fleet on ONE encoding in the shared pick FBO (INV-2)
-// so nearer pick producers occlude farther ones. The //>>else branch is a
-// single @location(0) output byte-identical to the historical bare-vec4 return
-// (kill-switch parity). NO near-discard — the color sibling has none.
-// The globe pick command is dispatched ONLY when `globe.pickable` is set (the
-// globe stays out of the pick pass otherwise — see
-// `GlobeSurfaceTileProviderRendering.updateWebGPUForPick`), so `scene.pick`
-// stays undefined over the globe by default (WebGL parity) and returns the
+// Rendered by the pick-pass pipeline, whose `buildPickPipelineDescriptor`
+// strips the G-buffer slot-1 target, blend and MSAA from the color descriptor.
+//
+// Under the pick-fleet LOG_DEPTH module — compiled only when
+// `isWebGPUPickLogDepthActive`, which is a separate master switch from the
+// scene log switch — the globe pick writes the same log frag_depth its color
+// sibling `makeFragOutput` writes: the interpolated `input.v_logDepth` through
+// `csm_writeLogDepth` with factor `camera.logDepth.z`. Keeping the whole pick
+// fleet on one encoding in the shared pick framebuffer is what lets nearer pick
+// producers occlude farther ones. The `//>>else` branch is a single
+// @location(0) output matching a bare vec4 return. There is no near-discard,
+// because the color sibling has none.
+//
+// The globe pick command is dispatched only when `globe.pickable` is set — the
+// globe stays out of the pick pass otherwise, see
+// `GlobeSurfaceTileProviderRendering.updateWebGPUForPick` — so `scene.pick`
+// stays undefined over the globe by default, matching WebGL, and returns the
 // Globe only when the app opts in. `scene.pickPosition` reads the main-pass
-// globe-depth texture, not this FBO, so it works over terrain regardless.
-// NOTE: the cartographic-limit / clipping-plane discards that
-// `fragmentMain` applies are intentionally NOT mirrored here yet — globe pick
-// over a clipped/limited globe is a follow-up; the default (unclipped) globe
-// picks correctly.
+// globe-depth texture rather than this framebuffer, so it works over terrain
+// either way.
+//
+// The cartographic-limit and clipping-plane discards that `fragmentMain`
+// applies are not mirrored here: an unclipped globe picks correctly, and pick
+// over a clipped or limited globe is unimplemented.
 struct PickFragOutput {
   @location(0) color: vec4<f32>,
   //>>ifdef LOG_DEPTH
@@ -3707,9 +3570,7 @@ fn fragmentPickMain(input: VertexOutput) -> PickFragOutput {
   return out;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// C11-213 — draped vector-tile polylines (WGSL twin of VectorCommon.glsl)
-// ═══════════════════════════════════════════════════════════════════════
+// Draped vector-tile polylines, the WGSL twin of VectorCommon.glsl.
 
 // Header word indices into `vectorTileData`. Mirrored by
 // `VECTOR_TILE_HEADER_*` in `WebGPUVectorTileResources.ts`.
@@ -3764,15 +3625,14 @@ fn vectorNormSquared2x2(m: mat2x2<f32>) -> f32 {
 // known non-singular. `vectorPolylineRender` tests it and abandons the whole
 // vector path when it is zero — the test CANNOT live in here.
 //
-// Why not: this function has no way to say "no line is ever within range". Any
-// matrix it could return for a singular input is wrong, and the ZERO matrix —
-// the obvious "safe" choice, and what this function used to return — is the
-// worst of them: `screenFromUv * offsetUv` becomes the zero vector, so
-// `length(...) < lineWidth` is TRUE for the first segment in the cell no matter
-// how far away that segment is, and the fragment gets painted. That was
-// NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS: terrain SKIRT quads have an
-// exactly singular UV Jacobian, so every skirt fragment of a vector-carrying
-// tile was painted with that tile's first segment colour.
+// This function has no way to say "no line is ever within range", so any matrix
+// it could return for a singular input is wrong. The zero matrix — the obvious
+// safe-looking choice — is the worst of them: `screenFromUv * offsetUv` becomes
+// the zero vector, so `length(...) < lineWidth` is true for the first segment
+// in the cell however far away that segment is, and the fragment gets painted.
+// Terrain skirt quads have an exactly singular UV Jacobian, so that fallback
+// paints every skirt fragment of a vector-carrying tile with the tile's first
+// segment colour.
 fn vectorInverse2x2(m: mat2x2<f32>, det: f32) -> mat2x2<f32> {
   let invDet = 1.0 / det;
   return mat2x2<f32>(
@@ -3841,26 +3701,26 @@ fn vectorPolylineRender(
   // against the resulting Inf/NaN is false, and WebGL silently drapes nothing;
   // the WGSL twin has to say so explicitly.
   //
-  // NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS: the previous zero-matrix
-  // fallback collapsed the distance to 0, which is `< lineWidth` for the FIRST
-  // segment in the cell regardless of where that segment is — so the entire
-  // skirt ring of every vector-carrying tile was painted with that tile's first
-  // segment colour, drawn as faint lines along the tile-row boundaries.
+  // A zero-matrix fallback collapses the distance to 0, which is `< lineWidth`
+  // for the first segment in the cell regardless of where that segment is, so
+  // the entire skirt ring of every vector-carrying tile gets painted with that
+  // tile's first segment colour, drawn as faint lines along the tile-row
+  // boundaries.
   //
-  // NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT: an exactly-zero determinant is
-  // not a sufficient test on EITHER backend. The shader never sees the skirt's
-  // exact algebra — it sees `dpdx`/`dpdy` of a PERSPECTIVE-INTERPOLATED
-  // varying, and interpolating a bit-identical attribute still divides by the
-  // interpolated 1/w, so the recovered `v` lands within an ulp or so of the
-  // edge value rather than on it. On a skirt seen edge-on (nadir) the quad's
-  // screen footprint collapses, which amplifies that residue AND inflates the
-  // `u` derivatives, so the determinant is small-but-nonzero, the exact test
-  // lets it through, and the inverted matrix reports a pixel distance far
-  // shorter than the true one — the fragment is painted with a segment tens or
-  // hundreds of pixels away.
+  // An exactly-zero determinant is not a sufficient test on either backend. The
+  // shader never sees the skirt's exact algebra; it sees `dpdx`/`dpdy` of a
+  // perspective-interpolated varying, and interpolating a bit-identical
+  // attribute still divides by the interpolated 1/w, so the recovered `v` lands
+  // within an ulp or so of the edge value rather than on it. On a skirt seen
+  // edge-on at nadir the quad's screen footprint collapses, which amplifies
+  // that residue and inflates the `u` derivatives, so the determinant is small
+  // but non-zero, the exact test lets it through, and the inverted matrix
+  // reports a pixel distance far shorter than the true one — painting the
+  // fragment with a segment tens or hundreds of pixels away.
   //
-  // So reject on the CONDITION NUMBER, which is what "this matrix carries no
-  // usable pixel metric" actually means. ‖M‖_F² / |det| is exactly κ + 1/κ for
+  // The rejection is therefore on the condition number, which is what "this
+  // matrix carries no usable pixel metric" actually means. ‖M‖_F² / |det| is
+  // exactly κ + 1/κ for
   // a 2x2: scale-invariant, sqrt-free, and unmovable by tile size, zoom or line
   // width. A skirt lands in the 1e4..1e6 band because its small singular value
   // is pure interpolation residue; legitimate grazing foreshortening on a drawn
@@ -3940,10 +3800,10 @@ fn globe_interpolateByDistance(nearFarScalar: vec4<f32>, distance: f32) -> f32 {
   return mix(startValue, endValue, t);
 }
 
-// NEW-GLOBE-BELOWSURFACE-DECOMP (B2) — debug-only per-term bypass predicate.
+// Debug-only per-term bypass predicate.
 // `CesiumDebug.globeFragmentDebug('bypass-*')` writes sentinels 21e9..27e9
 // into `tile.time` (registry: WebGPUGlobeFragmentDebug.ts). Unlike the
-// Batch-56 visualization modes, the bypass modes do NOT short-circuit
+// visualization modes, the bypass modes do not short-circuit
 // fragmentMain — the full shading path runs with exactly ONE term skipped,
 // so `diag-globe-belowsurface-decomp.mjs` can attribute the WebGL↔WebGPU
 // signed-dRGB residual per term. Production output is untouched: the
@@ -3963,30 +3823,28 @@ fn fragmentMain(
   // builtin's semantics match gl_FrontFacing exactly.
   @builtin(front_facing) frontFacing: bool,
 ) -> FragOutput {
-  // Slice 5c-B Batch 117 — hoisted from line 2738 so every return path
-  // (including the ~30 early debug returns at the top of this function)
-  // has a real eye-space normal to emit on slot 1. v_normalEC is always
-  // written by the vertex shader (unconditionally in vertexMain, line
-  // 1158) so the read is safe regardless of the hasNormals pipeline
-  // variant.
+  // Hoisted to the top of the function so every return path, including the
+  // roughly 30 early debug returns below, has a real eye-space normal to emit
+  // on slot 1. The vertex shader always writes v_normalEC, so the read is safe
+  // regardless of the hasNormals pipeline variant.
   let normalEC = normalize(input.v_normalEC);
-  // GLOBE-POLAR-STRETCH-POLISH — clamp the interpolated texture coordinates
-  // to [0,1], matching WebGL GlobeFS.glsl line 396:
+  // Clamp the interpolated texture coordinates to [0,1], matching WebGL
+  // GlobeFS.glsl line 396:
   //   `computeDayColor(u_initialColor, clamp(v_textureCoordinates, 0.0, 1.0), ...)`
   // (upstream's workaround for rasterizer interpolation overshoot at tile
   // edges: fragments on shared tile boundaries can see UVs epsilon-outside
   // [0,1] even though the VS emits exactly 0/1). Without the clamp the
   // overshoot fails the `texCoordsAlpha` step-mask (rect is typically
   // (0,0,1,1)), zeroing every imagery layer for that fragment and exposing
-  // the dark-blue `initialColor` (0, 0, 0.5) — the WebGPU-only dashed
-  // tile-seam grid lines (BUG-GLOBE-TILE-SEAM-LINES, 62% of the mid-zoom
-  // WebGL↔WebGPU residual before this fix). The clamp moves UVs by at most
-  // ~1e-6, invisible everywhere except the seam mask.
+  // the dark-blue `initialColor` (0, 0, 0.5), which draws as dashed tile-seam
+  // grid lines and accounts for 62% of the mid-zoom residual against WebGL.
+  // The clamp moves UVs by at most ~1e-6, invisible everywhere except the seam
+  // mask.
   var geoUV = clamp(input.v_textureCoordinates.xy, vec2<f32>(0.0), vec2<f32>(1.0));
   var webMercT = clamp(input.v_textureCoordinates.z, 0.0, 1.0);
-  // NEW-GLOBE-BELOWSURFACE-DECOMP — 'bypass-seam-clamp' (25e9) reverts to
-  // the raw (unclamped) interpolated UVs so the B506 seam-clamp delta can
-  // be measured in isolation. `tile.time` is uniform, so control flow stays
+  // The 'bypass-seam-clamp' debug mode (25e9) reverts to
+  // the raw, unclamped interpolated UVs so the seam-clamp delta can be
+  // measured in isolation. `tile.time` is uniform, so control flow stays
   // uniform and the dpdx/dpdy below remain valid. Never taken in production.
   if (globe_debugBypassActive(25.0e9)) {
     geoUV = input.v_textureCoordinates.xy;
@@ -3999,7 +3857,7 @@ fn fragmentMain(
   g_fragLogDepth = input.v_logDepth;
   //>>endif
 
-  // Batch 57 — per-fragment UV derivatives computed AT FRAGMENT ENTRY
+  // Per-fragment UV derivatives, computed at fragment entry
   // while control flow is still uniform. Used by `sampleImagery` calls
   // below via `textureSampleGrad`, which is the only WGSL sampling
   // function that picks a mip level (via the gradient magnitude) AND
@@ -4013,7 +3871,7 @@ fn fragmentMain(
   // varying instead of geoUV.y, so its derivative is also needed.
   let webMercUV_dx = vec2<f32>(geoUV_dx.x, dpdx(webMercT));
   let webMercUV_dy = vec2<f32>(geoUV_dy.x, dpdy(webMercT));
-  // C11-213 — screen-space Jacobian of the RAW (unclamped) tile UV, for the
+  // Screen-space Jacobian of the raw, unclamped tile UV, for the
   // draped vector-polyline width test near the end of this function.
   // GlobeFS.glsl passes `v_textureCoordinates.xy` unclamped to
   // `vectorPolylineRender`, so the derivative is taken on the raw varying too
@@ -4027,7 +3885,7 @@ fn fragmentMain(
   let vectorUV_dy = dpdy(input.v_textureCoordinates.xy);
 
   // Helper: select geographic V or webMercatorT per layer.
-  // Matches WebGL's u_dayTextureUseWebMercatorT. Batch 58 — packed 4 layers
+  // Matches WebGL's u_dayTextureUseWebMercatorT. Packed 4 layers
   // per vec4 (`useWebMercatorTLayer[i/4][i%4]`); read all 16 here so the
   // per-layer blocks below stay branch-light.
 
@@ -4040,7 +3898,7 @@ fn fragmentMain(
   if (tile.time > 1.0e9 && tile.time < 1.5e9) {
     return makeFragOutput(vec4<f32>(geoUV.x, geoUV.y, webMercT, 1.0), normalEC);
   }
-  // Batch 56 — texCoordsAlpha debug. Trigger via tile.time in [1.5e9, 2.5e9].
+  // texCoordsAlpha debug. Trigger via tile.time in [1.5e9, 2.5e9].
   // Shows red = alpha mask for layer 0 (white means alpha=1, black=0),
   // green = the V coord clamped to [0,1], blue = layer 0 rect.y (minV).
   if (tile.time > 1.5e9 && tile.time < 2.5e9) {
@@ -4051,7 +3909,7 @@ fn fragmentMain(
     }
     return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC); // magenta = no layer
   }
-  // Batch 56 — layerCount debug. Trigger via tile.time in [2.5e9, 3.5e9].
+  // layerCount debug. Trigger via tile.time in [2.5e9, 3.5e9].
   // Red = layer count / 16. Green = layer 0 alpha. Blue = layer 1 alpha
   // (if it exists). Each visible non-magenta tile should show layer 0
   // OR layer 1 alpha=1 for any given V, but never both 0.
@@ -4061,7 +3919,7 @@ fn fragmentMain(
     let a1 = select(0.0, texCoordsAlpha(geoUV, tile.layers[1].texCoordsRect), lc >= 2u);
     return makeFragOutput(vec4<f32>(f32(lc) / 16.0, a0, a1, 1.0), normalEC);
   }
-  // Batch 56 — direct imagery sample debug. Trigger via tile.time in
+  // Direct imagery sample debug. Trigger via tile.time in
   // [3.5e9, 4.5e9]. Shows raw sample from layer 0 (no compositing,
   // no alpha mask). Confirms whether the reprojected texture content
   // itself is black or correct.
@@ -4076,7 +3934,7 @@ fn fragmentMain(
     }
     return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC);
   }
-  // Batch 57 — explicit mip level debug. Forces sampling at mip 4 to
+  // Explicit mip level debug. Forces sampling at mip 4 to
   // verify the mipmap chain exists and contains valid imagery. If the
   // output here matches sample0 then either mipmaps aren't generated
   // or the sampler isn't picking them. If different from sample0, the
@@ -4092,7 +3950,7 @@ fn fragmentMain(
     }
     return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC);
   }
-  // Batch 57 — visualize derivative magnitude as grayscale.
+  // Visualize derivative magnitude as grayscale.
   // log2(max(|dx|, |dy|) * texSize) approximates the LOD value the
   // sampler computes. Should grow with camera distance.
   if (tile.time > 17.5e9 && tile.time < 18.5e9) {
@@ -4110,7 +3968,7 @@ fn fragmentMain(
     }
     return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC);
   }
-  // Batch 56 — direct imagery sample for layer 1.
+  // Direct imagery sample for layer 1.
   if (tile.time > 4.5e9 && tile.time < 5.5e9) {
     if (u32(tile.layerCount) >= 2u) {
       let useWMT = tile.useWebMercatorTLayer[0].y;
@@ -4122,7 +3980,7 @@ fn fragmentMain(
     }
     return makeFragOutput(vec4<f32>(0.0, 1.0, 1.0, 1.0), normalEC); // cyan = no layer 1
   }
-  // Batch 56 — texSample.a debug. Visualize the imagery's alpha channel
+  // texSample.a debug. Visualize the imagery's alpha channel
   // for layer 0. RED = layer 0's tex.a. If alpha is 0, the composite
   // multiplier kills imagery contribution → BLACK output even with
   // valid texCoordsMask.
@@ -4137,10 +3995,9 @@ fn fragmentMain(
     }
     return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC);
   }
-  // Batch 56 — tex.a for layer 1. Used to discriminate which texture
-  // upload path has alpha=0. Reprojected layers force alpha=1 (after
-  // Batch 56 fix); direct uploads via uploadImageSource for opaque JPEGs
-  // may have alpha=0.
+  // tex.a for layer 1. Used to discriminate which texture
+  // upload path has alpha=0. Reprojected layers force alpha=1; direct uploads
+  // via uploadImageSource for opaque JPEGs may have alpha=0.
   if (tile.time > 6.5e9 && tile.time < 7.5e9) {
     if (u32(tile.layerCount) >= 2u) {
       let useWMT = tile.useWebMercatorTLayer[0].y;
@@ -4156,22 +4013,21 @@ fn fragmentMain(
   // Compute shadow factor early — textureSampleCompare must be called
   // from uniform control flow (before any non-uniform discard/return).
   // camera.enableLighting is a uniform value so this branch is uniform.
-  // CSM Slice 1: route through the cascaded-shadow path when enabled.
-  // Reconstruct world-space fragment position via the atmosphere LUT
-  // convention (`v_positionMC + cameraWC`); view-space depth is the
-  // magnitude of `v_positionEC.z` (right-handed view, camera at origin
-  // looking -Z).
-  // NEW-CSM-CAST-NO-DISPATCH-VIEWER (Batch 296) — shadow receive is
-  // applied INDEPENDENT of `enableLighting`, matching WebGL's
-  // `ShadowMapShader.js` which injects `out_FragColor.rgb *= visibility;`
-  // unconditionally (it never wraps the shadow multiply in the lighting
-  // `#ifdef`). Previously this whole block was gated on
-  // `camera.enableLighting > 0.5`, so a scene with directional lighting
-  // disabled (a common isolation setup, and the one the shadow probes use)
-  // showed NO cast shadow on WebGPU even though the cast depth map was
-  // populated. The shadow factor is now computed whenever a shadow mode is
-  // active (point-light / CSM / single-map) and applied once to the final
-  // color below (see the `color *= shadowFactor` after the lighting block).
+  // Routes through the cascaded-shadow path when enabled. The world-space
+  // fragment position follows the atmosphere LUT convention
+  // (`v_positionMC + cameraWC`); view-space depth is the magnitude of
+  // `v_positionEC.z`, for a right-handed view with the camera at the origin
+  // looking down -Z.
+  //
+  // Shadow receive is applied independently of `enableLighting`, matching
+  // WebGL's `ShadowMapShader.js`, which injects
+  // `out_FragColor.rgb *= visibility;` unconditionally and never wraps the
+  // shadow multiply in the lighting `#ifdef`. Gating this block on
+  // `camera.enableLighting > 0.5` instead leaves a scene with directional
+  // lighting disabled — a common isolation setup — showing no cast shadow at
+  // all, even with the cast depth map populated. The shadow factor is computed
+  // whenever any shadow mode is active (point-light, cascaded or single-map)
+  // and applied once to the final color below, at `color *= shadowFactor`.
   var shadowFactor: f32 = 1.0;
   // Single-shadow-map presence is signalled by `shadowDarkness < 1.0`
   // (the default 1.0 means "no darkening / no shadow map bound"; the
@@ -4183,12 +4039,12 @@ fn fragmentMain(
     effects.shadowDarkness < 1.0;
   if (shadowModeActive) {
     if (effects.pointLightControl.x > 0.5) {
-      // C-R10-POINT-LIGHT-RECEIVE-GLOBE (Batch 108) — point-light
-      // cube-shadow path. `v_positionRTE` and the packed light are
-      // camera-relative in the same world-axis frame, preserving point-shadow
-      // direction and distance without an absolute f32 ECEF reconstruction.
-      // Takes priority over CSM when both are enabled (point + sun shadows
-      // together would need an OR-combine, deferred).
+      // Point-light cube-shadow path. `v_positionRTE` and the packed light are
+      // camera-relative in the same world-axis frame, which preserves
+      // point-shadow direction and distance without an absolute f32 ECEF
+      // reconstruction. Takes priority over the cascaded path when both are
+      // enabled; combining point and sun shadows would need an OR-combine,
+      // which is unimplemented.
       shadowFactor = globeComputeShadowFactorPointLight(input.v_positionRTE);
     } else if (effects.csmControl.x > 0.5) {
       // RTE precision path — feed the camera-relative position straight
@@ -4209,10 +4065,10 @@ fn fragmentMain(
     }
   }
 
-  // ─── Clipping planes discard ───
+  // Clipping planes discard.
   if (globeClipByPlanes(input.v_positionMC)) { discard; }
 
-  // ─── Clipping edge highlight ───
+  // Clipping edge highlight.
   if (effects.clippingPlaneCount > 0u && effects.clippingEdgeWidth > 0.0) {
     let clipCount = effects.clippingPlaneCount;
     let texW = f32(clipCount);
@@ -4229,7 +4085,7 @@ fn fragmentMain(
     }
   }
 
-  // ─── Polygon SDF clipping (czm_clipPolygons parity) ───
+  // Polygon SDF clipping, matching czm_clipPolygons.
   // GLOBE-CLIPPOLY-GEODETIC — full atlas-aware port shared with the model
   // path; see `globeClipByPolygon` above. `v_positionMC` is the fragment's
   // full ECEF world position (GlobeVS feeds the same `position3DWC` into
@@ -4239,7 +4095,7 @@ fn fragmentMain(
     if (globeClipByPolygon(input.v_positionMC)) { discard; }
   }
 
-  // ─── Cartographic limit rectangle clipping ───
+  // Cartographic limit rectangle clipping.
   if (tile.flags.y > 0.5) {
     let clampRect = tile.cartographicLimitRect;
     if (geoUV.x < clampRect.x || geoUV.x > clampRect.z ||
@@ -4252,69 +4108,61 @@ fn fragmentMain(
 
   // Base color: `globe.baseColor` (tile.initialColor — WebGL's
   // `u_initialColor`) for the first pass, transparent for subsequent
-  // multi-pass imagery (the CPU packer zeroes the slot). Batch 247 —
+  // multi-pass imagery, where the CPU packer zeroes the slot.
   // previously hardcoded vec3(0.04, 0.04, 0.06), which rendered
   // rgb(10,10,15) where WebGL rendered the configured baseColor.
   var color: vec3<f32> = tile.initialColor.rgb;
   var alpha: f32 = tile.initialColor.a;
 
-  // Slice 5c-B Batch 117 — `normalEC` is hoisted to the top of the
+  // `normalEC` is hoisted to the top of the
   // function for the G-buffer emit. Reuse it here instead of normalizing
   // again.
   let normal = normalEC;
   let sunDir = normalize(camera.sunDirectionEC);
 
-  // ─── NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE (CO-15) ───────────────────
-  // The day/night FAMILY — the imagery day/night alpha (`dayFade`), the
+  // The day/night family — the imagery day/night alpha (`dayFade`), the
   // night-lights emission gate (`nightBlend`), the DAYNIGHT_SHADING Lambert
-  // term and `computeTerminatorGlow` — reads the ANALYTIC GEOCENTRIC surface
-  // normal recomputed here per fragment, NOT the interpolated mesh normal
+  // term and `computeTerminatorGlow` — reads the analytic geocentric surface
+  // normal recomputed here per fragment, not the interpolated mesh normal
   // `input.v_normalEC`.
   //
-  // WHY. `v_normalEC` is `octDecode(encodedNormal)` pushed through the view
-  // 3×3 (line ~1526). On terrain with no vertex normals the encoded normal is
-  // not a normal at all: `vertexMain` reads it from the `.z` of a
-  // `float32x2`-declared attribute (`WebGPUGlobeSurfacePipelines.ts:270-289`),
-  // so it is the WebGPU default 0.0 and `octDecode(0.0)` = (0, 0, -1); the
-  // quantized+webMercatorT entry point passes the literal 32896.0 = (0, 0, +1)
-  // purely to keep faces from being culled. Both are CONSTANT model-space
-  // vectors along the spin axis, so `dot(N, L)` was ONE number for the whole
-  // globe and every day/night term was globally uniform. Every provider this
-  // fork can stand up offline reports `hasVertexNormals === false`
-  // (`EllipsoidTerrainProvider.js:154`, `CustomHeightmapTerrainProvider.js:216`,
-  // `ArcGISTiledElevationTerrainProvider.js:425`), i.e. this was the DEFAULT
-  // path. Pixel-confirmed by `probe-daynight-terminator-law.mjs`'s first run
-  // (tip 6e9c997287, Batch 915): lane A measured a day-fade slope of 0.000
-  // across the fit window and returned STRUCTURAL rather than confirming the
-  // recorded `+0.5` mechanism.
+  // `v_normalEC` is `octDecode(encodedNormal)` pushed through the view 3×3. On
+  // terrain with no vertex normals the encoded normal is not a normal at all:
+  // `vertexMain` reads it from the `.z` of a `float32x2`-declared attribute
+  // (`WebGPUGlobeSurfacePipelines.ts:270-289`), so it holds the WebGPU default
+  // 0.0 and `octDecode(0.0)` is (0, 0, -1); the quantized webMercatorT entry
+  // point passes the literal 32896.0, or (0, 0, +1), purely to keep faces from
+  // being culled. Both are constant model-space vectors along the spin axis, so
+  // `dot(N, L)` collapses to one number for the whole globe and every day/night
+  // term goes globally uniform — measurable as a day-fade slope of 0.000 across
+  // the terminator. Every provider this fork can stand up offline reports
+  // `hasVertexNormals === false` (`EllipsoidTerrainProvider.js:154`,
+  // `CustomHeightmapTerrainProvider.js:216`,
+  // `ArcGISTiledElevationTerrainProvider.js:425`), so that is the default path.
   //
-  // WEBGL'S LAW, PER TERRAIN KIND — and why this is UNCONDITIONAL.
-  // `GlobeSurfaceShaderSet.js:435-442` emits `ENABLE_VERTEX_LIGHTING` and
-  // `ENABLE_DAYNIGHT_SHADING` as MUTUALLY EXCLUSIVE arms of
-  // `if (hasVertexNormals)`. So on WebGL:
+  // The recompute is unconditional because WebGL's law leaves no arm for which
+  // the mesh normal is right. `GlobeSurfaceShaderSet.js:435-442` emits
+  // `ENABLE_VERTEX_LIGHTING` and `ENABLE_DAYNIGHT_SHADING` as mutually
+  // exclusive arms of `if (hasVertexNormals)`:
   //   • no vertex normals → `ENABLE_DAYNIGHT_SHADING`, and `GlobeFS.glsl:595-597`
   //     computes `normalMC = czm_geodeticSurfaceNormal(v_positionMC, vec3(0),
   //     vec3(1))` — which with `oneOverRadiiSquared = (1,1,1)` is exactly
   //     `normalize(v_positionMC)` — then `normalEC = czm_normal3D * normalMC`,
-  //     PER FRAGMENT. The day/night alpha at `:600` and the day/night diffuse
+  //     per fragment. The day/night alpha at `:600` and the day/night diffuse
   //     both consume that analytic normal.
   //   • vertex normals → `ENABLE_VERTEX_LIGHTING`, and the day/night term does
   //     not exist at all: `GlobeFS.glsl:600`'s `#if defined(APPLY_DAY_NIGHT_ALPHA)
   //     && defined(ENABLE_DAYNIGHT_SHADING)` fails, so `nightBlend = 0.0`.
-  // The mesh normal is therefore NEVER the source of WebGL's day/night term on
-  // EITHER terrain kind — there is no arm of WebGL's law for which
-  // `v_normalEC` is the right answer. Recomputing analytically without a gate
-  // is the faithful shape, and it needs no new `ShaderDefine` bit: the
-  // expression sits at `//>>ifdef` depth 0 and expands identically under every
-  // define set, so no `//>>else` arm moved.
-  //   Residual, deliberately NOT closed here: WebGPU still APPLIES the ramp on
-  //   vertex-normal terrain where WebGL gates it off entirely. That is CLT-B1
-  //   finding (c) (`CLT-B1-VERTEX-NORMAL-LANE-NEEDS-A-NETWORK-LANE`), whose
-  //   render half needs a `hasVertexNormals === true` provider. Feeding the
-  //   analytic normal on that path keeps the remaining divergence to a single
-  //   axis — "the term exists at all" — instead of compounding it with a normal
-  //   WebGL never computes. The VERTEX_LIGHTING Lambert below keeps `normal`,
-  //   because THAT term really is WebGL's mesh-normal term.
+  // Recomputing analytically without a gate needs no new `ShaderDefine` bit:
+  // the expression sits at `//>>ifdef` depth 0 and expands identically under
+  // every define set.
+  //
+  // One divergence remains open: on vertex-normal terrain this still applies
+  // the ramp where WebGL gates it off entirely. Feeding the analytic normal
+  // there keeps that divergence to a single axis — whether the term exists at
+  // all — rather than compounding it with a normal WebGL never computes. The
+  // VERTEX_LIGHTING Lambert below keeps `normal`, because that term really is
+  // WebGL's mesh-normal term.
   //
   // SPACE. `camera.modifiedModelView`'s upper-3×3 is the view rotation (RTE
   // only offsets the translation column), so a `w = 0` transform reproduces
@@ -4330,7 +4178,7 @@ fn fragmentMain(
   );
 
   // Day/night fade factor: 0 = night, 1 = day.
-  // Batch 54 — gate on `camera.enableLighting`. The WebGL GlobeFS
+  // Gated on `camera.enableLighting`. The WebGL GlobeFS
   // applies day/night shading inside `#ifdef ENABLE_DAYNIGHT_SHADING`,
   // which the JS-side pragma extractor only emits when
   // `globe.enableLighting === true`. With the default `enableLighting
@@ -4350,9 +4198,9 @@ fn fragmentMain(
     nightBlend = 0.0;
   }
 
-  // ─── Composite imagery layers ───
-  // Batch 58 (C-R5): widened from 4 to 16 layer slots. Each layer block
-  // applies the same effect chain via `applyImageryLayer`:
+  // Composite imagery layers.
+  // Sixteen layer slots. Each layer block applies the same effect chain via
+  // `applyImageryLayer`:
   //   colorToAlpha → gamma → split → cutout → brightness/contrast/saturation/hue
   // The 16 blocks are unrolled because WGSL forbids dynamic indexing of
   // texture bindings; the per-pass `count` gate skips inactive slots so
@@ -4360,7 +4208,7 @@ fn fragmentMain(
   // mask in the helper.
   let count = u32(tile.layerCount);
 
-  // Tier 2 debug: imagery layer isolation. Negative => all layers render
+  // Debug: imagery layer isolation. Negative => all layers render
   // (production). 0..15 => only that layer's slot in the current pass
   // contributes to the composite.
   let isolate = i32(tile.debugFields.y);
@@ -4429,7 +4277,7 @@ fn fragmentMain(
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
   //>>ifdef GLOBE_IMAGERY_REDUCED
-  // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (C11-208) — reduced layout
+  // Reduced layout
   // carries four imagery slots per pass; slots 4..15 don't exist. The CPU
   // multi-pass slicer caps `tile.layerCount` at four, so the blocks above
   // still composite every layer in this pass without feature loss.
@@ -4592,14 +4440,14 @@ fn fragmentMain(
   }
   //>>endif
 
-  // Batch 56 — post-composite color debug. Trigger via tile.time in
+  // Post-composite color debug. Trigger via tile.time in
   // [7.5e9, 8.5e9]. Returns the imagery-composited color BEFORE all
   // material/atmosphere/HSB/fog effects. If this shows clean imagery
   // but production shows black, the bug is in the subsequent effects.
   if (tile.time > 7.5e9 && tile.time < 8.5e9) {
     return makeFragOutput(vec4<f32>(color, 1.0), normalEC);
   }
-  // Batch 56 — post-composite alpha debug. Trigger via [8.5e9, 9.5e9].
+  // Post-composite alpha debug. Trigger via [8.5e9, 9.5e9].
   // Returns the accumulated alpha as grayscale. If alpha is 0 here,
   // the imagery composite produced no contribution.
   if (tile.time > 8.5e9 && tile.time < 9.5e9) {
@@ -4611,7 +4459,7 @@ fn fragmentMain(
     return makeFragOutput(vec4<f32>(color, alpha), normalEC);
   }
 
-  // ─── Cluster 3 — globe material composite ───
+  // Globe material composite.
   // Builds a `czm_MaterialInput` from per-fragment values and calls
   // `czm_getMaterial`, which is either the per-material function appended
   // to the source by the pipeline cache (when a globe.material is bound)
@@ -4625,12 +4473,12 @@ fn fragmentMain(
   //>>ifdef MATERIAL_APPLY
   var matInput: czm_MaterialInput;
   matInput.st = geoUV;
-  // Slice 5c-B Batch 117 — reuse the hoisted `normalEC` (line 2480ish).
+  // Reuse the `normalEC` hoisted at the top of the function.
   matInput.normalEC = normalEC;
   matInput.positionToEyeEC = -input.v_positionEC;
   // tangentToEyeMatrix: east-north-up frame at the fragment, transformed
   // to eye space. WebGL builds it via `czm_eastNorthUpToEyeCoordinates`;
-  // we identity-substitute here because none of the in-tree globe
+  // the substitution here is the identity, because none of the in-tree globe
   // materials consume it (BumpMap/NormalMap target Primitive surfaces,
   // not the globe). If a future globe material needs a true tangent
   // frame, route the east/north/up basis through additional VS outputs.
@@ -4648,52 +4496,34 @@ fn fragmentMain(
   alpha = max(alpha, m.alpha);
   //>>endif
 
-  // ┌─────────────────────────────────────────────────────────────────────┐
-  // │ PAIR-SECTION: Water mask + Ocean rendering (WGSL) ↔ GLSL             │
-  // │   GLSL call site: Shaders/GlobeFS.glsl ~lines 433-495                │
-  // │   GLSL impl:      Shaders/GlobeFS.glsl L777-849 (computeWaterColor,  │
-  // │                   gated by `#ifdef SHOW_REFLECTIVE_OCEAN`)           │
-  // │ Last lockstep audit: 2026-07-24, C11-172 (wave-march footprint LOD) │
-  // └─────────────────────────────────────────────────────────────────────┘
-  // Any change to this block MUST land with a matching change in the
-  // GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+  // Water mask and ocean rendering. The GLSL counterpart is called from
+  // `Shaders/GlobeFS.glsl` around lines 433-495 and implemented at
+  // `GlobeFS.glsl` L777-849 as `computeWaterColor`, gated by
+  // `#ifdef SHOW_REFLECTIVE_OCEAN`. A change to this block has to land with a
+  // matching change there. See SHADER_PAIRS_LOCKSTEP.md.
   //
-  // ALGORITHM (matched across backends since Batch 58 + Batch 78)
-  // Both backends use an **additive** blend:
+  // Both backends use an additive blend:
   //   `color = imageryColor + diffuseHighlight + nonDiffuseHighlight + specular`
-  // Imagery is preserved as the base; ocean highlights are added.
+  // Imagery is preserved as the base and ocean highlights are added to it. A
+  // replacement blend such as `mix(imagery, deepColor × darkening, 0.6)` dims
+  // aerial ocean imagery by roughly 5× at orbit altitudes.
   //
-  // Pre-Batch-58 the WGSL incorrectly used a `mix(imagery, deepColor ×
-  // darkening, 0.6)` REPLACEMENT blend, which dimmed Bing aerial ocean
-  // by ~5× at orbit altitudes — the dominant source of the historical
-  // WebGPU/WebGL brightness gap. Batch 58 rewrote the WGSL to match
-  // WebGL's additive intent. Batch 78 then closed the remaining
-  // line-by-line gaps: `nonDiffuseHighlight` (low-light wave highlight
-  // under SHOW_OCEAN_WAVES) and the waveIntensity-modulated
-  // surfaceReflectance specular pattern.
+  // `computeWaterColor` is hand-written GLSL, not output of Cesium's
+  // material-system codegen, so both halves of this pair need manual
+  // line-by-line edits.
   //
-  // CORRECTION TO PRIOR AUDIT NOTES (Batches 58 + 73 said WebGL
-  // `computeWaterColor` was generated by Cesium's material-system
-  // codegen — that was incorrect). The actual implementation is
-  // hand-written GLSL in GlobeFS.glsl, gated by `#ifdef
-  // SHOW_REFLECTIVE_OCEAN`. The "material codegen" framing leaked into
-  // both pair-section headers and the convention ledger; Batch 78
-  // corrects this so the lockstep discipline points reviewers at the
-  // right files.
+  // `computeEnhancedOcean` is `//>>ifdef ENHANCED_OCEAN`-gated at the styling
+  // boundary: the shared wave march (`sampleOceanWaveNormals` feeding
+  // `waterNormal`, `tsPerturbationRatio` and `foamFactor`) runs unconditionally
+  // for both branches, and only the colour derivation is gated. The
+  // `//>>ifdef` branch is the enhanced look; the `//>>else` branch is a
+  // faithful port of WebGL's classic `computeWaterColor` and is the default,
+  // with the hi word clear. Divergences 5-7 below are therefore
+  // enhanced-branch only, and the default branch matches WebGL. The bit is
+  // `ShaderDefineHi.ENHANCED_OCEAN`, OR'd in when `Globe.enableEnhancedOcean`
+  // (default false) is set.
   //
-  // C11-158 STYLING TOGGLE (NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE).
-  // `computeEnhancedOcean` is now `//>>ifdef ENHANCED_OCEAN`-gated at the
-  // STYLING boundary: the shared wave march (`sampleOceanWaveNormals` →
-  // `waterNormal` / `tsPerturbationRatio` / `foamFactor`) runs unconditionally
-  // and feeds both branches; only the colour derivation is gated. The
-  // `//>>ifdef` branch is the WGSL enhanced look (bytes-identical to the
-  // pre-toggle source); the `//>>else` branch is a faithful port of WebGL's
-  // classic `computeWaterColor` and is the DEFAULT (hi word clear), so the
-  // divergences numbered 5-7 below are ENHANCED-branch-only — the classic
-  // default branch matches WebGL. The bit is `ShaderDefineHi.ENHANCED_OCEAN`,
-  // OR'd in when `Globe.enableEnhancedOcean` (default false) is true.
-  //
-  // STRUCTURAL DIVERGENCES (separate from the now-matched algorithm)
+  // Structural divergences, separate from the matched algorithm:
   //
   // 1. **Gating**. GLSL: `#if defined(HAS_WATER_MASK) && (defined(SHOW_
   //    REFLECTIVE_OCEAN) || defined(APPLY_MATERIAL))`. WGSL: runtime
@@ -4711,40 +4541,36 @@ fn fragmentMain(
   //    neither is generated.
   // 4. **Wave-normal source**. GLSL uses `czm_getWaterNoise(
   //    u_oceanNormalMap, textureCoordinates × oceanFrequency*, time, 0)`
-  //    with TWO altitude layers and `czm_ellipsoidTextureCoordinates(
-  //    normalMC)` for globe-consistent wrapping. C11-172 v3 (2026-07-24)
-  //    CONVERGED the WGSL coordinate onto WebGL's: the WGSL march now also
-  //    samples in a GLOBAL ellipsoid (lon/lat) UV at INTEGER repeat counts
-  //    (`OCEAN_OCTAVE_REPEATS_*` ≈ 150/50/15 m), RTE-decomposed via CPU-packed
-  //    f64 phase offsets for f32 precision, replacing the old scale-invariant
-  //    tile-UV ×400/200/800 sampling that was sub-pixel at every altitude
-  //    (animated aliasing, the maintainer's "noisy" bug).
-  //    Both backends now MIP-AVERAGE (WGSL `textureSampleGrad` + sampler
-  //    maxAnisotropy 8 ↔ GLSL `texture()` auto-LOD) and apply a footprint
-  //    amplitude fade + hard cutoff. SHARED (Principle 5): the fade band
-  //    (repeats/pixel) + cutoff, pinned by ocean-wave-lod.spec.mjs. NOT
-  //    shared (intentional, documented): the per-layer SCALE — WGSL picks
-  //    physical wavelengths for the WebGPU look; GLSL keeps czm_getWaterNoise
-  //    (its fade keyed on the effective divisor, D2). So wave appearance is
-  //    similar-but-not-identical; strict pixel parity is NOT a goal here.
-  // 5. **Specular model**. MATCHED in BOTH branches since
-  //    GLOBE-POLAR-STRETCH-POLISH: enhanced and classic (C11-158 `//>>else`)
-  //    both use the `czm_getSpecular` Phong lobe
-  //    (`pow(max(dot(reflect(-L, N), V), 0), 10)`) × the waveIntensity-
-  //    modulated `surfaceReflectance`, unconditionally (no enableLighting
-  //    gate, no orbit fade). The earlier WGSL-only GGX + orbit-fade
-  //    variant suppressed the zoomed-out sun glint that WebGL shows at
-  //    orbital altitudes. `distributionGGX` remains defined but unused.
-  // 6. **Foam (whitecaps)**. ENHANCED-branch only (C11-158). WGSL's
-  //    `computeFoam` overlays white pixels where wave normals are steep;
-  //    GLSL has no equivalent, and the classic `//>>else` default branch
-  //    omits it — foam is a WGSL-only enhancement that renders only when
-  //    `Globe.enableEnhancedOcean` is true.
+  //    with two altitude layers and `czm_ellipsoidTextureCoordinates(
+  //    normalMC)` for globe-consistent wrapping. The WGSL march samples in the
+  //    same global ellipsoid (lon/lat) UV, at integer repeat counts
+  //    (`OCEAN_OCTAVE_REPEATS_*`, about 150/50/15 m), decomposed
+  //    relative-to-eye through CPU-packed f64 phase offsets for f32 precision.
+  //    Both backends mip-average — WGSL through `textureSampleGrad` plus a
+  //    sampler maxAnisotropy of 8, GLSL through `texture()` auto-LOD — and
+  //    apply a footprint amplitude fade with a hard cutoff. The fade band, in
+  //    repeats per pixel, and the cutoff are shared and pinned by
+  //    ocean-wave-lod.spec.mjs. The per-layer scale is deliberately not
+  //    shared: WGSL picks physical wavelengths, while GLSL keeps
+  //    czm_getWaterNoise with its fade keyed on the effective divisor. Wave
+  //    appearance is therefore similar but not identical, and strict pixel
+  //    parity is not a goal here.
+  // 5. **Specular model**. Matched in both branches: each uses the
+  //    `czm_getSpecular` Phong lobe
+  //    (`pow(max(dot(reflect(-L, N), V), 0), 10)`) times the
+  //    waveIntensity-modulated `surfaceReflectance`, unconditionally, with no
+  //    enableLighting gate and no orbit fade. A GGX lobe with an orbit fade
+  //    suppresses the zoomed-out sun glint WebGL shows at orbital altitudes.
+  //    `distributionGGX` remains defined but unused.
+  // 6. **Foam (whitecaps)**. Enhanced branch only. WGSL's `computeFoam`
+  //    overlays white pixels where wave normals are steep; GLSL has no
+  //    equivalent, and the classic `//>>else` default branch omits it, so foam
+  //    renders only when `Globe.enableEnhancedOcean` is set.
   // 7. **Subsurface scattering**. WGSL has `computeSubsurfaceScattering`
   //    defined but currently unused (neither branch calls it) — scaffolding
   //    for future enhancement; GLSL has no equivalent.
   //
-  // ─── Enhanced Water mask + ocean rendering ───
+  // Enhanced water mask and ocean rendering.
     if (tile.flags.x > 0.5) {
       let wmTS = tile.waterMaskTranslationAndScale;
       let waterUVUnflipped = geoUV * wmTS.zw + wmTS.xy;
@@ -4756,7 +4582,7 @@ fn fragmentMain(
     // resolves the coastline at texel granularity, so at low zoom (a mask
     // texel spanning ~1 screen pixel) the water/land boundary aliases into
     // a jagged staircase and, at high zoom, kinks at each bilinear-patch
-    // seam. We widen the coverage smoothstep by the mask's SCREEN-space
+    // seam. The coverage smoothstep is widened by the mask's screen-space
     // rate of change so the boundary feathers over ~1 screen pixel (killing
     // the staircase), while the 0.2 floor keeps the high-zoom bilinear ramp
     // soft. This never moves the 0.5 isoline, so the coast stays spatially
@@ -4764,7 +4590,7 @@ fn fragmentMain(
     // coverage 1) interiors are byte-identical to a hard step.
     //
     // WGSL forbids `fwidth` here (this is downstream of non-uniform
-    // discards), so we reconstruct the mask's per-pixel footprint from the
+    // discards), so the mask's per-pixel footprint is reconstructed from the
       // UV derivatives hoisted to fragment entry (geoUV_dx/geoUV_dy, computed
       // in uniform control flow). The post-transform Y flip reverses one
       // derivative component's sign, which does not change the vector lengths
@@ -4818,23 +4644,16 @@ fn fragmentMain(
     }
   }
 
-  // ┌─────────────────────────────────────────────────────────────────────┐
-  // │ PAIR-SECTION: Lighting + Shadow Receive (WGSL) ↔ GLSL                │
-  // │   GLSL: Shaders/GlobeFS.glsl ~lines 515-524 (lighting); shadows are  │
-  // │         injected by the WebGL pipeline cache via                      │
-  // │         `ShadowMapShader.js`, not present in GlobeFS.glsl source.    │
-  // │ Last lockstep audit: 2026-08-07, Batch 925 (CO-18 ramp-law            │
-  // │         reconciliation; CO-15 normal source before it)                │
-  // └─────────────────────────────────────────────────────────────────────┘
-  // Any change to this block MUST land with a matching change in the
-  // GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+  // Lighting and shadow receive. The GLSL counterpart is
+  // `Shaders/GlobeFS.glsl` around lines 515-524 for lighting; shadows are
+  // injected by the WebGL pipeline cache via `ShadowMapShader.js` and are not
+  // present in the GlobeFS.glsl source. A change to this block has to land
+  // with a matching change there. See SHADER_PAIRS_LOCKSTEP.md.
   //
-  // NO LONGER AN ALGORITHMIC REWRITE (CLT-B4, CO-18). The day/night arm now
-  // runs WebGL's law verbatim. What used to sit here — "same intent, different
-  // coefficients" — was a real, measured visual divergence, not a stylistic
-  // choice, and it is closed.
+  // The day/night arm runs WebGL's law verbatim; the coefficients are not
+  // reinterpreted here.
   //
-  // - WebGL has THREE mutually-exclusive lighting variants gated by
+  // - WebGL has three mutually exclusive lighting variants gated by
   //   #ifdef:
   //     ENABLE_VERTEX_LIGHTING — diffuse with `u_lambertDiffuseMultiplier`
   //       and `u_vertexShadowDarkness` uniforms; multiplies by
@@ -4845,105 +4664,86 @@ fn fragmentMain(
   //       are flat-lit and orbit tiles get full day/night.
   //     (neither) — pass-through, no shading.
   //
-  // - WGSL has ONE runtime gate (`camera.enableLighting > 0.5`) selecting
-  //   between the SAME two arms via `camera.lighting.z` (hasVertexNormals):
+  // - WGSL has one runtime gate (`camera.enableLighting > 0.5`) selecting
+  //   between the same two arms via `camera.lighting.z` (hasVertexNormals):
   //     lighting.z > 0.5 → `clamp(NdotL × lighting.x + lighting.y, 0, 1)`
   //       (WebGL's ENABLE_VERTEX_LIGHTING formula, mesh normal)
   //     lighting.z ≤ 0.5 → `mix(1.0, computeDayNightDiffuse(dayNightNormalEC,
   //       sunDir), tile.lightingFade)` (WebGL's ENABLE_DAYNIGHT_SHADING
   //       formula, analytic normal, same camera-distance mix)
-  //   Then adds `computeTerminatorGlow(dayNightNormalEC, sunDir)` — a warm
-  //   orange/pink contribution at the terminator that WebGL doesn't have
-  //   (CLT-B3's audit subject; untouched by CO-18).
+  //   Then adds `computeTerminatorGlow(dayNightNormalEC, sunDir)`, a warm
+  //   orange-pink contribution at the terminator that WebGL does not have.
   //
-  // STRUCTURAL DIVERGENCES
+  // Both backends run `clamp(NdotL × 5 + 0.3, 0, 1)` on the DAYNIGHT arm,
+  // mixed toward 1.0 by the camera-distance fade, and the imagery day/night
+  // alpha ramp is the separate `clamp(NdotL × 5, 0, 1)` on both. Both feed the
+  // day/night term the analytic geocentric normal recomputed per fragment and
+  // the VERTEX_LIGHTING term the interpolated mesh normal. `tile.lightingFade`
+  // carries WebGL's camera-distance clamp (GlobeFS.glsl:620-644, :852), packed
+  // CPU-side in `WebGPUGlobeSurfaceTileUB.ts` because the WGSL has neither
+  // `czm_view` nor `czm_frustumPlanes`; without it the night side stays dark at
+  // every altitude.
   //
-  // 1. **Gating mechanism.** GLSL: three #ifdef variants; WGSL: single
+  // Structural divergences:
+  //
+  // 1. **Gating mechanism.** GLSL uses three #ifdef variants, WGSL a single
   //    runtime gate. Shape only — the same three outcomes are reachable.
-  // 2. **Diffuse coefficients — RESOLVED, no longer a divergence (CLT-B4,
-  //    CO-18).** Both backends now run `clamp(NdotL × 5 + 0.3, 0, 1)` mixed
-  //    toward 1.0 by the camera-distance fade on the DAYNIGHT arm, and the
-  //    imagery day/night alpha ramp is the separate `clamp(NdotL × 5, 0, 1)`
-  //    on both. Before CO-18 the WGSL collapsed both consumers onto one
-  //    `clamp(NdotL × 5 + 0.5, 0, 1)` and drove the diffuse from
-  //    `mix(0.025, NdotL × 0.88 + 0.12, dayFade)` with no camera-distance term.
-  //    Measured, not inferred: `probe-daynight-terminator-law.mjs` run 2 read a
-  //    +0.485 terminator delta (lane A) and a night/day luminance ratio of
-  //    0.312/0.0896 against WebGL's 1.000/0.300 (lane D).
-  // 3. **Custom light color.** GLSL multiplies by `czm_lightColor`
-  //    (allows scene-provided custom light color). WGSL multiplies by
-  //    `camera.lightColor.rgb` packed from `uniformState.lightColor`
-  //    (Batch 76). Default white (1,1,1) preserves pre-Batch-76 behavior
-  //    for scenes without a custom `scene.light`.
-  // 4. **Terminator glow.** WGSL adds it (warm color band at the
-  //    day/night boundary); WebGL doesn't.
-  // 5. **Shadow receive.** GLSL does NOT contain shadow code; the
-  //    WebGL pipeline cache injects shadow-sampling GLSL via
-  //    `ShadowMapShader.js` per-pipeline based on the shadow-map
-  //    config. WGSL inlines three shadow paths directly:
+  // 2. **Custom light color.** GLSL multiplies by `czm_lightColor`; WGSL
+  //    multiplies by `camera.lightColor.rgb`, packed from
+  //    `uniformState.lightColor`. The default white (1,1,1) leaves scenes
+  //    without a custom `scene.light` unaffected.
+  // 3. **Terminator glow.** WGSL adds a warm colour band at the day/night
+  //    boundary; WebGL has none.
+  // 4. **Shadow receive.** GLSL carries no shadow code: the WebGL pipeline
+  //    cache injects shadow-sampling GLSL through `ShadowMapShader.js` per
+  //    pipeline, from the shadow-map config. WGSL inlines three shadow paths
+  //    directly —
   //      `globeComputeShadowFactorPointLight` (cube-shadow point light)
   //      `globeComputeShadowFactorCSM` (cascaded shadow maps)
   //      `globeComputeShadowFactor` (single-map default)
-  //    gated at the top of `fragmentMain` (see lines ~2380-2420).
-  //    The architectural difference is forced by the pipeline-cache
-  //    model: WebGL injects per-config GLSL strings; WebGPU uses a
+  //    gated at the top of `fragmentMain`. The pipeline-cache model forces the
+  //    difference: WebGL injects per-config GLSL strings, WebGPU compiles a
   //    fixed shader with runtime gates.
-  // 6b. **Normal source — RESOLVED, no longer a divergence (CO-15,
-  //    Batch 919).** Both backends now feed the day/night term the ANALYTIC
-  //    geocentric normal recomputed per fragment, and both feed the
-  //    VERTEX_LIGHTING term the interpolated MESH normal. Before CO-15 the
-  //    WGSL fed `input.v_normalEC` to BOTH, which on normal-less terrain is
-  //    the constant `octDecode(0.0)` = (0,0,-1) — a globally uniform
-  //    day/night term with no terminator. See the
-  //    NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE block at `dayNightNormalEC`.
-  // 6c. **Camera-distance lighting fade — RESOLVED (CLT-B4, CO-18).** WebGL
-  //    mixes the DAYNIGHT diffuse toward 1.0 by `fade` (GlobeFS.glsl:620-644,
-  //    :852); the WGSL had no such term, so its night side stayed dark at any
-  //    altitude. `tile.lightingFade` now carries the identical clamp, packed
-  //    CPU-side in `WebGPUGlobeSurfaceTileUB.ts` because the WGSL has neither
-  //    `czm_view` nor `czm_frustumPlanes`.
-  //    STILL DIVERGENT and tracked separately: the vertex-normal gating split
-  //    (CLT-B1 finding (c) — WebGL emits ENABLE_VERTEX_LIGHTING *instead of*
+  // 5. **Vertex-normal gating.** WebGL emits ENABLE_VERTEX_LIGHTING instead of
   //    ENABLE_DAYNIGHT_SHADING, so its day/night imagery alpha does not exist
-  //    at all on vertex-normal terrain, where WGSL still applies the ramp).
+  //    at all on vertex-normal terrain, where WGSL still applies the ramp.
+  // 6. **Vertex-lighting customization.** The GLSL ENABLE_VERTEX_LIGHTING path
+  //    uses `u_lambertDiffuseMultiplier` and `u_vertexShadowDarkness` for
+  //    tile-provider-driven shading. WGSL bridges those through
+  //    `camera.lighting.x/y` and gates between the WebGL
+  //    ENABLE_VERTEX_LIGHTING formula (a direct `NdotL × mult + darkness`) and
+  //    the DAYNIGHT_SHADING analogue via `camera.lighting.z`, the
+  //    hasVertexNormals flag from `terrainProvider.hasVertexNormals`.
   //
-  // 6. **Vertex-lighting customization.** GLSL ENABLE_VERTEX_LIGHTING
-  //    path uses `u_lambertDiffuseMultiplier` and
-  //    `u_vertexShadowDarkness` uniforms for tile-provider-driven
-  //    shading. WGSL bridges these via `camera.lighting.x/y` (Batch 77),
-  //    and gates between the WebGL ENABLE_VERTEX_LIGHTING formula
-  //    (direct `NdotL × mult + darkness`) and the existing WGSL
-  //    DAYNIGHT_SHADING-analogue path via `camera.lighting.z`
-  //    (hasVertexNormals flag from `terrainProvider.hasVertexNormals`).
-  //
-  // ─── C12-29 S5 — fragment-local eclipse factors ───
-  // S2 already applied a camera-anchored factor to selected radiance
-  // producers. Absolute is for an undimmed term; relative divides S2's camera
-  // factor back out before applying this fragment's factor. The uniform gate
-  // is zero in ordinary/non-3D frames, leaving both exact identities.
+  // Fragment-local eclipse factors. A camera-anchored factor has already been
+  // applied at the uniform source to selected radiance producers: the absolute
+  // factor is for an undimmed term, while the relative one divides that camera
+  // factor back out before applying this fragment's. The uniform gate is zero
+  // in ordinary and non-3D frames, leaving both exact identities.
   var eclipseAbsolute: f32 = 1.0;
   var eclipseRelative: f32 = 1.0;
   if (eclipseUniforms.params.x > 0.5) {
-    // Gates 3/4 restore only the producers S2 actually dimmed without paying
-    // common-ray, ellipsoid-horizon, overlap, or limb-fit ALU.
+    // Gates 3 and 4 restore only the producers the uniform-source factor
+    // dimmed, without paying common-ray, ellipsoid-horizon, overlap or
+    // limb-fit arithmetic.
     if (eclipseUniforms.params.x < 2.5) {
       eclipseAbsolute = globe_eclipseFragmentFactor(input.v_positionMC);
     }
     eclipseRelative = eclipseAbsolute * eclipseUniforms.params.y;
   }
 
-  // ─── Lambert diffuse lighting + shadow receive ───
+  // Lambert diffuse lighting and shadow receive.
   if (camera.enableLighting > 0.5) {
-    // WebGL's two lighting arms read two different normals (see the
-    // NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE block above):
-    // ENABLE_VERTEX_LIGHTING is the mesh-normal term, ENABLE_DAYNIGHT_SHADING
-    // is the analytic-normal term. Each branch below takes the one its WebGL
-    // twin takes — this one the MESH normal, the DAYNIGHT arm the analytic
-    // `dayNightNormalEC` (inside `computeDayNightDiffuse`).
+    // WebGL's two lighting arms read two different normals, as the normal-source
+    // block above sets out: ENABLE_VERTEX_LIGHTING is the mesh-normal term and
+    // ENABLE_DAYNIGHT_SHADING is the analytic-normal term. Each branch below
+    // takes the one its WebGL twin takes — this one the mesh normal, the
+    // DAYNIGHT arm the analytic `dayNightNormalEC`, inside
+    // `computeDayNightDiffuse`.
     let NdotL = max(dot(normal, sunDir), 0.0);
     var diffuse: f32;
     if (camera.lighting.z > 0.5) {
-      // Batch 77 — VERTEX_LIGHTING path: terrain has vertex normals.
+      // VERTEX_LIGHTING path: terrain has vertex normals.
       // Direct linear ramp using tile-provider-supplied coefficients,
       // matching WebGL GlobeFS.glsl ENABLE_VERTEX_LIGHTING (L559):
       //   diffuse = clamp(NdotL × lambertDiffuseMultiplier
@@ -4983,7 +4783,7 @@ fn fragmentMain(
       let dayNightDiffuse = computeDayNightDiffuse(dayNightNormalEC, sunDir);
       diffuse = mix(1.0, dayNightDiffuse, clamp(tile.lightingFade, 0.0, 1.0));
     }
-    // Batch 76 — `camera.lightColor` mirrors WebGL's `czm_lightColor`
+    // `camera.lightColor` mirrors WebGL's `czm_lightColor`
     // automatic uniform. Scene-provided custom light colors (e.g.
     // `scene.light.color = Color.ORANGE`) now propagate to the globe
     // diffuse term on WebGPU, matching GlobeFS.glsl ENABLE_VERTEX_LIGHTING
@@ -5014,7 +4814,7 @@ fn fragmentMain(
     color = color * eclipseAbsolute;
   }
 
-  // NEW-CSM-CAST-NO-DISPATCH-VIEWER (Batch 296) — apply the shadow receive
+  // Apply the shadow receive
   // ONCE to the final color, independent of `enableLighting`. Mirrors
   // WebGL's `ShadowMapShader.js`: `out_FragColor.rgb *= visibility;` runs
   // outside the lighting branch, so cast shadows darken the surface even
@@ -5022,10 +4822,10 @@ fn fragmentMain(
   // shadow mode is active, so lighting-only scenes are unchanged.
   color = color * shadowFactor;
 
-  // Batch 437 (CLOUD-SHADOWS) — darken lit ground under the procedural clouds by
+  // Darken lit ground under the procedural clouds by
   // the sun-view beer shadow map. Gated on `cloudShadowControl.x` so the default
   // (globe.cloudCastShadows off) leaves `color` byte-identical (the placeholder is
-  // never read). C13-06 — the position operand follows the frame the CPU
+  // never read). The position operand follows the frame the CPU
   // published: eye-relative `v_positionRTE` in SCENE3D, absolute `v_positionMC`
   // in the planar modes.
   if (camera.cloudShadowControl.x > 0.5) {
@@ -5036,15 +4836,11 @@ fn fragmentMain(
       );
   }
 
-  // ┌─────────────────────────────────────────────────────────────────────┐
-  // │ PAIR-SECTION: Ground Atmosphere + Fog (WGSL) ↔ GLSL                  │
-  // │   GLSL: Shaders/GlobeFS.glsl ~lines 512-603                          │
-  // │ Last lockstep audit: 2026-05-19, Batch 72                            │
-  // └─────────────────────────────────────────────────────────────────────┘
-  // Any change to this block MUST land with a matching change in the
-  // GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+  // Ground atmosphere and fog. The GLSL counterpart is
+  // `Shaders/GlobeFS.glsl` around lines 512-603; a change to this block has to
+  // land with a matching change there. See SHADER_PAIRS_LOCKSTEP.md.
   //
-  // STRUCTURAL DIVERGENCES (documented, intentional)
+  // Structural divergences, all intentional:
   //
   // 1. **Pipeline gating.** GLSL guards the whole block with
   //    `#if defined(GROUND_ATMOSPHERE) || defined(FOG)`; the per-vertex
@@ -5061,15 +4857,14 @@ fn fragmentMain(
   //    `v_atmosphereRayleighColor` / `v_atmosphereMieColor` varyings and
   //    a per-fragment `computeAtmosphereScattering` call based on the
   //    `PER_FRAGMENT_GROUND_ATMOSPHERE` define (set CPU-side when
-  //    `cameraDist > nightFadeOutDistance` ≈ 10 Mm). WGSL **always** does
-  //    per-fragment via `computeAtmosphereScatteringGround` (Batch 56).
-  //    The per-vertex path would produce a mesh-pattern artifact at
-  //    orbit altitudes because interpolated optical depths diverge across
-  //    triangles that span the limb. The per-vertex varyings remain in
-  //    the WGSL VS for future use if the close-camera optimization needs
-  //    re-introducing.
+  //    `cameraDist > nightFadeOutDistance` ≈ 10 Mm). WGSL always goes
+  //    per-fragment, through `computeAtmosphereScatteringGround`, because the
+  //    per-vertex path produces a mesh-pattern artifact at orbit altitudes:
+  //    interpolated optical depths diverge across triangles spanning the limb.
+  //    The per-vertex varyings remain in the WGSL vertex shader in case the
+  //    close-camera optimization is reintroduced.
   //
-  // 3. **LUT integration.** WGSL adds a Phase-4 path that samples a
+  // 3. **LUT integration.** WGSL adds a path that samples a
   //    compute-shader-pre-computed atmosphere LUT when available
   //    (`effects.atmosphereLutControl.x > 0.5`) and falls back to the
   //    inline Rayleigh/Mie analytic when not. GLSL has no equivalent —
@@ -5088,17 +4883,16 @@ fn fragmentMain(
   //    as `fExposure = 2.0` (global const); WGSL spells it as a local
   //    `let exposure: f32 = 2.0;`. Same value.
   //
-  // ─── Fog blending + ground atmosphere ───
-  // Matches WebGL `czm_fog(distance, color, fogColor)` — mixes color
-  // toward fogColor by the fog amount, leaves alpha alone. Upstream
-  // does NOT drop alpha at high fog; a previous WGSL-only alpha drop
-  // turned distant terrain transparent and exposed the black skybox
-  // behind it whenever the camera was tilted toward the horizon, which
-  // is the opposite of what fog should do.
+  // Fog blending and ground atmosphere.
+  // Matches WebGL `czm_fog(distance, color, fogColor)`: mixes color toward
+  // fogColor by the fog amount and leaves alpha alone. Upstream does not drop
+  // alpha at high fog, and dropping it turns distant terrain transparent,
+  // exposing the black skybox behind it whenever the camera tilts toward the
+  // horizon — the opposite of what fog should do.
   //
-  // Phase 4 integration: when the atmosphere LUT is available
-  // (compute supported AND the SkyAtmosphere feature renderer has
-  // dispatched the compute pass at least once), sample the inscatter
+  // When the atmosphere LUT is available — compute is supported and the
+  // SkyAtmosphere feature renderer has dispatched the compute pass at least
+  // once — sample the inscatter
   // LUT for a physically-accurate fog color that matches the visible
   // sky dome exactly. Otherwise fall back to the inline
   // Rayleigh/Mie approximation — both paths use the same `fogAmount`
@@ -5115,7 +4909,7 @@ fn fragmentMain(
     var atmosphereOpacity: f32 = 0.0;
     if (effects.atmosphereLutControl.x > 0.5) {
       // Reconstruct camera world position from the RTE-encoded camera.
-      // Single-precision subtract is fine here — we're feeding it into
+      // A single-precision subtract is enough here, because it feeds into
       // a texture sample, not a transform.
       let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
       // v_positionMC is already the absolute ECEF position used by the
@@ -5124,7 +4918,7 @@ fn fragmentMain(
       let fragmentWorldPos = input.v_positionMC;
       let lut = sampleAtmosphereFogLut(fragmentWorldPos, cameraWC);
       // Use the LUT's inscatter directly when it returns meaningful
-      // magnitude; the placeholder texture produces zero so we fall
+      // magnitude; the placeholder texture produces zero, which falls
       // back cleanly in that case.
       let lutLuminance = max(lut.r, max(lut.g, lut.b));
       if (lutLuminance > 0.001) {
@@ -5141,7 +4935,7 @@ fn fragmentMain(
       );
     }
 
-    // Batch 56 — ground atmosphere: per-fragment ray-march at orbit
+    // Ground atmosphere: per-fragment ray-march at orbit
     // distances. WebGL `GlobeFS.glsl` switches between per-vertex and
     // per-fragment scattering via `#ifdef PER_FRAGMENT_GROUND_ATMOSPHERE`
     // (defined CPU-side when `cameraDist > nightFadeOutDistance`). At
@@ -5150,12 +4944,11 @@ fn fragmentMain(
     // on near-side vertices vs ~13Mm marches on far-side limb vertices,
     // interpolated linearly across the triangle → mesh-pattern artifact
     // overwriting imagery via `mix(color, draped, fadeAmount=1.0)`.
-    // We always do per-fragment here for parity at orbit. Per C9-14 the
-    // VS per-vertex march now runs ONLY when the per-vertex debug
-    // visualizers are active (`tile.time ∈ [13.5e9,15.5e9]`); in
-    // production the v_atmosphere* varyings stay zero and are never read
-    // outside those debug returns, so this per-fragment path is the sole
-    // owner of the production integration.
+    // This path is per-fragment unconditionally, for parity at orbit. The
+    // vertex-stage march runs only when the per-vertex debug visualizers are
+    // active (`tile.time ∈ [13.5e9,15.5e9]`); in production the v_atmosphere*
+    // varyings stay zero and are never read outside those debug returns, so
+    // this is the sole owner of the production integration.
     var groundAtmoColor: vec3<f32>;
     var groundAtmoOpacity: f32 = atmosphereOpacity;
     var groundAtmoLightDir: vec3<f32> = vec3<f32>(0.0, 0.0, 1.0);
@@ -5192,10 +4985,10 @@ fn fragmentMain(
     }
 
     // The air column above the surface shadow is solar radiance too. The
-    // Nishita ground-scattering producer includes the S2-scaled atmosphere
-    // intensity, while the analytic fallback and LUT do not; select the
-    // relative or absolute factor at the producer boundary and leave geometric
-    // opacity untouched.
+    // Nishita ground-scattering producer already carries the scene-scaled
+    // atmosphere intensity, while the analytic fallback and the LUT do not, so
+    // the relative or absolute factor is selected at the producer boundary and
+    // the geometric opacity is left untouched.
     let atmoCarriesSceneFactor = camera.atmosphereParams.w > 0.5;
     groundAtmoColor = groundAtmoColor * select(
       eclipseAbsolute,
@@ -5209,8 +5002,8 @@ fn fragmentMain(
       // imagery toward atmosphere color by a distance-driven scalar.
       let fogAmount = computeFog(input.v_distance, fogDensity, tile.fogVisualDensityScalar);
       var fogColor = groundAtmoColor;
-      // Session 65 Batch 41 (NEW-VR2-1) — match WebGL gating for the
-      // night-fog darken factor. WebGL `GlobeFS.glsl` lines 522-526:
+      // The night-fog darken factor follows WebGL's gating.
+      // WebGL `GlobeFS.glsl` lines 522-526:
       //
       //   #if defined(DYNAMIC_ATMOSPHERE_LIGHTING) &&
       //       (defined(ENABLE_VERTEX_LIGHTING) ||
@@ -5221,26 +5014,21 @@ fn fragmentMain(
       //     fogColor *= darken;
       //   #endif
       //
-      // Pre-Batch-41 the WGSL applied an UNGATED
-      // `nightFogDimming = mix(0.05, 1.0, dayFade)` plus a
-      // `max(fogColor * nightFogDimming, fogMinimumBrightness)` floor.
-      // For demos with the default `enableLighting = false`
-      // (Bloom, Particle System, Lighting, Shadows at ground altitude)
-      // WebGL leaves fog at full brightness so the dim ground atmo
-      // contribution lets imagery still show through; WebGPU was
-      // dimming fog to `fogMinimumBrightness` (default 0.03), which
-      // tonemapped + gamma-encodes to ~24 sRGB and overwrote every
-      // imagery pixel with that floor at high fog density. Net effect:
-      // a flat uniform `(24, 24, 24)` grey across the entire below-
-      // horizon area, exactly the disk-bleed-probe symptom flagged
-      // under NEW-VR2-1.
+      // The gate is load-bearing. An ungated
+      // `nightFogDimming = mix(0.05, 1.0, dayFade)` with a
+      // `max(fogColor * nightFogDimming, fogMinimumBrightness)` floor dims fog
+      // to `fogMinimumBrightness` (default 0.03) in scenes with the default
+      // `enableLighting = false`, where WebGL leaves fog at full brightness so
+      // the dim ground-atmosphere contribution still lets imagery through.
+      // That floor tonemaps and gamma-encodes to about 24 sRGB and overwrites
+      // every imagery pixel at high fog density, flattening the whole
+      // below-horizon area to a uniform (24, 24, 24) grey.
       //
-      // `camera.atmosphereParams.w > 1.5` mirrors the WebGL
-      // `dynamicLighting` bool (Batch 38 encoding: 0 off, 1 static,
-      // 2 lit). When dynamic lighting is active we apply a
-      // `clamp(dot(viewerNormalized, lightDir), minimumBrightness, 1.0)`
-      // multiplier; otherwise the fog color stays at full brightness
-      // matching the un-gated WebGL path.
+      // `camera.atmosphereParams.w > 1.5` mirrors the WebGL `dynamicLighting`
+      // bool, encoded 0 off, 1 static, 2 lit. With dynamic lighting active the
+      // multiplier is `clamp(dot(viewerNormalized, lightDir),
+      // minimumBrightness, 1.0)`; otherwise the fog color stays at full
+      // brightness, matching WebGL's ungated path.
       if (camera.atmosphereParams.w > 1.5) {
         let viewerNormalized = normalize(
           camera.encodedCameraHigh + camera.encodedCameraLow,
@@ -5258,7 +5046,7 @@ fn fragmentMain(
         fogColor = pbrNeutralTonemapAtmosphere(fogColor);
         fogColor = pow(max(fogColor, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
       }
-      // NEW-GLOBE-BELOWSURFACE-DECOMP — 'bypass-fog' (27e9) skips the fog
+      // The 'bypass-fog' debug mode (27e9) skips the fog
       // mix so the near-ground atmosphere term (the branch below-surface
       // scenes actually take — v_distance is megameters underground, so
       // fogAmount saturates) can be measured in isolation.
@@ -5271,9 +5059,9 @@ fn fragmentMain(
       // `#if defined(GROUND_ATMOSPHERE) || defined(FOG)` in GlobeFS.glsl
       // (lines 535-563). FOG is undefined whenever the camera is above
       // Fog.maxHeight (default 800 km), but GROUND_ATMOSPHERE may still
-      // be enabled. Without this branch the entire atmospheric drape is
-      // missing at orbital altitudes — only the SkyAtmosphere shell at
-      // the limb shows, which is the symptom Session 65 was chasing.
+      // be enabled. Without this branch the entire atmospheric drape goes
+      // missing at orbital altitudes and only the SkyAtmosphere shell at the
+      // limb remains visible.
       //
       //   transmittance = 0.5 + clamp(1 - opacity, 0, 1)  — brightens
       //     the rim where the view ray takes a longer path through the
@@ -5286,35 +5074,29 @@ fn fragmentMain(
       //     — fade scalar is pre-computed CPU-side; ramps from 0 at the
       //     fog threshold up to 1 at lightingFadeInDistance (~20 Mm).
       let transmittanceModifier: f32 = 0.5;
-      // Use the per-vertex opacity from the Nishita march when atmosphere
-      // is enabled (Session 65 Batch 9). Falls through to the LUT-sampled
-      // opacity / 0 default when atmosphere is disabled.
+      // Use the per-vertex opacity from the Nishita march when atmosphere is
+      // enabled, falling through to the LUT-sampled opacity, or the 0 default,
+      // when it is disabled.
       let opacityForDrape = select(
         atmosphereOpacity,
         clamp(1.0 - groundAtmoOpacity, 0.0, 1.0),
         camera.atmosphereParams.w > 0.5,
       );
       let transmittance = transmittanceModifier + opacityForDrape;
-      // Session 65 Batch 38 — proper ground-atmosphere integration.
-      // The previous Batches 30+31 fix capped the per-channel radiance
-      // at 1.5 then scaled by 0.15 to perceptually match WebGL at
-      // orbit altitudes. The root cause was NOT the ray-march — the
-      // WGSL `computeScatteringGround` port is byte-equivalent to
-      // `AtmosphereCommon.glsl::computeScattering`. The over-
-      // accumulation came from the WGSL VS always tracing toward the
-      // packed sun direction, while WebGL (with the default
-      // DynamicAtmosphereLighting.NONE) substitutes
-      // `normalize(positionWC)` per-vertex — every vertex sees a
-      // "straight up" light ray, so optical depth stays uniform and
-      // the integrated radiance lands in the 0.3-0.6 range that
-      // matches real orbital photography.
-      //
-      // Batch 38 fixes that at the source (see VS path + CPU
-      // `atmosphereParams.w` repack) so the FS can apply the
-      // unscaled WebGL drape math: `color + atmoColor * transmittance`
-      // combined with the WebGL `darken` and `sunlitAtmosphereIntensity`
-      // mixes from GlobeFS.glsl lines 546-554. No empirical magic
-      // numbers in this branch.
+      // The drape math here is WebGL's, unscaled:
+      // `color + atmoColor * transmittance`, combined with the `darken` and
+      // `sunlitAtmosphereIntensity` mixes from GlobeFS.glsl lines 546-554.
+      // There are no empirical correction factors in this branch, because the
+      // light direction is corrected at the source instead — see the vertex
+      // path and the CPU `atmosphereParams.w` packing. Tracing toward the
+      // packed sun direction in both lighting modes over-accumulates radiance,
+      // since WebGL under the default DynamicAtmosphereLighting.NONE
+      // substitutes `normalize(positionWC)` per vertex: every vertex then sees
+      // a straight-up light ray, optical depth stays uniform, and the
+      // integrated radiance lands in the 0.3-0.6 range that matches orbital
+      // photography. Capping and rescaling the radiance downstream treats the
+      // symptom; the ray-march itself is equivalent to
+      // `AtmosphereCommon.glsl::computeScattering`.
       var finalAtmosphereColor = color + groundAtmoColor * transmittance;
 
       // WebGL GlobeFS.glsl lines 546-554 — the day/night atmosphere
@@ -5371,7 +5153,7 @@ fn fragmentMain(
       // `tile.groundAtmosphereControl.w` carries the HDR flag CPU-side
       // (Scene mirrors `scene._hdr` onto `frameState.useHDR`). When
       // off, exposure = 2.0 matches the WebGL Reinhard constant from
-      // GlobeFS.glsl line 302; when on, we hand the post-process the
+      // GlobeFS.glsl line 302; when on, the post-process receives the
       // raw linear-HDR color and let it tonemap downstream.
       var draped: vec3<f32>;
       if (tile.groundAtmosphereControl.w > 0.5) {
@@ -5381,39 +5163,39 @@ fn fragmentMain(
         draped = vec3<f32>(1.0) - exp(-exposure * finalAtmosphereColor);
       }
       let fadeAmount = tile.groundAtmosphereControl.y;
-      // Batch 56 — visualize per-vertex v_atmosphereRayleighColor via [13.5e9, 14.5e9].
+      // Visualize per-vertex v_atmosphereRayleighColor via [13.5e9, 14.5e9].
       if (tile.time > 13.5e9 && tile.time < 14.5e9) {
         return makeFragOutput(vec4<f32>(input.v_atmosphereRayleighColor, 1.0), normalEC);
       }
-      // Batch 56 — visualize per-vertex v_atmosphereMieColor via [14.5e9, 15.5e9].
+      // Visualize per-vertex v_atmosphereMieColor via [14.5e9, 15.5e9].
       if (tile.time > 14.5e9 && tile.time < 15.5e9) {
         return makeFragOutput(vec4<f32>(input.v_atmosphereMieColor, 1.0), normalEC);
       }
-      // Batch 56 — visualize viewDir via [15.5e9, 16.5e9]. Maps from [-1,1] to [0,1].
+      // Visualize viewDir via [15.5e9, 16.5e9]. Maps from [-1,1] to [0,1].
       if (tile.time > 15.5e9 && tile.time < 16.5e9) {
         let cameraWC2 = camera.encodedCameraHigh + camera.encodedCameraLow;
         let positionWC2 = input.v_positionMC;
         let viewDir2 = normalize(positionWC2 - cameraWC2);
         return makeFragOutput(vec4<f32>(viewDir2 * 0.5 + 0.5, 1.0), normalEC);
       }
-      // Batch 56 — debug: visualize fadeAmount as grayscale via [9.5e9, 10.5e9].
+      // Debug: visualize fadeAmount as grayscale via [9.5e9, 10.5e9].
       // If fadeAmount = 1 (white), the imagery is fully replaced by drape.
       if (tile.time > 9.5e9 && tile.time < 10.5e9) {
         return makeFragOutput(vec4<f32>(fadeAmount, fadeAmount, fadeAmount, 1.0), normalEC);
       }
-      // Batch 56 — debug: visualize draped color via [10.5e9, 11.5e9].
+      // Debug: visualize draped color via [10.5e9, 11.5e9].
       if (tile.time > 10.5e9 && tile.time < 11.5e9) {
         return makeFragOutput(vec4<f32>(draped, 1.0), normalEC);
       }
-      // Batch 56 — debug: visualize groundAtmoColor only via [11.5e9, 12.5e9].
+      // Debug: visualize groundAtmoColor only via [11.5e9, 12.5e9].
       if (tile.time > 11.5e9 && tile.time < 12.5e9) {
         return makeFragOutput(vec4<f32>(groundAtmoColor, 1.0), normalEC);
       }
-      // Batch 56 — debug: visualize transmittance via [12.5e9, 13.5e9].
+      // Debug: visualize transmittance via [12.5e9, 13.5e9].
       if (tile.time > 12.5e9 && tile.time < 13.5e9) {
         return makeFragOutput(vec4<f32>(transmittance / 5.0, transmittance / 5.0, transmittance / 5.0, 1.0), normalEC);
       }
-      // NEW-GLOBE-BELOWSURFACE-DECOMP — 'bypass-drape' (24e9) skips the
+      // The 'bypass-drape' debug mode (24e9) skips the
       // far-from-ground ground-atmosphere drape replacement so the drape /
       // limb-width term can be measured in isolation.
       if (!globe_debugBypassActive(24.0e9)) {
@@ -5422,7 +5204,7 @@ fn fragmentMain(
     }
   }
 
-  // ─── GLOBE-UNDERGROUND-COLOR — underground tint blend ───
+  // Underground tint blend.
   // Mirrors GlobeFS.glsl lines 735-744 (`#ifdef UNDERGROUND_COLOR`): when
   // the camera can see under the surface and the fragment is back-facing
   // (the inside of the globe), alpha-blend `undergroundColor` over the
@@ -5432,7 +5214,7 @@ fn fragmentMain(
   // (`undergroundControl.x`) is computed CPU-side with the exact WebGL
   // `showUndergroundColor` condition, so above-ground / default renders
   // never enter this branch (byte-identical off path).
-  // NEW-GLOBE-BELOWSURFACE-DECOMP — 'bypass-underground' (22e9) skips the
+  // The 'bypass-underground' debug mode (22e9) skips the
   // underground tint blend so its residual share can be measured.
   if (camera.undergroundControl.x > 0.5 && !frontFacing &&
       !globe_debugBypassActive(22.0e9)) {
@@ -5456,7 +5238,7 @@ fn fragmentMain(
     alpha = blended.a;
   }
 
-  // ─── C11-213 — draped clamped vector polylines ───
+  // Draped clamped vector polylines.
   // Mirrors GlobeFS.glsl lines 1018-1020 (`#ifdef HAS_VECTOR_LAYER`):
   // alpha-composite the tile's clamped vector polylines over the shaded
   // terrain, AFTER the underground tint and BEFORE the translucency alpha
@@ -5474,16 +5256,16 @@ fn fragmentMain(
   color = vectorComposited.rgb;
   alpha = vectorComposited.a;
 
-  // ─── GLOBE-TRANSLUCENCY-ALPHA — per-fragment translucent-globe alpha ───
+  // Per-fragment translucent-globe alpha.
   // Mirrors GlobeFS.glsl lines 746-751 (`#ifdef TRANSLUCENT`): inside the
   // translucency rectangle, scale the fragment's alpha by the front- or
   // back-face NearFarScalar ramp (`interpolateByDistance`) evaluated at the
-  // fragment's eye distance. The translucent multi-pass pipelines (depth-only
-  // pre-pass + translucent back-face + translucent front-face, Batches
-  // 177/182) supply the ALPHA blend state; this alpha value is what makes the
-  // blend actually translucent. Gate is closed (control.x = 0) unless
-  // `globeTranslucencyState.translucent`, keeping the default byte-identical.
-  // NEW-GLOBE-BELOWSURFACE-DECOMP — 'bypass-translucency' (23e9) skips the
+  // fragment's eye distance. The translucent multi-pass pipelines — depth-only
+  // pre-pass, translucent back-face, translucent front-face — supply the alpha
+  // blend state; this alpha value is what makes the blend actually
+  // translucent. The gate stays closed (control.x = 0) unless
+  // `globeTranslucencyState.translucent`, leaving the default render unchanged.
+  // The 'bypass-translucency' debug mode (23e9) skips the
   // per-fragment translucency alpha ramp so its residual share can be
   // measured (the multi-pass blend pipelines still run; only the FS alpha
   // multiply is bypassed).
@@ -5500,7 +5282,7 @@ fn fragmentMain(
     }
   }
 
-  // DP-H24 — Globe hue / saturation / brightness shift. Matches the
+  // Globe hue, saturation and brightness shift. Matches the
   // WebGL GlobeFS.glsl `u_hsbShift` application. Applied AFTER fog so
   // the user's tonal grading touches both imagery and atmospheric
   // haze — same behavior as the reference WebGL path.
@@ -5513,20 +5295,18 @@ fn fragmentMain(
     color = globe_hsbToRgb(hsb);
   }
 
-  // Batch 58 — end-of-fragment force-bright debug. Trigger via
+  // End-of-fragment force-bright debug. Trigger via
   // [18.5e9, 19.5e9]. Forces output to (1,0,0,1) regardless of any
   // prior shading. If the displayed canvas pixel is dim red instead of
   // bright red, something between FS output and display is dimming
   // (canvas format, color space, post-process). If bright red, the
-  // dimming is in the FS shading path. (Used during Batch 58 to
-  // confirm the canvas/display path was clean before bisecting the FS.)
+  // dimming is in the fragment shading path.
   if (tile.time > 18.5e9 && tile.time < 19.5e9) {
     return makeFragOutput(vec4<f32>(1.0, 0.0, 0.0, 1.0), normalEC);
   }
-  // Batch 58 — water-effect-trigger debug. Trigger via [19.5e9, 20.5e9].
+  // Water-effect-trigger debug. Trigger via [19.5e9, 20.5e9].
   // Renders ocean fragments RED, land fragments GREEN. Verifies the
-  // `flags.x` gate is correctly identifying water vs land tiles after
-  // the Batch 58 showReflectiveOcean fix.
+  // `flags.x` gate is correctly identifying water against land tiles.
   if (tile.time > 19.5e9 && tile.time < 20.5e9) {
       if (tile.flags.x > 0.5) {
         let wmTS = tile.waterMaskTranslationAndScale;
@@ -5546,13 +5326,11 @@ fn fragmentMain(
   return makeFragOutput(vec4<f32>(color, alpha), normalEC);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// DP-H24 — RGB ↔ HSB conversion helpers for hue/saturation/brightness
+// RGB and HSB conversion helpers for the hue/saturation/brightness
 // globe-level tonal shift. Module-scoped and prefixed `globe_` so they
 // don't collide with the rgbToHsb/hsbToRgb pair in SkyAtmosphere.wgsl
 // (WGSL doesn't have namespaces — the globe + sky shaders can end up
 // in the same module graph via shared pipelines).
-// ═══════════════════════════════════════════════════════════════════════
 fn globe_rgbToHsb(c: vec3<f32>) -> vec3<f32> {
   let maxC = max(c.r, max(c.g, c.b));
   let minC = min(c.r, min(c.g, c.b));

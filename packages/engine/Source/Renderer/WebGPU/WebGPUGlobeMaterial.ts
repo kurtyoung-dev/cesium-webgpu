@@ -1,8 +1,8 @@
 /**
- * Cluster 3 — globe-material pipeline factory + UBO/texture wiring.
- * Bridges the parallel WGSL fabric API (`material.wgslShaderSource`
- * emitted by `MaterialHelpers.createWGSLMethodDefinition`) into the
- * WebGPU globe renderer.
+ * Globe-material pipeline factory plus UBO and texture wiring. Bridges the
+ * parallel WGSL fabric API (`material.wgslShaderSource` emitted by
+ * `MaterialHelpers.createWGSLMethodDefinition`) into the WebGPU globe
+ * renderer.
  *
  * Flow per `globe.material` instance:
  *
@@ -20,18 +20,17 @@
  *      per-tile alongside water/ocean (see `_createWaterOceanMaterial
  *      BindGroup` on the renderer).
  *
- * Limitations of this initial cut (Session 65 Batch 11 — partial Cluster 3):
- *   - Single-pipeline material support — i.e., one `globe.material` at a
- *     time. Switching materials invalidates the cache (which is fine for
- *     the typical use case; demos with toolbar-driven material changes
- *     pay a one-time rebuild cost).
+ * Limitations:
+ *   - Single-pipeline material support, i.e. one `globe.material` at a
+ *     time. Switching materials invalidates the cache, so demos with
+ *     toolbar-driven material changes pay a one-time rebuild cost.
  *   - Texture support limited to the two slots declared in
  *     `_bindGroupLayout2` (binding 5 / binding 7). The in-tree globe
  *     materials (ElevationRamp, SlopeRamp, AspectRamp, DiffuseMap,
  *     ElevationBand, WaterMask) all fit within this. ElevationBand uses
  *     both slots (heights, colors); others use binding 5 only.
- *   - No support for compound/composite fabric trees yet. The MVP
- *     supports the single-material cases.
+ *   - No support for compound/composite fabric trees; only the
+ *     single-material cases resolve.
  *
  * @private
  * @module WebGPUGlobeMaterial
@@ -39,9 +38,9 @@
 /// <reference types="@webgpu/types" />
 
 /**
- * Cesium Material-class shape we depend on. Locally declared because
- * the Cesium core types aren't exposed via the WebGPU renderer's type
- * surface. Only the fields we actually consume are listed.
+ * The subset of the Cesium Material class this module depends on. Locally
+ * declared because the Cesium core types aren't exposed through the WebGPU
+ * renderer's type surface; only the consumed fields are listed.
  */
 interface CesiumMaterial {
   type: string;
@@ -168,28 +167,14 @@ function isStringTokenUniform(value: unknown): boolean {
 }
 
 /**
- * Build the WGSL prelude for a material — declares a `MaterialUniforms`
- * struct mirroring the material's uniforms, binds it at
- * `@group(2) @binding(4)`, and emits `let`-aliases at the top of
- * `czm_getMaterial` so the material's component expressions reference
- * bare uniform names just like GLSL does.
- *
- * The textures are already declared in GlobeTerrain.wgsl at
- * `@group(2) @binding(5)` (image) and `@group(2) @binding(7)`
- * (heights/colors); the prelude doesn't redeclare them.
- *
- * Returns `null` if the material has no useful uniforms (in which case
- * the caller should skip the material pipeline path).
- */
-/**
  * Walk a material + its sub-materials, returning a flat map of uniform
  * name → value. Sub-material uniforms get included so composite WGSL
  * fabrics (e.g., Bathymetry's `ElevationColorContour` fusing
  * `ElevationContour` + `ElevationRamp`) can resolve their nested
  * uniform references against a single aggregate UBO. Parent uniforms
- * take precedence on name collision — matches the GLSL semantics where
+ * take precedence on name collision, matching the GLSL semantics where
  * the composite's own uniform overrides any sub-material's same-named
- * one. Session 65 Batch 16.
+ * one.
  */
 export function aggregateCompositeUniforms(
   material: CesiumMaterial,
@@ -205,7 +190,7 @@ export function aggregateCompositeUniforms(
         // Skip internal back-references emitted by the MaterialUniformBuffer
         // facade (e.g., `_buffer` points back at the buffer itself).
         // These aren't real uniform values and would pollute the UBO
-        // layout with a phantom field. Session 65 Batch 16.
+        // layout with a phantom field.
         if (k.startsWith("_")) continue;
         result[k] = v;
       }
@@ -223,6 +208,20 @@ export function aggregateCompositeUniforms(
   return result;
 }
 
+/**
+ * Build the WGSL prelude for a material — declares a `MaterialUniforms`
+ * struct mirroring the material's uniforms, binds it at
+ * `@group(2) @binding(4)`, and emits `let`-aliases at the top of
+ * `czm_getMaterial` so the material's component expressions reference
+ * bare uniform names just like GLSL does.
+ *
+ * The textures are already declared in GlobeTerrain.wgsl at
+ * `@group(2) @binding(5)` (image) and `@group(2) @binding(7)`
+ * (heights/colors); the prelude doesn't redeclare them.
+ *
+ * Returns `null` if the material has no useful uniforms, in which case
+ * the caller should skip the material pipeline path.
+ */
 export function buildMaterialPrelude(material: CesiumMaterial): {
   prelude: string;
   uboLayout: Map<string, MaterialUniformSlot>;
@@ -295,8 +294,8 @@ export function buildMaterialPrelude(material: CesiumMaterial): {
 /**
  * Rewrite the material's WGSL body to reference uniforms as
  * `materialUniforms.<name>` rather than bare `<name>`. Texture uniform
- * names (in `textureNames`) are NOT rewritten — they remain bare so
- * they pick up the WGSL texture bindings declared in GlobeTerrain.wgsl.
+ * names (those in `textureNames`) stay bare so they pick up the WGSL
+ * texture bindings declared in GlobeTerrain.wgsl.
  *
  * Whole-word match only (word boundaries via lookahead/behind) so
  * `color.rgb` becomes `materialUniforms.color.rgb` cleanly without
@@ -307,8 +306,8 @@ export function rewriteMaterialBody(
   uboLayout: Map<string, MaterialUniformSlot>,
   textureNames: string[],
 ): string {
-  // Build name list sorted by length DESC so longer names match first
-  // (prevents `color` rewriting `colors`).
+  // Sort names longest-first so longer names match first, which prevents
+  // `color` from rewriting `colors`.
   const names = [...uboLayout.keys()].sort((a, b) => b.length - a.length);
   // Build a single regex with alternation; word boundaries surround
   // each name. WGSL identifier chars include letters/digits/underscore.
@@ -332,8 +331,8 @@ export function rewriteMaterialBody(
  * carry texture uniforms either as Cesium WebGL `Texture` instances (the
  * core upload path) OR as the WebGPU stub placeholder (when the WebGPU
  * stub texture stack already wraps the resource). The renderer's existing
- * imagery texture cache uploads either form to a backing `GPUTexture`;
- * here we just pull the WebGPU view from whichever shape we get.
+ * imagery texture cache uploads either form to a backing `GPUTexture`, so
+ * this only has to pull the WebGPU view out of whichever shape arrives.
  *
  * Returns `null` when the texture isn't a recognized shape — caller binds
  * the placeholder view.
@@ -369,17 +368,16 @@ export function assembleMaterialWGSLSource(
   prelude: string,
   rewrittenBody: string,
 ): string {
-  // Session 65 Batch 16 — module-scope diagnostic directive. Suppresses
-  // WGSL's `derivative_uniformity` analysis for the entire material
-  // module. The globe FS has conditional `discard` / early-return
-  // branches (clipping planes, clipping polygons, cartographic-rect
-  // limit, alpha-test) that make control flow non-uniform from the
-  // uniformity-analyser's perspective, while some globe materials
-  // (e.g., `ElevationContour` used in the Bathymetry demo) call
-  // `dpdx`/`dpdy` to compute contour-line widths. The diagnostic is a
-  // false positive — fragments that should have discarded never write
-  // their derivative value to any output. Module-scope diagnostic
-  // directive MUST be the first non-comment line in the source.
+  // Module-scope diagnostic directive suppressing WGSL's
+  // `derivative_uniformity` analysis for the whole material module. The globe
+  // FS has conditional `discard` / early-return branches (clipping planes,
+  // clipping polygons, cartographic-rect limit, alpha-test) that make control
+  // flow non-uniform from the uniformity analyser's perspective, while some
+  // globe materials (`ElevationContour`, used by the Bathymetry demo) call
+  // `dpdx`/`dpdy` to compute contour-line widths. The diagnostic is a false
+  // positive there: fragments that should have discarded never write their
+  // derivative value to any output. A module-scope diagnostic directive has to
+  // be the first non-comment line in the source.
   const diagnostic = "diagnostic(off, derivative_uniformity);\n";
   return `${diagnostic}${prelude}\n${rewrittenBody}\n${baseSource}`;
 }
@@ -397,11 +395,10 @@ export function packMaterialUBO(
 ): Uint8Array {
   const buf = new ArrayBuffer(uboSize);
   const f32 = new Float32Array(buf);
-  // Session 65 Batch 16 — pull from the aggregated composite-uniforms
-  // view so packs of composite fabrics (Bathymetry's
-  // `ElevationColorContour`) reach the nested sub-material values, not
-  // just the parent's own top-level uniforms (which are typically empty
-  // for the pure-fusion case).
+  // Pull from the aggregated composite-uniforms view so packs of composite
+  // fabrics (Bathymetry's `ElevationColorContour`) reach the nested
+  // sub-material values, not just the parent's own top-level uniforms, which
+  // are typically empty in the pure-fusion case.
   const uniforms = aggregateCompositeUniforms(material);
   for (const [name, slot] of layout) {
     const v = uniforms[name];

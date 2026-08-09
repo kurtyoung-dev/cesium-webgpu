@@ -1,21 +1,13 @@
 /// <reference types="@webgpu/types" />
 /**
  * Module-level types, layout constants, and free helpers for
- * `WebGPUGlobeSurfaceRenderer`.
+ * `WebGPUGlobeSurfaceRenderer`. The renderer re-exports `TileDrawDescriptor`
+ * and `DebugFragmentMode` so downstream consumers that import them via
+ * `WebGPUGlobeSurfaceRenderer.js` continue to compile.
  *
- * Batch 145 of the audit-recommended decomposition (the first slice of the
- * GlobeSurface decomposition arc — see
- * `migration_doc/BATCH_145_PLAN_GLOBE_SURFACE_DECOMPOSITION.md`).
- *
- * Pure lift of the constants/interfaces/enums/free helpers that previously
- * sat above the `WebGPUGlobeSurfaceRenderer` class. No behavior change. The
- * renderer re-exports `TileDrawDescriptor` and `DebugFragmentMode` so that
- * any downstream consumer that still imports them via
- * `WebGPUGlobeSurfaceRenderer.js` continues to compile.
- *
- * The layout-offset constants here MUST stay in lock-step with the
+ * The layout-offset constants here must stay in lock-step with the
  * `CameraUniforms` and `TileUniforms` structs in
- * `Source/Shaders/WebGPU/GlobeTerrain.wgsl`. Adding/removing fields
+ * `Source/Shaders/WebGPU/GlobeTerrain.wgsl`. Adding or removing a field
  * requires updating both sides plus the `*_FLOATS` totals below.
  *
  * @module WebGPUGlobeSurfaceTypes
@@ -29,9 +21,8 @@ import type { SharedImageryRealization } from "./WebGPUSharedImageryRealizations
  * stable shape submitted to the central `webgpuPipelineCache`; the
  * pipeline is the materialized `GPURenderPipeline` (null until the
  * central cache resolves it). `pending` tracks whether a creation
- * promise is in-flight so we don't re-issue per frame.
+ * promise is in flight, so the request is not re-issued per frame.
  *
- * C-R7-RENDERER-MIGRATION (Batch 75).
  * @private
  */
 export interface GlobePipelineEntry {
@@ -40,33 +31,48 @@ export interface GlobePipelineEntry {
   pending: boolean;
 }
 
-// ─── Uniform buffer sizes (must match GlobeTerrain.wgsl CameraUniforms) ───
-// CameraUniforms: mvpRTE(16) + modifiedMV(16) + modifiedMVP(16) +
-//   camHigh(3+1) + camLow(3+1) +
-//   center3DHigh(3+1) + center3DLow(3+1) +
-//   sunDirEC(3)+enableLighting(1) + scaleAndBias(16) +
-//   minMaxHeight(2) + pad(2) = 88 floats (3D core)
-//   + tileRectangle(4) + southAndNorthLatitude(2) + southMercY(2) +
-//   sceneMode(1) + morphTime(1) + useWebMercator(1) + pad(1) = 12 floats (2D/Columbus)
-//   + previousViewProjection(16) = 16 floats (TAA/motion — DP-H41)
-//   = 116 floats total
+// CameraUniforms float layout. Must match the struct of the same name in
+// GlobeTerrain.wgsl.
 //
-// The center3D field is stored as a high/low f32 pair (emulated f64) so the
-// SCENE3D vertex shader can combine it with the tile-local vertex position
-// and the encoded camera pair without losing sub-meter precision. Previously
-// raw f32 `center3D` lost ~0.5 m of precision per component at Earth radius,
-// which defeated the RTE emulation and produced visible tile-seam jitter at
-// orbital altitudes.
+//   0   -  15  mvpRelativeToEye (mat4)
+//   16  -  31  modifiedModelView (mat4)
+//   32  -  47  modifiedModelViewProjection (mat4)
+//   48  -  51  encodedCameraHigh (vec3 + ellipsoid inverse radius x)
+//   52  -  55  encodedCameraLow (vec3 + ellipsoid inverse radius y)
+//   56  -  59  center3DHigh (vec3 + ellipsoid inverse radius z)
+//   60  -  63  center3DLow (vec3 + pad)
+//   64  -  67  sunDirectionEC (vec3) + enableLighting
+//   68  -  83  scaleAndBias (mat4, quantized-mesh decompression)
+//   84  -  87  minMaxHeight (vec2) + ellipsoidRadius + pad
+//   88  -  99  tileRectangle (vec4) + southAndNorthLatitude (vec2) +
+//              southMercatorYAndOneOverHeight (vec2) + sceneMode + morphTime +
+//              useWebMercator + pad
+//   100 - 115  previousViewProjection (mat4)
+//   116 - 131  ground-atmosphere ray-march parameters
+//   132 - 135  lightColor (vec4)
+//   136 - 139  lighting (vec4)
+//   140 - 143  logDepth (vec4)
+//   144 - 147  pickColor (vec4)
+//   148 - 167  cloud-shadow single map (mat4 + control vec4)
+//   168 - 179  underground tint (colour + alphaByDistance + control)
+//   180 - 191  globe translucency (front + back alphaByDistance + control)
+//   192 - 195  hdrControl (vec4)
+//   196 - 231  cloud-shadow cascades (2 × mat4 + params vec4)
 //
-// previousViewProjection (offsets 100–115): last frame's `viewProjection`
-// captured by `UniformState.update()`. Exposing it unblocks motion-vector
-// pipelines (TAA, motion blur) that need to reproject the current fragment
-// into the previous frame's NDC. Consumers read it via the shared
-// `camera.previousViewProjection` slot in `CameraUniforms`.
+// center3D is a high/low f32 pair (emulated f64) so the SCENE3D vertex shader
+// can combine it with the tile-local vertex position and the encoded camera
+// pair without losing sub-meter precision. A raw f32 centre loses ~0.5 m per
+// component at Earth radius, which defeats the RTE emulation and produces
+// visible tile-seam jitter at orbital altitudes.
 //
-// Session 65 Batch 9 (Cluster 2b/5 — fog/atmosphere parity) adds 16 more
-// floats at the tail for Nishita-style ground atmosphere ray-march in the
-// vertex shader. Layout (offsets 116–131):
+// previousViewProjection (offsets 100-115) is the previous frame's
+// `viewProjection`, captured by `UniformState.update()`. Motion-vector
+// pipelines (TAA, motion blur) reproject the current fragment into the
+// previous frame's NDC through the shared `camera.previousViewProjection`
+// slot.
+//
+// Ground-atmosphere ray-march parameters (offsets 116-131), consumed per
+// vertex:
 //
 //   atmosphereLightDirectionAndIntensity (vec4, offset 116-119):
 //     xyz = world-space atmosphere light direction (sun by default)
@@ -85,21 +91,21 @@ export interface GlobePipelineEntry {
 //         is enabled, 0.0 otherwise — gates the VS ray-march so disabling
 //         atmosphere costs nothing per-vertex).
 //
-// Batch 76 — czm_lightColor support. Adds a vec4 at the tail mirroring
-// WebGL's `czm_lightColor` automatic uniform so scene-provided custom
-// light colors propagate to the globe Lambert diffuse path:
+// lightColor mirrors WebGL's `czm_lightColor` automatic uniform so
+// scene-provided custom light colors propagate to the globe Lambert diffuse
+// path:
 //
 //   lightColor (vec4, offset 132-135):
 //     xyz = scene light color (matches `uniformState.lightColor`, which
 //           is `lightColorHdr` clipped so its max channel ≤ 1)
-//     w   = reserved (future: ambient color scalar or HDR multiplier)
+//     w   = reserved (ambient color scalar or HDR multiplier)
 //
-// Batch 77 — Custom Lambert coefficients (tile-provider-driven). Mirrors
-// WebGL's `u_lambertDiffuseMultiplier` + `u_vertexShadowDarkness`
-// fragment uniforms (GlobeFS.glsl L132-133, L559). The WGSL Lambert
-// path gates on the `hasVertexNormals` flag at .z to match the WebGL
-// ENABLE_VERTEX_LIGHTING gating (which compiles only when the terrain
-// provider exposes vertex normals):
+// lighting carries the tile-provider-driven Lambert coefficients, mirroring
+// WebGL's `u_lambertDiffuseMultiplier` + `u_vertexShadowDarkness` fragment
+// uniforms (GlobeFS.glsl L132-133, L559). The WGSL Lambert path gates on the
+// `hasVertexNormals` flag at .z to match WebGL's ENABLE_VERTEX_LIGHTING
+// gating, which compiles only when the terrain provider exposes vertex
+// normals:
 //
 //   lighting (vec4, offset 136-139):
 //     x = lambertDiffuseMultiplier  (from tileProvider, default 0.9)
@@ -107,38 +113,41 @@ export interface GlobePipelineEntry {
 //     z = hasVertexNormals flag — when > 0.5, WGSL uses the (x, y)
 //         coefficients directly (matches WebGL ENABLE_VERTEX_LIGHTING);
 //         when ≤ 0.5, WGSL runs WebGL's ENABLE_DAYNIGHT_SHADING formula
-//         `mix(1, clamp(NdotL × 5 + 0.3, 0, 1), lightingFade)` (CLT-B4,
-//         CO-18; it was a hardcoded `NdotL × 0.88 + 0.12` aesthetic before).
-//     w = zoomedOutOceanSpecularIntensity (GLOBE-POLAR-STRETCH-POLISH). This
-//         slot was once reserved for the DAYNIGHT_SHADING `fade` bridge;
-//         CO-18 built that bridge as `TileUniforms.lightingFade` (float 463)
-//         instead, since the fade is per-frame tile-UB data.
-// 140 base floats + 4 for the log-depth tail vec4 (near, far,
-// oneOverLog2FarDepthFromNearPlusOne, reserved) — see GlobeTerrain.wgsl
-// CameraUniforms.logDepth and the renderer-wide log-depth epic (Approach A).
-// The tail carries zero until log depth activates, so the larger UB is inert.
-// DP-H44 (Batch 360) — +4 for the `pickColor` tail vec4 (globe pick-ID color,
-// read only by GlobeTerrain.wgsl::fragmentPickMain). Additive tail append: no
-// existing offset shifts. Carries (0,0,0,0) unless `globe.pickable` is set.
-// Batch 437 (CLOUD-SHADOWS) — +20 for the sun-view beer shadow map:
+//         `mix(1, clamp(NdotL × 5 + 0.3, 0, 1), lightingFade)`.
+//     w = zoomedOutOceanSpecularIntensity. The DAYNIGHT_SHADING `fade` bridge
+//         does not live here: the fade is per-frame tile-UB data and is
+//         carried by `TileUniforms.lightingFade` (float 463) instead.
+//
+// logDepth (offsets 140-143) is (near, far,
+// oneOverLog2FarDepthFromNearPlusOne, reserved) — see
+// GlobeTerrain.wgsl's `CameraUniforms.logDepth`. The tail carries zero until
+// log depth activates, so the larger UB is inert until then.
+//
+// pickColor (offsets 144-147) is the globe pick-ID color, read only by
+// GlobeTerrain.wgsl::fragmentPickMain. Carries (0,0,0,0) unless
+// `globe.pickable` is set.
+//
+// Cloud-shadow single map:
 //   cloudShadowVP (mat4, offsets 148-163) — world ECEF → sun ortho clip
 //   cloudShadowControl (vec4, offsets 164-167) — x=enabled, y=absorption,
-//     z=strength, w=reserved.
-// Additive tail-append (no existing offset shifts). Carries (identity, 0,0,0,0)
-// unless `globe.cloudCastShadows` is set AND the cloud renderer rendered a map,
-// so the FS gate (`cloudShadowControl.x > 0.5`) stays closed by default → the
-// shadow sample is skipped and the render is byte-identical.
-// GLOBE-UNDERGROUND-COLOR — +12 for the underground-tint tail:
+//     z=strength, w=cascade count.
+// Carries (identity, 0,0,0,0) unless `globe.cloudCastShadows` is set and the
+// cloud renderer rendered a map, so the FS gate
+// (`cloudShadowControl.x > 0.5`) stays closed by default, the shadow sample
+// is skipped, and the render is byte-identical.
+//
+// Underground tint:
 //   undergroundColor (vec4, offsets 168-171) — globe.undergroundColor RGBA
 //   undergroundColorAlphaByDistance (vec4, offsets 172-175) — NearFarScalar
 //     packed as (near, nearValue, far, farValue)
 //   undergroundControl (vec4, offsets 176-179) — x=show flag (the WebGL
 //     `showUndergroundColor` condition), y=max(eyeHeight, 0), z/w reserved.
-// Additive tail-append (no existing offset shifts). The show flag is 0 unless
-// the camera can see underground AND the underground color is visible, so the
-// FS gate (`undergroundControl.x > 0.5`) stays closed by default → the render
-// is byte-identical.
-// GLOBE-TRANSLUCENCY-ALPHA — +12 for the translucent-globe alpha tail:
+// The show flag is 0 unless the camera can see underground and the
+// underground color is visible, so the FS gate
+// (`undergroundControl.x > 0.5`) stays closed by default and the render is
+// byte-identical.
+//
+// Translucent-globe alpha:
 //   translucencyFrontAlphaByDistance (vec4, offsets 180-183) — WebGL's
 //     `u_frontFaceAlphaByDistance` NearFarScalar packed as
 //     (near, nearValue, far, farValue); camera-underground swap pre-applied
@@ -147,36 +156,33 @@ export interface GlobePipelineEntry {
 //   translucencyControl (vec4, offsets 188-191) — x = enable flag (mirrors
 //     the WebGL TRANSLUCENT define, i.e. globeTranslucencyState.translucent),
 //     y/z/w reserved.
-// Additive tail-append (no existing offset shifts). All-zero unless
-// globe.translucency is enabled, so the FS gate
-// (`translucencyControl.x > 0.5`) stays closed by default → byte-identical.
-// GLOBE-HDR-GAMMA — +4 for the czm_gammaCorrect HDR gate tail:
-//   hdrControl (vec4, offsets 192-195) — x = 1.0 when the B479 HDR
-//     canvas-output path is active (frameState.useHDR AND
-//     context.hdrCanvasOutput — the same effective gate the post-process
-//     chain's setHDROutputMode uses); y = czm_gamma (uniformState.gamma,
-//     default 2.2); z/w reserved.
-// Additive tail-append (no existing offset shifts). Gate is 0 unless HDR
-// canvas output is engaged, so `czm_gammaCorrect` stays the historical
-// identity no-op → byte-identical default (SDR) render.
-// CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP — +36 for the cloud-shadow cascade
-// tail: cloudShadowVP1 (mat4, offsets 196-211) + cloudShadowVP2 (mat4, offsets
-// 212-227) + cloudShadowCascadeParams (vec4, offsets 228-231). Carries the two
-// FAR cascade forward-VP matrices (cascade 0 reuses the existing cloudShadowVP
-// field; cascade count travels in cloudShadowControl.w). All-zero unless the
-// opt-in `cloudShadowCascades` tier rendered the cascade atlas this frame, so
-// the single-beer-shadow-map path (cloudShadowControl.w < 1.5) is byte-identical.
+// All-zero unless globe.translucency is enabled, so the FS gate
+// (`translucencyControl.x > 0.5`) stays closed by default.
+//
+// czm_gammaCorrect HDR gate:
+//   hdrControl (vec4, offsets 192-195) — x = 1.0 when the HDR canvas-output
+//     path is active; y = czm_gamma (uniformState.gamma, default 2.2); z/w
+//     reserved.
+// The gate is 0 unless HDR canvas output is engaged, so `czm_gammaCorrect`
+// stays an identity no-op and the default SDR render is byte-identical.
+//
+// Cloud-shadow cascades: cloudShadowVP1 (mat4, offsets 196-211) +
+// cloudShadowVP2 (mat4, offsets 212-227) + cloudShadowCascadeParams (vec4,
+// offsets 228-231). These carry the two far cascade forward-VP matrices;
+// cascade 0 reuses the cloudShadowVP field above and the cascade count travels
+// in cloudShadowControl.w. All-zero unless the opt-in `cloudShadowCascades`
+// tier rendered the cascade atlas this frame, so the single-map path
+// (cloudShadowControl.w < 1.5) is byte-identical.
 export const CAMERA_UNIFORM_FLOATS = 232;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
-// TileUniforms layout — Batch 58 (C-R5 imagery layer expansion):
+// TileUniforms layout.
 //
-// Per-layer struct widened from 12 to 24 floats (96 bytes) to carry the 5
-// new effect fields previously WebGL-only: hue, oneOverGamma, split,
-// colorToAlpha (vec4), cutoutRectangle (vec4). Layer cap raised from 4 to
-// 16 to hit WebGPU's `maxSampledTexturesPerShaderStage` floor without
-// device-limit probing. Tiles with >16 imagery layers continue to fall
-// back to multi-pass rendering (createTileCommands handles the slicing).
+// The per-layer struct is 24 floats (96 bytes): the base 12 plus hue,
+// oneOverGamma, split, colorToAlpha (vec4) and cutoutRectangle (vec4). The
+// layer cap is 16, WebGPU's `maxSampledTexturesPerShaderStage` floor, which
+// avoids device-limit probing. Tiles with more than 16 imagery layers fall
+// back to multi-pass rendering, sliced by createTileCommands.
 //
 // Float offsets (each row in this table is 4 bytes × stated count):
 //   0   - 383  layers[16]                (16 × 24 = 384)
@@ -198,23 +204,23 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //   460        time
 //   461        fogVisualDensityScalar
 //   462        splitPosition (in framebuffer pixels — frameState.splitPosition × drawingBufferWidth)
-//   463        lightingFade (CLT-B4, CO-18) — WebGL's day/night camera-distance
-//                fade, `GlobeFS.glsl:620-644`:
+//   463        lightingFade — WebGL's day/night camera-distance fade,
+//                `GlobeFS.glsl:620-644`:
 //                  fade = clamp((cameraDist - fadeOutDist) /
 //                               (fadeInDist - fadeOutDist), 0, 1)
 //                with `cameraDist` selected per scene mode and both distances
 //                reduced by the ellipsoid's maximum radius outside SCENE3D.
 //                Consumed by the DAYNIGHT_SHADING arm as
 //                `mix(1.0, diffuseIntensity, lightingFade)` (GlobeFS.glsl:852).
-//                DISTINCT from `groundAtmosphereControl.y`, which carries the
+//                Distinct from `groundAtmosphereControl.y`, which carries the
 //                same clamp but is forced to 0 whenever the ground-atmosphere
 //                drape is off — WebGL applies no such gate to the lighting
-//                fade. Was `_pad`; a scalar slot, so no vec4 alignment moved.
+//                fade.
 //   464 - 467  debugFields (vec4)
 //   468 - 471  hsbShift (vec4)
-//   472 - 475  groundAtmosphereControl (vec4) — Session 65 (2026-05-11):
-//                x = enable flag (1.0 if showGroundAtmosphere AND
-//                    lightingFade fade > 0 AND camera in 3D mode)
+//   472 - 475  groundAtmosphereControl (vec4):
+//                x = enable flag (1.0 if showGroundAtmosphere and the
+//                    lightingFade fade > 0 and the camera is in 3D mode)
 //                y = pre-computed fade scalar (matches WebGL's
 //                    `fade = clamp((cameraDist - fadeOutDist) /
 //                    (fadeInDist - fadeOutDist), 0, 1)` from GlobeFS.glsl
@@ -224,42 +230,42 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //                z = atmosphereLightIntensity (default 10.0)
 //                w = reserved
 //
-// initialColor — vec4 globe.baseColor (WebGL `u_initialColor`) consumed
-//                by the no-imagery first-pass base color in
-//                GlobeTerrain.wgsl (Batch 247,
-//                NEW-GROUND-VIEW-ENV-DIVERGENCES fix 3). Subsequent
-//                passes leave it zeroed (transparent), matching WebGL's
-//                `otherPassesInitialColor`.
-//
-//   480 - 483  localizedTranslucencyRectangle (vec4) — GLOBE-TRANSLUCENCY-ALPHA:
-//                WebGL's `u_translucencyRectangle` (globe.translucency.rectangle
+//   476 - 479  initialColor (vec4) — globe.baseColor (WebGL
+//                `u_initialColor`), consumed by the no-imagery first-pass base
+//                color in GlobeTerrain.wgsl. Subsequent passes leave it zeroed
+//                (transparent), matching WebGL's `otherPassesInitialColor`.
+//   480 - 483  localizedTranslucencyRectangle (vec4) — WebGL's
+//                `u_translucencyRectangle` (globe.translucency.rectangle
 //                antimeridian-clipped + localized to tile UV, west/south/east/
 //                north). All-zero when translucency is off; the FS only reads
 //                it inside the `camera.translucencyControl.x > 0.5` gate.
-//   484 - 487  oceanWavePhaseA (vec4) — C11-172 v3 ocean-wave RTE phase. f64-
-//                computed per-tile phase offsets fract(rectOriginNorm × Rᵢ) for
-//                octaves 1 & 2: (.xy)=octave1 (u,v), (.zw)=octave2 (u,v). ADD-ONLY
-//                tail. Removes the f32 quantization of the absolute global wave UV
-//                (euv×R reached ~2.7e6 ⇒ ulp ~0.25 repeat ⇒ staircase banding +
-//                frozen animation). All-zero when the tile has no rectangle.
+//   484 - 487  oceanWavePhaseA (vec4) — ocean-wave RTE phase, f64-computed
+//                per-tile offsets fract(rectOriginNorm × Rᵢ) for octaves 1 and
+//                2: (.xy)=octave1 (u,v), (.zw)=octave2 (u,v). Removes the f32
+//                quantization of the absolute global wave UV, where euv×R
+//                reaches ~2.7e6 so one ulp is ~0.25 of a repeat, producing
+//                staircase banding and a frozen animation. All-zero when the
+//                tile has no rectangle.
 //   488 - 491  oceanWavePhaseB (vec4) — (.xy)=octave3 phase (u,v),
 //                (.zw)=oceanWaveSpanNorm (normalized ellipsoid-UV tile span:
-//                width×1/2π, height×1/π). The span is packed (not computed in
-//                the FS as east−west) to avoid f32 cancellation ⇒ tile-boundary
-//                wave-scale seams at fine LOD.
+//                width×1/2π, height×1/π). The span is packed rather than
+//                computed in the FS as east−west, which would suffer f32
+//                cancellation and produce tile-boundary wave-scale seams at
+//                fine LOD.
 //
 // Total = 492 floats = 1968 bytes. Well under WebGPU's
 // `maxUniformBufferBindingSize` floor (16 KiB).
 export const TILE_UNIFORM_FLOATS = 492;
 export const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
-// C11-172 v3 — integer normal-map repeat counts per octave, = round(equatorial
-// circumference / target wavelength). INTEGER so the ±180° ellipsoid-UV wrap is
-// an exact repeat count (seamless) AND the CPU f64 phase offset stays consistent
-// with the shader. Wavelengths (approx): 267167 → 150.0 m, 801500 → 50.0 m,
-// 2671668 → 15.0 m (equatorial, zonal; meridional is ×2 — see the shader). These
-// are the WebGPU wave-scale tunable; keep in lockstep with GlobeTerrain.wgsl's
-// OCEAN_OCTAVE_REPEATS_* and the ocean-wave-lod.spec.mjs cross-check.
+// Normal-map repeat counts per octave, round(equatorial circumference /
+// target wavelength). They are integers so the ±180° ellipsoid-UV wrap is an
+// exact repeat count, which keeps the seam invisible and the CPU f64 phase
+// offset consistent with the shader. Approximate wavelengths: 267167 →
+// 150.0 m, 801500 → 50.0 m, 2671668 → 15.0 m (equatorial, zonal; meridional
+// is ×2 — see the shader). These are the WebGPU wave-scale tunable; keep them
+// in lockstep with GlobeTerrain.wgsl's OCEAN_OCTAVE_REPEATS_* and the
+// ocean-wave-lod.spec.mjs cross-check.
 export const OCEAN_OCTAVE_REPEATS = [267167.0, 801500.0, 2671668.0];
 
 // Per-layer floats: vec4 translationAndScale + vec4 texCoordsRect +
@@ -300,11 +306,10 @@ export const OCEAN_WAVE_PHASE_B_OFFSET = 488; // octave3.xy, spanNorm.xy
 // `maxSampledTexturesPerShaderStage`). Tiles exceeding this count multi-pass.
 export const MAX_IMAGERY_LAYERS = 16;
 
-// NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — fragment-stage
-// sampled textures the globe terrain pipeline layout needs BESIDES the
-// group-1 imagery slots:
+// Fragment-stage sampled textures the globe terrain pipeline layout needs
+// besides the group-1 imagery slots:
 //   group 2 (5): water mask, ocean normal, material image, material heights,
-//     cloud shadow map (Batch 437, binding 9)
+//     cloud shadow map (binding 9)
 //   group 3 globe effects (7): shadow depth, clipping planes, polygon SDF,
 //     2× atmosphere LUT, CSM cascade array, point-light cube depth (see
 //     WebGPUEffectsBindGroup.js bindings 1/3/5/7/8/11/17). Model-only edge,
@@ -352,8 +357,8 @@ export function computeGlobeImagerySlotCount(
  *
  * The callback signature matches WebGL's `ImageryLayerFeatureGetter`
  * convention: imagery layers that use it (hover-fade, time-of-day fade,
- * elevation-based fade) rely on per-tile arguments, so we pass the tile
- * rectangle's level/x/y when available.
+ * elevation-based fade) rely on per-tile arguments, so the tile rectangle's
+ * level/x/y are passed when available.
  *
  * @private
  */
@@ -451,34 +456,34 @@ export interface TileGPUResources {
   hasNormals: boolean;
   hasWebMercatorT: boolean;
   isQuantized: boolean;
-  // DP-H25 — true when `TerrainEncoding.hasGeodeticSurfaceNormals` is set,
-  // meaning the last 3 floats of each vertex stride hold the WGS84 geodetic
-  // surface normal. The pipeline builder adds a `@location(2)` vec3 attribute
-  // and activates the `GEODETIC_NORMAL` shader define (Batch 20) so the
-  // exaggeration branch uses the true geodetic normal instead of
-  // `normalize(position3D)`. When false the shader define is off and the
-  // exaggeration branch falls back to the ellipsocentric normal (sub-meter
-  // accurate near the equator, drifts up to 0.2° at mid-latitudes on WGS84).
+  // True when `TerrainEncoding.hasGeodeticSurfaceNormals` is set, meaning the
+  // last 3 floats of each vertex stride hold the WGS84 geodetic surface
+  // normal. The pipeline builder then adds a `@location(2)` vec3 attribute and
+  // activates the `GEODETIC_NORMAL` shader define so the exaggeration branch
+  // uses the true geodetic normal instead of `normalize(position3D)`. When
+  // false the shader define is off and the exaggeration branch falls back to
+  // the ellipsocentric normal, which is sub-meter accurate near the equator
+  // but drifts up to 0.2° at mid-latitudes on WGS84.
   hasGeodeticSurfaceNormals: boolean;
   meshGeneration: number;
-  // NS-WEBGPU-TILE-POPPING-SKIRTS — reference to the `mesh.vertices`
-  // Float32Array these GPU buffers were built from. The cache key is only
-  // `${level}_${x}_${y}` and `meshGeneration` is always 0 (nothing bumps
-  // `mesh._webgpuGeneration`), so without a mesh-identity check the cache
-  // would keep serving a tile's FIRST-seen buffers forever — even after
-  // `GlobeSurfaceTile.renderedMesh` swaps the fill/upsampled mesh for the
-  // real terrain mesh (same tile coords). Decoding the stale vertex data with
-  // the *current* mesh's per-tile uniforms flung individual vertices to
-  // Earth-radius distance, drawing thin black atmosphere-tinted wedge slivers
-  // during cold LOD refine (WebGPU-only; WebGL re-uploads on every mesh
-  // change). A new mesh allocates a new `vertices` array, so comparing the
-  // reference detects the swap and forces a rebuild; an unchanged mesh keeps
-  // the identical reference and the cache stays a byte-for-byte hit.
+  // Reference to the `mesh.vertices` Float32Array these GPU buffers were built
+  // from. The cache key is only `${level}_${x}_${y}` and `meshGeneration` is
+  // always 0 (nothing bumps `mesh._webgpuGeneration`), so without a
+  // mesh-identity check the cache serves a tile's first-seen buffers forever,
+  // even after `GlobeSurfaceTile.renderedMesh` swaps the fill/upsampled mesh
+  // for the real terrain mesh at the same tile coordinates. Decoding that
+  // stale vertex data with the current mesh's per-tile uniforms flings
+  // individual vertices to Earth-radius distance and draws thin black
+  // atmosphere-tinted wedge slivers during cold LOD refine — WebGPU only,
+  // since WebGL re-uploads on every mesh change. A new mesh allocates a new
+  // `vertices` array, so comparing the reference detects the swap and forces a
+  // rebuild; an unchanged mesh keeps the identical reference and the cache
+  // stays a byte-for-byte hit.
   sourceVertices: Float32Array;
-  // C11-192 — retain the source mesh without allocating a CPU payload or GPU
-  // buffer on the default no-cast path. First real cast demand packs the
-  // shared 96-byte quantized/uncompressed layout, realizes the UB, and then
-  // releases this extra mesh reference.
+  // Retains the source mesh without allocating a CPU payload or GPU buffer on
+  // the default no-cast path. The first real cast demand packs the shared
+  // 96-byte quantized/uncompressed layout, realizes the UB, and then releases
+  // this extra mesh reference.
   shadowCastMesh?: CesiumTerrainMesh;
   shadowCastUniformData?: Float32Array;
   // Device identity for the optional lazy realization. A changed identity
@@ -503,10 +508,10 @@ export interface ImageryGPUTexture {
   /** Logical owner used by opt-in attribution; imported textures omit it. */
   logicalOwner?: "imagery";
   /**
-   * C9-12A — when set, the texture/view are OWNED by this shared realization
-   * (many tile cache entries reference the same one), not by this cache entry.
-   * The entry's cleanup releases the reference instead of destroying the
-   * texture. Undefined → the cache entry owns its texture outright.
+   * When set, the texture and view are owned by this shared realization —
+   * many tile cache entries reference the same one — not by this cache entry,
+   * so the entry's cleanup releases the reference instead of destroying the
+   * texture. Undefined means the cache entry owns its texture outright.
    */
   shared?: SharedImageryRealization;
 }
@@ -564,50 +569,49 @@ export interface WebGPUGlobeLogicalCounters {
   imageryOwnedLiveBytes?: number;
   imageryOwnedHighWaterTextures?: number;
   imageryOwnedHighWaterBytes?: number;
-  /** C9-12A — distinct shared imagery realizations created (a cache miss on the
+  /** Distinct shared imagery realizations created (a cache miss on the
    * shared table for a shareable, immutable source). */
   imageryRealizationsCreated?: number;
-  /** C9-12A — tile cache entries that referenced an existing shared realization
+  /** Tile cache entries that referenced an existing shared realization
    * instead of realizing their own texture. */
   imageryRealizationShares?: number;
-  /** C9-12A — live bytes held by the shared realization table. */
+  /** Live bytes held by the shared realization table. */
   imageryRealizationLiveBytes?: number;
-  /** C9-12A — shared realizations retired through the grace LRU / teardown. */
+  /** Shared realizations retired through the grace LRU / teardown. */
   imageryRealizationRetirements?: number;
-  /** C9-12A — mip generations that fell back to a private draw-path submit
-   * (context unavailable). Must stay 0 on the happy path — a probe tripwire. */
+  /** Mip generations that fell back to a private draw-path submit because no
+   * context was available. Stays 0 on the happy path — a probe tripwire. */
   imageryMipFallbackSubmits?: number;
-  /** C9-13 — times the per-frame globe effects handle was built fresh. */
+  /** Times the per-frame globe effects handle was built fresh. */
   effectsHandlePrepares?: number;
-  /** C9-13 — times a tile/pass reused the prepared globe effects handle. */
+  /** Times a tile or pass reused the prepared globe effects handle. */
   effectsHandleReuses?: number;
 }
 
 /** Descriptor for a single tile draw pass */
 export interface TileDrawDescriptor {
   pipeline: GPURenderPipeline;
-  // DP-H44 (Batch 360) — globe terrain pick pipeline (fragmentPickMain, single
-  // pick-FBO target, blend + G-buffer slot stripped, single-sample, depth-write
-  // forced on). Present ONLY on the primary first-pass color descriptor (not on
-  // the translucency depth-only / back-face pre-pass descriptors). The scene
+  // Globe terrain pick pipeline (fragmentPickMain, single pick-FBO target,
+  // blend + G-buffer slot stripped, single-sample, depth-write forced on).
+  // Present only on the primary first-pass color descriptor, never on the
+  // translucency depth-only or back-face pre-pass descriptors. The scene
   // adapter (`addWebGPUDrawCommandsForTile`) builds the per-tile pick command
-  // from this + the SAME bind groups (the camera UB carries `pickColor` at its
-  // tail) and attaches it via `command.derivedCommands.picking.pickCommand`, so
-  // the WebGPU pick pass dispatches it. `null` while the pipeline is still
-  // materializing in the central cache (one-frame skip, same as `pipeline`).
+  // from this plus the same bind groups — the camera UB carries `pickColor` at
+  // its tail — and attaches it via
+  // `command.derivedCommands.picking.pickCommand`, so the WebGPU pick pass
+  // dispatches it. `null` while the pipeline is still materializing in the
+  // central cache, a one-frame skip like `pipeline`.
   pickPipeline?: GPURenderPipeline | null;
   bindGroups: GPUBindGroup[];
-  // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — dynamic byte offsets for
-  // group 0's three uniform-buffer bindings (camera UB, tile UB, per-View
-  // eclipse UB). The
-  // group-0 bind group is built over the ring page at offset 0 and
-  // these three values shift it to this draw's actual slices at
-  // `setBindGroup(0, bg0, bindGroup0DynamicOffsets)` time. Always a
-  // 3-element array `[cameraOffset, tileOffset, eclipseOffset]` when group 0
-  // uses the dynamic-offset layout (the standard path); omitted only for the
-  // legacy/wireframe descriptors that don't route through group 0 dynamically.
-  // The scene-adapter execute closure passes it straight through to
-  // `renderPass.setBindGroup`.
+  // Dynamic byte offsets for group 0's three uniform-buffer bindings (camera
+  // UB, tile UB, per-View eclipse UB). The group-0 bind group is built over
+  // the ring page at offset 0 and these three values shift it to this draw's
+  // actual slices at `setBindGroup(0, bg0, bindGroup0DynamicOffsets)` time.
+  // Always a 3-element array `[cameraOffset, tileOffset, eclipseOffset]` when
+  // group 0 uses the dynamic-offset layout, which is the standard path;
+  // omitted only for the wireframe descriptors that do not route through group
+  // 0 dynamically. The scene-adapter execute closure passes it straight
+  // through to `renderPass.setBindGroup`.
   bindGroup0DynamicOffsets?: number[];
   vertexBuffer: GPUBuffer;
   indexBuffer: GPUBuffer;
@@ -615,33 +619,31 @@ export interface TileDrawDescriptor {
   indexFormat: GPUIndexFormat;
   boundingVolume: CesiumBoundingSphere | undefined;
   isSubsequentPass: boolean;
-  // Shadow cast hints (Batch 24) — consumed by
-  // `GlobeSurfaceTileProviderRendering.addWebGPUDrawCommandsForTile` to
-  // tag the generated scene command with the correct shadow cast
-  // variant + per-command UB + effective VB stride. Every tile sets
-  // these three fields; quantized tiles route to `quantized12` and
-  // uncompressed tiles to `terrainUncompressed` (new in Batch 24).
+  // Shadow-cast hints consumed by
+  // `GlobeSurfaceTileProviderRendering.addWebGPUDrawCommandsForTile`, which
+  // tags the generated scene command with the correct shadow-cast variant,
+  // per-command UB, and effective VB stride. Every tile sets these three
+  // fields; quantized tiles route to `quantized12` and uncompressed tiles to
+  // `terrainUncompressed`.
   isQuantized?: boolean;
   shadowCastTerrainUB?: GPUBuffer;
-  // DP-H25 — flagged when the tile's VB includes the geodetic surface
-  // normal attribute (extra 12 bytes / 3 floats at the tail of each
-  // vertex stride). No longer affects shadow cast directly — Batch 24's
-  // stride-aware pipeline registry handles any stride correctly via
-  // `strideBytes` below — but consumers that need to know whether the
-  // attribute is present (e.g. the color pipeline) continue to check
-  // this flag.
+  // Flagged when the tile's VB includes the geodetic surface normal attribute
+  // (an extra 12 bytes / 3 floats at the tail of each vertex stride). It does
+  // not affect shadow cast — the stride-aware pipeline registry handles any
+  // stride through `strideBytes` below — but consumers that need to know
+  // whether the attribute is present, such as the color pipeline, read it.
   hasGeodeticSurfaceNormals?: boolean;
-  // Batch 24 — the ACTUAL per-vertex byte stride of the tile's VB. The
-  // scene adapter forwards this as `cmd.vertexStride` so the shadow
-  // cast registry builds a pipeline whose `arrayStride` matches.
-  // Without this the GPU walks the buffer at the variant's declared
-  // default stride, silently misaligning every vertex.
+  // The actual per-vertex byte stride of the tile's VB. The scene adapter
+  // forwards it as `cmd.vertexStride` so the shadow-cast registry builds a
+  // pipeline whose `arrayStride` matches. Without it the GPU walks the buffer
+  // at the variant's declared default stride, silently misaligning every
+  // vertex.
   strideBytes?: number;
-  // C11-184 — persistent owner for shadow-cast bind-group reuse. Globe tile
-  // draw descriptors and their scene commands are rebuilt every frame, while
-  // the TileGPUResources record survives for the lifetime of the cached mesh.
-  // The renderer publishes that stable record here so the shadow renderer
-  // does not fall back to caching on a transient command object.
+  // Persistent owner for shadow-cast bind-group reuse. Globe tile draw
+  // descriptors and their scene commands are rebuilt every frame, while the
+  // TileGPUResources record survives for the lifetime of the cached mesh. The
+  // renderer publishes that stable record here so the shadow renderer does not
+  // fall back to caching on a transient command object.
   shadowCastBindGroupCacheHost?: object;
 }
 

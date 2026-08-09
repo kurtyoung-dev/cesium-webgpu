@@ -1213,7 +1213,9 @@ test("WebGL and WebGPU pin direct rays, exact support, ellipsoid limb, and floor
   const webgpuEclipse = readSource(
     "Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts",
   );
-  const glslEclipseStart = glsl.indexOf("PAIR-SECTION: Eclipse globe shadow");
+  // Anchored on the first eclipse declaration rather than on a comment banner,
+  // so the slice survives comment rewrites.
+  const glslEclipseStart = glsl.indexOf("float eclipseGeometricObscuration(");
   const glslEclipse = glsl.slice(
     glslEclipseStart,
     glsl.indexOf("void main()", glslEclipseStart),
@@ -1386,11 +1388,11 @@ test("WebGL excludes S5 from inactive globe shader variants", () => {
   );
   assert.match(
     glsl,
-    /#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW\s+\/\/ ┌[\s\S]*?PAIR-SECTION: Eclipse globe shadow[\s\S]*?float eclipseFragmentFactor\(vec3 positionMC\)[\s\S]*?#endif\s+void main\(\)/,
+    /#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW\s+\/\/[\s\S]*?float eclipseGeometricObscuration\([\s\S]*?float eclipseFragmentFactor\(vec3 positionMC\)[\s\S]*?#endif\s+void main\(\)/,
   );
   assert.match(
     glsl,
-    /#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW\s+\/\/ S2 applies[\s\S]*?finalColor\.rgb \*= eclipseAbsolute;[\s\S]*?#endif\s+#ifdef ENABLE_CLIPPING_PLANES/,
+    /#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW\s+\/\/[\s\S]*?float eclipseAbsolute = 1\.0;[\s\S]*?finalColor\.rgb \*= eclipseAbsolute;[\s\S]*?#endif\s+#ifdef ENABLE_CLIPPING_PLANES/,
   );
   assert.match(
     glsl,

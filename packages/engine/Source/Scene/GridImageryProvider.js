@@ -71,11 +71,11 @@ class GridImageryProvider {
 
     // We only need a single canvas since all tiles will be the same
     this._canvas = this._createGridCanvas();
-    // C9-12A — the grid canvas is drawn exactly once here and returned
-    // unchanged for every tile (`requestImage` resolves to `this._canvas`).
-    // Declaring it immutable lets the WebGPU globe realize ONE shared GPU
-    // texture for all tiles instead of one identical full-mip texture per
-    // tile. Backend-neutral: WebGL ignores the declaration.
+    // The grid canvas is drawn exactly once here and returned unchanged for
+    // every tile, since `requestImage` resolves to `this._canvas`. Declaring
+    // it immutable lets the WebGPU globe realize one shared GPU texture for
+    // all tiles instead of an identical full-mip texture per tile. WebGL
+    // ignores the declaration.
     declareImmutableImagerySource(this._canvas);
   }
 

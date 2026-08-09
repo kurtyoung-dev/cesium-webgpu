@@ -1,21 +1,22 @@
-// OceanTimeSpectrum.wgsl — per-frame time evolution of the ocean spectrum
-// (Campaign 6/7, C6-FFT-OCEAN). Reads the static h0(k)/conj(h0(-k)) packing and
-// produces the two complex fields that the inverse FFT turns into real spatial
-// displacement:
+// OceanTimeSpectrum.wgsl — per-frame time evolution of the ocean spectrum.
+// Reads the static h0(k)/conj(h0(-k)) packing and produces the two complex
+// fields that the inverse FFT turns into real spatial displacement:
 //
 //   h(k,t) = h0(k) e^{iwt} + conj(h0(-k)) e^{-iwt}   (Hermitian -> real field)
 //   Dy(k)  = h                                        (vertical height)
 //   Dx(k)  = -i kx/|k| * h                            (horizontal choppiness)
 //   Dz(k)  = -i kz/|k| * h
 //
-// Two-for-one packing (both Dy and Dx spectra are Hermitian so each IFFTs to a
-// real field): output0 = Dy + i*Dx  (IFFT -> re=Dy, im=Dx); output1 = Dz.
-// Deep-water dispersion w = sqrt(g|k|). Wave clock `time` is frame-number
-// derived (quantized upstream) so paused clocks still animate deterministically
-// across multi-view (B630 lesson).
+// Two-for-one packing — both the Dy and Dx spectra are Hermitian, so each
+// inverse-transforms to a real field: output0 = Dy + i*Dx (IFFT gives re=Dy,
+// im=Dx) and output1 = Dz. Deep-water dispersion is w = sqrt(g|k|). The wave
+// clock `time` is derived from the frame number and quantized upstream, so a
+// paused scene clock still animates deterministically across multiple views.
 //
-// Derived from Tessendorf's published equations; packing follows gasgiant/
-// FFT-Ocean (MIT) and Popov72/OceanDemo (MIT, WGSL) time-dependent-spectrum.
+// Reference: Jerry Tessendorf, "Simulating Ocean Water" (SIGGRAPH course
+// notes) for the equations, implemented from the published math; the
+// time-dependent-spectrum packing follows gasgiant/FFT-Ocean (MIT) and
+// Popov72/OceanDemo (MIT, WGSL), see the Third-Party section of LICENSE.md.
 
 struct TimeParams {
   size: u32,

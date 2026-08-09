@@ -2,25 +2,18 @@ import defined from "../Core/defined.js";
 import GlobeWaterOcean from "./GlobeWaterOcean.js";
 
 /**
- * GlobeWater — canonical facade (Phase 0.3).
+ * The water facade, accessed as <code>scene.globe.water</code>.
  *
- * Accessed as `scene.globe.water`. Like {@link AtmosphericConditions}, this
- * class is a **facade**: its getters/setters read and write through to the
- * existing `Globe` fields (`showWaterEffect`, `oceanNormalMapUrl`, and the
- * enhanced-ocean tunables). No data migration, no behavior change — legacy
- * code paths remain untouched and authoritative.
+ * Like {@link AtmosphericConditions} this class is a facade: its accessors read
+ * and write through to the existing {@link Globe} fields —
+ * <code>showWaterEffect</code>, <code>oceanNormalMapUrl</code> and the
+ * enhanced-ocean tunables — which remain authoritative.
  *
- * Why `scene.globe.water` and not `scene.water`?
- *  1. Every existing water property already lives on {@link Globe}.
- *  2. Water is rendered as part of the terrain pass via the water mask, so
- *     it conceptually belongs to the globe.
- *  3. It pairs symmetrically with `scene.globe.atmosphericConditions`.
- *
- * Future Phase 1+ water features (classification provider, flow maps,
- * caustics, refraction, underwater fog, water regions, debug toggles) will
- * be added as new sub-facades on this class. See
- * `migration_doc/WATER_RENDERING_DESIGN.md §5 Toggle Inventory` for the
- * planned surface.
+ * It hangs off the globe rather than off the scene because every water property
+ * already lives on {@link Globe}, because water is rendered as part of the
+ * terrain pass through the water mask, and because it then pairs symmetrically
+ * with <code>scene.globe.atmosphericConditions</code>. Further water features
+ * are added as sub-facades on this class.
  *
  * @alias GlobeWater
  * @constructor
@@ -47,10 +40,10 @@ class GlobeWater {
   }
 
   /**
-   * Opt-in FFT spectral ocean sub-facade (Campaign 6/7, C6-FFT-OCEAN).
-   * `scene.globe.water.ocean.enabled = true` creates and adds an
-   * {@link OceanSurfacePrimitive}; default off and byte-identical when off.
-   * WebGPU-only (documented no-op on WebGL).
+   * The opt-in FFT spectral ocean sub-facade. Setting
+   * <code>scene.globe.water.ocean.enabled = true</code> creates and adds an
+   * {@link OceanSurfacePrimitive}; it is off by default and inert while off.
+   * WebGPU only, and a no-op on WebGL.
    * @type {GlobeWaterOcean}
    * @readonly
    */
@@ -66,10 +59,9 @@ class GlobeWater {
    * {@link VerticalDatum} (`"AUTO"` | `"ELLIPSOID"` | `"GEOID"`). Delegates to
    * `scene.globe.water.ocean.verticalDatum`.
    *
-   * Ruling T2 (`TIDES_FEASIBILITY_2026-07-24.md` §5a). `AUTO` derives the
-   * datum from the globe's terrain provider. This is **default-on correctness
-   * work**: the ellipsoid-0 anchor was a measured 101.64 m above Cesium World
-   * Terrain's baked sea at the Sri Lanka coast.
+   * <code>AUTO</code> derives the datum from the globe's terrain provider, and
+   * is the default because an ellipsoid-0 anchor sits a measured 101.64 m above
+   * Cesium World Terrain's baked sea at the Sri Lanka coast.
    *
    * @type {string}
    * @default VerticalDatum.AUTO
@@ -98,10 +90,10 @@ class GlobeWater {
   }
 
   /**
-   * Multiplier on the tide term; 1.0 is true scale (ruling T3). Delegates to
-   * `scene.globe.water.ocean.tideExaggeration`. Above 1.0 is explicitly
-   * stylised — the underlying equilibrium tide is ±0.3 m with no basin
-   * amplification and no phase lag, not a prediction.
+   * Multiplier on the tide term; 1.0 is true scale. Delegates to
+   * <code>scene.globe.water.ocean.tideExaggeration</code>. Above 1.0 is
+   * stylised rather than predictive: the underlying equilibrium tide is ±0.3 m,
+   * with no basin amplification and no phase lag.
    * @type {number}
    * @default 1.0
    */
@@ -118,10 +110,8 @@ class GlobeWater {
    * place of the in-engine {@link TideModel}. Delegates to
    * `scene.globe.water.ocean.tideCallback`.
    *
-   * This is the hook reserved by `WATER_RENDERING_DESIGN.md` §5 / OQ5. Its
-   * documented default was "null → 0"; ruling T1 replaced that default with
-   * the in-engine equilibrium {@link TideModel}, so `null` now means "use the
-   * engine's tide" and `tideEnabled = false` means "no tide at all".
+   * <code>null</code> means "use the engine's tide", not "no tide";
+   * <code>tideEnabled = false</code> is what suppresses the term entirely.
    * @type {Function|undefined}
    * @default undefined
    */

@@ -1,11 +1,13 @@
 // OceanTwiddle.wgsl — precompute the twiddle-factor + butterfly-index texture
-// for OceanIFFT.wgsl (Campaign 6/7, C6-FFT-OCEAN). One rgba32float texel per
-// (step, index): (tw.re, tw.im, i0, i1). Run once at init (or on resize).
+// for OceanIFFT.wgsl. One rgba32float texel per (step, index):
+// (tw.re, tw.im, i0, i1). Run once at init, and again on resize.
 //
-// Mirrors the gasgiant/FFT-Ocean (MIT) PrecomputeTwiddleFactorsAndInputIndices
-// kernel / WebTide twiddleFactors.wgsl. The exact formula below was CPU-
-// validated against a brute-force IDFT (decimation-in-frequency: the top half
-// of the column shares indices with the bottom half and negates the twiddle).
+// Reference: mirrors the gasgiant/FFT-Ocean (MIT)
+// PrecomputeTwiddleFactorsAndInputIndices kernel and WebTide's
+// twiddleFactors.wgsl; see the Third-Party section of LICENSE.md. The formula
+// below was CPU-validated against a brute-force IDFT. It is
+// decimation-in-frequency: the top half of the column shares indices with the
+// bottom half and negates the twiddle.
 
 struct TwiddleParams {
   size: u32,       // N (power of two)

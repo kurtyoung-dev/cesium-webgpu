@@ -28,9 +28,8 @@ import WebMercatorTilingScheme from "../Core/WebMercatorTilingScheme.js";
  *   - L (level), X, Y — tile coordinates
  *   - the geographic rectangle (S/W/N/E corners in degrees)
  *   - the tiling-scheme projection class
- *   - whether the tile straddles the Web Mercator ±85.0511° limit (these
- *     are the tiles that need WebGPU reprojection per Path B in
- *     `migration_doc/IMAGERY_PROJECTION.md`)
+ *   - whether the tile straddles the Web Mercator ±85.0511° limit, which is
+ *     what sends it through the WebGPU reprojection path
  *
  * Use it as an overlay imagery layer to debug imagery sampling, tile
  * selection, and LOD transitions interactively:

@@ -1,47 +1,34 @@
-// ┌─────────────────────────────────────────────────────────────────────┐
-// │ PAIR: WebGPU WGSL (this file)                                        │
-// │       WebGL GLSL: Shaders/ReprojectWebMercator{VS,FS}.glsl           │
-// │ Last lockstep audit: 2026-05-18, Batch 67                            │
-// └─────────────────────────────────────────────────────────────────────┘
-// Any change in this file MUST land with a matching change in the GLSL
-// counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
-//
-// PURPOSE
 // Reprojects a Web Mercator imagery texture to Geographic (equirectangular)
-// projection by computing the Mercator-Y fraction per fragment and
-// sampling the source at the resulting (u, srcV) coordinate.
+// projection by computing the Mercator-Y fraction per fragment and sampling
+// the source at the resulting (u, srcV) coordinate.
 //
-// UNIFORMS (matches GLSL `u_*` scalar uniforms one-for-one)
+// This is the WebGPU half of a shader pair; the WebGL half is
+// Shaders/ReprojectWebMercator{VS,FS}.glsl. Any change here must land with the
+// matching change there. See SHADER_PAIRS_LOCKSTEP.md.
+//
+// Uniforms, matching the GLSL `u_*` scalar uniforms one-for-one:
 //   southLatitude     - south edge of the destination tile (radians)
 //   northLatitude     - north edge of the destination tile (radians)
 //   southMercatorY    - precomputed `0.5 * log((1+sin(south))/(1-sin(south)))`
 //   oneOverMercHeight - `1.0 / (northMercatorY - southMercatorY)`
 //
-// CONVENTION LEDGER (see SHADER_PAIRS_LOCKSTEP.md) — corrected 2026-07-02
-// (GLOBE-POLAR-STRETCH). On BOTH backends the source mercator texture is
-// laid out with SOUTH of the imagery at sampled v=0:
-//   - WebGL uses `UNPACK_FLIP_Y_WEBGL=true` on a pre-flipped ImageBitmap
-//     → double-flip under GL's bottom-up texture convention → v=0 = SOUTH.
-//   - WebGPU uses `copyExternalImageToTexture` with default flipY=false on
-//     the same pre-flipped ImageBitmap. The `imageOrientation: "flipY"`
-//     from `Resource.fetchImage` IS baked into the pixel data that
-//     `copyExternalImageToTexture` consumes → v=0 = SOUTH here too.
-//     PROOF: the direct-Mercator binding path (tiles with
-//     `useWebMercatorT=true`) samples the SAME uploaded texture at the
-//     per-vertex `webMercatorT` (v=0 = south semantics) and renders
-//     right-side-up at pixel parity with WebGL.
-// Both shaders therefore sample at srcV = mercatorFraction, and both
-// write south content at output v=0 — the FS math is line-for-line
-// identical between the pair.
-//
-// HISTORY: until 2026-07-02 this file double-flipped (v_geo = 1-y AND
-// srcV = 1-mercatorFraction) based on the false "flipY is metadata-only"
-// theory. The two flips cancel ONLY for imagery tiles symmetric about
-// the equator; for asymmetric tiles they produce a latitude-MIRRORED
-// Mercator warp (content at geographic fraction g came from mercator
-// fraction 1-mercFrac(mirror(g)) instead of mercFrac(g)), which dragged
-// high-latitude imagery toward the equator at far zoom — the
-// long-standing "polar stretch" of the zoomed-out WebGPU globe.
+// Source-texture convention: on both backends the source mercator texture is
+// laid out with south of the imagery at sampled v=0, reached by different
+// upload paths.
+//   - WebGL uses `UNPACK_FLIP_Y_WEBGL=true` on a pre-flipped ImageBitmap, so
+//     GL's bottom-up texture convention double-flips it back to v=0 = south.
+//   - WebGPU uses `copyExternalImageToTexture` with the default flipY=false on
+//     the same pre-flipped ImageBitmap. The `imageOrientation: "flipY"` from
+//     `Resource.fetchImage` is baked into the pixel data the copy consumes, so
+//     v=0 = south here too. The direct-Mercator binding path (tiles with
+//     `useWebMercatorT=true`) samples that same uploaded texture at the
+//     per-vertex `webMercatorT`, whose v=0 is south, and renders right-side-up
+//     at pixel parity with WebGL.
+// Both shaders therefore sample at srcV = mercatorFraction and both write
+// south content at output v=0, which is what keeps the FS math line-for-line
+// identical across the pair. A vertical flip on either end warps every
+// reprojected texture built from imagery that is not symmetric about the
+// equator, so neither end may reintroduce one.
 
 struct ReprojectUniforms {
   southLatitude: f32,
@@ -84,11 +71,9 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   // v_geo: geographic-V fraction across the destination tile.
   //   0 = south edge, 1 = north edge. Matches the GLSL FS local `v_geo`.
-  // texCoord.y equals the output texel's sampled V (see VS comment), and
-  // the downstream globe FS samples reprojected textures with v=0 = south,
-  // so v_geo IS texCoord.y — no flip. (The pre-2026-07-02 `1.0 - y` flip
-  // paired with the `1.0 - mercatorFraction` flip below to produce the
-  // latitude-mirrored warp described in the header ledger.)
+  // texCoord.y equals the output texel's sampled V (see the VS comment), and
+  // the downstream globe FS samples reprojected textures with v=0 = south, so
+  // v_geo is texCoord.y with no flip.
   let v_geo = in.texCoord.y;
 
   // Per-fragment Mercator math: same closed-form expression on both
@@ -100,25 +85,20 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   let mercatorY = 0.5 * log((1.0 + sinLat) / (1.0 - sinLat));
   let mercatorFraction = (mercatorY - u.southMercatorY) * u.oneOverMercHeight;
 
-  // Source v=0 holds SOUTH content on both backends (see convention
-  // ledger above — the pre-flipped ImageBitmap's flip IS baked into the
-  // pixels `copyExternalImageToTexture` reads). Sample at
-  // (u, mercatorFraction) directly, matching the GLSL FS line-for-line.
+  // Source v=0 holds south content on both backends (see the source-texture
+  // convention above), so sampling at (u, mercatorFraction) directly matches
+  // the GLSL FS line-for-line.
   let srcV = mercatorFraction;
   let sampled = textureSample(srcTexture, srcSampler, vec2<f32>(in.texCoord.x, srcV));
 
-  // Batch 56 — force alpha=1.0. The source imagery texture coming from
-  // copyExternalImageToTexture on an opaque JPEG often arrives with
-  // alpha=0 in WebGPU (the alpha channel isn't populated from non-alpha
-  // source formats). Downstream globe-surface fragment shader multiplies
-  // by tex.a in its effectiveAlpha chain, so alpha=0 made every
-  // reprojected-imagery composite produce zero contribution → black
-  // tiles. Source imagery from the Mercator providers is always opaque
-  // (Bing aerial JPEG, Esri WorldImagery JPEG, etc.), so forcing alpha=1
-  // is safe here. If/when transparent imagery providers need support,
-  // this needs to be conditional on the source format/provider.
-  // GLSL pair: the WebGL Texture upload populates alpha=255 for opaque
-  // JPEGs, so the WebGL FS doesn't need the explicit alpha=1 — but
-  // emits a vec4 implicitly via texture() that already has a=1.
+  // Alpha is forced to 1.0. `copyExternalImageToTexture` does not populate the
+  // destination alpha channel from a non-alpha source format, so an opaque
+  // JPEG arrives with alpha=0; the globe-surface FS multiplies by tex.a in its
+  // effectiveAlpha chain, which would zero every reprojected-imagery composite
+  // and render the tiles black. Imagery from the Mercator providers is always
+  // opaque (Bing aerial JPEG, Esri WorldImagery JPEG), so the constant is safe
+  // here, but supporting a transparent imagery provider means making it
+  // conditional on the source format. The GLSL pair needs no equivalent: the
+  // WebGL Texture upload populates alpha=255 for opaque JPEGs.
   return vec4<f32>(sampled.rgb, 1.0);
 }

@@ -1,12 +1,13 @@
-// OceanSurface.wgsl — displaced ocean surface patch for the FFT spectral ocean
-// (Campaign 6/7, C6-FFT-OCEAN). A flat ENU grid patch anchored at the camera
-// sub-point is displaced by the merged FFT displacement map and shaded with a
-// simple Fresnel water BRDF + Jacobian foam. Positioning is RTE: the anchor is
-// EncodedCartesian3-split high/low and the vertex is transformed with
-// mvpRelativeToEye — never an absolute f32 world position (CLAUDE.md RTE rules).
+// OceanSurface.wgsl — displaced ocean surface patch for the FFT spectral
+// ocean. A flat ENU grid patch anchored at the camera sub-point is displaced by
+// the merged FFT displacement map and shaded with a simple Fresnel water BRDF
+// plus Jacobian foam. Positioning is relative-to-eye: the anchor is
+// EncodedCartesian3-split into high and low halves and the vertex is
+// transformed with mvpRelativeToEye, never an absolute f32 world position.
 //
-// Reference: displacement/normal reassembly follows gasgiant/FFT-Ocean (MIT) and
-// Popov72/OceanDemo (MIT); RTE vertex path mirrors FlowFieldRender.wgsl.
+// Reference: displacement and normal reassembly follow gasgiant/FFT-Ocean (MIT)
+// and Popov72/OceanDemo (MIT); see the Third-Party section of LICENSE.md. The
+// relative-to-eye vertex path mirrors FlowFieldRender.wgsl.
 
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,

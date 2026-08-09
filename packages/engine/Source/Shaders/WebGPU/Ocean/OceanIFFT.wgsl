@@ -1,19 +1,21 @@
 // OceanIFFT.wgsl — radix-2 inverse FFT butterfly stages for the FFT spectral
-// ocean (Campaign 6/7, C6-FFT-OCEAN). Precomputed twiddle+index texture drives
-// a ping-pong texture butterfly: one dispatch per stage, `horizontalStep` walks
-// rows, `verticalStep` walks columns. After log2(N) horizontal + log2(N)
-// vertical stages the input spectrum is inverse-transformed into a real spatial
-// field (see OceanMerge.wgsl for the reassembly).
+// ocean. A precomputed twiddle+index texture drives a ping-pong texture
+// butterfly: one dispatch per stage, `horizontalStep` walks rows and
+// `verticalStep` walks columns. After log2(N) horizontal plus log2(N) vertical
+// stages the input spectrum is inverse-transformed into a real spatial field
+// (see OceanMerge.wgsl for the reassembly).
 //
-// The precomputed-twiddle scheme and the inverse-conjugated twiddle are the
-// gasgiant/FFT-Ocean (MIT, (c) 2020 Ivan Pensionerov) and BarthPaleologue/
-// WebTide (MIT, (c) 2024 Barthelemy Paleologue) pattern. The exact sign/index
-// conventions used here were re-derived and CPU-validated against a brute-force
-// IDFT before porting (no fftshift permutation needed: the spectrum texel n
-// maps to frequency index n so the butterfly output is the field directly).
+// Inputs bind as unfilterable-float TEXTURE_BINDING, read with textureLoad
+// only; outputs are write-only rg32float storage. Ping-pong buffers alternate
+// each stage.
 //
-// TEXTURE_BINDING (unfilterable-float, textureLoad only) for inputs; write-only
-// rg32float storage for outputs. Ping-pong buffers alternate each stage.
+// Reference: the precomputed-twiddle scheme and the inverse-conjugated twiddle
+// follow gasgiant/FFT-Ocean (MIT, (c) 2020 Ivan Pensionerov) and
+// BarthPaleologue/WebTide (MIT, (c) 2024 Barthelemy Paleologue); see the
+// Third-Party section of LICENSE.md. The sign and index conventions here were
+// re-derived and CPU-validated against a brute-force IDFT before porting. No
+// fftshift permutation is needed: spectrum texel n maps to frequency index n,
+// so the butterfly output is the field directly.
 
 struct IFFTParams {
   step: u32,

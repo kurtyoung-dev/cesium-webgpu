@@ -1,22 +1,16 @@
 /// <reference types="@webgpu/types" />
 /**
- * Tile-buffer cache + eviction helpers extracted from
- * `WebGPUGlobeSurfaceRenderer`.
- *
- * Batch 151 of the audit-recommended decomposition (seventh slice of the
- * GlobeSurface decomposition arc — see
- * `migration_doc/BATCH_145_PLAN_GLOBE_SURFACE_DECOMPOSITION.md`).
- *
- * Moves the per-tile GPU-resource cache off the renderer class:
+ * Per-tile GPU-resource cache and eviction helpers for
+ * `WebGPUGlobeSurfaceRenderer`:
  *
  *   - `getTileKey(tile)` — pure helper that produces the cache key for
  *     a tile (`${level}_${x}_${y}`). No host needed.
- *   - `getOrCreateTileBuffers(host, tileKey, mesh)` — the heaviest helper
- *     in this batch (~245 LOC). Builds the per-tile vertex+index GPU
- *     buffers, handles `Uint8Array` index up-conversion, validates
- *     stride against actual vertex data (fill-tile correction), pads to
- *     4-byte alignment, retains the shadow-cast mesh source, and caches
- *     the result. Returns null on any unrecoverable encoding mismatch.
+ *   - `getOrCreateTileBuffers(host, tileKey, mesh)` — builds the per-tile
+ *     vertex and index GPU buffers, handles `Uint8Array` index
+ *     up-conversion, validates stride against actual vertex data
+ *     (fill-tile correction), pads to 4-byte alignment, retains the
+ *     shadow-cast mesh source, and caches the result. Returns null on any
+ *     unrecoverable encoding mismatch.
  *   - `ensureTerrainShadowCastUniformBuffer(device, resources)` lazily
  *     packs, realizes, and uploads the per-tile shadow UB on the first real
  *     cast pass, then reuses it until mesh replacement, eviction, or device
@@ -30,16 +24,10 @@
  * 96-byte terrain shadow layout (scaleAndBias + center3D + minMaxHeight)
  * without allocating a GPU resource.
  *
- * The renderer keeps `evictStaleResources` and `removeImageryTexture`
- * as public-API delegators (2-line wrappers) since they're part of the
- * renderer's external surface. The internal `_getTileKey`,
- * `_getOrCreateTileBuffers`, and `_writeTerrainShadowUB` methods are
- * removed entirely; the 2 internal callers (in `createTileCommands` and
- * `createWireframeTileCommands`) now invoke the helpers directly.
- *
- * The 2 host fields these helpers reach into beyond `_device` are
- * `_tileBufferCache` (flipped to public this batch) and
- * `_imageryTextureCache` (already public from Batch 148).
+ * `evictStaleResources` and `removeImageryTexture` also exist as two-line
+ * delegators on the renderer, since they are part of its external surface.
+ * The host fields these helpers read beyond `_device` are `_tileBufferCache`
+ * and `_imageryTextureCache`.
  *
  * @module WebGPUGlobeSurfaceTileBuffers
  */
@@ -59,9 +47,9 @@ const TERRAIN_SHADOW_UNIFORM_SIZE = 96;
  *
  *   - `_device`: read-only.
  *   - `_tileBufferCache` / `_imageryTextureCache`: read+write Maps.
- *   - `_sharedImageryRealizations` / `_webgpuContext` (optional, C9-12A):
- *     shared-realization reference release + deferred/inline-destroy stamping
- *     for evicted imagery entries.
+ *   - `_sharedImageryRealizations` / `_webgpuContext` (optional):
+ *     shared-realization reference release plus deferred and inline-destroy
+ *     stamping for evicted imagery entries.
  */
 export interface TileBuffersHost {
   readonly _device: GPUDevice | null;
@@ -186,10 +174,6 @@ export function getTileKey(tile: {
   return `${tile.level}_${tile.x}_${tile.y}`;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Vertex / Index Buffer Management
-// ═══════════════════════════════════════════════════════════════════════
-
 export function getOrCreateTileBuffers(
   host: TileBuffersHost,
   tileKey: string,
@@ -199,15 +183,16 @@ export function getOrCreateTileBuffers(
   const generation = mesh._webgpuGeneration || 0;
 
   const cached = host._tileBufferCache.get(tileKey);
-  // NS-WEBGPU-TILE-POPPING-SKIRTS — a tile's cache key (`level_x_y`) is stable
-  // across a fill/upsampled → real-terrain mesh swap, and `meshGeneration` is
-  // always 0 (nothing sets `mesh._webgpuGeneration`), so `meshGeneration`
-  // alone never invalidates. Also require the cached buffers to have been built
-  // from the SAME `mesh.vertices` array; when `renderedMesh` swaps in a new
-  // mesh (new typed array) the reference differs and we rebuild instead of
-  // serving stale vertex data that the current per-tile uniforms decode into
-  // flung "space" vertices (black wedge slivers). Same mesh → same reference →
-  // identical cache hit as before (byte-neutral for the settled steady state).
+  // A tile's cache key (`level_x_y`) is stable across a fill/upsampled →
+  // real-terrain mesh swap, and `meshGeneration` is always 0 because nothing
+  // sets `mesh._webgpuGeneration`, so the generation alone never invalidates.
+  // The cached buffers must therefore also have been built from the same
+  // `mesh.vertices` array: when `renderedMesh` swaps in a new mesh the typed
+  // array reference differs and the entry rebuilds, instead of serving stale
+  // vertex data that the current per-tile uniforms decode into vertices flung
+  // to Earth-radius distance (black wedge slivers). An unchanged mesh keeps
+  // the identical reference, so the settled steady state is a byte-neutral
+  // cache hit.
   if (
     cached &&
     cached.meshGeneration === generation &&
@@ -248,13 +233,13 @@ export function getOrCreateTileBuffers(
   // WebGPU does not support uint8 index format — only uint16 and uint32.
   // `TerrainFillMesh` stores indices as `Uint8Array` when `vertexCount < 256`
   // to save memory (see `TerrainFillMesh.js:1236`). Up-convert to Uint16Array
-  // here so the buffer size, byte-length, and declared `indexFormat` all
-  // agree. Historical bug: leaving the Uint8Array in place made
-  // `indices.byteLength` equal to `indexCount` (1 byte/index), the buffer
-  // was created at half the needed size, and the index format was still
-  // reported as uint16 — the GPU then read 2 bytes per index and tried to
-  // walk past the end of the buffer, invalidating the whole command buffer
-  // and producing an invisible globe at default zoom.
+  // here so the buffer size, byte length, and declared `indexFormat` all
+  // agree. Leaving the Uint8Array in place makes `indices.byteLength` equal
+  // to `indexCount` (1 byte per index), so the buffer is created at half the
+  // needed size while the index format is still reported as uint16; the GPU
+  // then reads 2 bytes per index, walks past the end of the buffer,
+  // invalidates the whole command buffer, and the globe disappears at default
+  // zoom.
   if (indices instanceof Uint8Array) {
     const upconverted = new Uint16Array(indices.length);
     for (let k = 0; k < indices.length; k++) upconverted[k] = indices[k];
@@ -358,7 +343,7 @@ export function getOrCreateTileBuffers(
       const actualVertCount = maxIdx + 1;
       const inferredStride = Math.floor(vertices.length / actualVertCount);
 
-      // If we can infer a valid stride, use it instead
+      // Prefer the inferred stride when it is valid
       if (
         inferredStride >= 3 &&
         inferredStride <= 11 &&
@@ -367,11 +352,11 @@ export function getOrCreateTileBuffers(
         const correctedStrideBytes = inferredStride * 4;
         const correctedVertCount = Math.floor(vbSize / correctedStrideBytes);
         if (maxIdx < correctedVertCount) {
-          // DP-H25 — geodetic normals occupy the trailing 3 floats of the
-          // stride when `encoding.hasGeodeticSurfaceNormals` is set. The
-          // inferred-stride fallback only fires for fill tiles so we defer
-          // to the encoding flag here; downstream `_selectPipeline` handles
-          // the case where stride is too small to actually carry it.
+          // Geodetic normals occupy the trailing 3 floats of the stride when
+          // `encoding.hasGeodeticSurfaceNormals` is set. The inferred-stride
+          // fallback only fires for fill tiles, so the encoding flag is the
+          // authority here; downstream `_selectPipeline` handles the case
+          // where the stride is too small to actually carry it.
           const inferredHasGeoNormal =
             encoding.hasGeodeticSurfaceNormals === true &&
             inferredStride >=
@@ -437,8 +422,8 @@ export function getOrCreateTileBuffers(
     hasNormals,
     hasWebMercatorT,
     isQuantized,
-    // DP-H25 — `TerrainEncoding` flips `hasGeodeticSurfaceNormals` on when
-    // the per-vertex stride is widened to include the normal (see
+    // `TerrainEncoding` flips `hasGeodeticSurfaceNormals` on when the
+    // per-vertex stride is widened to include the normal (see
     // TerrainEncoding.js:320). The pipeline builder uses this flag to
     // add a `@location(2)` vec3 attribute over the trailing 12 bytes of
     // the stride and enable the `GEODETIC_NORMAL` shader define.
@@ -589,10 +574,6 @@ export function prepareTerrainShadowCastCommandUniforms(
   return readyCount;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Cache Eviction
-// ═══════════════════════════════════════════════════════════════════════
-
 export function evictStaleResources(
   host: TileBuffersHost,
   activeTileKeys: Set<string>,
@@ -614,14 +595,14 @@ export function removeImageryTexture(
 ): void {
   const cached = host._imageryTextureCache.get(cacheKey);
   if (cached) {
-    // C9-12A (hardened Batch 686, F1) — a shared-realization entry does NOT
-    // own its texture, but it DOES own a reference: dropping the map entry
-    // without releasing it orphans the refcount forever (the imagery-side
-    // cleanup is identity-guarded on this same map entry and early-returns
-    // once the entry is gone). Release here — never-shared entries retire
-    // promptly through the live context's deferred destroy (F2a); ever-shared
-    // ones re-enter the table's zero-ref pool. Owned-texture counters are not
-    // touched (those track outright-owned direct uploads).
+    // A shared-realization entry does not own its texture, but it does own a
+    // reference: dropping the map entry without releasing it orphans the
+    // refcount forever, because the imagery-side cleanup is identity-guarded
+    // on this same map entry and early-returns once the entry is gone.
+    // Releasing here retires never-shared entries promptly through the live
+    // context's deferred destroy, while ever-shared ones re-enter the table's
+    // zero-ref pool. Owned-texture counters are untouched — those track
+    // outright-owned direct uploads.
     if (cached.shared) {
       host._imageryTextureCache.delete(cacheKey);
       const table = host._sharedImageryRealizations;
@@ -663,9 +644,9 @@ export function removeImageryTexture(
         (counters.imageryOwnedLiveBytes ?? 0) - (cached.byteSize ?? 0),
       );
     }
-    // F7 (Batch 686) — inline destroy: stamp so a same-frame pending mip job
-    // for this texture is skipped (the texture dies NOW, unlike scheduled
-    // destroys which stay live through this frame's submit).
+    // Inline destroy: stamp the texture so a same-frame pending mip job for
+    // it is skipped. This texture dies immediately, unlike scheduled destroys
+    // which stay live through this frame's submit.
     host._webgpuContext?.noteInlineTextureDestroy?.(cached.texture);
     cached.texture.destroy();
     host._imageryTextureCache.delete(cacheKey);

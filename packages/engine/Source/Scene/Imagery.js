@@ -72,21 +72,21 @@ class Imagery {
         this.textureWebMercator.destroy();
       }
 
-      // Batch 65 — release the WebGPU dual-texture pair. Mirrors the WebGL
-      // textureWebMercator / texture destruction above. These must be
-      // DEFERRED, not freed inline: eviction can run mid-frame (LRU under
-      // memory pressure, e.g. split-screen) while the current frame's
-      // globe-tile draw still binds the texture in a not-yet-submitted
-      // command buffer. Destroying now surfaces as
-      // "Destroyed texture [ImageryMercatorSource] used in a submit".
+      // Release the WebGPU dual-texture pair, mirroring the WebGL
+      // textureWebMercator / texture destruction above. The release has to be
+      // deferred rather than inline: eviction can run mid-frame — LRU under
+      // memory pressure, split-screen for instance — while the current frame's
+      // globe-tile draw still binds the texture in a command buffer that has
+      // not been submitted, which surfaces as "Destroyed texture
+      // [ImageryMercatorSource] used in a submit".
       // `scheduleTextureDestroy` frees the texture only after the in-flight
-      // frame's GPU work completes; fall back to an inline destroy when no
-      // context was recorded (e.g. device already torn down).
+      // frame's GPU work completes; an inline destroy is the fallback when no
+      // context was recorded, as when the device is already torn down.
       //
-      // FIRST drop this imagery's renderer texture-cache entries (the cache
-      // outlives the imagery object and is keyed by tile x/y/level): a
+      // This imagery's renderer texture-cache entries go first. The cache
+      // outlives the imagery object and is keyed by tile x/y/level, so a
       // re-created same-key imagery must rebuild from its own live texture
-      // rather than serve a cached view onto the texture we are about to free.
+      // rather than serve a cached view onto the texture about to be freed.
       if (typeof this._webgpuTextureCacheCleanup === "function") {
         this._webgpuTextureCacheCleanup();
         this._webgpuTextureCacheCleanup = undefined;

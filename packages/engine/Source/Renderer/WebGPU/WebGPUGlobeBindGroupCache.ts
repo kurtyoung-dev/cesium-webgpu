@@ -1,21 +1,20 @@
 /// <reference types="@webgpu/types" />
 /**
- * Per-tile bind-group cache for the globe surface renderer
- * (NEW-GLOBE-BINDGROUP-CACHE, Batch 241).
+ * Per-tile bind-group cache for the globe surface renderer.
  *
- * Before this cache, `WebGPUGlobeSurfaceRenderer.createTileCommands`
- * called `device.createBindGroup` 3-4 times per tile per pass per FRAME
- * (~600-800 creations/sec steady-state at a fixed camera). Bind groups
- * are immutable descriptors over resource identities, so re-creating
- * one whose bound resources haven't changed is pure waste.
+ * Without it, `WebGPUGlobeSurfaceRenderer.createTileCommands` calls
+ * `device.createBindGroup` three to four times per tile per pass per frame —
+ * 600-800 creations per second at a fixed camera. Bind groups are immutable
+ * descriptors over resource identities, so re-creating one whose bound
+ * resources have not changed is pure waste.
  *
- * Keying strategy (mirrors the C-R11 effects-BG cache in
+ * Keying strategy (mirrors the effects bind-group cache in
  * `WebGPUEffectsBindGroup.js`): every GPU resource object gets a stable
- * numeric identity via WeakMap; a bind group's key is the joined
- * identity tuple of its actual bound resources. This is the
- * Batch-139 lesson applied — key on the stable underlying objects
- * (textures' cached views, buffers, offsets), never on per-frame
- * wrapper objects.
+ * numeric identity via WeakMap; a bind group's key is the joined identity
+ * tuple of its actual bound resources. Keys must be built from the stable
+ * underlying objects — textures' cached views, buffers, offsets — never from
+ * per-frame wrapper objects, which produce a fresh identity every frame and
+ * turn the cache into a pure cost.
  *
  *   - Group 0 (camera UB + tile UB + eclipse UB): keyed on the three
  *     backing-buffer identities only. Camera/tile and active eclipse slices
@@ -34,9 +33,9 @@
  *   - Group 2 (water mask + ocean normal + material UBO/textures):
  *     keyed on the 5 variable resource identities. Samplers and the
  *     placeholder material UBO are init-time singletons.
- *   - Group 3 (effects) is NOT routed through this cache — it already
- *     has its own identity-keyed cache (C-R11-EFFECTS-BGL-COLLECTION-
- *     CACHE, Batch 55) shared with the model/primitive paths.
+ *   - Group 3 (effects) is not routed through this cache — it already
+ *     has its own identity-keyed cache shared with the model/primitive
+ *     paths.
  *
  * Eviction: age-based. Entries unused for `EVICT_AFTER_FRAMES` are
  * dropped on a periodic scan (`SCAN_EVERY_FRAMES`). This bounds the
@@ -49,12 +48,12 @@
  * production builds). Read them via `CesiumDebug.globeBindGroups()`
  * or `globalThis.__webgpuGlobeBindGroupCache.getStats()`.
  *
- * Why not reuse the generic `WebGPUBindGroupCache` (C-R11, post-process
- * paths)? Three contract differences, each load-bearing here:
- *   1. The generic cache has NO eviction (only `invalidateAll()` —
- *      tracked as NEW-BINDGROUPCACHE-EVICTION). The globe tile path is
- *      the highest key-churn path in the engine (group-0 keys rotate
- *      with ring-allocator offsets during camera motion); without
+ * Three contract differences keep this separate from the generic
+ * `WebGPUBindGroupCache` used by the post-process paths, each load-bearing
+ * here:
+ *   1. The generic cache has no eviction, only `invalidateAll()`. The globe
+ *      tile path is the highest key-churn path in the engine (group-0 keys
+ *      rotate with ring-allocator offsets during camera motion); without
  *      aging, the map grows unboundedly over long sessions.
  *   2. Its `getOrCreate(device, label, layout, entries)` requires the
  *      caller to build the full entries array per call to compute the
@@ -63,8 +62,8 @@
  *      key and only runs the builder on miss.
  *   3. Per-frame stat windows (`lastFrameCreates`) that the regression
  *      probe and `CesiumDebug.globeBindGroups()` assert on.
- * If the generic cache later grows aging + keyed lookups, folding this
- * one into it is a welcome consolidation.
+ * Folding this cache into the generic one becomes possible once that one
+ * grows aging and keyed lookups.
  *
  * @private
  */
@@ -93,9 +92,9 @@ export interface GlobeBindGroupCacheStats {
   /**
    * Per-group lifetime creation counts, indexed by the leading key
    * token (`"0"` camera+tile+eclipse UB, `"1"` imagery views, `"2"` water/
-   * ocean/material). Debug builds only — empty in production.
-   * NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) uses `byGroup["0"]` to
-   * prove group-0 creations stay flat under sustained camera motion.
+   * ocean/material). Debug builds only — empty in production. The
+   * dynamic-offset regression probe reads `byGroup["0"]` to prove group-0
+   * creations stay flat under sustained camera motion.
    */
   byGroup: Record<string, number>;
   /** Per-group creations during the last completed frame (debug only). */
@@ -119,10 +118,9 @@ export class WebGPUGlobeBindGroupCache {
   private _frameNumber = -1;
   private _lastScanFrame = 0;
 
-  // ── Stats ──
-  // Public underscore: `_bindGroupCreates` is the probe-visible counter
-  // named by NEW-GLOBE-BINDGROUP-CACHE. Increments are pragma-stripped
-  // in production builds; the fields read 0 there.
+  // Public underscore: `_bindGroupCreates` and `_bindGroupHits` are the
+  // probe-visible counters. Increments are pragma-stripped in production
+  // builds; the fields read 0 there.
   public _bindGroupCreates = 0;
   public _bindGroupHits = 0;
   private _createsThisFrame = 0;

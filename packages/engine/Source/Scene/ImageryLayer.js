@@ -599,31 +599,29 @@ class ImageryLayer {
       GeographicProjection
     );
 
-    // Batch 65 — WebGPU dual-texture upload. When the IMAGERY_REPROJECTION
-    // feature renderer exposes `uploadAndReproject`, run the dual-texture
-    // path for ANY Mercator-provider tile regardless of whether geographic
-    // projection is currently requested by the caller. This is critical
-    // because:
+    // WebGPU dual-texture upload. When the IMAGERY_REPROJECTION feature
+    // renderer exposes `uploadAndReproject`, the dual-texture path runs for any
+    // Mercator-provider tile, whether or not the caller currently requests a
+    // geographic projection, for two reasons:
     //
-    //   1. When ALL skeletons reference this imagery with
-    //      `useWebMercatorT === true`, `TileImagery.processStateMachine`
-    //      calls down with `needGeographicProjection = false`. The legacy
-    //      path then skips reprojection AND skips any GPU upload, which
-    //      leaves the WebGPU cache to lazily upload `imagery.image` as a
-    //      geographic-keyed texture — but the data is Mercator-V, so the
-    //      shader's `useWebMercatorTLayer = 1.0` sampling (`webMercT × cached
-    //      Mercator-space translation/scale`) ends up reading from a
+    //   1. When every skeleton references this imagery with
+    //      `useWebMercatorT === true`, `TileImagery.processStateMachine` calls
+    //      down with `needGeographicProjection = false`. Skipping reprojection
+    //      then also skips the GPU upload, leaving the WebGPU cache to upload
+    //      `imagery.image` lazily as a geographic-keyed texture — but the data
+    //      is Mercator-V, so the shader's `useWebMercatorTLayer = 1.0` sampling
+    //      (`webMercT × cached Mercator-space translation/scale`) reads from a
     //      texture keyed against a geographic-V interpretation.
     //
-    //   2. The bind-group setup and the tile-UB packer run independently
-    //      in the renderer and both need to agree on which texture variant
-    //      is bound. Eagerly setting `imagery._webgpuMercatorTexture` and
-    //      `imagery._webgpuReprojectedTexture` during the state machine
-    //      gives both code paths a fixed view of the imagery from frame 1.
+    //   2. The bind-group setup and the tile-UB packer run independently in the
+    //      renderer and have to agree on which texture variant is bound.
+    //      Setting `imagery._webgpuMercatorTexture` and
+    //      `imagery._webgpuReprojectedTexture` eagerly during the state machine
+    //      gives both a fixed view of the imagery from the first frame.
     //
-    // Mirrors WebGL's `imagery.textureWebMercator` / `imagery.texture`
-    // dual-texture architecture (`_createTexture` produces the Mercator
-    // texture; `_reprojectTexture` produces the geographic one).
+    // This mirrors WebGL's `imagery.textureWebMercator` / `imagery.texture`
+    // pair, where `_createTexture` produces the Mercator texture and
+    // `_reprojectTexture` the geographic one.
     const fr = context.getFeatureRenderer(
       FeatureRendererKey.IMAGERY_REPROJECTION,
     );

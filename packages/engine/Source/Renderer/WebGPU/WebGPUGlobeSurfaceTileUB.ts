@@ -1,51 +1,40 @@
 /// <reference types="@webgpu/types" />
 /**
- * Tile-uniform-buffer packing extracted from `WebGPUGlobeSurfaceRenderer`.
+ * Per-tile, per-pass `TileUniforms` packing for
+ * `WebGPUGlobeSurfaceRenderer`.
  *
- * Batch 153 of the audit-recommended decomposition (ninth and final
- * slice of the GlobeSurface decomposition arc — see
- * `migration_doc/BATCH_145_PLAN_GLOBE_SURFACE_DECOMPOSITION.md`).
- *
- * The biggest single extraction in the arc (~496 LOC). Moves the
- * per-tile per-pass `TileUniforms` packer off the renderer class.
- *
- * `createTileUniformBuffer(host, …)` lays out the 476-float
- * `TileUniforms` struct (1904 bytes) against the GlobeTerrain WGSL
- * contract:
+ * `createTileUniformBuffer(host, …)` lays the struct out against the
+ * GlobeTerrain WGSL contract:
  *
  *   - Per-imagery-layer block (16 layers × 24 floats): translationAndScale,
  *     texCoordsRectangle, colorToAlpha (rgb + threshold), cutoutRectangle
  *     (in tile-UV), alpha/brightness/contrast/saturation,
- *     hue/oneOverGamma/split (Batch 58 expansion).
+ *     hue/oneOverGamma/split.
  *   - dayNightAlpha[8] vec4 array (packed 2 layers per vec4).
  *   - useWebMercatorTLayer[4] vec4 array (packed 4 layers per vec4).
  *   - Scalars: layerCount, fog density/offset/minBrightness, water-mask
  *     translation, cartographic limit rectangle, night fade in/out,
  *     vertical exaggeration, flags (waterMask/clipping/oceanWaves/
- *     subsequentPass), ocean params, night & ocean secondary params,
+ *     subsequentPass), ocean params, night and ocean secondary params,
  *     wave time, fogVisualDensityScalar, splitPosition, debug fields,
  *     HSB shift.
- *   - Resolves callback-shaped imagery-layer values via `resolveImageryLayerValue`
- *     so dynamic-alpha use cases (hover-fade, time-of-day fade) work on WebGPU.
+ *   - Callback-shaped imagery-layer values resolve through
+ *     `resolveImageryLayerValue` so dynamic-alpha use cases (hover-fade,
+ *     time-of-day fade) work on WebGPU.
  *
  * Two diagnostic blocks are pragma-stripped in production:
- *   - LAYERS log (1/sec throttle on `_diagLastLayerCountLogMs`) — helps
- *     diagnose the `layerCount=0` failure mode that produces empty tiles.
- *   - Fog log + fog-missing error (1/sec throttle on `_diagLastFogLogMs`,
- *     one-shot on `_diagFogMissingLogged`).
+ *   - The layer log (throttled to 1/sec on `_diagLastLayerCountLogMs`), which
+ *     diagnoses the `layerCount=0` failure mode that produces empty tiles.
+ *   - The fog log and fog-missing error (throttled to 1/sec on
+ *     `_diagLastFogLogMs`, one-shot on `_diagFogMissingLogged`).
  *
- * The 5 host fields the packer reaches into are flipped from `private`
- * to `public` on the renderer:
+ * The five host fields the packer reaches into are public on the renderer:
  *   - `_tileUniformData` (Float32Array scratch sized to TILE_UNIFORM_FLOATS)
- *   - `_tileUniformU32View` (Uint32Array view, currently unused inside
- *     the body but kept per the "leave scaffolding" rule — was likely
- *     intended for bitfield slots in a future TileUniforms revision).
+ *   - `_tileUniformU32View` (Uint32Array view over the same buffer,
+ *     scaffolding for bitfield slots; nothing in the current body reads it)
  *   - `_diagLastLayerCountLogMs`
  *   - `_diagLastFogLogMs`
  *   - `_diagFogMissingLogged`
- *
- * The 2 callers (in `createTileCommands` and `createWireframeTileCommands`)
- * now invoke the helper directly with `this`.
  *
  * @module WebGPUGlobeSurfaceTileUB
  */
@@ -84,18 +73,18 @@ import {
   MAX_IMAGERY_LAYERS,
   resolveImageryLayerValue,
 } from "./WebGPUGlobeSurfaceTypes.js";
-// CLT-B2 — the enable/unset encoding for the night + ocean tunable slots lives
-// in its own leaf so the CPU packer, the WGSL getters and the Node spec that
+// The enable/unset encoding for the night and ocean tunable slots lives in its
+// own leaf so the CPU packer, the WGSL getters and the Node spec that
 // cross-checks them all read one contract.
 import { GLOBE_UB_UNSET, resolveGlobeTunable } from "./WebGPUGlobeTunables.js";
-// GLOBE-TRANSLUCENCY-ALPHA — reuse the exact WebGL antimeridian-clip helper
-// for the translucency rectangle instead of replicating the split logic here
-// and risking drift. Backend-neutral pure function.
+// Reuse the exact WebGL antimeridian-clip helper for the translucency
+// rectangle rather than replicating the split logic here, which would drift.
+// Backend-neutral pure function.
 import { clipRectangleAntimeridian } from "../../Scene/GlobeSurfaceTileProviderRendering.js";
-// CLT-B4 — WebGL's day/night camera-distance lighting fade lives in its own
-// leaf, for the same reason as `WebGPUGlobeTunables`: the packer, the shader
-// and the Node spec that cross-checks both against `GlobeFS.glsl` all need to
-// read one law, and only a leaf is importable from a spec.
+// WebGL's day/night camera-distance lighting fade lives in its own leaf for
+// the same reason as `WebGPUGlobeTunables`: the packer, the shader and the
+// Node spec that cross-checks both against `GlobeFS.glsl` all need to read one
+// law, and only a leaf is importable from a spec.
 import {
   computeLightingFade,
   type LightingFadeCamera,
@@ -166,10 +155,9 @@ export function createTileUniformBuffer(
   const u32 = host._tileUniformU32View;
   data.fill(0);
 
-  // ─── Imagery layers (Batch 58, C-R5) ───
-  // Per-layer struct = 24 floats / 96 bytes. Slots 4-15 are filled with
-  // sensible defaults (alpha=0 below) so the shader's `count` gate is
-  // the only thing keeping unused slots from contributing.
+  // Imagery layers. Per-layer struct = 24 floats / 96 bytes. Unused slots
+  // carry defaults (alpha 0), so the shader's `count` gate is the only thing
+  // keeping them from contributing.
   let layerCount = 0;
 
   for (
@@ -185,34 +173,29 @@ export function createTileUniformBuffer(
 
     const baseOffset = LAYERS_OFFSET + layerCount * LAYER_FLOATS;
 
-    // Batch 65 — dual-texture cache. `WebGPUGlobeSurfaceTextures.
-    // getOrCreateImageryTexture` binds the Mercator-projection
-    // GPUTexture when `tileImagery.useWebMercatorT === true` AND
-    // `imagery._webgpuMercatorTexture` exists; otherwise it binds the
-    // Geographic-projection variant. The shader's
-    // `useWebMercatorTLayer` flag MUST track that decision so
-    // `selectLayerUV` samples the bound texture at the correct
-    // coordinate space.
+    // Dual-texture cache. `WebGPUGlobeSurfaceTextures.
+    // getOrCreateImageryTexture` binds the Mercator-projection GPUTexture when
+    // `tileImagery.useWebMercatorT === true` and
+    // `imagery._webgpuMercatorTexture` exists, and the Geographic-projection
+    // variant otherwise. The shader's `useWebMercatorTLayer` flag has to track
+    // that decision so `selectLayerUV` samples the bound texture in the
+    // correct coordinate space.
     //
     // The cached `tileImagery.textureTranslationAndScale` and
-    // `textureCoordinateRectangle` are already in the matching
-    // coordinate space — `_calculateTextureTranslationAndScale` and
-    // `createTileImagerySkeletons` branch on `useWebMercatorT` and
-    // produce Mercator-space tile-UVs when true and geographic-space
-    // tile-UVs when false. So when we honor the bound texture's
-    // projection, the cached translation/scale and texCoordsRect line
-    // up without any inline recalc (the Batch 62 fixup is no longer
-    // needed and would have been wrong in either direction).
+    // `textureCoordinateRectangle` are already in the matching coordinate
+    // space: `_calculateTextureTranslationAndScale` and
+    // `createTileImagerySkeletons` branch on `useWebMercatorT` and produce
+    // Mercator-space tile-UVs when true and geographic-space tile-UVs when
+    // false. Honouring the bound texture's projection therefore lines the
+    // cached translation/scale and texCoordsRect up with no inline recalc.
     //
-    // NEW-USEWEBMERCATORT-SINGLE-SOURCE (Batch 304): derive the flag
-    // from `resolveImageryProjection` — the SAME pure peek
-    // `getOrCreateImageryTexture` uses to pick the bound variant — so
-    // the shader's `useWebMercatorTLayer` flag can never diverge from
-    // the actually-bound texture's projection (cache hits, the
-    // Mercator→geographic fall-through, and the race-window bind all
-    // resolve identically here and at bind-group creation). The old
-    // local `tileImagery.useWebMercatorT && !!_webgpuMercatorTexture`
-    // recompute missed the cache and fall-through cases.
+    // The flag is derived from `resolveImageryProjection`, the same pure peek
+    // `getOrCreateImageryTexture` uses to pick the bound variant, so it can
+    // never diverge from the bound texture's actual projection — cache hits,
+    // the Mercator-to-geographic fall-through, and the race-window bind all
+    // resolve identically here and at bind-group creation. A local
+    // `tileImagery.useWebMercatorT && !!_webgpuMercatorTexture` recompute
+    // misses the cache and fall-through cases.
     const effectiveUseWebMercatorT =
       resolveImageryProjection(host, tileImagery)?.isMercator ?? false;
 
@@ -338,10 +321,10 @@ export function createTileUniformBuffer(
       tile,
     );
 
-    // Batch 58 — new per-layer scalars: hue (radians), oneOverGamma
-    // (pre-divided so shader avoids a divide), split (-1/0/+1 from
-    // SplitDirection enum), and a trailing pad to keep the layer struct
-    // 16-byte aligned for WGSL uniform-address-space rules.
+    // Per-layer scalars: hue (radians), oneOverGamma (pre-divided so the
+    // shader avoids a divide), split (-1/0/+1 from the SplitDirection enum),
+    // and a trailing pad that keeps the layer struct 16-byte aligned for the
+    // WGSL uniform-address-space rules.
     const hueResolved = resolveImageryLayerValue(
       (layer as unknown as { hue?: unknown }).hue,
       0.0,
@@ -373,15 +356,14 @@ export function createTileUniformBuffer(
     // useWebMercatorT (packed 4 layers per vec4). Bit i in the layer
     // sequence maps to component (i % 4) of vec4 (i / 4).
     //
-    // Batch 65 — `effectiveUseWebMercatorT` mirrors what
-    // `WebGPUGlobeSurfaceTextures.getOrCreateImageryTexture` decides to
-    // bind. WebGL's GlobeSurfaceTileProviderRendering selects between
+    // `effectiveUseWebMercatorT` mirrors what
+    // `WebGPUGlobeSurfaceTextures.getOrCreateImageryTexture` decides to bind.
+    // WebGL's GlobeSurfaceTileProviderRendering selects between
     // `imagery.texture` (geographic) and `imagery.textureWebMercator`
-    // (mercator) per tile; WebGPU now mirrors that with
-    // `imagery._webgpuReprojectedTexture` (geographic) and
-    // `imagery._webgpuMercatorTexture` (mercator). The flag here keeps
-    // the shader's `selectLayerUV` in lock-step with the bound
-    // texture's projection.
+    // (mercator) per tile; WebGPU mirrors that with
+    // `imagery._webgpuReprojectedTexture` and
+    // `imagery._webgpuMercatorTexture`. The flag keeps the shader's
+    // `selectLayerUV` in lock-step with the bound texture's projection.
     const useWMVecIndex = layerCount >> 2;
     const useWMComp = layerCount & 3;
     data[USE_WEB_MERC_OFFSET + useWMVecIndex * 4 + useWMComp] =
@@ -411,16 +393,14 @@ export function createTileUniformBuffer(
     layerCount++;
   }
 
-  // ─── layerCount (f32 at LAYER_COUNT_OFFSET) ───
-  // Stored as f32 (read in WGSL via `u32(tile.layerCount)`) — matches the
-  // historical convention used to diagnose past UB transfer issues.
+  // layerCount is stored as f32 and read in WGSL via `u32(tile.layerCount)`,
+  // matching the convention the rest of this struct uses for count slots.
   data[LAYER_COUNT_OFFSET] = layerCount;
 
   //>>includeStart('debug', pragmas.debug);
-  // Dedicated diagnostic — logs EVERY frame (throttled to 1/sec) even
-  // when layerCount=0, because layerCount=0 is exactly the failure mode
-  // we need to catch. Fires independently of the shared `_diagShouldLog`
-  // counter to avoid getting starved by center3D logging.
+  // Logs every frame, throttled to 1/sec, even when layerCount is 0 — that is
+  // exactly the failure mode this catches. It fires independently of the
+  // shared `_diagShouldLog` counter so center3D logging cannot starve it.
 
   const nowMs3 =
     typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -443,34 +423,31 @@ export function createTileUniformBuffer(
   }
   //>>includeEnd('debug');
 
-  // ─── Fog parameters (offsets 49-51) ───
-  // Phase 1.4 — `frameState.atmosphericConditions.weather.humidity`
-  // (default 0.5 = no change) modulates fog density on a (0.5+humidity)
-  // multiplier: 0.0 humidity → 0.5× density (very dry desert), 0.5 →
-  // 1.0× (default, no change), 1.0 → 1.5× (tropical jungle haze).
-  // Linear and bounded so the existing fog tuning stays predictable.
+  // Fog parameters. `frameState.atmosphericConditions.weather.humidity`
+  // (default 0.5, meaning no change) modulates fog density by a
+  // (0.5 + humidity) multiplier: humidity 0.0 gives 0.5× density for a very
+  // dry desert, 0.5 gives 1.0×, and 1.0 gives 1.5× for tropical jungle haze.
+  // Linear and bounded, so the existing fog tuning stays predictable.
   //
-  // CRITICAL — belt-and-suspenders: when `fog.enabled === false`, force
-  // density to 0 regardless of what `fog.density` says. `Fog.update()`
-  // early-returns when `this.enabled` is false, which leaves any prior
-  // non-zero density value sitting on `frameState.fog.density` stale.
-  // At planetary scale that stale value causes the shader to fog every
-  // distant pixel to black — the "black globe at distance" bug.
-  // Explicitly zeroing when !enabled makes the GPU state consistent
-  // with the user-facing switch.
+  // When `fog.enabled === false` the density is forced to 0 regardless of what
+  // `fog.density` says. `Fog.update()` early-returns when `this.enabled` is
+  // false, leaving any prior non-zero density stale on `frameState.fog`, and
+  // at planetary scale a stale density fogs every distant pixel to black.
+  // Zeroing explicitly keeps the GPU state consistent with the user-facing
+  // switch.
   if (frameState && frameState.fog) {
-    // Track V-A2 — when aerial perspective owns the atmosphere, force the
-    // in-globe fog density to 0 so the two don't double-apply.
+    // When the aerial-perspective post-process owns the atmosphere, the
+    // in-globe fog density is forced to 0 so the two do not double-apply.
     const fogEnabled =
       frameState.fog.enabled !== false &&
       (frameState as { aerialPerspective?: boolean }).aerialPerspective !==
         true &&
-      // GLOBE-UNDERGROUND-COLOR — WebGL disables terrain fog when the camera
-      // is underground (`enableFog = frameState.fog.enabled &&
-      // frameState.fog.renderable && !cameraUnderground` in
-      // GlobeSurfaceTileProviderRendering.js:1229-1230). Without this gate
-      // the WGSL fog mix saturates every underside fragment toward the
-      // (near-black) underground atmosphere color and buries the imagery +
+      // WebGL disables terrain fog when the camera is underground
+      // (`enableFog = frameState.fog.enabled && frameState.fog.renderable &&
+      // !cameraUnderground` in
+      // GlobeSurfaceTileProviderRendering.js:1229-1230). Without this gate the
+      // WGSL fog mix saturates every underside fragment toward the near-black
+      // underground atmosphere color and buries the imagery and
       // undergroundColor tint that WebGL shows.
       (frameState as { cameraUnderground?: boolean }).cameraUnderground !==
         true;
@@ -486,9 +463,9 @@ export function createTileUniformBuffer(
     data[FOG_OFFSET_OFFSET] = fogEnabled ? (frameState.fog.offset ?? 0.0) : 0.0;
     data[FOG_MIN_BRIGHTNESS_OFFSET] = frameState.fog.minimumBrightness ?? 0.03;
     //>>includeStart('debug', pragmas.debug);
-    // Dedicated throttle (independent of the tile-center3D log) so we
-    // always see fog state at camera altitude transitions. Logs once
-    // per second regardless of what other diagnostics are firing.
+    // A throttle independent of the tile-center3D log, so fog state stays
+    // visible at camera-altitude transitions. Logs once per second regardless
+    // of what other diagnostics are firing.
     const nowMs =
       typeof performance !== "undefined" ? performance.now() : Date.now();
 
@@ -512,10 +489,10 @@ export function createTileUniformBuffer(
   } else {
     data[FOG_MIN_BRIGHTNESS_OFFSET] = 0.03;
     //>>includeStart('debug', pragmas.debug);
-    // Called once — frameState.fog is missing entirely. That means
-    // Scene.fog.update() never ran for this frame, which would fully
-    // explain the "black globe at orbit" symptom: density stays at
-    // whatever it was last set to and no zeroing path runs.
+    // Fires once. `frameState.fog` missing entirely means Scene.fog.update()
+    // never ran for this frame, which leaves the density at whatever it was
+    // last set to with no zeroing path — the globe then renders black at
+    // orbit.
 
     if (!host._diagFogMissingLogged) {
       host._diagFogMissingLogged = true;
@@ -528,7 +505,7 @@ export function createTileUniformBuffer(
     //>>includeEnd('debug');
   }
 
-  // ─── Water mask translation and scale (vec4) ───
+  // Water mask translation and scale (vec4).
   if (!isSubsequentPass) {
     const wmTS = surfaceTile.waterMaskTranslationAndScale;
     if (wmTS) {
@@ -539,7 +516,7 @@ export function createTileUniformBuffer(
     }
   }
 
-  // ─── Cartographic limit rectangle (vec4) ───
+  // Cartographic limit rectangle (vec4).
   if (tileProvider && tileProvider.cartographicLimitRectangle) {
     const limitRect = tileProvider.cartographicLimitRectangle;
     const tileRect = tile.rectangle;
@@ -561,7 +538,7 @@ export function createTileUniformBuffer(
     data[CART_LIMIT_RECT_OFFSET + 3] = 1.0;
   }
 
-  // ─── Night fade distances (two scalars) ───
+  // Night fade distances (two scalars).
   if (tileProvider) {
     data[NIGHT_FADE_OUT_OFFSET] =
       tileProvider.nightFadeOutDistance ?? 10000000.0;
@@ -571,7 +548,7 @@ export function createTileUniformBuffer(
     data[NIGHT_FADE_IN_OFFSET] = 50000000.0;
   }
 
-  // ─── Vertical exaggeration (two scalars) ───
+  // Vertical exaggeration (two scalars).
   data[VERT_EXAG_OFFSET] = frameState?.verticalExaggeration ?? 1.0;
   data[VERT_EXAG_REL_HEIGHT_OFFSET] =
     frameState?.verticalExaggerationRelativeHeight ?? 0.0;
@@ -579,19 +556,15 @@ export function createTileUniformBuffer(
   // dayNightAlpha[8] vec4 array already set above during layer iteration.
   // useWebMercatorTLayer[4] vec4 array also set during layer iteration.
 
-  // ─── Flags (vec4) ───
-  // Batch 58 — `flags.x` controls whether the WGSL `computeEnhancedOcean`
-  // path runs for ocean fragments. WebGL gates the equivalent
-  // `computeWaterColor` on the `SHOW_REFLECTIVE_OCEAN` shader define,
-  // which is only emitted when BOTH:
+  // `flags.x` controls whether the WGSL `computeEnhancedOcean` path runs for
+  // ocean fragments. WebGL gates the equivalent `computeWaterColor` on the
+  // `SHOW_REFLECTIVE_OCEAN` shader define, which is emitted only when both:
   //   1. the terrain provider supplies a water mask (`hasWaterMask`)
   //   2. the user enabled water rendering (`globe.showWaterEffect`,
-  //      default FALSE)
-  // Previously the WGSL only checked condition 1, so every ocean
-  // fragment ran the enhanced shader (which blends 40% imagery + 60%
-  // deep color, dimming the satellite Bing aerial by ~5×). That was
-  // the dominant source of the WebGPU/WebGL brightness gap at
-  // mid/orbit distances over ocean.
+  //      default false)
+  // Checking only the first condition runs the enhanced shader over every
+  // ocean fragment, blending 40% imagery with 60% deep color and dimming
+  // satellite aerial imagery by roughly 5x.
   const hasWaterMask =
     !isSubsequentPass &&
     tileProvider &&
@@ -611,16 +584,14 @@ export function createTileUniformBuffer(
   data[FLAGS_OFFSET + 2] = showOceanWaves ? 1.0 : 0.0;
   data[FLAGS_OFFSET + 3] = isSubsequentPass ? 1.0 : 0.0;
 
-  // ─── Ocean enhancement params (vec4) ───
-  // oceanParams: x=deepR, y=deepG, z=deepB, w=fresnelPower
+  // Ocean enhancement params: x=deepR, y=deepG, z=deepB, w=fresnelPower.
   //
-  // CLT-B2 — "unset" is `GLOBE_UB_UNSET` (negative), never `0.0`. `data` is
-  // zero-filled at the top of this function, so an unwritten slot would now
-  // read as an explicit zero; every arm below therefore writes something.
-  // `enableEnhancedOcean` OFF means NOT APPLICABLE (the consuming branch is
-  // preprocessed out by `ShaderDefineHi.ENHANCED_OCEAN`), so the off arm is the
-  // unset marker and the shader keeps returning the same built-in defaults it
-  // returned before this row — the default look is unchanged.
+  // "Unset" is `GLOBE_UB_UNSET` (negative), never `0.0`. `data` is zero-filled
+  // at the top of this function, so an unwritten slot reads as an explicit
+  // zero; every arm below therefore writes something. `enableEnhancedOcean`
+  // off means not applicable — `ShaderDefineHi.ENHANCED_OCEAN` preprocesses
+  // the consuming branch out — so the off arm carries the unset marker and the
+  // shader returns its built-in defaults.
   const enhancedOceanOn = tileProvider?.enableEnhancedOcean === true;
   const deepColor = enhancedOceanOn ? tileProvider?.oceanDeepColor : undefined;
   if (deepColor) {
@@ -638,58 +609,56 @@ export function createTileUniformBuffer(
     GLOBE_UB_UNSET,
   );
 
-  // ─── Time for ocean wave animation ───
-  // NS-WEBGPU-OCEAN-BRIGHT-NO-WAVES — drive the wave phase from
-  // `frameState.frameNumber`, mirroring WebGL's `czm_frameNumber` (the
-  // driver of `computeWaterColor`'s wave sampling: `time = czm_frameNumber
-  // * oceanAnimationSpeed`, GlobeFS.glsl L800/805). WebGL animates on every
-  // RENDERED frame regardless of the scene clock, so a paused (or slow) clock
-  // still shows churning ocean. The previous derivation used
-  // `frameState.time` (JulianDate seconds); at the WGSL octave coefficients
-  // (`sampleOceanWaveNormals` 0.012/0.008/0.03) a 1×-realtime clock advanced
-  // the wave UV by only ~0.012/s — visually FROZEN next to WebGL's per-frame
-  // churn — and stopped entirely when the clock was paused. This was the
-  // "WebGPU ocean lacks the wave effect" half of the user-reported bug.
+  // Ocean wave animation clock, driven from `frameState.frameNumber` to mirror
+  // WebGL's `czm_frameNumber`, which drives `computeWaterColor`'s wave
+  // sampling as `time = czm_frameNumber * oceanAnimationSpeed`
+  // (GlobeFS.glsl L800/805). WebGL animates on every rendered frame regardless
+  // of the scene clock, so a paused or slow clock still shows churning ocean.
+  // Deriving the phase from `frameState.time` (JulianDate seconds) instead
+  // advances the wave UV by only ~0.012/s at the WGSL octave coefficients
+  // (`sampleOceanWaveNormals` 0.012/0.008/0.03), which reads as frozen next to
+  // WebGL's per-frame churn and stops entirely when the clock is paused.
   //
-  // `frameNumber` preserves the two properties the clock-time switch was made
-  // for: it is CONSTANT across all views of one `scene.render()` (no per-view
-  // phase drift, unlike the earlier `performance.now()`) and DETERMINISTIC for
-  // a fixed warm-up frame count (regression capture). `OCEAN_WAVE_FRAME_SPEED`
-  // is the per-frame phase increment fed into the octave coefficients — tuned
-  // for a gentle, WebGL-comparable churn.
-  // C11-172 v3 — mod by 16000 (was 1e6). The WGSL march does `fract(t × velocity)`
-  // per octave; with `t` up to 1e6 the largest advection `t × 0.03 ≈ 3e4` had an
-  // f32 ulp (~0.004) comparable to the per-frame step (~0.0045), so the ripple
-  // animation stuttered near the top of the range. 16000 keeps `t × 0.03 ≤ 480`
-  // (ulp ~3e-5 ≪ step) and is commensurate with every shader advection rate:
-  // 16000 × {0.008, 0.012, 0.018, 0.03} is integral. The wrap at ~107k frames
-  // (~30 min at 60 fps) is therefore the same texture phase, not a visible pop.
+  // `frameNumber` is constant across all views of one `scene.render()`, so
+  // there is no per-view phase drift the way there is with
+  // `performance.now()`, and it is deterministic for a fixed warm-up frame
+  // count, which regression captures depend on. `OCEAN_WAVE_FRAME_SPEED` is
+  // the per-frame phase increment fed into the octave coefficients, tuned for
+  // a gentle, WebGL-comparable churn.
+  //
+  // The modulus is 16000, not 1e6. The WGSL march does `fract(t × velocity)`
+  // per octave, and with `t` up to 1e6 the largest advection `t × 0.03 ≈ 3e4`
+  // has an f32 ulp (~0.004) comparable to the per-frame step (~0.0045), so the
+  // ripple animation stutters near the top of the range. 16000 keeps
+  // `t × 0.03 ≤ 480` (ulp ~3e-5, far below the step) and is commensurate with
+  // every shader advection rate: 16000 × {0.008, 0.012, 0.018, 0.03} is
+  // integral. The wrap at ~107k frames, about 30 minutes at 60 fps, therefore
+  // lands on the same texture phase rather than a visible pop.
   const frameNumber = frameState?.frameNumber ?? 0;
   const waveTime =
     (frameNumber * OCEAN_WAVE_FRAME_SPEED) % OCEAN_WAVE_TIME_PERIOD;
   data[TIME_OFFSET] = waveTime;
   //>>includeStart('debug', pragmas.debug);
-  // Batch 56 diagnostic — `CesiumDebug.globeFragmentDebug(name)` (or
-  // setting `globalThis._webgpuGlobeDebugMode` directly) writes one of
-  // the sentinel values from `GLOBE_FRAGMENT_DEBUG_MODES`. The WGSL
-  // `fragmentMain` reads `tile.time` and short-circuits to a debug
-  // visualization when it crosses 1e9. Registry lives in
-  // `WebGPUGlobeFragmentDebug.ts` — add new modes there, then add the
-  // matching WGSL branch in `GlobeTerrain.wgsl::fragmentMain`.
+  // `CesiumDebug.globeFragmentDebug(name)`, or setting
+  // `globalThis._webgpuGlobeDebugMode` directly, writes one of the sentinel
+  // values from `GLOBE_FRAGMENT_DEBUG_MODES`. The WGSL `fragmentMain` reads
+  // `tile.time` and short-circuits to a debug visualization when it crosses
+  // 1e9. The registry lives in `WebGPUGlobeFragmentDebug.ts`; a new mode is
+  // added there plus a matching WGSL branch in
+  // `GlobeTerrain.wgsl::fragmentMain`.
   const debugSentinel = getActiveDebugSentinel();
   if (debugSentinel !== null) {
     data[TIME_OFFSET] = debugSentinel;
   }
   //>>includeEnd('debug');
-  // OPEN-5 fix: fogVisualDensityScalar — matches WebGL's
-  // `czm_fogVisualDensityScalar` auto-uniform (default 0.15 from
-  // UniformState). Without this the fog formula is ~6.7x stronger than
-  // WebGL at horizontal viewing angles.
+  // fogVisualDensityScalar matches WebGL's `czm_fogVisualDensityScalar`
+  // automatic uniform (default 0.15 from UniformState). Without it the fog
+  // formula is ~6.7x stronger than WebGL at horizontal viewing angles.
   data[FOG_VIS_DENSITY_OFFSET] =
     frameState?.context?.uniformState?.fogVisualDensityScalar ?? 0.15;
-  // Batch 58 — splitPosition in framebuffer pixels (matches gl_FragCoord
-  // and `czm_splitPosition`). Sourced via `frameState.splitPosition` (a
-  // 0..1 fraction; 0.5 = canvas centre) × drawing buffer width.
+  // splitPosition in framebuffer pixels, matching gl_FragCoord and
+  // `czm_splitPosition`. Sourced from `frameState.splitPosition`, a 0..1
+  // fraction where 0.5 is the canvas centre, times the drawing buffer width.
   const splitFrac =
     typeof frameState?.splitPosition === "number"
       ? frameState.splitPosition
@@ -699,14 +668,13 @@ export function createTileUniformBuffer(
       ?.drawingBufferWidth ?? 0;
   data[SPLIT_POSITION_OFFSET] = splitFrac * drawWidth;
 
-  // ─── lightingFade (CLT-B4, CO-18) ───
   // WebGL's day/night camera-distance fade. The DAYNIGHT_SHADING arm consumes
-  // it as `mix(1.0, diffuseIntensity, fade)` (GlobeFS.glsl:852), so 0 = flat-lit
-  // near the ground and 1 = full day/night at orbit. UNGATED, unlike
-  // `groundAtmosphereControl.y` below, which carries the identical clamp but is
-  // zeroed whenever the ground-atmosphere drape is off — WebGL computes this
-  // fade under `ENABLE_DAYNIGHT_SHADING || GROUND_ATMOSPHERE`, so turning the
-  // drape off must not flat-light the globe.
+  // it as `mix(1.0, diffuseIntensity, fade)` (GlobeFS.glsl:852), so 0 is
+  // flat-lit near the ground and 1 is full day/night at orbit. It is ungated,
+  // unlike `groundAtmosphereControl.y` below, which carries the identical
+  // clamp but is zeroed whenever the ground-atmosphere drape is off: WebGL
+  // computes this fade under `ENABLE_DAYNIGHT_SHADING || GROUND_ATMOSPHERE`,
+  // so turning the drape off must not flat-light the globe.
   //
   // The two distances live on the tile provider (`Globe.js:1204-1205` copies
   // them each frame); `WebGPUGlobeLightingFade`'s exported defaults are the
@@ -730,21 +698,21 @@ export function createTileUniformBuffer(
     ellipsoidMaxRadius,
   );
 
-  // ─── Night & ocean secondary params (vec4) ───
-  // nightOceanParams: x=nightIntensity, y=oceanReflectivity, z=foamThreshold, w=oceanDarkening
+  // Night and ocean secondary params: x=nightIntensity, y=oceanReflectivity,
+  // z=foamThreshold, w=oceanDarkening.
   //
-  // CLT-B2 — the enable arrives as its OWN signal (`tileProvider
-  // .enableNightLights` / `.enableEnhancedOcean`, both mirrored by
-  // `Globe.update()`), and the value slot carries only a value. Before this
-  // row `Globe.js` collapsed the two into one number by writing `0.0` on the
-  // off path, and `getNightIntensity()` read `0.0` as "use 2.5" — so
-  // `globe.enableNightLights = false` rendered as default-ON and C11-159's
-  // ratified "default OFF, keep the toggle" had no reachable off state.
+  // The enable arrives as its own signal (`tileProvider.enableNightLights` /
+  // `.enableEnhancedOcean`, both mirrored by `Globe.update()`) and the value
+  // slot carries only a value. Collapsing the two into one number by writing
+  // `0.0` on the off path makes `globe.enableNightLights = false` render as
+  // default-on, because `getNightIntensity()` reads `0.0` as "use 2.5", and
+  // leaves the ratified "default off, keep the toggle" contract with no
+  // reachable off state.
   //
-  // The two features answer "what does OFF mean" differently, which is why
+  // The two features answer "what does off mean" differently, which is why
   // `resolveGlobeTunable` takes the off value explicitly:
-  //   night lights  → 0.0            (zero emission; the shader multiplies by it)
-  //   enhanced ocean→ GLOBE_UB_UNSET (branch removed by the define; no value)
+  //   night lights   → 0.0            (zero emission; the shader multiplies by it)
+  //   enhanced ocean → GLOBE_UB_UNSET (branch removed by the define; no value)
   const nightLightsOn = tileProvider?.enableNightLights !== false;
   data[NIGHT_OCEAN_PARAMS_OFFSET + 0] = resolveGlobeTunable(
     nightLightsOn,
@@ -767,11 +735,10 @@ export function createTileUniformBuffer(
     GLOBE_UB_UNSET,
   );
 
-  // ─── Per-tile debug fields (vec4) ───
-  // Tier 2 debug: tile depth-level + imagery layer isolation. Both
-  // sourced from frameState so a single Scene property toggle flips
-  // them on for every tile uniformly. Production cost is two property
-  // reads + two array writes per tile, sub-noise-floor.
+  // Per-tile debug fields: tile depth-level and imagery-layer isolation. Both
+  // are sourced from frameState so a single Scene property toggle flips them
+  // on for every tile uniformly. Production cost is two property reads and two
+  // array writes per tile, below the noise floor.
   //   .x = tileLevel — read by fragmentDebugLod for the LOD overlay
   //   .y = isolateImageryLayer — when >= 0, fragmentMain renders only
   //        that layer index (0..15 within the current pass) and skips
@@ -784,8 +751,7 @@ export function createTileUniformBuffer(
   data[DEBUG_FIELDS_OFFSET + 2] = 0;
   data[DEBUG_FIELDS_OFFSET + 3] = 0;
 
-  // ─── DP-H24: HSB shift (vec4) ───
-  // Mirrors WebGL GlobeFS.glsl `u_hsbShift`. `Globe.update()` copies
+  // HSB shift. Mirrors WebGL GlobeFS.glsl `u_hsbShift`. `Globe.update()` copies
   // `Globe.atmosphereHueShift/Saturation/Brightness` onto the tile
   // provider each frame, so tileProvider is authoritative here.
   // The shader gates the HSB round-trip on |any| > 0.001, so writing
@@ -802,13 +768,12 @@ export function createTileUniformBuffer(
       : 0;
   data[HSB_SHIFT_OFFSET + 3] = 0;
 
-  // ─── GroundAtmosphere control (vec4) — Session 65 (2026-05-11) ───
-  // Drives the no-fog GroundAtmosphere drape path in GlobeTerrain.wgsl,
-  // matching WebGL's `#else` branch in GlobeFS.glsl that triggers when
-  // FOG is undefined but GROUND_ATMOSPHERE is defined (i.e. camera is
-  // above the fog maxHeight of 800 km). Without this, the drape is
-  // invisible at orbital altitudes — only the SkyAtmosphere limb shell
-  // renders, which is what the Hello-World screenshot was missing.
+  // Ground-atmosphere control. Drives the no-fog ground-atmosphere drape path
+  // in GlobeTerrain.wgsl, matching WebGL's `#else` branch in GlobeFS.glsl that
+  // triggers when FOG is undefined but GROUND_ATMOSPHERE is defined — that is,
+  // when the camera is above the fog maxHeight of 800 km. Without it the drape
+  // is invisible at orbital altitudes and only the SkyAtmosphere limb shell
+  // renders.
   //
   // Mirrors GlobeFS.glsl lines 369-391:
   //   cameraDist  = length(camera position from globe origin) [3D only]
@@ -816,9 +781,10 @@ export function createTileUniformBuffer(
   //   fadeInDist  = lightingFadeInDistance  (default π   × R ≈ 20 Mm)
   //   fade        = clamp((cameraDist - fadeOutDist) /
   //                       (fadeInDist - fadeOutDist), 0, 1)
-  // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — gate the per-tile
-  // ground-atmosphere drape OFF when the unified aerial-perspective
-  // post-process is active, so they don't double-apply (it owns the haze).
+  //
+  // The per-tile drape is gated off when the unified aerial-perspective
+  // post-process is active, since that owns the haze and the two would
+  // double-apply.
   const aerialPerspectiveActive =
     (frameState as { aerialPerspective?: boolean })?.aerialPerspective === true;
   const showGroundAtmosphere =
@@ -854,24 +820,22 @@ export function createTileUniformBuffer(
   data[GROUND_ATMOSPHERE_CONTROL_OFFSET + 2] =
     (tileProvider as { atmosphereLightIntensity?: number })
       .atmosphereLightIntensity ?? 10.0;
-  // .w = HDR-enabled flag. Mirrors WebGL GlobeFS.glsl `#ifdef HDR` —
-  // when on, the drape branch SKIPS the inline `1 - exp(-fExposure * x)`
-  // tonemap so the post-process chain can apply its own (the HDR
-  // framebuffer holds linear-radiance values until the final pass).
-  // Without this gate, demos like `Atmosphere.html` (which sets
-  // `scene.highDynamicRange = true` plus a 2x default light intensity)
-  // collapse to uniform tan because the inline tonemap saturates every
-  // channel before the post-process gets a chance to compress.
+  // .w = HDR-enabled flag, mirroring WebGL GlobeFS.glsl's `#ifdef HDR`. When
+  // on, the drape branch skips the inline `1 - exp(-fExposure * x)` tonemap so
+  // the post-process chain can apply its own; the HDR framebuffer holds
+  // linear-radiance values until the final pass. Without the gate, demos such
+  // as `Atmosphere.html`, which sets `scene.highDynamicRange = true` plus a
+  // doubled default light intensity, collapse to uniform tan, because the
+  // inline tonemap saturates every channel before the post-process gets a
+  // chance to compress.
   const hdrEnabled = (frameState as { useHDR?: boolean }).useHDR === true;
   data[GROUND_ATMOSPHERE_CONTROL_OFFSET + 3] = hdrEnabled ? 1.0 : 0.0;
 
-  // ─── initialColor (vec4) — Batch 247, NEW-GROUND-VIEW-ENV-DIVERGENCES ───
-  // Mirrors WebGL's `u_initialColor`: `globe.baseColor` on the first pass
-  // (the color rendered where no imagery is available), transparent black
-  // (`otherPassesInitialColor`) on subsequent multi-pass imagery passes —
-  // the zeroed scratch already covers the subsequent-pass case. The WGSL
-  // previously hardcoded vec3(0.04, 0.04, 0.06), rendering rgb(10,10,15)
-  // where WebGL rendered the configured baseColor.
+  // initialColor mirrors WebGL's `u_initialColor`: `globe.baseColor` on the
+  // first pass, which is the color rendered where no imagery is available, and
+  // transparent black (`otherPassesInitialColor`) on subsequent multi-pass
+  // imagery passes. The zeroed scratch already covers the subsequent-pass
+  // case.
   if (!isSubsequentPass) {
     const baseColor = tileProvider?.baseColor;
     if (baseColor) {
@@ -886,8 +850,8 @@ export function createTileUniformBuffer(
     }
   }
 
-  // ─── GLOBE-TRANSLUCENCY-ALPHA: localizedTranslucencyRectangle (vec4) ───
-  // Mirrors WebGL's `u_translucencyRectangle` packing
+  // localizedTranslucencyRectangle mirrors WebGL's `u_translucencyRectangle`
+  // packing
   // (GlobeSurfaceTileProviderRendering.js:1555-1607): antimeridian-clip
   // `globe.translucency.rectangle` against the tile rectangle, then localize
   // to tile-UV space (west, south, east, north). Only packed when the globe
@@ -926,20 +890,20 @@ export function createTileUniformBuffer(
       (clippedTranslucencyRectangle.north - tile.rectangle.south) * invH;
   }
 
-  // ─── C11-172 v3 — ocean-wave RTE phase offsets + normalized span ───
-  // The WGSL march samples 3 octaves in a GLOBAL ellipsoid (lon/lat) UV at
-  // integer normal-map repeat counts Rᵢ = round(circumference / wavelengthᵢ).
-  // The ABSOLUTE sample coordinate `euv × Rᵢ` reaches ~2.7e6 for the 15 m
-  // ripple, whose f32 ulp is ~0.25 of a repeat — quantizing the coordinate
-  // into staircase bands and freezing the (small-delta) time advection. We
-  // remove the large magnitude the same way the fork handles RTE positions:
-  // compute the per-tile per-octave PHASE OFFSET in f64 here —
-  // fract(rectOriginNorm × Rᵢ) per axis — and pack only the [0,1) remainder;
-  // the shader then reconstructs the coordinate from small quantities
-  // (phaseOffset + tileLocalUV × spanNorm × Rᵢ + fract(time)). Because Rᵢ is an
-  // exact integer, adjacent tiles + the ±180° wrap stay phase-continuous. The
-  // normalized span is packed too (not derived as east−west in the FS) to avoid
-  // f32 cancellation ⇒ wave-scale seams at fine LOD.
+  // Ocean-wave phase offsets and normalized span. The WGSL march samples 3
+  // octaves in a global ellipsoid (lon/lat) UV at integer normal-map
+  // repeat counts Rᵢ = round(circumference / wavelengthᵢ). The absolute sample
+  // coordinate `euv × Rᵢ` reaches ~2.7e6 for the 15 m ripple, whose f32 ulp is
+  // ~0.25 of a repeat, which quantizes the coordinate into staircase bands and
+  // freezes the small-delta time advection. The large magnitude comes out the
+  // same way it does for RTE positions: the per-tile per-octave phase offset
+  // is computed in f64 here as fract(rectOriginNorm × Rᵢ) per axis and only
+  // the [0,1) remainder is packed, so the shader reconstructs the coordinate
+  // from small quantities (phaseOffset + tileLocalUV × spanNorm × Rᵢ +
+  // fract(time)). Because Rᵢ is an exact integer, adjacent tiles and the ±180°
+  // wrap stay phase-continuous. The normalized span is packed rather than
+  // derived as east−west in the FS, which would suffer f32 cancellation and
+  // produce wave-scale seams at fine LOD.
   if (tile.rectangle) {
     const ONE_OVER_TWO_PI = 0.15915494309189535;
     const ONE_OVER_PI = 0.3183098861837907;

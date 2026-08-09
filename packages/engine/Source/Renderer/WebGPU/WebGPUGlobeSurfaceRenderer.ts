@@ -102,26 +102,25 @@ const shadowModeRuntime = ShadowMode as typeof ShadowMode & {
 export type { TileDrawDescriptor } from "./WebGPUGlobeSurfaceTypes.js";
 export { DebugFragmentMode } from "./WebGPUGlobeSurfaceTypes.js";
 
-// C9-13 (NEW-GLOBE-EFFECTS-PER-VIEW-PREPARED-HANDLE) — the terrain-global
-// group-3 effects state (shadow receive / CSM / atmosphere LUT / clipping
-// planes+polygons) is identical for every selected tile in a frame/view, yet
-// the pre-C9-13 path re-resolved and re-packed it once per tile per imagery
-// pass (~200 tiles → ~200 identical repacks: a 480-byte `fill(0)`+repack,
-// `computeClipPlaneDPrimes`, 22 WeakMap identity lookups, 3 string concats, and
-// several wrapper-object literals). This snapshot records the exact inputs that
-// determine those bytes and the placeholder-vs-active decision, so tiles 2..N
-// reuse one prepared `GPUBindGroup`. The memo lives on the CONTEXT (not the
-// per-GPUDevice renderer instance): post-Sol multi-context work shares pooled
-// devices across Scenes, so a renderer-scoped memo keyed by frameNumber alone
-// would alias Scene A's camera bytes into Scene B (see the same rationale in
-// `WebGPUEffectsBindGroup.js` `_ensureEffectsBgCache`, and the primitive
-// precedent `_getOrCreateSharedPrimitiveEffectsBG`).
+// The terrain-global group-3 effects state — shadow receive, CSM, atmosphere
+// LUT, clipping planes and polygons — is identical for every selected tile in a
+// frame/view, so it is resolved and packed once and reused. This snapshot
+// records the exact inputs that determine those bytes and the
+// placeholder-versus-active decision, so tiles 2..N reuse one prepared
+// `GPUBindGroup`.
+//
+// The memo lives on the context, not on the per-GPUDevice renderer instance:
+// pooled devices are shared across Scenes, so a renderer-scoped memo keyed by
+// frameNumber alone would alias Scene A's camera bytes into Scene B. Same
+// rationale as `_ensureEffectsBgCache` in `WebGPUEffectsBindGroup.js` and the
+// primitive path's `_getOrCreateSharedPrimitiveEffectsBG`.
 interface GlobeEffectsHandleSnapshot {
   frameNumber: number;
   device: GPUDevice;
   bindGroup: GPUBindGroup;
-  // Reference identity of every resolved effect input (undefined when the
-  // feature is inactive). Any ref mismatch → miss → fresh prepare.
+  // Reference identity of every resolved effect input, undefined when the
+  // feature is inactive. Any reference mismatch misses and forces a fresh
+  // prepare.
   receiveShadowMap: unknown;
   csmParamsBuffer: unknown;
   csmArrayView: unknown;
@@ -133,9 +132,9 @@ interface GlobeEffectsHandleSnapshot {
   clippingPolygons: unknown;
   clippingPolygonsLength: number;
   tileProvider: unknown;
-  // Camera position VALUES (not the mutated-in-place scratch Cartesian3 ref):
-  // the clip-plane dPrime bytes depend on them, and a multi-view frame can
-  // reuse one frameNumber across different cameras.
+  // Camera position values, not the mutated-in-place scratch Cartesian3
+  // reference: the clip-plane dPrime bytes depend on them, and a multi-view
+  // frame can reuse one frameNumber across different cameras.
   cameraX: number;
   cameraY: number;
   cameraZ: number;
@@ -168,24 +167,24 @@ type GlobeEffectsMemoContext = {
  * @private
  */
 export class WebGPUGlobeSurfaceRenderer {
-  // Public underscore: shared with the shader factory (Batch 146).
+  // Public underscore: shared with the shader factory.
   public _device: GPUDevice | null = null;
   private _diagTileCount = 0;
   private _diagLastLogTime = 0;
   // Public underscore: the next 3 diag-throttle fields are shared with
-  // the tile-UB packer (Batch 153).
+  // the tile-UB packer.
   public _diagLastLayerCountLogMs = 0;
   public _diagLastFogLogMs = 0;
   public _diagFogMissingLogged = false;
   private _lastOverflowWarnTime = 0;
 
   /**
-   * Throttle diagnostic logs to once per 3 seconds AND only the first tile.
-   * In production builds (`removePragmas: true`), this method is replaced
-   * with a constant `false` return by the pragma stripper, so the
-   * diagnostic code at each call site is dead-code-eliminated by esbuild.
+   * Throttle diagnostic logs to once per 3 seconds, and only for the first
+   * tile. In production builds (`removePragmas: true`) the pragma stripper
+   * replaces this method with a constant `false` return, so the diagnostic code
+   * at each call site is dead-code-eliminated by esbuild.
    */
-  // Public underscore: shared with the texture-cache helpers (Batch 148).
+  // Public underscore: shared with the texture-cache helpers.
   public _diagShouldLog(): boolean {
     //>>includeStart('debug', pragmas.debug);
     if (this._diagTileCount !== 0) return false;
@@ -196,122 +195,118 @@ export class WebGPUGlobeSurfaceRenderer {
     //>>includeEnd('debug');
     return false;
   }
-  // BUG-11 imagery probe — last observed value of `frameState.debugShowImageryProbe`,
-  // used to detect the rising edge so the probe latch resets when the
-  // operator toggles the flag back on for a second sample.
+  // Last observed value of `frameState.debugShowImageryProbe`, used to detect
+  // the rising edge so the imagery-probe latch resets when the operator toggles
+  // the flag back on for a second sample.
   private _lastProbeFlag = false;
-  // C-R7-RENDERER-MIGRATION (Batch 75) — local Map now stores
-  // `GlobePipelineEntry` slots; the GPU pipeline materializes through
-  // `webgpuPipelineCache` so two GlobeSurfaceRenderer instances (split-
-  // screen, multi-viewer) sharing the same descriptor share one
-  // `GPURenderPipeline`.
-  // Public underscore: shared with the pipeline helpers (Batch 150).
+  // Holds `GlobePipelineEntry` slots; the GPU pipeline materializes through
+  // `webgpuPipelineCache` so two GlobeSurfaceRenderer instances (split-screen,
+  // multi-viewer) sharing the same descriptor share one `GPURenderPipeline`.
+  // Public underscore: shared with the pipeline helpers.
   public _pipelineCache: Map<string, GlobePipelineEntry> = new Map();
   // Central pipeline cache reference, captured lazily on the first
   // `createTileCommands` call (which has access to `frameState.context`).
   // Stays null when the renderer's GraphicsContext doesn't expose one
   // (WebGL fallback shouldn't reach this code path, but defensive).
-  // Public underscore: shared with the pipeline helpers (Batch 150).
+  // Public underscore: shared with the pipeline helpers.
   public _centralPipelineCache: WebGPURenderPipelineCache | null = null;
-  // Batch 20 — the production shader module is now resolved through the
+  // The production shader module is resolved through the
   // `WebGPUShaderModuleCache` keyed by `(ShaderSourceId.GLOBE_TERRAIN, defines)`.
   // The cache runs the `//>>ifdef` preprocessor against `_shaderCode` on
   // first use per define-set and deduplicates repeat requests. Prewarmed at
   // `initialize()` time with the common define sets so first-frame render
   // pays no shader-compile cost.
-  // Public underscore: shared with the shader factory (Batch 146).
+  // Public underscore: shared with the shader factory.
   public _shaderModuleCache: WebGPUShaderModuleCache | null = null;
-  // Source preserved so we can lazily augment it with debug fragment
-  // entry points (triangulation / LOD overlay / normal-as-color) and the
-  // hardware clip-distances variant. Consumers run the preprocessor on
-  // this raw source before creating derived modules.
-  // Public underscore: shared with the shader factory (Batch 146).
+  // Source preserved so it can be lazily augmented with debug fragment entry
+  // points (triangulation / LOD overlay / normal-as-color) and the hardware
+  // clip-distances variant. Consumers run the preprocessor on this raw source
+  // before creating derived modules.
+  // Public underscore: shared with the shader factory.
   public _shaderCode: string = "";
   // Debug fragment augmented modules, keyed by active-defines bitmask. A
   // `null` value means the device rejected the augmented source for that
   // define-set during the one-shot validation probe — subsequent lookups
   // return null and the caller falls back to the production fragment.
-  // Public underscore: shared with the shader factory (Batch 146).
+  // Public underscore: shared with the shader factory.
   public _debugFragmentShaderModules = new Map<
     number,
     GPUShaderModule | null
   >();
-  // Public underscore: shared with the pipeline helpers (Batch 150).
+  // Public underscore: shared with the pipeline helpers.
   public _debugFragmentPipelineCache: Map<string, GlobePipelineEntry> =
     new Map();
-  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — SEPARATE cache for single-target
-  // scene-capture pipeline variants (keyed on face format + CAPTURE_MODE +
-  // vertex shape). Deliberately NOT wiped by the
-  // `_scenePipelineFormatGeneration` reset in `createTileCommands` — the
-  // capture target format follows the env cube, not the canvas, so a
-  // canvas-format / MSAA flip must not invalidate it; and a capture build must
-  // not bump the on-screen generation (which would rebuild every on-screen
-  // globe pipeline each frame capture runs). Public underscore: shared with the
-  // capture-pipeline helper.
+  // Cache for single-target scene-capture pipeline variants, keyed on face
+  // format, CAPTURE_MODE and vertex shape. Deliberately not wiped by the
+  // `_scenePipelineFormatGeneration` reset in `createTileCommands`: the capture
+  // target format follows the env cube rather than the canvas, so a
+  // canvas-format or MSAA flip must not invalidate it, and a capture build must
+  // not bump the on-screen generation, which would rebuild every on-screen
+  // globe pipeline on each frame capture runs. Public underscore: shared with
+  // the capture-pipeline helper.
   public _capturePipelineCache: Map<string, GlobePipelineEntry> = new Map();
-  // Phase 5 WGF-1: hardware clip-distances shader variant. Built lazily
-  // by string-augmenting a preprocessed `_shaderCode` to (a) declare the
-  // `@builtin(clip_distances)` vertex output and (b) compute it from the
-  // precomputed `effects.clipPlaneEqHW` values. The fragment-side
-  // `globeClipByPlanes` discard is neutralized in the augmented source so
-  // the rasterizer is the sole authority. Probed once per active-defines
-  // set; cached forever. `null` value after probe means the device
-  // rejected the augmented source (driver bug or missing feature) and the
-  // production module is the fallback.
-  // Public underscore: shared with the shader factory (Batch 146).
+  // Hardware clip-distances shader variant, built lazily by string-augmenting a
+  // preprocessed `_shaderCode` to declare the `@builtin(clip_distances)` vertex
+  // output and compute it from the precomputed `effects.clipPlaneEqHW` values.
+  // The fragment-side `globeClipByPlanes` discard is neutralized in the
+  // augmented source so the rasterizer is the sole authority. Probed once per
+  // active-defines set and cached for the lifetime of the renderer; a `null`
+  // value after the probe means the device rejected the augmented source — a
+  // driver bug or a missing feature — and the production module is the
+  // fallback.
+  // Public underscore: shared with the shader factory.
   public _clipDistancesShaderModules = new Map<
     number,
     GPUShaderModule | null
   >();
   // Public underscore: the next 11 fields are shared with the layouts
-  // initializer (Batch 147). The renderer reads them every frame and
-  // clears them in `destroy()`; the helpers in `WebGPUGlobeSurfaceLayouts.ts`
-  // populate them once at init time.
+  // initializer. The renderer reads them every frame and clears them in
+  // `destroy()`; the helpers in `WebGPUGlobeSurfaceLayouts.ts` populate them
+  // once at init time.
   public _sampler: GPUSampler | null = null;
   public _waterMaskSampler: GPUSampler | null = null;
   public _bindGroupLayout0: GPUBindGroupLayout | null = null;
   public _bindGroupLayout1: GPUBindGroupLayout | null = null;
   public _bindGroupLayout2: GPUBindGroupLayout | null = null;
-  // Group 3 is now the effects bind group (merged water+ocean into group 2)
+  // Group 3 is the effects bind group; water and ocean are merged into group 2.
   public _effectsBGL: GPUBindGroupLayout | null = null;
   public _placeholderEffectsBG: GPUBindGroup | null = null;
   public _oceanNormalSampler: GPUSampler | null = null;
-  // Batch 437 (CLOUD-SHADOWS) — the sun-view beer shadow map view + sampler to bind
-  // at group 2 / bindings 9-10 this frame. Captured each frame from
-  // `context._cloudCache` in `createTileCommands`; null → the group-2 bind group
-  // uses the renderer's own 1×1 placeholder (`_placeholderView` + `_sampler`,
-  // optical depth/white → transmittance 1). Their identity is folded into the
-  // group-2 bind-group cache key so a real-vs-placeholder swap rebuilds the group.
+  // The sun-view Beer shadow map view and sampler to bind at group 2, bindings
+  // 9-10, this frame. Captured each frame from `context._cloudCache` in
+  // `createTileCommands`; null makes the group-2 bind group use the renderer's
+  // own 1×1 placeholder (`_placeholderView` + `_sampler`, an optical depth of
+  // white, so transmittance 1). Their identity is folded into the group-2
+  // bind-group cache key so a real-versus-placeholder swap rebuilds the group.
   private _cloudShadowView: GPUTextureView | null = null;
   private _cloudShadowSampler: GPUSampler | null = null;
   private _oceanNormalMapCache: Map<string, ImageryGPUTexture> = new Map();
-  // PERF-OCEAN-NORMAL-REUPLOAD (2026-07-19) — `uploadImageSource` only WRITES
-  // to the cache map it is handed; it never reads it, and its shared-
-  // realization dedupe is gated on `logicalOwner === "imagery"`, which the
-  // ocean-normal call site does not pass. Without this source-identity guard
-  // the normal map was re-uploaded (copyExternalImageToTexture + mip regen +
-  // createView) once per tile per frame on a static scene — and because the
-  // group-2 bind-group cache keys on view identity, a fresh view each call
-  // also forced a createBindGroup every frame. Same idiom as
-  // `_materialTextureCache` below.
+  // `uploadImageSource` only writes to the cache map it is handed — it never
+  // reads it — and its shared-realization dedupe is gated on
+  // `logicalOwner === "imagery"`, which the ocean-normal call site does not
+  // pass. Without this source-identity guard the normal map is re-uploaded
+  // (copyExternalImageToTexture, mip regen, createView) once per tile per frame
+  // even on a static scene, and because the group-2 bind-group cache keys on
+  // view identity, a fresh view each call also forces a createBindGroup every
+  // frame. Same idiom as `_materialTextureCache` below.
   private _oceanNormalMapSource: unknown = null;
   private _oceanNormalMapView: GPUTextureView | null = null;
   public _pipelineLayout: GPUPipelineLayout | null = null;
-  // Session 65 Cluster 3 — material lives at @group(2) bindings 4-8
-  // (UBO + image texture/sampler + heights texture/sampler). The
-  // merged-group strategy keeps total bind groups at 4 so devices that
-  // report the WebGPU spec floor of `maxBindGroups: 4` (e.g., Edge on
-  // some adapters) can still use the material pipeline path. No
-  // separate material pipeline layout — the regular `_pipelineLayout`
-  // is reused with a wider Group 2 layout.
-  // Placeholder UBO bound at @group(2) @binding(4) when no material is
-  // active, so the bind group still validates against the expanded
-  // Group 2 layout. Lazy-initialized on first non-material draw.
+  // Material state lives at @group(2) bindings 4-8: UBO, image
+  // texture/sampler, heights texture/sampler. Merging it into group 2 keeps the
+  // total bind-group count at 4, so devices reporting the WebGPU spec floor of
+  // `maxBindGroups: 4` — Edge on some adapters — can still use the material
+  // pipeline path. There is no separate material pipeline layout; the regular
+  // `_pipelineLayout` is reused with a wider group 2.
+  //
+  // This placeholder UBO is bound at @group(2) @binding(4) when no material is
+  // active, so the bind group still validates against the expanded group-2
+  // layout. Lazy-initialized on the first non-material draw.
   private _placeholderMaterialUBO: GPUBuffer | null = null;
-  // C11-213 — the shared all-zero storage buffer bound at
-  // @group(2) @binding(11) for every tile without draped vector geometry.
-  // Its zeroed `gridWidth` header word is the shader's early-out sentinel.
-  // Lazy-initialized on the first group-2 build.
+  // The shared all-zero storage buffer bound at @group(2) @binding(11) for
+  // every tile without draped vector geometry. Its zeroed `gridWidth` header
+  // word is the shader's early-out sentinel. Lazy-initialized on the first
+  // group-2 build.
   private _placeholderVectorBuffer: GPUBuffer | null = null;
   // Per-material cache. Keyed by `material.type` since (a) the WGSL
   // source is determined by the fabric (which is associated with the
@@ -332,27 +327,27 @@ export class WebGPUGlobeSurfaceRenderer {
   > = new Map();
   public _placeholderTexture: GPUTexture | null = null;
   public _placeholderView: GPUTextureView | null = null;
-  // NEW-GLOBE-BELOWSURFACE-FIX — 1×1 r8unorm ZERO fallback bound at
-  // @group(2) @binding(0) when a tile's water mask isn't GPU-resident.
-  // The white shared placeholder read as waterMask=1.0 (all water) and
-  // ocean-shaded whole land tiles; zero = all land matches WebGL.
+  // 1×1 r8unorm zero fallback bound at @group(2) @binding(0) when a tile's
+  // water mask is not GPU-resident. The shared white placeholder reads as
+  // waterMask=1.0, all water, and ocean-shades whole land tiles; zero means all
+  // land, which matches WebGL.
   public _noWaterMaskTexture: GPUTexture | null = null;
   public _noWaterMaskView: GPUTextureView | null = null;
-  // Public underscore: shared with the wireframe helpers (Batch 149).
+  // Public underscore: shared with the wireframe helpers.
   public _canvasFormat: GPUTextureFormat = "bgra8unorm";
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the globe pick pipeline's color
-  // target format, mirrored from `context.pickPipelineFormat` (the sole
-  // byte-object-ID attachment authority) whenever the scene-format
-  // generation bumps. Equals `_canvasFormat` in SDR; stays an 8-bit unorm
-  // when the scene target flips to a float/HDR format.
+  // The globe pick pipeline's color target format, mirrored from
+  // `context.pickPipelineFormat` — the sole byte-object-ID attachment
+  // authority — whenever the scene-format generation bumps. Equals
+  // `_canvasFormat` in SDR; stays an 8-bit unorm when the scene target flips to
+  // a float/HDR format.
   public _pickFormat: GPUTextureFormat = "rgba8unorm";
-  // Session 65 Batch 32 — MSAA sample count tracked alongside format.
-  // Captured from `context._msaaSamples` on each `maybeUpdateForScene
-  // Format` call (mirrors `_canvasFormat`). Used by `PipelineHost`
-  // consumers to bake `multisample.count` into globe pipelines. The
-  // shared `_scenePipelineFormatGeneration` counter also bumps on
-  // MSAA change (see `WebGPUSceneRenderer.prepareFrame` Batch 25),
-  // triggering this renderer's pipeline cache wipe at the same point.
+  // MSAA sample count, tracked alongside the format and captured from
+  // `context._msaaSamples` on each `maybeUpdateForSceneFormat` call, mirroring
+  // `_canvasFormat`. `PipelineHost` consumers read it to bake
+  // `multisample.count` into globe pipelines. The shared
+  // `_scenePipelineFormatGeneration` counter also bumps on an MSAA change (see
+  // `WebGPUSceneRenderer.prepareFrame`), triggering this renderer's pipeline
+  // cache wipe at the same point.
   public _sampleCount: number = 1;
   // Renderer-wide log-depth state, resolved each frame from the SHARED gate
   // `isWebGPULogDepthActive(context, frameState)` = the `_logDepthWriteEnabled`
@@ -361,128 +356,124 @@ export class WebGPUGlobeSurfaceRenderer {
   // globe pipeline's defines + cache key on exactly the frames every sibling
   // producer does.
   //
-  // NEW-WEBGPU-GLOBE-USE-LOG-DEPTH — this used to mirror
-  // `context._logDepthWriteEnabled` ALONE, making the globe the only WebGPU
-  // depth producer that ignored `frameState.useLogDepth`. `Scene.js` clears
-  // that flag on any orthographic frustum (2D / Columbus View /
+  // Mirroring `context._logDepthWriteEnabled` alone would make the globe the
+  // only WebGPU depth producer that ignores `frameState.useLogDepth`. `Scene.js`
+  // clears that flag on any orthographic frustum (2D, Columbus View,
   // `camera.switchToOrthographicFrustum()`) and whenever
-  // `scene.logarithmicDepthBuffer` is false, so in those modes the globe wrote
-  // LOG-encoded `frag_depth` into the same attachment the classifiers, the
-  // enhanced-ocean depth test and the depth plane read as hyperbolic — mixed
-  // encodings in one buffer. Under a pure orthographic frustum the log encode
-  // also degenerates (clip `.w` is constant, so `csm_vertexLogDepth` collapses
-  // to a per-draw constant, and it is NaN when near > 2.0).
+  // `scene.logarithmicDepthBuffer` is false, so in those modes the globe would
+  // write log-encoded `frag_depth` into the same attachment the classifiers,
+  // the enhanced-ocean depth test and the depth plane read as hyperbolic —
+  // mixed encodings in one buffer. Under a pure orthographic frustum the log
+  // encode also degenerates: clip `.w` is constant, so `csm_vertexLogDepth`
+  // collapses to a per-draw constant, and it is NaN when near > 2.0.
   public _logDepthEnabled: boolean = false;
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet state,
-  // resolved from `isWebGPUPickLogDepthActive(context, frameState)` (the
-  // `_pickLogDepthWriteEnabled` master switch AND `frameState.useLogDepth`).
-  // The globe PICK pipeline (selectPickPipeline) ORs LOG_DEPTH from THIS flag
-  // (not `_logDepthEnabled`) into its pick-pipeline cache key. The pick
-  // mini-frame owns ONE shared depth attachment (INV-2), so the whole fleet
-  // must be uniformly hyperbolic OR log — and every sibling pick producer drops
-  // to hyperbolic when `useLogDepth` is false, so the globe must too.
+  // Pick-fleet log-depth state, held separately from `_logDepthEnabled` and
+  // resolved from `isWebGPUPickLogDepthActive(context, frameState)` — the
+  // `_pickLogDepthWriteEnabled` master switch and `frameState.useLogDepth`.
+  // `selectPickPipeline` ORs LOG_DEPTH from this flag, not `_logDepthEnabled`,
+  // into its pick-pipeline cache key. The pick mini-frame owns one shared depth
+  // attachment, so the whole fleet must be uniformly hyperbolic or uniformly
+  // log; every sibling pick producer drops to hyperbolic when `useLogDepth` is
+  // false, so the globe must too.
   public _pickLogDepthEnabled: boolean = false;
-  // C11-158 (NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE) — renderer mirror
-  // of `Globe.enableEnhancedOcean` (default FALSE). When true, the globe shader
-  // factory ORs `ShaderDefineHi.ENHANCED_OCEAN` into `definesHi` (via
-  // `host._enhancedOceanEnabled`), selecting the enhanced ocean STYLING branch
-  // of `computeEnhancedOcean`; false compiles the classic WebGL-parity branch.
-  // Only the STYLING is gated — the shared wave march is unconditional. Set
-  // each frame from the tile provider (which `Globe.render` copies the flag
-  // onto) via `_applyEnhancedOceanState`, which wipes the renderer-local globe
-  // pipeline caches on a flip so the module + pipeline re-resolve.
+  // Renderer mirror of `Globe.enableEnhancedOcean`, default false. When true,
+  // the globe shader factory ORs `ShaderDefineHi.ENHANCED_OCEAN` into
+  // `definesHi` through `host._enhancedOceanEnabled`, selecting the enhanced
+  // ocean styling branch of `computeEnhancedOcean`; false compiles the classic
+  // WebGL-parity branch. Only the styling is gated — the shared wave march is
+  // unconditional. Set each frame from the tile provider, which `Globe.render`
+  // copies the flag onto, through `_applyEnhancedOceanState`, which wipes the
+  // renderer-local globe pipeline caches on a flip so the module and pipeline
+  // re-resolve.
   public _enhancedOceanEnabled: boolean = false;
-  // Batch 110 — track scene-pipeline format generation last applied
-  // so a runtime HDR / canvas-format change clears the pipeline +
-  // wireframe + debug-fragment caches and rebuilds against the new
-  // scene FB color format.
+  // The scene-pipeline format generation last applied, so a runtime HDR or
+  // canvas-format change clears the pipeline, wireframe and debug-fragment
+  // caches and rebuilds against the new scene framebuffer color format.
   private _scenePipelineFormatGeneration: number = -1;
 
-  // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — per-device
-  // imagery slot count (16 full / 4 reduced) and the matching
-  // `GLOBE_IMAGERY_REDUCED` shader-define flag. Captured ONCE at
-  // `initialize()` from `device.limits.maxSampledTexturesPerShaderStage`
-  // (a device's limits are immutable, so this never flips at runtime).
-  // Drives: group-1 BGL width (WebGPUGlobeSurfaceLayouts), the WGSL
-  // variant (via the define bit ORed into every pipeline's defines),
-  // the bind-group-1 entry count, and the CPU multi-pass slicing width
-  // in `createTileCommands`.
-  // Public underscore: shared with the layouts initializer + the shader/
-  // pipeline/wireframe helper modules (same convention as Batches 142–153).
+  // Per-device imagery slot count (16 full, 4 reduced) and the matching
+  // `GLOBE_IMAGERY_REDUCED` shader-define flag. Captured once at `initialize()`
+  // from `device.limits.maxSampledTexturesPerShaderStage`; a device's limits
+  // are immutable, so this never flips at runtime. It drives the group-1
+  // bind-group-layout width (`WebGPUGlobeSurfaceLayouts`), the WGSL variant
+  // through the define bit ORed into every pipeline's defines, the bind-group-1
+  // entry count, and the CPU multi-pass slicing width in `createTileCommands`.
+  // Public underscore: shared with the layouts initializer and the shader,
+  // pipeline and wireframe helper modules.
   public _imagerySlotCount: number = MAX_IMAGERY_LAYERS;
   public _imageryReduced: boolean = false;
 
-  // Wireframe pipelines — keyed by the same shape string used by
-  // _selectPipeline so they share variant granularity (Q/U, N/X, M/G, stride).
-  // Lazily built on first wireframe request; production cache is untouched.
-  // Public underscore: shared with the wireframe helpers (Batch 149).
+  // Wireframe pipelines, keyed by the same shape string `selectPipeline` uses
+  // so they share variant granularity (Q/U, N/X, M/G, stride). Lazily built on
+  // the first wireframe request; the production cache is untouched.
+  // Public underscore: shared with the wireframe helpers.
   public _wireframePipelineCache: Map<string, GlobePipelineEntry> = new Map();
   public _wireframeIndexCache: Map<
     string,
     { buffer: GPUBuffer; count: number; format: GPUIndexFormat }
   > = new Map();
 
-  // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — per-tile bind-group cache
-  // keyed on bound-resource identity. Groups 0/1/2 route through it;
-  // group 3 (effects) has its own cache in `WebGPUEffectsBindGroup.js`
-  // (C-R11, Batch 55). Stats readable via
-  // `CesiumDebug.globeBindGroups()` / `globalThis.__webgpuGlobeBindGroupCache`.
+  // Per-tile bind-group cache keyed on bound-resource identity. Groups 0, 1 and
+  // 2 route through it; group 3, effects, has its own cache in
+  // `WebGPUEffectsBindGroup.js`. Stats are readable through
+  // `CesiumDebug.globeBindGroups()` and
+  // `globalThis.__webgpuGlobeBindGroupCache`.
   private _bindGroupCache: WebGPUGlobeBindGroupCache =
     new WebGPUGlobeBindGroupCache();
-  // C12-29 S5 — one dedicated 64-byte carrier per logical View/frame.
-  // Active payloads are ring-allocated once and shared by every tile/pass;
+  // One dedicated 64-byte eclipse carrier per logical view/frame. Active
+  // payloads are ring-allocated once and shared by every tile and pass;
   // inactive frames bind one stable renderer-owned inert buffer.
   private _eclipseUniforms = new WebGPUGlobeEclipseUniforms();
 
   // Per-tile GPU resource caches
-  // Public underscore: shared with the tile-buffer helpers (Batch 151).
+  // Public underscore: shared with the tile-buffer helpers.
   public _tileBufferCache: Map<string, TileGPUResources> = new Map();
   // Public underscore: imagery + water-mask caches are shared with the
-  // texture-cache helpers (Batch 148).
+  // texture-cache helpers.
   public _imageryTextureCache: Map<string, ImageryGPUTexture> = new Map();
   public _waterMaskTextureCache: Map<string, ImageryGPUTexture> = new Map();
-  // C9-12A (hardened Batch 686) — per-renderer (= per-pooled-GPUDevice, NOT
-  // per-context: two viewers on one device share this renderer and this table)
-  // shared imagery realization table, plus the CURRENT frame's context used for
-  // frame-owned mip prep + deferred texture retirement. Both are populated each
-  // frame from `createTileCommands` (the only site with `frameState.context`);
-  // imagery uploads only occur from that path so they are set before
-  // `uploadImageSource` runs. `_webgpuContext` always tracks the most recent
-  // live context; the table never captures one (F0b). Rebuilt on a
-  // device-generation change so GPU handles never cross devices.
+  // Shared imagery realization table, per renderer and therefore per pooled
+  // GPUDevice rather than per context: two viewers on one device share this
+  // renderer and this table. `_webgpuContext` is the current frame's context,
+  // used for frame-owned mip prep and deferred texture retirement. Both are
+  // populated each frame from `createTileCommands`, the only site with
+  // `frameState.context`, and imagery uploads only occur from that path, so
+  // they are set before `uploadImageSource` runs. `_webgpuContext` always
+  // tracks the most recent live context; the table never captures one. Rebuilt
+  // on a device-generation change so GPU handles never cross devices.
   public _sharedImageryRealizations: WebGPUSharedImageryRealizations | null =
     null;
   public _webgpuContext: ImageryRealizationContext | null = null;
-  // F4 (Batch 686) — frameNumber edge detector so the realization-table sweep
-  // runs once per frame, not once per tile (createTileCommands is per-tile).
+  // frameNumber edge detector, so the realization-table sweep runs once per
+  // frame rather than once per tile — `createTileCommands` is a per-tile call.
   private _lastRealizationSweepFrame = -1;
-  // C9-01 — opt-in logical allocation/cache attribution. The performance
-  // runner installs this object before Cesium loads only in its separately
-  // instrumented lane. Clean/production runs retain null and allocate no
+  // Opt-in logical allocation and cache attribution. The performance runner
+  // installs this object before Cesium loads, and only in its separately
+  // instrumented lane. Clean and production runs leave it null and allocate no
   // diagnostics state.
   public _logicalCounters: WebGPUGlobeLogicalCounters | null = null;
 
   // Reusable typed arrays for uniform data
-  // Public underscore: shared with the camera-UB packer (Batch 152).
+  // Public underscore: shared with the camera-UB packer.
   public _cameraUniformData: Float32Array = new Float32Array(
     CAMERA_UNIFORM_FLOATS,
   );
   // Scratch for projection × modifiedModelView (column-major Float64).
   // 2D/CV/Morphing paths in the vertex shader use this matrix instead of
   // mvpRelativeToEye, since their positions are planar (not RTE).
-  // Public underscore: shared with the camera-UB packer (Batch 152).
+  // Public underscore: shared with the camera-UB packer.
   public _cameraMvpScratch: Float64Array = new Float64Array(16);
-  // Public underscore: shared with the tile-UB packer (Batch 153).
+  // Public underscore: shared with the tile-UB packer.
   public _tileUniformData: Float32Array = new Float32Array(TILE_UNIFORM_FLOATS);
-  // Public underscore: shared with the tile-UB packer (Batch 153).
+  // Public underscore: shared with the tile-UB packer.
   public _tileUniformU32View: Uint32Array;
 
   private _isDestroyed: boolean = false;
   private _isInitialized: boolean = false;
-  // Last context this renderer published its per-frame effects memo onto
-  // (Batch 677 `_globeEffectsHandle`). Captured so `destroy()` can drop the
-  // memo, which otherwise pins a bind group + shadowMap/clipping/tileProvider
-  // for the context's lifetime. Null until the first effects prepare.
+  // Last context this renderer published its per-frame `_globeEffectsHandle`
+  // memo onto. Captured so `destroy()` can drop the memo, which otherwise pins
+  // a bind group plus the shadow map, clipping state and tile provider for the
+  // context's lifetime. Null until the first effects prepare.
   private _effectsMemoContext: GlobeEffectsMemoContext | null = null;
 
   constructor() {
@@ -506,13 +497,11 @@ export class WebGPUGlobeSurfaceRenderer {
    * usable `wgslShaderSource` (an opt-out path — caller falls back to
    * the non-material pipeline).
    *
-   * Cache shape: per-material-type entry holds the assembled WGSL
-   * source, the compiled shader module, the UBO buffer + layout, and a
-   * sub-cache of GPURenderPipelines keyed on the geometry variant.
-   * Switching `globe.material` types pays a one-time pipeline build per
-   * geometry variant the first time the new material renders.
-   *
-   * Cluster 3 / Step 5 (Session 65 Batch 11 — final integration).
+   * Cache shape: the per-material-type entry holds the assembled WGSL source,
+   * the compiled shader module, the UBO buffer and its layout, and a sub-cache
+   * of GPURenderPipelines keyed on the geometry variant. Switching
+   * `globe.material` types pays a one-time pipeline build per geometry variant
+   * the first time the new material renders.
    * @private
    */
   private _getOrCreateMaterialPipeline(
@@ -550,11 +539,11 @@ export class WebGPUGlobeSurfaceRenderer {
         built.prelude,
         rewritten,
       );
-      // Preprocess with MATERIAL_APPLY set so the `//>>ifdef`-gated
-      // material call site + group(4) bindings are included. Batch 246:
-      // the reduced-imagery bit must ride along — on a default-limit
-      // device the material module would otherwise declare all 16
-      // dayTextures and mismatch the 1-slot group-1 layout.
+      // Preprocess with MATERIAL_APPLY set so the `//>>ifdef`-gated material
+      // call site and group(4) bindings are included. The reduced-imagery bit
+      // must ride along: on a default-limit device the material module would
+      // otherwise declare all 16 dayTextures and mismatch the 1-slot group-1
+      // layout.
       const preprocessed = preprocessWGSL(
         fullSource,
         ShaderDefine.MATERIAL_APPLY |
@@ -581,13 +570,12 @@ export class WebGPUGlobeSurfaceRenderer {
       this._materialPipelineCache.set(material.type, entry);
     }
 
-    // Geometry variant key — the same grammar as the base pipeline cache key
-    // minus the debug-fragment and translucent-back-face axes (those variants
-    // don't currently route through the material path) and minus
-    // clip-distances, which the material path never requests. Built through
-    // the shared key module rather than inline: this map was a FIFTH private
-    // copy of the format, i.e. the same latent defect that left the four
-    // pipeline accessors reading a key shape the producer had abandoned.
+    // Geometry variant key — the same grammar as the base pipeline cache key,
+    // minus the debug-fragment and translucent-back-face axes, whose variants
+    // do not route through the material path, and minus clip-distances, which
+    // the material path never requests. Built through the shared key module
+    // rather than inline: a private copy of the format is how a reader ends up
+    // parsing a key shape the producer has abandoned.
     const defines = hasGeodeticSurfaceNormals
       ? ShaderDefine.GEODETIC_NORMAL
       : 0;
@@ -660,14 +648,14 @@ export class WebGPUGlobeSurfaceRenderer {
     this._device = device;
     this._canvasFormat = canvasFormat;
 
-    // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — resolve the
-    // per-device imagery slot count BEFORE the shader cache (prewarm
-    // needs the define bit) and the bind-group layouts (group 1 width).
+    // Resolve the per-device imagery slot count before the shader cache, whose
+    // prewarm needs the define bit, and before the bind-group layouts, which
+    // need the group-1 width.
     this._imagerySlotCount = computeGlobeImagerySlotCount(device.limits);
     this._imageryReduced = this._imagerySlotCount < MAX_IMAGERY_LAYERS;
     if (this._imageryReduced) {
-      // PERMANENT (not debug-pragma'd) — a degraded layout on a real
-      // user device is something a bug report needs to show.
+      // Permanent rather than debug-pragma'd: a degraded layout on a real user
+      // device is something a bug report needs to show.
       console.warn(
         `[CesiumJS:WebGPU] Globe imagery layout reduced to ` +
           `${this._imagerySlotCount} slot(s)/pass: device ` +
@@ -686,17 +674,16 @@ export class WebGPUGlobeSurfaceRenderer {
     // Pipelines are created lazily in _selectPipeline based on actual tile stride
     this._isInitialized = true;
 
-    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — publish the bind-group
-    // cache for `CesiumDebug.globeBindGroups()` and the regression
-    // probe. Last-initialized renderer wins (same convention as
-    // `__webgpuGlobeFragmentDebugRegistry`); split-screen debug reads
-    // the most recent device's cache, which is the common case.
+    // Publish the bind-group cache for `CesiumDebug.globeBindGroups()` and the
+    // regression probe. The last-initialized renderer wins, matching the
+    // `__webgpuGlobeFragmentDebugRegistry` convention; split-screen debug then
+    // reads the most recent device's cache, which is the common case.
     (
       globalThis as { __webgpuGlobeBindGroupCache?: WebGPUGlobeBindGroupCache }
     ).__webgpuGlobeBindGroupCache = this._bindGroupCache;
-    // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — publish the
-    // resolved slot count for probe-globe-default-limits.mjs and
-    // CesiumDebug introspection (same last-initialized-wins convention).
+    // Publish the resolved slot count for `probe-globe-default-limits.mjs` and
+    // CesiumDebug introspection, under the same last-initialized-wins
+    // convention.
     (
       globalThis as { __webgpuGlobeImagerySlotCount?: number }
     ).__webgpuGlobeImagerySlotCount = this._imagerySlotCount;
@@ -706,9 +693,9 @@ export class WebGPUGlobeSurfaceRenderer {
     return this._isInitialized;
   }
 
-  // ─── Shader Module Cache ─────────────────────────────────────────
-  // Bodies live in `WebGPUGlobeSurfaceShaders.ts` (Batch 146). These methods
-  // are 1-line delegators kept on the class for call-site stability.
+  // Shader-module cache accessors. The bodies live in
+  // `WebGPUGlobeSurfaceShaders.ts`; these one-line delegators stay on the class
+  // for call-site stability.
 
   private _initShaderCache(code: string): void {
     initShaderCacheHelper(this, code);
@@ -731,23 +718,23 @@ export class WebGPUGlobeSurfaceRenderer {
   }
 
   /**
-   * C11-158 (NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE) — apply the
-   * current `Globe.enableEnhancedOcean` state (mirrored onto the tile provider
-   * each frame) to the renderer. On a FLIP, the enhanced ocean STYLING branch
-   * of `computeEnhancedOcean` swaps in/out via the `ShaderDefineHi.ENHANCED_OCEAN`
-   * hi-word define. The shader-module cache keys by `definesHi`, so it serves
-   * the correct module on its own — but the renderer-local pipeline caches key
-   * WITHOUT the hi word (only the central cache keys on the descriptor name,
-   * which now carries an `enhOcean` label), and the clip-distances module map
-   * keys by the lo defines only. So a flip must wipe those to force a
-   * keyed-miss rebuild that re-resolves the module + pipeline — no reload
-   * needed. Idempotent: returns immediately when the state is unchanged (the
-   * common per-frame case), so the wipe fires only on the rare toggle.
+   * Apply the current `Globe.enableEnhancedOcean` state, mirrored onto the tile
+   * provider each frame, to the renderer. On a flip, the enhanced ocean styling
+   * branch of `computeEnhancedOcean` swaps in or out through the
+   * `ShaderDefineHi.ENHANCED_OCEAN` hi-word define. The shader-module cache
+   * keys by `definesHi` and serves the correct module on its own, but the
+   * renderer-local pipeline caches key without the hi word — only the central
+   * cache keys on the descriptor name, which carries an `enhOcean` label — and
+   * the clip-distances module map keys by the lo defines only. A flip must
+   * therefore wipe those to force a keyed-miss rebuild that re-resolves the
+   * module and pipeline without a reload. Idempotent: returns immediately when
+   * the state is unchanged, which is the common per-frame case, so the wipe
+   * fires only on the rare toggle.
    *
-   * Called from BOTH `createTileCommands` (on-screen) and
-   * `getOrCreateCaptureTileCommands` (env-map capture) — whichever runs first
-   * in a frame wipes ALL globe pipeline caches, so the ordering between the two
-   * (capture runs before `globe.render`) never leaves a stale cache behind.
+   * Called from both `createTileCommands` (on-screen) and
+   * `getOrCreateCaptureTileCommands` (env-map capture). Whichever runs first in
+   * a frame wipes all globe pipeline caches, so the ordering between the two —
+   * capture runs before `globe.render` — never leaves a stale cache behind.
    */
   private _applyEnhancedOceanState(enabled: boolean): void {
     if (this._enhancedOceanEnabled === enabled) {
@@ -758,41 +745,34 @@ export class WebGPUGlobeSurfaceRenderer {
     this._wireframePipelineCache.clear();
     this._debugFragmentPipelineCache.clear();
     this._capturePipelineCache.clear();
-    // The clip-distances MODULE map keys by the lo defines only; wipe it so the
+    // The clip-distances module map keys by the lo defines only; wipe it so the
     // next lookup rebuilds its base against the new `definesHi`.
     this._clipDistancesShaderModules.clear();
   }
 
-  // ─── Bind Group Layouts, Pipeline Layout, Samplers, Placeholder Texture
-  // Bodies live in `WebGPUGlobeSurfaceLayouts.ts` (Batch 147). Each helper
-  // is invoked once from `initialize()`; no class-level wrappers remain.
-
-  // ─── Render Pipelines / Pipeline Selection ───
-  // Bodies for `buildPipelineDescriptor`, `descriptorToGPU`,
-  // `resolveGlobePipelineEntry`, `selectPipeline`, and
-  // `selectDebugFragmentPipeline` live in
-  // `WebGPUGlobeSurfacePipelines.ts` (Batch 150). Callers in this file
-  // invoke the helpers directly with `this` as the host.
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // Tile Command Creation
-  // ═══════════════════════════════════════════════════════════════════════
+  // Bind-group layouts, pipeline layout, samplers and the placeholder texture
+  // are built by `WebGPUGlobeSurfaceLayouts.ts`. Each helper is invoked once
+  // from `initialize()`, so no class-level wrappers exist for them.
+  //
+  // `buildPipelineDescriptor`, `descriptorToGPU`, `resolveGlobePipelineEntry`,
+  // `selectPipeline` and `selectDebugFragmentPipeline` live in
+  // `WebGPUGlobeSurfacePipelines.ts`. Callers in this file invoke those helpers
+  // directly with `this` as the host.
 
   /**
-   * C9-13 (NEW-GLOBE-EFFECTS-PER-VIEW-PREPARED-HANDLE) — resolve and pack the
-   * terrain-global group-3 effects bind group ONCE per (context, frame/view).
+   * Resolve and pack the terrain-global group-3 effects bind group once per
+   * (context, frame/view).
    *
-   * The shadow-receive / CSM / atmosphere-LUT / clipping-planes+polygons state
+   * The shadow-receive, CSM, atmosphere-LUT and clipping-planes/polygons state
    * is identical for every selected tile and every imagery pass in a frame, so
-   * the body below (moved verbatim from the old per-tile-per-pass inline block)
-   * runs at most once; subsequent tiles/passes take the memo fast-path (a few
-   * reference/scalar compares) and reuse the prepared `GPUBindGroup`.
+   * the body below runs at most once; subsequent tiles and passes take the memo
+   * fast path — a few reference and scalar compares — and reuse the prepared
+   * `GPUBindGroup`.
    *
-   * The memo is stored on the CONTEXT, not on this per-GPUDevice renderer
-   * instance: pooled devices are shared across contexts post-Sol, so a memo
-   * keyed by frameNumber on a device-shared renderer would alias Scene A's
-   * camera bytes into Scene B. Any input mismatch falls through to a fresh
-   * prepare (campaign rule 3: unknown ⇒ conservative execution).
+   * The memo is stored on the context, not on this per-GPUDevice renderer
+   * instance: pooled devices are shared across contexts, so a memo keyed by
+   * frameNumber on a device-shared renderer would alias Scene A's camera bytes
+   * into Scene B. Any input mismatch falls through to a fresh prepare.
    */
   private _getOrCreateFrameEffectsBindGroup(
     device: GPUDevice,
@@ -800,14 +780,12 @@ export class WebGPUGlobeSurfaceRenderer {
     tileProvider: CesiumGlobeTileProvider,
     uniformState: CesiumUniformState,
   ): GPUBindGroup {
-    // Phase 4 AtmosphereLUT integration: when the scene has an
-    // atmosphere LUT ready (compute supported + SkyAtmosphere has
-    // dispatched the LUT compute pass at least once), we route
-    // through the active bind group builder to pass the LUT views
-    // into bindings 7/8 of the effects BGL. The globe shader reads
-    // those to compute fog color that matches the visible sky dome.
-    // If neither clipping nor LUT is present we still take the
-    // placeholder fast-path.
+    // When the scene has an atmosphere LUT ready — compute is supported and
+    // SkyAtmosphere has dispatched the LUT compute pass at least once — the
+    // active bind group builder passes the LUT views into bindings 7 and 8 of
+    // the effects bind-group layout. The globe shader reads those to compute a
+    // fog color that matches the visible sky dome. With neither clipping nor a
+    // LUT present, the placeholder fast path still applies.
     const perfMgr = (
       frameState as {
         context?: {
@@ -825,20 +803,18 @@ export class WebGPUGlobeSurfaceRenderer {
       inscatter: GPUTextureView;
     } | null = null;
     if (perfMgr?.ensureAtmosphereLUTResources) {
-      // Read the existing LUT views. We deliberately don't consult
-      // `shouldRecomputeAtmosphereLUT()` here because that method is
-      // side-effecting — it clears the dirty flag on read, and the
-      // flag belongs to SkyAtmosphere's dispatch lifecycle. Consuming
-      // it here would prevent SkyAtmosphere from seeing "needs
-      // recompute" on its next frame.
+      // Read the existing LUT views without consulting
+      // `shouldRecomputeAtmosphereLUT()`: that method is side-effecting — it
+      // clears the dirty flag on read — and the flag belongs to SkyAtmosphere's
+      // dispatch lifecycle, so consuming it here would stop SkyAtmosphere
+      // seeing "needs recompute" on its next frame.
       //
-      // Instead we bind whatever the texture currently contains and
-      // let the shader's `lutLuminance > 0.001` check in
-      // `sampleAtmosphereFogLut` decide whether the data is
-      // meaningful. Before SkyAtmosphere has dispatched (first frame)
-      // the textures are all-zero and the shader takes the inline
-      // Rayleigh/Mie fallback, which produces the same look as
-      // pre-LUT builds — no flash or pop.
+      // Binding whatever the texture currently contains instead lets the
+      // shader's `lutLuminance > 0.001` check in `sampleAtmosphereFogLut`
+      // decide whether the data is meaningful. Before SkyAtmosphere has
+      // dispatched, on the first frame, the textures are all zero and the
+      // shader takes the inline Rayleigh/Mie fallback, so there is no flash or
+      // pop.
       const res = perfMgr.ensureAtmosphereLUTResources(device);
       if (res && res.transmittanceView && res.inscatterView) {
         atmosphereLutViews = {
@@ -847,23 +823,23 @@ export class WebGPUGlobeSurfaceRenderer {
         };
       }
     }
-    // DP-H28 — resolve the scene's receive shadow map so the globe
-    // actually gets shadow-darkening when `viewer.shadows = true`.
-    // WebGL routes through Scene.js per-command receive logic; in
-    // WebGPU the globe manages its own bind groups, so we inline the
-    // same lookup here. `lightShadowMaps[0]` is the canonical receive
-    // source (cascades, spot, directional all land there post-update).
-    // Gated on `lightShadowsEnabled` to match Scene.js:4389.
+    // Resolve the scene's receive shadow map so the globe gets
+    // shadow-darkening when `viewer.shadows = true`. WebGL routes through
+    // Scene.js per-command receive logic; on WebGPU the globe manages its own
+    // bind groups, so the same lookup is inlined here. `lightShadowMaps[0]` is
+    // the canonical receive source — cascades, spot and directional all land
+    // there after update. Gated on `lightShadowsEnabled` to match Scene.js.
     const shadowState = frameState?.shadowState;
     const receivesShadows =
       shadowModeRuntime.receiveShadows(tileProvider.shadows) &&
       frameState.globeTranslucencyState?.translucent !== true;
-    // NEW-WEBGPU-GLOBE-RECEIVE-IGNORES-OUTOFVIEW — an out-of-view map (the
-    // below-horizon cull in `ShadowMap.checkVisibility`) is not cast into this
-    // frame, so sampling it would darken the night side from a stale, day-lit
-    // depth target. WebGL skips the receive derivation for the same reason
-    // (`Scene/SceneRenderer.js` `executeShadowMapCastCommands` / the per-command
-    // receive swap), and the WebGPU CAST dispatch already skips on it.
+    // An out-of-view map — the below-horizon cull in
+    // `ShadowMap.checkVisibility` — is not cast into this frame, so sampling it
+    // would darken the night side from a stale, day-lit depth target. WebGL
+    // skips the receive derivation for the same reason, in
+    // `Scene/SceneRenderer.js` `executeShadowMapCastCommands` and the
+    // per-command receive swap, and the WebGPU cast dispatch already skips on
+    // it.
     const candidateShadowMap = shadowState?.lightShadowMaps?.[0];
     const receiveShadowMap =
       receivesShadows &&
@@ -873,17 +849,15 @@ export class WebGPUGlobeSurfaceRenderer {
         ? candidateShadowMap
         : undefined;
 
-    // CSM Slice 1 — resolve the context's cascaded shadow map renderer
-    // when the scene has asked for cascades and the renderer has
-    // initialized a cascade texture array. We pass the params UBO +
-    // array view into the effects bind group so the shader's shadow
-    // branch can route through `sampleCascadeShadow` (binding 10/11)
-    // instead of the single-map path (binding 1/2).
+    // Resolve the context's cascaded shadow map renderer when the scene has
+    // asked for cascades and the renderer has initialized a cascade texture
+    // array. The params UBO and array view go into the effects bind group so
+    // the shader's shadow branch can route through `sampleCascadeShadow`
+    // (bindings 10 and 11) instead of the single-map path (bindings 1 and 2).
     //
-    // The ambient `csmRenderer: object | null` on the context is
-    // intentionally opaque (cesium-js-types.d.ts keeps this file free
-    // of WebGPU-renderer imports). Narrow it here to the local shape
-    // we actually consume.
+    // The ambient `csmRenderer: object | null` on the context is deliberately
+    // opaque — `cesium-js-types.d.ts` keeps this file free of WebGPU-renderer
+    // imports — so it is narrowed here to the shape this site consumes.
     type CSMRendererView = {
       enabled?: boolean;
       cascadeParamsBuffer?: GPUBuffer | null;
@@ -903,14 +877,14 @@ export class WebGPUGlobeSurfaceRenderer {
             enabled: true,
             paramsBuffer: csmCandidate.cascadeParamsBuffer,
             cascadeArrayView: csmCandidate.cascadeArrayView,
-            // NEW-CSM-SOFT-SHADOW-PCF — soft-shadow kernel radius (texels).
+            // Soft-shadow kernel radius, in texels.
             pcfRadius: csmCandidate.pcfRadius,
           }
         : undefined;
 
-    // GLOBE-CLIPPOLY-GEODETIC — `globe.clippingPolygons`. Mirrors the
-    // model renderer's gate: only an enabled, non-empty collection
-    // activates the polygon SDF path (`effects.clippingPolygonCount`).
+    // `globe.clippingPolygons`, gated exactly as the model renderer gates it:
+    // only an enabled, non-empty collection activates the polygon SDF path
+    // through `effects.clippingPolygonCount`.
     const tpClippingPolygons = tileProvider?.clippingPolygons;
     const activeClippingPolygons =
       tpClippingPolygons &&
@@ -927,13 +901,13 @@ export class WebGPUGlobeSurfaceRenderer {
     const cameraY = cameraPosition?.y ?? 0;
     const cameraZ = cameraPosition?.z ?? 0;
 
-    // ── Memo fast-path ──────────────────────────────────────────────
-    // Reuse the prepared handle only when EVERY input that determines the
+    // Reuse the prepared handle only when every input that determines the
     // packed bytes or the placeholder decision is unchanged. Ordered
-    // cheapest-first: frameNumber (changes every tick) → device → refs →
-    // camera values. `frameNumber` is read raw and a missing value disables
-    // memoization (a `?? 0` fallback would alias distinct frames — queue
-    // audit P1 #14). The memo is context-scoped (T1 pooled-device hazard).
+    // cheapest-first: frameNumber, which changes every tick, then device, then
+    // references, then camera values. `frameNumber` is read raw and a missing
+    // value disables memoization, because a `?? 0` fallback would alias
+    // distinct frames. The memo is context-scoped so a pooled device shared
+    // across Scenes cannot cross-serve.
     const memoCtx = frameState.context as unknown as
       GlobeEffectsMemoContext | undefined;
     const frameNumber = frameState.frameNumber;
@@ -967,13 +941,12 @@ export class WebGPUGlobeSurfaceRenderer {
       }
     }
 
-    // ── Fresh prepare ───────────────────────────────────────────────
-    // The active-vs-placeholder gate: any active effect routes through the
-    // real bind group builder; otherwise the per-device placeholder is
-    // returned (byte-identical zero-filled effects UBO). `useClipDistances`
-    // from the per-pass loop is intentionally NOT a term here — it requires
-    // `clippingPlanes.length > 0`, so it can never widen this condition
-    // beyond the `clippingPlanesLength > 0` term (provably byte-equal).
+    // The active-versus-placeholder gate: any active effect routes through the
+    // real bind group builder; otherwise the per-device placeholder is returned
+    // with a zero-filled effects UBO. `useClipDistances` from the per-pass loop
+    // is deliberately not a term here — it requires `clippingPlanes.length > 0`,
+    // so it can never widen this condition beyond the
+    // `clippingPlanesLength > 0` term.
     let bindGroup3: GPUBindGroup;
     if (
       clippingPlanesLength > 0 ||
@@ -996,11 +969,11 @@ export class WebGPUGlobeSurfaceRenderer {
         cameraInPlaneSpace: cameraPosition,
         atmosphereLutTransmittanceView: atmosphereLutViews?.transmittance,
         atmosphereLutInscatterView: atmosphereLutViews?.inscatter,
-        // Use the SkyAtmosphere convention — WGS84 + 2.5% atmosphere
-        // thickness matches the default the LUT compute dispatcher
-        // uses unless SkyAtmosphere.atmosphereLightIntensity has
-        // been customized. Full scene-specific radii plumbing is a
-        // small follow-on but the shader clamps altitudes anyway.
+        // The SkyAtmosphere convention: WGS84 plus 2.5% atmosphere thickness,
+        // which is what the LUT compute dispatcher defaults to unless
+        // `SkyAtmosphere.atmosphereLightIntensity` has been customized. The
+        // shader clamps altitudes, so scene-specific radii are not plumbed
+        // through.
         atmosphereLutPlanetRadii: {
           inner: 6378137.0,
           outer: 6378137.0 * 1.025,
@@ -1008,11 +981,11 @@ export class WebGPUGlobeSurfaceRenderer {
       });
       bindGroup3 = fxRes.bindGroup;
     } else {
-      // Toggle-off transition: storing the placeholder here (not leaving the
-      // stale active handle) means the next tile after shadows/CSM/LUT turn
-      // off binds zero-filled effects data rather than last frame's control
-      // bytes (the `WebGPUPrimitiveCommands._getOrCreateSharedPrimitiveEffectsBG`
-      // lesson).
+      // On a toggle-off transition, storing the placeholder rather than leaving
+      // the stale active handle means the next tile after shadows, CSM or the
+      // LUT turn off binds zero-filled effects data instead of last frame's
+      // control bytes. Same constraint as
+      // `WebGPUPrimitiveCommands._getOrCreateSharedPrimitiveEffectsBG`.
       bindGroup3 = this._placeholderEffectsBG!;
     }
 
@@ -1072,18 +1045,18 @@ export class WebGPUGlobeSurfaceRenderer {
     }
 
     // Eagerly touch the uniform ring buffer allocator on first use. The
-    // context's lazy getter only constructs the allocator on first access,
-    // and `context.beginFrame()` only calls `beginFrame()` on the allocator
-    // when it already exists. Without this touch the allocator would never
-    // initialize and BUG-9's per-frame buffer leak would re-emerge.
+    // context's lazy getter only constructs the allocator on first access, and
+    // `context.beginFrame()` only calls `beginFrame()` on the allocator when it
+    // already exists. Without this touch the allocator never initializes and
+    // every frame leaks its uniform buffers.
     void frameState.context?.uniformAllocator;
 
-    // C9-12A (hardened Batch 686) — plumb the shared imagery realization table
-    // + the CURRENT frame's context for uploads. The table stores no context
-    // closure (F0b): destruction routes through a scheduleDestroy callback
-    // supplied at each call from the live `realizationContext`, so a viewer
-    // teardown never pins a dead context's destroy queue while the pooled
-    // device stays live for another viewer.
+    // Plumb the shared imagery realization table and the current frame's
+    // context for uploads. The table stores no context closure: destruction
+    // routes through a scheduleDestroy callback supplied at each call from the
+    // live `realizationContext`, so a viewer teardown never pins a dead
+    // context's destroy queue while the pooled device stays live for another
+    // viewer.
     const realizationContext = frameState.context as unknown as
       ImageryRealizationContext | undefined;
     if (
@@ -1095,12 +1068,12 @@ export class WebGPUGlobeSurfaceRenderer {
       if (device) {
         const table = this._sharedImageryRealizations;
         if (table === null || table.device !== device) {
-          // F6 — the `table.device !== device` arm is DEFENSIVE ONLY: this
-          // renderer is constructed per pooled GPUDevice and `_device` is
-          // written once at initialize, so with the current outer plumbing the
-          // mismatch cannot occur. It is kept (cheap) so a future change to
-          // the renderer pooling fails safe (rebuild) instead of serving
-          // stale-device textures.
+          // The `table.device !== device` arm is defensive only: this renderer
+          // is constructed per pooled GPUDevice and `_device` is written once
+          // at initialize, so with the current outer plumbing the mismatch
+          // cannot occur. It is cheap, and it makes a change to the renderer
+          // pooling fail safe by rebuilding instead of serving stale-device
+          // textures.
           if (table !== null) {
             table.destroyAll((t) =>
               realizationContext.scheduleTextureDestroy(t),
@@ -1110,12 +1083,13 @@ export class WebGPUGlobeSurfaceRenderer {
             device,
           );
         }
-        // F4 — sweep once per frame (not per tile): createTileCommands is a
-        // per-tile call site, so gate on the scene's frameNumber. The number
-        // is used ONLY as an edge detector — the table keeps its own internal
-        // clock (F0a), so two scenes sharing this renderer each tick the sweep
-        // clock once per their frame (faster wall-clock aging = the safe
-        // direction), with no cross-scene stamp mixing.
+        // Sweep once per frame rather than once per tile: `createTileCommands`
+        // is a per-tile call site, so the scene's frameNumber gates it. The
+        // number is used only as an edge detector — the table keeps its own
+        // internal clock — so two scenes sharing this renderer each tick the
+        // sweep clock once per their own frame, ageing faster in wall-clock
+        // terms, which is the safe direction, and with no cross-scene stamp
+        // mixing.
         const activeTable = this._sharedImageryRealizations;
         if (activeTable) {
           const frameNumber =
@@ -1136,13 +1110,13 @@ export class WebGPUGlobeSurfaceRenderer {
       }
     }
 
-    // Batch 437 (CLOUD-SHADOWS) — capture the sun-view beer shadow map view +
-    // sampler from the procedural cloud renderer's cache for the group-2 bind
-    // group. The cloud renderer runs AFTER the globe terrain pass, so this reads
-    // LAST frame's map (one frame late — fine for a slow, soft cloud shadow). When
-    // the feature is off (the default) the cache has no real shadow view, so null
-    // here → the bind group falls back to the renderer's 1×1 placeholder
-    // (transmittance 1, no shadow) → byte-identical.
+    // Capture the sun-view Beer shadow map view and sampler from the procedural
+    // cloud renderer's cache for the group-2 bind group. The cloud renderer
+    // runs after the globe terrain pass, so this reads last frame's map — one
+    // frame late, which a slow, soft cloud shadow tolerates. When the feature
+    // is off, the default, the cache has no real shadow view, so null here
+    // makes the bind group fall back to the renderer's 1×1 placeholder:
+    // transmittance 1, no shadow.
     const cloudCacheForShadow = (
       frameState.context as unknown as {
         _cloudCache?: {
@@ -1158,10 +1132,11 @@ export class WebGPUGlobeSurfaceRenderer {
       cloudCacheForShadow?.shadowCascadeActive === true &&
       cloudCacheForShadow.shadowCascadeView
     ) {
-      // CLOUD-LOD-R5 — the opt-in cascade tier binds the 3-cascade atlas at
-      // binding 9 (same texture_2d type; the FS reads it via the cascade branch
-      // gated on cloudShadowControl.w). Aerial/fog consumers keep reading the
-      // single map, which is still rendered alongside the atlas.
+      // The opt-in cascade tier binds the three-cascade atlas at binding 9 —
+      // the same texture_2d type; the fragment shader reads it through the
+      // cascade branch gated on `cloudShadowControl.w`. Aerial and fog
+      // consumers keep reading the single map, which is still rendered
+      // alongside the atlas.
       this._cloudShadowView = cloudCacheForShadow.shadowCascadeView;
       this._cloudShadowSampler =
         cloudCacheForShadow.shadowSampler ?? this._sampler;
@@ -1177,11 +1152,10 @@ export class WebGPUGlobeSurfaceRenderer {
       this._cloudShadowSampler = null;
     }
 
-    // C-R7-RENDERER-MIGRATION (Batch 75) — capture the central pipeline
-    // cache from the context. The select methods consult `this._centralPipelineCache`
-    // to dedupe pipelines across renderer instances. Captured here (not in
-    // `initialize()`) because `initialize()` only receives `device`,
-    // not `context`.
+    // Capture the central pipeline cache from the context. The select methods
+    // consult `this._centralPipelineCache` to dedupe pipelines across renderer
+    // instances. It is captured here rather than in `initialize()` because
+    // `initialize()` only receives `device`, not `context`.
     if (!this._centralPipelineCache) {
       this._centralPipelineCache =
         (
@@ -1191,11 +1165,10 @@ export class WebGPUGlobeSurfaceRenderer {
         ).webgpuPipelineCache ?? null;
     }
 
-    // Batch 110 — invalidate cached pipelines when the scene-pipeline
-    // format generation has changed (HDR toggle, MSAA toggle). Globe
-    // terrain pipelines target the scene FB, so they must rebuild
-    // against the new color format. Clears production, wireframe,
-    // and debug-fragment caches.
+    // Invalidate cached pipelines when the scene-pipeline format generation has
+    // changed, on an HDR or MSAA toggle. Globe terrain pipelines target the
+    // scene framebuffer, so they must rebuild against the new color format.
+    // Clears the production, wireframe and debug-fragment caches.
     const ctxGen =
       (
         frameState.context as unknown as {
@@ -1212,19 +1185,18 @@ export class WebGPUGlobeSurfaceRenderer {
           }
         ).scenePipelineFormat ?? this._canvasFormat;
       this._canvasFormat = newFormat;
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — mirror the context's pick
-      // format authority alongside the scene format. The cache wipe below
-      // drops any pick pipeline built against the previous format.
+      // Mirror the context's pick format authority alongside the scene format.
+      // The cache wipe below drops any pick pipeline built against the previous
+      // format.
       this._pickFormat =
         (
           frameState.context as unknown as {
             pickPipelineFormat?: GPUTextureFormat;
           }
         ).pickPipelineFormat ?? "rgba8unorm";
-      // Session 65 Batch 32 — capture MSAA sample count alongside the
-      // canvas format. The cache wipe below ensures pipelines created
-      // before the change are dropped; new lookups pick up `_sampleCount`
-      // via `buildPipelineDescriptor → host._sampleCount`.
+      // Capture the MSAA sample count alongside the canvas format. The cache
+      // wipe below drops pipelines created before the change; new lookups pick
+      // up `_sampleCount` through `buildPipelineDescriptor → host._sampleCount`.
       this._sampleCount =
         (frameState.context as unknown as { _msaaSamples?: number })
           ._msaaSamples ?? 1;
@@ -1233,40 +1205,40 @@ export class WebGPUGlobeSurfaceRenderer {
       this._debugFragmentPipelineCache.clear();
     }
 
-    // NEW-WEBGPU-GLOBE-USE-LOG-DEPTH — resolve the log-depth state from the
-    // SHARED gate every frame (independent of the ctxGen guard above), so the
-    // globe's encoding tracks `frameState.useLogDepth` exactly like the model /
-    // primitive / collection producers that share the depth attachment. No
-    // cache wipe is needed on a flip: the renderer-local key ends in
-    // `|${defines.toString(16)}` (which carries the LOG_DEPTH bit) and the
-    // central key carries the `, ld=1` descriptor-name marker, so both caches
-    // rebuild through a normal keyed miss.
+    // Resolve the log-depth state from the shared gate every frame,
+    // independently of the `ctxGen` guard above, so the globe's encoding tracks
+    // `frameState.useLogDepth` exactly like the model, primitive and collection
+    // producers that share the depth attachment. No cache wipe is needed on a
+    // flip: the renderer-local key ends in `|${defines.toString(16)}`, which
+    // carries the LOG_DEPTH bit, and the central key carries the `, ld=1`
+    // descriptor-name marker, so both caches rebuild through a normal keyed
+    // miss.
     this._logDepthEnabled = isWebGPULogDepthActive(
       frameState.context,
       frameState,
     );
-    // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the SEPARATE pick-fleet gate,
-    // so selectPickPipeline compiles its LOG_DEPTH module from it (its pick
-    // cache key includes the define → the flip rebuilds via keyed miss).
+    // The separate pick-fleet gate, from which `selectPickPipeline` compiles
+    // its LOG_DEPTH module. Its pick cache key includes the define, so a flip
+    // rebuilds through a keyed miss.
     this._pickLogDepthEnabled = isWebGPUPickLogDepthActive(
       frameState.context,
       frameState,
     );
 
-    // C11-158 — mirror `Globe.enableEnhancedOcean` (copied onto the tile
-    // provider each frame by `Globe.render`) so the globe shader factory picks
-    // the enhanced vs classic ocean STYLING module. Default false = classic
-    // WebGL-parity water. A flip wipes the globe pipeline caches (see
-    // `_applyEnhancedOceanState`) so it takes effect without a reload.
+    // Mirror `Globe.enableEnhancedOcean`, which `Globe.render` copies onto the
+    // tile provider each frame, so the globe shader factory picks the enhanced
+    // or the classic ocean styling module. The default, false, is classic
+    // WebGL-parity water. A flip wipes the globe pipeline caches — see
+    // `_applyEnhancedOceanState` — so it takes effect without a reload.
     this._applyEnhancedOceanState(tileProvider.enableEnhancedOcean ?? false);
 
     const device = this._device;
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
     if (!mesh) return null;
 
-    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — per-frame tick (no-ops
-    // when called again for subsequent tiles in the same frame). Rolls
-    // the per-frame stat counters and runs the periodic age eviction.
+    // Per-frame tick, a no-op when called again for subsequent tiles in the
+    // same frame. Rolls the per-frame stat counters and runs the periodic age
+    // eviction.
     this._bindGroupCache.beginFrame(frameState.frameNumber ?? 0);
 
     const tileKey = getTileKeyHelper(tile);
@@ -1293,10 +1265,9 @@ export class WebGPUGlobeSurfaceRenderer {
       }
     }
 
-    // Determine number of passes needed. Pass width is the per-device
-    // imagery slot count — 16 on full-layout adapters, 1 on default-
-    // limit adapters (NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT, Batch 246),
-    // so reduced devices render N layers as N blend passes.
+    // Determine the number of passes needed. Pass width is the per-device
+    // imagery slot count — 16 on full-layout adapters, 1 on default-limit
+    // adapters — so reduced devices render N layers as N blend passes.
     const imagerySlots = this._imagerySlotCount;
     const totalLayers = readyLayers.length;
     const passCount = Math.max(1, Math.ceil(totalLayers / imagerySlots));
@@ -1307,11 +1278,11 @@ export class WebGPUGlobeSurfaceRenderer {
       logicalCounters.commandArrays = (logicalCounters.commandArrays ?? 0) + 1;
     }
 
-    // BUG-11 imagery probe diagnostic. Off by default — opt in via
-    // `scene.debugShowImageryProbe = true` when investigating an
-    // imagery render bug. Logs the first 4 tiles after the flag is set,
-    // then quiets so the console doesn't drown. Toggling the flag from
-    // false → true resets the latch so a second sample can be captured.
+    // Imagery probe diagnostic, off by default — opt in with
+    // `scene.debugShowImageryProbe = true` when investigating an imagery render
+    // bug. Logs the first 4 tiles after the flag is set, then quiets so the
+    // console does not drown. Toggling the flag from false to true resets the
+    // latch so a second sample can be captured.
     const probeOn = frameState.debugShowImageryProbe === true;
     if (probeOn && !this._lastProbeFlag) {
       // Rising edge — reset the latch so the next 4 tiles dump again.
@@ -1378,15 +1349,15 @@ export class WebGPUGlobeSurfaceRenderer {
     }
     //>>includeEnd('debug');
 
-    // Hot-path discipline: read all per-frame debug flags once *outside*
-    // the per-pass loop. The four fragment debug modes are mutually
-    // exclusive (you can only show one fragment overlay at a time);
-    // collapse them into a single integer mode so the per-pass branch
-    // is one comparison against NONE rather than a chain of if-elses.
+    // Hot-path discipline: read all per-frame debug flags once, outside the
+    // per-pass loop. The four fragment debug modes are mutually exclusive, only
+    // one fragment overlay showing at a time, so collapsing them into a single
+    // integer mode makes the per-pass branch one comparison against NONE rather
+    // than a chain of if-elses.
     //
-    // Wireframe is *not* a fragment mode — it's a topology + IB swap —
-    // so it stays as its own boolean and wins over fragment modes
-    // (more structural diagnostic value).
+    // Wireframe is not a fragment mode — it is a topology plus index-buffer
+    // swap — so it stays its own boolean and wins over the fragment modes,
+    // being the more structural diagnostic.
     const debugWireframe = frameState.debugShowGlobeWireframe === true;
     let debugFragmentMode: DebugFragmentMode = DebugFragmentMode.NONE;
     if (frameState.debugShowTriangulation === true) {
@@ -1397,15 +1368,14 @@ export class WebGPUGlobeSurfaceRenderer {
       debugFragmentMode = DebugFragmentMode.NORMAL;
     }
 
-    // C-R1-GLOBE-RENDERSTATE (Batch 99) — derive cull-on/off from the
-    // same gates WebGL uses in
+    // Derive cull on/off from the same gates WebGL uses in
     // `GlobeSurfaceTileProviderRendering.js:1224-1225`:
     //   backFaceCulling = tileProvider.backFaceCulling
     //                  && !cameraUnderground
     //                  && !globeTranslucencyState.translucent
-    // Inverted: disable culling when underground OR translucent OR the
-    // provider has back-face culling explicitly off. The runtime variant
-    // selection feeds into `_selectPipeline`'s `disableCulling` flag.
+    // Inverted here: disable culling when underground, or translucent, or the
+    // provider has back-face culling explicitly off. The result feeds
+    // `selectPipeline`'s `disableCulling` flag.
     const cameraUnderground =
       (frameState as unknown as { cameraUnderground?: boolean })
         .cameraUnderground === true;
@@ -1418,23 +1388,22 @@ export class WebGPUGlobeSurfaceRenderer {
     const providerCullEnabled =
       (tileProvider as unknown as { backFaceCulling?: boolean })
         .backFaceCulling !== false;
-    // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 182) — split the
-    // disable-culling decision. Underground / provider-disabled-culling
-    // still want cullMode: "none" (single-pass both-faces). But
-    // globeTranslucent now wants the 3-pass technique:
-    //   1. Depth-only back-face (Batch 177, cullMode: "front")
-    //   2. Translucent back-face (NEW Batch 182, cullMode: "front", blend ALPHA)
-    //   3. Translucent front-face (existing, but now cullMode: "back" via
-    //      `disableCulling: false`, instead of cullMode: "none").
-    // Camera-underground takes precedence over translucent — if both
-    // are true, use single-pass both-faces (the user's primary intent
-    // is "see through the globe").
+    // The disable-culling decision is split. Underground, and a provider with
+    // culling disabled, want cullMode: "none" — single-pass, both faces. A
+    // translucent globe instead wants the three-pass technique:
+    //   1. Depth-only back-face (cullMode: "front")
+    //   2. Translucent back-face (cullMode: "front", blend ALPHA)
+    //   3. Translucent front-face (cullMode: "back" through
+    //      `disableCulling: false`, rather than cullMode: "none")
+    // Camera-underground takes precedence over translucent: when both are true,
+    // single-pass both-faces wins, because the primary intent is to see through
+    // the globe.
     const disableCulling = !providerCullEnabled || cameraUnderground;
 
-    // C12-29 S5 — terrain-global for this logical View/frame. `prepare`
-    // returns a memoized active ring slice, or the stable inert slice without
-    // allocating/uploading on ordinary frames. Every tile and imagery pass
-    // binds this same carrier; only camera/tile UBs remain per-pass.
+    // Terrain-global for this logical view/frame. `prepare` returns a memoized
+    // active ring slice, or the stable inert slice without allocating or
+    // uploading on ordinary frames. Every tile and imagery pass binds this same
+    // carrier; only the camera and tile UBs remain per-pass.
     const eclipseUB = this._eclipseUniforms.prepare(device, frameState);
 
     for (let pass = 0; pass < passCount; pass++) {
@@ -1447,9 +1416,9 @@ export class WebGPUGlobeSurfaceRenderer {
           (logicalCounters.passLayerSlices ?? 0) + 1;
       }
 
-      // Phase 5 WGF-1: pick the hardware clip-distances variant only when
-      // ALL of the following hold. Each condition is a real correctness
-      // gate — the legacy fragment-discard path handles every other case.
+      // Pick the hardware clip-distances variant only when all of the
+      // following hold. Each condition is a correctness gate; the
+      // fragment-discard path handles every other case.
       //
       //   1. context flag is on (auto-set when device granted clip-distances)
       //   2. tile provider has an active ClippingPlaneCollection
@@ -1464,9 +1433,9 @@ export class WebGPUGlobeSurfaceRenderer {
       //   4. Union mode (`unionClippingRegions === true`). The hardware
       //      `@builtin(clip_distances)` is purely union semantics — any
       //      negative slot causes a clip. The fragment-discard path
-      //      additionally supports intersection mode (clip only when ALL
-      //      planes clip); routing intersection-mode collections to the
-      //      hardware variant would over-clip.
+      //      additionally supports intersection mode, clipping only when
+      //      every plane clips, so routing intersection-mode collections to
+      //      the hardware variant would over-clip.
       const ctx = frameState?.context;
       const cp = tileProvider?.clippingPlanes;
       const isScene3D = (frameState?.mode ?? 3) >= 2.5; // SceneMode.SCENE3D = 3
@@ -1476,13 +1445,11 @@ export class WebGPUGlobeSurfaceRenderer {
         isScene3D &&
         !!cp.unionClippingRegions;
 
-      // C-R7-RENDERER-MIGRATION (Batch 75) — `_select*` now returns
-      // `GPURenderPipeline | null`. Null means the pipeline is still
-      // materializing in the central cache; we `continue` to skip this
-      // pass for this tile this frame. The same defines × stride × format
-      // tuple resolves once and stays cached for the lifetime of the
-      // device, so the skip only ever fires on the first frame a new
-      // variant appears.
+      // A null from the `select*` helpers means the pipeline is still
+      // materializing in the central cache, and the loop `continue`s to skip
+      // this pass for this tile this frame. The same defines × stride × format
+      // tuple resolves once and stays cached for the lifetime of the device, so
+      // the skip only ever fires on the first frame a new variant appears.
       let pipeline: GPURenderPipeline | null;
       // Wireframe is a structural overlay — only the first pass renders it,
       // subsequent passes are the multi-imagery overdraw which would just
@@ -1497,12 +1464,12 @@ export class WebGPUGlobeSurfaceRenderer {
           gpuResources.hasGeodeticSurfaceNormals,
         );
       } else if (debugFragmentMode !== DebugFragmentMode.NONE) {
-        // Cold path: try the debug fragment variant; gracefully fall back
-        // to the production pipeline if the device can't compile the
-        // augmented module (driver missing primitive_index, etc.).
-        // The debug fragment + clip-distances combination is intentionally
-        // unsupported — the debug variants don't share the augmented
-        // VertexOutput. Fall through to the production module.
+        // Cold path: try the debug fragment variant, falling back to the
+        // production pipeline when the device cannot compile the augmented
+        // module — a driver missing primitive_index, for instance. The debug
+        // fragment and clip-distances combination is deliberately unsupported,
+        // since the debug variants do not share the augmented VertexOutput, so
+        // it also falls through to the production module.
         pipeline =
           selectDebugFragmentPipelineHelper(
             this,
@@ -1526,16 +1493,15 @@ export class WebGPUGlobeSurfaceRenderer {
             disableCulling,
           );
       } else {
-        // GLOBE-TRANSLUCENCY-ALPHA — when the globe is translucent, the
-        // front-face color command MUST use the ALPHA-blend pipeline
-        // variant (blend src-alpha/one-minus-src-alpha, depth-write off),
-        // matching WebGL's `getTranslucentFrontFaceRenderState`
-        // (BlendingState.ALPHA_BLEND + depthMask false). Previously only
-        // subsequent imagery passes selected the blend variant, so the
-        // first-pass translucent front-face rendered OPAQUE and the
-        // per-fragment alpha from the FS was discarded by the pipeline —
-        // an enabled translucent globe still composited fully opaque.
-        // The depth-only back-face pre-pass (Batch 177) still writes the
+        // When the globe is translucent, the front-face color command takes the
+        // ALPHA-blend pipeline variant — blend src-alpha/one-minus-src-alpha,
+        // depth-write off — matching WebGL's
+        // `getTranslucentFrontFaceRenderState` (BlendingState.ALPHA_BLEND with
+        // depthMask false). Selecting the blend variant only for subsequent
+        // imagery passes would leave the first-pass translucent front face
+        // opaque, with the pipeline discarding the per-fragment alpha the
+        // fragment shader produced, so an enabled translucent globe would still
+        // composite fully opaque. The depth-only back-face pre-pass writes the
         // far-side depth, so the blend pass has correct occlusion.
         pipeline = selectPipelineHelper(
           this,
@@ -1553,12 +1519,11 @@ export class WebGPUGlobeSurfaceRenderer {
         continue;
       }
 
-      // ─── Cluster 3 Step 5 — material pipeline override ───
-      // When `globe.material` is set (mirrored onto tileProvider.material
-      // by Globe.update), build/cache a material-augmented pipeline.
-      // The material UBO + textures are bound through Group 2 alongside
-      // water-mask / ocean-normal (merged-group strategy keeps total
-      // bind-group count at the WebGPU spec floor of 4).
+      // Material pipeline override. When `globe.material` is set — mirrored
+      // onto `tileProvider.material` by `Globe.update` — build and cache a
+      // material-augmented pipeline. The material UBO and textures bind through
+      // group 2 alongside the water mask and ocean normal, which keeps the
+      // total bind-group count at the WebGPU spec floor of 4.
       let materialEntry: MaterialPipelineCacheEntry | null = null;
       const tpMaterial = (
         tileProvider as unknown as {
@@ -1647,15 +1612,14 @@ export class WebGPUGlobeSurfaceRenderer {
         tileProvider,
       );
 
-      // Group 3: Effects (shadow receive + CSM + atmosphere LUT + clipping).
+      // Group 3: effects — shadow receive, CSM, atmosphere LUT and clipping.
       //
-      // C9-13 — the entire effects group is terrain-global: its bytes and its
-      // placeholder-vs-active decision are identical for every selected tile
-      // and every imagery pass in this frame/view. Resolve and pack it ONCE
-      // per (context, frame) in `_getOrCreateFrameEffectsBindGroup`; tiles
-      // 2..N and passes 2..M reuse the prepared handle. See that method for
-      // the full move of the LUT/shadow/CSM/clipping resolution + gate that
-      // used to run inline here (per tile per pass).
+      // The entire effects group is terrain-global: its bytes and its
+      // placeholder-versus-active decision are identical for every selected
+      // tile and every imagery pass in this frame/view, so
+      // `_getOrCreateFrameEffectsBindGroup` resolves and packs it once per
+      // (context, frame) and tiles 2..N and passes 2..M reuse the prepared
+      // handle.
       const bindGroup3 = this._getOrCreateFrameEffectsBindGroup(
         device,
         frameState,
@@ -1679,18 +1643,18 @@ export class WebGPUGlobeSurfaceRenderer {
         }
       }
 
-      // ── Index buffer overflow guard ──
-      // A mismatched indexCount vs buffer size produces a WebGPU validation
-      // error that invalidates the ENTIRE command buffer for the frame —
-      // making the canvas go black. Clamp to prevent that.
+      // Index buffer overflow guard. A mismatch between indexCount and the
+      // buffer size produces a WebGPU validation error that invalidates the
+      // whole command buffer for the frame, turning the canvas black, so the
+      // count is clamped.
       const bytesPerIndex = drawIndexFormat === "uint32" ? 4 : 2;
       const maxIndicesInBuffer = Math.floor(
         drawIndexBuffer.size / bytesPerIndex,
       );
       if (drawIndexCount > maxIndicesInBuffer) {
-        // PERMANENT warning (not debug-only) — this indicates real data
-        // corruption that produces visible rendering gaps. Throttled to
-        // once per 5 seconds to prevent console spam from recurring tiles.
+        // Permanent rather than debug-only: this indicates real data corruption
+        // that produces visible rendering gaps. Throttled to once per 5 seconds
+        // so recurring tiles do not spam the console.
         const now = performance.now();
         if (
           !this._lastOverflowWarnTime ||
@@ -1708,16 +1672,16 @@ export class WebGPUGlobeSurfaceRenderer {
         drawIndexCount = maxIndicesInBuffer;
       }
 
-      // GLOBE-UNDERGROUND-COLOR — skirt suppression parity. WebGL truncates
-      // the draw count to `mesh.indexCountWithoutSkirts` when
+      // Skirt suppression parity. WebGL truncates the draw count to
+      // `mesh.indexCountWithoutSkirts` when
       // `showSkirts = tileProvider.showSkirts && !cameraUnderground &&
       // !translucent` is false (GlobeSurfaceTileProviderRendering.js:1395-1396,
-      // 1836-1839 — skirt indices sit at the tail of the index buffer, so a
-      // count truncation drops exactly the skirt walls). WebGPU previously
-      // always drew the full buffer, so underground views showed bright
-      // untinted skirt stripes across the underside that WebGL never renders.
-      // Wireframe keeps its own dedicated line-list IB (no skirt split there —
-      // matches the debug-only intent).
+      // 1836-1839). Skirt indices sit at the tail of the index buffer, so the
+      // count truncation drops exactly the skirt walls. Drawing the full buffer
+      // instead puts bright untinted skirt stripes across the underside of
+      // underground views that WebGL never renders. Wireframe keeps its own
+      // dedicated line-list index buffer, with no skirt split, matching its
+      // debug-only intent.
       const showSkirts =
         (tileProvider as unknown as { showSkirts?: boolean }).showSkirts !==
           false &&
@@ -1730,49 +1694,43 @@ export class WebGPUGlobeSurfaceRenderer {
         }
       }
 
-      // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 177) — depth-only
-      // back-face pre-pass for translucent globe rendering. Push BEFORE
-      // the regular imagery-layer command so the scene-FB depth
-      // attachment is populated with the FAR side of the globe (cullMode:
-      // "front", depthWriteEnabled: true, colorWriteMask: 0) before the
-      // single-pass alpha blend writes the near side over it. Without
-      // the pre-pass, looking through the planet at antipodal terrain
-      // produces inside-out z-fight artifacts in the alpha-blend.
+      // Depth-only back-face pre-pass for translucent globe rendering, pushed
+      // before the regular imagery-layer command so the scene framebuffer's
+      // depth attachment holds the far side of the globe — cullMode: "front",
+      // depthWriteEnabled: true, colorWriteMask: 0 — before the single-pass
+      // alpha blend writes the near side over it. Without the pre-pass, looking
+      // through the planet at antipodal terrain produces inside-out z-fight
+      // artifacts in the alpha blend.
       //
       // Gates:
-      // - `globeTranslucent` — only when the user actually requested
-      //   translucent globe rendering. Static-opaque rendering pays
-      //   nothing (no extra pipeline, no extra command).
-      // - `!isSubsequentPass` — once per tile, not once per imagery
-      //   layer pass. Imagery layers blend over each other in
-      //   subsequent passes; the depth pre-pass only needs to run for
-      //   the first one.
-      // - `!debugWireframe && debugFragmentMode === NONE` — debug
-      //   variants own the pipeline entirely; pre-pass is suppressed
-      //   so the debug visualization renders its own depth without the
-      //   pre-emptive write affecting LOD / triangulation overlay
-      //   visibility.
-      // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 183 fix) — the 3-pass
-      // technique is mutually exclusive with cameraUnderground. When the
-      // camera is underground, `disableCulling` above already forces
-      // cullMode: "none" on the regular color command (single-pass
-      // both-faces — the user wants to see through the globe). Letting
-      // the 3-pass fire as well would double-blend back-faces (depth-
-      // only pre-pass + translucent back-face + translucent front-face
-      // command running with cullMode: "none" instead of "back"). The
-      // `!cameraUnderground` gate keeps the underground path on the
-      // legacy single-pass behavior.
-      // GLOBE-TRANSLUCENCY-ALPHA — the 3-pass see-through technique (depth-
-      // only back-face pre-pass + translucent back-face) only applies when
-      // the BACK faces are themselves translucent (backFaceAlpha < 1 or
-      // backFaceAlphaByDistance). WebGL's `getDerivedCommandTypes`
-      // (GlobeTranslucencyState.js:496-520) makes the same split: when the
-      // back face is opaque (the default — backFaceAlpha = 1), it renders
-      // DEPTH_ONLY_FRONT_FACE + OPAQUE_BACK_FACE (z-rejected behind the
-      // front depth, base depth func LESS) + TRANSLUCENT_FRONT_FACE — the
-      // net composite is JUST the alpha-blended front face over the
-      // background. Running the back-face passes in that case blends the
-      // globe underside into the destination, which WebGL never shows.
+      // - `globeTranslucent` — only when translucent globe rendering was
+      //   requested. Static-opaque rendering pays nothing: no extra pipeline,
+      //   no extra command.
+      // - `!isSubsequentPass` — once per tile, not once per imagery-layer pass.
+      //   Imagery layers blend over each other in subsequent passes; the depth
+      //   pre-pass only needs to run for the first.
+      // - `!debugWireframe && debugFragmentMode === NONE` — the debug variants
+      //   own the pipeline entirely, so the pre-pass is suppressed and the
+      //   debug visualization renders its own depth without a pre-emptive write
+      //   affecting LOD or triangulation overlay visibility.
+      // - `!cameraUnderground` — the three-pass technique is mutually exclusive
+      //   with an underground camera. Underground, `disableCulling` above
+      //   already forces cullMode: "none" on the regular color command, giving
+      //   single-pass both-faces so the globe can be seen through. Letting the
+      //   three-pass fire as well would double-blend back faces: depth-only
+      //   pre-pass, translucent back face, and a translucent front-face command
+      //   running with cullMode: "none" rather than "back".
+      // - `backTranslucent` — the three-pass see-through technique, depth-only
+      //   back-face pre-pass plus translucent back face, only applies when the
+      //   back faces are themselves translucent (backFaceAlpha < 1, or
+      //   backFaceAlphaByDistance). WebGL's `getDerivedCommandTypes`
+      //   (GlobeTranslucencyState.js:496-520) makes the same split: with an
+      //   opaque back face, the default backFaceAlpha = 1, it renders
+      //   DEPTH_ONLY_FRONT_FACE, OPAQUE_BACK_FACE (z-rejected behind the front
+      //   depth under base depth func LESS) and TRANSLUCENT_FRONT_FACE, whose
+      //   net composite is just the alpha-blended front face over the
+      //   background. Running the back-face passes there would blend the globe
+      //   underside into the destination, which WebGL never shows.
       const backTranslucent =
         (
           frameState as unknown as {
@@ -1826,15 +1784,14 @@ export class WebGPUGlobeSurfaceRenderer {
         // to render without the pre-pass — a one-frame degraded
         // artifact instead of a permanent black tile.
 
-        // NEW-GLOBE-TRANSLUCENCY-MULTI-PASS (Batch 182) — translucent
-        // back-face command. Emitted AFTER the depth-only pre-pass and
-        // BEFORE the regular translucent front-face command (pushed at
-        // line ~916 below). Sequence per tile when globeTranslucent:
-        //   1. Depth-only back-face (Batch 177) — populates depth
-        //   2. Translucent back-face (NEW Batch 182) — blends FAR side
-        //   3. Translucent front-face (existing) — blends NEAR side over
-        // The existing front-face command's cullMode flipped from
-        // "none" to "back" via the disableCulling decision split above.
+        // Translucent back-face command, emitted after the depth-only pre-pass
+        // and before the regular translucent front-face command. The per-tile
+        // sequence when `globeTranslucent` is:
+        //   1. Depth-only back-face — populates depth
+        //   2. Translucent back-face — blends the far side
+        //   3. Translucent front-face — blends the near side over it
+        // The front-face command runs with cullMode "back" rather than "none",
+        // through the `disableCulling` decision split above.
         const translucentBackPipeline = selectTranslucentBackFacePipelineHelper(
           this,
           gpuResources.isQuantized,
@@ -1870,18 +1827,18 @@ export class WebGPUGlobeSurfaceRenderer {
         // contribution is invisible after the first frame.
       }
 
-      // GLOBE-TRANSLUCENCY-ALPHA — opaque-back-face translucency (the
-      // default: backFaceAlpha = 1, frontFaceAlpha < 1). Mirrors WebGL's
-      // DEPTH_ONLY_FRONT_FACE derived command: the color command below runs
-      // on the ALPHA-blend pipeline with depth-write OFF, so without this
-      // pre-pass the scene depth would hold no globe surface at all — the
-      // sky/atmosphere pass then floods the planet disk and later
-      // depth-reading passes (depth plane, pickPosition) break. WebGL's
-      // OPAQUE_BACK_FACE sibling command is intentionally NOT mirrored: with
-      // WebGL's base depth func LESS it is z-rejected against this pre-pass
-      // depth everywhere (equal depth), so its net contribution is nothing;
-      // WebGPU's globe pipelines use less-equal, where emitting it WOULD
-      // wrongly overwrite the destination with the globe underside.
+      // Opaque-back-face translucency, the default: backFaceAlpha = 1,
+      // frontFaceAlpha < 1. Mirrors WebGL's DEPTH_ONLY_FRONT_FACE derived
+      // command. The color command below runs on the ALPHA-blend pipeline with
+      // depth-write off, so without this pre-pass the scene depth would hold no
+      // globe surface at all, the sky/atmosphere pass would flood the planet
+      // disk, and later depth-reading passes — the depth plane, pickPosition —
+      // would break. WebGL's OPAQUE_BACK_FACE sibling command is deliberately
+      // not mirrored: under WebGL's base depth func LESS it is z-rejected
+      // against this pre-pass depth everywhere, at equal depth, so its net
+      // contribution is nothing, whereas WebGPU's globe pipelines use
+      // less-equal, where emitting it would wrongly overwrite the destination
+      // with the globe underside.
       if (
         globeTranslucent &&
         !backTranslucent &&
@@ -1927,10 +1884,10 @@ export class WebGPUGlobeSurfaceRenderer {
         // semantics as the back-face pre-pass above).
       }
 
-      // Cluster 3 — material slots are merged into Group 2. When a
-      // material is active, rebuild bindGroup2 with the material UBO +
-      // textures included; otherwise the existing 4-binding water/ocean
-      // group is padded with placeholders to match the expanded layout.
+      // Material slots are merged into group 2. When a material is active,
+      // rebuild bindGroup2 with the material UBO and textures included;
+      // otherwise the four-binding water/ocean group is padded with
+      // placeholders to match the expanded layout.
       let bindGroup2Final = bindGroup2;
       if (materialEntry) {
         bindGroup2Final = this._createWaterOceanMaterialBindGroup(
@@ -1948,16 +1905,16 @@ export class WebGPUGlobeSurfaceRenderer {
         );
       }
 
-      // DP-H44 (Batch 360) — globe terrain pick pipeline. Select once for the
-      // PRIMARY (first) pass only; the scene adapter attaches the resulting
-      // pick command to that command's `derivedCommands.picking.pickCommand`
-      // so the WebGPU pick pass dispatches it (writes globe depth + the
-      // `camera.pickColor` tail into the pick FBO). The pick pipeline uses the
-      // SAME vertex variant (so the same bind groups + VB line up) but
-      // `fragmentPickMain`; it is independent of imagery-layer multi-pass /
-      // debug / material (those vary only the FRAGMENT of the color path), so
-      // subsequent imagery passes need no pick command. Null while the central
-      // cache materializes the variant — pick is simply absent for one frame.
+      // Globe terrain pick pipeline, selected for the primary (first) pass
+      // only. The scene adapter attaches the resulting pick command to that
+      // command's `derivedCommands.picking.pickCommand` so the WebGPU pick pass
+      // dispatches it, writing globe depth and the `camera.pickColor` tail into
+      // the pick FBO. The pick pipeline uses the same vertex variant, so the
+      // same bind groups and vertex buffer line up, but `fragmentPickMain`. It
+      // is independent of imagery-layer multi-pass, debug and material, which
+      // vary only the fragment stage of the color path, so subsequent imagery
+      // passes need no pick command. Null while the central cache materializes
+      // the variant, leaving pick absent for one frame.
       const pickPipeline = !isSubsequentPass
         ? selectPickPipelineHelper(
             this,
@@ -1983,13 +1940,13 @@ export class WebGPUGlobeSurfaceRenderer {
           (tile.boundingVolume as CesiumBoundingSphere | undefined) ||
           surfaceTile.boundingSphere3D,
         isSubsequentPass,
-        // Shadow cast wiring (Batch 24). Every tile — quantized or not —
-        // carries its shadow-cast UB and its true VB stride so the
-        // stride-aware pipeline registry in WebGPUShadowMapRenderer can
-        // build a pipeline whose `arrayStride` matches this tile's
-        // actual VB. The scene adapter translates these three fields
-        // into `_shadowCastLayout` + `_shadowCastTerrainUB` +
-        // `vertexStride` on the Cesium draw command.
+        // Shadow cast wiring. Every tile, quantized or not, carries its
+        // shadow-cast UB and its true vertex-buffer stride so the stride-aware
+        // pipeline registry in WebGPUShadowMapRenderer can build a pipeline
+        // whose `arrayStride` matches this tile's actual vertex buffer. The
+        // scene adapter translates these three fields into
+        // `_shadowCastLayout`, `_shadowCastTerrainUB` and `vertexStride` on the
+        // Cesium draw command.
         isQuantized: gpuResources.isQuantized,
         shadowCastTerrainUB: gpuResources.shadowCastUB,
         hasGeodeticSurfaceNormals: gpuResources.hasGeodeticSurfaceNormals,
@@ -2046,10 +2003,6 @@ export class WebGPUGlobeSurfaceRenderer {
     };
   }
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // Texture Management
-  // ═══════════════════════════════════════════════════════════════════════
-
   /**
    * Group 0 (camera UB + tile UB + eclipse UB), cached on the three backing
    * buffer identities. Per-allocation offsets are dynamic and therefore do
@@ -2064,14 +2017,14 @@ export class WebGPUGlobeSurfaceRenderer {
     eclipseUB: { buffer: GPUBuffer; offset: number; size: number },
   ): { bindGroup: GPUBindGroup; dynamicOffsets: number[] } {
     const cache = this._bindGroupCache;
-    // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — the bind group is built
-    // over the ring page at offset 0 (size = struct width). Its key is
-    // ONLY the (camera page, tile page, eclipse page/buffer) identities — the
-    // per-allocation byte offset is supplied per-draw as a dynamic
-    // offset instead. Under camera motion the page identities cycle
-    // through the ring's pageCount and recur every pageCount frames, so
-    // the cache converges to ~pageCount group-0 entries and stays at
-    // ~100% hit-rate even while the byte offsets shift each frame.
+    // The bind group is built over the ring page at offset 0, with size equal
+    // to the struct width. Its key is only the camera page, tile page and
+    // eclipse page/buffer identities; the per-allocation byte offset is
+    // supplied per draw as a dynamic offset instead. Under camera motion the
+    // page identities cycle through the ring's pageCount and recur every
+    // pageCount frames, so the cache converges to about pageCount group-0
+    // entries and stays near a 100% hit rate even while the byte offsets shift
+    // each frame.
     const key =
       `0|${cache.idOf(cameraUB.buffer)}|${cache.idOf(tileUB.buffer)}|` +
       `${cache.idOf(eclipseUB.buffer)}`;
@@ -2121,8 +2074,8 @@ export class WebGPUGlobeSurfaceRenderer {
     passLayers: CesiumTileImagery[],
   ): GPUBindGroup {
     const textureViews: GPUTextureView[] = [];
-    // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — entry count
-    // follows the per-device group-1 layout width (16 full / 4 reduced).
+    // The entry count follows the per-device group-1 layout width: 16 full, 4
+    // reduced.
     const imagerySlots = this._imagerySlotCount;
 
     for (
@@ -2134,9 +2087,9 @@ export class WebGPUGlobeSurfaceRenderer {
       if (!tileImagery || !tileImagery.readyImagery) continue;
 
       const imagery = tileImagery.readyImagery;
-      // Batch 65 — pass the full tileImagery so the cache can pick the
-      // Mercator or Geographic variant based on
-      // `tileImagery.useWebMercatorT` and the per-imagery dual textures.
+      // Pass the full tileImagery so the cache can pick the Mercator or
+      // Geographic variant from `tileImagery.useWebMercatorT` and the
+      // per-imagery dual textures.
       const result = getOrCreateImageryTextureHelper(this, tileImagery);
       if (result) {
         textureViews.push(result.view);
@@ -2162,22 +2115,20 @@ export class WebGPUGlobeSurfaceRenderer {
       textureViews.push(this._placeholderView!);
     }
 
-    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — keyed on the per-slot view
-    // identities. Views are stable per texture (created once, cached in
-    // `_imageryTextureCache` next to their GPUTexture), so a key change
-    // means the underlying texture actually rotated. The sampler is an
-    // init-time singleton and stays out of the key.
+    // Keyed on the per-slot view identities. Views are stable per texture —
+    // created once and cached in `_imageryTextureCache` next to their
+    // GPUTexture — so a key change means the underlying texture actually
+    // rotated. The sampler is an init-time singleton and stays out of the key.
     const cache = this._bindGroupCache;
     let key = "1";
     for (let i = 0; i < imagerySlots; i++) {
       key += `|${cache.idOf(textureViews[i])}`;
     }
 
-    // Batch 58 (C-R5) / Batch 246: one texture binding per imagery slot
-    // + the shared sampler at binding 16 (both layout shapes keep the
-    // sampler there). Each entry pulls from `textureViews[i]` which is
-    // padded with placeholder views above so unused slots still bind a
-    // valid resource.
+    // One texture binding per imagery slot, plus the shared sampler at binding
+    // 16, where both layout shapes keep it. Each entry pulls from
+    // `textureViews[i]`, padded with placeholder views above so unused slots
+    // still bind a valid resource.
     return cache.getOrCreate(key, () => {
       const entries: GPUBindGroupEntry[] = [];
       for (let i = 0; i < imagerySlots; i++) {
@@ -2210,10 +2161,10 @@ export class WebGPUGlobeSurfaceRenderer {
     );
   }
 
-  // Session 65 Cluster 3 — wraps `_createWaterOceanBindGroup` to accept
-  // optional material entry + material data. When provided, fills the
-  // material UBO + texture slots (bindings 4-8); otherwise binds
-  // placeholders so the bind group still matches the layout.
+  // Wraps `_createWaterOceanBindGroup` to accept an optional material entry and
+  // material data. When they are provided, the material UBO and texture slots
+  // (bindings 4-8) are filled; otherwise placeholders bind there so the bind
+  // group still matches the layout.
   private _createWaterOceanMaterialBindGroup(
     surfaceTile: CesiumGlobeSurfaceTile | null,
     tileProvider: CesiumGlobeTileProvider,
@@ -2278,8 +2229,8 @@ export class WebGPUGlobeSurfaceRenderer {
     material: { uniforms: Record<string, unknown> } | null,
   ): GPUBindGroup {
     const device = this._device!;
-    // Fallback is the ZERO (all-land) mask, NOT the white placeholder —
-    // white means "all water" to the shader (NEW-GLOBE-BELOWSURFACE-FIX).
+    // The fallback is the zero, all-land mask rather than the white
+    // placeholder, which the shader reads as all water.
     let waterMaskView = this._noWaterMaskView!;
     let normalMapView = this._placeholderView!;
 
@@ -2296,24 +2247,24 @@ export class WebGPUGlobeSurfaceRenderer {
     const oceanNormalMap = tileProvider?.oceanNormalMap;
     if (oceanNormalMap) {
       const onm = oceanNormalMap as CesiumTextureWithSource;
-      // NS-WEBGPU-OCEAN-BRIGHT-NO-WAVES — prefer `_webgpuSource` (the decoded
-      // image Globe.js retains for us; the WebGL Texture drops `_source`/`image`
-      // after upload, so those are undefined here in practice). Without this the
-      // resolver fell through to the Texture object itself, failed the
-      // instanceof gate below, and left the wave sampler on the 1×1 placeholder
-      // → a flat, non-animating ocean.
+      // Prefer `_webgpuSource`, the decoded image Globe.js retains: the WebGL
+      // Texture drops `_source` and `image` after upload, so in practice those
+      // are undefined here. Without it the resolver falls through to the
+      // Texture object itself, fails the instanceof gate below, and leaves the
+      // wave sampler on the 1×1 placeholder, giving a flat, non-animating
+      // ocean.
       const source = onm._webgpuSource ?? onm._source ?? onm.image;
       if (
         source instanceof HTMLImageElement ||
         source instanceof ImageBitmap ||
         source instanceof HTMLCanvasElement
       ) {
-        // PERF-OCEAN-NORMAL-REUPLOAD — reuse the previously uploaded view while
-        // the underlying source object is unchanged. The ocean normal map is a
-        // decoded, immutable image retained by Globe.js, so identity equality is
-        // a sound reuse test here (the same test `_resolveOrUploadMaterialTexture`
-        // applies). A changed source (e.g. `oceanNormalMapUrl` swapped at
-        // runtime) fails the identity check and re-uploads exactly once.
+        // Reuse the previously uploaded view while the underlying source object
+        // is unchanged. The ocean normal map is a decoded, immutable image
+        // retained by Globe.js, so identity equality is a sound reuse test —
+        // the same test `_resolveOrUploadMaterialTexture` applies. A changed
+        // source, such as `oceanNormalMapUrl` swapped at runtime, fails the
+        // identity check and re-uploads exactly once.
         if (this._oceanNormalMapView && this._oceanNormalMapSource === source) {
           normalMapView = this._oceanNormalMapView;
         } else {
@@ -2341,10 +2292,10 @@ export class WebGPUGlobeSurfaceRenderer {
     let matHeights = this._placeholderView!;
     if (materialEntry && material) {
       matUBO = materialEntry.ubo;
-      // Session 65 Batch 16 — pull from the aggregated composite-uniforms
-      // view so composite-fabric texture uniforms (e.g., the `image`
-      // color-ramp on Bathymetry's `ElevationRamp` sub-material, owned
-      // by `material.materials.elevationRampMaterial`, not the parent)
+      // Pull from the aggregated composite-uniforms view so composite-fabric
+      // texture uniforms — for instance the `image` color ramp on Bathymetry's
+      // `ElevationRamp` sub-material, owned by
+      // `material.materials.elevationRampMaterial` rather than the parent —
       // resolve through the same lookup path as scalar uniforms in
       // `packMaterialUBO`.
       const uniforms = aggregateCompositeUniforms(material as never);
@@ -2377,30 +2328,29 @@ export class WebGPUGlobeSurfaceRenderer {
       matUBO = this._placeholderMaterialUBO;
     }
 
-    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — keyed on the 5 variable
-    // resource identities (water mask view, ocean normal view, material
-    // UBO + 2 material texture views). Samplers are init-time
-    // singletons. The material UBO's CONTENTS are rewritten per frame
-    // via writeBuffer, but the buffer object is stable per material
-    // type, so the bind group itself is reusable. This also collapses
-    // the per-pass double-create (`bindGroup2` for the translucency
-    // pre-passes + `bindGroup2Final` for the color pass resolve to the
-    // same key when their resolved resources match).
-    // Batch 437 (CLOUD-SHADOWS) — bindings 9/10: the sun-view beer shadow map +
-    // sampler, captured this frame from the cloud cache (real map when
-    // globe.cloudCastShadows is on, else the renderer's 1×1 placeholder →
-    // transmittance 1, no shadow). Folded into the cache key so a real-vs-
-    // placeholder swap rebuilds the group.
+    // The group-2 cache key is the five variable resource identities: water
+    // mask view, ocean normal view, material UBO and two material texture
+    // views. Samplers are init-time singletons. The material UBO's contents are
+    // rewritten per frame through writeBuffer, but the buffer object is stable
+    // per material type, so the bind group itself is reusable. This also
+    // collapses the per-pass double create: `bindGroup2` for the translucency
+    // pre-passes and `bindGroup2Final` for the color pass resolve to the same
+    // key when their resolved resources match.
+    //
+    // Bindings 9 and 10 are the sun-view Beer shadow map and sampler, captured
+    // this frame from the cloud cache — the real map when
+    // `globe.cloudCastShadows` is on, otherwise the renderer's 1×1 placeholder,
+    // which reads as transmittance 1, no shadow. They are folded into the cache
+    // key so a real-versus-placeholder swap rebuilds the group.
     const cloudShadowView = this._cloudShadowView ?? this._placeholderView!;
     const cloudShadowSampler = this._cloudShadowSampler ?? this._sampler!;
 
-    // C11-213 (UP144-VECTOR-LAYER-WGSL) — binding 11: the tile's draped
-    // vector-polyline lookup buffer, realized at bake time by
-    // `prepareWebGPUVectorTileData`. Tiles with no clamped vector geometry (the
-    // overwhelming majority) share one 32-byte all-zero placeholder whose
-    // `gridWidth` header word is 0, which is the shader's early-out sentinel —
-    // so the layout never forks and the cache key stays stable across a whole
-    // globe of vector-free tiles.
+    // Binding 11 is the tile's draped vector-polyline lookup buffer, realized
+    // at bake time by `prepareWebGPUVectorTileData`. Tiles with no clamped
+    // vector geometry — the overwhelming majority — share one 32-byte all-zero
+    // placeholder whose `gridWidth` header word is 0, the shader's early-out
+    // sentinel, so the layout never forks and the cache key stays stable across
+    // a whole globe of vector-free tiles.
     if (!this._placeholderVectorBuffer) {
       this._placeholderVectorBuffer = device.createBuffer({
         label: "Globe vector tile placeholder",
@@ -2440,22 +2390,14 @@ export class WebGPUGlobeSurfaceRenderer {
     );
   }
 
-  // ─── Imagery / Water-Mask Texture Cache ───
-  // Bodies live in `WebGPUGlobeSurfaceTextures.ts` (Batch 148). The 3
-  // per-method delegators that previously sat here were the only callers
-  // for the imagery + water-mask paths; their single call sites now
-  // invoke the helpers directly. The shared `uploadImageSource` helper
-  // is also called directly from the ocean-normal-map upload site in
-  // `_createWaterOceanBindGroup`.
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // Wireframe Debug Mode
-  // ═══════════════════════════════════════════════════════════════════════
-
-  // ─── Wireframe helpers ───
-  // Bodies for `selectWireframePipeline`, `buildWireframePipelineDescriptor`,
-  // and `getOrCreateWireframeIndices` live in
-  // `WebGPUGlobeSurfaceWireframe.ts` (Batch 149). The public-API
+  // The imagery and water-mask texture caches are managed by
+  // `WebGPUGlobeSurfaceTextures.ts`, whose helpers the single call sites above
+  // invoke directly. The shared `uploadImageSource` helper is likewise called
+  // directly from the ocean-normal-map upload site in
+  // `_createWaterOceanMaterialBindGroupInner`.
+  //
+  // `selectWireframePipeline`, `buildWireframePipelineDescriptor` and
+  // `getOrCreateWireframeIndices` live in `WebGPUGlobeSurfaceWireframe.ts`; the
   // `createWireframeTileCommands` orchestrator below calls them directly.
 
   /**
@@ -2477,8 +2419,8 @@ export class WebGPUGlobeSurfaceRenderer {
   ): TileDrawDescriptor[] | null {
     if (!this._isInitialized || !this._device) return null;
 
-    // C-R7-RENDERER-MIGRATION (Batch 75) — capture the central pipeline
-    // cache from the context (same as `createTileCommands`).
+    // Capture the central pipeline cache from the context, as
+    // `createTileCommands` does.
     if (!this._centralPipelineCache) {
       this._centralPipelineCache =
         (
@@ -2492,8 +2434,8 @@ export class WebGPUGlobeSurfaceRenderer {
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
     if (!mesh) return null;
 
-    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — same per-frame tick as
-    // `createTileCommands` (no-op when already ticked this frame).
+    // The same per-frame tick `createTileCommands` runs; a no-op when the frame
+    // has already been ticked.
     this._bindGroupCache.beginFrame(frameState.frameNumber ?? 0);
 
     const tileKey = getTileKeyHelper(tile);
@@ -2511,19 +2453,20 @@ export class WebGPUGlobeSurfaceRenderer {
       gpuResources.strideBytes,
       gpuResources.hasGeodeticSurfaceNormals,
     );
-    // C-R7 (Batch 75) — pipeline still resolving in the central cache.
-    // Skip the wireframe overlay this frame; next frame it'll be ready.
+    // A null pipeline means it is still resolving in the central cache, so the
+    // wireframe overlay is skipped this frame and picked up on the next.
     if (!pipeline) return null;
 
     // Wireframe parity with WebGL: WebGL's wireframe path only swaps the tile
-    // command's vertexArray to the line VA + primitiveType to LINES, keeping the
-    // full imagery uniformMap + textures, so the lines are shaded with real
-    // imagery against the black background. The WebGPU path previously fed an
-    // EMPTY layer set, so fragmentMain's imagery composite loop (gated on
-    // tile.layerCount > 0) was skipped and the lines emitted the navy base color
-    // (tile.initialColor ≈ (0,0,0.5)) — which reads as black. Feed the same
-    // ready imagery layers createTileCommands gathers (single first pass — the
-    // wireframe is a one-pass debug overlay, no multi-pass blend needed).
+    // command's vertexArray to the line vertex array and its primitiveType to
+    // LINES, keeping the full imagery uniformMap and textures, so the lines are
+    // shaded with real imagery against the black background. Feeding an empty
+    // layer set here would skip `fragmentMain`'s imagery composite loop, which
+    // is gated on `tile.layerCount > 0`, and the lines would emit the navy base
+    // color `tile.initialColor` ≈ (0, 0, 0.5), which reads as black. So the
+    // same ready imagery layers `createTileCommands` gathers are fed through,
+    // as a single first pass — the wireframe is a one-pass debug overlay and
+    // needs no multi-pass blend.
     const imageryCollection = surfaceTile.imagery;
     const readyLayers: CesiumTileImagery[] = [];
     if (imageryCollection) {
@@ -2569,8 +2512,8 @@ export class WebGPUGlobeSurfaceRenderer {
       eclipseUB,
     );
 
-    // Real imagery textures (matches createTileCommands' first pass) so the
-    // wireframe lines are imagery-colored, not the base-color black.
+    // Real imagery textures, matching `createTileCommands`' first pass, so the
+    // wireframe lines are imagery-colored rather than base-color black.
     const bindGroup1 = this._createTextureBindGroup(device, wireLayers);
     const bindGroup2 = this._createWaterOceanBindGroup(
       device,
@@ -2602,24 +2545,23 @@ export class WebGPUGlobeSurfaceRenderer {
   }
 
   /**
-   * C2-25 ENV-SCENE-CAPTURE (Batch 446) — capture sibling of
-   * `createTileCommands`. Builds ONE single-color-target draw command for a
-   * tile, for rendering the opaque globe surface into a dynamic-environment-map
-   * cube face. The caller (`runSceneCapture` in
-   * `WebGPUDynamicEnvironmentMapManager`) has already repointed
-   * `uniformState` at the active cube-face camera via
-   * `uniformState.updateCamera(faceCamera)`, so `createCameraUniformBufferHelper`
-   * packs the FACE-camera RTE matrices for free — the same override-camera seam
-   * the WebGL shadow loop uses.
+   * Capture sibling of `createTileCommands`. Builds one single-color-target
+   * draw command for a tile, rendering the opaque globe surface into a
+   * dynamic-environment-map cube face. The caller, `runSceneCapture` in
+   * `WebGPUDynamicEnvironmentMapManager`, has already repointed `uniformState`
+   * at the active cube-face camera through
+   * `uniformState.updateCamera(faceCamera)`, so
+   * `createCameraUniformBufferHelper` packs the face-camera RTE matrices for
+   * free, through the same override-camera seam the WebGL shadow loop uses.
    *
-   * Crucially this does NOT run the on-screen `createTileCommands`
-   * `_scenePipelineFormatGeneration` reset (which wipes `_pipelineCache`): the
-   * capture pipeline lives in the SEPARATE `_capturePipelineCache`, so a capture
-   * build never invalidates the on-screen globe pipelines (no per-frame FPS
-   * regression while capture is active). Reuses the standard group 0/1/2 bind
-   * groups + the placeholder effects group; the single imagery pass is enough
-   * for a reflection source (no multi-layer blend, no material, no debug, no
-   * translucency).
+   * This deliberately does not run the on-screen `createTileCommands`
+   * `_scenePipelineFormatGeneration` reset, which wipes `_pipelineCache`: the
+   * capture pipeline lives in the separate `_capturePipelineCache`, so a
+   * capture build never invalidates the on-screen globe pipelines and costs no
+   * per-frame FPS while capture is active. It reuses the standard group 0, 1
+   * and 2 bind groups plus the placeholder effects group; a single imagery pass
+   * is enough for a reflection source, with no multi-layer blend, material,
+   * debug variant or translucency.
    *
    * @param faceFormat the cube-face color attachment format (`rgba8unorm` /
    *   `rgba16float`) — keys the capture pipeline variant.
@@ -2652,27 +2594,28 @@ export class WebGPUGlobeSurfaceRenderer {
         ).webgpuPipelineCache ?? null;
     }
 
-    // Mirror the on-screen log-depth + imagery-reduced state so the capture
-    // pipeline's shader-define set lines up with the bind-group layout. (The
-    // on-screen `createTileCommands` sets `_logDepthEnabled` each frame; capture
-    // runs in `primitives.update`, BEFORE `globe.render`, so resolve the gate
-    // directly here to stay in sync on the first capture of the frame.)
+    // Mirror the on-screen log-depth and imagery-reduced state so the capture
+    // pipeline's shader-define set lines up with the bind-group layout. The
+    // on-screen `createTileCommands` sets `_logDepthEnabled` each frame, but
+    // capture runs in `primitives.update`, before `globe.render`, so the gate
+    // is resolved directly here to stay in sync on the first capture of the
+    // frame.
     //
-    // NEW-WEBGPU-GLOBE-USE-LOG-DEPTH — this MUST be the same expression the
-    // on-screen writer uses. Both read the same `frameState`, so whichever runs
-    // first this frame decides the same globe encoding; if the two ever diverge,
-    // the capture cube and the on-screen frame disagree and the shared
-    // `_pipelineCache` / module set thrashes between them every frame.
+    // This has to be the same expression the on-screen writer uses. Both read
+    // the same `frameState`, so whichever runs first this frame decides the
+    // same globe encoding; were the two to diverge, the capture cube and the
+    // on-screen frame would disagree and the shared `_pipelineCache` and module
+    // set would thrash between them every frame.
     this._logDepthEnabled = isWebGPULogDepthActive(
       frameState.context,
       frameState,
     );
 
-    // C11-158 — mirror the ocean-styling toggle here too. Capture runs in
-    // `primitives.update` (BEFORE `globe.render` / `createTileCommands`), so
-    // read it directly to stay in sync on the first capture of the frame; the
-    // shared `_applyEnhancedOceanState` wipes ALL globe pipeline caches on a
-    // flip, so whichever path runs first covers both.
+    // Mirror the ocean-styling toggle here too. Capture runs in
+    // `primitives.update`, before `globe.render` and `createTileCommands`, so
+    // it is read directly to stay in sync on the first capture of the frame.
+    // The shared `_applyEnhancedOceanState` wipes all globe pipeline caches on
+    // a flip, so whichever path runs first covers both.
     this._applyEnhancedOceanState(tileProvider.enableEnhancedOcean ?? false);
 
     const device = this._device;
@@ -2737,8 +2680,9 @@ export class WebGPUGlobeSurfaceRenderer {
       false,
     );
 
-    // The carrier is geocentric, so every cube-face capture camera can reuse
-    // the logical View's one S5 payload; only the camera UBO changes per face.
+    // The eclipse carrier is geocentric, so every cube-face capture camera
+    // reuses the logical view's single payload; only the camera UBO changes per
+    // face.
     const eclipseUB = this._eclipseUniforms.prepare(device, frameState);
     const bg0 = this._getOrCreateBindGroup0(
       device,
@@ -2775,12 +2719,8 @@ export class WebGPUGlobeSurfaceRenderer {
     ];
   }
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // Cache Eviction
-  // ═══════════════════════════════════════════════════════════════════════
-
-  // Public-API delegators for the tile-buffer / imagery-texture cache
-  // helpers. Bodies live in `WebGPUGlobeSurfaceTileBuffers.ts` (Batch 151).
+  // Public delegators for the tile-buffer and imagery-texture cache eviction
+  // helpers, whose bodies live in `WebGPUGlobeSurfaceTileBuffers.ts`.
 
   evictStaleResources(activeTileKeys: Set<string>): void {
     evictStaleResourcesHelper(this, activeTileKeys);
@@ -2790,26 +2730,21 @@ export class WebGPUGlobeSurfaceRenderer {
     removeImageryTextureHelper(this, cacheKey);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // Pipeline Access
-  // ═══════════════════════════════════════════════════════════════════════
-
   /**
-   * Enumerate every renderer-local pipeline cache truthfully.
+   * Enumerate every renderer-local pipeline cache.
    *
-   * Replaces key-string spelunking as the way to ask what this renderer has
-   * built. Covers all four maps — `_pipelineCache` (which holds the color,
-   * pick, translucent-back-face and both depth-only kinds),
+   * This replaces key-string spelunking as the way to ask what this renderer
+   * has built. It covers all four maps — `_pipelineCache`, which holds the
+   * color, pick, translucent-back-face and both depth-only kinds,
    * `_capturePipelineCache`, `_debugFragmentPipelineCache` and
    * `_wireframePipelineCache` — and reports one row per stored entry, so the
    * row count always equals the sum of the map sizes.
    *
    * Each row carries the parsed key fields, or `fields: null` when the stored
    * key does not match the grammar in `WebGPUGlobeSurfacePipelineKey`. That
-   * null is deliberate and load-bearing: the four getters below silently
-   * returned `null` for ~15 months because they assumed a key shape the
-   * producer had stopped writing, and nothing reported the mismatch. An
-   * unparseable row is the visible version of that failure.
+   * null is load-bearing: a reader assuming a key shape the producer has
+   * stopped writing otherwise fails silently, and an unparseable row is the
+   * visible form of that divergence.
    *
    * `descriptorName` is the leading segment of the CENTRAL cache key
    * (`WebGPURenderPipelineCache.describeCacheKey`), so two rows with distinct
@@ -2839,35 +2774,29 @@ export class WebGPUGlobeSurfaceRenderer {
     return rows.filter((row) => row.fields?.kind === kind);
   }
 
-  // C-R7-RENDERER-MIGRATION (Batch 75), repaired 2026-08-01 — these four
-  // legacy accessors named a semantic variant ("uncompressed, with normals,
-  // opaque, no extra defines") but looked it up through a hardcoded key
-  // string. `831e2f189b` (2026-04-04) inserted the webMercatorT marker as a
-  // fourth letter, so `UNO_28|0` and its three siblings stopped matching any
-  // key the producer writes and all four returned `null` unconditionally for
-  // ~15 months, with no caller and no signal.
-  //
-  // They now resolve through `findGlobePipelineVariant`, which parses the key
-  // grammar from its single owning module and compares only the axes these
-  // getters actually mean:
+  // These four accessors each name a semantic variant — "uncompressed, with
+  // normals, opaque, no extra defines" and its siblings — and resolve it
+  // through `findGlobePipelineVariant`, which parses the key grammar from its
+  // single owning module. A hardcoded key string here instead would silently
+  // stop matching the moment the producer's grammar gains a field. They compare
+  // only the axes the getters actually mean:
   //
   //   quantized / normals / opaque / no clip-distances / cull enabled /
   //   no active shader defines
   //
-  // Two axes the old keys pinned by accident are deliberately left FREE:
-  //   - webMercatorT — never part of any getter's name; pinning it is the
-  //     precise bug being fixed.
-  //   - stride — varies with the terrain encoding actually loaded (12/16/
-  //     20/24/28/32/36/40+ bytes depending on quantization, webMercatorT,
-  //     normals and DP-H25 geodetic surface normals), so the single
-  //     hardcoded value was never more than a guess at one encoding.
+  // Two axes are deliberately left free:
+  //   - webMercatorT — no getter names it, so pinning it would exclude
+  //     materialized variants the getter is meant to find.
+  //   - stride — varies with the terrain encoding actually loaded (12, 16, 20,
+  //     24, 28, 32, 36, 40 or more bytes, depending on quantization,
+  //     webMercatorT, normals and geodetic surface normals), so any single
+  //     value would be a guess at one encoding.
   //
-  // SHAPE CHANGE, deliberate: several materialized variants can satisfy one
-  // getter. The lexicographically-smallest key wins so repeat calls are
-  // stable rather than load-order dependent. Callers needing every match
-  // should use `listPipelineVariants()`. Still returns `null` when no
-  // matching variant has materialized — unchanged, and now for the honest
-  // reason rather than because the key could never match.
+  // Several materialized variants can therefore satisfy one getter. The
+  // lexicographically smallest key wins, so repeat calls are stable rather than
+  // load-order dependent; callers needing every match use
+  // `listPipelineVariants()`. Returns `null` when no matching variant has
+  // materialized.
   get pipeline(): GPURenderPipeline | null {
     return findGlobePipelineVariant(this._pipelineCache, {
       kind: "color",
@@ -2936,36 +2865,32 @@ export class WebGPUGlobeSurfaceRenderer {
     return this._placeholderView;
   }
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // Cleanup
-  // ═══════════════════════════════════════════════════════════════════════
-
   destroy(): void {
     if (this._isDestroyed) return;
 
-    // C9-AUDIT-P1-SWEEP (Batch 684) — drop the per-(context, frame) effects
-    // memo this renderer published. It pins a bind group + shadowMap /
-    // clipping / tileProvider refs for the context's lifetime otherwise. The
-    // memo is intra-frame by design (reuse is gated on `frameNumber`), so
-    // nulling it here is safe by construction — the next frame rebuilds it.
+    // Drop the per-(context, frame) effects memo this renderer published; it
+    // otherwise pins a bind group plus shadow-map, clipping and tile-provider
+    // references for the context's lifetime. The memo is intra-frame by design,
+    // since reuse is gated on `frameNumber`, so nulling it here is safe by
+    // construction and the next frame rebuilds it.
     if (this._effectsMemoContext) {
       this._effectsMemoContext._globeEffectsHandle = null;
       this._effectsMemoContext = null;
     }
 
-    // Route final destruction through the same helper as production eviction
-    // so C9-01's opt-in logical lifetime gauges close consistently.
+    // Route final destruction through the same helper as production eviction so
+    // the opt-in logical lifetime gauges close consistently.
     evictStaleResourcesHelper(this, new Set());
 
     for (const cacheKey of [...this._imageryTextureCache.keys()]) {
       removeImageryTextureHelper(this, cacheKey);
     }
-    // C9-12A (hardened Batch 686) — release every shared imagery realization.
-    // The map entries were already dropped above; this destroys the shared
-    // GPUTextures the table owns. Destruction routes through the last live
-    // context's deferred `scheduleTextureDestroy` (F0b — the table stores no
-    // context closure); if no context was ever plumbed, inline destroy is the
-    // only option and is stamped for the F7 mip-job skip.
+    // Release every shared imagery realization. The map entries were dropped
+    // above; this destroys the shared GPUTextures the table owns. Destruction
+    // routes through the last live context's deferred `scheduleTextureDestroy`,
+    // since the table stores no context closure of its own; if no context was
+    // ever plumbed, inline destroy is the only option and is stamped so a
+    // pending mip job for the texture is skipped.
     if (this._sharedImageryRealizations) {
       const ctx = this._webgpuContext;
       this._sharedImageryRealizations.destroyAll((t) => {
@@ -2983,24 +2908,23 @@ export class WebGPUGlobeSurfaceRenderer {
     }
 
     for (const [, cached] of this._waterMaskTextureCache) {
-      // F7 (Batch 686) — inline destroy: stamp so a same-frame pending mip job
-      // for this texture is skipped instead of encoding on a dead texture.
+      // An inline destroy is stamped so a same-frame pending mip job for this
+      // texture is skipped instead of encoding on a dead texture.
       this._webgpuContext?.noteInlineTextureDestroy?.(cached.texture);
       cached.texture.destroy();
     }
     this._waterMaskTextureCache.clear();
 
     for (const [, cached] of this._oceanNormalMapCache) {
-      // F7 — ocean-normal uploads enqueue frame-owned mip jobs every frame
-      // (see NEW-WEBGPU-OCEANNORMAL-PER-CALL-REUPLOAD), so a mid-frame destroy
-      // MUST stamp or endFrame would encode mips on a destroyed texture.
+      // Ocean-normal uploads enqueue frame-owned mip jobs, so a mid-frame
+      // destroy must stamp or `endFrame` would encode mips on a destroyed
+      // texture.
       this._webgpuContext?.noteInlineTextureDestroy?.(cached.texture);
       cached.texture.destroy();
     }
     this._oceanNormalMapCache.clear();
-    // PERF-OCEAN-NORMAL-REUPLOAD — drop the reuse guard alongside the textures
-    // it points at, or a later frame would hand out a view backed by a
-    // destroyed texture.
+    // Drop the reuse guard alongside the textures it points at, or a later
+    // frame would hand out a view backed by a destroyed texture.
     this._oceanNormalMapSource = null;
     this._oceanNormalMapView = null;
     this._webgpuContext = null;
@@ -3020,8 +2944,8 @@ export class WebGPUGlobeSurfaceRenderer {
       this._noWaterMaskView = null;
     }
 
-    // C11-213 — the shared vector placeholder is renderer-owned. Per-tile
-    // vector buffers are owned by their `VectorTileData` and released through
+    // The shared vector placeholder is renderer-owned. Per-tile vector buffers
+    // belong to their `VectorTileData` and are released through
     // `VectorPipeline.freeResources`, not here.
     if (this._placeholderVectorBuffer) {
       this._placeholderVectorBuffer.destroy();
@@ -3031,9 +2955,9 @@ export class WebGPUGlobeSurfaceRenderer {
     this._pipelineCache.clear();
     this._wireframePipelineCache.clear();
     this._debugFragmentPipelineCache.clear();
-    // NEW-GLOBE-BINDGROUP-CACHE (Batch 241) — drop all cached bind
-    // groups (they reference textures/buffers destroyed above) and
-    // unpublish the debug handle if it points at this cache.
+    // Drop all cached bind groups, which reference textures and buffers
+    // destroyed above, and unpublish the debug handle if it points at this
+    // cache.
     this._bindGroupCache.clear();
     const g = globalThis as {
       __webgpuGlobeBindGroupCache?: WebGPUGlobeBindGroupCache;

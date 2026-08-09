@@ -1461,14 +1461,17 @@ test("D3 — derivatives are hoisted to fragment entry, never taken under the st
 });
 
 test("D4 — the composite runs after the underground tint and before the translucency ramp", () => {
+  // Anchored on the three statements themselves, not on the comments above
+  // them: `undergroundControl` / `localizedTranslucencyRectangle` are each read
+  // exactly once, inside their own composite block.
   const undergroundWgsl = wgsl.indexOf(
-    "GLOBE-UNDERGROUND-COLOR — underground tint blend",
+    "let distanceFromEllipsoid = camera.undergroundControl.y;",
   );
   const vectorWgsl = wgsl.indexOf(
     "let vectorComposited = vectorPolylineRender(",
   );
   const translucencyWgsl = wgsl.indexOf(
-    "GLOBE-TRANSLUCENCY-ALPHA — per-fragment translucent-globe alpha",
+    "let tRect = tile.localizedTranslucencyRectangle;",
   );
   assert.ok(undergroundWgsl > 0 && vectorWgsl > 0 && translucencyWgsl > 0);
   assert.ok(

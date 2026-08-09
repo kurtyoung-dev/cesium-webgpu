@@ -1,55 +1,37 @@
-// ┌─────────────────────────────────────────────────────────────────────┐
-// │ PAIR-SECTION: Vertex Shader (GLSL) ↔ WGSL                            │
-// │   WGSL: Shaders/WebGPU/Globe/GlobeTerrain.wgsl ~lines 1190-1340      │
-// │         (6 explicit @vertex entry points) + `processVertex()` helper │
-// │         (~line 976) for shared math.                                 │
-// │ Last lockstep audit: 2026-05-19, Batch 75                            │
-// └─────────────────────────────────────────────────────────────────────┘
-// Any change to this VS MUST land with a matching change in the WGSL
-// counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+// Paired with the six `@vertex` entry points in
+// Shaders/WebGPU/Globe/GlobeTerrain.wgsl and their shared `processVertex()`
+// helper; a change to either half has to land with a matching change to the
+// other.
 //
-// ARCHITECTURAL DIVERGENCE (largest in the globe shader pair)
+// The two halves are shaped differently. This file is a single `void main()`
+// covering every terrain encoding through `#ifdef` variants —
+// QUANTIZATION_BITS12 (quantized vertex format), INCLUDE_WEB_MERCATOR_Y
+// (per-vertex Mercator-T), ENABLE_VERTEX_LIGHTING,
+// GENERATE_POSITION_AND_NORMAL, APPLY_MATERIAL, GEODETIC_SURFACE_NORMALS,
+// EXAGGERATION, ENABLE_CLIPPING_POLYGONS, FOG, GROUND_ATMOSPHERE,
+// UNDERGROUND_COLOR, TRANSLUCENT, and the 2D modes with their
+// runtime-generated `getPosition` / `get2DYPositionFraction` — and the WebGL
+// pipeline cache compiles a fresh shader per define set. The WGSL declares one
+// entry point per vertex layout instead:
 //
-// - This file is a SINGLE `void main()` (~286 lines) that handles every
-//   terrain encoding via `#ifdef` preprocessor variants:
-//     QUANTIZATION_BITS12 (quantized vertex format)
-//     INCLUDE_WEB_MERCATOR_Y (per-vertex Mercator-T)
-//     ENABLE_VERTEX_LIGHTING / GENERATE_POSITION_AND_NORMAL / APPLY_MATERIAL
-//     GEODETIC_SURFACE_NORMALS
-//     EXAGGERATION
-//     ENABLE_CLIPPING_POLYGONS
-//     FOG / GROUND_ATMOSPHERE / UNDERGROUND_COLOR / TRANSLUCENT
-//     2D modes (runtime-generated `getPosition` / `get2DYPositionFraction`)
-//   The WebGL pipeline cache compiles a fresh shader per define-set.
+//   vertexMain                        (uncompressed, no Mercator-T)
+//   vertexMainWebMerc                 (uncompressed + Mercator-T)
+//   vertexMainWebMercNormals          (uncompressed + Mercator-T + normal)
+//   vertexMainQuantized               (BITS12, no Mercator-T)
+//   vertexMainQuantizedWebMerc        (BITS12 + Mercator-T)
+//   vertexMainQuantizedWebMercNormals (BITS12 + Mercator-T + normal)
 //
-// - The WGSL counterpart has SIX explicit `@vertex` entry points, each
-//   handling one specific terrain-encoding combination:
-//     vertexMain                        (uncompressed, no Mercator-T)
-//     vertexMainWebMerc                 (uncompressed + Mercator-T)
-//     vertexMainWebMercNormals          (uncompressed + Mercator-T + normal)
-//     vertexMainQuantized               (BITS12, no Mercator-T)
-//     vertexMainQuantizedWebMerc        (BITS12 + Mercator-T)
-//     vertexMainQuantizedWebMercNormals (BITS12 + Mercator-T + normal)
-//   Each decodes its specific vertex layout, then hands off to a shared
-//   `processVertex()` helper for layout-agnostic math (position
-//   transformation, ellipsoid normal, exaggeration, varying setup).
+// Each decodes its own layout, then hands off to `processVertex()` for the
+// layout-agnostic math: position transformation, ellipsoid normal,
+// exaggeration and varying setup. The language forces the split. GLSL's
+// preprocessor encodes every variant inline, so a new variant costs a few
+// `#ifdef` lines; WGSL has only a minimal bit-flag preprocessor driven from
+// `WebGPUShaderDefines.ts`, and WebGPU pipeline creation wants a single shader
+// module carrying several entry points, which also fits WGSL's typed
+// `@location` attribute model better.
 //
-// WHY THE TWO BACKENDS SPLIT DIFFERENTLY
-//
-// - GLSL's preprocessor is rich enough to encode every variant inline.
-//   This file relies on it heavily. Adding a new variant costs a few
-//   `#ifdef` lines.
-// - WGSL has only a minimal custom preprocessor (`//>>ifdef`, bit-flag
-//   driven from `WebGPUShaderDefines.ts`); it can't reproduce all of
-//   GLSL's variants. AND WebGPU pipeline creation wants a single shader
-//   module with multiple entry points. So the WGSL splits variants
-//   across entry points instead of preprocessor branches — closer fit
-//   to WGSL's typed `@location` attribute model.
-//
-// SHARED VARYING CONTRACT
-//
-// Despite the architectural split, both backends emit the SAME
-// downstream varyings consumed by the FS pair-sections:
+// Both halves emit the same varyings, which is what keeps per-fragment parity
+// across the split:
 //   gl_Position / @builtin(position) — clip-space position
 //   v_textureCoordinates (vec3: u, v, webMercatorT)
 //   v_positionEC, v_positionMC, v_normalEC, v_normalMC
@@ -57,9 +39,6 @@
 //   v_atmosphereRayleighColor, v_atmosphereMieColor, v_atmosphereOpacity
 //     (when FOG and non-per-fragment ground-atmosphere)
 //   v_slope, v_aspect, v_height (when APPLY_MATERIAL)
-// The FS pair-sections (Phases 2.1-2.4) consume these same varyings on
-// both backends, so per-fragment parity is preserved despite the VS
-// split.
 
 #ifdef QUANTIZATION_BITS12
 in vec4 compressed0;

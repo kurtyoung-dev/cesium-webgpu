@@ -1,15 +1,16 @@
 // OceanInitialSpectrum.wgsl — initial wave-height spectrum h0(k) for the FFT
-// spectral ocean (Campaign 6/7, C6-FFT-OCEAN). Computed once (or when spectrum
-// parameters change), not per frame. Output rgba32float packs the complex
-// h0(k) in .xy and the complex conjugate partner h0(-k) in .zw, so the per-
-// frame time-evolution pass (OceanTimeSpectrum.wgsl) can build the Hermitian
+// spectral ocean. Computed once, or when the spectrum parameters change, never
+// per frame. Output rgba32float packs the complex h0(k) in .xy and the complex
+// conjugate partner h0(-k) in .zw, so the per-frame time-evolution pass
+// (OceanTimeSpectrum.wgsl) can build the Hermitian
 // h(k,t) = h0(k)e^{iwt} + conj(h0(-k))e^{-iwt} from a single texel fetch.
 //
-// The spectrum is the classic Tessendorf/Phillips model (SIGGRAPH course notes
-// 1999-2004), derived from the published math (no code copied). A JONSWAP+TMA
-// upgrade (Horvath 2015) is tracked in DEFERRED_WORK — Phillips is the v1
-// baseline. Gaussian noise (xr, xi per partner) is uploaded deterministically
-// from the CPU (Box-Muller) so results are reproducible across contexts.
+// Gaussian noise (xr, xi per partner) is uploaded deterministically from the
+// CPU by Box-Muller, so results are reproducible across contexts.
+//
+// Reference: Jerry Tessendorf, "Simulating Ocean Water" (SIGGRAPH course notes
+// 1999-2004) — the Phillips spectrum, implemented from the published math with
+// no code copied.
 
 struct InitParams {
   size: u32,        // N

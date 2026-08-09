@@ -316,11 +316,10 @@ class GlobeSurfaceTileProvider {
     this.lightingFadeInDistance = 9000000.0;
     this.hasWaterMask = false;
     this.showWaterEffect = false;
-    // C7-LAKE-WATER-MASK — the WaterClassificationProvider Phase-1 seam.
-    // Mirrored from Globe each frame when `globe.lakeWaterMask` is on
-    // (undefined otherwise); consumed by GlobeSurfaceTile's shared
-    // water-mask upload point to OR lake coverage over the terrain
-    // provider's ocean-only mask. See Scene/WaterClassificationProvider.ts.
+    // Mirrored from Globe each frame while `globe.lakeWaterMask` is on, and
+    // left undefined otherwise. GlobeSurfaceTile's shared water-mask upload
+    // point consumes it to OR lake coverage over the terrain provider's
+    // ocean-only mask. See `Scene/WaterClassificationProvider.ts`.
     this.waterClassificationProvider = undefined;
     this.oceanNormalMap = undefined;
     this.zoomedOutOceanSpecularIntensity = 0.5;
@@ -435,9 +434,9 @@ class GlobeSurfaceTileProvider {
     this._oldVerticalExaggerationRelativeHeight = undefined;
     this._oldSceneMode = SceneMode.SCENE3D;
 
-    // C12-29 S5 — retained O(1) rendered-terrain activation envelope. Raw
-    // height extrema are folded in once when mesh resources become ready;
-    // ordinary selection/command generation therefore does no eclipse work.
+    // Retained O(1) activation envelope for the rendered terrain. Raw height
+    // extrema are folded in once, when mesh resources become ready, so
+    // ordinary selection and command generation do no eclipse work.
     this._eclipseSurfaceRadius = undefined;
     this._eclipseSelectionRevision = 0;
     resetKnownTerrainEclipseBounds(this);
@@ -737,8 +736,9 @@ class GlobeSurfaceTileProvider {
     );
     this._eclipseSelectionRevision++;
 
-    // C12-29 S5 — current selection/exaggeration bounds are authoritative.
-    // Reclassify before any tile command captures/binds the View-owned block.
+    // The current selection and exaggeration bounds are authoritative, so
+    // reclassify before any tile command captures or binds the view-owned
+    // block.
     updateEclipseGlobeShadowForFrameState(
       frameState,
       this._eclipseSurfaceRadius,
@@ -748,10 +748,11 @@ class GlobeSurfaceTileProvider {
 
     updateSceneCaptureContentRevision(this, frameState);
 
-    // C9-02 — optional visibility/execution ownership audit. The performance
+    // Optional visibility and execution ownership audit; the performance
     // runner attaches this observer only in its separately instrumented lane.
-    // Production pays one context-field read and two frame-level guards; tile
-    // compilation itself gains no diagnostic allocation or per-tile branch.
+    // Production pays one context-field read and two frame-level guards, and
+    // tile compilation itself gains no diagnostic allocation or per-tile
+    // branch.
     const ownershipDiagnostics =
       frameState.context._visibilityExecutionOwnershipDiagnostics;
     const ownershipCommandListStart = defined(ownershipDiagnostics)
@@ -829,17 +830,17 @@ class GlobeSurfaceTileProvider {
       );
     }
 
-    // DP-H44 — WebGPU rebuilds fresh globe commands (with the pick command
-    // attached) for the selected tiles in the pick frame; the WebGL
-    // `_drawCommands` re-push below is skipped (it's empty on WebGPU anyway).
+    // WebGPU rebuilds fresh globe commands, with the pick command attached,
+    // for the selected tiles in the pick frame, so the WebGL `_drawCommands`
+    // re-push below is skipped; it is empty on WebGPU in any case.
     const webGPUHandled = updateWebGPUForPick(this, frameState);
     if (!webGPUHandled) {
       const drawCommands = this._drawCommands;
       for (let i = 0, length = this._usedDrawCommands; i < length; ++i) {
-        // The pooled WebGL command was built by the prior on-screen View.
-        // Rebind the property-backed S5 block before an offscreen/pick View
-        // re-pushes it; otherwise the derived pick fragment shader executes
-        // eclipse ALU with the default View's geometry.
+        // The pooled WebGL command was built by the prior on-screen view.
+        // Rebind the property-backed eclipse block before an offscreen or pick
+        // view re-pushes it, or the derived pick fragment shader runs its
+        // eclipse arithmetic against the default view's geometry.
         this._uniformMaps[i].properties.eclipseGlobeShadow =
           frameState.eclipseGlobeShadow;
         pushCommand(drawCommands[i], frameState);
@@ -1480,10 +1481,6 @@ class GlobeSurfaceTileProvider {
     }
   }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// File-scoped helpers
-// ═══════════════════════════════════════════════════════════════════════════
 
 function sortTileImageryByLayerIndex(a, b) {
   let aImagery = a.loadingImagery;

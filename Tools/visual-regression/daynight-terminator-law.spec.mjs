@@ -159,7 +159,7 @@ test("A5: the false 'Matches the GLSL path' comment is gone, and now it would be
   // And the replacement prose names the contract rather than asserting parity.
   assert.match(
     wgsl,
-    /THE DAY\/NIGHT RAMP LAW \(CLT-B4, CO-18\)/,
+    /The day\/night ramp law: one law, two expressions, two consumers/,
     "the reconciled law's own explanation block is missing from the shader",
   );
 });

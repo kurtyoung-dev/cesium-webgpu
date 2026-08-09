@@ -8,14 +8,11 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
-// Batch 67 — WGSL source-of-truth lives in
-// `packages/engine/Source/Shaders/WebGPU/ReprojectWebMercator.wgsl`. The
-// gulp build emits a `.js` wrapper that exports the WGSL as a default
-// string export. We import that here so the TS file no longer carries
-// an inline copy that could drift from the `.wgsl` (which already
-// happened pre-Batch-67 — the inline copy carried a Batch 56 alpha=1
-// fix that the `.wgsl` file lacked). See
-// `migration_doc/SHADER_PAIRS_LOCKSTEP.md`.
+// The shader's single source is
+// `packages/engine/Source/Shaders/WebGPU/ReprojectWebMercator.wgsl`; the gulp
+// build emits a `.js` wrapper exporting it as a default string. Importing that
+// wrapper keeps this file from carrying a second copy of the WGSL, which can
+// drift from the `.wgsl` the GLSL pair is kept in lockstep with.
 import ReprojectWebMercatorWGSL from "../../Shaders/WebGPU/ReprojectWebMercator.js";
 
 // Lazily-allocated mipmap generator, shared across reprojection calls
@@ -176,14 +173,12 @@ export function reprojectWebMercatorWebGPU(
   ]);
   device.queue.writeBuffer(cache.uniformBuffer, 0, uniformData);
 
-  // Batch 57 — allocate output texture with full mipmap chain. The
-  // reprojected texture feeds the globe-tile sampler at orbital altitudes
-  // where one fragment can cover many texels; without mipmaps the
-  // sampler point-samples Level-0 and produces severe aliasing + a
-  // brightness drop (the alias pattern under-samples bright pixels).
-  // Mirrors the equivalent fix in WebGPUGlobeSurfaceTextures.ts
-  // (uploadImageSource). See `migration_doc/WEBGPU_DEBUGGING_LOG.md`
-  // Batch 57.
+  // Allocate the output with a full mipmap chain. The reprojected texture
+  // feeds the globe-tile sampler at orbital altitudes where one fragment can
+  // cover many texels; with only level 0 present the sampler point-samples it
+  // and produces severe aliasing plus a brightness drop, because the alias
+  // pattern under-samples bright pixels. `uploadImageSource` in
+  // WebGPUGlobeSurfaceTextures.ts allocates its chain for the same reason.
   const mipLevelCount = Math.floor(Math.log2(Math.max(width, height))) + 1;
   const outputTexture = device.createTexture({
     label: "ReprojectWebMercator Output",
@@ -226,12 +221,10 @@ export function reprojectWebMercatorWebGPU(
     label: "ReprojectWebMercator Encoder",
   });
 
-  // BUG-11 hypothesis A defense: clear alpha to 1.0 (instead of 0.0) so
-  // any unwritten texel — present today only via a future `discard` path,
-  // but a footgun waiting to happen — does NOT collapse the downstream
-  // composite to zero via `tex.a * effectiveAlpha`. The full-screen
-  // triangle currently overwrites every texel, so this is a defensive
-  // change with no behavior impact today.
+  // Alpha clears to 1.0 rather than 0.0 so an unwritten texel cannot collapse
+  // the downstream composite to zero through `tex.a * effectiveAlpha`. The
+  // full-screen triangle covers every texel, so this only becomes load-bearing
+  // if a `discard` path is ever added to the fragment shader.
   const pass = encoder.beginRenderPass({
     label: "ReprojectWebMercator RenderPass",
     colorAttachments: [
@@ -251,9 +244,9 @@ export function reprojectWebMercatorWebGPU(
 
   device.queue.submit([encoder.finish()]);
 
-  // Batch 57 — fill mip levels 1..N from the freshly-rendered level 0.
-  // Lazily instantiate the generator per device; it caches per-format
-  // pipelines so repeated reprojection calls reuse the same shader.
+  // Fill mip levels 1..N from the freshly-rendered level 0. The generator is
+  // instantiated lazily per device and caches per-format pipelines, so
+  // repeated reprojection calls reuse the same shader.
   if (mipLevelCount > 1) {
     ensureReprojectionMipmapGenerator(device).generateMipmapsAndSubmit(
       outputTexture,
@@ -288,11 +281,11 @@ export function reprojectImageSourceWebGPU(
   southLatitude: number,
   northLatitude: number,
 ): GPUTexture {
-  // C-P18: HTMLImageElement sources must be fully decoded before WebGPU
-  // can copy them. Without this guard, `copyExternalImageToTexture`
-  // throws "source is not in a valid state" mid-reproject and the
-  // fresh `srcTexture` leaks. Callers that pass a potentially-decoding
-  // image should catch the error and retry on the next frame.
+  // HTMLImageElement sources must be fully decoded before WebGPU can copy
+  // them. Without this guard, `copyExternalImageToTexture` throws "source is
+  // not in a valid state" mid-reproject and the fresh `srcTexture` leaks.
+  // Callers that pass a potentially-decoding image should catch the error and
+  // retry on the next frame.
   if (
     typeof HTMLImageElement !== "undefined" &&
     imageSource instanceof HTMLImageElement
@@ -340,15 +333,15 @@ export function reprojectImageSourceWebGPU(
 }
 
 /**
- * Batch 65 — dual-texture upload for Mercator imagery providers.
+ * Dual-texture upload for Mercator imagery providers.
  *
- * Uploads the source image to a Mercator-projection GPUTexture WITH a full
- * mipmap chain (so it is directly bindable by the globe-tile pipeline for
- * tiles whose `useWebMercatorT === true`), then reprojects from that texture
- * to a Geographic-projection GPUTexture (also with full mip chain).
+ * Uploads the source image to a Mercator-projection GPUTexture with a full
+ * mipmap chain, so it is directly bindable by the globe-tile pipeline for
+ * tiles whose `useWebMercatorT === true`, then reprojects from that texture
+ * to a Geographic-projection GPUTexture that also carries a full mip chain.
  *
  * The returned pair lets the renderer pick the projection that matches each
- * tile's `tileImagery.useWebMercatorT` flag, exactly mirroring WebGL's
+ * tile's `tileImagery.useWebMercatorT` flag, mirroring WebGL's
  * `imagery.textureWebMercator` / `imagery.texture` dual-texture architecture.
  *
  * Both textures are owned by the caller; both must be destroyed when the

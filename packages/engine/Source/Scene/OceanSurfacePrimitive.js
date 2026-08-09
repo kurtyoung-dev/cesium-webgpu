@@ -14,45 +14,43 @@ import VerticalExaggeration from "../Core/VerticalExaggeration.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 /**
- * OceanSurfacePrimitive — opt-in GPU FFT spectral ocean surface (Campaign 6/7,
- * C6-FFT-OCEAN). A camera-anchored ENU grid patch is displaced by an animated
- * FFT wave field synthesized on the GPU and shaded with a Fresnel water BRDF +
- * Jacobian foam.
+ * An opt-in GPU FFT spectral ocean surface. A camera-anchored ENU grid patch is
+ * displaced by an animated FFT wave field synthesized on the GPU, then shaded
+ * with a Fresnel water BRDF and Jacobian foam.
  *
- * WebGPU-only: on WebGL no feature renderer resolves and the primitive renders
- * nothing (documented no-op, Principle 2/10). Default-off at the facade level;
- * this primitive only runs its compute chain while added to the scene and
- * `show === true`.
+ * WebGPU only: on WebGL no feature renderer resolves and the primitive renders
+ * nothing. It is off by default at the facade level, and runs its compute chain
+ * only while it is in the scene with <code>show === true</code>.
  *
- * Backend-agnostic scene logic (anchor computation, ENU snapping for world-
- * anchored UVs, vertical-datum + tide offset, sun/parameter packing) runs here
- * BEFORE the backend branch; the WebGPU renderer consumes the packed
- * `_`-prefixed fields (scene-logic-extractor pattern, CLAUDE.md). Because the
- * datum/tide offset moves the ANCHOR — which the renderer already splits
- * high/low into `OceanUniforms.anchorHigh/anchorLow` — RTE absorbs it and no
- * WGSL changes; a WebGL2 FFT fallback would inherit the offset for free.
+ * The backend-agnostic scene logic — anchor computation, ENU snapping for
+ * world-anchored UVs, vertical-datum and tide offset, sun and parameter
+ * packing — runs here, ahead of the backend branch, and the WebGPU renderer
+ * consumes the packed <code>_</code>-prefixed fields. Because the datum and
+ * tide offset moves the anchor, which the renderer already splits high/low into
+ * <code>OceanUniforms.anchorHigh</code> / <code>anchorLow</code>, the relative-
+ * to-eye encoding absorbs it and no WGSL changes; a WebGL2 FFT fallback would
+ * inherit the offset for free.
  *
- * VERTICAL DATUM + TIDE (C6-FFT-OCEAN-TIDE-DATUM, rulings T1/T2/T3/T6). The
- * patch used to anchor at `scaleToGeodeticSurface(camera)` — ELLIPSOIDAL height
- * 0 — while real terrain publishes ORTHOMETRIC heights, so Cesium World
- * Terrain's baked sea sits on the geoid. `probe-ocean-datum.mjs` measured the
- * disagreement at 101.64 m at the Sri Lanka coast (patch floating above the
- * baked sea as a raised water plateau). The anchor is now displaced along
- * `_a0Up` by
+ * Vertical datum and tide. Anchoring at
+ * <code>scaleToGeodeticSurface(camera)</code> puts the patch at ellipsoidal
+ * height 0, while real terrain publishes orthometric heights, so Cesium World
+ * Terrain's baked sea sits on the geoid — a disagreement of 101.64 m at the Sri
+ * Lanka coast, where the patch floats above the baked sea as a raised water
+ * plateau. The anchor is therefore displaced along <code>_a0Up</code> by
  *
  *     h  = geoidUndulation(anchor)          // 0 when the datum is ELLIPSOID
  *        + tideHeight(time, anchor) * tideExaggeration
  *     h' = (h - relativeHeight) * verticalExaggeration + relativeHeight
  *
- * in that order. The exaggeration map is applied LAST because the ocean lid is
- * itself displaced by it — measured, Batch 759 lane 3: the India site's lid
- * moves -104 m -> -313 m at exaggeration 3.0, exactly `(h-0)*3`. Composing the
- * other way would leave the patch behind at high exaggeration.
+ * in that order. The exaggeration map is applied last because the ocean lid is
+ * itself displaced by it: at exaggeration 3.0 an Indian-coast lid moves from
+ * -104 m to -313 m, exactly <code>(h - 0) * 3</code>. Composing the other way
+ * leaves the patch behind at high exaggeration.
  *
- * OFF-CONTRACT. With `verticalDatum` resolving to ELLIPSOID and the tide term
- * 0, `h` is exactly 0 and — at the default exaggeration (1.0, relative height
- * 0) — `h'` is exactly 0, so the anchor is bit-for-bit what it was before this
- * feature existed.
+ * With <code>verticalDatum</code> resolving to ELLIPSOID and the tide term 0,
+ * <code>h</code> is exactly 0, and at the default exaggeration (1.0, relative
+ * height 0) so is <code>h'</code>, leaving the anchor bit-for-bit where it
+ * would be without this feature.
  *
  * @alias OceanSurfacePrimitive
  * @constructor
@@ -74,10 +72,10 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
  * @param {boolean} [options.tideEnabled=true] Whether the tide term is added.
  *   `false` makes it exactly 0.
  * @param {number} [options.tideExaggeration=1] Multiplier on the tide term.
- *   1.0 is true scale (ruling T3); above 1 is explicitly stylised.
+ *   1.0 is true scale; above 1 is explicitly stylised.
  * @param {Function} [options.tideCallback] `(positionWC, time) => metres`,
  *   replacing the built-in {@link TideModel}.
- * @param {Globe} [options.globe] Owning globe, read ONLY for its
+ * @param {Globe} [options.globe] Owning globe, read only for its
  *   `terrainProvider` when the datum is `AUTO`.
  */
 function OceanSurfacePrimitive(options) {
@@ -132,7 +130,6 @@ function OceanSurfacePrimitive(options) {
   this._a0North = new Cartesian3();
   this._a0Up = new Cartesian3();
 
-  // ── Vertical datum + tide (C6-FFT-OCEAN-TIDE-DATUM). ──
   this._verticalDatum = options.verticalDatum ?? VerticalDatum.AUTO;
   this._tideEnabled = options.tideEnabled ?? true;
   this._tideExaggeration = options.tideExaggeration ?? 1.0;
@@ -216,8 +213,8 @@ function computeSeaLevelOffset(primitive, anchor, frameState, ellipsoid) {
   }
   primitive._tideHeightM = tide;
 
-  // ── Compose with scene.verticalExaggeration (measured: it DOES displace the
-  // terrain's ocean lid, Batch 759 lane 3), so the patch tracks the lid. ──
+  // Compose with scene.verticalExaggeration so the patch tracks the terrain's
+  // ocean lid, which that exaggeration displaces.
   let height = undulation + tide;
   let scale = frameState.verticalExaggeration;
   let relative = frameState.verticalExaggerationRelativeHeight;
@@ -315,7 +312,7 @@ OceanSurfacePrimitive.prototype.update = function (frameState) {
   Cartesian3.clone(this._a0Up, this._up);
 
   // Local curvature radius from the geodetic surface radius at the anchor.
-  // Taken AFTER the sea-level offset so the spherical cap is the sphere the
+  // Taken after the sea-level offset, so the spherical cap is the sphere the
   // patch actually sits on.
   const anchorMag = Cartesian3.magnitude(this._anchor);
   this._invRadius = anchorMag > 1.0 ? 1.0 / anchorMag : 1.0 / 6371000.0;

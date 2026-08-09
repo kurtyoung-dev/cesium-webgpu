@@ -1,13 +1,7 @@
 /// <reference types="@webgpu/types" />
 /**
  * Bind-group-layout, pipeline-layout, sampler, and placeholder-texture
- * builders extracted from `WebGPUGlobeSurfaceRenderer`.
- *
- * Batch 147 of the audit-recommended decomposition (third slice of the
- * GlobeSurface decomposition arc — see
- * `migration_doc/BATCH_145_PLAN_GLOBE_SURFACE_DECOMPOSITION.md`).
- *
- * Moves the four `_create*` init helpers off the renderer class:
+ * builders for `WebGPUGlobeSurfaceRenderer`:
  *
  *   - `createBindGroupLayouts(host)` — builds the four bind-group layouts
  *     (camera+tile+eclipse UBs, 16-slot imagery + sampler, water-mask + ocean
@@ -24,14 +18,11 @@
  *     + view used to fill empty imagery slots in tiles with fewer than
  *     16 layers.
  *
- * The renderer's `initialize()` calls these four helpers directly. The
- * old `_create*` private methods are removed entirely (each had a
- * single caller).
+ * The renderer's `initialize()` calls these four helpers directly.
  *
- * The 12 host fields these helpers write into are flipped from `private`
- * to `public` on the renderer (with the underscore prefix preserved as
- * the "do-not-call-from-outside-the-Renderer-package" marker per the
- * convention used in Batches 142–146).
+ * The 12 host fields they write into are public on the renderer, with the
+ * underscore prefix retained to mark them as not callable from outside the
+ * Renderer package.
  *
  * @module WebGPUGlobeSurfaceLayouts
  */
@@ -59,8 +50,7 @@ import { ECLIPSE_UNIFORM_BYTES } from "./WebGPUGlobeEclipseUniforms.js";
 export interface LayoutsHost {
   readonly _device: GPUDevice | null;
   /**
-   * NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — per-device
-   * imagery slot count (16 full / 4 reduced), computed by
+   * Per-device imagery slot count (16 full / 4 reduced), computed by
    * `computeGlobeImagerySlotCount` at renderer init. Group 1 is built
    * with this many texture bindings; the sampler stays at binding 16
    * in both shapes (sparse binding indices are valid in WebGPU).
@@ -81,28 +71,25 @@ export interface LayoutsHost {
   _noWaterMaskView: GPUTextureView | null;
 }
 
-// ─── Bind Group Layouts ───
 export function createBindGroupLayouts(host: LayoutsHost): void {
   const device = host._device!;
 
   // Group 0: Camera + Tile + per-View eclipse uniform buffers.
   //
-  // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — all bindings use
-  // dynamic offsets. The bind group is built ONCE over the ring
-  // allocator's page buffer (offset 0, size = struct width) and keyed only on
-  // the (camera page, tile page, eclipse page/buffer) identities — never on
-  // the per-allocation byte offset. The actual slice offset is supplied
-  // per-draw via
+  // All three bindings use dynamic offsets. The bind group is built once over
+  // the ring allocator's page buffer (offset 0, size = struct width) and keyed
+  // only on the (camera page, tile page, eclipse page/buffer) identities,
+  // never on the per-allocation byte offset. The actual slice offset is
+  // supplied per draw via
   // `setBindGroup(0, bg0, [camOffset, tileOffset, eclipseOffset])`.
   //
-  // Why this matters: the camera/tile UBs are sub-allocated from the
-  // per-frame ring allocator, so their byte offset within a page shifts
-  // whenever the per-frame allocation sequence changes (tile streaming
-  // in/out during camera motion). Keying the cache on that offset meant
-  // a fresh `createBindGroup` for every tile after the shift point.
-  // With dynamic offsets the bind group survives motion: the cache
-  // converges to ~pageCount group-0 entries (one per ring page) and
-  // stays at ~100% hit-rate while panning.
+  // The camera and tile UBs are sub-allocated from the per-frame ring
+  // allocator, so their byte offset within a page shifts whenever the
+  // allocation sequence changes — tile streaming in and out during camera
+  // motion. Keying the cache on that offset costs a fresh `createBindGroup`
+  // for every tile after the shift point. With dynamic offsets the bind group
+  // survives motion: the cache converges to roughly one group-0 entry per ring
+  // page and holds a ~100% hit rate while panning.
   //
   // `minBindingSize: 0` keeps camera/tile shape-agnostic; their binding
   // views supply exact struct widths. EclipseUniforms is a fixed four-vec4
@@ -121,14 +108,12 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
   );
 
   // Group 1: Day imagery textures + shared sampler at binding 16.
-  // Batch 58 (C-R5): bumped from 4 to 16 imagery slots. Batch 246
-  // (NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT): the slot count is now
-  // per-device — 16 on adapters whose `maxSampledTexturesPerShaderStage`
-  // covers the full 28-texture pipeline layout, 4 on default-limit
-  // adapters (spec floor 16, e.g. SwiftShader CI / compat mode) so the
-  // whole layout fits exactly 16. The sampler keeps binding 16 in both
-  // shapes (WebGPU allows sparse binding indices) so the WGSL
-  // `texSampler` declaration and the JS bind-group builder are shared.
+  // The slot count is per-device: 16 on adapters whose
+  // `maxSampledTexturesPerShaderStage` covers the full 28-texture pipeline
+  // layout, 4 on default-limit adapters (spec floor 16, e.g. SwiftShader CI /
+  // compat mode) so the whole layout fits exactly 16. The sampler keeps
+  // binding 16 in both shapes — WebGPU allows sparse binding indices — so the
+  // WGSL `texSampler` declaration and the JS bind-group builder are shared.
   const imagerySlots = host._imagerySlotCount;
   const group1Entries: GPUBindGroupLayoutEntry[] = [];
   for (let i = 0; i < imagerySlots; i++) {
@@ -142,12 +127,12 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
   );
 
   // Group 2: Water mask + Ocean normal map + Material UBO + Material textures.
-  // Session 65 Cluster 3 — material slots merged into Group 2 to stay
-  // within the WebGPU `maxBindGroups: 4` spec floor. Bindings 4-8 carry
-  // the globe-material payload — UBO + image (texture+sampler) +
-  // heights (texture+sampler). When `globe.material` is null, bindings
-  // 4-8 receive a placeholder UBO + placeholder textures so the layout
-  // stays single-shape regardless of material state.
+  // The material slots live here rather than in a group of their own to stay
+  // within the WebGPU `maxBindGroups: 4` spec floor. Bindings 4-8 carry the
+  // globe-material payload — UBO + image (texture+sampler) + heights
+  // (texture+sampler). When `globe.material` is null, bindings 4-8 receive a
+  // placeholder UBO and placeholder textures so the layout stays single-shape
+  // regardless of material state.
   host._bindGroupLayout2 = makeBindGroupLayout(
     device,
     "Globe water mask + ocean normal + material layout",
@@ -161,34 +146,33 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
       sampler(6, Stage.FRAGMENT),
       texture(7, Stage.FRAGMENT),
       sampler(8, Stage.FRAGMENT),
-      // Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map (binding 9) + its
-      // linear sampler (binding 10). Bound UNCONDITIONALLY so the layout never
-      // forks; the renderer binds the real map when globe.cloudCastShadows is on,
-      // else a 1×1 zero placeholder (optical depth 0 → transmittance 1). The WGSL
+      // Sun-view beer shadow map (binding 9) and its linear sampler
+      // (binding 10). Bound unconditionally so the layout never forks; the
+      // renderer binds the real map when globe.cloudCastShadows is on, else a
+      // 1×1 zero placeholder (optical depth 0 → transmittance 1). The WGSL
       // samples it only inside the `cloudShadowControl.x > 0.5` gate.
       texture(9, Stage.FRAGMENT),
       sampler(10, Stage.FRAGMENT),
-      // C11-213 (UP144-VECTOR-LAYER-WGSL) — draped vector-tile polyline lookup
-      // (binding 11). A read-only STORAGE BUFFER, not the five sampled
-      // textures WebGL's `VectorCommon.glsl` uses: group 2 already charges 5 of
-      // the 12 non-imagery fragment sampled textures
-      // (`GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES`), and the reduced 4-slot imagery
-      // layout lands on exactly the 16-texture spec floor, so five more would
-      // break default-limit adapters outright. Storage buffers draw from a
-      // separate budget (`maxStorageBuffersPerShaderStage`, spec floor 8; this
-      // is the globe layout's only one), so the texture accounting above is
-      // unchanged. Bound UNCONDITIONALLY — tiles with no clamped vector data
-      // get a 32-byte all-zero placeholder whose gridWidth header word is 0.
+      // Draped vector-tile polyline lookup (binding 11). A read-only storage
+      // buffer rather than the five sampled textures WebGL's
+      // `VectorCommon.glsl` uses: group 2 already charges 5 of the 12
+      // non-imagery fragment sampled textures
+      // (`GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES`), and the reduced 4-slot
+      // imagery layout lands on exactly the 16-texture spec floor, so five
+      // more would break default-limit adapters outright. Storage buffers draw
+      // from a separate budget (`maxStorageBuffersPerShaderStage`, spec floor
+      // 8; this is the globe layout's only one), so the texture accounting
+      // above is unchanged. Bound unconditionally — tiles with no clamped
+      // vector data get a 32-byte all-zero placeholder whose gridWidth header
+      // word is 0.
       //
-      // ASSUMPTION worth knowing about: this is the first fragment-stage
-      // storage buffer the globe layout has ever declared. Core WebGPU
-      // guarantees 8, and `WebGPUDevicePool` defaults `featureLevel` to
-      // "core", so the default path is safe. WebGPU COMPATIBILITY mode is
-      // opt-in here and may report `maxStorageBuffersInFragmentStage` as low
-      // as 0 on GLES-class adapters — this layout would then fail to create.
-      // Tracked as a follow-up on `UP144-VECTOR-LAYER-WGSL`; do not "fix" it
-      // by forking the layout, which is the thing the unconditional binding
-      // exists to avoid.
+      // This is the globe layout's only fragment-stage storage buffer. Core
+      // WebGPU guarantees 8 and `WebGPUDevicePool` defaults `featureLevel` to
+      // "core", so the default path is safe. WebGPU compatibility mode is
+      // opt-in and may report `maxStorageBuffersInFragmentStage` as low as 0
+      // on GLES-class adapters, where this layout then fails to create.
+      // Forking the layout is not the fix — the unconditional binding exists
+      // precisely to keep it single-shape.
       storageBuffer(11, Stage.FRAGMENT, { readOnly: true }),
     ],
   );
@@ -202,7 +186,6 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
   host._placeholderEffectsBG = placeholder.bindGroup;
 }
 
-// ─── Pipeline Layout ───
 export function createPipelineLayout(host: LayoutsHost): void {
   host._pipelineLayout = host._device!.createPipelineLayout({
     label: "Globe terrain pipeline layout",
@@ -215,7 +198,6 @@ export function createPipelineLayout(host: LayoutsHost): void {
   });
 }
 
-// ─── Samplers ───
 export function createSamplers(host: LayoutsHost): void {
   host._sampler = host._device!.createSampler({
     label: "Globe terrain sampler",
@@ -224,15 +206,14 @@ export function createSamplers(host: LayoutsHost): void {
     mipmapFilter: "linear",
     addressModeU: "clamp-to-edge",
     addressModeV: "clamp-to-edge",
-    // GLOBE-POLAR-STRETCH-POLISH — WebGL imagery samplers use anisotropic
-    // filtering at the device maximum (ImageryLayer.js finalizeReprojectTexture:
+    // WebGL imagery samplers use anisotropic filtering at the device maximum
+    // (ImageryLayer.js finalizeReprojectTexture:
     // `maximumAnisotropy = min(context.limits.maximumTextureFilterAnisotropy,
     // layer.maximumAnisotropy ?? max)`, typically 16). Without it the WebGPU
-    // globe imagery goes visibly blurry at oblique view angles (limb-adjacent
-    // terrain at orbit zoom) — measured as a broad "GPU brighter" smear over
-    // high-contrast snowy terrain in probe-globe-polar-stretch. 16 is the
-    // WebGPU spec maximum and requires all three filters to be "linear",
-    // which they are.
+    // globe imagery goes visibly blurry at oblique view angles — limb-adjacent
+    // terrain at orbit zoom — measured as a broad "GPU brighter" smear over
+    // high-contrast snowy terrain. 16 is the WebGPU spec maximum and requires
+    // all three filters to be "linear", which they are.
     maxAnisotropy: 16,
   });
   // Water mask uses linear filtering to match WebGL — matches the WGSL's
@@ -247,14 +228,15 @@ export function createSamplers(host: LayoutsHost): void {
     addressModeV: "clamp-to-edge",
   });
   // Ocean normal map uses repeating linear filtering for tiled wave patterns.
-  // C11-172 — maxAnisotropy 8: the physical-wavelength wave march samples with
+  // maxAnisotropy 8: the physical-wavelength wave march samples with
   // `textureSampleGrad`, whose footprint is highly elongated at the grazing
   // angles of a low camera looking toward the horizon. Isotropic mip selection
-  // (maxAnisotropy 1) would pick the LONG-axis LOD and over-blur across-track
+  // (maxAnisotropy 1) picks the long-axis LOD and over-blurs across-track
   // detail into mush; anisotropic filtering takes multiple taps along the long
-  // axis at the finer (short-axis) LOD, keeping the wave streaks crisp. Requires
-  // linear min/mag/mipmap (all set). The octave footprint WEIGHT is keyed off the
-  // MIN (short) axis to match — see GlobeTerrain.wgsl::sampleOceanWaveNormals.
+  // axis at the finer short-axis LOD, keeping the wave streaks crisp. Requires
+  // linear min/mag/mipmap, all set. The octave footprint weight is keyed off
+  // the shorter axis to match — see
+  // GlobeTerrain.wgsl::sampleOceanWaveNormals.
   host._oceanNormalSampler = host._device!.createSampler({
     label: "Globe ocean normal sampler",
     magFilter: "linear",
@@ -266,7 +248,6 @@ export function createSamplers(host: LayoutsHost): void {
   });
 }
 
-// ─── Placeholder 1×1 white texture ───
 export function createPlaceholderTexture(host: LayoutsHost): void {
   const device = host._device!;
   host._placeholderTexture = device.createTexture({
@@ -283,11 +264,11 @@ export function createPlaceholderTexture(host: LayoutsHost): void {
   );
   host._placeholderView = host._placeholderTexture.createView();
 
-  // NEW-GLOBE-BELOWSURFACE-FIX — dedicated 1×1 ZERO water-mask fallback.
-  // The shared white placeholder reads as waterMask=1.0 (all water),
-  // which ran the enhanced-ocean shader over entire land tiles whenever
-  // a tile's mask wasn't GPU-resident. Zero (all land) matches WebGL's
-  // convention, where an all-land tile simply has no water-mask texture.
+  // Dedicated 1×1 zero water-mask fallback. The shared white placeholder
+  // reads as waterMask = 1.0 (all water), which runs the enhanced-ocean
+  // shader over entire land tiles whenever a tile's mask is not GPU-resident.
+  // Zero (all land) matches WebGL's convention, where an all-land tile simply
+  // has no water-mask texture.
   host._noWaterMaskTexture = device.createTexture({
     label: "Globe no-water mask fallback",
     size: [1, 1],

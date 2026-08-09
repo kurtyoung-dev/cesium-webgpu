@@ -1,57 +1,41 @@
 /// <reference types="@webgpu/types" />
 /**
- * Camera-uniform-buffer packing extracted from `WebGPUGlobeSurfaceRenderer`.
+ * Per-frame camera-uniform-buffer packing for
+ * `WebGPUGlobeSurfaceRenderer`.
  *
- * Batch 152 of the audit-recommended decomposition (eighth slice of the
- * GlobeSurface decomposition arc — see
- * `migration_doc/BATCH_145_PLAN_GLOBE_SURFACE_DECOMPOSITION.md`).
- *
- * Moves the per-frame camera-UB packing logic off the renderer class:
- *
- *   - `createCameraUniformBuffer(host, device, …)` — the heavyweight
- *     (~270 LOC) per-tile UB packer. Lays out the 116-float
- *     `CameraUniforms` struct against the GlobeTerrain WGSL contract:
- *     mvpRTE, modifiedMV, modifiedMVP, encoded camera high/low,
+ *   - `createCameraUniformBuffer(host, device, …)` — the per-tile UB packer.
+ *     Lays out the `CameraUniforms` struct against the GlobeTerrain WGSL
+ *     contract: mvpRTE, modifiedMV, modifiedMVP, encoded camera high/low,
  *     center3D high/low, sun + lighting, scaleAndBias, minMaxHeight +
- *     ellipsoid radius, 2D/Columbus tileRectangle + south/north +
- *     mercatorY, scene mode + morph time + WebMercator flag, and the
- *     DP-H41 `previousViewProjection` tail. Emits the resulting
- *     `Float32Array` through `writeUniformSlice` against the per-frame
- *     ring allocator.
+ *     ellipsoid radius, 2D/Columbus tileRectangle + south/north + mercatorY,
+ *     scene mode + morph time + WebMercator flag, and the tails documented
+ *     against `CAMERA_UNIFORM_FLOATS` in `WebGPUGlobeSurfaceTypes`. Emits the
+ *     resulting `Float32Array` through `writeUniformSlice` against the
+ *     per-frame ring allocator.
  *   - `writeUniformSlice(device, frameState, data, bufferSize, label)`
  *     — pure helper that uploads a CPU-staged Float32Array slice to
  *     the per-frame ring allocator. Falls back to a one-shot buffer
  *     allocation when no allocator is available (very first frame on
  *     a fresh context). Returns `{ buffer, offset, size }` for the
  *     bind-group entry.
- *   - `computeModifiedModelView(uniformState, surfaceTile)` — pure
- *     helper that produces the `modifiedModelView` matrix used in 2D /
- *     Columbus / Morphing scene modes. Returns a Float64Array of length
- *     16 (column-major). Identity-translates the view matrix by the
- *     tile center.
+ *   - `computeModifiedModelView(uniformState, mesh)` — pure helper that
+ *     produces the `modifiedModelView` matrix used in 2D / Columbus /
+ *     Morphing scene modes. Returns a Float64Array of length 16
+ *     (column-major). Identity-translates the view matrix by the tile center.
  *
- * The renderer's `_createCameraUniformBuffer`, `_writeUniformSlice`,
- * and `_computeModifiedModelView` are removed entirely. The 2 callers
- * of `createCameraUniformBuffer` (in `createTileCommands` and
- * `createWireframeTileCommands`) now invoke the helper directly. The
- * 1 external caller of `writeUniformSlice` (inside the still-on-class
- * `_createTileUniformBuffer`) also calls the helper directly — it
- * will move to its own module in Batch 153.
- *
- * The 2 host fields the camera packer reaches into are flipped from
- * `private` to `public` on the renderer: `_cameraUniformData` (the
- * reusable Float32Array scratch) and `_cameraMvpScratch` (the
- * Float64Array projection × modifiedView scratch).
+ * The two host fields the camera packer reaches into are public on the
+ * renderer: `_cameraUniformData` (the reusable Float32Array scratch) and
+ * `_cameraMvpScratch` (the Float64Array projection × modifiedView scratch).
  *
  * @module WebGPUGlobeSurfaceCameraUB
  */
 
 import Cartographic from "../../Core/Cartographic.js";
 import WebMercatorProjection from "../../Core/WebMercatorProjection.js";
-// GLOBE-UNDERGROUND-COLOR — reuse the exact WebGL visibility predicate
-// (cameraUnderground / globe translucency / backFaceCulling off / clipping
-// planes / clipping polygons / cartographic limit) instead of replicating the
-// condition here and risking drift. Backend-neutral pure function.
+// Reuse the exact WebGL underground-visibility predicate (cameraUnderground /
+// globe translucency / backFaceCulling off / clipping planes / clipping
+// polygons / cartographic limit) rather than replicating the condition here,
+// which would drift. Backend-neutral pure function.
 import { isUndergroundVisible } from "../../Scene/GlobeSurfaceTileProviderRendering.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
 import { assertCameraRTERoundTrip } from "./WebGPURTEAssertions.js";
@@ -60,7 +44,7 @@ import {
   CAMERA_UNIFORM_BYTES,
   multiplyMat4ColumnMajor,
 } from "./WebGPUGlobeSurfaceTypes.js";
-// C13-06 — the shared cloud-shadow RTE frame owner.
+// The shared cloud-shadow RTE frame owner.
 import {
   type CloudShadowFrame,
   writeCloudShadowViewProjectionRelativeToEye,
@@ -91,8 +75,8 @@ const rtc2D = { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number };
  *     packer and uploaded via `writeUniformSlice`.
  *   - `_cameraMvpScratch`: Float64Array of length 16 used to compute
  *     `projection × modifiedModelView` for the 2D/CV/Morphing path.
- *   - `_diagShouldLog()`: pragma-stripped throttle predicate; gates
- *     the per-tile center3D diagnostic at line ~1020 of the original.
+ *   - `_diagShouldLog()`: pragma-stripped throttle predicate gating the
+ *     per-tile center3D diagnostic.
  */
 export interface CameraUBHost {
   readonly _cameraUniformData: Float32Array;
@@ -153,16 +137,16 @@ export function createCameraUniformBuffer(
     z: 1.0 / 6356752.314245179,
   };
 
-  // ─── SCENE2D / COLUMBUS_VIEW / MORPHING projected-rectangle setup ───
-  // Mirrors `GlobeSurfaceTileProviderRendering.js:1139-1164` (upstream
-  // WebGL). For non-SCENE3D modes, the planar vertex path operates on
-  // PROJECTED meters, not raw radians. The `tileRectangle` uniform AND
-  // the `rtc` used by `modifiedModelView` both have to be in projected
-  // space — otherwise the vertex shader's
+  // Projected-rectangle setup for SCENE2D / COLUMBUS_VIEW / MORPHING. Mirrors
+  // upstream WebGL's `GlobeSurfaceTileProviderRendering.js:1139-1164`. Outside
+  // SCENE3D the planar vertex path operates on projected meters, not raw
+  // radians, so both the `tileRectangle` uniform and the `rtc` used by
+  // `modifiedModelView` have to be in projected space. Otherwise the vertex
+  // shader's
   //   `lon = mix(west, east, st.x); lat = mix(south, north, yFrac);`
-  // produces values in radians ([-π, π]) which the projection × modelView
-  // matrix expects in meters (millions of units). Result: every planar
-  // vertex collapses to ~0 in clip space and the globe disappears.
+  // produces radians in [-π, π] where the projection × modelView matrix
+  // expects meters (millions of units), every planar vertex collapses to ~0 in
+  // clip space, and the globe disappears.
   //
   // SceneMode constants: MORPHING=0, COLUMBUS_VIEW=1, SCENE2D=2, SCENE3D=3.
   const sceneMode = frameState?.mode ?? 3;
@@ -213,62 +197,53 @@ export function createCameraUniformBuffer(
 
   // modifiedModelView (mat4x4, 16 floats).
   //
-  // Session 65 Batch 41 (NEW-VR2-1) — pass `mesh.center` not
-  // `surfaceTile.center`. WebGL's GlobeSurfaceTileProviderRendering.js
-  // line 1120 reads `rtc = mesh.center` and feeds that to
-  // `u_modifiedModelView`. `surfaceTile.center` is NOT a property that
-  // exists on GlobeSurfaceTile — the previous call was always passing
-  // `undefined`, causing `computeModifiedModelView` to fall back to
-  // the plain view matrix.
-  //
-  // With a plain view matrix, `view × position_tile_local` produces a
-  // HUGE camera-relative position because `position_tile_local` is
-  // small (a few hundred meters at most) but the translation column
-  // of `view` is the negative camera position in world coords (~6.4 Mm
-  // for Earth surface views). The resulting `v_positionEC` magnitude
-  // crossed 100 km on every fragment in Bloom / Particle System,
-  // making `v_distance` huge and `computeFog(v_distance, density, mod)`
-  // saturate to 1.0 at every pixel — which is why fog appeared to
-  // wipe imagery to a uniform color across the entire below-horizon
-  // area regardless of the Batch 41 night-fog gating fix.
-  //
-  // The fix is one character — pass `mesh` instead of `surfaceTile`
-  // to `computeModifiedModelView`. (Renamed signature below to make
-  // it impossible to repeat the mistake.)
+  // The centre source must be a mesh, never a `GlobeSurfaceTile`: WebGL's
+  // `GlobeSurfaceTileProviderRendering.js:1120` reads `rtc = mesh.center` and
+  // feeds that to `u_modifiedModelView`, and `GlobeSurfaceTile` has no
+  // `center` property at all, so passing one makes
+  // `computeModifiedModelView` fall back to the plain view matrix. With a
+  // plain view, `view × position_tile_local` yields a huge camera-relative
+  // position — the tile-local position is at most a few hundred meters while
+  // the translation column of `view` is the negative camera position in world
+  // coordinates (~6.4 Mm for Earth-surface views). The resulting
+  // `v_positionEC` magnitude crosses 100 km on every fragment, `v_distance`
+  // goes huge, and `computeFog(v_distance, density, mod)` saturates to 1.0 at
+  // every pixel, wiping imagery to a uniform fog color below the horizon.
   //
   // SCENE2D / COLUMBUS_VIEW override: substitute the projected tile-center
-  // rtc for `mesh.center`. The ECEF center is meaningless in planar modes
-  // (it's at the surface of the WGS84 ellipsoid in 3D space, ~6.4 Mm from
-  // the projected origin) — feeding it to `setTranslation(view, view×rtc)`
-  // would translate the view to an impossible eye-space point and the
-  // planar geometry would never reach clip space. Mirrors `rtc` assignment
-  // at `GlobeSurfaceTileProviderRendering.js:1156-1163`.
+  // rtc for `mesh.center`. The ECEF center is meaningless in planar modes —
+  // it sits on the WGS84 ellipsoid in 3D space, ~6.4 Mm from the projected
+  // origin — so feeding it to `setTranslation(view, view×rtc)` translates the
+  // view to an impossible eye-space point and the planar geometry never
+  // reaches clip space. Mirrors the `rtc` assignment at
+  // `GlobeSurfaceTileProviderRendering.js:1156-1163`.
   //
-  // MORPHING override (mode 0): use a PLAIN view (no center baked) so the
+  // MORPHING override (mode 0): use a plain view with no center baked, so the
   // morph branch's `modifiedModelView(Projection)` equals WebGL's plain
   // `czm_modelView` / `czm_projection`. The WGSL MORPHING branch feeds these
-  // matrices a WORLD-space position (`position3DWC = exaggeratedPosition +
-  // center3D`, and an absolute-projected planar position), so baking
-  // `view × mesh.center` would add the tile center a SECOND time — the
-  // ~6.4 Mm per-tile eye-space offset that splayed the globe apart through
-  // every transition. WebGL's `getPositionMorphingMode` (GlobeVS.glsl:172-182)
-  // uses `czm_modelView` (the globe command has an identity modelMatrix, so
-  // that is the plain view) — NOT the center-baked `u_modifiedModelView`,
-  // which it only uses for the 3D/CV/2D planar `getPositionPlanarEarth` path
-  // with tile-LOCAL positions. `computeModifiedModelView` returns the plain
-  // view when handed a source with no `center`. (BUG: globe morph splay.)
+  // matrices a world-space position (`position3DWC = exaggeratedPosition +
+  // center3D`, plus an absolute-projected planar position), so baking
+  // `view × mesh.center` adds the tile center a second time — a ~6.4 Mm
+  // per-tile eye-space offset that splays the globe apart through every
+  // transition. WebGL's `getPositionMorphingMode` (GlobeVS.glsl:172-182) uses
+  // `czm_modelView`, which is the plain view because the globe command has an
+  // identity modelMatrix, and not the center-baked `u_modifiedModelView`,
+  // which it uses only for the 3D/CV/2D planar `getPositionPlanarEarth` path
+  // with tile-local positions. `computeModifiedModelView` returns the plain
+  // view when handed a source with no `center`.
   const rtcSource = usePlanarMv
     ? { center: rtc2D }
     : sceneMode === 0 /* MORPHING */
       ? { center: undefined }
       : // SCENE3D RTC: modifiedModelViewProjection bakes view×center, and the
-        // SCENE3D vertex branch multiplies it by the tile-LOCAL position
-        // (encoding.center pre-subtracted). For out.position to land at the
-        // true world position the baked center MUST equal the vertex ENCODING
-        // center — the same center the center3D split below uses. mesh.center
-        // normally equals it but diverges for TerrainFillMesh / upsampled /
-        // cloned encodings; feed encoding.center (the authoritative encode
-        // reference), not mesh.center, so divergent tiles don't render offset.
+        // SCENE3D vertex branch multiplies it by the tile-local position with
+        // encoding.center pre-subtracted. For out.position to land at the true
+        // world position the baked center has to equal the vertex encoding
+        // center — the same center the center3D split below uses.
+        // `mesh.center` normally equals it but diverges for TerrainFillMesh,
+        // upsampled, and cloned encodings, so the authoritative encode
+        // reference `encoding.center` is used instead and divergent tiles do
+        // not render offset.
         { center: mesh.encoding?.center ?? mesh.center };
   const modifiedView = computeModifiedModelView(uniformState, rtcSource);
   const mv = m4Values(modifiedView);
@@ -288,8 +263,9 @@ export function createCameraUniformBuffer(
   data[offset++] = camHigh.y;
   data[offset++] = camHigh.z;
   // Reuse the three existing vec3 alignment lanes for the rendered globe
-  // ellipsoid's inverse radii. S5's fragment horizon test consumes them;
-  // no CameraUniforms growth or additional upload bytes are required.
+  // ellipsoid's inverse radii. The fragment horizon test consumes them, and
+  // riding the existing lanes costs no CameraUniforms growth and no additional
+  // upload bytes.
   data[offset++] = ellipsoidInverseRadii.x;
 
   // encodedCameraLow (vec3 + pad)
@@ -318,20 +294,18 @@ export function createCameraUniformBuffer(
   }
   //>>includeEnd('debug');
 
-  // center3D (vec3 + pad) — MUST match the encoding center that vertex
-  // positions are relative to. In `TerrainEncoding.encode`, each vertex
-  // is stored as `(position - encoding.center)`, so the vertex shader
-  // reconstructs the world position via `exaggeratedPosition + camera.center3D`.
-  // If we feed `mesh.center` here but `mesh.center !== encoding.center`,
-  // the reconstructed world position is wrong by exactly that delta —
-  // which would produce per-tile radius variance in wireframe, matching
-  // the user-reported symptom.
+  // center3D (vec3 + pad) has to match the encoding center that vertex
+  // positions are relative to. `TerrainEncoding.encode` stores each vertex as
+  // `(position - encoding.center)`, so the vertex shader reconstructs the
+  // world position via `exaggeratedPosition + camera.center3D`. Writing
+  // `mesh.center` here when it differs from `encoding.center` leaves the
+  // reconstructed world position wrong by exactly that delta, which shows up
+  // as per-tile radius variance in wireframe.
   //
-  // Therefore: ALWAYS use `encoding.center` here, not `mesh.center`.
-  // They should normally be equal, but subtle paths (TerrainFillMesh OBB
-  // vs rectangle center, upsampled meshes, cloned encodings) can make
-  // them diverge, and `encoding.center` is the authoritative source for
-  // "the reference point the vertices were encoded against."
+  // The two are normally equal, but subtle paths (TerrainFillMesh OBB versus
+  // rectangle center, upsampled meshes, cloned encodings) make them diverge,
+  // and `encoding.center` is the authoritative reference point the vertices
+  // were encoded against.
   const encodingCenter = mesh.encoding?.center;
   const meshCenter = mesh.center;
   const center = encodingCenter || meshCenter || { x: 0, y: 0, z: 0 };
@@ -347,11 +321,10 @@ export function createCameraUniformBuffer(
     const fillMesh = surfaceTile.fill?.mesh;
     const isFillByRef = mesh === fillMesh;
     const isCachedMesh = mesh === surfaceTile.mesh;
-    // Ctor name reveals which TerrainData class produced this mesh
-    // (QuantizedMeshTerrainData / HeightmapTerrainData / Cesium3DTilesTerrainData
-    // / TerrainFillMesh). The center bug is almost certainly "which
-    // constructor was called with what center", so this is the
-    // fingerprint we need.
+    // The constructor name reveals which TerrainData class produced this mesh
+    // (QuantizedMeshTerrainData / HeightmapTerrainData /
+    // Cesium3DTilesTerrainData / TerrainFillMesh), which is the fingerprint
+    // for tracing a wrong centre back to the constructor that supplied it.
     const meshCtor = mesh?.constructor?.name ?? "?";
     const encCtor = mesh?.encoding?.constructor?.name ?? "?";
     const tdCtor =
@@ -367,23 +340,22 @@ export function createCameraUniformBuffer(
     );
   }
   //>>includeEnd('debug');
-  // Split center3D into high/low f32 so the SCENE3D RTE assembly in
-  // GlobeTerrain.wgsl can do `(centerH - camH) + (centerL + pos - camL)`
+  // Split center3D into a high/low f32 pair so the SCENE3D RTE assembly in
+  // GlobeTerrain.wgsl can compute `(centerH - camH) + (centerL + pos - camL)`
   // without losing sub-meter precision. The encoding matches
   // `EncodedCartesian3.fromCartesian`: for each component, high =
-  // reinterpret(f32(value & ~((1<<24)-1))), low = value - high. When the
-  // camera is close to the tile, both (centerH - camH) and
-  // (centerL - camL) are small, so the RTE sum keeps sub-meter precision.
-  // Split center3D into high/low on the FULL f64 value, matching
-  // EncodedCartesian3.encode (incl. the sign branch) and the encodedCamera
-  // side this is subtracted from in GlobeTerrain.wgsl. The prior code did
-  // Math.fround(center) FIRST — truncating to f32 and destroying the
-  // sub-meter residual that `low` must carry. That produced a per-tile
-  // world-space offset (~0.012 m near Earth radius): sub-pixel up close, but
-  // at far/orbit camera distance it threw far/limb tile vertices to garbage,
-  // squishing and TEARING the globe mesh (radial wedge-gaps → a detached
-  // floating ring). Splitting the f64 value keeps `low` to ~sub-cm before it
-  // is stored as f32. (DP — far-camera globe RTE precision fix.)
+  // reinterpret(f32(value & ~((1<<24)-1))), low = value - high. With the
+  // camera close to the tile both (centerH - camH) and (centerL - camL) are
+  // small, so the RTE sum keeps sub-meter precision.
+  //
+  // The split runs on the full f64 value, matching `EncodedCartesian3.encode`
+  // including its sign branch and the encodedCamera side this is subtracted
+  // from in GlobeTerrain.wgsl. Rounding the centre to f32 before splitting
+  // destroys the sub-meter residual `low` has to carry and leaves a per-tile
+  // world-space offset of ~0.012 m near Earth radius — sub-pixel up close, but
+  // at orbit distance it throws limb-tile vertices to garbage and tears the
+  // globe mesh into radial wedge gaps. Splitting the f64 value keeps `low`
+  // near sub-centimetre before it is stored as f32.
   const splitShift = 65536.0; // 2^16
   const cxHigh =
     center.x >= 0.0
@@ -411,20 +383,19 @@ export function createCameraUniformBuffer(
   data[offset++] = czLow;
   data[offset++] = 0;
 
-  // sunDirectionEC (vec3) + enableLighting (f32)
-  // Session 65 Batch 17 — pack `lightDirectionEC` (the SCENE LIGHT
-  // direction) instead of `sunDirectionEC`. When the scene uses a
-  // SunLight, these are identical (see `UniformState.update` line
-  // 836-844). When the scene overrides `scene.light` with a custom
-  // `DirectionalLight` (e.g., Bathymetry's per-frame hillshade
-  // direction), only `lightDirectionEC` reflects the user-set value.
-  // Mirrors upstream `GlobeFS.glsl` which references
-  // `czm_lightDirectionEC` everywhere — using `sunDirectionEC` here
-  // produced dark output for custom-light demos because the Lambert
-  // term + day/night fade math read the wrong direction. The WGSL
-  // field is still named `sunDirectionEC` for back-compat with
-  // existing shader code; it's a misnomer but rewriting the field
-  // name is a separate refactor.
+  // sunDirectionEC (vec3) + enableLighting (f32).
+  //
+  // The value packed is `lightDirectionEC`, the scene light direction, not
+  // `sunDirectionEC`. With a SunLight the two are identical (see
+  // `UniformState.update` lines 836-844), but when the scene overrides
+  // `scene.light` with a custom `DirectionalLight` — Bathymetry's per-frame
+  // hillshade direction, for instance — only `lightDirectionEC` reflects the
+  // user-set value. Upstream `GlobeFS.glsl` references
+  // `czm_lightDirectionEC` everywhere; packing `sunDirectionEC` here makes
+  // the Lambert term and day/night fade read the wrong direction and renders
+  // custom-light demos dark. The WGSL field keeps the name `sunDirectionEC`
+  // for compatibility with existing shader code; the name is a misnomer that
+  // a rename would have to fix on both sides at once.
   const lightDir = uniformState.lightDirectionEC;
   data[offset++] = lightDir.x;
   data[offset++] = lightDir.y;
@@ -451,12 +422,11 @@ export function createCameraUniformBuffer(
   data[offset++] = ellipsoid?.maximumRadius ?? 0.0;
   data[offset++] = 0; // reserved (future minor-axis radius)
 
-  // ─── 2D / Columbus View support ───
-  // tileRectangle (vec4): planar modes pack the PROJECTED rectangle in
-  // meters (relative to rtc2D for SCENE2D / COLUMBUS_VIEW; absolute for
-  // MORPHING). SCENE3D packs raw radians since `computePlanarPosition`
-  // is not invoked in the 3D vertex branch. See the projected-rectangle
-  // setup near the top of this function.
+  // tileRectangle (vec4): planar modes pack the projected rectangle in meters,
+  // relative to rtc2D for SCENE2D / COLUMBUS_VIEW and absolute for MORPHING.
+  // SCENE3D packs raw radians, since `computePlanarPosition` is not invoked in
+  // the 3D vertex branch. See the projected-rectangle setup near the top of
+  // this function.
   const rectangle = tile?.rectangle;
   if (isPlanarMode && mapProjection && rectangle) {
     data[offset++] = projectedTileRect.x;
@@ -507,25 +477,26 @@ export function createCameraUniformBuffer(
   // morphTime (f32): 0..1, used for morphing transitions
   data[offset++] = frameState?.morphTime ?? 1.0;
   // useWebMercator (f32): 1 if Web Mercator projection, 0 if Geographic.
-  // Use `instanceof`, NOT `constructor.name === "WebMercatorProjection"` —
-  // esbuild's minifyIdentifiers renames the class in release builds, so the
-  // string compare silently returns false and the globe reverts to
-  // geographic-linear latitude spacing (vertical tile warping at mid/high
-  // latitudes) in minified 2D/CV/morph. Mirrors WebGL
+  // Tested with `instanceof` rather than
+  // `constructor.name === "WebMercatorProjection"`: esbuild's
+  // minifyIdentifiers renames the class in release builds, so the string
+  // compare silently returns false and the globe reverts to
+  // geographic-linear latitude spacing — vertical tile warping at mid and
+  // high latitudes — in minified 2D, Columbus View and morph. Mirrors WebGL
   // GlobeSurfaceTileProviderRendering.js:1201 (`projection instanceof WebMercatorProjection`).
   const projection = frameState?.mapProjection;
   const isWebMercator = projection instanceof WebMercatorProjection;
   data[offset++] = isWebMercator ? 1.0 : 0.0;
   data[offset++] = 0; // pad
 
-  // ─── DP-H41: previousViewProjection (mat4x4, 16 floats, offsets 100–115)
+  // previousViewProjection (mat4x4, 16 floats, offsets 100-115).
   // `UniformState.update()` clones the current viewProjection into
   // `_previousViewProjection` before overwriting it with the new camera
   // state, so on frame N this field is the viewProjection from frame N-1.
-  // TAA / motion-vector shaders consume it via `camera.previousViewProjection`.
-  // Writing zeros on the very first frame (when previousViewProjection is
-  // still Matrix4.IDENTITY) is fine — motion-vector consumers detect the
-  // first frame via a separate "valid history" flag on their own pass.
+  // TAA and motion-vector shaders consume it via
+  // `camera.previousViewProjection`. Identity on the very first frame is
+  // harmless: motion-vector consumers detect the first frame through a
+  // separate "valid history" flag on their own pass.
   const prevVP = uniformState.previousViewProjection;
   if (prevVP) {
     const prev = m4Values(prevVP);
@@ -550,18 +521,18 @@ export function createCameraUniformBuffer(
     data[offset++] = 1;
   }
 
-  // ─── Session 65 Batch 9 (Cluster 2b/5): Nishita ground atmosphere ───
-  // Pack atmosphere parameters for the per-vertex ray-march. All values
+  // Ground-atmosphere parameters for the per-vertex ray-march. All values
   // default to the constants in `Source/Scene/Atmosphere.js` so the
   // first-frame render matches WebGL out of the box. Scene-level setters
   // (`scene.atmosphere.rayleighCoefficient = ...`) flow through to
-  // `uniformState.atmosphere*` on update; we read those when present.
+  // `uniformState.atmosphere*` on update and are read here when present.
   //
   // atmosphereLightDirectionAndIntensity (vec4): xyz = light direction WC
   //   (sun by default — matches `DYNAMIC_ATMOSPHERE_LIGHTING_FROM_SUN`),
   //   w = light intensity (default 10.0).
-  // GROUND atmosphere parameters live on the Globe (via tileProvider.*)
-  // rather than `scene.atmosphere.*`. The Atmosphere.html demo sets
+  // Ground-atmosphere parameters live on the Globe, reached through
+  // `tileProvider.*`, rather than on `scene.atmosphere.*`. The
+  // Atmosphere.html demo sets
   // `globe.atmosphereLightIntensity = 20.0` which the Globe.update path
   // copies onto the tileProvider. WebGL reads these via
   // `tileProvider.atmosphereLightIntensity` etc. SkyAtmosphere uses a
@@ -579,14 +550,13 @@ export function createCameraUniformBuffer(
     showGroundAtmosphere?: boolean;
     enableLighting?: boolean;
     hasWaterMask?: boolean;
-    // Batch 77 — Custom Lambert coefficient uniforms (tile-provider-driven).
-    // Default values come from Globe.js (0.9 / 0.3) and are propagated to
-    // the tile provider via Globe.beginFrame.
+    // Lambert coefficient uniforms. Defaults come from Globe.js (0.9 / 0.3)
+    // and propagate to the tile provider via Globe.beginFrame.
     lambertDiffuseMultiplier?: number;
     vertexShadowDarkness?: number;
-    // GLOBE-POLAR-STRETCH-POLISH — `u_zoomedOutOceanSpecularIntensity`
-    // mirror, driven per-frame by Globe.beginFrame (0.4 with ground
-    // atmosphere, 0.5 without, 0.0 outside SCENE3D).
+    // `u_zoomedOutOceanSpecularIntensity` mirror, driven per frame by
+    // Globe.beginFrame: 0.4 with ground atmosphere, 0.5 without, 0.0 outside
+    // SCENE3D.
     zoomedOutOceanSpecularIntensity?: number;
     // Surface terrain provider exposes `hasVertexNormals` — when true, the
     // WebGL pipeline cache enables ENABLE_VERTEX_LIGHTING; the WGSL Lambert
@@ -596,8 +566,8 @@ export function createCameraUniformBuffer(
   const us = uniformState as unknown as {
     sunDirectionWC?: { x: number; y: number; z: number };
     lightDirectionWC?: { x: number; y: number; z: number };
-    // Batch 76 — `czm_lightColor` mirror. UniformState computes this as
-    // `lightColorHdr` clipped so the brightest channel ≤ 1.
+    // `czm_lightColor` mirror. UniformState computes it as `lightColorHdr`
+    // clipped so the brightest channel is at most 1.
     lightColor?: { x: number; y: number; z: number };
   };
   const fs = frameState as
@@ -605,13 +575,13 @@ export function createCameraUniformBuffer(
         fog?: { enabled?: boolean };
       })
     | undefined;
-  // Light direction WC: WebGL chooses between `czm_sunDirectionWC` (when
-  // `DYNAMIC_ATMOSPHERE_LIGHTING_FROM_SUN`) and `czm_lightDirectionWC`
-  // otherwise. We mirror that decision here. When dynamic lighting is
-  // off entirely, WebGL substitutes `normalize(positionWC)` in the VS;
-  // we always pass a global direction and let the VS handle the
-  // per-vertex fallback (computes nothing extra in our case since the
-  // ray-march already uses positionWC as the inner radius source).
+  // Light direction WC mirrors WebGL's choice between `czm_sunDirectionWC`
+  // (under `DYNAMIC_ATMOSPHERE_LIGHTING_FROM_SUN`) and
+  // `czm_lightDirectionWC` otherwise. When dynamic lighting is off entirely,
+  // WebGL substitutes `normalize(positionWC)` in the VS; a global direction is
+  // always passed here and the VS handles the per-vertex fallback, which costs
+  // nothing extra because the ray-march already uses positionWC as its inner
+  // radius source.
   const lightWC = tp.dynamicAtmosphereLightingFromSun
     ? (us.sunDirectionWC ?? us.lightDirectionWC)
     : (us.lightDirectionWC ?? us.sunDirectionWC);
@@ -664,19 +634,17 @@ export function createCameraUniformBuffer(
   // the ray-march entirely (zero per-vertex cost). `showGroundAtmosphere`
   // is mirrored from Globe.js onto tileProvider; fog.enabled comes from
   // the per-frame Fog.update.
-  // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — when the unified
-  // aerial-perspective post-process owns the atmosphere, gate the in-globe
-  // ground-atmosphere + fog drape OFF so the two don't double-apply. Read the
-  // canonical per-frame flag Scene publishes onto frameState (same pattern as
-  // `taaEnabled`). WebGL never sets it, so this is a no-op there.
+  // When the unified aerial-perspective post-process owns the atmosphere, the
+  // in-globe ground-atmosphere and fog drape are gated off so the two do not
+  // double-apply. The flag is the canonical per-frame one Scene publishes onto
+  // frameState, the same pattern as `taaEnabled`. WebGL never sets it, so this
+  // is a no-op there.
   const aerialPerspectiveActive =
     (frameState as { aerialPerspective?: boolean })?.aerialPerspective === true;
   const fogEnabled = !aerialPerspectiveActive && fs?.fog?.enabled !== false;
   const groundAtmoEnabled =
     !aerialPerspectiveActive && tp.showGroundAtmosphere !== false;
-  // Session 65 Batch 38 — ground-atmosphere proper integration.
-  // `atmosphereParams.w` encodes the enable flag AND the lighting mode,
-  // replacing the empirical cap=1.5 × scale=0.15 workaround:
+  // `atmosphereParams.w` encodes both the enable flag and the lighting mode:
   //
   //   0.0 → atmosphere off (skip per-vertex ray-march entirely)
   //   1.0 → atmosphere on, "static" lighting (the WebGL `dynamicLighting`
@@ -688,57 +656,55 @@ export function createCameraUniformBuffer(
   //         integrated optical depth is uniform across the planet (the
   //         simplified flat-light model WebGL ships when lighting is off
   //         or atmosphere lighting is NONE).
-  //   2.0 → atmosphere on, dynamic lighting ACTIVE (real sun direction +
-  //         FS darken/sunlitAtmosphereIntensity day-night mix).
+  //   2.0 → atmosphere on, dynamic lighting active: real sun direction plus
+  //         the FS darken/sunlitAtmosphereIntensity day-night mix.
   //
-  // WebGL `dynamicLighting = DYNAMIC_ATMOSPHERE_LIGHTING && (ENABLE_VERTEX_LIGHTING
-  // || ENABLE_DAYNIGHT_SHADING)`. The first define follows
-  // `tileProvider.dynamicAtmosphereLighting`; the latter two are gated by
-  // `enableLighting` in GlobeSurfaceShaderSet. Hello World defaults to
-  // `enableLighting = false`, so WebGL's `dynamicLighting` evaluates to
-  // false even though `dynamicAtmosphereLighting` is true by default —
-  // the WGSL must reproduce that AND-gate or the per-vertex march
-  // accumulates ~7-10× more radiance than the WebGL flat-light reference.
+  // WebGL computes `dynamicLighting = DYNAMIC_ATMOSPHERE_LIGHTING &&
+  // (ENABLE_VERTEX_LIGHTING || ENABLE_DAYNIGHT_SHADING)`. The first define
+  // follows `tileProvider.dynamicAtmosphereLighting`; the latter two are gated
+  // by `enableLighting` in GlobeSurfaceShaderSet. The default scene has
+  // `enableLighting = false`, so WebGL's `dynamicLighting` evaluates to false
+  // even though `dynamicAtmosphereLighting` defaults to true. The WGSL has to
+  // reproduce that AND-gate, or the per-vertex march accumulates roughly 7-10x
+  // more radiance than the WebGL flat-light reference.
   //
-  // The WGSL `w > 0.5` enable check still passes for both 1.0 and 2.0;
-  // a separate `w > 1.5` check gates the dynamic-lighting branch.
+  // The WGSL `w > 0.5` enable check passes for both 1.0 and 2.0; a separate
+  // `w > 1.5` check gates the dynamic-lighting branch.
   const atmoEnabled = fogEnabled || groundAtmoEnabled;
   const dynamicLightingActive =
     !!tp.dynamicAtmosphereLighting && !!tp.enableLighting;
   data[offset++] = atmoEnabled ? (dynamicLightingActive ? 2.0 : 1.0) : 0.0;
 
-  // ─── Batch 76: czm_lightColor (vec4, offset 132-135) ───
-  // Mirrors WebGL's `czm_lightColor` automatic uniform. UniformState
-  // computes `_lightColor` as `lightColorHdr` clipped so the brightest
-  // channel ≤ 1 (see UniformState.js:855-878). When the scene provides
-  // a custom light (`scene.light.color = Color.ORANGE`), the WGSL globe
-  // Lambert path multiplies the diffuse term by this color, matching
-  // WebGL's ENABLE_VERTEX_LIGHTING / ENABLE_DAYNIGHT_SHADING paths.
-  // Default uniform value is (1,1,1) so non-customized scenes (the
-  // overwhelming majority) are visually unchanged.
+  // czm_lightColor (vec4, offset 132-135). Mirrors WebGL's `czm_lightColor`
+  // automatic uniform. UniformState computes `_lightColor` as `lightColorHdr`
+  // clipped so the brightest channel is at most 1 (see
+  // UniformState.js:855-878). When the scene provides a custom light
+  // (`scene.light.color = Color.ORANGE`), the WGSL globe Lambert path
+  // multiplies the diffuse term by this color, matching WebGL's
+  // ENABLE_VERTEX_LIGHTING / ENABLE_DAYNIGHT_SHADING paths. The default
+  // uniform value is (1,1,1), so uncustomized scenes are visually unchanged.
   const lc = us.lightColor;
   if (lc) {
     data[offset++] = lc.x;
     data[offset++] = lc.y;
     data[offset++] = lc.z;
   } else {
-    // UniformState hasn't been updated yet (extremely early frame).
-    // White preserves pre-Batch-76 behavior (multiply by 1).
+    // UniformState has not been updated yet on an extremely early frame.
+    // White multiplies by 1 and leaves the diffuse term untouched.
     data[offset++] = 1.0;
     data[offset++] = 1.0;
     data[offset++] = 1.0;
   }
   data[offset++] = 0.0; // .w reserved
 
-  // ─── Batch 77: lighting (vec4, offset 136-139) ───
-  // Custom Lambert coefficient uniforms (tile-provider-driven). Mirrors
-  // WebGL's `u_lambertDiffuseMultiplier` + `u_vertexShadowDarkness`
-  // fragment uniforms. The WGSL Lambert path gates on `.z`
-  // (hasVertexNormals) to match WebGL's ENABLE_VERTEX_LIGHTING gating
-  // (compile-time #ifdef in WebGL → runtime branch in WGSL).
+  // lighting (vec4, offset 136-139): the tile-provider-driven Lambert
+  // coefficients, mirroring WebGL's `u_lambertDiffuseMultiplier` +
+  // `u_vertexShadowDarkness` fragment uniforms. The WGSL Lambert path gates on
+  // `.z` (hasVertexNormals) to match WebGL's ENABLE_VERTEX_LIGHTING gating,
+  // which is a compile-time #ifdef in WebGL and a runtime branch in WGSL.
   //
-  // When a tile provider hasn't been populated yet (extremely early
-  // frame) we still write the Globe.js defaults so the WGSL branch is
+  // A tile provider that has not been populated yet, on an extremely early
+  // frame, still gets the Globe.js defaults written so the WGSL branch is
   // well-defined.
   const lambertMult = tp.lambertDiffuseMultiplier;
   const shadowDark = tp.vertexShadowDarkness;
@@ -746,21 +712,22 @@ export function createCameraUniformBuffer(
   data[offset++] = typeof shadowDark === "number" ? shadowDark : 0.3;
   const hasNormals = !!tp.terrainProvider?.hasVertexNormals;
   data[offset++] = hasNormals ? 1.0 : 0.0;
-  // .w — GLOBE-POLAR-STRETCH-POLISH: `u_zoomedOutOceanSpecularIntensity`
-  // mirror. Globe.beginFrame drives it per-frame (0.4 with the default
-  // showGroundAtmosphere, 0.5 without, 0.0 outside SCENE3D). Consumed by
-  // computeEnhancedOcean's specular surfaceReflectance in GlobeTerrain.wgsl.
+  // .w mirrors `u_zoomedOutOceanSpecularIntensity`. Globe.beginFrame drives it
+  // per frame: 0.4 with the default showGroundAtmosphere, 0.5 without, 0.0
+  // outside SCENE3D. Consumed by computeEnhancedOcean's specular
+  // surfaceReflectance in GlobeTerrain.wgsl.
   const zoomedOutSpec = tp.zoomedOutOceanSpecularIntensity;
   data[offset++] = typeof zoomedOutSpec === "number" ? zoomedOutSpec : 0.5;
 
-  // ─── Renderer-wide log depth tail (vec4: near, far, factor, reserved) ───
-  // Read by GlobeTerrain.wgsl's `//>>ifdef LOG_DEPTH` blocks (camera.logDepth).
-  // Carries the live frustum scalars regardless of the flag — inert on any
-  // frame where the LOG_DEPTH pipeline define is not set, i.e. whenever
-  // `isWebGPULogDepthActive(context, frameState)` is false (master switch off,
-  // or `frameState.useLogDepth` cleared by 2D / Columbus View / an orthographic
-  // frustum). The bespoke globe UB carries these at the tail rather than the
-  // shared CameraUniforms .w lanes (see WebGPULogDepth.ts).
+  // Log-depth tail (vec4: near, far, factor, reserved), read by
+  // GlobeTerrain.wgsl's `//>>ifdef LOG_DEPTH` blocks as `camera.logDepth`. It
+  // carries the live frustum scalars regardless of the flag and is inert on
+  // any frame where the LOG_DEPTH pipeline define is not set — that is,
+  // whenever `isWebGPULogDepthActive(context, frameState)` is false because
+  // the master switch is off or `frameState.useLogDepth` was cleared by 2D,
+  // Columbus View, or an orthographic frustum. The globe UB carries these at
+  // its tail rather than in the shared CameraUniforms .w lanes (see
+  // WebGPULogDepth.ts).
   const usLog = uniformState as unknown as {
     currentFrustum?: { x: number; y: number };
     oneOverLog2FarDepthFromNearPlusOne?: number;
@@ -777,25 +744,24 @@ export function createCameraUniformBuffer(
   data[offset++] = ldFactor;
   data[offset++] = 0.0; // reserved
   //>>includeStart('debug', pragmas.debug);
-  // C15-G6g — publish the pair this tile's camera UB actually baked. The globe
-  // is the REFERENCE every other producer's frag_depth is compared against, so
-  // its baked pair is half of every depth verdict in the scene. Per-tile, but
-  // pragma-stripped from release builds, and the last tile wins (they all pack
-  // from the same `uniformState` read within one update phase — if they ever
-  // did NOT, that is itself the finding).
+  // Publish the pair this tile's camera UB actually baked. The globe is the
+  // reference every other producer's frag_depth is compared against, so its
+  // baked pair is half of every depth verdict in the scene. Per-tile but
+  // pragma-stripped from release builds, and the last tile wins: they all pack
+  // from the same `uniformState` read within one update phase, and a
+  // divergence between them is itself the finding.
   recordLogDepthEncoder(uniformState, "globe", ldNear, ldFar, ldFactor);
   //>>includeEnd('debug');
 
-  // ─── DP-H44 (Batch 360): globe pick color tail (vec4, offsets 144-147) ───
-  // Read ONLY by GlobeTerrain.wgsl::fragmentPickMain (the pick-pass entry
-  // point). `Globe.beginFrame` stashes the globe's registered pick-ID color
-  // on `tileProvider._webgpuGlobePickColor` when `globe.pickable` is true,
-  // and clears it otherwise. (0,0,0,0) → the pick FBO still receives globe
-  // DEPTH (so `scene.pickPosition` works over terrain, matching WebGL's
-  // `updateForPick` re-push) but writes a zero pick color, leaving
-  // `scene.pick` undefined over the globe (WebGL parity). A non-zero color
-  // makes `scene.pick` return the Globe. Additive tail-append — no existing
-  // offset shifts.
+  // Globe pick color tail (vec4, offsets 144-147), read only by
+  // GlobeTerrain.wgsl::fragmentPickMain, the pick-pass entry point.
+  // `Globe.beginFrame` stashes the globe's registered pick-ID color on
+  // `tileProvider._webgpuGlobePickColor` when `globe.pickable` is true and
+  // clears it otherwise. With (0,0,0,0) the pick FBO still receives globe
+  // depth, so `scene.pickPosition` works over terrain the way WebGL's
+  // `updateForPick` re-push provides, but the zero pick color leaves
+  // `scene.pick` undefined over the globe, matching WebGL. A non-zero color
+  // makes `scene.pick` return the Globe.
   const pickColor = (
     tileProvider as unknown as {
       _webgpuGlobePickColor?: {
@@ -818,23 +784,24 @@ export function createCameraUniformBuffer(
     data[offset++] = 0.0;
   }
 
-  // ─── Batch 437 (CLOUD-SHADOWS): sun-view beer shadow map tail ───
+  // Sun-view beer shadow map tail:
   // cloudShadowVP (mat4, offsets 148-163) + cloudShadowControl (vec4, 164-167).
-  // The procedural cloud renderer stashes the world→sun-clip matrix + an "active"
-  // flag on `context._cloudCache` after rendering the map (which happens AFTER the
-  // globe terrain pass in the frame, so terrain reads LAST frame's matrix — fine for
-  // a slow, soft cloud shadow). When inactive (the default, or the very first frame
-  // before the cloud renderer runs), write IDENTITY + control.x=0 so the FS gate
-  // stays closed and the render is byte-identical.
+  // The procedural cloud renderer stashes the world-to-sun-clip matrix and an
+  // "active" flag on `context._cloudCache` after rendering the map, which
+  // happens after the globe terrain pass, so terrain reads the previous
+  // frame's matrix — acceptable for a slow, soft cloud shadow. When inactive,
+  // which covers the default and the very first frame before the cloud
+  // renderer runs, the packer writes identity plus control.x = 0 so the FS
+  // gate stays closed and the render is byte-identical.
   const cloudCache = (
     frameState?.context as unknown as {
       _cloudCache?: {
         shadowActive?: boolean;
         shadowSunViewVP?: Float32Array;
         shadowAbsorption?: number;
-        // C13-41 — the eclipse-aware cast-shadow strength, published by the
-        // cloud renderer through this same seam. `?? 1.0` reproduces the
-        // former literal exactly for any frame that has not published one.
+        // Eclipse-aware cast-shadow strength, published by the cloud renderer
+        // through this same seam. The `?? 1.0` fallback covers any frame that
+        // has not published one.
         shadowStrength?: number;
         shadowCascadeActive?: boolean;
         shadowCascadeVP?: Float32Array;
@@ -845,31 +812,33 @@ export function createCameraUniformBuffer(
   )?._cloudCache;
   const shadowActive = cloudCache?.shadowActive === true;
   const shadowVP = cloudCache?.shadowSunViewVP;
-  // ─── C13-06 — project through the eye-relative sun-view matrix ───
-  // `cloudShadowVP * vec4(v_positionMC, 1.0)` is the planet-scale `mvp *
-  // vec4(position, 1.0)` the fork's RTE law forbids: both the matrix
+  // Project through the eye-relative sun-view matrix.
+  // `cloudShadowVP * vec4(v_positionMC, 1.0)` is the planet-scale
+  // `mvp * vec4(position, 1.0)` the fork's RTE law forbids: both the matrix
   // translation column and the position are ~6.4e6 m in f32. In SCENE3D the
-  // fragment already carries `v_positionRTE` (the exact high/low camera-relative
-  // vector CSM samples with), so the shared cloud-shadow frame owner emits the
-  // matrix relative to THIS packer's camera and the product stays small.
+  // fragment already carries `v_positionRTE`, the exact high/low
+  // camera-relative vector CSM samples with, so the shared cloud-shadow frame
+  // owner emits the matrix relative to this packer's camera and the product
+  // stays small.
   //
   // The planar modes have no ECEF camera-relative fragment position, so they
-  // keep the absolute matrix + `v_positionMC` — byte-identical to pre-C13-06.
+  // keep the absolute matrix and `v_positionMC`.
   const cloudShadowFrame = cloudCache?.shadowFrame;
   const cloudShadowCascadeFrames = cloudCache?.shadowCascadeFrames;
   const cloudShadowEyeX = camHigh.x + camLow.x;
   const cloudShadowEyeY = camHigh.y + camLow.y;
   const cloudShadowEyeZ = camHigh.z + camLow.z;
-  // CLOUD-LOD-R5 — the opt-in cascade tier renders a 3-cascade atlas AND stashes
-  // three forward VPs (48 floats). Cascade 0 goes in the existing cloudShadowVP
-  // field; cloudShadowControl.w carries the cascade count (3.0) so the FS takes
-  // the cascade branch. Cascades 1/2 are appended at the struct tail below.
+  // The opt-in cascade tier renders a 3-cascade atlas and stashes three
+  // forward VPs (48 floats). Cascade 0 goes in the cloudShadowVP field above;
+  // cloudShadowControl.w carries the cascade count (3.0) so the FS takes the
+  // cascade branch. Cascades 1 and 2 are appended at the struct tail below.
   const cascadeActive = cloudCache?.shadowCascadeActive === true;
   const cascadeVP = cloudCache?.shadowCascadeVP;
   const cascadeReady = cascadeActive && !!cascadeVP && cascadeVP.length >= 48;
-  // The flag the FS reads is ALL-OR-NOTHING across every matrix in the struct:
-  // a mix of eye-relative and absolute VPs would silently project the wrong
-  // operand through one cascade. Require every frame this branch will emit.
+  // The flag the FS reads applies to every matrix in the struct at once: a mix
+  // of eye-relative and absolute VPs would silently project the wrong operand
+  // through one cascade. Every frame this branch will emit must therefore be
+  // valid.
   const cloudShadowRelativeToEye =
     sceneMode === 3 &&
     cloudShadowFrame?.valid === true &&
@@ -892,7 +861,7 @@ export function createCameraUniformBuffer(
     }
     data[offset++] = 1.0; // x = enabled
     data[offset++] = cloudCache?.shadowAbsorption ?? 0.04; // y = absorption
-    data[offset++] = cloudCache?.shadowStrength ?? 1.0; // z = strength (C13-41)
+    data[offset++] = cloudCache?.shadowStrength ?? 1.0; // z = strength
     data[offset++] = 3.0; // w = cascade count (cascaded atlas branch)
   } else if (shadowActive && shadowVP && shadowVP.length >= 16) {
     if (cloudShadowRelativeToEye) {
@@ -910,7 +879,7 @@ export function createCameraUniformBuffer(
     }
     data[offset++] = 1.0; // x = enabled
     data[offset++] = cloudCache?.shadowAbsorption ?? 0.04; // y = absorption
-    data[offset++] = cloudCache?.shadowStrength ?? 1.0; // z = strength (C13-41)
+    data[offset++] = cloudCache?.shadowStrength ?? 1.0; // z = strength
     data[offset++] = 0.0; // w = cascade count 0 (single-map branch)
   } else {
     // Identity matrix + disabled control (byte-identical default).
@@ -936,19 +905,19 @@ export function createCameraUniformBuffer(
     data[offset++] = 0.0;
   }
 
-  // ─── GLOBE-UNDERGROUND-COLOR: underground tint tail (offsets 168-179) ───
-  // undergroundColor (vec4) + undergroundColorAlphaByDistance (vec4) +
-  // undergroundControl (vec4). Mirrors the WebGL uniforms
-  // `u_undergroundColor` / `u_undergroundColorAlphaByDistance` plus the
-  // `showUndergroundColor` compile-time gate from
-  // GlobeSurfaceTileProviderRendering.js:1212-1217 (the gate becomes
-  // `undergroundControl.x` since WGSL branches at runtime). `Globe.render`
-  // mirrors `globe.undergroundColor` / `globe.undergroundColorAlphaByDistance`
-  // onto the tile provider each frame (Globe.js:1420-1422).
-  // `undergroundControl.y` carries `max(czm_eyeHeight, 0)` — the FS subtracts
-  // it from `v_distance` before the NearFarScalar ramp, exactly like
-  // GlobeFS.glsl line 738. All-zero (gate closed) when the condition fails,
-  // keeping the default render byte-identical.
+  // Underground tint tail (offsets 168-179): undergroundColor (vec4) +
+  // undergroundColorAlphaByDistance (vec4) + undergroundControl (vec4).
+  // Mirrors the WebGL uniforms `u_undergroundColor` /
+  // `u_undergroundColorAlphaByDistance` plus the `showUndergroundColor`
+  // compile-time gate from GlobeSurfaceTileProviderRendering.js:1212-1217; the
+  // gate becomes `undergroundControl.x` because WGSL branches at runtime.
+  // `Globe.render` mirrors `globe.undergroundColor` /
+  // `globe.undergroundColorAlphaByDistance` onto the tile provider each frame
+  // (Globe.js:1420-1422). `undergroundControl.y` carries
+  // `max(czm_eyeHeight, 0)`, which the FS subtracts from `v_distance` before
+  // the NearFarScalar ramp exactly as GlobeFS.glsl line 738 does. All-zero,
+  // gate closed, when the condition fails, keeping the default render
+  // byte-identical.
   const ugTp = tileProvider as unknown as {
     undergroundColor?: {
       red: number;
@@ -990,7 +959,7 @@ export function createCameraUniformBuffer(
     for (let i = 0; i < 12; i++) data[offset++] = 0.0;
   }
 
-  // ─── GLOBE-TRANSLUCENCY-ALPHA: translucent-globe alpha tail (180-191) ───
+  // Translucent-globe alpha tail (180-191):
   // translucencyFrontAlphaByDistance (vec4) + translucencyBackAlphaByDistance
   // (vec4) + translucencyControl (vec4). Mirrors the WebGL uniforms
   // `u_frontFaceAlphaByDistance` / `u_backFaceAlphaByDistance`
@@ -1054,26 +1023,28 @@ export function createCameraUniformBuffer(
     for (let i = 0; i < 12; i++) data[offset++] = 0.0;
   }
 
-  // ─── GLOBE-HDR-GAMMA: czm_gammaCorrect HDR gate tail (192-195) ───
-  // hdrControl (vec4). Mirrors WebGL's `#ifdef HDR` czm_gammaCorrect
-  // (gammaCorrect.glsl: sRGB → linear decode). WebGL pushes the `HDR`
-  // define via DerivedCommand.createHdrCommand whenever `scene._hdr`
-  // (i.e. `scene.highDynamicRange`) is true — INDEPENDENT of whether the
-  // canvas is an actual HDR/rgba16float output. Q13-PLAIN-HDR-GAMMA-CORE:
-  // the gate is therefore `frameState.useHDR` alone (Scene mirrors
-  // `scene.highDynamicRange` onto it), matching (1) WebGL's single HDR
-  // define, (2) this globe's own atmosphere/fog inline-tonemap skip gate
-  // (`groundAtmosphereControl.w`, WebGPUGlobeSurfaceTileUB.ts, also
-  // `frameState.useHDR`), and (3) the WebGPU post-process Tonemap stage
-  // (`setStageEnabled("Tonemap", useHdr && !hdrOutputMode)`), which
-  // tonemaps + gamma-encodes on `scene.highDynamicRange` regardless of
-  // canvas output. The previous `context.hdrCanvasOutput && useHDR` gate
-  // left imagery UN-decoded under plain `scene.highDynamicRange = true`
-  // (SDR canvas) while the post-process Tonemap still gamma-ENCODED it —
-  // a double-gamma-encode that rendered the globe double-bright vs WebGL.
+  // czm_gammaCorrect HDR gate tail (192-195): hdrControl (vec4). Mirrors
+  // WebGL's `#ifdef HDR` czm_gammaCorrect (gammaCorrect.glsl: sRGB to linear
+  // decode). WebGL pushes the `HDR` define via
+  // DerivedCommand.createHdrCommand whenever `scene._hdr`
+  // (`scene.highDynamicRange`) is true, independently of whether the canvas is
+  // an actual HDR/rgba16float output. The gate here is therefore
+  // `frameState.useHDR` alone, which Scene mirrors from
+  // `scene.highDynamicRange`, matching WebGL's single HDR define, this globe's
+  // own atmosphere/fog inline-tonemap skip gate
+  // (`groundAtmosphereControl.w` in WebGPUGlobeSurfaceTileUB.ts, also
+  // `frameState.useHDR`), and the WebGPU post-process Tonemap stage
+  // (`setStageEnabled("Tonemap", useHdr && !hdrOutputMode)`), which tonemaps
+  // and gamma-encodes on `scene.highDynamicRange` regardless of canvas output.
+  //
+  // Adding `context.hdrCanvasOutput` to the gate would leave imagery undecoded
+  // under a plain `scene.highDynamicRange = true` on an SDR canvas while the
+  // post-process Tonemap still gamma-encodes it — a double gamma encode that
+  // renders the globe double-bright against WebGL.
+  //
   // y carries czm_gamma (uniformState.gamma, default 2.2). All-zero on the
-  // default SDR path (useHDR false) → czm_gammaCorrect stays identity →
-  // byte-identical render.
+  // default SDR path, where useHDR is false, so czm_gammaCorrect stays an
+  // identity and the render is byte-identical.
   const hdrEnabled =
     (frameState as { useHDR?: boolean } | undefined)?.useHDR === true;
   data[offset++] = hdrEnabled ? 1.0 : 0.0;
@@ -1081,11 +1052,12 @@ export function createCameraUniformBuffer(
   data[offset++] = 0.0;
   data[offset++] = 0.0;
 
-  // ─── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP: cascade tail (196-231) ───
-  // cloudShadowVP1 (mat4) + cloudShadowVP2 (mat4) — the mid/far cascade forward
-  // VPs (cascade 0 is packed above into cloudShadowVP). cloudShadowCascadeParams
-  // (vec4): x = atlas tile count (3.0). All-zero unless the opt-in cascade tier
-  // rendered the atlas this frame → the FS single-map branch stays byte-identical.
+  // Cloud-shadow cascade tail (196-231): cloudShadowVP1 (mat4) +
+  // cloudShadowVP2 (mat4) are the mid and far cascade forward VPs, cascade 0
+  // being packed above into cloudShadowVP. cloudShadowCascadeParams (vec4)
+  // carries x = atlas tile count (3.0). All-zero unless the opt-in cascade
+  // tier rendered the atlas this frame, so the FS single-map branch stays
+  // byte-identical.
   if (cascadeReady) {
     for (let ci = 1; ci < 3; ci++) {
       const cascadeFrame = cloudShadowCascadeFrames?.[ci];
@@ -1105,8 +1077,9 @@ export function createCameraUniformBuffer(
       }
     }
     data[offset++] = 3.0; // x = tile count
-    // C13-06 — y > 0.5 tells the FS the sun-view matrices above are eye-relative
-    // and it must project `v_positionRTE` instead of the full-ECEF `v_positionMC`.
+    // y > 0.5 tells the FS the sun-view matrices above are eye-relative and
+    // that it must project `v_positionRTE` rather than the full-ECEF
+    // `v_positionMC`.
     data[offset++] = cloudShadowRelativeToEye ? 1.0 : 0.0;
     data[offset++] = 0.0;
     data[offset++] = 0.0;
@@ -1118,14 +1091,14 @@ export function createCameraUniformBuffer(
     data[offset++] = 0.0;
   }
 
-  // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — stash the EXACT near/far this
-  // globe command log-encodes the whole depth texture against onto the SHARED
-  // uniformState (the one object that crosses the GraphicsContext boundary to
-  // the depth-sample classifier's frameState.context.uniformState). This runs
-  // at scene-update (full frustum, before the per-slice loop slices
-  // currentFrustum AND before the classifier's command-build), so depth-sample
-  // classifiers read the correct encode frustum to reverse the log depth. Only
-  // stash a valid frustum so an early-frame zero never poisons the decode.
+  // Stash the exact near/far this globe command log-encodes the whole depth
+  // texture against onto the shared uniformState, the one object that crosses
+  // the GraphicsContext boundary to the depth-sample classifier's
+  // `frameState.context.uniformState`. This runs at scene-update, on the full
+  // frustum, before the per-slice loop slices currentFrustum and before the
+  // classifier's command build, so depth-sample classifiers read the correct
+  // encode frustum when reversing the log depth. Only a valid frustum is
+  // stashed, so an early-frame zero cannot poison the decode.
   if (ldFar > ldNear) {
     const usStash = uniformState as unknown as {
       _logDepthEncodeNearFar: Float32Array | null;
@@ -1158,8 +1131,8 @@ export function createCameraUniformBuffer(
  * isn't yet attached to the context (very first frame).
  *
  * Returns a `{ buffer, offset, size }` triple sized to the requested
- * `bufferSize` — NOT the allocator's 256-aligned slot size — so the
- * caller's bind-group entry binds exactly the WGSL struct width.
+ * `bufferSize`, not to the allocator's 256-aligned slot size, so the caller's
+ * bind-group entry binds exactly the WGSL struct width.
  *
  * Pure free function — no host needed.
  */
@@ -1224,32 +1197,25 @@ export function writeUniformSlice(
 }
 
 /**
- * Compute the `modifiedModelView` matrix for 2D / Columbus View / Morphing
- * scene modes. Identity-translates the view matrix by the tile center.
- *
- * Pure free function — no host needed.
- */
-/**
  * Build the per-tile `modifiedModelView` matrix that the globe-terrain
  * vertex shader uses as
  *   `v_positionEC = modifiedModelView × position_tile_local`
- * — equivalent to `view × (position_tile_local + mesh.center)` i.e. the
- * eye-space position for the world point the tile-local vertex
- * represents.
+ * — equivalent to `view × (position_tile_local + mesh.center)`, the
+ * eye-space position for the world point the tile-local vertex represents.
+ * Used by the 2D, Columbus View and Morphing scene modes; it
+ * identity-translates the view matrix by the tile center.
  *
- * Mirrors WebGL `GlobeSurfaceTileProviderRendering.js#L1120,L406-L414`
+ * Mirrors WebGL `GlobeSurfaceTileProviderRendering.js#L1120,L406-L414`,
  * which reads `rtc = mesh.center` and feeds it to `u_modifiedModelView`.
  *
- * Session 65 Batch 41 (NEW-VR2-1) — renamed the second argument from
- * `surfaceTile` to `mesh` to make it impossible to repeat the bug
- * where the caller passed a `GlobeSurfaceTile` and the function looked
- * up `surfaceTile.center` which doesn't exist on that class — the
- * `if (!center) return new Float64Array(view);` fallback then handed
- * back a plain view matrix, leaving every fragment with a HUGE
- * (>100 km) `v_positionEC` magnitude at ground-altitude camera
- * positions. The visible symptom was Bloom.html + Particle System.html
- * rendering as a flat uniform fog color across the entire below-
- * horizon area (NEW-VR2-1 "still deferred" since 2026-05-10).
+ * The second argument has to be something carrying a `center`. A
+ * `GlobeSurfaceTile` does not: the `if (!center) return new
+ * Float64Array(view);` fallback then returns a plain view matrix, leaving
+ * every fragment with a `v_positionEC` magnitude above 100 km at
+ * ground-altitude camera positions, which saturates the fog term to a flat
+ * uniform color across the entire below-horizon area.
+ *
+ * Pure free function — no host needed.
  */
 export function computeModifiedModelView(
   uniformState: CesiumUniformState,

@@ -812,7 +812,7 @@ test("E1 no WGSL was touched — the C13-39 occupancy mandate is structural", ()
   const globeSrc = readEngine("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   const shadowFn = globeSrc.slice(
     globeSrc.indexOf("fn sampleCloudGroundShadow("),
-    globeSrc.indexOf("// Enhanced Day/Night Rendering"),
+    globeSrc.indexOf("fn computeDayNightFade("),
   );
   assert.ok(shadowFn.length > 0, "cloud-shadow sampler not found");
   assert.doesNotMatch(shadowFn, /eclipse/i);

@@ -1,13 +1,8 @@
 /// <reference types="@webgpu/types" />
 /**
- * Globe-surface shader-module factory extracted from
- * `WebGPUGlobeSurfaceRenderer`.
+ * Globe-surface shader-module factory for `WebGPUGlobeSurfaceRenderer`.
  *
- * Batch 146 of the audit-recommended decomposition (second slice of the
- * GlobeSurface decomposition arc — see
- * `migration_doc/BATCH_145_PLAN_GLOBE_SURFACE_DECOMPOSITION.md`).
- *
- * Moves the five shader-cache methods off the renderer class:
+ * Five entry points:
  *
  *   - `initShaderCache(host, code)` — creates the per-device
  *     `WebGPUShaderModuleCache` and prewarms the baseline + GEODETIC_NORMAL
@@ -27,16 +22,12 @@
  *     Returns null if any of the three anchor strings is missing.
  *
  * The renderer's `_initShaderCache`, `_getProductionShaderModule`,
- * `_getDebugFragmentShaderModule`, and `_getClipDistancesShaderModule`
- * become 1-line delegators that pass `this` as the host. The pure
- * `_buildClipDistancesShaderSource` method is removed entirely —
- * the only caller (the clip-distances builder above) now invokes the free
- * function directly.
+ * `_getDebugFragmentShaderModule` and `_getClipDistancesShaderModule` are
+ * one-line delegators that pass `this` as the host.
  *
- * The five host fields the factory reaches into are flipped from `private`
- * to `public` on the renderer (with the underscore prefix preserved as the
- * "do-not-call-from-outside-the-Renderer-package" marker per the same
- * convention used in Batches 142–144).
+ * The five host fields the factory reaches into are public on the renderer,
+ * with the underscore prefix retained to mark them as not callable from
+ * outside the Renderer package.
  *
  * @module WebGPUGlobeSurfaceShaders
  */
@@ -69,30 +60,28 @@ export interface ShaderFactoryHost {
   readonly _debugFragmentShaderModules: Map<number, GPUShaderModule | null>;
   readonly _clipDistancesShaderModules: Map<number, GPUShaderModule | null>;
   /**
-   * NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — true when the
-   * device's `maxSampledTexturesPerShaderStage` can't fit the full
-   * 28-texture globe layout and the renderer runs the 4-imagery-slot
+   * True when the device's `maxSampledTexturesPerShaderStage` cannot fit the
+   * full 28-texture globe layout and the renderer runs the 4-imagery-slot
    * variant. Every defines computation (pipelines, wireframe, material,
-   * prewarm) ORs `ShaderDefine.GLOBE_IMAGERY_REDUCED` when set. Fixed
-   * per device — captured once at renderer `initialize()`.
+   * prewarm) ORs `ShaderDefine.GLOBE_IMAGERY_REDUCED` when set. Fixed per
+   * device — captured once at renderer `initialize()`.
    */
   readonly _imageryReduced?: boolean;
   /**
-   * C11-158 (NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE) — mirrored each
-   * frame from `Globe.enableEnhancedOcean` (default false). When true, every
-   * GlobeTerrain module fetch ORs the `ShaderDefineHi.ENHANCED_OCEAN` hi-word
-   * bit into `definesHi`, selecting the enhanced ocean STYLING branch in
-   * `computeEnhancedOcean`; when false (the default), the module compiles the
-   * classic WebGL-parity `//>>else` branch. The wave march is unconditional in
-   * both. The flag is read HERE (not passed per-call) so every production /
-   * clip-distances module the factory hands back is consistent with the
-   * renderer's current ocean state.
+   * Mirrored each frame from `Globe.enableEnhancedOcean` (default false).
+   * When true, every GlobeTerrain module fetch ORs the
+   * `ShaderDefineHi.ENHANCED_OCEAN` hi-word bit into `definesHi`, selecting
+   * the enhanced ocean styling branch in `computeEnhancedOcean`; when false,
+   * the module compiles the classic WebGL-parity `//>>else` branch. The wave
+   * march is unconditional in both. The flag is read here rather than passed
+   * per call so every production and clip-distances module the factory hands
+   * back is consistent with the renderer's current ocean state.
    */
   readonly _enhancedOceanEnabled?: boolean;
 }
 
-// C11-158 — compute the hi-word define mask for the current ocean state.
-// Returns `ShaderDefineHi.ENHANCED_OCEAN` when the renderer mirrors
+// Hi-word define mask for the current ocean state. Returns
+// `ShaderDefineHi.ENHANCED_OCEAN` when the renderer mirrors
 // `Globe.enableEnhancedOcean === true`, else 0 (classic WebGL-parity styling).
 // The value threads into `getOrCreate(..., definesHi)` + `preprocess(...,
 // definesHi)`, which key the compiled module by the hi word.
@@ -100,31 +89,29 @@ function oceanDefinesHi(host: ShaderFactoryHost): number {
   return host._enhancedOceanEnabled ? ShaderDefineHi.ENHANCED_OCEAN : 0;
 }
 
-// ─── Shader Module Cache ─────────────────────────────────────────
-// Batch 20 — the globe terrain shader flows through `WebGPUShaderModuleCache`
-// which preprocesses `//>>ifdef` directives against an active-defines bitmask,
-// deduplicates module compilation across wireframe/debug/production pipelines
-// that share a source, and prewarms common variants so the first-frame
-// render path has no shader-compile jank.
+// The globe terrain shader flows through `WebGPUShaderModuleCache`, which
+// preprocesses `//>>ifdef` directives against an active-defines bitmask,
+// deduplicates module compilation across the wireframe, debug and production
+// pipelines that share a source, and prewarms common variants so the
+// first-frame render path has no shader-compile jank.
 export function initShaderCache(host: ShaderFactoryHost, code: string): void {
   host._shaderCode = code;
   host._shaderModuleCache = new WebGPUShaderModuleCache(host._device!);
 
-  // Prewarm: the baseline module plus every variant we expect the first
-  // ~30 frames of rendering to touch. Compiling them up-front moves
-  // ~10–20 ms of shader-compile cost off the render path. The list is
-  // deliberately concrete rather than computed — it should match the
-  // call sites in `_createPipelineVariant` / `_createWireframePipelineVariant`.
-  // Batch 246 — on a reduced-imagery device every globe module carries
-  // the GLOBE_IMAGERY_REDUCED bit, so prewarm the variants that will
-  // actually be requested (the full-layout variants would be dead weight
-  // there, and vice versa).
+  // Prewarm the baseline module plus every variant the first ~30 frames of
+  // rendering touch. Compiling them up front moves 10-20 ms of shader-compile
+  // cost off the render path. The list is deliberately concrete rather than
+  // computed, and must match the call sites in `_createPipelineVariant` /
+  // `_createWireframePipelineVariant`. On a reduced-imagery device every globe
+  // module carries the GLOBE_IMAGERY_REDUCED bit, so only the variants that
+  // will actually be requested are warmed — the full-layout variants would be
+  // dead weight there, and vice versa.
   const reducedBit = host._imageryReduced
     ? ShaderDefine.GLOBE_IMAGERY_REDUCED
     : 0;
   const prewarmSets: readonly number[] = [
     reducedBit, // production terrain without geodetic normals
-    ShaderDefine.GEODETIC_NORMAL | reducedBit, // DP-H25 exaggerated terrain
+    ShaderDefine.GEODETIC_NORMAL | reducedBit, // exaggerated terrain
   ];
   host._shaderModuleCache.prewarm(
     ShaderSourceId.GLOBE_TERRAIN,
@@ -143,10 +130,10 @@ export function getProductionShaderModule(
   host: ShaderFactoryHost,
   defines: number,
 ): GPUShaderModule {
-  // C11-158 — the hi-word `ENHANCED_OCEAN` bit rides `definesHi`. The module
-  // cache keys the compiled module by (sourceId, defines, definesHi), so the
-  // enhanced and classic ocean STYLING variants dedupe as distinct modules on
-  // a shared device.
+  // The hi-word `ENHANCED_OCEAN` bit rides `definesHi`. The module cache keys
+  // the compiled module by (sourceId, defines, definesHi), so the enhanced and
+  // classic ocean styling variants dedupe as distinct modules on a shared
+  // device.
   const definesHi = oceanDefinesHi(host);
   const label =
     definesHi === 0
@@ -195,12 +182,10 @@ export function getDebugFragmentShaderModule(
     return null;
   }
 
-  // Batch 20 — run the `//>>ifdef` preprocessor on the base source
-  // FIRST, then append the debug fragment entry points. If we skipped
-  // preprocessing, the raw directive lines between `//>>ifdef` /
-  // `//>>endif` would be comments but the body lines between them
-  // would accumulate (both branches of the if/else materialize),
-  // producing invalid WGSL like `f(a); g(b));`.
+  // Run the `//>>ifdef` preprocessor on the base source before appending the
+  // debug fragment entry points. Skipping it leaves the raw directive lines
+  // as comments while both branches' body lines accumulate, producing invalid
+  // WGSL like `f(a); g(b));`.
   const preprocessedBase = preprocessShaderSource(host._shaderCode, defines);
 
   // The three debug fragment entry points share the same vertex outputs
@@ -208,11 +193,11 @@ export function getDebugFragmentShaderModule(
   // shader source without touching VertexOutput / TileUniforms.
   //
   // - fragmentDebugTri: uses @builtin(primitive_index) for face coloring.
-  // - fragmentDebugLod: reads `tile.tileLevel` (added to TileUniforms in
-  //   this session) and maps it to a deterministic color.
+  // - fragmentDebugLod: reads `tile.tileLevel` and maps it to a
+  //   deterministic color.
   // - fragmentDebugNormal: emits the interpolated eye-space normal as
-  //   RGB after a [-1,1]→[0,1] remap. Useful for verifying the
-  //   normal-map shaders we modernized in WGF-5.
+  //   RGB after a [-1,1]→[0,1] remap, which verifies the normal-map
+  //   shaders' orientation.
   const augmented = `${preprocessedBase}
 
 // Slice 5c-B Batch 117 — debug fragment variants emit FragOutput too.
@@ -277,10 +262,10 @@ fn fragmentDebugNormal(input: VertexOutput) -> FragOutput {
       label: `GlobeTerrain shader (debug variants, defines=0x${defines.toString(16)})`,
       code: augmented,
     });
-    // Drain the validation scope. If the driver rejected the builtin we
-    // still hold the module reference, but the next pipeline build will
-    // fail noisily — replace the entry with `null` so we never retry
-    // for this define-set.
+    // Drain the validation scope. A driver that rejected the builtin still
+    // leaves a module reference behind, but the next pipeline build fails
+    // noisily, so replace the entry with `null` and never retry this
+    // define-set.
     device.popErrorScope().then((err) => {
       if (err) {
         host._debugFragmentShaderModules.set(defines, null);
@@ -301,9 +286,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> FragOutput {
 }
 
 /**
- * Phase 5 WGF-1: build (and cache) the GlobeTerrain shader module
- * variant that uses `@builtin(clip_distances)` for hardware clipping
- * planes. The base source is augmented in three places:
+ * Build (and cache) the GlobeTerrain shader module variant that uses
+ * `@builtin(clip_distances)` for hardware clipping planes. The base source is
+ * augmented in three places:
  *
  *   1. The `VertexOutput` struct gets a new
  *      `@builtin(clip_distances) clipDistances: array<f32, 8>` member.
@@ -341,17 +326,18 @@ export function getClipDistancesShaderModule(
     return null;
   }
 
-  // Batch 20 — preprocess first so the anchor-string search in
-  // `buildClipDistancesShaderSource` sees a valid-WGSL base. Without
-  // preprocessing, the `//>>ifdef` body lines (e.g. the extra
-  // `input.geodeticSurfaceNormal` arg) would still be present and
-  // would match the anchor patterns but produce invalid output when
-  // combined with the `//>>else` branch.
-  // C11-158 — pass the hi word so the clip-distances variant compiles the
-  // SAME ocean STYLING branch as the on-screen production module (the clip
-  // variant uses the real `fragmentMain`, so a mismatch would render classic
-  // water under active clipping planes while the rest renders enhanced). The
-  // `_clipDistancesShaderModules` map keys by `defines` only, but the renderer
+  // Preprocess first so the anchor-string search in
+  // `buildClipDistancesShaderSource` sees a valid-WGSL base. Without it the
+  // `//>>ifdef` body lines (for instance the extra
+  // `input.geodeticSurfaceNormal` argument) are still present and match the
+  // anchor patterns, but produce invalid output once combined with the
+  // `//>>else` branch.
+  //
+  // The hi word is passed so the clip-distances variant compiles the same
+  // ocean styling branch as the on-screen production module; the clip variant
+  // uses the real `fragmentMain`, so a mismatch renders classic water under
+  // active clipping planes while the rest renders enhanced. The
+  // `_clipDistancesShaderModules` map keys by `defines` only, and the renderer
   // wipes it on an ocean-flag flip, so `definesHi` is constant within a map
   // epoch.
   const definesHi = oceanDefinesHi(host);
@@ -411,8 +397,8 @@ export function getClipDistancesShaderModule(
 export function buildClipDistancesShaderSource(source: string): string | null {
   // Anchor 1: VertexOutput struct definition. Inject the builtin
   // clip-distances output as the last member, right before the closing
-  // brace. We match the precise existing v_distance line so the patch
-  // can't drift onto an unrelated struct.
+  // brace. Matching the exact existing v_distance line keeps the patch from
+  // drifting onto an unrelated struct.
   const vertexOutputAnchor = "@location(4) v_distance: f32,\n};";
   if (!source.includes(vertexOutputAnchor)) {
     return null;
@@ -435,9 +421,9 @@ export function buildClipDistancesShaderSource(source: string): string | null {
   // so eyePos is the direct (positionWC - cameraWC) which gives
   // FP32-precision 0.6m noise at Earth radius — fine because clipping
   // planes are the only consumer and they have meter-scale tolerance.
-  // For the SCENE3D path, the same expression is exactly the
-  // `rtePosition.xyz` we already computed; recomputing it here lets the
-  // augmentation work uniformly across all four scene modes.
+  // For the SCENE3D path the same expression is exactly the already-computed
+  // `rtePosition.xyz`; recomputing it here lets the augmentation work
+  // uniformly across all four scene modes.
   const processVertexAnchor =
     "out.position.z = min(out.position.z, out.position.w);\n\n  return out;";
   if (!out.includes(processVertexAnchor)) {
@@ -460,11 +446,11 @@ export function buildClipDistancesShaderSource(source: string): string | null {
     "  return out;";
   out = out.replace(processVertexAnchor, cdInjection);
 
-  // Anchor 3: fragment-side discard. The legacy path is unconditionally
-  // safe to remove because the rasterizer's clip distance check is a
-  // strict superset (it operates on every interpolated pixel of every
-  // clipped triangle). We replace the discard line with a comment so
-  // line numbers in errors stay close to the original.
+  // Anchor 3: fragment-side discard. Removing it is unconditionally safe
+  // because the rasterizer's clip-distance check is a strict superset — it
+  // operates on every interpolated pixel of every clipped triangle. The
+  // discard line becomes a comment rather than disappearing so line numbers
+  // in errors stay close to the original.
   const fragmentDiscardAnchor =
     "if (globeClipByPlanes(input.v_positionMC)) { discard; }";
   if (!out.includes(fragmentDiscardAnchor)) {

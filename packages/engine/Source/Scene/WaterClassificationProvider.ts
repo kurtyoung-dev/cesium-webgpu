@@ -1,29 +1,25 @@
 /**
- * WaterClassificationProvider — the WATER-epic Phase-1 seam (C7-LAKE-WATER-MASK).
- *
  * A water classification provider augments the terrain provider's per-tile
- * water mask with a supplementary client-side water dataset. Phase 1 ships
- * one concrete implementation, {@link LakeWaterClassificationProvider},
- * which composites Natural Earth 1:10m lake polygons (public domain) over
- * the provider mask so large inland lakes (Great Lakes, Great Salt Lake,
- * Baikal, Victoria, …) get the animated water-mask effect that Cesium
+ * water mask with a supplementary client-side water dataset. One concrete
+ * implementation ships, {@link LakeWaterClassificationProvider}, which
+ * composites Natural Earth 1:10m lake polygons (public domain) over the
+ * provider mask so large inland lakes — the Great Lakes, Great Salt Lake,
+ * Baikal, Victoria and so on — get the animated water-mask effect that Cesium
  * World Terrain's ocean-only mask denies them.
  *
- * Known dataset limitation: Natural Earth classes the Caspian Sea as
- * OCEAN — it is absent from the lakes files, so `lakeWaterMask` does not
- * add it. Largest bundled bodies: Baikal, the Great Lakes, Great
- * Bear/Slave, Winnipeg, Tanganyika, Victoria, Balkhash.
+ * Natural Earth classes the Caspian Sea as ocean, so it is absent from the
+ * lakes files and `lakeWaterMask` does not add it. The largest bundled bodies
+ * are Baikal, the Great Lakes, Great Bear, Great Slave, Winnipeg, Tanganyika,
+ * Victoria and Balkhash.
  *
- * The seam is deliberately renderer-agnostic: it operates on the CPU-side
- * mask BYTES inside the single shared upload point
- * (`GlobeSurfaceTile.js` → `createWaterMaskTextureIfNeeded`, unified for
- * both backends in Batch 512), so WebGL and WebGPU consume identical
- * texels by construction. Wired behind the opt-in `globe.lakeWaterMask`
- * flag — DEFAULT OFF and byte-identical when off.
+ * The seam is renderer-agnostic by construction: it operates on the CPU-side
+ * mask bytes inside the single upload point both backends share
+ * (`GlobeSurfaceTile.js` → `createWaterMaskTextureIfNeeded`), so WebGL and
+ * WebGPU consume identical texels. It sits behind the opt-in
+ * `globe.lakeWaterMask` flag, which defaults off.
  *
- * Later WATER-epic phases can add providers backed by finer datasets
- * (e.g. the ~30m public-domain SRTMSWBD raster — research lane
- * R-LAKE-SRTMSWBD) behind the same interface.
+ * Providers backed by finer datasets, such as the ~30 m public-domain SRTMSWBD
+ * raster, can be added behind the same interface.
  */
 
 /**
@@ -54,11 +50,11 @@ export interface WaterClassificationProvider {
 
   /**
    * OR-composite supplementary water coverage over the terrain
-   * provider's mask for the tile rectangle. NEVER mutates the input —
-   * the provider mask may be shared with (or upsampled into) other
-   * tiles. Returns a NEW combined mask, or `undefined` when the
-   * composite would change nothing (caller keeps the original mask and
-   * its fast paths).
+   * provider's mask for the tile rectangle. The input is never mutated,
+   * because the provider mask may be shared with, or upsampled into,
+   * other tiles. Returns a new combined mask, or `undefined` when the
+   * composite would change nothing, in which case the caller keeps the
+   * original mask and its fast paths.
    *
    * A 1-byte all-land mask expands to `expandedSize`² when a lake
    * intersects; an N×N provider mask keeps its resolution.

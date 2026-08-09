@@ -5,15 +5,15 @@ import VerticalDatum from "../Core/VerticalDatum.js";
 import OceanSurfacePrimitive from "./OceanSurfacePrimitive.js";
 
 /**
- * GlobeWaterOcean — opt-in FFT spectral ocean sub-facade (Campaign 6/7,
- * C6-FFT-OCEAN). Accessed as `scene.globe.water.ocean`.
+ * The opt-in FFT spectral ocean sub-facade, accessed as
+ * <code>scene.globe.water.ocean</code>.
  *
- * Default **off** and byte-identical when off: no {@link OceanSurfacePrimitive}
- * is created (and therefore no GPU resources are allocated and no compute passes
- * run) until `enabled` is set to `true`, at which point a single ocean primitive
- * is created and added to `scene.primitives`. Setting `enabled = false` removes
- * and destroys it. WebGPU-only — on WebGL the primitive renders nothing
- * (documented no-op, Principle 2/10).
+ * Off by default, and inert while off: no {@link OceanSurfacePrimitive} is
+ * created, so no GPU resources are allocated and no compute passes run, until
+ * <code>enabled</code> is set to <code>true</code>, at which point a single
+ * ocean primitive is created and added to <code>scene.primitives</code>.
+ * Setting <code>enabled = false</code> removes and destroys it. WebGPU only —
+ * on WebGL the primitive renders nothing.
  *
  * @alias GlobeWaterOcean
  * @constructor
@@ -34,7 +34,7 @@ function GlobeWaterOcean(scene, globe) {
   this._amplitude = 4.0;
   this._choppiness = 1.0;
   this._deepColor = new Color(0.02, 0.08, 0.13, 1.0);
-  // Vertical datum + tide (C6-FFT-OCEAN-TIDE-DATUM).
+  // Vertical datum and tide.
   this._verticalDatum = VerticalDatum.AUTO;
   this._tideEnabled = true;
   this._tideExaggeration = 1.0;
@@ -183,12 +183,12 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
   },
 
   /**
-   * Multiplier on the tide term (ruling T3, precedent
-   * {@link Scene#verticalExaggeration}). `1.0` is TRUE SCALE — and the true
-   * equilibrium tide is only ±0.3 m, which is sub-pixel from orbit and reads
-   * as a slow waterline creep at a shoreline framing. Values above 1 are
-   * explicitly **stylised, not a prediction**; the underlying model is an
-   * equilibrium tide with no basin amplification and no phase lag.
+   * Multiplier on the tide term, following the precedent of
+   * {@link Scene#verticalExaggeration}. <code>1.0</code> is true scale, and the
+   * true equilibrium tide is only ±0.3 m, which is sub-pixel from orbit and
+   * reads as a slow waterline creep in a shoreline framing. Values above 1 are
+   * stylised rather than predictive: the underlying model is an equilibrium
+   * tide with no basin amplification and no phase lag.
    *
    * @memberof GlobeWaterOcean.prototype
    * @type {number}
@@ -212,9 +212,8 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
    * through {@link GlobeWaterOcean#tideExaggeration} and is still gated by
    * {@link GlobeWaterOcean#tideEnabled}; a non-finite return is treated as 0.
    *
-   * This is the hook reserved by `WATER_RENDERING_DESIGN.md` OQ5. Its default
-   * changed from "zero" to "the in-engine equilibrium model" when ruling T1
-   * put {@link TideModel} in Core.
+   * Leaving it undefined uses the in-engine equilibrium model rather than
+   * suppressing the tide.
    *
    * @memberof GlobeWaterOcean.prototype
    * @type {Function|undefined}

@@ -1,12 +1,6 @@
 /// <reference types="@webgpu/types" />
 /**
- * Texture-cache helpers extracted from `WebGPUGlobeSurfaceRenderer`.
- *
- * Batch 148 of the audit-recommended decomposition (fourth slice of the
- * GlobeSurface decomposition arc — see
- * `migration_doc/BATCH_145_PLAN_GLOBE_SURFACE_DECOMPOSITION.md`).
- *
- * Moves the three image-upload methods off the renderer class:
+ * Texture-cache helpers for `WebGPUGlobeSurfaceRenderer`:
  *
  *   - `getOrCreateImageryTexture(host, imagery)` — caches per-imagery
  *     `GPUTextureView`. Fast-path for already-uploaded tiles, with a
@@ -21,16 +15,9 @@
  *     records the result in the caller-supplied cache. Returns null on
  *     any error so the caller's cache miss path retries next frame.
  *
- * The renderer's `_getOrCreateImageryTexture` / `_getOrCreateWaterMaskTexture`
- * methods are removed entirely (each had a single caller). The
- * `_uploadImageSource` method is also removed; the lone external caller
- * (the ocean normal map upload in `_createWaterOceanBindGroup`) now
- * invokes the helper directly.
- *
- * The four host fields/methods these helpers reach into are flipped
- * from `private` to `public` on the renderer (with the underscore
- * prefix preserved as the "do-not-call-from-outside-the-Renderer-package"
- * marker per the convention used in Batches 142–147).
+ * The host fields and methods these helpers reach into are public on the
+ * renderer, with the underscore prefix retained to mark them as not callable
+ * from outside the Renderer package.
  *
  * @module WebGPUGlobeSurfaceTextures
  */
@@ -44,9 +31,9 @@ import type { WebGPUSharedImageryRealizations } from "./WebGPUSharedImageryReali
 import { getShareableImagerySourceIdentity } from "../ImagerySourceIdentity.js";
 
 /**
- * The subset of `WebGPUContext` the texture helpers reach for C9-12A frame-owned
- * mip preparation and deferred texture retirement. Kept structural to avoid a
- * hard import cycle with `WebGPUContext`.
+ * The subset of `WebGPUContext` the texture helpers reach for frame-owned mip
+ * preparation and deferred texture retirement. Kept structural to avoid a hard
+ * import cycle with `WebGPUContext`.
  */
 export interface ImageryRealizationContext {
   enqueueTextureMipGeneration(
@@ -57,9 +44,10 @@ export interface ImageryRealizationContext {
   /** Cancel frame-owned mip work before destroying an unpublished candidate. */
   cancelTextureMipGeneration?(texture: GPUTexture): void;
   scheduleTextureDestroy(texture: GPUTexture | null | undefined): void;
-  /** F7 (Batch 686) — stamp a texture destroyed INLINE (dies immediately, not
-   * deferred) so a same-frame pending mip job for it is dropped rather than
-   * encoded against a dead texture. Optional for structural-typing tolerance. */
+  /** Stamp a texture as destroyed inline — dying immediately rather than being
+   * deferred — so a same-frame pending mip job for it is dropped instead of
+   * encoded against a dead texture. Optional for structural-typing
+   * tolerance. */
   noteInlineTextureDestroy?(texture: GPUTexture): void;
 }
 
@@ -78,13 +66,12 @@ function ensureMipmapGenerator(device: GPUDevice): WebGPUMipmapGenerator {
   return _mipmapGenerator;
 }
 
-// `Math.floor(Math.log2(maxDim)) + 1` mip levels — same convention as
-// the cubemap loader and WebGL's `gl.generateMipmap`. A 256×256 imagery
-// tile gets 9 mip levels (256, 128, 64, 32, 16, 8, 4, 2, 1). Without
-// mipmaps the GPU point-samples Level-0 at orbital altitudes where one
-// fragment covers many texels, producing severe aliasing AND a
-// brightness drop because the alias pattern under-samples bright
-// pixels. Batch 57 — root cause of the WebGPU/WebGL brightness gap.
+// `Math.floor(Math.log2(maxDim)) + 1` mip levels — the same convention as the
+// cubemap loader and WebGL's `gl.generateMipmap`. A 256×256 imagery tile gets
+// 9 mip levels (256, 128, 64, 32, 16, 8, 4, 2, 1). Without mipmaps the GPU
+// point-samples level 0 at orbital altitudes, where one fragment covers many
+// texels, producing severe aliasing and a brightness drop because the alias
+// pattern under-samples bright pixels.
 function mipLevelCountFor(width: number, height: number): number {
   return Math.floor(Math.log2(Math.max(width, height))) + 1;
 }
@@ -95,13 +82,13 @@ function mipLevelCountFor(width: number, height: number): number {
  * (`Imagery.releaseReference`).
  *
  * The `_imageryTextureCache` outlives the imagery object: an imagery is
- * evicted + re-created (same tile x/y/level key) many times while the cache
- * keeps one entry per key. Without this, after the evicting imagery frees its
- * `GPUTexture` the cache would still serve a `GPUTextureView` onto that freed
- * texture → "Destroyed texture used in a submit". The identity guard
- * (`cache.get(key)?.texture === texture`) ensures we only drop the entry while
- * it still wraps the texture we cached — a re-created imagery may have already
- * replaced it with its own.
+ * evicted and re-created (same tile x/y/level key) many times while the cache
+ * keeps one entry per key. Without this, once the evicting imagery frees its
+ * `GPUTexture` the cache still serves a `GPUTextureView` onto that freed
+ * texture and the submit fails with "Destroyed texture used in a submit". The
+ * identity guard (`cache.get(key)?.texture === texture`) drops the entry only
+ * while it still wraps the cached texture, since a re-created imagery may have
+ * already replaced it with its own.
  */
 function registerImageryCacheCleanup(
   imagery: CesiumReadyImagery,
@@ -135,10 +122,10 @@ export interface TextureCacheHost {
   readonly _imageryTextureCache: Map<string, ImageryGPUTexture>;
   readonly _waterMaskTextureCache: Map<string, ImageryGPUTexture>;
   readonly _logicalCounters?: WebGPUGlobeLogicalCounters | null;
-  // C9-12A — the per-context shared imagery realization table and the context
-  // used for frame-owned mip prep + deferred retirement. Both are null until
-  // the first tile-command frame plumbs them (uploads only occur from that
-  // path, so they are populated before `uploadImageSource` ever runs).
+  // The per-context shared imagery realization table and the context used for
+  // frame-owned mip preparation and deferred retirement. Both are null until
+  // the first tile-command frame plumbs them; uploads only occur from that
+  // path, so they are populated before `uploadImageSource` ever runs.
   _sharedImageryRealizations?: WebGPUSharedImageryRealizations | null;
   _webgpuContext?: ImageryRealizationContext | null;
   _diagShouldLog(): boolean;
@@ -215,15 +202,15 @@ function recordRealizationLiveBytes(host: TextureCacheHost): void {
   counters.imageryRealizationLiveBytes = table.getDiagnostics().liveBytes;
 }
 
-// F5 (Batch 686) — layer-scoped imagery cache key. `imagery.key` is never
-// assigned in-tree, so the fallback was a bare `x_y_level` string with NO
-// layer/provider component: two geographic-provider ImageryLayers whose tiles
-// share coordinates aliased each other's cached GPUTexture on the cache-hit
-// branch (filed as NEW-WEBGPU-IMAGERY-CACHE-KEY-CROSS-LAYER-COLLISION).
-// Prefixing a stable per-ImageryLayer id closes the collision at the root.
-// Memory stays deduped for shareable sources — the realization table BELOW the
-// cache keys on source identity, not on this string. The two derivation sites
-// (`resolveImageryProjection` / `getOrCreateImageryTexture`) both route here.
+// Layer-scoped imagery cache key. `imagery.key` is never assigned in-tree, so
+// the fallback would otherwise be a bare `x_y_level` string with no
+// layer or provider component, and two geographic-provider ImageryLayers whose
+// tiles share coordinates would alias each other's cached GPUTexture on the
+// cache-hit branch. Prefixing a stable per-ImageryLayer id closes that
+// collision at the root. Memory stays deduplicated for shareable sources: the
+// realization table below the cache keys on source identity, not on this
+// string. Both derivation sites (`resolveImageryProjection` and
+// `getOrCreateImageryTexture`) route here.
 let _nextImageryLayerId = 1;
 const _imageryLayerIds = new WeakMap<object, number>();
 function imageryCacheKey(imagery: CesiumReadyImagery): string {
@@ -238,12 +225,12 @@ function imageryCacheKey(imagery: CesiumReadyImagery): string {
 }
 
 /**
- * Register the per-imagery cleanup for a direct-upload / shared-realization
- * cache entry (C9-12A). Unlike {@link registerImageryCacheCleanup} (which only
- * drops the map entry, used for reprojection-produced textures the imagery
- * owns), this releases the shared realization reference or retires the owned
- * texture through the context's deferred destroy, closing the historical
- * zero-retirement leak on the direct-upload path.
+ * Register the per-imagery cleanup for a direct-upload or shared-realization
+ * cache entry. Unlike {@link registerImageryCacheCleanup}, which only drops
+ * the map entry and is used for reprojection-produced textures the imagery
+ * owns, this releases the shared realization reference or retires the owned
+ * texture through the context's deferred destroy. Without it the direct-upload
+ * path never retires anything and leaks.
  *
  * Identity-guarded (`cache.get(key)?.texture === entry.texture`) so a later
  * re-realization under a reused key is not clobbered.
@@ -270,9 +257,9 @@ function registerImageryUploadCleanup(
     if (shared) {
       const table = host._sharedImageryRealizations;
       if (table) {
-        // Batch 686 (F0b/F2a) — destruction routes through a live context's
-        // deferred destroy supplied at call time; never-shared entries retire
-        // promptly here (counter below), ever-shared ones enter the pool.
+        // Destruction routes through a live context's deferred destroy
+        // supplied at call time. Never-shared entries retire promptly here
+        // (see the counter below); ever-shared ones enter the pool.
         const ctx = host._webgpuContext;
         const retired = table.release(shared, (t) => {
           if (ctx) {
@@ -310,62 +297,24 @@ function registerImageryUploadCleanup(
 }
 
 /**
- * Resolve a `GPUTextureView` for an imagery layer's tile, picking the
- * Mercator-projection or Geographic-projection variant based on the
- * tile's per-skeleton `useWebMercatorT` flag.
- *
- * Batch 65 — dual-texture cache. Two cache entries per imagery:
- *
- *   - `${key}_merc` → `imagery._webgpuMercatorTexture` (set by
- *     `ImageryLayer._reprojectTexture` on the `uploadAndReproject`
- *     path for Mercator providers). Used when `tileImagery.useWebMercatorT
- *     === true` — the cached `textureTranslationAndScale` and
- *     `textureCoordinateRectangle` are in Mercator-space, so the
- *     matching Mercator texture must be bound.
- *
- *   - `${key}` → `imagery._webgpuReprojectedTexture` (Geographic) OR
- *     the result of uploading `imagery.image` directly (Geographic
- *     providers — no reprojection runs). Used when
- *     `tileImagery.useWebMercatorT === false`.
- *
- * If the requested variant doesn't exist, the function gracefully
- * downgrades:
- *
- *   - Want merc, have merc → bind merc.
- *   - Want merc, no merc, have reprojected → bind reprojected (the
- *     caller's `effectiveUseWebMercatorT` must follow suit so the
- *     shader samples geographic-V).
- *   - Want geographic, have reprojected → bind reprojected.
- *   - Want geographic, only have merc (race window before reproject
- *     finishes) → bind merc (caller must flip
- *     `effectiveUseWebMercatorT` so the shader samples Mercator-V).
- *   - Nothing GPU-resident → upload `imagery.image` as the geographic
- *     variant (legacy path for geographic providers).
- *
- * Returns `{ view, isMercator }` so the caller can keep
- * `useWebMercatorTLayer` in lock-step with what was actually bound.
- * Returns null when the imagery is missing or every fallback fails.
- */
-/**
- * The single authority for the Mercator-vs-geographic projection
- * decision used by both the texture binding (`getOrCreateImageryTexture`)
- * and the tile-uniform-buffer's `useWebMercatorTLayer` flag
+ * The single authority for the Mercator-versus-geographic projection
+ * decision, used both by the texture binding (`getOrCreateImageryTexture`)
+ * and by the tile-uniform-buffer's `useWebMercatorTLayer` flag
  * (`createTileUniformBuffer`).
  *
- * NEW-USEWEBMERCATORT-SINGLE-SOURCE (Batch 304): previously the tile-UB
- * packer recomputed the flag as `tileImagery.useWebMercatorT &&
- * !!imagery._webgpuMercatorTexture`, which does NOT match the richer
- * decision tree in `getOrCreateImageryTexture` (cache hits, the
- * geographic fall-through when a Mercator skeleton has no merc texture,
- * and the race-window bind where only the merc texture is resident).
- * In those windows the shader's V-coordinate space and the bound
- * texture's actual projection could disagree, producing a misprojected
- * imagery strip until the next steady-state frame. Routing both
- * consumers through this pure peek closes that gap.
+ * Recomputing the flag in the tile-UB packer as
+ * `tileImagery.useWebMercatorT && !!imagery._webgpuMercatorTexture` does not
+ * match the richer decision tree in `getOrCreateImageryTexture` — cache hits,
+ * the geographic fall-through when a Mercator skeleton has no merc texture,
+ * and the race-window bind where only the merc texture is resident. In those
+ * windows the shader's V-coordinate space and the bound texture's actual
+ * projection disagree, producing a misprojected imagery strip until the next
+ * steady-state frame. Routing both consumers through this pure peek closes
+ * that gap.
  *
- * Pure: no uploads, no cache writes — it only inspects the imagery
- * texture cache and the per-imagery dual-texture fields. The `variant`
- * mirrors which branch `getOrCreateImageryTexture` will take:
+ * Pure: no uploads, no cache writes. It only inspects the imagery texture
+ * cache and the per-imagery dual-texture fields. The `variant` mirrors which
+ * branch `getOrCreateImageryTexture` will take:
  *
  *   - `"merc"`   → a Mercator GPUTexture is (or will be) bound; isMercator true.
  *   - `"geo"`    → a geographic (reprojected/cached) GPUTexture is bound; false.
@@ -419,6 +368,42 @@ export function resolveImageryProjection(
   return { variant: "upload", isMercator: false };
 }
 
+/**
+ * Resolve a `GPUTextureView` for an imagery layer's tile, picking the
+ * Mercator-projection or Geographic-projection variant based on the tile's
+ * per-skeleton `useWebMercatorT` flag.
+ *
+ * The cache holds up to two entries per imagery:
+ *
+ *   - `${key}_merc` → `imagery._webgpuMercatorTexture`, set by
+ *     `ImageryLayer._reprojectTexture` on the `uploadAndReproject`
+ *     path for Mercator providers. Used when `tileImagery.useWebMercatorT
+ *     === true`: the cached `textureTranslationAndScale` and
+ *     `textureCoordinateRectangle` are in Mercator space, so the matching
+ *     Mercator texture has to be bound.
+ *
+ *   - `${key}` → `imagery._webgpuReprojectedTexture` (geographic), or the
+ *     result of uploading `imagery.image` directly for geographic providers,
+ *     where no reprojection runs. Used when `tileImagery.useWebMercatorT ===
+ *     false`.
+ *
+ * When the requested variant does not exist the resolution downgrades
+ * gracefully:
+ *
+ *   - Want merc, have merc → bind merc.
+ *   - Want merc, no merc, have reprojected → bind reprojected; the caller's
+ *     `effectiveUseWebMercatorT` follows suit so the shader samples
+ *     geographic-V.
+ *   - Want geographic, have reprojected → bind reprojected.
+ *   - Want geographic, only have merc, the race window before reprojection
+ *     finishes → bind merc; the caller flips `effectiveUseWebMercatorT` so the
+ *     shader samples Mercator-V.
+ *   - Nothing GPU-resident → upload `imagery.image` as the geographic variant.
+ *
+ * Returns `{ view, isMercator }` so the caller can keep
+ * `useWebMercatorTLayer` in lock-step with what was actually bound, or null
+ * when the imagery is missing and every fallback fails.
+ */
 export function getOrCreateImageryTexture(
   host: TextureCacheHost,
   tileImagery: CesiumTileImagery | null | undefined,
@@ -434,13 +419,12 @@ export function getOrCreateImageryTexture(
 
   const baseKey = imageryCacheKey(imagery);
 
-  // NEW-USEWEBMERCATORT-SINGLE-SOURCE (Batch 304) — the projection
-  // decision (Mercator vs geographic variant) is computed ONCE in
-  // `resolveImageryProjection` so the bound texture, the shader's
-  // `useWebMercatorTLayer` flag, and the cached translation/scale
-  // coordinate space can't diverge. `resolveImageryProjection` is a
-  // pure peek (no uploads, no cache writes); the branches below honor
-  // its `variant` choice exactly.
+  // The projection decision, Mercator versus geographic variant, is computed
+  // once in `resolveImageryProjection` so the bound texture, the shader's
+  // `useWebMercatorTLayer` flag, and the cached translation/scale coordinate
+  // space cannot diverge. `resolveImageryProjection` is a pure peek — no
+  // uploads, no cache writes — and the branches below honor its `variant`
+  // choice exactly.
   const projection = resolveImageryProjection(host, tileImagery);
 
   // First-preference lookup: Mercator variant when the peek chose it.
@@ -543,11 +527,11 @@ export function getOrCreateImageryTexture(
     "imagery",
   );
   if (!uploaded) return null;
-  // C9-12A — register the release hook for the direct-upload path (which
-  // historically registered none → the zero-retirement leak). Shared entries
-  // release their realization reference; owned entries retire via
-  // `scheduleTextureDestroy`. The imagery object is reachable here (it is not
-  // inside `uploadImageSource`), so this is where the cleanup is bound.
+  // Register the release hook for the direct-upload path; without one nothing
+  // on that path is ever retired. Shared entries release their realization
+  // reference, owned entries retire via `scheduleTextureDestroy`. The imagery
+  // object is reachable here and not inside `uploadImageSource`, so this is
+  // where the cleanup binds.
   const uploadedEntry = host._imageryTextureCache.get(baseKey);
   if (uploadedEntry) {
     registerImageryUploadCleanup(host, imagery, baseKey, uploadedEntry);
@@ -621,7 +605,7 @@ export function getOrCreateWaterMaskTexture(
       source instanceof HTMLImageElement
     ) {
       if (source instanceof HTMLImageElement) {
-        // Same undecoded-image guard as `uploadImageSource` (C-P18).
+        // Same undecoded-image guard as `uploadImageSource`.
         if (!source.complete || source.naturalWidth === 0) return null;
         width = source.naturalWidth || source.width;
         height = source.naturalHeight || source.height;
@@ -703,12 +687,12 @@ export function getOrCreateWaterMaskTexture(
 }
 
 /**
- * C9-12A — prepare the mip chain for a freshly-uploaded imagery texture.
- * Frame-owned by default (enqueued on the context, encoded + submitted in one
- * `"TextureMipPreparation"` encoder in `endFrame` before scene passes → zero
- * private submits from draw emission). Falls back to the historical private
- * submit only when no context is plumbed (cannot happen on the live upload
- * path, but guarded so the fallback is counted as a regression tripwire).
+ * Prepare the mip chain for a freshly-uploaded imagery texture. Frame-owned by
+ * default: the job is enqueued on the context, then encoded and submitted in
+ * one `"TextureMipPreparation"` encoder in `endFrame` before scene passes, so
+ * draw emission issues no private submits. Falls back to a private submit only
+ * when no context is plumbed, which cannot happen on the live upload path;
+ * the fallback is counted so it acts as a regression tripwire.
  */
 function prepareImageryMips(
   host: TextureCacheHost,
@@ -807,21 +791,20 @@ const reuploadWatch = new Map<
 >();
 
 /**
- * PERMANENT SENTINEL — detects a texture re-upload storm.
+ * Permanent sentinel detecting a texture re-upload storm.
  *
- * `uploadImageSource` does NOT read the cache it is handed (see its docblock),
- * so a caller that forgets its own cache-hit guard silently re-uploads the same
- * image every frame. That exact defect (`NEW-WEBGPU-OCEANNORMAL-PER-CALL-REUPLOAD`)
- * cost ~9.6 ms/frame and hid for two campaigns, because the per-pass CPU
- * profiler is structurally blind to it — 99% of the frame lived outside every
- * instrumented pass.
+ * `uploadImageSource` never reads the cache it is handed (see its docblock),
+ * so a caller that forgets its own cache-hit guard silently re-uploads the
+ * same image every frame, costing milliseconds per frame. The per-pass CPU
+ * profiler cannot surface it either, because almost the whole frame lies
+ * outside every instrumented pass.
  *
- * Deliberately NOT pragma-stripped, per the permanent-sentinel rule for
- * loop/re-entry detectors. The cost argument is airtight: in correct operation
- * uploads are rare (once per source), so this Map op is noise next to a
- * `copyExternalImageToTexture`; in broken operation the frequency IS the bug and
- * we want the error. The tally is per cacheKey, so many DIFFERENT tiles
- * uploading during load never trip it — only the same key repeating does.
+ * Deliberately not pragma-stripped, matching the treatment of loop and
+ * re-entry detectors. In correct operation uploads are rare — once per source
+ * — so this Map operation is noise next to a `copyExternalImageToTexture`; in
+ * broken operation the frequency is the bug. The tally is per cacheKey, so
+ * many different tiles uploading during load never trip it; only the same key
+ * repeating does.
  */
 function noteUploadForStormDetection(cacheKey: string): void {
   const now = performance.now();
@@ -856,25 +839,26 @@ function noteUploadForStormDetection(cacheKey: string): void {
  * Upload an image source (ImageBitmap, HTMLImageElement, HTMLCanvasElement)
  * to a GPU texture.
  *
- * ⚠ **CONTRACT — THIS FUNCTION NEVER READS `cache`.** It only ever WRITES the
- * resulting entry into it. There is no `cache.get`/`cache.has` anywhere in the
- * body. The `cache` argument selects the destination Map (imagery, water mask,
- * or ocean normal) — it is **not** a memo.
+ * This function never reads `cache`; it only writes the resulting entry into
+ * it, and there is no `cache.get` or `cache.has` anywhere in the body. The
+ * `cache` argument selects the destination Map (imagery, water mask, or ocean
+ * normal) — it is not a memo.
  *
- * **Therefore every caller MUST supply its own cache-hit guard.** An unguarded
- * call re-uploads on every invocation: `createTexture` +
- * `copyExternalImageToTexture` + a full mip chain + a fresh `createView`, and
- * because bind-group caches key on view identity the new view also forces a
- * `createBindGroup` — self-perpetuating. Guarded callers to copy from:
- * `_resolveOrUploadMaterialTexture` and the ocean-normal path (both compare
- * source identity: `cached.source === value`).
+ * Every caller therefore has to supply its own cache-hit guard. An unguarded
+ * call re-uploads on every invocation: `createTexture` plus
+ * `copyExternalImageToTexture` plus a full mip chain plus a fresh
+ * `createView`, and because bind-group caches key on view identity the new
+ * view also forces a `createBindGroup`, which makes the cost
+ * self-perpetuating. `_resolveOrUploadMaterialTexture` and the ocean-normal
+ * path are the guarded callers to copy from; both compare source identity as
+ * `cached.source === value`.
  *
- * The one internal dedupe path — the shared realization table
- * (`host._sharedImageryRealizations`) — is gated on `logicalOwner === "imagery"`
- * and does nothing for any other caller.
+ * The one internal dedupe path, the shared realization table
+ * (`host._sharedImageryRealizations`), is gated on
+ * `logicalOwner === "imagery"` and does nothing for any other caller.
  *
- * A `console.error` sentinel fires if the same `cacheKey` is uploaded ≥30 times
- * within 2 s, which is what a missing guard looks like.
+ * A `console.error` sentinel fires if the same `cacheKey` is uploaded 30 or
+ * more times within 2 s, which is what a missing guard looks like.
  *
  * Returns null on any error (unrecognized source type, zero-sized image,
  * undecoded `<img>`, `copyExternalImageToTexture` rejection).
@@ -896,30 +880,27 @@ export function uploadImageSource(
   try {
     let width: number, height: number;
     let gpuSource: ImageBitmap | HTMLImageElement | HTMLCanvasElement;
-    // Batch 60 — `needsFlipY` controls the `flipY` option on
-    // `copyExternalImageToTexture`. The WGSL globe-FS samples imagery
-    // textures at `(u, geoUV.y)` where `geoUV.y = 0` is the tile's SOUTH
-    // edge (the WebGL V=0=south convention preserved through the shared
-    // terrain mesh). For the texture to honor that convention, the
-    // top-of-source-image must end up at V=1 (south of image-content =
-    // north geographically).
+    // `needsFlipY` controls the `flipY` option on
+    // `copyExternalImageToTexture`. The WGSL globe FS samples imagery textures
+    // at `(u, geoUV.y)` where `geoUV.y = 0` is the tile's south edge — the
+    // WebGL V=0=south convention, preserved through the shared terrain mesh.
+    // For the texture to honor that convention the top of the source image has
+    // to end up at V=1.
     //
     // The standard Cesium imagery providers route through
     // `Resource.fetchImage({ flipY: true })`, which decodes via
     // `createImageBitmap(blob, { imageOrientation: "flipY" })`. Those
-    // ImageBitmaps arrive PRE-FLIPPED — `flipY: false` at upload is
-    // correct.
+    // ImageBitmaps arrive pre-flipped, so `flipY: false` at upload is correct.
     //
-    // Custom providers (notably `TileCoordinatesImageryProvider` and
-    // our fork-added `DebugTileImageryProvider`) return a raw
-    // `HTMLCanvasElement` drawn top-down without any flip. For those
-    // the upload needs `flipY: true` so the canvas's row 0 lands at the
-    // texture's V=1 row — matching what the globe FS expects. Without
-    // this, the canvas content renders upside-down (Batch 60 user-
-    // observed symptom on the `DebugTileImageryProvider` overlay).
+    // Custom providers — notably `TileCoordinatesImageryProvider` and the
+    // fork-added `DebugTileImageryProvider` — return a raw
+    // `HTMLCanvasElement` drawn top-down without any flip. Those need
+    // `flipY: true` so the canvas's row 0 lands at the texture's V=1 row and
+    // matches what the globe FS expects; without it the canvas content renders
+    // upside-down.
     //
-    // `HTMLImageElement` sources are uncommon (most providers prefer
-    // ImageBitmaps); when they appear they're typically NOT pre-flipped
+    // `HTMLImageElement` sources are uncommon, since most providers prefer
+    // ImageBitmaps, and when they appear they are typically not pre-flipped
     // either, so they get the same treatment as raw canvases.
     let needsFlipY = false;
     if (source instanceof ImageBitmap) {
@@ -927,13 +908,12 @@ export function uploadImageSource(
       height = source.height;
       gpuSource = source;
     } else if (source instanceof HTMLImageElement) {
-      // C-P18: reject not-yet-decoded images. Without this check,
-      // `copyExternalImageToTexture` throws "source is not in a valid
-      // state" for any HTMLImageElement whose load/decode hasn't
-      // completed — which happens unpredictably when imagery layers
-      // hand off `<img>` refs immediately after `src=` assignment.
-      // The uploader returns null; the caller's cache miss path
-      // retries on the next frame when `complete` flips to true.
+      // Reject not-yet-decoded images. Without this check,
+      // `copyExternalImageToTexture` throws "source is not in a valid state"
+      // for any HTMLImageElement whose load or decode has not completed, which
+      // happens unpredictably when imagery layers hand off `<img>` references
+      // immediately after assigning `src`. Returning null lets the caller's
+      // cache-miss path retry on the next frame, once `complete` flips true.
       if (!source.complete || source.naturalWidth === 0) {
         return null;
       }
@@ -952,29 +932,28 @@ export function uploadImageSource(
 
     if (width === 0 || height === 0) return null;
 
-    // Batch 57 — allocate with full mipmap chain. WebGL's imagery upload
-    // path calls `gl.generateMipmap` after `texImage2D`, producing 9 mip
-    // levels for a 256×256 tile. WebGPU has no equivalent so we have to
-    // build the chain explicitly via `WebGPUMipmapGenerator`. Without
-    // this the GPU point-samples Level-0 at orbital altitudes (one
-    // fragment covers many texels) which produces severe aliasing AND a
-    // brightness drop — the alias pattern under-samples bright pixels,
-    // dropping mean radiance by ~4x at 20Mm altitude relative to
-    // WebGL's properly-mipmapped sampling. See
-    // `migration_doc/WEBGPU_DEBUGGING_LOG.md` Batch 57.
+    // Allocate with a full mipmap chain. WebGL's imagery upload path calls
+    // `gl.generateMipmap` after `texImage2D`, producing 9 mip levels for a
+    // 256×256 tile. WebGPU has no equivalent, so the chain is built explicitly
+    // via `WebGPUMipmapGenerator`. Without it the GPU point-samples level 0 at
+    // orbital altitudes, where one fragment covers many texels, producing
+    // severe aliasing and a brightness drop: the alias pattern under-samples
+    // bright pixels and drops mean radiance by roughly 4x at 20 Mm altitude
+    // relative to WebGL's properly-mipmapped sampling.
     const mipLevelCount = mipLevelCountFor(width, height);
 
-    // C9-12A — realization dedup for the imagery cache only. A shareable
-    // (immutable) source (an ImageBitmap, or a provider-declared canvas such as
-    // GridImagery's constructor-drawn grid) is realized ONCE into a shared
-    // GPUTexture+view referenced by every tile that binds it, instead of one
-    // identical full-mip texture per tile. Non-imagery callers (ocean normal /
-    // material uploads) never participate — they keep owned textures exactly.
+    // Realization dedup, for the imagery cache only. A shareable (immutable)
+    // source — an ImageBitmap, or a provider-declared canvas such as
+    // GridImagery's constructor-drawn grid — is realized once into a shared
+    // GPUTexture and view referenced by every tile that binds it, instead of
+    // one identical full-mip texture per tile. Non-imagery callers, the ocean
+    // normal and material uploads, never participate and keep owned textures.
     //
     // The sRGB colorSpace and the flipY convention (see the `needsFlipY` block
-    // above) are unchanged: `createUploadedImageryTexture` forces srgb→srgb
-    // identity copy so a display-p3 / HDR monitor cannot introduce a wide-gamut
-    // conversion. Mip generation is frame-owned (`prepareImageryMips`).
+    // above) are unaffected: `createUploadedImageryTexture` forces an
+    // srgb-to-srgb identity copy so a display-p3 or HDR monitor cannot
+    // introduce a wide-gamut conversion. Mip generation is frame-owned via
+    // `prepareImageryMips`.
     const identity =
       logicalOwner === "imagery"
         ? getShareableImagerySourceIdentity(source)
@@ -988,9 +967,10 @@ export function uploadImageSource(
       const fingerprint = `s${identity.sourceId}r${identity.revision}|${width}x${height}|rgba8unorm|m${mipLevelCount}|f${needsFlipY ? 1 : 0}|srgb`;
       const existing = table.get(fingerprint);
       if (existing) {
-        // Reuse the ONE texture + view. Sharing the view object also collapses
-        // the group-1 bind-group cache key (keyed on view identity) so the
-        // repeated per-tile bind-group creates collapse alongside the uploads.
+        // Reuse the single texture and view. Sharing the view object also
+        // collapses the group-1 bind-group cache key, which is keyed on view
+        // identity, so the repeated per-tile bind-group creations collapse
+        // alongside the uploads.
         cache.set(cacheKey, {
           texture: existing.texture,
           view: existing.view,
@@ -1050,9 +1030,9 @@ export function uploadImageSource(
       return view;
     }
 
-    // Non-shareable source (undeclared / mutable) or a non-imagery caller: own
-    // the texture outright, exactly as before this task — but with frame-owned
-    // mips and (for imagery) refcounted retirement wired at the caller.
+    // Non-shareable source (undeclared or mutable) or a non-imagery caller:
+    // own the texture outright, with frame-owned mips and, for imagery,
+    // refcounted retirement wired at the caller.
     const texture = createUploadedImageryTexture(
       device,
       cacheKey,
@@ -1100,20 +1080,20 @@ export function uploadImageSource(
     if (unpublishedTexture) {
       destroyUnpublishedTexture(host, unpublishedTexture);
     }
-    // NEW-UPLOADIMAGESOURCE-OBSERVABILITY (Batch 304) — reaching here is
-    // unexpected: the transient undecoded-`<img>` case is already handled
-    // by the early `!source.complete` return above, and unsupported source
-    // types are rejected before the try. A throw from
-    // `createTexture`/`copyExternalImageToTexture` therefore signals a real
-    // fault (out-of-memory, an out-of-bounds size, or a lost device) that
-    // would otherwise silently blank the tile with no signal at all.
-    // Surface it as a permanent (non-pragma) error so the failure is
-    // diagnosable. We deliberately do NOT re-throw: device loss is already
-    // routed through the `device.lost` promise in WebGPUContextDeviceLoss /
+    // Reaching here is unexpected: the transient undecoded-`<img>` case is
+    // handled by the early `!source.complete` return above, and unsupported
+    // source types are rejected before the try. A throw from
+    // `createTexture` or `copyExternalImageToTexture` therefore signals a real
+    // fault — out of memory, an out-of-bounds size, or a lost device — that
+    // would otherwise silently blank the tile with no signal at all, so the
+    // error is permanent rather than pragma-stripped.
+    //
+    // It is deliberately not re-thrown. Device loss is already routed through
+    // the `device.lost` promise in WebGPUContextDeviceLoss /
     // WebGPUDeviceLossRecovery, and throwing synchronously from this
-    // globe-render hot path would crash the frame loop instead of letting
-    // that async recovery engage. Returning null preserves the caller's
-    // cache-miss retry for recoverable cases.
+    // globe-render hot path would crash the frame loop instead of letting that
+    // async recovery engage. Returning null preserves the caller's cache-miss
+    // retry for recoverable cases.
     const message = e instanceof Error ? e.message : String(e);
     console.error(
       `[CesiumJS:webgpu] uploadImageSource failed for "${cacheKey}": ${message}`,

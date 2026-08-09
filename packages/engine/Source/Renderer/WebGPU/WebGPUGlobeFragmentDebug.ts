@@ -153,10 +153,9 @@ export const GLOBE_FRAGMENT_DEBUG_MODES: ReadonlyArray<GlobeFragmentDebugMode> =
       description:
         "Visualize `tile.flags.x` (showReflectiveOcean) per fragment. Red = water + reflective-ocean enabled (computeEnhancedOcean runs). Yellow = tile has water mask but fragment is land. Green = no reflective ocean.",
     },
-    // ── NEW-GLOBE-BELOWSURFACE-DECOMP (B2) bypass modes ──
-    // Unlike the visualization modes above, these do NOT short-circuit
-    // fragmentMain: the full shading path runs with exactly ONE term
-    // skipped, so `diag-globe-belowsurface-decomp.mjs` can attribute the
+    // Bypass modes. Unlike the visualization modes above, these do not
+    // short-circuit fragmentMain: the full shading path runs with exactly one
+    // term skipped, so `diag-globe-belowsurface-decomp.mjs` can attribute the
     // WebGL↔WebGPU signed-dRGB residual per term. Every bypass sentinel
     // (including 'bypass-none') also freezes the ocean wave clock at 0 so
     // A/B captures share an identical wave phase.
@@ -224,9 +223,8 @@ const _MODE_BY_NAME: ReadonlyMap<string, GlobeFragmentDebugMode> = new Map(
  * sentinel, or `null` if no mode (or an unknown mode) is active.
  *
  * Intentionally lenient on unknown names — returns null and lets the
- * caller fall through to the production `waveTime` write. We log a one-shot
- * warning on unknown names so typos surface in DevTools without breaking
- * rendering.
+ * caller fall through to the production `waveTime` write. Unknown names get a
+ * one-shot warning so typos surface in DevTools without breaking rendering.
  */
 export function getActiveDebugSentinel(): number | null {
   const g = globalThis as { _webgpuGlobeDebugMode?: string | null };

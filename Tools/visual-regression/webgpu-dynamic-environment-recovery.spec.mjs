@@ -211,7 +211,7 @@ test("recovered scene capture wakes from a frame/content-stamped producer edge",
   const publication = sourceSection(
     globeProviderSource,
     "function publishWebGPUSceneCaptureSources(",
-    "\n}\n\n// ═",
+    "\n}\n\nconst modifiedModelViewScratch",
   );
   assert.match(
     publication,
@@ -296,7 +296,7 @@ test("hidden and opt-out transitions erase retained globe state without a retry 
   const publication = sourceSection(
     globeProviderSource,
     "function publishWebGPUSceneCaptureSources(",
-    "\n}\n\n// ═",
+    "\n}\n\nconst modifiedModelViewScratch",
   );
   const wakeMatches = publication.match(
     /frameState\.afterRender\.push\(requestRenderForSceneCapturePublication\);/g,

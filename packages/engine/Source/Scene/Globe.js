@@ -82,19 +82,16 @@ class Globe {
 
     this._translucency = new GlobeTranslucency();
 
-    // Cloud-unification epic slice 4A — the Scene/Globe-owned MANAGED default
-    // volumetric-capable CloudCollection. It is the source of truth for the
-    // WebGPU env-effects volumetric cloud request: the `atmosphericConditions`
-    // cloud facade, the AtmosphericEffects genus bias, and the weather ingest
-    // all re-home their writes onto this collection's `.volumetric` config, and
-    // the env-effects + god-ray-cloud-aware gates read its `renderMode`. Its
-    // `.volumetric` field defaults are byte-equal to the historical
-    // `globe.cloud*` defaults, so a default scene (renderMode BILLBOARD, nothing
-    // published) drives no extra rendering and is byte-identical on BOTH
-    // backends. Config-only — deliberately NOT added to the scene primitives
-    // (it owns no billboards of its own; the volumetric raymarch stays in the
-    // env-effects phase). WebGPU only; inert on WebGL (documented graceful
-    // no-op). See migration_doc/CLOUD_UNIFICATION_DESIGN.md.
+    // The globe-owned managed CloudCollection, and the source of truth for the
+    // WebGPU environmental-effects volumetric cloud request: the
+    // `atmosphericConditions` cloud facade, the AtmosphericEffects genus bias
+    // and the weather ingest all write onto this collection's `.volumetric`
+    // config, and the environmental-effects and cloud-aware god-ray gates read
+    // its `renderMode`. Deliberately not added to the scene primitives — it
+    // owns no billboards of its own and the volumetric raymarch runs in the
+    // environmental-effects phase — so it is configuration only. A default
+    // scene, with `renderMode` BILLBOARD and nothing published, drives no
+    // extra rendering on either backend. WebGPU only; inert on WebGL.
     this._defaultCloudCollection = new CloudCollection();
 
     makeShadersDirty(this);
@@ -108,7 +105,7 @@ class Globe {
     this.show = true;
 
     /**
-     * DP-H44 — When <code>true</code>, the globe surface emits a pick ID so
+     * When <code>true</code>, the globe surface emits a pick ID so
      * <code>scene.pick</code> over terrain returns this <code>Globe</code>.
      * Default <code>false</code> to match WebGL, where the globe has no pick
      * ID and <code>scene.pick</code> returns <code>undefined</code> over the
@@ -125,10 +122,10 @@ class Globe {
      */
     this.pickable = false;
 
-    // DP-H44 — cached pick ID for the globe surface (single ID for the whole
-    // globe). Allocated lazily in `beginFrame` when `pickable` is true; its
-    // color is mirrored onto the tile provider so the WebGPU camera UB packer
-    // can write it into the pick-color tail. Destroyed in `destroy()`.
+    // Cached pick ID for the globe surface: one ID covers the whole globe.
+    // Allocated lazily in `beginFrame` when `pickable` is true; its color is
+    // mirrored onto the tile provider so the WebGPU camera UB packer can write
+    // it into the pick-color tail. Destroyed in `destroy()`.
     this._pickId = undefined;
 
     this._oceanNormalMapResourceDirty = true;
@@ -348,29 +345,23 @@ class Globe {
      */
     this.showWaterEffect = true;
 
-    // C7-LAKE-WATER-MASK — WaterClassificationProvider Phase-1 seam.
-    // Opt-in (see the `lakeWaterMask` accessor); the provider is fetched
-    // lazily on first enable so the default-off path never loads the
-    // bundled Natural Earth lake dataset.
+    // The water classification seam is opt-in through the `lakeWaterMask`
+    // accessor, and the provider is fetched lazily on first enable so the
+    // default-off path never loads the bundled Natural Earth lake dataset.
     this._lakeWaterMask = false;
     this._lakeWaterClassificationProvider = undefined;
     this._lakeWaterMaskLoadPending = false;
 
-    // ═══════════════════════════════════════════════════════════════
-    // Enhanced rendering configuration (WebGPU)
-    // These properties are opt-in and only take effect in the WebGPU
-    // renderer. They have no effect on the WebGL path.
-    // ═══════════════════════════════════════════════════════════════
-
     /**
      * When true, night-side imagery layers with nightAlpha > dayAlpha
      * are treated as emissive city lights, boosted proportional to
-     * their luminance. Only active with enableLighting.
+     * their luminance. Only active with enableLighting, and only on the WebGPU
+     * renderer; the WebGL path ignores it.
      * <p>
-     * CLT-B2: setting this to <code>false</code> now genuinely produces zero
-     * emission. Before that row the off state was encoded as
-     * <code>nightIntensity = 0.0</code>, which the WGSL globe read as "use my
-     * built-in default of 2.5" — so the toggle was a visual no-op.
+     * Setting this to <code>false</code> produces zero emission. The enable and
+     * {@link Globe#nightIntensity} travel as separate signals precisely so that
+     * it can: an off state encoded as <code>nightIntensity = 0.0</code> would
+     * collide with the shader's unset sentinel and render as the default 2.5.
      * </p>
      * @type {boolean}
      * @default true
@@ -381,8 +372,9 @@ class Globe {
      * Multiplier for night-side city light emission brightness.
      * Higher values = brighter city lights. 0 = no emission.
      * <p>
-     * CLT-B2: <code>0</code> is honoured. It used to collide with the shader's
-     * "unset" sentinel and render as the default 2.5.
+     * <code>0</code> is honoured: {@link Globe#enableNightLights} carries the
+     * off state separately, so a zero here is never confused with the shader's
+     * unset sentinel and never falls back to the default 2.5.
      * </p>
      * @type {number}
      * @default 2.5
@@ -390,10 +382,10 @@ class Globe {
     this.nightIntensity = 2.5;
 
     /**
-     * Selects the WebGPU ocean STYLING model. This gates only how water
-     * surfaces are coloured — NOT the waves. The animated wave-normal march is
-     * shared and always runs (under the same default-true {@link Globe#showWaterEffect}
-     * as WebGL), so the ocean animates identically either way.
+     * Selects the WebGPU ocean styling model. This gates how water surfaces are
+     * coloured, not the waves: the animated wave-normal march is shared and
+     * always runs, under the same default-true {@link Globe#showWaterEffect} as
+     * WebGL, so the ocean animates identically either way.
      * <p>
      * When <code>false</code> (the default), WebGPU renders the classic
      * WebGL-parity water look: imagery preserved with wave-diffuse,
@@ -532,10 +524,10 @@ class Globe {
      */
     this.vertexShadowDarkness = 0.3;
 
-    // Phase 0.3 canonical facades — wired by Scene after construction to
-    // avoid a circular import (Scene imports AtmosphericConditions/GlobeWater
-    // and hangs them here once `scene.atmosphere`, `scene.fog`, and
-    // `scene.skyAtmosphere` are all built).
+    // The facades are wired by Scene after construction, to avoid a circular
+    // import: Scene imports AtmosphericConditions and GlobeWater and hangs
+    // them here once `scene.atmosphere`, `scene.fog` and `scene.skyAtmosphere`
+    // are all built.
     this._atmosphericConditions = undefined;
     this._water = undefined;
   }
@@ -1111,14 +1103,14 @@ class Globe {
    * @private
    */
   /**
-   * The Scene/Globe-owned managed default {@link CloudCollection} that carries
-   * the WebGPU volumetric cloud configuration (cloud-unification epic slice
-   * 4A). Its <code>.volumetric</code> {@link CloudVolumetrics} is the source of
-   * truth for the WebGPU env-effects volumetric-cloud deck: it is driven by
+   * The globe-owned managed default {@link CloudCollection} that carries the
+   * WebGPU volumetric cloud configuration. Its <code>.volumetric</code>
+   * {@link CloudVolumetrics} is the source of truth for the WebGPU
+   * environmental-effects volumetric-cloud deck: it is driven by
    * <code>scene.globe.atmosphericConditions.clouds</code>, the atmospheric
-   * effects genus bias, and the weather ingest, and read by the env-effects +
-   * god-ray-cloud-aware gates. <b>WebGPU only</b> — inert on the WebGL renderer
-   * (documented graceful no-op).
+   * effects genus bias and the weather ingest, and it is read by the
+   * environmental-effects and cloud-aware god-ray gates. WebGPU only, and
+   * inert on the WebGL renderer.
    * @memberof Globe.prototype
    * @type {CloudCollection}
    * @readonly
@@ -1168,14 +1160,14 @@ class Globe {
             context: frameState.context,
             source: image,
           });
-          // NS-WEBGPU-OCEAN-BRIGHT-NO-WAVES — the WebGL Texture class does not
-          // retain its source image after upload, but the WebGPU globe renderer
-          // must re-upload the ocean normal map into its own GPUTexture cache
-          // (WebGPUGlobeSurfaceRenderer._createWaterOceanMaterialBindGroupInner).
-          // Retain the decoded image here — same `_webgpuSource` handoff pattern
-          // the water mask uses (GlobeSurfaceTile.js). Without it the WGSL wave
-          // sampler bound the 1×1 placeholder, giving a flat, NON-animating
-          // ocean (the "lacks the wave effect" user report).
+          // The Texture class does not retain its source image after upload,
+          // but the WebGPU globe renderer has to re-upload the ocean normal map
+          // into its own GPUTexture cache, in
+          // `WebGPUGlobeSurfaceRenderer._createWaterOceanMaterialBindGroupInner`.
+          // Retaining the decoded image here is the same `_webgpuSource`
+          // handoff the water mask uses in `GlobeSurfaceTile.js`. Without it
+          // the WGSL wave sampler binds the 1×1 placeholder and the ocean is
+          // flat and unanimated.
           that._oceanNormalMap._webgpuSource = image;
         });
       } else {
@@ -1211,9 +1203,8 @@ class Globe {
           : 0.0;
       tileProvider.hasWaterMask = hasWaterMask;
       tileProvider.showWaterEffect = this.showWaterEffect;
-      // C7-LAKE-WATER-MASK — mirror the loaded lake provider only while
-      // the opt-in flag is on; undefined keeps the default-off water-mask
-      // upload path byte-identical.
+      // Mirror the loaded lake provider only while the opt-in flag is on;
+      // undefined leaves the default water-mask upload path untouched.
       tileProvider.waterClassificationProvider = this._lakeWaterMask
         ? this._lakeWaterClassificationProvider
         : undefined;
@@ -1223,16 +1214,16 @@ class Globe {
       tileProvider.dynamicAtmosphereLightingFromSun =
         this.dynamicAtmosphereLightingFromSun;
       tileProvider.showGroundAtmosphere = this.showGroundAtmosphere;
-      // C12-29 S2 — the ground atmosphere AND the globe's fog both dim here.
-      // This one mirror is the single JS source both backends read:
-      // WebGL takes it through `u_atmosphereLightIntensity`
-      // (`GlobeSurfaceTileProviderRendering`, consumed by
-      // `AtmosphereCommon.glsl`'s `computeAtmosphereColor`, whose result IS
-      // the fog colour in `GlobeFS.glsl`), and WebGPU takes it through
+      // Eclipse dimming of both the ground atmosphere and the globe's fog.
+      // This mirror is the single JS source both backends read: WebGL takes it
+      // through `u_atmosphereLightIntensity` in
+      // `GlobeSurfaceTileProviderRendering`, consumed by
+      // `AtmosphereCommon.glsl`'s `computeAtmosphereColor`, whose result is the
+      // fog colour in `GlobeFS.glsl`; WebGPU takes it through
       // `WebGPUGlobeSurfaceCameraUB` / `WebGPUGlobeSurfaceTileUB` into
-      // `GlobeTerrain.wgsl`. The user's `globe.atmosphereLightIntensity` is
-      // never mutated — only this per-frame derived mirror is. `* 1.0` is
-      // bit-exact, so non-eclipse frames are unchanged.
+      // `GlobeTerrain.wgsl`. Only this per-frame derived mirror is written —
+      // `globe.atmosphereLightIntensity` itself is never mutated — and the
+      // `* 1.0` of a non-eclipse frame is bit-exact.
       tileProvider.atmosphereLightIntensity =
         this.atmosphereLightIntensity *
         (frameState.eclipseSceneLightFactor ?? 1.0);
@@ -1252,16 +1243,16 @@ class Globe {
       tileProvider.backFaceCulling = this.backFaceCulling;
       tileProvider.vertexShadowDarkness = this.vertexShadowDarkness;
 
-      // DP-H44 — globe surface pick ID. When `pickable` is true, allocate a
-      // single pick ID for the whole globe (once, reused across frames) and
-      // mirror its color onto the tile provider; the WebGPU camera UB packer
-      // writes that color into the pick-color tail (GlobeTerrain.wgsl
-      // `fragmentPickMain`). When false, clear the mirror so the tail packs
-      // (0,0,0,0) and `scene.pick` stays undefined over the globe (WebGL
-      // parity). The pick ID itself is kept allocated once created so toggling
-      // the flag doesn't churn the pick registry. `createPickId` is the
-      // backend-agnostic `GraphicsContext` API (works on WebGL too, though the
-      // WebGL globe path never references the ID).
+      // Globe surface pick ID. When `pickable` is true, allocate a single pick
+      // ID for the whole globe — once, then reused across frames — and mirror
+      // its color onto the tile provider, where the WebGPU camera UB packer
+      // writes it into the pick-color tail that `GlobeTerrain.wgsl`'s
+      // `fragmentPickMain` reads. When false, clear the mirror so the tail
+      // packs (0,0,0,0) and `scene.pick` stays undefined over the globe, as it
+      // is on WebGL. The pick ID stays allocated once created, so toggling the
+      // flag does not churn the pick registry. `createPickId` is the
+      // backend-agnostic `GraphicsContext` API and works on WebGL too, though
+      // the WebGL globe path never references the ID.
       if (this.pickable) {
         if (!defined(this._pickId) && defined(frameState.context)) {
           this._pickId = frameState.context.createPickId({ primitive: this });
@@ -1277,22 +1268,16 @@ class Globe {
         this._undergroundColorAlphaByDistance;
       tileProvider.lambertDiffuseMultiplier = this.lambertDiffuseMultiplier;
 
-      // ── Enhanced WebGPU rendering properties ──
-      // CLT-B2 — the enable and the value travel as SEPARATE signals.
-      //
-      // These lines used to fold the enable into the value (`enableNightLights
-      // ? nightIntensity : 0.0`). The WebGPU tile UB then handed that number to
-      // `GlobeTerrain.wgsl::getNightIntensity()`, which read `0.0` as "the CPU
-      // configured nothing — use my built-in default of 2.5". So the OFF value
-      // aliased exactly onto default-ON: `globe.enableNightLights = false` was
-      // a visual no-op, `tileProvider.enableNightLights` was written and never
-      // read, and C11-159's ratified "default OFF, keep the toggle" had no
-      // reachable off state to ratify. The same fold hid `nightIntensity = 0`,
-      // which this class documents as "no emission".
-      //
-      // The enable flags below are now READ by `WebGPUGlobeSurfaceTileUB`,
-      // which owns the encoding (`resolveGlobeTunable` +
-      // `GLOBE_UB_UNSET`). Nothing here decides what OFF looks like.
+      // The enable and the value travel as separate signals, and must keep
+      // doing so. Folding them here — `enableNightLights ? nightIntensity : 0`
+      // — hands the WebGPU tile UB a zero, which
+      // `GlobeTerrain.wgsl`'s `getNightIntensity()` reads as "the CPU
+      // configured nothing, use the built-in default of 2.5". The off state
+      // then aliases exactly onto default-on, `enableNightLights = false`
+      // becomes a visual no-op, and `nightIntensity = 0` — documented on this
+      // class as no emission — is swallowed with it. `WebGPUGlobeSurfaceTileUB`
+      // owns the encoding through `resolveGlobeTunable` and `GLOBE_UB_UNSET`;
+      // nothing here decides what off looks like.
       tileProvider.enableNightLights = this.enableNightLights;
       tileProvider.nightIntensity = this.nightIntensity;
       tileProvider.enableEnhancedOcean = this.enableEnhancedOcean;
@@ -1302,11 +1287,10 @@ class Globe {
       tileProvider.oceanFoamThreshold = this.oceanFoamThreshold;
       tileProvider.oceanDarkening = this.oceanDarkening;
 
-      // Ground atmosphere needs no separate WebGPU pass — it is shaded
-      // inside GlobeTerrain.wgsl (csm_computeGroundAtmosphereScattering +
-      // WebGPUAtmosphereLUT), with parameters carried by the globe camera
-      // and tile uniform buffers. The old separate-pass
-      // WebGPUGroundAtmosphereRenderer was retired in Batch 239.
+      // Ground atmosphere needs no separate WebGPU pass — it is shaded inside
+      // GlobeTerrain.wgsl (csm_computeGroundAtmosphereScattering plus
+      // WebGPUAtmosphereLUT), with parameters carried by the globe camera and
+      // tile uniform buffers.
 
       surface.beginFrame(frameState);
     }
@@ -1376,10 +1360,10 @@ class Globe {
     this._surface = this._surface && this._surface.destroy();
     this._oceanNormalMap =
       this._oceanNormalMap && this._oceanNormalMap.destroy();
-    // DP-H44 — release the globe pick ID's registry slot.
+    // Release the globe pick ID's registry slot.
     this._pickId = this._pickId && this._pickId.destroy();
-    // Cloud-unification epic slice 4A — release the managed default cloud
-    // collection (config-only; owns no GPU resources unless volumetric ran).
+    // Release the managed default cloud collection. It is configuration only
+    // and owns no GPU resources unless the volumetric path ran.
     this._defaultCloudCollection =
       this._defaultCloudCollection && this._defaultCloudCollection.destroy();
     return destroyObject(this);
@@ -1402,10 +1386,10 @@ function makeShadersDirty(globe) {
     fragmentSources.push(globe._material.shaderSource);
     defines.push("APPLY_MATERIAL");
     globe._surface._tileProvider.materialUniformMap = globe._material._uniforms;
-    // Session 65 Cluster 3 — also expose the material itself so the
-    // WebGPU GlobeSurfaceRenderer can read `material.wgslShaderSource`
-    // and `material.uniforms` directly. WebGL only needs the uniform
-    // map because its shader source is already concatenated above.
+    // Expose the material itself as well, so the WebGPU GlobeSurfaceRenderer
+    // can read `material.wgslShaderSource` and `material.uniforms` directly.
+    // WebGL needs only the uniform map, because its shader source is already
+    // concatenated above.
     globe._surface._tileProvider.material = globe._material;
   } else {
     globe._surface._tileProvider.materialUniformMap = undefined;

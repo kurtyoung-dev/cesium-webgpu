@@ -1,13 +1,7 @@
 /// <reference types="@webgpu/types" />
 /**
- * Wireframe-pipeline + wireframe-index helpers extracted from
- * `WebGPUGlobeSurfaceRenderer`.
- *
- * Batch 149 of the audit-recommended decomposition (fifth slice of the
- * GlobeSurface decomposition arc — see
- * `migration_doc/BATCH_145_PLAN_GLOBE_SURFACE_DECOMPOSITION.md`).
- *
- * Moves the three internal wireframe helpers off the renderer class:
+ * Wireframe-pipeline and wireframe-index helpers for
+ * `WebGPUGlobeSurfaceRenderer`:
  *
  *   - `selectWireframePipeline(host, …)` — entry-based caching for the
  *     line-list pipeline variant. Mirrors `_selectPipeline`'s shape
@@ -23,14 +17,13 @@
  *     buffer per tile.
  *
  * The public-API `createWireframeTileCommands` orchestrator stays on the
- * renderer class — it's the single entry point for wireframe-mode draw
- * commands, calls these helpers, and depends on a wider slice of class
- * state (uniform-buffer builders, tile-buffer cache, bind-group helpers)
- * that's scheduled to leave the class in Batches 150–153.
+ * renderer class: it is the single entry point for wireframe-mode draw
+ * commands, calls these helpers, and depends on a wider slice of class state
+ * (uniform-buffer builders, tile-buffer cache, bind-group helpers).
  *
- * The four host fields/methods these helpers reach into are flipped from
- * `private` to `public` on the renderer (with the underscore prefix
- * preserved as the convention marker per Batches 142–148).
+ * The host fields these helpers read are public on the renderer, with the
+ * underscore prefix retained to mark them as not callable from outside the
+ * Renderer package.
  *
  * @module WebGPUGlobeSurfaceWireframe
  */
@@ -88,10 +81,9 @@ export function selectWireframePipeline(
   strideBytes: number,
   hasGeodeticSurfaceNormals: boolean = false,
 ): GPURenderPipeline | null {
-  // C-R7-RENDERER-MIGRATION (Batch 75) — entry-based caching; pipeline
-  // resolves through the central cache. Returns null when the pipeline
-  // hasn't materialized yet (caller should skip the wireframe overlay
-  // for this tile this frame).
+  // Entry-based caching; the pipeline resolves through the central cache.
+  // Returns null while it has not materialized yet, in which case the caller
+  // skips the wireframe overlay for this tile this frame.
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
@@ -126,10 +118,10 @@ export function selectWireframePipeline(
  * shader module — no special wireframe entry point needed because line-list
  * topology applied to triangle indices produces edges automatically when
  * the IB is converted (see `getOrCreateWireframeIndices`).
+ *
+ * Returns a descriptor, not a pipeline: the pipeline materializes through
+ * `webgpuPipelineCache`.
  */
-// C-R7-RENDERER-MIGRATION (Batch 75) — returns descriptor; pipeline
-// materializes through `webgpuPipelineCache`. Renamed:
-// `_createWireframePipelineVariant` → `buildWireframePipelineDescriptor`.
 export function buildWireframePipelineDescriptor(
   host: WireframeHost,
   isQuantized: boolean,
@@ -140,13 +132,13 @@ export function buildWireframePipelineDescriptor(
 ): WebGPURenderPipelineDescriptor {
   let vertexBuffers: GPUVertexBufferLayout[];
   let entryPoint: string;
-  // Batch 20 — the production shader module + our `GEODETIC_NORMAL`
-  // define keep the wireframe pipeline's vertex layout in sync with
-  // the colored pass automatically. Entry-point names are unqualified;
-  // the correct variant is selected via the active-defines bitmask
-  // passed to `getProductionShaderModule`. Batch 246 — the reduced-
-  // imagery bit rides along so the wireframe module's group-1
-  // declarations match the device's 1-slot pipeline layout.
+  // Sharing the production shader module and the `GEODETIC_NORMAL` define
+  // keeps the wireframe pipeline's vertex layout in sync with the colored
+  // pass automatically. Entry-point names are unqualified; the correct
+  // variant is selected via the active-defines bitmask passed to
+  // `getProductionShaderModule`. The reduced-imagery bit rides along so the
+  // wireframe module's group-1 declarations match the device's pipeline
+  // layout.
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
@@ -240,15 +232,15 @@ export function buildWireframePipelineDescriptor(
   const normLabel = hasNormals ? "normals" : "noNormals";
   const mercLabel = hasWebMercatorT ? "webMerc" : "geo";
 
-  // Batch 20 — wireframe fetches the module from the shader cache with
-  // the same `defines` used by the production pipeline for this tile,
-  // so the wireframe overlay always matches its colored counterpart.
+  // Fetch the module from the shader cache with the same `defines` the
+  // production pipeline uses for this tile, so the wireframe overlay always
+  // matches its colored counterpart.
   const shaderModule = getProductionShaderModuleHelper(host, defines);
-  // C11-158 — the wireframe overlay uses the full production `fragmentMain`
-  // (line 249), so its module carries the ocean STYLING variant too. Mark the
-  // descriptor name so the central pipeline cache doesn't alias the enhanced
-  // and classic wireframe variants (the renderer-local `_wireframePipelineCache`
-  // is wiped on the flag flip — see `_applyEnhancedOceanState`).
+  // The wireframe overlay uses the full production `fragmentMain`, so its
+  // module carries the ocean styling variant too. Marking the descriptor name
+  // keeps the central pipeline cache from aliasing the enhanced and classic
+  // wireframe variants; the renderer-local `_wireframePipelineCache` is wiped
+  // on the flag flip instead (see `_applyEnhancedOceanState`).
   const oceanLabel = host._enhancedOceanEnabled ? ", enhOcean" : "";
   return {
     name: `Globe wireframe (${quantLabel}, ${normLabel}, ${mercLabel}, ${strideBytes}b${host._imageryReduced ? ", imagery4" : ""}${oceanLabel})`,
@@ -261,13 +253,13 @@ export function buildWireframePipelineDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Match the scene framebuffer's attachment state EXACTLY, same as the
-      // production globe pipeline (WebGPUGlobeSurfacePipelines.ts): TWO color
-      // targets — the canvas-format scene color + the rgba16float G-buffer/
-      // emissive target. With only ONE target (the prior code) the pipeline's
-      // attachment state was incompatible with the Scene Framebuffer Render
-      // Pass (which binds both attachments), so SetPipeline failed validation
-      // and the wireframe draw was dropped — the overlay rendered BLACK.
+      // Match the scene framebuffer's attachment state exactly, same as the
+      // production globe pipeline (WebGPUGlobeSurfacePipelines.ts): two color
+      // targets, the canvas-format scene color plus the rgba16float
+      // G-buffer/emissive target. A single-target pipeline is incompatible
+      // with the scene framebuffer render pass, which binds both attachments,
+      // so SetPipeline fails validation, the wireframe draw is dropped, and
+      // the overlay renders black.
       targets: [
         { format: host._canvasFormat },
         { format: "rgba16float" as GPUTextureFormat, writeMask: 0xf },
@@ -279,9 +271,9 @@ export function buildWireframePipelineDescriptor(
     },
     depthStencil: {
       format: "depth24plus-stencil8",
-      // Slight depth bias would be ideal here, but WebGPU's depthBias
-      // applies only to triangle topology — for line-list we accept the
-      // co-planar z-fight and rely on the wireframe being a debug overlay.
+      // A slight depth bias would be ideal here, but WebGPU's depthBias
+      // applies only to triangle topology; line-list therefore keeps the
+      // co-planar z-fight, which is tolerable for a debug overlay.
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },

@@ -1,13 +1,17 @@
 // OceanMerge.wgsl — reassemble the inverse-FFT fields into a filterable
-// displacement + foam map for the ocean surface (Campaign 6/7, C6-FFT-OCEAN).
+// displacement + foam map for the ocean surface.
 //
-// The FFT inputs stored the spectrum centered (frequency index m = n - N/2), so
-// the inverse transform output carries an fftshift factor that is corrected here
-// with the standard (-1)^(x+y) sign flip (Tessendorf). fieldDyDx packs re=Dy
-// (height), im=Dx (x displacement); fieldDz packs re=Dz. Output rgba16float
-// (filterable) = (lambda*Dx, Dy, lambda*Dz, foam), where foam comes from the
-// Jacobian of the horizontal displacement (wave folding, J < threshold), matching
-// gasgiant/FFT-Ocean (MIT) turbulence detection derived by finite difference.
+// The FFT inputs store the spectrum centered (frequency index m = n - N/2), so
+// the inverse transform output carries an fftshift factor, corrected here with
+// the standard (-1)^(x+y) sign flip. fieldDyDx packs re=Dy (height) and im=Dx
+// (x displacement); fieldDz packs re=Dz. The filterable rgba16float output is
+// (lambda*Dx, Dy, lambda*Dz, foam), where foam comes from the Jacobian of the
+// horizontal displacement — wave folding, J below threshold — evaluated by
+// finite difference.
+//
+// Reference: fftshift correction from Jerry Tessendorf, "Simulating Ocean
+// Water" (SIGGRAPH course notes); turbulence detection follows
+// gasgiant/FFT-Ocean (MIT), see the Third-Party section of LICENSE.md.
 
 struct MergeParams {
   size: u32,

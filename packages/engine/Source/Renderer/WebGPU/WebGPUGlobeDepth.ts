@@ -4,7 +4,7 @@
  *
  * Manages depth framebuffers for the globe rendering pass. In WebGL, GlobeDepth
  * copies depth to a color texture (via a fullscreen quad + shader) so that shaders
- * can sample it. In WebGPU, we can directly use the depth texture as a shader resource
+ * can sample it. In WebGPU the depth texture binds directly as a shader resource
  * via texture_depth_2d, which is more efficient.
  *
  * Responsibilities:
@@ -78,25 +78,22 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-// C-R8-GLOBE-DEPTH-MSAA (Batch 43) — MSAA variant. WGSL's
-// `textureSample` can't read a `texture_depth_multisampled_2d`, and
-// MSAA depth targets can't be resolved via a render-pass `resolveTarget`
-// (the platform only resolves color attachments). The workaround:
-// sample one specific fragment (`sampleIndex = 0`) via `textureLoad`.
-// This matches the convention of WebGL's `glSampleCoverage` /
-// default-sample read path — center-of-pixel depth is a reasonable
-// approximation for pickPosition / terrain clamping, which don't
-// need per-sample depth accuracy.
+// MSAA variant. WGSL's `textureSample` cannot read a
+// `texture_depth_multisampled_2d`, and MSAA depth targets cannot be resolved
+// via a render-pass `resolveTarget` (the platform only resolves color
+// attachments), so this samples one specific fragment (`sampleIndex = 0`) via
+// `textureLoad`. That matches WebGL's `glSampleCoverage` / default-sample read
+// path — center-of-pixel depth is a reasonable approximation for pickPosition
+// and terrain clamping, neither of which needs per-sample depth accuracy.
 //
 // The shader derives the integer pixel coordinate from the @builtin
 // position (pre-viewport pixel coords). No sampler binding is needed
 // (textureLoad is unsampled).
 //
-// Note on sample selection: sampling index 0 is deterministic and
-// matches the MSAA pattern center for sample count 1 and the first
-// sample for higher counts. Per-sample averaging would be more
-// accurate but introduces a packed-format rounding question and
-// dominates the cost; sample-0 is the standard approach.
+// Sample index 0 is deterministic: it is the MSAA pattern center at sample
+// count 1 and the first sample above that. Per-sample averaging would be more
+// accurate but introduces a packed-format rounding question and dominates the
+// cost.
 const DEPTH_COPY_MSAA_WGSL = /* wgsl */ `
 @group(0) @binding(0) var depthTex: texture_depth_multisampled_2d;
 
@@ -168,12 +165,11 @@ export class WebGPUGlobeDepth {
   private _depthCopyBindGroup: GPUBindGroup | null = null;
   private _depthCopySampler: GPUSampler | null = null;
 
-  // C-R8-GLOBE-DEPTH-MSAA (Batch 43) — MSAA-depth sampling variant.
-  // Separate pipeline + bind group layout because the shader binding
-  // type changes from `texture_depth_2d` to
-  // `texture_depth_multisampled_2d` and the pipeline must be created
-  // with a non-default `multisampleType` on the texture binding.
-  // Bind group has no sampler (textureLoad is unsampled).
+  // MSAA-depth sampling variant. Separate pipeline and bind-group layout
+  // because the shader binding type changes from `texture_depth_2d` to
+  // `texture_depth_multisampled_2d` and the pipeline must be created with a
+  // non-default `multisampleType` on the texture binding. The bind group has
+  // no sampler (textureLoad is unsampled).
   private _depthCopyMSAAPipeline: GPURenderPipeline | null = null;
   private _depthCopyMSAABindGroupLayout: GPUBindGroupLayout | null = null;
   private _depthCopyMSAABindGroup: GPUBindGroup | null = null;
@@ -350,20 +346,19 @@ export class WebGPUGlobeDepth {
   }
 
   /**
-   * C-R8 (Batch 35) — WebGPU equivalent of
+   * WebGPU equivalent of
    * `GlobeDepth.executeUpdateDepth(context, passState, depthStencilTexture)`.
    * Fires after the main 3D Tile pass so subsequent classification,
    * overlay, and ground primitives read depth that includes tile
    * contributions rather than the pre-tile terrain-only state.
    *
    * Shares the depth-to-color copy implementation with
-   * {@link executeCopyDepth} — in the current single-depth-attachment
-   * WebGPU model, "update" and "copy" produce the same result: the
-   * current live depth is projected into the color-ref texture that
-   * downstream shaders sample. The method exists as a separate named
-   * entry point so SceneRenderer caller intent stays clear (WebGL
-   * has two distinct paths that composite partial updates; WebGPU
-   * folds them into the same re-copy operation).
+   * {@link executeCopyDepth} — in the single-depth-attachment WebGPU model
+   * "update" and "copy" produce the same result: the current live depth is
+   * projected into the color-ref texture that downstream shaders sample. It
+   * exists as a separate named entry point so SceneRenderer caller intent
+   * stays clear, since WebGL has two distinct paths that composite partial
+   * updates where WebGPU folds them into the same re-copy operation.
    */
   executeUpdateDepth(
     encoder: GPUCommandEncoder,
@@ -376,13 +371,12 @@ export class WebGPUGlobeDepth {
    * Copy the depth buffer to a color texture for shader access.
    * This is the WebGPU equivalent of GlobeDepth.executeCopyDepth().
    *
-   * C-R8-INVERT-DEPTH-SOURCE (Batch 41) — `depthTextureOverride` lets
-   * callers replace the default scene-framebuffer depth source for a
-   * single copy. Used when InvertClassification is active: tile
-   * geometry writes to the invert FBO's own depth texture (not scene
-   * depth), and the post-tile copy should sample THAT depth so
-   * downstream ground/overlay primitives see tile contributions.
-   * Mirrors WebGL's `SceneRenderer.js:573-578` which passes
+   * `depthTextureOverride` replaces the default scene-framebuffer depth
+   * source for a single copy. InvertClassification needs it: tile geometry
+   * writes to the invert FBO's own depth texture rather than scene depth, and
+   * the post-tile copy has to sample that depth so downstream ground and
+   * overlay primitives see the tile contributions. Mirrors WebGL's
+   * `SceneRenderer.js:573-578`, which passes
    * `scene._invertClassification._fbo.getDepthStencilTexture()` here.
    */
   executeCopyDepth(
@@ -494,11 +488,11 @@ export class WebGPUGlobeDepth {
       "GlobeDepth-DepthCopy-BindGroupLayout",
       [
         texture(0, Stage.FRAGMENT, { sampleType: "depth" }),
-        // NEW-4-B (Batch 66) — depth textures expose a "non-filtering"
-        // sampler type only; pairing with a default "filtering" sampler
-        // throws WebGPU validation: "depth-only texture must be paired
-        // with non-filtering sampler". The depth-copy fragment uses
-        // textureLoad-style nearest reads, so non-filtering is correct.
+        // Depth textures expose a "non-filtering" sampler type only; pairing
+        // one with a default "filtering" sampler fails WebGPU validation
+        // ("depth-only texture must be paired with non-filtering sampler").
+        // The depth-copy fragment uses textureLoad-style nearest reads, so
+        // non-filtering is correct.
         sampler(1, Stage.FRAGMENT, "non-filtering"),
       ],
     );
@@ -533,11 +527,10 @@ export class WebGPUGlobeDepth {
   }
 
   /**
-   * C-R8-GLOBE-DEPTH-MSAA (Batch 43) — Create the MSAA-capable depth
-   * copy pipeline. Shader binding is `texture_depth_multisampled_2d`;
-   * the bind group layout reflects that (via the `multisampled: true`
-   * entry). No sampler binding — MSAA depth is read via `textureLoad`
-   * which is unsampled.
+   * Create the MSAA-capable depth copy pipeline. The shader binding is
+   * `texture_depth_multisampled_2d` and the bind-group layout reflects that
+   * via its `multisampled: true` entry. There is no sampler binding: MSAA
+   * depth is read with `textureLoad`, which is unsampled.
    */
   private _createDepthCopyMSAAPipeline(device: GPUDevice): void {
     if (this._depthCopyMSAAPipeline) return;
@@ -585,15 +578,12 @@ export class WebGPUGlobeDepth {
   }
 
   /**
-   * Update the bind group to reference the current depth texture.
-   */
-  /**
-   * Routes the bind group allocation to the single-sample or MSAA
-   * path based on the source texture's `sampleCount`. Returns `true`
-   * when MSAA was picked (caller uses `_depthCopyMSAABindGroup` and
-   * `_depthCopyMSAAPipeline`), `false` for single-sample. The return
-   * value lets `executeCopyDepth` avoid re-reading `sampleCount` and
-   * keeps the branch logic in one place.
+   * Update the bind group to reference the current depth texture, routing the
+   * allocation to the single-sample or MSAA path based on the source
+   * texture's `sampleCount`. Returns `true` when MSAA was picked (the caller
+   * then uses `_depthCopyMSAABindGroup` and `_depthCopyMSAAPipeline`), `false`
+   * for single-sample. Returning the choice lets `executeCopyDepth` avoid
+   * re-reading `sampleCount` and keeps the branch logic in one place.
    */
   private _updateDepthCopyBindGroup(
     depthTextureOverride?: GPUTexture,
@@ -603,13 +593,12 @@ export class WebGPUGlobeDepth {
       return false;
     }
 
-    // Source texture order: explicit override > internal output target.
-    // Callers should always pass an explicit override because the
-    // internal `_outputTarget` is never actually rendered INTO by
-    // WebGPU scene code (scene renders to `_sceneFramebuffer`
-    // elsewhere); its depth attachment is always cleared. The
-    // internal fallback stays for API compat with any caller that
-    // still omits the override.
+    // Source texture order: explicit override, then the internal output
+    // target. Callers should always pass an explicit override: WebGPU scene
+    // code never renders into `_outputTarget` (it renders to
+    // `_sceneFramebuffer` elsewhere), so that depth attachment is always
+    // cleared. The internal fallback stays for API compatibility with any
+    // caller that still omits the override.
     let depthTexture = depthTextureOverride;
     if (!depthTexture) {
       const target = this.colorFramebufferTarget;

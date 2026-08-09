@@ -460,12 +460,11 @@ function requestImagery(layer, imagery, context) {
   doRequest();
 }
 
-// Batch 66 — uniformMap carries the four scalar uniforms the per-fragment
-// reproject FS needs. `southLatitude` / `northLatitude` are in radians;
-// `southMercatorY` / `oneOverMercatorHeight` are the precomputed
-// Mercator-Y bounds for the destination imagery tile. These replace the
-// per-row `webMercatorT` vertex buffer that the previous 64-row grid
-// reproject used.
+// The four scalar uniforms the per-fragment reproject fragment shader needs.
+// `southLatitude` / `northLatitude` are in radians; `southMercatorY` /
+// `oneOverMercatorHeight` are the precomputed Mercator-Y bounds for the
+// destination imagery tile. Computing Mercator-Y per fragment from these is
+// what removes the need for a per-row `webMercatorT` vertex buffer.
 const uniformMap = {
   u_textureDimensions: function () {
     return this.textureDimensions;
@@ -515,10 +514,9 @@ function reprojectToGeographic(command, context, texture, rectangle) {
       },
     };
 
-    // Batch 66 — single quad. The previous 64-row vertex grid existed only
-    // so the rasterizer could linearly interpolate a per-row Mercator-Y
-    // value between rows; now that the FS computes Mercator-Y per
-    // fragment, four vertices is enough.
+    // A single quad. A multi-row vertex grid is only needed when the
+    // rasterizer has to interpolate a per-row Mercator-Y value between rows;
+    // the fragment shader computes Mercator-Y itself, so four vertices suffice.
     const positions = new Float32Array([
       0.0,
       0.0, // bottom-left  (south, west)

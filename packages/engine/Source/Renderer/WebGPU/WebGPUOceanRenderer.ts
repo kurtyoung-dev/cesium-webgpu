@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU FFT Spectral Ocean Renderer (Campaign 6/7, C6-FFT-OCEAN).
+ * WebGPU FFT spectral ocean renderer.
  *
  * A GPU FFT ocean: a per-frame compute chain synthesizes an animated wave
  * displacement + foam map from a Tessendorf/Phillips spectrum, and an RTE-
@@ -14,18 +14,22 @@
  *   4. inverse FFT        log2(N) horizontal + log2(N) vertical stages, ×2 fields
  *   5. merge              → filterable rgba16float (Dx, Dy, Dz, foam)
  *
- * Opt-in, default-off: the entire GPU resource set is allocated lazily on the
- * first `update()` of an enabled `OceanSurfacePrimitive`. Nothing is allocated
- * or dispatched while the feature is off (byte-identical frames). WebGL contexts
- * never register this renderer, so an `OceanSurfacePrimitive` renders nothing on
- * WebGL (documented no-op, Principle 2/10). A WebGL2 fragment-FFT fallback is
- * tracked in DEFERRED_WORK.
+ * Opt-in and default-off: the entire GPU resource set is allocated lazily on
+ * the first `update()` of an enabled `OceanSurfacePrimitive`, so nothing is
+ * allocated or dispatched while the feature is off and frames stay
+ * byte-identical. WebGL contexts never register this renderer, so an
+ * `OceanSurfacePrimitive` renders nothing on WebGL — a documented no-op rather
+ * than a fallback.
  *
- * License: FFT butterfly + spectrum packing derived from gasgiant/FFT-Ocean
- * (MIT, © 2020 Ivan Pensionerov) and Popov72/OceanDemo (MIT, WGSL port) and
- * BarthPaleologue/WebTide (MIT, © 2024 Barthélemy Paléologue); Phillips spectrum
- * derived from Tessendorf's published SIGGRAPH course notes. FFT sign/index
- * conventions were CPU-validated against a brute-force IDFT before porting.
+ * References:
+ *   - Jerry Tessendorf, "Simulating Ocean Water" (SIGGRAPH course notes) — the
+ *     Phillips spectrum and the dispersion relation, implemented from the
+ *     published equations.
+ *   - gasgiant/FFT-Ocean (MIT, © 2020 Ivan Pensionerov), Popov72/OceanDemo
+ *     (MIT, WGSL port) and BarthPaleologue/WebTide (MIT, © 2024 Barthélemy
+ *     Paléologue) — the FFT butterfly and spectrum packing. See the
+ *     Third-Party section of `LICENSE.md`. The sign and index conventions used
+ *     here were CPU-validated against a brute-force IDFT before porting.
  *
  * @private
  */
