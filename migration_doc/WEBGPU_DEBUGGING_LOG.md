@@ -18182,3 +18182,14 @@ Step 2 is what makes B647 finally execute for the synthetic and custom producers
 **Multifrustum correctness beyond binning - stated, not over-claimed.** A cloud that genuinely spans two slices legitimately executes in both, and that is correct: each slice draws the geometry belonging to it against depth belonging to it, which is the standard Cesium multifrustum contract (WebGL's `clearDepth.execute` per frustum does the same). The splat's log-depth encode is slice-invariant - baked once from the camera frustum, and Batch 888 measured every producer on that same pair - so a splat fragment is comparable against the globe wherever the two co-occur. What is NOT fixed by this, and is not a WebGPU defect, is inter-slice compositing for a TRANSLUCENT surface straddling a boundary: its far-slice fragments are composited before the near slice's opaque geometry draws. WebGL has the same limitation. Out of scope here, and no probe currently exercises it.
 
 **Pinned.** `gsplat-harness.spec.mjs` 148 -> 156. `computeLocalSplatBoundingSphere` is EXTRACTED FROM THE REAL SOURCE AND EXECUTED over both record layouts (legacy 16-f32 with the position split across the RTE high/low lanes so the recombination is proven, and packed 8-u32 read as the same bytes), on an asymmetric flat cloud that a plain average would fail; a second case with no point at an AABB corner separates the exact radius from half the diagonal; empty, short and all-NaN inputs must return null rather than a sphere that would poison the scene near/far accumulators. Four mutants rejected: the fallback removed, the sphere left in model space, the legacy RTE low word dropped, and the O(n) scan hoisted into the per-frame path. A fifth rule pins the OTHER half of the mechanism - the per-frustum depth-clear contract and `View.js`'s worst-case-span comment - so a future reader cannot inherit the wrong reason for this code.
+
+### C11-60/C11-194 IBL generation lifetime — Batch 1022
+
+- IBL retains one 40-float SH buffer per live generation. Stable frames perform
+  f32 comparisons with zero allocation/upload; mutations upload once and
+  removal zeroes once. Exact owner/context/device/generation invalidation occurs
+  before duplicate-frame skipping. Cache, published, and cube ownership detach
+  before best-effort native drain; every stale sibling is attempted even when a
+  lost-device `destroy()` throws, while decoded KTX2 CPU data is retained for
+  re-upload. Focused Edge recovery: **3/3** (17,876 skipped), including injected
+  destroy failure.

@@ -18,11 +18,7 @@
  * @module WebGPUImageBasedLighting
  */
 
-import {
-  generateIBLMaps,
-  packSphericalHarmonics,
-  RADIANCE_MIP_LEVELS,
-} from "./WebGPUIBLPipeline.js";
+import { generateIBLMaps, RADIANCE_MIP_LEVELS } from "./WebGPUIBLPipeline.js";
 
 import type { IBLPipelineCache } from "./WebGPUIBLPipeline.js";
 
@@ -30,12 +26,17 @@ import loadKTX2 from "../../Core/loadKTX2.js";
 import { buildWebGPUSpecularCubeFromKTX2Buffers } from "./WebGPUSpecularEnvironmentCubeMap.js";
 
 interface IBLCache extends IBLPipelineCache {
+  owner: CesiumImageBasedLighting;
+  context: CesiumGraphicsContext;
+  device: GPUDevice;
+  resourceGeneration: number;
   brdfLutGenerated: boolean;
   defaultSpecularTexture: GPUTexture | null;
   defaultSpecularView: GPUTextureView | null;
   defaultDiffuseTexture: GPUTexture | null;
   defaultDiffuseView: GPUTextureView | null;
   shBuffer: GPUBuffer | null;
+  shData: Float32Array;
   hasSH: boolean;
   maxMipLevel: number;
   iblFactor: Float32Array;
@@ -115,11 +116,70 @@ function createDefaultSHBuffer(device: GPUDevice): GPUBuffer {
   return buffer;
 }
 
-function initCache(device: GPUDevice): IBLCache {
+function updateSphericalHarmonics(
+  device: GPUDevice,
+  cache: IBLCache,
+  coefficients: CesiumCartesian3[] | undefined,
+): void {
+  const data = cache.shData;
+  const buffer = cache.shBuffer;
+  if (!buffer) {
+    return;
+  }
+
+  if (!coefficients || coefficients.length < 9) {
+    if (!cache.hasSH) {
+      return;
+    }
+    data.fill(0.0);
+    device.queue.writeBuffer(buffer, 0, data);
+    cache.hasSH = false;
+    return;
+  }
+
+  let dirty = !cache.hasSH || data[39] !== 1.0;
+  for (let i = 0; i < 9; i++) {
+    const coefficient = coefficients[i];
+    const offset = i * 4;
+    const x = Math.fround(coefficient.x);
+    const y = Math.fround(coefficient.y);
+    const z = Math.fround(coefficient.z);
+    dirty =
+      dirty ||
+      !Object.is(data[offset], x) ||
+      !Object.is(data[offset + 1], y) ||
+      !Object.is(data[offset + 2], z);
+  }
+
+  if (dirty) {
+    for (let i = 0; i < 9; i++) {
+      const coefficient = coefficients[i];
+      const offset = i * 4;
+      data[offset] = coefficient.x;
+      data[offset + 1] = coefficient.y;
+      data[offset + 2] = coefficient.z;
+      data[offset + 3] = 0.0;
+    }
+    data[39] = 1.0;
+    device.queue.writeBuffer(buffer, 0, data);
+  }
+  cache.hasSH = true;
+}
+
+function initCache(
+  owner: CesiumImageBasedLighting,
+  context: CesiumGraphicsContext,
+  device: GPUDevice,
+  resourceGeneration: number,
+): IBLCache {
   const defSpec = createDefaultSpecularCubemap(device);
   const defDiff = createDefaultDiffuseCubemap(device);
 
   return {
+    owner,
+    context,
+    device,
+    resourceGeneration,
     brdfLutGenerated: false,
     defaultSpecularTexture: defSpec.texture,
     defaultSpecularView: defSpec.view,
@@ -144,10 +204,84 @@ function initCache(device: GPUDevice): IBLCache {
     }),
     sourceVersion: -1,
     shBuffer: createDefaultSHBuffer(device),
+    shData: new Float32Array(40),
     hasSH: false,
     maxMipLevel: 0,
     iblFactor: new Float32Array([1.0, 1.0]), // diffuse, specular factors
   };
+}
+
+/** A lost/replaced device may throw while its stale native handles are drained. */
+function destroyBestEffort(resource: { destroy(): void } | null | undefined) {
+  try {
+    resource?.destroy();
+  } catch {
+    // Ownership is already detached. Continue draining sibling resources so a
+    // stale device cannot prevent the replacement generation from rebuilding.
+  }
+}
+
+/** Destroy only the GPU objects owned by one exact cache generation. */
+function destroyCacheResources(cache: IBLCache): void {
+  const resources = [
+    cache.defaultSpecularTexture,
+    cache.defaultDiffuseTexture,
+    cache.irradianceTexture,
+    cache.radianceTexture,
+    cache.shBuffer,
+  ];
+
+  // Detach first. Native destruction is best-effort and must never leave stale
+  // cache ownership or published views reachable if one old handle throws.
+  cache.defaultSpecularTexture = null;
+  cache.defaultSpecularView = null;
+  cache.defaultDiffuseTexture = null;
+  cache.defaultDiffuseView = null;
+  cache.irradianceTexture = null;
+  cache.irradianceView = null;
+  cache.radianceTexture = null;
+  cache.radianceView = null;
+  cache.shBuffer = null;
+  cache.sampler = null;
+
+  for (const resource of resources) {
+    destroyBestEffort(resource);
+  }
+}
+
+/** Stop publishing handles after their owning device generation is gone. */
+function clearPublishedResources(ibl: CesiumImageBasedLighting): void {
+  ibl._webgpuSpecularView = undefined;
+  ibl._webgpuDiffuseView = undefined;
+  ibl._webgpuSampler = undefined;
+  ibl._webgpuSHBuffer = undefined;
+  ibl._webgpuHasSH = undefined;
+  ibl._webgpuMaxMipLevel = undefined;
+  ibl._webgpuIBLFactor = undefined;
+}
+
+/** Release the device-local cube while retaining its decoded CPU source. */
+function destroyDeviceSpecularCube(ibl: CesiumImageBasedLighting): void {
+  const cube = ibl._webgpuSpecularCube;
+  ibl._webgpuSpecularCube = undefined;
+  ibl._specularEnvironmentCubeMap = undefined;
+  destroyBestEffort(cube);
+}
+
+/**
+ * Drop one superseded GPU generation. KTX2 fetch/transcode results are CPU
+ * resources keyed by URL + transcode targets, so retain them: the next cache
+ * can rebuild the cube without an avoidable network/decode round trip.
+ */
+function invalidateCacheGeneration(ibl: CesiumImageBasedLighting): void {
+  const cache = ibl._webgpuCache as IBLCache | undefined;
+  ibl._webgpuCache = undefined;
+  clearPublishedResources(ibl);
+
+  if (cache) {
+    destroyCacheResources(cache);
+  }
+  destroyDeviceSpecularCube(ibl);
 }
 
 /**
@@ -274,15 +408,39 @@ function updateWebGPUImageBasedLighting(
 ): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
+  const resourceGeneration =
+    (
+      context as unknown as {
+        resourceGeneration?: number;
+      }
+    ).resourceGeneration ?? 0;
 
-  if (!ibl._webgpuCache) {
-    ibl._webgpuCache = initCache(device);
+  // Every native object in the cache belongs to this exact
+  // (owner, context, device, resourceGeneration) tuple. Check before the
+  // duplicate-frame return: recovery can publish a new generation within the
+  // same logical frame, and that generation still needs a complete rebuild.
+  let cache = ibl._webgpuCache as IBLCache | undefined;
+  if (
+    cache &&
+    (cache.owner !== ibl ||
+      cache.context !== context ||
+      cache.device !== device ||
+      cache.resourceGeneration !== resourceGeneration)
+  ) {
+    invalidateCacheGeneration(ibl);
+    cache = undefined;
   }
 
-  const cache = ibl._webgpuCache as IBLCache;
+  let cacheCreated = false;
+  if (!cache) {
+    cache = initCache(ibl, context, device, resourceGeneration);
+    ibl._webgpuCache = cache;
+    cacheCreated = true;
+  }
 
   // Skip duplicate frames
   if (
+    !cacheCreated &&
     frameState.frameNumber === ibl._previousFrameNumber &&
     frameState.context === ibl._previousFrameContext
   ) {
@@ -302,27 +460,10 @@ function updateWebGPUImageBasedLighting(
     cache.iblFactor[1] = ibl.imageBasedLightingFactor.y;
   }
 
-  // Update spherical harmonics if provided
-  if (ibl.sphericalHarmonicCoefficients) {
-    const newSH = packSphericalHarmonics(
-      device,
-      ibl.sphericalHarmonicCoefficients,
-    );
-    if (newSH) {
-      if (cache.shBuffer) {
-        cache.shBuffer.destroy();
-      }
-      cache.shBuffer = newSH;
-      cache.hasSH = true;
-    }
-  } else if (cache.hasSH) {
-    // SH was removed, reset to default
-    if (cache.shBuffer) {
-      cache.shBuffer.destroy();
-    }
-    cache.shBuffer = createDefaultSHBuffer(device);
-    cache.hasSH = false;
-  }
+  // The buffer identity is stable for the cache lifetime. Authored coefficients
+  // are mutable, so compare their packed f32 values every frame and upload only
+  // when those values or the active/inactive state actually change.
+  updateSphericalHarmonics(device, cache, ibl.sphericalHarmonicCoefficients);
 
   // C2-2 NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU: load + upload the authored KTX2
   // specular env map into a WebGPU cube and publish it as _specularEnvironmentCubeMap.
@@ -375,33 +516,20 @@ function destroyWebGPUImageBasedLightingResources(
   ibl: CesiumImageBasedLighting,
 ): void {
   const cache = ibl._webgpuCache as IBLCache | undefined;
-  if (!cache) {
-    return;
-  }
+  ibl._webgpuCache = undefined;
+  clearPublishedResources(ibl);
 
-  if (cache.defaultSpecularTexture) cache.defaultSpecularTexture.destroy();
-  if (cache.defaultDiffuseTexture) cache.defaultDiffuseTexture.destroy();
-  if (cache.irradianceTexture) cache.irradianceTexture.destroy();
-  if (cache.radianceTexture) cache.radianceTexture.destroy();
-  if (cache.shBuffer) cache.shBuffer.destroy();
+  if (cache) {
+    destroyCacheResources(cache);
+  }
 
   // C2-2: tear down the authored KTX2 specular cube + reset the load latches.
-  if (ibl._webgpuSpecularCube) {
-    ibl._webgpuSpecularCube.destroy();
-    ibl._webgpuSpecularCube = undefined;
-  }
-  ibl._specularEnvironmentCubeMap = undefined;
+  destroyDeviceSpecularCube(ibl);
   ibl._webgpuSpecularKTX2Buffers = undefined;
   ibl._webgpuSpecularKTX2Url = undefined;
   ibl._webgpuSpecularKTX2RequestKey = undefined;
   ibl._webgpuSpecularKTX2Loading = false;
   ibl._webgpuSpecularKTX2Failed = false;
-
-  ibl._webgpuCache = undefined;
-  ibl._webgpuSpecularView = undefined;
-  ibl._webgpuDiffuseView = undefined;
-  ibl._webgpuSampler = undefined;
-  ibl._webgpuSHBuffer = undefined;
 }
 
 export {

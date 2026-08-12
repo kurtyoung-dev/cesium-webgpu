@@ -857,7 +857,7 @@ while a replacement is prepared.
 |---|---|---|---|---|---|---|---|
 | `C11-192` | WEBGPU-TERRAIN-SHADOW-UB-DEMAND-REALIZATION [do not allocate/upload per-tile shadow-cast UBs while no shadow pass demands them; first ON frame must remain complete] | terrain-imagery / shadows | P1 | perf/resource-lifetime | S–M | G2/G10 | **W1 — IMPLEMENTED / LANDED (Batch 775, 2026-08-01) / STATIC+OFF-RUNTIME GREEN / ON-PIXEL GATE OPEN** |
 | `C11-193` | WEBGPU-DYNAMIC-ENVIRONMENT-SHARED-KERNEL-JOB-SCHEDULER [one device-generation kernel pack; context-owned bounded refresh jobs; reuse targets; shared encoder/submission; retain per-probe regional/weather outputs] | models / atmosphere-sky / resource-prep | P0 | perf/architecture | L | G5/G8/G10 | **W1 — PARTIAL.** Borrowed tile manager, shared refresh kernel/packed parameter arena, observe-only priority registry, bounded context scheduler, and generation-keyed target pool are implemented. The 2026-08-02 fairness correction (landed Batch 819) advances `lastGrantFrameId` only from `noteRefreshSubmitted`; an encode that never submits no longer consumes the fairness turn. Focused scheduler/pool lane: 43/43. Deferral remains bounded at `MAX_DEFERRAL_FRAMES + 1`, unpublished managers are mandatory, and every deferral arms an `afterRender` resume. **OPEN:** managers still create and submit separate encoding scopes; shared frame encoder/submission, moving-browser submission credit, conservative `PROVEN_NONE` authority, and retained per-probe regional/weather outputs remain. |
-| `C11-194` | WEBGPU-MODEL-SHARED-DEVICE-RESOURCES [reference-count immutable model BGL/layout/sampler/placeholder/default-view resources by device generation; keep mutable state model-local] | models / resource-lifetime | P1 | perf/architecture | M | G5/G10 | **W1 — PARTIAL (Batch 774 base + independently reviewed 2026-08-02 recovery slice, LANDED Batch 819):** model/shared/pipeline/compatibility resources now require the exact `(GPUDevice, resourceGeneration)` tuple; stale handles null-drop without an unbounded decoded-source replay journal; async pipeline/error-scope publication is lifecycle-epoch guarded; compressed uploads validate feature/block/mip ownership; candidate creation is transactional; and teardown detaches then drains primitives, nested feature/morph/metadata/edge/instancing owners, ordinary plus per-feature pick IDs/textures, compatibility registries, shared leases, and environment-pool handles even when an old native throws. Focused recovery + pool contracts are 19/19 + 45/45 and package TypeScript is green. **OPEN:** higher-level texture re-upload after a dropped compatibility handle, nested IBL/clipping tuple recovery, real replacement-device browser evidence, multi-context arena partitioning (C11-195), non-block-aligned compressed-source support/extension exposure, and pick-demand realization (C11-196). Do not mark complete. |
+| `C11-194` | WEBGPU-MODEL-SHARED-DEVICE-RESOURCES [reference-count immutable model BGL/layout/sampler/placeholder/default-view resources by device generation; keep mutable state model-local] | models / resource-lifetime | P1 | perf/architecture | M | G5/G10 | **W1 — PARTIAL (Batch 774 base + independently reviewed 2026-08-02 recovery slice, LANDED Batch 819; IBL generation recovery LANDED Batch 1022):** model/shared/pipeline/compatibility resources now require the exact `(GPUDevice, resourceGeneration)` tuple; stale handles null-drop without an unbounded decoded-source replay journal; async pipeline/error-scope publication is lifecycle-epoch guarded; compressed uploads validate feature/block/mip ownership; candidate creation is transactional; and teardown detaches then drains primitives, nested feature/morph/metadata/edge/instancing owners, ordinary plus per-feature pick IDs/textures, compatibility registries, shared leases, and environment-pool handles even when an old native throws. IBL cache/published/cube ownership now detaches before best-effort sibling drain and focused Edge passes 3/3. Focused recovery + pool contracts remain 19/19 + 45/45 and package TypeScript is green. **OPEN:** higher-level texture re-upload after a dropped compatibility handle, nested clipping tuple recovery, real replacement-device browser evidence, multi-context arena partitioning (C11-195), non-block-aligned compressed-source support/extension exposure, and pick-demand realization (C11-196). Do not mark complete. |
 | `C11-195` | WEBGPU-MODEL-VIEW-LIGHT-DYNAMIC-UNIFORM-ARENA [replace direct per-model camera/light queue writes with dynamic-offset slices; retain per-view/RTE/capture/shadow-camera isolation] | models / scene-core | P0 | perf/architecture | L | G5/G10 | **W1 — PARTIAL (LANDED Batches 772/780/791/800): CAPTURE/RTE + MAIN CAMERA DYNAMIC OFFSETS + ONE 864-BYTE LIGHT PACK PER MODEL/VIEW IMPLEMENTED AND FOCUSED-PROBE VERIFIED. OPEN:** moving-route allocation/GC measurement; remove per-acquire string/short-array churn; exact device-recovery and full multi-view/shadow/capture certification. **NEW 2026-08-02 AUDIT:** the mutable arena currently lives in the device-shared immutable pool even though uniform allocators are context-owned; alternating contexts on one pooled `GPUDevice` clear the whole bind-group cache on every allocator-identity swap. Make the arena context-owned or allocator-partitioned while continuing to share the immutable layout. |
 | `C11-196` | WEBGPU-MODEL-LAZY-PICK-DERIVATION [retain pick IDs; build/prewarm pick pipeline+command outside ordinary colour rendering and preserve synchronous first-pick fallback] | models / picking | P1 | perf | M | G5/G10 | **W1 — QUEUED / 20 EAGER PIPELINES OBSERVED. 2026-08-02 RECOVERY REVIEW ADDENDUM:** `ensureFeatureIdResources` also realizes one registry pick ID per batch-table feature plus the RGBA lookup texture during ordinary color preparation because `pickPassActive` is ignored. Move that work behind explicit pick demand while preserving synchronous first-pick functionality; do not remove per-feature picking. |
 | `C11-197` | WEBGPU-LAZY-SCENE-PASS-RESUME [defer pass reopen until a draw or required clear/resolve; preserve depth/stencil/TAA/classification/multifrustum ordering] | scene-core / attachment-topology | P1 | perf/architecture | M | G3/G10 | **W1 — QUEUED / REOPEN-REASON ATTRIBUTION FIRST** |
@@ -902,6 +902,24 @@ while a replacement is prepared.
   four-slot exact-identity cache keyed by layout, buffers/ranges, views and
   samplers; resource changes rebuild only the affected slot and teardown clears
   the cache (cache leaf 3/3; focused attachment-plus-cache union 45/45).
+  **IBL SLICE IMPLEMENTED / VERIFIED / LANDED Batch 1022 (2026-08-11);
+  moving-performance evidence owed:** image-based-lighting SH uses
+  one 40-float buffer per live device generation, with zero allocation/upload
+  on stable frames, one upload for an in-place mutation, and one zeroing upload
+  on removal. Generation invalidation now detaches cache/published/cube ownership
+  before native destruction and independently drains every stale handle, so one
+  lost-device `destroy()` exception cannot block replacement generation. Focused
+  Edge/Karma executes **3/3** with **17,876 skipped**, including the injected
+  destroy-failure recovery. These close only the named churn slices;
+  C11-60 remains PARTIAL and no FPS credit is claimed before the moving route.
+- `C11-194`'s IBL recovery half **LANDED Batch 1022 (2026-08-11)** after the
+  destroy-failure audit and focused Edge verification. Its cache requires exact
+  `(owner, context, GPUDevice,
+  resourceGeneration)` ownership, invalidates before duplicate-frame skipping,
+  detaches old native and published ownership before best-effort sibling drain,
+  and retains decoded KTX2 CPU data for re-upload. Focused Edge recovery is
+  **3/3**. Nested clipping recovery and a real
+  replacement-device browser run remain open, so C11-194 stays PARTIAL.
 - `C11-165` also covers synchronous first-toggle pipelines in optional effects
   and Ocean compute, using generation-tagged async preparation while retaining
   the last complete pipeline.
@@ -921,8 +939,9 @@ while a replacement is prepared.
   open, as does retaining per-probe regional/weather outputs.
 - `C11-194`'s immutable defaults/layouts are device-generation shared, and the
   2026-08-02 recovery slice (landed Batch 819) now rejects/disposes stale model and
-  compatibility resources by exact tuple. Higher-level texture re-upload,
-  nested IBL/clipping recovery, and live replacement-device evidence keep the
+  compatibility resources by exact tuple; IBL generation recovery landed in
+  Batch 1022 with focused Edge 3/3. Higher-level texture re-upload, nested
+  clipping recovery, and live replacement-device evidence keep the
   row partial; no global decoded-source replay journal is authorized.
 - `C11-205` must distinguish common traversal inputs from backend-dependent
   `Model3DTileContent` readiness and frame-rate-sensitive request cancellation;
@@ -1087,7 +1106,7 @@ evidence paragraph as each slice lands.)
 | `C11-43 … C11-50` (attachment-topology) | NOT STARTED | G3 | evidence-pending |
 | `C11-51 … C11-57` (rte-taa) | NOT STARTED · **no cluster guide** | register §7 + PR §4/§8 | evidence-pending |
 | `C11-58 … C11-59`, `C11-61 … C11-63`, `C11-SEED-01` (frame-delta) | NOT STARTED | G4 §2 | evidence-pending |
-| `C11-60` (cache-hit-path allocation riders) | **PARTIAL — CLOUD CACHE SLICE LANDED Batch 1019; IBL SLICE LOCAL AUDITED; MOVING ROUTE OWED.** Cloud-shadow bind-group identity is bounded and IBL SH storage is stable per device generation; focused contracts and the current IBL Edge gate are green. Remaining user/library stage churn and moving-route allocation evidence keep the row open. | G4 §2 | Batch 1019 cache; IBL landing owed |
+| `C11-60` (cache-hit-path allocation riders) | **PARTIAL — CLOUD CACHE SLICE LANDED Batch 1019; IBL SLICE LANDED Batch 1022; MOVING ROUTE OWED.** Cloud-shadow bind-group identity is bounded and IBL SH storage is stable per device generation; focused contracts and the 3/3 IBL Edge gate are green. Remaining user/library stage churn and moving-route allocation evidence keep the row open. | G4 §2 | Batch 1019 cache; Batch 1022 IBL |
 | `C11-64 … C11-74`, `C11-SEED-02` (entity-scale) | NOT STARTED | G7 | evidence-pending |
 | `C11-75 … C11-78` (submit-residency) | NOT STARTED | G2 §submit | evidence-pending |
 | `C11-79 … C11-80` (celestial-env) | **TRANSFERRED to C12 (LD-1, 2026-07-23)** — IDs retained as aliases (C13 precedent); C12 `C12-04` sequences them (C11-80 before C11-79 retains star cmds). Close here; execute there. | G7 Item 12/13 | LD-1 |
