@@ -481,7 +481,7 @@ async function capture(renderer, part) {
         let prev = null;
         let last = null;
         for (let i = 0; i < 12; i++) {
-          const r = scene._picking.pickVoxelCoordinate(scene, pos, 1, 1);
+          const r = scene._picking.pickVoxelCoordinate(scene, pos, 1, 1, prim);
           last = Array.from(r || []);
           if (
             prev &&

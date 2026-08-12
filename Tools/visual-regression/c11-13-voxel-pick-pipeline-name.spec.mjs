@@ -18,6 +18,24 @@ const probeSource = await readFile(
   new URL("./probe-voxel-cell-pick.mjs", import.meta.url),
   "utf8",
 );
+const pickingSource = await readFile(
+  new URL("../../packages/engine/Source/Scene/Picking.js", import.meta.url),
+  "utf8",
+);
+const voxelPrimitiveSource = await readFile(
+  new URL(
+    "../../packages/engine/Source/Scene/VoxelPrimitive.js",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const pickPassSource = await readFile(
+  new URL(
+    "../../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPickPass.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 function assessHelperSource(source) {
   const errors = [];
@@ -132,4 +150,67 @@ test("the physical probe records independent state and uses only the exact helpe
     /pickVoxelPipelineName\s*===\s*"Voxel pickVoxel pipeline"/u,
   );
   assert.doesNotMatch(probeSource, /pickVoxelPipelineName\.startsWith/u);
+});
+
+function assessSelectedOwnerContract({ probe, picking, primitive, pickPass }) {
+  const errors = [];
+  if (
+    !/scene\._picking\.pickVoxelCoordinate\(scene, pos, 1, 1, prim\)/u.test(
+      probe,
+    )
+  ) {
+    errors.push("the probe must pass its exact voxel primitive owner");
+  }
+  if (
+    !/pickVoxelCoordinate\(scene, windowPosition, width, height, voxelPrimitive\)[\s\S]*?frameState\._pickVoxelPrimitive = voxelPrimitive[\s\S]*?finally \{[\s\S]*?frameState\._pickVoxelPrimitive = undefined/u.test(
+      picking,
+    )
+  ) {
+    errors.push("Picking must scope the selected owner to the mini-frame");
+  }
+  if (
+    !/frameState\.passes\.pickVoxel[\s\S]*?defined\(frameState\._pickVoxelPrimitive\)[\s\S]*?frameState\._pickVoxelPrimitive !== this[\s\S]*?return;/u.test(
+      primitive,
+    )
+  ) {
+    errors.push("non-selected voxel primitives must skip the selected pass");
+  }
+  if (
+    !/selectedVoxelOwner !== undefined[\s\S]*?dispatchedVoxelOwner === selectedVoxelOwner/u.test(
+      pickPass,
+    )
+  ) {
+    errors.push("WebGPU must reject a missing or mismatched voxel owner");
+  }
+  return errors;
+}
+
+test("the probe supplies the selected owner required by the WebGPU mini-frame", () => {
+  const sources = {
+    probe: probeSource,
+    picking: pickingSource,
+    primitive: voxelPrimitiveSource,
+    pickPass: pickPassSource,
+  };
+  assert.deepEqual(assessSelectedOwnerContract(sources), []);
+
+  const missingProbeOwner = {
+    ...sources,
+    probe: mutateOnce(
+      probeSource,
+      "scene._picking.pickVoxelCoordinate(scene, pos, 1, 1, prim)",
+      "scene._picking.pickVoxelCoordinate(scene, pos, 1, 1)",
+    ),
+  };
+  assert.notDeepEqual(assessSelectedOwnerContract(missingProbeOwner), []);
+
+  const failOpenPickPass = {
+    ...sources,
+    pickPass: mutateOnce(
+      pickPassSource,
+      "selectedVoxelOwner !== undefined &&",
+      "selectedVoxelOwner === undefined ||",
+    ),
+  };
+  assert.notDeepEqual(assessSelectedOwnerContract(failOpenPickPass), []);
 });
