@@ -126,6 +126,22 @@ describe("Core/GoogleEarthEnterpriseMetadata", function () {
       return Promise.resolve();
     });
 
+    spyOn(Resource._Implementations, "loadWithXhr").and.callFake(
+      function (
+        url,
+        responseType,
+        method,
+        data,
+        headers,
+        deferred,
+        overrideMimeType,
+      ) {
+        expect(url).toEqual("http://test.server/dbRoot.v5?output=proto");
+        expect(responseType).toEqual("arraybuffer");
+        deferred.reject();
+      },
+    );
+
     const metadata =
       await GoogleEarthEnterpriseMetadata.fromUrl("http://test.server");
     const request = new Request({

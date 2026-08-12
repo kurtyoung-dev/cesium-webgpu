@@ -1,6 +1,11 @@
 import addDefaultMatchers from "./addDefaultMatchers.js";
 import equalsMethodEqualityTester from "./equalsMethodEqualityTester.js";
-import { installOfflineNetworkGuard, setOfflineLane } from "./networkPolicy.js";
+import {
+  installOfflineNetworkGuard,
+  installOfflineNetworkRunAssertion,
+  installOfflineNetworkSpecAttribution,
+  setOfflineLane,
+} from "./networkPolicy.js";
 
 function customizeJasmine(
   env,
@@ -24,7 +29,21 @@ function customizeJasmine(
   // the last point at which that ordering still holds.
   setOfflineLane(offline === true);
   if (offline === true) {
+    installOfflineNetworkSpecAttribution(env, window);
     installOfflineNetworkGuard({ origin: window.location.origin });
+    installOfflineNetworkRunAssertion(env, {
+      scope: window,
+      report(message) {
+        // Console capture intentionally stays disabled for the enormous engine
+        // suite. Send this one stable line through Karma explicitly so a clean
+        // run still exposes every reasoned skip in its terminal output.
+        if (typeof window.__karma__?.info === "function") {
+          window.__karma__.info({ log: message, type: "info" });
+        } else {
+          window.console.info(message);
+        }
+      },
+    });
   }
 
   const originalDescribe = window.describe;

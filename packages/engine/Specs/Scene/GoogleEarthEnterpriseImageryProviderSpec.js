@@ -87,6 +87,24 @@ describe("Scene/GoogleEarthEnterpriseImageryProvider", function () {
     });
   }
 
+  function installMockDbRootFallback(expectedUrl) {
+    Resource._Implementations.loadWithXhr = function (
+      url,
+      responseType,
+      method,
+      data,
+      headers,
+      deferred,
+      overrideMimeType,
+    ) {
+      expect(url).toEqual(
+        `${expectedUrl.replace(/\/$/, "")}/dbRoot.v5?output=proto`,
+      );
+      expect(responseType).toEqual("arraybuffer");
+      deferred.reject();
+    };
+  }
+
   function installFakeImageRequest(expectedUrl, proxy) {
     Resource._Implementations.createImage = function (
       request,
@@ -177,6 +195,7 @@ describe("Scene/GoogleEarthEnterpriseImageryProvider", function () {
   it("fromMetadata resolves to created provider", async function () {
     installMockGetQuadTreePacket();
     const url = "http://fake.fake.invalid";
+    installMockDbRootFallback(url);
 
     const metadata = await GoogleEarthEnterpriseMetadata.fromUrl(url);
     imageryProvider =
@@ -190,6 +209,7 @@ describe("Scene/GoogleEarthEnterpriseImageryProvider", function () {
   it("returns false for hasAlphaChannel", async function () {
     installMockGetQuadTreePacket();
     const url = "http://fake.fake.invalid";
+    installMockDbRootFallback(url);
 
     const metadata = await GoogleEarthEnterpriseMetadata.fromUrl(url);
     imageryProvider =
@@ -202,6 +222,7 @@ describe("Scene/GoogleEarthEnterpriseImageryProvider", function () {
   it("can provide a root tile", async function () {
     installMockGetQuadTreePacket();
     const url = "http://fake.fake.invalid/";
+    installMockDbRootFallback(url);
 
     const metadata = await GoogleEarthEnterpriseMetadata.fromUrl(url);
     imageryProvider =
@@ -231,6 +252,7 @@ describe("Scene/GoogleEarthEnterpriseImageryProvider", function () {
   it("raises error event when image cannot be loaded", async function () {
     installMockGetQuadTreePacket();
     const url = "http://foo.bar.invalid";
+    installMockDbRootFallback(url);
 
     const metadata = await GoogleEarthEnterpriseMetadata.fromUrl(url);
     imageryProvider =

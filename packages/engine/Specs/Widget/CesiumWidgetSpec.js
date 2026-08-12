@@ -40,6 +40,7 @@ import getWebGLStub from "../../../../Specs/getWebGLStub.js";
 import MockDataSource from "../../../../Specs/MockDataSource.js";
 import pollToPromise from "../../../../Specs/pollToPromise.js";
 import BufferPoint from "../../Source/Scene/BufferPoint.js";
+import { isOfflineLane } from "../../../../Specs/networkPolicy.js";
 
 describe(
   "Widget/CesiumWidget",
@@ -74,6 +75,17 @@ describe(
 
     function createCesiumWidget(container, options) {
       options = options ?? {};
+      // Most CesiumWidget specs exercise unrelated behavior and rely on the
+      // production World Imagery default. Keep that default online, but prevent
+      // its Ion endpoint request in the offline lane. Explicit base layers and
+      // globe:false retain their exact behavior.
+      if (
+        isOfflineLane(window) &&
+        options.globe !== false &&
+        options.baseLayer === undefined
+      ) {
+        options.baseLayer = false;
+      }
       options.contextOptions = options.contextOptions ?? {};
       options.contextOptions.webgl = options.contextOptions.webgl ?? {};
       if (!!window.webglStub) {

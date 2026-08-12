@@ -23,6 +23,36 @@ describe("Scene/IonImageryProvider", function () {
   let defaultEndpoint;
   let defaultConstructorOptions;
 
+  const tileMapServiceXml =
+    '<TileMap version="1.0.0" tilemapservice="http://tms.osgeo.org/1.0.0">' +
+    "<Title>offline fixture</Title>" +
+    '<SRS>EPSG:4326</SRS><BoundingBox minx="-180" miny="-90" maxx="180" maxy="90" />' +
+    '<TileFormat width="256" height="256" mime-type="image/png" extension="png" />' +
+    '<TileSets profile="geodetic"><TileSet href="0" units-per-pixel="0.703125" order="0" />' +
+    '<TileSet href="1" units-per-pixel="0.3515625" order="1" /></TileSets></TileMap>';
+
+  function installFakeTileMapServiceRequest() {
+    spyOn(Resource._Implementations, "loadWithXhr").and.callFake(
+      function (
+        url,
+        responseType,
+        method,
+        data,
+        headers,
+        deferred,
+        overrideMimeType,
+      ) {
+        expect(url).toMatch(/\/tilemapresource\.xml$/);
+        expect(responseType).toEqual("document");
+        const xml = new DOMParser().parseFromString(
+          tileMapServiceXml,
+          "application/xml",
+        );
+        deferred.resolve(xml);
+      },
+    );
+  }
+
   function setUpTestEndpoint({
     assetId = defaultAssetId,
     endpoint = defaultEndpoint,
@@ -105,6 +135,7 @@ describe("Scene/IonImageryProvider", function () {
   });
 
   it("fromAssetId resolves to created provider", async function () {
+    installFakeTileMapServiceRequest();
     setUpTestEndpoint();
 
     const provider = await IonImageryProvider.fromAssetId(
@@ -124,6 +155,7 @@ describe("Scene/IonImageryProvider", function () {
   });
 
   it("propagates called to underlying imagery provider resolves when ready", async function () {
+    installFakeTileMapServiceRequest();
     setUpTestEndpoint();
 
     const provider = await IonImageryProvider.fromAssetId(
@@ -352,8 +384,14 @@ describe("Scene/IonImageryProvider", function () {
     });
   });
 
-  testExternalImagery("TMS", UrlTemplateImageryProvider, {
-    url: "http://test.invalid",
+  describe("TMS", function () {
+    beforeEach(function () {
+      installFakeTileMapServiceRequest();
+    });
+
+    testExternalImagery("TMS", UrlTemplateImageryProvider, {
+      url: "http://test.invalid",
+    });
   });
 
   testExternalImagery("URL_TEMPLATE", UrlTemplateImageryProvider, {

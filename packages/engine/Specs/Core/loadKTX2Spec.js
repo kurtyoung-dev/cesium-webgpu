@@ -59,8 +59,10 @@ describe("Core/loadKTX2", function () {
     expect(seenTargets).toEqual([etcTargets, bcTargets]);
   });
 
-  it("throws if loadKTX2 is called with invalid url", function () {
-    const testUrl = "http://example.invalid/testuri";
+  it("throws if loadKTX2 is called with a missing URL", function () {
+    // Keep the transport local to Karma. The missing fixture still exercises
+    // the load failure without granting a real external request in offline CI.
+    const testUrl = "Data/Images/does-not-exist.ktx2";
     const promise = loadKTX2(testUrl, noCompressedTargets);
     return promise
       .then(function (value) {

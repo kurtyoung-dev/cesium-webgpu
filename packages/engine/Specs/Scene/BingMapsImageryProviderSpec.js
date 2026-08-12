@@ -318,6 +318,18 @@ describe("Scene/BingMapsImageryProvider", function () {
   it("fromUrl throws if request fails", async function () {
     const url = "http://fake.fake.invalid";
 
+    Resource._Implementations.loadWithXhr = function (
+      requestUrl,
+      responseType,
+      method,
+      data,
+      headers,
+      deferred,
+      overrideMimeType,
+    ) {
+      deferred.reject();
+    };
+
     await expectAsync(
       BingMapsImageryProvider.fromUrl(url, { key: "" }),
     ).toBeRejectedWithError(

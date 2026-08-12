@@ -49,6 +49,14 @@ module.exports = function (config) {
       },
     },
 
+    // C11-134 emits one explicit machine-readable offline-lane summary through
+    // __karma__.info(). General page-console capture stays off, so this does not
+    // turn a full engine run into a console-log flood.
+    browserConsoleLogOptions: {
+      level: "info",
+      terminal: true,
+    },
+
     detectBrowsers: {
       enabled: false,
       usePhantomJS: false,

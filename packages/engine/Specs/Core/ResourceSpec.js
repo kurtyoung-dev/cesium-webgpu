@@ -1576,7 +1576,9 @@ describe("Core/Resource", function () {
       }
 
       return Resource.fetchImage({
-        url: "http://example.invalid/testuri.png",
+        // A same-origin 404 exercises the native error path without outbound
+        // transport in the default offline lane.
+        url: "Data/Images/does-not-exist.png",
         preferImageBitmap: true,
       })
         .then(function () {
@@ -2142,7 +2144,8 @@ describe("Core/Resource", function () {
       describe("returns a promise that rejects when the request", function () {
         it("results in an HTTP status code greater than or equal to 300", function () {
           return loadWithXhr({
-            url: "http://example.invalid",
+            // Karma returns 404 for this missing same-origin fixture.
+            url: "Data/does-not-exist.json",
           })
             .then(function () {
               fail("expected promise to reject");
@@ -2624,7 +2627,9 @@ describe("Core/Resource", function () {
     });
 
     it("returns a promise that rejects when the request errors", function () {
-      const testUrl = "http://example.invalid/testuri";
+      // JSONP uses a script element rather than fetch/XHR. Keep its deliberate
+      // error on the Karma origin so the test cannot leak through that surface.
+      const testUrl = "Data/does-not-exist-jsonp";
       return Resource.fetchJsonp(testUrl).catch(function (error) {
         expect(error).toBeDefined();
       });

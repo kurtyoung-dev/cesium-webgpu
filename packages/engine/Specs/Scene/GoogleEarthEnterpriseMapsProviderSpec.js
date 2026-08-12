@@ -118,6 +118,17 @@ describe("Scene/GoogleEarthEnterpriseMapsProvider", function () {
 
   it("fromUrl throws with invalid url", async function () {
     const url = "http://invalid.localhost";
+    Resource._Implementations.loadWithXhr = function (
+      requestUrl,
+      responseType,
+      method,
+      data,
+      headers,
+      deferred,
+      overrideMimeType,
+    ) {
+      deferred.reject();
+    };
     await expectAsync(
       GoogleEarthEnterpriseMapsProvider.fromUrl(url, 1234),
     ).toBeRejectedWithError(

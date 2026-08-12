@@ -135,6 +135,20 @@ describe("Scene/ArcGisMapServerImageryProvider", function () {
   it("fromUrl throws if request fails", async function () {
     const baseUrl = "//tiledArcGisMapServer.invalid/";
 
+    spyOn(Resource._Implementations, "loadWithXhr").and.callFake(
+      function (
+        url,
+        responseType,
+        method,
+        data,
+        headers,
+        deferred,
+        overrideMimeType,
+      ) {
+        deferred.reject();
+      },
+    );
+
     await expectAsync(
       ArcGisMapServerImageryProvider.fromUrl(baseUrl),
     ).toBeRejectedWithError(

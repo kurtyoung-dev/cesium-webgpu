@@ -220,7 +220,9 @@ describe(
         return;
       }
 
-      const cubeMap = new SpecularEnvironmentCubeMap("http://invalid.url");
+      const cubeMap = new SpecularEnvironmentCubeMap(
+        "Data/Images/does-not-exist.ktx2",
+      );
       const frameState = createFrameState(context);
       let error;
 
