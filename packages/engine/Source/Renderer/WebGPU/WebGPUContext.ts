@@ -2163,6 +2163,13 @@ export class WebGPUContext extends GraphicsContext {
     ) {
       return;
     }
+    // Reaching this point starts a standalone pick mini-frame with a fresh
+    // encoder. Its clear-loop budget must not inherit calls from a previously
+    // submitted mini-frame. Keep these resets after the early-return gate so
+    // the renderer's idempotent/re-entrant beginPickFrame call cannot reset the
+    // budget while this mini-frame is already being encoded.
+    this._clearCallsThisFrame = 0;
+    this._clearOverflowWarned = false;
     // A pick mini-frame never acquires the swap view, so the `endFrame`
     // present fallback, gated on `_currentTextureView`, cannot fabricate a
     // canvas pass here. The tracking state is reset anyway so a stale target
@@ -4138,8 +4145,9 @@ export class WebGPUContext extends GraphicsContext {
    * @param {CesiumPassState} passState - PassState (may contain a custom framebuffer)
    */
   // Tracks clear() calls per frame for infinite-loop detection.
-  // Reset in beginFrame(). If this exceeds 50, something is re-entering
-  // clear recursively — log once and bail to prevent the tab from freezing.
+  // Reset in beginFrame() and for each standalone beginPickFrame(). If this
+  // exceeds 50, something is re-entering clear recursively — log once and bail
+  // to prevent the tab from freezing.
   private _clearCallsThisFrame: number = 0;
   private _clearOverflowWarned: boolean = false;
 
