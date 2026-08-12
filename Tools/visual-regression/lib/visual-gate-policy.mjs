@@ -41,6 +41,13 @@ export function stableStringify(value) {
 }
 
 export function createSceneIdentity(scene, runConfiguration) {
+  const hasSetupFile = typeof scene.setupFile === "string";
+  const setupFileSha256 = runConfiguration.setupFileSha256 ?? null;
+  if (hasSetupFile && !/^[0-9a-f]{64}$/i.test(setupFileSha256 ?? "")) {
+    throw new Error(
+      `Scene ${scene.name ?? "<unnamed>"} requires setupFileSha256`,
+    );
+  }
   const identity = {
     name: scene.name,
     camera: scene.camera ?? null,
@@ -51,6 +58,9 @@ export function createSceneIdentity(scene, runConfiguration) {
     settleFrames: runConfiguration.settleFrames,
     viewport: runConfiguration.viewport,
   };
+  if (hasSetupFile) {
+    identity.setupFileSha256 = setupFileSha256;
+  }
   return sha256(stableStringify(identity));
 }
 
@@ -318,7 +328,6 @@ export function validateManifestEntry(entry, actual) {
   if (!/^[0-9a-f]{64}$/i.test(entry.sceneIdentity ?? "")) {
     reasons.push("MANIFEST_SCENE_IDENTITY_INVALID");
   }
-
   const matchingFields = [
     "scene",
     "image",
@@ -455,4 +464,27 @@ export function validatePromotionRequest(args) {
     authorized: errors.length === 0,
     errors,
   };
+}
+
+/**
+ * A promoted capture must describe one clean, unchanged source snapshot.
+ * Check immediately before capture and again immediately before promotion;
+ * the manifest may retain that capture commit as provenance without requiring
+ * a later commit containing the baseline to have the same, impossible hash.
+ */
+export function validatePromotionSourceStability(before, after) {
+  const errors = [];
+  if (before?.sourceDirty !== false) {
+    errors.push("PROMOTION_SOURCE_DIRTY_BEFORE_CAPTURE");
+  }
+  if (after?.sourceDirty !== false) {
+    errors.push("PROMOTION_SOURCE_DIRTY_AFTER_CAPTURE");
+  }
+  if (
+    typeof before?.sourceCommit !== "string" ||
+    before.sourceCommit !== after?.sourceCommit
+  ) {
+    errors.push("PROMOTION_SOURCE_COMMIT_CHANGED_DURING_CAPTURE");
+  }
+  return { valid: errors.length === 0, errors };
 }

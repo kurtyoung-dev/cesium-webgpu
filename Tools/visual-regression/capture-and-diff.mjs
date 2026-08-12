@@ -61,6 +61,7 @@ import {
   summarizeSceneGates,
   validateManifestEntry,
   validatePromotionRequest,
+  validatePromotionSourceStability,
 } from "./lib/visual-gate-policy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -283,6 +284,9 @@ async function promoteBaselineCandidates({
 }) {
   if (environment.adapterClass === "unknown") {
     throw new Error("Cannot promote without a resolved WebGPU adapter class");
+  }
+  if (git.sourceDirty) {
+    throw new Error("Cannot promote a baseline from a dirty source tree");
   }
 
   const now = new Date().toISOString();
@@ -556,9 +560,11 @@ async function applyScene(page, scene, settleFrames) {
   // were inline in `setup`. Inline `setup` still works for one-line
   // helpers.
   let setupSrc = null;
+  let setupFileSha256 = null;
   if (typeof scene.setupFile === "string") {
     const filePath = path.resolve(path.dirname(SCENES_PATH), scene.setupFile);
     setupSrc = await fs.readFile(filePath, "utf8");
+    setupFileSha256 = sha256(setupSrc);
   } else if (typeof scene.setup === "string") {
     setupSrc = scene.setup;
   }
@@ -620,6 +626,7 @@ async function applyScene(page, scene, settleFrames) {
       }),
     settleFrames,
   );
+  return { setupFileSha256 };
 }
 
 async function main() {
@@ -804,7 +811,7 @@ async function main() {
   const promotionCandidates = [];
   for (const scene of scenes) {
     console.log(`[visual-regression] scene: ${scene.name}`);
-    await applyScene(page, scene, cfg.settleFrames);
+    const appliedScene = await applyScene(page, scene, cfg.settleFrames);
     const cap = await captureCanvases(page);
 
     const webglPath = path.join(OUTPUT_DIR, `${scene.name}.webgl.png`);
@@ -838,6 +845,7 @@ async function main() {
       baseUrl: cfg.baseUrl,
       settleFrames: cfg.settleFrames,
       viewport: VIEWPORT,
+      setupFileSha256: appliedScene.setupFileSha256,
     });
 
     const historicalWebglValidation = historicalWebgl
@@ -1029,10 +1037,12 @@ async function main() {
   }
 
   if (promotionRequest.requested) {
+    const promotionGit = getGitMetadata();
+    const sourceStability = validatePromotionSourceStability(git, promotionGit);
     const crossBackendFailures = report.scenes.filter(
       (scene) => scene.gates.crossBackend.status !== GateStatus.PASS,
     );
-    const promotionBlockers = [];
+    const promotionBlockers = [...sourceStability.errors];
     if (gateFaults.length > 0) {
       promotionBlockers.push("WebGPU error gate failed");
     }
@@ -1048,7 +1058,7 @@ async function main() {
         candidates: promotionCandidates,
         manifestState: baselineManifest,
         environment,
-        git,
+        git: promotionGit,
         args,
       });
       report.promotion.performed = true;

@@ -15,8 +15,11 @@ import {
   resolveSceneThresholds,
   summarizeExpectations,
   summarizeSceneGates,
+  sha256,
+  stableStringify,
   validateManifestEntry,
   validatePromotionRequest,
+  validatePromotionSourceStability,
 } from "./lib/visual-gate-policy.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -98,6 +101,54 @@ test("scene identity is stable across object key order", () => {
     config,
   );
   assert.equal(a, b);
+  assert.equal(
+    a,
+    sha256(
+      stableStringify({
+        name: "scene",
+        camera: { x: 1, y: 2 },
+        setup: null,
+        setupFile: null,
+        setupParams: null,
+        baseUrl: config.baseUrl,
+        settleFrames: config.settleFrames,
+        viewport: config.viewport,
+      }),
+    ),
+    "scenes without setupFile must retain their existing baseline identity",
+  );
+});
+
+test("scene identity binds setup-file contents", () => {
+  const scene = { name: "scene", setupFile: "scenes/setup.js" };
+  const config = {
+    baseUrl: "http://example.test",
+    settleFrames: 30,
+    viewport: { width: 1, height: 1 },
+  };
+  const before = createSceneIdentity(scene, {
+    ...config,
+    setupFileSha256: sha256("before"),
+  });
+  const after = createSceneIdentity(scene, {
+    ...config,
+    setupFileSha256: sha256("after"),
+  });
+  assert.notEqual(before, after);
+  assert.throws(
+    () => createSceneIdentity(scene, config),
+    /requires setupFileSha256/,
+  );
+});
+
+test("the runner fingerprints the exact setup bytes it executes", () => {
+  const runnerSource = readFileSync(
+    path.join(HERE, "capture-and-diff.mjs"),
+    "utf8",
+  );
+  assert.match(runnerSource, /setupFileSha256 = sha256\(setupSrc\)/);
+  assert.match(runnerSource, /return \{ setupFileSha256 \}/);
+  assert.match(runnerSource, /setupFileSha256: appliedScene\.setupFileSha256/);
 });
 
 test("pixel comparison reports a deterministic mismatch ratio", () => {
@@ -413,6 +464,10 @@ test("every shipped scene's expectations are valid and its identity is unique", 
       baseUrl: config.baseUrl,
       settleFrames: config.settleFrames,
       viewport: { width: 1600, height: 800 },
+      setupFileSha256:
+        typeof scene.setupFile === "string"
+          ? sha256(readFileSync(path.join(HERE, scene.setupFile)))
+          : null,
     });
     assert.equal(
       identities.has(identity),
@@ -483,30 +538,22 @@ test("the three subsystem scenes are self-sufficient and deterministic", () => {
   }
 });
 
-test("no subsystem scene waits on a readiness flag one backend never sets", () => {
+test("subsystem voxel readiness requires the public flag and render evidence", () => {
   const setupSource = readFileSync(
     path.join(HERE, "scenes", "subsystem-parity-setup.js"),
     "utf8",
   );
 
-  // `VoxelPrimitive.ready` is permanently false on WebGPU: `update` dispatches
-  // to the VOXEL_PRIMITIVE feature renderer and returns before the
-  // `frameState.afterRender` hook that only the legacy branch runs, and nothing
-  // under Renderer/WebGPU sets the flag. Waiting on it across both viewers can
-  // never hold, and the first run of `voxel-box-procedural` burned its whole
-  // 45 s budget proving it. The budget did its job; the signal was the bug.
-  //
-  // This is a structural anchor, not a style rule: a readiness predicate that
-  // one backend cannot satisfy turns an honest throw into a permanent red, and
-  // the next person to reach for `.ready` here gets caught at `node --test`
-  // instead of 45 seconds into a browser run.
-  assert.doesNotMatch(
+  // The backend-neutral lifecycle now publishes VoxelPrimitive.ready only
+  // after owner resources are usable. Require that public contract in both
+  // viewers; a future early-return regression is then caught by the scene.
+  assert.match(
     setupSource,
-    /\.ready === true/,
-    "subsystem setup must not gate readiness on `.ready`, which VoxelPrimitive never sets on WebGPU",
+    /primitives\[index\]\.ready !== true/,
+    "the voxel scene must require public readiness on both backends",
   );
 
-  // The replacement must still be REAL evidence on both backends: a root tile
+  // Public readiness is paired with REAL evidence on both backends: a root tile
   // served through this file's own provider (both traversals go through
   // `provider.requestData`) plus frames rendered after that delivery.
   assert.match(
@@ -537,4 +584,35 @@ test("--update alone cannot authorize baseline promotion", () => {
     reviewedBy: "reviewer",
   });
   assert.equal(authorized.authorized, true);
+});
+
+test("baseline promotion requires one unchanged clean source snapshot", () => {
+  const clean = { sourceCommit: "a".repeat(40), sourceDirty: false };
+  assert.deepEqual(validatePromotionSourceStability(clean, clean), {
+    valid: true,
+    errors: [],
+  });
+
+  const changed = validatePromotionSourceStability(
+    { ...clean, sourceDirty: true },
+    { sourceCommit: "b".repeat(40), sourceDirty: true },
+  );
+  assert.equal(changed.valid, false);
+  assert.deepEqual(changed.errors, [
+    "PROMOTION_SOURCE_DIRTY_BEFORE_CAPTURE",
+    "PROMOTION_SOURCE_DIRTY_AFTER_CAPTURE",
+    "PROMOTION_SOURCE_COMMIT_CHANGED_DURING_CAPTURE",
+  ]);
+});
+
+test("the runner rechecks source stability immediately before promotion", () => {
+  const runnerSource = readFileSync(
+    path.join(HERE, "capture-and-diff.mjs"),
+    "utf8",
+  );
+  assert.match(
+    runnerSource,
+    /const promotionGit = getGitMetadata\(\);\s*const sourceStability = validatePromotionSourceStability\(git, promotionGit\);/,
+  );
+  assert.match(runnerSource, /git: promotionGit/);
 });
