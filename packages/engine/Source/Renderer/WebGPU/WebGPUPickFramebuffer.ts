@@ -21,17 +21,46 @@ import {
   type FeatureIdResolveResult,
 } from "./WebGPUFeatureIdTexture.js";
 
-// NEW-PICK-METADATA-READBACK (Batch 285) — validity window for the cached
-// center pixel (pickMetadata / pickVoxelCoordinate). The cache is only
-// returned when the query is within this many pixels of the readback's own
-// coordinate (a moving cursor re-arms and converges next frame)...
-const CENTER_PIXEL_COORD_TOLERANCE = 2;
-// ...and when no more than this many picks have rendered since the readback
-// was armed (the pixel content can't change without a new metadata/voxel
-// pass, so a short window bounds drift on a continuously-moving cursor).
+// NEW-PICK-METADATA-READBACK (Batch 285) — no more than this many picks may
+// render before a typed center-pixel result expires. Coordinates and logical
+// rectangles are exact: a nearby pixel can be a different voxel or metadata
+// value and must arm its own readback rather than borrow its neighbor's bytes.
 const CENTER_PIXEL_MAX_STALE_FRAMES = 4;
 // 256-byte minimum mapping alignment for a 1x1 RGBA8 copy.
 const CENTER_STAGING_BUFFER_SIZE = 256;
+const VOXEL_CENTER_PIXEL_CLEAR_VALUE: GPUColorDict = Object.freeze({
+  r: 1.0,
+  g: 1.0,
+  b: 1.0,
+  a: 1.0,
+});
+
+type CenterPixelPassDomain = "metadata" | "voxel";
+
+interface CenterPixelReadbackIdentity {
+  domain: CenterPixelPassDomain;
+  queryIdentityA: unknown;
+  queryIdentityB: unknown;
+  queryIdentityC: unknown;
+  queryVersion: unknown;
+  viewProvenance: unknown;
+  logicalOriginX: number;
+  logicalOriginTopY: number;
+  logicalWidth: number;
+  logicalHeight: number;
+  pixelX: number;
+  pixelY: number;
+  device: GPUDevice;
+  resourceGeneration: number;
+  attachmentGeneration: number;
+  colorTexture: GPUTexture;
+}
+
+interface CenterPixelCacheEntry extends CenterPixelReadbackIdentity {
+  value: Uint8Array;
+  stamp: number;
+  requestSequence: number;
+}
 
 /**
  * The pick color attachment MUST use the same format the pick PIPELINES target
@@ -56,6 +85,13 @@ export function getWebGPUPickColorFormat(
   }
   const f = typedContext.scenePipelineFormat;
   return f === "bgra8unorm" || f === "rgba8unorm" ? f : "rgba8unorm";
+}
+
+function getPickResourceGeneration(context: CesiumGraphicsContext): number {
+  return "resourceGeneration" in context &&
+    typeof context.resourceGeneration === "number"
+    ? context.resourceGeneration
+    : 0;
 }
 
 /**
@@ -143,7 +179,9 @@ interface PickReadbackRegion {
   copyHeight: number;
   copyOffsetX: number;
   copyOffsetY: number;
+  resourceGeneration: number;
   attachmentGeneration: number;
+  viewProvenance: unknown;
 }
 
 /**
@@ -190,6 +228,7 @@ export class WebGPUPickFramebuffer {
   private _colorView: GPUTextureView | null = null;
   private _depthView: GPUTextureView | null = null;
   private _attachmentDevice: GPUDevice | null = null;
+  private _attachmentResourceGeneration: number = -1;
 
   // Staging buffer for color readback
   private _stagingBuffer: GPUBuffer | null = null;
@@ -234,6 +273,7 @@ export class WebGPUPickFramebuffer {
   private _copyOffsetX: number = 0;
   private _copyOffsetY: number = 0;
   private _attachmentGeneration: number = 0;
+  private _ordinaryPickViewProvenance: unknown = undefined;
 
   // Depth readback resources (separate depth32float target for copyable depth)
   private _readableDepthTexture: GPUTexture | null = null;
@@ -257,20 +297,14 @@ export class WebGPUPickFramebuffer {
   // cannot consume `_lastReadPixels` (which holds the most recent regular
   // scene.pick() color pass — a STALE pixel from a different pass). Instead
   // readCenterPixel arms its OWN 1x1 readback of the just-rendered center
-  // pixel and returns a one-frame-stale cached value keyed to the query
-  // coordinate + frame stamp, mirroring PickDepth.getDepth's async contract:
-  // the first query at a new spot returns the cleared pixel (caller gets
-  // undefined / no voxel) and arms the readback; a re-pick at the same spot
-  // 1-2 frames later returns the correct metadata/voxel value.
-  private _centerPixelValue: Uint8Array | null = null;
-  private _centerPixelX: number = -1;
-  private _centerPixelY: number = -1;
-  private _centerPixelStamp: number = -1;
-  // Re-entrancy guard: true between submit-of-copyTextureToBuffer and the
-  // unmap that follows mapAsync's resolution. Prevents a rapid re-pick from
-  // re-reading a half-written staging buffer (the metadata/voxel analogue of
-  // _readbackInFlight on the color path).
-  private _centerReadbackInFlight: boolean = false;
+  // pixel and returns a one-frame-stale cache only for the exact typed query,
+  // rectangle, device/resource tuple, attachment, and owner version. A cold
+  // query is invalid (`undefined`), never a fabricated all-zero pixel.
+  private _centerPixelCache: CenterPixelCacheEntry | null = null;
+  private _centerPendingIdentity: CenterPixelReadbackIdentity | null = null;
+  private _centerPendingRequestSequence: number = -1;
+  private _nextCenterReadbackSequence: number = 0;
+  private _latestCenterReadbackSequence: number = -1;
   // Staleness clock — advanced once per begin() (one metadata/voxel pick is
   // one begin → render → readCenterPixel cycle). Measured in picks, not wall
   // time, so a paused scene keeps a valid cache indefinitely.
@@ -300,6 +334,8 @@ export class WebGPUPickFramebuffer {
   begin(
     screenSpaceRectangle: CesiumBoundingRectangle,
     viewport: CesiumBoundingRectangle,
+    centerPixelDomain?: CenterPixelPassDomain,
+    viewProvenance?: unknown,
   ): CesiumPassState {
     // Start the off-screen frame before any pick commands are rebuilt.
     // Globe.updateForPick and other feature renderers allocate uniform-ring
@@ -317,6 +353,9 @@ export class WebGPUPickFramebuffer {
       return this._passState;
     }
     const deviceChanged = device !== this._attachmentDevice;
+    const resourceGeneration = getPickResourceGeneration(this._context);
+    const resourceGenerationChanged =
+      resourceGeneration !== this._attachmentResourceGeneration;
     this._device = device;
 
     const rawWidth = viewport?.width;
@@ -334,6 +373,9 @@ export class WebGPUPickFramebuffer {
 
     // Advance the staleness clock once per pick pass (NEW-PICK-METADATA-READBACK).
     this._updateCount++;
+    if (centerPixelDomain === undefined) {
+      this._ordinaryPickViewProvenance = viewProvenance;
+    }
 
     BoundingRectangle.clone(
       screenSpaceRectangle,
@@ -385,10 +427,11 @@ export class WebGPUPickFramebuffer {
       width !== this._width ||
       height !== this._height ||
       colorFormat !== this._colorFormat ||
-      deviceChanged
+      deviceChanged ||
+      resourceGenerationChanged
     ) {
       this._destroyTextures();
-      if (deviceChanged) {
+      if (deviceChanged || resourceGenerationChanged) {
         if (this._depthStagingBuffer) {
           this._depthStagingBuffer.destroy();
           this._depthStagingBuffer = null;
@@ -422,6 +465,7 @@ export class WebGPUPickFramebuffer {
       this._width = width;
       this._height = height;
       this._attachmentDevice = device;
+      this._attachmentResourceGeneration = resourceGeneration;
       this._attachmentGeneration++;
 
       // Cache texture views once per resize — see field comment above.
@@ -469,6 +513,13 @@ export class WebGPUPickFramebuffer {
         width: this._copyWidth,
         height: this._copyHeight,
       },
+      // Voxel coordinate zero is valid. Clear its dedicated pass to a value
+      // outside base-255's representable low-byte domain so a no-command or
+      // no-fragment pass cannot masquerade as root tile / sample zero.
+      pickClearValue:
+        centerPixelDomain === "voxel"
+          ? VOXEL_CENTER_PIXEL_CLEAR_VALUE
+          : undefined,
       ensureClassificationDepth: this._ensureClassificationDepthTarget,
     } as CesiumOpaqueFramebuffer;
 
@@ -490,7 +541,9 @@ export class WebGPUPickFramebuffer {
       copyHeight: this._copyHeight,
       copyOffsetX: this._copyOffsetX,
       copyOffsetY: this._copyOffsetY,
+      resourceGeneration: this._attachmentResourceGeneration,
       attachmentGeneration: this._attachmentGeneration,
+      viewProvenance: this._ordinaryPickViewProvenance,
     };
   }
 
@@ -510,7 +563,9 @@ export class WebGPUPickFramebuffer {
       left.copyHeight === right.copyHeight &&
       left.copyOffsetX === right.copyOffsetX &&
       left.copyOffsetY === right.copyOffsetY &&
-      left.attachmentGeneration === right.attachmentGeneration
+      left.resourceGeneration === right.resourceGeneration &&
+      left.attachmentGeneration === right.attachmentGeneration &&
+      left.viewProvenance === right.viewProvenance
     );
   }
 
@@ -539,7 +594,9 @@ export class WebGPUPickFramebuffer {
     if (
       !cached ||
       !cachedPixels ||
-      cached.attachmentGeneration !== region.attachmentGeneration
+      cached.resourceGeneration !== region.resourceGeneration ||
+      cached.attachmentGeneration !== region.attachmentGeneration ||
+      cached.viewProvenance !== region.viewProvenance
     ) {
       return null;
     }
@@ -607,8 +664,10 @@ export class WebGPUPickFramebuffer {
       this._isDestroyed ||
       this._device !== requestDevice ||
       this._attachmentDevice !== requestDevice ||
+      this._attachmentResourceGeneration !== region.resourceGeneration ||
       this._colorTexture !== colorTexture ||
       this._attachmentGeneration !== region.attachmentGeneration ||
+      this._ordinaryPickViewProvenance !== region.viewProvenance ||
       requestSequence < this._lastPublishedReadbackSequence
     ) {
       return;
@@ -821,13 +880,25 @@ export class WebGPUPickFramebuffer {
    * Because WebGPU readback is async, we arm a fresh 1x1 readback of the
    * current center pixel (guarded so a re-pick can't read a half-written
    * buffer) and return a one-frame-stale cache keyed to the query coordinate
-   * + a frame stamp. A cold query returns (0,0,0,0) (caller decodes to
-   * "no metadata / no voxel") and arms the readback; the same query 1-2 frames
-   * later returns the correct value — identical to PickDepth.getDepth's
-   * contract. This replaces the old `_lastReadPixels.slice()` which returned
+   * + a frame stamp. A cold query returns `undefined` and arms the readback;
+   * the same exact query 1-2 frames later returns the correct value. This
+   * replaces the old `_lastReadPixels.slice()` which returned
    * the STALE pixel from the most recent regular scene.pick() COLOR pass.
    */
-  readCenterPixel(screenSpaceRectangle: CesiumBoundingRectangle): Uint8Array {
+  readCenterPixel(
+    screenSpaceRectangle: CesiumBoundingRectangle,
+    domain: CenterPixelPassDomain = "metadata",
+    queryIdentityA?: unknown,
+    queryIdentityB?: unknown,
+    queryVersion?: unknown,
+    queryIdentityC?: unknown,
+    viewProvenance?: unknown,
+  ): Uint8Array | undefined {
+    const device = this._device;
+    const colorTexture = this._colorTexture;
+    if (!device || !colorTexture) {
+      return undefined;
+    }
     const width = this._pickWidth;
     const height = this._pickHeight;
     const halfWidth = Math.floor(width * 0.5);
@@ -835,24 +906,124 @@ export class WebGPUPickFramebuffer {
 
     // Absolute center coordinate within the full-viewport `_colorTexture`.
     // begin() already normalized the rectangle to top-down texture space.
-    const px = this._pickOriginX + halfWidth;
-    const py = this._pickOriginTopY + halfHeight;
+    const px = Math.max(
+      0,
+      Math.min(this._pickOriginX + halfWidth, this._width - 1),
+    );
+    const py = Math.max(
+      0,
+      Math.min(this._pickOriginTopY + halfHeight, this._height - 1),
+    );
+
+    const voxelLifecycle = queryIdentityB as
+      { contentRevision?: unknown } | undefined;
+    const resolvedQueryIdentityC =
+      domain === "voxel" && queryIdentityC === undefined
+        ? voxelLifecycle?.contentRevision
+        : queryIdentityC;
+    const identity: CenterPixelReadbackIdentity = {
+      domain,
+      queryIdentityA,
+      queryIdentityB,
+      queryIdentityC: resolvedQueryIdentityC,
+      queryVersion,
+      viewProvenance,
+      logicalOriginX: this._pickOriginX,
+      logicalOriginTopY: this._pickOriginTopY,
+      logicalWidth: width,
+      logicalHeight: height,
+      pixelX: px,
+      pixelY: py,
+      device,
+      resourceGeneration: getPickResourceGeneration(this._context),
+      attachmentGeneration: this._attachmentGeneration,
+      colorTexture,
+    };
 
     // Arm/refresh the readback for this center pixel. The guard inside dedupes
     // overlapping requests and swallows teardown races.
-    this._readCenterPixelAsync(px, py);
+    this._readCenterPixelAsync(identity);
 
-    const cached = this._centerPixelValue;
+    const cached = this._centerPixelCache;
     if (
       cached &&
-      Math.abs(px - this._centerPixelX) <= CENTER_PIXEL_COORD_TOLERANCE &&
-      Math.abs(py - this._centerPixelY) <= CENTER_PIXEL_COORD_TOLERANCE &&
-      this._updateCount - this._centerPixelStamp <=
-        CENTER_PIXEL_MAX_STALE_FRAMES
+      this._centerPixelIdentitiesEqual(cached, identity) &&
+      this._updateCount - cached.stamp >= 0 &&
+      this._updateCount - cached.stamp <= CENTER_PIXEL_MAX_STALE_FRAMES
     ) {
-      return cached.slice(0, 4);
+      return cached.value.slice(0, 4);
     }
-    return new Uint8Array([0, 0, 0, 0]);
+    return undefined;
+  }
+
+  private _centerPixelIdentitiesEqual(
+    left: CenterPixelReadbackIdentity,
+    right: CenterPixelReadbackIdentity,
+  ): boolean {
+    return (
+      left.domain === right.domain &&
+      left.queryIdentityA === right.queryIdentityA &&
+      left.queryIdentityB === right.queryIdentityB &&
+      left.queryIdentityC === right.queryIdentityC &&
+      left.queryVersion === right.queryVersion &&
+      left.viewProvenance === right.viewProvenance &&
+      left.logicalOriginX === right.logicalOriginX &&
+      left.logicalOriginTopY === right.logicalOriginTopY &&
+      left.logicalWidth === right.logicalWidth &&
+      left.logicalHeight === right.logicalHeight &&
+      left.pixelX === right.pixelX &&
+      left.pixelY === right.pixelY &&
+      left.device === right.device &&
+      left.resourceGeneration === right.resourceGeneration &&
+      left.attachmentGeneration === right.attachmentGeneration &&
+      left.colorTexture === right.colorTexture
+    );
+  }
+
+  private _centerPixelIdentityIsCurrent(
+    identity: CenterPixelReadbackIdentity,
+  ): boolean {
+    if (
+      this._isDestroyed ||
+      this._context._device !== identity.device ||
+      this._device !== identity.device ||
+      this._attachmentDevice !== identity.device ||
+      getPickResourceGeneration(this._context) !==
+        identity.resourceGeneration ||
+      this._attachmentResourceGeneration !== identity.resourceGeneration ||
+      this._attachmentGeneration !== identity.attachmentGeneration ||
+      this._colorTexture !== identity.colorTexture
+    ) {
+      return false;
+    }
+    if (identity.domain !== "voxel") {
+      return true;
+    }
+    const lifecycle = identity.queryIdentityB as
+      | {
+          atlasReuseEpoch?: unknown;
+          detached?: boolean;
+          device?: unknown;
+          resourceGeneration?: unknown;
+          contentRevision?: unknown;
+        }
+      | undefined;
+    return (
+      identity.queryIdentityA !== undefined &&
+      lifecycle !== undefined &&
+      lifecycle?.detached !== true &&
+      lifecycle.device === identity.device &&
+      lifecycle.resourceGeneration === identity.resourceGeneration &&
+      lifecycle.atlasReuseEpoch === identity.queryVersion &&
+      lifecycle.contentRevision === identity.queryIdentityC
+    );
+  }
+
+  private _finishCenterPixelRequest(requestSequence: number): void {
+    if (this._centerPendingRequestSequence === requestSequence) {
+      this._centerPendingRequestSequence = -1;
+      this._centerPendingIdentity = null;
+    }
   }
 
   /**
@@ -860,34 +1031,30 @@ export class WebGPUPickFramebuffer {
    * given texture coordinate, caching it for the next synchronous
    * readCenterPixel() call. NEW-PICK-METADATA-READBACK (Batch 285).
    *
-   * Uses a fresh staging buffer per readback (destroyed after unmap) so it
-   * never collides with the color-path `_stagingBuffer` used by end()/
-   * endAsync(), and so an in-flight readback can't be re-read mid-write
-   * (the `_centerReadbackInFlight` guard enforces the latter).
+   * Uses a fresh staging buffer per readback (destroyed after unmap), so
+   * different typed queries may overlap safely. Monotonic request identity
+   * prevents an older completion from publishing over a newer request.
    */
-  private _readCenterPixelAsync(x: number, y: number): void {
-    const device = this._device;
-    const colorTexture = this._colorTexture;
-    if (!device || !colorTexture) {
+  private _readCenterPixelAsync(identity: CenterPixelReadbackIdentity): void {
+    if (!this._centerPixelIdentityIsCurrent(identity)) {
       return;
     }
-
-    // Re-entrancy guard: a readback is still mapping/mapped — don't submit a
-    // second copy nor read the half-written buffer. The current cached value
-    // (if any) is returned by the caller; this query converges next frame.
-    if (this._centerReadbackInFlight) {
+    if (
+      this._centerPendingIdentity &&
+      this._centerPixelIdentitiesEqual(this._centerPendingIdentity, identity)
+    ) {
       return;
     }
-
-    const px = Math.max(0, Math.min(Math.floor(x), this._width - 1));
-    const py = Math.max(0, Math.min(Math.floor(y), this._height - 1));
 
     // Stamp with the CURRENT pick count — the pixel decoded below corresponds
     // to the metadata/voxel pass that rendered into `_colorTexture` this pick.
     const requestStamp = this._updateCount;
     const bgra = this._colorFormat === "bgra8unorm";
-
-    this._centerReadbackInFlight = true;
+    const requestSequence = this._nextCenterReadbackSequence++;
+    this._latestCenterReadbackSequence = requestSequence;
+    this._centerPendingRequestSequence = requestSequence;
+    this._centerPendingIdentity = identity;
+    const { device, colorTexture } = identity;
 
     let stagingBuffer: GPUBuffer | null = null;
     try {
@@ -903,7 +1070,7 @@ export class WebGPUPickFramebuffer {
       encoder.copyTextureToBuffer(
         {
           texture: colorTexture,
-          origin: [px, py, 0],
+          origin: [identity.pixelX, identity.pixelY, 0],
         },
         {
           buffer: stagingBuffer,
@@ -918,36 +1085,44 @@ export class WebGPUPickFramebuffer {
       buffer
         .mapAsync(GPUMapMode.READ, 0, 4)
         .then(() => {
-          if (this._isDestroyed) {
+          try {
+            if (
+              requestSequence !== this._latestCenterReadbackSequence ||
+              !this._centerPixelIdentityIsCurrent(identity)
+            ) {
+              return;
+            }
+            const data = new Uint8Array(buffer.getMappedRange(0, 4));
+            // Normalize to [R,G,B,A] regardless of the texture's byte order so
+            // downstream decoders see the same layout as WebGL readPixels.
+            const value = bgra
+              ? new Uint8Array([data[2], data[1], data[0], data[3]])
+              : new Uint8Array([data[0], data[1], data[2], data[3]]);
+            this._centerPixelCache = {
+              ...identity,
+              value,
+              stamp: requestStamp,
+              requestSequence,
+            };
+          } finally {
+            try {
+              buffer.unmap();
+            } catch {
+              // Teardown may destroy a mapped buffer before this callback.
+            }
             buffer.destroy();
-            this._centerReadbackInFlight = false;
-            return;
+            this._finishCenterPixelRequest(requestSequence);
           }
-          const data = new Uint8Array(buffer.getMappedRange(0, 4));
-          // Normalize to [R,G,B,A] regardless of the texture's byte order so
-          // downstream decoders (MetadataPicking, voxel tile/sample unpack)
-          // see the same layout the WebGL readPixels path produces.
-          const value = bgra
-            ? new Uint8Array([data[2], data[1], data[0], data[3]])
-            : new Uint8Array([data[0], data[1], data[2], data[3]]);
-          buffer.unmap();
-          buffer.destroy();
-
-          this._centerPixelValue = value;
-          this._centerPixelX = x;
-          this._centerPixelY = y;
-          this._centerPixelStamp = requestStamp;
-          this._centerReadbackInFlight = false;
         })
         .catch(() => {
           buffer.destroy();
-          this._centerReadbackInFlight = false;
+          this._finishCenterPixelRequest(requestSequence);
         });
     } catch {
       if (stagingBuffer) {
         stagingBuffer.destroy();
       }
-      this._centerReadbackInFlight = false;
+      this._finishCenterPixelRequest(requestSequence);
     }
   }
 
@@ -1024,9 +1199,19 @@ export class WebGPUPickFramebuffer {
     if (!stagingBuffer) {
       return;
     }
-    const encoder = device.createCommandEncoder({
-      label: "Pick readback encoder (async)",
-    });
+    const frameContext = this._context as CesiumGraphicsContext & {
+      currentCommandEncoder?: GPUCommandEncoder | null;
+      enqueueAfterFrameSubmit?: (
+        callback: (submitted: boolean) => void,
+      ) => boolean;
+    };
+    const encoder = frameContext.currentCommandEncoder;
+    if (
+      !encoder ||
+      typeof frameContext.enqueueAfterFrameSubmit !== "function"
+    ) {
+      return;
+    }
 
     encoder.copyTextureToBuffer(
       {
@@ -1044,54 +1229,61 @@ export class WebGPUPickFramebuffer {
       [region.copyWidth, region.copyHeight],
     );
 
-    device.queue.submit([encoder.finish()]);
-
-    // Fire-and-forget async mapping — result will be used next frame.
-    // The destroyed-guard catches the tab-close / viewer-teardown race
-    // where destroy() runs between mapAsync() initiation and resolution
-    // (would otherwise throw "cannot read getMappedRange of destroyed
-    // buffer" on the unmap path).
-    this._readbackInFlight = true;
-    stagingBuffer
-      .mapAsync(GPUMapMode.READ)
-      .then(() => {
-        try {
-          if (
-            this._isDestroyed ||
-            this._stagingBuffer !== stagingBuffer ||
-            this._stagingBufferDevice !== device ||
-            this._device !== device ||
-            this._colorTexture !== colorTexture
-          ) {
-            // The attachment/device generation changed while the copy was in
-            // flight. Its bytes must not warm the shared synchronous cache for
-            // the replacement target.
-            return;
-          }
-
-          const mappedData = new Uint8Array(stagingBuffer.getMappedRange());
-          const pixels = unpackPickPixels(mappedData, bytesPerRow, region);
-          this._publishReadbackCache(
-            pixels,
-            region,
-            requestSequence,
-            device,
-            colorTexture,
-          );
-        } finally {
-          try {
-            stagingBuffer.unmap();
-          } catch {
-            // A destroyed buffer cannot be unmapped; teardown already owns it.
-          }
-          this._readbackInFlight = false;
-        }
-      })
-      .catch(() => {
-        // A map or unpack failure is non-authoritative for synchronous pick.
-        // The `then` finally above already unmapped when mapping succeeded.
+    // The copy belongs to the SAME encoder as the pick draw. Starting a
+    // private submit here would run before Picking.completePickFrame submits
+    // that encoder, copying the previous pass's bytes and falsely labelling
+    // them with this request's view provenance. Map only after endFrame has
+    // submitted the draw+copy command buffer in-order.
+    const accepted = frameContext.enqueueAfterFrameSubmit((submitted) => {
+      if (!submitted) {
         this._readbackInFlight = false;
-      });
+        return;
+      }
+
+      // Fire-and-forget async mapping — result will be used by a later
+      // synchronous pick. The destroyed guard catches the tab-close /
+      // viewer-teardown race between mapAsync and resolution.
+      stagingBuffer
+        .mapAsync(GPUMapMode.READ)
+        .then(() => {
+          try {
+            if (
+              this._isDestroyed ||
+              this._stagingBuffer !== stagingBuffer ||
+              this._stagingBufferDevice !== device ||
+              this._device !== device ||
+              this._colorTexture !== colorTexture
+            ) {
+              // The attachment/device generation changed while the copy was
+              // in flight. Its bytes cannot warm the replacement target.
+              return;
+            }
+
+            const mappedData = new Uint8Array(stagingBuffer.getMappedRange());
+            const pixels = unpackPickPixels(mappedData, bytesPerRow, region);
+            this._publishReadbackCache(
+              pixels,
+              region,
+              requestSequence,
+              device,
+              colorTexture,
+            );
+          } finally {
+            try {
+              stagingBuffer.unmap();
+            } catch {
+              // A destroyed buffer cannot be unmapped; teardown already owns it.
+            }
+            this._readbackInFlight = false;
+          }
+        })
+        .catch(() => {
+          // A map or unpack failure is non-authoritative for synchronous pick.
+          // The `then` finally above already unmapped when mapping succeeded.
+          this._readbackInFlight = false;
+        });
+    });
+    this._readbackInFlight = accepted;
   }
 
   /**
@@ -1326,7 +1518,18 @@ export class WebGPUPickFramebuffer {
     return this._featureIdTexture?.outputView ?? null;
   }
 
+  private _invalidateCenterPixelReadback(): void {
+    this._centerPixelCache = null;
+    this._centerPendingIdentity = null;
+    this._centerPendingRequestSequence = -1;
+    // Reserve a sequence that no outstanding request captured. Older
+    // completions then fail the latest-request check without touching state
+    // belonging to a replacement attachment.
+    this._latestCenterReadbackSequence = this._nextCenterReadbackSequence++;
+  }
+
   private _destroyTextures(): void {
+    this._invalidateCenterPixelReadback();
     if (this._colorTexture) {
       this._colorTexture.destroy();
       this._colorTexture = null;
@@ -1351,6 +1554,7 @@ export class WebGPUPickFramebuffer {
     this._classificationDepthView = null;
     this._classificationDepthPlaceholderView = null;
     this._attachmentDevice = null;
+    this._attachmentResourceGeneration = -1;
     this._colorView = null;
     this._depthView = null;
     // Cached bytes belong to the destroyed color target/format and cannot be
@@ -1384,11 +1588,6 @@ export class WebGPUPickFramebuffer {
     this._depthStagingBufferDevice = null;
     this._lastReadPixels = null;
     this._lastReadRegion = null;
-    // NEW-PICK-METADATA-READBACK — drop the center cache so a destroyed FBO
-    // can't hand a stale pixel to a new pick after recreation. Any in-flight
-    // center readback hits the `_isDestroyed` guard in its .then().
-    this._centerPixelValue = null;
-    this._centerReadbackInFlight = false;
     // R-2b UNIFIED-FEATURE-ID-TEXTURE — release the resolve helper's output
     // texture + pipeline if one was ever constructed.
     if (this._featureIdTexture) {

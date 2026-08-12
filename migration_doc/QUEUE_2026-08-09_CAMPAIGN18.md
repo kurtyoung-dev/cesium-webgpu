@@ -169,6 +169,21 @@ real-world usage (3D Tiles PNTS) silently loses features on WebGPU.
 | `C18-P4` | PNTS model path: EDL routing (the silent no-op) | Tileset eye-dome lighting is **silently inert** on WebGPU — only `_edlSource`-tagged commands are recorded by the EDL processor, so `pointCloudShading.eyeDomeLighting` changes nothing and warns nothing. Route the model-path commands through the existing offscreen EDL path (which is already near-parity on the dedicated path). **`C18-P3` + `C18-P4` together discharge `PNTS-MODEL-PATH-EDL-INERT`** (filed 2026-08-09, an L cluster row). | Enabling `eyeDomeLighting` on a PNTS tileset changes WebGPU pixels and matches WebGL within the gate; a counter proves the tileset's commands are actually recorded by the EDL processor (the inertness canary — a pixel test alone cannot distinguish "inert" from "subtle"); OFF leg byte-identical. | M | `C18-P3` |
 | `C18-P5` | Dedicated-path Draco: the silent permanent hang | A Draco-compressed `TimeDynamicPointCloud` **never renders and never reports ready** on WebGPU — the dedicated path lacks the decode step the model path has, and there is no error surface at all. **Discharges `POINTCLOUD-TIMEDYNAMIC-DRACO-HANG`** (filed 2026-08-09). | A Draco-compressed `TimeDynamicPointCloud` reaches ready and renders on WebGPU at cross-backend parity within the gate; the probe asserts readiness under a bounded timeout so a regression to the hang fails loudly instead of silently; the shared CPU decode is reused, not forked. | M | `C18-V1` |
 
+**Mixed implementation checkpoint — 2026-08-09 through 2026-08-12 (terminal gates remain).**
+
+- `C18-V2` harness identity now binds a setup scene to the SHA-256 of the exact
+  UTF-8 source executed by the browser. Promotion rechecks that Git is clean at
+  the same source commit immediately before writing, while the stored commit is
+  treated as capture provenance so a committed baseline remains usable. Scenes
+  without setup files retain their legacy identity shape. Policy contracts are
+  **21/21**; the Edge promotion and non-vacuity mutations remain the row's gate.
+- `C18-V2` **implementation landed Batch 1028 (2026-08-12; browser closure
+  remains open):** owner-scoped WebGPU voxel readiness now requires real root upload,
+  color/pick pipelines and a usable command before `VoxelPrimitive.ready`
+  publishes through `afterRender`. The paired offline voxel probe passes at
+  **0.986 IoU**, color L1 **0**, with all sampled cells correct and zero errors.
+  Baseline promotion and non-vacuity mutations still own closure.
+
 **Recorded but deliberately NOT rowed here.** The audit's §2b table also shows
 `normalShading` / `backFaceCulling` unsupported on the dedicated path (no
 normals in the 40-byte layout). It is neither in the audit's ranked §3 gap list
@@ -344,7 +359,7 @@ gated); LiDAR-surfel rendering through the splat renderer (M, post-G8).
 | ID | Wave | Size | Status |
 |---|---|---|---|
 | `C18-V1` | V | S | **DONE** — 15 probes fixed, not 3 (see the row); fleet-wide anchor + scanner-blindness fix landed; spec 32 → 47 tests |
-| `C18-V2` | V | S | ★ **IN FLIGHT — diagnosis dispatched and LANDED at Batch 1013; the row does NOT close on it.** *(State added 2026-08-09, handover audit FIX 34 — the ledger had no IN FLIGHT vocabulary, so an active dispatch was invisible.)* **First scene run stamped at Batch 1011:** gsplat clean at **0.41%**; the point-cloud **tint DID NOT MANIFEST** — the pre-registered expectation was UNMET *in the surprising direction* — and the voxel scene reached structural at readiness. **The investigation that surprise triggered landed at Batch 1013 and its verdict is that the point-cloud tint is WebGPU NON-DETERMINISM** (1 of 4 captures; WebGL invariant; the "metric blindness" hypothesis REFUTED by replay at 3.2–3.5% vs 2.0%), plus a separate engine-parity defect FILED: **`VoxelPrimitive.ready` is a WebGL-only signal.** Scene readiness fixed; policy spec 17/17. **NEXT: the certifying Edge run of all three scenes on a build carrying the readiness fix.** ~~READY-PENDING-RUN — 2026-08-09.~~ Three scenes + one shared generator + the `expectedMismatch` mechanism are in the tree and spec-covered (policy spec 10 -> 16). The Edge run, the baseline captures and the per-scene non-vacuity mutations are the orchestrator's and have NOT executed; the row is not DONE until they have |
+| `C18-V2` | V | S | ★ **IN FLIGHT — readiness/pick lifecycle implementation LANDED Batch 1028; browser closure remains open.** Batch 1011's first scene run found the voxel readiness structural; Batch 1013 diagnosed it and the separate point-cloud tint nondeterminism. Batch 1028 now publishes `VoxelPrimitive.ready` only after real root upload plus usable color/pick commands, binds async pick identity to the exact owner/device/atlas generation, treats cold/all-255 readback as invalid, preserves ancestor fallback on descendant failures, and surfaces mandatory root failures once without cleanup masking them. Focused lifecycle/pick contracts are **21/21**; adjacent public-correctness contracts are **26/26**. **NEXT:** rebuild, run all three certifying Edge scenes, promote/review baselines, and execute every per-scene non-vacuity mutation. The row remains open until those gates pass. |
 | `C18-V3` | V | S | PENDING |
 | `C18-P1` | P | M | PENDING |
 | `C18-P2` | P | M | PENDING |

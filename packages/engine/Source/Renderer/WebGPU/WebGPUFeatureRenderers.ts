@@ -712,10 +712,12 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
       const mod = await import("./WebGPUVoxelRenderer.js");
       return {
         update: mod.updateWebGPUVoxelPrimitive,
+        isReady: mod.isWebGPUVoxelPrimitiveReady,
         destroy: mod.destroyWebGPUVoxelResources,
         // C-R9-VOXEL-CELL-PICK-TAIL — resolves the root keyframe node for
         // Scene.pickVoxel's VoxelCell construction (WebGPU has no CPU traversal).
         getPickKeyframeNode: mod.getVoxelPickKeyframeNode,
+        getPickReadbackIdentity: mod.getVoxelPickReadbackIdentity,
       };
     },
   );

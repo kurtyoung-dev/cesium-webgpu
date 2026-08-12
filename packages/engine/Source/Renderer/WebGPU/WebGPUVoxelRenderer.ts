@@ -64,10 +64,25 @@ import type {
 // that replaces the placeholder gradient when a voxel provider is present.
 import {
   createVoxelDataUploadState,
+  destroyVoxelDataUploadState,
+  isVoxelDataUploadSlotPickSafe,
   tryUploadRootVoxelTile,
   tryUploadChildVoxelTiles,
   type VoxelDataUploadState,
 } from "./WebGPUVoxelDataUpload.js";
+import {
+  captureVoxelResourceLifecycleToken,
+  createVoxelAsyncFailureState,
+  createVoxelResourceLifecycle,
+  detachVoxelResourceLifecycle,
+  isVoxelResourceLifecycleCurrent,
+  isVoxelResourceLifecycleTokenCurrent,
+  recordVoxelAsyncFailure,
+  resetVoxelAsyncFailure,
+  takeVoxelAsyncFailure,
+  type VoxelAsyncFailureState,
+  type VoxelResourceLifecycle,
+} from "./WebGPUVoxelResourceLifecycle.js";
 // VOXEL-USER-CUSTOMSHADER — per-primitive WGSL codegen for a USER-supplied
 // native-WGSL voxel CustomShader (the voxel sibling of the model path's
 // CustomShaderWGSLPipelineStage). GLSL-only voxel customShaders keep the
@@ -99,6 +114,11 @@ function getVoxelShaderModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
 }
 
 interface VoxelCache {
+  owner: CesiumObjectWithWebGPUCache;
+  context: CesiumGraphicsContext;
+  device: GPUDevice;
+  resourceGeneration: number;
+  lifecycle: VoxelResourceLifecycle;
   uniformBuffer: GPUBuffer | null;
   pipeline: GPURenderPipeline | null;
   pickPipeline: GPURenderPipeline | null;
@@ -116,6 +136,9 @@ interface VoxelCache {
   // asynchronously from `WebGPURenderPipelineCache.getPipeline()`. Track
   // whether the request is in flight so we don't re-issue it every frame.
   pipelineRequestPending: boolean;
+  pipelineRequestSerial: number;
+  pipelineFailure: VoxelAsyncFailureState;
+  pipelineFailureReported: boolean;
   colorDescriptor: WebGPURenderPipelineDescriptor | null;
   pickDescriptor: WebGPURenderPipelineDescriptor | null;
 
@@ -127,6 +150,8 @@ interface VoxelCache {
   velocityPipeline: GPURenderPipeline | null;
   velocityDescriptor: WebGPURenderPipelineDescriptor | null;
   velocityPipelineRequestPending: boolean;
+  velocityPipelineRequestSerial: number;
+  velocityPipelineFailure: VoxelAsyncFailureState;
 
   // PARITY-VOXEL-MEGATEXTURE-UPLOAD (increment 1) — one-time async state
   // machine that requests the ROOT voxel tile and uploads its real property
@@ -171,6 +196,8 @@ interface VoxelCache {
   pickVoxelPipeline: GPURenderPipeline | null;
   pickVoxelDescriptor: WebGPURenderPipelineDescriptor | null;
   pickVoxelPipelineRequestPending: boolean;
+  pickVoxelPipelineRequestSerial: number;
+  pickVoxelPipelineFailure: VoxelAsyncFailureState;
   pickVoxelCommand: CesiumAnyDrawCommand | null;
 }
 
@@ -2401,6 +2428,177 @@ function createPlaceholderVoxelTexture(device: GPUDevice): {
   return { texture, view: texture.createView() };
 }
 
+function getVoxelContextResourceGeneration(
+  context: CesiumGraphicsContext,
+): number {
+  return (
+    (context as unknown as { resourceGeneration?: number })
+      .resourceGeneration ?? 0
+  );
+}
+
+function isVoxelCacheLive(cache: VoxelCache): boolean {
+  const contextDevice = (cache.context as unknown as { device?: GPUDevice })
+    .device;
+  return (
+    cache.owner._webgpuCache === cache &&
+    contextDevice === cache.device &&
+    isVoxelResourceLifecycleCurrent(
+      cache.lifecycle,
+      contextDevice,
+      getVoxelContextResourceGeneration(cache.context),
+    )
+  );
+}
+
+function recordVoxelPipelineFailure(
+  cache: VoxelCache,
+  lifecycleToken: number,
+  failure: VoxelAsyncFailureState,
+  label: string,
+  reason: unknown,
+): void {
+  const detail =
+    reason instanceof Error
+      ? `: ${reason.message}`
+      : typeof reason === "string"
+        ? `: ${reason}`
+        : "";
+  const failureReason = new Error(
+    `WebGPU voxel ${label} pipeline failed to compile${detail}`,
+    { cause: reason },
+  );
+  const error = recordVoxelAsyncFailure(
+    cache.lifecycle,
+    lifecycleToken,
+    failure,
+    failureReason,
+  );
+  if (error) {
+    cache.context.log(
+      "error",
+      `VoxelPrimitive ${label} pipeline creation failed: ${error.message}`,
+    );
+  }
+}
+
+function throwUnreportedVoxelPrimaryPipelineFailure(cache: VoxelCache): void {
+  const error = cache.pipelineFailure.error;
+  if (error && !cache.pipelineFailureReported) {
+    cache.pipelineFailureReported = true;
+    throw error;
+  }
+}
+
+function throwUnreportedVoxelRootUploadFailure(cache: VoxelCache): void {
+  const failure = cache.dataUpload
+    ? takeVoxelAsyncFailure(cache.dataUpload.rootFailure)
+    : null;
+  if (failure) {
+    throw failure;
+  }
+}
+
+function createVoxelCache(
+  owner: CesiumObjectWithWebGPUCache,
+  context: CesiumGraphicsContext,
+  device: GPUDevice,
+  resourceGeneration: number,
+): VoxelCache {
+  return {
+    owner,
+    context,
+    device,
+    resourceGeneration,
+    lifecycle: createVoxelResourceLifecycle(device, resourceGeneration),
+    uniformBuffer: null,
+    pipeline: null,
+    pickPipeline: null,
+    shaderModule: null,
+    bindGroup: null,
+    vertexBuffer: null,
+    indexBuffer: null,
+    voxelTexture: null,
+    voxelTextureView: null,
+    sampler: null,
+    command: null,
+    pickCommand: null,
+    initialized: false,
+    pipelineRequestPending: false,
+    pipelineRequestSerial: 0,
+    pipelineFailure: createVoxelAsyncFailureState(),
+    pipelineFailureReported: false,
+    colorDescriptor: null,
+    pickDescriptor: null,
+    velocityPipeline: null,
+    velocityDescriptor: null,
+    velocityPipelineRequestPending: false,
+    velocityPipelineRequestSerial: 0,
+    velocityPipelineFailure: createVoxelAsyncFailureState(),
+    dataUpload: null,
+    usingRealData: false,
+    bindGroupLayout: null,
+    pipelineLayout: null,
+    colorModuleCustomShader: null,
+    userShaderRef: null,
+    userShaderInfo: null,
+    pickVoxelPipeline: null,
+    pickVoxelDescriptor: null,
+    pickVoxelPipelineRequestPending: false,
+    pickVoxelPipelineRequestSerial: 0,
+    pickVoxelPipelineFailure: createVoxelAsyncFailureState(),
+    pickVoxelCommand: null,
+  };
+}
+
+function destroyVoxelInitializationResources(cache: VoxelCache): void {
+  cache.uniformBuffer?.destroy();
+  cache.vertexBuffer?.destroy();
+  cache.indexBuffer?.destroy();
+  cache.voxelTexture?.destroy();
+  cache.uniformBuffer = null;
+  cache.vertexBuffer = null;
+  cache.indexBuffer = null;
+  cache.voxelTexture = null;
+  cache.voxelTextureView = null;
+  cache.sampler = null;
+  cache.bindGroup = null;
+  cache.bindGroupLayout = null;
+  cache.pipelineLayout = null;
+  cache.shaderModule = null;
+  cache.colorModuleCustomShader = null;
+  cache.command = null;
+  cache.pickCommand = null;
+  cache.pickVoxelCommand = null;
+  cache.initialized = false;
+}
+
+function destroyVoxelCache(
+  primitive: CesiumObjectWithWebGPUCache,
+  cache: VoxelCache,
+): void {
+  // Retire the epoch before destroying anything. In-flight pipeline/content
+  // promises can finish later, but none can publish into this cache again.
+  if (cache.dataUpload) {
+    destroyVoxelDataUploadState(cache.dataUpload);
+  } else {
+    detachVoxelResourceLifecycle(cache.lifecycle);
+  }
+  cache.pipelineRequestSerial++;
+  cache.velocityPipelineRequestSerial++;
+  cache.pickVoxelPipelineRequestSerial++;
+  cache.pipelineRequestPending = false;
+  cache.velocityPipelineRequestPending = false;
+  cache.pickVoxelPipelineRequestPending = false;
+
+  destroyVoxelInitializationResources(cache);
+
+  destroyPickIds(primitive as unknown as SinglePickIdCache);
+  if (primitive._webgpuCache === cache) {
+    primitive._webgpuCache = undefined;
+  }
+}
+
 /**
  * Resolve the color + pick pipelines through the central pipeline cache.
  * If the cache is unavailable, falls back to direct
@@ -2421,6 +2619,9 @@ function tryResolveVoxelPipelines(
   if (cache.pipeline && cache.pickPipeline) {
     return true;
   }
+  if (cache.pipelineFailure.error) {
+    return false;
+  }
   const colorDesc = cache.colorDescriptor;
   const pickDesc = cache.pickDescriptor;
   if (!colorDesc || !pickDesc) {
@@ -2438,26 +2639,72 @@ function tryResolveVoxelPipelines(
     }
     if (!cache.pipelineRequestPending) {
       cache.pipelineRequestPending = true;
+      const lifecycleToken = captureVoxelResourceLifecycleToken(
+        cache.lifecycle,
+      );
+      const requestSerial = ++cache.pipelineRequestSerial;
       Promise.all([
         pipelineCache.getPipeline(colorDesc),
         pipelineCache.getPipeline(pickDesc),
       ])
         .then(([color, pick]) => {
+          if (
+            !isVoxelCacheLive(cache) ||
+            !isVoxelResourceLifecycleTokenCurrent(
+              cache.lifecycle,
+              lifecycleToken,
+            ) ||
+            cache.pipelineRequestSerial !== requestSerial
+          ) {
+            return;
+          }
           cache.pipeline = color;
           cache.pickPipeline = pick;
           cache.pipelineRequestPending = false;
         })
-        .catch(() => {
-          cache.pipelineRequestPending = false;
+        .catch((reason: unknown) => {
+          if (
+            isVoxelCacheLive(cache) &&
+            isVoxelResourceLifecycleTokenCurrent(
+              cache.lifecycle,
+              lifecycleToken,
+            ) &&
+            cache.pipelineRequestSerial === requestSerial
+          ) {
+            cache.pipelineRequestPending = false;
+            recordVoxelPipelineFailure(
+              cache,
+              lifecycleToken,
+              cache.pipelineFailure,
+              "color/object-pick",
+              reason,
+            );
+          }
         });
     }
     return false;
   }
 
   // Fallback: no central cache. Mirror the historical synchronous path.
-  cache.pipeline = device.createRenderPipeline(toGPUDescriptor(colorDesc));
-  cache.pickPipeline = device.createRenderPipeline(toGPUDescriptor(pickDesc));
-  return true;
+  const lifecycleToken = captureVoxelResourceLifecycleToken(cache.lifecycle);
+  try {
+    const colorPipeline = device.createRenderPipeline(
+      toGPUDescriptor(colorDesc),
+    );
+    const pickPipeline = device.createRenderPipeline(toGPUDescriptor(pickDesc));
+    cache.pipeline = colorPipeline;
+    cache.pickPipeline = pickPipeline;
+    return true;
+  } catch (reason) {
+    recordVoxelPipelineFailure(
+      cache,
+      lifecycleToken,
+      cache.pipelineFailure,
+      "color/object-pick",
+      reason,
+    );
+    return false;
+  }
 }
 
 function toGPUDescriptor(
@@ -2491,6 +2738,22 @@ function updateWebGPUVoxelPrimitive(
   const context = frameState.context;
   const device: GPUDevice = context.device;
   const commandList = frameState.commandList;
+  const resourceGeneration = getVoxelContextResourceGeneration(context);
+
+  let cache = primitive._webgpuCache as VoxelCache | undefined;
+  if (
+    cache &&
+    !isVoxelResourceLifecycleCurrent(
+      cache.lifecycle,
+      device,
+      resourceGeneration,
+    )
+  ) {
+    // Device recovery can occur while the owner is hidden. Invalidate before
+    // the show early-return so stale resources/content never remain "ready".
+    destroyVoxelCache(primitive, cache);
+    cache = undefined;
+  }
 
   if (!primitive.show) {
     return;
@@ -2505,47 +2768,10 @@ function updateWebGPUVoxelPrimitive(
   // pipelines never see this define, so their depth behaviour is unchanged.
   const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
 
-  if (!primitive._webgpuCache) {
-    primitive._webgpuCache = {
-      uniformBuffer: null,
-      pipeline: null,
-      pickPipeline: null,
-      shaderModule: null,
-      bindGroup: null,
-      vertexBuffer: null,
-      indexBuffer: null,
-      voxelTexture: null,
-      voxelTextureView: null,
-      sampler: null,
-      command: null,
-      pickCommand: null,
-      initialized: false,
-      pipelineRequestPending: false,
-      colorDescriptor: null,
-      pickDescriptor: null,
-      // Batch 173 - velocity slots (lazy, allocated when TAA is on).
-      velocityPipeline: null,
-      velocityDescriptor: null,
-      velocityPipelineRequestPending: false,
-      // PARITY-VOXEL-MEGATEXTURE-UPLOAD (increment 1) — real-data upload state.
-      dataUpload: null,
-      usingRealData: false,
-      bindGroupLayout: null,
-      // PARITY-VOXEL-COLOR-PARITY — color-parity pipeline rebuild slots.
-      pipelineLayout: null,
-      colorModuleCustomShader: null,
-      // VOXEL-USER-CUSTOMSHADER — user native-WGSL customShader slots.
-      userShaderRef: null,
-      userShaderInfo: null,
-      // C-R9-VOXEL-CELL-PICK — per-cell pick slots (lazy, real-data only).
-      pickVoxelPipeline: null,
-      pickVoxelDescriptor: null,
-      pickVoxelPipelineRequestPending: false,
-      pickVoxelCommand: null,
-    } as VoxelCache;
+  if (!cache) {
+    cache = createVoxelCache(primitive, context, device, resourceGeneration);
+    primitive._webgpuCache = cache;
   }
-
-  const cache = primitive._webgpuCache as VoxelCache;
   // Batch 110 — voxels draw into scene FB; use scenePipelineFormat.
   const canvasFormat: GPUTextureFormat =
     (
@@ -2597,12 +2823,18 @@ function updateWebGPUVoxelPrimitive(
       (prevSampleCount !== undefined && prevSampleCount !== sceneSampleCount) ||
       (prevPickLog !== undefined && prevPickLog !== pickLogActive))
   ) {
-    cache.initialized = false;
+    // Format/MSAA/pick-log changes only retire the descriptor-facing owner
+    // resources. The real voxel atlas/content remains valid on this exact
+    // device generation and is rebound after initialization below.
+    destroyVoxelInitializationResources(cache);
     cache.pipeline = null;
     cache.pickPipeline = null;
     cache.colorDescriptor = null;
     cache.pickDescriptor = null;
     cache.pipelineRequestPending = false;
+    cache.pipelineRequestSerial++;
+    resetVoxelAsyncFailure(cache.pipelineFailure);
+    cache.pipelineFailureReported = false;
     cache.command = null;
     cache.pickCommand = null;
     // Batch 173 - velocity pipeline references the same shader module
@@ -2610,10 +2842,14 @@ function updateWebGPUVoxelPrimitive(
     cache.velocityPipeline = null;
     cache.velocityDescriptor = null;
     cache.velocityPipelineRequestPending = false;
+    cache.velocityPipelineRequestSerial++;
+    resetVoxelAsyncFailure(cache.velocityPipelineFailure);
     // C-R9-VOXEL-CELL-PICK — same treatment for the per-cell pick variant.
     cache.pickVoxelPipeline = null;
     cache.pickVoxelDescriptor = null;
     cache.pickVoxelPipelineRequestPending = false;
+    cache.pickVoxelPipelineRequestSerial++;
+    resetVoxelAsyncFailure(cache.pickVoxelPipelineFailure);
     cache.pickVoxelCommand = null;
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
@@ -2906,39 +3142,34 @@ function updateWebGPUVoxelPrimitive(
   // ray-march WGSL is unchanged — only the 3D texture SOURCE changes.
   if (!cache.usingRealData) {
     if (!cache.dataUpload) {
-      cache.dataUpload = createVoxelDataUploadState();
+      cache.dataUpload = createVoxelDataUploadState(cache.lifecycle);
     }
-    const uploaded = tryUploadRootVoxelTile(
-      device,
-      primitive,
-      frameState,
-      cache.dataUpload,
-    );
-    if (
-      uploaded &&
-      cache.dataUpload.view &&
-      cache.bindGroupLayout &&
-      cache.uniformBuffer &&
-      cache.sampler
-    ) {
-      cache.voxelTextureView = cache.dataUpload.view;
-      cache.bindGroup = device.createBindGroup({
-        label: "Voxel bind group (real data)",
-        layout: cache.bindGroupLayout,
-        entries: [
-          { binding: 0, resource: { buffer: cache.uniformBuffer } },
-          { binding: 1, resource: cache.dataUpload.view },
-          { binding: 2, resource: cache.sampler },
-        ],
-      });
-      // Force the cached commands to pick up the rebuilt bind group at slot 0.
-      cache.command = null;
-      cache.pickCommand = null;
-      // C-R9-VOXEL-CELL-PICK — cannot exist before usingRealData, but reset
-      // for symmetry so a future multi-upload path rebinds it too.
-      cache.pickVoxelCommand = null;
-      cache.usingRealData = true;
-    }
+    tryUploadRootVoxelTile(device, primitive, frameState, cache.dataUpload);
+  }
+  throwUnreportedVoxelRootUploadFailure(cache);
+  const realDataView = cache.dataUpload?.view ?? null;
+  if (
+    realDataView &&
+    cache.voxelTextureView !== realDataView &&
+    cache.bindGroupLayout &&
+    cache.uniformBuffer &&
+    cache.sampler
+  ) {
+    cache.voxelTextureView = realDataView;
+    cache.bindGroup = device.createBindGroup({
+      label: "Voxel bind group (real data)",
+      layout: cache.bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: cache.uniformBuffer } },
+        { binding: 1, resource: realDataView },
+        { binding: 2, resource: cache.sampler },
+      ],
+    });
+    // Force the cached commands to pick up the rebuilt bind group at slot 0.
+    cache.command = null;
+    cache.pickCommand = null;
+    cache.pickVoxelCommand = null;
+    cache.usingRealData = true;
   }
 
   // VOXEL-OCTREE-LOD — once the root is bound, drive the asynchronous
@@ -3042,6 +3273,9 @@ function updateWebGPUVoxelPrimitive(
       // leaving it stale would keep drawing with the old raw-texel pipeline).
       cache.pipeline = null;
       cache.pipelineRequestPending = false;
+      cache.pipelineRequestSerial++;
+      resetVoxelAsyncFailure(cache.pipelineFailure);
+      cache.pipelineFailureReported = false;
       cache.command = null;
     }
 
@@ -3105,6 +3339,8 @@ function updateWebGPUVoxelPrimitive(
         // descriptor (the command captures the pipeline at construction).
         cache.pickVoxelPipeline = null;
         cache.pickVoxelPipelineRequestPending = false;
+        cache.pickVoxelPipelineRequestSerial++;
+        resetVoxelAsyncFailure(cache.pickVoxelPipelineFailure);
         cache.pickVoxelCommand = null;
       }
     }
@@ -3113,6 +3349,9 @@ function updateWebGPUVoxelPrimitive(
   // C-R7-RENDERER-MIGRATION (Batch 72) — resolve color + pick pipelines
   // through the central cache. Skip the draw on not-yet-ready frames so
   // we never enqueue commands with null pipelines.
+  // Check after format/custom-shader invalidation: those are deliberate retry
+  // boundaries and must clear an obsolete terminal error before it is thrown.
+  throwUnreportedVoxelPrimaryPipelineFailure(cache);
   if (!cache.pipeline || !cache.pickPipeline) {
     const ctxAny = context as unknown as {
       webgpuPipelineCache?: WebGPURenderPipelineCache | null;
@@ -3487,7 +3726,11 @@ function attachVoxelCellPickCommand(
     return;
   }
 
-  if (!cache.pickVoxelPipeline && !cache.pickVoxelPipelineRequestPending) {
+  if (
+    !cache.pickVoxelPipeline &&
+    !cache.pickVoxelPipelineRequestPending &&
+    !cache.pickVoxelPipelineFailure.error
+  ) {
     const ctxAny = context as unknown as {
       webgpuPipelineCache?: WebGPURenderPipelineCache | null;
     };
@@ -3498,21 +3741,64 @@ function attachVoxelCellPickCommand(
         cache.pickVoxelPipeline = sync;
       } else {
         cache.pickVoxelPipelineRequestPending = true;
+        const lifecycleToken = captureVoxelResourceLifecycleToken(
+          cache.lifecycle,
+        );
+        const requestSerial = ++cache.pickVoxelPipelineRequestSerial;
         pipelineCache
           .getPipeline(cache.pickVoxelDescriptor)
           .then((p) => {
+            if (
+              !isVoxelCacheLive(cache) ||
+              !isVoxelResourceLifecycleTokenCurrent(
+                cache.lifecycle,
+                lifecycleToken,
+              ) ||
+              cache.pickVoxelPipelineRequestSerial !== requestSerial
+            ) {
+              return;
+            }
             cache.pickVoxelPipeline = p;
             cache.pickVoxelPipelineRequestPending = false;
           })
-          .catch(() => {
-            cache.pickVoxelPipelineRequestPending = false;
+          .catch((reason: unknown) => {
+            if (
+              isVoxelCacheLive(cache) &&
+              isVoxelResourceLifecycleTokenCurrent(
+                cache.lifecycle,
+                lifecycleToken,
+              ) &&
+              cache.pickVoxelPipelineRequestSerial === requestSerial
+            ) {
+              cache.pickVoxelPipelineRequestPending = false;
+              recordVoxelPipelineFailure(
+                cache,
+                lifecycleToken,
+                cache.pickVoxelPipelineFailure,
+                "cell-pick",
+                reason,
+              );
+            }
           });
       }
     } else {
       // Fallback synchronous creation when no central cache.
-      cache.pickVoxelPipeline = device.createRenderPipeline(
-        toGPUDescriptor(cache.pickVoxelDescriptor),
+      const lifecycleToken = captureVoxelResourceLifecycleToken(
+        cache.lifecycle,
       );
+      try {
+        cache.pickVoxelPipeline = device.createRenderPipeline(
+          toGPUDescriptor(cache.pickVoxelDescriptor),
+        );
+      } catch (reason) {
+        recordVoxelPipelineFailure(
+          cache,
+          lifecycleToken,
+          cache.pickVoxelPipelineFailure,
+          "cell-pick",
+          reason,
+        );
+      }
     }
   }
 
@@ -3535,6 +3821,12 @@ function attachVoxelCellPickCommand(
       pickOnly: true,
     });
   }
+
+  (
+    cache.pickVoxelCommand as CesiumAnyDrawCommand & {
+      _voxelPickOwner?: unknown;
+    }
+  )._voxelPickOwner = cache.owner;
 
   attachPickVoxelToColorCommand(
     cache.command as CesiumAnyDrawCommand,
@@ -3578,7 +3870,11 @@ function attachVoxelVelocityCommand(
   }
 
   // Lazy velocity pipeline resolution.
-  if (!cache.velocityPipeline && !cache.velocityPipelineRequestPending) {
+  if (
+    !cache.velocityPipeline &&
+    !cache.velocityPipelineRequestPending &&
+    !cache.velocityPipelineFailure.error
+  ) {
     const ctxAny = context as unknown as {
       webgpuPipelineCache?: WebGPURenderPipelineCache | null;
     };
@@ -3589,21 +3885,64 @@ function attachVoxelVelocityCommand(
         cache.velocityPipeline = sync;
       } else {
         cache.velocityPipelineRequestPending = true;
+        const lifecycleToken = captureVoxelResourceLifecycleToken(
+          cache.lifecycle,
+        );
+        const requestSerial = ++cache.velocityPipelineRequestSerial;
         pipelineCache
           .getPipeline(cache.velocityDescriptor)
           .then((p) => {
+            if (
+              !isVoxelCacheLive(cache) ||
+              !isVoxelResourceLifecycleTokenCurrent(
+                cache.lifecycle,
+                lifecycleToken,
+              ) ||
+              cache.velocityPipelineRequestSerial !== requestSerial
+            ) {
+              return;
+            }
             cache.velocityPipeline = p;
             cache.velocityPipelineRequestPending = false;
           })
-          .catch(() => {
-            cache.velocityPipelineRequestPending = false;
+          .catch((reason: unknown) => {
+            if (
+              isVoxelCacheLive(cache) &&
+              isVoxelResourceLifecycleTokenCurrent(
+                cache.lifecycle,
+                lifecycleToken,
+              ) &&
+              cache.velocityPipelineRequestSerial === requestSerial
+            ) {
+              cache.velocityPipelineRequestPending = false;
+              recordVoxelPipelineFailure(
+                cache,
+                lifecycleToken,
+                cache.velocityPipelineFailure,
+                "velocity",
+                reason,
+              );
+            }
           });
       }
     } else {
       // Fallback synchronous creation when no central cache.
-      cache.velocityPipeline = device.createRenderPipeline(
-        toGPUDescriptor(cache.velocityDescriptor),
+      const lifecycleToken = captureVoxelResourceLifecycleToken(
+        cache.lifecycle,
       );
+      try {
+        cache.velocityPipeline = device.createRenderPipeline(
+          toGPUDescriptor(cache.velocityDescriptor),
+        );
+      } catch (reason) {
+        recordVoxelPipelineFailure(
+          cache,
+          lifecycleToken,
+          cache.velocityPipelineFailure,
+          "velocity",
+          reason,
+        );
+      }
     }
   }
 
@@ -3627,6 +3966,36 @@ function attachVoxelVelocityCommand(
   }
 }
 
+/**
+ * Report whether an individual voxel primitive has completed the WebGPU
+ * lifecycle needed by the public `VoxelPrimitive.ready` contract. Loading the
+ * lazy renderer module is not sufficient: root provider content must be
+ * decoded/uploaded, both primary pipelines must have materialized, and a draw
+ * command must have been built against those live resources.
+ */
+function isWebGPUVoxelPrimitiveReady(
+  primitive: CesiumObjectWithWebGPUCache,
+): boolean {
+  const cache = primitive._webgpuCache as VoxelCache | undefined;
+  return !!(
+    cache &&
+    isVoxelCacheLive(cache) &&
+    cache.initialized &&
+    cache.usingRealData &&
+    cache.dataUpload?.phase === "done" &&
+    cache.pipeline &&
+    cache.pickPipeline &&
+    cache.command
+  );
+}
+
+function getVoxelPickReadbackIdentity(
+  primitive: CesiumObjectWithWebGPUCache,
+): VoxelResourceLifecycle | undefined {
+  const cache = primitive._webgpuCache as VoxelCache | undefined;
+  return cache && isVoxelCacheLive(cache) ? cache.lifecycle : undefined;
+}
+
 function destroyWebGPUVoxelResources(
   primitive: CesiumObjectWithWebGPUCache,
 ): void {
@@ -3634,21 +4003,7 @@ function destroyWebGPUVoxelResources(
   if (!cache) {
     return;
   }
-  cache.uniformBuffer?.destroy();
-  cache.vertexBuffer?.destroy();
-  cache.indexBuffer?.destroy();
-  cache.voxelTexture?.destroy();
-  // PARITY-VOXEL-MEGATEXTURE-UPLOAD (increment 1) — release the real-data
-  // texture (distinct from the placeholder `voxelTexture`).
-  cache.dataUpload?.texture?.destroy();
-
-  // C-R9-VOXEL-PICK (Batch 53 / refactored Batch 59) — release the pick
-  // ID so the registry slot is reclaimed and the next VoxelPrimitive
-  // instance gets a fresh color. No-op when the primitive never entered
-  // a render or pick pass.
-  destroyPickIds(primitive as unknown as SinglePickIdCache);
-
-  primitive._webgpuCache = undefined;
+  destroyVoxelCache(primitive, cache);
 }
 
 /**
@@ -3726,6 +4081,9 @@ function getVoxelPickKeyframeNode(
   | { spatialNode: unknown; content: unknown; megatextureIndex: number }
   | undefined {
   const cache = primitive._webgpuCache as VoxelCache | undefined;
+  if (!cache || !isVoxelCacheLive(cache)) {
+    return undefined;
+  }
   const dataUpload = cache?.dataUpload ?? null;
   // Not-yet-uploaded root → no cell (nothing is resident to pick).
   if (!dataUpload || dataUpload.phase !== "done") {
@@ -3746,6 +4104,15 @@ function getVoxelPickKeyframeNode(
   let tileZ = 0;
   let content: unknown;
   if (tileIndex === 0) {
+    if (
+      !isVoxelDataUploadSlotPickSafe(
+        dataUpload,
+        0,
+        dataUpload.rootSlotGeneration,
+      )
+    ) {
+      return undefined;
+    }
     content = dataUpload.content;
   } else {
     const refined = resolveRefinedVoxelTile(dataUpload, tileIndex);
@@ -3811,7 +4178,14 @@ function resolveRefinedVoxelTile(
   // Level 1 — slots 1..8, childIndex = x + 2y + 4z.
   for (let i = 0; i < 8; i++) {
     if (dataUpload.childSlots[i] === slot) {
-      const content = dataUpload.childStates[i]?.content;
+      const tile = dataUpload.childStates[i];
+      if (
+        !tile ||
+        !isVoxelDataUploadSlotPickSafe(dataUpload, slot, tile.slotGeneration)
+      ) {
+        return undefined;
+      }
+      const content = tile.content;
       if (!content) {
         return undefined;
       }
@@ -3821,7 +4195,14 @@ function resolveRefinedVoxelTile(
   // Level 2 — slots 9..72, linear index x + 4y + 16z.
   for (let i = 0; i < 64; i++) {
     if (dataUpload.l2Slots[i] === slot) {
-      const content = dataUpload.l2States[i]?.content;
+      const tile = dataUpload.l2States[i];
+      if (
+        !tile ||
+        !isVoxelDataUploadSlotPickSafe(dataUpload, slot, tile.slotGeneration)
+      ) {
+        return undefined;
+      }
+      const content = tile.content;
       if (!content) {
         return undefined;
       }
@@ -3831,7 +4212,14 @@ function resolveRefinedVoxelTile(
   // Level 3 — slots 73..584, linear index x + 8y + 64z.
   for (let i = 0; i < 512; i++) {
     if (dataUpload.l3Slots[i] === slot) {
-      const content = dataUpload.l3States[i]?.content;
+      const tile = dataUpload.l3States[i];
+      if (
+        !tile ||
+        !isVoxelDataUploadSlotPickSafe(dataUpload, slot, tile.slotGeneration)
+      ) {
+        return undefined;
+      }
+      const content = tile.content;
       if (!content) {
         return undefined;
       }
@@ -3843,11 +4231,15 @@ function resolveRefinedVoxelTile(
 
 export {
   updateWebGPUVoxelPrimitive,
+  isWebGPUVoxelPrimitiveReady,
   destroyWebGPUVoxelResources,
   getVoxelPickKeyframeNode,
+  getVoxelPickReadbackIdentity,
 };
 export default {
   updateWebGPUVoxelPrimitive,
+  isWebGPUVoxelPrimitiveReady,
   destroyWebGPUVoxelResources,
   getVoxelPickKeyframeNode,
+  getVoxelPickReadbackIdentity,
 };

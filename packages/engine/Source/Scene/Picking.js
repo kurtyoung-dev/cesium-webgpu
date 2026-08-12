@@ -429,7 +429,7 @@ class Picking {
     return pickedObjects;
   }
 
-  pickVoxelCoordinate(scene, windowPosition, width, height) {
+  pickVoxelCoordinate(scene, windowPosition, width, height, voxelPrimitive) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("windowPosition", windowPosition);
     //>>includeEnd('debug');
@@ -472,36 +472,54 @@ class Picking {
     frameState.invertClassification = false;
     frameState.passes.pickVoxel = true;
     frameState.tilesetPassState = pickTilesetPassState;
+    frameState._pickVoxelPrimitive = voxelPrimitive;
 
-    context.uniformState.update(frameState);
-    scene.updateEnvironment();
-
-    let pickError = noPickFrameError;
     try {
-      passState = pickFramebuffer.begin(drawingBufferRectangle, viewport);
-      scene.updateAndExecuteCommands(passState, scratchColorZero);
-      scene.resolveFramebuffers(passState);
-    } catch (error) {
-      pickError = error;
-    }
+      context.uniformState.update(frameState);
+      scene.updateEnvironment();
 
-    // endFrame() MUST run before readCenterPixel() on WebGPU: it submits the
-    // voxel pass's command encoder to the queue. readCenterPixel arms its own
-    // copyTextureToBuffer readback (NEW-PICK-METADATA-READBACK); if it ran
-    // first the readback would be submitted ahead of the voxel render and
-    // decode a stale/cleared pixel (the same submission-order hazard the async
-    // pick path documents in _pickAsyncWithMode). On WebGL, endFrame() only
-    // unbinds the default framebuffer — the pick FBO content persists and
-    // readCenterPixel re-binds it explicitly — so the reorder is a no-op there.
-    completePickFrame(scene, pickError);
-    const voxelInfo = pickFramebuffer.readCenterPixel(drawingBufferRectangle);
-    return voxelInfo;
+      let pickError = noPickFrameError;
+      try {
+        passState = pickFramebuffer.begin(
+          drawingBufferRectangle,
+          viewport,
+          "voxel",
+        );
+        scene.updateAndExecuteCommands(passState, scratchColorZero);
+        scene.resolveFramebuffers(passState);
+      } catch (error) {
+        pickError = error;
+      }
+
+      // endFrame() MUST run before readCenterPixel() on WebGPU: it submits the
+      // voxel pass's command encoder to the queue. readCenterPixel arms its own
+      // copyTextureToBuffer readback (NEW-PICK-METADATA-READBACK); if it ran
+      // first the readback would be submitted ahead of the voxel render and
+      // decode a stale/cleared pixel (the same submission-order hazard the async
+      // pick path documents in _pickAsyncWithMode). On WebGL, endFrame() only
+      // unbinds the default framebuffer — the pick FBO content persists and
+      // readCenterPixel re-binds it explicitly — so the reorder is a no-op there.
+      completePickFrame(scene, pickError);
+      const voxelReadbackIdentity =
+        voxelPrimitive?._getPickReadbackIdentity?.();
+      return pickFramebuffer.readCenterPixel(
+        drawingBufferRectangle,
+        "voxel",
+        voxelPrimitive,
+        voxelReadbackIdentity,
+        voxelReadbackIdentity?.atlasReuseEpoch,
+        voxelReadbackIdentity?.contentRevision,
+        getCenterPixelViewProvenance(scene, voxelPrimitive),
+      );
+    } finally {
+      frameState._pickVoxelPrimitive = undefined;
+    }
   }
 
   /**
    * @private
    */
-  pickMetadata(scene, windowPosition, pickedMetadataInfo) {
+  pickMetadata(scene, windowPosition, pickedMetadataInfo, pickedObject) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.object("windowPosition", windowPosition);
     Check.typeOf.object("pickedMetadataInfo", pickedMetadataInfo);
@@ -553,7 +571,11 @@ class Picking {
 
     let pickError = noPickFrameError;
     try {
-      passState = pickFramebuffer.begin(drawingBufferRectangle, viewport);
+      passState = pickFramebuffer.begin(
+        drawingBufferRectangle,
+        viewport,
+        "metadata",
+      );
       scene.updateAndExecuteCommands(passState, scratchColorZero);
 
       const oldOIT = scene._environmentState.useOIT;
@@ -578,7 +600,20 @@ class Picking {
     }
     const rawMetadataPixel = pickFramebuffer.readCenterPixel(
       drawingBufferRectangle,
+      "metadata",
+      pickedMetadataInfo.classProperty,
+      pickedMetadataInfo.metadataProperty,
+      `${pickedMetadataInfo.schemaId ?? ""}\u0000${pickedMetadataInfo.className}\u0000${pickedMetadataInfo.propertyName}`,
+      pickedObject,
+      getCenterPixelViewProvenance(scene, pickedObject),
     );
+
+    // WebGPU's synchronous center readback is intentionally invalid while a
+    // new exact query warms. Do not reinterpret that cold state as four zero
+    // metadata bytes; zero is a valid encoded metadata value.
+    if (!defined(rawMetadataPixel)) {
+      return undefined;
+    }
 
     return MetadataPicking.decodeMetadataValues(
       pickedMetadataInfo.classProperty,
@@ -1479,6 +1514,49 @@ const scratchPosition = new Cartesian2();
 const scratchColorZero = new Color(0.0, 0.0, 0.0, 0.0);
 const noPickFrameError = Symbol("no pick frame error");
 
+function appendPickMatrixProvenance(parts, matrix) {
+  if (!defined(matrix)) {
+    parts.push("none");
+    return;
+  }
+  for (let i = 0; i < 16; i++) {
+    parts.push(matrix[i]);
+  }
+}
+
+function getPickOwnerModelMatrix(owner) {
+  return (
+    owner?.detail?.model?.modelMatrix ??
+    owner?.primitive?.modelMatrix ??
+    owner?.modelMatrix ??
+    owner?._modelMatrix
+  );
+}
+
+function getCenterPixelViewProvenance(scene, owner) {
+  const camera = scene.camera;
+  const frustum = camera.frustum;
+  const context = scene.context;
+  const parts = [
+    scene.mode,
+    scene.morphTime,
+    context.drawingBufferWidth,
+    context.drawingBufferHeight,
+    frustum.near,
+    frustum.far,
+    owner?.show,
+    owner?.primitive?.show,
+  ];
+
+  // The synchronous WebGPU API may reuse a completed readback only when the
+  // view that produced it is exactly unchanged. Frame number is deliberately
+  // absent: continuous rendering with a static view must still warm the cache.
+  appendPickMatrixProvenance(parts, camera.viewMatrix);
+  appendPickMatrixProvenance(parts, frustum.projectionMatrix);
+  appendPickMatrixProvenance(parts, getPickOwnerModelMatrix(owner));
+  return parts.join("|");
+}
+
 function computePickingDrawingBufferRectangle(
   drawingBufferHeight,
   position,
@@ -1581,7 +1659,12 @@ export function pickBegin(
   context.uniformState.update(frameState);
   scene.updateEnvironment();
 
-  passState = framebuffer.begin(drawingBufferRectangle, viewport);
+  passState = framebuffer.begin(
+    drawingBufferRectangle,
+    viewport,
+    undefined,
+    getCenterPixelViewProvenance(scene),
+  );
   scene.updateAndExecuteCommands(passState, scratchColorZero);
   scene.resolveFramebuffers(passState);
 }

@@ -4835,13 +4835,11 @@ class Scene {
     // actual ray-vs-bounds hit rather than the object-pick footprint. On WebGL
     // `this.pick` already returns undefined off the rendered voxel surface, so
     // this early-out is never reached for an off-box pixel (byte-identical).
-    // On WebGPU the object-pick footprint over-reports the whole box (and the
-    // synchronous pick can return a stale in-box hit for an adjacent off-box
-    // pixel), which — because a cleared voxel-coordinate readback [0,0,0,0] is
-    // indistinguishable from a genuine tile-0/sample-0 hit — otherwise yields a
-    // spurious root VoxelCell. Casting the pick ray against the primitive's
-    // oriented bounding box rejects those off-box picks with WebGL parity. The
-    // OBB is a conservative bound, so a genuine on-surface hit always passes.
+    // On WebGPU the object-pick footprint over-reports the whole box, and the
+    // synchronous object pick can still be a one-frame-stale in-box hit for an
+    // adjacent off-box pixel. Casting the current ray against the primitive's
+    // oriented bounding box rejects that stale footprint before launching the
+    // cell pass. The OBB is conservative, so a genuine surface hit passes.
     if (!voxelPickRayHitsBounds(this, windowPosition, voxelPrimitive)) {
       return;
     }
@@ -4850,7 +4848,23 @@ class Scene {
       windowPosition,
       width,
       height,
+      voxelPrimitive,
     );
+    // A cold WebGPU readback is invalid, not a synthetic root/sample zero.
+    if (!defined(voxelCoordinate)) {
+      return;
+    }
+    // WebGPU clears the dedicated voxel-coordinate pass to all-255. Base-255
+    // packing never emits 255 in either remainder byte, so this value is an
+    // impossible no-command/no-fragment sentinel on both backends.
+    if (
+      voxelCoordinate[0] === 255 &&
+      voxelCoordinate[1] === 255 &&
+      voxelCoordinate[2] === 255 &&
+      voxelCoordinate[3] === 255
+    ) {
+      return;
+    }
     const tileIndex = 255 * voxelCoordinate[0] + voxelCoordinate[1];
     // Backend-agnostic keyframe-node resolve: WebGL consults the CPU-side
     // VoxelTraversal; the WebGPU feature-renderer path (no traversal) resolves
@@ -4932,6 +4946,7 @@ class Scene {
       this,
       windowPosition,
       pickedMetadataInfo,
+      pickedObject,
     );
 
     return pickedMetadataValues;

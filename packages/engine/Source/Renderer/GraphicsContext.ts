@@ -329,6 +329,14 @@ export interface FeatureRenderer {
    * returns true; the hook must never submit or emit visible commands.
    */
   prepare?(...args: unknown[]): boolean | void;
+  /**
+   * Optional owner-specific readiness query. This is deliberately separate
+   * from feature-renderer module readiness: a renderer module may be loaded
+   * while an individual primitive is still waiting for decoded content,
+   * pipelines, or backend resources. Scene owners use this to publish their
+   * public `ready` transition without reaching into backend-private caches.
+   */
+  isReady?(owner: unknown): boolean;
   execute?(...args: unknown[]): void;
   render?(...args: unknown[]): void;
   composite?(...args: unknown[]): void;
@@ -340,6 +348,12 @@ export interface FeatureRenderer {
    * WebGL path constructs. Returns undefined when no tile resolves.
    */
   getPickKeyframeNode?(primitive: unknown, tileIndex: number): unknown;
+
+  /**
+   * Resolve the exact backend resource identity captured by asynchronous voxel
+   * pick readback so a later owner/device/atlas generation cannot reuse it.
+   */
+  getPickReadbackIdentity?(primitive: unknown): unknown;
 
   /**
    * Realize a terrain tile's baked

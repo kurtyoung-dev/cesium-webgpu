@@ -108,6 +108,25 @@
 // `inputCoordinate` mapping expects it.
 import VoxelMetadataOrder from "../../Scene/VoxelMetadataOrder.js";
 import VoxelShapeType from "../../Scene/VoxelShapeType.js";
+import {
+  captureVoxelResourceLifecycleToken,
+  createVoxelAsyncFailureState,
+  detachVoxelResourceLifecycle,
+  disposeAllVoxelContents,
+  disposeUnpublishedVoxelContent,
+  ensureVoxelAtlasSlotCapacity,
+  isVoxelAtlasSlotPickSafe,
+  isVoxelResourceLifecycleTokenCurrent,
+  publishVoxelAtlasSlot,
+  recordVoxelAsyncFailure,
+  releaseVoxelContent,
+  retireVoxelAtlasSlot,
+  selectVoxelAtlasLruVictim,
+  stampVoxelAtlasDemandFrame,
+  tryRetainVoxelContentForToken,
+  type VoxelAsyncFailureState,
+  type VoxelResourceLifecycle,
+} from "./WebGPUVoxelResourceLifecycle.js";
 
 /**
  * Minimal structural view of a {@link VoxelContent}. `metadata` is an array of
@@ -117,6 +136,8 @@ interface VoxelContentLike {
   update(primitive: unknown, frameState: unknown): void;
   readonly ready: boolean;
   readonly metadata: ArrayLike<number>[] | undefined;
+  destroy?(): unknown;
+  isDestroyed?(): boolean;
 }
 
 /**
@@ -187,6 +208,10 @@ interface VoxelChildTileState {
    * static full-atlas path and for level-1 tiles.
    */
   lastDemandFrame: number;
+  /** Monotonic request identity; invalidates late promise completion. */
+  requestSerial: number;
+  /** Atlas-slot identity captured when this content was published. */
+  slotGeneration: number;
 }
 
 /**
@@ -194,8 +219,18 @@ interface VoxelChildTileState {
  * voxel cache under `dataUpload`.
  */
 export interface VoxelDataUploadState {
+  /** Idempotent owner-teardown sentinel. */
+  destroyed: boolean;
+  /** Exact device-generation lifetime shared with the owning renderer cache. */
+  lifecycle: VoxelResourceLifecycle;
+  /** Monotonic root request identity; invalidates late promise completion. */
+  requestSerial: number;
+  /** Resource-lifecycle epoch captured by the active mandatory root request. */
+  requestLifecycleToken: number;
   /** Lifecycle phase of the async request → process → upload sequence. */
   phase: "idle" | "requesting" | "processing" | "done" | "failed";
+  /** First terminal root failure for this exact owner lifecycle. */
+  rootFailure: VoxelAsyncFailureState;
   /** The resolved root-tile content (available once phase === 'processing'). */
   content: VoxelContentLike | null;
   /** The real-data texture, once uploaded. Owned here; destroyed by caller. */
@@ -307,19 +342,38 @@ export interface VoxelDataUploadState {
    * requests/uploads. Diagnostic — read by probes.
    */
   demandLevel: number;
+  /** Slot-0 identity used to reject stale asynchronous pick readback. */
+  rootSlotGeneration: number;
 }
 
-export function createVoxelDataUploadState(): VoxelDataUploadState {
+function createChildTileState(): VoxelChildTileState {
+  return {
+    phase: "idle",
+    content: null,
+    lastDemandFrame: 0,
+    requestSerial: 0,
+    slotGeneration: 0,
+  };
+}
+
+export function createVoxelDataUploadState(
+  lifecycle: VoxelResourceLifecycle,
+): VoxelDataUploadState {
   const childStates: VoxelChildTileState[] = [];
   for (let i = 0; i < 8; i++) {
-    childStates.push({ phase: "idle", content: null, lastDemandFrame: 0 });
+    childStates.push(createChildTileState());
   }
   const l2States: VoxelChildTileState[] = [];
   for (let i = 0; i < 64; i++) {
-    l2States.push({ phase: "idle", content: null, lastDemandFrame: 0 });
+    l2States.push(createChildTileState());
   }
   return {
+    destroyed: false,
+    lifecycle,
+    requestSerial: 0,
+    requestLifecycleToken: 0,
     phase: "idle",
+    rootFailure: createVoxelAsyncFailureState(),
     content: null,
     texture: null,
     view: null,
@@ -342,7 +396,120 @@ export function createVoxelDataUploadState(): VoxelDataUploadState {
     uploadFormat: null,
     lastTargetLevel: 0,
     demandLevel: 0,
+    rootSlotGeneration: 0,
   };
+}
+
+function failRootVoxelTile(
+  state: VoxelDataUploadState,
+  lifecycleToken: number,
+  reason: unknown,
+): void {
+  const failure = recordVoxelAsyncFailure(
+    state.lifecycle,
+    lifecycleToken,
+    state.rootFailure,
+    reason,
+  );
+  if (!failure) {
+    return;
+  }
+
+  state.requestSerial++;
+  state.phase = "failed";
+  const content = state.content;
+  state.content = null;
+  if (content) {
+    releaseVoxelContent(state.lifecycle, content);
+  }
+}
+
+function destroyVoxelTextureBestEffort(texture: GPUTexture | null): void {
+  try {
+    texture?.destroy();
+  } catch {
+    // A cleanup failure must not replace the recorded root upload failure or
+    // interrupt teardown of the remaining voxel resources.
+  }
+}
+
+function releaseTileContent(
+  state: VoxelDataUploadState,
+  tile: VoxelChildTileState,
+): void {
+  const content = tile.content;
+  tile.content = null;
+  if (content) {
+    releaseVoxelContent(state.lifecycle, content);
+  }
+}
+
+function failTile(
+  state: VoxelDataUploadState,
+  tile: VoxelChildTileState,
+): void {
+  tile.requestSerial++;
+  tile.phase = "failed";
+  tile.slotGeneration = 0;
+  releaseTileContent(state, tile);
+}
+
+function isTileRequestCurrent(
+  state: VoxelDataUploadState,
+  tile: VoxelChildTileState,
+  lifecycleToken: number,
+  requestSerial: number,
+): boolean {
+  return (
+    isVoxelResourceLifecycleTokenCurrent(state.lifecycle, lifecycleToken) &&
+    tile.requestSerial === requestSerial &&
+    tile.phase === "requesting"
+  );
+}
+
+export function destroyVoxelDataUploadState(state: VoxelDataUploadState): void {
+  if (state.destroyed) {
+    return;
+  }
+  state.destroyed = true;
+  // Detach first. Promise callbacks may run after this call, but their captured
+  // epoch can no longer publish content into the retired owner cache.
+  detachVoxelResourceLifecycle(state.lifecycle);
+  state.requestSerial++;
+  state.content = null;
+
+  const levels = [state.childStates, state.l2States, state.l3States];
+  for (const tiles of levels) {
+    for (const tile of tiles) {
+      tile.requestSerial++;
+      tile.phase = "failed";
+      tile.slotGeneration = 0;
+      tile.content = null;
+    }
+  }
+
+  state.childSlots.fill(-1);
+  state.l2Slots.fill(-1);
+  state.l3Slots.fill(-1);
+  state.phase = "failed";
+  state.childPhase = "none";
+  state.rootSlotGeneration = 0;
+  // All state fields have dropped their aliases; the ownership table can now
+  // dispose each unique VoxelContent/loader once and release its strong keys.
+  disposeAllVoxelContents(state.lifecycle);
+
+  const texture = state.texture;
+  state.texture = null;
+  state.view = null;
+  destroyVoxelTextureBestEffort(texture);
+}
+
+export function isVoxelDataUploadSlotPickSafe(
+  state: VoxelDataUploadState,
+  slot: number,
+  generation: number,
+): boolean {
+  return isVoxelAtlasSlotPickSafe(state.lifecycle, slot, generation);
 }
 
 function getProvider(primitive: unknown): VoxelProviderLike | undefined {
@@ -451,27 +618,62 @@ export function tryUploadRootVoxelTile(
   }
 
   if (state.phase === "idle") {
-    const promise = provider.requestData({
-      tileLevel: 0,
-      tileX: 0,
-      tileY: 0,
-      tileZ: 0,
-      keyframe: 0,
-    });
+    const lifecycleToken = captureVoxelResourceLifecycleToken(state.lifecycle);
+    let promise: Promise<VoxelContentLike> | undefined;
+    try {
+      promise = provider.requestData({
+        tileLevel: 0,
+        tileX: 0,
+        tileY: 0,
+        tileZ: 0,
+        keyframe: 0,
+      });
+    } catch (reason) {
+      failRootVoxelTile(state, lifecycleToken, reason);
+      return false;
+    }
     if (!promise) {
       // Request could not be scheduled this frame — retry next frame.
       return false;
     }
+    state.requestLifecycleToken = lifecycleToken;
     state.phase = "requesting";
+    const requestSerial = ++state.requestSerial;
     promise
       .then((content) => {
-        if (state.phase === "requesting") {
+        if (
+          !isVoxelResourceLifecycleTokenCurrent(
+            state.lifecycle,
+            lifecycleToken,
+          ) ||
+          state.requestSerial !== requestSerial ||
+          state.phase !== "requesting"
+        ) {
+          disposeUnpublishedVoxelContent(state.lifecycle, content);
+          return;
+        }
+        if (
+          tryRetainVoxelContentForToken(
+            state.lifecycle,
+            lifecycleToken,
+            content,
+          )
+        ) {
           state.content = content;
           state.phase = "processing";
         }
       })
-      .catch(() => {
-        state.phase = "failed";
+      .catch((reason) => {
+        if (
+          isVoxelResourceLifecycleTokenCurrent(
+            state.lifecycle,
+            lifecycleToken,
+          ) &&
+          state.requestSerial === requestSerial &&
+          state.phase === "requesting"
+        ) {
+          failRootVoxelTile(state, lifecycleToken, reason);
+        }
       });
     return false;
   }
@@ -483,17 +685,30 @@ export function tryUploadRootVoxelTile(
   // phase === 'processing' — advance the glTF loader until content is ready.
   const content = state.content;
   if (!content) {
-    state.phase = "failed";
+    failRootVoxelTile(
+      state,
+      state.requestLifecycleToken,
+      new Error("WebGPU voxel root tile resolved without content"),
+    );
     return false;
   }
-  content.update(primitive, frameState);
+  try {
+    content.update(primitive, frameState);
+  } catch (reason) {
+    failRootVoxelTile(state, state.requestLifecycleToken, reason);
+    return false;
+  }
   if (!content.ready) {
     return false;
   }
 
   const metadata = content.metadata;
   if (!metadata || metadata.length === 0 || !metadata[0]) {
-    state.phase = "failed";
+    failRootVoxelTile(
+      state,
+      state.requestLifecycleToken,
+      new Error("WebGPU voxel root tile contains no metadata property"),
+    );
     return false;
   }
 
@@ -538,7 +753,13 @@ export function tryUploadRootVoxelTile(
   }
   const voxelCount = width * height * depth;
 
-  const rgba = expandToRGBA(metadata[0], voxelCount);
+  let rgba: Float32Array;
+  try {
+    rgba = expandToRGBA(metadata[0], voxelCount);
+  } catch (reason) {
+    failRootVoxelTile(state, state.requestLifecycleToken, reason);
+    return false;
+  }
 
   const { format, float32 } = chooseFormat(device);
 
@@ -604,35 +825,46 @@ export function tryUploadRootVoxelTile(
         : multiLevel
           ? 9
           : 1;
+  ensureVoxelAtlasSlotCapacity(state.lifecycle, slotCount);
 
-  const texture = device.createTexture({
-    label: fullDeep3
-      ? "Voxel real-data 3D atlas (root + level-1 + level-2 + level-3 tiles)"
-      : deepLevel
-        ? "Voxel real-data 3D atlas (root + level-1 + level-2 tiles)"
-        : multiLevel
-          ? "Voxel real-data 3D atlas (root + level-1 tiles)"
-          : "Voxel real-data 3D texture (root tile)",
-    size: { width, height, depthOrArrayLayers: depth * slotCount },
-    format,
-    dimension: "3d",
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-  });
+  let texture: GPUTexture | null = null;
+  let view: GPUTextureView;
+  try {
+    texture = device.createTexture({
+      label: fullDeep3
+        ? "Voxel real-data 3D atlas (root + level-1 + level-2 + level-3 tiles)"
+        : deepLevel
+          ? "Voxel real-data 3D atlas (root + level-1 + level-2 tiles)"
+          : multiLevel
+            ? "Voxel real-data 3D atlas (root + level-1 tiles)"
+            : "Voxel real-data 3D texture (root tile)",
+      size: { width, height, depthOrArrayLayers: depth * slotCount },
+      format,
+      dimension: "3d",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
 
-  const bytesPerTexel = float32 ? 16 : 8;
-  const data: ArrayBufferView = float32 ? rgba : toHalfFloat(rgba);
-  device.queue.writeTexture(
-    { texture, origin: { x: 0, y: 0, z: 0 } },
-    data,
-    { bytesPerRow: width * bytesPerTexel, rowsPerImage: height },
-    { width, height, depthOrArrayLayers: depth },
-  );
+    const bytesPerTexel = float32 ? 16 : 8;
+    const data: ArrayBufferView = float32 ? rgba : toHalfFloat(rgba);
+    device.queue.writeTexture(
+      { texture, origin: { x: 0, y: 0, z: 0 } },
+      data,
+      { bytesPerRow: width * bytesPerTexel, rowsPerImage: height },
+      { width, height, depthOrArrayLayers: depth },
+    );
+    view = texture.createView();
+  } catch (reason) {
+    failRootVoxelTile(state, state.requestLifecycleToken, reason);
+    destroyVoxelTextureBestEffort(texture);
+    return false;
+  }
 
   state.texture = texture;
-  state.view = texture.createView();
+  state.view = view;
   state.convention = convention;
   state.slotCount = slotCount;
   state.uploadFormat = format;
+  state.rootSlotGeneration = publishVoxelAtlasSlot(state.lifecycle, 0);
   state.childPhase = multiLevel ? "loading" : "none";
   // NEW-VOXEL-ATLAS-LRU-EVICT — level-2 pool bookkeeping. Static full atlas
   // keeps an empty free list (slots are pre-assigned baseSlot + i); the
@@ -656,21 +888,23 @@ export function tryUploadRootVoxelTile(
     if (state.l3States.length !== 512) {
       state.l3States = [];
       for (let i = 0; i < 512; i++) {
-        state.l3States.push({
-          phase: "idle",
-          content: null,
-          lastDemandFrame: 0,
-        });
+        state.l3States.push(createChildTileState());
       }
     } else {
       for (let i = 0; i < 512; i++) {
+        releaseTileContent(state, state.l3States[i]);
         state.l3States[i].phase = "idle";
-        state.l3States[i].content = null;
         state.l3States[i].lastDemandFrame = 0;
+        state.l3States[i].requestSerial++;
+        state.l3States[i].slotGeneration = 0;
       }
     }
   } else {
     state.l3PoolSize = 0;
+    for (const tile of state.l3States) {
+      tile.requestSerial++;
+      releaseTileContent(state, tile);
+    }
     state.l3States = [];
   }
   state.phase = "done";
@@ -720,28 +954,54 @@ function driveTileLevelUploads(
     }
 
     if (child.phase === "idle") {
-      const promise = provider.requestData({
-        tileLevel: level,
-        tileX: i % edge,
-        tileY: Math.floor(i / edge) % edge,
-        tileZ: Math.floor(i / (edge * edge)),
-        keyframe: 0,
-      });
+      let promise: Promise<VoxelContentLike> | undefined;
+      try {
+        promise = provider.requestData({
+          tileLevel: level,
+          tileX: i % edge,
+          tileY: Math.floor(i / edge) % edge,
+          tileZ: Math.floor(i / (edge * edge)),
+          keyframe: 0,
+        });
+      } catch {
+        // Descendants are optional refinements. A synchronous provider failure
+        // must settle only this child and retain its uploaded ancestor.
+        failTile(state, child);
+        settled++;
+        continue;
+      }
       if (!promise) {
         // Could not be scheduled this frame — retry next frame.
         continue;
       }
       child.phase = "requesting";
+      const lifecycleToken = captureVoxelResourceLifecycleToken(
+        state.lifecycle,
+      );
+      const requestSerial = ++child.requestSerial;
       promise
         .then((content) => {
-          if (child.phase === "requesting") {
+          if (
+            isTileRequestCurrent(state, child, lifecycleToken, requestSerial) &&
+            tryRetainVoxelContentForToken(
+              state.lifecycle,
+              lifecycleToken,
+              content,
+            )
+          ) {
             child.content = content;
             child.phase = "processing";
+          } else {
+            disposeUnpublishedVoxelContent(state.lifecycle, content);
           }
         })
         .catch(() => {
           // Tile not available (or failed) — ancestor fallback for this region.
-          child.phase = "failed";
+          if (
+            isTileRequestCurrent(state, child, lifecycleToken, requestSerial)
+          ) {
+            failTile(state, child);
+          }
         });
       continue;
     }
@@ -757,28 +1017,41 @@ function driveTileLevelUploads(
       settled++;
       continue;
     }
-    content.update(primitive, frameState);
+    try {
+      content.update(primitive, frameState);
+    } catch {
+      failTile(state, child);
+      settled++;
+      continue;
+    }
     if (!content.ready) {
       continue;
     }
 
     const metadata = content.metadata;
     if (!metadata || metadata.length === 0 || !metadata[0]) {
-      child.phase = "failed";
+      failTile(state, child);
       settled++;
       continue;
     }
 
-    const rgba = expandToRGBA(metadata[0], voxelCount);
-    const data: ArrayBufferView = float32 ? rgba : toHalfFloat(rgba);
     const slot = baseSlot + i;
-    device.queue.writeTexture(
-      { texture: state.texture!, origin: { x: 0, y: 0, z: slot * depth } },
-      data,
-      { bytesPerRow: width * bytesPerTexel, rowsPerImage: height },
-      { width, height, depthOrArrayLayers: depth },
-    );
+    try {
+      const rgba = expandToRGBA(metadata[0], voxelCount);
+      const data: ArrayBufferView = float32 ? rgba : toHalfFloat(rgba);
+      device.queue.writeTexture(
+        { texture: state.texture!, origin: { x: 0, y: 0, z: slot * depth } },
+        data,
+        { bytesPerRow: width * bytesPerTexel, rowsPerImage: height },
+        { width, height, depthOrArrayLayers: depth },
+      );
+    } catch {
+      failTile(state, child);
+      settled++;
+      continue;
+    }
     slots[i] = slot;
+    child.slotGeneration = publishVoxelAtlasSlot(state.lifecycle, slot);
     // NS-VOXEL-REFINED-TILE-CELL-RETENTION — retain the CPU-side content (was
     // nulled here to free memory) so a refined-tile `scene.pickVoxel` can build
     // a full VoxelCell from this child's metadata. Parity with WebGL, whose
@@ -947,30 +1220,22 @@ export function tryUploadChildVoxelTiles(
  * lowest tile index — deterministic for probes.
  */
 function evictLruL2Slot(state: VoxelDataUploadState): number {
-  let victim = -1;
-  let oldest = Infinity;
-  for (let i = 0; i < 64; i++) {
-    if (state.l2Slots[i] < 0) {
-      continue;
-    }
-    const tile = state.l2States[i];
-    if (tile.lastDemandFrame >= state.frameIndex) {
-      // Demanded this frame — protected.
-      continue;
-    }
-    if (tile.lastDemandFrame < oldest) {
-      oldest = tile.lastDemandFrame;
-      victim = i;
-    }
-  }
+  const victim = selectVoxelAtlasLruVictim(
+    state.l2Slots,
+    state.l2States,
+    state.frameIndex,
+  );
   if (victim < 0) {
     return -1;
   }
   const slot = state.l2Slots[victim];
   state.l2Slots[victim] = -1;
   const tile = state.l2States[victim];
+  tile.requestSerial++;
   tile.phase = "idle";
-  tile.content = null;
+  retireVoxelAtlasSlot(state.lifecycle, slot, tile.slotGeneration);
+  tile.slotGeneration = 0;
+  releaseTileContent(state, tile);
   state.evictionCount++;
   return slot;
 }
@@ -1005,15 +1270,20 @@ function driveDynamicL2Uploads(
   const float32 = state.uploadFormat === "rgba32float";
   const bytesPerTexel = float32 ? 16 : 8;
 
-  let demandCount = 0;
+  // Declare the complete demand set before any ready tile can allocate or
+  // evict. Stamping inside the loop lets a low-index upload evict a resident
+  // high-index tile that is also demanded but has not been visited yet.
+  const demandCount = stampVoxelAtlasDemandFrame(
+    state.l2States,
+    demandLevel,
+    l2DemandMask,
+    state.frameIndex,
+  );
   for (let i = 0; i < 64; i++) {
     const tile = state.l2States[i];
     const demanded =
       demandLevel >= 2 && l2DemandMask !== null && l2DemandMask[i] !== 0;
-    if (demanded) {
-      tile.lastDemandFrame = state.frameIndex;
-      demandCount++;
-    } else {
+    if (!demanded) {
       // Not demanded: residents stay until evicted; in-flight requests pause
       // at their current phase and resume under future demand.
       continue;
@@ -1024,26 +1294,51 @@ function driveDynamicL2Uploads(
     }
 
     if (tile.phase === "idle") {
-      const promise = provider.requestData({
-        tileLevel: 2,
-        tileX: i % 4,
-        tileY: Math.floor(i / 4) % 4,
-        tileZ: Math.floor(i / 16),
-        keyframe: 0,
-      });
+      let promise: Promise<VoxelContentLike> | undefined;
+      try {
+        promise = provider.requestData({
+          tileLevel: 2,
+          tileX: i % 4,
+          tileY: Math.floor(i / 4) % 4,
+          tileZ: Math.floor(i / 16),
+          keyframe: 0,
+        });
+      } catch {
+        // Dynamic descendants use the same ancestor-fallback contract as the
+        // static levels, including synchronous provider failures.
+        failTile(state, tile);
+        continue;
+      }
       if (!promise) {
         continue;
       }
       tile.phase = "requesting";
+      const lifecycleToken = captureVoxelResourceLifecycleToken(
+        state.lifecycle,
+      );
+      const requestSerial = ++tile.requestSerial;
       promise
         .then((content) => {
-          if (tile.phase === "requesting") {
+          if (
+            isTileRequestCurrent(state, tile, lifecycleToken, requestSerial) &&
+            tryRetainVoxelContentForToken(
+              state.lifecycle,
+              lifecycleToken,
+              content,
+            )
+          ) {
             tile.content = content;
             tile.phase = "processing";
+          } else {
+            disposeUnpublishedVoxelContent(state.lifecycle, content);
           }
         })
         .catch(() => {
-          tile.phase = "failed";
+          if (
+            isTileRequestCurrent(state, tile, lifecycleToken, requestSerial)
+          ) {
+            failTile(state, tile);
+          }
         });
       continue;
     }
@@ -1058,13 +1353,18 @@ function driveDynamicL2Uploads(
       tile.phase = "failed";
       continue;
     }
-    content.update(primitive, frameState);
+    try {
+      content.update(primitive, frameState);
+    } catch {
+      failTile(state, tile);
+      continue;
+    }
     if (!content.ready) {
       continue;
     }
     const metadata = content.metadata;
     if (!metadata || metadata.length === 0 || !metadata[0]) {
-      tile.phase = "failed";
+      failTile(state, tile);
       continue;
     }
 
@@ -1080,15 +1380,22 @@ function driveDynamicL2Uploads(
       continue;
     }
 
-    const rgba = expandToRGBA(metadata[0], voxelCount);
-    const data: ArrayBufferView = float32 ? rgba : toHalfFloat(rgba);
-    device.queue.writeTexture(
-      { texture: state.texture!, origin: { x: 0, y: 0, z: slot * depth } },
-      data,
-      { bytesPerRow: width * bytesPerTexel, rowsPerImage: height },
-      { width, height, depthOrArrayLayers: depth },
-    );
+    try {
+      const rgba = expandToRGBA(metadata[0], voxelCount);
+      const data: ArrayBufferView = float32 ? rgba : toHalfFloat(rgba);
+      device.queue.writeTexture(
+        { texture: state.texture!, origin: { x: 0, y: 0, z: slot * depth } },
+        data,
+        { bytesPerRow: width * bytesPerTexel, rowsPerImage: height },
+        { width, height, depthOrArrayLayers: depth },
+      );
+    } catch {
+      state.freeL2Slots.push(slot);
+      failTile(state, tile);
+      continue;
+    }
     state.l2Slots[i] = slot;
+    tile.slotGeneration = publishVoxelAtlasSlot(state.lifecycle, slot);
     // NS-VOXEL-REFINED-TILE-CELL-RETENTION — retain the CPU-side content so a
     // refined-tile pick can construct its VoxelCell (see the static-path note in
     // driveTileLevelUploads). An LRU eviction resets `content` to null in

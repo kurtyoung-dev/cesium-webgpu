@@ -61,6 +61,9 @@ class VoxelPrimitive {
     options = options ?? Frozen.EMPTY_OBJECT;
 
     this._ready = false;
+    // Guards the backend-neutral afterRender ready publication so repeated
+    // update calls in one frame do not enqueue duplicate callbacks.
+    this._readyTransitionPending = false;
     this._provider = options.provider ?? VoxelPrimitive.DefaultProvider;
     this._traversal = undefined;
     // Set on the WebGPU feature-renderer path (VoxelPrimitive.update) so
@@ -459,6 +462,13 @@ class VoxelPrimitive {
    * @private
    */
   update(frameState) {
+    if (
+      frameState.passes.pickVoxel &&
+      defined(frameState._pickVoxelPrimitive) &&
+      frameState._pickVoxelPrimitive !== this
+    ) {
+      return;
+    }
     // Loading/failed belong to the selected backend. Do not initialize the
     // legacy traversal/resources until the backend says it is unsupported.
     const readiness = resolveFeatureRendererReadiness(
@@ -469,6 +479,30 @@ class VoxelPrimitive {
     if (fr) {
       this._featureRenderer = fr;
       fr.update(this, frameState);
+      // Renderer-module readiness and primitive readiness are different: the
+      // lazy module can be loaded while this primitive is still decoding its
+      // root tile or compiling its pipelines. Publish `ready` only after the
+      // selected backend reports that this owner's data and draw resources
+      // are usable. Match the WebGL contract by making the transition after
+      // the successful render update, not halfway through it.
+      if (
+        !this._ready &&
+        !this._readyTransitionPending &&
+        typeof fr.isReady === "function" &&
+        fr.isReady(this)
+      ) {
+        this._readyTransitionPending = true;
+        frameState.afterRender.push(() => {
+          this._readyTransitionPending = false;
+          // Device recovery can retire the exact owner cache after update but
+          // before this callback. Recheck the backend tuple so a stale cache
+          // can never publish the public ready transition.
+          if (this._featureRenderer === fr && fr.isReady(this)) {
+            this._ready = true;
+          }
+          return true;
+        });
+      }
       return;
     }
     if (readiness.kind !== "unsupported") {
@@ -673,6 +707,20 @@ class VoxelPrimitive {
     const traversal = this._traversal;
     if (defined(traversal)) {
       return traversal.findKeyframeNode(tileIndex);
+    }
+    return undefined;
+  }
+
+  // Return the stable renderer-owner identity used to validate asynchronous
+  // voxel-coordinate readback. WebGL has no deferred center-pixel cache and
+  // returns undefined; its framebuffer ignores the extra identity.
+  _getPickReadbackIdentity() {
+    const featureRenderer = this._featureRenderer;
+    if (
+      defined(featureRenderer) &&
+      typeof featureRenderer.getPickReadbackIdentity === "function"
+    ) {
+      return featureRenderer.getPickReadbackIdentity(this);
     }
     return undefined;
   }
