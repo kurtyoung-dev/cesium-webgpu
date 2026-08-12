@@ -8,6 +8,10 @@ const probeSource = await readFile(
   new URL("./probe-voxel-pick.mjs", import.meta.url),
   "utf8",
 );
+const refinedProbeSource = await readFile(
+  new URL("./probe-voxel-refined-pick.mjs", import.meta.url),
+  "utf8",
+);
 
 function runSequence(keys) {
   let state = {
@@ -47,21 +51,20 @@ test("a different cell or a cold gap resets the real-cell streak", () => {
   assert.equal(interrupted.at(-1).consecutiveCellCount, 1);
 });
 
-test("the physical probe consumes the exact convergence result fail-closed", () => {
+function assertProbeConsumesConvergence(source) {
+  assert.match(source, /advanceC1113PublicVoxelPickConvergence\.toString\(\)/u);
   assert.match(
-    probeSource,
-    /advanceC1113PublicVoxelPickConvergence\.toString\(\)/u,
-  );
-  assert.match(
-    probeSource,
+    source,
     /convergence = advanceConvergence\(\s*convergence,\s*isCell \? key : null,?\s*\)/u,
   );
-  assert.match(probeSource, /if \(convergence\.stable\) \{/u);
-  assert.match(probeSource, /stable: convergence\.stable/u);
-  assert.match(probeSource, /gl\.stable === true/u);
-  assert.match(probeSource, /gp\.stable === true/u);
-  assert.doesNotMatch(
-    probeSource,
-    /prevKey !== null && i >= 2 && prevKey === key/u,
-  );
+  assert.match(source, /if \(convergence\.stable\) \{/u);
+  assert.match(source, /stable: convergence\.stable/u);
+  assert.match(source, /gl\.stable === true/u);
+  assert.match(source, /gp\.stable === true/u);
+  assert.doesNotMatch(source, /prevKey !== null && i >= 2 && prevKey === key/u);
+}
+
+test("both public physical probes consume the exact convergence result fail-closed", () => {
+  assertProbeConsumesConvergence(probeSource);
+  assertProbeConsumesConvergence(refinedProbeSource);
 });
