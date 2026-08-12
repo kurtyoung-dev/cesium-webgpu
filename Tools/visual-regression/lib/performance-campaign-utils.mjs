@@ -491,7 +491,12 @@ export function summarizeEclipseGlobeShadowEvidence(samples, evidence) {
 export function assessPerformanceRunQuality(run, options = {}) {
   const minTrackSegmentSamples = options.minTrackSegmentSamples ?? 30;
   const attributionOnly =
-    run.apiInstrumentationEnabled === true || run.apiCounters?.enabled === true;
+    options.attributionOnly === true ||
+    run.apiInstrumentationEnabled === true ||
+    run.apiCounters?.enabled === true;
+  const attributionReason =
+    options.attributionReason ??
+    "GPU API instrumentation is attribution-only and excluded from timing aggregation and certification";
   const reasons = [];
   const warnings = [];
   const elapsedMs = run.measurement?.elapsedMs || 0;
@@ -589,9 +594,7 @@ export function assessPerformanceRunQuality(run, options = {}) {
   const measurementValid =
     cpuValid && (run.timestampEnabled !== true || gpuValid);
   if (attributionOnly) {
-    warnings.push(
-      "GPU API instrumentation is attribution-only and excluded from timing aggregation and certification",
-    );
+    warnings.push(attributionReason);
   }
   return {
     status: !measurementValid
@@ -1767,6 +1770,11 @@ export function assessRepresentativePairComparability(
     webgpuRun?.quality?.attributionOnly === true ||
     webglRun?.apiCounters?.enabled === true ||
     webgpuRun?.apiCounters?.enabled === true;
+  const apiLifecycleAttributionRequired =
+    webglRun?.apiInstrumentationEnabled === true ||
+    webgpuRun?.apiInstrumentationEnabled === true ||
+    webglRun?.apiCounters?.enabled === true ||
+    webgpuRun?.apiCounters?.enabled === true;
   const ordinaryQualityEligible =
     webglRun?.quality?.status === "clean" &&
     webglRun?.quality?.certificationEligible === true &&
@@ -1787,7 +1795,7 @@ export function assessRepresentativePairComparability(
   const certificationExclusions = [];
   if (attributionOnly) {
     certificationExclusions.push(
-      "API-instrumented renderer pairs are attribution-only and cannot certify causal timing",
+      "attribution-instrumented renderer pairs cannot certify causal timing",
     );
   } else if (!ordinaryQualityEligible) {
     certificationExclusions.push(
@@ -1804,14 +1812,14 @@ export function assessRepresentativePairComparability(
     webglRun,
     webgpuRun,
   );
-  if (attributionOnly && tilesetLifecycle.valid !== true) {
+  if (apiLifecycleAttributionRequired && tilesetLifecycle.valid !== true) {
     reasons.push(
       ...tilesetLifecycle.reasons.map(
         (reason) => `tileset lifecycle attribution is incomplete: ${reason}`,
       ),
     );
   } else if (
-    attributionOnly &&
+    apiLifecycleAttributionRequired &&
     causalRendererComparison &&
     ((tilesetLifecycle.requestLedger?.webgl?.openRequestCount ?? 0) > 0 ||
       (tilesetLifecycle.requestLedger?.webgpu?.openRequestCount ?? 0) > 0)
@@ -1888,6 +1896,7 @@ export function assessRepresentativePairComparability(
     measurementTerrainMode,
     causalRendererComparison,
     attributionOnly,
+    apiLifecycleAttributionRequired,
     ordinaryQualityEligible,
     certificationEligible,
     certificationExclusions,

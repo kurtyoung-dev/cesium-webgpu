@@ -7,10 +7,10 @@
  * promotion metric.
  */
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import {
@@ -40,6 +40,16 @@ import {
 import { assertPerformanceWorkloadManifest } from "./lib/performance-workload-manifest.mjs";
 import { summarizeRepresentativeTilesetResidency } from "./lib/representative-performance-content.mjs";
 import { classifyPerformanceCampaignExit } from "./lib/c11-205-evidence.mjs";
+import {
+  assessC11205OwnerAttribution,
+  C11_205_OWNER_ATTRIBUTION_CONFIG,
+  createC11205OwnerAttributionLockRecord,
+  createC11205OwnerAttributionRunningMarker,
+  evaluateC11205OwnerAttributionConfig,
+  ownerAttributionFirstRedLookupDecision,
+  ownerAttributionFirstRedDecision,
+  ownsC11205OwnerAttributionLock,
+} from "./lib/c11-205-owner-attribution.mjs";
 import { buildPerformanceViewerUrl } from "./lib/performance-viewer-url.mjs";
 import {
   renderersForWorkload,
@@ -80,6 +90,7 @@ Options:
   --gpu-timestamps         Enable WebGPU pass timestamps (separate characterization lane)
   --no-gpu-timestamps      Explicitly select the default timestamp-off comparison lane
   --reuse-browser          Reuse one browser process (cross-run stress mode)
+  --cpu-owner-attribution Diagnose C11-169 on the exact resident C11-205 workload
   --headed                 Launch a visible Edge window
   --help                   Show this help
 
@@ -106,20 +117,36 @@ function parseArguments(argv) {
     // Timestamp profiling is an explicit, separate characterization lane.
     gpuTimestamps: false,
     reuseBrowser: false,
+    cpuOwnerAttribution: false,
+    cpuOwnerAttributionRequestedOutput: null,
+    cpuOwnerAttributionRequestedOptions: null,
     headed: false,
+    explicit: {
+      manifest: false,
+      renderer: false,
+      workload: false,
+      repetitions: false,
+      frames: false,
+      output: false,
+    },
   };
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
     if (argument === "--manifest") {
       options.manifestPath = resolve(argv[++index]);
+      options.explicit.manifest = true;
     } else if (argument === "--renderer") {
       options.renderer = argv[++index];
+      options.explicit.renderer = true;
     } else if (argument === "--workload") {
       options.workloads.push(argv[++index]);
+      options.explicit.workload = true;
     } else if (argument === "--repetitions") {
       options.repetitions = Number.parseInt(argv[++index], 10);
+      options.explicit.repetitions = true;
     } else if (argument === "--frames") {
       options.frames = Number.parseInt(argv[++index], 10);
+      options.explicit.frames = true;
     } else if (argument === "--viewport-width") {
       options.viewportWidth = Number.parseInt(argv[++index], 10);
     } else if (argument === "--viewport-height") {
@@ -130,6 +157,7 @@ function parseArguments(argv) {
       options.resolutionScale = Number.parseFloat(argv[++index]);
     } else if (argument === "--output") {
       options.output = resolve(argv[++index]);
+      options.explicit.output = true;
     } else if (
       argument === "--api-instrumentation" ||
       argument === "--api-counters"
@@ -141,6 +169,8 @@ function parseArguments(argv) {
       options.gpuTimestamps = false;
     } else if (argument === "--reuse-browser") {
       options.reuseBrowser = true;
+    } else if (argument === "--cpu-owner-attribution") {
+      options.cpuOwnerAttribution = true;
     } else if (argument === "--headed") {
       options.headed = true;
     } else if (argument === "--help") {
@@ -149,6 +179,46 @@ function parseArguments(argv) {
     } else {
       throw new Error(`Unknown argument: ${argument}`);
     }
+  }
+  if (options.cpuOwnerAttribution) {
+    const config = C11_205_OWNER_ATTRIBUTION_CONFIG;
+    const canonicalManifestPath = resolve(
+      repositoryDirectory,
+      config.manifestFile,
+    );
+    const canonicalOutputPath = resolve(
+      repositoryDirectory,
+      config.diagnosticOutput,
+    );
+    options.cpuOwnerAttributionRequestedOptions = {
+      manifestPath: options.explicit.manifest
+        ? options.manifestPath
+        : canonicalManifestPath,
+      renderer: options.explicit.renderer ? options.renderer : config.renderer,
+      workloads: options.explicit.workload
+        ? [...options.workloads]
+        : [config.workloadId],
+      repetitions: options.explicit.repetitions
+        ? options.repetitions
+        : config.repetitions,
+      frames: options.explicit.frames ? options.frames : config.measuredFrames,
+      output: options.explicit.output ? options.output : canonicalOutputPath,
+      apiInstrumentation: options.apiInstrumentation,
+      gpuTimestamps: options.gpuTimestamps,
+      reuseBrowser: options.reuseBrowser,
+      headed: options.headed,
+    };
+    options.cpuOwnerAttributionRequestedOutput =
+      options.cpuOwnerAttributionRequestedOptions.output;
+    // Load and serialize only the canonical diagnostic inputs. Conflicting
+    // caller values remain in the requested snapshot for fail-closed policy
+    // assessment, but can never redirect reads or overwrite causal evidence.
+    options.manifestPath = canonicalManifestPath;
+    options.renderer = config.renderer;
+    options.workloads = [config.workloadId];
+    options.repetitions = config.repetitions;
+    options.frames = config.measuredFrames;
+    options.output = resolve(repositoryDirectory, config.diagnosticOutput);
   }
   if (!["webgl", "webgpu", "both"].includes(options.renderer)) {
     throw new Error("--renderer must be webgl, webgpu, or both");
@@ -203,6 +273,28 @@ async function fileIdentity(path) {
     byteLength: bytes.byteLength,
     sha256: createHash("sha256").update(bytes).digest("hex").toUpperCase(),
   };
+}
+
+function repositoryRelativePath(path) {
+  return relative(repositoryDirectory, path).replaceAll("\\", "/");
+}
+
+async function requireC11205OwnerAttributionLock(lockPath, runId) {
+  let record;
+  try {
+    record = JSON.parse(await readFile(lockPath, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `could not read C11-169 owner-attribution lock ${lockPath}: ${String(error?.stack ?? error)}`,
+      { cause: error },
+    );
+  }
+  if (!ownsC11205OwnerAttributionLock(record, runId)) {
+    throw new Error(
+      `C11-169 owner-attribution lock ${lockPath} is not owned by run ${runId}`,
+    );
+  }
+  return record;
 }
 
 function launchCampaignBrowser(manifest, options) {
@@ -312,6 +404,7 @@ async function runOne(
   measurement,
   apiInstrumentation,
   gpuTimestamps,
+  cpuOwnerAttribution,
 ) {
   const protocol = manifest.protocol;
   const pageErrors = [];
@@ -1800,6 +1893,7 @@ async function runOne(
         cameraTrack,
         apiInstrumentationEnabled,
         gpuTimestampsEnabled,
+        cpuOwnerAttributionEnabled,
         firstCompleteStableFrames,
       }) => {
         const setupStart = performance.now();
@@ -2394,51 +2488,80 @@ async function runOne(
                     index / Math.max(1, configuredRoutePrimeSamples - 1),
                 )
               : cameraTrack.map((_, index) => index / (cameraTrack.length - 1));
-          for (
-            let primeIndex = 0;
-            primeIndex < primeProgresses.length;
-            primeIndex++
-          ) {
-            const waypointPrimeDeadline =
-              performance.now() + protocolDefinition.settleTimeoutMs;
-            applyCameraTrackProgress(primeProgresses[primeIndex]);
-            let waypointStableFrames = 0;
-            while (
-              waypointStableFrames <
-                workloadDefinition.representativeConfig.primeStableFrames &&
-              performance.now() < waypointPrimeDeadline
+          // Route priming exists to build the same resident UNION for both
+          // backends. Cesium's normal foveated delay and moving-request cull
+          // are intentionally wall-clock-sensitive: a slower content
+          // realization can dwell past the delay and request peripheral
+          // siblings that a faster backend skips. Disable only those request-
+          // admission delays during this untimed prime, then restore every
+          // tileset before convergence and measurement. Traversal, SSE,
+          // selection, rendering, and all measured feature settings remain
+          // unchanged.
+          const routePrimeAdmissionPolicy =
+            representativeHarness.assets.tilesets.map((tileset) => ({
+              tileset,
+              foveatedTimeDelay: tileset.foveatedTimeDelay,
+              cullRequestsWhileMoving: tileset.cullRequestsWhileMoving,
+            }));
+          let routePrimeAdmissionPolicyRestored;
+          try {
+            for (const policy of routePrimeAdmissionPolicy) {
+              policy.tileset.foveatedTimeDelay = 0;
+              policy.tileset.cullRequestsWhileMoving = false;
+            }
+            for (
+              let primeIndex = 0;
+              primeIndex < primeProgresses.length;
+              primeIndex++
             ) {
-              await waitFrames(1, "representative-route-prime");
-              const assetsReady =
-                representativeHarness.assets.models.every(
-                  (model) => model.ready,
-                ) &&
-                representativeHarness.assets.tilesets.every(
-                  (tileset) => tileset.tilesLoaded,
+              const waypointPrimeDeadline =
+                performance.now() + protocolDefinition.settleTimeoutMs;
+              applyCameraTrackProgress(primeProgresses[primeIndex]);
+              let waypointStableFrames = 0;
+              while (
+                waypointStableFrames <
+                  workloadDefinition.representativeConfig.primeStableFrames &&
+                performance.now() < waypointPrimeDeadline
+              ) {
+                await waitFrames(1, "representative-route-prime");
+                const assetsReady =
+                  representativeHarness.assets.models.every(
+                    (model) => model.ready,
+                  ) &&
+                  representativeHarness.assets.tilesets.every(
+                    (tileset) => tileset.tilesLoaded,
+                  );
+                if (scene.globe.tilesLoaded && assetsReady) {
+                  waypointStableFrames++;
+                  // Sample only fully stable prime frames. Provider replacement
+                  // can leave old ellipsoid selections visible for a few
+                  // transitional frames; those are setup evidence, not part of
+                  // the representative content's bounded-LOD proof.
+                  primeTracker.sample();
+                } else {
+                  waypointStableFrames = 0;
+                }
+              }
+              if (
+                waypointStableFrames <
+                workloadDefinition.representativeConfig.primeStableFrames
+              ) {
+                const primeLabel =
+                  configuredRoutePrimeSamples > 0
+                    ? `route sample ${primeIndex + 1}/${primeProgresses.length}`
+                    : cameraTrack[primeIndex].name;
+                throw new Error(
+                  `representative route prime timed out at ${primeLabel}`,
                 );
-              if (scene.globe.tilesLoaded && assetsReady) {
-                waypointStableFrames++;
-                // Sample only fully stable prime frames. Provider replacement
-                // can leave old ellipsoid selections visible for a few
-                // transitional frames; those are setup evidence, not part of
-                // the representative content's bounded-LOD proof.
-                primeTracker.sample();
-              } else {
-                waypointStableFrames = 0;
               }
             }
-            if (
-              waypointStableFrames <
-              workloadDefinition.representativeConfig.primeStableFrames
-            ) {
-              const primeLabel =
-                configuredRoutePrimeSamples > 0
-                  ? `route sample ${primeIndex + 1}/${primeProgresses.length}`
-                  : cameraTrack[primeIndex].name;
-              throw new Error(
-                `representative route prime timed out at ${primeLabel}`,
-              );
+          } finally {
+            for (const policy of routePrimeAdmissionPolicy) {
+              policy.tileset.foveatedTimeDelay = policy.foveatedTimeDelay;
+              policy.tileset.cullRequestsWhileMoving =
+                policy.cullRequestsWhileMoving;
             }
+            routePrimeAdmissionPolicyRestored = true;
           }
           representativeHarness.primeEvidence = primeTracker.snapshot({
             phase: "prime",
@@ -2450,6 +2573,16 @@ async function runOne(
               configuredRoutePrimeSamples > 0
                 ? "continuous-interpolation"
                 : "waypoints",
+            requestAdmissionPolicy: {
+              scope: "untimed-route-prime-only",
+              foveatedTimeDelay: 0,
+              cullRequestsWhileMoving: false,
+              restoredBeforeConvergence: routePrimeAdmissionPolicyRestored,
+              original: routePrimeAdmissionPolicy.map((policy) => ({
+                foveatedTimeDelay: policy.foveatedTimeDelay,
+                cullRequestsWhileMoving: policy.cullRequestsWhileMoving,
+              })),
+            },
           };
 
           applyCameraTrackProgress(0);
@@ -2605,6 +2738,10 @@ async function runOne(
         let trackEpochMs = performance.now();
         let cameraTrackFrameIndex = 0;
         let currentTrackState = null;
+        // C11-205 owner attribution replaces only the measured resident-route
+        // camera cursor. The ordinary action rAF remains the sole owner for
+        // every default-off and non-diagnostic run.
+        let cpuOwnerAttributionMeasurementCursorRunning = false;
         const currentPickState = {
           valid: false,
           sequence: 0,
@@ -2858,7 +2995,7 @@ async function runOne(
           if (!actionLoopActive) {
             return;
           }
-          if (actionRunning) {
+          if (actionRunning && !cpuOwnerAttributionMeasurementCursorRunning) {
             const frame = actionCounters.frames++;
             const collection = content.collection;
             if (workloadDefinition.action === "orbit") {
@@ -3303,6 +3440,20 @@ async function runOne(
           recordPickTelemetry = true;
           pickIssuanceEnabled = true;
         }
+        // Preload the diagnostic helper before taking any measured-window
+        // counter snapshot or installing any evidence listener. Dynamic import
+        // yields to the event loop, so doing this later can make an untimed
+        // render look like measured cumulative work or an apparent 601st row.
+        let ownerAttributionModule = null;
+        if (cpuOwnerAttributionEnabled) {
+          if (!representativeHarness?.assets) {
+            throw new Error(
+              "CPU owner attribution requires representative resident assets",
+            );
+          }
+          ownerAttributionModule =
+            await import("/Tools/visual-regression/lib/c11-205-owner-attribution.mjs");
+        }
         const actionCountersStart = { ...actionCounters };
         const diagnostics = globalThis.__perfCampaignDiagnostics;
         const apiCountersStart = { ...diagnostics.apiCounters };
@@ -3491,6 +3642,85 @@ async function runOne(
           };
           terrainOwnershipDiagnostics.derivedRefreshObserverAttached = true;
         }
+        let cpuOwnerAttributionCollector = null;
+        let cpuOwnerAttributionStopPromise = null;
+        let cpuOwnerAttributionMeasurementFrameIndex = 0;
+        let removeCpuOwnerAttributionMeasurementCursor = null;
+        const stopCpuOwnerAttribution = (aborted = false) => {
+          if (!cpuOwnerAttributionCollector) return null;
+          cpuOwnerAttributionStopPromise ??= cpuOwnerAttributionCollector.stop({
+            aborted,
+          });
+          return cpuOwnerAttributionStopPromise;
+        };
+        const stopCpuOwnerAttributionMeasurementCursor = () => {
+          cpuOwnerAttributionMeasurementCursorRunning = false;
+          const remove = removeCpuOwnerAttributionMeasurementCursor;
+          removeCpuOwnerAttributionMeasurementCursor = null;
+          try {
+            remove?.();
+          } catch {
+            // Event removal must not strand the action loop, trace, evidence
+            // listener, profiler wrappers, or viewer teardown. The running
+            // guard above already makes a retained callback inert.
+          }
+        };
+        const startCpuOwnerAttributionMeasurementCursor = () => {
+          if (!cpuOwnerAttributionEnabled) return;
+          if (!residentFrameDrivenTrack) {
+            throw new Error(
+              "CPU owner attribution requires a resident fixed-frame route",
+            );
+          }
+          const measuredFrameCount = measurementDefinition.frames;
+          cpuOwnerAttributionMeasurementFrameIndex = 0;
+          cpuOwnerAttributionMeasurementCursorRunning = true;
+          try {
+            // Viewer raises clock.onTick before Scene.render. Applying camera
+            // work here gives every presented frame one deterministic cursor
+            // update while keeping that work outside Scene.render accounting.
+            removeCpuOwnerAttributionMeasurementCursor =
+              viewer.clock.onTick.addEventListener(() => {
+                if (
+                  !cpuOwnerAttributionMeasurementCursorRunning ||
+                  cpuOwnerAttributionMeasurementFrameIndex >= measuredFrameCount
+                ) {
+                  return;
+                }
+                const frameIndex = cpuOwnerAttributionMeasurementFrameIndex++;
+                const routeProgress =
+                  measuredFrameCount <= 1
+                    ? 0
+                    : frameIndex / (measuredFrameCount - 1);
+                currentTrackState = applyCameraTrackProgress(routeProgress);
+                actionCounters.frames++;
+                actionCounters.cameraTrackUpdates++;
+              });
+          } catch (error) {
+            cpuOwnerAttributionMeasurementCursorRunning = false;
+            throw error;
+          }
+        };
+        if (cpuOwnerAttributionEnabled) {
+          cpuOwnerAttributionCollector =
+            ownerAttributionModule.createC11205OwnerAttributionCollector({
+              scene,
+              renderer: scene._alternateSceneRenderer,
+              actualRenderer,
+              directModels: representativeHarness.assets.models,
+              tilesets: representativeHarness.assets.tilesets,
+              // Snapshot route state synchronously in postRender. The helper's
+              // queued microtask then reads WebGPU lastFrame only after the
+              // enclosing Scene.render and profiler accounting have returned.
+              metadataProvider: () => ({ ...(currentTrackState ?? {}) }),
+            });
+          cpuOwnerAttributionCollector.start();
+          performanceCampaignCleanup.add(() => stopCpuOwnerAttribution(true));
+          performanceCampaignCleanup.add(
+            stopCpuOwnerAttributionMeasurementCursor,
+          );
+          startCpuOwnerAttributionMeasurementCursor();
+        }
         if (residentFrameDrivenTrack) {
           actionRunning = true;
         }
@@ -3548,6 +3778,7 @@ async function runOne(
           // run-scoped mutation the measurement boundary installed, then
           // rethrow so the run is recorded as an error rather than yielding a
           // truncated window that could be mistaken for a measured one.
+          stopCpuOwnerAttributionMeasurementCursor();
           stopActionLoop();
           pickIssuanceEnabled = false;
           removeActionEvidence?.();
@@ -3563,6 +3794,7 @@ async function runOne(
           }
           context._visibilityExecutionOwnershipDiagnostics = undefined;
           if (timestampEnabled) globalThis.CesiumDebug?.gpuPassCost?.(false);
+          await stopCpuOwnerAttribution(true);
           throw measurementWaitError;
         }
 
@@ -3570,10 +3802,12 @@ async function runOne(
         // Timestamp readback may continue below, but it must not add motion,
         // uploads, API calls, heap deltas, or long tasks to this measurement.
         const measurementEndMs = performance.now();
+        stopCpuOwnerAttributionMeasurementCursor();
         stopActionLoop();
         pickIssuanceEnabled = false;
         removeActionEvidence?.();
         const trace = scene.endPerformanceTrace();
+        const cpuOwnerAttributionResult = await stopCpuOwnerAttribution(false);
         const webgpuModelPreparationEvidence =
           actualRenderer === "webgl"
             ? null
@@ -4118,6 +4352,7 @@ async function runOne(
           enabledFeatures: context.enabledFeatures || [],
           canvasState,
           trace,
+          cpuOwnerAttribution: cpuOwnerAttributionResult,
           measurement: {
             ...measurementDefinition,
             elapsedMs: measurementElapsedMs,
@@ -4215,6 +4450,7 @@ async function runOne(
         cameraTrack: GLOBE_CAMERA_TRACK,
         apiInstrumentationEnabled: apiInstrumentation,
         gpuTimestampsEnabled: gpuTimestamps,
+        cpuOwnerAttributionEnabled: cpuOwnerAttribution,
         firstCompleteStableFrames: FIRST_COMPLETE_FRAME_STABLE_FRAMES,
       },
     );
@@ -4373,8 +4609,38 @@ async function runOne(
             browserResult.trackEvidence || [],
           )
         : null;
-    browserResult.quality = assessPerformanceRunQuality(browserResult);
+    browserResult.cpuOwnerAttributionAssessment = cpuOwnerAttribution
+      ? assessC11205OwnerAttribution(browserResult.cpuOwnerAttribution, {
+          traceSamples: browserResult.trace?.samples || [],
+          trackEvidence: browserResult.trackEvidence || [],
+        })
+      : null;
+    browserResult.quality = assessPerformanceRunQuality(browserResult, {
+      attributionOnly: cpuOwnerAttribution,
+      attributionReason: cpuOwnerAttribution
+        ? "C11-169 CPU-owner timers and WebGPU phase profiling are diagnostic/noncausal and excluded from timing aggregation and certification"
+        : undefined,
+    });
     const failures = [];
+    if (
+      cpuOwnerAttribution &&
+      browserResult.cpuOwnerAttributionAssessment?.pass !== true
+    ) {
+      const attributionFailures = browserResult.cpuOwnerAttributionAssessment
+        ?.failures ?? ["CPU owner attribution assessment was missing"];
+      failures.push(
+        ...attributionFailures.map(
+          (reason) => `CPU owner attribution: ${reason}`,
+        ),
+      );
+      browserResult.quality.status = "invalid";
+      browserResult.quality.measurementValid = false;
+      browserResult.quality.validForAggregation = false;
+      browserResult.quality.validForCpuAggregation = false;
+      browserResult.quality.validForGpuAggregation = false;
+      browserResult.quality.reasons ??= [];
+      browserResult.quality.reasons.push(...attributionFailures);
+    }
     if (browserResult.actualRenderer !== renderer) {
       failures.push(
         `resolved ${browserResult.actualRenderer}, expected ${renderer}`,
@@ -4906,6 +5172,50 @@ async function runOne(
 }
 
 const options = parseArguments(process.argv.slice(2));
+let cpuOwnerAttributionRunId = null;
+let cpuOwnerAttributionLockPath = null;
+let cpuOwnerAttributionRunningMarker = null;
+if (options.cpuOwnerAttribution) {
+  cpuOwnerAttributionRunId = randomUUID();
+  cpuOwnerAttributionLockPath = resolve(
+    repositoryDirectory,
+    C11_205_OWNER_ATTRIBUTION_CONFIG.lockOutput,
+  );
+  const acquiredAt = new Date().toISOString();
+  const lockRecord = createC11205OwnerAttributionLockRecord(
+    cpuOwnerAttributionRunId,
+    acquiredAt,
+  );
+  cpuOwnerAttributionRunningMarker = createC11205OwnerAttributionRunningMarker({
+    runId: cpuOwnerAttributionRunId,
+    generatedAt: acquiredAt,
+  });
+  await mkdir(dirname(cpuOwnerAttributionLockPath), { recursive: true });
+  try {
+    await writeFile(
+      cpuOwnerAttributionLockPath,
+      `${JSON.stringify(lockRecord, null, 2)}\n`,
+      { encoding: "utf8", flag: "wx" },
+    );
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw new Error(
+        `C11-169 owner-attribution lock already exists at ${cpuOwnerAttributionLockPath}; ` +
+          "refusing to touch the diagnostic output. Verify no owner process remains, then remove the stale lock manually.",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+  // The lock is deliberately retained if this write or any later setup fails.
+  // That leaves this invocation visibly RUNNING/incomplete instead of exposing
+  // a stale PASS, and requires deliberate stale-lock recovery before retrying.
+  await writeFile(
+    options.output,
+    `${JSON.stringify(cpuOwnerAttributionRunningMarker, null, 2)}\n`,
+    "utf8",
+  );
+}
 const manifest = JSON.parse(await readFile(options.manifestPath, "utf8"));
 const manifestSchema = JSON.parse(
   await readFile(
@@ -4943,6 +5253,14 @@ const toolingIdentities = Object.fromEntries(
         resolve(toolDirectory, "lib", "representative-performance-content.mjs"),
       ],
       ["cameraTrack", resolve(toolDirectory, "lib", "globe-camera-track.mjs")],
+      ...(options.cpuOwnerAttribution
+        ? [
+            [
+              "cpuOwnerAttributionHelper",
+              resolve(toolDirectory, "lib", "c11-205-owner-attribution.mjs"),
+            ],
+          ]
+        : []),
     ].map(async ([name, path]) => [name, await fileIdentity(path)]),
   ),
 );
@@ -4977,6 +5295,39 @@ for (const workload of selectedWorkloads) {
   }
 }
 const repetitions = options.repetitions ?? manifest.protocol.repetitions;
+let causalReferenceIdentity = null;
+let causalReferenceIdentityError = null;
+const causalReferencePath = resolve(
+  repositoryDirectory,
+  C11_205_OWNER_ATTRIBUTION_CONFIG.causalReference,
+);
+if (options.cpuOwnerAttribution) {
+  try {
+    causalReferenceIdentity = await fileIdentity(causalReferencePath);
+  } catch (error) {
+    causalReferenceIdentityError = String(error?.stack || error);
+  }
+}
+const cpuOwnerAttributionConfigAssessment = options.cpuOwnerAttribution
+  ? evaluateC11205OwnerAttributionConfig({
+      manifest,
+      workload: selectedWorkloads[0],
+      options: options.cpuOwnerAttributionRequestedOptions,
+      repetitions: options.cpuOwnerAttributionRequestedOptions.repetitions,
+      selectedWorkloadIds:
+        options.cpuOwnerAttributionRequestedOptions.workloads,
+      manifestRelativePath: repositoryRelativePath(
+        options.cpuOwnerAttributionRequestedOptions.manifestPath,
+      ),
+      outputRelativePath: repositoryRelativePath(
+        options.cpuOwnerAttributionRequestedOutput,
+      ),
+      manifestSha256: toolingIdentities.manifest.sha256,
+      causalReferenceRelativePath:
+        C11_205_OWNER_ATTRIBUTION_CONFIG.causalReference,
+      causalReferenceSha256: causalReferenceIdentity?.sha256 ?? null,
+    })
+  : null;
 const runSchedule = buildCounterbalancedSchedule(renderers, repetitions);
 const workloadSchedules = Object.fromEntries(
   selectedWorkloads.map((workload) => {
@@ -4991,6 +5342,7 @@ const workloadSchedules = Object.fromEntries(
 const report = {
   schemaVersion: 1,
   kind: "fork-performance-campaign",
+  ...(options.cpuOwnerAttribution ? { runId: cpuOwnerAttributionRunId } : {}),
   instrumentation: {
     schemaVersion: 2,
     compatibilityAliases: {
@@ -4998,6 +5350,31 @@ const report = {
       webgpuRenderPassDrawCalls: "webgpuRenderPassWorkOps",
     },
   },
+  cpuOwnerAttribution: options.cpuOwnerAttribution
+    ? {
+        schemaVersion: C11_205_OWNER_ATTRIBUTION_CONFIG.schemaVersion,
+        objective:
+          "Diagnose C11-169 CPU ownership on the prior C11-205 resident San Francisco workload",
+        diagnostic: true,
+        noncausal: true,
+        attributionOnly: true,
+        certificationEligible: false,
+        status: "RUNNING",
+        incomplete: true,
+        pass: null,
+        exitCode: null,
+        config: C11_205_OWNER_ATTRIBUTION_CONFIG,
+        configAssessment: cpuOwnerAttributionConfigAssessment,
+        causalReference: {
+          role: "pre-existing uninstrumented causal evidence; referenced read-only and never recertified by this diagnostic",
+          path: C11_205_OWNER_ATTRIBUTION_CONFIG.causalReference,
+          identity: causalReferenceIdentity,
+          identityError: causalReferenceIdentityError,
+        },
+        lock: cpuOwnerAttributionRunningMarker.cpuOwnerAttribution.lock,
+        firstRed: null,
+      }
+    : null,
   generatedAt: new Date().toISOString(),
   manifest: {
     path: options.manifestPath,
@@ -5030,6 +5407,7 @@ const report = {
     measuredFramesOverride: options.frames ?? null,
     apiInstrumentation: options.apiInstrumentation,
     gpuTimestamps: options.gpuTimestamps,
+    cpuOwnerAttribution: options.cpuOwnerAttribution,
     browserIsolation: options.reuseBrowser
       ? "shared-process-isolated-contexts"
       : "fresh-process-per-run",
@@ -5039,7 +5417,9 @@ const report = {
     skippedWorkloadRenderers: workloadSelection.skippedRenderers,
     runSchedule,
     workloadSchedules,
-    note: "CPU Scene.render and capability-available GPU timestamp metrics are primary; requestAnimationFrame wall time is diagnostic and may be display-limited.",
+    note: options.cpuOwnerAttribution
+      ? "C11-169 owner and WebGPU phase timings are instrumented, synchronous, diagnostic/noncausal, and excluded from certification; the ordinary resident and identity gates remain mandatory."
+      : "CPU Scene.render and capability-available GPU timestamp metrics are primary; requestAnimationFrame wall time is diagnostic and may be display-limited.",
   },
   browserVersion: null,
   runs: [],
@@ -5050,6 +5430,14 @@ const report = {
 
 let sharedBrowser;
 try {
+  if (
+    options.cpuOwnerAttribution &&
+    cpuOwnerAttributionConfigAssessment?.pass !== true
+  ) {
+    throw new Error(
+      `[structural] invalid C11-169 resident CPU-owner attribution config: ${cpuOwnerAttributionConfigAssessment?.failures.join("; ")}`,
+    );
+  }
   if (options.reuseBrowser) {
     sharedBrowser = await launchCampaignBrowser(manifest, options);
     report.browserVersion = sharedBrowser.version();
@@ -5093,6 +5481,7 @@ try {
             measurement,
             options.apiInstrumentation,
             options.gpuTimestamps,
+            options.cpuOwnerAttribution,
           );
         } finally {
           if (!sharedBrowser) {
@@ -5182,7 +5571,9 @@ try {
       const certificationEligiblePairs = validPairs.filter(
         (pair) => pair.certificationEligible,
       );
-      const attributionOnlyCampaign = options.apiInstrumentation === true;
+      const attributionOnlyCampaign =
+        options.apiInstrumentation === true ||
+        options.cpuOwnerAttribution === true;
       const closurePairs = attributionOnlyCampaign
         ? validPairs
         : certificationEligiblePairs;
@@ -5280,15 +5671,222 @@ try {
   await sharedBrowser?.close();
 }
 
-await mkdir(dirname(options.output), { recursive: true });
-await writeFile(options.output, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-console.log(JSON.stringify(report, null, 2));
-console.error(`Wrote ${options.output}`);
-
 // Exit codes: 0 = every gate decided and passed. 1 = a real product FAIL.
 // 2 = an exception. 3 = no FAIL, but a leg had no subject to measure —
 // acceptance is INCOMPLETE, not green.
-const exitClassification = classifyPerformanceCampaignExit(report);
+let exitClassification = classifyPerformanceCampaignExit(report);
+function synchronizeCpuOwnerAttributionExit() {
+  if (!options.cpuOwnerAttribution) return;
+  report.cpuOwnerAttribution.status = exitClassification.verdict;
+  report.cpuOwnerAttribution.incomplete = false;
+  report.cpuOwnerAttribution.pass = exitClassification.exitCode === 0;
+  report.cpuOwnerAttribution.exitCode = exitClassification.exitCode;
+  report.status = exitClassification.verdict;
+  report.incomplete = false;
+  report.pass = exitClassification.exitCode === 0;
+  report.exitCode = exitClassification.exitCode;
+}
+
+function recordCpuOwnerAttributionLifecycleError(label, error) {
+  const detail = String(error?.stack || error);
+  report.result = "error";
+  report.errors ??= [];
+  report.errors.push(`${label}: ${detail}`);
+  console.error(`${label}: ${detail}`);
+  exitClassification = classifyPerformanceCampaignExit(report);
+  synchronizeCpuOwnerAttributionExit();
+}
+
+synchronizeCpuOwnerAttributionExit();
+let outputPersisted = false;
+if (options.cpuOwnerAttribution) {
+  const firstRedPath = resolve(
+    repositoryDirectory,
+    C11_205_OWNER_ATTRIBUTION_CONFIG.firstRedOutput,
+  );
+  let mayFinalizeOutput = true;
+  try {
+    await requireC11205OwnerAttributionLock(
+      cpuOwnerAttributionLockPath,
+      cpuOwnerAttributionRunId,
+    );
+  } catch (error) {
+    mayFinalizeOutput = false;
+    recordCpuOwnerAttributionLifecycleError(
+      "owner-attribution lock ownership failed before first-red handling",
+      error,
+    );
+  }
+
+  if (mayFinalizeOutput) {
+    let firstRedLookup;
+    try {
+      await access(firstRedPath);
+      firstRedLookup = ownerAttributionFirstRedLookupDecision();
+    } catch (error) {
+      firstRedLookup = ownerAttributionFirstRedLookupDecision(error);
+    }
+    if (firstRedLookup.lookupError !== null) {
+      report.cpuOwnerAttribution.firstRed = {
+        existedBefore: null,
+        written: false,
+        preserved: false,
+        lookupError: firstRedLookup.lookupError,
+        path: C11_205_OWNER_ATTRIBUTION_CONFIG.firstRedOutput,
+        policy:
+          "write-once; an existing first red is referenced, never overwritten",
+      };
+      recordCpuOwnerAttributionLifecycleError(
+        "owner-attribution first-red lookup failed",
+        firstRedLookup.lookupError,
+      );
+    } else {
+      let firstRed = ownerAttributionFirstRedDecision({
+        exitCode: exitClassification.exitCode,
+        existedBefore: firstRedLookup.existedBefore,
+      });
+      report.cpuOwnerAttribution.firstRed = {
+        ...firstRed,
+        path: C11_205_OWNER_ATTRIBUTION_CONFIG.firstRedOutput,
+        policy:
+          "write-once; an existing first red is referenced, never overwritten",
+      };
+      if (firstRed.written) {
+        try {
+          await requireC11205OwnerAttributionLock(
+            cpuOwnerAttributionLockPath,
+            cpuOwnerAttributionRunId,
+          );
+        } catch (error) {
+          mayFinalizeOutput = false;
+          report.cpuOwnerAttribution.firstRed = {
+            ...report.cpuOwnerAttribution.firstRed,
+            written: false,
+            preserved: false,
+            lockOwnershipError: String(error?.stack || error),
+          };
+          recordCpuOwnerAttributionLifecycleError(
+            "owner-attribution lock ownership failed before first-red write",
+            error,
+          );
+        }
+        if (mayFinalizeOutput) {
+          try {
+            await mkdir(dirname(firstRedPath), { recursive: true });
+            await writeFile(
+              firstRedPath,
+              `${JSON.stringify(report, null, 2)}\n`,
+              {
+                encoding: "utf8",
+                flag: "wx",
+              },
+            );
+          } catch (error) {
+            if (error?.code === "EEXIST") {
+              firstRed = ownerAttributionFirstRedDecision({
+                exitCode: exitClassification.exitCode,
+                existedBefore: true,
+              });
+              report.cpuOwnerAttribution.firstRed = {
+                ...report.cpuOwnerAttribution.firstRed,
+                ...firstRed,
+              };
+            } else {
+              const writeError = String(error?.stack || error);
+              report.cpuOwnerAttribution.firstRed = {
+                ...report.cpuOwnerAttribution.firstRed,
+                written: false,
+                preserved: false,
+                writeError,
+              };
+              recordCpuOwnerAttributionLifecycleError(
+                "owner-attribution first-red write failed",
+                error,
+              );
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (mayFinalizeOutput) {
+    try {
+      await requireC11205OwnerAttributionLock(
+        cpuOwnerAttributionLockPath,
+        cpuOwnerAttributionRunId,
+      );
+    } catch (error) {
+      mayFinalizeOutput = false;
+      recordCpuOwnerAttributionLifecycleError(
+        "owner-attribution lock ownership failed before final output",
+        error,
+      );
+    }
+  }
+  if (mayFinalizeOutput) {
+    try {
+      await mkdir(dirname(options.output), { recursive: true });
+      await writeFile(
+        options.output,
+        `${JSON.stringify(report, null, 2)}\n`,
+        "utf8",
+      );
+      outputPersisted = true;
+    } catch (error) {
+      recordCpuOwnerAttributionLifecycleError(
+        "owner-attribution final output write failed",
+        error,
+      );
+    }
+  }
+  if (outputPersisted) {
+    let releaseOwnershipVerified = false;
+    try {
+      await requireC11205OwnerAttributionLock(
+        cpuOwnerAttributionLockPath,
+        cpuOwnerAttributionRunId,
+      );
+      releaseOwnershipVerified = true;
+      await unlink(cpuOwnerAttributionLockPath);
+    } catch (error) {
+      outputPersisted = false;
+      report.cpuOwnerAttribution.lock.releaseError = String(
+        error?.stack || error,
+      );
+      recordCpuOwnerAttributionLifecycleError(
+        "owner-attribution lock release failed after final output",
+        error,
+      );
+      if (releaseOwnershipVerified) {
+        try {
+          await writeFile(
+            options.output,
+            `${JSON.stringify(report, null, 2)}\n`,
+            "utf8",
+          );
+          outputPersisted = true;
+        } catch (writeError) {
+          recordCpuOwnerAttributionLifecycleError(
+            "owner-attribution release-error output write failed",
+            writeError,
+          );
+        }
+      }
+    }
+  }
+} else {
+  await mkdir(dirname(options.output), { recursive: true });
+  await writeFile(
+    options.output,
+    `${JSON.stringify(report, null, 2)}\n`,
+    "utf8",
+  );
+  outputPersisted = true;
+}
+console.log(JSON.stringify(report, null, 2));
+if (outputPersisted) console.error(`Wrote ${options.output}`);
+
 console.error(`\nCAMPAIGN ${exitClassification.verdict}`);
 for (const cause of exitClassification.productCauses) {
   console.error(`  FAIL       ${cause}`);

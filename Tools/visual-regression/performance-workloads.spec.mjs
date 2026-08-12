@@ -306,6 +306,21 @@ test("representative resident manifest prewarms its exact high-cache frame route
   );
 });
 
+test("resident route prime removes wall-clock request admission only outside measurement", () => {
+  assert.match(
+    runnerSource,
+    /const routePrimeAdmissionPolicy =\s+representativeHarness\.assets\.tilesets\.map/,
+  );
+  assert.match(
+    runnerSource,
+    /try \{[\s\S]*?policy\.tileset\.foveatedTimeDelay = 0;[\s\S]*?policy\.tileset\.cullRequestsWhileMoving = false;[\s\S]*?representative-route-prime[\s\S]*?\} finally \{[\s\S]*?policy\.tileset\.foveatedTimeDelay = policy\.foveatedTimeDelay;[\s\S]*?policy\.tileset\.cullRequestsWhileMoving =[\s\S]*?policy\.cullRequestsWhileMoving;/,
+  );
+  assert.match(
+    runnerSource,
+    /scope: "untimed-route-prime-only"[\s\S]*?restoredBeforeConvergence: routePrimeAdmissionPolicyRestored/,
+  );
+});
+
 test("representative terrain is non-flat and emits uniform plus mixed water-mask forms", () => {
   const radians = (degrees) => (degrees * Math.PI) / 180;
   const heights = [
