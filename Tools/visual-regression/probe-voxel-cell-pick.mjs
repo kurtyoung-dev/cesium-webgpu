@@ -60,6 +60,10 @@
 import { chromium } from "playwright";
 import fs from "fs";
 import { createVoxelOctreeL4Provider } from "./fixtures/voxel-octree-l4.mjs";
+import {
+  exactC1113VoxelPickPipelineName,
+  expectedC1113VoxelPickPipelineName,
+} from "./lib/c11-13-voxel-pick-pipeline-name.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT = "Tools/visual-regression/output";
@@ -561,6 +565,13 @@ async function capture(renderer, part) {
           cache && cache.pickVoxelDescriptor
             ? cache.pickVoxelDescriptor.name
             : null,
+        pickLogDepthState: cache
+          ? {
+              master: scene.context._pickLogDepthWriteEnabled,
+              frame: scene.frameState.useLogDepth,
+              realized: cache._pipelinePickLogActive,
+            }
+          : null,
         hasPickVoxelCommand: cache ? !!cache.pickVoxelCommand : null,
         objectPickOk,
         picks,
@@ -669,11 +680,19 @@ function tallyErrors(label, res) {
     webgl.objectPickOk === true && webgpu.objectPickOk === true;
   console.log(`  objectPickOk: ${objectPickOk}`);
   if (!objectPickOk) pass = false;
-  // Part A off-gate: the DEFAULT path must keep the base pipeline name (no
-  // user-shader patch, no pipeline churn).
-  const baseNameOk =
-    webgpu.pickVoxelPipelineName === "Voxel pickVoxel pipeline";
-  console.log(`  default pipeline name unchanged: ${baseNameOk}`);
+  // Part A state gate: derive the one exact expected name from independent
+  // master, frame, and realized log-depth booleans. Never accept either name
+  // loosely or infer the expected suffix from the descriptor under test.
+  const expectedPipelineName = expectedC1113VoxelPickPipelineName(
+    webgpu.pickLogDepthState,
+  );
+  const baseNameOk = exactC1113VoxelPickPipelineName(
+    webgpu.pickLogDepthState,
+    webgpu.pickVoxelPipelineName,
+  );
+  console.log(
+    `  state-derived pipeline name ${JSON.stringify(expectedPipelineName)}: ${baseNameOk}`,
+  );
   if (!baseNameOk) pass = false;
   tallyErrors("A webgl", webgl);
   tallyErrors("A webgpu", webgpu);
