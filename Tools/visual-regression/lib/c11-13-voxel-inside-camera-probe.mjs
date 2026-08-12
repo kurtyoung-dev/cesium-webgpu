@@ -101,6 +101,40 @@ export function normalizeProbeBase(value) {
   return base.origin;
 }
 
+/**
+ * Convert a live canvas client rectangle into a Playwright page-screenshot
+ * clip. Element screenshots wait for the target to become visually stable;
+ * that wait can never complete for a deliberately rendered WebGPU canvas.
+ * A page clip captures the same canvas pixels without treating frame activity
+ * as element motion.
+ *
+ * @param {unknown} value
+ * @param {{width: number, height: number}} viewport
+ * @returns {{x: number, y: number, width: number, height: number}}
+ */
+export function normalizeCanvasClip(value, viewport = VIEWPORT) {
+  const clip = {
+    x: Number(value?.x),
+    y: Number(value?.y),
+    width: Number(value?.width),
+    height: Number(value?.height),
+  };
+  if (
+    !Object.values(clip).every(Number.isFinite) ||
+    clip.x < 0 ||
+    clip.y < 0 ||
+    clip.width <= 0 ||
+    clip.height <= 0 ||
+    !Number.isFinite(viewport?.width) ||
+    !Number.isFinite(viewport?.height) ||
+    clip.x + clip.width > viewport.width ||
+    clip.y + clip.height > viewport.height
+  ) {
+    throw new Error("STRUCTURAL: canvas screenshot clip is invalid");
+  }
+  return clip;
+}
+
 const BASE = normalizeProbeBase(
   process.env.PROBE_BASE ?? "http://localhost:8080",
 );
@@ -1229,7 +1263,23 @@ async function captureWaypoint(lane, waypoint, runDirectory) {
     await lane.page.evaluate((frameCount) => {
       return globalThis.__c1113VoxelInsideHarness.settlePixels(frameCount);
     }, STABILITY_FRAMES);
-    const png = await canvas.screenshot();
+    const clip = normalizeCanvasClip(
+      await canvas.evaluate((element) => {
+        const rectangle = element.getBoundingClientRect();
+        return {
+          x: rectangle.left,
+          y: rectangle.top,
+          width: rectangle.width,
+          height: rectangle.height,
+        };
+      }),
+    );
+    const png = await lane.page.screenshot({
+      animations: "disabled",
+      caret: "hide",
+      clip,
+      type: "png",
+    });
     const analyzed = await analyzePng(png);
     identicalStreak =
       analyzed.metrics.rawSha256 === priorHash ? identicalStreak + 1 : 1;

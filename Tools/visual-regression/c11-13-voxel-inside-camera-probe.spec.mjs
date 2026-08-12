@@ -30,6 +30,7 @@ import {
   createImmutable,
   errorLanesAreEmpty,
   isBaseOrigin,
+  normalizeCanvasClip,
   normalizeProbeBase,
   preserveFirstRed,
   provenanceStable,
@@ -193,6 +194,9 @@ function assessPhysicalProbePolicy(candidate) {
     "await browser.close()",
     "cleanupErrors",
     "const settledProbe = await observedTask",
+    "normalizeCanvasClip",
+    "await canvas.evaluate",
+    "await lane.page.screenshot({",
     "browserControl.probeTaskDrained = true",
   ]) {
     if (!candidate.implementation.includes(token)) {
@@ -379,6 +383,11 @@ test("physical probe source policy is complete and static mutants are rejected",
       "const settledProbe = observedTask",
     ],
     ["implementation", 'page.route("**/*"', 'page.route("external-only"'],
+    [
+      "implementation",
+      "await lane.page.screenshot({",
+      "await canvas.screenshot({",
+    ],
     ["entry", 'channel: "msedge"', 'channel: "chromium"'],
     ["entry", '"--use-vulkan"', '"--disable-vulkan"'],
   ];
@@ -393,6 +402,39 @@ test("physical probe source policy is complete and static mutants are rejected",
       `${file} mutant ${before} must be rejected`,
     );
   }
+});
+
+test("canvas capture uses a finite nonempty page clip without a stability wait", () => {
+  assert.deepEqual(
+    normalizeCanvasClip(
+      { x: 0, y: 0, width: 960, height: 720 },
+      { width: 960, height: 720 },
+    ),
+    { x: 0, y: 0, width: 960, height: 720 },
+  );
+  for (const invalid of [
+    undefined,
+    {},
+    { x: -1, y: 0, width: 960, height: 720 },
+    { x: 0, y: 0, width: 0, height: 720 },
+    { x: 0, y: 0, width: 960, height: Number.NaN },
+    { x: 1, y: 0, width: 960, height: 720 },
+  ]) {
+    assert.throws(
+      () => normalizeCanvasClip(invalid, { width: 960, height: 720 }),
+      /STRUCTURAL/,
+    );
+  }
+  assert.doesNotMatch(
+    sources.implementation,
+    /await canvas\.screenshot\(/u,
+    "an element screenshot would reintroduce Playwright's impossible active-canvas stability wait",
+  );
+  assert.doesNotMatch(
+    sources.implementation,
+    /rectangle\.(?:left|top) \+ globalThis\.scroll/u,
+    "Playwright page clips use viewport coordinates, not document coordinates",
+  );
 });
 
 test("backend and L3 provider authority fail closed", () => {
