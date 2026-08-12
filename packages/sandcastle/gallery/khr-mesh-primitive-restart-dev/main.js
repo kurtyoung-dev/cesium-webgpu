@@ -18,7 +18,7 @@ import Sandcastle from "Sandcastle";
 
 let viewer;
 
-function createViewer(requestWebgl1) {
+async function createViewer(requestWebgl1) {
   if (Cesium.defined(viewer)) {
     viewer.destroy();
   }
@@ -27,7 +27,7 @@ function createViewer(requestWebgl1) {
   });
 }
 
-createViewer(false);
+await createViewer(false);
 
 const models = {
   "Hilbert Curve (LINE_STRIP, 32-bit indices)": {
@@ -110,16 +110,16 @@ Sandcastle.addToolbarMenu(
 Sandcastle.addToolbarMenu([
   {
     text: "WebGL 2 (restart supported)",
-    onselect: () => {
-      createViewer(false);
-      loadModel(currentEntry);
+    onselect: async () => {
+      await createViewer(false);
+      await loadModel(currentEntry);
     },
   },
   {
     text: "WebGL 1 (restart unsupported; behavior varies)",
-    onselect: () => {
-      createViewer(true);
-      loadModel(currentEntry);
+    onselect: async () => {
+      await createViewer(true);
+      await loadModel(currentEntry);
     },
   },
 ]);
