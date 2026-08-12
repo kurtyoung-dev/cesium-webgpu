@@ -677,20 +677,23 @@ function getPlaceholderEffects(device) {
   // bind-group construction.
   cache.placeholderDepthView = depthTex.createView();
 
-  // Clear placeholder depth to 1.0 via a render pass
-  const clearEncoder = device.createCommandEncoder();
+  // All placeholder depth subresources are initialized in one command buffer.
+  // The 11 clear passes remain distinct because each targets a different
+  // subresource: base depth, four CSM layers, and six point-light cube faces.
+  const clearEncoder = device.createCommandEncoder({
+    label: "Initialize effects depth placeholders",
+  });
   clearEncoder
     .beginRenderPass({
       colorAttachments: [],
       depthStencilAttachment: {
-        view: depthTex.createView(),
+        view: cache.placeholderDepthView,
         depthClearValue: 1.0,
         depthLoadOp: "clear",
         depthStoreOp: "store",
       },
     })
     .end();
-  device.queue.submit([clearEncoder.finish()]);
 
   // Comparison sampler
   const compSampler = device.createSampler({
@@ -820,8 +823,7 @@ function getPlaceholderEffects(device) {
   });
   // Clear every layer to 1.0 so the comparison sampler returns "lit".
   for (let layer = 0; layer < 4; layer++) {
-    const layerClearEncoder = device.createCommandEncoder();
-    layerClearEncoder
+    clearEncoder
       .beginRenderPass({
         colorAttachments: [],
         depthStencilAttachment: {
@@ -836,7 +838,6 @@ function getPlaceholderEffects(device) {
         },
       })
       .end();
-    device.queue.submit([layerClearEncoder.finish()]);
   }
   cache.placeholderCsmDepthArrayTex = csmDepthArrayTex;
   cache.placeholderCsmDepthArrayView = csmDepthArrayTex.createView({
@@ -896,8 +897,7 @@ function getPlaceholderEffects(device) {
   // than the light's far radius"). Per-face render pass with depth
   // clear, mirroring the CSM cascade-array placeholder above.
   for (let face = 0; face < 6; face++) {
-    const faceClearEncoder = device.createCommandEncoder();
-    faceClearEncoder
+    clearEncoder
       .beginRenderPass({
         colorAttachments: [],
         depthStencilAttachment: {
@@ -913,8 +913,8 @@ function getPlaceholderEffects(device) {
         },
       })
       .end();
-    device.queue.submit([faceClearEncoder.finish()]);
   }
+  device.queue.submit([clearEncoder.finish()]);
   cache.placeholderCubeDepthTex = cubeDepthPlaceholderTex;
   cache.placeholderCubeDepthView = cubeDepthPlaceholderTex.createView({
     dimension: "cube",

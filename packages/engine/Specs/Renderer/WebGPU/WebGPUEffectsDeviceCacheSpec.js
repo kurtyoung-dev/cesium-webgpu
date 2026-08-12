@@ -2,12 +2,141 @@ import {
   _destroyEffectsDeviceCache,
   _ensureEffectsBgCache,
   clearEffectsPlaceholderCacheForDevice,
+  getPlaceholderEffects,
   releaseEffectsPlaceholderCacheForContext,
   retainEffectsPlaceholderCacheForContext,
 } from "../../../Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js";
 import WebGPUEffectsStateCache from "../../../Source/Renderer/WebGPU/WebGPUEffectsStateCache.js";
 
 describe("Renderer/WebGPU/WebGPUEffects device-cache ownership", function () {
+  it("initializes all eleven depth placeholders with one cached submission", function () {
+    const textures = [];
+    const passes = [];
+    const commandBuffers = [];
+    const createCommandEncoderSpy = jasmine.createSpy("createCommandEncoder");
+    const submit = jasmine.createSpy("submit");
+    const device = {
+      createBindGroupLayout(descriptor) {
+        return { descriptor };
+      },
+      createBindGroup(descriptor) {
+        return { descriptor };
+      },
+      createBuffer(descriptor) {
+        return { descriptor, destroy: jasmine.createSpy("buffer.destroy") };
+      },
+      createSampler(descriptor) {
+        return { descriptor };
+      },
+      createTexture(descriptor) {
+        const texture = {
+          descriptor,
+          views: [],
+          destroy: jasmine.createSpy("texture.destroy"),
+          createView(viewDescriptor = {}) {
+            const view = { texture, descriptor: viewDescriptor };
+            texture.views.push(view);
+            return view;
+          },
+        };
+        textures.push(texture);
+        return texture;
+      },
+      createCommandEncoder(descriptor) {
+        createCommandEncoderSpy(descriptor);
+        const commandBuffer = {};
+        commandBuffers.push(commandBuffer);
+        return {
+          beginRenderPass(passDescriptor) {
+            passes.push(passDescriptor);
+            return { end() {} };
+          },
+          finish: jasmine.createSpy("finish").and.returnValue(commandBuffer),
+        };
+      },
+      queue: {
+        writeBuffer() {},
+        writeTexture() {},
+        submit,
+      },
+    };
+
+    const first = getPlaceholderEffects(device);
+    const second = getPlaceholderEffects(device);
+
+    expect(second.bindGroup).toBe(first.bindGroup);
+    expect(second.uniformBuffer).toBe(first.uniformBuffer);
+    expect(createCommandEncoderSpy).toHaveBeenCalledTimes(1);
+    expect(createCommandEncoderSpy).toHaveBeenCalledWith({
+      label: "Initialize effects depth placeholders",
+    });
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledWith([commandBuffers[0]]);
+    expect(passes.length).toBe(11);
+    for (const pass of passes) {
+      expect(pass.colorAttachments).toEqual([]);
+      expect(pass.depthStencilAttachment.depthClearValue).toBe(1.0);
+      expect(pass.depthStencilAttachment.depthLoadOp).toBe("clear");
+      expect(pass.depthStencilAttachment.depthStoreOp).toBe("store");
+    }
+
+    const entries = first.bindGroup.descriptor.entries;
+    const baseDepthView = entries.find((entry) => entry.binding === 1).resource;
+    const csmDepthView = entries.find((entry) => entry.binding === 11).resource;
+    const cubeDepthView = entries.find(
+      (entry) => entry.binding === 17,
+    ).resource;
+    expect(passes[0].depthStencilAttachment.view).toBe(baseDepthView);
+    expect(baseDepthView.texture.views.length).toBe(1);
+    expect(
+      passes
+        .slice(1, 5)
+        .map(
+          (pass) => pass.depthStencilAttachment.view.descriptor.baseArrayLayer,
+        ),
+    ).toEqual([0, 1, 2, 3]);
+    expect(
+      passes
+        .slice(1, 5)
+        .every(
+          (pass) =>
+            pass.depthStencilAttachment.view.texture === csmDepthView.texture,
+        ),
+    ).toBeTrue();
+    expect(
+      passes
+        .slice(5)
+        .map(
+          (pass) => pass.depthStencilAttachment.view.descriptor.baseArrayLayer,
+        ),
+    ).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(
+      passes
+        .slice(5)
+        .every(
+          (pass) =>
+            pass.depthStencilAttachment.view.texture === cubeDepthView.texture,
+        ),
+    ).toBeTrue();
+
+    const firstDepthTexture = baseDepthView.texture;
+    clearEffectsPlaceholderCacheForDevice(device);
+    expect(firstDepthTexture.destroy).toHaveBeenCalledTimes(1);
+
+    const recovered = getPlaceholderEffects(device);
+    expect(recovered.bindGroup).not.toBe(first.bindGroup);
+    expect(
+      recovered.bindGroup.descriptor.entries.find(
+        (entry) => entry.binding === 1,
+      ).resource.texture,
+    ).not.toBe(firstDepthTexture);
+    expect(createCommandEncoderSpy).toHaveBeenCalledTimes(2);
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(passes.length).toBe(22);
+
+    clearEffectsPlaceholderCacheForDevice(device);
+  });
+
   it("keeps a shared device cache until its last context owner releases it", function () {
     const device = {};
     const firstContext = {};
