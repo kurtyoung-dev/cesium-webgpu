@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>C11-13 voxel camera-inside acceptance harness</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/Build/CesiumUnminified/Widgets/widgets.css" />
+    <style>
+      html,
+      body,
+      #cesiumContainer {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #000;
+      }
+
+      #creditContainer {
+        display: none;
+      }
+    </style>
+    <script>
+      window.CESIUM_BASE_URL = "/Build/CesiumUnminified";
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "cesium": "/Source/Cesium.js",
+          "@cesium/engine": "/packages/engine/Build/Unminified/index.js",
+          "@cesium/engine/index-wgsl.js": "/packages/engine/Build/Unminified/index-wgsl.js",
+          "@cesium/widgets": "/packages/widgets/Build/Unminified/index.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="cesiumContainer"></div>
+    <div id="creditContainer"></div>
+    <script
+      type="module"
+      src="./c11-13-voxel-inside-camera-harness.mjs"
+    ></script>
+  </body>
+</html>
