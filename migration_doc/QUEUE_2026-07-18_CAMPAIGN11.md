@@ -1362,8 +1362,12 @@ Then the original W1 contents:
   engine lane again reported five reasoned skips and zero blocked requests. That full
   lane's unrelated 93 failures do not invalidate the isolation result and do not count
   as an engine-green result for `C11-132`. `C11-134`'s online `--no-offline` coverage
-  lane remains owed, so this paragraph supersedes the older machine-debt wording in
-  the §3.2 cells without falsely closing either row. `C11-133` tooling and its ten-run
+  control was attempted on the same source at 2026-08-12: the live terrain services
+  returned `Request has failed`, producing five failures among nine selected tests.
+  This is an honest external-service/environment red, not offline-policy evidence; the
+  online lane remains owed in a valid live-service/token environment. This paragraph
+  supersedes the older machine-debt wording in the §3.2 cells without falsely closing
+  either row. `C11-133` tooling and its ten-run
   machine gate landed in Batch 1018, discharging only the launcher-specific
   prerequisite; `C11-136` and `C11-144` retain their remaining prerequisites and own
   gates.
