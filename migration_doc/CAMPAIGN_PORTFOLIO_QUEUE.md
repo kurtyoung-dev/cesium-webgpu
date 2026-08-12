@@ -321,8 +321,10 @@ already supplies order. Remaining candidates such as C13-41, CLT-B3, C18-P5,
 C18-V3 → P1 → P2, C15-G7/G9/G6/G8, and C12/C13/C11 acceptance retain their
 own queue contracts.
 
-Green C11-193/196/202/209/210 and C12-37 artifacts are landing evidence, not
-invitations to rerun unchanged probes. Blocked or not-yet-instrumented rows do
+Green C11-196/202/210 and C12-37 artifacts remain landing evidence, not
+invitations to rerun unchanged probes. C11-193A/B/C landed at `b20234a16b`;
+its moving causal/recovery continuation remains attribution-gated. C11-209 is
+already landed. Blocked or not-yet-instrumented rows do
 not become machine-ready merely because they appear on this board.
 
 Every first red is write-once evidence. Preserve its run ID, source and bundle
