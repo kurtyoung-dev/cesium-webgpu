@@ -237,13 +237,15 @@ test("the default source-grid coordinate reference is NODE-centred", () => {
 
 test("the decision is DOCUMENTED in exactly one module, and the seam module defers to it", () => {
   assert.ok(
-    /DECISION 1 — the source-grid coordinate reference is NODE-CENTRED by default/.test(
+    /Registration[\s\S]{0,200}source grid is node-centred by default/i.test(
       gridSource,
     ),
     "WeatherFieldGrid must state the coordinate-reference decision",
   );
   assert.ok(
-    /DECISION 2 — no-data is NOT an observation of clear sky/.test(gridSource),
+    /No-data[\s\S]{0,200}absence of data is not an observation of clear sky/i.test(
+      gridSource,
+    ),
     "WeatherFieldGrid must state the no-data decision",
   );
   assert.ok(
