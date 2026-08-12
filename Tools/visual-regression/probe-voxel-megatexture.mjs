@@ -36,18 +36,25 @@
 // so the per-tile SSE gate only demands tiles near the camera. The camera
 // sits just OUTSIDE opposite box corners (±1.05R on the main diagonal,
 // looking at the center — the corner fills the frame) so the demand mask
-// selects disjoint corner-local tile sets (~7 tiles, > the 4-slot pool):
+// selects disjoint corner-local tile sets (11 here, > the 4-slot pool):
 //   CORNER A: demand > pool → exactly 4 tiles resident (no overflow), the
-//     lowest-indexed demanded tiles win deterministically.
+//     complete demanded set is protected before allocation/eviction.
 //   CORNER B: A-residents fall out of demand → LRU-EVICTED (evictionCount
 //     rises, slots 9..12 are reused by B tiles, pool never exceeds 4).
-//   RETURN TO A: the evicted A tiles re-request + re-upload into the reused
-//     slots — resident set identical to the first A visit, and the rendered
-//     frame pixel-matches the first A screenshot (correct cell values after
-//     re-upload of an evicted tile).
+//   BOUNDED A/B RETURN SWEEP: an already-ready overflow wave may correctly
+//     win the first return while the original A residents re-request. Alternate
+//     corners until the exact A1 set reappears with newer request serials AND
+//     slot generations; then its frame must pixel-match A1. Every leg replaces
+//     exactly four disjoint residents, and failure to converge within the
+//     fixture-derived bound is a hard red.
 import { chromium } from "playwright";
 import fs from "fs";
 import { createVoxelOctreeL3Provider } from "./fixtures/voxel-octree-l3.mjs";
+import {
+  VOXEL_MEGATEXTURE_MAX_RETURN_ATTEMPTS,
+  assessVoxelMegatextureReuploadEvidence,
+  voxelMegatextureResidentSetWasRepublished,
+} from "./lib/voxel-megatexture-reupload-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const browser = await chromium.launch({
@@ -515,11 +522,15 @@ const evictA1 = await page3.evaluate(
       const du = (prim._webgpuCache || {}).dataUpload || {};
       const resident = [];
       const slotsUsed = [];
+      const requestSerials = [];
+      const slotGenerations = [];
       if (du.l2Slots) {
         for (let i = 0; i < 64; i++) {
           if (du.l2Slots[i] >= 0) {
             resident.push(i);
             slotsUsed.push(du.l2Slots[i]);
+            requestSerials.push(du.l2States?.[i]?.requestSerial ?? null);
+            slotGenerations.push(du.l2States?.[i]?.slotGeneration ?? null);
           }
         }
       }
@@ -534,6 +545,8 @@ const evictA1 = await page3.evaluate(
           : null,
         resident,
         slotsUsed,
+        requestSerials,
+        slotGenerations,
         evictionCount: du.evictionCount ?? null,
         demandCount: du.lastL2DemandCount ?? null,
         demandLevel: du.demandLevel ?? null,
@@ -585,35 +598,86 @@ const evictB = await page3.evaluate(async () => {
 });
 console.log("PART 3 corner B (eviction):", JSON.stringify(evictB));
 
-// Step 3 — back to corner A: evicted tiles re-request + re-upload into the
-// reused slots; the resident set must converge to the first visit's.
-const evictA2 = await page3.evaluate(async (wantResident) => {
-  const P = window.__evictProbe;
-  P.setCorner(1);
-  let s;
-  let maxResident = 0;
-  const want = JSON.stringify(wantResident);
-  for (let iter = 0; iter < 60; iter++) {
-    await P.renderFrames(15);
-    s = P.snap();
-    maxResident = Math.max(maxResident, s.resident.length);
-    if (JSON.stringify(s.resident) === want) break;
-  }
-  await P.renderFrames(30);
-  s = P.snap();
-  maxResident = Math.max(maxResident, s.resident.length);
-  return { ...s, maxResident };
-}, evictA1.resident);
-console.log("PART 3 corner A (return):", JSON.stringify(evictA2));
+// Step 3 — alternate back through A/B until the exact first-A tiles have
+// re-requested and REPUBLISHED into newer atlas-slot generations. Demand is
+// deliberately greater than capacity (11 tiles competing for 4 slots), so a
+// one-return equality assertion is a stale scheduling oracle: the first A
+// return may correctly publish an already-ready overflow wave while the four
+// evicted A1 requests resolve. The bound is fail-closed and larger than the
+// fixture's ceil(demand/pool) wave count.
+const returnSweep = await page3.evaluate(
+  async ({ firstA, firstB, maxAttempts, republishedSource }) => {
+    const P = window.__evictProbe;
+    // eslint-disable-next-line no-new-func
+    const wasRepublished = new Function(`return (${republishedSource});`)();
+    const attempts = [];
+    let previous = firstB;
+
+    const renderLeg = async (sign, expectedEvictionCount, settleFrames) => {
+      P.setCorner(sign);
+      let s;
+      let maxResident = 0;
+      for (let iter = 0; iter < 60; iter++) {
+        await P.renderFrames(15);
+        s = P.snap();
+        maxResident = Math.max(maxResident, s.resident.length);
+        if (
+          s.evictionCount >= expectedEvictionCount &&
+          s.resident.length >= s.l2PoolSize
+        ) {
+          break;
+        }
+      }
+      await P.renderFrames(settleFrames);
+      s = P.snap();
+      maxResident = Math.max(maxResident, s.resident.length);
+      return { ...s, maxResident };
+    };
+
+    for (let attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex++) {
+      const a = await renderLeg(
+        1,
+        previous.evictionCount + firstA.l2PoolSize,
+        30,
+      );
+      const attempt = { a, b: null };
+      attempts.push(attempt);
+      if (wasRepublished(firstA, a)) {
+        return { converged: true, attempts, finalA: a };
+      }
+      if (attemptIndex === maxAttempts - 1) {
+        break;
+      }
+      attempt.b = await renderLeg(-1, a.evictionCount + firstA.l2PoolSize, 15);
+      previous = attempt.b;
+    }
+    return {
+      converged: false,
+      attempts,
+      finalA: attempts.at(-1)?.a ?? null,
+    };
+  },
+  {
+    firstA: evictA1,
+    firstB: evictB,
+    maxAttempts: VOXEL_MEGATEXTURE_MAX_RETURN_ATTEMPTS,
+    republishedSource: voxelMegatextureResidentSetWasRepublished.toString(),
+  },
+);
+console.log("PART 3 corner return sweep:", JSON.stringify(returnSweep));
+console.log(
+  "PART 3 corner A (republished return):",
+  JSON.stringify(returnSweep.finalA),
+);
 const shotA2 = await page3.screenshot();
 fs.writeFileSync(
   "Tools/visual-regression/output/probe-voxel-evict-cornerA2.png",
   shotA2,
 );
 
-// Pixel-compare the two corner-A screenshots: identical camera + identical
-// resident tile set (in possibly different slots — slot indirection makes
-// that invisible) → the re-uploaded tiles must reproduce the original frame.
+// Pixel-compare the two corner-A screenshots: identical camera + the exact
+// first-A tiles at newer publication generations (possibly in different slots
+// — slot indirection makes that invisible) must reproduce the original frame.
 const diffA = await page3.evaluate(
   async ({ urlA, urlB }) => {
     const load = (u) =>
@@ -699,30 +763,46 @@ const evicted =
   evictB.maxResident <= 4 &&
   setsDiffer &&
   slotsInPool(evictB);
-// Return to A: evicted tiles re-uploaded — same resident set as the first
-// visit, more evictions counted, still no overflow.
-const reuploaded =
-  JSON.stringify(evictA2.resident) === JSON.stringify(evictA1.resident) &&
-  evictA2.evictionCount >= evictB.evictionCount + 4 &&
-  evictA2.maxResident <= 4 &&
-  slotsInPool(evictA2);
-// Re-uploaded tiles render the SAME frame as the original visit.
+// Return to A: the exact first-A tiles re-requested and REPUBLISHED into newer
+// slot generations. The shared assessor also pins exact four-slot replacement
+// on every alternating leg, full-pool uniqueness, the bounded stop, pixels,
+// and a clean console.
+const reuploaded = voxelMegatextureResidentSetWasRepublished(
+  evictA1,
+  returnSweep.finalA,
+);
+const reuploadAssessment = assessVoxelMegatextureReuploadEvidence({
+  firstA: evictA1,
+  firstB: evictB,
+  returnAttempts: returnSweep.attempts,
+  pixelDiff: diffA,
+  consoleErrorCount: consoleErrors3.length,
+});
+// Republished tiles render the SAME frame as the original visit.
 const pixelsMatch = diffA.nonBlackA > 500 && diffA.mismatchPct < 1.5;
 const passPart3 =
   cappedAtlas &&
   overDemandNoOverflow &&
   evicted &&
   reuploaded &&
-  pixelsMatch &&
-  consoleErrors3.length === 0;
+  reuploadAssessment.pass;
 console.log("cappedAtlas (13 slots, dynamic 4-slot L2 pool):", cappedAtlas);
 console.log(
   "overDemandNoOverflow (demand > pool, exactly 4 resident):",
   overDemandNoOverflow,
 );
 console.log("evicted (LRU eviction + slot reuse at corner B):", evicted);
-console.log("reuploaded (A set restored after eviction):", reuploaded);
-console.log("pixelsMatch (re-upload reproduces original frame):", pixelsMatch);
+console.log(
+  "reuploaded (exact A set re-requested + republished after eviction):",
+  reuploaded,
+);
+console.log("pixelsMatch (republish reproduces original frame):", pixelsMatch);
+if (!reuploadAssessment.pass) {
+  console.log(
+    "PART 3 reupload evidence failures:",
+    reuploadAssessment.failures.join("; "),
+  );
+}
 console.log(
   passPart3
     ? "PART 3 (LRU atlas eviction): PASS"
