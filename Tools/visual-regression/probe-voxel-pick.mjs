@@ -24,10 +24,13 @@
 // cell path. That residual tracks WebGPU object-pick occupancy accuracy.
 //
 // WebGPU note: the per-cell pick readback is armed-async
-// (NEW-PICK-METADATA-READBACK), so `scene.pickVoxel` is retried until two
-// consecutive calls agree.
+// (NEW-PICK-METADATA-READBACK), and the public API first performs its own
+// asynchronous object pick. A new cursor is therefore retried until two
+// consecutive identical REAL cells agree; repeated `undefined` results never
+// establish convergence.
 import { chromium } from "playwright";
 import fs from "fs";
+import { advanceC1113PublicVoxelPickConvergence } from "./lib/c11-13-public-voxel-pick-convergence.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT = "Tools/visual-regression/output";
@@ -88,12 +91,14 @@ async function capture(renderer) {
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const result = await page.evaluate(
-    async ({ dims, filledSrc, targets }) => {
+    async ({ dims, filledSrc, targets, convergenceSrc }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
       // eslint-disable-next-line no-new-func
       const filled = new Function(`return (${filledSrc});`)();
+      // eslint-disable-next-line no-new-func
+      const advanceConvergence = new Function(`return (${convergenceSrc});`)();
 
       scene.globe.show = false;
       if (scene.skyBox) scene.skyBox.show = false;
@@ -186,10 +191,16 @@ async function capture(renderer) {
           return { note: "no window coord" };
         }
         const pos = new C.Cartesian2(win.x, win.y);
-        let prevKey = null;
         let lastCell = null;
         let threw = null;
+        let attempts = 0;
+        let convergence = {
+          lastCellKey: null,
+          consecutiveCellCount: 0,
+          stable: false,
+        };
         for (let i = 0; i < 14; i++) {
+          attempts = i + 1;
           let cell;
           try {
             cell = scene.pickVoxel(pos);
@@ -206,20 +217,22 @@ async function capture(renderer) {
               color: Array.from(cell.getProperty("color") || []),
               isVoxelCell: true,
             };
-          } else if (i >= 3) {
-            // Consistently no cell after warmup — record that.
-            lastCell = lastCell ?? { isVoxelCell: false };
           }
-          if (prevKey !== null && i >= 2 && prevKey === key) {
+          convergence = advanceConvergence(convergence, isCell ? key : null);
+          if (convergence.stable) {
             break;
           }
-          prevKey = key;
           for (let r = 0; r < 3; r++) {
             scene.render();
             await new Promise((rr) => setTimeout(rr, 24));
           }
         }
-        return { cell: lastCell, threw };
+        return {
+          cell: lastCell,
+          threw,
+          stable: convergence.stable,
+          attempts,
+        };
       }
 
       const picks = [];
@@ -251,7 +264,12 @@ async function capture(renderer) {
         deviceErrors: errors,
       };
     },
-    { dims: DIMS, filledSrc: cellFilled.toString(), targets: TARGETS },
+    {
+      dims: DIMS,
+      filledSrc: cellFilled.toString(),
+      targets: TARGETS,
+      convergenceSrc: advanceC1113PublicVoxelPickConvergence.toString(),
+    },
   );
 
   const buf = await page.screenshot();
@@ -293,12 +311,14 @@ for (let i = 0; i < TARGETS.length; i++) {
     const expColor = expectedColor(t.cell);
     const glOk =
       glc &&
+      gl.stable === true &&
       glc.isVoxelCell &&
       glc.tileIndex === 0 &&
       glc.sampleIndex === expSample &&
       colorsEq(glc.color, expColor);
     const gpOk =
       gpc &&
+      gp.stable === true &&
       gpc.isVoxelCell &&
       gpc.tileIndex === 0 &&
       gpc.sampleIndex === expSample &&
