@@ -193,6 +193,14 @@ type NumArray = TypedArray | number[];
 type Vec = number[] | Float32Array;
 type GPUBufferOrNull = GPUBuffer | null;
 type GPUPipelineOrNull = GPURenderPipeline | null;
+// Keep the renderer's JS-interop façades coupled to the metadata upload
+// functions' actual contracts.  These aliases are derived rather than
+// duplicated so a JSDoc refinement in WebGPUModelMetadata.js cannot silently
+// turn the local layout fields back into `unknown` at the call sites.
+type PropertyTextureLayout = Parameters<
+  typeof ensurePropertyTextureResources
+>[2];
+type PropertyTableLayout = Parameters<typeof ensurePropertyTableResources>[2];
 
 interface ImageSourceLike {
   width?: number;
@@ -316,8 +324,8 @@ interface PrimitiveGeometry {
   metadataClassHash?: number;
   metadataWGSL?: string | null;
   metadataMatTransport?: boolean;
-  propertyTableLayout?: unknown;
-  propertyTextureLayout?: unknown;
+  propertyTableLayout?: PropertyTableLayout;
+  propertyTextureLayout?: PropertyTextureLayout;
   hasNormals: boolean;
   hasTangents: boolean;
   hasTexCoord0: boolean;
@@ -342,8 +350,8 @@ interface PrimitiveGeometryViewRecord {
 
 interface ModelMetadataDescriptor {
   metadataData?: Float32Array;
-  propertyTextureLayout?: unknown;
-  propertyTableLayout?: unknown;
+  propertyTextureLayout?: PropertyTextureLayout;
+  propertyTableLayout?: PropertyTableLayout;
   metadataWGSL?: string;
   metadataClassHash: number;
   metadataMatTransport: boolean;
