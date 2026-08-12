@@ -1538,6 +1538,18 @@ const scratchObbHalfAxes = new Matrix3();
 const scratchObbCenter = new Cartesian3();
 const scratchEffModel = new Matrix4();
 
+// C11-13 — camera-inside proxy selection. These are shared per-frame
+// scratches: deciding which winding range to draw must not allocate or rebuild
+// geometry/pipelines as the camera crosses the proxy boundary.
+const scratchVoxelProxyInverseModel = new Matrix4();
+const scratchVoxelProxyCamera = new Cartesian3();
+const scratchVoxelProxyLinear = new Matrix3();
+
+const VOXEL_PROXY_HALF_EXTENT = 0.5;
+const VOXEL_PROXY_INSIDE_EPSILON = 1.0e-7;
+const VOXEL_PROXY_INDEX_COUNT = 36;
+const VOXEL_PROXY_REVERSED_FIRST_INDEX = VOXEL_PROXY_INDEX_COUNT;
+
 // VOXEL-SHAPEUV-CONVENTION scratches for composing the proxy→shapeUv matrix.
 const scratchShapeTransformInv = new Matrix4();
 const scratchProxyToLocal = new Matrix4();
@@ -1676,6 +1688,77 @@ function computeVoxelEffectiveModelMatrix(
   );
   const center = Cartesian3.clone(obb.center, scratchObbCenter);
   return Matrix4.fromRotationTranslation(halfAxes2, center, scratchEffModel);
+}
+
+/**
+ * C11-13 — transform the camera through the exact effective proxy model used
+ * for this draw, then select the index-buffer winding range. The historical
+ * first 36 indices remain the non-mirrored outside-camera path. The appended
+ * 36 indices reverse every triangle for an inside camera, so the exit faces
+ * survive the unchanged `cullMode: "front"` pipelines even when the entry faces
+ * are behind the near plane. A negative linear determinant already reverses
+ * projected winding, hence the exclusive-or.
+ *
+ * Boundary points are treated as inside. The tiny inclusive epsilon absorbs
+ * only inverse-transform roundoff at the exact proxy face; non-finite camera
+ * coordinates can never opt into the interior range.
+ *
+ * @param modelMatrix The effective proxy model matrix used by the draw.
+ * @param cameraWorld The camera position in world coordinates.
+ * @param cameraProxyResult Reusable result receiving the proxy-space camera.
+ * @returns The first index of the selected 36-index winding range (0 or 36).
+ */
+function computeVoxelProxyFirstIndex(
+  modelMatrix: Matrix4,
+  cameraWorld: Cartesian3,
+  cameraProxyResult: Cartesian3,
+): number {
+  Matrix4.getMatrix3(modelMatrix, scratchVoxelProxyLinear);
+  const determinant = Matrix3.determinant(scratchVoxelProxyLinear);
+  const determinantFinite = Number.isFinite(determinant);
+  const modelMirrored = determinantFinite && determinant < 0.0;
+  let cameraInside = false;
+  if (determinantFinite && determinant !== 0.0) {
+    try {
+      Matrix4.inverse(modelMatrix, scratchVoxelProxyInverseModel);
+      Matrix4.multiplyByPoint(
+        scratchVoxelProxyInverseModel,
+        cameraWorld,
+        cameraProxyResult,
+      );
+
+      const x = cameraProxyResult.x;
+      const y = cameraProxyResult.y;
+      const z = cameraProxyResult.z;
+      const limit = VOXEL_PROXY_HALF_EXTENT + VOXEL_PROXY_INSIDE_EPSILON;
+      cameraInside =
+        Number.isFinite(x) &&
+        Number.isFinite(y) &&
+        Number.isFinite(z) &&
+        Math.abs(x) <= limit &&
+        Math.abs(y) <= limit &&
+        Math.abs(z) <= limit;
+
+      if (
+        !cameraInside &&
+        (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z))
+      ) {
+        Cartesian3.clone(Cartesian3.ZERO, cameraProxyResult);
+      }
+    } catch {
+      // A non-invertible proxy cannot produce a meaningful interior test.
+      // Keep finite uniform bytes; parity selection below still accounts for
+      // a finite reflection.
+      Cartesian3.clone(Cartesian3.ZERO, cameraProxyResult);
+    }
+  } else {
+    // Matrix4.inverse has a zero-scale special case that returns a matrix of
+    // zeros instead of throwing. Reject that degenerate proxy explicitly so a
+    // fabricated (0,0,0) camera cannot be classified as inside.
+    Cartesian3.clone(Cartesian3.ZERO, cameraProxyResult);
+  }
+
+  return cameraInside !== modelMirrored ? VOXEL_PROXY_REVERSED_FIRST_INDEX : 0;
 }
 
 /**
@@ -2321,6 +2404,33 @@ function computeVoxelL2DemandMask(
   return mask;
 }
 
+// C11-13 — byte-for-byte historical cube prefix. Non-mirrored outside cameras
+// continue to draw this range, so their geometry and fragment workload stay
+// unchanged.
+const VOXEL_PROXY_ORIGINAL_INDICES = [
+  0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1, 2, 6, 7, 2, 7, 3, 0, 3,
+  7, 0, 7, 4, 1, 5, 6, 1, 6, 2,
+] as const;
+
+/**
+ * Build the proxy cube's two immutable winding ranges. Each triangle in the
+ * appended range swaps its final two vertices; the first range is preserved
+ * exactly for outside cameras.
+ */
+function createVoxelProxyIndices(): Uint16Array {
+  const indices = new Uint16Array(VOXEL_PROXY_INDEX_COUNT * 2);
+  indices.set(VOXEL_PROXY_ORIGINAL_INDICES, 0);
+  for (let i = 0; i < VOXEL_PROXY_INDEX_COUNT; i += 3) {
+    indices[VOXEL_PROXY_REVERSED_FIRST_INDEX + i] =
+      VOXEL_PROXY_ORIGINAL_INDICES[i];
+    indices[VOXEL_PROXY_REVERSED_FIRST_INDEX + i + 1] =
+      VOXEL_PROXY_ORIGINAL_INDICES[i + 2];
+    indices[VOXEL_PROXY_REVERSED_FIRST_INDEX + i + 2] =
+      VOXEL_PROXY_ORIGINAL_INDICES[i + 1];
+  }
+  return indices;
+}
+
 function createBoxGeometry(device: GPUDevice): {
   vertexBuffer: GPUBuffer;
   indexBuffer: GPUBuffer;
@@ -2378,10 +2488,7 @@ function createBoxGeometry(device: GPUDevice): {
     0,
     0,
   ]);
-  const indices = new Uint16Array([
-    0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1, 2, 6, 7, 2, 7, 3, 0,
-    3, 7, 0, 7, 4, 1, 5, 6, 1, 6, 2,
-  ]);
+  const indices = createVoxelProxyIndices();
   const vb = device.createBuffer({
     size: positions.byteLength,
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
@@ -2729,6 +2836,42 @@ function toGPUDescriptor(
     depthStencil: d.depthStencil,
     multisample: d.multisample,
   };
+}
+
+interface VoxelProxyIndexedCommand {
+  firstIndex?: number;
+  velocityCommand?: VoxelProxyIndexedCommand;
+}
+
+interface VoxelProxyCommandSet {
+  command?: VoxelProxyIndexedCommand | null;
+  pickCommand?: VoxelProxyIndexedCommand | null;
+  pickVoxelCommand?: VoxelProxyIndexedCommand | null;
+}
+
+/**
+ * C11-13 — update all currently-materialized voxel command variants in place.
+ * Called after the lazy velocity and cell-pick attachment points every frame,
+ * so variants created on this frame cannot retain the constructor default.
+ */
+function updateVoxelProxyCommandFirstIndices(
+  commands: VoxelProxyCommandSet,
+  firstIndex: number,
+): void {
+  const colorCommand = commands.command;
+  if (colorCommand) {
+    colorCommand.firstIndex = firstIndex;
+    const velocityCommand = colorCommand.velocityCommand;
+    if (velocityCommand) {
+      velocityCommand.firstIndex = firstIndex;
+    }
+  }
+  if (commands.pickCommand) {
+    commands.pickCommand.firstIndex = firstIndex;
+  }
+  if (commands.pickVoxelCommand) {
+    commands.pickVoxelCommand.firstIndex = firstIndex;
+  }
 }
 
 function updateWebGPUVoxelPrimitive(
@@ -3389,12 +3532,12 @@ function updateWebGPUVoxelPrimitive(
   const mvp = m4Values(Matrix4.multiply(projection, mvRte, scratchMVP));
 
   const camWorld = us.cameraPosition;
-  const invModel = Matrix4.inverse(modelMatrix, new Matrix4());
-  const camModel = Matrix4.multiplyByPoint(
-    invModel,
+  const proxyFirstIndex = computeVoxelProxyFirstIndex(
+    modelMatrix,
     camWorld,
-    new Cartesian3(),
+    scratchVoxelProxyCamera,
   );
+  const camModel = scratchVoxelProxyCamera;
   EncodedCartesian3.fromCartesian(camModel, scratchEncoded);
 
   // C-R9-VOXEL-PICK (Batch 53 / refactored Batch 59) — pick ID lifecycle
@@ -3640,7 +3783,8 @@ function updateWebGPUVoxelPrimitive(
       bindGroups: [cache.bindGroup, effectsBG],
       vertexBuffers: [cache.vertexBuffer],
       indexBuffer: cache.indexBuffer,
-      indexCount: 36,
+      indexFormat: "uint16",
+      indexCount: VOXEL_PROXY_INDEX_COUNT,
       pass: Pass.VOXELS,
     });
   } else {
@@ -3685,7 +3829,8 @@ function updateWebGPUVoxelPrimitive(
         bindGroups: [cache.bindGroup, pickEffectsBG],
         vertexBuffers: [cache.vertexBuffer],
         indexBuffer: cache.indexBuffer,
-        indexCount: 36,
+        indexFormat: "uint16",
+        indexCount: VOXEL_PROXY_INDEX_COUNT,
         pass: Pass.VOXELS,
         pickOnly: true,
       });
@@ -3706,6 +3851,16 @@ function updateWebGPUVoxelPrimitive(
   if (cache.usingRealData) {
     attachVoxelCellPickCommand(device, context, cache);
   }
+
+  // C11-13 — attachment is intentionally complete before selection. Both the
+  // velocity and cell-pick commands materialize lazily, and object-pick may be
+  // allocated only when a pick ID exists. Updating the four live command
+  // objects here makes outside ↔ inside transitions allocation-free and keeps
+  // every render/pick/velocity path on the same proxy face.
+  updateVoxelProxyCommandFirstIndices(
+    cache as unknown as VoxelProxyCommandSet,
+    proxyFirstIndex,
+  );
 }
 
 /**
@@ -3816,7 +3971,8 @@ function attachVoxelCellPickCommand(
       bindGroups: [cache.bindGroup, pickEffectsBG],
       vertexBuffers: [cache.vertexBuffer],
       indexBuffer: cache.indexBuffer,
-      indexCount: 36,
+      indexFormat: "uint16",
+      indexCount: VOXEL_PROXY_INDEX_COUNT,
       pass: Pass.VOXELS,
       pickOnly: true,
     });
@@ -3957,7 +4113,8 @@ function attachVoxelVelocityCommand(
         bindGroups: [cache.bindGroup, velocityEffectsBG],
         vertexBuffers: [cache.vertexBuffer],
         indexBuffer: cache.indexBuffer,
-        indexCount: 36,
+        indexFormat: "uint16",
+        indexCount: VOXEL_PROXY_INDEX_COUNT,
         pass: Pass.VOXELS,
       });
   } else {
@@ -4235,6 +4392,10 @@ export {
   destroyWebGPUVoxelResources,
   getVoxelPickKeyframeNode,
   getVoxelPickReadbackIdentity,
+  // C11-13 focused, device-free contract hooks.
+  createVoxelProxyIndices,
+  computeVoxelProxyFirstIndex,
+  updateVoxelProxyCommandFirstIndices,
 };
 export default {
   updateWebGPUVoxelPrimitive,
