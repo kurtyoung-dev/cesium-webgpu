@@ -82,3 +82,16 @@ test("the primitive-restart demo remains valid after the WebGPU transform", () =
   );
   assert.match(negativeControl.stderr, /Unexpected reserved word/);
 });
+
+test("the primitive-restart demo is isolated from optional network imagery", () => {
+  assert.equal(
+    demoSource.match(/\bbaseLayer:\s*false\b/g)?.length,
+    1,
+    "the focused topology demo must not request Cesium ion world imagery",
+  );
+  assert.equal(
+    demoSource.match(/\bbaseLayerPicker:\s*false\b/g)?.length,
+    1,
+    "the focused topology demo must not create imagery-provider UI or sessions",
+  );
+});

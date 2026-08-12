@@ -24,6 +24,8 @@ async function createViewer(requestWebgl1) {
   }
   viewer = new Cesium.Viewer("cesiumContainer", {
     contextOptions: { requestWebgl1: requestWebgl1 },
+    baseLayer: false,
+    baseLayerPicker: false,
   });
 }
 
