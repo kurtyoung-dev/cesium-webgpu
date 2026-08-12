@@ -93,6 +93,11 @@ import {
   writeCloudShadowInverseViewProjectionRelativeToEye,
   writeCloudShadowViewProjection,
 } from "./WebGPUCloudShadowFrame.js";
+import {
+  createCloudShadowBindGroupCache,
+  getOrCreateCloudShadowBindGroup,
+} from "./WebGPUCloudShadowBindGroupCache.js";
+import type { CloudShadowBindGroupCache } from "./WebGPUCloudShadowBindGroupCache.js";
 // Supplies the relative-to-eye high/low camera split for the camera-relative
 // high-precision march. Only the encoded floats in uniform slots 120-127 come
 // from here, and the shader reads them solely inside the
@@ -442,6 +447,7 @@ export interface CloudCache {
   shadowSampler: GPUSampler | null; // linear clamp
   shadowPipeline: GPURenderPipeline | null;
   shadowBindGroupLayout: GPUBindGroupLayout | null;
+  shadowBindGroups: CloudShadowBindGroupCache;
   shadowUniformBuffer: GPUBuffer | null; // CloudShadowUniforms (binding 13)
   shadowUniformData: Float32Array;
   shadowSize: number; // current square shadow-map resolution
@@ -720,6 +726,7 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       shadowSampler: null,
       shadowPipeline: null,
       shadowBindGroupLayout: null,
+      shadowBindGroups: createCloudShadowBindGroupCache(),
       shadowUniformBuffer: null,
       shadowUniformData: new Float32Array(CLOUD_SHADOW_UNIFORM_FLOATS),
       shadowSize: 0,
@@ -3565,18 +3572,21 @@ export function executeProceduralClouds(
       );
       cache.shadowAbsorption = 0.04; // matches CloudUniforms.absorptionCoeff
 
-      const shadowBindGroup = device.createBindGroup({
-        layout: cache.shadowBindGroupLayout!,
-        entries: [
-          { binding: 3, resource: { buffer: cache.uniformBuffer! } },
-          { binding: 4, resource: weatherView },
-          { binding: 5, resource: cache.weatherSampler! },
-          { binding: 6, resource: noise.shapeView },
-          { binding: 7, resource: noise.detailView },
-          { binding: 8, resource: noise.sampler },
-          { binding: 13, resource: { buffer: cache.shadowUniformBuffer! } },
-        ],
-      });
+      const shadowBindGroup = getOrCreateCloudShadowBindGroup(
+        device,
+        cache.shadowBindGroups,
+        0,
+        cache.shadowBindGroupLayout!,
+        cache.uniformBuffer!,
+        weatherView,
+        cache.weatherSampler!,
+        noise.shapeView,
+        noise.detailView,
+        noise.sampler,
+        cache.shadowUniformBuffer!,
+        0,
+        CLOUD_SHADOW_UNIFORM_BYTES,
+      );
       const shadowPass = encoder.beginRenderPass(
         timedCloudPass(context, {
           label: "CloudShadow map pass",
@@ -3684,25 +3694,21 @@ export function executeProceduralClouds(
               0,
               1,
             );
-            const cascadeBindGroup = device.createBindGroup({
-              layout: cache.shadowBindGroupLayout!,
-              entries: [
-                { binding: 3, resource: { buffer: cache.uniformBuffer! } },
-                { binding: 4, resource: weatherView },
-                { binding: 5, resource: cache.weatherSampler! },
-                { binding: 6, resource: noise.shapeView },
-                { binding: 7, resource: noise.detailView },
-                { binding: 8, resource: noise.sampler },
-                {
-                  binding: 13,
-                  resource: {
-                    buffer: cache.shadowCascadeUniformBuffer!,
-                    offset: ci * CLOUD_SHADOW_CASCADE_STRIDE_BYTES,
-                    size: CLOUD_SHADOW_UNIFORM_BYTES,
-                  },
-                },
-              ],
-            });
+            const cascadeBindGroup = getOrCreateCloudShadowBindGroup(
+              device,
+              cache.shadowBindGroups,
+              ci + 1,
+              cache.shadowBindGroupLayout!,
+              cache.uniformBuffer!,
+              weatherView,
+              cache.weatherSampler!,
+              noise.shapeView,
+              noise.detailView,
+              noise.sampler,
+              cache.shadowCascadeUniformBuffer!,
+              ci * CLOUD_SHADOW_CASCADE_STRIDE_BYTES,
+              CLOUD_SHADOW_UNIFORM_BYTES,
+            );
             cascadePass.setBindGroup(0, cascadeBindGroup);
             cascadePass.draw(3);
           }
@@ -4378,6 +4384,7 @@ export function destroyProceduralCloudResources(
     cache.shadowSampler = null;
     cache.shadowPipeline = null;
     cache.shadowBindGroupLayout = null;
+    cache.shadowBindGroups = createCloudShadowBindGroupCache();
     cache.shadowUniformBuffer?.destroy();
     cache.shadowUniformBuffer = null;
     cache.shadowSize = 0;

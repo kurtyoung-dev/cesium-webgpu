@@ -897,7 +897,11 @@ while a replacement is prepared.
   all should record on the frame encoder and retain only an off-frame fallback.
 - `C11-60` also owns per-frame bind-group/upload churn in user/library stages,
   motion blur, contact shadows, SSR, and NPR; genuinely dynamic uniforms remain
-  dynamic.
+  dynamic. **CLOUD CACHE SLICE IMPLEMENTED / VERIFIED / LANDED Batch 1019
+  (2026-08-11):** cloud primary + three cascade shadow bind groups use a bounded
+  four-slot exact-identity cache keyed by layout, buffers/ranges, views and
+  samplers; resource changes rebuild only the affected slot and teardown clears
+  the cache (cache leaf 3/3; focused attachment-plus-cache union 45/45).
 - `C11-165` also covers synchronous first-toggle pipelines in optional effects
   and Ocean compute, using generation-tagged async preparation while retaining
   the last complete pipeline.
@@ -1082,7 +1086,8 @@ evidence paragraph as each slice lands.)
 | `C11-35` (ocean-normal per-call re-upload) | **COMPLETE-BY-ALIAS (2026-07-23 reconcile)** — same `DEFERRED_WORK` entry (`NEW-WEBGPU-OCEANNORMAL-PER-CALL-REUPLOAD`) as `C11-166` (§1.25), landed Batch 717 `a0ca50bea7`. G2 guide §1 scope verified identical to the landed fix (source-identity memo mirroring `_resolveOrUploadMaterialTexture`). Close here; do not double-schedule. | G2 | Batch 717 |
 | `C11-43 … C11-50` (attachment-topology) | NOT STARTED | G3 | evidence-pending |
 | `C11-51 … C11-57` (rte-taa) | NOT STARTED · **no cluster guide** | register §7 + PR §4/§8 | evidence-pending |
-| `C11-58 … C11-63`, `C11-SEED-01` (frame-delta) | NOT STARTED | G4 §2 | evidence-pending |
+| `C11-58 … C11-59`, `C11-61 … C11-63`, `C11-SEED-01` (frame-delta) | NOT STARTED | G4 §2 | evidence-pending |
+| `C11-60` (cache-hit-path allocation riders) | **PARTIAL — CLOUD CACHE SLICE LANDED Batch 1019; IBL SLICE LOCAL AUDITED; MOVING ROUTE OWED.** Cloud-shadow bind-group identity is bounded and IBL SH storage is stable per device generation; focused contracts and the current IBL Edge gate are green. Remaining user/library stage churn and moving-route allocation evidence keep the row open. | G4 §2 | Batch 1019 cache; IBL landing owed |
 | `C11-64 … C11-74`, `C11-SEED-02` (entity-scale) | NOT STARTED | G7 | evidence-pending |
 | `C11-75 … C11-78` (submit-residency) | NOT STARTED | G2 §submit | evidence-pending |
 | `C11-79 … C11-80` (celestial-env) | **TRANSFERRED to C12 (LD-1, 2026-07-23)** — IDs retained as aliases (C13 precedent); C12 `C12-04` sequences them (C11-80 before C11-79 retains star cmds). Close here; execute there. | G7 Item 12/13 | LD-1 |
