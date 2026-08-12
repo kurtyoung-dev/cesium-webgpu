@@ -18193,3 +18193,14 @@ Step 2 is what makes B647 finally execute for the synthetic and custom producers
   lost-device `destroy()` throws, while decoded KTX2 CPU data is retained for
   re-upload. Focused Edge recovery: **3/3** (17,876 skipped), including injected
   destroy failure.
+## C11-169 / C11-205 — resident owner-attribution Tools packet landed (2026-08-12, Batch 1032)
+
+**Status: TOOLS PACKET LANDED at `be0683c60d`; BOTH ROWS REMAIN NOT COMPLETE / DIAGNOSTIC ONLY / NO FPS OR GPU CLAIM.**
+
+This append-only entry supersedes only the older C11-169/C11-205 `local/unlanded` landing-status sentences; their historical run findings and honest reds remain unchanged.
+
+The shared harness had two exact attribution hazards. The untimed C11-205 route prime admitted requests according to backend-dependent wall-clock dwell, and the first C11-169 resident owner cursor let the sibling action loop shift the measured route boundary. The landed fix snapshots and restores the route-prime admission policy before convergence, applies exact `i/599` camera progress on `clock.onTick` before `Scene.render`, suppresses the sibling cursor only during measurement, and makes owner collection/output ownership fail closed.
+
+Batch 1032 lands exactly `run-performance-campaign.mjs`, `performance-workloads.spec.mjs`, `lib/performance-campaign-utils.mjs`, `lib/c11-205-owner-attribution.mjs`, and `c11-205-owner-attribution-policy.spec.mjs`. Fresh pre-landing static evidence was Node **73/73**, syntax, Prettier, ESLint, and scoped diff hygiene green. Runner SHA-256 remains `8045B6462EF498B290DC5965C0013715BCA34A0E0C1EEA269F22349ED137AE12`.
+
+The immutable ignored artifact `c11-169-resident-sf-owner-attribution.json` (`runId=63c4806e-83cb-4ac3-bddd-8a28d1dcdca7`, 8,453,346 bytes, SHA-256 `C755784AEF33AA85DF8C8F0DD72C0E025BFF38AC54F441CF1349DB5E95774C1C`) is PASS/exit 0 across four 600-frame AB/BA legs and binds frozen runtime bundle SHA-256 `7B42F00D0135C28CE5D9CC90486966EBA21B452B8974A6293381FE8761BFCBDA`. The 57 console messages are allowlisted sandboxed `about:blank` notices, not an empty console lane. These synchronous instrumented shares are noncausal and noncertifying; the referenced C11-205 causal run had no GPU timestamp samples. Accounting-source landing, evidence-led remediation, and separate uninstrumented causal confirmation remain open.
