@@ -91,6 +91,8 @@ Options:
   --no-gpu-timestamps      Explicitly select the default timestamp-off comparison lane
   --reuse-browser          Reuse one browser process (cross-run stress mode)
   --cpu-owner-attribution Diagnose C11-169 on the exact resident C11-205 workload
+  --direct-model-ablation CONDITION
+                           C11-168 causal discriminator: shown or hidden
   --headed                 Launch a visible Edge window
   --help                   Show this help
 
@@ -118,6 +120,7 @@ function parseArguments(argv) {
     gpuTimestamps: false,
     reuseBrowser: false,
     cpuOwnerAttribution: false,
+    directModelAblation: null,
     cpuOwnerAttributionRequestedOutput: null,
     cpuOwnerAttributionRequestedOptions: null,
     headed: false,
@@ -171,6 +174,8 @@ function parseArguments(argv) {
       options.reuseBrowser = true;
     } else if (argument === "--cpu-owner-attribution") {
       options.cpuOwnerAttribution = true;
+    } else if (argument === "--direct-model-ablation") {
+      options.directModelAblation = argv[++index];
     } else if (argument === "--headed") {
       options.headed = true;
     } else if (argument === "--help") {
@@ -222,6 +227,12 @@ function parseArguments(argv) {
   }
   if (!["webgl", "webgpu", "both"].includes(options.renderer)) {
     throw new Error("--renderer must be webgl, webgpu, or both");
+  }
+  if (
+    options.directModelAblation !== null &&
+    !["shown", "hidden"].includes(options.directModelAblation)
+  ) {
+    throw new Error("--direct-model-ablation must be shown or hidden");
   }
   if (
     options.repetitions !== undefined &&
@@ -405,6 +416,7 @@ async function runOne(
   apiInstrumentation,
   gpuTimestamps,
   cpuOwnerAttribution,
+  directModelAblation,
 ) {
   const protocol = manifest.protocol;
   const pageErrors = [];
@@ -1894,6 +1906,7 @@ async function runOne(
         apiInstrumentationEnabled,
         gpuTimestampsEnabled,
         cpuOwnerAttributionEnabled,
+        directModelAblationCondition,
         firstCompleteStableFrames,
       }) => {
         const setupStart = performance.now();
@@ -3434,6 +3447,42 @@ async function runOne(
           // final measured frame reaches exactly (N-1)/(N-1).
           cameraTrackFrameIndex = 1;
         }
+        // C11-168 default-off causal discriminator. Subject capture and the
+        // show toggle happen only after the resident route has converged and
+        // re-stabilized, but before the first timed counter/statistics/memory
+        // snapshot below. Ordinary campaign runs never import this helper or
+        // touch Model.show.
+        let directModelAblationController = null;
+        let directModelAblationApplied = null;
+        let directModelAblationRetained = null;
+        let directModelAblationEvidence = null;
+        if (directModelAblationCondition !== null) {
+          if (
+            !residentFrameDrivenTrack ||
+            representativeHarness?.primeEvidence?.residentConvergence
+              ?.converged !== true ||
+            !representativeHarness?.assets
+          ) {
+            throw new Error(
+              "[structural] C11-168 direct-model ablation requires the converged resident representative workload",
+            );
+          }
+          const directModelAblationModule =
+            await import("/Tools/visual-regression/lib/c11-168-direct-model-ablation.mjs");
+          directModelAblationController =
+            directModelAblationModule.createC11168DirectModelAblationController(
+              {
+                scene,
+                models: representativeHarness.assets.models,
+                condition: directModelAblationCondition,
+              },
+            );
+          performanceCampaignCleanup.add(() =>
+            directModelAblationController?.restoreOriginal(),
+          );
+          directModelAblationApplied =
+            directModelAblationController.applyTimedCondition();
+        }
         if (movingPickEnabled) {
           publicPickCpuSinceLastRender = 0;
           asyncPickExecutionCpuSinceLastRender = 0;
@@ -3993,6 +4042,29 @@ async function runOne(
               representativeHarness.terrain,
               representativeHarness.assets,
             );
+          if (directModelAblationController) {
+            directModelAblationRetained =
+              directModelAblationController.validateTimedCondition();
+            // This control is deliberately outside every measured snapshot.
+            // It replays the same fixed-frame route hidden, proves that the
+            // selector removes direct-model commands, then restores shown so
+            // the ordinary identity/coverage replay below remains unchanged.
+            directModelAblationController.enterHiddenSelectorControl();
+            for (
+              let controlFrameIndex = 0;
+              controlFrameIndex < measurementDefinition.frames;
+              controlFrameIndex++
+            ) {
+              const controlProgress =
+                measurementDefinition.frames === 1
+                  ? 0
+                  : controlFrameIndex / (measurementDefinition.frames - 1);
+              currentTrackState = applyCameraTrackProgress(controlProgress);
+              await waitFrames(1, "direct-model-hidden-selector-control");
+              directModelAblationController.sampleHiddenSelectorControl();
+            }
+            directModelAblationController.restoreShownForReplay();
+          }
           const residentRepresentativeReplay =
             workloadDefinition.representativeConfig.measurementTerrainMode ===
             "resident";
@@ -4162,6 +4234,25 @@ async function runOne(
           }
           representativeContentEvidence.measurementContent =
             representativeMeasurementContent;
+          if (directModelAblationController) {
+            const selectorControl =
+              directModelAblationController.selectorControlSnapshot(
+                representativeMeasurementContent,
+              );
+            directModelAblationEvidence = {
+              schemaVersion: 1,
+              valid:
+                directModelAblationApplied !== null &&
+                directModelAblationRetained !== null &&
+                selectorControl.valid === true,
+              condition: directModelAblationCondition,
+              timed: {
+                applied: directModelAblationApplied,
+                retained: directModelAblationRetained,
+              },
+              selectorControl,
+            };
+          }
           representativeContentEvidence.tilesetLifecycleDiagnostics =
             representativeHarness.tilesetLifecycle?.snapshot(
               representativeReplayProvenance,
@@ -4352,6 +4443,7 @@ async function runOne(
           enabledFeatures: context.enabledFeatures || [],
           canvasState,
           trace,
+          directModelAblation: directModelAblationEvidence,
           cpuOwnerAttribution: cpuOwnerAttributionResult,
           measurement: {
             ...measurementDefinition,
@@ -4451,6 +4543,7 @@ async function runOne(
         apiInstrumentationEnabled: apiInstrumentation,
         gpuTimestampsEnabled: gpuTimestamps,
         cpuOwnerAttributionEnabled: cpuOwnerAttribution,
+        directModelAblationCondition: directModelAblation,
         firstCompleteStableFrames: FIRST_COMPLETE_FRAME_STABLE_FRAMES,
       },
     );
@@ -4645,6 +4738,24 @@ async function runOne(
       failures.push(
         `resolved ${browserResult.actualRenderer}, expected ${renderer}`,
       );
+    }
+    if (
+      directModelAblation !== null &&
+      browserResult.directModelAblation?.valid !== true
+    ) {
+      const reasons = browserResult.directModelAblation?.selectorControl
+        ?.reasons ?? ["C11-168 direct-model evidence is missing"];
+      const reason = `C11-168 direct-model ablation invalid: ${reasons.join("; ")}`;
+      failures.push(reason);
+      browserResult.quality.status = "invalid";
+      browserResult.quality.structural = true;
+      browserResult.quality.validForAggregation = false;
+      browserResult.quality.validForCpuAggregation = false;
+      browserResult.quality.validForGpuAggregation = false;
+      browserResult.quality.reasons ??= [];
+      browserResult.quality.reasons.push(reason);
+      browserResult.quality.structuralReasons ??= [];
+      browserResult.quality.structuralReasons.push(reason);
     }
     const modelPreparationAssessment = assessWebGPUModelPreparationEvidence(
       browserResult.webgpuModelPreparationEvidence,
@@ -5243,6 +5354,13 @@ const bundlePath = resolve(
   "Cesium.js",
 );
 const bundleIdentity = await fileIdentity(bundlePath);
+const runtimeEntryPath = resolve(
+  repositoryDirectory,
+  "Build",
+  "CesiumUnminified",
+  "index.js",
+);
+const runtimeEntryIdentity = await fileIdentity(runtimeEntryPath);
 const toolingIdentities = Object.fromEntries(
   await Promise.all(
     [
@@ -5261,7 +5379,25 @@ const toolingIdentities = Object.fromEntries(
             ],
           ]
         : []),
-    ].map(async ([name, path]) => [name, await fileIdentity(path)]),
+      ...(options.directModelAblation !== null
+        ? [
+            [
+              "directModelAblationHelper",
+              resolve(
+                toolDirectory,
+                "lib",
+                "c11-168-direct-model-ablation.mjs",
+              ),
+            ],
+          ]
+        : []),
+    ].map(async ([name, path]) => {
+      const identity = await fileIdentity(path);
+      return [
+        name,
+        { ...identity, path: repositoryRelativePath(identity.path) },
+      ];
+    }),
   ),
 );
 const requestedWorkloads = options.workloads.length
@@ -5295,6 +5431,33 @@ for (const workload of selectedWorkloads) {
   }
 }
 const repetitions = options.repetitions ?? manifest.protocol.repetitions;
+let directModelAblationConfig = null;
+let directModelAblationConfigAssessment = null;
+if (options.directModelAblation !== null) {
+  const directModelAblationModule =
+    await import("./lib/c11-168-direct-model-ablation.mjs");
+  directModelAblationConfig =
+    directModelAblationModule.C11_168_DIRECT_MODEL_ABLATION_CONFIG;
+  directModelAblationConfigAssessment =
+    directModelAblationModule.evaluateC11168DirectModelInvocation({
+      condition: options.directModelAblation,
+      renderer: options.renderer,
+      selectedWorkloadIds: selectedWorkloads.map((workload) => workload.id),
+      manifestRelativePath: repositoryRelativePath(options.manifestPath),
+      manifestSha256: toolingIdentities.manifest.sha256,
+      manifest,
+      measuredFrames:
+        options.frames ??
+        selectedWorkloads[0]?.measuredFrames ??
+        manifest.protocol.measuredFrames,
+      repetitions,
+      apiInstrumentation: options.apiInstrumentation,
+      gpuTimestamps: options.gpuTimestamps,
+      reuseBrowser: options.reuseBrowser,
+      cpuOwnerAttribution: options.cpuOwnerAttribution,
+      workload: selectedWorkloads[0],
+    });
+}
 let causalReferenceIdentity = null;
 let causalReferenceIdentityError = null;
 const causalReferencePath = resolve(
@@ -5375,6 +5538,19 @@ const report = {
         firstRed: null,
       }
     : null,
+  directModelAblation:
+    options.directModelAblation === null
+      ? null
+      : {
+          schemaVersion: directModelAblationConfig.schemaVersion,
+          objective:
+            "Uninstrumented resident direct-model shown/hidden causal discriminator",
+          condition: options.directModelAblation,
+          diagnostic: true,
+          conclusionDeferredToQuartetDriver: true,
+          config: directModelAblationConfig,
+          configAssessment: directModelAblationConfigAssessment,
+        },
   generatedAt: new Date().toISOString(),
   manifest: {
     path: options.manifestPath,
@@ -5389,6 +5565,11 @@ const report = {
       path: "Build/CesiumUnminified/Cesium.js",
       byteLength: bundleIdentity.byteLength,
       sha256: bundleIdentity.sha256,
+    },
+    runtimeEntry: {
+      path: "Build/CesiumUnminified/index.js",
+      byteLength: runtimeEntryIdentity.byteLength,
+      sha256: runtimeEntryIdentity.sha256,
     },
     tooling: toolingIdentities,
   },
@@ -5408,6 +5589,7 @@ const report = {
     apiInstrumentation: options.apiInstrumentation,
     gpuTimestamps: options.gpuTimestamps,
     cpuOwnerAttribution: options.cpuOwnerAttribution,
+    directModelAblation: options.directModelAblation,
     browserIsolation: options.reuseBrowser
       ? "shared-process-isolated-contexts"
       : "fresh-process-per-run",
@@ -5436,6 +5618,14 @@ try {
   ) {
     throw new Error(
       `[structural] invalid C11-169 resident CPU-owner attribution config: ${cpuOwnerAttributionConfigAssessment?.failures.join("; ")}`,
+    );
+  }
+  if (
+    options.directModelAblation !== null &&
+    directModelAblationConfigAssessment?.pass !== true
+  ) {
+    throw new Error(
+      `[structural] invalid C11-168 direct-model ablation config: ${directModelAblationConfigAssessment?.failures.join("; ")}`,
     );
   }
   if (options.reuseBrowser) {
@@ -5482,6 +5672,7 @@ try {
             options.apiInstrumentation,
             options.gpuTimestamps,
             options.cpuOwnerAttribution,
+            options.directModelAblation,
           );
         } finally {
           if (!sharedBrowser) {
