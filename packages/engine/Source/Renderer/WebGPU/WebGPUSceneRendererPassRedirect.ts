@@ -251,7 +251,7 @@ export function setupSceneFramebufferRenderPass(
       if (!host._renderPassRedirectLogged) {
         host._renderPassRedirectLogged = true;
         const ca0 = colorAttachments[0];
-        console.warn(
+        console.log(
           `[WebGPU:SceneRenderer] RENDER PASS REDIRECT — ` +
             `sceneFB pass OPENED. viewport=${host._width}x${host._height} ` +
             `colorView=${!!ca0?.view} resolveTarget=${!!ca0?.resolveTarget} ` +

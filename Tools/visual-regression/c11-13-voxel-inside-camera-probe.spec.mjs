@@ -26,15 +26,18 @@ import {
   assessWatchdogOrdering,
   assessWaypointSequence,
   atomicReplace,
+  classifyExpectedConsoleWarning,
   compareBackendCaptures,
   createImmutable,
   decodeCanvasPngDataUrl,
   errorLanesAreEmpty,
+  expectedConsoleWarningsAreValid,
   isBaseOrigin,
   normalizeCanvasClip,
   normalizeProbeBase,
   preserveFirstRed,
   provenanceStable,
+  recordConsoleWarning,
   redactOutputPayload,
   withWatchdog,
 } from "./lib/c11-13-voxel-inside-camera-probe.mjs";
@@ -57,6 +60,22 @@ const sources = {
     path.join(here, "probe-c11-13-voxel-inside-camera.mjs"),
     "utf8",
   ),
+  sceneRenderer: fs
+    .readFileSync(
+      path.resolve(
+        "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts",
+      ),
+      "utf8",
+    )
+    .replaceAll("\r\n", "\n"),
+  scenePassRedirect: fs
+    .readFileSync(
+      path.resolve(
+        "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPassRedirect.ts",
+      ),
+      "utf8",
+    )
+    .replaceAll("\r\n", "\n"),
 };
 
 const EXPECTED_WAYPOINTS = [
@@ -233,6 +252,10 @@ function assessPhysicalProbePolicy(candidate) {
     "analyzed.metrics.height !== capture.drawingBufferHeight",
     "decodeCanvasPngDataUrl",
     "browserControl.probeTaskDrained = true",
+    "expectedConsoleWarningsAreValid(diagnostics.allowedConsoleWarnings)",
+    "classifyExpectedConsoleWarning(record, baseOrigin)",
+    "warningCheck.pass = expectedConsoleWarningsAreValid",
+    "recordConsoleWarning(record, errors, diagnostics)",
   ]) {
     if (!candidate.implementation.includes(token)) {
       failures.push(`probe implementation lost fail-closed token: ${token}`);
@@ -249,6 +272,30 @@ function assessPhysicalProbePolicy(candidate) {
     if (!candidate.entry.includes(token)) {
       failures.push(`entry lost Edge/watchdog cleanup token: ${token}`);
     }
+  }
+  for (const [name, text, token] of [
+    [
+      "executeCommands diagnostic must stay informational",
+      candidate.sceneRenderer,
+      "console.log(\n        `[WebGPU:SceneRenderer] executeCommands called — `",
+    ],
+    [
+      "post-init diagnostic must stay informational",
+      candidate.sceneRenderer,
+      "console.log(\n        `[WebGPU:SceneRenderer] POST-INIT state — `",
+    ],
+    [
+      "successful render-pass redirect must stay informational",
+      candidate.scenePassRedirect,
+      "console.log(\n          `[WebGPU:SceneRenderer] RENDER PASS REDIRECT — `",
+    ],
+    [
+      "failed render-pass redirect must stay an error",
+      candidate.scenePassRedirect,
+      "console.error(\n        `[WebGPU:SceneRenderer] RENDER PASS REDIRECT FAILED — `",
+    ],
+  ]) {
+    if (!text.includes(token)) failures.push(name);
   }
   return failures;
 }
@@ -450,14 +497,49 @@ test("physical probe source policy is complete and static mutants are rejected",
       "analyzed.metrics.height !== capture.drawingBufferHeight",
       "false",
     ],
+    [
+      "implementation",
+      "warningCheck.pass = expectedConsoleWarningsAreValid",
+      "warningCheck.pass = true || expectedConsoleWarningsAreValid",
+    ],
+    [
+      "implementation",
+      "recordConsoleWarning(record, errors, diagnostics)",
+      "void record",
+    ],
     ["entry", 'channel: "msedge"', 'channel: "chromium"'],
     ["entry", '"--use-vulkan"', '"--disable-vulkan"'],
+    [
+      "sceneRenderer",
+      "console.log(\n        `[WebGPU:SceneRenderer] executeCommands called — `",
+      "console.warn(\n        `[WebGPU:SceneRenderer] executeCommands called — `",
+    ],
+    [
+      "sceneRenderer",
+      "console.log(\n        `[WebGPU:SceneRenderer] POST-INIT state — `",
+      "console.warn(\n        `[WebGPU:SceneRenderer] POST-INIT state — `",
+    ],
+    [
+      "scenePassRedirect",
+      "console.log(\n          `[WebGPU:SceneRenderer] RENDER PASS REDIRECT — `",
+      "console.warn(\n          `[WebGPU:SceneRenderer] RENDER PASS REDIRECT — `",
+    ],
+    [
+      "scenePassRedirect",
+      "console.error(\n        `[WebGPU:SceneRenderer] RENDER PASS REDIRECT FAILED — `",
+      "console.log(\n        `[WebGPU:SceneRenderer] RENDER PASS REDIRECT FAILED — `",
+    ],
   ];
   for (const [file, before, after] of mutants) {
     const mutant = {
       ...sources,
       [file]: sources[file].replaceAll(before, after),
     };
+    assert.notEqual(
+      mutant[file],
+      sources[file],
+      `${file} mutant ${before} must change the source`,
+    );
     assert.notDeepEqual(
       assessPhysicalProbePolicy(mutant),
       [],
@@ -689,6 +771,18 @@ test("source/build/probe/provider provenance is exact, stable, and fresh", () =>
       sha256: "A".repeat(64),
       mtimeMs: 10,
     },
+    sceneRendererSource: {
+      exists: true,
+      bytes: 10,
+      sha256: "D".repeat(64),
+      mtimeMs: 10,
+    },
+    scenePassRedirectSource: {
+      exists: true,
+      bytes: 10,
+      sha256: "E".repeat(64),
+      mtimeMs: 10,
+    },
     engineBundle: {
       exists: true,
       bytes: 10,
@@ -708,8 +802,14 @@ test("source/build/probe/provider provenance is exact, stable, and fresh", () =>
   );
   assert.equal(provenanceStable(provenance, structuredClone(provenance)), true);
   const stale = structuredClone(provenance);
-  stale.engineBundle.mtimeMs = 9;
+  stale.scenePassRedirectSource.mtimeMs = 12;
   assert.equal(assessBuildProvenance(stale, sentinels, sentinels).pass, false);
+  const staleSceneRenderer = structuredClone(provenance);
+  staleSceneRenderer.sceneRendererSource.mtimeMs = 12;
+  assert.equal(
+    assessBuildProvenance(staleSceneRenderer, sentinels, sentinels).pass,
+    false,
+  );
   const changed = structuredClone(provenance);
   changed.providerFixture.sha256 = "D".repeat(64);
   assert.equal(provenanceStable(provenance, changed), false);
@@ -803,6 +903,111 @@ test("origin, watchdog, and all error lanes are fail-closed", () => {
   );
   extraLane.unknown = [];
   assert.equal(errorLanesAreEmpty(extraLane), false);
+});
+
+test("only exact bounded WebGPU debug-build and Chromium warnings are diagnostic", () => {
+  const bundleUrl =
+    "http://localhost:8080/packages/engine/Build/Unminified/index.js";
+  const make = (text, overrides = {}) => ({
+    backend: "webgpu",
+    type: "warning",
+    text,
+    location: { url: bundleUrl },
+    ...overrides,
+  });
+  const records = [
+    make(
+      "The powerPreference option is currently ignored when calling requestAdapter() on Windows. See https://crbug.com/369219127",
+    ),
+  ].map((record) => ({
+    ...record,
+    classification: classifyExpectedConsoleWarning(
+      record,
+      "http://localhost:8080",
+    ),
+  }));
+  assert.deepEqual(
+    records.map(({ classification }) => classification),
+    ["chromium-windows-power-preference"],
+  );
+  assert.equal(
+    expectedConsoleWarningsAreValid(records, "http://localhost:8080"),
+    true,
+  );
+  assert.equal(
+    expectedConsoleWarningsAreValid([], "http://localhost:8080"),
+    true,
+  );
+  assert.equal(
+    expectedConsoleWarningsAreValid(
+      [...records, structuredClone(records[0])],
+      "http://localhost:8080",
+    ),
+    false,
+  );
+  assert.equal(
+    expectedConsoleWarningsAreValid(
+      [{ classification: "chromium-windows-power-preference" }],
+      "http://localhost:8080",
+    ),
+    false,
+  );
+
+  const errors = { consoleWarnings: [] };
+  const diagnostics = { allowedConsoleWarnings: [] };
+  assert.equal(
+    recordConsoleWarning(
+      records[0],
+      errors,
+      diagnostics,
+      "http://localhost:8080",
+    ),
+    true,
+  );
+  assert.equal(
+    recordConsoleWarning(
+      records[0],
+      errors,
+      diagnostics,
+      "http://localhost:8080",
+    ),
+    false,
+  );
+  assert.equal(diagnostics.allowedConsoleWarnings.length, 1);
+  assert.equal(errors.consoleWarnings.length, 1);
+
+  for (const mutant of [
+    make("[WebGPU:SceneRenderer] executeCommands called — healthy debug log"),
+    make(`${records[0].text}.`),
+    make(records[0].text, { type: "log" }),
+    make(records[0].text, { backend: "webgl" }),
+    make(records[0].text, {
+      location: {
+        url: "http://localhost:8080/Tools/visual-regression/fake.js",
+      },
+    }),
+    make(records[0].text, {
+      location: {
+        url: "https://example.com/packages/engine/Build/Unminified/index.js",
+      },
+    }),
+    make(records[0].text, {
+      location: { url: `${bundleUrl}?cache=variant` },
+    }),
+    make(records[0].text, {
+      location: { url: `${bundleUrl}#fragment` },
+    }),
+    make(records[0].text, {
+      location: {
+        url: "http://user:password@localhost:8080/packages/engine/Build/Unminified/index.js",
+      },
+    }),
+  ]) {
+    assert.equal(
+      classifyExpectedConsoleWarning(mutant, "http://localhost:8080"),
+      null,
+    );
+  }
 });
 
 test("artifact watchdog awaits the losing probe cleanup before rejecting", async () => {

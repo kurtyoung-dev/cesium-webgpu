@@ -1642,7 +1642,7 @@ export class WebGPUSceneRenderer {
     //>>includeStart('debug', pragmas.debug);
     if (!this._execDebugLogged) {
       this._execDebugLogged = true;
-      console.warn(
+      console.log(
         `[WebGPU:SceneRenderer] executeCommands called — ` +
           `numFrustums=${numFrustums} ` +
           `usePostProcess=${config.usePostProcess} ` +
@@ -1699,7 +1699,7 @@ export class WebGPUSceneRenderer {
       this._postInitDebugLogged = true;
       const sf = this._sceneFramebuffer;
       const pp = this._postProcess;
-      console.warn(
+      console.log(
         `[WebGPU:SceneRenderer] POST-INIT state — ` +
           `_postProcess=${!!pp} hasActiveStages=${pp?.hasActiveStages} ` +
           `sceneFramebuffer=${!!sf} colorTarget=${!!sf?.colorTarget} ` +

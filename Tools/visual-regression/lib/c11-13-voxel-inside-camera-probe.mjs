@@ -78,6 +78,75 @@ const VIEWPORT = Object.freeze({ width: 960, height: 720 });
 const STABILITY_ATTEMPTS = 8;
 const STABILITY_STREAK = 3;
 const STABILITY_FRAMES = 8;
+const ENGINE_BUNDLE_PATHNAME = "/packages/engine/Build/Unminified/index.js";
+const EXPECTED_WEBGPU_WARNING_RULES = Object.freeze([
+  Object.freeze({
+    id: "chromium-windows-power-preference",
+    pattern:
+      /^The powerPreference option is currently ignored when calling requestAdapter\(\) on Windows\. See https:\/\/crbug\.com\/369219127$/u,
+  }),
+]);
+
+export function classifyExpectedConsoleWarning(
+  record,
+  baseOrigin = BASE_ORIGIN,
+) {
+  if (record?.backend !== "webgpu" || record?.type !== "warning") {
+    return null;
+  }
+  let location;
+  try {
+    location = new URL(record?.location?.url);
+  } catch {
+    return null;
+  }
+  if (
+    location.origin !== baseOrigin ||
+    location.username !== "" ||
+    location.password !== "" ||
+    location.pathname !== ENGINE_BUNDLE_PATHNAME ||
+    location.search !== "" ||
+    location.hash !== ""
+  ) {
+    return null;
+  }
+  const rule = EXPECTED_WEBGPU_WARNING_RULES.find(({ pattern }) =>
+    pattern.test(record.text),
+  );
+  return rule?.id ?? null;
+}
+
+export function expectedConsoleWarningsAreValid(
+  records,
+  baseOrigin = BASE_ORIGIN,
+) {
+  if (!Array.isArray(records)) return false;
+  const ids = records.map((record) => {
+    const classified = classifyExpectedConsoleWarning(record, baseOrigin);
+    return classified === record?.classification ? classified : null;
+  });
+  return ids.every((id) => id !== null) && new Set(ids).size === ids.length;
+}
+
+export function recordConsoleWarning(
+  record,
+  errors,
+  diagnostics,
+  baseOrigin = BASE_ORIGIN,
+) {
+  const classification = classifyExpectedConsoleWarning(record, baseOrigin);
+  if (
+    !classification ||
+    diagnostics.allowedConsoleWarnings.some(
+      (warning) => warning.classification === classification,
+    )
+  ) {
+    errors.consoleWarnings.push(record);
+    return false;
+  }
+  diagnostics.allowedConsoleWarnings.push({ ...record, classification });
+  return true;
+}
 
 export function normalizeProbeBase(value) {
   let base;
@@ -199,6 +268,12 @@ const LOCAL_PATHS = Object.freeze({
   rendererSource: path.resolve(
     "packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts",
   ),
+  sceneRendererSource: path.resolve(
+    "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts",
+  ),
+  scenePassRedirectSource: path.resolve(
+    "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPassRedirect.ts",
+  ),
   rendererSpec: path.resolve(
     "packages/engine/Specs/Renderer/WebGPU/WebGPUVoxelRendererSpec.js",
   ),
@@ -301,9 +376,13 @@ export function assessBuildProvenance(provenance, sourceText, bundleText) {
     );
   }
   if (
-    !(provenance?.engineBundle?.mtimeMs >= provenance?.rendererSource?.mtimeMs)
+    ![
+      provenance?.rendererSource?.mtimeMs,
+      provenance?.sceneRendererSource?.mtimeMs,
+      provenance?.scenePassRedirectSource?.mtimeMs,
+    ].every((sourceMtime) => provenance?.engineBundle?.mtimeMs >= sourceMtime)
   ) {
-    failures.push("engine bundle predates the C11-13 renderer source");
+    failures.push("engine bundle predates a required renderer source");
   }
   for (const sentinel of [
     "VOXEL_PROXY_REVERSED_FIRST_INDEX",
@@ -1125,6 +1204,7 @@ async function installPageObservers(
   page,
   backend,
   errors,
+  diagnostics,
   runtimeResponses,
   responseTasks,
 ) {
@@ -1145,7 +1225,9 @@ async function installPageObservers(
       location: message.location(),
     };
     if (message.type() === "error") errors.consoleErrors.push(record);
-    if (message.type() === "warning") errors.consoleWarnings.push(record);
+    if (message.type() === "warning") {
+      recordConsoleWarning(record, errors, diagnostics);
+    }
   });
   page.on("pageerror", (error) => {
     errors.pageErrors.push({ backend, message: error.message });
@@ -1237,7 +1319,13 @@ async function waitForHarness(page) {
   return evidence;
 }
 
-async function openLanes(context, errors, runtimeResponses, responseTasks) {
+async function openLanes(
+  context,
+  errors,
+  diagnostics,
+  runtimeResponses,
+  responseTasks,
+) {
   const lanes = {};
   for (const backend of BACKENDS) {
     const page = await context.newPage();
@@ -1245,6 +1333,7 @@ async function openLanes(context, errors, runtimeResponses, responseTasks) {
       page,
       backend,
       errors,
+      diagnostics,
       runtimeResponses,
       responseTasks,
     );
@@ -1375,6 +1464,7 @@ function collectRuntimeGateErrors(lanes, errors) {
 
 async function executeProbe(runDirectory, launchBrowser, browserControl) {
   const errors = createErrorLanes();
+  const diagnostics = { allowedConsoleWarnings: [] };
   const runtimeResponses = [];
   const responseTasks = [];
   let browser;
@@ -1394,6 +1484,7 @@ async function executeProbe(runDirectory, launchBrowser, browserControl) {
     const liveLanes = await openLanes(
       context,
       errors,
+      diagnostics,
       runtimeResponses,
       responseTasks,
     );
@@ -1462,6 +1553,7 @@ async function executeProbe(runDirectory, launchBrowser, browserControl) {
       lanes,
       waypoints,
       runtimeResponses,
+      diagnostics,
       errors,
       checks: [],
       cleanup: {
@@ -1471,6 +1563,15 @@ async function executeProbe(runDirectory, launchBrowser, browserControl) {
       },
     };
     result.checks = buildProbeChecks(result);
+    addCheck(
+      result.checks,
+      "debug-build and browser warnings are exact, bounded, and recorded",
+      expectedConsoleWarningsAreValid(diagnostics.allowedConsoleWarnings),
+      diagnostics.allowedConsoleWarnings,
+      {
+        optionalAtMostOnce: "chromium-windows-power-preference",
+      },
+    );
 
     const screenshotPaths = WAYPOINTS.flatMap((waypoint) =>
       BACKENDS.map(
@@ -1548,6 +1649,17 @@ async function executeProbe(runDirectory, launchBrowser, browserControl) {
       if (errorLaneCheck) {
         errorLaneCheck.pass = errorLanesAreEmpty(errors);
         errorLaneCheck.actual = errors;
+      }
+      const warningCheck = result.checks.find(
+        (check) =>
+          check.name ===
+          "debug-build and browser warnings are exact, bounded, and recorded",
+      );
+      if (warningCheck) {
+        warningCheck.pass = expectedConsoleWarningsAreValid(
+          diagnostics.allowedConsoleWarnings,
+        );
+        warningCheck.actual = diagnostics.allowedConsoleWarnings;
       }
       addCheck(
         result.checks,
