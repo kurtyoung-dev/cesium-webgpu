@@ -159,6 +159,7 @@ import {
 } from "./lib/build-source-identity.mjs";
 import {
   DECK_FREE_CONTROL_SESSION_PLAN,
+  DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
   DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS,
   DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY,
   DECK_FREE_LIGHTING_FADE_IN_DISTANCE,
@@ -235,6 +236,26 @@ const SOURCE_FILES = [
   "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
+  "packages/engine/Source/Scene/Globe.js",
+  "packages/engine/Source/Scene/GlobeSurfaceTileProvider.js",
+  "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceShaders.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts",
+  "packages/engine/Source/Shaders/GlobeFS.glsl",
+  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+  "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
+];
+// The build consumes generated shader modules, while reviewers edit and audit
+// the GLSL/WGSL sources above. Bind both halves: exact sourcesContent identity
+// for the runtime inputs plus verbatim markers for each authoritative shader.
+const BUILD_SOURCE_IDENTITY_FILES = [
+  ...SOURCE_FILES.filter(
+    (file) => !file.endsWith(".glsl") && !file.endsWith(".wgsl"),
+  ),
+  "packages/engine/Source/Shaders/GlobeFS.js",
+  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.js",
+  "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.js",
 ];
 
 const BUILD_ENTRY_PATH = path.join("Build/CesiumUnminified", "index.js");
@@ -244,6 +265,14 @@ const LOCAL_EVIDENCE_FILES = Object.freeze({
   ...Object.fromEntries(
     SOURCE_FILES.map((file, index) => [
       `engineSource${index}`,
+      path.resolve(file),
+    ]),
+  ),
+  ...Object.fromEntries(
+    BUILD_SOURCE_IDENTITY_FILES.filter(
+      (file) => !SOURCE_FILES.includes(file),
+    ).map((file, index) => [
+      `generatedShaderSource${index}`,
       path.resolve(file),
     ]),
   ),
@@ -307,6 +336,39 @@ const VERBATIM_SLICES = [
     // ratio against a build that predates the fix and report the SAME 0.894.
     file: "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
     marker: "dimAerialTint",
+  },
+  {
+    file: "packages/engine/Source/Scene/Globe.js",
+    marker: "tileProvider.terminatorGlowStrength =",
+  },
+  {
+    file: "packages/engine/Source/Scene/GlobeSurfaceTileProvider.js",
+    marker: "this.terminatorGlowStrength =",
+  },
+  {
+    file: "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js",
+    marker:
+      "uniformMapProperties.terminatorGlowStrength = terminatorGlowStrength",
+  },
+  {
+    file: "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts",
+    marker: "tileProvider.terminatorGlowStrength ??",
+  },
+  {
+    file: "packages/engine/Source/Shaders/GlobeFS.glsl",
+    marker:
+      "float terminatorGlowStrength = max(u_terminatorGlowStrength, 0.0);",
+  },
+  {
+    file: "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+    marker: "let terminatorGlowStrength = max(tile.tileControls.z, 0.0);",
+  },
+  {
+    // Lane B reads the image after this cloud over-composite. Binding the exact
+    // producer/consumer seam prevents a future build from silently moving the
+    // additive cloud term back into the terrain-shadow domain.
+    file: "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
+    marker: "let finalColor = mix(sceneColor.rgb, hazed, cloudAlpha);",
   },
 ];
 
@@ -422,7 +484,7 @@ function provenance() {
   try {
     sourceIdentity = inspectBuildSourceIdentity({
       sourceMapPath: BUILD_SOURCE_MAP_PATH,
-      sourceFiles: SOURCE_FILES,
+      sourceFiles: BUILD_SOURCE_IDENTITY_FILES,
     });
   } catch (error) {
     sourceIdentity = {
@@ -1038,12 +1100,13 @@ const RUN_CLOUD_LANES = async (cfg) => {
       shadowStrength: scene.context?._cloudCache?.shadowStrength ?? null,
     };
 
-    // ── LANE B: ground cloud-shadow CONTRAST. Look down; toggle
-    // `cloudCastShadows` at one instant in each eclipse position. The contrast
-    // is `shadowOn / shadowOff`, and the CLAIM is that the eclipse leaves that
-    // ratio essentially unchanged (+0.08%) — because an eclipse dims the direct
-    // beam and the skylight together, so the shadow's contrast ratio survives
-    // until the nonlocal umbral floor takes over.
+    // ── LANE B: ground cloud-shadow DECREMENT. Look down; toggle
+    // `cloudCastShadows` at one instant in each eclipse position. The raw
+    // `shadowOn / shadowOff` contrast is retained for visual history, but the
+    // terrain claim uses `noShadow - shadow`: that within-state difference
+    // cancels ProceduralClouds' later additive over-composite. Its eclipse/clear
+    // ratio must equal independent deck-free ABBA ground dim times the actual
+    // producer-strength ratio.
     //
     // THE LANE FLIES ITS OWN CAMERA, and that is what the first run got wrong.
     // The cast-shadow map is a 512x512 ortho render over a +/-60 km footprint
@@ -1277,6 +1340,22 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
 
   scene.globe.enableLighting = true;
   scene.globe.baseColor = C.Color.fromBytes(200, 200, 200);
+  // The current engine exposes this appearance term as an opt-in strength. The
+  // diagnostic pins it to one so its complete shader expression is explicit,
+  // then restores the exact prior value before every scored Sun capture. Older
+  // f38 evidence had the same expression unconditionally (effective strength
+  // one); a build without this public control must be rebuilt before rerunning.
+  const terminatorGlowSupported =
+    "terminatorGlowStrength" in scene.globe &&
+    Number.isFinite(scene.globe.terminatorGlowStrength);
+  const priorTerminatorGlowStrength = terminatorGlowSupported
+    ? scene.globe.terminatorGlowStrength
+    : null;
+  const readTerminatorGlowStrength = () => ({
+    publicStrength: scene.globe.terminatorGlowStrength ?? null,
+    tileProviderStrength:
+      scene.globe._surface?.tileProvider?.terminatorGlowStrength ?? null,
+  });
   // This control flies below Globe's normal ~9.98 Mm day/night fade-out, where
   // both backends intentionally flatten diffuse lighting to 1. Probe-only
   // distances 0/1 force the shipped day/night branch live at the unchanged
@@ -1543,11 +1622,14 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
 
     // DIAGNOSTIC ONLY. DirectionalLight is intentionally outside S2's
     // SunLight-only uniform dimming and, with eclipse-globe shadow disabled,
-    // must remain eclipse-invariant. It only proves the unsaturated DAYNIGHT
-    // diffuse path is live.
+    // must remain eclipse-invariant. It proves the unsaturated DAYNIGHT
+    // diffuse path and its explicitly enabled terminator-glow addend are live.
     const ndotlTarget = cfg.directionalNdotLTargets[rungIndex];
     const directionSpec = diagnosticDirection(ndotlTarget);
     aimDiagnosticCamera();
+    if (terminatorGlowSupported) {
+      scene.globe.terminatorGlowStrength = cfg.diagnosticTerminatorGlowStrength;
+    }
     scene.light = new C.DirectionalLight({
       direction: new C.Cartesian3(...directionSpec.emittedDirectionWC),
       color: C.Color.WHITE,
@@ -1575,6 +1657,9 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
       cameraHeight: cfg.groundCameraHeight,
       enableVolumetric: collection.enableVolumetric,
       configureCalls,
+      terminatorGlowStrength: scene.globe.terminatorGlowStrength ?? null,
+      terminatorGlowTileProviderStrength:
+        readTerminatorGlowStrength().tileProviderStrength,
     });
 
     // SCORED FACTOR CAPTURE. Always replace the custom light with a fresh
@@ -1584,6 +1669,9 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
       color: C.Color.WHITE,
       intensity: cfg.sunLightIntensity,
     });
+    if (terminatorGlowSupported) {
+      scene.globe.terminatorGlowStrength = priorTerminatorGlowStrength;
+    }
     aimCamera(julian);
     await pin.settle(julian, cfg.settleMs);
     const reduced = bandMean(pin.capture(julian, false));
@@ -1607,6 +1695,9 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
       cameraHeight: cfg.groundCameraHeight,
       enableVolumetric: collection.enableVolumetric,
       configureCalls,
+      terminatorGlowStrength: scene.globe.terminatorGlowStrength ?? null,
+      terminatorGlowTileProviderStrength:
+        readTerminatorGlowStrength().tileProviderStrength,
     });
   }
 
@@ -1622,6 +1713,11 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
     baseColor: readBaseColor(),
     lighting: readLighting(),
     light: readLight(false),
+    terminatorGlow: {
+      supported: terminatorGlowSupported,
+      priorStrength: priorTerminatorGlowStrength,
+      ...readTerminatorGlowStrength(),
+    },
     pins,
     dials,
     globeReadiness: { control: readiness },
@@ -2709,6 +2805,8 @@ export async function runEclipseCloudResponseProbe() {
               lightingFadeInDistance: DECK_FREE_LIGHTING_FADE_IN_DISTANCE,
               directionalNdotLTargets: DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS,
               directionalLightIntensity: DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY,
+              diagnosticTerminatorGlowStrength:
+                DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
               sunLightIntensity: DECK_FREE_SUN_LIGHT_INTENSITY,
             }),
         );
@@ -3045,6 +3143,17 @@ export async function runEclipseCloudResponseProbe() {
           `band inside footprint ${t.footprint?.allInside ?? "?"}, texelSpan ${r3(t.footprint?.texelSpan)}; ` +
           `groundOnly ${r3(t.groundOnly)}, retention ${r3(t.groundRetention)} ` +
           `@ ${t.cameraHeight} m / ${t.pitchDegrees} deg`,
+      );
+      const decrement = t.decrementModelAtDeepest ?? {};
+      console.log(
+        `SHADOW model: producer/footprint ${t.producerAndFootprintCertified}; ` +
+          `raw cloud-composite contrast ${r6(t.rawCompositeContrastAtDeepest)} ` +
+          `(legacy [${ECLIPSE_CLOUD_BANDS.shadowContrastRatio.lo}, ${ECLIPSE_CLOUD_BANDS.shadowContrastRatio.hi}] ` +
+          `${t.rawCompositeContrastInLegacyBand ? "inside" : "outside"}, REPORTED ONLY); ` +
+          `terrain decrement observed/expected ${r6(decrement.observed)}/${r6(decrement.expected)}, ` +
+          `residual ${r6(decrement.residual)}, quantization interval ` +
+          `[${r6(decrement.quantization?.residualInterval?.lo)}, ${r6(decrement.quantization?.residualInterval?.hi)}], ` +
+          `certified ${decrement.withinQuantizationBound}`,
       );
       // CO-19 INSTRUMENT TELL, printed UNROUNDED and in full. The fourth run's
       // four `offNoCloud` reads were bit-identical (0.2750603921572111) across

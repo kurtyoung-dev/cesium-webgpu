@@ -201,12 +201,13 @@ export const CLOUD_SHADOW_BEER_FLOOR = 0.35;
 // (C13-41-SHADOW-CONTRAST-ECLIPSE-EXCESS, CO-17)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// The fourth Edge run measured `shadowContrastRatioAtDeepest` = 1.0496 against
-// the [0.97, 1.03] invariant, on a lane whose vacuity was fully cleared. The row
-// named the extension below as the next derivation, on the hypothesis that "the
-// shadowed floor is ambient-lit and the ambient dims by a different law than the
-// direct term". THE DERIVATION REFUTES THAT HYPOTHESIS, and it does so without
-// needing to know the split.
+// This is retained as a HISTORICAL RAW-COMPOSITE DIAGNOSTIC. The fourth Edge
+// run measured `shadowContrastRatioAtDeepest` = 1.0496 against the legacy
+// [0.97, 1.03] band, and the row derived the extension below on the hypothesis
+// that the shadowed floor was ambient-lit by a different law. The derivation
+// refutes that hypothesis without needing to know the split, but the recovered
+// run later proved that the captured band also contains ProceduralClouds' later
+// unshadowable over-composite. Consequently this model is reported, not gated.
 //
 // THE SHADER'S OWN STRUCTURE gives the split exactly. `GlobeTerrain.wgsl:4838`
 // applies the cast shadow as `color = color * sampleCloudGroundShadow(...)` — a
@@ -265,10 +266,12 @@ export const CLOUD_SHADOW_BEER_FLOOR = 0.35;
 // whole family is capped at 1.00084, and the measurement is 59x past that cap.
 // `shadowContrastModelIsBoundedByDirectional` gates the inequality.
 //
-// THEREFORE THE BAND DOES NOT MOVE. The row asked for it to move BY DERIVATION
-// if the extension predicted ~1.05; the extension predicts 1.0002, so
-// [0.97, 1.03] stands and 1.0496 is a REAL finding. The band's headroom over the
-// model grew from 36x to 142x, which is a reason to keep it, not to widen it.
+// THE LEGACY BAND DOES NOT MOVE, BUT IT IS REPORTED-ONLY. The extension still
+// predicts 1.0002 and remains useful when comparing historical artifacts; it
+// cannot turn a post-cloud-composite raw ratio into a terrain product verdict.
+// `evaluateShadowDecrementModel` is the owned gate: its within-state difference
+// cancels the additive cloud term, then compares the eclipse/clear decrement
+// ratio with independent ABBA ground dim times actual producer strength.
 //
 // WHAT THE DERIVATION DOES LOCALISE. Because F cancels, the published laws also
 // predict that BOTH ground bands dim by exactly F — `onNoShadow/offNoShadow` and
@@ -278,9 +281,9 @@ export const CLOUD_SHADOW_BEER_FLOOR = 0.35;
 // (1.181983 / 1.126131 = 1.0496). `extractShadowableDimming` inverts the two
 // bands for the shadowable term's own law and reads d/F = 1.000 / 0.992 / 0.995 /
 // 1.008 across the ladder — the shadowable path is exactly right to <1%, so the
-// under-dim lives ENTIRELY in the residue the shadow cannot touch. Reported, not
-// gated: naming a residue is a diagnosis, and the fifth run's clouds-off
-// eclipse-ON control is what attributes it.
+// under-dim lives in the residue the shadow cannot touch. This remains reported
+// historical diagnosis; the certified deck-free ABBA leg and decrement model
+// now carry the attribution and verdict.
 
 /**
  * The ambient/direct-split prediction for the eclipse contrast ratio, in closed
@@ -769,6 +772,208 @@ export function maxBucketStep(series) {
  */
 export const BAND_MEAN_CAPTURE_DELTA = 0.004;
 
+/** Half of one 8-bit display code, the quantization error of one band mean. */
+export const BAND_MEAN_QUANTIZATION_HALF_STEP = 0.5 / 255;
+
+/**
+ * Exact positive-ratio interval after propagating bounded numerator and
+ * denominator errors. This is an interval calculation, not a fitted tolerance.
+ *
+ * @param {number} numerator
+ * @param {number} denominator
+ * @param {number} numeratorError
+ * @param {number} denominatorError
+ * @returns {{lo:number, hi:number}|null}
+ */
+function boundedPositiveRatioInterval(
+  numerator,
+  denominator,
+  numeratorError,
+  denominatorError,
+) {
+  if (
+    !Number.isFinite(numerator) ||
+    !Number.isFinite(denominator) ||
+    !Number.isFinite(numeratorError) ||
+    !Number.isFinite(denominatorError) ||
+    !(numerator > 0) ||
+    !(denominator > denominatorError) ||
+    !(numeratorError >= 0) ||
+    !(denominatorError >= 0)
+  ) {
+    return null;
+  }
+  return {
+    lo:
+      Math.max(0, numerator - numeratorError) /
+      (denominator + denominatorError),
+    hi: (numerator + numeratorError) / (denominator - denominatorError),
+  };
+}
+
+const intervalsOverlap = (left, right) =>
+  left !== null && right !== null && left.lo <= right.hi && right.lo <= left.hi;
+
+/**
+ * Certify the terrain cloud-shadow decrement without treating the later cloud
+ * over-composite as terrain. The full-resolution cloud pass produces
+ * `C = (1-alpha) * G + alpha * H` after `GlobeTerrain` has already multiplied
+ * `G` by the beer shadow. Consequently the raw `shadowed/unshadowed` display
+ * contrast contains an unshadowable, independently tone-mapped `H` term. The
+ * difference at one eclipse state cancels that additive term:
+ *
+ *   D = C_noShadow - C_shadow = (1-alpha) * (G_noShadow - G_shadow)
+ *
+ * and the ratio of decrements must follow the independently replicated ABBA
+ * ground dim times the producer's actual shadow-strength ratio.
+ *
+ * Every input band is an 8-bit display mean. One mean is bounded by half a code
+ * (`0.5/255`), so each two-mean decrement is bounded by one full code
+ * (`1/255`). The returned intervals propagate those hard bounds through both
+ * ratios exactly; no empirical percentage or widened legacy band is involved.
+ *
+ * @param {object} model
+ * @param {object} model.shadow One rung's shadow block, including ABBA fields.
+ * @param {number} model.strengthClear Actual producer strength in the clear leg.
+ * @param {number} model.strengthEclipse Actual producer strength in the eclipse leg.
+ * @param {number|null} [model.alternativeStrengthRatio] Rejected-design ratio.
+ * @returns {object}
+ */
+export function evaluateShadowDecrementModel({
+  shadow,
+  strengthClear,
+  strengthEclipse,
+  alternativeStrengthRatio = null,
+}) {
+  const clearDecrement =
+    Number.isFinite(shadow?.offNoShadow) && Number.isFinite(shadow?.offShadow)
+      ? shadow.offNoShadow - shadow.offShadow
+      : null;
+  const eclipseDecrement =
+    Number.isFinite(shadow?.onNoShadow) && Number.isFinite(shadow?.onShadow)
+      ? shadow.onNoShadow - shadow.onShadow
+      : null;
+  const groundClear = shadow?.offNoCloud;
+  const groundEclipse = shadow?.onNoCloud;
+  const halfStep = BAND_MEAN_QUANTIZATION_HALF_STEP;
+  const differenceError = halfStep * 2;
+  const reasons = [];
+
+  if (!(Number.isFinite(clearDecrement) && clearDecrement > differenceError)) {
+    reasons.push(
+      `clear shadow decrement ${clearDecrement} does not exceed one display code ${differenceError}`,
+    );
+  }
+  if (!(Number.isFinite(eclipseDecrement) && eclipseDecrement > 0)) {
+    reasons.push(
+      `eclipse shadow decrement ${eclipseDecrement} is not positive`,
+    );
+  }
+  if (!(Number.isFinite(groundClear) && groundClear > halfStep)) {
+    reasons.push(
+      `ABBA clear ground ${groundClear} is not quantization-resolvable`,
+    );
+  }
+  if (!(Number.isFinite(groundEclipse) && groundEclipse > 0)) {
+    reasons.push(`ABBA eclipse ground ${groundEclipse} is not positive`);
+  }
+  if (!(Number.isFinite(strengthClear) && strengthClear > 0)) {
+    reasons.push(`clear producer strength ${strengthClear} is not positive`);
+  }
+  if (!(Number.isFinite(strengthEclipse) && strengthEclipse >= 0)) {
+    reasons.push(`eclipse producer strength ${strengthEclipse} is invalid`);
+  }
+
+  const observed =
+    reasons.length === 0 ? eclipseDecrement / clearDecrement : null;
+  const groundDimming =
+    reasons.length === 0 ? groundEclipse / groundClear : null;
+  const strengthRatio =
+    reasons.length === 0 ? strengthEclipse / strengthClear : null;
+  const expected = reasons.length === 0 ? groundDimming * strengthRatio : null;
+  const observedInterval =
+    reasons.length === 0
+      ? boundedPositiveRatioInterval(
+          eclipseDecrement,
+          clearDecrement,
+          differenceError,
+          differenceError,
+        )
+      : null;
+  const groundInterval =
+    reasons.length === 0
+      ? boundedPositiveRatioInterval(
+          groundEclipse,
+          groundClear,
+          halfStep,
+          halfStep,
+        )
+      : null;
+  const expectedInterval =
+    groundInterval !== null && Number.isFinite(strengthRatio)
+      ? {
+          lo: groundInterval.lo * strengthRatio,
+          hi: groundInterval.hi * strengthRatio,
+        }
+      : null;
+  const alternativeExpected =
+    Number.isFinite(groundDimming) &&
+    Number.isFinite(alternativeStrengthRatio) &&
+    alternativeStrengthRatio >= 0
+      ? groundDimming * alternativeStrengthRatio
+      : null;
+  const alternativeExpectedInterval =
+    groundInterval !== null &&
+    Number.isFinite(alternativeStrengthRatio) &&
+    alternativeStrengthRatio >= 0
+      ? {
+          lo: groundInterval.lo * alternativeStrengthRatio,
+          hi: groundInterval.hi * alternativeStrengthRatio,
+        }
+      : null;
+
+  return {
+    valid:
+      reasons.length === 0 &&
+      observedInterval !== null &&
+      expectedInterval !== null,
+    reasons,
+    clearDecrement,
+    eclipseDecrement,
+    groundDimming,
+    strengthRatio,
+    observed,
+    expected,
+    residual:
+      Number.isFinite(observed) && Number.isFinite(expected)
+        ? observed - expected
+        : null,
+    quantization: {
+      bandMeanHalfStep: halfStep,
+      twoMeanDifferenceError: differenceError,
+      observedInterval,
+      expectedInterval,
+      residualInterval:
+        observedInterval !== null && expectedInterval !== null
+          ? {
+              lo: observedInterval.lo - expectedInterval.hi,
+              hi: observedInterval.hi - expectedInterval.lo,
+            }
+          : null,
+    },
+    withinQuantizationBound: intervalsOverlap(
+      observedInterval,
+      expectedInterval,
+    ),
+    alternativeExpected,
+    alternativeExpectedInterval,
+    alternativeWithinQuantizationBound: intervalsOverlap(
+      observedInterval,
+      alternativeExpectedInterval,
+    ),
+  };
+}
+
 /**
  * The dimmest deck-free ground band lane B may score at all — the floor of
  * `shadowGroundBrightness`. It is named here because it BOUNDS the propagated
@@ -817,7 +1022,7 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
   shadowContrastRatio: band(
     0.97,
     1.03,
-    "prediction (ii) verbatim: mix(1, 0.35, s) moves 0.350000 -> 0.350293, i.e. +0.084%. +/-3% is two orders of magnitude wider than the predicted move and is set by 8-bit quantization on a ground band, NOT by the effect. It is also the DISCRIMINATOR: the rejected design (shadow strength = S2's factor) puts the contrast at 1 - 0.65*0.769 = 0.5001 against an un-eclipsed 0.35 at the 0.5452 rung, a ratio of 1.429 — 14x outside this band. A measured move beyond it REFUTES the shipped model, exactly as the row asks. FIFTH-PASS EXTENSION (CO-17), and the band DOES NOT MOVE: the row named the ambient/direct split as the derivation that might justify moving it, and the derivation refutes its own hypothesis. The cast shadow is a MULTIPLY on the whole surface colour (GlobeTerrain.wgsl:4838), so only what is ADDED after that line is un-shadowable; C13-41 and C12-29 S2 dim every term on BOTH sides of that line by the SAME scalar, so the eclipse factor cancels out of the contrast entirely and the closed form is ratio = 1 + (s_1 - s_F)*(1 - c_clear)/(s_1*c_clear) with the split and the beer transmittance both cancelled against the MEASURED clear contrast — no free parameter to tune. At the fourth run's numbers that is 1.00021, which is 3.9x CLOSER to 1 than the directional-only 1.00084, because the residue DILUTES the move. The directional-only model is the SUPREMUM of the whole split family (attained at zero residue with tau at the beer floor), so no admissible split reaches 1.05 and the measured 1.0496 is 59x past the family's cap — a REAL finding, not a modelling gap. `shadowContrastModelIsBoundedByDirectional` gates that inequality; the band's headroom over the model went from 36x to 142x, which is a reason to keep it rather than widen it",
+    "LEGACY REPORTED-ONLY display band. The original prediction applies to the terrain surface immediately after its beer-shadow multiply, but lane B captures after ProceduralClouds composites C=(1-alpha)G+alphaH. H is an unshadowable, independently Reinhard-mapped cloud term, so the raw shadowed/unshadowed ratio is useful visual telemetry but is not the terrain invariant. The band remains unchanged for historical comparison; `shadowContrastInvariant` now gates the cloud-cancelling decrement ratio against independent ABBA ground dim times producer strength, using exact 8-bit quantization intervals.",
   ),
 
   iblDeepestRatio: band(
@@ -979,6 +1184,10 @@ export const ECLIPSE_CLOUD_PARITY_PREDICATES = Object.freeze([
  * legitimately read false.
  */
 export const ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES = Object.freeze([
+  // The captured lane-B image includes the procedural-cloud over-composite,
+  // which is applied after the terrain beer shadow. Keep the legacy raw ratio
+  // visible, but never let that mixed-domain number decide the terrain model.
+  "shadowCompositeContrastInLegacyBandReportedOnly",
   // The refresh wall-clock obligation was discharged by the second Edge run
   // (7.749 ms/refresh WebGPU, 1.607 WebGL). Later acceptance runs still retain
   // the complete interleaved accounting and an explicit INVALID reason, but a
@@ -994,11 +1203,11 @@ export const ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES = Object.freeze([
   // gate — the same lesson `probe-eclipse-scene-dimming` learned over four
   // rounds of trying to predict a saturating display transform.
   "deckRatioMatchesLinearReportedOnly",
-  // CO-17. The ambient/direct-split model's own agreement with the measurement.
-  // It reads FALSE on the fourth run's numbers BY DESIGN — that disagreement IS
-  // `C13-41-SHADOW-CONTRAST-ECLIPSE-EXCESS`, and it is already carried by the
-  // gating `shadowContrastInvariant`. Gating it too would score one finding
-  // twice. Read `shadowContrastModel` for the per-rung arithmetic.
+  // CO-17. The ambient/direct-split model's agreement with the raw composite.
+  // The recovered run established that the raw band contains a later
+  // unshadowable cloud term, so disagreement is diagnostic rather than a
+  // terrain failure. Read `shadowContrastModel` for the historical per-rung
+  // arithmetic and `shadowDecrementModel` for the gate.
   "shadowContrastMatchesSplitModelReportedOnly",
   // CO-17. Whether the fitted deck tonemap entry sits inside the design
   // envelope `deckDisplayedRatio` was derived for. NOT gating because the fit
@@ -1105,8 +1314,11 @@ export const ECLIPSE_CLOUD_PREDICATE_LANES = Object.freeze({
   shadowNonVacuous: "shadow",
   offShadowStrengthExactlyOne: "cloud-page",
   shadowStrengthMatchesDirectional: "cloud-page",
-  shadowContrastInvariant: "shadow",
-  shadowContrastRejectsAlternativeDesign: "shadow",
+  // The decrement model consumes the independently replicated ABBA ground dim,
+  // so a blind deck-free control must quarantine it rather than silently fall
+  // back to the contaminated raw cloud-composite contrast.
+  shadowContrastInvariant: "deck-free",
+  shadowContrastRejectsAlternativeDesign: "deck-free",
   // The split model's bound on itself: derived inside this module from the
   // published laws with no run input, so it is never quarantined — the same
   // domain, and for the same reason, as `predictedRefreshCountExact`.
@@ -1537,6 +1749,53 @@ export function judgeEclipseCloudResponse(run) {
         ).join("; "),
       );
     }
+    const shadowPlumbingFailures = rungs.flatMap((rung, index) => {
+      const shadow = rung.shadow ?? {};
+      const footprint = shadow.footprintOff;
+      const footprintSamples = footprint?.samples;
+      const producerOff = shadow.cloudCacheOff;
+      const producerOn = shadow.cloudCacheOn;
+      const failures = [];
+      if (
+        shadow.shadowActiveOff !== true ||
+        producerOff?.shadowActive !== true ||
+        producerOff?.shadowViewPresent !== true ||
+        producerOff?.shadowFrameValid !== true
+      ) {
+        failures.push(`rung ${index} clear shadow producer is not live`);
+      }
+      if (
+        shadow.shadowActiveOn !== true ||
+        producerOn?.shadowActive !== true ||
+        producerOn?.shadowViewPresent !== true ||
+        producerOn?.shadowFrameValid !== true
+      ) {
+        failures.push(`rung ${index} eclipse shadow producer is not live`);
+      }
+      if (
+        footprint?.allInside !== true ||
+        !Array.isArray(footprintSamples) ||
+        footprintSamples.length === 0 ||
+        !footprintSamples.every(
+          (sample) => sample?.groundHit === true && sample?.inside === true,
+        )
+      ) {
+        failures.push(
+          `rung ${index} scored ground band is outside the shadow footprint`,
+        );
+      }
+      return failures;
+    });
+    v.shadowProducerAndFootprintCertified =
+      rungs.length > 0 && shadowPlumbingFailures.length === 0;
+    if (!v.shadowProducerAndFootprintCertified) {
+      markBlind(
+        "shadow",
+        `cloud-shadow producer/footprint certification failed: ${
+          shadowPlumbingFailures.join("; ") || "no shadow rungs were captured"
+        }`,
+      );
+    }
     v.shadowGroundOnly = rungs[0]?.shadow?.offNoCloud ?? null;
     v.shadowGroundRetentionRatio = ratio(
       rungs[0]?.shadow?.offNoShadow,
@@ -1623,15 +1882,40 @@ export function judgeEclipseCloudResponse(run) {
       rungs[0]?.shadow?.offShadow,
       rungs[0]?.shadow?.offNoShadow,
     );
-    v.shadowNonVacuous =
-      Number.isFinite(v.shadowContrastClear) &&
-      v.shadowContrastClear <= B.shadowVacuityCeiling.hi &&
-      v.shadowContrastClear > 0;
-    if (!v.shadowNonVacuous) {
-      markBlind(
-        "shadow",
-        `un-eclipsed ground contrast ${v.shadowContrastClear} is not below ${B.shadowVacuityCeiling.hi} — the cast shadow is not darkening the ground`,
-      );
+    if (!isBlind("shadow")) {
+      const decrementFailures = rungs.flatMap((rung, index) => {
+        const clear = rung.shadow?.offNoShadow - rung.shadow?.offShadow;
+        const eclipse = rung.shadow?.onNoShadow - rung.shadow?.onShadow;
+        const failures = [];
+        if (
+          !Number.isFinite(clear) ||
+          !(clear > BAND_MEAN_QUANTIZATION_HALF_STEP * 2)
+        ) {
+          failures.push(
+            `rung ${index}: clear ground contrast decrement ${clear} does not exceed one display code`,
+          );
+        }
+        if (!Number.isFinite(eclipse) || !(eclipse > 0)) {
+          failures.push(
+            `rung ${index}: eclipse ground contrast decrement ${eclipse} is not positive`,
+          );
+        }
+        return failures;
+      });
+      v.shadowNonVacuous =
+        Number.isFinite(v.shadowContrastClear) &&
+        v.shadowContrastClear <= B.shadowVacuityCeiling.hi &&
+        v.shadowContrastClear > 0 &&
+        decrementFailures.length === 0;
+      if (!v.shadowNonVacuous) {
+        markBlind(
+          "shadow",
+          `cloud-shadow decrement is not non-vacuous: ${
+            decrementFailures.join("; ") ||
+            `clear contrast ${v.shadowContrastClear} is outside (0, ${B.shadowVacuityCeiling.hi}]`
+          }`,
+        );
+      }
     }
   }
   if (!isBlind("ibl-page")) {
@@ -1720,14 +2004,24 @@ export function judgeEclipseCloudResponse(run) {
 
   // ── Lane B: prediction (ii), and its refutation control ──────────────────
   v.offShadowStrengthExactlyOne = rungs.every(
-    (rung) => rung.publishedOff?.shadowStrength === 1,
+    (rung) =>
+      rung.publishedOff?.shadowStrength === 1 && rung.shadow?.strengthOff === 1,
   );
   v.shadowStrengthMatchesDirectional = rungs.every((rung) => {
-    const measured = rung.published?.shadowStrength;
-    const expected = predictDirectional(rung.published?.moonObscuration ?? 0);
+    const publishedMeasured = rung.published?.shadowStrength;
+    const publishedExpected = predictDirectional(
+      rung.published?.moonObscuration ?? 0,
+    );
+    const producerMeasured = rung.shadow?.strengthOn;
+    const producerExpected = predictDirectional(
+      rung.deckFreePublished?.moonObscuration ?? 0,
+    );
     return (
-      Number.isFinite(measured) &&
-      Math.abs(measured - expected) <= B.strengthTolerance.hi
+      Number.isFinite(publishedMeasured) &&
+      Math.abs(publishedMeasured - publishedExpected) <=
+        B.strengthTolerance.hi &&
+      Number.isFinite(producerMeasured) &&
+      Math.abs(producerMeasured - producerExpected) <= B.strengthTolerance.hi
     );
   });
   const contrastRatioAt = (rung) => {
@@ -1735,23 +2029,55 @@ export function judgeEclipseCloudResponse(run) {
     const off = ratio(rung?.shadow?.offShadow, rung?.shadow?.offNoShadow);
     return ratio(on, off);
   };
+  // Legacy raw image telemetry. ProceduralClouds composites an independently
+  // tone-mapped cloud term after the terrain shadow, so this ratio is not the
+  // terrain invariant and cannot gate it.
   v.shadowContrastRatioAtDeepest = contrastRatioAt(deepest);
   v.shadowContrastRatioAtDiscriminating = contrastRatioAt(discriminating);
-  v.shadowContrastInvariant = inBand(
+  v.shadowCompositeContrastRatioAtDeepest = v.shadowContrastRatioAtDeepest;
+  v.shadowCompositeContrastRatioAtDiscriminating =
+    v.shadowContrastRatioAtDiscriminating;
+  v.shadowCompositeContrastInLegacyBandReportedOnly = inBand(
     v.shadowContrastRatioAtDeepest,
     B.shadowContrastRatio,
   );
+  v.shadowDecrementModel = rungs.map((rung) => {
+    const deckFreeObscuration = rung.deckFreePublished?.moonObscuration;
+    const alternativeStrengthRatio = Number.isFinite(deckFreeObscuration)
+      ? predictFactor(deckFreeObscuration)
+      : null;
+    return {
+      obscuration: Number.isFinite(deckFreeObscuration)
+        ? deckFreeObscuration
+        : null,
+      ...evaluateShadowDecrementModel({
+        shadow: rung.shadow,
+        strengthClear: rung.shadow?.strengthOff,
+        strengthEclipse: rung.shadow?.strengthOn,
+        alternativeStrengthRatio,
+      }),
+    };
+  });
+  v.shadowDecrementModelAtDeepest =
+    v.shadowDecrementModel[v.shadowDecrementModel.length - 1] ?? null;
+  v.shadowContrastInvariant =
+    v.shadowDecrementModel.length > 0 &&
+    v.shadowDecrementModel.every(
+      (entry) => entry.valid === true && entry.withinQuantizationBound === true,
+    );
   // The REJECTED design's prediction at the discriminating rung, computed here
-  // so the report carries the number the band is excluding rather than a bare
-  // boolean. `s = F` instead of `s = Fd`.
+  // so the report carries both the historical contrast number and the decrement
+  // interval the gate actually excludes. `s = F` instead of `s = Fd`.
   const discriminatingObscuration =
     discriminating?.published?.moonObscuration ?? 0;
   v.rejectedDesignContrastRatio =
     shadowContrast(predictFactor(discriminatingObscuration)) /
     shadowContrast(1.0);
   v.shadowContrastRejectsAlternativeDesign =
-    inBand(v.shadowContrastRatioAtDiscriminating, B.shadowContrastRatio) &&
-    !inBand(v.rejectedDesignContrastRatio, B.shadowContrastRatio);
+    v.shadowDecrementModel.length > 0 &&
+    v.shadowDecrementModel[rungs.indexOf(discriminating)]?.valid === true &&
+    v.shadowDecrementModel[rungs.indexOf(discriminating)]
+      ?.alternativeWithinQuantizationBound === false;
   // The extension is an arithmetic property of the model, not of this run.
   v.shadowContrastModelIsBoundedByDirectional =
     shadowContrastModelIsBoundedByDirectional();
@@ -1978,15 +2304,20 @@ export function judgeEclipseCloudResponse(run) {
   //   producer  `shadowActive` + the published strength/absorption/map size
   //   consumer  the packed `cloudShadowControl` the terrain FS branches on
   //   geometry  where the scored band lands in the 512-texel footprint
-  // Deliberately NOT gating: each can legitimately read false in a
-  // configuration that is not lane B's (a clouds-off leg publishes no map), and
-  // the gate is the contrast, not the plumbing.
+  // The full telemetry object is reported. Lane B's producer-live and
+  // footprint-inside subset is also a structural precondition: without it the
+  // decrement predicates are quarantined rather than scored.
   v.shadowTelemetry = {
     producerActiveOff: rungs[0]?.shadow?.shadowActiveOff ?? null,
     producerActiveOn: rungs[0]?.shadow?.shadowActiveOn ?? null,
     producer: rungs[0]?.shadow?.cloudCacheOff ?? null,
     consumer: rungs[0]?.shadow?.globeUniformOff ?? null,
     footprint: rungs[0]?.shadow?.footprintOff ?? null,
+    producerAndFootprintCertified: v.shadowProducerAndFootprintCertified,
+    rawCompositeContrastAtDeepest: v.shadowCompositeContrastRatioAtDeepest,
+    rawCompositeContrastInLegacyBand:
+      v.shadowCompositeContrastInLegacyBandReportedOnly,
+    decrementModelAtDeepest: v.shadowDecrementModelAtDeepest,
     groundOnly: v.shadowGroundOnly,
     groundRetention: v.shadowGroundRetentionRatio,
     // CO-19: the four per-rung deck-free reads, printed in full so the tell is

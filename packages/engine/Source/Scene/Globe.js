@@ -204,6 +204,20 @@ class Globe {
     this.enableLighting = false;
 
     /**
+     * The strength of an optional warm appearance band centered on the
+     * geometric day/night terminator. A value of {@code 0.0} disables the
+     * effect and leaves physically-derived globe lighting unchanged; a value
+     * of {@code 1.0} reproduces the fork's original stylized band. This only
+     * takes effect when {@link Globe#enableLighting} is {@code true}.
+     * Negative and non-finite values are treated as {@code 0.0} by the
+     * renderers.
+     *
+     * @type {number}
+     * @default 0.0
+     */
+    this.terminatorGlowStrength = 0.0;
+
+    /**
      * A multiplier to adjust terrain lambert lighting.
      * This number is multiplied by the result of <code>czm_getLambertDiffuse</code> in GlobeFS.glsl.
      * This only takes effect when <code>enableLighting</code> is <code>true</code>.
@@ -1210,6 +1224,12 @@ class Globe {
         : undefined;
       tileProvider.oceanNormalMap = this._oceanNormalMap;
       tileProvider.enableLighting = this.enableLighting;
+      const terminatorGlowStrength = this.terminatorGlowStrength;
+      tileProvider.terminatorGlowStrength =
+        typeof terminatorGlowStrength === "number" &&
+        Number.isFinite(terminatorGlowStrength)
+          ? Math.max(terminatorGlowStrength, 0.0)
+          : 0.0;
       tileProvider.dynamicAtmosphereLighting = this.dynamicAtmosphereLighting;
       tileProvider.dynamicAtmosphereLightingFromSun =
         this.dynamicAtmosphereLightingFromSun;

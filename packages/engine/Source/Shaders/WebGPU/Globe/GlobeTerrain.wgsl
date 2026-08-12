@@ -399,12 +399,14 @@ struct TileUniforms {
   // ground-atmosphere drape is off; the lighting fade has no such gate on
   // WebGL, so it needs its own slot.
   lightingFade: f32,
-  // Per-tile debug fields. All zero in production:
+  // Per-tile controls. The first two fields are diagnostics; the third is an
+  // explicit Globe appearance control:
   //   x = tileLevel — LOD depth integer (read by fragmentDebugLod)
   //   y = isolateImageryLayer — index 0..15 to render alone, or -1 for all
   //                              (read by fragmentMain when set)
-  //   z, w = reserved for future debug toggles
-  debugFields: vec4<f32>,
+  //   z = optional terminator-glow strength; 0 is the natural/parity identity
+  //   w = reserved
+  tileControls: vec4<f32>,
   // Globe hue/saturation/brightness shift. When any channel
   // is non-zero (|shift| > 0.001) the final composite color is
   // converted to HSB, shifted, and converted back. Matches the
@@ -2200,12 +2202,13 @@ fn computeDayNightDiffuse(normalEC: vec3<f32>, sunDirEC: vec3<f32>) -> f32 {
   return clamp(lambertDiffuse * 5.0 + 0.3, 0.0, 1.0);
 }
 
-// Computes the terminator glow: a warm orange-pink tint right at the day-night
-// boundary, standing in for atmospheric scattering there.
+// Computes the optional stylized terminator glow: a warm orange-pink tint at
+// the day-night boundary. The public appearance strength defaults to zero, so
+// natural atmosphere and lighting remain the default result.
 //
 // This term takes the raw signed `dot(N, L)` rather than either day/night
-// ramp, so a change to the ramp law does not move it. It is WebGPU-only, with
-// no GLSL twin; its only shared input is the analytic normal.
+// ramp, so a change to the ramp law does not move it. GlobeFS.glsl carries the
+// exact same function and evaluates it from the same analytic normal.
 fn computeTerminatorGlow(normalEC: vec3<f32>, sunDirEC: vec3<f32>) -> vec3<f32> {
   let NdotL = dot(normalEC, sunDirEC);
   // Peak at the terminator (NdotL ≈ 0), fading on both sides
@@ -4211,7 +4214,7 @@ fn fragmentMain(
   // Debug: imagery layer isolation. Negative => all layers render
   // (production). 0..15 => only that layer's slot in the current pass
   // contributes to the composite.
-  let isolate = i32(tile.debugFields.y);
+  let isolate = i32(tile.tileControls.y);
 
   // Pixel-space split position (in framebuffer coords, matches @builtin(position).x).
   let splitPositionPx = tile.splitPosition;
@@ -4671,8 +4674,8 @@ fn fragmentMain(
   //     lighting.z ≤ 0.5 → `mix(1.0, computeDayNightDiffuse(dayNightNormalEC,
   //       sunDir), tile.lightingFade)` (WebGL's ENABLE_DAYNIGHT_SHADING
   //       formula, analytic normal, same camera-distance mix)
-  //   Then adds `computeTerminatorGlow(dayNightNormalEC, sunDir)`, a warm
-  //   orange-pink contribution at the terminator that WebGL does not have.
+  //   Then optionally adds `computeTerminatorGlow(dayNightNormalEC, sunDir)`,
+  //   the same explicit appearance contribution as GlobeFS.glsl.
   //
   // Both backends run `clamp(NdotL × 5 + 0.3, 0, 1)` on the DAYNIGHT arm,
   // mixed toward 1.0 by the camera-distance fade, and the imagery day/night
@@ -4692,8 +4695,8 @@ fn fragmentMain(
   //    multiplies by `camera.lightColor.rgb`, packed from
   //    `uniformState.lightColor`. The default white (1,1,1) leaves scenes
   //    without a custom `scene.light` unaffected.
-  // 3. **Terminator glow.** WGSL adds a warm colour band at the day/night
-  //    boundary; WebGL has none.
+  // 3. **Terminator glow.** Both backends add the same optional warm colour
+  //    band at the day/night boundary; WGSL reads its strength at runtime.
   // 4. **Shadow receive.** GLSL carries no shadow code: the WebGL pipeline
   //    cache injects shadow-sampling GLSL through `ShadowMapShader.js` per
   //    pipeline, from the shadow-map config. WGSL inlines three shadow paths
@@ -4801,14 +4804,18 @@ fn fragmentMain(
         eclipseUniforms.params.x < 3.5,
     );
 
-    // The additive terminator glow contains no S2-scaled light quantity.
-    // It peaks at N·L ≈ 0 — a TERMINATOR band — and the terminator is defined
-    // by the geocentric normal, not by local terrain slope, so it takes the
-    // analytic normal on both terrain kinds. (This term is WebGPU-only and has
-    // no GLSL twin to match; it is CLT-B3's audit subject. Before CO-15 it
-    // inherited the constant mesh normal and so was a uniform globe-wide tint
-    // on normal-less terrain rather than a band.)
-    color += computeTerminatorGlow(dayNightNormalEC, sunDir) * eclipseAbsolute;
+    // The additive terminator glow contains no S2-scaled light quantity. It
+    // peaks at N·L ≈ 0 and therefore uses the geocentric analytic normal, not
+    // local terrain slope. Zero is the default identity and branches before
+    // computeTerminatorGlow's exp(); enabled values use the same law and
+    // eclipseAbsolute factor as GlobeFS.glsl.
+    let terminatorGlowStrength = max(tile.tileControls.z, 0.0);
+    if (terminatorGlowStrength > 0.0) {
+      color +=
+        computeTerminatorGlow(dayNightNormalEC, sunDir) *
+        terminatorGlowStrength *
+        eclipseAbsolute;
+    }
   } else {
     // Raw imagery/ocean surface: S2 never reached it.
     color = color * eclipseAbsolute;

@@ -216,7 +216,12 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //                same clamp but is forced to 0 whenever the ground-atmosphere
 //                drape is off — WebGL applies no such gate to the lighting
 //                fade.
-//   464 - 467  debugFields (vec4)
+//   464 - 467  tileControls (vec4):
+//                x = tile level for the diagnostic LOD overlay
+//                y = isolated imagery-layer index, or -1 for all layers
+//                z = optional terminator-glow appearance strength; 0 is the
+//                    natural/parity identity
+//                w = reserved
 //   468 - 471  hsbShift (vec4)
 //   472 - 475  groundAtmosphereControl (vec4):
 //                x = enable flag (1.0 if showGroundAtmosphere and the
@@ -294,7 +299,7 @@ export const TIME_OFFSET = 460;
 export const FOG_VIS_DENSITY_OFFSET = 461;
 export const SPLIT_POSITION_OFFSET = 462;
 export const LIGHTING_FADE_OFFSET = 463;
-export const DEBUG_FIELDS_OFFSET = 464;
+export const TILE_CONTROLS_OFFSET = 464;
 export const HSB_SHIFT_OFFSET = 468;
 export const GROUND_ATMOSPHERE_CONTROL_OFFSET = 472;
 export const INITIAL_COLOR_OFFSET = 476;

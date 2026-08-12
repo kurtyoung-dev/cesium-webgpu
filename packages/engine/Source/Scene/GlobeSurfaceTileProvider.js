@@ -324,6 +324,10 @@ class GlobeSurfaceTileProvider {
     this.oceanNormalMap = undefined;
     this.zoomedOutOceanSpecularIntensity = 0.5;
     this.enableLighting = false;
+    // Backend-neutral, per-frame mirror of Globe.terminatorGlowStrength.
+    // Zero is the natural/parity identity; renderers branch before evaluating
+    // the optional exponential glow term.
+    this.terminatorGlowStrength = 0.0;
     this.dynamicAtmosphereLighting = false;
     this.dynamicAtmosphereLightingFromSun = false;
     this.showGroundAtmosphere = false;

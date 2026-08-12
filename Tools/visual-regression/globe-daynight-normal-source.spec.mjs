@@ -138,7 +138,7 @@ const DAYNIGHT_CONSUMERS = Object.freeze([
   {
     name: "terminator glow",
     pattern:
-      /color \+= computeTerminatorGlow\(dayNightNormalEC, sunDir\) \* eclipseAbsolute;/,
+      /computeTerminatorGlow\(dayNightNormalEC, sunDir\)\s*\*\s*terminatorGlowStrength\s*\*\s*eclipseAbsolute;/,
   },
 ]);
 
@@ -494,8 +494,8 @@ test("D1: reinstating v_normalEC for the day/night fade is REJECTED", () => {
 test("D2: reinstating it for the terminator glow alone is REJECTED", () => {
   const mutant = mutate(
     wgsl,
-    "color += computeTerminatorGlow(dayNightNormalEC, sunDir) * eclipseAbsolute;",
-    "color += computeTerminatorGlow(normal, sunDir) * eclipseAbsolute;",
+    "        computeTerminatorGlow(dayNightNormalEC, sunDir) *",
+    "        computeTerminatorGlow(normal, sunDir) *",
   );
   assert.equal(consumersTakeAnalyticNormal(mutant), false);
   assert.equal(noMeshNormalInDayNightFamily(mutant), false);
@@ -534,8 +534,8 @@ test("D4: deriving the normal but never consuming it is REJECTED", () => {
       "let dayNightDiffuse = computeDayNightDiffuse(normal, sunDir);",
     ],
     [
-      "color += computeTerminatorGlow(dayNightNormalEC, sunDir) * eclipseAbsolute;",
-      "color += computeTerminatorGlow(normal, sunDir) * eclipseAbsolute;",
+      "        computeTerminatorGlow(dayNightNormalEC, sunDir) *",
+      "        computeTerminatorGlow(normal, sunDir) *",
     ],
   ]) {
     mutant = mutate(mutant, from, to);
@@ -666,7 +666,7 @@ const EDITED_MARKERS = Object.freeze([
   "let dayNightNormalEC = normalize(",
   "dayFade = computeDayNightFade(dayNightNormalEC, sunDir);",
   "let dayNightDiffuse = computeDayNightDiffuse(dayNightNormalEC, sunDir);",
-  "color += computeTerminatorGlow(dayNightNormalEC, sunDir) * eclipseAbsolute;",
+  "computeTerminatorGlow(dayNightNormalEC, sunDir) *",
 ]);
 
 test("F1: the flag list is complete — no directive uses a flag not listed", () => {

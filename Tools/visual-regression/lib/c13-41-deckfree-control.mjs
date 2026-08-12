@@ -39,6 +39,22 @@ export const DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS = Object.freeze([
 export const DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY = 1;
 export const DECK_FREE_SUN_LIGHT_INTENSITY = 2;
 export const DECK_FREE_LIGHT_COLOR = Object.freeze([1, 1, 1, 1]);
+export const DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH = 0;
+export const DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH = 1;
+
+// The directional discriminator executes the WebGPU globe's complete lighting
+// block. After the shared DAYNIGHT multiply, that block adds the documented
+// terminator glow (`GlobeTerrain.wgsl::computeTerminatorGlow`; current source
+// also carries its GLSL twin). Keep
+// this Node-side model independent of the shader so captured pixels cannot
+// certify themselves; the focused source contract pins the constants together.
+export const DECK_FREE_TERMINATOR_GLOW_COLOR = Object.freeze([
+  0.95, 0.45, 0.15,
+]);
+export const DECK_FREE_TERMINATOR_GLOW_EXPONENT = 40;
+export const DECK_FREE_TERMINATOR_GLOW_STRENGTH = 0.15;
+
+const REC709_LUMA = Object.freeze([0.2126, 0.7152, 0.0722]);
 
 const clamp01 = (value) => Math.min(1, Math.max(0, value));
 
@@ -52,6 +68,43 @@ export function computeDeckFreeDayNightDiffuse(ndotl, lightingFade) {
   return 1 + (dayNightDiffuse - 1) * fade;
 }
 
+/** Independently evaluate the additive WebGPU terminator-glow luma. */
+export function computeDeckFreeTerminatorGlowLuma(
+  ndotl,
+  terminatorGlowStrength,
+) {
+  if (!Number.isFinite(ndotl) || !Number.isFinite(terminatorGlowStrength)) {
+    return null;
+  }
+  const warmLuma = DECK_FREE_TERMINATOR_GLOW_COLOR.reduce(
+    (sum, channel, index) => sum + channel * REC709_LUMA[index],
+    0,
+  );
+  const terminatorFactor = Math.exp(
+    -ndotl * ndotl * DECK_FREE_TERMINATOR_GLOW_EXPONENT,
+  );
+  return (
+    warmLuma *
+    terminatorFactor *
+    DECK_FREE_TERMINATOR_GLOW_STRENGTH *
+    Math.max(terminatorGlowStrength, 0)
+  );
+}
+
+/** Full expected luma of the fixed grey directional diagnostic surface. */
+export function computeDeckFreeDirectionalDiagnosticLuma(
+  ndotl,
+  lightingFade,
+  terminatorGlowStrength,
+) {
+  const diffuse = computeDeckFreeDayNightDiffuse(ndotl, lightingFade);
+  const glow = computeDeckFreeTerminatorGlowLuma(ndotl, terminatorGlowStrength);
+  if (!Number.isFinite(diffuse) || !Number.isFinite(glow)) {
+    return null;
+  }
+  return DECK_FREE_RAW_BASE_COLOR_LUMA * diffuse + glow;
+}
+
 /**
  * Reconstruct the diagnostic's WGS84 geodetic normal, east tangent, incoming
  * light, and public DirectionalLight emitted direction without Cesium. This is
@@ -61,13 +114,15 @@ export function computeDeckFreeDiagnosticFrame(
   latitudeDegrees,
   longitudeDegrees,
   ndotlTarget,
+  terminatorGlowStrength,
 ) {
   if (
     !Number.isFinite(latitudeDegrees) ||
     !Number.isFinite(longitudeDegrees) ||
     !Number.isFinite(ndotlTarget) ||
     ndotlTarget < 0 ||
-    ndotlTarget >= 1
+    ndotlTarget >= 1 ||
+    !Number.isFinite(terminatorGlowStrength)
   ) {
     return null;
   }
@@ -85,18 +140,31 @@ export function computeDeckFreeDiagnosticFrame(
       component * ndotlTarget + eastWC[index] * tangentShare,
   );
   const emittedDirectionWC = incomingDirectionWC.map((component) => -component);
+  const ndotl = normalWC.reduce(
+    (sum, component, index) => sum + component * incomingDirectionWC[index],
+    0,
+  );
+  const diffuse = computeDeckFreeDayNightDiffuse(
+    ndotlTarget,
+    DECK_FREE_EXPECTED_LIGHTING_FADE,
+  );
+  const terminatorGlowLuma = computeDeckFreeTerminatorGlowLuma(
+    ndotlTarget,
+    terminatorGlowStrength,
+  );
   return {
     normalWC,
     eastWC,
     incomingDirectionWC,
     emittedDirectionWC,
-    ndotl: normalWC.reduce(
-      (sum, component, index) => sum + component * incomingDirectionWC[index],
-      0,
-    ),
-    diffuse: computeDeckFreeDayNightDiffuse(
+    ndotl,
+    diffuse,
+    terminatorGlowStrength,
+    terminatorGlowLuma,
+    diagnosticLuma: computeDeckFreeDirectionalDiagnosticLuma(
       ndotlTarget,
       DECK_FREE_EXPECTED_LIGHTING_FADE,
+      terminatorGlowStrength,
     ),
   };
 }
@@ -343,6 +411,28 @@ export function foldDeckFreeControlSessions(options) {
         `${expected.label}: top-level lighting fade is not the live probe pin (out 0, in 1, independently expected fade 1)`,
       );
     }
+    const priorTerminatorGlowStrength = finiteMean(
+      report.terminatorGlow?.priorStrength,
+    );
+    if (
+      report.terminatorGlow?.supported !== true ||
+      priorTerminatorGlowStrength === null ||
+      priorTerminatorGlowStrength !== DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH
+    ) {
+      reasons.push(
+        `${expected.label}: terminator-glow control is absent or its prior/default strength is not exactly ${DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH}`,
+      );
+    }
+    if (
+      priorTerminatorGlowStrength === null ||
+      report.terminatorGlow?.publicStrength !== priorTerminatorGlowStrength ||
+      report.terminatorGlow?.tileProviderStrength !==
+        priorTerminatorGlowStrength
+    ) {
+      reasons.push(
+        `${expected.label}: top-level terminator-glow strength was not restored exactly to its prior value`,
+      );
+    }
     if (
       report.captureSequence !== "directional-diagnostic-then-fresh-sun-scored"
     ) {
@@ -412,6 +502,15 @@ export function foldDeckFreeControlSessions(options) {
       if (rung?.enableLighting !== true) {
         reasons.push(
           `${expected.label}: rung ${rungIndex} globe lighting is not enabled`,
+        );
+      }
+      if (
+        priorTerminatorGlowStrength === null ||
+        rung?.terminatorGlowStrength !== priorTerminatorGlowStrength ||
+        rung?.terminatorGlowTileProviderStrength !== priorTerminatorGlowStrength
+      ) {
+        reasons.push(
+          `${expected.label}: rung ${rungIndex} scored Sun capture did not restore the exact prior terminator-glow strength`,
         );
       }
       if (!baseColorIsPinned(rung?.baseColor)) {
@@ -636,6 +735,7 @@ export function foldDeckFreeControlSessions(options) {
         diagnosticSite?.latitudeDegrees,
         diagnosticSite?.longitudeDegrees,
         ndotlTarget,
+        DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
       );
       if (
         diagnostic?.target !== expectedRung.target ||
@@ -675,10 +775,14 @@ export function foldDeckFreeControlSessions(options) {
           diagnostic?.directionSpec?.expectedDiffuse,
           expectedFrame?.diffuse,
           1e-10,
-        )
+        ) ||
+        diagnostic?.terminatorGlowStrength !==
+          DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH ||
+        diagnostic?.terminatorGlowTileProviderStrength !==
+          DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH
       ) {
         reasons.push(
-          `${expected.label}: rung ${rungIndex} directional vector or DAYNIGHT prediction does not match the independent geodetic construction`,
+          `${expected.label}: rung ${rungIndex} directional vector or DAYNIGHT prediction does not match the independent geodetic construction, or diagnostic terminator-glow strength is not exact`,
         );
       }
       if (
@@ -861,6 +965,7 @@ export function foldDeckFreeControlSessions(options) {
       diagnosticSite?.latitudeDegrees,
       diagnosticSite?.longitudeDegrees,
       DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[index],
+      DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
     );
     const offA = finiteMean(
       byLabel["off-a"]?.directionalDiagnosticRungs?.[index]?.mean,
@@ -875,9 +980,7 @@ export function foldDeckFreeControlSessions(options) {
       byLabel["on-b"]?.directionalDiagnosticRungs?.[index]?.mean,
     );
     const factor = finiteMean(certified[index]?.deckFreePublished?.factor);
-    const expectedOff = Number.isFinite(expectedFrame?.diffuse)
-      ? DECK_FREE_RAW_BASE_COLOR_LUMA * expectedFrame.diffuse
-      : null;
+    const expectedOff = finiteMean(expectedFrame?.diagnosticLuma);
     // The custom DirectionalLight is deliberately NOT an eclipse-factor lane:
     // UniformState applies S2 only to SunLight, and this control disables the
     // fragment-local eclipse-globe shadow. Its ON/OFF identity proves the
@@ -927,7 +1030,7 @@ export function foldDeckFreeControlSessions(options) {
       Math.abs(onOffRatioB - 1) <= ratioTolerance;
     if (!pixelsFollowLaw) {
       nonVacuityReasons.push(
-        `rung ${index}: diagnostic DirectionalLight pixels do not execute DAYNIGHT diffuse ${String(expectedFrame?.diffuse)} within ${diagnosticPixelTolerance} (OFF ${String(offA)}/${String(offB)} expected ${String(expectedOff)}, ON ${String(onA)}/${String(onB)} expected ${String(expectedOn)})`,
+        `rung ${index}: diagnostic DirectionalLight pixels do not execute DAYNIGHT diffuse ${String(expectedFrame?.diffuse)} plus terminator-glow luma ${String(expectedFrame?.terminatorGlowLuma)} within ${diagnosticPixelTolerance} (OFF ${String(offA)}/${String(offB)} expected ${String(expectedOff)}, ON ${String(onA)}/${String(onB)} expected ${String(expectedOn)})`,
       );
     }
     if (!replicasAgree) {
@@ -945,6 +1048,7 @@ export function foldDeckFreeControlSessions(options) {
       iso: expected.iso,
       ndotlTarget: DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[index],
       expectedDiffuse: expectedFrame?.diffuse ?? null,
+      expectedTerminatorGlowLuma: expectedFrame?.terminatorGlowLuma ?? null,
       expectedOff,
       expectedOn,
       offA,

@@ -133,6 +133,10 @@ uniform float u_lambertDiffuseMultiplier;
 uniform float u_vertexShadowDarkness;
 #endif
 
+#if defined(ENABLE_VERTEX_LIGHTING) || defined(ENABLE_DAYNIGHT_SHADING)
+uniform float u_terminatorGlowStrength;
+#endif
+
 // Per-fragment lunar shadow on the globe. The two body vectors are a
 // geocentric, range-normalized differential:
 //   sun.xyz  = normalize(S), sun.w = 1 / length(S)
@@ -566,6 +570,16 @@ float eclipseFragmentFactor(vec3 positionMC)
 }
 #endif
 
+// Optional stylized appearance term shared exactly with GlobeTerrain.wgsl.
+// The caller branches on the default-zero strength before evaluating exp().
+vec3 computeTerminatorGlow(vec3 normalEC, vec3 sunDirEC)
+{
+    float NdotL = dot(normalEC, sunDirEC);
+    float terminatorFactor = exp(-NdotL * NdotL * 40.0);
+    vec3 warmColor = vec3(0.95, 0.45, 0.15);
+    return warmColor * terminatorFactor * 0.15;
+}
+
 void main()
 {
 #ifdef TILE_LIMIT_RECTANGLE
@@ -773,13 +787,13 @@ void main()
 // file multiplies by `czm_lightColor`, and it reads the vertex-lighting
 // uniforms as `camera.lighting.x` / `.y`.
 //
-// Two divergences are open rather than shape-only:
+// One divergence is open rather than shape-only:
 // - Day/night imagery alpha: this file emits ENABLE_VERTEX_LIGHTING instead
 //   of ENABLE_DAYNIGHT_SHADING when the terrain has vertex normals (see
 //   `GlobeSurfaceShaderSet.js`), so the day/night alpha does not exist there
 //   at all, while WGSL still applies the ramp.
-// - WGSL adds `computeTerminatorGlow` at the day/night boundary, a warm
-//   orange band this file has no equivalent for.
+// The optional terminator appearance term below is now an exact GLSL/WGSL
+// twin, dynamically controlled by Globe.terminatorGlowStrength.
 //
 // Shadow receive is not present in this file: the WebGL pipeline cache
 // injects shadow-sampling GLSL through `ShadowMapShader.js` per pipeline,
@@ -795,6 +809,10 @@ void main()
     vec4 finalColor = vec4(color.rgb * czm_lightColor * diffuseIntensity, color.a);
 #else
     vec4 finalColor = color;
+#endif
+
+#if defined(ENABLE_VERTEX_LIGHTING) || defined(ENABLE_DAYNIGHT_SHADING)
+    float terminatorGlowEclipse = 1.0;
 #endif
 
 #ifdef ENABLE_ECLIPSE_GLOBE_SHADOW
@@ -828,6 +846,31 @@ void main()
 #else
     finalColor.rgb *= eclipseAbsolute;
 #endif
+#if defined(ENABLE_VERTEX_LIGHTING) || defined(ENABLE_DAYNIGHT_SHADING)
+    // This additive term contains no camera-anchored S2 light quantity, so it
+    // receives the local absolute eclipse factor exactly once.
+    terminatorGlowEclipse = eclipseAbsolute;
+#endif
+#endif
+
+#if defined(ENABLE_VERTEX_LIGHTING) || defined(ENABLE_DAYNIGHT_SHADING)
+    float terminatorGlowStrength = max(u_terminatorGlowStrength, 0.0);
+    if (terminatorGlowStrength > 0.0)
+    {
+        // The terminator is geocentric, not terrain-slope dependent. Rebuild
+        // the analytic normal inside the opt-in branch so the default path
+        // does not pay for it in the ENABLE_VERTEX_LIGHTING variant.
+        vec3 terminatorNormalMC = czm_geodeticSurfaceNormal(
+            v_positionMC,
+            vec3(0.0),
+            vec3(1.0)
+        );
+        vec3 terminatorNormalEC = czm_normal3D * terminatorNormalMC;
+        finalColor.rgb +=
+            computeTerminatorGlow(terminatorNormalEC, czm_lightDirectionEC) *
+            terminatorGlowStrength *
+            terminatorGlowEclipse;
+    }
 #endif
 
 #ifdef ENABLE_CLIPPING_PLANES

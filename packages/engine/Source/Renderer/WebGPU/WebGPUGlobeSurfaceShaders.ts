@@ -222,7 +222,7 @@ fn fragmentDebugTri(@builtin(primitive_index) primIndex: u32) -> FragOutput {
 fn fragmentDebugLod(input: VertexOutput) -> FragOutput {
   // Deterministic per-level palette: 12 hues cycle through the spectrum
   // so adjacent levels are visually distinct. Levels above 11 wrap.
-  let level = u32(tile.debugFields.x + 0.5) % 12u;
+  let level = u32(tile.tileControls.x + 0.5) % 12u;
   var color: vec3<f32>;
   switch (level) {
     case 0u:  { color = vec3<f32>(1.00, 0.00, 0.00); }

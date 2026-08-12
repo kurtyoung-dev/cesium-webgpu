@@ -1360,6 +1360,11 @@ interface CesiumGlobeTileProvider {
   nightFadeInDistance: number;
   hasWaterMask: boolean;
   enableLighting: boolean;
+  /**
+   * Sanitized per-frame mirror of `Globe.terminatorGlowStrength`. Zero is the
+   * natural/parity identity and skips the optional shader work.
+   */
+  terminatorGlowStrength?: number;
   translucencyEnabled: boolean;
   /**
    * HSB shift fields mirrored from `Globe.atmosphere{Hue,Saturation,

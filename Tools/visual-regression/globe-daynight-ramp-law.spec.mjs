@@ -80,12 +80,17 @@ const TYPES_PATH =
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts";
 const FADE_LEAF_PATH =
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeLightingFade.ts";
+const GLOBE_PATH = "packages/engine/Source/Scene/Globe.js";
+const TILE_RENDERING_PATH =
+  "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js";
 
 const wgsl = read(WGSL_PATH);
 const glsl = read(GLSL_PATH);
 const tileUb = read(TILE_UB_PATH);
 const types = read(TYPES_PATH);
 const fadeLeaf = read(FADE_LEAF_PATH);
+const globe = read(GLOBE_PATH);
+const tileRendering = read(TILE_RENDERING_PATH);
 
 /**
  * Strip line comments so a prose mention of a formula can never satisfy a pin.
@@ -774,9 +779,9 @@ test("D6: restoring the pre-CO-18 WGSL diffuse is REJECTED", () => {
 test("E1: the WGSL struct declares lightingFade where the pad used to be", () => {
   assert.match(
     wgslCode,
-    /splitPosition: f32,\s*lightingFade: f32,\s*debugFields: vec4<f32>,/,
+    /splitPosition: f32,\s*lightingFade: f32,\s*tileControls: vec4<f32>,/,
     "lightingFade must occupy the scalar slot between splitPosition and " +
-      "debugFields — moving it would shift every vec4 after it",
+      "tileControls — moving it would shift every vec4 after it",
   );
   assert.doesNotMatch(
     wgslCode,
@@ -788,7 +793,7 @@ test("E1: the WGSL struct declares lightingFade where the pad used to be", () =>
 test("E2: the CPU offset table agrees with the struct, and nothing else moved", () => {
   assert.match(types, /export const SPLIT_POSITION_OFFSET = 462;/);
   assert.match(types, /export const LIGHTING_FADE_OFFSET = 463;/);
-  assert.match(types, /export const DEBUG_FIELDS_OFFSET = 464;/);
+  assert.match(types, /export const TILE_CONTROLS_OFFSET = 464;/);
   assert.match(
     types,
     /export const TILE_UNIFORM_FLOATS = 492;/,
@@ -989,4 +994,69 @@ test("F5: a shader that still declares the removed helper does NOT validate as r
     "mutation precondition: the definition was removed",
   );
   assert.equal(diffuseExpressionsAgree(mutant, glsl), false);
+});
+
+// ─── G. optional terminator appearance is explicit and backend-neutral ───
+
+function captureTerminatorLaw(source) {
+  const body = source.match(
+    /(?:fn|vec3) computeTerminatorGlow[\s\S]*?return warmColor \* terminatorFactor \* ([0-9.]+);/,
+  );
+  assert.ok(body, "terminator-glow function must remain executable");
+  const falloff = body[0].match(/NdotL \* NdotL \* ([0-9.]+)/);
+  const color = body[0].match(
+    /vec3(?:<f32>)?\(([0-9.]+),\s*([0-9.]+),\s*([0-9.]+)\)/,
+  );
+  assert.ok(falloff && color, "terminator-glow coefficients must be readable");
+  return {
+    falloff: Number(falloff[1]),
+    color: color.slice(1).map(Number),
+    amplitude: Number(body[1]),
+  };
+}
+
+test("G1: the optional glow defaults to identity and is dynamically mirrored", () => {
+  assert.match(globe, /this\.terminatorGlowStrength = 0\.0;/);
+  assert.match(
+    globe,
+    /Number\.isFinite\(terminatorGlowStrength\)[\s\S]*?Math\.max\(terminatorGlowStrength, 0\.0\)/,
+  );
+  assert.match(
+    tileRendering,
+    /u_terminatorGlowStrength:[\s\S]*?this\.properties\.terminatorGlowStrength/,
+  );
+  assert.match(
+    tileUb,
+    /data\[TILE_CONTROLS_OFFSET \+ 2\] =\s*tileProvider\.terminatorGlowStrength \?\? 0\.0/,
+  );
+});
+
+test("G2: GLSL and WGSL carry the same glow law", () => {
+  const gl = captureTerminatorLaw(glslCode);
+  const gpu = captureTerminatorLaw(wgslCode);
+  assert.deepEqual(gpu, gl);
+  for (const ndotl of [-1, -0.25, 0, 0.25, 1]) {
+    const evaluate = (law) =>
+      law.color.map(
+        (channel) =>
+          channel * Math.exp(-ndotl * ndotl * law.falloff) * law.amplitude,
+      );
+    assert.deepEqual(evaluate(gpu), evaluate(gl));
+  }
+});
+
+test("G3: zero branches before exp and enabled paths use analytic normal plus absolute eclipse", () => {
+  assert.match(
+    wgslCode,
+    /if \(terminatorGlowStrength > 0\.0\) \{[\s\S]*?computeTerminatorGlow\(dayNightNormalEC, sunDir\)[\s\S]*?terminatorGlowStrength[\s\S]*?eclipseAbsolute/,
+  );
+  assert.match(
+    glslCode,
+    /if \(terminatorGlowStrength > 0\.0\)[\s\S]*?czm_geodeticSurfaceNormal\([\s\S]*?computeTerminatorGlow\(terminatorNormalEC, czm_lightDirectionEC\)[\s\S]*?terminatorGlowStrength[\s\S]*?terminatorGlowEclipse/,
+  );
+  assert.match(glslCode, /terminatorGlowEclipse = eclipseAbsolute;/);
+  assert.match(
+    glslCode,
+    /#if defined\(ENABLE_VERTEX_LIGHTING\) \|\| defined\(ENABLE_DAYNIGHT_SHADING\)/,
+  );
 });

@@ -62,7 +62,7 @@ import {
   FOG_VIS_DENSITY_OFFSET,
   SPLIT_POSITION_OFFSET,
   LIGHTING_FADE_OFFSET,
-  DEBUG_FIELDS_OFFSET,
+  TILE_CONTROLS_OFFSET,
   HSB_SHIFT_OFFSET,
   GROUND_ATMOSPHERE_CONTROL_OFFSET,
   INITIAL_COLOR_OFFSET,
@@ -735,21 +735,20 @@ export function createTileUniformBuffer(
     GLOBE_UB_UNSET,
   );
 
-  // Per-tile debug fields: tile depth-level and imagery-layer isolation. Both
-  // are sourced from frameState so a single Scene property toggle flips them
-  // on for every tile uniformly. Production cost is two property reads and two
-  // array writes per tile, below the noise floor.
+  // Per-tile controls. The first two remain diagnostics; the third is the
+  // backend-neutral Globe appearance strength mirrored by Globe.beginFrame.
   //   .x = tileLevel — read by fragmentDebugLod for the LOD overlay
   //   .y = isolateImageryLayer — when >= 0, fragmentMain renders only
   //        that layer index (0..15 within the current pass) and skips
   //        the rest of the imagery composite. -1 = production behavior.
-  //   .z, .w = reserved for future per-tile debug toggles
-  data[DEBUG_FIELDS_OFFSET + 0] = tile?.level ?? 0;
+  //   .z = optional terminator glow strength; 0 = natural/parity identity
+  //   .w = reserved
+  data[TILE_CONTROLS_OFFSET + 0] = tile?.level ?? 0;
   const isolate = frameState.debugShowImageryLayer;
-  data[DEBUG_FIELDS_OFFSET + 1] =
+  data[TILE_CONTROLS_OFFSET + 1] =
     typeof isolate === "number" && isolate >= 0 ? isolate : -1;
-  data[DEBUG_FIELDS_OFFSET + 2] = 0;
-  data[DEBUG_FIELDS_OFFSET + 3] = 0;
+  data[TILE_CONTROLS_OFFSET + 2] = tileProvider.terminatorGlowStrength ?? 0.0;
+  data[TILE_CONTROLS_OFFSET + 3] = 0;
 
   // HSB shift. Mirrors WebGL GlobeFS.glsl `u_hsbShift`. `Globe.update()` copies
   // `Globe.atmosphereHueShift/Saturation/Brightness` onto the tile

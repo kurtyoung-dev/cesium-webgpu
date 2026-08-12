@@ -1386,14 +1386,47 @@ test("WebGL excludes S5 from inactive globe shader variants", () => {
     glsl,
     /#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW\s+uniform mat4 u_eclipseGlobeShadow;[\s\S]*?#endif/,
   );
-  assert.match(
-    glsl,
-    /#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW\s+\/\/[\s\S]*?float eclipseGeometricObscuration\([\s\S]*?float eclipseFragmentFactor\(vec3 positionMC\)[\s\S]*?#endif\s+void main\(\)/,
+  const helperMarker = glsl.indexOf(
+    "// Paired with the eclipse globe shadow in",
   );
-  assert.match(
-    glsl,
-    /#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW\s+\/\/[\s\S]*?float eclipseAbsolute = 1\.0;[\s\S]*?finalColor\.rgb \*= eclipseAbsolute;[\s\S]*?#endif\s+#ifdef ENABLE_CLIPPING_PLANES/,
+  const helperGuard = glsl.lastIndexOf(
+    "#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW",
+    helperMarker,
   );
+  const helperEnd = glsl.indexOf("#endif", helperMarker);
+  const mainStart = glsl.indexOf("void main()", helperEnd);
+  assert.ok(helperGuard >= 0 && helperGuard < helperMarker);
+  assert.ok(helperEnd > helperMarker && helperEnd < mainStart);
+  const helperBlock = glsl.slice(helperGuard, helperEnd);
+  assert.match(helperBlock, /float eclipseGeometricObscuration\(/);
+  assert.match(helperBlock, /float eclipseFragmentFactor\(vec3 positionMC\)/);
+
+  const applicationMarker = glsl.indexOf(
+    "float eclipseAbsolute = 1.0;",
+    mainStart,
+  );
+  const applicationGuard = glsl.lastIndexOf(
+    "#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW",
+    applicationMarker,
+  );
+  const glowMarker = glsl.indexOf(
+    "float terminatorGlowStrength",
+    applicationMarker,
+  );
+  const glowGuard = glsl.lastIndexOf(
+    "#if defined(ENABLE_VERTEX_LIGHTING) || defined(ENABLE_DAYNIGHT_SHADING)",
+    glowMarker,
+  );
+  const applicationEnd = glsl.lastIndexOf("#endif", glowGuard);
+  assert.ok(
+    applicationGuard >= 0 &&
+      applicationGuard < applicationMarker &&
+      applicationEnd > applicationMarker &&
+      applicationEnd < glowGuard,
+  );
+  const applicationBlock = glsl.slice(applicationGuard, applicationEnd);
+  assert.match(applicationBlock, /finalColor\.rgb \*= eclipseAbsolute;/);
+  assert.match(applicationBlock, /terminatorGlowEclipse = eclipseAbsolute;/);
   assert.match(
     glsl,
     /#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW\s+groundAtmosphereColor\.rgb \*= eclipseRelative;\s+#endif/,

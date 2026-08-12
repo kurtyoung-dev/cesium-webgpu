@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   BAND_MEAN_CAPTURE_DELTA,
+  BAND_MEAN_QUANTIZATION_HALF_STEP,
   CLOUD_SHADOW_BEER_FLOOR,
   DECK_AERIAL_SHARE_CROSS_RUN,
   DECK_TONEMAP_ENTRY_CEILING,
@@ -61,6 +62,7 @@ import {
   deckFreeGroundDimTolerance,
   eclipseCloudExitCode,
   eclipseCloudGateLabel,
+  evaluateShadowDecrementModel,
   extractShadowableDimming,
   fitDeckAerialShare,
   fitDeckAerialShareFromPureDeck,
@@ -92,7 +94,9 @@ import {
 import {
   DECK_FREE_BASE_COLOR_CHANNEL,
   DECK_FREE_CONTROL_SESSION_PLAN,
+  DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH,
   DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS,
+  DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
   DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY,
   DECK_FREE_EXPECTED_LIGHTING_FADE,
   DECK_FREE_LIGHT_COLOR,
@@ -100,9 +104,14 @@ import {
   DECK_FREE_LIGHTING_FADE_OUT_DISTANCE,
   DECK_FREE_RAW_BASE_COLOR_LUMA,
   DECK_FREE_SUN_LIGHT_INTENSITY,
+  DECK_FREE_TERMINATOR_GLOW_COLOR,
+  DECK_FREE_TERMINATOR_GLOW_EXPONENT,
+  DECK_FREE_TERMINATOR_GLOW_STRENGTH,
   computeDeckFreeDayNightDiffuse,
+  computeDeckFreeDirectionalDiagnosticLuma,
   computeDeckFreeDiagnosticFrame,
   computeDeckFreeLightingFade,
+  computeDeckFreeTerminatorGlowLuma,
   foldDeckFreeControlSessions,
 } from "./lib/c13-41-deckfree-control.mjs";
 import {
@@ -479,6 +488,12 @@ const freshDeckFreeSessions = (rungs) =>
       captureSequence: "directional-diagnostic-then-fresh-sun-scored",
       lighting: { lightingFade: deckFreeLightingFadeEvidence() },
       light: deckFreeLightReadback("SunLight", false),
+      terminatorGlow: {
+        supported: true,
+        priorStrength: DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH,
+        publicStrength: DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH,
+        tileProviderStrength: DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH,
+      },
       baseColor: [
         DECK_FREE_BASE_COLOR_CHANNEL,
         DECK_FREE_BASE_COLOR_CHANNEL,
@@ -507,6 +522,9 @@ const freshDeckFreeSessions = (rungs) =>
         light: deckFreeLightReadback("SunLight", false),
         cameraHeight: rung.deckFreePublished.cameraHeight,
         configureCalls: 1,
+        terminatorGlowStrength: DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH,
+        terminatorGlowTileProviderStrength:
+          DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH,
       })),
       directionalDiagnosticRungs: rungs.map((rung, rungIndex) => {
         const ndotlTarget = DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[rungIndex];
@@ -514,6 +532,7 @@ const freshDeckFreeSessions = (rungs) =>
           DECK_FREE_DIAGNOSTIC_SITE.latitudeDegrees,
           DECK_FREE_DIAGNOSTIC_SITE.longitudeDegrees,
           ndotlTarget,
+          DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
         );
         return {
           target: rung.target,
@@ -531,8 +550,13 @@ const freshDeckFreeSessions = (rungs) =>
           },
           // DirectionalLight bypasses S2's SunLight-only uniform dimming and
           // the probe disables the fragment-local eclipse-globe shadow. Both
-          // ON and OFF diagnostic pixels therefore execute diffuse only.
-          mean: DECK_FREE_RAW_BASE_COLOR_LUMA * directionSpec.diffuse,
+          // ON and OFF diagnostic pixels execute the same DAYNIGHT multiply
+          // plus the strength-one terminator-glow addend.
+          mean: computeDeckFreeDirectionalDiagnosticLuma(
+            ndotlTarget,
+            DECK_FREE_EXPECTED_LIGHTING_FADE,
+            DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+          ),
           samples: 20000,
           eclipseEnabled: planned.eclipseEnabled,
           factor: factorFor(rung),
@@ -552,6 +576,9 @@ const freshDeckFreeSessions = (rungs) =>
           cameraHeight: rung.deckFreePublished.cameraHeight,
           enableVolumetric: false,
           configureCalls: 1,
+          terminatorGlowStrength: DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+          terminatorGlowTileProviderStrength:
+            DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
         };
       }),
     };
@@ -665,6 +692,30 @@ function passingRun() {
         strengthOn: directional,
         shadowActiveOff: true,
         shadowActiveOn: true,
+        cloudCacheOff: {
+          shadowActive: true,
+          shadowViewPresent: true,
+          shadowFrameValid: true,
+          shadowStrength: 1,
+          shadowAbsorption: 0.04,
+          shadowSize: 512,
+        },
+        cloudCacheOn: {
+          shadowActive: true,
+          shadowViewPresent: true,
+          shadowFrameValid: true,
+          shadowStrength: directional,
+          shadowAbsorption: 0.04,
+          shadowSize: 512,
+        },
+        footprintOff: {
+          allInside: true,
+          texelSpan: 8,
+          samples: [
+            { groundHit: true, inside: true },
+            { groundHit: true, inside: true },
+          ],
+        },
         cameraHeight: 1400,
         pitchDegrees: -8,
         samples: 20000,
@@ -797,6 +848,19 @@ function settleDeckFreeTwins(run) {
   return run;
 }
 
+/** Keep a deck-free mutant physically consistent with the decrement model. */
+function syncShadowDecrementsToDeckFree(run) {
+  for (const rung of run.cloudLanes?.rungs ?? []) {
+    const shadow = rung.shadow;
+    const clearDecrement = shadow.offNoShadow - shadow.offShadow;
+    const groundDim = shadow.onNoCloud / shadow.offNoCloud;
+    const strengthRatio = shadow.strengthOn / shadow.strengthOff;
+    shadow.onShadow =
+      shadow.onNoShadow - clearDecrement * groundDim * strengthRatio;
+  }
+  return run;
+}
+
 test("D1 the reference run PASSES, so the mutants below are isolating one thing", () => {
   const verdict = judgeEclipseCloudResponse(passingRun());
   assert.deepEqual(
@@ -836,8 +900,10 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
   // 5 -> 6 at CO-21: `deckFreeGroundRetentionLegsAgreeReportedOnly`, the
   // corroborating disagreement between lane B's two retention ratios.
   // 6 -> 7 when the already-discharged refresh-cost estimate moved to
-  // reported-only for redesigned-control closure reruns.
-  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 7);
+  // reported-only for redesigned-control closure reruns. The recovered run
+  // adds the raw post-cloud-composite contrast as the eighth reported-only
+  // value; the cloud-cancelling decrement is now the gate.
+  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 8);
   assert.equal(ECLIPSE_CLOUD_PARITY_PREDICATES.length, 2);
   // Nothing is scored without a declared blindness domain — an unmapped
   // predicate would be silently unquarantinable.
@@ -895,18 +961,19 @@ test("D4 a non-monotone deck response fails", () => {
   );
 });
 
-test("D5 the REJECTED shadow design fails both shadow predicates", () => {
+test("D5 strength = F follows the actual producer but fails the shipped law and discriminator", () => {
   expectFailure(
     (run) => {
       for (const rung of run.cloudLanes.rungs) {
         const factor = predictFactor(rung.published.moonObscuration);
         rung.published.shadowStrength = factor; // S2's scalar, not the directional
+        rung.shadow.strengthOn = factor;
+        rung.shadow.cloudCacheOn.shadowStrength = factor;
         rung.shadow.onShadow = rung.shadow.onNoShadow * shadowContrast(factor);
       }
     },
     [
       "shadowStrengthMatchesDirectional",
-      "shadowContrastInvariant",
       "shadowContrastRejectsAlternativeDesign",
     ],
   );
@@ -1068,6 +1135,38 @@ test("E2 a cast shadow that does not darken the ground is STRUCTURAL", () => {
     JSON.stringify(verdict.structuralReasons),
   );
   assert.deepEqual(verdict.failedPredicates, []);
+});
+
+test("E2d a dead producer or escaped footprint fails closed before decrement scoring", () => {
+  for (const [label, mutate, expectedReason] of [
+    [
+      "producer",
+      (run) => {
+        run.cloudLanes.rungs[2].shadow.cloudCacheOn.shadowFrameValid = false;
+      },
+      /eclipse shadow producer is not live/,
+    ],
+    [
+      "footprint",
+      (run) => {
+        run.cloudLanes.rungs[2].shadow.footprintOff.samples[0].inside = false;
+      },
+      /outside the shadow footprint/,
+    ],
+  ]) {
+    const run = clone(passingRun());
+    mutate(run);
+    const verdict = judgeEclipseCloudResponse(run);
+    assert.equal(
+      verdict.shadowProducerAndFootprintCertified,
+      false,
+      `${label} mutant must invalidate producer/footprint certification`,
+    );
+    assert.match(verdict.structuralReasons.join("\n"), expectedReason);
+    assert.ok(verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+    assert.deepEqual(verdict.failedPredicates, []);
+    assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.STRUCTURAL);
+  }
 });
 
 test("E2b a ground too DARK to carry a shadow is STRUCTURAL, and names why", () => {
@@ -1936,7 +2035,7 @@ test("J2 the directional-only model is the SUPREMUM of the split family, not a r
   assert.equal(shadowContrastModelIsBoundedByDirectional(), true);
 });
 
-test("J3 the extension predicts 1.0002 at the fourth run's numbers, so the BAND DOES NOT MOVE", () => {
+test("J3 the historical extension predicts 1.0002 while the unchanged raw band is reported-only", () => {
   // The fourth Edge run (tip 6e9c997287), deepest rung, verbatim.
   const strengthEclipse = 0.9995501111290277;
   const clearContrast = 0.22385011803330374 / 0.32925418914786103;
@@ -1968,14 +2067,21 @@ test("J3 the extension predicts 1.0002 at the fourth run's numbers, so the BAND 
     excessOverCap > 55 && excessOverCap < 65,
     `the measurement is ${excessOverCap}x the family cap`,
   );
-  // THE BAND IS UNCHANGED, and this assertion is the point of the test.
+  // The historical band is unchanged for comparison, but the recovered run
+  // proved that this raw image contains the later cloud over-composite. It is
+  // therefore explicitly reported-only rather than widened or used as a gate.
   assert.equal(ECLIPSE_CLOUD_BANDS.shadowContrastRatio.lo, 0.97);
   assert.equal(ECLIPSE_CLOUD_BANDS.shadowContrastRatio.hi, 1.03);
   assert.ok(
     ECLIPSE_CLOUD_BANDS.shadowContrastRatio.why.includes(
-      "the band DOES NOT MOVE",
+      "LEGACY REPORTED-ONLY",
     ),
-    "the derivation that keeps the band has to be written where the band is",
+    "the mixed-domain ruling has to be written where the legacy band is",
+  );
+  assert.ok(
+    ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.includes(
+      "shadowCompositeContrastInLegacyBandReportedOnly",
+    ),
   );
   // Headroom over the model, before and after the extension.
   assert.ok(Math.abs(0.03 / (supremum - 1) - 35.9) < 0.5);
@@ -2152,7 +2258,7 @@ test("J6 the split model is REPORTED, never gated, and the reference run agrees 
   );
 });
 
-test("J7 a run whose residue UNDER-DIMS fails only the contrast gate, and the model says so", () => {
+test("J7 additive cloud contamination moves the raw contrast but cancels from the decrement gate", () => {
   const run = clone(passingRun());
   // Rebuild the ground bands with a real residue that dims as F^0.708 — the
   // fourth run's shape, injected into the fixture. The deck, the IBL and the
@@ -2185,7 +2291,9 @@ test("J7 a run whose residue UNDER-DIMS fails only the contrast gate, and the mo
   settleDeckFreeTwins(run);
   const verdict = judgeEclipseCloudResponse(run);
   assert.deepEqual(verdict.structuralReasons, []);
-  assert.deepEqual(verdict.failedPredicates, ["shadowContrastInvariant"]);
+  assert.deepEqual(verdict.failedPredicates, []);
+  assert.equal(verdict.shadowContrastInvariant, true);
+  assert.equal(verdict.shadowCompositeContrastInLegacyBandReportedOnly, false);
   assert.equal(verdict.shadowContrastMatchesSplitModelReportedOnly, false);
   // The model still reports its own prediction, and it is still ~1.0002 — the
   // instrument does not follow the measurement.
@@ -2198,6 +2306,84 @@ test("J7 a run whose residue UNDER-DIMS fails only the contrast gate, and the mo
   // though the band it lives in under-dims by 12.6% — which is the whole point
   // of publishing this column.
   assert.ok(Math.abs(deepest.groundDimming.shadowableOverFactor - 1) < 1e-3);
+  const decrement = verdict.shadowDecrementModelAtDeepest;
+  assert.equal(decrement.withinQuantizationBound, true);
+  assert.ok(Math.abs(decrement.observed - decrement.expected) < 1e-3);
+});
+
+test("J8 removing the independent ground dim fails the decrement invariant", () => {
+  const run = clone(passingRun());
+  for (const rung of run.cloudLanes.rungs) {
+    const clearDecrement = rung.shadow.offNoShadow - rung.shadow.offShadow;
+    const strengthRatio = rung.shadow.strengthOn / rung.shadow.strengthOff;
+    // MUTANT: apply the producer-strength move, but omit the independently
+    // measured eclipse dim of the shadowable ground term.
+    rung.shadow.onShadow =
+      rung.shadow.onNoShadow - clearDecrement * strengthRatio;
+  }
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.deepEqual(verdict.structuralReasons, []);
+  assert.deepEqual(verdict.failedPredicates, ["shadowContrastInvariant"]);
+  assert.equal(verdict.shadowContrastInvariant, false);
+  assert.ok(
+    verdict.shadowDecrementModel
+      .slice(1)
+      .every((entry) => entry.withinQuantizationBound === false),
+  );
+});
+
+test("J9 decrement quantization admits the hard edge and rejects one code beyond", () => {
+  const differenceError = BAND_MEAN_QUANTIZATION_HALF_STEP * 2;
+  const baseShadow = {
+    offNoShadow: 0.8,
+    offShadow: 0.4,
+    onNoShadow: 0.5,
+    onShadow: 0.3,
+    offNoCloud: 0.8,
+    onNoCloud: 0.4,
+  };
+  const baseline = evaluateShadowDecrementModel({
+    shadow: baseShadow,
+    strengthClear: 1,
+    strengthEclipse: 1,
+  });
+  const expectedHi = baseline.quantization.expectedInterval.hi;
+  const clearDecrement = baseShadow.offNoShadow - baseShadow.offShadow;
+  // Solve (D_on - e) / (D_off + e) = expectedHi, then move one floating
+  // representation inward so the closed interval meets at its exact edge.
+  const edgeDecrement =
+    expectedHi * (clearDecrement + differenceError) +
+    differenceError -
+    Number.EPSILON;
+  const atEdge = evaluateShadowDecrementModel({
+    shadow: {
+      ...baseShadow,
+      onShadow: baseShadow.onNoShadow - edgeDecrement,
+    },
+    strengthClear: 1,
+    strengthEclipse: 1,
+  });
+  assert.equal(atEdge.valid, true);
+  assert.equal(atEdge.withinQuantizationBound, true);
+  assert.ok(
+    Math.abs(atEdge.quantization.observedInterval.lo - expectedHi) <=
+      Number.EPSILON * 2,
+  );
+
+  const oneCodeBeyond = evaluateShadowDecrementModel({
+    shadow: {
+      ...baseShadow,
+      onShadow: baseShadow.onNoShadow - (edgeDecrement + differenceError),
+    },
+    strengthClear: 1,
+    strengthEclipse: 1,
+  });
+  assert.equal(oneCodeBeyond.valid, true);
+  assert.equal(oneCodeBeyond.withinQuantizationBound, false);
+  assert.ok(
+    oneCodeBeyond.quantization.observedInterval.lo >
+      oneCodeBeyond.quantization.expectedInterval.hi,
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2606,6 +2792,7 @@ test("L2 MUTANT — a tolerance that admits the globe-path excess is required to
     rung.shadow.onNoCloud =
       rung.shadow.offNoCloud * (0.492507 * F + 0.507493 * Math.pow(F, 0.708));
   }
+  syncShadowDecrementsToDeckFree(run);
   settleDeckFreeTwins(run);
   const verdict = judgeEclipseCloudResponse(run);
   assert.deepEqual(verdict.structuralReasons, []);
@@ -2633,6 +2820,7 @@ test("L2 MUTANT — a tolerance that admits the globe-path excess is required to
   for (const rung of noisy.cloudLanes.rungs) {
     rung.shadow.onNoCloud += BAND_MEAN_CAPTURE_DELTA;
   }
+  syncShadowDecrementsToDeckFree(noisy);
   settleDeckFreeTwins(noisy);
   const noisyVerdict = judgeEclipseCloudResponse(noisy);
   assert.equal(
@@ -2643,14 +2831,19 @@ test("L2 MUTANT — a tolerance that admits the globe-path excess is required to
   assert.ok(noisyVerdict.deckFreeGroundDim.every((entry) => entry.delta !== 0));
 });
 
-test("L3 the leg SPLITS the candidates — cloud-driven vs globe-driven differ by exactly one gate", () => {
+test("L3 the decrement cancels cloud residue and catches a deck-free residue-law mismatch", () => {
   // (a) CLOUD-DRIVEN: the residue appears only once the deck is in the scene,
   //     so the deck-free band still dims by exactly F.
   const cloudDriven = clone(passingRun());
   injectUnderDimmingResidue(cloudDriven, { alsoDeckFree: false });
   const cloudVerdict = judgeEclipseCloudResponse(cloudDriven);
   assert.deepEqual(cloudVerdict.structuralReasons, []);
-  assert.deepEqual(cloudVerdict.failedPredicates, ["shadowContrastInvariant"]);
+  assert.deepEqual(cloudVerdict.failedPredicates, []);
+  assert.equal(cloudVerdict.shadowContrastInvariant, true);
+  assert.equal(
+    cloudVerdict.shadowCompositeContrastInLegacyBandReportedOnly,
+    false,
+  );
   assert.equal(cloudVerdict.deckFreeGroundDimsByFactor, true);
   assert.ok(
     Math.abs(cloudVerdict.deckFreeGroundExcessAtDeepest - 1) < 1e-9,
@@ -2669,7 +2862,8 @@ test("L3 the leg SPLITS the candidates — cloud-driven vs globe-driven differ b
   assert.ok(globeVerdict.deckFreeGroundExcessAtDeepest > 1.12);
 
   // THE ATTRIBUTION: two runs whose SCORED shadow bands are bit-identical, told
-  // apart by exactly one predicate. Before this leg they returned one verdict.
+  // apart by the independent ABBA ground law. The cloud-only residue cancels;
+  // the deck-free residue does not share the shadowable decrement's law.
   for (const key of ["offNoShadow", "offShadow", "onNoShadow", "onShadow"]) {
     assert.equal(
       cloudDriven.cloudLanes.rungs[3].shadow[key],
@@ -2685,7 +2879,7 @@ test("L3 the leg SPLITS the candidates — cloud-driven vs globe-driven differ b
     globeVerdict.failedPredicates.filter(
       (name) => !cloudVerdict.failedPredicates.includes(name),
     ),
-    ["deckFreeGroundDimsByFactor"],
+    ["deckFreeGroundDimsByFactor", "shadowContrastInvariant"],
   );
 });
 
@@ -2922,6 +3116,7 @@ test("L8 both CO-19 gates can FAIL in isolation, each scoped to its own lane", (
         rung.shadow.onNoCloud =
           rung.shadow.offNoCloud * Math.min(1, rung.published.factor * 1.12);
       }
+      syncShadowDecrementsToDeckFree(run);
       settleDeckFreeTwins(run);
     },
     ["deckFreeGroundDimsByFactor"],
@@ -2935,6 +3130,7 @@ test("L8 both CO-19 gates can FAIL in isolation, each scoped to its own lane", (
         rung.shadow.onNoCloud =
           rung.shadow.offNoCloud * rung.published.factor * 0.85;
       }
+      syncShadowDecrementsToDeckFree(run);
       settleDeckFreeTwins(run);
     },
     ["deckFreeGroundDimsByFactor"],
@@ -2981,6 +3177,7 @@ test("K1 the ENABLE-IDENTITY mutant — a dim at F = 1 — FAILS, settled or not
       assert.equal(identityRung.published.factor, 1);
       identityRung.shadow.onNoCloud =
         identityRung.shadow.offNoCloud * 0.4490092844112451;
+      syncShadowDecrementsToDeckFree(run);
       settleDeckFreeTwins(run);
     },
     ["deckFreeGroundDimsByFactor"],
@@ -2993,6 +3190,7 @@ test("K1 the ENABLE-IDENTITY mutant — a dim at F = 1 — FAILS, settled or not
   const identityRung = run.cloudLanes.rungs[0];
   identityRung.shadow.onNoCloud =
     identityRung.shadow.offNoCloud * 0.4490092844112451;
+  syncShadowDecrementsToDeckFree(run);
   settleDeckFreeTwins(run);
   const verdict = judgeEclipseCloudResponse(run);
   const entry = verdict.deckFreeGroundDim[0];
@@ -3031,11 +3229,16 @@ test("K2 a session-dependent deck-free control is STRUCTURAL, not a product FAIL
   assert.ok(
     verdict.unscoredPredicates.includes("deckFreeGroundCapturesSettled"),
   );
-  // ...and NOTHING else is: an unsettled deck-free CONTROL says nothing about
-  // the cast-shadow contrast, which is a ratio of ratios among the
-  // deck-present captures. This is the per-lane scoping the third pass asked
-  // for, in the direction that matters.
-  assert.ok(!verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+  // The decrement model deliberately consumes this independent control, so a
+  // session-dependent ABBA ground read must quarantine the invariant rather
+  // than silently score it against an uncertified expectation. The parent
+  // shadow lane's own non-vacuity and the unrelated deck lane stay scored.
+  assert.ok(verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+  assert.ok(
+    verdict.unscoredPredicates.includes(
+      "shadowContrastRejectsAlternativeDesign",
+    ),
+  );
   assert.ok(!verdict.unscoredPredicates.includes("shadowNonVacuous"));
   assert.ok(!verdict.unscoredPredicates.includes("deckRatioInBand"));
   assert.deepEqual(verdict.failedPredicates, []);
@@ -3050,6 +3253,7 @@ test("K3 the convergence detector cannot LAUNDER a settled defect", () => {
   for (const rung of run.cloudLanes.rungs) {
     rung.shadow.onNoCloud = rung.shadow.offNoCloud * 0.4490092844112451;
   }
+  syncShadowDecrementsToDeckFree(run);
   settleDeckFreeTwins(run);
   const verdict = judgeEclipseCloudResponse(run);
   assert.deepEqual(verdict.structuralReasons, []);
@@ -3145,11 +3349,25 @@ test("K6 the probe removes the in-page control and opens four fresh ABBA context
   assert.match(callback, /expectedFade/);
   assert.match(callback, /scene\.light = new C\.DirectionalLight\(/);
   assert.match(callback, /captureRole: "diagnostic-directional-daynight"/);
+  assert.equal(
+    (callback.match(/scene\.globe\.terminatorGlowStrength\s*=/g) ?? []).length,
+    2,
+    "the diagnostic strength must be set once and restored once per rung",
+  );
   assert.match(
     callback,
-    /scene\.light = new C\.SunLight\([\s\S]*?aimCamera\(julian\);[\s\S]*?await pin\.settle\(julian, cfg\.settleMs\);[\s\S]*?captureRole: "scored-real-sun-factor"/,
-    "each scored rung must restore a fresh SunLight and render after restoration",
+    /scene\.globe\.terminatorGlowStrength = cfg\.diagnosticTerminatorGlowStrength;[\s\S]*?scene\.light = new C\.DirectionalLight\(/,
   );
+  assert.match(
+    callback,
+    /scene\.light = new C\.SunLight\([\s\S]*?scene\.globe\.terminatorGlowStrength = priorTerminatorGlowStrength;[\s\S]*?aimCamera\(julian\);[\s\S]*?await pin\.settle\(julian, cfg\.settleMs\);[\s\S]*?captureRole: "scored-real-sun-factor"/,
+    "each scored rung must restore a fresh SunLight and the exact prior glow strength, then render",
+  );
+  assert.match(
+    probe,
+    /diagnosticTerminatorGlowStrength:\s*DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH/,
+  );
+  assert.match(callback, /terminatorGlowTileProviderStrength:/);
   assert.match(callback, /light: readLight\(false\)/);
   assert.match(callback, /light: readLight\(true\)/);
   assert.match(
@@ -3241,7 +3459,7 @@ test("K7 the ABBA policy rejects reused, reordered, or reconfigured sessions", (
   assert.match(fold(deckPresent).isolationReasons.join("\n"), /not disabled/);
 });
 
-test("K8 the non-saturated DirectionalLight discriminator rejects Sun saturation and fabricated variation", () => {
+test("K8 the complete DirectionalLight discriminator rejects omitted terms, Sun saturation, and fabricated variation", () => {
   const run = passingRun();
   const ladder = run.cloudLanes.rungs.map(
     ({ target, iso, scheduledObscuration }) => ({
@@ -3277,6 +3495,87 @@ test("K8 the non-saturated DirectionalLight discriminator rejects Sun saturation
   assert.equal(saturatedRealSunVerdict.offASpread, 0);
   assert.equal(saturatedRealSunVerdict.maximumRawDistance, 0);
   assert.equal(saturatedRealSunVerdict.litSurfaceNonVacuous, true);
+
+  // The exact fresh-v3 artifact (run bef98b53, SHA-256 63ab81ab...b20293)
+  // executes the full source expression, not baseColor*diffuse alone. The
+  // independent model explains every rung to <0.0012 without a band change.
+  const freshV3Observed = [
+    0.3146870588234545, 0.4667945098038767, 0.6099576470587704,
+    0.7514533333337392,
+  ];
+  const freshV3 = freshDeckFreeSessions(run.cloudLanes.rungs);
+  for (const session of freshV3) {
+    for (let index = 0; index < freshV3Observed.length; index++) {
+      session.directionalDiagnosticRungs[index].mean = freshV3Observed[index];
+    }
+  }
+  const freshV3Verdict = fold(freshV3);
+  assert.equal(freshV3Verdict.diagnosticPixelTolerance, 0.008);
+  assert.equal(freshV3Verdict.litSurfaceNonVacuous, true);
+  assert.deepEqual(
+    freshV3Verdict.directionalDiagnostic.map((entry) =>
+      Number(entry.expectedOff.toFixed(6)),
+    ),
+    [0.31549, 0.467381, 0.611103, 0.750964],
+  );
+  assert.ok(
+    freshV3Verdict.directionalDiagnostic.every(
+      (entry, index) =>
+        Math.abs(entry.expectedOff - freshV3Observed[index]) < 0.0012,
+    ),
+  );
+
+  // Mutant: an oracle that omits the additive glow would recreate the false
+  // red. Every capture remains positive, sampled, replicated, and ON/OFF
+  // identical, so rejection comes from the expression rather than vacuity.
+  const missingGlow = freshDeckFreeSessions(run.cloudLanes.rungs);
+  for (const session of missingGlow) {
+    for (const diagnostic of session.directionalDiagnosticRungs) {
+      const frame = computeDeckFreeDiagnosticFrame(
+        DECK_FREE_DIAGNOSTIC_SITE.latitudeDegrees,
+        DECK_FREE_DIAGNOSTIC_SITE.longitudeDegrees,
+        diagnostic.ndotlTarget,
+        DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+      );
+      diagnostic.mean = DECK_FREE_RAW_BASE_COLOR_LUMA * frame.diffuse;
+      assert.ok(diagnostic.mean > 0 && diagnostic.samples > 0);
+    }
+  }
+  const missingGlowVerdict = fold(missingGlow);
+  assert.equal(missingGlowVerdict.litSurfaceNonVacuous, false);
+  assert.match(
+    missingGlowVerdict.nonVacuityReasons.join("\n"),
+    /plus terminator-glow luma/,
+  );
+  assert.ok(
+    missingGlowVerdict.directionalDiagnostic.every(
+      (entry) => entry.replicasAgree && entry.ratioIsIdentity,
+    ),
+  );
+
+  // Converse mutant: glow without the DAYNIGHT multiply is also bright and
+  // deterministic, but cannot certify that the diffuse branch executed.
+  const missingDiffuse = freshDeckFreeSessions(run.cloudLanes.rungs);
+  for (const session of missingDiffuse) {
+    for (const diagnostic of session.directionalDiagnosticRungs) {
+      diagnostic.mean = computeDeckFreeTerminatorGlowLuma(
+        diagnostic.ndotlTarget,
+        DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+      );
+      assert.ok(diagnostic.mean > 0 && diagnostic.samples > 0);
+    }
+  }
+  const missingDiffuseVerdict = fold(missingDiffuse);
+  assert.equal(missingDiffuseVerdict.litSurfaceNonVacuous, false);
+  assert.match(
+    missingDiffuseVerdict.nonVacuityReasons.join("\n"),
+    /DAYNIGHT diffuse/,
+  );
+  assert.ok(
+    missingDiffuseVerdict.directionalDiagnostic.every(
+      (entry) => entry.replicasAgree && entry.ratioIsIdentity,
+    ),
+  );
 
   // Mutant 1: accidentally reusing SunLight for the diagnostic restores the
   // exact saturation blind the reviewer found, even if the pixels look stable.
@@ -3343,17 +3642,17 @@ test("K8 the non-saturated DirectionalLight discriminator rejects Sun saturation
   const verdict = judgeEclipseCloudResponse(judged);
   assert.ok(verdict.structuralReasons.includes("raw baseColor mutant"));
   assert.ok(verdict.unscoredPredicates.includes("deckFreeGroundDimsByFactor"));
-  assert.ok(!verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+  assert.ok(verdict.unscoredPredicates.includes("shadowContrastInvariant"));
 });
 
-test("K8b fresh v3's exact 1.034 shadow red survives deck-free blindness and invalid cost", () => {
+test("K8b fresh v3's exact 1.034 raw ratio is reported-only under deck-free blindness", () => {
   const run = clone(passingRun());
   const deepest = run.cloudLanes.rungs.at(-1).shadow;
   Object.assign(deepest, {
     offNoShadow: 0.677968772411535,
-    offShadow: 0.3794705078143026,
+    offShadow: 0.3794675752523887,
     onNoShadow: 0.3322938519156115,
-    onShadow: 0.1923373584990313,
+    onShadow: 0.19233498224297316,
   });
   run.cloudLanes.deckFreeControl.litSurfaceNonVacuous = false;
   run.cloudLanes.deckFreeControl.nonVacuityReasons = [
@@ -3367,17 +3666,18 @@ test("K8b fresh v3's exact 1.034 shadow red survives deck-free blindness and inv
   });
 
   const verdict = judgeEclipseCloudResponse(run);
-  assert.equal(verdict.shadowContrastRatioAtDeepest, 1.0341249188478936);
-  assert.deepEqual(verdict.failedPredicates, ["shadowContrastInvariant"]);
+  assert.equal(verdict.shadowContrastRatioAtDeepest, 1.0341201343397566);
+  assert.equal(verdict.shadowCompositeContrastInLegacyBandReportedOnly, false);
+  assert.deepEqual(verdict.failedPredicates, []);
   assert.ok(
     verdict.structuralReasons.includes(
       "fresh v3 raw-baseColor structural blind",
     ),
   );
-  assert.ok(!verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+  assert.ok(verdict.unscoredPredicates.includes("shadowContrastInvariant"));
   assert.equal(verdict.refreshCostEstimateValidReportedOnly, false);
   assert.match(verdict.cost.invalidReasons[0], /differential is negative/);
-  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.FAIL);
+  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.STRUCTURAL);
 });
 
 test("K9 build identity compares every current source byte with sourcesContent", () => {
@@ -3743,6 +4043,71 @@ test("K11 baseColor, fade, and exact light classes are read back on every fresh 
   assert.equal(computeDeckFreeDayNightDiffuse(0.5, 1), 1);
   assert.equal(computeDeckFreeDayNightDiffuse(0, 0), 1);
 
+  // The independent canvas-luma oracle includes the additive terminator glow
+  // that follows the shared DAYNIGHT multiply. Pin both the
+  // oracle constants and their product-source counterparts so neither side can
+  // drift into another self-consistent false red.
+  assert.deepEqual(DECK_FREE_TERMINATOR_GLOW_COLOR, [0.95, 0.45, 0.15]);
+  assert.equal(DECK_FREE_TERMINATOR_GLOW_EXPONENT, 40);
+  assert.equal(DECK_FREE_TERMINATOR_GLOW_STRENGTH, 0.15);
+  assert.equal(DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH, 0);
+  assert.equal(DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH, 1);
+  assert.deepEqual(
+    DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS.map((ndotl) =>
+      Number(
+        computeDeckFreeDirectionalDiagnosticLuma(
+          ndotl,
+          DECK_FREE_EXPECTED_LIGHTING_FADE,
+          DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+        ).toFixed(6),
+      ),
+    ),
+    [0.31549, 0.467381, 0.611103, 0.750964],
+  );
+  assert.equal(
+    computeDeckFreeTerminatorGlowLuma(
+      Number.NaN,
+      DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+    ),
+    null,
+  );
+  assert.equal(
+    computeDeckFreeDirectionalDiagnosticLuma(
+      Number.NaN,
+      DECK_FREE_EXPECTED_LIGHTING_FADE,
+      DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+    ),
+    null,
+  );
+  const globeTerrain = readEngine("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
+  assert.match(
+    globeTerrain,
+    /let terminatorFactor = exp\(-NdotL \* NdotL \* 40\.0\);/,
+  );
+  assert.match(
+    globeTerrain,
+    /let warmColor = vec3<f32>\(0\.95, 0\.45, 0\.15\);/,
+  );
+  assert.match(globeTerrain, /return warmColor \* terminatorFactor \* 0\.15;/);
+  assert.match(
+    globeTerrain,
+    /let terminatorGlowStrength = max\(tile\.tileControls\.z, 0\.0\);/,
+  );
+  assert.match(
+    globeTerrain,
+    /if \(terminatorGlowStrength > 0\.0\) \{[\s\S]*?computeTerminatorGlow\(dayNightNormalEC, sunDir\) \*[\s\S]*?terminatorGlowStrength \*[\s\S]*?eclipseAbsolute;/,
+  );
+  const globeSource = readEngine("Scene/Globe.js");
+  assert.match(globeSource, /this\.terminatorGlowStrength = 0\.0;/);
+  assert.match(
+    globeSource,
+    /tileProvider\.terminatorGlowStrength =[\s\S]*?Math\.max\(terminatorGlowStrength, 0\.0\)[\s\S]*?: 0\.0;/,
+  );
+  assert.match(
+    readEngine("Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts"),
+    /data\[TILE_CONTROLS_OFFSET \+ 2\] =\s*tileProvider\.terminatorGlowStrength \?\? 0\.0;/,
+  );
+
   const wrongDirection = freshDeckFreeSessions(run.cloudLanes.rungs);
   wrongDirection[0].directionalDiagnosticRungs[1].light.scene.directionWC[0] += 0.01;
   assert.match(
@@ -3782,11 +4147,63 @@ test("K11 baseColor, fade, and exact light classes are read back on every fresh 
     /top-level light read-back is not a restored fresh SunLight/,
   );
 
+  const missingGlowControl = freshDeckFreeSessions(run.cloudLanes.rungs);
+  delete missingGlowControl[0].terminatorGlow;
+  assert.match(
+    fold(missingGlowControl).isolationReasons.join("\n"),
+    /terminator-glow control is absent/,
+  );
+
+  const wrongDiagnosticGlowStrength = freshDeckFreeSessions(
+    run.cloudLanes.rungs,
+  );
+  wrongDiagnosticGlowStrength[1].directionalDiagnosticRungs[2].terminatorGlowStrength = 0;
+  assert.match(
+    fold(wrongDiagnosticGlowStrength).isolationReasons.join("\n"),
+    /diagnostic terminator-glow strength/,
+  );
+
+  const failedGlowRestore = freshDeckFreeSessions(run.cloudLanes.rungs);
+  failedGlowRestore[2].rungs[1].terminatorGlowStrength =
+    DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH;
+  failedGlowRestore[2].terminatorGlow.publicStrength =
+    DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH;
+  failedGlowRestore[2].terminatorGlow.tileProviderStrength =
+    DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH;
+  const failedRestoreReasons =
+    fold(failedGlowRestore).isolationReasons.join("\n");
+  assert.match(failedRestoreReasons, /scored Sun capture did not restore/);
+  assert.match(failedRestoreReasons, /was not restored exactly/);
+
+  // Coherent mutant: a contaminated fresh context starts at strength one and
+  // faithfully "restores" every scored/top-level readback to one. Equality to
+  // an arbitrary prior cannot satisfy the product's exact default-zero rule.
+  const nonzeroPrior = freshDeckFreeSessions(run.cloudLanes.rungs);
+  const contaminatedSession = nonzeroPrior[0];
+  contaminatedSession.terminatorGlow.priorStrength =
+    DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH;
+  contaminatedSession.terminatorGlow.publicStrength =
+    DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH;
+  contaminatedSession.terminatorGlow.tileProviderStrength =
+    DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH;
+  for (const rung of contaminatedSession.rungs) {
+    rung.terminatorGlowStrength = DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH;
+    rung.terminatorGlowTileProviderStrength =
+      DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH;
+  }
+  const nonzeroPriorVerdict = fold(nonzeroPrior);
+  assert.equal(nonzeroPriorVerdict.stateIsolated, false);
+  assert.match(
+    nonzeroPriorVerdict.isolationReasons.join("\n"),
+    /prior\/default strength is not exactly 0/,
+  );
+
   const staleDirectionalAtScore = freshDeckFreeSessions(run.cloudLanes.rungs);
   const staleFrame = computeDeckFreeDiagnosticFrame(
     DECK_FREE_DIAGNOSTIC_SITE.latitudeDegrees,
     DECK_FREE_DIAGNOSTIC_SITE.longitudeDegrees,
     DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[0],
+    DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
   );
   staleDirectionalAtScore[1].rungs[0].light = deckFreeLightReadback(
     "DirectionalLight",
@@ -4320,6 +4737,53 @@ test("K15 the probe lifecycle binds diagnostics, provenance, watchdog cleanup, a
   assert.match(probe, /void response\.body\(\)\.then/);
   assert.match(probe, /sha256: sha256\(bytes\)/);
   assert.match(probe, /await import\("\/Build\/CesiumUnminified\/index\.js"\)/);
+
+  const requiredGlowSources = [
+    "packages/engine/Source/Scene/Globe.js",
+    "packages/engine/Source/Scene/GlobeSurfaceTileProvider.js",
+    "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js",
+    "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts",
+    "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceShaders.ts",
+    "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts",
+    "packages/engine/Source/Shaders/GlobeFS.glsl",
+    "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+    "packages/engine/Source/Shaders/GlobeFS.js",
+    "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.js",
+  ];
+  const glowIdentityDeclarations = probe.match(
+    /const SOURCE_FILES = \[[\s\S]*?const BUILD_SOURCE_IDENTITY_FILES = \[[\s\S]*?\n\];/,
+  );
+  assert.ok(
+    glowIdentityDeclarations,
+    "the source and build identity declarations must be present",
+  );
+  const validateGlowIdentityCoverage = (declarations) => {
+    const missing = requiredGlowSources.filter(
+      (file) => !declarations.includes(`"${file}"`),
+    );
+    return { ok: missing.length === 0, missing };
+  };
+  assert.deepEqual(validateGlowIdentityCoverage(glowIdentityDeclarations[0]), {
+    ok: true,
+    missing: [],
+  });
+  for (const file of requiredGlowSources) {
+    const literal = `"${file}"`;
+    const mutant = glowIdentityDeclarations[0].replace(
+      literal,
+      '"removed-glow-source"',
+    );
+    assert.deepEqual(
+      validateGlowIdentityCoverage(mutant),
+      { ok: false, missing: [file] },
+      `removing ${file} must be rejected by the provenance coverage contract`,
+    );
+  }
+  assert.match(
+    probe,
+    /sourceFiles: BUILD_SOURCE_IDENTITY_FILES/,
+    "source-map identity must consume the complete runtime input set",
+  );
 
   const runtimeLabelBlock = probe.match(
     /const EXPECTED_RUNTIME_SESSION_LABELS = Object\.freeze\(\[([\s\S]*?)\]\);/,
