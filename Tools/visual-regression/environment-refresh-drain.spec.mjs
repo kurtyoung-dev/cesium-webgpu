@@ -196,9 +196,29 @@ test("MANDATORY bypasses the budget entirely", () => {
   }
   const telemetry = drain.getTelemetry();
   assert.equal(telemetry.granted, 6);
+  assert.equal(telemetry.deferrableGrants, 1);
   assert.equal(telemetry.deferred, 0);
   assert.equal(telemetry.mandatoryGrants, 5);
   assert.equal(telemetry.overBudgetGrants, 5);
+});
+
+test("MANDATORY work does not consume the deferrable slot", () => {
+  const drain = new WebGPUEnvironmentRefreshScheduler();
+  const unpublished = {};
+  const demanded = {};
+  drain.beginFrame(0);
+
+  assert.equal(
+    drain.requestRefresh(unpublished, Urgency.MANDATORY),
+    Decision.RUN,
+  );
+  assert.equal(drain.requestRefresh(demanded, Urgency.HIGH), Decision.RUN);
+
+  const telemetry = drain.getTelemetry();
+  assert.equal(telemetry.granted, 2);
+  assert.equal(telemetry.mandatoryGrants, 1);
+  assert.equal(telemetry.deferrableGrants, 1);
+  assert.equal(telemetry.deferred, 0);
 });
 
 test("PROVEN_NONE is deprioritized, never skipped", () => {
@@ -226,22 +246,10 @@ test("PROVEN_NONE is deprioritized, never skipped", () => {
 
 test("every request starts within MAX_DEFERRAL_FRAMES + 1 frames, at any contention", () => {
   const bound = MAX_DEFERRAL_FRAMES + 1;
-  // `hostileCount` managers request MANDATORY every frame. They never yield and
-  // never wait, so they permanently consume the frame ahead of everyone else —
-  // the arrangement in which the aging escalation is the ONLY mechanism that
-  // can still get a deferrable manager scheduled.
-  const scenarios = [
-    { managerCount: 2, hostileCount: 0 },
-    { managerCount: 3, hostileCount: 0 },
-    { managerCount: 10, hostileCount: 0 },
-    { managerCount: 32, hostileCount: 0 },
-    { managerCount: 2, hostileCount: 1 },
-    { managerCount: 6, hostileCount: 3 },
-    { managerCount: 12, hostileCount: 8 },
-  ];
+  const scenarios = [2, 3, 10, 32];
 
-  for (const { managerCount, hostileCount } of scenarios) {
-    const label = `${managerCount} managers / ${hostileCount} hostile`;
+  for (const managerCount of scenarios) {
+    const label = `${managerCount} deferrable managers`;
     const drain = new WebGPUEnvironmentRefreshScheduler();
     const managers = Array.from({ length: managerCount }, () => ({}));
     // firstRequestFrame[i] is the frame the current outstanding request began.
@@ -256,17 +264,11 @@ test("every request starts within MAX_DEFERRAL_FRAMES + 1 frames, at any content
         if (firstRequestFrame[i] < 0) {
           firstRequestFrame[i] = frame;
         }
-        const hostile = i < hostileCount;
-        const decision = drain.requestRefresh(
-          managers[i],
-          hostile ? Urgency.MANDATORY : Urgency.HIGH,
-        );
+        const decision = drain.requestRefresh(managers[i], Urgency.HIGH);
         if (decision === Decision.RUN) {
           const latency = frame - firstRequestFrame[i];
           worstLatency = Math.max(worstLatency, latency);
-          if (!hostile) {
-            worstDeferrable = Math.max(worstDeferrable, latency);
-          }
+          worstDeferrable = Math.max(worstDeferrable, latency);
           firstRequestFrame[i] = -1;
           runCount[i]++;
           drain.noteRefreshSubmitted(managers[i]);
@@ -282,7 +284,7 @@ test("every request starts within MAX_DEFERRAL_FRAMES + 1 frames, at any content
     // frames with a worst-case start latency of `bound`, every deferrable
     // manager must have run at least 200 / (bound + 1) times.
     const minimumRuns = Math.floor(200 / (bound + 1));
-    for (let i = hostileCount; i < managerCount; i++) {
+    for (let i = 0; i < managerCount; i++) {
       assert.ok(
         runCount[i] >= minimumRuns,
         `${label}: manager ${i} ran only ${runCount[i]} times in 200 frames (>= ${minimumRuns} required)`,
@@ -299,15 +301,16 @@ test("every request starts within MAX_DEFERRAL_FRAMES + 1 frames, at any content
 
 test("escalation fires and is reported when the cap is reached", () => {
   const drain = new WebGPUEnvironmentRefreshScheduler();
-  const hog = {};
   const victim = {};
   let escalatedGrants = 0;
   for (let frame = 0; frame < 8; frame++) {
     drain.beginFrame(0);
-    // The hog re-requests as MANDATORY every frame so it never yields and the
-    // victim can only ever get in through the escalation cap.
-    drain.requestRefresh(hog, Urgency.MANDATORY);
-    drain.noteRefreshSubmitted(hog);
+    // A fresh front-runner spends the deferrable slot without inheriting a
+    // prior-frame yield debt. The persistent victim therefore reaches the hard
+    // escalation path.
+    const frontRunner = {};
+    drain.requestRefresh(frontRunner, Urgency.HIGH);
+    drain.noteRefreshSubmitted(frontRunner);
     drain.requestRefresh(victim, Urgency.NORMAL);
     escalatedGrants += drain.getTelemetry().escalatedGrants;
   }
@@ -379,6 +382,14 @@ test("a deferral arms the resume request exactly once per frame", () => {
   drain.requestRefresh({}, Urgency.HIGH); // defer 2
   assert.equal(drain.consumeResumeRequest(), true);
   assert.equal(drain.consumeResumeRequest(), false, "armed once per frame");
+
+  drain.requestRefresh({}, Urgency.HIGH);
+  assert.equal(
+    drain.consumeResumeRequest(),
+    false,
+    "a later same-frame deferral cannot re-arm after consumption",
+  );
+  assert.equal(drain.getTelemetry().resumeRequests, 1);
 
   drain.beginFrame(0);
   assert.equal(
@@ -839,45 +850,58 @@ test("the tileset environment tick stays outside every consumer gate", () => {
     "// Update clipping polygons",
   );
   assert.match(section, /environmentMapManager\.update\(frameState\);/);
-  assert.doesNotMatch(section, /this\.show/);
-  assert.doesNotMatch(section, /_selectedTiles/);
+  const tickEnd =
+    section.indexOf("environmentMapManager.update(frameState);") +
+    "environmentMapManager.update(frameState);".length;
+  const beforeTick = section.slice(0, tickEnd);
+  assert.doesNotMatch(beforeTick, /this\.show/);
+  assert.doesNotMatch(beforeTick, /_selectedTiles/);
 });
 
 test("the deferred path commits no refresh bookkeeping", () => {
-  // Every `last*` commit and `needsUpdate = false` must live inside the granted
-  // branch, otherwise a deferral would consume the dirty edge and freeze.
+  // Every `last*` commit and `needsUpdate = false` must live inside the exact
+  // post-submit transaction; a deferral must never consume the dirty edge.
   const granted = sourceSection(
     managerSource,
     "if (refreshGranted) {",
-    "// Expose cubemap + prefiltered IBL views",
+    "if (cache.pendingRefresh === null && !cache.needsUpdate)",
   );
-  for (const commit of [
+  const commitSection = sourceSection(
+    managerSource,
+    "function commitDynamicEnvironmentRefresh(",
+    "function settlePendingDynamicEnvironmentRefresh(",
+  );
+  for (const expectedAssignment of [
     "cache.needsUpdate = false;",
-    "cache.lastSunDirX = sunDir.x;",
-    "cache.lastSceneCaptureMode = sceneCaptureMode;",
-    "cache.lastCloudCoverage = liveCloudCoverage;",
-    "cache.lastCloudRevision = liveCloudRevision;",
+    "cache.lastSunDirX = state.sunDirection.x;",
+    "cache.lastSceneCaptureMode = state.sceneCaptureMode;",
+    "cache.lastCloudCoverage = state.cloudCoverage;",
+    "cache.lastCloudRevision = state.cloudRevision;",
   ]) {
     assert.ok(
-      granted.includes(commit),
-      `${commit} must be inside the granted branch`,
+      commitSection.includes(expectedAssignment),
+      `${expectedAssignment} must be owned by the refresh commit transaction`,
     );
     assert.equal(
-      managerSource.split(commit).length - 1,
+      managerSource.split(expectedAssignment).length - 1,
       1,
-      `${commit} must appear exactly once, only in the granted branch`,
+      `${expectedAssignment} must appear exactly once, only in the commit transaction`,
     );
   }
+  assert.match(granted, /commitDynamicEnvironmentRefresh\(/);
 });
 
 test("publication survives a deferral", () => {
   // The resource publication is deliberately AFTER the granted branch, so a
   // deferred manager keeps publishing the resources it already has.
   const grantedIndex = managerSource.indexOf("if (refreshGranted) {");
-  const publishIndex = managerSource.indexOf("manager._radianceMap = {");
+  const publishIndex = managerSource.indexOf(
+    "if (cache.pendingRefresh === null && !cache.needsUpdate)",
+    grantedIndex,
+  );
   assert.ok(grantedIndex > 0 && publishIndex > grantedIndex);
   const between = managerSource.slice(grantedIndex, publishIndex);
-  assert.match(between, /Expose cubemap \+ prefiltered IBL views/);
+  assert.match(between, /commitDynamicEnvironmentRefresh\(/);
 });
 
 test("an unpublished manager is never deferrable", () => {
@@ -941,8 +965,8 @@ test("the drain advances once per frame from beginFrame", () => {
 test("the encoding scope returns its arena to the pool instead of destroying it", () => {
   const section = sourceSection(
     iblSource,
+    "function settleIBLCommandEncodingScope(",
     "function destroyIBLCommandEncodingScope(",
-    "function submitIBLCommandEncodingScope(",
   );
   assert.match(section, /releaseParameterBuffer\(scope\.parameterHandle\)/);
   // The unpooled caller keeps the historical own-and-destroy lifetime.

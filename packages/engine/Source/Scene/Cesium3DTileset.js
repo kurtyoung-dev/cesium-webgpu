@@ -1423,13 +1423,19 @@ class Cesium3DTileset {
       // outside the `show` / `defined(this._root)` / selected-tile gates below:
       // skipping a call while hidden or while nothing is selected freezes an
       // in-flight generation and suppresses the regeneration that consumers
-      // will need on re-show. Selected-tile counts feed demand telemetry only
-      // (see updateEnvironmentMapForSelectedConsumers).
+      // will need on re-show. Selected-tile counts may reorder bounded work,
+      // never gate the tick (see updateEnvironmentMapForSelectedConsumers).
       const environmentMapManager = this._environmentMapManager;
       if (defined(this._root)) {
         environmentMapManager.position = this.boundingSphere.center;
       }
       environmentMapManager.update(frameState);
+
+      // Normal traversal reports final demand after selectTiles below. These
+      // paths return or skip traversal before that registration point, so make
+      // their lack of render consumers explicit instead of leaving the queued
+      // WebGPU manager tick conservatively UNKNOWN/HIGH.
+      recordEnvironmentMapNoDemandForSkippedTraversal(this, frameState);
     }
 
     // Update clipping polygons
@@ -3876,29 +3882,52 @@ function update(tileset, frameState, passStatistics, passOptions) {
  * tileset-owned environment map. Selection is only known here, after
  * selectTiles and before tile/model draw commands are emitted.
  *
- * This is C11-193 observe-only registration: it records demand and changes no
- * behavior. The manager itself is ticked unconditionally once per render pass
- * in Cesium3DTileset#updateForPass, because its generation state machine spans
+ * Demand may reorder bounded WebGPU refresh work, never skip it. The manager
+ * itself is still offered unconditionally once per render pass in
+ * Cesium3DTileset#updateForPass, because its generation state machine spans
  * multiple frames and owns its own reset trigger — gating that tick on
  * selection (or on `show`) would freeze a partially generated map and defer the
- * sun-moved regeneration that consumers need on re-show. A future scheduler may
- * use this signal for priority, never to skip a refresh.
+ * sun-moved regeneration that consumers need on re-show.
  *
  * @private
  */
-function updateEnvironmentMapForSelectedConsumers(tileset, frameState) {
+function updateEnvironmentMapForSelectedConsumers(
+  tileset,
+  frameState,
+  selectedConsumerCount = tileset._selectedTiles.length,
+) {
   const context = frameState.context;
   if (typeof context?.recordEnvironmentMapDemand !== "function") {
     return;
   }
 
-  const selectedConsumerCount = tileset._selectedTiles.length;
   context.recordEnvironmentMapDemand(
     tileset._environmentMapManager,
     selectedConsumerCount > 0 ? "demanded" : "proven-none",
     "tileset-selection",
     selectedConsumerCount,
   );
+}
+
+/**
+ * Records explicit zero demand when a render pass cannot reach tileset
+ * traversal and its final selected-consumer registration.
+ *
+ * @private
+ * @returns {boolean} Whether traversal is skipped and zero demand was
+ *          recorded.
+ */
+function recordEnvironmentMapNoDemandForSkippedTraversal(tileset, frameState) {
+  const traversalSkipped =
+    !tileset.show ||
+    !defined(tileset._root) ||
+    frameState.mode === SceneMode.MORPHING;
+  if (!traversalSkipped) {
+    return false;
+  }
+
+  updateEnvironmentMapForSelectedConsumers(tileset, frameState, 0);
+  return true;
 }
 
 function createCredits(tileset) {
@@ -3985,5 +4014,8 @@ const scratchPickIntersection = new Cartesian3();
  * @param {number} time The time of interpolation generally in the range <code>[0.0, 1.0]</code>.
  * @returns {number} The interpolated value.
  */
-export { updateEnvironmentMapForSelectedConsumers };
+export {
+  recordEnvironmentMapNoDemandForSkippedTraversal,
+  updateEnvironmentMapForSelectedConsumers,
+};
 export default Cesium3DTileset;

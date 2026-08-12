@@ -86,6 +86,7 @@ import {
   type WebGPUEnvironmentRefreshTelemetry,
   type WebGPUEnvironmentRefreshUrgencyValue,
 } from "./WebGPUEnvironmentRefreshScheduler.js";
+import WebGPUEnvironmentRefreshCoordinator from "./WebGPUEnvironmentRefreshCoordinator.js";
 import {
   WebGPUEnvironmentTargetPool,
   type WebGPUEnvironmentTargetPoolTelemetry,
@@ -505,6 +506,7 @@ export class WebGPUContext extends GraphicsContext {
     if (value) {
       this._currentRenderPassEncoder = null;
       this._activePassTarget = null;
+      this._drainAfterCommandEncoderSubmitCallbacks(false);
       this._currentCommandEncoder = null;
       this._drainAfterFrameSubmitCallbacks(false);
     }
@@ -566,6 +568,18 @@ export class WebGPUContext extends GraphicsContext {
   // shared encoder without calling mapAsync while the staging buffer is still
   // referenced by an unsubmitted command buffer.
   private _afterFrameSubmitCallbacks: Array<(submitted: boolean) => void> = [];
+
+  // Callbacks owned by one exact command-encoder segment. Unlike the logical-
+  // frame callbacks above, these settle whenever that encoder is submitted or
+  // abandoned — including the Scene2D and readback boundaries that rotate the
+  // encoder before the logical frame ends. The encoder identity is load-
+  // bearing: a pooled GPUDevice can serve several contexts, and callbacks from
+  // one context/segment must never settle another context's resource leases.
+  private _afterCommandEncoderSubmitCallbacks: Map<
+    GPUCommandEncoder,
+    Array<(submitted: boolean) => void>
+  > = new Map();
+  private _commandEncoderSubmitCallbacksDraining = false;
 
   // Explicit render-pass target tracking, declared at every pass open and end
   // site so the `clear()` guard never has to infer "is a scene-owned pass
@@ -631,10 +645,14 @@ export class WebGPUContext extends GraphicsContext {
   // throttle pipeline-variant generation or defer non-critical compute work.
   // Always on; the cost is one subscriber and about 1 KB resident.
   private _asyncResourceTelemetry: AsyncResourceTelemetry | null = null;
-  // Observe-only, GPU-free selected-consumer ledger. It does not gate refresh
-  // work; it supplies the conservative admission semantics the context-owned
-  // bounded job scheduler reads.
+  // GPU-free selected-consumer ledger. It supplies the conservative priority
+  // semantics the same-frame coordinator and bounded job scheduler read.
   private _environmentDemandRegistry = new WebGPUEnvironmentDemandRegistry();
+  // Scene-only collection queue. It delays the backend manager tick until
+  // traversal has published final same-frame demand, but owns no GPU work or
+  // manager output itself.
+  private _environmentRefreshCoordinator =
+    new WebGPUEnvironmentRefreshCoordinator();
   // Context-owned bounded refresh drain. It may reorder and bound
   // environment-refresh work; it may never drop it. See the module docs for
   // the no-starvation contract.
@@ -2045,8 +2063,10 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
-    // A truncated prior frame must not strand readback promises. Normal frames
-    // drain this list immediately after queue.submit in endFrame().
+    // A truncated prior frame must not strand submit-owned resource leases or
+    // readback promises. Normal frames drain these lists at their respective
+    // encoder-segment and logical-frame submission boundaries.
+    this._drainAfterCommandEncoderSubmitCallbacks(false);
     this._drainAfterFrameSubmitCallbacks(false);
 
     // Reset frame statistics
@@ -2054,6 +2074,9 @@ export class WebGPUContext extends GraphicsContext {
     this._triangleCount = 0;
     this._frameCount++;
     this._environmentDemandRegistry.beginFrame(this._deviceResourceGeneration);
+    this._environmentRefreshCoordinator.beginFrame(
+      this._deviceResourceGeneration,
+    );
     // Advance the bounded refresh drain and re-anchor the target pool
     // on the current device generation before any producer can request work.
     this._environmentRefreshScheduler.beginFrame(
@@ -2215,8 +2238,9 @@ export class WebGPUContext extends GraphicsContext {
    * data that the first viewport has only recorded, not yet consumed.
    *
    * The frame's swap view, demand flags, uniform-allocation page, timestamp
-   * frame, deferred destroys, and after-submit callbacks remain owned by the
-   * logical frame. Only the command encoder is rotated. WebGL inherits the
+   * frame, deferred destroys, and logical-frame after-submit callbacks remain
+   * owned by the logical frame. Exact encoder-segment callbacks settle at this
+   * boundary. Only the command encoder is rotated. WebGL inherits the
    * no-op implementation from GraphicsContext because its first viewport has
    * already executed when the second update begins.
    */
@@ -2242,8 +2266,13 @@ export class WebGPUContext extends GraphicsContext {
       // prep submit so a validation failure cannot invalidate the scene work.
       this._submitPendingTextureMipJobs();
 
-      const firstViewportBuffer = this._currentCommandEncoder.finish();
+      const firstViewportEncoder = this._currentCommandEncoder;
+      const firstViewportBuffer = firstViewportEncoder.finish();
       this._device.queue.submit([firstViewportBuffer]);
+      // Close the submitted identity before callbacks run, so callback code
+      // cannot attach new work to an encoder whose disposition is final.
+      this._currentCommandEncoder = null;
+      this._drainCommandEncoderSubmitCallbacks(firstViewportEncoder, true);
       this._currentCommandEncoder = this._device.createCommandEncoder({
         label: "Secondary Viewport Continuation Encoder",
       });
@@ -2251,6 +2280,7 @@ export class WebGPUContext extends GraphicsContext {
       // The segment cannot be retried safely after finish/submit starts. Match
       // endFrame's abandonment contract so readback promises and the allocator
       // cannot leak into a future request-render frame.
+      this._drainAfterCommandEncoderSubmitCallbacks(false);
       this._drainAfterFrameSubmitCallbacks(false);
       this._currentRenderPassEncoder = null;
       this._activePassTarget = null;
@@ -2591,6 +2621,95 @@ export class WebGPUContext extends GraphicsContext {
     }
     this._afterFrameSubmitCallbacks.push(callback);
     return true;
+  }
+
+  /**
+   * Run a callback immediately after one exact command-encoder segment is
+   * submitted, or when that segment is abandoned before submission.
+   *
+   * This is deliberately distinct from {@link enqueueAfterFrameSubmit}. A
+   * logical frame can submit and rotate its encoder at a Scene2D viewport or
+   * readback boundary. Submit-owned resource leases must settle at that exact
+   * boundary rather than waiting for a later segment to finish.
+   *
+   * @param encoder The currently active encoder that owns the work/lease.
+   * @param callback Receives true after that encoder reaches queue.submit, or
+   *   false if it is abandoned first.
+   * @returns Whether the callback was accepted by the exact active segment.
+   * @private
+   */
+  enqueueAfterCommandEncoderSubmit(
+    encoder: GPUCommandEncoder,
+    callback: (submitted: boolean) => void,
+  ): boolean {
+    if (
+      typeof callback !== "function" ||
+      this._isDeviceUnavailable ||
+      this._commandEncoderSubmitCallbacksDraining ||
+      !encoder ||
+      encoder !== this._currentCommandEncoder
+    ) {
+      return false;
+    }
+
+    let callbacks = this._afterCommandEncoderSubmitCallbacks.get(encoder);
+    if (!callbacks) {
+      callbacks = [];
+      this._afterCommandEncoderSubmitCallbacks.set(encoder, callbacks);
+    }
+    callbacks.push(callback);
+    return true;
+  }
+
+  private _invokeCommandEncoderSubmitCallbacks(
+    callbacks: Array<(submitted: boolean) => void>,
+    submitted: boolean,
+  ): void {
+    for (let i = 0; i < callbacks.length; i++) {
+      try {
+        callbacks[i](submitted);
+      } catch {
+        // A transaction owner reports its own failure. One callback must never
+        // strand the remaining submit-owned leases for this encoder segment.
+      }
+    }
+  }
+
+  private _drainCommandEncoderSubmitCallbacks(
+    encoder: GPUCommandEncoder,
+    submitted: boolean,
+  ): void {
+    const callbacks = this._afterCommandEncoderSubmitCallbacks.get(encoder);
+    if (!callbacks) {
+      return;
+    }
+    // Delete before invoking user code. A callback cannot re-enlist work onto
+    // an encoder whose disposition is already known.
+    this._afterCommandEncoderSubmitCallbacks.delete(encoder);
+    const wasDraining = this._commandEncoderSubmitCallbacksDraining;
+    this._commandEncoderSubmitCallbacksDraining = true;
+    try {
+      this._invokeCommandEncoderSubmitCallbacks(callbacks, submitted);
+    } finally {
+      this._commandEncoderSubmitCallbacksDraining = wasDraining;
+    }
+  }
+
+  private _drainAfterCommandEncoderSubmitCallbacks(submitted: boolean): void {
+    if (this._afterCommandEncoderSubmitCallbacks.size === 0) {
+      return;
+    }
+    const batches = this._afterCommandEncoderSubmitCallbacks;
+    this._afterCommandEncoderSubmitCallbacks = new Map();
+    const wasDraining = this._commandEncoderSubmitCallbacksDraining;
+    this._commandEncoderSubmitCallbacksDraining = true;
+    try {
+      for (const callbacks of batches.values()) {
+        this._invokeCommandEncoderSubmitCallbacks(callbacks, submitted);
+      }
+    } finally {
+      this._commandEncoderSubmitCallbacksDraining = wasDraining;
+    }
   }
 
   private _drainAfterFrameSubmitCallbacks(submitted: boolean): void {
@@ -3120,8 +3239,14 @@ export class WebGPUContext extends GraphicsContext {
       this._submitPendingTextureMipJobs();
 
       // Submit command buffer
-      const commandBuffer = this._currentCommandEncoder.finish();
+      const submittedEncoder = this._currentCommandEncoder;
+      const commandBuffer = submittedEncoder.finish();
       this._device.queue.submit([commandBuffer]);
+      // This exact encoder segment is now queue-owned. Settle its leases before
+      // the broader logical-frame callbacks and before any later finalization
+      // step can fail.
+      this._currentCommandEncoder = null;
+      this._drainCommandEncoderSubmitCallbacks(submittedEncoder, true);
       this._drainAfterFrameSubmitCallbacks(true);
       this._timestampProfiler?.afterSubmit();
 
@@ -3163,6 +3288,7 @@ export class WebGPUContext extends GraphicsContext {
       // frame-owned readback copy. Leaving the promises queued for a future
       // `beginFrame` would strand them: a request-render scene may stop
       // rendering immediately after an error.
+      this._drainAfterCommandEncoderSubmitCallbacks(false);
       this._drainAfterFrameSubmitCallbacks(false);
       this._currentRenderPassEncoder = null;
       this._activePassTarget = null;
@@ -3893,25 +4019,43 @@ export class WebGPUContext extends GraphicsContext {
 
     // Submit the command buffer so the copy actually executes on the GPU
     if (this._currentCommandEncoder) {
-      // Coalesce any staged per-draw uniform uploads before this MID-FRAME
-      // submit. Queue writes issued before submit are ordered before the
-      // command buffer that consumes them — without this flush, draws already
-      // encoded into this encoder would read stale ring-buffer bytes because
-      // their staged writes would only land at endFrame's flush, AFTER this
-      // submit. Mirrors the endFrame() flush.
-      this._uniformAllocator?.flush();
-      // This mid-frame submit executes draws already encoded into the frame
-      // encoder, which may sample an imagery texture realized this frame whose
-      // mip chain is still pending for `endFrame`. Flushing the pending mip
-      // jobs first, as their own submit, orders mips before draws on the
-      // queue.
-      this.flushPendingTextureMipJobs();
-      const commandBuffer = this._currentCommandEncoder.finish();
-      this._device!.queue.submit([commandBuffer]);
-      // Create a fresh encoder for any subsequent operations this frame
-      this._currentCommandEncoder = this._device!.createCommandEncoder({
-        label: "Post-Readback Command Encoder",
-      });
+      const submittedEncoder = this._currentCommandEncoder;
+      try {
+        // Coalesce any staged per-draw uniform uploads before this MID-FRAME
+        // submit. Queue writes issued before submit are ordered before the
+        // command buffer that consumes them — without this flush, draws already
+        // encoded into this encoder would read stale ring-buffer bytes because
+        // their staged writes would only land at endFrame's flush, AFTER this
+        // submit. Mirrors the endFrame() flush.
+        this._uniformAllocator?.flush();
+        // This mid-frame submit executes draws already encoded into the frame
+        // encoder, which may sample an imagery texture realized this frame whose
+        // mip chain is still pending for `endFrame`. Flushing the pending mip
+        // jobs first, as their own submit, orders mips before draws on the
+        // queue.
+        this.flushPendingTextureMipJobs();
+        const commandBuffer = submittedEncoder.finish();
+        this._device!.queue.submit([commandBuffer]);
+        this._currentCommandEncoder = null;
+        this._drainCommandEncoderSubmitCallbacks(submittedEncoder, true);
+        // Create a fresh encoder for any subsequent operations this frame.
+        this._currentCommandEncoder = this._device!.createCommandEncoder({
+          label: "Post-Readback Command Encoder",
+        });
+      } catch (error) {
+        // `finish`/`submit` failure abandons this exact segment. If continuation
+        // encoder creation failed after submit, the true drain above already
+        // removed the batch and this false drain is an idempotent no-op.
+        this._currentCommandEncoder = null;
+        this._drainCommandEncoderSubmitCallbacks(submittedEncoder, false);
+        // No continuation encoder exists, so the rest of the logical frame is
+        // abandoned even when the old segment had already submitted. Reject
+        // frame-wide readbacks now rather than leaving them for an endFrame()
+        // that will early-return on the null encoder.
+        this._drainAfterFrameSubmitCallbacks(false);
+        pbo.destroy();
+        throw error;
+      }
     }
 
     try {
@@ -4940,6 +5084,9 @@ export class WebGPUContext extends GraphicsContext {
     // callbacks queued would strand their promises and retain feature buffers.
     // Abandon the unfinished encoder before destroying those feature owners.
     continueFinalCleanupAfter(() =>
+      this._drainAfterCommandEncoderSubmitCallbacks(false),
+    );
+    continueFinalCleanupAfter(() =>
       this._drainAfterFrameSubmitCallbacks(false),
     );
     this._currentRenderPassEncoder = null;
@@ -5062,6 +5209,9 @@ export class WebGPUContext extends GraphicsContext {
     }
     continueFinalCleanupAfter(() =>
       this._environmentDemandRegistry.reset(this._deviceResourceGeneration),
+    );
+    continueFinalCleanupAfter(() =>
+      this._environmentRefreshCoordinator.reset(this._deviceResourceGeneration),
     );
     continueFinalCleanupAfter(() =>
       this._environmentRefreshScheduler.reset(this._deviceResourceGeneration),
@@ -6226,8 +6376,8 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * Observe-only registration seam used by backend-neutral Scene
-   * producers. No refresh work is gated here, and an unknown demand stays
+   * Demand registration seam used by backend-neutral Scene producers.
+   * Demand may reorder bounded refresh work, but never drops it; unknown stays
    * conservative.
    */
   recordEnvironmentMapDemand(
@@ -6269,6 +6419,70 @@ export class WebGPUContext extends GraphicsContext {
   /** Allocation-bearing debug snapshot; never used to gate renderer work. */
   getEnvironmentMapDemandStats(): WebGPUEnvironmentDemandTelemetry {
     return this._environmentDemandRegistry.getTelemetry();
+  }
+
+  /**
+   * Open Scene's primitive-collection phase for dynamic-environment updates.
+   * WebGL has no corresponding hook; ViewportExecutor calls this optionally.
+   */
+  beginEnvironmentMapUpdateCollection(): boolean {
+    if (this._isDeviceUnavailable || this._currentCommandEncoder === null) {
+      return false;
+    }
+    return this._environmentRefreshCoordinator.beginCollection(
+      this._deviceResourceGeneration,
+    );
+  }
+
+  /** Close the matching Scene primitive-collection phase. */
+  endEnvironmentMapUpdateCollection(): void {
+    this._environmentRefreshCoordinator.endCollection(
+      this._deviceResourceGeneration,
+    );
+  }
+
+  /**
+   * Offer one backend manager tick to the active Scene collection.
+   *
+   * `false` means no Scene collection owns the call, so the feature-renderer
+   * wrapper must preserve the historical immediate/off-frame updater. `true`
+   * means this context consumed the call, including exact-manager duplicates.
+   */
+  queueEnvironmentMapUpdate<TManager extends object>(
+    manager: TManager,
+    frameState: CesiumFrameState,
+    update: (manager: TManager, frameState: CesiumFrameState) => void,
+  ): boolean {
+    if (frameState.context !== this || this._isDeviceUnavailable) {
+      return false;
+    }
+    return this._environmentRefreshCoordinator.enqueue(
+      manager,
+      frameState,
+      update,
+      this._deviceResourceGeneration,
+      this,
+    );
+  }
+
+  /**
+   * Invoke queued manager ticks on the exact active Scene encoder.
+   * The first half of a split-2D frame passes `false` so NORMAL work can see
+   * second-viewport demand before final admission.
+   */
+  drainEnvironmentMapUpdates(includeNormal = true): number {
+    if (
+      this._isDeviceUnavailable ||
+      this._currentCommandEncoder === null ||
+      this.hasActiveRenderPass
+    ) {
+      return 0;
+    }
+    return this._environmentRefreshCoordinator.drain(
+      this._environmentDemandRegistry,
+      this._deviceResourceGeneration,
+      includeNormal,
+    );
   }
 
   /**
@@ -7111,6 +7325,7 @@ export class WebGPUContext extends GraphicsContext {
     // A device-loss edge abandons the current encoder permanently. Reject
     // frame-owned readbacks immediately; request-render scenes may never start
     // another frame, and terminal loss has no future frame by definition.
+    this._drainAfterCommandEncoderSubmitCallbacks(false);
     this._drainAfterFrameSubmitCallbacks(false);
     this._currentRenderPassEncoder = null;
     this._activePassTarget = null;
@@ -7207,6 +7422,7 @@ export class WebGPUContext extends GraphicsContext {
     // still-valid resource lifetime.
     this._deviceResourceGeneration += 1;
     this._environmentDemandRegistry.reset(this._deviceResourceGeneration);
+    this._environmentRefreshCoordinator.reset(this._deviceResourceGeneration);
     // Every queued refresh described work against the lost device.
     // Drop the queue; each producer re-derives a MANDATORY post-recovery
     // request from its own invalidated cache, so nothing is lost. The pool

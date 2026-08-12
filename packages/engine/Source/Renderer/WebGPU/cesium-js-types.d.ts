@@ -738,6 +738,15 @@ interface CesiumGraphicsContext {
    * submitted (for example mapAsync on a frame-owned readback copy).
    */
   enqueueAfterFrameSubmit?(callback: (submitted: boolean) => void): boolean;
+  /**
+   * WebGPU-only: register a submit-owned lease against one exact active command
+   * encoder. Unlike `enqueueAfterFrameSubmit`, this settles at intermediate
+   * Scene2D/readback encoder rotations as well as at final frame submission.
+   */
+  enqueueAfterCommandEncoderSubmit?(
+    encoder: GPUCommandEncoder,
+    callback: (submitted: boolean) => void,
+  ): boolean;
   /** WebGPU-only: lazy-initialized cascaded shadow map renderer.
    *  `null` until `scene.useCascadedShadowMaps` activates it; absent
    *  on WebGL Context. Same typing-boundary pattern as

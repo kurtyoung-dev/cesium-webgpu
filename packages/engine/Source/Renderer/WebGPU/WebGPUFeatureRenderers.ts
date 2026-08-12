@@ -191,6 +191,8 @@ import {
   destroyWebGPUImageBasedLightingResources,
 } from "./WebGPUImageBasedLighting.js";
 import {
+  preflightWebGPUDynamicEnvironmentMap,
+  updatePreflightedWebGPUDynamicEnvironmentMap,
   updateWebGPUDynamicEnvironmentMap,
   destroyWebGPUDynamicEnvironmentMapResources,
 } from "./WebGPUDynamicEnvironmentMapManager.js";
@@ -234,6 +236,34 @@ import type {
   PrimitiveCommandRenderer,
   SystemRenderer,
 } from "../GraphicsContext.js";
+
+function updateSceneQueuedWebGPUDynamicEnvironmentMap(
+  manager: Parameters<typeof updatePreflightedWebGPUDynamicEnvironmentMap>[0],
+  frameState: Parameters<
+    typeof updatePreflightedWebGPUDynamicEnvironmentMap
+  >[1],
+): void {
+  const frameContext = frameState.context as unknown as WebGPUContext;
+  // Recovery safety is synchronous even when the expensive manager tick is
+  // collected: model command preparation below this call must never observe
+  // published views or buffers from the prior device generation.
+  preflightWebGPUDynamicEnvironmentMap(manager, frameState);
+  if (
+    typeof frameContext.queueEnvironmentMapUpdate === "function" &&
+    frameContext.queueEnvironmentMapUpdate(
+      manager,
+      frameState,
+      updateWebGPUDynamicEnvironmentMap,
+    )
+  ) {
+    return;
+  }
+
+  // Off-frame and non-Scene callers preserve C11-193B's immediate updater,
+  // including its private-encoder fallback. A normal Scene collection consumes
+  // the offer above and drains the direct updater on the active Scene encoder.
+  updatePreflightedWebGPUDynamicEnvironmentMap(manager, frameState);
+}
 
 /**
  * Registers all WebGPU feature renderers on the given context.
@@ -739,7 +769,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
   });
 
   context.registerFeatureRenderer(FeatureRendererKey.DYNAMIC_ENVIRONMENT_MAP, {
-    update: updateWebGPUDynamicEnvironmentMap,
+    update: updateSceneQueuedWebGPUDynamicEnvironmentMap,
     destroy: destroyWebGPUDynamicEnvironmentMapResources,
   });
 

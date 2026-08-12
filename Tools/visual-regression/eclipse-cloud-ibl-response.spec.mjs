@@ -657,29 +657,98 @@ test("D3 WebGPU environment: the bake dims AND the gate can see it", () => {
     /lutPathChanged \|\|\n(\s*\/\/[^\n]*\n)*\s*eclipseEnvChanged \|\|\n\s*cloudCoverageMoved \|\|/,
   );
 
-  // The commit lives ONLY inside the granted branch (C11-193 lossless defer),
-  // and only after the complete fill.
+  // The bucket is part of the submit-owned transaction. Encoding captures it
+  // in the provisional commit state only after the complete fill; it is not
+  // written directly from the granted branch.
   assert.equal(
     (
       webgpuEnvManager.match(
         /cache\.lastEclipseEnvBucket = eclipseEnvBucket;/g,
       ) ?? []
     ).length,
+    0,
+  );
+  assert.equal(
+    (
+      webgpuEnvManager.match(
+        /cache\.lastEclipseEnvBucket = state\.eclipseEnvBucket;/g,
+      ) ?? []
+    ).length,
     1,
   );
   const granted = webgpuEnvManager.slice(
     webgpuEnvManager.indexOf("if (refreshGranted) {"),
-    webgpuEnvManager.indexOf("// Expose cubemap + prefiltered IBL views"),
+    webgpuEnvManager.indexOf(
+      "if (cache.pendingRefresh === null && !cache.needsUpdate)",
+    ),
   );
   const fillIdx = granted.indexOf("runProceduralSkyFill(");
   const shIdx = granted.indexOf("runSphericalHarmonicProjection(");
-  const commitIdx = granted.indexOf(
-    "cache.lastEclipseEnvBucket = eclipseEnvBucket;",
+  const commitStateIdx = granted.indexOf(
+    "const commitState: DynamicEnvironmentRefreshCommitState =",
   );
-  assert.ok(fillIdx >= 0 && shIdx > fillIdx);
+  assert.ok(fillIdx >= 0 && shIdx > fillIdx && commitStateIdx > shIdx);
+  const provisionalState = granted.slice(
+    commitStateIdx,
+    granted.indexOf("if (pendingRefresh !== null) {", commitStateIdx),
+  );
+  assert.match(provisionalState, /\n\s*eclipseEnvBucket,\n/);
+
+  // A borrowed Scene encoder may publish that state only when its exact
+  // segment submitted successfully, encoding remained valid, the provisional
+  // state exists, and the context/device/generation owner is still exact.
+  const settleStart = webgpuEnvManager.indexOf(
+    "function settlePendingDynamicEnvironmentRefresh(",
+  );
+  const settle = webgpuEnvManager.slice(
+    settleStart,
+    webgpuEnvManager.indexOf(
+      "function preflightWebGPUDynamicEnvironmentMap(",
+      settleStart,
+    ),
+  );
+  assert.match(
+    settle,
+    /const accepted =\n\s*submitted &&\n\s*!pending\.encodingFailed &&\n\s*pending\.commitState !== null &&\n\s*exactOwner;/,
+  );
+  const acceptedBranch = settle.slice(
+    settle.indexOf("if (accepted) {"),
+    settle.indexOf("} else if (exactOwner)"),
+  );
+  assert.match(
+    acceptedBranch,
+    /commitDynamicEnvironmentRefresh\(\n\s*manager,\n\s*cache,\n\s*pending\.commitState!,\n\s*pending\.frameState,\n\s*\);/,
+  );
+
+  // The shared path uploads before attaching the provisional state and leaves
+  // commit authority to the callback above. The off-frame/private path first
+  // performs its native submit; only a successful return commits the state.
+  const settlement = granted.slice(
+    granted.indexOf("if (pendingRefresh !== null) {", commitStateIdx),
+    granted.indexOf("} catch (error)", commitStateIdx),
+  );
+  const uploadIdx = settlement.indexOf(
+    "uploadIBLCommandEncodingScopeParameters(device, encodingScope);",
+  );
+  const attachIdx = settlement.indexOf(
+    "pendingRefresh.commitState = commitState;",
+  );
+  const privateSubmitIdx = settlement.indexOf(
+    "submitIBLCommandEncodingScope(device, encodingScope);",
+  );
+  const privateCommitIdx = settlement.indexOf(
+    "commitDynamicEnvironmentRefresh(",
+  );
+  assert.ok(uploadIdx >= 0 && attachIdx > uploadIdx);
   assert.ok(
-    commitIdx > shIdx,
-    "the consumed bucket must be committed only after the complete fill",
+    privateSubmitIdx > attachIdx && privateCommitIdx > privateSubmitIdx,
+  );
+  const sharedSettlement = settlement.slice(0, settlement.indexOf("} else {"));
+  assert.doesNotMatch(sharedSettlement, /commitDynamicEnvironmentRefresh\(/);
+  const privateSettlement = settlement.slice(settlement.indexOf("} else {"));
+  assert.match(
+    privateSettlement,
+    /submitIBLCommandEncodingScope\(device, encodingScope\);\n\s*commitDynamicEnvironmentRefresh\(\n\s*manager,\n\s*cache,\n\s*commitState,\n\s*frameState,\n\s*\);/,
   );
   // NaN sentinel so the first frame always runs.
   assert.match(webgpuEnvManager, /lastEclipseEnvBucket: NaN,/);

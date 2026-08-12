@@ -6,21 +6,246 @@ import {
 } from "../../../Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.js";
 import Cartesian3 from "../../../Source/Core/Cartesian3.js";
 import {
+  destroyWebGPUDynamicEnvironmentMapResources,
+  getOrCreateDynamicIBLPipelineCache,
   getOrCreateDynamicEnvironmentKernelPack,
+  isDynamicEnvironmentCacheCurrent,
+  preflightWebGPUDynamicEnvironmentMap,
   resetDynamicEnvironmentKernelPacksForSpecs,
   resolveSceneCaptureMode,
   shouldRefreshSceneCapture,
   shouldResetSceneCaptureHistory,
+  updateWebGPUDynamicEnvironmentMap,
   updateSceneCaptureAttemptBookkeeping,
   updateSceneCaptureBookkeeping,
 } from "../../../Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.js";
 import { publishWebGPUSceneCaptureSources } from "../../../Source/Scene/GlobeSurfaceTileProviderRendering.js";
 import {
+  createIBLCommandEncodingScope,
   createIrradiancePipeline,
   createRadianceHQPipeline,
   createRadiancePipeline,
+  destroyIBLCommandEncodingScope,
+  getOrCreateIBLPersistentParameterArena,
   generateIBLMaps,
+  resetIBLDeviceKernelPacksForSpecs,
+  submitIBLCommandEncodingScope,
 } from "../../../Source/Renderer/WebGPU/WebGPUIBLPipeline.js";
+
+function createFrameOwnedDynamicRefreshHarness() {
+  const textures = [];
+  const buffers = [];
+  const parameterHandles = [];
+  const scheduledTextureDestroys = [];
+  const encoderCallbacks = new Map();
+  let encoderSerial = 0;
+  let failPassCountdown = null;
+
+  const makeComputePass = function () {
+    return {
+      setPipeline() {},
+      setBindGroup() {},
+      dispatchWorkgroups() {},
+      end() {},
+    };
+  };
+  const makeEncoder = function () {
+    const encoder = {
+      id: ++encoderSerial,
+      beginComputePass() {
+        if (failPassCountdown !== null) {
+          if (failPassCountdown === 0) {
+            failPassCountdown = null;
+            throw new Error("injected late compute-pass failure");
+          }
+          failPassCountdown--;
+        }
+        return makeComputePass();
+      },
+      copyTextureToTexture() {},
+      finish: jasmine
+        .createSpy(`frameFinish${encoderSerial}`)
+        .and.returnValue({}),
+    };
+    return encoder;
+  };
+
+  const privateEncoder = makeEncoder();
+  const createCommandEncoder = jasmine
+    .createSpy("createCommandEncoder")
+    .and.returnValue(privateEncoder);
+  const writeBuffer = jasmine.createSpy("writeBuffer");
+  const submit = jasmine.createSpy("submit");
+  const device = {
+    limits: { minUniformBufferOffsetAlignment: 256 },
+    createCommandEncoder,
+    createTexture(descriptor) {
+      const size = descriptor.size;
+      const width =
+        typeof size === "number"
+          ? size
+          : Array.isArray(size)
+            ? size[0]
+            : size.width;
+      const texture = {
+        descriptor,
+        width,
+        mipLevelCount: descriptor.mipLevelCount ?? 1,
+        createView(viewDescriptor) {
+          return { texture, descriptor: viewDescriptor };
+        },
+        destroy: jasmine.createSpy(`destroyTexture${textures.length}`),
+      };
+      textures.push(texture);
+      return texture;
+    },
+    createBuffer(descriptor) {
+      const buffer = {
+        descriptor,
+        destroy: jasmine.createSpy(`destroyBuffer${buffers.length}`),
+      };
+      buffers.push(buffer);
+      return buffer;
+    },
+    createSampler(descriptor) {
+      return { descriptor };
+    },
+    createBindGroupLayout(descriptor) {
+      return { descriptor };
+    },
+    createPipelineLayout(descriptor) {
+      return { descriptor };
+    },
+    createShaderModule(descriptor) {
+      return { descriptor };
+    },
+    createComputePipeline(descriptor) {
+      return { descriptor };
+    },
+    createBindGroup(descriptor) {
+      return { descriptor };
+    },
+    queue: {
+      writeBuffer,
+      writeTexture: jasmine.createSpy("writeTexture"),
+      submit,
+    },
+  };
+  const pool = {
+    acquireParameterBuffer: jasmine
+      .createSpy("acquireParameterBuffer")
+      .and.callFake(function (_byteLength, label) {
+        const handle = {
+          label,
+          buffer: {
+            label,
+            destroy: jasmine.createSpy(
+              `destroyParameterBuffer${parameterHandles.length}`,
+            ),
+          },
+        };
+        parameterHandles.push(handle);
+        return handle;
+      }),
+    releaseParameterBuffer: jasmine.createSpy("releaseParameterBuffer"),
+  };
+  const noteEnvironmentRefreshSubmitted = jasmine.createSpy(
+    "noteEnvironmentRefreshSubmitted",
+  );
+  const scheduleEnvironmentRefresh = jasmine
+    .createSpy("scheduleEnvironmentRefresh")
+    .and.returnValue("grant");
+  let frameEncoder = makeEncoder();
+  const context = {
+    device,
+    resourceGeneration: 1,
+    currentCommandEncoder: frameEncoder,
+    _currentCommandEncoder: frameEncoder,
+    uniformState: {
+      sunDirectionWC: { x: 0.3, y: 0.0, z: 0.95 },
+    },
+    scheduleEnvironmentRefresh,
+    noteEnvironmentRefreshSubmitted,
+    getEnvironmentTargetPool() {
+      return pool;
+    },
+    scheduleTextureDestroy: jasmine
+      .createSpy("scheduleTextureDestroy")
+      .and.callFake(function (texture) {
+        scheduledTextureDestroys.push(texture);
+      }),
+    enqueueAfterCommandEncoderSubmit: jasmine
+      .createSpy("enqueueAfterCommandEncoderSubmit")
+      .and.callFake(function (encoder, callback) {
+        if (encoder !== context.currentCommandEncoder) {
+          return false;
+        }
+        const callbacks = encoderCallbacks.get(encoder) ?? [];
+        callbacks.push(callback);
+        encoderCallbacks.set(encoder, callbacks);
+        return true;
+      }),
+  };
+  const frameState = {
+    context,
+    mode: 3,
+    globeVisible: true,
+    afterRender: [],
+    frameNumber: 1,
+    sunDirectionWC: context.uniformState.sunDirectionWC,
+  };
+  const createManager = function () {
+    return {
+      _mipmapLevels: 1,
+      enabled: true,
+      shouldUpdate: true,
+      _position: new Cartesian3(6378137.0, 0.0, 0.0),
+      _shouldRegenerateShaders: false,
+      _cubemapSize: 16,
+      _radianceMap: null,
+    };
+  };
+
+  return {
+    context,
+    device,
+    frameState,
+    pool,
+    textures,
+    scheduledTextureDestroys,
+    parameterHandles,
+    createCommandEncoder,
+    writeBuffer,
+    submit,
+    scheduleEnvironmentRefresh,
+    noteEnvironmentRefreshSubmitted,
+    createManager,
+    callbacksFor(encoder = frameEncoder) {
+      return encoderCallbacks.get(encoder) ?? [];
+    },
+    settle(encoder = frameEncoder, submitted = true) {
+      const callbacks = encoderCallbacks.get(encoder) ?? [];
+      encoderCallbacks.delete(encoder);
+      for (const callback of callbacks) {
+        callback(submitted);
+      }
+    },
+    nextFrame() {
+      frameEncoder = makeEncoder();
+      context.currentCommandEncoder = frameEncoder;
+      context._currentCommandEncoder = frameEncoder;
+      frameState.afterRender = [];
+      frameState.frameNumber++;
+      return frameEncoder;
+    },
+    currentEncoder() {
+      return frameEncoder;
+    },
+    failAfterComputePasses(count) {
+      failPassCountdown = count;
+    },
+  };
+}
 
 describe("Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager", function () {
   it("shares immutable kernels by device generation and storage format", function () {
@@ -102,6 +327,7 @@ describe("Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager", function () {
   });
 
   it("shares IBL convolution kernels across manager caches", function () {
+    resetIBLDeviceKernelPacksForSpecs();
     const counts = {
       bindGroupLayouts: 0,
       pipelineLayouts: 0,
@@ -128,14 +354,14 @@ describe("Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager", function () {
     };
 
     const first = [
-      createIrradiancePipeline(device, null),
-      createRadiancePipeline(device, null),
-      createRadianceHQPipeline(device, null),
+      createIrradiancePipeline(device, null, 1),
+      createRadiancePipeline(device, null, 1),
+      createRadianceHQPipeline(device, null, 1),
     ];
     const second = [
-      createIrradiancePipeline(device, null),
-      createRadiancePipeline(device, null),
-      createRadianceHQPipeline(device, null),
+      createIrradiancePipeline(device, null, 1),
+      createRadiancePipeline(device, null, 1),
+      createRadianceHQPipeline(device, null, 1),
     ];
 
     expect(second[0]).toBe(first[0]);
@@ -147,6 +373,16 @@ describe("Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager", function () {
       shaderModules: 3,
       computePipelines: 3,
     });
+
+    const recovered = createIrradiancePipeline(device, null, 2);
+    expect(recovered).not.toBe(first[0]);
+    expect(counts).toEqual({
+      bindGroupLayouts: 4,
+      pipelineLayouts: 4,
+      shaderModules: 4,
+      computePipelines: 4,
+    });
+    resetIBLDeviceKernelPacksForSpecs();
   });
 
   it("packs a standalone HQ IBL refresh into one immutable upload and submission", function () {
@@ -194,7 +430,7 @@ describe("Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager", function () {
           createView() {
             return {};
           },
-          destroy() {},
+          destroy: jasmine.createSpy("destroy"),
         };
       },
       createBindGroup(descriptor) {
@@ -277,6 +513,688 @@ describe("Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager", function () {
     expect(readSlot(8)).toEqual([8, 0, 0, 0]);
     expect(readSlot(9)).toEqual([0, 0, 6, 128]);
     expect(readSlot(44)).toEqual([5, 5, 6, 4]);
+
+    // An authored/explicit source does not opt into the dynamic-output policy.
+    // Its historical replace-on-refresh lifecycle remains unchanged.
+    const firstIrradiance = cache.irradianceTexture;
+    const firstRadiance = cache.radianceTexture;
+    generateIBLMaps(device, cache, {}, null, {
+      quality: "high",
+      sourceCube,
+      sourceFormat: "rgba8unorm",
+    });
+    expect(cache.irradianceTexture).not.toBe(firstIrradiance);
+    expect(cache.radianceTexture).not.toBe(firstRadiance);
+    expect(firstIrradiance.destroy).toHaveBeenCalledTimes(1);
+    expect(firstRadiance.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains dynamic IBL outputs and bind state until ownership topology changes", function () {
+    const textures = [];
+    const bindGroups = [];
+    const dispatchWorkgroups = jasmine.createSpy("dispatchWorkgroups");
+    let failNextWrite = false;
+    let failNextSubmit = false;
+    let failNextEncoder = false;
+    const writeBuffer = jasmine
+      .createSpy("writeBuffer")
+      .and.callFake(function () {
+        if (failNextWrite) {
+          failNextWrite = false;
+          throw new Error("injected write failure");
+        }
+      });
+    const submit = jasmine.createSpy("submit").and.callFake(function () {
+      if (failNextSubmit) {
+        failNextSubmit = false;
+        throw new Error("injected submit failure");
+      }
+    });
+    let failNextView = false;
+    const device = {
+      limits: { minUniformBufferOffsetAlignment: 256 },
+      createTexture(descriptor) {
+        const texture = {
+          descriptor,
+          destroy: jasmine.createSpy("destroy"),
+          createView(viewDescriptor) {
+            if (failNextView) {
+              failNextView = false;
+              throw new Error("injected view failure");
+            }
+            return { texture, descriptor: viewDescriptor };
+          },
+        };
+        textures.push(texture);
+        return texture;
+      },
+      createBuffer() {
+        return { destroy: jasmine.createSpy("destroy") };
+      },
+      createCommandEncoder() {
+        if (failNextEncoder) {
+          failNextEncoder = false;
+          throw new Error("injected encoder failure");
+        }
+        return {
+          beginComputePass() {
+            return {
+              setPipeline() {},
+              setBindGroup() {},
+              dispatchWorkgroups,
+              end() {},
+            };
+          },
+          finish() {
+            return {};
+          },
+        };
+      },
+      createBindGroup(descriptor) {
+        const group = { descriptor };
+        bindGroups.push(group);
+        return group;
+      },
+      queue: { writeBuffer, submit },
+    };
+    const pool = {
+      acquireParameterBuffer: jasmine
+        .createSpy("acquireParameterBuffer")
+        .and.callFake(function () {
+          return { buffer: { destroy: jasmine.createSpy("destroy") } };
+        }),
+      releaseParameterBuffer: jasmine.createSpy("releaseParameterBuffer"),
+    };
+    const contextA = {};
+    const contextB = {};
+    const ownerA = {
+      context: contextA,
+      device,
+      resourceGeneration: 7,
+      size: 256,
+      mipmapLevels: 4,
+      cubemapFormat: "rgba8unorm",
+      iblCache: null,
+    };
+    const ownerB = {
+      context: contextB,
+      device,
+      resourceGeneration: 7,
+      size: 256,
+      mipmapLevels: 4,
+      cubemapFormat: "rgba8unorm",
+      iblCache: null,
+    };
+    const cacheA = getOrCreateDynamicIBLPipelineCache(ownerA);
+    const cacheB = getOrCreateDynamicIBLPipelineCache(ownerB);
+    expect(cacheB).not.toBe(cacheA);
+    expect(isDynamicEnvironmentCacheCurrent(ownerA, contextA, device, 7)).toBe(
+      true,
+    );
+    expect(isDynamicEnvironmentCacheCurrent(ownerA, contextB, device, 7)).toBe(
+      false,
+    );
+    expect(isDynamicEnvironmentCacheCurrent(ownerA, contextA, device, 8)).toBe(
+      false,
+    );
+
+    for (const cache of [cacheA, cacheB]) {
+      cache.irradiancePipeline = {};
+      cache.radiancePipeline = {};
+      cache.irradianceBGL = {};
+      cache.radianceBGL = {};
+      cache.sampler = {};
+    }
+    const sourceView = {};
+    const encode = function (cache, capacity = 42) {
+      const arena = getOrCreateIBLPersistentParameterArena(
+        device,
+        7,
+        cache,
+        capacity,
+        pool,
+        "spec",
+      );
+      const scope = createIBLCommandEncodingScope(
+        device,
+        "spec",
+        capacity,
+        null,
+        arena,
+      );
+      try {
+        generateIBLMaps(device, cache, sourceView, null, undefined, scope);
+        return scope;
+      } catch (error) {
+        destroyIBLCommandEncodingScope(scope);
+        throw error;
+      }
+    };
+    const refresh = function (cache) {
+      const scope = encode(cache);
+      try {
+        submitIBLCommandEncodingScope(device, scope);
+      } finally {
+        destroyIBLCommandEncodingScope(scope);
+      }
+    };
+
+    refresh(cacheA);
+    const stable = {
+      irradianceTexture: cacheA.irradianceTexture,
+      irradianceView: cacheA.irradianceView,
+      irradianceStorageView: cacheA.irradianceStorageView,
+      radianceTexture: cacheA.radianceTexture,
+      radianceView: cacheA.radianceView,
+      radianceMipStorageViews: cacheA.radianceMipStorageViews,
+      irradianceGroups: cacheA.irradianceBindGroupState.groups,
+      radianceGroups: cacheA.radianceBindGroupState.groups,
+    };
+    refresh(cacheA);
+    expect(cacheA.irradianceTexture).toBe(stable.irradianceTexture);
+    expect(cacheA.irradianceView).toBe(stable.irradianceView);
+    expect(cacheA.irradianceStorageView).toBe(stable.irradianceStorageView);
+    expect(cacheA.radianceTexture).toBe(stable.radianceTexture);
+    expect(cacheA.radianceView).toBe(stable.radianceView);
+    expect(cacheA.radianceMipStorageViews).toBe(stable.radianceMipStorageViews);
+    expect(cacheA.irradianceBindGroupState.groups).toBe(
+      stable.irradianceGroups,
+    );
+    expect(cacheA.radianceBindGroupState.groups).toBe(stable.radianceGroups);
+    expect(textures.length).toBe(2);
+    expect(bindGroups.length).toBe(42);
+    expect(writeBuffer).toHaveBeenCalledTimes(2);
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(dispatchWorkgroups).toHaveBeenCalledTimes(84);
+
+    refresh(cacheB);
+    expect(cacheB.irradianceTexture).not.toBe(cacheA.irradianceTexture);
+    expect(cacheB.radianceTexture).not.toBe(cacheA.radianceTexture);
+    expect(pool.acquireParameterBuffer).toHaveBeenCalledTimes(2);
+
+    cacheA.outputTopologyKey = "512:4:rgba8unorm";
+    refresh(cacheA);
+    expect(cacheA.irradianceTexture).not.toBe(stable.irradianceTexture);
+    expect(cacheA.radianceTexture).not.toBe(stable.radianceTexture);
+    expect(stable.irradianceTexture.destroy).toHaveBeenCalledTimes(1);
+    expect(stable.radianceTexture.destroy).toHaveBeenCalledTimes(1);
+
+    const retainedIrradiance = cacheA.irradianceTexture;
+    const retainedRadiance = cacheA.radianceTexture;
+    cacheA.outputTopologyKey = "1024:4:rgba8unorm";
+    failNextView = true;
+    expect(function () {
+      generateIBLMaps(device, cacheA, sourceView);
+    }).toThrowError("injected view failure");
+    expect(cacheA.irradianceTexture).toBe(retainedIrradiance);
+    expect(cacheA.radianceTexture).toBe(retainedRadiance);
+    expect(textures[textures.length - 1].destroy).toHaveBeenCalledTimes(1);
+
+    cacheA.outputTopologyKey = "2048:4:rgba8unorm";
+    failNextEncoder = true;
+    expect(function () {
+      generateIBLMaps(device, cacheA, sourceView);
+    }).toThrowError("injected encoder failure");
+    expect(cacheA.irradianceTexture).toBe(retainedIrradiance);
+    expect(cacheA.radianceTexture).toBe(retainedRadiance);
+    expect(textures[textures.length - 1].destroy).toHaveBeenCalledTimes(1);
+    expect(textures[textures.length - 2].destroy).toHaveBeenCalledTimes(1);
+
+    cacheA.outputTopologyKey = "4096:4:rgba8unorm";
+    const writeCandidateStart = textures.length;
+    failNextWrite = true;
+    expect(function () {
+      refresh(cacheA);
+    }).toThrowError("injected write failure");
+    expect(cacheA.irradianceTexture).toBe(retainedIrradiance);
+    expect(cacheA.radianceTexture).toBe(retainedRadiance);
+    expect(cacheA.persistentParameterArena.inUse).toBeFalse();
+    expect(textures[writeCandidateStart].destroy).toHaveBeenCalledTimes(1);
+    expect(textures[writeCandidateStart + 1].destroy).toHaveBeenCalledTimes(1);
+    refresh(cacheA);
+    expect(cacheA.irradianceTexture).not.toBe(retainedIrradiance);
+    expect(cacheA.radianceTexture).not.toBe(retainedRadiance);
+
+    const afterWriteRetryIrradiance = cacheA.irradianceTexture;
+    const afterWriteRetryRadiance = cacheA.radianceTexture;
+    cacheA.outputTopologyKey = "8192:4:rgba8unorm";
+    const submitCandidateStart = textures.length;
+    failNextSubmit = true;
+    expect(function () {
+      refresh(cacheA);
+    }).toThrowError("injected submit failure");
+    expect(cacheA.irradianceTexture).toBe(afterWriteRetryIrradiance);
+    expect(cacheA.radianceTexture).toBe(afterWriteRetryRadiance);
+    expect(cacheA.persistentParameterArena.inUse).toBeFalse();
+    expect(textures[submitCandidateStart].destroy).toHaveBeenCalledTimes(1);
+    expect(textures[submitCandidateStart + 1].destroy).toHaveBeenCalledTimes(1);
+    refresh(cacheA);
+    expect(cacheA.irradianceTexture).not.toBe(afterWriteRetryIrradiance);
+    expect(cacheA.radianceTexture).not.toBe(afterWriteRetryRadiance);
+
+    cacheA.outputTopologyKey = "16384:4:rgba8unorm";
+    const beforePendingIrradiance = cacheA.irradianceTexture;
+    const beforePendingRadiance = cacheA.radianceTexture;
+    const pendingScope = encode(cacheA);
+    expect(cacheA.irradianceTexture).toBe(beforePendingIrradiance);
+    expect(cacheA.radianceTexture).toBe(beforePendingRadiance);
+    expect(function () {
+      generateIBLMaps(
+        device,
+        cacheA,
+        sourceView,
+        null,
+        undefined,
+        pendingScope,
+      );
+    }).toThrowError("Persistent IBL cache already has a pending transaction.");
+    destroyIBLCommandEncodingScope(pendingScope);
+    expect(cacheA.pendingOutputTransaction).toBeNull();
+    expect(cacheA.persistentParameterArena.inUse).toBeFalse();
+
+    const activeArena = cacheA.persistentParameterArena;
+    const activeScope = createIBLCommandEncodingScope(
+      device,
+      "arena upgrade spec",
+      42,
+      null,
+      activeArena,
+    );
+    expect(function () {
+      getOrCreateIBLPersistentParameterArena(
+        device,
+        7,
+        cacheA,
+        43,
+        pool,
+        "arena upgrade spec",
+      );
+    }).toThrowError(
+      "Cannot replace a persistent IBL parameter arena while it is in use.",
+    );
+    expect(cacheA.persistentParameterArena).toBe(activeArena);
+    destroyIBLCommandEncodingScope(activeScope);
+  });
+
+  it("borrows the frame encoder and publishes only after exact submission", function () {
+    const harness = createFrameOwnedDynamicRefreshHarness();
+    const manager = harness.createManager();
+    const encoder = harness.currentEncoder();
+
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+
+    const cache = manager._webgpuCache;
+    const arena = cache.iblCache.persistentParameterArena;
+    expect(harness.createCommandEncoder).not.toHaveBeenCalled();
+    expect(encoder.finish).not.toHaveBeenCalled();
+    expect(harness.submit).not.toHaveBeenCalled();
+    expect(harness.callbacksFor(encoder).length).toBe(1);
+    expect(
+      harness.writeBuffer.calls
+        .allArgs()
+        .some((args) => args[0] === arena.parameterBuffer),
+    ).toBeTrue();
+    expect(arena.inUse).toBeTrue();
+    expect(cache.needsUpdate).toBeTrue();
+    expect(cache.lastSunDirX).toBeNaN();
+    expect(manager._radianceMap).toBeNull();
+    expect(manager._webgpuIBLDiffuseView).toBeUndefined();
+    expect(harness.noteEnvironmentRefreshSubmitted).not.toHaveBeenCalled();
+
+    harness.settle(encoder, true);
+
+    expect(cache.pendingRefresh).toBeNull();
+    expect(arena.inUse).toBeFalse();
+    expect(cache.needsUpdate).toBeFalse();
+    expect(cache.lastSunDirX).toBe(0.3);
+    expect(manager._radianceMap._webgpuTexture).toBe(cache.cubemapTexture);
+    expect(manager._webgpuIBLDiffuseView).toBe(cache.iblCache.irradianceView);
+    expect(manager._webgpuIBLSpecularView).toBe(cache.iblCache.radianceView);
+    expect(manager._webgpuSHBuffer).toBe(cache.shBuffer);
+    expect(harness.noteEnvironmentRefreshSubmitted).toHaveBeenCalledTimes(1);
+    expect(harness.frameState.afterRender.length).toBe(1);
+    expect(harness.frameState.afterRender[0]()).toBeTrue();
+  });
+
+  it("preserves the off-frame private submission fallback", function () {
+    const harness = createFrameOwnedDynamicRefreshHarness();
+    const manager = harness.createManager();
+    harness.context.currentCommandEncoder = null;
+    harness.context._currentCommandEncoder = null;
+
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+
+    const cache = manager._webgpuCache;
+    const privateEncoder =
+      harness.createCommandEncoder.calls.mostRecent().returnValue;
+    expect(harness.createCommandEncoder).toHaveBeenCalledTimes(1);
+    expect(privateEncoder.finish).toHaveBeenCalledTimes(1);
+    expect(harness.submit).toHaveBeenCalledTimes(1);
+    expect(
+      harness.context.enqueueAfterCommandEncoderSubmit,
+    ).not.toHaveBeenCalled();
+    expect(cache.pendingRefresh).toBeNull();
+    expect(cache.iblCache.persistentParameterArena.inUse).toBeFalse();
+    expect(manager._radianceMap._webgpuTexture).toBe(cache.cubemapTexture);
+    expect(manager._webgpuIBLDiffuseView).toBe(cache.iblCache.irradianceView);
+    expect(harness.noteEnvironmentRefreshSubmitted).toHaveBeenCalledTimes(1);
+  });
+
+  it("rolls back an abandoned frame refresh and retries with the retained arena", function () {
+    const harness = createFrameOwnedDynamicRefreshHarness();
+    const manager = harness.createManager();
+    const firstEncoder = harness.currentEncoder();
+
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+    const cache = manager._webgpuCache;
+    const arena = cache.iblCache.persistentParameterArena;
+    const transaction = cache.iblCache.pendingOutputTransaction;
+    const candidateIrradiance = transaction.workingCache.irradianceTexture;
+    const candidateRadiance = transaction.workingCache.radianceTexture;
+
+    harness.settle(firstEncoder, false);
+
+    expect(candidateIrradiance.destroy).toHaveBeenCalledTimes(1);
+    expect(candidateRadiance.destroy).toHaveBeenCalledTimes(1);
+    expect(cache.pendingRefresh).toBeNull();
+    expect(cache.iblCache.pendingOutputTransaction).toBeNull();
+    expect(arena.inUse).toBeFalse();
+    expect(cache.needsUpdate).toBeTrue();
+    expect(manager._radianceMap).toBeNull();
+    expect(harness.noteEnvironmentRefreshSubmitted).not.toHaveBeenCalled();
+
+    const retryEncoder = harness.nextFrame();
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+    expect(cache.iblCache.persistentParameterArena).toBe(arena);
+    expect(arena.inUse).toBeTrue();
+    expect(harness.callbacksFor(retryEncoder).length).toBe(1);
+    harness.settle(retryEncoder, true);
+    expect(arena.inUse).toBeFalse();
+    expect(manager._webgpuIBLDiffuseView).toBe(cache.iblCache.irradianceView);
+    expect(harness.noteEnvironmentRefreshSubmitted).toHaveBeenCalledTimes(1);
+  });
+
+  it("never exposes a destroyed raw cube while topology publication is pending", function () {
+    const harness = createFrameOwnedDynamicRefreshHarness();
+    const manager = harness.createManager();
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+    harness.settle(harness.currentEncoder(), true);
+
+    const cache = manager._webgpuCache;
+    const incumbentCube = cache.cubemapTexture;
+    expect(manager._radianceMap._webgpuTexture).toBe(incumbentCube);
+    manager._cubemapSize = 32;
+    const topologyEncoder = harness.nextFrame();
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+
+    expect(incumbentCube.destroy).not.toHaveBeenCalled();
+    expect(harness.scheduledTextureDestroys).toContain(incumbentCube);
+    expect(manager._radianceMap).toBeNull();
+    expect(cache.pendingRefresh).not.toBeNull();
+    expect(cache.pendingRefresh.commitState).not.toBeNull();
+    harness.settle(topologyEncoder, false);
+    expect(manager._radianceMap).toBeNull();
+    expect(cache.needsUpdate).toBeTrue();
+
+    const retryEncoder = harness.nextFrame();
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+    expect(manager._radianceMap).toBeNull();
+    harness.settle(retryEncoder, true);
+    expect(manager._radianceMap._webgpuTexture).toBe(cache.cubemapTexture);
+    expect(manager._radianceMap._webgpuTexture).not.toBe(incumbentCube);
+  });
+
+  it("suppresses duplicate pending grants and fails closed on a late encode error", function () {
+    const harness = createFrameOwnedDynamicRefreshHarness();
+    const manager = harness.createManager();
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+    harness.settle(harness.currentEncoder(), true);
+    const cache = manager._webgpuCache;
+
+    const stableEncoder = harness.nextFrame();
+    harness.context.uniformState.sunDirectionWC = { x: -0.3, y: 0.0, z: 0.95 };
+    harness.frameState.sunDirectionWC =
+      harness.context.uniformState.sunDirectionWC;
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+    const pending = cache.pendingRefresh;
+    const scheduleCount = harness.scheduleEnvironmentRefresh.calls.count();
+    const writeCount = harness.writeBuffer.calls.count();
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+    expect(cache.pendingRefresh).toBe(pending);
+    expect(harness.callbacksFor(stableEncoder).length).toBe(1);
+    expect(harness.scheduleEnvironmentRefresh.calls.count()).toBe(
+      scheduleCount,
+    );
+    expect(harness.writeBuffer.calls.count()).toBe(writeCount);
+    harness.settle(stableEncoder, true);
+    expect(harness.frameState.afterRender.length).toBe(0);
+
+    const failedEncoder = harness.nextFrame();
+    harness.context.uniformState.sunDirectionWC = { x: 0.3, y: 0.2, z: 0.9 };
+    harness.frameState.sunDirectionWC =
+      harness.context.uniformState.sunDirectionWC;
+    harness.failAfterComputePasses(5);
+    expect(function () {
+      updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+    }).toThrowError("injected late compute-pass failure");
+    expect(cache.pendingRefresh.encodingFailed).toBeTrue();
+    expect(cache.iblCache.persistentParameterArena.inUse).toBeTrue();
+    expect(manager._radianceMap).toBeNull();
+    expect(manager._webgpuIBLDiffuseView).toBeNull();
+    expect(cache.historyValid).toBeFalse();
+    expect(harness.noteEnvironmentRefreshSubmitted).toHaveBeenCalledTimes(2);
+
+    // Even a submitted disposition cannot publish partially encoded stable
+    // outputs; it only releases the retained lease and schedules a clean retry.
+    harness.settle(failedEncoder, true);
+    expect(cache.pendingRefresh).toBeNull();
+    expect(cache.iblCache.persistentParameterArena.inUse).toBeFalse();
+    expect(cache.needsUpdate).toBeTrue();
+    expect(manager._radianceMap).toBeNull();
+    expect(harness.noteEnvironmentRefreshSubmitted).toHaveBeenCalledTimes(2);
+
+    const retryEncoder = harness.nextFrame();
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+    harness.settle(retryEncoder, true);
+    expect(manager._radianceMap).not.toBeNull();
+    expect(harness.noteEnvironmentRefreshSubmitted).toHaveBeenCalledTimes(3);
+  });
+
+  it("defers pending cache destruction until the exact encoder settles", function () {
+    const harness = createFrameOwnedDynamicRefreshHarness();
+    const manager = harness.createManager();
+    const encoder = harness.currentEncoder();
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+
+    const cache = manager._webgpuCache;
+    const arena = cache.iblCache.persistentParameterArena;
+    const candidate = cache.iblCache.pendingOutputTransaction.workingCache;
+    destroyWebGPUDynamicEnvironmentMapResources(manager);
+
+    expect(manager._webgpuCache).toBeUndefined();
+    expect(manager._radianceMap).toBeNull();
+    expect(cache.pendingRefresh.retireCacheAfterSettlement).toBeTrue();
+    expect(arena.inUse).toBeTrue();
+    expect(harness.pool.releaseParameterBuffer).not.toHaveBeenCalled();
+    expect(candidate.irradianceTexture.destroy).not.toHaveBeenCalled();
+    expect(candidate.radianceTexture.destroy).not.toHaveBeenCalled();
+
+    harness.settle(encoder, true);
+    expect(arena.inUse).toBeFalse();
+    expect(harness.pool.releaseParameterBuffer).toHaveBeenCalledTimes(1);
+    expect(candidate.irradianceTexture.destroy).not.toHaveBeenCalled();
+    expect(candidate.radianceTexture.destroy).not.toHaveBeenCalled();
+    expect(harness.scheduledTextureDestroys).toContain(
+      candidate.irradianceTexture,
+    );
+    expect(harness.scheduledTextureDestroys).toContain(
+      candidate.radianceTexture,
+    );
+    expect(harness.noteEnvironmentRefreshSubmitted).not.toHaveBeenCalled();
+  });
+
+  it("retires old-device outputs when recovery precedes the false drain", function () {
+    const harness = createFrameOwnedDynamicRefreshHarness();
+    const manager = harness.createManager();
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+    harness.settle(harness.currentEncoder(), true);
+
+    const cache = manager._webgpuCache;
+    const incumbentCube = cache.cubemapTexture;
+    const arena = cache.iblCache.persistentParameterArena;
+    const staleEncoder = harness.nextFrame();
+    harness.context.uniformState.sunDirectionWC = { x: -0.3, y: 0.0, z: 0.95 };
+    harness.frameState.sunDirectionWC =
+      harness.context.uniformState.sunDirectionWC;
+    updateWebGPUDynamicEnvironmentMap(manager, harness.frameState);
+    expect(manager._radianceMap._webgpuTexture).toBe(incumbentCube);
+    expect(arena.inUse).toBeTrue();
+
+    // WebGPUContext recovery changes the live tuple before draining the exact
+    // old segment false. That callback must be sufficient cleanup even if no
+    // later manager update ever runs.
+    harness.context.resourceGeneration = 2;
+    harness.settle(staleEncoder, false);
+
+    expect(manager._webgpuCache).toBeUndefined();
+    expect(manager._radianceMap).toBeNull();
+    expect(manager._webgpuIBLDiffuseView).toBeNull();
+    expect(manager._webgpuIBLSpecularView).toBeNull();
+    expect(arena.inUse).toBeFalse();
+    expect(arena.destroyed).toBeTrue();
+    expect(harness.pool.releaseParameterBuffer).toHaveBeenCalledTimes(1);
+    expect(incumbentCube.destroy).not.toHaveBeenCalled();
+    expect(harness.scheduledTextureDestroys).toContain(incumbentCube);
+    expect(harness.noteEnvironmentRefreshSubmitted).toHaveBeenCalledTimes(1);
+  });
+
+  it("preflight detaches old-device outputs before a deferred backend tick", function () {
+    const oldContext = {};
+    const oldDevice = {};
+    const newDevice = {};
+    const retireTexture = jasmine.createSpy("retireTexture");
+    const oldDiffuse = {};
+    const oldSpecular = {};
+    const oldSampler = {};
+    const oldShBuffer = {};
+    const manager = {
+      _webgpuCache: {
+        context: oldContext,
+        device: oldDevice,
+        resourceGeneration: 1,
+        retireTexture,
+        pendingRefresh: null,
+        iblCache: null,
+      },
+      _radianceMap: {},
+      _webgpuIBLDiffuseView: oldDiffuse,
+      _webgpuIBLSpecularView: oldSpecular,
+      _webgpuIBLSampler: oldSampler,
+      _webgpuIBLMaxMipLevel: 5,
+      _webgpuSHBuffer: oldShBuffer,
+    };
+    const frameState = {
+      context: {
+        device: newDevice,
+        resourceGeneration: 2,
+      },
+    };
+
+    preflightWebGPUDynamicEnvironmentMap(manager, frameState);
+
+    expect(manager._webgpuCache).toBeUndefined();
+    expect(manager._radianceMap).toBeNull();
+    expect(manager._webgpuIBLDiffuseView).toBeNull();
+    expect(manager._webgpuIBLSpecularView).toBeNull();
+    expect(manager._webgpuIBLSampler).toBeNull();
+    expect(manager._webgpuIBLMaxMipLevel).toBe(0);
+    expect(manager._webgpuSHBuffer).toBeNull();
+  });
+
+  it("keeps simultaneous managers on distinct writable arenas", function () {
+    const harness = createFrameOwnedDynamicRefreshHarness();
+    const managerA = harness.createManager();
+    const managerB = harness.createManager();
+    const encoder = harness.currentEncoder();
+
+    updateWebGPUDynamicEnvironmentMap(managerA, harness.frameState);
+    updateWebGPUDynamicEnvironmentMap(managerB, harness.frameState);
+
+    const cacheA = managerA._webgpuCache;
+    const cacheB = managerB._webgpuCache;
+    const arenaA = cacheA.iblCache.persistentParameterArena;
+    const arenaB = cacheB.iblCache.persistentParameterArena;
+    expect(arenaB).not.toBe(arenaA);
+    expect(arenaB.parameterBuffer).not.toBe(arenaA.parameterBuffer);
+    expect(arenaA.inUse).toBeTrue();
+    expect(arenaB.inUse).toBeTrue();
+    expect(harness.callbacksFor(encoder).length).toBe(2);
+    expect(harness.createCommandEncoder).not.toHaveBeenCalled();
+    expect(harness.submit).not.toHaveBeenCalled();
+
+    harness.settle(encoder, true);
+    expect(arenaA.inUse).toBeFalse();
+    expect(arenaB.inUse).toBeFalse();
+    expect(managerA._webgpuIBLDiffuseView).not.toBe(
+      managerB._webgpuIBLDiffuseView,
+    );
+    expect(harness.noteEnvironmentRefreshSubmitted).toHaveBeenCalledTimes(2);
+    // Both initial publications share one request-render callback identity.
+    expect(harness.frameState.afterRender.length).toBe(1);
+  });
+
+  it("tears down every owned dynamic IBL resource after one destroy fails", function () {
+    const firstDestroy = jasmine
+      .createSpy("firstDestroy")
+      .and.throwError("injected destroy failure");
+    const laterDestroy = jasmine.createSpy("laterDestroy");
+    const irradianceDestroy = jasmine.createSpy("irradianceDestroy");
+    const radianceDestroy = jasmine.createSpy("radianceDestroy");
+    const releaseParameterBuffer = jasmine.createSpy("releaseParameterBuffer");
+    const manager = {
+      _webgpuCache: {
+        cubemapTexture: { destroy: firstDestroy },
+        skyUniformBuffer: { destroy: laterDestroy },
+        iblCache: {
+          irradianceTexture: { destroy: irradianceDestroy },
+          irradianceView: {},
+          radianceTexture: { destroy: radianceDestroy },
+          radianceView: {},
+          persistentParameterArena: {
+            device: {},
+            resourceGeneration: 1,
+            parameterBuffer: {},
+            parameterBytes: new ArrayBuffer(256),
+            parameterWords: new Uint32Array(64),
+            parameterAlignment: 256,
+            parameterCapacity: 1,
+            parameterPool: { releaseParameterBuffer },
+            parameterHandle: { buffer: {} },
+            inUse: true,
+            destroyed: false,
+          },
+        },
+      },
+      _radianceMap: {},
+      _webgpuIBLDiffuseView: {},
+      _webgpuIBLSpecularView: {},
+      _webgpuIBLSampler: {},
+      _webgpuIBLMaxMipLevel: 5,
+      _webgpuSHBuffer: {},
+    };
+
+    expect(function () {
+      destroyWebGPUDynamicEnvironmentMapResources(manager);
+    }).not.toThrow();
+    expect(firstDestroy).toHaveBeenCalled();
+    expect(laterDestroy).toHaveBeenCalled();
+    expect(irradianceDestroy).toHaveBeenCalled();
+    expect(radianceDestroy).toHaveBeenCalled();
+    expect(releaseParameterBuffer).toHaveBeenCalled();
+    expect(manager._webgpuCache).toBeUndefined();
+    expect(manager._radianceMap).toBeNull();
+    expect(manager._webgpuIBLDiffuseView).toBeNull();
+    expect(manager._webgpuIBLSpecularView).toBeNull();
   });
 
   it("builds all six model faces from one capture eye", function () {

@@ -78,14 +78,36 @@ function updateShadowMaps(scene) {
   }
 }
 
-function updateAndRenderPrimitives(scene) {
+function updateAndRenderPrimitives(
+  scene,
+  includeNormalEnvironmentRefreshes = true,
+) {
   const frameState = scene._frameState;
 
   frameState.edgeVisibilityRequested = false;
   frameState.planarFillRequested = false;
 
-  scene._groundPrimitives.update(frameState);
-  scene._primitives.update(frameState);
+  // WebGPU dynamic-environment managers are offered during primitive update,
+  // but tileset selection only publishes final consumer demand later in that
+  // same traversal. Collect those exact manager ticks and drain them below,
+  // before PVS/draw execution. WebGL exposes no hook and stays immediate.
+  const context = frameState.context;
+  const collectingEnvironmentUpdates =
+    context.beginEnvironmentMapUpdateCollection?.() === true;
+  try {
+    scene._groundPrimitives.update(frameState);
+    scene._primitives.update(frameState);
+  } finally {
+    if (collectingEnvironmentUpdates) {
+      context.endEnvironmentMapUpdateCollection();
+    }
+  }
+
+  if (collectingEnvironmentUpdates) {
+    // The first half of a split 2D frame drains HIGH work only. NORMAL jobs
+    // remain queued until the final viewport can contribute or promote demand.
+    context.drainEnvironmentMapUpdates(includeNormalEnvironmentRefreshes);
+  }
 
   if (
     frameState.edgeVisibilityRequested &&
@@ -385,7 +407,7 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
     scene.frameState.commandList.length = 0;
   }
 
-  updateAndRenderPrimitives(scene);
+  updateAndRenderPrimitives(scene, !scene._is2DViewportSplit || !firstViewport);
 
   // FAR-003: the layer buckets are not consumed by either renderer, so their
   // duplicate O(N log N) sort is opt-in. C9-08: even the linear stable

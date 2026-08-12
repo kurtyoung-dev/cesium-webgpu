@@ -1,11 +1,10 @@
 /**
  * Environment-map consumer demand telemetry.
  *
- * This registry is deliberately observe-only. It records what Scene producers
- * know about consumers of a {@link DynamicEnvironmentMapManager}, but it does
- * not gate refresh work, change update ordering, or retain GPU resources. A
- * shared job scheduler can consume the same classifications once its
- * visibility and ordering gates are proven.
+ * This registry records what Scene producers know about consumers of a
+ * {@link DynamicEnvironmentMapManager}. The same-frame coordinator uses the
+ * classification only to order bounded refresh work; it can never skip work or
+ * retain manager/GPU resources.
  *
  * A manager is a WeakMap key, so the registry never extends its lifetime. Each
  * entry also carries the current logical-frame stamp; a request-render idle,
@@ -157,9 +156,8 @@ export class WebGPUEnvironmentDemandRegistry {
   }
 
   /**
-   * Record the classification observed by today's unconditional update path.
-   * The return value is telemetry only; callers must not gate work on it in
-   * this slice.
+   * Record the classification observed by the unconditional manager tick.
+   * Callers may use it for bounded priority, never as permission to skip work.
    */
   observeUpdate(manager: object): WebGPUEnvironmentDemandValue {
     const entry = this._getCurrentEntry(manager);

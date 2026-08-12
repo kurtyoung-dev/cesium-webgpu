@@ -108,6 +108,7 @@ export interface WebGPUEnvironmentRefreshTelemetry {
   budget: number;
   requests: number;
   granted: number;
+  deferrableGrants: number;
   deferred: number;
   mandatoryGrants: number;
   escalatedGrants: number;
@@ -144,6 +145,7 @@ function createTelemetry(
     budget,
     requests: 0,
     granted: 0,
+    deferrableGrants: 0,
     deferred: 0,
     mandatoryGrants: 0,
     escalatedGrants: 0,
@@ -175,7 +177,9 @@ export class WebGPUEnvironmentRefreshScheduler {
   private _resourceGeneration = 0;
   private _budget: number;
   private _grantedThisFrame = 0;
+  private _deferrableGrantedThisFrame = 0;
   private _resumeArmed = false;
+  private _resumeConsumedThisFrame = false;
   private _telemetry: WebGPUEnvironmentRefreshTelemetry;
 
   constructor(budget: number = DEFAULT_ENVIRONMENT_REFRESH_BUDGET) {
@@ -232,7 +236,9 @@ export class WebGPUEnvironmentRefreshScheduler {
     }
 
     this._grantedThisFrame = 0;
+    this._deferrableGrantedThisFrame = 0;
     this._resumeArmed = false;
+    this._resumeConsumedThisFrame = false;
     this._telemetry = createTelemetry(
       this._frameId,
       this._resourceGeneration,
@@ -277,7 +283,9 @@ export class WebGPUEnvironmentRefreshScheduler {
       } else {
         telemetry.mandatoryGrants += 1;
       }
-      return this._grant(entry);
+      // MANDATORY and anti-starvation grants bypass the deferrable quota; an
+      // urgent unpublished manager must not consume the one ordinary slot.
+      return this._grant(entry, false);
     }
 
     // One-frame yield: whoever ran on the immediately preceding frame steps
@@ -290,8 +298,8 @@ export class WebGPUEnvironmentRefreshScheduler {
       return this._defer(entry);
     }
 
-    if (this._grantedThisFrame < this._budget) {
-      return this._grant(entry);
+    if (this._deferrableGrantedThisFrame < this._budget) {
+      return this._grant(entry, true);
     }
 
     telemetry.budgetDeferrals += 1;
@@ -321,10 +329,11 @@ export class WebGPUEnvironmentRefreshScheduler {
    * caller uses it to arm a single render request rather than one per deferral.
    */
   consumeResumeRequest(): boolean {
-    if (!this._resumeArmed) {
+    if (!this._resumeArmed || this._resumeConsumedThisFrame) {
       return false;
     }
     this._resumeArmed = false;
+    this._resumeConsumedThisFrame = true;
     this._telemetry.resumeRequests += 1;
     return true;
   }
@@ -372,7 +381,9 @@ export class WebGPUEnvironmentRefreshScheduler {
     this._resourceGeneration = resourceGeneration;
     this._frameId = 0;
     this._grantedThisFrame = 0;
+    this._deferrableGrantedThisFrame = 0;
     this._resumeArmed = false;
+    this._resumeConsumedThisFrame = false;
     this._telemetry = createTelemetry(
       0,
       this._resourceGeneration,
@@ -390,13 +401,20 @@ export class WebGPUEnvironmentRefreshScheduler {
     return Math.max(1, Math.floor(value));
   }
 
-  private _grant(entry: RefreshEntry): WebGPUEnvironmentRefreshDecisionValue {
+  private _grant(
+    entry: RefreshEntry,
+    countsAgainstDeferrableBudget: boolean,
+  ): WebGPUEnvironmentRefreshDecisionValue {
     if (entry.deferredFrames > entry.maxDeferredFrames) {
       entry.maxDeferredFrames = entry.deferredFrames;
     }
     entry.deferredFrames = 0;
     this._removePending(entry);
     this._grantedThisFrame += 1;
+    if (countsAgainstDeferrableBudget) {
+      this._deferrableGrantedThisFrame += 1;
+      this._telemetry.deferrableGrants += 1;
+    }
     this._telemetry.granted += 1;
     if (this._grantedThisFrame > this._budget) {
       this._telemetry.overBudgetGrants += 1;
@@ -410,7 +428,9 @@ export class WebGPUEnvironmentRefreshScheduler {
       entry.maxDeferredFrames = entry.deferredFrames;
     }
     this._telemetry.deferred += 1;
-    this._resumeArmed = true;
+    if (!this._resumeConsumedThisFrame) {
+      this._resumeArmed = true;
+    }
 
     // Permanent sentinel. The escalation cap makes this unreachable; if it ever
     // fires, an ordering rule above has swallowed the cap and a producer is

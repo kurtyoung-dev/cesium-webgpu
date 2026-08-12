@@ -24,10 +24,14 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import Transforms from "../../Core/Transforms.js";
 import {
   createIBLCommandEncodingScope,
+  destroyPersistentIBLPipelineResources,
   destroyIBLCommandEncodingScope,
   generateIBLMaps,
+  getOrCreateIBLPersistentParameterArena,
   getIBLRefreshParameterCapacity,
+  settleIBLCommandEncodingScope,
   submitIBLCommandEncodingScope,
+  uploadIBLCommandEncodingScopeParameters,
 } from "./WebGPUIBLPipeline.js";
 import type {
   IBLCommandEncodingScope,
@@ -53,6 +57,7 @@ import {
   CLOUD_DENSITY_ORIGIN_PHASE_FLOATS,
   writeCloudDensityAdvectedOriginPhases,
 } from "./WebGPUCloudDensityDomain.js";
+import getAvailableFrameCommandEncoder from "./WebGPUFrameCommandEncoder.js";
 // The eclipse response for the cloud/environment subsystem. The WebGL
 // `Scene/DynamicEnvironmentMapManager.js` imports this same module, so the two
 // backends share one factor, one composition and one refresh grid.
@@ -111,8 +116,15 @@ interface DynEnvMapCache {
   // Keep both identities: `device` catches replacement-device swaps directly,
   // while `resourceGeneration` follows WebGPUContext's recovery epoch even if
   // a future recovery implementation preserves a wrapper identity.
+  context: CesiumGraphicsContext;
   device: GPUDevice;
   resourceGeneration: number;
+  retireTexture: (texture: GPUTexture | null | undefined) => void;
+  // A frame-borrowed refresh owns its parameter arena and provisional output
+  // graph until the exact encoder segment reports submitted or abandoned.
+  // While non-null, repeated manager updates (including Scene2D's second
+  // update) must not grant or encode another refresh for this cache.
+  pendingRefresh: DynamicEnvironmentPendingRefresh | null;
   cubemapTexture: GPUTexture | null;
   cubemapTextureView: GPUTextureView | null;
   faceViews: GPUTextureView[];
@@ -289,6 +301,49 @@ interface DynEnvMapCache {
   lastBlendSunZ: number;
 }
 
+interface DynamicEnvironmentSkyFillState {
+  usedMultiScatterLut: boolean;
+  usedCloudMarch: boolean;
+}
+
+interface DynamicEnvironmentTemporalCommitState {
+  historyValid: boolean;
+  temporalFrameIndex: number;
+  lastBlendCameraX: number;
+  lastBlendCameraY: number;
+  lastBlendCameraZ: number;
+  lastBlendSunX: number;
+  lastBlendSunY: number;
+  lastBlendSunZ: number;
+}
+
+interface DynamicEnvironmentRefreshCommitState {
+  sceneCaptureResult: SceneCaptureResultValue;
+  wantCapture: boolean;
+  captureSourceRevision: number;
+  capturePosition: { x: number; y: number; z: number };
+  sceneCaptureMode: number;
+  sunDirection: { x: number; y: number; z: number };
+  cloudCoverage: number;
+  cloudRevision: number;
+  eclipseEnvBucket: number;
+  skyFill: DynamicEnvironmentSkyFillState;
+  resetHistory: boolean;
+  temporal: DynamicEnvironmentTemporalCommitState | null;
+}
+
+interface DynamicEnvironmentPendingRefresh {
+  context: CesiumGraphicsContext;
+  device: GPUDevice;
+  resourceGeneration: number;
+  encoder: GPUCommandEncoder;
+  scope: IBLCommandEncodingScope;
+  encodingFailed: boolean;
+  commitState: DynamicEnvironmentRefreshCommitState | null;
+  retireCacheAfterSettlement: boolean;
+  frameState: CesiumFrameState;
+}
+
 /**
  * Immutable compute kernels shared by all dynamic-environment managers on one
  * GPU device generation. Textures, buffers, bind groups, capture state, and
@@ -330,6 +385,11 @@ interface EnvironmentRefreshContextSeams {
   noteEnvironmentRefreshSubmitted?: (manager: object) => void;
   consumeEnvironmentRefreshResume?: () => boolean;
   getEnvironmentTargetPool?: () => EnvironmentRefreshTargetPool | null;
+  enqueueAfterCommandEncoderSubmit?: (
+    encoder: GPUCommandEncoder,
+    callback: (submitted: boolean) => void,
+  ) => boolean;
+  scheduleTextureDestroy?: (texture: GPUTexture | null | undefined) => void;
 }
 
 /** Union of the pool surface the two refresh consumers need. */
@@ -415,11 +475,306 @@ function getEnvironmentTargetPool(
   return get.call(context) ?? null;
 }
 
+function createDynamicEnvironmentTextureRetirer(
+  context: CesiumGraphicsContext,
+): (texture: GPUTexture | null | undefined) => void {
+  return (texture: GPUTexture | null | undefined): void => {
+    if (!texture) {
+      return;
+    }
+    const schedule = (context as unknown as EnvironmentRefreshContextSeams)
+      .scheduleTextureDestroy;
+    if (typeof schedule === "function") {
+      try {
+        schedule.call(context, texture);
+        return;
+      } catch {
+        // Fall back to native teardown when a structural test seam fails.
+      }
+    }
+    try {
+      texture.destroy();
+    } catch {
+      // Device loss and duplicate best-effort retirement are harmless.
+    }
+  };
+}
+
+function isDynamicEnvironmentCacheCurrent(
+  cache: DynEnvMapCache,
+  context: CesiumGraphicsContext,
+  device: GPUDevice,
+  resourceGeneration: number,
+): boolean {
+  return (
+    cache.context === context &&
+    cache.device === device &&
+    cache.resourceGeneration === resourceGeneration
+  );
+}
+
+function getOrCreateDynamicIBLPipelineCache(
+  cache: DynEnvMapCache,
+): IBLPipelineCache {
+  let iblCache = cache.iblCache;
+  if (
+    iblCache &&
+    (iblCache.device !== cache.device ||
+      iblCache.resourceGeneration !== cache.resourceGeneration)
+  ) {
+    destroyPersistentIBLPipelineResources(iblCache);
+    iblCache = null;
+  }
+  if (!iblCache) {
+    iblCache = {
+      device: cache.device,
+      resourceGeneration: cache.resourceGeneration,
+      persistentOutputs: true,
+      irradianceTexture: null,
+      irradianceView: null,
+      radianceTexture: null,
+      radianceView: null,
+      irradiancePipeline: null,
+      radiancePipeline: null,
+      irradianceBGL: null,
+      radianceBGL: null,
+      sampler: null,
+      sourceVersion: -1,
+    };
+    cache.iblCache = iblCache;
+  }
+  iblCache.retireOutputTexture = cache.retireTexture;
+  iblCache.outputTopologyKey = `${cache.size}:${cache.mipmapLevels}:${cache.cubemapFormat ?? "unknown"}`;
+  return iblCache;
+}
+
+function requestRenderForDynamicEnvironmentSettlement(): boolean {
+  return true;
+}
+
+function armDynamicEnvironmentFollowUp(frameState: CesiumFrameState): void {
+  const afterRender = frameState.afterRender;
+  if (
+    afterRender &&
+    !afterRender.includes(requestRenderForDynamicEnvironmentSettlement)
+  ) {
+    afterRender.push(requestRenderForDynamicEnvironmentSettlement);
+  }
+}
+
+function detachDynamicEnvironmentManagerOutputs(
+  manager: DynEnvMapManagerLike,
+): void {
+  manager._radianceMap = null;
+  manager._webgpuIBLDiffuseView = null;
+  manager._webgpuIBLSpecularView = null;
+  manager._webgpuIBLSampler = null;
+  manager._webgpuIBLMaxMipLevel = 0;
+  manager._webgpuSHBuffer = null;
+}
+
+function publishDynamicEnvironmentOutputs(
+  manager: DynEnvMapManagerLike,
+  cache: DynEnvMapCache,
+): boolean {
+  const iblCache = cache.iblCache;
+  const identityChanged =
+    manager._radianceMap?._webgpuTexture !== cache.cubemapTexture ||
+    manager._radianceMap?._webgpuTextureView !== cache.cubemapTextureView ||
+    manager._webgpuIBLDiffuseView !== (iblCache?.irradianceView ?? null) ||
+    manager._webgpuIBLSpecularView !== (iblCache?.radianceView ?? null) ||
+    manager._webgpuSHBuffer !== cache.shBuffer;
+
+  const radianceMap = manager._radianceMap ?? {
+    _webgpuTexture: null,
+    _webgpuTextureView: null,
+    _webgpuSampler: null,
+  };
+  radianceMap._webgpuTexture = cache.cubemapTexture;
+  radianceMap._webgpuTextureView = cache.cubemapTextureView;
+  radianceMap._webgpuSampler = cache.sampler;
+  manager._radianceMap = radianceMap;
+
+  manager._webgpuIBLDiffuseView = iblCache?.irradianceView ?? null;
+  manager._webgpuIBLSpecularView = iblCache?.radianceView ?? null;
+  manager._webgpuIBLSampler = iblCache?.sampler ?? null;
+  manager._webgpuIBLMaxMipLevel = iblCache?.radianceView ? 5 : 0;
+  manager._webgpuSHBuffer = cache.shBuffer;
+  return identityChanged;
+}
+
+function commitDynamicEnvironmentRefresh(
+  manager: DynEnvMapManagerLike,
+  cache: DynEnvMapCache,
+  state: DynamicEnvironmentRefreshCommitState,
+  frameState: CesiumFrameState,
+): void {
+  if (state.wantCapture) {
+    updateSceneCaptureAttemptBookkeeping(
+      cache,
+      state.capturePosition,
+      state.captureSourceRevision,
+    );
+    updateSceneCaptureBookkeeping(
+      cache,
+      state.capturePosition,
+      state.sceneCaptureResult === SceneCaptureResult.SUBMITTED,
+      state.captureSourceRevision,
+    );
+  }
+
+  cache.needsUpdate = false;
+  cache.lastSunDirX = state.sunDirection.x;
+  cache.lastSunDirY = state.sunDirection.y;
+  cache.lastSunDirZ = state.sunDirection.z;
+  cache.lastSceneCaptureMode = state.sceneCaptureMode;
+  cache.lastSceneCaptureSourceRevision = state.captureSourceRevision;
+  cache.lastSceneCaptureResult = state.sceneCaptureResult;
+  cache.lastCloudCoverage = state.cloudCoverage;
+  cache.lastCloudRevision = state.cloudRevision;
+  cache.lastEclipseEnvBucket = state.eclipseEnvBucket;
+  cache.lastUsedMultiScatterLut = state.skyFill.usedMultiScatterLut;
+  cache.lastUsedCloudMarch = state.skyFill.usedCloudMarch;
+
+  if (state.temporal !== null) {
+    cache.historyValid = state.temporal.historyValid;
+    cache.temporalFrameIndex = state.temporal.temporalFrameIndex;
+    cache.lastBlendCameraX = state.temporal.lastBlendCameraX;
+    cache.lastBlendCameraY = state.temporal.lastBlendCameraY;
+    cache.lastBlendCameraZ = state.temporal.lastBlendCameraZ;
+    cache.lastBlendSunX = state.temporal.lastBlendSunX;
+    cache.lastBlendSunY = state.temporal.lastBlendSunY;
+    cache.lastBlendSunZ = state.temporal.lastBlendSunZ;
+  } else if (state.resetHistory) {
+    cache.historyValid = false;
+  }
+
+  noteEnvironmentRefreshSubmitted(cache.context, manager);
+  if (publishDynamicEnvironmentOutputs(manager, cache)) {
+    // Output identities first become usable after this frame's command lists
+    // have already been built. Request exactly one follow-up render so models
+    // can bind the newly published topology.
+    armDynamicEnvironmentFollowUp(frameState);
+  }
+}
+
+function settlePendingDynamicEnvironmentRefresh(
+  manager: DynEnvMapManagerLike,
+  cache: DynEnvMapCache,
+  pending: DynamicEnvironmentPendingRefresh,
+  submitted: boolean,
+): void {
+  const ownsCache = manager._webgpuCache === cache;
+  const liveContext = pending.context as unknown as {
+    device?: GPUDevice;
+    resourceGeneration?: number;
+  };
+  const exactOwner =
+    ownsCache &&
+    cache.pendingRefresh === pending &&
+    pending.scope.encoder === pending.encoder &&
+    pending.context === cache.context &&
+    pending.device === cache.device &&
+    pending.resourceGeneration === cache.resourceGeneration &&
+    liveContext.device === pending.device &&
+    (liveContext.resourceGeneration ?? 0) === pending.resourceGeneration &&
+    isDynamicEnvironmentCacheCurrent(
+      cache,
+      pending.context,
+      pending.device,
+      pending.resourceGeneration,
+    );
+  const accepted =
+    submitted &&
+    !pending.encodingFailed &&
+    pending.commitState !== null &&
+    exactOwner;
+
+  settleIBLCommandEncodingScope(pending.scope, accepted, submitted);
+  if (cache.pendingRefresh === pending) {
+    cache.pendingRefresh = null;
+  }
+
+  let retireCache = pending.retireCacheAfterSettlement || !ownsCache;
+  if (accepted) {
+    commitDynamicEnvironmentRefresh(
+      manager,
+      cache,
+      pending.commitState!,
+      pending.frameState,
+    );
+  } else if (exactOwner) {
+    // No dirty level was consumed. Keep the manager retryable and ensure a
+    // request-render scene cannot idle with the rejected refresh outstanding.
+    cache.needsUpdate = true;
+    armDynamicEnvironmentFollowUp(pending.frameState);
+  } else if (ownsCache) {
+    // Device recovery can replace the context tuple before it false-drains the
+    // old encoder callback. No future frame is guaranteed after terminal loss,
+    // so do not leave old-device aliases/cache attached awaiting another
+    // manager update. The exact scope has settled above and is now safe to
+    // retire synchronously.
+    manager._webgpuCache = undefined;
+    detachDynamicEnvironmentManagerOutputs(manager);
+    retireCache = true;
+  }
+
+  if (retireCache) {
+    destroyDynamicEnvironmentCacheResources(cache);
+  }
+}
+
+/**
+ * Synchronously detach any dynamic-environment outputs owned by a stale
+ * context/device/generation tuple.
+ *
+ * Model command preparation can consume the manager's published IBL handles
+ * immediately after `manager.update()`. The same-frame coordinator delays the
+ * expensive backend tick, so this lightweight recovery guard must run before
+ * that offer returns; otherwise a first post-recovery model bind group could
+ * capture old-device views and buffers.
+ */
+function preflightWebGPUDynamicEnvironmentMap(
+  manager: DynEnvMapManagerLike,
+  frameState: CesiumFrameState,
+): void {
+  const context = frameState.context;
+  const device: GPUDevice = context.device;
+  const resourceGeneration =
+    (
+      context as unknown as {
+        resourceGeneration?: number;
+      }
+    ).resourceGeneration ?? 0;
+
+  const existingCache = manager._webgpuCache;
+  if (
+    existingCache &&
+    !isDynamicEnvironmentCacheCurrent(
+      existingCache,
+      context,
+      device,
+      resourceGeneration,
+    )
+  ) {
+    destroyWebGPUDynamicEnvironmentMapResources(manager);
+  }
+}
+
 /**
  * Update WebGPU dynamic environment map resources.
  * Creates cubemap textures and schedules re-rendering when needed.
  */
 function updateWebGPUDynamicEnvironmentMap(
+  manager: DynEnvMapManagerLike,
+  frameState: CesiumFrameState,
+): void {
+  preflightWebGPUDynamicEnvironmentMap(manager, frameState);
+  updatePreflightedWebGPUDynamicEnvironmentMap(manager, frameState);
+}
+
+/** Direct backend tick for a manager whose synchronous tuple guard has run. */
+function updatePreflightedWebGPUDynamicEnvironmentMap(
   manager: DynEnvMapManagerLike,
   frameState: CesiumFrameState,
 ): void {
@@ -446,19 +801,6 @@ function updateWebGPUDynamicEnvironmentMap(
       }
     ).resourceGeneration ?? 0;
 
-  // A recovered WebGPUContext cannot reuse any texture, view, pipeline, bind
-  // group, sampler, or buffer from the lost device. Invalidate before the
-  // ordinary enabled/update gates so a temporarily disabled manager cannot
-  // continue publishing old-device IBL handles to model/fog consumers.
-  const existingCache = manager._webgpuCache;
-  if (
-    existingCache &&
-    (existingCache.device !== device ||
-      existingCache.resourceGeneration !== resourceGeneration)
-  ) {
-    destroyWebGPUDynamicEnvironmentMapResources(manager);
-  }
-
   // Check basic support conditions
   const isSupported = manager._mipmapLevels >= 1;
   if (
@@ -474,8 +816,11 @@ function updateWebGPUDynamicEnvironmentMap(
 
   if (!manager._webgpuCache) {
     manager._webgpuCache = {
+      context,
       device,
       resourceGeneration,
+      retireTexture: createDynamicEnvironmentTextureRetirer(context),
+      pendingRefresh: null,
       cubemapTexture: null,
       cubemapTextureView: null,
       faceViews: [],
@@ -556,6 +901,14 @@ function updateWebGPUDynamicEnvironmentMap(
   }
 
   const cache = manager._webgpuCache as DynEnvMapCache;
+  if (cache.pendingRefresh !== null) {
+    // One exact encoder segment already owns this manager's writable cube,
+    // output transaction, and persistent parameter arena. Scene2D and other
+    // re-entrant updates keep consuming the last published graph until that
+    // segment settles; they may not create a duplicate grant or lease.
+    cache.framesSinceUpdate++;
+    return;
+  }
   const size = manager._cubemapSize || 256;
   const mipmapLevels = manager._mipmapLevels || 1;
 
@@ -584,53 +937,66 @@ function updateWebGPUDynamicEnvironmentMap(
     cache.mipmapLevels !== mipmapLevels ||
     cache.cubemapFormat !== cubemapFormat
   ) {
-    if (cache.cubemapTexture) {
-      cache.cubemapTexture.destroy();
-    }
-
     const mipLevelCount = Math.max(1, mipmapLevels);
-
-    cache.cubemapTexture = device.createTexture({
-      size: { width: size, height: size, depthOrArrayLayers: 6 },
-      format: cubemapFormat,
-      mipLevelCount,
-      // STORAGE_BINDING lets the procedural sky compute pass write directly
-      // into the cubemap. The IBL prefilter consumes the same texture as
-      // TEXTURE_BINDING through the cube view.
-      usage:
-        GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.STORAGE_BINDING |
-        GPUTextureUsage.RENDER_ATTACHMENT |
-        GPUTextureUsage.COPY_DST,
-      dimension: "2d",
-    });
-
-    cache.cubemapTextureView = cache.cubemapTexture.createView({
-      dimension: "cube",
-    });
-
-    // 2d-array view for storage-write from the compute shader. WebGPU requires
-    // the storage binding's view dimension to match the BGL declaration, and
-    // "cube" is not valid for storage.
-    cache.storageView = cache.cubemapTexture.createView({
-      dimension: "2d-array",
-      baseMipLevel: 0,
-      mipLevelCount: 1,
-    });
-
-    // Create per-face views for rendering into each face
-    cache.faceViews = [];
-    for (let face = 0; face < 6; face++) {
-      cache.faceViews.push(
-        cache.cubemapTexture.createView({
-          dimension: "2d",
-          baseArrayLayer: face,
-          arrayLayerCount: 1,
-          baseMipLevel: 0,
-          mipLevelCount: 1,
-        }),
-      );
+    let candidateTexture: GPUTexture | null = null;
+    let candidateCubeView: GPUTextureView;
+    let candidateStorageView: GPUTextureView;
+    const candidateFaceViews: GPUTextureView[] = [];
+    try {
+      candidateTexture = device.createTexture({
+        size: { width: size, height: size, depthOrArrayLayers: 6 },
+        format: cubemapFormat,
+        mipLevelCount,
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.STORAGE_BINDING |
+          GPUTextureUsage.RENDER_ATTACHMENT |
+          GPUTextureUsage.COPY_DST,
+        dimension: "2d",
+      });
+      candidateCubeView = candidateTexture.createView({ dimension: "cube" });
+      candidateStorageView = candidateTexture.createView({
+        dimension: "2d-array",
+        baseMipLevel: 0,
+        mipLevelCount: 1,
+      });
+      for (let face = 0; face < 6; face++) {
+        candidateFaceViews.push(
+          candidateTexture.createView({
+            dimension: "2d",
+            baseArrayLayer: face,
+            arrayLayerCount: 1,
+            baseMipLevel: 0,
+            mipLevelCount: 1,
+          }),
+        );
+      }
+    } catch (error) {
+      try {
+        candidateTexture?.destroy();
+      } catch {
+        // Preserve the allocation/view failure.
+      }
+      throw error;
     }
+
+    const oldCubemapTexture = cache.cubemapTexture;
+    const oldCubemapWasPublished =
+      oldCubemapTexture !== null &&
+      manager._radianceMap?._webgpuTexture === oldCubemapTexture;
+    cache.cubemapTexture = candidateTexture;
+    cache.cubemapTextureView = candidateCubeView!;
+    cache.storageView = candidateStorageView!;
+    cache.faceViews = candidateFaceViews;
+    if (oldCubemapWasPublished) {
+      // A frame-borrowed refresh cannot publish the replacement until its
+      // exact encoder segment submits. Do not let commands built meanwhile
+      // retain the wrapper for a native texture we are about to destroy. The
+      // incumbent IBL/SH outputs remain valid; only the raw-cube alias fails
+      // closed until the complete replacement refresh settles.
+      manager._radianceMap = null;
+    }
+    cache.retireTexture(oldCubemapTexture);
 
     cache.size = size;
     cache.mipmapLevels = mipmapLevels;
@@ -654,11 +1020,11 @@ function updateWebGPUDynamicEnvironmentMap(
     // reallocates against the new cube, and mark history invalid so the next
     // blend seeds at alpha=1 instead of mixing a stale frame.
     if (cache.historyCube) {
-      cache.historyCube.destroy();
+      cache.retireTexture(cache.historyCube);
       cache.historyCube = null;
     }
     if (cache.accumCube) {
-      cache.accumCube.destroy();
+      cache.retireTexture(cache.accumCube);
       cache.accumCube = null;
     }
     cache.historyArrayView = null;
@@ -845,15 +1211,95 @@ function updateWebGPUDynamicEnvironmentMap(
       SceneCaptureResult.SKY_ONLY;
     const hqOptions = resolveIBLHQOptions(cache, frameState);
     const targetPool = getEnvironmentTargetPool(context);
-    const encodingScope = createIBLCommandEncodingScope(
+    const iblCache = getOrCreateDynamicIBLPipelineCache(cache);
+    const parameterCapacity = getIBLRefreshParameterCapacity(hqOptions);
+    const parameterArena = getOrCreateIBLPersistentParameterArena(
       device,
-      "Dynamic Environment Map Refresh",
-      getIBLRefreshParameterCapacity(hqOptions),
+      resourceGeneration,
+      iblCache,
+      parameterCapacity,
       targetPool,
+      "Dynamic Environment Map Refresh",
     );
+    const frameEncoder = getAvailableFrameCommandEncoder(context);
+    const enqueueExact = (context as unknown as EnvironmentRefreshContextSeams)
+      .enqueueAfterCommandEncoderSubmit;
+    let encodingScope: IBLCommandEncodingScope;
+    let pendingRefresh: DynamicEnvironmentPendingRefresh | null = null;
+
+    if (frameEncoder !== null && typeof enqueueExact === "function") {
+      const borrowedScope = createIBLCommandEncodingScope(
+        device,
+        "Dynamic Environment Map Refresh",
+        parameterCapacity,
+        null,
+        parameterArena,
+        frameEncoder,
+      );
+      const candidatePending: DynamicEnvironmentPendingRefresh = {
+        context,
+        device,
+        resourceGeneration,
+        encoder: frameEncoder,
+        scope: borrowedScope,
+        encodingFailed: false,
+        commitState: null,
+        retireCacheAfterSettlement: false,
+        frameState,
+      };
+      cache.pendingRefresh = candidatePending;
+      let enlisted = false;
+      try {
+        enlisted =
+          enqueueExact.call(
+            context,
+            frameEncoder,
+            (submitted: boolean): void => {
+              settlePendingDynamicEnvironmentRefresh(
+                manager,
+                cache,
+                candidatePending,
+                submitted,
+              );
+            },
+          ) === true;
+      } catch {
+        enlisted = false;
+      }
+
+      if (enlisted) {
+        encodingScope = borrowedScope;
+        pendingRefresh = candidatePending;
+      } else {
+        cache.pendingRefresh = null;
+        destroyIBLCommandEncodingScope(borrowedScope);
+        encodingScope = createIBLCommandEncodingScope(
+          device,
+          "Dynamic Environment Map Refresh",
+          parameterCapacity,
+          null,
+          parameterArena,
+        );
+      }
+    } else {
+      encodingScope = createIBLCommandEncodingScope(
+        device,
+        "Dynamic Environment Map Refresh",
+        parameterCapacity,
+        null,
+        parameterArena,
+      );
+    }
+
     const refreshEncoder = encodingScope.encoder;
     try {
-      runProceduralSkyFill(device, cache, manager, frameState, refreshEncoder);
+      const skyFill = runProceduralSkyFill(
+        device,
+        cache,
+        manager,
+        frameState,
+        refreshEncoder,
+      );
       // Composite globe/model sources over the sky before downstream readers.
       if (wantCapture) {
         sceneCaptureResult = runSceneCapture(
@@ -872,83 +1318,84 @@ function updateWebGPUDynamicEnvironmentMap(
             envMapTemporalAccumulation?: boolean;
           }
         ).envMapTemporalAccumulation === true;
-      if (
-        shouldResetSceneCaptureHistory(
-          cache,
-          sceneCaptureMode,
-          captureSourceRevision,
-          sceneCaptureResult,
-        )
-      ) {
-        // Never blend terrain from the previous provider/content epoch into a
-        // fresh provider, a hidden/disabled globe, or a failed globe replay.
-        cache.historyValid = false;
-      }
-      if (wantTemporal) {
-        runEnvCubeTemporalBlend(device, cache, manager, sunDir, refreshEncoder);
-      }
+      const resetHistory = shouldResetSceneCaptureHistory(
+        cache,
+        sceneCaptureMode,
+        captureSourceRevision,
+        sceneCaptureResult,
+      );
+      const temporal = wantTemporal
+        ? runEnvCubeTemporalBlend(
+            device,
+            cache,
+            manager,
+            sunDir,
+            refreshEncoder,
+            resetHistory,
+          )
+        : null;
       runIBLPrefilter(device, cache, frameState, hqOptions, encodingScope);
       runSphericalHarmonicProjection(device, cache, manager, refreshEncoder);
-      submitIBLCommandEncodingScope(device, encodingScope);
-      // Only a real submission updates the drain's fairness anchor. A refresh
-      // that throws mid-encode simply re-requests next frame through the
-      // unchanged level-triggered predicate above.
-      noteEnvironmentRefreshSubmitted(context, manager);
+      const commitState: DynamicEnvironmentRefreshCommitState = {
+        sceneCaptureResult,
+        wantCapture,
+        captureSourceRevision,
+        capturePosition: {
+          x: manager._position.x,
+          y: manager._position.y,
+          z: manager._position.z,
+        },
+        sceneCaptureMode,
+        sunDirection: { x: sunDir.x, y: sunDir.y, z: sunDir.z },
+        cloudCoverage: liveCloudCoverage,
+        cloudRevision: liveCloudRevision,
+        eclipseEnvBucket,
+        skyFill,
+        resetHistory,
+        temporal,
+      };
+
+      if (pendingRefresh !== null) {
+        // Upload the packed arena now, but leave the arena leased and every
+        // transaction provisional until this exact frame segment settles.
+        uploadIBLCommandEncodingScopeParameters(device, encodingScope);
+        pendingRefresh.commitState = commitState;
+      } else {
+        submitIBLCommandEncodingScope(device, encodingScope);
+        commitDynamicEnvironmentRefresh(
+          manager,
+          cache,
+          commitState,
+          frameState,
+        );
+      }
+    } catch (error) {
+      if (pendingRefresh !== null) {
+        // Do not unlock or destroy resources referenced by partially recorded
+        // frame work. Even if the frame later submits, encodingFailed prevents
+        // publication; the exact segment callback performs rollback/unlock.
+        pendingRefresh.encodingFailed = true;
+        // Stable-topology refreshes overwrite the incumbent graph in place.
+        // A late encode failure can leave partial writes on a segment that the
+        // scene still submits, and transaction rollback cannot undo those GPU
+        // writes. Fail closed until a complete retry republishes the graph.
+        detachDynamicEnvironmentManagerOutputs(manager);
+        cache.needsUpdate = true;
+        cache.historyValid = false;
+      } else {
+        destroyIBLCommandEncodingScope(encodingScope);
+      }
+      throw error;
     } finally {
-      // Idempotent after submit; releases the arena if encoding throws and the
-      // unfinished command encoder is intentionally abandoned.
-      destroyIBLCommandEncodingScope(encodingScope);
+      if (pendingRefresh === null) {
+        // Idempotent after the private submit path.
+        destroyIBLCommandEncodingScope(encodingScope);
+      }
     }
-    // Commit capture cadence only after the complete refresh has been queued.
-    if (wantCapture) {
-      updateSceneCaptureAttemptBookkeeping(
-        cache,
-        manager._position,
-        captureSourceRevision,
-      );
-      updateSceneCaptureBookkeeping(
-        cache,
-        manager._position,
-        sceneCaptureResult === SceneCaptureResult.SUBMITTED,
-        captureSourceRevision,
-      );
-    }
-    // The globe producer requests a follow-up frame when it first publishes
-    // current capture sources. A miss can therefore settle on the sky fallback
-    // here without spinning requestRenderMode or rerunning the prefilter.
-    cache.needsUpdate = false;
-    cache.lastSunDirX = sunDir.x;
-    cache.lastSunDirY = sunDir.y;
-    cache.lastSunDirZ = sunDir.z;
-    cache.lastSceneCaptureMode = sceneCaptureMode;
-    cache.lastSceneCaptureSourceRevision = captureSourceRevision;
-    cache.lastSceneCaptureResult = sceneCaptureResult;
-    // Record the coverage this fill used.
-    cache.lastCloudCoverage = liveCloudCoverage;
-    cache.lastCloudRevision = liveCloudRevision;
-    // Committed only here, alongside every other consumed level, so a
-    // budget-deferred refresh re-evaluates true next frame.
-    cache.lastEclipseEnvBucket = eclipseEnvBucket;
   }
 
-  // Expose cubemap + prefiltered IBL views for shader consumption.
-  manager._radianceMap = {
-    _webgpuTexture: cache.cubemapTexture,
-    _webgpuTextureView: cache.cubemapTextureView,
-    _webgpuSampler: cache.sampler,
-  };
-  if (cache.iblCache) {
-    manager._webgpuIBLDiffuseView = cache.iblCache.irradianceView;
-    manager._webgpuIBLSpecularView = cache.iblCache.radianceView;
-    manager._webgpuIBLSampler = cache.iblCache.sampler;
-    // RADIANCE_MIP_LEVELS = 6 in WebGPUIBLPipeline; max mip index = 5.
-    manager._webgpuIBLMaxMipLevel = 5;
-  }
-  // Expose the SH coefficient buffer for `buildModelIBLEntries`. Present once
-  // the first projection has run; the buffer's own control.w gate keeps it
-  // inert until the compute pass populates it.
-  if (cache.shBuffer) {
-    manager._webgpuSHBuffer = cache.shBuffer;
+  if (cache.pendingRefresh === null && !cache.needsUpdate) {
+    publishDynamicEnvironmentOutputs(manager, cache);
   }
 
   cache.framesSinceUpdate++;
@@ -1141,9 +1588,10 @@ function runEnvCubeTemporalBlend(
   manager: DynEnvMapManagerLike,
   sunDir: { x: number; y: number; z: number },
   encoder: GPUCommandEncoder,
-): void {
+  forceHistoryReset = false,
+): DynamicEnvironmentTemporalCommitState | null {
   if (!cache.cubemapTexture) {
-    return;
+    return null;
   }
   const format: GPUTextureFormat = cache.cubemapFormat ?? "rgba8unorm";
 
@@ -1311,7 +1759,8 @@ function runEnvCubeTemporalBlend(
     cdx * cdx + cdy * cdy + cdz * cdz <
     ENV_TEMPORAL_CAMERA_RESET_SQ
   );
-  const reset = !cache.historyValid || sunReset || cameraReset;
+  const reset =
+    forceHistoryReset || !cache.historyValid || sunReset || cameraReset;
   const alpha = reset ? 1.0 : ENV_TEMPORAL_ALPHA;
 
   // Per-face Hammersley-rotated sub-texel jitter. The base-2 radical inverse of
@@ -1336,7 +1785,7 @@ function runEnvCubeTemporalBlend(
     jx = vdc - 0.5;
     jy = golden - 0.5;
   }
-  cache.temporalFrameIndex = (cache.temporalFrameIndex + 1) >>> 0;
+  const nextTemporalFrameIndex = (cache.temporalFrameIndex + 1) >>> 0;
 
   const params = new Float32Array(8);
   params[0] = alpha;
@@ -1386,15 +1835,19 @@ function runEnvCubeTemporalBlend(
     { texture: cache.historyCube!, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
     { width: cache.size, height: cache.size, depthOrArrayLayers: 6 },
   );
-  // Record the eye + sun this accumulated frame was blended from, and mark the
-  // history valid so subsequent frames EMA-blend (until the next reset).
-  cache.historyValid = true;
-  cache.lastBlendCameraX = px.x;
-  cache.lastBlendCameraY = px.y;
-  cache.lastBlendCameraZ = px.z;
-  cache.lastBlendSunX = sunDir.x;
-  cache.lastBlendSunY = sunDir.y;
-  cache.lastBlendSunZ = sunDir.z;
+  // The encoder's exact submit disposition owns this state advance. Returning
+  // the proposal keeps an abandoned segment from claiming valid history or
+  // consuming a jitter index for commands that never executed.
+  return {
+    historyValid: true,
+    temporalFrameIndex: nextTemporalFrameIndex,
+    lastBlendCameraX: px.x,
+    lastBlendCameraY: px.y,
+    lastBlendCameraZ: px.z,
+    lastBlendSunX: sunDir.x,
+    lastBlendSunY: sunDir.y,
+    lastBlendSunZ: sunDir.z,
+  };
 }
 
 // The atmosphere-derived sky fill's uniform block, in byte-exact lockstep with
@@ -1639,7 +2092,7 @@ function runProceduralSkyFill(
   manager: DynEnvMapManagerLike,
   frameState: CesiumFrameState,
   encoder: GPUCommandEncoder,
-): void {
+): DynamicEnvironmentSkyFillState {
   // Kernels are immutable for a device generation and storage format. Share
   // them across managers; only bind groups, buffers, textures, and state are
   // probe-local.
@@ -1790,7 +2243,6 @@ function runProceduralSkyFill(
   // Record the effective path so the update gate re-fills when it flips, for
   // instance when the LUTs finish baking a frame after the first fill on an
   // otherwise static scene.
-  cache.lastUsedMultiScatterLut = useMultiScatterLut;
 
   const data = new Float32Array(SKY_UNIFORM_FLOATS);
   // positionWC + faceSize
@@ -1907,7 +2359,6 @@ function runProceduralSkyFill(
   // Record the effective march path so the update gate re-fills when it flips,
   // for instance when the cloud noise finishes baking a frame after the first
   // sky fill, or the flag toggles on a static scene.
-  cache.lastUsedCloudMarch = cloudMarchActive;
 
   // Cloud-march params read from `_cloudCache`, the same channel as
   // `iblCoverage`, published every frame by the cloud renderer's
@@ -2118,6 +2569,10 @@ function runProceduralSkyFill(
   pass.setBindGroup(0, cache.skyBindGroup);
   pass.dispatchWorkgroups(groupsXY, groupsXY, 6);
   pass.end();
+  return {
+    usedMultiScatterLut: useMultiScatterLut,
+    usedCloudMarch: cloudMarchActive,
+  };
 }
 
 // The SH-L2 projection pass. Projects the freshly-filled radiance cube onto 9
@@ -2228,25 +2683,14 @@ function runIBLPrefilter(
   hqOptions: RadianceHQOptions | undefined,
   encodingScope: IBLCommandEncodingScope,
 ): void {
-  if (!cache.iblCache) {
-    cache.iblCache = {
-      irradianceTexture: null,
-      irradianceView: null,
-      radianceTexture: null,
-      radianceView: null,
-      irradiancePipeline: null,
-      radiancePipeline: null,
-      irradianceBGL: null,
-      radianceBGL: null,
-      sampler: null,
-      sourceVersion: -1,
-    };
-  }
+  const iblCache = getOrCreateDynamicIBLPipelineCache(cache);
   // `generateIBLMaps` does not read `sourceVersion`; only the explicit-IBL
   // `WebGPUImageBasedLighting` caller uses it as a regeneration gate, so there
-  // is nothing to bump here. `WebGPUIBLPipeline` destroys the old irradiance
-  // and radiance textures before recreating them, so re-running the prefilter
-  // on each sun-direction refresh does not leak GPU memory.
+  // is nothing to bump here. Dynamic IBL overwrites stable native output/view/
+  // bind-group identities on topology hits; topology changes publish a fully
+  // initialized replacement only after submission succeeds, then retire the
+  // incumbent graph. Parameter-binding descriptors are still short-lived CPU
+  // values assembled for each encoded refresh.
   //
   // The prefilter quality is opt-in. The default 'parity' passes `undefined`,
   // so `generateIBLMaps` takes the mip-0 path with no source-mip pass and the
@@ -2255,7 +2699,7 @@ function runIBLPrefilter(
   // GGX-pdf-derived LOD through `mainHQ`.
   generateIBLMaps(
     device,
-    cache.iblCache,
+    iblCache,
     cache.cubemapTextureView!,
     (
       frameState.context as unknown as {
@@ -2270,79 +2714,66 @@ function runIBLPrefilter(
 /**
  * Destroy WebGPU dynamic environment map resources.
  */
+function destroyDynamicEnvironmentCacheResources(cache: DynEnvMapCache): void {
+  const destroyBestEffort = (
+    resource: { destroy(): void } | null | undefined,
+  ): void => {
+    try {
+      resource?.destroy();
+    } catch {
+      // Device loss and pool teardown must not strand later owned resources.
+    }
+  };
+  const retireTexture = cache.retireTexture ?? destroyBestEffort;
+
+  const iblCache = cache.iblCache;
+  cache.pendingRefresh = null;
+  cache.iblCache = null;
+  retireTexture(cache.cubemapTexture);
+  destroyBestEffort(cache.skyUniformBuffer);
+  destroyBestEffort(cache.shBuffer);
+  destroyBestEffort(cache.shParamBuffer);
+  retireTexture(cache.captureDepthTexture);
+  retireTexture(cache.historyCube);
+  retireTexture(cache.accumCube);
+  destroyBestEffort(cache.blendUniformBuffer);
+  // Only placeholders are manager-owned; real LUT/cloud-noise sources are
+  // borrowed and deliberately absent from this retirement list.
+  retireTexture(cache.lutPlaceholderTex);
+  retireTexture(cache.cloudPlaceholderTex);
+  if (iblCache) {
+    destroyPersistentIBLPipelineResources(iblCache);
+  }
+}
+
 function destroyWebGPUDynamicEnvironmentMapResources(
   manager: DynEnvMapManagerLike,
 ): void {
   const cache = manager._webgpuCache as DynEnvMapCache | undefined;
+  manager._webgpuCache = undefined;
+  detachDynamicEnvironmentManagerOutputs(manager);
   if (!cache) {
     return;
   }
 
-  if (cache.cubemapTexture) {
-    cache.cubemapTexture.destroy();
+  const pending = cache.pendingRefresh ?? null;
+  if (pending !== null && !pending.scope.destroyed) {
+    // The borrowed encoder may still reference every manager-local target and
+    // its persistent arena. Detach public ownership immediately, but let the
+    // exact encoder callback rollback/unlock before native retirement.
+    pending.retireCacheAfterSettlement = true;
+    return;
   }
-  if (cache.skyUniformBuffer) {
-    cache.skyUniformBuffer.destroy();
-  }
-  if (cache.shBuffer) {
-    cache.shBuffer.destroy();
-  }
-  if (cache.shParamBuffer) {
-    cache.shParamBuffer.destroy();
-  }
-  // The manager owns the lazily allocated capture depth attachment. It is not
-  // reachable through the IBL cache, so it must be released explicitly on
-  // manager destruction or device recovery.
-  if (cache.captureDepthTexture) {
-    cache.captureDepthTexture.destroy();
-  }
-  cache.captureDepthTexture = null;
-  cache.captureDepthView = null;
-  cache.captureDepthSize = 0;
-  // Release the history and accumulation cubes and the blend uniform buffer.
-  // All three are null while temporal accumulation is off, so the branches skip.
-  if (cache.historyCube) {
-    cache.historyCube.destroy();
-  }
-  if (cache.accumCube) {
-    cache.accumCube.destroy();
-  }
-  if (cache.blendUniformBuffer) {
-    cache.blendUniformBuffer.destroy();
-  }
-  // The manager owns only the 1×1 LUT placeholder. The real sky-view and
-  // multiple-scattering LUT textures belong to the perf manager and must not be
-  // destroyed here.
-  if (cache.lutPlaceholderTex) {
-    cache.lutPlaceholderTex.destroy();
-  }
-  // The manager owns only the 1×1×1 cloud noise placeholder. The real baked
-  // cloud noise belongs to the cloud renderer (`_cloudCache.noise`) and must
-  // not be destroyed here.
-  if (cache.cloudPlaceholderTex) {
-    cache.cloudPlaceholderTex.destroy();
-  }
-  if (cache.iblCache) {
-    if (cache.iblCache.irradianceTexture) {
-      cache.iblCache.irradianceTexture.destroy();
-    }
-    if (cache.iblCache.radianceTexture) {
-      cache.iblCache.radianceTexture.destroy();
-    }
-  }
-
-  manager._webgpuCache = undefined;
-  manager._radianceMap = null;
-  manager._webgpuIBLDiffuseView = null;
-  manager._webgpuIBLSpecularView = null;
-  manager._webgpuIBLSampler = null;
-  manager._webgpuIBLMaxMipLevel = 0;
-  manager._webgpuSHBuffer = null;
+  destroyDynamicEnvironmentCacheResources(cache);
 }
 
 export {
+  preflightWebGPUDynamicEnvironmentMap,
+  updatePreflightedWebGPUDynamicEnvironmentMap,
   updateWebGPUDynamicEnvironmentMap,
   destroyWebGPUDynamicEnvironmentMapResources,
+  getOrCreateDynamicIBLPipelineCache,
+  isDynamicEnvironmentCacheCurrent,
   getOrCreateDynamicEnvironmentKernelPack,
   resetDynamicEnvironmentKernelPacksForSpecs,
   resolveSceneCaptureMode,
@@ -2352,6 +2783,7 @@ export {
   updateSceneCaptureBookkeeping,
 };
 export default {
+  preflightWebGPUDynamicEnvironmentMap,
   updateWebGPUDynamicEnvironmentMap,
   destroyWebGPUDynamicEnvironmentMapResources,
 };

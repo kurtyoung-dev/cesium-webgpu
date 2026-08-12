@@ -11,24 +11,36 @@ describe("Renderer/WebGPU unsafe default containment", function () {
   it("rejects queued frame readbacks when the context is destroyed", function () {
     const context = new WebGPUContext(document.createElement("canvas"), {});
     const callback = jasmine.createSpy("afterFrameSubmit");
-    context._currentCommandEncoder = {};
+    const segmentCallback = jasmine.createSpy("afterCommandEncoderSubmit");
+    const encoder = {};
+    context._currentCommandEncoder = encoder;
 
     expect(context.enqueueAfterFrameSubmit(callback)).toBe(true);
+    expect(
+      context.enqueueAfterCommandEncoderSubmit(encoder, segmentCallback),
+    ).toBe(true);
     context.destroy();
 
     expect(callback).toHaveBeenCalledOnceWith(false);
+    expect(segmentCallback).toHaveBeenCalledOnceWith(false);
     expect(context._currentCommandEncoder).toBeNull();
   });
 
   it("rejects queued frame readbacks immediately on device loss", function () {
     const context = new WebGPUContext(document.createElement("canvas"), {});
     const callback = jasmine.createSpy("afterFrameSubmit");
-    context._currentCommandEncoder = {};
+    const segmentCallback = jasmine.createSpy("afterCommandEncoderSubmit");
+    const encoder = {};
+    context._currentCommandEncoder = encoder;
 
     expect(context.enqueueAfterFrameSubmit(callback)).toBe(true);
+    expect(
+      context.enqueueAfterCommandEncoderSubmit(encoder, segmentCallback),
+    ).toBe(true);
     context._clearAllCaches(null);
 
     expect(callback).toHaveBeenCalledOnceWith(false);
+    expect(segmentCallback).toHaveBeenCalledOnceWith(false);
     expect(context._currentCommandEncoder).toBeNull();
     context.destroy();
   });
@@ -43,15 +55,31 @@ describe("Renderer/WebGPU unsafe default containment", function () {
       endFrame: jasmine.createSpy("allocator.endFrame"),
     };
     context._device = {};
-    context._currentCommandEncoder = {};
+    const encoder = {};
+    context._currentCommandEncoder = encoder;
     context._uniformAllocator = allocator;
+    const segmentCallback = jasmine.createSpy("afterCommandEncoderSubmit");
+    const reentrantCallback = jasmine.createSpy("reentrantSegmentSubmit");
+    let reentrantAccepted;
+    segmentCallback.and.callFake(function () {
+      reentrantAccepted = context.enqueueAfterCommandEncoderSubmit(
+        encoder,
+        reentrantCallback,
+      );
+    });
 
     expect(context.enqueueAfterFrameSubmit(callback)).toBe(true);
+    expect(
+      context.enqueueAfterCommandEncoderSubmit(encoder, segmentCallback),
+    ).toBe(true);
     expect(function () {
       context.endFrame();
     }).toThrowError("flush failed");
 
     expect(callback).toHaveBeenCalledOnceWith(false);
+    expect(segmentCallback).toHaveBeenCalledOnceWith(false);
+    expect(reentrantAccepted).toBe(false);
+    expect(reentrantCallback).not.toHaveBeenCalled();
     expect(allocator.endFrame).toHaveBeenCalledTimes(1);
     expect(context._currentCommandEncoder).toBeNull();
 
@@ -80,6 +108,20 @@ describe("Renderer/WebGPU unsafe default containment", function () {
       endFrame: jasmine.createSpy("allocator.endFrame"),
     };
     const callback = jasmine.createSpy("afterFrameSubmit");
+    const firstSegmentCallback = jasmine.createSpy(
+      "first.afterCommandEncoderSubmit",
+    );
+    const throwingSegmentCallback = jasmine
+      .createSpy("throwing.afterCommandEncoderSubmit")
+      .and.callFake(function () {
+        throw new Error("callback failure must be isolated");
+      });
+    const survivingSegmentCallback = jasmine.createSpy(
+      "surviving.afterCommandEncoderSubmit",
+    );
+    const secondSegmentCallback = jasmine.createSpy(
+      "second.afterCommandEncoderSubmit",
+    );
     const textureView = {};
 
     context._device = {
@@ -94,6 +136,27 @@ describe("Renderer/WebGPU unsafe default containment", function () {
     context._canvasColorTouchedThisFrame = true;
     context._canvasDepthTouchedThisFrame = true;
     expect(context.enqueueAfterFrameSubmit(callback)).toBe(true);
+    expect(
+      context.enqueueAfterCommandEncoderSubmit(
+        firstEncoder,
+        firstSegmentCallback,
+      ),
+    ).toBe(true);
+    expect(
+      context.enqueueAfterCommandEncoderSubmit(
+        firstEncoder,
+        throwingSegmentCallback,
+      ),
+    ).toBe(true);
+    expect(
+      context.enqueueAfterCommandEncoderSubmit(
+        firstEncoder,
+        survivingSegmentCallback,
+      ),
+    ).toBe(true);
+    expect(
+      context.enqueueAfterCommandEncoderSubmit({}, jasmine.createSpy("stale")),
+    ).toBe(false);
 
     context.beginSecondaryViewport();
 
@@ -108,16 +171,227 @@ describe("Renderer/WebGPU unsafe default containment", function () {
     expect(context._currentTextureView).toBe(textureView);
     expect(context._canvasColorTouchedThisFrame).toBe(true);
     expect(context._canvasDepthTouchedThisFrame).toBe(true);
+    expect(firstSegmentCallback).toHaveBeenCalledOnceWith(true);
+    expect(throwingSegmentCallback).toHaveBeenCalledOnceWith(true);
+    expect(survivingSegmentCallback).toHaveBeenCalledOnceWith(true);
     expect(callback).not.toHaveBeenCalled();
     expect(allocator.endFrame).not.toHaveBeenCalled();
+    expect(
+      context.enqueueAfterCommandEncoderSubmit(
+        secondEncoder,
+        secondSegmentCallback,
+      ),
+    ).toBe(true);
 
     context.endFrame();
 
-    expect(submit.calls.allArgs()).toEqual([[firstBuffer], [secondBuffer]]);
+    expect(submit.calls.allArgs()).toEqual([[[firstBuffer]], [[secondBuffer]]]);
+    expect(secondSegmentCallback).toHaveBeenCalledOnceWith(true);
     expect(callback).toHaveBeenCalledOnceWith(true);
     expect(allocator.endFrame).toHaveBeenCalledTimes(1);
 
     context._uniformAllocator = null;
+    context._device = null;
+    context.destroy();
+  });
+
+  it("rejects an exact encoder segment when queue submission fails", function () {
+    const context = new WebGPUContext(document.createElement("canvas"), {});
+    const commandBuffer = {};
+    const encoder = {
+      finish: jasmine
+        .createSpy("encoder.finish")
+        .and.returnValue(commandBuffer),
+    };
+    const segmentCallback = jasmine.createSpy("afterCommandEncoderSubmit");
+    const frameCallback = jasmine.createSpy("afterFrameSubmit");
+    const allocator = {
+      flush: jasmine.createSpy("allocator.flush"),
+      endFrame: jasmine.createSpy("allocator.endFrame"),
+    };
+    context._device = {
+      queue: {
+        submit: jasmine
+          .createSpy("queue.submit")
+          .and.throwError("submit failed"),
+      },
+    };
+    context._uniformAllocator = allocator;
+    context._currentCommandEncoder = encoder;
+
+    expect(
+      context.enqueueAfterCommandEncoderSubmit(encoder, segmentCallback),
+    ).toBe(true);
+    expect(context.enqueueAfterFrameSubmit(frameCallback)).toBe(true);
+    expect(function () {
+      context.endFrame();
+    }).toThrowError("submit failed");
+
+    expect(segmentCallback).toHaveBeenCalledOnceWith(false);
+    expect(frameCallback).toHaveBeenCalledOnceWith(false);
+    expect(allocator.endFrame).toHaveBeenCalledTimes(1);
+    expect(context._currentCommandEncoder).toBeNull();
+
+    context._uniformAllocator = null;
+    context._device = null;
+    context.destroy();
+  });
+
+  it("settles a readback encoder segment before the logical frame", async function () {
+    const context = new WebGPUContext(document.createElement("canvas"), {});
+    const firstBuffer = {};
+    const secondBuffer = {};
+    const firstEncoder = {
+      finish: jasmine.createSpy("first.finish").and.returnValue(firstBuffer),
+    };
+    const secondEncoder = {
+      finish: jasmine.createSpy("second.finish").and.returnValue(secondBuffer),
+    };
+    const submit = jasmine.createSpy("queue.submit");
+    context._device = {
+      queue: { submit: submit },
+      createCommandEncoder: jasmine
+        .createSpy("createCommandEncoder")
+        .and.returnValue(secondEncoder),
+    };
+    context._currentCommandEncoder = firstEncoder;
+    const pbo = {
+      width: 1,
+      height: 1,
+      bytesPerRow: 4,
+      mapAsync: jasmine
+        .createSpy("pbo.mapAsync")
+        .and.resolveTo(new Uint8Array([1, 2, 3, 4])),
+      destroy: jasmine.createSpy("pbo.destroy"),
+    };
+    spyOn(context, "readPixelsToPBO").and.returnValue(pbo);
+    const firstSegmentCallback = jasmine.createSpy(
+      "first.afterCommandEncoderSubmit",
+    );
+    const secondSegmentCallback = jasmine.createSpy(
+      "second.afterCommandEncoderSubmit",
+    );
+    const frameCallback = jasmine.createSpy("afterFrameSubmit");
+    expect(
+      context.enqueueAfterCommandEncoderSubmit(
+        firstEncoder,
+        firstSegmentCallback,
+      ),
+    ).toBe(true);
+    expect(context.enqueueAfterFrameSubmit(frameCallback)).toBe(true);
+
+    const pixels = await context.readPixelsAsync({
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+    });
+
+    expect(Array.from(pixels)).toEqual([1, 2, 3, 4]);
+    expect(submit).toHaveBeenCalledWith([firstBuffer]);
+    expect(firstSegmentCallback).toHaveBeenCalledOnceWith(true);
+    expect(frameCallback).not.toHaveBeenCalled();
+    expect(context._currentCommandEncoder).toBe(secondEncoder);
+    expect(
+      context.enqueueAfterCommandEncoderSubmit(
+        secondEncoder,
+        secondSegmentCallback,
+      ),
+    ).toBe(true);
+
+    context.endFrame();
+
+    expect(submit.calls.allArgs()).toEqual([[[firstBuffer]], [[secondBuffer]]]);
+    expect(secondSegmentCallback).toHaveBeenCalledOnceWith(true);
+    expect(frameCallback).toHaveBeenCalledOnceWith(true);
+    expect(pbo.destroy).toHaveBeenCalledTimes(1);
+
+    context._device = null;
+    context.destroy();
+  });
+
+  it("rejects a readback segment when its pre-submit flush fails", async function () {
+    const context = new WebGPUContext(document.createElement("canvas"), {});
+    const encoder = {
+      finish: jasmine.createSpy("encoder.finish"),
+    };
+    const pbo = {
+      width: 1,
+      height: 1,
+      bytesPerRow: 4,
+      mapAsync: jasmine.createSpy("pbo.mapAsync"),
+      destroy: jasmine.createSpy("pbo.destroy"),
+    };
+    context._device = { queue: { submit: jasmine.createSpy("queue.submit") } };
+    context._currentCommandEncoder = encoder;
+    context._uniformAllocator = {
+      flush: function () {
+        throw new Error("readback flush failed");
+      },
+    };
+    spyOn(context, "readPixelsToPBO").and.returnValue(pbo);
+    const segmentCallback = jasmine.createSpy("afterCommandEncoderSubmit");
+    expect(
+      context.enqueueAfterCommandEncoderSubmit(encoder, segmentCallback),
+    ).toBe(true);
+
+    await expectAsync(
+      context.readPixelsAsync({ x: 0, y: 0, width: 1, height: 1 }),
+    ).toBeRejectedWithError("readback flush failed");
+
+    expect(segmentCallback).toHaveBeenCalledOnceWith(false);
+    expect(encoder.finish).not.toHaveBeenCalled();
+    expect(context._device.queue.submit).not.toHaveBeenCalled();
+    expect(context._currentCommandEncoder).toBeNull();
+    expect(pbo.destroy).toHaveBeenCalledTimes(1);
+
+    context._uniformAllocator = null;
+    context._device = null;
+    context.destroy();
+  });
+
+  it("keeps a submitted readback segment true when continuation creation fails", async function () {
+    const context = new WebGPUContext(document.createElement("canvas"), {});
+    const commandBuffer = {};
+    const encoder = {
+      finish: jasmine
+        .createSpy("encoder.finish")
+        .and.returnValue(commandBuffer),
+    };
+    const submit = jasmine.createSpy("queue.submit");
+    context._device = {
+      queue: { submit: submit },
+      createCommandEncoder: jasmine
+        .createSpy("createCommandEncoder")
+        .and.throwError("continuation failed"),
+    };
+    context._currentCommandEncoder = encoder;
+    const pbo = {
+      width: 1,
+      height: 1,
+      bytesPerRow: 4,
+      mapAsync: jasmine.createSpy("pbo.mapAsync"),
+      destroy: jasmine.createSpy("pbo.destroy"),
+    };
+    spyOn(context, "readPixelsToPBO").and.returnValue(pbo);
+    const segmentCallback = jasmine.createSpy("afterCommandEncoderSubmit");
+    const frameCallback = jasmine.createSpy("afterFrameSubmit");
+    expect(
+      context.enqueueAfterCommandEncoderSubmit(encoder, segmentCallback),
+    ).toBe(true);
+    expect(context.enqueueAfterFrameSubmit(frameCallback)).toBe(true);
+
+    await expectAsync(
+      context.readPixelsAsync({ x: 0, y: 0, width: 1, height: 1 }),
+    ).toBeRejectedWithError("continuation failed");
+
+    expect(submit).toHaveBeenCalledOnceWith([commandBuffer]);
+    expect(segmentCallback).toHaveBeenCalledOnceWith(true);
+    expect(frameCallback).toHaveBeenCalledOnceWith(false);
+    expect(pbo.mapAsync).not.toHaveBeenCalled();
+    expect(pbo.destroy).toHaveBeenCalledTimes(1);
+    expect(context._currentCommandEncoder).toBeNull();
+
     context._device = null;
     context.destroy();
   });
