@@ -10607,6 +10607,23 @@ DO-NOT-LAND.**
 > as history — read the "Negative control and acceptance" paragraph as already satisfied by
 > Batches 825/828, and re-scope the remaining work to the variant audit.**
 
+> **COMPLETION UPDATE 2026-08-09; AUDIT-CORRECTED 2026-08-11; LANDED Batch 1021.** The surviving
+> apply-versus-key defect is implemented and verified locally. Cache identity
+> and submitted descriptors now share one effective-state law: every target's
+> default-normalized blend equation and write mask are keyed and applied;
+> explicit target state wins over variant defaults; null MRT slots and source
+> descriptor immutability are preserved. `depthTest: false` removes the depth
+> state unless stencil requires the attachment, in which case comparison is
+> `always` and depth writes remain disabled. Modifier-only depth write,
+> compare, and bias variants also remain depthless unless a descriptor,
+> explicit `depthTest: true`, or stencil operation actually requires an
+> attachment. Numbered fake-pipeline sentinels pass **63/63**; the exact
+> combined command
+> `node --test Tools/visual-regression/globe-pipeline-readiness.spec.mjs Tools/visual-regression/globe-use-log-depth.spec.mjs Tools/visual-regression/pipeline-key-aliasing.spec.mjs`
+> passes **131/131**. This
+> closes only the variant survivor described above, not unrelated pipeline
+> adoption or browser-performance work.
+
 `WebGPURenderPipelineCache.generateCacheKey` still delegates
 shader identity to the free-form descriptor name. Adding `ld=` markers at
 individual callers mitigates known `LOG_DEPTH` cases but does not make the

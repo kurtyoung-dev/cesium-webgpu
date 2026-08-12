@@ -72,6 +72,69 @@ function stencilFaceSignature(face: GPUStencilFaceState | undefined): string {
 }
 
 /**
+ * Compact, default-normalized signature for one blend component. WebGPU's
+ * dictionary defaults are part of pipeline identity even when a caller omits
+ * them, so `{}` and the explicitly-spelled replacement component deliberately
+ * produce the same signature.
+ */
+function blendComponentSignature(component: GPUBlendComponent): string {
+  return `${component.operation ?? "add"}.${component.srcFactor ?? "one"}.${component.dstFactor ?? "zero"}`;
+}
+
+/**
+ * Complete signature for a color target's blend state. An absent blend block
+ * stays distinct from an explicitly enabled replacement blend: the latter is
+ * still a blend-enabled pipeline state and is invalid for non-blendable target
+ * formats even though its arithmetic happens to replace the destination.
+ */
+function blendStateSignature(blend: GPUBlendState | undefined): string {
+  if (blend === undefined) {
+    return "-";
+  }
+  return `${blendComponentSignature(blend.color)}/${blendComponentSignature(blend.alpha)}`;
+}
+
+/**
+ * Resolve the target state the pipeline builder will actually submit. A
+ * descriptor target is the explicit contract, so variant blend/write-mask
+ * fields only fill omitted target fields. The input descriptor is never
+ * mutated, and the original array is retained when the variant changes
+ * nothing.
+ */
+function resolveColorTargets(
+  targets: Array<GPUColorTargetState | null>,
+  variant?: PipelineVariant,
+): Array<GPUColorTargetState | null> {
+  const variantBlend = variant?.blend;
+  const variantWriteMask =
+    variant?.colorWriteMask === undefined
+      ? undefined
+      : variant.colorWriteMask & 0xf;
+  if (variantBlend === undefined && variantWriteMask === undefined) {
+    return targets;
+  }
+
+  let changed = false;
+  const resolved = targets.map((target) => {
+    if (target === null) {
+      return target;
+    }
+    const blend = target.blend ?? variantBlend;
+    const writeMask = target.writeMask ?? variantWriteMask;
+    if (blend === target.blend && writeMask === target.writeMask) {
+      return target;
+    }
+    changed = true;
+    return {
+      ...target,
+      ...(blend === undefined ? {} : { blend }),
+      ...(writeMask === undefined ? {} : { writeMask }),
+    };
+  });
+  return changed ? resolved : targets;
+}
+
+/**
  * Pipeline descriptor for creating render pipelines
  */
 export interface WebGPURenderPipelineDescriptor {
@@ -95,7 +158,7 @@ export interface WebGPURenderPipelineDescriptor {
   fragment?: {
     module: GPUShaderModule;
     entryPoint: string;
-    targets: GPUColorTargetState[];
+    targets: Array<GPUColorTargetState | null>;
   };
 
   /**
@@ -149,7 +212,9 @@ export interface WebGPURenderPipelineDescriptor {
  */
 export interface PipelineVariant {
   /**
-   * Depth test enabled
+   * Depth test enabled. `false` removes depth state unless effective stencil
+   * operations require the attachment; that stencil-only form forces
+   * `depthCompare = "always"` and disables depth writes.
    */
   depthTest?: boolean;
 
@@ -174,7 +239,8 @@ export interface PipelineVariant {
   frontFace?: GPUFrontFace;
 
   /**
-   * Blend mode
+   * Blend mode used for fragment targets that do not declare their own
+   * `blend` block. An explicit per-target descriptor block wins.
    */
   blend?: GPUBlendState;
 
@@ -686,26 +752,17 @@ export class WebGPURenderPipelineCache {
       },
     };
 
-    // Fragment shader (optional). When the variant specifies a
-    // colorWriteMask override (Proton-style WebGL stub path — it
-    // accumulates the current gl.colorMask into the state), apply it
-    // to each color target in a shallow-cloned targets array so the
-    // caller's descriptor isn't mutated. Targets that already have an
-    // explicit writeMask keep their own value since pipeline
-    // descriptors are the explicit contract — we only fill in targets
-    // that omitted the field.
+    // Fragment shader (optional). Variant blend and colorWriteMask state fills
+    // only fields omitted by an individual target. Targets that spell either
+    // field explicitly keep it: pipeline descriptors are the explicit
+    // contract, while variants carry compatibility state for otherwise-bare
+    // descriptors. resolveColorTargets shallow-clones only changed targets and
+    // never mutates the caller's descriptor.
     if (descriptor.fragment) {
-      let targets = descriptor.fragment.targets;
-      if (variant?.colorWriteMask !== undefined && targets) {
-        const mask = variant.colorWriteMask & 0xf;
-        targets = targets.map((t) =>
-          t && t.writeMask === undefined ? { ...t, writeMask: mask } : t,
-        );
-      }
       result.fragment = {
         module: descriptor.fragment.module,
         entryPoint: descriptor.fragment.entryPoint,
-        targets,
+        targets: resolveColorTargets(descriptor.fragment.targets, variant),
       };
     }
 
@@ -722,18 +779,34 @@ export class WebGPURenderPipelineCache {
       unclippedDepth: descriptor.primitive?.unclippedDepth,
     };
 
-    // Depth stencil state with variant overrides. When the variant
+    // Depth stencil state with variant overrides. A false depthTest means
+    // there must be no depth state at all unless stencil operations require
+    // the attachment. In that stencil-only case depth comparison is `always`
+    // and depth writes are disabled: retaining the descriptor's depth compare
+    // or write flag would silently leave depth testing active.
+    //
+    // When the variant
     // introduces stencil ops and the descriptor's format is
     // depth-only, auto-upgrade to `depth24plus-stencil8` — otherwise
     // WebGPU validation errors on "stencil ops present but format has
     // no stencil aspect". Matches the behavior of
     // WebGPUPipelineDescriptorBuilder._ensureDepthStencil.
-    if (descriptor.depthStencil || variant?.depthTest !== undefined) {
-      const hasStencilOps =
-        (variant?.stencilFront ?? descriptor.depthStencil?.stencilFront) !==
-          undefined ||
-        (variant?.stencilBack ?? descriptor.depthStencil?.stencilBack) !==
-          undefined;
+    const stencilFront =
+      variant?.stencilFront ?? descriptor.depthStencil?.stencilFront;
+    const stencilBack =
+      variant?.stencilBack ?? descriptor.depthStencil?.stencilBack;
+    const hasStencilOps =
+      stencilFront !== undefined || stencilBack !== undefined;
+    const depthDisabled = variant?.depthTest === false;
+
+    // Write/compare/bias fields modify a selected depth state; they do not
+    // independently require a depth attachment on a color-only pipeline.
+    const needsDepthStencil = depthDisabled
+      ? hasStencilOps
+      : descriptor.depthStencil !== undefined ||
+        variant?.depthTest === true ||
+        hasStencilOps;
+    if (needsDepthStencil) {
       let format = descriptor.depthStencil?.format || "depth24plus";
       if (
         hasStencilOps &&
@@ -743,21 +816,21 @@ export class WebGPURenderPipelineCache {
       }
       result.depthStencil = {
         format,
-        depthWriteEnabled:
-          variant?.depthWrite !== undefined
+        depthWriteEnabled: depthDisabled
+          ? false
+          : variant?.depthWrite !== undefined
             ? variant.depthWrite
             : (descriptor.depthStencil?.depthWriteEnabled ?? true),
-        depthCompare:
-          variant?.depthCompare ||
-          descriptor.depthStencil?.depthCompare ||
-          // Default to `less-equal` (not `less`) — at planetary scale,
-          // FP32 can project Z to exactly the far plane and `less`
-          // would discard those fragments. See WebGPUContext.
-          "less-equal",
-        stencilFront:
-          variant?.stencilFront || descriptor.depthStencil?.stencilFront,
-        stencilBack:
-          variant?.stencilBack || descriptor.depthStencil?.stencilBack,
+        depthCompare: depthDisabled
+          ? "always"
+          : variant?.depthCompare ||
+            descriptor.depthStencil?.depthCompare ||
+            // Default to `less-equal` (not `less`) — at planetary scale,
+            // FP32 can project Z to exactly the far plane and `less`
+            // would discard those fragments. See WebGPUContext.
+            "less-equal",
+        stencilFront,
+        stencilBack,
         stencilReadMask:
           variant?.stencilReadMask ?? descriptor.depthStencil?.stencilReadMask,
         stencilWriteMask:
@@ -814,8 +887,9 @@ export class WebGPURenderPipelineCache {
    * real state flip, so identity is stable across frames and genuinely
    * identical pipelines still share one key. Cost is two `WeakMap.get`s plus
    * one extra `parts.push` per call — no new allocation beyond the single
-   * segment string, and far below the `JSON.stringify(variant.blend)` this
-   * function already pays on every blended lookup.
+   * segment string. Blend state is hand-serialized with its WebGPU defaults,
+   * avoiding the serializer walk and object-key-order sensitivity of
+   * `JSON.stringify`.
    *
    * @param descriptor - Pipeline descriptor
    * @param variant - Variant configuration
@@ -836,7 +910,6 @@ export class WebGPURenderPipelineCache {
       if (variant.cullMode !== undefined) parts.push(`cm:${variant.cullMode}`);
       if (variant.frontFace) parts.push(`ff:${variant.frontFace}`);
       if (variant.topology) parts.push(`tp:${variant.topology}`);
-      if (variant.blend) parts.push(`bl:${JSON.stringify(variant.blend)}`);
       if (variant.stencilFront)
         parts.push(`sf:${JSON.stringify(variant.stencilFront)}`);
       if (variant.stencilBack)
@@ -845,8 +918,6 @@ export class WebGPURenderPipelineCache {
         parts.push(`srm:${variant.stencilReadMask}`);
       if (variant.stencilWriteMask !== undefined)
         parts.push(`swm:${variant.stencilWriteMask}`);
-      if (variant.colorWriteMask !== undefined)
-        parts.push(`cwm:${variant.colorWriteMask}`);
       if (variant.depthBias !== undefined)
         parts.push(`db:${variant.depthBias}`);
       if (variant.depthBiasSlopeScale !== undefined)
@@ -874,18 +945,29 @@ export class WebGPURenderPipelineCache {
     if (descriptor.depthStencil?.format) {
       parts.push(`df:${descriptor.depthStencil.format}`);
     }
-    // Per-target color format + writeMask. Two pipelines writing to
+    // Per-target color format + effective writeMask + exact normalized blend
+    // state. Two pipelines writing to
     // `bgra8unorm` vs `rgba16float` must materialize separately; same
     // for different writeMasks across targets (MRT pick + color writing
-    // to one attachment but not the other).
+    // to one attachment but not the other). A descriptor target wins over a
+    // variant field, exactly as buildPipelineDescriptor resolves it, so an
+    // ignored compatibility variant neither aliases nor needlessly splits a
+    // cache entry.
     const targets = descriptor.fragment?.targets;
+    const variantWriteMask =
+      variant?.colorWriteMask === undefined
+        ? undefined
+        : variant.colorWriteMask & 0xf;
     if (targets && targets.length > 0) {
       const targetSig = targets
         .map((t, i) => {
-          const fmt = t?.format ?? "";
-          const wm = t?.writeMask ?? 0xf;
-          const hasBlend = t?.blend ? "+" : "-";
-          return `${i}:${fmt}:${wm}:${hasBlend}`;
+          if (t === null) {
+            return `${i}:null`;
+          }
+          const fmt = t.format;
+          const wm = t.writeMask ?? variantWriteMask ?? 0xf;
+          const blend = blendStateSignature(t.blend ?? variant?.blend);
+          return `${i}:${fmt}:${wm}:${blend}`;
         })
         .join(",");
       parts.push(`tg:${targetSig}`);

@@ -594,11 +594,18 @@ function findAliasingNames(src) {
 
 /** Minimal GPUDevice stand-in — every object it hands back has its own identity. */
 function makeStubDevice() {
+  let renderPipelineOrdinal = 0;
   return {
     createShaderModule: ({ code, label }) => ({ __code: code, __label: label }),
-    createRenderPipeline: (d) => ({ __label: d.label ?? "pipeline" }),
+    createRenderPipeline: (d) => ({
+      __label: d.label ?? "pipeline",
+      __descriptor: d,
+      __ordinal: ++renderPipelineOrdinal,
+    }),
     createRenderPipelineAsync: async (d) => ({
       __label: d.label ?? "pipeline",
+      __descriptor: d,
+      __ordinal: ++renderPipelineOrdinal,
     }),
     createComputePipeline: (d) => ({ __label: d.label ?? "compute" }),
     createComputePipelineAsync: async (d) => ({
@@ -627,6 +634,214 @@ function markerlessDescriptor(vsModule, fsModule) {
     multisample: { count: 1 },
   };
 }
+
+const ALPHA_BLEND = {
+  color: {
+    operation: "add",
+    srcFactor: "src-alpha",
+    dstFactor: "one-minus-src-alpha",
+  },
+  alpha: {
+    operation: "add",
+    srcFactor: "one",
+    dstFactor: "one-minus-src-alpha",
+  },
+};
+
+const ADDITIVE_BLEND = {
+  color: { operation: "add", srcFactor: "one", dstFactor: "one" },
+  alpha: { operation: "add", srcFactor: "one", dstFactor: "one" },
+};
+
+test("STRUCTURAL — exact normalized per-target blend state moves the key", async () => {
+  const device = makeStubDevice();
+  const cache = new WebGPURenderPipelineCache(device, "ctx-target-blend");
+  const module = { __module: "shared" };
+  const alpha = markerlessDescriptor(module);
+  alpha.fragment.targets[0].blend = ALPHA_BLEND;
+  const additive = markerlessDescriptor(module);
+  additive.fragment.targets[0].blend = ADDITIVE_BLEND;
+
+  assert.notEqual(
+    cache.describeCacheKey(alpha),
+    cache.describeCacheKey(additive),
+    "two descriptor targets with different blend equations must not alias",
+  );
+  const alphaPipeline = await cache.getPipeline(alpha);
+  const additivePipeline = await cache.getPipeline(additive);
+  assert.notEqual(alphaPipeline, additivePipeline);
+  assert.deepEqual(
+    alphaPipeline.__descriptor.fragment.targets[0].blend,
+    ALPHA_BLEND,
+  );
+  assert.deepEqual(
+    additivePipeline.__descriptor.fragment.targets[0].blend,
+    ADDITIVE_BLEND,
+  );
+
+  const implicitDefaults = markerlessDescriptor(module);
+  implicitDefaults.fragment.targets[0].blend = { color: {}, alpha: {} };
+  const explicitDefaults = markerlessDescriptor(module);
+  explicitDefaults.fragment.targets[0].blend = {
+    color: { operation: "add", srcFactor: "one", dstFactor: "zero" },
+    alpha: { operation: "add", srcFactor: "one", dstFactor: "zero" },
+  };
+  assert.equal(
+    cache.describeCacheKey(implicitDefaults),
+    cache.describeCacheKey(explicitDefaults),
+    "omitted WebGPU dictionary defaults must normalize to their explicit form",
+  );
+
+  const noBlend = markerlessDescriptor(module);
+  assert.notEqual(
+    cache.describeCacheKey(noBlend),
+    cache.describeCacheKey(explicitDefaults),
+    "blend-disabled and blend-enabled replacement targets are distinct states",
+  );
+});
+
+test("STRUCTURAL — PipelineVariant blend fills bare targets while explicit targets win", async () => {
+  const device = makeStubDevice();
+  const cache = new WebGPURenderPipelineCache(device, "ctx-variant-blend");
+  const module = { __module: "shared" };
+  const descriptor = markerlessDescriptor(module);
+  descriptor.fragment.targets = [
+    { format: "bgra8unorm", blend: ADDITIVE_BLEND, writeMask: 0x3 },
+    { format: "rgba16float" },
+  ];
+  const sourceTargets = structuredClone(descriptor.fragment.targets);
+
+  const pipeline = await cache.getPipeline(descriptor, {
+    blend: ALPHA_BLEND,
+    colorWriteMask: 0x5,
+  });
+  const builtTargets = pipeline.__descriptor.fragment.targets;
+  assert.deepEqual(
+    builtTargets[0],
+    descriptor.fragment.targets[0],
+    "an explicit target blend/writeMask is the descriptor contract",
+  );
+  assert.deepEqual(builtTargets[1], {
+    format: "rgba16float",
+    blend: ALPHA_BLEND,
+    writeMask: 0x5,
+  });
+  assert.deepEqual(
+    descriptor.fragment.targets,
+    sourceTargets,
+    "variant application must not mutate the caller's descriptor",
+  );
+
+  const allExplicit = markerlessDescriptor(module);
+  allExplicit.fragment.targets[0].blend = ADDITIVE_BLEND;
+  const ignoredAlphaKey = cache.describeCacheKey(allExplicit, {
+    blend: ALPHA_BLEND,
+  });
+  const ignoredAdditiveKey = cache.describeCacheKey(allExplicit, {
+    blend: ADDITIVE_BLEND,
+  });
+  assert.equal(
+    ignoredAlphaKey,
+    ignoredAdditiveKey,
+    "an ignored compatibility variant must not split an explicit target",
+  );
+
+  const sparse = markerlessDescriptor(module);
+  sparse.fragment.targets = [null];
+  assert.equal(
+    cache.describeCacheKey(sparse, { blend: ALPHA_BLEND }),
+    cache.describeCacheKey(sparse, { blend: ADDITIVE_BLEND }),
+    "a null MRT slot must stay null rather than inherit variant blend state",
+  );
+});
+
+test("STRUCTURAL — depthTest=false removes depth or retains stencil-only state", async () => {
+  const device = makeStubDevice();
+  const cache = new WebGPURenderPipelineCache(device, "ctx-depth-disabled");
+  const module = { __module: "shared" };
+  const descriptor = markerlessDescriptor(module);
+  const sourceDepthStencil = structuredClone(descriptor.depthStencil);
+
+  const depthOff = await cache.getPipeline(descriptor, { depthTest: false });
+  assert.equal(
+    depthOff.__descriptor.depthStencil,
+    undefined,
+    "depthTest=false must not retain the descriptor's active depth state",
+  );
+  assert.deepEqual(
+    descriptor.depthStencil,
+    sourceDepthStencil,
+    "depth disabling must not mutate the source descriptor",
+  );
+
+  const stencilFront = {
+    compare: "equal",
+    failOp: "keep",
+    depthFailOp: "keep",
+    passOp: "replace",
+  };
+  const stencilOnly = await cache.getPipeline(descriptor, {
+    depthTest: false,
+    depthWrite: true,
+    depthCompare: "less",
+    stencilFront,
+  });
+  assert.equal(
+    stencilOnly.__descriptor.depthStencil.format,
+    "depth24plus-stencil8",
+  );
+  assert.equal(stencilOnly.__descriptor.depthStencil.depthWriteEnabled, false);
+  assert.equal(stencilOnly.__descriptor.depthStencil.depthCompare, "always");
+  assert.deepEqual(
+    stencilOnly.__descriptor.depthStencil.stencilFront,
+    stencilFront,
+  );
+});
+
+test("STRUCTURAL — modifier-only depth variants do not create an attachment", async () => {
+  const device = makeStubDevice();
+  const cache = new WebGPURenderPipelineCache(
+    device,
+    "ctx-depth-modifier-only",
+  );
+  const module = { __module: "shared" };
+  const descriptor = markerlessDescriptor(module);
+  delete descriptor.depthStencil;
+
+  const modifierCases = [
+    ["depthWrite", { depthWrite: false }],
+    ["depthCompare", { depthCompare: "always" }],
+    ["depthBias", { depthBias: 1 }],
+    ["depthBiasSlopeScale", { depthBiasSlopeScale: 1 }],
+    ["depthBiasClamp", { depthBiasClamp: 1 }],
+  ];
+
+  for (const [name, variant] of modifierCases) {
+    const pipeline = await cache.getPipeline(descriptor, variant);
+    assert.equal(
+      pipeline.__descriptor.depthStencil,
+      undefined,
+      `${name} must not synthesize a depth attachment`,
+    );
+  }
+
+  const explicitlyEnabled = await cache.getPipeline(descriptor, {
+    depthTest: true,
+    depthWrite: false,
+  });
+  assert.equal(
+    explicitlyEnabled.__descriptor.depthStencil.format,
+    "depth24plus",
+  );
+  assert.equal(
+    explicitlyEnabled.__descriptor.depthStencil.depthWriteEnabled,
+    false,
+  );
+  assert.equal(
+    explicitlyEnabled.__descriptor.depthStencil.depthCompare,
+    "less-equal",
+  );
+});
 
 const SHARED_STUB_LAYOUT = { __layout: "shared" };
 
