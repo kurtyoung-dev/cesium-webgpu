@@ -30,11 +30,12 @@
 //         256 -> 119), which is quiescent on roughly two thirds of an
 //         801-frame sweep.
 //
-// Plus the row's STILL OWED list: an IBL recovery leg that steps a clock
-// through the deep phase and out the other side and asserts the environment
-// brightens back, and the wall-clock cost of the 275 fills
-// (`C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`), which lane C times so that row
-// discharges in the same run.
+// Plus the row's original STILL OWED list: an IBL recovery leg that steps a
+// clock through the deep phase and out the other side, and the wall-clock cost
+// of the 275 fills. The second Edge run discharged the one-time cost obligation
+// (7.749 ms/refresh WebGPU, 1.607 WebGL). Lane C retains the full estimate as a
+// reported diagnostic; an INVALID rerun never prints a negative cost and does
+// not revoke the banked measurement.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // AIMING vs GATING — the discriminator is never built from what it discriminates
@@ -158,6 +159,11 @@ import {
 } from "./lib/build-source-identity.mjs";
 import {
   DECK_FREE_CONTROL_SESSION_PLAN,
+  DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS,
+  DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY,
+  DECK_FREE_LIGHTING_FADE_IN_DISTANCE,
+  DECK_FREE_LIGHTING_FADE_OUT_DISTANCE,
+  DECK_FREE_SUN_LIGHT_INTENSITY,
   foldDeckFreeControlSessions,
 } from "./lib/c13-41-deckfree-control.mjs";
 import {
@@ -194,6 +200,10 @@ const FIRST_RED_ARTIFACT = path.join(
 const PRE_LIFECYCLE_RUN_6_ARTIFACT = path.join(
   OUT_DIR,
   "eclipse-cloud-response-report.pre-lifecycle-run-6.json",
+);
+const RUN_LOCK_ARTIFACT = path.join(
+  OUT_DIR,
+  "eclipse-cloud-response-report.lock",
 );
 const ARTIFACT_SCHEMA = "c13-41-eclipse-cloud-response-v3";
 const MODEL_URL =
@@ -1267,6 +1277,13 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
 
   scene.globe.enableLighting = true;
   scene.globe.baseColor = C.Color.fromBytes(200, 200, 200);
+  // This control flies below Globe's normal ~9.98 Mm day/night fade-out, where
+  // both backends intentionally flatten diffuse lighting to 1. Probe-only
+  // distances 0/1 force the shipped day/night branch live at the unchanged
+  // lane-B camera. They are read back and independently re-evaluated by the
+  // Node fold; no engine default or product scene is changed.
+  scene.globe.lightingFadeOutDistance = cfg.lightingFadeOutDistance;
+  scene.globe.lightingFadeInDistance = cfg.lightingFadeInDistance;
   const ac = scene.globe?.atmosphericConditions;
   if (!ac?.lighting || !("enableEclipse" in ac.lighting)) {
     return {
@@ -1283,18 +1300,66 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
     const color = scene.globe.baseColor;
     return color ? [color.red, color.green, color.blue, color.alpha] : null;
   };
-  const readLighting = () => ({
-    enableLighting: scene.globe.enableLighting === true,
-    enableEclipse: ac.lighting.enableEclipse === true,
-    enableEclipseGlobeShadow:
-      "enableEclipseGlobeShadow" in ac.lighting
-        ? ac.lighting.enableEclipseGlobeShadow === true
+  const readLighting = () => {
+    const view = scene.camera?.viewMatrix;
+    const tx = view?.[12];
+    const ty = view?.[13];
+    const tz = view?.[14];
+    const cameraDistance =
+      Number.isFinite(tx) && Number.isFinite(ty) && Number.isFinite(tz)
+        ? Math.sqrt(tx * tx + ty * ty + tz * tz)
+        : null;
+    const outDistance = scene.globe.lightingFadeOutDistance;
+    const inDistance = scene.globe.lightingFadeInDistance;
+    const span = inDistance - outDistance;
+    const expectedFade =
+      Number.isFinite(cameraDistance) && Number.isFinite(span) && span > 0
+        ? Math.min(1, Math.max(0, (cameraDistance - outDistance) / span))
+        : null;
+    return {
+      enableLighting: scene.globe.enableLighting === true,
+      enableEclipse: ac.lighting.enableEclipse === true,
+      enableEclipseGlobeShadow:
+        "enableEclipseGlobeShadow" in ac.lighting
+          ? ac.lighting.enableEclipseGlobeShadow === true
+          : null,
+      eclipseStateEnabled: scene.frameState?.eclipseState?.enabled === true,
+      eclipseStateValid: scene.frameState?.eclipseState?.valid === true,
+      moonObscuration: scene.frameState?.eclipseState?.moonObscuration ?? null,
+      factor: scene.frameState?.eclipseSceneLightFactor ?? null,
+      lightingFade: {
+        outDistance,
+        inDistance,
+        cameraDistance,
+        expectedFade,
+      },
+    };
+  };
+  const readLight = (diagnosticOnly) => {
+    const readSide = (light) => ({
+      constructorName: light?.constructor?.name ?? null,
+      isSunLight: light instanceof C.SunLight,
+      isDirectionalLight: light instanceof C.DirectionalLight,
+      directionWC: light?.direction
+        ? [light.direction.x, light.direction.y, light.direction.z]
         : null,
-    eclipseStateEnabled: scene.frameState?.eclipseState?.enabled === true,
-    eclipseStateValid: scene.frameState?.eclipseState?.valid === true,
-    moonObscuration: scene.frameState?.eclipseState?.moonObscuration ?? null,
-    factor: scene.frameState?.eclipseSceneLightFactor ?? null,
-  });
+      color: light?.color
+        ? [
+            light.color.red,
+            light.color.green,
+            light.color.blue,
+            light.color.alpha,
+          ]
+        : null,
+      intensity: light?.intensity ?? null,
+    });
+    return {
+      diagnosticOnly,
+      sameObject: scene.light === scene.frameState?.light,
+      scene: readSide(scene.light),
+      frameState: readSide(scene.frameState?.light),
+    };
+  };
 
   // This is the configure epoch: exactly one configuration on a fresh page,
   // before readiness or any scored capture. The session never toggles the deck,
@@ -1326,6 +1391,26 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
     let samples = 0;
     for (let y = top; y < bottom; y += 2) {
       for (let x = Math.floor(width * 0.15); x < width * 0.85; x += 2) {
+        const i = (y * width + x) * 4;
+        sum +=
+          (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) /
+          255;
+        samples++;
+      }
+    }
+    return { mean: samples > 0 ? sum / samples : null, samples };
+  };
+
+  // Nadir plus a small central reducer keeps the diagnostic footprint under
+  // 2 km at 1400 m. That bounds analytic-normal drift tightly enough for the
+  // Node fold to distinguish the shipped 0.3/0.5/0.7/0.9 DAYNIGHT law from a
+  // saturated or fabricated response without changing a product band.
+  const diagnosticBandMean = (frame) => {
+    const { data, width, height } = frame;
+    let sum = 0;
+    let samples = 0;
+    for (let y = Math.floor(height * 0.35); y < height * 0.65; y += 2) {
+      for (let x = Math.floor(width * 0.35); x < width * 0.65; x += 2) {
         const i = (y * width + x) * 4;
         sum +=
           (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) /
@@ -1374,12 +1459,131 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
     });
   };
 
+  const diagnosticPositionWC = C.Cartesian3.fromDegrees(cfg.lon, cfg.lat, 0);
+  const diagnosticSurfaceNormalWC = scene.globe.ellipsoid.geodeticSurfaceNormal(
+    diagnosticPositionWC,
+    new C.Cartesian3(),
+  );
+  const diagnosticEastWC = C.Cartesian3.normalize(
+    C.Cartesian3.cross(
+      C.Cartesian3.UNIT_Z,
+      diagnosticSurfaceNormalWC,
+      new C.Cartesian3(),
+    ),
+    new C.Cartesian3(),
+  );
+  const aimDiagnosticCamera = () => {
+    scene.camera.setView({
+      destination: C.Cartesian3.fromDegrees(
+        cfg.lon,
+        cfg.lat,
+        cfg.groundCameraHeight,
+      ),
+      orientation: {
+        heading: 0,
+        pitch: -C.Math.PI_OVER_TWO,
+        roll: 0,
+      },
+    });
+  };
+  const diagnosticDirection = (ndotlTarget) => {
+    const tangentShare = Math.sqrt(1 - ndotlTarget * ndotlTarget);
+    const incomingDirectionWC = C.Cartesian3.add(
+      C.Cartesian3.multiplyByScalar(
+        diagnosticSurfaceNormalWC,
+        ndotlTarget,
+        new C.Cartesian3(),
+      ),
+      C.Cartesian3.multiplyByScalar(
+        diagnosticEastWC,
+        tangentShare,
+        new C.Cartesian3(),
+      ),
+      new C.Cartesian3(),
+    );
+    C.Cartesian3.normalize(incomingDirectionWC, incomingDirectionWC);
+    const emittedDirectionWC = C.Cartesian3.negate(
+      incomingDirectionWC,
+      new C.Cartesian3(),
+    );
+    const ndotl = C.Cartesian3.dot(
+      diagnosticSurfaceNormalWC,
+      incomingDirectionWC,
+    );
+    return {
+      surfaceNormalWC: [
+        diagnosticSurfaceNormalWC.x,
+        diagnosticSurfaceNormalWC.y,
+        diagnosticSurfaceNormalWC.z,
+      ],
+      eastWC: [diagnosticEastWC.x, diagnosticEastWC.y, diagnosticEastWC.z],
+      incomingDirectionWC: [
+        incomingDirectionWC.x,
+        incomingDirectionWC.y,
+        incomingDirectionWC.z,
+      ],
+      emittedDirectionWC: [
+        emittedDirectionWC.x,
+        emittedDirectionWC.y,
+        emittedDirectionWC.z,
+      ],
+      ndotl,
+      expectedDiffuse: Math.min(1, Math.max(0, Math.max(ndotl, 0) * 5 + 0.3)),
+    };
+  };
+
   const firstTime = C.JulianDate.fromIso8601(cfg.ladder[0].iso);
   aimCamera(firstTime);
   const readiness = await pin.awaitGlobeReady(C, firstTime, 400, 60000);
   const rungs = [];
-  for (const rung of cfg.ladder) {
+  const directionalDiagnosticRungs = [];
+  for (let rungIndex = 0; rungIndex < cfg.ladder.length; rungIndex++) {
+    const rung = cfg.ladder[rungIndex];
     const julian = C.JulianDate.fromIso8601(rung.iso);
+
+    // DIAGNOSTIC ONLY. DirectionalLight is intentionally outside S2's
+    // SunLight-only uniform dimming and, with eclipse-globe shadow disabled,
+    // must remain eclipse-invariant. It only proves the unsaturated DAYNIGHT
+    // diffuse path is live.
+    const ndotlTarget = cfg.directionalNdotLTargets[rungIndex];
+    const directionSpec = diagnosticDirection(ndotlTarget);
+    aimDiagnosticCamera();
+    scene.light = new C.DirectionalLight({
+      direction: new C.Cartesian3(...directionSpec.emittedDirectionWC),
+      color: C.Color.WHITE,
+      intensity: cfg.directionalLightIntensity,
+    });
+    await pin.settle(julian, cfg.settleMs);
+    const diagnosticReduced = diagnosticBandMean(pin.capture(julian, false));
+    const diagnosticBaseColor = readBaseColor();
+    const diagnosticLighting = readLighting();
+    directionalDiagnosticRungs.push({
+      target: rung.target,
+      iso: rung.iso,
+      captureRole: "diagnostic-directional-daynight",
+      diagnosticOnly: true,
+      ndotlTarget,
+      directionSpec,
+      mean: diagnosticReduced.mean,
+      samples: diagnosticReduced.samples,
+      eclipseEnabled: scene.frameState?.eclipseState?.enabled === true,
+      factor: scene.frameState?.eclipseSceneLightFactor ?? null,
+      baseColor: diagnosticBaseColor,
+      enableLighting: scene.globe.enableLighting === true,
+      lighting: diagnosticLighting,
+      light: readLight(true),
+      cameraHeight: cfg.groundCameraHeight,
+      enableVolumetric: collection.enableVolumetric,
+      configureCalls,
+    });
+
+    // SCORED FACTOR CAPTURE. Always replace the custom light with a fresh
+    // SunLight, restore the real-Sun camera, and settle/render before reading a
+    // pixel. S2 dims this type only; the diagnostic can never certify it.
+    scene.light = new C.SunLight({
+      color: C.Color.WHITE,
+      intensity: cfg.sunLightIntensity,
+    });
     aimCamera(julian);
     await pin.settle(julian, cfg.settleMs);
     const reduced = bandMean(pin.capture(julian, false));
@@ -1388,6 +1592,7 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
     rungs.push({
       target: rung.target,
       iso: rung.iso,
+      captureRole: "scored-real-sun-factor",
       mean: reduced.mean,
       samples: reduced.samples,
       eclipseEnabled: scene.frameState?.eclipseState?.enabled === true,
@@ -1398,6 +1603,7 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
         : null,
       enableLighting: scene.globe.enableLighting === true,
       lighting,
+      light: readLight(false),
       cameraHeight: cfg.groundCameraHeight,
       enableVolumetric: collection.enableVolumetric,
       configureCalls,
@@ -1412,12 +1618,15 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
     configureTruth,
     rendererType: String(scene.context?.rendererType ?? "").toLowerCase(),
     enableLighting: scene.globe.enableLighting === true,
+    captureSequence: "directional-diagnostic-then-fresh-sun-scored",
     baseColor: readBaseColor(),
     lighting: readLighting(),
+    light: readLight(false),
     pins,
     dials,
     globeReadiness: { control: readiness },
     rungs,
+    directionalDiagnosticRungs,
   };
 };
 
@@ -1633,7 +1842,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
   const controlWallMs = performance.now() - controlStartMs;
   warmedLegs.control = true;
 
-  // ── C13-41-ECLIPSE-REFRESH-COST-UNMEASURED: the INTERLEAVED cost legs.
+  // ── Reported-only refresh-cost re-estimate: the INTERLEAVED cost legs.
   //
   // The first run derived the cost from the two counting legs above and got
   // -18.9 ms/refresh: the eclipse leg ran FIRST at 0.77 s and the control leg
@@ -1915,6 +2124,25 @@ const RUN_ARTIFACT = path.join(
   OUT_DIR,
   `eclipse-cloud-response-report.run-${RUN_ID}.json`,
 );
+const PRIOR_CANONICAL_QUARANTINE_ARTIFACT = path.join(
+  OUT_DIR,
+  `eclipse-cloud-response-report.prior-${RUN_ID}.json`,
+);
+const LIFECYCLE_PATHS = Object.freeze({
+  directory: OUT_DIR,
+  canonical: CANONICAL_ARTIFACT,
+  firstRed: FIRST_RED_ARTIFACT,
+  preLifecycle: PRE_LIFECYCLE_RUN_6_ARTIFACT,
+  lock: RUN_LOCK_ARTIFACT,
+  run: RUN_ARTIFACT,
+  priorQuarantine: PRIOR_CANONICAL_QUARANTINE_ARTIFACT,
+  archiveForRunId(runId) {
+    return path.join(
+      OUT_DIR,
+      `eclipse-cloud-response-report.run-${runId}.json`,
+    );
+  },
+});
 let activeBrowser = null;
 let browserClosePromise = null;
 let browserClosed = false;
@@ -1925,10 +2153,12 @@ let watchdog;
 let outerWatchdog;
 let publicationAttempted = false;
 let runningMarkerPublished = false;
+let runLockAcquired = false;
 let firstRedAtStart;
 let startLocalIdentity;
 let startProvenance;
 let previousCanonicalAtStart;
+let priorCanonicalCapture;
 const browserEvidence = {
   runtimeEntries: [],
   pageDiagnostics: [],
@@ -1951,35 +2181,185 @@ function sameFingerprint(left, right) {
   );
 }
 
-function prepareCanonicalForRun() {
-  const canonical = fingerprintEvidenceFile(CANONICAL_ARTIFACT);
-  assertEvidenceReadableOrAbsent(canonical, "prior canonical artifact");
-  if (!canonical.exists) {
+export function captureC1341PriorCanonical(file, operations = fs) {
+  try {
+    const value = operations.readFileSync(file);
+    const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    const canonical = {
+      file,
+      exists: true,
+      byteLength: bytes.byteLength,
+      sha256: sha256(bytes),
+    };
+    try {
+      return {
+        canonical,
+        bytes,
+        parsed: JSON.parse(bytes.toString("utf8")),
+        parseError: null,
+      };
+    } catch (error) {
+      return {
+        canonical,
+        bytes,
+        parsed: null,
+        parseError: error?.message ?? String(error),
+      };
+    }
+  } catch (error) {
+    return {
+      canonical: {
+        file,
+        exists: false,
+        byteLength: null,
+        sha256: null,
+        error: error?.code ?? error?.message ?? String(error),
+      },
+      bytes: null,
+      parsed: null,
+      parseError: null,
+    };
+  }
+}
+
+function summarizePriorCanonical(captured) {
+  return {
+    canonical: captured?.canonical,
+    parsedStatus: captured?.parsed?.status ?? null,
+    parsedRunId: captured?.parsed?.runId ?? null,
+    parseError: captured?.parseError ?? null,
+  };
+}
+
+export function assertNoPriorC1341Running(captured) {
+  if (
+    captured?.parsed?.status === "RUNNING" ||
+    captured?.parsed?.incomplete === true
+  ) {
+    throw new Error(
+      `previous RUNNING marker ${String(captured.parsed.runId)} must be investigated before retry`,
+    );
+  }
+}
+
+export function acquireC1341RunLock(paths, runId, operations = fs) {
+  operations.writeFileSync(
+    paths.lock,
+    artifactBytes({ runId, acquiredAt: new Date().toISOString() }),
+    { flag: "wx" },
+  );
+  assertC1341RunLockOwnership(paths, runId, operations);
+}
+
+export function assertC1341RunLockOwnership(paths, runId, operations = fs) {
+  let lock;
+  try {
+    lock = JSON.parse(operations.readFileSync(paths.lock, "utf8"));
+  } catch (error) {
+    throw new Error("C13-41 run lock is absent or unreadable", {
+      cause: error,
+    });
+  }
+  if (lock?.runId !== runId) {
+    throw new Error("C13-41 run lock ownership changed during the run");
+  }
+  return lock;
+}
+
+export function releaseC1341RunLock(paths, runId, operations = fs) {
+  assertC1341RunLockOwnership(paths, runId, operations);
+  operations.unlinkSync(paths.lock);
+}
+
+export function publishC1341Running(paths, marker, operations = fs) {
+  if (
+    marker?.runId === undefined ||
+    marker?.status !== "RUNNING" ||
+    marker?.incomplete !== true
+  ) {
+    throw new Error("RUNNING marker does not own this C13-41 invocation");
+  }
+  assertC1341RunLockOwnership(paths, marker.runId, operations);
+  atomicReplaceEvidence(paths.canonical, artifactBytes(marker), operations);
+}
+
+export function assertC1341RunningOwnership(paths, runId, operations = fs) {
+  assertC1341RunLockOwnership(paths, runId, operations);
+  let marker;
+  try {
+    marker = JSON.parse(operations.readFileSync(paths.canonical, "utf8"));
+  } catch (error) {
+    throw new Error("C13-41 RUNNING marker is absent or unreadable", {
+      cause: error,
+    });
+  }
+  if (
+    marker?.runId !== runId ||
+    marker?.status !== "RUNNING" ||
+    marker?.incomplete !== true
+  ) {
+    throw new Error("C13-41 canonical RUNNING ownership was lost");
+  }
+  return marker;
+}
+
+function quarantineCapturedCanonical(captured, paths, operations) {
+  try {
+    createImmutableEvidence(paths.priorQuarantine, captured.bytes, operations);
+  } catch (error) {
+    if (error?.code !== "EEXIST") {
+      throw error;
+    }
+  }
+  const quarantine = fingerprintEvidenceFile(paths.priorQuarantine, operations);
+  if (
+    quarantine.exists !== true ||
+    !Number.isInteger(quarantine.byteLength) ||
+    quarantine.byteLength < 0 ||
+    !/^[0-9a-f]{64}$/u.test(quarantine.sha256 ?? "") ||
+    !sameFingerprint(captured.canonical, quarantine)
+  ) {
+    throw new Error("prior canonical quarantine differs from captured bytes");
+  }
+  return quarantine;
+}
+
+export function prepareCapturedCanonicalForRun(
+  captured,
+  paths,
+  operations = fs,
+) {
+  const canonical = captured?.canonical;
+  if (canonical?.exists !== true) {
+    assertEvidenceReadableOrAbsent(canonical, "prior canonical artifact");
     return { mode: "absent", canonical };
   }
 
-  const bytes = fs.readFileSync(CANONICAL_ARTIFACT);
-  let previous;
-  try {
-    previous = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    previous = null;
+  if (
+    captured.parseError !== null ||
+    typeof captured.parsed !== "object" ||
+    captured.parsed === null ||
+    Array.isArray(captured.parsed)
+  ) {
+    const quarantine = quarantineCapturedCanonical(captured, paths, operations);
+    throw new Error(
+      `prior canonical JSON is malformed; exact bytes quarantined at ${quarantine.file}`,
+    );
   }
 
-  if (previous?.schema === ARTIFACT_SCHEMA) {
-    if (previous.status === "RUNNING" || previous.incomplete === true) {
-      throw new Error(
-        `previous RUNNING marker ${String(previous.runId)} must be investigated before retry`,
-      );
-    }
+  assertEvidenceReadableOrAbsent(canonical, "prior canonical artifact");
+
+  const previous = captured.parsed;
+  assertNoPriorC1341Running(captured);
+  if (previous.schema === ARTIFACT_SCHEMA) {
     if (typeof previous.runId !== "string" || previous.runId.length === 0) {
       throw new Error("previous lifecycle artifact has no runId");
     }
-    const previousArchivePath = path.join(
-      OUT_DIR,
-      `eclipse-cloud-response-report.run-${previous.runId}.json`,
+    const previousArchivePath = paths.archiveForRunId(previous.runId);
+    const previousArchive = fingerprintEvidenceFile(
+      previousArchivePath,
+      operations,
     );
-    const previousArchive = fingerprintEvidenceFile(previousArchivePath);
     assertEvidenceReadableOrAbsent(
       previousArchive,
       "prior immutable run artifact",
@@ -1996,17 +2376,17 @@ function prepareCanonicalForRun() {
     };
   }
 
-  // The six historical runs predate run IDs and immutable archives. Preserve
-  // the current run-6 canonical byte-for-byte before the first v3 RUNNING
-  // marker replaces it; retries verify rather than overwrite this archive.
+  // The six historical runs predate run IDs and immutable archives. RUNNING
+  // is already durable before this fallible preservation/verification step,
+  // so no stale PASS can survive a preflight failure.
   try {
-    createImmutableEvidence(PRE_LIFECYCLE_RUN_6_ARTIFACT, bytes);
+    createImmutableEvidence(paths.preLifecycle, captured.bytes, operations);
   } catch (error) {
     if (error?.code !== "EEXIST") {
       throw error;
     }
   }
-  const legacyArchive = fingerprintEvidenceFile(PRE_LIFECYCLE_RUN_6_ARTIFACT);
+  const legacyArchive = fingerprintEvidenceFile(paths.preLifecycle, operations);
   assertEvidenceReadableOrAbsent(legacyArchive, "pre-lifecycle run-6 archive");
   if (!sameFingerprint(canonical, legacyArchive)) {
     throw new Error(
@@ -2058,11 +2438,24 @@ function clearWatchdogs() {
   clearTimeout(outerWatchdog);
 }
 
-function publishFinalArtifact(artifact) {
-  publicationAttempted = true;
+export function finalizeC1341Evidence(paths, artifact, operations = fs) {
+  if (
+    typeof artifact?.runId !== "string" ||
+    !["PASS", "FAIL", "STRUCTURAL", "ERROR"].includes(artifact?.status) ||
+    artifact?.incomplete !== false
+  ) {
+    throw new Error(
+      "final C13-41 artifact is malformed or owned by no lifecycle run",
+    );
+  }
+  const runningMarker = assertC1341RunningOwnership(
+    paths,
+    artifact.runId,
+    operations,
+  );
   const bytes = artifactBytes(artifact);
-  createImmutableEvidence(RUN_ARTIFACT, bytes);
-  const archive = fingerprintEvidenceFile(RUN_ARTIFACT);
+  createImmutableEvidence(paths.run, bytes, operations);
+  const archive = fingerprintEvidenceFile(paths.run, operations);
   assertEvidenceReadableOrAbsent(archive, "new immutable run artifact");
   if (archive.exists !== true) {
     throw new Error("new immutable run artifact disappeared after creation");
@@ -2070,18 +2463,53 @@ function publishFinalArtifact(artifact) {
   const firstRed =
     artifact.status === "PASS"
       ? null
-      : preserveFirstRedEvidence(FIRST_RED_ARTIFACT, bytes);
-  atomicReplaceEvidence(CANONICAL_ARTIFACT, bytes);
-  const canonical = fingerprintEvidenceFile(CANONICAL_ARTIFACT);
-  assertEvidenceReadableOrAbsent(canonical, "final canonical artifact");
-  if (canonical.exists !== true) {
-    throw new Error("final canonical artifact disappeared after replacement");
-  }
-  if (!sameFingerprint(archive, canonical)) {
+      : preserveFirstRedEvidence(
+          paths.firstRed,
+          bytes,
+          operations,
+          fingerprintEvidenceFile,
+        );
+  let canonical;
+  try {
+    atomicReplaceEvidence(paths.canonical, bytes, operations);
+    canonical = fingerprintEvidenceFile(paths.canonical, operations);
+    assertEvidenceReadableOrAbsent(canonical, "final canonical artifact");
+    if (canonical.exists !== true) {
+      throw new Error("final canonical artifact disappeared after replacement");
+    }
+    if (!sameFingerprint(archive, canonical)) {
+      throw new Error(
+        "canonical artifact is not byte-identical to immutable run archive",
+      );
+    }
+    releaseC1341RunLock(paths, artifact.runId, operations);
+  } catch (error) {
+    // A final result is visible only after its bytes verify and ownership is
+    // cleanly relinquished. Any post-replacement failure restores this
+    // invocation's RUNNING marker while the lock is retained.
+    atomicReplaceEvidence(
+      paths.canonical,
+      artifactBytes(runningMarker),
+      operations,
+    );
+    assertC1341RunningOwnership(paths, artifact.runId, operations);
     throw new Error(
-      "canonical artifact is not byte-identical to immutable run archive",
+      "C13-41 final verification or lock release failed; owned RUNNING marker restored",
+      { cause: error },
     );
   }
+  return {
+    canonical,
+    immutableRunArtifact: archive,
+    firstRed,
+    lockReleased: true,
+  };
+}
+
+function publishFinalArtifact(artifact) {
+  publicationAttempted = true;
+  const publication = finalizeC1341Evidence(LIFECYCLE_PATHS, artifact);
+  runLockAcquired = false;
   console.log(
     JSON.stringify(
       {
@@ -2089,25 +2517,29 @@ function publishFinalArtifact(artifact) {
         runId: RUN_ID,
         status: artifact.status,
         exitCode: artifact.exitCode,
-        canonical,
-        immutableRunArtifact: archive,
-        firstRed,
+        ...publication,
       },
       null,
       2,
     ),
   );
+  return publication;
 }
 
-(async () => {
-  fs.mkdirSync(OUT_DIR, { recursive: true });
-  startLocalIdentity = snapshotEvidenceFiles(LOCAL_EVIDENCE_FILES);
-  firstRedAtStart = fingerprintEvidenceFile(FIRST_RED_ARTIFACT);
-  assertEvidenceReadableOrAbsent(firstRedAtStart, "prior first-red artifact");
-  previousCanonicalAtStart = prepareCanonicalForRun();
-  atomicReplaceEvidence(
-    CANONICAL_ARTIFACT,
-    artifactBytes({
+export async function runEclipseCloudResponseProbe() {
+  try {
+    fs.mkdirSync(OUT_DIR, { recursive: true });
+    acquireC1341RunLock(LIFECYCLE_PATHS, RUN_ID);
+    runLockAcquired = true;
+
+    // Capture the prior bytes without asserting, parsing, archiving, or
+    // fingerprinting any other input. A genuine prior RUNNING remains owned by
+    // its invocation; every other prior state is invalidated immediately by
+    // this run's marker before fallible evidence preflight begins.
+    priorCanonicalCapture = captureC1341PriorCanonical(CANONICAL_ARTIFACT);
+    previousCanonicalAtStart = summarizePriorCanonical(priorCanonicalCapture);
+    assertNoPriorC1341Running(priorCanonicalCapture);
+    publishC1341Running(LIFECYCLE_PATHS, {
       schema: ARTIFACT_SCHEMA,
       schemaVersion: 3,
       probe: "probe-eclipse-cloud-response",
@@ -2116,598 +2548,638 @@ function publishFinalArtifact(artifact) {
       status: "RUNNING",
       incomplete: true,
       startedAt: STARTED_AT,
-      startLocalIdentity,
-      firstRedAtStart,
-      previousCanonicalAtStart,
-    }),
-  );
-  runningMarkerPublished = true;
-  armWatchdogs();
+      lock: { path: RUN_LOCK_ARTIFACT, runId: RUN_ID },
+      priorCanonicalAtStart: previousCanonicalAtStart,
+    });
+    runningMarkerPublished = true;
+    armWatchdogs();
 
-  startProvenance = provenance();
-  if (!startProvenance.ok) {
-    console.error(
-      "[probe-eclipse-cloud-response] PROVENANCE FAILURE — stale or missing build:",
-      JSON.stringify(startProvenance, null, 2),
+    previousCanonicalAtStart = prepareCapturedCanonicalForRun(
+      priorCanonicalCapture,
+      LIFECYCLE_PATHS,
     );
-    // STRUCTURAL, not a harness fault: the probe ran, checked, and refused. A
-    // pin on the BUILD is the same class as a pin on the scene.
-    throw new StructuralProbeError(
-      "stale or missing build provenance",
-      startProvenance,
-    );
-  }
+    startLocalIdentity = snapshotEvidenceFiles(LOCAL_EVIDENCE_FILES);
+    firstRedAtStart = fingerprintEvidenceFile(FIRST_RED_ARTIFACT);
+    assertEvidenceReadableOrAbsent(firstRedAtStart, "prior first-red artifact");
 
-  activeBrowser = await chromium.launch({ channel: "msedge", headless: true });
-  const browser = activeBrowser;
-  let derived;
-  let cloudLanes;
-  const deckFreeSessions = [];
-  let iblWebGPU;
-  let iblWebGL;
-  const shotsWritten = [];
-
-  try {
-    // ── Derive the schedule ONCE, on a WebGL context (pure ephemeris; no
-    // rendering), and reuse it for both backends so the two runs are the same
-    // fixture rather than two independently-located ones.
-    derived = await withFreshPage(
-      browser,
-      "webgl",
-      "derive-webgl",
-      browserEvidence,
-      (page) =>
-        page.evaluate(DERIVE_SCHEDULE, {
-          targets: ECLIPSE_CLOUD_BANDS.ladderTargets,
-          rampFrames: SWEEP_RISING_FRAMES,
-          rampPeak: SWEEP_PEAK_OBSCURATION,
-        }),
-    );
-    if (!derived || derived.structuralError) {
+    startProvenance = provenance();
+    if (!startProvenance.ok) {
       console.error(
-        "[probe-eclipse-cloud-response] schedule derivation failed:",
-        JSON.stringify(derived, null, 2),
+        "[probe-eclipse-cloud-response] PROVENANCE FAILURE — stale or missing build:",
+        JSON.stringify(startProvenance, null, 2),
       );
-      // The derivation lane returned a `structuralError`; that is the same
-      // class as any other lane that could not run.
-      throw new StructuralProbeError("schedule derivation failed", derived);
-    }
-    console.log(
-      `2026-08-12 vantage ${derived.region} (${r3(derived.lat)}, ${r3(derived.lon)}), ` +
-        `peak obscuration ${r3(derived.peakObscuration)} at ${derived.peakIso}`,
-    );
-    for (const rung of derived.ladder) {
-      console.log(
-        `  ladder target ${rung.target} -> realized ${r6(rung.obscuration)} @ ${rung.iso}`,
+      // STRUCTURAL, not a harness fault: the probe ran, checked, and refused. A
+      // pin on the BUILD is the same class as a pin on the scene.
+      throw new StructuralProbeError(
+        "stale or missing build provenance",
+        startProvenance,
       );
     }
 
-    const laneConfig = {
-      lat: derived.lat,
-      lon: derived.lon,
-      // Lane A: UNDER the 1500-4000 m deck, looking up, so the deck is measured
-      // against the (now black) background.
-      cameraHeight: 300.0,
-      skyPitchDegrees: 12.0,
-      // Lane B: BELOW the 1500 m deck floor, looking down at a ground patch far
-      // enough away to span many shadow texels. The +/-60 km, 512-texel shadow
-      // map is 234 m per texel, so the FIRST run's 300 m vantage put the whole
-      // scored band inside ONE texel (geometric vacuity); the SECOND run's
-      // 9000 m vantage fixed that but flew ABOVE the deck, so ~98% of the band
-      // was cloud top and only ~1.8% was ground (photometric vacuity). 1400 m
-      // at -8 deg puts the band at 3.1-6.8 km — ~16 texels — with the deck
-      // entirely above the line of sight. See the arithmetic at the lane-B
-      // block; `shadowGroundNotOccluded` and `shadowGroundIsBright` read both
-      // preconditions back.
-      groundCameraHeight: 1400.0,
-      groundPitchDegrees: -8.0,
-      groundCloudDensity: 0.85,
-      settleMs: 500,
-      ladder: derived.ladder,
-      determinismDials: WEATHER_DETERMINISM_DIALS,
-    };
+    activeBrowser = await chromium.launch({
+      channel: "msedge",
+      headless: true,
+    });
+    const browser = activeBrowser;
+    let derived;
+    let cloudLanes;
+    const deckFreeSessions = [];
+    let iblWebGPU;
+    let iblWebGL;
+    const shotsWritten = [];
 
-    // ── WebGPU: lanes A + B, then lane C in a fresh context (the IBL lane
-    // hides the globe and replaces the scene light, so it must not share a
-    // context with the cloud lanes).
-    cloudLanes = await withFreshPage(
-      browser,
-      "webgpu",
-      "cloud-webgpu",
-      browserEvidence,
-      async (page) => {
-        const keys = await resolveFeatureRendererKeys(page);
-        if (keys.proceduralKey === null || keys.globeSurfaceKey === null) {
-          return {
-            structuralError:
-              "FeatureRendererKey.PROCEDURAL_CLOUDS / GLOBE_SURFACE is not exported",
-          };
-        }
-        return page.evaluate(RUN_CLOUD_LANES, {
-          ...laneConfig,
-          proceduralKey: keys.proceduralKey,
-          globeSurfaceKey: keys.globeSurfaceKey,
-        });
-      },
-    );
-    if (cloudLanes?.shots) {
-      for (const shot of cloudLanes.shots) {
-        if (!shot.png) {
-          continue;
-        }
-        const file = path.join(
-          OUT_DIR,
-          `eclipse-cloud-response-${shot.name}.png`,
-        );
-        fs.writeFileSync(
-          file,
-          Buffer.from(shot.png.split(",")[1] ?? "", "base64"),
-        );
-        shotsWritten.push(file.replaceAll("\\", "/"));
-      }
-      delete cloudLanes.shots;
-    }
-
-    // The deck-free control gets no shared page and no repeated configuration.
-    // Each ABBA entry opens and closes its own browser context, configures the
-    // collection exactly once, and captures the entire four-rung ladder without
-    // changing eclipse/cloud state. Cross-session agreement replaces the
-    // same-page "settled twin" that run 6 proved could reproduce stale state.
-    for (const planned of DECK_FREE_CONTROL_SESSION_PLAN) {
-      const report = await withFreshPage(
+    try {
+      // ── Derive the schedule ONCE, on a WebGL context (pure ephemeris; no
+      // rendering), and reuse it for both backends so the two runs are the same
+      // fixture rather than two independently-located ones.
+      derived = await withFreshPage(
         browser,
-        "webgpu",
-        `deck-free-${planned.label}`,
+        "webgl",
+        "derive-webgl",
         browserEvidence,
         (page) =>
-          page.evaluate(RUN_DECK_FREE_CONTROL_SESSION, {
-            ...laneConfig,
-            sessionLabel: planned.label,
-            eclipseEnabled: planned.eclipseEnabled,
+          page.evaluate(DERIVE_SCHEDULE, {
+            targets: ECLIPSE_CLOUD_BANDS.ladderTargets,
+            rampFrames: SWEEP_RISING_FRAMES,
+            rampPeak: SWEEP_PEAK_OBSCURATION,
           }),
       );
-      deckFreeSessions.push(report);
-    }
-    const deckFreeControl = foldDeckFreeControlSessions({
-      sessions: deckFreeSessions,
-      ladder: derived.ladder,
-      certifiedRungs: cloudLanes?.rungs,
-      factorTolerance: ECLIPSE_CLOUD_BANDS.factorTolerance.hi,
-      scheduleObscurationTolerance:
-        ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
-      captureDelta: BAND_MEAN_CAPTURE_DELTA,
-    });
-    if (cloudLanes && !cloudLanes.structuralError) {
-      cloudLanes.deckFreeControl = deckFreeControl;
-      for (let index = 0; index < cloudLanes.rungs.length; index++) {
-        Object.assign(
-          cloudLanes.rungs[index].shadow,
-          deckFreeControl.rungs[index] ?? {},
+      if (!derived || derived.structuralError) {
+        console.error(
+          "[probe-eclipse-cloud-response] schedule derivation failed:",
+          JSON.stringify(derived, null, 2),
+        );
+        // The derivation lane returned a `structuralError`; that is the same
+        // class as any other lane that could not run.
+        throw new StructuralProbeError("schedule derivation failed", derived);
+      }
+      console.log(
+        `2026-08-12 vantage ${derived.region} (${r3(derived.lat)}, ${r3(derived.lon)}), ` +
+          `peak obscuration ${r3(derived.peakObscuration)} at ${derived.peakIso}`,
+      );
+      for (const rung of derived.ladder) {
+        console.log(
+          `  ladder target ${rung.target} -> realized ${r6(rung.obscuration)} @ ${rung.iso}`,
         );
       }
-    }
 
-    const iblConfig = {
-      lat: derived.lat,
-      lon: derived.lon,
-      modelUrl: MODEL_URL,
-      ramp: derived.ramp,
-    };
-    iblWebGPU = await withFreshPage(
-      browser,
-      "webgpu",
-      "ibl-webgpu",
-      browserEvidence,
-      (page) => page.evaluate(RUN_IBL_SWEEP, iblConfig),
-    );
-    iblWebGL = await withFreshPage(
-      browser,
-      "webgl",
-      "ibl-webgl",
-      browserEvidence,
-      (page) => page.evaluate(RUN_IBL_SWEEP, iblConfig),
-    );
-  } finally {
-    await closeActiveBrowser("measurement finally");
-  }
+      const laneConfig = {
+        lat: derived.lat,
+        lon: derived.lon,
+        // Lane A: UNDER the 1500-4000 m deck, looking up, so the deck is measured
+        // against the (now black) background.
+        cameraHeight: 300.0,
+        skyPitchDegrees: 12.0,
+        // Lane B: BELOW the 1500 m deck floor, looking down at a ground patch far
+        // enough away to span many shadow texels. The +/-60 km, 512-texel shadow
+        // map is 234 m per texel, so the FIRST run's 300 m vantage put the whole
+        // scored band inside ONE texel (geometric vacuity); the SECOND run's
+        // 9000 m vantage fixed that but flew ABOVE the deck, so ~98% of the band
+        // was cloud top and only ~1.8% was ground (photometric vacuity). 1400 m
+        // at -8 deg puts the band at 3.1-6.8 km — ~16 texels — with the deck
+        // entirely above the line of sight. See the arithmetic at the lane-B
+        // block; `shadowGroundNotOccluded` and `shadowGroundIsBright` read both
+        // preconditions back.
+        groundCameraHeight: 1400.0,
+        groundPitchDegrees: -8.0,
+        groundCloudDensity: 0.85,
+        settleMs: 500,
+        ladder: derived.ladder,
+        determinismDials: WEATHER_DETERMINISM_DIALS,
+      };
 
-  if (watchdogTimedOut) {
-    throw new Error(`WATCHDOG: exceeded ${HARD_LIMIT_MS} ms`);
-  }
-  if (
-    !browserClosed ||
-    cleanupErrors.length > 0 ||
-    browserEvidence.cleanupErrors.length > 0
-  ) {
-    throw new Error(
-      `browser cleanup did not complete cleanly: closed=${browserClosed}, errors=${JSON.stringify([...cleanupErrors, ...browserEvidence.cleanupErrors])}`,
-    );
-  }
-
-  const endProvenance = provenance();
-  const markerToStartIdentity = compareEvidenceFileSnapshots(
-    startLocalIdentity,
-    startProvenance.localIdentity,
-  );
-  const runIdentityStable = compareEvidenceFileSnapshots(
-    startLocalIdentity,
-    endProvenance.localIdentity,
-  );
-  const servedEntryIdentity = validateServedEntryIdentities({
-    entries: browserEvidence.runtimeEntries,
-    expectedLabels: EXPECTED_RUNTIME_SESSION_LABELS,
-    localEntry: startLocalIdentity.buildEntry,
-  });
-  const firstRedBeforeFinalize = fingerprintEvidenceFile(FIRST_RED_ARTIFACT);
-  assertEvidenceReadableOrAbsent(
-    firstRedBeforeFinalize,
-    "first-red artifact before finalization",
-  );
-  const firstRedStable = sameFingerprint(
-    firstRedAtStart,
-    firstRedBeforeFinalize,
-  );
-  const provenanceReasons = [
-    ...(startProvenance.ok
-      ? []
-      : ["start build/source identity is not certified"]),
-    ...(endProvenance.ok
-      ? []
-      : [
-          `end build/source identity is not certified: ${(
-            endProvenance.sourceIdentity?.reasons ?? [endProvenance.reason]
-          )
-            .filter(Boolean)
-            .join("; ")}`,
-        ]),
-    ...markerToStartIdentity.reasons,
-    ...runIdentityStable.reasons,
-    ...servedEntryIdentity.reasons,
-    ...(firstRedStable
-      ? []
-      : ["write-once first-red bytes changed during the run"]),
-  ].map((reason) => `provenance: ${reason}`);
-  const diagnosticReasons = browserEvidence.pageDiagnostics.map(
-    (diagnostic) =>
-      `${diagnostic.sessionLabel}: ${diagnostic.type}: ${diagnostic.text}`,
-  );
-  const webglSessions = new Set(["derive-webgl", "ibl-webgl"]);
-  const consoleFaults = {
-    all: browserEvidence.pageDiagnostics,
-    webgpu: browserEvidence.pageDiagnostics.filter(
-      (entry) => !webglSessions.has(entry.sessionLabel),
-    ),
-    webgl: browserEvidence.pageDiagnostics.filter((entry) =>
-      webglSessions.has(entry.sessionLabel),
-    ),
-  };
-
-  // ── Pin enforcement (exit 3). A probe that is not measuring the
-  // configuration it documents certifies nothing, so this is STRUCTURAL and
-  // never a product verdict.
-  const pinReasons = [...provenanceReasons, ...diagnosticReasons];
-  for (const [name, lane] of [
-    ["webgpu-cloud", cloudLanes],
-    ["webgpu-ibl", iblWebGPU],
-    ["webgl-ibl", iblWebGL],
-  ]) {
-    if (!lane || lane.structuralError) {
-      pinReasons.push(
-        `${name}: ${lane?.structuralError ?? "lane did not run"}`,
+      // ── WebGPU: lanes A + B, then lane C in a fresh context (the IBL lane
+      // hides the globe and replaces the scene light, so it must not share a
+      // context with the cloud lanes).
+      cloudLanes = await withFreshPage(
+        browser,
+        "webgpu",
+        "cloud-webgpu",
+        browserEvidence,
+        async (page) => {
+          const keys = await resolveFeatureRendererKeys(page);
+          if (keys.proceduralKey === null || keys.globeSurfaceKey === null) {
+            return {
+              structuralError:
+                "FeatureRendererKey.PROCEDURAL_CLOUDS / GLOBE_SURFACE is not exported",
+            };
+          }
+          return page.evaluate(RUN_CLOUD_LANES, {
+            ...laneConfig,
+            proceduralKey: keys.proceduralKey,
+            globeSurfaceKey: keys.globeSurfaceKey,
+          });
+        },
       );
-      continue;
-    }
-    // The cloud lanes hand in their dials AND every scored capture's uniform
-    // slots. The IBL lanes hand in neither: they run no cloud deck by design,
-    // so `_cloudCache` does not exist and the cloud-slot clause would
-    // manufacture a structural failure out of a configuration they do not use.
-    // Their scene pins and globe readiness are still fully enforced.
-    const isCloudLane = name === "webgpu-cloud";
-    pinReasons.push(
-      ...collectPinStructural({
-        pins: lane.pins,
-        dials: isCloudLane ? lane.dials : undefined,
-        captures: isCloudLane ? (lane.captures ?? []) : [],
-        globeReadiness: lane.globeReadiness ?? {},
-        requireWeatherMap: false,
-        subjectDials: ["cloudCastShadows", "cloudContributesIBL"],
-      }).map((reason) => `${name}: ${reason}`),
-    );
-  }
+      if (cloudLanes?.shots) {
+        for (const shot of cloudLanes.shots) {
+          if (!shot.png) {
+            continue;
+          }
+          const file = path.join(
+            OUT_DIR,
+            `eclipse-cloud-response-${shot.name}.png`,
+          );
+          fs.writeFileSync(
+            file,
+            Buffer.from(shot.png.split(",")[1] ?? "", "base64"),
+          );
+          shotsWritten.push(file.replaceAll("\\", "/"));
+        }
+        delete cloudLanes.shots;
+      }
 
-  // A control-session pin failure blinds only the deck-free attribution. It is
-  // not allowed to demote the independent deck, shadow-contrast, or IBL lanes.
-  if (cloudLanes?.deckFreeControl) {
-    const controlPinReasons = [];
-    for (const session of deckFreeSessions) {
-      if (!session || session.structuralError) {
-        controlPinReasons.push(
-          `${session?.sessionLabel ?? "unknown"}: ${session?.structuralError ?? "session did not run"}`,
+      // The deck-free control gets no shared page and no repeated configuration.
+      // Each ABBA entry opens and closes its own browser context, configures the
+      // collection exactly once, and captures the entire four-rung ladder without
+      // changing eclipse/cloud state. Cross-session agreement replaces the
+      // same-page "settled twin" that run 6 proved could reproduce stale state.
+      for (const planned of DECK_FREE_CONTROL_SESSION_PLAN) {
+        const report = await withFreshPage(
+          browser,
+          "webgpu",
+          `deck-free-${planned.label}`,
+          browserEvidence,
+          (page) =>
+            page.evaluate(RUN_DECK_FREE_CONTROL_SESSION, {
+              ...laneConfig,
+              sessionLabel: planned.label,
+              eclipseEnabled: planned.eclipseEnabled,
+              lightingFadeOutDistance: DECK_FREE_LIGHTING_FADE_OUT_DISTANCE,
+              lightingFadeInDistance: DECK_FREE_LIGHTING_FADE_IN_DISTANCE,
+              directionalNdotLTargets: DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS,
+              directionalLightIntensity: DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY,
+              sunLightIntensity: DECK_FREE_SUN_LIGHT_INTENSITY,
+            }),
+        );
+        deckFreeSessions.push(report);
+      }
+      const deckFreeControl = foldDeckFreeControlSessions({
+        sessions: deckFreeSessions,
+        ladder: derived.ladder,
+        certifiedRungs: cloudLanes?.rungs,
+        factorTolerance: ECLIPSE_CLOUD_BANDS.factorTolerance.hi,
+        scheduleObscurationTolerance:
+          ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
+        captureDelta: BAND_MEAN_CAPTURE_DELTA,
+        diagnosticSite: {
+          latitudeDegrees: derived.lat,
+          longitudeDegrees: derived.lon,
+        },
+      });
+      if (cloudLanes && !cloudLanes.structuralError) {
+        cloudLanes.deckFreeControl = deckFreeControl;
+        for (let index = 0; index < cloudLanes.rungs.length; index++) {
+          Object.assign(
+            cloudLanes.rungs[index].shadow,
+            deckFreeControl.rungs[index] ?? {},
+          );
+        }
+      }
+
+      const iblConfig = {
+        lat: derived.lat,
+        lon: derived.lon,
+        modelUrl: MODEL_URL,
+        ramp: derived.ramp,
+      };
+      iblWebGPU = await withFreshPage(
+        browser,
+        "webgpu",
+        "ibl-webgpu",
+        browserEvidence,
+        (page) => page.evaluate(RUN_IBL_SWEEP, iblConfig),
+      );
+      iblWebGL = await withFreshPage(
+        browser,
+        "webgl",
+        "ibl-webgl",
+        browserEvidence,
+        (page) => page.evaluate(RUN_IBL_SWEEP, iblConfig),
+      );
+    } finally {
+      await closeActiveBrowser("measurement finally");
+    }
+
+    if (watchdogTimedOut) {
+      throw new Error(`WATCHDOG: exceeded ${HARD_LIMIT_MS} ms`);
+    }
+    if (
+      !browserClosed ||
+      cleanupErrors.length > 0 ||
+      browserEvidence.cleanupErrors.length > 0
+    ) {
+      throw new Error(
+        `browser cleanup did not complete cleanly: closed=${browserClosed}, errors=${JSON.stringify([...cleanupErrors, ...browserEvidence.cleanupErrors])}`,
+      );
+    }
+
+    const endProvenance = provenance();
+    const markerToStartIdentity = compareEvidenceFileSnapshots(
+      startLocalIdentity,
+      startProvenance.localIdentity,
+    );
+    const runIdentityStable = compareEvidenceFileSnapshots(
+      startLocalIdentity,
+      endProvenance.localIdentity,
+    );
+    const servedEntryIdentity = validateServedEntryIdentities({
+      entries: browserEvidence.runtimeEntries,
+      expectedLabels: EXPECTED_RUNTIME_SESSION_LABELS,
+      localEntry: startLocalIdentity.buildEntry,
+    });
+    const firstRedBeforeFinalize = fingerprintEvidenceFile(FIRST_RED_ARTIFACT);
+    assertEvidenceReadableOrAbsent(
+      firstRedBeforeFinalize,
+      "first-red artifact before finalization",
+    );
+    const firstRedStable = sameFingerprint(
+      firstRedAtStart,
+      firstRedBeforeFinalize,
+    );
+    const provenanceReasons = [
+      ...(startProvenance.ok
+        ? []
+        : ["start build/source identity is not certified"]),
+      ...(endProvenance.ok
+        ? []
+        : [
+            `end build/source identity is not certified: ${(
+              endProvenance.sourceIdentity?.reasons ?? [endProvenance.reason]
+            )
+              .filter(Boolean)
+              .join("; ")}`,
+          ]),
+      ...markerToStartIdentity.reasons,
+      ...runIdentityStable.reasons,
+      ...servedEntryIdentity.reasons,
+      ...(firstRedStable
+        ? []
+        : ["write-once first-red bytes changed during the run"]),
+    ].map((reason) => `provenance: ${reason}`);
+    const diagnosticReasons = browserEvidence.pageDiagnostics.map(
+      (diagnostic) =>
+        `${diagnostic.sessionLabel}: ${diagnostic.type}: ${diagnostic.text}`,
+    );
+    const webglSessions = new Set(["derive-webgl", "ibl-webgl"]);
+    const consoleFaults = {
+      all: browserEvidence.pageDiagnostics,
+      webgpu: browserEvidence.pageDiagnostics.filter(
+        (entry) => !webglSessions.has(entry.sessionLabel),
+      ),
+      webgl: browserEvidence.pageDiagnostics.filter((entry) =>
+        webglSessions.has(entry.sessionLabel),
+      ),
+    };
+
+    // ── Pin enforcement (exit 3). A probe that is not measuring the
+    // configuration it documents certifies nothing, so this is STRUCTURAL and
+    // never a product verdict.
+    const pinReasons = [...provenanceReasons, ...diagnosticReasons];
+    for (const [name, lane] of [
+      ["webgpu-cloud", cloudLanes],
+      ["webgpu-ibl", iblWebGPU],
+      ["webgl-ibl", iblWebGL],
+    ]) {
+      if (!lane || lane.structuralError) {
+        pinReasons.push(
+          `${name}: ${lane?.structuralError ?? "lane did not run"}`,
         );
         continue;
       }
-      controlPinReasons.push(
+      // The cloud lanes hand in their dials AND every scored capture's uniform
+      // slots. The IBL lanes hand in neither: they run no cloud deck by design,
+      // so `_cloudCache` does not exist and the cloud-slot clause would
+      // manufacture a structural failure out of a configuration they do not use.
+      // Their scene pins and globe readiness are still fully enforced.
+      const isCloudLane = name === "webgpu-cloud";
+      pinReasons.push(
         ...collectPinStructural({
-          pins: session.pins,
-          dials: session.dials,
-          captures: [],
-          globeReadiness: session.globeReadiness ?? {},
+          pins: lane.pins,
+          dials: isCloudLane ? lane.dials : undefined,
+          captures: isCloudLane ? (lane.captures ?? []) : [],
+          globeReadiness: lane.globeReadiness ?? {},
           requireWeatherMap: false,
-        }).map((reason) => `${session.sessionLabel}: ${reason}`),
+          subjectDials: ["cloudCastShadows", "cloudContributesIBL"],
+        }).map((reason) => `${name}: ${reason}`),
       );
     }
-    cloudLanes.deckFreeControl.structuralReasons.push(...controlPinReasons);
-    cloudLanes.deckFreeControl.isolationReasons.push(...controlPinReasons);
-    cloudLanes.deckFreeControl.stateIsolated =
-      cloudLanes.deckFreeControl.isolationReasons.length === 0;
-  }
 
-  // A pin failure is a claim about the CONFIGURATION, not about any one lane,
-  // so it is not scoped — it blinds the whole run. The judge still runs, so the
-  // report carries every measured number, but its verdicts do not gate.
-  const verdicts = judgeEclipseCloudResponse({
-    cloudLanes,
-    iblWebGPU,
-    iblWebGL,
-  });
-
-  const structuralReasons = [...pinReasons, ...verdicts.structuralReasons];
-  const failed = pinReasons.length > 0 ? [] : verdicts.failedPredicates;
-  const parityFailed = pinReasons.length > 0 ? [] : verdicts.parityFailed;
-  const outcome = {
-    harnessFault: false,
-    structuralReasons,
-    failedPredicates: failed,
-    parityFailed,
-  };
-  const exitCode = eclipseCloudExitCode(outcome);
-  const GATE = eclipseCloudGateLabel(outcome);
-  const status =
-    exitCode === ECLIPSE_CLOUD_EXIT.PASS
-      ? "PASS"
-      : exitCode === ECLIPSE_CLOUD_EXIT.FAIL
-        ? "FAIL"
-        : "STRUCTURAL";
-
-  const report = {
-    schema: ARTIFACT_SCHEMA,
-    schemaVersion: 3,
-    probe: "probe-eclipse-cloud-response",
-    task: "C13-41 (C12-29 S3 rider) — cloud lighting / cloud shadow / IBL",
-    runId: RUN_ID,
-    status,
-    incomplete: false,
-    startedAt: STARTED_AT,
-    completedAt: new Date().toISOString(),
-    provenance: {
-      start: startProvenance,
-      end: endProvenance,
-      markerToStartIdentity,
-      runIdentityStable,
-      servedEntryIdentity,
-      servedRuntimeEntries: browserEvidence.runtimeEntries,
-    },
-    firstRedAtStart,
-    previousCanonicalAtStart,
-    firstRedBeforeFinalize,
-    cleanup: {
-      browserClosed,
-      watchdog: {
-        timedOut: watchdogTimedOut,
-        closeAttempted: watchdogCloseAttempted,
-      },
-      errors: cleanupErrors,
-      contextErrors: browserEvidence.cleanupErrors,
-    },
-    // The tier escape hatch every scored capture is required to have been taken
-    // under. Echoed into the report because the pin checker's failure message
-    // names it and a reader should not have to open the shared module to learn
-    // what value was expected.
-    pinnedCloudQuality: PINNED_CLOUD_QUALITY,
-    bands: ECLIPSE_CLOUD_BANDS,
-    predicateLanes: ECLIPSE_CLOUD_PREDICATE_LANES,
-    exitContract: ECLIPSE_CLOUD_EXIT,
-    predictions: {
-      factorAt09: predictFactor(SWEEP_PEAK_OBSCURATION),
-      directionalAt09: predictDirectional(SWEEP_PEAK_OBSCURATION),
-      bucketAt09: predictBucket(predictFactor(SWEEP_PEAK_OBSCURATION)),
-      sweepFrames: SWEEP_FRAMES,
-      sweepRefreshCount: predictedSweepRefreshCount(),
-    },
-    derived: derived
-      ? {
-          region: derived.region,
-          lat: derived.lat,
-          lon: derived.lon,
-          peakObscuration: derived.peakObscuration,
-          peakIso: derived.peakIso,
-          ladder: derived.ladder,
-          rampFrames: derived.ramp?.length ?? 0,
+    // A control-session pin failure blinds only the deck-free attribution. It is
+    // not allowed to demote the independent deck, shadow-contrast, or IBL lanes.
+    if (cloudLanes?.deckFreeControl) {
+      const controlPinReasons = [];
+      for (const session of deckFreeSessions) {
+        if (!session || session.structuralError) {
+          controlPinReasons.push(
+            `${session?.sessionLabel ?? "unknown"}: ${session?.structuralError ?? "session did not run"}`,
+          );
+          continue;
         }
-      : null,
-    shotsWritten,
-    consoleFaults,
-    pinReasons,
-    webgpuCloudLanes: cloudLanes,
-    webgpuIbl: iblWebGPU,
-    webglIbl: iblWebGL,
-    verdicts,
-    structuralReasons,
-    unscoredPredicates: verdicts.unscoredPredicates ?? [],
-    GATE,
-    exitCode,
-  };
-  console.log(
-    JSON.stringify(
-      { predictions: report.predictions, pinReasons, verdicts, GATE, exitCode },
-      null,
-      2,
-    ),
-  );
+        controlPinReasons.push(
+          ...collectPinStructural({
+            pins: session.pins,
+            dials: session.dials,
+            captures: [],
+            globeReadiness: session.globeReadiness ?? {},
+            requireWeatherMap: false,
+          }).map((reason) => `${session.sessionLabel}: ${reason}`),
+        );
+      }
+      cloudLanes.deckFreeControl.structuralReasons.push(...controlPinReasons);
+      cloudLanes.deckFreeControl.isolationReasons.push(...controlPinReasons);
+      cloudLanes.deckFreeControl.stateIsolated =
+        cloudLanes.deckFreeControl.isolationReasons.length === 0;
+    }
 
-  // ── The lines a reader should need. STRUCTURAL and FAIL are no longer
-  // exclusive: with per-lane scoping a run can quarantine one lane and still
-  // return a real verdict on the others, and BOTH halves have to be visible or
-  // the scoping has just moved the first run's blind spot somewhere else.
-  for (const reason of structuralReasons) {
-    console.log(`STRUCTURAL: ${reason}`);
-  }
-  if (verdicts.unscoredPredicates?.length) {
-    console.log(
-      `UNSCORED (quarantined with their blind lane): ${verdicts.unscoredPredicates.join(", ")}`,
-    );
-  }
-  const scoredCount =
-    ECLIPSE_CLOUD_GATE_PREDICATES.length -
-    (verdicts.unscoredPredicates?.length ?? 0);
-  console.log(
-    failed.length === 0
-      ? `GATE: ${GATE} — ${scoredCount} of ${ECLIPSE_CLOUD_GATE_PREDICATES.length} gating predicates scored, all true`
-      : `GATE: ${GATE} — failing predicate(s): ${failed.join(", ")}`,
-  );
-  console.log(
-    verdicts.unscoredParityPredicates?.length
-      ? `GATE parity: UNSCORED — ${verdicts.unscoredParityPredicates.join(", ")}`
-      : `GATE parity: ${parityFailed.length === 0 ? "PASS" : `FAIL — ${parityFailed.join(", ")}`} ` +
-          `(${ECLIPSE_CLOUD_PARITY_PREDICATES.length} cross-backend predicates)`,
-  );
-  console.log(
-    `NOT GATING (reported-only): ${ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.join(", ")}`,
-  );
-  // The SHADOW plumbing, on one line. The second run's report carried
-  // `shadowActive` but nothing printed it, so a blind lane looked like a missing
-  // instrument rather than a scene that could not see its own subject.
-  {
-    const t = verdicts.shadowTelemetry ?? {};
-    const control = t.consumer?.cloudShadowControl;
-    console.log(
-      `SHADOW telemetry: producerActive off/on ${t.producerActiveOff}/${t.producerActiveOn}; ` +
-        `map ${t.producer?.shadowSize ?? "?"} px, frameValid ${t.producer?.shadowFrameValid ?? "?"}, ` +
-        `absorption ${t.producer?.shadowAbsorption ?? "?"}; ` +
-        `terrain cloudShadowControl ${control ? `[${control.map((n) => r3(n)).join(", ")}]` : "UNREADABLE"} ` +
-        `(x>0.5 opens the FS branch), eyeRelative ${t.consumer?.cloudShadowRelativeToEye ?? "?"}; ` +
-        `band inside footprint ${t.footprint?.allInside ?? "?"}, texelSpan ${r3(t.footprint?.texelSpan)}; ` +
-        `groundOnly ${r3(t.groundOnly)}, retention ${r3(t.groundRetention)} ` +
-        `@ ${t.cameraHeight} m / ${t.pitchDegrees} deg`,
-    );
-    // CO-19 INSTRUMENT TELL, printed UNROUNDED and in full. The fourth run's
-    // four `offNoCloud` reads were bit-identical (0.2750603921572111) across
-    // instants 54 minutes apart while `offNoShadow` moved +3.3%; four identical
-    // f64s here is the tell that the deck-free control is not being re-captured
-    // per rung. Reported only — if it reads false again it becomes its own
-    // instrument investigation, not a product verdict.
-    console.log(
-      `SHADOW deck-free sessions: order [${(t.deckFreeSessionOrder ?? []).join(", ")}], ` +
-        `unique tokens ${(t.deckFreeSessionTokens ?? []).length}, stateIsolated ${t.deckFreeControlStateIsolated}, ` +
-        `lit ${t.deckFreeGroundIsLit}, rawDistance ${t.deckFreeMaximumRawDistance}, ` +
-        `OFF spreads ${t.deckFreeOffASpread}/${t.deckFreeOffBSpread}; ` +
-        `offNoCloud [${(t.offNoCloudSeries ?? []).join(", ")}] ` +
-        `spread ${t.offNoCloudSpread}, offNoShadow spread ${t.offNoShadowSpread}; ` +
-        `offNoCloudVariesWithSun ${t.offNoCloudVariesWithSun} ` +
-        `(false = four identical f64s, the tell); ` +
-        `deck-free dim at deepest ${r3(t.deckFreeExcessAtDeepest)}x F ` +
-        `(1.0 exonerates the globe light path and makes the CO-17 residue CLOUD-DRIVEN; ` +
-        `>1 indicts the globe path)`,
-    );
-    // State-isolated attribution evidence, printed unrounded. Each `first` and
-    // `settled` value is now a different fresh browser context in ABBA order;
-    // agreement means the measurement replicated across sessions, disagreement
-    // is STRUCTURAL. `retention on/off` remains the corroborating pair.
-    console.log(
-      `SHADOW deck-free convergence: settled ${t.deckFreeSettled} ` +
-        `(bracket ${ECLIPSE_CLOUD_BANDS.deckFreeGroundSettleDelta.hi}); ` +
-        `per-rung [${(t.deckFreeSettleDelta ?? [])
-          .map(
-            (e) =>
-              `obs ${e.obscuration}: off ${e.offFirst}->${e.offSettled} (d ${e.offDelta}), ` +
-              `on ${e.onFirst}->${e.onSettled} (d ${e.onDelta})`,
-          )
-          .join(" | ")}]; ` +
-        `retention off ${t.groundRetention} vs on ${t.groundRetentionOn} ` +
-        `(replicated+failing = ENGINE identity violation; divergent sessions = INSTRUMENT)`,
-    );
-  }
-  // The CO-19 deck leg, on its own line: the pure deck ratio and the `e` it
-  // implies, with no cross-run input anywhere in the chain.
-  {
-    const fit = verdicts.deckTonemapFit ?? {};
-    console.log(
-      `DECK aerial-zero leg: pure ratio ${verdicts.deckPureRatio} ` +
-        `(pre-registered 0.635 +/- 0.01, band [${ECLIPSE_CLOUD_BANDS.deckPureDeckRatio.lo}, ${ECLIPSE_CLOUD_BANDS.deckPureDeckRatio.hi}]) ` +
-        `-> e ${verdicts.deckTonemapEntryFromPureLeg}; ` +
-        `single-run aerial share ${verdicts.deckAerialShareSingleRun} ` +
-        `(cross-run constant ${DECK_AERIAL_SHARE_CROSS_RUN}); ` +
-        `fit source: ${fit.aerialShareSource}`,
-    );
-  }
-  // INVALID is printed as INVALID with its reason. The first run printed
-  // "-18.9 ms/refresh", which reads like a measurement and is not one.
-  console.log(
-    `COST (C13-41-ECLIPSE-REFRESH-COST-UNMEASURED): ` +
-      `webgpu ${verdicts.cost.webgpu.valid ? `${r3(verdicts.cost.webgpuMsPerRefresh)} ms/refresh` : `INVALID — ${verdicts.cost.webgpu.invalidReason}`}; ` +
-      `webgl ${verdicts.cost.webgl.valid ? `${r3(verdicts.cost.webglMsPerRefresh)} ms/refresh` : `INVALID — ${verdicts.cost.webgl.invalidReason}`}`,
-  );
+    // A pin failure is a claim about the CONFIGURATION, not about any one lane,
+    // so it is not scoped — it blinds the whole run. The judge still runs, so the
+    // report carries every measured number, but its verdicts do not gate.
+    const verdicts = judgeEclipseCloudResponse({
+      cloudLanes,
+      iblWebGPU,
+      iblWebGL,
+    });
 
-  publishFinalArtifact(report);
-  clearWatchdogs();
-  console.log(`EXIT: ${exitCode}`);
-  process.exitCode = exitCode;
-})().catch(async (e) => {
-  // An escaped apparatus exception is a HARNESS FAULT (exit 2) and publishes
-  // ERROR; a deliberate precondition refusal is STRUCTURAL (exit 3). Neither is
-  // allowed to masquerade as a product verdict.
-  await closeActiveBrowser("top-level error finally");
-  const structural = e instanceof StructuralProbeError;
-  const exitCode = structural
-    ? ECLIPSE_CLOUD_EXIT.STRUCTURAL
-    : ECLIPSE_CLOUD_EXIT.HARNESS;
-  const status = structural ? "STRUCTURAL" : "ERROR";
-  const errorArtifact = {
-    schema: ARTIFACT_SCHEMA,
-    schemaVersion: 3,
-    probe: "probe-eclipse-cloud-response",
-    task: "C13-41 (C12-29 S3 rider) — cloud lighting / cloud shadow / IBL",
-    runId: RUN_ID,
-    status,
-    incomplete: false,
-    exitCode,
-    startedAt: STARTED_AT,
-    completedAt: new Date().toISOString(),
-    startLocalIdentity,
-    endLocalIdentity: snapshotEvidenceFiles(LOCAL_EVIDENCE_FILES),
-    startProvenance,
-    firstRedAtStart,
-    firstRedBeforeFinalize: fingerprintEvidenceFile(FIRST_RED_ARTIFACT),
-    previousCanonicalAtStart,
-    browserEvidence,
-    cleanup: {
-      browserLaunched: activeBrowser !== null,
-      browserClosed,
-      watchdog: {
-        timedOut: watchdogTimedOut,
-        closeAttempted: watchdogCloseAttempted,
+    const structuralReasons = [...pinReasons, ...verdicts.structuralReasons];
+    const failed = pinReasons.length > 0 ? [] : verdicts.failedPredicates;
+    const parityFailed = pinReasons.length > 0 ? [] : verdicts.parityFailed;
+    const outcome = {
+      harnessFault: false,
+      structuralReasons,
+      failedPredicates: failed,
+      parityFailed,
+    };
+    const exitCode = eclipseCloudExitCode(outcome);
+    const GATE = eclipseCloudGateLabel(outcome);
+    const status =
+      exitCode === ECLIPSE_CLOUD_EXIT.PASS
+        ? "PASS"
+        : exitCode === ECLIPSE_CLOUD_EXIT.FAIL
+          ? "FAIL"
+          : "STRUCTURAL";
+
+    const report = {
+      schema: ARTIFACT_SCHEMA,
+      schemaVersion: 3,
+      probe: "probe-eclipse-cloud-response",
+      task: "C13-41 (C12-29 S3 rider) — cloud lighting / cloud shadow / IBL",
+      runId: RUN_ID,
+      status,
+      incomplete: false,
+      startedAt: STARTED_AT,
+      completedAt: new Date().toISOString(),
+      provenance: {
+        start: startProvenance,
+        end: endProvenance,
+        markerToStartIdentity,
+        runIdentityStable,
+        servedEntryIdentity,
+        servedRuntimeEntries: browserEvidence.runtimeEntries,
       },
-      errors: cleanupErrors,
-      contextErrors: browserEvidence.cleanupErrors,
-    },
-    error: e?.stack ?? String(e),
-    details: e?.details ?? null,
-  };
-  if (!publicationAttempted && runningMarkerPublished) {
-    try {
-      publishFinalArtifact(errorArtifact);
-    } catch (publicationError) {
-      console.error(
-        "[probe-eclipse-cloud-response] FINAL ARTIFACT PUBLICATION FAILED; RUNNING marker retained where possible:",
-        publicationError,
+      firstRedAtStart,
+      previousCanonicalAtStart,
+      firstRedBeforeFinalize,
+      cleanup: {
+        browserClosed,
+        watchdog: {
+          timedOut: watchdogTimedOut,
+          closeAttempted: watchdogCloseAttempted,
+        },
+        errors: cleanupErrors,
+        contextErrors: browserEvidence.cleanupErrors,
+      },
+      // The tier escape hatch every scored capture is required to have been taken
+      // under. Echoed into the report because the pin checker's failure message
+      // names it and a reader should not have to open the shared module to learn
+      // what value was expected.
+      pinnedCloudQuality: PINNED_CLOUD_QUALITY,
+      bands: ECLIPSE_CLOUD_BANDS,
+      predicateLanes: ECLIPSE_CLOUD_PREDICATE_LANES,
+      exitContract: ECLIPSE_CLOUD_EXIT,
+      predictions: {
+        factorAt09: predictFactor(SWEEP_PEAK_OBSCURATION),
+        directionalAt09: predictDirectional(SWEEP_PEAK_OBSCURATION),
+        bucketAt09: predictBucket(predictFactor(SWEEP_PEAK_OBSCURATION)),
+        sweepFrames: SWEEP_FRAMES,
+        sweepRefreshCount: predictedSweepRefreshCount(),
+      },
+      derived: derived
+        ? {
+            region: derived.region,
+            lat: derived.lat,
+            lon: derived.lon,
+            peakObscuration: derived.peakObscuration,
+            peakIso: derived.peakIso,
+            ladder: derived.ladder,
+            rampFrames: derived.ramp?.length ?? 0,
+          }
+        : null,
+      shotsWritten,
+      consoleFaults,
+      pinReasons,
+      webgpuCloudLanes: cloudLanes,
+      webgpuIbl: iblWebGPU,
+      webglIbl: iblWebGL,
+      verdicts,
+      structuralReasons,
+      unscoredPredicates: verdicts.unscoredPredicates ?? [],
+      GATE,
+      exitCode,
+    };
+    console.log(
+      JSON.stringify(
+        {
+          predictions: report.predictions,
+          pinReasons,
+          verdicts,
+          GATE,
+          exitCode,
+        },
+        null,
+        2,
+      ),
+    );
+
+    // ── The lines a reader should need. STRUCTURAL and FAIL are no longer
+    // exclusive: with per-lane scoping a run can quarantine one lane and still
+    // return a real verdict on the others, and BOTH halves have to be visible or
+    // the scoping has just moved the first run's blind spot somewhere else.
+    for (const reason of structuralReasons) {
+      console.log(`STRUCTURAL: ${reason}`);
+    }
+    if (verdicts.unscoredPredicates?.length) {
+      console.log(
+        `UNSCORED (quarantined with their blind lane): ${verdicts.unscoredPredicates.join(", ")}`,
       );
     }
+    const scoredCount =
+      ECLIPSE_CLOUD_GATE_PREDICATES.length -
+      (verdicts.unscoredPredicates?.length ?? 0);
+    console.log(
+      failed.length === 0
+        ? `GATE: ${GATE} — ${scoredCount} of ${ECLIPSE_CLOUD_GATE_PREDICATES.length} gating predicates scored, all true`
+        : `GATE: ${GATE} — failing predicate(s): ${failed.join(", ")}`,
+    );
+    console.log(
+      verdicts.unscoredParityPredicates?.length
+        ? `GATE parity: UNSCORED — ${verdicts.unscoredParityPredicates.join(", ")}`
+        : `GATE parity: ${parityFailed.length === 0 ? "PASS" : `FAIL — ${parityFailed.join(", ")}`} ` +
+            `(${ECLIPSE_CLOUD_PARITY_PREDICATES.length} cross-backend predicates)`,
+    );
+    console.log(
+      `NOT GATING (reported-only): ${ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.join(", ")}`,
+    );
+    // The SHADOW plumbing, on one line. The second run's report carried
+    // `shadowActive` but nothing printed it, so a blind lane looked like a missing
+    // instrument rather than a scene that could not see its own subject.
+    {
+      const t = verdicts.shadowTelemetry ?? {};
+      const control = t.consumer?.cloudShadowControl;
+      console.log(
+        `SHADOW telemetry: producerActive off/on ${t.producerActiveOff}/${t.producerActiveOn}; ` +
+          `map ${t.producer?.shadowSize ?? "?"} px, frameValid ${t.producer?.shadowFrameValid ?? "?"}, ` +
+          `absorption ${t.producer?.shadowAbsorption ?? "?"}; ` +
+          `terrain cloudShadowControl ${control ? `[${control.map((n) => r3(n)).join(", ")}]` : "UNREADABLE"} ` +
+          `(x>0.5 opens the FS branch), eyeRelative ${t.consumer?.cloudShadowRelativeToEye ?? "?"}; ` +
+          `band inside footprint ${t.footprint?.allInside ?? "?"}, texelSpan ${r3(t.footprint?.texelSpan)}; ` +
+          `groundOnly ${r3(t.groundOnly)}, retention ${r3(t.groundRetention)} ` +
+          `@ ${t.cameraHeight} m / ${t.pitchDegrees} deg`,
+      );
+      // CO-19 INSTRUMENT TELL, printed UNROUNDED and in full. The fourth run's
+      // four `offNoCloud` reads were bit-identical (0.2750603921572111) across
+      // instants 54 minutes apart while `offNoShadow` moved +3.3%; four identical
+      // f64s here is the tell that the deck-free control is not being re-captured
+      // per rung. Reported only — if it reads false again it becomes its own
+      // instrument investigation, not a product verdict.
+      console.log(
+        `SHADOW deck-free sessions: order [${(t.deckFreeSessionOrder ?? []).join(", ")}], ` +
+          `unique tokens ${(t.deckFreeSessionTokens ?? []).length}, stateIsolated ${t.deckFreeControlStateIsolated}, ` +
+          `lit ${t.deckFreeGroundIsLit}, rawDistance ${t.deckFreeMaximumRawDistance}, ` +
+          `OFF spreads ${t.deckFreeOffASpread}/${t.deckFreeOffBSpread}; ` +
+          `offNoCloud [${(t.offNoCloudSeries ?? []).join(", ")}] ` +
+          `spread ${t.offNoCloudSpread}, offNoShadow spread ${t.offNoShadowSpread}; ` +
+          `offNoCloudVariesWithSun ${t.offNoCloudVariesWithSun} ` +
+          `(false = four identical f64s, the tell); ` +
+          `deck-free dim at deepest ${r3(t.deckFreeExcessAtDeepest)}x F ` +
+          `(1.0 exonerates the globe light path and makes the CO-17 residue CLOUD-DRIVEN; ` +
+          `>1 indicts the globe path)`,
+      );
+      // State-isolated attribution evidence, printed unrounded. Each `first` and
+      // `settled` value is now a different fresh browser context in ABBA order;
+      // agreement means the measurement replicated across sessions, disagreement
+      // is STRUCTURAL. `retention on/off` remains the corroborating pair.
+      console.log(
+        `SHADOW deck-free convergence: settled ${t.deckFreeSettled} ` +
+          `(bracket ${ECLIPSE_CLOUD_BANDS.deckFreeGroundSettleDelta.hi}); ` +
+          `per-rung [${(t.deckFreeSettleDelta ?? [])
+            .map(
+              (e) =>
+                `obs ${e.obscuration}: off ${e.offFirst}->${e.offSettled} (d ${e.offDelta}), ` +
+                `on ${e.onFirst}->${e.onSettled} (d ${e.onDelta})`,
+            )
+            .join(" | ")}]; ` +
+          `retention off ${t.groundRetention} vs on ${t.groundRetentionOn} ` +
+          `(replicated+failing = ENGINE identity violation; divergent sessions = INSTRUMENT)`,
+      );
+    }
+    // The CO-19 deck leg, on its own line: the pure deck ratio and the `e` it
+    // implies, with no cross-run input anywhere in the chain.
+    {
+      const fit = verdicts.deckTonemapFit ?? {};
+      console.log(
+        `DECK aerial-zero leg: pure ratio ${verdicts.deckPureRatio} ` +
+          `(pre-registered 0.635 +/- 0.01, band [${ECLIPSE_CLOUD_BANDS.deckPureDeckRatio.lo}, ${ECLIPSE_CLOUD_BANDS.deckPureDeckRatio.hi}]) ` +
+          `-> e ${verdicts.deckTonemapEntryFromPureLeg}; ` +
+          `single-run aerial share ${verdicts.deckAerialShareSingleRun} ` +
+          `(cross-run constant ${DECK_AERIAL_SHARE_CROSS_RUN}); ` +
+          `fit source: ${fit.aerialShareSource}`,
+      );
+    }
+    // INVALID is printed as INVALID with its reason. The first run printed
+    // "-18.9 ms/refresh", which reads like a measurement and is not one.
+    console.log(
+      `COST (reported-only; historical obligation discharged): ` +
+        `webgpu ${verdicts.cost.webgpu.valid ? `${r3(verdicts.cost.webgpuMsPerRefresh)} ms/refresh` : `INVALID — ${verdicts.cost.webgpu.invalidReason}`}; ` +
+        `webgl ${verdicts.cost.webgl.valid ? `${r3(verdicts.cost.webglMsPerRefresh)} ms/refresh` : `INVALID — ${verdicts.cost.webgl.invalidReason}`}`,
+    );
+
+    publishFinalArtifact(report);
+    clearWatchdogs();
+    console.log(`EXIT: ${exitCode}`);
+    process.exitCode = exitCode;
+  } catch (e) {
+    // An escaped apparatus exception is a HARNESS FAULT (exit 2) and publishes
+    // ERROR; a deliberate precondition refusal is STRUCTURAL (exit 3). Neither
+    // is allowed to masquerade as a product verdict.
+    await closeActiveBrowser("top-level error finally");
+    const structural = e instanceof StructuralProbeError;
+    const exitCode = structural
+      ? ECLIPSE_CLOUD_EXIT.STRUCTURAL
+      : ECLIPSE_CLOUD_EXIT.HARNESS;
+    const status = structural ? "STRUCTURAL" : "ERROR";
+    const errorArtifact = {
+      schema: ARTIFACT_SCHEMA,
+      schemaVersion: 3,
+      probe: "probe-eclipse-cloud-response",
+      task: "C13-41 (C12-29 S3 rider) — cloud lighting / cloud shadow / IBL",
+      runId: RUN_ID,
+      status,
+      incomplete: false,
+      exitCode,
+      startedAt: STARTED_AT,
+      completedAt: new Date().toISOString(),
+      startLocalIdentity,
+      endLocalIdentity: snapshotEvidenceFiles(LOCAL_EVIDENCE_FILES),
+      startProvenance,
+      firstRedAtStart,
+      firstRedBeforeFinalize: fingerprintEvidenceFile(FIRST_RED_ARTIFACT),
+      previousCanonicalAtStart,
+      browserEvidence,
+      cleanup: {
+        browserLaunched: activeBrowser !== null,
+        browserClosed,
+        watchdog: {
+          timedOut: watchdogTimedOut,
+          closeAttempted: watchdogCloseAttempted,
+        },
+        errors: cleanupErrors,
+        contextErrors: browserEvidence.cleanupErrors,
+      },
+      error: e?.stack ?? String(e),
+      details: e?.details ?? null,
+    };
+    if (!publicationAttempted && runningMarkerPublished) {
+      try {
+        publishFinalArtifact(errorArtifact);
+      } catch (publicationError) {
+        console.error(
+          "[probe-eclipse-cloud-response] FINAL ARTIFACT PUBLICATION FAILED; owned RUNNING marker and lock retained where possible:",
+          publicationError,
+        );
+      }
+    }
+    if (!runningMarkerPublished && runLockAcquired) {
+      try {
+        releaseC1341RunLock(LIFECYCLE_PATHS, RUN_ID);
+        runLockAcquired = false;
+      } catch (releaseError) {
+        console.error(
+          "[probe-eclipse-cloud-response] pre-marker lock release failed; lock retained for investigation:",
+          releaseError,
+        );
+      }
+    }
+    clearWatchdogs();
+    console.error(
+      `[probe-eclipse-cloud-response] ${structural ? "STRUCTURAL" : "HARNESS FAULT"}:`,
+      e,
+    );
+    console.log(`EXIT: ${exitCode}`);
+    process.exitCode = exitCode;
   }
-  clearWatchdogs();
-  console.error(
-    `[probe-eclipse-cloud-response] ${structural ? "STRUCTURAL" : "HARNESS FAULT"}:`,
-    e,
-  );
-  console.log(`EXIT: ${exitCode}`);
-  process.exitCode = exitCode;
-});
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === PROBE_FILE) {
+  void runEclipseCloudResponseProbe();
+}

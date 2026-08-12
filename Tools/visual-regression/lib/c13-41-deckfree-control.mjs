@@ -17,6 +17,115 @@ export const DECK_FREE_CONTROL_SESSION_PLAN = Object.freeze([
 export const DECK_FREE_BASE_COLOR_CHANNEL = 200 / 255;
 export const DECK_FREE_RAW_BASE_COLOR_LUMA = DECK_FREE_BASE_COLOR_CHANNEL;
 
+// The isolated control flies at ~6.36 Mm geocentric distance. Globe's shipped
+// near-ground day/night fade begins at ~9.98 Mm, so leaving the defaults in
+// place deliberately produces a flat-lit raw baseColor control. This probe-only
+// pin forces the already-shipped day/night branch live without changing Globe
+// defaults or the scored lane-B camera geometry.
+export const DECK_FREE_LIGHTING_FADE_OUT_DISTANCE = 0;
+export const DECK_FREE_LIGHTING_FADE_IN_DISTANCE = 1;
+export const DECK_FREE_EXPECTED_LIGHTING_FADE = 1;
+
+// A forced fade alone is not a live DAYNIGHT discriminator at the Iceland
+// ladder: its real-Sun NdotL values (0.531/0.496/0.479/0.453) all saturate
+// `clamp(NdotL * 5 + 0.3, 0, 1)` at 1. The diagnostic therefore supplies four
+// emitted-light directions whose independently reconstructed incoming NdotL
+// values exercise the unsaturated 0.3/0.5/0.7/0.9 portion of the shipped law.
+// The custom light is diagnostic-only; every scored factor capture restores a
+// fresh SunLight first because S2's uniform-source dimming is SunLight-gated.
+export const DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS = Object.freeze([
+  0, 0.04, 0.08, 0.12,
+]);
+export const DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY = 1;
+export const DECK_FREE_SUN_LIGHT_INTENSITY = 2;
+export const DECK_FREE_LIGHT_COLOR = Object.freeze([1, 1, 1, 1]);
+
+const clamp01 = (value) => Math.min(1, Math.max(0, value));
+
+/** Independently execute the shipped no-vertex-normal DAYNIGHT law. */
+export function computeDeckFreeDayNightDiffuse(ndotl, lightingFade) {
+  if (!Number.isFinite(ndotl) || !Number.isFinite(lightingFade)) {
+    return null;
+  }
+  const dayNightDiffuse = clamp01(Math.max(ndotl, 0) * 5 + 0.3);
+  const fade = clamp01(lightingFade);
+  return 1 + (dayNightDiffuse - 1) * fade;
+}
+
+/**
+ * Reconstruct the diagnostic's WGS84 geodetic normal, east tangent, incoming
+ * light, and public DirectionalLight emitted direction without Cesium. This is
+ * independent of the in-page Cartesian implementation whose readback it checks.
+ */
+export function computeDeckFreeDiagnosticFrame(
+  latitudeDegrees,
+  longitudeDegrees,
+  ndotlTarget,
+) {
+  if (
+    !Number.isFinite(latitudeDegrees) ||
+    !Number.isFinite(longitudeDegrees) ||
+    !Number.isFinite(ndotlTarget) ||
+    ndotlTarget < 0 ||
+    ndotlTarget >= 1
+  ) {
+    return null;
+  }
+  const latitude = (latitudeDegrees * Math.PI) / 180;
+  const longitude = (longitudeDegrees * Math.PI) / 180;
+  const normalWC = [
+    Math.cos(latitude) * Math.cos(longitude),
+    Math.cos(latitude) * Math.sin(longitude),
+    Math.sin(latitude),
+  ];
+  const eastWC = [-Math.sin(longitude), Math.cos(longitude), 0];
+  const tangentShare = Math.sqrt(1 - ndotlTarget * ndotlTarget);
+  const incomingDirectionWC = normalWC.map(
+    (component, index) =>
+      component * ndotlTarget + eastWC[index] * tangentShare,
+  );
+  const emittedDirectionWC = incomingDirectionWC.map((component) => -component);
+  return {
+    normalWC,
+    eastWC,
+    incomingDirectionWC,
+    emittedDirectionWC,
+    ndotl: normalWC.reduce(
+      (sum, component, index) => sum + component * incomingDirectionWC[index],
+      0,
+    ),
+    diffuse: computeDeckFreeDayNightDiffuse(
+      ndotlTarget,
+      DECK_FREE_EXPECTED_LIGHTING_FADE,
+    ),
+  };
+}
+
+/**
+ * Independently evaluate the 3D camera-distance fade from reported evidence.
+ * This mirrors the public law, not an engine accessor, so a stale or fabricated
+ * `expectedFade` readback cannot certify itself.
+ */
+export function computeDeckFreeLightingFade(
+  cameraDistance,
+  fadeOutDistance,
+  fadeInDistance,
+) {
+  if (
+    !Number.isFinite(cameraDistance) ||
+    !Number.isFinite(fadeOutDistance) ||
+    !Number.isFinite(fadeInDistance)
+  ) {
+    return null;
+  }
+  const span = fadeInDistance - fadeOutDistance;
+  if (!(span > 0)) {
+    return null;
+  }
+  const fade = (cameraDistance - fadeOutDistance) / span;
+  return fade < 0 ? 0 : fade > 1 ? 1 : fade;
+}
+
 const finiteMean = (value) =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
 
@@ -42,6 +151,66 @@ const factorsMatch = (left, right, tolerance) =>
   Number.isFinite(right) &&
   Math.abs(left - right) <= tolerance;
 
+const vectorsMatch = (left, right, tolerance = 1e-10) =>
+  Array.isArray(left) &&
+  Array.isArray(right) &&
+  left.length === 3 &&
+  right.length === 3 &&
+  left.every(
+    (component, index) =>
+      Number.isFinite(component) &&
+      Number.isFinite(right[index]) &&
+      Math.abs(component - right[index]) <= tolerance,
+  );
+
+const colorsMatch = (value) =>
+  Array.isArray(value) &&
+  value.length === DECK_FREE_LIGHT_COLOR.length &&
+  value.every((channel, index) => channel === DECK_FREE_LIGHT_COLOR[index]);
+
+const lightSideMatches = (side, kind, direction) =>
+  side?.constructorName === kind &&
+  side?.isSunLight === (kind === "SunLight") &&
+  side?.isDirectionalLight === (kind === "DirectionalLight") &&
+  side?.intensity ===
+    (kind === "SunLight"
+      ? DECK_FREE_SUN_LIGHT_INTENSITY
+      : DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY) &&
+  colorsMatch(side?.color) &&
+  (kind === "SunLight"
+    ? side?.directionWC === null
+    : vectorsMatch(side?.directionWC, direction));
+
+const sunLightEvidenceIsRestored = (evidence) =>
+  evidence?.sameObject === true &&
+  evidence?.diagnosticOnly === false &&
+  lightSideMatches(evidence?.scene, "SunLight", null) &&
+  lightSideMatches(evidence?.frameState, "SunLight", null);
+
+const directionalLightEvidenceMatches = (evidence, direction) =>
+  evidence?.sameObject === true &&
+  evidence?.diagnosticOnly === true &&
+  lightSideMatches(evidence?.scene, "DirectionalLight", direction) &&
+  lightSideMatches(evidence?.frameState, "DirectionalLight", direction);
+
+const lightingFadeEvidenceIsLive = (evidence) => {
+  const outDistance = finiteMean(evidence?.outDistance);
+  const inDistance = finiteMean(evidence?.inDistance);
+  const cameraDistance = finiteMean(evidence?.cameraDistance);
+  const reportedExpectedFade = finiteMean(evidence?.expectedFade);
+  const independentlyExpectedFade = computeDeckFreeLightingFade(
+    cameraDistance,
+    outDistance,
+    inDistance,
+  );
+  return (
+    outDistance === DECK_FREE_LIGHTING_FADE_OUT_DISTANCE &&
+    inDistance === DECK_FREE_LIGHTING_FADE_IN_DISTANCE &&
+    independentlyExpectedFade === DECK_FREE_EXPECTED_LIGHTING_FADE &&
+    reportedExpectedFade === independentlyExpectedFade
+  );
+};
+
 /**
  * Validate and fold four fresh-context session reports into the legacy per-rung
  * field names consumed by the response gate. The `*Settled` fields now mean an
@@ -57,6 +226,8 @@ const factorsMatch = (left, right, tolerance) =>
  * @param {number} options.scheduleObscurationTolerance Maximum geometric
  * disagreement between the ellipsoid-height schedule and the rendered lane.
  * @param {number} options.captureDelta Smallest resolvable band-mean delta.
+ * @param {{latitudeDegrees: number, longitudeDegrees: number}} options.diagnosticSite
+ * Fixed site used to derive the diagnostic DirectionalLight vectors.
  * @returns {object}
  */
 export function foldDeckFreeControlSessions(options) {
@@ -67,6 +238,7 @@ export function foldDeckFreeControlSessions(options) {
     factorTolerance,
     scheduleObscurationTolerance,
     captureDelta,
+    diagnosticSite,
   } = options;
   const reasons = [];
   const reports = Array.isArray(sessions) ? sessions : [];
@@ -98,6 +270,12 @@ export function foldDeckFreeControlSessions(options) {
     reasons.push(
       `expected ${expectedLadder.length} certified main-page rungs, received ${certified.length}`,
     );
+  }
+  if (
+    !Number.isFinite(diagnosticSite?.latitudeDegrees) ||
+    !Number.isFinite(diagnosticSite?.longitudeDegrees)
+  ) {
+    reasons.push("directional diagnostic site is absent or non-finite");
   }
   const effectiveFactorTolerance =
     Number.isFinite(factorTolerance) && factorTolerance >= 0
@@ -160,6 +338,23 @@ export function foldDeckFreeControlSessions(options) {
         `${expected.label}: baseColor is not pinned to 200/255 gray`,
       );
     }
+    if (!lightingFadeEvidenceIsLive(report.lighting?.lightingFade)) {
+      reasons.push(
+        `${expected.label}: top-level lighting fade is not the live probe pin (out 0, in 1, independently expected fade 1)`,
+      );
+    }
+    if (
+      report.captureSequence !== "directional-diagnostic-then-fresh-sun-scored"
+    ) {
+      reasons.push(
+        `${expected.label}: capture sequence does not isolate the custom-light diagnostic from the fresh-Sun scored capture`,
+      );
+    }
+    if (!sunLightEvidenceIsRestored(report.light)) {
+      reasons.push(
+        `${expected.label}: top-level light read-back is not a restored fresh SunLight`,
+      );
+    }
     if (
       !Array.isArray(report.rungs) ||
       report.rungs.length !== expectedLadder.length
@@ -168,6 +363,14 @@ export function foldDeckFreeControlSessions(options) {
         `${expected.label}: expected ${expectedLadder.length} rung captures, received ${report.rungs?.length ?? "none"}`,
       );
       continue;
+    }
+    if (
+      !Array.isArray(report.directionalDiagnosticRungs) ||
+      report.directionalDiagnosticRungs.length !== expectedLadder.length
+    ) {
+      reasons.push(
+        `${expected.label}: expected ${expectedLadder.length} directional diagnostic captures, received ${report.directionalDiagnosticRungs?.length ?? "none"}`,
+      );
     }
     for (let rungIndex = 0; rungIndex < expectedLadder.length; rungIndex++) {
       const expectedRung = expectedLadder[rungIndex];
@@ -179,6 +382,11 @@ export function foldDeckFreeControlSessions(options) {
       ) {
         reasons.push(
           `${expected.label}: rung ${rungIndex} does not match the shared ladder`,
+        );
+      }
+      if (!lightingFadeEvidenceIsLive(rung?.lighting?.lightingFade)) {
+        reasons.push(
+          `${expected.label}: rung ${rungIndex} lighting fade is not the live probe pin (out 0, in 1, independently expected fade 1)`,
         );
       }
       if (finiteMean(rung?.mean) === null || !(rung?.samples > 0)) {
@@ -209,6 +417,16 @@ export function foldDeckFreeControlSessions(options) {
       if (!baseColorIsPinned(rung?.baseColor)) {
         reasons.push(
           `${expected.label}: rung ${rungIndex} baseColor is not pinned to 200/255 gray`,
+        );
+      }
+      if (rung?.captureRole !== "scored-real-sun-factor") {
+        reasons.push(
+          `${expected.label}: rung ${rungIndex} is not labelled as the scored real-Sun factor capture`,
+        );
+      }
+      if (!sunLightEvidenceIsRestored(rung?.light)) {
+        reasons.push(
+          `${expected.label}: rung ${rungIndex} did not restore and render a fresh SunLight before scoring`,
         );
       }
       if (
@@ -411,6 +629,106 @@ export function foldDeckFreeControlSessions(options) {
           );
         }
       }
+
+      const diagnostic = report.directionalDiagnosticRungs?.[rungIndex];
+      const ndotlTarget = DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[rungIndex];
+      const expectedFrame = computeDeckFreeDiagnosticFrame(
+        diagnosticSite?.latitudeDegrees,
+        diagnosticSite?.longitudeDegrees,
+        ndotlTarget,
+      );
+      if (
+        diagnostic?.target !== expectedRung.target ||
+        diagnostic?.iso !== expectedRung.iso ||
+        diagnostic?.captureRole !== "diagnostic-directional-daynight" ||
+        diagnostic?.diagnosticOnly !== true ||
+        diagnostic?.ndotlTarget !== ndotlTarget
+      ) {
+        reasons.push(
+          `${expected.label}: rung ${rungIndex} directional diagnostic is absent, reordered, or not diagnostic-only`,
+        );
+      }
+      if (
+        !expectedFrame ||
+        !vectorsMatch(
+          diagnostic?.directionSpec?.surfaceNormalWC,
+          expectedFrame?.normalWC,
+        ) ||
+        !vectorsMatch(
+          diagnostic?.directionSpec?.eastWC,
+          expectedFrame?.eastWC,
+        ) ||
+        !vectorsMatch(
+          diagnostic?.directionSpec?.incomingDirectionWC,
+          expectedFrame?.incomingDirectionWC,
+        ) ||
+        !vectorsMatch(
+          diagnostic?.directionSpec?.emittedDirectionWC,
+          expectedFrame?.emittedDirectionWC,
+        ) ||
+        !factorsMatch(
+          diagnostic?.directionSpec?.ndotl,
+          expectedFrame?.ndotl,
+          1e-10,
+        ) ||
+        !factorsMatch(
+          diagnostic?.directionSpec?.expectedDiffuse,
+          expectedFrame?.diffuse,
+          1e-10,
+        )
+      ) {
+        reasons.push(
+          `${expected.label}: rung ${rungIndex} directional vector or DAYNIGHT prediction does not match the independent geodetic construction`,
+        );
+      }
+      if (
+        !directionalLightEvidenceMatches(
+          diagnostic?.light,
+          expectedFrame?.emittedDirectionWC,
+        )
+      ) {
+        reasons.push(
+          `${expected.label}: rung ${rungIndex} custom-light read-back is not the exact diagnostic DirectionalLight`,
+        );
+      }
+      if (
+        diagnostic?.eclipseEnabled !== expected.eclipseEnabled ||
+        diagnostic?.enableVolumetric !== false ||
+        diagnostic?.enableLighting !== true ||
+        diagnostic?.configureCalls !== 1 ||
+        !baseColorIsPinned(diagnostic?.baseColor) ||
+        diagnostic?.lighting?.enableLighting !== true ||
+        diagnostic?.lighting?.enableEclipse !== expected.eclipseEnabled ||
+        diagnostic?.lighting?.eclipseStateEnabled !== expected.eclipseEnabled ||
+        diagnostic?.lighting?.eclipseStateValid !== true ||
+        diagnostic?.lighting?.enableEclipseGlobeShadow !== false ||
+        !lightingFadeEvidenceIsLive(diagnostic?.lighting?.lightingFade)
+      ) {
+        reasons.push(
+          `${expected.label}: rung ${rungIndex} directional diagnostic read-back does not preserve the fixed control state`,
+        );
+      }
+      if (finiteMean(diagnostic?.mean) === null || !(diagnostic?.samples > 0)) {
+        reasons.push(
+          `${expected.label}: rung ${rungIndex} directional diagnostic has no non-vacuous pixel measurement`,
+        );
+      }
+      if (
+        !factorsMatch(
+          diagnostic?.factor,
+          measuredFactor,
+          effectiveFactorTolerance,
+        ) ||
+        !factorsMatch(
+          diagnostic?.lighting?.factor,
+          measuredLightingFactor,
+          effectiveFactorTolerance,
+        )
+      ) {
+        reasons.push(
+          `${expected.label}: rung ${rungIndex} diagnostic and scored real-Sun factor read-backs disagree`,
+        );
+      }
     }
   }
 
@@ -528,23 +846,145 @@ export function foldDeckFreeControlSessions(options) {
       : null;
   const offASpread = spread(offASeries);
   const offBSpread = spread(offBSeries);
-  const litSurfaceNonVacuous =
-    Number.isFinite(maximumRawDistance) &&
-    maximumRawDistance > captureDelta &&
-    Number.isFinite(offASpread) &&
-    offASpread > captureDelta &&
-    Number.isFinite(offBSpread) &&
-    offBSpread > captureDelta;
-
-  const nonVacuityReasons = litSurfaceNonVacuous
-    ? []
-    : [
-        `deck-free surface is not a live lighting control: max distance from raw 200/255 baseColor is ${maximumRawDistance}, OFF-A sun spread is ${offASpread}, OFF-B sun spread is ${offBSpread}, required > ${captureDelta}`,
-      ];
+  // The real Sun is deliberately NOT the diffuse-path liveness discriminator:
+  // all four Iceland NdotL values saturate the DAYNIGHT clamp at 1. Instead,
+  // independently predicted custom-light captures exercise diffuse values
+  // 0.3/0.5/0.7/0.9, after which every scored capture restores a fresh SunLight.
+  // The central nadir diagnostic patch spans <2 km at 1400 m, so its geodetic
+  // normal changes by <3.2e-4 and the 5x ramp changes by <0.0016. Two existing
+  // capture deltas (one for that bound, one for the 8-bit band mean) are a
+  // conservative evidence tolerance without moving any product band.
+  const diagnosticPixelTolerance = captureDelta * 2;
+  const nonVacuityReasons = [];
+  const directionalDiagnostic = expectedLadder.map((expected, index) => {
+    const expectedFrame = computeDeckFreeDiagnosticFrame(
+      diagnosticSite?.latitudeDegrees,
+      diagnosticSite?.longitudeDegrees,
+      DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[index],
+    );
+    const offA = finiteMean(
+      byLabel["off-a"]?.directionalDiagnosticRungs?.[index]?.mean,
+    );
+    const offB = finiteMean(
+      byLabel["off-b"]?.directionalDiagnosticRungs?.[index]?.mean,
+    );
+    const onA = finiteMean(
+      byLabel["on-a"]?.directionalDiagnosticRungs?.[index]?.mean,
+    );
+    const onB = finiteMean(
+      byLabel["on-b"]?.directionalDiagnosticRungs?.[index]?.mean,
+    );
+    const factor = finiteMean(certified[index]?.deckFreePublished?.factor);
+    const expectedOff = Number.isFinite(expectedFrame?.diffuse)
+      ? DECK_FREE_RAW_BASE_COLOR_LUMA * expectedFrame.diffuse
+      : null;
+    // The custom DirectionalLight is deliberately NOT an eclipse-factor lane:
+    // UniformState applies S2 only to SunLight, and this control disables the
+    // fragment-local eclipse-globe shadow. Its ON/OFF identity proves the
+    // diagnostic stayed out of the SunLight-only factor path; F is certified
+    // exclusively by the restored-Sun scored captures above.
+    const expectedOn = expectedOff;
+    const offReplicaDelta =
+      Number.isFinite(offA) && Number.isFinite(offB)
+        ? Math.abs(offA - offB)
+        : null;
+    const onReplicaDelta =
+      Number.isFinite(onA) && Number.isFinite(onB) ? Math.abs(onA - onB) : null;
+    const onOffRatioA =
+      Number.isFinite(onA) && Number.isFinite(offA) && offA > 0
+        ? onA / offA
+        : null;
+    const onOffRatioB =
+      Number.isFinite(onB) && Number.isFinite(offB) && offB > 0
+        ? onB / offB
+        : null;
+    const ratioTolerance =
+      Number.isFinite(expectedOff) && expectedOff > 0
+        ? (diagnosticPixelTolerance / expectedOff) * 2
+        : 0;
+    const pixelsFollowLaw =
+      Number.isFinite(expectedOff) &&
+      Number.isFinite(expectedOn) &&
+      [offA, offB].every(
+        (value) =>
+          Number.isFinite(value) &&
+          Math.abs(value - expectedOff) <= diagnosticPixelTolerance,
+      ) &&
+      [onA, onB].every(
+        (value) =>
+          Number.isFinite(value) &&
+          Math.abs(value - expectedOn) <= diagnosticPixelTolerance,
+      );
+    const replicasAgree =
+      Number.isFinite(offReplicaDelta) &&
+      offReplicaDelta <= diagnosticPixelTolerance &&
+      Number.isFinite(onReplicaDelta) &&
+      onReplicaDelta <= diagnosticPixelTolerance;
+    const ratioIsIdentity =
+      Number.isFinite(onOffRatioA) &&
+      Math.abs(onOffRatioA - 1) <= ratioTolerance &&
+      Number.isFinite(onOffRatioB) &&
+      Math.abs(onOffRatioB - 1) <= ratioTolerance;
+    if (!pixelsFollowLaw) {
+      nonVacuityReasons.push(
+        `rung ${index}: diagnostic DirectionalLight pixels do not execute DAYNIGHT diffuse ${String(expectedFrame?.diffuse)} within ${diagnosticPixelTolerance} (OFF ${String(offA)}/${String(offB)} expected ${String(expectedOff)}, ON ${String(onA)}/${String(onB)} expected ${String(expectedOn)})`,
+      );
+    }
+    if (!replicasAgree) {
+      nonVacuityReasons.push(
+        `rung ${index}: diagnostic DirectionalLight replicas disagree (OFF delta ${String(offReplicaDelta)}, ON delta ${String(onReplicaDelta)}, limit ${diagnosticPixelTolerance})`,
+      );
+    }
+    if (!ratioIsIdentity) {
+      nonVacuityReasons.push(
+        `rung ${index}: diagnostic-only DirectionalLight ON/OFF ratios ${String(onOffRatioA)}/${String(onOffRatioB)} are not eclipse-invariant at 1 within ${ratioTolerance}; the SunLight-only factor lane was contaminated`,
+      );
+    }
+    return {
+      target: expected.target,
+      iso: expected.iso,
+      ndotlTarget: DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[index],
+      expectedDiffuse: expectedFrame?.diffuse ?? null,
+      expectedOff,
+      expectedOn,
+      offA,
+      offB,
+      onA,
+      onB,
+      offReplicaDelta,
+      onReplicaDelta,
+      onOffRatioA,
+      onOffRatioB,
+      certifiedFactor: factor,
+      ratioTolerance,
+      pixelsFollowLaw,
+      replicasAgree,
+      ratioIsIdentity,
+    };
+  });
+  for (const [label, field] of [
+    ["off-a", "offA"],
+    ["off-b", "offB"],
+  ]) {
+    const values = directionalDiagnostic.map((entry) => entry[field]);
+    for (let index = 1; index < values.length; index++) {
+      if (
+        !Number.isFinite(values[index - 1]) ||
+        !Number.isFinite(values[index]) ||
+        !(values[index] - values[index - 1] > diagnosticPixelTolerance)
+      ) {
+        nonVacuityReasons.push(
+          `${label}: diagnostic DAYNIGHT pixels do not increase across the unsaturated NdotL ladder`,
+        );
+        break;
+      }
+    }
+  }
+  const litSurfaceNonVacuous = nonVacuityReasons.length === 0;
   reasons.push(...nonVacuityReasons);
 
   return {
-    schema: "c13-41-deckfree-control-v3",
+    schema: "c13-41-deckfree-control-v5",
     stateIsolated: isolationReasons.length === 0,
     structuralReasons: reasons,
     isolationReasons,
@@ -558,6 +998,8 @@ export function foldDeckFreeControlSessions(options) {
     maximumRawDistance,
     offASpread,
     offBSpread,
+    diagnosticPixelTolerance,
+    directionalDiagnostic,
     litSurfaceNonVacuous,
     rungs,
     sessions: reports,

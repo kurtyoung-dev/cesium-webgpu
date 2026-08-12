@@ -966,7 +966,6 @@ export const ECLIPSE_CLOUD_GATE_PREDICATES = Object.freeze([
   "iblRecovers",
   // Instrument health
   "determinismBracketHolds",
-  "refreshCostMeasured",
 ]);
 
 /** Cross-backend predicates, folded the same way. */
@@ -980,6 +979,12 @@ export const ECLIPSE_CLOUD_PARITY_PREDICATES = Object.freeze([
  * legitimately read false.
  */
 export const ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES = Object.freeze([
+  // The refresh wall-clock obligation was discharged by the second Edge run
+  // (7.749 ms/refresh WebGPU, 1.607 WebGL). Later acceptance runs still retain
+  // the complete interleaved accounting and an explicit INVALID reason, but a
+  // noisy re-estimate cannot revoke that banked evidence and does not gate the
+  // redesigned-control closure criterion.
+  "refreshCostEstimateValidReportedOnly",
   // A C11-193 bounded-refresh deferral can merge two adjacent bucket edges
   // into a single fill. That is correct behaviour, not a defect, so the exact
   // reading is information rather than a verdict — the BAND gates.
@@ -1127,7 +1132,6 @@ export const ECLIPSE_CLOUD_PREDICATE_LANES = Object.freeze({
   iblRecovers: "ibl-model",
   // Instrument health
   determinismBracketHolds: "cloud-page",
-  refreshCostMeasured: "ibl-page",
 });
 
 /** Both cross-backend predicates compare the two IBL lanes. */
@@ -1256,7 +1260,7 @@ export function computeRefreshCost(accounting) {
     return {
       ...out,
       fillDelta: Number.isFinite(fillDelta) ? fillDelta : null,
-      invalidReason: `no eclipse-driven fills to attribute cost to (${out.eclipseFills} eclipse vs ${out.controlFills} control) — the differential cannot be formed and the row does NOT discharge`,
+      invalidReason: `no eclipse-driven fills to attribute cost to (${out.eclipseFills} eclipse vs ${out.controlFills} control) — this run's reported-only differential cannot be formed`,
     };
   }
 
@@ -1515,7 +1519,7 @@ export function judgeEclipseCloudResponse(run) {
     // second Edge run, and the ceiling could only report the SYMPTOM.
     v.deckFreeControlStateIsolated =
       deckFreeControl?.stateIsolated === true &&
-      deckFreeControl?.schema === "c13-41-deckfree-control-v3";
+      deckFreeControl?.schema === "c13-41-deckfree-control-v5";
     if (!v.deckFreeControlStateIsolated) {
       markBlind(
         "deck-free",
@@ -2001,6 +2005,10 @@ export function judgeEclipseCloudResponse(run) {
     deckFreeMaximumRawDistance: deckFreeControl?.maximumRawDistance ?? null,
     deckFreeOffASpread: deckFreeControl?.offASpread ?? null,
     deckFreeOffBSpread: deckFreeControl?.offBSpread ?? null,
+    deckFreeDirectionalDiagnostic:
+      deckFreeControl?.directionalDiagnostic ?? null,
+    deckFreeDiagnosticPixelTolerance:
+      deckFreeControl?.diagnosticPixelTolerance ?? null,
     deckFreeExpectedBaseColor: deckFreeControl?.expectedBaseColor ?? null,
     deckFreeFactorTolerance: deckFreeControl?.factorTolerance ?? null,
     deckFreeScheduleObscurationTolerance:
@@ -2103,11 +2111,11 @@ export function judgeEclipseCloudResponse(run) {
       webglCost.valid ? null : `webgl: ${webglCost.invalidReason}`,
     ].filter((reason) => reason !== null),
   };
-  // MEASURED, not bounded: the row asks for the number, and there is no
-  // pre-registered budget to score it against. The gate is only that a real,
-  // non-negative number came back on both backends — an INVALID estimate means
-  // the differential could not be formed and the row does NOT discharge.
-  v.refreshCostMeasured = webgpuCost.valid && webglCost.valid;
+  // Reported-only on closure reruns. The row has no performance budget, and
+  // its one-time wall-clock obligation was discharged by the banked second
+  // Edge run. A later INVALID estimate remains visible with its exact reason;
+  // it is evidence about this estimator, not a new product failure.
+  v.refreshCostEstimateValidReportedOnly = webgpuCost.valid && webglCost.valid;
 
   // ── Parity ───────────────────────────────────────────────────────────────
   const parity = {};

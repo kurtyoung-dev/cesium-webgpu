@@ -92,9 +92,28 @@ import {
 import {
   DECK_FREE_BASE_COLOR_CHANNEL,
   DECK_FREE_CONTROL_SESSION_PLAN,
+  DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS,
+  DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY,
+  DECK_FREE_EXPECTED_LIGHTING_FADE,
+  DECK_FREE_LIGHT_COLOR,
+  DECK_FREE_LIGHTING_FADE_IN_DISTANCE,
+  DECK_FREE_LIGHTING_FADE_OUT_DISTANCE,
   DECK_FREE_RAW_BASE_COLOR_LUMA,
+  DECK_FREE_SUN_LIGHT_INTENSITY,
+  computeDeckFreeDayNightDiffuse,
+  computeDeckFreeDiagnosticFrame,
+  computeDeckFreeLightingFade,
   foldDeckFreeControlSessions,
 } from "./lib/c13-41-deckfree-control.mjs";
+import {
+  acquireC1341RunLock,
+  assertNoPriorC1341Running,
+  captureC1341PriorCanonical,
+  finalizeC1341Evidence,
+  prepareCapturedCanonicalForRun,
+  publishC1341Running,
+  releaseC1341RunLock,
+} from "./probe-eclipse-cloud-response.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -394,52 +413,149 @@ test("C7 the schedule tolerance admits fixed camera parallax and rejects the eph
  * the shape the fourth run actually measured.
  */
 const REFERENCE_DECK_TONEMAP_ENTRY = 1.01;
+const DECK_FREE_DIAGNOSTIC_SITE = Object.freeze({
+  latitudeDegrees: 64.15,
+  longitudeDegrees: -24,
+});
+
+const deckFreeLightingFadeEvidence = () => {
+  const cameraDistance = 6_362_245;
+  const outDistance = DECK_FREE_LIGHTING_FADE_OUT_DISTANCE;
+  const inDistance = DECK_FREE_LIGHTING_FADE_IN_DISTANCE;
+  return {
+    outDistance,
+    inDistance,
+    cameraDistance,
+    expectedFade: computeDeckFreeLightingFade(
+      cameraDistance,
+      outDistance,
+      inDistance,
+    ),
+  };
+};
+
+const deckFreeLightReadback = (kind, diagnosticOnly, directionWC = null) => {
+  const side = {
+    constructorName: kind,
+    isSunLight: kind === "SunLight",
+    isDirectionalLight: kind === "DirectionalLight",
+    directionWC,
+    color: [...DECK_FREE_LIGHT_COLOR],
+    intensity:
+      kind === "SunLight"
+        ? DECK_FREE_SUN_LIGHT_INTENSITY
+        : DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY,
+  };
+  return {
+    diagnosticOnly,
+    sameObject: true,
+    scene: structuredClone(side),
+    frameState: structuredClone(side),
+  };
+};
 
 const freshDeckFreeSessions = (rungs) =>
-  DECK_FREE_CONTROL_SESSION_PLAN.map((planned, sessionIndex) => ({
-    sessionLabel: planned.label,
-    sessionToken: `fresh-session-${sessionIndex}`,
-    eclipseEnabled: planned.eclipseEnabled,
-    configureCalls: 1,
-    configureTruth: { enableVolumetric: false },
-    rendererType: "webgpu",
-    enableLighting: true,
-    baseColor: [
-      DECK_FREE_BASE_COLOR_CHANNEL,
-      DECK_FREE_BASE_COLOR_CHANNEL,
-      DECK_FREE_BASE_COLOR_CHANNEL,
-      1,
-    ],
-    rungs: rungs.map((rung) => ({
-      target: rung.target,
-      iso: rung.iso,
-      mean: planned.eclipseEnabled
-        ? rung.shadow.onNoCloud
-        : rung.shadow.offNoCloud,
-      samples: 20000,
-      enableVolumetric: false,
+  DECK_FREE_CONTROL_SESSION_PLAN.map((planned, sessionIndex) => {
+    const factorFor = (rung) =>
+      planned.eclipseEnabled ? rung.deckFreePublished.factor : 1;
+    const lightingFor = (rung) => ({
+      enableLighting: true,
+      enableEclipse: planned.eclipseEnabled,
+      enableEclipseGlobeShadow: false,
+      eclipseStateEnabled: planned.eclipseEnabled,
+      eclipseStateValid: true,
+      moonObscuration: rung.deckFreePublished.moonObscuration,
+      factor: factorFor(rung),
+      lightingFade: deckFreeLightingFadeEvidence(),
+    });
+    return {
+      sessionLabel: planned.label,
+      sessionToken: `fresh-session-${sessionIndex}`,
       eclipseEnabled: planned.eclipseEnabled,
-      factor: planned.eclipseEnabled ? rung.published.factor : 1,
+      configureCalls: 1,
+      configureTruth: { enableVolumetric: false },
+      rendererType: "webgpu",
+      enableLighting: true,
+      captureSequence: "directional-diagnostic-then-fresh-sun-scored",
+      lighting: { lightingFade: deckFreeLightingFadeEvidence() },
+      light: deckFreeLightReadback("SunLight", false),
       baseColor: [
         DECK_FREE_BASE_COLOR_CHANNEL,
         DECK_FREE_BASE_COLOR_CHANNEL,
         DECK_FREE_BASE_COLOR_CHANNEL,
         1,
       ],
-      enableLighting: true,
-      lighting: {
+      rungs: rungs.map((rung) => ({
+        target: rung.target,
+        iso: rung.iso,
+        captureRole: "scored-real-sun-factor",
+        mean: planned.eclipseEnabled
+          ? rung.shadow.onNoCloud
+          : rung.shadow.offNoCloud,
+        samples: 20000,
+        enableVolumetric: false,
+        eclipseEnabled: planned.eclipseEnabled,
+        factor: factorFor(rung),
+        baseColor: [
+          DECK_FREE_BASE_COLOR_CHANNEL,
+          DECK_FREE_BASE_COLOR_CHANNEL,
+          DECK_FREE_BASE_COLOR_CHANNEL,
+          1,
+        ],
         enableLighting: true,
-        enableEclipse: planned.eclipseEnabled,
-        enableEclipseGlobeShadow: false,
-        eclipseStateEnabled: planned.eclipseEnabled,
-        eclipseStateValid: true,
-        moonObscuration: rung.deckFreePublished.moonObscuration,
-        factor: planned.eclipseEnabled ? rung.deckFreePublished.factor : 1,
-      },
-      cameraHeight: rung.deckFreePublished.cameraHeight,
-      configureCalls: 1,
-    })),
-  }));
+        lighting: lightingFor(rung),
+        light: deckFreeLightReadback("SunLight", false),
+        cameraHeight: rung.deckFreePublished.cameraHeight,
+        configureCalls: 1,
+      })),
+      directionalDiagnosticRungs: rungs.map((rung, rungIndex) => {
+        const ndotlTarget = DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[rungIndex];
+        const directionSpec = computeDeckFreeDiagnosticFrame(
+          DECK_FREE_DIAGNOSTIC_SITE.latitudeDegrees,
+          DECK_FREE_DIAGNOSTIC_SITE.longitudeDegrees,
+          ndotlTarget,
+        );
+        return {
+          target: rung.target,
+          iso: rung.iso,
+          captureRole: "diagnostic-directional-daynight",
+          diagnosticOnly: true,
+          ndotlTarget,
+          directionSpec: {
+            surfaceNormalWC: directionSpec.normalWC,
+            eastWC: directionSpec.eastWC,
+            incomingDirectionWC: directionSpec.incomingDirectionWC,
+            emittedDirectionWC: directionSpec.emittedDirectionWC,
+            ndotl: directionSpec.ndotl,
+            expectedDiffuse: directionSpec.diffuse,
+          },
+          // DirectionalLight bypasses S2's SunLight-only uniform dimming and
+          // the probe disables the fragment-local eclipse-globe shadow. Both
+          // ON and OFF diagnostic pixels therefore execute diffuse only.
+          mean: DECK_FREE_RAW_BASE_COLOR_LUMA * directionSpec.diffuse,
+          samples: 20000,
+          eclipseEnabled: planned.eclipseEnabled,
+          factor: factorFor(rung),
+          baseColor: [
+            DECK_FREE_BASE_COLOR_CHANNEL,
+            DECK_FREE_BASE_COLOR_CHANNEL,
+            DECK_FREE_BASE_COLOR_CHANNEL,
+            1,
+          ],
+          enableLighting: true,
+          lighting: lightingFor(rung),
+          light: deckFreeLightReadback(
+            "DirectionalLight",
+            true,
+            directionSpec.emittedDirectionWC,
+          ),
+          cameraHeight: rung.deckFreePublished.cameraHeight,
+          enableVolumetric: false,
+          configureCalls: 1,
+        };
+      }),
+    };
+  });
 
 /** A run in which every gate passes. Mutants below break exactly one thing. */
 function passingRun() {
@@ -616,6 +732,7 @@ function passingRun() {
     scheduleObscurationTolerance:
       ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
     captureDelta: BAND_MEAN_CAPTURE_DELTA,
+    diagnosticSite: DECK_FREE_DIAGNOSTIC_SITE,
   });
   for (let index = 0; index < rungs.length; index++) {
     Object.assign(rungs[index].shadow, deckFreeControl.rungs[index]);
@@ -649,6 +766,7 @@ function refoldDeckFreeControl(run) {
     scheduleObscurationTolerance:
       ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
     captureDelta: BAND_MEAN_CAPTURE_DELTA,
+    diagnosticSite: DECK_FREE_DIAGNOSTIC_SITE,
   });
   cloud.deckFreeControl = control;
   for (let index = 0; index < cloud.rungs.length; index++) {
@@ -708,14 +826,18 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
   // 26 -> 28 at CO-19: the two pre-registered fifth-run legs,
   // `deckPureRatioInBand` (lane A's tint-free deck ratio) and
   // `deckFreeGroundDimsByFactor` (lane B's deck-free attribution).
-  // 28 -> 29 at CO-21: the same-page settled-twin precondition. 29 -> 31 for
-  // the redesigned control: four fresh ABBA configure epochs, plus a live-lit
-  // surface that differs from raw 200/255 and varies with solar elevation.
-  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 31);
+  // 28 -> 29 at CO-21: the same-page settled-twin precondition. The redesigned
+  // control added two gates (29 -> 31): four fresh ABBA configure epochs, plus
+  // a live DAYNIGHT surface proven by a separate unsaturated DirectionalLight
+  // diagnostic. Demoting the already-discharged refresh-cost estimate makes
+  // the current gating count 30.
+  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 30);
   // 4 -> 5 at CO-19: `offNoCloudVariesWithSun`, the instrument tell.
   // 5 -> 6 at CO-21: `deckFreeGroundRetentionLegsAgreeReportedOnly`, the
   // corroborating disagreement between lane B's two retention ratios.
-  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 6);
+  // 6 -> 7 when the already-discharged refresh-cost estimate moved to
+  // reported-only for redesigned-control closure reruns.
+  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 7);
   assert.equal(ECLIPSE_CLOUD_PARITY_PREDICATES.length, 2);
   // Nothing is scored without a declared blindness domain — an unmapped
   // predicate would be silently unquarantinable.
@@ -883,22 +1005,24 @@ test("D12 an unreproducible capture fails the determinism bracket", () => {
   );
 });
 
-test("D13 a cost differential that cannot be formed fails — the row does NOT discharge", () => {
-  expectFailure(
-    (run) => {
-      // Same fill count in both legs: nothing to attribute the wall clock to.
-      run.iblWebGPU.refreshCost.eclipseFills =
-        run.iblWebGPU.refreshCost.controlFills;
-    },
-    ["refreshCostMeasured"],
-  );
+test("D13 a cost differential that cannot be formed stays explicit and reported-only", () => {
+  const run = clone(passingRun());
+  // Same fill count in both legs: nothing to attribute the wall clock to.
+  run.iblWebGPU.refreshCost.eclipseFills =
+    run.iblWebGPU.refreshCost.controlFills;
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.refreshCostEstimateValidReportedOnly, false);
+  assert.equal(verdict.cost.webgpu.valid, false);
+  assert.match(verdict.cost.invalidReasons[0], /differential cannot be formed/);
+  assert.deepEqual(verdict.failedPredicates, []);
+  assert.equal(verdict.PASS, true);
 });
 
-test("D14 the cost IS reported when the differential exists", () => {
+test("D14 a valid cost estimate remains reported with its exact value", () => {
   const verdict = judgeEclipseCloudResponse(passingRun());
   // 4000 ms over 274 eclipse-driven fills.
   assert.equal(Number(verdict.cost.webgpuMsPerRefresh.toFixed(4)), 14.5985);
-  assert.equal(verdict.refreshCostMeasured, true);
+  assert.equal(verdict.refreshCostEstimateValidReportedOnly, true);
   assert.equal(verdict.cost.webgpu.valid, true);
   assert.deepEqual(verdict.cost.invalidReasons, []);
 });
@@ -1388,7 +1512,10 @@ test("I5 unequal frame counts and a zero fill delta are both INVALID", () => {
   const noFills = computeRefreshCost(costInput({ eclipseFills: 8 }));
   assert.equal(noFills.valid, false);
   assert.match(noFills.invalidReason, /no eclipse-driven fills/);
-  assert.match(noFills.invalidReason, /does NOT discharge/);
+  assert.match(
+    noFills.invalidReason,
+    /reported-only differential cannot be formed/,
+  );
 
   const absent = computeRefreshCost(undefined);
   assert.equal(absent.valid, false);
@@ -1402,16 +1529,17 @@ test("I6 a zero differential is VALID at exactly 0 — non-negative by construct
   assert.ok(cost.msPerRefresh >= 0);
 });
 
-test("I7 the fold refuses to discharge the row when EITHER backend is INVALID", () => {
+test("I7 the fold reports either backend INVALID without reopening the discharged row", () => {
   const run = clone(passingRun());
   run.iblWebGL.refreshCost.eclipseWallMs = 100;
   const verdict = judgeEclipseCloudResponse(run);
-  assert.equal(verdict.refreshCostMeasured, false);
+  assert.equal(verdict.refreshCostEstimateValidReportedOnly, false);
   assert.equal(verdict.cost.webglMsPerRefresh, null);
   assert.equal(verdict.cost.webgpu.valid, true);
   assert.equal(verdict.cost.invalidReasons.length, 1);
   assert.match(verdict.cost.invalidReasons[0], /^webgl: /);
-  assert.deepEqual(verdict.failedPredicates, ["refreshCostMeasured"]);
+  assert.deepEqual(verdict.failedPredicates, []);
+  assert.equal(verdict.PASS, true);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1674,8 +1802,15 @@ test("F4 the probe's cost legs are interleaved and both pay a warm-up", () => {
   // The gate reads the interleaved accounting, not the two counting legs.
   assert.match(probe, /refreshCost,/);
   assert.ok(
-    ECLIPSE_CLOUD_GATE_PREDICATES.includes("refreshCostMeasured"),
-    "the cost must remain a gate, or the row silently stops discharging",
+    ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.includes(
+      "refreshCostEstimateValidReportedOnly",
+    ),
+    "closure reruns must retain cost validity and its INVALID reason as a reported diagnostic",
+  );
+  assert.ok(
+    !ECLIPSE_CLOUD_GATE_PREDICATES.includes(
+      "refreshCostEstimateValidReportedOnly",
+    ),
   );
   assert.ok(
     8 >= REFRESH_COST_MIN_SEGMENTS_PER_LEG,
@@ -2400,16 +2535,22 @@ test("L1b deck-free attribution uses the independently predicted 1400 m factor, 
   const offBand = rung.shadow.offNoCloud;
   for (const session of run.cloudLanes.deckFreeControl.sessions) {
     const sessionRung = session.rungs[rungIndex];
+    const diagnosticRung = session.directionalDiagnosticRungs[rungIndex];
     sessionRung.lighting.moonObscuration = deckFreeObscuration;
+    diagnosticRung.lighting.moonObscuration = deckFreeObscuration;
     sessionRung.cameraHeight = 1400;
     if (session.eclipseEnabled) {
       sessionRung.factor = deckFreeFactor;
       sessionRung.lighting.factor = deckFreeFactor;
       sessionRung.mean = offBand * deckFreeFactor;
+      diagnosticRung.factor = deckFreeFactor;
+      diagnosticRung.lighting.factor = deckFreeFactor;
     } else {
       sessionRung.factor = 1;
       sessionRung.lighting.factor = 1;
       sessionRung.mean = offBand;
+      diagnosticRung.factor = 1;
+      diagnosticRung.lighting.factor = 1;
     }
   }
   const control = refoldDeckFreeControl(run);
@@ -2992,12 +3133,56 @@ test("K6 the probe removes the in-page control and opens four fresh ABBA context
     "a fresh control session must have exactly one configure epoch",
   );
   assert.match(callback, /enableVolumetric: false/);
+  assert.match(
+    callback,
+    /scene\.globe\.lightingFadeOutDistance = cfg\.lightingFadeOutDistance/,
+  );
+  assert.match(
+    callback,
+    /scene\.globe\.lightingFadeInDistance = cfg\.lightingFadeInDistance/,
+  );
+  assert.match(callback, /cameraDistance/);
+  assert.match(callback, /expectedFade/);
+  assert.match(callback, /scene\.light = new C\.DirectionalLight\(/);
+  assert.match(callback, /captureRole: "diagnostic-directional-daynight"/);
+  assert.match(
+    callback,
+    /scene\.light = new C\.SunLight\([\s\S]*?aimCamera\(julian\);[\s\S]*?await pin\.settle\(julian, cfg\.settleMs\);[\s\S]*?captureRole: "scored-real-sun-factor"/,
+    "each scored rung must restore a fresh SunLight and render after restoration",
+  );
+  assert.match(callback, /light: readLight\(false\)/);
+  assert.match(callback, /light: readLight\(true\)/);
+  assert.match(
+    callback,
+    /sameObject: scene\.light === scene\.frameState\?\.light/,
+  );
   assert.match(callback, /configureCalls,/);
   assert.match(callback, /sessionToken: globalThis\.crypto\.randomUUID\(\)/);
   assert.match(callback, /cameraHeight: cfg\.groundCameraHeight/);
   assert.match(
     probe,
     /const deckFreePublished = \{[\s\S]*?cameraHeight: cfg\.groundCameraHeight,[\s\S]*?\};/,
+  );
+  assert.match(
+    probe,
+    /lightingFadeOutDistance: DECK_FREE_LIGHTING_FADE_OUT_DISTANCE/,
+  );
+  assert.match(
+    probe,
+    /lightingFadeInDistance: DECK_FREE_LIGHTING_FADE_IN_DISTANCE/,
+  );
+  assert.match(
+    probe,
+    /directionalNdotLTargets: DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS/,
+  );
+  assert.match(
+    probe,
+    /directionalLightIntensity:\s*DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY/,
+  );
+  assert.match(probe, /sunLightIntensity: DECK_FREE_SUN_LIGHT_INTENSITY/);
+  assert.match(
+    probe,
+    /diagnosticSite: \{\s*latitudeDegrees: derived\.lat,\s*longitudeDegrees: derived\.lon/,
   );
 });
 
@@ -3026,6 +3211,7 @@ test("K7 the ABBA policy rejects reused, reordered, or reconfigured sessions", (
       scheduleObscurationTolerance:
         ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
       captureDelta: BAND_MEAN_CAPTURE_DELTA,
+      diagnosticSite: DECK_FREE_DIAGNOSTIC_SITE,
     });
 
   assert.equal(fold(sessions).stateIsolated, true);
@@ -3055,7 +3241,7 @@ test("K7 the ABBA policy rejects reused, reordered, or reconfigured sessions", (
   assert.match(fold(deckPresent).isolationReasons.join("\n"), /not disabled/);
 });
 
-test("K8 raw or frozen baseColor controls are STRUCTURAL before attribution", () => {
+test("K8 the non-saturated DirectionalLight discriminator rejects Sun saturation and fabricated variation", () => {
   const run = passingRun();
   const ladder = run.cloudLanes.rungs.map(
     ({ target, iso, scheduledObscuration }) => ({
@@ -3073,27 +3259,81 @@ test("K8 raw or frozen baseColor controls are STRUCTURAL before attribution", ()
       scheduleObscurationTolerance:
         ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
       captureDelta: BAND_MEAN_CAPTURE_DELTA,
+      diagnosticSite: DECK_FREE_DIAGNOSTIC_SITE,
     });
 
-  const raw = freshDeckFreeSessions(run.cloudLanes.rungs);
-  for (const session of raw.filter((entry) => !entry.eclipseEnabled)) {
+  // The actual Iceland Sun is saturated at all four rungs. Flat/raw OFF pixels
+  // are therefore valid in the scored factor lane once a separate diagnostic
+  // executes the DAYNIGHT diffuse law.
+  const saturatedRealSun = freshDeckFreeSessions(run.cloudLanes.rungs);
+  for (const session of saturatedRealSun.filter(
+    (entry) => !entry.eclipseEnabled,
+  )) {
     for (const rung of session.rungs) {
       rung.mean = DECK_FREE_RAW_BASE_COLOR_LUMA;
     }
   }
-  const rawVerdict = fold(raw);
-  assert.equal(rawVerdict.litSurfaceNonVacuous, false);
-  assert.match(rawVerdict.nonVacuityReasons[0], /raw 200\/255 baseColor/);
+  const saturatedRealSunVerdict = fold(saturatedRealSun);
+  assert.equal(saturatedRealSunVerdict.offASpread, 0);
+  assert.equal(saturatedRealSunVerdict.maximumRawDistance, 0);
+  assert.equal(saturatedRealSunVerdict.litSurfaceNonVacuous, true);
 
-  const frozenDark = freshDeckFreeSessions(run.cloudLanes.rungs);
-  for (const session of frozenDark.filter((entry) => !entry.eclipseEnabled)) {
-    for (const rung of session.rungs) {
-      rung.mean = 0.2750603921572111;
+  // Mutant 1: accidentally reusing SunLight for the diagnostic restores the
+  // exact saturation blind the reviewer found, even if the pixels look stable.
+  const saturatedDiagnostic = freshDeckFreeSessions(run.cloudLanes.rungs);
+  for (const session of saturatedDiagnostic) {
+    for (const diagnostic of session.directionalDiagnosticRungs) {
+      diagnostic.mean = DECK_FREE_RAW_BASE_COLOR_LUMA;
+      diagnostic.light = deckFreeLightReadback("SunLight", false);
     }
   }
-  const darkVerdict = fold(frozenDark);
-  assert.equal(darkVerdict.litSurfaceNonVacuous, false);
-  assert.equal(darkVerdict.offASpread, 0);
+  const saturatedDiagnosticVerdict = fold(saturatedDiagnostic);
+  assert.equal(saturatedDiagnosticVerdict.stateIsolated, false);
+  assert.equal(saturatedDiagnosticVerdict.litSurfaceNonVacuous, false);
+  assert.match(
+    saturatedDiagnosticVerdict.isolationReasons.join("\n"),
+    /not the exact diagnostic DirectionalLight/,
+  );
+  assert.match(
+    saturatedDiagnosticVerdict.nonVacuityReasons.join("\n"),
+    /do not execute DAYNIGHT diffuse/,
+  );
+
+  // Mutant 2: monotonically varying pixels cannot self-certify. The fold
+  // derives .3/.5/.7/.9 from direction readback and rejects made-up values.
+  const fabricatedVariation = freshDeckFreeSessions(run.cloudLanes.rungs);
+  for (const session of fabricatedVariation) {
+    for (
+      let index = 0;
+      index < session.directionalDiagnosticRungs.length;
+      index++
+    ) {
+      session.directionalDiagnosticRungs[index].mean = 0.2 + index * 0.1;
+    }
+  }
+  const fabricatedVerdict = fold(fabricatedVariation);
+  assert.equal(fabricatedVerdict.litSurfaceNonVacuous, false);
+  assert.match(
+    fabricatedVerdict.nonVacuityReasons.join("\n"),
+    /do not execute DAYNIGHT diffuse/,
+  );
+
+  // Mutant 3: applying F to the custom diagnostic contaminates the deliberate
+  // SunLight-only separation. Only restored-Sun scored pixels may certify F.
+  const contaminatedDiagnostic = freshDeckFreeSessions(run.cloudLanes.rungs);
+  for (const session of contaminatedDiagnostic.filter(
+    (entry) => entry.eclipseEnabled,
+  )) {
+    for (const diagnostic of session.directionalDiagnosticRungs) {
+      diagnostic.mean *= diagnostic.factor;
+    }
+  }
+  const contaminatedVerdict = fold(contaminatedDiagnostic);
+  assert.equal(contaminatedVerdict.litSurfaceNonVacuous, false);
+  assert.match(
+    contaminatedVerdict.nonVacuityReasons.join("\n"),
+    /not eclipse-invariant/,
+  );
 
   const judged = clone(passingRun());
   judged.cloudLanes.deckFreeControl.litSurfaceNonVacuous = false;
@@ -3104,6 +3344,40 @@ test("K8 raw or frozen baseColor controls are STRUCTURAL before attribution", ()
   assert.ok(verdict.structuralReasons.includes("raw baseColor mutant"));
   assert.ok(verdict.unscoredPredicates.includes("deckFreeGroundDimsByFactor"));
   assert.ok(!verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+});
+
+test("K8b fresh v3's exact 1.034 shadow red survives deck-free blindness and invalid cost", () => {
+  const run = clone(passingRun());
+  const deepest = run.cloudLanes.rungs.at(-1).shadow;
+  Object.assign(deepest, {
+    offNoShadow: 0.677968772411535,
+    offShadow: 0.3794705078143026,
+    onNoShadow: 0.3322938519156115,
+    onShadow: 0.1923373584990313,
+  });
+  run.cloudLanes.deckFreeControl.litSurfaceNonVacuous = false;
+  run.cloudLanes.deckFreeControl.nonVacuityReasons = [
+    "fresh v3 raw-baseColor structural blind",
+  ];
+  Object.assign(run.iblWebGPU.refreshCost, {
+    eclipseWallMs: 1861,
+    controlWallMs: 2238.800000011921,
+    eclipseFills: 273,
+    controlFills: 0,
+  });
+
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.shadowContrastRatioAtDeepest, 1.0341249188478936);
+  assert.deepEqual(verdict.failedPredicates, ["shadowContrastInvariant"]);
+  assert.ok(
+    verdict.structuralReasons.includes(
+      "fresh v3 raw-baseColor structural blind",
+    ),
+  );
+  assert.ok(!verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+  assert.equal(verdict.refreshCostEstimateValidReportedOnly, false);
+  assert.match(verdict.cost.invalidReasons[0], /differential is negative/);
+  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.FAIL);
 });
 
 test("K9 build identity compares every current source byte with sourcesContent", () => {
@@ -3162,6 +3436,7 @@ test("K10 every fresh-session factor is finite, replicated, and bound to the sch
         scheduleObscurationTolerance:
           ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
         captureDelta: BAND_MEAN_CAPTURE_DELTA,
+        diagnosticSite: DECK_FREE_DIAGNOSTIC_SITE,
       });
     return { run, sessions, fold };
   };
@@ -3353,7 +3628,7 @@ test("K10 every fresh-session factor is finite, replicated, and bound to the sch
   );
 });
 
-test("K11 baseColor and lighting are read back on every fresh control rung", () => {
+test("K11 baseColor, fade, and exact light classes are read back on every fresh control rung", () => {
   const run = passingRun();
   const ladder = run.cloudLanes.rungs.map(
     ({ target, iso, scheduledObscuration }) => ({
@@ -3362,7 +3637,7 @@ test("K11 baseColor and lighting are read back on every fresh control rung", () 
       obscuration: scheduledObscuration,
     }),
   );
-  const fold = (sessions) =>
+  const fold = (sessions, diagnosticSite = DECK_FREE_DIAGNOSTIC_SITE) =>
     foldDeckFreeControlSessions({
       sessions,
       ladder,
@@ -3371,6 +3646,7 @@ test("K11 baseColor and lighting are read back on every fresh control rung", () 
       scheduleObscurationTolerance:
         ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
       captureDelta: BAND_MEAN_CAPTURE_DELTA,
+      diagnosticSite,
     });
 
   const topLevelColor = freshDeckFreeSessions(run.cloudLanes.rungs);
@@ -3420,6 +3696,145 @@ test("K11 baseColor and lighting are read back on every fresh control rung", () 
   assert.match(
     fold(toggled).isolationReasons.join("\n"),
     /rung 1 lighting read-back does not match/,
+  );
+
+  assert.equal(DECK_FREE_LIGHTING_FADE_OUT_DISTANCE, 0);
+  assert.equal(DECK_FREE_LIGHTING_FADE_IN_DISTANCE, 1);
+  assert.equal(DECK_FREE_EXPECTED_LIGHTING_FADE, 1);
+  assert.equal(computeDeckFreeLightingFade(6_362_245, 0, 1), 1);
+  assert.equal(computeDeckFreeLightingFade(6_362_245, 1, 1), null);
+
+  const missingTopLevelFade = freshDeckFreeSessions(run.cloudLanes.rungs);
+  delete missingTopLevelFade[0].lighting.lightingFade;
+  assert.match(
+    fold(missingTopLevelFade).isolationReasons.join("\n"),
+    /top-level lighting fade is not the live probe pin/,
+  );
+
+  const wrongFadePin = freshDeckFreeSessions(run.cloudLanes.rungs);
+  wrongFadePin[1].rungs[2].lighting.lightingFade.outDistance = 1;
+  assert.match(
+    fold(wrongFadePin).isolationReasons.join("\n"),
+    /rung 2 lighting fade is not the live probe pin/,
+  );
+
+  const zeroSpan = freshDeckFreeSessions(run.cloudLanes.rungs);
+  zeroSpan[2].rungs[1].lighting.lightingFade.inDistance = 0;
+  assert.match(
+    fold(zeroSpan).isolationReasons.join("\n"),
+    /rung 1 lighting fade is not the live probe pin/,
+  );
+
+  const fabricatedFade = freshDeckFreeSessions(run.cloudLanes.rungs);
+  fabricatedFade[3].rungs[3].lighting.lightingFade.cameraDistance = 0.5;
+  fabricatedFade[3].rungs[3].lighting.lightingFade.expectedFade = 1;
+  assert.match(
+    fold(fabricatedFade).isolationReasons.join("\n"),
+    /rung 3 lighting fade is not the live probe pin/,
+  );
+
+  assert.deepEqual(DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS, [0, 0.04, 0.08, 0.12]);
+  assert.deepEqual(
+    DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS.map((ndotl) =>
+      Number(computeDeckFreeDayNightDiffuse(ndotl, 1).toFixed(1)),
+    ),
+    [0.3, 0.5, 0.7, 0.9],
+  );
+  assert.equal(computeDeckFreeDayNightDiffuse(0.5, 1), 1);
+  assert.equal(computeDeckFreeDayNightDiffuse(0, 0), 1);
+
+  const wrongDirection = freshDeckFreeSessions(run.cloudLanes.rungs);
+  wrongDirection[0].directionalDiagnosticRungs[1].light.scene.directionWC[0] += 0.01;
+  assert.match(
+    fold(wrongDirection).isolationReasons.join("\n"),
+    /custom-light read-back is not the exact diagnostic DirectionalLight/,
+  );
+
+  const wrongClass = freshDeckFreeSessions(run.cloudLanes.rungs);
+  wrongClass[1].directionalDiagnosticRungs[0].light = deckFreeLightReadback(
+    "SunLight",
+    false,
+  );
+  assert.match(
+    fold(wrongClass).isolationReasons.join("\n"),
+    /not the exact diagnostic DirectionalLight/,
+  );
+
+  const wrongIntensity = freshDeckFreeSessions(run.cloudLanes.rungs);
+  wrongIntensity[2].directionalDiagnosticRungs[2].light.scene.intensity = 2;
+  wrongIntensity[2].directionalDiagnosticRungs[2].light.frameState.intensity = 2;
+  assert.match(
+    fold(wrongIntensity).isolationReasons.join("\n"),
+    /not the exact diagnostic DirectionalLight/,
+  );
+
+  const detachedFrameLight = freshDeckFreeSessions(run.cloudLanes.rungs);
+  detachedFrameLight[3].directionalDiagnosticRungs[3].light.sameObject = false;
+  assert.match(
+    fold(detachedFrameLight).isolationReasons.join("\n"),
+    /not the exact diagnostic DirectionalLight/,
+  );
+
+  const missingTopLevelSun = freshDeckFreeSessions(run.cloudLanes.rungs);
+  missingTopLevelSun[0].light = null;
+  assert.match(
+    fold(missingTopLevelSun).isolationReasons.join("\n"),
+    /top-level light read-back is not a restored fresh SunLight/,
+  );
+
+  const staleDirectionalAtScore = freshDeckFreeSessions(run.cloudLanes.rungs);
+  const staleFrame = computeDeckFreeDiagnosticFrame(
+    DECK_FREE_DIAGNOSTIC_SITE.latitudeDegrees,
+    DECK_FREE_DIAGNOSTIC_SITE.longitudeDegrees,
+    DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[0],
+  );
+  staleDirectionalAtScore[1].rungs[0].light = deckFreeLightReadback(
+    "DirectionalLight",
+    true,
+    staleFrame.emittedDirectionWC,
+  );
+  assert.match(
+    fold(staleDirectionalAtScore).isolationReasons.join("\n"),
+    /did not restore and render a fresh SunLight before scoring/,
+  );
+
+  const wrongSequence = freshDeckFreeSessions(run.cloudLanes.rungs);
+  wrongSequence[2].captureSequence = "directional-only";
+  assert.match(
+    fold(wrongSequence).isolationReasons.join("\n"),
+    /capture sequence does not isolate/,
+  );
+
+  const wrongSite = freshDeckFreeSessions(run.cloudLanes.rungs);
+  assert.match(
+    fold(wrongSite, {
+      latitudeDegrees: DECK_FREE_DIAGNOSTIC_SITE.latitudeDegrees,
+      longitudeDegrees: DECK_FREE_DIAGNOSTIC_SITE.longitudeDegrees + 1,
+    }).isolationReasons.join("\n"),
+    /directional vector or DAYNIGHT prediction/,
+  );
+
+  const fabricatedPrediction = freshDeckFreeSessions(run.cloudLanes.rungs);
+  fabricatedPrediction[0].directionalDiagnosticRungs[0].directionSpec.expectedDiffuse = 0.31;
+  assert.match(
+    fold(fabricatedPrediction).isolationReasons.join("\n"),
+    /directional vector or DAYNIGHT prediction/,
+  );
+
+  // The in-page Cartesian implementation normalizes before taking the dot.
+  // Accept its mathematically equivalent f64 reconstruction of the 0.08 rung.
+  const realCartesianRoundoff = freshDeckFreeSessions(run.cloudLanes.rungs);
+  const roundedDirection =
+    realCartesianRoundoff[0].directionalDiagnosticRungs[2].directionSpec;
+  roundedDirection.ndotl = 0.07999999999999997;
+  roundedDirection.expectedDiffuse = 0.6999999999999998;
+  assert.equal(fold(realCartesianRoundoff).stateIsolated, true);
+
+  const missingDiagnostics = freshDeckFreeSessions(run.cloudLanes.rungs);
+  missingDiagnostics[0].directionalDiagnosticRungs = [];
+  assert.match(
+    fold(missingDiagnostics).isolationReasons.join("\n"),
+    /expected 4 directional diagnostic captures/,
   );
 });
 
@@ -3608,6 +4023,207 @@ test("K14 canonical, immutable archive, and first-red lifecycle is fail-closed",
   assert.equal(temporaryCleaned, true);
 });
 
+test("K14b owned RUNNING invalidates stale PASS before fallible preflight and release", (t) => {
+  const rootDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "c13-41-owned-lifecycle-"),
+  );
+  t.after(() => fs.rmSync(rootDirectory, { recursive: true, force: true }));
+  const makePaths = (caseName, runId) => {
+    const directory = path.join(rootDirectory, caseName);
+    fs.mkdirSync(directory, { recursive: true });
+    return {
+      directory,
+      canonical: path.join(directory, "canonical.json"),
+      firstRed: path.join(directory, "first-red.json"),
+      preLifecycle: path.join(directory, "pre-lifecycle.json"),
+      lock: path.join(directory, "run.lock"),
+      run: path.join(directory, `run-${runId}.json`),
+      priorQuarantine: path.join(directory, `prior-${runId}.json`),
+      archiveForRunId(priorRunId) {
+        return path.join(directory, `run-${priorRunId}.json`);
+      },
+    };
+  };
+  const runningMarker = (runId) => ({
+    schema: "c13-41-eclipse-cloud-response-v3",
+    runId,
+    status: "RUNNING",
+    incomplete: true,
+  });
+  const finalArtifact = (runId, status = "ERROR") => ({
+    schema: "c13-41-eclipse-cloud-response-v3",
+    runId,
+    status,
+    incomplete: false,
+    exitCode: status === "PASS" ? 0 : 2,
+  });
+
+  // A failure after ownership publication cannot leave the seeded PASS as the
+  // public claim. This is the exact preflight-throw ordering regression.
+  {
+    const runId = "123e4567-e89b-42d3-a456-426614174001";
+    const paths = makePaths("preflight-throw", runId);
+    fs.writeFileSync(
+      paths.canonical,
+      `${JSON.stringify({ status: "PASS", incomplete: false })}\n`,
+    );
+    acquireC1341RunLock(paths, runId);
+    const prior = captureC1341PriorCanonical(paths.canonical);
+    assertNoPriorC1341Running(prior);
+    publishC1341Running(paths, runningMarker(runId));
+    assert.equal(
+      JSON.parse(fs.readFileSync(paths.canonical)).status,
+      "RUNNING",
+    );
+    try {
+      throw new Error("synthetic post-RUNNING preflight failure");
+    } catch (error) {
+      assert.match(error.message, /preflight failure/);
+      finalizeC1341Evidence(paths, finalArtifact(runId));
+    }
+    assert.equal(JSON.parse(fs.readFileSync(paths.canonical)).status, "ERROR");
+    assert.equal(fs.existsSync(paths.lock), false);
+    assert.deepEqual(
+      fs.readFileSync(paths.canonical),
+      fs.readFileSync(paths.run),
+    );
+  }
+
+  // A previous RUNNING belongs to its original invocation and is never
+  // overwritten merely because another process acquired a different lock.
+  {
+    const runId = "123e4567-e89b-42d3-a456-426614174002";
+    const paths = makePaths("prior-running", runId);
+    const priorBytes = `${JSON.stringify({ runId: "prior", status: "RUNNING", incomplete: true })}\n`;
+    fs.writeFileSync(paths.canonical, priorBytes);
+    acquireC1341RunLock(paths, runId);
+    assert.throws(
+      () =>
+        assertNoPriorC1341Running(captureC1341PriorCanonical(paths.canonical)),
+      /previous RUNNING marker/,
+    );
+    assert.equal(fs.readFileSync(paths.canonical, "utf8"), priorBytes);
+    releaseC1341RunLock(paths, runId);
+  }
+
+  // Malformed readable prior bytes are quarantined only after RUNNING has
+  // invalidated them, and the caught error can then finalize as ERROR.
+  {
+    const runId = "123e4567-e89b-42d3-a456-426614174003";
+    const paths = makePaths("malformed-prior", runId);
+    fs.writeFileSync(paths.canonical, "{malformed\n");
+    acquireC1341RunLock(paths, runId);
+    const prior = captureC1341PriorCanonical(paths.canonical);
+    publishC1341Running(paths, runningMarker(runId));
+    assert.throws(
+      () => prepareCapturedCanonicalForRun(prior, paths),
+      /exact bytes quarantined/,
+    );
+    assert.equal(
+      fs.readFileSync(paths.priorQuarantine, "utf8"),
+      "{malformed\n",
+    );
+    finalizeC1341Evidence(paths, finalArtifact(runId));
+    assert.equal(JSON.parse(fs.readFileSync(paths.canonical)).status, "ERROR");
+  }
+
+  // Empty is corrupt evidence, not absence. It is still a readable exact byte
+  // sequence, so preserve its zero length and SHA before finalizing ERROR.
+  {
+    const runId = "123e4567-e89b-42d3-a456-426614174006";
+    const paths = makePaths("zero-byte-prior", runId);
+    fs.writeFileSync(paths.canonical, "");
+    acquireC1341RunLock(paths, runId);
+    const prior = captureC1341PriorCanonical(paths.canonical);
+    assert.equal(prior.canonical.exists, true);
+    assert.equal(prior.canonical.byteLength, 0);
+    publishC1341Running(paths, runningMarker(runId));
+    assert.equal(
+      JSON.parse(fs.readFileSync(paths.canonical)).status,
+      "RUNNING",
+    );
+    assert.throws(
+      () => prepareCapturedCanonicalForRun(prior, paths),
+      /exact bytes quarantined/,
+    );
+    const quarantined = fingerprintEvidenceFile(paths.priorQuarantine);
+    assert.equal(quarantined.exists, true);
+    assert.equal(quarantined.byteLength, 0);
+    assert.equal(quarantined.sha256, prior.canonical.sha256);
+    finalizeC1341Evidence(paths, finalArtifact(runId));
+    assert.equal(JSON.parse(fs.readFileSync(paths.canonical)).status, "ERROR");
+    assert.equal(fs.existsSync(paths.lock), false);
+  }
+
+  // Final evidence cannot remain visible if lock release fails. The exact
+  // owned RUNNING marker is restored and the lock remains for investigation.
+  {
+    const runId = "123e4567-e89b-42d3-a456-426614174004";
+    const paths = makePaths("release-failure", runId);
+    acquireC1341RunLock(paths, runId);
+    publishC1341Running(paths, runningMarker(runId));
+    const operations = {
+      readFileSync: fs.readFileSync,
+      writeFileSync: fs.writeFileSync,
+      renameSync: fs.renameSync,
+      unlinkSync(file) {
+        if (path.resolve(file) === path.resolve(paths.lock)) {
+          throw new Error("synthetic lock release failure");
+        }
+        fs.unlinkSync(file);
+      },
+    };
+    assert.throws(
+      () =>
+        finalizeC1341Evidence(paths, finalArtifact(runId, "PASS"), operations),
+      /owned RUNNING marker restored/,
+    );
+    assert.equal(
+      JSON.parse(fs.readFileSync(paths.canonical)).status,
+      "RUNNING",
+    );
+    assert.equal(fs.existsSync(paths.lock), true);
+    releaseC1341RunLock(paths, runId);
+  }
+
+  // A verification failure after the final bytes replace RUNNING has the same
+  // rollback contract as a failed lock release.
+  {
+    const runId = "123e4567-e89b-42d3-a456-426614174005";
+    const paths = makePaths("post-replace-read-failure", runId);
+    acquireC1341RunLock(paths, runId);
+    publishC1341Running(paths, runningMarker(runId));
+    let canonicalReads = 0;
+    const operations = {
+      readFileSync(file, ...args) {
+        if (path.resolve(file) === path.resolve(paths.canonical)) {
+          canonicalReads++;
+          if (canonicalReads === 2) {
+            const error = new Error("synthetic post-replace read failure");
+            error.code = "EACCES";
+            throw error;
+          }
+        }
+        return fs.readFileSync(file, ...args);
+      },
+      writeFileSync: fs.writeFileSync,
+      renameSync: fs.renameSync,
+      unlinkSync: fs.unlinkSync,
+    };
+    assert.throws(
+      () =>
+        finalizeC1341Evidence(paths, finalArtifact(runId, "PASS"), operations),
+      /owned RUNNING marker restored/,
+    );
+    assert.equal(
+      JSON.parse(fs.readFileSync(paths.canonical)).status,
+      "RUNNING",
+    );
+    assert.equal(fs.existsSync(paths.lock), true);
+    releaseC1341RunLock(paths, runId);
+  }
+});
+
 test("K15 the probe lifecycle binds diagnostics, provenance, watchdog cleanup, and artifacts", () => {
   const probe = fs
     .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
@@ -3618,19 +4234,37 @@ test("K15 the probe lifecycle binds diagnostics, provenance, watchdog cleanup, a
   assert.match(probe, /const status = structural \? "STRUCTURAL" : "ERROR"/);
   assert.match(probe, /startedAt: STARTED_AT/);
   assert.match(probe, /completedAt: new Date\(\)\.toISOString\(\)/);
-  assert.match(probe, /createImmutableEvidence\(RUN_ARTIFACT, bytes\)/);
-  assert.match(probe, /atomicReplaceEvidence\(CANONICAL_ARTIFACT, bytes\)/);
-  assert.match(probe, /preserveFirstRedEvidence\(FIRST_RED_ARTIFACT, bytes\)/);
+  assert.match(
+    probe,
+    /createImmutableEvidence\(paths\.run, bytes, operations\)/,
+  );
+  assert.match(
+    probe,
+    /atomicReplaceEvidence\(paths\.canonical, bytes, operations\)/,
+  );
+  assert.match(
+    probe,
+    /preserveFirstRedEvidence\(\n\s*paths\.firstRed,\n\s*bytes,\n\s*operations/,
+  );
+  const archive = probe.indexOf(
+    "createImmutableEvidence(paths.run, bytes, operations)",
+  );
+  const firstRed = probe.indexOf("preserveFirstRedEvidence(", archive);
+  const canonicalFinal = probe.indexOf(
+    "atomicReplaceEvidence(paths.canonical, bytes, operations)",
+    firstRed,
+  );
   assert.ok(
-    probe.indexOf("createImmutableEvidence(RUN_ARTIFACT, bytes)") <
-      probe.indexOf("preserveFirstRedEvidence(FIRST_RED_ARTIFACT, bytes)") &&
-      probe.indexOf("preserveFirstRedEvidence(FIRST_RED_ARTIFACT, bytes)") <
-        probe.indexOf("atomicReplaceEvidence(CANONICAL_ARTIFACT, bytes)"),
+    archive >= 0 && archive < firstRed && firstRed < canonicalFinal,
     "immutable archive and first-red must land before canonical finalization",
   );
   assert.match(
     probe,
-    /createImmutableEvidence\(PRE_LIFECYCLE_RUN_6_ARTIFACT, bytes\)/,
+    /createImmutableEvidence\(paths\.preLifecycle, captured\.bytes, operations\)/,
+  );
+  assert.match(
+    probe,
+    /createImmutableEvidence\(paths\.priorQuarantine, captured\.bytes, operations\)/,
   );
   assert.match(probe, /previous RUNNING marker .* must be investigated/);
   assert.match(probe, /!publicationAttempted && runningMarkerPublished/);
@@ -3646,6 +4280,29 @@ test("K15 the probe lifecycle binds diagnostics, provenance, watchdog cleanup, a
     probe,
     /assertEvidenceReadableOrAbsent\([\s\S]*firstRedBeforeFinalize,[\s\S]*"first-red artifact before finalization"/,
   );
+
+  const acquire = probe.indexOf("acquireC1341RunLock(LIFECYCLE_PATHS, RUN_ID)");
+  const capture = probe.indexOf(
+    "priorCanonicalCapture = captureC1341PriorCanonical(CANONICAL_ARTIFACT)",
+  );
+  const running = probe.indexOf("publishC1341Running(LIFECYCLE_PATHS, {");
+  const priorValidation = probe.indexOf(
+    "previousCanonicalAtStart = prepareCapturedCanonicalForRun(",
+  );
+  const localSnapshot = probe.indexOf(
+    "startLocalIdentity = snapshotEvidenceFiles(LOCAL_EVIDENCE_FILES)",
+  );
+  assert.ok(
+    acquire >= 0 &&
+      acquire < capture &&
+      capture < running &&
+      running < priorValidation &&
+      priorValidation < localSnapshot,
+    "exclusive lock and owned RUNNING must precede every fallible preflight check",
+  );
+  assert.match(probe, /assertC1341RunningOwnership\(/);
+  assert.match(probe, /releaseC1341RunLock\(/);
+  assert.match(probe, /owned RUNNING marker restored/);
 
   assert.match(probe, /startLocalIdentity = snapshotEvidenceFiles/);
   assert.match(probe, /const endProvenance = provenance\(\)/);

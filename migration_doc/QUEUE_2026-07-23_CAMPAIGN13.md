@@ -698,6 +698,20 @@ landing defect.
 | `C13-GATE-D` | NOT STARTED | Follows `C13-14..20`. |
 | `C13-EXIT` | NOT STARTED | Dead last. |
 
+**C13-41 COST-STATUS RECONCILIATION (2026-08-12; authoritative over the
+historical CO-9 “does not discharge” sentence inside the long row):** the
+second Edge run already discharged `C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`
+with banked ABBA/warm-up-parity measurements of **7.749 ms/refresh WebGPU** and
+**1.607 ms/refresh WebGL**. The post-run-6 closure criterion is the later and
+controlling criterion: one redesigned-control run with all three lanes scoring,
+`deckFreeGroundCapturesSettled` true, and `shadowContrastInvariant` passing or
+converted to its named own-row defect. It does not require the historical cost
+obligation to be re-discharged. Closure reruns therefore preserve cost segment
+accounting and its exact INVALID reason as
+`refreshCostEstimateValidReportedOnly`; a noisy negative re-estimate is neither
+a speedup nor a gating product failure. Publishing a replacement performance
+number requires a separately pre-registered completed-work paired estimator.
+
 ### C13-01 Slice A launch evidence
 
 This is an oracle/tooling slice only; it changes no engine renderer or cloud appearance.

@@ -1278,37 +1278,25 @@ Filed by the C13-41 worker. All surfaced rather than routed around (Principle
   this decision must be revisited; the gate re-verifies the premise rather than
   assuming it. **Effort: S** once billboard lighting exists; blocked until then.
 
-- **`C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`** — the quantized gate's cadence is **UPDATE 2026-08-07: first measurement attempt INVALID — the control leg paid the warm-up (5.97 s control vs 0.77 s sweep on WebGPU, yielding a NEGATIVE per-refresh). Still open; re-run with warm-up parity or interleaved legs.** **RESOLVED 2026-08-07 (second run, tip `1970806a59`): WebGPU 7.749 ms/refresh, WebGL 1.607 ms/refresh — ABBA-interleaved with warm-up parity and verified preconditions. The row closes.**
-  derived and pinned arithmetically (exactly 275 fills across a `0 -> 0.9 -> 0`
-  obscuration sweep: one first-frame baseline plus `2 x 137` bucket edges), but
-  the WALL-CLOCK cost of those fills has not been measured on Edge. Each is a
-  `256^2 x 6` cube fill + IBL prefilter + SH projection, and the per-frame
-  ceiling is owned by the C11-193 bounded refresh scheduler rather than by the
-  grid. If an Edge run shows the scheduler deferring heavily through a fast
-  clock scrub, the grid is the dial to coarsen — but it must not be coarsened on
-  speculation. **Effort: S** (one probe leg).
-  **UPDATE 2026-08-07 (Batch 909) — the INSTRUMENT is repaired; the number is
-  still owed.** The first attempt derived the cost from the two SEQUENTIAL
-  counting legs, so the eclipse leg was timed cold (0.77 s) and the control leg
-  warm (5.97 s) — a 7.7x inversion whose own mechanism is still unexplained and
-  is now instrumented rather than guessed at. The lane now runs a THIRD phase:
-  both legs have already rendered the whole 801-frame schedule (warm-up parity
-  by construction, and REPORTED from a `warmedLegs` flag rather than asserted in
-  a comment), then the two legs are interleaved ABBA across 8 segments so a
-  monotone drift lands on both instead of on the effect, with one untimed frame
-  after each toggle absorbing the toggle's own bucket transition out of both the
-  clock and the fill count. The arithmetic moved into `computeRefreshCost`
-  (`lib/eclipse-cloud-response-gate.mjs`), which VERIFIES warm-up parity, the
-  interleaving minimum and equal frame counts before dividing, and returns
-  `valid:false` with a NAMED reason rather than publishing a negative number as
-  a cost — the probe now prints `INVALID — <reason>` where it printed
-  `-18.9 ms/refresh`. Spec `eclipse-cloud-response-gate.spec.mjs` group I (7
-  tests) pins all of it, including the first run's exact 770/5970 ms numbers as
-  the negative-differential mutant. The per-segment table is emitted so the next
-  run localizes the inversion: a warm-up ramp cancels under interleaving, a step
-  change at the eclipse toggle shows up as a per-segment pattern. **This row
-  still does not discharge until a run returns a finite non-negative
-  ms/refresh.**
+- **`C13-41-ECLIPSE-REFRESH-COST-UNMEASURED` — RESOLVED 2026-08-07
+  (second run, tip `1970806a59`).** The banked ABBA-interleaved, warm-up-parity
+  measurement is **7.749 ms/refresh on WebGPU and 1.607 ms/refresh on WebGL**;
+  the one-time wall-clock obligation is discharged. The first attempt remains
+  useful negative evidence: its sequential cold/warm legs produced an invalid
+  negative estimate (0.77 s eclipse versus 5.97 s control), which is why
+  `computeRefreshCost` still verifies warm-up parity, interleaving, equal frame
+  counts, a positive fill differential, and a non-negative wall-clock
+  differential before returning a number.
+
+  **AUTHORITATIVE RECONCILIATION 2026-08-12:** subsequent C13-41 closure runs
+  retain the complete segment accounting and named INVALID reason under
+  `refreshCostEstimateValidReportedOnly`; they do not re-open or re-discharge
+  this resolved row. The post-C11-193 fresh v3 run returned an INVALID negative
+  WebGPU differential because one control segment absorbed a 638.6 ms stall;
+  that is estimator-health evidence, not a measured speedup and not a new S3
+  product failure. A future attempt to publish a replacement performance number
+  needs its own row and a completed-work, repeated paired estimator. Do not
+  coarsen the 1/256 refresh grid from a noisy closure-run re-estimate.
 
 - **`C13-41-CLOUD-AERIAL-TINT-UNDIMMED`** *(filed 2026-08-07, Batch 909 — **QUANTITATIVE TARGET 2026-08-07 (second probe run): the deck displayed ratio measured 0.894 at F=0.4642 on a verifiably black background vs the ~0.58 pure-deck prediction — if this addend is the cause it contributes ~0.31 of displayed ratio at the probe camera, far above the original few-percent estimate. Next: a diagnosis build zeroing the addend; if the ratio does not drop into band, the cause is elsewhere in the deck light path.** **FIXED 2026-08-07 (Batch 912, CO-11) — and the quantitative target REFUTED: geometrically impossible (~0.31 of ratio would need aerial ~0.63 = a 37.8 km march midpoint; actual 5.2-10.2 km). Measured share 9.9% of the deck band; max ratio effect 0.894 -> 0.791. Dimmed at the pack site by `dimAerialTint` (zero WGSL, byte-identical at F=1). The QF_AERIAL_LUT path carries its own undimmed inscatter (NOT CPU-packed, untouched) and stays open as a rider. The true residual is `C13-41-CLOUD-DECK-TONEMAP-SWALLOWS-THE-DIM` (new entry at end of file).**
   static diagnosis, NOT fixed here)* — the volumetric deck's aerial-perspective
