@@ -1,7 +1,7 @@
 # Campaign Portfolio Queue — Feature-Priority Dispatch
 
 **Status:** LIVE dispatch view, refreshed 2026-08-12 at committed `main`
-`c418d01ec3`. The current shared workspace also contains independently owned
+`5b3045d42b`. The current shared workspace also contains independently owned
 local campaign packets; this board labels those `LOCAL` rather than treating
 them as landed.
 
@@ -59,8 +59,8 @@ canonical queue state, and source/build/probe identity are the gates.
 
 The immediate frontier is closure work, not a new broad source wave:
 
-1. preserve and independently review the `LOCAL` C11-169 resident-owner
-   attribution packet, then land it as a bounded Tools/evidence unit;
+1. preserve the landed C11-169 resident-owner attribution evidence and advance
+   only its pre-registered uninstrumented C11-168 causal discriminator;
 2. on one frozen clean build, retire the current physical-acceptance packets in
    the pre-registered order recorded in §5: C11-13, C11-90, C18-V2, then
    C11-146;
@@ -72,10 +72,10 @@ The immediate frontier is closure work, not a new broad source wave:
    contract changed.
 
 C11-205 no longer owns an interrupted-run recovery slot: its lifecycle,
-exact-work, API-attribution, and six-pair uninstrumented causal gates are locally
-green. C11-169's corrected resident-owner diagnostic is also locally green; it
-selects the next discriminator but makes no causal, GPU, FPS, or remediation
-claim. Land that packet and design the smallest uninstrumented C11-168
+exact-work, API-attribution, and six-pair uninstrumented causal gates are green.
+C11-169's corrected resident-owner diagnostic and shared Tools packet landed in
+Batch 1032 (`be0683c60d`); it selects the next discriminator but makes no causal,
+GPU, FPS, or remediation claim. Implement the smallest uninstrumented C11-168
 discriminator instead of rerunning the unchanged green attribution route.
 
 `CLT-B3` remains a locally complete, already-authorized bug-fix unit with
@@ -191,11 +191,11 @@ colliding source slice:
    `c418d01ec3`; the corrected physical both-backend browser recovery remains
    open. Do not promote the triangle strip/fan visual remainder from harness
    evidence alone.
-3. **C11-169/C11-205 → C11-168:** land the locally green resident-owner
-   attribution packet, preserve its two distinct harness reds, and use its
-   direct-model/globe/tileset split to pre-register the smallest uninstrumented
-   causal discriminator. The valid CPU/wall deficit has no GPU-timestamp
-   samples, so it is not a GPU-bottleneck verdict.
+3. **C11-169/C11-205 → C11-168:** the resident-owner attribution packet landed
+   in Batch 1032 (`be0683c60d`) and its two distinct harness reds remain
+   preserved. Use its direct-model/globe/tileset split to implement the smallest
+   uninstrumented causal discriminator. The valid CPU/wall deficit has no
+   GPU-timestamp samples, so it is not a GPU-bottleneck verdict.
 4. **C11-134/C11-146:** keep the Batch-1029 offline-isolation pass and external
    online red separate; run the online control only in a valid environment.
    The C11-146 fail-closed route assessor landed in Batch 1027, and its one
@@ -291,7 +291,7 @@ scope, order, and completion.
 
 | Packet | Current evidence boundary | Next machine action |
 |---|---|---|
-| C11-169 / C11-205 | C11-205 lifecycle, exact-work, API-attribution, and six-pair uninstrumented gates are locally green. C11-169's corrected four-leg resident-owner diagnostic is locally green and unlanded; it is diagnostic only. | Land the reviewed Tools/evidence packet. Do **not** rerun the unchanged route; pre-register the smallest C11-168 uninstrumented discriminator. |
+| C11-169 / C11-205 → C11-168 | C11-205 lifecycle, exact-work, API-attribution, and six-pair uninstrumented gates are green. C11-169's corrected four-leg resident-owner diagnostic and shared Tools packet landed in Batch 1032 (`be0683c60d`); it remains diagnostic only. | Do **not** rerun the unchanged attribution route. Implement and review the pre-registered uninstrumented direct-model shown/hidden C11-168 discriminator before any production remediation. |
 | C11-13 | Implementation landed Batch 1031; offline policy/static fleet is green. | Run the new outside/inside/outside Edge waypoint probe, outside-byte-identity check, focused Karma lane, and ten-probe voxel preservation battery. |
 | C11-90 | Offline demo hardening and the fail-closed visual harness are landed. | Run one corrected both-backend primitive-restart recovery on the frozen build and retain any red without weakening topology or pixel gates. |
 | C18-V2 | Readiness/pick lifecycle landed Batch 1028; setup/source identity and promotion hardening landed at `bae6bd0f09`. | Run the voxel, point-cloud, and splat Edge scenes; review/promote clean baselines and execute all non-vacuity mutations. |
