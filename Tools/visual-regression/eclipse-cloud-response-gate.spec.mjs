@@ -28,6 +28,7 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -47,6 +48,8 @@ import {
   ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES,
   ECLIPSE_RADIOMETRIC_FLOOR,
   ENV_REFRESH_STEPS,
+  FIXED_LADDER_0_TO_1400_MAX_OBSCURATION_SHIFT,
+  HISTORICAL_EPHEMERIS_BRANCH_SHIFT_FLOOR,
   REFRESH_COST_MIN_SEGMENTS_PER_LEG,
   SHADOW_GROUND_BRIGHTNESS_FLOOR,
   SWEEP_FRAMES,
@@ -75,6 +78,23 @@ import {
   shadowContrastModelIsBoundedByDirectional,
   shadowContrastRatioSupremum,
 } from "./lib/eclipse-cloud-response-gate.mjs";
+import {
+  assertEvidenceReadableOrAbsent,
+  atomicReplaceEvidence,
+  compareBuildSourceIdentity,
+  compareEvidenceFileSnapshots,
+  createImmutableEvidence,
+  fingerprintEvidenceFile,
+  preserveFirstRedEvidence,
+  snapshotEvidenceFiles,
+  validateServedEntryIdentities,
+} from "./lib/build-source-identity.mjs";
+import {
+  DECK_FREE_BASE_COLOR_CHANNEL,
+  DECK_FREE_CONTROL_SESSION_PLAN,
+  DECK_FREE_RAW_BASE_COLOR_LUMA,
+  foldDeckFreeControlSessions,
+} from "./lib/c13-41-deckfree-control.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -337,6 +357,30 @@ test("C6 the engine refresh band's CEILING is the arithmetic maximum", () => {
   assert.ok(b.lo >= 0.85 * b.hi, "the floor allows at most ~15% merged edges");
 });
 
+test("C7 the schedule tolerance admits fixed camera parallax and rejects the ephemeris branch shift", () => {
+  const tolerance = ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance;
+  const fixedCameraParallaxBound =
+    (300 / 356_500_000 / 0.00465) * (4 / Math.PI);
+  assert.ok(
+    tolerance.hi >= fixedCameraParallaxBound,
+    "the 0 m derivation and fixed 300 m lane must fit the geometric bound",
+  );
+  assert.equal(FIXED_LADDER_0_TO_1400_MAX_OBSCURATION_SHIFT, 7.91e-5);
+  assert.ok(
+    tolerance.hi > FIXED_LADDER_0_TO_1400_MAX_OBSCURATION_SHIFT,
+    "the independently evaluated 0 -> 1400 m shift on all four fixed ISOs must fit",
+  );
+  assert.equal(HISTORICAL_EPHEMERIS_BRANCH_SHIFT_FLOOR, 0.0063);
+  assert.ok(
+    tolerance.hi < HISTORICAL_EPHEMERIS_BRANCH_SHIFT_FLOOR,
+    "the smallest observed ICRF/TEME-style branch shift must remain excluded",
+  );
+  assert.match(tolerance.why, /300\/356500000/);
+  assert.match(tolerance.why, /0 -> 1400 m shift/);
+  assert.match(tolerance.why, /7\.91e-5/);
+  assert.match(tolerance.why, /0\.0063-0\.0077/);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // D. The fold — every gating predicate must be able to FAIL
 // ─────────────────────────────────────────────────────────────────────────────
@@ -350,6 +394,52 @@ test("C6 the engine refresh band's CEILING is the arithmetic maximum", () => {
  * the shape the fourth run actually measured.
  */
 const REFERENCE_DECK_TONEMAP_ENTRY = 1.01;
+
+const freshDeckFreeSessions = (rungs) =>
+  DECK_FREE_CONTROL_SESSION_PLAN.map((planned, sessionIndex) => ({
+    sessionLabel: planned.label,
+    sessionToken: `fresh-session-${sessionIndex}`,
+    eclipseEnabled: planned.eclipseEnabled,
+    configureCalls: 1,
+    configureTruth: { enableVolumetric: false },
+    rendererType: "webgpu",
+    enableLighting: true,
+    baseColor: [
+      DECK_FREE_BASE_COLOR_CHANNEL,
+      DECK_FREE_BASE_COLOR_CHANNEL,
+      DECK_FREE_BASE_COLOR_CHANNEL,
+      1,
+    ],
+    rungs: rungs.map((rung) => ({
+      target: rung.target,
+      iso: rung.iso,
+      mean: planned.eclipseEnabled
+        ? rung.shadow.onNoCloud
+        : rung.shadow.offNoCloud,
+      samples: 20000,
+      enableVolumetric: false,
+      eclipseEnabled: planned.eclipseEnabled,
+      factor: planned.eclipseEnabled ? rung.published.factor : 1,
+      baseColor: [
+        DECK_FREE_BASE_COLOR_CHANNEL,
+        DECK_FREE_BASE_COLOR_CHANNEL,
+        DECK_FREE_BASE_COLOR_CHANNEL,
+        1,
+      ],
+      enableLighting: true,
+      lighting: {
+        enableLighting: true,
+        enableEclipse: planned.eclipseEnabled,
+        enableEclipseGlobeShadow: false,
+        eclipseStateEnabled: planned.eclipseEnabled,
+        eclipseStateValid: true,
+        moonObscuration: rung.deckFreePublished.moonObscuration,
+        factor: planned.eclipseEnabled ? rung.deckFreePublished.factor : 1,
+      },
+      cameraHeight: rung.deckFreePublished.cameraHeight,
+      configureCalls: 1,
+    })),
+  }));
 
 /** A run in which every gate passes. Mutants below break exactly one thing. */
 function passingRun() {
@@ -396,12 +486,20 @@ function passingRun() {
     return {
       target,
       iso: `2026-08-12T16:0${ECLIPSE_CLOUD_BANDS.ladderTargets.indexOf(target)}:00Z`,
+      scheduledObscuration: target,
       published: {
         moonObscuration: target,
         factor,
         enabled: true,
         valid: true,
         shadowStrength: directional,
+      },
+      deckFreePublished: {
+        moonObscuration: target,
+        factor,
+        enabled: true,
+        valid: true,
+        cameraHeight: 1400,
       },
       publishedOff: {
         factor: 1,
@@ -506,10 +604,28 @@ function passingRun() {
     modelReady: true,
   });
 
+  const deckFreeControl = foldDeckFreeControlSessions({
+    sessions: freshDeckFreeSessions(rungs),
+    ladder: rungs.map(({ target, iso, scheduledObscuration }) => ({
+      target,
+      iso,
+      obscuration: scheduledObscuration,
+    })),
+    certifiedRungs: rungs,
+    factorTolerance: ECLIPSE_CLOUD_BANDS.factorTolerance.hi,
+    scheduleObscurationTolerance:
+      ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
+    captureDelta: BAND_MEAN_CAPTURE_DELTA,
+  });
+  for (let index = 0; index < rungs.length; index++) {
+    Object.assign(rungs[index].shadow, deckFreeControl.rungs[index]);
+  }
+
   return {
     cloudLanes: {
       rendererType: "webgpu",
       rungs,
+      deckFreeControl,
       repeat: { first: 0.5, again: 0.5005, delta: 0.0005 },
     },
     iblWebGPU: iblLane("webgpu"),
@@ -518,6 +634,28 @@ function passingRun() {
 }
 
 const clone = (value) => structuredClone(value);
+
+function refoldDeckFreeControl(run) {
+  const cloud = run.cloudLanes;
+  const control = foldDeckFreeControlSessions({
+    sessions: cloud.deckFreeControl.sessions,
+    ladder: cloud.rungs.map(({ target, iso, scheduledObscuration }) => ({
+      target,
+      iso,
+      obscuration: scheduledObscuration,
+    })),
+    certifiedRungs: cloud.rungs,
+    factorTolerance: ECLIPSE_CLOUD_BANDS.factorTolerance.hi,
+    scheduleObscurationTolerance:
+      ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
+    captureDelta: BAND_MEAN_CAPTURE_DELTA,
+  });
+  cloud.deckFreeControl = control;
+  for (let index = 0; index < cloud.rungs.length; index++) {
+    Object.assign(cloud.rungs[index].shadow, control.rungs[index]);
+  }
+  return control;
+}
 
 /**
  * Re-point CO-21's settled twins at whatever the mutant just wrote to the
@@ -570,10 +708,10 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
   // 26 -> 28 at CO-19: the two pre-registered fifth-run legs,
   // `deckPureRatioInBand` (lane A's tint-free deck ratio) and
   // `deckFreeGroundDimsByFactor` (lane B's deck-free attribution).
-  // 28 -> 29 at CO-21: `deckFreeGroundCapturesSettled`, the convergence
-  // precondition that decides whether the fifth run's 0.449 is a measurement
-  // (ENGINE) or a transient (INSTRUMENT).
-  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 29);
+  // 28 -> 29 at CO-21: the same-page settled-twin precondition. 29 -> 31 for
+  // the redesigned control: four fresh ABBA configure epochs, plus a live-lit
+  // surface that differs from raw 200/255 and varies with solar elevation.
+  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 31);
   // 4 -> 5 at CO-19: `offNoCloudVariesWithSun`, the instrument tell.
   // 5 -> 6 at CO-21: `deckFreeGroundRetentionLegsAgreeReportedOnly`, the
   // corroborating disagreement between lane B's two retention ratios.
@@ -1018,6 +1156,7 @@ test("H1 the first run's EXACT shape — shadow-blind + deck out of band — is 
   assert.deepEqual(
     verdict.unscoredPredicates.sort(),
     [
+      "deckFreeControlStateIsolated",
       "shadowGroundIsBright",
       "shadowGroundNotOccluded",
       "shadowNonVacuous",
@@ -1027,6 +1166,7 @@ test("H1 the first run's EXACT shape — shadow-blind + deck out of band — is 
       // attribution AND its convergence precondition with it — the direction
       // that must hold. The converse (an unsettled control blinding the
       // contrast) is what the parent chain deliberately prevents; L9 pins it.
+      "deckFreeGroundIsLit",
       "deckFreeGroundCapturesSettled",
       "deckFreeGroundDimsByFactor",
     ].sort(),
@@ -1287,7 +1427,7 @@ test("F1 the probe reads the committed bucket from BOTH managers' own seam", () 
   // ...and those are the names the engine actually commits.
   assert.match(
     readEngine("Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts"),
-    /cache\.lastEclipseEnvBucket = eclipseEnvBucket;/,
+    /cache\.lastEclipseEnvBucket = state\.eclipseEnvBucket;/,
   );
   assert.match(
     readEngine("Scene/DynamicEnvironmentMapManager.js"),
@@ -1315,9 +1455,12 @@ test("F2 the probe follows the pinning doctrine it documents", () => {
   assert.match(probe, /WEATHER_DETERMINISM_DIALS/);
   assert.match(probe, /PINNED_CLOUD_QUALITY|cloudQuality/);
   // Watchdog + close-in-finally + the 0/1/2/3 exit contract.
-  assert.match(probe, /watchdog\.unref\(\)/);
-  assert.match(probe, /\} finally \{\n\s*await browser\.close\(\)/);
-  assert.match(probe, /process\.exit\(exitCode\)/);
+  assert.match(probe, /watchdog\.unref\?\.\(\)/);
+  assert.match(
+    probe,
+    /\} finally \{\n\s*await closeActiveBrowser\("measurement finally"\)/,
+  );
+  assert.match(probe, /process\.exitCode = exitCode/);
   // The mapping comes from the pinned pure function, NOT from a ternary in the
   // driver. That ternary is what shipped `2` for a STRUCTURAL verdict.
   assert.match(probe, /const exitCode = eclipseCloudExitCode\(outcome\)/);
@@ -1425,8 +1568,10 @@ test("F3 the probe establishes the deck ISOLATION and the lane-B shadow geometry
       ECLIPSE_CLOUD_BANDS.shadowGroundBrightness.lo,
     "the DEFAULT base colour must fail the brightness floor — that is what the floor is for",
   );
-  // Both preconditions are read back, not assumed.
-  assert.match(probe, /offNoCloud: bOffNoCloud\.mean/);
+  // Both preconditions are read back from the fresh-context control, not
+  // assumed from the configured base colour.
+  assert.match(probe, /foldDeckFreeControlSessions/);
+  assert.match(probe, /RUN_DECK_FREE_CONTROL_SESSION/);
   assert.match(probe, /shadowGroundIsBright/);
   assert.match(probe, /shadowGroundNotOccluded/);
 });
@@ -1473,16 +1618,17 @@ test("F5 lane B publishes the producer / consumer / footprint telemetry", () => 
   assert.match(probe, /SHADOW telemetry: producerActive off\/on/);
 });
 
-test("F6 the probe runs BOTH CO-19 legs and prints the tell unrounded", () => {
+test("F6 the probe runs both CO-19 subjects with the deck-free leg isolated", () => {
   const probe = fs
     .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
     .replace(/\r\n/g, "\n");
 
-  // Lane B's eclipse-ON deck-free twin, at the same instant and over the same
-  // dials as the OFF control it is compared against.
-  assert.match(probe, /const bOnNoCloud = groundBand\(/);
-  assert.match(probe, /B\$\{index\}-eclipseOn-cloudsOff/);
-  assert.match(probe, /onNoCloud: bOnNoCloud\.mean,/);
+  // Lane B's deck-free pair is now a four-session ABBA plan. The shared cloud
+  // page must not manufacture either read.
+  assert.match(probe, /DECK_FREE_CONTROL_SESSION_PLAN/);
+  assert.match(probe, /sessionLabel: planned\.label/);
+  assert.match(probe, /eclipseEnabled: planned\.eclipseEnabled/);
+  assert.ok(!probe.includes("const bOnNoCloud"));
 
   // Lane A's `cloudAerialStrength = 0` leg, at the deepest rung, over the dial
   // the shader actually reads.
@@ -1509,7 +1655,7 @@ test("F6 the probe runs BOTH CO-19 legs and prints the tell unrounded", () => {
 
   // The tell is printed UNROUNDED: four identical f64s IS the discriminator,
   // and `r3()` would erase it.
-  assert.match(probe, /SHADOW deck-free series: offNoCloud/);
+  assert.match(probe, /SHADOW deck-free sessions: order/);
   assert.match(probe, /\(t\.offNoCloudSeries \?\? \[\]\)\.join\(", "\)/);
   assert.match(probe, /DECK aerial-zero leg: pure ratio/);
 });
@@ -2229,6 +2375,87 @@ test("L1 the deck-free tolerance is PROPAGATED from the band it was measured on"
   );
 });
 
+test("L1b deck-free attribution uses the independently predicted 1400 m factor, never lane A's 300 m factor", () => {
+  const run = passingRun();
+  const rungIndex = run.cloudLanes.rungs.length - 1;
+  const rung = run.cloudLanes.rungs[rungIndex];
+  const scheduled = rung.scheduledObscuration;
+
+  // Both observations are inside the registered schedule tolerance, but they
+  // are intentionally distinct: lane A is rendered at 300 m, while lane B and
+  // every fresh deck-free session are rendered at 1400 m.
+  const laneAObscuration = scheduled + 2e-5;
+  const deckFreeObscuration = scheduled + 7.9e-5;
+  const laneAFactor = predictFactor(laneAObscuration);
+  const deckFreeFactor = predictFactor(deckFreeObscuration);
+  assert.notEqual(laneAFactor, deckFreeFactor);
+
+  rung.published.moonObscuration = laneAObscuration;
+  rung.published.factor = laneAFactor;
+  rung.published.shadowStrength = predictDirectional(laneAObscuration);
+  rung.shadow.strengthOn = rung.published.shadowStrength;
+  rung.deckFreePublished.moonObscuration = deckFreeObscuration;
+  rung.deckFreePublished.factor = deckFreeFactor;
+
+  const offBand = rung.shadow.offNoCloud;
+  for (const session of run.cloudLanes.deckFreeControl.sessions) {
+    const sessionRung = session.rungs[rungIndex];
+    sessionRung.lighting.moonObscuration = deckFreeObscuration;
+    sessionRung.cameraHeight = 1400;
+    if (session.eclipseEnabled) {
+      sessionRung.factor = deckFreeFactor;
+      sessionRung.lighting.factor = deckFreeFactor;
+      sessionRung.mean = offBand * deckFreeFactor;
+    } else {
+      sessionRung.factor = 1;
+      sessionRung.lighting.factor = 1;
+      sessionRung.mean = offBand;
+    }
+  }
+  const control = refoldDeckFreeControl(run);
+  assert.equal(control.stateIsolated, true);
+
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.deepEqual(verdict.structuralReasons, []);
+  assert.equal(verdict.deckFreeGroundDimsByFactor, true);
+  const entry = verdict.deckFreeGroundDim[rungIndex];
+  assert.equal(entry.obscuration, deckFreeObscuration);
+  assert.equal(entry.factor, deckFreeFactor);
+  assert.equal(entry.publishedFactor, deckFreeFactor);
+  assert.equal(
+    entry.factorSource,
+    "predictFactor(deckFreePublished.moonObscuration)",
+  );
+  assert.equal(entry.factorCameraHeight, 1400);
+  assert.equal(entry.measurementCameraHeight, 1400);
+  assert.equal(entry.cameraGeometryMatches, true);
+  assert.equal(entry.scheduledLaneFactor, laneAFactor);
+  assert.ok(Math.abs(entry.delta) < 1e-15);
+
+  const wrongFactor = clone(run);
+  wrongFactor.cloudLanes.rungs[rungIndex].deckFreePublished.factor =
+    laneAFactor;
+  const wrongFactorVerdict = judgeEclipseCloudResponse(wrongFactor);
+  assert.equal(
+    wrongFactorVerdict.deckFreeGroundDim[rungIndex].factorCertified,
+    false,
+  );
+  assert.ok(
+    wrongFactorVerdict.failedPredicates.includes("deckFreeGroundDimsByFactor"),
+  );
+
+  const wrongHeight = clone(run);
+  wrongHeight.cloudLanes.rungs[rungIndex].deckFreePublished.cameraHeight = 300;
+  const wrongHeightVerdict = judgeEclipseCloudResponse(wrongHeight);
+  assert.equal(
+    wrongHeightVerdict.deckFreeGroundDim[rungIndex].cameraGeometryMatches,
+    false,
+  );
+  assert.ok(
+    wrongHeightVerdict.failedPredicates.includes("deckFreeGroundDimsByFactor"),
+  );
+});
+
 test("L2 MUTANT — a tolerance that admits the globe-path excess is required to differ", () => {
   const run = clone(passingRun());
   // CO-17's measured residue law, applied to the DECK-FREE band: the globe's
@@ -2639,11 +2866,10 @@ test("K1 the ENABLE-IDENTITY mutant — a dim at F = 1 — FAILS, settled or not
   assert.equal(entry.withinTolerance, false);
 });
 
-test("K2 an UNSETTLED deck-free control is STRUCTURAL, not a product FAIL", () => {
-  // The instrument branch of the fifth run: the first-position eclipse-ON
-  // capture reads 0.449 and the settled twin, three settles further from the
-  // transition, has converged onto the law. A gate that scored the first read
-  // would report an engine identity violation that does not exist.
+test("K2 a session-dependent deck-free control is STRUCTURAL, not a product FAIL", () => {
+  // One fresh eclipse-ON session reads 0.449 and its independent ABBA replicate
+  // reads the law. A gate that scored the first session would report an engine
+  // identity violation that does not exist.
   const run = clone(passingRun());
   const identityRung = run.cloudLanes.rungs[0];
   identityRung.shadow.onNoCloud =
@@ -2653,12 +2879,12 @@ test("K2 an UNSETTLED deck-free control is STRUCTURAL, not a product FAIL", () =
 
   assert.equal(verdict.deckFreeGroundCapturesSettled, false);
   const reason = verdict.structuralReasons.find((r) =>
-    r.includes("had not converged"),
+    r.includes("session-dependent"),
   );
   assert.ok(reason, JSON.stringify(verdict.structuralReasons));
   // BOTH legs' deltas are named, so a reader can see WHICH one moved.
-  assert.match(reason, /eclipse-OFF moved 0 /);
-  assert.match(reason, /eclipse-ON moved 0\.28/);
+  assert.match(reason, /eclipse-OFF sessions differ by 0 /);
+  assert.match(reason, /eclipse-ON sessions differ by 0\.28/);
   // The attribution is quarantined rather than scored...
   assert.ok(verdict.unscoredPredicates.includes("deckFreeGroundDimsByFactor"));
   assert.ok(
@@ -2737,49 +2963,745 @@ test("K5 the ON-leg retention twin is computed and REPORTED, never gating", () =
   assert.ok(Math.abs(fifth.deckFreeGroundOnRetentionRatio - 2.2035) < 1e-3);
 });
 
-test("K6 the probe captures the settled twin on BOTH legs, matched in position", () => {
+test("K6 the probe removes the in-page control and opens four fresh ABBA contexts", () => {
+  const probe = fs
+    .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+  assert.ok(!probe.includes("bOffNoCloud"));
+  assert.ok(!probe.includes("bOnNoCloud"));
+  assert.match(
+    probe,
+    /for \(const planned of DECK_FREE_CONTROL_SESSION_PLAN\)/,
+  );
+  assert.match(probe, /`deck-free-\$\{planned\.label\}`/);
+  assert.match(probe, /const report = await withFreshPage\(/);
+  assert.match(probe, /RUN_DECK_FREE_CONTROL_SESSION/);
+  assert.match(
+    probe,
+    /await opened\.context\.close\(\);[\s\S]*retainFreshPageEvidence\(opened, evidence\)/,
+  );
+
+  const callbackStart = probe.indexOf(
+    "const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {",
+  );
+  const callbackEnd = probe.indexOf("// IN-PAGE: lane C", callbackStart);
+  const callback = probe.slice(callbackStart, callbackEnd);
+  assert.equal(
+    (callback.match(/cloudProbe\.configure\(/g) ?? []).length,
+    1,
+    "a fresh control session must have exactly one configure epoch",
+  );
+  assert.match(callback, /enableVolumetric: false/);
+  assert.match(callback, /configureCalls,/);
+  assert.match(callback, /sessionToken: globalThis\.crypto\.randomUUID\(\)/);
+  assert.match(callback, /cameraHeight: cfg\.groundCameraHeight/);
+  assert.match(
+    probe,
+    /const deckFreePublished = \{[\s\S]*?cameraHeight: cfg\.groundCameraHeight,[\s\S]*?\};/,
+  );
+});
+
+test("K7 the ABBA policy rejects reused, reordered, or reconfigured sessions", () => {
+  assert.deepEqual(DECK_FREE_CONTROL_SESSION_PLAN, [
+    { label: "off-a", eclipseEnabled: false },
+    { label: "on-a", eclipseEnabled: true },
+    { label: "on-b", eclipseEnabled: true },
+    { label: "off-b", eclipseEnabled: false },
+  ]);
+  const run = passingRun();
+  const ladder = run.cloudLanes.rungs.map(
+    ({ target, iso, scheduledObscuration }) => ({
+      target,
+      iso,
+      obscuration: scheduledObscuration,
+    }),
+  );
+  const sessions = freshDeckFreeSessions(run.cloudLanes.rungs);
+  const fold = (reports) =>
+    foldDeckFreeControlSessions({
+      sessions: reports,
+      ladder,
+      certifiedRungs: run.cloudLanes.rungs,
+      factorTolerance: ECLIPSE_CLOUD_BANDS.factorTolerance.hi,
+      scheduleObscurationTolerance:
+        ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
+      captureDelta: BAND_MEAN_CAPTURE_DELTA,
+    });
+
+  assert.equal(fold(sessions).stateIsolated, true);
+
+  const reused = clone(sessions);
+  reused[1].sessionToken = reused[0].sessionToken;
+  assert.equal(fold(reused).stateIsolated, false);
+  assert.match(fold(reused).isolationReasons.join("\n"), /token .* reused/);
+
+  const reordered = clone(sessions);
+  [reordered[0], reordered[1]] = [reordered[1], reordered[0]];
+  assert.equal(fold(reordered).stateIsolated, false);
+  assert.match(fold(reordered).isolationReasons.join("\n"), /report label/);
+
+  const reconfigured = clone(sessions);
+  reconfigured[2].configureCalls = 2;
+  reconfigured[2].rungs[0].configureCalls = 2;
+  assert.equal(fold(reconfigured).stateIsolated, false);
+  assert.match(
+    fold(reconfigured).isolationReasons.join("\n"),
+    /expected exactly 1/,
+  );
+
+  const deckPresent = clone(sessions);
+  deckPresent[3].configureTruth.enableVolumetric = true;
+  assert.equal(fold(deckPresent).stateIsolated, false);
+  assert.match(fold(deckPresent).isolationReasons.join("\n"), /not disabled/);
+});
+
+test("K8 raw or frozen baseColor controls are STRUCTURAL before attribution", () => {
+  const run = passingRun();
+  const ladder = run.cloudLanes.rungs.map(
+    ({ target, iso, scheduledObscuration }) => ({
+      target,
+      iso,
+      obscuration: scheduledObscuration,
+    }),
+  );
+  const fold = (sessions) =>
+    foldDeckFreeControlSessions({
+      sessions,
+      ladder,
+      certifiedRungs: run.cloudLanes.rungs,
+      factorTolerance: ECLIPSE_CLOUD_BANDS.factorTolerance.hi,
+      scheduleObscurationTolerance:
+        ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
+      captureDelta: BAND_MEAN_CAPTURE_DELTA,
+    });
+
+  const raw = freshDeckFreeSessions(run.cloudLanes.rungs);
+  for (const session of raw.filter((entry) => !entry.eclipseEnabled)) {
+    for (const rung of session.rungs) {
+      rung.mean = DECK_FREE_RAW_BASE_COLOR_LUMA;
+    }
+  }
+  const rawVerdict = fold(raw);
+  assert.equal(rawVerdict.litSurfaceNonVacuous, false);
+  assert.match(rawVerdict.nonVacuityReasons[0], /raw 200\/255 baseColor/);
+
+  const frozenDark = freshDeckFreeSessions(run.cloudLanes.rungs);
+  for (const session of frozenDark.filter((entry) => !entry.eclipseEnabled)) {
+    for (const rung of session.rungs) {
+      rung.mean = 0.2750603921572111;
+    }
+  }
+  const darkVerdict = fold(frozenDark);
+  assert.equal(darkVerdict.litSurfaceNonVacuous, false);
+  assert.equal(darkVerdict.offASpread, 0);
+
+  const judged = clone(passingRun());
+  judged.cloudLanes.deckFreeControl.litSurfaceNonVacuous = false;
+  judged.cloudLanes.deckFreeControl.nonVacuityReasons = [
+    "raw baseColor mutant",
+  ];
+  const verdict = judgeEclipseCloudResponse(judged);
+  assert.ok(verdict.structuralReasons.includes("raw baseColor mutant"));
+  assert.ok(verdict.unscoredPredicates.includes("deckFreeGroundDimsByFactor"));
+  assert.ok(!verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+});
+
+test("K9 build identity compares every current source byte with sourcesContent", () => {
+  const mapPath = path.join(root, "Build", "CesiumUnminified", "index.js.map");
+  const sourceFile = path.join(root, "packages", "engine", "Source", "X.js");
+  const exactMap = {
+    sources: ["../../packages/engine/Source/X.js"],
+    sourcesContent: ["export const marker = 1;\n"],
+  };
+  const exact = compareBuildSourceIdentity({
+    sourceMap: exactMap,
+    sourceMapPath: mapPath,
+    sources: [{ file: sourceFile, bytes: "export const marker = 1;\n" }],
+  });
+  assert.equal(exact.ok, true);
+  assert.equal(exact.entries[0].exact, true);
+
+  const stale = compareBuildSourceIdentity({
+    sourceMap: exactMap,
+    sourceMapPath: mapPath,
+    // The marker survives; one unrelated byte changes. Marker-only provenance
+    // would pass this mutant, exact source/build identity must not.
+    sources: [
+      { file: sourceFile, bytes: "export const marker = 1; // edit\n" },
+    ],
+  });
+  assert.equal(stale.ok, false);
+  assert.match(stale.reasons[0], /differ from built sourcesContent/);
+
+  const missingContent = compareBuildSourceIdentity({
+    sourceMap: { sources: exactMap.sources },
+    sourceMapPath: mapPath,
+    sources: [{ file: sourceFile, bytes: "export const marker = 1;\n" }],
+  });
+  assert.equal(missingContent.ok, false);
+  assert.match(missingContent.reasons.join("\n"), /no embedded sourcesContent/);
+});
+
+test("K10 every fresh-session factor is finite, replicated, and bound to the schedule-certified rung", () => {
+  const fixture = () => {
+    const run = passingRun();
+    const ladder = run.cloudLanes.rungs.map(
+      ({ target, iso, scheduledObscuration }) => ({
+        target,
+        iso,
+        obscuration: scheduledObscuration,
+      }),
+    );
+    const sessions = freshDeckFreeSessions(run.cloudLanes.rungs);
+    const fold = (reports = sessions, certifiedRungs = run.cloudLanes.rungs) =>
+      foldDeckFreeControlSessions({
+        sessions: reports,
+        ladder,
+        certifiedRungs,
+        factorTolerance: ECLIPSE_CLOUD_BANDS.factorTolerance.hi,
+        scheduleObscurationTolerance:
+          ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
+        captureDelta: BAND_MEAN_CAPTURE_DELTA,
+      });
+    return { run, sessions, fold };
+  };
+
+  const passing = fixture();
+  assert.equal(passing.fold().stateIsolated, true);
+  assert.equal(
+    passing.fold().rungs[3].factorEvidence.certifiedMainPage,
+    predictFactor(SWEEP_PEAK_OBSCURATION),
+  );
+
+  for (const sessionIndex of [0, 3]) {
+    for (let rungIndex = 0; rungIndex < 4; rungIndex++) {
+      const { sessions, fold } = fixture();
+      sessions[sessionIndex].rungs[rungIndex].factor = 1 - 1e-12;
+      const verdict = fold();
+      assert.equal(verdict.stateIsolated, false);
+      assert.match(
+        verdict.isolationReasons.join("\n"),
+        new RegExp(`rung ${rungIndex} eclipse-OFF factor.*exactly 1`),
+      );
+
+      const nested = fixture();
+      nested.sessions[sessionIndex].rungs[rungIndex].lighting.factor =
+        1 - 1e-12;
+      const nestedVerdict = nested.fold();
+      assert.equal(nestedVerdict.stateIsolated, false);
+      assert.match(
+        nestedVerdict.isolationReasons.join("\n"),
+        new RegExp(`rung ${rungIndex} eclipse-OFF lighting factor.*exactly 1`),
+      );
+    }
+  }
+
+  for (const sessionIndex of [1, 2]) {
+    for (let rungIndex = 0; rungIndex < 4; rungIndex++) {
+      const { sessions, fold } = fixture();
+      sessions[sessionIndex].rungs[rungIndex].factor = Number.NaN;
+      assert.match(
+        fold().isolationReasons.join("\n"),
+        new RegExp(`rung ${rungIndex} eclipse-ON factor is not finite`),
+      );
+
+      const mismatch = fixture();
+      mismatch.sessions[sessionIndex].rungs[rungIndex].factor += 2e-9;
+      assert.match(
+        mismatch.fold().isolationReasons.join("\n"),
+        new RegExp(`rung ${rungIndex} factor .* does not match certified`),
+      );
+
+      const nestedFinite = fixture();
+      nestedFinite.sessions[sessionIndex].rungs[rungIndex].lighting.factor =
+        Number.NaN;
+      assert.match(
+        nestedFinite.fold().isolationReasons.join("\n"),
+        new RegExp(
+          `rung ${rungIndex} lighting factor null does not match certified`,
+        ),
+      );
+    }
+  }
+
+  const replication = fixture();
+  replication.sessions[1].rungs[2].factor += 0.75e-9;
+  replication.sessions[2].rungs[2].factor -= 0.75e-9;
+  assert.match(
+    replication.fold().isolationReasons.join("\n"),
+    /rung 2: eclipse-ON fresh-session factors do not replicate/,
+  );
+
+  // Adversarial tolerance chain: both primaries remain <= 1e-9 from the
+  // certification and both nested readbacks remain <= 1e-9 from their primary,
+  // but the nested factors are 1.5e-9 from the certification. Only a DIRECT
+  // nested -> certified comparison rejects this construction.
+  const nestedCertification = fixture();
+  const certifiedFactor =
+    nestedCertification.run.cloudLanes.rungs[2].deckFreePublished.factor;
+  for (const sessionIndex of [1, 2]) {
+    const rung = nestedCertification.sessions[sessionIndex].rungs[2];
+    rung.factor = certifiedFactor + 0.75e-9;
+    rung.lighting.factor = certifiedFactor + 1.5e-9;
+  }
+  const nestedCertificationVerdict = nestedCertification.fold();
+  assert.equal(nestedCertificationVerdict.stateIsolated, false);
+  assert.match(
+    nestedCertificationVerdict.isolationReasons.join("\n"),
+    /rung 2 lighting factor .* does not match certified main-page factor/,
+  );
+  assert.doesNotMatch(
+    nestedCertificationVerdict.isolationReasons.join("\n"),
+    /nested lighting factors do not replicate/,
+  );
+
+  // The inverse construction: each nested factor is independently within
+  // 1e-9 of the certification, but ON-A and ON-B are 1.5e-9 apart. Direct
+  // nested replication must reject it even though both primaries are exact.
+  const nestedReplication = fixture();
+  nestedReplication.sessions[1].rungs[2].lighting.factor =
+    certifiedFactor + 0.75e-9;
+  nestedReplication.sessions[2].rungs[2].lighting.factor =
+    certifiedFactor - 0.75e-9;
+  const nestedReplicationVerdict = nestedReplication.fold();
+  assert.equal(nestedReplicationVerdict.stateIsolated, false);
+  assert.match(
+    nestedReplicationVerdict.isolationReasons.join("\n"),
+    /rung 2: eclipse-ON nested lighting factors do not replicate/,
+  );
+  assert.doesNotMatch(
+    nestedReplicationVerdict.isolationReasons.join("\n"),
+    /lighting factor .* does not match certified main-page factor/,
+  );
+
+  const wrongGeometry = fixture();
+  wrongGeometry.sessions[1].rungs[2].cameraHeight = 1399;
+  assert.match(
+    wrongGeometry.fold().isolationReasons.join("\n"),
+    /measurement factor is not bound to the certified lane-B camera height/,
+  );
+
+  const uncertified = fixture();
+  const certified = clone(uncertified.run.cloudLanes.rungs);
+  certified[1].published.factor = null;
+  assert.match(
+    uncertified
+      .fold(uncertified.sessions, certified)
+      .isolationReasons.join("\n"),
+    /certified main-page factor is not finite/,
+  );
+
+  for (const [field, message] of [
+    ["valid", /certified main-page eclipse state is not valid/],
+    ["enabled", /certified main-page eclipse state is not enabled/],
+  ]) {
+    const mutant = fixture();
+    const mutantCertified = clone(mutant.run.cloudLanes.rungs);
+    mutantCertified[2].published[field] = false;
+    const folded = mutant.fold(mutant.sessions, mutantCertified);
+    assert.equal(folded.stateIsolated, false);
+    assert.match(folded.isolationReasons.join("\n"), message);
+
+    const judgedRun = passingRun();
+    judgedRun.cloudLanes.rungs[2].published[field] = false;
+    const judged = judgeEclipseCloudResponse(judgedRun);
+    assert.equal(judged.mainPageScheduleCertified, false);
+    assert.match(judged.structuralReasons.join("\n"), /schedule certification/);
+  }
+
+  const drift = fixture();
+  const driftedCertified = clone(drift.run.cloudLanes.rungs);
+  const driftedPublished = driftedCertified[1].published;
+  driftedPublished.moonObscuration +=
+    ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi * 2;
+  // Keep the old self-consistency check green: only the new schedule binding
+  // can reject a branch that moved obscuration and its factor together.
+  driftedPublished.factor = predictFactor(driftedPublished.moonObscuration);
+  const driftedFold = drift.fold(drift.sessions, driftedCertified);
+  assert.equal(driftedFold.stateIsolated, false);
+  assert.match(
+    driftedFold.isolationReasons.join("\n"),
+    /certified main-page obscuration .* drifted from scheduled/,
+  );
+
+  const deckFreeDrift = fixture();
+  const deckFreeDriftedCertified = clone(deckFreeDrift.run.cloudLanes.rungs);
+  const deckFreeDrifted = deckFreeDriftedCertified[3].deckFreePublished;
+  deckFreeDrifted.moonObscuration +=
+    ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi * 2;
+  deckFreeDrifted.factor = predictFactor(deckFreeDrifted.moonObscuration);
+  const deckFreeDriftedFold = deckFreeDrift.fold(
+    deckFreeDrift.sessions,
+    deckFreeDriftedCertified,
+  );
+  assert.equal(deckFreeDriftedFold.stateIsolated, false);
+  assert.match(
+    deckFreeDriftedFold.isolationReasons.join("\n"),
+    /deck-free main-page obscuration .* drifted from scheduled/,
+  );
+
+  const judgedDrift = passingRun();
+  const judgedPublished = judgedDrift.cloudLanes.rungs[1].published;
+  judgedPublished.moonObscuration +=
+    ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi * 2;
+  judgedPublished.factor = predictFactor(judgedPublished.moonObscuration);
+  const driftVerdict = judgeEclipseCloudResponse(judgedDrift);
+  assert.equal(driftVerdict.mainPageScheduleCertified, false);
+  assert.match(
+    driftVerdict.structuralReasons.join("\n"),
+    /drifted from scheduled/,
+  );
+});
+
+test("K11 baseColor and lighting are read back on every fresh control rung", () => {
+  const run = passingRun();
+  const ladder = run.cloudLanes.rungs.map(
+    ({ target, iso, scheduledObscuration }) => ({
+      target,
+      iso,
+      obscuration: scheduledObscuration,
+    }),
+  );
+  const fold = (sessions) =>
+    foldDeckFreeControlSessions({
+      sessions,
+      ladder,
+      certifiedRungs: run.cloudLanes.rungs,
+      factorTolerance: ECLIPSE_CLOUD_BANDS.factorTolerance.hi,
+      scheduleObscurationTolerance:
+        ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
+      captureDelta: BAND_MEAN_CAPTURE_DELTA,
+    });
+
+  const topLevelColor = freshDeckFreeSessions(run.cloudLanes.rungs);
+  topLevelColor[0].baseColor[0] = 0;
+  assert.match(
+    fold(topLevelColor).isolationReasons.join("\n"),
+    /baseColor is not pinned/,
+  );
+
+  const rungColor = freshDeckFreeSessions(run.cloudLanes.rungs);
+  rungColor[2].rungs[3].baseColor[2] = 0;
+  assert.match(
+    fold(rungColor).isolationReasons.join("\n"),
+    /rung 3 baseColor is not pinned/,
+  );
+
+  const unlit = freshDeckFreeSessions(run.cloudLanes.rungs);
+  unlit[1].rungs[0].enableLighting = false;
+  assert.match(
+    fold(unlit).isolationReasons.join("\n"),
+    /rung 0 globe lighting is not enabled/,
+  );
+
+  const unlitReadback = freshDeckFreeSessions(run.cloudLanes.rungs);
+  unlitReadback[1].rungs[0].lighting.enableLighting = false;
+  assert.match(
+    fold(unlitReadback).isolationReasons.join("\n"),
+    /rung 0 lighting read-back does not match/,
+  );
+
+  const invalidState = freshDeckFreeSessions(run.cloudLanes.rungs);
+  invalidState[2].rungs[1].lighting.eclipseStateValid = false;
+  assert.match(
+    fold(invalidState).isolationReasons.join("\n"),
+    /rung 1 lighting read-back does not match/,
+  );
+
+  const globeShadowEnabled = freshDeckFreeSessions(run.cloudLanes.rungs);
+  globeShadowEnabled[0].rungs[2].lighting.enableEclipseGlobeShadow = true;
+  assert.match(
+    fold(globeShadowEnabled).isolationReasons.join("\n"),
+    /rung 2 lighting read-back does not match/,
+  );
+
+  const toggled = freshDeckFreeSessions(run.cloudLanes.rungs);
+  toggled[3].rungs[1].lighting.eclipseStateEnabled = true;
+  assert.match(
+    fold(toggled).isolationReasons.join("\n"),
+    /rung 1 lighting read-back does not match/,
+  );
+});
+
+test("K12 every expected fresh context must serve the exact local runtime entry", () => {
+  const expectedLabels = ["derive", "cloud", "off-a", "on-a"];
+  const localEntry = {
+    exists: true,
+    byteLength: 7,
+    sha256: "a".repeat(64),
+  };
+  const entries = expectedLabels.map((sessionLabel) => ({
+    sessionLabel,
+    ok: true,
+    status: 200,
+    byteLength: localEntry.byteLength,
+    sha256: localEntry.sha256,
+  }));
+  const validate = (candidate) =>
+    validateServedEntryIdentities({
+      entries: candidate,
+      expectedLabels,
+      localEntry,
+    });
+
+  assert.equal(validate(entries).ok, true);
+
+  const missing = entries.slice(1);
+  assert.equal(validate(missing).ok, false);
+  assert.match(
+    validate(missing).reasons.join("\n"),
+    /derive: expected exactly one/,
+  );
+
+  const duplicate = [...entries, entries[0]];
+  assert.match(
+    validate(duplicate).reasons.join("\n"),
+    /derive: expected exactly one.*received 2/,
+  );
+
+  const stale = clone(entries);
+  stale[2].sha256 = "b".repeat(64);
+  assert.match(
+    validate(stale).reasons.join("\n"),
+    /off-a: served runtime entry differs from the local start entry/,
+  );
+
+  const failedFetch = clone(entries);
+  failedFetch[3].ok = false;
+  failedFetch[3].status = 404;
+  assert.match(
+    validate(failedFetch).reasons.join("\n"),
+    /on-a: served runtime entry returned 404/,
+  );
+});
+
+test("K13 start/end local source-map-probe-policy identity fails on any byte drift", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "c13-41-identity-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const source = path.join(directory, "source.js");
+  const policy = path.join(directory, "policy.mjs");
+  fs.writeFileSync(source, "source-a\n");
+  fs.writeFileSync(policy, "policy-a\n");
+  const files = { source, sourceMap: source, probe: policy, policy };
+  const start = snapshotEvidenceFiles(files);
+  assert.equal(
+    compareEvidenceFileSnapshots(start, snapshotEvidenceFiles(files)).ok,
+    true,
+  );
+
+  fs.writeFileSync(policy, "policy-b\n");
+  const drifted = compareEvidenceFileSnapshots(
+    start,
+    snapshotEvidenceFiles(files),
+  );
+  assert.equal(drifted.ok, false);
+  assert.match(
+    drifted.reasons.join("\n"),
+    /probe: local evidence bytes changed/,
+  );
+  assert.match(
+    drifted.reasons.join("\n"),
+    /policy: local evidence bytes changed/,
+  );
+
+  const missing = compareEvidenceFileSnapshots(start, {
+    ...snapshotEvidenceFiles(files),
+    sourceMap: fingerprintEvidenceFile(path.join(directory, "absent.map")),
+  });
+  assert.match(
+    missing.reasons.join("\n"),
+    /sourceMap: required local evidence file is absent/,
+  );
+});
+
+test("K14 canonical, immutable archive, and first-red lifecycle is fail-closed", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "c13-41-artifact-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const canonical = path.join(directory, "canonical.json");
+  const archive = path.join(directory, "run-id.json");
+  const firstRed = path.join(directory, "first-red.json");
+
+  fs.writeFileSync(canonical, "RUNNING\n");
+  atomicReplaceEvidence(canonical, "PASS\n");
+  assert.equal(fs.readFileSync(canonical, "utf8"), "PASS\n");
+
+  createImmutableEvidence(archive, "immutable\n");
+  assert.throws(
+    () => createImmutableEvidence(archive, "mutant\n"),
+    (error) => error?.code === "EEXIST",
+  );
+  assert.equal(fs.readFileSync(archive, "utf8"), "immutable\n");
+
+  const first = preserveFirstRedEvidence(firstRed, "red-a\n");
+  const second = preserveFirstRedEvidence(firstRed, "red-b\n");
+  assert.equal(first.written, true);
+  assert.equal(second.written, false);
+  assert.equal(fs.readFileSync(firstRed, "utf8"), "red-a\n");
+
+  assert.doesNotThrow(() =>
+    assertEvidenceReadableOrAbsent(
+      { exists: false, error: "ENOENT" },
+      "legitimately absent evidence",
+    ),
+  );
+  for (const error of ["EACCES", "EISDIR", "SYNTHETIC_READ_FAILURE"]) {
+    assert.throws(
+      () =>
+        assertEvidenceReadableOrAbsent(
+          { exists: false, error },
+          "prior canonical artifact",
+        ),
+      /integrity is unverifiable/,
+    );
+  }
+  assert.throws(
+    () =>
+      assertEvidenceReadableOrAbsent(
+        { exists: true, byteLength: 12, sha256: null },
+        "malformed evidence",
+      ),
+    /fingerprint is malformed/,
+  );
+  assert.throws(
+    () =>
+      assertEvidenceReadableOrAbsent(
+        { exists: true, byteLength: 0, sha256: "0".repeat(64) },
+        "empty evidence",
+      ),
+    /fingerprint is malformed/,
+  );
+
+  const existingOperations = {
+    writeFileSync() {
+      const error = new Error("synthetic EEXIST");
+      error.code = "EEXIST";
+      throw error;
+    },
+  };
+  assert.throws(
+    () =>
+      preserveFirstRedEvidence(
+        "synthetic-first-red.json",
+        "red\n",
+        existingOperations,
+        () => ({ exists: false, error: "EACCES" }),
+      ),
+    /retained first-red artifact integrity is unverifiable/,
+  );
+
+  let temporaryCleaned = false;
+  const operations = {
+    writeFileSync(_file, _bytes, options) {
+      assert.equal(options.flag, "wx");
+    },
+    renameSync() {
+      throw new Error("rename mutant");
+    },
+    unlinkSync() {
+      temporaryCleaned = true;
+    },
+  };
+  assert.throws(
+    () => atomicReplaceEvidence("synthetic.json", "new\n", operations),
+    /rename mutant/,
+  );
+  assert.equal(temporaryCleaned, true);
+});
+
+test("K15 the probe lifecycle binds diagnostics, provenance, watchdog cleanup, and artifacts", () => {
   const probe = fs
     .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
     .replace(/\r\n/g, "\n");
 
-  // Both twins exist, over the SAME dials and the same settle as the
-  // first-position reads they are compared against.
-  assert.match(probe, /const bOffNoCloudSettled = groundBand\(/);
-  assert.match(probe, /const bOnNoCloudSettled = groundBand\(/);
-  assert.match(probe, /B\$\{index\}-eclipseOff-cloudsOff-settled/);
-  assert.match(probe, /B\$\{index\}-eclipseOn-cloudsOff-settled/);
-  assert.match(probe, /offNoCloudSettled: bOffNoCloudSettled\.mean,/);
-  assert.match(probe, /onNoCloudSettled: bOnNoCloudSettled\.mean,/);
-
-  // MATCHED ORDERING is the point. A repeat on the eclipse-ON leg alone would
-  // re-introduce the unmatched-position defect it exists to detect, so the two
-  // must be structurally identical statements — same configure, same settle,
-  // same reducer — and each must sit AFTER its own leg's shadow captures.
-  const legSetup =
-    /configure\(\{ enableVolumetric: false, dials: groundDials \}\);\n\s*await pin\.settle\(julian, cfg\.settleMs\);\n\s*const bO(?:ff|n)NoCloudSettled = groundBand\(/g;
-  assert.equal(
-    (probe.match(legSetup) ?? []).length,
-    2,
-    "both legs must set up their settled twin identically",
-  );
+  assert.match(probe, /ARTIFACT_SCHEMA = "c13-41-eclipse-cloud-response-v3"/);
+  assert.match(probe, /runId: RUN_ID,\n\s*status: "RUNNING"/);
+  assert.match(probe, /const status = structural \? "STRUCTURAL" : "ERROR"/);
+  assert.match(probe, /startedAt: STARTED_AT/);
+  assert.match(probe, /completedAt: new Date\(\)\.toISOString\(\)/);
+  assert.match(probe, /createImmutableEvidence\(RUN_ARTIFACT, bytes\)/);
+  assert.match(probe, /atomicReplaceEvidence\(CANONICAL_ARTIFACT, bytes\)/);
+  assert.match(probe, /preserveFirstRedEvidence\(FIRST_RED_ARTIFACT, bytes\)/);
   assert.ok(
-    probe.indexOf("bOffNoCloudSettled") <
-      probe.indexOf("const bOnNoCloud = groundBand("),
-    "the OFF twin must be captured before the eclipse-ON leg begins",
+    probe.indexOf("createImmutableEvidence(RUN_ARTIFACT, bytes)") <
+      probe.indexOf("preserveFirstRedEvidence(FIRST_RED_ARTIFACT, bytes)") &&
+      probe.indexOf("preserveFirstRedEvidence(FIRST_RED_ARTIFACT, bytes)") <
+        probe.indexOf("atomicReplaceEvidence(CANONICAL_ARTIFACT, bytes)"),
+    "immutable archive and first-red must land before canonical finalization",
   );
-  assert.ok(
-    probe.indexOf("const bOffShadow") < probe.indexOf("bOffNoCloudSettled"),
-    "the OFF twin must sit AFTER its leg's shadow captures",
-  );
-  assert.ok(
-    probe.indexOf("const bOnShadow") < probe.indexOf("bOnNoCloudSettled"),
-    "the ON twin must sit AFTER its leg's shadow captures",
-  );
-
-  // The evidence reaches the console unrounded — the deltas ARE the verdict.
-  assert.match(probe, /SHADOW deck-free convergence: settled/);
   assert.match(
     probe,
-    /settled\+failing = ENGINE identity violation; unsettled = INSTRUMENT/,
+    /createImmutableEvidence\(PRE_LIFECYCLE_RUN_6_ARTIFACT, bytes\)/,
+  );
+  assert.match(probe, /previous RUNNING marker .* must be investigated/);
+  assert.match(probe, /!publicationAttempted && runningMarkerPublished/);
+  assert.match(
+    probe,
+    /assertEvidenceReadableOrAbsent\(canonical, "prior canonical artifact"\)/,
+  );
+  assert.match(
+    probe,
+    /assertEvidenceReadableOrAbsent\(firstRedAtStart, "prior first-red artifact"\)/,
+  );
+  assert.match(
+    probe,
+    /assertEvidenceReadableOrAbsent\([\s\S]*firstRedBeforeFinalize,[\s\S]*"first-red artifact before finalization"/,
+  );
+
+  assert.match(probe, /startLocalIdentity = snapshotEvidenceFiles/);
+  assert.match(probe, /const endProvenance = provenance\(\)/);
+  assert.match(probe, /compareEvidenceFileSnapshots/);
+  assert.match(probe, /validateServedEntryIdentities/);
+  assert.match(
+    probe,
+    /weatherPinPolicy: fileURLToPath\(\n\s*new URL\("\.\/lib\/weather-probe-pinning\.mjs", import\.meta\.url\),\n\s*\)/,
+  );
+  assert.match(
+    probe,
+    /cloudProbeHarness: fileURLToPath\(\n\s*new URL\("\.\/lib\/cloud-probe-harness\.mjs", import\.meta\.url\),\n\s*\)/,
+  );
+  assert.match(probe, /page\.on\("response", \(response\) =>/);
+  assert.match(probe, /void response\.body\(\)\.then/);
+  assert.match(probe, /sha256: sha256\(bytes\)/);
+  assert.match(probe, /await import\("\/Build\/CesiumUnminified\/index\.js"\)/);
+
+  const runtimeLabelBlock = probe.match(
+    /const EXPECTED_RUNTIME_SESSION_LABELS = Object\.freeze\(\[([\s\S]*?)\]\);/,
+  );
+  assert.ok(runtimeLabelBlock, "the exact served-entry label list must exist");
+  assert.deepEqual(
+    [...runtimeLabelBlock[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]),
+    [
+      "derive-webgl",
+      "cloud-webgpu",
+      "deck-free-off-a",
+      "deck-free-on-a",
+      "deck-free-on-b",
+      "deck-free-off-b",
+      "ibl-webgpu",
+      "ibl-webgl",
+    ],
+  );
+  assert.match(probe, /`deck-free-\$\{planned\.label\}`/);
+  assert.match(
+    probe,
+    /const pinReasons = \[\.\.\.provenanceReasons, \.\.\.diagnosticReasons\]/,
+  );
+  assert.match(probe, /type: "console\.error"/);
+  assert.match(probe, /type: "pageerror"/);
+
+  assert.match(probe, /const HARD_LIMIT_MS = 720000/);
+  assert.match(probe, /const OUTER_WATCHDOG_GRACE_MS = 60000/);
+  assert.match(probe, /void closeActiveBrowser\("primary watchdog"\)/);
+  assert.match(
+    probe,
+    /\} finally \{\n\s*await closeActiveBrowser\("measurement finally"\)/,
+  );
+  assert.match(
+    probe,
+    /if \(\n\s*!browserClosed \|\|\n\s*cleanupErrors\.length > 0 \|\|\n\s*browserEvidence\.cleanupErrors\.length > 0\n\s*\)/,
+  );
+  assert.match(
+    probe,
+    /errors=\$\{JSON\.stringify\(\[\.\.\.cleanupErrors, \.\.\.browserEvidence\.cleanupErrors\]\)\}/,
   );
 });

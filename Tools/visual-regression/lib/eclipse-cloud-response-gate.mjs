@@ -453,8 +453,9 @@ export function extractShadowableDimming(shadow) {
 
 /**
  * The propagated tolerance for one rung's `onNoCloud / offNoCloud` against the
- * published factor. See the block above for the derivation; the result is
- * clamped to `deckFreeGroundDimToleranceCap` so it can only ever tighten.
+ * independently predicted factor at the same 1400 m camera geometry. See the
+ * block above for the derivation; the result is clamped to
+ * `deckFreeGroundDimToleranceCap` so it can only ever tighten.
  *
  * @param {number} deckFreeBandMean The eclipse-OFF deck-free ground band mean.
  * @param {number} measuredRatio The measured `onNoCloud / offNoCloud`.
@@ -777,6 +778,14 @@ export const BAND_MEAN_CAPTURE_DELTA = 0.004;
  */
 export const SHADOW_GROUND_BRIGHTNESS_FLOOR = 0.15;
 
+// Independent read-only evaluation of the fixed four ladder ISOs through the
+// current EclipseState implementation. This is the largest obscuration change
+// observed when moving the same fixture from ellipsoid height to lane B's
+// 1400 m camera; the historical ICRF/TEME branch disagreement at those ISOs was
+// never smaller than 0.0063.
+export const FIXED_LADDER_0_TO_1400_MAX_OBSCURATION_SHIFT = 7.91e-5;
+export const HISTORICAL_EPHEMERIS_BRANCH_SHIFT_FLOOR = 0.0063;
+
 const band = (lo, hi, why) => Object.freeze({ lo, hi, why, status: "DERIVED" });
 
 /**
@@ -802,7 +811,7 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
   deckFreeGroundDimToleranceCap: band(
     0,
     (BAND_MEAN_CAPTURE_DELTA / SHADOW_GROUND_BRIGHTNESS_FLOOR) * (1 + 1),
-    "NOT the tolerance — the CAP on it. `deckFreeGroundDimsByFactor` compares `onNoCloud/offNoCloud` against the published F with a tolerance PROPAGATED per rung from the band mean it was measured on, (d/U_off)*(1+r) with d = BAND_MEAN_CAPTURE_DELTA (see `deckFreeGroundDimTolerance`). A propagated tolerance widens as the band darkens, so it needs a ceiling that is not a choice: `shadowGroundIsBright` blinds the whole shadow domain below U_off = 0.15 and a ratio above 1 fails on its own terms, so (0.004/0.15)*(1+1) = 0.05333 is the loosest tolerance this predicate can EVER be scored with. At the fourth run's own deck-free band (0.27506) the propagated tolerance is 0.02129, and the under-dim the globe-path branch predicts (1.1261*F - F = 0.0585) is 2.75x it",
+    "NOT the tolerance — the CAP on it. `deckFreeGroundDimsByFactor` compares `onNoCloud/offNoCloud` against the independently predicted F at the same 1400 m camera geometry, with a tolerance PROPAGATED per rung from the band mean it was measured on, (d/U_off)*(1+r) with d = BAND_MEAN_CAPTURE_DELTA (see `deckFreeGroundDimTolerance`). A propagated tolerance widens as the band darkens, so it needs a ceiling that is not a choice: `shadowGroundIsBright` blinds the whole shadow domain below U_off = 0.15 and a ratio above 1 fails on its own terms, so (0.004/0.15)*(1+1) = 0.05333 is the loosest tolerance this predicate can EVER be scored with. At the fourth run's own deck-free band (0.27506) the propagated tolerance is 0.02129, and the under-dim the globe-path branch predicts (1.1261*F - F = 0.0585) is 2.75x it",
   ),
 
   shadowContrastRatio: band(
@@ -853,6 +862,12 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
     "the published `eclipseSceneLightFactor` against this module's second implementation, and across backends. It is ONE CPU module evaluated on f64 inputs, so anything above f64 round-off is a real divergence",
   ),
 
+  scheduleObscurationTolerance: band(
+    0,
+    2.5e-4,
+    `the realized obscuration at each scored camera geometry against the schedule derived in its own fresh context. DERIVE_SCHEDULE solves at ellipsoid height while lane A renders at 300 m: at minimum lunar distance, observer displacement normalized by the Sun's apparent radius and disc-overlap slope is (300/356500000)/0.00465*(4/pi) = 0.000230, so 0.00025 rounds that hard bound upward. Lane B and every deck-free ABBA session render at 1400 m; independent read-only evaluation of this fixed four-ISO ladder through current EclipseState measured a maximum 0 -> 1400 m shift of 7.91e-5 (${FIXED_LADDER_0_TO_1400_MAX_OBSCURATION_SHIFT}). The historical old-vs-current ICRF/TEME branch shift at those same ISOs was ${HISTORICAL_EPHEMERIS_BRANCH_SHIFT_FLOOR}-0.0077, so it remains structural`,
+  ),
+
   strengthTolerance: band(
     0,
     1e-9,
@@ -886,7 +901,7 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
   deckFreeGroundSettleDelta: band(
     0,
     BAND_MEAN_CAPTURE_DELTA,
-    "|settled - first| on the deck-free ground band, on EACH eclipse leg. The fifth run measured `onNoCloud / offNoCloud` = 0.449 at obscuration ZERO — where the published laws force exactly 1.0 — and its own numbers could not say whether the globe's light path is really dimmed by merely ENABLING the eclipse or whether that one capture had simply not converged: it is the ONLY scored capture in the probe taken a single settle after a genuine eclipse-state TRANSITION (the eclipse-OFF leg's toggle at the lane-B entry is a no-op, because the `publishedOff` read two blocks earlier already left the flag false). The probe now takes the same deck-free configuration TWICE on BOTH legs — once in first position and once in last — and this band is the agreement they must show. A drift beyond one eight-bit code is an UNSETTLED instrument, not a product finding, so it is STRUCTURAL: it quarantines the `deck-free` domain — the attribution and this detector, and deliberately NOT the cast-shadow contrast, which is a ratio of ratios among the deck-present captures — rather than scoring an attribution over a capture that was still moving. The bound is `BAND_MEAN_CAPTURE_DELTA` verbatim rather than a second literal, because the quantity being bounded is the same one `determinismDelta` bounds — the smallest difference this instrument can resolve at all. NOTE the asymmetry this CANNOT launder: if both reads agree AND the ratio is 0.449, the reading is the measurement and `deckFreeGroundDimsByFactor` still fails, which is the ENGINE verdict shape",
+    "the absolute difference between independent fresh-context replicas of the deck-free ground band, on EACH eclipse leg. Runs 4-6 produced frozen-dark, sun-varying, then exact raw-baseColor controls because one persistent page repeatedly crossed cloud/effect configure states; a later same-page recapture could only report more state from that same epoch. The redesigned control is ABBA across four new browser contexts, exactly one configure per context before any scored frame. A difference beyond one eight-bit code is session-dependent apparatus, not a product finding, so it is STRUCTURAL for the `deck-free` domain and deliberately does not demote the cast-shadow ratio taken entirely among deck-present captures. The bound is `BAND_MEAN_CAPTURE_DELTA` verbatim. This cannot launder a defect: if both independent sessions agree on 0.449, replication passes and `deckFreeGroundDimsByFactor` still fails",
   ),
 
   shadowGroundRetention: band(
@@ -932,8 +947,11 @@ export const ECLIPSE_CLOUD_GATE_PREDICATES = Object.freeze([
   "shadowContrastRejectsAlternativeDesign",
   "shadowContrastModelIsBoundedByDirectional",
   // Lane B attribution leg — the deck-free ground's own dimming law. The
-  // convergence precondition is evaluated FIRST: an attribution taken off a
-  // capture that was still moving is not an attribution.
+  // fresh-context and lit-surface preconditions are evaluated FIRST. The ABBA
+  // sessions then have to reproduce; an attribution from a reused configure
+  // epoch or a raw/unlit base-colour read is not an attribution.
+  "deckFreeControlStateIsolated",
+  "deckFreeGroundIsLit",
   "deckFreeGroundCapturesSettled",
   "deckFreeGroundDimsByFactor",
   // Lane C — IBL dim, refresh cadence, recovery (prediction iii)
@@ -1077,8 +1095,8 @@ export const ECLIPSE_CLOUD_PREDICATE_LANES = Object.freeze({
   // quarantining the deck lane's other verdicts.
   deckPureRatioInBand: "deck",
   // Lane B — cloud shadow (prediction ii)
-  shadowGroundIsBright: "shadow",
-  shadowGroundNotOccluded: "shadow",
+  shadowGroundIsBright: "deck-free",
+  shadowGroundNotOccluded: "deck-free",
   shadowNonVacuous: "shadow",
   offShadowStrengthExactlyOne: "cloud-page",
   shadowStrengthMatchesDirectional: "cloud-page",
@@ -1093,6 +1111,8 @@ export const ECLIPSE_CLOUD_PREDICATE_LANES = Object.freeze({
   // propagated from) lives in the parent domain. Scoring an attribution over a
   // band too dark to carry one certifies nothing — and CO-21 adds the second
   // precondition, that the band had stopped moving when it was read.
+  deckFreeControlStateIsolated: "deck-free",
+  deckFreeGroundIsLit: "deck-free",
   deckFreeGroundCapturesSettled: "deck-free",
   deckFreeGroundDimsByFactor: "deck-free",
   // Lane C — IBL dim, refresh cadence, recovery (prediction iii)
@@ -1337,7 +1357,7 @@ const inBand = (value, b) =>
 const ratio = (a, b) =>
   Number.isFinite(a) && Number.isFinite(b) && b !== 0 ? a / b : null;
 
-// `null` rather than NaN when either read is absent, so a MISSING settled twin
+// `null` rather than NaN when either read is absent, so a missing ABBA replica
 // fails `inBand` and blinds the lane instead of silently passing it: an absent
 // convergence check is exactly as uninformative as a failed one.
 const absDelta = (a, b) =>
@@ -1394,6 +1414,7 @@ export function judgeEclipseCloudResponse(run) {
   }
 
   const rungs = cloud.rungs ?? [];
+  const deckFreeControl = cloud.deckFreeControl;
   const deepest = rungs[rungs.length - 1];
   // The rung whose obscuration is closest to 0.5452 — where the REJECTED
   // design peaks and this band's discrimination is widest.
@@ -1410,6 +1431,38 @@ export function judgeEclipseCloudResponse(run) {
       markBlind(
         "cloud-page",
         `webgpu-cloud: rendererType resolved "${cloud.rendererType}", not webgpu`,
+      );
+    }
+    const scheduleFailures = rungs.flatMap((rung, index) => {
+      const published = rung?.published;
+      const scheduled = rung?.scheduledObscuration;
+      const observed = published?.moonObscuration;
+      const failures = [];
+      if (published?.valid !== true) {
+        failures.push(`rung ${index} published eclipse state is not valid`);
+      }
+      if (published?.enabled !== true) {
+        failures.push(`rung ${index} published eclipse state is not enabled`);
+      }
+      if (!Number.isFinite(scheduled) || !Number.isFinite(observed)) {
+        failures.push(`rung ${index} schedule obscuration is not finite`);
+      } else if (
+        Math.abs(observed - scheduled) > B.scheduleObscurationTolerance.hi
+      ) {
+        failures.push(
+          `rung ${index} published obscuration ${observed} drifted from scheduled ${scheduled}`,
+        );
+      }
+      return failures;
+    });
+    v.mainPageScheduleCertified =
+      rungs.length > 0 && scheduleFailures.length === 0;
+    if (!v.mainPageScheduleCertified) {
+      markBlind(
+        "cloud-page",
+        `webgpu-cloud schedule certification failed: ${
+          scheduleFailures.join("; ") || "no ladder rungs were published"
+        }`,
       );
     }
   }
@@ -1460,36 +1513,58 @@ export function judgeEclipseCloudResponse(run) {
     // ground caps the achievable contrast move at `0.65 * groundShare`; a deck
     // sitting in the band caps `groundShare` itself. Both were true of the
     // second Edge run, and the ceiling could only report the SYMPTOM.
-    v.shadowGroundOnly = rungs[0]?.shadow?.offNoCloud ?? null;
-    v.shadowGroundIsBright = inBand(
-      v.shadowGroundOnly,
-      B.shadowGroundBrightness,
-    );
-    if (!v.shadowGroundIsBright) {
+    v.deckFreeControlStateIsolated =
+      deckFreeControl?.stateIsolated === true &&
+      deckFreeControl?.schema === "c13-41-deckfree-control-v3";
+    if (!v.deckFreeControlStateIsolated) {
       markBlind(
-        "shadow",
-        `the deck-free ground band reads ${v.shadowGroundOnly} against the ${B.shadowGroundBrightness.lo} brightness floor — the cast shadow's 0.35 beer floor can remove at most 65% of that, so the ${B.shadowVacuityCeiling.hi} contrast ceiling is unreachable however well the shadow works`,
+        "deck-free",
+        `the deck-free control is not four fresh ABBA configure epochs with pinned lighting and certified factors: ${(deckFreeControl?.isolationReasons ?? ["control evidence is absent"]).join("; ")}`,
       );
     }
+    v.deckFreeGroundIsLit = deckFreeControl?.litSurfaceNonVacuous === true;
+    if (!v.deckFreeGroundIsLit) {
+      markBlind(
+        "deck-free",
+        (
+          deckFreeControl?.nonVacuityReasons ?? [
+            "deck-free lit-surface evidence is absent",
+          ]
+        ).join("; "),
+      );
+    }
+    v.shadowGroundOnly = rungs[0]?.shadow?.offNoCloud ?? null;
     v.shadowGroundRetentionRatio = ratio(
       rungs[0]?.shadow?.offNoShadow,
       rungs[0]?.shadow?.offNoCloud,
     );
-    v.shadowGroundNotOccluded = inBand(
-      v.shadowGroundRetentionRatio,
-      B.shadowGroundRetention,
-    );
-    if (!v.shadowGroundNotOccluded) {
-      markBlind(
-        "shadow",
-        `turning the deck on moves the ground band by ${v.shadowGroundRetentionRatio}x (outside [${B.shadowGroundRetention.lo}, ${B.shadowGroundRetention.hi}]) — the scored band is not the ground, so its contrast is not the cast shadow's`,
+    if (!isBlind("deck-free")) {
+      v.shadowGroundIsBright = inBand(
+        v.shadowGroundOnly,
+        B.shadowGroundBrightness,
       );
+      if (!v.shadowGroundIsBright) {
+        markBlind(
+          "deck-free",
+          `the deck-free ground band reads ${v.shadowGroundOnly} against the ${B.shadowGroundBrightness.lo} brightness floor — the cast shadow's 0.35 beer floor can remove at most 65% of that, so the ${B.shadowVacuityCeiling.hi} contrast ceiling is unreachable however well the shadow works`,
+        );
+      }
+      v.shadowGroundNotOccluded = inBand(
+        v.shadowGroundRetentionRatio,
+        B.shadowGroundRetention,
+      );
+      if (!v.shadowGroundNotOccluded) {
+        markBlind(
+          "deck-free",
+          `turning the deck on moves the ground band by ${v.shadowGroundRetentionRatio}x (outside [${B.shadowGroundRetention.lo}, ${B.shadowGroundRetention.hi}]) — the scored band is not the ground, so its contrast is not the cast shadow's`,
+        );
+      }
     }
-    // ── THE SETTLED-TWIN DETECTOR (CO-21) ───────────────────────────────────
-    // Both deck-free reads, on both legs, against the one code value this
-    // instrument can resolve. A drift means the first-position capture had not
-    // converged, which makes EVERY deck-free attribution below it a reading of
-    // a transient rather than of the engine. STRUCTURAL for the same reason
+    // ── THE FRESH-SESSION REPLICATION DETECTOR ───────────────────────────────
+    // Both deck-free ABBA replicas, on both legs, against the one code value
+    // this instrument can resolve. A drift makes EVERY deck-free attribution
+    // below it session-dependent rather than a measurement of the engine.
+    // STRUCTURAL for the same reason
     // `shadowGroundIsBright` is: the lane cannot answer, and pretending it did
     // is how the fifth run's 0.449 became attributable to two different causes.
     v.deckFreeGroundSettleDelta = rungs.map((rung) => {
@@ -1516,13 +1591,13 @@ export function judgeEclipseCloudResponse(run) {
     v.deckFreeGroundCapturesSettled =
       v.deckFreeGroundSettleDelta.length > 0 &&
       v.deckFreeGroundSettleDelta.every((entry) => entry.settled === true);
-    if (!v.deckFreeGroundCapturesSettled) {
+    if (!isBlind("deck-free") && !v.deckFreeGroundCapturesSettled) {
       const worst = v.deckFreeGroundSettleDelta.find(
         (entry) => entry.settled !== true,
       );
       markBlind(
         "deck-free",
-        `the deck-free ground control did not reproduce within one capture code at obscuration ${worst?.obscuration}: eclipse-OFF moved ${worst?.offDelta} (${worst?.offFirst} -> ${worst?.offSettled}) and eclipse-ON moved ${worst?.onDelta} (${worst?.onFirst} -> ${worst?.onSettled}) against the ${B.deckFreeGroundSettleDelta.hi} bracket — the first-position capture had not converged, so the deck-free attribution reads a transient and not the engine`,
+        `the fresh deck-free ABBA sessions did not reproduce within one capture code at obscuration ${worst?.obscuration}: eclipse-OFF sessions differ by ${worst?.offDelta} (${worst?.offFirst} vs ${worst?.offSettled}) and eclipse-ON sessions differ by ${worst?.onDelta} (${worst?.onFirst} vs ${worst?.onSettled}) against the ${B.deckFreeGroundSettleDelta.hi} bracket — the attribution is session-dependent and not an engine measurement`,
       );
     }
     // The ON-leg twin of `shadowGroundRetentionRatio`, REPORTED not gated. The
@@ -1573,8 +1648,15 @@ export function judgeEclipseCloudResponse(run) {
   );
   v.factorMatchesSecondImplementation = rungs.every((rung) => {
     const measured = rung.published?.factor;
-    const expected = predictFactor(rung.published?.moonObscuration ?? 0);
+    const observed = rung.published?.moonObscuration;
+    const scheduled = rung.scheduledObscuration;
+    const expected = predictFactor(observed);
     return (
+      rung.published?.valid === true &&
+      rung.published?.enabled === true &&
+      Number.isFinite(scheduled) &&
+      Number.isFinite(observed) &&
+      Math.abs(observed - scheduled) <= B.scheduleObscurationTolerance.hi &&
       Number.isFinite(measured) &&
       Math.abs(measured - expected) <= B.factorTolerance.hi
     );
@@ -1671,7 +1753,11 @@ export function judgeEclipseCloudResponse(run) {
     shadowContrastModelIsBoundedByDirectional();
 
   // ── THE DECK-FREE ATTRIBUTION LEG (CO-19) ────────────────────────────────
-  // `onNoCloud / offNoCloud` against the published factor, per rung. See the
+  // `onNoCloud / offNoCloud` against the independently predicted factor at the
+  // SAME 1400 m camera geometry, per rung. `rung.published` is lane A at 300 m
+  // and must never enter this comparison; `deckFreePublished` is captured on
+  // lane B immediately after its eclipse-ON frame, while the fold binds every
+  // fresh ABBA readback to that same geometry and factor. See the
   // derivation above `deckFreeGroundDimTolerance` for what each verdict means:
   // == F exonerates the globe's own light path and makes CO-17's under-dimming
   // residue CLOUD-DRIVEN; > F indicts the globe path and exonerates the cloud
@@ -1680,7 +1766,21 @@ export function judgeEclipseCloudResponse(run) {
   v.deckFreeGroundDim = rungs.map((rung) => {
     const off = rung.shadow?.offNoCloud;
     const on = rung.shadow?.onNoCloud;
-    const factor = rung.published?.factor;
+    const obscuration = rung.deckFreePublished?.moonObscuration;
+    const publishedFactor = rung.deckFreePublished?.factor;
+    const factor = Number.isFinite(obscuration)
+      ? predictFactor(obscuration)
+      : null;
+    const factorCertified =
+      Number.isFinite(publishedFactor) &&
+      Number.isFinite(factor) &&
+      Math.abs(publishedFactor - factor) <= B.factorTolerance.hi;
+    const factorCameraHeight = rung.deckFreePublished?.cameraHeight;
+    const measurementCameraHeight = rung.shadow?.cameraHeight;
+    const cameraGeometryMatches =
+      Number.isFinite(factorCameraHeight) &&
+      Number.isFinite(measurementCameraHeight) &&
+      factorCameraHeight === measurementCameraHeight;
     const measured = ratio(on, off);
     const tolerance = deckFreeGroundDimTolerance(off, measured);
     const delta =
@@ -1688,8 +1788,21 @@ export function judgeEclipseCloudResponse(run) {
         ? measured - factor
         : null;
     return {
-      obscuration: rung.published?.moonObscuration ?? null,
+      obscuration: Number.isFinite(obscuration) ? obscuration : null,
       factor: factor ?? null,
+      publishedFactor: Number.isFinite(publishedFactor)
+        ? publishedFactor
+        : null,
+      factorCertified,
+      factorSource: "predictFactor(deckFreePublished.moonObscuration)",
+      factorCameraHeight: Number.isFinite(factorCameraHeight)
+        ? factorCameraHeight
+        : null,
+      measurementCameraHeight: Number.isFinite(measurementCameraHeight)
+        ? measurementCameraHeight
+        : null,
+      cameraGeometryMatches,
+      scheduledLaneFactor: rung.published?.factor ?? null,
       offNoCloud: Number.isFinite(off) ? off : null,
       onNoCloud: Number.isFinite(on) ? on : null,
       measured,
@@ -1699,6 +1812,8 @@ export function judgeEclipseCloudResponse(run) {
       // 1.0 is the published law; CO-17 measured 1.126 with the deck ON.
       overFactor: ratio(measured, factor),
       withinTolerance:
+        factorCertified &&
+        cameraGeometryMatches &&
         delta !== null &&
         Number.isFinite(tolerance) &&
         Math.abs(delta) <= tolerance,
@@ -1878,6 +1993,20 @@ export function judgeEclipseCloudResponse(run) {
     offNoShadowSpread: v.offNoShadowSpread,
     offNoCloudVariesWithSun: v.offNoCloudVariesWithSun,
     deckFreeExcessAtDeepest: v.deckFreeGroundExcessAtDeepest,
+    deckFreeControlStateIsolated: v.deckFreeControlStateIsolated,
+    deckFreeGroundIsLit: v.deckFreeGroundIsLit,
+    deckFreeSessionOrder: deckFreeControl?.sessionOrder ?? null,
+    deckFreeSessionTokens: deckFreeControl?.sessionTokens ?? null,
+    deckFreeRawBaseColorLuma: deckFreeControl?.rawBaseColorLuma ?? null,
+    deckFreeMaximumRawDistance: deckFreeControl?.maximumRawDistance ?? null,
+    deckFreeOffASpread: deckFreeControl?.offASpread ?? null,
+    deckFreeOffBSpread: deckFreeControl?.offBSpread ?? null,
+    deckFreeExpectedBaseColor: deckFreeControl?.expectedBaseColor ?? null,
+    deckFreeFactorTolerance: deckFreeControl?.factorTolerance ?? null,
+    deckFreeScheduleObscurationTolerance:
+      deckFreeControl?.scheduleObscurationTolerance ?? null,
+    deckFreeFactorEvidence:
+      deckFreeControl?.rungs?.map((rung) => rung.factorEvidence) ?? null,
     // CO-21: the convergence evidence, next to the number it qualifies. The
     // two retention ratios sit together because their DISAGREEMENT is the
     // question — the OFF leg says the scored band is ground, the ON leg says
