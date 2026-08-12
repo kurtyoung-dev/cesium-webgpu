@@ -21,6 +21,66 @@ ls Tools/visual-regression/output/
 # - report.json         per-scene diff ratios + pass/fail
 ```
 
+## Append-only visual-evidence library
+
+Probe-owned `output/` directories remain local scratch space. Finished runs can
+also be retained in a shared, append-only library whose default location is the
+external Git sibling `cesium-webgpu-visual-evidence`; the main and linked
+worktrees derive that same path from their Git common directory. Use
+`--library-root` to choose another same-volume location.
+
+```bash
+# Read-only preflight: validates and fingerprints the exact source set.
+node Tools/visual-regression/visual-evidence-library.mjs archive --dry-run <archive-options>
+
+# Repeat without --dry-run to publish, then audit or list the library.
+node Tools/visual-regression/visual-evidence-library.mjs archive <archive-options>
+node Tools/visual-regression/visual-evidence-library.mjs verify
+node Tools/visual-regression/visual-evidence-library.mjs catalog
+
+# Existing v1 hardlink stores must be upgraded before another archive.
+# `upgrade` is read-only by default; inspect its plan, then opt in explicitly.
+node Tools/visual-regression/visual-evidence-library.mjs upgrade
+node Tools/visual-regression/visual-evidence-library.mjs upgrade --apply
+```
+
+Publication uses protected read-only SHA-256 objects, independent protected
+original-path copies, and an atomic no-clobber producer/run-ID directory. A
+view can therefore be damaged only locally; it cannot mutate the canonical
+object or another deduplicated run. Protection is defense in depth rather than
+an ACL boundary, so `verify` still hashes every byte and checks that objects,
+views, and manifests remain non-writable. The archive refuses active locks,
+`RUNNING` or incomplete JSON, artifact/verdict mismatches, and source or Git
+provenance changes between preflight and postflight. A dry run writes nothing
+and reserves nothing; the real archive repeats all checks. Archiving preserves
+the source result exactly—it neither certifies a run nor promotes a baseline.
+Older bytes require `import-legacy --namespace ... --reason ...` and are always
+recorded as `NON_CERTIFYING`; the reason must be concise public text without
+absolute host paths, control characters, or credential literals. Retrying the
+exact same producer/run ID and source
+bytes is idempotent; any changed identity is a hard collision. Source and
+library junctions/symbolic links are rejected. Shared manifests retain hashes,
+portable paths, and Git identity but omit absolute host paths and store only a
+hash plus byte length for an optional source command. `verify` checks the full
+library topology, manifests, protected objects, independent views, and
+authoritative artifact semantics before `catalog` will emit an index. Parsed
+manifest JSON that is null, an array, or another non-object is reported as an
+invalid library rather than escaping the verifier as an exception. V2 manifests
+are exact schemas: unknown fields, run/legacy provenance mixing, false repository
+stability, and extra host-path, command, or credential-bearing fields all fail
+verification even when an attacker refreshes the manifest hash sidecar.
+Catalog output uses only the portable library directory label; it does not emit
+the absolute host location of the shared store.
+
+The v1-to-v2 `upgrade` command first inspects the complete legacy hardlink
+store without writing. `upgrade --apply` takes an external library-wide claim,
+builds and verifies a complete sibling v2 store from the canonical object
+bytes, then swaps it into place. If the swap or final verification fails, it
+restores the untouched v1 directory; an already-v2 store is an idempotent
+no-op. New publications refuse mixed v1/v2 stores. Because the apply form
+rewrites the library topology, always review the plan and take a filesystem
+backup before applying it to the shared store.
+
 ## Flags
 
 | Flag                                          | Default  | Notes                                                      |
