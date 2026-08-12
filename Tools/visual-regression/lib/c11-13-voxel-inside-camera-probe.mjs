@@ -102,11 +102,7 @@ export function normalizeProbeBase(value) {
 }
 
 /**
- * Convert a live canvas client rectangle into a Playwright page-screenshot
- * clip. Element screenshots wait for the target to become visually stable;
- * that wait can never complete for a deliberately rendered WebGPU canvas.
- * A page clip captures the same canvas pixels without treating frame activity
- * as element motion.
+ * Validate the live canvas rectangle against the fixed capture viewport.
  *
  * @param {unknown} value
  * @param {{width: number, height: number}} viewport
@@ -133,6 +129,30 @@ export function normalizeCanvasClip(value, viewport = VIEWPORT) {
     throw new Error("STRUCTURAL: canvas screenshot clip is invalid");
   }
   return clip;
+}
+
+/**
+ * Decode the immutable PNG frozen synchronously after the final in-page
+ * render. This avoids both deferred GPU-canvas reads and Chrome's screenshot
+ * surface capture, which can hang on an active canvas.
+ *
+ * @param {unknown} value
+ * @returns {Buffer}
+ */
+export function decodeCanvasPngDataUrl(value) {
+  const prefix = "data:image/png;base64,";
+  if (typeof value !== "string" || !value.startsWith(prefix)) {
+    throw new Error("STRUCTURAL: canvas capture is not a PNG data URL");
+  }
+  const bytes = Buffer.from(value.slice(prefix.length), "base64");
+  const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  if (
+    bytes.length <= pngSignature.length ||
+    !bytes.subarray(0, 8).equals(pngSignature)
+  ) {
+    throw new Error("STRUCTURAL: canvas capture has no valid PNG payload");
+  }
+  return bytes;
 }
 
 const BASE = normalizeProbeBase(
@@ -1260,27 +1280,36 @@ async function captureWaypoint(lane, waypoint, runDirectory) {
   let finalCapture;
   const attempts = [];
   for (let attempt = 1; attempt <= STABILITY_ATTEMPTS; attempt += 1) {
-    await lane.page.evaluate((frameCount) => {
-      return globalThis.__c1113VoxelInsideHarness.settlePixels(frameCount);
+    const captured = await lane.page.evaluate((frameCount) => {
+      return globalThis.__c1113VoxelInsideHarness.capturePixels(frameCount);
     }, STABILITY_FRAMES);
-    const clip = normalizeCanvasClip(
-      await canvas.evaluate((element) => {
-        const rectangle = element.getBoundingClientRect();
-        return {
-          x: rectangle.left,
-          y: rectangle.top,
-          width: rectangle.width,
-          height: rectangle.height,
-        };
-      }),
-    );
-    const png = await lane.page.screenshot({
-      animations: "disabled",
-      caret: "hide",
-      clip,
-      type: "png",
-    });
+    if (!captured?.capture || !captured?.evidence) {
+      throw new Error(
+        "STRUCTURAL: same-task capture omitted pixels or matching evidence",
+      );
+    }
+    const capture = captured.capture;
+    const clip = normalizeCanvasClip(capture.clip);
+    if (
+      capture.drawingBufferWidth !== clip.width ||
+      capture.drawingBufferHeight !== clip.height ||
+      capture.nativeDrawingBufferWidth !== capture.drawingBufferWidth ||
+      capture.nativeDrawingBufferHeight !== capture.drawingBufferHeight
+    ) {
+      throw new Error(
+        "STRUCTURAL: canvas/native drawing buffer and viewport dimensions differ",
+      );
+    }
+    const png = decodeCanvasPngDataUrl(capture.dataUrl);
     const analyzed = await analyzePng(png);
+    if (
+      analyzed.metrics.width !== capture.drawingBufferWidth ||
+      analyzed.metrics.height !== capture.drawingBufferHeight
+    ) {
+      throw new Error(
+        "STRUCTURAL: decoded PNG dimensions differ from the drawing buffer",
+      );
+    }
     identicalStreak =
       analyzed.metrics.rawSha256 === priorHash ? identicalStreak + 1 : 1;
     priorHash = analyzed.metrics.rawSha256;
@@ -1291,7 +1320,7 @@ async function captureWaypoint(lane, waypoint, runDirectory) {
       nonBlackPixels: analyzed.metrics.nonBlackPixels,
       identicalStreak,
     });
-    finalCapture = { png, ...analyzed };
+    finalCapture = { png, ...analyzed, evidence: captured.evidence };
     if (identicalStreak >= STABILITY_STREAK) break;
   }
   if (!finalCapture) {
@@ -1304,9 +1333,7 @@ async function captureWaypoint(lane, waypoint, runDirectory) {
     `${String(WAYPOINTS.indexOf(waypoint)).padStart(2, "0")}-${waypoint.id}-${lane.backend}.png`,
   );
   createImmutable(screenshotPath, finalCapture.png);
-  const finalEvidence = await lane.page.evaluate(() =>
-    globalThis.__c1113VoxelInsideHarness.getEvidence(),
-  );
+  const finalEvidence = finalCapture.evidence;
   return {
     public: {
       screenshot: relativePath(screenshotPath),

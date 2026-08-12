@@ -326,6 +326,53 @@ async function settlePixels(frameCount = 8) {
   return collectEvidence();
 }
 
+async function capturePixels(frameCount = 8) {
+  if (state.history.length === 0) {
+    throw new Error("STRUCTURAL: capturePixels called before a waypoint");
+  }
+  if (viewer.scene.taaEnabled === true) {
+    throw new Error("STRUCTURAL: deterministic pixel capture requires TAA off");
+  }
+  if (!Number.isInteger(frameCount) || frameCount < 1) {
+    throw new Error("STRUCTURAL: capturePixels requires at least one frame");
+  }
+
+  // Yield only while settling. The final render and immutable PNG snapshot
+  // must stay in this same task: WebGL may clear a non-preserved drawing
+  // buffer after compositing, and WebGPU invalidates the presented swap-chain
+  // texture. Reading either canvas from a later Playwright task is undefined.
+  await renderFrames(frameCount - 1);
+  viewer.scene.render();
+  const canvas = viewer.scene.canvas;
+  const rectangle = canvas.getBoundingClientRect();
+  let dataUrl;
+  try {
+    dataUrl = canvas.toDataURL("image/png");
+  } catch (error) {
+    throw new Error(
+      `STRUCTURAL: same-task canvas capture failed: ${textOf(error)}`,
+      { cause: error },
+    );
+  }
+  const gl = viewer.scene.context?._gl;
+  return {
+    evidence: collectEvidence(),
+    capture: {
+      dataUrl,
+      drawingBufferWidth: canvas.width,
+      drawingBufferHeight: canvas.height,
+      nativeDrawingBufferWidth: gl?.drawingBufferWidth ?? canvas.width,
+      nativeDrawingBufferHeight: gl?.drawingBufferHeight ?? canvas.height,
+      clip: {
+        x: rectangle.left,
+        y: rectangle.top,
+        width: rectangle.width,
+        height: rectangle.height,
+      },
+    },
+  };
+}
+
 async function boot() {
   try {
     requireRenderer();
@@ -388,6 +435,7 @@ globalThis.__c1113VoxelInsideHarness = {
   state,
   waypoints: WAYPOINTS,
   prepareWaypoint,
+  capturePixels,
   settlePixels,
   getEvidence: collectEvidence,
 };

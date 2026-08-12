@@ -28,6 +28,7 @@ import {
   atomicReplace,
   compareBackendCaptures,
   createImmutable,
+  decodeCanvasPngDataUrl,
   errorLanesAreEmpty,
   isBaseOrigin,
   normalizeCanvasClip,
@@ -129,6 +130,35 @@ function assessPhysicalProbePolicy(candidate) {
     candidate.harness,
     /scene\.taaEnabled = false;[\s\S]*await renderFrames\(16\)/u,
   );
+  requirePattern(
+    "harness must render and freeze its PNG in the same task",
+    candidate.harness,
+    /viewer\.scene\.render\(\);\s*const canvas = viewer\.scene\.canvas;[\s\S]{0,500}canvas\.toDataURL\("image\/png"\)/u,
+  );
+  requirePattern(
+    "harness must report native WebGL drawing-buffer dimensions",
+    candidate.harness,
+    /nativeDrawingBufferWidth: gl\?\.drawingBufferWidth \?\? canvas\.width,[\s\S]{0,100}nativeDrawingBufferHeight: gl\?\.drawingBufferHeight \?\? canvas\.height/u,
+  );
+  const captureFunctionIndex = candidate.harness.indexOf(
+    "async function capturePixels",
+  );
+  const finalRenderIndex = candidate.harness.indexOf(
+    "viewer.scene.render();",
+    captureFunctionIndex,
+  );
+  const snapshotIndex = candidate.harness.indexOf(
+    'canvas.toDataURL("image/png")',
+    finalRenderIndex,
+  );
+  if (
+    captureFunctionIndex < 0 ||
+    finalRenderIndex < 0 ||
+    snapshotIndex < 0 ||
+    /\bawait\b/u.test(candidate.harness.slice(finalRenderIndex, snapshotIndex))
+  ) {
+    failures.push("harness yielded between the final render and PNG snapshot");
+  }
   for (const token of [
     "color: commandEvidence(color)",
     "objectPick: commandEvidence(objectPick)",
@@ -195,8 +225,13 @@ function assessPhysicalProbePolicy(candidate) {
     "cleanupErrors",
     "const settledProbe = await observedTask",
     "normalizeCanvasClip",
-    "await canvas.evaluate",
-    "await lane.page.screenshot({",
+    "__c1113VoxelInsideHarness.capturePixels(frameCount)",
+    "!captured?.capture || !captured?.evidence",
+    "capture.nativeDrawingBufferWidth !== capture.drawingBufferWidth",
+    "capture.nativeDrawingBufferHeight !== capture.drawingBufferHeight",
+    "analyzed.metrics.width !== capture.drawingBufferWidth",
+    "analyzed.metrics.height !== capture.drawingBufferHeight",
+    "decodeCanvasPngDataUrl",
     "browserControl.probeTaskDrained = true",
   ]) {
     if (!candidate.implementation.includes(token)) {
@@ -368,6 +403,17 @@ test("physical probe source policy is complete and static mutants are rejected",
     ["harness", "useDefaultRenderLoop: false", "useDefaultRenderLoop: true"],
     ["harness", "velocity: commandEvidence(velocity)", "velocity: null"],
     ["harness", "scene.taaEnabled = false", "scene.taaEnabled = true"],
+    [
+      "harness",
+      "viewer.scene.render();\n  const canvas = viewer.scene.canvas;",
+      "await nextEventTurn();\n  const canvas = viewer.scene.canvas;",
+    ],
+    ["harness", 'canvas.toDataURL("image/png")', '"data:image/png;base64,"'],
+    [
+      "harness",
+      "const rectangle = canvas.getBoundingClientRect();",
+      "await nextEventTurn();\n  const rectangle = canvas.getBoundingClientRect();",
+    ],
     ["implementation", "bothNonVacuous", "bothCouldBeBlack"],
     ["implementation", "assessCommandSnapshot", "skipCommandSnapshot"],
     ["implementation", '{ flag: "wx" }', '{ flag: "w" }'],
@@ -383,10 +429,26 @@ test("physical probe source policy is complete and static mutants are rejected",
       "const settledProbe = observedTask",
     ],
     ["implementation", 'page.route("**/*"', 'page.route("external-only"'],
+    ["implementation", "!captured?.capture || !captured?.evidence", "false"],
     [
       "implementation",
-      "await lane.page.screenshot({",
-      "await canvas.screenshot({",
+      "capture.nativeDrawingBufferWidth !== capture.drawingBufferWidth",
+      "false",
+    ],
+    [
+      "implementation",
+      "capture.nativeDrawingBufferHeight !== capture.drawingBufferHeight",
+      "false",
+    ],
+    [
+      "implementation",
+      "analyzed.metrics.width !== capture.drawingBufferWidth",
+      "false",
+    ],
+    [
+      "implementation",
+      "analyzed.metrics.height !== capture.drawingBufferHeight",
+      "false",
     ],
     ["entry", 'channel: "msedge"', 'channel: "chromium"'],
     ["entry", '"--use-vulkan"', '"--disable-vulkan"'],
@@ -404,7 +466,7 @@ test("physical probe source policy is complete and static mutants are rejected",
   }
 });
 
-test("canvas capture uses a finite nonempty page clip without a stability wait", () => {
+test("canvas capture freezes the final render in-task and validates exact dimensions", () => {
   assert.deepEqual(
     normalizeCanvasClip(
       { x: 0, y: 0, width: 960, height: 720 },
@@ -427,14 +489,38 @@ test("canvas capture uses a finite nonempty page clip without a stability wait",
   }
   assert.doesNotMatch(
     sources.implementation,
-    /await canvas\.screenshot\(/u,
-    "an element screenshot would reintroduce Playwright's impossible active-canvas stability wait",
+    /\.(?:screenshot)\(/u,
+    "Playwright/Chrome screenshot capture hangs on this active GPU canvas",
+  );
+  assert.match(
+    sources.harness,
+    /viewer\.scene\.render\(\);\s*const canvas = viewer\.scene\.canvas;[\s\S]{0,500}canvas\.toDataURL\("image\/png"\)/u,
+  );
+  assert.doesNotMatch(
+    sources.implementation,
+    /await createImageBitmap|new OffscreenCanvas|context2d\.drawImage|output\.convertToBlob/u,
+    "the probe must consume the immutable same-task PNG rather than reread the GPU canvas",
   );
   assert.doesNotMatch(
     sources.implementation,
     /rectangle\.(?:left|top) \+ globalThis\.scroll/u,
     "Playwright page clips use viewport coordinates, not document coordinates",
   );
+  const png = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    Buffer.from("payload"),
+  ]);
+  assert.deepEqual(
+    decodeCanvasPngDataUrl(`data:image/png;base64,${png.toString("base64")}`),
+    png,
+  );
+  for (const invalid of [
+    undefined,
+    "data:text/plain;base64,AA==",
+    "data:image/png;base64,AA==",
+  ]) {
+    assert.throws(() => decodeCanvasPngDataUrl(invalid), /STRUCTURAL/);
+  }
 });
 
 test("backend and L3 provider authority fail closed", () => {
