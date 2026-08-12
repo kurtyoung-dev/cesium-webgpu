@@ -1353,11 +1353,20 @@ Then the original W1 contents:
   (spec-bundle freshness), `C11-134` (offline isolation). Until all three are COMPLETE, no spec/gate
   claim in the whole campaign is falsifiable (G9 §6). Two exit-gate owners (`C11-136`, `C11-144`) are
   paused specifically on them.
-  **UPDATE 2026-08-11:** `C11-132` and `C11-134` are COMPLETE in code (see §3.2), each
-  with its recorded Karma round-trip still owed to the machine lane. `C11-133`
-  tooling and its ten-run machine gate landed in Batch 1018, discharging the
-  launcher-specific prerequisite. `C11-136` and `C11-144` are no longer blocked
-  on launcher determinism; their remaining prerequisites and own gates still apply.
+  **UPDATE 2026-08-12:** `C11-132` is complete in code and its widgets round-trip is
+  machine-green (351/351, exit 0); the required engine-green round-trip remains open
+  because the current-source full engine lane completed with a fresh bundle but exited
+  1 on 93 unrelated suite failures. `C11-134`'s fail-closed offline repair landed in
+  Batch 1029 (`de04e70574`): the exact targeted Edge lane passed 349/349 with five
+  reasoned network skips and zero blocked requests, and the subsequent full offline
+  engine lane again reported five reasoned skips and zero blocked requests. That full
+  lane's unrelated 93 failures do not invalidate the isolation result and do not count
+  as an engine-green result for `C11-132`. `C11-134`'s online `--no-offline` coverage
+  lane remains owed, so this paragraph supersedes the older machine-debt wording in
+  the §3.2 cells without falsely closing either row. `C11-133` tooling and its ten-run
+  machine gate landed in Batch 1018, discharging only the launcher-specific
+  prerequisite; `C11-136` and `C11-144` retain their remaining prerequisites and own
+  gates.
 - **Perf-claim prerequisite tooling (early):** `C11-140` (GPU-timestamp unique-sample cert), `C11-146`
   (first-complete-frame metric). An uncertified timer silently invalidates every later perf number
   (G9 Q7).
