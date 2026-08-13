@@ -1555,15 +1555,36 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
   };
 
   if (contract.renderer === "webgl") {
-    const automaticModule =
-      await import("/packages/engine/Source/Renderer/AutomaticUniforms.js");
-    const automaticUniforms = automaticModule.default;
-    const uniformState = scene.context.uniformState;
-    const radii = automaticUniforms.czm_ellipsoidRadii.getValue(uniformState);
-    const inverse =
-      automaticUniforms.czm_ellipsoidInverseRadii.getValue(uniformState);
+    const hasServedBundleExport = Object.hasOwn(C, "AutomaticUniforms");
+    const automaticUniforms = C.AutomaticUniforms;
+    const radiiUniform = automaticUniforms?.czm_ellipsoidRadii;
+    const inverseRadiiUniform = automaticUniforms?.czm_ellipsoidInverseRadii;
+    if (
+      !hasServedBundleExport ||
+      typeof automaticUniforms !== "object" ||
+      automaticUniforms === null ||
+      typeof radiiUniform?.getValue !== "function" ||
+      typeof inverseRadiiUniform?.getValue !== "function"
+    ) {
+      throw new Error(
+        "served production bundle AutomaticUniforms export is missing or invalid",
+      );
+    }
+    const radii = C.AutomaticUniforms.czm_ellipsoidRadii.getValue(
+      scene.context.uniformState,
+    );
+    const inverse = C.AutomaticUniforms.czm_ellipsoidInverseRadii.getValue(
+      scene.context.uniformState,
+    );
     preparation.backendIdentity = {
       automaticUniforms: {
+        exportName: "AutomaticUniforms",
+        servedBundleExport: hasServedBundleExport,
+        bundleExportIdentity: automaticUniforms === C.AutomaticUniforms,
+        radiiUniformIdentity:
+          radiiUniform === C.AutomaticUniforms.czm_ellipsoidRadii,
+        inverseRadiiUniformIdentity:
+          inverseRadiiUniform === C.AutomaticUniforms.czm_ellipsoidInverseRadii,
         radii: { x: radii.x, y: radii.y, z: radii.z },
         inverseRadii: { x: inverse.x, y: inverse.y, z: inverse.z },
         radiiExact:
@@ -1574,7 +1595,10 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
           inverse.x === 1 / contract.radii.x &&
           inverse.y === 1 / contract.radii.y &&
           inverse.z === 1 / contract.radii.z,
-        source: "AutomaticUniforms.getValue(scene.context.uniformState)",
+        radiiSource:
+          "C.AutomaticUniforms.czm_ellipsoidRadii.getValue(scene.context.uniformState)",
+        inverseRadiiSource:
+          "C.AutomaticUniforms.czm_ellipsoidInverseRadii.getValue(scene.context.uniformState)",
       },
     };
   } else {

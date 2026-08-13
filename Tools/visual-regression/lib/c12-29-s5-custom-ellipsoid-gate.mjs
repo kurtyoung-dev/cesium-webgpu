@@ -8,9 +8,9 @@
  * the f64 reference and strict stepwise-f32 twin below are independent.
  */
 
-export const C12_29_S5_CUSTOM_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v2";
+export const C12_29_S5_CUSTOM_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v3";
 export const C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA =
-  "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v2";
+  "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v3";
 
 export const C12_29_S5_CUSTOM_RENDERERS = Object.freeze(["webgl", "webgpu"]);
 
@@ -224,6 +224,23 @@ const FINAL_STATUSES = new Set(["PASS", "FAIL", "STRUCTURAL", "ERROR"]);
 const SHA256 = /^[0-9a-f]{64}$/u;
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const WEBGL_AUTOMATIC_UNIFORMS_IDENTITY_KEYS = Object.freeze([
+  "exportName",
+  "servedBundleExport",
+  "bundleExportIdentity",
+  "radiiUniformIdentity",
+  "inverseRadiiUniformIdentity",
+  "radii",
+  "inverseRadii",
+  "radiiExact",
+  "inverseRadiiExact",
+  "radiiSource",
+  "inverseRadiiSource",
+]);
+const WEBGL_AUTOMATIC_UNIFORMS_RADII_SOURCE =
+  "C.AutomaticUniforms.czm_ellipsoidRadii.getValue(scene.context.uniformState)";
+const WEBGL_AUTOMATIC_UNIFORMS_INVERSE_RADII_SOURCE =
+  "C.AutomaticUniforms.czm_ellipsoidInverseRadii.getValue(scene.context.uniformState)";
 
 function finite(value) {
   return typeof value === "number" && Number.isFinite(value);
@@ -2099,20 +2116,34 @@ function validateSession(session, runId, structural, failures) {
   const shadowPayload = froundedShadowPayload(eventOn?.shadowBlock);
   const identity = preparation?.backendIdentity;
   if (renderer === "webgl") {
+    const automaticUniforms = identity?.automaticUniforms;
     if (
-      identity?.automaticUniforms?.radiiExact !== true ||
-      identity?.automaticUniforms?.inverseRadiiExact !== true ||
-      !exactVec3(
-        identity?.automaticUniforms?.radii,
-        C12_29_S5_CUSTOM_SCENE.radii,
-      ) ||
-      !exactVec3(identity?.automaticUniforms?.inverseRadii, {
+      !exactKeys(automaticUniforms, WEBGL_AUTOMATIC_UNIFORMS_IDENTITY_KEYS) ||
+      automaticUniforms.exportName !== "AutomaticUniforms" ||
+      automaticUniforms.radiiSource !== WEBGL_AUTOMATIC_UNIFORMS_RADII_SOURCE ||
+      automaticUniforms.inverseRadiiSource !==
+        WEBGL_AUTOMATIC_UNIFORMS_INVERSE_RADII_SOURCE
+    ) {
+      structural.push(
+        `${renderer}: served AutomaticUniforms evidence shape is invalid`,
+      );
+    } else if (
+      automaticUniforms.servedBundleExport !== true ||
+      automaticUniforms.bundleExportIdentity !== true ||
+      automaticUniforms.radiiUniformIdentity !== true ||
+      automaticUniforms.inverseRadiiUniformIdentity !== true ||
+      automaticUniforms.radiiExact !== true ||
+      automaticUniforms.inverseRadiiExact !== true ||
+      !exactVec3(automaticUniforms.radii, C12_29_S5_CUSTOM_SCENE.radii) ||
+      !exactVec3(automaticUniforms.inverseRadii, {
         x: 1 / C12_29_S5_CUSTOM_SCENE.radii.x,
         y: 1 / C12_29_S5_CUSTOM_SCENE.radii.y,
         z: 1 / C12_29_S5_CUSTOM_SCENE.radii.z,
       })
     ) {
-      failures.push(`${renderer}: automatic custom radii are not exact`);
+      failures.push(
+        `${renderer}: served AutomaticUniforms identity/custom radii are not exact`,
+      );
     }
   } else if (
     identity?.cameraUbo?.indices?.inverseRadiiX !==

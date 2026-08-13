@@ -429,6 +429,11 @@ function passingSession(renderer, imageOffset) {
     renderer === "webgl"
       ? {
           automaticUniforms: {
+            exportName: "AutomaticUniforms",
+            servedBundleExport: true,
+            bundleExportIdentity: true,
+            radiiUniformIdentity: true,
+            inverseRadiiUniformIdentity: true,
             radiiExact: true,
             inverseRadiiExact: true,
             radii: { ...C12_29_S5_CUSTOM_SCENE.radii },
@@ -437,6 +442,10 @@ function passingSession(renderer, imageOffset) {
               y: 1 / C12_29_S5_CUSTOM_SCENE.radii.y,
               z: 1 / C12_29_S5_CUSTOM_SCENE.radii.z,
             },
+            radiiSource:
+              "C.AutomaticUniforms.czm_ellipsoidRadii.getValue(scene.context.uniformState)",
+            inverseRadiiSource:
+              "C.AutomaticUniforms.czm_ellipsoidInverseRadii.getValue(scene.context.uniformState)",
           },
         }
       : {
@@ -951,11 +960,11 @@ function operationsWith(overrides) {
 test("contract freezes schemas, renderer order, nine phases, and six captures", () => {
   assert.equal(
     C12_29_S5_CUSTOM_SCHEMA,
-    "c12-29-s5-custom-ellipsoid-evidence-v2",
+    "c12-29-s5-custom-ellipsoid-evidence-v3",
   );
   assert.equal(
     C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
-    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v2",
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v3",
   );
   assert.deepEqual(C12_29_S5_CUSTOM_RENDERERS, ["webgl", "webgpu"]);
   assert.equal(C12_29_S5_CUSTOM_PHASES.length, 9);
@@ -1217,6 +1226,9 @@ test("pure fold accepts the exact fully attested report", () => {
   assert.equal(verdict.exitCode, 0);
   assert.equal(verdict.checks.phaseCountPerRenderer, 9);
   assert.equal(verdict.checks.captureCountPerRenderer, 6);
+  const v2Report = passingReport();
+  v2Report.schema = "c12-29-s5-custom-ellipsoid-evidence-v2";
+  assert.equal(foldC1229S5CustomEllipsoidGate(v2Report).status, "STRUCTURAL");
 });
 
 for (const [name, mutate, expected] of [
@@ -1360,6 +1372,21 @@ for (const [name, mutate, expected] of [
       (r.sessions[1].phases[
         "selected-terrain-preparation"
       ].backendIdentity.eclipseBinding.payload[0] += 0.01),
+    "FAIL",
+  ],
+  [
+    "WebGL served AutomaticUniforms evidence missing",
+    (r) =>
+      delete r.sessions[0].phases["selected-terrain-preparation"]
+        .backendIdentity.automaticUniforms,
+    "STRUCTURAL",
+  ],
+  [
+    "WebGL served AutomaticUniforms identity forged",
+    (r) =>
+      (r.sessions[0].phases[
+        "selected-terrain-preparation"
+      ].backendIdentity.automaticUniforms.bundleExportIdentity = false),
     "FAIL",
   ],
   [
@@ -1757,6 +1784,9 @@ test("final artifact must reproduce the pure fold exactly", () => {
     ok: true,
     reasons: [],
   });
+  const v2Artifact = structuredClone(artifact);
+  v2Artifact.schema = "c12-29-s5-custom-ellipsoid-evidence-v2";
+  assert.equal(validateC1229S5CustomFinalArtifact(v2Artifact).ok, false);
   const retained = JSON.parse(stableC1229S5CustomJson(artifact, 2));
   const retainedVerdict = foldC1229S5CustomEllipsoidGate(retained);
   assert.equal(
@@ -1788,6 +1818,10 @@ test("ERROR artifact requires bounded schema/stage/renderer diagnostics", () => 
     },
   };
   assert.equal(validateC1229S5CustomFinalArtifact(artifact).ok, true);
+  const v2Diagnostics = structuredClone(artifact);
+  v2Diagnostics.diagnostics.schema =
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v2";
+  assert.equal(validateC1229S5CustomFinalArtifact(v2Diagnostics).ok, false);
   artifact.diagnostics.renderer = "fake";
   assert.equal(validateC1229S5CustomFinalArtifact(artifact).ok, false);
 });
@@ -1866,7 +1900,28 @@ test("new oracle/probe artifacts contain no Earth axes or production-oracle call
   }
 });
 
-test("probe constructs every custom scene owner explicitly and derives the axis", () => {
+test("probe uses the served bundle for browser modules, constructs every custom scene owner, and derives the axis", () => {
+  assert.match(
+    probeSource,
+    /const C = await import\(contract\.runtimePath\);/u,
+  );
+  assert.doesNotMatch(
+    probeSource,
+    /import\s*\(\s*["']\/packages\/engine\/Source\//u,
+  );
+  assert.match(probeSource, /Object\.hasOwn\(C, "AutomaticUniforms"\)/u);
+  assert.match(
+    probeSource,
+    /C\.AutomaticUniforms\.czm_ellipsoidRadii\.getValue\(\s*scene\.context\.uniformState,\s*\)/u,
+  );
+  assert.match(
+    probeSource,
+    /C\.AutomaticUniforms\.czm_ellipsoidInverseRadii\.getValue\(\s*scene\.context\.uniformState,\s*\)/u,
+  );
+  assert.match(
+    probeSource,
+    /served production bundle AutomaticUniforms export is missing or invalid/u,
+  );
   assert.match(probeSource, /new C\.Ellipsoid\(\s*contract\.radii\.x,/u);
   assert.match(probeSource, /new C\.GeographicProjection\(ellipsoid\)/u);
   assert.match(probeSource, /new C\.GeographicTilingScheme\(\{\s*ellipsoid,/u);
@@ -1995,11 +2050,32 @@ test("loopback transport rejects credentials, paths, search, and external hosts"
 test("evidence begin creates exclusive byte-exact lock and RUNNING latest", () => {
   const directory = tempEvidenceDirectory();
   try {
+    const legacyRunId = randomUUID();
+    const legacyArtifact = {
+      schema: "c12-29-s5-custom-ellipsoid-evidence-v2",
+      runId: legacyRunId,
+      status: "ERROR",
+      incomplete: false,
+      exitCode: 2,
+      artifactName: `${legacyRunId}.json`,
+      error: "finalized legacy error",
+      diagnostics: {
+        schema: "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v2",
+        stage: "legacy",
+        renderer: "webgl",
+      },
+    };
+    const legacyBytes = Buffer.from(stableC1229S5CustomJson(legacyArtifact, 2));
     const runId = randomUUID();
     const paths = createC1229S5CustomArtifactPaths(runId, directory);
+    const legacyArchive = path.join(directory, `${legacyRunId}.json`);
+    fs.writeFileSync(legacyArchive, legacyBytes, { flag: "wx" });
+    fs.writeFileSync(paths.latest, legacyBytes, { flag: "wx" });
     const ownership = beginC1229S5CustomEvidenceRun(paths, runId);
     assert.deepEqual(fs.readFileSync(paths.lock), ownership.lockBytes);
     assert.deepEqual(fs.readFileSync(paths.latest), ownership.runningBytes);
+    assert.equal(ownership.running.schema, C12_29_S5_CUSTOM_SCHEMA);
+    assert.deepEqual(fs.readFileSync(legacyArchive), legacyBytes);
     assert.throws(() => beginC1229S5CustomEvidenceRun(paths, randomUUID()));
   } finally {
     removeTempEvidenceDirectory(directory);
