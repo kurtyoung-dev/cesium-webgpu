@@ -147,6 +147,8 @@ function AppStandalone() {
               code={codeState.committedCode}
               html={codeState.committedHtml}
               runNumber={codeState.runNumber}
+              rendererMode="webgl"
+              showFps={false}
               highlightLine={() => {
                 /* We don't have an editor to even highlight */
               }}

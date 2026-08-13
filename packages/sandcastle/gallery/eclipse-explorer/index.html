@@ -1,0 +1,46 @@
+<style>
+  @import url(../templates/bucket.css);
+
+  #eventPanel {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    width: min(430px, calc(100% - 16px));
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid rgb(255 255 255 / 22%);
+    border-radius: 4px;
+    color: #f4f7fb;
+    background: rgb(10 15 24 / 84%);
+    box-shadow: 0 2px 12px rgb(0 0 0 / 45%);
+    font: 13px/1.35 sans-serif;
+    pointer-events: none;
+  }
+
+  #eventPanel strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 14px;
+  }
+
+  #eventPanel .secondary {
+    margin-top: 5px;
+    color: #c6d2e3;
+  }
+
+  #eventPanel .warning {
+    margin-top: 6px;
+    color: #ffd58a;
+  }
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading...</h1></div>
+<div id="toolbar"></div>
+<div id="eventPanel" aria-live="polite">
+  <strong id="eventName">Preparing eclipse explorer…</strong>
+  <div id="eventTime"></div>
+  <div id="eventFacts" class="secondary"></div>
+  <div id="eventSource" class="secondary"></div>
+  <div id="engineStatus" class="secondary"></div>
+  <div id="coverageNote" class="warning"></div>
+</div>

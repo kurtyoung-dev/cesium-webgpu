@@ -31,7 +31,6 @@ export function RendererToggle() {
         {rendererOptions.map((opt) => (
           <Tooltip key={opt.value} content={opt.title} type="label">
             <Button
-              // @ts-expect-error tone works but is not passed through the types from Button
               tone={settings.rendererMode === opt.value ? "accent" : "neutral"}
               variant={settings.rendererMode === opt.value ? "solid" : "ghost"}
               onClick={() => updateSettings({ rendererMode: opt.value })}
