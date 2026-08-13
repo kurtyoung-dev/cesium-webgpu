@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -51,9 +51,13 @@ import {
   cleanupC1229S5CustomOwnedPngs,
   closeC1229S5CustomResourceBounded,
   createC1229S5CustomArtifactPaths,
+  createC1229S5CustomErrorArtifact,
+  createC1229S5CustomImmutableAuthority,
   finalizeC1229S5CustomEvidence,
   releaseC1229S5CustomLock,
+  runC1229S5CustomEllipsoidProbe,
   validateC1229S5CustomLoopbackBase,
+  validateC1229S5CustomPriorFinal,
   withC1229S5CustomWatchdog,
 } from "./probe-c12-29-s5-custom-ellipsoid.mjs";
 
@@ -172,6 +176,7 @@ function fixtureTemporalState(label, preparedTuple) {
 
 function image(renderer, label, index, preparedTuple, firstSelectionRevision) {
   const imageId = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+  const taskToken = `10000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
   const result = {
     label,
     imageId,
@@ -185,8 +190,8 @@ function image(renderer, label, index, preparedTuple, firstSelectionRevision) {
     width: C12_29_S5_CUSTOM_SCENE.viewport.width,
     height: C12_29_S5_CUSTOM_SCENE.viewport.height,
     captureMethod: C12_29_S5_CUSTOM_CAPTURE_METHOD,
-    renderTaskToken: `task-${index}`,
-    captureTaskToken: `task-${index}`,
+    renderTaskToken: taskToken,
+    captureTaskToken: taskToken,
     metricImageId: imageId,
     fingerprintVerified: true,
   };
@@ -654,6 +659,9 @@ function passingSession(renderer, imageOffset) {
     method: "scene.pickAsync",
     invoked: true,
     awaited: true,
+    settled: true,
+    renderPumpFrames: 1,
+    maximumPumpFrames: C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames,
     directUpdateForPickCall: false,
     pickableBefore: false,
     pickableRequested: true,
@@ -919,6 +927,45 @@ function passingArtifact() {
   };
 }
 
+function materializePassingArtifactPngs(paths, artifact, ownership) {
+  assert.equal(artifact.runId, ownership.runId);
+  assert.deepEqual(ownership.pngAuthorities, []);
+  for (const session of artifact.sessions) {
+    for (const image of session.images) {
+      const visualClass = image.label.startsWith("antipode-")
+        ? "antipode"
+        : image.label.startsWith("control-")
+          ? "control"
+          : image.label;
+      const seed = createHash("sha256")
+        .update(`${session.renderer}:${visualClass}`, "utf8")
+        .digest();
+      const bytes = Buffer.alloc(image.byteLength);
+      for (let index = 0; index < bytes.length; index++) {
+        bytes[index] = seed[index % seed.length];
+      }
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      image.sha256 = digest;
+      for (const observation of image.temporalStability.observations) {
+        observation.byteLength = bytes.length;
+        observation.sha256 = digest;
+      }
+      image.temporalStability.captureOutput.byteLength = bytes.length;
+      image.temporalStability.captureOutput.sha256 = digest;
+      const file = path.join(paths.directory, image.fileName);
+      ownership.pngAuthorities.push(
+        createC1229S5CustomImmutableAuthority(
+          file,
+          bytes,
+          `${session.renderer} ${image.label} fixture PNG`,
+        ),
+      );
+    }
+  }
+  assert.equal(ownership.pngAuthorities.length, 12);
+  assert.equal(validateC1229S5CustomFinalArtifact(artifact).ok, true);
+}
+
 function errorArtifact(runId, message = "deliberate red") {
   return {
     schema: C12_29_S5_CUSTOM_SCHEMA,
@@ -930,8 +977,10 @@ function errorArtifact(runId, message = "deliberate red") {
     error: message,
     diagnostics: {
       schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
-      stage: "node-mutant",
       renderer: "webgl",
+      stage: "node",
+      timeoutMs: 540_000,
+      page: null,
     },
   };
 }
@@ -957,14 +1006,19 @@ function operationsWith(overrides) {
   });
 }
 
+function assertOwnedRunning(paths, ownership) {
+  assert.deepEqual(fs.readFileSync(paths.latest), ownership.runningBytes);
+  assert.deepEqual(fs.readFileSync(paths.lock), ownership.lockBytes);
+}
+
 test("contract freezes schemas, renderer order, nine phases, and six captures", () => {
   assert.equal(
     C12_29_S5_CUSTOM_SCHEMA,
-    "c12-29-s5-custom-ellipsoid-evidence-v3",
+    "c12-29-s5-custom-ellipsoid-evidence-v4",
   );
   assert.equal(
     C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
-    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v3",
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v4",
   );
   assert.deepEqual(C12_29_S5_CUSTOM_RENDERERS, ["webgl", "webgpu"]);
   assert.equal(C12_29_S5_CUSTOM_PHASES.length, 9);
@@ -1018,6 +1072,8 @@ test("source boundary is complete, ordered, unique, readable, and build-derived"
     "packages/engine/Source/Core/CustomHeightmapTerrainProvider.js",
     "packages/engine/Source/Core/GeographicProjection.js",
     "packages/engine/Source/Renderer/AutomaticUniforms.js",
+    "packages/engine/Source/Renderer/FeatureRendererKey.js",
+    "packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts",
     "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
     "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts",
     "packages/engine/Source/Shaders/GlobeFS.glsl",
@@ -1226,9 +1282,17 @@ test("pure fold accepts the exact fully attested report", () => {
   assert.equal(verdict.exitCode, 0);
   assert.equal(verdict.checks.phaseCountPerRenderer, 9);
   assert.equal(verdict.checks.captureCountPerRenderer, 6);
-  const v2Report = passingReport();
-  v2Report.schema = "c12-29-s5-custom-ellipsoid-evidence-v2";
-  assert.equal(foldC1229S5CustomEllipsoidGate(v2Report).status, "STRUCTURAL");
+  for (const schema of [
+    "c12-29-s5-custom-ellipsoid-evidence-v2",
+    "c12-29-s5-custom-ellipsoid-evidence-v3",
+  ]) {
+    const legacyReport = passingReport();
+    legacyReport.schema = schema;
+    assert.equal(
+      foldC1229S5CustomEllipsoidGate(legacyReport).status,
+      "STRUCTURAL",
+    );
+  }
 });
 
 for (const [name, mutate, expected] of [
@@ -1340,6 +1404,38 @@ for (const [name, mutate, expected] of [
   [
     "pickable flag not restored",
     (r) => (r.sessions[1].phases["behavioral-pick"].pickableRestored = false),
+    "FAIL",
+  ],
+  [
+    "pick promise did not settle",
+    (r) => (r.sessions[1].phases["behavioral-pick"].settled = false),
+    "FAIL",
+  ],
+  [
+    "pick pump did not render",
+    (r) => (r.sessions[1].phases["behavioral-pick"].renderPumpFrames = 0),
+    "FAIL",
+  ],
+  [
+    "pick pump exceeded its bound",
+    (r) =>
+      (r.sessions[1].phases["behavioral-pick"].renderPumpFrames =
+        C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames + 1),
+    "FAIL",
+  ],
+  [
+    "pick pump bound self-attestation drift",
+    (r) => (r.sessions[1].phases["behavioral-pick"].maximumPumpFrames -= 1),
+    "FAIL",
+  ],
+  [
+    "fractional updateForPick count",
+    (r) => (r.sessions[1].phases["behavioral-pick"].updateForPickCalls = 1.5),
+    "FAIL",
+  ],
+  [
+    "updateForPick count exceeds pumped frames",
+    (r) => (r.sessions[1].phases["behavioral-pick"].updateForPickCalls = 2),
     "FAIL",
   ],
   [
@@ -1757,6 +1853,28 @@ for (const [name, mutate, expected] of [
     (r) => (r.sessions[0].images[0].temporalStability.renderFirst = false),
     "STRUCTURAL",
   ],
+  [
+    "null capture task token",
+    (r) => (r.sessions[0].images[0].captureTaskToken = null),
+    "STRUCTURAL",
+  ],
+  [
+    "render and capture task token split",
+    (r) =>
+      (r.sessions[0].images[0].captureTaskToken =
+        "20000000-0000-4000-8000-000000000001"),
+    "STRUCTURAL",
+  ],
+  [
+    "capture task token reused globally",
+    (r) => {
+      r.sessions[0].images[1].renderTaskToken =
+        r.sessions[0].images[0].renderTaskToken;
+      r.sessions[0].images[1].captureTaskToken =
+        r.sessions[0].images[0].captureTaskToken;
+    },
+    "STRUCTURAL",
+  ],
 ]) {
   test(`mutation: ${name} cannot pass`, () => {
     const report = passingReport();
@@ -1784,9 +1902,14 @@ test("final artifact must reproduce the pure fold exactly", () => {
     ok: true,
     reasons: [],
   });
-  const v2Artifact = structuredClone(artifact);
-  v2Artifact.schema = "c12-29-s5-custom-ellipsoid-evidence-v2";
-  assert.equal(validateC1229S5CustomFinalArtifact(v2Artifact).ok, false);
+  for (const schema of [
+    "c12-29-s5-custom-ellipsoid-evidence-v2",
+    "c12-29-s5-custom-ellipsoid-evidence-v3",
+  ]) {
+    const legacyArtifact = structuredClone(artifact);
+    legacyArtifact.schema = schema;
+    assert.equal(validateC1229S5CustomFinalArtifact(legacyArtifact).ok, false);
+  }
   const retained = JSON.parse(stableC1229S5CustomJson(artifact, 2));
   const retainedVerdict = foldC1229S5CustomEllipsoidGate(retained);
   assert.equal(
@@ -1813,17 +1936,124 @@ test("ERROR artifact requires bounded schema/stage/renderer diagnostics", () => 
     error: "browser failed",
     diagnostics: {
       schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
-      stage: "webgpu:event-s5-on",
       renderer: "webgpu",
+      stage: "event-s5-on",
+      timeoutMs: 240_000,
+      page: {
+        schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+        renderer: "webgpu",
+        currentPhase: "event-s5-on",
+        completedPhases: [
+          "custom-scene-construction",
+          "selected-terrain-preparation",
+          "event-s5-off",
+        ],
+        step: "event-on-fused-snapshot",
+        elapsedMs: 123,
+      },
     },
   };
   assert.equal(validateC1229S5CustomFinalArtifact(artifact).ok, true);
-  const v2Diagnostics = structuredClone(artifact);
-  v2Diagnostics.diagnostics.schema =
-    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v2";
-  assert.equal(validateC1229S5CustomFinalArtifact(v2Diagnostics).ok, false);
+  for (const schema of [
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v2",
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v3",
+  ]) {
+    const legacyDiagnostics = structuredClone(artifact);
+    legacyDiagnostics.diagnostics.schema = schema;
+    assert.equal(
+      validateC1229S5CustomFinalArtifact(legacyDiagnostics).ok,
+      false,
+    );
+  }
   artifact.diagnostics.renderer = "fake";
   assert.equal(validateC1229S5CustomFinalArtifact(artifact).ok, false);
+});
+
+test("ERROR diagnostics and prior-version finals are exact and fail closed", () => {
+  const artifact = errorArtifact(RUN_ID);
+  assert.equal(validateC1229S5CustomFinalArtifact(artifact).ok, true);
+  for (const mutate of [
+    (value) => (value.diagnostics = {}),
+    (value) => (value.diagnostics.extra = true),
+    (value) => delete value.diagnostics.timeoutMs,
+    (value) => (value.diagnostics.timeoutMs = 1),
+    (value) => (value.diagnostics.page = []),
+    (value) => (value.diagnostics.__proto__ = { polluted: true }),
+    (value) => (value.error = "x".repeat(65_537)),
+  ]) {
+    const mutant = structuredClone(artifact);
+    mutate(mutant);
+    assert.equal(validateC1229S5CustomFinalArtifact(mutant).ok, false);
+  }
+  const runtime = structuredClone(artifact);
+  runtime.diagnostics = {
+    schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+    renderer: "webgpu",
+    stage: "event-s5-on",
+    timeoutMs: 240_000,
+    page: {
+      schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+      renderer: "webgpu",
+      currentPhase: "event-s5-on",
+      completedPhases: [
+        "custom-scene-construction",
+        "selected-terrain-preparation",
+        "event-s5-off",
+      ],
+      step: "event-on-fused-snapshot",
+      elapsedMs: 123,
+    },
+  };
+  assert.equal(validateC1229S5CustomFinalArtifact(runtime).ok, true);
+  for (const mutate of [
+    (value) => value.diagnostics.page.completedPhases.reverse(),
+    (value) => delete value.diagnostics.page.step,
+    (value) => (value.diagnostics.page.extra = 1),
+    (value) => (value.diagnostics.page.elapsedMs = Number.NaN),
+    (value) => (value.diagnostics.stage = "event-s5-off"),
+    (value) => (value.diagnostics.page.completedPhases = new Array(3)),
+    (value) => {
+      value.diagnostics.stage = "preflight";
+      value.diagnostics.page.currentPhase = "preflight";
+      value.diagnostics.page.completedPhases = [...C12_29_S5_CUSTOM_PHASES];
+      value.diagnostics.page.step = "start";
+    },
+    (value) => {
+      value.diagnostics.stage = C12_29_S5_CUSTOM_PHASES[0];
+      value.diagnostics.page.currentPhase = C12_29_S5_CUSTOM_PHASES[0];
+      value.diagnostics.page.completedPhases = [...C12_29_S5_CUSTOM_PHASES];
+      value.diagnostics.page.step = "constructing-explicit-custom-scene";
+    },
+    (value) => {
+      value.diagnostics.page.step = "complete";
+    },
+    (value) => {
+      value.diagnostics.page.completedPhases.push("event-s5-on");
+    },
+  ]) {
+    const mutant = structuredClone(runtime);
+    mutate(mutant);
+    assert.equal(validateC1229S5CustomFinalArtifact(mutant).ok, false);
+  }
+  for (const version of ["v2", "v3"]) {
+    const legacy = structuredClone(runtime);
+    legacy.schema = `c12-29-s5-custom-ellipsoid-evidence-${version}`;
+    legacy.diagnostics.schema = `c12-29-s5-custom-ellipsoid-runtime-diagnostics-${version}`;
+    legacy.diagnostics.page.schema = `c12-29-s5-custom-ellipsoid-runtime-diagnostics-${version}`;
+    assert.equal(validateC1229S5CustomPriorFinal(legacy), true);
+    legacy.diagnostics.extra = true;
+    assert.equal(validateC1229S5CustomPriorFinal(legacy), false);
+  }
+  let toJsonReads = 0;
+  const hiddenToJson = structuredClone(artifact);
+  Object.defineProperty(hiddenToJson, "toJSON", {
+    value() {
+      toJsonReads++;
+      return { substituted: true };
+    },
+  });
+  assert.equal(validateC1229S5CustomFinalArtifact(hiddenToJson).ok, false);
+  assert.equal(toJsonReads, 0);
 });
 
 test("status, UUID, and stable serialization utilities are exact", () => {
@@ -1838,6 +2068,77 @@ test("status, UUID, and stable serialization utilities are exact", () => {
     stableC1229S5CustomJson({ z: 1, a: { y: 2, b: 3 } }, 2),
     '{\n  "a": {\n    "b": 3,\n    "y": 2\n  },\n  "z": 1\n}\n',
   );
+  let accessorReads = 0;
+  const hostileValues = [
+    Object.defineProperty({}, "hidden", { value: true }),
+    Object.defineProperty({}, "value", {
+      enumerable: true,
+      get() {
+        accessorReads++;
+        throw new Error("accessor must not execute");
+      },
+    }),
+    Object.assign({}, { [Symbol("hidden")]: true }),
+    Object.create({ inherited: true }),
+    new Array(1),
+    { value: Number.NaN },
+    new Proxy({}, {}),
+  ];
+  for (const value of hostileValues) {
+    assert.throws(() => stableC1229S5CustomJson(value, 2));
+  }
+  assert.equal(accessorReads, 0);
+  assert.equal(stableC1229S5CustomJson({ value: -0 }), '{"value":0}\n');
+});
+
+test("ERROR construction is bounded and hostile-error safe", () => {
+  const oversized = createC1229S5CustomErrorArtifact(
+    RUN_ID,
+    new Error("x".repeat(70_000)),
+  );
+  assert.equal(oversized.error.length, 65_536);
+  assert.match(oversized.error, /CUSTOM_ERROR_TRUNCATED/u);
+  assert.deepEqual(validateC1229S5CustomFinalArtifact(oversized), {
+    ok: true,
+    reasons: [],
+  });
+  const hostile = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error("hostile error accessor");
+      },
+    },
+  );
+  const retained = createC1229S5CustomErrorArtifact(RUN_ID, hostile);
+  assert.equal(retained.error, "[custom-ellipsoid uninspectable error]");
+  assert.deepEqual(validateC1229S5CustomFinalArtifact(retained), {
+    ok: true,
+    reasons: [],
+  });
+});
+
+test("oversized launch failure finalizes exact ERROR and releases authority", async () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const result = await runC1229S5CustomEllipsoidProbe({
+      outputDirectory: directory,
+      runId: randomUUID(),
+      launchBrowser: async () => {
+        throw new Error("x".repeat(70_000));
+      },
+    });
+    assert.equal(result.artifact.status, "ERROR");
+    assert.equal(result.artifact.error.length, 65_536);
+    assert.match(result.artifact.error, /CUSTOM_ERROR_TRUNCATED/u);
+    assert.equal(fs.existsSync(result.paths.lock), false);
+    assert.deepEqual(
+      fs.readFileSync(result.paths.latest),
+      fs.readFileSync(result.paths.archive),
+    );
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
 });
 
 test("source map proves every frozen production entry byte-for-byte", () => {
@@ -1859,7 +2160,10 @@ test("probe embeds the canonical fused one-snapshot capture and uses it exclusiv
   assert.deepEqual(checkEmbeddedFusedSnapshotIsCanonical(probeSource), []);
   assert.deepEqual(checkFusedCaptureUsage(probeSource), []);
   assert.match(probeSource, /metricImageId: imageId/u);
-  assert.match(probeSource, /retainedBytes\.equals\(bytes\)/u);
+  assert.match(
+    probeSource,
+    /createC1229S5CustomImmutableAuthority\(\s*file,\s*bytes,/u,
+  );
 });
 
 test("every evidence capture follows a bounded render-first stable window", () => {
@@ -1922,6 +2226,23 @@ test("probe uses the served bundle for browser modules, constructs every custom 
     probeSource,
     /served production bundle AutomaticUniforms export is missing or invalid/u,
   );
+  assert.match(
+    probeSource,
+    /const globeRendererDescriptor =[\s\S]*?getFeatureRenderer\?\.\(C\.FeatureRendererKey\.GLOBE_SURFACE\)/u,
+  );
+  assert.match(
+    probeSource,
+    /const sceneCaptureSources =[\s\S]*?scene\.context\._webgpuSceneCaptureSources/u,
+  );
+  assert.match(
+    probeSource,
+    /const globeRenderer = sceneCaptureSources\?\.globeRenderer \?\? null/u,
+  );
+  assert.match(
+    probeSource,
+    /globeRenderer instanceof globeRendererDescriptor\.RendererClass/u,
+  );
+  assert.match(probeSource, /sceneCaptureSources\?\.tileProvider !== tp/u);
   assert.match(probeSource, /new C\.Ellipsoid\(\s*contract\.radii\.x,/u);
   assert.match(probeSource, /new C\.GeographicProjection\(ellipsoid\)/u);
   assert.match(probeSource, /new C\.GeographicTilingScheme\(\{\s*ellipsoid,/u);
@@ -2052,7 +2373,7 @@ test("evidence begin creates exclusive byte-exact lock and RUNNING latest", () =
   try {
     const legacyRunId = randomUUID();
     const legacyArtifact = {
-      schema: "c12-29-s5-custom-ellipsoid-evidence-v2",
+      schema: "c12-29-s5-custom-ellipsoid-evidence-v3",
       runId: legacyRunId,
       status: "ERROR",
       incomplete: false,
@@ -2060,9 +2381,11 @@ test("evidence begin creates exclusive byte-exact lock and RUNNING latest", () =
       artifactName: `${legacyRunId}.json`,
       error: "finalized legacy error",
       diagnostics: {
-        schema: "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v2",
-        stage: "legacy",
+        schema: "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v3",
         renderer: "webgl",
+        stage: "node",
+        timeoutMs: 540_000,
+        page: null,
       },
     };
     const legacyBytes = Buffer.from(stableC1229S5CustomJson(legacyArtifact, 2));
@@ -2077,6 +2400,609 @@ test("evidence begin creates exclusive byte-exact lock and RUNNING latest", () =
     assert.equal(ownership.running.schema, C12_29_S5_CUSTOM_SCHEMA);
     assert.deepEqual(fs.readFileSync(legacyArchive), legacyBytes);
     assert.throws(() => beginC1229S5CustomEvidenceRun(paths, randomUUID()));
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("run, path, and ownership binding fails before any foreign publication", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const runId = randomUUID();
+    const foreignRunId = randomUUID();
+    const nested = path.join(directory, "not-created");
+    const unstartedPaths = createC1229S5CustomArtifactPaths(runId, nested);
+    assert.throws(
+      () => beginC1229S5CustomEvidenceRun(unstartedPaths, foreignRunId),
+      /path is not bound to run/u,
+    );
+    assert.equal(fs.existsSync(nested), false);
+
+    const paths = createC1229S5CustomArtifactPaths(runId, directory);
+    const ownership = beginC1229S5CustomEvidenceRun(paths, runId);
+    assert.throws(
+      () =>
+        finalizeC1229S5CustomEvidence(
+          paths,
+          errorArtifact(foreignRunId),
+          ownership,
+        ),
+      /path is not bound to run|ownership binding is invalid/u,
+    );
+    assert.equal(
+      fs.existsSync(path.join(directory, `${foreignRunId}.json`)),
+      false,
+    );
+    assert.equal(fs.existsSync(paths.archive), false);
+    assertOwnedRunning(paths, ownership);
+
+    ownership.runId = foreignRunId;
+    assert.throws(
+      () =>
+        finalizeC1229S5CustomEvidence(paths, errorArtifact(runId), ownership),
+      /ownership binding is invalid/u,
+    );
+    assert.equal(fs.existsSync(paths.archive), false);
+    assertOwnedRunning(paths, ownership);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("stored predecessor authority cannot be removed or rebound", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const prior = errorArtifact(randomUUID(), "prior final");
+    const priorBytes = Buffer.from(stableC1229S5CustomJson(prior, 2));
+    const runId = randomUUID();
+    const paths = createC1229S5CustomArtifactPaths(runId, directory);
+    const priorArchive = path.join(directory, prior.artifactName);
+    fs.writeFileSync(paths.latest, priorBytes, { flag: "wx" });
+    fs.writeFileSync(priorArchive, priorBytes, { flag: "wx" });
+    const ownership = beginC1229S5CustomEvidenceRun(paths, runId);
+    ownership.priorArchiveAuthority = null;
+    assert.throws(
+      () =>
+        finalizeC1229S5CustomEvidence(paths, errorArtifact(runId), ownership),
+      /ownership binding is invalid/u,
+    );
+    assert.equal(fs.existsSync(paths.archive), false);
+    assertOwnedRunning(paths, ownership);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("first-red requires its exact canonical immutable archive", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const priorRed = errorArtifact(randomUUID(), "retained first red");
+    const priorRedBytes = Buffer.from(stableC1229S5CustomJson(priorRed, 2));
+    const runId = randomUUID();
+    const paths = createC1229S5CustomArtifactPaths(runId, directory);
+    fs.writeFileSync(paths.firstRed, priorRedBytes, { flag: "wx" });
+    assert.throws(
+      () => beginC1229S5CustomEvidenceRun(paths, runId),
+      /first-red immutable archive/u,
+    );
+    assert.equal(fs.existsSync(paths.lock), false);
+    assert.equal(fs.existsSync(paths.latest), false);
+    assert.deepEqual(fs.readFileSync(paths.firstRed), priorRedBytes);
+    fs.writeFileSync(
+      path.join(directory, priorRed.artifactName),
+      priorRedBytes,
+      { flag: "wx" },
+    );
+    const ownership = beginC1229S5CustomEvidenceRun(paths, runId);
+    ownership.firstRedArchiveAuthority = ownership.firstRedAuthority;
+    assert.throws(
+      () =>
+        finalizeC1229S5CustomEvidence(paths, errorArtifact(runId), ownership),
+      /ownership binding is invalid/u,
+    );
+    assert.equal(fs.existsSync(paths.archive), false);
+    assertOwnedRunning(paths, ownership);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("evidence begin rejects noncanonical prior latest and first-red bytes", () => {
+  for (const target of ["latest", "firstRed"]) {
+    const directory = tempEvidenceDirectory();
+    try {
+      const prior = errorArtifact(randomUUID(), "prior red");
+      const noncanonicalBytes = Buffer.from(
+        ` ${stableC1229S5CustomJson(prior, 2)}`,
+      );
+      const runId = randomUUID();
+      const paths = createC1229S5CustomArtifactPaths(runId, directory);
+      fs.writeFileSync(paths[target], noncanonicalBytes, { flag: "wx" });
+      assert.throws(
+        () => beginC1229S5CustomEvidenceRun(paths, runId),
+        /exact canonical/u,
+      );
+      assert.deepEqual(fs.readFileSync(paths[target]), noncanonicalBytes);
+      assert.equal(fs.existsSync(paths.lock), false);
+    } finally {
+      removeTempEvidenceDirectory(directory);
+    }
+  }
+});
+
+test("evidence begin rejects a canonical PASS masquerading as first-red", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const passBytes = Buffer.from(
+      stableC1229S5CustomJson(passingArtifact(), 2),
+    );
+    const runId = randomUUID();
+    const paths = createC1229S5CustomArtifactPaths(runId, directory);
+    fs.writeFileSync(paths.firstRed, passBytes, { flag: "wx" });
+    assert.throws(
+      () => beginC1229S5CustomEvidenceRun(paths, runId),
+      /first-red is not an exact canonical red final/u,
+    );
+    assert.deepEqual(fs.readFileSync(paths.firstRed), passBytes);
+    assert.equal(fs.existsSync(paths.lock), false);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("evidence begin requires the prior latest's exact immutable archive", () => {
+  for (const mutation of ["missing", "mismatched"]) {
+    const directory = tempEvidenceDirectory();
+    try {
+      const prior = errorArtifact(randomUUID(), "prior final");
+      const priorBytes = Buffer.from(stableC1229S5CustomJson(prior, 2));
+      const runId = randomUUID();
+      const paths = createC1229S5CustomArtifactPaths(runId, directory);
+      const priorArchive = path.join(directory, prior.artifactName);
+      fs.writeFileSync(paths.latest, priorBytes, { flag: "wx" });
+      if (mutation === "mismatched") {
+        fs.writeFileSync(priorArchive, Buffer.from("foreign archive"), {
+          flag: "wx",
+        });
+      }
+      assert.throws(
+        () => beginC1229S5CustomEvidenceRun(paths, runId),
+        /prior latest immutable archive/u,
+      );
+      assert.deepEqual(fs.readFileSync(paths.latest), priorBytes);
+      assert.equal(fs.existsSync(paths.lock), false);
+      if (mutation === "mismatched") {
+        assert.deepEqual(
+          fs.readFileSync(priorArchive),
+          Buffer.from("foreign archive"),
+        );
+      }
+    } finally {
+      removeTempEvidenceDirectory(directory);
+    }
+  }
+});
+
+test("prior immutable archive rejects hard links and symbolic-link descriptors", () => {
+  for (const mutation of ["hardlink", "symlink-descriptor"]) {
+    const directory = tempEvidenceDirectory();
+    try {
+      const prior = errorArtifact(randomUUID(), "prior final");
+      const priorBytes = Buffer.from(stableC1229S5CustomJson(prior, 2));
+      const runId = randomUUID();
+      const paths = createC1229S5CustomArtifactPaths(runId, directory);
+      const priorArchive = path.join(directory, prior.artifactName);
+      fs.writeFileSync(paths.latest, priorBytes, { flag: "wx" });
+      let operations = fs;
+      if (mutation === "hardlink") {
+        const backing = path.join(directory, "prior-backing.json");
+        fs.writeFileSync(backing, priorBytes, { flag: "wx" });
+        fs.linkSync(backing, priorArchive);
+      } else {
+        fs.writeFileSync(priorArchive, priorBytes, { flag: "wx" });
+        operations = operationsWith({
+          lstatSync(file, ...args) {
+            const descriptor = fs.lstatSync(file, ...args);
+            if (path.resolve(file) !== path.resolve(priorArchive)) {
+              return descriptor;
+            }
+            return {
+              dev: descriptor.dev,
+              ino: descriptor.ino,
+              mode: descriptor.mode,
+              nlink: descriptor.nlink,
+              size: descriptor.size,
+              mtimeMs: descriptor.mtimeMs,
+              ctimeMs: descriptor.ctimeMs,
+              isFile: () => false,
+              isSymbolicLink: () => true,
+            };
+          },
+        });
+      }
+      assert.throws(
+        () => beginC1229S5CustomEvidenceRun(paths, runId, operations),
+        /prior latest immutable archive/u,
+      );
+      assert.deepEqual(fs.readFileSync(paths.latest), priorBytes);
+      assert.equal(fs.existsSync(paths.lock), false);
+    } finally {
+      removeTempEvidenceDirectory(directory);
+    }
+  }
+});
+
+test("prior archive races fail closed before or after RUNNING publication", () => {
+  for (const corruptOnArchiveRead of [2, 3, 4, 5, 6]) {
+    const directory = tempEvidenceDirectory();
+    try {
+      const prior = errorArtifact(randomUUID(), "prior final");
+      const priorBytes = Buffer.from(stableC1229S5CustomJson(prior, 2));
+      const runId = randomUUID();
+      const paths = createC1229S5CustomArtifactPaths(runId, directory);
+      const priorArchive = path.join(directory, prior.artifactName);
+      const foreign = Buffer.from(`foreign archive ${corruptOnArchiveRead}`);
+      fs.writeFileSync(paths.latest, priorBytes, { flag: "wx" });
+      fs.writeFileSync(priorArchive, priorBytes, { flag: "wx" });
+      let archiveReads = 0;
+      const operations = operationsWith({
+        readFileSync(file, ...args) {
+          if (path.resolve(file) === path.resolve(priorArchive)) {
+            archiveReads += 1;
+            if (archiveReads === corruptOnArchiveRead) {
+              fs.writeFileSync(priorArchive, foreign);
+            }
+          }
+          return fs.readFileSync(file, ...args);
+        },
+      });
+      let thrown;
+      try {
+        beginC1229S5CustomEvidenceRun(paths, runId, operations);
+      } catch (error) {
+        thrown = error;
+      }
+      assert.ok(thrown);
+      assert.match(String(thrown), /prior immutable archive/u);
+      assert.deepEqual(fs.readFileSync(priorArchive), foreign);
+      if (corruptOnArchiveRead <= 4) {
+        assert.deepEqual(fs.readFileSync(paths.latest), priorBytes);
+        assert.equal(fs.existsSync(paths.lock), false);
+      } else {
+        assert.equal(thrown.retainCustomRunning, true);
+        assert.equal(fs.existsSync(paths.lock), true);
+        assert.equal(
+          JSON.parse(fs.readFileSync(paths.latest, "utf8")).status,
+          "RUNNING",
+        );
+      }
+    } finally {
+      removeTempEvidenceDirectory(directory);
+    }
+  }
+});
+
+test("identical prior-archive substitutions fail every finalization boundary", () => {
+  for (let substituteOnRead = 1; substituteOnRead <= 7; substituteOnRead++) {
+    const directory = tempEvidenceDirectory();
+    try {
+      const prior = errorArtifact(randomUUID(), "prior final");
+      const priorBytes = Buffer.from(stableC1229S5CustomJson(prior, 2));
+      const artifact = passingArtifact();
+      const paths = createC1229S5CustomArtifactPaths(artifact.runId, directory);
+      const priorArchive = path.join(directory, prior.artifactName);
+      fs.writeFileSync(paths.latest, priorBytes, { flag: "wx" });
+      fs.writeFileSync(priorArchive, priorBytes, { flag: "wx" });
+      const ownership = beginC1229S5CustomEvidenceRun(paths, artifact.runId);
+      materializePassingArtifactPngs(paths, artifact, ownership);
+      let priorReads = 0;
+      const operations = operationsWith({
+        readFileSync(file, ...args) {
+          if (path.resolve(file) === path.resolve(priorArchive)) {
+            priorReads += 1;
+            if (priorReads === substituteOnRead) {
+              fs.unlinkSync(priorArchive);
+              fs.writeFileSync(priorArchive, priorBytes, { flag: "wx" });
+            }
+          }
+          return fs.readFileSync(file, ...args);
+        },
+      });
+      let thrown;
+      try {
+        finalizeC1229S5CustomEvidence(paths, artifact, ownership, operations);
+      } catch (error) {
+        thrown = error;
+      }
+      assert.ok(thrown, `boundary ${substituteOnRead}`);
+      assert.match(String(thrown), /prior immutable archive/u);
+      assert.equal(thrown.retainCustomRunning, true);
+      assert.equal(priorReads, substituteOnRead);
+      assert.deepEqual(fs.readFileSync(paths.latest), ownership.runningBytes);
+      assert.deepEqual(fs.readFileSync(paths.lock), ownership.lockBytes);
+      assert.deepEqual(fs.readFileSync(priorArchive), priorBytes);
+    } finally {
+      removeTempEvidenceDirectory(directory);
+    }
+  }
+});
+
+test("current archive failures occur before first-red and retain RUNNING", () => {
+  for (const mutation of ["write-failure", "hardlink", "substitution"]) {
+    const directory = tempEvidenceDirectory();
+    try {
+      const runId = randomUUID();
+      const paths = createC1229S5CustomArtifactPaths(runId, directory);
+      const ownership = beginC1229S5CustomEvidenceRun(paths, runId);
+      const final = errorArtifact(runId, `archive ${mutation}`);
+      let injected = false;
+      const alias = path.join(directory, `${runId}.archive-alias.json`);
+      const operations = operationsWith({
+        writeFileSync(file, bytes, options) {
+          if (
+            !injected &&
+            mutation === "write-failure" &&
+            path.resolve(file) === path.resolve(paths.archive)
+          ) {
+            injected = true;
+            const error = new Error("injected archive write failure");
+            error.code = "EIO";
+            throw error;
+          }
+          const result = fs.writeFileSync(file, bytes, options);
+          if (
+            !injected &&
+            mutation === "hardlink" &&
+            path.resolve(file) === path.resolve(paths.archive)
+          ) {
+            injected = true;
+            fs.linkSync(paths.archive, alias);
+          }
+          return result;
+        },
+        readFileSync(file, ...args) {
+          if (
+            !injected &&
+            mutation === "substitution" &&
+            path.resolve(file) === path.resolve(paths.archive)
+          ) {
+            injected = true;
+            const original = fs.readFileSync(paths.archive);
+            const foreign = Buffer.from(original);
+            foreign[0] ^= 1;
+            fs.unlinkSync(paths.archive);
+            fs.writeFileSync(paths.archive, foreign, { flag: "wx" });
+          }
+          return fs.readFileSync(file, ...args);
+        },
+      });
+      assert.throws(() =>
+        finalizeC1229S5CustomEvidence(paths, final, ownership, operations),
+      );
+      assert.equal(injected, true, mutation);
+      assert.equal(fs.existsSync(paths.firstRed), false, mutation);
+      assertOwnedRunning(paths, ownership);
+    } finally {
+      removeTempEvidenceDirectory(directory);
+    }
+  }
+});
+
+test("a hard-linked new first-red cannot reach canonical latest", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const runId = randomUUID();
+    const paths = createC1229S5CustomArtifactPaths(runId, directory);
+    const ownership = beginC1229S5CustomEvidenceRun(paths, runId);
+    const alias = path.join(directory, `${runId}.first-red-alias.json`);
+    let injected = false;
+    const operations = operationsWith({
+      writeFileSync(file, bytes, options) {
+        const result = fs.writeFileSync(file, bytes, options);
+        if (!injected && path.resolve(file) === path.resolve(paths.firstRed)) {
+          injected = true;
+          fs.linkSync(paths.firstRed, alias);
+        }
+        return result;
+      },
+    });
+    assert.throws(() =>
+      finalizeC1229S5CustomEvidence(
+        paths,
+        errorArtifact(runId),
+        ownership,
+        operations,
+      ),
+    );
+    assert.equal(injected, true);
+    assert.equal(fs.existsSync(paths.archive), true);
+    assert.equal(fs.existsSync(paths.firstRed), true);
+    assertOwnedRunning(paths, ownership);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("all twelve PNG authorities fail closed before JSON publication", () => {
+  for (const mutation of ["missing", "hardlink", "substitution"]) {
+    const directory = tempEvidenceDirectory();
+    try {
+      const artifact = passingArtifact();
+      const paths = createC1229S5CustomArtifactPaths(artifact.runId, directory);
+      const ownership = beginC1229S5CustomEvidenceRun(paths, artifact.runId);
+      materializePassingArtifactPngs(paths, artifact, ownership);
+      const target = ownership.pngAuthorities[5];
+      const alias = `${target.path}.alias`;
+      let injected = false;
+      let operations = fs;
+      if (mutation === "missing") {
+        fs.unlinkSync(target.path);
+        injected = true;
+      } else if (mutation === "hardlink") {
+        fs.linkSync(target.path, alias);
+        injected = true;
+      } else {
+        operations = operationsWith({
+          readFileSync(file, ...args) {
+            if (!injected && path.resolve(file) === path.resolve(target.path)) {
+              injected = true;
+              const foreign = Buffer.from(target.bytes);
+              foreign[0] ^= 1;
+              fs.unlinkSync(target.path);
+              fs.writeFileSync(target.path, foreign, { flag: "wx" });
+            }
+            return fs.readFileSync(file, ...args);
+          },
+        });
+      }
+      assert.throws(() =>
+        finalizeC1229S5CustomEvidence(paths, artifact, ownership, operations),
+      );
+      assert.equal(injected, true, mutation);
+      assert.equal(fs.existsSync(paths.archive), false, mutation);
+      assertOwnedRunning(paths, ownership);
+    } finally {
+      removeTempEvidenceDirectory(directory);
+    }
+  }
+});
+
+test("archive, latest, PNG, and first-red races fail at the unlock boundary", () => {
+  for (const targetKind of ["archive", "latest", "png", "first-red"]) {
+    const directory = tempEvidenceDirectory();
+    try {
+      const artifact = passingArtifact();
+      const paths = createC1229S5CustomArtifactPaths(artifact.runId, directory);
+      const ownership = beginC1229S5CustomEvidenceRun(paths, artifact.runId);
+      materializePassingArtifactPngs(paths, artifact, ownership);
+      const finalBytes = Buffer.from(stableC1229S5CustomJson(artifact, 2));
+      const png = ownership.pngAuthorities[3];
+      let latestPublished = false;
+      let postPublicationReads = 0;
+      let postPublicationLatestLstats = 0;
+      let injected = false;
+      const operations = operationsWith({
+        writeFileSync(file, bytes, options) {
+          const result = fs.writeFileSync(file, bytes, options);
+          if (
+            path.resolve(file) === path.resolve(paths.latest) &&
+            Buffer.from(bytes).equals(finalBytes)
+          ) {
+            latestPublished = true;
+          }
+          return result;
+        },
+        lstatSync(file, ...args) {
+          if (
+            targetKind === "latest" &&
+            latestPublished &&
+            path.resolve(file) === path.resolve(paths.latest)
+          ) {
+            postPublicationLatestLstats += 1;
+            if (!injected && postPublicationLatestLstats === 6) {
+              injected = true;
+              fs.unlinkSync(paths.latest);
+              fs.writeFileSync(paths.latest, finalBytes, { flag: "wx" });
+            }
+          }
+          return fs.lstatSync(file, ...args);
+        },
+        readFileSync(file, ...args) {
+          const expectedTarget =
+            targetKind === "archive"
+              ? paths.archive
+              : targetKind === "png"
+                ? png.path
+                : targetKind === "first-red"
+                  ? paths.firstRed
+                  : null;
+          if (
+            expectedTarget !== null &&
+            latestPublished &&
+            path.resolve(file) === path.resolve(expectedTarget)
+          ) {
+            postPublicationReads += 1;
+            if (!injected && postPublicationReads === 2) {
+              injected = true;
+              if (targetKind === "first-red") {
+                fs.writeFileSync(
+                  paths.firstRed,
+                  Buffer.from("late foreign red"),
+                  {
+                    flag: "wx",
+                  },
+                );
+              } else {
+                const retained = fs.readFileSync(expectedTarget);
+                fs.unlinkSync(expectedTarget);
+                fs.writeFileSync(expectedTarget, retained, { flag: "wx" });
+              }
+            }
+          }
+          return fs.readFileSync(file, ...args);
+        },
+      });
+      let thrown;
+      try {
+        finalizeC1229S5CustomEvidence(paths, artifact, ownership, operations);
+      } catch (error) {
+        thrown = error;
+      }
+      assert.ok(thrown, targetKind);
+      assert.equal(injected, true, targetKind);
+      assert.equal(thrown.retainCustomRunning, true, targetKind);
+      assert.equal(thrown.publicationRecovery?.ok, true, targetKind);
+      assertOwnedRunning(paths, ownership);
+      assert.deepEqual(fs.readFileSync(paths.recovery), finalBytes);
+      if (targetKind === "first-red") {
+        assert.deepEqual(
+          fs.readFileSync(paths.firstRed),
+          Buffer.from("late foreign red"),
+        );
+      }
+    } finally {
+      removeTempEvidenceDirectory(directory);
+    }
+  }
+});
+
+test("post-linearization replacement cannot revoke a completed unlock", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const prior = errorArtifact(randomUUID(), "prior final");
+    const priorBytes = Buffer.from(stableC1229S5CustomJson(prior, 2));
+    const artifact = passingArtifact();
+    const paths = createC1229S5CustomArtifactPaths(artifact.runId, directory);
+    const priorArchive = path.join(directory, prior.artifactName);
+    fs.writeFileSync(paths.latest, priorBytes, { flag: "wx" });
+    fs.writeFileSync(priorArchive, priorBytes, { flag: "wx" });
+    const ownership = beginC1229S5CustomEvidenceRun(paths, artifact.runId);
+    materializePassingArtifactPngs(paths, artifact, ownership);
+    let substituted = false;
+    const operations = operationsWith({
+      unlinkSync(file) {
+        const result = fs.unlinkSync(file);
+        if (
+          !substituted &&
+          file.includes(".release-") &&
+          file.endsWith(".receipt")
+        ) {
+          substituted = true;
+          fs.unlinkSync(priorArchive);
+          fs.writeFileSync(priorArchive, priorBytes, { flag: "wx" });
+        }
+        return result;
+      },
+    });
+    finalizeC1229S5CustomEvidence(paths, artifact, ownership, operations);
+    assert.equal(substituted, true);
+    assert.equal(fs.existsSync(paths.lock), false);
+    assert.equal(fs.existsSync(paths.recovery), false);
+    assert.deepEqual(
+      fs.readFileSync(paths.latest),
+      fs.readFileSync(paths.archive),
+    );
+    assert.deepEqual(fs.readFileSync(priorArchive), priorBytes);
   } finally {
     removeTempEvidenceDirectory(directory);
   }
@@ -2119,7 +3045,7 @@ test("canonical claim restores a late foreign replacement instead of overwriting
   }
 });
 
-test("lock release preserves a foreign authority appearing after its claim", () => {
+test("lock release is successor-safe after its linearization point", () => {
   const directory = tempEvidenceDirectory();
   try {
     const lock = path.join(directory, "lock.json");
@@ -2137,15 +3063,17 @@ test("lock release preserves a foreign authority appearing after its claim", () 
         return result;
       },
     });
-    assert.throws(() => releaseC1229S5CustomLock(lock, owned, operations));
+    assert.deepEqual(releaseC1229S5CustomLock(lock, owned, operations), {
+      released: true,
+      receiptRemoved: true,
+    });
     assert.deepEqual(fs.readFileSync(lock), foreign);
     const receipts = fs
       .readdirSync(directory)
       .filter(
         (file) => file.includes(".release-") && file.endsWith(".receipt"),
       );
-    assert.equal(receipts.length, 1);
-    assert.deepEqual(fs.readFileSync(path.join(directory, receipts[0])), owned);
+    assert.equal(receipts.length, 0);
   } finally {
     removeTempEvidenceDirectory(directory);
   }
@@ -2157,6 +3085,7 @@ test("successful finalization publishes byte-identical archive/latest then unloc
     const artifact = passingArtifact();
     const paths = createC1229S5CustomArtifactPaths(artifact.runId, directory);
     const ownership = beginC1229S5CustomEvidenceRun(paths, artifact.runId);
+    materializePassingArtifactPngs(paths, artifact, ownership);
     finalizeC1229S5CustomEvidence(paths, artifact, ownership);
     assert.deepEqual(
       fs.readFileSync(paths.archive),
@@ -2178,6 +3107,7 @@ test("failed post-final receipt deletion quarantines final and restores RUNNING 
     const artifact = passingArtifact();
     const paths = createC1229S5CustomArtifactPaths(artifact.runId, directory);
     const ownership = beginC1229S5CustomEvidenceRun(paths, artifact.runId);
+    materializePassingArtifactPngs(paths, artifact, ownership);
     let failedOnce = false;
     const operations = operationsWith({
       unlinkSync(file) {
@@ -2289,18 +3219,74 @@ test("UUID-owned partial PNG cleanup removes exact bytes and preserves foreign r
     const owned = Buffer.from("owned-custom-png");
     const original = Buffer.from("original-custom-png");
     const foreign = Buffer.from("foreign-custom-png");
-    fs.writeFileSync(ownedFile, owned, { flag: "wx" });
+    const ownedAuthority = createC1229S5CustomImmutableAuthority(
+      ownedFile,
+      owned,
+      "owned fixture PNG",
+    );
+    const foreignAuthority = createC1229S5CustomImmutableAuthority(
+      foreignFile,
+      original,
+      "replaced fixture PNG",
+    );
+    const absentAuthority = createC1229S5CustomImmutableAuthority(
+      absentFile,
+      owned,
+      "absent fixture PNG",
+    );
+    fs.unlinkSync(foreignFile);
     fs.writeFileSync(foreignFile, foreign, { flag: "wx" });
+    fs.unlinkSync(absentFile);
     const result = cleanupC1229S5CustomOwnedPngs([
-      { file: ownedFile, bytes: owned },
-      { file: foreignFile, bytes: original },
-      { file: absentFile, bytes: owned },
+      ownedAuthority,
+      foreignAuthority,
+      absentAuthority,
     ]);
     assert.equal(result.ok, false);
     assert.equal(result.removed, 1);
     assert.equal(fs.existsSync(ownedFile), false);
     assert.deepEqual(fs.readFileSync(foreignFile), foreign);
     assert.match(result.reasons.join("\n"), /foreign replacement preserved/u);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("PNG cleanup restores a replacement racing its atomic claim", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const file = path.join(
+      directory,
+      `${RUN_ID}.00000000-0000-4000-8000-000000000102.webgpu.event-on.png`,
+    );
+    const owned = Buffer.from("owned-racing-custom-png");
+    const foreign = Buffer.from("foreign-racing-custom-png");
+    const authority = createC1229S5CustomImmutableAuthority(
+      file,
+      owned,
+      "racing cleanup fixture PNG",
+    );
+    let injected = false;
+    const operations = operationsWith({
+      renameSync(source, destination) {
+        if (!injected && path.resolve(source) === path.resolve(file)) {
+          injected = true;
+          fs.unlinkSync(file);
+          fs.writeFileSync(file, foreign, { flag: "wx" });
+        }
+        return fs.renameSync(source, destination);
+      },
+    });
+    const result = cleanupC1229S5CustomOwnedPngs([authority], operations);
+    assert.equal(injected, true);
+    assert.equal(result.ok, false);
+    assert.equal(result.removed, 0);
+    assert.deepEqual(fs.readFileSync(file), foreign);
+    assert.equal(
+      fs.readdirSync(directory).some((entry) => entry.endsWith(".receipt")),
+      false,
+    );
+    assert.match(result.reasons.join("\n"), /replacement.*restored/u);
   } finally {
     removeTempEvidenceDirectory(directory);
   }
@@ -2316,45 +3302,204 @@ test("bounded close reports an uncooperative resource without hanging", async ()
   assert.equal(result.timedOut, true);
 });
 
-test("watchdog closes and drains timed-out work before reporting", async () => {
-  let finish;
-  const work = new Promise((resolve) => {
-    finish = resolve;
-  });
-  let closeCalled = false;
-  await assert.rejects(
-    withC1229S5CustomWatchdog(
-      () => work,
-      async () => {
-        closeCalled = true;
-        finish();
+test("watchdog rejects at the deadline while owning cleanup and task drain", async () => {
+  let finishTask;
+  let finishCleanup;
+  let taskSignal;
+  const startedAt = Date.now();
+  let watchdogError;
+  try {
+    await withC1229S5CustomWatchdog(
+      (signal) => {
+        taskSignal = signal;
+        return new Promise((resolve) => {
+          finishTask = resolve;
+        });
       },
+      () =>
+        new Promise((resolve) => {
+          finishCleanup = () => resolve({ page: null });
+        }),
       10,
-    ),
-    /watchdog expired/u,
-  );
-  assert.equal(closeCalled, true);
+    );
+  } catch (error) {
+    watchdogError = error;
+  }
+  assert.ok(watchdogError);
+  assert.match(watchdogError.message, /watchdog expired/u);
+  assert.ok(Date.now() - startedAt < 1_000);
+  assert.equal(taskSignal.aborted, true);
+  assert.equal(watchdogError.retainCustomRunning, true);
+  assert.equal(typeof watchdogError.c1229S5CustomDrain?.then, "function");
+  let drainSettled = false;
+  watchdogError.c1229S5CustomDrain.finally(() => {
+    drainSettled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(drainSettled, false);
+  finishCleanup();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(drainSettled, false);
+  finishTask("late success");
+  const drain = await watchdogError.c1229S5CustomDrain;
+  assert.equal(drain.cleanupProven, true);
+  assert.equal(drain.taskStatus, "fulfilled");
+  assert.equal(watchdogError.retainCustomRunning, undefined);
+  assert.match(String(watchdogError.cause), /fulfilled after watchdog/u);
 });
 
-test("watchdog diagnostics report the renderer active at timeout", async () => {
-  let renderer = "webgl";
-  const task = new Promise((resolve) => {
-    setTimeout(() => resolve("late"), 15);
-  });
-  renderer = "webgpu";
-  await assert.rejects(
-    () =>
+test("watchdog is deadline-first under event-loop starvation", async () => {
+  let taskSignal;
+  let cleanupCalls = 0;
+  let watchdogError;
+  try {
+    await withC1229S5CustomWatchdog(
+      (signal) => {
+        taskSignal = signal;
+        const stop = process.hrtime.bigint() + BigInt(25_000_000);
+        while (process.hrtime.bigint() < stop) {
+          // Deliberately starve the timer queue past the monotonic deadline.
+        }
+        return "late success";
+      },
+      async () => {
+        cleanupCalls += 1;
+        return { page: null };
+      },
+      5,
+    );
+  } catch (error) {
+    watchdogError = error;
+  }
+  assert.ok(watchdogError);
+  assert.match(watchdogError.message, /watchdog expired/u);
+  assert.equal(taskSignal.aborted, true);
+  const drain = await watchdogError.c1229S5CustomDrain;
+  assert.equal(cleanupCalls, 1);
+  assert.equal(drain.cleanupProven, true);
+  assert.equal(drain.taskStatus, "fulfilled");
+  assert.match(String(watchdogError.cause), /fulfilled after watchdog/u);
+});
+
+test("watchdog rejects non-positive or fractional deadlines", async () => {
+  for (const timeoutMs of [0, -1, 1.5, Number.MAX_VALUE]) {
+    await assert.rejects(
       withC1229S5CustomWatchdog(
-        () => task,
+        async () => true,
         async () => {},
-        1,
-        () => renderer,
+        timeoutMs,
       ),
-    (error) => {
-      assert.equal(error.customDiagnostics.renderer, "webgpu");
-      return true;
+      /positive safe integer/u,
+    );
+  }
+});
+
+test("watchdog preserves deadline renderer and exact page progress", async () => {
+  let renderer = "webgl";
+  const page = {
+    schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+    renderer: "webgl",
+    currentPhase: "event-s5-on",
+    completedPhases: C12_29_S5_CUSTOM_PHASES.slice(0, 3),
+    step: "capturing-stable-window",
+    elapsedMs: 1,
+  };
+  let watchdogError;
+  try {
+    await withC1229S5CustomWatchdog(
+      (signal) =>
+        new Promise((_, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              renderer = "webgpu";
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        }),
+      async () => ({ page }),
+      1,
+      () => renderer,
+    );
+  } catch (error) {
+    watchdogError = error;
+  }
+  assert.ok(watchdogError);
+  assert.equal(watchdogError.customDiagnostics.renderer, "webgl");
+  const drain = await watchdogError.c1229S5CustomDrain;
+  assert.equal(drain.cleanupProven, true);
+  assert.deepEqual(watchdogError.customDiagnostics.page, page);
+  assert.equal(watchdogError.customDiagnostics.stage, page.currentPhase);
+  assert.equal(watchdogError.customDiagnostics.renderer, "webgl");
+});
+
+test("watchdog retains RUNNING when cleanup proof is red", async () => {
+  let watchdogError;
+  try {
+    await withC1229S5CustomWatchdog(
+      (signal) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+      async () => ({ drainError: new Error("cleanup unproven") }),
+      1,
+    );
+  } catch (error) {
+    watchdogError = error;
+  }
+  assert.ok(watchdogError);
+  const drain = await watchdogError.c1229S5CustomDrain;
+  assert.equal(drain.cleanupProven, false);
+  assert.equal(watchdogError.retainCustomRunning, true);
+  assert.match(String(watchdogError.cause), /cleanup unproven/u);
+});
+
+test("probe keeps RUNNING and lock when watchdog cleanup is unproven", async () => {
+  const directory = tempEvidenceDirectory();
+  const runId = randomUUID();
+  let rejectContext;
+  const browser = {
+    newContext() {
+      return new Promise((_, reject) => {
+        rejectContext = reject;
+      });
     },
-  );
+    close() {
+      rejectContext(new Error("context aborted by watchdog"));
+      throw new Error("browser cleanup unproven");
+    },
+  };
+  try {
+    let thrown;
+    try {
+      await runC1229S5CustomEllipsoidProbe({
+        runId,
+        outputDirectory: directory,
+        watchdogMs: 10,
+        launchBrowser: async () => browser,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    assert.ok(thrown);
+    assert.equal(thrown.retainCustomRunning, true);
+    assert.match(String(thrown.cause), /browser cleanup unproven/u);
+    const paths = createC1229S5CustomArtifactPaths(runId, directory);
+    assert.equal(
+      JSON.parse(fs.readFileSync(paths.latest, "utf8")).status,
+      "RUNNING",
+    );
+    assert.equal(
+      JSON.parse(fs.readFileSync(paths.lock, "utf8")).status,
+      "RUNNING",
+    );
+    assert.equal(fs.existsSync(paths.archive), false);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
 });
 
 test("probe skeleton eventually exists and must not call production oracle", () => {

@@ -44,6 +44,7 @@ import {
   deriveC1229S5CustomSampleId,
   exitCodeForC1229S5CustomStatus,
   foldC1229S5CustomEllipsoidGate,
+  isC1229S5CustomUuidV4,
   packC1229S5CustomCommonRay,
   stableC1229S5CustomJson,
   validateC1229S5CustomFinalArtifact,
@@ -94,9 +95,83 @@ const outputDirectory = path.resolve(
 const WATCHDOG_MS = 540_000;
 const PAGE_TIMEOUT_MS = 240_000;
 const CLOSE_TIMEOUT_MS = 15_000;
-const DRAIN_TIMEOUT_MS = 30_000;
+const ERROR_TEXT_MAXIMUM_CHARACTERS = 65_536;
+const C1229_S5_CUSTOM_OWNERSHIP_RECORDS = new WeakMap();
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+function inspectC1229S5CustomErrorText(error) {
+  let name;
+  let message;
+  try {
+    name = error?.name;
+  } catch {
+    name = undefined;
+  }
+  try {
+    message = error?.message;
+  } catch {
+    message = undefined;
+  }
+  if (typeof name === "string" && typeof message === "string") {
+    return `${name}: ${message}`;
+  }
+  if (typeof message === "string" && message.length > 0) return message;
+  try {
+    const rendered = String(error);
+    if (rendered.length > 0) return rendered;
+  } catch {
+    // Preserve a deterministic ERROR even for an uninspectable thrown Proxy.
+  }
+  return "[custom-ellipsoid uninspectable error]";
+}
+
+function boundedC1229S5CustomErrorText(error) {
+  const text = inspectC1229S5CustomErrorText(error) || "[empty error]";
+  if (text.length <= ERROR_TEXT_MAXIMUM_CHARACTERS) return text;
+  let omitted = text.length - ERROR_TEXT_MAXIMUM_CHARACTERS;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidateSuffix = `[CUSTOM_ERROR_TRUNCATED omittedCharacters=${omitted}]`;
+    const retained = Math.max(
+      0,
+      ERROR_TEXT_MAXIMUM_CHARACTERS - candidateSuffix.length,
+    );
+    const exactOmitted = text.length - retained;
+    if (exactOmitted === omitted) break;
+    omitted = exactOmitted;
+  }
+  const suffix = `[CUSTOM_ERROR_TRUNCATED omittedCharacters=${omitted}]`;
+  return `${text.slice(0, Math.max(0, ERROR_TEXT_MAXIMUM_CHARACTERS - suffix.length))}${suffix}`;
+}
+
+export function validateC1229S5CustomPriorFinal(value) {
+  if (validateC1229S5CustomFinalArtifact(value).ok) return true;
+  if (
+    value?.schema !== "c12-29-s5-custom-ellipsoid-evidence-v3" &&
+    !(
+      value?.schema === "c12-29-s5-custom-ellipsoid-evidence-v2" &&
+      value?.status === "ERROR"
+    )
+  ) {
+    return false;
+  }
+  const upgraded = structuredClone(value);
+  upgraded.schema = C12_29_S5_CUSTOM_SCHEMA;
+  if (upgraded.status === "ERROR") {
+    upgraded.diagnostics = {
+      ...upgraded.diagnostics,
+      schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+      page:
+        upgraded.diagnostics?.page === null
+          ? null
+          : {
+              ...upgraded.diagnostics?.page,
+              schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+            },
+    };
+  }
+  return validateC1229S5CustomFinalArtifact(upgraded).ok;
+}
 
 export function validateC1229S5CustomLoopbackBase(value) {
   let url;
@@ -128,6 +203,10 @@ export function createC1229S5CustomArtifactPaths(
   runId,
   directory = outputDirectory,
 ) {
+  if (!isC1229S5CustomUuidV4(runId)) {
+    throw new Error("custom-ellipsoid runId must be a UUID v4");
+  }
+  directory = path.resolve(directory);
   return {
     directory,
     archive: path.join(directory, `${runId}.json`),
@@ -142,6 +221,39 @@ export function createC1229S5CustomArtifactPaths(
     ),
     recovery: path.join(directory, `${runId}.publication-recovery.json`),
   };
+}
+
+function assertC1229S5CustomArtifactPaths(paths, runId) {
+  if (!isC1229S5CustomUuidV4(runId)) {
+    throw new Error("custom-ellipsoid runId must be a UUID v4");
+  }
+  if (
+    paths === null ||
+    typeof paths !== "object" ||
+    Array.isArray(paths) ||
+    Object.keys(paths).length !== 6 ||
+    !["directory", "archive", "latest", "lock", "firstRed", "recovery"].every(
+      (key) => Object.hasOwn(paths, key) && typeof paths[key] === "string",
+    )
+  ) {
+    throw new Error("custom-ellipsoid artifact paths are not exact");
+  }
+  const expected = createC1229S5CustomArtifactPaths(runId, paths.directory);
+  for (const key of [
+    "directory",
+    "archive",
+    "latest",
+    "lock",
+    "firstRed",
+    "recovery",
+  ]) {
+    if (canonicalPathKey(paths[key]) !== canonicalPathKey(expected[key])) {
+      throw new Error(
+        `custom-ellipsoid ${key} path is not bound to run ${runId}`,
+      );
+    }
+  }
+  return expected;
 }
 
 function exactBytes(file, expected, label, operations = fs) {
@@ -159,6 +271,270 @@ function exactBytes(file, expected, label, operations = fs) {
     throw new Error(`${label} bytes do not match owned authority`);
   }
   return actualBytes;
+}
+
+function canonicalPathKey(file) {
+  const resolved = path.resolve(file);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function inspectImmutableDescriptor(file, label, operations = fs) {
+  if (typeof operations.lstatSync !== "function") {
+    throw new Error(`${label} lstat authority is unavailable`);
+  }
+  const descriptor = operations.lstatSync(file, { bigint: true });
+  const nlink = Number(descriptor.nlink);
+  const size = Number(descriptor.size);
+  if (
+    descriptor.isFile() !== true ||
+    descriptor.isSymbolicLink() === true ||
+    !Number.isSafeInteger(nlink) ||
+    nlink !== 1 ||
+    !Number.isSafeInteger(size) ||
+    size <= 0
+  ) {
+    throw new Error(`${label} is not one uniquely linked regular file`);
+  }
+  const exactInteger = (value, field) => {
+    if (typeof value === "bigint") return value.toString();
+    if (Number.isSafeInteger(value)) return String(value);
+    throw new Error(`${label} ${field} identity is not an exact integer`);
+  };
+  const exactTimestamp = (nanoseconds, milliseconds, field) => {
+    if (typeof nanoseconds === "bigint") return nanoseconds.toString();
+    if (Number.isFinite(milliseconds)) return String(milliseconds);
+    throw new Error(`${label} ${field} identity is unavailable`);
+  };
+  return {
+    dev: exactInteger(descriptor.dev, "device"),
+    ino: exactInteger(descriptor.ino, "inode"),
+    mode: exactInteger(descriptor.mode, "mode"),
+    nlink,
+    size,
+    mtime: exactTimestamp(descriptor.mtimeNs, descriptor.mtimeMs, "mtime"),
+    ctime: exactTimestamp(descriptor.ctimeNs, descriptor.ctimeMs, "ctime"),
+  };
+}
+
+function sameImmutableDescriptor(left, right) {
+  return (
+    left !== null &&
+    typeof left === "object" &&
+    right !== null &&
+    typeof right === "object" &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.mtime === right.mtime &&
+    left.ctime === right.ctime
+  );
+}
+
+function sameImmutableEntryIdentity(left, right) {
+  return (
+    left !== null &&
+    typeof left === "object" &&
+    right !== null &&
+    typeof right === "object" &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size
+  );
+}
+
+function resolvePriorArchivePath(paths, priorLatest) {
+  const directory = path.resolve(paths.directory);
+  const expectedName = `${priorLatest.runId}.json`;
+  const archive = path.resolve(directory, priorLatest.artifactName);
+  const expectedArchive = path.resolve(directory, expectedName);
+  const reserved = [
+    paths.archive,
+    paths.latest,
+    paths.lock,
+    paths.firstRed,
+    paths.recovery,
+  ].map(canonicalPathKey);
+  if (
+    priorLatest.artifactName !== expectedName ||
+    canonicalPathKey(path.dirname(archive)) !== canonicalPathKey(directory) ||
+    canonicalPathKey(archive) !== canonicalPathKey(expectedArchive) ||
+    reserved.includes(canonicalPathKey(archive))
+  ) {
+    throw new Error(
+      "custom-ellipsoid prior immutable archive path is not canonical-safe",
+    );
+  }
+  return archive;
+}
+
+function assertImmutableFileAuthority(authority, label, operations = fs) {
+  if (authority === null) return;
+  if (
+    authority === undefined ||
+    typeof authority.path !== "string" ||
+    !Buffer.isBuffer(authority.bytes) ||
+    authority.bytes.length === 0 ||
+    authority.descriptor === null ||
+    typeof authority.descriptor !== "object"
+  ) {
+    throw new Error(`${label} immutable authority is malformed`);
+  }
+  try {
+    const before = inspectImmutableDescriptor(
+      authority.path,
+      `${label} immutable descriptor`,
+      operations,
+    );
+    if (!sameImmutableDescriptor(before, authority.descriptor)) {
+      throw new Error("descriptor identity changed");
+    }
+    exactBytes(
+      authority.path,
+      authority.bytes,
+      `${label} immutable bytes`,
+      operations,
+    );
+    const after = inspectImmutableDescriptor(
+      authority.path,
+      `${label} immutable descriptor after read`,
+      operations,
+    );
+    if (
+      !sameImmutableDescriptor(before, after) ||
+      !sameImmutableDescriptor(after, authority.descriptor)
+    ) {
+      throw new Error("descriptor identity raced during exact read");
+    }
+  } catch (error) {
+    throw new Error(
+      `custom-ellipsoid ${label} immutable file is unavailable, unsafe, or differs`,
+      { cause: error },
+    );
+  }
+}
+
+function assertPriorArchiveAuthority(authority, label, operations = fs) {
+  try {
+    assertImmutableFileAuthority(authority, label, operations);
+  } catch (error) {
+    throw new Error(
+      `custom-ellipsoid ${label} prior immutable archive is unavailable, unsafe, or differs`,
+      { cause: error },
+    );
+  }
+}
+
+function captureC1229S5CustomImmutableAuthority(
+  file,
+  bytes,
+  label,
+  operations = fs,
+) {
+  const authority = {
+    path: path.resolve(file),
+    file: path.resolve(file),
+    bytes: Buffer.from(bytes),
+    descriptor: inspectImmutableDescriptor(
+      file,
+      `${label} descriptor`,
+      operations,
+    ),
+  };
+  assertImmutableFileAuthority(authority, label, operations);
+  return authority;
+}
+
+function snapshotC1229S5CustomAuthority(authority) {
+  return authority === null
+    ? null
+    : {
+        authority,
+        path: authority.path,
+        file: authority.file,
+        bytes: Buffer.from(authority.bytes),
+        descriptor: { ...authority.descriptor },
+      };
+}
+
+function sameC1229S5CustomAuthoritySnapshot(authority, snapshot) {
+  if (snapshot === null) return authority === null;
+  return (
+    authority === snapshot.authority &&
+    authority.path === snapshot.path &&
+    authority.file === snapshot.file &&
+    Buffer.isBuffer(authority.bytes) &&
+    authority.bytes.equals(snapshot.bytes) &&
+    sameImmutableDescriptor(authority.descriptor, snapshot.descriptor)
+  );
+}
+
+export function createC1229S5CustomImmutableAuthority(
+  file,
+  bytes,
+  label,
+  operations = fs,
+) {
+  createImmutableEvidence(file, bytes, operations);
+  return captureC1229S5CustomImmutableAuthority(file, bytes, label, operations);
+}
+
+function inspectReferencedFinalAuthority(
+  paths,
+  finalBytes,
+  referenceLabel,
+  operations = fs,
+  requireRed = false,
+) {
+  let referencedFinal;
+  try {
+    referencedFinal = JSON.parse(finalBytes.toString("utf8"));
+    if (
+      !validateC1229S5CustomPriorFinal(referencedFinal) ||
+      (requireRed && referencedFinal.status === "PASS") ||
+      !finalBytes.equals(
+        Buffer.from(stableC1229S5CustomJson(referencedFinal, 2)),
+      )
+    ) {
+      throw new Error("schema/status/canonical drift");
+    }
+  } catch (error) {
+    throw new Error(
+      `custom-ellipsoid ${referenceLabel} is not an exact canonical${
+        requireRed ? " red" : ""
+      } final`,
+      { cause: error },
+    );
+  }
+  const archive = resolvePriorArchivePath(paths, referencedFinal);
+  let authority;
+  try {
+    authority = captureC1229S5CustomImmutableAuthority(
+      archive,
+      finalBytes,
+      `${referenceLabel} immutable archive`,
+      operations,
+    );
+  } catch (error) {
+    throw new Error(
+      `custom-ellipsoid ${referenceLabel} immutable archive is unavailable, unsafe, or differs`,
+      { cause: error },
+    );
+  }
+  return { final: referencedFinal, authority };
+}
+
+function inspectPriorLatestAuthority(paths, priorLatestBytes, operations = fs) {
+  const inspected = inspectReferencedFinalAuthority(
+    paths,
+    priorLatestBytes,
+    "prior latest",
+    operations,
+  );
+  return { priorLatest: inspected.final, authority: inspected.authority };
 }
 
 function readBytesIfPresent(file, operations = fs) {
@@ -308,32 +684,40 @@ function replaceOwnedCanonical(
   exactBytes(canonical, replacementBytes, `${tag} final canonical`, operations);
 }
 
-export function releaseC1229S5CustomLock(lockPath, lockBytes, operations = fs) {
+export function releaseC1229S5CustomLock(
+  lockPath,
+  lockBytes,
+  operations = fs,
+  verifyAuthority = () => {},
+) {
   exactBytes(lockPath, lockBytes, "owned lock before release", operations);
+  // All publication authority must be proven while the canonical lock path is
+  // still occupied. The rename below is the release linearization point; a
+  // successor may legitimately acquire the lock immediately afterwards.
+  verifyAuthority("pre-lock-release");
   const receipt = `${lockPath}.release-${randomUUID()}.receipt`;
   operations.renameSync(lockPath, receipt);
   try {
     exactBytes(receipt, lockBytes, "claimed lock release receipt", operations);
-    if (readBytesIfPresent(lockPath, operations) !== undefined) {
-      throw new Error("foreign lock appeared during owned lock release");
-    }
     operations.unlinkSync(receipt);
-    if (
-      readBytesIfPresent(lockPath, operations) !== undefined ||
-      readBytesIfPresent(receipt, operations) !== undefined
-    ) {
-      throw new Error("lock release absence could not be proven");
+    if (readBytesIfPresent(receipt, operations) !== undefined) {
+      throw new Error("owned lock release receipt remained after deletion");
     }
   } catch (error) {
     try {
       const retained = readBytesIfPresent(receipt, operations);
-      if (retained !== undefined) {
-        restoreClaimedBytes(
+      if (readBytesIfPresent(lockPath, operations) === undefined) {
+        const restored = restoreClaimedBytes(
           lockPath,
-          retained,
+          retained ?? lockBytes,
           "owned lock restoration after failed release",
           operations,
         );
+        if (!restored) {
+          throw new Error("owned lock could not be restored exclusively", {
+            cause: error,
+          });
+        }
       }
     } catch (restoreError) {
       throw new AggregateError(
@@ -344,9 +728,11 @@ export function releaseC1229S5CustomLock(lockPath, lockBytes, operations = fs) {
     }
     throw error;
   }
+  return { released: true, receiptRemoved: true };
 }
 
 export function beginC1229S5CustomEvidenceRun(paths, runId, operations = fs) {
+  assertC1229S5CustomArtifactPaths(paths, runId);
   operations.mkdirSync(paths.directory, { recursive: true });
   const lockBefore = fingerprintEvidenceFile(paths.lock, operations);
   assertEvidenceReadableOrAbsent(lockBefore, "custom-ellipsoid lock preflight");
@@ -362,13 +748,26 @@ export function beginC1229S5CustomEvidenceRun(paths, runId, operations = fs) {
     "custom-ellipsoid latest preflight",
   );
   const priorLatestBytes = readBytesIfPresent(paths.latest, operations);
-  const priorLatest =
-    priorLatestBytes === undefined
-      ? undefined
-      : JSON.parse(priorLatestBytes.toString("utf8"));
-  if (priorLatest?.status === "RUNNING" || priorLatest?.incomplete === true) {
-    throw new Error(
-      `custom-ellipsoid latest is RUNNING for ${String(priorLatest?.runId)}`,
+  if (
+    latestBefore.exists !== (priorLatestBytes !== undefined) ||
+    (priorLatestBytes !== undefined &&
+      (latestBefore.byteLength !== priorLatestBytes.byteLength ||
+        latestBefore.sha256 !== sha256(priorLatestBytes)))
+  ) {
+    throw new Error("custom-ellipsoid prior latest preflight identity raced");
+  }
+  let priorArchiveAuthority = null;
+  if (priorLatestBytes !== undefined) {
+    ({ authority: priorArchiveAuthority } = inspectPriorLatestAuthority(
+      paths,
+      priorLatestBytes,
+      operations,
+    ));
+    exactBytes(
+      paths.latest,
+      priorLatestBytes,
+      "validated custom-ellipsoid prior latest",
+      operations,
     );
   }
   const firstRedBefore = fingerprintEvidenceFile(paths.firstRed, operations);
@@ -385,6 +784,52 @@ export function beginC1229S5CustomEvidenceRun(paths, runId, operations = fs) {
   ) {
     throw new Error("custom-ellipsoid first-red preflight identity raced");
   }
+  let firstRedAuthority = null;
+  let firstRedArchiveAuthority = null;
+  if (firstRedBeforeBytes !== undefined) {
+    const inspectedFirstRed = inspectReferencedFinalAuthority(
+      paths,
+      firstRedBeforeBytes,
+      "first-red",
+      operations,
+      true,
+    );
+    firstRedArchiveAuthority = inspectedFirstRed.authority;
+    firstRedAuthority = captureC1229S5CustomImmutableAuthority(
+      paths.firstRed,
+      firstRedBeforeBytes,
+      "initial first-red",
+      operations,
+    );
+  }
+  const proveInitialFirstRed = (label) => {
+    if (firstRedAuthority === null) {
+      if (readBytesIfPresent(paths.firstRed, operations) !== undefined) {
+        throw new Error(`custom-ellipsoid first-red appeared during ${label}`);
+      }
+      return;
+    }
+    assertImmutableFileAuthority(
+      firstRedAuthority,
+      `${label} first-red`,
+      operations,
+    );
+    assertImmutableFileAuthority(
+      firstRedArchiveAuthority,
+      `${label} first-red archive`,
+      operations,
+    );
+  };
+  if (priorLatestBytes !== undefined) {
+    exactBytes(
+      paths.latest,
+      priorLatestBytes,
+      "pre-lock custom-ellipsoid prior latest",
+      operations,
+    );
+  }
+  assertPriorArchiveAuthority(priorArchiveAuthority, "pre-lock", operations);
+  proveInitialFirstRed("pre-lock");
   const nonce = randomUUID();
   const acquiredAt = new Date().toISOString();
   const lock = {
@@ -413,6 +858,22 @@ export function beginC1229S5CustomEvidenceRun(paths, runId, operations = fs) {
   };
   const runningBytes = Buffer.from(stableC1229S5CustomJson(running, 2));
   try {
+    if (priorLatestBytes !== undefined) {
+      exactBytes(
+        paths.latest,
+        priorLatestBytes,
+        "post-lock custom-ellipsoid prior latest",
+        operations,
+      );
+    }
+    assertPriorArchiveAuthority(priorArchiveAuthority, "post-lock", operations);
+    proveInitialFirstRed("post-lock");
+    assertPriorArchiveAuthority(
+      priorArchiveAuthority,
+      "pre-RUNNING-publication",
+      operations,
+    );
+    proveInitialFirstRed("pre-RUNNING-publication");
     if (priorLatestBytes === undefined) {
       createExclusive(
         paths.latest,
@@ -431,6 +892,37 @@ export function beginC1229S5CustomEvidenceRun(paths, runId, operations = fs) {
         operations,
       );
     }
+    assertPriorArchiveAuthority(
+      priorArchiveAuthority,
+      "post-RUNNING-publication",
+      operations,
+    );
+    proveInitialFirstRed("post-RUNNING-publication");
+    exactBytes(
+      paths.lock,
+      lockBytes,
+      "owned custom-ellipsoid lock",
+      operations,
+    );
+    exactBytes(paths.latest, runningBytes, "owned RUNNING latest", operations);
+    assertPriorArchiveAuthority(
+      priorArchiveAuthority,
+      "pre-return",
+      operations,
+    );
+    proveInitialFirstRed("pre-return");
+    exactBytes(
+      paths.latest,
+      runningBytes,
+      "pre-return owned custom-ellipsoid RUNNING",
+      operations,
+    );
+    exactBytes(
+      paths.lock,
+      lockBytes,
+      "pre-return owned custom-ellipsoid lock",
+      operations,
+    );
   } catch (error) {
     try {
       if (readBytesIfPresent(paths.latest, operations)?.equals(runningBytes)) {
@@ -448,16 +940,44 @@ export function beginC1229S5CustomEvidenceRun(paths, runId, operations = fs) {
     }
     throw error;
   }
-  exactBytes(paths.lock, lockBytes, "owned custom-ellipsoid lock", operations);
-  exactBytes(paths.latest, runningBytes, "owned RUNNING latest", operations);
-  return {
+  const ownership = {
+    runId,
     lock,
     lockBytes,
     running,
     runningBytes,
     firstRedBefore,
     firstRedBeforeBytes,
+    firstRedAuthority,
+    firstRedArchiveAuthority,
+    priorLatestBytes,
+    priorArchiveAuthority,
+    pngAuthorities: [],
   };
+  C1229_S5_CUSTOM_OWNERSHIP_RECORDS.set(ownership, {
+    runId,
+    paths: Object.fromEntries(
+      Object.entries(paths).map(([key, file]) => [key, canonicalPathKey(file)]),
+    ),
+    lockBytes: Buffer.from(lockBytes),
+    runningBytes: Buffer.from(runningBytes),
+    firstRedBeforeBytes:
+      firstRedBeforeBytes === undefined
+        ? undefined
+        : Buffer.from(firstRedBeforeBytes),
+    firstRedAuthority: snapshotC1229S5CustomAuthority(firstRedAuthority),
+    firstRedArchiveAuthority: snapshotC1229S5CustomAuthority(
+      firstRedArchiveAuthority,
+    ),
+    priorLatestBytes:
+      priorLatestBytes === undefined
+        ? undefined
+        : Buffer.from(priorLatestBytes),
+    priorArchiveAuthority: snapshotC1229S5CustomAuthority(
+      priorArchiveAuthority,
+    ),
+  });
+  return ownership;
 }
 
 function quarantineFinalLookingLatest(
@@ -502,17 +1022,325 @@ function quarantineFinalLookingLatest(
   }
 }
 
+function proveOwnedPriorArchive(ownership, label, operations = fs) {
+  try {
+    assertPriorArchiveAuthority(
+      ownership.priorArchiveAuthority ?? null,
+      label,
+      operations,
+    );
+  } catch (error) {
+    // Once RUNNING is authoritative, loss of the predecessor archive makes
+    // every final (including ERROR) unsafe. Preserve RUNNING and its lock for
+    // explicit recovery instead of attempting a second publication.
+    error.retainCustomRunning = true;
+    throw error;
+  }
+}
+
+function assertStoredReferencedFinalBinding(
+  paths,
+  bytes,
+  authority,
+  label,
+  requireRed = false,
+) {
+  if (bytes === undefined) {
+    if (authority !== null) {
+      throw new Error(`${label} authority exists without referenced bytes`);
+    }
+    return;
+  }
+  if (!Buffer.isBuffer(bytes) || authority === null) {
+    throw new Error(`${label} referenced authority is incomplete`);
+  }
+  let referenced;
+  try {
+    referenced = JSON.parse(bytes.toString("utf8"));
+    if (
+      !validateC1229S5CustomPriorFinal(referenced) ||
+      (requireRed && referenced.status === "PASS") ||
+      stableC1229S5CustomJson(referenced, 2) !== bytes.toString("utf8")
+    ) {
+      throw new Error("referenced final is not canonical");
+    }
+  } catch (error) {
+    throw new Error(`${label} referenced final binding is invalid`, {
+      cause: error,
+    });
+  }
+  const archive = resolvePriorArchivePath(paths, referenced);
+  if (
+    canonicalPathKey(authority?.path ?? "") !== canonicalPathKey(archive) ||
+    canonicalPathKey(authority?.file ?? "") !== canonicalPathKey(archive) ||
+    !Buffer.isBuffer(authority?.bytes) ||
+    !authority.bytes.equals(bytes)
+  ) {
+    throw new Error(`${label} archive authority is not path/byte bound`);
+  }
+}
+
+function assertC1229S5CustomOwnershipBinding(paths, artifact, ownership) {
+  assertC1229S5CustomArtifactPaths(paths, artifact.runId);
+  const record =
+    ownership !== null && typeof ownership === "object"
+      ? C1229_S5_CUSTOM_OWNERSHIP_RECORDS.get(ownership)
+      : undefined;
+  const sameOptionalBytes = (left, right) =>
+    left === undefined
+      ? right === undefined
+      : Buffer.isBuffer(right) && left.equals(right);
+  if (
+    record === undefined ||
+    ownership === null ||
+    typeof ownership !== "object" ||
+    record.runId !== artifact.runId ||
+    !Object.entries(record.paths).every(
+      ([key, file]) => canonicalPathKey(paths[key]) === file,
+    ) ||
+    ownership.runId !== artifact.runId ||
+    ownership.lock?.runId !== artifact.runId ||
+    ownership.running?.runId !== artifact.runId ||
+    ownership.lock?.nonce !== ownership.running?.nonce ||
+    ownership.lock?.status !== "RUNNING" ||
+    ownership.running?.status !== "RUNNING" ||
+    ownership.lock?.incomplete !== true ||
+    ownership.running?.incomplete !== true ||
+    ownership.running?.artifactName !== artifact.artifactName ||
+    !Buffer.isBuffer(ownership.lockBytes) ||
+    !Buffer.isBuffer(ownership.runningBytes) ||
+    !ownership.lockBytes.equals(
+      Buffer.from(stableC1229S5CustomJson(ownership.lock, 2)),
+    ) ||
+    !ownership.runningBytes.equals(
+      Buffer.from(stableC1229S5CustomJson(ownership.running, 2)),
+    ) ||
+    !ownership.lockBytes.equals(record.lockBytes) ||
+    !ownership.runningBytes.equals(record.runningBytes) ||
+    !sameOptionalBytes(
+      record.firstRedBeforeBytes,
+      ownership.firstRedBeforeBytes,
+    ) ||
+    !sameC1229S5CustomAuthoritySnapshot(
+      ownership.firstRedAuthority,
+      record.firstRedAuthority,
+    ) ||
+    !sameC1229S5CustomAuthoritySnapshot(
+      ownership.firstRedArchiveAuthority,
+      record.firstRedArchiveAuthority,
+    ) ||
+    !sameOptionalBytes(record.priorLatestBytes, ownership.priorLatestBytes) ||
+    !sameC1229S5CustomAuthoritySnapshot(
+      ownership.priorArchiveAuthority,
+      record.priorArchiveAuthority,
+    ) ||
+    !Array.isArray(ownership.pngAuthorities)
+  ) {
+    throw new Error(
+      "custom-ellipsoid artifact/run/path/ownership binding is invalid",
+    );
+  }
+  try {
+    assertStoredReferencedFinalBinding(
+      paths,
+      ownership.priorLatestBytes,
+      ownership.priorArchiveAuthority,
+      "prior latest",
+    );
+    assertStoredReferencedFinalBinding(
+      paths,
+      ownership.firstRedBeforeBytes,
+      ownership.firstRedArchiveAuthority,
+      "first-red",
+      true,
+    );
+    if (ownership.firstRedBeforeBytes === undefined) {
+      if (
+        ownership.firstRedAuthority !== null ||
+        ownership.firstRedBefore?.exists !== false
+      ) {
+        throw new Error("absent first-red ownership is inconsistent");
+      }
+    } else if (
+      ownership.firstRedBefore?.exists !== true ||
+      ownership.firstRedBefore?.byteLength !==
+        ownership.firstRedBeforeBytes.length ||
+      ownership.firstRedBefore?.sha256 !==
+        sha256(ownership.firstRedBeforeBytes) ||
+      canonicalPathKey(ownership.firstRedAuthority?.path ?? "") !==
+        canonicalPathKey(paths.firstRed) ||
+      canonicalPathKey(ownership.firstRedAuthority?.file ?? "") !==
+        canonicalPathKey(paths.firstRed) ||
+      !Buffer.isBuffer(ownership.firstRedAuthority?.bytes) ||
+      !ownership.firstRedAuthority.bytes.equals(ownership.firstRedBeforeBytes)
+    ) {
+      throw new Error("first-red ownership is not path/byte bound");
+    }
+  } catch (error) {
+    throw new Error(
+      "custom-ellipsoid predecessor/first-red ownership binding is invalid",
+      { cause: error },
+    );
+  }
+}
+
+function proveOwnedInitialFirstRed(ownership, paths, label, operations = fs) {
+  try {
+    if (ownership.firstRedBeforeBytes === undefined) {
+      if (
+        ownership.firstRedAuthority !== null ||
+        ownership.firstRedArchiveAuthority !== null ||
+        readBytesIfPresent(paths.firstRed, operations) !== undefined
+      ) {
+        throw new Error("first-red appeared after absent preflight");
+      }
+      return;
+    }
+    if (
+      !Buffer.isBuffer(ownership.firstRedBeforeBytes) ||
+      ownership.firstRedAuthority === null ||
+      ownership.firstRedArchiveAuthority === null
+    ) {
+      throw new Error("pre-existing first-red authority is incomplete");
+    }
+    assertImmutableFileAuthority(
+      ownership.firstRedAuthority,
+      `${label} first-red`,
+      operations,
+    );
+    assertImmutableFileAuthority(
+      ownership.firstRedArchiveAuthority,
+      `${label} first-red archive`,
+      operations,
+    );
+  } catch (error) {
+    error.retainCustomRunning = true;
+    throw error;
+  }
+}
+
+function artifactImages(artifact) {
+  return artifact.status === "ERROR"
+    ? []
+    : artifact.sessions.flatMap((session) => session.images);
+}
+
+function proveOwnedPngAuthorities(
+  ownership,
+  paths,
+  artifact,
+  label,
+  operations = fs,
+) {
+  const images = artifactImages(artifact);
+  const authorities = ownership.pngAuthorities;
+  if (
+    authorities.length !== images.length ||
+    (artifact.status === "ERROR" ? images.length !== 0 : images.length !== 12)
+  ) {
+    throw new Error(
+      `custom-ellipsoid ${label} PNG authority count is not exact`,
+    );
+  }
+  const authorityByPath = new Map();
+  for (const authority of authorities) {
+    const key = canonicalPathKey(authority?.path ?? "");
+    if (authorityByPath.has(key)) {
+      throw new Error(`custom-ellipsoid ${label} PNG authority is duplicated`);
+    }
+    authorityByPath.set(key, authority);
+  }
+  for (const image of images) {
+    const file = path.join(paths.directory, image.fileName);
+    const authority = authorityByPath.get(canonicalPathKey(file));
+    if (
+      authority === undefined ||
+      !Buffer.isBuffer(authority.bytes) ||
+      authority.bytes.length !== image.byteLength ||
+      sha256(authority.bytes) !== image.sha256
+    ) {
+      throw new Error(
+        `custom-ellipsoid ${label} PNG ${image.fileName} is not artifact-bound`,
+      );
+    }
+    assertImmutableFileAuthority(
+      authority,
+      `${label} PNG ${image.fileName}`,
+      operations,
+    );
+  }
+}
+
+function proveEffectiveFirstRed(
+  authority,
+  archiveAuthority,
+  paths,
+  label,
+  operations = fs,
+) {
+  if (authority === null) {
+    if (readBytesIfPresent(paths.firstRed, operations) !== undefined) {
+      throw new Error(`custom-ellipsoid first-red appeared during ${label}`);
+    }
+    return;
+  }
+  let red;
+  try {
+    red = JSON.parse(authority.bytes.toString("utf8"));
+    const expectedArchive = path.join(paths.directory, `${red.runId}.json`);
+    if (
+      !validateC1229S5CustomPriorFinal(red) ||
+      red.status === "PASS" ||
+      red.artifactName !== `${red.runId}.json` ||
+      stableC1229S5CustomJson(red, 2) !== authority.bytes.toString("utf8") ||
+      canonicalPathKey(authority.path) !== canonicalPathKey(paths.firstRed) ||
+      !Buffer.isBuffer(archiveAuthority?.bytes) ||
+      !archiveAuthority.bytes.equals(authority.bytes) ||
+      canonicalPathKey(archiveAuthority?.path ?? "") !==
+        canonicalPathKey(expectedArchive)
+    ) {
+      throw new Error("first-red/archive reference is not exact");
+    }
+  } catch (error) {
+    throw new Error(
+      `custom-ellipsoid ${label} first-red/archive binding is invalid`,
+      { cause: error },
+    );
+  }
+  assertImmutableFileAuthority(authority, `${label} first-red`, operations);
+  assertImmutableFileAuthority(
+    archiveAuthority,
+    `${label} first-red archive`,
+    operations,
+  );
+}
+
 export function finalizeC1229S5CustomEvidence(
   paths,
   artifact,
   ownership,
   operations = fs,
 ) {
+  let finalBytes;
+  try {
+    finalBytes = Buffer.from(stableC1229S5CustomJson(artifact, 2));
+    artifact = JSON.parse(finalBytes.toString("utf8"));
+    if (stableC1229S5CustomJson(artifact, 2) !== finalBytes.toString("utf8")) {
+      throw new Error("canonical roundtrip changed final bytes");
+    }
+  } catch (error) {
+    throw new Error(
+      "invalid final artifact: canonical materialization failed",
+      {
+        cause: error,
+      },
+    );
+  }
   const validated = validateC1229S5CustomFinalArtifact(artifact);
   if (!validated.ok) {
     throw new Error(`invalid final artifact: ${validated.reasons.join("; ")}`);
   }
-  const finalBytes = Buffer.from(stableC1229S5CustomJson(artifact, 2));
+  assertC1229S5CustomOwnershipBinding(paths, artifact, ownership);
   exactBytes(
     paths.lock,
     ownership.lockBytes,
@@ -525,28 +1353,29 @@ export function finalizeC1229S5CustomEvidence(
     "owned RUNNING latest at finalization",
     operations,
   );
-  if (ownership.firstRedBeforeBytes !== undefined) {
-    exactBytes(
-      paths.firstRed,
-      ownership.firstRedBeforeBytes,
-      "stable pre-existing custom-ellipsoid first-red",
-      operations,
-    );
-  } else if (readBytesIfPresent(paths.firstRed, operations) !== undefined) {
-    throw new Error(
-      "custom-ellipsoid first-red appeared after absent preflight",
-    );
-  }
+  proveOwnedPriorArchive(ownership, "finalization-entry", operations);
+  proveOwnedInitialFirstRed(ownership, paths, "finalization-entry", operations);
+  proveOwnedPngAuthorities(
+    ownership,
+    paths,
+    artifact,
+    "finalization-entry",
+    operations,
+  );
+  proveOwnedPriorArchive(ownership, "post-first-red-preflight", operations);
+  proveOwnedPriorArchive(ownership, "pre-current-archive", operations);
+  const currentArchiveAuthority = createC1229S5CustomImmutableAuthority(
+    paths.archive,
+    finalBytes,
+    "current immutable custom-ellipsoid archive",
+    operations,
+  );
   let firstRed;
+  let effectiveFirstRedAuthority = ownership.firstRedAuthority;
+  let effectiveFirstRedArchiveAuthority = ownership.firstRedArchiveAuthority;
   if (artifact.status !== "PASS") {
     firstRed = preserveFirstRedEvidence(paths.firstRed, finalBytes, operations);
     const expectedFirstRedBytes = ownership.firstRedBeforeBytes ?? finalBytes;
-    exactBytes(
-      paths.firstRed,
-      expectedFirstRedBytes,
-      "exact retained custom-ellipsoid first-red",
-      operations,
-    );
     if (
       firstRed.byteLength !== expectedFirstRedBytes.byteLength ||
       firstRed.sha256 !== sha256(expectedFirstRedBytes) ||
@@ -554,15 +1383,43 @@ export function finalizeC1229S5CustomEvidence(
     ) {
       throw new Error("custom-ellipsoid first-red receipt is not exact");
     }
+    if (ownership.firstRedBeforeBytes === undefined) {
+      effectiveFirstRedAuthority = captureC1229S5CustomImmutableAuthority(
+        paths.firstRed,
+        finalBytes,
+        "new first-red",
+        operations,
+      );
+      effectiveFirstRedArchiveAuthority = currentArchiveAuthority;
+    }
   }
-  createImmutableEvidence(paths.archive, finalBytes, operations);
-  exactBytes(
-    paths.archive,
-    finalBytes,
-    "immutable custom-ellipsoid archive",
+  proveEffectiveFirstRed(
+    effectiveFirstRedAuthority,
+    effectiveFirstRedArchiveAuthority,
+    paths,
+    "post-current-archive",
     operations,
   );
+  assertImmutableFileAuthority(
+    currentArchiveAuthority,
+    "post-create current archive",
+    operations,
+  );
+  proveOwnedPngAuthorities(
+    ownership,
+    paths,
+    artifact,
+    "post-current-archive",
+    operations,
+  );
+  proveOwnedPriorArchive(ownership, "post-current-archive", operations);
+  let currentLatestAuthority;
   try {
+    proveOwnedPriorArchive(
+      ownership,
+      "pre-final-latest-publication",
+      operations,
+    );
     replaceOwnedCanonical(
       paths.latest,
       ownership.runningBytes,
@@ -572,34 +1429,68 @@ export function finalizeC1229S5CustomEvidence(
       "final",
       operations,
     );
-    exactBytes(
-      paths.archive,
+    currentLatestAuthority = captureC1229S5CustomImmutableAuthority(
+      paths.latest,
       finalBytes,
-      "archive after latest publication",
+      "current canonical latest",
       operations,
     );
-    if (ownership.firstRedBeforeBytes !== undefined) {
-      exactBytes(
-        paths.firstRed,
-        ownership.firstRedBeforeBytes,
-        "publication retained custom-ellipsoid first-red",
-        operations,
-      );
-    } else if (artifact.status === "PASS") {
-      if (readBytesIfPresent(paths.firstRed, operations) !== undefined) {
-        throw new Error(
-          "PASS publication created a custom-ellipsoid first-red",
+    proveOwnedPriorArchive(
+      ownership,
+      "post-final-latest-publication",
+      operations,
+    );
+    assertImmutableFileAuthority(
+      currentArchiveAuthority,
+      "post-latest current archive",
+      operations,
+    );
+    assertImmutableFileAuthority(
+      currentLatestAuthority,
+      "post-latest canonical latest",
+      operations,
+    );
+    proveOwnedPngAuthorities(
+      ownership,
+      paths,
+      artifact,
+      "post-latest",
+      operations,
+    );
+    proveEffectiveFirstRed(
+      effectiveFirstRedAuthority,
+      effectiveFirstRedArchiveAuthority,
+      paths,
+      "post-latest",
+      operations,
+    );
+    proveOwnedPriorArchive(ownership, "pre-unlock", operations);
+    releaseC1229S5CustomLock(
+      paths.lock,
+      ownership.lockBytes,
+      operations,
+      (label) => {
+        proveOwnedPriorArchive(ownership, label, operations);
+        assertImmutableFileAuthority(
+          currentArchiveAuthority,
+          `${label} current archive`,
+          operations,
         );
-      }
-    } else {
-      exactBytes(
-        paths.firstRed,
-        finalBytes,
-        "publication new custom-ellipsoid first-red",
-        operations,
-      );
-    }
-    releaseC1229S5CustomLock(paths.lock, ownership.lockBytes, operations);
+        assertImmutableFileAuthority(
+          currentLatestAuthority,
+          `${label} canonical latest`,
+          operations,
+        );
+        proveOwnedPngAuthorities(ownership, paths, artifact, label, operations);
+        proveEffectiveFirstRed(
+          effectiveFirstRedAuthority,
+          effectiveFirstRedArchiveAuthority,
+          paths,
+          label,
+          operations,
+        );
+      },
+    );
   } catch (error) {
     const finalLatest = readBytesIfPresent(paths.latest, operations);
     const lockCurrent = readBytesIfPresent(paths.lock, operations);
@@ -618,15 +1509,13 @@ export function finalizeC1229S5CustomEvidence(
     }
     throw error;
   }
-  if (
-    readBytesIfPresent(paths.lock, operations) !== undefined ||
-    !readBytesIfPresent(paths.latest, operations)?.equals(finalBytes) ||
-    !readBytesIfPresent(paths.archive, operations)?.equals(finalBytes)
-  ) {
-    throw new Error("custom-ellipsoid final publication postcondition failed");
-  }
   return {
-    runIdentity: fingerprintEvidenceFile(paths.archive, operations),
+    runIdentity: {
+      file: paths.archive,
+      exists: true,
+      byteLength: currentArchiveAuthority.bytes.length,
+      sha256: sha256(currentArchiveAuthority.bytes),
+    },
     firstRed,
   };
 }
@@ -1167,15 +2056,27 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
   };
   complete(contract.phases[1]);
 
-  const globeRenderer =
+  const globeRendererDescriptor =
     contract.renderer === "webgpu"
       ? scene.context.getFeatureRenderer?.(C.FeatureRendererKey.GLOBE_SURFACE)
       : null;
+  const sceneCaptureSources =
+    contract.renderer === "webgpu"
+      ? scene.context._webgpuSceneCaptureSources
+      : null;
+  const globeRenderer = sceneCaptureSources?.globeRenderer ?? null;
   const eclipsePrepareRecords = [];
   const eclipseManager = globeRenderer?._eclipseUniforms;
   const originalEclipsePrepare = eclipseManager?.prepare;
   if (contract.renderer === "webgpu") {
-    if (!globeRenderer || typeof originalEclipsePrepare !== "function") {
+    if (
+      !globeRendererDescriptor ||
+      typeof globeRendererDescriptor.RendererClass !== "function" ||
+      typeof globeRendererDescriptor.getShaderCode !== "function" ||
+      !(globeRenderer instanceof globeRendererDescriptor.RendererClass) ||
+      sceneCaptureSources?.tileProvider !== tp ||
+      typeof originalEclipsePrepare !== "function"
+    ) {
       throw new Error("WebGPU globe eclipse manager is unavailable");
     }
     eclipseManager.prepare = function (device, frameState) {
@@ -2094,17 +2995,14 @@ function materializeC1229S5CustomImages(
     const imageId = randomUUID();
     const fileName = `${runId}.${imageId}.${session.renderer}.${capture.label}.png`;
     const file = path.join(paths.directory, fileName);
-    operations.writeFileSync(file, bytes, { flag: "wx" });
-    ownedPngs.push({ file, bytes: Buffer.from(bytes) });
-    const retained = operations.readFileSync(file);
-    const retainedBytes = Buffer.isBuffer(retained)
-      ? retained
-      : Buffer.from(retained);
-    if (!retainedBytes.equals(bytes)) {
-      throw new Error(
-        `${session.renderer}: ${capture.label} PNG changed on write`,
-      );
-    }
+    ownedPngs.push(
+      createC1229S5CustomImmutableAuthority(
+        file,
+        bytes,
+        `${session.renderer} ${capture.label} PNG`,
+        operations,
+      ),
+    );
     const image = {
       label: capture.label,
       imageId,
@@ -2172,27 +3070,72 @@ export function cleanupC1229S5CustomOwnedPngs(ownedPngs, operations = fs) {
   const reasons = [];
   let removed = 0;
   for (const owned of [...ownedPngs].reverse()) {
+    const file = owned.path ?? owned.file;
     let current;
     try {
-      current = readBytesIfPresent(owned.file, operations);
+      current = readBytesIfPresent(file, operations);
     } catch (error) {
-      reasons.push(`${owned.file}: cleanup read failed: ${error.message}`);
+      reasons.push(`${file}: cleanup read failed: ${error.message}`);
       continue;
     }
     if (current === undefined) continue;
-    if (!Buffer.from(current).equals(owned.bytes)) {
-      reasons.push(`${owned.file}: foreign replacement preserved`);
+    try {
+      assertImmutableFileAuthority(owned, `cleanup PNG ${file}`, operations);
+    } catch {
+      reasons.push(`${file}: foreign replacement preserved`);
       continue;
     }
+    const receipt = `${file}.cleanup-${randomUUID()}.receipt`;
     try {
-      operations.unlinkSync(owned.file);
-      if (readBytesIfPresent(owned.file, operations) !== undefined) {
-        reasons.push(`${owned.file}: owned PNG remained after unlink`);
-      } else {
-        removed++;
+      operations.renameSync(file, receipt);
+      const before = inspectImmutableDescriptor(
+        receipt,
+        `claimed cleanup PNG ${file}`,
+        operations,
+      );
+      exactBytes(
+        receipt,
+        owned.bytes,
+        `claimed cleanup PNG ${file}`,
+        operations,
+      );
+      const after = inspectImmutableDescriptor(
+        receipt,
+        `claimed cleanup PNG ${file} after read`,
+        operations,
+      );
+      if (
+        !sameImmutableEntryIdentity(before, owned.descriptor) ||
+        !sameImmutableDescriptor(before, after)
+      ) {
+        throw new Error("claimed cleanup PNG entry is not owned");
       }
+      operations.unlinkSync(receipt);
+      if (readBytesIfPresent(receipt, operations) !== undefined) {
+        throw new Error("owned cleanup PNG receipt remained after unlink");
+      }
+      removed++;
     } catch (error) {
-      reasons.push(`${owned.file}: cleanup unlink failed: ${error.message}`);
+      let disposition = "retained at its cleanup receipt";
+      let reportedError = error;
+      try {
+        if (
+          readBytesIfPresent(receipt, operations) !== undefined &&
+          readBytesIfPresent(file, operations) === undefined
+        ) {
+          operations.renameSync(receipt, file);
+          disposition = "restored at its canonical path";
+        }
+      } catch (restoreError) {
+        reportedError = new AggregateError(
+          [error, restoreError],
+          "cleanup PNG claim and restoration failed",
+          { cause: restoreError },
+        );
+      }
+      reasons.push(
+        `${file}: foreign or unproven replacement ${disposition}: ${reportedError.message}`,
+      );
     }
   }
   return { ok: reasons.length === 0, removed, reasons };
@@ -2543,6 +3486,7 @@ async function runC1229S5CustomBrowserSession(
   runId,
   paths,
   ownedPngs,
+  watchdogState,
   operations = fs,
 ) {
   const context = await browser.newContext({
@@ -2571,6 +3515,9 @@ async function runC1229S5CustomBrowserSession(
     await route.continue();
   });
   const page = await context.newPage();
+  watchdogState.renderer = renderer;
+  watchdogState.page = page;
+  watchdogState.pageDiagnostic = null;
   await page.addInitScript(errorGateInit);
   page.on("request", (request) => pending.add(request));
   const settleRequest = (request) => pending.delete(request);
@@ -2707,6 +3654,7 @@ async function runC1229S5CustomBrowserSession(
     } catch {
       diagnostics = null;
     }
+    watchdogState.pageDiagnostic = diagnostics;
   }
   const pageClose = await closeC1229S5CustomResourceBounded(
     page,
@@ -2716,6 +3664,7 @@ async function runC1229S5CustomBrowserSession(
     context,
     `${renderer} context`,
   );
+  if (watchdogState.page === page) watchdogState.page = null;
   if (measured) {
     measured.cleanup = {
       complete: pageClose.closed && contextClose.closed && pending.size === 0,
@@ -2764,68 +3713,169 @@ async function closeBrowserOrThrow(browser) {
   return result;
 }
 
+async function readC1229S5CustomPageProgressBounded(page, timeoutMs = 1_000) {
+  if (!page) return null;
+  let timer;
+  try {
+    return await Promise.race([
+      page
+        .evaluate(() =>
+          globalThis.__c1229S5CustomProgress
+            ? JSON.parse(JSON.stringify(globalThis.__c1229S5CustomProgress))
+            : null,
+        )
+        .catch(() => null),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function withC1229S5CustomWatchdog(
   task,
   closeOnTimeout,
   timeoutMs,
   renderer = "webgl",
 ) {
-  const settlement = Promise.resolve()
-    .then(task)
-    .then(
-      (value) => ({ kind: "value", value }),
-      (error) => ({ kind: "error", error }),
+  if (typeof task !== "function" || typeof closeOnTimeout !== "function") {
+    throw new TypeError(
+      "custom-ellipsoid watchdog callbacks must be functions",
     );
+  }
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > 2_147_483_647
+  ) {
+    throw new TypeError(
+      "custom-ellipsoid watchdog timeout must be a positive safe integer within the timer range",
+    );
+  }
   let timer;
-  const first = await Promise.race([
-    settlement,
-    new Promise((resolve) => {
-      timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
-    }),
-  ]);
-  clearTimeout(timer);
-  if (first.kind === "value") return first.value;
-  if (first.kind === "error") throw first.error;
-  let closeTimer;
-  const closed = await Promise.race([
-    Promise.resolve()
-      .then(closeOnTimeout)
-      .then(
-        () => ({ ok: true }),
-        (error) => ({ ok: false, error }),
-      ),
-    new Promise((resolve) => {
-      closeTimer = setTimeout(
-        () => resolve({ ok: false, timedOut: true }),
-        CLOSE_TIMEOUT_MS,
-      );
-    }),
-  ]);
-  clearTimeout(closeTimer);
-  let drainTimer;
-  const drained = await Promise.race([
-    settlement.then(() => true),
-    new Promise((resolve) => {
-      drainTimer = setTimeout(() => resolve(false), DRAIN_TIMEOUT_MS);
-    }),
-  ]);
-  clearTimeout(drainTimer);
-  const error = new Error(
-    `custom-ellipsoid watchdog expired after ${timeoutMs} ms; drained=${drained}`,
+  let expired = false;
+  let deadlineError;
+  const abortController = new AbortController();
+  const deadlineNs =
+    process.hrtime.bigint() + BigInt(timeoutMs) * BigInt(1_000_000);
+  const taskPromise = Promise.resolve().then(() =>
+    task(abortController.signal),
   );
-  const activeRenderer = typeof renderer === "function" ? renderer() : renderer;
-  error.customDiagnostics = {
-    schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
-    renderer: C12_29_S5_CUSTOM_RENDERERS.includes(activeRenderer)
-      ? activeRenderer
-      : "webgl",
-    stage: "watchdog",
-    timeoutMs,
-    page: null,
+  const expire = () => {
+    if (deadlineError) return deadlineError;
+    expired = true;
+    clearTimeout(timer);
+    let deadlineRenderer;
+    try {
+      deadlineRenderer = typeof renderer === "function" ? renderer() : renderer;
+    } catch {
+      deadlineRenderer = undefined;
+    }
+    const diagnosticRenderer = C12_29_S5_CUSTOM_RENDERERS.includes(
+      deadlineRenderer,
+    )
+      ? deadlineRenderer
+      : "webgl";
+    const error = new Error(
+      `custom-ellipsoid watchdog expired after ${timeoutMs} ms; drain=pending`,
+    );
+    deadlineError = error;
+    error.customDiagnostics = {
+      schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+      renderer: diagnosticRenderer,
+      stage: "watchdog",
+      timeoutMs,
+      page: null,
+    };
+    // Until both cleanup and the aborted task have settled, RUNNING is the
+    // only safe canonical state. The caller awaits the hidden drain before
+    // deciding whether an exact ERROR may be published.
+    error.retainCustomRunning = true;
+    abortController.abort(error);
+    const cleanupSettlement = Promise.resolve()
+      .then(() => closeOnTimeout(abortController.signal))
+      .then(
+        (value) => ({ status: "fulfilled", value }),
+        (cleanupError) => ({ status: "rejected", error: cleanupError }),
+      );
+    const taskSettlement = taskPromise.then(
+      (value) => ({ status: "fulfilled", value }),
+      (taskError) => ({ status: "rejected", error: taskError }),
+    );
+    const drain = Promise.all([cleanupSettlement, taskSettlement]).then(
+      ([cleanup, settlement]) => {
+        const cleanupValue = cleanup.value ?? {};
+        const page =
+          cleanupValue.page?.renderer === diagnosticRenderer
+            ? cleanupValue.page
+            : null;
+        error.customDiagnostics.page = page;
+        error.customDiagnostics.stage = page?.currentPhase ?? "watchdog";
+        let drainError =
+          cleanup.status === "rejected"
+            ? cleanup.error
+            : cleanupValue.drainError;
+        if (settlement.status === "fulfilled") {
+          const lateSuccess = new Error(
+            "custom-ellipsoid task fulfilled after watchdog deadline",
+          );
+          drainError =
+            drainError === undefined
+              ? lateSuccess
+              : new AggregateError(
+                  [drainError, lateSuccess],
+                  "custom-ellipsoid cleanup failed and task fulfilled after deadline",
+                  { cause: drainError },
+                );
+        }
+        const cleanupProven =
+          cleanup.status === "fulfilled" &&
+          cleanupValue.drainError === undefined;
+        if (cleanupProven) {
+          delete error.retainCustomRunning;
+        } else {
+          error.retainCustomRunning = true;
+        }
+        error.message =
+          `custom-ellipsoid watchdog expired after ${timeoutMs} ms; ` +
+          `cleanupProven=${cleanupProven}; task=${settlement.status}`;
+        if (drainError !== undefined) error.cause = drainError;
+        return {
+          cleanupProven,
+          taskStatus: settlement.status,
+          renderer: diagnosticRenderer,
+          page,
+          drainError,
+        };
+      },
+    );
+    Object.defineProperty(error, "c1229S5CustomDrain", {
+      value: drain,
+      enumerable: false,
+    });
+    return error;
   };
-  if (!closed.ok || !drained) error.retainCustomRunning = true;
-  if (closed.error) error.cause = closed.error;
-  throw error;
+  const guardedTask = taskPromise.then(
+    (value) => {
+      if (process.hrtime.bigint() >= deadlineNs) throw expire();
+      return value;
+    },
+    (error) => {
+      if (process.hrtime.bigint() >= deadlineNs) throw expire();
+      throw error;
+    },
+  );
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(expire()), timeoutMs);
+  });
+  try {
+    return await Promise.race([guardedTask, timeout]);
+  } finally {
+    clearTimeout(timer);
+    if (expired) taskPromise.catch(() => {});
+  }
 }
 
 function publicFingerprint(value) {
@@ -3009,30 +4059,57 @@ function finalContract() {
   };
 }
 
-function createC1229S5CustomErrorArtifact(runId, error) {
-  const diagnostic = error?.customDiagnostics;
-  const renderer = C12_29_S5_CUSTOM_RENDERERS.includes(diagnostic?.renderer)
-    ? diagnostic.renderer
+export function createC1229S5CustomErrorArtifact(runId, error) {
+  let diagnostic;
+  try {
+    diagnostic = error?.customDiagnostics;
+  } catch {
+    diagnostic = undefined;
+  }
+  let diagnosticRenderer;
+  let diagnosticStage;
+  let diagnosticTimeoutMs;
+  let diagnosticPage;
+  try {
+    diagnosticRenderer = diagnostic?.renderer;
+    diagnosticStage = diagnostic?.stage;
+    diagnosticTimeoutMs = diagnostic?.timeoutMs;
+    diagnosticPage = diagnostic?.page;
+  } catch {
+    diagnosticRenderer = undefined;
+    diagnosticStage = undefined;
+    diagnosticTimeoutMs = undefined;
+    diagnosticPage = undefined;
+  }
+  const renderer = C12_29_S5_CUSTOM_RENDERERS.includes(diagnosticRenderer)
+    ? diagnosticRenderer
     : "webgl";
-  return {
+  const artifact = {
     schema: C12_29_S5_CUSTOM_SCHEMA,
     runId,
     status: "ERROR",
     incomplete: false,
     exitCode: exitCodeForC1229S5CustomStatus("ERROR"),
     artifactName: `${runId}.json`,
-    error:
-      error instanceof Error
-        ? `${error.name}: ${error.message}`
-        : String(error),
+    error: boundedC1229S5CustomErrorText(error),
     diagnostics: {
       schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
       renderer,
-      stage: diagnostic?.stage ?? "node",
-      timeoutMs: diagnostic?.timeoutMs ?? WATCHDOG_MS,
-      page: diagnostic?.page ?? null,
+      stage: diagnosticStage ?? "node",
+      timeoutMs: diagnosticTimeoutMs ?? WATCHDOG_MS,
+      page: diagnosticPage ?? null,
     },
   };
+  if (!validateC1229S5CustomFinalArtifact(artifact).ok) {
+    artifact.diagnostics = {
+      schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+      renderer,
+      stage: "node",
+      timeoutMs: WATCHDOG_MS,
+      page: null,
+    };
+  }
+  return artifact;
 }
 
 export async function runC1229S5CustomEllipsoidProbe(options = {}) {
@@ -3050,17 +4127,24 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
   let browser;
   const ownedPngs = [];
   let watchdogRenderer = C12_29_S5_CUSTOM_RENDERERS[0];
+  const watchdogState = {
+    renderer: null,
+    page: null,
+    pageDiagnostic: null,
+  };
   try {
     ownership = beginC1229S5CustomEvidenceRun(paths, runId, operations);
+    ownership.pngAuthorities = ownedPngs;
     const start = await collectC1229S5CustomProvenanceSnapshot();
     browser = await launchBrowser({
       channel: process.env.PROBE_BROWSER_CHANNEL || "msedge",
       headless: process.env.PROBE_HEADED !== "1",
     });
     const sessions = await withC1229S5CustomWatchdog(
-      async () => {
+      async (signal) => {
         const measured = [];
         for (const renderer of C12_29_S5_CUSTOM_RENDERERS) {
+          signal.throwIfAborted();
           watchdogRenderer = renderer;
           measured.push(
             await runC1229S5CustomBrowserSession(
@@ -3070,16 +4154,31 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
               runId,
               paths,
               ownedPngs,
+              watchdogState,
               operations,
             ),
           );
+          signal.throwIfAborted();
         }
         return measured;
       },
       async () => {
+        const page =
+          watchdogState.pageDiagnostic ??
+          (await readC1229S5CustomPageProgressBounded(watchdogState.page));
         const closing = browser;
         browser = undefined;
-        await closeBrowserOrThrow(closing);
+        let drainError;
+        try {
+          await closeBrowserOrThrow(closing);
+        } catch (error) {
+          drainError = error;
+        }
+        return {
+          renderer: watchdogState.renderer ?? watchdogRenderer,
+          page,
+          drainError,
+        };
       },
       options.watchdogMs ?? WATCHDOG_MS,
       () => watchdogRenderer,
@@ -3121,9 +4220,10 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
         ),
       },
     };
-    const verdict = foldC1229S5CustomEllipsoidGate(report);
+    const canonicalReport = JSON.parse(stableC1229S5CustomJson(report));
+    const verdict = foldC1229S5CustomEllipsoidGate(canonicalReport);
     const artifact = {
-      ...report,
+      ...canonicalReport,
       status: verdict.status,
       exitCode: verdict.exitCode,
       reasons: {
@@ -3145,6 +4245,10 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
     return { artifact, publication, paths };
   } catch (caughtError) {
     let error = caughtError;
+    if (error?.c1229S5CustomDrain) {
+      const drain = await error.c1229S5CustomDrain;
+      if (drain.cleanupProven !== true) error.retainCustomRunning = true;
+    }
     if (browser) {
       const closing = browser;
       browser = undefined;
@@ -3173,6 +4277,8 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
           { cause: error },
         );
         error.retainCustomRunning = true;
+      } else {
+        ownedPngs.length = 0;
       }
     }
     if (ownership && error?.retainCustomRunning !== true) {

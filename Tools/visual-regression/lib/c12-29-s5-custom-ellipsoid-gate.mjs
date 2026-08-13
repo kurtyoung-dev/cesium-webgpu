@@ -8,9 +8,11 @@
  * the f64 reference and strict stepwise-f32 twin below are independent.
  */
 
-export const C12_29_S5_CUSTOM_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v3";
+import { types as utilTypes } from "node:util";
+
+export const C12_29_S5_CUSTOM_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v4";
 export const C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA =
-  "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v3";
+  "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v4";
 
 export const C12_29_S5_CUSTOM_RENDERERS = Object.freeze(["webgl", "webgpu"]);
 
@@ -164,9 +166,11 @@ export const C12_29_S5_CUSTOM_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Core/Transforms.js",
   "packages/engine/Source/Core/Iau2006XysData.js",
   "packages/engine/Source/Renderer/AutomaticUniforms.js",
+  "packages/engine/Source/Renderer/FeatureRendererKey.js",
   "packages/engine/Source/Renderer/GraphicsContext.ts",
   "packages/engine/Source/Renderer/PickId.js",
   "packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceLayouts.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts",
@@ -253,6 +257,111 @@ function exactKeys(value, keys) {
     !Array.isArray(value) &&
     Object.keys(value).length === keys.length &&
     keys.every((key) => Object.hasOwn(value, key))
+  );
+}
+
+function exactPlainKeys(value, keys) {
+  return (
+    exactKeys(value, keys) &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    Object.getOwnPropertySymbols(value).length === 0 &&
+    keys.every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return (
+        descriptor?.enumerable === true && Object.hasOwn(descriptor, "value")
+      );
+    })
+  );
+}
+
+function exactDenseStringArray(value, maximumLength) {
+  if (
+    !Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype ||
+    value.length > maximumLength ||
+    Object.getOwnPropertySymbols(value).length !== 0
+  ) {
+    return false;
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== value.length + 1 || keys[keys.length - 1] !== "length") {
+    return false;
+  }
+  for (let index = 0; index < value.length; index++) {
+    if (keys[index] !== String(index)) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (
+      descriptor?.enumerable !== true ||
+      !Object.hasOwn(descriptor, "value") ||
+      typeof descriptor.value !== "string" ||
+      descriptor.value.length === 0 ||
+      descriptor.value.length > 128
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function validCustomErrorDiagnostics(diagnostics) {
+  if (
+    !exactPlainKeys(diagnostics, [
+      "schema",
+      "renderer",
+      "stage",
+      "timeoutMs",
+      "page",
+    ]) ||
+    diagnostics.schema !== C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA ||
+    !C12_29_S5_CUSTOM_RENDERERS.includes(diagnostics.renderer) ||
+    !Number.isInteger(diagnostics.timeoutMs) ||
+    !new Set([240_000, 540_000]).has(diagnostics.timeoutMs)
+  ) {
+    return false;
+  }
+  if (diagnostics.page === null) {
+    return new Set(["node", "node-session", "watchdog"]).has(diagnostics.stage);
+  }
+  const page = diagnostics.page;
+  if (
+    !exactPlainKeys(page, [
+      "schema",
+      "renderer",
+      "currentPhase",
+      "completedPhases",
+      "step",
+      "elapsedMs",
+    ]) ||
+    page.schema !== C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA ||
+    page.renderer !== diagnostics.renderer ||
+    diagnostics.stage !== page.currentPhase ||
+    !new Set(["preflight", ...C12_29_S5_CUSTOM_PHASES]).has(
+      page.currentPhase,
+    ) ||
+    typeof page.step !== "string" ||
+    page.step.length === 0 ||
+    page.step.length > 128 ||
+    !finite(page.elapsedMs) ||
+    page.elapsedMs < 0 ||
+    page.elapsedMs > diagnostics.timeoutMs + 30_000 ||
+    !exactDenseStringArray(page.completedPhases, C12_29_S5_CUSTOM_PHASES.length)
+  ) {
+    return false;
+  }
+  if (
+    !page.completedPhases.every(
+      (phase, index) => phase === C12_29_S5_CUSTOM_PHASES[index],
+    )
+  ) {
+    return false;
+  }
+  if (page.currentPhase === "preflight") {
+    return page.completedPhases.length === 0 && page.step === "start";
+  }
+  const phaseIndex = C12_29_S5_CUSTOM_PHASES.indexOf(page.currentPhase);
+  return (
+    page.completedPhases.length ===
+    phaseIndex + (page.step === "complete" ? 1 : 0)
   );
 }
 
@@ -520,24 +629,154 @@ export function exitCodeForC1229S5CustomStatus(status) {
   throw new RangeError(`unknown custom-ellipsoid status ${String(status)}`);
 }
 
-export function stableC1229S5CustomJson(value, space) {
-  const seen = new WeakSet();
-  const normalize = (item) => {
-    if (item === null || typeof item !== "object") return item;
-    if (seen.has(item)) throw new TypeError("cyclic evidence is forbidden");
-    seen.add(item);
-    if (Array.isArray(item)) {
-      const result = item.map(normalize);
-      seen.delete(item);
-      return result;
+function cloneC1229S5CustomJsonSafe(
+  value,
+  location = "$",
+  ancestors = new Set(),
+  state = { nodes: 0 },
+) {
+  state.nodes++;
+  if (state.nodes > 1_000_000) {
+    throw new TypeError("custom-ellipsoid JSON-safe value exceeds node cap");
+  }
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new TypeError(
+        `custom-ellipsoid JSON-safe value rejects a lossy number at ${location}`,
+      );
     }
-    const result = {};
-    for (const key of Object.keys(item).sort())
-      result[key] = normalize(item[key]);
-    seen.delete(item);
-    return result;
-  };
-  return `${JSON.stringify(normalize(value), null, space)}\n`;
+    // Camera/vector math can legitimately produce signed zero. JSON has no
+    // signed-zero representation, so normalize it deliberately before the
+    // first fold rather than letting JSON.stringify change it implicitly.
+    return Object.is(value, -0) ? 0 : value;
+  }
+  if (!value || typeof value !== "object") {
+    throw new TypeError(
+      `custom-ellipsoid JSON-safe value rejects ${typeof value} at ${location}`,
+    );
+  }
+  try {
+    if (ancestors.has(value)) {
+      throw new TypeError(
+        `custom-ellipsoid JSON-safe value rejects a cycle at ${location}`,
+      );
+    }
+    if (utilTypes.isProxy(value)) {
+      throw new TypeError(
+        `custom-ellipsoid JSON-safe value rejects a Proxy at ${location}`,
+      );
+    }
+    const array = Array.isArray(value);
+    const prototype = Object.getPrototypeOf(value);
+    if (
+      (array && prototype !== Array.prototype) ||
+      (!array && prototype !== Object.prototype && prototype !== null)
+    ) {
+      throw new TypeError(
+        `custom-ellipsoid JSON-safe value rejects a custom prototype at ${location}`,
+      );
+    }
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string")) {
+      throw new TypeError(
+        `custom-ellipsoid JSON-safe value rejects a symbol key at ${location}`,
+      );
+    }
+    ancestors.add(value);
+    if (array) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      if (
+        lengthDescriptor === undefined ||
+        !Object.hasOwn(lengthDescriptor, "value") ||
+        lengthDescriptor.value !== value.length ||
+        !Number.isInteger(lengthDescriptor.value) ||
+        lengthDescriptor.value < 0 ||
+        lengthDescriptor.value > 1_000_000 ||
+        lengthDescriptor.enumerable !== false ||
+        lengthDescriptor.configurable !== false ||
+        keys.length !== lengthDescriptor.value + 1 ||
+        keys.at(-1) !== "length"
+      ) {
+        throw new TypeError(
+          `custom-ellipsoid JSON-safe value rejects a noncanonical array at ${location}`,
+        );
+      }
+      const clone = [];
+      for (let index = 0; index < lengthDescriptor.value; index++) {
+        const key = String(index);
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (
+          keys[index] !== key ||
+          descriptor === undefined ||
+          !Object.hasOwn(descriptor, "value") ||
+          descriptor.enumerable !== true
+        ) {
+          throw new TypeError(
+            `custom-ellipsoid JSON-safe value rejects holes, accessors, or hidden keys at ${location}[${index}]`,
+          );
+        }
+        clone.push(
+          cloneC1229S5CustomJsonSafe(
+            descriptor.value,
+            `${location}[${index}]`,
+            ancestors,
+            state,
+          ),
+        );
+      }
+      ancestors.delete(value);
+      return clone;
+    }
+    const clone = {};
+    for (const key of [...keys].sort()) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined ||
+        !Object.hasOwn(descriptor, "value") ||
+        descriptor.enumerable !== true
+      ) {
+        throw new TypeError(
+          `custom-ellipsoid JSON-safe value rejects accessors or hidden keys at ${location}.${key}`,
+        );
+      }
+      clone[key] = cloneC1229S5CustomJsonSafe(
+        descriptor.value,
+        `${location}.${key}`,
+        ancestors,
+        state,
+      );
+    }
+    ancestors.delete(value);
+    return clone;
+  } catch (error) {
+    ancestors.delete(value);
+    if (
+      error instanceof TypeError &&
+      /^custom-ellipsoid JSON-safe/u.test(error.message)
+    ) {
+      throw error;
+    }
+    throw new TypeError(
+      `custom-ellipsoid JSON-safe value is not inspectable at ${location}`,
+      { cause: error },
+    );
+  }
+}
+
+export function stableC1229S5CustomJson(value, space) {
+  const normalized = cloneC1229S5CustomJsonSafe(value);
+  const json = JSON.stringify(normalized, null, space);
+  if (typeof json !== "string") {
+    throw new TypeError("custom-ellipsoid JSON-safe root is not serializable");
+  }
+  return `${json}\n`;
 }
 
 export function computeC1229S5CustomSurfaceRadius({
@@ -1530,6 +1769,8 @@ function validImage(image, session, runId, phases) {
     image.width === C12_29_S5_CUSTOM_SCENE.viewport.width &&
     image.height === C12_29_S5_CUSTOM_SCENE.viewport.height &&
     image.captureMethod === C12_29_S5_CUSTOM_CAPTURE_METHOD &&
+    isC1229S5CustomUuidV4(image.renderTaskToken) &&
+    isC1229S5CustomUuidV4(image.captureTaskToken) &&
     image.renderTaskToken === image.captureTaskToken &&
     image.metricImageId === image.imageId &&
     image.fingerprintVerified === true &&
@@ -2345,9 +2586,43 @@ function validateSession(session, runId, structural, failures) {
   const pickAfter = pick?.postcondition?.after;
   const expectedPickKind = renderer === "webgpu" ? "globe" : "undefined";
   if (
+    !exactKeys(pick, [
+      "method",
+      "invoked",
+      "awaited",
+      "settled",
+      "renderPumpFrames",
+      "maximumPumpFrames",
+      "directUpdateForPickCall",
+      "pickableBefore",
+      "pickableRequested",
+      "pickIdAllocated",
+      "pickIdKey",
+      "pickIdRegistryOwnsGlobe",
+      "pickColorMirrorExact",
+      "updateForPickObserved",
+      "updateForPickCalls",
+      "resultKind",
+      "resultPrimitiveIdentity",
+      "pickableAfterRestore",
+      "pickableRestored",
+      "postcondition",
+    ]) ||
+    !exactKeys(pick?.postcondition, [
+      "before",
+      "after",
+      "surfaceRadius",
+      "selectionRevision",
+      "selectedTileIds",
+    ]) ||
     pick?.method !== "scene.pickAsync" ||
     pick?.invoked !== true ||
     pick?.awaited !== true ||
+    pick?.settled !== true ||
+    !Number.isInteger(pick?.renderPumpFrames) ||
+    pick.renderPumpFrames < 1 ||
+    pick.renderPumpFrames > C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames ||
+    pick?.maximumPumpFrames !== C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames ||
     pick?.directUpdateForPickCall !== false ||
     pick?.pickableBefore !== false ||
     pick?.pickableRequested !== true ||
@@ -2357,7 +2632,10 @@ function validateSession(session, runId, structural, failures) {
     pick?.pickIdRegistryOwnsGlobe !== true ||
     pick?.pickColorMirrorExact !== true ||
     pick?.updateForPickObserved !== true ||
-    !(pick?.updateForPickCalls > 0) ||
+    !Number.isInteger(pick?.updateForPickCalls) ||
+    pick.updateForPickCalls < 1 ||
+    pick.updateForPickCalls > C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames ||
+    pick.updateForPickCalls > pick.renderPumpFrames ||
     pick?.resultKind !== expectedPickKind ||
     pick?.resultPrimitiveIdentity !== (renderer === "webgpu") ||
     pick?.pickableAfterRestore !== false ||
@@ -2777,9 +3055,14 @@ export function foldC1229S5CustomEllipsoidGate(report) {
   if (
     new Set(allImages.map((image) => image?.imageId)).size !==
       allImages.length ||
-    new Set(allImages.map((image) => image?.fileName)).size !== allImages.length
+    new Set(allImages.map((image) => image?.fileName)).size !==
+      allImages.length ||
+    new Set(allImages.map((image) => image?.renderTaskToken)).size !==
+      allImages.length
   ) {
-    structuralReasons.push("PNG UUID/file identities are not globally unique");
+    structuralReasons.push(
+      "PNG UUID/file/task identities are not globally unique",
+    );
   }
   if (
     report?.cleanup?.complete !== true ||
@@ -2813,6 +3096,19 @@ export function foldC1229S5CustomEllipsoidGate(report) {
 
 export function validateC1229S5CustomFinalArtifact(artifact) {
   const reasons = [];
+  try {
+    const canonicalBytes = stableC1229S5CustomJson(artifact, 2);
+    artifact = JSON.parse(canonicalBytes);
+    if (stableC1229S5CustomJson(artifact, 2) !== canonicalBytes) {
+      reasons.push("final artifact canonical roundtrip is unstable");
+      return { ok: false, reasons };
+    }
+  } catch (error) {
+    reasons.push(
+      `final artifact is not canonical JSON-safe data: ${error.message}`,
+    );
+    return { ok: false, reasons };
+  }
   if (artifact?.schema !== C12_29_S5_CUSTOM_SCHEMA) {
     reasons.push("final schema is invalid");
   }
@@ -2853,11 +3149,10 @@ export function validateC1229S5CustomFinalArtifact(artifact) {
       reasons.push("ERROR artifact top-level keys are not exact");
     }
     if (
-      artifact?.diagnostics?.schema !== C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA ||
-      typeof artifact?.diagnostics?.stage !== "string" ||
-      !C12_29_S5_CUSTOM_RENDERERS.includes(artifact?.diagnostics?.renderer) ||
+      !validCustomErrorDiagnostics(artifact?.diagnostics) ||
       typeof artifact?.error !== "string" ||
-      artifact.error.length === 0
+      artifact.error.length === 0 ||
+      artifact.error.length > 65_536
     ) {
       reasons.push("ERROR diagnostics are incomplete");
     }
