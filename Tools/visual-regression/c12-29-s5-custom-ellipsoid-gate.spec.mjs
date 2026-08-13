@@ -1,0 +1,2291 @@
+#!/usr/bin/env node
+
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import {
+  C12_29_S5_CUSTOM_AGGREGATION,
+  C12_29_S5_CUSTOM_BUILD_SOURCE_FILES,
+  C12_29_S5_CUSTOM_CAPTURE_LABELS,
+  C12_29_S5_CUSTOM_CAPTURE_METHOD,
+  C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+  C12_29_S5_CUSTOM_ECLIPSE_FLOATS,
+  C12_29_S5_CUSTOM_GEOMETRY_EPSILON_METERS,
+  C12_29_S5_CUSTOM_GEOMETRY_OPERATION_BUDGETS,
+  C12_29_S5_CUSTOM_PHASES,
+  C12_29_S5_CUSTOM_RENDERERS,
+  C12_29_S5_CUSTOM_SCENE,
+  C12_29_S5_CUSTOM_SCHEMA,
+  C12_29_S5_CUSTOM_SOURCE_FILES,
+  C12_29_S5_CUSTOM_STABILITY_METHOD,
+  C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES,
+  C12_29_S5_CUSTOM_WEBGPU_ECLIPSE_BINDING,
+  c1229S5CustomGeometryTolerance,
+  computeC1229S5CustomSurfaceRadius,
+  customEllipsoidGeodeticToEcef,
+  deriveC1229S5CustomAxisIntersection,
+  deriveC1229S5CustomCrossBackend,
+  deriveC1229S5CustomOracleSample,
+  deriveC1229S5CustomSampleId,
+  evaluateC1229S5CustomFragment,
+  exitCodeForC1229S5CustomStatus,
+  foldC1229S5CustomEllipsoidGate,
+  isC1229S5CustomUuidV4,
+  packC1229S5CustomCommonRay,
+  stableC1229S5CustomJson,
+  validateC1229S5CustomFinalArtifact,
+} from "./lib/c12-29-s5-custom-ellipsoid-gate.mjs";
+import { inspectBuildSourceIdentity } from "./lib/build-source-identity.mjs";
+import {
+  checkEmbeddedFusedSnapshotIsCanonical,
+  checkFusedCaptureUsage,
+} from "./lib/same-task-capture.mjs";
+import {
+  beginC1229S5CustomEvidenceRun,
+  claimC1229S5CustomCanonical,
+  cleanupC1229S5CustomOwnedPngs,
+  closeC1229S5CustomResourceBounded,
+  createC1229S5CustomArtifactPaths,
+  finalizeC1229S5CustomEvidence,
+  releaseC1229S5CustomLock,
+  validateC1229S5CustomLoopbackBase,
+  withC1229S5CustomWatchdog,
+} from "./probe-c12-29-s5-custom-ellipsoid.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(__dirname, "../..");
+const helperPath = path.join(
+  __dirname,
+  "lib/c12-29-s5-custom-ellipsoid-gate.mjs",
+);
+const probePath = path.join(__dirname, "probe-c12-29-s5-custom-ellipsoid.mjs");
+const helperSource = fs.readFileSync(helperPath, "utf8");
+const probeSource = fs.readFileSync(probePath, "utf8");
+
+const RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
+const SHA = "a".repeat(64);
+
+function fp() {
+  return { exists: true, byteLength: 7, sha256: SHA };
+}
+
+function params() {
+  return {
+    params: { x: 1, y: 1, z: 0.08, w: -0.03 },
+    params2: { x: 0.00005, y: 1 / 3, z: 0, w: 0.01 },
+  };
+}
+
+function alignedBodies() {
+  return {
+    sun: { x: 149_600_000_000, y: 0, z: 0 },
+    moon: { x: 384_400_000, y: 0, z: 0 },
+    ...params(),
+  };
+}
+
+function fixtureTemporalState(label, preparedTuple) {
+  const antipode = label.startsWith("antipode-");
+  const control = label.startsWith("control-");
+  const lightingEnabled = label.endsWith("-on");
+  const active = lightingEnabled && !control && !antipode;
+  const target = {
+    longitude: antipode ? -Math.PI : 0,
+    latitude: 0,
+    height: C12_29_S5_CUSTOM_SCENE.heightMeters,
+  };
+  const positionObject = customEllipsoidGeodeticToEcef({
+    ...target,
+    height: C12_29_S5_CUSTOM_SCENE.cameraHeightMeters,
+  });
+  const positionWC = [positionObject.x, positionObject.y, positionObject.z];
+  const normalize = (value) => {
+    const magnitude = Math.hypot(...value);
+    return value.map((entry) => entry / magnitude);
+  };
+  const cross = (left, right) => [
+    left[1] * right[2] - left[2] * right[1],
+    left[2] * right[0] - left[0] * right[2],
+    left[0] * right[1] - left[1] * right[0],
+  ];
+  const directionWC = normalize(positionWC.map((value) => -value));
+  const north = [
+    -Math.sin(target.latitude) * Math.cos(target.longitude),
+    -Math.sin(target.latitude) * Math.sin(target.longitude),
+    Math.cos(target.latitude),
+  ];
+  const rightWC = normalize(cross(directionWC, north));
+  const upWC = normalize(cross(rightWC, directionWC));
+  return {
+    clockIso: control
+      ? C12_29_S5_CUSTOM_SCENE.controlIso
+      : C12_29_S5_CUSTOM_SCENE.eventIso,
+    cameraTarget: target,
+    camera: {
+      positionWC,
+      directionWC,
+      upWC,
+      rightWC,
+      viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+      projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+      frustum: {
+        fov: (C12_29_S5_CUSTOM_SCENE.cameraFovDegrees * Math.PI) / 180,
+        aspectRatio:
+          C12_29_S5_CUSTOM_SCENE.viewport.width /
+          C12_29_S5_CUSTOM_SCENE.viewport.height,
+        near: 1,
+        far: 20_000_000,
+      },
+    },
+    provider: {
+      constructor: "CustomHeightmapTerrainProvider",
+      objectIdentity: true,
+      tilingSchemeIdentity: true,
+      width: C12_29_S5_CUSTOM_SCENE.terrainWidth,
+      height: C12_29_S5_CUSTOM_SCENE.terrainHeight,
+      constantHeight: C12_29_S5_CUSTOM_SCENE.heightMeters,
+      requestCount: 2,
+    },
+    preparedTuple: structuredClone(preparedTuple),
+    content: preparedTuple.selectedTileIds.map((tileId, contentIndex) => ({
+      tileId,
+      meshIdentity: `mesh-${contentIndex + 1}`,
+      renderedMesh: true,
+    })),
+    eclipse: {
+      lightingEnabled,
+      blockPresent: true,
+      active,
+      revision: 7,
+      sunDirectionAndInvRange: { x: 1, y: 0, z: 0, w: 1 },
+      moonDirectionDeltaAndInvRange: { x: 1, y: 0, z: 0, w: 1 },
+      params: { x: active ? 1 : 0, y: 1, z: 0, w: 0 },
+      params2: { x: 0.00005, y: 1 / 3, z: 0, w: 0 },
+    },
+  };
+}
+
+function image(renderer, label, index, preparedTuple, firstSelectionRevision) {
+  const imageId = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+  const result = {
+    label,
+    imageId,
+    fileName: `${RUN_ID}.${imageId}.${renderer}.${label}.png`,
+    byteLength: label.startsWith("antipode-")
+      ? 103
+      : label.startsWith("control-")
+        ? 105
+        : 100 + index,
+    sha256: SHA,
+    width: C12_29_S5_CUSTOM_SCENE.viewport.width,
+    height: C12_29_S5_CUSTOM_SCENE.viewport.height,
+    captureMethod: C12_29_S5_CUSTOM_CAPTURE_METHOD,
+    renderTaskToken: `task-${index}`,
+    captureTaskToken: `task-${index}`,
+    metricImageId: imageId,
+    fingerprintVerified: true,
+  };
+  const state = fixtureTemporalState(label, preparedTuple);
+  const firstFrame = index * 10 + 1;
+  result.temporalStability = {
+    method: C12_29_S5_CUSTOM_STABILITY_METHOD,
+    requiredConsecutiveFrames: C12_29_S5_CUSTOM_SCENE.minimumStableFrames,
+    maximumFrames: C12_29_S5_CUSTOM_SCENE.maximumStabilityFrames,
+    attemptedFrames: C12_29_S5_CUSTOM_SCENE.minimumStableFrames + 1,
+    observations: Array.from(
+      { length: C12_29_S5_CUSTOM_SCENE.minimumStableFrames },
+      (_, observationIndex) => ({
+        ordinal: observationIndex + 1,
+        frameNumber: firstFrame + observationIndex,
+        byteLength: result.byteLength,
+        sha256: result.sha256,
+        width: result.width,
+        height: result.height,
+        state: {
+          ...structuredClone(state),
+          preparedTuple: {
+            ...structuredClone(state.preparedTuple),
+            selectionRevision: firstSelectionRevision + observationIndex,
+          },
+        },
+      }),
+    ),
+    captureFrameNumber: firstFrame + C12_29_S5_CUSTOM_SCENE.minimumStableFrames,
+    captureState: {
+      ...structuredClone(state),
+      preparedTuple: {
+        ...structuredClone(state.preparedTuple),
+        selectionRevision:
+          firstSelectionRevision + C12_29_S5_CUSTOM_SCENE.minimumStableFrames,
+      },
+    },
+    captureOutput: {
+      byteLength: result.byteLength,
+      sha256: result.sha256,
+      width: result.width,
+      height: result.height,
+    },
+    renderFirst: true,
+    sameTaskFusedCapture: true,
+  };
+  return result;
+}
+
+function temporalStates(image) {
+  return [
+    ...image.temporalStability.observations.map(
+      (observation) => observation.state,
+    ),
+    image.temporalStability.captureState,
+  ];
+}
+
+function luminance(rgba) {
+  return (0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]) / 255;
+}
+
+function distance(left, right) {
+  return Math.hypot(left.x - right.x, left.y - right.y, left.z - right.z);
+}
+
+function tileCoordinates(cartographic, level = 2) {
+  const tilesX = 2 * 2 ** level;
+  const tilesY = 2 ** level;
+  const tileWidth = (2 * Math.PI) / tilesX;
+  const tileHeight = Math.PI / tilesY;
+  const x = Math.min(
+    tilesX - 1,
+    Math.floor((cartographic.longitude + Math.PI) / tileWidth),
+  );
+  const y = Math.min(
+    tilesY - 1,
+    Math.floor((Math.PI / 2 - cartographic.latitude) / tileHeight),
+  );
+  const west = -Math.PI + x * tileWidth;
+  const south = Math.PI / 2 - (y + 1) * tileHeight;
+  return {
+    tileId: `${level}/${x}/${y}`,
+    tileUv: [
+      (cartographic.longitude - west) / tileWidth,
+      (cartographic.latitude - south) / tileHeight,
+    ],
+  };
+}
+
+function primaryOracleSample({
+  longitudeDegrees,
+  latitudeDegrees,
+  pixelIndex,
+  offMetricImageId,
+  onMetricImageId,
+  event,
+  horizon = false,
+}) {
+  const cartographic = {
+    longitude: (longitudeDegrees * Math.PI) / 180,
+    latitude: (latitudeDegrees * Math.PI) / 180,
+    height: C12_29_S5_CUSTOM_SCENE.heightMeters,
+  };
+  const pixel = { x: 100 + pixelIndex * 23, y: 200 + pixelIndex * 17 };
+  const runtimePosition = customEllipsoidGeodeticToEcef(cartographic, "f64");
+  const offRgba = [200, 200, 200, 255];
+  const preview = deriveC1229S5CustomOracleSample({
+    cartographic,
+    sun: event.runtimeBodies.sun,
+    moon: event.runtimeBodies.moon,
+    params: event.shadowBlock.params,
+    params2: event.shadowBlock.params2,
+    offLuminance: luminance(offRgba),
+    onLuminance: luminance(offRgba),
+    runtimePosition,
+  });
+  assert.ok(preview);
+  const onByte = horizon ? 200 : Math.round(preview.f64 * 200);
+  const onRgba = [onByte, onByte, onByte, 255];
+  const derived = deriveC1229S5CustomOracleSample({
+    cartographic,
+    sun: event.runtimeBodies.sun,
+    moon: event.runtimeBodies.moon,
+    params: event.shadowBlock.params,
+    params2: event.shadowBlock.params2,
+    offLuminance: luminance(offRgba),
+    onLuminance: luminance(onRgba),
+    runtimePosition,
+  });
+  assert.ok(derived?.geometryIdentity);
+  const tile = tileCoordinates(cartographic);
+  const tileBoundaryPixels = [
+    { x: pixel.x + 10, y: pixel.y },
+    { x: pixel.x - 17, y: pixel.y },
+    { x: pixel.x, y: pixel.y + 13 },
+    { x: pixel.x, y: pixel.y - 19 },
+  ];
+  const tileBoundaryDistancesPixels = tileBoundaryPixels.map((boundary) =>
+    Math.hypot(boundary.x - pixel.x, boundary.y - pixel.y),
+  );
+  const normalizedBoundaryDistance = Math.min(
+    tile.tileUv[0],
+    1 - tile.tileUv[0],
+    tile.tileUv[1],
+    1 - tile.tileUv[1],
+  );
+  const sample = {
+    id: "pending",
+    cartographic,
+    pixel,
+    tileId: tile.tileId,
+    tileUv: tile.tileUv,
+    normalizedBoundaryDistance,
+    tileBoundaryPixels,
+    tileBoundaryDistancesPixels,
+    boundaryDistancePixels: Math.min(...tileBoundaryDistancesPixels),
+    flatTileInterior: true,
+    runtimePosition,
+    offRgba,
+    onRgba,
+    offMetricImageId,
+    onMetricImageId,
+    boundaryAmbiguous: derived.boundaryAmbiguous,
+    classification: derived.classificationF64,
+    classificationF32: derived.classificationF32,
+    offLuminance: luminance(offRgba),
+    onLuminance: luminance(onRgba),
+    f64: derived.f64,
+    f32: derived.f32,
+    f32Error: derived.f32Error,
+    quantizationBound: derived.quantizationBound,
+    tolerance: derived.tolerance,
+    observedFactor: derived.observedFactor,
+    absoluteError: derived.absoluteError,
+    withinTolerance: derived.withinTolerance,
+    horizonRejectedF64: derived.horizonRejectedF64,
+    horizonRejectedF32: derived.horizonRejectedF32,
+    geometricF64: derived.geometricF64,
+    geometricF32: derived.geometricF32,
+    geometryIdentity: derived.geometryIdentity,
+  };
+  sample.id = deriveC1229S5CustomSampleId(sample);
+  return sample;
+}
+
+function passingSession(renderer, imageOffset) {
+  const radius = computeC1229S5CustomSurfaceRadius({
+    maximumRadius: 8_000_000,
+    minimumHeight: 0,
+    maximumHeight: 24_000,
+  });
+  const selectedTileIds = ["0/0/0", "0/1/0"];
+  const preparedTuple = {
+    prepared: true,
+    selectionRevision: 5,
+    surfaceRadius: radius.radius,
+    selectedTileIds,
+  };
+  const firstSelectionRevisions = [6, 10, 21, 25, 41, 45];
+  const sessionImages = C12_29_S5_CUSTOM_CAPTURE_LABELS.map((label, index) =>
+    image(
+      renderer,
+      label,
+      imageOffset + index,
+      preparedTuple,
+      firstSelectionRevisions[index],
+    ),
+  );
+  const imageIdFor = (label) =>
+    sessionImages.find((entry) => entry.label === label).imageId;
+  const bodies = {
+    sun: { x: 149_600_000_000, y: 0, z: 0 },
+    moon: { x: 350_000_000, y: 0, z: 0 },
+    sunInertial: { x: 149_600_000_000, y: 0, z: 0 },
+    moonInertial: { x: 350_000_000, y: 0, z: 0 },
+    icrfToFixed: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+  };
+  const shadowParams = params();
+  const expectedPayload = Array.from(
+    packC1229S5CustomCommonRay({ ...bodies, ...shadowParams }, "f32"),
+  );
+  const shadowVectors = {
+    sunDirectionAndInvRange: {
+      x: expectedPayload[0],
+      y: expectedPayload[1],
+      z: expectedPayload[2],
+      w: expectedPayload[3],
+    },
+    moonDirectionDeltaAndInvRange: {
+      x: expectedPayload[4],
+      y: expectedPayload[5],
+      z: expectedPayload[6],
+      w: expectedPayload[7],
+    },
+    params: { ...shadowParams.params },
+    params2: { ...shadowParams.params2 },
+  };
+  const backendIdentity =
+    renderer === "webgl"
+      ? {
+          automaticUniforms: {
+            radiiExact: true,
+            inverseRadiiExact: true,
+            radii: { ...C12_29_S5_CUSTOM_SCENE.radii },
+            inverseRadii: {
+              x: 1 / C12_29_S5_CUSTOM_SCENE.radii.x,
+              y: 1 / C12_29_S5_CUSTOM_SCENE.radii.y,
+              z: 1 / C12_29_S5_CUSTOM_SCENE.radii.z,
+            },
+          },
+        }
+      : {
+          cameraUbo: {
+            indices: { ...C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES },
+            values: {
+              inverseRadiiX: Math.fround(1 / 8_000_000),
+              inverseRadiiY: Math.fround(1 / 8_000_000),
+              inverseRadiiZ: Math.fround(1 / 5_000_000),
+              maximumRadius: Math.fround(8_000_000),
+            },
+            valuesExact: true,
+          },
+          eclipseBinding: {
+            binding: C12_29_S5_CUSTOM_WEBGPU_ECLIPSE_BINDING,
+            offsetAligned: true,
+            size: 64,
+            payload: [...expectedPayload],
+            block: { revision: 1, ...structuredClone(shadowVectors) },
+            payloadExact: true,
+          },
+        };
+  const phases = Object.fromEntries(
+    C12_29_S5_CUSTOM_PHASES.map((phase) => [phase, {}]),
+  );
+  phases["custom-scene-construction"] = {
+    ellipsoid: {
+      constructor: "Ellipsoid",
+      radii: { ...C12_29_S5_CUSTOM_SCENE.radii },
+      sceneIdentity: true,
+    },
+    provider: {
+      constructor: "CustomHeightmapTerrainProvider",
+      width: 17,
+      height: 17,
+      constantHeight: 24_000,
+      tilingSchemeIdentity: true,
+    },
+    projection: {
+      constructor: "GeographicProjection",
+      ellipsoidIdentity: true,
+      sceneIdentity: true,
+    },
+    tilingScheme: {
+      constructor: "GeographicTilingScheme",
+      ellipsoidIdentity: true,
+    },
+    globe: { ellipsoidIdentity: true, sceneIdentity: true },
+    imagery: {
+      constructor: "GridImageryProvider",
+      tilingSchemeIdentity: true,
+    },
+  };
+  phases["selected-terrain-preparation"] = {
+    ...preparedTuple,
+    tilesLoaded: true,
+    knownMinimumHeight: 0,
+    knownMaximumHeight: 24_000,
+    knownBoundsValid: true,
+    radiusLaw: {
+      maximumRadius: 8_000_000,
+      minimumHeight: 0,
+      maximumHeight: 24_000,
+      height: 24_000,
+    },
+    terrainRequestCount: 2,
+    terrainRequests: [
+      { x: 0, y: 0, level: 0, height: 24_000 },
+      { x: 1, y: 0, level: 0, height: 24_000 },
+    ],
+    backendIdentity,
+  };
+  phases["event-s5-off"] = {
+    enabled: false,
+    clockIso: C12_29_S5_CUSTOM_SCENE.eventIso,
+    preparedTuple: structuredClone(
+      sessionImages[0].temporalStability.captureState.preparedTuple,
+    ),
+  };
+  const axis = deriveC1229S5CustomAxisIntersection(bodies);
+  assert.ok(axis);
+  const axisCartographic = { longitude: 0, latitude: 0, height: 0 };
+  const axisSurface = customEllipsoidGeodeticToEcef(axisCartographic, "f64");
+  const pointTolerance = c1229S5CustomGeometryTolerance(
+    "axisIntersectionPoint",
+    "meters",
+  );
+  const directionTolerance = c1229S5CustomGeometryTolerance(
+    "axisDirection",
+    "dimensionless",
+  );
+  const surfaceTolerance =
+    pointTolerance + c1229S5CustomGeometryTolerance("ecefPosition", "meters");
+  const eventCentre = {
+    derivedFromRuntimeBodies: true,
+    hardcodedLongitude: false,
+    longitude: 0,
+    latitude: 0,
+    point: axis.point,
+    direction: axis.direction,
+    forwardRoot: axis.forwardRoot,
+    geometryIdentity: {
+      baseEpsilonMeters: C12_29_S5_CUSTOM_GEOMETRY_EPSILON_METERS,
+      pointDifferenceMeters: 0,
+      pointToleranceMeters: pointTolerance,
+      directionDifference: 0,
+      directionTolerance,
+      rootDifferenceMeters: 0,
+      rootToleranceMeters: pointTolerance,
+      surfacePointDifferenceMeters: distance(axisSurface, axis.point),
+      surfacePointToleranceMeters: surfaceTolerance,
+      withinTolerance: distance(axisSurface, axis.point) <= surfaceTolerance,
+    },
+  };
+  phases["event-s5-on"] = {
+    enabled: true,
+    clockIso: C12_29_S5_CUSTOM_SCENE.eventIso,
+    preparedTuple: structuredClone(
+      sessionImages[1].temporalStability.captureState.preparedTuple,
+    ),
+    eventCentre,
+    runtimeBodies: bodies,
+    shadowBlock: {
+      ...structuredClone(shadowVectors),
+      ...(renderer === "webgl"
+        ? {
+            webglPackedUniform: [...expectedPayload],
+            webglPackedF32: [...expectedPayload],
+            payloadExact: true,
+          }
+        : {}),
+    },
+    oracleSampleCount: 9,
+    oracleSampleCounts: { umbra: 3, penumbra: 3, clear: 3 },
+    allSamplesWithinDerivedTolerance: true,
+    hasUmbra: true,
+    hasPenumbra: true,
+    hasClear: true,
+  };
+  const eventSamples = [
+    [0.2, 0.2],
+    [0.4, 0.3],
+    [0.6, 0.4],
+    [2, 0.5],
+    [5, 1],
+    [10, 2],
+    [30, 2],
+    [35, 3],
+    [40, 4],
+  ].map(([longitudeDegrees, latitudeDegrees], index) =>
+    primaryOracleSample({
+      longitudeDegrees,
+      latitudeDegrees,
+      pixelIndex: index,
+      offMetricImageId: imageIdFor("event-off"),
+      onMetricImageId: imageIdFor("event-on"),
+      event: phases["event-s5-on"],
+    }),
+  );
+  assert.deepEqual(
+    eventSamples.map((sample) => sample.classification),
+    [
+      "umbra",
+      "umbra",
+      "umbra",
+      "penumbra",
+      "penumbra",
+      "penumbra",
+      "clear",
+      "clear",
+      "clear",
+    ],
+  );
+  const antipodeSamples = [
+    [-179, 1],
+    [-178, 2],
+    [-177, 3],
+  ].map(([longitudeDegrees, latitudeDegrees], index) =>
+    primaryOracleSample({
+      longitudeDegrees,
+      latitudeDegrees,
+      pixelIndex: 20 + index,
+      offMetricImageId: imageIdFor("antipode-off"),
+      onMetricImageId: imageIdFor("antipode-on"),
+      event: phases["event-s5-on"],
+      horizon: true,
+    }),
+  );
+  phases["antipode-horizon-control"] = {
+    centre: { longitude: -Math.PI, latitude: 0 },
+    preparedTupleBefore: {
+      ...structuredClone(preparedTuple),
+      selectionRevision: 20,
+    },
+    offPreparedTuple: structuredClone(
+      sessionImages[2].temporalStability.captureState.preparedTuple,
+    ),
+    onPreparedTuple: structuredClone(
+      sessionImages[3].temporalStability.captureState.preparedTuple,
+    ),
+    allCandidatesHorizonRejected: true,
+    offOnByteIdentical: true,
+    samples: antipodeSamples,
+  };
+  phases["behavioral-pick"] = {
+    method: "scene.pickAsync",
+    invoked: true,
+    awaited: true,
+    directUpdateForPickCall: false,
+    pickableBefore: false,
+    pickableRequested: true,
+    pickIdAllocated: true,
+    pickIdKey: 7,
+    pickIdRegistryOwnsGlobe: true,
+    pickColorMirrorExact: true,
+    updateForPickObserved: true,
+    updateForPickCalls: 1,
+    resultKind: renderer === "webgpu" ? "globe" : "undefined",
+    resultPrimitiveIdentity: renderer === "webgpu",
+    pickableAfterRestore: false,
+    pickableRestored: true,
+    postcondition: {
+      before: {
+        prepared: false,
+        selectionRevision: null,
+        surfaceRadius: null,
+        selectedTileIds: [...selectedTileIds],
+      },
+      after: {
+        ...structuredClone(preparedTuple),
+        selectionRevision: 30,
+      },
+      surfaceRadius: radius.radius,
+      selectionRevision: 30,
+      selectedTileIds,
+    },
+  };
+  phases["retained-capture"] =
+    renderer === "webgl"
+      ? { applicability: "N/A-WebGPU-only" }
+      : {
+          applicability: "required",
+          managerDriven: true,
+          directCaptureHelperCall: false,
+          tinyLocalModel: true,
+          faceCount: 6,
+          faceTileCardinalityExact: true,
+          terrainDrawCount: 6,
+          cameraRestored: true,
+          preparedTuplePreserved: true,
+          cameraUboInverseRadiiExact: true,
+          eclipseBindingOffsetsExact: true,
+          eclipseBindingPayloads: [[...expectedPayload]],
+          eclipseBindingPayloadsExact: true,
+          submittedWork: true,
+        };
+  phases["noneclipse-identity-control"] = {
+    clockIso: C12_29_S5_CUSTOM_SCENE.controlIso,
+    inactive: true,
+    preparedTupleBefore: {
+      ...structuredClone(preparedTuple),
+      selectionRevision: 40,
+    },
+    offPreparedTuple: structuredClone(
+      sessionImages[4].temporalStability.captureState.preparedTuple,
+    ),
+    onPreparedTuple: structuredClone(
+      sessionImages[5].temporalStability.captureState.preparedTuple,
+    ),
+    offOnByteIdentical: true,
+  };
+  phases["session-cleanup"] = {
+    complete: true,
+    instrumentationRestored: true,
+    defaultEllipsoidRestored: true,
+  };
+  return {
+    renderer,
+    actualRenderer: renderer,
+    phaseOrder: [...C12_29_S5_CUSTOM_PHASES],
+    completedPhases: [...C12_29_S5_CUSTOM_PHASES],
+    phases,
+    images: sessionImages,
+    transport: {
+      loopback: true,
+      sameOriginOnly: true,
+      externalRequests: [],
+      failedRequests: [],
+      httpErrors: [],
+    },
+    runtime: {
+      pageErrors: [],
+      consoleErrors: [],
+      gpuErrors: [],
+      deviceLost: false,
+    },
+    oracleSamples: eventSamples,
+    cleanup: {
+      complete: true,
+      pageClosed: true,
+      contextClosed: true,
+      timersCleared: true,
+      pendingRequests: 0,
+      pageCloseTimedOut: false,
+      contextCloseTimedOut: false,
+    },
+  };
+}
+
+function passingReport() {
+  const sessions = [passingSession("webgl", 1), passingSession("webgpu", 7)];
+  const crossSamples = sessions[0].oracleSamples.map((left, index) => {
+    const right = sessions[1].oracleSamples[index];
+    const derived = deriveC1229S5CustomCrossBackend(left, right);
+    return {
+      id: left.id,
+      classification: left.classification,
+      webglObservedFactor: left.observedFactor,
+      webgpuObservedFactor: right.observedFactor,
+      maximumF32Error: derived.maximumF32Error,
+      quantizationBound: derived.quantizationBound,
+      tolerance: derived.tolerance,
+      absoluteDifference: derived.absoluteDifference,
+      withinTolerance: derived.withinTolerance,
+    };
+  });
+  const buildIdentity = {
+    ok: true,
+    entries: C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.map((file) => ({
+      file: `/repo/${file}`,
+      sourceMapEntry: `../../${file}`,
+      currentByteLength: 7,
+      embeddedByteLength: 7,
+      currentSha256: SHA,
+      embeddedSha256: SHA,
+      exact: true,
+      reason: null,
+    })),
+    reasons: [],
+    sourceMapPath: "/repo/Build/CesiumUnminified/index.js.map",
+    sourceMapByteLength: 10,
+    sourceMapSha256: SHA,
+  };
+  return {
+    schema: C12_29_S5_CUSTOM_SCHEMA,
+    runId: RUN_ID,
+    aggregation: C12_29_S5_CUSTOM_AGGREGATION,
+    incomplete: false,
+    contract: {
+      eventIso: C12_29_S5_CUSTOM_SCENE.eventIso,
+      controlIso: C12_29_S5_CUSTOM_SCENE.controlIso,
+      radii: { ...C12_29_S5_CUSTOM_SCENE.radii },
+      heightMeters: C12_29_S5_CUSTOM_SCENE.heightMeters,
+      cameraHeightMeters: C12_29_S5_CUSTOM_SCENE.cameraHeightMeters,
+      terrainDimensions: { width: 17, height: 17 },
+      phaseOrder: [...C12_29_S5_CUSTOM_PHASES],
+      captureLabels: [...C12_29_S5_CUSTOM_CAPTURE_LABELS],
+      temporalStability: {
+        method: C12_29_S5_CUSTOM_STABILITY_METHOD,
+        minimumConsecutiveFrames: C12_29_S5_CUSTOM_SCENE.minimumStableFrames,
+        maximumFrames: C12_29_S5_CUSTOM_SCENE.maximumStabilityFrames,
+      },
+      cameraUboIndices: { ...C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES },
+      eclipseBinding: C12_29_S5_CUSTOM_WEBGPU_ECLIPSE_BINDING,
+      radiusLaw: {
+        fillSkirtAllowanceMeters: 1000,
+        absoluteSafetyMeters: 2,
+        relativeSafety: 8 * 2 ** -23,
+      },
+      tileInteriorPixelFootprintRadius:
+        C12_29_S5_CUSTOM_SCENE.tileInteriorPixelFootprintRadius,
+      geometryEpsilonMeters: C12_29_S5_CUSTOM_GEOMETRY_EPSILON_METERS,
+      geometryOperationBudgets: C12_29_S5_CUSTOM_GEOMETRY_OPERATION_BUDGETS,
+    },
+    provenance: {
+      ok: true,
+      stable: true,
+      reasons: [],
+      gitHead: {
+        start: "1".repeat(40),
+        end: "1".repeat(40),
+        stable: true,
+      },
+      sourceBoundary: {
+        count: C12_29_S5_CUSTOM_SOURCE_FILES.length,
+        files: [...C12_29_S5_CUSTOM_SOURCE_FILES],
+        allReadable: true,
+      },
+      localFiles: C12_29_S5_CUSTOM_SOURCE_FILES.map((file) => ({
+        file,
+        start: fp(),
+        end: fp(),
+      })),
+      generatedShaders: {
+        start: { globeFsExact: true, globeTerrainExact: true },
+        end: { globeFsExact: true, globeTerrainExact: true },
+        stable: true,
+      },
+      buildSourceIdentity: {
+        start: buildIdentity,
+        end: structuredClone(buildIdentity),
+        stable: true,
+      },
+      servedEntryIdentity: {
+        ok: true,
+        reasons: [],
+        expectedLabels: ["webgl", "webgpu"],
+        observedLabels: ["webgl", "webgpu"],
+        localStart: fp(),
+        localEnd: fp(),
+        stable: true,
+      },
+      xys: [
+        {
+          renderer: "webgl",
+          file: "IAU2006_XYS_26.json",
+          localStart: fp(),
+          localEnd: fp(),
+          served: fp(),
+        },
+        {
+          renderer: "webgpu",
+          file: "IAU2006_XYS_26.json",
+          localStart: fp(),
+          localEnd: fp(),
+          served: fp(),
+        },
+      ],
+      sameTaskCapture: {
+        canonical: true,
+        usageExact: true,
+        helperPinned: true,
+        helperIdentity: {
+          file: "Tools/visual-regression/lib/same-task-capture.mjs",
+          start: fp(),
+          end: fp(),
+        },
+      },
+      harnessStable: true,
+    },
+    sessions,
+    crossBackendOracle: {
+      aggregation: C12_29_S5_CUSTOM_AGGREGATION,
+      matchedSampleCount: 9,
+      allWithinDerivedTolerance: true,
+      samples: crossSamples,
+    },
+    cleanup: {
+      complete: true,
+      browserClosed: true,
+      contextsClosed: true,
+      timersCleared: true,
+      pendingRequests: 0,
+    },
+  };
+}
+
+function passingArtifact() {
+  const report = passingReport();
+  const verdict = foldC1229S5CustomEllipsoidGate(report);
+  return {
+    ...report,
+    artifactName: `${report.runId}.json`,
+    status: verdict.status,
+    exitCode: verdict.exitCode,
+    reasons: {
+      structural: verdict.structuralReasons,
+      failures: verdict.failureReasons,
+    },
+    checks: verdict.checks,
+  };
+}
+
+function errorArtifact(runId, message = "deliberate red") {
+  return {
+    schema: C12_29_S5_CUSTOM_SCHEMA,
+    runId,
+    status: "ERROR",
+    incomplete: false,
+    exitCode: 2,
+    artifactName: `${runId}.json`,
+    error: message,
+    diagnostics: {
+      schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+      stage: "node-mutant",
+      renderer: "webgl",
+    },
+  };
+}
+
+function tempEvidenceDirectory() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "c1229-s5-custom-"));
+}
+
+function removeTempEvidenceDirectory(directory) {
+  const resolved = path.resolve(directory);
+  const tempRoot = path.resolve(os.tmpdir());
+  assert.equal(resolved.startsWith(`${tempRoot}${path.sep}`), true);
+  fs.rmSync(resolved, { recursive: true, force: true });
+}
+
+function operationsWith(overrides) {
+  return new Proxy(fs, {
+    get(target, property) {
+      if (Object.hasOwn(overrides, property)) return overrides[property];
+      const value = target[property];
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+test("contract freezes schemas, renderer order, nine phases, and six captures", () => {
+  assert.equal(
+    C12_29_S5_CUSTOM_SCHEMA,
+    "c12-29-s5-custom-ellipsoid-evidence-v2",
+  );
+  assert.equal(
+    C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v2",
+  );
+  assert.deepEqual(C12_29_S5_CUSTOM_RENDERERS, ["webgl", "webgpu"]);
+  assert.equal(C12_29_S5_CUSTOM_PHASES.length, 9);
+  assert.deepEqual(C12_29_S5_CUSTOM_PHASES, [
+    "custom-scene-construction",
+    "selected-terrain-preparation",
+    "event-s5-off",
+    "event-s5-on",
+    "antipode-horizon-control",
+    "behavioral-pick",
+    "retained-capture",
+    "noneclipse-identity-control",
+    "session-cleanup",
+  ]);
+  assert.deepEqual(C12_29_S5_CUSTOM_CAPTURE_LABELS, [
+    "event-off",
+    "event-on",
+    "antipode-off",
+    "antipode-on",
+    "control-off",
+    "control-on",
+  ]);
+  assert.equal(
+    C12_29_S5_CUSTOM_STABILITY_METHOD,
+    "render-first-consecutive-fused-snapshots-v1",
+  );
+  assert.equal(C12_29_S5_CUSTOM_SCENE.minimumStableFrames, 3);
+  assert.equal(C12_29_S5_CUSTOM_SCENE.maximumStabilityFrames, 60);
+  assert.equal(C12_29_S5_CUSTOM_SCENE.cameraHeightMeters, 12_000_000);
+});
+
+test("source boundary is complete, ordered, unique, readable, and build-derived", () => {
+  assert.equal(
+    new Set(C12_29_S5_CUSTOM_SOURCE_FILES).size,
+    C12_29_S5_CUSTOM_SOURCE_FILES.length,
+  );
+  for (const file of C12_29_S5_CUSTOM_SOURCE_FILES) {
+    if (file.endsWith("probe-c12-29-s5-custom-ellipsoid.mjs")) continue;
+    assert.equal(fs.existsSync(path.join(root, file)), true, file);
+  }
+  assert.deepEqual(
+    C12_29_S5_CUSTOM_BUILD_SOURCE_FILES,
+    C12_29_S5_CUSTOM_SOURCE_FILES.filter(
+      (file) =>
+        !file.startsWith("Tools/") &&
+        !file.endsWith(".glsl") &&
+        !file.endsWith(".wgsl"),
+    ),
+  );
+  for (const required of [
+    "packages/engine/Source/Core/CustomHeightmapTerrainProvider.js",
+    "packages/engine/Source/Core/GeographicProjection.js",
+    "packages/engine/Source/Renderer/AutomaticUniforms.js",
+    "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
+    "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts",
+    "packages/engine/Source/Shaders/GlobeFS.glsl",
+    "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+    "packages/widgets/Source/Viewer/Viewer.js",
+    "Tools/visual-regression/lib/same-task-capture.mjs",
+    "Tools/visual-regression/lib/build-source-identity.mjs",
+  ]) {
+    assert.ok(C12_29_S5_CUSTOM_SOURCE_FILES.includes(required), required);
+  }
+});
+
+test("static oracle has no Earth constants or production eclipse oracle import", () => {
+  assert.doesNotMatch(helperSource, /6378137|6356752/u);
+  assert.doesNotMatch(
+    helperSource,
+    /from\s+["'][^"']*(?:EclipseGlobeShadow|Ellipsoid|Transforms)[^"']*["']/u,
+  );
+  assert.doesNotMatch(helperSource, /Ellipsoid\.WGS84/u);
+});
+
+test("custom scene freezes oblate axes, honest terrain, and exact UBO indices", () => {
+  assert.deepEqual(C12_29_S5_CUSTOM_SCENE.radii, {
+    x: 8_000_000,
+    y: 8_000_000,
+    z: 5_000_000,
+  });
+  assert.equal(C12_29_S5_CUSTOM_SCENE.heightMeters, 24_000);
+  assert.equal(C12_29_S5_CUSTOM_SCENE.terrainWidth, 17);
+  assert.equal(C12_29_S5_CUSTOM_SCENE.terrainHeight, 17);
+  assert.deepEqual(C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES, {
+    inverseRadiiX: 51,
+    inverseRadiiY: 55,
+    inverseRadiiZ: 59,
+    maximumRadius: 86,
+  });
+  assert.equal(C12_29_S5_CUSTOM_WEBGPU_ECLIPSE_BINDING, 2);
+  assert.equal(C12_29_S5_CUSTOM_ECLIPSE_FLOATS, 16);
+});
+
+test("radius law includes skirt endpoint and max(relative, two metre) safety", () => {
+  const result = computeC1229S5CustomSurfaceRadius({
+    maximumRadius: 8_000_000,
+    minimumHeight: 24_000,
+    maximumHeight: 24_000,
+  });
+  assert.equal(result.unprotectedRadius, 8_024_000);
+  assert.equal(result.safety, 8_024_000 * 8 * 2 ** -23);
+  assert.equal(result.radius, result.unprotectedRadius + result.safety);
+  assert.equal(
+    computeC1229S5CustomSurfaceRadius({
+      maximumRadius: 10,
+      minimumHeight: 0,
+      maximumHeight: 0,
+    }).safety,
+    2,
+  );
+});
+
+test("radius-law mutants fail exact expected radius", () => {
+  const expected = computeC1229S5CustomSurfaceRadius({
+    maximumRadius: 8_000_000,
+    minimumHeight: -24_000,
+    maximumHeight: -24_000,
+  });
+  const noSkirt = 8_000_000 + 24_000 + (8_000_000 + 24_000) * 8 * 2 ** -23;
+  const noSafety = expected.unprotectedRadius;
+  assert.notEqual(noSkirt, expected.radius);
+  assert.notEqual(noSafety, expected.radius);
+});
+
+test("independent f64 oblate ECEF resolves equator and pole", () => {
+  const equator = customEllipsoidGeodeticToEcef({
+    longitude: 0,
+    latitude: 0,
+    height: 24_000,
+  });
+  assert.deepEqual(equator, { x: 8_024_000, y: 0, z: 0 });
+  const pole = customEllipsoidGeodeticToEcef({
+    longitude: 1.2,
+    latitude: Math.PI / 2,
+    height: 24_000,
+  });
+  assert.ok(Math.abs(pole.x) < 1e-8);
+  assert.ok(Math.abs(pole.y) < 1e-8);
+  assert.ok(Math.abs(pole.z - 5_024_000) < 1e-8);
+});
+
+test("f32 ECEF is strict f32 and diverges detectably from f64 off-axis", () => {
+  const cartographic = { longitude: 0.713, latitude: 0.432, height: 24_000 };
+  const f64 = customEllipsoidGeodeticToEcef(cartographic, "f64");
+  const f32 = customEllipsoidGeodeticToEcef(cartographic, "f32");
+  for (const key of ["x", "y", "z"]) {
+    assert.equal(f32[key], Math.fround(f32[key]));
+  }
+  assert.notDeepEqual(f32, f64);
+});
+
+test("f64 geometry tolerances derive from maxRadius times EPS and operation counts", () => {
+  assert.equal(
+    C12_29_S5_CUSTOM_GEOMETRY_EPSILON_METERS,
+    8_000_000 * Number.EPSILON,
+  );
+  for (const [comparison, budget] of Object.entries(
+    C12_29_S5_CUSTOM_GEOMETRY_OPERATION_BUDGETS,
+  )) {
+    const derivedTotal = Object.entries(budget)
+      .filter(([key]) => key !== "total")
+      .reduce((sum, [, count]) => sum + count, 0);
+    assert.equal(budget.total, derivedTotal, comparison);
+    assert.equal(
+      c1229S5CustomGeometryTolerance(comparison, "meters"),
+      C12_29_S5_CUSTOM_GEOMETRY_EPSILON_METERS * derivedTotal,
+    );
+  }
+  const intersection = deriveC1229S5CustomAxisIntersection(alignedBodies());
+  assert.ok(intersection);
+  assert.ok(intersection.point.x > 0);
+  assert.ok(intersection.point.x < alignedBodies().moon.x);
+  assert.equal(intersection.direction.x, -1);
+  assert.equal(intersection.point.y, 0);
+  assert.equal(intersection.point.z, 0);
+});
+
+test("common-ray f32 packing rounds every one of sixteen values", () => {
+  const input = {
+    sun: { x: 149_600_000_000, y: 31_000_003, z: -17_000_009 },
+    moon: { x: 384_400_000, y: -8_000_003, z: 4_000_007 },
+    ...params(),
+  };
+  const f64 = packC1229S5CustomCommonRay(input, "f64");
+  const f32 = packC1229S5CustomCommonRay(input, "f32");
+  assert.equal(f64.length, 16);
+  assert.ok(f32 instanceof Float32Array);
+  assert.equal(f32.length, 16);
+  for (let index = 0; index < f32.length; index++) {
+    assert.equal(f32[index], Math.fround(f64[index]));
+  }
+  assert.equal(f32[8], 1);
+  assert.equal(f32[12], Math.fround(0.00005));
+});
+
+test("aligned near-side sample eclipses while antipode is horizon rejected", () => {
+  const payload64 = packC1229S5CustomCommonRay(alignedBodies(), "f64");
+  const inverseRadii = { x: 1 / 8e6, y: 1 / 8e6, z: 1 / 5e6 };
+  const near = evaluateC1229S5CustomFragment(
+    {
+      position: { x: 8_024_000, y: 0, z: 0 },
+      inverseRadii,
+      payload: payload64,
+    },
+    "f64",
+  );
+  const far = evaluateC1229S5CustomFragment(
+    {
+      position: { x: -8_024_000, y: 0, z: 0 },
+      inverseRadii,
+      payload: payload64,
+    },
+    "f64",
+  );
+  assert.ok(near.factor < 1);
+  assert.equal(near.horizonRejected, false);
+  assert.equal(far.factor, 1);
+  assert.equal(far.horizonRejected, true);
+});
+
+test("oracle tolerance is derived only from f32 error and image quantization", () => {
+  const sample = deriveC1229S5CustomOracleSample({
+    cartographic: { longitude: 0, latitude: 0, height: 24_000 },
+    offLuminance: 0.5,
+    onLuminance: 0.25,
+    ...alignedBodies(),
+  });
+  assert.ok(sample);
+  assert.equal(
+    sample.tolerance,
+    4 * sample.f32Error + sample.quantizationBound,
+  );
+  assert.equal(
+    sample.quantizationBound,
+    (1 + sample.f64) / (255 * Math.max(0.5 - 1 / 255, 32 / 255)),
+  );
+  assert.equal(sample.observedFactor, 0.5);
+});
+
+test("cross-backend tolerance uses larger f32 error and both quantization bounds", () => {
+  const result = deriveC1229S5CustomCrossBackend(
+    { f32Error: 0.002, quantizationBound: 0.01, observedFactor: 0.5 },
+    { f32Error: 0.004, quantizationBound: 0.02, observedFactor: 0.54 },
+  );
+  assert.equal(result.maximumF32Error, 0.004);
+  assert.equal(result.quantizationBound, 0.03);
+  assert.equal(result.tolerance, 4 * 0.004 + 0.03);
+  assert.equal(result.withinTolerance, true);
+  const mutant = deriveC1229S5CustomCrossBackend(
+    { f32Error: 0, quantizationBound: 0, observedFactor: 0 },
+    { f32Error: 0, quantizationBound: 0, observedFactor: 1 },
+  );
+  assert.equal(mutant.withinTolerance, false);
+});
+
+test("pure fold accepts the exact fully attested report", () => {
+  const verdict = foldC1229S5CustomEllipsoidGate(passingReport());
+  assert.equal(verdict.status, "PASS", JSON.stringify(verdict, null, 2));
+  assert.equal(verdict.exitCode, 0);
+  assert.equal(verdict.checks.phaseCountPerRenderer, 9);
+  assert.equal(verdict.checks.captureCountPerRenderer, 6);
+});
+
+for (const [name, mutate, expected] of [
+  [
+    "Earth-shaped minor axis",
+    (r) => (r.contract.radii.z = 6_356_752),
+    "STRUCTURAL",
+  ],
+  ["renderer order", (r) => r.sessions.reverse(), "STRUCTURAL"],
+  [
+    "custom scene owner identity",
+    (r) =>
+      (r.sessions[0].phases["custom-scene-construction"].globe.sceneIdentity =
+        false),
+    "STRUCTURAL",
+  ],
+  [
+    "phase omission",
+    (r) => delete r.sessions[0].phases["behavioral-pick"],
+    "STRUCTURAL",
+  ],
+  [
+    "direct updateForPick",
+    (r) =>
+      (r.sessions[0].phases["behavioral-pick"].directUpdateForPickCall = true),
+    "FAIL",
+  ],
+  [
+    "event OFF accidentally enabled",
+    (r) => (r.sessions[0].phases["event-s5-off"].enabled = true),
+    "FAIL",
+  ],
+  [
+    "WebGL S5 payload drift",
+    (r) =>
+      (r.sessions[0].phases["event-s5-on"].shadowBlock.payloadExact = false),
+    "FAIL",
+  ],
+  [
+    "WebGL packed payload self-attestation",
+    (r) =>
+      (r.sessions[0].phases["event-s5-on"].shadowBlock.webglPackedF32[0] +=
+        0.01),
+    "FAIL",
+  ],
+  [
+    "runtime shadow vector drift",
+    (r) =>
+      (r.sessions[0].phases[
+        "event-s5-on"
+      ].shadowBlock.sunDirectionAndInvRange.x += 0.01),
+    "FAIL",
+  ],
+  [
+    "inertial/fixed Sun disconnect",
+    (r) =>
+      (r.sessions[0].phases["event-s5-on"].runtimeBodies.sunInertial.y +=
+        1_000_000),
+    "FAIL",
+  ],
+  [
+    "non-orthonormal ICRF transform",
+    (r) =>
+      (r.sessions[0].phases["event-s5-on"].runtimeBodies.icrfToFixed[0] = 2),
+    "FAIL",
+  ],
+  [
+    "event-axis f64 identity drift",
+    (r) =>
+      (r.sessions[0].phases[
+        "event-s5-on"
+      ].eventCentre.geometryIdentity.withinTolerance = false),
+    "FAIL",
+  ],
+  [
+    "pick radius drift",
+    (r) =>
+      (r.sessions[1].phases[
+        "behavioral-pick"
+      ].postcondition.after.surfaceRadius += 1),
+    "FAIL",
+  ],
+  [
+    "pick mini-frame begins with stale prepared memo",
+    (r) => {
+      const postcondition =
+        r.sessions[1].phases["behavioral-pick"].postcondition;
+      postcondition.before = structuredClone(postcondition.after);
+    },
+    "FAIL",
+  ],
+  [
+    "pickable route not enabled",
+    (r) => (r.sessions[1].phases["behavioral-pick"].pickableRequested = false),
+    "FAIL",
+  ],
+  [
+    "pick registry disconnect",
+    (r) =>
+      (r.sessions[1].phases["behavioral-pick"].pickIdRegistryOwnsGlobe = false),
+    "FAIL",
+  ],
+  [
+    "pick color mirror disconnect",
+    (r) =>
+      (r.sessions[1].phases["behavioral-pick"].pickColorMirrorExact = false),
+    "FAIL",
+  ],
+  [
+    "pickable flag not restored",
+    (r) => (r.sessions[1].phases["behavioral-pick"].pickableRestored = false),
+    "FAIL",
+  ],
+  [
+    "WebGPU camera radius drift",
+    (r) =>
+      (r.sessions[1].phases[
+        "selected-terrain-preparation"
+      ].backendIdentity.cameraUbo.valuesExact = false),
+    "FAIL",
+  ],
+  [
+    "WebGPU camera value drift behind green boolean",
+    (r) =>
+      (r.sessions[1].phases[
+        "selected-terrain-preparation"
+      ].backendIdentity.cameraUbo.values.maximumRadius += 1),
+    "FAIL",
+  ],
+  [
+    "WebGPU binding-2 offset drift",
+    (r) =>
+      (r.sessions[1].phases[
+        "selected-terrain-preparation"
+      ].backendIdentity.eclipseBinding.offsetAligned = false),
+    "FAIL",
+  ],
+  [
+    "WebGPU binding-2 payload drift behind green boolean",
+    (r) =>
+      (r.sessions[1].phases[
+        "selected-terrain-preparation"
+      ].backendIdentity.eclipseBinding.payload[0] += 0.01),
+    "FAIL",
+  ],
+  [
+    "WebGL automatic radii drift",
+    (r) =>
+      (r.sessions[0].phases[
+        "selected-terrain-preparation"
+      ].backendIdentity.automaticUniforms.radiiExact = false),
+    "FAIL",
+  ],
+  [
+    "selected surface radius drift",
+    (r) =>
+      (r.sessions[0].phases["selected-terrain-preparation"].surfaceRadius += 1),
+    "FAIL",
+  ],
+  [
+    "antipodal shadow",
+    (r) =>
+      (r.sessions[0].phases["antipode-horizon-control"].offOnByteIdentical =
+        false),
+    "FAIL",
+  ],
+  [
+    "antipode paired tuple drift",
+    (r) =>
+      (r.sessions[0].phases[
+        "antipode-horizon-control"
+      ].onPreparedTuple.selectionRevision += 1),
+    "STRUCTURAL",
+  ],
+  [
+    "control activity",
+    (r) =>
+      (r.sessions[1].phases["noneclipse-identity-control"].inactive = false),
+    "FAIL",
+  ],
+  [
+    "control paired tuple drift",
+    (r) =>
+      r.sessions[1].phases[
+        "noneclipse-identity-control"
+      ].onPreparedTuple.selectedTileIds.reverse(),
+    "STRUCTURAL",
+  ],
+  [
+    "retained face loss",
+    (r) => (r.sessions[1].phases["retained-capture"].faceCount = 5),
+    "FAIL",
+  ],
+  [
+    "retained binding offset drift",
+    (r) =>
+      (r.sessions[1].phases["retained-capture"].eclipseBindingOffsetsExact =
+        false),
+    "FAIL",
+  ],
+  [
+    "retained face/tile cardinality drift",
+    (r) =>
+      (r.sessions[1].phases["retained-capture"].faceTileCardinalityExact =
+        false),
+    "FAIL",
+  ],
+  [
+    "retained binding payload drift",
+    (r) =>
+      (r.sessions[1].phases["retained-capture"].eclipseBindingPayloadsExact =
+        false),
+    "FAIL",
+  ],
+  [
+    "retained payload array drift behind green boolean",
+    (r) =>
+      (r.sessions[1].phases["retained-capture"].eclipseBindingPayloads[0][0] +=
+        0.01),
+    "FAIL",
+  ],
+  [
+    "boundary sample",
+    (r) => (r.sessions[0].oracleSamples[0].boundaryAmbiguous = true),
+    "FAIL",
+  ],
+  [
+    "tile-interior pixel shortfall",
+    (r) => (r.sessions[0].oracleSamples[0].boundaryDistancePixels = 0.5),
+    "FAIL",
+  ],
+  [
+    "derived sample identity drift",
+    (r) => (r.sessions[0].oracleSamples[0].id = "arbitrary-joined-label"),
+    "FAIL",
+  ],
+  [
+    "cartographic/tile disconnect",
+    (r) => (r.sessions[0].oracleSamples[0].tileId = "2/0/0"),
+    "FAIL",
+  ],
+  [
+    "tile UV self-attestation",
+    (r) => (r.sessions[0].oracleSamples[0].tileUv[0] += 0.01),
+    "FAIL",
+  ],
+  [
+    "boundary minimum self-attestation",
+    (r) => (r.sessions[0].oracleSamples[0].boundaryDistancePixels += 1),
+    "FAIL",
+  ],
+  [
+    "boundary primary geometry drift",
+    (r) => (r.sessions[0].oracleSamples[0].tileBoundaryPixels[0].x += 1),
+    "FAIL",
+  ],
+  [
+    "primary off RGBA drift",
+    (r) => (r.sessions[0].oracleSamples[0].offRgba[0] -= 1),
+    "FAIL",
+  ],
+  [
+    "primary runtime position drift",
+    (r) => (r.sessions[0].oracleSamples[0].runtimePosition.x += 10),
+    "FAIL",
+  ],
+  [
+    "derived observed factor drift",
+    (r) => (r.sessions[0].oracleSamples[0].observedFactor += 0.01),
+    "FAIL",
+  ],
+  [
+    "derived f64 factor drift",
+    (r) => (r.sessions[0].oracleSamples[0].f64 += 0.01),
+    "FAIL",
+  ],
+  [
+    "derived tolerance drift",
+    (r) => (r.sessions[0].oracleSamples[0].tolerance += 0.01),
+    "FAIL",
+  ],
+  [
+    "derived f32 class drift",
+    (r) => (r.sessions[0].oracleSamples[0].classificationF32 = "clear"),
+    "FAIL",
+  ],
+  [
+    "oracle sample schema extension",
+    (r) => (r.sessions[0].oracleSamples[0].untrustedClaim = true),
+    "FAIL",
+  ],
+  [
+    "sample ECEF identity drift",
+    (r) =>
+      (r.sessions[0].oracleSamples[0].geometryIdentity.withinTolerance = false),
+    "FAIL",
+  ],
+  [
+    "event sample PNG binding drift",
+    (r) =>
+      (r.sessions[0].oracleSamples[0].offMetricImageId =
+        r.sessions[0].images[1].imageId),
+    "FAIL",
+  ],
+  ["oracle class shortage", (r) => r.sessions[0].oracleSamples.pop(), "FAIL"],
+  [
+    "dim off sample",
+    (r) => (r.sessions[0].oracleSamples[0].offLuminance = 31 / 255),
+    "FAIL",
+  ],
+  [
+    "cross-backend mismatch",
+    (r) => (r.crossBackendOracle.allWithinDerivedTolerance = false),
+    "FAIL",
+  ],
+  [
+    "cross-backend arbitrary join id",
+    (r) => (r.crossBackendOracle.samples[0].id = "arbitrary-cross-id"),
+    "FAIL",
+  ],
+  [
+    "XYS mismatch",
+    (r) => (r.provenance.xys[0].served.sha256 = "b".repeat(64)),
+    "STRUCTURAL",
+  ],
+  [
+    "source-map entry drift",
+    (r) => (r.provenance.buildSourceIdentity.start.entries[0].exact = false),
+    "STRUCTURAL",
+  ],
+  [
+    "served entry drift",
+    (r) => (r.provenance.servedEntryIdentity.ok = false),
+    "STRUCTURAL",
+  ],
+  [
+    "served entry end drift",
+    (r) => (r.provenance.servedEntryIdentity.localEnd.sha256 = "b".repeat(64)),
+    "STRUCTURAL",
+  ],
+  [
+    "same-task helper identity drift",
+    (r) => (r.provenance.sameTaskCapture.helperPinned = false),
+    "STRUCTURAL",
+  ],
+  [
+    "geometry epsilon drift",
+    (r) => (r.contract.geometryEpsilonMeters *= 2),
+    "STRUCTURAL",
+  ],
+  ["phase reorder", (r) => r.sessions[0].phaseOrder.reverse(), "STRUCTURAL"],
+  [
+    "pending cleanup request",
+    (r) => (r.cleanup.pendingRequests = 1),
+    "STRUCTURAL",
+  ],
+  [
+    "pick result is not globe",
+    (r) => (r.sessions[0].phases["behavioral-pick"].resultKind = "model"),
+    "FAIL",
+  ],
+  [
+    "generated shader drift",
+    (r) => (r.provenance.generatedShaders.start.globeTerrainExact = false),
+    "STRUCTURAL",
+  ],
+  [
+    "image/metric split",
+    (r) =>
+      (r.sessions[0].images[0].metricImageId = r.sessions[0].images[1].imageId),
+    "STRUCTURAL",
+  ],
+  [
+    "transient stability fingerprint",
+    (r) =>
+      (r.sessions[0].images[0].temporalStability.observations[1].sha256 =
+        "b".repeat(64)),
+    "STRUCTURAL",
+  ],
+  [
+    "stale fused capture fingerprint",
+    (r) =>
+      (r.sessions[0].images[1].temporalStability.captureOutput.sha256 =
+        "b".repeat(64)),
+    "STRUCTURAL",
+  ],
+  [
+    "gapped stability frame",
+    (r) =>
+      (r.sessions[0].images[2].temporalStability.observations[1].frameNumber += 2),
+    "STRUCTURAL",
+  ],
+  [
+    "gapped prepared selection epoch",
+    (r) =>
+      (r.sessions[0].images[2].temporalStability.observations[1].state.preparedTuple.selectionRevision += 1),
+    "STRUCTURAL",
+  ],
+  [
+    "non-immediate evidence frame",
+    (r) => (r.sessions[0].images[3].temporalStability.captureFrameNumber += 1),
+    "STRUCTURAL",
+  ],
+  [
+    "camera changed inside stable window",
+    (r) =>
+      (r.sessions[0].images[4].temporalStability.observations[2].state.camera.positionWC[0] += 1),
+    "STRUCTURAL",
+  ],
+  [
+    "stable but wrong camera target",
+    (r) => {
+      for (const state of temporalStates(r.sessions[0].images[0])) {
+        state.cameraTarget.longitude += 0.1;
+      }
+    },
+    "STRUCTURAL",
+  ],
+  [
+    "stable but geometrically false camera",
+    (r) => {
+      for (const state of temporalStates(r.sessions[0].images[1])) {
+        state.camera.positionWC[0] += 1;
+      }
+    },
+    "STRUCTURAL",
+  ],
+  [
+    "prepared content changed inside stable window",
+    (r) =>
+      (r.sessions[1].images[2].temporalStability.observations[1].state.content[0].meshIdentity =
+        "mesh-99"),
+    "STRUCTURAL",
+  ],
+  [
+    "stable content changed between OFF and ON",
+    (r) => {
+      for (const state of temporalStates(r.sessions[1].images[1])) {
+        state.content[0].meshIdentity = "mesh-99";
+      }
+    },
+    "STRUCTURAL",
+  ],
+  [
+    "event ON stable window is inactive",
+    (r) => {
+      for (const state of temporalStates(r.sessions[0].images[1])) {
+        state.eclipse.active = false;
+        state.eclipse.params.x = 0;
+      }
+    },
+    "STRUCTURAL",
+  ],
+  [
+    "antipode ON stable window is spuriously active",
+    (r) => {
+      for (const state of temporalStates(r.sessions[0].images[3])) {
+        state.eclipse.active = true;
+        state.eclipse.params.x = 1;
+      }
+    },
+    "STRUCTURAL",
+  ],
+  [
+    "wrong provider behind stable output",
+    (r) => {
+      for (const state of temporalStates(r.sessions[1].images[3])) {
+        state.provider.objectIdentity = false;
+      }
+    },
+    "STRUCTURAL",
+  ],
+  [
+    "stale control clock behind stable output",
+    (r) => {
+      for (const state of temporalStates(r.sessions[1].images[4])) {
+        state.clockIso = C12_29_S5_CUSTOM_SCENE.eventIso;
+      }
+    },
+    "STRUCTURAL",
+  ],
+  [
+    "prepared tuple disconnected from capture",
+    (r) => {
+      for (const state of temporalStates(r.sessions[1].images[5])) {
+        state.preparedTuple.selectionRevision += 1;
+      }
+    },
+    "STRUCTURAL",
+  ],
+  [
+    "reused prior capture frame window",
+    (r) => {
+      const stability = r.sessions[0].images[1].temporalStability;
+      for (const observation of stability.observations) {
+        observation.frameNumber -= 10;
+      }
+      stability.captureFrameNumber -= 10;
+    },
+    "STRUCTURAL",
+  ],
+  [
+    "unbounded stability attempt count",
+    (r) =>
+      (r.sessions[0].images[0].temporalStability.attemptedFrames =
+        C12_29_S5_CUSTOM_SCENE.maximumStabilityFrames + 1),
+    "STRUCTURAL",
+  ],
+  [
+    "capture did not render first",
+    (r) => (r.sessions[0].images[0].temporalStability.renderFirst = false),
+    "STRUCTURAL",
+  ],
+]) {
+  test(`mutation: ${name} cannot pass`, () => {
+    const report = passingReport();
+    mutate(report);
+    const verdict = foldC1229S5CustomEllipsoidGate(report);
+    assert.equal(verdict.status, expected, JSON.stringify(verdict, null, 2));
+  });
+}
+
+test("final artifact must reproduce the pure fold exactly", () => {
+  const report = passingReport();
+  const verdict = foldC1229S5CustomEllipsoidGate(report);
+  const artifact = {
+    ...report,
+    status: verdict.status,
+    exitCode: verdict.exitCode,
+    artifactName: `${RUN_ID}.json`,
+    reasons: {
+      structural: verdict.structuralReasons,
+      failures: verdict.failureReasons,
+    },
+    checks: verdict.checks,
+  };
+  assert.deepEqual(validateC1229S5CustomFinalArtifact(artifact), {
+    ok: true,
+    reasons: [],
+  });
+  const retained = JSON.parse(stableC1229S5CustomJson(artifact, 2));
+  const retainedVerdict = foldC1229S5CustomEllipsoidGate(retained);
+  assert.equal(
+    retainedVerdict.status,
+    "PASS",
+    JSON.stringify(retainedVerdict, null, 2),
+  );
+  assert.deepEqual(validateC1229S5CustomFinalArtifact(retained), {
+    ok: true,
+    reasons: [],
+  });
+  artifact.checks.phaseCountPerRenderer = 8;
+  assert.equal(validateC1229S5CustomFinalArtifact(artifact).ok, false);
+});
+
+test("ERROR artifact requires bounded schema/stage/renderer diagnostics", () => {
+  const artifact = {
+    schema: C12_29_S5_CUSTOM_SCHEMA,
+    runId: RUN_ID,
+    status: "ERROR",
+    incomplete: false,
+    exitCode: 2,
+    artifactName: `${RUN_ID}.json`,
+    error: "browser failed",
+    diagnostics: {
+      schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+      stage: "webgpu:event-s5-on",
+      renderer: "webgpu",
+    },
+  };
+  assert.equal(validateC1229S5CustomFinalArtifact(artifact).ok, true);
+  artifact.diagnostics.renderer = "fake";
+  assert.equal(validateC1229S5CustomFinalArtifact(artifact).ok, false);
+});
+
+test("status, UUID, and stable serialization utilities are exact", () => {
+  assert.equal(isC1229S5CustomUuidV4(RUN_ID), true);
+  assert.equal(isC1229S5CustomUuidV4(RUN_ID.replace("-42d3", "-52d3")), false);
+  assert.deepEqual(
+    ["PASS", "FAIL", "STRUCTURAL", "ERROR"].map(exitCodeForC1229S5CustomStatus),
+    [0, 1, 2, 2],
+  );
+  assert.throws(() => exitCodeForC1229S5CustomStatus("RUNNING"));
+  assert.equal(
+    stableC1229S5CustomJson({ z: 1, a: { y: 2, b: 3 } }, 2),
+    '{\n  "a": {\n    "b": 3,\n    "y": 2\n  },\n  "z": 1\n}\n',
+  );
+});
+
+test("source map proves every frozen production entry byte-for-byte", () => {
+  const identity = inspectBuildSourceIdentity({
+    sourceMapPath: path.join(root, "Build/CesiumUnminified/index.js.map"),
+    sourceFiles: C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.map((file) =>
+      path.join(root, file),
+    ),
+  });
+  assert.equal(identity.ok, true, identity.reasons.join("\n"));
+  assert.equal(
+    identity.entries.length,
+    C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.length,
+  );
+  assert.ok(identity.entries.every((entry) => entry.exact === true));
+});
+
+test("probe embeds the canonical fused one-snapshot capture and uses it exclusively", () => {
+  assert.deepEqual(checkEmbeddedFusedSnapshotIsCanonical(probeSource), []);
+  assert.deepEqual(checkFusedCaptureUsage(probeSource), []);
+  assert.match(probeSource, /metricImageId: imageId/u);
+  assert.match(probeSource, /retainedBytes\.equals\(bytes\)/u);
+});
+
+test("every evidence capture follows a bounded render-first stable window", () => {
+  assert.match(
+    probeSource,
+    /const \[observationSnapshot, observationFrame\] = await Promise\.all\(\[\s*captureSnapshot\(\),\s*Promise\.resolve\(\)\.then\(\(\) => \(\{\s*frameNumber: scene\.frameState\.frameNumber,\s*state: captureFrameState\(\),/u,
+  );
+  assert.match(
+    probeSource,
+    /stableWindow\.length < contract\.minimumStableFrames[\s\S]*?const \[evidenceSnapshot, evidenceFrameState\] = await Promise\.all\(\[[\s\S]*?captureSnapshot\(\),[\s\S]*?frameNumber: scene\.frameState\.frameNumber,[\s\S]*?state: captureFrameState\(\),[\s\S]*?evidenceFrame\.frameNumber === stableWindow\.at\(-1\)\.frameNumber \+ 1[\s\S]*?sameStableFrame\(stableWindow\.at\(-1\), evidenceFrame\)/u,
+  );
+  assert.match(
+    probeSource,
+    /right\.frameNumber === left\.frameNumber \+ 1[\s\S]*?rightRevision === leftRevision \+ 1[\s\S]*?JSON\.stringify\(stableComparableState\(left\.state\)\)[\s\S]*?JSON\.stringify\(stableComparableState\(right\.state\)\)/u,
+  );
+  assert.match(
+    probeSource,
+    /const observationBytes = decodePngDataUrl\(observation\.dataUrl\);[\s\S]*?sha256: sha256\(observationBytes\)/u,
+  );
+  assert.match(
+    probeSource,
+    /maximumStabilityFrames: C12_29_S5_CUSTOM_SCENE\.maximumStabilityFrames/u,
+  );
+});
+
+test("new oracle/probe artifacts contain no Earth axes or production-oracle call", () => {
+  for (const [name, source] of [
+    ["helper", helperSource],
+    ["probe", probeSource],
+  ]) {
+    assert.doesNotMatch(source, /6378137|6356752(?:\.314245179)?/u, name);
+    assert.doesNotMatch(source, /Ellipsoid\.WGS84/u, name);
+    assert.doesNotMatch(
+      source,
+      /(?:fitEclipseLimbDarkening|computeUniformObscuration|updateEclipseGlobeShadow)\s*\(/u,
+      name,
+    );
+  }
+});
+
+test("probe constructs every custom scene owner explicitly and derives the axis", () => {
+  assert.match(probeSource, /new C\.Ellipsoid\(\s*contract\.radii\.x,/u);
+  assert.match(probeSource, /new C\.GeographicProjection\(ellipsoid\)/u);
+  assert.match(probeSource, /new C\.GeographicTilingScheme\(\{\s*ellipsoid,/u);
+  assert.match(
+    probeSource,
+    /new C\.CustomHeightmapTerrainProvider\(\{[\s\S]*?width: contract\.terrainWidth,[\s\S]*?height: contract\.terrainHeight,[\s\S]*?tilingScheme,/u,
+  );
+  assert.match(probeSource, /heights\.fill\(contract\.heightMeters\)/u);
+  assert.match(probeSource, /const globe = new C\.Globe\(ellipsoid\)/u);
+  assert.match(probeSource, /new C\.GridImageryProvider\(\{\s*tilingScheme,/u);
+  assert.match(probeSource, /computeSunPositionInEarthInertialFrame/u);
+  assert.match(probeSource, /computeMoonPositionInEarthInertialFrame/u);
+  assert.match(probeSource, /deriveAxisSurface\(eventBodies\)/u);
+  assert.doesNotMatch(
+    probeSource,
+    /eventCentre\s*=\s*\{[^}]*longitude:\s*[-\d]/u,
+  );
+});
+
+test("production carriers still expose the pinned custom radii and binding seams", () => {
+  const automatic = fs.readFileSync(
+    path.join(root, "packages/engine/Source/Renderer/AutomaticUniforms.js"),
+    "utf8",
+  );
+  const camera = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
+    ),
+    "utf8",
+  );
+  const layout = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceLayouts.ts",
+    ),
+    "utf8",
+  );
+  const wgsl = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+    ),
+    "utf8",
+  );
+  assert.match(
+    automatic,
+    /czm_ellipsoidRadii:[\s\S]*?return uniformState\.ellipsoid\.radii;/u,
+  );
+  assert.match(
+    automatic,
+    /czm_ellipsoidInverseRadii:[\s\S]*?return uniformState\.ellipsoid\.oneOverRadii;/u,
+  );
+  assert.match(camera, /data\[offset\+\+\] = ellipsoidInverseRadii\.x;/u);
+  assert.match(camera, /data\[offset\+\+\] = ellipsoidInverseRadii\.y;/u);
+  assert.match(camera, /data\[offset\+\+\] = ellipsoidInverseRadii\.z;/u);
+  assert.match(
+    camera,
+    /data\[offset\+\+\] = ellipsoid\?\.maximumRadius \?\? 0\.0;/u,
+  );
+  assert.match(
+    layout,
+    /uniformBuffer\(2, Stage\.FRAGMENT, \{\s*hasDynamicOffset: true,\s*minBindingSize: ECLIPSE_UNIFORM_BYTES,/u,
+  );
+  assert.match(wgsl, /@group\(0\) @binding\(2\) var<uniform> eclipseUniforms/u);
+  assert.match(
+    wgsl,
+    /camera\.ellipsoidInverseRadiiX[\s\S]*camera\.ellipsoidInverseRadiiY[\s\S]*camera\.ellipsoidInverseRadiiZ/u,
+  );
+});
+
+test("probe uses real pickAsync and observes rather than directly invokes updateForPick", () => {
+  assert.match(probeSource, /const operation = scene\.pickAsync\(/u);
+  assert.match(probeSource, /globe\.pickable = true/u);
+  assert.match(
+    probeSource,
+    /scene\.context\?\._pickObjects\?\.get\(pickIdKey\)/u,
+  );
+  assert.match(probeSource, /pickProvider\._webgpuGlobePickColor/u);
+  assert.match(probeSource, /globe\.pickable = pickableBefore/u);
+  assert.match(
+    probeSource,
+    /pickProvider\.updateForPick = function \(\.\.\.args\)/u,
+  );
+  assert.match(probeSource, /originalUpdateForPick\.apply\(this, args\)/u);
+  assert.doesNotMatch(
+    probeSource,
+    /(?:pickProvider|tileProvider\(\))\.updateForPick\s*\(/u,
+  );
+});
+
+test("probe retains the real manager-driven six-face WebGPU path", () => {
+  assert.match(probeSource, /model\.environmentMapManager/u);
+  assert.match(probeSource, /manager\.enableSceneCapture = true;/u);
+  assert.match(probeSource, /manager\.reset\(\);/u);
+  assert.match(
+    probeSource,
+    /captureGlobeRenderer\.getOrCreateCaptureTileCommands = function/u,
+  );
+  assert.match(probeSource, /const uniqueViews = new Set/u);
+  assert.match(probeSource, /lastSceneCaptureResult === 2/u);
+  assert.match(probeSource, /offsets\.length === 3/u);
+  assert.doesNotMatch(probeSource, /runWebGPUSceneCapture\s*\(/u);
+});
+
+test("loopback transport rejects credentials, paths, search, and external hosts", () => {
+  assert.equal(
+    validateC1229S5CustomLoopbackBase("http://localhost:8080").origin,
+    "http://localhost:8080",
+  );
+  assert.equal(
+    validateC1229S5CustomLoopbackBase("https://[::1]").origin,
+    "https://[::1]",
+  );
+  for (const value of [
+    "https://example.com",
+    "http://user:pass@localhost:8080",
+    "http://localhost:8080/path",
+    "http://localhost:8080/?x=1",
+    "relative",
+  ]) {
+    assert.throws(() => validateC1229S5CustomLoopbackBase(value), value);
+  }
+});
+
+test("evidence begin creates exclusive byte-exact lock and RUNNING latest", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const runId = randomUUID();
+    const paths = createC1229S5CustomArtifactPaths(runId, directory);
+    const ownership = beginC1229S5CustomEvidenceRun(paths, runId);
+    assert.deepEqual(fs.readFileSync(paths.lock), ownership.lockBytes);
+    assert.deepEqual(fs.readFileSync(paths.latest), ownership.runningBytes);
+    assert.throws(() => beginC1229S5CustomEvidenceRun(paths, randomUUID()));
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("canonical claim restores a late foreign replacement instead of overwriting it", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const canonical = path.join(directory, "latest.json");
+    const lock = path.join(directory, "lock.json");
+    const expected = Buffer.from("expected");
+    const foreign = Buffer.from("foreign");
+    const lockBytes = Buffer.from("lock");
+    fs.writeFileSync(canonical, expected, { flag: "wx" });
+    fs.writeFileSync(lock, lockBytes, { flag: "wx" });
+    let injected = false;
+    const operations = operationsWith({
+      renameSync(source, destination) {
+        if (!injected && source === canonical) {
+          injected = true;
+          fs.writeFileSync(canonical, foreign);
+        }
+        return fs.renameSync(source, destination);
+      },
+    });
+    assert.throws(() =>
+      claimC1229S5CustomCanonical(
+        canonical,
+        expected,
+        lock,
+        lockBytes,
+        "mutant",
+        operations,
+      ),
+    );
+    assert.deepEqual(fs.readFileSync(canonical), foreign);
+    assert.deepEqual(fs.readFileSync(lock), lockBytes);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("lock release preserves a foreign authority appearing after its claim", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const lock = path.join(directory, "lock.json");
+    const owned = Buffer.from("owned");
+    const foreign = Buffer.from("foreign");
+    fs.writeFileSync(lock, owned, { flag: "wx" });
+    let injected = false;
+    const operations = operationsWith({
+      renameSync(source, destination) {
+        const result = fs.renameSync(source, destination);
+        if (!injected && source === lock) {
+          injected = true;
+          fs.writeFileSync(lock, foreign, { flag: "wx" });
+        }
+        return result;
+      },
+    });
+    assert.throws(() => releaseC1229S5CustomLock(lock, owned, operations));
+    assert.deepEqual(fs.readFileSync(lock), foreign);
+    const receipts = fs
+      .readdirSync(directory)
+      .filter(
+        (file) => file.includes(".release-") && file.endsWith(".receipt"),
+      );
+    assert.equal(receipts.length, 1);
+    assert.deepEqual(fs.readFileSync(path.join(directory, receipts[0])), owned);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("successful finalization publishes byte-identical archive/latest then unlocks", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const artifact = passingArtifact();
+    const paths = createC1229S5CustomArtifactPaths(artifact.runId, directory);
+    const ownership = beginC1229S5CustomEvidenceRun(paths, artifact.runId);
+    finalizeC1229S5CustomEvidence(paths, artifact, ownership);
+    assert.deepEqual(
+      fs.readFileSync(paths.archive),
+      fs.readFileSync(paths.latest),
+    );
+    assert.equal(fs.existsSync(paths.lock), false);
+    assert.equal(
+      fs.readdirSync(directory).some((file) => file.endsWith(".receipt")),
+      false,
+    );
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("failed post-final receipt deletion quarantines final and restores RUNNING authority", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const artifact = passingArtifact();
+    const paths = createC1229S5CustomArtifactPaths(artifact.runId, directory);
+    const ownership = beginC1229S5CustomEvidenceRun(paths, artifact.runId);
+    let failedOnce = false;
+    const operations = operationsWith({
+      unlinkSync(file) {
+        if (
+          !failedOnce &&
+          file.includes(".final-") &&
+          file.endsWith(".receipt")
+        ) {
+          failedOnce = true;
+          const error = new Error("injected final receipt deletion failure");
+          error.code = "EIO";
+          throw error;
+        }
+        return fs.unlinkSync(file);
+      },
+    });
+    let thrown;
+    try {
+      finalizeC1229S5CustomEvidence(paths, artifact, ownership, operations);
+    } catch (error) {
+      thrown = error;
+    }
+    assert.ok(thrown);
+    assert.equal(thrown.retainCustomRunning, true);
+    assert.deepEqual(fs.readFileSync(paths.latest), ownership.runningBytes);
+    assert.deepEqual(fs.readFileSync(paths.lock), ownership.lockBytes);
+    assert.deepEqual(
+      fs.readFileSync(paths.recovery),
+      fs.readFileSync(paths.archive),
+    );
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("write-once first-red remains byte-identical across later red runs", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const firstRunId = randomUUID();
+    const firstPaths = createC1229S5CustomArtifactPaths(firstRunId, directory);
+    const firstOwnership = beginC1229S5CustomEvidenceRun(
+      firstPaths,
+      firstRunId,
+    );
+    finalizeC1229S5CustomEvidence(
+      firstPaths,
+      errorArtifact(firstRunId, "first red"),
+      firstOwnership,
+    );
+    const firstBytes = fs.readFileSync(firstPaths.firstRed);
+    const secondRunId = randomUUID();
+    const secondPaths = createC1229S5CustomArtifactPaths(
+      secondRunId,
+      directory,
+    );
+    const secondOwnership = beginC1229S5CustomEvidenceRun(
+      secondPaths,
+      secondRunId,
+    );
+    const publication = finalizeC1229S5CustomEvidence(
+      secondPaths,
+      errorArtifact(secondRunId, "second red"),
+      secondOwnership,
+    );
+    assert.equal(publication.firstRed.written, false);
+    assert.deepEqual(fs.readFileSync(secondPaths.firstRed), firstBytes);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("first-red appearing after an absent preflight is preserved and rejected", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const runId = randomUUID();
+    const paths = createC1229S5CustomArtifactPaths(runId, directory);
+    const ownership = beginC1229S5CustomEvidenceRun(paths, runId);
+    const foreign = Buffer.from("foreign first-red authority");
+    fs.writeFileSync(paths.firstRed, foreign, { flag: "wx" });
+    assert.throws(
+      () =>
+        finalizeC1229S5CustomEvidence(paths, errorArtifact(runId), ownership),
+      /first-red appeared after absent preflight/u,
+    );
+    assert.deepEqual(fs.readFileSync(paths.firstRed), foreign);
+    assert.equal(fs.existsSync(paths.archive), false);
+    assert.deepEqual(fs.readFileSync(paths.latest), ownership.runningBytes);
+    assert.deepEqual(fs.readFileSync(paths.lock), ownership.lockBytes);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("UUID-owned partial PNG cleanup removes exact bytes and preserves foreign replacements", () => {
+  const directory = tempEvidenceDirectory();
+  try {
+    const ownedFile = path.join(
+      directory,
+      `${RUN_ID}.00000000-0000-4000-8000-000000000099.webgpu.event-on.png`,
+    );
+    const foreignFile = path.join(
+      directory,
+      `${RUN_ID}.00000000-0000-4000-8000-000000000100.webgpu.control-on.png`,
+    );
+    const absentFile = path.join(
+      directory,
+      `${RUN_ID}.00000000-0000-4000-8000-000000000101.webgpu.control-off.png`,
+    );
+    const owned = Buffer.from("owned-custom-png");
+    const original = Buffer.from("original-custom-png");
+    const foreign = Buffer.from("foreign-custom-png");
+    fs.writeFileSync(ownedFile, owned, { flag: "wx" });
+    fs.writeFileSync(foreignFile, foreign, { flag: "wx" });
+    const result = cleanupC1229S5CustomOwnedPngs([
+      { file: ownedFile, bytes: owned },
+      { file: foreignFile, bytes: original },
+      { file: absentFile, bytes: owned },
+    ]);
+    assert.equal(result.ok, false);
+    assert.equal(result.removed, 1);
+    assert.equal(fs.existsSync(ownedFile), false);
+    assert.deepEqual(fs.readFileSync(foreignFile), foreign);
+    assert.match(result.reasons.join("\n"), /foreign replacement preserved/u);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("bounded close reports an uncooperative resource without hanging", async () => {
+  const result = await closeC1229S5CustomResourceBounded(
+    { close: () => new Promise(() => {}) },
+    "hung",
+    10,
+  );
+  assert.equal(result.closed, false);
+  assert.equal(result.timedOut, true);
+});
+
+test("watchdog closes and drains timed-out work before reporting", async () => {
+  let finish;
+  const work = new Promise((resolve) => {
+    finish = resolve;
+  });
+  let closeCalled = false;
+  await assert.rejects(
+    withC1229S5CustomWatchdog(
+      () => work,
+      async () => {
+        closeCalled = true;
+        finish();
+      },
+      10,
+    ),
+    /watchdog expired/u,
+  );
+  assert.equal(closeCalled, true);
+});
+
+test("watchdog diagnostics report the renderer active at timeout", async () => {
+  let renderer = "webgl";
+  const task = new Promise((resolve) => {
+    setTimeout(() => resolve("late"), 15);
+  });
+  renderer = "webgpu";
+  await assert.rejects(
+    () =>
+      withC1229S5CustomWatchdog(
+        () => task,
+        async () => {},
+        1,
+        () => renderer,
+      ),
+    (error) => {
+      assert.equal(error.customDiagnostics.renderer, "webgpu");
+      return true;
+    },
+  );
+});
+
+test("probe skeleton eventually exists and must not call production oracle", () => {
+  if (!fs.existsSync(probePath)) return;
+  const source = fs.readFileSync(probePath, "utf8");
+  assert.doesNotMatch(source, /fitEclipseLimbDarkening\s*\(/u);
+  assert.doesNotMatch(source, /computeUniformObscuration\s*\(/u);
+  assert.match(source, /scene\.pickAsync\s*\(/u);
+  assert.doesNotMatch(source, /\.updateForPick\s*\(/u);
+});
