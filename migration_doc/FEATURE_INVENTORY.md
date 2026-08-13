@@ -1329,6 +1329,14 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
 
 ## Maintenance
 
+- **C13-41 / C12-29 S3 status correction (2026-08-12):** the eclipse-driven
+  cloud-lighting, shadow, and IBL slice is **SHIPPED / EDGE VERIFIED**, not
+  pending. Landing-equivalent run
+  `b5e3f63c-94c6-4204-8706-dd30eabd2eaf` passed 30/30 and the exact selective
+  packet landed as `9c043987a5`. The raw post-cloud contrast ratio `1.034120`
+  is report-only under the replacement terrain-shadow decrement model. CLT-B3's
+  separate terminator-specific both-backend browser gate remains open.
+
 - **When you ship a feature** that resolves a WIP entry, move it from §C to §B (and update its tag from SCAFFOLDED to SHIPPED).
 - **When a future entry becomes WIP**, move it from §D to §C with a brief summary of where the partial implementation stands.
 - **When a new feature lands** without an existing inventory slot, add it to §B under the appropriate subsystem.

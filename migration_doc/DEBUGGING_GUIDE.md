@@ -2036,3 +2036,17 @@ Bundle-size table and full architecture: [CLAUDE.md "Build Variants"](../CLAUDE.
 A guide that drifts becomes worse than no guide because it actively misleads. Same maintenance rule as [IMAGERY_PROJECTION.md](IMAGERY_PROJECTION.md): touch this doc whenever you touch a tool it catalogs.
 
 When unsure where something fits: pick the closest existing section rather than creating a new one. New top-level sections only when a real new category emerges (e.g., a Voxel-specific debugging chapter once voxel work is fully shipped).
+
+### C13-41 eclipse-cloud probe closure (2026-08-12)
+
+The historical `probe-eclipse-cloud-response.mjs` inventory row above preserves
+the probe's original pre-registration and six-run investigation. Its current
+authoritative result is landing-equivalent run
+`b5e3f63c-94c6-4204-8706-dd30eabd2eaf`: PASS / exit 0, 30/30 predicates,
+report SHA-256
+`DD9BA7DCAC0434B91C0F88EFFA4804F3F1CB99747D888B5449B2A483236E70EE`.
+The redesigned fresh-session deck-free control is lit and settled, and the
+terrain-shadow decrement model passes. The raw post-cloud ratio `1.034120` is
+reported-only. The exact selective packet landed as `9c043987a5`, closing
+C13-41 / C12-29 S3. This run does not close CLT-B3's separate terminator-specific
+WebGL/WebGPU browser gate.

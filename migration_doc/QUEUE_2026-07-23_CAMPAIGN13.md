@@ -698,6 +698,27 @@ landing defect.
 | `C13-GATE-D` | NOT STARTED | Follows `C13-14..20`. |
 | `C13-EXIT` | NOT STARTED | Dead last. |
 
+**C13-41 ACCEPTANCE + LANDING RECONCILIATION (2026-08-12; authoritative over the stale
+`EDGE ACCEPTANCE OWED`, standing-failure, and next-diagnostic clauses inside the
+long historical row):** the landing-equivalent post-comment Edge run
+`b5e3f63c-94c6-4204-8706-dd30eabd2eaf` is **PASS / exit 0**, with all **30/30**
+gating predicates true, no structural, unscored, parity, page, GPU, cleanup, or
+provenance failures, and canonical/immutable report SHA-256
+`DD9BA7DCAC0434B91C0F88EFFA4804F3F1CB99747D888B5449B2A483236E70EE`
+(346,189 bytes). The served build entry/map are
+`E49370212931733D12A6813DBED22550FDA44E0E55792E0E3019DA9BAC2D27DA` /
+`D20374BCD894349CBDFFFA1AE0B09818ADA430F4207BE9C5899D8092C67125A8`.
+The state-isolated deck-free control is lit, settled, and dims by the published
+factor; the terrain shadow-decrement model passes inside its propagated
+quantization interval, while the old raw post-cloud composite ratio `1.034120`
+is retained as reported-only because it mixes the later cloud composite into a
+terrain-shadow invariant. This **discharges the C13-41 / C12-29 S3 machine
+criterion**. The exact reviewed 16-file selective packet landed as
+`9c043987a5`; therefore **C13-41 is COMPLETE / EDGE VERIFIED and C12-29 S3 is
+complete**. The separate CLT-B3
+terminator-specific WebGL/WebGPU browser acceptance is not discharged by this
+run.
+
 **C13-41 COST-STATUS RECONCILIATION (2026-08-12; authoritative over the
 historical CO-9 “does not discharge” sentence inside the long row):** the
 second Edge run already discharged `C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`
