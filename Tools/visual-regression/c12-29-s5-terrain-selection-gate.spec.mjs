@@ -55,6 +55,7 @@ const specSource = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
 const RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
 const V4_SCHEMA = "c12-29-s5-terrain-selection-evidence-v4";
 const V5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v5";
+const V6_SCHEMA = "c12-29-s5-terrain-selection-evidence-v6";
 
 const IMAGE_IDS = Object.freeze([
   "123e4567-e89b-42d3-a456-426614174001",
@@ -195,7 +196,257 @@ const targetComputedSse =
   (levelOneGeometricError * C12_29_S5_SCENE.viewport.height) /
   (targetDistance * sseDenominator);
 
+function syntheticTileState(overrides = {}) {
+  return {
+    instantiated: true,
+    quadtreeState: 1,
+    renderable: true,
+    dataDefined: true,
+    terrainState: 1,
+    terrainDataDefined: false,
+    realMeshDefined: false,
+    vertexArrayDefined: false,
+    fillDefined: false,
+    fillMeshDefined: false,
+    renderedMeshDefined: false,
+    renderedMeshMatchesReal: false,
+    renderedMeshMatchesFill: false,
+    terrainFillMeshInstance: false,
+    vertexCount: 0,
+    indexCount: 0,
+    ...overrides,
+  };
+}
+
+function providerFlags(hasLoadedTilesThisFrame, hasFillTilesThisFrame) {
+  return {
+    hasLoadedTilesThisFrame,
+    hasFillTilesThisFrame,
+    loadedAndFillFlags: hasLoadedTilesThisFrame && hasFillTilesThisFrame,
+  };
+}
+
+function syntheticOrderInstallation() {
+  return {
+    originalIdentityCaptured: true,
+    prototypeDescriptorFound: true,
+    beforeHadOwn: false,
+    beforeDescriptor: null,
+    installedHadOwn: true,
+    installedDescriptor: {
+      configurable: true,
+      enumerable: false,
+      writable: true,
+      hasValue: true,
+      hasGetter: false,
+      hasSetter: false,
+    },
+    installedWrapperIdentityMatches: true,
+  };
+}
+
+function syntheticOrderProof() {
+  const emptyTarget = syntheticTileState();
+  const filledTarget = syntheticTileState({
+    fillDefined: true,
+    fillMeshDefined: true,
+    renderedMeshDefined: true,
+    renderedMeshMatchesFill: true,
+    terrainFillMeshInstance: true,
+    vertexCount: 5,
+    indexCount: 12,
+  });
+  const realSibling = syntheticTileState({
+    terrainDataDefined: true,
+    realMeshDefined: true,
+    vertexArrayDefined: true,
+    renderedMeshDefined: true,
+    renderedMeshMatchesReal: true,
+  });
+  return {
+    state: "restored",
+    targetKey: heldTarget.key,
+    eventCount: 6,
+    installation: {
+      showTileThisFrame: syntheticOrderInstallation(),
+      endUpdate: syntheticOrderInstallation(),
+    },
+    showTileThisFrameCalls: [
+      {
+        ordinal: 1,
+        enterEventOrdinal: 1,
+        exitEventOrdinal: 2,
+        frameNumber: 21,
+        tileKey: siblingKey,
+        target: false,
+        tileStateBefore: realSibling,
+        tileStateAfter: realSibling,
+        providerFlagsBefore: providerFlags(false, false),
+        providerFlagsAfter: providerFlags(true, false),
+      },
+      {
+        ordinal: 2,
+        enterEventOrdinal: 3,
+        exitEventOrdinal: 4,
+        frameNumber: 21,
+        tileKey: heldTarget.key,
+        target: true,
+        tileStateBefore: emptyTarget,
+        tileStateAfter: emptyTarget,
+        providerFlagsBefore: providerFlags(true, false),
+        providerFlagsAfter: providerFlags(true, true),
+      },
+    ],
+    endUpdateCalls: [
+      {
+        ordinal: 1,
+        enterEventOrdinal: 5,
+        exitEventOrdinal: 6,
+        frameNumber: 21,
+        targetStateBefore: emptyTarget,
+        targetStateAfter: filledTarget,
+        providerFlagsBefore: providerFlags(true, true),
+        providerFlagsAfter: providerFlags(true, true),
+      },
+    ],
+    restoration: {
+      attempted: true,
+      attemptedAt: "immediately-after-reveal-snapshot",
+      restored: true,
+      showIdentityMatches: true,
+      showDescriptorMatches: true,
+      endIdentityMatches: true,
+      endDescriptorMatches: true,
+      finallyVerified: true,
+    },
+  };
+}
+
+function syntheticFirstReveal(revealTargetSelection, revealSiblingSelection) {
+  const targetState = syntheticTileState({
+    fillDefined: true,
+    fillMeshDefined: true,
+    renderedMeshDefined: true,
+    renderedMeshMatchesFill: true,
+    terrainFillMeshInstance: true,
+    vertexCount: 5,
+    indexCount: 12,
+  });
+  return {
+    state: "evaluated",
+    targetKey: heldTarget.key,
+    captureWasFirstRenderAfterPassThrough: true,
+    sameTaskModeSwitchAndCapture: true,
+    noYieldBeforeCapture: true,
+    warmFrame: 20,
+    frameBefore: 20,
+    frameAfter: 21,
+    frameDelta: 1,
+    longitude: SYNTHETIC_TRACK.longitude,
+    latitude: SYNTHETIC_TRACK.latitude,
+    cameraHeightMeters: C12_29_S5_SCENE.cameraHeightMeters,
+    cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
+    maximumScreenSpaceError: FILL_SSE,
+    targetRequestAttemptsBefore: 0,
+    targetRequestAttemptsAfter: 1,
+    postArmTargetRequestAttempts: 1,
+    targetSelection: revealTargetSelection,
+    visibilityTargetCallOrdinals: [5],
+    visibilityCalls: [{ ...visibilityCalls[4] }],
+    selectedTileIds: [siblingKey, heldTarget.key].sort(),
+    realTileIds: [siblingKey],
+    fillTileIds: [heldTarget.key],
+    selectedCount: 2,
+    realMeshCount: 1,
+    fillCount: 1,
+    targetSelectedDescendantTileIds: [heldTarget.key],
+    targetRealDescendantTileIds: [],
+    targetFillDescendantTileIds: [heldTarget.key],
+    targetSelectedStrictDescendantTileIds: [],
+    targetRealStrictDescendantTileIds: [],
+    targetFillStrictDescendantTileIds: [],
+    selectedRealSiblingTileIds: [siblingKey],
+    selectedRealSiblingObservations: [revealSiblingSelection],
+    siblingKey,
+    heldKeys: [heldTarget.key],
+    reservedKeys: [heldTarget.key],
+    heldRequestCount: 1,
+    reservedPromiseCount: 1,
+    targetHeldPromisePresent: true,
+    targetReservedPromisePresent: true,
+    providerFlags: providerFlags(true, true),
+    loadedAndFillFlags: true,
+    tilesLoaded: false,
+    targetSelected: true,
+    targetReal: false,
+    targetFill: true,
+    targetState,
+    fillMesh: {
+      tileId: heldTarget.key,
+      fillDefined: true,
+      fillMeshDefined: true,
+      renderedMeshDefined: true,
+      realMeshDefined: false,
+      terrainFillMeshInstance: true,
+      renderedMeshMatches: true,
+      realMeshAbsent: true,
+      vertexCount: 5,
+      indexCount: 12,
+    },
+    restoration: {
+      visibilityRestored: true,
+      orderInstrumentationRestored: true,
+    },
+    predicateResults: Object.fromEntries(
+      [
+        "captureWasFirstRenderAfterPassThrough",
+        "sameTaskModeSwitchAndCapture",
+        "noYieldBeforeCapture",
+        "consecutiveWarmAndRevealFrames",
+        "exactlyOnePostArmTargetRequest",
+        "exactHeldTargetSet",
+        "exactReservedTargetSet",
+        "targetSameFrameRendered",
+        "targetVisibilityPassThrough",
+        "targetSelected",
+        "targetFill",
+        "targetRealAbsent",
+        "terrainFillMeshInstance",
+        "renderedMeshMatchesFill",
+        "realMeshAbsent",
+        "positiveVertexCount",
+        "positiveIndexCount",
+        "noSelectedStrictDescendants",
+        "noRealStrictDescendants",
+        "noFillStrictDescendants",
+        "anchorSiblingRendered",
+        "providerLoadedAndFillFlags",
+        "targetShownExactlyOnce",
+        "targetShowBeforeEndUpdate",
+        "endUpdateExactlyOnce",
+        "coherentSameFrameOrderSurfaces",
+        "showMarkedFillBeforeEndUpdate",
+        "endUpdateConstructedFill",
+        "visibilityRestored",
+        "orderInstrumentationRestored",
+      ].map((key) => [key, true]),
+    ),
+  };
+}
+
 function syntheticProgress(renderer = "webgl") {
+  const revealTargetSelection = selectionObservation(
+    heldTarget.key,
+    21,
+    2,
+    "RENDERED",
+  );
+  const revealSiblingSelection = selectionObservation(
+    siblingKey,
+    21,
+    2,
+    "RENDERED",
+  );
   return {
     schema: C12_29_S5_DIAGNOSTICS_SCHEMA,
     renderer,
@@ -222,6 +473,11 @@ function syntheticProgress(renderer = "webgl") {
       frameDriver: C12_29_S5_PICK_FRAME_DRIVER,
       renderPumpFrames: 0,
     },
+    firstReveal: syntheticFirstReveal(
+      revealTargetSelection,
+      revealSiblingSelection,
+    ),
+    orderProof: syntheticOrderProof(),
     visibilitySeam: {
       state: "restored",
       targetKey: heldTarget.key,
@@ -454,41 +710,11 @@ function syntheticSession(renderer) {
         maximumScreenSpaceError: FILL_SSE,
         holdInterceptionEnabledAfter: true,
       },
-      firstRevealProof: {
-        captureWasFirstRenderAfterPassThrough: true,
-        sameTaskModeSwitchAndCapture: true,
-        noYieldBeforeCapture: true,
-        frameBefore: 20,
-        frameAfter: 21,
-        frameDelta: 1,
-        longitude: SYNTHETIC_TRACK.longitude,
-        latitude: SYNTHETIC_TRACK.latitude,
-        cameraHeightMeters: C12_29_S5_SCENE.cameraHeightMeters,
-        cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
-        maximumScreenSpaceError: FILL_SSE,
-        targetRequestAttemptsBefore: 0,
-        targetRequestAttemptsAfter: 1,
-        postArmTargetRequestAttempts: 1,
-        targetSelection: revealTargetSelection,
-        visibilityTargetCallOrdinals: [5],
-        targetSelectedStrictDescendantTileIds: [],
-        selectedRealSiblingTileIds: [siblingKey],
-        selectedRealSiblingObservations: [revealSiblingSelection],
-        siblingKey,
-        heldKeys: [heldTarget.key],
-        heldRequestCount: 1,
-        loadedAndFillFlags: true,
-        targetSelected: true,
-        targetFill: true,
-        fillMesh: {
-          tileId: heldTarget.key,
-          terrainFillMeshInstance: true,
-          renderedMeshMatches: true,
-          realMeshAbsent: true,
-          vertexCount: 5,
-          indexCount: 12,
-        },
-      },
+      firstRevealProof: syntheticFirstReveal(
+        revealTargetSelection,
+        revealSiblingSelection,
+      ),
+      orderProof: syntheticOrderProof(),
       visibilitySeam: {
         claim:
           "controlled-visibility-input-production-selection-request-fill-release-render",
@@ -908,7 +1134,11 @@ test("01 full valid fixture closes the pure S5 gate", () => {
   const verdict = foldC1229S5Gate(greenReport());
   assert.equal(verdict.status, "PASS");
   assert.equal(verdict.exitCode, 0);
-  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v6");
+  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v7");
+  assert.equal(
+    C12_29_S5_DIAGNOSTICS_SCHEMA,
+    "c12-29-s5-runtime-diagnostics-v3",
+  );
   assert.equal(verdict.checks.sourceBoundaryCount, 37);
   assert.equal(verdict.checks.buildSourceBoundaryCount, 35);
 });
@@ -953,6 +1183,9 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
   const v5Report = greenReport();
   v5Report.schema = V5_SCHEMA;
   assert.equal(foldC1229S5Gate(v5Report).status, "STRUCTURAL");
+  const v6Report = greenReport();
+  v6Report.schema = V6_SCHEMA;
+  assert.equal(foldC1229S5Gate(v6Report).status, "STRUCTURAL");
   const errorArtifact = {
     ...artifact,
     status: "ERROR",
@@ -979,6 +1212,79 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
   };
   assert.equal(validateS5FinalArtifactShape(errorArtifact).ok, true);
   assert.equal(validateS5PageProgress(syntheticProgress()).ok, true);
+  const startedProgress = syntheticProgress();
+  startedProgress.completedPhases = C12_29_S5_PHASES.slice(0, 2);
+  startedProgress.firstReveal.state = "started";
+  for (const key of [
+    "captureWasFirstRenderAfterPassThrough",
+    "frameAfter",
+    "frameDelta",
+    "longitude",
+    "latitude",
+    "cameraHeightMeters",
+    "cameraFovDegrees",
+    "maximumScreenSpaceError",
+    "targetRequestAttemptsAfter",
+    "postArmTargetRequestAttempts",
+    "targetSelection",
+    "selectedCount",
+    "realMeshCount",
+    "fillCount",
+    "heldRequestCount",
+    "reservedPromiseCount",
+    "targetHeldPromisePresent",
+    "targetReservedPromisePresent",
+    "providerFlags",
+    "loadedAndFillFlags",
+    "tilesLoaded",
+    "targetSelected",
+    "targetReal",
+    "targetFill",
+    "targetState",
+    "fillMesh",
+    "predicateResults",
+  ]) {
+    startedProgress.firstReveal[key] = null;
+  }
+  for (const key of [
+    "visibilityTargetCallOrdinals",
+    "visibilityCalls",
+    "selectedTileIds",
+    "realTileIds",
+    "fillTileIds",
+    "targetSelectedDescendantTileIds",
+    "targetRealDescendantTileIds",
+    "targetFillDescendantTileIds",
+    "targetSelectedStrictDescendantTileIds",
+    "targetRealStrictDescendantTileIds",
+    "targetFillStrictDescendantTileIds",
+    "selectedRealSiblingTileIds",
+    "selectedRealSiblingObservations",
+    "heldKeys",
+    "reservedKeys",
+  ]) {
+    startedProgress.firstReveal[key] = [];
+  }
+  startedProgress.firstReveal.restoration = {
+    visibilityRestored: true,
+    orderInstrumentationRestored: true,
+  };
+  startedProgress.orderProof.state = "error-restored";
+  startedProgress.orderProof.restoration.attemptedAt = "finally-after-error";
+  startedProgress.currentPhase = C12_29_S5_PHASES[2];
+  startedProgress.step = "first-pass-through-render-and-fused-fill-capture";
+  assert.equal(validateS5PageProgress(startedProgress).ok, true);
+  startedProgress.firstReveal.targetRequestAttemptsBefore = 0.5;
+  assert.equal(validateS5PageProgress(startedProgress).ok, false);
+  const contradictoryProgress = syntheticProgress();
+  contradictoryProgress.orderProof.endUpdateCalls[0].targetStateAfter = {
+    ...contradictoryProgress.orderProof.endUpdateCalls[0].targetStateAfter,
+    vertexCount: 6,
+  };
+  contradictoryProgress.firstReveal.predicateResults.coherentSameFrameOrderSurfaces = false;
+  contradictoryProgress.visibilitySeam.terminalReason =
+    "first pass-through render did not produce the exact held L1 fill";
+  assert.equal(validateS5PageProgress(contradictoryProgress).ok, true);
   assert.equal(
     validateS5PageProgress({
       ...syntheticProgress(),
@@ -992,6 +1298,14 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
     (progress) => (progress.visibilitySeam.calls[0].overridden = true),
     (progress) => (progress.visibilitySeam.targetKey = "2/0/0"),
     (progress) => (progress.visibilitySeam.restoration.identityMatches = false),
+    (progress) => delete progress.firstReveal,
+    (progress) => (progress.firstReveal.predicateResults.targetFill = false),
+    (progress) =>
+      (progress.firstReveal.visibilityCalls[0].ordinal =
+        progress.visibilitySeam.calls.length),
+    (progress) =>
+      (progress.orderProof.endUpdateCalls[0].targetStateAfter.fillMeshDefined = false),
+    (progress) => (progress.orderProof.restoration.restored = false),
   ]) {
     const mutated = structuredClone(syntheticProgress());
     mutateVisibilityProgress(mutated);
@@ -1249,7 +1563,15 @@ test("08 controlled visibility produces one exact L1 fill and release", () => {
     (phase) => (phase.firstRevealProof.postArmTargetRequestAttempts = 0),
     (phase) => (phase.firstRevealProof.postArmTargetRequestAttempts = 2),
     (phase) => (phase.firstRevealProof.frameDelta = 2),
+    (phase) => {
+      phase.firstRevealProof.frameBefore = 25;
+      phase.firstRevealProof.frameAfter = 26;
+      phase.firstRevealProof.warmFrame = 25;
+      phase.firstRevealProof.targetSelection.selectionFrame = 26;
+      phase.firstRevealProof.targetSelection.resultFrame = 26;
+    },
     (phase) => (phase.firstRevealProof.targetSelection.rawResult = 3),
+    (phase) => (phase.firstRevealProof.targetSelection.extra = true),
     (phase) =>
       (phase.firstRevealProof.fillMesh.terrainFillMeshInstance = false),
     (phase) => (phase.firstRevealProof.fillMesh.renderedMeshMatches = false),
@@ -1261,6 +1583,59 @@ test("08 controlled visibility produces one exact L1 fill and release", () => {
         "2/0/2",
       ),
     (phase) => (phase.firstRevealProof.selectedRealSiblingTileIds = []),
+    (phase) => {
+      const nonSibling = selectionObservation("1/3/0", 21, 2, "RENDERED");
+      phase.firstRevealProof.selectedTileIds.push(nonSibling.tileId);
+      phase.firstRevealProof.selectedTileIds.sort();
+      phase.firstRevealProof.selectedCount++;
+      phase.firstRevealProof.realTileIds.push(nonSibling.tileId);
+      phase.firstRevealProof.realTileIds.sort();
+      phase.firstRevealProof.realMeshCount++;
+      phase.firstRevealProof.selectedRealSiblingTileIds.push(nonSibling.tileId);
+      phase.firstRevealProof.selectedRealSiblingTileIds.sort();
+      phase.firstRevealProof.selectedRealSiblingObservations.push(nonSibling);
+    },
+    (phase) => (phase.firstRevealProof.predicateResults.targetFill = false),
+    (phase) =>
+      (phase.firstRevealProof.visibilityCalls[0].returnedVisibility = -1),
+    (phase) => (phase.firstRevealProof.targetState.renderable = "yes"),
+    (phase) =>
+      phase.firstRevealProof.targetRealDescendantTileIds.push(heldTarget.key),
+    (phase) =>
+      (phase.orderProof.showTileThisFrameCalls[1].exitEventOrdinal = 5),
+    (phase) => {
+      phase.orderProof.showTileThisFrameCalls[1].tileStateBefore = {
+        ...phase.orderProof.showTileThisFrameCalls[1].tileStateBefore,
+        renderable: false,
+      };
+    },
+    (phase) => {
+      phase.orderProof.endUpdateCalls[0].targetStateBefore = {
+        ...phase.orderProof.endUpdateCalls[0].targetStateBefore,
+        renderable: false,
+      };
+    },
+    (phase) => {
+      phase.orderProof.showTileThisFrameCalls[1].providerFlagsAfter =
+        providerFlags(false, true);
+    },
+    (phase) =>
+      phase.orderProof.endUpdateCalls[0].targetStateAfter.vertexCount++,
+    (phase) => {
+      phase.orderProof.endUpdateCalls[0].providerFlagsAfter = providerFlags(
+        false,
+        true,
+      );
+    },
+    (phase) =>
+      (phase.orderProof.endUpdateCalls[0].targetStateAfter.fillMeshDefined = false),
+    (phase) => (phase.orderProof.installation.endUpdate.beforeHadOwn = true),
+    (phase) =>
+      (phase.orderProof.installation.endUpdate.installedDescriptor.enumerable = true),
+    (phase) =>
+      (phase.orderProof.installation.endUpdate.installedDescriptor.extra = true),
+    (phase) => (phase.orderProof.restoration.attemptedAt = null),
+    (phase) => (phase.orderProof.restoration.finallyVerified = false),
     (phase) => (phase.holdTarget.level = 2),
     (phase) => (phase.maximumScreenSpaceError = FILL_SSE + 1),
   ]) {
@@ -1775,6 +2150,28 @@ test("21 prior RUNNING and extant lock both reject before browser work", () => {
     assert.equal(v6StartOverV4.prior.latest.schema, V4_SCHEMA);
     assert.equal(v6StartOverV4.running.schema, C12_29_S5_SCHEMA);
     assert.equal(v6StartOverV4.running.status, "RUNNING");
+
+    const v6Directory = path.join(temp, "finalized-v6-latest");
+    fs.mkdirSync(v6Directory);
+    const v6Paths = createS5ArtifactPaths(IMAGE_IDS[5], v6Directory);
+    fs.writeFileSync(
+      v6Paths.latest,
+      JSON.stringify({
+        schema: V6_SCHEMA,
+        runId: RUN_ID,
+        status: "ERROR",
+        exitCode: 2,
+        incomplete: false,
+        artifactName: `${RUN_ID}.json`,
+        error: "archived v6 diagnostic outcome",
+      }),
+    );
+    const v7StartOverV6 = beginS5EvidenceRun(v6Paths, IMAGE_IDS[5]);
+    assert.equal(v7StartOverV6.prior.latest.schema, V6_SCHEMA);
+    assert.equal(v7StartOverV6.prior.latest.status, "ERROR");
+    assert.equal(v7StartOverV6.running.schema, C12_29_S5_SCHEMA);
+    assert.equal(v7StartOverV6.running.status, "RUNNING");
+    assert.equal(v7StartOverV6.running.incomplete, true);
 
     const orderedDirectory = path.join(temp, "ordered-acquire");
     const orderedPaths = createS5ArtifactPaths(IMAGE_IDS[2], orderedDirectory);
@@ -3279,6 +3676,22 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
     'visibilityMode = "pass-through";',
     exactHoldArm,
   );
+  const installShowOrderWrapper = probeSource.indexOf(
+    'Object.defineProperty(providerBeforeSwap, "showTileThisFrame", {',
+    passThroughSwitch,
+  );
+  const installEndOrderWrapper = probeSource.indexOf(
+    'Object.defineProperty(providerBeforeSwap, "endUpdate", {',
+    installShowOrderWrapper,
+  );
+  const publishOrderProof = probeSource.indexOf(
+    "progress.orderProof = orderProof;",
+    installEndOrderWrapper,
+  );
+  const publishRevealStarted = probeSource.indexOf(
+    "progress.firstReveal = firstRevealProof;",
+    publishOrderProof,
+  );
   const firstRevealCapture = probeSource.indexOf(
     "const fillImageId = captureDocumentaryPng(contract.captureLabels[0]);",
     passThroughSwitch,
@@ -3287,9 +3700,25 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
     "const cSnapshot = snapshotTerrain();",
     firstRevealCapture,
   );
+  const publishRawReveal = probeSource.indexOf(
+    "Object.assign(firstRevealProof, {",
+    revealSnapshot,
+  );
   const immediateRestore = probeSource.indexOf(
     'restoreVisibilitySeam("immediately-after-reveal-snapshot");',
-    revealSnapshot,
+    publishRawReveal,
+  );
+  const immediateOrderRestore = probeSource.indexOf(
+    'restoreOrderInstrumentation("immediately-after-reveal-snapshot");',
+    immediateRestore,
+  );
+  const publishPredicateResults = probeSource.indexOf(
+    "firstRevealProof.predicateResults = {",
+    immediateOrderRestore,
+  );
+  const aggregateRevealGate = probeSource.indexOf(
+    "if (!Object.values(firstRevealProof.predicateResults).every(Boolean))",
+    publishPredicateResults,
   );
   const releasePhase = probeSource.indexOf(
     'markProgress(contract.phases[3], "release-held-requests"',
@@ -3310,15 +3739,35 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
       deferredTargetAssignment < exactHoldArm &&
       settledWarmupProof < exactHoldArm &&
       exactHoldArm < passThroughSwitch &&
-      passThroughSwitch < firstRevealCapture &&
+      passThroughSwitch < installShowOrderWrapper &&
+      installShowOrderWrapper < installEndOrderWrapper &&
+      installEndOrderWrapper < publishOrderProof &&
+      publishOrderProof < publishRevealStarted &&
+      publishRevealStarted < firstRevealCapture &&
       firstRevealCapture < revealSnapshot &&
-      revealSnapshot < immediateRestore &&
+      revealSnapshot < publishRawReveal &&
+      publishRawReveal < immediateRestore &&
+      immediateRestore < immediateOrderRestore &&
+      immediateOrderRestore < publishPredicateResults &&
+      publishPredicateResults < aggregateRevealGate &&
       immediateRestore < releasePhase &&
       releasePhase < restoreProductionSse,
   );
   assert.doesNotMatch(
     probeSource.slice(passThroughSwitch, firstRevealCapture),
     /\bawait\b/u,
+  );
+  assert.doesNotMatch(
+    probeSource.slice(publishRevealStarted, firstRevealCapture),
+    /renderNow\s*\(/u,
+  );
+  assert.equal(
+    (
+      probeSource.match(
+        /captureDocumentaryPng\(contract\.captureLabels\[0\]\)/gu,
+      ) ?? []
+    ).length,
+    1,
   );
   assert.match(
     probeSource,
@@ -3327,6 +3776,10 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
   assert.match(
     probeSource,
     /if \(visibilityOwnDescriptorBefore\)[\s\S]*?Object\.defineProperty\([\s\S]*?visibilityOwnDescriptorBefore[\s\S]*?else \{[\s\S]*?delete providerBeforeSwap\[visibilityProperty\]/u,
+  );
+  assert.match(
+    probeSource,
+    /finally \{[\s\S]*?restoreVisibilitySeam\(restorationAttempt\);[\s\S]*?restoreOrderInstrumentation\(restorationAttempt\);[\s\S]*?orderProof\.restoration\.finallyVerified/u,
   );
   assert.match(probeSource, /globe\.preloadSiblings = false;/u);
   assert.match(probeSource, /let holdEnabled = false;/u);
@@ -3404,6 +3857,7 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
     probeSource,
     /diagnostics:\s*cloneS5DiagnosticValue\(error\?\.s5Diagnostics\)/u,
   );
+  assert.match(probeSource, /coherentSameFrameOrderSurfaces:/u);
   assert.doesNotMatch(
     probeSource,
     /(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|start|serve)/u,

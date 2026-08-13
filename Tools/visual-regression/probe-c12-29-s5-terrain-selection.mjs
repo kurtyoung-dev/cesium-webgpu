@@ -2117,6 +2117,8 @@ const MEASURE_S5_SESSION = async (contract) => {
       frameDriver: contract.pickFrameDriver,
       renderPumpFrames: 0,
     },
+    firstReveal: null,
+    orderProof: null,
     visibilitySeam: {
       state: "not-installed",
       targetKey: null,
@@ -3061,6 +3063,102 @@ const MEASURE_S5_SESSION = async (contract) => {
     visibilityDiagnostic.state =
       attemptedAt === "finally-after-error" ? "error-restored" : "restored";
   };
+  const tileMeshState = (tile) => {
+    const data = tile?.data;
+    const fill = data?.fill;
+    const fillMesh = fill?.mesh;
+    return {
+      instantiated: Boolean(tile),
+      quadtreeState: Number.isInteger(tile?.state) ? tile.state : null,
+      renderable: tile?.renderable === true,
+      dataDefined: Boolean(data),
+      terrainState: Number.isInteger(data?.terrainState)
+        ? data.terrainState
+        : null,
+      terrainDataDefined: Boolean(data?.terrainData),
+      realMeshDefined: Boolean(data?.mesh),
+      vertexArrayDefined: Boolean(data?.vertexArray),
+      fillDefined: Boolean(fill),
+      fillMeshDefined: Boolean(fillMesh),
+      renderedMeshDefined: Boolean(data?.renderedMesh),
+      renderedMeshMatchesReal:
+        Boolean(data?.mesh) && data.renderedMesh === data.mesh,
+      renderedMeshMatchesFill:
+        Boolean(fillMesh) && data?.renderedMesh === fillMesh,
+      terrainFillMeshInstance: fill instanceof C.TerrainFillMesh,
+      vertexCount:
+        fillMesh?.vertexCountWithoutSkirts ??
+        (fillMesh?.vertices?.length && fillMesh?.stride
+          ? Math.floor(fillMesh.vertices.length / fillMesh.stride)
+          : 0),
+      indexCount: fillMesh?.indices?.length ?? 0,
+    };
+  };
+  const providerFrameFlags = (provider) => ({
+    hasLoadedTilesThisFrame: provider?._hasLoadedTilesThisFrame === true,
+    hasFillTilesThisFrame: provider?._hasFillTilesThisFrame === true,
+    loadedAndFillFlags:
+      provider?._hasLoadedTilesThisFrame === true &&
+      provider?._hasFillTilesThisFrame === true,
+  });
+  let orderProof;
+  let orderInstrumentationRestored = false;
+  let originalShowTileThisFrame;
+  let originalEndUpdate;
+  let showOwnDescriptorBefore;
+  let endOwnDescriptorBefore;
+  const restoreOrderInstrumentation = (attemptedAt) => {
+    if (!orderProof) return;
+    const restoration = orderProof.restoration;
+    restoration.attempted = true;
+    restoration.attemptedAt ??= attemptedAt;
+    if (!orderInstrumentationRestored) {
+      if (showOwnDescriptorBefore) {
+        Object.defineProperty(
+          providerBeforeSwap,
+          "showTileThisFrame",
+          showOwnDescriptorBefore,
+        );
+      } else {
+        delete providerBeforeSwap.showTileThisFrame;
+      }
+      if (endOwnDescriptorBefore) {
+        Object.defineProperty(
+          providerBeforeSwap,
+          "endUpdate",
+          endOwnDescriptorBefore,
+        );
+      } else {
+        delete providerBeforeSwap.endUpdate;
+      }
+      orderInstrumentationRestored = true;
+    }
+    const showAfter = Object.getOwnPropertyDescriptor(
+      providerBeforeSwap,
+      "showTileThisFrame",
+    );
+    const endAfter = Object.getOwnPropertyDescriptor(
+      providerBeforeSwap,
+      "endUpdate",
+    );
+    restoration.showIdentityMatches =
+      providerBeforeSwap.showTileThisFrame === originalShowTileThisFrame;
+    restoration.showDescriptorMatches =
+      JSON.stringify(descriptorShape(showAfter)) ===
+      JSON.stringify(descriptorShape(showOwnDescriptorBefore));
+    restoration.endIdentityMatches =
+      providerBeforeSwap.endUpdate === originalEndUpdate;
+    restoration.endDescriptorMatches =
+      JSON.stringify(descriptorShape(endAfter)) ===
+      JSON.stringify(descriptorShape(endOwnDescriptorBefore));
+    restoration.restored =
+      restoration.showIdentityMatches &&
+      restoration.showDescriptorMatches &&
+      restoration.endIdentityMatches &&
+      restoration.endDescriptorMatches;
+    orderProof.state =
+      attemptedAt === "finally-after-error" ? "error-restored" : "restored";
+  };
   const terrainRequestsBeforeFirstFrame = terrainRequests.attempted;
   let providerAfterSwap;
   try {
@@ -3376,6 +3474,139 @@ const MEASURE_S5_SESSION = async (contract) => {
     holdArm.holdInterceptionEnabledAfter = holdEnabled;
     holdArm.visibilityModeAfter = visibilityMode;
 
+    showOwnDescriptorBefore = Object.getOwnPropertyDescriptor(
+      providerBeforeSwap,
+      "showTileThisFrame",
+    );
+    endOwnDescriptorBefore = Object.getOwnPropertyDescriptor(
+      providerBeforeSwap,
+      "endUpdate",
+    );
+    const showDescriptorBefore = locatePropertyDescriptor(
+      providerBeforeSwap,
+      "showTileThisFrame",
+    );
+    const endDescriptorBefore = locatePropertyDescriptor(
+      providerBeforeSwap,
+      "endUpdate",
+    );
+    originalShowTileThisFrame = providerBeforeSwap.showTileThisFrame;
+    originalEndUpdate = providerBeforeSwap.endUpdate;
+    if (
+      typeof originalShowTileThisFrame !== "function" ||
+      typeof originalEndUpdate !== "function" ||
+      !showDescriptorBefore ||
+      !endDescriptorBefore
+    ) {
+      throw new Error("reveal order instrumentation methods are unavailable");
+    }
+    const orderInstallationRecord = (ownDescriptor, locatedDescriptor) => ({
+      originalIdentityCaptured: true,
+      prototypeDescriptorFound: Boolean(locatedDescriptor),
+      beforeHadOwn: Boolean(ownDescriptor),
+      beforeDescriptor: descriptorShape(ownDescriptor),
+      installedHadOwn: false,
+      installedDescriptor: null,
+      installedWrapperIdentityMatches: false,
+    });
+    orderProof = {
+      state: "installed",
+      targetKey: holdTarget.key,
+      eventCount: 0,
+      installation: {
+        showTileThisFrame: orderInstallationRecord(
+          showOwnDescriptorBefore,
+          showDescriptorBefore,
+        ),
+        endUpdate: orderInstallationRecord(
+          endOwnDescriptorBefore,
+          endDescriptorBefore,
+        ),
+      },
+      showTileThisFrameCalls: [],
+      endUpdateCalls: [],
+      restoration: {
+        attempted: false,
+        attemptedAt: null,
+        restored: false,
+        showIdentityMatches: false,
+        showDescriptorMatches: false,
+        endIdentityMatches: false,
+        endDescriptorMatches: false,
+        finallyVerified: false,
+      },
+    };
+    const nextOrderEvent = () => ++orderProof.eventCount;
+    const controlledShowTileThisFrame = function (tile, frameState) {
+      const call = {
+        ordinal: orderProof.showTileThisFrameCalls.length + 1,
+        enterEventOrdinal: nextOrderEvent(),
+        exitEventOrdinal: null,
+        frameNumber: frameState.frameNumber,
+        tileKey: tileId(tile),
+        target: tileId(tile) === holdTarget.key,
+        tileStateBefore: tileMeshState(tile),
+        tileStateAfter: null,
+        providerFlagsBefore: providerFrameFlags(this),
+        providerFlagsAfter: null,
+      };
+      orderProof.showTileThisFrameCalls.push(call);
+      try {
+        return originalShowTileThisFrame.call(this, tile, frameState);
+      } finally {
+        call.exitEventOrdinal = nextOrderEvent();
+        call.tileStateAfter = tileMeshState(tile);
+        call.providerFlagsAfter = providerFrameFlags(this);
+      }
+    };
+    const controlledEndUpdate = function (frameState) {
+      const call = {
+        ordinal: orderProof.endUpdateCalls.length + 1,
+        enterEventOrdinal: nextOrderEvent(),
+        exitEventOrdinal: null,
+        frameNumber: frameState.frameNumber,
+        targetStateBefore: tileMeshState(findInstantiatedTile(holdTarget.key)),
+        targetStateAfter: null,
+        providerFlagsBefore: providerFrameFlags(this),
+        providerFlagsAfter: null,
+      };
+      orderProof.endUpdateCalls.push(call);
+      try {
+        return originalEndUpdate.call(this, frameState);
+      } finally {
+        call.exitEventOrdinal = nextOrderEvent();
+        call.targetStateAfter = tileMeshState(
+          findInstantiatedTile(holdTarget.key),
+        );
+        call.providerFlagsAfter = providerFrameFlags(this);
+      }
+    };
+    Object.defineProperty(providerBeforeSwap, "showTileThisFrame", {
+      configurable: true,
+      enumerable: showOwnDescriptorBefore?.enumerable === true,
+      writable: true,
+      value: controlledShowTileThisFrame,
+    });
+    Object.defineProperty(providerBeforeSwap, "endUpdate", {
+      configurable: true,
+      enumerable: endOwnDescriptorBefore?.enumerable === true,
+      writable: true,
+      value: controlledEndUpdate,
+    });
+    for (const [property, wrapper] of [
+      ["showTileThisFrame", controlledShowTileThisFrame],
+      ["endUpdate", controlledEndUpdate],
+    ]) {
+      const record = orderProof.installation[property];
+      record.installedHadOwn = Object.hasOwn(providerBeforeSwap, property);
+      record.installedDescriptor = descriptorShape(
+        Object.getOwnPropertyDescriptor(providerBeforeSwap, property),
+      );
+      record.installedWrapperIdentityMatches =
+        providerBeforeSwap[property] === wrapper;
+    }
+    progress.orderProof = orderProof;
+
     markProgress(
       contract.phases[2],
       "first-pass-through-render-and-fused-fill-capture",
@@ -3383,6 +3614,63 @@ const MEASURE_S5_SESSION = async (contract) => {
     const targetAttemptsBeforeReveal =
       requestAttemptsByKey.get(holdTarget.key) ?? 0;
     const revealFrameBefore = scene.frameState.frameNumber;
+    const firstRevealProof = {
+      state: "started",
+      targetKey: holdTarget.key,
+      captureWasFirstRenderAfterPassThrough: null,
+      sameTaskModeSwitchAndCapture: true,
+      noYieldBeforeCapture: true,
+      warmFrame: warmTargetSelection.selectionFrame,
+      frameBefore: revealFrameBefore,
+      frameAfter: null,
+      frameDelta: null,
+      longitude: null,
+      latitude: null,
+      cameraHeightMeters: null,
+      cameraFovDegrees: null,
+      maximumScreenSpaceError: null,
+      targetRequestAttemptsBefore: targetAttemptsBeforeReveal,
+      targetRequestAttemptsAfter: null,
+      postArmTargetRequestAttempts: null,
+      targetSelection: null,
+      visibilityTargetCallOrdinals: [],
+      visibilityCalls: [],
+      selectedTileIds: [],
+      realTileIds: [],
+      fillTileIds: [],
+      selectedCount: null,
+      realMeshCount: null,
+      fillCount: null,
+      targetSelectedDescendantTileIds: [],
+      targetRealDescendantTileIds: [],
+      targetFillDescendantTileIds: [],
+      targetSelectedStrictDescendantTileIds: [],
+      targetRealStrictDescendantTileIds: [],
+      targetFillStrictDescendantTileIds: [],
+      selectedRealSiblingTileIds: [],
+      selectedRealSiblingObservations: [],
+      siblingKey: fillTarget.anchorKey,
+      heldKeys: [],
+      reservedKeys: [],
+      heldRequestCount: null,
+      reservedPromiseCount: null,
+      targetHeldPromisePresent: null,
+      targetReservedPromisePresent: null,
+      providerFlags: null,
+      loadedAndFillFlags: null,
+      tilesLoaded: null,
+      targetSelected: null,
+      targetReal: null,
+      targetFill: null,
+      targetState: null,
+      fillMesh: null,
+      restoration: {
+        visibilityRestored: false,
+        orderInstrumentationRestored: false,
+      },
+      predicateResults: null,
+    };
+    progress.firstReveal = firstRevealProof;
     const fillImageId = captureDocumentaryPng(contract.captureLabels[0]);
     const revealFrameAfter = scene.frameState.frameNumber;
     const cSnapshot = snapshotTerrain();
@@ -3395,11 +3683,22 @@ const MEASURE_S5_SESSION = async (contract) => {
     const targetAttemptsAfterReveal =
       requestAttemptsByKey.get(holdTarget.key) ?? 0;
     const heldKeys = [...held.keys()].sort();
+    const reservedKeys = [...reservedPromises].sort();
+    const targetSelectedDescendantTileIds = cSnapshot.selectedTileIds.filter(
+      (id) => levelOneAncestorId(id) === holdTarget.key,
+    );
+    const targetRealDescendantTileIds = cSnapshot.realTileIds.filter(
+      (id) => levelOneAncestorId(id) === holdTarget.key,
+    );
+    const targetFillDescendantTileIds = cSnapshot.fillTileIds.filter(
+      (id) => levelOneAncestorId(id) === holdTarget.key,
+    );
     const targetSelectedStrictDescendantTileIds =
-      cSnapshot.selectedTileIds.filter(
-        (id) =>
-          id !== holdTarget.key && levelOneAncestorId(id) === holdTarget.key,
-      );
+      targetSelectedDescendantTileIds.filter((id) => id !== holdTarget.key);
+    const targetRealStrictDescendantTileIds =
+      targetRealDescendantTileIds.filter((id) => id !== holdTarget.key);
+    const targetFillStrictDescendantTileIds =
+      targetFillDescendantTileIds.filter((id) => id !== holdTarget.key);
     const revealTargetVisibilityCalls = targetVisibilityCallsForFrame(
       revealTargetSelection.selectionFrame,
     );
@@ -3407,8 +3706,14 @@ const MEASURE_S5_SESSION = async (contract) => {
     const revealTileData = revealTile?.data;
     const revealFill = revealTileData?.fill;
     const revealFillMesh = revealFill?.mesh;
+    const revealTargetState = tileMeshState(revealTile);
+    const revealProviderFlags = providerFrameFlags(providerBeforeSwap);
     const fillMeshProof = {
       tileId: holdTarget.key,
+      fillDefined: Boolean(revealFill),
+      fillMeshDefined: Boolean(revealFillMesh),
+      renderedMeshDefined: Boolean(revealTileData?.renderedMesh),
+      realMeshDefined: Boolean(revealTileData?.mesh),
       terrainFillMeshInstance: revealFill instanceof C.TerrainFillMesh,
       renderedMeshMatches:
         Boolean(revealFillMesh) &&
@@ -3421,16 +3726,10 @@ const MEASURE_S5_SESSION = async (contract) => {
           : 0),
       indexCount: revealFillMesh?.indices?.length ?? 0,
     };
-    restoreVisibilitySeam("immediately-after-reveal-snapshot");
-    visibilityRestoration.immediateAfterReveal = true;
-    visibilityRestoration.beforeRelease = true;
-    visibilityDiagnostic.state = "restored";
-    const firstRevealProof = {
+    Object.assign(firstRevealProof, {
+      state: "captured",
       captureWasFirstRenderAfterPassThrough:
         revealFrameAfter === revealFrameBefore + 1,
-      sameTaskModeSwitchAndCapture: true,
-      noYieldBeforeCapture: true,
-      frameBefore: revealFrameBefore,
       frameAfter: revealFrameAfter,
       frameDelta: revealFrameAfter - revealFrameBefore,
       longitude: track.longitude,
@@ -3438,7 +3737,6 @@ const MEASURE_S5_SESSION = async (contract) => {
       cameraHeightMeters: scene.camera.positionCartographic.height,
       cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
       maximumScreenSpaceError: globe.maximumScreenSpaceError,
-      targetRequestAttemptsBefore: targetAttemptsBeforeReveal,
       targetRequestAttemptsAfter: targetAttemptsAfterReveal,
       postArmTargetRequestAttempts:
         targetAttemptsAfterReveal - targetAttemptsBeforeReveal,
@@ -3446,53 +3744,172 @@ const MEASURE_S5_SESSION = async (contract) => {
       visibilityTargetCallOrdinals: revealTargetVisibilityCalls.map(
         (call) => call.ordinal,
       ),
+      visibilityCalls: revealTargetVisibilityCalls.map((call) => ({ ...call })),
+      selectedTileIds: [...cSnapshot.selectedTileIds],
+      realTileIds: [...cSnapshot.realTileIds],
+      fillTileIds: [...cSnapshot.fillTileIds],
+      selectedCount: cSnapshot.selectedCount,
+      realMeshCount: cSnapshot.realMeshCount,
+      fillCount: cSnapshot.fillCount,
+      targetSelectedDescendantTileIds,
+      targetRealDescendantTileIds,
+      targetFillDescendantTileIds,
       targetSelectedStrictDescendantTileIds,
+      targetRealStrictDescendantTileIds,
+      targetFillStrictDescendantTileIds,
       selectedRealSiblingTileIds: revealSiblingSelections
         .map((entry) => entry.tileId)
         .sort(),
       selectedRealSiblingObservations: revealSiblingSelections,
-      siblingKey: fillTarget.anchorKey,
       heldKeys,
+      reservedKeys,
       heldRequestCount: held.size,
+      reservedPromiseCount: reservedPromises.size,
+      targetHeldPromisePresent: held.has(holdTarget.key),
+      targetReservedPromisePresent: reservedPromises.has(holdTarget.key),
+      providerFlags: revealProviderFlags,
       loadedAndFillFlags: cSnapshot.loadedAndFillFlags,
+      tilesLoaded: cSnapshot.tilesLoaded,
       targetSelected: cSnapshot.selectedTileIds.includes(holdTarget.key),
+      targetReal: cSnapshot.realTileIds.includes(holdTarget.key),
       targetFill: cSnapshot.fillTileIds.includes(holdTarget.key),
+      targetState: revealTargetState,
       fillMesh: fillMeshProof,
+    });
+    restoreVisibilitySeam("immediately-after-reveal-snapshot");
+    visibilityRestoration.immediateAfterReveal = true;
+    visibilityRestoration.beforeRelease = true;
+    visibilityDiagnostic.state = "restored";
+    restoreOrderInstrumentation("immediately-after-reveal-snapshot");
+    orderProof.restoration.finallyVerified =
+      orderProof.restoration.restored &&
+      providerBeforeSwap.showTileThisFrame === originalShowTileThisFrame &&
+      providerBeforeSwap.endUpdate === originalEndUpdate;
+    firstRevealProof.restoration.visibilityRestored =
+      visibilityRestoration.restored;
+    firstRevealProof.restoration.orderInstrumentationRestored =
+      orderProof.restoration.restored;
+    const revealTargetShowCalls = orderProof.showTileThisFrameCalls.filter(
+      (call) => call.target && call.frameNumber === revealFrameAfter,
+    );
+    const revealEndUpdateCalls = orderProof.endUpdateCalls.filter(
+      (call) => call.frameNumber === revealFrameAfter,
+    );
+    const revealTargetShow = revealTargetShowCalls[0];
+    const revealEndUpdate = revealEndUpdateCalls[0];
+    firstRevealProof.predicateResults = {
+      captureWasFirstRenderAfterPassThrough:
+        firstRevealProof.captureWasFirstRenderAfterPassThrough,
+      sameTaskModeSwitchAndCapture:
+        firstRevealProof.sameTaskModeSwitchAndCapture,
+      noYieldBeforeCapture: firstRevealProof.noYieldBeforeCapture,
+      consecutiveWarmAndRevealFrames:
+        revealTargetSelection.selectionFrame ===
+        warmTargetSelection.selectionFrame + 1,
+      exactlyOnePostArmTargetRequest:
+        firstRevealProof.postArmTargetRequestAttempts === 1 &&
+        targetAttemptsAfterReveal === targetAttemptsBeforeReveal + 1,
+      exactHeldTargetSet:
+        held.size === 1 &&
+        heldKeys.length === 1 &&
+        heldKeys[0] === holdTarget.key &&
+        held.has(holdTarget.key),
+      exactReservedTargetSet:
+        reservedPromises.size === 1 &&
+        reservedKeys.length === 1 &&
+        reservedKeys[0] === holdTarget.key &&
+        reservedPromises.has(holdTarget.key),
+      targetSameFrameRendered:
+        revealTargetSelection.tileId === holdTarget.key &&
+        revealTargetSelection.instantiated === true &&
+        revealTargetSelection.resultFrame ===
+          revealTargetSelection.selectionFrame &&
+        revealTargetSelection.sameFrame &&
+        revealTargetSelection.rawResult === C.TileSelectionResult.RENDERED &&
+        revealTargetSelection.originalResult ===
+          C.TileSelectionResult.RENDERED &&
+        revealTargetSelection.rawResultName === "RENDERED" &&
+        revealTargetSelection.originalResultName === "RENDERED" &&
+        !revealTargetSelection.wasKicked,
+      targetVisibilityPassThrough:
+        revealTargetVisibilityCalls.length > 0 &&
+        revealTargetVisibilityCalls.every(
+          (call) =>
+            call.tileKey === holdTarget.key &&
+            call.frameNumber === revealTargetSelection.selectionFrame &&
+            new Set([C.Visibility.PARTIAL, C.Visibility.FULL]).has(
+              call.originalVisibility,
+            ) &&
+            call.returnedVisibility === call.originalVisibility &&
+            call.overridden === false &&
+            call.mode === "pass-through",
+        ),
+      targetSelected: firstRevealProof.targetSelected,
+      targetFill: firstRevealProof.targetFill,
+      targetRealAbsent: !firstRevealProof.targetReal,
+      terrainFillMeshInstance: fillMeshProof.terrainFillMeshInstance,
+      renderedMeshMatchesFill: fillMeshProof.renderedMeshMatches,
+      realMeshAbsent: fillMeshProof.realMeshAbsent,
+      positiveVertexCount: fillMeshProof.vertexCount > 0,
+      positiveIndexCount: fillMeshProof.indexCount > 0,
+      noSelectedStrictDescendants:
+        targetSelectedStrictDescendantTileIds.length === 0,
+      noRealStrictDescendants: targetRealStrictDescendantTileIds.length === 0,
+      noFillStrictDescendants: targetFillStrictDescendantTileIds.length === 0,
+      anchorSiblingRendered: revealSiblingSelections.some(
+        (entry) =>
+          entry.tileId === fillTarget.anchorKey &&
+          entry.instantiated === true &&
+          entry.resultFrame === entry.selectionFrame &&
+          entry.sameFrame === true &&
+          entry.rawResult === C.TileSelectionResult.RENDERED &&
+          entry.originalResult === C.TileSelectionResult.RENDERED &&
+          entry.rawResultName === "RENDERED" &&
+          entry.originalResultName === "RENDERED" &&
+          entry.wasKicked === false,
+      ),
+      providerLoadedAndFillFlags: revealProviderFlags.loadedAndFillFlags,
+      targetShownExactlyOnce: revealTargetShowCalls.length === 1,
+      targetShowBeforeEndUpdate:
+        revealTargetShowCalls.length === 1 &&
+        revealEndUpdateCalls.length === 1 &&
+        revealTargetShow.exitEventOrdinal < revealEndUpdate.enterEventOrdinal,
+      endUpdateExactlyOnce: revealEndUpdateCalls.length === 1,
+      coherentSameFrameOrderSurfaces:
+        revealTargetShowCalls.length === 1 &&
+        revealEndUpdateCalls.length === 1 &&
+        JSON.stringify(revealTargetShow.tileStateBefore) ===
+          JSON.stringify(revealTargetShow.tileStateAfter) &&
+        JSON.stringify(revealTargetShow.tileStateAfter) ===
+          JSON.stringify(revealEndUpdate.targetStateBefore) &&
+        JSON.stringify(revealTargetShow.providerFlagsAfter) ===
+          JSON.stringify(revealEndUpdate.providerFlagsBefore) &&
+        JSON.stringify(revealEndUpdate.targetStateAfter) ===
+          JSON.stringify(firstRevealProof.targetState) &&
+        JSON.stringify(revealEndUpdate.providerFlagsAfter) ===
+          JSON.stringify(firstRevealProof.providerFlags) &&
+        revealEndUpdate.providerFlagsAfter.loadedAndFillFlags ===
+          firstRevealProof.loadedAndFillFlags,
+      showMarkedFillBeforeEndUpdate:
+        revealTargetShowCalls.length === 1 &&
+        revealTargetShow.providerFlagsAfter.hasFillTilesThisFrame &&
+        revealEndUpdateCalls.length === 1 &&
+        revealEndUpdate.providerFlagsBefore.hasLoadedTilesThisFrame &&
+        revealEndUpdate.providerFlagsBefore.hasFillTilesThisFrame,
+      endUpdateConstructedFill:
+        revealEndUpdateCalls.length === 1 &&
+        !revealEndUpdate.targetStateBefore.fillMeshDefined &&
+        revealEndUpdate.targetStateAfter.terrainFillMeshInstance &&
+        revealEndUpdate.targetStateAfter.fillMeshDefined &&
+        revealEndUpdate.targetStateAfter.renderedMeshMatchesFill &&
+        !revealEndUpdate.targetStateAfter.realMeshDefined &&
+        revealEndUpdate.targetStateAfter.vertexCount > 0 &&
+        revealEndUpdate.targetStateAfter.indexCount > 0,
+      visibilityRestored: visibilityRestoration.restored,
+      orderInstrumentationRestored: orderProof.restoration.restored,
     };
-    if (
-      !firstRevealProof.captureWasFirstRenderAfterPassThrough ||
-      visibilityModeSwitch.revealFrame !== visibilityModeSwitch.warmFrame + 1 ||
-      firstRevealProof.postArmTargetRequestAttempts !== 1 ||
-      heldKeys.length !== 1 ||
-      heldKeys[0] !== holdTarget.key ||
-      !reservedPromises.has(holdTarget.key) ||
-      !revealTargetSelection.sameFrame ||
-      revealTargetSelection.rawResult !== C.TileSelectionResult.RENDERED ||
-      revealTargetSelection.wasKicked ||
-      revealTargetVisibilityCalls.length === 0 ||
-      !revealTargetVisibilityCalls.every(
-        (call) =>
-          new Set([C.Visibility.PARTIAL, C.Visibility.FULL]).has(
-            call.originalVisibility,
-          ) &&
-          call.returnedVisibility === call.originalVisibility &&
-          call.overridden === false &&
-          call.mode === "pass-through",
-      ) ||
-      !firstRevealProof.targetSelected ||
-      !firstRevealProof.targetFill ||
-      !fillMeshProof.terrainFillMeshInstance ||
-      !fillMeshProof.renderedMeshMatches ||
-      !fillMeshProof.realMeshAbsent ||
-      !(fillMeshProof.vertexCount > 0) ||
-      !(fillMeshProof.indexCount > 0) ||
-      targetSelectedStrictDescendantTileIds.length !== 0 ||
-      !revealSiblingSelections.some(
-        (entry) => entry.tileId === fillTarget.anchorKey,
-      ) ||
-      !cSnapshot.loadedAndFillFlags ||
-      !visibilityRestoration.restored
-    ) {
+    firstRevealProof.state = "evaluated";
+    if (!Object.values(firstRevealProof.predicateResults).every(Boolean)) {
       visibilityDiagnostic.terminalReason =
         "first pass-through render did not produce the exact held L1 fill";
       throw new Error(
@@ -3511,6 +3928,7 @@ const MEASURE_S5_SESSION = async (contract) => {
       warmup: warmupProof,
       holdArm,
       firstRevealProof,
+      orderProof,
       visibilitySeam: {
         claim:
           "controlled-visibility-input-production-selection-request-fill-release-render",
@@ -3569,17 +3987,39 @@ const MEASURE_S5_SESSION = async (contract) => {
       ? "finally-verification"
       : "finally-after-error";
     restoreVisibilitySeam(restorationAttempt);
+    restoreOrderInstrumentation(restorationAttempt);
     visibilityRestoration.finallyVerified =
       visibilityRestoration.restored &&
       providerBeforeSwap.computeTileVisibility ===
         originalComputeTileVisibility;
+    if (orderProof) {
+      orderProof.restoration.finallyVerified =
+        orderProof.restoration.restored &&
+        providerBeforeSwap.showTileThisFrame === originalShowTileThisFrame &&
+        providerBeforeSwap.endUpdate === originalEndUpdate;
+      if (progress.firstReveal) {
+        progress.firstReveal.restoration.visibilityRestored =
+          visibilityRestoration.restored;
+        progress.firstReveal.restoration.orderInstrumentationRestored =
+          orderProof.restoration.restored;
+      }
+    }
     if (!visibilityRestoration.finallyVerified) {
       visibilityDiagnostic.terminalReason =
         "computeTileVisibility restoration verification failed";
     }
+    if (orderProof && !orderProof.restoration.finallyVerified) {
+      visibilityDiagnostic.terminalReason =
+        "reveal order instrumentation restoration verification failed";
+    }
   }
   if (!visibilityRestoration.finallyVerified) {
     throw new Error("computeTileVisibility restoration verification failed");
+  }
+  if (orderProof && !orderProof.restoration.finallyVerified) {
+    throw new Error(
+      "reveal order instrumentation restoration verification failed",
+    );
   }
 
   markProgress(contract.phases[3], "release-held-requests", {

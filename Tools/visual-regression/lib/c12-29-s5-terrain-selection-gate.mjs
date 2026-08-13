@@ -7,9 +7,9 @@
  * deliberately browser-free so every premise can be mutation-tested in Node.
  */
 
-export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v6";
+export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v7";
 
-export const C12_29_S5_DIAGNOSTICS_SCHEMA = "c12-29-s5-runtime-diagnostics-v2";
+export const C12_29_S5_DIAGNOSTICS_SCHEMA = "c12-29-s5-runtime-diagnostics-v3";
 
 export const C12_29_S5_RENDERERS = Object.freeze(["webgl", "webgpu"]);
 
@@ -169,6 +169,118 @@ const TERRAIN_REQUEST_KEYS = Object.freeze([
   "lastError",
 ]);
 
+const FIRST_REVEAL_PREDICATE_KEYS = Object.freeze([
+  "captureWasFirstRenderAfterPassThrough",
+  "sameTaskModeSwitchAndCapture",
+  "noYieldBeforeCapture",
+  "consecutiveWarmAndRevealFrames",
+  "exactlyOnePostArmTargetRequest",
+  "exactHeldTargetSet",
+  "exactReservedTargetSet",
+  "targetSameFrameRendered",
+  "targetVisibilityPassThrough",
+  "targetSelected",
+  "targetFill",
+  "targetRealAbsent",
+  "terrainFillMeshInstance",
+  "renderedMeshMatchesFill",
+  "realMeshAbsent",
+  "positiveVertexCount",
+  "positiveIndexCount",
+  "noSelectedStrictDescendants",
+  "noRealStrictDescendants",
+  "noFillStrictDescendants",
+  "anchorSiblingRendered",
+  "providerLoadedAndFillFlags",
+  "targetShownExactlyOnce",
+  "targetShowBeforeEndUpdate",
+  "endUpdateExactlyOnce",
+  "coherentSameFrameOrderSurfaces",
+  "showMarkedFillBeforeEndUpdate",
+  "endUpdateConstructedFill",
+  "visibilityRestored",
+  "orderInstrumentationRestored",
+]);
+
+const TILE_MESH_STATE_KEYS = Object.freeze([
+  "instantiated",
+  "quadtreeState",
+  "renderable",
+  "dataDefined",
+  "terrainState",
+  "terrainDataDefined",
+  "realMeshDefined",
+  "vertexArrayDefined",
+  "fillDefined",
+  "fillMeshDefined",
+  "renderedMeshDefined",
+  "renderedMeshMatchesReal",
+  "renderedMeshMatchesFill",
+  "terrainFillMeshInstance",
+  "vertexCount",
+  "indexCount",
+]);
+
+const PROVIDER_FRAME_FLAG_KEYS = Object.freeze([
+  "hasLoadedTilesThisFrame",
+  "hasFillTilesThisFrame",
+  "loadedAndFillFlags",
+]);
+
+const FIRST_REVEAL_KEYS = Object.freeze([
+  "state",
+  "targetKey",
+  "captureWasFirstRenderAfterPassThrough",
+  "sameTaskModeSwitchAndCapture",
+  "noYieldBeforeCapture",
+  "warmFrame",
+  "frameBefore",
+  "frameAfter",
+  "frameDelta",
+  "longitude",
+  "latitude",
+  "cameraHeightMeters",
+  "cameraFovDegrees",
+  "maximumScreenSpaceError",
+  "targetRequestAttemptsBefore",
+  "targetRequestAttemptsAfter",
+  "postArmTargetRequestAttempts",
+  "targetSelection",
+  "visibilityTargetCallOrdinals",
+  "visibilityCalls",
+  "selectedTileIds",
+  "realTileIds",
+  "fillTileIds",
+  "selectedCount",
+  "realMeshCount",
+  "fillCount",
+  "targetSelectedDescendantTileIds",
+  "targetRealDescendantTileIds",
+  "targetFillDescendantTileIds",
+  "targetSelectedStrictDescendantTileIds",
+  "targetRealStrictDescendantTileIds",
+  "targetFillStrictDescendantTileIds",
+  "selectedRealSiblingTileIds",
+  "selectedRealSiblingObservations",
+  "siblingKey",
+  "heldKeys",
+  "reservedKeys",
+  "heldRequestCount",
+  "reservedPromiseCount",
+  "targetHeldPromisePresent",
+  "targetReservedPromisePresent",
+  "providerFlags",
+  "loadedAndFillFlags",
+  "tilesLoaded",
+  "targetSelected",
+  "targetReal",
+  "targetFill",
+  "targetState",
+  "fillMesh",
+  "restoration",
+  "predicateResults",
+]);
+
 const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0;
 
 function exactObjectKeys(value, keys) {
@@ -178,6 +290,14 @@ function exactObjectKeys(value, keys) {
     !Array.isArray(value) &&
     Object.keys(value).length === keys.length &&
     keys.every((key) => Object.hasOwn(value, key))
+  );
+}
+
+function exactObjectValues(left, right, keys) {
+  return (
+    exactObjectKeys(left, keys) &&
+    exactObjectKeys(right, keys) &&
+    keys.every((key) => Object.is(left[key], right[key]))
   );
 }
 
@@ -325,11 +445,682 @@ function validVisibilitySeamProgress(value) {
   );
 }
 
+function validTileMeshState(value) {
+  if (!exactObjectKeys(value, TILE_MESH_STATE_KEYS)) return false;
+  const booleanKeys = [
+    "instantiated",
+    "renderable",
+    "dataDefined",
+    "terrainDataDefined",
+    "realMeshDefined",
+    "vertexArrayDefined",
+    "fillDefined",
+    "fillMeshDefined",
+    "renderedMeshDefined",
+    "renderedMeshMatchesReal",
+    "renderedMeshMatchesFill",
+    "terrainFillMeshInstance",
+  ];
+  return (
+    booleanKeys.every((key) => typeof value[key] === "boolean") &&
+    (value.quadtreeState === null || Number.isInteger(value.quadtreeState)) &&
+    (value.terrainState === null || Number.isInteger(value.terrainState)) &&
+    nonNegativeInteger(value.vertexCount) &&
+    nonNegativeInteger(value.indexCount) &&
+    (!value.terrainDataDefined || value.dataDefined) &&
+    (!value.realMeshDefined || value.dataDefined) &&
+    (!value.fillDefined || value.dataDefined) &&
+    (!value.fillMeshDefined || value.fillDefined) &&
+    (!value.renderedMeshDefined || value.dataDefined) &&
+    (!value.renderedMeshMatchesReal ||
+      (value.renderedMeshDefined && value.realMeshDefined)) &&
+    (!value.renderedMeshMatchesFill ||
+      (value.renderedMeshDefined && value.fillMeshDefined)) &&
+    (!value.terrainFillMeshInstance || value.fillDefined) &&
+    (value.fillMeshDefined ||
+      (value.vertexCount === 0 && value.indexCount === 0))
+  );
+}
+
+function validProviderFrameFlags(value) {
+  return (
+    exactObjectKeys(value, PROVIDER_FRAME_FLAG_KEYS) &&
+    PROVIDER_FRAME_FLAG_KEYS.every((key) => typeof value[key] === "boolean") &&
+    value.loadedAndFillFlags ===
+      (value.hasLoadedTilesThisFrame && value.hasFillTilesThisFrame)
+  );
+}
+
+function validOrderPropertyInstallation(value) {
+  return (
+    exactObjectKeys(value, [
+      "originalIdentityCaptured",
+      "prototypeDescriptorFound",
+      "beforeHadOwn",
+      "beforeDescriptor",
+      "installedHadOwn",
+      "installedDescriptor",
+      "installedWrapperIdentityMatches",
+    ]) &&
+    [
+      value.originalIdentityCaptured,
+      value.prototypeDescriptorFound,
+      value.beforeHadOwn,
+      value.installedHadOwn,
+      value.installedWrapperIdentityMatches,
+    ].every((entry) => typeof entry === "boolean") &&
+    (value.beforeDescriptor === null ||
+      typeof value.beforeDescriptor === "object") &&
+    (value.installedDescriptor === null ||
+      typeof value.installedDescriptor === "object")
+  );
+}
+
+function exactOrderPropertyInstallation(value) {
+  return (
+    validOrderPropertyInstallation(value) &&
+    value.originalIdentityCaptured === true &&
+    value.prototypeDescriptorFound === true &&
+    value.beforeHadOwn === false &&
+    value.beforeDescriptor === null &&
+    value.installedHadOwn === true &&
+    exactObjectKeys(value.installedDescriptor, [
+      "configurable",
+      "enumerable",
+      "writable",
+      "hasValue",
+      "hasGetter",
+      "hasSetter",
+    ]) &&
+    value.installedDescriptor?.configurable === true &&
+    value.installedDescriptor?.enumerable === false &&
+    value.installedDescriptor?.writable === true &&
+    value.installedDescriptor?.hasValue === true &&
+    value.installedDescriptor?.hasGetter === false &&
+    value.installedDescriptor?.hasSetter === false &&
+    value.installedWrapperIdentityMatches === true
+  );
+}
+
+function validShowTileOrderCall(call, index, targetKey) {
+  return (
+    exactObjectKeys(call, [
+      "ordinal",
+      "enterEventOrdinal",
+      "exitEventOrdinal",
+      "frameNumber",
+      "tileKey",
+      "target",
+      "tileStateBefore",
+      "tileStateAfter",
+      "providerFlagsBefore",
+      "providerFlagsAfter",
+    ]) &&
+    call.ordinal === index + 1 &&
+    nonNegativeInteger(call.enterEventOrdinal) &&
+    nonNegativeInteger(call.exitEventOrdinal) &&
+    call.enterEventOrdinal < call.exitEventOrdinal &&
+    nonNegativeInteger(call.frameNumber) &&
+    /^\d+\/\d+\/\d+$/u.test(call.tileKey) &&
+    call.target === (call.tileKey === targetKey) &&
+    validTileMeshState(call.tileStateBefore) &&
+    validTileMeshState(call.tileStateAfter) &&
+    validProviderFrameFlags(call.providerFlagsBefore) &&
+    validProviderFrameFlags(call.providerFlagsAfter)
+  );
+}
+
+function validEndUpdateOrderCall(call, index) {
+  return (
+    exactObjectKeys(call, [
+      "ordinal",
+      "enterEventOrdinal",
+      "exitEventOrdinal",
+      "frameNumber",
+      "targetStateBefore",
+      "targetStateAfter",
+      "providerFlagsBefore",
+      "providerFlagsAfter",
+    ]) &&
+    call.ordinal === index + 1 &&
+    nonNegativeInteger(call.enterEventOrdinal) &&
+    nonNegativeInteger(call.exitEventOrdinal) &&
+    call.enterEventOrdinal < call.exitEventOrdinal &&
+    nonNegativeInteger(call.frameNumber) &&
+    validTileMeshState(call.targetStateBefore) &&
+    validTileMeshState(call.targetStateAfter) &&
+    validProviderFrameFlags(call.providerFlagsBefore) &&
+    validProviderFrameFlags(call.providerFlagsAfter)
+  );
+}
+
+function validOrderProofProgress(value) {
+  if (
+    !exactObjectKeys(value, [
+      "state",
+      "targetKey",
+      "eventCount",
+      "installation",
+      "showTileThisFrameCalls",
+      "endUpdateCalls",
+      "restoration",
+    ]) ||
+    !new Set(["installed", "restored", "error-restored"]).has(value.state) ||
+    !/^1\/\d+\/\d+$/u.test(value.targetKey) ||
+    !nonNegativeInteger(value.eventCount) ||
+    !exactObjectKeys(value.installation, ["showTileThisFrame", "endUpdate"]) ||
+    !validOrderPropertyInstallation(value.installation.showTileThisFrame) ||
+    !validOrderPropertyInstallation(value.installation.endUpdate) ||
+    !Array.isArray(value.showTileThisFrameCalls) ||
+    value.showTileThisFrameCalls.length > 64 ||
+    !value.showTileThisFrameCalls.every((call, index) =>
+      validShowTileOrderCall(call, index, value.targetKey),
+    ) ||
+    !Array.isArray(value.endUpdateCalls) ||
+    value.endUpdateCalls.length > 4 ||
+    !value.endUpdateCalls.every(validEndUpdateOrderCall) ||
+    !exactObjectKeys(value.restoration, [
+      "attempted",
+      "attemptedAt",
+      "restored",
+      "showIdentityMatches",
+      "showDescriptorMatches",
+      "endIdentityMatches",
+      "endDescriptorMatches",
+      "finallyVerified",
+    ]) ||
+    ![
+      value.restoration.attempted,
+      value.restoration.restored,
+      value.restoration.showIdentityMatches,
+      value.restoration.showDescriptorMatches,
+      value.restoration.endIdentityMatches,
+      value.restoration.endDescriptorMatches,
+      value.restoration.finallyVerified,
+    ].every((entry) => typeof entry === "boolean") ||
+    !(
+      value.restoration.attemptedAt === null ||
+      typeof value.restoration.attemptedAt === "string"
+    )
+  ) {
+    return false;
+  }
+  const eventOrdinals = [
+    ...value.showTileThisFrameCalls.flatMap((call) => [
+      call.enterEventOrdinal,
+      call.exitEventOrdinal,
+    ]),
+    ...value.endUpdateCalls.flatMap((call) => [
+      call.enterEventOrdinal,
+      call.exitEventOrdinal,
+    ]),
+  ].sort((left, right) => left - right);
+  const restorationExact =
+    !value.restoration.restored ||
+    (value.restoration.attempted &&
+      value.restoration.showIdentityMatches &&
+      value.restoration.showDescriptorMatches &&
+      value.restoration.endIdentityMatches &&
+      value.restoration.endDescriptorMatches);
+  return (
+    eventOrdinals.length === value.eventCount &&
+    eventOrdinals.every((ordinal, index) => ordinal === index + 1) &&
+    restorationExact &&
+    (value.state === "installed" || value.restoration.restored)
+  );
+}
+
+function computeFirstRevealPredicateResults(firstReveal, orderProof) {
+  const targetKey = firstReveal?.targetKey;
+  const siblingKey = firstReveal?.siblingKey;
+  const targetShowCalls = orderProof?.showTileThisFrameCalls?.filter(
+    (call) => call.target && call.frameNumber === firstReveal?.frameAfter,
+  );
+  const revealEndCalls = orderProof?.endUpdateCalls?.filter(
+    (call) => call.frameNumber === firstReveal?.frameAfter,
+  );
+  const targetShow = targetShowCalls?.[0];
+  const revealEnd = revealEndCalls?.[0];
+  const siblingRendered =
+    firstReveal?.selectedRealSiblingTileIds?.includes(siblingKey) === true &&
+    firstReveal?.selectedRealSiblingObservations?.some((selection) =>
+      exactSelectionObservation(selection, siblingKey, 2, "RENDERED"),
+    ) === true;
+  return {
+    captureWasFirstRenderAfterPassThrough:
+      firstReveal?.frameDelta === 1 &&
+      firstReveal?.frameAfter === firstReveal?.frameBefore + 1,
+    sameTaskModeSwitchAndCapture:
+      firstReveal?.sameTaskModeSwitchAndCapture === true,
+    noYieldBeforeCapture: firstReveal?.noYieldBeforeCapture === true,
+    consecutiveWarmAndRevealFrames:
+      firstReveal?.frameBefore === firstReveal?.warmFrame &&
+      firstReveal?.targetSelection?.selectionFrame ===
+        firstReveal?.frameAfter &&
+      firstReveal?.targetSelection?.selectionFrame ===
+        firstReveal?.warmFrame + 1,
+    exactlyOnePostArmTargetRequest:
+      firstReveal?.postArmTargetRequestAttempts === 1 &&
+      firstReveal?.targetRequestAttemptsAfter ===
+        firstReveal?.targetRequestAttemptsBefore + 1,
+    exactHeldTargetSet:
+      firstReveal?.heldRequestCount === 1 &&
+      firstReveal?.heldKeys?.length === 1 &&
+      firstReveal?.heldKeys?.[0] === targetKey &&
+      firstReveal?.targetHeldPromisePresent === true,
+    exactReservedTargetSet:
+      firstReveal?.reservedPromiseCount === 1 &&
+      firstReveal?.reservedKeys?.length === 1 &&
+      firstReveal?.reservedKeys?.[0] === targetKey &&
+      firstReveal?.targetReservedPromisePresent === true,
+    targetSameFrameRendered: exactSelectionObservation(
+      firstReveal?.targetSelection,
+      targetKey,
+      2,
+      "RENDERED",
+    ),
+    targetVisibilityPassThrough:
+      firstReveal?.visibilityCalls?.length > 0 &&
+      firstReveal.visibilityCalls.every(
+        (call) =>
+          call.tileKey === targetKey &&
+          call.frameNumber === firstReveal?.targetSelection?.selectionFrame &&
+          new Set([0, 1]).has(call.originalVisibility) &&
+          call.returnedVisibility === call.originalVisibility &&
+          call.overridden === false &&
+          call.mode === "pass-through",
+      ),
+    targetSelected: firstReveal?.selectedTileIds?.includes(targetKey) === true,
+    targetFill: firstReveal?.fillTileIds?.includes(targetKey) === true,
+    targetRealAbsent: firstReveal?.realTileIds?.includes(targetKey) === false,
+    terrainFillMeshInstance:
+      firstReveal?.fillMesh?.terrainFillMeshInstance === true,
+    renderedMeshMatchesFill:
+      firstReveal?.fillMesh?.renderedMeshMatches === true,
+    realMeshAbsent: firstReveal?.fillMesh?.realMeshAbsent === true,
+    positiveVertexCount: firstReveal?.fillMesh?.vertexCount > 0,
+    positiveIndexCount: firstReveal?.fillMesh?.indexCount > 0,
+    noSelectedStrictDescendants:
+      firstReveal?.targetSelectedStrictDescendantTileIds?.length === 0,
+    noRealStrictDescendants:
+      firstReveal?.targetRealStrictDescendantTileIds?.length === 0,
+    noFillStrictDescendants:
+      firstReveal?.targetFillStrictDescendantTileIds?.length === 0,
+    anchorSiblingRendered: siblingRendered,
+    providerLoadedAndFillFlags:
+      firstReveal?.providerFlags?.hasLoadedTilesThisFrame === true &&
+      firstReveal?.providerFlags?.hasFillTilesThisFrame === true &&
+      firstReveal?.providerFlags?.loadedAndFillFlags === true,
+    targetShownExactlyOnce: targetShowCalls?.length === 1,
+    targetShowBeforeEndUpdate:
+      targetShowCalls?.length === 1 &&
+      revealEndCalls?.length === 1 &&
+      targetShow.exitEventOrdinal < revealEnd.enterEventOrdinal,
+    endUpdateExactlyOnce: revealEndCalls?.length === 1,
+    coherentSameFrameOrderSurfaces:
+      targetShowCalls?.length === 1 &&
+      revealEndCalls?.length === 1 &&
+      exactObjectValues(
+        targetShow.tileStateBefore,
+        targetShow.tileStateAfter,
+        TILE_MESH_STATE_KEYS,
+      ) &&
+      exactObjectValues(
+        targetShow.tileStateAfter,
+        revealEnd.targetStateBefore,
+        TILE_MESH_STATE_KEYS,
+      ) &&
+      exactObjectValues(
+        targetShow.providerFlagsAfter,
+        revealEnd.providerFlagsBefore,
+        PROVIDER_FRAME_FLAG_KEYS,
+      ) &&
+      exactObjectValues(
+        revealEnd.targetStateAfter,
+        firstReveal?.targetState,
+        TILE_MESH_STATE_KEYS,
+      ) &&
+      exactObjectValues(
+        revealEnd.providerFlagsAfter,
+        firstReveal?.providerFlags,
+        PROVIDER_FRAME_FLAG_KEYS,
+      ) &&
+      revealEnd.providerFlagsAfter.loadedAndFillFlags ===
+        firstReveal?.loadedAndFillFlags,
+    showMarkedFillBeforeEndUpdate:
+      targetShowCalls?.length === 1 &&
+      targetShow.providerFlagsAfter.hasFillTilesThisFrame === true &&
+      revealEndCalls?.length === 1 &&
+      revealEnd.providerFlagsBefore.hasLoadedTilesThisFrame === true &&
+      revealEnd.providerFlagsBefore.hasFillTilesThisFrame === true,
+    endUpdateConstructedFill:
+      revealEndCalls?.length === 1 &&
+      revealEnd.targetStateBefore.fillMeshDefined === false &&
+      revealEnd.targetStateAfter.terrainFillMeshInstance === true &&
+      revealEnd.targetStateAfter.fillMeshDefined === true &&
+      revealEnd.targetStateAfter.renderedMeshMatchesFill === true &&
+      revealEnd.targetStateAfter.realMeshDefined === false &&
+      revealEnd.targetStateAfter.vertexCount > 0 &&
+      revealEnd.targetStateAfter.indexCount > 0,
+    visibilityRestored: firstReveal?.restoration?.visibilityRestored === true,
+    orderInstrumentationRestored:
+      firstReveal?.restoration?.orderInstrumentationRestored === true,
+  };
+}
+
+function validFirstRevealProgress(value, orderProof, visibilitySeam) {
+  if (
+    !exactObjectKeys(value, FIRST_REVEAL_KEYS) ||
+    !new Set(["started", "captured", "evaluated"]).has(value.state) ||
+    !/^1\/\d+\/\d+$/u.test(value.targetKey) ||
+    value.siblingKey === value.targetKey ||
+    !/^1\/\d+\/\d+$/u.test(value.siblingKey) ||
+    ![value.sameTaskModeSwitchAndCapture, value.noYieldBeforeCapture].every(
+      (entry) => typeof entry === "boolean",
+    ) ||
+    !Number.isInteger(value.warmFrame) ||
+    !Number.isInteger(value.frameBefore)
+  ) {
+    return false;
+  }
+  if (value.state === "started") {
+    const exactNullKeys = [
+      "captureWasFirstRenderAfterPassThrough",
+      "frameAfter",
+      "frameDelta",
+      "longitude",
+      "latitude",
+      "cameraHeightMeters",
+      "cameraFovDegrees",
+      "maximumScreenSpaceError",
+      "targetRequestAttemptsAfter",
+      "postArmTargetRequestAttempts",
+      "targetSelection",
+      "selectedCount",
+      "realMeshCount",
+      "fillCount",
+      "heldRequestCount",
+      "reservedPromiseCount",
+      "targetHeldPromisePresent",
+      "targetReservedPromisePresent",
+      "providerFlags",
+      "loadedAndFillFlags",
+      "tilesLoaded",
+      "targetSelected",
+      "targetReal",
+      "targetFill",
+      "targetState",
+      "fillMesh",
+      "predicateResults",
+    ];
+    const exactEmptyArrayKeys = [
+      "visibilityTargetCallOrdinals",
+      "visibilityCalls",
+      "selectedTileIds",
+      "realTileIds",
+      "fillTileIds",
+      "targetSelectedDescendantTileIds",
+      "targetRealDescendantTileIds",
+      "targetFillDescendantTileIds",
+      "targetSelectedStrictDescendantTileIds",
+      "targetRealStrictDescendantTileIds",
+      "targetFillStrictDescendantTileIds",
+      "selectedRealSiblingTileIds",
+      "selectedRealSiblingObservations",
+      "heldKeys",
+      "reservedKeys",
+    ];
+    return (
+      nonNegativeInteger(value.targetRequestAttemptsBefore) &&
+      exactNullKeys.every((key) => value[key] === null) &&
+      exactEmptyArrayKeys.every(
+        (key) => Array.isArray(value[key]) && value[key].length === 0,
+      ) &&
+      exactObjectKeys(value.restoration, [
+        "visibilityRestored",
+        "orderInstrumentationRestored",
+      ]) &&
+      value.restoration.visibilityRestored ===
+        visibilitySeam?.restoration?.restored &&
+      value.restoration.orderInstrumentationRestored ===
+        orderProof?.restoration?.restored &&
+      validOrderProofProgress(orderProof) &&
+      orderProof.targetKey === value.targetKey &&
+      new Set(["installed", "restored", "error-restored"]).has(orderProof.state)
+    );
+  }
+  const stringArrayKeys = [
+    "selectedTileIds",
+    "realTileIds",
+    "fillTileIds",
+    "targetSelectedDescendantTileIds",
+    "targetRealDescendantTileIds",
+    "targetFillDescendantTileIds",
+    "targetSelectedStrictDescendantTileIds",
+    "targetRealStrictDescendantTileIds",
+    "targetFillStrictDescendantTileIds",
+    "selectedRealSiblingTileIds",
+    "heldKeys",
+    "reservedKeys",
+  ];
+  const fillMesh = value.fillMesh;
+  const targetDescendantsFrom = (tileIds) =>
+    tileIds.filter((id) => levelOneAncestorKey(id) === value.targetKey).sort();
+  const targetSelectedDescendants = Array.isArray(value.selectedTileIds)
+    ? targetDescendantsFrom(value.selectedTileIds)
+    : [];
+  const targetRealDescendants = Array.isArray(value.realTileIds)
+    ? targetDescendantsFrom(value.realTileIds)
+    : [];
+  const targetFillDescendants = Array.isArray(value.fillTileIds)
+    ? targetDescendantsFrom(value.fillTileIds)
+    : [];
+  const strictDescendants = (tileIds) =>
+    tileIds.filter((id) => id !== value.targetKey);
+  const observedSiblingIds = Array.isArray(
+    value.selectedRealSiblingObservations,
+  )
+    ? value.selectedRealSiblingObservations
+        .map((selection) => selection?.tileId)
+        .sort()
+    : [];
+  const derivedTarget = deriveS5SouthLevelOneTarget(
+    value.longitude,
+    value.latitude,
+  );
+  if (
+    !Number.isInteger(value.frameAfter) ||
+    !Number.isInteger(value.frameDelta) ||
+    value.frameDelta !== value.frameAfter - value.frameBefore ||
+    value.captureWasFirstRenderAfterPassThrough !==
+      (value.frameDelta === 1 && value.frameAfter === value.frameBefore + 1) ||
+    ![
+      value.longitude,
+      value.latitude,
+      value.cameraHeightMeters,
+      value.cameraFovDegrees,
+      value.maximumScreenSpaceError,
+    ].every(Number.isFinite) ||
+    ![
+      value.targetRequestAttemptsBefore,
+      value.targetRequestAttemptsAfter,
+      value.postArmTargetRequestAttempts,
+      value.selectedCount,
+      value.realMeshCount,
+      value.fillCount,
+      value.heldRequestCount,
+      value.reservedPromiseCount,
+    ].every(nonNegativeInteger) ||
+    value.postArmTargetRequestAttempts !==
+      value.targetRequestAttemptsAfter - value.targetRequestAttemptsBefore ||
+    !stringArrayKeys.every((key) => exactSortedUniqueStrings(value[key])) ||
+    !sameArrayMembers(
+      value.targetSelectedDescendantTileIds,
+      targetSelectedDescendants,
+    ) ||
+    !sameArrayMembers(
+      value.targetRealDescendantTileIds,
+      targetRealDescendants,
+    ) ||
+    !sameArrayMembers(
+      value.targetFillDescendantTileIds,
+      targetFillDescendants,
+    ) ||
+    !sameArrayMembers(
+      value.targetSelectedStrictDescendantTileIds,
+      strictDescendants(targetSelectedDescendants),
+    ) ||
+    !sameArrayMembers(
+      value.targetRealStrictDescendantTileIds,
+      strictDescendants(targetRealDescendants),
+    ) ||
+    !sameArrayMembers(
+      value.targetFillStrictDescendantTileIds,
+      strictDescendants(targetFillDescendants),
+    ) ||
+    value.selectedCount !== value.selectedTileIds.length ||
+    value.realMeshCount !== value.realTileIds.length ||
+    value.fillCount !== value.fillTileIds.length ||
+    value.heldRequestCount !== value.heldKeys.length ||
+    value.reservedPromiseCount !== value.reservedKeys.length ||
+    value.targetHeldPromisePresent !==
+      value.heldKeys.includes(value.targetKey) ||
+    value.targetReservedPromisePresent !==
+      value.reservedKeys.includes(value.targetKey) ||
+    !Array.isArray(value.selectedRealSiblingObservations) ||
+    derivedTarget?.key !== value.targetKey ||
+    derivedTarget?.anchorKey !== value.siblingKey ||
+    !value.selectedRealSiblingTileIds.includes(value.siblingKey) ||
+    !value.selectedRealSiblingTileIds.every((id) =>
+      derivedTarget.siblingKeys.includes(id),
+    ) ||
+    !sameArrayMembers(value.selectedRealSiblingTileIds, observedSiblingIds) ||
+    !value.selectedRealSiblingObservations.every(
+      (selection) =>
+        value.selectedTileIds.includes(selection?.tileId) &&
+        value.realTileIds.includes(selection?.tileId) &&
+        selection?.tileId !== value.targetKey &&
+        exactSelectionObservation(selection, selection?.tileId, 2, "RENDERED"),
+    ) ||
+    !Array.isArray(value.visibilityCalls) ||
+    value.visibilityCalls.length === 0 ||
+    !value.visibilityCalls.every(
+      (call, index) =>
+        Number.isInteger(call?.ordinal) &&
+        call.ordinal > 0 &&
+        (index === 0 ||
+          value.visibilityCalls[index - 1].ordinal < call.ordinal) &&
+        call.tileKey === value.targetKey &&
+        call.frameNumber === value.targetSelection?.selectionFrame &&
+        JSON.stringify(call) ===
+          JSON.stringify(visibilitySeam?.calls?.[call.ordinal - 1]),
+    ) ||
+    new Set(value.visibilityCalls.map((call) => call.ordinal)).size !==
+      value.visibilityCalls.length ||
+    !sameArrayMembers(
+      value.visibilityTargetCallOrdinals,
+      value.visibilityCalls.map((call) => call.ordinal),
+    ) ||
+    !validProviderFrameFlags(value.providerFlags) ||
+    value.loadedAndFillFlags !== value.providerFlags.loadedAndFillFlags ||
+    typeof value.tilesLoaded !== "boolean" ||
+    value.targetSelected !== value.selectedTileIds.includes(value.targetKey) ||
+    value.targetReal !== value.realTileIds.includes(value.targetKey) ||
+    value.targetFill !== value.fillTileIds.includes(value.targetKey) ||
+    !validTileMeshState(value.targetState) ||
+    !exactObjectKeys(fillMesh, [
+      "tileId",
+      "fillDefined",
+      "fillMeshDefined",
+      "renderedMeshDefined",
+      "realMeshDefined",
+      "terrainFillMeshInstance",
+      "renderedMeshMatches",
+      "realMeshAbsent",
+      "vertexCount",
+      "indexCount",
+    ]) ||
+    fillMesh.tileId !== value.targetKey ||
+    ![
+      fillMesh.fillDefined,
+      fillMesh.fillMeshDefined,
+      fillMesh.renderedMeshDefined,
+      fillMesh.realMeshDefined,
+      fillMesh.terrainFillMeshInstance,
+      fillMesh.renderedMeshMatches,
+      fillMesh.realMeshAbsent,
+    ].every((entry) => typeof entry === "boolean") ||
+    !nonNegativeInteger(fillMesh.vertexCount) ||
+    !nonNegativeInteger(fillMesh.indexCount) ||
+    fillMesh.fillDefined !== value.targetState.fillDefined ||
+    fillMesh.fillMeshDefined !== value.targetState.fillMeshDefined ||
+    fillMesh.renderedMeshDefined !== value.targetState.renderedMeshDefined ||
+    fillMesh.realMeshDefined !== value.targetState.realMeshDefined ||
+    fillMesh.terrainFillMeshInstance !==
+      value.targetState.terrainFillMeshInstance ||
+    fillMesh.renderedMeshMatches !==
+      value.targetState.renderedMeshMatchesFill ||
+    fillMesh.realMeshAbsent !== !value.targetState.realMeshDefined ||
+    fillMesh.vertexCount !== value.targetState.vertexCount ||
+    fillMesh.indexCount !== value.targetState.indexCount ||
+    !exactObjectKeys(value.restoration, [
+      "visibilityRestored",
+      "orderInstrumentationRestored",
+    ]) ||
+    !Object.values(value.restoration).every(
+      (entry) => typeof entry === "boolean",
+    ) ||
+    !validOrderProofProgress(orderProof) ||
+    orderProof.targetKey !== value.targetKey ||
+    visibilitySeam?.targetKey !== value.targetKey
+  ) {
+    return false;
+  }
+  if (value.state === "captured") {
+    return value.predicateResults === null;
+  }
+  const computed = computeFirstRevealPredicateResults(value, orderProof);
+  return (
+    exactObjectKeys(value.predicateResults, FIRST_REVEAL_PREDICATE_KEYS) &&
+    FIRST_REVEAL_PREDICATE_KEYS.every(
+      (key) =>
+        typeof value.predicateResults[key] === "boolean" &&
+        value.predicateResults[key] === computed[key],
+    ) &&
+    value.restoration.visibilityRestored ===
+      visibilitySeam?.restoration?.restored &&
+    value.restoration.orderInstrumentationRestored ===
+      orderProof.restoration.restored
+  );
+}
+
 export function validateS5PageProgress(value, renderer = value?.renderer) {
   const reasons = [];
   const completed = value?.completedPhases;
   const requests = value?.terrainRequests;
   const pick = value?.pick;
+  const optionalDetailKey = Object.hasOwn(value ?? {}, "detail")
+    ? ["detail"]
+    : [];
+  if (
+    !exactObjectKeys(value, [
+      "schema",
+      "renderer",
+      "currentPhase",
+      "step",
+      "completedPhases",
+      "elapsedMs",
+      "settle",
+      "terrainRequests",
+      "pick",
+      "firstReveal",
+      "orderProof",
+      "visibilitySeam",
+      ...optionalDetailKey,
+    ])
+  ) {
+    reasons.push("page progress top-level shape is invalid");
+  }
   if (
     value?.schema !== C12_29_S5_DIAGNOSTICS_SCHEMA ||
     value?.renderer !== renderer ||
@@ -390,6 +1181,36 @@ export function validateS5PageProgress(value, renderer = value?.renderer) {
   }
   if (!validVisibilitySeamProgress(value?.visibilitySeam)) {
     reasons.push("page progress visibility seam diagnostics are inconsistent");
+  }
+  const revealStarted =
+    completed?.includes(C12_29_S5_PHASES[2]) === true ||
+    (value?.currentPhase === C12_29_S5_PHASES[2] &&
+      value?.step === "first-pass-through-render-and-fused-fill-capture");
+  if (!revealStarted) {
+    if (value?.firstReveal !== null || value?.orderProof !== null) {
+      reasons.push("page progress reveal diagnostics began out of order");
+    }
+  } else if (
+    !validOrderProofProgress(value?.orderProof) ||
+    !validFirstRevealProgress(
+      value?.firstReveal,
+      value?.orderProof,
+      value?.visibilitySeam,
+    )
+  ) {
+    reasons.push(
+      "page progress first-reveal/order diagnostics are inconsistent",
+    );
+  }
+  if (
+    value?.visibilitySeam?.terminalReason ===
+      "first pass-through render did not produce the exact held L1 fill" &&
+    (value?.firstReveal?.state !== "evaluated" ||
+      !Object.values(value.firstReveal.predicateResults ?? {}).some(
+        (entry) => entry === false,
+      ))
+  ) {
+    reasons.push("page progress reveal failure lacks a named false predicate");
   }
   return { ok: reasons.length === 0, reasons };
 }
@@ -718,6 +1539,18 @@ function exactSortedUniqueStrings(value) {
 
 function exactSelectionObservation(observation, tileId, rawResult, name) {
   return (
+    exactObjectKeys(observation, [
+      "tileId",
+      "instantiated",
+      "selectionFrame",
+      "resultFrame",
+      "sameFrame",
+      "rawResult",
+      "rawResultName",
+      "originalResult",
+      "originalResultName",
+      "wasKicked",
+    ]) &&
     observation?.tileId === tileId &&
     observation?.instantiated === true &&
     Number.isInteger(observation?.selectionFrame) &&
@@ -1098,6 +1931,7 @@ function validateSession(session, runId, structural, failures) {
   const warmup = c?.warmup;
   const holdArm = c?.holdArm;
   const firstReveal = c?.firstRevealProof;
+  const orderProof = c?.orderProof;
   const lod = a?.fillLodPrecondition;
   const seam = c?.visibilitySeam;
   const expectedHeldTarget = deriveS5SouthLevelOneTarget(
@@ -1268,6 +2102,31 @@ function validateSession(session, runId, structural, failures) {
     seam?.restoration?.afterHadOwn === seam?.installation?.beforeHadOwn &&
     JSON.stringify(seam?.restoration?.afterDescriptor ?? null) ===
       JSON.stringify(seam?.installation?.beforeDescriptor ?? null);
+  const computedFirstRevealPredicates = computeFirstRevealPredicateResults(
+    firstReveal,
+    orderProof,
+  );
+  const firstRevealPredicatesExact =
+    firstReveal?.state === "evaluated" &&
+    validFirstRevealProgress(firstReveal, orderProof, seam) &&
+    validOrderProofProgress(orderProof) &&
+    exactOrderPropertyInstallation(
+      orderProof?.installation?.showTileThisFrame,
+    ) &&
+    exactOrderPropertyInstallation(orderProof?.installation?.endUpdate) &&
+    orderProof?.restoration?.attemptedAt ===
+      "immediately-after-reveal-snapshot" &&
+    orderProof?.restoration?.finallyVerified === true &&
+    exactObjectKeys(
+      firstReveal?.predicateResults,
+      FIRST_REVEAL_PREDICATE_KEYS,
+    ) &&
+    FIRST_REVEAL_PREDICATE_KEYS.every(
+      (key) =>
+        firstReveal.predicateResults[key] === true &&
+        firstReveal.predicateResults[key] ===
+          computedFirstRevealPredicates[key],
+    );
   if (
     seam?.claim !==
       "controlled-visibility-input-production-selection-request-fill-release-render" ||
@@ -1460,6 +2319,8 @@ function validateSession(session, runId, structural, failures) {
     holdArm?.maximumScreenSpaceError !==
       C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError ||
     firstReveal?.captureWasFirstRenderAfterPassThrough !== true ||
+    firstReveal?.targetKey !== expectedHeldTarget?.key ||
+    !firstRevealPredicatesExact ||
     firstReveal?.sameTaskModeSwitchAndCapture !== true ||
     firstReveal?.noYieldBeforeCapture !== true ||
     firstReveal?.frameDelta !== 1 ||
@@ -1479,6 +2340,11 @@ function validateSession(session, runId, structural, failures) {
     firstReveal?.targetRequestAttemptsBefore !== 0 ||
     firstReveal?.targetRequestAttemptsAfter !== 1 ||
     firstReveal?.postArmTargetRequestAttempts !== 1 ||
+    firstReveal?.reservedPromiseCount !== 1 ||
+    firstReveal?.reservedKeys?.length !== 1 ||
+    firstReveal.reservedKeys[0] !== expectedHeldTarget?.key ||
+    firstReveal?.targetHeldPromisePresent !== true ||
+    firstReveal?.targetReservedPromisePresent !== true ||
     !exactSelectionObservation(
       firstReveal?.targetSelection,
       expectedHeldTarget?.key,
@@ -1489,6 +2355,10 @@ function validateSession(session, runId, structural, failures) {
       firstReveal?.targetSelectedStrictDescendantTileIds,
     ) ||
     firstReveal.targetSelectedStrictDescendantTileIds.length !== 0 ||
+    !exactSortedUniqueStrings(firstReveal?.targetRealStrictDescendantTileIds) ||
+    firstReveal.targetRealStrictDescendantTileIds.length !== 0 ||
+    !exactSortedUniqueStrings(firstReveal?.targetFillStrictDescendantTileIds) ||
+    firstReveal.targetFillStrictDescendantTileIds.length !== 0 ||
     firstReveal?.siblingKey !== expectedSiblingKey ||
     !sameArrayMembers(
       firstReveal?.visibilityTargetCallOrdinals,
@@ -1500,13 +2370,19 @@ function validateSession(session, runId, structural, failures) {
     firstReveal.heldKeys[0] !== expectedHeldTarget?.key ||
     firstReveal?.loadedAndFillFlags !== true ||
     firstReveal?.targetSelected !== true ||
+    firstReveal?.targetReal !== false ||
     firstReveal?.targetFill !== true ||
+    !validTileMeshState(firstReveal?.targetState) ||
+    !validProviderFrameFlags(firstReveal?.providerFlags) ||
+    firstReveal?.providerFlags?.loadedAndFillFlags !== true ||
     firstReveal?.fillMesh?.tileId !== expectedHeldTarget?.key ||
     firstReveal?.fillMesh?.terrainFillMeshInstance !== true ||
     firstReveal?.fillMesh?.renderedMeshMatches !== true ||
     firstReveal?.fillMesh?.realMeshAbsent !== true ||
     !(firstReveal?.fillMesh?.vertexCount > 0) ||
     !(firstReveal?.fillMesh?.indexCount > 0) ||
+    firstReveal?.restoration?.visibilityRestored !== true ||
+    firstReveal?.restoration?.orderInstrumentationRestored !== true ||
     c?.holdInterceptionEnabled !== true ||
     Math.abs(c?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) > 1e-12 ||
     c?.maximumScreenSpaceError !==
