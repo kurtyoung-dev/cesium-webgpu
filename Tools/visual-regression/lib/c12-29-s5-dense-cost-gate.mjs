@@ -8,7 +8,8 @@
  * filesystem, or renderer side effects.
  */
 
-export const C12_29_S5_DENSE_SCHEMA = "c12-29-s5-dense-cost-evidence-v1";
+export const C12_29_S5_DENSE_LEGACY_SCHEMA = "c12-29-s5-dense-cost-evidence-v1";
+export const C12_29_S5_DENSE_SCHEMA = "c12-29-s5-dense-cost-evidence-v2";
 export const C12_29_S5_DENSE_RUNTIME_SCHEMA = "c12-29-s5-dense-cost-runtime-v1";
 export const C12_29_S5_DENSE_WORKLOAD_SCHEMA =
   "c12-29-s5-dense-cost-workload-v1";
@@ -21,6 +22,9 @@ export const C12_29_S5_DENSE_STATUSES = Object.freeze([
   "ERROR",
   "STRUCTURAL",
 ]);
+
+const C12_29_S5_DENSE_WORKLOAD_PATH =
+  "Tools/visual-regression/performance-workloads-s5-dense-cost.json";
 
 export const C12_29_S5_DENSE_CONFIG = Object.freeze({
   workloadByteLength: 7137,
@@ -103,6 +107,18 @@ export const C12_29_S5_DENSE_SCHEDULE = Object.freeze(
 );
 
 export const C12_29_S5_DENSE_PREREQUISITES = Object.freeze({
+  terrain: Object.freeze({
+    producer: "c12-29-s5-terrain-selection",
+    schema: "c12-29-s5-terrain-selection-evidence-v10",
+  }),
+  nasa: Object.freeze({
+    producer: "c12-29-s5-svs-footprint",
+    schema: "c12-29-s5-svs-5073-footprint-evidence-v3",
+  }),
+  publicationSchema: "cesium-visual-evidence-publication/v2",
+});
+
+export const C12_29_S5_DENSE_LEGACY_PREREQUISITES = Object.freeze({
   terrain: Object.freeze({
     producer: "c12-29-s5-terrain-selection",
     schema: "c12-29-s5-terrain-selection-evidence-v8",
@@ -281,6 +297,43 @@ const exactKeys = (value, keys) =>
   Object.keys(value).sort().join("\u0000") === [...keys].sort().join("\u0000");
 const sameJson = (left, right) =>
   stableC1229S5DenseJson(left) === stableC1229S5DenseJson(right);
+
+function canonicalIsoMilliseconds(value) {
+  if (typeof value !== "string") return null;
+  const milliseconds = Date.parse(value);
+  if (!finite(milliseconds)) return null;
+  try {
+    return new Date(milliseconds).toISOString() === value ? milliseconds : null;
+  } catch {
+    return null;
+  }
+}
+
+function deriveDenseGpuIdentityComplete(renderer, rendererEvidence) {
+  if (
+    !exactKeys(rendererEvidence, [
+      "requested",
+      "actual",
+      "rendererString",
+      "adapterInfo",
+      "gpuIdentityComplete",
+    ]) ||
+    typeof rendererEvidence.rendererString !== "string"
+  ) {
+    return false;
+  }
+  if (renderer === "webgl") {
+    return rendererEvidence.rendererString.trim().length > 0;
+  }
+  if (renderer !== "webgpu") return false;
+  const adapterInfo = rendererEvidence.adapterInfo;
+  const keys = ["vendor", "architecture", "device", "description"];
+  return (
+    exactKeys(adapterInfo, keys) &&
+    keys.every((key) => typeof adapterInfo[key] === "string") &&
+    keys.some((key) => adapterInfo[key].trim().length > 0)
+  );
+}
 
 function denseSha256(bytes) {
   const source =
@@ -1019,7 +1072,7 @@ export function inspectC1229S5DenseTerrainFrame(scene, terrain) {
   };
 }
 
-function validatePrerequisite(value, expected, label) {
+function validatePrerequisite(value, expected, publicationSchema, label) {
   const reasons = [];
   if (
     !isObject(value) ||
@@ -1041,7 +1094,7 @@ function validatePrerequisite(value, expected, label) {
       "byteLength",
       "sha256",
     ]) ||
-    publication.schema !== C12_29_S5_DENSE_PREREQUISITES.publicationSchema ||
+    publication.schema !== publicationSchema ||
     !isC1229S5DenseUuidV4(publication.runId) ||
     publication.status !== "PASS" ||
     publication.exitCode !== 0 ||
@@ -1084,19 +1137,21 @@ function validatePrerequisite(value, expected, label) {
   return reasons;
 }
 
-export function validateC1229S5DensePrerequisites(value) {
+function validateDensePrerequisites(value, expected) {
   if (!exactKeys(value, ["terrain", "nasa"])) {
     return { valid: false, reasons: ["prerequisite set shape differs"] };
   }
   const reasons = [
     ...validatePrerequisite(
       value.terrain,
-      C12_29_S5_DENSE_PREREQUISITES.terrain,
+      expected.terrain,
+      expected.publicationSchema,
       "terrain",
     ),
     ...validatePrerequisite(
       value.nasa,
-      C12_29_S5_DENSE_PREREQUISITES.nasa,
+      expected.nasa,
+      expected.publicationSchema,
       "nasa",
     ),
   ];
@@ -1104,6 +1159,10 @@ export function validateC1229S5DensePrerequisites(value) {
     reasons.push("prerequisite run identities collide");
   }
   return { valid: reasons.length === 0, reasons };
+}
+
+export function validateC1229S5DensePrerequisites(value) {
+  return validateDensePrerequisites(value, C12_29_S5_DENSE_PREREQUISITES);
 }
 
 function routeEvidenceReasons(routeEvidence, workload, label) {
@@ -1602,6 +1661,8 @@ export function validateC1229S5DenseRuntimeLeg(leg, workload, context = {}) {
   if (!workloadValidation.valid) structural.push(...workloadValidation.reasons);
   const expected =
     C12_29_S5_DENSE_SCHEDULE[(leg?.scheduleLeg?.ordinal ?? 0) - 1];
+  const startedAt = canonicalIsoMilliseconds(leg?.startedAt);
+  const completedAt = canonicalIsoMilliseconds(leg?.completedAt);
   if (
     !isObject(leg) ||
     leg.schema !== C12_29_S5_DENSE_RUNTIME_SCHEMA ||
@@ -1614,11 +1675,27 @@ export function validateC1229S5DenseRuntimeLeg(leg, workload, context = {}) {
   ) {
     structural.push("runtime leg envelope differs");
   }
+  if (startedAt === null || completedAt === null || startedAt >= completedAt) {
+    structural.push("runtime leg timestamp envelope differs");
+  }
   if (leg?.status === "ERROR" || leg?.error)
     errors.push("runtime leg reported an error");
   if (leg?.status === "STRUCTURAL")
     structural.push("runtime leg reported STRUCTURAL");
   if (leg?.status === "FAIL") behavioral.push("runtime leg reported FAIL");
+  if (
+    !exactKeys(leg?.workloadIdentity, ["path", "byteLength", "sha256"]) ||
+    leg.workloadIdentity.path !== C12_29_S5_DENSE_WORKLOAD_PATH ||
+    leg.workloadIdentity.byteLength !==
+      C12_29_S5_DENSE_CONFIG.workloadByteLength ||
+    !/^[0-9a-f]{64}$/i.test(leg.workloadIdentity.sha256 ?? "")
+  ) {
+    structural.push("runtime leg workload identity differs");
+  }
+  const gpuIdentityComplete = deriveDenseGpuIdentityComplete(
+    expected?.renderer,
+    leg?.renderer,
+  );
   if (
     context.runId !== undefined &&
     (leg.runId !== context.runId ||
@@ -1657,7 +1734,8 @@ export function validateC1229S5DenseRuntimeLeg(leg, workload, context = {}) {
     leg.browser.userAgent.length === 0 ||
     leg?.renderer?.requested !== expected?.renderer ||
     leg?.renderer?.actual !== expected?.renderer ||
-    leg?.renderer?.gpuIdentityComplete !== true
+    gpuIdentityComplete !== true ||
+    leg?.renderer?.gpuIdentityComplete !== gpuIdentityComplete
   ) {
     structural.push("browser, viewport, renderer, or adapter identity differs");
   }
@@ -1735,6 +1813,7 @@ export function validateC1229S5DenseRuntimeLeg(leg, workload, context = {}) {
   if (
     !sameJson(leg?.prime?.sentinel, sentinel) ||
     !sameJson(leg?.prime?.seenOwnRealSentinelKeys, sentinel.keys) ||
+    !nonNegativeInteger(leg?.prime?.settledFrames) ||
     leg?.prime?.settledFrames < workload?.protocol?.settleStableFrames ||
     !sameJson(
       leg?.prime?.variants?.map((variant) => ({
@@ -1989,11 +2068,14 @@ export function characterizeC1229S5DenseCost(legs) {
   };
 }
 
-function campaignShapeReasons(report) {
+function campaignShapeReasons(report, contract) {
   const reasons = [];
+  const startedAt = canonicalIsoMilliseconds(report?.startedAt);
+  const completedAt = canonicalIsoMilliseconds(report?.completedAt);
   if (
     !isObject(report) ||
-    report.schema !== C12_29_S5_DENSE_SCHEMA ||
+    report.schema !== contract.schema ||
+    report.schemaVersion !== contract.schemaVersion ||
     !isC1229S5DenseUuidV4(report.runId) ||
     !["RUNNING", "PASS", "FAIL", "ERROR", "STRUCTURAL"].includes(
       report.status,
@@ -2006,6 +2088,9 @@ function campaignShapeReasons(report) {
     !Array.isArray(report.legs)
   ) {
     reasons.push("campaign envelope differs");
+  }
+  if (startedAt === null || completedAt === null || startedAt >= completedAt) {
+    reasons.push("campaign timestamp envelope differs");
   }
   return reasons;
 }
@@ -2199,16 +2284,17 @@ function lifecycleReasons(report) {
 }
 
 /** Fold the complete 24-process campaign with STRUCTURAL > ERROR > FAIL > PASS. */
-export function foldC1229S5DenseCostGate(report) {
-  const structural = campaignShapeReasons(report);
+function foldDenseCostGate(report, contract) {
+  const structural = campaignShapeReasons(report, contract);
   const errors = [];
   const behavioral = [];
   const workloadValidation = validateC1229S5DenseWorkload(
     report?.workload?.value,
   );
   if (!workloadValidation.valid) structural.push(...workloadValidation.reasons);
-  const prerequisiteValidation = validateC1229S5DensePrerequisites(
+  const prerequisiteValidation = validateDensePrerequisites(
     report?.prerequisites,
+    contract.prerequisites,
   );
   if (!prerequisiteValidation.valid)
     structural.push(...prerequisiteValidation.reasons);
@@ -2219,8 +2305,7 @@ export function foldC1229S5DenseCostGate(report) {
     structural.push("prerequisite digest does not recompute");
   }
   if (
-    report?.workload?.path !==
-      "Tools/visual-regression/performance-workloads-s5-dense-cost.json" ||
+    report?.workload?.path !== C12_29_S5_DENSE_WORKLOAD_PATH ||
     report.workload.byteLength !== C12_29_S5_DENSE_CONFIG.workloadByteLength ||
     report.workload.sha256 !== C12_29_S5_DENSE_CONFIG.workloadSha256
   ) {
@@ -2244,6 +2329,9 @@ export function foldC1229S5DenseCostGate(report) {
   ) {
     structural.push("campaign does not contain exactly 24 fresh-process legs");
   } else {
+    const campaignStartedAt = canonicalIsoMilliseconds(report.startedAt);
+    const campaignCompletedAt = canonicalIsoMilliseconds(report.completedAt);
+    let previousLegCompletedAt = campaignStartedAt;
     for (let index = 0; index < report.legs.length; index++) {
       const leg = report.legs[index];
       if (!sameJson(leg.scheduleLeg, C12_29_S5_DENSE_SCHEDULE[index])) {
@@ -2273,6 +2361,23 @@ export function foldC1229S5DenseCostGate(report) {
       behavioral.push(
         ...assessment.behavioral.map((reason) => `${leg.legId}: ${reason}`),
       );
+      const legStartedAt = canonicalIsoMilliseconds(leg?.startedAt);
+      const legCompletedAt = canonicalIsoMilliseconds(leg?.completedAt);
+      if (
+        campaignStartedAt !== null &&
+        campaignCompletedAt !== null &&
+        legStartedAt !== null &&
+        legCompletedAt !== null &&
+        (legStartedAt < campaignStartedAt ||
+          legCompletedAt > campaignCompletedAt ||
+          (previousLegCompletedAt !== null &&
+            legStartedAt < previousLegCompletedAt))
+      ) {
+        structural.push(
+          `${leg.legId}: runtime leg timestamp is outside campaign/schedule order`,
+        );
+      }
+      if (legCompletedAt !== null) previousLegCompletedAt = legCompletedAt;
     }
     const launchIds = report.legs.map((leg) => leg?.subprocess?.launchId);
     if (
@@ -2356,8 +2461,28 @@ export function foldC1229S5DenseCostGate(report) {
   };
 }
 
-export function validateC1229S5DenseFinalArtifact(report) {
-  const reasons = campaignShapeReasons(report);
+const CURRENT_DENSE_CONTRACT = Object.freeze({
+  schema: C12_29_S5_DENSE_SCHEMA,
+  schemaVersion: 2,
+  prerequisites: C12_29_S5_DENSE_PREREQUISITES,
+});
+
+const LEGACY_DENSE_CONTRACT = Object.freeze({
+  schema: C12_29_S5_DENSE_LEGACY_SCHEMA,
+  schemaVersion: 1,
+  prerequisites: C12_29_S5_DENSE_LEGACY_PREREQUISITES,
+});
+
+export function foldC1229S5DenseCostGate(report) {
+  return foldDenseCostGate(report, CURRENT_DENSE_CONTRACT);
+}
+
+export function foldC1229S5DenseLegacyCostGate(report) {
+  return foldDenseCostGate(report, LEGACY_DENSE_CONTRACT);
+}
+
+function validateDenseFinalArtifact(report, contract) {
+  const reasons = campaignShapeReasons(report, contract);
   if (
     report?.status === "RUNNING" ||
     report?.incomplete !== false ||
@@ -2370,7 +2495,15 @@ export function validateC1229S5DenseFinalArtifact(report) {
   ) {
     reasons.push("final status/exit/assessment envelope differs");
   }
-  const folded = foldC1229S5DenseCostGate(report);
+  let folded;
+  try {
+    folded = foldDenseCostGate(report, contract);
+  } catch (error) {
+    reasons.push(
+      `final assessment recomputation threw: ${String(error?.message ?? error)}`,
+    );
+    return { valid: false, reasons, folded: null };
+  }
   if (
     folded.status !== report?.status ||
     folded.exitCode !== report?.exitCode ||
@@ -2383,4 +2516,12 @@ export function validateC1229S5DenseFinalArtifact(report) {
     reasons.push("final assessment does not recompute from raw evidence");
   }
   return { valid: reasons.length === 0, reasons, folded };
+}
+
+export function validateC1229S5DenseFinalArtifact(report) {
+  return validateDenseFinalArtifact(report, CURRENT_DENSE_CONTRACT);
+}
+
+export function validateC1229S5DenseLegacyFinalArtifact(report) {
+  return validateDenseFinalArtifact(report, LEGACY_DENSE_CONTRACT);
 }

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import {
   C12_29_S5_DENSE_BUILD_SOURCE_FILES,
   C12_29_S5_DENSE_CONFIG,
+  C12_29_S5_DENSE_LEGACY_SCHEMA,
   C12_29_S5_DENSE_LOCAL_FILES,
   C12_29_S5_DENSE_RAW_GENERATED_PAIRS,
   C12_29_S5_DENSE_RENDERERS,
@@ -22,12 +23,14 @@ import {
   deriveC1229S5DenseSentinel,
   exitCodeForC1229S5DenseStatus,
   foldC1229S5DenseCostGate,
+  foldC1229S5DenseLegacyCostGate,
   isC1229S5DenseUuidV4,
   sampleC1229S5DenseRoute,
   selectC1229S5DenseLongTasks,
   stableC1229S5DenseJson,
   summarizeC1229S5DenseSamples,
   validateC1229S5DenseFinalArtifact,
+  validateC1229S5DenseLegacyFinalArtifact,
   validateC1229S5DensePrerequisites,
   validateC1229S5DenseRuntimeLeg,
   validateC1229S5DenseWorkload,
@@ -52,6 +55,7 @@ const NASA_RUN_ID = "12345678-1234-4abc-9def-123456789abc";
 const SOURCE_SHA = "b".repeat(64);
 const PREREQUISITES_SHA = "c".repeat(64);
 const WORKLOAD_SHA = C12_29_S5_DENSE_CONFIG.workloadSha256;
+const TEST_CAMPAIGN_START_MS = Date.parse("2026-08-13T12:00:00.000Z");
 
 const clone = (value) => structuredClone(value);
 
@@ -88,14 +92,14 @@ function validPrerequisites() {
     terrain: prerequisite(
       "terrain",
       "c12-29-s5-terrain-selection",
-      "c12-29-s5-terrain-selection-evidence-v8",
+      "c12-29-s5-terrain-selection-evidence-v10",
       TERRAIN_RUN_ID,
       "d",
     ),
     nasa: prerequisite(
       "nasa",
       "c12-29-s5-svs-footprint",
-      "c12-29-s5-svs-5073-footprint-evidence-v2",
+      "c12-29-s5-svs-5073-footprint-evidence-v3",
       NASA_RUN_ID,
       "e",
     ),
@@ -138,6 +142,12 @@ function validLeg(
   sourceSha = SOURCE_SHA,
   prerequisitesSha = PREREQUISITES_SHA,
 ) {
+  const legStartedAt = new Date(
+    TEST_CAMPAIGN_START_MS + (scheduleLeg.ordinal - 1) * 10 * 60_000,
+  ).toISOString();
+  const legCompletedAt = new Date(
+    TEST_CAMPAIGN_START_MS + ((scheduleLeg.ordinal - 1) * 10 + 5) * 60_000,
+  ).toISOString();
   const sentinel = deriveC1229S5DenseSentinel(workload.route);
   const route = Array.from({ length: 600 }, (_, index) => {
     const sample = sampleC1229S5DenseRoute(workload.route, index, 600);
@@ -195,8 +205,8 @@ function validLeg(
       byteLength: C12_29_S5_DENSE_CONFIG.workloadByteLength,
       sha256: WORKLOAD_SHA,
     },
-    startedAt: "2026-08-13T12:00:00.000Z",
-    completedAt: "2026-08-13T12:10:00.000Z",
+    startedAt: legStartedAt,
+    completedAt: legCompletedAt,
     status: "PASS",
     incomplete: false,
     error: null,
@@ -225,8 +235,16 @@ function validLeg(
     renderer: {
       requested: scheduleLeg.renderer,
       actual: scheduleLeg.renderer,
-      rendererString: "test adapter",
-      adapterInfo: { vendor: "test", architecture: "test" },
+      rendererString: scheduleLeg.renderer === "webgl" ? "test adapter" : "",
+      adapterInfo:
+        scheduleLeg.renderer === "webgpu"
+          ? {
+              vendor: "test",
+              architecture: "test",
+              device: "",
+              description: "",
+            }
+          : null,
       gpuIdentityComplete: true,
     },
     servedEntry: {
@@ -483,7 +501,7 @@ function validReport() {
   const provenanceStart = validProvenanceSnapshot();
   const report = {
     schema: C12_29_S5_DENSE_SCHEMA,
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId: RUN_ID,
     status: "PASS",
     incomplete: false,
@@ -545,6 +563,43 @@ function validReport() {
   return report;
 }
 
+function validLegacyReport(runId = RUN_ID) {
+  const report = validReport();
+  report.schema = C12_29_S5_DENSE_LEGACY_SCHEMA;
+  report.schemaVersion = 1;
+  report.runId = runId;
+  report.prerequisites.terrain.artifact.schema =
+    "c12-29-s5-terrain-selection-evidence-v8";
+  report.prerequisites.nasa.artifact.schema =
+    "c12-29-s5-svs-5073-footprint-evidence-v2";
+  report.prerequisitesSha256 = hashJson(report.prerequisites);
+  for (const leg of report.legs) {
+    leg.runId = runId;
+    leg.prerequisitesSha256 = report.prerequisitesSha256;
+  }
+  report.assessment = foldC1229S5DenseLegacyCostGate(report);
+  return report;
+}
+
+function validReportForRun(runId, mutation) {
+  const report = validReport();
+  report.runId = runId;
+  for (const leg of report.legs) leg.runId = runId;
+  mutation?.(report);
+  let assessment = foldC1229S5DenseCostGate(report);
+  report.status = assessment.status;
+  report.exitCode = assessment.exitCode;
+  report.pass = assessment.pass;
+  report.lifecycle.firstRedPreserved = report.status !== "PASS";
+  assessment = foldC1229S5DenseCostGate(report);
+  report.status = assessment.status;
+  report.exitCode = assessment.exitCode;
+  report.pass = assessment.pass;
+  report.assessment = assessment;
+  assert.equal(validateC1229S5DenseFinalArtifact(report).valid, true);
+  return report;
+}
+
 test("01 frozen workload closes the full valid 24-process gate", () => {
   assert.deepEqual(validateC1229S5DenseWorkload(workload), {
     valid: true,
@@ -585,9 +640,14 @@ test("03 schema, UUID-v4, final status, and recomputation fail closed", () => {
   );
   for (const mutation of [
     (r) => (r.schema = "v2"),
+    (r) => (r.schemaVersion = 1),
     (r) => (r.runId = "not-a-uuid"),
     (r) => (r.incomplete = true),
     (r) => (r.exitCode = 1),
+    (r) => delete r.startedAt,
+    (r) => (r.completedAt = "2026-08-13 16:00:00Z"),
+    (r) => (r.completedAt = r.startedAt),
+    (r) => (r.completedAt = "2026-08-13T11:59:59.999Z"),
     (r) => (r.assessment.characterization.policy = "ceiling"),
     (r) => (r.lifecycle.finalReceiptCreatedExclusively = false),
     (r) => (r.lifecycle.firstRedFingerprintPolicy = "existence-only"),
@@ -717,6 +777,40 @@ test("09 every leg is a fresh exact Edge/backend/viewport identity", () => {
     mutation(leg);
     assert.equal(validateC1229S5DenseRuntimeLeg(leg, workload).valid, false);
   }
+  for (const [scheduleLeg, mutation] of [
+    [C12_29_S5_DENSE_SCHEDULE[0], (leg) => (leg.renderer.rendererString = "")],
+    [C12_29_S5_DENSE_SCHEDULE[2], (leg) => (leg.renderer.adapterInfo = null)],
+    [
+      C12_29_S5_DENSE_SCHEDULE[2],
+      (leg) => {
+        for (const key of Object.keys(leg.renderer.adapterInfo)) {
+          leg.renderer.adapterInfo[key] = "";
+        }
+      },
+    ],
+    [
+      C12_29_S5_DENSE_SCHEDULE[2],
+      (leg) => delete leg.renderer.adapterInfo.device,
+    ],
+  ]) {
+    const leg = validLeg(scheduleLeg);
+    mutation(leg);
+    leg.renderer.gpuIdentityComplete = true;
+    assert.equal(validateC1229S5DenseRuntimeLeg(leg, workload).valid, false);
+  }
+  const symmetricIdentityReport = validReport();
+  for (const leg of symmetricIdentityReport.legs) {
+    if (leg.scheduleLeg.renderer === "webgl") {
+      leg.renderer.rendererString = "";
+    } else {
+      leg.renderer.adapterInfo = null;
+    }
+    leg.renderer.gpuIdentityComplete = true;
+  }
+  assert.equal(
+    foldC1229S5DenseCostGate(symmetricIdentityReport).status,
+    "STRUCTURAL",
+  );
   const report = validReport();
   const pair = report.legs.filter(
     (leg) =>
@@ -788,6 +882,9 @@ test("12 both variants prewarm and the full own-real sentinel primes before timi
         ...l.prime.seenOwnRealSentinelKeys,
       ].sort()),
     (l) => (l.prime.settledFrames = 29),
+    (l) => delete l.prime.settledFrames,
+    (l) => (l.prime.settledFrames = "30"),
+    (l) => (l.prime.settledFrames = 30.5),
   ]) {
     const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
     mutation(leg);
@@ -1291,11 +1388,9 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
     const firstReceipt = publication.publishC1229S5DenseFinal(
       firstPaths,
       firstStart.lockBytes,
-      {
-        runId: firstRunId,
-        status: "ERROR",
-        finding: "first",
-      },
+      validReportForRun(firstRunId, (report) => {
+        report.legs[0].transport.pageErrors.push("first");
+      }),
     );
     assert.equal(firstReceipt.firstRed.writeOnceFingerprintVerified, true);
     assert.equal(firstReceipt.firstRed.written, true);
@@ -1320,11 +1415,9 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
     const secondReceipt = publication.publishC1229S5DenseFinal(
       secondPaths,
       secondStart.lockBytes,
-      {
-        runId: secondRunId,
-        status: "FAIL",
-        finding: "second",
-      },
+      validReportForRun(secondRunId, (report) => {
+        report.legs[0].measurement.frames[0].gate = 0;
+      }),
     );
     assert.equal(secondReceipt.firstRed.writeOnceFingerprintVerified, true);
     assert.equal(secondReceipt.firstRed.written, false);
@@ -1343,10 +1436,17 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
   }
 });
 
-test("25 NASA-v2 and every operational bound are exact prerequisites", () => {
-  const stale = validPrerequisites();
-  stale.nasa.artifact.schema = "c12-29-s5-svs-5073-footprint-evidence-v1";
-  assert.equal(validateC1229S5DensePrerequisites(stale).valid, false);
+test("25 terrain-v10, NASA-v3, and every operational bound are exact prerequisites", () => {
+  for (const [kind, staleSchema] of [
+    ["terrain", "c12-29-s5-terrain-selection-evidence-v8"],
+    ["terrain", "c12-29-s5-terrain-selection-evidence-v9"],
+    ["nasa", "c12-29-s5-svs-5073-footprint-evidence-v1"],
+    ["nasa", "c12-29-s5-svs-5073-footprint-evidence-v2"],
+  ]) {
+    const stale = validPrerequisites();
+    stale[kind].artifact.schema = staleSchema;
+    assert.equal(validateC1229S5DensePrerequisites(stale).valid, false);
+  }
   for (const mutation of [
     (value) => (value.protocol.refreshSemantics = "render whenever convenient"),
     (value) => (value.protocol.settleStableFrames = 0),
@@ -1358,6 +1458,316 @@ test("25 NASA-v2 and every operational bound are exact prerequisites", () => {
     const value = clone(workload);
     mutation(value);
     assert.equal(validateC1229S5DenseWorkload(value).valid, false);
+  }
+});
+
+test("25a campaign/leg timestamps and leg workload identities are exact and cross-bound", () => {
+  for (const mutation of [
+    (leg) => delete leg.startedAt,
+    (leg) => (leg.completedAt = "2026-08-13 12:05:00Z"),
+    (leg) => (leg.completedAt = leg.startedAt),
+    (leg) => (leg.completedAt = "2026-08-13T11:59:59.999Z"),
+    (leg) => delete leg.workloadIdentity.path,
+    (leg) => delete leg.workloadIdentity.byteLength,
+    (leg) => (leg.workloadIdentity.byteLength = "7137"),
+    (leg) => (leg.workloadIdentity.byteLength = 7137.5),
+    (leg) => (leg.workloadIdentity.path = "foreign-workload.json"),
+  ]) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+    mutation(leg);
+    assert.ok(
+      validateC1229S5DenseRuntimeLeg(leg, workload).structural.length > 0,
+    );
+  }
+
+  for (const mutation of [
+    (report) => (report.legs[0].startedAt = "2026-08-13T11:59:59.999Z"),
+    (report) => (report.legs.at(-1).completedAt = "2026-08-13T16:00:00.001Z"),
+    (report) =>
+      (report.legs[1].startedAt = new Date(
+        Date.parse(report.legs[0].completedAt) - 1,
+      ).toISOString()),
+  ]) {
+    const report = validReport();
+    mutation(report);
+    assert.equal(foldC1229S5DenseCostGate(report).status, "STRUCTURAL");
+  }
+});
+
+test("25b dense v2 accepts only fully validated archived v1/v2 authority and makes v1 supersession race-safe", async () => {
+  const publication = await import("./probe-c12-29-s5-dense-cost.mjs");
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "c12-29-s5-dense-v2-"));
+  const legacyRunId = "10101010-2020-4030-8040-505050505050";
+  const legacy = validLegacyReport(legacyRunId);
+  const legacyBytes = Buffer.from(`${JSON.stringify(legacy, null, 2)}\n`);
+  const receiptName = `campaign12-c12-29-s5-dense-cost.superseded-v1-${legacyRunId}.json`;
+  const operationProxy = (overrides) =>
+    new Proxy(fs, {
+      get(target, property) {
+        return overrides[property] ?? Reflect.get(target, property);
+      },
+    });
+  const seedPrior = (paths, prior, bytes, archiveBytes = bytes) => {
+    fs.mkdirSync(paths.directory, { recursive: true });
+    fs.writeFileSync(paths.latest, bytes);
+    fs.writeFileSync(
+      join(paths.directory, `${prior.runId}.json`),
+      archiveBytes,
+    );
+  };
+  const legacyReceipt = (paths) => join(paths.directory, receiptName);
+
+  assert.equal(validateC1229S5DenseFinalArtifact(legacy).valid, false);
+  assert.equal(validateC1229S5DenseLegacyFinalArtifact(legacy).valid, true);
+  try {
+    const output = join(temporaryRoot, "exact-v1-retry");
+    const runId = "60606060-7070-4080-8090-a0a0a0a0a0a0";
+    const paths = publication.createC1229S5DenseArtifactPaths(output, runId);
+    seedPrior(paths, legacy, legacyBytes);
+    fs.writeFileSync(legacyReceipt(paths), legacyBytes);
+    const started = publication.beginC1229S5DenseRun(paths, runId);
+    assert.equal(started.running.schema, C12_29_S5_DENSE_SCHEMA);
+    assert.equal(started.running.schemaVersion, 2);
+    assert.deepEqual(await readFile(legacyReceipt(paths)), legacyBytes);
+    assert.deepEqual(await readFile(paths.latest), started.runningBytes);
+    assert.deepEqual(
+      await readFile(join(output, `${legacyRunId}.json`)),
+      legacyBytes,
+    );
+
+    const current = validReport();
+    const currentBytes = Buffer.from(`${JSON.stringify(current, null, 2)}\n`);
+    const currentOutput = join(temporaryRoot, "exact-v2-prior");
+    const currentRunId = "71717171-8282-4939-8a4a-b5b5b5b5b5b5";
+    const currentPaths = publication.createC1229S5DenseArtifactPaths(
+      currentOutput,
+      currentRunId,
+    );
+    seedPrior(currentPaths, current, currentBytes);
+    const currentStarted = publication.beginC1229S5DenseRun(
+      currentPaths,
+      currentRunId,
+    );
+    assert.deepEqual(
+      await readFile(currentPaths.latest),
+      currentStarted.runningBytes,
+    );
+    assert.deepEqual(
+      await readFile(join(currentOutput, `${current.runId}.json`)),
+      currentBytes,
+    );
+
+    for (const [name, prior] of [
+      [
+        "malformed-v2",
+        {
+          schema: C12_29_S5_DENSE_SCHEMA,
+          schemaVersion: 2,
+          runId: RUN_ID,
+          status: "PASS",
+          incomplete: false,
+          pass: true,
+          exitCode: 0,
+        },
+      ],
+      [
+        "malformed-v1",
+        {
+          schema: C12_29_S5_DENSE_LEGACY_SCHEMA,
+          schemaVersion: 1,
+          runId: legacyRunId,
+          status: "ERROR",
+          incomplete: false,
+          pass: false,
+          exitCode: 2,
+        },
+      ],
+    ]) {
+      const malformedBytes = Buffer.from(`${JSON.stringify(prior, null, 2)}\n`);
+      const malformedRunId =
+        name === "malformed-v2"
+          ? "81818181-9292-4a3a-8b4b-c6c6c6c6c6c6"
+          : "91919191-a2a2-4b3b-8c4c-d7d7d7d7d7d7";
+      const malformedPaths = publication.createC1229S5DenseArtifactPaths(
+        join(temporaryRoot, name),
+        malformedRunId,
+      );
+      seedPrior(malformedPaths, prior, malformedBytes);
+      assert.throws(
+        () => publication.beginC1229S5DenseRun(malformedPaths, malformedRunId),
+        /not valid finalized v[12] evidence/u,
+      );
+      assert.deepEqual(await readFile(malformedPaths.latest), malformedBytes);
+      await assert.rejects(readFile(malformedPaths.lock), /ENOENT/u);
+    }
+
+    for (const [name, prior, bytes] of [
+      ["corrupt-v2-archive", current, currentBytes],
+      ["corrupt-v1-archive", legacy, legacyBytes],
+    ]) {
+      const corruptRunId =
+        name === "corrupt-v2-archive"
+          ? "a1a1a1a1-b2b2-4c3c-8d4d-e8e8e8e8e8e8"
+          : "b1b1b1b1-c2c2-4d3d-8e4e-f9f9f9f9f9f9";
+      const corruptPaths = publication.createC1229S5DenseArtifactPaths(
+        join(temporaryRoot, name),
+        corruptRunId,
+      );
+      seedPrior(corruptPaths, prior, bytes, Buffer.from("corrupt archive\n"));
+      assert.throws(
+        () => publication.beginC1229S5DenseRun(corruptPaths, corruptRunId),
+        /prior immutable v[12] archive.*bytes differ/u,
+      );
+      assert.deepEqual(await readFile(corruptPaths.latest), bytes);
+      await assert.rejects(readFile(corruptPaths.lock), /ENOENT/u);
+    }
+
+    const corruptOutput = join(temporaryRoot, "corrupt-receipt");
+    const corruptRunId = "b0b0b0b0-c0c0-4d0d-8e0e-f0f0f0f0f0f0";
+    const corruptPaths = publication.createC1229S5DenseArtifactPaths(
+      corruptOutput,
+      corruptRunId,
+    );
+    seedPrior(corruptPaths, legacy, legacyBytes);
+    fs.writeFileSync(legacyReceipt(corruptPaths), "foreign receipt\n");
+    assert.throws(
+      () => publication.beginC1229S5DenseRun(corruptPaths, corruptRunId),
+      /supersession receipt.*bytes differ/u,
+    );
+    assert.deepEqual(await readFile(corruptPaths.latest), legacyBytes);
+    await assert.rejects(readFile(corruptPaths.lock), /ENOENT/u);
+
+    const noncanonicalOutput = join(temporaryRoot, "noncanonical-v1");
+    const noncanonicalRunId = "12121212-3434-4567-89ab-cdef12345678";
+    const noncanonicalPaths = publication.createC1229S5DenseArtifactPaths(
+      noncanonicalOutput,
+      noncanonicalRunId,
+    );
+    const noncanonical = Buffer.from(JSON.stringify(legacy));
+    seedPrior(noncanonicalPaths, legacy, noncanonical, noncanonical);
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(noncanonicalPaths, noncanonicalRunId),
+      /not canonical JSON/u,
+    );
+    assert.deepEqual(await readFile(noncanonicalPaths.latest), noncanonical);
+    await assert.rejects(readFile(noncanonicalPaths.lock), /ENOENT/u);
+
+    const deletedRunId = "c1c1c1c1-d2d2-4e3e-8f4f-a0a0a0a0a0a0";
+    const deletedPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "receipt-deleted-post-running"),
+      deletedRunId,
+    );
+    seedPrior(deletedPaths, legacy, legacyBytes);
+    fs.writeFileSync(legacyReceipt(deletedPaths), legacyBytes);
+    let deleted = false;
+    const deleteOperations = operationProxy({
+      writeFileSync(file, bytes, options) {
+        fs.writeFileSync(file, bytes, options);
+        if (!deleted && file === deletedPaths.runningReceipt) {
+          deleted = true;
+          fs.unlinkSync(legacyReceipt(deletedPaths));
+        }
+      },
+    });
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          deletedPaths,
+          deletedRunId,
+          deleteOperations,
+        ),
+      /post-running-receipt dense v1 supersession receipt/u,
+    );
+    assert.equal(deleted, true);
+    assert.deepEqual(await readFile(deletedPaths.latest), legacyBytes);
+    assert.deepEqual(
+      await readFile(join(deletedPaths.directory, `${legacyRunId}.json`)),
+      legacyBytes,
+    );
+    await assert.rejects(readFile(deletedPaths.lock), /ENOENT/u);
+
+    const changedRunId = "d1d1d1d1-e2e2-4f3f-8040-b1b1b1b1b1b1";
+    const changedPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "receipt-corrupt-post-latest"),
+      changedRunId,
+    );
+    seedPrior(changedPaths, legacy, legacyBytes);
+    fs.writeFileSync(legacyReceipt(changedPaths), legacyBytes);
+    let changed = false;
+    const changeOperations = operationProxy({
+      unlinkSync(file) {
+        fs.unlinkSync(file);
+        if (
+          !changed &&
+          String(file).startsWith(`${changedPaths.latest}.running-`)
+        ) {
+          changed = true;
+          fs.writeFileSync(legacyReceipt(changedPaths), "foreign receipt\n");
+        }
+      },
+    });
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          changedPaths,
+          changedRunId,
+          changeOperations,
+        ),
+      /post-latest-replacement dense v1 supersession receipt.*bytes differ/u,
+    );
+    assert.equal(changed, true);
+    assert.deepEqual(
+      await readFile(join(changedPaths.directory, `${legacyRunId}.json`)),
+      legacyBytes,
+    );
+    assert.ok(
+      (await readFile(changedPaths.latest)).includes(Buffer.from("RUNNING")),
+    );
+    assert.ok((await readFile(changedPaths.lock)).byteLength > 0);
+
+    const unreadableRunId = "e1e1e1e1-f2f2-4030-8141-c2c2c2c2c2c2";
+    const unreadablePaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "receipt-unreadable-pre-return"),
+      unreadableRunId,
+    );
+    seedPrior(unreadablePaths, legacy, legacyBytes);
+    fs.writeFileSync(legacyReceipt(unreadablePaths), legacyBytes);
+    let rawCreated = false;
+    const unreadableOperations = operationProxy({
+      mkdirSync(file, options) {
+        fs.mkdirSync(file, options);
+        if (file === unreadablePaths.rawDirectory) rawCreated = true;
+      },
+      readFileSync(file, options) {
+        if (rawCreated && file === legacyReceipt(unreadablePaths)) {
+          const error = new Error("receipt read denied");
+          error.code = "EACCES";
+          throw error;
+        }
+        return fs.readFileSync(file, options);
+      },
+    });
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          unreadablePaths,
+          unreadableRunId,
+          unreadableOperations,
+        ),
+      /receipt read denied/u,
+    );
+    assert.equal(rawCreated, true);
+    assert.deepEqual(
+      await readFile(join(unreadablePaths.directory, `${legacyRunId}.json`)),
+      legacyBytes,
+    );
+    assert.ok(
+      (await readFile(unreadablePaths.latest)).includes(Buffer.from("RUNNING")),
+    );
+    assert.ok((await readFile(unreadablePaths.lock)).byteLength > 0);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
 

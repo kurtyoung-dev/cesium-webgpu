@@ -4,7 +4,7 @@
  *
  * The coordinator launches 24 child Node processes in the frozen order. Each
  * child launches exactly one fresh Edge process, runs one 600-frame condition,
- * and exits. The probe requires already-certified terrain-v8 and NASA-SVS-v2
+ * and exits. The probe requires already-certified terrain-v10 and NASA-SVS-v3
  * publication manifests, a current Build/CesiumUnminified bundle, and an
  * already-running loopback server. It does not build or start infrastructure.
  */
@@ -21,6 +21,7 @@ import {
   C12_29_S5_DENSE_BUILD_SOURCE_FILES,
   C12_29_S5_DENSE_CONFIG,
   C12_29_S5_DENSE_LOCAL_FILES,
+  C12_29_S5_DENSE_LEGACY_SCHEMA,
   C12_29_S5_DENSE_RAW_GENERATED_PAIRS,
   C12_29_S5_DENSE_RUNTIME_SCHEMA,
   C12_29_S5_DENSE_SCHEDULE,
@@ -31,6 +32,7 @@ import {
   foldC1229S5DenseCostGate,
   stableC1229S5DenseJson,
   validateC1229S5DenseFinalArtifact,
+  validateC1229S5DenseLegacyFinalArtifact,
   validateC1229S5DensePrerequisites,
   validateC1229S5DenseRuntimeLeg,
   validateC1229S5DenseWorkload,
@@ -71,8 +73,8 @@ function usage() {
   console.log(`Usage: node Tools/visual-regression/probe-c12-29-s5-dense-cost.mjs [options]
 
 Required coordinator options:
-  --terrain-publication FILE  Certified terrain-v8 publication manifest
-  --nasa-publication FILE     Certified NASA-SVS-v2 publication manifest
+  --terrain-publication FILE  Certified terrain-v10 publication manifest
+  --nasa-publication FILE     Certified NASA-SVS-v3 publication manifest
 
 Options:
   --base URL                  Loopback server (default ${defaultBase})
@@ -386,12 +388,12 @@ function loadPrerequisites(options) {
     terrain: resolvePublicationArtifact(options.terrainPublication, {
       kind: "terrain",
       producer: "c12-29-s5-terrain-selection",
-      schema: "c12-29-s5-terrain-selection-evidence-v8",
+      schema: "c12-29-s5-terrain-selection-evidence-v10",
     }),
     nasa: resolvePublicationArtifact(options.nasaPublication, {
       kind: "nasa",
       producer: "c12-29-s5-svs-footprint",
-      schema: "c12-29-s5-svs-5073-footprint-evidence-v2",
+      schema: "c12-29-s5-svs-5073-footprint-evidence-v3",
     }),
   };
   const validation = validateC1229S5DensePrerequisites(prerequisites);
@@ -416,6 +418,109 @@ export function createC1229S5DenseArtifactPaths(outputDirectory, runId) {
     finalReceipt: path.join(outputDirectory, `${runId}.final-receipt.json`),
     rawDirectory: path.join(outputDirectory, `${runId}.legs`),
   };
+}
+
+function inspectDensePriorFinalBytes(bytes) {
+  const source = Buffer.from(bytes);
+  let value;
+  try {
+    value = JSON.parse(source.toString("utf8"));
+  } catch {
+    throw new Error("[persistence] dense prior latest is not valid JSON");
+  }
+  if (!jsonBytes(value).equals(source)) {
+    throw new Error("[persistence] dense prior latest is not canonical JSON");
+  }
+  const schemaVersion =
+    value?.schema === C12_29_S5_DENSE_SCHEMA
+      ? 2
+      : value?.schema === C12_29_S5_DENSE_LEGACY_SCHEMA
+        ? 1
+        : null;
+  if (
+    schemaVersion === null ||
+    value?.schemaVersion !== schemaVersion ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      value?.runId ?? "",
+    ) ||
+    !["PASS", "FAIL", "ERROR", "STRUCTURAL"].includes(value?.status) ||
+    value?.incomplete !== false ||
+    value?.pass !== (value.status === "PASS") ||
+    value?.exitCode !== exitCodeForC1229S5DenseStatus(value.status)
+  ) {
+    throw new Error(
+      "[persistence] dense prior latest is not a finalized v1/v2 envelope",
+    );
+  }
+  const validation =
+    schemaVersion === 1
+      ? validateC1229S5DenseLegacyFinalArtifact(value)
+      : validateC1229S5DenseFinalArtifact(value);
+  if (!validation.valid) {
+    throw new Error(
+      `[persistence] dense prior latest is not valid finalized v${schemaVersion} evidence: ${validation.reasons.join("; ")}`,
+    );
+  }
+  return { value, schemaVersion };
+}
+
+function preserveDenseLegacyV1Latest(paths, bytes, prior, operations = fs) {
+  const receipt = path.join(
+    paths.directory,
+    `${artifactPrefix}.superseded-v1-${prior.runId}.json`,
+  );
+  try {
+    writeExclusive(receipt, bytes, operations);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    assertExactBytes(
+      receipt,
+      bytes,
+      "existing dense v1 supersession receipt",
+      operations,
+    );
+  }
+  assertExactBytes(receipt, bytes, "dense v1 supersession receipt", operations);
+  return receipt;
+}
+
+function assertDensePriorRetained(
+  paths,
+  bytes,
+  prior,
+  legacyReceipt,
+  label,
+  operations = fs,
+) {
+  if (!prior) return;
+  try {
+    assertExactBytes(
+      path.join(paths.directory, `${prior.value.runId}.json`),
+      bytes,
+      `${label} prior immutable v${prior.schemaVersion} archive`,
+      operations,
+    );
+  } catch (error) {
+    throw new Error(
+      `[persistence] ${label} prior immutable v${prior.schemaVersion} archive is unavailable or differs: ${String(error?.message ?? error)}`,
+      { cause: error },
+    );
+  }
+  if (prior.schemaVersion === 1 && legacyReceipt !== null) {
+    try {
+      assertExactBytes(
+        legacyReceipt,
+        bytes,
+        `${label} dense v1 supersession receipt`,
+        operations,
+      );
+    } catch (error) {
+      throw new Error(
+        `[persistence] ${label} dense v1 supersession receipt is unavailable or differs: ${String(error?.message ?? error)}`,
+        { cause: error },
+      );
+    }
+  }
 }
 
 function readBytes(file, operations = fs) {
@@ -715,7 +820,7 @@ export function beginC1229S5DenseRun(paths, runId, operations = fs) {
   writeExclusive(paths.lock, lockBytes, operations);
   const running = {
     schema: C12_29_S5_DENSE_SCHEMA,
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId,
     status: "RUNNING",
     incomplete: true,
@@ -734,14 +839,35 @@ export function beginC1229S5DenseRun(paths, runId, operations = fs) {
     const priorBefore = fingerprintEvidenceFile(paths.latest, operations);
     assertEvidenceReadableOrAbsent(priorBefore, "dense prior latest");
     let priorBytes = null;
+    let prior = null;
+    let legacyReceipt = null;
     if (priorBefore.exists === true) {
       priorBytes = readBytes(paths.latest, operations);
-      const prior = JSON.parse(priorBytes.toString("utf8"));
-      if (prior?.status === "RUNNING" || prior?.incomplete === true) {
-        throw new Error(
-          `[persistence] dense latest is still RUNNING for ${String(prior?.runId ?? "unknown")}`,
+      prior = inspectDensePriorFinalBytes(priorBytes);
+      assertDensePriorRetained(
+        paths,
+        priorBytes,
+        prior,
+        legacyReceipt,
+        "initial",
+        operations,
+      );
+      if (prior.schemaVersion === 1) {
+        legacyReceipt = preserveDenseLegacyV1Latest(
+          paths,
+          priorBytes,
+          prior.value,
+          operations,
         );
       }
+      assertDensePriorRetained(
+        paths,
+        priorBytes,
+        prior,
+        legacyReceipt,
+        "post-supersession",
+        operations,
+      );
     }
     const priorAfter = fingerprintEvidenceFile(paths.latest, operations);
     assertEvidenceReadableOrAbsent(
@@ -753,6 +879,14 @@ export function beginC1229S5DenseRun(paths, runId, operations = fs) {
     }
     requireOwnedLock(paths, lockBytes, operations);
     writeExclusive(paths.runningReceipt, runningBytes, operations);
+    assertDensePriorRetained(
+      paths,
+      priorBytes,
+      prior,
+      legacyReceipt,
+      "post-running-receipt",
+      operations,
+    );
     replaceC1229S5DenseLatestOwned(
       paths,
       runningBytes,
@@ -762,6 +896,14 @@ export function beginC1229S5DenseRun(paths, runId, operations = fs) {
       operations,
     );
     runningAuthorityEstablished = true;
+    assertDensePriorRetained(
+      paths,
+      priorBytes,
+      prior,
+      legacyReceipt,
+      "post-latest-replacement",
+      operations,
+    );
     assertExactBytes(
       paths.latest,
       runningBytes,
@@ -770,6 +912,14 @@ export function beginC1229S5DenseRun(paths, runId, operations = fs) {
     );
     requireOwnedLock(paths, lockBytes, operations);
     operations.mkdirSync(paths.rawDirectory, { recursive: false });
+    assertDensePriorRetained(
+      paths,
+      priorBytes,
+      prior,
+      legacyReceipt,
+      "pre-return",
+      operations,
+    );
     assertExactBytes(
       paths.latest,
       runningBytes,
@@ -2295,7 +2445,7 @@ async function runCoordinator(options) {
   };
   const report = {
     schema: C12_29_S5_DENSE_SCHEMA,
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId,
     status: "PASS",
     incomplete: false,
