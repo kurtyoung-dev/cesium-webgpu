@@ -381,7 +381,9 @@ not externally trained scenes.
 | `C15-04` | WebGL + WebGPU shell renderers, visibility demand, and feature-preserving performance tiers | P0 | PENDING — **HELD (R4)** | `C15-03` |
 | `C15-05` | OVATION + planetary-Kp asynchronous ingest and source-authority policy | P1 | PENDING — **HELD (R4)**; schemas now measured, §2a grid ordering is the spec | `C15-01`, `C15-02` |
 | `C15-06` | New RTSW + GOES asynchronous ingest with separate geomagnetic and flare state | P1 | PENDING — **HELD (R4)**; brief corrected for descending RTSW order + `-9999` fill | `C15-01`, `C15-05` authority contract |
+| `C15-06P` | Attributed, located solar-prominence state provider for eclipse composition; never infer image-plane location from GOES flux | P1 overlay | PENDING — **HELD (R4)**; exact owner for the Eclipse Explorer follow-up | `C15-01`, `C15-06`; `CLT-C3/C4` own rendering/composition |
 | `C15-07` | `effects.aurora` facade, demo, diagnostics, accessibility, attribution/licensing closure | P1 | PENDING — **HELD (R4)** | `C15-04`, `C15-05`, `C15-06` |
+| `C15-07H` | Immutable historical eclipse/space-weather replay provider and provenance manifest | P1 overlay | PENDING — **HELD (R4)**; exact owner for the Fairbanks co-event replay | `C15-01`, `C15-05`, `C15-06`, `C15-07` |
 | `C15-08` | Cross-backend visual, RTE, lifecycle, off-contract, and moving-performance certification | R0 | PENDING — **HELD (R4)** | `C15-01..07` |
 
 ---
@@ -524,6 +526,22 @@ are mutation-tested. A fixture must cover the measured wind gaps (11 × 120 s,
 rejected. Solar-wind diagnostics do not double-force OVATION and a GOES flare
 alone does not mutate the auroral oval.
 
+### C15-06P — Located solar-prominence provider overlay
+
+Define a deterministic manual/historical prominence state whose source can
+carry an attributed observation time plus explicit solar-disc or limb
+coordinates. This is a state/data owner only: `CLT-C3` owns the corona shape,
+`CLT-C4` owns HDR/bloom/exposure composition, and the eclipse contact geometry
+owns occultation. GOES X-ray flux may identify flare timing or aggregate
+energy but has no image-plane longitude and must never invent a prominence
+location. An unlocated flare remains a separate diagnostic/radiance state.
+
+Exit: quiet, located-prominence, unlocated-flare, and combined fixtures remain
+independent; provenance and coordinate frames are exact; disc occultation can
+reveal/hide a located feature without moving it; deleting the prominence packet
+does not alter flare/aurora state; and a mutant deriving limb position from
+GOES flux is rejected.
+
 ### C15-07 — Facade, demo, diagnostics, and rights
 
 Add `atmosphericConditions.effects.aurora`/`effects.auto` integration following
@@ -541,6 +559,22 @@ seam.
 Exit: facade round-trip and auto/manual precedence tests pass; the demo works
 offline; off state is zero-demand; required attributions are present without
 claiming NOAA/JHU licensing that the official product pages do not grant.
+
+### C15-07H — Historical eclipse/space-weather replay overlay
+
+Add immutable, attributed historical providers that feed the same normalized
+`C15-01` packet as manual and live sources, without a network dependency. The
+first pinned co-event is the 2025-03-14 Fairbanks-area total lunar eclipse plus
+the independently photographed auroral activity. This is coincidence, not
+causation: an eclipse flag cannot synthesize aurora, and a solar flare cannot
+be treated as an immediate geomagnetic storm.
+
+Exit: a source/transform/licence manifest binds every frozen byte; event,
+observation, and forecast clocks remain distinct; offline replay is byte
+stable; removing either the eclipse or space-weather packet removes only its
+own phenomenon; quiet-time, wrong-location, both-hemisphere, freshness,
+attribution, and default-OFF controls pass. `C15-08` must include this overlay
+once implemented.
 
 ### C15-08 — Certification
 
@@ -562,8 +596,13 @@ performance is reported without deleting or default-disabling features.
 ## 5. Execution order and campaign boundaries
 
 The implementation order is `C15-01 → C15-02 → C15-03 → C15-04`, then the
-data lanes `C15-05 → C15-06`, followed by `C15-07 → C15-08`. The synthetic
-renderer is therefore useful and certifiable before any network provider.
+data lanes `C15-05 → C15-06`, followed by `C15-07 → C15-08`. The optional
+but now explicitly owned eclipse riders enter as `C15-06P` after the neutral
+and flare state exists, and `C15-07H` after provider/facade provenance exists;
+both are folded into `C15-08` when present. These rider IDs assign execution
+ownership without launching or relaxing R4's hold on the ratified core rows.
+The synthetic renderer is therefore useful and certifiable before any network
+provider.
 
 Campaign 15 is independent of atmospheric T/Td/RH ingest, but it may not
 duplicate Campaign 12's shared sky-brightness work or Campaign 13's generic
