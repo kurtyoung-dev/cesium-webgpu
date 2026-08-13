@@ -75,6 +75,7 @@ const V5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v5";
 const V6_SCHEMA = "c12-29-s5-terrain-selection-evidence-v6";
 const V7_SCHEMA = "c12-29-s5-terrain-selection-evidence-v7";
 const V8_SCHEMA = "c12-29-s5-terrain-selection-evidence-v8";
+const V9_SCHEMA = "c12-29-s5-terrain-selection-evidence-v9";
 const diagnosticSha256 = (value) =>
   createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
 
@@ -1096,9 +1097,16 @@ function syntheticSession(renderer) {
     runtime: {
       pageErrors: [],
       consoleErrors: [],
+      ignoredConsoleErrors: [],
       gpuErrors: [],
       deviceLost: false,
+      deviceLostReason: null,
+      deviceLostMessage: null,
       cleanupComplete: true,
+    },
+    deviceGate: {
+      gpuErrors: [],
+      deviceLost: false,
     },
     sameTaskCapture: {
       method: C12_29_S5_CAPTURE_METHOD,
@@ -1246,13 +1254,29 @@ test("01 full valid fixture closes the pure S5 gate", () => {
     }),
   );
   assert.equal(verdict.exitCode, 0);
-  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v9");
+  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v10");
   assert.equal(
     C12_29_S5_DIAGNOSTICS_SCHEMA,
     "c12-29-s5-runtime-diagnostics-v5",
   );
   assert.equal(verdict.checks.sourceBoundaryCount, 43);
   assert.equal(verdict.checks.buildSourceBoundaryCount, 41);
+  for (const session of greenReport().sessions) {
+    assert.deepEqual(Object.keys(session.deviceGate), [
+      "gpuErrors",
+      "deviceLost",
+    ]);
+    assert.deepEqual(Object.keys(session.runtime), [
+      "pageErrors",
+      "consoleErrors",
+      "ignoredConsoleErrors",
+      "gpuErrors",
+      "deviceLost",
+      "deviceLostReason",
+      "deviceLostMessage",
+      "cleanupComplete",
+    ]);
+  }
 });
 
 test("02 precedence is STRUCTURAL over FAIL over PASS with frozen exits", () => {
@@ -1304,12 +1328,19 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
   const v8Report = greenReport();
   v8Report.schema = V8_SCHEMA;
   assert.equal(foldC1229S5Gate(v8Report).status, "STRUCTURAL");
+  const v9Report = greenReport();
+  v9Report.schema = V9_SCHEMA;
+  assert.equal(foldC1229S5Gate(v9Report).status, "STRUCTURAL");
   assert.equal(
     validateS5FinalArtifactShape({ ...artifact, schema: V7_SCHEMA }).ok,
     false,
   );
   assert.equal(
     validateS5FinalArtifactShape({ ...artifact, schema: V8_SCHEMA }).ok,
+    false,
+  );
+  assert.equal(
+    validateS5FinalArtifactShape({ ...artifact, schema: V9_SCHEMA }).ok,
     false,
   );
   const errorArtifact = {
@@ -1528,7 +1559,7 @@ test("04 renderer and A-H phase cardinality cannot shrink", () => {
       .slice(1);
   const base = greenReport();
   const arrayLocations = enumerateArrayLocations(base);
-  assert.equal(arrayLocations.length, 139);
+  assert.equal(arrayLocations.length, 143);
   assert.equal(
     new Set(arrayLocations.map((location) => valueAt(base, location))).size,
     arrayLocations.length,
@@ -1747,12 +1778,15 @@ test("04 renderer and A-H phase cardinality cannot shrink", () => {
       matches: (arrayPath) => arrayPath.endsWith(".images"),
     },
     {
-      name: "transport/runtime-empty-ledger",
+      name: "transport/runtime/device-gate-empty-ledger",
       matches: (arrayPath) =>
         /\.transport\.(?:externalRequests|failedRequests|httpErrors)$/u.test(
           arrayPath,
         ) ||
-        /\.runtime\.(?:pageErrors|consoleErrors|gpuErrors)$/u.test(arrayPath),
+        /\.runtime\.(?:pageErrors|consoleErrors|ignoredConsoleErrors|gpuErrors)$/u.test(
+          arrayPath,
+        ) ||
+        /\.deviceGate\.gpuErrors$/u.test(arrayPath),
     },
     {
       name: "phase-tile-set/count/transition-identity",
@@ -2699,6 +2733,67 @@ test("20 browser, GPU-error, transport, and cleanup surfaces fail closed", async
       (report) => mutator(report.sessions[1]),
       "STRUCTURAL",
       /browser\/GPU|transport/u,
+    );
+  }
+
+  for (const mutateDeviceGate of [
+    (session) => delete session.deviceGate,
+    (session) => delete session.deviceGate.gpuErrors,
+    (session) => delete session.deviceGate.deviceLost,
+    (session) => (session.deviceGate.extra = true),
+    (session) => session.deviceGate.gpuErrors.push("validation"),
+    (session) => {
+      session.deviceGate.gpuErrors.length = 1;
+    },
+    (session) =>
+      Object.setPrototypeOf(
+        session.deviceGate.gpuErrors,
+        Object.create(Array.prototype),
+      ),
+    (session) => (session.deviceGate.deviceLost = true),
+  ]) {
+    expectStatus(
+      (report) => mutateDeviceGate(report.sessions[1]),
+      "STRUCTURAL",
+      /device gate|canonical dense bounded data/u,
+    );
+  }
+
+  for (const mutateCrossBinding of [
+    (session) => session.deviceGate.gpuErrors.push("device-gate-only"),
+    (session) => (session.deviceGate.deviceLost = true),
+    (session) => session.runtime.gpuErrors.push("runtime-only"),
+    (session) => (session.runtime.deviceLost = true),
+  ]) {
+    expectStatus(
+      (report) => mutateCrossBinding(report.sessions[1]),
+      "STRUCTURAL",
+      /device gate is not cross-bound to runtime/u,
+    );
+  }
+
+  for (const mutateRuntimeShape of [
+    (session) => delete session.runtime.ignoredConsoleErrors,
+    (session) => delete session.runtime.deviceLost,
+    (session) => (session.runtime.extra = true),
+    (session) => session.runtime.ignoredConsoleErrors.push("ignored error"),
+    (session) => {
+      session.runtime.ignoredConsoleErrors.length = 1;
+    },
+    (session) =>
+      Object.setPrototypeOf(
+        session.runtime.ignoredConsoleErrors,
+        Object.create(Array.prototype),
+      ),
+    (session) => (session.runtime.deviceLost = true),
+    (session) => (session.runtime.deviceLostReason = "unknown"),
+    (session) => (session.runtime.deviceLostMessage = "lost"),
+    (session) => session.runtime.gpuErrors.push("runtime-only validation"),
+  ]) {
+    expectStatus(
+      (report) => mutateRuntimeShape(report.sessions[1]),
+      "STRUCTURAL",
+      /browser\/GPU|cross-bound|canonical dense bounded data/u,
     );
   }
 
@@ -4347,6 +4442,27 @@ test("21 prior RUNNING and extant lock both reject before browser work", () => {
     assert.equal(v9StartOverV8.running.status, "RUNNING");
     assert.equal(v9StartOverV8.running.incomplete, true);
 
+    const v9Directory = path.join(temp, "finalized-v9-latest");
+    fs.mkdirSync(v9Directory);
+    const v9Paths = createS5ArtifactPaths(IMAGE_IDS[0], v9Directory);
+    fs.writeFileSync(
+      v9Paths.latest,
+      JSON.stringify({
+        schema: V9_SCHEMA,
+        runId: RUN_ID,
+        status: "STRUCTURAL",
+        exitCode: 3,
+        incomplete: false,
+        artifactName: `${RUN_ID}.json`,
+      }),
+    );
+    const v10StartOverV9 = beginS5EvidenceRun(v9Paths, IMAGE_IDS[0]);
+    assert.equal(v10StartOverV9.prior.latest.schema, V9_SCHEMA);
+    assert.equal(v10StartOverV9.prior.latest.status, "STRUCTURAL");
+    assert.equal(v10StartOverV9.running.schema, C12_29_S5_SCHEMA);
+    assert.equal(v10StartOverV9.running.status, "RUNNING");
+    assert.equal(v10StartOverV9.running.incomplete, true);
+
     const orderedDirectory = path.join(temp, "ordered-acquire");
     const orderedPaths = createS5ArtifactPaths(IMAGE_IDS[2], orderedDirectory);
     const events = [];
@@ -5799,6 +5915,14 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
   assert.doesNotMatch(probeSource, /GPUDevice\.destroy\s*\(/u);
   assert.doesNotMatch(probeSource, /\.(?:pickEllipsoid|pickPosition)\s*\(/u);
   assert.doesNotMatch(probeSource, /await\s+scene\.pickAsync\s*\(/u);
+  assert.match(
+    probeSource,
+    /deviceGate: globalThis\.__c1229S5DeviceGate \?\? \{\s*gpuErrors: \[\],\s*deviceLost: false,\s*\}/u,
+  );
+  assert.match(
+    probeSource,
+    /runtime: \{\s*pageErrors,\s*consoleErrors,\s*ignoredConsoleErrors,\s*gpuErrors: settledDeviceGate\.gpuErrors,\s*deviceLost: settledDeviceGate\.deviceLost,\s*deviceLostReason: settledDeviceGate\.deviceLostReason,\s*deviceLostMessage: settledDeviceGate\.deviceLostMessage,\s*cleanupComplete: false,\s*\}/u,
+  );
   assert.equal(
     (probeSource.match(/globe\.beginFrame = function \(frameState\)/gu) ?? [])
       .length,

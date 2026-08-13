@@ -9,7 +9,7 @@
 
 import { createHash } from "node:crypto";
 
-export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v9";
+export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v10";
 
 export const C12_29_S5_DIAGNOSTICS_SCHEMA = "c12-29-s5-runtime-diagnostics-v5";
 
@@ -1579,7 +1579,12 @@ const S5_FINAL_ARRAY_MAX_LENGTHS = new Map([
   ["sessions[].transport.httpErrors", C12_29_S5_PROGRESS_LEDGER_MAX_LENGTH],
   ["sessions[].runtime.pageErrors", C12_29_S5_PROGRESS_LEDGER_MAX_LENGTH],
   ["sessions[].runtime.consoleErrors", C12_29_S5_PROGRESS_LEDGER_MAX_LENGTH],
+  [
+    "sessions[].runtime.ignoredConsoleErrors",
+    C12_29_S5_PROGRESS_LEDGER_MAX_LENGTH,
+  ],
   ["sessions[].runtime.gpuErrors", C12_29_S5_PROGRESS_LEDGER_MAX_LENGTH],
+  ["sessions[].deviceGate.gpuErrors", C12_29_S5_PROGRESS_LEDGER_MAX_LENGTH],
 ]);
 
 function maximumS5FinalArrayLength(path) {
@@ -4470,6 +4475,19 @@ function validatePhaseCardinality(session, structural) {
   return true;
 }
 
+const S5_SESSION_DEVICE_GATE_KEYS = Object.freeze(["gpuErrors", "deviceLost"]);
+
+const S5_SESSION_RUNTIME_KEYS = Object.freeze([
+  "pageErrors",
+  "consoleErrors",
+  "ignoredConsoleErrors",
+  "gpuErrors",
+  "deviceLost",
+  "deviceLostReason",
+  "deviceLostMessage",
+  "cleanupComplete",
+]);
+
 function validateSession(session, runId, structural, failures) {
   const renderer = session?.renderer ?? "unknown";
   if (
@@ -4490,14 +4508,36 @@ function validateSession(session, runId, structural, failures) {
       `${renderer}: browser transport escaped loopback/offline scope`,
     );
   }
+  const deviceGate = session?.deviceGate;
+  const runtime = session?.runtime;
   if (
-    !exactEmptyS5Array(session?.runtime?.pageErrors) ||
-    !exactEmptyS5Array(session?.runtime?.consoleErrors) ||
-    !exactEmptyS5Array(session?.runtime?.gpuErrors) ||
-    session?.runtime?.deviceLost !== false ||
-    session?.runtime?.cleanupComplete !== true
+    !exactObjectKeys(deviceGate, S5_SESSION_DEVICE_GATE_KEYS) ||
+    !exactEmptyS5Array(deviceGate?.gpuErrors) ||
+    deviceGate?.deviceLost !== false
+  ) {
+    structural.push(`${renderer}: browser GPU device gate proof is red`);
+  }
+  if (
+    !exactObjectKeys(runtime, S5_SESSION_RUNTIME_KEYS) ||
+    !exactEmptyS5Array(runtime?.pageErrors) ||
+    !exactEmptyS5Array(runtime?.consoleErrors) ||
+    !exactEmptyS5Array(runtime?.ignoredConsoleErrors) ||
+    !exactEmptyS5Array(runtime?.gpuErrors) ||
+    runtime?.deviceLost !== false ||
+    runtime?.deviceLostReason !== null ||
+    runtime?.deviceLostMessage !== null ||
+    runtime?.cleanupComplete !== true
   ) {
     structural.push(`${renderer}: browser/GPU error or cleanup proof is red`);
+  }
+  if (
+    !Array.isArray(runtime?.gpuErrors) ||
+    !exactS5ArrayValues(deviceGate?.gpuErrors, runtime.gpuErrors) ||
+    deviceGate?.deviceLost !== runtime?.deviceLost
+  ) {
+    structural.push(
+      `${renderer}: browser GPU device gate is not cross-bound to runtime`,
+    );
   }
   if (
     session?.sameTaskCapture?.method !== C12_29_S5_CAPTURE_METHOD ||
