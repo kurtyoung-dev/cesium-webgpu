@@ -3,9 +3,10 @@
  * C12-29 S5 real-terrain/selection browser acceptance.
  *
  * Runs serial WebGL and WebGPU sessions over the local QuantizedMesh fixture.
- * Each session proves an ellipsoid control, synchronous provider reset, an
- * actual held-request TerrainFillMesh, fill-to-real transition, exact x2
- * radius law, real awaited async picking, and a fresh-provider reset. WebGPU
+ * Each session proves an ellipsoid control, first-beginFrame provider reset,
+ * an actual single-held-request TerrainFillMesh, fill-to-real transition,
+ * exact x2 radius law, real awaited async picking, and a fresh-provider reset.
+ * WebGPU
  * additionally drives retained six-face capture through a tiny Model's normal
  * DynamicEnvironmentMapManager update; WebGL records that phase as N/A.
  *
@@ -2266,6 +2267,18 @@ const MEASURE_S5_SESSION = async (contract) => {
 
   const tileId = (tile) =>
     `${tile?.level ?? "?"}/${tile?.x ?? "?"}/${tile?.y ?? "?"}`;
+  const levelOneAncestorId = (id) => {
+    const match = /^(\d+)\/(\d+)\/(\d+)$/u.exec(id ?? "");
+    if (!match) return undefined;
+    const level = Number(match[1]);
+    const x = Number(match[2]);
+    const y = Number(match[3]);
+    if (![level, x, y].every(Number.isInteger) || level < 1) {
+      return undefined;
+    }
+    const divisor = 2 ** (level - 1);
+    return `1/${Math.floor(x / divisor)}/${Math.floor(y / divisor)}`;
+  };
   const getTileProvider = () =>
     globe._surface?.tileProvider ?? globe._surface?._tileProvider;
   const selectedTiles = () => [...(globe._surface?._tilesToRender ?? [])];
@@ -2282,7 +2295,7 @@ const MEASURE_S5_SESSION = async (contract) => {
       const id = tileId(tile);
       selectedTileIds.push(id);
       const data = tile?.data;
-      if (data?.terrainData?.constructor?.name === "QuantizedMeshTerrainData") {
+      if (data?.terrainData instanceof C.QuantizedMeshTerrainData) {
         decodedQuantizedMeshCount++;
       }
       if (data?.mesh) {
@@ -2488,11 +2501,92 @@ const MEASURE_S5_SESSION = async (contract) => {
   markProgress(contract.phases[1], "fixture-provider-create");
   const quantizedUrl = new URL(contract.fixtureRoute, location.origin).href;
   const quantizedProvider = await C.CesiumTerrainProvider.fromUrl(quantizedUrl);
+  globe.maximumScreenSpaceError = contract.fillMaximumScreenSpaceError;
+  const heldLevel = 1;
+  const tilingScheme = quantizedProvider.tilingScheme;
+  const levelOneXTiles = tilingScheme.getNumberOfXTilesAtLevel(heldLevel);
+  const levelOneYTiles = tilingScheme.getNumberOfYTilesAtLevel(heldLevel);
+  if (levelOneXTiles !== 4 || levelOneYTiles !== 2) {
+    throw new Error("S5 QuantizedMesh fixture is not level-one 4x2 geographic");
+  }
+  const trackPosition = C.Cartographic.fromDegrees(
+    track.longitude,
+    track.latitude,
+  );
+  const anchorTile = tilingScheme.positionToTileXY(trackPosition, heldLevel);
+  const tileWidthDegrees = 360 / levelOneXTiles;
+  const tileHeightDegrees = 180 / levelOneYTiles;
+  const anchorWest = -180 + anchorTile.x * tileWidthDegrees;
+  const anchorEast = anchorWest + tileWidthDegrees;
+  const anchorNorth = 90 - anchorTile.y * tileHeightDegrees;
+  const anchorSouth = anchorNorth - tileHeightDegrees;
+  const holdCandidates = [];
+  if (anchorTile.x + 1 < levelOneXTiles) {
+    holdCandidates.push({
+      edge: "east",
+      distanceDegrees: Math.abs(anchorEast - track.longitude),
+      targetX: anchorTile.x + 1,
+      targetY: anchorTile.y,
+    });
+  }
+  if (anchorTile.x > 0) {
+    holdCandidates.push({
+      edge: "west",
+      distanceDegrees: Math.abs(track.longitude - anchorWest),
+      targetX: anchorTile.x - 1,
+      targetY: anchorTile.y,
+    });
+  }
+  if (anchorTile.y > 0) {
+    holdCandidates.push({
+      edge: "north",
+      distanceDegrees: Math.abs(anchorNorth - track.latitude),
+      targetX: anchorTile.x,
+      targetY: anchorTile.y - 1,
+    });
+  }
+  if (anchorTile.y + 1 < levelOneYTiles) {
+    holdCandidates.push({
+      edge: "south",
+      distanceDegrees: Math.abs(track.latitude - anchorSouth),
+      targetX: anchorTile.x,
+      targetY: anchorTile.y + 1,
+    });
+  }
+  holdCandidates.sort(
+    (left, right) =>
+      left.distanceDegrees - right.distanceDegrees ||
+      left.edge.localeCompare(right.edge),
+  );
+  const nearestEdge = holdCandidates[0];
+  if (!nearestEdge) throw new Error("S5 level-one hold target is unavailable");
+  const heldParentX = Math.floor(nearestEdge.targetX / 2);
+  const heldParentY = Math.floor(nearestEdge.targetY / 2);
+  const holdSiblingKeys = [];
+  for (let y = heldParentY * 2; y < heldParentY * 2 + 2; y++) {
+    for (let x = heldParentX * 2; x < heldParentX * 2 + 2; x++) {
+      if (x !== nearestEdge.targetX || y !== nearestEdge.targetY) {
+        holdSiblingKeys.push(`${heldLevel}/${x}/${y}`);
+      }
+    }
+  }
+  holdSiblingKeys.sort();
+  const holdTarget = {
+    level: heldLevel,
+    anchorKey: `${heldLevel}/${anchorTile.x}/${anchorTile.y}`,
+    key: `${heldLevel}/${nearestEdge.targetX}/${nearestEdge.targetY}`,
+    edge: nearestEdge.edge,
+    distanceDegrees: nearestEdge.distanceDegrees,
+    derivation: "nearest-level-1-anchor-edge-neighbor",
+  };
   const realRequestTileGeometry =
     quantizedProvider.requestTileGeometry.bind(quantizedProvider);
   const held = new Map();
-  const decodedClasses = new Set();
   const decodedFixtureBounds = new Map();
+  let decodedQuantizedMeshInstances = 0;
+  let decodedIdentityMismatches = 0;
+  let holdEnabled = true;
+  let holdTargetReserved = false;
   quantizedProvider.requestTileGeometry = (x, y, level, request) => {
     const key = `${level}/${x}/${y}`;
     terrainRequests.attempted++;
@@ -2503,17 +2597,23 @@ const MEASURE_S5_SESSION = async (contract) => {
       return requested;
     }
     terrainRequests.accepted++;
+    const reserveHold =
+      holdEnabled && key === holdTarget.key && !holdTargetReserved;
+    if (reserveHold) holdTargetReserved = true;
     return Promise.resolve(requested).then(
       (terrainData) => {
         terrainRequests.decoded++;
-        decodedClasses.add(terrainData?.constructor?.name ?? "unknown");
+        if (terrainData instanceof C.QuantizedMeshTerrainData) {
+          decodedQuantizedMeshInstances++;
+        } else {
+          decodedIdentityMismatches++;
+        }
         decodedFixtureBounds.set(key, {
           tileId: key,
           minimumHeight: terrainData?._minimumHeight ?? null,
           maximumHeight: terrainData?._maximumHeight ?? null,
         });
-        const shouldHold = x % 2 === 1;
-        if (!shouldHold) {
+        if (!reserveHold) {
           terrainRequests.fulfilled++;
           return terrainData;
         }
@@ -2540,45 +2640,120 @@ const MEASURE_S5_SESSION = async (contract) => {
   const providerBeforeSwap = getTileProvider();
   const contentRevisionBeforeSwap =
     providerBeforeSwap._sceneCaptureContentRevision;
+  const selectionRevisionBeforeSwap =
+    providerBeforeSwap._eclipseSelectionRevision;
+  const terrainRequestsBeforeFirstFrame = terrainRequests.attempted;
   scene.terrainProvider = quantizedProvider;
+  const publicAssignment = {
+    sceneProviderMatches: scene.terrainProvider === quantizedProvider,
+    tileProviderAwaitingFirstBeginFrame:
+      providerBeforeSwap.terrainProvider !== quantizedProvider,
+    terrainRequestsBeforeFirstFrame,
+  };
+  let beginFrameCallCount = 0;
+  let firstBeginFramePropagation;
+  const originalGlobeBeginFrame = globe.beginFrame;
+  globe.beginFrame = function (frameState) {
+    beginFrameCallCount++;
+    const result = originalGlobeBeginFrame.call(this, frameState);
+    if (beginFrameCallCount === 1) {
+      const propagatedProvider = getTileProvider();
+      const terrainRequestAttemptsAtObservation = terrainRequests.attempted;
+      const selectionRevisionUnchanged =
+        propagatedProvider?._eclipseSelectionRevision ===
+        selectionRevisionBeforeSwap;
+      firstBeginFramePropagation = {
+        observedAt:
+          "first-pinned-render-after-globe.beginFrame-before-selection-load",
+        beginFrameCallOrdinal: beginFrameCallCount,
+        frameNumber: frameState.frameNumber,
+        tileProviderIdentityPreserved:
+          propagatedProvider === providerBeforeSwap,
+        tileProviderMatchesAssigned:
+          propagatedProvider?.terrainProvider === quantizedProvider,
+        publicProviderMatchesAssigned:
+          scene.terrainProvider === quantizedProvider,
+        surfaceRadiusUndefined:
+          propagatedProvider?._eclipseSurfaceRadius === undefined,
+        knownMinimumHeight: propagatedProvider?._eclipseKnownMinimumHeight,
+        knownMaximumHeight: propagatedProvider?._eclipseKnownMaximumHeight,
+        knownBoundsValid: propagatedProvider?._eclipseKnownBoundsValid,
+        contentRevisionAdvanced:
+          propagatedProvider?._sceneCaptureContentRevision >
+          contentRevisionBeforeSwap,
+        contentRevisionBefore: contentRevisionBeforeSwap,
+        contentRevisionAtObservation:
+          propagatedProvider?._sceneCaptureContentRevision,
+        selectionRevisionUnchanged,
+        selectionRevisionBefore: selectionRevisionBeforeSwap,
+        selectionRevisionAtObservation:
+          propagatedProvider?._eclipseSelectionRevision,
+        terrainRequestAttemptsAtObservation,
+        observedBeforeSelectionAndLoad:
+          terrainRequestAttemptsAtObservation === 0 &&
+          selectionRevisionUnchanged,
+      };
+    }
+    return result;
+  };
+  let firstRenderFrameNumber;
+  try {
+    renderNow();
+    firstRenderFrameNumber = scene.frameState.frameNumber;
+  } finally {
+    globe.beginFrame = originalGlobeBeginFrame;
+  }
   const providerAfterSwap = getTileProvider();
+  firstBeginFramePropagation = {
+    ...firstBeginFramePropagation,
+    observedInFirstRender:
+      beginFrameCallCount === 1 &&
+      firstBeginFramePropagation?.frameNumber === firstRenderFrameNumber,
+  };
   phases[contract.phases[1]] = {
     fromProvider: "EllipsoidTerrainProvider",
     toProvider: "CesiumTerrainProvider-held",
-    synchronousReset: {
-      surfaceRadiusUndefined:
-        providerAfterSwap._eclipseSurfaceRadius === undefined,
-      knownMinimumHeight: providerAfterSwap._eclipseKnownMinimumHeight,
-      knownMaximumHeight: providerAfterSwap._eclipseKnownMaximumHeight,
-      knownBoundsValid: providerAfterSwap._eclipseKnownBoundsValid,
-      contentRevisionAdvanced:
-        providerAfterSwap._sceneCaptureContentRevision >
-        contentRevisionBeforeSwap,
-    },
+    publicAssignment,
+    firstBeginFramePropagation,
   };
   completePhase(contract.phases[1], {
-    contentRevisionAdvanced:
-      phases[contract.phases[1]].synchronousReset.contentRevisionAdvanced,
+    contentRevisionAdvanced: firstBeginFramePropagation.contentRevisionAdvanced,
   });
 
   markProgress(contract.phases[2], "settle-held-fill");
   const c = await settleTerrain(
     (state) =>
-      held.size > 0 &&
-      state.realMeshCount > 0 &&
-      state.fillCount > 0 &&
+      held.size === 1 &&
+      held.has(holdTarget.key) &&
+      state.fillTileIds.includes(holdTarget.key) &&
+      state.realTileIds.some((id) =>
+        holdSiblingKeys.includes(levelOneAncestorId(id)),
+      ) &&
       state.loadedAndFillFlags,
     300,
   );
   const heldKeys = [...held.keys()].sort();
+  const realSiblingTileIds = c.realTileIds.filter((id) =>
+    holdSiblingKeys.includes(levelOneAncestorId(id)),
+  );
   const fillImageId = captureDocumentaryPng(contract.captureLabels[0]);
   phases[contract.phases[2]] = {
     ...c,
+    holdTarget,
+    holdInterceptionEnabled: holdEnabled,
+    maximumScreenSpaceError: globe.maximumScreenSpaceError,
     heldRequestCount: held.size,
     heldKeys,
-    decodedFixtureClass: decodedClasses.has("QuantizedMeshTerrainData")
-      ? "QuantizedMeshTerrainData"
-      : ([...decodedClasses][0] ?? null),
+    heldTargetIntersectsSelectedFill:
+      c.selectedTileIds.includes(holdTarget.key) &&
+      c.fillTileIds.includes(holdTarget.key),
+    realSiblingTileIds,
+    decodedFixtureIdentity:
+      decodedQuantizedMeshInstances > 0 && decodedIdentityMismatches === 0
+        ? "QuantizedMeshTerrainData-instance"
+        : "identity-mismatch",
+    decodedFixtureIdentityVerified:
+      decodedQuantizedMeshInstances > 0 && decodedIdentityMismatches === 0,
     decodedFixtureBounds: [...decodedFixtureBounds.values()].sort(
       (left, right) => left.tileId.localeCompare(right.tileId),
     ),
@@ -2595,22 +2770,65 @@ const MEASURE_S5_SESSION = async (contract) => {
     heldKeys: [...held.keys()].sort(),
   });
   const releasedKeys = [...held.keys()].sort();
+  const heldRequestCountBeforeRelease = terrainRequests.held;
+  const releasedRequestCountBeforeRelease = terrainRequests.released;
+  holdEnabled = false;
   for (const entry of held.values()) entry.resolve(entry.terrainData);
   held.clear();
-  const d = await settleTerrain(
-    (state) =>
-      state.tilesLoaded &&
-      state.fillCount === 0 &&
-      state.decodedQuantizedMeshCount > 0,
-    300,
-  );
-  const transitionedKeys = phases[contract.phases[2]].fillTileIds.filter((id) =>
-    d.realTileIds.includes(id),
-  );
+  let transitionObservation;
+  let transitionFrame = 0;
+  let transitionLatest;
+  const transitionSettle = await settleThen(300, () => {
+    transitionFrame++;
+    transitionLatest = snapshotTerrain();
+    if (
+      !transitionObservation &&
+      transitionLatest.selectedTileIds.includes(holdTarget.key) &&
+      transitionLatest.realTileIds.includes(holdTarget.key) &&
+      !transitionLatest.fillTileIds.includes(holdTarget.key)
+    ) {
+      transitionObservation = {
+        tileId: holdTarget.key,
+        selected: true,
+        renderedReal: true,
+        renderedFill: false,
+        frame: transitionFrame,
+      };
+    }
+    progress.settle = {
+      frame: transitionFrame,
+      maxFrames: 300,
+      transitionObserved: Boolean(transitionObservation),
+      selectedCount: transitionLatest.selectedCount,
+      realMeshCount: transitionLatest.realMeshCount,
+      fillCount: transitionLatest.fillCount,
+      decodedQuantizedMeshCount: transitionLatest.decodedQuantizedMeshCount,
+      tilesLoaded: transitionLatest.tilesLoaded,
+    };
+    return (
+      Boolean(transitionObservation) &&
+      transitionLatest.tilesLoaded &&
+      transitionLatest.fillCount === 0 &&
+      transitionLatest.decodedQuantizedMeshCount > 0
+    );
+  });
+  const d = {
+    ...snapshotTerrain(),
+    settled: transitionSettle.settled,
+    transitionObservation,
+  };
+  const transitionedKeys = transitionObservation ? [holdTarget.key] : [];
   const realX1ImageId = captureDocumentaryPng(contract.captureLabels[1]);
   phases[contract.phases[3]] = {
     ...d,
+    holdInterceptionEnabled: holdEnabled,
+    heldRequestCountAfterRelease: held.size,
     releasedKeys,
+    releasedTargetKey: releasedKeys[0] ?? null,
+    releasedRequestCount:
+      terrainRequests.released - releasedRequestCountBeforeRelease,
+    newHeldRequestCountAfterRelease:
+      terrainRequests.held - heldRequestCountBeforeRelease,
     transitionedKeys,
     imageId: realX1ImageId,
   };
@@ -2682,16 +2900,28 @@ const MEASURE_S5_SESSION = async (contract) => {
   globe.pickable = true;
   let updateForPickCalls = 0;
   let pickPostcondition;
+  let pickExpected;
   const originalUpdateForPick = providerAfterSwap.updateForPick;
   providerAfterSwap.updateForPick = function (frameState) {
     updateForPickCalls++;
+    const callOrdinal = updateForPickCalls;
+    const expectedSelectionRevision = this._eclipseSelectionRevision;
+    const expectedSurfaceRadius = this._eclipseSurfaceRadius;
     const result = originalUpdateForPick.call(this, frameState);
     pickPostcondition = {
+      sampledAt: "same-updateForPick-call",
+      callOrdinal,
       prepared: frameState.eclipseGlobeShadowPrepared === true,
       selectionRevision: frameState.eclipseGlobeShadowSelectionRevision,
       surfaceRadius: frameState.eclipseGlobeShadowSurfaceRadius,
       ownerMatches:
         frameState.eclipseGlobeShadow === frameState.view?._eclipseGlobeShadow,
+    };
+    pickExpected = {
+      sampledAt: "same-updateForPick-call",
+      callOrdinal,
+      selectionRevision: expectedSelectionRevision,
+      surfaceRadius: expectedSurfaceRadius,
     };
     return result;
   };
@@ -2723,10 +2953,7 @@ const MEASURE_S5_SESSION = async (contract) => {
     pickResultKind: picked?.primitive === globe ? "globe" : typeof picked,
     updateForPickCalls,
     postcondition: pickPostcondition,
-    expected: {
-      selectionRevision: providerAfterSwap._eclipseSelectionRevision,
-      surfaceRadius: providerAfterSwap._eclipseSurfaceRadius,
-    },
+    expected: pickExpected,
   };
   completePhase(contract.phases[5], {
     updateForPickCalls,
@@ -2879,26 +3106,102 @@ const MEASURE_S5_SESSION = async (contract) => {
   const providerBeforeFinalSwap = getTileProvider();
   const contentRevisionBeforeFinalSwap =
     providerBeforeFinalSwap._sceneCaptureContentRevision;
+  const selectionRevisionBeforeFinalSwap =
+    providerBeforeFinalSwap._eclipseSelectionRevision;
   const freshEllipsoid = new C.EllipsoidTerrainProvider();
-  scene.terrainProvider = freshEllipsoid;
-  const finalProvider = getTileProvider();
-  const synchronousFinalReset = {
-    surfaceRadiusUndefined: finalProvider._eclipseSurfaceRadius === undefined,
-    knownMinimumHeight: finalProvider._eclipseKnownMinimumHeight,
-    knownMaximumHeight: finalProvider._eclipseKnownMaximumHeight,
+  let freshTerrainRequestAttempts = 0;
+  const originalFreshRequestTileGeometry = freshEllipsoid.requestTileGeometry;
+  freshEllipsoid.requestTileGeometry = function (...args) {
+    freshTerrainRequestAttempts++;
+    return originalFreshRequestTileGeometry.apply(this, args);
   };
-  renderNow();
+  scene.terrainProvider = freshEllipsoid;
+  const finalPublicAssignment = {
+    sceneProviderMatches: scene.terrainProvider === freshEllipsoid,
+    tileProviderAwaitingFirstBeginFrame:
+      providerBeforeFinalSwap.terrainProvider !== freshEllipsoid,
+    terrainRequestsBeforeFirstFrame: freshTerrainRequestAttempts,
+  };
+  let finalBeginFrameCallCount = 0;
+  let finalFirstBeginFramePropagation;
+  const originalFinalGlobeBeginFrame = globe.beginFrame;
+  globe.beginFrame = function (frameState) {
+    finalBeginFrameCallCount++;
+    const result = originalFinalGlobeBeginFrame.call(this, frameState);
+    if (finalBeginFrameCallCount === 1) {
+      const propagatedProvider = getTileProvider();
+      const terrainRequestAttemptsAtObservation = freshTerrainRequestAttempts;
+      const selectionRevisionUnchanged =
+        propagatedProvider?._eclipseSelectionRevision ===
+        selectionRevisionBeforeFinalSwap;
+      finalFirstBeginFramePropagation = {
+        observedAt:
+          "first-pinned-render-after-globe.beginFrame-before-selection-load",
+        beginFrameCallOrdinal: finalBeginFrameCallCount,
+        frameNumber: frameState.frameNumber,
+        tileProviderIdentityPreserved:
+          propagatedProvider === providerBeforeFinalSwap,
+        tileProviderMatchesAssigned:
+          propagatedProvider?.terrainProvider === freshEllipsoid,
+        publicProviderMatchesAssigned: scene.terrainProvider === freshEllipsoid,
+        surfaceRadiusUndefined:
+          propagatedProvider?._eclipseSurfaceRadius === undefined,
+        knownMinimumHeight: propagatedProvider?._eclipseKnownMinimumHeight,
+        knownMaximumHeight: propagatedProvider?._eclipseKnownMaximumHeight,
+        knownBoundsValid: propagatedProvider?._eclipseKnownBoundsValid,
+        contentRevisionAdvanced:
+          propagatedProvider?._sceneCaptureContentRevision >
+          contentRevisionBeforeFinalSwap,
+        contentRevisionBefore: contentRevisionBeforeFinalSwap,
+        contentRevisionAtObservation:
+          propagatedProvider?._sceneCaptureContentRevision,
+        selectionRevisionUnchanged,
+        selectionRevisionBefore: selectionRevisionBeforeFinalSwap,
+        selectionRevisionAtObservation:
+          propagatedProvider?._eclipseSelectionRevision,
+        terrainRequestAttemptsAtObservation,
+        observedBeforeSelectionAndLoad:
+          terrainRequestAttemptsAtObservation === 0 &&
+          selectionRevisionUnchanged,
+      };
+    }
+    return result;
+  };
+  let finalFirstRenderFrameNumber;
+  try {
+    renderNow();
+    finalFirstRenderFrameNumber = scene.frameState.frameNumber;
+  } finally {
+    globe.beginFrame = originalFinalGlobeBeginFrame;
+    freshEllipsoid.requestTileGeometry = originalFreshRequestTileGeometry;
+  }
+  const finalProvider = getTileProvider();
+  finalFirstBeginFramePropagation = {
+    ...finalFirstBeginFramePropagation,
+    observedInFirstRender:
+      finalBeginFrameCallCount === 1 &&
+      finalFirstBeginFramePropagation?.frameNumber ===
+        finalFirstRenderFrameNumber,
+  };
   const nextEpoch = snapshotTerrain();
   phases[contract.phases[7]] = {
     fromProvider: "CesiumTerrainProvider-held",
     toProvider: "EllipsoidTerrainProvider-fresh",
-    synchronousReset: synchronousFinalReset,
+    publicAssignment: finalPublicAssignment,
+    firstBeginFramePropagation: finalFirstBeginFramePropagation,
     nextEpoch: {
       contentRevisionAdvanced:
         finalProvider._sceneCaptureContentRevision >
         contentRevisionBeforeFinalSwap,
+      contentRevision: finalProvider._sceneCaptureContentRevision,
       providerIsFreshEllipsoid: scene.terrainProvider === freshEllipsoid,
+      tileProviderMatchesFreshEllipsoid:
+        finalProvider.terrainProvider === freshEllipsoid,
       selectionRevision: nextEpoch.providerSelectionRevision,
+      selectionRevisionAdvanced:
+        nextEpoch.providerSelectionRevision > selectionRevisionBeforeFinalSwap,
+      selectedCount: nextEpoch.selectedCount,
+      terrainRequestAttempts: freshTerrainRequestAttempts,
     },
   };
   completePhase(contract.phases[7], {
@@ -2945,6 +3248,7 @@ function makePageContract(renderer) {
     pinnedIso: C12_29_S5_SCENE.pinnedIso,
     cameraHeightMeters: C12_29_S5_SCENE.cameraHeightMeters,
     cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
+    fillMaximumScreenSpaceError: C12_29_S5_SCENE.fillMaximumScreenSpaceError,
     verticalExaggeration: C12_29_S5_SCENE.verticalExaggeration,
     relativeHeight: C12_29_S5_SCENE.verticalExaggerationRelativeHeight,
     radiusLaw: { ...C12_29_S5_RADIUS_LAW },

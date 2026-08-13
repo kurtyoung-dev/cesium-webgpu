@@ -7,7 +7,7 @@
  * deliberately browser-free so every premise can be mutation-tested in Node.
  */
 
-export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v1";
+export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v2";
 
 export const C12_29_S5_DIAGNOSTICS_SCHEMA = "c12-29-s5-runtime-diagnostics-v1";
 
@@ -64,6 +64,7 @@ export const C12_29_S5_SCENE = Object.freeze({
   pinnedIso: "2024-04-08T18:17:16Z",
   cameraHeightMeters: 8_000_000,
   cameraFovDegrees: 55,
+  fillMaximumScreenSpaceError: 0.5,
   viewport: Object.freeze({ width: 960, height: 960 }),
   verticalExaggeration: 2,
   // This is deliberately above the pinned fixture maximum. At x2 the
@@ -261,6 +262,106 @@ export function exitCodeForS5Status(status) {
 }
 
 /**
+ * Choose one level-one tile immediately across the nearest edge of the tile
+ * containing the live ephemeris track. The pinned QuantizedMesh fixture uses
+ * the standard GeographicTilingScheme (four-by-two tiles at level one).
+ * Holding the adjacent tile, instead of the track-centre tile or a broad key
+ * pattern, leaves its anchor and other neighbours available to construct a
+ * nonvacuous TerrainFillMesh along the visible footprint edge.
+ */
+export function deriveS5HeldLevelOneTarget(longitude, latitude) {
+  if (
+    !Number.isFinite(longitude) ||
+    !Number.isFinite(latitude) ||
+    longitude < -180 ||
+    longitude > 180 ||
+    latitude < -90 ||
+    latitude > 90
+  ) {
+    return undefined;
+  }
+
+  const level = 1;
+  const xTiles = 4;
+  const yTiles = 2;
+  const tileWidth = 360 / xTiles;
+  const tileHeight = 180 / yTiles;
+  const anchorX = Math.min(
+    xTiles - 1,
+    Math.floor((longitude + 180) / tileWidth),
+  );
+  const anchorY = Math.min(
+    yTiles - 1,
+    Math.floor((90 - latitude) / tileHeight),
+  );
+  const west = -180 + anchorX * tileWidth;
+  const east = west + tileWidth;
+  const north = 90 - anchorY * tileHeight;
+  const south = north - tileHeight;
+  const candidates = [];
+  if (anchorX + 1 < xTiles) {
+    candidates.push({
+      edge: "east",
+      distanceDegrees: Math.abs(east - longitude),
+      targetX: anchorX + 1,
+      targetY: anchorY,
+    });
+  }
+  if (anchorX > 0) {
+    candidates.push({
+      edge: "west",
+      distanceDegrees: Math.abs(longitude - west),
+      targetX: anchorX - 1,
+      targetY: anchorY,
+    });
+  }
+  if (anchorY > 0) {
+    candidates.push({
+      edge: "north",
+      distanceDegrees: Math.abs(north - latitude),
+      targetX: anchorX,
+      targetY: anchorY - 1,
+    });
+  }
+  if (anchorY + 1 < yTiles) {
+    candidates.push({
+      edge: "south",
+      distanceDegrees: Math.abs(latitude - south),
+      targetX: anchorX,
+      targetY: anchorY + 1,
+    });
+  }
+  candidates.sort(
+    (left, right) =>
+      left.distanceDegrees - right.distanceDegrees ||
+      left.edge.localeCompare(right.edge),
+  );
+  const nearest = candidates[0];
+  if (!nearest) return undefined;
+  const parentX = Math.floor(nearest.targetX / 2);
+  const parentY = Math.floor(nearest.targetY / 2);
+  const siblingKeys = [];
+  for (let y = parentY * 2; y < parentY * 2 + 2; y++) {
+    for (let x = parentX * 2; x < parentX * 2 + 2; x++) {
+      const key = `${level}/${x}/${y}`;
+      if (x !== nearest.targetX || y !== nearest.targetY) {
+        siblingKeys.push(key);
+      }
+    }
+  }
+  siblingKeys.sort();
+  return {
+    level,
+    anchorKey: `${level}/${anchorX}/${anchorY}`,
+    key: `${level}/${nearest.targetX}/${nearest.targetY}`,
+    edge: nearest.edge,
+    distanceDegrees: nearest.distanceDegrees,
+    derivation: "nearest-level-1-anchor-edge-neighbor",
+    siblingKeys,
+  };
+}
+
+/**
  * Exact production law in GlobeSurfaceTileProvider. The fill-skirt allowance
  * is applied before exaggeration and relative height participates in both
  * endpoints. Using max(0, emax), omitting abs(emin), or adding the skirt after
@@ -386,6 +487,17 @@ function sameArrayMembers(left, right) {
     left.length === right.length &&
     [...left].sort().every((value, index) => value === [...right].sort()[index])
   );
+}
+
+function levelOneAncestorKey(tileId) {
+  const match = /^(\d+)\/(\d+)\/(\d+)$/u.exec(tileId ?? "");
+  if (!match) return undefined;
+  const level = Number(match[1]);
+  const x = Number(match[2]);
+  const y = Number(match[3]);
+  if (![level, x, y].every(Number.isInteger) || level < 1) return undefined;
+  const divisor = 2 ** (level - 1);
+  return `1/${Math.floor(x / divisor)}/${Math.floor(y / divisor)}`;
 }
 
 function exactFingerprint(actual, expected) {
@@ -617,37 +729,96 @@ function validateSession(session, runId, structural, failures) {
   }
 
   const b = phases["B-held-provider-swap"];
+  const bPublicAssignment = b?.publicAssignment;
+  const bPropagation = b?.firstBeginFramePropagation;
   if (
     b?.fromProvider !== "EllipsoidTerrainProvider" ||
     b?.toProvider !== "CesiumTerrainProvider-held" ||
-    b?.synchronousReset?.surfaceRadiusUndefined !== true ||
-    b?.synchronousReset?.knownMinimumHeight !== 0 ||
-    b?.synchronousReset?.knownMaximumHeight !== 0 ||
-    b?.synchronousReset?.knownBoundsValid !== true ||
-    b?.synchronousReset?.contentRevisionAdvanced !== true
+    bPublicAssignment?.sceneProviderMatches !== true ||
+    bPublicAssignment?.tileProviderAwaitingFirstBeginFrame !== true ||
+    bPublicAssignment?.terrainRequestsBeforeFirstFrame !== 0 ||
+    bPropagation?.observedAt !==
+      "first-pinned-render-after-globe.beginFrame-before-selection-load" ||
+    bPropagation?.beginFrameCallOrdinal !== 1 ||
+    bPropagation?.tileProviderIdentityPreserved !== true ||
+    bPropagation?.tileProviderMatchesAssigned !== true ||
+    bPropagation?.publicProviderMatchesAssigned !== true ||
+    bPropagation?.terrainRequestAttemptsAtObservation !== 0 ||
+    bPropagation?.observedBeforeSelectionAndLoad !== true ||
+    bPropagation?.observedInFirstRender !== true ||
+    bPropagation?.selectionRevisionUnchanged !== true ||
+    !Number.isInteger(bPropagation?.selectionRevisionBefore) ||
+    bPropagation?.selectionRevisionAtObservation !==
+      bPropagation?.selectionRevisionBefore ||
+    !Number.isInteger(bPropagation?.contentRevisionBefore) ||
+    !Number.isInteger(bPropagation?.contentRevisionAtObservation)
+  ) {
+    structural.push(
+      `${renderer}: provider swap first-beginFrame observation is incomplete`,
+    );
+  }
+  if (
+    bPropagation?.surfaceRadiusUndefined !== true ||
+    bPropagation?.knownMinimumHeight !== 0 ||
+    bPropagation?.knownMaximumHeight !== 0 ||
+    bPropagation?.knownBoundsValid !== true ||
+    bPropagation?.contentRevisionAdvanced !== true ||
+    !(
+      bPropagation?.contentRevisionAtObservation >
+      bPropagation?.contentRevisionBefore
+    )
   ) {
     failures.push(
-      `${renderer}: provider swap did not synchronously reset S5 bounds`,
+      `${renderer}: first beginFrame propagation did not reset S5 bounds before terrain load/selection publication`,
     );
   }
 
   const c = phases["C-fill-held"];
+  const expectedHeldTarget = deriveS5HeldLevelOneTarget(
+    session?.fixture?.deepestTrack?.longitude,
+    session?.fixture?.deepestTrack?.latitude,
+  );
   if (
-    !(c?.heldRequestCount > 0) ||
+    !expectedHeldTarget ||
+    c?.holdTarget?.level !== 1 ||
+    c?.holdTarget?.key !== expectedHeldTarget?.key ||
+    c?.holdTarget?.anchorKey !== expectedHeldTarget?.anchorKey ||
+    c?.holdTarget?.edge !== expectedHeldTarget?.edge ||
+    c?.holdTarget?.derivation !== expectedHeldTarget?.derivation ||
+    !Object.is(
+      c?.holdTarget?.distanceDegrees,
+      expectedHeldTarget?.distanceDegrees,
+    ) ||
+    c?.holdInterceptionEnabled !== true ||
+    c?.maximumScreenSpaceError !==
+      C12_29_S5_SCENE.fillMaximumScreenSpaceError ||
+    c?.heldRequestCount !== 1 ||
+    c?.heldKeys?.length !== 1 ||
+    c?.heldKeys?.[0] !== expectedHeldTarget?.key ||
     !(c?.fillCount > 0) ||
     c?.loadedAndFillFlags !== true ||
     !Array.isArray(c?.fillTileIds) ||
     c.fillTileIds.length === 0 ||
-    !c.fillTileIds.some((id) => c?.heldKeys?.includes(id))
+    !c.fillTileIds.includes(expectedHeldTarget.key) ||
+    !c?.selectedTileIds?.includes(expectedHeldTarget.key) ||
+    c?.heldTargetIntersectsSelectedFill !== true ||
+    !Array.isArray(c?.realSiblingTileIds) ||
+    c.realSiblingTileIds.length === 0 ||
+    !c.realSiblingTileIds.every(
+      (id) =>
+        expectedHeldTarget.siblingKeys.includes(levelOneAncestorKey(id)) &&
+        c?.realTileIds?.includes(id),
+    )
   ) {
     structural.push(
-      `${renderer}: held request did not produce a real TerrainFillMesh`,
+      `${renderer}: exactly one derived level-one hold did not intersect a selected TerrainFillMesh`,
     );
   }
   if (
     !(c?.decodedQuantizedMeshCount > 0) ||
     !(c?.realMeshCount > 0) ||
-    c?.decodedFixtureClass !== "QuantizedMeshTerrainData"
+    c?.decodedFixtureIdentity !== "QuantizedMeshTerrainData-instance" ||
+    c?.decodedFixtureIdentityVerified !== true
   ) {
     structural.push(`${renderer}: decoded QuantizedMesh nonvacuity is absent`);
   }
@@ -672,12 +843,31 @@ function validateSession(session, runId, structural, failures) {
 
   const d = phases["D-real-x1"];
   if (
+    d?.holdInterceptionEnabled !== false ||
+    d?.heldRequestCountAfterRelease !== 0 ||
+    d?.releasedKeys?.length !== 1 ||
+    d?.releasedKeys?.[0] !== expectedHeldTarget?.key ||
+    d?.releasedTargetKey !== expectedHeldTarget?.key ||
+    d?.releasedRequestCount !== 1 ||
+    d?.newHeldRequestCountAfterRelease !== 0
+  ) {
+    structural.push(
+      `${renderer}: hold interception was not disabled before the one release`,
+    );
+  }
+  if (
     d?.tilesLoaded !== true ||
     d?.fillCount !== 0 ||
     !(d?.decodedQuantizedMeshCount > 0) ||
     !Array.isArray(d?.transitionedKeys) ||
-    d.transitionedKeys.length === 0 ||
-    !d.transitionedKeys.every((id) => c.heldKeys.includes(id))
+    d.transitionedKeys.length !== 1 ||
+    d.transitionedKeys[0] !== expectedHeldTarget?.key ||
+    d?.transitionObservation?.tileId !== expectedHeldTarget?.key ||
+    d?.transitionObservation?.selected !== true ||
+    d?.transitionObservation?.renderedReal !== true ||
+    d?.transitionObservation?.renderedFill !== false ||
+    !Number.isInteger(d?.transitionObservation?.frame) ||
+    d.transitionObservation.frame < 1
   ) {
     failures.push(
       `${renderer}: held fill did not transition to real x1 terrain`,
@@ -769,6 +959,10 @@ function validateSession(session, runId, structural, failures) {
   if (
     !(f?.updateForPickCalls > 0) ||
     f?.postcondition?.prepared !== true ||
+    f?.postcondition?.sampledAt !== "same-updateForPick-call" ||
+    f?.expected?.sampledAt !== "same-updateForPick-call" ||
+    f?.postcondition?.callOrdinal !== f?.expected?.callOrdinal ||
+    f?.expected?.callOrdinal !== f?.updateForPickCalls ||
     f?.postcondition?.selectionRevision !== f?.expected?.selectionRevision ||
     !Object.is(f?.postcondition?.surfaceRadius, f?.expected?.surfaceRadius) ||
     f?.postcondition?.ownerMatches !== true
@@ -831,16 +1025,60 @@ function validateSession(session, runId, structural, failures) {
     }
   }
   const h = phases["H-ellipsoid-reset"];
+  const hPublicAssignment = h?.publicAssignment;
+  const hPropagation = h?.firstBeginFramePropagation;
   if (
     h?.fromProvider !== "CesiumTerrainProvider-held" ||
     h?.toProvider !== "EllipsoidTerrainProvider-fresh" ||
-    h?.synchronousReset?.surfaceRadiusUndefined !== true ||
-    h?.synchronousReset?.knownMinimumHeight !== 0 ||
-    h?.synchronousReset?.knownMaximumHeight !== 0 ||
-    h?.nextEpoch?.contentRevisionAdvanced !== true ||
-    h?.nextEpoch?.providerIsFreshEllipsoid !== true
+    hPublicAssignment?.sceneProviderMatches !== true ||
+    hPublicAssignment?.tileProviderAwaitingFirstBeginFrame !== true ||
+    hPublicAssignment?.terrainRequestsBeforeFirstFrame !== 0 ||
+    hPropagation?.observedAt !==
+      "first-pinned-render-after-globe.beginFrame-before-selection-load" ||
+    hPropagation?.beginFrameCallOrdinal !== 1 ||
+    hPropagation?.tileProviderIdentityPreserved !== true ||
+    hPropagation?.tileProviderMatchesAssigned !== true ||
+    hPropagation?.publicProviderMatchesAssigned !== true ||
+    hPropagation?.terrainRequestAttemptsAtObservation !== 0 ||
+    hPropagation?.observedBeforeSelectionAndLoad !== true ||
+    hPropagation?.observedInFirstRender !== true ||
+    hPropagation?.selectionRevisionUnchanged !== true ||
+    !Number.isInteger(hPropagation?.selectionRevisionBefore) ||
+    hPropagation?.selectionRevisionAtObservation !==
+      hPropagation?.selectionRevisionBefore ||
+    !Number.isInteger(hPropagation?.contentRevisionBefore) ||
+    !Number.isInteger(hPropagation?.contentRevisionAtObservation)
   ) {
-    failures.push(`${renderer}: final provider reset/next epoch is inexact`);
+    structural.push(
+      `${renderer}: final provider first-beginFrame observation is incomplete`,
+    );
+  }
+  if (
+    hPropagation?.surfaceRadiusUndefined !== true ||
+    hPropagation?.knownMinimumHeight !== 0 ||
+    hPropagation?.knownMaximumHeight !== 0 ||
+    hPropagation?.knownBoundsValid !== true ||
+    hPropagation?.contentRevisionAdvanced !== true ||
+    !(
+      hPropagation?.contentRevisionAtObservation >
+      hPropagation?.contentRevisionBefore
+    ) ||
+    h?.nextEpoch?.contentRevisionAdvanced !== true ||
+    h?.nextEpoch?.providerIsFreshEllipsoid !== true ||
+    h?.nextEpoch?.tileProviderMatchesFreshEllipsoid !== true ||
+    h?.nextEpoch?.selectionRevisionAdvanced !== true ||
+    !Number.isInteger(h?.nextEpoch?.selectionRevision) ||
+    !(
+      h?.nextEpoch?.selectionRevision >
+      hPropagation?.selectionRevisionAtObservation
+    ) ||
+    !Number.isInteger(h?.nextEpoch?.contentRevision) ||
+    h.nextEpoch.contentRevision < hPropagation?.contentRevisionAtObservation ||
+    !(h?.nextEpoch?.selectedCount > 0)
+  ) {
+    failures.push(
+      `${renderer}: final provider first-beginFrame reset/next epoch is inexact`,
+    );
   }
 
   validateImages(session, runId, structural, failures);

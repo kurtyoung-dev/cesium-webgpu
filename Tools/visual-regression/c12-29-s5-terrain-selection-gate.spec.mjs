@@ -21,6 +21,7 @@ import {
   C12_29_S5_WEBGPU_ECLIPSE_BINDING,
   C12_29_S5_WEBGPU_LAYOUT_FILE,
   computeExpectedTerrainSurfaceRadius,
+  deriveS5HeldLevelOneTarget,
   exitCodeForS5Status,
   foldC1229S5Gate,
   isUuidV4,
@@ -73,6 +74,15 @@ const radiusInput = Object.freeze({
     C12_29_S5_SCENE.verticalExaggerationRelativeHeight,
 });
 const radius = computeExpectedTerrainSurfaceRadius(radiusInput);
+const SYNTHETIC_TRACK = Object.freeze({
+  longitude: -100,
+  latitude: 25,
+  magnitude: 1.01,
+});
+const heldTarget = deriveS5HeldLevelOneTarget(
+  SYNTHETIC_TRACK.longitude,
+  SYNTHETIC_TRACK.latitude,
+);
 
 function syntheticProgress(renderer = "webgl") {
   return {
@@ -129,31 +139,58 @@ function syntheticSession(renderer) {
       stable: true,
       tilesLoaded: true,
       selectedCount: 2,
-      selectedTileIds,
+      selectedTileIds: [...selectedTileIds],
     },
     [C12_29_S5_PHASES[1]]: {
       fromProvider: "EllipsoidTerrainProvider",
       toProvider: "CesiumTerrainProvider-held",
-      synchronousReset: {
+      publicAssignment: {
+        sceneProviderMatches: true,
+        tileProviderAwaitingFirstBeginFrame: true,
+        terrainRequestsBeforeFirstFrame: 0,
+      },
+      firstBeginFramePropagation: {
+        observedAt:
+          "first-pinned-render-after-globe.beginFrame-before-selection-load",
+        beginFrameCallOrdinal: 1,
+        tileProviderIdentityPreserved: true,
+        tileProviderMatchesAssigned: true,
+        publicProviderMatchesAssigned: true,
+        terrainRequestAttemptsAtObservation: 0,
+        observedBeforeSelectionAndLoad: true,
+        observedInFirstRender: true,
+        selectionRevisionUnchanged: true,
         surfaceRadiusUndefined: true,
         knownMinimumHeight: 0,
         knownMaximumHeight: 0,
         knownBoundsValid: true,
         contentRevisionAdvanced: true,
+        contentRevisionBefore: 3,
+        contentRevisionAtObservation: 4,
+        selectionRevisionBefore: 16,
+        selectionRevisionAtObservation: 16,
       },
     },
     [C12_29_S5_PHASES[2]]: {
+      selectedTileIds: [...selectedTileIds],
+      realTileIds: [heldTarget.anchorKey],
+      holdTarget: heldTarget,
+      holdInterceptionEnabled: true,
+      maximumScreenSpaceError: C12_29_S5_SCENE.fillMaximumScreenSpaceError,
       heldRequestCount: 1,
-      heldKeys: ["1/1/0"],
+      heldKeys: [heldTarget.key],
       fillCount: 1,
-      fillTileIds: ["1/1/0"],
+      fillTileIds: [heldTarget.key],
       loadedAndFillFlags: true,
+      heldTargetIntersectsSelectedFill: true,
+      realSiblingTileIds: [heldTarget.anchorKey],
       decodedQuantizedMeshCount: 1,
       realMeshCount: 1,
-      decodedFixtureClass: "QuantizedMeshTerrainData",
+      decodedFixtureIdentity: "QuantizedMeshTerrainData-instance",
+      decodedFixtureIdentityVerified: true,
       decodedFixtureBounds: [
         {
-          tileId: "1/1/0",
+          tileId: heldTarget.key,
           minimumHeight:
             C12_29_S5_FIXTURE.tile.quantizedMeshHeader.minimumHeight,
           maximumHeight:
@@ -165,7 +202,21 @@ function syntheticSession(renderer) {
       tilesLoaded: true,
       fillCount: 0,
       decodedQuantizedMeshCount: 2,
-      transitionedKeys: ["1/1/0"],
+      realTileIds: [heldTarget.key],
+      holdInterceptionEnabled: false,
+      heldRequestCountAfterRelease: 0,
+      releasedKeys: [heldTarget.key],
+      releasedTargetKey: heldTarget.key,
+      releasedRequestCount: 1,
+      newHeldRequestCountAfterRelease: 0,
+      transitionedKeys: [heldTarget.key],
+      transitionObservation: {
+        tileId: heldTarget.key,
+        selected: true,
+        renderedReal: true,
+        renderedFill: false,
+        frame: 1,
+      },
     },
     [C12_29_S5_PHASES[4]]: {
       ...radiusInput,
@@ -176,8 +227,8 @@ function syntheticSession(renderer) {
       preparedSelectionRevision: 17,
       providerSelectionRevision: 17,
       preparedSurfaceRadius: radius.radius,
-      preparedSelectedTileIds: selectedTileIds,
-      selectedTileIds,
+      preparedSelectedTileIds: [...selectedTileIds],
+      selectedTileIds: [...selectedTileIds],
     },
     [C12_29_S5_PHASES[5]]: {
       method: "scene.pickAsync",
@@ -188,12 +239,19 @@ function syntheticSession(renderer) {
       renderPumpFrames: renderer === "webgl" ? 1 : 0,
       updateForPickCalls: 1,
       postcondition: {
+        sampledAt: "same-updateForPick-call",
+        callOrdinal: 1,
         prepared: true,
         selectionRevision: 17,
         surfaceRadius: radius.radius,
         ownerMatches: true,
       },
-      expected: { selectionRevision: 17, surfaceRadius: radius.radius },
+      expected: {
+        sampledAt: "same-updateForPick-call",
+        callOrdinal: 1,
+        selectionRevision: 17,
+        surfaceRadius: radius.radius,
+      },
     },
     [C12_29_S5_PHASES[6]]:
       renderer === "webgl"
@@ -207,8 +265,8 @@ function syntheticSession(renderer) {
             directRunSceneCapture: false,
             transientAliasesOnlyCleared: true,
             managerResetRequested: true,
-            selectedTileIds,
-            calledTileIds: selectedTileIds,
+            selectedTileIds: [...selectedTileIds],
+            calledTileIds: [...selectedTileIds],
             captureTileCalls: 12,
             expectedCaptureTileCalls: 12,
             positiveDrawCalls: 12,
@@ -226,14 +284,40 @@ function syntheticSession(renderer) {
     [C12_29_S5_PHASES[7]]: {
       fromProvider: "CesiumTerrainProvider-held",
       toProvider: "EllipsoidTerrainProvider-fresh",
-      synchronousReset: {
+      publicAssignment: {
+        sceneProviderMatches: true,
+        tileProviderAwaitingFirstBeginFrame: true,
+        terrainRequestsBeforeFirstFrame: 0,
+      },
+      firstBeginFramePropagation: {
+        observedAt:
+          "first-pinned-render-after-globe.beginFrame-before-selection-load",
+        beginFrameCallOrdinal: 1,
+        tileProviderIdentityPreserved: true,
+        tileProviderMatchesAssigned: true,
+        publicProviderMatchesAssigned: true,
+        terrainRequestAttemptsAtObservation: 0,
+        observedBeforeSelectionAndLoad: true,
+        observedInFirstRender: true,
+        selectionRevisionUnchanged: true,
         surfaceRadiusUndefined: true,
         knownMinimumHeight: 0,
         knownMaximumHeight: 0,
+        knownBoundsValid: true,
+        contentRevisionAdvanced: true,
+        contentRevisionBefore: 8,
+        contentRevisionAtObservation: 9,
+        selectionRevisionBefore: 30,
+        selectionRevisionAtObservation: 30,
       },
       nextEpoch: {
         contentRevisionAdvanced: true,
+        contentRevision: 10,
         providerIsFreshEllipsoid: true,
+        tileProviderMatchesFreshEllipsoid: true,
+        selectionRevisionAdvanced: true,
+        selectionRevision: 31,
+        selectedCount: 1,
       },
     },
   };
@@ -248,7 +332,7 @@ function syntheticSession(renderer) {
       cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
       viewport: { ...C12_29_S5_SCENE.viewport },
       trackDerivation: "live-f64-ephemeris-global-grid-plus-two-refinements",
-      deepestTrack: { longitude: -100, latitude: 25, magnitude: 1.01 },
+      deepestTrack: SYNTHETIC_TRACK,
     },
     phases,
     images: syntheticImages(renderer),
@@ -343,6 +427,7 @@ test("01 full valid fixture closes the pure S5 gate", () => {
   const verdict = foldC1229S5Gate(greenReport());
   assert.equal(verdict.status, "PASS");
   assert.equal(verdict.exitCode, 0);
+  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v2");
   assert.equal(verdict.checks.sourceBoundaryCount, 35);
   assert.equal(verdict.checks.buildSourceBoundaryCount, 33);
 });
@@ -497,23 +582,89 @@ test("06 source, build, generated, served, and stability mutants are STRUCTURAL"
   }
 });
 
-test("07 provider-swap synchronous reset proof is required", () => {
+test("07 first-beginFrame provider-reset boundary is exact and pre-selection", () => {
+  assert.deepEqual(heldTarget, {
+    level: 1,
+    anchorKey: "1/0/0",
+    key: "1/1/0",
+    edge: "east",
+    distanceDegrees: 10,
+    derivation: "nearest-level-1-anchor-edge-neighbor",
+    siblingKeys: ["1/0/0", "1/0/1", "1/1/1"],
+  });
+  for (const mutateBoundary of [
+    (phase) => delete phase.firstBeginFramePropagation,
+    (phase) =>
+      (phase.firstBeginFramePropagation.terrainRequestAttemptsAtObservation = 1),
+    (phase) =>
+      (phase.firstBeginFramePropagation.selectionRevisionUnchanged = false),
+  ]) {
+    expectStatus(
+      (report) =>
+        mutateBoundary(report.sessions[0].phases[C12_29_S5_PHASES[1]]),
+      "STRUCTURAL",
+      /first-beginFrame observation/u,
+    );
+  }
+  for (const mutateReset of [
+    (phase) =>
+      (phase.firstBeginFramePropagation.surfaceRadiusUndefined = false),
+    (phase) => (phase.firstBeginFramePropagation.knownMinimumHeight = -1),
+    (phase) =>
+      (phase.firstBeginFramePropagation.contentRevisionAdvanced = false),
+  ]) {
+    expectStatus(
+      (report) => mutateReset(report.sessions[0].phases[C12_29_S5_PHASES[1]]),
+      "FAIL",
+      /first beginFrame propagation/u,
+    );
+  }
   expectStatus(
     (report) => {
       report.sessions[0].phases[
-        C12_29_S5_PHASES[1]
-      ].synchronousReset.surfaceRadiusUndefined = false;
+        C12_29_S5_PHASES[7]
+      ].firstBeginFramePropagation.terrainRequestAttemptsAtObservation = 1;
     },
-    "FAIL",
-    /provider swap/u,
+    "STRUCTURAL",
+    /final provider first-beginFrame observation/u,
   );
 });
 
-test("08 held request must produce a nonvacuous actual fill", () => {
+test("08 one selected L1 hold, real sibling, and disabled release are exact", () => {
+  for (const mutateFill of [
+    (phase) => (phase.fillCount = 0),
+    (phase) => (phase.heldRequestCount = 0),
+    (phase) => {
+      phase.heldRequestCount = 2;
+      phase.heldKeys.push("1/1/1");
+    },
+    (phase) => phase.selectedTileIds.pop(),
+    (phase) => (phase.realSiblingTileIds = []),
+    (phase) => (phase.maximumScreenSpaceError = 2),
+  ]) {
+    expectStatus(
+      (report) => mutateFill(report.sessions[0].phases[C12_29_S5_PHASES[2]]),
+      "STRUCTURAL",
+      /exactly one derived level-one hold/u,
+    );
+  }
+  for (const mutateRelease of [
+    (phase) => (phase.holdInterceptionEnabled = true),
+    (phase) => (phase.newHeldRequestCountAfterRelease = 1),
+  ]) {
+    expectStatus(
+      (report) => mutateRelease(report.sessions[0].phases[C12_29_S5_PHASES[3]]),
+      "STRUCTURAL",
+      /disabled before the one release/u,
+    );
+  }
   expectStatus(
-    (report) => (report.sessions[0].phases[C12_29_S5_PHASES[2]].fillCount = 0),
-    "STRUCTURAL",
-    /TerrainFillMesh/u,
+    (report) =>
+      (report.sessions[0].phases[
+        C12_29_S5_PHASES[3]
+      ].transitionObservation.renderedReal = false),
+    "FAIL",
+    /held fill did not transition/u,
   );
 });
 
@@ -522,6 +673,15 @@ test("09 decoded real QuantizedMesh is independently nonvacuous", () => {
     (report) => {
       report.sessions[1].phases[C12_29_S5_PHASES[2]].decodedQuantizedMeshCount =
         0;
+    },
+    "STRUCTURAL",
+    /QuantizedMesh/u,
+  );
+  expectStatus(
+    (report) => {
+      report.sessions[1].phases[
+        C12_29_S5_PHASES[2]
+      ].decodedFixtureIdentityVerified = false;
     },
     "STRUCTURAL",
     /QuantizedMesh/u,
@@ -656,6 +816,12 @@ test("14 real fulfilled scene.pickAsync and updateForPick postcondition are gate
   expectStatus(
     (report) =>
       (report.sessions[1].phases[C12_29_S5_PHASES[5]].updateForPickCalls = 0),
+    "FAIL",
+    /updateForPick/u,
+  );
+  expectStatus(
+    (report) =>
+      (report.sessions[1].phases[C12_29_S5_PHASES[5]].expected.callOrdinal = 2),
     "FAIL",
     /updateForPick/u,
   );
@@ -2288,6 +2454,10 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
     /const functionsCpy = functions\.slice\(\);[\s\S]*?functions\.length = 0;[\s\S]*?functionsCpy\[i\]\(\)/u,
   );
   assert.match(scene, /callAfterRenderFunctions\(this\);/u);
+  assert.match(
+    scene,
+    /scene\.globe\.beginFrame\(frameState\);[\s\S]*?scene\.updateEnvironment\(\);/u,
+  );
   assert.deepEqual(inspectS5WebGPUEclipseBinding(), {
     ok: true,
     file: C12_29_S5_WEBGPU_LAYOUT_FILE,
@@ -2315,6 +2485,34 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
   assert.doesNotMatch(probeSource, /GPUDevice\.destroy\s*\(/u);
   assert.doesNotMatch(probeSource, /\.(?:pickEllipsoid|pickPosition)\s*\(/u);
   assert.doesNotMatch(probeSource, /await\s+scene\.pickAsync\s*\(/u);
+  assert.equal(
+    (probeSource.match(/globe\.beginFrame = function \(frameState\)/gu) ?? [])
+      .length,
+    2,
+  );
+  assert.match(
+    probeSource,
+    /const result = originalGlobeBeginFrame\.call\(this, frameState\);[\s\S]*?terrainRequestAttemptsAtObservation[\s\S]*?selectionRevisionUnchanged/u,
+  );
+  assert.match(
+    probeSource,
+    /const result = originalFinalGlobeBeginFrame\.call\(this, frameState\);[\s\S]*?freshTerrainRequestAttempts[\s\S]*?selectionRevisionUnchanged/u,
+  );
+  assert.match(
+    probeSource,
+    /terrainData instanceof C\.QuantizedMeshTerrainData/u,
+  );
+  assert.doesNotMatch(probeSource, /terrainData\?\.constructor\?\.name/u);
+  assert.ok(
+    probeSource.indexOf("holdEnabled = false;") <
+      probeSource.indexOf(
+        "for (const entry of held.values()) entry.resolve(entry.terrainData);",
+      ),
+  );
+  assert.match(
+    probeSource,
+    /const callOrdinal = updateForPickCalls;[\s\S]*?pickPostcondition = \{[\s\S]*?callOrdinal[\s\S]*?pickExpected = \{[\s\S]*?callOrdinal/u,
+  );
   assert.match(
     probeSource,
     /const pickOperation = scene\.pickAsync\([\s\S]*?await awaitFrameDrivenOperation\([\s\S]*?contract\.pickMaxPumpFrames/u,
