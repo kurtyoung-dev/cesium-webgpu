@@ -85,6 +85,7 @@ function executeCommand(command, scene, passState, debugFramebuffer) {
     !passes.pickVoxel &&
     !passes.depth &&
     scene._hdr &&
+    command._moonPhysicalDepthRoute !== true &&
     defined(command.derivedCommands) &&
     defined(command.derivedCommands.hdr)
   ) {

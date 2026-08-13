@@ -37,6 +37,23 @@ describe("Scene shadow-caster pre-PVS filtering", function () {
     expect(result.bypassCommands.length).toBe(0);
   });
 
+  it("C12-37 bypasses Earth-local octree ownership for non-occludable bodies", function () {
+    const octree = new SceneOctree({
+      enabled: true,
+      minCommandsForOctree: 1,
+    });
+    const moon = createCommand({ castShadows: false });
+    moon.occlude = false;
+    moon._moonPhysicalDepthRoute = true;
+    const terrestrial = createCommand({ castShadows: false });
+
+    const result = octree.build([moon, terrestrial], 1);
+
+    expect(result.useOctree).toBe(true);
+    expect(result.octreeCommands).toBe(1);
+    expect(result.bypassCommands).toEqual([moon]);
+  });
+
   it("captures active casters in a shadow-only pre-PVS side channel", function () {
     const shadowState = {
       shadowsEnabled: true,
@@ -97,6 +114,22 @@ describe("Scene shadow-caster pre-PVS filtering", function () {
 
     expect(occlusionResult.visible.length).toBe(0);
     expect(occlusionResult.occluded).toEqual([receiveOnly, disabled]);
+  });
+
+  it("C12-37 preserves non-occludable command identity and list order", function () {
+    const culling = new OcclusionCulling({ enabled: true, maxCommands: 3 });
+    culling.resultsReady = true;
+    culling._soaLayout.visibility.fill(0);
+    const firstOccluded = createCommand({ castShadows: false });
+    const moon = createCommand({ castShadows: false });
+    moon.occlude = false;
+    const lastVisible = createCommand({ castShadows: false });
+    culling._soaLayout.visibility[2] = 1;
+
+    const result = culling.testCommands([firstOccluded, moon, lastVisible]);
+
+    expect(result.visible).toEqual([moon, lastVisible]);
+    expect(result.occluded).toEqual([firstOccluded]);
   });
 
   it("allows camera Hi-Z to reject casters without losing the side channel", function () {

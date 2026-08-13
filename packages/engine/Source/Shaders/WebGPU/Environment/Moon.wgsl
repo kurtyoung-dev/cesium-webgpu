@@ -143,9 +143,14 @@ struct U {
   specularStrength: f32,                            // 284
 
   farPlane: f32,                                    // 288
-  _p11: f32,                                        // 292
-  _p12: f32,                                        // 296
-  _p13: f32,                                        // 300
+  // C12-37 physical-depth route reuses the three historical pad lanes. The
+  // legacy fs/vs entry points never read them, so their layout and output stay
+  // byte-identical. Physical meanings: canonical encode near/factor and packed
+  // globe-depth mode (0 = native live depth, 1 = compare packed, -1 = fail
+  // closed because a required late view was unavailable).
+  logDepthNear: f32,                                // 292
+  logDepthFactor: f32,                              // 296
+  packedGlobeDepthMode: f32,                        // 300
 
   // Per-channel atmospheric transmittance (extinction) along the camera→moon
   // view ray. Exactly vec3(1.0) from orbit and when the sky atmosphere is
@@ -196,6 +201,9 @@ struct U {
 // sampler — the two maps share the same UV unwrap and the same filtering, so
 // a second sampler would be pure duplication.
 @group(0) @binding(3) var normalTex: texture_2d<f32>;
+// C12-37 physical route only. The legacy `fs` entry point has no call path to
+// this binding, so the existing environment bind-group layout remains valid.
+@group(0) @binding(4) var packedGlobeDepthTex: texture_2d<f32>;
 
 const PI: f32 = 3.14159265359;
 
@@ -352,6 +360,24 @@ fn vs(i: VI) -> VO {
   // point.
   o.hitEC = posMC;
 
+  return o;
+}
+
+// C12-37 — true-position vertex route for the ordinary OPAQUE frustum bins.
+// X/Y/W retain the exact RTE projection. Z is clamped only for raster coverage
+// (the analytic fragment hit writes the authoritative depth), matching the
+// renderer-wide csm_updatePositionDepth contract.
+@vertex
+fn vsPhysical(i: VI) -> VO {
+  var o: VO;
+  let posMC = i.cubePos * u.radii;
+  let rte = (posMC - u.camH) - u.camL;
+  let clip = u.mvpRTE * vec4<f32>(rte, 1.0);
+  var rasterClip = clip;
+  rasterClip.z = clamp(clip.z / clip.w, 0.0, 1.0) * clip.w;
+  o.pos = rasterClip;
+  o.clipW = clip.w;
+  o.hitEC = posMC;
   return o;
 }
 
@@ -575,5 +601,102 @@ fn fs(i: VO) -> FragOut {
     out.depth = 0.5;
   }
 
+  return out;
+}
+
+fn unpackPackedDepth(packed: vec4<f32>) -> f32 {
+  return dot(
+    packed,
+    vec4<f32>(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0),
+  );
+}
+
+// C12-37 — the physical Moon shares the normal OPAQUE attachment with tiles,
+// voxels, and models. When Cesium's default terrain-depth clear is active it
+// also compares the same raw depth against the packed pre-clear globe depth.
+@fragment
+fn fsPhysical(i: VO) -> FragOut {
+  var out: FragOut;
+
+  let originMC = u.cameraPositionMC;
+  let dirMC = normalize(i.hitEC - u.cameraPositionMC);
+  let intersection = intersectEllipsoid(originMC, dirMC);
+  let ts = intersection.roots;
+  let outsideHit = ts.x >= 0.0;
+  let tHit = select(ts.y, ts.x, outsideHit);
+  let side = select(-1.0, 1.0, outsideHit);
+  let hitMC = originMC + dirMC * tHit;
+
+  // Derivatives must be evaluated before the fragment-varying miss discard.
+  let sphericalN = normalize(hitMC / u.radii);
+  let uv = ellipsoidTexCoords(sphericalN);
+  var uvDx = dpdx(uv);
+  var uvDy = dpdy(uv);
+  uvDx.x = uvDx.x - round(uvDx.x);
+  uvDy.x = uvDy.x - round(uvDy.x);
+
+  let hasForwardHit = ts.x >= 0.0 || ts.y >= 0.0;
+  if (intersection.discriminant < 0.0 || !hasForwardHit) {
+    discard;
+  }
+
+  let hitColor = computeEllipsoidColor(hitMC, side, uv, uvDx, uvDy);
+  out.color = vec4<f32>(hitColor.rgb * u.extinction + u.inscatter, 1.0);
+
+  // Project the analytic hit through the same late-resolved, TAA-jittered
+  // per-frustum matrix used by the vertex path. RTE subtraction happens before
+  // the float32 matrix multiply, so lunar-scale world coordinates never enter
+  // the shader as one lossy absolute value.
+  let hitRte = (hitMC - u.camH) - u.camL;
+  let hitClip = u.mvpRTE * vec4<f32>(hitRte, 1.0);
+  if (hitClip.w <= 0.0) {
+    discard;
+  }
+  // The command is present in every intersecting frustum so camera-inside-Moon
+  // views can reach the slice containing the exit surface. The live projection
+  // identifies that one owning slice before canonical full-range depth is
+  // calculated; all other executions are fragment-inert.
+  let sliceDepth = hitClip.z / hitClip.w;
+  if (sliceDepth < 0.0 || sliceDepth > 1.0) {
+    discard;
+  }
+
+  let useLog: bool = u32(round(u.useLogDepth)) == 1u;
+  var moonDepth: f32;
+  if (useLog) {
+    let depthFromNearPlusOne = (hitClip.w - u.logDepthNear) + 1.0;
+    let farDepthFromNearPlusOne =
+      (u.farPlane - u.logDepthNear) + 1.0;
+    if (
+      depthFromNearPlusOne <= 0.9999999 ||
+      depthFromNearPlusOne > farDepthFromNearPlusOne ||
+      !(u.logDepthFactor > 0.0)
+    ) {
+      discard;
+    }
+    moonDepth = log2(depthFromNearPlusOne) * u.logDepthFactor;
+  } else {
+    moonDepth = sliceDepth;
+  }
+
+  // A required texture that failed to publish late must never turn into an
+  // on-top draw. The resolver binds a valid placeholder and selects -1 here.
+  if (u.packedGlobeDepthMode < -0.5) {
+    discard;
+  }
+  if (u.packedGlobeDepthMode > 0.5) {
+    let globeDepth = unpackPackedDepth(textureLoad(
+      packedGlobeDepthTex,
+      vec2<i32>(i.pos.xy),
+      0,
+    ));
+    // Zero is the packed-depth no-fragment sentinel. Earth wins an exact or
+    // quantized tie to avoid a Moon-over-Earth seam at the limb.
+    if (globeDepth != 0.0 && moonDepth >= globeDepth) {
+      discard;
+    }
+  }
+
+  out.depth = moonDepth;
   return out;
 }

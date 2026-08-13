@@ -1234,6 +1234,12 @@ class Scene {
       isSkyAtmosphereVisible: false,
 
       clearGlobeDepth: false,
+      // C12-37 — reusable private handoff into Moon.update.  Kept on the
+      // environment state so the ordinary render hot path allocates no options
+      // object per frame.
+      moonDepthRouteState: {
+        clearGlobeDepth: false,
+      },
       useDepthPlane: false,
       renderTranslucentDepthForPick: false,
 
@@ -3537,7 +3543,18 @@ class Scene {
     const hasDerivedCommands = defined(derivedCommands.originalCommand);
     const needsLogDepthDerivedCommands =
       useLogDepth && !hasLogDepthDerivedCommands;
-    const needsHdrCommands = useHdr && !hasHdrCommands;
+    // C12-37 — the ordinary WebGL Moon is an ENVIRONMENT command executed
+    // directly by EnvironmentRenderer, so it has never selected Scene's HDR
+    // derived shader.  The conditional physical-depth route must preserve
+    // that exact appearance when it moves the same command into OPAQUE.  If
+    // we derive HDR here, the Moon switches from its historical inline
+    // gamma/tonemap convention to the linear-HDR convention only while it is
+    // near enough to occlude Earth, causing a visible brightness pop.  Keep
+    // the base Moon program on both routes; WebGPU owns this convention in its
+    // native pipeline and never enters this WebGL-derived-command path.
+    const skipHdrDerivedCommand = command._moonPhysicalDepthRoute === true;
+    const needsHdrCommands =
+      useHdr && !skipHdrDerivedCommand && !hasHdrCommands;
     const needsDerivedCommands =
       (!useLogDepth || !useHdr) && !hasDerivedCommands;
     const needsUpdateForMetadataPicking =
@@ -3626,6 +3643,13 @@ class Scene {
         context,
         derivedCommands.logDepth,
       );
+      // DrawCommand.shallowClone intentionally copies only declared command
+      // fields, so carry this private route marker onto the log-depth clone
+      // before its recursive HDR derivation decision. Without this handoff,
+      // the base command skips HDR as intended but the selected log clone
+      // immediately recreates it and the Moon still changes brightness.
+      derivedCommands.logDepth.command._moonPhysicalDepthRoute =
+        command._moonPhysicalDepthRoute === true;
       updateDerivedCommands(
         this,
         derivedCommands.logDepth.command,
@@ -3954,6 +3978,9 @@ class Scene {
   updateEnvironment() {
     const frameState = this._frameState;
     const view = this._view;
+    // A route transition is a one-frame TAA invalidation signal. Reset it even
+    // on early environment exits so a prior frame cannot poison later history.
+    frameState._moonPhysicalDepthRouteChanged = false;
 
     // Update celestial and terrestrial environment effects.
     const environmentState = this._environmentState;
@@ -3963,6 +3990,15 @@ class Scene {
     const skyAtmosphere = this.skyAtmosphere;
     const globe = this.globe;
     const globeTranslucencyState = this._globeTranslucencyState;
+    // Preserve the original unconditional clear policy for render, pick,
+    // offscreen, orthographic and environment-hidden frames alike. Moon reads
+    // the same resolved value only on the branch where Moon.update runs.
+    const clearGlobeDepth =
+      defined(globe) &&
+      globe.show &&
+      (!globe.depthTestAgainstTerrain || this.mode === SceneMode.SCENE2D);
+    environmentState.clearGlobeDepth = clearGlobeDepth;
+    environmentState.moonDepthRouteState.clearGlobeDepth = clearGlobeDepth;
 
     if (
       !renderPass ||
@@ -4031,8 +4067,12 @@ class Scene {
       // reset its scalar contribution before the update; a visible Moon
       // overwrites it with current ephemeris data below.
       frameState.moonPhaseFraction = 0.0;
+      // C12-37 — resolve the existing clear rule before Moon.update so the
+      // backend-neutral route can decide whether it must compare against the
+      // packed pre-clear globe depth.  The same value is reused below; this is
+      // an ordering move, not a policy change.
       environmentState.moonCommand = defined(this.moon)
-        ? this.moon.update(frameState)
+        ? this.moon.update(frameState, environmentState.moonDepthRouteState)
         : undefined;
 
       // Phase 1.3a / C12-29 S6 — derive brightness only after `Moon.update`
@@ -4145,10 +4185,9 @@ class Scene {
       // a current-frame moon direction). Not re-run here.
     }
 
-    const clearGlobeDepth = (environmentState.clearGlobeDepth =
-      defined(globe) &&
-      globe.show &&
-      (!globe.depthTestAgainstTerrain || this.mode === SceneMode.SCENE2D));
+    // `clearGlobeDepth` was resolved before Moon.update above so C12-37 can
+    // select its packed-depth comparison without a backend-specific Scene
+    // branch.  Continue using the identical value for the existing pipeline.
     const useDepthPlane = (environmentState.useDepthPlane =
       clearGlobeDepth &&
       this.mode === SceneMode.SCENE3D &&
@@ -6067,7 +6106,10 @@ function updateDerivedCommands(scene, command, shadowsDirty) {
 
   derivedCommands.originalCommand = command;
 
-  if (scene._hdr) {
+  // C12-37 — preserve the byte-identical legacy WebGL Moon appearance when
+  // its physical-depth route changes pass ownership. See the matching dirty
+  // predicate in Scene.updateDerivedCommands above.
+  if (scene._hdr && command._moonPhysicalDepthRoute !== true) {
     derivedCommands.hdr = DerivedCommand.createHdrCommand(
       command,
       context,
@@ -6450,7 +6492,10 @@ function render(scene) {
         scene._taaPrevProjectionOrtho !== isOrthographic;
       scene._taaPrevProjectionOrtho = isOrthographic;
 
-      const historyInvalid = isMorphing || projectionFlipped;
+      const historyInvalid =
+        isMorphing ||
+        projectionFlipped ||
+        frameState._moonPhysicalDepthRouteChanged === true;
       if (historyInvalid) {
         // Drop the history buffer for this frame so the upcoming execute()
         // returns the un-reprojected source (no blend against the stale,

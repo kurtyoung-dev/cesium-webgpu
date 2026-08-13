@@ -278,7 +278,11 @@ class OcclusionCulling {
         continue;
       }
 
-      if (visibility[representedIndex] === 1) {
+      // C12-37 — commands that explicitly opt out of occlusion stay in their
+      // original list position even if a stale/quantized GPU result says zero.
+      // We still advance representedIndex so SOA/result identity remains
+      // aligned for every following command.
+      if (command.occlude === false || visibility[representedIndex] === 1) {
         visible.push(command);
       } else {
         occluded.push(command);

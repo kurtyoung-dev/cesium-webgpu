@@ -364,6 +364,54 @@ void main()
     t = (intersection.start != 0.0) ? intersection.start : intersection.stop;
     vec3 positionEC = czm_pointAlongRay(ray, t);
     vec4 positionCC = czm_projection * vec4(positionEC, 1.0);
+#ifdef MOON_PHYSICAL_DEPTH
+    // C12-37 — the physical command is binned into every intersecting frustum
+    // so a camera inside the Moon can reach the slice containing the visible
+    // exit surface. Reject non-owning slices with the current projection before
+    // computing the canonical depth value; exactly one slice can shade/write.
+    if (positionCC.w <= 0.0)
+    {
+        discard;
+    }
+    float sliceZ = positionCC.z / positionCC.w;
+    float sliceNear = czm_depthRange.near;
+    float sliceFar = czm_depthRange.far;
+    float sliceDepth =
+        (sliceZ * (sliceFar - sliceNear) + sliceFar + sliceNear) * 0.5;
+    if (sliceDepth < 0.0 || sliceDepth > 1.0)
+    {
+        discard;
+    }
+
+    // Recreate the exact canonical depth value once. When the ordinary OPAQUE
+    // attachment has been cleared after terrain, also compare it with the
+    // packed pre-clear globe depth. Earth wins an exact/quantized tie so the
+    // two limbs cannot form a one-pixel Moon-over-Earth halo.
+    float moonDepth;
+#ifdef LOG_DEPTH
+    float depthFromNearPlusOne =
+        (positionCC.w - czm_currentFrustum.x) + 1.0;
+    if (depthFromNearPlusOne <= 0.9999999 ||
+        depthFromNearPlusOne > czm_farDepthFromNearPlusOne)
+    {
+        discard;
+    }
+    moonDepth = log2(depthFromNearPlusOne) *
+        czm_oneOverLog2FarDepthFromNearPlusOne;
+#else
+    moonDepth = sliceDepth;
+#endif
+#ifdef MOON_PHYSICAL_GLOBE_DEPTH
+    float globeDepth = czm_unpackDepth(texture(
+        czm_globeDepthTexture,
+        gl_FragCoord.xy / czm_viewport.zw));
+    if (globeDepth != 0.0 && moonDepth >= globeDepth)
+    {
+        discard;
+    }
+#endif
+    gl_FragDepth = moonDepth;
+#else
 #ifdef LOG_DEPTH
     czm_writeLogDepth(1.0 + positionCC.w);
 #else
@@ -373,6 +421,7 @@ void main()
     float f = czm_depthRange.far;
 
     gl_FragDepth = (z * (f - n) + f + n) * 0.5;
+#endif
 #endif
 #endif
 }

@@ -4208,7 +4208,12 @@ export class WebGPUSceneRenderer {
     const filtered = this._hiZFilterPool;
     filtered.length = 0;
     for (let i = 0; i < count; i++) {
-      if (flags[i] === 1) filtered.push(commands[i]);
+      // C12-37 — preserve explicit non-occludable commands (celestial bodies)
+      // conservatively. Keep them in the producer arrays so result count and
+      // index identity do not drift; only override the consumer decision.
+      if (commands[i].occlude === false || flags[i] === 1) {
+        filtered.push(commands[i]);
+      }
     }
     // B217-N1 (Batch 219) + B219-N2 (Batch 223) — accumulate across
     // frustums. Reset moved to `_executeOpaquePass` frustum-0 entry.

@@ -1,4 +1,5 @@
 import buildModuleUrl from "../Core/buildModuleUrl.js";
+import BoundingSphere from "../Core/BoundingSphere.js";
 import Cartesian3 from "../Core/Cartesian3.js";
 import Frozen from "../Core/Frozen.js";
 import defined from "../Core/defined.js";
@@ -8,6 +9,8 @@ import Ellipsoid from "../Core/Ellipsoid.js";
 import IauOrientationAxes from "../Core/IauOrientationAxes.js";
 import Matrix3 from "../Core/Matrix3.js";
 import Matrix4 from "../Core/Matrix4.js";
+import PerspectiveFrustum from "../Core/PerspectiveFrustum.js";
+import PerspectiveOffCenterFrustum from "../Core/PerspectiveOffCenterFrustum.js";
 import { getSharedMoonDecodedSourceCache } from "../Core/MoonDecodedSourceCache.js";
 import Simon1994PlanetaryPositions from "../Core/Simon1994PlanetaryPositions.js";
 import Transforms from "../Core/Transforms.js";
@@ -27,6 +30,7 @@ import {
   readMoonPhaseAppearance,
 } from "./MoonPhaseAppearance.js";
 import resolveMoonNormalMapStrength from "./resolveMoonNormalMapStrength.js";
+import SceneMode from "./SceneMode.js";
 import {
   canGenerateWebGLMoonMipmaps,
   configureWebGLMoonTextureMipmaps,
@@ -71,6 +75,86 @@ const webGLMoonTextureRequestHooks = Object.freeze({
     //>>includeEnd('debug');
   },
 });
+
+/**
+ * Compute the conservative camera-relative separation used to decide whether
+ * the Moon can be nearer than any part of the Earth.
+ *
+ * All arithmetic is JavaScript `number` (IEEE-754 binary64). Keeping this
+ * decision on the CPU avoids deriving a renderer-specific answer from
+ * float32/RTE shader state.
+ *
+ * @param {Cartesian3} cameraPositionWC
+ * @param {Cartesian3} moonCenterWC
+ * @param {number} moonRadius
+ * @param {number} earthRadius
+ * @returns {number} Moon-nearest distance minus Earth-farthest distance.
+ * @private
+ */
+function computeMoonPhysicalDepthGap(
+  cameraPositionWC,
+  moonCenterWC,
+  moonRadius,
+  earthRadius,
+) {
+  const moonX = moonCenterWC.x - cameraPositionWC.x;
+  const moonY = moonCenterWC.y - cameraPositionWC.y;
+  const moonZ = moonCenterWC.z - cameraPositionWC.z;
+  const moonCenterDistance = Math.hypot(moonX, moonY, moonZ);
+  const moonNear = Math.max(0.0, moonCenterDistance - moonRadius);
+
+  const earthCenterDistance = Math.hypot(
+    cameraPositionWC.x,
+    cameraPositionWC.y,
+    cameraPositionWC.z,
+  );
+  const earthFar = earthCenterDistance + earthRadius;
+  return moonNear - earthFar;
+}
+
+/**
+ * Apply the physical-depth route's hysteresis law.
+ *
+ * Entry is exact and conservative: the Moon enters as soon as its nearest
+ * surface is no farther than Earth's farthest possible surface. Exit carries
+ * one lunar radius of margin so binary64 ephemeris/camera noise cannot make the
+ * command bounce between ENVIRONMENT and OPAQUE at the boundary.
+ *
+ * @param {boolean} wasPhysical
+ * @param {number} gap
+ * @param {number} moonRadius
+ * @returns {boolean}
+ * @private
+ */
+function updateMoonPhysicalDepthDemand(wasPhysical, gap, moonRadius) {
+  if (
+    !Number.isFinite(gap) ||
+    !Number.isFinite(moonRadius) ||
+    moonRadius <= 0.0
+  ) {
+    return false;
+  }
+  return gap <= (wasPhysical ? moonRadius : 0.0);
+}
+
+/**
+ * Start lazy backend preparation one lunar radius before exact route entry.
+ * This uses the same margin as exit hysteresis, but never changes command
+ * ownership by itself.
+ *
+ * @param {number} gap
+ * @param {number} moonRadius
+ * @returns {boolean}
+ * @private
+ */
+function shouldPrewarmMoonPhysicalDepth(gap, moonRadius) {
+  return (
+    Number.isFinite(gap) &&
+    Number.isFinite(moonRadius) &&
+    moonRadius > 0.0 &&
+    gap <= moonRadius
+  );
+}
 
 function configureWebGLMoonTextureCandidate(texture, context) {
   try {
@@ -278,6 +362,20 @@ class Moon {
     // Reusable result object for the shared moon-phase appearance resolver.
     // Allocated once; never reallocated per frame.
     this._phaseAppearance = createMoonPhaseAppearance();
+
+    // C12-37 — backend-neutral physical-depth demand and exact command
+    // bounding volume.  The demand is intentionally distinct from the route
+    // actually emitted by a backend: WebGPU may keep returning the legacy
+    // ENVIRONMENT command while its lazy physical pipeline compiles.
+    this._physicalDepthDistanceDemand = false;
+    this._physicalDepthPrewarmRequested = false;
+    this._physicalDepthRequested = false;
+    this._physicalDepthActual = false;
+    this._physicalDepthClearGlobeDepth = false;
+    this._physicalDepthBoundingVolume = new BoundingSphere(
+      Cartesian3.ZERO,
+      this._ellipsoid.maximumRadius,
+    );
   }
 
   /**
@@ -295,8 +393,9 @@ class Moon {
   /**
    * @private
    */
-  update(frameState) {
+  update(frameState, depthRouteState) {
     if (!this.show) {
+      publishMoonPhysicalDepthRoute(this, frameState, false);
       return;
     }
 
@@ -318,6 +417,57 @@ class Moon {
         translationScratch,
       );
     Matrix3.multiplyByVector(icrfToFixed, translation, translation);
+
+    // C12-37 — decide whether the Moon can physically precede the Earth using
+    // only shared binary64 scene state, before either backend is selected.
+    // Entry is exact; exit carries a one-lunar-radius hysteresis margin.  A
+    // screen-overlap predicate is deliberately not used: projection noise or a
+    // one-frame-late view would make route ownership pop at the limb.
+    const moonRadius = this._ellipsoid.maximumRadius;
+    Cartesian3.clone(translation, this._physicalDepthBoundingVolume.center);
+    this._physicalDepthBoundingVolume.radius = moonRadius;
+    const camera = frameState.camera;
+    const earthEllipsoid = frameState.mapProjection?.ellipsoid;
+    const earthRadius = defined(earthEllipsoid)
+      ? earthEllipsoid.maximumRadius
+      : Ellipsoid.default.maximumRadius;
+    const physicalDepthGap = defined(camera)
+      ? computeMoonPhysicalDepthGap(
+          camera.positionWC,
+          translation,
+          moonRadius,
+          earthRadius,
+        )
+      : Number.POSITIVE_INFINITY;
+    this._physicalDepthDistanceDemand = updateMoonPhysicalDepthDemand(
+      this._physicalDepthDistanceDemand,
+      physicalDepthGap,
+      moonRadius,
+    );
+
+    const passes = frameState.passes;
+    const frustum = camera?.frustum;
+    const perspective =
+      frustum instanceof PerspectiveFrustum ||
+      frustum instanceof PerspectiveOffCenterFrustum;
+    const globeTranslucent =
+      frameState.globeTranslucencyState?.translucent === true;
+    this._physicalDepthClearGlobeDepth =
+      depthRouteState?.clearGlobeDepth === true;
+    const physicalDepthEligible =
+      passes.render === true &&
+      passes.pick !== true &&
+      passes.pickVoxel !== true &&
+      passes.offscreen !== true &&
+      frameState.mode === SceneMode.SCENE3D &&
+      perspective &&
+      frameState.globeVisible === true &&
+      !globeTranslucent;
+    this._physicalDepthPrewarmRequested =
+      physicalDepthEligible &&
+      shouldPrewarmMoonPhysicalDepth(physicalDepthGap, moonRadius);
+    this._physicalDepthRequested =
+      physicalDepthEligible && this._physicalDepthDistanceDemand;
 
     Matrix4.fromRotationTranslation(
       rotation,
@@ -568,9 +718,7 @@ class Moon {
       scratchCommandList.length = 0;
       fr.update(this, frameState, scratchCommandList);
       frameState.commandList = savedCommandList;
-      return scratchCommandList.length === 1
-        ? scratchCommandList[0]
-        : undefined;
+      return routeMoonCommand(this, frameState, savedCommandList);
     }
 
     // Only the WebGL fallback consumes the shared decoded-source cache here.
@@ -621,12 +769,23 @@ class Moon {
       : undefined;
     ellipsoidPrimitive.lunarNormalStrength = normalMapStrength;
 
+    // WebGL can take the physical route only when a sampleable packed globe
+    // depth and fragment-depth writes both exist.  Otherwise the exact legacy
+    // ENVIRONMENT command remains the feature-preserving fallback.
+    const webGLPhysicalDepth =
+      this._physicalDepthRequested &&
+      context.depthTexture === true &&
+      context.fragmentDepth === true;
+    ellipsoidPrimitive._moonPhysicalDepth = webGLPhysicalDepth;
+    ellipsoidPrimitive._moonPackedGlobeDepthCompare =
+      webGLPhysicalDepth && this._physicalDepthClearGlobeDepth;
+
     const savedCommandList = frameState.commandList;
     frameState.commandList = scratchCommandList;
     scratchCommandList.length = 0;
     ellipsoidPrimitive.update(frameState);
     frameState.commandList = savedCommandList;
-    return scratchCommandList.length === 1 ? scratchCommandList[0] : undefined;
+    return routeMoonCommand(this, frameState, savedCommandList);
   }
 
   /**
@@ -1000,6 +1159,40 @@ Moon.getVariantNormalMapUrl = function (variant) {
   return defined(asset) ? buildModuleUrl(asset) : undefined;
 };
 
+/**
+ * Publish the route a backend actually emitted.  This is not the distance
+ * demand: a lazy WebGPU physical pipeline may still have emitted the legacy
+ * environment command for this frame.
+ *
+ * @private
+ */
+function publishMoonPhysicalDepthRoute(moon, frameState, physical) {
+  const changed = moon._physicalDepthActual !== physical;
+  moon._physicalDepthActual = physical;
+  if (changed) {
+    frameState._moonPhysicalDepthRouteChanged = true;
+  }
+}
+
+/**
+ * Transfer exactly one backend command out of the scratch list.  Physical
+ * commands become ordinary scene commands; legacy commands retain the
+ * historical `Moon.update` return ownership used by EnvironmentRenderer.
+ *
+ * @private
+ */
+function routeMoonCommand(moon, frameState, sceneCommandList) {
+  const command =
+    scratchCommandList.length === 1 ? scratchCommandList[0] : undefined;
+  const physical = command?._moonPhysicalDepthRoute === true;
+  publishMoonPhysicalDepthRoute(moon, frameState, physical);
+  if (physical) {
+    sceneCommandList.push(command);
+    return undefined;
+  }
+  return command;
+}
+
 const icrfToFixed = new Matrix3();
 const rotationScratch = new Matrix3();
 const translationScratch = new Cartesian3();
@@ -1012,4 +1205,9 @@ const scratchMoonToCamera = new Cartesian3();
 const scratchCommandList = [];
 
 export default Moon;
-export { configureWebGLMoonTextureCandidate };
+export {
+  computeMoonPhysicalDepthGap,
+  configureWebGLMoonTextureCandidate,
+  shouldPrewarmMoonPhysicalDepth,
+  updateMoonPhysicalDepthDemand,
+};

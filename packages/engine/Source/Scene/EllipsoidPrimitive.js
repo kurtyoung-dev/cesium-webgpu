@@ -299,6 +299,14 @@ class EllipsoidPrimitive {
      */
     this._depthTestEnabled = options.depthTestEnabled ?? true;
 
+    // C12-37 private Moon route. Generic ellipsoids never set these and keep
+    // their historical render state, shader variant, frustum ownership, and
+    // occlusion behavior exactly.
+    this._moonPhysicalDepth = false;
+    this._moonPackedGlobeDepthCompare = false;
+    this._moonPhysicalDepthState = undefined;
+    this._moonPackedGlobeDepthCompareState = undefined;
+
     this._useLogDepth = false;
 
     this._sp = undefined;
@@ -454,8 +462,17 @@ class EllipsoidPrimitive {
     const context = frameState.context;
     const translucent = this.material.isTranslucent();
     const translucencyChanged = this._translucent !== translucent;
+    const moonPhysicalDepth = this._moonPhysicalDepth === true;
+    const moonPackedGlobeDepthCompare =
+      this._moonPackedGlobeDepthCompare === true;
+    const moonPhysicalDepthChanged =
+      this._moonPhysicalDepthState !== moonPhysicalDepth;
+    const moonPackedGlobeDepthCompareChanged =
+      this._moonPackedGlobeDepthCompareState !== moonPackedGlobeDepthCompare;
+    this._moonPhysicalDepthState = moonPhysicalDepth;
+    this._moonPackedGlobeDepthCompareState = moonPackedGlobeDepthCompare;
 
-    if (!defined(this._rs) || translucencyChanged) {
+    if (!defined(this._rs) || translucencyChanged || moonPhysicalDepthChanged) {
       this._translucent = translucent;
 
       this._rs = RenderState.fromCache({
@@ -464,7 +481,7 @@ class EllipsoidPrimitive {
           face: CullFace.FRONT,
         },
         depthTest: {
-          enabled: this._depthTestEnabled,
+          enabled: moonPhysicalDepth || this._depthTestEnabled,
         },
         depthMask: !translucent && context.fragmentDepth,
         blending: translucent ? BlendingState.ALPHA_BLEND : undefined,
@@ -572,7 +589,9 @@ class EllipsoidPrimitive {
       softTerminatorChanged ||
       lunarNormalMapChanged ||
       lunarAlbedoExplicitGradientsChanged ||
-      lunarNormalExplicitGradientsChanged
+      lunarNormalExplicitGradientsChanged ||
+      moonPhysicalDepthChanged ||
+      moonPackedGlobeDepthCompareChanged
     ) {
       vs = new ShaderSource({
         sources: [EllipsoidVS],
@@ -616,6 +635,12 @@ class EllipsoidPrimitive {
       if (!translucent && context.fragmentDepth) {
         fs.defines.push("WRITE_DEPTH");
       }
+      if (moonPhysicalDepth) {
+        fs.defines.push("MOON_PHYSICAL_DEPTH");
+      }
+      if (moonPackedGlobeDepthCompare) {
+        fs.defines.push("MOON_PHYSICAL_GLOBE_DEPTH");
+      }
       if (this._useLogDepth) {
         vs.defines.push("LOG_DEPTH");
         fs.defines.push("LOG_DEPTH");
@@ -636,6 +661,10 @@ class EllipsoidPrimitive {
         this._uniforms,
         this.material._uniforms,
       );
+      // A physical Moon spans every intersecting frustum. This matters while
+      // the camera is inside it: the containing sphere begins in the closest
+      // slice, but the visible exit surface may live in a farther slice. The
+      // analytic fragment-depth range check makes all non-owning slices inert.
       colorCommand.executeInClosestFrustum = translucent;
     }
 
@@ -647,6 +676,8 @@ class EllipsoidPrimitive {
       colorCommand.debugShowBoundingVolume = this.debugShowBoundingVolume;
       colorCommand.modelMatrix = this._computedModelMatrix;
       colorCommand.pass = translucent ? Pass.TRANSLUCENT : Pass.OPAQUE;
+      colorCommand.occlude = !moonPhysicalDepth;
+      colorCommand._moonPhysicalDepthRoute = moonPhysicalDepth;
 
       commandList.push(colorCommand);
     }

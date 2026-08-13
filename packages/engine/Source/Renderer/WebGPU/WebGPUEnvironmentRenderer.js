@@ -54,6 +54,7 @@ import {
 } from "./WebGPUEllipsoidRenderer.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 
 // Per-device shader module cache so two Sun / Moon instances on the same
 // `GPUDevice` share one compiled `GPUShaderModule`.
@@ -221,6 +222,71 @@ function tryResolveEnvPipeline(device, pipelineCache, entry) {
   );
   entry.pending = false;
   return entry.pipeline;
+}
+
+/**
+ * Resolve the optional physical-Moon pipeline with a terminal failure policy.
+ * Unlike the legacy environment pipelines, this route is a lazy correctness
+ * upgrade with a feature-preserving ENVIRONMENT fallback. Retrying a rejected
+ * compilation every near-Moon frame would create an unbounded hot-loop tax;
+ * one failure therefore remains terminal for this owner/context/device/
+ * generation cache. Device recovery or a scene-format generation change
+ * replaces the entry and permits one fresh attempt.
+ *
+ * @private
+ */
+function tryResolvePhysicalMoonPipeline(device, pipelineCache, entry) {
+  if (entry.failed === true) {
+    return null;
+  }
+  if (entry.pipeline) {
+    return entry.pipeline;
+  }
+
+  function fail(error) {
+    entry.pending = false;
+    entry.failed = true;
+    if (entry.failureReported !== true) {
+      entry.failureReported = true;
+      console.warn(
+        "[WebGPU:Moon] physical-depth pipeline failed; retaining the legacy ENVIRONMENT route:",
+        error && error.message ? error.message : error,
+      );
+    }
+    return null;
+  }
+
+  if (pipelineCache) {
+    const sync = pipelineCache.getPipelineSync(entry.descriptor);
+    if (sync) {
+      entry.pipeline = sync;
+      entry.pending = false;
+      return sync;
+    }
+    if (!entry.pending) {
+      entry.pending = true;
+      pipelineCache
+        .getPipeline(entry.descriptor)
+        .then((pipeline) => {
+          if (entry.failed !== true) {
+            entry.pipeline = pipeline;
+            entry.pending = false;
+          }
+        })
+        .catch(fail);
+    }
+    return null;
+  }
+
+  try {
+    entry.pipeline = device.createRenderPipeline(
+      _envDescriptorToGPU(entry.descriptor),
+    );
+    entry.pending = false;
+    return entry.pipeline;
+  } catch (error) {
+    return fail(error);
+  }
 }
 
 const UNIFORM_BUFFER_SIZE = 256;
@@ -966,6 +1032,64 @@ function buildMoonPipelineResources(device, format, depthFormat, sampleCount) {
 }
 
 /**
+ * C12-37 physical Moon pipeline. Kept separate and lazy so the ordinary
+ * Earth-near ENVIRONMENT pipeline above retains its exact descriptor, bundle,
+ * bind-group layout, and upload behavior.
+ *
+ * @private
+ */
+function buildPhysicalMoonPipelineResources(
+  device,
+  format,
+  depthFormat,
+  sampleCount,
+) {
+  const moduleCache = getEnvShaderModuleCache(device);
+  const mod = moduleCache.getOrCreate(
+    ShaderSourceId.ENVIRONMENT_MOON,
+    MoonShaderCode,
+    0,
+    "Moon shader",
+  );
+  const bgl = makeBindGroupLayout(device, "Moon_Physical_BindGroupLayout", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    texture(1, Stage.FRAGMENT),
+    sampler(2, Stage.FRAGMENT),
+    texture(3, Stage.FRAGMENT),
+    texture(4, Stage.FRAGMENT),
+  ]);
+  const descriptor = {
+    name: `Moon physical pipeline [${format}/${depthFormat}]`,
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
+    vertex: {
+      module: mod,
+      entryPoint: "vsPhysical",
+      buffers: [
+        {
+          arrayStride: 12,
+          attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }],
+        },
+      ],
+    },
+    fragment: {
+      module: mod,
+      entryPoint: "fsPhysical",
+      targets: makeSceneFBTargets(format),
+    },
+    // Analytic intersection discards miss lanes. Disabling face culling also
+    // preserves the camera-inside-Moon case without a second pipeline.
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: true,
+      depthCompare: "less-equal",
+    },
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
+  };
+  return { descriptor, bgl };
+}
+
+/**
  * Renderer hooks for one exact Moon texture request. The generic lifecycle
  * controller owns the deferred state and the stale-candidate rules; these
  * hooks are the only layer that knows how to fetch and realize a
@@ -1104,6 +1228,14 @@ function invalidateMoonTextureBindings(cache) {
   cache.bindGroup = undefined;
   cache.bundle = undefined;
   cache._bundleStale = true;
+  const physicalSlots = cache.physicalUniformSlots;
+  if (defined(physicalSlots)) {
+    for (let i = 0; i < physicalSlots.length; i++) {
+      physicalSlots[i].bindGroup = undefined;
+      physicalSlots[i].albedoView = undefined;
+      physicalSlots[i].normalView = undefined;
+    }
+  }
 }
 
 function createMoonTexturePublicationCallbacks(cache, device, channelName) {
@@ -1464,6 +1596,16 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   ) {
     cache.pipelineEntry = undefined;
     cache.pipeline = undefined;
+    cache.physicalPipelineEntry = undefined;
+    cache.physicalPipeline = undefined;
+    cache.physicalBgl = undefined;
+    cache.physicalCommand = undefined;
+    const physicalSlots = cache.physicalUniformSlots;
+    if (defined(physicalSlots)) {
+      for (let i = 0; i < physicalSlots.length; i++) {
+        physicalSlots[i].bindGroup = undefined;
+      }
+    }
     cache._bundleStale = true;
   }
 
@@ -1501,6 +1643,44 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     return;
   }
   cache.pipeline = moonPipeline;
+
+  // C12-37 — request the physical pipeline only while the shared f64 demand
+  // asks for it. Until this lazy pipeline is genuinely ready, the function
+  // continues through the unchanged ENVIRONMENT path below; the Moon never
+  // disappears and never emits both routes.
+  let physicalPipeline;
+  if (
+    moon._physicalDepthPrewarmRequested === true ||
+    moon._physicalDepthRequested === true
+  ) {
+    if (!defined(cache.physicalPipelineEntry)) {
+      const format = context.scenePipelineFormat || "bgra8unorm";
+      const depthFmt = context.depthFormat || "depth24plus-stencil8";
+      const sampleCount = context._msaaSamples ?? 1;
+      const built = buildPhysicalMoonPipelineResources(
+        device,
+        format,
+        depthFmt,
+        sampleCount,
+      );
+      cache.physicalPipelineEntry = {
+        descriptor: built.descriptor,
+        pipeline: null,
+        pending: false,
+        failed: false,
+        failureReported: false,
+      };
+      cache.physicalBgl = built.bgl;
+    }
+    physicalPipeline = tryResolvePhysicalMoonPipeline(
+      device,
+      context.webgpuPipelineCache ?? null,
+      cache.physicalPipelineEntry,
+    );
+    if (defined(physicalPipeline)) {
+      cache.physicalPipeline = physicalPipeline;
+    }
+  }
 
   // Moon texture (placeholder until async load completes)
   if (!defined(cache.moonTexture)) {
@@ -1602,6 +1782,11 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     MoonTextureChannel.NORMAL,
     cache._normalPublicationCallbacks,
   );
+
+  if (moon._physicalDepthRequested === true && defined(physicalPipeline)) {
+    pushPhysicalMoonCommand(moon, frameState, commandList, cache);
+    return;
+  }
 
   // Uniform buffer sized by `MOON_UNIFORM_BUFFER_SIZE`, currently 352 bytes /
   // 88 floats, of which floats 0..86 are in use and 87 is tail padding. The
@@ -1757,6 +1942,217 @@ function updateWebGPUMoon(moon, frameState, commandList) {
 }
 
 /**
+ * Return one independently backed physical-Moon uniform slot. A physical
+ * command is resolved only after the renderer has selected a view and frustum
+ * and copied that frustum's globe depth. Because every queue.writeBuffer call
+ * happens before the frame's single submit, reusing one buffer would make all
+ * recorded draws observe the bytes from the last execution. Slots therefore
+ * grow with the number of actual executions and are retained for reuse.
+ *
+ * @private
+ */
+function getPhysicalMoonUniformSlot(cache, slotIndex) {
+  const slots = (cache.physicalUniformSlots ??= []);
+  let slot = slots[slotIndex];
+  if (!defined(slot)) {
+    slot = slots[slotIndex] = {
+      uniformBuffer: WebGPUBuffer.createUniformBuffer(
+        cache.device,
+        MOON_UNIFORM_BUFFER_SIZE,
+        undefined,
+        `Moon physical uniforms ${slotIndex}`,
+      ),
+      uniformData: new Float32Array(MOON_UNIFORM_BUFFER_SIZE / 4),
+      bindGroup: undefined,
+      albedoView: undefined,
+      normalView: undefined,
+      sampler: undefined,
+      globeDepthView: undefined,
+    };
+  }
+  return slot;
+}
+
+/**
+ * Build or refresh a physical-Moon bind group for one execution slot. The
+ * packed depth view is deliberately resolved here, not during Scene.update:
+ * WebGPU publishes a different view after each frustum's GLOBE copy. The
+ * albedo view is a valid texture placeholder while no packed view is needed
+ * (or when a required view failed to publish); the uniform mode prevents that
+ * placeholder from ever being interpreted as depth.
+ *
+ * @private
+ */
+function getPhysicalMoonBindGroup(cache, slot, globeDepthView) {
+  const depthResource = globeDepthView ?? cache.moonTextureView;
+  if (
+    !defined(slot.bindGroup) ||
+    slot.albedoView !== cache.moonTextureView ||
+    slot.normalView !== cache.normalTextureView ||
+    slot.sampler !== cache.sampler ||
+    slot.globeDepthView !== depthResource
+  ) {
+    slot.bindGroup = cache.device.createBindGroup({
+      label: "Moon physical bind group",
+      layout: cache.physicalBgl,
+      entries: [
+        { binding: 0, resource: { buffer: slot.uniformBuffer.buffer } },
+        { binding: 1, resource: cache.moonTextureView },
+        { binding: 2, resource: cache.sampler },
+        { binding: 3, resource: cache.normalTextureView },
+        { binding: 4, resource: depthResource },
+      ],
+    });
+    slot.albedoView = cache.moonTextureView;
+    slot.normalView = cache.normalTextureView;
+    slot.sampler = cache.sampler;
+    slot.globeDepthView = depthResource;
+  }
+  return slot.bindGroup;
+}
+
+/**
+ * Resolve one physical Moon execution against the current view/frustum.
+ * Projection, RTE camera position, canonical log-depth range, TAA jitter and
+ * the packed globe-depth view are all late state and must be captured here.
+ *
+ * @private
+ */
+function resolvePhysicalMoonBindGroup(moon, frameState, cache) {
+  const context = frameState.context;
+  const uniformState = context.uniformState;
+  const slot = getPhysicalMoonUniformSlot(
+    cache,
+    cache.physicalExecutionCursor++,
+  );
+  const cameraPositionWC =
+    uniformState.cameraPosition ?? frameState.camera.positionWC;
+  _packMoonUniforms(
+    moon,
+    frameState,
+    cache,
+    slot.uniformData,
+    cameraPositionWC,
+  );
+  // Physical depth must use the renderer-wide producer switch. Keep this
+  // override out of the legacy ENVIRONMENT pack, whose historical shader uses
+  // frameState.useLogDepth directly and parks the Moon at the far plane.
+  slot.uniformData[69] = isWebGPULogDepthActive(context, frameState)
+    ? 1.0
+    : 0.0;
+
+  // The globe publishes the FULL camera range used to encode packed log depth,
+  // while projection/currentFrustum remain the executing slice. This is the
+  // same split consumed by globe, primitives, collections and voxels.
+  const encodeNearFar = uniformState._logDepthEncodeNearFar;
+  const encodeNear = Number(encodeNearFar?.[0]);
+  const encodeFar = Number(encodeNearFar?.[1]);
+  const currentFrustum = uniformState.currentFrustum;
+  slot.uniformData[73] = Number.isFinite(encodeNear)
+    ? encodeNear
+    : (currentFrustum?.x ?? 0.0);
+  slot.uniformData[72] = Number.isFinite(encodeFar)
+    ? encodeFar
+    : (currentFrustum?.y ?? 1.0e9);
+  const publishedFactor = Number(uniformState._logDepthEncodeFactor);
+  const logSpan = slot.uniformData[72] - slot.uniformData[73] + 1.0;
+  slot.uniformData[74] =
+    Number.isFinite(publishedFactor) && publishedFactor > 0.0
+      ? publishedFactor
+      : logSpan > 1.0
+        ? 1.0 / Math.log2(logSpan)
+        : 0.0;
+
+  const requiresPackedDepth = moon._physicalDepthClearGlobeDepth === true;
+  const globeDepthView = context._globeDepthView ?? undefined;
+  // -1 is fail-closed in WGSL. It prevents a first-frame/resize/device-recovery
+  // hole from turning into the original Moon-on-top bug.
+  slot.uniformData[75] = requiresPackedDepth
+    ? defined(globeDepthView)
+      ? 1.0
+      : -1.0
+    : 0.0;
+
+  context.device.queue.writeBuffer(
+    slot.uniformBuffer.buffer,
+    0,
+    slot.uniformData.buffer,
+    slot.uniformData.byteOffset,
+    slot.uniformData.byteLength,
+  );
+  return getPhysicalMoonBindGroup(cache, slot, globeDepthView);
+}
+
+/**
+ * Emit the physical Moon as one ordinary, bounded OPAQUE command. It remains
+ * in Cesium's normal frustum binning across every intersecting slice, and opts
+ * out of Earth-centric horizon/octree/Hi-Z occlusion. The physical fragment's
+ * canonical depth-range guard leaves exactly the owning slice visible. Keeping
+ * all intersecting slices is required for camera-inside-Moon views, where the
+ * sphere enters the closest slice but its visible exit surface may be farther.
+ * No render bundle is attached because its bind group is resolved per
+ * execution after the GLOBE depth publication.
+ *
+ * @private
+ */
+function pushPhysicalMoonCommand(moon, frameState, commandList, cache) {
+  cache.physicalExecutionCursor = 0;
+  const initialSlot = getPhysicalMoonUniformSlot(cache, 0);
+  const initialBindGroup = getPhysicalMoonBindGroup(
+    cache,
+    initialSlot,
+    undefined,
+  );
+  if (!defined(cache.physicalBindGroupResolver)) {
+    cache.physicalBindGroupResolver = function () {
+      return resolvePhysicalMoonBindGroup(
+        cache.physicalMoon,
+        cache.physicalFrameState,
+        cache,
+      );
+    };
+  }
+  cache.physicalMoon = moon;
+  cache.physicalFrameState = frameState;
+
+  if (!defined(cache.physicalCommand)) {
+    cache.physicalCommand = new WebGPUDrawCommand({
+      pipeline: cache.physicalPipeline,
+      bindGroups: [initialBindGroup],
+      bindGroupResolvers: [cache.physicalBindGroupResolver],
+      vertexBuffers: [cache.geometry.vertexBuffer],
+      indexBuffer: cache.geometry.indexBuffer,
+      indexCount: cache.geometry.indexCount,
+      indexFormat: "uint16",
+      pass: Pass.OPAQUE,
+      owner: moon,
+      boundingVolume: moon._physicalDepthBoundingVolume,
+      modelMatrix: moon._ellipsoidPrimitive.modelMatrix,
+      cull: true,
+      occlude: false,
+      castShadows: false,
+      receiveShadows: false,
+      pickOnly: false,
+      executeInClosestFrustum: false,
+    });
+  }
+  const command = cache.physicalCommand;
+  command.pipeline = cache.physicalPipeline;
+  command.bindGroups[0] = initialBindGroup;
+  command.bindGroup = initialBindGroup;
+  command.boundingVolume = moon._physicalDepthBoundingVolume;
+  command.modelMatrix = moon._ellipsoidPrimitive.modelMatrix;
+  command.owner = moon;
+  command.pass = Pass.OPAQUE;
+  command.cull = true;
+  command.occlude = false;
+  command.executeInClosestFrustum = false;
+  command.bundle = undefined;
+  command._moonPhysicalDepthRoute = true;
+  commandList.push(command);
+}
+
+/**
  * Packs the moon uniform buffer for one frame. Pulled out of
  * updateWebGPUMoon so the snapshot-mode skip path is a single conditional.
  *
@@ -1787,7 +2183,13 @@ function updateWebGPUMoon(moon, frameState, commandList) {
  *
  * @private
  */
-function _packMoonUniforms(moon, frameState, cache) {
+function _packMoonUniforms(
+  moon,
+  frameState,
+  cache,
+  uniformData,
+  cameraPositionWC,
+) {
   const context = frameState.context;
   const uniformState = context.uniformState;
   const ellipsoidPrimitive = moon._ellipsoidPrimitive;
@@ -1805,7 +2207,7 @@ function _packMoonUniforms(moon, frameState, cache) {
   scratchMVRTE[14] = 0.0;
   Matrix4.multiply(projMatrix, scratchMVRTE, scratchMVPRTE);
 
-  const ud = cache.uniformData;
+  const ud = uniformData ?? cache.uniformData;
   ud.fill(0);
 
   // Shared base uniform pack, offsets 0..63: mvpRTE, the camH/camL split, the
@@ -1814,7 +2216,7 @@ function _packMoonUniforms(moon, frameState, cache) {
   packEllipsoidBaseUniforms(ud, {
     mvpRelativeToEye: scratchMVPRTE,
     viewMatrix: viewMatrix,
-    cameraPositionWC: frameState.camera.positionWC,
+    cameraPositionWC: cameraPositionWC ?? frameState.camera.positionWC,
     modelMatrix: modelMatrix,
     radii: moon._ellipsoid.radii,
     oneOverRadiiSquared: moon._ellipsoid.oneOverRadiiSquared,
@@ -2149,12 +2551,23 @@ function destroyWebGPUMoonResources(moon) {
   destroyOnce(cache.geometry?.vertexBuffer);
   destroyOnce(cache.geometry?.indexBuffer);
   destroyOnce(cache.uniformBuffer);
+  const physicalSlots = cache.physicalUniformSlots;
+  if (defined(physicalSlots)) {
+    for (let i = 0; i < physicalSlots.length; i++) {
+      destroyOnce(physicalSlots[i].uniformBuffer);
+    }
+  }
   destroyTextureOnce(cache.moonTexture);
   destroyTextureOnce(cache.normalTexture);
   destroyTextureOnce(cache.normalPlaceholderTexture);
 
   cache.geometry = undefined;
   cache.uniformBuffer = undefined;
+  cache.physicalUniformSlots = undefined;
+  cache.physicalCommand = undefined;
+  cache.physicalBindGroupResolver = undefined;
+  cache.physicalMoon = undefined;
+  cache.physicalFrameState = undefined;
   cache.moonTexture = undefined;
   cache.moonTextureView = undefined;
   cache.normalTexture = undefined;
@@ -2176,6 +2589,7 @@ export {
   destroyWebGPUMoonResources,
   getWebGPUMoonStatistics,
   createMoonFreezable,
+  tryResolvePhysicalMoonPipeline,
 };
 
 export default {
@@ -2185,4 +2599,5 @@ export default {
   destroyWebGPUMoonResources,
   getWebGPUMoonStatistics,
   createMoonFreezable,
+  tryResolvePhysicalMoonPipeline,
 };

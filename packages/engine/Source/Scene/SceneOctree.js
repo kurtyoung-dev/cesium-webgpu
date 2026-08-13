@@ -296,6 +296,13 @@ const OCTREE_ELIGIBLE_PASSES = [Pass.OPAQUE, Pass.TRANSLUCENT];
  * @private
  */
 function isOctreeEligible(command) {
+  // C12-37 — the SceneOctree root is Earth-sized and cannot represent the
+  // physical Moon sphere without clamping or dropping it. Keep normal frustum
+  // binning and leave other `occlude === false` commands on their historical
+  // octree path; only the private lunar route bypasses this acceleration tree.
+  if (command._moonPhysicalDepthRoute === true) {
+    return false;
+  }
   if (!defined(command.boundingVolume)) {
     return false;
   }
