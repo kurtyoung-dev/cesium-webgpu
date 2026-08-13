@@ -7,7 +7,7 @@
  * deliberately browser-free so every premise can be mutation-tested in Node.
  */
 
-export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v4";
+export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v5";
 
 export const C12_29_S5_DIAGNOSTICS_SCHEMA = "c12-29-s5-runtime-diagnostics-v1";
 
@@ -39,7 +39,7 @@ export const C12_29_S5_PICK_FRAME_DRIVER =
 
 export const C12_29_S5_PICK_MAX_PUMP_FRAMES = 30;
 
-export const C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES = 60;
+export const C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES = 180;
 
 export const C12_29_S5_FIXTURE = Object.freeze({
   baseRoute: "/Specs/Data/CesiumTerrainTileJson/QuantizedMesh/",
@@ -66,8 +66,11 @@ export const C12_29_S5_SCENE = Object.freeze({
   pinnedIso: "2024-04-08T18:17:16Z",
   cameraHeightMeters: 8_000_000,
   cameraFovDegrees: 55,
-  warmupCameraFovDegrees: 20,
   terrainMaximumScreenSpaceError: 2,
+  frontierScreenSpaceErrorCandidates: Object.freeze([32, 40, 48, 56, 64]),
+  frontierLatitudeStepDegrees: 1,
+  frontierMaxSteps: 60,
+  frontierSettleMaxFrames: 60,
   viewport: Object.freeze({ width: 960, height: 960 }),
   verticalExaggeration: 2,
   // This is deliberately above the pinned fixture maximum. At x2 the
@@ -109,6 +112,7 @@ export const C12_29_S5_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Scene/GlobeSurfaceShaderSet.js",
   "packages/engine/Source/Scene/TerrainFillMesh.js",
   "packages/engine/Source/Scene/QuadtreePrimitive.js",
+  "packages/engine/Source/Scene/TileSelectionResult.js",
   "packages/engine/Source/Scene/Picking.js",
   "packages/engine/Source/Scene/PickFramebuffer.js",
   "packages/engine/Source/Renderer/Sync.js",
@@ -134,6 +138,8 @@ export const C12_29_S5_BUILD_SOURCE_FILES = Object.freeze(
     (file) => !file.endsWith(".glsl") && !file.endsWith(".wgsl"),
   ),
 );
+
+export const C12_29_S5_BUILD_SOURCE_MAP = "Build/CesiumUnminified/index.js.map";
 
 const FINAL_STATUSES = new Set(["PASS", "FAIL", "STRUCTURAL", "ERROR"]);
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -264,12 +270,8 @@ export function exitCodeForS5Status(status) {
   throw new Error(`unknown S5 evidence status ${String(status)}`);
 }
 
-/**
- * Enumerate every valid cardinal level-one neighbour of the tile containing
- * the live ephemeris track. Target selection is deliberately deferred until
- * the browser has completed and recorded its narrow-FOV warm-up.
- */
-export function deriveS5CardinalLevelOneCandidates(longitude, latitude) {
+/** Derive the exact south level-one neighbour of the live track anchor. */
+export function deriveS5SouthLevelOneTarget(longitude, latitude) {
   if (
     !Number.isFinite(longitude) ||
     !Number.isFinite(latitude) ||
@@ -278,7 +280,7 @@ export function deriveS5CardinalLevelOneCandidates(longitude, latitude) {
     latitude < -90 ||
     latitude > 90
   ) {
-    return [];
+    return undefined;
   }
 
   const level = 1;
@@ -294,106 +296,148 @@ export function deriveS5CardinalLevelOneCandidates(longitude, latitude) {
     yTiles - 1,
     Math.floor((90 - latitude) / tileHeight),
   );
-  const west = -180 + anchorX * tileWidth;
-  const east = west + tileWidth;
-  const north = 90 - anchorY * tileHeight;
-  const south = north - tileHeight;
-  const candidates = [];
-  const addCandidate = (edge, distanceDegrees, targetX, targetY) => {
-    const parentX = Math.floor(targetX / 2);
-    const parentY = Math.floor(targetY / 2);
-    const siblingKeys = [];
-    for (let y = parentY * 2; y < parentY * 2 + 2; y++) {
-      for (let x = parentX * 2; x < parentX * 2 + 2; x++) {
-        if (x !== targetX || y !== targetY) {
-          siblingKeys.push(`${level}/${x}/${y}`);
-        }
+  if (anchorY + 1 >= yTiles) return undefined;
+  const targetX = anchorX;
+  const targetY = anchorY + 1;
+  const parentX = Math.floor(targetX / 2);
+  const parentY = Math.floor(targetY / 2);
+  const siblingKeys = [];
+  for (let y = parentY * 2; y < parentY * 2 + 2; y++) {
+    for (let x = parentX * 2; x < parentX * 2 + 2; x++) {
+      if (x !== targetX || y !== targetY) {
+        siblingKeys.push(`${level}/${x}/${y}`);
       }
     }
-    siblingKeys.sort();
-    candidates.push({
-      level,
-      anchorKey: `${level}/${anchorX}/${anchorY}`,
-      parentKey: `0/${parentX}/${parentY}`,
-      key: `${level}/${targetX}/${targetY}`,
-      edge,
-      targetX,
-      targetY,
-      distanceDegrees,
-      derivation: "valid-cardinal-level-1-anchor-neighbor",
-      siblingKeys,
-    });
+  }
+  siblingKeys.sort();
+  return {
+    level,
+    anchorKey: `${level}/${anchorX}/${anchorY}`,
+    parentKey: `0/${parentX}/${parentY}`,
+    key: `${level}/${targetX}/${targetY}`,
+    edge: "south",
+    targetX,
+    targetY,
+    distanceDegrees: Math.abs(latitude - (90 - (anchorY + 1) * tileHeight)),
+    derivation: "south-level-1-anchor-neighbor",
+    siblingKeys,
   };
-  if (anchorX + 1 < xTiles) {
-    addCandidate("east", Math.abs(east - longitude), anchorX + 1, anchorY);
-  }
-  if (anchorX > 0) {
-    addCandidate("west", Math.abs(longitude - west), anchorX - 1, anchorY);
-  }
-  if (anchorY > 0) {
-    addCandidate("north", Math.abs(north - latitude), anchorX, anchorY - 1);
-  }
-  if (anchorY + 1 < yTiles) {
-    addCandidate("south", Math.abs(latitude - south), anchorX, anchorY + 1);
-  }
-  return candidates;
 }
 
-/**
- * Recompute the selection-dependent part of one candidate observation. Only
- * rendered selection arrays participate; an instantiated-but-unselected tile
- * is intentionally irrelevant to eligibility.
- */
-export function evaluateS5HoldCandidateObservation(
-  candidate,
-  observation,
-  snapshot,
-) {
-  const selectedTileIds = snapshot?.selectedTileIds;
-  const realTileIds = snapshot?.realTileIds;
-  const fillTileIds = snapshot?.fillTileIds;
+/** Recompute one fixed-camera level-one frontier observation from its evidence. */
+export function evaluateS5FrontierObservation(target, observation) {
   if (
-    !candidate ||
-    !Array.isArray(candidate.siblingKeys) ||
-    !Array.isArray(selectedTileIds) ||
-    !Array.isArray(realTileIds) ||
-    !Array.isArray(fillTileIds)
+    !target ||
+    !Array.isArray(observation?.selectedTileIds) ||
+    !Array.isArray(observation?.realTileIds) ||
+    !Array.isArray(observation?.fillTileIds)
   ) {
     return undefined;
   }
-  const selected = new Set(selectedTileIds);
-  const selectedDescendantTileIds = selectedTileIds
-    .filter((id) => levelOneAncestorKey(id) === candidate.key)
+  const selected = new Set(observation.selectedTileIds);
+  const targetSelectedDescendantTileIds = observation.selectedTileIds
+    .filter((id) => levelOneAncestorKey(id) === target.key)
     .sort();
-  const realDescendantTileIds = realTileIds
-    .filter((id) => levelOneAncestorKey(id) === candidate.key)
+  const targetRealDescendantTileIds = observation.realTileIds
+    .filter((id) => levelOneAncestorKey(id) === target.key)
     .sort();
-  const fillDescendantTileIds = fillTileIds
-    .filter((id) => levelOneAncestorKey(id) === candidate.key)
+  const targetFillDescendantTileIds = observation.fillTileIds
+    .filter((id) => levelOneAncestorKey(id) === target.key)
     .sort();
-  const selectedRealSiblingTileIds = realTileIds
-    .filter(
-      (id) =>
-        selected.has(id) &&
-        candidate.siblingKeys.includes(levelOneAncestorKey(id)),
-    )
+  const selectedRealSiblingTileIds = observation.realTileIds
+    .filter((id) => selected.has(id) && target.siblingKeys.includes(id))
     .sort();
-  const eligibility = {
-    requestUnseen: observation?.requestAttempts === 0,
-    noHeldPromise: observation?.heldPromisePresent === false,
-    noReservedPromise: observation?.reservedPromisePresent === false,
-    noSelectedDescendant: selectedDescendantTileIds.length === 0,
-    noRealDescendant: realDescendantTileIds.length === 0,
-    noFillDescendant: fillDescendantTileIds.length === 0,
-    hasSelectedRealSibling: selectedRealSiblingTileIds.length > 0,
-  };
+  const targetSelected = selected.has(target.key);
+  const targetReal = observation.realTileIds.includes(target.key);
+  const targetFill = observation.fillTileIds.includes(target.key);
+  const targetSelectedStrictDescendantTileIds =
+    targetSelectedDescendantTileIds.filter((id) => id !== target.key);
+  const targetRealStrictDescendantTileIds = targetRealDescendantTileIds.filter(
+    (id) => id !== target.key,
+  );
+  const targetFillStrictDescendantTileIds = targetFillDescendantTileIds.filter(
+    (id) => id !== target.key,
+  );
+  const siblingSelections = Array.isArray(
+    observation.selectedRealSiblingObservations,
+  )
+    ? observation.selectedRealSiblingObservations
+    : [];
+  const selectedRealSiblingRendered =
+    selectedRealSiblingTileIds.length > 0 &&
+    selectedRealSiblingTileIds.every((id) =>
+      siblingSelections.some(
+        (selection) =>
+          selection?.tileId === id &&
+          selection?.instantiated === true &&
+          selection?.resultFrame === selection?.selectionFrame &&
+          selection?.sameFrame === true &&
+          selection?.rawResult === 2 &&
+          selection?.originalResult === 2 &&
+          selection?.rawResultName === "RENDERED" &&
+          selection?.originalResultName === "RENDERED" &&
+          selection?.wasKicked === false,
+      ),
+    );
+  const targetSelection = observation.targetSelection;
+  const targetSameFrameRendered =
+    targetSelection?.tileId === target.key &&
+    targetSelection?.resultFrame === targetSelection?.selectionFrame &&
+    targetSelection?.sameFrame === true &&
+    targetSelection?.rawResult === 2 &&
+    targetSelection?.originalResult === 2 &&
+    targetSelection?.rawResultName === "RENDERED" &&
+    targetSelection?.originalResultName === "RENDERED" &&
+    targetSelection?.wasKicked === false;
+  const targetSameFrameCulled =
+    targetSelection?.tileId === target.key &&
+    targetSelection?.instantiated === true &&
+    targetSelection?.resultFrame === targetSelection?.selectionFrame &&
+    targetSelection?.sameFrame === true &&
+    targetSelection?.rawResult === 1 &&
+    targetSelection?.originalResult === 1 &&
+    targetSelection?.rawResultName === "CULLED" &&
+    targetSelection?.originalResultName === "CULLED" &&
+    targetSelection?.wasKicked === false;
+  const noStrictDescendants =
+    targetSelectedStrictDescendantTileIds.length === 0 &&
+    targetRealStrictDescendantTileIds.length === 0 &&
+    targetFillStrictDescendantTileIds.length === 0;
+  const targetBranchAbsent =
+    targetSelectedDescendantTileIds.length === 0 &&
+    targetRealDescendantTileIds.length === 0 &&
+    targetFillDescendantTileIds.length === 0;
   return {
-    selectedDescendantTileIds,
-    realDescendantTileIds,
-    fillDescendantTileIds,
+    targetSelectedDescendantTileIds,
+    targetRealDescendantTileIds,
+    targetFillDescendantTileIds,
     selectedRealSiblingTileIds,
-    eligibility,
-    eligible: Object.values(eligibility).every(Boolean),
+    targetSelectedStrictDescendantTileIds,
+    targetRealStrictDescendantTileIds,
+    targetFillStrictDescendantTileIds,
+    targetSelected,
+    targetReal,
+    targetFill,
+    noStrictDescendants,
+    targetBranchAbsent,
+    selectedRealSiblingRendered,
+    revealEligible:
+      observation.settled === true &&
+      observation.tilesLoaded === true &&
+      !selected.has(target.parentKey) &&
+      targetSelected &&
+      targetReal &&
+      !targetFill &&
+      noStrictDescendants &&
+      targetSameFrameRendered &&
+      selectedRealSiblingRendered,
+    warmEligible:
+      observation.settled === true &&
+      observation.tilesLoaded === true &&
+      !selected.has(target.parentKey) &&
+      targetBranchAbsent &&
+      targetSameFrameCulled &&
+      selectedRealSiblingRendered,
   };
 }
 
@@ -525,6 +569,30 @@ function sameArrayMembers(left, right) {
   );
 }
 
+function exactSortedUniqueStrings(value) {
+  return (
+    Array.isArray(value) &&
+    value.every((entry) => typeof entry === "string") &&
+    new Set(value).size === value.length &&
+    value.every((entry, index) => index === 0 || value[index - 1] < entry)
+  );
+}
+
+function exactSelectionObservation(observation, tileId, rawResult, name) {
+  return (
+    observation?.tileId === tileId &&
+    observation?.instantiated === true &&
+    Number.isInteger(observation?.selectionFrame) &&
+    observation?.resultFrame === observation?.selectionFrame &&
+    observation?.sameFrame === true &&
+    observation?.rawResult === rawResult &&
+    observation?.originalResult === rawResult &&
+    observation?.rawResultName === name &&
+    observation?.originalResultName === name &&
+    observation?.wasKicked === false
+  );
+}
+
 function levelOneAncestorKey(tileId) {
   const match = /^(\d+)\/(\d+)\/(\d+)$/u.exec(tileId ?? "");
   if (!match) return undefined;
@@ -542,6 +610,89 @@ function exactFingerprint(actual, expected) {
     actual.byteLength === expected.byteLength &&
     actual.sha256 === expected.sha256
   );
+}
+
+function normalizeIdentityPath(value) {
+  return typeof value === "string" ? value.replaceAll("\\", "/") : undefined;
+}
+
+function isAbsoluteIdentityPath(value) {
+  return /^(?:[A-Za-z]:\/|\/)/u.test(normalizeIdentityPath(value) ?? "");
+}
+
+function hasExactIdentityPathSuffix(value, suffix) {
+  const normalized = normalizeIdentityPath(value);
+  return normalized === suffix || normalized?.endsWith(`/${suffix}`) === true;
+}
+
+function validBuildSourceIdentity(value) {
+  const entries = value?.entries;
+  if (
+    !exactObjectKeys(value, [
+      "ok",
+      "entries",
+      "reasons",
+      "sourceMapPath",
+      "sourceMapByteLength",
+      "sourceMapSha256",
+    ]) ||
+    value.ok !== true ||
+    !Array.isArray(value.reasons) ||
+    value.reasons.length !== 0 ||
+    !isAbsoluteIdentityPath(value.sourceMapPath) ||
+    !hasExactIdentityPathSuffix(
+      value.sourceMapPath,
+      C12_29_S5_BUILD_SOURCE_MAP,
+    ) ||
+    !Number.isInteger(value.sourceMapByteLength) ||
+    value.sourceMapByteLength < 1 ||
+    !SHA256.test(value.sourceMapSha256 ?? "") ||
+    !Array.isArray(entries) ||
+    entries.length !== C12_29_S5_BUILD_SOURCE_FILES.length
+  ) {
+    return false;
+  }
+
+  const files = entries.map((entry) => normalizeIdentityPath(entry?.file));
+  const mapEntries = entries.map((entry) =>
+    normalizeIdentityPath(entry?.sourceMapEntry),
+  );
+  if (
+    new Set(files).size !== C12_29_S5_BUILD_SOURCE_FILES.length ||
+    new Set(mapEntries).size !== C12_29_S5_BUILD_SOURCE_FILES.length
+  ) {
+    return false;
+  }
+
+  return C12_29_S5_BUILD_SOURCE_FILES.every((file) => {
+    const matches = entries.filter((entry) =>
+      hasExactIdentityPathSuffix(entry?.file, file),
+    );
+    if (matches.length !== 1) return false;
+    const entry = matches[0];
+    return (
+      exactObjectKeys(entry, [
+        "file",
+        "sourceMapEntry",
+        "currentByteLength",
+        "embeddedByteLength",
+        "currentSha256",
+        "embeddedSha256",
+        "exact",
+        "reason",
+      ]) &&
+      isAbsoluteIdentityPath(entry.file) &&
+      hasExactIdentityPathSuffix(entry.file, file) &&
+      normalizeIdentityPath(entry.sourceMapEntry) === `../../${file}` &&
+      Number.isInteger(entry.currentByteLength) &&
+      entry.currentByteLength > 0 &&
+      entry.embeddedByteLength === entry.currentByteLength &&
+      SHA256.test(entry.currentSha256 ?? "") &&
+      entry.embeddedSha256 === entry.currentSha256 &&
+      entry.exact === true &&
+      entry.reason === null
+    );
+  });
 }
 
 function validateProvenance(provenance, structural) {
@@ -588,11 +739,7 @@ function validateProvenance(provenance, structural) {
       `the exact ${C12_29_S5_SOURCE_FILES.length}-file S5 source boundary is not proven`,
     );
   }
-  if (
-    provenance?.buildSourceIdentity?.ok !== true ||
-    provenance?.buildSourceIdentity?.entries?.length !==
-      C12_29_S5_BUILD_SOURCE_FILES.length
-  ) {
+  if (!validBuildSourceIdentity(provenance?.buildSourceIdentity)) {
     structural.push("source-map identity does not cover the build boundary");
   }
   if (
@@ -812,102 +959,238 @@ function validateSession(session, runId, structural, failures) {
   const c = phases["C-fill-held"];
   const warmup = c?.warmup;
   const holdArm = c?.holdArm;
-  const expectedCandidates = deriveS5CardinalLevelOneCandidates(
+  const firstReveal = c?.firstRevealProof;
+  const discovery = a?.frontierDiscovery;
+  const expectedHeldTarget = deriveS5SouthLevelOneTarget(
     session?.fixture?.deepestTrack?.longitude,
     session?.fixture?.deepestTrack?.latitude,
   );
-  const observedCandidates = warmup?.candidateObservations;
-  let candidateContractExact =
-    expectedCandidates.length > 0 &&
-    Array.isArray(observedCandidates) &&
-    observedCandidates.length === expectedCandidates.length;
-  const recomputedCandidates = [];
-  if (candidateContractExact) {
-    for (let index = 0; index < expectedCandidates.length; index++) {
-      const expected = expectedCandidates[index];
-      const observed = observedCandidates[index];
-      const recomputed = evaluateS5HoldCandidateObservation(
-        expected,
-        observed,
-        warmup,
-      );
-      const eligibility = recomputed?.eligibility;
-      const recordedEligibility = observed?.eligibility;
-      const exact =
-        observed?.level === expected.level &&
-        observed?.anchorKey === expected.anchorKey &&
-        observed?.parentKey === expected.parentKey &&
-        observed?.key === expected.key &&
-        observed?.edge === expected.edge &&
-        observed?.targetX === expected.targetX &&
-        observed?.targetY === expected.targetY &&
-        Object.is(observed?.distanceDegrees, expected.distanceDegrees) &&
-        observed?.derivation === expected.derivation &&
-        sameArrayMembers(observed?.siblingKeys, expected.siblingKeys) &&
-        nonNegativeInteger(observed?.requestAttempts) &&
-        observed?.heldPromisePresent === false &&
-        observed?.reservedPromisePresent === false &&
-        recomputed !== undefined &&
-        sameArrayMembers(
-          observed?.selectedDescendantTileIds,
-          recomputed?.selectedDescendantTileIds,
-        ) &&
-        sameArrayMembers(
-          observed?.realDescendantTileIds,
-          recomputed?.realDescendantTileIds,
-        ) &&
-        sameArrayMembers(
-          observed?.fillDescendantTileIds,
-          recomputed?.fillDescendantTileIds,
-        ) &&
-        sameArrayMembers(
-          observed?.selectedRealSiblingTileIds,
-          recomputed?.selectedRealSiblingTileIds,
-        ) &&
-        recordedEligibility?.requestUnseen === eligibility?.requestUnseen &&
-        recordedEligibility?.noHeldPromise === eligibility?.noHeldPromise &&
-        recordedEligibility?.noReservedPromise ===
-          eligibility?.noReservedPromise &&
-        recordedEligibility?.noSelectedDescendant ===
-          eligibility?.noSelectedDescendant &&
-        recordedEligibility?.noRealDescendant ===
-          eligibility?.noRealDescendant &&
-        recordedEligibility?.noFillDescendant ===
-          eligibility?.noFillDescendant &&
-        recordedEligibility?.hasSelectedRealSibling ===
-          eligibility?.hasSelectedRealSibling &&
-        observed?.eligible === recomputed?.eligible;
-      if (!exact) candidateContractExact = false;
-      recomputedCandidates.push({ candidate: expected, ...recomputed });
+  const exactTarget = (target) =>
+    target?.level === expectedHeldTarget?.level &&
+    target?.anchorKey === expectedHeldTarget?.anchorKey &&
+    target?.parentKey === expectedHeldTarget?.parentKey &&
+    target?.key === expectedHeldTarget?.key &&
+    target?.edge === expectedHeldTarget?.edge &&
+    target?.targetX === expectedHeldTarget?.targetX &&
+    target?.targetY === expectedHeldTarget?.targetY &&
+    Object.is(target?.distanceDegrees, expectedHeldTarget?.distanceDegrees) &&
+    target?.derivation === expectedHeldTarget?.derivation &&
+    sameArrayMembers(target?.siblingKeys, expectedHeldTarget?.siblingKeys);
+  let frontierExact =
+    Boolean(expectedHeldTarget) &&
+    exactTarget(discovery?.target) &&
+    discovery?.derivation ===
+      "south-level-1-sse-major-north-latitude-adjacent-frontier" &&
+    Array.isArray(discovery?.screenSpaceErrorCandidates) &&
+    discovery.screenSpaceErrorCandidates.length ===
+      C12_29_S5_SCENE.frontierScreenSpaceErrorCandidates.length &&
+    discovery.screenSpaceErrorCandidates.every(
+      (value, index) =>
+        value === C12_29_S5_SCENE.frontierScreenSpaceErrorCandidates[index],
+    ) &&
+    discovery?.latitudeStepDegrees ===
+      C12_29_S5_SCENE.frontierLatitudeStepDegrees &&
+    discovery?.maxSteps === C12_29_S5_SCENE.frontierMaxSteps &&
+    discovery?.settleMaxFrames === C12_29_S5_SCENE.frontierSettleMaxFrames &&
+    discovery?.direction === "north" &&
+    Math.abs(discovery?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) <=
+      1e-12 &&
+    Math.abs(
+      discovery?.cameraHeightMeters - C12_29_S5_SCENE.cameraHeightMeters,
+    ) <= 1e-3 &&
+    discovery?.preloadSiblings === false &&
+    discovery?.preloadAncestors === false &&
+    Array.isArray(discovery?.transcripts) &&
+    discovery.transcripts.length === discovery?.sseIndex + 1;
+  let recomputedPair;
+  if (frontierExact) {
+    const trackLatitude = session.fixture.deepestTrack.latitude;
+    for (
+      let sseIndex = 0;
+      sseIndex < discovery.transcripts.length && frontierExact;
+      sseIndex++
+    ) {
+      const transcript = discovery.transcripts[sseIndex];
+      const expectedSse =
+        C12_29_S5_SCENE.frontierScreenSpaceErrorCandidates[sseIndex];
+      const ladder = transcript?.ladder;
+      if (
+        transcript?.sseIndex !== sseIndex ||
+        transcript?.maximumScreenSpaceError !== expectedSse ||
+        !Array.isArray(ladder) ||
+        ladder.length < 2 ||
+        ladder.length > C12_29_S5_SCENE.frontierMaxSteps
+      ) {
+        frontierExact = false;
+        break;
+      }
+      let firstPair;
+      for (let step = 0; step < ladder.length; step++) {
+        const rung = ladder[step];
+        const recomputed = evaluateS5FrontierObservation(
+          expectedHeldTarget,
+          rung,
+        );
+        const expectedLatitude =
+          trackLatitude + step * C12_29_S5_SCENE.frontierLatitudeStepDegrees;
+        const baseArraysExact = [
+          "selectedTileIds",
+          "realTileIds",
+          "fillTileIds",
+        ].every((key) => exactSortedUniqueStrings(rung?.[key]));
+        const derivedArraysExact = [
+          "targetSelectedDescendantTileIds",
+          "targetRealDescendantTileIds",
+          "targetFillDescendantTileIds",
+          "targetSelectedStrictDescendantTileIds",
+          "targetRealStrictDescendantTileIds",
+          "targetFillStrictDescendantTileIds",
+          "selectedRealSiblingTileIds",
+        ].every(
+          (key) =>
+            exactSortedUniqueStrings(rung?.[key]) &&
+            sameArrayMembers(rung[key], recomputed?.[key]),
+        );
+        const siblingObservationsExact =
+          Array.isArray(rung?.selectedRealSiblingObservations) &&
+          rung.selectedRealSiblingObservations.length ===
+            recomputed?.selectedRealSiblingTileIds.length &&
+          recomputed.selectedRealSiblingTileIds.every((id) =>
+            rung.selectedRealSiblingObservations.some((selection) =>
+              exactSelectionObservation(selection, id, 2, "RENDERED"),
+            ),
+          );
+        if (
+          rung?.sseIndex !== sseIndex ||
+          rung?.step !== step ||
+          !Object.is(rung?.longitude, session.fixture.deepestTrack.longitude) ||
+          !Object.is(rung?.latitude, expectedLatitude) ||
+          Math.abs(
+            rung?.cameraHeightMeters - C12_29_S5_SCENE.cameraHeightMeters,
+          ) > 1e-3 ||
+          Math.abs(rung?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) >
+            1e-12 ||
+          rung?.maximumScreenSpaceError !== expectedSse ||
+          rung?.preloadSiblings !== false ||
+          rung?.preloadAncestors !== false ||
+          rung?.settled !== true ||
+          rung?.tilesLoaded !== true ||
+          !baseArraysExact ||
+          !derivedArraysExact ||
+          !siblingObservationsExact ||
+          rung?.targetSelected !== recomputed?.targetSelected ||
+          rung?.targetReal !== recomputed?.targetReal ||
+          rung?.targetFill !== recomputed?.targetFill ||
+          rung?.noStrictDescendants !== recomputed?.noStrictDescendants ||
+          rung?.targetBranchAbsent !== recomputed?.targetBranchAbsent ||
+          rung?.revealEligible !== recomputed?.revealEligible ||
+          rung?.warmEligible !== recomputed?.warmEligible
+        ) {
+          frontierExact = false;
+          break;
+        }
+        const prior = ladder[step - 1];
+        const priorRecomputed =
+          step > 0
+            ? evaluateS5FrontierObservation(expectedHeldTarget, prior)
+            : undefined;
+        const commonSiblingKeys = priorRecomputed
+          ? priorRecomputed.selectedRealSiblingTileIds
+              .filter((id) =>
+                recomputed.selectedRealSiblingTileIds.includes(id),
+              )
+              .sort()
+          : [];
+        if (
+          !firstPair &&
+          priorRecomputed?.revealEligible &&
+          recomputed?.warmEligible &&
+          commonSiblingKeys.length > 0
+        ) {
+          firstPair = {
+            sseIndex,
+            maximumScreenSpaceError: expectedSse,
+            revealStep: step - 1,
+            warmStep: step,
+            revealLatitude: prior.latitude,
+            warmLatitude: rung.latitude,
+            siblingKey: commonSiblingKeys[0],
+          };
+        }
+      }
+      if (firstPair) {
+        recomputedPair = firstPair;
+        if (
+          sseIndex !== discovery.transcripts.length - 1 ||
+          discovery.transcripts[sseIndex].ladder.length !==
+            firstPair.warmStep + 1 ||
+          JSON.stringify(transcript.firstAdjacentMatch) !==
+            JSON.stringify(firstPair)
+        ) {
+          frontierExact = false;
+        }
+      } else {
+        const possibleRungs = Math.min(
+          C12_29_S5_SCENE.frontierMaxSteps,
+          Math.floor(
+            (89 - trackLatitude) / C12_29_S5_SCENE.frontierLatitudeStepDegrees,
+          ) + 1,
+        );
+        if (
+          frontierExact &&
+          (sseIndex === discovery.transcripts.length - 1 ||
+            ladder.length !== possibleRungs ||
+            transcript?.firstAdjacentMatch !== null)
+        ) {
+          frontierExact = false;
+        }
+      }
     }
   }
-  const eligibleCandidates = recomputedCandidates.filter(
-    (candidate) => candidate.eligible,
-  );
-  const expectedHeldTarget =
-    eligibleCandidates.length === 1
-      ? eligibleCandidates[0].candidate
-      : undefined;
   if (
-    !candidateContractExact ||
-    eligibleCandidates.length !== 1 ||
-    !expectedHeldTarget ||
-    c?.holdTarget?.level !== 1 ||
-    c?.holdTarget?.key !== expectedHeldTarget?.key ||
-    c?.holdTarget?.anchorKey !== expectedHeldTarget?.anchorKey ||
-    c?.holdTarget?.parentKey !== expectedHeldTarget?.parentKey ||
-    c?.holdTarget?.edge !== expectedHeldTarget?.edge ||
-    c?.holdTarget?.targetX !== expectedHeldTarget?.targetX ||
-    c?.holdTarget?.targetY !== expectedHeldTarget?.targetY ||
-    c?.holdTarget?.derivation !== expectedHeldTarget?.derivation ||
-    !sameArrayMembers(
-      c?.holdTarget?.siblingKeys,
-      expectedHeldTarget?.siblingKeys,
-    ) ||
-    !Object.is(
-      c?.holdTarget?.distanceDegrees,
-      expectedHeldTarget?.distanceDegrees,
-    ) ||
+    !frontierExact ||
+    !recomputedPair ||
+    ![
+      "sseIndex",
+      "maximumScreenSpaceError",
+      "revealStep",
+      "warmStep",
+      "revealLatitude",
+      "warmLatitude",
+      "siblingKey",
+    ].every((key) => Object.is(discovery?.[key], recomputedPair?.[key]))
+  ) {
+    structural.push(
+      `${renderer}: level-one SSE/latitude frontier transcript is not the first exact adjacent match`,
+    );
+  }
+  const warmSiblingExact =
+    Array.isArray(warmup?.selectedRealSiblingObservations) &&
+    warmup?.selectedRealSiblingTileIds?.includes(recomputedPair?.siblingKey) &&
+    warmup.selectedRealSiblingObservations.some((selection) =>
+      exactSelectionObservation(
+        selection,
+        recomputedPair?.siblingKey,
+        2,
+        "RENDERED",
+      ),
+    );
+  const revealSiblingExact =
+    Array.isArray(firstReveal?.selectedRealSiblingObservations) &&
+    firstReveal?.selectedRealSiblingTileIds?.includes(
+      recomputedPair?.siblingKey,
+    ) &&
+    firstReveal.selectedRealSiblingObservations.some((selection) =>
+      exactSelectionObservation(
+        selection,
+        recomputedPair?.siblingKey,
+        2,
+        "RENDERED",
+      ),
+    );
+  if (
+    !exactTarget(c?.holdTarget) ||
+    warmup?.proofCompletedBeforeArm !== true ||
     warmup?.settled !== true ||
     warmup?.boundedMaxFrames !== 300 ||
     !Number.isInteger(warmup?.settleFrames) ||
@@ -916,71 +1199,116 @@ function validateSession(session, runId, structural, failures) {
     !Number.isInteger(warmup?.stableFrames) ||
     warmup.stableFrames < 3 ||
     warmup?.tilesLoaded !== true ||
-    !Number.isFinite(warmup?.cameraFovDegrees) ||
-    Math.abs(warmup.cameraFovDegrees - C12_29_S5_SCENE.warmupCameraFovDegrees) >
+    warmup?.fillCount !== 0 ||
+    !Object.is(warmup?.longitude, session.fixture.deepestTrack.longitude) ||
+    !Object.is(warmup?.latitude, recomputedPair?.warmLatitude) ||
+    Math.abs(warmup?.cameraHeightMeters - C12_29_S5_SCENE.cameraHeightMeters) >
+      1e-3 ||
+    Math.abs(warmup?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) >
       1e-12 ||
     warmup?.maximumScreenSpaceError !==
-      C12_29_S5_SCENE.terrainMaximumScreenSpaceError ||
+      recomputedPair?.maximumScreenSpaceError ||
     warmup?.preloadSiblings !== false ||
-    warmup?.fillCount !== 0 ||
+    warmup?.preloadAncestors !== false ||
     warmup?.holdTargetUndefinedDuringWarmup !== true ||
     warmup?.holdInterceptionEnabled !== false ||
     warmup?.heldRequestCount !== 0 ||
     warmup?.reservedPromiseCount !== 0 ||
-    warmup?.candidateDerivation !==
-      "all-valid-cardinal-level-1-neighbors-then-post-warmup-eligibility" ||
-    !sameArrayMembers(warmup?.eligibleCandidateKeys, [
+    warmup?.targetKey !== expectedHeldTarget?.key ||
+    warmup?.targetRequestAttempts !== 0 ||
+    warmup?.targetHeldPromisePresent !== false ||
+    warmup?.targetReservedPromisePresent !== false ||
+    !exactSortedUniqueStrings(warmup?.targetSelectedDescendantTileIds) ||
+    warmup.targetSelectedDescendantTileIds.length !== 0 ||
+    !exactSortedUniqueStrings(warmup?.targetRealDescendantTileIds) ||
+    warmup.targetRealDescendantTileIds.length !== 0 ||
+    !exactSortedUniqueStrings(warmup?.targetFillDescendantTileIds) ||
+    warmup.targetFillDescendantTileIds.length !== 0 ||
+    !exactSelectionObservation(
+      warmup?.targetSelection,
       expectedHeldTarget?.key,
-    ]) ||
-    !Array.isArray(warmup?.selectedTileIds) ||
-    !Array.isArray(warmup?.realTileIds) ||
-    !Array.isArray(warmup?.fillTileIds) ||
+      1,
+      "CULLED",
+    ) ||
+    warmup?.frontierSiblingKey !== recomputedPair?.siblingKey ||
+    !warmSiblingExact ||
     holdArm?.afterSettledWarmup !== true ||
-    holdArm?.assignedAfterCandidateSnapshot !== true ||
+    holdArm?.assignedAfterWarmProof !== true ||
+    holdArm?.warmProofFrame !== warmup?.targetSelection?.selectionFrame ||
     holdArm?.targetKey !== expectedHeldTarget?.key ||
     holdArm?.holdInterceptionEnabledBefore !== false ||
     holdArm?.holdInterceptionEnabledAfter !== true ||
     holdArm?.targetRequestAttemptsBefore !== 0 ||
     holdArm?.targetReservedBefore !== false ||
     holdArm?.heldRequestCountBefore !== 0 ||
-    !Number.isFinite(holdArm?.cameraFovDegreesBefore) ||
-    Math.abs(
-      holdArm.cameraFovDegreesBefore - C12_29_S5_SCENE.warmupCameraFovDegrees,
-    ) > 1e-12 ||
-    !Number.isFinite(holdArm?.cameraFovDegreesAfter) ||
-    Math.abs(holdArm.cameraFovDegreesAfter - C12_29_S5_SCENE.cameraFovDegrees) >
+    !Object.is(holdArm?.warmLatitude, recomputedPair?.warmLatitude) ||
+    !Object.is(holdArm?.revealLatitude, recomputedPair?.revealLatitude) ||
+    holdArm?.latitudePanDegrees !==
+      -C12_29_S5_SCENE.frontierLatitudeStepDegrees ||
+    Math.abs(holdArm?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) >
       1e-12 ||
-    c?.settled !== true ||
+    Math.abs(holdArm?.cameraHeightMeters - C12_29_S5_SCENE.cameraHeightMeters) >
+      1e-3 ||
+    holdArm?.maximumScreenSpaceError !==
+      recomputedPair?.maximumScreenSpaceError ||
+    firstReveal?.captureWasFirstRenderAfterPan !== true ||
+    firstReveal?.noYieldBeforeCapture !== true ||
+    firstReveal?.frameDelta !== 1 ||
+    firstReveal?.frameAfter !== firstReveal?.frameBefore + 1 ||
+    !Object.is(
+      firstReveal?.longitude,
+      session.fixture.deepestTrack.longitude,
+    ) ||
+    !Object.is(firstReveal?.latitude, recomputedPair?.revealLatitude) ||
+    Math.abs(
+      firstReveal?.cameraHeightMeters - C12_29_S5_SCENE.cameraHeightMeters,
+    ) > 1e-3 ||
+    Math.abs(firstReveal?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) >
+      1e-12 ||
+    firstReveal?.maximumScreenSpaceError !==
+      recomputedPair?.maximumScreenSpaceError ||
+    firstReveal?.targetRequestAttemptsBefore !== 0 ||
+    firstReveal?.targetRequestAttemptsAfter !== 1 ||
+    firstReveal?.postArmTargetRequestAttempts !== 1 ||
+    !exactSelectionObservation(
+      firstReveal?.targetSelection,
+      expectedHeldTarget?.key,
+      2,
+      "RENDERED",
+    ) ||
+    !exactSortedUniqueStrings(
+      firstReveal?.targetSelectedStrictDescendantTileIds,
+    ) ||
+    firstReveal.targetSelectedStrictDescendantTileIds.length !== 0 ||
+    firstReveal?.frontierSiblingKey !== recomputedPair?.siblingKey ||
+    !revealSiblingExact ||
+    firstReveal?.heldRequestCount !== 1 ||
+    firstReveal?.heldKeys?.length !== 1 ||
+    firstReveal.heldKeys[0] !== expectedHeldTarget?.key ||
+    firstReveal?.loadedAndFillFlags !== true ||
+    firstReveal?.targetSelected !== true ||
+    firstReveal?.targetFill !== true ||
     c?.holdInterceptionEnabled !== true ||
-    !Number.isFinite(c?.cameraFovDegrees) ||
-    Math.abs(c.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) > 1e-12 ||
-    c?.maximumScreenSpaceError !==
-      C12_29_S5_SCENE.terrainMaximumScreenSpaceError ||
+    Math.abs(c?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) > 1e-12 ||
+    c?.maximumScreenSpaceError !== recomputedPair?.maximumScreenSpaceError ||
     c?.preloadSiblings !== false ||
     c?.holdTargetReserved !== true ||
-    !Number.isInteger(c?.holdTargetRequestAttemptsAfterArm) ||
-    c.holdTargetRequestAttemptsAfterArm !== 1 ||
+    c?.holdTargetRequestAttemptsAfterArm !== 1 ||
     c?.heldRequestCount !== 1 ||
     c?.heldKeys?.length !== 1 ||
-    c?.heldKeys?.[0] !== expectedHeldTarget?.key ||
-    !(c?.fillCount > 0) ||
+    c.heldKeys[0] !== expectedHeldTarget?.key ||
+    c?.fillCount < 1 ||
     c?.loadedAndFillFlags !== true ||
-    !Array.isArray(c?.fillTileIds) ||
-    c.fillTileIds.length === 0 ||
-    !c.fillTileIds.includes(expectedHeldTarget.key) ||
-    !c?.selectedTileIds?.includes(expectedHeldTarget.key) ||
+    !c?.fillTileIds?.includes(expectedHeldTarget?.key) ||
+    !c?.selectedTileIds?.includes(expectedHeldTarget?.key) ||
     c?.heldTargetIntersectsSelectedFill !== true ||
-    !Array.isArray(c?.realSiblingTileIds) ||
-    c.realSiblingTileIds.length === 0 ||
-    !c.realSiblingTileIds.every(
-      (id) =>
-        expectedHeldTarget.siblingKeys.includes(levelOneAncestorKey(id)) &&
-        c?.realTileIds?.includes(id) &&
-        c?.selectedTileIds?.includes(id),
-    )
+    !c?.realSiblingTileIds?.includes(recomputedPair?.siblingKey) ||
+    !c?.realTileIds?.includes(recomputedPair?.siblingKey) ||
+    !c?.selectedTileIds?.includes(recomputedPair?.siblingKey) ||
+    c?.heldTargetDecodedBeforeRelease !== true
   ) {
     structural.push(
-      `${renderer}: exactly one derived level-one hold did not intersect a selected TerrainFillMesh`,
+      `${renderer}: first reveal did not produce exactly one direct level-one held TerrainFillMesh`,
     );
   }
   if (
@@ -1011,6 +1339,7 @@ function validateSession(session, runId, structural, failures) {
   }
 
   const d = phases["D-real-x1"];
+  const trackRestore = d?.trackRestore;
   if (
     d?.holdTargetKey !== c?.holdTarget?.key ||
     d?.holdInterceptionEnabled !== false ||
@@ -1037,7 +1366,34 @@ function validateSession(session, runId, structural, failures) {
     d?.transitionObservation?.renderedReal !== true ||
     d?.transitionObservation?.renderedFill !== false ||
     !Number.isInteger(d?.transitionObservation?.frame) ||
-    d.transitionObservation.frame < 1
+    d.transitionObservation.frame < 1 ||
+    trackRestore?.settled !== true ||
+    trackRestore?.boundedMaxFrames !== 240 ||
+    !Number.isInteger(trackRestore?.settleFrames) ||
+    trackRestore.settleFrames < 1 ||
+    trackRestore.settleFrames > trackRestore.boundedMaxFrames ||
+    !Number.isInteger(trackRestore?.stableFrames) ||
+    trackRestore.stableFrames < 3 ||
+    Math.abs(trackRestore?.longitude - session.fixture.deepestTrack.longitude) >
+      1e-12 ||
+    Math.abs(trackRestore?.latitude - session.fixture.deepestTrack.latitude) >
+      1e-12 ||
+    !Object.is(
+      trackRestore?.targetLongitude,
+      session.fixture.deepestTrack.longitude,
+    ) ||
+    !Object.is(
+      trackRestore?.targetLatitude,
+      session.fixture.deepestTrack.latitude,
+    ) ||
+    Math.abs(
+      trackRestore?.cameraHeightMeters - C12_29_S5_SCENE.cameraHeightMeters,
+    ) > 1e-3 ||
+    Math.abs(
+      trackRestore?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees,
+    ) > 1e-12 ||
+    trackRestore?.maximumScreenSpaceError !==
+      C12_29_S5_SCENE.terrainMaximumScreenSpaceError
   ) {
     failures.push(
       `${renderer}: held fill did not transition to real x1 terrain`,
@@ -1163,6 +1519,7 @@ function validateSession(session, runId, structural, failures) {
           (label) => typeof label === "string" && label.length > 0,
         ) &&
         Array.isArray(proof?.ownerTileIds) &&
+        exactSortedUniqueStrings(proof.ownerTileIds) &&
         proof.ownerTileIds.length > 0 &&
         Number.isInteger(proof?.frameNumber)
       );
@@ -1171,10 +1528,28 @@ function validateSession(session, runId, structural, failures) {
       webgpuCommandPrewarm?.applicable !== true ||
       !validCarrierState(webgpuCommandPrewarm?.off, "OFF", false) ||
       !validCarrierState(webgpuCommandPrewarm?.on, "ON", true) ||
+      !exactSortedUniqueStrings(webgpuCommandPrewarm?.expectedOwnerTileIds) ||
+      !sameArrayMembers(
+        webgpuCommandPrewarm?.expectedOwnerTileIds,
+        e?.selectedTileIds,
+      ) ||
+      !sameArrayMembers(
+        webgpuCommandPrewarm?.off?.ownerTileIds,
+        e?.selectedTileIds,
+      ) ||
+      !sameArrayMembers(
+        webgpuCommandPrewarm?.on?.ownerTileIds,
+        e?.selectedTileIds,
+      ) ||
       webgpuCommandPrewarm?.sameMaterializedPipelines !== true ||
       !sameArrayMembers(
         webgpuCommandPrewarm?.off?.pipelineIdentityIds,
         webgpuCommandPrewarm?.on?.pipelineIdentityIds,
+      ) ||
+      webgpuCommandPrewarm?.offBeforeOn !== true ||
+      !(
+        webgpuCommandPrewarm?.off?.frameNumber <
+        webgpuCommandPrewarm?.on?.frameNumber
       ) ||
       webgpuCommandPrewarm?.terminalCapturesAfterPrewarm?.off !== true ||
       webgpuCommandPrewarm?.terminalCapturesAfterPrewarm?.on !== true

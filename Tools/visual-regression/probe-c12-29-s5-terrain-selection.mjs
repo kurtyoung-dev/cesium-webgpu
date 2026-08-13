@@ -2280,46 +2280,6 @@ const MEASURE_S5_SESSION = async (contract) => {
     const divisor = 2 ** (level - 1);
     return `1/${Math.floor(x / divisor)}/${Math.floor(y / divisor)}`;
   };
-  const evaluateHoldCandidateObservation = (
-    candidate,
-    observation,
-    snapshot,
-  ) => {
-    const selected = new Set(snapshot.selectedTileIds);
-    const selectedDescendantTileIds = snapshot.selectedTileIds
-      .filter((id) => levelOneAncestorId(id) === candidate.key)
-      .sort();
-    const realDescendantTileIds = snapshot.realTileIds
-      .filter((id) => levelOneAncestorId(id) === candidate.key)
-      .sort();
-    const fillDescendantTileIds = snapshot.fillTileIds
-      .filter((id) => levelOneAncestorId(id) === candidate.key)
-      .sort();
-    const selectedRealSiblingTileIds = snapshot.realTileIds
-      .filter(
-        (id) =>
-          selected.has(id) &&
-          candidate.siblingKeys.includes(levelOneAncestorId(id)),
-      )
-      .sort();
-    const eligibility = {
-      requestUnseen: observation.requestAttempts === 0,
-      noHeldPromise: observation.heldPromisePresent === false,
-      noReservedPromise: observation.reservedPromisePresent === false,
-      noSelectedDescendant: selectedDescendantTileIds.length === 0,
-      noRealDescendant: realDescendantTileIds.length === 0,
-      noFillDescendant: fillDescendantTileIds.length === 0,
-      hasSelectedRealSibling: selectedRealSiblingTileIds.length > 0,
-    };
-    return {
-      selectedDescendantTileIds,
-      realDescendantTileIds,
-      fillDescendantTileIds,
-      selectedRealSiblingTileIds,
-      eligibility,
-      eligible: Object.values(eligibility).every(Boolean),
-    };
-  };
   const getTileProvider = () =>
     globe._surface?.tileProvider ?? globe._surface?._tileProvider;
   const selectedTiles = () => [...(globe._surface?._tilesToRender ?? [])];
@@ -2339,7 +2299,7 @@ const MEASURE_S5_SESSION = async (contract) => {
       if (data?.terrainData instanceof C.QuantizedMeshTerrainData) {
         decodedQuantizedMeshCount++;
       }
-      if (data?.mesh) {
+      if (data?.mesh && data?.renderedMesh === data.mesh) {
         realMeshCount++;
         realTileIds.push(id);
       }
@@ -2371,6 +2331,78 @@ const MEASURE_S5_SESSION = async (contract) => {
       contentRevision: provider?._sceneCaptureContentRevision ?? null,
     };
   };
+  const findInstantiatedTile = (id) => {
+    const match = /^(\d+)\/(\d+)\/(\d+)$/u.exec(id ?? "");
+    if (!match) return undefined;
+    const [level, x, y] = match.slice(1).map(Number);
+    const quadtree = globe._surface?._levelZeroTiles
+      ? globe._surface
+      : getTileProvider()?._quadtree;
+    const pending = [...(quadtree?._levelZeroTiles ?? [])];
+    while (pending.length > 0) {
+      const tile = pending.pop();
+      if (tile?.level === level && tile?.x === x && tile?.y === y) return tile;
+      if ((tile?.level ?? level) >= level) continue;
+      for (const key of [
+        "_southwestChild",
+        "_southeastChild",
+        "_northwestChild",
+        "_northeastChild",
+      ]) {
+        if (tile?.[key]) pending.push(tile[key]);
+      }
+    }
+    return undefined;
+  };
+  const tileSelectionObservation = (id) => {
+    const tile = findInstantiatedTile(id);
+    const quadtree = getTileProvider()?._quadtree ?? globe._surface;
+    const selectionFrame = quadtree?._lastSelectionFrameNumber ?? null;
+    const resultFrame = tile?._lastSelectionResultFrame ?? null;
+    const sameFrame =
+      Number.isInteger(selectionFrame) && resultFrame === selectionFrame;
+    const rawResult = sameFrame
+      ? tile?._lastSelectionResult
+      : C.TileSelectionResult.NONE;
+    const originalResult = C.TileSelectionResult.originalResult(rawResult);
+    const resultName = (value) =>
+      ["NONE", "CULLED", "RENDERED", "REFINED"].find(
+        (name) => C.TileSelectionResult[name] === value,
+      ) ?? "UNKNOWN";
+    return {
+      tileId: id,
+      instantiated: Boolean(tile),
+      selectionFrame,
+      resultFrame,
+      sameFrame,
+      rawResult,
+      rawResultName:
+        rawResult === C.TileSelectionResult.CULLED_BUT_NEEDED
+          ? "CULLED_BUT_NEEDED"
+          : rawResult === C.TileSelectionResult.RENDERED_AND_KICKED
+            ? "RENDERED_AND_KICKED"
+            : rawResult === C.TileSelectionResult.REFINED_AND_KICKED
+              ? "REFINED_AND_KICKED"
+              : resultName(rawResult),
+      originalResult,
+      originalResultName: resultName(originalResult),
+      wasKicked: C.TileSelectionResult.wasKicked(rawResult),
+    };
+  };
+  const selectedRealSiblingObservations = (target, snapshot) =>
+    snapshot.realTileIds
+      .filter(
+        (id) =>
+          snapshot.selectedTileIds.includes(id) &&
+          target.siblingKeys.includes(id),
+      )
+      .map(tileSelectionObservation)
+      .filter(
+        (observation) =>
+          observation.sameFrame &&
+          observation.originalResult === C.TileSelectionResult.RENDERED &&
+          !observation.wasKicked,
+      );
   const settleTerrain = async (predicate, maxFrames = 240) => {
     let latest;
     let stable = 0;
@@ -2515,15 +2547,21 @@ const MEASURE_S5_SESSION = async (contract) => {
       `deepest named-event track is too shallow: ${track?.magnitude}`,
     );
   }
-  scene.camera.setView({
-    destination: C.Cartesian3.fromDegrees(
-      track.longitude,
-      track.latitude,
-      contract.cameraHeightMeters,
-    ),
-    orientation: { heading: 0, pitch: -C.Math.PI_OVER_TWO, roll: 0 },
-  });
+  const setNadirCamera = (latitude) => {
+    scene.camera.setView({
+      destination: C.Cartesian3.fromDegrees(
+        track.longitude,
+        latitude,
+        contract.cameraHeightMeters,
+      ),
+      orientation: { heading: 0, pitch: -C.Math.PI_OVER_TWO, roll: 0 },
+    });
+  };
+  setNadirCamera(track.latitude);
   scene.camera.frustum.fov = C.Math.toRadians(contract.cameraFovDegrees);
+  globe.maximumScreenSpaceError = contract.terrainMaximumScreenSpaceError;
+  globe.preloadSiblings = false;
+  globe.preloadAncestors = false;
 
   const phases = {};
   markProgress(contract.phases[0], "settle-start");
@@ -2531,12 +2569,224 @@ const MEASURE_S5_SESSION = async (contract) => {
     (state) => state.tilesLoaded && state.selectedCount > 0,
     180,
   );
+  const ellipsoidTilingScheme = scene.terrainProvider.tilingScheme;
+  const heldLevel = 1;
+  const trackPosition = C.Cartographic.fromDegrees(
+    track.longitude,
+    track.latitude,
+  );
+  const anchorTile = ellipsoidTilingScheme.positionToTileXY(
+    trackPosition,
+    heldLevel,
+  );
+  const levelOneXTiles =
+    ellipsoidTilingScheme.getNumberOfXTilesAtLevel(heldLevel);
+  const levelOneYTiles =
+    ellipsoidTilingScheme.getNumberOfYTilesAtLevel(heldLevel);
+  if (
+    levelOneXTiles !== 4 ||
+    levelOneYTiles !== 2 ||
+    anchorTile.y + 1 >= levelOneYTiles
+  ) {
+    throw new Error("S5 south level-one frontier target is unavailable");
+  }
+  const targetX = anchorTile.x;
+  const targetY = anchorTile.y + 1;
+  const targetParentX = Math.floor(targetX / 2);
+  const targetParentY = Math.floor(targetY / 2);
+  const siblingKeys = [];
+  for (let y = targetParentY * 2; y < targetParentY * 2 + 2; y++) {
+    for (let x = targetParentX * 2; x < targetParentX * 2 + 2; x++) {
+      if (x !== targetX || y !== targetY) {
+        siblingKeys.push(`${heldLevel}/${x}/${y}`);
+      }
+    }
+  }
+  siblingKeys.sort();
+  const frontierTarget = {
+    level: heldLevel,
+    anchorKey: `${heldLevel}/${anchorTile.x}/${anchorTile.y}`,
+    parentKey: `0/${targetParentX}/${targetParentY}`,
+    key: `${heldLevel}/${targetX}/${targetY}`,
+    edge: "south",
+    targetX,
+    targetY,
+    distanceDegrees: Math.abs(track.latitude - (90 - (anchorTile.y + 1) * 90)),
+    derivation: "south-level-1-anchor-neighbor",
+    siblingKeys,
+  };
+  const observeFrontierRung = (settled, sseIndex, step, latitude) => {
+    const targetSelectedDescendantTileIds = settled.selectedTileIds
+      .filter((id) => levelOneAncestorId(id) === frontierTarget.key)
+      .sort();
+    const targetRealDescendantTileIds = settled.realTileIds
+      .filter((id) => levelOneAncestorId(id) === frontierTarget.key)
+      .sort();
+    const targetFillDescendantTileIds = settled.fillTileIds
+      .filter((id) => levelOneAncestorId(id) === frontierTarget.key)
+      .sort();
+    const targetSelectedStrictDescendantTileIds =
+      targetSelectedDescendantTileIds.filter((id) => id !== frontierTarget.key);
+    const targetRealStrictDescendantTileIds =
+      targetRealDescendantTileIds.filter((id) => id !== frontierTarget.key);
+    const targetFillStrictDescendantTileIds =
+      targetFillDescendantTileIds.filter((id) => id !== frontierTarget.key);
+    const targetSelection = tileSelectionObservation(frontierTarget.key);
+    const siblingSelections = selectedRealSiblingObservations(
+      frontierTarget,
+      settled,
+    );
+    const selectedRealSiblingTileIds = siblingSelections
+      .map((entry) => entry.tileId)
+      .sort();
+    const noStrictDescendants =
+      targetSelectedStrictDescendantTileIds.length === 0 &&
+      targetRealStrictDescendantTileIds.length === 0 &&
+      targetFillStrictDescendantTileIds.length === 0;
+    const targetBranchAbsent =
+      targetSelectedDescendantTileIds.length === 0 &&
+      targetRealDescendantTileIds.length === 0 &&
+      targetFillDescendantTileIds.length === 0;
+    return {
+      sseIndex,
+      step,
+      longitude: track.longitude,
+      latitude,
+      cameraHeightMeters: scene.camera.positionCartographic.height,
+      cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
+      maximumScreenSpaceError: globe.maximumScreenSpaceError,
+      preloadSiblings: globe.preloadSiblings,
+      preloadAncestors: globe.preloadAncestors,
+      settled: settled.settled,
+      settleFrames: settled.settleFrames,
+      stableFrames: settled.stableFrames,
+      tilesLoaded: settled.tilesLoaded,
+      selectedTileIds: settled.selectedTileIds,
+      realTileIds: settled.realTileIds,
+      fillTileIds: settled.fillTileIds,
+      targetSelectedDescendantTileIds,
+      targetRealDescendantTileIds,
+      targetFillDescendantTileIds,
+      targetSelectedStrictDescendantTileIds,
+      targetRealStrictDescendantTileIds,
+      targetFillStrictDescendantTileIds,
+      targetSelection,
+      selectedRealSiblingTileIds,
+      selectedRealSiblingObservations: siblingSelections,
+      targetSelected: settled.selectedTileIds.includes(frontierTarget.key),
+      targetReal: settled.realTileIds.includes(frontierTarget.key),
+      targetFill: settled.fillTileIds.includes(frontierTarget.key),
+      noStrictDescendants,
+      targetBranchAbsent,
+      revealEligible:
+        settled.settled &&
+        settled.tilesLoaded &&
+        settled.selectedTileIds.includes(frontierTarget.key) &&
+        settled.realTileIds.includes(frontierTarget.key) &&
+        !settled.fillTileIds.includes(frontierTarget.key) &&
+        noStrictDescendants &&
+        targetSelection.sameFrame &&
+        targetSelection.rawResult === C.TileSelectionResult.RENDERED &&
+        !targetSelection.wasKicked &&
+        siblingSelections.length > 0,
+      warmEligible:
+        settled.settled &&
+        settled.tilesLoaded &&
+        targetBranchAbsent &&
+        targetSelection.sameFrame &&
+        targetSelection.rawResult === C.TileSelectionResult.CULLED &&
+        !targetSelection.wasKicked &&
+        siblingSelections.length > 0,
+    };
+  };
+  const frontierTranscripts = [];
+  let frontierPair;
+  for (
+    let sseIndex = 0;
+    sseIndex < contract.frontierScreenSpaceErrorCandidates.length;
+    sseIndex++
+  ) {
+    const maximumScreenSpaceError =
+      contract.frontierScreenSpaceErrorCandidates[sseIndex];
+    globe.maximumScreenSpaceError = maximumScreenSpaceError;
+    const ladder = [];
+    const transcript = {
+      sseIndex,
+      maximumScreenSpaceError,
+      ladder,
+      firstAdjacentMatch: null,
+    };
+    frontierTranscripts.push(transcript);
+    for (let step = 0; step < contract.frontierMaxSteps; step++) {
+      const latitude =
+        track.latitude + step * contract.frontierLatitudeStepDegrees;
+      if (latitude > 89) break;
+      setNadirCamera(latitude);
+      const settled = await settleTerrain(
+        (state) => state.tilesLoaded && state.fillCount === 0,
+        contract.frontierSettleMaxFrames,
+      );
+      const observation = observeFrontierRung(
+        settled,
+        sseIndex,
+        step,
+        latitude,
+      );
+      ladder.push(observation);
+      const prior = ladder.at(-2);
+      const commonSiblingKeys = prior
+        ? prior.selectedRealSiblingTileIds.filter((id) =>
+            observation.selectedRealSiblingTileIds.includes(id),
+          )
+        : [];
+      if (
+        prior?.revealEligible &&
+        observation.warmEligible &&
+        commonSiblingKeys.length > 0
+      ) {
+        frontierPair = {
+          sseIndex,
+          maximumScreenSpaceError,
+          revealStep: prior.step,
+          warmStep: observation.step,
+          revealLatitude: prior.latitude,
+          warmLatitude: observation.latitude,
+          siblingKey: commonSiblingKeys.sort()[0],
+        };
+        transcript.firstAdjacentMatch = { ...frontierPair };
+        break;
+      }
+    }
+    if (frontierPair) break;
+  }
+  if (!frontierPair) {
+    throw new Error(
+      "level-one SSE/latitude reveal-warm frontier was not found",
+    );
+  }
   phases[contract.phases[0]] = {
     provider: "EllipsoidTerrainProvider",
     stable: a.settled,
     tilesLoaded: a.tilesLoaded,
     selectedCount: a.selectedCount,
     selectedTileIds: a.selectedTileIds,
+    frontierDiscovery: {
+      derivation: "south-level-1-sse-major-north-latitude-adjacent-frontier",
+      target: frontierTarget,
+      screenSpaceErrorCandidates: [
+        ...contract.frontierScreenSpaceErrorCandidates,
+      ],
+      latitudeStepDegrees: contract.frontierLatitudeStepDegrees,
+      maxSteps: contract.frontierMaxSteps,
+      settleMaxFrames: contract.frontierSettleMaxFrames,
+      direction: "north",
+      cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
+      cameraHeightMeters: contract.cameraHeightMeters,
+      preloadSiblings: globe.preloadSiblings,
+      preloadAncestors: globe.preloadAncestors,
+      transcripts: frontierTranscripts,
+      ...frontierPair,
+    },
   };
   completePhase(contract.phases[0], {
     settled: a.settled,
@@ -2547,89 +2797,25 @@ const MEASURE_S5_SESSION = async (contract) => {
   markProgress(contract.phases[1], "fixture-provider-create");
   const quantizedUrl = new URL(contract.fixtureRoute, location.origin).href;
   const quantizedProvider = await C.CesiumTerrainProvider.fromUrl(quantizedUrl);
-  globe.maximumScreenSpaceError = contract.terrainMaximumScreenSpaceError;
+  globe.maximumScreenSpaceError = frontierPair.maximumScreenSpaceError;
   globe.preloadSiblings = false;
-  scene.camera.frustum.fov = C.Math.toRadians(contract.warmupCameraFovDegrees);
-  const heldLevel = 1;
+  globe.preloadAncestors = false;
+  scene.camera.frustum.fov = C.Math.toRadians(contract.cameraFovDegrees);
+  setNadirCamera(frontierPair.warmLatitude);
   const tilingScheme = quantizedProvider.tilingScheme;
-  const levelOneXTiles = tilingScheme.getNumberOfXTilesAtLevel(heldLevel);
-  const levelOneYTiles = tilingScheme.getNumberOfYTilesAtLevel(heldLevel);
-  if (levelOneXTiles !== 4 || levelOneYTiles !== 2) {
+  const quantizedAnchor = tilingScheme.positionToTileXY(
+    trackPosition,
+    heldLevel,
+  );
+  if (
+    tilingScheme.getNumberOfXTilesAtLevel(heldLevel) !== 4 ||
+    tilingScheme.getNumberOfYTilesAtLevel(heldLevel) !== 2 ||
+    quantizedAnchor.x !== anchorTile.x ||
+    quantizedAnchor.y !== anchorTile.y
+  ) {
     throw new Error("S5 QuantizedMesh fixture is not level-one 4x2 geographic");
   }
-  const trackPosition = C.Cartographic.fromDegrees(
-    track.longitude,
-    track.latitude,
-  );
-  const anchorTile = tilingScheme.positionToTileXY(trackPosition, heldLevel);
   let holdTarget;
-  const tileWidthDegrees = 360 / levelOneXTiles;
-  const tileHeightDegrees = 180 / levelOneYTiles;
-  const anchorWest = -180 + anchorTile.x * tileWidthDegrees;
-  const anchorEast = anchorWest + tileWidthDegrees;
-  const anchorNorth = 90 - anchorTile.y * tileHeightDegrees;
-  const anchorSouth = anchorNorth - tileHeightDegrees;
-  const holdCandidates = [];
-  const addHoldCandidate = (edge, distanceDegrees, targetX, targetY) => {
-    const parentX = Math.floor(targetX / 2);
-    const parentY = Math.floor(targetY / 2);
-    const siblingKeys = [];
-    for (let y = parentY * 2; y < parentY * 2 + 2; y++) {
-      for (let x = parentX * 2; x < parentX * 2 + 2; x++) {
-        if (x !== targetX || y !== targetY) {
-          siblingKeys.push(`${heldLevel}/${x}/${y}`);
-        }
-      }
-    }
-    siblingKeys.sort();
-    holdCandidates.push({
-      level: heldLevel,
-      anchorKey: `${heldLevel}/${anchorTile.x}/${anchorTile.y}`,
-      parentKey: `0/${parentX}/${parentY}`,
-      key: `${heldLevel}/${targetX}/${targetY}`,
-      edge,
-      targetX,
-      targetY,
-      distanceDegrees,
-      derivation: "valid-cardinal-level-1-anchor-neighbor",
-      siblingKeys,
-    });
-  };
-  if (anchorTile.x + 1 < levelOneXTiles) {
-    addHoldCandidate(
-      "east",
-      Math.abs(anchorEast - track.longitude),
-      anchorTile.x + 1,
-      anchorTile.y,
-    );
-  }
-  if (anchorTile.x > 0) {
-    addHoldCandidate(
-      "west",
-      Math.abs(track.longitude - anchorWest),
-      anchorTile.x - 1,
-      anchorTile.y,
-    );
-  }
-  if (anchorTile.y > 0) {
-    addHoldCandidate(
-      "north",
-      Math.abs(anchorNorth - track.latitude),
-      anchorTile.x,
-      anchorTile.y - 1,
-    );
-  }
-  if (anchorTile.y + 1 < levelOneYTiles) {
-    addHoldCandidate(
-      "south",
-      Math.abs(track.latitude - anchorSouth),
-      anchorTile.x,
-      anchorTile.y + 1,
-    );
-  }
-  if (holdCandidates.length === 0) {
-    throw new Error("S5 cardinal level-one candidates are unavailable");
-  }
   const realRequestTileGeometry =
     quantizedProvider.requestTileGeometry.bind(quantizedProvider);
   const held = new Map();
@@ -2637,9 +2823,7 @@ const MEASURE_S5_SESSION = async (contract) => {
   let decodedQuantizedMeshInstances = 0;
   let decodedIdentityMismatches = 0;
   let holdEnabled = false;
-  const requestAttemptsByKey = new Map(
-    holdCandidates.map((candidate) => [candidate.key, 0]),
-  );
+  const requestAttemptsByKey = new Map([[frontierTarget.key, 0]]);
   const reservedPromises = new Set();
   quantizedProvider.requestTileGeometry = (x, y, level, request) => {
     const key = `${level}/${x}/${y}`;
@@ -2656,7 +2840,33 @@ const MEASURE_S5_SESSION = async (contract) => {
     terrainRequests.accepted++;
     const reserveHold =
       holdEnabled && key === holdTarget?.key && !reservedPromises.has(key);
-    if (reserveHold) reservedPromises.add(key);
+    let heldEntry;
+    if (reserveHold) {
+      reservedPromises.add(key);
+      terrainRequests.held++;
+      let resolveDeferred;
+      const deferred = new Promise((resolve) => {
+        resolveDeferred = resolve;
+      });
+      heldEntry = {
+        key,
+        terrainData: undefined,
+        ready: false,
+        releaseRequested: false,
+        resolveDeferred,
+        deferred,
+        release() {
+          if (this.releaseRequested) return;
+          this.releaseRequested = true;
+          terrainRequests.released++;
+          if (this.ready) {
+            terrainRequests.fulfilled++;
+            this.resolveDeferred(this.terrainData);
+          }
+        },
+      };
+      held.set(key, heldEntry);
+    }
     return Promise.resolve(requested).then(
       (terrainData) => {
         terrainRequests.decoded++;
@@ -2670,24 +2880,23 @@ const MEASURE_S5_SESSION = async (contract) => {
           minimumHeight: terrainData?._minimumHeight ?? null,
           maximumHeight: terrainData?._maximumHeight ?? null,
         });
-        if (!reserveHold) {
+        if (!heldEntry) {
           terrainRequests.fulfilled++;
           return terrainData;
         }
-        terrainRequests.held++;
-        return new Promise((resolve) => {
-          held.set(key, {
-            key,
-            terrainData,
-            resolve: (value) => {
-              terrainRequests.released++;
-              terrainRequests.fulfilled++;
-              resolve(value);
-            },
-          });
-        });
+        heldEntry.terrainData = terrainData;
+        heldEntry.ready = true;
+        if (heldEntry.releaseRequested) {
+          terrainRequests.fulfilled++;
+          heldEntry.resolveDeferred(terrainData);
+        }
+        return heldEntry.deferred;
       },
       (error) => {
+        if (heldEntry) {
+          held.delete(key);
+          reservedPromises.delete(key);
+        }
         terrainRequests.rejected++;
         terrainRequests.lastError = error?.message ?? String(error);
         throw error;
@@ -2777,122 +2986,223 @@ const MEASURE_S5_SESSION = async (contract) => {
     contentRevisionAdvanced: firstBeginFramePropagation.contentRevisionAdvanced,
   });
 
-  markProgress(contract.phases[2], "settle-narrow-real-neighbor-warmup");
-  const warmup = await settleTerrain(
-    (state) =>
+  markProgress(contract.phases[2], "settle-quantized-warm-frontier");
+  const quantizedWarm = await settleTerrain((state) => {
+    const targetSelection = tileSelectionObservation(frontierTarget.key);
+    const targetBranchAbsent = ![
+      ...state.selectedTileIds,
+      ...state.realTileIds,
+      ...state.fillTileIds,
+    ].some((id) => levelOneAncestorId(id) === frontierTarget.key);
+    const siblingSelections = selectedRealSiblingObservations(
+      frontierTarget,
+      state,
+    );
+    return (
       state.tilesLoaded &&
       state.fillCount === 0 &&
+      targetBranchAbsent &&
+      targetSelection.sameFrame &&
+      targetSelection.rawResult === C.TileSelectionResult.CULLED &&
+      !targetSelection.wasKicked &&
+      siblingSelections.some(
+        (entry) => entry.tileId === frontierPair.siblingKey,
+      ) &&
+      (requestAttemptsByKey.get(frontierTarget.key) ?? 0) === 0 &&
       holdEnabled === false &&
       holdTarget === undefined &&
       held.size === 0 &&
-      reservedPromises.size === 0,
-    300,
+      reservedPromises.size === 0
+    );
+  }, 300);
+  const warmTargetSelection = tileSelectionObservation(frontierTarget.key);
+  const warmSiblingSelections = selectedRealSiblingObservations(
+    frontierTarget,
+    quantizedWarm,
   );
-  const candidateObservations = holdCandidates.map((candidate) => {
-    const requestAttempts = requestAttemptsByKey.get(candidate.key) ?? 0;
-    const baseObservation = {
-      key: candidate.key,
-      edge: candidate.edge,
-      requestAttempts,
-      heldPromisePresent: held.has(candidate.key),
-      reservedPromisePresent: reservedPromises.has(candidate.key),
-    };
-    return {
-      ...candidate,
-      ...baseObservation,
-      ...evaluateHoldCandidateObservation(candidate, baseObservation, warmup),
-    };
-  });
-  const eligibleCandidates = candidateObservations.filter(
-    (candidate) => candidate.eligible,
+  const warmTargetSelectedDescendantTileIds =
+    quantizedWarm.selectedTileIds.filter(
+      (id) => levelOneAncestorId(id) === frontierTarget.key,
+    );
+  const warmTargetRealDescendantTileIds = quantizedWarm.realTileIds.filter(
+    (id) => levelOneAncestorId(id) === frontierTarget.key,
+  );
+  const warmTargetFillDescendantTileIds = quantizedWarm.fillTileIds.filter(
+    (id) => levelOneAncestorId(id) === frontierTarget.key,
   );
   const warmupProof = {
-    settled: warmup.settled,
+    proofCompletedBeforeArm: true,
+    settled: quantizedWarm.settled,
     boundedMaxFrames: 300,
-    settleFrames: warmup.settleFrames,
-    stableFrames: warmup.stableFrames,
-    tilesLoaded: warmup.tilesLoaded,
-    fillCount: warmup.fillCount,
+    settleFrames: quantizedWarm.settleFrames,
+    stableFrames: quantizedWarm.stableFrames,
+    tilesLoaded: quantizedWarm.tilesLoaded,
+    fillCount: quantizedWarm.fillCount,
+    longitude: track.longitude,
+    latitude: frontierPair.warmLatitude,
+    cameraHeightMeters: scene.camera.positionCartographic.height,
     cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
     maximumScreenSpaceError: globe.maximumScreenSpaceError,
     preloadSiblings: globe.preloadSiblings,
+    preloadAncestors: globe.preloadAncestors,
     holdTargetUndefinedDuringWarmup: holdTarget === undefined,
     holdInterceptionEnabled: holdEnabled,
     heldRequestCount: held.size,
     reservedPromiseCount: reservedPromises.size,
-    selectedTileIds: warmup.selectedTileIds,
-    realTileIds: warmup.realTileIds,
-    fillTileIds: warmup.fillTileIds,
-    candidateDerivation:
-      "all-valid-cardinal-level-1-neighbors-then-post-warmup-eligibility",
-    candidateObservations,
-    eligibleCandidateKeys: eligibleCandidates.map((candidate) => candidate.key),
+    targetKey: frontierTarget.key,
+    targetRequestAttempts: requestAttemptsByKey.get(frontierTarget.key) ?? 0,
+    targetHeldPromisePresent: held.has(frontierTarget.key),
+    targetReservedPromisePresent: reservedPromises.has(frontierTarget.key),
+    selectedTileIds: quantizedWarm.selectedTileIds,
+    realTileIds: quantizedWarm.realTileIds,
+    fillTileIds: quantizedWarm.fillTileIds,
+    targetSelectedDescendantTileIds: warmTargetSelectedDescendantTileIds,
+    targetRealDescendantTileIds: warmTargetRealDescendantTileIds,
+    targetFillDescendantTileIds: warmTargetFillDescendantTileIds,
+    targetSelection: warmTargetSelection,
+    selectedRealSiblingTileIds: warmSiblingSelections
+      .map((entry) => entry.tileId)
+      .sort(),
+    selectedRealSiblingObservations: warmSiblingSelections,
+    frontierSiblingKey: frontierPair.siblingKey,
   };
   if (
     !warmupProof.settled ||
+    warmupProof.targetRequestAttempts !== 0 ||
     !warmupProof.holdTargetUndefinedDuringWarmup ||
     warmupProof.heldRequestCount !== 0 ||
     warmupProof.reservedPromiseCount !== 0 ||
-    eligibleCandidates.length !== 1
+    warmTargetSelectedDescendantTileIds.length !== 0 ||
+    warmTargetRealDescendantTileIds.length !== 0 ||
+    warmTargetFillDescendantTileIds.length !== 0 ||
+    !warmTargetSelection.sameFrame ||
+    warmTargetSelection.rawResult !== C.TileSelectionResult.CULLED ||
+    warmTargetSelection.wasKicked ||
+    !warmSiblingSelections.some(
+      (entry) => entry.tileId === frontierPair.siblingKey,
+    )
   ) {
-    throw new Error(
-      `narrow-FOV warm-up produced ${eligibleCandidates.length} eligible hold candidates`,
-    );
+    throw new Error("quantized warm frontier proof is inexact");
   }
-  holdTarget = holdCandidates.find(
-    (candidate) => candidate.key === eligibleCandidates[0].key,
-  );
-  const holdSiblingKeys = holdTarget.siblingKeys;
-  markProgress(contract.phases[2], "arm-exact-hold-and-widen");
+  holdTarget = frontierTarget;
+  markProgress(contract.phases[2], "arm-exact-hold-and-reveal");
   const holdArm = {
     afterSettledWarmup: warmupProof.settled,
-    assignedAfterCandidateSnapshot: true,
+    assignedAfterWarmProof: true,
+    warmProofFrame: warmTargetSelection.selectionFrame,
     targetKey: holdTarget.key,
     holdInterceptionEnabledBefore: holdEnabled,
     targetRequestAttemptsBefore: requestAttemptsByKey.get(holdTarget.key),
     targetReservedBefore: reservedPromises.has(holdTarget.key),
     heldRequestCountBefore: held.size,
-    cameraFovDegreesBefore: C.Math.toDegrees(scene.camera.frustum.fov),
-    cameraFovDegreesAfter: contract.cameraFovDegrees,
+    warmLatitude: frontierPair.warmLatitude,
+    revealLatitude: frontierPair.revealLatitude,
+    latitudePanDegrees: frontierPair.revealLatitude - frontierPair.warmLatitude,
+    cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
+    cameraHeightMeters: scene.camera.positionCartographic.height,
+    maximumScreenSpaceError: globe.maximumScreenSpaceError,
   };
   holdEnabled = true;
-  scene.camera.frustum.fov = C.Math.toRadians(contract.cameraFovDegrees);
+  setNadirCamera(frontierPair.revealLatitude);
   holdArm.holdInterceptionEnabledAfter = holdEnabled;
 
-  markProgress(contract.phases[2], "settle-held-fill");
-  const c = await settleTerrain(
-    (state) =>
-      held.size === 1 &&
-      held.has(holdTarget.key) &&
-      state.fillTileIds.includes(holdTarget.key) &&
-      state.realTileIds.some((id) =>
-        holdSiblingKeys.includes(levelOneAncestorId(id)),
-      ) &&
-      state.loadedAndFillFlags,
-    300,
+  markProgress(
+    contract.phases[2],
+    "first-reveal-render-and-fused-fill-capture",
   );
-  const heldKeys = [...held.keys()].sort();
-  const realSiblingTileIds = c.realTileIds.filter((id) =>
-    holdSiblingKeys.includes(levelOneAncestorId(id)),
-  );
+  const targetAttemptsBeforeReveal =
+    requestAttemptsByKey.get(holdTarget.key) ?? 0;
+  const revealFrameBefore = scene.frameState.frameNumber;
   const fillImageId = captureDocumentaryPng(contract.captureLabels[0]);
+  const revealFrameAfter = scene.frameState.frameNumber;
+  const cSnapshot = snapshotTerrain();
+  const revealTargetSelection = tileSelectionObservation(holdTarget.key);
+  const revealSiblingSelections = selectedRealSiblingObservations(
+    holdTarget,
+    cSnapshot,
+  );
+  const targetAttemptsAfterReveal =
+    requestAttemptsByKey.get(holdTarget.key) ?? 0;
+  const heldKeys = [...held.keys()].sort();
+  const targetSelectedStrictDescendantTileIds =
+    cSnapshot.selectedTileIds.filter(
+      (id) =>
+        id !== holdTarget.key && levelOneAncestorId(id) === holdTarget.key,
+    );
+  const firstRevealProof = {
+    captureWasFirstRenderAfterPan: revealFrameAfter === revealFrameBefore + 1,
+    noYieldBeforeCapture: true,
+    frameBefore: revealFrameBefore,
+    frameAfter: revealFrameAfter,
+    frameDelta: revealFrameAfter - revealFrameBefore,
+    longitude: track.longitude,
+    latitude: frontierPair.revealLatitude,
+    cameraHeightMeters: scene.camera.positionCartographic.height,
+    cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
+    maximumScreenSpaceError: globe.maximumScreenSpaceError,
+    targetRequestAttemptsBefore: targetAttemptsBeforeReveal,
+    targetRequestAttemptsAfter: targetAttemptsAfterReveal,
+    postArmTargetRequestAttempts:
+      targetAttemptsAfterReveal - targetAttemptsBeforeReveal,
+    targetSelection: revealTargetSelection,
+    targetSelectedStrictDescendantTileIds,
+    selectedRealSiblingTileIds: revealSiblingSelections
+      .map((entry) => entry.tileId)
+      .sort(),
+    selectedRealSiblingObservations: revealSiblingSelections,
+    frontierSiblingKey: frontierPair.siblingKey,
+    heldKeys,
+    heldRequestCount: held.size,
+    loadedAndFillFlags: cSnapshot.loadedAndFillFlags,
+    targetSelected: cSnapshot.selectedTileIds.includes(holdTarget.key),
+    targetFill: cSnapshot.fillTileIds.includes(holdTarget.key),
+  };
+  if (
+    !firstRevealProof.captureWasFirstRenderAfterPan ||
+    firstRevealProof.postArmTargetRequestAttempts !== 1 ||
+    heldKeys.length !== 1 ||
+    heldKeys[0] !== holdTarget.key ||
+    !reservedPromises.has(holdTarget.key) ||
+    !revealTargetSelection.sameFrame ||
+    revealTargetSelection.rawResult !== C.TileSelectionResult.RENDERED ||
+    revealTargetSelection.wasKicked ||
+    !firstRevealProof.targetSelected ||
+    !firstRevealProof.targetFill ||
+    targetSelectedStrictDescendantTileIds.length !== 0 ||
+    !revealSiblingSelections.some(
+      (entry) => entry.tileId === frontierPair.siblingKey,
+    ) ||
+    !cSnapshot.loadedAndFillFlags
+  ) {
+    throw new Error(
+      "first reveal render did not produce the exact held L1 fill",
+    );
+  }
+  let heldDecodeWaitFrames = 0;
+  while (!held.get(holdTarget.key)?.ready && heldDecodeWaitFrames < 120) {
+    heldDecodeWaitFrames++;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
   phases[contract.phases[2]] = {
-    ...c,
+    ...cSnapshot,
     holdTarget,
     warmup: warmupProof,
     holdArm,
+    firstRevealProof,
     holdInterceptionEnabled: holdEnabled,
     cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
     maximumScreenSpaceError: globe.maximumScreenSpaceError,
     preloadSiblings: globe.preloadSiblings,
-    holdTargetRequestAttemptsAfterArm: requestAttemptsByKey.get(holdTarget.key),
+    holdTargetRequestAttemptsAfterArm: targetAttemptsAfterReveal,
     holdTargetReserved: reservedPromises.has(holdTarget.key),
     heldRequestCount: held.size,
     heldKeys,
     heldTargetIntersectsSelectedFill:
-      c.selectedTileIds.includes(holdTarget.key) &&
-      c.fillTileIds.includes(holdTarget.key),
-    realSiblingTileIds,
+      cSnapshot.selectedTileIds.includes(holdTarget.key) &&
+      cSnapshot.fillTileIds.includes(holdTarget.key),
+    realSiblingTileIds: firstRevealProof.selectedRealSiblingTileIds,
+    heldDecodeWaitFrames,
+    heldTargetDecodedBeforeRelease: held.get(holdTarget.key)?.ready === true,
     decodedFixtureIdentity:
       decodedQuantizedMeshInstances > 0 && decodedIdentityMismatches === 0
         ? "QuantizedMeshTerrainData-instance"
@@ -2905,10 +3215,9 @@ const MEASURE_S5_SESSION = async (contract) => {
     imageId: fillImageId,
   };
   completePhase(contract.phases[2], {
-    settled: c.settled,
     heldRequestCount: held.size,
-    realMeshCount: c.realMeshCount,
-    fillCount: c.fillCount,
+    realMeshCount: cSnapshot.realMeshCount,
+    fillCount: cSnapshot.fillCount,
   });
 
   markProgress(contract.phases[3], "release-held-requests", {
@@ -2918,8 +3227,9 @@ const MEASURE_S5_SESSION = async (contract) => {
   const heldRequestCountBeforeRelease = terrainRequests.held;
   const releasedRequestCountBeforeRelease = terrainRequests.released;
   holdEnabled = false;
-  for (const entry of held.values()) entry.resolve(entry.terrainData);
+  for (const entry of held.values()) entry.release();
   held.clear();
+  reservedPromises.clear();
   let transitionObservation;
   let transitionFrame = 0;
   let transitionLatest;
@@ -2957,13 +3267,34 @@ const MEASURE_S5_SESSION = async (contract) => {
       transitionLatest.decodedQuantizedMeshCount > 0
     );
   });
+  const transitionedKeys = transitionObservation ? [holdTarget.key] : [];
+  setNadirCamera(track.latitude);
+  scene.camera.frustum.fov = C.Math.toRadians(contract.cameraFovDegrees);
+  globe.maximumScreenSpaceError = contract.terrainMaximumScreenSpaceError;
+  const trackRestore = await settleTerrain(
+    (state) => state.tilesLoaded && state.fillCount === 0,
+    240,
+  );
+  const trackRestoreProof = {
+    settled: trackRestore.settled,
+    boundedMaxFrames: 240,
+    settleFrames: trackRestore.settleFrames,
+    stableFrames: trackRestore.stableFrames,
+    longitude: C.Math.toDegrees(scene.camera.positionCartographic.longitude),
+    latitude: C.Math.toDegrees(scene.camera.positionCartographic.latitude),
+    cameraHeightMeters: scene.camera.positionCartographic.height,
+    cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
+    maximumScreenSpaceError: globe.maximumScreenSpaceError,
+    targetLongitude: track.longitude,
+    targetLatitude: track.latitude,
+  };
+  const realX1ImageId = captureDocumentaryPng(contract.captureLabels[1]);
   const d = {
     ...snapshotTerrain(),
-    settled: transitionSettle.settled,
+    settled: transitionSettle.settled && trackRestore.settled,
     transitionObservation,
+    trackRestore: trackRestoreProof,
   };
-  const transitionedKeys = transitionObservation ? [holdTarget.key] : [];
-  const realX1ImageId = captureDocumentaryPng(contract.captureLabels[1]);
   phases[contract.phases[3]] = {
     ...d,
     holdTargetKey: holdTarget.key,
@@ -3050,6 +3381,7 @@ const MEASURE_S5_SESSION = async (contract) => {
   const prewarmWebGPUGlobeCarrierState = async (
     carrierState,
     eclipseEnabled,
+    expectedOwnerTileIds,
   ) => {
     if (contract.renderer !== "webgpu") {
       return {
@@ -3076,7 +3408,10 @@ const MEASURE_S5_SESSION = async (contract) => {
         proof.positiveIndexCommandCount === proof.emittedCommandCount &&
         proof.threeDynamicOffsetCommandCount === proof.emittedCommandCount &&
         proof.pipelineIdentityIds.length > 0 &&
-        proof.ownerTileIds.length > 0;
+        proof.ownerTileIds.length === expectedOwnerTileIds.length &&
+        proof.ownerTileIds.every(
+          (id, index) => id === expectedOwnerTileIds[index],
+        );
       if (settled) break;
       await new Promise((resolve) => requestAnimationFrame(resolve));
     }
@@ -3096,11 +3431,20 @@ const MEASURE_S5_SESSION = async (contract) => {
     (state) => state.tilesLoaded && state.fillCount === 0,
     240,
   );
+  const expectedX2OwnerTileIds = [...eSettled.selectedTileIds].sort();
   lighting.enableEclipseGlobeShadow = false;
-  const x2OffPrewarm = await prewarmWebGPUGlobeCarrierState("OFF", false);
+  const x2OffPrewarm = await prewarmWebGPUGlobeCarrierState(
+    "OFF",
+    false,
+    expectedX2OwnerTileIds,
+  );
   const x2OffImageId = captureDocumentaryPng(contract.captureLabels[2]);
   lighting.enableEclipseGlobeShadow = true;
-  const x2OnPrewarm = await prewarmWebGPUGlobeCarrierState("ON", true);
+  const x2OnPrewarm = await prewarmWebGPUGlobeCarrierState(
+    "ON",
+    true,
+    expectedX2OwnerTileIds,
+  );
   const x2OnImageId = captureDocumentaryPng(contract.captureLabels[3]);
   const sameMaterializedPipelines =
     contract.renderer === "webgpu" &&
@@ -3153,7 +3497,9 @@ const MEASURE_S5_SESSION = async (contract) => {
             applicable: true,
             off: x2OffPrewarm,
             on: x2OnPrewarm,
+            expectedOwnerTileIds: expectedX2OwnerTileIds,
             sameMaterializedPipelines,
+            offBeforeOn: x2OffPrewarm.frameNumber < x2OnPrewarm.frameNumber,
             terminalCapturesAfterPrewarm: {
               off: x2OffPrewarm.settled,
               on: x2OnPrewarm.settled,
@@ -3551,9 +3897,14 @@ function makePageContract(renderer) {
     pinnedIso: C12_29_S5_SCENE.pinnedIso,
     cameraHeightMeters: C12_29_S5_SCENE.cameraHeightMeters,
     cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
-    warmupCameraFovDegrees: C12_29_S5_SCENE.warmupCameraFovDegrees,
     terrainMaximumScreenSpaceError:
       C12_29_S5_SCENE.terrainMaximumScreenSpaceError,
+    frontierScreenSpaceErrorCandidates: [
+      ...C12_29_S5_SCENE.frontierScreenSpaceErrorCandidates,
+    ],
+    frontierLatitudeStepDegrees: C12_29_S5_SCENE.frontierLatitudeStepDegrees,
+    frontierMaxSteps: C12_29_S5_SCENE.frontierMaxSteps,
+    frontierSettleMaxFrames: C12_29_S5_SCENE.frontierSettleMaxFrames,
     verticalExaggeration: C12_29_S5_SCENE.verticalExaggeration,
     relativeHeight: C12_29_S5_SCENE.verticalExaggerationRelativeHeight,
     radiusLaw: { ...C12_29_S5_RADIUS_LAW },
