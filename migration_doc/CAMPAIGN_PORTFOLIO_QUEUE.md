@@ -125,16 +125,28 @@ that critical path through C12-29 S3.
 
 Execute in this order where dependencies permit:
 
-1. **C12-37:** finish the local Moon/globe physical-depth landing unit. The
-   newest handoff records browser and Jasmine/Karma green; perform final diff
-   review and queue reconciliation, then land. Do not rerun the already-green
-   browser artifact without an invalidating change.
-2. **C13-41 / C12-29 S3:** redesign the deck-free control into an isolated
-   configure epoch or session, run its certifying Edge lane, and either close
-   `shadowContrastInvariant` or file the exact engine defect. Do not widen its
-   band.
-3. **C12-29 S4/S5:** close observability and the final seven-lane eclipse
-   certification matrix.
+1. **C12-37 — COMPLETE / EDGE VERIFIED:** the 15-path product/tool packet landed
+   as `6d4a2376fc`; independently audited run
+   `1f437ee9-37e5-4d17-94a1-a269e81679ab` is PASS / exit 0 on both backends.
+   Its report and 72 verified PNGs are preserved under shared-library manifest
+   `33CEE1FB9E1304234DA8743D952D34204FCFE2621885C0383FBAABA6E9113F17`.
+2. **C13-41 / C12-29 S3 — COMPLETE:** the landing-equivalent redesigned-control
+   run is green (30/30, run `b5e3f63c-94c6-4204-8706-dd30eabd2eaf`) and the
+   exact selective packet landed as `9c043987a5`. S3 no longer blocks C12;
+   CLT-B3's terminator-specific both-backend acceptance remains a separate open
+   gate.
+3. **C12-29 S4 — COMPLETE / EDGE VERIFIED; S5 remains open:** S4 browser
+   acceptance is green and archived (PASS/0, run
+   `6a3eac44-f4b8-477d-b21b-6062de6aaf19`), and its exact independently
+   reviewed three-file evidence tool packet is included in the same landing
+   unit. S5's first terrain-selection shard is preserved as STRUCTURAL / exit 3
+   (run `858fa49d-5c0f-47ca-9e42-55716b626261`) and certifies no matrix cell.
+   Independent forensics confines the result to harness identity, held-tile,
+   first-`beginFrame`, and pick-snapshot timing defects; the fixture, build,
+   renderers, GPU, and environment are healthy. Repair and review the tools-only
+   probe before one recovery run. The exact four-record NASA SVS fixture is green
+   offline; its geographic browser comparison and the rest of the seven-lane
+   matrix remain open.
 4. **C12 G3 / C12-12:** prepare the ordered 4096-per-face star-cubemap bake and
    G3 rerun as one maintainer machine session. The manual asset/HDR work is not
    a worker task.
@@ -321,8 +333,10 @@ already supplies order. Remaining candidates such as C13-41, CLT-B3, C18-P5,
 C18-V3 → P1 → P2, C15-G7/G9/G6/G8, and C12/C13/C11 acceptance retain their
 own queue contracts.
 
-Green C11-196/202/210 and C12-37 artifacts remain landing evidence, not
-invitations to rerun unchanged probes. C11-193A/B/C landed at `b20234a16b`;
+Green C11-196/202/210 artifacts remain landing evidence, not invitations to
+rerun unchanged probes. C12-37 is landed at `6d4a2376fc`; its final PASS artifact
+is immutable closure evidence and likewise must not be rerun without an
+invalidating change. C11-193A/B/C landed at `b20234a16b`;
 its moving causal/recovery continuation remains attribution-gated. C11-209 is
 already landed. Blocked or not-yet-instrumented rows do
 not become machine-ready merely because they appear on this board.
