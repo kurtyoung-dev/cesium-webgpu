@@ -1,0 +1,242 @@
+{
+  "schema": "nasa-svs-5073-umbra-lo-c1229-s5-fixture-v1",
+  "title": "2024 Total Solar Eclipse: Shapefiles — exact low-resolution umbra records",
+  "source": {
+    "publisher": "NASA/Goddard Space Flight Center Scientific Visualization Studio",
+    "page": "https://svs.gsfc.nasa.gov/5073/",
+    "archive": {
+      "file": "2024eclipse_shapefiles.zip",
+      "bytes": 79468554,
+      "sha256": "869cf2129382c56e547d32c9a5be368b3456145f113a2a44c350b5b19a8933a2",
+      "url": "https://svs.gsfc.nasa.gov/vis/a000000/a005000/a005073/2024eclipse_shapefiles.zip",
+      "localCopyVerifiedOn": "2026-08-12"
+    },
+    "members": {
+      "shp": {
+        "file": "umbra_lo.shp",
+        "bytes": 4024140,
+        "sha256": "f21ed8514a5572a19e74485e179a8bc8bbe9042b29975a2162f31d22159119a2"
+      },
+      "shx": {
+        "file": "umbra_lo.shx",
+        "bytes": 9548,
+        "sha256": "889357ddcc201ca5840fb08d96015ae43aa3a93155cb8efbbf1b025b3bf970c9"
+      },
+      "dbf": {
+        "file": "umbra_lo.dbf",
+        "bytes": 98440,
+        "sha256": "82c9d4ca2ce9b30477216e509b77f26a08d74afb0fb631ab22a93d0d55f7e0e3"
+      },
+      "prj": {
+        "file": "umbra_lo.prj",
+        "bytes": 143,
+        "sha256": "98aaf3d1c0ecadf1a424a4536de261c3daf4e373697cb86c40c43b989daf52eb"
+      }
+    },
+    "sourceRecordCount": 1181,
+    "projection": {
+      "crsInterpretation": "ESRI WKT1 GCS_WGS_1984 on the WGS 84 datum and ellipsoid; comparable to EPSG:4326 without importing EPSG's latitude-first axis rule",
+      "axisOrderUsedByShapefile": [
+        "longitude-east-degrees",
+        "latitude-north-degrees"
+      ],
+      "axisOrderBasis": "ESRI Shapefile Polygon stores x then y; the copied records are therefore consumed as longitude then latitude",
+      "wkt": "GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"Degree\",0.017453292519943295]]",
+      "ellipsoid": {
+        "semiMajorAxisMeters": 6378137,
+        "inverseFlattening": 298.257223563
+      }
+    }
+  },
+  "selection": {
+    "event": "2024-04-08 total solar eclipse",
+    "rationale": "Exact 10-second rows for named Mazatlan and Dallas observer lanes, plus the two source rows bracketing NASA's 18:17:16 greatest-eclipse instant.",
+    "records": [
+      {
+        "role": "named-observer-mazatlan",
+        "iso8601": "2024-04-08T18:09:30Z",
+        "sourceIndexZeroBased": 544,
+        "sourceRecordNumber": 545,
+        "outputRecordNumber": 1,
+        "sourceOffsetBytes": 1726244,
+        "contentBytes": 2784,
+        "storedPointCount": 171,
+        "distinctNonClosingVertices": 170,
+        "bbox": [
+          -107.22654104232788,
+          22.150620818138123,
+          -105.30465245246887,
+          23.94869863986969
+        ],
+        "centerLonLat": [
+          -106.26671,
+          23.04871
+        ],
+        "durationSeconds": 269.06,
+        "recordBodySha256": "a5270e231d5c355730885ac65f868c5edb5766cf044a48998c1e072d6bf26fb2",
+        "dbfRowSha256": "ea035664037170a2662e9dccfb5618c0ee23d1e2cd8df9549733b077a694225c"
+      },
+      {
+        "role": "greatest-eclipse-10-second-bracket-before",
+        "iso8601": "2024-04-08T18:17:10Z",
+        "sourceIndexZeroBased": 590,
+        "sourceRecordNumber": 591,
+        "outputRecordNumber": 2,
+        "sourceOffsetBytes": 1853636,
+        "contentBytes": 2784,
+        "storedPointCount": 171,
+        "distinctNonClosingVertices": 170,
+        "bbox": [
+          -105.1610791683197,
+          24.345703125,
+          -103.22807550430298,
+          26.14741802215576
+        ],
+        "centerLonLat": [
+          -104.1956,
+          25.24078
+        ],
+        "durationSeconds": 270.07,
+        "recordBodySha256": "e244e445c810957b8c1d969d28e3feea04654c57f4ee9c370c7126adaf51aa3f",
+        "dbfRowSha256": "4d6da5a0dc03b127c2bab9cba8a89afebdd12c3643a26ca07f3015af91645ae4"
+      },
+      {
+        "role": "greatest-eclipse-10-second-bracket-after",
+        "iso8601": "2024-04-08T18:17:20Z",
+        "sourceIndexZeroBased": 591,
+        "sourceRecordNumber": 592,
+        "outputRecordNumber": 3,
+        "sourceOffsetBytes": 1856428,
+        "contentBytes": 2784,
+        "storedPointCount": 171,
+        "distinctNonClosingVertices": 170,
+        "bbox": [
+          -105.11703729629517,
+          24.3896484375,
+          -103.18379759788513,
+          26.19140088558197
+        ],
+        "centerLonLat": [
+          -104.14985,
+          25.2883
+        ],
+        "durationSeconds": 270.07,
+        "recordBodySha256": "bdb21fd3e6ac09aca5be6ffead7763dce6a144e4eeed24b40e270dc08dd37e42",
+        "dbfRowSha256": "f679541ef1de71d9a6724bff388dfdd8028f8794217cf4fe65ff081b344e7f18"
+      },
+      {
+        "role": "named-observer-dallas",
+        "iso8601": "2024-04-08T18:42:50Z",
+        "sourceIndexZeroBased": 744,
+        "sourceRecordNumber": 745,
+        "outputRecordNumber": 4,
+        "sourceOffsetBytes": 2288628,
+        "contentBytes": 2832,
+        "storedPointCount": 174,
+        "distinctNonClosingVertices": 173,
+        "bbox": [
+          -97.43116736412048,
+          31.586101055145264,
+          -95.44056594371796,
+          33.4423828125
+        ],
+        "centerLonLat": [
+          -96.43722,
+          32.51228
+        ],
+        "durationSeconds": 264.26,
+        "recordBodySha256": "099cada8c0cd3ddc9a43e2932682efc3d17fc06384e1f459d133b37edd0b37e7",
+        "dbfRowSha256": "0f6782b7398e512f91abf1c0d0295f84c228bddd660c94522754ee9b5a504aeb"
+      }
+    ],
+    "storedPointCount": 687,
+    "distinctNonClosingVertices": 683,
+    "countCorrection": "The design input said 694 vertices, but the authoritative SHP bodies contain 171 + 171 + 171 + 174 = 687 stored points (683 after removing one duplicated closing point per ring). No vertices were manufactured or resampled."
+  },
+  "derivation": {
+    "script": {
+      "file": "derive-umbra-lo-shard.mjs",
+      "bytes": 21391,
+      "sha256": "45e4ab05a304ec165614827326cc74917e0ac98a9c3264563f0738d6d56f14db"
+    },
+    "parser": {
+      "file": "nasa-svs-5073-shapefile.mjs",
+      "bytes": 10257,
+      "sha256": "1dadb5d2f33b47e520869b8214eb2f876d3f8492647ccf6b216ff0cfe0c4a3f2"
+    },
+    "inputPolicy": "Verify all four full source-member byte lengths and SHA-256 hashes before reading any selected record.",
+    "copiedExactly": [
+      "Each selected SHP Polygon content body (the eight-byte record header is rebuilt).",
+      "Each selected 83-byte DBF record.",
+      "All 143 PRJ bytes."
+    ],
+    "rebuiltDeterministically": [
+      "SHP/SHX 100-byte main headers: source template with output file length and selected union bbox rewritten.",
+      "SHP record headers: sequential output record numbers 1..4 and exact content lengths.",
+      "SHX entries: exact output offsets and content lengths.",
+      "DBF header: source header with only the little-endian record count changed from 1181 to 4."
+    ],
+    "resample": "none",
+    "reprojection": "none",
+    "coordinateRounding": "none; source IEEE-754 binary64 coordinate bytes are copied",
+    "outputOrder": "ascending source index / UTC"
+  },
+  "output": {
+    "members": {
+      "shp": {
+        "file": "umbra-lo-c1229-s5.shp",
+        "bytes": 11316,
+        "sha256": "bd5e931b81ccb1092a0d33d1156591ce5183924b9e4f78d9a61fbf3526d46c65"
+      },
+      "shx": {
+        "file": "umbra-lo-c1229-s5.shx",
+        "bytes": 132,
+        "sha256": "be4b5d094cf2a7ca0d38d2965d2c83320a9f3d0c1cd9ae1f87c89a5ab6866831"
+      },
+      "dbf": {
+        "file": "umbra-lo-c1229-s5.dbf",
+        "bytes": 749,
+        "sha256": "84393c62b748d447ff4453b207d4314ed92c9666c792a9d885d1f966c4fb9168"
+      },
+      "prj": {
+        "file": "umbra-lo-c1229-s5.prj",
+        "bytes": 143,
+        "sha256": "98aaf3d1c0ecadf1a424a4536de261c3daf4e373697cb86c40c43b989daf52eb"
+      }
+    },
+    "fixtureSetSha256": "1ee9f2537864171786ea9669cf01bf078cfcd92b47678c16b440811911f4844e",
+    "recordCount": 4,
+    "shapeType": 5,
+    "bbox": [
+      -107.22654104232788,
+      22.150620818138123,
+      -95.44056594371796,
+      33.4423828125
+    ]
+  },
+  "creditAndUse": {
+    "requestedCredit": "NASA's Scientific Visualization Studio",
+    "publisher": "NASA/Goddard Space Flight Center Scientific Visualization Studio",
+    "pageCreators": {
+      "visualizers": [
+        "Michala Garrison (SSAI)",
+        "Ernie Wright (USRA)"
+      ],
+      "scientists": [
+        "Michael S. Kirk (NASA/GSFC)",
+        "Carolyn Ng"
+      ],
+      "projectManager": "Shannon Reed (ADNET Systems, Inc.)",
+      "technicalSupport": [
+        "Laurence Schuler (ADNET Systems, Inc.)",
+        "Ian Jones (ADNET Systems, Inc.)"
+      ]
+    },
+    "retain": "Retain the NASA SVS product title, source page, exact archive/member pins, requested credit, creator credits, and NOTICE.md with redistributed fixture bytes.",
+    "termsPosition": "NASA media guidance generally permits factual reuse of NASA content without an implied endorsement. This provenance record is not a public-domain dedication and does not override a page-specific third-party marking.",
+    "noEndorsement": "NASA's name and this fixture must not be used to imply NASA endorsement.",
+    "pageReview": "SVS 5073 identifies the requested NASA SVS credit and the named creators recorded above; no page-specific third-party restriction is attached to the 2024 eclipse shapefile download.",
+    "usageGuidelines": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+    "notice": "NOTICE.md"
+  }
+}
