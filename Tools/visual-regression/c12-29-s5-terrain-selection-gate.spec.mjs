@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +15,12 @@ import {
   C12_29_S5_PHASES,
   C12_29_S5_PICK_FRAME_DRIVER,
   C12_29_S5_PICK_MAX_PUMP_FRAMES,
+  C12_29_S5_PAGE_VALIDATION_FAILURE_FIELDS,
+  C12_29_S5_PAGE_VALIDATION_REASONS,
+  C12_29_S5_RAW_PAGE_MAX_ARRAY_LENGTH,
+  C12_29_S5_RAW_PAGE_MAX_KEY_LENGTH,
+  C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH,
+  C12_29_S5_RAW_PAGE_MAX_STRING_LENGTH,
   C12_29_S5_RENDERERS,
   C12_29_S5_SCENE,
   C12_29_S5_SCHEMA,
@@ -22,23 +29,31 @@ import {
   C12_29_S5_WEBGPU_LAYOUT_FILE,
   C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES,
   computeExpectedTerrainSurfaceRadius,
+  createS5PageValidationWitness,
   deriveS5SouthLevelOneTarget,
   evaluateS5ControlledVisibilityObservation,
   exitCodeForS5Status,
   foldC1229S5Gate,
   isUuidV4,
   validateS5FinalArtifactShape,
+  validateS5PageDiagnosticProjection,
   validateS5PageProgress,
+  validateS5RawPageDiagnosticJson,
 } from "./lib/c12-29-s5-terrain-selection-gate.mjs";
 import {
   awaitS5PageMeasurement,
   beginS5EvidenceRun,
+  boundS5RawPageDiagnostic,
+  classifyS5PageDiagnosticValue,
   createS5ArtifactPaths,
   inspectS5PriorState,
   inspectS5QuantizedMeshHeader,
   inspectS5WebGPUEclipseBinding,
+  materializeS5CanonicalJsonValue,
   publishS5FinalArtifact,
   redactS5OutputPayload,
+  serializeS5Artifact,
+  snapshotS5PageProgress,
   validateS5LoopbackBase,
   withS5Watchdog,
 } from "./probe-c12-29-s5-terrain-selection.mjs";
@@ -56,6 +71,9 @@ const RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
 const V4_SCHEMA = "c12-29-s5-terrain-selection-evidence-v4";
 const V5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v5";
 const V6_SCHEMA = "c12-29-s5-terrain-selection-evidence-v6";
+const V7_SCHEMA = "c12-29-s5-terrain-selection-evidence-v7";
+const diagnosticSha256 = (value) =>
+  createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
 
 const IMAGE_IDS = Object.freeze([
   "123e4567-e89b-42d3-a456-426614174001",
@@ -638,6 +656,7 @@ function syntheticSession(renderer) {
     },
     [C12_29_S5_PHASES[2]]: {
       selectedTileIds: [siblingKey, heldTarget.key].sort(),
+      selectedCount: 2,
       realTileIds: [siblingKey],
       holdTarget: heldTarget,
       warmup: {
@@ -793,11 +812,16 @@ function syntheticSession(renderer) {
       ],
     },
     [C12_29_S5_PHASES[3]]: {
+      selectedTileIds: [heldTarget.key],
+      selectedCount: 1,
       holdTargetKey: heldTarget.key,
+      settled: true,
       tilesLoaded: true,
+      fillTileIds: [],
       fillCount: 0,
       decodedQuantizedMeshCount: 2,
       realTileIds: [heldTarget.key],
+      realMeshCount: 1,
       holdInterceptionEnabled: false,
       visibilitySeamRestoredBeforeRelease: true,
       heldRequestCountAfterRelease: 0,
@@ -829,6 +853,13 @@ function syntheticSession(renderer) {
     },
     [C12_29_S5_PHASES[4]]: {
       ...radiusInput,
+      settled: true,
+      tilesLoaded: true,
+      selectedCount: selectedTileIds.length,
+      realTileIds: [...selectedTileIds],
+      realMeshCount: selectedTileIds.length,
+      fillTileIds: [],
+      fillCount: 0,
       expectedSurfaceRadius: radius.radius,
       surfaceRadius: radius.radius,
       mainViewOwnerMatches: true,
@@ -1073,13 +1104,41 @@ function syntheticBuildSourceIdentity() {
   };
 }
 
+function syntheticSourceIdentities() {
+  return C12_29_S5_SOURCE_FILES.map((file, index) => {
+    const buildIndex = C12_29_S5_BUILD_SOURCE_FILES.indexOf(file);
+    return {
+      file: path.join(repositoryRoot, file),
+      exists: true,
+      byteLength: buildIndex >= 0 ? 1_000 + buildIndex : 2_000 + index,
+      sha256:
+        buildIndex >= 0
+          ? (buildIndex % 16).toString(16).repeat(64)
+          : ((index + 3) % 16).toString(16).repeat(64),
+    };
+  });
+}
+
+function syntheticSourceLocalIdentity(identities) {
+  return Object.fromEntries(
+    identities.map((identity, index) => [
+      `source${String(index).padStart(2, "0")}`,
+      structuredClone(identity),
+    ]),
+  );
+}
+
 function greenReport() {
-  return {
+  const buildSourceIdentity = syntheticBuildSourceIdentity();
+  const sourceIdentities = syntheticSourceIdentities();
+  const sourceLocalIdentity = syntheticSourceLocalIdentity(sourceIdentities);
+  const report = {
     schema: C12_29_S5_SCHEMA,
     runId: RUN_ID,
     provenance: {
       ok: true,
       stable: true,
+      reasons: [],
       gitHead: "a".repeat(40),
       fixtures: {
         layer: { exists: true, ...C12_29_S5_FIXTURE.layer },
@@ -1092,9 +1151,10 @@ function greenReport() {
       sourceBoundary: {
         count: C12_29_S5_SOURCE_FILES.length,
         files: [...C12_29_S5_SOURCE_FILES],
+        identities: structuredClone(sourceIdentities),
         allReadable: true,
       },
-      buildSourceIdentity: syntheticBuildSourceIdentity(),
+      buildSourceIdentity,
       generatedShaders: { globeFsExact: true, globeTerrainExact: true },
       webgpuEclipseBinding: {
         ok: true,
@@ -1107,11 +1167,25 @@ function greenReport() {
       servedEntryIdentity: {
         ok: true,
         expectedLabels: [...C12_29_S5_RENDERERS],
+        observedLabels: [...C12_29_S5_RENDERERS],
+        reasons: [],
       },
       harnessStable: true,
+      start: {
+        reasons: [],
+        localIdentity: structuredClone(sourceLocalIdentity),
+        buildSourceIdentity: structuredClone(buildSourceIdentity),
+      },
+      end: {
+        reasons: [],
+        localIdentity: structuredClone(sourceLocalIdentity),
+        buildSourceIdentity: structuredClone(buildSourceIdentity),
+      },
     },
     sessions: C12_29_S5_RENDERERS.map(syntheticSession),
   };
+  return materializeS5CanonicalJsonValue(report, "synthetic green S5 report")
+    .value;
 }
 
 function mutateReport(mutator) {
@@ -1132,12 +1206,19 @@ function expectStatus(mutator, status, pattern) {
 
 test("01 full valid fixture closes the pure S5 gate", () => {
   const verdict = foldC1229S5Gate(greenReport());
-  assert.equal(verdict.status, "PASS");
+  assert.equal(
+    verdict.status,
+    "PASS",
+    JSON.stringify({
+      structuralReasons: verdict.structuralReasons,
+      failureReasons: verdict.failureReasons,
+    }),
+  );
   assert.equal(verdict.exitCode, 0);
-  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v7");
+  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v8");
   assert.equal(
     C12_29_S5_DIAGNOSTICS_SCHEMA,
-    "c12-29-s5-runtime-diagnostics-v3",
+    "c12-29-s5-runtime-diagnostics-v4",
   );
   assert.equal(verdict.checks.sourceBoundaryCount, 37);
   assert.equal(verdict.checks.buildSourceBoundaryCount, 35);
@@ -1186,6 +1267,13 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
   const v6Report = greenReport();
   v6Report.schema = V6_SCHEMA;
   assert.equal(foldC1229S5Gate(v6Report).status, "STRUCTURAL");
+  const v7Report = greenReport();
+  v7Report.schema = V7_SCHEMA;
+  assert.equal(foldC1229S5Gate(v7Report).status, "STRUCTURAL");
+  assert.equal(
+    validateS5FinalArtifactShape({ ...artifact, schema: V7_SCHEMA }).ok,
+    false,
+  );
   const errorArtifact = {
     ...artifact,
     status: "ERROR",
@@ -1195,6 +1283,7 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
       schema: C12_29_S5_DIAGNOSTICS_SCHEMA,
       renderer: "webgl",
       stage: "page-measurement-timeout",
+      timeoutMs: 240_000,
       node: {
         stage: "page-measurement",
         requestLedger: {
@@ -1207,10 +1296,14 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
           lastFailure: null,
         },
       },
-      page: syntheticProgress(),
+      ...classifyS5PageDiagnosticValue(syntheticProgress(), "webgl"),
     },
   };
   assert.equal(validateS5FinalArtifactShape(errorArtifact).ok, true);
+  assert.equal(
+    validateS5PageDiagnosticProjection(errorArtifact.diagnostics.page, "webgl"),
+    true,
+  );
   assert.equal(validateS5PageProgress(syntheticProgress()).ok, true);
   const startedProgress = syntheticProgress();
   startedProgress.completedPhases = C12_29_S5_PHASES.slice(0, 2);
@@ -1327,6 +1420,14 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
     ),
     "https://[REDACTED]@localhost:8080/x?token=[REDACTED]&flag=[REDACTED]#[REDACTED]",
   );
+  assert.equal(
+    redactS5OutputPayload("Bearer sk-live-secret password=secret"),
+    "Bearer [REDACTED] password=[REDACTED]",
+  );
+  assert.deepEqual(
+    redactS5OutputPayload({ token: "secret", nested: { password: "secret" } }),
+    { token: "[REDACTED]", nested: { password: "[REDACTED]" } },
+  );
 });
 
 test("04 renderer and A-H phase cardinality cannot shrink", () => {
@@ -1351,6 +1452,456 @@ test("04 renderer and A-H phase cardinality cannot shrink", () => {
       "STRUCTURAL",
       /named-event camera\/clock fixture/u,
     );
+  }
+
+  const enumerateArrayLocations = (value, path = [], locations = []) => {
+    if (Array.isArray(value)) {
+      locations.push(path);
+      for (let index = 0; index < value.length; index++) {
+        enumerateArrayLocations(value[index], [...path, index], locations);
+      }
+      return locations;
+    }
+    if (value !== null && typeof value === "object") {
+      for (const key of Object.keys(value)) {
+        enumerateArrayLocations(value[key], [...path, key], locations);
+      }
+    }
+    return locations;
+  };
+  const valueAt = (value, location) =>
+    location.reduce((current, key) => current[key], value);
+  const displayLocation = (location) =>
+    location
+      .map((key) => (typeof key === "number" ? "[]" : `.${key}`))
+      .join("")
+      .slice(1);
+  const base = greenReport();
+  const arrayLocations = enumerateArrayLocations(base);
+  assert.equal(arrayLocations.length, 139);
+  assert.equal(
+    new Set(arrayLocations.map((location) => valueAt(base, location))).size,
+    arrayLocations.length,
+  );
+  const retainedReferences = [];
+  const enumerateRetainedReferences = (value) => {
+    if (value === null || typeof value !== "object") return;
+    retainedReferences.push(value);
+    if (Array.isArray(value)) {
+      value.forEach(enumerateRetainedReferences);
+      return;
+    }
+    Object.values(value).forEach(enumerateRetainedReferences);
+  };
+  enumerateRetainedReferences(base);
+  assert.equal(
+    new Set(retainedReferences).size,
+    retainedReferences.length,
+    "the canonical synthetic report must not share certifying objects",
+  );
+
+  const liveGraphAlias = greenReport();
+  const webglSelected =
+    liveGraphAlias.sessions[0].phases["A-ellipsoid-stable"].selectedTileIds;
+  const webgpuSelected =
+    liveGraphAlias.sessions[1].phases["A-ellipsoid-stable"].selectedTileIds;
+  assert.deepEqual(webgpuSelected, webglSelected);
+  liveGraphAlias.sessions[1].phases["A-ellipsoid-stable"].selectedTileIds =
+    webglSelected;
+  assert.strictEqual(
+    liveGraphAlias.sessions[0].phases["A-ellipsoid-stable"].selectedTileIds,
+    liveGraphAlias.sessions[1].phases["A-ellipsoid-stable"].selectedTileIds,
+  );
+  const liveAliasVerdict = foldC1229S5Gate(liveGraphAlias);
+  assert.equal(liveAliasVerdict.status, "PASS");
+  const canonicalAlias = materializeS5CanonicalJsonValue(
+    liveGraphAlias,
+    "aliased S5 report mutant",
+  );
+  assert.equal(canonicalAlias.bytes, serializeS5Artifact(base));
+  assert.equal(serializeS5Artifact(canonicalAlias.value), canonicalAlias.bytes);
+  assert.deepEqual(foldC1229S5Gate(canonicalAlias.value), liveAliasVerdict);
+  assert.notStrictEqual(
+    canonicalAlias.value.sessions[0].phases["A-ellipsoid-stable"]
+      .selectedTileIds,
+    canonicalAlias.value.sessions[1].phases["A-ellipsoid-stable"]
+      .selectedTileIds,
+  );
+  for (const [label, mutateUnsafeReport] of [
+    [
+      "undefined",
+      (report) => (report.provenance.generatedShaders.lossy = undefined),
+    ],
+    ["NaN", (report) => (report.sessions[0].fixture.cameraFovDegrees = NaN)],
+    [
+      "infinity",
+      (report) => (report.sessions[0].fixture.cameraFovDegrees = Infinity),
+    ],
+    [
+      "negative zero",
+      (report) => (report.sessions[0].fixture.cameraFovDegrees = -0),
+    ],
+  ]) {
+    const unsafe = greenReport();
+    mutateUnsafeReport(unsafe);
+    assert.throws(
+      () => materializeS5CanonicalJsonValue(unsafe, label),
+      /non-JSON|lossy JSON/u,
+    );
+  }
+  const cyclicReport = greenReport();
+  cyclicReport.provenance.cycle = cyclicReport;
+  assert.throws(
+    () => materializeS5CanonicalJsonValue(cyclicReport, "cyclic report"),
+    /JSON cycle/u,
+  );
+  const accessorReport = greenReport();
+  let accessorReads = 0;
+  Object.defineProperty(accessorReport.provenance, "accessor", {
+    enumerable: true,
+    get() {
+      accessorReads++;
+      return "must-not-be-read";
+    },
+  });
+  assert.throws(
+    () => materializeS5CanonicalJsonValue(accessorReport, "accessor report"),
+    /non-data JSON property/u,
+  );
+  assert.equal(accessorReads, 0);
+  for (const accessorBehavior of ["throwing", "mutating"]) {
+    const arrayAccessorReport = greenReport();
+    const selectedTileIds =
+      arrayAccessorReport.sessions[0].phases["A-ellipsoid-stable"]
+        .selectedTileIds;
+    const originalSecondTileId = selectedTileIds[1];
+    let arrayAccessorReads = 0;
+    Object.defineProperty(selectedTileIds, "0", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        arrayAccessorReads++;
+        if (accessorBehavior === "throwing") {
+          throw new Error("array accessor must not execute");
+        }
+        selectedTileIds[1] = "30/0/0";
+        return heldTarget.key;
+      },
+    });
+    assert.throws(
+      () =>
+        materializeS5CanonicalJsonValue(
+          arrayAccessorReport,
+          `${accessorBehavior} array accessor report`,
+        ),
+      /non-data JSON property/u,
+    );
+    assert.equal(arrayAccessorReads, 0);
+    assert.equal(selectedTileIds[1], originalSecondTileId);
+  }
+  const nonEnumerableArrayIndexReport = greenReport();
+  const nonEnumerableSelectedTileIds =
+    nonEnumerableArrayIndexReport.sessions[0].phases["A-ellipsoid-stable"]
+      .selectedTileIds;
+  Object.defineProperty(nonEnumerableSelectedTileIds, "0", {
+    configurable: true,
+    enumerable: false,
+    value: nonEnumerableSelectedTileIds[0],
+    writable: true,
+  });
+  assert.throws(
+    () =>
+      materializeS5CanonicalJsonValue(
+        nonEnumerableArrayIndexReport,
+        "non-enumerable array index report",
+      ),
+    /non-data JSON property/u,
+  );
+  const symbolArrayKeyReport = greenReport();
+  symbolArrayKeyReport.sessions[0].phases["A-ellipsoid-stable"].selectedTileIds[
+    Symbol("hidden array value")
+  ] = "must-not-be-dropped";
+  assert.throws(
+    () =>
+      materializeS5CanonicalJsonValue(
+        symbolArrayKeyReport,
+        "symbol array key report",
+      ),
+    /lossy JSON array/u,
+  );
+  for (const [label, lossyNumber] of [
+    ["array negative zero", -0],
+    ["array NaN", NaN],
+    ["array infinity", Infinity],
+  ]) {
+    const lossyArrayReport = greenReport();
+    const selectedTileIds =
+      lossyArrayReport.sessions[0].phases["A-ellipsoid-stable"].selectedTileIds;
+    Object.defineProperty(selectedTileIds, "0", {
+      configurable: true,
+      enumerable: true,
+      value: lossyNumber,
+      writable: true,
+    });
+    assert.throws(
+      () => materializeS5CanonicalJsonValue(lossyArrayReport, label),
+      /lossy JSON number/u,
+    );
+  }
+  for (const location of arrayLocations) {
+    for (const [label, mutateArray] of [
+      [
+        "sparse",
+        (array) => {
+          if (array.length === 0) array.length = 1;
+          else delete array[Math.floor(array.length / 2)];
+        },
+      ],
+      ["extra-own-key", (array) => (array.extra = true)],
+      [
+        "custom-prototype",
+        (array) => Object.setPrototypeOf(array, Object.create(Array.prototype)),
+      ],
+    ]) {
+      const report = structuredClone(base);
+      mutateArray(valueAt(report, location));
+      const verdict = foldC1229S5Gate(report);
+      assert.equal(
+        verdict.status,
+        "STRUCTURAL",
+        `${label}: ${displayLocation(location)}`,
+      );
+      assert.match(
+        verdict.structuralReasons.join("\n"),
+        /final report array is not canonical dense bounded data/u,
+        `${label}: ${displayLocation(location)}`,
+      );
+    }
+  }
+
+  // Every retained array has a named semantic contract. Shape validation is
+  // only the outer boundary; these generated mutants prove that a meaningful
+  // element change, deletion, insertion, or observable reorder cannot retain
+  // a certifying PASS.
+  const semanticArrayContracts = [
+    {
+      name: "renderer-order/cardinality",
+      matches: (arrayPath) => arrayPath === "sessions",
+    },
+    {
+      name: "provenance-frozen-order/digest-identity",
+      matches: (arrayPath) => arrayPath.startsWith("provenance."),
+    },
+    {
+      name: "capture-label/UUID/file-identity",
+      matches: (arrayPath) => arrayPath.endsWith(".images"),
+    },
+    {
+      name: "transport/runtime-empty-ledger",
+      matches: (arrayPath) =>
+        /\.transport\.(?:externalRequests|failedRequests|httpErrors)$/u.test(
+          arrayPath,
+        ) ||
+        /\.runtime\.(?:pageErrors|consoleErrors|gpuErrors)$/u.test(arrayPath),
+    },
+    {
+      name: "phase-tile-set/count/transition-identity",
+      matches: (arrayPath) =>
+        /(?:TileIds|Keys)$/u.test(arrayPath) &&
+        !arrayPath.endsWith("pipelineIdentityIds"),
+    },
+    {
+      name: "phase-pipeline/materialization-identity",
+      matches: (arrayPath) =>
+        /\.(?:pipelineIdentityIds|pipelineLabels)$/u.test(arrayPath),
+    },
+    {
+      name: "phase-call/count/order-identity",
+      matches: (arrayPath) =>
+        /(?:CallOrdinals|\.calls|Calls|dynamicOffsetLengths)$/u.test(arrayPath),
+    },
+    {
+      name: "phase-observation/bounds-identity",
+      matches: (arrayPath) =>
+        /(?:Observations|decodedFixtureBounds)$/u.test(arrayPath),
+    },
+  ];
+  const classifiedPaths = new Map();
+  for (const location of arrayLocations) {
+    const arrayPath = displayLocation(location);
+    const matches = semanticArrayContracts.filter((contract) =>
+      contract.matches(arrayPath),
+    );
+    assert.equal(
+      matches.length,
+      1,
+      `semantic contract classification: ${arrayPath}`,
+    );
+    classifiedPaths.set(arrayPath, matches[0].name);
+  }
+  assert.ok(classifiedPaths.size >= 70);
+
+  const semanticTileId = "30/0/0";
+  const differentSha256 = "e".repeat(64);
+  const mutateMeaningfulElement = (array, arrayPath) => {
+    if (array.length === 0) return false;
+    const entry = array[0];
+    if (arrayPath === "sessions") {
+      entry.renderer = entry.renderer === "webgl" ? "webgpu" : "webgl";
+      return true;
+    }
+    if (arrayPath.endsWith(".images")) {
+      entry.label = C12_29_S5_CAPTURE_LABELS[1];
+      return true;
+    }
+    if (
+      /(?:TileIds|Keys)$/u.test(arrayPath) &&
+      !arrayPath.endsWith("pipelineIdentityIds")
+    ) {
+      array[0] = semanticTileId;
+      array.sort();
+      return true;
+    }
+    if (arrayPath.endsWith("pipelineIdentityIds")) {
+      array[0] = "pipeline-999999";
+      return true;
+    }
+    if (typeof entry === "number") {
+      array[0] = entry + 1;
+      return true;
+    }
+    if (typeof entry === "string") {
+      array[0] = `${entry}-semantic-mutant`;
+      return true;
+    }
+    if (entry !== null && typeof entry === "object") {
+      if (Object.hasOwn(entry, "ordinal")) {
+        entry.ordinal += 1_000;
+        return true;
+      }
+      if (Object.hasOwn(entry, "tileId")) {
+        entry.tileId = semanticTileId;
+        return true;
+      }
+      if (
+        Object.hasOwn(entry, "currentSha256") &&
+        Object.hasOwn(entry, "embeddedSha256")
+      ) {
+        entry.currentSha256 = differentSha256;
+        entry.embeddedSha256 = differentSha256;
+        return true;
+      }
+      if (Object.hasOwn(entry, "sha256")) {
+        entry.sha256 = differentSha256;
+        return true;
+      }
+    }
+    return false;
+  };
+  const insertedElement = (array, arrayPath) => {
+    if (array.length > 0) return structuredClone(array[0]);
+    if (/(?:TileIds|Keys)$/u.test(arrayPath)) return semanticTileId;
+    if (arrayPath.endsWith("pipelineIdentityIds")) return "pipeline-999999";
+    if (arrayPath.endsWith("dynamicOffsetLengths")) return 3;
+    return "semantic-mutant";
+  };
+  const semanticOperations = [
+    {
+      name: "mutate",
+      applicable: (array) => array.length > 0,
+      apply: mutateMeaningfulElement,
+    },
+    {
+      name: "delete",
+      applicable: (array) => array.length > 0,
+      apply: (array) => {
+        array.splice(0, 1);
+        return true;
+      },
+    },
+    {
+      name: "insert",
+      applicable: () => true,
+      apply: (array, arrayPath) => {
+        array.push(insertedElement(array, arrayPath));
+        return true;
+      },
+    },
+    {
+      name: "reorder",
+      applicable: (array) =>
+        array.length > 1 &&
+        JSON.stringify(array) !== JSON.stringify([...array].reverse()),
+      apply: (array) => {
+        array.reverse();
+        return true;
+      },
+    },
+  ];
+  const operationCounts = new Map(
+    semanticOperations.map((operation) => [operation.name, 0]),
+  );
+  const semanticMutantsThatPassed = [];
+  for (const location of arrayLocations) {
+    const arrayPath = displayLocation(location);
+    for (const operation of semanticOperations) {
+      const report = structuredClone(base);
+      const array = valueAt(report, location);
+      if (!operation.applicable(array)) continue;
+      assert.equal(
+        operation.apply(array, arrayPath),
+        true,
+        `${operation.name} applicability: ${arrayPath}`,
+      );
+      operationCounts.set(
+        operation.name,
+        operationCounts.get(operation.name) + 1,
+      );
+      if (foldC1229S5Gate(report).status === "PASS") {
+        semanticMutantsThatPassed.push(
+          `${operation.name}: ${arrayPath} (${classifiedPaths.get(arrayPath)})`,
+        );
+      }
+    }
+  }
+  assert.equal(operationCounts.get("insert"), arrayLocations.length);
+  assert.equal(operationCounts.get("mutate"), 96);
+  assert.equal(operationCounts.get("delete"), 96);
+  assert.equal(operationCounts.get("reorder"), 39);
+  assert.deepEqual(semanticMutantsThatPassed, []);
+
+  // The validator must fail closed even if a hostile page has polluted the
+  // realm-wide numeric prototype surface.
+  for (const writable of [true, false]) {
+    const pristineReport = greenReport();
+    // eslint-disable-next-line no-extend-native
+    Object.defineProperty(Array.prototype, "1", {
+      configurable: true,
+      writable,
+      value: "numeric-prototype-pollution",
+    });
+    try {
+      const verdict = foldC1229S5Gate(pristineReport);
+      assert.equal(verdict.status, "STRUCTURAL");
+      assert.match(
+        verdict.structuralReasons.join("\n"),
+        /final report array is not canonical dense bounded data/u,
+      );
+    } finally {
+      delete Array.prototype[1];
+    }
+  }
+
+  for (const mutateFrozenOrder of [
+    (report) => report.provenance.sourceBoundary.files.reverse(),
+    (report) => report.provenance.buildSourceIdentity.entries.reverse(),
+    (report) => report.provenance.servedEntryIdentity.expectedLabels.reverse(),
+    (report) => report.sessions.reverse(),
+    (report) => report.sessions[0].images.reverse(),
+  ]) {
+    const report = structuredClone(base);
+    mutateFrozenOrder(report);
+    assert.equal(foldC1229S5Gate(report).status, "STRUCTURAL");
   }
 });
 
@@ -2050,6 +2601,7 @@ test("20 browser, GPU-error, transport, and cleanup surfaces fail closed", async
       error?.code === "S5_PAGE_TIMEOUT" &&
       error?.s5Diagnostics?.stage === "page-measurement-timeout" &&
       error?.s5Diagnostics?.node?.requestLedger?.inFlight === 1 &&
+      error?.s5Diagnostics?.pageValidation?.status === "fulfilled-valid" &&
       error?.s5Diagnostics?.page?.currentPhase === C12_29_S5_PHASES[5] &&
       error?.s5Diagnostics?.page?.pick?.settled === false,
   );
@@ -2066,6 +2618,7 @@ test("20 browser, GPU-error, transport, and cleanup surfaces fail closed", async
       error?.code === "S5_PAGE_TIMEOUT" &&
       error?.s5Diagnostics?.page === null &&
       error?.s5Diagnostics?.node?.diagnosticRead === "timeout" &&
+      error?.s5Diagnostics?.pageValidation?.status === "timeout" &&
       error?.s5Diagnostics?.node?.requestLedger?.started === 12,
   );
   await assert.rejects(
@@ -2083,10 +2636,1413 @@ test("20 browser, GPU-error, transport, and cleanup surfaces fail closed", async
         },
       }),
     }),
-    (error) =>
-      error?.code === "S5_PAGE_TIMEOUT" &&
-      error?.s5Diagnostics?.page === null &&
-      error?.s5Diagnostics?.node?.diagnosticRead === "invalid",
+    (error) => {
+      const diagnostics = error?.s5Diagnostics;
+      assert.equal(error?.code, "S5_PAGE_TIMEOUT");
+      assert.equal(diagnostics?.page, null);
+      assert.equal(diagnostics?.node?.diagnosticRead, "fulfilled-invalid");
+      assert.equal(diagnostics?.pageValidation?.status, "fulfilled-invalid");
+      assert.deepEqual(
+        diagnostics?.pageValidation?.reasons,
+        validateS5PageProgress(
+          {
+            ...syntheticProgress(),
+            terrainRequests: {
+              ...syntheticProgress().terrainRequests,
+              attempted: 3,
+            },
+          },
+          "webgl",
+        ).reasons,
+      );
+      assert.equal(diagnostics?.rawPage?.truncated, true);
+      assert.equal(diagnostics?.rawPage?.originalByteLength, null);
+      assert.equal(diagnostics?.rawPage?.json.length > 0, true);
+      return true;
+    },
+  );
+
+  const invalidProgress = structuredClone(syntheticProgress());
+  invalidProgress.firstReveal.predicateResults.targetFill = false;
+  invalidProgress.visibilitySeam.terminalReason =
+    "first pass-through render did not produce the exact held L1 fill";
+  const rejectedSnapshot = await snapshotS5PageProgress(
+    { evaluate: async () => invalidProgress },
+    "webgl",
+  );
+  assert.equal(rejectedSnapshot.page, null);
+  assert.equal(rejectedSnapshot.pageValidation.status, "fulfilled-invalid");
+  assert.deepEqual(
+    rejectedSnapshot.pageValidation.reasons,
+    validateS5PageProgress(invalidProgress, "webgl").reasons,
+  );
+  assert.equal(
+    JSON.parse(rejectedSnapshot.rawPage.json).firstReveal.predicateResults
+      .targetFill,
+    false,
+  );
+  assert.equal(
+    JSON.parse(rejectedSnapshot.rawPage.json).visibilitySeam.terminalReason,
+    "first pass-through render did not produce the exact held L1 fill",
+  );
+  assert.equal(
+    validateS5FinalArtifactShape({
+      schema: C12_29_S5_SCHEMA,
+      runId: RUN_ID,
+      status: "ERROR",
+      exitCode: 2,
+      incomplete: false,
+      artifactName: `${RUN_ID}.json`,
+      error: "page.evaluate rejected after first-reveal aggregate failure",
+      diagnostics: {
+        schema: C12_29_S5_DIAGNOSTICS_SCHEMA,
+        renderer: "webgl",
+        stage: "page-measurement-error",
+        timeoutMs: 240_000,
+        node: {
+          stage: "page-measurement-error",
+          requestLedger: {
+            started: 123,
+            completed: 122,
+            failed: 0,
+            inFlight: 1,
+            lastRequest: null,
+            lastResponse: null,
+            lastFailure: null,
+          },
+        },
+        page: rejectedSnapshot.page,
+        pageValidation: rejectedSnapshot.pageValidation,
+        rawPage: rejectedSnapshot.rawPage,
+      },
+    }).ok,
+    true,
+  );
+
+  const readFailure = await snapshotS5PageProgress(
+    {
+      evaluate: async () => {
+        throw new Error("snapshot failed");
+      },
+    },
+    "webgl",
+  );
+  assert.equal(readFailure.pageValidation.status, "rejected");
+  assert.equal(readFailure.rawPage, null);
+  assert.equal(readFailure.error, "snapshot failed");
+});
+
+test("20b invalid raw page diagnostics are bounded and never certify", () => {
+  const numericPathSecret =
+    "12345678901234567890/98765432109876543210/11223344556677889900";
+  const d866Reason =
+    "first pass-through render did not produce the exact held L1 fill";
+  const hostile = structuredClone(syntheticProgress());
+  hostile.secret = "must-not-be-retained";
+  hostile.terrainRequests.password = "terrain-secret";
+  hostile.pick.authorization = "pick-secret";
+  hostile.firstReveal.predicateResults.targetFill = false;
+  hostile.firstReveal.predicateResults.apiToken = "predicate-secret";
+  hostile.firstReveal.visibilityCalls[0].cookie = "visibility-call-secret";
+  hostile.firstReveal.predicateResults["💣".repeat(20_000)] = "界".repeat(
+    100_000,
+  );
+  hostile.firstReveal.visibilityCalls = Array.from(
+    { length: 10_000 },
+    (_, ordinal) => ({ ordinal, payload: "🧪".repeat(10_000) }),
+  );
+  hostile.orderProof.installation.showTileThisFrame.loop = hostile;
+  hostile.orderProof.installation.secret = "installation-secret";
+  hostile.visibilitySeam.calls[0].credential = "seam-call-secret";
+  hostile.visibilitySeam.restoration.password = "restoration-secret";
+  let deep = hostile.orderProof.installation.endUpdate;
+  for (let index = 0; index < 100; index++) {
+    deep.next = {};
+    deep = deep.next;
+  }
+
+  const classified = classifyS5PageDiagnosticValue(hostile, "webgl");
+  assert.equal(classified.page, null);
+  assert.equal(classified.pageValidation.status, "fulfilled-invalid");
+  assert.deepEqual(
+    classified.pageValidation.reasons,
+    validateS5PageProgress(hostile, "webgl").reasons,
+  );
+  assert.equal(classified.rawPage.truncated, true);
+  assert.equal(classified.rawPage.originalByteLength, null);
+  assert.ok(
+    Buffer.byteLength(classified.rawPage.json, "utf8") <=
+      C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH,
+  );
+  assert.doesNotThrow(() => JSON.parse(classified.rawPage.json));
+  assert.doesNotMatch(classified.rawPage.json, /must-not-be-retained/u);
+  assert.doesNotMatch(
+    classified.rawPage.json,
+    /terrain-secret|pick-secret|predicate-secret|visibility-call-secret|installation-secret|seam-call-secret|restoration-secret/u,
+  );
+  assert.equal(
+    validateS5RawPageDiagnosticJson(classified.rawPage.json).ok,
+    true,
+  );
+
+  const boundedUndefined = boundS5RawPageDiagnostic(undefined);
+  assert.ok(
+    Buffer.byteLength(boundedUndefined.json, "utf8") <=
+      C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH,
+  );
+  assert.doesNotThrow(() => JSON.parse(boundedUndefined.json));
+
+  const unicodeHostile = structuredClone(syntheticProgress());
+  unicodeHostile.unexpected = "force invalid classification";
+  unicodeHostile.step = "🧪".repeat(10_000);
+  unicodeHostile.terrainRequests.lastError = "界🧪".repeat(10_000);
+  unicodeHostile.completedPhases = Array.from(
+    { length: C12_29_S5_RAW_PAGE_MAX_ARRAY_LENGTH + 1 },
+    () => "🧪".repeat(10_000),
+  );
+  unicodeHostile.firstReveal.predicateResults["💣".repeat(10_000)] =
+    "dynamic-key-secret";
+  unicodeHostile.loop = unicodeHostile;
+  const boundedUnicode = classifyS5PageDiagnosticValue(unicodeHostile, "webgl");
+  assert.equal(boundedUnicode.pageValidation.status, "fulfilled-invalid");
+  const parsedUnicode = JSON.parse(boundedUnicode.rawPage.json);
+  let maximumKeyLength = 0;
+  let maximumStringLength = 0;
+  let maximumArrayLength = 0;
+  const inspectBoundedTree = (value) => {
+    if (typeof value === "string") {
+      maximumStringLength = Math.max(maximumStringLength, value.length);
+      return;
+    }
+    if (Array.isArray(value)) {
+      maximumArrayLength = Math.max(maximumArrayLength, value.length);
+      value.forEach(inspectBoundedTree);
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const [key, entry] of Object.entries(value)) {
+        maximumKeyLength = Math.max(maximumKeyLength, key.length);
+        inspectBoundedTree(entry);
+      }
+    }
+  };
+  inspectBoundedTree(parsedUnicode);
+  assert.ok(maximumKeyLength <= C12_29_S5_RAW_PAGE_MAX_KEY_LENGTH);
+  assert.ok(maximumStringLength <= C12_29_S5_RAW_PAGE_MAX_STRING_LENGTH);
+  assert.ok(maximumArrayLength <= C12_29_S5_RAW_PAGE_MAX_ARRAY_LENGTH);
+  assert.doesNotMatch(boundedUnicode.rawPage.json, /dynamic-key-secret/u);
+  assert.equal(
+    Buffer.byteLength(boundedUnicode.rawPage.json, "utf8") <=
+      C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH,
+    true,
+  );
+
+  const accessorFailure = classifyS5PageDiagnosticValue(
+    {
+      get renderer() {
+        throw new Error("accessor secret");
+      },
+    },
+    "webgl",
+  );
+  assert.deepEqual(accessorFailure, {
+    page: null,
+    pageValidation: {
+      status: "rejected",
+      reasons: [],
+      diagnosticSha256: null,
+    },
+    rawPage: null,
+  });
+  assert.equal(
+    boundS5RawPageDiagnostic({
+      get schema() {
+        throw new Error("projection accessor secret");
+      },
+    }),
+    null,
+  );
+  let schemaReads = 0;
+  assert.equal(
+    boundS5RawPageDiagnostic(
+      {
+        get schema() {
+          schemaReads++;
+          if (schemaReads === 1) return C12_29_S5_DIAGNOSTICS_SCHEMA;
+          throw new Error("second projection accessor secret");
+        },
+      },
+      [],
+      "webgl",
+    ),
+    null,
+  );
+  assert.equal(
+    boundS5RawPageDiagnostic({
+      get renderer() {
+        throw new Error("default renderer accessor secret");
+      },
+    }),
+    null,
+  );
+  const proxyFailure = classifyS5PageDiagnosticValue(
+    new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error("proxy secret");
+        },
+      },
+    ),
+    "webgl",
+  );
+  assert.equal(proxyFailure.pageValidation.status, "rejected");
+  assert.equal(proxyFailure.rawPage, null);
+
+  const diagnosticErrorArtifact = (diagnostic, error) => ({
+    schema: C12_29_S5_SCHEMA,
+    runId: RUN_ID,
+    status: "ERROR",
+    exitCode: 2,
+    incomplete: false,
+    artifactName: `${RUN_ID}.json`,
+    error,
+    diagnostics: {
+      schema: C12_29_S5_DIAGNOSTICS_SCHEMA,
+      renderer: "webgl",
+      stage: "page-measurement-error",
+      timeoutMs: 240_000,
+      node: {
+        stage: "page-measurement-error",
+        requestLedger: {
+          started: 1,
+          completed: 1,
+          failed: 0,
+          inFlight: 0,
+          lastRequest: null,
+          lastResponse: null,
+          lastFailure: null,
+        },
+      },
+      ...diagnostic,
+    },
+  });
+
+  const validHostile = syntheticProgress();
+  validHostile.settle = {
+    nested: { password: "valid-settle-secret" },
+  };
+  validHostile.settle.loop = validHostile.settle;
+  validHostile.detail = {
+    authorization: "valid-detail-secret",
+  };
+  validHostile.detail.loop = validHostile.detail;
+  validHostile.terrainRequests.lastError = {
+    token: "valid-ledger-secret",
+  };
+  assert.equal(validateS5PageProgress(validHostile, "webgl").ok, true);
+  const validClassified = classifyS5PageDiagnosticValue(validHostile, "webgl");
+  assert.equal(validClassified.pageValidation.status, "fulfilled-valid");
+  assert.equal(validClassified.rawPage, null);
+  assert.equal(
+    validateS5PageDiagnosticProjection(validClassified.page, "webgl"),
+    true,
+  );
+  assert.equal(Object.hasOwn(validClassified.page, "settle"), false);
+  assert.equal(Object.hasOwn(validClassified.page, "detail"), false);
+  assert.equal(validClassified.page.terrainRequests.lastError, "non-string");
+  assert.doesNotMatch(
+    JSON.stringify(validClassified),
+    /valid-settle-secret|valid-detail-secret|valid-ledger-secret/u,
+  );
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(validClassified.page), "utf8") <=
+      C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH,
+  );
+  const validHostileArtifact = diagnosticErrorArtifact(
+    validClassified,
+    "simulated timeout with valid hostile progress",
+  );
+  assert.equal(validateS5FinalArtifactShape(validHostileArtifact).ok, true);
+  const validSecretInjection = structuredClone(validHostileArtifact);
+  validSecretInjection.diagnostics.page.secret = "late-valid-secret";
+  assert.equal(validateS5FinalArtifactShape(validSecretInjection).ok, false);
+  const crossFieldValidPageForge = structuredClone(validHostileArtifact);
+  crossFieldValidPageForge.diagnostics.page.step = numericPathSecret;
+  crossFieldValidPageForge.diagnostics.page.validationWitness.step =
+    numericPathSecret;
+  crossFieldValidPageForge.diagnostics.pageValidation.diagnosticSha256 =
+    diagnosticSha256(crossFieldValidPageForge.diagnostics.page);
+  assert.equal(
+    validateS5FinalArtifactShape(crossFieldValidPageForge).ok,
+    false,
+  );
+  const reorderedValidPage = structuredClone(validHostileArtifact);
+  reorderedValidPage.diagnostics.page = Object.fromEntries(
+    Object.entries(reorderedValidPage.diagnostics.page).reverse(),
+  );
+  reorderedValidPage.diagnostics.pageValidation.diagnosticSha256 =
+    diagnosticSha256(reorderedValidPage.diagnostics.page);
+  assert.equal(validateS5FinalArtifactShape(reorderedValidPage).ok, false);
+
+  validHostileArtifact.diagnostics.node.authorization =
+    "Bearer node-secret-token";
+  validHostileArtifact.diagnostics.node.cookie = "cookie-secret-value";
+  const validBytes = serializeS5Artifact(validHostileArtifact);
+  const validRoundTrip = JSON.parse(validBytes);
+  assert.equal(validateS5FinalArtifactShape(validRoundTrip).ok, true);
+  assert.equal(serializeS5Artifact(validRoundTrip), validBytes);
+  assert.equal(
+    validRoundTrip.diagnostics.pageValidation.diagnosticSha256,
+    diagnosticSha256(validRoundTrip.diagnostics.page),
+  );
+  assert.doesNotMatch(
+    validBytes,
+    /valid-settle-secret|valid-detail-secret|valid-ledger-secret|node-secret-token|cookie-secret-value/u,
+  );
+
+  const categoricalStrings = [
+    ["https://user:password@terrain.invalid/tile", "url-userinfo"],
+    ["https://terrain.invalid/tile?token=top-secret", "url-query"],
+    ["https://terrain.invalid/tile#top-secret", "url-fragment"],
+    ["Bearer sk-live-top-secret", "message"],
+    ["password=top-secret", "message"],
+  ];
+  for (const [lastError, expectedCode] of categoricalStrings) {
+    const source = structuredClone(syntheticProgress());
+    source.unexpectedSecret = "must-never-survive";
+    source["api-key-top-secret"] = "secret-key-value";
+    source.schema = `schema-${lastError}`;
+    source.terrainRequests.lastError = lastError;
+    const diagnostic = classifyS5PageDiagnosticValue(source, "webgl");
+    assert.equal(diagnostic.pageValidation.status, "fulfilled-invalid");
+    const artifact = diagnosticErrorArtifact(
+      diagnostic,
+      "categorical diagnostic round trip",
+    );
+    const bytes = serializeS5Artifact(artifact);
+    const roundTrip = JSON.parse(bytes);
+    const raw = JSON.parse(roundTrip.diagnostics.rawPage.json);
+    assert.equal(raw.validationWitness.schema, "[redacted-string]");
+    assert.equal(raw.validationWitness.terrainRequests.lastError, expectedCode);
+    assert.equal(roundTrip.diagnostics.rawPage.json, diagnostic.rawPage.json);
+    assert.equal(validateS5FinalArtifactShape(roundTrip).ok, true);
+    assert.equal(serializeS5Artifact(roundTrip), bytes);
+    assert.equal(
+      roundTrip.diagnostics.pageValidation.diagnosticSha256,
+      createHash("sha256")
+        .update(roundTrip.diagnostics.rawPage.json, "utf8")
+        .digest("hex"),
+    );
+    assert.doesNotMatch(
+      bytes,
+      /top-secret|password@|sk-live|must-never-survive|secret-key-value/u,
+    );
+  }
+
+  const witnessFromDiagnostic = (diagnostic) =>
+    diagnostic.page?.validationWitness ??
+    JSON.parse(diagnostic.rawPage.json).validationWitness;
+  const crossFieldStringMutants = [
+    {
+      value: numericPathSecret,
+      mutate: (source) => (source.step = numericPathSecret),
+      read: (witness) => witness.step,
+      expected: "other-step",
+    },
+    {
+      value: RUN_ID,
+      mutate: (source) => (source.schema = RUN_ID),
+      read: (witness) => witness.schema,
+      expected: "[redacted-string]",
+    },
+    {
+      value: C12_29_S5_PHASES[0],
+      mutate: (source) => (source.schema = C12_29_S5_PHASES[0]),
+      read: (witness) => witness.schema,
+      expected: "[redacted-string]",
+    },
+    {
+      value: d866Reason,
+      mutate: (source) => (source.step = d866Reason),
+      read: (witness) => witness.step,
+      expected: "other-step",
+    },
+    {
+      value: "[invalid-super-secret-token]",
+      mutate: (source) => (source.step = "[invalid-super-secret-token]"),
+      read: (witness) => witness.step,
+      expected: "other-step",
+    },
+    {
+      value: RUN_ID,
+      mutate: (source) => (source.visibilitySeam.terminalReason = RUN_ID),
+      read: (witness) => witness.visibilitySeam.terminalReason,
+      expected: "other-terminal-reason",
+    },
+  ];
+  for (const mutant of crossFieldStringMutants) {
+    const source = structuredClone(syntheticProgress());
+    mutant.mutate(source);
+    const diagnostic = classifyS5PageDiagnosticValue(source, "webgl");
+    assert.notEqual(diagnostic.pageValidation.status, "rejected");
+    assert.deepEqual(
+      diagnostic.pageValidation.reasons,
+      validateS5PageProgress(source, "webgl").reasons,
+    );
+    const witness = witnessFromDiagnostic(diagnostic);
+    assert.equal(mutant.read(witness), mutant.expected);
+    if (mutant.value !== C12_29_S5_PHASES[0]) {
+      const escapedValue = mutant.value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+      assert.doesNotMatch(
+        JSON.stringify(diagnostic),
+        new RegExp(escapedValue, "u"),
+      );
+    }
+  }
+
+  const numericWitnessSecret = 123_456_789_012_345;
+  const misplacedKnownKeyMutants = [
+    {
+      mutate: (source) => (source.targetFill = numericWitnessSecret),
+      read: (witness) => witness,
+      misplacedKey: "targetFill",
+    },
+    {
+      mutate: (source) =>
+        (source.terrainRequests.targetFill = numericWitnessSecret),
+      read: (witness) => witness.terrainRequests,
+      misplacedKey: "targetFill",
+    },
+    {
+      mutate: (source) =>
+        (source.firstReveal.visibilityCalls[0].vertexCount =
+          numericWitnessSecret),
+      read: (witness) => witness.firstReveal.visibilityCalls[0],
+      misplacedKey: "vertexCount",
+    },
+    {
+      mutate: (source) =>
+        (source.pick.providerFlags = structuredClone(
+          source.firstReveal.providerFlags,
+        )),
+      read: (witness) => witness.pick,
+      misplacedKey: "providerFlags",
+    },
+    {
+      mutate: (source) =>
+        (source.firstReveal.providerFlags = {
+          ...structuredClone(source.orderProof),
+          targetFill: numericWitnessSecret,
+        }),
+      read: (witness) => witness.firstReveal.providerFlags,
+      misplacedKey: "targetFill",
+    },
+  ];
+  for (const mutant of misplacedKnownKeyMutants) {
+    const source = structuredClone(syntheticProgress());
+    mutant.mutate(source);
+    const diagnostic = classifyS5PageDiagnosticValue(source, "webgl");
+    assert.equal(diagnostic.pageValidation.status, "fulfilled-invalid");
+    assert.deepEqual(
+      diagnostic.pageValidation.reasons,
+      validateS5PageProgress(source, "webgl").reasons,
+    );
+    const raw = JSON.parse(diagnostic.rawPage.json);
+    const container = mutant.read(raw.validationWitness);
+    assert.equal(Object.hasOwn(container, mutant.misplacedKey), false);
+    const sentinels = Object.entries(container).filter(([key]) =>
+      /^__unexpected_s5_\d{4}$/u.test(key),
+    );
+    assert.ok(sentinels.length > 0);
+    assert.deepEqual(
+      sentinels,
+      sentinels.map((_entry, index) => [
+        `__unexpected_s5_${String(index + 1).padStart(4, "0")}`,
+        "[unexpected]",
+      ]),
+    );
+    assert.doesNotMatch(
+      diagnostic.rawPage.json,
+      new RegExp(String(numericWitnessSecret), "u"),
+    );
+    assert.equal(
+      validateS5RawPageDiagnosticJson(diagnostic.rawPage.json, "webgl").ok,
+      true,
+    );
+    assert.equal(
+      validateS5FinalArtifactShape(
+        diagnosticErrorArtifact(diagnostic, "misplaced known-key diagnostic"),
+      ).ok,
+      true,
+    );
+  }
+
+  const misplacedArrayElement = createS5PageValidationWitness({
+    completedPhases: [{ targetFill: numericWitnessSecret }],
+  });
+  assert.deepEqual(misplacedArrayElement, {
+    completedPhases: ["[unexpected]"],
+  });
+  assert.doesNotMatch(
+    JSON.stringify(misplacedArrayElement),
+    new RegExp(String(numericWitnessSecret), "u"),
+  );
+
+  const wrongPathTypeMutants = [
+    {
+      mutate: (source) =>
+        (source.firstReveal.targetFill = numericWitnessSecret),
+      read: (witness) => witness.firstReveal.targetFill,
+    },
+    {
+      mutate: (source) => (source.completedPhases[0] = numericWitnessSecret),
+      read: (witness) => witness.completedPhases[0],
+    },
+    {
+      mutate: (source) =>
+        (source.firstReveal.selectedTileIds[0] = numericWitnessSecret),
+      read: (witness) => witness.firstReveal.selectedTileIds[0],
+    },
+    {
+      mutate: (source) =>
+        (source.firstReveal.visibilityCalls[0] = numericWitnessSecret),
+      read: (witness) => witness.firstReveal.visibilityCalls[0],
+    },
+    {
+      mutate: (source) =>
+        (source.firstReveal.visibilityTargetCallOrdinals[0] = "RENDERED"),
+      read: (witness) => witness.firstReveal.visibilityTargetCallOrdinals[0],
+    },
+  ];
+  for (const mutant of wrongPathTypeMutants) {
+    const source = structuredClone(syntheticProgress());
+    mutant.mutate(source);
+    const diagnostic = classifyS5PageDiagnosticValue(source, "webgl");
+    assert.equal(diagnostic.pageValidation.status, "fulfilled-invalid");
+    assert.deepEqual(
+      diagnostic.pageValidation.reasons,
+      validateS5PageProgress(source, "webgl").reasons,
+    );
+    const witness = JSON.parse(diagnostic.rawPage.json).validationWitness;
+    assert.equal(mutant.read(witness), "[unexpected]");
+    assert.doesNotMatch(
+      diagnostic.rawPage.json,
+      new RegExp(String(numericWitnessSecret), "u"),
+    );
+    assert.equal(
+      validateS5FinalArtifactShape(
+        diagnosticErrorArtifact(diagnostic, "wrong path-type diagnostic"),
+      ).ok,
+      true,
+    );
+  }
+
+  const hugeTileComponent = `1/${"9".repeat(4_096)}/0`;
+  for (const invalidTileId of [
+    numericPathSecret,
+    hugeTileComponent,
+    "31/0/0",
+    "1/4/0",
+    "1/0/2",
+    "01/0/0",
+  ]) {
+    const lastTileWitness = createS5PageValidationWitness({
+      terrainRequests: { lastTileId: invalidTileId },
+    });
+    assert.equal(lastTileWitness.terrainRequests.lastTileId, "present");
+  }
+  assert.equal(
+    createS5PageValidationWitness({
+      terrainRequests: { lastTileId: "1/3/1" },
+    }).terrainRequests.lastTileId,
+    "1/3/1",
+  );
+  const hugeTileProgress = structuredClone(syntheticProgress());
+  hugeTileProgress.firstReveal.targetKey = hugeTileComponent;
+  const hugeTileDiagnostic = classifyS5PageDiagnosticValue(
+    hugeTileProgress,
+    "webgl",
+  );
+  assert.equal(hugeTileDiagnostic.pageValidation.status, "fulfilled-invalid");
+  const hugeTileRaw = JSON.parse(hugeTileDiagnostic.rawPage.json);
+  assert.equal(
+    hugeTileRaw.validationWitness.firstReveal.targetKey,
+    "[redacted-string]",
+  );
+  assert.doesNotMatch(hugeTileDiagnostic.rawPage.json, /9{128}/u);
+
+  const publicationSource = structuredClone(syntheticProgress());
+  publicationSource.unexpected = true;
+  publicationSource.terrainRequests.lastError =
+    "https://terrain.invalid/tile?token=publication-secret";
+  const publicationDiagnostic = classifyS5PageDiagnosticValue(
+    publicationSource,
+    "webgl",
+  );
+  const publicationArtifact = diagnosticErrorArtifact(
+    publicationDiagnostic,
+    "categorical publication round trip",
+  );
+  const publicationDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "c1229-s5-diagnostic-publication-"),
+  );
+  try {
+    const publicationPaths = createS5ArtifactPaths(
+      RUN_ID,
+      publicationDirectory,
+    );
+    beginS5EvidenceRun(publicationPaths, RUN_ID);
+    publishS5FinalArtifact(publicationPaths, publicationArtifact);
+    const publishedBytes = fs.readFileSync(publicationPaths.run, "utf8");
+    const publishedArtifact = JSON.parse(publishedBytes);
+    assert.equal(validateS5FinalArtifactShape(publishedArtifact).ok, true);
+    assert.equal(
+      publishedArtifact.diagnostics.rawPage.json,
+      publicationDiagnostic.rawPage.json,
+    );
+    assert.doesNotMatch(publishedBytes, /publication-secret/u);
+  } finally {
+    fs.rmSync(publicationDirectory, { recursive: true, force: true });
+  }
+
+  const sparseProgress = syntheticProgress();
+  delete sparseProgress.completedPhases[4];
+  assert.deepEqual(validateS5PageProgress(sparseProgress, "webgl").reasons, [
+    "page progress completed phases are not an A-H prefix",
+    "page progress reveal diagnostics began out of order",
+  ]);
+  const sparseClassified = classifyS5PageDiagnosticValue(
+    sparseProgress,
+    "webgl",
+  );
+  assert.equal(sparseClassified.pageValidation.status, "fulfilled-invalid");
+  assert.equal(sparseClassified.page, null);
+  assert.equal(
+    validateS5RawPageDiagnosticJson(sparseClassified.rawPage.json, "webgl").ok,
+    true,
+  );
+
+  const rendererMismatch = classifyS5PageDiagnosticValue(
+    syntheticProgress("webgpu"),
+    "webgl",
+  );
+  assert.equal(rendererMismatch.pageValidation.status, "fulfilled-invalid");
+  assert.ok(
+    rendererMismatch.pageValidation.reasons.includes(
+      "page progress schema/renderer is invalid",
+    ),
+  );
+  assert.equal(
+    validateS5RawPageDiagnosticJson(rendererMismatch.rawPage.json, "webgl").ok,
+    true,
+  );
+  assert.equal(
+    validateS5RawPageDiagnosticJson(rendererMismatch.rawPage.json, "webgpu").ok,
+    false,
+  );
+  assert.equal(
+    validateS5FinalArtifactShape(
+      diagnosticErrorArtifact(rendererMismatch, "renderer mismatch"),
+    ).ok,
+    true,
+  );
+
+  const witnessIdempotent = createS5PageValidationWitness(validHostile);
+  assert.deepEqual(
+    createS5PageValidationWitness(witnessIdempotent),
+    witnessIdempotent,
+  );
+
+  const allowlistedGetterFailure = syntheticProgress();
+  Object.defineProperty(allowlistedGetterFailure.terrainRequests, "lastError", {
+    enumerable: true,
+    get() {
+      throw new Error("allowlisted getter secret");
+    },
+  });
+  assert.equal(
+    classifyS5PageDiagnosticValue(allowlistedGetterFailure, "webgl")
+      .pageValidation.status,
+    "rejected",
+  );
+
+  const d866Progress = structuredClone(syntheticProgress());
+  d866Progress.orderProof.endUpdateCalls[0].targetStateAfter = {
+    ...d866Progress.orderProof.endUpdateCalls[0].targetStateAfter,
+    vertexCount: 6,
+  };
+  d866Progress.firstReveal.predicateResults.coherentSameFrameOrderSurfaces = false;
+  d866Progress.visibilitySeam.terminalReason =
+    "first pass-through render did not produce the exact held L1 fill";
+  assert.equal(validateS5PageProgress(d866Progress, "webgl").ok, true);
+  const d866Classified = classifyS5PageDiagnosticValue(d866Progress, "webgl");
+  assert.equal(d866Classified.pageValidation.status, "fulfilled-valid");
+  assert.equal(
+    d866Classified.page.firstReveal.predicateResults
+      .coherentSameFrameOrderSurfaces,
+    false,
+  );
+  assert.deepEqual(d866Classified.page.validationBasis.falsePredicateFields, [
+    "coherentSameFrameOrderSurfaces",
+  ]);
+  const d866Artifact = diagnosticErrorArtifact(
+    d866Classified,
+    "d866 aggregate failure remains non-certifying",
+  );
+  assert.equal(validateS5FinalArtifactShape(d866Artifact).ok, true);
+  for (const mutateD866 of [
+    (page) =>
+      (page.firstReveal.predicateResults.coherentSameFrameOrderSurfaces = true),
+    (page) => (page.validationBasis.falsePredicateFields = []),
+    (page) => (page.visibilitySeam.terminalReason = null),
+  ]) {
+    const mutated = structuredClone(d866Artifact);
+    mutateD866(mutated.diagnostics.page);
+    mutated.diagnostics.pageValidation.diagnosticSha256 = diagnosticSha256(
+      mutated.diagnostics.page,
+    );
+    assert.equal(validateS5FinalArtifactShape(mutated).ok, false);
+  }
+
+  const extendVisibilityLedger = (count) => {
+    const source = syntheticProgress();
+    const calls = source.visibilitySeam.calls;
+    const template = structuredClone(calls.at(-1));
+    while (calls.length < count) {
+      calls.push({ ...template, ordinal: calls.length + 1 });
+    }
+    const counts = source.visibilitySeam.counts;
+    counts.totalCalls = calls.length;
+    counts.originalCalls = calls.length;
+    counts.targetCalls = calls.filter((call) => call.target).length;
+    counts.nonTargetCalls = calls.filter((call) => !call.target).length;
+    counts.overrideCalls = calls.filter((call) => call.overridden).length;
+    counts.nonTargetAlteredCalls = calls.filter(
+      (call) => !call.target && call.overridden,
+    ).length;
+    counts.skippedOriginalCalls = 0;
+    return source;
+  };
+  const maximumVisibilityCalls = C12_29_S5_SCENE.fillWarmMaximumFrames * 64;
+  for (const callCount of [65, maximumVisibilityCalls]) {
+    const source = extendVisibilityLedger(callCount);
+    const sourceValidation = validateS5PageProgress(source, "webgl");
+    assert.deepEqual(sourceValidation, { ok: true, reasons: [] });
+    const witness = createS5PageValidationWitness(source);
+    assert.equal(
+      witness.visibilitySeam.calls.schema,
+      "c12-29-s5-validation-array-summary-v1",
+    );
+    assert.equal(witness.visibilitySeam.calls.path, "visibilitySeam.calls");
+    assert.equal(witness.visibilitySeam.calls.length, callCount);
+    assert.deepEqual(validateS5PageProgress(witness, "webgl"), {
+      ok: true,
+      reasons: [],
+    });
+    const diagnostic = classifyS5PageDiagnosticValue(source, "webgl");
+    assert.equal(diagnostic.pageValidation.status, "fulfilled-valid");
+    assert.equal(diagnostic.rawPage, null);
+    assert.equal(
+      validateS5PageDiagnosticProjection(diagnostic.page, "webgl"),
+      true,
+    );
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(diagnostic.page), "utf8") <=
+        C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH,
+    );
+
+    // A page cannot submit a forged summary as if it were raw progress. Only
+    // the locally branded witness produced after raw validation may use it.
+    const unbrandedRoundTrip = JSON.parse(JSON.stringify(witness));
+    assert.equal(validateS5PageProgress(unbrandedRoundTrip, "webgl").ok, false);
+    assert.equal(
+      classifyS5PageDiagnosticValue(unbrandedRoundTrip, "webgl").pageValidation
+        .status,
+      "rejected",
+    );
+  }
+
+  const assertExactInvalidDiagnostic = (source, expectedReasons) => {
+    const sourceValidation = validateS5PageProgress(source, "webgl");
+    assert.deepEqual(sourceValidation.reasons, expectedReasons);
+    const diagnostic = classifyS5PageDiagnosticValue(source, "webgl");
+    assert.equal(diagnostic.pageValidation.status, "fulfilled-invalid");
+    assert.deepEqual(diagnostic.pageValidation.reasons, expectedReasons);
+    assert.equal(
+      validateS5RawPageDiagnosticJson(diagnostic.rawPage.json, "webgl").ok,
+      true,
+    );
+  };
+  const sparseVisibilityReasons = [
+    "page progress visibility seam diagnostics are inconsistent",
+    "page progress first-reveal/order diagnostics are inconsistent",
+  ];
+  for (const callCount of [65, maximumVisibilityCalls]) {
+    const sparse = extendVisibilityLedger(callCount);
+    delete sparse.visibilitySeam.calls[Math.floor(callCount / 2)];
+    assertExactInvalidDiagnostic(sparse, sparseVisibilityReasons);
+  }
+
+  const sparseSelected = syntheticProgress();
+  sparseSelected.firstReveal.selectedTileIds.length = 65;
+  sparseSelected.firstReveal.selectedCount = 65;
+  assertExactInvalidDiagnostic(sparseSelected, [
+    "page progress first-reveal/order diagnostics are inconsistent",
+  ]);
+  const sparseReal = syntheticProgress();
+  sparseReal.firstReveal.realTileIds.length = 65;
+  sparseReal.firstReveal.realMeshCount = 65;
+  assertExactInvalidDiagnostic(sparseReal, [
+    "page progress first-reveal/order diagnostics are inconsistent",
+  ]);
+  const sparseFill = syntheticProgress();
+  sparseFill.firstReveal.fillTileIds.length = 65;
+  sparseFill.firstReveal.fillCount = 65;
+  assertExactInvalidDiagnostic(sparseFill, [
+    "page progress first-reveal/order diagnostics are inconsistent",
+  ]);
+  const sparseOrder = syntheticProgress();
+  sparseOrder.orderProof.showTileThisFrameCalls.length = 17;
+  assertExactInvalidDiagnostic(sparseOrder, [
+    "page progress first-reveal/order diagnostics are inconsistent",
+  ]);
+
+  const arrayShapeMutants = [
+    (source) => {
+      source.visibilitySeam.calls.extra = true;
+    },
+    (source) => {
+      Object.defineProperty(source.visibilitySeam.calls, "01", {
+        configurable: true,
+        enumerable: true,
+        value: source.visibilitySeam.calls[1],
+      });
+    },
+    (source) => {
+      const inherited = Object.create(Array.prototype);
+      Object.defineProperty(inherited, "99", {
+        configurable: true,
+        value: source.visibilitySeam.calls[1],
+      });
+      Object.setPrototypeOf(source.visibilitySeam.calls, inherited);
+    },
+  ];
+  for (const mutateArrayShape of arrayShapeMutants) {
+    const source = syntheticProgress();
+    mutateArrayShape(source);
+    assertExactInvalidDiagnostic(source, sparseVisibilityReasons);
+  }
+
+  const maximumPlusOne = extendVisibilityLedger(maximumVisibilityCalls + 1);
+  const maximumPlusOneSourceValidation = validateS5PageProgress(
+    maximumPlusOne,
+    "webgl",
+  );
+  assert.deepEqual(maximumPlusOneSourceValidation.reasons, [
+    "page progress visibility seam diagnostics are inconsistent",
+    "page progress first-reveal/order diagnostics are inconsistent",
+  ]);
+  const maximumPlusOneDiagnostic = classifyS5PageDiagnosticValue(
+    maximumPlusOne,
+    "webgl",
+  );
+  assert.equal(
+    maximumPlusOneDiagnostic.pageValidation.status,
+    "fulfilled-invalid",
+  );
+  assert.deepEqual(
+    maximumPlusOneDiagnostic.pageValidation.reasons,
+    maximumPlusOneSourceValidation.reasons,
+  );
+  assert.equal(
+    validateS5RawPageDiagnosticJson(
+      maximumPlusOneDiagnostic.rawPage.json,
+      "webgl",
+    ).ok,
+    true,
+  );
+  assert.ok(
+    Buffer.byteLength(maximumPlusOneDiagnostic.rawPage.json, "utf8") <=
+      C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH,
+  );
+
+  const largeSelectionProgress = syntheticProgress();
+  const largeSelectedRealIds = Array.from(
+    { length: 4_096 },
+    (_, index) => `12/${index}/0`,
+  );
+  const largeFillIds = Array.from(
+    { length: 4_096 },
+    (_, index) => `12/${index + 4_096}/1`,
+  );
+  largeSelectionProgress.firstReveal.selectedTileIds = [
+    ...largeSelectionProgress.firstReveal.selectedTileIds,
+    ...largeSelectedRealIds,
+    ...largeFillIds,
+  ].sort();
+  largeSelectionProgress.firstReveal.realTileIds = [
+    ...largeSelectionProgress.firstReveal.realTileIds,
+    ...largeSelectedRealIds,
+  ].sort();
+  largeSelectionProgress.firstReveal.fillTileIds = [
+    ...largeSelectionProgress.firstReveal.fillTileIds,
+    ...largeFillIds,
+  ].sort();
+  largeSelectionProgress.firstReveal.selectedCount =
+    largeSelectionProgress.firstReveal.selectedTileIds.length;
+  largeSelectionProgress.firstReveal.realMeshCount =
+    largeSelectionProgress.firstReveal.realTileIds.length;
+  largeSelectionProgress.firstReveal.fillCount =
+    largeSelectionProgress.firstReveal.fillTileIds.length;
+  assert.deepEqual(validateS5PageProgress(largeSelectionProgress, "webgl"), {
+    ok: true,
+    reasons: [],
+  });
+  const largeSelectionDiagnostic = classifyS5PageDiagnosticValue(
+    largeSelectionProgress,
+    "webgl",
+  );
+  assert.equal(
+    largeSelectionDiagnostic.pageValidation.status,
+    "fulfilled-valid",
+  );
+  assert.equal(
+    validateS5PageDiagnosticProjection(largeSelectionDiagnostic.page, "webgl"),
+    true,
+  );
+  for (const field of ["selectedTileIds", "realTileIds", "fillTileIds"]) {
+    assert.equal(
+      largeSelectionDiagnostic.page.validationWitness.firstReveal[field].schema,
+      "c12-29-s5-validation-array-summary-v1",
+    );
+  }
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(largeSelectionDiagnostic.page), "utf8") <=
+      C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH,
+  );
+  const largeSelectionArtifact = diagnosticErrorArtifact(
+    largeSelectionDiagnostic,
+    "large selection ledger diagnostic",
+  );
+  assert.equal(validateS5FinalArtifactShape(largeSelectionArtifact).ok, true);
+  const largeSelectionBytes = serializeS5Artifact(largeSelectionArtifact);
+  const largeSelectionRoundTrip = JSON.parse(largeSelectionBytes);
+  assert.equal(validateS5FinalArtifactShape(largeSelectionRoundTrip).ok, true);
+  assert.equal(
+    serializeS5Artifact(largeSelectionRoundTrip),
+    largeSelectionBytes,
+  );
+  for (const mutateLargeWitness of [
+    (page) => page.validationWitness.firstReveal.selectedCount++,
+    (page) => (page.validationWitness.firstReveal.longitude = 0),
+    (page) =>
+      (page.validationWitness.firstReveal.predicateResults.targetSelected = false),
+    (page) =>
+      (page.validationWitness.firstReveal.selectedTileIds.path =
+        "firstReveal.realTileIds"),
+    (page) => page.validationWitness.firstReveal.selectedTileIds.length++,
+    (page) =>
+      (page.validationWitness.firstReveal.selectedTileIds.sha256 = "0".repeat(
+        64,
+      )),
+    (page) =>
+      (page.validationWitness.firstReveal.selectedTileIds.facts.firstRevealArrayRelationsValid = false),
+    (page) =>
+      (page.validationWitness.firstReveal.realTileIds = structuredClone(
+        page.validationWitness.firstReveal.selectedTileIds,
+      )),
+  ]) {
+    const mutated = structuredClone(largeSelectionArtifact);
+    mutateLargeWitness(mutated.diagnostics.page);
+    mutated.diagnostics.pageValidation.diagnosticSha256 = diagnosticSha256(
+      mutated.diagnostics.page,
+    );
+    assert.equal(validateS5FinalArtifactShape(mutated).ok, false);
+  }
+
+  const maximumOrderProgress = syntheticProgress();
+  const nonTargetShow = structuredClone(
+    maximumOrderProgress.orderProof.showTileThisFrameCalls[0],
+  );
+  const targetShow = structuredClone(
+    maximumOrderProgress.orderProof.showTileThisFrameCalls[1],
+  );
+  maximumOrderProgress.orderProof.showTileThisFrameCalls = Array.from(
+    { length: 64 },
+    (_, index) => {
+      const target = index === 63;
+      return {
+        ...(target ? targetShow : nonTargetShow),
+        ordinal: index + 1,
+        enterEventOrdinal: index * 2 + 1,
+        exitEventOrdinal: index * 2 + 2,
+      };
+    },
+  );
+  maximumOrderProgress.orderProof.endUpdateCalls[0].enterEventOrdinal = 129;
+  maximumOrderProgress.orderProof.endUpdateCalls[0].exitEventOrdinal = 130;
+  maximumOrderProgress.orderProof.eventCount = 130;
+  assert.deepEqual(validateS5PageProgress(maximumOrderProgress, "webgl"), {
+    ok: true,
+    reasons: [],
+  });
+  const maximumOrderDiagnostic = classifyS5PageDiagnosticValue(
+    maximumOrderProgress,
+    "webgl",
+  );
+  assert.equal(maximumOrderDiagnostic.pageValidation.status, "fulfilled-valid");
+  assert.equal(
+    maximumOrderDiagnostic.page.validationWitness.orderProof
+      .showTileThisFrameCalls.length,
+    64,
+  );
+  assert.equal(
+    maximumOrderDiagnostic.page.validationWitness.orderProof
+      .showTileThisFrameCalls.schema,
+    "c12-29-s5-validation-array-summary-v1",
+  );
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(maximumOrderDiagnostic.page), "utf8") <=
+      C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH,
+  );
+
+  const invalidErrorArtifact = diagnosticErrorArtifact(
+    classified,
+    "simulated invalid page progress",
+  );
+  assert.equal(validateS5FinalArtifactShape(invalidErrorArtifact).ok, true);
+  const crossFieldRawForge = structuredClone(invalidErrorArtifact);
+  const crossFieldRaw = JSON.parse(crossFieldRawForge.diagnostics.rawPage.json);
+  crossFieldRaw.step = numericPathSecret;
+  crossFieldRaw.validationWitness.step = numericPathSecret;
+  crossFieldRawForge.diagnostics.rawPage.json = JSON.stringify(crossFieldRaw);
+  crossFieldRawForge.diagnostics.pageValidation.diagnosticSha256 = createHash(
+    "sha256",
+  )
+    .update(crossFieldRawForge.diagnostics.rawPage.json, "utf8")
+    .digest("hex");
+  assert.equal(validateS5FinalArtifactShape(crossFieldRawForge).ok, false);
+
+  const openEndedSentinelForge = structuredClone(invalidErrorArtifact);
+  const openEndedSentinelRaw = JSON.parse(
+    openEndedSentinelForge.diagnostics.rawPage.json,
+  );
+  openEndedSentinelRaw.step = "[invalid-super-secret-token]";
+  openEndedSentinelRaw.validationWitness.step = "[invalid-super-secret-token]";
+  openEndedSentinelForge.diagnostics.rawPage.json =
+    JSON.stringify(openEndedSentinelRaw);
+  openEndedSentinelForge.diagnostics.pageValidation.diagnosticSha256 =
+    createHash("sha256")
+      .update(openEndedSentinelForge.diagnostics.rawPage.json, "utf8")
+      .digest("hex");
+  assert.equal(validateS5FinalArtifactShape(openEndedSentinelForge).ok, false);
+
+  const nonSequentialSentinelForge = structuredClone(invalidErrorArtifact);
+  const nonSequentialSentinelRaw = JSON.parse(
+    nonSequentialSentinelForge.diagnostics.rawPage.json,
+  );
+  nonSequentialSentinelRaw.validationWitness.__unexpected_s5_9999 =
+    "[unexpected]";
+  nonSequentialSentinelForge.diagnostics.rawPage.json = JSON.stringify(
+    nonSequentialSentinelRaw,
+  );
+  nonSequentialSentinelForge.diagnostics.pageValidation.diagnosticSha256 =
+    createHash("sha256")
+      .update(nonSequentialSentinelForge.diagnostics.rawPage.json, "utf8")
+      .digest("hex");
+  assert.equal(
+    validateS5FinalArtifactShape(nonSequentialSentinelForge).ok,
+    false,
+  );
+
+  for (const sentinelValue of [
+    true,
+    numericWitnessSecret,
+    "RENDERED",
+    null,
+    { targetFill: true },
+    ["RENDERED"],
+  ]) {
+    const sentinelValueForge = structuredClone(invalidErrorArtifact);
+    const sentinelValueRaw = JSON.parse(
+      sentinelValueForge.diagnostics.rawPage.json,
+    );
+    assert.equal(
+      sentinelValueRaw.validationWitness.__unexpected_s5_0001,
+      "[unexpected]",
+    );
+    sentinelValueRaw.validationWitness.__unexpected_s5_0001 = sentinelValue;
+    sentinelValueForge.diagnostics.rawPage.json =
+      JSON.stringify(sentinelValueRaw);
+    sentinelValueForge.diagnostics.pageValidation.diagnosticSha256 = createHash(
+      "sha256",
+    )
+      .update(sentinelValueForge.diagnostics.rawPage.json, "utf8")
+      .digest("hex");
+    assert.equal(
+      validateS5RawPageDiagnosticJson(
+        sentinelValueForge.diagnostics.rawPage.json,
+        "webgl",
+      ).ok,
+      false,
+    );
+    assert.equal(validateS5FinalArtifactShape(sentinelValueForge).ok, false);
+  }
+
+  const misplacedRawKnownKeyForge = structuredClone(invalidErrorArtifact);
+  const misplacedRawKnownKey = JSON.parse(
+    misplacedRawKnownKeyForge.diagnostics.rawPage.json,
+  );
+  const misplacedRootSentinels = Object.entries(
+    misplacedRawKnownKey.validationWitness,
+  ).filter(([key]) => /^__unexpected_s5_\d{4}$/u.test(key));
+  misplacedRawKnownKey.validationWitness = Object.fromEntries([
+    ...Object.entries(misplacedRawKnownKey.validationWitness).filter(
+      ([key]) => !/^__unexpected_s5_\d{4}$/u.test(key),
+    ),
+    ["targetFill", numericWitnessSecret],
+    ...misplacedRootSentinels,
+  ]);
+  misplacedRawKnownKeyForge.diagnostics.rawPage.json =
+    JSON.stringify(misplacedRawKnownKey);
+  misplacedRawKnownKeyForge.diagnostics.pageValidation.diagnosticSha256 =
+    createHash("sha256")
+      .update(misplacedRawKnownKeyForge.diagnostics.rawPage.json, "utf8")
+      .digest("hex");
+  assert.equal(
+    validateS5RawPageDiagnosticJson(
+      misplacedRawKnownKeyForge.diagnostics.rawPage.json,
+      "webgl",
+    ).ok,
+    false,
+  );
+  assert.equal(
+    validateS5FinalArtifactShape(misplacedRawKnownKeyForge).ok,
+    false,
+  );
+
+  const movedSubtreeForge = structuredClone(invalidErrorArtifact);
+  const movedSubtreeRaw = JSON.parse(
+    movedSubtreeForge.diagnostics.rawPage.json,
+  );
+  const pickSentinels = Object.entries(
+    movedSubtreeRaw.validationWitness.pick,
+  ).filter(([key]) => /^__unexpected_s5_\d{4}$/u.test(key));
+  movedSubtreeRaw.validationWitness.pick = Object.fromEntries([
+    ...Object.entries(movedSubtreeRaw.validationWitness.pick).filter(
+      ([key]) => !/^__unexpected_s5_\d{4}$/u.test(key),
+    ),
+    [
+      "providerFlags",
+      {
+        hasLoadedTilesThisFrame: true,
+        hasFillTilesThisFrame: true,
+        loadedAndFillFlags: true,
+      },
+    ],
+    ...pickSentinels,
+  ]);
+  movedSubtreeForge.diagnostics.rawPage.json = JSON.stringify(movedSubtreeRaw);
+  movedSubtreeForge.diagnostics.pageValidation.diagnosticSha256 = createHash(
+    "sha256",
+  )
+    .update(movedSubtreeForge.diagnostics.rawPage.json, "utf8")
+    .digest("hex");
+  assert.equal(
+    validateS5RawPageDiagnosticJson(
+      movedSubtreeForge.diagnostics.rawPage.json,
+      "webgl",
+    ).ok,
+    false,
+  );
+  assert.equal(validateS5FinalArtifactShape(movedSubtreeForge).ok, false);
+
+  const canonicalRawJson = invalidErrorArtifact.diagnostics.rawPage.json;
+  const coordinatedAssertionMutant = structuredClone(invalidErrorArtifact);
+  const coordinatedRaw = JSON.parse(
+    coordinatedAssertionMutant.diagnostics.rawPage.json,
+  );
+  const coordinatedField = C12_29_S5_PAGE_VALIDATION_FAILURE_FIELDS.find(
+    (field) => coordinatedRaw.validationFailures[field],
+  );
+  assert.ok(coordinatedField);
+  coordinatedRaw.validationFailures[coordinatedField] = false;
+  coordinatedRaw.validationBasis.validationFailureFields =
+    C12_29_S5_PAGE_VALIDATION_FAILURE_FIELDS.filter(
+      (field) => coordinatedRaw.validationFailures[field],
+    );
+  coordinatedAssertionMutant.diagnostics.pageValidation.reasons =
+    C12_29_S5_PAGE_VALIDATION_REASONS.filter(
+      (_reason, index) =>
+        coordinatedRaw.validationFailures[
+          C12_29_S5_PAGE_VALIDATION_FAILURE_FIELDS[index]
+        ],
+    );
+  coordinatedAssertionMutant.diagnostics.rawPage.json =
+    JSON.stringify(coordinatedRaw);
+  coordinatedAssertionMutant.diagnostics.pageValidation.diagnosticSha256 =
+    createHash("sha256")
+      .update(coordinatedAssertionMutant.diagnostics.rawPage.json, "utf8")
+      .digest("hex");
+  assert.equal(
+    validateS5FinalArtifactShape(coordinatedAssertionMutant).ok,
+    false,
+  );
+
+  for (const forgeWitness of [
+    (raw) => delete raw.validationWitness,
+    (raw) => (raw.validationWitness = {}),
+    (raw) =>
+      (raw.validationWitness.firstReveal.predicateResults.targetFill = true),
+  ]) {
+    const mutated = structuredClone(invalidErrorArtifact);
+    const raw = JSON.parse(mutated.diagnostics.rawPage.json);
+    forgeWitness(raw);
+    mutated.diagnostics.rawPage.json = JSON.stringify(raw);
+    mutated.diagnostics.pageValidation.diagnosticSha256 = createHash("sha256")
+      .update(mutated.diagnostics.rawPage.json, "utf8")
+      .digest("hex");
+    assert.equal(validateS5FinalArtifactShape(mutated).ok, false);
+  }
+
+  const duplicateKeyJson = `{"schema":"collision-secret",${canonicalRawJson.slice(1)}`;
+  assert.equal(
+    JSON.parse(duplicateKeyJson).schema,
+    JSON.parse(canonicalRawJson).schema,
+  );
+  assert.equal(validateS5RawPageDiagnosticJson(duplicateKeyJson).ok, false);
+  const duplicateKeyMutant = structuredClone(invalidErrorArtifact);
+  duplicateKeyMutant.diagnostics.rawPage.json = duplicateKeyJson;
+  duplicateKeyMutant.diagnostics.pageValidation.diagnosticSha256 = createHash(
+    "sha256",
+  )
+    .update(duplicateKeyJson, "utf8")
+    .digest("hex");
+  assert.equal(validateS5FinalArtifactShape(duplicateKeyMutant).ok, false);
+
+  const reorderedRaw = Object.fromEntries(
+    Object.entries(JSON.parse(canonicalRawJson)).reverse(),
+  );
+  const reorderedRawJson = JSON.stringify(reorderedRaw);
+  assert.equal(validateS5RawPageDiagnosticJson(reorderedRawJson).ok, false);
+  const whitespaceRawJson = `${canonicalRawJson.slice(0, 1)} ${canonicalRawJson.slice(1)}`;
+  assert.equal(validateS5RawPageDiagnosticJson(whitespaceRawJson).ok, false);
+
+  for (const mutateReasons of [
+    (reasons) => (reasons[0] = "fabricated reason"),
+    (reasons) => reasons.push(reasons[0]),
+    (reasons) => reasons.reverse(),
+    (reasons) => reasons.splice(0, 1),
+  ]) {
+    const mutated = structuredClone(invalidErrorArtifact);
+    mutateReasons(mutated.diagnostics.pageValidation.reasons);
+    assert.equal(validateS5FinalArtifactShape(mutated).ok, false);
+  }
+
+  const basisMutant = structuredClone(invalidErrorArtifact);
+  const basisRaw = JSON.parse(basisMutant.diagnostics.rawPage.json);
+  const assertedFailure = C12_29_S5_PAGE_VALIDATION_FAILURE_FIELDS.find(
+    (field) => basisRaw.validationFailures[field],
+  );
+  assert.ok(assertedFailure);
+  basisRaw.validationFailures[assertedFailure] = false;
+  basisMutant.diagnostics.rawPage.json = JSON.stringify(basisRaw);
+  basisMutant.diagnostics.pageValidation.diagnosticSha256 = createHash("sha256")
+    .update(basisMutant.diagnostics.rawPage.json, "utf8")
+    .digest("hex");
+  assert.equal(validateS5FinalArtifactShape(basisMutant).ok, false);
+
+  const falsePredicateBasisMutant = structuredClone(invalidErrorArtifact);
+  const falsePredicateBasisRaw = JSON.parse(
+    falsePredicateBasisMutant.diagnostics.rawPage.json,
+  );
+  const falsePredicate =
+    falsePredicateBasisRaw.validationBasis.falsePredicateFields[0];
+  assert.ok(falsePredicate);
+  falsePredicateBasisRaw.firstReveal.predicateResults[falsePredicate] = true;
+  falsePredicateBasisMutant.diagnostics.rawPage.json = JSON.stringify(
+    falsePredicateBasisRaw,
+  );
+  falsePredicateBasisMutant.diagnostics.pageValidation.diagnosticSha256 =
+    createHash("sha256")
+      .update(falsePredicateBasisMutant.diagnostics.rawPage.json, "utf8")
+      .digest("hex");
+  assert.equal(
+    validateS5FinalArtifactShape(falsePredicateBasisMutant).ok,
+    false,
+  );
+
+  const rawUnknownKeyMutators = [
+    (raw) => (raw.secret = "top-secret"),
+    (raw) => (raw.terrainRequests.password = "terrain-secret"),
+    (raw) => (raw.pick.authorization = "pick-secret"),
+    (raw) => (raw.firstReveal.secret = "reveal-secret"),
+    (raw) => (raw.firstReveal.predicateResults.apiToken = "predicate-secret"),
+    (raw) => (raw.orderProof.cookie = "order-secret"),
+    (raw) => (raw.visibilitySeam.credential = "seam-secret"),
+    (raw) => (raw.validationFailures.unexpected = true),
+    (raw) => (raw.validationBasis.unexpected = "basis-secret"),
+  ];
+  for (const mutateRaw of rawUnknownKeyMutators) {
+    const mutated = structuredClone(invalidErrorArtifact);
+    const raw = JSON.parse(mutated.diagnostics.rawPage.json);
+    mutateRaw(raw);
+    mutated.diagnostics.rawPage.json = JSON.stringify(raw);
+    assert.equal(validateS5FinalArtifactShape(mutated).ok, false);
+  }
+
+  for (const rawJson of ["null", "[]", '"scalar"', "{", "123"]) {
+    const mutated = structuredClone(invalidErrorArtifact);
+    mutated.diagnostics.rawPage.json = rawJson;
+    assert.equal(validateS5FinalArtifactShape(mutated).ok, false);
+  }
+
+  assert.deepEqual(
+    invalidErrorArtifact.diagnostics.pageValidation.reasons,
+    C12_29_S5_PAGE_VALIDATION_REASONS.filter(
+      (_reason, index) =>
+        JSON.parse(invalidErrorArtifact.diagnostics.rawPage.json)
+          .validationFailures[C12_29_S5_PAGE_VALIDATION_FAILURE_FIELDS[index]],
+    ),
+  );
+  for (const status of ["not-read", "fulfilled-valid", "rejected", "timeout"]) {
+    const mutated = structuredClone(invalidErrorArtifact);
+    mutated.diagnostics.pageValidation = {
+      status,
+      reasons: [],
+      diagnosticSha256: null,
+    };
+    assert.equal(validateS5FinalArtifactShape(mutated).ok, false);
+  }
+  const missingRaw = structuredClone(invalidErrorArtifact);
+  missingRaw.diagnostics.rawPage = null;
+  assert.equal(validateS5FinalArtifactShape(missingRaw).ok, false);
+  const missingInvalidRenderer = structuredClone(invalidErrorArtifact);
+  missingInvalidRenderer.diagnostics.renderer = null;
+  assert.equal(validateS5FinalArtifactShape(missingInvalidRenderer).ok, false);
+  assert.equal(
+    validateS5FinalArtifactShape({
+      ...invalidErrorArtifact,
+      diagnostics: {
+        ...invalidErrorArtifact.diagnostics,
+        page: syntheticProgress(),
+      },
+    }).ok,
+    false,
+  );
+  assert.equal(
+    validateS5FinalArtifactShape({
+      ...invalidErrorArtifact,
+      diagnostics: {
+        ...invalidErrorArtifact.diagnostics,
+        rawPage: {
+          ...classified.rawPage,
+          json: `"${"界".repeat(C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH)}"`,
+        },
+      },
+    }).ok,
+    false,
   );
 });
 
@@ -2171,6 +4127,27 @@ test("21 prior RUNNING and extant lock both reject before browser work", () => {
     assert.equal(v7StartOverV6.prior.latest.status, "ERROR");
     assert.equal(v7StartOverV6.running.schema, C12_29_S5_SCHEMA);
     assert.equal(v7StartOverV6.running.status, "RUNNING");
+
+    const v7Directory = path.join(temp, "finalized-v7-latest");
+    fs.mkdirSync(v7Directory);
+    const v7Paths = createS5ArtifactPaths(IMAGE_IDS[6], v7Directory);
+    fs.writeFileSync(
+      v7Paths.latest,
+      JSON.stringify({
+        schema: V7_SCHEMA,
+        runId: RUN_ID,
+        status: "ERROR",
+        exitCode: 2,
+        incomplete: false,
+        artifactName: `${RUN_ID}.json`,
+        error: "archived v7 diagnostic outcome",
+      }),
+    );
+    const v8StartOverV7 = beginS5EvidenceRun(v7Paths, IMAGE_IDS[6]);
+    assert.equal(v8StartOverV7.prior.latest.schema, V7_SCHEMA);
+    assert.equal(v8StartOverV7.prior.latest.status, "ERROR");
+    assert.equal(v8StartOverV7.running.schema, C12_29_S5_SCHEMA);
+    assert.equal(v8StartOverV7.running.status, "RUNNING");
     assert.equal(v7StartOverV6.running.incomplete, true);
 
     const orderedDirectory = path.join(temp, "ordered-acquire");
@@ -2302,6 +4279,12 @@ test("22 run then first-red then latest then unlock is ordered and write-once", 
       incomplete: false,
       artifactName: `${RUN_ID}.json`,
     };
+    assert.throws(
+      () => publishS5FinalArtifact(paths, artifact, operations, "wrong bytes"),
+      /changed after canonical materialization/u,
+    );
+    assert.equal(fs.existsSync(paths.run), false);
+    events.length = 0;
     publishS5FinalArtifact(paths, artifact, operations);
     const runIndex = events.findIndex(
       (event) => event === `write:${RUN_ID}.json`,
@@ -3483,7 +5466,7 @@ test("23 canonical same-task capture block is exact and has no unfused reader", 
 });
 
 test("24 static seams, ordering, exact imports, and forbidden operations are pinned", () => {
-  assert.equal((specSource.match(/^test\(/gmu) ?? []).length, 24);
+  assert.equal((specSource.match(/^test\(/gmu) ?? []).length, 25);
   assert.equal(C12_29_S5_SOURCE_FILES.length, 37);
   assert.equal(new Set(C12_29_S5_SOURCE_FILES).size, 37);
   assert.equal(C12_29_S5_BUILD_SOURCE_FILES.length, 35);
@@ -3856,6 +5839,44 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
   assert.match(
     probeSource,
     /diagnostics:\s*cloneS5DiagnosticValue\(error\?\.s5Diagnostics\)/u,
+  );
+  assert.match(
+    probeSource,
+    /function assertS5CanonicalJsonSafe\([\s\S]*?Number\.isFinite\(entry\)[\s\S]*?Object\.is\(entry, -0\)[\s\S]*?has a JSON cycle/u,
+  );
+  const canonicalReport = probeSource.indexOf(
+    "const report = materializeS5CanonicalJsonValue(",
+  );
+  const firstCertificationFold = probeSource.indexOf(
+    "const verdict = foldC1229S5Gate(report);",
+    canonicalReport,
+  );
+  const canonicalArtifact = probeSource.indexOf(
+    "const artifactMaterialization = materializeS5CanonicalJsonValue(",
+    firstCertificationFold,
+  );
+  const archiveBoundFold = probeSource.indexOf(
+    "const archiveBoundVerdict = foldC1229S5Gate({",
+    canonicalArtifact,
+  );
+  const finalPublication = probeSource.indexOf(
+    "const publication = publishS5FinalArtifact(",
+    archiveBoundFold,
+  );
+  assert.ok(
+    canonicalReport >= 0 &&
+      canonicalReport < firstCertificationFold &&
+      firstCertificationFold < canonicalArtifact &&
+      canonicalArtifact < archiveBoundFold &&
+      archiveBoundFold < finalPublication,
+  );
+  assert.match(
+    probeSource.slice(archiveBoundFold, finalPublication),
+    /isDeepStrictEqual\(archiveBoundVerdict, verdict\)/u,
+  );
+  assert.match(
+    probeSource.slice(finalPublication),
+    /publishS5FinalArtifact\([\s\S]*?artifactMaterialization\.bytes/u,
   );
   assert.match(probeSource, /coherentSameFrameOrderSurfaces:/u);
   assert.doesNotMatch(

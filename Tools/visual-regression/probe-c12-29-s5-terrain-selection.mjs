@@ -20,6 +20,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import { chromium } from "playwright";
 import sharp from "sharp";
@@ -33,7 +34,20 @@ import {
   C12_29_S5_PHASES,
   C12_29_S5_PICK_FRAME_DRIVER,
   C12_29_S5_PICK_MAX_PUMP_FRAMES,
+  C12_29_S5_PAGE_VALIDATION_MAX_REASON_LENGTH,
+  C12_29_S5_PAGE_VALIDATION_MAX_REASONS,
+  C12_29_S5_PAGE_VALIDATION_FAILURE_FIELDS,
+  C12_29_S5_PAGE_VALIDATION_REASONS,
   C12_29_S5_RADIUS_LAW,
+  C12_29_S5_RAW_PAGE_FIRST_REVEAL_FIELDS,
+  C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH,
+  C12_29_S5_RAW_PAGE_MAX_ARRAY_LENGTH,
+  C12_29_S5_RAW_PAGE_MAX_STRING_LENGTH,
+  C12_29_S5_RAW_PAGE_ORDER_PROOF_FIELDS,
+  C12_29_S5_RAW_PAGE_PICK_FIELDS,
+  C12_29_S5_RAW_PAGE_PREDICATE_FIELDS,
+  C12_29_S5_RAW_PAGE_TERRAIN_REQUEST_FIELDS,
+  C12_29_S5_RAW_PAGE_VISIBILITY_SEAM_FIELDS,
   C12_29_S5_RENDERERS,
   C12_29_S5_SCENE,
   C12_29_S5_SCHEMA,
@@ -41,10 +55,12 @@ import {
   C12_29_S5_WEBGPU_ECLIPSE_BINDING,
   C12_29_S5_WEBGPU_LAYOUT_FILE,
   C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES,
+  createS5PageValidationWitness,
   exitCodeForS5Status,
   foldC1229S5Gate,
   isUuidV4,
   validateS5FinalArtifactShape,
+  validateS5PageDiagnosticProjection,
   validateS5PageProgress,
 } from "./lib/c12-29-s5-terrain-selection-gate.mjs";
 import {
@@ -159,8 +175,16 @@ function redactQueriesInString(value) {
     })
     .replace(/#([^\s"'<>]*)/gu, (match, fragment) =>
       fragment.length === 0 ? match : "#[REDACTED]",
+    )
+    .replace(/\b(Bearer)\s+[a-z0-9._~+/=\[\]-]+/giu, "$1 [REDACTED]")
+    .replace(
+      /\b(token|password|secret|api[-_]?key|authorization|cookie)\s*([=:])\s*(?:\[REDACTED\]|[^\s,;}>\]]+)/giu,
+      "$1$2[REDACTED]",
     );
 }
+
+const S5_SENSITIVE_KEY =
+  /^(?:token|password|secret|api[-_]?key|authorization|cookie)$/iu;
 
 export function redactS5OutputPayload(value) {
   if (typeof value === "string") return redactQueriesInString(value);
@@ -169,7 +193,9 @@ export function redactS5OutputPayload(value) {
     return Object.fromEntries(
       Object.entries(value).map(([key, entry]) => [
         key,
-        redactS5OutputPayload(entry),
+        S5_SENSITIVE_KEY.test(key)
+          ? "[REDACTED]"
+          : redactS5OutputPayload(entry),
       ]),
     );
   }
@@ -179,9 +205,383 @@ export function redactS5OutputPayload(value) {
 export const serializeS5Artifact = (value) =>
   `${JSON.stringify(redactS5OutputPayload(value), null, 2)}\n`;
 
+function assertS5CanonicalJsonSafe(value, label) {
+  const active = new WeakSet();
+  const visit = (entry, location) => {
+    if (
+      entry === null ||
+      typeof entry === "string" ||
+      typeof entry === "boolean"
+    ) {
+      return;
+    }
+    if (typeof entry === "number") {
+      if (!Number.isFinite(entry) || Object.is(entry, -0)) {
+        throw new Error(`${label} has a lossy JSON number at ${location}`);
+      }
+      return;
+    }
+    if (typeof entry !== "object") {
+      throw new Error(
+        `${label} has a non-JSON ${typeof entry} value at ${location}`,
+      );
+    }
+    if (active.has(entry)) {
+      throw new Error(`${label} has a JSON cycle at ${location}`);
+    }
+    active.add(entry);
+    try {
+      if (Array.isArray(entry)) {
+        if (Object.getPrototypeOf(entry) !== Array.prototype) {
+          throw new Error(`${label} has a noncanonical array at ${location}`);
+        }
+        const keys = Reflect.ownKeys(entry);
+        if (keys.length !== entry.length + 1 || !keys.includes("length")) {
+          throw new Error(`${label} has a lossy JSON array at ${location}`);
+        }
+        for (let index = 0; index < entry.length; index++) {
+          const key = String(index);
+          if (!Object.hasOwn(entry, key)) {
+            throw new Error(`${label} has a sparse array at ${location}`);
+          }
+          const descriptor = Object.getOwnPropertyDescriptor(entry, key);
+          if (
+            descriptor?.enumerable !== true ||
+            !Object.hasOwn(descriptor, "value")
+          ) {
+            throw new Error(
+              `${label} has a non-data JSON property at ${location}[${index}]`,
+            );
+          }
+          visit(descriptor.value, `${location}[${index}]`);
+        }
+        return;
+      }
+      const prototype = Object.getPrototypeOf(entry);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new Error(`${label} has a noncanonical object at ${location}`);
+      }
+      for (const key of Reflect.ownKeys(entry)) {
+        if (typeof key !== "string") {
+          throw new Error(`${label} has a symbol key at ${location}`);
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(entry, key);
+        if (
+          descriptor?.enumerable !== true ||
+          !Object.hasOwn(descriptor, "value")
+        ) {
+          throw new Error(
+            `${label} has a non-data JSON property at ${location}.${key}`,
+          );
+        }
+        visit(descriptor.value, `${location}.${key}`);
+      }
+    } finally {
+      active.delete(entry);
+    }
+  };
+  visit(value, "<root>");
+}
+
+/**
+ * Materialize the exact JSON graph used for certification and publication.
+ * Shared references are intentionally de-aliased by the packet's canonical
+ * serializer, while every value that JSON would drop or normalize is rejected
+ * before it can silently change a gate premise.
+ */
+export function materializeS5CanonicalJsonValue(value, label = "S5 value") {
+  assertS5CanonicalJsonSafe(value, label);
+  let bytes;
+  let parsed;
+  try {
+    bytes = serializeS5Artifact(value);
+    parsed = JSON.parse(bytes);
+  } catch (error) {
+    throw new Error(`${label} canonical materialization failed`, {
+      cause: error,
+    });
+  }
+  if (
+    !isDeepStrictEqual(parsed, value) ||
+    serializeS5Artifact(parsed) !== bytes
+  ) {
+    throw new Error(`${label} changed during canonical materialization`);
+  }
+  return { value: parsed, bytes };
+}
+
 function cloneS5DiagnosticValue(value) {
   if (value === undefined) return undefined;
   return JSON.parse(JSON.stringify(redactS5OutputPayload(value)));
+}
+
+function truncateS5RawString(value, maximumLength) {
+  const suffix = "[truncated]";
+  if (value.length <= maximumLength) return value;
+  let end = maximumLength - suffix.length;
+  if (
+    end > 0 &&
+    value.charCodeAt(end - 1) >= 0xd800 &&
+    value.charCodeAt(end - 1) <= 0xdbff &&
+    value.charCodeAt(end) >= 0xdc00 &&
+    value.charCodeAt(end) <= 0xdfff
+  ) {
+    end--;
+  }
+  return `${value.slice(0, end)}${suffix}`;
+}
+
+function sanitizeS5RawLeaf(value, maximumStringLength) {
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) return value;
+    return String(value);
+  }
+  if (typeof value === "string") {
+    return truncateS5RawString(value, maximumStringLength);
+  }
+  return `[${typeof value}]`;
+}
+
+function projectS5RawLeafObject(value, fields, maximumStringLength) {
+  const source = value !== null && typeof value === "object" ? value : null;
+  return Object.fromEntries(
+    fields.map((field) => [
+      field,
+      sanitizeS5RawLeaf(source?.[field], maximumStringLength),
+    ]),
+  );
+}
+
+function criticalS5RawPageProjection(
+  validationWitness,
+  validationReasons,
+  maximumStringLength,
+) {
+  const source =
+    validationWitness !== null && typeof validationWitness === "object"
+      ? validationWitness
+      : null;
+  const firstReveal = source?.firstReveal;
+  const predicateResults = projectS5RawLeafObject(
+    firstReveal?.predicateResults,
+    C12_29_S5_RAW_PAGE_PREDICATE_FIELDS,
+    maximumStringLength,
+  );
+  const validationFailures = Object.fromEntries(
+    C12_29_S5_PAGE_VALIDATION_FAILURE_FIELDS.map((field, index) => [
+      field,
+      validationReasons.includes(C12_29_S5_PAGE_VALIDATION_REASONS[index]),
+    ]),
+  );
+  return {
+    schema: sanitizeS5RawLeaf(source?.schema, maximumStringLength),
+    renderer: sanitizeS5RawLeaf(source?.renderer, maximumStringLength),
+    currentPhase: sanitizeS5RawLeaf(source?.currentPhase, maximumStringLength),
+    step: sanitizeS5RawLeaf(source?.step, maximumStringLength),
+    completedPhases: Array.isArray(source?.completedPhases)
+      ? source.completedPhases
+          .slice(0, C12_29_S5_RAW_PAGE_MAX_ARRAY_LENGTH)
+          .map((entry) => sanitizeS5RawLeaf(entry, maximumStringLength))
+      : [],
+    elapsedMs: sanitizeS5RawLeaf(source?.elapsedMs, maximumStringLength),
+    terrainRequests: projectS5RawLeafObject(
+      source?.terrainRequests,
+      C12_29_S5_RAW_PAGE_TERRAIN_REQUEST_FIELDS,
+      maximumStringLength,
+    ),
+    pick: projectS5RawLeafObject(
+      source?.pick,
+      C12_29_S5_RAW_PAGE_PICK_FIELDS,
+      maximumStringLength,
+    ),
+    firstReveal: {
+      ...projectS5RawLeafObject(
+        firstReveal,
+        C12_29_S5_RAW_PAGE_FIRST_REVEAL_FIELDS.filter(
+          (field) => field !== "predicateResults",
+        ),
+        maximumStringLength,
+      ),
+      predicateResults,
+    },
+    orderProof: projectS5RawLeafObject(
+      source?.orderProof,
+      C12_29_S5_RAW_PAGE_ORDER_PROOF_FIELDS,
+      maximumStringLength,
+    ),
+    visibilitySeam: projectS5RawLeafObject(
+      source?.visibilitySeam,
+      C12_29_S5_RAW_PAGE_VISIBILITY_SEAM_FIELDS,
+      maximumStringLength,
+    ),
+    validationFailures,
+    validationBasis: {
+      validationFailureFields: C12_29_S5_PAGE_VALIDATION_FAILURE_FIELDS.filter(
+        (field) => validationFailures[field],
+      ),
+      falsePredicateFields: C12_29_S5_RAW_PAGE_PREDICATE_FIELDS.filter(
+        (field) => predicateResults[field] === false,
+      ),
+    },
+    validationWitness,
+  };
+}
+
+function boundS5PageProjectionJson(value, validationReasons) {
+  try {
+    for (const maximumStringLength of [
+      C12_29_S5_RAW_PAGE_MAX_STRING_LENGTH,
+      128,
+      32,
+    ]) {
+      const json = JSON.stringify(
+        criticalS5RawPageProjection(
+          value,
+          validationReasons,
+          maximumStringLength,
+        ),
+      );
+      if (
+        Buffer.byteLength(json, "utf8") <= C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH
+      ) {
+        return json;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function boundS5RawPageDiagnostic(
+  value,
+  validationReasons = [],
+  renderer,
+) {
+  try {
+    // This is deliberately a non-certifying, allowlisted diagnostic projection.
+    const expectedRenderer =
+      renderer === undefined ? value?.renderer : renderer;
+    const validationWitness = createS5PageValidationWitness(value);
+    if (validationWitness === null) return null;
+    const witnessReasons = validateS5PageProgress(
+      validationWitness,
+      expectedRenderer,
+    ).reasons;
+    const exactReasons =
+      validationReasons.length > 0
+        ? validationReasons
+        : validateS5PageProgress(value, expectedRenderer).reasons;
+    if (
+      exactReasons.length !== witnessReasons.length ||
+      !exactReasons.every((reason, index) => reason === witnessReasons[index])
+    ) {
+      return null;
+    }
+    const json = boundS5PageProjectionJson(validationWitness, exactReasons);
+    return json === null
+      ? null
+      : {
+          format: "bounded-json-v1",
+          truncated: true,
+          originalByteLength: null,
+          json,
+        };
+  } catch {
+    return null;
+  }
+}
+
+function boundS5ValidPageDiagnostic(value, renderer) {
+  const json = boundS5PageProjectionJson(value, []);
+  if (json === null) return null;
+  const page = JSON.parse(json);
+  return validateS5PageDiagnosticProjection(page, renderer) ? page : null;
+}
+
+function boundedS5PageValidation(status, reasons = [], diagnosticJson = null) {
+  const normalizedReasons = reasons.map(String);
+  if (
+    normalizedReasons.length > C12_29_S5_PAGE_VALIDATION_MAX_REASONS ||
+    normalizedReasons.some(
+      (reason) =>
+        reason.length === 0 ||
+        reason.length > C12_29_S5_PAGE_VALIDATION_MAX_REASON_LENGTH,
+    ) ||
+    normalizedReasons.some(
+      (reason, index) =>
+        !C12_29_S5_PAGE_VALIDATION_REASONS.includes(reason) ||
+        (index > 0 &&
+          C12_29_S5_PAGE_VALIDATION_REASONS.indexOf(reason) <=
+            C12_29_S5_PAGE_VALIDATION_REASONS.indexOf(
+              normalizedReasons[index - 1],
+            )),
+    )
+  ) {
+    throw new Error("S5 page validation reasons exceed diagnostic bounds");
+  }
+  return {
+    status,
+    reasons: normalizedReasons,
+    diagnosticSha256:
+      diagnosticJson === null ? null : sha256(Buffer.from(diagnosticJson)),
+  };
+}
+
+export function classifyS5PageDiagnosticValue(value, renderer) {
+  try {
+    const sourceValidation = validateS5PageProgress(value, renderer);
+    const validationWitness = createS5PageValidationWitness(value);
+    if (validationWitness === null) {
+      throw new Error("S5 page validation witness could not be retained");
+    }
+    const validation = validateS5PageProgress(validationWitness, renderer);
+    if (
+      sourceValidation.reasons.length !== validation.reasons.length ||
+      !sourceValidation.reasons.every(
+        (reason, index) => reason === validation.reasons[index],
+      )
+    ) {
+      throw new Error("S5 page validation witness changed clause outcomes");
+    }
+    if (validation.ok) {
+      const page = boundS5ValidPageDiagnostic(validationWitness, renderer);
+      if (page === null) throw new Error("valid S5 page projection failed");
+      return {
+        page,
+        pageValidation: boundedS5PageValidation(
+          "fulfilled-valid",
+          [],
+          JSON.stringify(page),
+        ),
+        rawPage: null,
+      };
+    }
+    const rawPage = boundS5RawPageDiagnostic(
+      validationWitness,
+      validation.reasons,
+      renderer,
+    );
+    if (rawPage !== null) {
+      return {
+        page: null,
+        pageValidation: boundedS5PageValidation(
+          "fulfilled-invalid",
+          validation.reasons,
+          rawPage.json,
+        ),
+        rawPage,
+      };
+    }
+  } catch {
+    // Accessor/proxy and serialization failures are non-retainable diagnostics.
+  }
+  return {
+    page: null,
+    pageValidation: boundedS5PageValidation("rejected"),
+    rawPage: null,
+  };
 }
 
 export async function awaitS5PageMeasurement(options) {
@@ -237,17 +637,22 @@ export async function awaitS5PageMeasurement(options) {
     } finally {
       clearTimeout(readTimer);
     }
-    const validPage =
-      pageOutcome.status === "fulfilled" &&
-      validateS5PageProgress(pageOutcome.value, renderer).ok;
+    const pageDiagnostic =
+      pageOutcome.status === "fulfilled"
+        ? classifyS5PageDiagnosticValue(pageOutcome.value, renderer)
+        : {
+            page: null,
+            pageValidation: boundedS5PageValidation(
+              pageOutcome.status === "unavailable"
+                ? "not-read"
+                : pageOutcome.status,
+            ),
+            rawPage: null,
+          };
     const node = cloneS5DiagnosticValue(options?.nodeDiagnostics) ?? {
       stage: "page-measurement",
     };
-    node.diagnosticRead = validPage
-      ? "fulfilled"
-      : pageOutcome.status === "fulfilled"
-        ? "invalid"
-        : pageOutcome.status;
+    node.diagnosticRead = pageDiagnostic.pageValidation.status;
     if (pageOutcome.status === "rejected") {
       node.diagnosticReadError = pageOutcome.error;
     }
@@ -259,7 +664,9 @@ export async function awaitS5PageMeasurement(options) {
       stage: "page-measurement-timeout",
       timeoutMs,
       node,
-      page: validPage ? cloneS5DiagnosticValue(pageOutcome.value) : null,
+      page: pageDiagnostic.page,
+      pageValidation: pageDiagnostic.pageValidation,
+      rawPage: pageDiagnostic.rawPage,
     };
     throw error;
   } finally {
@@ -267,7 +674,11 @@ export async function awaitS5PageMeasurement(options) {
   }
 }
 
-async function snapshotS5PageProgress(page, renderer, timeoutMs = 2_000) {
+export async function snapshotS5PageProgress(
+  page,
+  renderer,
+  timeoutMs = 2_000,
+) {
   const read = Promise.resolve()
     .then(() => page.evaluate(() => globalThis.__c1229S5Progress ?? null))
     .then(
@@ -283,10 +694,19 @@ async function snapshotS5PageProgress(page, renderer, timeoutMs = 2_000) {
   });
   try {
     const outcome = await Promise.race([read, timeout]);
-    return outcome.status === "fulfilled" &&
-      validateS5PageProgress(outcome.value, renderer).ok
-      ? { status: "fulfilled", page: cloneS5DiagnosticValue(outcome.value) }
-      : { status: outcome.status, page: null, error: outcome.error };
+    if (outcome.status === "fulfilled") {
+      return {
+        status: "fulfilled",
+        ...classifyS5PageDiagnosticValue(outcome.value, renderer),
+      };
+    }
+    return {
+      status: outcome.status,
+      page: null,
+      pageValidation: boundedS5PageValidation(outcome.status),
+      rawPage: null,
+      error: outcome.error,
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -1783,7 +2203,12 @@ export function beginS5EvidenceRun(paths, runId, operations = fs) {
   }
 }
 
-export function publishS5FinalArtifact(paths, artifact, operations = fs) {
+export function publishS5FinalArtifact(
+  paths,
+  artifact,
+  operations = fs,
+  expectedBytes,
+) {
   const shape = validateS5FinalArtifactShape(artifact);
   if (!shape.ok) {
     throw new Error(`invalid S5 final artifact: ${shape.reasons.join("; ")}`);
@@ -1816,6 +2241,21 @@ export function publishS5FinalArtifact(paths, artifact, operations = fs) {
     operations,
   );
   const bytes = serializeS5Artifact(artifact);
+  if (expectedBytes !== undefined && bytes !== expectedBytes) {
+    throw new Error(
+      "S5 final artifact changed after canonical materialization",
+    );
+  }
+  const serializedArtifact = JSON.parse(bytes);
+  const serializedShape = validateS5FinalArtifactShape(serializedArtifact);
+  if (
+    !serializedShape.ok ||
+    serializeS5Artifact(serializedArtifact) !== bytes
+  ) {
+    throw new Error(
+      `serialized S5 final artifact is not canonical: ${serializedShape.reasons.join("; ")}`,
+    );
+  }
   createImmutableEvidence(paths.run, bytes, operations);
   assertExactEvidenceBytes(
     paths.run,
@@ -4828,6 +5268,8 @@ async function runBrowserSession(
       consoleErrors: [],
     },
     page: null,
+    pageValidation: boundedS5PageValidation("not-read"),
+    rawPage: null,
   };
   const context = await browser.newContext({
     viewport: C12_29_S5_SCENE.viewport,
@@ -5050,13 +5492,15 @@ async function runBrowserSession(
       const pageSnapshot = await snapshotS5PageProgress(page, renderer);
       diagnostics.stage = `${diagnostics.stage}-error`;
       diagnostics.node.stage = diagnostics.stage;
-      diagnostics.node.pageDiagnosticRead = pageSnapshot.status;
+      diagnostics.node.pageDiagnosticRead = pageSnapshot.pageValidation.status;
       diagnostics.node.pageErrors = [...pageErrors];
       diagnostics.node.consoleErrors = [...consoleErrors];
       if (pageSnapshot.error) {
         diagnostics.node.pageDiagnosticReadError = pageSnapshot.error;
       }
       diagnostics.page = pageSnapshot.page;
+      diagnostics.pageValidation = pageSnapshot.pageValidation;
+      diagnostics.rawPage = pageSnapshot.rawPage;
       error.s5Diagnostics = cloneS5DiagnosticValue(diagnostics);
     }
     throw error;
@@ -5159,6 +5603,8 @@ export async function runC1229S5Probe(options = {}) {
       requestLedger: null,
     },
     page: null,
+    pageValidation: boundedS5PageValidation("not-read"),
+    rawPage: null,
   };
   let browser;
   try {
@@ -5211,24 +5657,44 @@ export async function runC1229S5Probe(options = {}) {
       provenanceEnd,
       sessions,
     );
-    const report = {
-      schema: C12_29_S5_SCHEMA,
-      runId,
-      generatedAt: new Date().toISOString(),
-      provenance,
-      sessions,
-    };
+    const report = materializeS5CanonicalJsonValue(
+      {
+        schema: C12_29_S5_SCHEMA,
+        runId,
+        generatedAt: new Date().toISOString(),
+        provenance,
+        sessions,
+      },
+      "S5 certification report",
+    ).value;
     const verdict = foldC1229S5Gate(report);
-    const artifact = {
-      ...report,
-      ...verdict,
-      incomplete: false,
-      artifactName: `${runId}.json`,
-    };
+    const artifactMaterialization = materializeS5CanonicalJsonValue(
+      {
+        ...report,
+        ...verdict,
+        incomplete: false,
+        artifactName: `${runId}.json`,
+      },
+      "S5 final artifact",
+    );
+    const artifact = artifactMaterialization.value;
+    const archiveBoundVerdict = foldC1229S5Gate({
+      schema: artifact.schema,
+      runId: artifact.runId,
+      generatedAt: artifact.generatedAt,
+      provenance: artifact.provenance,
+      sessions: artifact.sessions,
+    });
+    if (!isDeepStrictEqual(archiveBoundVerdict, verdict)) {
+      throw new Error(
+        "S5 archive-bound report changed the first certification fold",
+      );
+    }
     const publication = publishS5FinalArtifact(
       paths,
       artifact,
       options.operations ?? fs,
+      artifactMaterialization.bytes,
     );
     return { artifact, publication, paths };
   } catch (error) {
