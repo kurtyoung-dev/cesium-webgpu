@@ -28,7 +28,7 @@ first (operating procedure), then this file (campaign map + hard rules), then
 _Mirrored verbatim from `CLAUDE.md`. Three corrections applied 2026-08-09 per handover-audit
 FIX 4 are marked inline with `⚠ CORRECTED 2026-08-09`; the original text is preserved._
 
-- **Close-out mode (2026-08-07, Batch 899):** [CLOSEOUT_PLAN_2026-08-07.md](CLOSEOUT_PLAN_2026-08-07.md) is the live dispatch schedule for closing all open campaigns (C11/C12/C13/C15 gsplat). It is a dispatch grouping only — the campaign queue docs remain the sole status authorities. Critical path: C12 completion (R1/R4).
+- **Close-out mode (2026-08-07, Batch 899; dispatch view superseded 2026-08-11):** [CLOSEOUT_PLAN_2026-08-07.md](CLOSEOUT_PLAN_2026-08-07.md) is the historical C11/C12/C13/C15-gsplat grouping. [`CAMPAIGN_PORTFOLIO_QUEUE.md`](CAMPAIGN_PORTFOLIO_QUEUE.md) is the current feature-priority dispatch view for C11–C18 and the split C15 lanes. Both are grouping only — campaign queue docs remain the sole status authorities. Critical path: C12 completion (R1/R4); `C13-41` / C12-29 S3 and S4 are COMPLETE / EDGE VERIFIED as of 2026-08-12, so the remaining C12 blockers are S5 and the recorded exit tail.
 - [Cloud Architecture Audit](CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md) is the evidence authority for the planetary-cloud correctness, temporal, weather, quality, and performance findings confirmed at Batch 731.
 - [Campaign 13 Queue](QUEUE_2026-07-23_CAMPAIGN13.md) was explicitly launched by the maintainer on 2026-07-23 and is a **live execution queue**. Update its live status ledger whenever a task completes, pauses while execution moves on, blocks, or is deferred. **Executor change 2026-07-23:** Sol 5.6 ran out of capacity; the orchestrator took over its in-flight C13-37 tree. Sol's Batches 732-736 were review-accepted; the takeover brief is [SOL_C13_REVIEW_2026-07-23.md](SOL_C13_REVIEW_2026-07-23.md). ~~Do NOT run the new cloud probes until their watchdogs land.~~ **⚠ CORRECTED 2026-08-09 (FIX 4): this clause is DISCHARGED and is deleted from the live rule set.** The cloud probes have run continuously since — `C13-41`'s probe alone has six recorded Edge runs (Batches 908–931) — and probe watchdogs are now a fleet-wide contract with a ratcheted allowlist landed at Batch 928 (`5aec156b93`). The handover audit attributes the original discharge to Batch 743 (`47a940eed9`, the Sol-handoff batch).
 - [Campaign 11 Queue](QUEUE_2026-07-18_CAMPAIGN11.md) is **open; its targeted W1 performance lane resumed 2026-07-28** while the broader body remains governed by its recorded wave order. `C11-180` is PARTIAL (WebGL async shader lifecycle + bounded final-program/fog-companion scheduling landed; broader structural first-use variants remain), and `C11-181` is LANDED+VERIFIED but NOT COMPLETE (globe shader replacement/reference correctness; the queue row is the authority and keeps it open). **Certification is HELD by maintainer ruling 2026-07-23** — the W2–W8 body executes before any C11-137 certification. Cloud/weather rows live in Campaign 13; `C11-79/80/115-impl/160/161/175/176a/b/c` transferred to Campaign 12 (LD-1/LD-2), IDs retained as aliases.
@@ -46,10 +46,11 @@ gate**: C12 stays open until every `C12-29` slice lands, **including S3** (cloud
 eclipse response), which is canonically owned by `C13-41`. Two consequences bind the
 campaign map above:
 
-1. **C14 remains blocked on C12 completion, which now transitively includes `C13-41`.**
-2. **`C13-41` is the C14 critical path** and is elevated accordingly. The `C12-29` S4
-   remainder (orbital-sunrise limb glow) and S5 verification (umbra vs. NASA shapefiles)
-   are active queue work, not deferrals.
+1. **C14 remains blocked on C12 completion.** `C13-41` / C12-29 S3 is now
+   COMPLETE / EDGE VERIFIED and no longer contributes an open dependency.
+2. `C12-29` S4 is COMPLETE / EDGE VERIFIED. S5 verification (umbra vs. NASA
+   shapefiles) is the remaining active C12-29 critical-path queue work, not a
+   deferral.
 
 The documented fallback (Option A — narrow the gate to S1/S2/S4/S6 and transfer S3 formally
 to C13-41) is preserved in the ruling document with its revisit trigger.
