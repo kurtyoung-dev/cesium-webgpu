@@ -816,6 +816,34 @@ const shaderFiles = [
 const wgslShaderFiles = ["packages/engine/Source/Shaders/WebGPU/**/*.wgsl"];
 
 /**
+ * Serialize normalized shader source as an ES module without allowing
+ * JavaScript string escapes to change the shader's runtime bytes.
+ *
+ * Callers normalize CRLF before license extraction and minification. The
+ * normalization here also makes that boundary explicit for direct callers.
+ * Backslashes must be escaped before carriage returns, quotes, and newlines so
+ * source text such as a literal `\\u2014` remains those six characters after
+ * module evaluation. Any lone carriage return remaining after CRLF
+ * normalization is escaped so it cannot terminate the JavaScript string.
+ *
+ * @param {string} contents Shader source after optional minification.
+ * @param {string} [copyrightComments=""] License comments emitted outside the
+ * exported string.
+ * @returns {string} JavaScript module source.
+ */
+export function shaderSourceToJavaScript(contents, copyrightComments = "") {
+  const escapedContents = contents
+    .replace(/\r\n/gm, "\n")
+    .replace(/\\/g, "\\\\")
+    .replace(/\r/g, "\\r")
+    .replace(/"/g, '\\"')
+    .replace(/\n/gm, "\\n\\\n");
+  return `${copyrightComments}\
+//This file is automatically rebuilt by the Cesium build process.\n\
+export default "${escapedContents}";\n`;
+}
+
+/**
  * @param {boolean} minify
  * @param {string} minifyStateFilePath
  * @param {Workspace} workspace
@@ -925,12 +953,10 @@ export async function glslToJavaScript(minify, minifyStateFilePath, workspace) {
         contents += "\n";
       }
 
-      contents = contents.split('"').join('\\"').replace(/\n/gm, "\\n\\\n");
-      contents = `${copyrightComments}\
-//This file is automatically rebuilt by the Cesium build process.\n\
-export default "${contents}";\n`;
-
-      return writeFile(jsFile, contents);
+      return writeFile(
+        jsFile,
+        shaderSourceToJavaScript(contents, copyrightComments),
+      );
     }),
   );
 
@@ -1071,12 +1097,10 @@ export async function wgslToJavaScript(minify, minifyStateFilePath, workspace) {
         contents += "\n";
       }
 
-      contents = contents.split('"').join('\\"').replace(/\n/gm, "\\n\\\n");
-      contents = `${copyrightComments}\
-//This file is automatically rebuilt by the Cesium build process.\n\
-export default "${contents}";\n`;
-
-      return writeFile(jsFile, contents);
+      return writeFile(
+        jsFile,
+        shaderSourceToJavaScript(contents, copyrightComments),
+      );
     }),
   );
 
