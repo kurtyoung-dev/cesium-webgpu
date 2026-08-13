@@ -20,6 +20,7 @@ import {
   C12_29_S5_SOURCE_FILES,
   C12_29_S5_WEBGPU_ECLIPSE_BINDING,
   C12_29_S5_WEBGPU_LAYOUT_FILE,
+  C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES,
   computeExpectedTerrainSurfaceRadius,
   deriveS5HeldLevelOneTarget,
   exitCodeForS5Status,
@@ -175,8 +176,45 @@ function syntheticSession(renderer) {
       selectedTileIds: [...selectedTileIds],
       realTileIds: [heldTarget.anchorKey],
       holdTarget: heldTarget,
+      warmup: {
+        settled: true,
+        boundedMaxFrames: 300,
+        settleFrames: 4,
+        stableFrames: 3,
+        tilesLoaded: true,
+        cameraFovDegrees: C12_29_S5_SCENE.warmupCameraFovDegrees,
+        maximumScreenSpaceError: C12_29_S5_SCENE.terrainMaximumScreenSpaceError,
+        preloadSiblings: false,
+        targetSelected: false,
+        targetRenderedReal: false,
+        targetRenderedFill: false,
+        targetRequestAttempts: 0,
+        targetReserved: false,
+        holdInterceptionEnabled: false,
+        heldRequestCount: 0,
+        selectedTileIds: [heldTarget.anchorKey],
+        realTileIds: [heldTarget.anchorKey],
+        fillTileIds: [],
+        realSiblingTileIds: [heldTarget.anchorKey],
+      },
+      holdArm: {
+        afterSettledWarmup: true,
+        targetKey: heldTarget.key,
+        holdInterceptionEnabledBefore: false,
+        targetRequestAttemptsBefore: 0,
+        targetReservedBefore: false,
+        heldRequestCountBefore: 0,
+        cameraFovDegreesBefore: C12_29_S5_SCENE.warmupCameraFovDegrees,
+        cameraFovDegreesAfter: C12_29_S5_SCENE.cameraFovDegrees,
+        holdInterceptionEnabledAfter: true,
+      },
+      settled: true,
       holdInterceptionEnabled: true,
-      maximumScreenSpaceError: C12_29_S5_SCENE.fillMaximumScreenSpaceError,
+      cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
+      maximumScreenSpaceError: C12_29_S5_SCENE.terrainMaximumScreenSpaceError,
+      preloadSiblings: false,
+      holdTargetRequestAttemptsAfterArm: 1,
+      holdTargetReserved: true,
       heldRequestCount: 1,
       heldKeys: [heldTarget.key],
       fillCount: 1,
@@ -229,6 +267,65 @@ function syntheticSession(renderer) {
       preparedSurfaceRadius: radius.radius,
       preparedSelectedTileIds: [...selectedTileIds],
       selectedTileIds: [...selectedTileIds],
+      webgpuCommandMaterializationPrewarm:
+        renderer === "webgpu"
+          ? {
+              applicable: true,
+              off: {
+                applicable: true,
+                boundedMaxFrames: C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES,
+                frames: 2,
+                settled: true,
+                carrierState: "OFF",
+                eclipseEnabled: false,
+                lightingFlagMatches: true,
+                frameShadowPrepared: true,
+                frameShadowActive: false,
+                frameShadowGate: 0,
+                frameShadowRevision: 20,
+                frameSelectionRevision: 17,
+                route: "scene.frameState.commandList/Pass.GLOBE/native-WebGPU",
+                commandIdentity: "isWebGPUDrawCommand===true+pass===Pass.GLOBE",
+                emittedCommandCount: 2,
+                materializedCommandCount: 2,
+                positiveIndexCommandCount: 2,
+                threeDynamicOffsetCommandCount: 2,
+                pipelineIdentityIds: ["pipeline-1"],
+                pipelineLabels: [],
+                ownerTileIds: [...selectedTileIds],
+                frameNumber: 40,
+              },
+              on: {
+                applicable: true,
+                boundedMaxFrames: C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES,
+                frames: 1,
+                settled: true,
+                carrierState: "ON",
+                eclipseEnabled: true,
+                lightingFlagMatches: true,
+                frameShadowPrepared: true,
+                frameShadowActive: true,
+                frameShadowGate: 1,
+                frameShadowRevision: 21,
+                frameSelectionRevision: 17,
+                route: "scene.frameState.commandList/Pass.GLOBE/native-WebGPU",
+                commandIdentity: "isWebGPUDrawCommand===true+pass===Pass.GLOBE",
+                emittedCommandCount: 2,
+                materializedCommandCount: 2,
+                positiveIndexCommandCount: 2,
+                threeDynamicOffsetCommandCount: 2,
+                pipelineIdentityIds: ["pipeline-1"],
+                pipelineLabels: [],
+                ownerTileIds: [...selectedTileIds],
+                frameNumber: 42,
+              },
+              sameMaterializedPipelines: true,
+              terminalCapturesAfterPrewarm: { off: true, on: true },
+            }
+          : {
+              applicable: false,
+              reason: "WebGPU-only native globe command materialization",
+            },
     },
     [C12_29_S5_PHASES[5]]: {
       method: "scene.pickAsync",
@@ -311,6 +408,18 @@ function syntheticSession(renderer) {
         selectionRevisionAtObservation: 30,
       },
       nextEpoch: {
+        claimSource: "bounded-post-first-beginFrame-settle",
+        immediateSnapshotUsedForClaim: false,
+        immediateSnapshot: {
+          selectedCount: 0,
+          tilesLoaded: false,
+          selectionRevision: 30,
+        },
+        settled: true,
+        boundedMaxFrames: 180,
+        settleFrames: 4,
+        stableFrames: 3,
+        tilesLoaded: true,
         contentRevisionAdvanced: true,
         contentRevision: 10,
         providerIsFreshEllipsoid: true,
@@ -318,6 +427,7 @@ function syntheticSession(renderer) {
         selectionRevisionAdvanced: true,
         selectionRevision: 31,
         selectedCount: 1,
+        terrainRequestAttempts: 2,
       },
     },
   };
@@ -427,7 +537,7 @@ test("01 full valid fixture closes the pure S5 gate", () => {
   const verdict = foldC1229S5Gate(greenReport());
   assert.equal(verdict.status, "PASS");
   assert.equal(verdict.exitCode, 0);
-  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v2");
+  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v3");
   assert.equal(verdict.checks.sourceBoundaryCount, 35);
   assert.equal(verdict.checks.buildSourceBoundaryCount, 33);
 });
@@ -628,6 +738,15 @@ test("07 first-beginFrame provider-reset boundary is exact and pre-selection", (
     "STRUCTURAL",
     /final provider first-beginFrame observation/u,
   );
+  expectStatus(
+    (report) => {
+      report.sessions[0].phases[
+        C12_29_S5_PHASES[7]
+      ].nextEpoch.immediateSnapshotUsedForClaim = true;
+    },
+    "STRUCTURAL",
+    /immediate reset snapshot/u,
+  );
 });
 
 test("08 one selected L1 hold, real sibling, and disabled release are exact", () => {
@@ -640,7 +759,12 @@ test("08 one selected L1 hold, real sibling, and disabled release are exact", ()
     },
     (phase) => phase.selectedTileIds.pop(),
     (phase) => (phase.realSiblingTileIds = []),
-    (phase) => (phase.maximumScreenSpaceError = 2),
+    (phase) => (phase.warmup.settled = false),
+    (phase) => (phase.holdArm.holdInterceptionEnabledBefore = true),
+    (phase) => (phase.warmup.targetRequestAttempts = 1),
+    (phase) => phase.warmup.selectedTileIds.push(heldTarget.key),
+    (phase) => (phase.holdTarget.level = 2),
+    (phase) => (phase.maximumScreenSpaceError = 0.5),
   ]) {
     expectStatus(
       (report) => mutateFill(report.sessions[0].phases[C12_29_S5_PHASES[2]]),
@@ -908,6 +1032,27 @@ test("19 PNG UUID/hash/bytes uniqueness and x2 OFF-ON nonvacuity are gated", () 
     "FAIL",
     /vacuous/u,
   );
+  for (const mutatePrewarm of [
+    (prewarm) => delete prewarm.off,
+    (prewarm) => (prewarm.off.settled = false),
+    (prewarm) => (prewarm.on.settled = false),
+    (prewarm) => {
+      prewarm.on.emittedCommandCount = 0;
+      prewarm.on.materializedCommandCount = 0;
+      prewarm.on.positiveIndexCommandCount = 0;
+      prewarm.on.threeDynamicOffsetCommandCount = 0;
+    },
+  ]) {
+    expectStatus(
+      (report) =>
+        mutatePrewarm(
+          report.sessions[1].phases[C12_29_S5_PHASES[4]]
+            .webgpuCommandMaterializationPrewarm,
+        ),
+      "STRUCTURAL",
+      /materially prewarmed/u,
+    );
+  }
 });
 
 test("20 browser, GPU-error, transport, and cleanup surfaces fail closed", async () => {
@@ -2503,6 +2648,78 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
     /terrainData instanceof C\.QuantizedMeshTerrainData/u,
   );
   assert.doesNotMatch(probeSource, /terrainData\?\.constructor\?\.name/u);
+  const narrowFovAssignment = probeSource.indexOf(
+    "scene.camera.frustum.fov = C.Math.toRadians(contract.warmupCameraFovDegrees);",
+  );
+  const narrowWarmupSettle = probeSource.indexOf(
+    "const warmup = await settleTerrain(",
+    narrowFovAssignment,
+  );
+  const settledWarmupProof = probeSource.indexOf(
+    "!warmupProof.settled",
+    narrowWarmupSettle,
+  );
+  const exactHoldArm = probeSource.indexOf(
+    "holdEnabled = true;",
+    settledWarmupProof,
+  );
+  const finalFovAssignment = probeSource.indexOf(
+    "scene.camera.frustum.fov = C.Math.toRadians(contract.cameraFovDegrees);",
+    exactHoldArm,
+  );
+  assert.ok(
+    narrowFovAssignment >= 0 &&
+      narrowFovAssignment < narrowWarmupSettle &&
+      narrowWarmupSettle < settledWarmupProof &&
+      settledWarmupProof < exactHoldArm &&
+      exactHoldArm < finalFovAssignment,
+  );
+  assert.match(probeSource, /globe\.preloadSiblings = false;/u);
+  assert.match(probeSource, /let holdEnabled = false;/u);
+  const x2Phase = probeSource.indexOf(
+    'markProgress(contract.phases[4], "settle-exaggerated-terrain")',
+  );
+  const eclipseOff = probeSource.indexOf(
+    "lighting.enableEclipseGlobeShadow = false;",
+    x2Phase,
+  );
+  const prewarmOff = probeSource.indexOf(
+    'await prewarmWebGPUGlobeCarrierState("OFF", false)',
+    eclipseOff,
+  );
+  const captureOff = probeSource.indexOf(
+    "captureDocumentaryPng(contract.captureLabels[2])",
+    prewarmOff,
+  );
+  const eclipseOn = probeSource.indexOf(
+    "lighting.enableEclipseGlobeShadow = true;",
+    captureOff,
+  );
+  const prewarmOn = probeSource.indexOf(
+    'await prewarmWebGPUGlobeCarrierState("ON", true)',
+    eclipseOn,
+  );
+  const captureOn = probeSource.indexOf(
+    "captureDocumentaryPng(contract.captureLabels[3])",
+    prewarmOn,
+  );
+  assert.ok(
+    x2Phase >= 0 &&
+      x2Phase < eclipseOff &&
+      eclipseOff < prewarmOff &&
+      prewarmOff < captureOff &&
+      captureOff < eclipseOn &&
+      eclipseOn < prewarmOn &&
+      prewarmOn < captureOn,
+  );
+  assert.match(
+    probeSource,
+    /scene\.frameState\.commandList\.filter\([\s\S]*?isWebGPUDrawCommand === true[\s\S]*?command\?\.pass === C\.Pass\.GLOBE/u,
+  );
+  assert.match(
+    probeSource,
+    /command\?\._pipeline[\s\S]*?command\?\._vertexBuffer[\s\S]*?command\?\._indexBuffer[\s\S]*?command\._indexCount > 0/u,
+  );
   assert.ok(
     probeSource.indexOf("holdEnabled = false;") <
       probeSource.indexOf(

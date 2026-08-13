@@ -7,7 +7,7 @@
  * deliberately browser-free so every premise can be mutation-tested in Node.
  */
 
-export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v2";
+export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v3";
 
 export const C12_29_S5_DIAGNOSTICS_SCHEMA = "c12-29-s5-runtime-diagnostics-v1";
 
@@ -39,6 +39,8 @@ export const C12_29_S5_PICK_FRAME_DRIVER =
 
 export const C12_29_S5_PICK_MAX_PUMP_FRAMES = 30;
 
+export const C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES = 60;
+
 export const C12_29_S5_FIXTURE = Object.freeze({
   baseRoute: "/Specs/Data/CesiumTerrainTileJson/QuantizedMesh/",
   layer: Object.freeze({
@@ -64,7 +66,8 @@ export const C12_29_S5_SCENE = Object.freeze({
   pinnedIso: "2024-04-08T18:17:16Z",
   cameraHeightMeters: 8_000_000,
   cameraFovDegrees: 55,
-  fillMaximumScreenSpaceError: 0.5,
+  warmupCameraFovDegrees: 20,
+  terrainMaximumScreenSpaceError: 2,
   viewport: Object.freeze({ width: 960, height: 960 }),
   verticalExaggeration: 2,
   // This is deliberately above the pinned fixture maximum. At x2 the
@@ -774,6 +777,8 @@ function validateSession(session, runId, structural, failures) {
   }
 
   const c = phases["C-fill-held"];
+  const warmup = c?.warmup;
+  const holdArm = c?.holdArm;
   const expectedHeldTarget = deriveS5HeldLevelOneTarget(
     session?.fixture?.deepestTrack?.longitude,
     session?.fixture?.deepestTrack?.latitude,
@@ -789,9 +794,65 @@ function validateSession(session, runId, structural, failures) {
       c?.holdTarget?.distanceDegrees,
       expectedHeldTarget?.distanceDegrees,
     ) ||
+    warmup?.settled !== true ||
+    warmup?.boundedMaxFrames !== 300 ||
+    !Number.isInteger(warmup?.settleFrames) ||
+    warmup.settleFrames < 1 ||
+    warmup.settleFrames > warmup.boundedMaxFrames ||
+    !Number.isInteger(warmup?.stableFrames) ||
+    warmup.stableFrames < 3 ||
+    warmup?.tilesLoaded !== true ||
+    !Number.isFinite(warmup?.cameraFovDegrees) ||
+    Math.abs(warmup.cameraFovDegrees - C12_29_S5_SCENE.warmupCameraFovDegrees) >
+      1e-12 ||
+    warmup?.maximumScreenSpaceError !==
+      C12_29_S5_SCENE.terrainMaximumScreenSpaceError ||
+    warmup?.preloadSiblings !== false ||
+    warmup?.targetSelected !== false ||
+    warmup?.targetRenderedReal !== false ||
+    warmup?.targetRenderedFill !== false ||
+    warmup?.targetRequestAttempts !== 0 ||
+    warmup?.targetReserved !== false ||
+    warmup?.holdInterceptionEnabled !== false ||
+    warmup?.heldRequestCount !== 0 ||
+    !Array.isArray(warmup?.selectedTileIds) ||
+    warmup.selectedTileIds.includes(expectedHeldTarget?.key) ||
+    !Array.isArray(warmup?.realTileIds) ||
+    warmup.realTileIds.includes(expectedHeldTarget?.key) ||
+    !Array.isArray(warmup?.fillTileIds) ||
+    warmup.fillTileIds.includes(expectedHeldTarget?.key) ||
+    !Array.isArray(warmup?.realSiblingTileIds) ||
+    warmup.realSiblingTileIds.length === 0 ||
+    !warmup.realSiblingTileIds.every(
+      (id) =>
+        expectedHeldTarget.siblingKeys.includes(levelOneAncestorKey(id)) &&
+        warmup?.realTileIds?.includes(id) &&
+        warmup?.selectedTileIds?.includes(id),
+    ) ||
+    holdArm?.afterSettledWarmup !== true ||
+    holdArm?.targetKey !== expectedHeldTarget?.key ||
+    holdArm?.holdInterceptionEnabledBefore !== false ||
+    holdArm?.holdInterceptionEnabledAfter !== true ||
+    holdArm?.targetRequestAttemptsBefore !== 0 ||
+    holdArm?.targetReservedBefore !== false ||
+    holdArm?.heldRequestCountBefore !== 0 ||
+    !Number.isFinite(holdArm?.cameraFovDegreesBefore) ||
+    Math.abs(
+      holdArm.cameraFovDegreesBefore - C12_29_S5_SCENE.warmupCameraFovDegrees,
+    ) > 1e-12 ||
+    !Number.isFinite(holdArm?.cameraFovDegreesAfter) ||
+    Math.abs(holdArm.cameraFovDegreesAfter - C12_29_S5_SCENE.cameraFovDegrees) >
+      1e-12 ||
+    c?.settled !== true ||
     c?.holdInterceptionEnabled !== true ||
+    !Number.isFinite(c?.cameraFovDegrees) ||
+    Math.abs(c.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) > 1e-12 ||
     c?.maximumScreenSpaceError !==
-      C12_29_S5_SCENE.fillMaximumScreenSpaceError ||
+      C12_29_S5_SCENE.terrainMaximumScreenSpaceError ||
+    c?.preloadSiblings !== false ||
+    c?.holdTargetReserved !== true ||
+    !Number.isInteger(c?.holdTargetRequestAttemptsAfterArm) ||
+    c.holdTargetRequestAttemptsAfterArm < 1 ||
     c?.heldRequestCount !== 1 ||
     c?.heldKeys?.length !== 1 ||
     c?.heldKeys?.[0] !== expectedHeldTarget?.key ||
@@ -807,7 +868,8 @@ function validateSession(session, runId, structural, failures) {
     !c.realSiblingTileIds.every(
       (id) =>
         expectedHeldTarget.siblingKeys.includes(levelOneAncestorKey(id)) &&
-        c?.realTileIds?.includes(id),
+        c?.realTileIds?.includes(id) &&
+        c?.selectedTileIds?.includes(id),
     )
   ) {
     structural.push(
@@ -940,6 +1002,80 @@ function validateSession(session, runId, structural, failures) {
   ) {
     failures.push(`${renderer}: main-view S5 owner/prepared tuple is inexact`);
   }
+  const webgpuCommandPrewarm = e?.webgpuCommandMaterializationPrewarm;
+  if (renderer === "webgl") {
+    if (
+      webgpuCommandPrewarm?.applicable !== false ||
+      webgpuCommandPrewarm?.reason !==
+        "WebGPU-only native globe command materialization"
+    ) {
+      structural.push(
+        "webgl: native WebGPU globe prewarm must be explicit N/A",
+      );
+    }
+  } else {
+    const validCarrierState = (proof, carrierState, eclipseEnabled) => {
+      const expectedShadow = eclipseEnabled
+        ? proof?.frameShadowActive === true && proof?.frameShadowGate > 0.5
+        : proof?.frameShadowActive === false && proof?.frameShadowGate === 0;
+      return (
+        proof?.applicable === true &&
+        proof?.carrierState === carrierState &&
+        proof?.eclipseEnabled === eclipseEnabled &&
+        proof?.lightingFlagMatches === true &&
+        proof?.frameShadowPrepared === true &&
+        expectedShadow &&
+        Number.isInteger(proof?.frameShadowRevision) &&
+        Number.isInteger(proof?.frameSelectionRevision) &&
+        proof?.route ===
+          "scene.frameState.commandList/Pass.GLOBE/native-WebGPU" &&
+        proof?.commandIdentity ===
+          "isWebGPUDrawCommand===true+pass===Pass.GLOBE" &&
+        proof?.boundedMaxFrames === C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES &&
+        Number.isInteger(proof?.frames) &&
+        proof.frames >= 1 &&
+        proof.frames <= C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES &&
+        proof?.settled === true &&
+        Number.isInteger(proof?.emittedCommandCount) &&
+        proof.emittedCommandCount > 0 &&
+        proof?.materializedCommandCount === proof.emittedCommandCount &&
+        proof?.positiveIndexCommandCount === proof.emittedCommandCount &&
+        proof?.threeDynamicOffsetCommandCount === proof.emittedCommandCount &&
+        Array.isArray(proof?.pipelineIdentityIds) &&
+        proof.pipelineIdentityIds.length > 0 &&
+        new Set(proof.pipelineIdentityIds).size ===
+          proof.pipelineIdentityIds.length &&
+        proof.pipelineIdentityIds.every(
+          (identity) =>
+            typeof identity === "string" &&
+            /^pipeline-[1-9]\d*$/u.test(identity),
+        ) &&
+        Array.isArray(proof?.pipelineLabels) &&
+        proof.pipelineLabels.every(
+          (label) => typeof label === "string" && label.length > 0,
+        ) &&
+        Array.isArray(proof?.ownerTileIds) &&
+        proof.ownerTileIds.length > 0 &&
+        Number.isInteger(proof?.frameNumber)
+      );
+    };
+    if (
+      webgpuCommandPrewarm?.applicable !== true ||
+      !validCarrierState(webgpuCommandPrewarm?.off, "OFF", false) ||
+      !validCarrierState(webgpuCommandPrewarm?.on, "ON", true) ||
+      webgpuCommandPrewarm?.sameMaterializedPipelines !== true ||
+      !sameArrayMembers(
+        webgpuCommandPrewarm?.off?.pipelineIdentityIds,
+        webgpuCommandPrewarm?.on?.pipelineIdentityIds,
+      ) ||
+      webgpuCommandPrewarm?.terminalCapturesAfterPrewarm?.off !== true ||
+      webgpuCommandPrewarm?.terminalCapturesAfterPrewarm?.on !== true
+    ) {
+      structural.push(
+        "webgpu: OFF/ON native globe command carriers were not materially prewarmed before fused capture",
+      );
+    }
+  }
 
   const f = phases["F-pick-async"];
   if (
@@ -1054,6 +1190,17 @@ function validateSession(session, runId, structural, failures) {
     );
   }
   if (
+    h?.nextEpoch?.claimSource !== "bounded-post-first-beginFrame-settle" ||
+    h?.nextEpoch?.immediateSnapshotUsedForClaim !== false ||
+    !Number.isInteger(h?.nextEpoch?.immediateSnapshot?.selectedCount) ||
+    typeof h?.nextEpoch?.immediateSnapshot?.tilesLoaded !== "boolean" ||
+    !Number.isInteger(h?.nextEpoch?.immediateSnapshot?.selectionRevision)
+  ) {
+    structural.push(
+      `${renderer}: final provider next-epoch claim used the immediate reset snapshot`,
+    );
+  }
+  if (
     hPropagation?.surfaceRadiusUndefined !== true ||
     hPropagation?.knownMinimumHeight !== 0 ||
     hPropagation?.knownMaximumHeight !== 0 ||
@@ -1074,7 +1221,16 @@ function validateSession(session, runId, structural, failures) {
     ) ||
     !Number.isInteger(h?.nextEpoch?.contentRevision) ||
     h.nextEpoch.contentRevision < hPropagation?.contentRevisionAtObservation ||
-    !(h?.nextEpoch?.selectedCount > 0)
+    h?.nextEpoch?.settled !== true ||
+    h?.nextEpoch?.boundedMaxFrames !== 180 ||
+    !Number.isInteger(h?.nextEpoch?.settleFrames) ||
+    h.nextEpoch.settleFrames < 1 ||
+    h.nextEpoch.settleFrames > h.nextEpoch.boundedMaxFrames ||
+    !Number.isInteger(h?.nextEpoch?.stableFrames) ||
+    h.nextEpoch.stableFrames < 3 ||
+    h?.nextEpoch?.tilesLoaded !== true ||
+    !(h?.nextEpoch?.selectedCount > 0) ||
+    !(h?.nextEpoch?.terrainRequestAttempts > 0)
   ) {
     failures.push(
       `${renderer}: final provider first-beginFrame reset/next epoch is inexact`,

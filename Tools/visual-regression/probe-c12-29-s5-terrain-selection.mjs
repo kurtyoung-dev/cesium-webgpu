@@ -40,6 +40,7 @@ import {
   C12_29_S5_SOURCE_FILES,
   C12_29_S5_WEBGPU_ECLIPSE_BINDING,
   C12_29_S5_WEBGPU_LAYOUT_FILE,
+  C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES,
   exitCodeForS5Status,
   foldC1229S5Gate,
   isUuidV4,
@@ -2360,7 +2361,12 @@ const MEASURE_S5_SESSION = async (contract) => {
       return predicate(latest) && stable >= 3;
     });
     latest = snapshotTerrain();
-    return { settled: settled.settled, stableFrames: stable, ...latest };
+    return {
+      settled: settled.settled,
+      settleFrames: frame,
+      stableFrames: stable,
+      ...latest,
+    };
   };
   const awaitFrameDrivenOperation = async (operation, label, maxFrames) => {
     let outcome;
@@ -2501,7 +2507,9 @@ const MEASURE_S5_SESSION = async (contract) => {
   markProgress(contract.phases[1], "fixture-provider-create");
   const quantizedUrl = new URL(contract.fixtureRoute, location.origin).href;
   const quantizedProvider = await C.CesiumTerrainProvider.fromUrl(quantizedUrl);
-  globe.maximumScreenSpaceError = contract.fillMaximumScreenSpaceError;
+  globe.maximumScreenSpaceError = contract.terrainMaximumScreenSpaceError;
+  globe.preloadSiblings = false;
+  scene.camera.frustum.fov = C.Math.toRadians(contract.warmupCameraFovDegrees);
   const heldLevel = 1;
   const tilingScheme = quantizedProvider.tilingScheme;
   const levelOneXTiles = tilingScheme.getNumberOfXTilesAtLevel(heldLevel);
@@ -2585,12 +2593,14 @@ const MEASURE_S5_SESSION = async (contract) => {
   const decodedFixtureBounds = new Map();
   let decodedQuantizedMeshInstances = 0;
   let decodedIdentityMismatches = 0;
-  let holdEnabled = true;
+  let holdEnabled = false;
   let holdTargetReserved = false;
+  let holdTargetRequestAttempts = 0;
   quantizedProvider.requestTileGeometry = (x, y, level, request) => {
     const key = `${level}/${x}/${y}`;
     terrainRequests.attempted++;
     terrainRequests.lastTileId = key;
+    if (key === holdTarget.key) holdTargetRequestAttempts++;
     const requested = realRequestTileGeometry(x, y, level, request);
     if (!requested) {
       terrainRequests.throttled++;
@@ -2720,6 +2730,73 @@ const MEASURE_S5_SESSION = async (contract) => {
     contentRevisionAdvanced: firstBeginFramePropagation.contentRevisionAdvanced,
   });
 
+  markProgress(contract.phases[2], "settle-narrow-real-neighbor-warmup");
+  const warmup = await settleTerrain(
+    (state) =>
+      state.tilesLoaded &&
+      state.fillCount === 0 &&
+      !state.selectedTileIds.includes(holdTarget.key) &&
+      !state.realTileIds.includes(holdTarget.key) &&
+      !state.fillTileIds.includes(holdTarget.key) &&
+      state.realTileIds.some((id) =>
+        holdSiblingKeys.includes(levelOneAncestorId(id)),
+      ) &&
+      holdEnabled === false &&
+      holdTargetRequestAttempts === 0 &&
+      holdTargetReserved === false &&
+      held.size === 0,
+    300,
+  );
+  const warmupRealSiblingTileIds = warmup.realTileIds.filter((id) =>
+    holdSiblingKeys.includes(levelOneAncestorId(id)),
+  );
+  const warmupProof = {
+    settled: warmup.settled,
+    boundedMaxFrames: 300,
+    settleFrames: warmup.settleFrames,
+    stableFrames: warmup.stableFrames,
+    tilesLoaded: warmup.tilesLoaded,
+    cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
+    maximumScreenSpaceError: globe.maximumScreenSpaceError,
+    preloadSiblings: globe.preloadSiblings,
+    targetSelected: warmup.selectedTileIds.includes(holdTarget.key),
+    targetRenderedReal: warmup.realTileIds.includes(holdTarget.key),
+    targetRenderedFill: warmup.fillTileIds.includes(holdTarget.key),
+    targetRequestAttempts: holdTargetRequestAttempts,
+    targetReserved: holdTargetReserved,
+    holdInterceptionEnabled: holdEnabled,
+    heldRequestCount: held.size,
+    selectedTileIds: warmup.selectedTileIds,
+    realTileIds: warmup.realTileIds,
+    fillTileIds: warmup.fillTileIds,
+    realSiblingTileIds: warmupRealSiblingTileIds,
+  };
+  if (
+    !warmupProof.settled ||
+    warmupProof.targetRequestAttempts !== 0 ||
+    warmupProof.targetReserved ||
+    warmupProof.heldRequestCount !== 0 ||
+    warmupProof.realSiblingTileIds.length === 0
+  ) {
+    throw new Error(
+      "narrow-FOV real-neighbor warm-up did not prove an unloaded hold target",
+    );
+  }
+  markProgress(contract.phases[2], "arm-exact-hold-and-widen");
+  const holdArm = {
+    afterSettledWarmup: warmupProof.settled,
+    targetKey: holdTarget.key,
+    holdInterceptionEnabledBefore: holdEnabled,
+    targetRequestAttemptsBefore: holdTargetRequestAttempts,
+    targetReservedBefore: holdTargetReserved,
+    heldRequestCountBefore: held.size,
+    cameraFovDegreesBefore: C.Math.toDegrees(scene.camera.frustum.fov),
+    cameraFovDegreesAfter: contract.cameraFovDegrees,
+  };
+  holdEnabled = true;
+  scene.camera.frustum.fov = C.Math.toRadians(contract.cameraFovDegrees);
+  holdArm.holdInterceptionEnabledAfter = holdEnabled;
+
   markProgress(contract.phases[2], "settle-held-fill");
   const c = await settleTerrain(
     (state) =>
@@ -2740,8 +2817,14 @@ const MEASURE_S5_SESSION = async (contract) => {
   phases[contract.phases[2]] = {
     ...c,
     holdTarget,
+    warmup: warmupProof,
+    holdArm,
     holdInterceptionEnabled: holdEnabled,
+    cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
     maximumScreenSpaceError: globe.maximumScreenSpaceError,
+    preloadSiblings: globe.preloadSiblings,
+    holdTargetRequestAttemptsAfterArm: holdTargetRequestAttempts,
+    holdTargetReserved,
     heldRequestCount: held.size,
     heldKeys,
     heldTargetIntersectsSelectedFill:
@@ -2838,6 +2921,111 @@ const MEASURE_S5_SESSION = async (contract) => {
     transitionedKeys,
   });
 
+  const pipelineIdentities = new WeakMap();
+  let nextPipelineIdentity = 0;
+  const identifyPipeline = (pipeline) => {
+    let identity = pipelineIdentities.get(pipeline);
+    if (!identity) {
+      identity = `pipeline-${++nextPipelineIdentity}`;
+      pipelineIdentities.set(pipeline, identity);
+    }
+    return identity;
+  };
+  const inspectWebGPUGlobeMaterialization = (carrierState, eclipseEnabled) => {
+    const commands = scene.frameState.commandList.filter(
+      (command) =>
+        command?.isWebGPUDrawCommand === true && command?.pass === C.Pass.GLOBE,
+    );
+    const materialized = commands.filter(
+      (command) =>
+        command?._pipeline &&
+        command?._vertexBuffer &&
+        command?._indexBuffer &&
+        Number.isInteger(command?._indexCount) &&
+        command._indexCount > 0,
+    );
+    const shadow = scene.frameState.eclipseGlobeShadow;
+    return {
+      carrierState,
+      eclipseEnabled,
+      lightingFlagMatches: lighting.enableEclipseGlobeShadow === eclipseEnabled,
+      frameShadowPrepared: scene.frameState.eclipseGlobeShadowPrepared === true,
+      frameShadowActive: shadow?.active === true,
+      frameShadowGate: shadow?.params?.x ?? null,
+      frameShadowRevision: shadow?.revision ?? null,
+      frameSelectionRevision:
+        scene.frameState.eclipseGlobeShadowSelectionRevision ?? null,
+      route: "scene.frameState.commandList/Pass.GLOBE/native-WebGPU",
+      commandIdentity: "isWebGPUDrawCommand===true+pass===Pass.GLOBE",
+      emittedCommandCount: commands.length,
+      materializedCommandCount: materialized.length,
+      positiveIndexCommandCount: commands.filter(
+        (command) =>
+          Number.isInteger(command?._indexCount) && command._indexCount > 0,
+      ).length,
+      threeDynamicOffsetCommandCount: commands.filter(
+        (command) => command?._bindGroup0DynamicOffsets?.length === 3,
+      ).length,
+      pipelineIdentityIds: [
+        ...new Set(
+          materialized.map((command) => identifyPipeline(command._pipeline)),
+        ),
+      ].sort(),
+      pipelineLabels: [
+        ...new Set(
+          materialized
+            .map((command) => command._pipeline?.label)
+            .filter((label) => typeof label === "string" && label.length > 0),
+        ),
+      ].sort(),
+      ownerTileIds: [
+        ...new Set(materialized.map((command) => tileId(command.owner))),
+      ].sort(),
+      frameNumber: scene.frameState.frameNumber,
+    };
+  };
+  const prewarmWebGPUGlobeCarrierState = async (
+    carrierState,
+    eclipseEnabled,
+  ) => {
+    if (contract.renderer !== "webgpu") {
+      return {
+        applicable: false,
+        reason: "WebGPU-only native globe command materialization",
+      };
+    }
+    let proof;
+    let settled = false;
+    let frames = 0;
+    while (frames < contract.webgpuPrewarmMaxFrames) {
+      renderNow();
+      frames++;
+      proof = inspectWebGPUGlobeMaterialization(carrierState, eclipseEnabled);
+      const shadowStateMatches = eclipseEnabled
+        ? proof.frameShadowActive === true && proof.frameShadowGate > 0.5
+        : proof.frameShadowActive === false && proof.frameShadowGate === 0;
+      settled =
+        proof.lightingFlagMatches &&
+        proof.frameShadowPrepared &&
+        shadowStateMatches &&
+        proof.emittedCommandCount > 0 &&
+        proof.materializedCommandCount === proof.emittedCommandCount &&
+        proof.positiveIndexCommandCount === proof.emittedCommandCount &&
+        proof.threeDynamicOffsetCommandCount === proof.emittedCommandCount &&
+        proof.pipelineIdentityIds.length > 0 &&
+        proof.ownerTileIds.length > 0;
+      if (settled) break;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    return {
+      applicable: true,
+      boundedMaxFrames: contract.webgpuPrewarmMaxFrames,
+      frames,
+      settled,
+      ...proof,
+    };
+  };
+
   markProgress(contract.phases[4], "settle-exaggerated-terrain");
   scene.verticalExaggeration = contract.verticalExaggeration;
   scene.verticalExaggerationRelativeHeight = contract.relativeHeight;
@@ -2846,9 +3034,18 @@ const MEASURE_S5_SESSION = async (contract) => {
     240,
   );
   lighting.enableEclipseGlobeShadow = false;
+  const x2OffPrewarm = await prewarmWebGPUGlobeCarrierState("OFF", false);
   const x2OffImageId = captureDocumentaryPng(contract.captureLabels[2]);
   lighting.enableEclipseGlobeShadow = true;
+  const x2OnPrewarm = await prewarmWebGPUGlobeCarrierState("ON", true);
   const x2OnImageId = captureDocumentaryPng(contract.captureLabels[3]);
+  const sameMaterializedPipelines =
+    contract.renderer === "webgpu" &&
+    x2OffPrewarm.pipelineIdentityIds.length ===
+      x2OnPrewarm.pipelineIdentityIds.length &&
+    x2OffPrewarm.pipelineIdentityIds.every(
+      (identity, index) => identity === x2OnPrewarm.pipelineIdentityIds[index],
+    );
   const e = snapshotTerrain();
   const ellipsoidMaximumRadius =
     providerAfterSwap.tilingScheme.ellipsoid.maximumRadius;
@@ -2887,6 +3084,22 @@ const MEASURE_S5_SESSION = async (contract) => {
     preparedSurfaceRadius: scene.frameState.eclipseGlobeShadowSurfaceRadius,
     preparedSelectedTileIds: e.selectedTileIds,
     selectedTileIds: e.selectedTileIds,
+    webgpuCommandMaterializationPrewarm:
+      contract.renderer === "webgpu"
+        ? {
+            applicable: true,
+            off: x2OffPrewarm,
+            on: x2OnPrewarm,
+            sameMaterializedPipelines,
+            terminalCapturesAfterPrewarm: {
+              off: x2OffPrewarm.settled,
+              on: x2OnPrewarm.settled,
+            },
+          }
+        : {
+            applicable: false,
+            reason: "WebGPU-only native globe command materialization",
+          },
     imageIds: { off: x2OffImageId, on: x2OnImageId },
   };
   completePhase(contract.phases[4], {
@@ -3173,9 +3386,7 @@ const MEASURE_S5_SESSION = async (contract) => {
     finalFirstRenderFrameNumber = scene.frameState.frameNumber;
   } finally {
     globe.beginFrame = originalFinalGlobeBeginFrame;
-    freshEllipsoid.requestTileGeometry = originalFreshRequestTileGeometry;
   }
-  const finalProvider = getTileProvider();
   finalFirstBeginFramePropagation = {
     ...finalFirstBeginFramePropagation,
     observedInFirstRender:
@@ -3183,13 +3394,42 @@ const MEASURE_S5_SESSION = async (contract) => {
       finalFirstBeginFramePropagation?.frameNumber ===
         finalFirstRenderFrameNumber,
   };
-  const nextEpoch = snapshotTerrain();
+  const immediateNextEpoch = snapshotTerrain();
+  let nextEpoch;
+  try {
+    nextEpoch = await settleTerrain(
+      (state) =>
+        state.tilesLoaded &&
+        state.selectedCount > 0 &&
+        getTileProvider() === providerBeforeFinalSwap &&
+        scene.terrainProvider === freshEllipsoid &&
+        getTileProvider()?.terrainProvider === freshEllipsoid &&
+        state.providerSelectionRevision >
+          finalFirstBeginFramePropagation.selectionRevisionAtObservation,
+      180,
+    );
+  } finally {
+    freshEllipsoid.requestTileGeometry = originalFreshRequestTileGeometry;
+  }
+  const finalProvider = getTileProvider();
   phases[contract.phases[7]] = {
     fromProvider: "CesiumTerrainProvider-held",
     toProvider: "EllipsoidTerrainProvider-fresh",
     publicAssignment: finalPublicAssignment,
     firstBeginFramePropagation: finalFirstBeginFramePropagation,
     nextEpoch: {
+      claimSource: "bounded-post-first-beginFrame-settle",
+      immediateSnapshotUsedForClaim: false,
+      immediateSnapshot: {
+        selectedCount: immediateNextEpoch.selectedCount,
+        tilesLoaded: immediateNextEpoch.tilesLoaded,
+        selectionRevision: immediateNextEpoch.providerSelectionRevision,
+      },
+      settled: nextEpoch.settled,
+      boundedMaxFrames: 180,
+      settleFrames: nextEpoch.settleFrames,
+      stableFrames: nextEpoch.stableFrames,
+      tilesLoaded: nextEpoch.tilesLoaded,
       contentRevisionAdvanced:
         finalProvider._sceneCaptureContentRevision >
         contentRevisionBeforeFinalSwap,
@@ -3248,7 +3488,9 @@ function makePageContract(renderer) {
     pinnedIso: C12_29_S5_SCENE.pinnedIso,
     cameraHeightMeters: C12_29_S5_SCENE.cameraHeightMeters,
     cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
-    fillMaximumScreenSpaceError: C12_29_S5_SCENE.fillMaximumScreenSpaceError,
+    warmupCameraFovDegrees: C12_29_S5_SCENE.warmupCameraFovDegrees,
+    terrainMaximumScreenSpaceError:
+      C12_29_S5_SCENE.terrainMaximumScreenSpaceError,
     verticalExaggeration: C12_29_S5_SCENE.verticalExaggeration,
     relativeHeight: C12_29_S5_SCENE.verticalExaggerationRelativeHeight,
     radiusLaw: { ...C12_29_S5_RADIUS_LAW },
@@ -3262,6 +3504,7 @@ function makePageContract(renderer) {
     pickFrameDriver: C12_29_S5_PICK_FRAME_DRIVER,
     pickMaxPumpFrames: C12_29_S5_PICK_MAX_PUMP_FRAMES,
     webgpuEclipseBinding: C12_29_S5_WEBGPU_ECLIPSE_BINDING,
+    webgpuPrewarmMaxFrames: C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES,
   };
 }
 
