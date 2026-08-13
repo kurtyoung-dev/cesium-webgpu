@@ -164,6 +164,27 @@ describe("Core/HeightmapTerrainData", function () {
       expect(promises.length).toBe(taskCount);
       return Promise.all(promises);
     });
+
+    it("reports the synchronous regular-grid vertex count", function () {
+      data = new HeightmapTerrainData({
+        buffer: new Float32Array(9 * 9),
+        width: 9,
+        height: 9,
+      });
+
+      const mesh = data._createMeshSync({
+        tilingScheme: tilingScheme,
+        x: 0,
+        y: 0,
+        level: 0,
+      });
+
+      expect(mesh.vertexCountWithoutSkirts).toBe(81);
+      expect(Number.isFinite(mesh.vertexCountWithoutSkirts)).toBe(true);
+      expect(mesh.indexCountWithoutSkirts).toBe(384);
+      expect(mesh.indices.length).toBe(576);
+      expect(mesh.vertices.length / mesh.stride).toBe(117);
+    });
   });
 
   describe("upsample", function () {

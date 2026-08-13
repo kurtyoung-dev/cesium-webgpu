@@ -347,7 +347,12 @@ class HeightmapTerrainData {
       );
     }
 
-    const vertexCountWithoutSkirts = result.gridWidth * result.gridHeight;
+    // HeightmapTessellator.computeVertices returns the encoded mesh, but its
+    // synchronous result does not include the worker-only gridWidth and
+    // gridHeight metadata.  The regular grid dimensions are the source
+    // heightmap dimensions, so derive the count from those authoritative
+    // values instead of producing NaN on the synchronous path.
+    const vertexCountWithoutSkirts = this._width * this._height;
 
     // No need to clone here (as we do in the async version) because the result
     // is not coming from a web worker.
