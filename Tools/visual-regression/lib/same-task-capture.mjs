@@ -59,6 +59,36 @@ export const CAPTURE_BEGIN = "// ==BEGIN same-task-capture==";
 /** Marker closing the embedded canonical block in a probe. */
 export const CAPTURE_END = "// ==END same-task-capture==";
 
+/** Optional render-once snapshot block used when metrics and documentary PNGs
+ * must be derived from exactly the same immutable bytes. */
+export const FUSED_SNAPSHOT_BEGIN = "// ==BEGIN fused-snapshot-capture==";
+export const FUSED_SNAPSHOT_END = "// ==END fused-snapshot-capture==";
+
+export const FUSED_SNAPSHOT_CAPTURE_SOURCE = `const makeFusedSnapshotCapture = (scene, canvas, timeFn) => {
+  const tmp = document.createElement("canvas");
+  const ctx = tmp.getContext("2d", { willReadFrequently: true });
+  const decode = async (dataUrl) => {
+    const image = new Image();
+    const loaded = new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error("fused PNG decode failed"));
+    });
+    image.src = dataUrl;
+    await loaded;
+    tmp.width = image.naturalWidth;
+    tmp.height = image.naturalHeight;
+    ctx.drawImage(image, 0, 0);
+    return ctx.getImageData(0, 0, tmp.width, tmp.height);
+  };
+  const captureSnapshot = async () => {
+    scene.render(timeFn());
+    const dataUrl = canvas.toDataURL("image/png");
+    const imageData = await decode(dataUrl);
+    return { dataUrl, imageData };
+  };
+  return { captureSnapshot };
+};`;
+
 /**
  * The canonical in-page primitives, as text.
  *
@@ -277,6 +307,37 @@ export function extractEmbeddedCapture(probeSource) {
     .join("\n");
 }
 
+function extractMarkedSource(probeSource, begin, end) {
+  const text = String(probeSource ?? "").replace(/\r\n/g, "\n");
+  const start = text.indexOf(begin);
+  const finish = text.indexOf(end);
+  if (start < 0 || finish <= start) return null;
+  const block = text
+    .slice(start + begin.length, finish)
+    .replace(/^\n/, "")
+    .replace(/\n[ \t]*$/, "");
+  const lines = block.split("\n");
+  const indents = lines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => line.match(/^[ \t]*/u)[0]);
+  const common = indents.sort((a, b) => a.length - b.length)[0] ?? "";
+  return lines
+    .map((line) => (line.startsWith(common) ? line.slice(common.length) : line))
+    .join("\n");
+}
+
+export function checkEmbeddedFusedSnapshotIsCanonical(probeSource) {
+  const embedded = extractMarkedSource(
+    probeSource,
+    FUSED_SNAPSHOT_BEGIN,
+    FUSED_SNAPSHOT_END,
+  );
+  if (embedded === null) return ["the probe has no fused snapshot block"];
+  return embedded === FUSED_SNAPSHOT_CAPTURE_SOURCE
+    ? []
+    : ["the embedded fused snapshot block has drifted"];
+}
+
 /**
  * The embedded copy must be byte-identical to the canonical source, so the two
  * cannot drift.
@@ -459,8 +520,8 @@ function functionCallsCapture(functionNode, captureFunctionNames) {
   return found;
 }
 
-function collectCaptureFunctionNames(ast) {
-  const names = new Set(["captureNow"]);
+function collectCaptureFunctionNames(ast, roots = ["captureNow"]) {
+  const names = new Set(roots);
   let changed = true;
   while (changed) {
     changed = false;
@@ -500,18 +561,21 @@ function collectCaptureFunctionNames(ast) {
 }
 
 function sourceOutsideCanonical(text) {
-  const start = text.indexOf(CAPTURE_BEGIN);
-  const end = text.indexOf(CAPTURE_END);
-  if (start < 0 || end <= start) {
-    return text;
+  let result = text;
+  for (const [begin, endMarker] of [
+    [CAPTURE_BEGIN, CAPTURE_END],
+    [FUSED_SNAPSHOT_BEGIN, FUSED_SNAPSHOT_END],
+  ]) {
+    const start = result.indexOf(begin);
+    const end = result.indexOf(endMarker);
+    if (start < 0 || end <= start) continue;
+    const removed = result.slice(start, end + endMarker.length);
+    const blankLines = removed.replace(/[^\n]/g, "");
+    result = `${result.slice(0, start)}${blankLines}${result.slice(
+      end + endMarker.length,
+    )}`;
   }
-
-  // Preserve line numbers so AST diagnostics still point at the probe.
-  const removed = text.slice(start, end + CAPTURE_END.length);
-  const blankLines = removed.replace(/[^\n]/g, "");
-  return `${text.slice(0, start)}${blankLines}${text.slice(
-    end + CAPTURE_END.length,
-  )}`;
+  return result;
 }
 
 /**
@@ -591,7 +655,13 @@ export function checkFusedCaptureUsage(probeSource) {
   // Promise. Requiring the invocation itself (or its Promise.all/.then chain)
   // to reach `await` prevents an awaited wrapper body from disguising an
   // unawaited wrapper call.
-  const captureFunctionNames = collectCaptureFunctionNames(ast);
+  const legacyCaptureFunctionNames = collectCaptureFunctionNames(ast);
+  const captureFunctionNames = text.includes(FUSED_SNAPSHOT_BEGIN)
+    ? new Set([
+        ...legacyCaptureFunctionNames,
+        ...collectCaptureFunctionNames(ast, ["captureSnapshot"]),
+      ])
+    : legacyCaptureFunctionNames;
   visitAst(ast, undefined, (node) => {
     if (
       node.type !== "CallExpression" ||
@@ -608,15 +678,35 @@ export function checkFusedCaptureUsage(probeSource) {
     );
   });
 
+  // Opt-in evidence probes must use the one-snapshot primitive exclusively.
+  // Existing fleet consumers without this marker retain the legacy API.
+  if (text.includes(FUSED_SNAPSHOT_BEGIN)) {
+    visitAst(ast, undefined, (node) => {
+      if (node.type !== "CallExpression") return;
+      const name = callIdentifierName(node);
+      if (legacyCaptureFunctionNames.has(name) || name === "grabNow") {
+        failures.push(
+          `${name}() appears beside fused snapshot capture at line ${
+            node.loc?.start.line ?? "?"
+          } — metrics and documentary PNG would come from different renders`,
+        );
+      }
+    });
+  }
+
   return failures;
 }
 
 export default {
   CAPTURE_BEGIN,
   CAPTURE_END,
+  FUSED_SNAPSHOT_BEGIN,
+  FUSED_SNAPSHOT_END,
+  FUSED_SNAPSHOT_CAPTURE_SOURCE,
   SAME_TASK_CAPTURE_SOURCE,
   TWO_READ_PATH_DISCRIMINATOR_SOURCE,
   extractEmbeddedCapture,
   checkEmbeddedCaptureIsCanonical,
+  checkEmbeddedFusedSnapshotIsCanonical,
   checkFusedCaptureUsage,
 };
