@@ -52,11 +52,242 @@ const { default: Cartesian3 } = await import(
 const { default: Ellipsoid } = await import(
   pathToFileURL(sourcePath("Core/Ellipsoid.js")).href
 );
+const { default: DrawCommand } = await import(
+  pathToFileURL(sourcePath("Renderer/DrawCommand.js")).href
+);
+const { default: GlobeTranslucencyState } = await import(
+  pathToFileURL(sourcePath("Scene/GlobeTranslucencyState.js")).href
+);
+const { createWebGLViewBoundGlobeCommand, pushWebGLViewBoundGlobeCommand } =
+  await import(
+    pathToFileURL(sourcePath("Scene/GlobeSurfaceTileProviderRendering.js")).href
+  );
 
 const SOLAR_RADIUS = 695_500_000.0;
 const LUNAR_RADIUS = 1_737_400.0;
 const AU = 149_597_870_700.0;
 const EARTH_RADIUS = 6_378_137.0;
+
+test("WebGL pick replays isolate the logical View S5 carrier", () => {
+  const packedA = new Float32Array(16).fill(1.0);
+  const packedB = new Float32Array(16).fill(2.0);
+  const shadowA = { webglPackedUniform: packedA };
+  const shadowB = { webglPackedUniform: packedB };
+  const pooledUniformMap = {
+    u_eclipseGlobeShadow() {
+      return this.properties.eclipseGlobeShadow.webglPackedUniform;
+    },
+    u_liveOrdinaryUniform() {
+      return this.properties.liveOrdinaryUniform;
+    },
+    properties: {
+      eclipseGlobeShadow: shadowA,
+      liveOrdinaryUniform: 7,
+    },
+  };
+  const owner = {};
+  const pooledCommand = new DrawCommand({
+    owner,
+    uniformMap: pooledUniformMap,
+  });
+
+  const viewACommand = createWebGLViewBoundGlobeCommand(pooledCommand, shadowA);
+  const viewBCommand = createWebGLViewBoundGlobeCommand(pooledCommand, shadowB);
+
+  assert.notEqual(viewACommand, pooledCommand);
+  assert.notEqual(viewBCommand, pooledCommand);
+  assert.notEqual(viewACommand.uniformMap, viewBCommand.uniformMap);
+  assert.equal(
+    Object.hasOwn(viewACommand.uniformMap, "u_eclipseGlobeShadow"),
+    true,
+  );
+  assert.equal(
+    Object.hasOwn(viewACommand.uniformMap, "u_liveOrdinaryUniform"),
+    true,
+  );
+  assert.equal(
+    viewACommand.uniformMap.u_liveOrdinaryUniform,
+    pooledUniformMap.u_liveOrdinaryUniform,
+  );
+  assert.equal(viewACommand.owner, owner);
+  assert.equal(viewBCommand.owner, owner);
+  assert.equal(pooledUniformMap.properties.eclipseGlobeShadow, shadowA);
+  assert.notEqual(
+    viewACommand.uniformMap.properties.eclipseGlobeShadow,
+    shadowA,
+  );
+  assert.notEqual(
+    viewBCommand.uniformMap.properties.eclipseGlobeShadow,
+    shadowB,
+  );
+  const retainedA = viewACommand.uniformMap.u_eclipseGlobeShadow();
+  const retainedB = viewBCommand.uniformMap.u_eclipseGlobeShadow();
+  assert.deepEqual(Array.from(retainedA), Array.from(packedA));
+  assert.deepEqual(Array.from(retainedB), Array.from(packedB));
+  assert.equal(Object.isFrozen(retainedA), true);
+  assert.equal(Object.isFrozen(retainedB), true);
+
+  // Preparing B must not change the live getter/value retained by A, while
+  // a later mutation of View A's reusable source object cannot rewrite the
+  // older preparation. Every unrelated pooled property stays live rather than
+  // being copied.
+  packedA[0] = 9.0;
+  pooledUniformMap.properties.liveOrdinaryUniform = 11;
+  assert.equal(viewACommand.uniformMap.u_eclipseGlobeShadow()[0], 1.0);
+  assert.equal(viewACommand.uniformMap.u_liveOrdinaryUniform(), 11);
+  assert.equal(viewBCommand.uniformMap.u_liveOrdinaryUniform(), 11);
+
+  const descriptor = Object.getOwnPropertyDescriptor(
+    viewACommand.uniformMap.properties,
+    "eclipseGlobeShadow",
+  );
+  assert.equal(descriptor.value.webglPackedUniform, retainedA);
+  assert.equal(descriptor.writable, false);
+  assert.equal(descriptor.configurable, false);
+  assert.throws(() => {
+    viewACommand.uniformMap.properties.eclipseGlobeShadow = shadowB;
+  }, TypeError);
+});
+
+function createTestGlobeTranslucencyState() {
+  const state = new GlobeTranslucencyState();
+  const pickFrontFaceType = 9;
+
+  // Exercise GlobeTranslucencyState's real derived-command lifecycle while
+  // replacing shader/render-state derivation with identity functions. The
+  // derived uniform-map function deliberately invokes combine(), which copies
+  // only own uniform-map properties and caught the prototype-only mutant.
+  state._frontFaceTranslucent = true;
+  state._derivedCommandsDirty = false;
+  state._derivedCommandPacks = [];
+  state._derivedCommandPacks[pickFrontFaceType] = {
+    pass: 71,
+    pickOnly: true,
+    getShaderProgramFunction: undefined,
+    getRenderStateFunction: undefined,
+    getUniformMapFunction() {
+      return {
+        u_translucencySentinel() {
+          return 13;
+        },
+      };
+    },
+    renderStateCache: {},
+  };
+  state._derivedCommandsToUpdateLength = 1;
+  state._derivedCommandTypesToUpdate[0] = pickFrontFaceType;
+  state._derivedPickCommandsLength = 1;
+  state._derivedPickCommandTypes[0] = pickFrontFaceType;
+  return state;
+}
+
+function createTestPickFrame(
+  eclipseGlobeShadow,
+  globeTranslucencyState,
+  frameNumber,
+) {
+  return {
+    eclipseGlobeShadow,
+    globeTranslucencyState,
+    frameNumber,
+    passes: {
+      pick: true,
+      pickVoxel: false,
+    },
+    commandList: [],
+    context: {
+      getFeatureRenderer() {
+        return undefined;
+      },
+    },
+  };
+}
+
+test("WebGL View-bound replays own translucent pick derivations", () => {
+  const packedA = new Float32Array(16).fill(3.0);
+  const packedB = new Float32Array(16).fill(5.0);
+  const shadowA = { webglPackedUniform: packedA };
+  const shadowB = { webglPackedUniform: packedB };
+  const pooledUniformMap = {
+    u_eclipseGlobeShadow() {
+      return this.properties.eclipseGlobeShadow.webglPackedUniform;
+    },
+    u_liveOrdinaryUniform() {
+      return this.properties.liveOrdinaryUniform;
+    },
+    properties: {
+      eclipseGlobeShadow: shadowA,
+      liveOrdinaryUniform: 17,
+    },
+  };
+  const pooledCommand = new DrawCommand({
+    uniformMap: pooledUniformMap,
+    shaderProgram: { id: 19 },
+    renderState: { id: 23, blending: { enabled: false } },
+  });
+  const pooledDerivedCommands = pooledCommand.derivedCommands;
+  const translucentState = createTestGlobeTranslucencyState();
+  const frameA = createTestPickFrame(shadowA, translucentState, 101);
+  const frameB = createTestPickFrame(shadowB, translucentState, 102);
+
+  const viewACommand = pushWebGLViewBoundGlobeCommand(pooledCommand, frameA);
+  const viewBCommand = pushWebGLViewBoundGlobeCommand(pooledCommand, frameB);
+  const pickA = frameA.commandList[0];
+  const pickB = frameB.commandList[0];
+
+  assert.equal(frameA.commandList.length, 1);
+  assert.equal(frameB.commandList.length, 1);
+  assert.notEqual(pickA, viewACommand);
+  assert.notEqual(pickB, viewBCommand);
+  assert.equal(
+    viewACommand.derivedCommands.globeTranslucency.pickFrontFaceCommand,
+    pickA,
+  );
+  assert.equal(
+    viewBCommand.derivedCommands.globeTranslucency.pickFrontFaceCommand,
+    pickB,
+  );
+  assert.notEqual(viewACommand.derivedCommands, viewBCommand.derivedCommands);
+  assert.notEqual(
+    viewACommand.derivedCommands.globeTranslucency,
+    viewBCommand.derivedCommands.globeTranslucency,
+  );
+  assert.equal(Object.hasOwn(pickA.uniformMap, "u_eclipseGlobeShadow"), true);
+  assert.equal(Object.hasOwn(pickA.uniformMap, "u_liveOrdinaryUniform"), true);
+  assert.equal(pickA.uniformMap.u_translucencySentinel(), 13);
+  assert.equal(pickB.uniformMap.u_translucencySentinel(), 13);
+  assert.deepEqual(
+    Array.from(pickA.uniformMap.u_eclipseGlobeShadow()),
+    new Array(16).fill(3.0),
+  );
+  assert.deepEqual(
+    Array.from(pickB.uniformMap.u_eclipseGlobeShadow()),
+    new Array(16).fill(5.0),
+  );
+
+  // The derived command keeps A's immutable carrier after B is prepared, but
+  // unrelated values continue to resolve through the live pooled properties.
+  packedA[0] = 29.0;
+  pooledUniformMap.properties.liveOrdinaryUniform = 31;
+  assert.equal(pickA.uniformMap.u_eclipseGlobeShadow()[0], 3.0);
+  assert.equal(pickA.uniformMap.u_liveOrdinaryUniform(), 31);
+  assert.equal(pickB.uniformMap.u_liveOrdinaryUniform(), 31);
+
+  // The ephemeral derived graph must not leak back into the pooled command.
+  assert.equal(pooledCommand.uniformMap, pooledUniformMap);
+  assert.equal(pooledCommand.derivedCommands, pooledDerivedCommands);
+  assert.deepEqual(Object.keys(pooledDerivedCommands), []);
+
+  const opaqueState = new GlobeTranslucencyState();
+  const opaqueFrame = createTestPickFrame(shadowA, opaqueState, 103);
+  const opaqueReplay = pushWebGLViewBoundGlobeCommand(
+    pooledCommand,
+    opaqueFrame,
+  );
+  assert.equal(opaqueFrame.commandList[0], opaqueReplay);
+  assert.deepEqual(Object.keys(opaqueReplay.derivedCommands), []);
+  assert.deepEqual(Object.keys(pooledDerivedCommands), []);
+});
 
 test("S5 CPU laws retain exact endpoints, fitted support, and composition", () => {
   assert.equal(applyLimbDarkeningFit(0.0, 7.0, -3.0, 11.0), 0.0);
@@ -1642,22 +1873,32 @@ test("logical View, selection refinement, capture, and pick stay integrated", ()
     updateForPickStart,
     tileProvider.indexOf("cancelReprojections()", updateForPickStart),
   );
-  const pickRebind = pickSource.indexOf(
-    "this._uniformMaps[i].properties.eclipseGlobeShadow",
-  );
+  const pickViewCarrier = pickSource.indexOf("pushWebGLViewBoundGlobeCommand(");
   const pickRefinement = pickSource.indexOf(
     "updateEclipseGlobeShadowForFrameState(",
   );
-  const pickPush = pickSource.indexOf(
-    "pushCommand(drawCommands[i], frameState)",
-  );
   assert.ok(
-    pickRefinement >= 0 && pickRebind > pickRefinement && pickPush > pickRebind,
-    "pick must prepare its rebuilt terrain set before rebinding and pushing commands",
+    pickRefinement >= 0 && pickViewCarrier > pickRefinement,
+    "pick must prepare its rebuilt terrain set before creating and pushing a View-bound command",
   );
   assert.match(
     pickSource,
-    /properties\.eclipseGlobeShadow =\s*frameState\.eclipseGlobeShadow;/,
+    /pushWebGLViewBoundGlobeCommand\(drawCommands\[i\], frameState\)/,
+  );
+  assert.match(
+    pickSource,
+    /const webGPUHandled = updateWebGPUForPick\(this, frameState\);\s*if \(!webGPUHandled\) \{[\s\S]*pushWebGLViewBoundGlobeCommand\(drawCommands\[i\], frameState\);/,
+    "the View-bound WebGL replay must remain behind the WebGPU handled branch",
+  );
+  assert.doesNotMatch(
+    pickSource,
+    /_uniformMaps\[i\]\.properties\.eclipseGlobeShadow\s*=/,
+    "a pick/offscreen View must not mutate the pooled command carrier",
+  );
+  assert.match(
+    tileRendering,
+    /function pushWebGLViewBoundGlobeCommand\([\s\S]*globeTranslucencyState\.updateDerivedCommands\(viewCommand, frameState\);[\s\S]*pushCommand\(viewCommand, frameState\);/,
+    "a translucent replay must populate its ephemeral derived graph before push",
   );
   assert.match(
     pickSource,

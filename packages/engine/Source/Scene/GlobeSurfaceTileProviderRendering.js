@@ -835,6 +835,86 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
   return uniformMap;
 }
 
+/**
+ * Creates the WebGL command carrier used when a retained globe command is
+ * replayed for a pick/offscreen logical View.
+ *
+ * The ordinary render path deliberately keeps pooling one command and one
+ * uniform map per globe draw.  A pick mini-frame cannot mutate that pooled
+ * map's eclipse property, however: another logical View may still retain the
+ * command and must continue resolving its own View-owned S5 block.  Use a
+ * two-object copy-on-write overlay instead.  Every non-eclipse uniform remains
+ * live through the pooled carrier while this command owns exactly the eclipse
+ * value for the View that requested the replay.
+ *
+ * @param {DrawCommand} command The retained pooled WebGL globe command.
+ * @param {object} eclipseGlobeShadow The requesting View's S5 block.
+ * @returns {DrawCommand} A replay command with an isolated eclipse carrier.
+ * @private
+ */
+function createWebGLViewBoundGlobeCommand(command, eclipseGlobeShadow) {
+  const pooledUniformMap = command.uniformMap;
+  // GlobeTranslucencyState builds its derived uniform map with `combine()`,
+  // which copies own enumerable properties only. Preserve every pooled getter
+  // as an own descriptor on this rare replay carrier while the backing values
+  // below continue to delegate to the pooled properties object.
+  const viewUniformMap = Object.create(Object.getPrototypeOf(pooledUniformMap));
+  const uniformDescriptors = Object.getOwnPropertyDescriptors(pooledUniformMap);
+  delete uniformDescriptors.properties;
+  Object.defineProperties(viewUniformMap, uniformDescriptors);
+  const viewProperties = Object.create(pooledUniformMap.properties);
+  const sourceShadow = eclipseGlobeShadow ?? defaultEclipseGlobeShadow;
+  const packedSnapshot = Object.freeze(
+    Matrix4.clone(sourceShadow.webglPackedUniform),
+  );
+  const eclipseSnapshot = Object.freeze({
+    webglPackedUniform: packedSnapshot,
+  });
+
+  Object.defineProperty(viewProperties, "eclipseGlobeShadow", {
+    value: eclipseSnapshot,
+    writable: false,
+    enumerable: true,
+    configurable: false,
+  });
+  Object.defineProperty(viewUniformMap, "properties", {
+    value: viewProperties,
+    writable: false,
+    enumerable: true,
+    configurable: false,
+  });
+
+  const viewCommand = DrawCommand.shallowClone(command);
+  viewCommand.uniformMap = viewUniformMap;
+  return viewCommand;
+}
+
+/**
+ * Prepares and pushes a WebGL globe command replay for one logical View.
+ *
+ * Translucent globe commands have a second retained-command graph owned by
+ * GlobeTranslucencyState. A newly cloned replay command deliberately starts
+ * with an empty derived-command graph, so populate that graph from the
+ * View-bound uniform carrier before pushDerivedCommands consumes it.
+ *
+ * @param {DrawCommand} command The retained pooled WebGL globe command.
+ * @param {FrameState} frameState The pick/offscreen View's frame state.
+ * @returns {DrawCommand} The ephemeral View-bound replay command.
+ * @private
+ */
+function pushWebGLViewBoundGlobeCommand(command, frameState) {
+  const viewCommand = createWebGLViewBoundGlobeCommand(
+    command,
+    frameState.eclipseGlobeShadow,
+  );
+  const globeTranslucencyState = frameState.globeTranslucencyState;
+  if (globeTranslucencyState.translucent) {
+    globeTranslucencyState.updateDerivedCommands(viewCommand, frameState);
+  }
+  pushCommand(viewCommand, frameState);
+  return viewCommand;
+}
+
 function createWireframeVertexArrayIfNecessary(context, provider, tile) {
   const surfaceTile = tile.data;
 
@@ -2264,6 +2344,8 @@ export {
   getDebugOrientedBoundingBox,
   getDebugBoundingSphere,
   pushCommand,
+  createWebGLViewBoundGlobeCommand,
+  pushWebGLViewBoundGlobeCommand,
   isUndergroundVisible,
   isGroundAtmosphereCompanionDistance,
   clipRectangleAntimeridian,
@@ -2280,6 +2362,8 @@ const GlobeSurfaceTileProviderRendering = {
   getDebugOrientedBoundingBox,
   getDebugBoundingSphere,
   pushCommand,
+  createWebGLViewBoundGlobeCommand,
+  pushWebGLViewBoundGlobeCommand,
   isUndergroundVisible,
   isGroundAtmosphereCompanionDistance,
   clipRectangleAntimeridian,

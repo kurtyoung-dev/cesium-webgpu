@@ -35,7 +35,7 @@ import {
   addDrawCommandsForTile,
   updateWebGPUForPick,
   updateTileBoundingRegion,
-  pushCommand,
+  pushWebGLViewBoundGlobeCommand,
   isUndergroundVisible,
   clipRectangleAntimeridian,
 } from "./GlobeSurfaceTileProviderRendering.js";
@@ -841,13 +841,11 @@ class GlobeSurfaceTileProvider {
     if (!webGPUHandled) {
       const drawCommands = this._drawCommands;
       for (let i = 0, length = this._usedDrawCommands; i < length; ++i) {
-        // The pooled WebGL command was built by the prior on-screen view.
-        // Rebind the property-backed eclipse block before an offscreen or pick
-        // view re-pushes it, or the derived pick fragment shader runs its
-        // eclipse arithmetic against the default view's geometry.
-        this._uniformMaps[i].properties.eclipseGlobeShadow =
-          frameState.eclipseGlobeShadow;
-        pushCommand(drawCommands[i], frameState);
+        // The pooled WebGL command belongs to the prior on-screen logical
+        // View. Replay a shallow command with a copy-on-write S5 carrier so
+        // this pick/offscreen View cannot rewrite an older retained command.
+        // Other globe uniforms still delegate to the current pooled map.
+        pushWebGLViewBoundGlobeCommand(drawCommands[i], frameState);
       }
     }
 
