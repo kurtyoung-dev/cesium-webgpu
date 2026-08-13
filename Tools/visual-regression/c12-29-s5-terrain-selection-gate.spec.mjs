@@ -22,7 +22,8 @@ import {
   C12_29_S5_WEBGPU_LAYOUT_FILE,
   C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES,
   computeExpectedTerrainSurfaceRadius,
-  deriveS5HeldLevelOneTarget,
+  deriveS5CardinalLevelOneCandidates,
+  evaluateS5HoldCandidateObservation,
   exitCodeForS5Status,
   foldC1229S5Gate,
   isUuidV4,
@@ -80,10 +81,11 @@ const SYNTHETIC_TRACK = Object.freeze({
   latitude: 25,
   magnitude: 1.01,
 });
-const heldTarget = deriveS5HeldLevelOneTarget(
+const holdCandidates = deriveS5CardinalLevelOneCandidates(
   SYNTHETIC_TRACK.longitude,
   SYNTHETIC_TRACK.latitude,
 );
+const heldTarget = holdCandidates[0];
 
 function syntheticProgress(renderer = "webgl") {
   return {
@@ -134,6 +136,29 @@ function syntheticImages(renderer) {
 
 function syntheticSession(renderer) {
   const selectedTileIds = ["1/0/0", "1/1/0"];
+  const warmupSnapshot = {
+    selectedTileIds: [heldTarget.anchorKey],
+    realTileIds: [heldTarget.anchorKey],
+    fillTileIds: [],
+  };
+  const candidateObservations = holdCandidates.map((candidate, index) => {
+    const observation = {
+      key: candidate.key,
+      edge: candidate.edge,
+      requestAttempts: index,
+      heldPromisePresent: false,
+      reservedPromisePresent: false,
+    };
+    return {
+      ...candidate,
+      ...observation,
+      ...evaluateS5HoldCandidateObservation(
+        candidate,
+        observation,
+        warmupSnapshot,
+      ),
+    };
+  });
   const phases = {
     [C12_29_S5_PHASES[0]]: {
       provider: "EllipsoidTerrainProvider",
@@ -182,23 +207,23 @@ function syntheticSession(renderer) {
         settleFrames: 4,
         stableFrames: 3,
         tilesLoaded: true,
+        fillCount: 0,
         cameraFovDegrees: C12_29_S5_SCENE.warmupCameraFovDegrees,
         maximumScreenSpaceError: C12_29_S5_SCENE.terrainMaximumScreenSpaceError,
         preloadSiblings: false,
-        targetSelected: false,
-        targetRenderedReal: false,
-        targetRenderedFill: false,
-        targetRequestAttempts: 0,
-        targetReserved: false,
+        holdTargetUndefinedDuringWarmup: true,
         holdInterceptionEnabled: false,
         heldRequestCount: 0,
-        selectedTileIds: [heldTarget.anchorKey],
-        realTileIds: [heldTarget.anchorKey],
-        fillTileIds: [],
-        realSiblingTileIds: [heldTarget.anchorKey],
+        reservedPromiseCount: 0,
+        ...warmupSnapshot,
+        candidateDerivation:
+          "all-valid-cardinal-level-1-neighbors-then-post-warmup-eligibility",
+        candidateObservations,
+        eligibleCandidateKeys: [heldTarget.key],
       },
       holdArm: {
         afterSettledWarmup: true,
+        assignedAfterCandidateSnapshot: true,
         targetKey: heldTarget.key,
         holdInterceptionEnabledBefore: false,
         targetRequestAttemptsBefore: 0,
@@ -237,6 +262,7 @@ function syntheticSession(renderer) {
       ],
     },
     [C12_29_S5_PHASES[3]]: {
+      holdTargetKey: heldTarget.key,
       tilesLoaded: true,
       fillCount: 0,
       decodedQuantizedMeshCount: 2,
@@ -537,7 +563,7 @@ test("01 full valid fixture closes the pure S5 gate", () => {
   const verdict = foldC1229S5Gate(greenReport());
   assert.equal(verdict.status, "PASS");
   assert.equal(verdict.exitCode, 0);
-  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v3");
+  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v4");
   assert.equal(verdict.checks.sourceBoundaryCount, 35);
   assert.equal(verdict.checks.buildSourceBoundaryCount, 33);
 });
@@ -693,15 +719,17 @@ test("06 source, build, generated, served, and stability mutants are STRUCTURAL"
 });
 
 test("07 first-beginFrame provider-reset boundary is exact and pre-selection", () => {
-  assert.deepEqual(heldTarget, {
-    level: 1,
-    anchorKey: "1/0/0",
-    key: "1/1/0",
-    edge: "east",
-    distanceDegrees: 10,
-    derivation: "nearest-level-1-anchor-edge-neighbor",
-    siblingKeys: ["1/0/0", "1/0/1", "1/1/1"],
-  });
+  assert.deepEqual(
+    holdCandidates.map(({ key, edge, distanceDegrees }) => ({
+      key,
+      edge,
+      distanceDegrees,
+    })),
+    [
+      { key: "1/1/0", edge: "east", distanceDegrees: 10 },
+      { key: "1/0/1", edge: "south", distanceDegrees: 25 },
+    ],
+  );
   for (const mutateBoundary of [
     (phase) => delete phase.firstBeginFramePropagation,
     (phase) =>
@@ -750,6 +778,17 @@ test("07 first-beginFrame provider-reset boundary is exact and pre-selection", (
 });
 
 test("08 one selected L1 hold, real sibling, and disabled release are exact", () => {
+  const recomputeCandidate = (phase, index) => {
+    const observation = phase.warmup.candidateObservations[index];
+    Object.assign(
+      observation,
+      evaluateS5HoldCandidateObservation(
+        holdCandidates[index],
+        observation,
+        phase.warmup,
+      ),
+    );
+  };
   for (const mutateFill of [
     (phase) => (phase.fillCount = 0),
     (phase) => (phase.heldRequestCount = 0),
@@ -761,8 +800,47 @@ test("08 one selected L1 hold, real sibling, and disabled release are exact", ()
     (phase) => (phase.realSiblingTileIds = []),
     (phase) => (phase.warmup.settled = false),
     (phase) => (phase.holdArm.holdInterceptionEnabledBefore = true),
-    (phase) => (phase.warmup.targetRequestAttempts = 1),
-    (phase) => phase.warmup.selectedTileIds.push(heldTarget.key),
+    (phase) => phase.warmup.candidateObservations.pop(),
+    (phase) =>
+      phase.warmup.candidateObservations.push(
+        structuredClone(phase.warmup.candidateObservations[0]),
+      ),
+    (phase) => {
+      phase.warmup.candidateObservations[0].requestAttempts = 1;
+      recomputeCandidate(phase, 0);
+      phase.warmup.eligibleCandidateKeys = [];
+    },
+    (phase) => (phase.warmup.candidateObservations[0].requestAttempts = 1),
+    (phase) => {
+      phase.warmup.candidateObservations[1].requestAttempts = 0;
+      recomputeCandidate(phase, 1);
+      phase.warmup.eligibleCandidateKeys.push(holdCandidates[1].key);
+    },
+    (phase) => {
+      phase.warmup.selectedTileIds.push(heldTarget.key);
+      recomputeCandidate(phase, 0);
+      phase.warmup.eligibleCandidateKeys = [];
+    },
+    (phase) => {
+      phase.warmup.realTileIds.push(heldTarget.key);
+      recomputeCandidate(phase, 0);
+      phase.warmup.eligibleCandidateKeys = [];
+    },
+    (phase) => {
+      phase.warmup.fillTileIds.push(heldTarget.key);
+      recomputeCandidate(phase, 0);
+      phase.warmup.eligibleCandidateKeys = [];
+    },
+    (phase) => {
+      phase.warmup.selectedTileIds = [];
+      phase.warmup.realTileIds = [];
+      recomputeCandidate(phase, 0);
+      recomputeCandidate(phase, 1);
+      phase.warmup.eligibleCandidateKeys = [];
+    },
+    (phase) => (phase.holdArm.targetRequestAttemptsBefore = 1),
+    (phase) => (phase.holdTargetRequestAttemptsAfterArm = 0),
+    (phase) => (phase.holdTargetRequestAttemptsAfterArm = 2),
     (phase) => (phase.holdTarget.level = 2),
     (phase) => (phase.maximumScreenSpaceError = 0.5),
   ]) {
@@ -775,6 +853,7 @@ test("08 one selected L1 hold, real sibling, and disabled release are exact", ()
   for (const mutateRelease of [
     (phase) => (phase.holdInterceptionEnabled = true),
     (phase) => (phase.newHeldRequestCountAfterRelease = 1),
+    (phase) => (phase.holdTargetKey = holdCandidates[1].key),
   ]) {
     expectStatus(
       (report) => mutateRelease(report.sessions[0].phases[C12_29_S5_PHASES[3]]),
@@ -2655,6 +2734,26 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
     "const warmup = await settleTerrain(",
     narrowFovAssignment,
   );
+  const targetUndefinedDeclaration = probeSource.indexOf(
+    "let holdTarget;",
+    narrowFovAssignment,
+  );
+  const candidateEnumeration = probeSource.indexOf(
+    "const holdCandidates = [];",
+    targetUndefinedDeclaration,
+  );
+  const candidateSnapshot = probeSource.indexOf(
+    "const candidateObservations = holdCandidates.map(",
+    narrowWarmupSettle,
+  );
+  const oneEligibleCheck = probeSource.indexOf(
+    "eligibleCandidates.length !== 1",
+    candidateSnapshot,
+  );
+  const deferredTargetAssignment = probeSource.indexOf(
+    "holdTarget = holdCandidates.find(",
+    oneEligibleCheck,
+  );
   const settledWarmupProof = probeSource.indexOf(
     "!warmupProof.settled",
     narrowWarmupSettle,
@@ -2669,13 +2768,28 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
   );
   assert.ok(
     narrowFovAssignment >= 0 &&
+      narrowFovAssignment < targetUndefinedDeclaration &&
+      targetUndefinedDeclaration < candidateEnumeration &&
+      candidateEnumeration < narrowWarmupSettle &&
       narrowFovAssignment < narrowWarmupSettle &&
-      narrowWarmupSettle < settledWarmupProof &&
+      narrowWarmupSettle < candidateSnapshot &&
+      candidateSnapshot < settledWarmupProof &&
+      settledWarmupProof < oneEligibleCheck &&
+      oneEligibleCheck < deferredTargetAssignment &&
+      deferredTargetAssignment < exactHoldArm &&
       settledWarmupProof < exactHoldArm &&
       exactHoldArm < finalFovAssignment,
   );
   assert.match(probeSource, /globe\.preloadSiblings = false;/u);
   assert.match(probeSource, /let holdEnabled = false;/u);
+  assert.doesNotMatch(
+    probeSource,
+    /\b(?:deriveS5CardinalLevelOneCandidates|evaluateS5HoldCandidateObservation)\b/u,
+  );
+  assert.match(
+    probeSource,
+    /requestAttemptsByKey\.has\(key\)[\s\S]*?key === holdTarget\?\.key/u,
+  );
   const x2Phase = probeSource.indexOf(
     'markProgress(contract.phases[4], "settle-exaggerated-terrain")',
   );

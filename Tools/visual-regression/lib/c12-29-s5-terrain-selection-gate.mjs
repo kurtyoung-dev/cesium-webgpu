@@ -7,7 +7,7 @@
  * deliberately browser-free so every premise can be mutation-tested in Node.
  */
 
-export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v3";
+export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v4";
 
 export const C12_29_S5_DIAGNOSTICS_SCHEMA = "c12-29-s5-runtime-diagnostics-v1";
 
@@ -265,14 +265,11 @@ export function exitCodeForS5Status(status) {
 }
 
 /**
- * Choose one level-one tile immediately across the nearest edge of the tile
- * containing the live ephemeris track. The pinned QuantizedMesh fixture uses
- * the standard GeographicTilingScheme (four-by-two tiles at level one).
- * Holding the adjacent tile, instead of the track-centre tile or a broad key
- * pattern, leaves its anchor and other neighbours available to construct a
- * nonvacuous TerrainFillMesh along the visible footprint edge.
+ * Enumerate every valid cardinal level-one neighbour of the tile containing
+ * the live ephemeris track. Target selection is deliberately deferred until
+ * the browser has completed and recorded its narrow-FOV warm-up.
  */
-export function deriveS5HeldLevelOneTarget(longitude, latitude) {
+export function deriveS5CardinalLevelOneCandidates(longitude, latitude) {
   if (
     !Number.isFinite(longitude) ||
     !Number.isFinite(latitude) ||
@@ -281,7 +278,7 @@ export function deriveS5HeldLevelOneTarget(longitude, latitude) {
     latitude < -90 ||
     latitude > 90
   ) {
-    return undefined;
+    return [];
   }
 
   const level = 1;
@@ -302,65 +299,101 @@ export function deriveS5HeldLevelOneTarget(longitude, latitude) {
   const north = 90 - anchorY * tileHeight;
   const south = north - tileHeight;
   const candidates = [];
-  if (anchorX + 1 < xTiles) {
-    candidates.push({
-      edge: "east",
-      distanceDegrees: Math.abs(east - longitude),
-      targetX: anchorX + 1,
-      targetY: anchorY,
-    });
-  }
-  if (anchorX > 0) {
-    candidates.push({
-      edge: "west",
-      distanceDegrees: Math.abs(longitude - west),
-      targetX: anchorX - 1,
-      targetY: anchorY,
-    });
-  }
-  if (anchorY > 0) {
-    candidates.push({
-      edge: "north",
-      distanceDegrees: Math.abs(north - latitude),
-      targetX: anchorX,
-      targetY: anchorY - 1,
-    });
-  }
-  if (anchorY + 1 < yTiles) {
-    candidates.push({
-      edge: "south",
-      distanceDegrees: Math.abs(latitude - south),
-      targetX: anchorX,
-      targetY: anchorY + 1,
-    });
-  }
-  candidates.sort(
-    (left, right) =>
-      left.distanceDegrees - right.distanceDegrees ||
-      left.edge.localeCompare(right.edge),
-  );
-  const nearest = candidates[0];
-  if (!nearest) return undefined;
-  const parentX = Math.floor(nearest.targetX / 2);
-  const parentY = Math.floor(nearest.targetY / 2);
-  const siblingKeys = [];
-  for (let y = parentY * 2; y < parentY * 2 + 2; y++) {
-    for (let x = parentX * 2; x < parentX * 2 + 2; x++) {
-      const key = `${level}/${x}/${y}`;
-      if (x !== nearest.targetX || y !== nearest.targetY) {
-        siblingKeys.push(key);
+  const addCandidate = (edge, distanceDegrees, targetX, targetY) => {
+    const parentX = Math.floor(targetX / 2);
+    const parentY = Math.floor(targetY / 2);
+    const siblingKeys = [];
+    for (let y = parentY * 2; y < parentY * 2 + 2; y++) {
+      for (let x = parentX * 2; x < parentX * 2 + 2; x++) {
+        if (x !== targetX || y !== targetY) {
+          siblingKeys.push(`${level}/${x}/${y}`);
+        }
       }
     }
+    siblingKeys.sort();
+    candidates.push({
+      level,
+      anchorKey: `${level}/${anchorX}/${anchorY}`,
+      parentKey: `0/${parentX}/${parentY}`,
+      key: `${level}/${targetX}/${targetY}`,
+      edge,
+      targetX,
+      targetY,
+      distanceDegrees,
+      derivation: "valid-cardinal-level-1-anchor-neighbor",
+      siblingKeys,
+    });
+  };
+  if (anchorX + 1 < xTiles) {
+    addCandidate("east", Math.abs(east - longitude), anchorX + 1, anchorY);
   }
-  siblingKeys.sort();
+  if (anchorX > 0) {
+    addCandidate("west", Math.abs(longitude - west), anchorX - 1, anchorY);
+  }
+  if (anchorY > 0) {
+    addCandidate("north", Math.abs(north - latitude), anchorX, anchorY - 1);
+  }
+  if (anchorY + 1 < yTiles) {
+    addCandidate("south", Math.abs(latitude - south), anchorX, anchorY + 1);
+  }
+  return candidates;
+}
+
+/**
+ * Recompute the selection-dependent part of one candidate observation. Only
+ * rendered selection arrays participate; an instantiated-but-unselected tile
+ * is intentionally irrelevant to eligibility.
+ */
+export function evaluateS5HoldCandidateObservation(
+  candidate,
+  observation,
+  snapshot,
+) {
+  const selectedTileIds = snapshot?.selectedTileIds;
+  const realTileIds = snapshot?.realTileIds;
+  const fillTileIds = snapshot?.fillTileIds;
+  if (
+    !candidate ||
+    !Array.isArray(candidate.siblingKeys) ||
+    !Array.isArray(selectedTileIds) ||
+    !Array.isArray(realTileIds) ||
+    !Array.isArray(fillTileIds)
+  ) {
+    return undefined;
+  }
+  const selected = new Set(selectedTileIds);
+  const selectedDescendantTileIds = selectedTileIds
+    .filter((id) => levelOneAncestorKey(id) === candidate.key)
+    .sort();
+  const realDescendantTileIds = realTileIds
+    .filter((id) => levelOneAncestorKey(id) === candidate.key)
+    .sort();
+  const fillDescendantTileIds = fillTileIds
+    .filter((id) => levelOneAncestorKey(id) === candidate.key)
+    .sort();
+  const selectedRealSiblingTileIds = realTileIds
+    .filter(
+      (id) =>
+        selected.has(id) &&
+        candidate.siblingKeys.includes(levelOneAncestorKey(id)),
+    )
+    .sort();
+  const eligibility = {
+    requestUnseen: observation?.requestAttempts === 0,
+    noHeldPromise: observation?.heldPromisePresent === false,
+    noReservedPromise: observation?.reservedPromisePresent === false,
+    noSelectedDescendant: selectedDescendantTileIds.length === 0,
+    noRealDescendant: realDescendantTileIds.length === 0,
+    noFillDescendant: fillDescendantTileIds.length === 0,
+    hasSelectedRealSibling: selectedRealSiblingTileIds.length > 0,
+  };
   return {
-    level,
-    anchorKey: `${level}/${anchorX}/${anchorY}`,
-    key: `${level}/${nearest.targetX}/${nearest.targetY}`,
-    edge: nearest.edge,
-    distanceDegrees: nearest.distanceDegrees,
-    derivation: "nearest-level-1-anchor-edge-neighbor",
-    siblingKeys,
+    selectedDescendantTileIds,
+    realDescendantTileIds,
+    fillDescendantTileIds,
+    selectedRealSiblingTileIds,
+    eligibility,
+    eligible: Object.values(eligibility).every(Boolean),
   };
 }
 
@@ -779,17 +812,98 @@ function validateSession(session, runId, structural, failures) {
   const c = phases["C-fill-held"];
   const warmup = c?.warmup;
   const holdArm = c?.holdArm;
-  const expectedHeldTarget = deriveS5HeldLevelOneTarget(
+  const expectedCandidates = deriveS5CardinalLevelOneCandidates(
     session?.fixture?.deepestTrack?.longitude,
     session?.fixture?.deepestTrack?.latitude,
   );
+  const observedCandidates = warmup?.candidateObservations;
+  let candidateContractExact =
+    expectedCandidates.length > 0 &&
+    Array.isArray(observedCandidates) &&
+    observedCandidates.length === expectedCandidates.length;
+  const recomputedCandidates = [];
+  if (candidateContractExact) {
+    for (let index = 0; index < expectedCandidates.length; index++) {
+      const expected = expectedCandidates[index];
+      const observed = observedCandidates[index];
+      const recomputed = evaluateS5HoldCandidateObservation(
+        expected,
+        observed,
+        warmup,
+      );
+      const eligibility = recomputed?.eligibility;
+      const recordedEligibility = observed?.eligibility;
+      const exact =
+        observed?.level === expected.level &&
+        observed?.anchorKey === expected.anchorKey &&
+        observed?.parentKey === expected.parentKey &&
+        observed?.key === expected.key &&
+        observed?.edge === expected.edge &&
+        observed?.targetX === expected.targetX &&
+        observed?.targetY === expected.targetY &&
+        Object.is(observed?.distanceDegrees, expected.distanceDegrees) &&
+        observed?.derivation === expected.derivation &&
+        sameArrayMembers(observed?.siblingKeys, expected.siblingKeys) &&
+        nonNegativeInteger(observed?.requestAttempts) &&
+        observed?.heldPromisePresent === false &&
+        observed?.reservedPromisePresent === false &&
+        recomputed !== undefined &&
+        sameArrayMembers(
+          observed?.selectedDescendantTileIds,
+          recomputed?.selectedDescendantTileIds,
+        ) &&
+        sameArrayMembers(
+          observed?.realDescendantTileIds,
+          recomputed?.realDescendantTileIds,
+        ) &&
+        sameArrayMembers(
+          observed?.fillDescendantTileIds,
+          recomputed?.fillDescendantTileIds,
+        ) &&
+        sameArrayMembers(
+          observed?.selectedRealSiblingTileIds,
+          recomputed?.selectedRealSiblingTileIds,
+        ) &&
+        recordedEligibility?.requestUnseen === eligibility?.requestUnseen &&
+        recordedEligibility?.noHeldPromise === eligibility?.noHeldPromise &&
+        recordedEligibility?.noReservedPromise ===
+          eligibility?.noReservedPromise &&
+        recordedEligibility?.noSelectedDescendant ===
+          eligibility?.noSelectedDescendant &&
+        recordedEligibility?.noRealDescendant ===
+          eligibility?.noRealDescendant &&
+        recordedEligibility?.noFillDescendant ===
+          eligibility?.noFillDescendant &&
+        recordedEligibility?.hasSelectedRealSibling ===
+          eligibility?.hasSelectedRealSibling &&
+        observed?.eligible === recomputed?.eligible;
+      if (!exact) candidateContractExact = false;
+      recomputedCandidates.push({ candidate: expected, ...recomputed });
+    }
+  }
+  const eligibleCandidates = recomputedCandidates.filter(
+    (candidate) => candidate.eligible,
+  );
+  const expectedHeldTarget =
+    eligibleCandidates.length === 1
+      ? eligibleCandidates[0].candidate
+      : undefined;
   if (
+    !candidateContractExact ||
+    eligibleCandidates.length !== 1 ||
     !expectedHeldTarget ||
     c?.holdTarget?.level !== 1 ||
     c?.holdTarget?.key !== expectedHeldTarget?.key ||
     c?.holdTarget?.anchorKey !== expectedHeldTarget?.anchorKey ||
+    c?.holdTarget?.parentKey !== expectedHeldTarget?.parentKey ||
     c?.holdTarget?.edge !== expectedHeldTarget?.edge ||
+    c?.holdTarget?.targetX !== expectedHeldTarget?.targetX ||
+    c?.holdTarget?.targetY !== expectedHeldTarget?.targetY ||
     c?.holdTarget?.derivation !== expectedHeldTarget?.derivation ||
+    !sameArrayMembers(
+      c?.holdTarget?.siblingKeys,
+      expectedHeldTarget?.siblingKeys,
+    ) ||
     !Object.is(
       c?.holdTarget?.distanceDegrees,
       expectedHeldTarget?.distanceDegrees,
@@ -808,28 +922,21 @@ function validateSession(session, runId, structural, failures) {
     warmup?.maximumScreenSpaceError !==
       C12_29_S5_SCENE.terrainMaximumScreenSpaceError ||
     warmup?.preloadSiblings !== false ||
-    warmup?.targetSelected !== false ||
-    warmup?.targetRenderedReal !== false ||
-    warmup?.targetRenderedFill !== false ||
-    warmup?.targetRequestAttempts !== 0 ||
-    warmup?.targetReserved !== false ||
+    warmup?.fillCount !== 0 ||
+    warmup?.holdTargetUndefinedDuringWarmup !== true ||
     warmup?.holdInterceptionEnabled !== false ||
     warmup?.heldRequestCount !== 0 ||
+    warmup?.reservedPromiseCount !== 0 ||
+    warmup?.candidateDerivation !==
+      "all-valid-cardinal-level-1-neighbors-then-post-warmup-eligibility" ||
+    !sameArrayMembers(warmup?.eligibleCandidateKeys, [
+      expectedHeldTarget?.key,
+    ]) ||
     !Array.isArray(warmup?.selectedTileIds) ||
-    warmup.selectedTileIds.includes(expectedHeldTarget?.key) ||
     !Array.isArray(warmup?.realTileIds) ||
-    warmup.realTileIds.includes(expectedHeldTarget?.key) ||
     !Array.isArray(warmup?.fillTileIds) ||
-    warmup.fillTileIds.includes(expectedHeldTarget?.key) ||
-    !Array.isArray(warmup?.realSiblingTileIds) ||
-    warmup.realSiblingTileIds.length === 0 ||
-    !warmup.realSiblingTileIds.every(
-      (id) =>
-        expectedHeldTarget.siblingKeys.includes(levelOneAncestorKey(id)) &&
-        warmup?.realTileIds?.includes(id) &&
-        warmup?.selectedTileIds?.includes(id),
-    ) ||
     holdArm?.afterSettledWarmup !== true ||
+    holdArm?.assignedAfterCandidateSnapshot !== true ||
     holdArm?.targetKey !== expectedHeldTarget?.key ||
     holdArm?.holdInterceptionEnabledBefore !== false ||
     holdArm?.holdInterceptionEnabledAfter !== true ||
@@ -852,7 +959,7 @@ function validateSession(session, runId, structural, failures) {
     c?.preloadSiblings !== false ||
     c?.holdTargetReserved !== true ||
     !Number.isInteger(c?.holdTargetRequestAttemptsAfterArm) ||
-    c.holdTargetRequestAttemptsAfterArm < 1 ||
+    c.holdTargetRequestAttemptsAfterArm !== 1 ||
     c?.heldRequestCount !== 1 ||
     c?.heldKeys?.length !== 1 ||
     c?.heldKeys?.[0] !== expectedHeldTarget?.key ||
@@ -905,6 +1012,7 @@ function validateSession(session, runId, structural, failures) {
 
   const d = phases["D-real-x1"];
   if (
+    d?.holdTargetKey !== c?.holdTarget?.key ||
     d?.holdInterceptionEnabled !== false ||
     d?.heldRequestCountAfterRelease !== 0 ||
     d?.releasedKeys?.length !== 1 ||

@@ -2280,6 +2280,46 @@ const MEASURE_S5_SESSION = async (contract) => {
     const divisor = 2 ** (level - 1);
     return `1/${Math.floor(x / divisor)}/${Math.floor(y / divisor)}`;
   };
+  const evaluateHoldCandidateObservation = (
+    candidate,
+    observation,
+    snapshot,
+  ) => {
+    const selected = new Set(snapshot.selectedTileIds);
+    const selectedDescendantTileIds = snapshot.selectedTileIds
+      .filter((id) => levelOneAncestorId(id) === candidate.key)
+      .sort();
+    const realDescendantTileIds = snapshot.realTileIds
+      .filter((id) => levelOneAncestorId(id) === candidate.key)
+      .sort();
+    const fillDescendantTileIds = snapshot.fillTileIds
+      .filter((id) => levelOneAncestorId(id) === candidate.key)
+      .sort();
+    const selectedRealSiblingTileIds = snapshot.realTileIds
+      .filter(
+        (id) =>
+          selected.has(id) &&
+          candidate.siblingKeys.includes(levelOneAncestorId(id)),
+      )
+      .sort();
+    const eligibility = {
+      requestUnseen: observation.requestAttempts === 0,
+      noHeldPromise: observation.heldPromisePresent === false,
+      noReservedPromise: observation.reservedPromisePresent === false,
+      noSelectedDescendant: selectedDescendantTileIds.length === 0,
+      noRealDescendant: realDescendantTileIds.length === 0,
+      noFillDescendant: fillDescendantTileIds.length === 0,
+      hasSelectedRealSibling: selectedRealSiblingTileIds.length > 0,
+    };
+    return {
+      selectedDescendantTileIds,
+      realDescendantTileIds,
+      fillDescendantTileIds,
+      selectedRealSiblingTileIds,
+      eligibility,
+      eligible: Object.values(eligibility).every(Boolean),
+    };
+  };
   const getTileProvider = () =>
     globe._surface?.tileProvider ?? globe._surface?._tileProvider;
   const selectedTiles = () => [...(globe._surface?._tilesToRender ?? [])];
@@ -2522,6 +2562,7 @@ const MEASURE_S5_SESSION = async (contract) => {
     track.latitude,
   );
   const anchorTile = tilingScheme.positionToTileXY(trackPosition, heldLevel);
+  let holdTarget;
   const tileWidthDegrees = 360 / levelOneXTiles;
   const tileHeightDegrees = 180 / levelOneYTiles;
   const anchorWest = -180 + anchorTile.x * tileWidthDegrees;
@@ -2529,64 +2570,66 @@ const MEASURE_S5_SESSION = async (contract) => {
   const anchorNorth = 90 - anchorTile.y * tileHeightDegrees;
   const anchorSouth = anchorNorth - tileHeightDegrees;
   const holdCandidates = [];
-  if (anchorTile.x + 1 < levelOneXTiles) {
-    holdCandidates.push({
-      edge: "east",
-      distanceDegrees: Math.abs(anchorEast - track.longitude),
-      targetX: anchorTile.x + 1,
-      targetY: anchorTile.y,
-    });
-  }
-  if (anchorTile.x > 0) {
-    holdCandidates.push({
-      edge: "west",
-      distanceDegrees: Math.abs(track.longitude - anchorWest),
-      targetX: anchorTile.x - 1,
-      targetY: anchorTile.y,
-    });
-  }
-  if (anchorTile.y > 0) {
-    holdCandidates.push({
-      edge: "north",
-      distanceDegrees: Math.abs(anchorNorth - track.latitude),
-      targetX: anchorTile.x,
-      targetY: anchorTile.y - 1,
-    });
-  }
-  if (anchorTile.y + 1 < levelOneYTiles) {
-    holdCandidates.push({
-      edge: "south",
-      distanceDegrees: Math.abs(track.latitude - anchorSouth),
-      targetX: anchorTile.x,
-      targetY: anchorTile.y + 1,
-    });
-  }
-  holdCandidates.sort(
-    (left, right) =>
-      left.distanceDegrees - right.distanceDegrees ||
-      left.edge.localeCompare(right.edge),
-  );
-  const nearestEdge = holdCandidates[0];
-  if (!nearestEdge) throw new Error("S5 level-one hold target is unavailable");
-  const heldParentX = Math.floor(nearestEdge.targetX / 2);
-  const heldParentY = Math.floor(nearestEdge.targetY / 2);
-  const holdSiblingKeys = [];
-  for (let y = heldParentY * 2; y < heldParentY * 2 + 2; y++) {
-    for (let x = heldParentX * 2; x < heldParentX * 2 + 2; x++) {
-      if (x !== nearestEdge.targetX || y !== nearestEdge.targetY) {
-        holdSiblingKeys.push(`${heldLevel}/${x}/${y}`);
+  const addHoldCandidate = (edge, distanceDegrees, targetX, targetY) => {
+    const parentX = Math.floor(targetX / 2);
+    const parentY = Math.floor(targetY / 2);
+    const siblingKeys = [];
+    for (let y = parentY * 2; y < parentY * 2 + 2; y++) {
+      for (let x = parentX * 2; x < parentX * 2 + 2; x++) {
+        if (x !== targetX || y !== targetY) {
+          siblingKeys.push(`${heldLevel}/${x}/${y}`);
+        }
       }
     }
-  }
-  holdSiblingKeys.sort();
-  const holdTarget = {
-    level: heldLevel,
-    anchorKey: `${heldLevel}/${anchorTile.x}/${anchorTile.y}`,
-    key: `${heldLevel}/${nearestEdge.targetX}/${nearestEdge.targetY}`,
-    edge: nearestEdge.edge,
-    distanceDegrees: nearestEdge.distanceDegrees,
-    derivation: "nearest-level-1-anchor-edge-neighbor",
+    siblingKeys.sort();
+    holdCandidates.push({
+      level: heldLevel,
+      anchorKey: `${heldLevel}/${anchorTile.x}/${anchorTile.y}`,
+      parentKey: `0/${parentX}/${parentY}`,
+      key: `${heldLevel}/${targetX}/${targetY}`,
+      edge,
+      targetX,
+      targetY,
+      distanceDegrees,
+      derivation: "valid-cardinal-level-1-anchor-neighbor",
+      siblingKeys,
+    });
   };
+  if (anchorTile.x + 1 < levelOneXTiles) {
+    addHoldCandidate(
+      "east",
+      Math.abs(anchorEast - track.longitude),
+      anchorTile.x + 1,
+      anchorTile.y,
+    );
+  }
+  if (anchorTile.x > 0) {
+    addHoldCandidate(
+      "west",
+      Math.abs(track.longitude - anchorWest),
+      anchorTile.x - 1,
+      anchorTile.y,
+    );
+  }
+  if (anchorTile.y > 0) {
+    addHoldCandidate(
+      "north",
+      Math.abs(anchorNorth - track.latitude),
+      anchorTile.x,
+      anchorTile.y - 1,
+    );
+  }
+  if (anchorTile.y + 1 < levelOneYTiles) {
+    addHoldCandidate(
+      "south",
+      Math.abs(track.latitude - anchorSouth),
+      anchorTile.x,
+      anchorTile.y + 1,
+    );
+  }
+  if (holdCandidates.length === 0) {
+    throw new Error("S5 cardinal level-one candidates are unavailable");
+  }
   const realRequestTileGeometry =
     quantizedProvider.requestTileGeometry.bind(quantizedProvider);
   const held = new Map();
@@ -2594,13 +2637,17 @@ const MEASURE_S5_SESSION = async (contract) => {
   let decodedQuantizedMeshInstances = 0;
   let decodedIdentityMismatches = 0;
   let holdEnabled = false;
-  let holdTargetReserved = false;
-  let holdTargetRequestAttempts = 0;
+  const requestAttemptsByKey = new Map(
+    holdCandidates.map((candidate) => [candidate.key, 0]),
+  );
+  const reservedPromises = new Set();
   quantizedProvider.requestTileGeometry = (x, y, level, request) => {
     const key = `${level}/${x}/${y}`;
     terrainRequests.attempted++;
     terrainRequests.lastTileId = key;
-    if (key === holdTarget.key) holdTargetRequestAttempts++;
+    if (requestAttemptsByKey.has(key)) {
+      requestAttemptsByKey.set(key, requestAttemptsByKey.get(key) + 1);
+    }
     const requested = realRequestTileGeometry(x, y, level, request);
     if (!requested) {
       terrainRequests.throttled++;
@@ -2608,8 +2655,8 @@ const MEASURE_S5_SESSION = async (contract) => {
     }
     terrainRequests.accepted++;
     const reserveHold =
-      holdEnabled && key === holdTarget.key && !holdTargetReserved;
-    if (reserveHold) holdTargetReserved = true;
+      holdEnabled && key === holdTarget?.key && !reservedPromises.has(key);
+    if (reserveHold) reservedPromises.add(key);
     return Promise.resolve(requested).then(
       (terrainData) => {
         terrainRequests.decoded++;
@@ -2735,20 +2782,29 @@ const MEASURE_S5_SESSION = async (contract) => {
     (state) =>
       state.tilesLoaded &&
       state.fillCount === 0 &&
-      !state.selectedTileIds.includes(holdTarget.key) &&
-      !state.realTileIds.includes(holdTarget.key) &&
-      !state.fillTileIds.includes(holdTarget.key) &&
-      state.realTileIds.some((id) =>
-        holdSiblingKeys.includes(levelOneAncestorId(id)),
-      ) &&
       holdEnabled === false &&
-      holdTargetRequestAttempts === 0 &&
-      holdTargetReserved === false &&
-      held.size === 0,
+      holdTarget === undefined &&
+      held.size === 0 &&
+      reservedPromises.size === 0,
     300,
   );
-  const warmupRealSiblingTileIds = warmup.realTileIds.filter((id) =>
-    holdSiblingKeys.includes(levelOneAncestorId(id)),
+  const candidateObservations = holdCandidates.map((candidate) => {
+    const requestAttempts = requestAttemptsByKey.get(candidate.key) ?? 0;
+    const baseObservation = {
+      key: candidate.key,
+      edge: candidate.edge,
+      requestAttempts,
+      heldPromisePresent: held.has(candidate.key),
+      reservedPromisePresent: reservedPromises.has(candidate.key),
+    };
+    return {
+      ...candidate,
+      ...baseObservation,
+      ...evaluateHoldCandidateObservation(candidate, baseObservation, warmup),
+    };
+  });
+  const eligibleCandidates = candidateObservations.filter(
+    (candidate) => candidate.eligible,
   );
   const warmupProof = {
     settled: warmup.settled,
@@ -2756,39 +2812,45 @@ const MEASURE_S5_SESSION = async (contract) => {
     settleFrames: warmup.settleFrames,
     stableFrames: warmup.stableFrames,
     tilesLoaded: warmup.tilesLoaded,
+    fillCount: warmup.fillCount,
     cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
     maximumScreenSpaceError: globe.maximumScreenSpaceError,
     preloadSiblings: globe.preloadSiblings,
-    targetSelected: warmup.selectedTileIds.includes(holdTarget.key),
-    targetRenderedReal: warmup.realTileIds.includes(holdTarget.key),
-    targetRenderedFill: warmup.fillTileIds.includes(holdTarget.key),
-    targetRequestAttempts: holdTargetRequestAttempts,
-    targetReserved: holdTargetReserved,
+    holdTargetUndefinedDuringWarmup: holdTarget === undefined,
     holdInterceptionEnabled: holdEnabled,
     heldRequestCount: held.size,
+    reservedPromiseCount: reservedPromises.size,
     selectedTileIds: warmup.selectedTileIds,
     realTileIds: warmup.realTileIds,
     fillTileIds: warmup.fillTileIds,
-    realSiblingTileIds: warmupRealSiblingTileIds,
+    candidateDerivation:
+      "all-valid-cardinal-level-1-neighbors-then-post-warmup-eligibility",
+    candidateObservations,
+    eligibleCandidateKeys: eligibleCandidates.map((candidate) => candidate.key),
   };
   if (
     !warmupProof.settled ||
-    warmupProof.targetRequestAttempts !== 0 ||
-    warmupProof.targetReserved ||
+    !warmupProof.holdTargetUndefinedDuringWarmup ||
     warmupProof.heldRequestCount !== 0 ||
-    warmupProof.realSiblingTileIds.length === 0
+    warmupProof.reservedPromiseCount !== 0 ||
+    eligibleCandidates.length !== 1
   ) {
     throw new Error(
-      "narrow-FOV real-neighbor warm-up did not prove an unloaded hold target",
+      `narrow-FOV warm-up produced ${eligibleCandidates.length} eligible hold candidates`,
     );
   }
+  holdTarget = holdCandidates.find(
+    (candidate) => candidate.key === eligibleCandidates[0].key,
+  );
+  const holdSiblingKeys = holdTarget.siblingKeys;
   markProgress(contract.phases[2], "arm-exact-hold-and-widen");
   const holdArm = {
     afterSettledWarmup: warmupProof.settled,
+    assignedAfterCandidateSnapshot: true,
     targetKey: holdTarget.key,
     holdInterceptionEnabledBefore: holdEnabled,
-    targetRequestAttemptsBefore: holdTargetRequestAttempts,
-    targetReservedBefore: holdTargetReserved,
+    targetRequestAttemptsBefore: requestAttemptsByKey.get(holdTarget.key),
+    targetReservedBefore: reservedPromises.has(holdTarget.key),
     heldRequestCountBefore: held.size,
     cameraFovDegreesBefore: C.Math.toDegrees(scene.camera.frustum.fov),
     cameraFovDegreesAfter: contract.cameraFovDegrees,
@@ -2823,8 +2885,8 @@ const MEASURE_S5_SESSION = async (contract) => {
     cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
     maximumScreenSpaceError: globe.maximumScreenSpaceError,
     preloadSiblings: globe.preloadSiblings,
-    holdTargetRequestAttemptsAfterArm: holdTargetRequestAttempts,
-    holdTargetReserved,
+    holdTargetRequestAttemptsAfterArm: requestAttemptsByKey.get(holdTarget.key),
+    holdTargetReserved: reservedPromises.has(holdTarget.key),
     heldRequestCount: held.size,
     heldKeys,
     heldTargetIntersectsSelectedFill:
@@ -2904,6 +2966,7 @@ const MEASURE_S5_SESSION = async (contract) => {
   const realX1ImageId = captureDocumentaryPng(contract.captureLabels[1]);
   phases[contract.phases[3]] = {
     ...d,
+    holdTargetKey: holdTarget.key,
     holdInterceptionEnabled: holdEnabled,
     heldRequestCountAfterRelease: held.size,
     releasedKeys,
