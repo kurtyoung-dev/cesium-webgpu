@@ -1,0 +1,159 @@
+{
+  "schema": "c12-29-s5-dense-cost-workload-v1",
+  "schemaVersion": 1,
+  "id": "c12-29-s5-dense-eclipse-active-inactive-cost-v1",
+  "description": "Threshold-free cost characterization of the S5 terrain eclipse globe-shadow carrier over the 2024-04-08 greatest-eclipse footprint. Each leg is a fresh Edge process and retains the complete default globe scene.",
+  "baseUrl": "http://localhost:8080/Apps/CesiumViewer/index.html",
+  "outputNamespace": "Tools/visual-regression/output/performance/c12-29-s5-dense-cost",
+  "protocol": {
+    "browser": "msedge",
+    "viewport": {
+      "width": 1280,
+      "height": 720,
+      "deviceScaleFactor": 1
+    },
+    "fixedClock": "2024-04-08T18:17:16Z",
+    "freshProcessPerLeg": true,
+    "refreshSemantics": "one explicit scene.render between successive requestAnimationFrame callbacks",
+    "measuredFrames": 600,
+    "routePrimeFramesPerCondition": 600,
+    "settleStableFrames": 30,
+    "settleTimeoutMs": 90000,
+    "gpuReadbackTimeoutMs": 10000,
+    "legTimeoutMs": 900000,
+    "repetitions": 6,
+    "renderers": ["webgl", "webgpu"],
+    "conditions": ["active", "inactive"]
+  },
+  "scene": {
+    "mode": "3d",
+    "offline": true,
+    "anchor": {
+      "longitudeDegrees": -104.1,
+      "latitudeDegrees": 25.3
+    },
+    "maximumScreenSpaceError": 0.1,
+    "tileCacheSize": 8192,
+    "globeLighting": true,
+    "retainDefaultGlobeFeatures": true,
+    "requestRenderMode": true,
+    "shouldAnimate": false
+  },
+  "terrain": {
+    "kind": "deterministic-global-heightmap-water",
+    "tilingScheme": "GeographicTilingScheme",
+    "heightmapWidth": 33,
+    "waterMaskWidth": 16,
+    "waterMaskPattern": "((row*3+column*5)%11)<5?0:255",
+    "waterMaskSha256": "2e88659bc8181a5b0aa6cd626ab3fc5164678b369f08de790bf5bbe5ee27b960",
+    "maximumLevel": 12,
+    "tileCacheSize": 8192,
+    "sentinel": {
+      "level": 12,
+      "columns": 8,
+      "rows": 8,
+      "derivation": "minimal route-bounds L12 tile envelope, symmetrically padded to 8x8 with an odd remainder assigned east/south",
+      "transcript": {
+        "routeBounds": {
+          "west": -104.22,
+          "south": 25.18,
+          "east": -103.98,
+          "north": 25.42
+        },
+        "routeTileBounds": {
+          "minimumX": 1724,
+          "maximumX": 1729,
+          "minimumY": 1469,
+          "maximumY": 1475
+        },
+        "padding": {
+          "west": 1,
+          "east": 1,
+          "north": 0,
+          "south": 1
+        },
+        "sentinelTileBounds": {
+          "minimumX": 1723,
+          "maximumX": 1730,
+          "minimumY": 1469,
+          "maximumY": 1476
+        }
+      }
+    }
+  },
+  "route": {
+    "id": "greatest-eclipse-dense-eight-segment-v1",
+    "interpolation": "linear-cartographic-segments",
+    "progressFormula": "frameIndex/(measuredFrames-1)",
+    "closedGroundTrack": true,
+    "orientationDegrees": {
+      "heading": 0,
+      "pitch": -90,
+      "roll": 0
+    },
+    "waypoints": [
+      { "longitude": -104.22, "latitude": 25.18, "height": 45000 },
+      { "longitude": -104.1, "latitude": 25.18, "height": 40000 },
+      { "longitude": -103.98, "latitude": 25.18, "height": 35000 },
+      { "longitude": -103.98, "latitude": 25.3, "height": 30000 },
+      { "longitude": -103.98, "latitude": 25.42, "height": 25000 },
+      { "longitude": -104.1, "latitude": 25.42, "height": 30000 },
+      { "longitude": -104.22, "latitude": 25.42, "height": 35000 },
+      { "longitude": -104.22, "latitude": 25.3, "height": 40000 },
+      { "longitude": -104.22, "latitude": 25.18, "height": 25000 }
+    ]
+  },
+  "conditions": {
+    "active": {
+      "enableEclipse": true,
+      "enableEclipseGlobeShadow": true,
+      "requiredGateValues": [1, 2]
+    },
+    "inactive": {
+      "enableEclipse": true,
+      "enableEclipseGlobeShadow": false,
+      "requiredGateValues": [0],
+      "untimedCounterfactualRequiredGateValues": [1, 2]
+    }
+  },
+  "schedule": [
+    { "ordinal": 1, "repetition": 1, "withinRepetition": 1, "renderer": "webgl", "condition": "active" },
+    { "ordinal": 2, "repetition": 1, "withinRepetition": 2, "renderer": "webgl", "condition": "inactive" },
+    { "ordinal": 3, "repetition": 1, "withinRepetition": 3, "renderer": "webgpu", "condition": "active" },
+    { "ordinal": 4, "repetition": 1, "withinRepetition": 4, "renderer": "webgpu", "condition": "inactive" },
+    { "ordinal": 5, "repetition": 2, "withinRepetition": 1, "renderer": "webgpu", "condition": "inactive" },
+    { "ordinal": 6, "repetition": 2, "withinRepetition": 2, "renderer": "webgpu", "condition": "active" },
+    { "ordinal": 7, "repetition": 2, "withinRepetition": 3, "renderer": "webgl", "condition": "inactive" },
+    { "ordinal": 8, "repetition": 2, "withinRepetition": 4, "renderer": "webgl", "condition": "active" },
+    { "ordinal": 9, "repetition": 3, "withinRepetition": 1, "renderer": "webgl", "condition": "inactive" },
+    { "ordinal": 10, "repetition": 3, "withinRepetition": 2, "renderer": "webgl", "condition": "active" },
+    { "ordinal": 11, "repetition": 3, "withinRepetition": 3, "renderer": "webgpu", "condition": "inactive" },
+    { "ordinal": 12, "repetition": 3, "withinRepetition": 4, "renderer": "webgpu", "condition": "active" },
+    { "ordinal": 13, "repetition": 4, "withinRepetition": 1, "renderer": "webgpu", "condition": "active" },
+    { "ordinal": 14, "repetition": 4, "withinRepetition": 2, "renderer": "webgpu", "condition": "inactive" },
+    { "ordinal": 15, "repetition": 4, "withinRepetition": 3, "renderer": "webgl", "condition": "active" },
+    { "ordinal": 16, "repetition": 4, "withinRepetition": 4, "renderer": "webgl", "condition": "inactive" },
+    { "ordinal": 17, "repetition": 5, "withinRepetition": 1, "renderer": "webgl", "condition": "active" },
+    { "ordinal": 18, "repetition": 5, "withinRepetition": 2, "renderer": "webgl", "condition": "inactive" },
+    { "ordinal": 19, "repetition": 5, "withinRepetition": 3, "renderer": "webgpu", "condition": "inactive" },
+    { "ordinal": 20, "repetition": 5, "withinRepetition": 4, "renderer": "webgpu", "condition": "active" },
+    { "ordinal": 21, "repetition": 6, "withinRepetition": 1, "renderer": "webgpu", "condition": "active" },
+    { "ordinal": 22, "repetition": 6, "withinRepetition": 2, "renderer": "webgpu", "condition": "inactive" },
+    { "ordinal": 23, "repetition": 6, "withinRepetition": 3, "renderer": "webgl", "condition": "inactive" },
+    { "ordinal": 24, "repetition": 6, "withinRepetition": 4, "renderer": "webgl", "condition": "active" }
+  ],
+  "validity": {
+    "cpuSampleCount": 600,
+    "wallSampleCount": 600,
+    "minimumFramesPerSegment": 30,
+    "maximumLongTaskShare": 0.25,
+    "maximumWithinConditionP95SpreadRatio": 2,
+    "webgpuTimestampAttemptCount": 600,
+    "webgpuMinimumTimestampSamples": 540,
+    "webgpuMaximumTimestampSkipShare": 0.1,
+    "webglGpuTiming": "not-applicable",
+    "terrainActivityDuringMeasurement": 0,
+    "fillMeshesDuringMeasurement": 0,
+    "conclusion": "A structurally valid campaign passes and reports the observed active-minus-inactive cost regardless of sign or magnitude; this gate has no performance ceiling."
+  }
+}

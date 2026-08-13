@@ -1,0 +1,1651 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import {
+  C12_29_S5_DENSE_BUILD_SOURCE_FILES,
+  C12_29_S5_DENSE_CONFIG,
+  C12_29_S5_DENSE_LOCAL_FILES,
+  C12_29_S5_DENSE_RAW_GENERATED_PAIRS,
+  C12_29_S5_DENSE_RENDERERS,
+  C12_29_S5_DENSE_RUNTIME_SCHEMA,
+  C12_29_S5_DENSE_SCHEDULE,
+  C12_29_S5_DENSE_SCHEMA,
+  C12_29_S5_DENSE_SERVED_FILES,
+  C12_29_S5_DENSE_SOURCE_FILES,
+  createC1229S5DenseWaterMask,
+  deriveC1229S5DenseSentinel,
+  exitCodeForC1229S5DenseStatus,
+  foldC1229S5DenseCostGate,
+  isC1229S5DenseUuidV4,
+  sampleC1229S5DenseRoute,
+  selectC1229S5DenseLongTasks,
+  stableC1229S5DenseJson,
+  summarizeC1229S5DenseSamples,
+  validateC1229S5DenseFinalArtifact,
+  validateC1229S5DensePrerequisites,
+  validateC1229S5DenseRuntimeLeg,
+  validateC1229S5DenseWorkload,
+} from "./lib/c12-29-s5-dense-cost-gate.mjs";
+
+const directory = dirname(fileURLToPath(import.meta.url));
+const workload = JSON.parse(
+  await readFile(
+    resolve(directory, "performance-workloads-s5-dense-cost.json"),
+    "utf8",
+  ),
+);
+const readSource = async (...parts) =>
+  (await readFile(resolve(directory, ...parts), "utf8")).replaceAll(
+    "\r\n",
+    "\n",
+  );
+
+const RUN_ID = "11111111-2222-4333-8444-555555555555";
+const TERRAIN_RUN_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const NASA_RUN_ID = "12345678-1234-4abc-9def-123456789abc";
+const SOURCE_SHA = "b".repeat(64);
+const PREREQUISITES_SHA = "c".repeat(64);
+const WORKLOAD_SHA = C12_29_S5_DENSE_CONFIG.workloadSha256;
+
+const clone = (value) => structuredClone(value);
+
+function prerequisite(kind, producer, schema, runId, hashCharacter) {
+  return {
+    kind,
+    producer,
+    publication: {
+      path: `F:/evidence/${producer}/${runId}/manifest.json`,
+      schema: "cesium-visual-evidence-publication/v2",
+      runId,
+      status: "PASS",
+      exitCode: 0,
+      certificationEligible: true,
+      byteLength: 2048,
+      sha256: hashCharacter.repeat(64),
+    },
+    artifact: {
+      path: `F:/evidence/${producer}/${runId}/files/${runId}.json`,
+      name: `${runId}.json`,
+      schema,
+      runId,
+      status: "PASS",
+      incomplete: false,
+      exitCode: 0,
+      byteLength: 4096,
+      sha256: hashCharacter.toUpperCase().repeat(64),
+    },
+  };
+}
+
+function validPrerequisites() {
+  return {
+    terrain: prerequisite(
+      "terrain",
+      "c12-29-s5-terrain-selection",
+      "c12-29-s5-terrain-selection-evidence-v8",
+      TERRAIN_RUN_ID,
+      "d",
+    ),
+    nasa: prerequisite(
+      "nasa",
+      "c12-29-s5-svs-footprint",
+      "c12-29-s5-svs-5073-footprint-evidence-v2",
+      NASA_RUN_ID,
+      "e",
+    ),
+  };
+}
+
+function terrainFrame(frameIndex, condition, sentinelKeys) {
+  const selected = [sentinelKeys[frameIndex % sentinelKeys.length]];
+  return {
+    frameIndex,
+    selectedKeys: selected,
+    realMeshKeys: [...selected],
+    ownRealMeshKeys: [...selected],
+    fillMeshKeys: [],
+    foreignTerrainKeys: [],
+    selectedCount: selected.length,
+    realMeshCount: selected.length,
+    ownRealMeshCount: selected.length,
+    fillMeshCount: 0,
+    gate: condition === "active" ? (frameIndex % 2 === 0 ? 1 : 2) : 0,
+    logicalDrawCount: selected.length,
+    commandCount: selected.length,
+  };
+}
+
+function traceSamples(cpuMs, sentinelKeys) {
+  return Array.from({ length: 600 }, (_, index) => ({
+    frameNumber: index + 1,
+    relFrame: index,
+    wallDtMs: 16,
+    cpuMs,
+    drawCount: 1,
+    commandCount: 1,
+    snapshotFrozen: false,
+  }));
+}
+
+function validLeg(
+  scheduleLeg,
+  sourceSha = SOURCE_SHA,
+  prerequisitesSha = PREREQUISITES_SHA,
+) {
+  const sentinel = deriveC1229S5DenseSentinel(workload.route);
+  const route = Array.from({ length: 600 }, (_, index) => {
+    const sample = sampleC1229S5DenseRoute(workload.route, index, 600);
+    return {
+      ...sample,
+      actual: {
+        longitude: sample.longitude,
+        latitude: sample.latitude,
+        height: sample.height,
+        heading: sample.heading,
+        pitch: sample.pitch,
+        roll: sample.roll,
+      },
+    };
+  });
+  const frames = Array.from({ length: 600 }, (_, index) =>
+    terrainFrame(index, scheduleLeg.condition, sentinel.keys),
+  );
+  const cpuMs =
+    (scheduleLeg.condition === "active" ? 2 : 1) +
+    scheduleLeg.repetition * 0.01;
+  const trace = { samples: traceSamples(cpuMs, sentinel.keys) };
+  const gpuSamples = Array(600).fill(
+    (scheduleLeg.condition === "active" ? 3 : 2) +
+      scheduleLeg.repetition * 0.01,
+  );
+  const defaultFeatureSnapshot = {
+    highDynamicRange: false,
+    sunBloom: true,
+    taaEnabled: false,
+    motionBlur: false,
+    msaaSamples: 4,
+    fogEnabled: true,
+    skyAtmosphereShown: true,
+    skyBoxShown: true,
+    sunShown: true,
+    moonShown: true,
+    globeShown: true,
+    groundAtmosphereShown: true,
+    waterEffectShown: true,
+    imageryLayerCount: 0,
+    postProcessStageCount: 0,
+    fxaaEnabled: false,
+    bloomEnabled: false,
+  };
+  return {
+    schema: C12_29_S5_DENSE_RUNTIME_SCHEMA,
+    runId: RUN_ID,
+    legId: `r${String(scheduleLeg.repetition).padStart(2, "0")}-${String(scheduleLeg.withinRepetition).padStart(2, "0")}-${scheduleLeg.renderer}-${scheduleLeg.condition}`,
+    scheduleLeg: clone(scheduleLeg),
+    sourceIdentitySha256: sourceSha,
+    prerequisitesSha256: prerequisitesSha,
+    workloadIdentity: {
+      path: "Tools/visual-regression/performance-workloads-s5-dense-cost.json",
+      byteLength: C12_29_S5_DENSE_CONFIG.workloadByteLength,
+      sha256: WORKLOAD_SHA,
+    },
+    startedAt: "2026-08-13T12:00:00.000Z",
+    completedAt: "2026-08-13T12:10:00.000Z",
+    status: "PASS",
+    incomplete: false,
+    error: null,
+    subprocess: {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      childProcessId: 10_000 + scheduleLeg.ordinal,
+      launchId: `00000000-0000-4000-8000-${String(scheduleLeg.ordinal).padStart(12, "0")}`,
+    },
+    browser: {
+      channel: "msedge",
+      version: "140.0.0.0",
+      userAgent: "Edge test",
+      viewport: clone(C12_29_S5_DENSE_CONFIG.viewport),
+      canvas: {
+        clientWidth: 1280,
+        clientHeight: 720,
+        width: 1280,
+        height: 720,
+        drawingBufferWidth: 1280,
+        drawingBufferHeight: 720,
+        resolutionScale: 1,
+      },
+    },
+    renderer: {
+      requested: scheduleLeg.renderer,
+      actual: scheduleLeg.renderer,
+      rendererString: "test adapter",
+      adapterInfo: { vendor: "test", architecture: "test" },
+      gpuIdentityComplete: true,
+    },
+    servedEntry: {
+      ok: true,
+      status: 200,
+      byteLength: 1,
+      sha256: "2".repeat(64),
+    },
+    transport: {
+      externalRequests: [],
+      failedRequests: [],
+      pageErrors: [],
+      consoleErrors: [],
+      dialogs: [],
+    },
+    errors: { gpu: [], deviceLost: false },
+    configuration: {
+      fixedClock: C12_29_S5_DENSE_CONFIG.fixedClock,
+      shouldAnimate: false,
+      maximumScreenSpaceError: 0.1,
+      tileCacheSize: 8192,
+      globeLighting: true,
+      defaultFeaturesRetained: true,
+      defaultFeatureSnapshot: clone(defaultFeatureSnapshot),
+      defaultFeatureSnapshotEnd: clone(defaultFeatureSnapshot),
+      requestRenderMode: true,
+      explicitMeasuredRenders: 600,
+      enableEclipse: true,
+      enableEclipseGlobeShadow: scheduleLeg.condition === "active",
+    },
+    prime: {
+      variants: [
+        { condition: "active", frameCount: 600 },
+        { condition: "inactive", frameCount: 600 },
+      ],
+      settledFrames: 30,
+      sentinel,
+      seenOwnRealSentinelKeys: [...sentinel.keys],
+      waterMask: {
+        width: 16,
+        values: [0, 255],
+        pattern: C12_29_S5_DENSE_CONFIG.waterMaskPattern,
+        sha256: C12_29_S5_DENSE_CONFIG.waterMaskSha256,
+      },
+    },
+    measurement: {
+      frameCount: 600,
+      route: clone(route),
+      frames: clone(frames),
+      trace: clone(trace),
+      cpuSummary: summarizeC1229S5DenseSamples(
+        trace.samples.map((sample) => sample.cpuMs),
+      ),
+      framePacing: {
+        semantics: C12_29_S5_DENSE_CONFIG.refreshSemantics,
+        requestAnimationFrameYieldCount: 600,
+        elapsedMs: 9600,
+        wallSummary: summarizeC1229S5DenseSamples(
+          trace.samples.map((sample) => sample.wallDtMs),
+        ),
+      },
+      longTasks: {
+        observerAvailable: true,
+        entries: [{ startTime: 2000, rawDuration: 100, duration: 100 }],
+        totalDurationMs: 100,
+        measurementStartMs: 1000,
+        measurementEndMs: 10600,
+        measurementDurationMs: 9600,
+        share: 100 / 9600,
+      },
+      terrainActivity: {
+        start: {
+          requestCount: 1,
+          generationCount: 1,
+          cacheHitCount: 0,
+          requestedKeys: ["12/1723/1469"],
+          generatedKeys: ["12/1723/1469"],
+          waterMaskWidth: 16,
+          waterMaskPattern: C12_29_S5_DENSE_CONFIG.waterMaskPattern,
+          waterMaskSha256: C12_29_S5_DENSE_CONFIG.waterMaskSha256,
+        },
+        end: {
+          requestCount: 1,
+          generationCount: 1,
+          cacheHitCount: 0,
+          requestedKeys: ["12/1723/1469"],
+          generatedKeys: ["12/1723/1469"],
+          waterMaskWidth: 16,
+          waterMaskPattern: C12_29_S5_DENSE_CONFIG.waterMaskPattern,
+          waterMaskSha256: C12_29_S5_DENSE_CONFIG.waterMaskSha256,
+        },
+        delta: {
+          requestCount: 0,
+          generationCount: 0,
+          cacheHitCount: 0,
+          requestedKeys: [],
+          generatedKeys: [],
+        },
+      },
+    },
+    replay: {
+      timed: false,
+      frameCount: 600,
+      route: clone(route),
+      frames: clone(frames),
+      trace: clone(trace),
+      alignment: { camera: true, selection: true, draw: true, command: true },
+    },
+    counterfactual: {
+      timed: false,
+      frameIndex: 300,
+      enableEclipse: true,
+      enableEclipseGlobeShadow: true,
+      gate: 2,
+      selectedKeys: [...frames[300].selectedKeys],
+      ownRealMeshKeys: [...frames[300].selectedKeys],
+    },
+    gpu:
+      scheduleLeg.renderer === "webgl"
+        ? {
+            applicability: "N/A",
+            reason: "WebGL has no WebGPU timestamp-query lane",
+            attemptedFrameCount: 0,
+            samples: [],
+          }
+        : {
+            applicability: "mandatory",
+            timestampFeatureAvailable: true,
+            armed: true,
+            fullFrameOnly: true,
+            wrapper: {
+              installed: true,
+              restored: true,
+              originalIdentityRestored: true,
+            },
+            samples: gpuSamples,
+            summary: summarizeC1229S5DenseSamples(gpuSamples),
+            drain: {
+              drained: 3,
+              undrained: 0,
+              abandoned: 0,
+              timedOut: false,
+            },
+            results: {
+              enabled: true,
+              attemptedFrameCount: 600,
+              frameCount: 600,
+              readbackSkipCount: 0,
+              failedReadbackCount: 0,
+              lostSampleCount: 0,
+              pendingReadbackCount: 0,
+              unaccountedSampleCount: 0,
+              invertedSampleCount: 0,
+              droppedPassCount: 0,
+              emptyFrameCount: 0,
+              sampleLedgerBalanced: true,
+            },
+          },
+    cleanup: {
+      viewerDestroyed: true,
+      timestampWrapperRestored: true,
+      timestampProfilingRestored: true,
+      longTaskObserverDisconnected: true,
+      conditionRestored: true,
+    },
+  };
+}
+
+const hashJson = (value) =>
+  createHash("sha256").update(stableC1229S5DenseJson(value)).digest("hex");
+const identityForPath = (path, hash = hashJson(path)) => ({
+  path,
+  byteLength: Buffer.byteLength(path) + 1,
+  sha256: hash,
+});
+
+function validProvenanceSnapshot() {
+  const localFiles = C12_29_S5_DENSE_LOCAL_FILES.map((path) =>
+    path === "Tools/visual-regression/performance-workloads-s5-dense-cost.json"
+      ? {
+          path,
+          byteLength: C12_29_S5_DENSE_CONFIG.workloadByteLength,
+          sha256: C12_29_S5_DENSE_CONFIG.workloadSha256,
+        }
+      : identityForPath(path),
+  );
+  const localByPath = new Map(
+    localFiles.map((identity) => [identity.path, identity]),
+  );
+  const servedFiles = C12_29_S5_DENSE_SERVED_FILES.map((path) => ({
+    ...localByPath.get(path),
+    url: `http://localhost:8080/${path}`,
+    ok: true,
+    status: 200,
+    contentType: "application/octet-stream",
+  }));
+  const buildSourceIdentity = {
+    ok: true,
+    reasons: [],
+    sourceMapPath: "Build/CesiumUnminified/index.js.map",
+    sourceMapByteLength: localByPath.get("Build/CesiumUnminified/index.js.map")
+      .byteLength,
+    sourceMapSha256: localByPath.get("Build/CesiumUnminified/index.js.map")
+      .sha256,
+    entries: C12_29_S5_DENSE_BUILD_SOURCE_FILES.map((file) => ({
+      file,
+      sourceMapEntry: `../../${file}`,
+      currentByteLength: Buffer.byteLength(file) + 1,
+      embeddedByteLength: Buffer.byteLength(file) + 1,
+      currentSha256: hashJson(file),
+      embeddedSha256: hashJson(file),
+      exact: true,
+      reason: null,
+    })),
+  };
+  const rawGenerated = C12_29_S5_DENSE_RAW_GENERATED_PAIRS.map(
+    ({ raw, generated }) => ({
+      raw,
+      generated,
+      rawIdentity: identityForPath(raw),
+      generatedIdentity: identityForPath(generated),
+      exact: true,
+    }),
+  );
+  const identity = {
+    gitHead: "1".repeat(40),
+    localFiles,
+    servedFiles,
+    buildSourceIdentity,
+    rawGenerated,
+  };
+  return {
+    capturedAt: "2026-08-13T12:00:00.000Z",
+    ...identity,
+    identitySha256: hashJson(identity),
+    ok: true,
+    reasons: [],
+  };
+}
+
+function resignSnapshot(snapshot) {
+  snapshot.identitySha256 = hashJson({
+    gitHead: snapshot.gitHead,
+    localFiles: snapshot.localFiles,
+    servedFiles: snapshot.servedFiles,
+    buildSourceIdentity: snapshot.buildSourceIdentity,
+    rawGenerated: snapshot.rawGenerated,
+  });
+}
+
+function validReport() {
+  const prerequisites = validPrerequisites();
+  const prerequisitesSha256 = hashJson(prerequisites);
+  const provenanceStart = validProvenanceSnapshot();
+  const report = {
+    schema: C12_29_S5_DENSE_SCHEMA,
+    schemaVersion: 1,
+    runId: RUN_ID,
+    status: "PASS",
+    incomplete: false,
+    pass: true,
+    exitCode: 0,
+    startedAt: "2026-08-13T12:00:00.000Z",
+    completedAt: "2026-08-13T16:00:00.000Z",
+    workload: {
+      path: "Tools/visual-regression/performance-workloads-s5-dense-cost.json",
+      byteLength: C12_29_S5_DENSE_CONFIG.workloadByteLength,
+      sha256: WORKLOAD_SHA,
+      value: clone(workload),
+    },
+    prerequisites,
+    prerequisitesSha256,
+    provenance: {
+      stable: true,
+      start: provenanceStart,
+      end: clone(provenanceStart),
+    },
+    legs: C12_29_S5_DENSE_SCHEDULE.map((leg) =>
+      validLeg(leg, provenanceStart.identitySha256, prerequisitesSha256),
+    ),
+    assessment: null,
+    lifecycle: {
+      lockCreatedExclusively: true,
+      runningReceiptCreatedExclusively: true,
+      runningLatestPublishedBeforeLaunch: true,
+      immutableRunCreatedExclusively: true,
+      firstRedPreserved: false,
+      firstRedFingerprintPolicy: "write-once-exact-sha256-byte-length",
+      finalReceiptCreatedExclusively: true,
+      latestEqualsImmutableRunBeforeUnlock: true,
+      lockReleasedByOwnedReceipt: true,
+      publicationOrder: [
+        "lock",
+        "running-receipt",
+        "running-latest",
+        "immutable-run",
+        "first-red",
+        "final-latest",
+        "final-receipt",
+        "unlock",
+      ],
+    },
+  };
+  const servedEntry = provenanceStart.servedFiles.find(
+    (identity) => identity.path === "Build/CesiumUnminified/index.js",
+  );
+  for (const leg of report.legs) {
+    leg.servedEntry = {
+      ok: true,
+      status: 200,
+      byteLength: servedEntry.byteLength,
+      sha256: servedEntry.sha256,
+    };
+  }
+  report.assessment = foldC1229S5DenseCostGate(report);
+  return report;
+}
+
+test("01 frozen workload closes the full valid 24-process gate", () => {
+  assert.deepEqual(validateC1229S5DenseWorkload(workload), {
+    valid: true,
+    reasons: [],
+  });
+  const report = validReport();
+  assert.equal(
+    report.assessment.status,
+    "PASS",
+    JSON.stringify(report.assessment.structural),
+  );
+  assert.equal(
+    report.assessment.characterization.passIndependentOfCostSignOrMagnitude,
+    true,
+  );
+  assert.deepEqual(validateC1229S5DenseFinalArtifact(report).reasons, []);
+});
+
+test("02 status precedence and exit codes are STRUCTURAL over ERROR over FAIL over PASS", () => {
+  assert.deepEqual(
+    ["PASS", "FAIL", "ERROR", "STRUCTURAL"].map(exitCodeForC1229S5DenseStatus),
+    [0, 1, 2, 3],
+  );
+  const fail = validReport();
+  fail.legs[0].measurement.frames[0].gate = 0;
+  assert.equal(foldC1229S5DenseCostGate(fail).status, "FAIL");
+  fail.legs[0].transport.pageErrors.push("boom");
+  assert.equal(foldC1229S5DenseCostGate(fail).status, "ERROR");
+  fail.legs.pop();
+  assert.equal(foldC1229S5DenseCostGate(fail).status, "STRUCTURAL");
+});
+
+test("03 schema, UUID-v4, final status, and recomputation fail closed", () => {
+  assert.equal(isC1229S5DenseUuidV4(RUN_ID), true);
+  assert.equal(
+    isC1229S5DenseUuidV4("11111111-2222-3333-8444-555555555555"),
+    false,
+  );
+  for (const mutation of [
+    (r) => (r.schema = "v2"),
+    (r) => (r.runId = "not-a-uuid"),
+    (r) => (r.incomplete = true),
+    (r) => (r.exitCode = 1),
+    (r) => (r.assessment.characterization.policy = "ceiling"),
+    (r) => (r.lifecycle.finalReceiptCreatedExclusively = false),
+    (r) => (r.lifecycle.firstRedFingerprintPolicy = "existence-only"),
+    (r) => r.lifecycle.publicationOrder.reverse(),
+  ]) {
+    const report = validReport();
+    mutation(report);
+    assert.equal(validateC1229S5DenseFinalArtifact(report).valid, false);
+  }
+});
+
+test("04 exact 24-leg counterbalance has 3/3 condition order and backend-first balance", () => {
+  assert.equal(C12_29_S5_DENSE_SCHEDULE.length, 24);
+  for (const renderer of C12_29_S5_DENSE_RENDERERS) {
+    let activeFirst = 0;
+    let inactiveFirst = 0;
+    for (let repetition = 1; repetition <= 6; repetition++) {
+      const pair = C12_29_S5_DENSE_SCHEDULE.filter(
+        (leg) => leg.repetition === repetition && leg.renderer === renderer,
+      );
+      if (pair[0].condition === "active") activeFirst++;
+      else inactiveFirst++;
+    }
+    assert.deepEqual([activeFirst, inactiveFirst], [3, 3]);
+  }
+  const backendFirst = Array.from(
+    { length: 6 },
+    (_, index) => C12_29_S5_DENSE_SCHEDULE[index * 4].renderer,
+  );
+  assert.deepEqual(
+    backendFirst.reduce(
+      (a, value) => ({ ...a, [value]: (a[value] ?? 0) + 1 }),
+      {},
+    ),
+    { webgl: 3, webgpu: 3 },
+  );
+});
+
+test("05 route is 600 unique states over eight covered 25-45km segments", () => {
+  const samples = Array.from({ length: 600 }, (_, index) =>
+    sampleC1229S5DenseRoute(workload.route, index, 600),
+  );
+  assert.equal(samples[0].progress, 0);
+  assert.equal(samples.at(-1).progress, 1);
+  assert.deepEqual(
+    [samples[0].longitude, samples[0].latitude],
+    [samples.at(-1).longitude, samples.at(-1).latitude],
+  );
+  assert.notEqual(samples[0].height, samples.at(-1).height);
+  assert.equal(
+    new Set(samples.map((value) => stableC1229S5DenseJson(value))).size,
+    600,
+  );
+  const counts = Array(8).fill(0);
+  for (const sample of samples) {
+    counts[sample.segmentIndex]++;
+    assert.ok(sample.height >= 25_000 && sample.height <= 45_000);
+  }
+  assert.ok(counts.every((count) => count >= 30));
+});
+
+test("06 route-bounds transcript derives an exact 8x8 L12 sentinel and mixed mask hash", () => {
+  const sentinel = deriveC1229S5DenseSentinel(workload.route, 12);
+  assert.deepEqual(sentinel.routeTileBounds, {
+    minimumX: 1724,
+    maximumX: 1729,
+    minimumY: 1469,
+    maximumY: 1475,
+  });
+  assert.deepEqual(sentinel.padding, { west: 1, east: 1, north: 0, south: 1 });
+  assert.equal(sentinel.keys.length, 64);
+  assert.equal(new Set(sentinel.keys).size, 64);
+  assert.equal(sentinel.keys[0], "12/1723/1469");
+  assert.equal(sentinel.keys.at(-1), "12/1730/1476");
+  const mask = createC1229S5DenseWaterMask();
+  assert.deepEqual(new Set(mask), new Set([0, 255]));
+  assert.equal(
+    createHash("sha256").update(mask).digest("hex"),
+    C12_29_S5_DENSE_CONFIG.waterMaskSha256,
+  );
+});
+
+test("07 prerequisites require two exact archived immutable PASS identities", () => {
+  assert.deepEqual(validateC1229S5DensePrerequisites(validPrerequisites()), {
+    valid: true,
+    reasons: [],
+  });
+  for (const mutation of [
+    (p) => (p.terrain.artifact.schema = "v6"),
+    (p) => (p.terrain.artifact.status = "ERROR"),
+    (p) => (p.nasa.publication.certificationEligible = false),
+    (p) => (p.nasa.artifact.sha256 = "placeholder"),
+    (p) => (p.nasa.artifact.runId = p.terrain.artifact.runId),
+  ]) {
+    const value = validPrerequisites();
+    mutation(value);
+    assert.equal(validateC1229S5DensePrerequisites(value).valid, false);
+  }
+});
+
+test("08 source, build, served, workload, and prerequisite closure cannot drift", () => {
+  for (const mutation of [
+    (r) => (r.provenance.stable = false),
+    (r) => (r.provenance.end.gitHead = "2".repeat(40)),
+    (r) => (r.provenance.end.localFiles[0].sha256 = "3".repeat(64)),
+    (r) => (r.provenance.end.servedFiles[0].byteLength = 2),
+    (r) => (r.legs[0].sourceIdentitySha256 = "f".repeat(64)),
+    (r) => (r.legs[1].prerequisitesSha256 = "f".repeat(64)),
+    (r) => (r.legs[2].workloadIdentity.sha256 = "f".repeat(64)),
+  ]) {
+    const report = validReport();
+    mutation(report);
+    assert.equal(foldC1229S5DenseCostGate(report).status, "STRUCTURAL");
+  }
+});
+
+test("09 every leg is a fresh exact Edge/backend/viewport identity", () => {
+  for (const mutation of [
+    (l) => (l.browser.channel = "chromium"),
+    (l) => (l.browser.viewport.width = 1279),
+    (l) =>
+      (l.renderer.actual = l.renderer.actual === "webgl" ? "webgpu" : "webgl"),
+    (l) => (l.renderer.gpuIdentityComplete = false),
+    (l) => (l.scheduleLeg.ordinal = 24),
+  ]) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+    mutation(leg);
+    assert.equal(validateC1229S5DenseRuntimeLeg(leg, workload).valid, false);
+  }
+  const report = validReport();
+  const pair = report.legs.filter(
+    (leg) =>
+      leg.scheduleLeg.repetition === 1 && leg.scheduleLeg.renderer === "webgl",
+  );
+  pair[1].browser.version = "141.0.0.0";
+  assert.equal(foldC1229S5DenseCostGate(report).status, "STRUCTURAL");
+  const cameraReport = validReport();
+  const cameraPair = cameraReport.legs.filter(
+    (leg) =>
+      leg.scheduleLeg.repetition === 1 && leg.scheduleLeg.renderer === "webgl",
+  );
+  cameraPair[1].measurement.route[4].actual.longitude += 1e-10;
+  cameraPair[1].replay.route[4].actual.longitude += 1e-10;
+  assert.equal(
+    validateC1229S5DenseRuntimeLeg(cameraPair[1], workload).valid,
+    true,
+  );
+  assert.equal(foldC1229S5DenseCostGate(cameraReport).status, "STRUCTURAL");
+  const processReport = validReport();
+  processReport.legs[1].subprocess.launchId =
+    processReport.legs[0].subprocess.launchId;
+  assert.equal(foldC1229S5DenseCostGate(processReport).status, "STRUCTURAL");
+  const timeoutReport = validReport();
+  timeoutReport.legs[0].subprocess.timedOut = true;
+  assert.equal(foldC1229S5DenseCostGate(timeoutReport).status, "STRUCTURAL");
+});
+
+test("10 offline transport, page, console, failed-request, and dialog surfaces are clean", () => {
+  for (const field of [
+    "externalRequests",
+    "failedRequests",
+    "pageErrors",
+    "consoleErrors",
+    "dialogs",
+  ]) {
+    const report = validReport();
+    report.legs[0].transport[field].push("unexpected");
+    assert.equal(foldC1229S5DenseCostGate(report).status, "ERROR");
+  }
+});
+
+test("11 clock, globe lighting, SSE, cache, and the two toggles are exact", () => {
+  for (const mutation of [
+    (l) => (l.configuration.fixedClock = "2024-04-08T18:17:15Z"),
+    (l) => (l.configuration.shouldAnimate = true),
+    (l) => (l.configuration.maximumScreenSpaceError = 0.2),
+    (l) => (l.configuration.tileCacheSize = 4096),
+    (l) => (l.configuration.globeLighting = false),
+    (l) => (l.configuration.defaultFeatureSnapshot.skyBoxShown = false),
+    (l) => (l.configuration.enableEclipse = false),
+    (l) => (l.configuration.enableEclipseGlobeShadow = false),
+  ]) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+    mutation(leg);
+    assert.ok(
+      validateC1229S5DenseRuntimeLeg(leg, workload).structural.length > 0,
+    );
+  }
+});
+
+test("12 both variants prewarm and the full own-real sentinel primes before timing", () => {
+  for (const mutation of [
+    (l) => l.prime.variants.pop(),
+    (l) => (l.prime.variants[0].frameCount = 599),
+    (l) => l.prime.seenOwnRealSentinelKeys.pop(),
+    (l) =>
+      (l.prime.seenOwnRealSentinelKeys = [
+        ...l.prime.seenOwnRealSentinelKeys,
+      ].sort()),
+    (l) => (l.prime.settledFrames = 29),
+  ]) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+    mutation(leg);
+    assert.ok(
+      validateC1229S5DenseRuntimeLeg(leg, workload).structural.length > 0,
+    );
+  }
+});
+
+test("13 timed route evidence cannot truncate, repeat, skip a segment, or drift camera", () => {
+  for (const mutation of [
+    (l) => l.measurement.route.pop(),
+    (l) => (l.measurement.route[10].frameIndex = 9),
+    (l) => (l.measurement.route[10].progress = 0),
+    (l) => (l.measurement.route[10].actual.height += 1),
+  ]) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+    mutation(leg);
+    assert.ok(
+      validateC1229S5DenseRuntimeLeg(leg, workload).structural.length > 0,
+    );
+  }
+});
+
+test("14 measured terrain has zero activity, zero fill, and only owned real meshes", () => {
+  const cases = [
+    (l) => (l.measurement.terrainActivity.delta.requestCount = 1),
+    (l) => l.measurement.terrainActivity.end.requestCount++,
+    (l) => l.measurement.terrainActivity.end.requestedKeys.push("12/1730/1476"),
+    (l) => l.measurement.frames[0].fillMeshKeys.push("12/1/1"),
+    (l) => l.measurement.frames[0].foreignTerrainKeys.push("12/1/1"),
+    (l) => l.measurement.frames[0].ownRealMeshKeys.pop(),
+  ];
+  for (const mutation of cases) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+    mutation(leg);
+    assert.equal(validateC1229S5DenseRuntimeLeg(leg, workload).valid, false);
+  }
+});
+
+test("15 ACTIVE is gate 1/2 and INACTIVE is exact gate zero", () => {
+  const active = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+  active.measurement.frames[0].gate = 0;
+  assert.ok(
+    validateC1229S5DenseRuntimeLeg(active, workload).behavioral.length > 0,
+  );
+  const inactiveSchedule = C12_29_S5_DENSE_SCHEDULE[1];
+  const inactive = validLeg(inactiveSchedule);
+  inactive.measurement.frames[0].gate = 1;
+  assert.ok(
+    validateC1229S5DenseRuntimeLeg(inactive, workload).behavioral.length > 0,
+  );
+});
+
+test("16 INACTIVE still proves an untimed exact-selection ACTIVE counterfactual", () => {
+  for (const mutation of [
+    (l) => (l.counterfactual.timed = true),
+    (l) => (l.counterfactual.frameIndex = 301),
+    (l) => (l.counterfactual.gate = 0),
+    (l) => (l.counterfactual.enableEclipseGlobeShadow = false),
+    (l) => l.counterfactual.ownRealMeshKeys.pop(),
+  ]) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[1]);
+    mutation(leg);
+    assert.ok(
+      validateC1229S5DenseRuntimeLeg(leg, workload).behavioral.length > 0,
+    );
+  }
+});
+
+test("17 untimed replay must align camera, selection, draw, and command exactly", () => {
+  for (const mutation of [
+    (l) => (l.replay.alignment.selection = false),
+    (l) => (l.replay.route[4].actual.longitude += 1e-10),
+    (l) => l.replay.frames[1].selectedKeys.pop(),
+    (l) => l.replay.trace.samples[2].drawCount++,
+    (l) => l.replay.frames[3].commandCount++,
+  ]) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+    mutation(leg);
+    assert.ok(
+      validateC1229S5DenseRuntimeLeg(leg, workload).structural.length > 0,
+    );
+  }
+});
+
+test("18 CPU validity is exactly 600 raw samples with recomputed quantiles", () => {
+  for (const mutation of [
+    (l) => l.measurement.trace.samples.pop(),
+    (l) => (l.measurement.trace.samples[0].cpuMs = -1),
+    (l) => (l.measurement.cpuSummary.p95 += 1),
+    (l) => l.measurement.trace.samples[1].commandCount++,
+    (l) => (l.measurement.trace.samples[1].frameNumber = 1),
+    (l) => (l.measurement.trace.samples[1].snapshotFrozen = true),
+    (l) => (l.measurement.frameCount = 599),
+  ]) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+    mutation(leg);
+    assert.ok(
+      validateC1229S5DenseRuntimeLeg(leg, workload).structural.length > 0,
+    );
+  }
+});
+
+test("19 long-task share is exact and cannot exceed 25 percent", () => {
+  const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+  leg.measurement.longTasks.totalDurationMs = 251;
+  leg.measurement.longTasks.measurementDurationMs = 1000;
+  leg.measurement.longTasks.share = 0.251;
+  assert.ok(
+    validateC1229S5DenseRuntimeLeg(leg, workload).structural.length > 0,
+  );
+  const inconsistent = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+  inconsistent.measurement.longTasks.share = 0.2;
+  assert.ok(
+    validateC1229S5DenseRuntimeLeg(inconsistent, workload).structural.length >
+      0,
+  );
+});
+
+test("20 six-rep per-condition CPU p95 spread cannot exceed 2x", () => {
+  const report = validReport();
+  const target = report.legs.find(
+    (leg) =>
+      leg.scheduleLeg.renderer === "webgl" &&
+      leg.scheduleLeg.condition === "active",
+  );
+  for (const sample of target.measurement.trace.samples) sample.cpuMs = 10;
+  target.measurement.cpuSummary = summarizeC1229S5DenseSamples(
+    target.measurement.trace.samples.map((sample) => sample.cpuMs),
+  );
+  assert.equal(foldC1229S5DenseCostGate(report).status, "STRUCTURAL");
+});
+
+test("21 WebGPU timestamps require 600 attempts, >=540 samples, <=10% skips, and a drained zero-error ledger", () => {
+  const index = C12_29_S5_DENSE_SCHEDULE.findIndex(
+    (leg) => leg.renderer === "webgpu",
+  );
+  for (const mutation of [
+    (l) => (l.gpu.timestampFeatureAvailable = false),
+    (l) => (l.gpu.results.attemptedFrameCount = 599),
+    (l) => {
+      l.gpu.samples.length = 539;
+      l.gpu.results.frameCount = 539;
+      l.gpu.summary = summarizeC1229S5DenseSamples(l.gpu.samples);
+    },
+    (l) => (l.gpu.results.readbackSkipCount = 61),
+    (l) => (l.gpu.results.failedReadbackCount = 1),
+    (l) => (l.gpu.results.lostSampleCount = 1),
+    (l) => (l.gpu.results.pendingReadbackCount = 1),
+    (l) => (l.gpu.results.unaccountedSampleCount = 1),
+    (l) => (l.gpu.results.invertedSampleCount = 1),
+    (l) => (l.gpu.results.droppedPassCount = 1),
+    (l) => (l.gpu.results.emptyFrameCount = 1),
+    (l) => (l.gpu.drain.undrained = 1),
+    (l) => (l.gpu.wrapper.restored = false),
+  ]) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[index]);
+    mutation(leg);
+    assert.ok(
+      validateC1229S5DenseRuntimeLeg(leg, workload).structural.length > 0,
+    );
+  }
+});
+
+test("22 WebGL GPU timing is exact N/A and cannot masquerade as sampled", () => {
+  for (const mutation of [
+    (l) => (l.gpu.applicability = "optional"),
+    (l) => (l.gpu.attemptedFrameCount = 600),
+    (l) => l.gpu.samples.push(1),
+    (l) => (l.gpu.reason = "unsupported"),
+  ]) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+    mutation(leg);
+    assert.ok(
+      validateC1229S5DenseRuntimeLeg(leg, workload).structural.length > 0,
+    );
+  }
+});
+
+test("23 cost sign and magnitude never change PASS; raw paired deltas, ratios, median, range, and MAD remain", () => {
+  for (const [activeCpu, inactiveCpu, activeGpu, inactiveGpu] of [
+    [100, 1, 200, 2],
+    [1, 100, 2, 200],
+    [5, 5, 7, 7],
+  ]) {
+    const report = validReport();
+    for (const leg of report.legs) {
+      const cpu =
+        leg.scheduleLeg.condition === "active" ? activeCpu : inactiveCpu;
+      for (const sample of leg.measurement.trace.samples) sample.cpuMs = cpu;
+      for (const sample of leg.replay.trace.samples) sample.cpuMs = cpu;
+      leg.measurement.cpuSummary = summarizeC1229S5DenseSamples(
+        leg.measurement.trace.samples.map((sample) => sample.cpuMs),
+      );
+      if (leg.scheduleLeg.renderer === "webgpu") {
+        const gpu =
+          leg.scheduleLeg.condition === "active" ? activeGpu : inactiveGpu;
+        leg.gpu.samples.fill(gpu);
+        leg.gpu.summary = summarizeC1229S5DenseSamples(leg.gpu.samples);
+      }
+    }
+    const folded = foldC1229S5DenseCostGate(report);
+    assert.equal(folded.status, "PASS");
+    assert.equal(folded.characterization.pairRecords.length, 12);
+    assert.ok("deltaMad" in folded.characterization.byRenderer.webgpu.gpuP95);
+    assert.ok("deltaRange" in folded.characterization.byRenderer.webgl.cpuP95);
+    assert.ok("ratioMad" in folded.characterization.byRenderer.webgpu.gpuP95);
+    assert.ok("ratioRange" in folded.characterization.byRenderer.webgl.cpuP95);
+  }
+});
+
+test("24 static packet pins new namespace, source closure, wrapper finally, fresh processes, and no ceiling", async () => {
+  assert.ok(
+    C12_29_S5_DENSE_LOCAL_FILES.includes("Build/CesiumUnminified/index.js.map"),
+  );
+  assert.ok(
+    C12_29_S5_DENSE_SERVED_FILES.includes("Build/CesiumUnminified/index.js"),
+  );
+  assert.equal(
+    new Set(C12_29_S5_DENSE_LOCAL_FILES).size,
+    C12_29_S5_DENSE_LOCAL_FILES.length,
+  );
+  assert.equal(
+    new Set(C12_29_S5_DENSE_SERVED_FILES).size,
+    C12_29_S5_DENSE_SERVED_FILES.length,
+  );
+  assert.ok(C12_29_S5_DENSE_SOURCE_FILES.length >= 46);
+  assert.ok(
+    C12_29_S5_DENSE_RAW_GENERATED_PAIRS.every(
+      ({ raw, generated }) =>
+        C12_29_S5_DENSE_SOURCE_FILES.includes(raw) &&
+        C12_29_S5_DENSE_SOURCE_FILES.includes(generated),
+    ),
+  );
+  const helper = await readSource("lib", "c12-29-s5-dense-cost-gate.mjs");
+  const manifest = await readSource("performance-workloads-s5-dense-cost.json");
+  assert.match(helper, /threshold-free-characterization/);
+  assert.doesNotMatch(helper, /maximum(?:Allowed)?(?:Cpu|Gpu|Cost)/i);
+  assert.match(manifest, /freshProcessPerLeg/);
+  assert.match(manifest, /regardless of sign or magnitude/);
+  const probePath = resolve(directory, "probe-c12-29-s5-dense-cost.mjs");
+  let probe = "";
+  try {
+    probe = (await readFile(probePath, "utf8")).replaceAll("\r\n", "\n");
+  } catch {}
+  if (probe.length > 0) {
+    assert.match(probe, /chromium\.launch/);
+    assert.match(probe, /channel:\s*"msedge"/);
+    assert.match(probe, /finally/);
+    assert.match(probe, /drainPendingReadbacks/);
+    assert.match(probe, /createImmutableEvidence/);
+    assert.match(probe, /first-red/);
+    assert.doesNotMatch(probe, /npm run build|gulp build|execSync\([^)]*build/);
+  }
+
+  const publication = await import("./probe-c12-29-s5-dense-cost.mjs");
+  const temporaryRoot = await mkdtemp(
+    join(tmpdir(), "c12-29-s5-dense-lifecycle-"),
+  );
+  const operationProxy = (overrides) =>
+    new Proxy(fs, {
+      get(target, property) {
+        return overrides[property] ?? Reflect.get(target, property);
+      },
+    });
+  try {
+    const foreignRunId = "99999999-8888-4777-8666-555555555555";
+    const foreignPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "foreign-lock"),
+      foreignRunId,
+    );
+    const foreignStart = publication.beginC1229S5DenseRun(
+      foreignPaths,
+      foreignRunId,
+    );
+    const foreignLock = Buffer.from("foreign authority\n");
+    await writeFile(foreignPaths.lock, foreignLock);
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          foreignPaths,
+          foreignStart.lockBytes,
+          { runId: foreignRunId, status: "ERROR" },
+        ),
+      /lock ownership differs/,
+    );
+    assert.deepEqual(await readFile(foreignPaths.lock), foreignLock);
+    await assert.rejects(readFile(foreignPaths.immutable), /ENOENT/);
+
+    const foreignLatestRunId = "88888888-7777-4666-8555-444444444444";
+    const foreignLatestPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "foreign-latest"),
+      foreignLatestRunId,
+    );
+    const foreignLatestStart = publication.beginC1229S5DenseRun(
+      foreignLatestPaths,
+      foreignLatestRunId,
+    );
+    const foreignLatest = Buffer.from("foreign latest authority\n");
+    await writeFile(foreignLatestPaths.latest, foreignLatest);
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          foreignLatestPaths,
+          foreignLatestStart.lockBytes,
+          { runId: foreignLatestRunId, status: "ERROR" },
+        ),
+      /not the owned RUNNING marker/,
+    );
+    assert.deepEqual(await readFile(foreignLatestPaths.latest), foreignLatest);
+    await assert.rejects(readFile(foreignLatestPaths.immutable), /ENOENT/);
+
+    const latePairRunId = "12121212-3434-4567-89ab-cdefabcdefab";
+    const latePairPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "late-pair"),
+      latePairRunId,
+    );
+    const latePairStart = publication.beginC1229S5DenseRun(
+      latePairPaths,
+      latePairRunId,
+    );
+    const lateForeignLock = Buffer.from("late foreign lock authority\n");
+    const lateForeignLatest = Buffer.from("late foreign latest authority\n");
+    let latePairInjected = false;
+    const latePairOperations = operationProxy({
+      renameSync(from, to) {
+        fs.renameSync(from, to);
+        if (
+          !latePairInjected &&
+          from === latePairPaths.latest &&
+          String(to).includes(".final-")
+        ) {
+          latePairInjected = true;
+          fs.writeFileSync(latePairPaths.latest, lateForeignLatest, {
+            flag: "wx",
+          });
+          fs.writeFileSync(latePairPaths.lock, lateForeignLock);
+        }
+      },
+    });
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          latePairPaths,
+          latePairStart.lockBytes,
+          { runId: latePairRunId, status: "PASS" },
+          latePairOperations,
+        ),
+      /persistence/,
+    );
+    assert.equal(latePairInjected, true);
+    assert.deepEqual(await readFile(latePairPaths.lock), lateForeignLock);
+    assert.deepEqual(await readFile(latePairPaths.latest), lateForeignLatest);
+    assert.ok((await readFile(latePairPaths.immutable)).byteLength > 0);
+
+    const captureRunId = "abababab-cdcd-4efe-8aba-123456789abc";
+    const capturePaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "foreign-lock-capture"),
+      captureRunId,
+    );
+    const captureStart = publication.beginC1229S5DenseRun(
+      capturePaths,
+      captureRunId,
+    );
+    const capturedForeignLock = Buffer.from("captured foreign lock\n");
+    const capturedForeignLatest = Buffer.from("captured foreign latest\n");
+    let captureInjected = false;
+    const captureOperations = operationProxy({
+      renameSync(from, to) {
+        if (
+          !captureInjected &&
+          from === capturePaths.lock &&
+          String(to).includes(".release-")
+        ) {
+          captureInjected = true;
+          fs.writeFileSync(capturePaths.lock, capturedForeignLock);
+          fs.writeFileSync(capturePaths.latest, capturedForeignLatest);
+        }
+        fs.renameSync(from, to);
+      },
+    });
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          capturePaths,
+          captureStart.lockBytes,
+          { runId: captureRunId, status: "PASS" },
+          captureOperations,
+        ),
+      /persistence/,
+    );
+    assert.equal(captureInjected, true);
+    assert.deepEqual(await readFile(capturePaths.lock), capturedForeignLock);
+    assert.deepEqual(
+      await readFile(capturePaths.latest),
+      capturedForeignLatest,
+    );
+
+    const postRenameRunId = "cdcdcdcd-abab-4fef-8bab-abcdefabcdef";
+    const postRenamePaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "foreign-after-lock-claim"),
+      postRenameRunId,
+    );
+    const postRenameStart = publication.beginC1229S5DenseRun(
+      postRenamePaths,
+      postRenameRunId,
+    );
+    const postRenameForeignLock = Buffer.from("post-rename foreign lock\n");
+    const postRenameForeignLatest = Buffer.from("post-rename foreign latest\n");
+    let postRenameInjected = false;
+    const postRenameOperations = operationProxy({
+      renameSync(from, to) {
+        fs.renameSync(from, to);
+        if (
+          !postRenameInjected &&
+          from === postRenamePaths.lock &&
+          String(to).includes(".release-")
+        ) {
+          postRenameInjected = true;
+          fs.writeFileSync(postRenamePaths.lock, postRenameForeignLock, {
+            flag: "wx",
+          });
+          fs.writeFileSync(postRenamePaths.latest, postRenameForeignLatest);
+        }
+      },
+    });
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          postRenamePaths,
+          postRenameStart.lockBytes,
+          { runId: postRenameRunId, status: "PASS" },
+          postRenameOperations,
+        ),
+      /persistence/,
+    );
+    assert.equal(postRenameInjected, true);
+    assert.deepEqual(
+      await readFile(postRenamePaths.lock),
+      postRenameForeignLock,
+    );
+    assert.deepEqual(
+      await readFile(postRenamePaths.latest),
+      postRenameForeignLatest,
+    );
+
+    const recoveryRunId = "efefefef-1212-4343-8565-787878787878";
+    const recoveryPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "post-final-recovery"),
+      recoveryRunId,
+    );
+    const recoveryStart = publication.beginC1229S5DenseRun(
+      recoveryPaths,
+      recoveryRunId,
+    );
+    let finalReceiptFailureInjected = false;
+    const recoveryOperations = operationProxy({
+      writeFileSync(file, bytes, options) {
+        fs.writeFileSync(file, bytes, options);
+        if (
+          !finalReceiptFailureInjected &&
+          file === recoveryPaths.finalReceipt
+        ) {
+          finalReceiptFailureInjected = true;
+          throw new Error("injected failure after final receipt write");
+        }
+      },
+    });
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          recoveryPaths,
+          recoveryStart.lockBytes,
+          { runId: recoveryRunId, status: "PASS" },
+          recoveryOperations,
+        ),
+      /injected failure after final receipt write/,
+    );
+    assert.equal(finalReceiptFailureInjected, true);
+    assert.deepEqual(
+      await readFile(recoveryPaths.lock),
+      recoveryStart.lockBytes,
+    );
+    assert.deepEqual(
+      await readFile(recoveryPaths.latest),
+      recoveryStart.runningBytes,
+    );
+    assert.notDeepEqual(
+      await readFile(recoveryPaths.latest),
+      await readFile(recoveryPaths.immutable),
+    );
+
+    const output = join(temporaryRoot, "success");
+    const firstRunId = "77777777-6666-4555-8444-333333333333";
+    const firstPaths = publication.createC1229S5DenseArtifactPaths(
+      output,
+      firstRunId,
+    );
+    const firstStart = publication.beginC1229S5DenseRun(firstPaths, firstRunId);
+    const firstReceipt = publication.publishC1229S5DenseFinal(
+      firstPaths,
+      firstStart.lockBytes,
+      {
+        runId: firstRunId,
+        status: "ERROR",
+        finding: "first",
+      },
+    );
+    assert.equal(firstReceipt.firstRed.writeOnceFingerprintVerified, true);
+    assert.equal(firstReceipt.firstRed.written, true);
+    assert.equal(firstReceipt.firstRed.beforeSha256, null);
+    assert.match(firstReceipt.firstRed.afterSha256, /^[0-9a-f]{64}$/u);
+    assert.deepEqual(
+      await readFile(firstPaths.immutable),
+      await readFile(firstPaths.latest),
+    );
+    const firstRed = await readFile(firstPaths.firstRed);
+    await assert.rejects(readFile(firstPaths.lock), /ENOENT/);
+
+    const secondRunId = "22222222-3333-4444-8555-666666666666";
+    const secondPaths = publication.createC1229S5DenseArtifactPaths(
+      output,
+      secondRunId,
+    );
+    const secondStart = publication.beginC1229S5DenseRun(
+      secondPaths,
+      secondRunId,
+    );
+    const secondReceipt = publication.publishC1229S5DenseFinal(
+      secondPaths,
+      secondStart.lockBytes,
+      {
+        runId: secondRunId,
+        status: "FAIL",
+        finding: "second",
+      },
+    );
+    assert.equal(secondReceipt.firstRed.writeOnceFingerprintVerified, true);
+    assert.equal(secondReceipt.firstRed.written, false);
+    assert.equal(
+      secondReceipt.firstRed.beforeSha256,
+      secondReceipt.firstRed.afterSha256,
+    );
+    assert.deepEqual(await readFile(secondPaths.firstRed), firstRed);
+    assert.deepEqual(
+      await readFile(secondPaths.immutable),
+      await readFile(secondPaths.latest),
+    );
+    assert.ok((await readFile(secondPaths.finalReceipt)).byteLength > 0);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("25 NASA-v2 and every operational bound are exact prerequisites", () => {
+  const stale = validPrerequisites();
+  stale.nasa.artifact.schema = "c12-29-s5-svs-5073-footprint-evidence-v1";
+  assert.equal(validateC1229S5DensePrerequisites(stale).valid, false);
+  for (const mutation of [
+    (value) => (value.protocol.refreshSemantics = "render whenever convenient"),
+    (value) => (value.protocol.settleStableFrames = 0),
+    (value) => (value.protocol.settleTimeoutMs = 0),
+    (value) => (value.protocol.gpuReadbackTimeoutMs = 0),
+    (value) => (value.protocol.legTimeoutMs = 0),
+    (value) => (value.validity.wallSampleCount = 599),
+  ]) {
+    const value = clone(workload);
+    mutation(value);
+    assert.equal(validateC1229S5DenseWorkload(value).valid, false);
+  }
+});
+
+test("26 provenance closure rejects omission, forged digests, stale served bytes, empty maps, and raw drift", () => {
+  const mutations = [
+    (report) => report.provenance.start.localFiles.pop(),
+    (report) => report.provenance.start.servedFiles.pop(),
+    (report) => {
+      const identity = report.provenance.start.servedFiles.find(
+        (item) =>
+          item.path ===
+          "Tools/visual-regression/lib/c12-29-s5-dense-cost-gate.mjs",
+      );
+      identity.sha256 = "f".repeat(64);
+    },
+    (report) => (report.provenance.start.buildSourceIdentity.entries = []),
+    (report) => (report.provenance.start.rawGenerated[0].exact = false),
+  ];
+  for (const mutation of mutations) {
+    const report = validReport();
+    mutation(report);
+    report.provenance.end = clone(report.provenance.start);
+    resignSnapshot(report.provenance.start);
+    resignSnapshot(report.provenance.end);
+    for (const leg of report.legs) {
+      leg.sourceIdentitySha256 = report.provenance.start.identitySha256;
+    }
+    assert.equal(foldC1229S5DenseCostGate(report).status, "STRUCTURAL");
+  }
+  const forgedPrerequisiteDigest = validReport();
+  forgedPrerequisiteDigest.prerequisitesSha256 = "f".repeat(64);
+  for (const leg of forgedPrerequisiteDigest.legs) {
+    leg.prerequisitesSha256 = forgedPrerequisiteDigest.prerequisitesSha256;
+  }
+  assert.equal(
+    foldC1229S5DenseCostGate(forgedPrerequisiteDigest).status,
+    "STRUCTURAL",
+  );
+});
+
+test("27 refresh pacing and observed camera attitude recompute from raw evidence", () => {
+  for (const mutation of [
+    (leg) => (leg.measurement.trace.samples[0].wallDtMs = null),
+    (leg) =>
+      (leg.measurement.framePacing.requestAnimationFrameYieldCount = 599),
+    (leg) => (leg.measurement.framePacing.elapsedMs += 1),
+    (leg) => (leg.measurement.framePacing.wallSummary.p99 += 1),
+    (leg) => (leg.measurement.route[0].actual.heading = 1),
+    (leg) => (leg.measurement.route[0].actual.pitch = -89),
+    (leg) => (leg.measurement.route[0].actual.roll = 1),
+  ]) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+    mutation(leg);
+    assert.ok(
+      validateC1229S5DenseRuntimeLeg(leg, workload).structural.length > 0,
+    );
+  }
+});
+
+test("28 long tasks exclude setup, clip the terminal boundary, and cannot be forged or overlap", () => {
+  assert.deepEqual(
+    selectC1229S5DenseLongTasks(
+      [
+        { startTime: 999, duration: 100 },
+        { startTime: 2000, duration: 100 },
+        { startTime: 10550, duration: 100 },
+        { startTime: 10600, duration: 100 },
+      ],
+      1000,
+      10600,
+    ),
+    [
+      { startTime: 2000, rawDuration: 100, duration: 100 },
+      { startTime: 10550, rawDuration: 100, duration: 50 },
+    ],
+  );
+  for (const mutation of [
+    (leg) => (leg.measurement.longTasks.entries = []),
+    (leg) => (leg.measurement.longTasks.totalDurationMs = 0),
+    (leg) => (leg.measurement.longTasks.share = 0),
+    (leg) => (leg.measurement.longTasks.measurementStartMs = 999),
+    (leg) => {
+      leg.measurement.longTasks.entries = [
+        { startTime: 2000, rawDuration: 100, duration: 100 },
+        { startTime: 2050, rawDuration: 100, duration: 100 },
+      ];
+      leg.measurement.longTasks.totalDurationMs = 200;
+      leg.measurement.longTasks.share = 200 / 9600;
+    },
+  ]) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+    mutation(leg);
+    assert.ok(
+      validateC1229S5DenseRuntimeLeg(leg, workload).structural.length > 0,
+    );
+  }
+});
+
+test("29 WebGPU ledger arithmetic, drain shape, cleanup, and raw status cannot be self-asserted", () => {
+  const webgpu = C12_29_S5_DENSE_SCHEDULE.find(
+    (leg) => leg.renderer === "webgpu",
+  );
+  const ledger = validLeg(webgpu);
+  ledger.gpu.samples.pop();
+  ledger.gpu.results.frameCount = 599;
+  ledger.gpu.summary = summarizeC1229S5DenseSamples(ledger.gpu.samples);
+  assert.ok(
+    validateC1229S5DenseRuntimeLeg(ledger, workload).structural.length > 0,
+  );
+  const drain = validLeg(webgpu);
+  drain.gpu.drain.abandoned = 1;
+  assert.ok(
+    validateC1229S5DenseRuntimeLeg(drain, workload).structural.length > 0,
+  );
+  const cleanup = validLeg(webgpu);
+  cleanup.cleanup.timestampProfilingRestored = false;
+  assert.ok(
+    validateC1229S5DenseRuntimeLeg(cleanup, workload).errors.length > 0,
+  );
+  const claimedFail = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+  claimedFail.status = "FAIL";
+  assert.ok(
+    validateC1229S5DenseRuntimeLeg(claimedFail, workload).behavioral.length > 0,
+  );
+});
+
+test("30 child watchdog is bounded and success clears response timers before forced child exit", async () => {
+  const publication = await import("./probe-c12-29-s5-dense-cost.mjs");
+  const outcome = await publication.childProcessResult(
+    ["-e", "setInterval(() => {}, 1000)"],
+    100,
+    1000,
+  );
+  assert.equal(outcome.timedOut, true);
+  assert.match(String(outcome.signal), /SIGKILL|WATCHDOG|null/u);
+  const probe = await readSource("probe-c12-29-s5-dense-cost.mjs");
+  assert.match(probe, /clearTimeout\(entryTimeout\)/u);
+  assert.match(probe, /process\.exit\(await runLegChild\(options\)\)/u);
+  assert.match(probe, /postKillCloseTimeoutMs/u);
+  assert.match(probe, /boundedAwait/u);
+});
+
+test("31 begin and pre-unlock publication boundaries preserve every late foreign authority", async () => {
+  const publication = await import("./probe-c12-29-s5-dense-cost.mjs");
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "c12-29-s5-dense-late-"));
+  const operationProxy = (overrides) =>
+    new Proxy(fs, {
+      get(target, property) {
+        return overrides[property] ?? Reflect.get(target, property);
+      },
+    });
+  try {
+    const beginRunId = "31313131-4242-4535-8646-575757575757";
+    const beginPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "begin"),
+      beginRunId,
+    );
+    const foreignBeginLock = Buffer.from("foreign begin lock\n");
+    const foreignBeginLatest = Buffer.from("foreign begin latest\n");
+    let beginInjected = false;
+    const beginOperations = operationProxy({
+      mkdirSync(file, options) {
+        fs.mkdirSync(file, options);
+        if (!beginInjected && file === beginPaths.rawDirectory) {
+          beginInjected = true;
+          fs.writeFileSync(beginPaths.lock, foreignBeginLock);
+          fs.writeFileSync(beginPaths.latest, foreignBeginLatest);
+        }
+      },
+    });
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          beginPaths,
+          beginRunId,
+          beginOperations,
+        ),
+      /persistence/u,
+    );
+    assert.equal(beginInjected, true);
+    assert.deepEqual(await readFile(beginPaths.lock), foreignBeginLock);
+    assert.deepEqual(await readFile(beginPaths.latest), foreignBeginLatest);
+
+    const latestRunId = "41414141-5252-4636-8747-686868686868";
+    const latestPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "latest-before-unlock"),
+      latestRunId,
+    );
+    const latestStart = publication.beginC1229S5DenseRun(
+      latestPaths,
+      latestRunId,
+    );
+    const foreignLatest = Buffer.from("foreign latest before unlock\n");
+    let latestInjected = false;
+    const latestOperations = operationProxy({
+      writeFileSync(file, bytes, options) {
+        fs.writeFileSync(file, bytes, options);
+        if (!latestInjected && file === latestPaths.finalReceipt) {
+          latestInjected = true;
+          fs.writeFileSync(latestPaths.latest, foreignLatest);
+        }
+      },
+    });
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          latestPaths,
+          latestStart.lockBytes,
+          { runId: latestRunId, status: "PASS" },
+          latestOperations,
+        ),
+      /persistence/u,
+    );
+    assert.equal(latestInjected, true);
+    assert.deepEqual(await readFile(latestPaths.latest), foreignLatest);
+    assert.deepEqual(await readFile(latestPaths.lock), latestStart.lockBytes);
+    assert.ok((await readFile(latestPaths.immutable)).byteLength > 0);
+
+    const redRunId = "51515151-6262-4737-8848-797979797979";
+    const redPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "first-red-before-unlock"),
+      redRunId,
+    );
+    const redStart = publication.beginC1229S5DenseRun(redPaths, redRunId);
+    const foreignFirstRed = Buffer.from("foreign first-red before unlock\n");
+    let redInjected = false;
+    const redOperations = operationProxy({
+      writeFileSync(file, bytes, options) {
+        fs.writeFileSync(file, bytes, options);
+        if (!redInjected && file === redPaths.finalReceipt) {
+          redInjected = true;
+          fs.writeFileSync(redPaths.firstRed, foreignFirstRed);
+        }
+      },
+    });
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          redPaths,
+          redStart.lockBytes,
+          { runId: redRunId, status: "ERROR" },
+          redOperations,
+        ),
+      /first-red changed before unlock/u,
+    );
+    assert.equal(redInjected, true);
+    assert.deepEqual(await readFile(redPaths.firstRed), foreignFirstRed);
+    assert.deepEqual(await readFile(redPaths.latest), redStart.runningBytes);
+    assert.deepEqual(await readFile(redPaths.lock), redStart.lockBytes);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("feature snapshot 1/3 pins every stable source default", () => {
+  const mutations = [
+    ["sunBloom", false],
+    ["taaEnabled", true],
+    ["motionBlur", true],
+    ["msaaSamples", 1],
+    ["postProcessStageCount", 1],
+    ["fxaaEnabled", true],
+    ["bloomEnabled", true],
+  ];
+  for (const [field, value] of mutations) {
+    const leg = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+    leg.configuration.defaultFeatureSnapshot[field] = value;
+    leg.configuration.defaultFeatureSnapshotEnd[field] = value;
+    assert.ok(
+      validateC1229S5DenseRuntimeLeg(leg, workload).structural.length > 0,
+      field,
+    );
+  }
+});
+
+test("feature snapshot 2/3 requires a raw terminal snapshot", () => {
+  const missing = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+  delete missing.configuration.defaultFeatureSnapshotEnd;
+  assert.ok(
+    validateC1229S5DenseRuntimeLeg(missing, workload).structural.length > 0,
+  );
+});
+
+test("feature snapshot 3/3 recomputes retention despite a true claim", () => {
+  const changed = validLeg(C12_29_S5_DENSE_SCHEDULE[0]);
+  changed.configuration.defaultFeatureSnapshotEnd.highDynamicRange = true;
+  changed.configuration.defaultFeaturesRetained = true;
+  assert.ok(
+    validateC1229S5DenseRuntimeLeg(changed, workload).structural.length > 0,
+  );
+});
