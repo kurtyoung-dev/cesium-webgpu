@@ -23,7 +23,7 @@ import {
   C12_29_S5_WEBGPU_PREWARM_MAX_FRAMES,
   computeExpectedTerrainSurfaceRadius,
   deriveS5SouthLevelOneTarget,
-  evaluateS5FrontierObservation,
+  evaluateS5ControlledVisibilityObservation,
   exitCodeForS5Status,
   foldC1229S5Gate,
   isUuidV4,
@@ -54,6 +54,7 @@ const probeSource = fs.readFileSync(probePath, "utf8");
 const specSource = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
 const RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
 const V4_SCHEMA = "c12-29-s5-terrain-selection-evidence-v4";
+const V5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v5";
 
 const IMAGE_IDS = Object.freeze([
   "123e4567-e89b-42d3-a456-426614174001",
@@ -86,8 +87,8 @@ const heldTarget = deriveS5SouthLevelOneTarget(
   SYNTHETIC_TRACK.longitude,
   SYNTHETIC_TRACK.latitude,
 );
-const frontierSiblingKey = heldTarget.anchorKey;
-const FRONTIER_SSE = C12_29_S5_SCENE.frontierScreenSpaceErrorCandidates[0];
+const siblingKey = heldTarget.anchorKey;
+const FILL_SSE = C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError;
 
 function selectionObservation(tileId, frame, rawResult, name) {
   return {
@@ -104,60 +105,95 @@ function selectionObservation(tileId, frame, rawResult, name) {
   };
 }
 
-function syntheticFrontierRung({ step, reveal }) {
-  const siblingSelection = selectionObservation(
-    frontierSiblingKey,
-    10 + step,
-    2,
-    "RENDERED",
-  );
-  const targetSelection = selectionObservation(
-    heldTarget.key,
-    10 + step,
-    reveal ? 2 : 1,
-    reveal ? "RENDERED" : "CULLED",
-  );
-  const selectedTileIds = reveal
-    ? [frontierSiblingKey, heldTarget.key].sort()
-    : [frontierSiblingKey];
-  const realTileIds = [...selectedTileIds];
-  const base = {
-    sseIndex: 0,
-    step,
-    longitude: SYNTHETIC_TRACK.longitude,
-    latitude:
-      SYNTHETIC_TRACK.latitude +
-      step * C12_29_S5_SCENE.frontierLatitudeStepDegrees,
-    cameraHeightMeters: C12_29_S5_SCENE.cameraHeightMeters,
-    cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
-    maximumScreenSpaceError: FRONTIER_SSE,
-    preloadSiblings: false,
-    preloadAncestors: false,
-    settled: true,
-    settleFrames: 4,
-    stableFrames: 3,
-    tilesLoaded: true,
-    selectedTileIds,
-    realTileIds,
-    fillTileIds: [],
-    targetSelection,
-    selectedRealSiblingObservations: [siblingSelection],
+function visibilityCall({
+  ordinal,
+  frameNumber,
+  tileKey,
+  mode,
+  originalVisibility,
+  returnedVisibility = originalVisibility,
+}) {
+  const name = (value) => ["PARTIAL", "FULL"][value] ?? "NONE";
+  return {
+    ordinal,
+    frameNumber,
+    tileKey,
+    mode,
+    target: tileKey === heldTarget.key,
+    originalCallCompleted: true,
+    originalVisibility,
+    originalVisibilityName: name(originalVisibility),
+    returnedVisibility,
+    returnedVisibilityName: name(returnedVisibility),
+    overridden: !Object.is(originalVisibility, returnedVisibility),
   };
-  return { ...base, ...evaluateS5FrontierObservation(heldTarget, base) };
 }
 
-const frontierRevealRung = syntheticFrontierRung({ step: 0, reveal: true });
-const frontierWarmRung = syntheticFrontierRung({ step: 1, reveal: false });
-const frontierPair = Object.freeze({
-  sseIndex: 0,
-  maximumScreenSpaceError: FRONTIER_SSE,
-  revealStep: 0,
-  warmStep: 1,
-  revealLatitude: SYNTHETIC_TRACK.latitude,
-  warmLatitude:
-    SYNTHETIC_TRACK.latitude + C12_29_S5_SCENE.frontierLatitudeStepDegrees,
-  siblingKey: frontierSiblingKey,
+const visibilityCalls = Object.freeze([
+  visibilityCall({
+    ordinal: 1,
+    frameNumber: 20,
+    tileKey: heldTarget.parentKey,
+    mode: "warm-mask",
+    originalVisibility: 1,
+  }),
+  visibilityCall({
+    ordinal: 2,
+    frameNumber: 20,
+    tileKey: heldTarget.key,
+    mode: "warm-mask",
+    originalVisibility: 0,
+    returnedVisibility: -1,
+  }),
+  visibilityCall({
+    ordinal: 3,
+    frameNumber: 20,
+    tileKey: siblingKey,
+    mode: "warm-mask",
+    originalVisibility: 1,
+  }),
+  visibilityCall({
+    ordinal: 4,
+    frameNumber: 21,
+    tileKey: heldTarget.parentKey,
+    mode: "pass-through",
+    originalVisibility: 1,
+  }),
+  visibilityCall({
+    ordinal: 5,
+    frameNumber: 21,
+    tileKey: heldTarget.key,
+    mode: "pass-through",
+    originalVisibility: 0,
+  }),
+  visibilityCall({
+    ordinal: 6,
+    frameNumber: 21,
+    tileKey: siblingKey,
+    mode: "pass-through",
+    originalVisibility: 1,
+  }),
+]);
+const visibilityCounts = Object.freeze({
+  totalCalls: visibilityCalls.length,
+  originalCalls: visibilityCalls.length,
+  targetCalls: 2,
+  nonTargetCalls: 4,
+  overrideCalls: 1,
+  nonTargetAlteredCalls: 0,
+  skippedOriginalCalls: 0,
 });
+const sseDenominator = 2 * Math.tan((55 * Math.PI) / 360);
+const levelZeroGeometricError = 77_067.34;
+const levelOneGeometricError = levelZeroGeometricError / 2;
+const parentDistance = 8_000_000;
+const targetDistance = 8_000_000;
+const parentComputedSse =
+  (levelZeroGeometricError * C12_29_S5_SCENE.viewport.height) /
+  (parentDistance * sseDenominator);
+const targetComputedSse =
+  (levelOneGeometricError * C12_29_S5_SCENE.viewport.height) /
+  (targetDistance * sseDenominator);
 
 function syntheticProgress(renderer = "webgl") {
   return {
@@ -185,6 +221,28 @@ function syntheticProgress(renderer = "webgl") {
       settled: false,
       frameDriver: C12_29_S5_PICK_FRAME_DRIVER,
       renderPumpFrames: 0,
+    },
+    visibilitySeam: {
+      state: "restored",
+      targetKey: heldTarget.key,
+      mode: "restored",
+      config: {
+        claim:
+          "controlled-visibility-input-production-selection-request-fill-release-render",
+        maximumScreenSpaceError: FILL_SSE,
+        cameraHeightMeters: C12_29_S5_SCENE.cameraHeightMeters,
+        cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
+        maskMode: "warm-only-exact-target-Visibility.NONE",
+      },
+      calls: visibilityCalls.map((call) => ({ ...call })),
+      counts: { ...visibilityCounts },
+      terminalReason: null,
+      restoration: {
+        attempted: true,
+        restored: true,
+        identityMatches: true,
+        descriptorMatches: true,
+      },
     },
   };
 }
@@ -214,8 +272,14 @@ function syntheticSession(renderer) {
     1,
     "CULLED",
   );
+  const warmParentSelection = selectionObservation(
+    heldTarget.parentKey,
+    20,
+    3,
+    "REFINED",
+  );
   const warmSiblingSelection = selectionObservation(
-    frontierSiblingKey,
+    siblingKey,
     20,
     2,
     "RENDERED",
@@ -227,7 +291,7 @@ function syntheticSession(renderer) {
     "RENDERED",
   );
   const revealSiblingSelection = selectionObservation(
-    frontierSiblingKey,
+    siblingKey,
     21,
     2,
     "RENDERED",
@@ -238,30 +302,52 @@ function syntheticSession(renderer) {
       stable: true,
       tilesLoaded: true,
       selectedCount: 2,
-      selectedTileIds: [...selectedTileIds],
-      frontierDiscovery: {
-        derivation: "south-level-1-sse-major-north-latitude-adjacent-frontier",
+      selectedTileIds: [siblingKey, heldTarget.key].sort(),
+      fillLodPrecondition: {
+        claim: "fixed-camera-direct-level-one-no-scan",
+        derivation: "pinned-sse-production-selection",
         target: heldTarget,
-        screenSpaceErrorCandidates: [
-          ...C12_29_S5_SCENE.frontierScreenSpaceErrorCandidates,
-        ],
-        latitudeStepDegrees: C12_29_S5_SCENE.frontierLatitudeStepDegrees,
-        maxSteps: C12_29_S5_SCENE.frontierMaxSteps,
-        settleMaxFrames: C12_29_S5_SCENE.frontierSettleMaxFrames,
-        direction: "north",
+        siblingKey,
+        maximumScreenSpaceError: FILL_SSE,
+        longitude: SYNTHETIC_TRACK.longitude,
+        latitude: SYNTHETIC_TRACK.latitude,
         cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
         cameraHeightMeters: C12_29_S5_SCENE.cameraHeightMeters,
         preloadSiblings: false,
         preloadAncestors: false,
-        transcripts: [
-          {
-            sseIndex: 0,
-            maximumScreenSpaceError: FRONTIER_SSE,
-            ladder: [frontierRevealRung, frontierWarmRung],
-            firstAdjacentMatch: { ...frontierPair },
-          },
-        ],
-        ...frontierPair,
+        cameraReference: {
+          cameraCartographicInsideTarget: false,
+          referenceFrameOriginDefined: false,
+          referenceFrameOriginInsideTarget: false,
+          neededPositionInsideTarget: false,
+        },
+        sseInputs: {
+          drawingBufferHeight: C12_29_S5_SCENE.viewport.height,
+          pixelRatio: 1,
+          sseDenominator,
+          levelZeroGeometricError,
+          levelOneGeometricError,
+          parentDistance,
+          targetDistance,
+          parentComputedSse,
+          targetComputedSse,
+        },
+        selectedTileIds: [siblingKey, heldTarget.key].sort(),
+        realTileIds: [siblingKey, heldTarget.key].sort(),
+        fillTileIds: [],
+        parentSelection: selectionObservation(
+          heldTarget.parentKey,
+          10,
+          3,
+          "REFINED",
+        ),
+        targetSelection: selectionObservation(
+          heldTarget.key,
+          10,
+          2,
+          "RENDERED",
+        ),
+        siblingSelection: selectionObservation(siblingKey, 10, 2, "RENDERED"),
       },
     },
     [C12_29_S5_PHASES[1]]: {
@@ -295,22 +381,22 @@ function syntheticSession(renderer) {
       },
     },
     [C12_29_S5_PHASES[2]]: {
-      selectedTileIds: [frontierSiblingKey, heldTarget.key].sort(),
-      realTileIds: [frontierSiblingKey],
+      selectedTileIds: [siblingKey, heldTarget.key].sort(),
+      realTileIds: [siblingKey],
       holdTarget: heldTarget,
       warmup: {
         proofCompletedBeforeArm: true,
         settled: true,
-        boundedMaxFrames: 300,
+        boundedMaxFrames: C12_29_S5_SCENE.fillWarmMaximumFrames,
         settleFrames: 4,
         stableFrames: 3,
         tilesLoaded: true,
         fillCount: 0,
         longitude: SYNTHETIC_TRACK.longitude,
-        latitude: frontierPair.warmLatitude,
+        latitude: SYNTHETIC_TRACK.latitude,
         cameraHeightMeters: C12_29_S5_SCENE.cameraHeightMeters,
         cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
-        maximumScreenSpaceError: FRONTIER_SSE,
+        maximumScreenSpaceError: FILL_SSE,
         preloadSiblings: false,
         preloadAncestors: false,
         holdTargetUndefinedDuringWarmup: true,
@@ -321,16 +407,35 @@ function syntheticSession(renderer) {
         targetRequestAttempts: 0,
         targetHeldPromisePresent: false,
         targetReservedPromisePresent: false,
-        selectedTileIds: [frontierSiblingKey],
-        realTileIds: [frontierSiblingKey],
+        selectedTileIds: [siblingKey],
+        realTileIds: [siblingKey],
         fillTileIds: [],
         targetSelectedDescendantTileIds: [],
         targetRealDescendantTileIds: [],
         targetFillDescendantTileIds: [],
+        parentSelection: warmParentSelection,
         targetSelection: warmTargetSelection,
-        selectedRealSiblingTileIds: [frontierSiblingKey],
+        visibilityTargetCallOrdinals: [2],
+        cameraReference: {
+          cameraCartographicInsideTarget: false,
+          referenceFrameOriginDefined: false,
+          referenceFrameOriginInsideTarget: false,
+          neededPositionInsideTarget: false,
+        },
+        sseInputs: {
+          drawingBufferHeight: C12_29_S5_SCENE.viewport.height,
+          pixelRatio: 1,
+          sseDenominator,
+          levelZeroGeometricError,
+          levelOneGeometricError,
+          parentDistance,
+          targetDistance,
+          parentComputedSse,
+          targetComputedSse,
+        },
+        selectedRealSiblingTileIds: [siblingKey],
         selectedRealSiblingObservations: [warmSiblingSelection],
-        frontierSiblingKey,
+        siblingKey,
       },
       holdArm: {
         afterSettledWarmup: true,
@@ -341,42 +446,100 @@ function syntheticSession(renderer) {
         targetRequestAttemptsBefore: 0,
         targetReservedBefore: false,
         heldRequestCountBefore: 0,
-        warmLatitude: frontierPair.warmLatitude,
-        revealLatitude: frontierPair.revealLatitude,
-        latitudePanDegrees: -C12_29_S5_SCENE.frontierLatitudeStepDegrees,
+        visibilityModeBefore: "warm-mask",
+        visibilityModeAfter: "pass-through",
+        cameraMovedForReveal: false,
         cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
         cameraHeightMeters: C12_29_S5_SCENE.cameraHeightMeters,
-        maximumScreenSpaceError: FRONTIER_SSE,
+        maximumScreenSpaceError: FILL_SSE,
         holdInterceptionEnabledAfter: true,
       },
       firstRevealProof: {
-        captureWasFirstRenderAfterPan: true,
+        captureWasFirstRenderAfterPassThrough: true,
+        sameTaskModeSwitchAndCapture: true,
         noYieldBeforeCapture: true,
         frameBefore: 20,
         frameAfter: 21,
         frameDelta: 1,
         longitude: SYNTHETIC_TRACK.longitude,
-        latitude: frontierPair.revealLatitude,
+        latitude: SYNTHETIC_TRACK.latitude,
         cameraHeightMeters: C12_29_S5_SCENE.cameraHeightMeters,
         cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
-        maximumScreenSpaceError: FRONTIER_SSE,
+        maximumScreenSpaceError: FILL_SSE,
         targetRequestAttemptsBefore: 0,
         targetRequestAttemptsAfter: 1,
         postArmTargetRequestAttempts: 1,
         targetSelection: revealTargetSelection,
+        visibilityTargetCallOrdinals: [5],
         targetSelectedStrictDescendantTileIds: [],
-        selectedRealSiblingTileIds: [frontierSiblingKey],
+        selectedRealSiblingTileIds: [siblingKey],
         selectedRealSiblingObservations: [revealSiblingSelection],
-        frontierSiblingKey,
+        siblingKey,
         heldKeys: [heldTarget.key],
         heldRequestCount: 1,
         loadedAndFillFlags: true,
         targetSelected: true,
         targetFill: true,
+        fillMesh: {
+          tileId: heldTarget.key,
+          terrainFillMeshInstance: true,
+          renderedMeshMatches: true,
+          realMeshAbsent: true,
+          vertexCount: 5,
+          indexCount: 12,
+        },
+      },
+      visibilitySeam: {
+        claim:
+          "controlled-visibility-input-production-selection-request-fill-release-render",
+        method: "GlobeSurfaceTileProvider.computeTileVisibility",
+        maskMode: "warm-only-exact-target-Visibility.NONE",
+        targetKey: heldTarget.key,
+        siblingKey,
+        maximumScreenSpaceError: FILL_SSE,
+        installation: {
+          originalIdentityCaptured: true,
+          prototypeDescriptorFound: true,
+          beforeHadOwn: false,
+          beforeDescriptor: null,
+          installedHadOwn: true,
+          installedDescriptor: {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            hasValue: true,
+            hasGetter: false,
+            hasSetter: false,
+          },
+          installedWrapperIdentityMatches: true,
+        },
+        calls: visibilityCalls.map((call) => ({ ...call })),
+        counts: { ...visibilityCounts },
+        warmTargetCallOrdinals: [2],
+        revealTargetCallOrdinals: [5],
+        modeSwitch: {
+          from: "warm-mask",
+          to: "pass-through",
+          warmFrame: 20,
+          revealFrame: 21,
+          sameTaskReveal: true,
+        },
+        restoration: {
+          attempted: true,
+          attemptedAt: "immediately-after-reveal-snapshot",
+          restored: true,
+          immediateAfterReveal: true,
+          beforeRelease: true,
+          afterHadOwn: false,
+          afterDescriptor: null,
+          identityMatches: true,
+          descriptorMatches: true,
+          finallyVerified: true,
+        },
       },
       holdInterceptionEnabled: true,
       cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
-      maximumScreenSpaceError: FRONTIER_SSE,
+      maximumScreenSpaceError: FILL_SSE,
       preloadSiblings: false,
       holdTargetRequestAttemptsAfterArm: 1,
       holdTargetReserved: true,
@@ -386,7 +549,7 @@ function syntheticSession(renderer) {
       fillTileIds: [heldTarget.key],
       loadedAndFillFlags: true,
       heldTargetIntersectsSelectedFill: true,
-      realSiblingTileIds: [frontierSiblingKey],
+      realSiblingTileIds: [siblingKey],
       heldDecodeWaitFrames: 1,
       heldTargetDecodedBeforeRelease: true,
       decodedQuantizedMeshCount: 1,
@@ -410,6 +573,7 @@ function syntheticSession(renderer) {
       decodedQuantizedMeshCount: 2,
       realTileIds: [heldTarget.key],
       holdInterceptionEnabled: false,
+      visibilitySeamRestoredBeforeRelease: true,
       heldRequestCountAfterRelease: 0,
       releasedKeys: [heldTarget.key],
       releasedTargetKey: heldTarget.key,
@@ -744,9 +908,9 @@ test("01 full valid fixture closes the pure S5 gate", () => {
   const verdict = foldC1229S5Gate(greenReport());
   assert.equal(verdict.status, "PASS");
   assert.equal(verdict.exitCode, 0);
-  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v5");
-  assert.equal(verdict.checks.sourceBoundaryCount, 36);
-  assert.equal(verdict.checks.buildSourceBoundaryCount, 34);
+  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v6");
+  assert.equal(verdict.checks.sourceBoundaryCount, 37);
+  assert.equal(verdict.checks.buildSourceBoundaryCount, 35);
 });
 
 test("02 precedence is STRUCTURAL over FAIL over PASS with frozen exits", () => {
@@ -786,6 +950,9 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
   const v4Report = greenReport();
   v4Report.schema = V4_SCHEMA;
   assert.equal(foldC1229S5Gate(v4Report).status, "STRUCTURAL");
+  const v5Report = greenReport();
+  v5Report.schema = V5_SCHEMA;
+  assert.equal(foldC1229S5Gate(v5Report).status, "STRUCTURAL");
   const errorArtifact = {
     ...artifact,
     status: "ERROR",
@@ -819,6 +986,17 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
     }).ok,
     false,
   );
+  for (const mutateVisibilityProgress of [
+    (progress) => delete progress.visibilitySeam,
+    (progress) => progress.visibilitySeam.counts.originalCalls--,
+    (progress) => (progress.visibilitySeam.calls[0].overridden = true),
+    (progress) => (progress.visibilitySeam.targetKey = "2/0/0"),
+    (progress) => (progress.visibilitySeam.restoration.identityMatches = false),
+  ]) {
+    const mutated = structuredClone(syntheticProgress());
+    mutateVisibilityProgress(mutated);
+    assert.equal(validateS5PageProgress(mutated).ok, false);
+  }
   assert.equal(
     validateS5FinalArtifactShape({
       ...errorArtifact,
@@ -1006,7 +1184,46 @@ test("07 first-beginFrame provider-reset boundary is exact and pre-selection", (
   );
 });
 
-test("08 one selected L1 hold, real sibling, and disabled release are exact", () => {
+test("08 controlled visibility produces one exact L1 fill and release", () => {
+  const naturalObservation = {
+    settled: true,
+    tilesLoaded: true,
+    selectedTileIds: [siblingKey, heldTarget.key].sort(),
+    realTileIds: [siblingKey, heldTarget.key].sort(),
+    fillTileIds: [],
+    targetSelection: selectionObservation(heldTarget.key, 10, 2, "RENDERED"),
+    selectedRealSiblingObservations: [
+      selectionObservation(siblingKey, 10, 2, "RENDERED"),
+    ],
+  };
+  assert.equal(
+    evaluateS5ControlledVisibilityObservation(heldTarget, naturalObservation)
+      .directLevelOneNatural,
+    true,
+  );
+  for (const mutateLod of [
+    (phase) => (phase.maximumScreenSpaceError = FILL_SSE + 1),
+    (phase) => (phase.cameraFovDegrees = 54),
+    (phase) => phase.cameraHeightMeters++,
+    (phase) => (phase.cameraReference.cameraCartographicInsideTarget = true),
+    (phase) => (phase.cameraReference.referenceFrameOriginDefined = true),
+    (phase) => (phase.cameraReference.neededPositionInsideTarget = true),
+    (phase) => (phase.parentSelection.rawResult = 2),
+    (phase) => (phase.targetSelection.rawResult = 3),
+    (phase) => (phase.siblingSelection.wasKicked = true),
+    (phase) => (phase.sseInputs.drawingBufferHeight = 959),
+    (phase) => (phase.sseInputs.parentComputedSse = FILL_SSE),
+    (phase) => (phase.sseInputs.targetComputedSse = FILL_SSE + 1),
+  ]) {
+    expectStatus(
+      (report) =>
+        mutateLod(
+          report.sessions[0].phases[C12_29_S5_PHASES[0]].fillLodPrecondition,
+        ),
+      "STRUCTURAL",
+      /fixed-SSE direct level-one/u,
+    );
+  }
   for (const mutateFill of [
     (phase) => (phase.fillCount = 0),
     (phase) => (phase.heldRequestCount = 0),
@@ -1017,10 +1234,14 @@ test("08 one selected L1 hold, real sibling, and disabled release are exact", ()
     (phase) => phase.selectedTileIds.pop(),
     (phase) => (phase.realSiblingTileIds = []),
     (phase) => (phase.warmup.settled = false),
+    (phase) => (phase.warmup.fillCount = 1),
     (phase) => (phase.holdArm.holdInterceptionEnabledBefore = true),
     (phase) => (phase.warmup.targetRequestAttempts = 1),
     (phase) => (phase.warmup.targetSelection.rawResult = 2),
     (phase) => (phase.warmup.targetSelection.wasKicked = true),
+    (phase) => (phase.warmup.parentSelection.rawResult = 2),
+    (phase) => (phase.warmup.cameraReference.neededPositionInsideTarget = true),
+    (phase) => (phase.warmup.sseInputs.targetComputedSse = FILL_SSE + 1),
     (phase) =>
       (phase.warmup.targetSelectedDescendantTileIds = [heldTarget.key]),
     (phase) => (phase.warmup.selectedRealSiblingTileIds = []),
@@ -1030,44 +1251,74 @@ test("08 one selected L1 hold, real sibling, and disabled release are exact", ()
     (phase) => (phase.firstRevealProof.frameDelta = 2),
     (phase) => (phase.firstRevealProof.targetSelection.rawResult = 3),
     (phase) =>
+      (phase.firstRevealProof.fillMesh.terrainFillMeshInstance = false),
+    (phase) => (phase.firstRevealProof.fillMesh.renderedMeshMatches = false),
+    (phase) => (phase.firstRevealProof.fillMesh.realMeshAbsent = false),
+    (phase) => (phase.firstRevealProof.fillMesh.vertexCount = 0),
+    (phase) => (phase.firstRevealProof.fillMesh.indexCount = 0),
+    (phase) =>
       phase.firstRevealProof.targetSelectedStrictDescendantTileIds.push(
         "2/0/2",
       ),
     (phase) => (phase.firstRevealProof.selectedRealSiblingTileIds = []),
     (phase) => (phase.holdTarget.level = 2),
-    (phase) => (phase.maximumScreenSpaceError = FRONTIER_SSE + 1),
+    (phase) => (phase.maximumScreenSpaceError = FILL_SSE + 1),
   ]) {
     expectStatus(
       (report) => mutateFill(report.sessions[0].phases[C12_29_S5_PHASES[2]]),
       "STRUCTURAL",
-      /direct level-one held TerrainFillMesh/u,
+      /pass-through reveal/u,
     );
   }
-  for (const mutateFrontier of [
-    (phase) => (phase.cameraFovDegrees = 54),
-    (phase) => phase.cameraHeightMeters++,
-    (phase) => phase.maximumScreenSpaceError++,
-    (phase) => (phase.warmStep = phase.revealStep + 2),
-    (phase) => (phase.revealStep = 1),
-    (phase) => phase.transcripts[0].ladder[0].selectedTileIds.push("2/0/2"),
-    (phase) => (phase.transcripts[0].ladder[0].targetSelection.rawResult = 3),
-    (phase) => (phase.transcripts[0].ladder[1].targetSelection.rawResult = 2),
-    (phase) => (phase.transcripts[0].ladder[0].selectedRealSiblingTileIds = []),
-    (phase) => phase.screenSpaceErrorCandidates.reverse(),
+  for (const mutateSeam of [
+    (seam) => (seam.installation.beforeHadOwn = true),
+    (seam) => (seam.installation.installedWrapperIdentityMatches = false),
+    (seam) => seam.counts.originalCalls--,
+    (seam) => (seam.calls[1].originalCallCompleted = false),
+    (seam) => (seam.calls[1].tileKey = siblingKey),
+    (seam) => {
+      seam.calls[0].returnedVisibility = -1;
+      seam.calls[0].returnedVisibilityName = "NONE";
+      seam.calls[0].overridden = true;
+      seam.counts.overrideCalls++;
+      seam.counts.nonTargetAlteredCalls++;
+    },
+    (seam) => {
+      seam.calls[1].originalVisibility = -1;
+      seam.calls[1].originalVisibilityName = "NONE";
+      seam.calls[1].returnedVisibility = -1;
+      seam.calls[1].returnedVisibilityName = "NONE";
+      seam.calls[1].overridden = false;
+      seam.counts.overrideCalls--;
+    },
+    (seam) => {
+      seam.calls[4].returnedVisibility = -1;
+      seam.calls[4].returnedVisibilityName = "NONE";
+      seam.calls[4].overridden = true;
+      seam.counts.overrideCalls++;
+    },
+    (seam) => (seam.modeSwitch.revealFrame = 22),
+    (seam) => (seam.restoration.attemptedAt = "finally-verification"),
+    (seam) => (seam.restoration.immediateAfterReveal = false),
+    (seam) => (seam.restoration.beforeRelease = false),
+    (seam) => (seam.restoration.identityMatches = false),
+    (seam) => (seam.restoration.descriptorMatches = false),
+    (seam) => (seam.restoration.afterHadOwn = true),
   ]) {
     expectStatus(
       (report) =>
-        mutateFrontier(
-          report.sessions[0].phases[C12_29_S5_PHASES[0]].frontierDiscovery,
+        mutateSeam(
+          report.sessions[0].phases[C12_29_S5_PHASES[2]].visibilitySeam,
         ),
       "STRUCTURAL",
-      /frontier transcript/u,
+      /visibility seam/u,
     );
   }
   for (const mutateRelease of [
     (phase) => (phase.holdInterceptionEnabled = true),
     (phase) => (phase.newHeldRequestCountAfterRelease = 1),
     (phase) => (phase.holdTargetKey = heldTarget.anchorKey),
+    (phase) => (phase.visibilitySeamRestoredBeforeRelease = false),
   ]) {
     expectStatus(
       (report) => mutateRelease(report.sessions[0].phases[C12_29_S5_PHASES[3]]),
@@ -1079,7 +1330,7 @@ test("08 one selected L1 hold, real sibling, and disabled release are exact", ()
     (report) =>
       (report.sessions[0].phases[
         C12_29_S5_PHASES[3]
-      ].trackRestore.maximumScreenSpaceError = FRONTIER_SSE),
+      ].trackRestore.maximumScreenSpaceError = FILL_SSE),
     "FAIL",
     /held fill did not transition/u,
   );
@@ -1520,10 +1771,10 @@ test("21 prior RUNNING and extant lock both reject before browser work", () => {
       }),
     );
     assert.equal(inspectS5PriorState(v4Paths).latest.schema, V4_SCHEMA);
-    const v5StartOverV4 = beginS5EvidenceRun(v4Paths, IMAGE_IDS[4]);
-    assert.equal(v5StartOverV4.prior.latest.schema, V4_SCHEMA);
-    assert.equal(v5StartOverV4.running.schema, C12_29_S5_SCHEMA);
-    assert.equal(v5StartOverV4.running.status, "RUNNING");
+    const v6StartOverV4 = beginS5EvidenceRun(v4Paths, IMAGE_IDS[4]);
+    assert.equal(v6StartOverV4.prior.latest.schema, V4_SCHEMA);
+    assert.equal(v6StartOverV4.running.schema, C12_29_S5_SCHEMA);
+    assert.equal(v6StartOverV4.running.status, "RUNNING");
 
     const orderedDirectory = path.join(temp, "ordered-acquire");
     const orderedPaths = createS5ArtifactPaths(IMAGE_IDS[2], orderedDirectory);
@@ -2836,9 +3087,15 @@ test("23 canonical same-task capture block is exact and has no unfused reader", 
 
 test("24 static seams, ordering, exact imports, and forbidden operations are pinned", () => {
   assert.equal((specSource.match(/^test\(/gmu) ?? []).length, 24);
-  assert.equal(C12_29_S5_SOURCE_FILES.length, 36);
-  assert.equal(new Set(C12_29_S5_SOURCE_FILES).size, 36);
-  assert.equal(C12_29_S5_BUILD_SOURCE_FILES.length, 34);
+  assert.equal(C12_29_S5_SOURCE_FILES.length, 37);
+  assert.equal(new Set(C12_29_S5_SOURCE_FILES).size, 37);
+  assert.equal(C12_29_S5_BUILD_SOURCE_FILES.length, 35);
+  assert.equal(
+    C12_29_S5_SOURCE_FILES.includes(
+      "packages/engine/Source/Core/Visibility.js",
+    ),
+    true,
+  );
   assert.equal(
     C12_29_S5_SOURCE_FILES.includes(
       "packages/engine/Source/Scene/TileSelectionResult.js",
@@ -2983,66 +3240,93 @@ test("24 static seams, ordering, exact imports, and forbidden operations are pin
     /terrainData instanceof C\.QuantizedMeshTerrainData/u,
   );
   assert.doesNotMatch(probeSource, /terrainData\?\.constructor\?\.name/u);
-  const frozenSseScan = probeSource.indexOf(
-    "sseIndex < contract.frontierScreenSpaceErrorCandidates.length",
-  );
-  const latitudeScan = probeSource.indexOf(
-    "step < contract.frontierMaxSteps",
-    frozenSseScan,
-  );
-  const firstFrontierPair = probeSource.indexOf(
-    "frontierPair = {",
-    latitudeScan,
+  assert.doesNotMatch(
+    probeSource,
+    /frontierScreenSpaceErrorCandidates|frontierLatitudeStepDegrees|frontierMaxSteps|frontierSettleMaxFrames/u,
   );
   const providerCreation = probeSource.indexOf(
     "const quantizedProvider = await C.CesiumTerrainProvider.fromUrl(quantizedUrl);",
-    firstFrontierPair,
   );
   const targetUndefinedDeclaration = probeSource.indexOf(
     "let holdTarget;",
     providerCreation,
   );
-  const quantizedWarmupSettle = probeSource.indexOf(
-    'markProgress(contract.phases[2], "settle-quantized-warm-frontier");',
+  const installVisibilityWrapper = probeSource.indexOf(
+    "Object.defineProperty(providerBeforeSwap, visibilityProperty, {",
     targetUndefinedDeclaration,
+  );
+  const providerAssignment = probeSource.indexOf(
+    "scene.terrainProvider = quantizedProvider;",
+    installVisibilityWrapper,
+  );
+  const quantizedWarmupSettle = probeSource.indexOf(
+    'markProgress(contract.phases[2], "settle-quantized-warm-visibility-mask");',
+    providerAssignment,
   );
   const settledWarmupProof = probeSource.indexOf(
     "!warmupProof.settled",
     quantizedWarmupSettle,
   );
   const deferredTargetAssignment = probeSource.indexOf(
-    "holdTarget = frontierTarget;",
+    "holdTarget = fillTarget;",
     settledWarmupProof,
   );
   const exactHoldArm = probeSource.indexOf(
     "holdEnabled = true;",
     deferredTargetAssignment,
   );
-  const revealPan = probeSource.indexOf(
-    "setNadirCamera(frontierPair.revealLatitude);",
+  const passThroughSwitch = probeSource.indexOf(
+    'visibilityMode = "pass-through";',
     exactHoldArm,
   );
   const firstRevealCapture = probeSource.indexOf(
     "const fillImageId = captureDocumentaryPng(contract.captureLabels[0]);",
-    revealPan,
+    passThroughSwitch,
+  );
+  const revealSnapshot = probeSource.indexOf(
+    "const cSnapshot = snapshotTerrain();",
+    firstRevealCapture,
+  );
+  const immediateRestore = probeSource.indexOf(
+    'restoreVisibilitySeam("immediately-after-reveal-snapshot");',
+    revealSnapshot,
+  );
+  const releasePhase = probeSource.indexOf(
+    'markProgress(contract.phases[3], "release-held-requests"',
+    immediateRestore,
   );
   const restoreProductionSse = probeSource.indexOf(
     "globe.maximumScreenSpaceError = contract.terrainMaximumScreenSpaceError;",
-    firstRevealCapture,
+    releasePhase,
   );
   assert.ok(
-    frozenSseScan >= 0 &&
-      frozenSseScan < latitudeScan &&
-      latitudeScan < firstFrontierPair &&
-      firstFrontierPair < providerCreation &&
+    providerCreation >= 0 &&
       providerCreation < targetUndefinedDeclaration &&
+      targetUndefinedDeclaration < installVisibilityWrapper &&
+      installVisibilityWrapper < providerAssignment &&
+      providerAssignment < quantizedWarmupSettle &&
       targetUndefinedDeclaration < quantizedWarmupSettle &&
       quantizedWarmupSettle < settledWarmupProof &&
       deferredTargetAssignment < exactHoldArm &&
       settledWarmupProof < exactHoldArm &&
-      exactHoldArm < revealPan &&
-      revealPan < firstRevealCapture &&
-      firstRevealCapture < restoreProductionSse,
+      exactHoldArm < passThroughSwitch &&
+      passThroughSwitch < firstRevealCapture &&
+      firstRevealCapture < revealSnapshot &&
+      revealSnapshot < immediateRestore &&
+      immediateRestore < releasePhase &&
+      releasePhase < restoreProductionSse,
+  );
+  assert.doesNotMatch(
+    probeSource.slice(passThroughSwitch, firstRevealCapture),
+    /\bawait\b/u,
+  );
+  assert.match(
+    probeSource,
+    /originalComputeTileVisibility\.call\([\s\S]*?const returnedVisibility =[\s\S]*?visibilityMode === "warm-mask" && target[\s\S]*?C\.Visibility\.NONE[\s\S]*?: originalVisibility/u,
+  );
+  assert.match(
+    probeSource,
+    /if \(visibilityOwnDescriptorBefore\)[\s\S]*?Object\.defineProperty\([\s\S]*?visibilityOwnDescriptorBefore[\s\S]*?else \{[\s\S]*?delete providerBeforeSwap\[visibilityProperty\]/u,
   );
   assert.match(probeSource, /globe\.preloadSiblings = false;/u);
   assert.match(probeSource, /let holdEnabled = false;/u);

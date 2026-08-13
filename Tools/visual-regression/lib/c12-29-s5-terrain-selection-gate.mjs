@@ -7,9 +7,9 @@
  * deliberately browser-free so every premise can be mutation-tested in Node.
  */
 
-export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v5";
+export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v6";
 
-export const C12_29_S5_DIAGNOSTICS_SCHEMA = "c12-29-s5-runtime-diagnostics-v1";
+export const C12_29_S5_DIAGNOSTICS_SCHEMA = "c12-29-s5-runtime-diagnostics-v2";
 
 export const C12_29_S5_RENDERERS = Object.freeze(["webgl", "webgpu"]);
 
@@ -67,10 +67,11 @@ export const C12_29_S5_SCENE = Object.freeze({
   cameraHeightMeters: 8_000_000,
   cameraFovDegrees: 55,
   terrainMaximumScreenSpaceError: 2,
-  frontierScreenSpaceErrorCandidates: Object.freeze([32, 40, 48, 56, 64]),
-  frontierLatitudeStepDegrees: 1,
-  frontierMaxSteps: 60,
-  frontierSettleMaxFrames: 60,
+  // At the pinned 8 Mm / 960 px / 55 degree view, level zero exceeds this
+  // threshold while direct level one meets it. Runtime evidence must prove the
+  // exact target and a same-parent sibling really are selected at level one.
+  fillFrontierMaximumScreenSpaceError: 6,
+  fillWarmMaximumFrames: 300,
   viewport: Object.freeze({ width: 960, height: 960 }),
   verticalExaggeration: 2,
   // This is deliberately above the pinned fixture maximum. At x2 the
@@ -96,6 +97,7 @@ export const C12_29_S5_WEBGPU_LAYOUT_FILE =
  */
 export const C12_29_S5_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Core/VerticalExaggeration.js",
+  "packages/engine/Source/Core/Visibility.js",
   "packages/engine/Source/Core/CesiumTerrainProvider.js",
   "packages/engine/Source/Core/QuantizedMeshTerrainData.js",
   "packages/engine/Source/Scene/GridImageryProvider.js",
@@ -190,6 +192,139 @@ function validRequestLedger(value) {
   );
 }
 
+const VISIBILITY_VALUES = new Map([
+  [-1, "NONE"],
+  [0, "PARTIAL"],
+  [1, "FULL"],
+]);
+
+function validVisibilityCall(call, index) {
+  const visibilityName = VISIBILITY_VALUES.get(call?.originalVisibility);
+  const returnedName = VISIBILITY_VALUES.get(call?.returnedVisibility);
+  return (
+    exactObjectKeys(call, [
+      "ordinal",
+      "frameNumber",
+      "tileKey",
+      "mode",
+      "target",
+      "originalCallCompleted",
+      "originalVisibility",
+      "originalVisibilityName",
+      "returnedVisibility",
+      "returnedVisibilityName",
+      "overridden",
+    ]) &&
+    call.ordinal === index + 1 &&
+    nonNegativeInteger(call.frameNumber) &&
+    /^\d+\/\d+\/\d+$/u.test(call.tileKey) &&
+    new Set(["warm-mask", "pass-through"]).has(call.mode) &&
+    typeof call.target === "boolean" &&
+    typeof call.originalCallCompleted === "boolean" &&
+    call.originalVisibilityName === visibilityName &&
+    call.returnedVisibilityName === returnedName &&
+    typeof call.overridden === "boolean" &&
+    call.overridden ===
+      !Object.is(call.originalVisibility, call.returnedVisibility) &&
+    (call.target || !call.overridden)
+  );
+}
+
+function validVisibilitySeamProgress(value) {
+  const config = value?.config;
+  const counts = value?.counts;
+  const restoration = value?.restoration;
+  const calls = value?.calls;
+  if (
+    !exactObjectKeys(value, [
+      "state",
+      "targetKey",
+      "mode",
+      "config",
+      "calls",
+      "counts",
+      "terminalReason",
+      "restoration",
+    ]) ||
+    !new Set([
+      "not-installed",
+      "installed",
+      "warm-proven",
+      "revealed",
+      "restored",
+      "error-restored",
+    ]).has(value.state) ||
+    !(value.targetKey === null || /^1\/\d+\/\d+$/u.test(value.targetKey)) ||
+    !new Set(["not-installed", "warm-mask", "pass-through", "restored"]).has(
+      value.mode,
+    ) ||
+    !(value.terminalReason === null || typeof value.terminalReason === "string")
+  ) {
+    return false;
+  }
+  if (
+    !exactObjectKeys(config, [
+      "claim",
+      "maximumScreenSpaceError",
+      "cameraHeightMeters",
+      "cameraFovDegrees",
+      "maskMode",
+    ]) ||
+    config.claim !==
+      "controlled-visibility-input-production-selection-request-fill-release-render" ||
+    config.maximumScreenSpaceError !==
+      C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError ||
+    config.cameraHeightMeters !== C12_29_S5_SCENE.cameraHeightMeters ||
+    config.cameraFovDegrees !== C12_29_S5_SCENE.cameraFovDegrees ||
+    config.maskMode !== "warm-only-exact-target-Visibility.NONE"
+  ) {
+    return false;
+  }
+  if (
+    !exactObjectKeys(counts, [
+      "totalCalls",
+      "originalCalls",
+      "targetCalls",
+      "nonTargetCalls",
+      "overrideCalls",
+      "nonTargetAlteredCalls",
+      "skippedOriginalCalls",
+    ]) ||
+    !Object.values(counts).every(nonNegativeInteger) ||
+    counts.totalCalls !== counts.targetCalls + counts.nonTargetCalls ||
+    counts.originalCalls + counts.skippedOriginalCalls !== counts.totalCalls ||
+    counts.overrideCalls > counts.targetCalls
+  ) {
+    return false;
+  }
+  if (
+    !exactObjectKeys(restoration, [
+      "attempted",
+      "restored",
+      "identityMatches",
+      "descriptorMatches",
+    ]) ||
+    !Object.values(restoration).every((entry) => typeof entry === "boolean") ||
+    (restoration.restored &&
+      (!restoration.attempted ||
+        !restoration.identityMatches ||
+        !restoration.descriptorMatches))
+  ) {
+    return false;
+  }
+  return (
+    Array.isArray(calls) &&
+    calls.length <= C12_29_S5_SCENE.fillWarmMaximumFrames * 64 &&
+    calls.length === counts.totalCalls &&
+    calls.every(validVisibilityCall) &&
+    calls.every(
+      (call) =>
+        value.targetKey !== null &&
+        call.target === (call.tileKey === value.targetKey),
+    )
+  );
+}
+
 export function validateS5PageProgress(value, renderer = value?.renderer) {
   const reasons = [];
   const completed = value?.completedPhases;
@@ -252,6 +387,9 @@ export function validateS5PageProgress(value, renderer = value?.renderer) {
     (pick.settled && !pick.started)
   ) {
     reasons.push("page progress async-pick state is inconsistent");
+  }
+  if (!validVisibilitySeamProgress(value?.visibilitySeam)) {
+    reasons.push("page progress visibility seam diagnostics are inconsistent");
   }
   return { ok: reasons.length === 0, reasons };
 }
@@ -324,8 +462,8 @@ export function deriveS5SouthLevelOneTarget(longitude, latitude) {
   };
 }
 
-/** Recompute one fixed-camera level-one frontier observation from its evidence. */
-export function evaluateS5FrontierObservation(target, observation) {
+/** Recompute one fixed-camera controlled-visibility observation. */
+export function evaluateS5ControlledVisibilityObservation(target, observation) {
   if (
     !target ||
     !Array.isArray(observation?.selectedTileIds) ||
@@ -421,7 +559,7 @@ export function evaluateS5FrontierObservation(target, observation) {
     noStrictDescendants,
     targetBranchAbsent,
     selectedRealSiblingRendered,
-    revealEligible:
+    directLevelOneNatural:
       observation.settled === true &&
       observation.tilesLoaded === true &&
       !selected.has(target.parentKey) &&
@@ -431,7 +569,7 @@ export function evaluateS5FrontierObservation(target, observation) {
       noStrictDescendants &&
       targetSameFrameRendered &&
       selectedRealSiblingRendered,
-    warmEligible:
+    warmMaskExact:
       observation.settled === true &&
       observation.tilesLoaded === true &&
       !selected.has(target.parentKey) &&
@@ -960,7 +1098,8 @@ function validateSession(session, runId, structural, failures) {
   const warmup = c?.warmup;
   const holdArm = c?.holdArm;
   const firstReveal = c?.firstRevealProof;
-  const discovery = a?.frontierDiscovery;
+  const lod = a?.fillLodPrecondition;
+  const seam = c?.visibilitySeam;
   const expectedHeldTarget = deriveS5SouthLevelOneTarget(
     session?.fixture?.deepestTrack?.longitude,
     session?.fixture?.deepestTrack?.latitude,
@@ -976,223 +1115,258 @@ function validateSession(session, runId, structural, failures) {
     Object.is(target?.distanceDegrees, expectedHeldTarget?.distanceDegrees) &&
     target?.derivation === expectedHeldTarget?.derivation &&
     sameArrayMembers(target?.siblingKeys, expectedHeldTarget?.siblingKeys);
-  let frontierExact =
-    Boolean(expectedHeldTarget) &&
-    exactTarget(discovery?.target) &&
-    discovery?.derivation ===
-      "south-level-1-sse-major-north-latitude-adjacent-frontier" &&
-    Array.isArray(discovery?.screenSpaceErrorCandidates) &&
-    discovery.screenSpaceErrorCandidates.length ===
-      C12_29_S5_SCENE.frontierScreenSpaceErrorCandidates.length &&
-    discovery.screenSpaceErrorCandidates.every(
-      (value, index) =>
-        value === C12_29_S5_SCENE.frontierScreenSpaceErrorCandidates[index],
-    ) &&
-    discovery?.latitudeStepDegrees ===
-      C12_29_S5_SCENE.frontierLatitudeStepDegrees &&
-    discovery?.maxSteps === C12_29_S5_SCENE.frontierMaxSteps &&
-    discovery?.settleMaxFrames === C12_29_S5_SCENE.frontierSettleMaxFrames &&
-    discovery?.direction === "north" &&
-    Math.abs(discovery?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) <=
-      1e-12 &&
-    Math.abs(
-      discovery?.cameraHeightMeters - C12_29_S5_SCENE.cameraHeightMeters,
-    ) <= 1e-3 &&
-    discovery?.preloadSiblings === false &&
-    discovery?.preloadAncestors === false &&
-    Array.isArray(discovery?.transcripts) &&
-    discovery.transcripts.length === discovery?.sseIndex + 1;
-  let recomputedPair;
-  if (frontierExact) {
-    const trackLatitude = session.fixture.deepestTrack.latitude;
-    for (
-      let sseIndex = 0;
-      sseIndex < discovery.transcripts.length && frontierExact;
-      sseIndex++
-    ) {
-      const transcript = discovery.transcripts[sseIndex];
-      const expectedSse =
-        C12_29_S5_SCENE.frontierScreenSpaceErrorCandidates[sseIndex];
-      const ladder = transcript?.ladder;
-      if (
-        transcript?.sseIndex !== sseIndex ||
-        transcript?.maximumScreenSpaceError !== expectedSse ||
-        !Array.isArray(ladder) ||
-        ladder.length < 2 ||
-        ladder.length > C12_29_S5_SCENE.frontierMaxSteps
-      ) {
-        frontierExact = false;
-        break;
-      }
-      let firstPair;
-      for (let step = 0; step < ladder.length; step++) {
-        const rung = ladder[step];
-        const recomputed = evaluateS5FrontierObservation(
-          expectedHeldTarget,
-          rung,
-        );
-        const expectedLatitude =
-          trackLatitude + step * C12_29_S5_SCENE.frontierLatitudeStepDegrees;
-        const baseArraysExact = [
-          "selectedTileIds",
-          "realTileIds",
-          "fillTileIds",
-        ].every((key) => exactSortedUniqueStrings(rung?.[key]));
-        const derivedArraysExact = [
-          "targetSelectedDescendantTileIds",
-          "targetRealDescendantTileIds",
-          "targetFillDescendantTileIds",
-          "targetSelectedStrictDescendantTileIds",
-          "targetRealStrictDescendantTileIds",
-          "targetFillStrictDescendantTileIds",
-          "selectedRealSiblingTileIds",
-        ].every(
-          (key) =>
-            exactSortedUniqueStrings(rung?.[key]) &&
-            sameArrayMembers(rung[key], recomputed?.[key]),
-        );
-        const siblingObservationsExact =
-          Array.isArray(rung?.selectedRealSiblingObservations) &&
-          rung.selectedRealSiblingObservations.length ===
-            recomputed?.selectedRealSiblingTileIds.length &&
-          recomputed.selectedRealSiblingTileIds.every((id) =>
-            rung.selectedRealSiblingObservations.some((selection) =>
-              exactSelectionObservation(selection, id, 2, "RENDERED"),
-            ),
-          );
-        if (
-          rung?.sseIndex !== sseIndex ||
-          rung?.step !== step ||
-          !Object.is(rung?.longitude, session.fixture.deepestTrack.longitude) ||
-          !Object.is(rung?.latitude, expectedLatitude) ||
-          Math.abs(
-            rung?.cameraHeightMeters - C12_29_S5_SCENE.cameraHeightMeters,
-          ) > 1e-3 ||
-          Math.abs(rung?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) >
-            1e-12 ||
-          rung?.maximumScreenSpaceError !== expectedSse ||
-          rung?.preloadSiblings !== false ||
-          rung?.preloadAncestors !== false ||
-          rung?.settled !== true ||
-          rung?.tilesLoaded !== true ||
-          !baseArraysExact ||
-          !derivedArraysExact ||
-          !siblingObservationsExact ||
-          rung?.targetSelected !== recomputed?.targetSelected ||
-          rung?.targetReal !== recomputed?.targetReal ||
-          rung?.targetFill !== recomputed?.targetFill ||
-          rung?.noStrictDescendants !== recomputed?.noStrictDescendants ||
-          rung?.targetBranchAbsent !== recomputed?.targetBranchAbsent ||
-          rung?.revealEligible !== recomputed?.revealEligible ||
-          rung?.warmEligible !== recomputed?.warmEligible
-        ) {
-          frontierExact = false;
-          break;
-        }
-        const prior = ladder[step - 1];
-        const priorRecomputed =
-          step > 0
-            ? evaluateS5FrontierObservation(expectedHeldTarget, prior)
-            : undefined;
-        const commonSiblingKeys = priorRecomputed
-          ? priorRecomputed.selectedRealSiblingTileIds
-              .filter((id) =>
-                recomputed.selectedRealSiblingTileIds.includes(id),
-              )
-              .sort()
-          : [];
-        if (
-          !firstPair &&
-          priorRecomputed?.revealEligible &&
-          recomputed?.warmEligible &&
-          commonSiblingKeys.length > 0
-        ) {
-          firstPair = {
-            sseIndex,
-            maximumScreenSpaceError: expectedSse,
-            revealStep: step - 1,
-            warmStep: step,
-            revealLatitude: prior.latitude,
-            warmLatitude: rung.latitude,
-            siblingKey: commonSiblingKeys[0],
-          };
-        }
-      }
-      if (firstPair) {
-        recomputedPair = firstPair;
-        if (
-          sseIndex !== discovery.transcripts.length - 1 ||
-          discovery.transcripts[sseIndex].ladder.length !==
-            firstPair.warmStep + 1 ||
-          JSON.stringify(transcript.firstAdjacentMatch) !==
-            JSON.stringify(firstPair)
-        ) {
-          frontierExact = false;
-        }
-      } else {
-        const possibleRungs = Math.min(
-          C12_29_S5_SCENE.frontierMaxSteps,
-          Math.floor(
-            (89 - trackLatitude) / C12_29_S5_SCENE.frontierLatitudeStepDegrees,
-          ) + 1,
-        );
-        if (
-          frontierExact &&
-          (sseIndex === discovery.transcripts.length - 1 ||
-            ladder.length !== possibleRungs ||
-            transcript?.firstAdjacentMatch !== null)
-        ) {
-          frontierExact = false;
-        }
-      }
-    }
-  }
+  const expectedSiblingKey = expectedHeldTarget?.anchorKey;
+  const sseInputs = lod?.sseInputs;
+  const recomputedParentSse =
+    (sseInputs?.levelZeroGeometricError * sseInputs?.drawingBufferHeight) /
+    (sseInputs?.parentDistance *
+      sseInputs?.sseDenominator *
+      sseInputs?.pixelRatio);
+  const recomputedTargetSse =
+    (sseInputs?.levelOneGeometricError * sseInputs?.drawingBufferHeight) /
+    (sseInputs?.targetDistance *
+      sseInputs?.sseDenominator *
+      sseInputs?.pixelRatio);
+  const warmSseInputs = warmup?.sseInputs;
+  const recomputedWarmParentSse =
+    (warmSseInputs?.levelZeroGeometricError *
+      warmSseInputs?.drawingBufferHeight) /
+    (warmSseInputs?.parentDistance *
+      warmSseInputs?.sseDenominator *
+      warmSseInputs?.pixelRatio);
+  const recomputedWarmTargetSse =
+    (warmSseInputs?.levelOneGeometricError *
+      warmSseInputs?.drawingBufferHeight) /
+    (warmSseInputs?.targetDistance *
+      warmSseInputs?.sseDenominator *
+      warmSseInputs?.pixelRatio);
+  const lodTargetDescendants = lod?.selectedTileIds?.filter(
+    (id) =>
+      id !== expectedHeldTarget?.key &&
+      levelOneAncestorKey(id) === expectedHeldTarget?.key,
+  );
   if (
-    !frontierExact ||
-    !recomputedPair ||
-    ![
-      "sseIndex",
-      "maximumScreenSpaceError",
-      "revealStep",
-      "warmStep",
-      "revealLatitude",
-      "warmLatitude",
-      "siblingKey",
-    ].every((key) => Object.is(discovery?.[key], recomputedPair?.[key]))
+    !exactTarget(lod?.target) ||
+    lod?.claim !== "fixed-camera-direct-level-one-no-scan" ||
+    lod?.derivation !== "pinned-sse-production-selection" ||
+    lod?.siblingKey !== expectedSiblingKey ||
+    lod?.maximumScreenSpaceError !==
+      C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError ||
+    !Object.is(lod?.longitude, session.fixture.deepestTrack.longitude) ||
+    !Object.is(lod?.latitude, session.fixture.deepestTrack.latitude) ||
+    Math.abs(lod?.cameraHeightMeters - C12_29_S5_SCENE.cameraHeightMeters) >
+      1e-3 ||
+    Math.abs(lod?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) >
+      1e-12 ||
+    lod?.preloadSiblings !== false ||
+    lod?.preloadAncestors !== false ||
+    lod?.cameraReference?.cameraCartographicInsideTarget !== false ||
+    lod?.cameraReference?.referenceFrameOriginDefined !== false ||
+    lod?.cameraReference?.referenceFrameOriginInsideTarget !== false ||
+    lod?.cameraReference?.neededPositionInsideTarget !== false ||
+    sseInputs?.drawingBufferHeight !== C12_29_S5_SCENE.viewport.height ||
+    sseInputs?.pixelRatio !== 1 ||
+    !(sseInputs?.sseDenominator > 0) ||
+    !(sseInputs?.levelZeroGeometricError > 0) ||
+    !(sseInputs?.levelOneGeometricError > 0) ||
+    !Object.is(
+      sseInputs?.levelOneGeometricError,
+      sseInputs?.levelZeroGeometricError / 2,
+    ) ||
+    !(sseInputs?.parentDistance > 0) ||
+    !(sseInputs?.targetDistance > 0) ||
+    !Object.is(sseInputs?.parentComputedSse, recomputedParentSse) ||
+    !Object.is(sseInputs?.targetComputedSse, recomputedTargetSse) ||
+    !(
+      sseInputs?.parentComputedSse >
+      C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError
+    ) ||
+    !(
+      sseInputs?.targetComputedSse <=
+      C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError
+    ) ||
+    !exactSortedUniqueStrings(lod?.selectedTileIds) ||
+    !exactSortedUniqueStrings(lod?.realTileIds) ||
+    !exactSortedUniqueStrings(lod?.fillTileIds) ||
+    !lod.selectedTileIds.includes(expectedHeldTarget?.key) ||
+    !lod.realTileIds.includes(expectedHeldTarget?.key) ||
+    lod.fillTileIds.includes(expectedHeldTarget?.key) ||
+    lod.selectedTileIds.includes(expectedHeldTarget?.parentKey) ||
+    !Array.isArray(lodTargetDescendants) ||
+    lodTargetDescendants.length !== 0 ||
+    !exactSelectionObservation(
+      lod?.parentSelection,
+      expectedHeldTarget?.parentKey,
+      3,
+      "REFINED",
+    ) ||
+    !exactSelectionObservation(
+      lod?.targetSelection,
+      expectedHeldTarget?.key,
+      2,
+      "RENDERED",
+    ) ||
+    !exactSelectionObservation(
+      lod?.siblingSelection,
+      expectedSiblingKey,
+      2,
+      "RENDERED",
+    )
   ) {
     structural.push(
-      `${renderer}: level-one SSE/latitude frontier transcript is not the first exact adjacent match`,
+      `${renderer}: fixed-SSE direct level-one target/sibling precondition is absent`,
+    );
+  }
+
+  const calls = seam?.calls;
+  const counts = seam?.counts;
+  const callsExact =
+    Array.isArray(calls) &&
+    calls.length > 0 &&
+    calls.every(validVisibilityCall);
+  const computedCounts = callsExact
+    ? {
+        totalCalls: calls.length,
+        originalCalls: calls.filter((call) => call.originalCallCompleted)
+          .length,
+        targetCalls: calls.filter((call) => call.target).length,
+        nonTargetCalls: calls.filter((call) => !call.target).length,
+        overrideCalls: calls.filter((call) => call.overridden).length,
+        nonTargetAlteredCalls: calls.filter(
+          (call) => !call.target && call.overridden,
+        ).length,
+        skippedOriginalCalls: calls.filter(
+          (call) => !call.originalCallCompleted,
+        ).length,
+      }
+    : undefined;
+  const warmFrameCalls = callsExact
+    ? calls.filter(
+        (call) =>
+          call.frameNumber === warmup?.targetSelection?.selectionFrame &&
+          call.tileKey === expectedHeldTarget?.key,
+      )
+    : [];
+  const revealFrameCalls = callsExact
+    ? calls.filter(
+        (call) =>
+          call.frameNumber === firstReveal?.targetSelection?.selectionFrame &&
+          call.tileKey === expectedHeldTarget?.key,
+      )
+    : [];
+  const allWarmTargetCalls = callsExact
+    ? calls.filter((call) => call.target && call.mode === "warm-mask")
+    : [];
+  const descriptorRestored =
+    seam?.restoration?.attempted === true &&
+    seam?.restoration?.restored === true &&
+    seam?.restoration?.immediateAfterReveal === true &&
+    seam?.restoration?.beforeRelease === true &&
+    seam?.restoration?.identityMatches === true &&
+    seam?.restoration?.descriptorMatches === true &&
+    seam?.restoration?.finallyVerified === true &&
+    seam?.restoration?.afterHadOwn === seam?.installation?.beforeHadOwn &&
+    JSON.stringify(seam?.restoration?.afterDescriptor ?? null) ===
+      JSON.stringify(seam?.installation?.beforeDescriptor ?? null);
+  if (
+    seam?.claim !==
+      "controlled-visibility-input-production-selection-request-fill-release-render" ||
+    seam?.method !== "GlobeSurfaceTileProvider.computeTileVisibility" ||
+    seam?.maskMode !== "warm-only-exact-target-Visibility.NONE" ||
+    seam?.targetKey !== expectedHeldTarget?.key ||
+    seam?.siblingKey !== expectedSiblingKey ||
+    seam?.maximumScreenSpaceError !==
+      C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError ||
+    seam?.installation?.originalIdentityCaptured !== true ||
+    seam?.installation?.prototypeDescriptorFound !== true ||
+    seam?.installation?.beforeHadOwn !== false ||
+    seam?.installation?.beforeDescriptor !== null ||
+    seam?.installation?.installedHadOwn !== true ||
+    seam?.installation?.installedDescriptor?.configurable !== true ||
+    seam?.installation?.installedDescriptor?.writable !== true ||
+    seam?.installation?.installedDescriptor?.hasValue !== true ||
+    seam?.installation?.installedDescriptor?.hasGetter !== false ||
+    seam?.installation?.installedDescriptor?.hasSetter !== false ||
+    seam?.installation?.installedWrapperIdentityMatches !== true ||
+    !callsExact ||
+    calls.length > C12_29_S5_SCENE.fillWarmMaximumFrames * 64 ||
+    !counts ||
+    !Object.keys(computedCounts ?? {}).every(
+      (key) => counts[key] === computedCounts[key],
+    ) ||
+    counts.totalCalls !== calls.length ||
+    counts.originalCalls !== calls.length ||
+    counts.skippedOriginalCalls !== 0 ||
+    counts.nonTargetAlteredCalls !== 0 ||
+    calls.some(
+      (call) => call.target !== (call.tileKey === expectedHeldTarget?.key),
+    ) ||
+    counts.overrideCalls !== allWarmTargetCalls.length ||
+    allWarmTargetCalls.length < 1 ||
+    !allWarmTargetCalls.every(
+      (call) =>
+        new Set([0, 1]).has(call.originalVisibility) &&
+        call.returnedVisibility === -1 &&
+        call.overridden === true,
+    ) ||
+    calls.some(
+      (call) => call.overridden && (!call.target || call.mode !== "warm-mask"),
+    ) ||
+    warmFrameCalls.length < 1 ||
+    !warmFrameCalls.every(
+      (call) =>
+        new Set([0, 1]).has(call.originalVisibility) &&
+        call.returnedVisibility === -1 &&
+        call.overridden === true &&
+        call.mode === "warm-mask",
+    ) ||
+    revealFrameCalls.length < 1 ||
+    !revealFrameCalls.every(
+      (call) =>
+        new Set([0, 1]).has(call.originalVisibility) &&
+        call.returnedVisibility === call.originalVisibility &&
+        call.overridden === false &&
+        call.mode === "pass-through",
+    ) ||
+    !sameArrayMembers(
+      seam?.warmTargetCallOrdinals,
+      warmFrameCalls.map((call) => call.ordinal),
+    ) ||
+    !sameArrayMembers(
+      seam?.revealTargetCallOrdinals,
+      revealFrameCalls.map((call) => call.ordinal),
+    ) ||
+    seam?.modeSwitch?.from !== "warm-mask" ||
+    seam?.modeSwitch?.to !== "pass-through" ||
+    seam?.modeSwitch?.sameTaskReveal !== true ||
+    seam?.modeSwitch?.warmFrame !== warmup?.targetSelection?.selectionFrame ||
+    seam?.modeSwitch?.revealFrame !==
+      firstReveal?.targetSelection?.selectionFrame ||
+    seam?.modeSwitch?.revealFrame !== seam?.modeSwitch?.warmFrame + 1 ||
+    seam?.restoration?.attemptedAt !== "immediately-after-reveal-snapshot" ||
+    !descriptorRestored
+  ) {
+    structural.push(
+      `${renderer}: exact-target warm-only visibility seam/call/restoration proof is invalid`,
     );
   }
   const warmSiblingExact =
     Array.isArray(warmup?.selectedRealSiblingObservations) &&
-    warmup?.selectedRealSiblingTileIds?.includes(recomputedPair?.siblingKey) &&
+    warmup?.selectedRealSiblingTileIds?.includes(expectedSiblingKey) &&
     warmup.selectedRealSiblingObservations.some((selection) =>
-      exactSelectionObservation(
-        selection,
-        recomputedPair?.siblingKey,
-        2,
-        "RENDERED",
-      ),
+      exactSelectionObservation(selection, expectedSiblingKey, 2, "RENDERED"),
     );
   const revealSiblingExact =
     Array.isArray(firstReveal?.selectedRealSiblingObservations) &&
-    firstReveal?.selectedRealSiblingTileIds?.includes(
-      recomputedPair?.siblingKey,
-    ) &&
+    firstReveal?.selectedRealSiblingTileIds?.includes(expectedSiblingKey) &&
     firstReveal.selectedRealSiblingObservations.some((selection) =>
-      exactSelectionObservation(
-        selection,
-        recomputedPair?.siblingKey,
-        2,
-        "RENDERED",
-      ),
+      exactSelectionObservation(selection, expectedSiblingKey, 2, "RENDERED"),
     );
   if (
     !exactTarget(c?.holdTarget) ||
     warmup?.proofCompletedBeforeArm !== true ||
     warmup?.settled !== true ||
-    warmup?.boundedMaxFrames !== 300 ||
+    warmup?.boundedMaxFrames !== C12_29_S5_SCENE.fillWarmMaximumFrames ||
     !Number.isInteger(warmup?.settleFrames) ||
     warmup.settleFrames < 1 ||
     warmup.settleFrames > warmup.boundedMaxFrames ||
@@ -1201,13 +1375,13 @@ function validateSession(session, runId, structural, failures) {
     warmup?.tilesLoaded !== true ||
     warmup?.fillCount !== 0 ||
     !Object.is(warmup?.longitude, session.fixture.deepestTrack.longitude) ||
-    !Object.is(warmup?.latitude, recomputedPair?.warmLatitude) ||
+    !Object.is(warmup?.latitude, session.fixture.deepestTrack.latitude) ||
     Math.abs(warmup?.cameraHeightMeters - C12_29_S5_SCENE.cameraHeightMeters) >
       1e-3 ||
     Math.abs(warmup?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) >
       1e-12 ||
     warmup?.maximumScreenSpaceError !==
-      recomputedPair?.maximumScreenSpaceError ||
+      C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError ||
     warmup?.preloadSiblings !== false ||
     warmup?.preloadAncestors !== false ||
     warmup?.holdTargetUndefinedDuringWarmup !== true ||
@@ -1230,7 +1404,42 @@ function validateSession(session, runId, structural, failures) {
       1,
       "CULLED",
     ) ||
-    warmup?.frontierSiblingKey !== recomputedPair?.siblingKey ||
+    !exactSelectionObservation(
+      warmup?.parentSelection,
+      expectedHeldTarget?.parentKey,
+      3,
+      "REFINED",
+    ) ||
+    warmup?.cameraReference?.cameraCartographicInsideTarget !== false ||
+    warmup?.cameraReference?.referenceFrameOriginDefined !== false ||
+    warmup?.cameraReference?.referenceFrameOriginInsideTarget !== false ||
+    warmup?.cameraReference?.neededPositionInsideTarget !== false ||
+    warmSseInputs?.drawingBufferHeight !== C12_29_S5_SCENE.viewport.height ||
+    warmSseInputs?.pixelRatio !== 1 ||
+    !(warmSseInputs?.sseDenominator > 0) ||
+    !(warmSseInputs?.levelZeroGeometricError > 0) ||
+    !(warmSseInputs?.levelOneGeometricError > 0) ||
+    !Object.is(
+      warmSseInputs?.levelOneGeometricError,
+      warmSseInputs?.levelZeroGeometricError / 2,
+    ) ||
+    !(warmSseInputs?.parentDistance > 0) ||
+    !(warmSseInputs?.targetDistance > 0) ||
+    !Object.is(warmSseInputs?.parentComputedSse, recomputedWarmParentSse) ||
+    !Object.is(warmSseInputs?.targetComputedSse, recomputedWarmTargetSse) ||
+    !(
+      warmSseInputs?.parentComputedSse >
+      C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError
+    ) ||
+    !(
+      warmSseInputs?.targetComputedSse <=
+      C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError
+    ) ||
+    warmup?.siblingKey !== expectedSiblingKey ||
+    !sameArrayMembers(
+      warmup?.visibilityTargetCallOrdinals,
+      warmFrameCalls.map((call) => call.ordinal),
+    ) ||
     !warmSiblingExact ||
     holdArm?.afterSettledWarmup !== true ||
     holdArm?.assignedAfterWarmProof !== true ||
@@ -1241,17 +1450,17 @@ function validateSession(session, runId, structural, failures) {
     holdArm?.targetRequestAttemptsBefore !== 0 ||
     holdArm?.targetReservedBefore !== false ||
     holdArm?.heldRequestCountBefore !== 0 ||
-    !Object.is(holdArm?.warmLatitude, recomputedPair?.warmLatitude) ||
-    !Object.is(holdArm?.revealLatitude, recomputedPair?.revealLatitude) ||
-    holdArm?.latitudePanDegrees !==
-      -C12_29_S5_SCENE.frontierLatitudeStepDegrees ||
+    holdArm?.visibilityModeBefore !== "warm-mask" ||
+    holdArm?.visibilityModeAfter !== "pass-through" ||
+    holdArm?.cameraMovedForReveal !== false ||
     Math.abs(holdArm?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) >
       1e-12 ||
     Math.abs(holdArm?.cameraHeightMeters - C12_29_S5_SCENE.cameraHeightMeters) >
       1e-3 ||
     holdArm?.maximumScreenSpaceError !==
-      recomputedPair?.maximumScreenSpaceError ||
-    firstReveal?.captureWasFirstRenderAfterPan !== true ||
+      C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError ||
+    firstReveal?.captureWasFirstRenderAfterPassThrough !== true ||
+    firstReveal?.sameTaskModeSwitchAndCapture !== true ||
     firstReveal?.noYieldBeforeCapture !== true ||
     firstReveal?.frameDelta !== 1 ||
     firstReveal?.frameAfter !== firstReveal?.frameBefore + 1 ||
@@ -1259,14 +1468,14 @@ function validateSession(session, runId, structural, failures) {
       firstReveal?.longitude,
       session.fixture.deepestTrack.longitude,
     ) ||
-    !Object.is(firstReveal?.latitude, recomputedPair?.revealLatitude) ||
+    !Object.is(firstReveal?.latitude, session.fixture.deepestTrack.latitude) ||
     Math.abs(
       firstReveal?.cameraHeightMeters - C12_29_S5_SCENE.cameraHeightMeters,
     ) > 1e-3 ||
     Math.abs(firstReveal?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) >
       1e-12 ||
     firstReveal?.maximumScreenSpaceError !==
-      recomputedPair?.maximumScreenSpaceError ||
+      C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError ||
     firstReveal?.targetRequestAttemptsBefore !== 0 ||
     firstReveal?.targetRequestAttemptsAfter !== 1 ||
     firstReveal?.postArmTargetRequestAttempts !== 1 ||
@@ -1280,7 +1489,11 @@ function validateSession(session, runId, structural, failures) {
       firstReveal?.targetSelectedStrictDescendantTileIds,
     ) ||
     firstReveal.targetSelectedStrictDescendantTileIds.length !== 0 ||
-    firstReveal?.frontierSiblingKey !== recomputedPair?.siblingKey ||
+    firstReveal?.siblingKey !== expectedSiblingKey ||
+    !sameArrayMembers(
+      firstReveal?.visibilityTargetCallOrdinals,
+      revealFrameCalls.map((call) => call.ordinal),
+    ) ||
     !revealSiblingExact ||
     firstReveal?.heldRequestCount !== 1 ||
     firstReveal?.heldKeys?.length !== 1 ||
@@ -1288,9 +1501,16 @@ function validateSession(session, runId, structural, failures) {
     firstReveal?.loadedAndFillFlags !== true ||
     firstReveal?.targetSelected !== true ||
     firstReveal?.targetFill !== true ||
+    firstReveal?.fillMesh?.tileId !== expectedHeldTarget?.key ||
+    firstReveal?.fillMesh?.terrainFillMeshInstance !== true ||
+    firstReveal?.fillMesh?.renderedMeshMatches !== true ||
+    firstReveal?.fillMesh?.realMeshAbsent !== true ||
+    !(firstReveal?.fillMesh?.vertexCount > 0) ||
+    !(firstReveal?.fillMesh?.indexCount > 0) ||
     c?.holdInterceptionEnabled !== true ||
     Math.abs(c?.cameraFovDegrees - C12_29_S5_SCENE.cameraFovDegrees) > 1e-12 ||
-    c?.maximumScreenSpaceError !== recomputedPair?.maximumScreenSpaceError ||
+    c?.maximumScreenSpaceError !==
+      C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError ||
     c?.preloadSiblings !== false ||
     c?.holdTargetReserved !== true ||
     c?.holdTargetRequestAttemptsAfterArm !== 1 ||
@@ -1302,13 +1522,13 @@ function validateSession(session, runId, structural, failures) {
     !c?.fillTileIds?.includes(expectedHeldTarget?.key) ||
     !c?.selectedTileIds?.includes(expectedHeldTarget?.key) ||
     c?.heldTargetIntersectsSelectedFill !== true ||
-    !c?.realSiblingTileIds?.includes(recomputedPair?.siblingKey) ||
-    !c?.realTileIds?.includes(recomputedPair?.siblingKey) ||
-    !c?.selectedTileIds?.includes(recomputedPair?.siblingKey) ||
+    !c?.realSiblingTileIds?.includes(expectedSiblingKey) ||
+    !c?.realTileIds?.includes(expectedSiblingKey) ||
+    !c?.selectedTileIds?.includes(expectedSiblingKey) ||
     c?.heldTargetDecodedBeforeRelease !== true
   ) {
     structural.push(
-      `${renderer}: first reveal did not produce exactly one direct level-one held TerrainFillMesh`,
+      `${renderer}: pass-through reveal did not produce exactly one direct level-one held TerrainFillMesh`,
     );
   }
   if (
@@ -1343,6 +1563,7 @@ function validateSession(session, runId, structural, failures) {
   if (
     d?.holdTargetKey !== c?.holdTarget?.key ||
     d?.holdInterceptionEnabled !== false ||
+    d?.visibilitySeamRestoredBeforeRelease !== true ||
     d?.heldRequestCountAfterRelease !== 0 ||
     d?.releasedKeys?.length !== 1 ||
     d?.releasedKeys?.[0] !== expectedHeldTarget?.key ||

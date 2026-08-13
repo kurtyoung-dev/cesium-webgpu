@@ -2117,6 +2117,36 @@ const MEASURE_S5_SESSION = async (contract) => {
       frameDriver: contract.pickFrameDriver,
       renderPumpFrames: 0,
     },
+    visibilitySeam: {
+      state: "not-installed",
+      targetKey: null,
+      mode: "not-installed",
+      config: {
+        claim:
+          "controlled-visibility-input-production-selection-request-fill-release-render",
+        maximumScreenSpaceError: contract.fillFrontierMaximumScreenSpaceError,
+        cameraHeightMeters: contract.cameraHeightMeters,
+        cameraFovDegrees: contract.cameraFovDegrees,
+        maskMode: "warm-only-exact-target-Visibility.NONE",
+      },
+      calls: [],
+      counts: {
+        totalCalls: 0,
+        originalCalls: 0,
+        targetCalls: 0,
+        nonTargetCalls: 0,
+        overrideCalls: 0,
+        nonTargetAlteredCalls: 0,
+        skippedOriginalCalls: 0,
+      },
+      terminalReason: null,
+      restoration: {
+        attempted: false,
+        restored: false,
+        identityMatches: false,
+        descriptorMatches: false,
+      },
+    },
   };
   globalThis.__c1229S5Progress = progress;
   const markProgress = (phase, step, detail) => {
@@ -2559,7 +2589,7 @@ const MEASURE_S5_SESSION = async (contract) => {
   };
   setNadirCamera(track.latitude);
   scene.camera.frustum.fov = C.Math.toRadians(contract.cameraFovDegrees);
-  globe.maximumScreenSpaceError = contract.terrainMaximumScreenSpaceError;
+  globe.maximumScreenSpaceError = contract.fillFrontierMaximumScreenSpaceError;
   globe.preloadSiblings = false;
   globe.preloadAncestors = false;
 
@@ -2588,7 +2618,7 @@ const MEASURE_S5_SESSION = async (contract) => {
     levelOneYTiles !== 2 ||
     anchorTile.y + 1 >= levelOneYTiles
   ) {
-    throw new Error("S5 south level-one frontier target is unavailable");
+    throw new Error("S5 south level-one fill target is unavailable");
   }
   const targetX = anchorTile.x;
   const targetY = anchorTile.y + 1;
@@ -2603,7 +2633,7 @@ const MEASURE_S5_SESSION = async (contract) => {
     }
   }
   siblingKeys.sort();
-  const frontierTarget = {
+  const fillTarget = {
     level: heldLevel,
     anchorKey: `${heldLevel}/${anchorTile.x}/${anchorTile.y}`,
     parentKey: `0/${targetParentX}/${targetParentY}`,
@@ -2615,153 +2645,77 @@ const MEASURE_S5_SESSION = async (contract) => {
     derivation: "south-level-1-anchor-neighbor",
     siblingKeys,
   };
-  const observeFrontierRung = (settled, sseIndex, step, latitude) => {
-    const targetSelectedDescendantTileIds = settled.selectedTileIds
-      .filter((id) => levelOneAncestorId(id) === frontierTarget.key)
-      .sort();
-    const targetRealDescendantTileIds = settled.realTileIds
-      .filter((id) => levelOneAncestorId(id) === frontierTarget.key)
-      .sort();
-    const targetFillDescendantTileIds = settled.fillTileIds
-      .filter((id) => levelOneAncestorId(id) === frontierTarget.key)
-      .sort();
-    const targetSelectedStrictDescendantTileIds =
-      targetSelectedDescendantTileIds.filter((id) => id !== frontierTarget.key);
-    const targetRealStrictDescendantTileIds =
-      targetRealDescendantTileIds.filter((id) => id !== frontierTarget.key);
-    const targetFillStrictDescendantTileIds =
-      targetFillDescendantTileIds.filter((id) => id !== frontierTarget.key);
-    const targetSelection = tileSelectionObservation(frontierTarget.key);
-    const siblingSelections = selectedRealSiblingObservations(
-      frontierTarget,
-      settled,
+  const lodTargetSelection = tileSelectionObservation(fillTarget.key);
+  const lodParentSelection = tileSelectionObservation(fillTarget.parentKey);
+  const lodSiblingSelection = tileSelectionObservation(fillTarget.anchorKey);
+  const lodTargetTile = findInstantiatedTile(fillTarget.key);
+  const lodParentTile = findInstantiatedTile(fillTarget.parentKey);
+  const lodProvider = getTileProvider();
+  const lodDrawingBufferHeight = scene.frameState.context.drawingBufferHeight;
+  const lodPixelRatio = scene.frameState.pixelRatio;
+  const lodSseDenominator = scene.camera.frustum.sseDenominator;
+  const lodLevelZeroGeometricError =
+    lodProvider.getLevelMaximumGeometricError(0);
+  const lodLevelOneGeometricError =
+    lodProvider.getLevelMaximumGeometricError(1);
+  const computeLodSse = (geometricError, tile) =>
+    Number.isFinite(tile?._distance) && tile._distance > 0
+      ? (geometricError * lodDrawingBufferHeight) /
+        (tile._distance * lodSseDenominator * lodPixelRatio)
+      : null;
+  const lodParentComputedSse = computeLodSse(
+    lodLevelZeroGeometricError,
+    lodParentTile,
+  );
+  const lodTargetComputedSse = computeLodSse(
+    lodLevelOneGeometricError,
+    lodTargetTile,
+  );
+  const lodCameraInsideTarget =
+    Boolean(lodTargetTile?.rectangle) &&
+    C.Rectangle.contains(
+      lodTargetTile.rectangle,
+      scene.camera.positionCartographic,
     );
-    const selectedRealSiblingTileIds = siblingSelections
-      .map((entry) => entry.tileId)
-      .sort();
-    const noStrictDescendants =
-      targetSelectedStrictDescendantTileIds.length === 0 &&
-      targetRealStrictDescendantTileIds.length === 0 &&
-      targetFillStrictDescendantTileIds.length === 0;
-    const targetBranchAbsent =
-      targetSelectedDescendantTileIds.length === 0 &&
-      targetRealDescendantTileIds.length === 0 &&
-      targetFillDescendantTileIds.length === 0;
-    return {
-      sseIndex,
-      step,
-      longitude: track.longitude,
-      latitude,
-      cameraHeightMeters: scene.camera.positionCartographic.height,
-      cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
-      maximumScreenSpaceError: globe.maximumScreenSpaceError,
-      preloadSiblings: globe.preloadSiblings,
-      preloadAncestors: globe.preloadAncestors,
-      settled: settled.settled,
-      settleFrames: settled.settleFrames,
-      stableFrames: settled.stableFrames,
-      tilesLoaded: settled.tilesLoaded,
-      selectedTileIds: settled.selectedTileIds,
-      realTileIds: settled.realTileIds,
-      fillTileIds: settled.fillTileIds,
-      targetSelectedDescendantTileIds,
-      targetRealDescendantTileIds,
-      targetFillDescendantTileIds,
-      targetSelectedStrictDescendantTileIds,
-      targetRealStrictDescendantTileIds,
-      targetFillStrictDescendantTileIds,
-      targetSelection,
-      selectedRealSiblingTileIds,
-      selectedRealSiblingObservations: siblingSelections,
-      targetSelected: settled.selectedTileIds.includes(frontierTarget.key),
-      targetReal: settled.realTileIds.includes(frontierTarget.key),
-      targetFill: settled.fillTileIds.includes(frontierTarget.key),
-      noStrictDescendants,
-      targetBranchAbsent,
-      revealEligible:
-        settled.settled &&
-        settled.tilesLoaded &&
-        settled.selectedTileIds.includes(frontierTarget.key) &&
-        settled.realTileIds.includes(frontierTarget.key) &&
-        !settled.fillTileIds.includes(frontierTarget.key) &&
-        noStrictDescendants &&
-        targetSelection.sameFrame &&
-        targetSelection.rawResult === C.TileSelectionResult.RENDERED &&
-        !targetSelection.wasKicked &&
-        siblingSelections.length > 0,
-      warmEligible:
-        settled.settled &&
-        settled.tilesLoaded &&
-        targetBranchAbsent &&
-        targetSelection.sameFrame &&
-        targetSelection.rawResult === C.TileSelectionResult.CULLED &&
-        !targetSelection.wasKicked &&
-        siblingSelections.length > 0,
-    };
-  };
-  const frontierTranscripts = [];
-  let frontierPair;
-  for (
-    let sseIndex = 0;
-    sseIndex < contract.frontierScreenSpaceErrorCandidates.length;
-    sseIndex++
-  ) {
-    const maximumScreenSpaceError =
-      contract.frontierScreenSpaceErrorCandidates[sseIndex];
-    globe.maximumScreenSpaceError = maximumScreenSpaceError;
-    const ladder = [];
-    const transcript = {
-      sseIndex,
-      maximumScreenSpaceError,
-      ladder,
-      firstAdjacentMatch: null,
-    };
-    frontierTranscripts.push(transcript);
-    for (let step = 0; step < contract.frontierMaxSteps; step++) {
-      const latitude =
-        track.latitude + step * contract.frontierLatitudeStepDegrees;
-      if (latitude > 89) break;
-      setNadirCamera(latitude);
-      const settled = await settleTerrain(
-        (state) => state.tilesLoaded && state.fillCount === 0,
-        contract.frontierSettleMaxFrames,
-      );
-      const observation = observeFrontierRung(
-        settled,
-        sseIndex,
-        step,
-        latitude,
-      );
-      ladder.push(observation);
-      const prior = ladder.at(-2);
-      const commonSiblingKeys = prior
-        ? prior.selectedRealSiblingTileIds.filter((id) =>
-            observation.selectedRealSiblingTileIds.includes(id),
-          )
-        : [];
-      if (
-        prior?.revealEligible &&
-        observation.warmEligible &&
-        commonSiblingKeys.length > 0
-      ) {
-        frontierPair = {
-          sseIndex,
-          maximumScreenSpaceError,
-          revealStep: prior.step,
-          warmStep: observation.step,
-          revealLatitude: prior.latitude,
-          warmLatitude: observation.latitude,
-          siblingKey: commonSiblingKeys.sort()[0],
-        };
-        transcript.firstAdjacentMatch = { ...frontierPair };
-        break;
-      }
-    }
-    if (frontierPair) break;
-  }
-  if (!frontierPair) {
+  const lodReferenceOrigin =
+    getTileProvider()?._quadtree?._cameraReferenceFrameOriginCartographic ??
+    globe._surface?._cameraReferenceFrameOriginCartographic;
+  const lodReferenceInsideTarget =
+    Boolean(lodReferenceOrigin && lodTargetTile?.rectangle) &&
+    C.Rectangle.contains(lodTargetTile.rectangle, lodReferenceOrigin);
+  const lodStrictDescendants = a.selectedTileIds.filter(
+    (id) => id !== fillTarget.key && levelOneAncestorId(id) === fillTarget.key,
+  );
+  const directLevelOneExact =
+    a.settled &&
+    a.tilesLoaded &&
+    a.fillCount === 0 &&
+    a.selectedTileIds.includes(fillTarget.key) &&
+    a.realTileIds.includes(fillTarget.key) &&
+    a.selectedTileIds.includes(fillTarget.anchorKey) &&
+    a.realTileIds.includes(fillTarget.anchorKey) &&
+    !a.selectedTileIds.includes(fillTarget.parentKey) &&
+    lodStrictDescendants.length === 0 &&
+    lodParentSelection.sameFrame &&
+    lodParentSelection.rawResult === C.TileSelectionResult.REFINED &&
+    !lodParentSelection.wasKicked &&
+    lodTargetSelection.sameFrame &&
+    lodTargetSelection.rawResult === C.TileSelectionResult.RENDERED &&
+    !lodTargetSelection.wasKicked &&
+    lodSiblingSelection.sameFrame &&
+    lodSiblingSelection.rawResult === C.TileSelectionResult.RENDERED &&
+    !lodSiblingSelection.wasKicked &&
+    Number.isFinite(lodParentComputedSse) &&
+    Number.isFinite(lodTargetComputedSse) &&
+    lodParentComputedSse > contract.fillFrontierMaximumScreenSpaceError &&
+    lodTargetComputedSse <= contract.fillFrontierMaximumScreenSpaceError &&
+    !lodCameraInsideTarget &&
+    !lodReferenceInsideTarget;
+  if (!directLevelOneExact) {
+    progress.visibilitySeam.terminalReason =
+      "fixed-SSE direct level-one target/sibling precondition failed";
     throw new Error(
-      "level-one SSE/latitude reveal-warm frontier was not found",
+      "fixed-SSE direct level-one target/sibling precondition failed",
     );
   }
   phases[contract.phases[0]] = {
@@ -2770,22 +2724,42 @@ const MEASURE_S5_SESSION = async (contract) => {
     tilesLoaded: a.tilesLoaded,
     selectedCount: a.selectedCount,
     selectedTileIds: a.selectedTileIds,
-    frontierDiscovery: {
-      derivation: "south-level-1-sse-major-north-latitude-adjacent-frontier",
-      target: frontierTarget,
-      screenSpaceErrorCandidates: [
-        ...contract.frontierScreenSpaceErrorCandidates,
-      ],
-      latitudeStepDegrees: contract.frontierLatitudeStepDegrees,
-      maxSteps: contract.frontierMaxSteps,
-      settleMaxFrames: contract.frontierSettleMaxFrames,
-      direction: "north",
+    fillLodPrecondition: {
+      claim: "fixed-camera-direct-level-one-no-scan",
+      derivation: "pinned-sse-production-selection",
+      target: fillTarget,
+      siblingKey: fillTarget.anchorKey,
+      maximumScreenSpaceError: globe.maximumScreenSpaceError,
+      longitude: track.longitude,
+      latitude: track.latitude,
       cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
-      cameraHeightMeters: contract.cameraHeightMeters,
+      cameraHeightMeters: scene.camera.positionCartographic.height,
       preloadSiblings: globe.preloadSiblings,
       preloadAncestors: globe.preloadAncestors,
-      transcripts: frontierTranscripts,
-      ...frontierPair,
+      cameraReference: {
+        cameraCartographicInsideTarget: lodCameraInsideTarget,
+        referenceFrameOriginDefined: Boolean(lodReferenceOrigin),
+        referenceFrameOriginInsideTarget: lodReferenceInsideTarget,
+        neededPositionInsideTarget:
+          lodCameraInsideTarget || lodReferenceInsideTarget,
+      },
+      sseInputs: {
+        drawingBufferHeight: lodDrawingBufferHeight,
+        pixelRatio: lodPixelRatio,
+        sseDenominator: lodSseDenominator,
+        levelZeroGeometricError: lodLevelZeroGeometricError,
+        levelOneGeometricError: lodLevelOneGeometricError,
+        parentDistance: lodParentTile?._distance ?? null,
+        targetDistance: lodTargetTile?._distance ?? null,
+        parentComputedSse: lodParentComputedSse,
+        targetComputedSse: lodTargetComputedSse,
+      },
+      selectedTileIds: a.selectedTileIds,
+      realTileIds: a.realTileIds,
+      fillTileIds: a.fillTileIds,
+      parentSelection: lodParentSelection,
+      targetSelection: lodTargetSelection,
+      siblingSelection: lodSiblingSelection,
     },
   };
   completePhase(contract.phases[0], {
@@ -2797,11 +2771,11 @@ const MEASURE_S5_SESSION = async (contract) => {
   markProgress(contract.phases[1], "fixture-provider-create");
   const quantizedUrl = new URL(contract.fixtureRoute, location.origin).href;
   const quantizedProvider = await C.CesiumTerrainProvider.fromUrl(quantizedUrl);
-  globe.maximumScreenSpaceError = frontierPair.maximumScreenSpaceError;
+  globe.maximumScreenSpaceError = contract.fillFrontierMaximumScreenSpaceError;
   globe.preloadSiblings = false;
   globe.preloadAncestors = false;
   scene.camera.frustum.fov = C.Math.toRadians(contract.cameraFovDegrees);
-  setNadirCamera(frontierPair.warmLatitude);
+  setNadirCamera(track.latitude);
   const tilingScheme = quantizedProvider.tilingScheme;
   const quantizedAnchor = tilingScheme.positionToTileXY(
     trackPosition,
@@ -2823,7 +2797,7 @@ const MEASURE_S5_SESSION = async (contract) => {
   let decodedQuantizedMeshInstances = 0;
   let decodedIdentityMismatches = 0;
   let holdEnabled = false;
-  const requestAttemptsByKey = new Map([[frontierTarget.key, 0]]);
+  const requestAttemptsByKey = new Map([[fillTarget.key, 0]]);
   const reservedPromises = new Set();
   quantizedProvider.requestTileGeometry = (x, y, level, request) => {
     const key = `${level}/${x}/${y}`;
@@ -2908,317 +2882,705 @@ const MEASURE_S5_SESSION = async (contract) => {
     providerBeforeSwap._sceneCaptureContentRevision;
   const selectionRevisionBeforeSwap =
     providerBeforeSwap._eclipseSelectionRevision;
-  const terrainRequestsBeforeFirstFrame = terrainRequests.attempted;
-  scene.terrainProvider = quantizedProvider;
-  const publicAssignment = {
-    sceneProviderMatches: scene.terrainProvider === quantizedProvider,
-    tileProviderAwaitingFirstBeginFrame:
-      providerBeforeSwap.terrainProvider !== quantizedProvider,
-    terrainRequestsBeforeFirstFrame,
-  };
-  let beginFrameCallCount = 0;
-  let firstBeginFramePropagation;
-  const originalGlobeBeginFrame = globe.beginFrame;
-  globe.beginFrame = function (frameState) {
-    beginFrameCallCount++;
-    const result = originalGlobeBeginFrame.call(this, frameState);
-    if (beginFrameCallCount === 1) {
-      const propagatedProvider = getTileProvider();
-      const terrainRequestAttemptsAtObservation = terrainRequests.attempted;
-      const selectionRevisionUnchanged =
-        propagatedProvider?._eclipseSelectionRevision ===
-        selectionRevisionBeforeSwap;
-      firstBeginFramePropagation = {
-        observedAt:
-          "first-pinned-render-after-globe.beginFrame-before-selection-load",
-        beginFrameCallOrdinal: beginFrameCallCount,
-        frameNumber: frameState.frameNumber,
-        tileProviderIdentityPreserved:
-          propagatedProvider === providerBeforeSwap,
-        tileProviderMatchesAssigned:
-          propagatedProvider?.terrainProvider === quantizedProvider,
-        publicProviderMatchesAssigned:
-          scene.terrainProvider === quantizedProvider,
-        surfaceRadiusUndefined:
-          propagatedProvider?._eclipseSurfaceRadius === undefined,
-        knownMinimumHeight: propagatedProvider?._eclipseKnownMinimumHeight,
-        knownMaximumHeight: propagatedProvider?._eclipseKnownMaximumHeight,
-        knownBoundsValid: propagatedProvider?._eclipseKnownBoundsValid,
-        contentRevisionAdvanced:
-          propagatedProvider?._sceneCaptureContentRevision >
-          contentRevisionBeforeSwap,
-        contentRevisionBefore: contentRevisionBeforeSwap,
-        contentRevisionAtObservation:
-          propagatedProvider?._sceneCaptureContentRevision,
-        selectionRevisionUnchanged,
-        selectionRevisionBefore: selectionRevisionBeforeSwap,
-        selectionRevisionAtObservation:
-          propagatedProvider?._eclipseSelectionRevision,
-        terrainRequestAttemptsAtObservation,
-        observedBeforeSelectionAndLoad:
-          terrainRequestAttemptsAtObservation === 0 &&
-          selectionRevisionUnchanged,
-      };
+  const descriptorShape = (descriptor) =>
+    descriptor
+      ? {
+          configurable: descriptor.configurable === true,
+          enumerable: descriptor.enumerable === true,
+          writable:
+            "writable" in descriptor ? descriptor.writable === true : null,
+          hasValue: "value" in descriptor,
+          hasGetter: typeof descriptor.get === "function",
+          hasSetter: typeof descriptor.set === "function",
+        }
+      : null;
+  const locatePropertyDescriptor = (value, property) => {
+    let owner = value;
+    while (owner) {
+      const descriptor = Object.getOwnPropertyDescriptor(owner, property);
+      if (descriptor) return { owner, descriptor };
+      owner = Object.getPrototypeOf(owner);
     }
-    return result;
+    return undefined;
   };
-  let firstRenderFrameNumber;
+  const visibilityProperty = "computeTileVisibility";
+  const visibilityOwnDescriptorBefore = Object.getOwnPropertyDescriptor(
+    providerBeforeSwap,
+    visibilityProperty,
+  );
+  const visibilityDescriptorBefore = locatePropertyDescriptor(
+    providerBeforeSwap,
+    visibilityProperty,
+  );
+  const originalComputeTileVisibility =
+    providerBeforeSwap.computeTileVisibility;
+  if (
+    typeof originalComputeTileVisibility !== "function" ||
+    !visibilityDescriptorBefore
+  ) {
+    progress.visibilitySeam.terminalReason =
+      "computeTileVisibility descriptor/identity is unavailable";
+    throw new Error("computeTileVisibility descriptor/identity is unavailable");
+  }
+  const visibilityDiagnostic = progress.visibilitySeam;
+  const visibilityCalls = visibilityDiagnostic.calls;
+  const visibilityCounts = visibilityDiagnostic.counts;
+  visibilityDiagnostic.targetKey = fillTarget.key;
+  visibilityDiagnostic.mode = "warm-mask";
+  visibilityDiagnostic.state = "installed";
+  let visibilityMode = "warm-mask";
+  let visibilityRestored = false;
+  const visibilityInstallation = {
+    originalIdentityCaptured: true,
+    prototypeDescriptorFound: Boolean(visibilityDescriptorBefore),
+    beforeHadOwn: Boolean(visibilityOwnDescriptorBefore),
+    beforeDescriptor: descriptorShape(visibilityOwnDescriptorBefore),
+    installedHadOwn: false,
+    installedDescriptor: null,
+    installedWrapperIdentityMatches: false,
+  };
+  const visibilityRestoration = {
+    attempted: false,
+    attemptedAt: null,
+    restored: false,
+    immediateAfterReveal: false,
+    beforeRelease: false,
+    afterHadOwn: null,
+    afterDescriptor: null,
+    identityMatches: false,
+    descriptorMatches: false,
+    finallyVerified: false,
+  };
+  const visibilityName = (value) =>
+    value === C.Visibility.NONE
+      ? "NONE"
+      : value === C.Visibility.PARTIAL
+        ? "PARTIAL"
+        : value === C.Visibility.FULL
+          ? "FULL"
+          : "UNKNOWN";
+  const controlledComputeTileVisibility = function (
+    tile,
+    frameState,
+    occluders,
+  ) {
+    let originalVisibility;
+    try {
+      originalVisibility = originalComputeTileVisibility.call(
+        this,
+        tile,
+        frameState,
+        occluders,
+      );
+    } catch (error) {
+      visibilityDiagnostic.terminalReason = `original computeTileVisibility threw: ${error?.message ?? String(error)}`;
+      throw error;
+    }
+    const key = tileId(tile);
+    const target = key === fillTarget.key;
+    const returnedVisibility =
+      visibilityMode === "warm-mask" && target
+        ? C.Visibility.NONE
+        : originalVisibility;
+    const overridden = !Object.is(originalVisibility, returnedVisibility);
+    const call = {
+      ordinal: visibilityCalls.length + 1,
+      frameNumber: frameState.frameNumber,
+      tileKey: key,
+      mode: visibilityMode,
+      target,
+      originalCallCompleted: true,
+      originalVisibility,
+      originalVisibilityName: visibilityName(originalVisibility),
+      returnedVisibility,
+      returnedVisibilityName: visibilityName(returnedVisibility),
+      overridden,
+    };
+    visibilityCalls.push(call);
+    visibilityCounts.totalCalls++;
+    visibilityCounts.originalCalls++;
+    if (target) visibilityCounts.targetCalls++;
+    else visibilityCounts.nonTargetCalls++;
+    if (overridden) visibilityCounts.overrideCalls++;
+    if (!target && overridden) visibilityCounts.nonTargetAlteredCalls++;
+    return returnedVisibility;
+  };
+  Object.defineProperty(providerBeforeSwap, visibilityProperty, {
+    configurable: true,
+    enumerable: visibilityOwnDescriptorBefore?.enumerable === true,
+    writable: true,
+    value: controlledComputeTileVisibility,
+  });
+  visibilityInstallation.installedHadOwn = Object.hasOwn(
+    providerBeforeSwap,
+    visibilityProperty,
+  );
+  visibilityInstallation.installedDescriptor = descriptorShape(
+    Object.getOwnPropertyDescriptor(providerBeforeSwap, visibilityProperty),
+  );
+  visibilityInstallation.installedWrapperIdentityMatches =
+    providerBeforeSwap.computeTileVisibility ===
+    controlledComputeTileVisibility;
+  const restoreVisibilitySeam = (attemptedAt) => {
+    visibilityRestoration.attempted = true;
+    visibilityRestoration.attemptedAt ??= attemptedAt;
+    if (!visibilityRestored) {
+      if (visibilityOwnDescriptorBefore) {
+        Object.defineProperty(
+          providerBeforeSwap,
+          visibilityProperty,
+          visibilityOwnDescriptorBefore,
+        );
+      } else {
+        delete providerBeforeSwap[visibilityProperty];
+      }
+      visibilityRestored = true;
+    }
+    const afterOwnDescriptor = Object.getOwnPropertyDescriptor(
+      providerBeforeSwap,
+      visibilityProperty,
+    );
+    visibilityRestoration.afterHadOwn = Boolean(afterOwnDescriptor);
+    visibilityRestoration.afterDescriptor = descriptorShape(afterOwnDescriptor);
+    visibilityRestoration.identityMatches =
+      providerBeforeSwap.computeTileVisibility ===
+      originalComputeTileVisibility;
+    visibilityRestoration.descriptorMatches =
+      JSON.stringify(visibilityRestoration.afterDescriptor) ===
+      JSON.stringify(descriptorShape(visibilityOwnDescriptorBefore));
+    visibilityRestoration.restored =
+      visibilityRestoration.identityMatches &&
+      visibilityRestoration.descriptorMatches;
+    visibilityDiagnostic.restoration = {
+      attempted: visibilityRestoration.attempted,
+      restored: visibilityRestoration.restored,
+      identityMatches: visibilityRestoration.identityMatches,
+      descriptorMatches: visibilityRestoration.descriptorMatches,
+    };
+    visibilityDiagnostic.mode = "restored";
+    visibilityDiagnostic.state =
+      attemptedAt === "finally-after-error" ? "error-restored" : "restored";
+  };
+  const terrainRequestsBeforeFirstFrame = terrainRequests.attempted;
+  let providerAfterSwap;
   try {
-    renderNow();
-    firstRenderFrameNumber = scene.frameState.frameNumber;
+    scene.terrainProvider = quantizedProvider;
+    const publicAssignment = {
+      sceneProviderMatches: scene.terrainProvider === quantizedProvider,
+      tileProviderAwaitingFirstBeginFrame:
+        providerBeforeSwap.terrainProvider !== quantizedProvider,
+      terrainRequestsBeforeFirstFrame,
+    };
+    let beginFrameCallCount = 0;
+    let firstBeginFramePropagation;
+    const originalGlobeBeginFrame = globe.beginFrame;
+    globe.beginFrame = function (frameState) {
+      beginFrameCallCount++;
+      const result = originalGlobeBeginFrame.call(this, frameState);
+      if (beginFrameCallCount === 1) {
+        const propagatedProvider = getTileProvider();
+        const terrainRequestAttemptsAtObservation = terrainRequests.attempted;
+        const selectionRevisionUnchanged =
+          propagatedProvider?._eclipseSelectionRevision ===
+          selectionRevisionBeforeSwap;
+        firstBeginFramePropagation = {
+          observedAt:
+            "first-pinned-render-after-globe.beginFrame-before-selection-load",
+          beginFrameCallOrdinal: beginFrameCallCount,
+          frameNumber: frameState.frameNumber,
+          tileProviderIdentityPreserved:
+            propagatedProvider === providerBeforeSwap,
+          tileProviderMatchesAssigned:
+            propagatedProvider?.terrainProvider === quantizedProvider,
+          publicProviderMatchesAssigned:
+            scene.terrainProvider === quantizedProvider,
+          surfaceRadiusUndefined:
+            propagatedProvider?._eclipseSurfaceRadius === undefined,
+          knownMinimumHeight: propagatedProvider?._eclipseKnownMinimumHeight,
+          knownMaximumHeight: propagatedProvider?._eclipseKnownMaximumHeight,
+          knownBoundsValid: propagatedProvider?._eclipseKnownBoundsValid,
+          contentRevisionAdvanced:
+            propagatedProvider?._sceneCaptureContentRevision >
+            contentRevisionBeforeSwap,
+          contentRevisionBefore: contentRevisionBeforeSwap,
+          contentRevisionAtObservation:
+            propagatedProvider?._sceneCaptureContentRevision,
+          selectionRevisionUnchanged,
+          selectionRevisionBefore: selectionRevisionBeforeSwap,
+          selectionRevisionAtObservation:
+            propagatedProvider?._eclipseSelectionRevision,
+          terrainRequestAttemptsAtObservation,
+          observedBeforeSelectionAndLoad:
+            terrainRequestAttemptsAtObservation === 0 &&
+            selectionRevisionUnchanged,
+        };
+      }
+      return result;
+    };
+    let firstRenderFrameNumber;
+    try {
+      renderNow();
+      firstRenderFrameNumber = scene.frameState.frameNumber;
+    } finally {
+      globe.beginFrame = originalGlobeBeginFrame;
+    }
+    providerAfterSwap = getTileProvider();
+    firstBeginFramePropagation = {
+      ...firstBeginFramePropagation,
+      observedInFirstRender:
+        beginFrameCallCount === 1 &&
+        firstBeginFramePropagation?.frameNumber === firstRenderFrameNumber,
+    };
+    phases[contract.phases[1]] = {
+      fromProvider: "EllipsoidTerrainProvider",
+      toProvider: "CesiumTerrainProvider-held",
+      publicAssignment,
+      firstBeginFramePropagation,
+    };
+    completePhase(contract.phases[1], {
+      contentRevisionAdvanced:
+        firstBeginFramePropagation.contentRevisionAdvanced,
+    });
+
+    markProgress(contract.phases[2], "settle-quantized-warm-visibility-mask");
+    const targetVisibilityCallsForFrame = (frameNumber) =>
+      visibilityCalls.filter(
+        (call) =>
+          call.frameNumber === frameNumber && call.tileKey === fillTarget.key,
+      );
+    const quantizedWarm = await settleTerrain((state) => {
+      const targetSelection = tileSelectionObservation(fillTarget.key);
+      const parentSelection = tileSelectionObservation(fillTarget.parentKey);
+      const targetBranchAbsent = ![
+        ...state.selectedTileIds,
+        ...state.realTileIds,
+        ...state.fillTileIds,
+      ].some((id) => levelOneAncestorId(id) === fillTarget.key);
+      const siblingSelections = selectedRealSiblingObservations(
+        fillTarget,
+        state,
+      );
+      const targetVisibilityCalls = targetVisibilityCallsForFrame(
+        targetSelection.selectionFrame,
+      );
+      return (
+        state.tilesLoaded &&
+        state.fillCount === 0 &&
+        targetBranchAbsent &&
+        parentSelection.sameFrame &&
+        parentSelection.rawResult === C.TileSelectionResult.REFINED &&
+        !parentSelection.wasKicked &&
+        targetSelection.sameFrame &&
+        targetSelection.rawResult === C.TileSelectionResult.CULLED &&
+        !targetSelection.wasKicked &&
+        siblingSelections.some(
+          (entry) => entry.tileId === fillTarget.anchorKey,
+        ) &&
+        targetVisibilityCalls.length > 0 &&
+        targetVisibilityCalls.every(
+          (call) =>
+            new Set([C.Visibility.PARTIAL, C.Visibility.FULL]).has(
+              call.originalVisibility,
+            ) &&
+            call.returnedVisibility === C.Visibility.NONE &&
+            call.overridden === true &&
+            call.mode === "warm-mask",
+        ) &&
+        (requestAttemptsByKey.get(fillTarget.key) ?? 0) === 0 &&
+        holdEnabled === false &&
+        holdTarget === undefined &&
+        held.size === 0 &&
+        reservedPromises.size === 0
+      );
+    }, contract.fillWarmMaximumFrames);
+    const warmTargetSelection = tileSelectionObservation(fillTarget.key);
+    const warmParentSelection = tileSelectionObservation(fillTarget.parentKey);
+    const warmSiblingSelections = selectedRealSiblingObservations(
+      fillTarget,
+      quantizedWarm,
+    );
+    const warmTargetVisibilityCalls = targetVisibilityCallsForFrame(
+      warmTargetSelection.selectionFrame,
+    );
+    const warmTargetTile = findInstantiatedTile(fillTarget.key);
+    const warmCameraInsideTarget =
+      Boolean(warmTargetTile?.rectangle) &&
+      C.Rectangle.contains(
+        warmTargetTile.rectangle,
+        scene.camera.positionCartographic,
+      );
+    const warmReferenceOrigin =
+      providerAfterSwap?._quadtree?._cameraReferenceFrameOriginCartographic ??
+      globe._surface?._cameraReferenceFrameOriginCartographic;
+    const warmReferenceInsideTarget =
+      Boolean(warmReferenceOrigin && warmTargetTile?.rectangle) &&
+      C.Rectangle.contains(warmTargetTile.rectangle, warmReferenceOrigin);
+    const warmParentTile = findInstantiatedTile(fillTarget.parentKey);
+    const warmDrawingBufferHeight =
+      scene.frameState.context.drawingBufferHeight;
+    const warmPixelRatio = scene.frameState.pixelRatio;
+    const warmSseDenominator = scene.camera.frustum.sseDenominator;
+    const warmLevelZeroGeometricError =
+      providerAfterSwap.getLevelMaximumGeometricError(0);
+    const warmLevelOneGeometricError =
+      providerAfterSwap.getLevelMaximumGeometricError(1);
+    const computeWarmSse = (geometricError, tile) =>
+      Number.isFinite(tile?._distance) && tile._distance > 0
+        ? (geometricError * warmDrawingBufferHeight) /
+          (tile._distance * warmSseDenominator * warmPixelRatio)
+        : null;
+    const warmParentComputedSse = computeWarmSse(
+      warmLevelZeroGeometricError,
+      warmParentTile,
+    );
+    const warmTargetComputedSse = computeWarmSse(
+      warmLevelOneGeometricError,
+      warmTargetTile,
+    );
+    const warmTargetSelectedDescendantTileIds =
+      quantizedWarm.selectedTileIds.filter(
+        (id) => levelOneAncestorId(id) === fillTarget.key,
+      );
+    const warmTargetRealDescendantTileIds = quantizedWarm.realTileIds.filter(
+      (id) => levelOneAncestorId(id) === fillTarget.key,
+    );
+    const warmTargetFillDescendantTileIds = quantizedWarm.fillTileIds.filter(
+      (id) => levelOneAncestorId(id) === fillTarget.key,
+    );
+    const warmupProof = {
+      proofCompletedBeforeArm: true,
+      settled: quantizedWarm.settled,
+      boundedMaxFrames: contract.fillWarmMaximumFrames,
+      settleFrames: quantizedWarm.settleFrames,
+      stableFrames: quantizedWarm.stableFrames,
+      tilesLoaded: quantizedWarm.tilesLoaded,
+      fillCount: quantizedWarm.fillCount,
+      longitude: track.longitude,
+      latitude: track.latitude,
+      cameraHeightMeters: scene.camera.positionCartographic.height,
+      cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
+      maximumScreenSpaceError: globe.maximumScreenSpaceError,
+      preloadSiblings: globe.preloadSiblings,
+      preloadAncestors: globe.preloadAncestors,
+      holdTargetUndefinedDuringWarmup: holdTarget === undefined,
+      holdInterceptionEnabled: holdEnabled,
+      heldRequestCount: held.size,
+      reservedPromiseCount: reservedPromises.size,
+      targetKey: fillTarget.key,
+      targetRequestAttempts: requestAttemptsByKey.get(fillTarget.key) ?? 0,
+      targetHeldPromisePresent: held.has(fillTarget.key),
+      targetReservedPromisePresent: reservedPromises.has(fillTarget.key),
+      selectedTileIds: quantizedWarm.selectedTileIds,
+      realTileIds: quantizedWarm.realTileIds,
+      fillTileIds: quantizedWarm.fillTileIds,
+      targetSelectedDescendantTileIds: warmTargetSelectedDescendantTileIds,
+      targetRealDescendantTileIds: warmTargetRealDescendantTileIds,
+      targetFillDescendantTileIds: warmTargetFillDescendantTileIds,
+      parentSelection: warmParentSelection,
+      targetSelection: warmTargetSelection,
+      visibilityTargetCallOrdinals: warmTargetVisibilityCalls.map(
+        (call) => call.ordinal,
+      ),
+      cameraReference: {
+        cameraCartographicInsideTarget: warmCameraInsideTarget,
+        referenceFrameOriginDefined: Boolean(warmReferenceOrigin),
+        referenceFrameOriginInsideTarget: warmReferenceInsideTarget,
+        neededPositionInsideTarget:
+          warmCameraInsideTarget || warmReferenceInsideTarget,
+      },
+      sseInputs: {
+        drawingBufferHeight: warmDrawingBufferHeight,
+        pixelRatio: warmPixelRatio,
+        sseDenominator: warmSseDenominator,
+        levelZeroGeometricError: warmLevelZeroGeometricError,
+        levelOneGeometricError: warmLevelOneGeometricError,
+        parentDistance: warmParentTile?._distance ?? null,
+        targetDistance: warmTargetTile?._distance ?? null,
+        parentComputedSse: warmParentComputedSse,
+        targetComputedSse: warmTargetComputedSse,
+      },
+      selectedRealSiblingTileIds: warmSiblingSelections
+        .map((entry) => entry.tileId)
+        .sort(),
+      selectedRealSiblingObservations: warmSiblingSelections,
+      siblingKey: fillTarget.anchorKey,
+    };
+    if (
+      !warmupProof.settled ||
+      warmupProof.targetRequestAttempts !== 0 ||
+      !warmupProof.holdTargetUndefinedDuringWarmup ||
+      warmupProof.heldRequestCount !== 0 ||
+      warmupProof.reservedPromiseCount !== 0 ||
+      warmTargetSelectedDescendantTileIds.length !== 0 ||
+      warmTargetRealDescendantTileIds.length !== 0 ||
+      warmTargetFillDescendantTileIds.length !== 0 ||
+      !warmParentSelection.sameFrame ||
+      warmParentSelection.rawResult !== C.TileSelectionResult.REFINED ||
+      warmParentSelection.wasKicked ||
+      !warmTargetSelection.sameFrame ||
+      warmTargetSelection.rawResult !== C.TileSelectionResult.CULLED ||
+      warmTargetSelection.wasKicked ||
+      warmCameraInsideTarget ||
+      warmReferenceInsideTarget ||
+      !Number.isFinite(warmParentComputedSse) ||
+      !Number.isFinite(warmTargetComputedSse) ||
+      warmParentComputedSse <= contract.fillFrontierMaximumScreenSpaceError ||
+      warmTargetComputedSse > contract.fillFrontierMaximumScreenSpaceError ||
+      warmTargetVisibilityCalls.length === 0 ||
+      !warmTargetVisibilityCalls.every(
+        (call) =>
+          new Set([C.Visibility.PARTIAL, C.Visibility.FULL]).has(
+            call.originalVisibility,
+          ) &&
+          call.returnedVisibility === C.Visibility.NONE &&
+          call.overridden === true &&
+          call.mode === "warm-mask",
+      ) ||
+      !warmSiblingSelections.some(
+        (entry) => entry.tileId === fillTarget.anchorKey,
+      )
+    ) {
+      visibilityDiagnostic.terminalReason =
+        "quantized warm visibility-mask proof is inexact";
+      throw new Error("quantized warm visibility-mask proof is inexact");
+    }
+    visibilityDiagnostic.state = "warm-proven";
+    holdTarget = fillTarget;
+    markProgress(contract.phases[2], "arm-exact-hold-and-pass-through-reveal");
+    const holdArm = {
+      afterSettledWarmup: warmupProof.settled,
+      assignedAfterWarmProof: true,
+      warmProofFrame: warmTargetSelection.selectionFrame,
+      targetKey: holdTarget.key,
+      holdInterceptionEnabledBefore: holdEnabled,
+      targetRequestAttemptsBefore: requestAttemptsByKey.get(holdTarget.key),
+      targetReservedBefore: reservedPromises.has(holdTarget.key),
+      heldRequestCountBefore: held.size,
+      visibilityModeBefore: visibilityMode,
+      visibilityModeAfter: null,
+      cameraMovedForReveal: false,
+      cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
+      cameraHeightMeters: scene.camera.positionCartographic.height,
+      maximumScreenSpaceError: globe.maximumScreenSpaceError,
+    };
+    holdEnabled = true;
+    const visibilityModeSwitch = {
+      from: visibilityMode,
+      to: "pass-through",
+      warmFrame: warmTargetSelection.selectionFrame,
+      revealFrame: null,
+      sameTaskReveal: true,
+    };
+    visibilityMode = "pass-through";
+    visibilityDiagnostic.mode = visibilityMode;
+    holdArm.holdInterceptionEnabledAfter = holdEnabled;
+    holdArm.visibilityModeAfter = visibilityMode;
+
+    markProgress(
+      contract.phases[2],
+      "first-pass-through-render-and-fused-fill-capture",
+    );
+    const targetAttemptsBeforeReveal =
+      requestAttemptsByKey.get(holdTarget.key) ?? 0;
+    const revealFrameBefore = scene.frameState.frameNumber;
+    const fillImageId = captureDocumentaryPng(contract.captureLabels[0]);
+    const revealFrameAfter = scene.frameState.frameNumber;
+    const cSnapshot = snapshotTerrain();
+    const revealTargetSelection = tileSelectionObservation(holdTarget.key);
+    visibilityModeSwitch.revealFrame = revealTargetSelection.selectionFrame;
+    const revealSiblingSelections = selectedRealSiblingObservations(
+      holdTarget,
+      cSnapshot,
+    );
+    const targetAttemptsAfterReveal =
+      requestAttemptsByKey.get(holdTarget.key) ?? 0;
+    const heldKeys = [...held.keys()].sort();
+    const targetSelectedStrictDescendantTileIds =
+      cSnapshot.selectedTileIds.filter(
+        (id) =>
+          id !== holdTarget.key && levelOneAncestorId(id) === holdTarget.key,
+      );
+    const revealTargetVisibilityCalls = targetVisibilityCallsForFrame(
+      revealTargetSelection.selectionFrame,
+    );
+    const revealTile = findInstantiatedTile(holdTarget.key);
+    const revealTileData = revealTile?.data;
+    const revealFill = revealTileData?.fill;
+    const revealFillMesh = revealFill?.mesh;
+    const fillMeshProof = {
+      tileId: holdTarget.key,
+      terrainFillMeshInstance: revealFill instanceof C.TerrainFillMesh,
+      renderedMeshMatches:
+        Boolean(revealFillMesh) &&
+        revealTileData?.renderedMesh === revealFillMesh,
+      realMeshAbsent: !revealTileData?.mesh,
+      vertexCount:
+        revealFillMesh?.vertexCountWithoutSkirts ??
+        (revealFillMesh?.vertices?.length && revealFillMesh?.stride
+          ? Math.floor(revealFillMesh.vertices.length / revealFillMesh.stride)
+          : 0),
+      indexCount: revealFillMesh?.indices?.length ?? 0,
+    };
+    restoreVisibilitySeam("immediately-after-reveal-snapshot");
+    visibilityRestoration.immediateAfterReveal = true;
+    visibilityRestoration.beforeRelease = true;
+    visibilityDiagnostic.state = "restored";
+    const firstRevealProof = {
+      captureWasFirstRenderAfterPassThrough:
+        revealFrameAfter === revealFrameBefore + 1,
+      sameTaskModeSwitchAndCapture: true,
+      noYieldBeforeCapture: true,
+      frameBefore: revealFrameBefore,
+      frameAfter: revealFrameAfter,
+      frameDelta: revealFrameAfter - revealFrameBefore,
+      longitude: track.longitude,
+      latitude: track.latitude,
+      cameraHeightMeters: scene.camera.positionCartographic.height,
+      cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
+      maximumScreenSpaceError: globe.maximumScreenSpaceError,
+      targetRequestAttemptsBefore: targetAttemptsBeforeReveal,
+      targetRequestAttemptsAfter: targetAttemptsAfterReveal,
+      postArmTargetRequestAttempts:
+        targetAttemptsAfterReveal - targetAttemptsBeforeReveal,
+      targetSelection: revealTargetSelection,
+      visibilityTargetCallOrdinals: revealTargetVisibilityCalls.map(
+        (call) => call.ordinal,
+      ),
+      targetSelectedStrictDescendantTileIds,
+      selectedRealSiblingTileIds: revealSiblingSelections
+        .map((entry) => entry.tileId)
+        .sort(),
+      selectedRealSiblingObservations: revealSiblingSelections,
+      siblingKey: fillTarget.anchorKey,
+      heldKeys,
+      heldRequestCount: held.size,
+      loadedAndFillFlags: cSnapshot.loadedAndFillFlags,
+      targetSelected: cSnapshot.selectedTileIds.includes(holdTarget.key),
+      targetFill: cSnapshot.fillTileIds.includes(holdTarget.key),
+      fillMesh: fillMeshProof,
+    };
+    if (
+      !firstRevealProof.captureWasFirstRenderAfterPassThrough ||
+      visibilityModeSwitch.revealFrame !== visibilityModeSwitch.warmFrame + 1 ||
+      firstRevealProof.postArmTargetRequestAttempts !== 1 ||
+      heldKeys.length !== 1 ||
+      heldKeys[0] !== holdTarget.key ||
+      !reservedPromises.has(holdTarget.key) ||
+      !revealTargetSelection.sameFrame ||
+      revealTargetSelection.rawResult !== C.TileSelectionResult.RENDERED ||
+      revealTargetSelection.wasKicked ||
+      revealTargetVisibilityCalls.length === 0 ||
+      !revealTargetVisibilityCalls.every(
+        (call) =>
+          new Set([C.Visibility.PARTIAL, C.Visibility.FULL]).has(
+            call.originalVisibility,
+          ) &&
+          call.returnedVisibility === call.originalVisibility &&
+          call.overridden === false &&
+          call.mode === "pass-through",
+      ) ||
+      !firstRevealProof.targetSelected ||
+      !firstRevealProof.targetFill ||
+      !fillMeshProof.terrainFillMeshInstance ||
+      !fillMeshProof.renderedMeshMatches ||
+      !fillMeshProof.realMeshAbsent ||
+      !(fillMeshProof.vertexCount > 0) ||
+      !(fillMeshProof.indexCount > 0) ||
+      targetSelectedStrictDescendantTileIds.length !== 0 ||
+      !revealSiblingSelections.some(
+        (entry) => entry.tileId === fillTarget.anchorKey,
+      ) ||
+      !cSnapshot.loadedAndFillFlags ||
+      !visibilityRestoration.restored
+    ) {
+      visibilityDiagnostic.terminalReason =
+        "first pass-through render did not produce the exact held L1 fill";
+      throw new Error(
+        "first pass-through render did not produce the exact held L1 fill",
+      );
+    }
+    visibilityDiagnostic.state = "revealed";
+    let heldDecodeWaitFrames = 0;
+    while (!held.get(holdTarget.key)?.ready && heldDecodeWaitFrames < 120) {
+      heldDecodeWaitFrames++;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    phases[contract.phases[2]] = {
+      ...cSnapshot,
+      holdTarget,
+      warmup: warmupProof,
+      holdArm,
+      firstRevealProof,
+      visibilitySeam: {
+        claim:
+          "controlled-visibility-input-production-selection-request-fill-release-render",
+        method: "GlobeSurfaceTileProvider.computeTileVisibility",
+        maskMode: "warm-only-exact-target-Visibility.NONE",
+        targetKey: holdTarget.key,
+        siblingKey: fillTarget.anchorKey,
+        maximumScreenSpaceError: globe.maximumScreenSpaceError,
+        installation: visibilityInstallation,
+        calls: visibilityCalls.map((call) => ({ ...call })),
+        counts: { ...visibilityCounts },
+        warmTargetCallOrdinals: warmTargetVisibilityCalls.map(
+          (call) => call.ordinal,
+        ),
+        revealTargetCallOrdinals: revealTargetVisibilityCalls.map(
+          (call) => call.ordinal,
+        ),
+        modeSwitch: visibilityModeSwitch,
+        restoration: visibilityRestoration,
+      },
+      holdInterceptionEnabled: holdEnabled,
+      cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
+      maximumScreenSpaceError: globe.maximumScreenSpaceError,
+      preloadSiblings: globe.preloadSiblings,
+      holdTargetRequestAttemptsAfterArm: targetAttemptsAfterReveal,
+      holdTargetReserved: reservedPromises.has(holdTarget.key),
+      heldRequestCount: held.size,
+      heldKeys,
+      heldTargetIntersectsSelectedFill:
+        cSnapshot.selectedTileIds.includes(holdTarget.key) &&
+        cSnapshot.fillTileIds.includes(holdTarget.key),
+      realSiblingTileIds: firstRevealProof.selectedRealSiblingTileIds,
+      heldDecodeWaitFrames,
+      heldTargetDecodedBeforeRelease: held.get(holdTarget.key)?.ready === true,
+      decodedFixtureIdentity:
+        decodedQuantizedMeshInstances > 0 && decodedIdentityMismatches === 0
+          ? "QuantizedMeshTerrainData-instance"
+          : "identity-mismatch",
+      decodedFixtureIdentityVerified:
+        decodedQuantizedMeshInstances > 0 && decodedIdentityMismatches === 0,
+      decodedFixtureBounds: [...decodedFixtureBounds.values()].sort(
+        (left, right) => left.tileId.localeCompare(right.tileId),
+      ),
+      imageId: fillImageId,
+    };
+    completePhase(contract.phases[2], {
+      heldRequestCount: held.size,
+      realMeshCount: cSnapshot.realMeshCount,
+      fillCount: cSnapshot.fillCount,
+    });
+  } catch (error) {
+    visibilityDiagnostic.terminalReason ??= `controlled visibility seam failed: ${error?.message ?? String(error)}`;
+    throw error;
   } finally {
-    globe.beginFrame = originalGlobeBeginFrame;
+    const restorationAttempt = visibilityRestored
+      ? "finally-verification"
+      : "finally-after-error";
+    restoreVisibilitySeam(restorationAttempt);
+    visibilityRestoration.finallyVerified =
+      visibilityRestoration.restored &&
+      providerBeforeSwap.computeTileVisibility ===
+        originalComputeTileVisibility;
+    if (!visibilityRestoration.finallyVerified) {
+      visibilityDiagnostic.terminalReason =
+        "computeTileVisibility restoration verification failed";
+    }
   }
-  const providerAfterSwap = getTileProvider();
-  firstBeginFramePropagation = {
-    ...firstBeginFramePropagation,
-    observedInFirstRender:
-      beginFrameCallCount === 1 &&
-      firstBeginFramePropagation?.frameNumber === firstRenderFrameNumber,
-  };
-  phases[contract.phases[1]] = {
-    fromProvider: "EllipsoidTerrainProvider",
-    toProvider: "CesiumTerrainProvider-held",
-    publicAssignment,
-    firstBeginFramePropagation,
-  };
-  completePhase(contract.phases[1], {
-    contentRevisionAdvanced: firstBeginFramePropagation.contentRevisionAdvanced,
-  });
-
-  markProgress(contract.phases[2], "settle-quantized-warm-frontier");
-  const quantizedWarm = await settleTerrain((state) => {
-    const targetSelection = tileSelectionObservation(frontierTarget.key);
-    const targetBranchAbsent = ![
-      ...state.selectedTileIds,
-      ...state.realTileIds,
-      ...state.fillTileIds,
-    ].some((id) => levelOneAncestorId(id) === frontierTarget.key);
-    const siblingSelections = selectedRealSiblingObservations(
-      frontierTarget,
-      state,
-    );
-    return (
-      state.tilesLoaded &&
-      state.fillCount === 0 &&
-      targetBranchAbsent &&
-      targetSelection.sameFrame &&
-      targetSelection.rawResult === C.TileSelectionResult.CULLED &&
-      !targetSelection.wasKicked &&
-      siblingSelections.some(
-        (entry) => entry.tileId === frontierPair.siblingKey,
-      ) &&
-      (requestAttemptsByKey.get(frontierTarget.key) ?? 0) === 0 &&
-      holdEnabled === false &&
-      holdTarget === undefined &&
-      held.size === 0 &&
-      reservedPromises.size === 0
-    );
-  }, 300);
-  const warmTargetSelection = tileSelectionObservation(frontierTarget.key);
-  const warmSiblingSelections = selectedRealSiblingObservations(
-    frontierTarget,
-    quantizedWarm,
-  );
-  const warmTargetSelectedDescendantTileIds =
-    quantizedWarm.selectedTileIds.filter(
-      (id) => levelOneAncestorId(id) === frontierTarget.key,
-    );
-  const warmTargetRealDescendantTileIds = quantizedWarm.realTileIds.filter(
-    (id) => levelOneAncestorId(id) === frontierTarget.key,
-  );
-  const warmTargetFillDescendantTileIds = quantizedWarm.fillTileIds.filter(
-    (id) => levelOneAncestorId(id) === frontierTarget.key,
-  );
-  const warmupProof = {
-    proofCompletedBeforeArm: true,
-    settled: quantizedWarm.settled,
-    boundedMaxFrames: 300,
-    settleFrames: quantizedWarm.settleFrames,
-    stableFrames: quantizedWarm.stableFrames,
-    tilesLoaded: quantizedWarm.tilesLoaded,
-    fillCount: quantizedWarm.fillCount,
-    longitude: track.longitude,
-    latitude: frontierPair.warmLatitude,
-    cameraHeightMeters: scene.camera.positionCartographic.height,
-    cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
-    maximumScreenSpaceError: globe.maximumScreenSpaceError,
-    preloadSiblings: globe.preloadSiblings,
-    preloadAncestors: globe.preloadAncestors,
-    holdTargetUndefinedDuringWarmup: holdTarget === undefined,
-    holdInterceptionEnabled: holdEnabled,
-    heldRequestCount: held.size,
-    reservedPromiseCount: reservedPromises.size,
-    targetKey: frontierTarget.key,
-    targetRequestAttempts: requestAttemptsByKey.get(frontierTarget.key) ?? 0,
-    targetHeldPromisePresent: held.has(frontierTarget.key),
-    targetReservedPromisePresent: reservedPromises.has(frontierTarget.key),
-    selectedTileIds: quantizedWarm.selectedTileIds,
-    realTileIds: quantizedWarm.realTileIds,
-    fillTileIds: quantizedWarm.fillTileIds,
-    targetSelectedDescendantTileIds: warmTargetSelectedDescendantTileIds,
-    targetRealDescendantTileIds: warmTargetRealDescendantTileIds,
-    targetFillDescendantTileIds: warmTargetFillDescendantTileIds,
-    targetSelection: warmTargetSelection,
-    selectedRealSiblingTileIds: warmSiblingSelections
-      .map((entry) => entry.tileId)
-      .sort(),
-    selectedRealSiblingObservations: warmSiblingSelections,
-    frontierSiblingKey: frontierPair.siblingKey,
-  };
-  if (
-    !warmupProof.settled ||
-    warmupProof.targetRequestAttempts !== 0 ||
-    !warmupProof.holdTargetUndefinedDuringWarmup ||
-    warmupProof.heldRequestCount !== 0 ||
-    warmupProof.reservedPromiseCount !== 0 ||
-    warmTargetSelectedDescendantTileIds.length !== 0 ||
-    warmTargetRealDescendantTileIds.length !== 0 ||
-    warmTargetFillDescendantTileIds.length !== 0 ||
-    !warmTargetSelection.sameFrame ||
-    warmTargetSelection.rawResult !== C.TileSelectionResult.CULLED ||
-    warmTargetSelection.wasKicked ||
-    !warmSiblingSelections.some(
-      (entry) => entry.tileId === frontierPair.siblingKey,
-    )
-  ) {
-    throw new Error("quantized warm frontier proof is inexact");
+  if (!visibilityRestoration.finallyVerified) {
+    throw new Error("computeTileVisibility restoration verification failed");
   }
-  holdTarget = frontierTarget;
-  markProgress(contract.phases[2], "arm-exact-hold-and-reveal");
-  const holdArm = {
-    afterSettledWarmup: warmupProof.settled,
-    assignedAfterWarmProof: true,
-    warmProofFrame: warmTargetSelection.selectionFrame,
-    targetKey: holdTarget.key,
-    holdInterceptionEnabledBefore: holdEnabled,
-    targetRequestAttemptsBefore: requestAttemptsByKey.get(holdTarget.key),
-    targetReservedBefore: reservedPromises.has(holdTarget.key),
-    heldRequestCountBefore: held.size,
-    warmLatitude: frontierPair.warmLatitude,
-    revealLatitude: frontierPair.revealLatitude,
-    latitudePanDegrees: frontierPair.revealLatitude - frontierPair.warmLatitude,
-    cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
-    cameraHeightMeters: scene.camera.positionCartographic.height,
-    maximumScreenSpaceError: globe.maximumScreenSpaceError,
-  };
-  holdEnabled = true;
-  setNadirCamera(frontierPair.revealLatitude);
-  holdArm.holdInterceptionEnabledAfter = holdEnabled;
-
-  markProgress(
-    contract.phases[2],
-    "first-reveal-render-and-fused-fill-capture",
-  );
-  const targetAttemptsBeforeReveal =
-    requestAttemptsByKey.get(holdTarget.key) ?? 0;
-  const revealFrameBefore = scene.frameState.frameNumber;
-  const fillImageId = captureDocumentaryPng(contract.captureLabels[0]);
-  const revealFrameAfter = scene.frameState.frameNumber;
-  const cSnapshot = snapshotTerrain();
-  const revealTargetSelection = tileSelectionObservation(holdTarget.key);
-  const revealSiblingSelections = selectedRealSiblingObservations(
-    holdTarget,
-    cSnapshot,
-  );
-  const targetAttemptsAfterReveal =
-    requestAttemptsByKey.get(holdTarget.key) ?? 0;
-  const heldKeys = [...held.keys()].sort();
-  const targetSelectedStrictDescendantTileIds =
-    cSnapshot.selectedTileIds.filter(
-      (id) =>
-        id !== holdTarget.key && levelOneAncestorId(id) === holdTarget.key,
-    );
-  const firstRevealProof = {
-    captureWasFirstRenderAfterPan: revealFrameAfter === revealFrameBefore + 1,
-    noYieldBeforeCapture: true,
-    frameBefore: revealFrameBefore,
-    frameAfter: revealFrameAfter,
-    frameDelta: revealFrameAfter - revealFrameBefore,
-    longitude: track.longitude,
-    latitude: frontierPair.revealLatitude,
-    cameraHeightMeters: scene.camera.positionCartographic.height,
-    cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
-    maximumScreenSpaceError: globe.maximumScreenSpaceError,
-    targetRequestAttemptsBefore: targetAttemptsBeforeReveal,
-    targetRequestAttemptsAfter: targetAttemptsAfterReveal,
-    postArmTargetRequestAttempts:
-      targetAttemptsAfterReveal - targetAttemptsBeforeReveal,
-    targetSelection: revealTargetSelection,
-    targetSelectedStrictDescendantTileIds,
-    selectedRealSiblingTileIds: revealSiblingSelections
-      .map((entry) => entry.tileId)
-      .sort(),
-    selectedRealSiblingObservations: revealSiblingSelections,
-    frontierSiblingKey: frontierPair.siblingKey,
-    heldKeys,
-    heldRequestCount: held.size,
-    loadedAndFillFlags: cSnapshot.loadedAndFillFlags,
-    targetSelected: cSnapshot.selectedTileIds.includes(holdTarget.key),
-    targetFill: cSnapshot.fillTileIds.includes(holdTarget.key),
-  };
-  if (
-    !firstRevealProof.captureWasFirstRenderAfterPan ||
-    firstRevealProof.postArmTargetRequestAttempts !== 1 ||
-    heldKeys.length !== 1 ||
-    heldKeys[0] !== holdTarget.key ||
-    !reservedPromises.has(holdTarget.key) ||
-    !revealTargetSelection.sameFrame ||
-    revealTargetSelection.rawResult !== C.TileSelectionResult.RENDERED ||
-    revealTargetSelection.wasKicked ||
-    !firstRevealProof.targetSelected ||
-    !firstRevealProof.targetFill ||
-    targetSelectedStrictDescendantTileIds.length !== 0 ||
-    !revealSiblingSelections.some(
-      (entry) => entry.tileId === frontierPair.siblingKey,
-    ) ||
-    !cSnapshot.loadedAndFillFlags
-  ) {
-    throw new Error(
-      "first reveal render did not produce the exact held L1 fill",
-    );
-  }
-  let heldDecodeWaitFrames = 0;
-  while (!held.get(holdTarget.key)?.ready && heldDecodeWaitFrames < 120) {
-    heldDecodeWaitFrames++;
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-  }
-  phases[contract.phases[2]] = {
-    ...cSnapshot,
-    holdTarget,
-    warmup: warmupProof,
-    holdArm,
-    firstRevealProof,
-    holdInterceptionEnabled: holdEnabled,
-    cameraFovDegrees: C.Math.toDegrees(scene.camera.frustum.fov),
-    maximumScreenSpaceError: globe.maximumScreenSpaceError,
-    preloadSiblings: globe.preloadSiblings,
-    holdTargetRequestAttemptsAfterArm: targetAttemptsAfterReveal,
-    holdTargetReserved: reservedPromises.has(holdTarget.key),
-    heldRequestCount: held.size,
-    heldKeys,
-    heldTargetIntersectsSelectedFill:
-      cSnapshot.selectedTileIds.includes(holdTarget.key) &&
-      cSnapshot.fillTileIds.includes(holdTarget.key),
-    realSiblingTileIds: firstRevealProof.selectedRealSiblingTileIds,
-    heldDecodeWaitFrames,
-    heldTargetDecodedBeforeRelease: held.get(holdTarget.key)?.ready === true,
-    decodedFixtureIdentity:
-      decodedQuantizedMeshInstances > 0 && decodedIdentityMismatches === 0
-        ? "QuantizedMeshTerrainData-instance"
-        : "identity-mismatch",
-    decodedFixtureIdentityVerified:
-      decodedQuantizedMeshInstances > 0 && decodedIdentityMismatches === 0,
-    decodedFixtureBounds: [...decodedFixtureBounds.values()].sort(
-      (left, right) => left.tileId.localeCompare(right.tileId),
-    ),
-    imageId: fillImageId,
-  };
-  completePhase(contract.phases[2], {
-    heldRequestCount: held.size,
-    realMeshCount: cSnapshot.realMeshCount,
-    fillCount: cSnapshot.fillCount,
-  });
 
   markProgress(contract.phases[3], "release-held-requests", {
     heldKeys: [...held.keys()].sort(),
@@ -3299,6 +3661,8 @@ const MEASURE_S5_SESSION = async (contract) => {
     ...d,
     holdTargetKey: holdTarget.key,
     holdInterceptionEnabled: holdEnabled,
+    visibilitySeamRestoredBeforeRelease:
+      visibilityRestoration.finallyVerified && visibilityRestored,
     heldRequestCountAfterRelease: held.size,
     releasedKeys,
     releasedTargetKey: releasedKeys[0] ?? null,
@@ -3899,12 +4263,9 @@ function makePageContract(renderer) {
     cameraFovDegrees: C12_29_S5_SCENE.cameraFovDegrees,
     terrainMaximumScreenSpaceError:
       C12_29_S5_SCENE.terrainMaximumScreenSpaceError,
-    frontierScreenSpaceErrorCandidates: [
-      ...C12_29_S5_SCENE.frontierScreenSpaceErrorCandidates,
-    ],
-    frontierLatitudeStepDegrees: C12_29_S5_SCENE.frontierLatitudeStepDegrees,
-    frontierMaxSteps: C12_29_S5_SCENE.frontierMaxSteps,
-    frontierSettleMaxFrames: C12_29_S5_SCENE.frontierSettleMaxFrames,
+    fillFrontierMaximumScreenSpaceError:
+      C12_29_S5_SCENE.fillFrontierMaximumScreenSpaceError,
+    fillWarmMaximumFrames: C12_29_S5_SCENE.fillWarmMaximumFrames,
     verticalExaggeration: C12_29_S5_SCENE.verticalExaggeration,
     relativeHeight: C12_29_S5_SCENE.verticalExaggerationRelativeHeight,
     radiusLaw: { ...C12_29_S5_RADIUS_LAW },
