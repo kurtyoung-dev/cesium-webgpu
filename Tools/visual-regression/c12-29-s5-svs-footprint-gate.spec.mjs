@@ -17,6 +17,7 @@ import {
   C12_29_S5_SVS_CAPTURE_LABELS,
   C12_29_S5_SVS_CAPTURE_METHOD,
   C12_29_S5_SVS_CONTROL,
+  C12_29_S5_SVS_DIAGNOSTIC_LIMITS,
   C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
   C12_29_S5_SVS_FIXTURE,
   C12_29_S5_SVS_PHASES,
@@ -28,12 +29,18 @@ import {
   C12_29_S5_SVS_SOURCE_EDGE,
   C12_29_S5_SVS_SOURCE_FILES,
   C12_29_S5_SVS_SOURCE_MOTION,
+  C12_29_S5_SVS_SUPERSEDED_SCHEMA,
   C12_29_S5_SVS_TERRAIN,
   computeSvsFootprintBudget,
+  createSvsDiagnosticOverflowMarker,
   deriveSvsSpatialMetrics,
   exitCodeForSvsStatus,
   foldC1229S5SvsGate,
+  summarizeSvsSpatialMetrics,
+  validateSupersededSvsV2FinalArtifactShape,
+  validateSvsErrorDiagnosticsShape,
   validateSvsFinalArtifactShape,
+  validateSvsRuntimeCheckpointShape,
   validateSvsRunningArtifactShape,
   wgs84GeodesicDistanceKm,
 } from "./lib/c12-29-s5-svs-footprint-gate.mjs";
@@ -45,12 +52,18 @@ import {
 import { parseSvs5073UmbraShapefile } from "./fixtures/nasa-svs-5073/nasa-svs-5073-shapefile.mjs";
 import {
   beginSvsEvidenceRun,
+  canonicalSvsArtifactBytes,
+  createSvsErrorArtifact,
+  createSvsOperationalErrorDiagnostics,
+  createSvsPageEvaluationSource,
   createSvsRequestLedger,
   createSvsArtifactPaths,
+  createSvsRuntimeErrorDiagnostics,
   drainSvsRequestLedger,
   inspectSvsPriorState,
   publishSvsFinalArtifact,
   closeSvsResourceBounded,
+  retainSvsRuntimeDiagnostics,
   validateSvsLoopbackBase,
   withSvsWatchdog,
 } from "./probe-c12-29-s5-svs-footprint.mjs";
@@ -75,8 +88,97 @@ const fixtureInputs = Object.fromEntries(
 const fixtureCollection = parseSvs5073UmbraShapefile(fixtureInputs);
 
 const clone = (value) => structuredClone(value);
+const canonicalJsonIdentity = (value) =>
+  JSON.stringify(value, (_key, entry) => {
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      return Object.fromEntries(
+        Object.keys(entry)
+          .sort()
+          .map((key) => [key, entry[key]]),
+      );
+    }
+    return entry;
+  });
 const ids = (count, start = 0) =>
   Array.from({ length: count }, (_, index) => start + index);
+
+function spatialPrimitives(row, measurementKind = "event") {
+  return {
+    side: row.lattice.side,
+    qKm: row.budget.qKm,
+    measurementKind,
+    validProjectedCellIds: [...row.lattice.validProjectedCellIds],
+    nasaInsideCellIds: [...row.lattice.nasaInsideCellIds],
+    classifiedCellIds: [...row.lattice.classifiedCellIds],
+    cellLonLat: row.lattice.cellLonLat.map((entry) => [...entry]),
+  };
+}
+
+function assertJsonSafeNumbers(value, path = "$") {
+  if (typeof value === "number") {
+    assert.equal(Number.isFinite(value), true, `${path} is non-finite`);
+    assert.equal(Object.is(value, -0), false, `${path} is negative zero`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) =>
+      assertJsonSafeNumbers(entry, `${path}[${index}]`),
+    );
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, entry] of Object.entries(value)) {
+      assertJsonSafeNumbers(entry, `${path}.${key}`);
+    }
+  }
+}
+
+function exactRuntimeCleanup() {
+  return {
+    pageCloseAttempted: true,
+    pageClosed: true,
+    pageCloseTimedOut: false,
+    contextCloseAttempted: true,
+    contextClosed: true,
+    contextCloseTimedOut: false,
+    requestLedgerDrainAttempted: true,
+    requestLedgerDrained: true,
+    errorCount: 0,
+    errors: [],
+  };
+}
+
+function exactRuntimeCheckpoint() {
+  return {
+    schema: C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
+    renderer: "webgl",
+    sequence: 17,
+    phase: C12_29_S5_SVS_ROWS[1].phase,
+    stage: "spatial-summary-complete",
+    rowIndex: 1,
+    role: C12_29_S5_SVS_ROWS[1].role,
+    iso: C12_29_S5_SVS_ROWS[1].iso,
+    measurementKind: "event",
+    counts: {
+      valid: 14400,
+      nasa: 227,
+      terrain: 14400,
+      classified: 0,
+      sourceBoundary: 62,
+      classifiedBoundary: 0,
+    },
+    sourceCentroid: { available: true, lonLat: [-121.5, 44.25] },
+    measuredCentroid: { available: false, lonLat: null },
+    boundary: { comparable: false, unavailableReason: "classified-empty" },
+    terrain: {
+      transitionRole: C12_29_S5_SVS_ROWS[1].role,
+      selectedTileIds: ["4/2/5"],
+      preparedSelectedTileIds: ["4/2/5"],
+      selectionRevision: 11,
+      captureFrameNumber: 23,
+    },
+  };
+}
 const imageId = (index) =>
   `00000000-0000-4000-a000-${String(index).padStart(12, "0")}`;
 
@@ -254,7 +356,7 @@ function syntheticRow(expected) {
     frameStateTimeIso: transitionIso,
     selectedContent: clone(terrainContent),
     preparedContent: clone(terrainContent),
-    selectionContentIdentity: JSON.stringify({
+    selectionContentIdentity: canonicalJsonIdentity({
       selected: terrainContent,
       prepared: terrainContent,
     }),
@@ -323,6 +425,7 @@ function syntheticRow(expected) {
     ),
     thresholdOrigin:
       "exact-WGS84-source-edge+half-lattice+half-pixel;40km-Simon1994",
+    spatialMeasurementKind: "event",
     sourceEdge: clone(C12_29_S5_SVS_SOURCE_EDGE),
     iouUsedAsGate: false,
     recentered: false,
@@ -511,6 +614,8 @@ function syntheticSession(renderer, serialIndex) {
       sourceDirection: C12_29_S5_SVS_SOURCE_MOTION.direction,
       sourceSpeedKmPerHour: C12_29_S5_SVS_SOURCE_MOTION.speedKmPerHour,
       method: C12_29_S5_SVS_SOURCE_MOTION.method,
+      comparable: true,
+      unavailableReason: null,
       measuredDirectionEast: true,
       measuredDirectionNorth: true,
       vectorErrorKm: 0,
@@ -560,6 +665,11 @@ function syntheticSession(renderer, serialIndex) {
   );
   const controlLattice = clone(controlSource.lattice);
   controlLattice.classifiedCellIds = [];
+  const controlSpatial = deriveSvsSpatialMetrics({
+    spatialMeasurementKind: "control",
+    budget: controlSource.budget,
+    lattice: controlLattice,
+  });
   session.control = {
     ...C12_29_S5_SVS_CONTROL,
     clock: {
@@ -573,11 +683,14 @@ function syntheticSession(renderer, serialIndex) {
     strictlyClassifiedCellCount: 0,
     oneCodeBoundaryCount: 0,
     classificationAppliedOnlyInsideTerrainMask: true,
+    spatialMeasurementKind: "control",
     cameraFrame: clone(controlSource.cameraFrame),
     terrainTuple: clone(controlSource.terrainTuple),
     transitionReadiness: clone(controlSource.transitionReadiness),
     captureTerrainProofs: clone(controlSource.captureTerrainProofs),
     lattice: controlLattice,
+    boundary: controlSpatial.boundary,
+    centroid: controlSpatial.centroid,
     mask: {
       method: C12_29_S5_SVS_SCENE.terrainMaskMethod,
       terrainPixelCount: controlLattice.terrainCellIds.length,
@@ -785,6 +898,8 @@ function greenReport() {
       differingCellIds: [],
       differingCellCount: 0,
       allDifferingCellsWithinUnionQBoundaryBands: true,
+      centroidComparable: true,
+      centroidUnavailableReason: null,
       centroidDistanceKm: 0,
       centroidDistanceMethod: "WGS84-Vincenty-inverse",
       centroidLimitKm:
@@ -840,22 +955,46 @@ function makeSyntheticProductFailure(report) {
   }
 }
 
+function makeRowClassificationEmpty(row) {
+  row.lattice.classifiedCellIds = [];
+  row.mask.classifiedCellCount = 0;
+  row.mask.strictlyClassifiedCellCount = 0;
+  const derived = deriveSvsSpatialMetrics(row);
+  row.lattice.qBoundaryBandCellIds = derived.qBoundaryBandCellIds;
+  row.boundary = derived.boundary;
+  row.centroid = derived.centroid;
+}
+
+function makeMotionUnavailable(session) {
+  Object.assign(session.motion, {
+    comparable: false,
+    unavailableReason: "measured-centroid-unavailable",
+    measuredDirectionEast: null,
+    measuredDirectionNorth: null,
+    vectorErrorKm: null,
+    measuredSpeedKmPerHour: null,
+  });
+}
+
+function makeCrossCentroidUnavailable(entry) {
+  Object.assign(entry, {
+    centroidComparable: false,
+    centroidUnavailableReason: "measured-centroid-unavailable",
+    centroidDistanceKm: null,
+  });
+}
+
 function finalArtifact(status, runId = RUN_ID) {
   const key = `${status}:${runId}`;
   if (finalArtifactTemplates.has(key)) {
     return clone(finalArtifactTemplates.get(key));
   }
   if (status === "ERROR") {
-    const errorArtifact = {
-      schema: C12_29_S5_SVS_SCHEMA,
+    const errorArtifact = createSvsErrorArtifact(
       runId,
-      generatedAt: "2026-08-13T00:00:00.000Z",
-      status,
-      exitCode: exitCodeForSvsStatus(status),
-      incomplete: false,
-      error: "synthetic final error",
-      diagnostics: null,
-    };
+      new Error("synthetic final error"),
+      "2026-08-13T00:00:00.000Z",
+    );
     finalArtifactTemplates.set(key, clone(errorArtifact));
     return errorArtifact;
   }
@@ -904,11 +1043,11 @@ test("01 green synthetic report closes every frozen gate", () => {
 test("02 schemas, A-H phases, exact rows, control, and ten labels are frozen", () => {
   assert.equal(
     C12_29_S5_SVS_SCHEMA,
-    "c12-29-s5-svs-5073-footprint-evidence-v2",
+    "c12-29-s5-svs-5073-footprint-evidence-v3",
   );
   assert.equal(
     C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
-    "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v2",
+    "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v3",
   );
   assert.equal(C12_29_S5_SVS_PHASES.length, 8);
   assert.equal(C12_29_S5_SVS_ROWS.length, 4);
@@ -939,6 +1078,709 @@ test("02 schemas, A-H phases, exact rows, control, and ten labels are frozen", (
     createHash("sha256").update(manifest).digest("hex"),
     C12_29_S5_SVS_FIXTURE.manifest.sha256,
   );
+});
+
+test("02a one spatial summarizer makes empty event/control results explicit and JSON-safe", () => {
+  const row = syntheticRow(C12_29_S5_SVS_ROWS[0]);
+  const emptyEvent = spatialPrimitives(row, "event");
+  emptyEvent.classifiedCellIds = [];
+  const eventSummary = summarizeSvsSpatialMetrics(
+    emptyEvent,
+    wgs84GeodesicDistanceKm,
+  );
+  assert.equal(eventSummary.measurementKind, "event");
+  assert.deepEqual(eventSummary.boundary, {
+    comparable: false,
+    unavailableReason: "classified-empty",
+    sourceBoundaryCellCount: eventSummary.boundary.sourceBoundaryCellCount,
+    classifiedBoundaryCellCount: 0,
+    p95Km: null,
+    maximumKm: null,
+    classifiedOutsideDilatedCount: 0,
+    erodedOutsideClassifiedCount: eventSummary.boundary.erodedNasaCellCount,
+    erodedNasaCellCount: eventSummary.boundary.erodedNasaCellCount,
+    dilatedNasaCellCount: eventSummary.boundary.dilatedNasaCellCount,
+    areaRatio: 0,
+    minimumAreaRatio: eventSummary.boundary.minimumAreaRatio,
+    maximumAreaRatio: eventSummary.boundary.maximumAreaRatio,
+    rawIou: 0,
+  });
+  assert.equal(eventSummary.centroid.comparable, false);
+  assert.equal(eventSummary.centroid.unavailableReason, "classified-empty");
+  assert.equal(eventSummary.centroid.measuredLonLat, null);
+  assert.ok(Array.isArray(eventSummary.centroid.sourceLonLat));
+  assert.equal(eventSummary.centroid.errorKm, null);
+  assert.equal(eventSummary.centroid.longitudeResidualDegrees, null);
+  assert.equal(eventSummary.centroid.latitudeResidualDegrees, null);
+  assertJsonSafeNumbers(eventSummary);
+  assert.deepEqual(JSON.parse(JSON.stringify(eventSummary)), eventSummary);
+
+  const emptyControl = clone(emptyEvent);
+  emptyControl.measurementKind = "control";
+  const controlSummary = summarizeSvsSpatialMetrics(
+    emptyControl,
+    wgs84GeodesicDistanceKm,
+  );
+  assert.equal(controlSummary.measurementKind, "control");
+  assert.deepEqual(controlSummary.boundary, eventSummary.boundary);
+  assert.deepEqual(controlSummary.centroid, eventSummary.centroid);
+  const report = greenReport();
+  assert.equal(report.sessions[0].control.spatialMeasurementKind, "control");
+  assert.equal(report.sessions[0].control.centroid.comparable, false);
+  assert.equal(foldC1229S5SvsGate(report).status, "PASS");
+});
+
+test("02b empty event classification is product FAIL, including unavailable motion/cross summaries", () => {
+  const report = greenReport();
+  for (const session of report.sessions) {
+    makeRowClassificationEmpty(session.rows[1]);
+    makeMotionUnavailable(session);
+  }
+  makeCrossCentroidUnavailable(report.crossBackend[1]);
+  const verdict = foldC1229S5SvsGate(report);
+  assert.equal(verdict.status, "FAIL", JSON.stringify(verdict, null, 2));
+  assert.equal(verdict.structuralReasons.length, 0);
+  assert.match(
+    verdict.failures.join("\n"),
+    /classification|boundary comparison|centroid|motion/u,
+  );
+  assertJsonSafeNumbers(report);
+});
+
+test("02c empty source and malformed degree primitives fail closed without non-finite serialization", () => {
+  const row = syntheticRow(C12_29_S5_SVS_ROWS[0]);
+  const emptySource = spatialPrimitives(row);
+  emptySource.nasaInsideCellIds = [];
+  emptySource.classifiedCellIds = [];
+  const sourceSummary = summarizeSvsSpatialMetrics(
+    emptySource,
+    wgs84GeodesicDistanceKm,
+  );
+  assert.equal(sourceSummary.boundary.unavailableReason, "source-empty");
+  assert.equal(sourceSummary.centroid.unavailableReason, "source-empty");
+  assert.equal(sourceSummary.centroid.sourceLonLat, null);
+  assertJsonSafeNumbers(sourceSummary);
+
+  const report = greenReport();
+  const mutant = report.sessions[0].rows[0];
+  mutant.lattice.nasaInsideCellIds = [];
+  mutant.lattice.nasaInsideCount = 0;
+  mutant.lattice.nasaOutsideCount = mutant.lattice.validProjectedCellIds.length;
+  mutant.lattice.classifiedCellIds = [];
+  mutant.mask.classifiedCellCount = 0;
+  mutant.mask.strictlyClassifiedCellCount = 0;
+  const derived = deriveSvsSpatialMetrics(mutant);
+  mutant.lattice.qBoundaryBandCellIds = derived.qBoundaryBandCellIds;
+  mutant.boundary = derived.boundary;
+  mutant.centroid = derived.centroid;
+  assert.equal(foldC1229S5SvsGate(report).status, "STRUCTURAL");
+
+  for (const mutate of [
+    (input) => (input.cellLonLat[0][1] = NaN),
+    (input) => (input.cellLonLat[0][1] = Infinity),
+    (input) => (input.cellLonLat[0][1] = -0),
+    (input) => (input.cellLonLat[0][1] = undefined),
+    (input) => (input.cellLonLat[0][1] = 180.001),
+    (input) => (input.cellLonLat[0][2] = 90.001),
+    (input) => input.cellLonLat[0].pop(),
+    (input) => input.classifiedCellIds.push(input.side ** 2),
+  ]) {
+    const input = spatialPrimitives(row);
+    mutate(input);
+    assert.throws(
+      () => summarizeSvsSpatialMetrics(input, wgs84GeodesicDistanceKm),
+      /primitive spatial inputs are invalid/u,
+    );
+  }
+  assert.equal(Number.isNaN(wgs84GeodesicDistanceKm([181, 0], [0, 0])), true);
+  assert.equal(Number.isNaN(wgs84GeodesicDistanceKm([-0, 1], [0, 1])), true);
+  assert.throws(
+    () => summarizeSvsSpatialMetrics(spatialPrimitives(row), () => Infinity),
+    /distance/u,
+  );
+  assert.throws(
+    () => summarizeSvsSpatialMetrics(spatialPrimitives(row), () => -0),
+    /distance/u,
+  );
+});
+
+test("02d page evaluation embeds the one exact spatial summarizer without runtime eval", () => {
+  const summarizerSource = summarizeSvsSpatialMetrics.toString();
+  const evaluationSource = createSvsPageEvaluationSource(
+    "webgl",
+    C12_29_S5_SVS_ROWS,
+  );
+  assert.match(
+    evaluationSource,
+    /^\(async \(contract, runtimeSpatialSummarizer\) =>/u,
+  );
+  assert.equal(evaluationSource.includes(summarizerSource), true);
+  assert.equal(evaluationSource.split(summarizerSource).length - 1, 1);
+  assert.match(evaluationSource, /runtimeSpatialSummarizer\(/u);
+  assert.doesNotMatch(evaluationSource, /\beval\s*\(/u);
+  assert.doesNotMatch(probeSource, /centroidOf\s*=|\[NaN, NaN\]/u);
+});
+
+test("02e runtime error artifacts retain the last JSON-safe spatial checkpoint", async () => {
+  const checkpoint = exactRuntimeCheckpoint();
+  const injected = new Error("injected post-membership page failure");
+  const fakePage = {
+    async evaluate(reader) {
+      assert.equal(typeof reader, "function");
+      return clone(checkpoint);
+    },
+  };
+  const retained = await retainSvsRuntimeDiagnostics(fakePage, injected, {
+    renderer: "webgl",
+    pageErrors: ["DeveloperError: normalized result is not a number"],
+    consoleErrors: ["injected console failure"],
+  });
+  assert.equal(retained, injected);
+  assert.deepEqual(retained.diagnostics.runtimeCheckpoint, checkpoint);
+  assert.equal(retained.diagnostics.stage, "page-session-error");
+  assert.match(retained.diagnostics.originalError, /injected post-membership/u);
+  assert.deepEqual(retained.diagnostics.pageErrors, [
+    "DeveloperError: normalized result is not a number",
+  ]);
+  retained.diagnostics = createSvsRuntimeErrorDiagnostics({
+    renderer: "webgl",
+    runtimeCheckpoint: retained.diagnostics.runtimeCheckpoint,
+    checkpointReadError: retained.diagnostics.checkpointReadError,
+    pageErrorCount: retained.diagnostics.pageErrorCount,
+    pageErrors: retained.diagnostics.pageErrors,
+    consoleErrorCount: retained.diagnostics.consoleErrorCount,
+    consoleErrors: retained.diagnostics.consoleErrors,
+    cleanup: exactRuntimeCleanup(),
+    originalError: injected,
+  });
+  const artifact = createSvsErrorArtifact(
+    RUN_ID,
+    retained,
+    "2026-08-13T12:00:00.000Z",
+  );
+  assert.deepEqual(validateSvsFinalArtifactShape(artifact), []);
+  const parsed = JSON.parse(
+    canonicalSvsArtifactBytes(artifact).toString("utf8"),
+  );
+  assert.deepEqual(parsed.diagnostics.runtimeCheckpoint, checkpoint);
+  assert.match(parsed.error, /injected post-membership page failure/u);
+  assertJsonSafeNumbers(parsed);
+
+  for (const value of [NaN, Infinity, -Infinity, -0]) {
+    assert.throws(
+      () => canonicalSvsArtifactBytes({ value }),
+      /non-finite|negative-zero/u,
+    );
+    const malformed = clone(checkpoint);
+    malformed.counts.classified = value;
+    assert.throws(
+      () =>
+        createSvsRuntimeErrorDiagnostics({
+          renderer: "webgl",
+          runtimeCheckpoint: malformed,
+          originalError: injected,
+        }),
+      /non-finite|negative-zero/u,
+    );
+  }
+
+  const malformedPage = {
+    async evaluate() {
+      const malformed = clone(checkpoint);
+      malformed.measuredCentroid.lonLat = [NaN, 44.25];
+      return malformed;
+    },
+  };
+  const safelyRetained = await retainSvsRuntimeDiagnostics(
+    malformedPage,
+    new Error("injected malformed checkpoint"),
+    { renderer: "webgl" },
+  );
+  assert.equal(safelyRetained.diagnostics.runtimeCheckpoint, null);
+  assert.match(
+    safelyRetained.diagnostics.checkpointReadError,
+    /checkpoint retention failed|non-finite/u,
+  );
+  assertJsonSafeNumbers(safelyRetained.diagnostics);
+});
+
+test("02f ERROR diagnostics and checkpoints are exact, bounded, and coherent", () => {
+  const checkpoint = exactRuntimeCheckpoint();
+  const diagnostics = createSvsRuntimeErrorDiagnostics({
+    renderer: "webgl",
+    runtimeCheckpoint: checkpoint,
+    pageErrors: ["page error"],
+    consoleErrors: ["console error"],
+    cleanup: exactRuntimeCleanup(),
+    originalError: new Error("runtime error"),
+  });
+  assert.deepEqual(validateSvsRuntimeCheckpointShape(checkpoint, "webgl"), []);
+  assert.deepEqual(validateSvsErrorDiagnosticsShape(diagnostics), []);
+  assert.equal(diagnostics.pageErrorCount, 1);
+  assert.equal(diagnostics.consoleErrorCount, 1);
+  const transitionCheckpoint = clone(checkpoint);
+  transitionCheckpoint.stage = "row-transition";
+  Object.keys(transitionCheckpoint.counts).forEach(
+    (key) => (transitionCheckpoint.counts[key] = null),
+  );
+  transitionCheckpoint.sourceCentroid = { available: false, lonLat: null };
+  transitionCheckpoint.measuredCentroid = { available: false, lonLat: null };
+  transitionCheckpoint.boundary = {
+    comparable: false,
+    unavailableReason: null,
+  };
+  transitionCheckpoint.terrain = {
+    transitionRole: null,
+    selectedTileIds: [],
+    preparedSelectedTileIds: [],
+    selectionRevision: null,
+    captureFrameNumber: null,
+  };
+  assert.deepEqual(
+    validateSvsRuntimeCheckpointShape(transitionCheckpoint, "webgl"),
+    [],
+  );
+  const phaseLaggedTransition = clone(transitionCheckpoint);
+  phaseLaggedTransition.phase = C12_29_S5_SVS_PHASES[2];
+  assert.match(
+    validateSvsRuntimeCheckpointShape(phaseLaggedTransition, "webgl").join(
+      "; ",
+    ),
+    /measurement phase\/owner differs/u,
+  );
+  assert.match(
+    probeSource,
+    /publishCheckpoint\(\{\s*phase: row\.phase,\s*stage: "row-transition"/u,
+  );
+  assert.match(
+    probeSource,
+    /publishCheckpoint\(\{\s*phase: contract\.control\.phase,\s*stage: "row-transition"/u,
+  );
+  const readyCheckpoint = clone(transitionCheckpoint);
+  readyCheckpoint.stage = "transition-readiness-complete";
+  readyCheckpoint.terrain = clone(checkpoint.terrain);
+  assert.deepEqual(
+    validateSvsRuntimeCheckpointShape(readyCheckpoint, "webgl"),
+    [],
+  );
+  const completedPhaseTransition = clone(checkpoint);
+  completedPhaseTransition.stage = "phase-transition";
+  completedPhaseTransition.phase = C12_29_S5_SVS_ROWS[1].phase;
+  assert.deepEqual(
+    validateSvsRuntimeCheckpointShape(completedPhaseTransition, "webgl"),
+    [],
+  );
+  const initialPhaseTransition = clone(transitionCheckpoint);
+  initialPhaseTransition.phase = C12_29_S5_SVS_PHASES[0];
+  initialPhaseTransition.stage = "phase-transition";
+  initialPhaseTransition.rowIndex = null;
+  initialPhaseTransition.role = null;
+  initialPhaseTransition.iso = null;
+  initialPhaseTransition.measurementKind = null;
+  assert.deepEqual(
+    validateSvsRuntimeCheckpointShape(initialPhaseTransition, "webgl"),
+    [],
+  );
+  const motionCheckpoint = clone(checkpoint);
+  motionCheckpoint.phase = C12_29_S5_SVS_PHASES[6];
+  motionCheckpoint.stage = "motion-summary-complete";
+  motionCheckpoint.rowIndex = null;
+  motionCheckpoint.role = null;
+  motionCheckpoint.iso = null;
+  motionCheckpoint.measurementKind = null;
+  motionCheckpoint.terrain.transitionRole = C12_29_S5_SVS_CONTROL.role;
+  assert.deepEqual(
+    validateSvsRuntimeCheckpointShape(motionCheckpoint, "webgl"),
+    [],
+  );
+  const cleanupPhaseTransition = clone(motionCheckpoint);
+  cleanupPhaseTransition.phase = C12_29_S5_SVS_PHASES[7];
+  cleanupPhaseTransition.stage = "phase-transition";
+  assert.deepEqual(
+    validateSvsRuntimeCheckpointShape(cleanupPhaseTransition, "webgl"),
+    [],
+  );
+  const artifact = {
+    schema: C12_29_S5_SVS_SCHEMA,
+    runId: RUN_ID,
+    generatedAt: "2026-08-13T12:00:00.000Z",
+    status: "ERROR",
+    exitCode: 2,
+    incomplete: false,
+    error: "runtime error",
+    diagnostics,
+  };
+  assert.deepEqual(validateSvsFinalArtifactShape(artifact), []);
+
+  for (const mutate of [
+    (value) => Object.assign(value, { extra: true }),
+    (value) => delete value.originalError,
+    (value) => (value.schema = "runtime-diagnostics-v2"),
+    (value) => (value.renderer = "webgpu"),
+    (value) => (value.stage = "unknown-stage"),
+    (value) => (value.kind = "unknown-kind"),
+    (value) => value.pageErrorCount++,
+    (value) => (value.pageErrors = [1]),
+    (value) => value.consoleErrorCount++,
+    (value) => (value.consoleErrors = new Array(513).fill("error")),
+    (value) => (value.originalError = "x".repeat(65_537)),
+    (value) => (value.cleanup = null),
+    (value) => (value.cleanup.pageCloseAttempted = false),
+    (value) => delete value.cleanup.contextClosed,
+    (value) => (value.cleanup.errors = ["unaccounted"]),
+    (value) => Object.setPrototypeOf(value, Object.create({ inherited: true })),
+  ]) {
+    const mutant = clone(diagnostics);
+    mutate(mutant);
+    assert.notDeepEqual(
+      validateSvsErrorDiagnosticsShape(mutant),
+      [],
+      JSON.stringify(mutant),
+    );
+    const artifactMutant = clone(artifact);
+    artifactMutant.diagnostics = mutant;
+    assert.notDeepEqual(validateSvsFinalArtifactShape(artifactMutant), []);
+  }
+  for (const diagnosticsMutant of [null, {}, []]) {
+    const mutant = clone(artifact);
+    mutant.diagnostics = diagnosticsMutant;
+    assert.notDeepEqual(validateSvsFinalArtifactShape(mutant), []);
+  }
+
+  for (const mutate of [
+    (value) => Object.assign(value, { extra: true }),
+    (value) => delete value.role,
+    (value) => (value.schema = "runtime-diagnostics-v2"),
+    (value) => (value.renderer = "webgpu"),
+    (value) => (value.stage = "unknown-stage"),
+    (value) => (value.phase = C12_29_S5_SVS_ROWS[0].phase),
+    (value) => (value.role = C12_29_S5_SVS_ROWS[0].role),
+    (value) => (value.measurementKind = "control"),
+    (value) => (value.counts.classified = NaN),
+    (value) => (value.counts.classified = -0),
+    (value) => (value.counts.classified = value.counts.terrain + 1),
+    (value) => (value.counts.classifiedBoundary = null),
+    (value) => (value.measuredCentroid.available = true),
+    (value) => (value.measuredCentroid.lonLat = [181, 0]),
+    (value) => (value.boundary.comparable = true),
+    (value) => (value.boundary.unavailableReason = null),
+    (value) => (value.terrain.transitionRole = C12_29_S5_SVS_ROWS[0].role),
+    (value) => value.terrain.preparedSelectedTileIds.push("5/2/5"),
+  ]) {
+    const mutant = clone(checkpoint);
+    mutate(mutant);
+    assert.notDeepEqual(validateSvsRuntimeCheckpointShape(mutant, "webgl"), []);
+  }
+
+  const operational = createSvsOperationalErrorDiagnostics(
+    new Error("fixture failed before page"),
+  );
+  assert.deepEqual(validateSvsErrorDiagnosticsShape(operational), []);
+  const prePageArtifact = createSvsErrorArtifact(
+    RUN_ID,
+    new Error("fixture failed before page"),
+    "2026-08-13T12:00:00.000Z",
+  );
+  assert.equal(prePageArtifact.diagnostics.kind, "operational-pre-page-error");
+  assert.deepEqual(validateSvsFinalArtifactShape(prePageArtifact), []);
+});
+
+test("02g hostile descriptors cannot bypass validation or canonical bytes", () => {
+  const diagnostics = createSvsOperationalErrorDiagnostics(
+    new Error("descriptor baseline"),
+  );
+  const artifact = createSvsErrorArtifact(
+    RUN_ID,
+    Object.assign(new Error("descriptor baseline"), { diagnostics }),
+    "2026-08-13T12:00:00.000Z",
+  );
+  assert.deepEqual(validateSvsFinalArtifactShape(artifact), []);
+  const baselineBytes = canonicalSvsArtifactBytes(artifact);
+  const parsed = JSON.parse(baselineBytes.toString("utf8"));
+  assert.deepEqual(validateSvsFinalArtifactShape(parsed), []);
+  assert.deepEqual(canonicalSvsArtifactBytes(parsed), baselineBytes);
+  const reordered = Object.fromEntries(Object.entries(artifact).reverse());
+  reordered.diagnostics = Object.fromEntries(
+    Object.entries(artifact.diagnostics).reverse(),
+  );
+  assert.deepEqual(validateSvsFinalArtifactShape(reordered), []);
+  assert.deepEqual(canonicalSvsArtifactBytes(reordered), baselineBytes);
+  const reportArtifact = finalArtifact("FAIL");
+  const reportBytes = canonicalSvsArtifactBytes(reportArtifact);
+  const parsedReportArtifact = JSON.parse(reportBytes.toString("utf8"));
+  assert.deepEqual(
+    validateSvsFinalArtifactShape(parsedReportArtifact),
+    [],
+    JSON.stringify(foldC1229S5SvsGate(parsedReportArtifact.report), null, 2),
+  );
+
+  const expectDescriptorRejection = (mutate) => {
+    const mutant = clone(artifact);
+    let getterCalls = 0;
+    mutate(mutant, () => {
+      getterCalls++;
+      throw new Error("hostile getter executed");
+    });
+    let reasons;
+    assert.doesNotThrow(() => {
+      reasons = validateSvsFinalArtifactShape(mutant);
+    });
+    assert.notDeepEqual(reasons, []);
+    assert.throws(
+      () => canonicalSvsArtifactBytes(mutant),
+      /JSON-safe|inspectable|prototype|symbol|accessor|non-enumerable|array/u,
+    );
+    assert.equal(getterCalls, 0);
+  };
+
+  expectDescriptorRejection((value) => {
+    Object.defineProperty(value, "toJSON", {
+      value: () => ({ substituted: true }),
+      enumerable: false,
+    });
+  });
+  expectDescriptorRejection((value) => {
+    value[Symbol("hidden")] = true;
+  });
+  expectDescriptorRejection((value) => {
+    Object.setPrototypeOf(value, { inherited: true });
+  });
+  expectDescriptorRejection((value, hostileGetter) => {
+    delete value.diagnostics.originalError;
+    Object.defineProperty(value.diagnostics, "originalError", {
+      get: hostileGetter,
+      enumerable: true,
+    });
+  });
+  expectDescriptorRejection((value) => {
+    Object.defineProperty(value.diagnostics, "originalError", {
+      value: value.diagnostics.originalError,
+      enumerable: false,
+    });
+  });
+  expectDescriptorRejection((value, hostileGetter) => {
+    value.diagnostics.pageErrors = ["page"];
+    delete value.diagnostics.pageErrors[0];
+    Object.defineProperty(value.diagnostics.pageErrors, "0", {
+      get: hostileGetter,
+      enumerable: true,
+    });
+  });
+  expectDescriptorRejection((value) => {
+    value.diagnostics.consoleErrors[Symbol("hidden")] = "console";
+  });
+  expectDescriptorRejection((value) => {
+    Object.setPrototypeOf(value.diagnostics.pageErrors, []);
+  });
+
+  const throwingProxy = new Proxy(artifact, {
+    ownKeys() {
+      throw new Error("ownKeys denied");
+    },
+  });
+  assert.notDeepEqual(validateSvsFinalArtifactShape(throwingProxy), []);
+  assert.throws(
+    () => canonicalSvsArtifactBytes(throwingProxy),
+    /inspectable|Proxy/u,
+  );
+  const { proxy: revokedProxy, revoke } = Proxy.revocable(artifact, {});
+  revoke();
+  assert.notDeepEqual(validateSvsFinalArtifactShape(revokedProxy), []);
+  assert.throws(
+    () => canonicalSvsArtifactBytes(revokedProxy),
+    /inspectable|Proxy/u,
+  );
+});
+
+test("02h diagnostic overflow remains bounded, categorized, and cleanup-complete", async () => {
+  const checkpoint = exactRuntimeCheckpoint();
+  const pageErrors = Array.from({ length: 513 }, (_, index) => `page-${index}`);
+  const consoleErrors = Array.from(
+    { length: 513 },
+    (_, index) => `console-${index}`,
+  );
+  pageErrors[0] = `page-long-${"p".repeat(40_000)}`;
+  consoleErrors[0] = `console-long-${"c".repeat(40_000)}`;
+  const original = new Error(`original-${"x".repeat(70_000)}`);
+  const retained = await retainSvsRuntimeDiagnostics(
+    { evaluate: async () => clone(checkpoint) },
+    original,
+    { renderer: "webgl", pageErrors, consoleErrors },
+  );
+  const cleanupErrors = Array.from(
+    { length: 513 },
+    (_, index) => `request-cleanup-${index}`,
+  );
+  cleanupErrors[0] = `request-cleanup-long-${"r".repeat(40_000)}`;
+  retained.diagnostics = createSvsRuntimeErrorDiagnostics({
+    renderer: "webgl",
+    runtimeCheckpoint: retained.diagnostics.runtimeCheckpoint,
+    checkpointReadError: retained.diagnostics.checkpointReadError,
+    pageErrorCount: retained.diagnostics.pageErrorCount,
+    pageErrors: retained.diagnostics.pageErrors,
+    consoleErrorCount: retained.diagnostics.consoleErrorCount,
+    consoleErrors: retained.diagnostics.consoleErrors,
+    cleanup: {
+      ...exactRuntimeCleanup(),
+      errorCount: cleanupErrors.length,
+      errors: cleanupErrors,
+    },
+    originalError: retained.diagnostics.originalError,
+  });
+  const diagnostics = retained.diagnostics;
+  assert.equal(
+    diagnostics.pageErrors.length,
+    C12_29_S5_SVS_DIAGNOSTIC_LIMITS.arrayEntries,
+  );
+  assert.equal(diagnostics.pageErrorCount, 513);
+  assert.equal(
+    diagnostics.pageErrors.at(-1),
+    createSvsDiagnosticOverflowMarker("pageErrors", 513, 511),
+  );
+  assert.equal(
+    diagnostics.pageErrors[0].length,
+    C12_29_S5_SVS_DIAGNOSTIC_LIMITS.entryCharacters,
+  );
+  assert.match(diagnostics.pageErrors[0], /SVS_TRUNCATED pageErrors\[0\]/u);
+  assert.equal(
+    diagnostics.consoleErrors.at(-1),
+    createSvsDiagnosticOverflowMarker("consoleErrors", 513, 511),
+  );
+  assert.equal(diagnostics.consoleErrorCount, 513);
+  assert.equal(
+    diagnostics.cleanup.errors.length,
+    C12_29_S5_SVS_DIAGNOSTIC_LIMITS.cleanupEntries,
+  );
+  assert.equal(diagnostics.cleanup.errorCount, 513);
+  assert.equal(
+    diagnostics.cleanup.errors.at(-1),
+    createSvsDiagnosticOverflowMarker("cleanup.errors", 513, 15),
+  );
+  assert.equal(
+    diagnostics.cleanup.errors[0].length,
+    C12_29_S5_SVS_DIAGNOSTIC_LIMITS.entryCharacters,
+  );
+  assert.match(diagnostics.originalError, /^Error: original-/u);
+  assert.match(diagnostics.originalError, /SVS_TRUNCATED originalError/u);
+  assert.deepEqual(validateSvsErrorDiagnosticsShape(diagnostics), []);
+
+  const artifact = createSvsErrorArtifact(
+    RUN_ID,
+    retained,
+    "2026-08-13T12:00:00.000Z",
+  );
+  assert.deepEqual(validateSvsFinalArtifactShape(artifact), []);
+  assert.ok(
+    artifact.error.length <= C12_29_S5_SVS_DIAGNOSTIC_LIMITS.errorCharacters,
+  );
+  assert.match(artifact.error, /^Error: original-/u);
+  const bytes = canonicalSvsArtifactBytes(artifact);
+  const parsed = JSON.parse(bytes.toString("utf8"));
+  assert.deepEqual(validateSvsFinalArtifactShape(parsed), []);
+  assert.deepEqual(canonicalSvsArtifactBytes(parsed), bytes);
+
+  const markerShapedPageErrors = Array.from(
+    { length: C12_29_S5_SVS_DIAGNOSTIC_LIMITS.arrayEntries - 1 },
+    (_, index) => `literal-page-${index}`,
+  );
+  markerShapedPageErrors.push(
+    createSvsDiagnosticOverflowMarker("pageErrors", 513, 511),
+  );
+  const literalPageDiagnostics = createSvsRuntimeErrorDiagnostics({
+    renderer: "webgl",
+    pageErrors: markerShapedPageErrors,
+    cleanup: exactRuntimeCleanup(),
+    originalError: "literal marker",
+  });
+  assert.equal(literalPageDiagnostics.pageErrorCount, 512);
+  assert.equal(
+    literalPageDiagnostics.pageErrors.at(-1),
+    `[SVS_LITERAL]${createSvsDiagnosticOverflowMarker("pageErrors", 513, 511)}`,
+  );
+  assert.deepEqual(
+    validateSvsErrorDiagnosticsShape(literalPageDiagnostics),
+    [],
+  );
+  const longMarkerLiteralDiagnostics = createSvsRuntimeErrorDiagnostics({
+    renderer: "webgl",
+    pageErrors: [
+      `[SVS_OVERFLOW pageErrors ${"x".repeat(
+        C12_29_S5_SVS_DIAGNOSTIC_LIMITS.entryCharacters,
+      )}`,
+    ],
+    cleanup: exactRuntimeCleanup(),
+    originalError: "long literal marker",
+  });
+  assert.equal(
+    longMarkerLiteralDiagnostics.pageErrors[0].length,
+    C12_29_S5_SVS_DIAGNOSTIC_LIMITS.entryCharacters,
+  );
+  assert.match(
+    longMarkerLiteralDiagnostics.pageErrors[0],
+    /^\[SVS_LITERAL\]\[SVS_OVERFLOW pageErrors /u,
+  );
+  assert.deepEqual(
+    validateSvsErrorDiagnosticsShape(longMarkerLiteralDiagnostics),
+    [],
+  );
+  const forgedPageCount = clone(literalPageDiagnostics);
+  forgedPageCount.pageErrors[511] = createSvsDiagnosticOverflowMarker(
+    "pageErrors",
+    513,
+    511,
+  );
+  assert.notDeepEqual(validateSvsErrorDiagnosticsShape(forgedPageCount), []);
+
+  const markerShapedCleanupErrors = Array.from(
+    { length: C12_29_S5_SVS_DIAGNOSTIC_LIMITS.cleanupEntries - 1 },
+    (_, index) => `literal-cleanup-${index}`,
+  );
+  markerShapedCleanupErrors.push(
+    createSvsDiagnosticOverflowMarker("cleanup.errors", 513, 15),
+  );
+  const literalCleanupDiagnostics = createSvsRuntimeErrorDiagnostics({
+    renderer: "webgl",
+    cleanup: {
+      ...exactRuntimeCleanup(),
+      errorCount: markerShapedCleanupErrors.length,
+      errors: markerShapedCleanupErrors,
+    },
+    originalError: "literal cleanup marker",
+  });
+  assert.equal(literalCleanupDiagnostics.cleanup.errorCount, 16);
+  assert.equal(
+    literalCleanupDiagnostics.cleanup.errors.at(-1),
+    `[SVS_LITERAL]${createSvsDiagnosticOverflowMarker("cleanup.errors", 513, 15)}`,
+  );
+  assert.deepEqual(
+    validateSvsErrorDiagnosticsShape(literalCleanupDiagnostics),
+    [],
+  );
+  const forgedCleanupCount = clone(literalCleanupDiagnostics);
+  forgedCleanupCount.cleanup.errors[15] = createSvsDiagnosticOverflowMarker(
+    "cleanup.errors",
+    513,
+    15,
+  );
+  assert.notDeepEqual(validateSvsErrorDiagnosticsShape(forgedCleanupCount), []);
+
+  const ledger = createSvsRequestLedger("http://localhost:8080");
+  for (let index = 0; index < 513; index++) {
+    const request = { url: () => `http://localhost:8080/request-${index}` };
+    ledger.noteRequest(request);
+    ledger.noteRequestFailed(request);
+  }
+  assert.deepEqual(
+    {
+      requestStartedCount: ledger.inspect().requestStartedCount,
+      requestSettledCount: ledger.inspect().requestSettledCount,
+      failedRequests: ledger.inspect().failedRequests,
+    },
+    { requestStartedCount: 513, requestSettledCount: 513, failedRequests: 513 },
+  );
+  const ledgerSnapshot = await drainSvsRequestLedger(ledger, 1_000, 1);
+  assert.equal(ledgerSnapshot.failedRequests, 513);
+  assert.equal(ledgerSnapshot.pendingRequests, 0);
 });
 
 test("03 exact maximum source edge is recomputed over all fixture vertices", async () => {
@@ -1464,6 +2306,63 @@ test("26 lifecycle writes RUNNING+lock, immutable red, latest, then unlocks", (t
   assert.equal(JSON.parse(fs.readFileSync(paths.latest)).status, "FAIL");
 });
 
+test("26a finalized v2 latest is byte-preserved before v3 RUNNING supersession", (t) => {
+  const temporary = fs.mkdtempSync(
+    path.join(os.tmpdir(), "c1229-svs-v2-supersession-"),
+  );
+  t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+  const paths = createSvsArtifactPaths(RUN_ID, temporary);
+  const v2 = {
+    schema: C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+    runId: "423e4567-e89b-42d3-a456-426614174000",
+    generatedAt: "2026-08-13T12:00:00.000Z",
+    status: "ERROR",
+    exitCode: 2,
+    incomplete: false,
+    error: "DeveloperError: normalized result is not a number",
+    diagnostics: null,
+  };
+  assert.deepEqual(validateSupersededSvsV2FinalArtifactShape(v2), []);
+  assert.notDeepEqual(validateSvsFinalArtifactShape(v2), []);
+  // Preserve the predecessor's insertion-order serializer byte-for-byte even
+  // though v3 canonicalizes object key order independently.
+  const v2Bytes = Buffer.from(`${JSON.stringify(v2, null, 2)}\n`);
+  assert.equal(v2Bytes.equals(canonicalSvsArtifactBytes(v2)), false);
+  fs.mkdirSync(temporary, { recursive: true });
+  fs.writeFileSync(paths.latest, v2Bytes, { flag: "wx" });
+  fs.writeFileSync(paths.firstRed, v2Bytes, { flag: "wx" });
+
+  const ownership = beginSvsEvidenceRun(paths, RUN_ID);
+  assert.equal(ownership.prior.latestSnapshot.supersededV2, true);
+  assert.deepEqual(ownership.supersededV2, {
+    file: ownership.recovery,
+    schema: C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+    runId: v2.runId,
+    status: "ERROR",
+    byteLength: v2Bytes.byteLength,
+    sha256: createHash("sha256").update(v2Bytes).digest("hex"),
+  });
+  assert.equal(fs.readFileSync(ownership.recovery).equals(v2Bytes), true);
+  assert.equal(fs.readFileSync(paths.firstRed).equals(v2Bytes), true);
+  const runningBytes = fs.readFileSync(paths.latest);
+  assert.equal(JSON.parse(runningBytes).schema, C12_29_S5_SVS_SCHEMA);
+  assert.equal(JSON.parse(runningBytes).status, "RUNNING");
+  assert.equal(runningBytes.equals(v2Bytes), false);
+
+  for (const mutate of [
+    (value) => Object.assign(value, { extra: true }),
+    (value) => (value.schema = "c12-29-s5-svs-5073-footprint-evidence-v1"),
+    (value) => (value.status = "FAIL"),
+    (value) => (value.exitCode = 1),
+    (value) => (value.incomplete = true),
+    (value) => (value.diagnostics = {}),
+  ]) {
+    const mutant = clone(v2);
+    mutate(mutant);
+    assert.notDeepEqual(validateSupersededSvsV2FinalArtifactShape(mutant), []);
+  }
+});
+
 test("27 lifecycle rejects prior RUNNING, extant lock, and alien ownership", (t) => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "c1229-svs-own-"));
   t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
@@ -1621,7 +2520,82 @@ test("32 watchdog returns fast work and closes then drains timed-out work", asyn
     closeTimeout = error;
   }
   assert.match(closeTimeout.message, /watchdog expired.*drained=true/u);
-  assert.equal(closeTimeout.diagnostics.closeTimedOut, true);
+  assert.equal(closeTimeout.watchdog.closeTimedOut, true);
+  assert.deepEqual(
+    validateSvsErrorDiagnosticsShape(closeTimeout.diagnostics),
+    [],
+  );
+
+  const inFlight = new Error("in-flight page failure");
+  inFlight.diagnostics = createSvsRuntimeErrorDiagnostics({
+    renderer: "webgl",
+    runtimeCheckpoint: exactRuntimeCheckpoint(),
+    pageErrors: ["page failure"],
+    consoleErrors: ["console failure"],
+    cleanup: exactRuntimeCleanup(),
+    originalError: inFlight,
+  });
+  let preserved;
+  try {
+    await withSvsWatchdog(
+      () => new Promise((_, reject) => setTimeout(() => reject(inFlight), 20)),
+      async () => {},
+      1,
+      50,
+      100,
+    );
+    assert.fail("watchdog should reject");
+  } catch (error) {
+    preserved = error;
+  }
+  assert.equal(preserved.watchdog.taskDrained, true);
+  assert.equal(preserved.watchdog.inFlightDiagnosticsPreserved, true);
+  assert.deepEqual(preserved.diagnostics, inFlight.diagnostics);
+  assert.deepEqual(validateSvsErrorDiagnosticsShape(preserved.diagnostics), []);
+  assert.equal(
+    preserved.diagnostics.runtimeCheckpoint.stage,
+    "spatial-summary-complete",
+  );
+  assert.equal(preserved.diagnostics.cleanup.pageClosed, true);
+
+  let undrained;
+  try {
+    await withSvsWatchdog(
+      () => new Promise(() => {}),
+      async () => {},
+      1,
+      50,
+      2,
+    );
+    assert.fail("watchdog should reject");
+  } catch (error) {
+    undrained = error;
+  }
+  assert.equal(undrained.watchdog.taskDrained, false);
+  assert.equal(undrained.watchdog.inFlightDiagnosticsPreserved, false);
+  assert.equal(undrained.diagnostics.kind, "operational-pre-page-error");
+  assert.equal(undrained.retainSvsRunning, true);
+
+  let closeAndDrainTimeout;
+  try {
+    await withSvsWatchdog(
+      () => new Promise(() => {}),
+      () => new Promise(() => {}),
+      1,
+      2,
+      2,
+    );
+    assert.fail("watchdog should reject");
+  } catch (error) {
+    closeAndDrainTimeout = error;
+  }
+  assert.equal(closeAndDrainTimeout.watchdog.closeTimedOut, true);
+  assert.equal(closeAndDrainTimeout.watchdog.taskDrained, false);
+  assert.equal(closeAndDrainTimeout.retainSvsRunning, true);
+  assert.deepEqual(
+    validateSvsErrorDiagnosticsShape(closeAndDrainTimeout.diagnostics),
+    [],
+  );
 });
 
 test("33 fused snapshot validator and metric bindings reject split evidence", () => {
@@ -2269,7 +3243,7 @@ test("38 selection events and emitted command owners are independent and exact",
     [
       (tuple) => {
         tuple.selectedContent[0].terrainDataObjectId++;
-        tuple.selectionContentIdentity = JSON.stringify({
+        tuple.selectionContentIdentity = canonicalJsonIdentity({
           selected: tuple.selectedContent,
           prepared: tuple.preparedContent,
         });
@@ -2280,7 +3254,7 @@ test("38 selection events and emitted command owners are independent and exact",
       (tuple) => {
         tuple.preparedContent[0].renderedMeshObjectId++;
         tuple.preparedContent[0].realMeshObjectId++;
-        tuple.selectionContentIdentity = JSON.stringify({
+        tuple.selectionContentIdentity = canonicalJsonIdentity({
           selected: tuple.selectedContent,
           prepared: tuple.preparedContent,
         });
@@ -2541,7 +3515,8 @@ test("40 page/context closure and request accounting are observed and bounded", 
   } catch (error) {
     undrained = error;
   }
-  assert.equal(undrained.diagnostics.taskDrained, false);
+  assert.equal(undrained.watchdog.taskDrained, false);
+  assert.deepEqual(validateSvsErrorDiagnosticsShape(undrained.diagnostics), []);
   assert.equal(undrained.retainSvsRunning, true);
   for (const mutate of [
     (cleanup) => (cleanup.pendingRequests = 1),

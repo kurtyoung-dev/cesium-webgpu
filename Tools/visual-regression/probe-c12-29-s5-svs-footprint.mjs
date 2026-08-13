@@ -13,6 +13,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { types as utilTypes } from "node:util";
 
 import { chromium } from "playwright";
 import sharp from "sharp";
@@ -23,6 +24,7 @@ import {
   C12_29_S5_SVS_CAPTURE_LABELS,
   C12_29_S5_SVS_CAPTURE_METHOD,
   C12_29_S5_SVS_CONTROL,
+  C12_29_S5_SVS_DIAGNOSTIC_LIMITS,
   C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
   C12_29_S5_SVS_FIXTURE,
   C12_29_S5_SVS_PHASES,
@@ -34,10 +36,15 @@ import {
   C12_29_S5_SVS_SOURCE_EDGE,
   C12_29_S5_SVS_SOURCE_FILES,
   C12_29_S5_SVS_SOURCE_MOTION,
+  C12_29_S5_SVS_SUPERSEDED_SCHEMA,
   C12_29_S5_SVS_TERRAIN,
+  createSvsDiagnosticOverflowMarker,
   exitCodeForSvsStatus,
   foldC1229S5SvsGate,
   isUuidV4,
+  summarizeSvsSpatialMetrics,
+  validateSupersededSvsV2FinalArtifactShape,
+  validateSvsErrorDiagnosticsShape,
   validateSvsFinalArtifactShape,
   validateSvsRunningArtifactShape,
   wgs84GeodesicDistanceKm,
@@ -339,8 +346,503 @@ export function createSvsArtifactPaths(runId, directory = outputDirectory) {
   });
 }
 
-const artifactBytes = (value) =>
-  Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+export function canonicalSvsArtifactBytes(value) {
+  const canonicalValue = cloneSvsJsonSafe(value);
+  const json = JSON.stringify(
+    canonicalValue,
+    (key, entry) => {
+      if (
+        typeof entry === "number" &&
+        (!Number.isFinite(entry) || Object.is(entry, -0))
+      ) {
+        throw new TypeError(
+          `SVS canonical JSON rejects non-finite or negative-zero number at ${key || "$"}`,
+        );
+      }
+      return entry;
+    },
+    2,
+  );
+  if (typeof json !== "string") {
+    throw new TypeError("SVS canonical JSON root is not serializable");
+  }
+  return Buffer.from(`${json}\n`, "utf8");
+}
+
+const artifactBytes = canonicalSvsArtifactBytes;
+
+function cloneSvsJsonSafe(value, path = "$", ancestors = new Set()) {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || Object.is(value, -0)) {
+      throw new TypeError(
+        `SVS JSON-safe value rejects non-finite or negative-zero number at ${path}`,
+      );
+    }
+    return value;
+  }
+  if (!value || typeof value !== "object") {
+    throw new TypeError(
+      `SVS JSON-safe value rejects ${typeof value} at ${path}`,
+    );
+  }
+  try {
+    if (ancestors.has(value)) {
+      throw new TypeError(`SVS JSON-safe value rejects a cycle at ${path}`);
+    }
+    if (utilTypes.isProxy(value)) {
+      throw new TypeError(`SVS JSON-safe value rejects a Proxy at ${path}`);
+    }
+    const array = Array.isArray(value);
+    const prototype = Object.getPrototypeOf(value);
+    if (
+      (array && prototype !== Array.prototype) ||
+      (!array && ![Object.prototype, null].includes(prototype))
+    ) {
+      throw new TypeError(
+        `SVS JSON-safe value has a custom prototype at ${path}`,
+      );
+    }
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string")) {
+      throw new TypeError(`SVS JSON-safe value has a symbol key at ${path}`);
+    }
+    ancestors.add(value);
+    if (array) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      if (
+        lengthDescriptor === undefined ||
+        !Object.hasOwn(lengthDescriptor, "value") ||
+        lengthDescriptor.enumerable !== false ||
+        !Number.isInteger(lengthDescriptor.value) ||
+        lengthDescriptor.value < 0 ||
+        lengthDescriptor.value > 1_000_000 ||
+        keys.length !== lengthDescriptor.value + 1 ||
+        keys.at(-1) !== "length"
+      ) {
+        throw new TypeError(`SVS JSON-safe array shape differs at ${path}`);
+      }
+      const clone = [];
+      for (let index = 0; index < lengthDescriptor.value; index++) {
+        const key = String(index);
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (
+          keys[index] !== key ||
+          descriptor === undefined ||
+          !Object.hasOwn(descriptor, "value") ||
+          descriptor.enumerable !== true
+        ) {
+          throw new TypeError(
+            `SVS JSON-safe array rejects holes, accessors, or hidden keys at ${path}[${index}]`,
+          );
+        }
+        clone.push(
+          cloneSvsJsonSafe(descriptor.value, `${path}[${index}]`, ancestors),
+        );
+      }
+      ancestors.delete(value);
+      return clone;
+    }
+    const clone = prototype === null ? Object.create(null) : {};
+    for (const key of [...keys].sort()) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined ||
+        !Object.hasOwn(descriptor, "value") ||
+        descriptor.enumerable !== true
+      ) {
+        throw new TypeError(
+          `SVS JSON-safe object rejects accessors or non-enumerable keys at ${path}.${key}`,
+        );
+      }
+      Object.defineProperty(clone, key, {
+        value: cloneSvsJsonSafe(descriptor.value, `${path}.${key}`, ancestors),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    ancestors.delete(value);
+    return clone;
+  } catch (error) {
+    ancestors.delete(value);
+    if (error instanceof TypeError && /^SVS JSON-safe/u.test(error.message)) {
+      throw error;
+    }
+    throw new TypeError(`SVS JSON-safe value is not inspectable at ${path}`, {
+      cause: error,
+    });
+  }
+}
+
+function svsErrorText(error) {
+  for (const key of ["stack", "message"]) {
+    try {
+      const value = error?.[key];
+      if (typeof value === "string" && value.length > 0) return value;
+    } catch {
+      // Continue to the next non-throwing representation.
+    }
+  }
+  try {
+    const value = String(error);
+    if (value.length > 0) return value;
+  } catch {
+    // The retained fallback remains deterministic even for a hostile Proxy.
+  }
+  return "[SVS uninspectable error]";
+}
+
+function boundedSvsDiagnosticText(
+  value,
+  maximumCharacters,
+  category,
+  allowEmpty = false,
+) {
+  let text = typeof value === "string" ? value : svsErrorText(value);
+  if (!allowEmpty && text.length === 0) {
+    text = `[SVS empty ${category}]`;
+  }
+  if (text.length <= maximumCharacters) return text;
+  let omitted = text.length - maximumCharacters;
+  let suffix;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    suffix = `\n[SVS_TRUNCATED ${category} omittedCharacters=${omitted}]`;
+    const retainedCharacters = Math.max(0, maximumCharacters - suffix.length);
+    const exactOmitted = text.length - retainedCharacters;
+    if (exactOmitted === omitted) break;
+    omitted = exactOmitted;
+  }
+  suffix = `\n[SVS_TRUNCATED ${category} omittedCharacters=${omitted}]`;
+  return `${text.slice(0, Math.max(0, maximumCharacters - suffix.length))}${suffix}`.slice(
+    0,
+    maximumCharacters,
+  );
+}
+
+function normalizeSvsDiagnosticArray(
+  value,
+  category,
+  maximumEntries = C12_29_S5_SVS_DIAGNOSTIC_LIMITS.arrayEntries,
+  declaredTotal,
+) {
+  let entries;
+  try {
+    entries = cloneSvsJsonSafe(value);
+  } catch (error) {
+    if (declaredTotal !== undefined) {
+      throw new TypeError(
+        `SVS ${category} declared diagnostics are unreadable`,
+        {
+          cause: error,
+        },
+      );
+    }
+    return {
+      total: 1,
+      entries: [
+        boundedSvsDiagnosticText(
+          `[SVS ${category} capture rejected: ${svsErrorText(error)}]`,
+          C12_29_S5_SVS_DIAGNOSTIC_LIMITS.entryCharacters,
+          `${category}[capture]`,
+          true,
+        ),
+      ],
+    };
+  }
+  if (!Array.isArray(entries)) {
+    if (declaredTotal !== undefined) {
+      throw new TypeError(
+        `SVS ${category} declared diagnostics are not an array`,
+      );
+    }
+    return {
+      total: 1,
+      entries: [`[SVS ${category} capture rejected: expected array]`],
+    };
+  }
+  const existingOverflow =
+    Number.isSafeInteger(declaredTotal) &&
+    declaredTotal > maximumEntries &&
+    entries.length === maximumEntries &&
+    entries.at(-1) ===
+      createSvsDiagnosticOverflowMarker(
+        category,
+        declaredTotal,
+        maximumEntries - 1,
+      );
+  if (
+    declaredTotal !== undefined &&
+    (!Number.isSafeInteger(declaredTotal) ||
+      declaredTotal < 0 ||
+      (!existingOverflow && declaredTotal !== entries.length))
+  ) {
+    throw new TypeError(`SVS ${category} declared diagnostic count differs`);
+  }
+  const total = declaredTotal ?? entries.length;
+  const retained =
+    total > maximumEntries ? Math.max(0, maximumEntries - 1) : total;
+  const normalized = entries.slice(0, retained).map((entry, index) => {
+    let text = typeof entry === "string" ? entry : svsErrorText(entry);
+    if (text.startsWith(`[SVS_OVERFLOW ${category} `)) {
+      text = `[SVS_LITERAL]${text}`;
+    }
+    return boundedSvsDiagnosticText(
+      text,
+      C12_29_S5_SVS_DIAGNOSTIC_LIMITS.entryCharacters,
+      `${category}[${index}]`,
+      true,
+    );
+  });
+  if (total > maximumEntries) {
+    normalized.push(
+      createSvsDiagnosticOverflowMarker(category, total, retained),
+    );
+  }
+  return { total, entries: normalized };
+}
+
+function normalizeSvsRuntimeCleanup(cleanup) {
+  if (cleanup === null) return null;
+  const safe = cloneSvsJsonSafe(cleanup);
+  if (!safe || typeof safe !== "object" || Array.isArray(safe)) return safe;
+  const sourceErrorCount = safe.errorCount;
+  const sourceErrors = safe.errors;
+  const normalized = normalizeSvsDiagnosticArray(
+    sourceErrors,
+    "cleanup.errors",
+    C12_29_S5_SVS_DIAGNOSTIC_LIMITS.cleanupEntries,
+    sourceErrorCount,
+  );
+  safe.errors = normalized.entries;
+  safe.errorCount = normalized.total;
+  return safe;
+}
+
+export function createSvsRuntimeErrorDiagnostics({
+  renderer,
+  runtimeCheckpoint = null,
+  checkpointReadError = null,
+  pageErrors = [],
+  pageErrorCount,
+  consoleErrors = [],
+  consoleErrorCount,
+  originalError,
+  stage = "page-session-error",
+  cleanup = null,
+}) {
+  if (
+    !C12_29_S5_SVS_RENDERERS.includes(renderer) ||
+    typeof stage !== "string" ||
+    stage.length === 0
+  ) {
+    throw new TypeError("SVS runtime diagnostics inputs are invalid");
+  }
+  const checkpoint = cloneSvsJsonSafe(runtimeCheckpoint);
+  if (
+    checkpoint !== null &&
+    (checkpoint?.schema !== C12_29_S5_SVS_DIAGNOSTICS_SCHEMA ||
+      checkpoint?.renderer !== renderer)
+  ) {
+    throw new TypeError("SVS runtime checkpoint identity differs");
+  }
+  const normalizedPageErrors = normalizeSvsDiagnosticArray(
+    pageErrors,
+    "pageErrors",
+    C12_29_S5_SVS_DIAGNOSTIC_LIMITS.arrayEntries,
+    pageErrorCount,
+  );
+  const normalizedConsoleErrors = normalizeSvsDiagnosticArray(
+    consoleErrors,
+    "consoleErrors",
+    C12_29_S5_SVS_DIAGNOSTIC_LIMITS.arrayEntries,
+    consoleErrorCount,
+  );
+  const diagnostics = cloneSvsJsonSafe({
+    schema: C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
+    kind: "runtime-page-session-error",
+    renderer,
+    stage,
+    runtimeCheckpoint: checkpoint,
+    checkpointReadError:
+      checkpointReadError === null
+        ? null
+        : boundedSvsDiagnosticText(
+            checkpointReadError,
+            C12_29_S5_SVS_DIAGNOSTIC_LIMITS.errorCharacters,
+            "checkpointReadError",
+          ),
+    pageErrorCount: normalizedPageErrors.total,
+    pageErrors: normalizedPageErrors.entries,
+    consoleErrorCount: normalizedConsoleErrors.total,
+    consoleErrors: normalizedConsoleErrors.entries,
+    cleanup: normalizeSvsRuntimeCleanup(cleanup),
+    originalError: boundedSvsDiagnosticText(
+      originalError,
+      C12_29_S5_SVS_DIAGNOSTIC_LIMITS.errorCharacters,
+      "originalError",
+    ),
+  });
+  const reasons = validateSvsErrorDiagnosticsShape(diagnostics, {
+    requireCleanup: cleanup !== null,
+  });
+  if (reasons.length > 0) {
+    throw new TypeError(
+      `SVS runtime diagnostics differ: ${reasons.join("; ")}`,
+    );
+  }
+  return diagnostics;
+}
+
+export function createSvsOperationalErrorDiagnostics(
+  originalError,
+  stage = "probe-before-page",
+) {
+  const diagnostics = cloneSvsJsonSafe({
+    schema: C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
+    kind: "operational-pre-page-error",
+    renderer: null,
+    stage,
+    runtimeCheckpoint: null,
+    checkpointReadError: null,
+    pageErrorCount: 0,
+    pageErrors: [],
+    consoleErrorCount: 0,
+    consoleErrors: [],
+    cleanup: null,
+    originalError: boundedSvsDiagnosticText(
+      originalError,
+      C12_29_S5_SVS_DIAGNOSTIC_LIMITS.errorCharacters,
+      "originalError",
+    ),
+  });
+  const reasons = validateSvsErrorDiagnosticsShape(diagnostics);
+  if (reasons.length > 0) {
+    throw new TypeError(
+      `SVS operational diagnostics differ: ${reasons.join("; ")}`,
+    );
+  }
+  return diagnostics;
+}
+
+function createSvsCleanupErrorDiagnostics({
+  renderer,
+  pageErrors,
+  consoleErrors,
+  cleanup,
+  originalError,
+}) {
+  const normalizedPageErrors = normalizeSvsDiagnosticArray(
+    pageErrors,
+    "pageErrors",
+  );
+  const normalizedConsoleErrors = normalizeSvsDiagnosticArray(
+    consoleErrors,
+    "consoleErrors",
+  );
+  const diagnostics = cloneSvsJsonSafe({
+    schema: C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
+    kind: "runtime-session-cleanup-error",
+    renderer,
+    stage: "session-cleanup-error",
+    runtimeCheckpoint: null,
+    checkpointReadError: null,
+    pageErrorCount: normalizedPageErrors.total,
+    pageErrors: normalizedPageErrors.entries,
+    consoleErrorCount: normalizedConsoleErrors.total,
+    consoleErrors: normalizedConsoleErrors.entries,
+    cleanup: normalizeSvsRuntimeCleanup(cleanup),
+    originalError: boundedSvsDiagnosticText(
+      originalError,
+      C12_29_S5_SVS_DIAGNOSTIC_LIMITS.errorCharacters,
+      "originalError",
+    ),
+  });
+  const reasons = validateSvsErrorDiagnosticsShape(diagnostics);
+  if (reasons.length > 0) {
+    throw new TypeError(
+      `SVS cleanup diagnostics differ: ${reasons.join("; ")}`,
+    );
+  }
+  return diagnostics;
+}
+
+export async function retainSvsRuntimeDiagnostics(
+  page,
+  error,
+  { renderer, pageErrors = [], consoleErrors = [], cleanup = null },
+) {
+  let runtimeCheckpoint = null;
+  let checkpointReadError = null;
+  try {
+    runtimeCheckpoint = await page.evaluate(
+      () => globalThis.__c1229SvsRuntimeCheckpoint ?? null,
+    );
+  } catch (readError) {
+    checkpointReadError = readError;
+  }
+  let diagnostics;
+  try {
+    diagnostics = createSvsRuntimeErrorDiagnostics({
+      renderer,
+      runtimeCheckpoint,
+      checkpointReadError,
+      pageErrors,
+      consoleErrors,
+      originalError: error,
+      cleanup,
+    });
+  } catch (retentionError) {
+    diagnostics = createSvsRuntimeErrorDiagnostics({
+      renderer,
+      runtimeCheckpoint: null,
+      checkpointReadError: new AggregateError(
+        [checkpointReadError, retentionError].filter(Boolean),
+        "SVS runtime checkpoint retention failed",
+      ),
+      pageErrors,
+      consoleErrors,
+      originalError: error,
+      cleanup,
+    });
+  }
+  const retainedError =
+    error instanceof Error && Object.isExtensible(error)
+      ? error
+      : new Error(svsErrorText(error), { cause: error });
+  retainedError.diagnostics = diagnostics;
+  return retainedError;
+}
+
+export function createSvsErrorArtifact(
+  runId,
+  error,
+  generatedAt = new Date().toISOString(),
+) {
+  return {
+    schema: C12_29_S5_SVS_SCHEMA,
+    runId,
+    generatedAt,
+    status: "ERROR",
+    exitCode: exitCodeForSvsStatus("ERROR"),
+    incomplete: false,
+    error: boundedSvsDiagnosticText(
+      error,
+      C12_29_S5_SVS_DIAGNOSTIC_LIMITS.errorCharacters,
+      "artifact.error",
+    ),
+    diagnostics:
+      error?.diagnostics === undefined
+        ? createSvsOperationalErrorDiagnostics(error)
+        : cloneSvsJsonSafe(error.diagnostics),
+  };
+}
 
 function parseJsonFile(file, operations = fs) {
   try {
@@ -369,11 +871,16 @@ function readExactLatestSnapshot(file, operations = fs) {
   }
   const runningReasons = validateSvsRunningArtifactShape(value);
   const finalReasons = validateSvsFinalArtifactShape(value);
-  if (runningReasons.length > 0 && finalReasons.length > 0) {
+  const supersededV2Reasons = validateSupersededSvsV2FinalArtifactShape(value);
+  if (
+    runningReasons.length > 0 &&
+    finalReasons.length > 0 &&
+    supersededV2Reasons.length > 0
+  ) {
     throw new Error(
       `SVS canonical latest shape is invalid: RUNNING ${runningReasons.join(
         "; ",
-      )}; final ${finalReasons.join("; ")}`,
+      )}; final ${finalReasons.join("; ")}; superseded-v2 ${supersededV2Reasons.join("; ")}`,
     );
   }
   return {
@@ -383,6 +890,7 @@ function readExactLatestSnapshot(file, operations = fs) {
     byteLength: bytes.byteLength,
     sha256: sha256(bytes),
     value,
+    supersededV2: supersededV2Reasons.length === 0,
   };
 }
 
@@ -424,12 +932,13 @@ function readExactFirstRedSnapshot(file, operations = fs) {
     });
   }
   const reasons = validateSvsFinalArtifactShape(value);
+  const supersededV2Reasons = validateSupersededSvsV2FinalArtifactShape(value);
   if (
-    reasons.length > 0 ||
+    (reasons.length > 0 && supersededV2Reasons.length > 0) ||
     !new Set(["FAIL", "STRUCTURAL", "ERROR"]).has(value.status)
   ) {
     throw new Error(
-      `SVS retained first-red artifact is not exact final red: ${reasons.join("; ")}`,
+      `SVS retained first-red artifact is not exact final red: ${reasons.join("; ")}; superseded-v2 ${supersededV2Reasons.join("; ")}`,
     );
   }
   return {
@@ -546,6 +1055,67 @@ function ensureExactRecoveryReceipt(
     file,
     expectedBytes,
     expectedRunning,
+    operations,
+  );
+}
+
+function requireExactSupersededV2Receipt(
+  file,
+  expectedBytes,
+  expectedArtifact,
+  operations = fs,
+) {
+  let observedBytes;
+  try {
+    observedBytes = Buffer.from(operations.readFileSync(file));
+  } catch (error) {
+    throw new Error("SVS superseded-v2 receipt is unreadable", {
+      cause: error,
+    });
+  }
+  let observed;
+  try {
+    observed = JSON.parse(observedBytes.toString("utf8"));
+  } catch (error) {
+    throw new Error("SVS superseded-v2 receipt is not exact JSON", {
+      cause: error,
+    });
+  }
+  const reasons = validateSupersededSvsV2FinalArtifactShape(observed);
+  if (
+    !observedBytes.equals(Buffer.from(expectedBytes)) ||
+    reasons.length > 0 ||
+    observed.runId !== expectedArtifact.runId ||
+    observed.generatedAt !== expectedArtifact.generatedAt ||
+    observed.status !== expectedArtifact.status
+  ) {
+    throw new Error(`SVS superseded-v2 receipt differs: ${reasons.join("; ")}`);
+  }
+  return {
+    file,
+    schema: C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+    runId: observed.runId,
+    status: observed.status,
+    byteLength: observedBytes.byteLength,
+    sha256: sha256(observedBytes),
+  };
+}
+
+function ensureExactSupersededV2Receipt(
+  file,
+  expectedBytes,
+  expectedArtifact,
+  operations = fs,
+) {
+  try {
+    writeExclusiveVerified(file, expectedBytes, operations);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+  return requireExactSupersededV2Receipt(
+    file,
+    expectedBytes,
+    expectedArtifact,
     operations,
   );
 }
@@ -1047,7 +1617,17 @@ export function beginSvsEvidenceRun(paths, runId, operations = fs) {
   try {
     writeExclusiveVerified(paths.runningReceipt, runningBytes, operations);
     let recovery = null;
-    if (prior.latest?.status === "RUNNING") {
+    let supersededV2 = null;
+    if (prior.latestSnapshot.supersededV2 === true) {
+      const supersededBytes = Buffer.from(prior.latestSnapshot.bytes);
+      recovery = `${paths.latest}.superseded-v2-${prior.latest.runId}.json`;
+      supersededV2 = ensureExactSupersededV2Receipt(
+        recovery,
+        supersededBytes,
+        prior.latest,
+        operations,
+      );
+    } else if (prior.latest?.status === "RUNNING") {
       const recoveredBytes = Buffer.from(prior.latestSnapshot.bytes);
       recovery = `${paths.latest}.recovered-${prior.latest.runId}.json`;
       ensureExactRecoveryReceipt(
@@ -1069,12 +1649,21 @@ export function beginSvsEvidenceRun(paths, runId, operations = fs) {
       operations,
     );
     if (recovery) {
-      requireExactRecoveryReceipt(
-        recovery,
-        prior.latestSnapshot.bytes,
-        prior.latest,
-        operations,
-      );
+      if (supersededV2) {
+        supersededV2 = requireExactSupersededV2Receipt(
+          recovery,
+          prior.latestSnapshot.bytes,
+          prior.latest,
+          operations,
+        );
+      } else {
+        requireExactRecoveryReceipt(
+          recovery,
+          prior.latestSnapshot.bytes,
+          prior.latest,
+          operations,
+        );
+      }
     }
     const ownership = {
       prior,
@@ -1085,6 +1674,7 @@ export function beginSvsEvidenceRun(paths, runId, operations = fs) {
       lock,
       lockBytes,
       recovery,
+      supersededV2,
     };
     svsOwnerships.set(running, ownership);
     return ownership;
@@ -1449,8 +2039,90 @@ async function loadFixtureForContract() {
   }));
 }
 
-const MEASURE_SVS_SESSION = async (contract) => {
+const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
+  const jsonSafeClone = (value) =>
+    JSON.parse(
+      JSON.stringify(value, (key, entry) => {
+        if (
+          typeof entry === "number" &&
+          (!Number.isFinite(entry) || Object.is(entry, -0))
+        ) {
+          throw new TypeError(
+            `SVS runtime checkpoint rejects non-finite or negative-zero number at ${key || "$"}`,
+          );
+        }
+        if (
+          entry === undefined ||
+          new Set(["bigint", "function", "symbol"]).has(typeof entry)
+        ) {
+          throw new TypeError(
+            `SVS runtime checkpoint rejects ${typeof entry} at ${key || "$"}`,
+          );
+        }
+        return entry;
+      }),
+    );
+  const canonicalJsonIdentity = (value) =>
+    JSON.stringify(value, (_key, entry) => {
+      if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+        return Object.fromEntries(
+          Object.keys(entry)
+            .sort()
+            .map((key) => [key, entry[key]]),
+        );
+      }
+      return entry;
+    });
+  const deepFreeze = (value) => {
+    if (value && typeof value === "object" && !Object.isFrozen(value)) {
+      Object.freeze(value);
+      for (const entry of Object.values(value)) deepFreeze(entry);
+    }
+    return value;
+  };
+  let checkpointState = {
+    schema: contract.diagnosticsSchema,
+    renderer: contract.renderer,
+    sequence: 0,
+    phase: null,
+    stage: "runtime-import",
+    rowIndex: null,
+    role: null,
+    iso: null,
+    measurementKind: null,
+    counts: {
+      valid: null,
+      nasa: null,
+      terrain: null,
+      classified: null,
+      sourceBoundary: null,
+      classifiedBoundary: null,
+    },
+    sourceCentroid: { available: false, lonLat: null },
+    measuredCentroid: { available: false, lonLat: null },
+    boundary: { comparable: false, unavailableReason: null },
+    terrain: {
+      transitionRole: null,
+      selectedTileIds: [],
+      preparedSelectedTileIds: [],
+      selectionRevision: null,
+      captureFrameNumber: null,
+    },
+  };
+  const publishCheckpoint = (patch) => {
+    checkpointState = jsonSafeClone({
+      ...checkpointState,
+      ...patch,
+      sequence: checkpointState.sequence + 1,
+    });
+    globalThis.__c1229SvsRuntimeCheckpoint = deepFreeze(
+      jsonSafeClone(checkpointState),
+    );
+    return checkpointState;
+  };
+  publishCheckpoint({ stage: "runtime-import" });
   const C = await import(contract.runtimePath);
+  publishCheckpoint({ stage: "viewer-contract" });
   const viewer = globalThis.viewer;
   const scene = viewer?.scene;
   const globe = scene?.globe;
@@ -1460,10 +2132,45 @@ const MEASURE_SVS_SESSION = async (contract) => {
   if (renderer !== contract.renderer) {
     throw new Error(`renderer ${renderer} != requested ${contract.renderer}`);
   }
+  if (
+    typeof runtimeSpatialSummarizer !== "function" ||
+    runtimeSpatialSummarizer.toString() !== contract.spatialSummarizerSource
+  ) {
+    throw new Error("SVS runtime spatial summarizer source identity differs");
+  }
+  const requireDegreeLonLat = (value, stage) => {
+    if (
+      !Array.isArray(value) ||
+      value.length !== 2 ||
+      !value.every(Number.isFinite) ||
+      value.some((entry) => Object.is(entry, -0)) ||
+      Math.abs(value[0]) > 180 ||
+      Math.abs(value[1]) > 90
+    ) {
+      throw new TypeError(`${stage}: degree lon/lat is invalid`);
+    }
+    return value;
+  };
+  const cartographicDistanceKm = (left, right, stage) => {
+    requireDegreeLonLat(left, `${stage}/left`);
+    requireDegreeLonLat(right, `${stage}/right`);
+    const geodesic = new C.EllipsoidGeodesic(
+      C.Cartographic.fromDegrees(left[0], left[1]),
+      C.Cartographic.fromDegrees(right[0], right[1]),
+      globe.ellipsoid,
+    );
+    const result = geodesic.surfaceDistance / 1000;
+    if (!Number.isFinite(result) || Object.is(result, -0) || result < 0) {
+      throw new TypeError(`${stage}: geodesic distance is invalid`);
+    }
+    return result;
+  };
+  publishCheckpoint({ stage: "runtime-ready" });
   const phases = [];
   const mark = (phase) => {
     if (phases.at(-1) !== phase) phases.push(phase);
     globalThis.__c1229SvsProgress = { renderer, phases: [...phases] };
+    publishCheckpoint({ phase, stage: "phase-transition" });
   };
   const errors = { page: [], console: [], gpu: [], deviceLost: false };
   const device = scene.context.device;
@@ -1646,12 +2353,11 @@ const MEASURE_SVS_SESSION = async (contract) => {
     for (let edgeIndex = 0; edgeIndex < row.ring.length - 1; edgeIndex++) {
       const start = row.ring[edgeIndex];
       const end = row.ring[edgeIndex + 1];
-      const geodesic = new C.EllipsoidGeodesic(
-        C.Cartographic.fromDegrees(start[0], start[1]),
-        C.Cartographic.fromDegrees(end[0], end[1]),
-        globe.ellipsoid,
+      const distanceKm = cartographicDistanceKm(
+        start,
+        end,
+        `fixture-edge/${row.role}/${edgeIndex}`,
       );
-      const distanceKm = geodesic.surfaceDistance / 1000;
       if (distanceKm > maximumSourceEdge.distanceKm) {
         maximumSourceEdge = {
           distanceKm,
@@ -1677,18 +2383,21 @@ const MEASURE_SVS_SESSION = async (contract) => {
   ) {
     throw new Error("runtime WGS84 maximum fixture edge differs");
   }
+  requireDegreeLonLat(runtimeRows[1].sourceCenter, "source-motion/before");
+  requireDegreeLonLat(runtimeRows[2].sourceCenter, "source-motion/after");
   const sourceMotionGeodesic = new C.EllipsoidGeodesic(
-    C.Cartographic.fromDegrees(
-      runtimeRows[1].sourceCenter[0],
-      runtimeRows[1].sourceCenter[1],
-    ),
-    C.Cartographic.fromDegrees(
-      runtimeRows[2].sourceCenter[0],
-      runtimeRows[2].sourceCenter[1],
-    ),
+    C.Cartographic.fromDegrees(...runtimeRows[1].sourceCenter),
+    C.Cartographic.fromDegrees(...runtimeRows[2].sourceCenter),
     globe.ellipsoid,
   );
-  const sourceMotionDistanceKm = sourceMotionGeodesic.surfaceDistance / 1000;
+  const sourceMotionDistanceKm = cartographicDistanceKm(
+    runtimeRows[1].sourceCenter,
+    runtimeRows[2].sourceCenter,
+    "source-motion",
+  );
+  if (!Number.isFinite(sourceMotionGeodesic.startHeading)) {
+    throw new TypeError("source-motion: heading is invalid");
+  }
   const sourceMotionHeading = sourceMotionGeodesic.startHeading;
   const derivedSourceMotion = {
     vectorDistanceKm: sourceMotionDistanceKm,
@@ -2105,7 +2814,7 @@ const MEASURE_SVS_SESSION = async (contract) => {
       frameStateTimeIso: C.JulianDate.toIso8601(scene.frameState.time),
       selectedContent,
       preparedContent,
-      selectionContentIdentity: JSON.stringify({
+      selectionContentIdentity: canonicalJsonIdentity({
         selected: selectedContent,
         prepared: preparedContent,
       }),
@@ -2235,7 +2944,7 @@ const MEASURE_SVS_SESSION = async (contract) => {
     tuple.selectedFillTileIds.length === 0 &&
     tuple.preparedFillTileIds.length === 0 &&
     tuple.selectionContentIdentity ===
-      JSON.stringify({
+      canonicalJsonIdentity({
         selected: tuple.selectedContent,
         prepared: tuple.preparedContent,
       }) &&
@@ -2314,7 +3023,17 @@ const MEASURE_SVS_SESSION = async (contract) => {
     }
     return { ...shot, tuple };
   };
-  const buildLattice = (row, frame, off, on, white, black) => {
+  const buildLattice = (
+    row,
+    frame,
+    off,
+    on,
+    white,
+    black,
+    measurementKind,
+    rowIndex,
+    terrainCheckpoint,
+  ) => {
     const side = contract.scene.latticeSide;
     const valid = [];
     const nasa = [];
@@ -2326,12 +3045,32 @@ const MEASURE_SVS_SESSION = async (contract) => {
     const classifiedPoints = [];
     let duplicates = 0;
     const projected = new Set();
+    publishCheckpoint({
+      stage: "lattice-projection",
+      rowIndex,
+      role: row.role,
+      iso: measurementKind === "control" ? contract.control.iso : row.iso,
+      measurementKind,
+      counts: {
+        valid: 0,
+        nasa: 0,
+        terrain: 0,
+        classified: 0,
+        sourceBoundary: null,
+        classifiedBoundary: null,
+      },
+      sourceCentroid: { available: false, lonLat: null },
+      measuredCentroid: { available: false, lonLat: null },
+      boundary: { comparable: false, unavailableReason: null },
+      terrain: terrainCheckpoint,
+    });
     for (let y = 0; y < side; y++) {
       const lat =
         frame.north - ((y + 0.5) / side) * (frame.north - frame.south);
       for (let x = 0; x < side; x++) {
         const lon = frame.west + ((x + 0.5) / side) * (frame.east - frame.west);
         const id = y * side + x;
+        requireDegreeLonLat([lon, lat], `${row.role}/lattice/${id}`);
         const world = C.Cartesian3.fromDegrees(lon, lat, 0, globe.ellipsoid);
         const windowPoint = C.SceneTransforms.worldToWindowCoordinates(
           scene,
@@ -2380,22 +3119,27 @@ const MEASURE_SVS_SESSION = async (contract) => {
         }
       }
     }
-    const cartographicDistanceKm = (left, right) => {
-      const geodesic = new C.EllipsoidGeodesic(
-        C.Cartographic.fromDegrees(left[0], left[1]),
-        C.Cartographic.fromDegrees(right[0], right[1]),
-        globe.ellipsoid,
-      );
-      return geodesic.surfaceDistance / 1000;
-    };
+    publishCheckpoint({
+      stage: "lattice-membership-complete",
+      counts: {
+        valid: valid.length,
+        nasa: nasa.length,
+        terrain: terrain.length,
+        classified: classified.length,
+        sourceBoundary: null,
+        classifiedBoundary: null,
+      },
+    });
     const pitchKm = Math.max(
       cartographicDistanceKm(
         [frame.west, frame.lat],
         [frame.west + (frame.east - frame.west) / side, frame.lat],
+        `${row.role}/horizontal-pitch`,
       ),
       cartographicDistanceKm(
         [frame.lon, frame.south],
         [frame.lon, frame.south + (frame.north - frame.south) / side],
+        `${row.role}/vertical-pitch`,
       ),
     );
     const pixelKm =
@@ -2420,69 +3164,47 @@ const MEASURE_SVS_SESSION = async (contract) => {
     budget.motionVectorLimitKm = 2 * budget.qKm;
     budget.speedUncertaintyKmPerHour =
       (budget.motionVectorLimitKm / contract.sourceMotion.seconds) * 3600;
-    const nasaSet = new Set(nasa);
-    const classifiedSet = new Set(classified);
-    const neighbors = (id) => {
-      const x = id % side;
-      const y = Math.floor(id / side);
-      return [
-        x > 0 ? id - 1 : -1,
-        x + 1 < side ? id + 1 : -1,
-        y > 0 ? id - side : -1,
-        y + 1 < side ? id + side : -1,
-      ];
-    };
-    const boundaryOf = (ids, membership) =>
-      ids.filter((id) =>
-        neighbors(id).some((neighbor) => !membership.has(neighbor)),
-      );
-    const boundaryNasa = boundaryOf(nasa, nasaSet);
-    const boundaryClassified = boundaryOf(classified, classifiedSet);
-    const distanceToBoundary = (id, boundary = boundaryNasa) => {
-      const point = worldById.get(id);
-      let minimum = Infinity;
-      for (const boundaryId of boundary) {
-        const other = worldById.get(boundaryId);
-        if (point && other) {
-          minimum = Math.min(minimum, cartographicDistanceKm(point, other));
-        }
-      }
-      return minimum;
-    };
-    const boundaryDistances = [
-      ...boundaryClassified.map((id) => distanceToBoundary(id, boundaryNasa)),
-      ...boundaryNasa.map((id) => distanceToBoundary(id, boundaryClassified)),
-    ]
-      .filter(Number.isFinite)
-      .sort((a, b) => a - b);
-    const boundaryBand = valid.filter(
-      (id) => distanceToBoundary(id) <= budget.qKm,
+    const cellLonLat = valid.map((id) => [id, ...worldById.get(id)]);
+    publishCheckpoint({ stage: "spatial-summary" });
+    const spatial = runtimeSpatialSummarizer(
+      {
+        side,
+        qKm: budget.qKm,
+        measurementKind,
+        validProjectedCellIds: valid,
+        nasaInsideCellIds: nasa,
+        classifiedCellIds: classified,
+        cellLonLat,
+      },
+      (left, right, stage) =>
+        cartographicDistanceKm(left, right, `${row.role}/${stage}`),
     );
-    const dilated = valid.filter(
-      (id) => nasaSet.has(id) || distanceToBoundary(id) <= budget.qKm,
-    );
-    const eroded = nasa.filter((id) => distanceToBoundary(id) > budget.qKm);
-    const intersection = classified.filter((id) => nasaSet.has(id)).length;
-    const union = new Set([...classified, ...nasa]).size;
-    const centroidOf = (ids) => {
-      if (ids.length === 0) return [NaN, NaN];
-      const sum = ids.reduce(
-        (acc, id) => {
-          const point = worldById.get(id);
-          return [acc[0] + point[0], acc[1] + point[1]];
-        },
-        [0, 0],
-      );
-      return [sum[0] / ids.length, sum[1] / ids.length];
-    };
-    const sourceCentroid = centroidOf(nasa);
-    const measuredCentroid = centroidOf(classified);
-    const centroidErrorKm = cartographicDistanceKm(
-      sourceCentroid,
-      measuredCentroid,
-    );
+    publishCheckpoint({
+      stage: "spatial-summary-complete",
+      counts: {
+        valid: valid.length,
+        nasa: nasa.length,
+        terrain: terrain.length,
+        classified: classified.length,
+        sourceBoundary: spatial.boundary.sourceBoundaryCellCount,
+        classifiedBoundary: spatial.boundary.classifiedBoundaryCellCount,
+      },
+      sourceCentroid: {
+        available: spatial.centroid.sourceLonLat !== null,
+        lonLat: spatial.centroid.sourceLonLat,
+      },
+      measuredCentroid: {
+        available: spatial.centroid.measuredLonLat !== null,
+        lonLat: spatial.centroid.measuredLonLat,
+      },
+      boundary: {
+        comparable: spatial.boundary.comparable,
+        unavailableReason: spatial.boundary.unavailableReason,
+      },
+    });
     return {
       budget,
+      spatialMeasurementKind: spatial.measurementKind,
       lattice: {
         side,
         candidateCellCount: side ** 2,
@@ -2499,8 +3221,8 @@ const MEASURE_SVS_SESSION = async (contract) => {
         nasaInsideCellIds: nasa,
         terrainCellIds: terrain,
         classifiedCellIds: classified,
-        qBoundaryBandCellIds: boundaryBand,
-        cellLonLat: valid.map((id) => [id, ...worldById.get(id)]),
+        qBoundaryBandCellIds: spatial.qBoundaryBandCellIds,
+        cellLonLat,
       },
       mask: {
         method: contract.scene.terrainMaskMethod,
@@ -2519,35 +3241,8 @@ const MEASURE_SVS_SESSION = async (contract) => {
           terrain.includes(id),
         ),
       },
-      boundary: {
-        p95Km:
-          boundaryDistances[
-            Math.min(
-              boundaryDistances.length - 1,
-              Math.floor(boundaryDistances.length * 0.95),
-            )
-          ] ?? Infinity,
-        maximumKm: boundaryDistances.at(-1) ?? Infinity,
-        classifiedOutsideDilatedCount: classified.filter(
-          (id) => !dilated.includes(id),
-        ).length,
-        erodedOutsideClassifiedCount: eroded.filter(
-          (id) => !classifiedSet.has(id),
-        ).length,
-        erodedNasaCellCount: eroded.length,
-        dilatedNasaCellCount: dilated.length,
-        areaRatio: classified.length / nasa.length,
-        minimumAreaRatio: eroded.length / nasa.length,
-        maximumAreaRatio: dilated.length / nasa.length,
-        rawIou: union > 0 ? intersection / union : 0,
-      },
-      centroid: {
-        measuredLonLat: measuredCentroid,
-        sourceLonLat: sourceCentroid,
-        errorKm: centroidErrorKm,
-        longitudeResidualDegrees: measuredCentroid[0] - sourceCentroid[0],
-        latitudeResidualDegrees: measuredCentroid[1] - sourceCentroid[1],
-      },
+      boundary: spatial.boundary,
+      centroid: spatial.centroid,
       classifiedPoints,
     };
   };
@@ -2571,6 +3266,32 @@ const MEASURE_SVS_SESSION = async (contract) => {
   }
   for (let index = 0; index < runtimeRows.length; index++) {
     const row = runtimeRows[index];
+    publishCheckpoint({
+      phase: row.phase,
+      stage: "row-transition",
+      rowIndex: index,
+      role: row.role,
+      iso: row.iso,
+      measurementKind: "event",
+      counts: {
+        valid: null,
+        nasa: null,
+        terrain: null,
+        classified: null,
+        sourceBoundary: null,
+        classifiedBoundary: null,
+      },
+      sourceCentroid: { available: false, lonLat: null },
+      measuredCentroid: { available: false, lonLat: null },
+      boundary: { comparable: false, unavailableReason: null },
+      terrain: {
+        transitionRole: null,
+        selectedTileIds: [],
+        preparedSelectedTileIds: [],
+        selectionRevision: null,
+        captureFrameNumber: null,
+      },
+    });
     currentTime = times[index];
     viewer.clock.currentTime = C.JulianDate.clone(currentTime);
     const frame = frameCamera(row);
@@ -2583,8 +3304,18 @@ const MEASURE_SVS_SESSION = async (contract) => {
       transition,
       contract.scene.transitionReadinessMaxFrames,
     );
-    const cameraFrame = measureCameraFrame(row, frame);
     const stableIdentity = transitionReadiness.observations.at(-1).tuple;
+    publishCheckpoint({
+      stage: "transition-readiness-complete",
+      terrain: {
+        transitionRole: stableIdentity.transitionRole,
+        selectedTileIds: [...stableIdentity.selectedTileIds],
+        preparedSelectedTileIds: [...stableIdentity.preparedSelectedTileIds],
+        selectionRevision: stableIdentity.selectionRevision,
+        captureFrameNumber: stableIdentity.captureFrameNumber,
+      },
+    });
+    const cameraFrame = measureCameraFrame(row, frame);
     globe.baseColor = C.Color.WHITE;
     lighting.enableEclipseGlobeShadow = false;
     const whiteShot = await captureStableSnapshot(transition, stableIdentity);
@@ -2595,6 +3326,7 @@ const MEASURE_SVS_SESSION = async (contract) => {
     const offShot = await captureStableSnapshot(transition, stableIdentity);
     lighting.enableEclipseGlobeShadow = true;
     const onShot = await captureStableSnapshot(transition, stableIdentity);
+    const tuple = onShot.tuple;
     const measured = buildLattice(
       row,
       frame,
@@ -2602,8 +3334,16 @@ const MEASURE_SVS_SESSION = async (contract) => {
       onShot.imageData,
       whiteShot.imageData,
       blackShot.imageData,
+      "event",
+      index,
+      {
+        transitionRole: tuple.transitionRole,
+        selectedTileIds: [...tuple.selectedTileIds],
+        preparedSelectedTileIds: [...tuple.preparedSelectedTileIds],
+        selectionRevision: tuple.selectionRevision,
+        captureFrameNumber: tuple.captureFrameNumber,
+      },
     );
-    const tuple = onShot.tuple;
     const offImageId = crypto.randomUUID();
     const onImageId = crypto.randomUUID();
     const independentSunIcrf =
@@ -2644,6 +3384,7 @@ const MEASURE_SVS_SESSION = async (contract) => {
       sourceRecordNumber: row.sourceRecordNumber,
       outputRecordNumber: row.outputRecordNumber,
       sourceCenter: row.sourceCenter,
+      spatialMeasurementKind: measured.spatialMeasurementKind,
       fixtureGeometry: {
         bbox: [...row.bbox],
         ring: row.ring.map((point) => [...point]),
@@ -2700,6 +3441,32 @@ const MEASURE_SVS_SESSION = async (contract) => {
 
   currentTime = times.at(-1);
   viewer.clock.currentTime = C.JulianDate.clone(currentTime);
+  publishCheckpoint({
+    phase: contract.control.phase,
+    stage: "row-transition",
+    rowIndex: runtimeRows.length,
+    role: contract.control.role,
+    iso: contract.control.iso,
+    measurementKind: "control",
+    counts: {
+      valid: null,
+      nasa: null,
+      terrain: null,
+      classified: null,
+      sourceBoundary: null,
+      classifiedBoundary: null,
+    },
+    sourceCentroid: { available: false, lonLat: null },
+    measuredCentroid: { available: false, lonLat: null },
+    boundary: { comparable: false, unavailableReason: null },
+    terrain: {
+      transitionRole: null,
+      selectedTileIds: [],
+      preparedSelectedTileIds: [],
+      selectionRevision: null,
+      captureFrameNumber: null,
+    },
+  });
   const controlFrame = frameCamera(runtimeRows[1]);
   const controlTransition = {
     role: contract.control.role,
@@ -2713,6 +3480,18 @@ const MEASURE_SVS_SESSION = async (contract) => {
   const controlCameraFrame = measureCameraFrame(runtimeRows[1], controlFrame);
   const controlStableIdentity =
     controlTransitionReadiness.observations.at(-1).tuple;
+  publishCheckpoint({
+    stage: "transition-readiness-complete",
+    terrain: {
+      transitionRole: controlStableIdentity.transitionRole,
+      selectedTileIds: [...controlStableIdentity.selectedTileIds],
+      preparedSelectedTileIds: [
+        ...controlStableIdentity.preparedSelectedTileIds,
+      ],
+      selectionRevision: controlStableIdentity.selectionRevision,
+      captureFrameNumber: controlStableIdentity.captureFrameNumber,
+    },
+  });
   globe.baseColor = C.Color.WHITE;
   lighting.enableEclipseGlobeShadow = false;
   const controlWhiteShot = await captureStableSnapshot(
@@ -2735,6 +3514,7 @@ const MEASURE_SVS_SESSION = async (contract) => {
     controlTransition,
     controlStableIdentity,
   );
+  const controlTerrainTuple = controlOnShot.tuple;
   const controlMeasured = buildLattice(
     runtimeRows[1],
     controlFrame,
@@ -2742,8 +3522,16 @@ const MEASURE_SVS_SESSION = async (contract) => {
     controlOnShot.imageData,
     controlWhiteShot.imageData,
     controlBlackShot.imageData,
+    "control",
+    runtimeRows.length,
+    {
+      transitionRole: controlTerrainTuple.transitionRole,
+      selectedTileIds: [...controlTerrainTuple.selectedTileIds],
+      preparedSelectedTileIds: [...controlTerrainTuple.preparedSelectedTileIds],
+      selectionRevision: controlTerrainTuple.selectionRevision,
+      captureFrameNumber: controlTerrainTuple.captureFrameNumber,
+    },
   );
-  const controlTerrainTuple = controlOnShot.tuple;
   const controlOffImageId = crypto.randomUUID();
   const controlOnImageId = crypto.randomUUID();
   captures.push(
@@ -2764,33 +3552,57 @@ const MEASURE_SVS_SESSION = async (contract) => {
 
   const before = rows[1].centroid.measuredLonLat;
   const after = rows[2].centroid.measuredLonLat;
-  const motionGeodesic = new C.EllipsoidGeodesic(
-    C.Cartographic.fromDegrees(before[0], before[1]),
-    C.Cartographic.fromDegrees(after[0], after[1]),
-    globe.ellipsoid,
-  );
-  const measuredDistanceKm = motionGeodesic.surfaceDistance / 1000;
   const sourceHeading = C.Math.toRadians(
     contract.sourceMotion.initialHeadingDegrees,
   );
-  const measuredHeading = Math.atan2(
-    Math.sin(C.Math.toRadians(after[0] - before[0])) *
-      Math.cos(C.Math.toRadians(after[1])),
-    Math.cos(C.Math.toRadians(before[1])) *
-      Math.sin(C.Math.toRadians(after[1])) -
-      Math.sin(C.Math.toRadians(before[1])) *
-        Math.cos(C.Math.toRadians(after[1])) *
-        Math.cos(C.Math.toRadians(after[0] - before[0])),
-  );
-  const vectorErrorKm = Math.sqrt(
-    (measuredDistanceKm * Math.sin(measuredHeading) -
-      contract.sourceMotion.eastKm) **
-      2 +
-      (measuredDistanceKm * Math.cos(measuredHeading) -
-        contract.sourceMotion.northKm) **
-        2,
-  );
+  let motionMeasurement = {
+    comparable: false,
+    unavailableReason: "measured-centroid-unavailable",
+    measuredDirectionEast: null,
+    measuredDirectionNorth: null,
+    vectorErrorKm: null,
+    measuredSpeedKmPerHour: null,
+  };
+  if (before !== null && after !== null) {
+    requireDegreeLonLat(before, "measured-motion/before");
+    requireDegreeLonLat(after, "measured-motion/after");
+    const measuredDistanceKm = cartographicDistanceKm(
+      before,
+      after,
+      "measured-motion",
+    );
+    const measuredHeading = Math.atan2(
+      Math.sin(C.Math.toRadians(after[0] - before[0])) *
+        Math.cos(C.Math.toRadians(after[1])),
+      Math.cos(C.Math.toRadians(before[1])) *
+        Math.sin(C.Math.toRadians(after[1])) -
+        Math.sin(C.Math.toRadians(before[1])) *
+          Math.cos(C.Math.toRadians(after[1])) *
+          Math.cos(C.Math.toRadians(after[0] - before[0])),
+    );
+    motionMeasurement = {
+      comparable: true,
+      unavailableReason: null,
+      measuredDirectionEast: Math.sin(measuredHeading) > 0,
+      measuredDirectionNorth: Math.cos(measuredHeading) > 0,
+      vectorErrorKm: Math.hypot(
+        measuredDistanceKm * Math.sin(measuredHeading) -
+          contract.sourceMotion.eastKm,
+        measuredDistanceKm * Math.cos(measuredHeading) -
+          contract.sourceMotion.northKm,
+      ),
+      measuredSpeedKmPerHour:
+        (measuredDistanceKm / contract.sourceMotion.seconds) * 3600,
+    };
+  }
   const q = Math.max(rows[1].budget.qKm, rows[2].budget.qKm);
+  publishCheckpoint({
+    stage: "motion-summary-complete",
+    rowIndex: null,
+    role: null,
+    iso: null,
+    measurementKind: null,
+  });
   mark(contract.phases[7]);
   return {
     schema: contract.diagnosticsSchema,
@@ -2938,6 +3750,7 @@ const MEASURE_SVS_SESSION = async (contract) => {
       oneCodeBoundaryCount: controlMeasured.mask.oneCodeBoundaryCount,
       classificationAppliedOnlyInsideTerrainMask:
         controlMeasured.mask.classificationAppliedOnlyInsideTerrainMask,
+      spatialMeasurementKind: controlMeasured.spatialMeasurementKind,
       cameraFrame: controlCameraFrame,
       terrainTuple: controlTerrainTuple,
       transitionReadiness: controlTransitionReadiness,
@@ -2949,6 +3762,8 @@ const MEASURE_SVS_SESSION = async (contract) => {
       ],
       lattice: controlMeasured.lattice,
       mask: controlMeasured.mask,
+      boundary: controlMeasured.boundary,
+      centroid: controlMeasured.centroid,
       metricImageBindings: {
         off: { imageId: controlOffImageId },
         on: { imageId: controlOnImageId },
@@ -2965,11 +3780,7 @@ const MEASURE_SVS_SESSION = async (contract) => {
       sourceDirection: contract.sourceMotion.direction,
       sourceSpeedKmPerHour: contract.sourceMotion.speedKmPerHour,
       method: contract.sourceMotion.method,
-      measuredDirectionEast: Math.sin(measuredHeading) > 0,
-      measuredDirectionNorth: Math.cos(measuredHeading) > 0,
-      vectorErrorKm,
-      measuredSpeedKmPerHour:
-        (measuredDistanceKm / contract.sourceMotion.seconds) * 3600,
+      ...motionMeasurement,
       vectorLimitKm: 2 * q,
       speedUncertaintyKmPerHour:
         ((2 * q) / contract.sourceMotion.seconds) * 3600,
@@ -2989,6 +3800,7 @@ function pageContract(renderer, rows) {
     renderer,
     runtimePath,
     diagnosticsSchema: C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
+    spatialSummarizerSource: summarizeSvsSpatialMetrics.toString(),
     phases: [...C12_29_S5_SVS_PHASES],
     rows,
     control: C12_29_S5_SVS_CONTROL,
@@ -3010,6 +3822,13 @@ function pageContract(renderer, rows) {
       simon1994BudgetKm: C12_29_S5_SVS_SIMON1994_BUDGET_KM,
     },
   };
+}
+
+export function createSvsPageEvaluationSource(renderer, rows) {
+  const contractJson = canonicalSvsArtifactBytes(pageContract(renderer, rows))
+    .toString("utf8")
+    .trimEnd();
+  return `(${MEASURE_SVS_SESSION.toString()})(${contractJson},(${summarizeSvsSpatialMetrics.toString()}))`;
 }
 
 async function materializeImages(session, runId, paths) {
@@ -3183,7 +4002,7 @@ async function runBrowserSession(
     let measured;
     try {
       measured = await Promise.race([
-        page.evaluate(MEASURE_SVS_SESSION, pageContract(renderer, rows)),
+        page.evaluate(createSvsPageEvaluationSource(renderer, rows)),
         new Promise((_, reject) => {
           pageTimer = setTimeout(
             () => reject(new Error(`${renderer} page timeout`)),
@@ -3209,7 +4028,11 @@ async function runBrowserSession(
     };
     await materializeImages(session, runId, paths);
   } catch (error) {
-    sessionError = error;
+    sessionError = await retainSvsRuntimeDiagnostics(page, error, {
+      renderer,
+      pageErrors,
+      consoleErrors,
+    });
   }
   const cleanupErrors = [];
   const pageClose = await closeSvsResourceBounded(page, `${renderer} page`);
@@ -3232,6 +4055,35 @@ async function runBrowserSession(
     ledgerSnapshot = await drainSvsRequestLedger(requestLedger);
   } catch (error) {
     cleanupErrors.push(error);
+  }
+  const errorCleanup = sessionError
+    ? {
+        pageCloseAttempted: pageClose.attempted,
+        pageClosed: pageClose.closed,
+        pageCloseTimedOut: pageClose.timedOut,
+        contextCloseAttempted: contextClose.attempted,
+        contextClosed: contextClose.closed,
+        contextCloseTimedOut: contextClose.timedOut,
+        requestLedgerDrainAttempted: true,
+        requestLedgerDrained: ledgerSnapshot !== undefined,
+        errorCount: cleanupErrors.length,
+        errors: cleanupErrors.map(svsErrorText),
+      }
+    : null;
+  if (sessionError) {
+    const retained = sessionError.diagnostics;
+    sessionError.diagnostics = createSvsRuntimeErrorDiagnostics({
+      renderer,
+      runtimeCheckpoint: retained.runtimeCheckpoint,
+      checkpointReadError: retained.checkpointReadError,
+      pageErrorCount: retained.pageErrorCount,
+      pageErrors: retained.pageErrors,
+      consoleErrorCount: retained.consoleErrorCount,
+      consoleErrors: retained.consoleErrors,
+      originalError: retained.originalError,
+      stage: retained.stage,
+      cleanup: errorCleanup,
+    });
   }
   if (session && ledgerSnapshot) {
     session.ephemeris.xysFiles = ledgerSnapshot.xysResponses;
@@ -3267,10 +4119,33 @@ async function runBrowserSession(
   }
   if (cleanupErrors.length > 0) {
     if (sessionError) cleanupErrors.unshift(sessionError);
-    throw new AggregateError(
+    const aggregate = new AggregateError(
       cleanupErrors,
       `${renderer} page/context cleanup failed`,
     );
+    if (sessionError?.diagnostics) {
+      aggregate.diagnostics = sessionError.diagnostics;
+    } else {
+      aggregate.diagnostics = createSvsCleanupErrorDiagnostics({
+        renderer,
+        pageErrors,
+        consoleErrors,
+        cleanup: {
+          pageCloseAttempted: pageClose.attempted,
+          pageClosed: pageClose.closed,
+          pageCloseTimedOut: pageClose.timedOut,
+          contextCloseAttempted: contextClose.attempted,
+          contextClosed: contextClose.closed,
+          contextCloseTimedOut: contextClose.timedOut,
+          requestLedgerDrainAttempted: true,
+          requestLedgerDrained: ledgerSnapshot !== undefined,
+          errorCount: cleanupErrors.length,
+          errors: cleanupErrors.map(svsErrorText),
+        },
+        originalError: aggregate,
+      });
+    }
+    throw aggregate;
   }
   if (sessionError) throw sessionError;
   return session;
@@ -3288,6 +4163,7 @@ function crossBackendRows(sessions) {
     const qKm = Math.max(left.budget.qKm, right.budget.qKm);
     const dl = left.centroid.measuredLonLat;
     const dr = right.centroid.measuredLonLat;
+    const centroidComparable = dl !== null && dr !== null;
     const bands = new Set([
       ...left.lattice.qBoundaryBandCellIds,
       ...right.lattice.qBoundaryBandCellIds,
@@ -3299,7 +4175,13 @@ function crossBackendRows(sessions) {
       allDifferingCellsWithinUnionQBoundaryBands: differingCellIds.every((id) =>
         bands.has(id),
       ),
-      centroidDistanceKm: wgs84GeodesicDistanceKm(dl, dr),
+      centroidComparable,
+      centroidUnavailableReason: centroidComparable
+        ? null
+        : "measured-centroid-unavailable",
+      centroidDistanceKm: centroidComparable
+        ? wgs84GeodesicDistanceKm(dl, dr)
+        : null,
       centroidDistanceMethod: "WGS84-Vincenty-inverse",
       centroidLimitKm: 2 * qKm,
     };
@@ -3353,23 +4235,38 @@ export async function withSvsWatchdog(
   }
   let drainTimer;
   const drained = await Promise.race([
-    settlement.then(() => true),
+    settlement.then((result) => ({ drained: true, result })),
     new Promise((resolve) => {
-      drainTimer = setTimeout(() => resolve(false), drainTimeoutMs);
+      drainTimer = setTimeout(
+        () => resolve({ drained: false, result: undefined }),
+        drainTimeoutMs,
+      );
     }),
   ]);
   clearTimeout(drainTimer);
+  const taskDrained = drained.drained;
+  const drainedResult = drained.result;
   const error = new Error(
-    `SVS browser watchdog expired after ${timeoutMs} ms; task drained=${drained}`,
+    `SVS browser watchdog expired after ${timeoutMs} ms; task drained=${taskDrained}; browser closed=${closeResult.closed}; close timedOut=${closeResult.timedOut === true}`,
   );
   if (closeError) error.cause = closeError;
-  error.diagnostics = {
+  error.watchdog = {
     watchdogTimedOut: true,
     closeCompleted: closeResult.closed,
     closeTimedOut: closeResult.timedOut === true,
-    taskDrained: drained,
+    taskDrained,
   };
-  if (!drained || closeResult.closed !== true) {
+  if (drainedResult?.kind === "error" && drainedResult.error?.diagnostics) {
+    error.diagnostics = cloneSvsJsonSafe(drainedResult.error.diagnostics);
+    error.watchdog.inFlightDiagnosticsPreserved = true;
+  } else {
+    error.diagnostics = createSvsOperationalErrorDiagnostics(
+      error,
+      "browser-watchdog-error",
+    );
+    error.watchdog.inFlightDiagnosticsPreserved = false;
+  }
+  if (!taskDrained || closeResult.closed !== true) {
     error.retainSvsRunning = true;
   }
   throw error;
@@ -3582,16 +4479,7 @@ export async function runC1229S5SvsProbe(options = {}) {
       throw error;
     }
     if (!running || error?.retainSvsRunning === true) throw error;
-    const artifact = {
-      schema: C12_29_S5_SVS_SCHEMA,
-      runId,
-      generatedAt: new Date().toISOString(),
-      status: "ERROR",
-      exitCode: exitCodeForSvsStatus("ERROR"),
-      incomplete: false,
-      error: error?.stack ?? error?.message ?? String(error),
-      diagnostics: error?.diagnostics ?? null,
-    };
+    const artifact = createSvsErrorArtifact(runId, error);
     const publication = publishSvsFinalArtifact(
       paths,
       artifact,

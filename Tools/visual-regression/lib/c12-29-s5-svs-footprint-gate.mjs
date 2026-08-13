@@ -9,11 +9,28 @@
  */
 
 import { createHash } from "node:crypto";
+import { types as utilTypes } from "node:util";
 
-export const C12_29_S5_SVS_SCHEMA = "c12-29-s5-svs-5073-footprint-evidence-v2";
+export const C12_29_S5_SVS_SCHEMA = "c12-29-s5-svs-5073-footprint-evidence-v3";
 
 export const C12_29_S5_SVS_DIAGNOSTICS_SCHEMA =
-  "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v2";
+  "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v3";
+
+export const C12_29_S5_SVS_SUPERSEDED_SCHEMA =
+  "c12-29-s5-svs-5073-footprint-evidence-v2";
+
+export const C12_29_S5_SVS_DIAGNOSTIC_LIMITS = Object.freeze({
+  arrayEntries: 512,
+  cleanupEntries: 16,
+  entryCharacters: 32_768,
+  errorCharacters: 65_536,
+  diagnosticErrorCount: 1_000_000,
+  cleanupErrorCount: 1_000_000,
+});
+
+export function createSvsDiagnosticOverflowMarker(category, total, retained) {
+  return `[SVS_OVERFLOW ${category} total=${total} retained=${retained} omitted=${total - retained}]`;
+}
 
 export const C12_29_S5_SVS_RENDERERS = Object.freeze(["webgl", "webgpu"]);
 
@@ -295,12 +312,44 @@ export const C12_29_S5_SVS_BUILD_SOURCE_MAP =
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const FINAL_STATUSES = new Set(["PASS", "FAIL", "STRUCTURAL", "ERROR"]);
+const SVS_RUNTIME_CHECKPOINT_STAGES = new Set([
+  "runtime-import",
+  "viewer-contract",
+  "runtime-ready",
+  "phase-transition",
+  "row-transition",
+  "transition-readiness-complete",
+  "lattice-projection",
+  "lattice-membership-complete",
+  "spatial-summary",
+  "spatial-summary-complete",
+  "motion-summary-complete",
+]);
+const SVS_SPATIAL_UNAVAILABLE_REASONS = new Set([
+  "source-empty",
+  "source-boundary-empty",
+  "classified-empty",
+  "classified-boundary-empty",
+]);
 const spatialMetricCache = new Map();
 const latticeAnchorCache = new Map();
 
 const finite = (value) => Number.isFinite(value);
+const nonnegativeInteger = (value) =>
+  Number.isInteger(value) && !Object.is(value, -0) && value >= 0;
 const close = (left, right, epsilon = 1e-9) =>
   finite(left) && finite(right) && Math.abs(left - right) <= epsilon;
+
+function isDegreeLonLat(value) {
+  return (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    value.every(finite) &&
+    value.every((entry) => !Object.is(entry, -0)) &&
+    Math.abs(value[0]) <= 180 &&
+    Math.abs(value[1]) <= 90
+  );
+}
 
 function exactSortedUniqueIntegers(value) {
   if (!Array.isArray(value)) return false;
@@ -314,7 +363,7 @@ function exactSortedUniqueIntegers(value) {
 
 function exactSortedUniqueTileIds(value) {
   return (
-    Array.isArray(value) &&
+    exactArrayData(value, 1024) &&
     value.every((item) => /^\d+\/\d+\/\d+$/u.test(item)) &&
     new Set(value).size === value.length &&
     JSON.stringify(value) === JSON.stringify([...value].sort())
@@ -322,7 +371,20 @@ function exactSortedUniqueTileIds(value) {
 }
 
 function sameJson(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return canonicalJsonIdentity(left) === canonicalJsonIdentity(right);
+}
+
+function canonicalJsonIdentity(value) {
+  return JSON.stringify(value, (_key, entry) => {
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      return Object.fromEntries(
+        Object.keys(entry)
+          .sort()
+          .map((key) => [key, entry[key]]),
+      );
+    }
+    return entry;
+  });
 }
 
 function sameMembers(left, right) {
@@ -334,14 +396,88 @@ function sameMembers(left, right) {
   );
 }
 
+function exactEnumerableDataObject(value) {
+  try {
+    if (
+      value === null ||
+      typeof value !== "object" ||
+      utilTypes.isProxy(value) ||
+      Array.isArray(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+    ) {
+      return false;
+    }
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string")) return false;
+    return keys.every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return (
+        descriptor !== undefined &&
+        Object.hasOwn(descriptor, "value") &&
+        descriptor.enumerable === true
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
+function exactArrayData(value, maximumLength = 1_000_000) {
+  try {
+    if (
+      utilTypes.isProxy(value) ||
+      !Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Array.prototype
+    ) {
+      return false;
+    }
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+    if (
+      lengthDescriptor === undefined ||
+      !Object.hasOwn(lengthDescriptor, "value") ||
+      lengthDescriptor.enumerable !== false ||
+      !nonnegativeInteger(lengthDescriptor.value) ||
+      lengthDescriptor.value > maximumLength
+    ) {
+      return false;
+    }
+    const keys = Reflect.ownKeys(value);
+    if (
+      keys.length !== lengthDescriptor.value + 1 ||
+      keys.at(-1) !== "length"
+    ) {
+      return false;
+    }
+    for (let index = 0; index < lengthDescriptor.value; index++) {
+      const key = String(index);
+      if (keys[index] !== key) return false;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined ||
+        !Object.hasOwn(descriptor, "value") ||
+        descriptor.enumerable !== true
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function exactObjectKeys(value, expected) {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    JSON.stringify(Object.keys(value).sort()) ===
-      JSON.stringify([...expected].sort())
-  );
+  if (!exactEnumerableDataObject(value)) return false;
+  try {
+    const actual = Reflect.ownKeys(value);
+    const sortedExpected = [...expected].sort();
+    return (
+      actual.length === expected.length &&
+      [...actual].sort().every((key, index) => key === sortedExpected[index])
+    );
+  } catch {
+    return false;
+  }
 }
 
 function isCanonicalUtcTimestamp(value) {
@@ -437,16 +573,7 @@ function validateFixtureGeometry(row, expected, renderer, reasons) {
 
 /** WGS84 inverse-geodesic distance for Node-side cross-backend comparison. */
 export function wgs84GeodesicDistanceKm(left, right) {
-  if (
-    !Array.isArray(left) ||
-    !Array.isArray(right) ||
-    left.length !== 2 ||
-    right.length !== 2 ||
-    !left.every(finite) ||
-    !right.every(finite) ||
-    Math.abs(left[1]) > 90 ||
-    Math.abs(right[1]) > 90
-  ) {
+  if (!isDegreeLonLat(left) || !isDegreeLonLat(right)) {
     return NaN;
   }
   if (sameMembers(left, right)) return 0;
@@ -604,57 +731,691 @@ export function computeSvsFootprintBudget({
 
 export function validateSvsRunningArtifactShape(artifact) {
   const reasons = [];
-  if (
-    !exactObjectKeys(artifact, [
-      "schema",
-      "runId",
-      "generatedAt",
-      "status",
-      "incomplete",
-      "nonce",
-    ])
-  ) {
-    reasons.push("RUNNING artifact keys are not exact");
+  try {
+    if (
+      !exactObjectKeys(artifact, [
+        "schema",
+        "runId",
+        "generatedAt",
+        "status",
+        "incomplete",
+        "nonce",
+      ])
+    ) {
+      reasons.push("RUNNING artifact keys are not exact");
+      return reasons;
+    }
+    if (artifact?.schema !== C12_29_S5_SVS_SCHEMA) {
+      reasons.push("RUNNING artifact schema is not the frozen SVS schema");
+    }
+    if (!isUuidV4(artifact?.runId)) {
+      reasons.push("RUNNING artifact runId is not UUIDv4");
+    }
+    if (artifact?.status !== "RUNNING") {
+      reasons.push("RUNNING artifact status differs");
+    }
+    if (artifact?.incomplete !== true) {
+      reasons.push("RUNNING artifact is not incomplete");
+    }
+    if (!isUuidV4(artifact?.nonce)) {
+      reasons.push("RUNNING artifact nonce is not UUIDv4");
+    }
+    if (!isCanonicalUtcTimestamp(artifact?.generatedAt)) {
+      reasons.push("RUNNING artifact generatedAt is not exact ISO-8601 UTC");
+    }
+    return reasons;
+  } catch {
+    reasons.push("RUNNING artifact could not be safely inspected");
+    return reasons;
   }
-  if (artifact?.schema !== C12_29_S5_SVS_SCHEMA) {
-    reasons.push("RUNNING artifact schema is not the frozen SVS schema");
-  }
-  if (!isUuidV4(artifact?.runId)) {
-    reasons.push("RUNNING artifact runId is not UUIDv4");
-  }
-  if (artifact?.status !== "RUNNING") {
-    reasons.push("RUNNING artifact status differs");
-  }
-  if (artifact?.incomplete !== true) {
-    reasons.push("RUNNING artifact is not incomplete");
-  }
-  if (!isUuidV4(artifact?.nonce)) {
-    reasons.push("RUNNING artifact nonce is not UUIDv4");
-  }
-  if (!isCanonicalUtcTimestamp(artifact?.generatedAt)) {
-    reasons.push("RUNNING artifact generatedAt is not exact ISO-8601 UTC");
-  }
-  return reasons;
 }
 
-export function validateSvsFinalArtifactShape(artifact) {
+function boundedSvsString(value, maximumLength, allowEmpty = false) {
+  return (
+    typeof value === "string" &&
+    (allowEmpty || value.length > 0) &&
+    value.length <= maximumLength
+  );
+}
+
+function validateSvsDiagnosticStringArray(
+  value,
+  category,
+  maximumEntries = C12_29_S5_SVS_DIAGNOSTIC_LIMITS.arrayEntries,
+) {
+  if (
+    !exactArrayData(value, maximumEntries) ||
+    value.length > maximumEntries ||
+    !value.every((entry) =>
+      boundedSvsString(
+        entry,
+        C12_29_S5_SVS_DIAGNOSTIC_LIMITS.entryCharacters,
+        true,
+      ),
+    )
+  ) {
+    return false;
+  }
+  const overflowPrefix = `[SVS_OVERFLOW ${category} `;
+  const overflowIndexes = value.flatMap((entry, index) =>
+    entry.startsWith(overflowPrefix) ? [index] : [],
+  );
+  if (overflowIndexes.length === 0) return true;
+  if (
+    overflowIndexes.length !== 1 ||
+    overflowIndexes[0] !== maximumEntries - 1 ||
+    value.length !== maximumEntries
+  ) {
+    return false;
+  }
+  const match =
+    /^\[SVS_OVERFLOW .+ total=(\d+) retained=(\d+) omitted=(\d+)\]$/u.exec(
+      value.at(-1),
+    );
+  if (!match) return false;
+  const total = Number(match[1]);
+  const retained = Number(match[2]);
+  const omitted = Number(match[3]);
+  return (
+    Number.isSafeInteger(total) &&
+    total >= 0 &&
+    retained === maximumEntries - 1 &&
+    total > maximumEntries &&
+    omitted === total - retained &&
+    value.at(-1) ===
+      createSvsDiagnosticOverflowMarker(category, total, retained)
+  );
+}
+
+function validateSvsDiagnosticArrayCount(
+  value,
+  category,
+  total,
+  maximumEntries = C12_29_S5_SVS_DIAGNOSTIC_LIMITS.arrayEntries,
+  maximumTotal = C12_29_S5_SVS_DIAGNOSTIC_LIMITS.diagnosticErrorCount,
+) {
+  if (
+    !validateSvsDiagnosticStringArray(value, category, maximumEntries) ||
+    !nonnegativeInteger(total) ||
+    total > maximumTotal
+  ) {
+    return false;
+  }
+  const overflowPrefix = `[SVS_OVERFLOW ${category} `;
+  if (total <= maximumEntries) {
+    return (
+      value.length === total &&
+      !value.some((entry) => entry.startsWith(overflowPrefix))
+    );
+  }
+  return (
+    value.length === maximumEntries &&
+    value.at(-1) ===
+      createSvsDiagnosticOverflowMarker(category, total, maximumEntries - 1)
+  );
+}
+
+function validateSvsCheckpointCentroid(value) {
+  return (
+    exactObjectKeys(value, ["available", "lonLat"]) &&
+    typeof value.available === "boolean" &&
+    (value.available
+      ? exactArrayData(value.lonLat, 2) && isDegreeLonLat(value.lonLat)
+      : value.lonLat === null)
+  );
+}
+
+function validateSvsCheckpointTerrain(value) {
+  if (
+    !exactObjectKeys(value, [
+      "transitionRole",
+      "selectedTileIds",
+      "preparedSelectedTileIds",
+      "selectionRevision",
+      "captureFrameNumber",
+    ])
+  ) {
+    return false;
+  }
+  if (value.transitionRole === null) {
+    return (
+      exactArrayData(value.selectedTileIds, 1024) &&
+      value.selectedTileIds.length === 0 &&
+      exactArrayData(value.preparedSelectedTileIds, 1024) &&
+      value.preparedSelectedTileIds.length === 0 &&
+      value.selectionRevision === null &&
+      value.captureFrameNumber === null
+    );
+  }
+  const roles = new Set([
+    ...C12_29_S5_SVS_ROWS.map((row) => row.role),
+    C12_29_S5_SVS_CONTROL.role,
+  ]);
+  return (
+    roles.has(value.transitionRole) &&
+    exactSortedUniqueTileIds(value.selectedTileIds) &&
+    value.selectedTileIds.length > 0 &&
+    value.selectedTileIds.length <= 1024 &&
+    exactSortedUniqueTileIds(value.preparedSelectedTileIds) &&
+    value.preparedSelectedTileIds.length <= 1024 &&
+    sameMembers(value.selectedTileIds, value.preparedSelectedTileIds) &&
+    nonnegativeInteger(value.selectionRevision) &&
+    nonnegativeInteger(value.captureFrameNumber)
+  );
+}
+
+/** Validate the exact JSON-safe checkpoint retained inside a page ERROR. */
+export function validateSvsRuntimeCheckpointShape(
+  checkpoint,
+  expectedRenderer,
+) {
   const reasons = [];
-  if (artifact?.schema !== C12_29_S5_SVS_SCHEMA) {
-    reasons.push("artifact schema is not the frozen SVS schema");
+  try {
+    if (
+      !exactObjectKeys(checkpoint, [
+        "schema",
+        "renderer",
+        "sequence",
+        "phase",
+        "stage",
+        "rowIndex",
+        "role",
+        "iso",
+        "measurementKind",
+        "counts",
+        "sourceCentroid",
+        "measuredCentroid",
+        "boundary",
+        "terrain",
+      ])
+    ) {
+      reasons.push("runtime checkpoint keys are not exact");
+      return reasons;
+    }
+    if (
+      checkpoint.schema !== C12_29_S5_SVS_DIAGNOSTICS_SCHEMA ||
+      !C12_29_S5_SVS_RENDERERS.includes(checkpoint.renderer) ||
+      (expectedRenderer !== undefined &&
+        checkpoint.renderer !== expectedRenderer) ||
+      !nonnegativeInteger(checkpoint.sequence) ||
+      checkpoint.sequence < 1 ||
+      checkpoint.sequence > 1_000_000 ||
+      !SVS_RUNTIME_CHECKPOINT_STAGES.has(checkpoint.stage) ||
+      (checkpoint.phase !== null &&
+        !C12_29_S5_SVS_PHASES.includes(checkpoint.phase))
+    ) {
+      reasons.push("runtime checkpoint identity/stage is invalid");
+    }
+
+    const expectedOwner = nonnegativeInteger(checkpoint.rowIndex)
+      ? checkpoint.rowIndex >= 0 &&
+        checkpoint.rowIndex < C12_29_S5_SVS_ROWS.length
+        ? {
+            ...C12_29_S5_SVS_ROWS[checkpoint.rowIndex],
+            measurementKind: "event",
+          }
+        : checkpoint.rowIndex === C12_29_S5_SVS_ROWS.length
+          ? { ...C12_29_S5_SVS_CONTROL, measurementKind: "control" }
+          : undefined
+      : checkpoint.rowIndex === null
+        ? null
+        : undefined;
+    if (
+      expectedOwner === undefined ||
+      (expectedOwner === null
+        ? checkpoint.role !== null ||
+          checkpoint.iso !== null ||
+          checkpoint.measurementKind !== null
+        : checkpoint.role !== expectedOwner.role ||
+          checkpoint.iso !== expectedOwner.iso ||
+          checkpoint.measurementKind !== expectedOwner.measurementKind)
+    ) {
+      reasons.push("runtime checkpoint row/role/kind identity differs");
+    }
+
+    const counts = checkpoint.counts;
+    const countKeys = [
+      "valid",
+      "nasa",
+      "terrain",
+      "classified",
+      "sourceBoundary",
+      "classifiedBoundary",
+    ];
+    const maximumCells = C12_29_S5_SVS_SCENE.latticeSide ** 2;
+    const countValue = (value) =>
+      value === null || (nonnegativeInteger(value) && value <= maximumCells);
+    if (
+      !exactObjectKeys(counts, countKeys) ||
+      countKeys.some((key) => !countValue(counts?.[key]))
+    ) {
+      reasons.push("runtime checkpoint counts are invalid");
+    } else {
+      const membership = [
+        counts.valid,
+        counts.nasa,
+        counts.terrain,
+        counts.classified,
+      ];
+      const boundaries = [counts.sourceBoundary, counts.classifiedBoundary];
+      const membershipNull = membership.every((value) => value === null);
+      const membershipPresent = membership.every(Number.isInteger);
+      const boundariesNull = boundaries.every((value) => value === null);
+      const boundariesPresent = boundaries.every(Number.isInteger);
+      if (
+        (!membershipNull && !membershipPresent) ||
+        (!boundariesNull && !boundariesPresent) ||
+        (boundariesPresent && !membershipPresent) ||
+        (membershipPresent &&
+          (counts.nasa > counts.valid ||
+            counts.terrain > counts.valid ||
+            counts.classified > counts.terrain)) ||
+        (boundariesPresent &&
+          (counts.sourceBoundary > counts.nasa ||
+            counts.classifiedBoundary > counts.classified))
+      ) {
+        reasons.push("runtime checkpoint count/null coherence differs");
+      }
+    }
+
+    if (
+      !validateSvsCheckpointCentroid(checkpoint.sourceCentroid) ||
+      !validateSvsCheckpointCentroid(checkpoint.measuredCentroid) ||
+      !exactObjectKeys(checkpoint.boundary, [
+        "comparable",
+        "unavailableReason",
+      ]) ||
+      typeof checkpoint.boundary?.comparable !== "boolean" ||
+      (checkpoint.boundary?.unavailableReason !== null &&
+        !SVS_SPATIAL_UNAVAILABLE_REASONS.has(
+          checkpoint.boundary.unavailableReason,
+        )) ||
+      !validateSvsCheckpointTerrain(checkpoint.terrain)
+    ) {
+      reasons.push("runtime checkpoint spatial/terrain state is invalid");
+    }
+
+    const membershipPresent = [
+      counts?.valid,
+      counts?.nasa,
+      counts?.terrain,
+      counts?.classified,
+    ].every(Number.isInteger);
+    const boundariesPresent = [
+      counts?.sourceBoundary,
+      counts?.classifiedBoundary,
+    ].every(Number.isInteger);
+    const preSummarySpatial =
+      checkpoint.sourceCentroid?.available === false &&
+      checkpoint.sourceCentroid?.lonLat === null &&
+      checkpoint.measuredCentroid?.available === false &&
+      checkpoint.measuredCentroid?.lonLat === null &&
+      checkpoint.boundary?.comparable === false &&
+      checkpoint.boundary?.unavailableReason === null;
+    const initialTerrain = checkpoint.terrain?.transitionRole === null;
+    const measurementStages = new Set([
+      "row-transition",
+      "transition-readiness-complete",
+      "lattice-projection",
+      "lattice-membership-complete",
+      "spatial-summary",
+      "spatial-summary-complete",
+    ]);
+    if (
+      measurementStages.has(checkpoint.stage) &&
+      (expectedOwner === null ||
+        checkpoint.phase !== C12_29_S5_SVS_PHASES[checkpoint.rowIndex + 2])
+    ) {
+      reasons.push("runtime checkpoint measurement phase/owner differs");
+    }
+    if (
+      new Set(["runtime-import", "viewer-contract", "runtime-ready"]).has(
+        checkpoint.stage,
+      ) &&
+      (expectedOwner !== null ||
+        checkpoint.phase !== null ||
+        !countKeys.every((key) => counts?.[key] === null) ||
+        !preSummarySpatial ||
+        !initialTerrain)
+    ) {
+      reasons.push("runtime checkpoint pre-page state differs");
+    }
+    if (
+      checkpoint.stage === "row-transition" &&
+      (expectedOwner === null ||
+        !countKeys.every((key) => counts?.[key] === null) ||
+        !preSummarySpatial ||
+        !initialTerrain)
+    ) {
+      reasons.push("runtime checkpoint row-transition state differs");
+    }
+    if (
+      checkpoint.stage === "transition-readiness-complete" &&
+      (expectedOwner === null ||
+        !countKeys.every((key) => counts?.[key] === null) ||
+        !preSummarySpatial ||
+        initialTerrain)
+    ) {
+      reasons.push("runtime checkpoint readiness-complete state differs");
+    }
+    if (
+      checkpoint.stage === "lattice-projection" &&
+      (expectedOwner === null ||
+        ![
+          counts?.valid,
+          counts?.nasa,
+          counts?.terrain,
+          counts?.classified,
+        ].every((value) => value === 0) ||
+        counts?.sourceBoundary !== null ||
+        counts?.classifiedBoundary !== null ||
+        !preSummarySpatial ||
+        initialTerrain)
+    ) {
+      reasons.push("runtime checkpoint lattice-projection state differs");
+    }
+    if (
+      new Set(["lattice-membership-complete", "spatial-summary"]).has(
+        checkpoint.stage,
+      ) &&
+      (expectedOwner === null ||
+        !membershipPresent ||
+        boundariesPresent ||
+        !preSummarySpatial ||
+        initialTerrain)
+    ) {
+      reasons.push("runtime checkpoint pre-summary state differs");
+    }
+    const completedSpatialStage = new Set([
+      "spatial-summary-complete",
+      "motion-summary-complete",
+    ]).has(checkpoint.stage);
+    if (completedSpatialStage && (!membershipPresent || !boundariesPresent)) {
+      reasons.push("runtime checkpoint completed spatial counts differ");
+    }
+    if (
+      checkpoint.stage === "spatial-summary-complete" &&
+      expectedOwner === null
+    ) {
+      reasons.push("runtime checkpoint completed spatial owner is absent");
+    }
+    if (
+      checkpoint.stage === "motion-summary-complete" &&
+      (expectedOwner !== null ||
+        checkpoint.phase !== C12_29_S5_SVS_PHASES[6] ||
+        checkpoint.terrain?.transitionRole !== C12_29_S5_SVS_CONTROL.role)
+    ) {
+      reasons.push("runtime checkpoint motion state differs");
+    }
+    if (checkpoint.stage === "phase-transition") {
+      const phaseIndex = C12_29_S5_SVS_PHASES.indexOf(checkpoint.phase);
+      const initialPhase = phaseIndex === 0 || phaseIndex === 1;
+      const eventPhase = phaseIndex >= 2 && phaseIndex <= 5;
+      const controlPhase = phaseIndex === 6;
+      const cleanupPhase = phaseIndex === 7;
+      const expectedEventIndex = eventPhase ? phaseIndex - 2 : null;
+      if (
+        phaseIndex < 0 ||
+        (initialPhase &&
+          (expectedOwner !== null ||
+            !countKeys.every((key) => counts?.[key] === null) ||
+            !preSummarySpatial ||
+            !initialTerrain)) ||
+        (eventPhase &&
+          (checkpoint.rowIndex !== expectedEventIndex ||
+            expectedOwner?.role !==
+              C12_29_S5_SVS_ROWS[expectedEventIndex].role ||
+            !membershipPresent ||
+            !boundariesPresent ||
+            initialTerrain)) ||
+        (controlPhase &&
+          (checkpoint.rowIndex !== C12_29_S5_SVS_ROWS.length ||
+            expectedOwner?.role !== C12_29_S5_SVS_CONTROL.role ||
+            !membershipPresent ||
+            !boundariesPresent ||
+            initialTerrain)) ||
+        (cleanupPhase &&
+          (expectedOwner !== null ||
+            !membershipPresent ||
+            !boundariesPresent ||
+            checkpoint.terrain?.transitionRole !== C12_29_S5_SVS_CONTROL.role))
+      ) {
+        reasons.push("runtime checkpoint phase-transition state differs");
+      }
+    }
+    if (boundariesPresent) {
+      const sourceAvailable = counts.nasa > 0;
+      const measuredAvailable = counts.classified > 0;
+      const comparable =
+        counts.sourceBoundary > 0 && counts.classifiedBoundary > 0;
+      const unavailableReason = comparable
+        ? null
+        : counts.nasa === 0
+          ? "source-empty"
+          : counts.sourceBoundary === 0
+            ? "source-boundary-empty"
+            : counts.classified === 0
+              ? "classified-empty"
+              : "classified-boundary-empty";
+      if (
+        checkpoint.sourceCentroid?.available !== sourceAvailable ||
+        checkpoint.measuredCentroid?.available !== measuredAvailable ||
+        checkpoint.boundary?.comparable !== comparable ||
+        checkpoint.boundary?.unavailableReason !== unavailableReason
+      ) {
+        reasons.push(
+          "runtime checkpoint spatial null/availability semantics differ",
+        );
+      }
+    }
+    if (
+      expectedOwner &&
+      checkpoint.stage !== "row-transition" &&
+      checkpoint.terrain?.transitionRole !== expectedOwner.role
+    ) {
+      reasons.push("runtime checkpoint terrain/role identity differs");
+    }
+    return reasons;
+  } catch {
+    reasons.push("runtime checkpoint could not be safely inspected");
+    return reasons;
   }
-  if (!isUuidV4(artifact?.runId)) reasons.push("artifact runId is not UUIDv4");
-  if (!FINAL_STATUSES.has(artifact?.status)) {
-    reasons.push("artifact status is not final");
+}
+
+function validateSvsRuntimeCleanupShape(cleanup) {
+  try {
+    if (
+      !exactObjectKeys(cleanup, [
+        "pageCloseAttempted",
+        "pageClosed",
+        "pageCloseTimedOut",
+        "contextCloseAttempted",
+        "contextClosed",
+        "contextCloseTimedOut",
+        "requestLedgerDrainAttempted",
+        "requestLedgerDrained",
+        "errorCount",
+        "errors",
+      ])
+    ) {
+      return false;
+    }
+    const booleanKeys = [
+      "pageCloseAttempted",
+      "pageClosed",
+      "pageCloseTimedOut",
+      "contextCloseAttempted",
+      "contextClosed",
+      "contextCloseTimedOut",
+      "requestLedgerDrainAttempted",
+      "requestLedgerDrained",
+    ];
+    return (
+      booleanKeys.every((key) => typeof cleanup[key] === "boolean") &&
+      cleanup.pageCloseAttempted === true &&
+      cleanup.contextCloseAttempted === true &&
+      cleanup.requestLedgerDrainAttempted === true &&
+      !(cleanup.pageClosed && cleanup.pageCloseTimedOut) &&
+      !(cleanup.contextClosed && cleanup.contextCloseTimedOut) &&
+      validateSvsDiagnosticArrayCount(
+        cleanup.errors,
+        "cleanup.errors",
+        cleanup.errorCount,
+        C12_29_S5_SVS_DIAGNOSTIC_LIMITS.cleanupEntries,
+        C12_29_S5_SVS_DIAGNOSTIC_LIMITS.cleanupErrorCount,
+      )
+    );
+  } catch {
+    return false;
   }
-  if (artifact?.exitCode !== exitCodeForSvsStatus(artifact?.status)) {
-    reasons.push("artifact exit code does not match status");
+}
+
+/** Validate the exact bounded diagnostics union accepted by a v3 ERROR. */
+export function validateSvsErrorDiagnosticsShape(
+  diagnostics,
+  { requireCleanup = true } = {},
+) {
+  const reasons = [];
+  try {
+    if (
+      !exactObjectKeys(diagnostics, [
+        "schema",
+        "kind",
+        "renderer",
+        "stage",
+        "runtimeCheckpoint",
+        "checkpointReadError",
+        "pageErrorCount",
+        "pageErrors",
+        "consoleErrorCount",
+        "consoleErrors",
+        "cleanup",
+        "originalError",
+      ])
+    ) {
+      reasons.push("ERROR diagnostics keys are not exact");
+      return reasons;
+    }
+    if (diagnostics.kind === "operational-pre-page-error") {
+      if (
+        diagnostics.schema !== C12_29_S5_SVS_DIAGNOSTICS_SCHEMA ||
+        diagnostics.renderer !== null ||
+        !new Set(["probe-before-page", "browser-watchdog-error"]).has(
+          diagnostics.stage,
+        ) ||
+        diagnostics.runtimeCheckpoint !== null ||
+        diagnostics.checkpointReadError !== null ||
+        !validateSvsDiagnosticArrayCount(
+          diagnostics.pageErrors,
+          "pageErrors",
+          diagnostics.pageErrorCount,
+        ) ||
+        diagnostics.pageErrorCount !== 0 ||
+        !validateSvsDiagnosticArrayCount(
+          diagnostics.consoleErrors,
+          "consoleErrors",
+          diagnostics.consoleErrorCount,
+        ) ||
+        diagnostics.consoleErrorCount !== 0 ||
+        diagnostics.cleanup !== null ||
+        !boundedSvsString(
+          diagnostics.originalError,
+          C12_29_S5_SVS_DIAGNOSTIC_LIMITS.errorCharacters,
+        )
+      ) {
+        reasons.push("operational ERROR diagnostics are invalid");
+      }
+      return reasons;
+    }
+    if (diagnostics.kind === "runtime-session-cleanup-error") {
+      if (
+        diagnostics.schema !== C12_29_S5_SVS_DIAGNOSTICS_SCHEMA ||
+        !C12_29_S5_SVS_RENDERERS.includes(diagnostics.renderer) ||
+        diagnostics.stage !== "session-cleanup-error" ||
+        diagnostics.runtimeCheckpoint !== null ||
+        diagnostics.checkpointReadError !== null ||
+        !validateSvsDiagnosticArrayCount(
+          diagnostics.pageErrors,
+          "pageErrors",
+          diagnostics.pageErrorCount,
+        ) ||
+        !validateSvsDiagnosticArrayCount(
+          diagnostics.consoleErrors,
+          "consoleErrors",
+          diagnostics.consoleErrorCount,
+        ) ||
+        !validateSvsRuntimeCleanupShape(diagnostics.cleanup) ||
+        diagnostics.cleanup.errorCount < 1 ||
+        !boundedSvsString(
+          diagnostics.originalError,
+          C12_29_S5_SVS_DIAGNOSTIC_LIMITS.errorCharacters,
+        )
+      ) {
+        reasons.push("session-cleanup ERROR diagnostics are invalid");
+      }
+      return reasons;
+    }
+    if (
+      diagnostics.schema !== C12_29_S5_SVS_DIAGNOSTICS_SCHEMA ||
+      diagnostics.kind !== "runtime-page-session-error" ||
+      !C12_29_S5_SVS_RENDERERS.includes(diagnostics.renderer) ||
+      diagnostics.stage !== "page-session-error" ||
+      !boundedSvsString(
+        diagnostics.originalError,
+        C12_29_S5_SVS_DIAGNOSTIC_LIMITS.errorCharacters,
+      ) ||
+      !validateSvsDiagnosticArrayCount(
+        diagnostics.pageErrors,
+        "pageErrors",
+        diagnostics.pageErrorCount,
+      ) ||
+      !validateSvsDiagnosticArrayCount(
+        diagnostics.consoleErrors,
+        "consoleErrors",
+        diagnostics.consoleErrorCount,
+      ) ||
+      (diagnostics.checkpointReadError !== null &&
+        !boundedSvsString(
+          diagnostics.checkpointReadError,
+          C12_29_S5_SVS_DIAGNOSTIC_LIMITS.errorCharacters,
+        ))
+    ) {
+      reasons.push("ERROR diagnostics identity/text is invalid");
+    }
+    if (diagnostics.runtimeCheckpoint === null) {
+      // A navigation/import failure can precede the first page checkpoint.
+    } else {
+      reasons.push(
+        ...validateSvsRuntimeCheckpointShape(
+          diagnostics.runtimeCheckpoint,
+          diagnostics.renderer,
+        ).map((reason) => `ERROR diagnostics ${reason}`),
+      );
+      if (diagnostics.checkpointReadError !== null) {
+        reasons.push("ERROR diagnostics retained a checkpoint and read error");
+      }
+    }
+    if (diagnostics.cleanup === null) {
+      if (requireCleanup)
+        reasons.push("ERROR diagnostics cleanup facts are absent");
+    } else if (!validateSvsRuntimeCleanupShape(diagnostics.cleanup)) {
+      reasons.push("ERROR diagnostics cleanup facts are invalid");
+    }
+    return reasons;
+  } catch {
+    reasons.push("ERROR diagnostics could not be safely inspected");
+    return reasons;
   }
-  if (artifact?.incomplete !== false)
-    reasons.push("final artifact is incomplete");
-  if (!isCanonicalUtcTimestamp(artifact?.generatedAt)) {
-    reasons.push("artifact generatedAt is not exact ISO-8601 UTC");
-  }
-  if (artifact?.status === "ERROR") {
+}
+
+/**
+ * Accept only the exact bounded v2 ERROR envelope needed to supersede the
+ * previously finalized browser failure. It is preserved byte-for-byte but is
+ * never interpreted as v3 certification.
+ */
+export function validateSupersededSvsV2FinalArtifactShape(artifact) {
+  const reasons = [];
+  try {
     if (
       !exactObjectKeys(artifact, [
         "schema",
@@ -667,78 +1428,146 @@ export function validateSvsFinalArtifactShape(artifact) {
         "diagnostics",
       ])
     ) {
-      reasons.push("ERROR artifact keys are not exact");
-    }
-    if (typeof artifact?.error !== "string" || artifact.error.length === 0) {
-      reasons.push("ERROR artifact has no error diagnostic");
+      reasons.push("superseded v2 ERROR artifact keys are not exact");
+      return reasons;
     }
     if (
-      artifact?.diagnostics !== null &&
-      (artifact.diagnostics === null ||
-        typeof artifact.diagnostics !== "object" ||
-        Array.isArray(artifact.diagnostics))
+      artifact?.schema !== C12_29_S5_SVS_SUPERSEDED_SCHEMA ||
+      !isUuidV4(artifact?.runId) ||
+      !isCanonicalUtcTimestamp(artifact?.generatedAt) ||
+      artifact?.status !== "ERROR" ||
+      artifact?.exitCode !== exitCodeForSvsStatus("ERROR") ||
+      artifact?.incomplete !== false ||
+      !boundedSvsString(artifact?.error, 65_536) ||
+      artifact?.diagnostics !== null
     ) {
-      reasons.push("ERROR artifact diagnostics are malformed");
+      reasons.push("superseded v2 ERROR artifact envelope is invalid");
     }
-  } else {
-    if (
-      !exactObjectKeys(artifact, [
-        "schema",
-        "runId",
-        "generatedAt",
-        "status",
-        "exitCode",
-        "incomplete",
-        "report",
-      ])
-    ) {
-      reasons.push("certifying artifact keys are not exact");
-    }
-    if (
-      !exactObjectKeys(artifact?.report, [
-        "schema",
-        "runId",
-        "lifecycle",
-        "provenance",
-        "sessions",
-        "crossBackend",
-        "status",
-        "exitCode",
-        "structuralReasons",
-        "failures",
-      ])
-    ) {
-      reasons.push("certifying report keys are not exact");
-    }
-    if (artifact?.report?.schema !== artifact?.schema) {
-      reasons.push("artifact/report schema mismatch");
-    }
-    if (artifact?.report?.runId !== artifact?.runId) {
-      reasons.push("artifact/report run identity mismatch");
-    }
-    if (artifact?.report?.status !== artifact?.status) {
-      reasons.push("artifact/report status mismatch");
-    }
-    let folded;
-    try {
-      folded = foldC1229S5SvsGate(artifact?.report);
-    } catch (error) {
-      reasons.push(`artifact report fold failed: ${error.message}`);
-    }
-    if (
-      folded &&
-      (artifact?.report?.status !== folded.status ||
-        artifact?.report?.exitCode !== folded.exitCode ||
-        !sameMembers(
-          artifact?.report?.structuralReasons,
-          folded.structuralReasons,
-        ) ||
-        !sameMembers(artifact?.report?.failures, folded.failures))
-    ) {
-      reasons.push("artifact report verdict is not an exact pure fold");
-    }
+    return reasons;
+  } catch {
+    reasons.push("superseded v2 ERROR artifact could not be safely inspected");
+    return reasons;
   }
-  return reasons;
+}
+
+export function validateSvsFinalArtifactShape(artifact) {
+  const reasons = [];
+  try {
+    if (!exactEnumerableDataObject(artifact)) {
+      reasons.push("artifact is not an exact enumerable-data object");
+      return reasons;
+    }
+    if (artifact?.schema !== C12_29_S5_SVS_SCHEMA) {
+      reasons.push("artifact schema is not the frozen SVS schema");
+    }
+    if (!isUuidV4(artifact?.runId))
+      reasons.push("artifact runId is not UUIDv4");
+    if (!FINAL_STATUSES.has(artifact?.status)) {
+      reasons.push("artifact status is not final");
+    }
+    if (artifact?.exitCode !== exitCodeForSvsStatus(artifact?.status)) {
+      reasons.push("artifact exit code does not match status");
+    }
+    if (artifact?.incomplete !== false)
+      reasons.push("final artifact is incomplete");
+    if (!isCanonicalUtcTimestamp(artifact?.generatedAt)) {
+      reasons.push("artifact generatedAt is not exact ISO-8601 UTC");
+    }
+    if (artifact?.status === "ERROR") {
+      if (
+        !exactObjectKeys(artifact, [
+          "schema",
+          "runId",
+          "generatedAt",
+          "status",
+          "exitCode",
+          "incomplete",
+          "error",
+          "diagnostics",
+        ])
+      ) {
+        reasons.push("ERROR artifact keys are not exact");
+      }
+      if (
+        !boundedSvsString(
+          artifact?.error,
+          C12_29_S5_SVS_DIAGNOSTIC_LIMITS.errorCharacters,
+        )
+      ) {
+        reasons.push("ERROR artifact has no error diagnostic");
+      }
+      if (artifact?.diagnostics === null) {
+        reasons.push("ERROR artifact diagnostics are absent");
+      } else {
+        reasons.push(
+          ...validateSvsErrorDiagnosticsShape(artifact.diagnostics).map(
+            (reason) => `ERROR artifact ${reason}`,
+          ),
+        );
+      }
+    } else {
+      if (
+        !exactObjectKeys(artifact, [
+          "schema",
+          "runId",
+          "generatedAt",
+          "status",
+          "exitCode",
+          "incomplete",
+          "report",
+        ])
+      ) {
+        reasons.push("certifying artifact keys are not exact");
+      }
+      if (
+        !exactObjectKeys(artifact?.report, [
+          "schema",
+          "runId",
+          "lifecycle",
+          "provenance",
+          "sessions",
+          "crossBackend",
+          "status",
+          "exitCode",
+          "structuralReasons",
+          "failures",
+        ])
+      ) {
+        reasons.push("certifying report keys are not exact");
+      }
+      if (artifact?.report?.schema !== artifact?.schema) {
+        reasons.push("artifact/report schema mismatch");
+      }
+      if (artifact?.report?.runId !== artifact?.runId) {
+        reasons.push("artifact/report run identity mismatch");
+      }
+      if (artifact?.report?.status !== artifact?.status) {
+        reasons.push("artifact/report status mismatch");
+      }
+      let folded;
+      try {
+        folded = foldC1229S5SvsGate(artifact?.report);
+      } catch (error) {
+        reasons.push(`artifact report fold failed: ${error.message}`);
+      }
+      if (
+        folded &&
+        (artifact?.report?.status !== folded.status ||
+          artifact?.report?.exitCode !== folded.exitCode ||
+          !sameMembers(
+            artifact?.report?.structuralReasons,
+            folded.structuralReasons,
+          ) ||
+          !sameMembers(artifact?.report?.failures, folded.failures))
+      ) {
+        reasons.push("artifact report verdict is not an exact pure fold");
+      }
+    }
+    return reasons;
+  } catch {
+    reasons.push("artifact could not be safely inspected");
+    return reasons;
+  }
 }
 
 function validateFingerprint(actual, expected, label, reasons) {
@@ -955,22 +1784,22 @@ function validateRuntimeFixture(fixture, renderer, reasons) {
     fixture?.manifestSchema !== C12_29_S5_SVS_FIXTURE.manifest.schema ||
     fixture?.featureCount !== 4 ||
     fixture?.storedPointCount !== C12_29_S5_SVS_FIXTURE.storedPointCount ||
-    JSON.stringify(fixture?.manifestRecordIdentities) !==
-      JSON.stringify(
-        C12_29_S5_SVS_ROWS.map((row) => ({
-          sourceIndexZeroBased: row.sourceIndexZeroBased,
-          sourceRecordNumber: row.sourceRecordNumber,
-          outputRecordNumber: row.outputRecordNumber,
-        })),
-      ) ||
-    JSON.stringify(fixture?.recordIdentities) !==
-      JSON.stringify(
-        C12_29_S5_SVS_ROWS.map((row) => ({
-          sourceIndexZeroBased: row.sourceIndexZeroBased,
-          sourceRecordNumber: row.sourceRecordNumber,
-          outputRecordNumber: row.outputRecordNumber,
-        })),
-      ) ||
+    !sameJson(
+      fixture?.manifestRecordIdentities,
+      C12_29_S5_SVS_ROWS.map((row) => ({
+        sourceIndexZeroBased: row.sourceIndexZeroBased,
+        sourceRecordNumber: row.sourceRecordNumber,
+        outputRecordNumber: row.outputRecordNumber,
+      })),
+    ) ||
+    !sameJson(
+      fixture?.recordIdentities,
+      C12_29_S5_SVS_ROWS.map((row) => ({
+        sourceIndexZeroBased: row.sourceIndexZeroBased,
+        sourceRecordNumber: row.sourceRecordNumber,
+        outputRecordNumber: row.outputRecordNumber,
+      })),
+    ) ||
     !close(
       fixture?.maximumSourceEdge?.distanceKm,
       C12_29_S5_SVS_SOURCE_EDGE.maximumAdjacentDistanceKm,
@@ -1205,32 +2034,92 @@ function validateLattice(row, expected, renderer, reasons) {
   }
 }
 
-export function deriveSvsSpatialMetrics(row) {
-  const lattice = row?.lattice;
-  const side = lattice?.side;
-  const valid = lattice?.validProjectedCellIds ?? [];
-  const nasa = lattice?.nasaInsideCellIds ?? [];
-  const classified = lattice?.classifiedCellIds ?? [];
-  const qKm = row?.budget?.qKm;
-  const points = new Map(
-    (lattice?.cellLonLat ?? []).map(([id, longitude, latitude]) => [
-      id,
-      [longitude, latitude],
-    ]),
-  );
-  if (!Number.isInteger(side) || !finite(qKm) || points.size !== valid.length) {
-    throw new TypeError("SVS primitive spatial inputs are invalid");
+/**
+ * Derives JSON-safe spatial summaries from primitive lattice membership.
+ *
+ * This function is intentionally self-contained. The browser probe evaluates
+ * this exact function body in the page and supplies Cesium's strict WGS84
+ * distance callback; Node policy supplies the independent Vincenty callback.
+ * Empty measured classifications are explicit unavailable product results,
+ * never non-finite coordinates passed to a geodesic constructor.
+ */
+export function summarizeSvsSpatialMetrics(primitives, distanceKm) {
+  const isFiniteNumber = (value) =>
+    Number.isFinite(value) && !Object.is(value, -0);
+  const isDegreeLonLat = (value) =>
+    Array.isArray(value) &&
+    value.length === 2 &&
+    value.every(isFiniteNumber) &&
+    Math.abs(value[0]) <= 180 &&
+    Math.abs(value[1]) <= 90;
+  const fail = (detail) => {
+    throw new TypeError(`SVS primitive spatial inputs are invalid: ${detail}`);
+  };
+  const cleanZero = (value) => (value === 0 ? 0 : value);
+  const side = primitives?.side;
+  const qKm = primitives?.qKm;
+  const measurementKind = primitives?.measurementKind;
+  const valid = primitives?.validProjectedCellIds;
+  const nasa = primitives?.nasaInsideCellIds;
+  const classified = primitives?.classifiedCellIds;
+  const cellLonLat = primitives?.cellLonLat;
+  if (
+    !Number.isInteger(side) ||
+    side < 2 ||
+    !isFiniteNumber(qKm) ||
+    qKm < 0 ||
+    !new Set(["event", "control"]).has(measurementKind) ||
+    typeof distanceKm !== "function" ||
+    !Array.isArray(valid) ||
+    !Array.isArray(nasa) ||
+    !Array.isArray(classified) ||
+    !Array.isArray(cellLonLat)
+  ) {
+    fail("shape");
   }
-  const cacheKey = JSON.stringify([
-    side,
-    qKm,
-    valid,
-    nasa,
-    classified,
-    lattice.cellLonLat,
-  ]);
-  const cached = spatialMetricCache.get(cacheKey);
-  if (cached) return structuredClone(cached);
+  const validSet = new Set(valid);
+  const exactIds = (ids) =>
+    ids.every(
+      (id, index) =>
+        Number.isInteger(id) &&
+        id >= 0 &&
+        id < side ** 2 &&
+        (index === 0 || id > ids[index - 1]) &&
+        validSet.has(id),
+    );
+  if (
+    validSet.size !== valid.length ||
+    !exactIds(valid) ||
+    !exactIds(nasa) ||
+    !exactIds(classified) ||
+    cellLonLat.length !== valid.length
+  ) {
+    fail("membership");
+  }
+  const points = new Map();
+  for (let index = 0; index < cellLonLat.length; index++) {
+    const entry = cellLonLat[index];
+    if (
+      !Array.isArray(entry) ||
+      entry.length !== 3 ||
+      entry[0] !== valid[index] ||
+      !isDegreeLonLat([entry[1], entry[2]]) ||
+      points.has(entry[0])
+    ) {
+      fail(`cellLonLat[${index}]`);
+    }
+    points.set(entry[0], [entry[1], entry[2]]);
+  }
+  const checkedDistanceKm = (left, right, stage) => {
+    if (!isDegreeLonLat(left) || !isDegreeLonLat(right)) {
+      fail(`${stage} coordinate`);
+    }
+    const result = distanceKm(left, right, stage);
+    if (!isFiniteNumber(result) || result < 0) {
+      fail(`${stage} distance`);
+    }
+    return result;
+  };
   const nasaSet = new Set(nasa);
   const classifiedSet = new Set(classified);
   const neighbors = (id) => {
@@ -1249,60 +2138,106 @@ export function deriveSvsSpatialMetrics(row) {
     );
   const nasaBoundary = boundaryOf(nasa, nasaSet);
   const classifiedBoundary = boundaryOf(classified, classifiedSet);
-  const distanceTo = (id, boundary) => {
+  const distanceTo = (id, boundary, stage) => {
+    if (boundary.length === 0) return null;
     const point = points.get(id);
-    if (!point || boundary.length === 0) return Infinity;
-    let minimum = Infinity;
+    if (!point) fail(`${stage} source`);
+    let minimum = null;
     for (const otherId of boundary) {
       const other = points.get(otherId);
-      if (other) {
-        minimum = Math.min(minimum, wgs84GeodesicDistanceKm(point, other));
-      }
+      if (!other) fail(`${stage} boundary`);
+      const distance = checkedDistanceKm(point, other, stage);
+      minimum = minimum === null ? distance : Math.min(minimum, distance);
     }
     return minimum;
   };
   const nasaDistance = new Map(
-    valid.map((id) => [id, distanceTo(id, nasaBoundary)]),
+    valid.map((id) => [
+      id,
+      distanceTo(id, nasaBoundary, "source-boundary-distance"),
+    ]),
   );
-  const boundaryDistances = [
-    ...classifiedBoundary.map((id) => distanceTo(id, nasaBoundary)),
-    ...nasaBoundary.map((id) => distanceTo(id, classifiedBoundary)),
-  ]
-    .filter(finite)
-    .sort((left, right) => left - right);
-  const qBoundaryBandCellIds = valid.filter(
-    (id) => nasaDistance.get(id) <= qKm,
+  const boundaryComparable =
+    nasaBoundary.length > 0 && classifiedBoundary.length > 0;
+  const boundaryDistances = boundaryComparable
+    ? [
+        ...classifiedBoundary.map((id) =>
+          distanceTo(id, nasaBoundary, "classified-to-source-boundary"),
+        ),
+        ...nasaBoundary.map((id) =>
+          distanceTo(id, classifiedBoundary, "source-to-classified-boundary"),
+        ),
+      ].sort((left, right) => left - right)
+    : [];
+  const withinQ = (distance) => distance !== null && distance <= qKm;
+  const qBoundaryBandCellIds = valid.filter((id) =>
+    withinQ(nasaDistance.get(id)),
   );
   const dilated = valid.filter(
-    (id) => nasaSet.has(id) || nasaDistance.get(id) <= qKm,
+    (id) => nasaSet.has(id) || withinQ(nasaDistance.get(id)),
   );
-  const eroded = nasa.filter((id) => nasaDistance.get(id) > qKm);
+  const eroded = nasa.filter((id) => {
+    const distance = nasaDistance.get(id);
+    return distance !== null && distance > qKm;
+  });
   const centroid = (ids) => {
-    if (ids.length === 0) return [NaN, NaN];
+    if (ids.length === 0) return null;
     const sum = ids.reduce(
       (value, id) => {
         const point = points.get(id);
+        if (!point) fail("centroid membership");
         return [value[0] + point[0], value[1] + point[1]];
       },
       [0, 0],
     );
-    return [sum[0] / ids.length, sum[1] / ids.length];
+    const result = [
+      cleanZero(sum[0] / ids.length),
+      cleanZero(sum[1] / ids.length),
+    ];
+    if (!isDegreeLonLat(result)) fail("centroid coordinate");
+    return result;
   };
   const sourceLonLat = centroid(nasa);
   const measuredLonLat = centroid(classified);
+  const centroidComparable = sourceLonLat !== null && measuredLonLat !== null;
+  const centroidDistanceKm = centroidComparable
+    ? checkedDistanceKm(sourceLonLat, measuredLonLat, "centroid")
+    : null;
   const intersection = classified.filter((id) => nasaSet.has(id)).length;
   const union = new Set([...classified, ...nasa]).size;
-  const result = {
+  const sourceRatio = (numerator) =>
+    nasa.length > 0 ? cleanZero(numerator / nasa.length) : null;
+  const boundaryUnavailableReason = boundaryComparable
+    ? null
+    : nasa.length === 0
+      ? "source-empty"
+      : nasaBoundary.length === 0
+        ? "source-boundary-empty"
+        : classified.length === 0
+          ? "classified-empty"
+          : "classified-boundary-empty";
+  const centroidUnavailableReason = centroidComparable
+    ? null
+    : sourceLonLat === null
+      ? "source-empty"
+      : "classified-empty";
+  return {
+    measurementKind,
     qBoundaryBandCellIds,
     boundary: {
-      p95Km:
-        boundaryDistances[
-          Math.min(
-            boundaryDistances.length - 1,
-            Math.floor(boundaryDistances.length * 0.95),
-          )
-        ] ?? Infinity,
-      maximumKm: boundaryDistances.at(-1) ?? Infinity,
+      comparable: boundaryComparable,
+      unavailableReason: boundaryUnavailableReason,
+      sourceBoundaryCellCount: nasaBoundary.length,
+      classifiedBoundaryCellCount: classifiedBoundary.length,
+      p95Km: boundaryComparable
+        ? boundaryDistances[
+            Math.min(
+              boundaryDistances.length - 1,
+              Math.floor(boundaryDistances.length * 0.95),
+            )
+          ]
+        : null,
+      maximumKm: boundaryComparable ? boundaryDistances.at(-1) : null,
       classifiedOutsideDilatedCount: classified.filter(
         (id) => !dilated.includes(id),
       ).length,
@@ -1311,19 +2246,45 @@ export function deriveSvsSpatialMetrics(row) {
       ).length,
       erodedNasaCellCount: eroded.length,
       dilatedNasaCellCount: dilated.length,
-      areaRatio: classified.length / nasa.length,
-      minimumAreaRatio: eroded.length / nasa.length,
-      maximumAreaRatio: dilated.length / nasa.length,
-      rawIou: union > 0 ? intersection / union : 0,
+      areaRatio: sourceRatio(classified.length),
+      minimumAreaRatio: sourceRatio(eroded.length),
+      maximumAreaRatio: sourceRatio(dilated.length),
+      rawIou: union > 0 ? cleanZero(intersection / union) : 0,
     },
     centroid: {
+      comparable: centroidComparable,
+      unavailableReason: centroidUnavailableReason,
       measuredLonLat,
       sourceLonLat,
-      errorKm: wgs84GeodesicDistanceKm(sourceLonLat, measuredLonLat),
-      longitudeResidualDegrees: measuredLonLat[0] - sourceLonLat[0],
-      latitudeResidualDegrees: measuredLonLat[1] - sourceLonLat[1],
+      errorKm: centroidDistanceKm,
+      longitudeResidualDegrees: centroidComparable
+        ? cleanZero(measuredLonLat[0] - sourceLonLat[0])
+        : null,
+      latitudeResidualDegrees: centroidComparable
+        ? cleanZero(measuredLonLat[1] - sourceLonLat[1])
+        : null,
     },
   };
+}
+
+export function deriveSvsSpatialMetrics(row) {
+  const lattice = row?.lattice;
+  const primitives = {
+    side: lattice?.side,
+    qKm: row?.budget?.qKm,
+    measurementKind: row?.spatialMeasurementKind ?? "event",
+    validProjectedCellIds: lattice?.validProjectedCellIds ?? [],
+    nasaInsideCellIds: lattice?.nasaInsideCellIds ?? [],
+    classifiedCellIds: lattice?.classifiedCellIds ?? [],
+    cellLonLat: lattice?.cellLonLat ?? [],
+  };
+  const cacheKey = JSON.stringify(primitives);
+  const cached = spatialMetricCache.get(cacheKey);
+  if (cached) return structuredClone(cached);
+  const result = summarizeSvsSpatialMetrics(
+    primitives,
+    wgs84GeodesicDistanceKm,
+  );
   spatialMetricCache.set(cacheKey, structuredClone(result));
   return result;
 }
@@ -1385,44 +2346,48 @@ function validateBudget(row, renderer, failures, structural) {
     return expected;
   }
   if (
+    row?.spatialMeasurementKind !== "event" ||
+    derived.measurementKind !== "event" ||
     !sameMembers(
       row?.lattice?.qBoundaryBandCellIds,
       derived.qBoundaryBandCellIds,
     ) ||
-    Object.keys(derived.boundary).some(
-      (key) => !close(boundary?.[key], derived.boundary[key], 1e-9),
-    )
+    !sameJson(boundary, derived.boundary)
   ) {
     structural.push(
       `${renderer}/${row?.role}: morphology summary is not derived`,
     );
   }
-  if (
+  if (boundary?.comparable !== true) {
+    failures.push(
+      `${renderer}/${row?.role}: boundary comparison is unavailable`,
+    );
+  } else if (
     !finite(boundary?.p95Km) ||
     !finite(boundary?.maximumKm) ||
-    boundary?.p95Km > expected.boundaryP95LimitKm ||
-    boundary?.maximumKm > expected.boundaryMaximumLimitKm ||
-    boundary?.classifiedOutsideDilatedCount !== 0 ||
-    boundary?.erodedOutsideClassifiedCount !== 0 ||
-    row?.mask?.classifiedCellCount < boundary?.erodedNasaCellCount ||
-    row?.mask?.classifiedCellCount > boundary?.dilatedNasaCellCount ||
+    boundary.p95Km > expected.boundaryP95LimitKm ||
+    boundary.maximumKm > expected.boundaryMaximumLimitKm ||
+    boundary.classifiedOutsideDilatedCount !== 0 ||
+    boundary.erodedOutsideClassifiedCount !== 0 ||
+    row?.mask?.classifiedCellCount < boundary.erodedNasaCellCount ||
+    row?.mask?.classifiedCellCount > boundary.dilatedNasaCellCount ||
     !close(
-      boundary?.areaRatio,
+      boundary.areaRatio,
       row?.mask?.classifiedCellCount / row?.lattice?.nasaInsideCount,
       1e-12,
     ) ||
     !close(
-      boundary?.minimumAreaRatio,
-      boundary?.erodedNasaCellCount / row?.lattice?.nasaInsideCount,
+      boundary.minimumAreaRatio,
+      boundary.erodedNasaCellCount / row?.lattice?.nasaInsideCount,
       1e-12,
     ) ||
     !close(
-      boundary?.maximumAreaRatio,
-      boundary?.dilatedNasaCellCount / row?.lattice?.nasaInsideCount,
+      boundary.maximumAreaRatio,
+      boundary.dilatedNasaCellCount / row?.lattice?.nasaInsideCount,
       1e-12,
     ) ||
-    boundary?.areaRatio < boundary?.minimumAreaRatio ||
-    boundary?.areaRatio > boundary?.maximumAreaRatio
+    boundary.areaRatio < boundary.minimumAreaRatio ||
+    boundary.areaRatio > boundary.maximumAreaRatio
   ) {
     failures.push(`${renderer}/${row?.role}: boundary/area morphology is red`);
   }
@@ -1431,30 +2396,18 @@ function validateBudget(row, renderer, failures, structural) {
     structural.push(`${renderer}/${row?.role}: raw IoU is malformed`);
   }
   const centroid = row?.centroid;
-  if (
-    !sameMembers(centroid?.measuredLonLat, derived.centroid.measuredLonLat) ||
-    !sameMembers(centroid?.sourceLonLat, derived.centroid.sourceLonLat) ||
-    !close(centroid?.errorKm, derived.centroid.errorKm, 1e-9) ||
-    !close(
-      centroid?.longitudeResidualDegrees,
-      derived.centroid.longitudeResidualDegrees,
-      1e-12,
-    ) ||
-    !close(
-      centroid?.latitudeResidualDegrees,
-      derived.centroid.latitudeResidualDegrees,
-      1e-12,
-    )
-  ) {
+  if (!sameJson(centroid, derived.centroid)) {
     structural.push(
       `${renderer}/${row?.role}: centroid summary is not derived`,
     );
   }
-  if (
-    !finite(centroid?.errorKm) ||
+  if (centroid?.comparable !== true) {
+    failures.push(`${renderer}/${row?.role}: absolute centroid is unavailable`);
+  } else if (
+    !finite(centroid.errorKm) ||
     centroid.errorKm > expected.centroidLimitKm ||
-    !finite(centroid?.longitudeResidualDegrees) ||
-    !finite(centroid?.latitudeResidualDegrees)
+    !finite(centroid.longitudeResidualDegrees) ||
+    !finite(centroid.latitudeResidualDegrees)
   ) {
     failures.push(`${renderer}/${row?.role}: absolute centroid is red`);
   }
@@ -1574,7 +2527,7 @@ function validateTerrainTuple(tuple, renderer, label, structural) {
   }
   const selectedContent = tuple?.selectedContent;
   const preparedContent = tuple?.preparedContent;
-  const expectedIdentity = JSON.stringify({
+  const expectedIdentity = canonicalJsonIdentity({
     selected: selectedContent,
     prepared: preparedContent,
   });
@@ -1786,7 +2739,7 @@ function validateRow(row, expected, renderer, failures, structural) {
     row.mask.terrainPixelCount <
       C12_29_S5_SVS_SCENE.minimumUniqueValidProjectedCells ||
     !Number.isInteger(row?.mask?.classifiedCellCount) ||
-    row.mask.classifiedCellCount < C12_29_S5_SVS_SCENE.minimumNasaInsideCells ||
+    row.mask.classifiedCellCount < 0 ||
     row?.mask?.offMinimumLuminanceCode !==
       C12_29_S5_SVS_SCENE.offMinimumLuminanceCode ||
     row?.mask?.onOffRatioMaximum !== C12_29_S5_SVS_SCENE.onOffRatioMaximum ||
@@ -1796,6 +2749,14 @@ function validateRow(row, expected, renderer, failures, structural) {
   ) {
     structural.push(
       `${renderer}/${expected.role}: real-pixel classifier differs`,
+    );
+  }
+  if (
+    Number.isInteger(row?.mask?.classifiedCellCount) &&
+    row.mask.classifiedCellCount < C12_29_S5_SVS_SCENE.minimumNasaInsideCells
+  ) {
+    failures.push(
+      `${renderer}/${expected.role}: eclipse classification is empty or under-covered`,
     );
   }
   validateTerrainTuple(row?.terrainTuple, renderer, expected.role, structural);
@@ -1836,26 +2797,43 @@ function validateMotion(session, budgets, failures, structural) {
   const afterPoint = session?.rows?.find(
     (row) => row?.role === C12_29_S5_SVS_SOURCE_MOTION.toRole,
   )?.centroid?.measuredLonLat;
-  const measuredDistanceKm = wgs84GeodesicDistanceKm(beforePoint, afterPoint);
-  const radians = Math.PI / 180;
-  const deltaLongitude = (afterPoint?.[0] - beforePoint?.[0]) * radians;
-  const beforeLatitude = beforePoint?.[1] * radians;
-  const afterLatitude = afterPoint?.[1] * radians;
-  const measuredHeading = Math.atan2(
-    Math.sin(deltaLongitude) * Math.cos(afterLatitude),
-    Math.cos(beforeLatitude) * Math.sin(afterLatitude) -
-      Math.sin(beforeLatitude) *
-        Math.cos(afterLatitude) *
-        Math.cos(deltaLongitude),
-  );
-  const derivedVectorErrorKm = Math.hypot(
-    measuredDistanceKm * Math.sin(measuredHeading) -
-      C12_29_S5_SVS_SOURCE_MOTION.eastKm,
-    measuredDistanceKm * Math.cos(measuredHeading) -
-      C12_29_S5_SVS_SOURCE_MOTION.northKm,
-  );
-  const derivedSpeedKmPerHour =
-    (measuredDistanceKm / C12_29_S5_SVS_SOURCE_MOTION.seconds) * 3600;
+  const comparable = isDegreeLonLat(beforePoint) && isDegreeLonLat(afterPoint);
+  let derivedMeasurement = {
+    comparable: false,
+    unavailableReason: "measured-centroid-unavailable",
+    measuredDirectionEast: null,
+    measuredDirectionNorth: null,
+    vectorErrorKm: null,
+    measuredSpeedKmPerHour: null,
+  };
+  if (comparable) {
+    const measuredDistanceKm = wgs84GeodesicDistanceKm(beforePoint, afterPoint);
+    const radians = Math.PI / 180;
+    const deltaLongitude = (afterPoint[0] - beforePoint[0]) * radians;
+    const beforeLatitude = beforePoint[1] * radians;
+    const afterLatitude = afterPoint[1] * radians;
+    const measuredHeading = Math.atan2(
+      Math.sin(deltaLongitude) * Math.cos(afterLatitude),
+      Math.cos(beforeLatitude) * Math.sin(afterLatitude) -
+        Math.sin(beforeLatitude) *
+          Math.cos(afterLatitude) *
+          Math.cos(deltaLongitude),
+    );
+    derivedMeasurement = {
+      comparable: true,
+      unavailableReason: null,
+      measuredDirectionEast: Math.sin(measuredHeading) > 0,
+      measuredDirectionNorth: Math.cos(measuredHeading) > 0,
+      vectorErrorKm: Math.hypot(
+        measuredDistanceKm * Math.sin(measuredHeading) -
+          C12_29_S5_SVS_SOURCE_MOTION.eastKm,
+        measuredDistanceKm * Math.cos(measuredHeading) -
+          C12_29_S5_SVS_SOURCE_MOTION.northKm,
+      ),
+      measuredSpeedKmPerHour:
+        (measuredDistanceKm / C12_29_S5_SVS_SOURCE_MOTION.seconds) * 3600,
+    };
+  }
   if (
     motion?.fromRole !== C12_29_S5_SVS_SOURCE_MOTION.fromRole ||
     motion?.toRole !== C12_29_S5_SVS_SOURCE_MOTION.toRole ||
@@ -1885,18 +2863,29 @@ function validateMotion(session, budgets, failures, structural) {
       speedUncertaintyKmPerHour,
       1e-9,
     ) ||
-    motion?.measuredDirectionEast !== Math.sin(measuredHeading) > 0 ||
-    motion?.measuredDirectionNorth !== Math.cos(measuredHeading) > 0 ||
-    !close(motion?.vectorErrorKm, derivedVectorErrorKm, 1e-6) ||
-    !close(motion?.measuredSpeedKmPerHour, derivedSpeedKmPerHour, 1e-6)
+    !sameJson(
+      {
+        comparable: motion?.comparable,
+        unavailableReason: motion?.unavailableReason,
+        measuredDirectionEast: motion?.measuredDirectionEast,
+        measuredDirectionNorth: motion?.measuredDirectionNorth,
+        vectorErrorKm: motion?.vectorErrorKm,
+        measuredSpeedKmPerHour: motion?.measuredSpeedKmPerHour,
+      },
+      derivedMeasurement,
+    )
   ) {
     structural.push(
       `${session?.renderer}: motion budget/source vector differs`,
     );
     return;
   }
-  if (
-    motion?.measuredDirectionEast !== true ||
+  if (motion?.comparable !== true) {
+    failures.push(
+      `${session?.renderer}: 10-second source motion is unavailable`,
+    );
+  } else if (
+    motion.measuredDirectionEast !== true ||
     motion?.measuredDirectionNorth !== true ||
     !finite(motion?.vectorErrorKm) ||
     motion.vectorErrorKm > vectorLimitKm ||
@@ -2058,6 +3047,32 @@ function validateControl(control, renderer, cameraSource, structural) {
   ) {
     structural.push(
       `${renderer}: noneclipse projection/terrain primitives differ from the exact camera source`,
+    );
+  }
+
+  let controlSpatial;
+  try {
+    controlSpatial = deriveSvsSpatialMetrics({
+      spatialMeasurementKind: control?.spatialMeasurementKind,
+      budget: cameraSource?.budget,
+      lattice,
+    });
+  } catch {
+    structural.push(`${renderer}: noneclipse spatial recomputation failed`);
+  }
+  if (
+    control?.spatialMeasurementKind !== "control" ||
+    controlSpatial?.measurementKind !== "control" ||
+    controlSpatial?.boundary?.comparable !== false ||
+    controlSpatial?.boundary?.unavailableReason !== "classified-empty" ||
+    controlSpatial?.centroid?.comparable !== false ||
+    controlSpatial?.centroid?.unavailableReason !== "classified-empty" ||
+    controlSpatial?.centroid?.measuredLonLat !== null ||
+    !sameJson(control?.boundary, controlSpatial?.boundary) ||
+    !sameJson(control?.centroid, controlSpatial?.centroid)
+  ) {
+    structural.push(
+      `${renderer}: noneclipse spatial unavailability is not explicit`,
     );
   }
 
@@ -2274,27 +3289,40 @@ function validateCrossBackend(cross, sessions, failures, structural) {
     const derivedDiffering = [...new Set([...glSet, ...gpuSet])]
       .filter((id) => glSet.has(id) !== gpuSet.has(id))
       .sort((left, right) => left - right);
-    const derivedDistance = wgs84GeodesicDistanceKm(
-      gl?.centroid?.measuredLonLat,
-      gpu?.centroid?.measuredLonLat,
-    );
+    const glCentroid = gl?.centroid?.measuredLonLat;
+    const gpuCentroid = gpu?.centroid?.measuredLonLat;
+    const centroidComparable =
+      isDegreeLonLat(glCentroid) && isDegreeLonLat(gpuCentroid);
+    const derivedDistance = centroidComparable
+      ? wgs84GeodesicDistanceKm(glCentroid, gpuCentroid)
+      : null;
     if (
       row?.role !== expected.role ||
       !exactSortedUniqueIntegers(row?.differingCellIds) ||
       row?.differingCellCount !== row?.differingCellIds?.length ||
       row?.allDifferingCellsWithinUnionQBoundaryBands !== true ||
       row?.centroidDistanceMethod !== "WGS84-Vincenty-inverse" ||
-      !close(row?.centroidLimitKm, 2 * qKm, 1e-9)
+      !close(row?.centroidLimitKm, 2 * qKm, 1e-9) ||
+      row?.centroidComparable !== centroidComparable ||
+      row?.centroidUnavailableReason !==
+        (centroidComparable ? null : "measured-centroid-unavailable")
     ) {
       structural.push(`${expected.role}: cross-backend proof is malformed`);
     }
     if (
       !sameMembers(row?.differingCellIds, derivedDiffering) ||
-      !close(row?.centroidDistanceKm, derivedDistance, 1e-9)
+      (centroidComparable
+        ? !close(row?.centroidDistanceKm, derivedDistance, 1e-9)
+        : row?.centroidDistanceKm !== null)
     ) {
       structural.push(`${expected.role}: cross-backend summary is not derived`);
     }
-    if (!finite(row?.centroidDistanceKm) || row.centroidDistanceKm > 2 * qKm) {
+    if (!centroidComparable) {
+      failures.push(`${expected.role}: cross-backend centroid is unavailable`);
+    } else if (
+      !finite(row?.centroidDistanceKm) ||
+      row.centroidDistanceKm > 2 * qKm
+    ) {
       failures.push(`${expected.role}: cross-backend centroid is red`);
     }
     const glBand = new Set(gl?.lattice?.qBoundaryBandCellIds ?? []);
@@ -2445,6 +3473,7 @@ export function foldC1229S5SvsGate(report) {
 export default {
   C12_29_S5_SVS_SCHEMA,
   C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
+  C12_29_S5_SVS_SUPERSEDED_SCHEMA,
   C12_29_S5_SVS_RENDERERS,
   C12_29_S5_SVS_PHASES,
   C12_29_S5_SVS_ROWS,
@@ -2462,7 +3491,12 @@ export default {
   C12_29_S5_SVS_BUILD_SOURCE_FILES,
   C12_29_S5_SVS_BUILD_SOURCE_MAP,
   computeSvsFootprintBudget,
+  summarizeSvsSpatialMetrics,
+  deriveSvsSpatialMetrics,
   validateSvsRunningArtifactShape,
+  validateSvsRuntimeCheckpointShape,
+  validateSvsErrorDiagnosticsShape,
+  validateSupersededSvsV2FinalArtifactShape,
   wgs84GeodesicDistanceKm,
   foldC1229S5SvsGate,
 };
