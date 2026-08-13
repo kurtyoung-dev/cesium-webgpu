@@ -12,6 +12,7 @@ import {
   C12_29_S5_CAPTURE_METHOD,
   C12_29_S5_DIAGNOSTICS_SCHEMA,
   C12_29_S5_FIXTURE,
+  C12_29_S5_LOW_DETAIL_FILL,
   C12_29_S5_PHASES,
   C12_29_S5_PICK_FRAME_DRIVER,
   C12_29_S5_PICK_MAX_PUMP_FRAMES,
@@ -22,6 +23,7 @@ import {
   C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH,
   C12_29_S5_RAW_PAGE_MAX_STRING_LENGTH,
   C12_29_S5_RENDERERS,
+  C12_29_S5_REVEAL_LIFECYCLE,
   C12_29_S5_SCENE,
   C12_29_S5_SCHEMA,
   C12_29_S5_SOURCE_FILES,
@@ -72,6 +74,7 @@ const V4_SCHEMA = "c12-29-s5-terrain-selection-evidence-v4";
 const V5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v5";
 const V6_SCHEMA = "c12-29-s5-terrain-selection-evidence-v6";
 const V7_SCHEMA = "c12-29-s5-terrain-selection-evidence-v7";
+const V8_SCHEMA = "c12-29-s5-terrain-selection-evidence-v8";
 const diagnosticSha256 = (value) =>
   createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
 
@@ -217,10 +220,10 @@ const targetComputedSse =
 function syntheticTileState(overrides = {}) {
   return {
     instantiated: true,
-    quadtreeState: 1,
+    quadtreeState: C12_29_S5_REVEAL_LIFECYCLE.quadtreeStart,
     renderable: true,
     dataDefined: true,
-    terrainState: 1,
+    terrainState: C12_29_S5_REVEAL_LIFECYCLE.terrainUnloaded,
     terrainDataDefined: false,
     realMeshDefined: false,
     vertexArrayDefined: false,
@@ -230,7 +233,11 @@ function syntheticTileState(overrides = {}) {
     renderedMeshMatchesReal: false,
     renderedMeshMatchesFill: false,
     terrainFillMeshInstance: false,
-    vertexCount: 0,
+    vertexCountWithoutSkirts: 0,
+    indexCountWithoutSkirts: 0,
+    verticesLength: 0,
+    stride: 0,
+    derivedVertexCount: 0,
     indexCount: 0,
     ...overrides,
   };
@@ -266,15 +273,22 @@ function syntheticOrderInstallation() {
 function syntheticOrderProof() {
   const emptyTarget = syntheticTileState();
   const filledTarget = syntheticTileState({
+    quadtreeState: C12_29_S5_REVEAL_LIFECYCLE.quadtreeLoading,
     fillDefined: true,
     fillMeshDefined: true,
     renderedMeshDefined: true,
     renderedMeshMatchesFill: true,
     terrainFillMeshInstance: true,
-    vertexCount: 5,
-    indexCount: 12,
+    vertexCountWithoutSkirts:
+      C12_29_S5_LOW_DETAIL_FILL.vertexCountWithoutSkirts,
+    indexCountWithoutSkirts: C12_29_S5_LOW_DETAIL_FILL.indexCountWithoutSkirts,
+    verticesLength: C12_29_S5_LOW_DETAIL_FILL.derivedVertexCount * 6,
+    stride: 6,
+    derivedVertexCount: C12_29_S5_LOW_DETAIL_FILL.derivedVertexCount,
+    indexCount: C12_29_S5_LOW_DETAIL_FILL.totalIndexCount,
   });
   const realSibling = syntheticTileState({
+    quadtreeState: C12_29_S5_REVEAL_LIFECYCLE.quadtreeLoading,
     terrainDataDefined: true,
     realMeshDefined: true,
     vertexArrayDefined: true,
@@ -342,13 +356,20 @@ function syntheticOrderProof() {
 
 function syntheticFirstReveal(revealTargetSelection, revealSiblingSelection) {
   const targetState = syntheticTileState({
+    quadtreeState: C12_29_S5_REVEAL_LIFECYCLE.quadtreeLoading,
+    terrainState: C12_29_S5_REVEAL_LIFECYCLE.terrainReceiving,
     fillDefined: true,
     fillMeshDefined: true,
     renderedMeshDefined: true,
     renderedMeshMatchesFill: true,
     terrainFillMeshInstance: true,
-    vertexCount: 5,
-    indexCount: 12,
+    vertexCountWithoutSkirts:
+      C12_29_S5_LOW_DETAIL_FILL.vertexCountWithoutSkirts,
+    indexCountWithoutSkirts: C12_29_S5_LOW_DETAIL_FILL.indexCountWithoutSkirts,
+    verticesLength: C12_29_S5_LOW_DETAIL_FILL.derivedVertexCount * 6,
+    stride: 6,
+    derivedVertexCount: C12_29_S5_LOW_DETAIL_FILL.derivedVertexCount,
+    indexCount: C12_29_S5_LOW_DETAIL_FILL.totalIndexCount,
   });
   return {
     state: "evaluated",
@@ -390,6 +411,8 @@ function syntheticFirstReveal(revealTargetSelection, revealSiblingSelection) {
     reservedKeys: [heldTarget.key],
     heldRequestCount: 1,
     reservedPromiseCount: 1,
+    releasedRequestCount: 0,
+    rejectedRequestCount: 0,
     targetHeldPromisePresent: true,
     targetReservedPromisePresent: true,
     providerFlags: providerFlags(true, true),
@@ -408,8 +431,14 @@ function syntheticFirstReveal(revealTargetSelection, revealSiblingSelection) {
       terrainFillMeshInstance: true,
       renderedMeshMatches: true,
       realMeshAbsent: true,
-      vertexCount: 5,
-      indexCount: 12,
+      vertexCountWithoutSkirts:
+        C12_29_S5_LOW_DETAIL_FILL.vertexCountWithoutSkirts,
+      indexCountWithoutSkirts:
+        C12_29_S5_LOW_DETAIL_FILL.indexCountWithoutSkirts,
+      verticesLength: C12_29_S5_LOW_DETAIL_FILL.derivedVertexCount * 6,
+      stride: 6,
+      derivedVertexCount: C12_29_S5_LOW_DETAIL_FILL.derivedVertexCount,
+      indexCount: C12_29_S5_LOW_DETAIL_FILL.totalIndexCount,
     },
     restoration: {
       visibilityRestored: true,
@@ -443,7 +472,9 @@ function syntheticFirstReveal(revealTargetSelection, revealSiblingSelection) {
         "targetShowBeforeEndUpdate",
         "endUpdateExactlyOnce",
         "coherentSameFrameOrderSurfaces",
+        "postEndUpdateLoadTransitionExact",
         "showMarkedFillBeforeEndUpdate",
+        "exactLowDetailFillMeshShape",
         "endUpdateConstructedFill",
         "visibilityRestored",
         "orderInstrumentationRestored",
@@ -1215,13 +1246,13 @@ test("01 full valid fixture closes the pure S5 gate", () => {
     }),
   );
   assert.equal(verdict.exitCode, 0);
-  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v8");
+  assert.equal(C12_29_S5_SCHEMA, "c12-29-s5-terrain-selection-evidence-v9");
   assert.equal(
     C12_29_S5_DIAGNOSTICS_SCHEMA,
-    "c12-29-s5-runtime-diagnostics-v4",
+    "c12-29-s5-runtime-diagnostics-v5",
   );
-  assert.equal(verdict.checks.sourceBoundaryCount, 37);
-  assert.equal(verdict.checks.buildSourceBoundaryCount, 35);
+  assert.equal(verdict.checks.sourceBoundaryCount, 43);
+  assert.equal(verdict.checks.buildSourceBoundaryCount, 41);
 });
 
 test("02 precedence is STRUCTURAL over FAIL over PASS with frozen exits", () => {
@@ -1270,8 +1301,15 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
   const v7Report = greenReport();
   v7Report.schema = V7_SCHEMA;
   assert.equal(foldC1229S5Gate(v7Report).status, "STRUCTURAL");
+  const v8Report = greenReport();
+  v8Report.schema = V8_SCHEMA;
+  assert.equal(foldC1229S5Gate(v8Report).status, "STRUCTURAL");
   assert.equal(
     validateS5FinalArtifactShape({ ...artifact, schema: V7_SCHEMA }).ok,
+    false,
+  );
+  assert.equal(
+    validateS5FinalArtifactShape({ ...artifact, schema: V8_SCHEMA }).ok,
     false,
   );
   const errorArtifact = {
@@ -1300,6 +1338,18 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
     },
   };
   assert.equal(validateS5FinalArtifactShape(errorArtifact).ok, true);
+  const v8ErrorArtifact = structuredClone(errorArtifact);
+  v8ErrorArtifact.schema = V8_SCHEMA;
+  v8ErrorArtifact.diagnostics.schema = "c12-29-s5-runtime-diagnostics-v4";
+  v8ErrorArtifact.diagnostics.page.schema = "c12-29-s5-runtime-diagnostics-v4";
+  v8ErrorArtifact.diagnostics.page.validationWitness.schema =
+    "c12-29-s5-runtime-diagnostics-v4";
+  v8ErrorArtifact.diagnostics.pageValidation.diagnosticSha256 =
+    diagnosticSha256(v8ErrorArtifact.diagnostics.page);
+  assert.equal(validateS5FinalArtifactShape(v8ErrorArtifact).ok, false);
+  const v8Progress = syntheticProgress();
+  v8Progress.schema = "c12-29-s5-runtime-diagnostics-v4";
+  assert.equal(validateS5PageProgress(v8Progress, "webgl").ok, false);
   assert.equal(
     validateS5PageDiagnosticProjection(errorArtifact.diagnostics.page, "webgl"),
     true,
@@ -1325,6 +1375,8 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
     "fillCount",
     "heldRequestCount",
     "reservedPromiseCount",
+    "releasedRequestCount",
+    "rejectedRequestCount",
     "targetHeldPromisePresent",
     "targetReservedPromisePresent",
     "providerFlags",
@@ -1370,11 +1422,9 @@ test("03 UUID, artifact naming, schema, and final shape fail closed", () => {
   startedProgress.firstReveal.targetRequestAttemptsBefore = 0.5;
   assert.equal(validateS5PageProgress(startedProgress).ok, false);
   const contradictoryProgress = syntheticProgress();
-  contradictoryProgress.orderProof.endUpdateCalls[0].targetStateAfter = {
-    ...contradictoryProgress.orderProof.endUpdateCalls[0].targetStateAfter,
-    vertexCount: 6,
-  };
-  contradictoryProgress.firstReveal.predicateResults.coherentSameFrameOrderSurfaces = false;
+  contradictoryProgress.orderProof.endUpdateCalls[0].targetStateAfter.terrainState =
+    C12_29_S5_REVEAL_LIFECYCLE.terrainReceiving;
+  contradictoryProgress.firstReveal.predicateResults.postEndUpdateLoadTransitionExact = false;
   contradictoryProgress.visibilitySeam.terminalReason =
     "first pass-through render did not produce the exact held L1 fill";
   assert.equal(validateS5PageProgress(contradictoryProgress).ok, true);
@@ -2127,7 +2177,7 @@ test("08 controlled visibility produces one exact L1 fill and release", () => {
       (phase.firstRevealProof.fillMesh.terrainFillMeshInstance = false),
     (phase) => (phase.firstRevealProof.fillMesh.renderedMeshMatches = false),
     (phase) => (phase.firstRevealProof.fillMesh.realMeshAbsent = false),
-    (phase) => (phase.firstRevealProof.fillMesh.vertexCount = 0),
+    (phase) => (phase.firstRevealProof.fillMesh.vertexCountWithoutSkirts = 0),
     (phase) => (phase.firstRevealProof.fillMesh.indexCount = 0),
     (phase) =>
       phase.firstRevealProof.targetSelectedStrictDescendantTileIds.push(
@@ -2171,7 +2221,8 @@ test("08 controlled visibility produces one exact L1 fill and release", () => {
         providerFlags(false, true);
     },
     (phase) =>
-      phase.orderProof.endUpdateCalls[0].targetStateAfter.vertexCount++,
+      phase.orderProof.endUpdateCalls[0].targetStateAfter
+        .vertexCountWithoutSkirts++,
     (phase) => {
       phase.orderProof.endUpdateCalls[0].providerFlagsAfter = providerFlags(
         false,
@@ -2196,6 +2247,101 @@ test("08 controlled visibility produces one exact L1 fill and release", () => {
       /pass-through reveal/u,
     );
   }
+  const expectTruthfulRedProgress = (mutator, falsePredicates) => {
+    const progress = syntheticProgress();
+    mutator(progress);
+    for (const predicate of falsePredicates) {
+      progress.firstReveal.predicateResults[predicate] = false;
+    }
+    progress.visibilitySeam.terminalReason =
+      "first pass-through render did not produce the exact held L1 fill";
+    assert.equal(
+      validateS5PageProgress(progress, "webgl").ok,
+      true,
+      falsePredicates.join(","),
+    );
+    const forgedGreen = structuredClone(progress);
+    for (const predicate of falsePredicates) {
+      forgedGreen.firstReveal.predicateResults[predicate] = true;
+    }
+    assert.equal(validateS5PageProgress(forgedGreen, "webgl").ok, false);
+  };
+  for (const mutateLifecycle of [
+    (progress) =>
+      (progress.orderProof.endUpdateCalls[0].targetStateAfter.terrainState =
+        C12_29_S5_REVEAL_LIFECYCLE.terrainReceiving),
+    (progress) =>
+      (progress.firstReveal.targetState.terrainState =
+        C12_29_S5_REVEAL_LIFECYCLE.terrainUnloaded),
+    (progress) => (progress.firstReveal.targetState.terrainState = 3),
+    (progress) =>
+      (progress.firstReveal.targetState.quadtreeState =
+        C12_29_S5_REVEAL_LIFECYCLE.quadtreeStart),
+    (progress) => (progress.firstReveal.targetState.renderable = false),
+    (progress) => (progress.firstReveal.releasedRequestCount = 1),
+    (progress) => (progress.firstReveal.rejectedRequestCount = 1),
+  ]) {
+    expectTruthfulRedProgress(mutateLifecycle, [
+      "postEndUpdateLoadTransitionExact",
+    ]);
+  }
+  expectTruthfulRedProgress(
+    (progress) => {
+      progress.firstReveal.heldKeys = [];
+      progress.firstReveal.heldRequestCount = 0;
+      progress.firstReveal.targetHeldPromisePresent = false;
+    },
+    ["exactHeldTargetSet", "postEndUpdateLoadTransitionExact"],
+  );
+  expectTruthfulRedProgress(
+    (progress) => {
+      progress.firstReveal.reservedKeys = [];
+      progress.firstReveal.reservedPromiseCount = 0;
+      progress.firstReveal.targetReservedPromisePresent = false;
+    },
+    ["exactReservedTargetSet", "postEndUpdateLoadTransitionExact"],
+  );
+  const mutateFillMeasurements = (progress, mutator) => {
+    for (const measurements of [
+      progress.orderProof.endUpdateCalls[0].targetStateAfter,
+      progress.firstReveal.targetState,
+      progress.firstReveal.fillMesh,
+    ]) {
+      mutator(measurements);
+    }
+  };
+  for (const mutateMesh of [
+    (value) => (value.vertexCountWithoutSkirts = 80),
+    (value) => (value.indexCountWithoutSkirts = 383),
+    (value) => (value.indexCount = 575),
+    (value) => {
+      value.derivedVertexCount = 116;
+      value.verticesLength = value.derivedVertexCount * value.stride;
+    },
+  ]) {
+    expectTruthfulRedProgress(
+      (progress) => mutateFillMeasurements(progress, mutateMesh),
+      ["exactLowDetailFillMeshShape", "endUpdateConstructedFill"],
+    );
+  }
+  expectTruthfulRedProgress(
+    (progress) =>
+      mutateFillMeasurements(
+        progress,
+        (value) => (value.vertexCountWithoutSkirts = 0),
+      ),
+    [
+      "positiveVertexCount",
+      "exactLowDetailFillMeshShape",
+      "endUpdateConstructedFill",
+    ],
+  );
+  const inconsistentStride = syntheticProgress();
+  mutateFillMeasurements(
+    inconsistentStride,
+    (value) => (value.stride = value.stride + 1),
+  );
+  assert.equal(validateS5PageProgress(inconsistentStride, "webgl").ok, false);
   for (const mutateSeam of [
     (seam) => (seam.installation.beforeHadOwn = true),
     (seam) => (seam.installation.installedWrapperIdentityMatches = false),
@@ -3353,6 +3499,37 @@ test("20b invalid raw page diagnostics are bounded and never certify", () => {
     createS5PageValidationWitness(witnessIdempotent),
     witnessIdempotent,
   );
+  const nonfiniteProgress = syntheticProgress();
+  nonfiniteProgress.firstReveal.fillMesh.vertexCountWithoutSkirts = Number.NaN;
+  const nonfiniteWitness = createS5PageValidationWitness(nonfiniteProgress);
+  assert.equal(
+    nonfiniteWitness.firstReveal.fillMesh.vertexCountWithoutSkirts,
+    "[non-finite-number]",
+  );
+  const nonfiniteWitnessSecondPass =
+    createS5PageValidationWitness(nonfiniteWitness);
+  assert.deepEqual(nonfiniteWitnessSecondPass, nonfiniteWitness);
+  assert.equal(
+    nonfiniteWitnessSecondPass.firstReveal.fillMesh.vertexCountWithoutSkirts,
+    "[non-finite-number]",
+  );
+  const classifiedNonfinite = classifyS5PageDiagnosticValue(
+    nonfiniteProgress,
+    "webgl",
+  );
+  assert.equal(classifiedNonfinite.pageValidation.status, "fulfilled-invalid");
+  assert.equal(
+    JSON.parse(classifiedNonfinite.rawPage.json).validationWitness.firstReveal
+      .fillMesh.vertexCountWithoutSkirts,
+    "[non-finite-number]",
+  );
+  const unbrandedForgery = structuredClone(nonfiniteWitness);
+  const sanitizedForgery = createS5PageValidationWitness(unbrandedForgery);
+  assert.equal(
+    sanitizedForgery.firstReveal.fillMesh.vertexCountWithoutSkirts,
+    "[unexpected]",
+  );
+  assert.equal(validateS5PageProgress(sanitizedForgery, "webgl").ok, false);
 
   const allowlistedGetterFailure = syntheticProgress();
   Object.defineProperty(allowlistedGetterFailure.terrainRequests, "lastError", {
@@ -3368,11 +3545,9 @@ test("20b invalid raw page diagnostics are bounded and never certify", () => {
   );
 
   const d866Progress = structuredClone(syntheticProgress());
-  d866Progress.orderProof.endUpdateCalls[0].targetStateAfter = {
-    ...d866Progress.orderProof.endUpdateCalls[0].targetStateAfter,
-    vertexCount: 6,
-  };
-  d866Progress.firstReveal.predicateResults.coherentSameFrameOrderSurfaces = false;
+  d866Progress.orderProof.endUpdateCalls[0].targetStateAfter.terrainState =
+    C12_29_S5_REVEAL_LIFECYCLE.terrainReceiving;
+  d866Progress.firstReveal.predicateResults.postEndUpdateLoadTransitionExact = false;
   d866Progress.visibilitySeam.terminalReason =
     "first pass-through render did not produce the exact held L1 fill";
   assert.equal(validateS5PageProgress(d866Progress, "webgl").ok, true);
@@ -3380,11 +3555,11 @@ test("20b invalid raw page diagnostics are bounded and never certify", () => {
   assert.equal(d866Classified.pageValidation.status, "fulfilled-valid");
   assert.equal(
     d866Classified.page.firstReveal.predicateResults
-      .coherentSameFrameOrderSurfaces,
+      .postEndUpdateLoadTransitionExact,
     false,
   );
   assert.deepEqual(d866Classified.page.validationBasis.falsePredicateFields, [
-    "coherentSameFrameOrderSurfaces",
+    "postEndUpdateLoadTransitionExact",
   ]);
   const d866Artifact = diagnosticErrorArtifact(
     d866Classified,
@@ -3393,7 +3568,7 @@ test("20b invalid raw page diagnostics are bounded and never certify", () => {
   assert.equal(validateS5FinalArtifactShape(d866Artifact).ok, true);
   for (const mutateD866 of [
     (page) =>
-      (page.firstReveal.predicateResults.coherentSameFrameOrderSurfaces = true),
+      (page.firstReveal.predicateResults.postEndUpdateLoadTransitionExact = true),
     (page) => (page.validationBasis.falsePredicateFields = []),
     (page) => (page.visibilitySeam.terminalReason = null),
   ]) {
@@ -4143,12 +4318,34 @@ test("21 prior RUNNING and extant lock both reject before browser work", () => {
         error: "archived v7 diagnostic outcome",
       }),
     );
-    const v8StartOverV7 = beginS5EvidenceRun(v7Paths, IMAGE_IDS[6]);
-    assert.equal(v8StartOverV7.prior.latest.schema, V7_SCHEMA);
-    assert.equal(v8StartOverV7.prior.latest.status, "ERROR");
-    assert.equal(v8StartOverV7.running.schema, C12_29_S5_SCHEMA);
-    assert.equal(v8StartOverV7.running.status, "RUNNING");
+    const v9StartOverV7 = beginS5EvidenceRun(v7Paths, IMAGE_IDS[6]);
+    assert.equal(v9StartOverV7.prior.latest.schema, V7_SCHEMA);
+    assert.equal(v9StartOverV7.prior.latest.status, "ERROR");
+    assert.equal(v9StartOverV7.running.schema, C12_29_S5_SCHEMA);
+    assert.equal(v9StartOverV7.running.status, "RUNNING");
     assert.equal(v7StartOverV6.running.incomplete, true);
+
+    const v8Directory = path.join(temp, "finalized-v8-latest");
+    fs.mkdirSync(v8Directory);
+    const v8Paths = createS5ArtifactPaths(IMAGE_IDS[7], v8Directory);
+    fs.writeFileSync(
+      v8Paths.latest,
+      JSON.stringify({
+        schema: V8_SCHEMA,
+        runId: RUN_ID,
+        status: "ERROR",
+        exitCode: 2,
+        incomplete: false,
+        artifactName: `${RUN_ID}.json`,
+        error: "archived v8 diagnostic outcome",
+      }),
+    );
+    const v9StartOverV8 = beginS5EvidenceRun(v8Paths, IMAGE_IDS[7]);
+    assert.equal(v9StartOverV8.prior.latest.schema, V8_SCHEMA);
+    assert.equal(v9StartOverV8.prior.latest.status, "ERROR");
+    assert.equal(v9StartOverV8.running.schema, C12_29_S5_SCHEMA);
+    assert.equal(v9StartOverV8.running.status, "RUNNING");
+    assert.equal(v9StartOverV8.running.incomplete, true);
 
     const orderedDirectory = path.join(temp, "ordered-acquire");
     const orderedPaths = createS5ArtifactPaths(IMAGE_IDS[2], orderedDirectory);
@@ -5467,9 +5664,9 @@ test("23 canonical same-task capture block is exact and has no unfused reader", 
 
 test("24 static seams, ordering, exact imports, and forbidden operations are pinned", () => {
   assert.equal((specSource.match(/^test\(/gmu) ?? []).length, 25);
-  assert.equal(C12_29_S5_SOURCE_FILES.length, 37);
-  assert.equal(new Set(C12_29_S5_SOURCE_FILES).size, 37);
-  assert.equal(C12_29_S5_BUILD_SOURCE_FILES.length, 35);
+  assert.equal(C12_29_S5_SOURCE_FILES.length, 43);
+  assert.equal(new Set(C12_29_S5_SOURCE_FILES).size, 43);
+  assert.equal(C12_29_S5_BUILD_SOURCE_FILES.length, 41);
   assert.equal(
     C12_29_S5_SOURCE_FILES.includes(
       "packages/engine/Source/Core/Visibility.js",

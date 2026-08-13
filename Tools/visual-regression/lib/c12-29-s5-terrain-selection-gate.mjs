@@ -9,9 +9,9 @@
 
 import { createHash } from "node:crypto";
 
-export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v8";
+export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v9";
 
-export const C12_29_S5_DIAGNOSTICS_SCHEMA = "c12-29-s5-runtime-diagnostics-v4";
+export const C12_29_S5_DIAGNOSTICS_SCHEMA = "c12-29-s5-runtime-diagnostics-v5";
 
 export const C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH = 65_536;
 export const C12_29_S5_PAGE_VALIDATION_MAX_REASONS = 16;
@@ -138,6 +138,22 @@ export const C12_29_S5_SCENE = Object.freeze({
   verticalExaggerationRelativeHeight: 7000,
 });
 
+export const C12_29_S5_LOW_DETAIL_FILL = Object.freeze({
+  width: 9,
+  height: 9,
+  vertexCountWithoutSkirts: 81,
+  indexCountWithoutSkirts: 384,
+  derivedVertexCount: 117,
+  totalIndexCount: 576,
+});
+
+export const C12_29_S5_REVEAL_LIFECYCLE = Object.freeze({
+  quadtreeStart: 0,
+  quadtreeLoading: 1,
+  terrainUnloaded: 1,
+  terrainReceiving: 2,
+});
+
 export const C12_29_S5_RADIUS_LAW = Object.freeze({
   fillSkirtAllowanceMeters: 1000,
   absoluteSafetyMeters: 2,
@@ -154,6 +170,10 @@ export const C12_29_S5_WEBGPU_LAYOUT_FILE =
  * list below, because esbuild's map names the generated modules.
  */
 export const C12_29_S5_SOURCE_FILES = Object.freeze([
+  "packages/engine/Source/Core/HeightmapTerrainData.js",
+  "packages/engine/Source/Core/HeightmapTessellator.js",
+  "packages/engine/Source/Core/TerrainMesh.js",
+  "packages/engine/Source/Core/TerrainProvider.js",
   "packages/engine/Source/Core/VerticalExaggeration.js",
   "packages/engine/Source/Core/Visibility.js",
   "packages/engine/Source/Core/CesiumTerrainProvider.js",
@@ -172,6 +192,8 @@ export const C12_29_S5_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Scene/GlobeSurfaceShaderSet.js",
   "packages/engine/Source/Scene/TerrainFillMesh.js",
   "packages/engine/Source/Scene/QuadtreePrimitive.js",
+  "packages/engine/Source/Scene/QuadtreeTileLoadState.js",
+  "packages/engine/Source/Scene/TerrainState.js",
   "packages/engine/Source/Scene/TileSelectionResult.js",
   "packages/engine/Source/Scene/Picking.js",
   "packages/engine/Source/Scene/PickFramebuffer.js",
@@ -257,7 +279,9 @@ const FIRST_REVEAL_PREDICATE_KEYS = Object.freeze([
   "targetShowBeforeEndUpdate",
   "endUpdateExactlyOnce",
   "coherentSameFrameOrderSurfaces",
+  "postEndUpdateLoadTransitionExact",
   "showMarkedFillBeforeEndUpdate",
+  "exactLowDetailFillMeshShape",
   "endUpdateConstructedFill",
   "visibilityRestored",
   "orderInstrumentationRestored",
@@ -330,7 +354,24 @@ const TILE_MESH_STATE_KEYS = Object.freeze([
   "renderedMeshMatchesReal",
   "renderedMeshMatchesFill",
   "terrainFillMeshInstance",
-  "vertexCount",
+  "vertexCountWithoutSkirts",
+  "indexCountWithoutSkirts",
+  "verticesLength",
+  "stride",
+  "derivedVertexCount",
+  "indexCount",
+]);
+
+const TILE_MESH_STATE_KEYS_EXCEPT_TERRAIN_STATE = Object.freeze(
+  TILE_MESH_STATE_KEYS.filter((key) => key !== "terrainState"),
+);
+
+const MESH_MEASUREMENT_KEYS = Object.freeze([
+  "vertexCountWithoutSkirts",
+  "indexCountWithoutSkirts",
+  "verticesLength",
+  "stride",
+  "derivedVertexCount",
   "indexCount",
 ]);
 
@@ -380,6 +421,8 @@ const FIRST_REVEAL_KEYS = Object.freeze([
   "reservedKeys",
   "heldRequestCount",
   "reservedPromiseCount",
+  "releasedRequestCount",
+  "rejectedRequestCount",
   "targetHeldPromisePresent",
   "targetReservedPromisePresent",
   "providerFlags",
@@ -588,7 +631,11 @@ const S5_VALIDATION_WITNESS_OBJECT_FIELDS = new Map(
         "terrainFillMeshInstance",
         "renderedMeshMatches",
         "realMeshAbsent",
-        "vertexCount",
+        "vertexCountWithoutSkirts",
+        "indexCountWithoutSkirts",
+        "verticesLength",
+        "stride",
+        "derivedVertexCount",
         "indexCount",
       ],
     ],
@@ -870,7 +917,11 @@ const S5_VALIDATION_WITNESS_BOOLEAN_PATHS = new Set([
       !new Set([
         "quadtreeState",
         "terrainState",
-        "vertexCount",
+        "vertexCountWithoutSkirts",
+        "indexCountWithoutSkirts",
+        "verticesLength",
+        "stride",
+        "derivedVertexCount",
         "indexCount",
       ]).has(field),
   ).map((field) => `firstReveal.targetState.${field}`),
@@ -918,7 +969,11 @@ const S5_VALIDATION_WITNESS_BOOLEAN_PATHS = new Set([
         !new Set([
           "quadtreeState",
           "terrainState",
-          "vertexCount",
+          "vertexCountWithoutSkirts",
+          "indexCountWithoutSkirts",
+          "verticesLength",
+          "stride",
+          "derivedVertexCount",
           "indexCount",
         ]).has(field),
     ).map((field) => `orderProof.showTileThisFrameCalls[].${state}.${field}`),
@@ -934,7 +989,11 @@ const S5_VALIDATION_WITNESS_BOOLEAN_PATHS = new Set([
         !new Set([
           "quadtreeState",
           "terrainState",
-          "vertexCount",
+          "vertexCountWithoutSkirts",
+          "indexCountWithoutSkirts",
+          "verticesLength",
+          "stride",
+          "derivedVertexCount",
           "indexCount",
         ]).has(field),
     ).map((field) => `orderProof.endUpdateCalls[].${state}.${field}`),
@@ -1003,30 +1062,53 @@ const S5_VALIDATION_WITNESS_NUMBER_PATHS = new Set([
   "firstReveal.selectedRealSiblingObservations[].originalResult",
   "firstReveal.heldRequestCount",
   "firstReveal.reservedPromiseCount",
+  "firstReveal.releasedRequestCount",
+  "firstReveal.rejectedRequestCount",
   "firstReveal.targetState.quadtreeState",
   "firstReveal.targetState.terrainState",
-  "firstReveal.targetState.vertexCount",
-  "firstReveal.targetState.indexCount",
-  "firstReveal.fillMesh.vertexCount",
-  "firstReveal.fillMesh.indexCount",
+  ...[
+    "vertexCountWithoutSkirts",
+    "indexCountWithoutSkirts",
+    "verticesLength",
+    "stride",
+    "derivedVertexCount",
+    "indexCount",
+  ].flatMap((field) => [
+    `firstReveal.targetState.${field}`,
+    `firstReveal.fillMesh.${field}`,
+  ]),
   "orderProof.eventCount",
   "orderProof.showTileThisFrameCalls[].ordinal",
   "orderProof.showTileThisFrameCalls[].enterEventOrdinal",
   "orderProof.showTileThisFrameCalls[].exitEventOrdinal",
   "orderProof.showTileThisFrameCalls[].frameNumber",
   ...["tileStateBefore", "tileStateAfter"].flatMap((state) =>
-    ["quadtreeState", "terrainState", "vertexCount", "indexCount"].map(
-      (field) => `orderProof.showTileThisFrameCalls[].${state}.${field}`,
-    ),
+    [
+      "quadtreeState",
+      "terrainState",
+      "vertexCountWithoutSkirts",
+      "indexCountWithoutSkirts",
+      "verticesLength",
+      "stride",
+      "derivedVertexCount",
+      "indexCount",
+    ].map((field) => `orderProof.showTileThisFrameCalls[].${state}.${field}`),
   ),
   "orderProof.endUpdateCalls[].ordinal",
   "orderProof.endUpdateCalls[].enterEventOrdinal",
   "orderProof.endUpdateCalls[].exitEventOrdinal",
   "orderProof.endUpdateCalls[].frameNumber",
   ...["targetStateBefore", "targetStateAfter"].flatMap((state) =>
-    ["quadtreeState", "terrainState", "vertexCount", "indexCount"].map(
-      (field) => `orderProof.endUpdateCalls[].${state}.${field}`,
-    ),
+    [
+      "quadtreeState",
+      "terrainState",
+      "vertexCountWithoutSkirts",
+      "indexCountWithoutSkirts",
+      "verticesLength",
+      "stride",
+      "derivedVertexCount",
+      "indexCount",
+    ].map((field) => `orderProof.endUpdateCalls[].${state}.${field}`),
   ),
   "visibilitySeam.config.maximumScreenSpaceError",
   "visibilitySeam.config.cameraHeightMeters",
@@ -1821,6 +1903,9 @@ function validS5ValidationWitnessTree(value, depth = 0, path = "") {
   }
   if (typeof value === "string") {
     if (value.length > C12_29_S5_RAW_PAGE_MAX_STRING_LENGTH) return false;
+    if (value === "[non-finite-number]") {
+      return S5_VALIDATION_WITNESS_NUMBER_PATHS.has(path);
+    }
     if (S5_VALIDATION_WITNESS_SENTINEL_STRINGS.has(value)) {
       return true;
     }
@@ -1897,7 +1982,6 @@ function categoricalS5WitnessLastError(value) {
 
 function categoricalS5WitnessString(value, path) {
   if (value === "") return "";
-  if (S5_VALIDATION_WITNESS_SENTINEL_STRINGS.has(value)) return value;
   if (path === "step") {
     return S5_VALIDATION_WITNESS_PATH_STRINGS.get(path).has(value)
       ? value
@@ -1923,12 +2007,34 @@ function categoricalS5WitnessString(value, path) {
   return "[redacted-string]";
 }
 
+function brandS5ValidationWitness(value) {
+  if (value !== null && typeof value === "object") {
+    Object.defineProperty(value, S5_VALIDATION_WITNESS_BRAND, {
+      value: true,
+    });
+  }
+  return value;
+}
+
 /**
  * Build the canonical, bounded, secret-free primary-fact witness on which both
  * classification and final-artifact validation run. It deliberately does not
  * emit validation booleans or reasons.
  */
 export function createS5PageValidationWitness(source) {
+  if (source?.[S5_VALIDATION_WITNESS_BRAND] === true) {
+    try {
+      if (!validS5ValidationWitnessTree(source)) return null;
+      const canonical = JSON.parse(
+        JSON.stringify(canonicalS5ValidationWitness(source)),
+      );
+      return validS5ValidationWitnessTree(canonical)
+        ? brandS5ValidationWitness(canonical)
+        : null;
+    } catch {
+      return null;
+    }
+  }
   const active = new WeakSet();
   let remainingNodes = 4_096;
   const visit = (value, path, depth) => {
@@ -2014,12 +2120,7 @@ export function createS5PageValidationWitness(source) {
       JSON.stringify(canonicalS5ValidationWitness(witness)),
     );
     if (!validS5ValidationWitnessTree(canonical)) return null;
-    if (canonical !== null && typeof canonical === "object") {
-      Object.defineProperty(canonical, S5_VALIDATION_WITNESS_BRAND, {
-        value: true,
-      });
-    }
-    return canonical;
+    return brandS5ValidationWitness(canonical);
   } catch {
     return null;
   }
@@ -2378,6 +2479,16 @@ function exactObjectValues(left, right, keys) {
   );
 }
 
+function exactTileMeshStateExceptTerrainState(left, right) {
+  return (
+    exactObjectKeys(left, TILE_MESH_STATE_KEYS) &&
+    exactObjectKeys(right, TILE_MESH_STATE_KEYS) &&
+    TILE_MESH_STATE_KEYS_EXCEPT_TERRAIN_STATE.every((key) =>
+      Object.is(left[key], right[key]),
+    )
+  );
+}
+
 function validRequestLedger(value) {
   if (value === null) return true;
   return (
@@ -2531,6 +2642,17 @@ function validVisibilitySeamProgress(value, allowArraySummaries = false) {
   );
 }
 
+function validMeshMeasurements(value) {
+  return (
+    MESH_MEASUREMENT_KEYS.every((key) => nonNegativeInteger(value?.[key])) &&
+    (value.stride === 0
+      ? value.verticesLength === 0 && value.derivedVertexCount === 0
+      : value.verticesLength === value.derivedVertexCount * value.stride) &&
+    value.vertexCountWithoutSkirts <= value.derivedVertexCount &&
+    value.indexCountWithoutSkirts <= value.indexCount
+  );
+}
+
 function validTileMeshState(value) {
   if (!exactObjectKeys(value, TILE_MESH_STATE_KEYS)) return false;
   const booleanKeys = [
@@ -2551,8 +2673,7 @@ function validTileMeshState(value) {
     booleanKeys.every((key) => typeof value[key] === "boolean") &&
     (value.quadtreeState === null || Number.isInteger(value.quadtreeState)) &&
     (value.terrainState === null || Number.isInteger(value.terrainState)) &&
-    nonNegativeInteger(value.vertexCount) &&
-    nonNegativeInteger(value.indexCount) &&
+    validMeshMeasurements(value) &&
     (!value.terrainDataDefined || value.dataDefined) &&
     (!value.realMeshDefined || value.dataDefined) &&
     (!value.fillDefined || value.dataDefined) &&
@@ -2564,7 +2685,23 @@ function validTileMeshState(value) {
       (value.renderedMeshDefined && value.fillMeshDefined)) &&
     (!value.terrainFillMeshInstance || value.fillDefined) &&
     (value.fillMeshDefined ||
-      (value.vertexCount === 0 && value.indexCount === 0))
+      MESH_MEASUREMENT_KEYS.every((key) => value[key] === 0))
+  );
+}
+
+function exactLowDetailFillMeshMeasurements(value) {
+  return (
+    value?.vertexCountWithoutSkirts ===
+      C12_29_S5_LOW_DETAIL_FILL.vertexCountWithoutSkirts &&
+    value?.indexCountWithoutSkirts ===
+      C12_29_S5_LOW_DETAIL_FILL.indexCountWithoutSkirts &&
+    value?.derivedVertexCount ===
+      C12_29_S5_LOW_DETAIL_FILL.derivedVertexCount &&
+    value?.indexCount === C12_29_S5_LOW_DETAIL_FILL.totalIndexCount &&
+    Number.isInteger(value?.stride) &&
+    value.stride > 0 &&
+    Number.isInteger(value?.verticesLength) &&
+    value.verticesLength === value.derivedVertexCount * value.stride
   );
 }
 
@@ -2921,8 +3058,12 @@ function computeFirstRevealPredicateResults(
     renderedMeshMatchesFill:
       firstReveal?.fillMesh?.renderedMeshMatches === true,
     realMeshAbsent: firstReveal?.fillMesh?.realMeshAbsent === true,
-    positiveVertexCount: firstReveal?.fillMesh?.vertexCount > 0,
-    positiveIndexCount: firstReveal?.fillMesh?.indexCount > 0,
+    positiveVertexCount:
+      Number.isInteger(firstReveal?.fillMesh?.vertexCountWithoutSkirts) &&
+      firstReveal.fillMesh.vertexCountWithoutSkirts > 0,
+    positiveIndexCount:
+      Number.isInteger(firstReveal?.fillMesh?.indexCount) &&
+      firstReveal.fillMesh.indexCount > 0,
     noSelectedStrictDescendants: summarizedPredicate(
       "noSelectedStrictDescendants",
       () => firstReveal?.targetSelectedStrictDescendantTileIds?.length === 0,
@@ -2963,6 +3104,10 @@ function computeFirstRevealPredicateResults(
       () =>
         targetShowCalls?.length === 1 &&
         revealEndCalls?.length === 1 &&
+        targetShow.tileStateBefore.quadtreeState ===
+          C12_29_S5_REVEAL_LIFECYCLE.quadtreeStart &&
+        targetShow.tileStateBefore.terrainState ===
+          C12_29_S5_REVEAL_LIFECYCLE.terrainUnloaded &&
         exactObjectValues(
           targetShow.tileStateBefore,
           targetShow.tileStateAfter,
@@ -2979,17 +3124,40 @@ function computeFirstRevealPredicateResults(
           PROVIDER_FRAME_FLAG_KEYS,
         ) &&
         exactObjectValues(
-          revealEnd.targetStateAfter,
-          firstReveal?.targetState,
-          TILE_MESH_STATE_KEYS,
-        ) &&
-        exactObjectValues(
           revealEnd.providerFlagsAfter,
           firstReveal?.providerFlags,
           PROVIDER_FRAME_FLAG_KEYS,
         ) &&
         revealEnd.providerFlagsAfter.loadedAndFillFlags ===
           firstReveal?.loadedAndFillFlags,
+    ),
+    postEndUpdateLoadTransitionExact: summarizedPredicate(
+      "postEndUpdateLoadTransitionExact",
+      () =>
+        revealEndCalls?.length === 1 &&
+        revealEnd.targetStateAfter.quadtreeState ===
+          C12_29_S5_REVEAL_LIFECYCLE.quadtreeLoading &&
+        revealEnd.targetStateAfter.terrainState ===
+          C12_29_S5_REVEAL_LIFECYCLE.terrainUnloaded &&
+        firstReveal?.targetState?.quadtreeState ===
+          C12_29_S5_REVEAL_LIFECYCLE.quadtreeLoading &&
+        firstReveal?.targetState?.terrainState ===
+          C12_29_S5_REVEAL_LIFECYCLE.terrainReceiving &&
+        exactTileMeshStateExceptTerrainState(
+          revealEnd.targetStateAfter,
+          firstReveal.targetState,
+        ) &&
+        firstReveal?.postArmTargetRequestAttempts === 1 &&
+        firstReveal?.heldRequestCount === 1 &&
+        firstReveal?.reservedPromiseCount === 1 &&
+        firstReveal?.releasedRequestCount === 0 &&
+        firstReveal?.rejectedRequestCount === 0 &&
+        firstReveal?.heldKeys?.length === 1 &&
+        firstReveal.heldKeys[0] === targetKey &&
+        firstReveal?.reservedKeys?.length === 1 &&
+        firstReveal.reservedKeys[0] === targetKey &&
+        firstReveal?.targetHeldPromisePresent === true &&
+        firstReveal?.targetReservedPromisePresent === true,
     ),
     showMarkedFillBeforeEndUpdate: summarizedPredicate(
       "showMarkedFillBeforeEndUpdate",
@@ -3000,6 +3168,9 @@ function computeFirstRevealPredicateResults(
         revealEnd.providerFlagsBefore.hasLoadedTilesThisFrame === true &&
         revealEnd.providerFlagsBefore.hasFillTilesThisFrame === true,
     ),
+    exactLowDetailFillMeshShape:
+      exactLowDetailFillMeshMeasurements(firstReveal?.fillMesh) &&
+      exactLowDetailFillMeshMeasurements(firstReveal?.targetState),
     endUpdateConstructedFill: summarizedPredicate(
       "endUpdateConstructedFill",
       () =>
@@ -3009,8 +3180,7 @@ function computeFirstRevealPredicateResults(
         revealEnd.targetStateAfter.fillMeshDefined === true &&
         revealEnd.targetStateAfter.renderedMeshMatchesFill === true &&
         revealEnd.targetStateAfter.realMeshDefined === false &&
-        revealEnd.targetStateAfter.vertexCount > 0 &&
-        revealEnd.targetStateAfter.indexCount > 0,
+        exactLowDetailFillMeshMeasurements(revealEnd.targetStateAfter),
     ),
     visibilityRestored: firstReveal?.restoration?.visibilityRestored === true,
     orderInstrumentationRestored:
@@ -3144,6 +3314,8 @@ function validFirstRevealProgress(
       "fillCount",
       "heldRequestCount",
       "reservedPromiseCount",
+      "releasedRequestCount",
+      "rejectedRequestCount",
       "targetHeldPromisePresent",
       "targetReservedPromisePresent",
       "providerFlags",
@@ -3247,6 +3419,8 @@ function validFirstRevealProgress(
       value.fillCount,
       value.heldRequestCount,
       value.reservedPromiseCount,
+      value.releasedRequestCount,
+      value.rejectedRequestCount,
     ].every(nonNegativeInteger) ||
     value.postArmTargetRequestAttempts !==
       value.targetRequestAttemptsAfter - value.targetRequestAttemptsBefore ||
@@ -3337,8 +3511,7 @@ function validFirstRevealProgress(
       "terrainFillMeshInstance",
       "renderedMeshMatches",
       "realMeshAbsent",
-      "vertexCount",
-      "indexCount",
+      ...MESH_MEASUREMENT_KEYS,
     ]) ||
     fillMesh.tileId !== value.targetKey ||
     ![
@@ -3350,8 +3523,7 @@ function validFirstRevealProgress(
       fillMesh.renderedMeshMatches,
       fillMesh.realMeshAbsent,
     ].every((entry) => typeof entry === "boolean") ||
-    !nonNegativeInteger(fillMesh.vertexCount) ||
-    !nonNegativeInteger(fillMesh.indexCount) ||
+    !validMeshMeasurements(fillMesh) ||
     fillMesh.fillDefined !== value.targetState.fillDefined ||
     fillMesh.fillMeshDefined !== value.targetState.fillMeshDefined ||
     fillMesh.renderedMeshDefined !== value.targetState.renderedMeshDefined ||
@@ -3361,8 +3533,9 @@ function validFirstRevealProgress(
     fillMesh.renderedMeshMatches !==
       value.targetState.renderedMeshMatchesFill ||
     fillMesh.realMeshAbsent !== !value.targetState.realMeshDefined ||
-    fillMesh.vertexCount !== value.targetState.vertexCount ||
-    fillMesh.indexCount !== value.targetState.indexCount ||
+    !MESH_MEASUREMENT_KEYS.every((key) =>
+      Object.is(fillMesh[key], value.targetState[key]),
+    ) ||
     !exactObjectKeys(value.restoration, [
       "visibilityRestored",
       "orderInstrumentationRestored",
@@ -4882,6 +5055,8 @@ function validateSession(session, runId, structural, failures) {
     firstReveal?.targetRequestAttemptsAfter !== 1 ||
     firstReveal?.postArmTargetRequestAttempts !== 1 ||
     firstReveal?.reservedPromiseCount !== 1 ||
+    firstReveal?.releasedRequestCount !== 0 ||
+    firstReveal?.rejectedRequestCount !== 0 ||
     !exactS5ArrayValues(firstReveal?.reservedKeys, [expectedHeldTarget?.key]) ||
     firstReveal?.targetHeldPromisePresent !== true ||
     firstReveal?.targetReservedPromisePresent !== true ||
@@ -4918,8 +5093,7 @@ function validateSession(session, runId, structural, failures) {
     firstReveal?.fillMesh?.terrainFillMeshInstance !== true ||
     firstReveal?.fillMesh?.renderedMeshMatches !== true ||
     firstReveal?.fillMesh?.realMeshAbsent !== true ||
-    !(firstReveal?.fillMesh?.vertexCount > 0) ||
-    !(firstReveal?.fillMesh?.indexCount > 0) ||
+    !exactLowDetailFillMeshMeasurements(firstReveal?.fillMesh) ||
     firstReveal?.restoration?.visibilityRestored !== true ||
     firstReveal?.restoration?.orderInstrumentationRestored !== true ||
     c?.holdInterceptionEnabled !== true ||

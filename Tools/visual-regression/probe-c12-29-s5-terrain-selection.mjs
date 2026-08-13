@@ -31,6 +31,7 @@ import {
   C12_29_S5_CAPTURE_METHOD,
   C12_29_S5_DIAGNOSTICS_SCHEMA,
   C12_29_S5_FIXTURE,
+  C12_29_S5_LOW_DETAIL_FILL,
   C12_29_S5_PHASES,
   C12_29_S5_PICK_FRAME_DRIVER,
   C12_29_S5_PICK_MAX_PUMP_FRAMES,
@@ -39,6 +40,7 @@ import {
   C12_29_S5_PAGE_VALIDATION_FAILURE_FIELDS,
   C12_29_S5_PAGE_VALIDATION_REASONS,
   C12_29_S5_RADIUS_LAW,
+  C12_29_S5_REVEAL_LIFECYCLE,
   C12_29_S5_RAW_PAGE_FIRST_REVEAL_FIELDS,
   C12_29_S5_RAW_PAGE_MAX_JSON_LENGTH,
   C12_29_S5_RAW_PAGE_MAX_ARRAY_LENGTH,
@@ -3503,6 +3505,46 @@ const MEASURE_S5_SESSION = async (contract) => {
     visibilityDiagnostic.state =
       attemptedAt === "finally-after-error" ? "error-restored" : "restored";
   };
+  const meshMeasurements = (mesh) => {
+    const verticesLength = mesh?.vertices?.length ?? 0;
+    const stride = mesh?.stride ?? 0;
+    return {
+      vertexCountWithoutSkirts: mesh?.vertexCountWithoutSkirts ?? 0,
+      indexCountWithoutSkirts: mesh?.indexCountWithoutSkirts ?? 0,
+      verticesLength,
+      stride,
+      derivedVertexCount: stride > 0 ? verticesLength / stride : 0,
+      indexCount: mesh?.indices?.length ?? 0,
+    };
+  };
+  const exactRecord = (left, right, excludedKeys = []) => {
+    if (!left || !right) return false;
+    const excluded = new Set(excludedKeys);
+    const leftKeys = Object.keys(left)
+      .filter((key) => !excluded.has(key))
+      .sort();
+    const rightKeys = Object.keys(right)
+      .filter((key) => !excluded.has(key))
+      .sort();
+    return (
+      leftKeys.length === rightKeys.length &&
+      leftKeys.every(
+        (key, index) =>
+          key === rightKeys[index] && Object.is(left[key], right[key]),
+      )
+    );
+  };
+  const exactLowDetailFillMeshMeasurements = (value) =>
+    value?.vertexCountWithoutSkirts ===
+      contract.lowDetailFill.vertexCountWithoutSkirts &&
+    value?.indexCountWithoutSkirts ===
+      contract.lowDetailFill.indexCountWithoutSkirts &&
+    value?.derivedVertexCount === contract.lowDetailFill.derivedVertexCount &&
+    value?.indexCount === contract.lowDetailFill.totalIndexCount &&
+    Number.isInteger(value?.stride) &&
+    value.stride > 0 &&
+    Number.isInteger(value?.verticesLength) &&
+    value.verticesLength === value.derivedVertexCount * value.stride;
   const tileMeshState = (tile) => {
     const data = tile?.data;
     const fill = data?.fill;
@@ -3526,12 +3568,7 @@ const MEASURE_S5_SESSION = async (contract) => {
       renderedMeshMatchesFill:
         Boolean(fillMesh) && data?.renderedMesh === fillMesh,
       terrainFillMeshInstance: fill instanceof C.TerrainFillMesh,
-      vertexCount:
-        fillMesh?.vertexCountWithoutSkirts ??
-        (fillMesh?.vertices?.length && fillMesh?.stride
-          ? Math.floor(fillMesh.vertices.length / fillMesh.stride)
-          : 0),
-      indexCount: fillMesh?.indices?.length ?? 0,
+      ...meshMeasurements(fillMesh),
     };
   };
   const providerFrameFlags = (provider) => ({
@@ -4094,6 +4131,8 @@ const MEASURE_S5_SESSION = async (contract) => {
       reservedKeys: [],
       heldRequestCount: null,
       reservedPromiseCount: null,
+      releasedRequestCount: null,
+      rejectedRequestCount: null,
       targetHeldPromisePresent: null,
       targetReservedPromisePresent: null,
       providerFlags: null,
@@ -4159,12 +4198,7 @@ const MEASURE_S5_SESSION = async (contract) => {
         Boolean(revealFillMesh) &&
         revealTileData?.renderedMesh === revealFillMesh,
       realMeshAbsent: !revealTileData?.mesh,
-      vertexCount:
-        revealFillMesh?.vertexCountWithoutSkirts ??
-        (revealFillMesh?.vertices?.length && revealFillMesh?.stride
-          ? Math.floor(revealFillMesh.vertices.length / revealFillMesh.stride)
-          : 0),
-      indexCount: revealFillMesh?.indices?.length ?? 0,
+      ...meshMeasurements(revealFillMesh),
     };
     Object.assign(firstRevealProof, {
       state: "captured",
@@ -4205,6 +4239,8 @@ const MEASURE_S5_SESSION = async (contract) => {
       reservedKeys,
       heldRequestCount: held.size,
       reservedPromiseCount: reservedPromises.size,
+      releasedRequestCount: terrainRequests.released,
+      rejectedRequestCount: terrainRequests.rejected,
       targetHeldPromisePresent: held.has(holdTarget.key),
       targetReservedPromisePresent: reservedPromises.has(holdTarget.key),
       providerFlags: revealProviderFlags,
@@ -4290,8 +4326,12 @@ const MEASURE_S5_SESSION = async (contract) => {
       terrainFillMeshInstance: fillMeshProof.terrainFillMeshInstance,
       renderedMeshMatchesFill: fillMeshProof.renderedMeshMatches,
       realMeshAbsent: fillMeshProof.realMeshAbsent,
-      positiveVertexCount: fillMeshProof.vertexCount > 0,
-      positiveIndexCount: fillMeshProof.indexCount > 0,
+      positiveVertexCount:
+        Number.isInteger(fillMeshProof.vertexCountWithoutSkirts) &&
+        fillMeshProof.vertexCountWithoutSkirts > 0,
+      positiveIndexCount:
+        Number.isInteger(fillMeshProof.indexCount) &&
+        fillMeshProof.indexCount > 0,
       noSelectedStrictDescendants:
         targetSelectedStrictDescendantTileIds.length === 0,
       noRealStrictDescendants: targetRealStrictDescendantTileIds.length === 0,
@@ -4318,24 +4358,63 @@ const MEASURE_S5_SESSION = async (contract) => {
       coherentSameFrameOrderSurfaces:
         revealTargetShowCalls.length === 1 &&
         revealEndUpdateCalls.length === 1 &&
-        JSON.stringify(revealTargetShow.tileStateBefore) ===
-          JSON.stringify(revealTargetShow.tileStateAfter) &&
-        JSON.stringify(revealTargetShow.tileStateAfter) ===
-          JSON.stringify(revealEndUpdate.targetStateBefore) &&
-        JSON.stringify(revealTargetShow.providerFlagsAfter) ===
-          JSON.stringify(revealEndUpdate.providerFlagsBefore) &&
-        JSON.stringify(revealEndUpdate.targetStateAfter) ===
-          JSON.stringify(firstRevealProof.targetState) &&
-        JSON.stringify(revealEndUpdate.providerFlagsAfter) ===
-          JSON.stringify(firstRevealProof.providerFlags) &&
+        revealTargetShow.tileStateBefore.quadtreeState ===
+          contract.revealLifecycle.quadtreeStart &&
+        revealTargetShow.tileStateBefore.terrainState ===
+          contract.revealLifecycle.terrainUnloaded &&
+        exactRecord(
+          revealTargetShow.tileStateBefore,
+          revealTargetShow.tileStateAfter,
+        ) &&
+        exactRecord(
+          revealTargetShow.tileStateAfter,
+          revealEndUpdate.targetStateBefore,
+        ) &&
+        exactRecord(
+          revealTargetShow.providerFlagsAfter,
+          revealEndUpdate.providerFlagsBefore,
+        ) &&
+        exactRecord(
+          revealEndUpdate.providerFlagsAfter,
+          firstRevealProof.providerFlags,
+        ) &&
         revealEndUpdate.providerFlagsAfter.loadedAndFillFlags ===
           firstRevealProof.loadedAndFillFlags,
+      postEndUpdateLoadTransitionExact:
+        revealEndUpdateCalls.length === 1 &&
+        revealEndUpdate.targetStateAfter.quadtreeState ===
+          contract.revealLifecycle.quadtreeLoading &&
+        revealEndUpdate.targetStateAfter.terrainState ===
+          contract.revealLifecycle.terrainUnloaded &&
+        firstRevealProof.targetState.quadtreeState ===
+          contract.revealLifecycle.quadtreeLoading &&
+        firstRevealProof.targetState.terrainState ===
+          contract.revealLifecycle.terrainReceiving &&
+        exactRecord(
+          revealEndUpdate.targetStateAfter,
+          firstRevealProof.targetState,
+          ["terrainState"],
+        ) &&
+        firstRevealProof.postArmTargetRequestAttempts === 1 &&
+        held.size === 1 &&
+        reservedPromises.size === 1 &&
+        terrainRequests.released === 0 &&
+        terrainRequests.rejected === 0 &&
+        heldKeys.length === 1 &&
+        heldKeys[0] === holdTarget.key &&
+        reservedKeys.length === 1 &&
+        reservedKeys[0] === holdTarget.key &&
+        held.has(holdTarget.key) &&
+        reservedPromises.has(holdTarget.key),
       showMarkedFillBeforeEndUpdate:
         revealTargetShowCalls.length === 1 &&
         revealTargetShow.providerFlagsAfter.hasFillTilesThisFrame &&
         revealEndUpdateCalls.length === 1 &&
         revealEndUpdate.providerFlagsBefore.hasLoadedTilesThisFrame &&
         revealEndUpdate.providerFlagsBefore.hasFillTilesThisFrame,
+      exactLowDetailFillMeshShape:
+        exactLowDetailFillMeshMeasurements(fillMeshProof) &&
+        exactLowDetailFillMeshMeasurements(firstRevealProof.targetState),
       endUpdateConstructedFill:
         revealEndUpdateCalls.length === 1 &&
         !revealEndUpdate.targetStateBefore.fillMeshDefined &&
@@ -4343,8 +4422,7 @@ const MEASURE_S5_SESSION = async (contract) => {
         revealEndUpdate.targetStateAfter.fillMeshDefined &&
         revealEndUpdate.targetStateAfter.renderedMeshMatchesFill &&
         !revealEndUpdate.targetStateAfter.realMeshDefined &&
-        revealEndUpdate.targetStateAfter.vertexCount > 0 &&
-        revealEndUpdate.targetStateAfter.indexCount > 0,
+        exactLowDetailFillMeshMeasurements(revealEndUpdate.targetStateAfter),
       visibilityRestored: visibilityRestoration.restored,
       orderInstrumentationRestored: orderProof.restoration.restored,
     };
@@ -5149,6 +5227,8 @@ function makePageContract(renderer) {
     verticalExaggeration: C12_29_S5_SCENE.verticalExaggeration,
     relativeHeight: C12_29_S5_SCENE.verticalExaggerationRelativeHeight,
     radiusLaw: { ...C12_29_S5_RADIUS_LAW },
+    lowDetailFill: { ...C12_29_S5_LOW_DETAIL_FILL },
+    revealLifecycle: { ...C12_29_S5_REVEAL_LIFECYCLE },
     fixtureRoute: C12_29_S5_FIXTURE.baseRoute,
     tinyModelRoute:
       "/Specs/Data/Models/glTF-2.0/BoxTextured/glTF-Binary/BoxTextured.glb",
