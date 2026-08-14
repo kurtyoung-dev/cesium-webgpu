@@ -10363,6 +10363,24 @@ product implementation evidence, not the still-owed rebuilt browser result.
 The two active browser owners are `C12-29-S5-CUSTOM-ELLIPSOID` and
 `C12-29-S5-NASA-SVS`; neither is closed by the landed static gate.
 
+**Landed S5 ephemeris evidence reconciliation (2026-08-14):** commit
+`cd656255e9` landed the versioned source/static evidence schema and lifecycle
+hardening with fresh independent GO. Its exact contract counts are CUSTOM
+evidence/diagnostics v5 **53/46** source/build, NASA v4 **56/54**, and dense v3
+**65/63**, while retaining the historical v1/v2 **46/44** contract. All three
+bind evidence to default Simon-1994 revision-2 samples in ECEF metres, freeze
+provider provenance and time policy, require an independent recomputation
+within `<= 1 mm`, and prove the exact `FrameState` -> `EclipseState` lineage;
+CUSTOM additionally proves the corresponding `UniformState` and Moon
+lineages. Instrumentation preserves exact descriptor/prototype topology and
+restores it descriptor-for-descriptor with best-effort cleanup. Dense v3 makes
+the exact nine-path `WeakMap` lifecycle authority normative, including
+no-follow `lstat`/open/`fstat` single-link admission, first-red retention,
+v1/v2 archive/receipt handling, and successor-safe unlock. This GO is limited
+to source/static evidence: a fresh clean build, regenerated served bundles and
+source maps, and authoritative browser artifacts remain open and are still
+required by the active browser owners.
+
 **Implemented direction:** each retained WebGL globe replay command owns an immutable
 or revision-exact eclipse-uniform carrier for the logical View that built it.
 Do not clone the whole uniform map per tile/frame and do not fix the evidence
