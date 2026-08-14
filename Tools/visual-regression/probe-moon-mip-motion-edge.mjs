@@ -27,8 +27,17 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  parse,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import sharp from "sharp";
@@ -39,21 +48,31 @@ import {
   errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
 
+let activeInvocationRunId = null;
+let activeInvocationControlMode = null;
+let activeInvocationOutputPath = null;
+
 // Machine-safety watchdog (Batch 861+ fleet sweep). A probe that wedges holds a
 // headless Edge + GPU process alive indefinitely; `unref` keeps the timer from
-// extending a healthy run.
+// extending a healthy run. The timeout is itself evidence: it publishes an
+// ERROR artifact before terminating so an orchestration failure cannot look
+// like an absent or merely inconclusive run.
 const WATCHDOG_MS = 900_000;
 const watchdog = setTimeout(() => {
-  console.error(
+  const error = new Error(
     `[probe-moon-mip-motion-edge] watchdog fired after ${WATCHDOG_MS} ms`,
   );
-  process.exit(2);
+  void emitFatalProbeArtifact(error, "WATCHDOG").finally(() => {
+    console.error(error.message);
+    process.exit(EXIT_CODES.FAIL);
+  });
 }, WATCHDOG_MS);
 watchdog.unref?.();
 
 export const FIXED_TIME_ISO = "2026-07-02T16:22:00Z";
 export const EXIT_CODES = Object.freeze({ PASS: 0, FAIL: 1, INCONCLUSIVE: 2 });
 export const MOON_MIP_CONTROL_MODES = Object.freeze(["normal", "force-lod0"]);
+export const MOON_MIP_SAMPLE_COUNT = 13;
 
 // Calibrate only from multiple known-good runs plus a deliberately broken
 // mip-0 control. Until then, raw metrics are evidence, not promotion limits.
@@ -72,6 +91,40 @@ export const MANUAL_INSPECTION_REQUIREMENT = Object.freeze({
 });
 
 const BACKEND_IDS = Object.freeze(["webgl", "webgpu"]);
+const RUNTIME_RESOURCE_DEFINITIONS = Object.freeze({
+  adapter: Object.freeze({
+    label: "split-view-adapter",
+    localPath: "Apps/WebGPUTest/split-screen-comparison.html",
+  }),
+  bundle: Object.freeze({
+    label: "cesium-global-bundle",
+    localPath: "Build/CesiumUnminified/Cesium.js",
+  }),
+  index: Object.freeze({
+    label: "cesium-module-index",
+    localPath: "Build/CesiumUnminified/index.js",
+  }),
+  moonAlbedo: Object.freeze({
+    label: "moon-albedo",
+    localPath:
+      "Build/CesiumUnminified/Assets/Textures/Moon/lroc_color_poles_2k.jpg",
+  }),
+  moonNormal: Object.freeze({
+    label: "moon-normal",
+    localPath: "Build/CesiumUnminified/Assets/Textures/Moon/ldem_normal_1k.png",
+  }),
+});
+const ADAPTER_IDENTITY_KEYS = Object.freeze([
+  "kind",
+  "loadedCesiumScriptUrl",
+  "globalCesiumObjectPresent",
+  "globalMoonConstructorPresent",
+  "webglMoonUsesGlobalConstructor",
+  "webgpuMoonUsesGlobalConstructor",
+  "distinctMoonInstances",
+  "webglSceneUsesGlobalConstructor",
+  "webgpuSceneUsesGlobalConstructor",
+]);
 const THRESHOLD_SCHEMA_VERSION = 1;
 const BACKEND_TEMPORAL_THRESHOLD_KEYS = Object.freeze([
   "maxNormalizedMeanAbsoluteLumaDelta",
@@ -99,6 +152,32 @@ export const PAIRED_SENSITIVITY_METRICS = Object.freeze([
   "spatialHighFrequencyCoefficientOfVariation",
   "normalizedSpatialHighFrequencyMean",
   "normalizedLaplacianEnergyMean",
+]);
+
+// C12-33 calibration authority is intentionally fixed in source. Callers may
+// select a control mode for an invocation, but they cannot choose easier
+// lanes, backends, or measurements when the ten-run calibration set is folded.
+export const PAIRED_SENSITIVITY_REQUIREMENTS = Object.freeze([
+  Object.freeze({
+    laneId: "minified-16px",
+    backend: "webgl",
+    metric: "normalizedP95HighPassDelta",
+  }),
+  Object.freeze({
+    laneId: "minified-16px",
+    backend: "webgl",
+    metric: "spatialHighFrequencyCoefficientOfVariation",
+  }),
+  Object.freeze({
+    laneId: "minified-16px",
+    backend: "webgpu",
+    metric: "normalizedP95HighPassDelta",
+  }),
+  Object.freeze({
+    laneId: "minified-16px",
+    backend: "webgpu",
+    metric: "spatialHighFrequencyCoefficientOfVariation",
+  }),
 ]);
 
 export const MOON_MIP_MOTION_LANES = Object.freeze([
@@ -142,14 +221,12 @@ function generatedRunId() {
   return `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
 }
 
-let activeInvocationRunId = null;
-
 export function parseRunId(value = process.env.C12_MOON_MIP_RUN_ID) {
   if (value === undefined || value === null || String(value).trim() === "") {
     return null;
   }
   const normalized = String(value).trim();
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(normalized)) {
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,94}[A-Za-z0-9])?$/u.test(normalized)) {
     throw new Error(
       "C12_MOON_MIP_RUN_ID must be 1-96 path-safe letters, digits, dots, underscores, or hyphens",
     );
@@ -164,6 +241,152 @@ function defaultOutputPath(controlMode, runId) {
     "performance",
     `campaign12-c12-33-moon-mip-motion-edge-${controlMode}-${runId}.json`,
   );
+}
+
+function sha256Bytes(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function portableRepositoryPath(path) {
+  const portable = relative(repositoryDirectory, path).replaceAll("\\", "/");
+  if (
+    portable.length === 0 ||
+    portable === ".." ||
+    portable.startsWith("../") ||
+    isAbsolute(portable)
+  ) {
+    throw new Error(`path is outside the repository: ${path}`);
+  }
+  return portable;
+}
+
+export function portableEvidencePath(outputPath, evidencePath) {
+  const portable = relative(dirname(outputPath), evidencePath).replaceAll(
+    "\\",
+    "/",
+  );
+  if (
+    portable.length === 0 ||
+    portable === ".." ||
+    portable.startsWith("../") ||
+    isAbsolute(portable)
+  ) {
+    throw new Error(
+      `evidence path must remain beneath the report directory: ${evidencePath}`,
+    );
+  }
+  return portable;
+}
+
+export function isPortableEvidencePath(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    !value.includes("\\") &&
+    !value.startsWith("/") &&
+    !/^[A-Za-z]:/u.test(value) &&
+    posix.normalize(value) === value &&
+    value
+      .split("/")
+      .every(
+        (component) =>
+          component !== "." && component !== ".." && component !== "",
+      )
+  );
+}
+
+async function mkdirWithoutSymbolicAncestors(directory) {
+  const canonical = resolve(directory);
+  const root = parse(canonical).root;
+  const components = relative(root, canonical).split(sep).filter(Boolean);
+  let current = root;
+  let missing = false;
+  for (const component of components) {
+    current = join(current, component);
+    if (missing) {
+      continue;
+    }
+    try {
+      const descriptor = await lstat(current, { bigint: true });
+      if (descriptor.isSymbolicLink()) {
+        throw new Error(
+          `symbolic output ancestor is forbidden before mkdir: ${current}`,
+        );
+      }
+      if (!descriptor.isDirectory()) {
+        throw new Error(`output ancestor is not a directory: ${current}`);
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+      missing = true;
+    }
+  }
+  await mkdir(canonical, { recursive: true });
+  current = root;
+  for (const component of components) {
+    current = join(current, component);
+    const descriptor = await lstat(current, { bigint: true });
+    if (descriptor.isSymbolicLink() || !descriptor.isDirectory()) {
+      throw new Error(`output directory topology is unsafe: ${current}`);
+    }
+  }
+  if (resolve(await realpath(canonical)) !== canonical) {
+    throw new Error("output directory topology is not canonical");
+  }
+}
+
+async function emitFatalProbeArtifact(error, failureKind = "ERROR") {
+  let controlMode = activeInvocationControlMode ?? "invalid-control";
+  if (activeInvocationControlMode === null) {
+    try {
+      controlMode = parseControlMode();
+    } catch (_controlError) {
+      // The originating failure remains authoritative in result.failures.
+    }
+  }
+  let runId = activeInvocationRunId ?? generatedRunId();
+  if (activeInvocationRunId === null) {
+    try {
+      runId = parseRunId() ?? runId;
+    } catch (_runIdError) {
+      // The originating failure remains authoritative in result.failures.
+    }
+  }
+  const outputPath =
+    activeInvocationOutputPath ??
+    resolve(process.argv[2] ?? defaultOutputPath(controlMode, runId));
+  const fatalReport = {
+    schemaVersion: 1,
+    campaign: "C12-33",
+    probe: "probe-moon-mip-motion-edge",
+    runId,
+    capturedAt: new Date().toISOString(),
+    status: "ERROR",
+    exitCode: EXIT_CODES.FAIL,
+    certificationEligible: false,
+    measurementStatus: "FATAL_FAIL",
+    failureKind,
+    requestedControlMode: process.env.C12_MOON_MIP_CONTROL ?? "normal",
+    result: {
+      verdict: "FAIL",
+      exitCode: EXIT_CODES.FAIL,
+      failures: [String(error?.stack ?? error)],
+      inconclusive: [],
+    },
+  };
+  try {
+    await mkdirWithoutSymbolicAncestors(dirname(outputPath));
+    await writeFile(outputPath, `${JSON.stringify(fatalReport, null, 2)}\n`, {
+      flag: "wx",
+    });
+  } catch (_writeError) {
+    // Never clobber an existing evidence artifact. The original failure is
+    // still emitted to stderr by the caller.
+  }
+  return fatalReport;
 }
 
 function exactObjectKeys(value, requiredKeys, path, failures) {
@@ -784,13 +1007,38 @@ export function deriveMeasurementStatus(
     : "CALIBRATION_INCONCLUSIVE";
 }
 
+export function classifyRawReport(result) {
+  const hardFailures = Array.isArray(result?.hardFailures)
+    ? result.hardFailures
+    : [];
+  const qualityFailures = Array.isArray(result?.qualityFailures)
+    ? result.qualityFailures
+    : [];
+  if (hardFailures.length > 0) {
+    return {
+      status: "STRUCTURAL",
+      exitCode: EXIT_CODES.FAIL,
+      certificationEligible: false,
+    };
+  }
+  if (qualityFailures.length > 0 || result?.verdict === "FAIL") {
+    return {
+      status: "FAIL",
+      exitCode: EXIT_CODES.FAIL,
+      certificationEligible: false,
+    };
+  }
+  return {
+    status: "NON_CERTIFYING",
+    exitCode: EXIT_CODES.INCONCLUSIVE,
+    certificationEligible: false,
+  };
+}
+
 function publicFrameMetric(metric, pngPath, pngBuffer) {
   return {
     pngPath,
-    pngSha256: createHash("sha256")
-      .update(pngBuffer)
-      .digest("hex")
-      .toUpperCase(),
+    pngSha256: createHash("sha256").update(pngBuffer).digest("hex"),
     width: metric.width,
     height: metric.height,
     coveredPixels: metric.coveredPixels,
@@ -821,33 +1069,110 @@ async function analyzePng(buffer) {
   });
 }
 
-async function runtimeBundleIdentity() {
-  const bundlePath = resolve(
-    repositoryDirectory,
-    "Build",
-    "CesiumUnminified",
-    "Cesium.js",
-  );
-  try {
-    const bytes = await readFile(bundlePath);
-    return {
-      path: "Build/CesiumUnminified/Cesium.js",
-      byteLength: bytes.byteLength,
-      sha256: createHash("sha256").update(bytes).digest("hex").toUpperCase(),
-    };
-  } catch (error) {
-    return {
-      path: "Build/CesiumUnminified/Cesium.js",
-      error: String(error?.message ?? error),
-    };
+function localPathForServedUrl(servedUrl, baseUrl) {
+  const served = new URL(servedUrl, baseUrl);
+  const base = new URL(baseUrl);
+  if (served.origin !== base.origin) {
+    throw new Error(
+      `certifying runtime resource left the probe origin: ${served.href}`,
+    );
   }
+  const decodedPath = decodeURIComponent(served.pathname).replace(/^\/+/, "");
+  const localPath = resolve(repositoryDirectory, decodedPath);
+  portableRepositoryPath(localPath);
+  return localPath;
 }
 
-function parseSampleCount() {
-  const parsed = Number(process.env.C12_MOON_MIP_SAMPLES ?? 13);
-  if (!Number.isInteger(parsed) || parsed < 5 || parsed % 2 === 0) {
+async function matchedRuntimeResourceIdentity(label, servedUrl, baseUrl) {
+  const canonicalUrl = new URL(servedUrl, baseUrl);
+  const response = await fetch(canonicalUrl, {
+    cache: "no-store",
+    redirect: "error",
+  });
+  if (!response.ok) {
     throw new Error(
-      "C12_MOON_MIP_SAMPLES must be an odd integer greater than or equal to 5",
+      `${label} served identity returned HTTP ${response.status}: ${canonicalUrl.href}`,
+    );
+  }
+  const servedBytes = Buffer.from(await response.arrayBuffer());
+  const localPath = localPathForServedUrl(canonicalUrl, baseUrl);
+  const localBytes = await readFile(localPath);
+  const servedSha256 = sha256Bytes(servedBytes);
+  const localSha256 = sha256Bytes(localBytes);
+  if (
+    servedBytes.byteLength !== localBytes.byteLength ||
+    servedSha256 !== localSha256
+  ) {
+    throw new Error(`${label} served bytes differ from the local repository`);
+  }
+  return {
+    label,
+    served: {
+      url: canonicalUrl.href,
+      byteLength: servedBytes.byteLength,
+      sha256: servedSha256,
+    },
+    local: {
+      path: portableRepositoryPath(localPath),
+      byteLength: localBytes.byteLength,
+      sha256: localSha256,
+    },
+    servedMatchesLocal: true,
+  };
+}
+
+async function runtimeIdentity(baseUrl, viewerUrl, setup) {
+  const bundleUrl = setup?.adapterIdentity?.loadedCesiumScriptUrl;
+  if (typeof bundleUrl !== "string" || bundleUrl.length === 0) {
+    throw new Error(
+      "split-view adapter did not expose its loaded Cesium bundle URL",
+    );
+  }
+  const entries = {
+    adapter: await matchedRuntimeResourceIdentity(
+      "split-view-adapter",
+      viewerUrl,
+      baseUrl,
+    ),
+    bundle: await matchedRuntimeResourceIdentity(
+      "cesium-global-bundle",
+      bundleUrl,
+      baseUrl,
+    ),
+    index: await matchedRuntimeResourceIdentity(
+      "cesium-module-index",
+      new URL("/Build/CesiumUnminified/index.js", baseUrl),
+      baseUrl,
+    ),
+    moonAlbedo: await matchedRuntimeResourceIdentity(
+      "moon-albedo",
+      setup.albedoUrl,
+      baseUrl,
+    ),
+    moonNormal: await matchedRuntimeResourceIdentity(
+      "moon-normal",
+      setup.normalUrl,
+      baseUrl,
+    ),
+  };
+  const adapterIdentity = setup.adapterIdentity;
+  return {
+    schemaVersion: 1,
+    entries,
+    adapterIdentity,
+    identitySha256: sha256Bytes(
+      Buffer.from(JSON.stringify({ entries, adapterIdentity }), "utf8"),
+    ),
+  };
+}
+
+export function parseSampleCount(
+  value = process.env.C12_MOON_MIP_SAMPLES ?? MOON_MIP_SAMPLE_COUNT,
+) {
+  const parsed = Number(value);
+  if (parsed !== MOON_MIP_SAMPLE_COUNT) {
+    throw new Error(
+      `C12_MOON_MIP_SAMPLES must equal the pre-registered count ${MOON_MIP_SAMPLE_COUNT}`,
     );
   }
   return parsed;
@@ -867,7 +1192,7 @@ export function parseControlMode(
   return normalized;
 }
 
-function summarizeSpatial(frames) {
+export function summarizeSpatial(frames) {
   const diameters = frames.map((frame) => frame.discDiameterPx);
   const spatial = frames.map((frame) => frame.normalizedSpatialHighFrequency);
   const laplacian = frames.map((frame) => frame.normalizedLaplacianEnergy);
@@ -882,8 +1207,38 @@ function summarizeSpatial(frames) {
   };
 }
 
-function cameraMotionSummary(motion, backend) {
-  const positions = motion.map((sample) => sample[backend].cameraWorldPosition);
+export function cameraMotionSummary(motion, backend) {
+  if (!Array.isArray(motion)) {
+    return {
+      stepCount: 0,
+      totalDistanceMeters: Number.NaN,
+      minStepDistanceMeters: Number.NaN,
+      maxStepDistanceMeters: Number.NaN,
+      frameAdvance: Number.NaN,
+    };
+  }
+  const positions = motion.map(
+    (sample) => sample?.[backend]?.cameraWorldPosition,
+  );
+  const validPositions = positions.every(
+    (position) =>
+      Array.isArray(position) &&
+      position.length === 3 &&
+      position.every(Number.isFinite),
+  );
+  const frameNumbers = motion.map((sample) => sample?.[backend]?.frameNumber);
+  if (
+    !validPositions ||
+    frameNumbers.some((value) => !Number.isFinite(value))
+  ) {
+    return {
+      stepCount: Math.max(0, motion.length - 1),
+      totalDistanceMeters: Number.NaN,
+      minStepDistanceMeters: Number.NaN,
+      maxStepDistanceMeters: Number.NaN,
+      frameAdvance: Number.NaN,
+    };
+  }
   const stepDistances = [];
   for (let index = 1; index < positions.length; index++) {
     const previous = positions[index - 1];
@@ -913,7 +1268,101 @@ function cameraMotionSummary(motion, backend) {
   };
 }
 
-function validateStructuralEvidence(report) {
+function expectedCameraLocalDirection(lane, sampleIndex, sampleCount) {
+  const fraction = sampleIndex / (sampleCount - 1);
+  const angle = lane.angularSweepRadians * (2 * fraction - 1);
+  const [x, y] = lane.localCameraDirection;
+  const rotated = [
+    x * Math.cos(angle) - y * Math.sin(angle),
+    x * Math.sin(angle) + y * Math.cos(angle),
+    0,
+  ];
+  const magnitude = Math.hypot(...rotated);
+  return rotated.map((component) => component / magnitude);
+}
+
+function vectorDistance(left, right) {
+  return Math.hypot(
+    ...left.map((component, index) => component - right[index]),
+  );
+}
+
+function numericSummaryMatches(actual, expected, keys, tolerance = 1e-12) {
+  return keys.every(
+    (key) =>
+      Number.isFinite(actual?.[key]) &&
+      Number.isFinite(expected?.[key]) &&
+      Math.abs(actual[key] - expected[key]) <= tolerance,
+  );
+}
+
+function recomputeTemporalSummary(frames, pairs) {
+  const meanDeltas = pairs.map((pair) => pair.meanAbsoluteLumaDelta);
+  const normalizedDeltas = pairs.map(
+    (pair) => pair.normalizedMeanAbsoluteLumaDelta,
+  );
+  const normalizedHighPass = pairs.map(
+    (pair) => pair.normalizedMeanHighPassDelta,
+  );
+  const spatialValues = frames.map(
+    (frame) => frame.normalizedSpatialHighFrequency,
+  );
+  const spatialMean = mean(spatialValues) ?? 0;
+  return {
+    pairCount: pairs.length,
+    comparedPixelsMin:
+      pairs.length > 0
+        ? Math.min(...pairs.map((pair) => pair.comparedPixels))
+        : 0,
+    meanAbsoluteLumaDelta: mean(meanDeltas) ?? 0,
+    p95PairMeanAbsoluteLumaDelta: percentile(meanDeltas, 0.95) ?? 0,
+    normalizedMeanAbsoluteLumaDelta: mean(normalizedDeltas) ?? 0,
+    normalizedP95PairLumaDelta: percentile(normalizedDeltas, 0.95) ?? 0,
+    normalizedMeanHighPassDelta: mean(normalizedHighPass) ?? 0,
+    normalizedP95HighPassDelta: percentile(normalizedHighPass, 0.95) ?? 0,
+    spatialHighFrequencyMean: spatialMean,
+    spatialHighFrequencyP95: percentile(spatialValues, 0.95) ?? 0,
+    spatialHighFrequencyCoefficientOfVariation:
+      (standardDeviation(spatialValues, spatialMean) ?? 0) /
+      Math.max(1e-9, spatialMean),
+  };
+}
+
+function recomputeParitySummary(samples) {
+  const keyMean = (key) => mean(samples.map((sample) => sample[key])) ?? 0;
+  return {
+    sampleCount: samples.length,
+    comparedPixelsMin:
+      samples.length > 0
+        ? Math.min(...samples.map((sample) => sample.comparedPixels))
+        : 0,
+    maskIntersectionOverUnionMean: keyMean("maskIntersectionOverUnion"),
+    meanAbsoluteRgbError: keyMean("meanAbsoluteRgbError"),
+    meanAbsoluteLumaError: keyMean("meanAbsoluteLumaError"),
+    normalizedMeanAbsoluteLumaError: keyMean("normalizedMeanAbsoluteLumaError"),
+    normalizedP95AbsoluteLumaError:
+      percentile(
+        samples.map((sample) => sample.normalizedMeanAbsoluteLumaError),
+        0.95,
+      ) ?? 0,
+    changedPixelFractionMean: keyMean("changedPixelFraction"),
+    spatialHighFrequencyRatioMean: keyMean("spatialHighFrequencyRatio"),
+  };
+}
+
+function exactRuntimeUrl(viewerUrl, localPath, { adapter = false } = {}) {
+  try {
+    const viewer = new URL(viewerUrl);
+    if (adapter) {
+      return viewer.href;
+    }
+    return new URL(`/${localPath}`, viewer.origin).href;
+  } catch (_error) {
+    return null;
+  }
+}
+
+export function validateStructuralEvidence(report) {
   const failures = [];
   const ready = report.readiness?.diagnostics;
   if (report.setup?.sameJavaScriptRealm !== true) {
@@ -921,12 +1370,169 @@ function validateStructuralEvidence(report) {
       "split viewers were not proven to share one JavaScript realm",
     );
   }
+  const runtimeIdentity = report.runtimeIdentity;
+  const runtimeEntries = runtimeIdentity?.entries;
+  const requiredRuntimeEntries = Object.keys(RUNTIME_RESOURCE_DEFINITIONS);
+  exactObjectKeys(
+    runtimeIdentity,
+    ["schemaVersion", "entries", "adapterIdentity", "identitySha256"],
+    "runtimeIdentity",
+    failures,
+  );
+  if (runtimeIdentity?.schemaVersion !== 1) {
+    failures.push("runtime identity schemaVersion must equal 1");
+  }
+  exactObjectKeys(
+    runtimeEntries,
+    requiredRuntimeEntries,
+    "runtimeIdentity.entries",
+    failures,
+  );
+  let expectedViewerUrl = null;
+  try {
+    const parsedViewerUrl = new URL(report.viewerUrl);
+    if (
+      parsedViewerUrl.pathname !==
+        "/Apps/WebGPUTest/split-screen-comparison.html" ||
+      parsedViewerUrl.search !== "?baseLayer=false" ||
+      parsedViewerUrl.hash !== ""
+    ) {
+      failures.push("viewerUrl is not the fixed split-view adapter URL");
+    }
+    expectedViewerUrl = parsedViewerUrl.href;
+  } catch (_error) {
+    failures.push("viewerUrl is not an absolute canonical URL");
+  }
+  for (const entryId of requiredRuntimeEntries) {
+    const entry = runtimeEntries?.[entryId];
+    const definition = RUNTIME_RESOURCE_DEFINITIONS[entryId];
+    exactObjectKeys(
+      entry,
+      ["label", "served", "local", "servedMatchesLocal"],
+      `runtimeIdentity.entries.${entryId}`,
+      failures,
+    );
+    exactObjectKeys(
+      entry?.served,
+      ["url", "byteLength", "sha256"],
+      `runtimeIdentity.entries.${entryId}.served`,
+      failures,
+    );
+    exactObjectKeys(
+      entry?.local,
+      ["path", "byteLength", "sha256"],
+      `runtimeIdentity.entries.${entryId}.local`,
+      failures,
+    );
+    const expectedUrl = exactRuntimeUrl(
+      report.viewerUrl,
+      definition.localPath,
+      {
+        adapter: entryId === "adapter",
+      },
+    );
+    if (
+      entry?.label !== definition.label ||
+      entry?.local?.path !== definition.localPath ||
+      entry?.served?.url !== expectedUrl ||
+      entry?.servedMatchesLocal !== true ||
+      !/^[0-9a-f]{64}$/u.test(entry?.served?.sha256 ?? "") ||
+      entry?.served?.sha256 !== entry?.local?.sha256 ||
+      entry?.served?.byteLength !== entry?.local?.byteLength ||
+      !Number.isInteger(entry?.served?.byteLength) ||
+      entry.served.byteLength <= 0 ||
+      typeof entry?.served?.url !== "string" ||
+      entry.served.url.length === 0 ||
+      !isPortableEvidencePath(entry?.local?.path)
+    ) {
+      failures.push(
+        `${entryId} did not retain its exact label/path/URL and matching served/local byte identity`,
+      );
+    }
+  }
+  if (!/^[0-9a-f]{64}$/u.test(report.runtimeIdentity?.identitySha256 ?? "")) {
+    failures.push("runtime identity digest was missing or malformed");
+  } else if (
+    report.runtimeIdentity.identitySha256 !==
+    sha256Bytes(
+      Buffer.from(
+        JSON.stringify({
+          entries: report.runtimeIdentity.entries,
+          adapterIdentity: report.runtimeIdentity.adapterIdentity,
+        }),
+        "utf8",
+      ),
+    )
+  ) {
+    failures.push(
+      "runtime identity digest did not bind its resources and adapter",
+    );
+  }
+  const adapterIdentity = runtimeIdentity?.adapterIdentity;
+  exactObjectKeys(
+    adapterIdentity,
+    ADAPTER_IDENTITY_KEYS,
+    "runtimeIdentity.adapterIdentity",
+    failures,
+  );
+  if (
+    adapterIdentity?.kind !== RUNTIME_RESOURCE_DEFINITIONS.adapter.localPath ||
+    adapterIdentity?.loadedCesiumScriptUrl !==
+      exactRuntimeUrl(
+        report.viewerUrl,
+        RUNTIME_RESOURCE_DEFINITIONS.bundle.localPath,
+      )
+  ) {
+    failures.push("split-view adapter kind/script URL provenance is invalid");
+  }
+  for (const flag of ADAPTER_IDENTITY_KEYS.slice(2)) {
+    if (adapterIdentity?.[flag] !== true) {
+      failures.push(`split-view adapter identity did not prove ${flag}`);
+    }
+  }
+  if (
+    !exactObjectKeys(
+      report.setup?.adapterIdentity,
+      ADAPTER_IDENTITY_KEYS,
+      "setup.adapterIdentity",
+      failures,
+    ) ||
+    ADAPTER_IDENTITY_KEYS.some(
+      (key) => report.setup?.adapterIdentity?.[key] !== adapterIdentity?.[key],
+    )
+  ) {
+    failures.push(
+      "setup.adapterIdentity is not the exact digest-bound runtime adapter identity",
+    );
+  }
+  if (
+    report.setup?.albedoUrl !== runtimeEntries?.moonAlbedo?.served?.url ||
+    report.setup?.normalUrl !== runtimeEntries?.moonNormal?.served?.url ||
+    report.setup?.fixedTimeIso !== FIXED_TIME_ISO ||
+    report.setup?.lightingFixture !== "camera-coincident-directional-light" ||
+    expectedViewerUrl === null
+  ) {
+    failures.push("setup asset/clock/lighting provenance is invalid");
+  }
   if (
     report.control?.requestedMode !== report.controlMode ||
     report.control?.appliedMode !== report.controlMode
   ) {
     failures.push(
       `Moon mip control was not applied exactly (requested=${report.controlMode}, applied=${report.control?.appliedMode ?? "missing"})`,
+    );
+  }
+  if (report.browser?.channel !== "msedge") {
+    failures.push("Moon mip probe browser channel was not msedge");
+  }
+  if (
+    report.controlMode === "normal" &&
+    (report.control?.webgl?.baseLevelOnly !== false ||
+      report.control?.webgpu?.baseLevelOnly !== false ||
+      report.control?.webgpu?.bindGroupRebuilt !== false)
+  ) {
+    failures.push(
+      "normal control did not retain mip-capable sampling on both backends",
     );
   }
   if (
@@ -942,6 +1548,17 @@ function validateStructuralEvidence(report) {
   if (report.readiness?.ready !== true) {
     failures.push(
       "wall-clock readiness deadline elapsed before both Moon mip chains became current",
+    );
+  }
+  if (
+    ready?.webgl?.textureLoaded !== true ||
+    ready?.webgl?.normalLoaded !== true ||
+    ready?.webgpu?.textureLoaded !== true ||
+    ready?.webgpu?.normalLoaded !== true ||
+    ready?.webgpu?.pipelineReady !== true
+  ) {
+    failures.push(
+      "readiness did not revalidate loaded Moon textures and the WebGPU pipeline",
     );
   }
   if (ready?.webgl?.rendererType !== "webgl") {
@@ -987,8 +1604,18 @@ function validateStructuralEvidence(report) {
     );
   }
   for (const backend of ["webgl", "webgpu"]) {
+    const finalBackend = report.finalDiagnostics?.[backend];
+    if (
+      finalBackend?.textureLoaded !== true ||
+      finalBackend?.normalLoaded !== true ||
+      (backend === "webgpu" && finalBackend?.pipelineReady !== true)
+    ) {
+      failures.push(
+        `${backend} final diagnostics did not retain loaded Moon textures${backend === "webgpu" ? " and a ready pipeline" : ""}`,
+      );
+    }
     for (const channel of ["albedo", "normal"]) {
-      const mip = report.finalDiagnostics?.[backend]?.mips?.[channel];
+      const mip = finalBackend?.mips?.[channel];
       if (!mip || mip.fullChain !== true) {
         failures.push(
           `${backend} ${channel} mip chain was not retained through final capture`,
@@ -1028,13 +1655,9 @@ function validateStructuralEvidence(report) {
   const expectedLaneIds = MOON_MIP_MOTION_LANES.map((lane) => lane.id);
   const actualLanes = Array.isArray(report.lanes) ? report.lanes : [];
   const actualLaneIds = actualLanes.map((lane) => lane?.id);
-  if (
-    !Number.isInteger(report.sampleCount) ||
-    report.sampleCount < 5 ||
-    report.sampleCount % 2 === 0
-  ) {
+  if (report.sampleCount !== MOON_MIP_SAMPLE_COUNT) {
     failures.push(
-      `sampleCount must be an odd integer greater than or equal to 5; received ${report.sampleCount}`,
+      `sampleCount must equal the pre-registered ${MOON_MIP_SAMPLE_COUNT}; received ${report.sampleCount}`,
     );
   }
   if (
@@ -1044,6 +1667,44 @@ function validateStructuralEvidence(report) {
     failures.push(
       `Moon motion lanes must be exactly ${expectedLaneIds.join(", ")} in declaration order; received ${actualLaneIds.join(", ") || "none"}`,
     );
+  }
+  for (let laneIndex = 0; laneIndex < actualLanes.length; laneIndex++) {
+    const lane = actualLanes[laneIndex];
+    const definition = MOON_MIP_MOTION_LANES[laneIndex];
+    exactObjectKeys(
+      lane,
+      [
+        "id",
+        "description",
+        "localCameraDirection",
+        "targetDiscDiameterPx",
+        "angularSweepRadians",
+        "seamPlacement",
+        "motion",
+        "motionSummary",
+        "backends",
+        "parity",
+      ],
+      `lanes[${laneIndex}]`,
+      failures,
+    );
+    if (
+      !definition ||
+      lane?.id !== definition.id ||
+      lane?.description !== definition.description ||
+      lane?.targetDiscDiameterPx !== definition.targetDiscDiameterPx ||
+      lane?.angularSweepRadians !== definition.angularSweepRadians ||
+      lane?.seamPlacement !== definition.seamPlacement ||
+      !Array.isArray(lane?.localCameraDirection) ||
+      vectorDistance(
+        lane.localCameraDirection,
+        definition.localCameraDirection,
+      ) !== 0
+    ) {
+      failures.push(
+        `lanes[${laneIndex}] did not bind the complete pre-registered lane definition`,
+      );
+    }
   }
   const manualLaneIds = report.manualInspection?.requiredLaneIds;
   if (
@@ -1071,8 +1732,16 @@ function validateStructuralEvidence(report) {
     );
   }
 
-  for (const lane of actualLanes) {
-    const minimumInteriorPixels = lane.id === "minified-16px" ? 20 : 1000;
+  const retainedPngPaths = new Set();
+  let fixedMoonGeometry = null;
+  for (let laneIndex = 0; laneIndex < actualLanes.length; laneIndex++) {
+    const lane = actualLanes[laneIndex];
+    const laneDefinition = MOON_MIP_MOTION_LANES[laneIndex];
+    if (!laneDefinition) {
+      continue;
+    }
+    const minimumInteriorPixels =
+      laneDefinition.id === "minified-16px" ? 20 : 1000;
     if (lane.motion?.length !== report.sampleCount) {
       failures.push(
         `${lane.id} recorded ${lane.motion?.length ?? 0} camera sample(s), expected ${report.sampleCount}`,
@@ -1080,16 +1749,69 @@ function validateStructuralEvidence(report) {
     }
     for (const backend of ["webgl", "webgpu"]) {
       const evidence = lane.backends?.[backend];
+      const expectedCanvasSelector =
+        backend === "webgl" ? "#leftViewer canvas" : "#rightViewer canvas";
+      if (
+        evidence?.captureKind !== "playwright-canvas-element-png" ||
+        evidence?.canvasSelector !== expectedCanvasSelector
+      ) {
+        failures.push(
+          `${lane.id}/${backend} did not use the exact canvas-element PNG capture`,
+        );
+      }
+      const frames = Array.isArray(evidence?.frames) ? evidence.frames : [];
       if (evidence?.frames?.length !== report.sampleCount) {
         failures.push(
           `${lane.id}/${backend} captured ${evidence?.frames?.length ?? 0} canvas PNG(s), expected ${report.sampleCount}`,
         );
       }
-      if ((evidence?.spatial?.discDiameterPxMin ?? 0) <= 0) {
+      for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
+        const frame = frames[frameIndex];
+        const expectedName = `${laneDefinition.id}-${String(frameIndex).padStart(2, "0")}-${backend}.png`;
+        if (
+          !isPortableEvidencePath(frame?.pngPath) ||
+          frame.pngPath.split("/").at(-1) !== expectedName
+        ) {
+          failures.push(
+            `${lane.id}/${backend}/${frameIndex} did not retain its portable canonical PNG path`,
+          );
+        } else if (retainedPngPaths.has(frame.pngPath)) {
+          failures.push(`duplicate retained PNG path ${frame.pngPath}`);
+        } else {
+          retainedPngPaths.add(frame.pngPath);
+        }
+        if (!/^[0-9a-f]{64}$/u.test(frame?.pngSha256 ?? "")) {
+          failures.push(
+            `${lane.id}/${backend}/${frameIndex} did not retain a canonical PNG hash`,
+          );
+        }
+      }
+      const spatialKeys = [
+        "discDiameterPxMedian",
+        "discDiameterPxMin",
+        "discDiameterPxMax",
+        "normalizedSpatialHighFrequencyMean",
+        "normalizedSpatialHighFrequencyP95",
+        "normalizedLaplacianEnergyMean",
+        "normalizedLaplacianEnergyP95",
+      ];
+      const recomputedSpatial = summarizeSpatial(frames);
+      if (
+        !numericSummaryMatches(
+          evidence?.spatial,
+          recomputedSpatial,
+          spatialKeys,
+        )
+      ) {
+        failures.push(
+          `${laneDefinition.id}/${backend} spatial summary disagreed with its frame measurements`,
+        );
+      }
+      if (recomputedSpatial.discDiameterPxMin <= 0) {
         failures.push(`${lane.id}/${backend} had no illuminated Moon pixels`);
       }
       const minimumFrameInterior = Math.min(
-        ...(evidence?.frames ?? []).map((frame) => frame.interiorPixels),
+        ...frames.map((frame) => frame.interiorPixels),
       );
       if (
         !Number.isFinite(minimumFrameInterior) ||
@@ -1099,53 +1821,493 @@ function validateStructuralEvidence(report) {
           `${lane.id}/${backend} had ${minimumFrameInterior} interior pixel(s), below the non-vacuous floor ${minimumInteriorPixels}`,
         );
       }
+      const temporalPairs = Array.isArray(evidence?.temporal?.pairs)
+        ? evidence.temporal.pairs
+        : [];
+      const temporalPairKeys = [
+        "comparedPixels",
+        "meanAbsoluteLumaDelta",
+        "p95AbsoluteLumaDelta",
+        "normalizedMeanAbsoluteLumaDelta",
+        "meanHighPassDelta",
+        "normalizedMeanHighPassDelta",
+      ];
       if (
-        (evidence?.temporal?.comparedPixelsMin ?? 0) < minimumInteriorPixels
+        temporalPairs.length !== report.sampleCount - 1 ||
+        temporalPairs.some(
+          (pair) =>
+            !exactObjectKeys(
+              pair,
+              temporalPairKeys,
+              `${laneDefinition.id}/${backend}.temporal.pair`,
+              failures,
+            ) ||
+            !Number.isInteger(pair.comparedPixels) ||
+            pair.comparedPixels < 0 ||
+            temporalPairKeys
+              .slice(1)
+              .some((key) => !Number.isFinite(pair[key]) || pair[key] < 0),
+        )
       ) {
+        failures.push(
+          `${laneDefinition.id}/${backend} did not retain 12 complete temporal pair measurements`,
+        );
+      }
+      const recomputedTemporal = recomputeTemporalSummary(
+        frames,
+        temporalPairs,
+      );
+      const temporalSummaryKeys = [
+        "pairCount",
+        "comparedPixelsMin",
+        "meanAbsoluteLumaDelta",
+        "p95PairMeanAbsoluteLumaDelta",
+        "normalizedMeanAbsoluteLumaDelta",
+        "normalizedP95PairLumaDelta",
+        "normalizedMeanHighPassDelta",
+        "normalizedP95HighPassDelta",
+        "spatialHighFrequencyMean",
+        "spatialHighFrequencyP95",
+        "spatialHighFrequencyCoefficientOfVariation",
+      ];
+      if (
+        !numericSummaryMatches(
+          evidence?.temporal,
+          recomputedTemporal,
+          temporalSummaryKeys,
+        )
+      ) {
+        failures.push(
+          `${laneDefinition.id}/${backend} temporal summary disagreed with its pair/frame measurements`,
+        );
+      }
+      if (recomputedTemporal.comparedPixelsMin < minimumInteriorPixels) {
         failures.push(
           `${lane.id}/${backend} temporal overlap was below the non-vacuous floor ${minimumInteriorPixels}`,
         );
       }
-      if (evidence?.temporal?.pairCount !== report.sampleCount - 1) {
+      if (recomputedTemporal.pairCount !== report.sampleCount - 1) {
         failures.push(
-          `${lane.id}/${backend} recorded ${evidence?.temporal?.pairCount ?? 0} temporal pair(s), expected ${report.sampleCount - 1}`,
+          `${lane.id}/${backend} recorded ${recomputedTemporal.pairCount} temporal pair(s), expected ${report.sampleCount - 1}`,
         );
       }
-      if ((lane.motionSummary?.[backend]?.minStepDistanceMeters ?? 0) <= 0.1) {
+      const recomputedMotionSummary = cameraMotionSummary(
+        lane.motion ?? [],
+        backend,
+      );
+      const motionSummaryKeys = [
+        "stepCount",
+        "totalDistanceMeters",
+        "minStepDistanceMeters",
+        "maxStepDistanceMeters",
+        "frameAdvance",
+      ];
+      if (
+        !numericSummaryMatches(
+          lane.motionSummary?.[backend],
+          recomputedMotionSummary,
+          motionSummaryKeys,
+        )
+      ) {
+        failures.push(
+          `${laneDefinition.id}/${backend} motion summary disagreed with actual post-sync WC samples`,
+        );
+      }
+      if (recomputedMotionSummary.minStepDistanceMeters <= 0.1) {
         failures.push(
           `${lane.id}/${backend} camera track contained a stationary step`,
         );
       }
-      if (
-        (lane.motionSummary?.[backend]?.frameAdvance ?? 0) <
-        report.sampleCount - 1
-      ) {
+      if (recomputedMotionSummary.frameAdvance < report.sampleCount - 1) {
         failures.push(
           `${lane.id}/${backend} did not advance a rendered frame per camera sample`,
         );
       }
       const unpinnedSample = (lane.motion ?? []).find(
-        (sample) => Math.abs(sample[backend].clockOffsetSeconds) > 1e-9,
+        (sample) =>
+          !Number.isFinite(sample?.[backend]?.clockOffsetSeconds) ||
+          Math.abs(sample[backend].clockOffsetSeconds) > 1e-9,
       );
       if (unpinnedSample) {
         failures.push(
           `${lane.id}/${backend} camera route advanced the pinned clock`,
         );
       }
+      for (
+        let sampleIndex = 0;
+        sampleIndex < (lane.motion?.length ?? 0);
+        sampleIndex++
+      ) {
+        const sample = lane.motion[sampleIndex]?.[backend];
+        const moonBasis = sample?.moonLocalToWorldBasis;
+        const vectors = [
+          sample?.cameraWorldPosition,
+          sample?.directionWC,
+          sample?.rightWC,
+          sample?.upWC,
+          sample?.cameraLocalDirection,
+          sample?.requestedCameraWorldPosition,
+          sample?.requestedDirectionWC,
+          sample?.requestedUpWC,
+          sample?.requestedCameraLocalDirection,
+          sample?.moonCenterWorld,
+          moonBasis?.xWC,
+          moonBasis?.yWC,
+          moonBasis?.zWC,
+        ];
+        if (
+          sample?.poseSource !== "post-sync-camera-world-coordinates" ||
+          sample?.postSyncStableFrameCount < 2 ||
+          vectors.some(
+            (vector) =>
+              !Array.isArray(vector) ||
+              vector.length !== 3 ||
+              vector.some((component) => !Number.isFinite(component)),
+          )
+        ) {
+          failures.push(
+            `${lane.id}/${backend}/${sampleIndex} lacked actual post-sync WC pose evidence`,
+          );
+          continue;
+        }
+        const [direction, right, up] = [
+          sample.directionWC,
+          sample.rightWC,
+          sample.upWC,
+        ];
+        const magnitude = (vector) => Math.hypot(...vector);
+        const dot = (left, rightVector) =>
+          left.reduce(
+            (sum, component, index) => sum + component * rightVector[index],
+            0,
+          );
+        const cross = (left, rightVector) => [
+          left[1] * rightVector[2] - left[2] * rightVector[1],
+          left[2] * rightVector[0] - left[0] * rightVector[2],
+          left[0] * rightVector[1] - left[1] * rightVector[0],
+        ];
+        const positionError = Math.hypot(
+          ...sample.cameraWorldPosition.map(
+            (component, index) =>
+              component - sample.requestedCameraWorldPosition[index],
+          ),
+        );
+        const toMoonUnnormalized = sample.moonCenterWorld.map(
+          (component, index) => component - sample.cameraWorldPosition[index],
+        );
+        const toMoonMagnitude = magnitude(toMoonUnnormalized);
+        const toMoon = toMoonUnnormalized.map(
+          (component) => component / toMoonMagnitude,
+        );
+        const directionDotRequested = dot(
+          direction,
+          sample.requestedDirectionWC,
+        );
+        const upDotRequested = dot(up, sample.requestedUpWC);
+        const directionToMoonDot = dot(direction, toMoon);
+        const expectedLocalDirection = expectedCameraLocalDirection(
+          laneDefinition,
+          sampleIndex,
+          report.sampleCount,
+        );
+        const [moonX, moonY, moonZ] = [
+          moonBasis.xWC,
+          moonBasis.yWC,
+          moonBasis.zWC,
+        ];
+        const expectedOutwardUnnormalized = moonX.map(
+          (component, index) =>
+            component * expectedLocalDirection[0] +
+            moonY[index] * expectedLocalDirection[1] +
+            moonZ[index] * expectedLocalDirection[2],
+        );
+        const expectedOutwardMagnitude = magnitude(expectedOutwardUnnormalized);
+        const expectedOutward = expectedOutwardUnnormalized.map(
+          (component) => component / expectedOutwardMagnitude,
+        );
+        const expectedRequestedPosition = sample.moonCenterWorld.map(
+          (component, index) =>
+            component + expectedOutward[index] * sample.centerDistanceMeters,
+        );
+        const expectedRequestedDirection = expectedOutward.map(
+          (component) => -component,
+        );
+        const expectedRightUnnormalized = cross(
+          expectedRequestedDirection,
+          moonZ,
+        );
+        const expectedRightMagnitude = magnitude(expectedRightUnnormalized);
+        const expectedRight = expectedRightUnnormalized.map(
+          (component) => component / expectedRightMagnitude,
+        );
+        const focalPixels =
+          sample.canvasHeight / (2 * Math.tan(sample.fovyRadians * 0.5));
+        const projectedRadius = laneDefinition.targetDiscDiameterPx * 0.5;
+        const tangentDistance =
+          (sample.moonRadiusMeters * focalPixels) / projectedRadius;
+        const expectedCenterDistance = Math.sqrt(
+          sample.moonRadiusMeters ** 2 + tangentDistance ** 2,
+        );
+        if (fixedMoonGeometry === null) {
+          fixedMoonGeometry = {
+            center: [...sample.moonCenterWorld],
+            radius: sample.moonRadiusMeters,
+            basis: {
+              xWC: [...moonX],
+              yWC: [...moonY],
+              zWC: [...moonZ],
+            },
+          };
+        } else if (
+          vectorDistance(sample.moonCenterWorld, fixedMoonGeometry.center) >
+            1e-3 ||
+          Math.abs(sample.moonRadiusMeters - fixedMoonGeometry.radius) > 1e-9 ||
+          vectorDistance(moonX, fixedMoonGeometry.basis.xWC) > 1e-9 ||
+          vectorDistance(moonY, fixedMoonGeometry.basis.yWC) > 1e-9 ||
+          vectorDistance(moonZ, fixedMoonGeometry.basis.zWC) > 1e-9
+        ) {
+          failures.push(
+            `${lane.id}/${backend}/${sampleIndex} changed the fixed-time Moon WC geometry`,
+          );
+        }
+        const scalarProofs = [
+          sample.positionErrorMeters,
+          sample.directionDotRequested,
+          sample.upDotRequested,
+          sample.directionToMoonDot,
+          sample.seamNormalDot,
+          sample.basis?.directionMagnitude,
+          sample.basis?.rightMagnitude,
+          sample.basis?.upMagnitude,
+          sample.basis?.directionRightDot,
+          sample.basis?.directionUpDot,
+          sample.basis?.rightUpDot,
+          sample.basis?.handedness,
+        ];
+        if (
+          scalarProofs.some((value) => !Number.isFinite(value)) ||
+          Math.abs(magnitude(direction) - 1) > 1e-9 ||
+          Math.abs(magnitude(right) - 1) > 1e-9 ||
+          Math.abs(magnitude(up) - 1) > 1e-9 ||
+          Math.abs(magnitude(sample.cameraLocalDirection) - 1) > 1e-9 ||
+          Math.abs(dot(direction, right)) > 1e-9 ||
+          Math.abs(dot(direction, up)) > 1e-9 ||
+          Math.abs(dot(right, up)) > 1e-9 ||
+          Math.abs(dot(cross(direction, up), right) - 1) > 1e-9 ||
+          !Number.isFinite(toMoonMagnitude) ||
+          toMoonMagnitude <= 0 ||
+          Math.abs(toMoonMagnitude - sample.centerDistanceMeters) > 1e-3 ||
+          !Number.isFinite(sample.centerDistanceMeters) ||
+          !Number.isFinite(sample.altitudeAboveMoonMeters) ||
+          !Number.isFinite(sample.moonRadiusMeters) ||
+          sample.moonRadiusMeters <= 0 ||
+          !Number.isFinite(sample.canvasHeight) ||
+          sample.canvasHeight <= 0 ||
+          !Number.isFinite(sample.fovyRadians) ||
+          sample.fovyRadians <= 0 ||
+          sample.fovyRadians >= Math.PI ||
+          !Number.isFinite(expectedOutwardMagnitude) ||
+          Math.abs(expectedOutwardMagnitude - 1) > 1e-9 ||
+          !Number.isFinite(expectedRightMagnitude) ||
+          expectedRightMagnitude <= 0 ||
+          Math.abs(magnitude(moonX) - 1) > 1e-9 ||
+          Math.abs(magnitude(moonY) - 1) > 1e-9 ||
+          Math.abs(magnitude(moonZ) - 1) > 1e-9 ||
+          Math.abs(dot(moonX, moonY)) > 1e-9 ||
+          Math.abs(dot(moonX, moonZ)) > 1e-9 ||
+          Math.abs(dot(moonY, moonZ)) > 1e-9 ||
+          Math.abs(dot(cross(moonX, moonY), moonZ) - 1) > 1e-9 ||
+          vectorDistance(
+            sample.requestedCameraWorldPosition,
+            expectedRequestedPosition,
+          ) > 1e-3 ||
+          vectorDistance(
+            sample.requestedDirectionWC,
+            expectedRequestedDirection,
+          ) > 1e-9 ||
+          vectorDistance(sample.requestedUpWC, moonZ) > 1e-9 ||
+          vectorDistance(right, expectedRight) > 1e-7 ||
+          Math.abs(sample.centerDistanceMeters - expectedCenterDistance) >
+            1e-6 ||
+          Math.abs(
+            sample.altitudeAboveMoonMeters -
+              (sample.centerDistanceMeters - sample.moonRadiusMeters),
+          ) > 1e-9 ||
+          sample.targetDiscDiameterPx !== laneDefinition.targetDiscDiameterPx ||
+          sample.lightingFixture !== "camera-coincident-directional-light" ||
+          vectorDistance(
+            sample.requestedCameraLocalDirection,
+            expectedLocalDirection,
+          ) > 1e-12 ||
+          vectorDistance(sample.cameraLocalDirection, expectedLocalDirection) >
+            1e-9 ||
+          positionError > 1e-3 ||
+          directionDotRequested < 1 - 1e-7 ||
+          upDotRequested < 1 - 1e-7 ||
+          directionToMoonDot < 1 - 1e-7 ||
+          Math.abs(sample.positionErrorMeters - positionError) > 1e-9 ||
+          Math.abs(sample.directionDotRequested - directionDotRequested) >
+            1e-12 ||
+          Math.abs(sample.upDotRequested - upDotRequested) > 1e-12 ||
+          Math.abs(sample.directionToMoonDot - directionToMoonDot) > 1e-12 ||
+          Math.abs(sample.seamNormalDot + sample.cameraLocalDirection[0]) >
+            1e-12
+        ) {
+          failures.push(
+            `${lane.id}/${backend}/${sampleIndex} post-sync WC pose or basis was not the requested orthonormal Moon track`,
+          );
+        }
+        const basis = sample.basis;
+        if (
+          Math.abs(
+            (basis?.directionMagnitude ?? Infinity) - magnitude(direction),
+          ) > 1e-12 ||
+          Math.abs((basis?.rightMagnitude ?? Infinity) - magnitude(right)) >
+            1e-12 ||
+          Math.abs((basis?.upMagnitude ?? Infinity) - magnitude(up)) > 1e-12 ||
+          Math.abs(
+            (basis?.directionRightDot ?? Infinity) - dot(direction, right),
+          ) > 1e-12 ||
+          Math.abs((basis?.directionUpDot ?? Infinity) - dot(direction, up)) >
+            1e-12 ||
+          Math.abs((basis?.rightUpDot ?? Infinity) - dot(right, up)) > 1e-12 ||
+          Math.abs(
+            (basis?.handedness ?? Infinity) - dot(cross(direction, up), right),
+          ) > 1e-12
+        ) {
+          failures.push(
+            `${lane.id}/${backend}/${sampleIndex} basis self-attestation disagreed with actual WC vectors`,
+          );
+        }
+      }
     }
 
-    if (lane.parity?.sampleCount !== report.sampleCount) {
+    for (
+      let sampleIndex = 0;
+      sampleIndex < (lane.motion?.length ?? 0);
+      sampleIndex++
+    ) {
+      const motionSample = lane.motion[sampleIndex];
+      const delta = motionSample?.backendPoseDelta;
+      const poseKeys = [
+        ["positionMeters", "cameraWorldPosition"],
+        ["direction", "directionWC"],
+        ["right", "rightWC"],
+        ["up", "upWC"],
+      ];
+      const recomputedDelta = Object.fromEntries(
+        poseKeys.map(([deltaKey, poseKey]) => {
+          const left = motionSample?.webgl?.[poseKey];
+          const right = motionSample?.webgpu?.[poseKey];
+          return [
+            deltaKey,
+            Array.isArray(left) && Array.isArray(right)
+              ? vectorDistance(left, right)
+              : Infinity,
+          ];
+        }),
+      );
+      if (
+        !delta ||
+        poseKeys.some(
+          ([deltaKey]) =>
+            !Number.isFinite(delta?.[deltaKey]) ||
+            delta[deltaKey] < 0 ||
+            Math.abs(delta[deltaKey] - recomputedDelta[deltaKey]) > 1e-12,
+        ) ||
+        recomputedDelta.positionMeters > 1e-3 ||
+        recomputedDelta.direction > 1e-9 ||
+        recomputedDelta.right > 1e-9 ||
+        recomputedDelta.up > 1e-9
+      ) {
+        failures.push(
+          `${lane.id}/${sampleIndex} WebGL/WebGPU post-sync WC poses diverged`,
+        );
+      }
+    }
+
+    const paritySamples = Array.isArray(lane.parity?.samples)
+      ? lane.parity.samples
+      : [];
+    const paritySampleKeys = [
+      "comparedPixels",
+      "maskIntersectionOverUnion",
+      "meanAbsoluteRgbError",
+      "meanAbsoluteLumaError",
+      "normalizedMeanAbsoluteLumaError",
+      "changedPixelFraction",
+      "spatialHighFrequencyRatio",
+    ];
+    if (
+      paritySamples.length !== report.sampleCount ||
+      paritySamples.some(
+        (sample, sampleIndex) =>
+          !exactObjectKeys(
+            sample,
+            paritySampleKeys,
+            `${laneDefinition.id}.parity.sample`,
+            failures,
+          ) ||
+          !Number.isInteger(sample.comparedPixels) ||
+          sample.comparedPixels < 0 ||
+          paritySampleKeys
+            .slice(1)
+            .some((key) => !Number.isFinite(sample[key]) || sample[key] < 0) ||
+          sample.maskIntersectionOverUnion > 1 ||
+          sample.changedPixelFraction > 1 ||
+          Math.abs(
+            sample.spatialHighFrequencyRatio -
+              (lane.backends?.webgpu?.frames?.[sampleIndex]
+                ?.normalizedSpatialHighFrequency ?? Infinity) /
+                Math.max(
+                  1e-9,
+                  lane.backends?.webgl?.frames?.[sampleIndex]
+                    ?.normalizedSpatialHighFrequency ?? -Infinity,
+                ),
+          ) > 1e-12,
+      )
+    ) {
       failures.push(
-        `${lane.id} recorded ${lane.parity?.sampleCount ?? 0} parity sample(s), expected ${report.sampleCount}`,
+        `${laneDefinition.id} did not retain 13 complete parity measurements`,
+      );
+    }
+    const recomputedParity = recomputeParitySummary(paritySamples);
+    const paritySummaryKeys = [
+      "sampleCount",
+      "comparedPixelsMin",
+      "maskIntersectionOverUnionMean",
+      "meanAbsoluteRgbError",
+      "meanAbsoluteLumaError",
+      "normalizedMeanAbsoluteLumaError",
+      "normalizedP95AbsoluteLumaError",
+      "changedPixelFractionMean",
+      "spatialHighFrequencyRatioMean",
+    ];
+    if (
+      !numericSummaryMatches(lane.parity, recomputedParity, paritySummaryKeys)
+    ) {
+      failures.push(
+        `${laneDefinition.id} parity summary disagreed with its sample measurements`,
+      );
+    }
+    if (recomputedParity.sampleCount !== report.sampleCount) {
+      failures.push(
+        `${lane.id} recorded ${recomputedParity.sampleCount} parity sample(s), expected ${report.sampleCount}`,
+      );
+    }
+    if (recomputedParity.comparedPixelsMin < minimumInteriorPixels) {
+      failures.push(
+        `${laneDefinition.id} parity overlap was below the non-vacuous floor ${minimumInteriorPixels}`,
       );
     }
 
-    const target = lane.targetDiscDiameterPx;
+    const target = laneDefinition.targetDiscDiameterPx;
     for (const backend of ["webgl", "webgpu"]) {
-      const measured =
-        lane.backends?.[backend]?.spatial?.discDiameterPxMedian ?? 0;
-      const lower = lane.id === "minified-16px" ? 8 : target * 0.55;
-      const upper = lane.id === "minified-16px" ? 28 : target * 1.45;
+      const measured = summarizeSpatial(
+        lane.backends?.[backend]?.frames ?? [],
+      ).discDiameterPxMedian;
+      const lower = laneDefinition.id === "minified-16px" ? 8 : target * 0.55;
+      const upper = laneDefinition.id === "minified-16px" ? 28 : target * 1.45;
       if (measured < lower || measured > upper) {
         failures.push(
           `${lane.id}/${backend} measured ${measured}px, outside structural framing band ${lower}-${upper}px`,
@@ -1154,10 +2316,10 @@ function validateStructuralEvidence(report) {
     }
 
     const centerDots = (lane.motion ?? []).map((sample) =>
-      Math.abs(sample.webgl.seamNormalDot),
+      Math.abs(-(sample.webgl?.cameraLocalDirection?.[0] ?? Infinity)),
     );
     if (
-      lane.seamPlacement === "center" &&
+      laneDefinition.seamPlacement === "center" &&
       (centerDots.length !== report.sampleCount ||
         Math.max(...centerDots.map((value) => Math.abs(1 - value))) > 0.001)
     ) {
@@ -1166,12 +2328,21 @@ function validateStructuralEvidence(report) {
       );
     }
     if (
-      lane.seamPlacement === "limb" &&
+      laneDefinition.seamPlacement === "limb" &&
       (centerDots.length !== report.sampleCount ||
         Math.max(...centerDots) > 0.03)
     ) {
       failures.push("seam-at-limb route did not keep the U seam on the limb");
     }
+  }
+
+  if (
+    retainedPngPaths.size !==
+    MOON_MIP_MOTION_LANES.length * MOON_MIP_SAMPLE_COUNT * BACKEND_IDS.length
+  ) {
+    failures.push(
+      `raw evidence retained ${retainedPngPaths.size} unique PNG paths instead of 104`,
+    );
   }
 
   if ((report.gpuGateArm?.total ?? 0) < 1) {
@@ -1395,15 +2566,10 @@ function sensitivityMetricValue(lane, backend, metric) {
 
 /**
  * Compare one structurally green normal report with its deliberately broken
- * base-level-only control. This helper establishes sensitivity direction; it
- * deliberately does not invent a numeric effect-size threshold. Calibration
- * owns that policy and supplies the exact cells/metrics it requires.
+ * base-level-only control. The four cells are source-controlled above; a
+ * caller cannot substitute a favorable lane, backend, or measurement.
  */
-export function evaluatePairedReportSensitivity(
-  normalReport,
-  forceLod0Report,
-  requirements,
-) {
+export function evaluatePairedReportSensitivity(normalReport, forceLod0Report) {
   const failures = [];
   const comparisons = [];
   if (normalReport?.controlMode !== "normal") {
@@ -1449,9 +2615,9 @@ export function evaluatePairedReportSensitivity(
       forceLod0Report?.browser?.version,
     ],
     [
-      "runtimeBundle.sha256",
-      normalReport?.runtimeBundle?.sha256,
-      forceLod0Report?.runtimeBundle?.sha256,
+      "runtimeIdentity.identitySha256",
+      normalReport?.runtimeIdentity?.identitySha256,
+      forceLod0Report?.runtimeIdentity?.identitySha256,
     ],
     [
       "setup.albedoUrl",
@@ -1474,17 +2640,13 @@ export function evaluatePairedReportSensitivity(
       failures.push(`paired reports do not share exact ${field}`);
     }
   }
-  if (
-    !Number.isInteger(normalReport?.sampleCount) ||
-    normalReport.sampleCount < 5 ||
-    normalReport.sampleCount % 2 === 0
-  ) {
-    failures.push("paired reports do not contain a valid odd sample count");
+  if (normalReport?.sampleCount !== MOON_MIP_SAMPLE_COUNT) {
+    failures.push(
+      `paired reports do not contain the pre-registered ${MOON_MIP_SAMPLE_COUNT}-sample count`,
+    );
   }
 
-  if (!Array.isArray(requirements) || requirements.length === 0) {
-    failures.push("paired sensitivity requirements must be a non-empty array");
-  } else {
+  {
     const seenRequirements = new Set();
     const normalLaneById = new Map(
       (normalReport?.lanes ?? []).map((lane) => [lane.id, lane]),
@@ -1493,7 +2655,7 @@ export function evaluatePairedReportSensitivity(
       (forceLod0Report?.lanes ?? []).map((lane) => [lane.id, lane]),
     );
     const validLaneIds = new Set(MOON_MIP_MOTION_LANES.map((lane) => lane.id));
-    for (const requirement of requirements) {
+    for (const requirement of PAIRED_SENSITIVITY_REQUIREMENTS) {
       const laneId = requirement?.laneId;
       const backend = requirement?.backend;
       const metric = requirement?.metric;
@@ -1806,6 +2968,18 @@ async function installBrowserHarness(page) {
           new C.Cartesian3(),
         );
         C.Cartesian3.normalize(localUp, localUp);
+        const localXAxis = C.Matrix4.multiplyByPointAsVector(
+          matrix,
+          C.Cartesian3.UNIT_X,
+          new C.Cartesian3(),
+        );
+        const localYAxis = C.Matrix4.multiplyByPointAsVector(
+          matrix,
+          C.Cartesian3.UNIT_Y,
+          new C.Cartesian3(),
+        );
+        C.Cartesian3.normalize(localXAxis, localXAxis);
+        C.Cartesian3.normalize(localYAxis, localYAxis);
 
         const frustum = viewer.camera.frustum;
         if ("fov" in frustum) {
@@ -1849,22 +3023,124 @@ async function installBrowserHarness(page) {
         scene.requestRender();
         return {
           frameNumberBefore: scene._frameState.frameNumber,
-          cameraWorldPosition: [
+          requestedCameraWorldPosition: [
             cameraPosition.x,
             cameraPosition.y,
             cameraPosition.z,
           ],
+          requestedDirectionWC: [
+            viewDirection.x,
+            viewDirection.y,
+            viewDirection.z,
+          ],
+          requestedUpWC: [localUp.x, localUp.y, localUp.z],
           moonCenterWorld: [center.x, center.y, center.z],
-          cameraLocalDirection: localDirection,
+          moonLocalToWorldBasis: {
+            xWC: [localXAxis.x, localXAxis.y, localXAxis.z],
+            yWC: [localYAxis.x, localYAxis.y, localYAxis.z],
+            zWC: [localUp.x, localUp.y, localUp.z],
+          },
+          requestedCameraLocalDirection: localDirection,
           centerDistanceMeters: centerDistance,
           altitudeAboveMoonMeters: centerDistance - radius,
-          seamNormalDot: -localDirection[0],
+          moonRadiusMeters: radius,
           lightingFixture: "camera-coincident-directional-light",
           targetDiscDiameterPx: lane.targetDiscDiameterPx,
           canvasHeight,
           fovyRadians: fovy,
         };
       };
+
+      const xyz = (value) => [value.x, value.y, value.z];
+      const postSyncCameraPose = (viewer, requested) => {
+        const camera = viewer.camera;
+        const position = C.Cartesian3.clone(camera.positionWC);
+        const direction = C.Cartesian3.clone(camera.directionWC);
+        const right = C.Cartesian3.clone(camera.rightWC);
+        const up = C.Cartesian3.clone(camera.upWC);
+        const moonCenter = new C.Cartesian3(...requested.moonCenterWorld);
+        const outward = C.Cartesian3.normalize(
+          C.Cartesian3.subtract(position, moonCenter, new C.Cartesian3()),
+          new C.Cartesian3(),
+        );
+        const toMoon = C.Cartesian3.negate(outward, new C.Cartesian3());
+        const inverseMoonMatrix = C.Matrix4.inverseTransformation(
+          viewer.scene.moon._ellipsoidPrimitive.modelMatrix,
+          new C.Matrix4(),
+        );
+        const localOutward = C.Matrix4.multiplyByPointAsVector(
+          inverseMoonMatrix,
+          outward,
+          new C.Cartesian3(),
+        );
+        C.Cartesian3.normalize(localOutward, localOutward);
+        const directionCrossUp = C.Cartesian3.cross(
+          direction,
+          up,
+          new C.Cartesian3(),
+        );
+        const requestedPosition = new C.Cartesian3(
+          ...requested.requestedCameraWorldPosition,
+        );
+        const requestedDirection = new C.Cartesian3(
+          ...requested.requestedDirectionWC,
+        );
+        const requestedUp = new C.Cartesian3(...requested.requestedUpWC);
+        return {
+          cameraWorldPosition: xyz(position),
+          directionWC: xyz(direction),
+          rightWC: xyz(right),
+          upWC: xyz(up),
+          cameraLocalDirection: xyz(localOutward),
+          seamNormalDot: -localOutward.x,
+          positionErrorMeters: C.Cartesian3.distance(
+            position,
+            requestedPosition,
+          ),
+          directionDotRequested: C.Cartesian3.dot(
+            direction,
+            requestedDirection,
+          ),
+          upDotRequested: C.Cartesian3.dot(up, requestedUp),
+          directionToMoonDot: C.Cartesian3.dot(direction, toMoon),
+          basis: {
+            directionMagnitude: C.Cartesian3.magnitude(direction),
+            rightMagnitude: C.Cartesian3.magnitude(right),
+            upMagnitude: C.Cartesian3.magnitude(up),
+            directionRightDot: C.Cartesian3.dot(direction, right),
+            directionUpDot: C.Cartesian3.dot(direction, up),
+            rightUpDot: C.Cartesian3.dot(right, up),
+            handedness: C.Cartesian3.dot(directionCrossUp, right),
+          },
+        };
+      };
+
+      const poseDelta = (left, right) => ({
+        positionMeters: Math.hypot(
+          ...left.cameraWorldPosition.map(
+            (component, index) => component - right.cameraWorldPosition[index],
+          ),
+        ),
+        direction: Math.hypot(
+          ...left.directionWC.map(
+            (component, index) => component - right.directionWC[index],
+          ),
+        ),
+        right: Math.hypot(
+          ...left.rightWC.map(
+            (component, index) => component - right.rightWC[index],
+          ),
+        ),
+        up: Math.hypot(
+          ...left.upWC.map((component, index) => component - right.upWC[index]),
+        ),
+      });
+
+      const poseIsStable = (delta) =>
+        delta.positionMeters <= 1e-4 &&
+        delta.direction <= 1e-12 &&
+        delta.right <= 1e-12 &&
+        delta.up <= 1e-12;
 
       const moveTrackedCamera = async (
         laneId,
@@ -1881,6 +3157,8 @@ async function installBrowserHarness(page) {
           webgpu: positionViewer(webgpu, lane, sampleIndex, sampleCount),
         };
         const deadline = performance.now() + timeoutMs;
+        let previousPoses = null;
+        let stableFrameCount = 0;
         while (performance.now() < deadline) {
           await nextAnimationFrame();
           const webglFrame = webgl.scene._frameState.frameNumber;
@@ -1889,17 +3167,43 @@ async function installBrowserHarness(page) {
             webglFrame > records.webgl.frameNumberBefore &&
             webgpuFrame > records.webgpu.frameNumberBefore
           ) {
-            records.webgl.frameNumber = webglFrame;
-            records.webgpu.frameNumber = webgpuFrame;
-            records.webgl.clockOffsetSeconds = C.JulianDate.secondsDifference(
-              webgl.clock.currentTime,
-              fixedTime,
-            );
-            records.webgpu.clockOffsetSeconds = C.JulianDate.secondsDifference(
-              webgpu.clock.currentTime,
-              fixedTime,
-            );
-            return records;
+            const currentPoses = {
+              webgl: postSyncCameraPose(webgl, records.webgl),
+              webgpu: postSyncCameraPose(webgpu, records.webgpu),
+            };
+            if (
+              previousPoses !== null &&
+              poseIsStable(
+                poseDelta(currentPoses.webgl, previousPoses.webgl),
+              ) &&
+              poseIsStable(poseDelta(currentPoses.webgpu, previousPoses.webgpu))
+            ) {
+              stableFrameCount++;
+            } else {
+              stableFrameCount = 0;
+            }
+            previousPoses = currentPoses;
+            if (stableFrameCount >= 2) {
+              for (const [backend, viewer, frameNumber] of [
+                ["webgl", webgl, webglFrame],
+                ["webgpu", webgpu, webgpuFrame],
+              ]) {
+                Object.assign(records[backend], currentPoses[backend], {
+                  frameNumber,
+                  clockOffsetSeconds: C.JulianDate.secondsDifference(
+                    viewer.clock.currentTime,
+                    fixedTime,
+                  ),
+                  postSyncStableFrameCount: stableFrameCount,
+                  poseSource: "post-sync-camera-world-coordinates",
+                });
+              }
+              records.backendPoseDelta = poseDelta(
+                currentPoses.webgl,
+                currentPoses.webgpu,
+              );
+              return records;
+            }
           }
         }
         throw new Error(
@@ -2062,6 +3366,11 @@ async function installBrowserHarness(page) {
         drainGpu,
         diagnostics,
       };
+      const loadedCesiumScriptUrl = Array.from(document.scripts)
+        .map((script) => script.src)
+        .find((source) =>
+          /\/Build\/CesiumUnminified\/Cesium\.js$/u.test(source),
+        );
       return {
         fixedTimeIso,
         albedoUrl,
@@ -2070,6 +3379,20 @@ async function installBrowserHarness(page) {
         sameJavaScriptRealm:
           webgl.scene.canvas.ownerDocument.defaultView ===
           webgpu.scene.canvas.ownerDocument.defaultView,
+        adapterIdentity: {
+          kind: "Apps/WebGPUTest/split-screen-comparison.html",
+          loadedCesiumScriptUrl: loadedCesiumScriptUrl ?? null,
+          globalCesiumObjectPresent: typeof C === "object" && C !== null,
+          globalMoonConstructorPresent: typeof C.Moon === "function",
+          webglMoonUsesGlobalConstructor:
+            webgl.scene.moon?.constructor === C.Moon,
+          webgpuMoonUsesGlobalConstructor:
+            webgpu.scene.moon?.constructor === C.Moon,
+          distinctMoonInstances: webgl.scene.moon !== webgpu.scene.moon,
+          webglSceneUsesGlobalConstructor: webgl.scene?.constructor === C.Scene,
+          webgpuSceneUsesGlobalConstructor:
+            webgpu.scene?.constructor === C.Scene,
+        },
       };
     },
     {
@@ -2082,11 +3405,13 @@ async function installBrowserHarness(page) {
 
 async function runProbe() {
   const controlMode = parseControlMode();
+  activeInvocationControlMode = controlMode;
   const runId = parseRunId() ?? generatedRunId();
   activeInvocationRunId = runId;
   const outputPath = resolve(
     process.argv[2] ?? defaultOutputPath(controlMode, runId),
   );
+  activeInvocationOutputPath = outputPath;
   const evidenceDirectory = /\.json$/i.test(outputPath)
     ? outputPath.replace(/\.json$/i, "-frames")
     : `${outputPath}-frames`;
@@ -2100,7 +3425,7 @@ async function runProbe() {
   const viewerUrl = viewerUrlObject.href;
   const headed = process.env.PROBE_HEADED === "1";
 
-  await mkdir(dirname(outputPath), { recursive: true });
+  await mkdirWithoutSymbolicAncestors(dirname(outputPath));
   await mkdir(evidenceDirectory, { recursive: false });
 
   const browser = await chromium.launch({
@@ -2113,6 +3438,8 @@ async function runProbe() {
     ],
   });
   let context;
+  let completedReport;
+  let executionError;
   try {
     context = await browser.newContext({
       viewport: { width: 1600, height: 900 },
@@ -2152,6 +3479,11 @@ async function runProbe() {
     );
     const gpuGateArm = await armWebGPUDevices(page);
     const setup = await installBrowserHarness(page);
+    const capturedRuntimeIdentity = await runtimeIdentity(
+      base,
+      viewerUrl,
+      setup,
+    );
     const readiness = await page.evaluate(() =>
       globalThis.__c12MoonMipMotionProbe.waitForReadiness(60_000),
     );
@@ -2195,7 +3527,13 @@ async function runProbe() {
           });
           const frame = await analyzePng(buffer);
           rawFrames[backend].push(frame);
-          publicFrames[backend].push(publicFrameMetric(frame, pngPath, buffer));
+          publicFrames[backend].push(
+            publicFrameMetric(
+              frame,
+              portableEvidencePath(outputPath, pngPath),
+              buffer,
+            ),
+          );
         }
       }
 
@@ -2207,15 +3545,30 @@ async function runProbe() {
 
       const backendEvidence = {};
       for (const backend of ["webgl", "webgpu"]) {
+        const temporal = computeTemporalSeries(rawFrames[backend]);
+        Object.assign(
+          temporal,
+          recomputeTemporalSummary(publicFrames[backend], temporal.pairs),
+        );
         backendEvidence[backend] = {
           captureKind: "playwright-canvas-element-png",
           canvasSelector:
             backend === "webgl" ? "#leftViewer canvas" : "#rightViewer canvas",
           frames: publicFrames[backend],
-          spatial: summarizeSpatial(rawFrames[backend]),
-          temporal: computeTemporalSeries(rawFrames[backend]),
+          spatial: summarizeSpatial(publicFrames[backend]),
+          temporal,
         };
       }
+      const parity = computeParitySeries(rawFrames.webgl, rawFrames.webgpu);
+      parity.samples.forEach((sample, sampleIndex) => {
+        sample.spatialHighFrequencyRatio =
+          publicFrames.webgpu[sampleIndex].normalizedSpatialHighFrequency /
+          Math.max(
+            1e-9,
+            publicFrames.webgl[sampleIndex].normalizedSpatialHighFrequency,
+          );
+      });
+      Object.assign(parity, recomputeParitySummary(parity.samples));
       lanes.push({
         ...lane,
         motion,
@@ -2224,7 +3577,7 @@ async function runProbe() {
           webgpu: cameraMotionSummary(motion, "webgpu"),
         },
         backends: backendEvidence,
-        parity: computeParitySeries(rawFrames.webgl, rawFrames.webgpu),
+        parity,
       });
     }
 
@@ -2267,7 +3620,7 @@ async function runProbe() {
         version: await browser.version(),
         headed,
       },
-      runtimeBundle: await runtimeBundleIdentity(),
+      runtimeIdentity: capturedRuntimeIdentity,
       setup,
       readiness,
       control,
@@ -2311,19 +3664,38 @@ async function runProbe() {
       CALIBRATED_THRESHOLDS,
       report.manualInspection,
     );
-    await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, {
-      flag: "wx",
-    });
-    console.log(JSON.stringify(report, null, 2));
-    console.error(
-      `[C12-33] ${report.result.verdict} — ${outputPath} ` +
-        `(hardFailures=${hardFailures.length}, qualityFailures=${qualityFailures.length})`,
-    );
-    return report;
-  } finally {
-    await context?.close();
-    await browser.close();
+    Object.assign(report, classifyRawReport(report.result));
+    completedReport = report;
+  } catch (error) {
+    executionError = error;
   }
+  const cleanupResults = await Promise.allSettled([
+    context?.close() ?? Promise.resolve(),
+    browser.close(),
+  ]);
+  const cleanupFailures = cleanupResults
+    .filter((result) => result.status === "rejected")
+    .map((result) => String(result.reason?.stack ?? result.reason));
+  if (cleanupFailures.length > 0) {
+    const cleanupError = new Error(
+      `Moon mip probe cleanup failed: ${cleanupFailures.join("; ")}`,
+      executionError ? { cause: executionError } : undefined,
+    );
+    cleanupError.failureKind = "CLEANUP";
+    throw cleanupError;
+  }
+  if (executionError) {
+    throw executionError;
+  }
+  await writeFile(outputPath, `${JSON.stringify(completedReport, null, 2)}\n`, {
+    flag: "wx",
+  });
+  console.log(JSON.stringify(completedReport, null, 2));
+  console.error(
+    `[C12-33] ${completedReport.status} — ${outputPath} ` +
+      `(hardFailures=${completedReport.result.hardFailures.length}, qualityFailures=${completedReport.result.qualityFailures.length})`,
+  );
+  return completedReport;
 }
 
 const isMainModule =
@@ -2333,52 +3705,14 @@ const isMainModule =
 if (isMainModule) {
   runProbe()
     .then((report) => {
-      process.exitCode = report.result.exitCode;
+      process.exitCode = report.exitCode;
     })
     .catch(async (error) => {
-      let fatalControlMode = "invalid-control";
-      try {
-        fatalControlMode = parseControlMode();
-      } catch (_controlError) {
-        // Preserve the original fail-closed parse error in result.failures.
-      }
-      let fatalRunId = activeInvocationRunId ?? generatedRunId();
-      try {
-        fatalRunId = parseRunId() ?? fatalRunId;
-      } catch (_runIdError) {
-        // Preserve the original fail-closed parse error in result.failures.
-      }
-      const outputPath = resolve(
-        process.argv[2] ?? defaultOutputPath(fatalControlMode, fatalRunId),
-      );
-      const fatalReport = {
-        schemaVersion: 1,
-        campaign: "C12-33",
-        probe: "probe-moon-mip-motion-edge",
-        runId: fatalRunId,
-        capturedAt: new Date().toISOString(),
-        measurementStatus: "FATAL_FAIL",
-        requestedControlMode: process.env.C12_MOON_MIP_CONTROL ?? "normal",
-        result: {
-          verdict: "FAIL",
-          exitCode: EXIT_CODES.FAIL,
-          failures: [String(error?.stack ?? error)],
-          inconclusive: [],
-        },
-      };
-      try {
-        await mkdir(dirname(outputPath), { recursive: true });
-        await writeFile(
-          outputPath,
-          `${JSON.stringify(fatalReport, null, 2)}\n`,
-          {
-            flag: "wx",
-          },
-        );
-      } catch (_writeError) {
-        // The original failure remains the actionable error.
-      }
+      await emitFatalProbeArtifact(error, error?.failureKind ?? "ERROR");
       console.error(error?.stack ?? error);
       process.exitCode = EXIT_CODES.FAIL;
+    })
+    .finally(() => {
+      clearTimeout(watchdog);
     });
 }

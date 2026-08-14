@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import test from "node:test";
 import {
   analyzeRgbaFrame,
   CALIBRATED_THRESHOLDS,
+  classifyRawReport,
   computeParitySeries,
   computeTemporalSeries,
   decideVerdict,
@@ -12,11 +14,16 @@ import {
   evaluatePairedReportSensitivity,
   EXIT_CODES,
   FIXED_TIME_ISO,
+  isPortableEvidencePath,
   MANUAL_INSPECTION_REQUIREMENT,
   MOON_MIP_CONTROL_MODES,
   MOON_MIP_MOTION_LANES,
+  MOON_MIP_SAMPLE_COUNT,
+  PAIRED_SENSITIVITY_REQUIREMENTS,
   parseControlMode,
   parseRunId,
+  parseSampleCount,
+  portableEvidencePath,
   validateCalibratedThresholds,
 } from "./probe-moon-mip-motion-edge.mjs";
 
@@ -135,7 +142,7 @@ function syntheticSensitivityReport(controlMode, value) {
     sampleCount: 13,
     fixedTimeIso: FIXED_TIME_ISO,
     browser: { version: "synthetic-edge" },
-    runtimeBundle: { sha256: "SYNTHETIC" },
+    runtimeIdentity: { identitySha256: "SYNTHETIC" },
     setup: { albedoUrl: "albedo", normalUrl: "normal" },
     result: { hardFailures: [] },
     lanes: MOON_MIP_MOTION_LANES.map((lane) => ({
@@ -187,7 +194,129 @@ test("probe pins one clock and declares all four required moving lanes", () => {
   assert.match(probeSource, /motion\?\.length !== report\.sampleCount/);
   assert.match(
     probeSource,
-    /lane\.parity\?\.sampleCount !== report\.sampleCount/,
+    /recomputedParity\.sampleCount !== report\.sampleCount/,
+  );
+  assert.equal(MOON_MIP_SAMPLE_COUNT, 13);
+  assert.equal(parseSampleCount(13), 13);
+  assert.throws(() => parseSampleCount(11), /pre-registered count 13/);
+  assert.throws(() => parseSampleCount(15), /pre-registered count 13/);
+});
+
+test("raw reports use library-compatible non-certifying states and cannot self-promote", () => {
+  assert.deepEqual(
+    classifyRawReport({
+      verdict: "INCONCLUSIVE",
+      hardFailures: [],
+      qualityFailures: [],
+    }),
+    {
+      status: "NON_CERTIFYING",
+      exitCode: 2,
+      certificationEligible: false,
+    },
+  );
+  assert.equal(
+    classifyRawReport({
+      verdict: "FAIL",
+      hardFailures: ["fault"],
+      qualityFailures: [],
+    }).status,
+    "STRUCTURAL",
+  );
+  assert.equal(
+    classifyRawReport({
+      verdict: "FAIL",
+      hardFailures: [],
+      qualityFailures: ["quality"],
+    }).status,
+    "FAIL",
+  );
+  assert.match(probeSource, /Object\.assign\(report, classifyRawReport/);
+  assert.match(probeSource, /status: "ERROR"/);
+  assert.match(probeSource, /emitFatalProbeArtifact\(error, "WATCHDOG"\)/);
+  assert.match(probeSource, /process\.exit\(EXIT_CODES\.FAIL\)/);
+  assert.match(probeSource, /clearTimeout\(watchdog\)/);
+  assert.match(probeSource, /error\?\.failureKind \?\? "ERROR"/);
+  assert.match(probeSource, /failureKind = "ERROR"/);
+  assert.match(probeSource, /cleanupError\.failureKind = "CLEANUP"/);
+  assert.match(probeSource, /Promise\.allSettled/);
+  assert.match(probeSource, /completedReport = report/);
+  assert.doesNotMatch(probeSource, /process\.exit\(2\)/);
+  assert.doesNotMatch(probeSource, /status:\s*"PASS"/);
+});
+
+test("PNG paths are portable and repository escapes fail closed", () => {
+  assert.equal(isPortableEvidencePath("frames/close-00-webgl.png"), true);
+  assert.equal(isPortableEvidencePath("./frames/close-00-webgl.png"), false);
+  assert.equal(isPortableEvidencePath("frames/./close-00-webgl.png"), false);
+  const outputDirectory = resolve("tmp", "c12-33-output");
+  assert.equal(
+    portableEvidencePath(
+      resolve(outputDirectory, "report.json"),
+      resolve(outputDirectory, "report-frames", "close-00-webgl.png"),
+    ),
+    "report-frames/close-00-webgl.png",
+  );
+  assert.throws(
+    () =>
+      portableEvidencePath(
+        resolve(outputDirectory, "report.json"),
+        resolve(outputDirectory, "..", "outside.png"),
+      ),
+    /beneath the report directory/,
+  );
+  assert.match(probeSource, /portableEvidencePath\(outputPath, pngPath\)/);
+  assert.doesNotMatch(
+    probeSource,
+    /publicFrameMetric\(frame, pngPath, buffer\)/,
+  );
+});
+
+test("runtime provenance binds served and local adapter, bundles, and Moon assets", () => {
+  for (const token of [
+    "split-view-adapter",
+    "cesium-global-bundle",
+    "cesium-module-index",
+    "moon-albedo",
+    "moon-normal",
+    "servedMatchesLocal",
+    "identitySha256",
+    "loadedCesiumScriptUrl",
+    "webglMoonUsesGlobalConstructor",
+    "webgpuMoonUsesGlobalConstructor",
+  ]) {
+    assert.ok(probeSource.includes(token), `missing runtime identity ${token}`);
+  }
+  assert.match(probeSource, /await fetch\(canonicalUrl/);
+  assert.match(
+    probeSource,
+    /servedBytes\.byteLength !== localBytes\.byteLength/,
+  );
+  assert.match(probeSource, /servedSha256 !== localSha256/);
+});
+
+test("camera evidence is read from the settled post-sync WC pose and basis", () => {
+  for (const token of [
+    "postSyncCameraPose",
+    "camera.positionWC",
+    "camera.directionWC",
+    "camera.rightWC",
+    "camera.upWC",
+    "postSyncStableFrameCount",
+    "post-sync-camera-world-coordinates",
+    "backendPoseDelta",
+    "basis self-attestation",
+    "moonLocalToWorldBasis",
+    "expectedRequestedPosition",
+    "expectedCenterDistance",
+    "fixedMoonGeometry",
+  ]) {
+    assert.ok(probeSource.includes(token), `missing post-sync proof ${token}`);
+  }
+  assert.match(probeSource, /stableFrameCount >= 2/);
+  assert.doesNotMatch(
+    probeSource,
+    /cameraWorldPosition:\s*\[\s*cameraPosition\.x/,
   );
 });
 
@@ -196,12 +325,20 @@ test("run ids make default evidence paths unique and reject unsafe names", () =>
   assert.equal(parseRunId(" pair-01-normal "), "pair-01-normal");
   assert.throws(() => parseRunId("../escape"), /path-safe/);
   assert.throws(() => parseRunId("contains spaces"), /path-safe/);
+  for (const suffix of [".", "_", "-"]) {
+    assert.throws(() => parseRunId(`trailing${suffix}`), /path-safe/);
+  }
   assert.match(probeSource, /C12_MOON_MIP_RUN_ID/);
   assert.match(probeSource, /defaultOutputPath\(controlMode, runId\)/);
   assert.match(probeSource, /flag: "wx"/);
   assert.match(
     probeSource,
     /mkdir\(evidenceDirectory, \{ recursive: false \}\)/,
+  );
+  assert.match(probeSource, /mkdirWithoutSymbolicAncestors/);
+  assert.match(
+    probeSource,
+    /symbolic output ancestor is forbidden before mkdir/,
   );
 });
 
@@ -232,6 +369,11 @@ test("mip-0 calibration control is symmetric, recorded, and fail-closed", () => 
     "renderBundleManager",
     "bindGroupRebuilt",
     "controlMode",
+    'report.browser?.channel !== "msedge"',
+    '"playwright-canvas-element-png"',
+    '"#leftViewer canvas"',
+    '"#rightViewer canvas"',
+    "normal control did not retain mip-capable sampling",
   ]) {
     assert.ok(probeSource.includes(token), `missing control token ${token}`);
   }
@@ -407,7 +549,7 @@ test("quality evaluation gates p95 shimmer, CV, spatial bands, and parity IoU", 
 });
 
 test("paired reports prove requested normal versus force-lod0 sensitivity", () => {
-  const requirements = [
+  assert.deepEqual(PAIRED_SENSITIVITY_REQUIREMENTS, [
     {
       laneId: "minified-16px",
       backend: "webgl",
@@ -415,19 +557,30 @@ test("paired reports prove requested normal versus force-lod0 sensitivity", () =
     },
     {
       laneId: "minified-16px",
+      backend: "webgl",
+      metric: "spatialHighFrequencyCoefficientOfVariation",
+    },
+    {
+      laneId: "minified-16px",
+      backend: "webgpu",
+      metric: "normalizedP95HighPassDelta",
+    },
+    {
+      laneId: "minified-16px",
       backend: "webgpu",
       metric: "spatialHighFrequencyCoefficientOfVariation",
     },
-  ];
+  ]);
+  assert.ok(Object.isFrozen(PAIRED_SENSITIVITY_REQUIREMENTS));
+  assert.ok(PAIRED_SENSITIVITY_REQUIREMENTS.every(Object.isFrozen));
   const normal = syntheticSensitivityReport("normal", 0.2);
   const control = syntheticSensitivityReport("force-lod0", 0.6);
-  const sensitive = evaluatePairedReportSensitivity(
-    normal,
-    control,
-    requirements,
-  );
+  const sensitive = evaluatePairedReportSensitivity(normal, control);
   assert.equal(sensitive.verdict, "PASS");
-  assert.equal(sensitive.comparisons.length, requirements.length);
+  assert.equal(
+    sensitive.comparisons.length,
+    PAIRED_SENSITIVITY_REQUIREMENTS.length,
+  );
   assert.ok(
     sensitive.comparisons.every(
       (comparison) => comparison.controlStrictlyWorse,
@@ -435,16 +588,22 @@ test("paired reports prove requested normal versus force-lod0 sensitivity", () =
   );
 
   const regressedNormal = syntheticSensitivityReport("normal", 0.8);
-  const insensitive = evaluatePairedReportSensitivity(
-    regressedNormal,
-    control,
-    requirements,
-  );
+  const insensitive = evaluatePairedReportSensitivity(regressedNormal, control);
   assert.equal(insensitive.verdict, "FAIL");
   assert.ok(insensitive.failures.length > 0);
+
+  const callerChosenEasyCell = [
+    { laneId: "close", backend: "webgl", metric: "normalizedP95HighPassDelta" },
+  ];
+  const manipulated = structuredClone(control);
+  manipulated.lanes.find(
+    (lane) => lane.id === "minified-16px",
+  ).backends.webgl.temporal.normalizedP95HighPassDelta = 0.1;
   assert.equal(
-    evaluatePairedReportSensitivity(normal, control, []).verdict,
+    evaluatePairedReportSensitivity(normal, manipulated, callerChosenEasyCell)
+      .verdict,
     "FAIL",
+    "a third-argument caller cell must not replace the fixed authority",
   );
 });
 
