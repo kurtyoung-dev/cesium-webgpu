@@ -6,7 +6,6 @@ import defined from "../Core/defined.js";
 import Matrix4 from "../Core/Matrix4.js";
 import Transforms from "../Core/Transforms.js";
 import Pass from "../Renderer/Pass.js";
-import Camera from "./Camera.js";
 import {
   executeCommands,
   executeComputeCommands,
@@ -22,7 +21,10 @@ isShadowedPass[Pass.OPAQUE] = true;
 isShadowedPass[Pass.TRANSLUCENT] = true;
 
 function setCpuScenePhase(scene, phase) {
-  const frameState = scene.frameState;
+  return setCpuScenePhaseForFrameState(scene.frameState, phase);
+}
+
+function setCpuScenePhaseForFrameState(frameState, phase) {
   const renderer = frameState._cpuSceneProfileRenderer;
   if (!defined(renderer)) {
     return false;
@@ -31,6 +33,260 @@ function setCpuScenePhase(scene, phase) {
     frameState._cpuSceneProfileFrameNumber,
     phase,
   );
+}
+
+function restoreOwnProperty(object, property, hadOwnProperty, value) {
+  if (hadOwnProperty) {
+    object[property] = value;
+  } else {
+    delete object[property];
+  }
+}
+
+const viewportExecutionScratchPool = [];
+let viewportExecutionDepth = 0;
+
+function createViewportExecutionScratch() {
+  return {
+    position: new Cartesian3(),
+    direction: new Cartesian3(),
+    up: new Cartesian3(),
+    right: new Cartesian3(),
+    transform: new Matrix4(),
+    viewport: new BoundingRectangle(),
+    workingViewport: new BoundingRectangle(),
+    viewportTransformation: new Matrix4(),
+    maxCartographic: new Cartographic(Math.PI, CesiumMath.PI_OVER_TWO),
+    maxCoord: new Cartesian3(),
+    eyePoint: new Cartesian3(),
+    windowCoordinates: new Cartesian3(),
+    eyeTranslation: new Cartesian3(),
+    frustum: undefined,
+  };
+}
+
+function acquireViewportExecutionScratch() {
+  const depth = viewportExecutionDepth;
+  let scratch = viewportExecutionScratchPool[depth];
+  if (!defined(scratch)) {
+    scratch = createViewportExecutionScratch();
+    viewportExecutionScratchPool[depth] = scratch;
+  }
+  viewportExecutionDepth = depth + 1;
+  scratch.cleanupFailed = false;
+  scratch.cleanupError = undefined;
+  return scratch;
+}
+
+function releaseViewportExecutionScratch(scratch) {
+  scratch.scene = undefined;
+  scratch.passState = undefined;
+  scratch.camera = undefined;
+  scratch.frameState = undefined;
+  scratch.positionReference = undefined;
+  scratch.directionReference = undefined;
+  scratch.upReference = undefined;
+  scratch.rightReference = undefined;
+  scratch.transformReference = undefined;
+  scratch.frustumReference = undefined;
+  scratch.viewportReference = undefined;
+  scratch.cullingVolume = undefined;
+  scratch.uniformState = undefined;
+  --viewportExecutionDepth;
+}
+
+function captureViewportExecutionState(
+  scratch,
+  scene,
+  passState,
+  camera,
+  uniformUpdateMode,
+) {
+  scratch.scene = scene;
+  scratch.passState = passState;
+  scratch.camera = camera;
+  scratch.frameState = scene.frameState;
+  scratch.uniformState = scene.context.uniformState;
+  scratch.uniformUpdateMode = uniformUpdateMode;
+
+  scratch.positionReference = camera.position;
+  Cartesian3.clone(camera.position, scratch.position);
+  scratch.directionReference = camera.direction;
+  Cartesian3.clone(camera.direction, scratch.direction);
+  scratch.upReference = camera.up;
+  Cartesian3.clone(camera.up, scratch.up);
+  scratch.rightReference = camera.right;
+  Cartesian3.clone(camera.right, scratch.right);
+
+  scratch.transformReference = camera.transform;
+  Matrix4.clone(camera.transform, scratch.transform);
+
+  const frustum = camera.frustum;
+  scratch.frustumReference = frustum;
+  if (
+    !defined(scratch.frustum) ||
+    scratch.frustum.constructor !== frustum.constructor
+  ) {
+    scratch.frustum = frustum.clone();
+  } else {
+    frustum.clone(scratch.frustum);
+  }
+  scratch.hadFrustumXOffset = Object.hasOwn(frustum, "xOffset");
+  scratch.frustumXOffset = frustum.xOffset;
+  scratch.hadFrustumYOffset = Object.hasOwn(frustum, "yOffset");
+  scratch.frustumYOffset = frustum.yOffset;
+
+  const viewport = passState.viewport;
+  scratch.viewportReference = viewport;
+  BoundingRectangle.clone(viewport, scratch.viewport);
+  scratch.cullingVolume = scratch.frameState.cullingVolume;
+
+  scratch.hadSplitFlag = Object.hasOwn(scene, "_is2DViewportSplit");
+  scratch.splitFlag = scene._is2DViewportSplit;
+  scratch.hadLoadFlag = Object.hasOwn(scene, "_exec2DSceneFbLoad");
+  scratch.loadFlag = scene._exec2DSceneFbLoad;
+  scratch.hadDeferFlag = Object.hasOwn(scene, "_exec2DDeferComposite");
+  scratch.deferFlag = scene._exec2DDeferComposite;
+}
+
+function recordViewportCleanupError(scratch, error) {
+  if (!scratch.cleanupFailed) {
+    scratch.cleanupFailed = true;
+    scratch.cleanupError = error;
+  }
+}
+
+function restoreViewportExecutionState(scratch) {
+  const { scene, passState, camera } = scratch;
+
+  // Each restoration is isolated. A hostile setter or failed uniform update
+  // cannot strand a later split/load/defer flag, and the caller can preserve
+  // an already-thrown render error instead of masking it with cleanup.
+  try {
+    camera._setTransform(scratch.transform);
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    camera._transform = scratch.transformReference;
+    Matrix4.clone(scratch.transform, scratch.transformReference);
+    camera._transformChanged = true;
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    camera.position = scratch.positionReference;
+    Cartesian3.clone(scratch.position, scratch.positionReference);
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    camera.direction = scratch.directionReference;
+    Cartesian3.clone(scratch.direction, scratch.directionReference);
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    camera.up = scratch.upReference;
+    Cartesian3.clone(scratch.up, scratch.upReference);
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    camera.right = scratch.rightReference;
+    Cartesian3.clone(scratch.right, scratch.rightReference);
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    camera.frustum = scratch.frustumReference;
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    scratch.frustum.clone(scratch.frustumReference);
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    restoreOwnProperty(
+      scratch.frustumReference,
+      "xOffset",
+      scratch.hadFrustumXOffset,
+      scratch.frustumXOffset,
+    );
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    restoreOwnProperty(
+      scratch.frustumReference,
+      "yOffset",
+      scratch.hadFrustumYOffset,
+      scratch.frustumYOffset,
+    );
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    passState.viewport = scratch.viewportReference;
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    BoundingRectangle.clone(scratch.viewport, scratch.viewportReference);
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    scratch.frameState.cullingVolume = scratch.cullingVolume;
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    restoreOwnProperty(
+      scene,
+      "_is2DViewportSplit",
+      scratch.hadSplitFlag,
+      scratch.splitFlag,
+    );
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    restoreOwnProperty(
+      scene,
+      "_exec2DSceneFbLoad",
+      scratch.hadLoadFlag,
+      scratch.loadFlag,
+    );
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    restoreOwnProperty(
+      scene,
+      "_exec2DDeferComposite",
+      scratch.hadDeferFlag,
+      scratch.deferFlag,
+    );
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    if (scratch.uniformUpdateMode === "frame") {
+      scratch.uniformState.update(scratch.frameState);
+    } else {
+      scratch.uniformState.updateCamera(camera);
+    }
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
+  try {
+    setCpuScenePhaseForFrameState(scratch.frameState, "visibilityCommandPrep");
+  } catch (error) {
+    recordViewportCleanupError(scratch, error);
+  }
 }
 
 /**
@@ -154,260 +410,290 @@ function updateAndRenderPrimitives(
   }
 }
 
-const scratchEyeTranslation = new Cartesian3();
+function executeWebVRCommands(
+  scene,
+  passState,
+  backgroundColor,
+  commandExecutor = executeCommands,
+) {
+  const scratch = acquireViewportExecutionScratch();
+  let captureComplete = false;
+  let hasPrimaryError = false;
+  let primaryError;
+  let cleanupFailed;
+  let cleanupError;
 
-function executeWebVRCommands(scene, passState) {
-  const view = scene._view;
-  const camera = view.camera;
-  const environmentState = scene._environmentState;
-  const renderTranslucentDepthForPick =
-    environmentState.renderTranslucentDepthForPick;
+  try {
+    const view = scene._view;
+    const camera = view.camera;
+    const environmentState = scene._environmentState;
+    const renderTranslucentDepthForPick =
+      environmentState.renderTranslucentDepthForPick;
 
-  updateAndRenderPrimitives(scene);
+    updateAndRenderPrimitives(scene);
 
-  setCpuScenePhase(scene, "visibilityCommandPrep");
-  view.createPotentiallyVisibleSet(scene);
+    setCpuScenePhase(scene, "visibilityCommandPrep");
+    view.createPotentiallyVisibleSet(scene);
 
-  setCpuScenePhase(scene, "computeShadows");
-  executeComputeCommands(scene);
+    setCpuScenePhase(scene, "computeShadows");
+    executeComputeCommands(scene);
 
-  if (!renderTranslucentDepthForPick) {
-    executeShadowMapCastCommands(scene);
+    if (!renderTranslucentDepthForPick) {
+      executeShadowMapCastCommands(scene);
+    }
+
+    setCpuScenePhase(scene, "visibilityCommandPrep");
+    captureViewportExecutionState(scratch, scene, passState, camera, "camera");
+    captureComplete = true;
+
+    const viewport = scratch.viewportReference;
+    viewport.x = 0;
+    viewport.y = 0;
+    viewport.width = viewport.width * 0.5;
+
+    const near = camera.frustum.near;
+    const fo = near * (scene.focalLength ?? 5.0);
+    const eyeSeparation = scene.eyeSeparation ?? fo / 30.0;
+    const eyeTranslation = Cartesian3.multiplyByScalar(
+      scratch.right,
+      eyeSeparation * 0.5,
+      scratch.eyeTranslation,
+    );
+
+    camera.frustum.aspectRatio = viewport.width / viewport.height;
+
+    const offset = (0.5 * eyeSeparation * near) / fo;
+
+    Cartesian3.add(scratch.position, eyeTranslation, camera.position);
+    camera.frustum.xOffset = offset;
+
+    setCpuScenePhase(scene, "rendererOverhead");
+    commandExecutor(scene, passState);
+
+    setCpuScenePhase(scene, "visibilityCommandPrep");
+    viewport.x = viewport.width;
+
+    Cartesian3.subtract(scratch.position, eyeTranslation, camera.position);
+    camera.frustum.xOffset = -offset;
+
+    setCpuScenePhase(scene, "rendererOverhead");
+    commandExecutor(scene, passState);
+  } catch (error) {
+    hasPrimaryError = true;
+    primaryError = error;
+  } finally {
+    if (captureComplete) {
+      restoreViewportExecutionState(scratch);
+    } else {
+      try {
+        setCpuScenePhase(scene, "visibilityCommandPrep");
+      } catch (error) {
+        recordViewportCleanupError(scratch, error);
+      }
+    }
+    cleanupFailed = scratch.cleanupFailed;
+    cleanupError = scratch.cleanupError;
+    releaseViewportExecutionScratch(scratch);
   }
 
-  setCpuScenePhase(scene, "visibilityCommandPrep");
-  const viewport = passState.viewport;
-  viewport.x = 0;
-  viewport.y = 0;
-  viewport.width = viewport.width * 0.5;
-
-  const savedCamera = Camera.clone(camera, scene._cameraVR);
-  savedCamera.frustum = camera.frustum;
-
-  const near = camera.frustum.near;
-  const fo = near * (scene.focalLength ?? 5.0);
-  const eyeSeparation = scene.eyeSeparation ?? fo / 30.0;
-  const eyeTranslation = Cartesian3.multiplyByScalar(
-    savedCamera.right,
-    eyeSeparation * 0.5,
-    scratchEyeTranslation,
-  );
-
-  camera.frustum.aspectRatio = viewport.width / viewport.height;
-
-  const offset = (0.5 * eyeSeparation * near) / fo;
-
-  Cartesian3.add(savedCamera.position, eyeTranslation, camera.position);
-  camera.frustum.xOffset = offset;
-
-  setCpuScenePhase(scene, "rendererOverhead");
-  executeCommands(scene, passState);
-
-  setCpuScenePhase(scene, "visibilityCommandPrep");
-  viewport.x = viewport.width;
-
-  Cartesian3.subtract(savedCamera.position, eyeTranslation, camera.position);
-  camera.frustum.xOffset = -offset;
-
-  setCpuScenePhase(scene, "rendererOverhead");
-  executeCommands(scene, passState);
-
-  setCpuScenePhase(scene, "visibilityCommandPrep");
-
-  Camera.clone(savedCamera, camera);
+  if (hasPrimaryError) {
+    throw primaryError;
+  }
+  if (cleanupFailed) {
+    throw cleanupError;
+  }
 }
 
-const scratch2DViewportCartographic = new Cartographic(
-  Math.PI,
-  CesiumMath.PI_OVER_TWO,
-);
-const scratch2DViewportMaxCoord = new Cartesian3();
-const scratch2DViewportSavedPosition = new Cartesian3();
-const scratch2DViewportTransform = new Matrix4();
-const scratch2DViewportCameraTransform = new Matrix4();
-const scratch2DViewportEyePoint = new Cartesian3();
-const scratch2DViewportWindowCoords = new Cartesian3();
-const scratch2DViewport = new BoundingRectangle();
+function execute2DViewportCommands(
+  scene,
+  passState,
+  viewportExecutor = executeCommandsInViewport,
+) {
+  const scratch = acquireViewportExecutionScratch();
+  let captureComplete = false;
+  let hasPrimaryError = false;
+  let primaryError;
+  let cleanupFailed;
+  let cleanupError;
 
-function execute2DViewportCommands(scene, passState) {
-  const { frameState, camera } = scene;
-  const { uniformState } = scene.context;
+  try {
+    const { camera } = scene;
+    captureViewportExecutionState(scratch, scene, passState, camera, "frame");
+    captureComplete = true;
 
-  const originalViewport = passState.viewport;
-  const viewport = BoundingRectangle.clone(originalViewport, scratch2DViewport);
-  passState.viewport = viewport;
-
-  // BUG-3 — flag that the SCENE2D infinite-scroll wrap MAY split the frame into
-  // two viewport halves. Default true (the else-if/else branches below all
-  // split); the single-pass `if` branch resets it to false. Consumed by
-  // `executeCommandsInViewport` to tell the WebGPU renderer to accumulate both
-  // halves into one scene framebuffer (clear+blit once) rather than clearing +
-  // blitting per half (which would leave only the last half — the BUG-3 sliver).
-  scene._is2DViewportSplit = true;
-
-  const maxCartographic = scratch2DViewportCartographic;
-  const maxCoord = scratch2DViewportMaxCoord;
-
-  const projection = scene.mapProjection;
-  projection.project(maxCartographic, maxCoord);
-
-  const position = Cartesian3.clone(
-    camera.position,
-    scratch2DViewportSavedPosition,
-  );
-  const transform = Matrix4.clone(
-    camera.transform,
-    scratch2DViewportCameraTransform,
-  );
-  const frustum = camera.frustum.clone();
-
-  camera._setTransform(Matrix4.IDENTITY);
-
-  const viewportTransformation = Matrix4.computeViewportTransformation(
-    viewport,
-    0.0,
-    1.0,
-    scratch2DViewportTransform,
-  );
-  const projectionMatrix =
-    typeof camera.frustum.getProjectionMatrix === "function"
-      ? camera.frustum.getProjectionMatrix(scene.context.clipSpaceConvention)
-      : camera.frustum.projectionMatrix;
-
-  const x = camera.positionWC.y;
-  const eyePoint = Cartesian3.fromElements(
-    CesiumMath.sign(x) * maxCoord.x - x,
-    0.0,
-    -camera.positionWC.x,
-    scratch2DViewportEyePoint,
-  );
-  const windowCoordinates = Transforms.pointToGLWindowCoordinates(
-    projectionMatrix,
-    viewportTransformation,
-    eyePoint,
-    scratch2DViewportWindowCoords,
-  );
-
-  windowCoordinates.x = Math.floor(windowCoordinates.x);
-
-  const viewportX = viewport.x;
-  const viewportWidth = viewport.width;
-
-  if (
-    x === 0.0 ||
-    windowCoordinates.x <= viewportX ||
-    windowCoordinates.x >= viewportX + viewportWidth
-  ) {
-    // Single full-viewport render — no wrap split this frame.
-    scene._is2DViewportSplit = false;
-    executeCommandsInViewport(true, scene, passState);
-  } else if (
-    Math.abs(viewportX + viewportWidth * 0.5 - windowCoordinates.x) < 1.0
-  ) {
-    viewport.width = windowCoordinates.x - viewport.x;
-
-    camera.position.x *= CesiumMath.sign(camera.position.x);
-
-    camera.frustum.right = 0.0;
-
-    frameState.cullingVolume = camera.frustum.computeCullingVolume(
-      camera.positionWC,
-      camera.directionWC,
-      camera.upWC,
+    const frameState = scratch.frameState;
+    const uniformState = scratch.uniformState;
+    const viewport = BoundingRectangle.clone(
+      scratch.viewport,
+      scratch.workingViewport,
     );
-    uniformState.update(frameState);
+    const maxCoord = scratch.maxCoord;
+    scene.mapProjection.project(scratch.maxCartographic, maxCoord);
 
-    executeCommandsInViewport(true, scene, passState);
+    passState.viewport = viewport;
 
-    viewport.x = windowCoordinates.x;
+    // BUG-3 — flag that the SCENE2D infinite-scroll wrap MAY split the frame
+    // into two viewport halves. Default true (the else-if/else branches below
+    // all split); the single-pass `if` branch resets it to false. Consumed by
+    // `executeCommandsInViewport` to tell the WebGPU renderer to accumulate
+    // both halves into one scene framebuffer.
+    scene._is2DViewportSplit = true;
 
-    camera.position.x = -camera.position.x;
+    camera._setTransform(Matrix4.IDENTITY);
 
-    camera.frustum.right = -camera.frustum.left;
-    camera.frustum.left = 0.0;
-
-    frameState.cullingVolume = camera.frustum.computeCullingVolume(
-      camera.positionWC,
-      camera.directionWC,
-      camera.upWC,
+    const viewportTransformation = Matrix4.computeViewportTransformation(
+      viewport,
+      0.0,
+      1.0,
+      scratch.viewportTransformation,
     );
-    uniformState.update(frameState);
+    const projectionMatrix =
+      typeof camera.frustum.getProjectionMatrix === "function"
+        ? camera.frustum.getProjectionMatrix(scene.context.clipSpaceConvention)
+        : camera.frustum.projectionMatrix;
 
-    executeCommandsInViewport(false, scene, passState);
-  } else if (windowCoordinates.x > viewportX + viewportWidth * 0.5) {
-    viewport.width = windowCoordinates.x - viewportX;
-
-    const right = camera.frustum.right;
-    camera.frustum.right = maxCoord.x - x;
-
-    frameState.cullingVolume = camera.frustum.computeCullingVolume(
-      camera.positionWC,
-      camera.directionWC,
-      camera.upWC,
+    const x = camera.positionWC.y;
+    const eyePoint = Cartesian3.fromElements(
+      CesiumMath.sign(x) * maxCoord.x - x,
+      0.0,
+      -camera.positionWC.x,
+      scratch.eyePoint,
     );
-    uniformState.update(frameState);
-
-    executeCommandsInViewport(true, scene, passState);
-
-    viewport.x = windowCoordinates.x;
-    viewport.width = viewportX + viewportWidth - windowCoordinates.x;
-
-    camera.position.x = -camera.position.x;
-
-    camera.frustum.left = -camera.frustum.right;
-    camera.frustum.right = right - camera.frustum.right * 2.0;
-
-    frameState.cullingVolume = camera.frustum.computeCullingVolume(
-      camera.positionWC,
-      camera.directionWC,
-      camera.upWC,
+    const windowCoordinates = Transforms.pointToGLWindowCoordinates(
+      projectionMatrix,
+      viewportTransformation,
+      eyePoint,
+      scratch.windowCoordinates,
     );
-    uniformState.update(frameState);
 
-    executeCommandsInViewport(false, scene, passState);
-  } else {
-    viewport.x = windowCoordinates.x;
-    viewport.width = viewportX + viewportWidth - windowCoordinates.x;
+    windowCoordinates.x = Math.floor(windowCoordinates.x);
 
-    const left = camera.frustum.left;
-    camera.frustum.left = -maxCoord.x - x;
+    const viewportX = viewport.x;
+    const viewportWidth = viewport.width;
 
-    frameState.cullingVolume = camera.frustum.computeCullingVolume(
-      camera.positionWC,
-      camera.directionWC,
-      camera.upWC,
-    );
-    uniformState.update(frameState);
+    if (
+      x === 0.0 ||
+      windowCoordinates.x <= viewportX ||
+      windowCoordinates.x >= viewportX + viewportWidth
+    ) {
+      // Single full-viewport render — no wrap split this frame.
+      scene._is2DViewportSplit = false;
+      viewportExecutor(true, scene, passState);
+    } else if (
+      Math.abs(viewportX + viewportWidth * 0.5 - windowCoordinates.x) < 1.0
+    ) {
+      viewport.width = windowCoordinates.x - viewport.x;
 
-    executeCommandsInViewport(true, scene, passState);
+      camera.position.x *= CesiumMath.sign(camera.position.x);
 
-    viewport.x = viewportX;
-    viewport.width = windowCoordinates.x - viewportX;
+      camera.frustum.right = 0.0;
 
-    camera.position.x = -camera.position.x;
+      frameState.cullingVolume = camera.frustum.computeCullingVolume(
+        camera.positionWC,
+        camera.directionWC,
+        camera.upWC,
+      );
+      uniformState.update(frameState);
 
-    camera.frustum.right = -camera.frustum.left;
-    camera.frustum.left = left - camera.frustum.left * 2.0;
+      viewportExecutor(true, scene, passState);
 
-    frameState.cullingVolume = camera.frustum.computeCullingVolume(
-      camera.positionWC,
-      camera.directionWC,
-      camera.upWC,
-    );
-    uniformState.update(frameState);
+      viewport.x = windowCoordinates.x;
 
-    executeCommandsInViewport(false, scene, passState);
+      camera.position.x = -camera.position.x;
+
+      camera.frustum.right = -camera.frustum.left;
+      camera.frustum.left = 0.0;
+
+      frameState.cullingVolume = camera.frustum.computeCullingVolume(
+        camera.positionWC,
+        camera.directionWC,
+        camera.upWC,
+      );
+      uniformState.update(frameState);
+
+      viewportExecutor(false, scene, passState);
+    } else if (windowCoordinates.x > viewportX + viewportWidth * 0.5) {
+      viewport.width = windowCoordinates.x - viewportX;
+
+      const right = camera.frustum.right;
+      camera.frustum.right = maxCoord.x - x;
+
+      frameState.cullingVolume = camera.frustum.computeCullingVolume(
+        camera.positionWC,
+        camera.directionWC,
+        camera.upWC,
+      );
+      uniformState.update(frameState);
+
+      viewportExecutor(true, scene, passState);
+
+      viewport.x = windowCoordinates.x;
+      viewport.width = viewportX + viewportWidth - windowCoordinates.x;
+
+      camera.position.x = -camera.position.x;
+
+      camera.frustum.left = -camera.frustum.right;
+      camera.frustum.right = right - camera.frustum.right * 2.0;
+
+      frameState.cullingVolume = camera.frustum.computeCullingVolume(
+        camera.positionWC,
+        camera.directionWC,
+        camera.upWC,
+      );
+      uniformState.update(frameState);
+
+      viewportExecutor(false, scene, passState);
+    } else {
+      viewport.x = windowCoordinates.x;
+      viewport.width = viewportX + viewportWidth - windowCoordinates.x;
+
+      const left = camera.frustum.left;
+      camera.frustum.left = -maxCoord.x - x;
+
+      frameState.cullingVolume = camera.frustum.computeCullingVolume(
+        camera.positionWC,
+        camera.directionWC,
+        camera.upWC,
+      );
+      uniformState.update(frameState);
+
+      viewportExecutor(true, scene, passState);
+
+      viewport.x = viewportX;
+      viewport.width = windowCoordinates.x - viewportX;
+
+      camera.position.x = -camera.position.x;
+
+      camera.frustum.right = -camera.frustum.left;
+      camera.frustum.left = left - camera.frustum.left * 2.0;
+
+      frameState.cullingVolume = camera.frustum.computeCullingVolume(
+        camera.positionWC,
+        camera.directionWC,
+        camera.upWC,
+      );
+      uniformState.update(frameState);
+
+      viewportExecutor(false, scene, passState);
+    }
+  } catch (error) {
+    hasPrimaryError = true;
+    primaryError = error;
+  } finally {
+    if (captureComplete) {
+      restoreViewportExecutionState(scratch);
+    }
+    cleanupFailed = scratch.cleanupFailed;
+    cleanupError = scratch.cleanupError;
+    releaseViewportExecutionScratch(scratch);
   }
 
-  camera._setTransform(transform);
-  Cartesian3.clone(position, camera.position);
-  camera.frustum = frustum.clone();
-  passState.viewport = originalViewport;
-
-  // BUG-3 — clear the wrap-split flag so the next non-2D frame's
-  // `executeCommandsInViewport` doesn't inherit a stale "split" state (which
-  // would make the WebGPU renderer defer the post-process blit → blank frame).
-  scene._is2DViewportSplit = false;
+  if (hasPrimaryError) {
+    throw primaryError;
+  }
+  if (cleanupFailed) {
+    throw cleanupError;
+  }
 }
 
 /**
