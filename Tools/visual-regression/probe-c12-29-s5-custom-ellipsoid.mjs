@@ -96,38 +96,234 @@ const outputDirectory = path.resolve(
 const WATCHDOG_MS = 540_000;
 const PAGE_TIMEOUT_MS = 240_000;
 const CLOSE_TIMEOUT_MS = 15_000;
+const RESPONSE_DRAIN_TIMEOUT_MS = 5_000;
+const WATCHDOG_DRAIN_TIMEOUT_MS = 45_000;
+const MAXIMUM_TIMER_TIMEOUT_MS = 2_147_483_647;
 const ERROR_TEXT_MAXIMUM_CHARACTERS = 65_536;
+const ERROR_TEXT_MAXIMUM_COMPONENT_CHARACTERS = 8_192;
+const ERROR_TEXT_MAXIMUM_DEPTH = 8;
+const ERROR_TEXT_MAXIMUM_NODES = 32;
 const C1229_S5_CUSTOM_OWNERSHIP_RECORDS = new WeakMap();
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-function inspectC1229S5CustomErrorText(error) {
-  let name;
-  let message;
+function readC1229S5CustomErrorField(value, field) {
   try {
-    name = error?.name;
+    return value?.[field];
   } catch {
-    name = undefined;
+    return undefined;
   }
-  try {
-    message = error?.message;
-  } catch {
-    message = undefined;
-  }
-  if (typeof name === "string" && typeof message === "string") {
-    return `${name}: ${message}`;
-  }
-  if (typeof message === "string" && message.length > 0) return message;
-  try {
-    const rendered = String(error);
-    if (rendered.length > 0) return rendered;
-  } catch {
-    // Preserve a deterministic ERROR even for an uninspectable thrown Proxy.
-  }
-  return "[custom-ellipsoid uninspectable error]";
 }
 
-function boundedC1229S5CustomErrorText(error) {
+function normalizeC1229S5CustomError(value, message) {
+  try {
+    if (value instanceof Error) return value;
+  } catch {
+    // Hostile values are wrapped below without further introspection.
+  }
+
+  let primitiveDetail = "";
+  if (
+    value === null ||
+    value === undefined ||
+    (typeof value !== "object" && typeof value !== "function")
+  ) {
+    try {
+      primitiveDetail = `: ${String(value)}`;
+    } catch {
+      primitiveDetail = ": [uninspectable primitive]";
+    }
+  }
+  const normalized = new Error(`${message}${primitiveDetail}`, {
+    cause: value,
+  });
+  const diagnostics = readC1229S5CustomErrorField(value, "customDiagnostics");
+  if (validC1229S5CustomDiagnostics(diagnostics)) {
+    normalized.customDiagnostics = diagnostics;
+  }
+  if (readC1229S5CustomErrorField(value, "retainCustomRunning") === true) {
+    normalized.retainCustomRunning = true;
+  }
+  return normalized;
+}
+
+function attachC1229S5CustomDiagnostics(error, diagnostics, message) {
+  const normalized = normalizeC1229S5CustomError(error, message);
+  try {
+    normalized.customDiagnostics = diagnostics;
+    if (
+      readC1229S5CustomErrorField(normalized, "customDiagnostics") ===
+      diagnostics
+    ) {
+      return normalized;
+    }
+  } catch {
+    // Frozen and hostile errors are preserved as the cause of a writable wrapper.
+  }
+  const wrapped = new Error(message, { cause: normalized });
+  wrapped.customDiagnostics = diagnostics;
+  if (readC1229S5CustomErrorField(normalized, "retainCustomRunning") === true) {
+    wrapped.retainCustomRunning = true;
+  }
+  return wrapped;
+}
+
+function boundC1229S5CustomErrorComponent(value) {
+  const text = typeof value === "string" ? value : "";
+  if (text.length <= ERROR_TEXT_MAXIMUM_COMPONENT_CHARACTERS) return text;
+  let omitted = text.length - ERROR_TEXT_MAXIMUM_COMPONENT_CHARACTERS;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidateSuffix = `[COMPONENT_TRUNCATED omittedCharacters=${omitted}]`;
+    const retained = Math.max(
+      0,
+      ERROR_TEXT_MAXIMUM_COMPONENT_CHARACTERS - candidateSuffix.length,
+    );
+    const exactOmitted = text.length - retained;
+    if (exactOmitted === omitted) break;
+    omitted = exactOmitted;
+  }
+  const suffix = `[COMPONENT_TRUNCATED omittedCharacters=${omitted}]`;
+  return `${text.slice(
+    0,
+    Math.max(0, ERROR_TEXT_MAXIMUM_COMPONENT_CHARACTERS - suffix.length),
+  )}${suffix}`;
+}
+
+function inspectC1229S5CustomErrorText(error) {
+  const seen = new Map();
+  const lines = [];
+  let nodes = 0;
+  const visit = (value, path, depth) => {
+    if (nodes >= ERROR_TEXT_MAXIMUM_NODES) {
+      lines.push(`${path}: [error node limit reached]`);
+      return;
+    }
+    nodes += 1;
+    if (depth > ERROR_TEXT_MAXIMUM_DEPTH) {
+      lines.push(`${path}: [error depth limit reached]`);
+      return;
+    }
+    const objectLike =
+      value !== null &&
+      (typeof value === "object" || typeof value === "function");
+    if (objectLike) {
+      const firstPath = seen.get(value);
+      if (firstPath !== undefined) {
+        lines.push(`${path}: [error reference -> ${firstPath}]`);
+        return;
+      }
+      seen.set(value, path);
+    }
+    const name = readC1229S5CustomErrorField(value, "name");
+    let message = readC1229S5CustomErrorField(value, "message");
+    if (typeof value === "string") message = value;
+    const boundedName = boundC1229S5CustomErrorComponent(name);
+    const boundedMessage = boundC1229S5CustomErrorComponent(message);
+    let rendered;
+    if (boundedName && boundedMessage) {
+      rendered = `${boundedName}: ${boundedMessage}`;
+    } else {
+      rendered = boundedMessage || boundedName;
+    }
+    if (!rendered) {
+      rendered = "[custom-ellipsoid uninspectable error]";
+    }
+    lines.push(path === "error" ? rendered : `${path}: ${rendered}`);
+    if (!objectLike) return;
+
+    const errors = readC1229S5CustomErrorField(value, "errors");
+    const errorsIsArray = (() => {
+      try {
+        return Array.isArray(errors);
+      } catch {
+        return false;
+      }
+    })();
+    if (errorsIsArray) {
+      const rawLength = readC1229S5CustomErrorField(errors, "length");
+      const length = Number.isSafeInteger(rawLength)
+        ? Math.min(Math.max(rawLength, 0), ERROR_TEXT_MAXIMUM_NODES)
+        : 0;
+      for (let index = 0; index < length; index++) {
+        let child;
+        try {
+          child = errors[index];
+        } catch {
+          child = undefined;
+        }
+        visit(child, `${path}.errors[${index}]`, depth + 1);
+      }
+    }
+    const cause = readC1229S5CustomErrorField(value, "cause");
+    if (cause !== undefined) visit(cause, `${path}.cause`, depth + 1);
+  };
+  visit(error, "error", 0);
+  return lines.join("\n") || "[custom-ellipsoid uninspectable error]";
+}
+
+function validC1229S5CustomDiagnostics(value) {
+  try {
+    return (
+      value !== null &&
+      typeof value === "object" &&
+      value.schema === C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA &&
+      C12_29_S5_CUSTOM_RENDERERS.includes(value.renderer) &&
+      typeof value.stage === "string" &&
+      value.stage.length > 0 &&
+      Number.isSafeInteger(value.timeoutMs) &&
+      value.timeoutMs > 0 &&
+      (value.page === null ||
+        (typeof value.page === "object" && !Array.isArray(value.page)))
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function combineC1229S5CustomPrimaryAndCleanup(
+  primary,
+  cleanup,
+  message,
+) {
+  const primaryError = normalizeC1229S5CustomError(
+    primary,
+    `${message}: primary failure`,
+  );
+  let cleanupValues;
+  try {
+    cleanupValues = Array.isArray(cleanup) ? [...cleanup] : [cleanup];
+  } catch {
+    cleanupValues = [cleanup];
+  }
+  const cleanupErrors = cleanupValues.map((error) =>
+    normalizeC1229S5CustomError(error, `${message}: cleanup failure`),
+  );
+  if (cleanupErrors.length === 0) return primaryError;
+  const combined = new AggregateError(
+    [primaryError, ...cleanupErrors],
+    message,
+    { cause: primaryError },
+  );
+  const diagnostics = readC1229S5CustomErrorField(
+    primaryError,
+    "customDiagnostics",
+  );
+  if (validC1229S5CustomDiagnostics(diagnostics)) {
+    combined.customDiagnostics = diagnostics;
+  }
+  if (
+    readC1229S5CustomErrorField(primaryError, "retainCustomRunning") === true ||
+    cleanupErrors.some(
+      (error) =>
+        readC1229S5CustomErrorField(error, "retainCustomRunning") === true,
+    )
+  ) {
+    combined.retainCustomRunning = true;
+  }
+  return combined;
+}
+
+export function boundedC1229S5CustomErrorText(error) {
   const text = inspectC1229S5CustomErrorText(error) || "[empty error]";
   if (text.length <= ERROR_TEXT_MAXIMUM_CHARACTERS) return text;
   let omitted = text.length - ERROR_TEXT_MAXIMUM_CHARACTERS;
@@ -151,6 +347,49 @@ const C1229_S5_CUSTOM_V5_SOURCE_ADDITIONS = new Set([
   "packages/engine/Source/Renderer/UniformStateComputations.js",
   "packages/engine/Source/Scene/Moon.js",
 ]);
+const C1229_S5_CUSTOM_V5_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v5";
+const C1229_S5_CUSTOM_V5_DIAGNOSTICS_SCHEMA =
+  "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v5";
+const C1229_S5_CUSTOM_V5_MOON_TOPOLOGY_KEYS = Object.freeze([
+  "widgetDefaultAbsent",
+  "explicitlyConstructed",
+  "constructor",
+  "servedConstructorIdentity",
+  "sceneIdentity",
+  "lifecycleOwner",
+  "updateIsFunction",
+  "destroyIsFunction",
+]);
+
+function upgradeC1229S5CustomPriorMoonTopology(upgraded) {
+  if (!Array.isArray(upgraded?.sessions)) return false;
+  for (const session of upgraded.sessions) {
+    const topology = session?.phases?.["custom-scene-construction"]?.moon;
+    if (
+      topology === null ||
+      typeof topology !== "object" ||
+      Object.keys(topology).length !==
+        C1229_S5_CUSTOM_V5_MOON_TOPOLOGY_KEYS.length ||
+      !C1229_S5_CUSTOM_V5_MOON_TOPOLOGY_KEYS.every((key) =>
+        Object.hasOwn(topology, key),
+      ) ||
+      topology.constructor !== "Moon"
+    ) {
+      return false;
+    }
+    delete topology.constructor;
+  }
+  return true;
+}
+
+function exactC1229S5CustomV5DiagnosticsSchemas(value) {
+  const diagnostics = value?.diagnostics;
+  return (
+    diagnostics?.schema === C1229_S5_CUSTOM_V5_DIAGNOSTICS_SCHEMA &&
+    (diagnostics.page === null ||
+      diagnostics.page?.schema === C1229_S5_CUSTOM_V5_DIAGNOSTICS_SCHEMA)
+  );
+}
 
 function upgradeC1229S5CustomPriorBoundary(upgraded) {
   const v4SourceFiles = C12_29_S5_CUSTOM_SOURCE_FILES.filter(
@@ -334,39 +573,57 @@ function upgradeC1229S5CustomPriorLineage(upgraded) {
 
 export function validateC1229S5CustomPriorFinal(value) {
   if (validateC1229S5CustomFinalArtifact(value).ok) return true;
-  if (
-    !new Set([
+  try {
+    const priorSchema = value?.schema;
+    const legacyNonErrorSchemas = new Set([
+      C1229_S5_CUSTOM_V5_SCHEMA,
       "c12-29-s5-custom-ellipsoid-evidence-v4",
       "c12-29-s5-custom-ellipsoid-evidence-v3",
-    ]).has(value?.schema) &&
-    !(
-      value?.schema === "c12-29-s5-custom-ellipsoid-evidence-v2" &&
-      value?.status === "ERROR"
-    )
-  ) {
+    ]);
+    if (
+      !legacyNonErrorSchemas.has(priorSchema) &&
+      !(
+        priorSchema === "c12-29-s5-custom-ellipsoid-evidence-v2" &&
+        value?.status === "ERROR"
+      )
+    ) {
+      return false;
+    }
+    if (
+      priorSchema === C1229_S5_CUSTOM_V5_SCHEMA &&
+      value?.status === "ERROR" &&
+      !exactC1229S5CustomV5DiagnosticsSchemas(value)
+    ) {
+      return false;
+    }
+    const upgraded = structuredClone(value);
+    upgraded.schema = C12_29_S5_CUSTOM_SCHEMA;
+    if (upgraded.status === "ERROR") {
+      upgraded.diagnostics = {
+        ...upgraded.diagnostics,
+        schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+        page:
+          upgraded.diagnostics?.page === null
+            ? null
+            : {
+                ...upgraded.diagnostics?.page,
+                schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+              },
+      };
+    } else {
+      if (!upgradeC1229S5CustomPriorMoonTopology(upgraded)) return false;
+      if (
+        priorSchema !== C1229_S5_CUSTOM_V5_SCHEMA &&
+        (!upgradeC1229S5CustomPriorBoundary(upgraded) ||
+          !upgradeC1229S5CustomPriorLineage(upgraded))
+      ) {
+        return false;
+      }
+    }
+    return validateC1229S5CustomFinalArtifact(upgraded).ok;
+  } catch {
     return false;
   }
-  const upgraded = structuredClone(value);
-  upgraded.schema = C12_29_S5_CUSTOM_SCHEMA;
-  if (upgraded.status === "ERROR") {
-    upgraded.diagnostics = {
-      ...upgraded.diagnostics,
-      schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
-      page:
-        upgraded.diagnostics?.page === null
-          ? null
-          : {
-              ...upgraded.diagnostics?.page,
-              schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
-            },
-    };
-  } else if (
-    !upgradeC1229S5CustomPriorBoundary(upgraded) ||
-    !upgradeC1229S5CustomPriorLineage(upgraded)
-  ) {
-    return false;
-  }
-  return validateC1229S5CustomFinalArtifact(upgraded).ok;
 }
 
 export function validateC1229S5CustomLoopbackBase(value) {
@@ -2048,6 +2305,30 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
   const instrumentationRestorationByLabel = new Map();
   const cleanupFailures = [];
   const cleanupActions = [];
+  const viewerCleanupState = {
+    renderLoopDisabled: false,
+    destroyed: false,
+    globalIdentityCleared: false,
+  };
+  const expectedInstrumentationLabels = [
+    ...(contract.renderer === "webgpu"
+      ? [
+          "captureGlobeRenderer.getOrCreateCaptureTileCommands",
+          "eclipseManager.prepare",
+        ]
+      : []),
+    "moon.show",
+    "moon.update",
+    "pickProvider.updateForPick",
+  ];
+  const sessionCleanup = {
+    complete: false,
+    timersCleared: false,
+    cleanupFailures: [],
+    instrumentationRestorations: [],
+    instrumentationRestored: false,
+    defaultEllipsoidRestored: false,
+  };
   const registerCleanupAction = (label, action, onError) => {
     const entry = { label, action, onError, attempted: false };
     cleanupActions.push(entry);
@@ -2125,6 +2406,34 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
       attemptCleanupAction(cleanupActions[index]);
     }
   };
+  const finalizeSessionCleanup = () => {
+    const instrumentationRestorations = expectedInstrumentationLabels
+      .map((label) => instrumentationRestorationByLabel.get(label))
+      .filter((restoration) => restoration !== undefined);
+    const exactCleanupFailures = [...new Set(cleanupFailures)].sort();
+    const instrumentationRestored =
+      instrumentationRestorations.length ===
+        expectedInstrumentationLabels.length &&
+      instrumentationRestorations.every(
+        (restoration) => restoration.restored === true,
+      );
+    const defaultEllipsoidRestored =
+      !exactCleanupFailures.includes("Ellipsoid.default");
+    Object.assign(sessionCleanup, {
+      complete:
+        exactCleanupFailures.length === 0 &&
+        instrumentationRestored &&
+        defaultEllipsoidRestored &&
+        viewerCleanupState.renderLoopDisabled &&
+        viewerCleanupState.destroyed &&
+        viewerCleanupState.globalIdentityCleared,
+      timersCleared: true,
+      cleanupFailures: exactCleanupFailures,
+      instrumentationRestorations,
+      instrumentationRestored,
+      defaultEllipsoidRestored,
+    });
+  };
   const C = await import(contract.runtimePath);
   const previousViewer = globalThis.viewer;
   if (previousViewer && !previousViewer.isDestroyed?.()) {
@@ -2194,6 +2503,7 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
       infoBox: false,
       skyBox: false,
       skyAtmosphere: false,
+      useDefaultRenderLoop: false,
       requestRenderMode: false,
       creditContainer: document.createElement("div"),
     };
@@ -2204,6 +2514,51 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
             contextOptions: { renderer: "webgpu" },
           })
         : new C.Viewer(container, commonOptions);
+    registerCleanupAction("viewer", () => {
+      try {
+        viewer.useDefaultRenderLoop = false;
+        viewerCleanupState.renderLoopDisabled =
+          viewer.useDefaultRenderLoop === false;
+      } catch {
+        viewerCleanupState.renderLoopDisabled = false;
+      }
+      const alreadyDestroyed = (() => {
+        try {
+          return viewer.isDestroyed() === true;
+        } catch {
+          return false;
+        }
+      })();
+      if (!alreadyDestroyed) {
+        try {
+          viewer.destroy();
+        } catch {
+          // Continue so global identity release is still attempted.
+        }
+      }
+      try {
+        viewerCleanupState.destroyed = viewer.isDestroyed() === true;
+      } catch {
+        viewerCleanupState.destroyed = false;
+      }
+      try {
+        if (
+          globalThis.viewer === viewer &&
+          !Reflect.deleteProperty(globalThis, "viewer")
+        ) {
+          Reflect.set(globalThis, "viewer", undefined);
+        }
+        viewerCleanupState.globalIdentityCleared = globalThis.viewer !== viewer;
+      } catch {
+        viewerCleanupState.globalIdentityCleared = false;
+      }
+      return (
+        viewerCleanupState.renderLoopDisabled &&
+        viewerCleanupState.destroyed &&
+        viewerCleanupState.globalIdentityCleared
+      );
+    });
+    viewer.useDefaultRenderLoop = false;
     globalThis.viewer = viewer;
     const scene = viewer.scene;
     const canvas = scene.canvas;
@@ -2230,7 +2585,8 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
     const moonTopology = {
       widgetDefaultAbsent: widgetDefaultMoon === undefined,
       explicitlyConstructed: true,
-      constructor: moon.constructor.name,
+      // Function names are bundler-owned. The served export's object identity
+      // is the authoritative constructor contract.
       servedConstructorIdentity: moon.constructor === C.Moon,
       sceneIdentity: scene.moon === moon,
       lifecycleOwner: "scene.moon",
@@ -2238,7 +2594,6 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
       destroyIsFunction: typeof moon.destroy === "function",
     };
     if (
-      moonTopology.constructor !== "Moon" ||
       moonTopology.servedConstructorIdentity !== true ||
       moonTopology.sceneIdentity !== true ||
       moonTopology.updateIsFunction !== true ||
@@ -2250,7 +2605,6 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
       scene.context?._device,
       `custom-${actualRenderer}`,
     );
-    viewer.useDefaultRenderLoop = false;
     viewer.resolutionScale = 1;
     scene.requestRenderMode = false;
     scene.highDynamicRange = false;
@@ -3637,35 +3991,7 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
 
     mark(contract.phases[8], "restoring-instrumentation");
     attemptAllCleanup();
-    const expectedInstrumentationLabels = [
-      ...(contract.renderer === "webgpu"
-        ? [
-            "captureGlobeRenderer.getOrCreateCaptureTileCommands",
-            "eclipseManager.prepare",
-          ]
-        : []),
-      "moon.show",
-      "moon.update",
-      "pickProvider.updateForPick",
-    ];
-    const instrumentationRestorations = expectedInstrumentationLabels
-      .map((label) => instrumentationRestorationByLabel.get(label))
-      .filter((restoration) => restoration !== undefined);
-    const exactCleanupFailures = [...new Set(cleanupFailures)].sort();
-    const sessionCleanup = {
-      complete: exactCleanupFailures.length === 0,
-      timersCleared: true,
-      cleanupFailures: exactCleanupFailures,
-      instrumentationRestorations,
-      instrumentationRestored:
-        instrumentationRestorations.length ===
-          expectedInstrumentationLabels.length &&
-        instrumentationRestorations.every(
-          (restoration) => restoration.restored === true,
-        ),
-      defaultEllipsoidRestored:
-        !exactCleanupFailures.includes("Ellipsoid.default"),
-    };
+    finalizeSessionCleanup();
     complete(contract.phases[8]);
 
     const phases = {
@@ -3704,6 +4030,7 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
     // registered action is idempotently attempted so one red seam cannot skip
     // restoration of the remaining wrappers or global state.
     attemptAllCleanup();
+    finalizeSessionCleanup();
   }
 };
 
@@ -4225,6 +4552,15 @@ export async function closeC1229S5CustomResourceBounded(
   label,
   timeoutMs = CLOSE_TIMEOUT_MS,
 ) {
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAXIMUM_TIMER_TIMEOUT_MS
+  ) {
+    throw new TypeError(
+      "resource-close timeout must be a positive safe integer within the timer range",
+    );
+  }
   if (!instance) {
     return { label, attempted: false, closed: true, timedOut: false };
   }
@@ -4245,6 +4581,106 @@ export async function closeC1229S5CustomResourceBounded(
   ]);
   clearTimeout(timer);
   return { label, attempted: true, ...result };
+}
+
+function readC1229S5CustomBrowserDisconnected(browser) {
+  try {
+    return (
+      typeof browser?.isConnected === "function" &&
+      browser.isConnected() === false
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function waitC1229S5CustomBrowserDisconnected(browser, timeoutMs) {
+  if (readC1229S5CustomBrowserDisconnected(browser)) return true;
+  if (timeoutMs <= 0) return false;
+
+  let resolveEvent;
+  const disconnectedEvent = new Promise((resolve) => {
+    resolveEvent = resolve;
+  });
+  const onDisconnected = () => resolveEvent();
+  try {
+    if (typeof browser?.once !== "function") return false;
+    browser.once("disconnected", onDisconnected);
+  } catch {
+    return false;
+  }
+
+  let timer;
+  try {
+    if (readC1229S5CustomBrowserDisconnected(browser)) return true;
+    await Promise.race([
+      disconnectedEvent,
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+    return readC1229S5CustomBrowserDisconnected(browser);
+  } finally {
+    clearTimeout(timer);
+    try {
+      if (typeof browser.off === "function") {
+        browser.off("disconnected", onDisconnected);
+      } else if (typeof browser.removeListener === "function") {
+        browser.removeListener("disconnected", onDisconnected);
+      }
+    } catch {
+      // Listener cleanup is best effort; it never establishes disconnection.
+    }
+  }
+}
+
+export async function closeC1229S5CustomBrowserBounded(
+  browser,
+  timeoutMs = CLOSE_TIMEOUT_MS,
+) {
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAXIMUM_TIMER_TIMEOUT_MS
+  ) {
+    throw new TypeError(
+      "browser-close timeout must be a positive safe integer within the timer range",
+    );
+  }
+  if (!browser) {
+    return {
+      label: "browser",
+      attempted: false,
+      closed: true,
+      timedOut: false,
+      closeFulfilled: true,
+      disconnectedProven: true,
+      closeClean: true,
+    };
+  }
+  const startedAt = process.hrtime.bigint();
+  const close = await closeC1229S5CustomResourceBounded(
+    browser,
+    "browser",
+    timeoutMs,
+  );
+  let disconnectedProven = readC1229S5CustomBrowserDisconnected(browser);
+  if (!disconnectedProven && !close.timedOut) {
+    const elapsedNs = process.hrtime.bigint() - startedAt;
+    const elapsedMs = Number((elapsedNs + BigInt(999_999)) / BigInt(1_000_000));
+    const remainingMs = Math.max(0, timeoutMs - elapsedMs);
+    disconnectedProven = await waitC1229S5CustomBrowserDisconnected(
+      browser,
+      remainingMs,
+    );
+  }
+  const closeFulfilled = close.closed === true;
+  return {
+    ...close,
+    closeFulfilled,
+    disconnectedProven,
+    closeClean: closeFulfilled && disconnectedProven,
+  };
 }
 
 export function runC1229S5CustomBestEffortCleanup(actions) {
@@ -4282,7 +4718,68 @@ export function runC1229S5CustomBestEffortCleanup(actions) {
   });
 }
 
-async function runC1229S5CustomBrowserSession(
+function observeC1229S5CustomTask(task) {
+  return Promise.resolve(task).then(
+    (value) => ({ status: "fulfilled", value }),
+    (error) => ({ status: "rejected", error }),
+  );
+}
+
+export async function settleC1229S5CustomTasksBounded(
+  observedTasks,
+  label,
+  timeoutMs = CLOSE_TIMEOUT_MS,
+) {
+  if (!Array.isArray(observedTasks)) {
+    throw new TypeError("observed tasks must be an array");
+  }
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAXIMUM_TIMER_TIMEOUT_MS
+  ) {
+    throw new TypeError(
+      "task-settlement timeout must be a positive safe integer within the timer range",
+    );
+  }
+  let timer;
+  try {
+    const result = await Promise.race([
+      Promise.all(observedTasks).then((settlements) => ({
+        timedOut: false,
+        settlements,
+      })),
+      new Promise((resolve) => {
+        timer = setTimeout(
+          () => resolve({ timedOut: true, settlements: [] }),
+          timeoutMs,
+        );
+      }),
+    ]);
+    let errors;
+    if (result.timedOut) {
+      const timeoutError = new Error(
+        `${label} settlement expired after ${timeoutMs} ms`,
+      );
+      timeoutError.retainCustomRunning = true;
+      errors = [timeoutError];
+    } else {
+      errors = result.settlements
+        .filter((settlement) => settlement?.status === "rejected")
+        .map((settlement) =>
+          normalizeC1229S5CustomError(
+            settlement.error,
+            `${label} task rejected`,
+          ),
+        );
+    }
+    return { ...result, errors };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function runC1229S5CustomBrowserSession(
   browser,
   renderer,
   baseIdentity,
@@ -4291,106 +4788,125 @@ async function runC1229S5CustomBrowserSession(
   ownedPngs,
   watchdogState,
   operations = fs,
+  responseDrainTimeoutMs = RESPONSE_DRAIN_TIMEOUT_MS,
 ) {
-  const context = await browser.newContext({
-    viewport: { ...C12_29_S5_CUSTOM_SCENE.viewport },
-    deviceScaleFactor: 1,
-  });
+  if (
+    !Number.isSafeInteger(responseDrainTimeoutMs) ||
+    responseDrainTimeoutMs <= 0 ||
+    responseDrainTimeoutMs > MAXIMUM_TIMER_TIMEOUT_MS
+  ) {
+    throw new TypeError(
+      "response-drain timeout must be a positive safe integer within the timer range",
+    );
+  }
   const externalRequests = [];
   const failedRequests = [];
   const httpErrors = [];
   const pageErrors = [];
   const consoleErrors = [];
   const pending = new Set();
-  await context.route("**/*", async (route) => {
-    let url;
-    try {
-      url = new URL(route.request().url());
-    } catch {
-      await route.continue();
-      return;
-    }
-    if (/^https?:$/u.test(url.protocol) && url.origin !== baseIdentity.origin) {
-      externalRequests.push(route.request().url());
-      await route.abort("blockedbyclient");
-      return;
-    }
-    await route.continue();
-  });
-  const page = await context.newPage();
-  watchdogState.renderer = renderer;
-  watchdogState.page = page;
-  watchdogState.pageDiagnostic = null;
-  await page.addInitScript(errorGateInit);
-  page.on("request", (request) => pending.add(request));
-  const settleRequest = (request) => pending.delete(request);
-  page.on("requestfinished", settleRequest);
-  page.on("requestfailed", (request) => {
-    settleRequest(request);
-    if (!externalRequests.includes(request.url()))
-      failedRequests.push(request.url());
-  });
-  page.on("pageerror", (error) => pageErrors.push(error.message));
-  page.on("console", (message) => {
-    if (message.type() === "error") consoleErrors.push(message.text());
-  });
   const xysResponses = [];
   const responseTasks = [];
+  const observeResponseTask = (task) => {
+    const observed = observeC1229S5CustomTask(task);
+    responseTasks.push(observed);
+    return observed;
+  };
+  let context;
+  let page;
+  let measured;
+  let sessionError;
+  let diagnostics = null;
+  let servedEntry;
   let capturedEntry = false;
-  let entryResolve;
-  let entryReject;
-  const entryPromise = new Promise((resolve, reject) => {
-    entryResolve = resolve;
-    entryReject = reject;
-  });
-  page.on("response", (response) => {
-    let url;
-    try {
-      url = new URL(response.url());
-    } catch {
-      return;
-    }
-    if (response.status() >= 400)
-      httpErrors.push(`${response.status()} ${url.href}`);
-    if (!capturedEntry && url.pathname === runtimePath) {
-      capturedEntry = true;
-      const task = response.body().then(
-        (bytes) =>
-          entryResolve({
+  let acceptResponseTasks = false;
+  let responseListenerOwned = false;
+  let responseListenerCleanupError;
+  const handleResponse = (response) => {
+    if (!acceptResponseTasks) return;
+    observeResponseTask(
+      Promise.resolve().then(async () => {
+        const url = new URL(response.url());
+        const status = response.status();
+        if (status >= 400) httpErrors.push(`${status} ${url.href}`);
+        if (!capturedEntry && url.pathname === runtimePath) {
+          capturedEntry = true;
+          const bytes = await response.body();
+          servedEntry = {
             sessionLabel: renderer,
             ok: response.ok(),
-            status: response.status(),
+            status,
             byteLength: bytes.byteLength,
             sha256: sha256(bytes),
-          }),
-        entryReject,
-      );
-      responseTasks.push(task);
-    }
-    if (
-      url.origin === baseIdentity.origin &&
-      /^\/Build\/CesiumUnminified\/Assets\/IAU2006_XYS\/IAU2006_XYS_\d+\.json$/u.test(
-        url.pathname,
-      )
-    ) {
-      responseTasks.push(
-        response.body().then((bytes) => {
+          };
+        }
+        if (
+          url.origin === baseIdentity.origin &&
+          /^\/Build\/CesiumUnminified\/Assets\/IAU2006_XYS\/IAU2006_XYS_\d+\.json$/u.test(
+            url.pathname,
+          )
+        ) {
+          const bytes = await response.body();
           xysResponses.push({
             file: path.basename(url.pathname),
             route: url.pathname,
-            status: response.status(),
+            status,
             exists: true,
             byteLength: bytes.byteLength,
             sha256: sha256(bytes),
           });
-        }),
-      );
-    }
-  });
-  let measured;
-  let sessionError;
-  let diagnostics;
+        }
+      }),
+    );
+  };
+  let pageClose;
+  let contextClose;
+  let responseDrain;
   try {
+    context = await browser.newContext({
+      viewport: { ...C12_29_S5_CUSTOM_SCENE.viewport },
+      deviceScaleFactor: 1,
+    });
+    await context.route("**/*", async (route) => {
+      let url;
+      try {
+        url = new URL(route.request().url());
+      } catch {
+        await route.continue();
+        return;
+      }
+      if (
+        /^https?:$/u.test(url.protocol) &&
+        url.origin !== baseIdentity.origin
+      ) {
+        externalRequests.push(route.request().url());
+        await route.abort("blockedbyclient");
+        return;
+      }
+      await route.continue();
+    });
+    page = await context.newPage();
+    watchdogState.renderer = renderer;
+    watchdogState.page = page;
+    watchdogState.pageDiagnostic = null;
+    await page.addInitScript(errorGateInit);
+    page.on("request", (request) => pending.add(request));
+    const settleRequest = (request) => pending.delete(request);
+    page.on("requestfinished", settleRequest);
+    page.on("requestfailed", (request) => {
+      settleRequest(request);
+      if (!externalRequests.includes(request.url())) {
+        failedRequests.push(request.url());
+      }
+    });
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+    acceptResponseTasks = true;
+    responseListenerOwned = true;
+    page.on("response", handleResponse);
+
     const url = new URL(viewerPath, baseIdentity.origin);
     url.searchParams.set("renderer", renderer);
     url.searchParams.set("offline", "true");
@@ -4418,8 +4934,6 @@ async function runC1229S5CustomBrowserSession(
     } finally {
       clearTimeout(pageTimer);
     }
-    await Promise.all(responseTasks);
-    measured.servedEntry = await entryPromise;
     const gpuGate = await collectGateErrors(page);
     measured.runtime = {
       pageErrors: [...pageErrors],
@@ -4435,9 +4949,6 @@ async function runC1229S5CustomBrowserSession(
       failedRequests,
       httpErrors,
     };
-    measured.xysResponses = xysResponses.sort((left, right) =>
-      left.file.localeCompare(right.file),
-    );
     const imageBytes = materializeC1229S5CustomImages(
       measured,
       runId,
@@ -4447,34 +4958,61 @@ async function runC1229S5CustomBrowserSession(
     );
     enrichC1229S5CustomOracle(measured, imageBytes);
   } catch (error) {
-    sessionError = error;
-    try {
-      diagnostics = await page.evaluate(() =>
-        globalThis.__c1229S5CustomProgress
-          ? JSON.parse(JSON.stringify(globalThis.__c1229S5CustomProgress))
-          : null,
-      );
-    } catch {
-      diagnostics = null;
-    }
+    sessionError = normalizeC1229S5CustomError(
+      error,
+      `${renderer} custom session rejected`,
+    );
+    diagnostics = await readC1229S5CustomPageProgressBounded(page);
     watchdogState.pageDiagnostic = diagnostics;
+  } finally {
+    pageClose = await closeC1229S5CustomResourceBounded(
+      page,
+      `${renderer} page`,
+    );
+    contextClose = await closeC1229S5CustomResourceBounded(
+      context,
+      `${renderer} context`,
+    );
+    if (watchdogState.page === page) watchdogState.page = null;
+    acceptResponseTasks = false;
+    if (responseListenerOwned && page) {
+      try {
+        const off = page.off;
+        if (typeof off !== "function") {
+          responseListenerCleanupError = new TypeError(
+            "page response listener cannot be detached",
+          );
+        } else {
+          off.call(page, "response", handleResponse);
+        }
+      } catch (error) {
+        responseListenerCleanupError = normalizeC1229S5CustomError(
+          error,
+          `${renderer} response-listener cleanup failed`,
+        );
+      }
+    }
+    const frozenResponseTasks = [...responseTasks];
+    responseDrain = await settleC1229S5CustomTasksBounded(
+      frozenResponseTasks,
+      `${renderer} response tasks`,
+      responseDrainTimeoutMs,
+    );
   }
-  const pageClose = await closeC1229S5CustomResourceBounded(
-    page,
-    `${renderer} page`,
-  );
-  const contextClose = await closeC1229S5CustomResourceBounded(
-    context,
-    `${renderer} context`,
-  );
-  if (watchdogState.page === page) watchdogState.page = null;
+
   if (measured) {
+    measured.servedEntry = servedEntry;
+    measured.xysResponses = xysResponses.sort((left, right) =>
+      left.file.localeCompare(right.file),
+    );
     const pageCleanupComplete = measured.cleanup?.complete === true;
     measured.cleanup = {
       complete:
         pageCleanupComplete &&
         pageClose.closed &&
         contextClose.closed &&
+        !responseDrain.timedOut &&
+        responseDrain.errors.length === 0 &&
         pending.size === 0,
       pageClosed: pageClose.closed,
       contextClosed: contextClose.closed,
@@ -4484,38 +5022,71 @@ async function runC1229S5CustomBrowserSession(
       contextCloseTimedOut: contextClose.timedOut,
     };
   }
-  const closeErrors = [pageClose, contextClose]
+
+  const cleanupErrors = [pageClose, contextClose]
     .filter((result) => !result.closed)
-    .map(
-      (result) =>
-        result.error ??
-        new Error(`${result.label} close expired after ${CLOSE_TIMEOUT_MS} ms`),
+    .map((result) =>
+      normalizeC1229S5CustomError(
+        result.error,
+        `${result.label} close expired after ${CLOSE_TIMEOUT_MS} ms`,
+      ),
     );
-  if (sessionError || closeErrors.length > 0) {
-    const errors = [...(sessionError ? [sessionError] : []), ...closeErrors];
-    const error =
-      errors.length === 1
-        ? errors[0]
-        : new AggregateError(errors, `${renderer} custom session failed`);
-    error.customDiagnostics = {
-      schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
-      renderer,
-      stage: diagnostics?.currentPhase ?? "node-session",
-      timeoutMs: PAGE_TIMEOUT_MS,
-      page: diagnostics,
-    };
+  if (responseListenerCleanupError) {
+    cleanupErrors.push(responseListenerCleanupError);
+  }
+  cleanupErrors.push(...responseDrain.errors);
+  if (measured && (!capturedEntry || servedEntry === undefined)) {
+    cleanupErrors.push(
+      new Error(`${renderer} served entry response was not captured`),
+    );
+  }
+  if (sessionError || cleanupErrors.length > 0) {
+    let error = sessionError ?? cleanupErrors[0];
+    const remainingCleanup = sessionError
+      ? cleanupErrors
+      : cleanupErrors.slice(1);
+    if (remainingCleanup.length > 0) {
+      error = combineC1229S5CustomPrimaryAndCleanup(
+        error,
+        remainingCleanup,
+        `${renderer} custom session failed`,
+      );
+    }
+    const existingDiagnostics = readC1229S5CustomErrorField(
+      error,
+      "customDiagnostics",
+    );
+    if (!validC1229S5CustomDiagnostics(existingDiagnostics)) {
+      error = attachC1229S5CustomDiagnostics(
+        error,
+        {
+          schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+          renderer,
+          stage: diagnostics?.currentPhase ?? "node-session",
+          timeoutMs: PAGE_TIMEOUT_MS,
+          page: diagnostics,
+        },
+        `${renderer} custom session diagnostics`,
+      );
+    }
     throw error;
   }
   return measured;
 }
 
 async function closeBrowserOrThrow(browser) {
-  const result = await closeC1229S5CustomResourceBounded(browser, "browser");
-  if (!result.closed) {
-    const error =
-      result.error ??
-      new Error(`browser close expired after ${CLOSE_TIMEOUT_MS} ms`);
-    error.retainCustomRunning = true;
+  const result = await closeC1229S5CustomBrowserBounded(browser);
+  if (!result.closeClean) {
+    const detail = result.timedOut
+      ? `expired after ${CLOSE_TIMEOUT_MS} ms`
+      : result.closeFulfilled
+        ? "fulfilled without proving disconnection"
+        : "rejected";
+    const error = new Error(`browser close ${detail}`, {
+      cause: result.error,
+    });
+    error.disconnectedProven = result.disconnectedProven;
+    if (!result.disconnectedProven) error.retainCustomRunning = true;
     throw error;
   }
   return result;
@@ -4523,16 +5094,24 @@ async function closeBrowserOrThrow(browser) {
 
 async function readC1229S5CustomPageProgressBounded(page, timeoutMs = 1_000) {
   if (!page) return null;
+  let evaluation;
+  try {
+    const evaluate = page.evaluate;
+    if (typeof evaluate !== "function") return null;
+    evaluation = Promise.resolve(
+      evaluate.call(page, () =>
+        globalThis.__c1229S5CustomProgress
+          ? JSON.parse(JSON.stringify(globalThis.__c1229S5CustomProgress))
+          : null,
+      ),
+    ).catch(() => null);
+  } catch {
+    return null;
+  }
   let timer;
   try {
     return await Promise.race([
-      page
-        .evaluate(() =>
-          globalThis.__c1229S5CustomProgress
-            ? JSON.parse(JSON.stringify(globalThis.__c1229S5CustomProgress))
-            : null,
-        )
-        .catch(() => null),
+      evaluation,
       new Promise((resolve) => {
         timer = setTimeout(() => resolve(null), timeoutMs);
       }),
@@ -4547,6 +5126,7 @@ export async function withC1229S5CustomWatchdog(
   closeOnTimeout,
   timeoutMs,
   renderer = "webgl",
+  drainTimeoutMs = WATCHDOG_DRAIN_TIMEOUT_MS,
 ) {
   if (typeof task !== "function" || typeof closeOnTimeout !== "function") {
     throw new TypeError(
@@ -4560,6 +5140,15 @@ export async function withC1229S5CustomWatchdog(
   ) {
     throw new TypeError(
       "custom-ellipsoid watchdog timeout must be a positive safe integer within the timer range",
+    );
+  }
+  if (
+    !Number.isSafeInteger(drainTimeoutMs) ||
+    drainTimeoutMs <= 0 ||
+    drainTimeoutMs > 2_147_483_647
+  ) {
+    throw new TypeError(
+      "custom-ellipsoid watchdog drain timeout must be a positive safe integer within the timer range",
     );
   }
   let timer;
@@ -4612,53 +5201,111 @@ export async function withC1229S5CustomWatchdog(
       (value) => ({ status: "fulfilled", value }),
       (taskError) => ({ status: "rejected", error: taskError }),
     );
-    const drain = Promise.all([cleanupSettlement, taskSettlement]).then(
-      ([cleanup, settlement]) => {
-        const cleanupValue = cleanup.value ?? {};
-        const page =
-          cleanupValue.page?.renderer === diagnosticRenderer
-            ? cleanupValue.page
-            : null;
-        error.customDiagnostics.page = page;
-        error.customDiagnostics.stage = page?.currentPhase ?? "watchdog";
-        let drainError =
-          cleanup.status === "rejected"
-            ? cleanup.error
-            : cleanupValue.drainError;
-        if (settlement.status === "fulfilled") {
-          const lateSuccess = new Error(
-            "custom-ellipsoid task fulfilled after watchdog deadline",
-          );
-          drainError =
-            drainError === undefined
-              ? lateSuccess
-              : new AggregateError(
-                  [drainError, lateSuccess],
-                  "custom-ellipsoid cleanup failed and task fulfilled after deadline",
-                  { cause: drainError },
-                );
-        }
-        const cleanupProven =
-          cleanup.status === "fulfilled" &&
-          cleanupValue.drainError === undefined;
-        if (cleanupProven) {
-          delete error.retainCustomRunning;
-        } else {
-          error.retainCustomRunning = true;
-        }
+    let drainTimer;
+    const drain = Promise.race([
+      Promise.all([cleanupSettlement, taskSettlement]).then((value) => ({
+        settled: true,
+        value,
+      })),
+      new Promise((resolve) => {
+        drainTimer = setTimeout(
+          () => resolve({ settled: false }),
+          drainTimeoutMs,
+        );
+      }),
+    ]).then((drainResult) => {
+      clearTimeout(drainTimer);
+      if (!drainResult.settled) {
+        const drainError = new Error(
+          `custom-ellipsoid watchdog drain expired after ${drainTimeoutMs} ms`,
+        );
+        error.retainCustomRunning = true;
         error.message =
           `custom-ellipsoid watchdog expired after ${timeoutMs} ms; ` +
-          `cleanupProven=${cleanupProven}; task=${settlement.status}`;
-        if (drainError !== undefined) error.cause = drainError;
+          "quiescenceProven=false; task=pending";
+        error.cause = drainError;
         return {
-          cleanupProven,
-          taskStatus: settlement.status,
+          cleanupProven: false,
+          quiescenceProven: false,
+          taskStatus: "pending",
           renderer: diagnosticRenderer,
-          page,
+          page: error.customDiagnostics.page,
           drainError,
         };
-      },
-    );
+      }
+      const [cleanup, settlement] = drainResult.value;
+      const cleanupValue = cleanup.value ?? {};
+      const page =
+        cleanupValue.page?.renderer === diagnosticRenderer
+          ? cleanupValue.page
+          : null;
+      error.customDiagnostics.page = page;
+      error.customDiagnostics.stage = page?.currentPhase ?? "watchdog";
+      let drainError;
+      if (cleanup.status === "rejected") {
+        drainError = normalizeC1229S5CustomError(
+          cleanup.error,
+          "custom-ellipsoid watchdog cleanup rejected",
+        );
+      } else if (cleanupValue.drainError !== undefined) {
+        drainError = normalizeC1229S5CustomError(
+          cleanupValue.drainError,
+          "custom-ellipsoid watchdog cleanup failed",
+        );
+      }
+      if (settlement.status === "fulfilled") {
+        const lateSuccess = new Error(
+          "custom-ellipsoid task fulfilled after watchdog deadline",
+        );
+        drainError =
+          drainError === undefined
+            ? lateSuccess
+            : combineC1229S5CustomPrimaryAndCleanup(
+                drainError,
+                lateSuccess,
+                "custom-ellipsoid cleanup failed and task fulfilled after deadline",
+              );
+      } else if (
+        settlement.error !== deadlineError &&
+        settlement.error !== abortController.signal.reason
+      ) {
+        const lateTaskError = normalizeC1229S5CustomError(
+          settlement.error,
+          "custom-ellipsoid late task rejected",
+        );
+        drainError =
+          drainError === undefined
+            ? lateTaskError
+            : combineC1229S5CustomPrimaryAndCleanup(
+                drainError,
+                lateTaskError,
+                "custom-ellipsoid cleanup and late task rejection failed",
+              );
+      }
+      const cleanupProven =
+        cleanup.status === "fulfilled" &&
+        cleanupValue.disconnectedProven === true;
+      const innerRetain =
+        readC1229S5CustomErrorField(drainError, "retainCustomRunning") === true;
+      const quiescenceProven = cleanupProven && !innerRetain;
+      if (quiescenceProven) {
+        delete error.retainCustomRunning;
+      } else {
+        error.retainCustomRunning = true;
+      }
+      error.message =
+        `custom-ellipsoid watchdog expired after ${timeoutMs} ms; ` +
+        `quiescenceProven=${quiescenceProven}; task=${settlement.status}`;
+      if (drainError !== undefined) error.cause = drainError;
+      return {
+        cleanupProven,
+        quiescenceProven,
+        taskStatus: settlement.status,
+        renderer: diagnosticRenderer,
+        page,
+        drainError,
+      };
+    });
     Object.defineProperty(error, "c1229S5CustomDrain", {
       value: drain,
       enumerable: false,
@@ -4964,6 +5611,7 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
               ownedPngs,
               watchdogState,
               operations,
+              options.responseDrainMs ?? RESPONSE_DRAIN_TIMEOUT_MS,
             ),
           );
           signal.throwIfAborted();
@@ -4977,19 +5625,25 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
         const closing = browser;
         browser = undefined;
         let drainError;
+        let disconnectedProven;
         try {
-          await closeBrowserOrThrow(closing);
+          const close = await closeBrowserOrThrow(closing);
+          disconnectedProven = close.disconnectedProven === true;
         } catch (error) {
           drainError = error;
+          disconnectedProven =
+            readC1229S5CustomErrorField(error, "disconnectedProven") === true;
         }
         return {
           renderer: watchdogState.renderer ?? watchdogRenderer,
           page,
           drainError,
+          disconnectedProven,
         };
       },
       options.watchdogMs ?? WATCHDOG_MS,
       () => watchdogRenderer,
+      options.watchdogDrainMs ?? WATCHDOG_DRAIN_TIMEOUT_MS,
     );
     const closing = browser;
     browser = undefined;
@@ -5013,9 +5667,9 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
       crossBackendOracle,
       cleanup: {
         complete:
-          browserCleanup.closed &&
+          browserCleanup.closeClean &&
           sessions.every((session) => session.cleanup.complete),
-        browserClosed: browserCleanup.closed,
+        browserClosed: browserCleanup.closeClean,
         contextsClosed: sessions.every(
           (session) => session.cleanup.contextClosed,
         ),
@@ -5052,9 +5706,16 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
     );
     return { artifact, publication, paths };
   } catch (caughtError) {
-    let error = caughtError;
-    if (error?.c1229S5CustomDrain) {
-      const drain = await error.c1229S5CustomDrain;
+    let error = normalizeC1229S5CustomError(
+      caughtError,
+      "custom-ellipsoid probe rejected",
+    );
+    const watchdogDrain = readC1229S5CustomErrorField(
+      error,
+      "c1229S5CustomDrain",
+    );
+    if (watchdogDrain) {
+      const drain = await watchdogDrain;
       if (drain.cleanupProven !== true) error.retainCustomRunning = true;
     }
     if (browser) {
@@ -5063,12 +5724,11 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
       try {
         await closeBrowserOrThrow(closing);
       } catch (closeError) {
-        error = new AggregateError(
-          [error, closeError],
+        error = combineC1229S5CustomPrimaryAndCleanup(
+          error,
+          closeError,
           "custom-ellipsoid probe and browser cleanup failed",
-          { cause: error },
         );
-        error.retainCustomRunning = true;
       }
     }
     const archiveExists =
@@ -5079,17 +5739,20 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
         const cleanupError = new Error(
           `owned PNG cleanup failed: ${pngCleanup.reasons.join("; ")}`,
         );
-        error = new AggregateError(
-          [error, cleanupError],
+        error = combineC1229S5CustomPrimaryAndCleanup(
+          error,
+          cleanupError,
           "custom-ellipsoid probe and UUID PNG cleanup failed",
-          { cause: error },
         );
         error.retainCustomRunning = true;
       } else {
         ownedPngs.length = 0;
       }
     }
-    if (ownership && error?.retainCustomRunning !== true) {
+    if (
+      ownership &&
+      readC1229S5CustomErrorField(error, "retainCustomRunning") !== true
+    ) {
       const artifact = createC1229S5CustomErrorArtifact(runId, error);
       try {
         const publication = finalizeC1229S5CustomEvidence(
@@ -5100,9 +5763,13 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
         );
         return { artifact, publication, paths, error };
       } catch (publicationError) {
-        publicationError.cause ??= error;
-        publicationError.retainCustomRunning = true;
-        throw publicationError;
+        const combined = combineC1229S5CustomPrimaryAndCleanup(
+          error,
+          publicationError,
+          "custom-ellipsoid probe and ERROR publication failed",
+        );
+        combined.retainCustomRunning = true;
+        throw combined;
       }
     }
     throw error;
@@ -5133,7 +5800,7 @@ async function main() {
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
 if (invokedPath === path.resolve(probePath)) {
   main().catch((error) => {
-    console.error(error?.stack ?? String(error));
+    console.error(boundedC1229S5CustomErrorText(error));
     process.exitCode = 2;
   });
 }

@@ -52,16 +52,21 @@ import {
 } from "./lib/same-task-capture.mjs";
 import {
   beginC1229S5CustomEvidenceRun,
+  boundedC1229S5CustomErrorText,
   claimC1229S5CustomCanonical,
   cleanupC1229S5CustomOwnedPngs,
+  closeC1229S5CustomBrowserBounded,
   closeC1229S5CustomResourceBounded,
+  combineC1229S5CustomPrimaryAndCleanup,
   createC1229S5CustomArtifactPaths,
   createC1229S5CustomErrorArtifact,
   createC1229S5CustomImmutableAuthority,
   finalizeC1229S5CustomEvidence,
   releaseC1229S5CustomLock,
   runC1229S5CustomBestEffortCleanup,
+  runC1229S5CustomBrowserSession,
   runC1229S5CustomEllipsoidProbe,
+  settleC1229S5CustomTasksBounded,
   validateC1229S5CustomLoopbackBase,
   validateC1229S5CustomPriorFinal,
   withC1229S5CustomWatchdog,
@@ -622,7 +627,6 @@ function passingSession(renderer, imageOffset) {
     moon: {
       widgetDefaultAbsent: true,
       explicitlyConstructed: true,
-      constructor: "Moon",
       servedConstructorIdentity: true,
       sceneIdentity: true,
       lifecycleOwner: "scene.moon",
@@ -1046,6 +1050,10 @@ function passingReport() {
 
 function passingArtifact() {
   const report = passingReport();
+  return finalArtifactFromReport(report);
+}
+
+function finalArtifactFromReport(report) {
   const verdict = foldC1229S5CustomEllipsoidGate(report);
   return {
     ...report,
@@ -1058,6 +1066,24 @@ function passingArtifact() {
     },
     checks: verdict.checks,
   };
+}
+
+function legacyV5Final(artifact) {
+  const legacy = structuredClone(artifact);
+  legacy.schema = "c12-29-s5-custom-ellipsoid-evidence-v5";
+  if (legacy.status === "ERROR") {
+    legacy.diagnostics.schema =
+      "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v5";
+    if (legacy.diagnostics.page !== null) {
+      legacy.diagnostics.page.schema =
+        "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v5";
+    }
+  } else {
+    for (const session of legacy.sessions) {
+      session.phases["custom-scene-construction"].moon.constructor = "Moon";
+    }
+  }
+  return legacy;
 }
 
 function materializePassingArtifactPngs(paths, artifact, ownership) {
@@ -1458,14 +1484,48 @@ test("hostile restoration and error hooks cannot skip later cleanup", () => {
   assert.deepEqual(cleanup.failures, ["moon.update", "moon.update:onError"]);
 });
 
+test("viewer cleanup is LIFO, fail-closed, and cannot skip baseline restoration", () => {
+  const calls = [];
+  const cleanup = runC1229S5CustomBestEffortCleanup([
+    {
+      label: "Ellipsoid.default",
+      restore() {
+        calls.push("Ellipsoid.default");
+        return true;
+      },
+    },
+    {
+      label: "viewer",
+      restore() {
+        calls.push("viewer");
+        return false;
+      },
+    },
+    {
+      label: "moon.update",
+      restore() {
+        calls.push("moon.update");
+        return true;
+      },
+    },
+  ]);
+  assert.deepEqual(calls, ["moon.update", "viewer", "Ellipsoid.default"]);
+  assert.deepEqual(cleanup.attempted, [
+    "moon.update",
+    "viewer",
+    "Ellipsoid.default",
+  ]);
+  assert.deepEqual(cleanup.failures, ["viewer"]);
+});
+
 test("contract freezes schemas, renderer order, nine phases, and six captures", () => {
   assert.equal(
     C12_29_S5_CUSTOM_SCHEMA,
-    "c12-29-s5-custom-ellipsoid-evidence-v5",
+    "c12-29-s5-custom-ellipsoid-evidence-v6",
   );
   assert.equal(
     C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
-    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v5",
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v6",
   );
   assert.deepEqual(C12_29_S5_CUSTOM_RENDERERS, ["webgl", "webgpu"]);
   assert.equal(C12_29_S5_CUSTOM_PHASES.length, 9);
@@ -2678,6 +2738,137 @@ test("ERROR diagnostics and prior-version finals are exact and fail closed", () 
   assert.equal(toJsonReads, 0);
 });
 
+test("frozen v5 finals migrate to v6 without repairing malformed v5 evidence", () => {
+  const failReport = passingReport();
+  failReport.sessions[0].phases["behavioral-pick"].directUpdateForPickCall =
+    true;
+  const structuralReport = passingReport();
+  structuralReport.cleanup.complete = false;
+  const currentFinals = [
+    passingArtifact(),
+    finalArtifactFromReport(failReport),
+    finalArtifactFromReport(structuralReport),
+  ];
+  assert.deepEqual(
+    currentFinals.map((artifact) => artifact.status),
+    ["PASS", "FAIL", "STRUCTURAL"],
+  );
+
+  for (const current of currentFinals) {
+    const legacy = legacyV5Final(current);
+    assert.equal(validateC1229S5CustomFinalArtifact(legacy).ok, false);
+    assert.equal(validateC1229S5CustomPriorFinal(legacy), true, current.status);
+
+    const extraTopologyKey = structuredClone(legacy);
+    extraTopologyKey.sessions[0].phases[
+      "custom-scene-construction"
+    ].moon.extra = true;
+    assert.equal(
+      validateC1229S5CustomPriorFinal(extraTopologyKey),
+      false,
+      `${current.status}: extra topology key`,
+    );
+
+    const wrongConstructor = structuredClone(legacy);
+    wrongConstructor.sessions[0].phases[
+      "custom-scene-construction"
+    ].moon.constructor = "_Moon";
+    assert.equal(
+      validateC1229S5CustomPriorFinal(wrongConstructor),
+      false,
+      `${current.status}: wrong frozen constructor`,
+    );
+
+    const missingIdentity = structuredClone(legacy);
+    delete missingIdentity.sessions[0].phases["custom-scene-construction"].moon
+      .servedConstructorIdentity;
+    assert.equal(
+      validateC1229S5CustomPriorFinal(missingIdentity),
+      false,
+      `${current.status}: missing served identity`,
+    );
+  }
+
+  const v5BoundaryMutant = legacyV5Final(passingArtifact());
+  const v5SourceAdditions = new Set([
+    "packages/engine/Source/Core/CelestialEphemerisProvider.js",
+    "packages/engine/Source/Core/Simon1994EphemerisProvider.js",
+    "packages/engine/Source/Renderer/UniformStateComputations.js",
+    "packages/engine/Source/Scene/Moon.js",
+  ]);
+  const v4SourceFiles = C12_29_S5_CUSTOM_SOURCE_FILES.filter(
+    (file) => !v5SourceAdditions.has(file),
+  );
+  const v4BuildFiles = C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.filter(
+    (file) => !v5SourceAdditions.has(file),
+  );
+  v5BoundaryMutant.provenance.sourceBoundary.count = v4SourceFiles.length;
+  v5BoundaryMutant.provenance.sourceBoundary.files = v4SourceFiles;
+  v5BoundaryMutant.provenance.localFiles =
+    v5BoundaryMutant.provenance.localFiles.filter((entry) =>
+      v4SourceFiles.includes(entry.file),
+    );
+  for (const endpoint of ["start", "end"]) {
+    v5BoundaryMutant.provenance.buildSourceIdentity[endpoint].entries =
+      v5BoundaryMutant.provenance.buildSourceIdentity[endpoint].entries.filter(
+        (entry) =>
+          v4BuildFiles.some(
+            (file) => entry.file === file || entry.file.endsWith(`/${file}`),
+          ),
+      );
+  }
+  v5BoundaryMutant.checks.sourceBoundaryCount = v4SourceFiles.length;
+  v5BoundaryMutant.checks.buildSourceBoundaryCount = v4BuildFiles.length;
+  assert.equal(validateC1229S5CustomPriorFinal(v5BoundaryMutant), false);
+
+  const v5LineageMutant = legacyV5Final(passingArtifact());
+  delete v5LineageMutant.sessions[0].images[0].temporalStability.observations[0]
+    .state.ephemeris;
+  assert.equal(validateC1229S5CustomPriorFinal(v5LineageMutant), false);
+
+  for (const schema of [
+    "c12-29-s5-custom-ellipsoid-evidence-v3",
+    "c12-29-s5-custom-ellipsoid-evidence-v4",
+  ]) {
+    const earlier = legacyV5Final(passingArtifact());
+    earlier.schema = schema;
+    assert.equal(validateC1229S5CustomPriorFinal(earlier), true, schema);
+  }
+
+  const currentRuntimeError = errorArtifact(randomUUID());
+  currentRuntimeError.diagnostics = {
+    schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+    renderer: "webgpu",
+    stage: "event-s5-on",
+    timeoutMs: 240_000,
+    page: {
+      schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+      renderer: "webgpu",
+      currentPhase: "event-s5-on",
+      completedPhases: [
+        "custom-scene-construction",
+        "selected-terrain-preparation",
+        "event-s5-off",
+      ],
+      step: "event-on-fused-snapshot",
+      elapsedMs: 123,
+    },
+  };
+  const v5Error = legacyV5Final(currentRuntimeError);
+  assert.equal(validateC1229S5CustomPriorFinal(v5Error), true);
+  for (const mutate of [
+    (value) => (value.extra = true),
+    (value) => (value.diagnostics.extra = true),
+    (value) => (value.diagnostics.schema = C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA),
+    (value) =>
+      (value.diagnostics.page.schema = C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA),
+  ]) {
+    const mutant = structuredClone(v5Error);
+    mutate(mutant);
+    assert.equal(validateC1229S5CustomPriorFinal(mutant), false);
+  }
+});
+
 test("status, UUID, and stable serialization utilities are exact", () => {
   assert.equal(isC1229S5CustomUuidV4(RUN_ID), true);
   assert.equal(isC1229S5CustomUuidV4(RUN_ID.replace("-42d3", "-52d3")), false);
@@ -2718,8 +2909,8 @@ test("ERROR construction is bounded and hostile-error safe", () => {
     RUN_ID,
     new Error("x".repeat(70_000)),
   );
-  assert.equal(oversized.error.length, 65_536);
-  assert.match(oversized.error, /CUSTOM_ERROR_TRUNCATED/u);
+  assert.ok(oversized.error.length <= 65_536);
+  assert.match(oversized.error, /COMPONENT_TRUNCATED/u);
   assert.deepEqual(validateC1229S5CustomFinalArtifact(oversized), {
     ok: true,
     reasons: [],
@@ -2738,6 +2929,125 @@ test("ERROR construction is bounded and hostile-error safe", () => {
     ok: true,
     reasons: [],
   });
+
+  const global = createC1229S5CustomErrorArtifact(
+    RUN_ID,
+    new AggregateError(
+      Array.from(
+        { length: 32 },
+        (_, index) => new Error(`${index}:${"x".repeat(10_000)}`),
+      ),
+      "many failures",
+    ),
+  );
+  assert.equal(global.error.length, 65_536);
+  assert.match(global.error, /CUSTOM_ERROR_TRUNCATED/u);
+});
+
+test("recursive error rendering survives hostile child collections and labels shared causes", () => {
+  const { proxy: revokedErrors, revoke } = Proxy.revocable([], {});
+  revoke();
+  assert.doesNotThrow(() =>
+    boundedC1229S5CustomErrorText({
+      name: "Error",
+      message: "revoked children",
+      errors: revokedErrors,
+    }),
+  );
+
+  const throwingLength = new Proxy([], {
+    get(target, key, receiver) {
+      if (key === "length") throw new Error("hostile length");
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  assert.doesNotThrow(() =>
+    boundedC1229S5CustomErrorText({
+      name: "Error",
+      message: "hostile children",
+      errors: throwingLength,
+    }),
+  );
+
+  const shared = new Error("shared cleanup failure");
+  const aggregate = new AggregateError([shared], "primary failure", {
+    cause: shared,
+  });
+  const rendered = boundedC1229S5CustomErrorText(aggregate);
+  assert.match(rendered, /error\.errors\[0\]: Error: shared cleanup failure/u);
+  assert.match(
+    rendered,
+    /error\.cause: \[error reference -> error\.errors\[0\]\]/u,
+  );
+
+  const cycle = new Error("cycle root");
+  cycle.cause = cycle;
+  assert.match(
+    boundedC1229S5CustomErrorText(cycle),
+    /error\.cause: \[error reference -> error\]/u,
+  );
+
+  const oversizedPrimary = new Error(`primary:${"p".repeat(10_000)}`);
+  const oversizedCleanup = new Error(`cleanup:${"c".repeat(10_000)}`);
+  const oversizedCombined = combineC1229S5CustomPrimaryAndCleanup(
+    oversizedPrimary,
+    oversizedCleanup,
+    "oversized combined failure",
+  );
+  const oversizedRendered = boundedC1229S5CustomErrorText(oversizedCombined);
+  assert.match(oversizedRendered, /primary:/u);
+  assert.match(oversizedRendered, /cleanup:/u);
+  assert.equal(
+    (oversizedRendered.match(/COMPONENT_TRUNCATED/gu) ?? []).length,
+    2,
+  );
+});
+
+test("cleanup aggregation preserves primary diagnostics and renders recursive causes", () => {
+  const primary = new Error("measurement failed");
+  primary.customDiagnostics = {
+    schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+    renderer: "webgpu",
+    stage: "event-s5-on",
+    timeoutMs: 240_000,
+    page: {
+      schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+      renderer: "webgpu",
+      currentPhase: "event-s5-on",
+      completedPhases: [
+        "custom-scene-construction",
+        "selected-terrain-preparation",
+        "event-s5-off",
+      ],
+      step: "event-on-fused-snapshot",
+      elapsedMs: 123,
+    },
+  };
+  const cleanup = new AggregateError(
+    [new Error("page close failed"), new Error("context close failed")],
+    "session cleanup failed",
+  );
+  const combined = combineC1229S5CustomPrimaryAndCleanup(
+    primary,
+    cleanup,
+    "measurement and cleanup failed",
+  );
+  assert.equal(combined.cause, primary);
+  assert.equal(combined.customDiagnostics, primary.customDiagnostics);
+  const artifact = createC1229S5CustomErrorArtifact(RUN_ID, combined);
+  assert.equal(artifact.diagnostics.renderer, "webgpu");
+  assert.equal(artifact.diagnostics.stage, "event-s5-on");
+  assert.match(artifact.error, /measurement failed/u);
+  assert.match(artifact.error, /page close failed/u);
+  assert.match(artifact.error, /context close failed/u);
+
+  cleanup.retainCustomRunning = true;
+  const retained = combineC1229S5CustomPrimaryAndCleanup(
+    primary,
+    cleanup,
+    "retained cleanup",
+  );
+  assert.equal(retained.retainCustomRunning, true);
 });
 
 test("oversized launch failure finalizes exact ERROR and releases authority", async () => {
@@ -2751,8 +3061,8 @@ test("oversized launch failure finalizes exact ERROR and releases authority", as
       },
     });
     assert.equal(result.artifact.status, "ERROR");
-    assert.equal(result.artifact.error.length, 65_536);
-    assert.match(result.artifact.error, /CUSTOM_ERROR_TRUNCATED/u);
+    assert.ok(result.artifact.error.length <= 65_536);
+    assert.match(result.artifact.error, /COMPONENT_TRUNCATED/u);
     assert.equal(fs.existsSync(result.paths.lock), false);
     assert.deepEqual(
       fs.readFileSync(result.paths.latest),
@@ -2760,6 +3070,63 @@ test("oversized launch failure finalizes exact ERROR and releases authority", as
     );
   } finally {
     removeTempEvidenceDirectory(directory);
+  }
+});
+
+test("ERROR publication aggregation preserves primary and hostile publication failures", () => {
+  for (const publicationFailure of [
+    "primitive publication failure",
+    undefined,
+    Object.freeze(new Error("frozen publication failure")),
+  ]) {
+    const primary = new Error("primary browser launch failure");
+    const combined = combineC1229S5CustomPrimaryAndCleanup(
+      primary,
+      publicationFailure,
+      "custom-ellipsoid probe and ERROR publication failed",
+    );
+    combined.retainCustomRunning = true;
+    assert.ok(combined instanceof AggregateError);
+    assert.equal(combined.cause, primary);
+    assert.equal(combined.retainCustomRunning, true);
+    const rendered = boundedC1229S5CustomErrorText(combined);
+    assert.match(rendered, /primary browser launch failure/u);
+    assert.match(
+      rendered,
+      publicationFailure === undefined
+        ? /publication failed: cleanup failure: undefined/u
+        : /publication failure/u,
+    );
+  }
+
+  const { proxy: revokedArray, revoke } = Proxy.revocable([], {});
+  revoke();
+  const hostileIterableArray = new Proxy([], {
+    get(target, key, receiver) {
+      if (key === Symbol.iterator) {
+        throw new Error("hostile cleanup iterator");
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  for (const hostileCleanup of [revokedArray, hostileIterableArray]) {
+    const primary = new Error("primary publication failure");
+    let combined;
+    assert.doesNotThrow(() => {
+      combined = combineC1229S5CustomPrimaryAndCleanup(
+        primary,
+        hostileCleanup,
+        "hostile cleanup collection",
+      );
+    });
+    assert.ok(combined instanceof AggregateError);
+    assert.equal(combined.cause, primary);
+    assert.equal(combined.errors.length, 2);
+    assert.ok(combined.errors[1] instanceof Error);
+    assert.match(
+      boundedC1229S5CustomErrorText(combined),
+      /hostile cleanup collection: cleanup failure/u,
+    );
   }
 });
 
@@ -2826,22 +3193,39 @@ test("new oracle/probe artifacts contain no Earth axes or production-oracle call
   }
 });
 
-test("custom Moon topology requires explicit served construction and Scene ownership", () => {
-  const passing = {
+test("custom Moon topology ignores function-name drift while preserving served identity", () => {
+  class ServedMoon {
+    update() {}
+    destroy() {}
+  }
+  const moon = new ServedMoon();
+  const scene = { moon };
+  const topology = () => ({
     widgetDefaultAbsent: true,
     explicitlyConstructed: true,
-    constructor: "Moon",
-    servedConstructorIdentity: true,
-    sceneIdentity: true,
+    servedConstructorIdentity: moon.constructor === ServedMoon,
+    sceneIdentity: scene.moon === moon,
     lifecycleOwner: "scene.moon",
-    updateIsFunction: true,
-    destroyIsFunction: true,
-  };
-  assert.equal(validateC1229S5CustomMoonTopology(passing), true);
+    updateIsFunction: typeof moon.update === "function",
+    destroyIsFunction: typeof moon.destroy === "function",
+  });
+  for (const bundledName of ["Moon", "_Moon", "a", "arbitrary-name"]) {
+    Object.defineProperty(ServedMoon, "name", {
+      configurable: true,
+      value: bundledName,
+    });
+    assert.equal(validateC1229S5CustomMoonTopology(topology()), true);
+  }
+
+  class DifferentMoon {}
+  const wrongIdentity = topology();
+  wrongIdentity.servedConstructorIdentity = moon.constructor === DifferentMoon;
+  assert.equal(validateC1229S5CustomMoonTopology(wrongIdentity), false);
+
+  const passing = topology();
   for (const mutate of [
     (value) => (value.widgetDefaultAbsent = false),
     (value) => (value.explicitlyConstructed = false),
-    (value) => (value.constructor = "Object"),
     (value) => (value.servedConstructorIdentity = false),
     (value) => (value.sceneIdentity = false),
     (value) => (value.lifecycleOwner = "probe"),
@@ -2911,6 +3295,68 @@ test("probe uses the served bundle for browser modules, constructs every custom 
   assert.match(
     probeSource,
     /servedConstructorIdentity: moon\.constructor === C\.Moon,[\s\S]*?sceneIdentity: scene\.moon === moon,[\s\S]*?lifecycleOwner: "scene\.moon"/u,
+  );
+  assert.doesNotMatch(
+    probeSource,
+    /constructor:\s*moon\.constructor\.name|moonTopology\.constructor/u,
+  );
+  assert.match(
+    probeSource,
+    /const commonOptions = \{[\s\S]*?useDefaultRenderLoop: false,[\s\S]*?: new C\.Viewer\(container, commonOptions\);\s*registerCleanupAction\("viewer"/u,
+  );
+  assert.match(
+    probeSource,
+    /registerCleanupAction\("viewer", \(\) => \{[\s\S]*?viewer\.useDefaultRenderLoop = false;[\s\S]*?viewer\.destroy\(\);[\s\S]*?Reflect\.deleteProperty\(globalThis, "viewer"\)[\s\S]*?viewerCleanupState\.globalIdentityCleared[\s\S]*?\}\);\s*viewer\.useDefaultRenderLoop = false;\s*globalThis\.viewer = viewer;/u,
+  );
+  const sessionStart = probeSource.indexOf(
+    "async function runC1229S5CustomBrowserSession(",
+  );
+  const sessionEnd = probeSource.indexOf(
+    "async function closeBrowserOrThrow(",
+    sessionStart,
+  );
+  const sessionSource = probeSource.slice(sessionStart, sessionEnd);
+  assert.match(
+    sessionSource,
+    /const handleResponse = \(response\) => \{\s*if \(!acceptResponseTasks\) return;\s*observeResponseTask\(\s*Promise\.resolve\(\)\.then\(async \(\) => \{/u,
+  );
+  const sessionFinally = sessionSource.lastIndexOf("} finally {");
+  const pageClose = sessionSource.indexOf(
+    "pageClose = await closeC1229S5CustomResourceBounded(",
+    sessionFinally,
+  );
+  const contextClose = sessionSource.indexOf(
+    "contextClose = await closeC1229S5CustomResourceBounded(",
+    pageClose,
+  );
+  const stopResponses = sessionSource.indexOf(
+    "acceptResponseTasks = false;",
+    contextClose,
+  );
+  const detachResponse = sessionSource.indexOf(
+    "const off = page.off;",
+    stopResponses,
+  );
+  const freezeResponses = sessionSource.indexOf(
+    "const frozenResponseTasks = [...responseTasks];",
+    detachResponse,
+  );
+  const drainResponses = sessionSource.indexOf(
+    "responseDrain = await settleC1229S5CustomTasksBounded(",
+    freezeResponses,
+  );
+  assert.ok(
+    sessionFinally >= 0 &&
+      pageClose > sessionFinally &&
+      contextClose > pageClose &&
+      stopResponses > contextClose &&
+      detachResponse > stopResponses &&
+      freezeResponses > detachResponse &&
+      drainResponses > freezeResponses,
+  );
+  assert.match(
+    probeSource,
+    /catch \(publicationError\) \{\s*const combined = combineC1229S5CustomPrimaryAndCleanup\(\s*error,\s*publicationError,[\s\S]*?combined\.retainCustomRunning = true;\s*throw combined;/u,
   );
   assert.match(
     probeSource,
@@ -4050,6 +4496,145 @@ test("bounded close reports an uncooperative resource without hanging", async ()
   );
   assert.equal(result.closed, false);
   assert.equal(result.timedOut, true);
+  for (const timeoutMs of [0, -1, 1.5, Number.MAX_VALUE]) {
+    await assert.rejects(
+      closeC1229S5CustomResourceBounded(undefined, "invalid", timeoutMs),
+      /positive safe integer within the timer range/u,
+    );
+  }
+});
+
+test("browser close separates clean fulfillment from proven disconnection", async () => {
+  let connected = true;
+  const clean = await closeC1229S5CustomBrowserBounded({
+    async close() {
+      connected = false;
+    },
+    isConnected() {
+      return connected;
+    },
+  });
+  assert.equal(clean.closeFulfilled, true);
+  assert.equal(clean.disconnectedProven, true);
+  assert.equal(clean.closeClean, true);
+
+  const rejectedButDisconnected = await closeC1229S5CustomBrowserBounded({
+    async close() {
+      throw new Error("close rejected after disconnect");
+    },
+    isConnected() {
+      return false;
+    },
+  });
+  assert.equal(rejectedButDisconnected.closeFulfilled, false);
+  assert.equal(rejectedButDisconnected.disconnectedProven, true);
+  assert.equal(rejectedButDisconnected.closeClean, false);
+
+  let delayedConnected = true;
+  let disconnectedListener;
+  const delayed = await closeC1229S5CustomBrowserBounded(
+    {
+      async close() {
+        setTimeout(() => {
+          delayedConnected = false;
+          disconnectedListener?.();
+        }, 5);
+        throw new Error("channel rejected before delayed disconnect");
+      },
+      isConnected() {
+        return delayedConnected;
+      },
+      once(event, listener) {
+        assert.equal(event, "disconnected");
+        disconnectedListener = listener;
+      },
+      off(event, listener) {
+        assert.equal(event, "disconnected");
+        if (disconnectedListener === listener) disconnectedListener = undefined;
+      },
+    },
+    100,
+  );
+  assert.equal(delayed.closeFulfilled, false);
+  assert.equal(delayed.disconnectedProven, true);
+  assert.equal(delayed.closeClean, false);
+  assert.equal(disconnectedListener, undefined);
+
+  for (const browser of [
+    {
+      async close() {},
+      isConnected() {
+        return true;
+      },
+    },
+    {
+      async close() {},
+      isConnected() {
+        throw new Error("hostile connection probe");
+      },
+    },
+  ]) {
+    const unproven = await closeC1229S5CustomBrowserBounded(browser);
+    assert.equal(unproven.closeFulfilled, true);
+    assert.equal(unproven.disconnectedProven, false);
+    assert.equal(unproven.closeClean, false);
+  }
+});
+
+test("response-task settlement observes rejection and bounds a hung body", async () => {
+  const rejection = new Error("response body rejected");
+  const settled = await settleC1229S5CustomTasksBounded(
+    [Promise.resolve({ status: "rejected", error: rejection })],
+    "response tasks",
+    100,
+  );
+  assert.equal(settled.timedOut, false);
+  assert.deepEqual(settled.errors, [rejection]);
+
+  const timedOut = await settleC1229S5CustomTasksBounded(
+    [new Promise(() => {})],
+    "hung response tasks",
+    10,
+  );
+  assert.equal(timedOut.timedOut, true);
+  assert.match(timedOut.errors[0].message, /settlement expired/u);
+  assert.equal(timedOut.errors[0].retainCustomRunning, true);
+
+  const primitive = await settleC1229S5CustomTasksBounded(
+    [Promise.resolve({ status: "rejected", error: "primitive rejection" })],
+    "primitive response task",
+    100,
+  );
+  assert.ok(primitive.errors[0] instanceof Error);
+  assert.match(primitive.errors[0].message, /primitive rejection/u);
+
+  for (const timeoutMs of [0, -1, 1.5, Number.MAX_VALUE]) {
+    await assert.rejects(
+      settleC1229S5CustomTasksBounded([], "invalid response tasks", timeoutMs),
+      /positive safe integer within the timer range/u,
+    );
+  }
+
+  let newContextCalls = 0;
+  await assert.rejects(
+    runC1229S5CustomBrowserSession(
+      {
+        async newContext() {
+          newContextCalls += 1;
+        },
+      },
+      "webgl",
+      { origin: "http://localhost:8080" },
+      RUN_ID,
+      {},
+      [],
+      { renderer: null, page: null, pageDiagnostic: null },
+      fs,
+      Number.MAX_VALUE,
+    ),
+    /response-drain timeout must be a positive safe integer within the timer range/u,
+  );
+  assert.equal(newContextCalls, 0);
 });
 
 test("watchdog rejects at the deadline while owning cleanup and task drain", async () => {
@@ -4068,7 +4653,8 @@ test("watchdog rejects at the deadline while owning cleanup and task drain", asy
       },
       () =>
         new Promise((resolve) => {
-          finishCleanup = () => resolve({ page: null });
+          finishCleanup = () =>
+            resolve({ page: null, disconnectedProven: true });
         }),
       10,
     );
@@ -4114,7 +4700,7 @@ test("watchdog is deadline-first under event-loop starvation", async () => {
       },
       async () => {
         cleanupCalls += 1;
-        return { page: null };
+        return { page: null, disconnectedProven: true };
       },
       5,
     );
@@ -4131,6 +4717,30 @@ test("watchdog is deadline-first under event-loop starvation", async () => {
   assert.match(String(watchdogError.cause), /fulfilled after watchdog/u);
 });
 
+test("watchdog drain has a terminal deadline when the task never settles", async () => {
+  let watchdogError;
+  const startedAt = Date.now();
+  try {
+    await withC1229S5CustomWatchdog(
+      () => new Promise(() => {}),
+      async () => ({ page: null, disconnectedProven: true }),
+      1,
+      "webgl",
+      10,
+    );
+  } catch (error) {
+    watchdogError = error;
+  }
+  assert.ok(watchdogError);
+  const drain = await watchdogError.c1229S5CustomDrain;
+  assert.ok(Date.now() - startedAt < 1_000);
+  assert.equal(drain.cleanupProven, false);
+  assert.equal(drain.quiescenceProven, false);
+  assert.equal(drain.taskStatus, "pending");
+  assert.equal(watchdogError.retainCustomRunning, true);
+  assert.match(String(watchdogError.cause), /drain expired/u);
+});
+
 test("watchdog rejects non-positive or fractional deadlines", async () => {
   for (const timeoutMs of [0, -1, 1.5, Number.MAX_VALUE]) {
     await assert.rejects(
@@ -4140,6 +4750,21 @@ test("watchdog rejects non-positive or fractional deadlines", async () => {
         timeoutMs,
       ),
       /positive safe integer/u,
+    );
+  }
+});
+
+test("watchdog rejects non-positive or fractional drain deadlines", async () => {
+  for (const drainTimeoutMs of [0, -1, 1.5, Number.MAX_VALUE]) {
+    await assert.rejects(
+      withC1229S5CustomWatchdog(
+        async () => true,
+        async () => ({ disconnectedProven: true }),
+        10,
+        "webgl",
+        drainTimeoutMs,
+      ),
+      /drain timeout must be a positive safe integer/u,
     );
   }
 });
@@ -4168,7 +4793,7 @@ test("watchdog preserves deadline renderer and exact page progress", async () =>
             { once: true },
           );
         }),
-      async () => ({ page }),
+      async () => ({ page, disconnectedProven: true }),
       1,
       () => renderer,
     );
@@ -4194,7 +4819,10 @@ test("watchdog retains RUNNING when cleanup proof is red", async () => {
             once: true,
           });
         }),
-      async () => ({ drainError: new Error("cleanup unproven") }),
+      async () => ({
+        disconnectedProven: false,
+        drainError: new Error("cleanup unproven"),
+      }),
       1,
     );
   } catch (error) {
@@ -4205,6 +4833,292 @@ test("watchdog retains RUNNING when cleanup proof is red", async () => {
   assert.equal(drain.cleanupProven, false);
   assert.equal(watchdogError.retainCustomRunning, true);
   assert.match(String(watchdogError.cause), /cleanup unproven/u);
+});
+
+test("watchdog preserves cleanup error but releases RUNNING after proven disconnection", async () => {
+  const closeError = new Error("browser close rejected after disconnect");
+  let watchdogError;
+  try {
+    await withC1229S5CustomWatchdog(
+      (signal) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+      async () => ({
+        disconnectedProven: true,
+        drainError: closeError,
+      }),
+      1,
+    );
+  } catch (error) {
+    watchdogError = error;
+  }
+  assert.ok(watchdogError);
+  const drain = await watchdogError.c1229S5CustomDrain;
+  assert.equal(drain.cleanupProven, true);
+  assert.equal(drain.quiescenceProven, true);
+  assert.equal(watchdogError.retainCustomRunning, undefined);
+  assert.equal(watchdogError.cause, closeError);
+});
+
+test("watchdog cannot clear a retain-marked late task after proven disconnection", async () => {
+  const closeError = new Error("browser close rejected after disconnect");
+  const pendingTaskError = new Error("response body remains unsettled");
+  pendingTaskError.retainCustomRunning = true;
+  let watchdogError;
+  try {
+    await withC1229S5CustomWatchdog(
+      (signal) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(pendingTaskError), {
+            once: true,
+          });
+        }),
+      async () => ({
+        disconnectedProven: true,
+        drainError: closeError,
+      }),
+      1,
+    );
+  } catch (error) {
+    watchdogError = error;
+  }
+  assert.ok(watchdogError);
+  const drain = await watchdogError.c1229S5CustomDrain;
+  assert.equal(drain.cleanupProven, true);
+  assert.equal(drain.quiescenceProven, false);
+  assert.equal(drain.taskStatus, "rejected");
+  assert.equal(watchdogError.retainCustomRunning, true);
+  assert.equal(drain.drainError.retainCustomRunning, true);
+  const rendered = boundedC1229S5CustomErrorText(watchdogError);
+  assert.match(rendered, /browser close rejected after disconnect/u);
+  assert.match(rendered, /response body remains unsettled/u);
+});
+
+test("watchdog labels undefined cleanup and late-task rejections", async () => {
+  for (const rejectionPoint of ["cleanup", "task"]) {
+    let watchdogError;
+    try {
+      await withC1229S5CustomWatchdog(
+        (signal) =>
+          new Promise((_, reject) => {
+            signal.addEventListener(
+              "abort",
+              () =>
+                reject(rejectionPoint === "task" ? undefined : signal.reason),
+              { once: true },
+            );
+          }),
+        async () => {
+          if (rejectionPoint === "cleanup") throw undefined;
+          return { disconnectedProven: true };
+        },
+        1,
+      );
+    } catch (error) {
+      watchdogError = error;
+    }
+    assert.ok(watchdogError);
+    await watchdogError.c1229S5CustomDrain;
+    const rendered = boundedC1229S5CustomErrorText(watchdogError);
+    assert.match(
+      rendered,
+      rejectionPoint === "cleanup"
+        ? /watchdog cleanup rejected: undefined/u
+        : /late task rejected: undefined/u,
+      rejectionPoint,
+    );
+  }
+});
+
+test("session setup failures preserve the primary and close every acquired resource", async () => {
+  const failureMessages = {
+    newContext: "hostile context primitive",
+    route: "hostile route setup",
+    newPage: "hostile page acquisition",
+    addInitScript: "hostile init-script setup",
+  };
+  for (const failurePoint of [
+    "newContext",
+    "route",
+    "newPage",
+    "addInitScript",
+  ]) {
+    const directory = tempEvidenceDirectory();
+    const runId = randomUUID();
+    let connected = true;
+    let contextClosed = false;
+    let pageClosed = false;
+    const page = {
+      async addInitScript() {
+        if (failurePoint === "addInitScript") {
+          throw new Error("hostile init-script setup");
+        }
+      },
+      on() {},
+      async close() {
+        pageClosed = true;
+      },
+    };
+    const context = {
+      async route() {
+        if (failurePoint === "route") throw new Error("hostile route setup");
+      },
+      async newPage() {
+        if (failurePoint === "newPage") {
+          throw new Error("hostile page acquisition");
+        }
+        return page;
+      },
+      async close() {
+        contextClosed = true;
+      },
+    };
+    const browser = {
+      async newContext() {
+        if (failurePoint === "newContext") throw "hostile context primitive";
+        return context;
+      },
+      async close() {
+        connected = false;
+      },
+      isConnected() {
+        return connected;
+      },
+    };
+    try {
+      let sessionError;
+      try {
+        await runC1229S5CustomBrowserSession(
+          browser,
+          "webgl",
+          { origin: "http://localhost:8080" },
+          runId,
+          createC1229S5CustomArtifactPaths(runId, directory),
+          [],
+          { renderer: null, page: null, pageDiagnostic: null },
+        );
+      } catch (error) {
+        sessionError = error;
+      }
+      assert.ok(sessionError, failurePoint);
+      assert.match(
+        boundedC1229S5CustomErrorText(sessionError),
+        new RegExp(failureMessages[failurePoint], "u"),
+        failurePoint,
+      );
+      assert.equal(contextClosed, failurePoint !== "newContext", failurePoint);
+      assert.equal(pageClosed, failurePoint === "addInitScript", failurePoint);
+      const browserClose = await closeC1229S5CustomBrowserBounded(browser);
+      assert.equal(browserClose.closeClean, true, failurePoint);
+      assert.equal(connected, false, failurePoint);
+    } finally {
+      removeTempEvidenceDirectory(directory);
+    }
+  }
+});
+
+test("close-time responses with hostile listener cleanup preserve primary and retain a pending body", async () => {
+  const directory = tempEvidenceDirectory();
+  const runId = randomUUID();
+  let connected = true;
+  let contextClosed = false;
+  let pageClosed = false;
+  let responseHandler;
+  let queuedResponseHandler;
+  let closeTimeBodyCalls = 0;
+  const runtimeResponse = {
+    url: () => "http://localhost:8080/Build/CesiumUnminified/index.js",
+    status: () => 200,
+    ok: () => true,
+    body: () => new Promise(() => {}),
+  };
+  const closeTimeResponse = {
+    url: () =>
+      "http://localhost:8080/Build/CesiumUnminified/Assets/IAU2006_XYS/IAU2006_XYS_0.json",
+    status: () => 200,
+    body() {
+      closeTimeBodyCalls += 1;
+      return Promise.resolve(Buffer.from("{}"));
+    },
+  };
+  const page = {
+    async addInitScript() {},
+    on(event, listener) {
+      if (event === "response") responseHandler = listener;
+    },
+    get off() {
+      throw new Error("hostile response off getter");
+    },
+    async goto() {
+      queuedResponseHandler = responseHandler;
+      queuedResponseHandler(runtimeResponse);
+      throw new Error("hostile navigation after runtime response");
+    },
+    async evaluate() {
+      return null;
+    },
+    async close() {
+      queuedResponseHandler(closeTimeResponse);
+      await Promise.resolve();
+      pageClosed = true;
+    },
+  };
+  const context = {
+    async route() {},
+    async newPage() {
+      return page;
+    },
+    async close() {
+      contextClosed = true;
+    },
+  };
+  const browser = {
+    async newContext() {
+      return context;
+    },
+    async close() {
+      connected = false;
+    },
+    isConnected() {
+      return connected;
+    },
+  };
+  try {
+    let sessionError;
+    try {
+      await runC1229S5CustomBrowserSession(
+        browser,
+        "webgl",
+        { origin: "http://localhost:8080" },
+        runId,
+        createC1229S5CustomArtifactPaths(runId, directory),
+        [],
+        { renderer: null, page: null, pageDiagnostic: null },
+        fs,
+        10,
+      );
+    } catch (error) {
+      sessionError = error;
+    }
+    assert.ok(sessionError);
+    assert.equal(sessionError.retainCustomRunning, true);
+    const rendered = boundedC1229S5CustomErrorText(sessionError);
+    assert.match(rendered, /hostile navigation after runtime response/u);
+    assert.match(rendered, /hostile response off getter/u);
+    assert.match(rendered, /response tasks settlement expired/u);
+    assert.equal(closeTimeBodyCalls, 1);
+    assert.equal(pageClosed, true);
+    assert.equal(contextClosed, true);
+    assert.equal(connected, true);
+    const browserClose = await closeC1229S5CustomBrowserBounded(browser);
+    assert.equal(browserClose.closeClean, true);
+    assert.equal(connected, false);
+  } finally {
+    removeTempEvidenceDirectory(directory);
+  }
 });
 
 test("probe keeps RUNNING and lock when watchdog cleanup is unproven", async () => {

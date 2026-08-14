@@ -10,9 +10,9 @@
 
 import { types as utilTypes } from "node:util";
 
-export const C12_29_S5_CUSTOM_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v5";
+export const C12_29_S5_CUSTOM_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v6";
 export const C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA =
-  "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v5";
+  "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v6";
 
 export const C12_29_S5_CUSTOM_EPHEMERIS = Object.freeze({
   providerConstructor: "Simon1994EphemerisProvider",
@@ -311,7 +311,6 @@ export function validateC1229S5CustomMoonTopology(topology) {
     exactKeys(topology, [
       "widgetDefaultAbsent",
       "explicitlyConstructed",
-      "constructor",
       "servedConstructorIdentity",
       "sceneIdentity",
       "lifecycleOwner",
@@ -320,7 +319,6 @@ export function validateC1229S5CustomMoonTopology(topology) {
     ]) &&
     topology.widgetDefaultAbsent === true &&
     topology.explicitlyConstructed === true &&
-    topology.constructor === "Moon" &&
     topology.servedConstructorIdentity === true &&
     topology.sceneIdentity === true &&
     topology.lifecycleOwner === "scene.moon" &&
@@ -600,7 +598,7 @@ function exactDenseStringArray(value, maximumLength) {
   return true;
 }
 
-function validCustomErrorDiagnostics(diagnostics) {
+function validCustomErrorDiagnosticsForSchema(diagnostics, schema) {
   if (
     !exactPlainKeys(diagnostics, [
       "schema",
@@ -609,7 +607,7 @@ function validCustomErrorDiagnostics(diagnostics) {
       "timeoutMs",
       "page",
     ]) ||
-    diagnostics.schema !== C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA ||
+    diagnostics.schema !== schema ||
     !C12_29_S5_CUSTOM_RENDERERS.includes(diagnostics.renderer) ||
     !Number.isInteger(diagnostics.timeoutMs) ||
     !new Set([240_000, 540_000]).has(diagnostics.timeoutMs)
@@ -629,7 +627,7 @@ function validCustomErrorDiagnostics(diagnostics) {
       "step",
       "elapsedMs",
     ]) ||
-    page.schema !== C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA ||
+    page.schema !== schema ||
     page.renderer !== diagnostics.renderer ||
     diagnostics.stage !== page.currentPhase ||
     !new Set(["preflight", ...C12_29_S5_CUSTOM_PHASES]).has(
@@ -659,6 +657,13 @@ function validCustomErrorDiagnostics(diagnostics) {
   return (
     page.completedPhases.length ===
     phaseIndex + (page.step === "complete" ? 1 : 0)
+  );
+}
+
+function validCustomErrorDiagnostics(diagnostics) {
+  return validCustomErrorDiagnosticsForSchema(
+    diagnostics,
+    C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
   );
 }
 
