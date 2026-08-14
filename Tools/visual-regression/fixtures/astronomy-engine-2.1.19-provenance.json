@@ -1,0 +1,52 @@
+{
+  "schema": "astronomy-engine-dependency-provenance-v1",
+  "package": "astronomy-engine",
+  "version": "2.1.19",
+  "registryTarball": {
+    "url": "https://registry.npmjs.org/astronomy-engine/-/astronomy-engine-2.1.19.tgz",
+    "byteLength": 493468,
+    "sha256": "605e9e9ebd0a364f1c5b556f10c1f163e4b8aa63b97ada1ab72e960d73189cdd",
+    "sha512": "f3258a35fed478d6c7e39f21dec009e998008c4e634d7a7f98d3511680b6d23d921f06488c041e12c041d90dee08545a4c208946fdf72b65e1921650317a17eb",
+    "integrity": "sha512-8yWKNf7UeNbH458h3sAJ6ZgAjE5jTXp/mNNRFoC20j2SHwZIjAQeEsBB2Q3uCFRaTCCJRv33K2XhkhZQMXoX6w=="
+  },
+  "installedFiles": {
+    "astronomy.browser.js": {
+      "byteLength": 422170,
+      "sha256": "a2cfab19cab1a15843e4c8cc7410b6cbaafd0907122a8698c25d63d00c2774e4"
+    },
+    "astronomy.browser.min.js": {
+      "byteLength": 116424,
+      "sha256": "f41139a87941ea017ab902b954c9389fa27ea72083d7fab4971756d7769d14e6"
+    },
+    "astronomy.d.ts": {
+      "byteLength": 156408,
+      "sha256": "fc5f1ede68dbebc32ce2f3f878cb3b261dc1bf8c16422451f0c4092c41fc871e"
+    },
+    "astronomy.js": {
+      "byteLength": 421280,
+      "sha256": "729c0ce37cc1a8096034a689039a5f04585ee8184177c638e8c74dec4fa3185a"
+    },
+    "astronomy.min.js": {
+      "byteLength": 135049,
+      "sha256": "6268029496ec7072e91a6ee3588dc645144dccc91ddbaa03b7f646fa0959da59"
+    },
+    "esm/astronomy.js": {
+      "byteLength": 412025,
+      "sha256": "068f1445ed0c636c94818fe6d20d7d125120e605e0bab9fc4675c3d531be5ad7"
+    },
+    "package.json": {
+      "byteLength": 1078,
+      "sha256": "d035702763839ae11f41600cf4b8210005672658dcb19cea4a09591078af4931"
+    },
+    "README.md": {
+      "byteLength": 174193,
+      "sha256": "73c2de22668374bafd2d238ef43bccd96017550d47ba05afaedd969a00490b1f"
+    }
+  },
+  "license": {
+    "spdx": "MIT",
+    "source": "https://raw.githubusercontent.com/cosinekitty/astronomy/v2.1.19/LICENSE",
+    "copyright": "Copyright (c) 2019-2023 Don Cross <cosinekitty@gmail.com>",
+    "noticeSha256": "8206804027d920c5838b8b5a8b5909c2241ad7f3666fafaee6e27881d4b9a137"
+  }
+}

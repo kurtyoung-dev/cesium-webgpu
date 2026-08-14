@@ -543,7 +543,8 @@ names a row that must be present in the generated `ThirdParty.json`.
     { "id": "L-21", "heading": "Inland-lake polygon mask — Natural Earth 1:10m Lakes", "files": ["root", "engine"], "status": "RESOLVED" },
     { "id": "L-22a", "heading": null, "files": [], "thirdPartyJson": "@spz-loader/core", "status": "RESOLVED" },
     { "id": "L-22b", "heading": null, "files": [], "thirdPartyJson": "@cesium/wasm-splats", "status": "RESOLVED" },
-    { "id": "L-24", "heading": "Takram three-geospatial", "files": ["root", "engine"], "status": "RESOLVED" }
+    { "id": "L-24", "heading": "Takram three-geospatial", "files": ["root", "engine"], "status": "RESOLVED" },
+    { "id": "L-25", "heading": "Astronomy Engine", "files": ["root", "engine"], "thirdPartyJson": "astronomy-engine", "status": "RESOLVED" }
   ]
 }
 ```
@@ -587,3 +588,13 @@ artifact is not a notice. The lesson generalises past this entry: **the census
 detects unrecorded provenance, not unpublished notices** — the second is what
 `Tools/c16/verify-packaged-notices.mjs` exists to catch, and it can only catch
 it for headings the manifest in §5 actually names.
+
+## 9. Addendum — 2026-08-13, Astronomy Engine dependency
+
+`L-25` records the exact `astronomy-engine@2.1.19` dependency used only by the
+opt-in high-precision celestial-ephemeris path. The upstream tag's `LICENSE`
+is MIT, copyright 2019–2023 Don Cross. The npm tarball declares MIT but omits a
+standalone license file, so the full upstream notice is mirrored in both
+shipped `LICENSE.md` files and the dependency is named in `ThirdParty.json`.
+The frozen registry-tarball and installed-file fingerprints live in
+`Tools/visual-regression/fixtures/astronomy-engine-2.1.19-provenance.json`.

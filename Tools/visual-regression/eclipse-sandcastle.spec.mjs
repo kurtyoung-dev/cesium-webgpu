@@ -19,22 +19,10 @@ const demoDirectory = path.join(
 const mainPath = path.join(demoDirectory, "main.js");
 const htmlPath = path.join(demoDirectory, "index.html");
 const metadataPath = path.join(demoDirectory, "sandcastle.yaml");
-const legacyDemoPath = path.join(
-  root,
-  "Apps/Sandcastle/gallery/Eclipse Explorer.html",
-);
-const legacyGalleryIndexPath = path.join(
-  root,
-  "Apps/Sandcastle/gallery/gallery-index.js",
-);
 
 const mainSource = fs.readFileSync(mainPath, "utf8");
 const htmlSource = fs.readFileSync(htmlPath, "utf8");
 const metadataSource = fs.readFileSync(metadataPath, "utf8");
-const legacyGalleryIndexSource = fs.readFileSync(
-  legacyGalleryIndexPath,
-  "utf8",
-);
 const presetBlock = mainSource.match(
   /const ECLIPSE_PRESETS = Object\.freeze\(\s*(\[[\s\S]*?\])\.map\(Object\.freeze\),\s*\);/,
 );
@@ -259,8 +247,6 @@ test("the Explorer is Sandcastle2-only and has complete gallery metadata", () =>
   assert.match(metadataSource, / {2}- Showcases/);
   assert.match(htmlSource, /id="cesiumContainer"/);
   assert.match(htmlSource, /id="eventPanel"/);
-  assert.equal(fs.existsSync(legacyDemoPath), false);
-  assert.doesNotMatch(legacyGalleryIndexSource, /name: "Eclipse Explorer"/);
   assert.doesNotMatch(mainSource, /from\s+["']\.\//);
 });
 

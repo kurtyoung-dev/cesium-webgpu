@@ -32,6 +32,15 @@
     "url": "https://www.npmjs.com/package/@zip.js/zip.js"
   },
   {
+    "name": "astronomy-engine",
+    "license": [
+      "MIT"
+    ],
+    "version": "2.1.19",
+    "url": "https://www.npmjs.com/package/astronomy-engine",
+    "notes": "Exact 2.1.19 ephemeris dependency for opt-in high-precision eclipse circumstances; Cesium owns local contact solving and the ECEF/time-scale policy."
+  },
+  {
     "name": "autolinker",
     "license": [
       "MIT"

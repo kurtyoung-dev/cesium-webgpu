@@ -3,6 +3,11 @@
       "name": "autolinker"
     },
     {
+        "name": "astronomy-engine",
+        "license": ["MIT"],
+        "notes": "Exact 2.1.19 ephemeris dependency for opt-in high-precision eclipse circumstances; Cesium owns local contact solving and the ECEF/time-scale policy."
+    },
+    {
         "name": "basis_universal",
         "license": ["Apache-2.0"],
         "version": "1.15",
