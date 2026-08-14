@@ -109,6 +109,7 @@ import {
 import {
   WebGPUCpuPassProfiler,
   type CpuPassProfile,
+  type CpuScenePhaseName,
 } from "./WebGPUCpuPassProfiler.js";
 import {
   buildInvertClassificationColorAttachment,
@@ -147,13 +148,13 @@ export interface WebGPURenderFrameConfig {
   //     loadOp="load" (preserve the first half) instead of "clear". Set on the
   //     SECOND half. Undefined/false → clear (normal single-pass behavior).
   //   - `deferComposite`: when true, skip the post-frustum chain (env effects,
-  //     composite, velocity, post-process blit) AND the per-frame
-  //     perf/profiler endFrame so the first half just accumulates into the
-  //     scene FB. Set on the FIRST half of a split. The SECOND (or single)
-  //     pass runs the chain, which blits the fully-accumulated scene FB once.
-  // The perf/profiler beginFrame is correspondingly skipped on the second half
-  // (sceneFbLoad=true) so the begin/end pair stays balanced across the two
-  // calls. Both default false → byte-for-byte the pre-fix single-pass path.
+  //     composite, velocity, post-process blit) AND the performance-manager
+  //     endFrame so the first half just accumulates into the scene FB. Set on
+  //     the FIRST half of a split. The SECOND (or single) pass runs the chain,
+  //     which blits the fully-accumulated scene FB once.
+  // The performance-manager beginFrame is correspondingly skipped on the
+  // second half. CPU pass accounting is owned by the outer Scene frame, so
+  // both viewport halves naturally accumulate into one logical sample.
   sceneFbLoad?: boolean;
   deferComposite?: boolean;
 }
@@ -1614,8 +1615,8 @@ export class WebGPUSceneRenderer {
         this._executePickPass(config);
       } finally {
         this._cpuPassProfiler.endPass("pick");
+        this._cpuPassProfiler.endFrame();
       }
-      this._cpuPassProfiler.endFrame();
       // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — pick frames also call
       // `modelFr.update`, which sets `_sceneHasTransmission` when a
       // transmissive primitive is in view. The pick branch doesn't run
@@ -1723,12 +1724,6 @@ export class WebGPUSceneRenderer {
       perfManager.beginFrame();
     }
 
-    // R-7a CPU pass profiler — begin the per-frame bucket. No-op when
-    // profiling is disabled.
-    if (!config.sceneFbLoad) {
-      this._cpuPassProfiler.beginFrame();
-    }
-
     // Slice 5d Batch 151 — dispatch clustered lighting compute passes
     // once per frame, BEFORE any material draws. The dispatcher
     // internally checks scene.clusteredLightingEnabled + light count
@@ -1798,10 +1793,6 @@ export class WebGPUSceneRenderer {
       } finally {
         this._cpuPassProfiler.endPass("postFrustumChain");
       }
-
-      // R-7a CPU pass profiler — close out the per-frame bucket and roll
-      // into the rolling window. No-op when profiling is disabled.
-      this._cpuPassProfiler.endFrame();
     }
   }
 
@@ -5115,8 +5106,8 @@ export class WebGPUSceneRenderer {
   // ─── R-7a CPU pass profiler accessors ──────────────────────────────────
 
   /**
-   * Toggle the CPU-side per-pass recording-cost profiler. Off by default
-   * (zero overhead). Enable from the console via
+   * Toggle the CPU-side per-pass recording-cost profiler. Off by default and
+   * clock/allocation/state-mutation-free at its marker sites. Enable via
    * `CesiumDebug.cpuPassCost(true)` to start collecting samples.
    */
   setCpuPassProfiling(enabled: boolean): void {
@@ -5124,6 +5115,42 @@ export class WebGPUSceneRenderer {
       this._cpuPassProfiler.reset();
     }
     this._cpuPassProfiler.setEnabled(enabled);
+  }
+
+  /** Whether whole-frame CPU accounting should clock the Scene boundary. */
+  get cpuPassProfilingEnabled(): boolean {
+    return this._cpuPassProfiler.enabled;
+  }
+
+  /** Open the attributed ledger for one logical Scene.render invocation. */
+  beginCpuSceneFrame(
+    frameNumber: number,
+    initialPhase: CpuScenePhaseName,
+  ): number | undefined {
+    return this._cpuPassProfiler.beginSceneFrame(frameNumber, initialPhase);
+  }
+
+  /** Advance the exclusive coarse Scene phase for the exact logical token. */
+  setCpuScenePhase(frameNumber: number, phase: CpuScenePhaseName): boolean {
+    return this._cpuPassProfiler.markScenePhase(frameNumber, phase);
+  }
+
+  /** Pair Scene.render time with the pass ledger for the same logical frame. */
+  recordSceneFrameCpu(
+    frameNumber: number,
+    sceneRenderMs: number,
+    endTimestamp?: number,
+  ): boolean {
+    return this._cpuPassProfiler.recordSceneFrameCpu(
+      frameNumber,
+      sceneRenderMs,
+      endTimestamp,
+    );
+  }
+
+  /** Discard an interrupted logical Scene frame without a partial sample. */
+  cancelCpuSceneFrame(frameNumber: number): boolean {
+    return this._cpuPassProfiler.cancelSceneFrame(frameNumber);
   }
 
   /**

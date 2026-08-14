@@ -242,6 +242,8 @@ for (const sceneName of scenes) {
       }
       note.frameCount = profile.frameCount;
       note.passes = passes;
+      note.frameAccounting = profile.frameAccounting;
+      note.lastFrame = profile.lastFrame;
       note.commandCount =
         scene._frameState?.commandList?.length ??
         scene.frameState?.commandList?.length ??
@@ -263,6 +265,15 @@ for (const sceneName of scenes) {
   if (out.error) console.log("  ERROR:", out.error);
   if (out.detail) console.log("  detail:", JSON.stringify(out.detail));
   console.log("  commandCount:", out.commandCount, "frames:", out.frameCount);
+  if (out.lastFrame) {
+    console.log(
+      `  whole frame: total=${out.lastFrame.totalMs.toFixed(3)}ms ` +
+        `profiled=${out.lastFrame.profiledPassMs.toFixed(3)}ms ` +
+        `unaccounted=${out.lastFrame.unaccountedMs.toFixed(3)}ms ` +
+        `coverage=${(out.lastFrame.coverageRatio * 100).toFixed(1)}% ` +
+        `valid=${out.lastFrame.valid}`,
+    );
+  }
   if (out.passes) {
     const rows = Object.entries(out.passes)
       .sort((a, b) => b[1].avgMs - a[1].avgMs)

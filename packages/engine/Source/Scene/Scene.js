@@ -4462,10 +4462,40 @@ class Scene {
    * @param {JulianDate} [time] The simulation time at which to render.
    */
   render(time) {
+    // Check the recursion sentinel before consulting the currently installed
+    // renderer. A callback may temporarily replace or disable that renderer,
+    // recursively render this same Scene, and restore it without advancing the
+    // frame token. That nested call must still invalidate the outer sample.
+    const cpuAccountingState = cpuAccountingSceneGuard.get(this);
+    if (cpuAccountingState?.active === true) {
+      if (cpuAccountingState.baseEntryExpected) {
+        // Consume the wrapper's one allowed entry into the immutable method.
+        cpuAccountingState.baseEntryExpected = false;
+      } else {
+        // Any later same-Scene recursion invalidates the outer wall-clock
+        // interval, including a request-render-suppressed inner call which
+        // leaves the frame token unchanged. Different Scene instances have
+        // independent WeakMap entries and do not trip this latch.
+        cpuAccountingState.reentered = true;
+      }
+    }
+
+    const cpuFrameRenderer = this._alternateSceneRenderer;
+    if (cpuFrameRenderer?.cpuPassProfilingEnabled === true) {
+      if (
+        cpuAccountingState?.active !== true &&
+        typeof cpuFrameRenderer.beginCpuSceneFrame === "function"
+      ) {
+        return renderSceneWithCpuAccounting(this, time, cpuFrameRenderer);
+      }
+    }
+
     // Capture the Scene.render() boundary only while an operator trace is
-    // active. The normal render path pays one boolean check and does not call
-    // performance.now(). Sampling happens after postRender so cpuMs covers the
-    // complete Scene-managed frame, including update and after-render work.
+    // active. This trace branch pays one boolean check and does not call
+    // performance.now() while inactive; the independent CPU-accounting
+    // recursion sentinel above performs one WeakMap read. Sampling happens
+    // after postRender so cpuMs covers the complete Scene-managed frame,
+    // including update and after-render work.
     const performanceTraceStart = this._performanceTracker.active
       ? performance.now()
       : undefined;
@@ -4624,6 +4654,7 @@ class Scene {
       this._preRender.raiseEvent(this, time);
       frameState.creditDisplay.beginFrame();
       tryAndCatchError(this, render);
+      setCpuScenePhase(this, "afterRenderCreditTrace");
     }
 
     /**
@@ -5666,6 +5697,10 @@ class Scene {
   }
 }
 
+// Keep the concrete implementation immutable so profiler-enabled rendering
+// cannot re-enter a later prototype override or instance wrapper.
+const renderSceneForCpuAccounting = Scene.prototype.render;
+
 /**
  * Releases a complete or partially initialized Scene. Each cleanup is isolated
  * so a malformed/custom backend resource cannot prevent mandatory listener,
@@ -6302,6 +6337,7 @@ function render(scene) {
   const view = scene._defaultView;
   scene._view = view;
 
+  setCpuScenePhase(scene, "frameState");
   scene.updateFrameState();
 
   // ── Option B: Per-view context updating ──
@@ -6368,6 +6404,7 @@ function render(scene) {
   passState.scissorTest = undefined;
   passState.viewport = BoundingRectangle.clone(viewport, passState.viewport);
 
+  setCpuScenePhase(scene, "contextBegin");
   context.beginFrame();
 
   // Give this View's presentation an identity independent of frameNumber,
@@ -6391,6 +6428,7 @@ function render(scene) {
     enqueuePresentedViewTemporalHistoryCommit(temporalHistory, context);
   }
 
+  setCpuScenePhase(scene, "sceneEnvironmentUpdate");
   if (defined(scene.globe)) {
     scene.globe.beginFrame(frameState);
   }
@@ -6528,7 +6566,10 @@ function render(scene) {
     }
   }
 
+  setCpuScenePhase(scene, "visibilityCommandPrep");
   scene.updateAndExecuteCommands(passState, backgroundColor);
+
+  setCpuScenePhase(scene, "frameFinalize");
   scene.resolveFramebuffers(passState);
 
   passState.framebuffer = undefined;
@@ -6542,6 +6583,7 @@ function render(scene) {
     }
   }
 
+  setCpuScenePhase(scene, "contextEndSubmit");
   context.endFrame();
   if (!temporalHistoryHasSubmitBoundary) {
     commitPresentedViewTemporalHistory(
@@ -6549,6 +6591,103 @@ function render(scene) {
       temporalPresentationToken,
       temporalPresentationEpoch,
     );
+  }
+}
+
+const cpuAccountingSceneGuard = new WeakMap();
+
+function setCpuScenePhase(scene, phase) {
+  const frameState = scene._frameState;
+  const renderer = frameState._cpuSceneProfileRenderer;
+  if (!defined(renderer)) {
+    return false;
+  }
+  return renderer.setCpuScenePhase(
+    frameState._cpuSceneProfileFrameNumber,
+    phase,
+  );
+}
+
+function renderSceneWithCpuAccounting(scene, time, renderer) {
+  const frameState = scene._frameState;
+  const expectedFrameNumber = CesiumMath.incrementWrap(
+    frameState.frameNumber,
+    15000000.0,
+    1.0,
+  );
+  let renderErrorRaised = false;
+  let recorded = false;
+  let removeRenderErrorListener;
+
+  let accountingState = cpuAccountingSceneGuard.get(scene);
+  if (!defined(accountingState)) {
+    accountingState = {
+      active: false,
+      baseEntryExpected: false,
+      reentered: false,
+    };
+    cpuAccountingSceneGuard.set(scene, accountingState);
+  }
+  accountingState.active = true;
+  accountingState.baseEntryExpected = true;
+  accountingState.reentered = false;
+  frameState._cpuSceneProfileRenderer = renderer;
+  frameState._cpuSceneProfileFrameNumber = expectedFrameNumber;
+
+  try {
+    removeRenderErrorListener = scene._renderError.addEventListener(() => {
+      renderErrorRaised = true;
+    });
+
+    // Install every fail-closed guard before sampling. The profiler's returned
+    // timestamp is the one shared whole-frame start, immediately adjacent to
+    // the immutable render implementation it measures.
+    const startTimestamp = renderer.beginCpuSceneFrame(
+      expectedFrameNumber,
+      "sceneUpdate",
+    );
+    if (!defined(startTimestamp)) {
+      return renderSceneForCpuAccounting.call(scene, time);
+    }
+    renderSceneForCpuAccounting.call(scene, time);
+    const endTimestamp = performance.now();
+    const totalMs = endTimestamp - startTimestamp;
+
+    // A suppressed request-render invocation has no logical render frame.
+    // Reentrant rendering is rejected explicitly even when the nested call was
+    // request-render suppressed and therefore left the frame token unchanged.
+    if (
+      !renderErrorRaised &&
+      !accountingState.reentered &&
+      frameState.newFrame === true &&
+      frameState.frameNumber === expectedFrameNumber &&
+      scene._alternateSceneRenderer === renderer &&
+      renderer.cpuPassProfilingEnabled === true
+    ) {
+      recorded =
+        renderer.recordSceneFrameCpu(
+          expectedFrameNumber,
+          totalMs,
+          endTimestamp,
+        ) === true;
+    }
+  } finally {
+    try {
+      try {
+        if (!recorded) {
+          renderer.cancelCpuSceneFrame(expectedFrameNumber);
+        }
+      } finally {
+        if (defined(removeRenderErrorListener)) {
+          removeRenderErrorListener();
+        }
+      }
+    } finally {
+      accountingState.active = false;
+      accountingState.baseEntryExpected = false;
+      frameState._cpuSceneProfileRenderer = undefined;
+      frameState._cpuSceneProfileFrameNumber = undefined;
+    }
   }
 }
 

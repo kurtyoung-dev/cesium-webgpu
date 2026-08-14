@@ -21,6 +21,18 @@ isShadowedPass[Pass.CESIUM_3D_TILE] = true;
 isShadowedPass[Pass.OPAQUE] = true;
 isShadowedPass[Pass.TRANSLUCENT] = true;
 
+function setCpuScenePhase(scene, phase) {
+  const frameState = scene.frameState;
+  const renderer = frameState._cpuSceneProfileRenderer;
+  if (!defined(renderer)) {
+    return false;
+  }
+  return renderer.setCpuScenePhase(
+    frameState._cpuSceneProfileFrameNumber,
+    phase,
+  );
+}
+
 /**
  * 2D/3D/VR viewport dispatch. Manages camera and frustum setup for each
  * viewport configuration, then delegates to SceneRenderer for command execution.
@@ -84,6 +96,8 @@ function updateAndRenderPrimitives(
 ) {
   const frameState = scene._frameState;
 
+  setCpuScenePhase(scene, "primitiveTraversal");
+
   frameState.edgeVisibilityRequested = false;
   frameState.planarFillRequested = false;
 
@@ -106,7 +120,9 @@ function updateAndRenderPrimitives(
   if (collectingEnvironmentUpdates) {
     // The first half of a split 2D frame drains HIGH work only. NORMAL jobs
     // remain queued until the final viewport can contribute or promote demand.
+    setCpuScenePhase(scene, "computeShadows");
     context.drainEnvironmentMapUpdates(includeNormalEnvironmentRefreshes);
+    setCpuScenePhase(scene, "primitiveTraversal");
   }
 
   if (
@@ -121,6 +137,7 @@ function updateAndRenderPrimitives(
   scene._enablePlanarFillId = frameState.planarFillRequested;
 
   updateDebugFrustumPlanes(scene);
+  setCpuScenePhase(scene, "computeShadows");
   updateShadowMaps(scene);
   // WebGPU model and primitive effects groups are prepared before the current
   // light camera is fitted. Flush their deduplicated resource-preparation list now, after
@@ -131,6 +148,7 @@ function updateAndRenderPrimitives(
   // flush that same owner or its refreshes remain stranded for this viewport.
   frameState.context.flushShadowReceiveUniformRefreshes?.();
 
+  setCpuScenePhase(scene, "primitiveTraversal");
   if (scene._globe) {
     scene._globe.render(frameState);
   }
@@ -147,14 +165,17 @@ function executeWebVRCommands(scene, passState) {
 
   updateAndRenderPrimitives(scene);
 
+  setCpuScenePhase(scene, "visibilityCommandPrep");
   view.createPotentiallyVisibleSet(scene);
 
+  setCpuScenePhase(scene, "computeShadows");
   executeComputeCommands(scene);
 
   if (!renderTranslucentDepthForPick) {
     executeShadowMapCastCommands(scene);
   }
 
+  setCpuScenePhase(scene, "visibilityCommandPrep");
   const viewport = passState.viewport;
   viewport.x = 0;
   viewport.y = 0;
@@ -179,14 +200,19 @@ function executeWebVRCommands(scene, passState) {
   Cartesian3.add(savedCamera.position, eyeTranslation, camera.position);
   camera.frustum.xOffset = offset;
 
+  setCpuScenePhase(scene, "rendererOverhead");
   executeCommands(scene, passState);
 
+  setCpuScenePhase(scene, "visibilityCommandPrep");
   viewport.x = viewport.width;
 
   Cartesian3.subtract(savedCamera.position, eyeTranslation, camera.position);
   camera.frustum.xOffset = -offset;
 
+  setCpuScenePhase(scene, "rendererOverhead");
   executeCommands(scene, passState);
+
+  setCpuScenePhase(scene, "visibilityCommandPrep");
 
   Camera.clone(savedCamera, camera);
 }
@@ -409,6 +435,8 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
 
   updateAndRenderPrimitives(scene, !scene._is2DViewportSplit || !firstViewport);
 
+  setCpuScenePhase(scene, "visibilityCommandPrep");
+
   // FAR-003: the layer buckets are not consumed by either renderer, so their
   // duplicate O(N log N) sort is opt-in. C9-08: even the linear stable
   // material-ID assignment on the default path is demand-gated — it does zero
@@ -498,10 +526,12 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
   view.createPotentiallyVisibleSet(scene);
 
   if (firstViewport) {
+    setCpuScenePhase(scene, "computeShadows");
     executeComputeCommands(scene);
     if (!renderTranslucentDepthForPick) {
       executeShadowMapCastCommands(scene);
     }
+    setCpuScenePhase(scene, "visibilityCommandPrep");
   }
 
   // BUG-3 — derive the WebGPU 2D-wrap accumulation flags for this pass.
@@ -518,7 +548,10 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
   scene._exec2DDeferComposite =
     scene._is2DViewportSplit === true && firstViewport;
 
+  setCpuScenePhase(scene, "rendererOverhead");
   executeCommands(scene, passState);
+
+  setCpuScenePhase(scene, "visibilityCommandPrep");
 
   // ── GPU-side Hi-Z occlusion dispatch ──────────────────────────────
   //
@@ -535,6 +568,7 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
   // before the NEXT frame's testCommands() call reads the visibility
   // bits, closing the one-frame-latency loop.
   if (occlusionCulling.enabled) {
+    setCpuScenePhase(scene, "computeShadows");
     const context = scene.context;
     const encoder = context.currentCommandEncoder;
     const depthView = context.depthOnlyTextureView;
@@ -567,6 +601,7 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
         context.resumeDefaultRenderPass();
       }
     }
+    setCpuScenePhase(scene, "visibilityCommandPrep");
   }
 }
 
@@ -580,7 +615,9 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
  */
 function beginSecondaryViewportSegment(firstViewport, scene) {
   if (!firstViewport && scene._is2DViewportSplit === true) {
+    setCpuScenePhase(scene, "contextEndSubmit");
     scene.frameState.context.beginSecondaryViewport?.();
+    setCpuScenePhase(scene, "visibilityCommandPrep");
   }
 }
 
