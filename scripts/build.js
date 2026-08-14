@@ -358,6 +358,8 @@ const workspaceSourceFiles = {
     "packages/engine/Source/**/*.js",
     "!packages/engine/Source/*.js",
     "!packages/engine/Source/Core/globalTypes.js",
+    // Internal named-export helpers; not part of the public engine barrel.
+    "!packages/engine/Source/Scene/ViewTemporalHistory.js",
     "!packages/engine/Source/Workers/**",
     "packages/engine/Source/Workers/createTaskProcessorWorker.js",
     "!packages/engine/Source/ThirdParty/Workers/**.js",
@@ -1386,9 +1388,12 @@ export async function bundleTestWorkers(options) {
  * Creates the index.js for a package.
  *
  * @param {Workspace} workspace The workspace to create the index.js for.
+ * @param {object} [options]
+ * @param {boolean} [options.write=true] Whether generated files are written.
  * @returns {Promise<string>}
  */
-export async function createIndexJs(workspace) {
+export async function createIndexJs(workspace, options = {}) {
+  const write = options.write ?? true;
   const version = await getVersion();
   let contents = `globalThis.CESIUM_VERSION = "${version}";\n`;
 
@@ -1603,14 +1608,18 @@ export async function createIndexJs(workspace) {
         "./Source/Renderer/WebGPU/WebGLCompatibilityStub.js",
       ),
     ].join("");
-    await writeFile(`packages/${workspace}/index-wgsl.js`, wgslContents, {
+    if (write) {
+      await writeFile(`packages/${workspace}/index-wgsl.js`, wgslContents, {
+        encoding: "utf-8",
+      });
+    }
+  }
+
+  if (write) {
+    await writeFile(`packages/${workspace}/index.js`, contents, {
       encoding: "utf-8",
     });
   }
-
-  await writeFile(`packages/${workspace}/index.js`, contents, {
-    encoding: "utf-8",
-  });
 
   return contents;
 }
