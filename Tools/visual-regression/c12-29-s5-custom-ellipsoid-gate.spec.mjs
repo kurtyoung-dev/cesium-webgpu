@@ -43,6 +43,7 @@ import {
   stableC1229S5CustomJson,
   validateC1229S5CustomEphemerisLineage,
   validateC1229S5CustomFinalArtifact,
+  validateC1229S5CustomMoonTopology,
 } from "./lib/c12-29-s5-custom-ellipsoid-gate.mjs";
 import { inspectBuildSourceIdentity } from "./lib/build-source-identity.mjs";
 import {
@@ -617,6 +618,16 @@ function passingSession(renderer, imageOffset) {
     imagery: {
       constructor: "GridImageryProvider",
       tilingSchemeIdentity: true,
+    },
+    moon: {
+      widgetDefaultAbsent: true,
+      explicitlyConstructed: true,
+      constructor: "Moon",
+      servedConstructorIdentity: true,
+      sceneIdentity: true,
+      lifecycleOwner: "scene.moon",
+      updateIsFunction: true,
+      destroyIsFunction: true,
     },
   };
   phases["selected-terrain-preparation"] = {
@@ -1820,6 +1831,37 @@ for (const [name, mutate, expected] of [
     "STRUCTURAL",
   ],
   [
+    "custom widget default Moon was assumed",
+    (r) =>
+      (r.sessions[0].phases[
+        "custom-scene-construction"
+      ].moon.widgetDefaultAbsent = false),
+    "STRUCTURAL",
+  ],
+  [
+    "custom Moon was not explicitly constructed",
+    (r) =>
+      (r.sessions[0].phases[
+        "custom-scene-construction"
+      ].moon.explicitlyConstructed = false),
+    "STRUCTURAL",
+  ],
+  [
+    "custom Moon constructor export identity drift",
+    (r) =>
+      (r.sessions[0].phases[
+        "custom-scene-construction"
+      ].moon.servedConstructorIdentity = false),
+    "STRUCTURAL",
+  ],
+  [
+    "custom Moon Scene ownership drift",
+    (r) =>
+      (r.sessions[0].phases["custom-scene-construction"].moon.lifecycleOwner =
+        "probe"),
+    "STRUCTURAL",
+  ],
+  [
     "phase omission",
     (r) => delete r.sessions[0].phases["behavioral-pick"],
     "STRUCTURAL",
@@ -2784,6 +2826,35 @@ test("new oracle/probe artifacts contain no Earth axes or production-oracle call
   }
 });
 
+test("custom Moon topology requires explicit served construction and Scene ownership", () => {
+  const passing = {
+    widgetDefaultAbsent: true,
+    explicitlyConstructed: true,
+    constructor: "Moon",
+    servedConstructorIdentity: true,
+    sceneIdentity: true,
+    lifecycleOwner: "scene.moon",
+    updateIsFunction: true,
+    destroyIsFunction: true,
+  };
+  assert.equal(validateC1229S5CustomMoonTopology(passing), true);
+  for (const mutate of [
+    (value) => (value.widgetDefaultAbsent = false),
+    (value) => (value.explicitlyConstructed = false),
+    (value) => (value.constructor = "Object"),
+    (value) => (value.servedConstructorIdentity = false),
+    (value) => (value.sceneIdentity = false),
+    (value) => (value.lifecycleOwner = "probe"),
+    (value) => (value.updateIsFunction = false),
+    (value) => (value.destroyIsFunction = false),
+    (value) => (value.assumedDefault = true),
+  ]) {
+    const mutant = structuredClone(passing);
+    mutate(mutant);
+    assert.equal(validateC1229S5CustomMoonTopology(mutant), false);
+  }
+});
+
 test("probe uses the served bundle for browser modules, constructs every custom scene owner, and derives the axis", () => {
   assert.match(
     probeSource,
@@ -2833,6 +2904,19 @@ test("probe uses the served bundle for browser modules, constructs every custom 
   assert.match(probeSource, /heights\.fill\(contract\.heightMeters\)/u);
   assert.match(probeSource, /const globe = new C\.Globe\(ellipsoid\)/u);
   assert.match(probeSource, /new C\.GridImageryProvider\(\{\s*tilingScheme,/u);
+  assert.match(
+    probeSource,
+    /const widgetDefaultMoon = scene\.moon;[\s\S]*?widgetDefaultMoon !== undefined[\s\S]*?typeof C\.Moon !== "function"[\s\S]*?const moon = new C\.Moon\(\);[\s\S]*?scene\.moon = moon;/u,
+  );
+  assert.match(
+    probeSource,
+    /servedConstructorIdentity: moon\.constructor === C\.Moon,[\s\S]*?sceneIdentity: scene\.moon === moon,[\s\S]*?lifecycleOwner: "scene\.moon"/u,
+  );
+  assert.match(
+    probeSource,
+    /originalMoonUpdate\.apply\(this, args\);[\s\S]*?return undefined;/u,
+  );
+  assert.doesNotMatch(probeSource, /const moon = scene\.moon/u);
   assert.match(probeSource, /computeSunPositionInEarthInertialFrame/u);
   assert.match(probeSource, /computeMoonPositionInEarthInertialFrame/u);
   assert.match(
@@ -2925,8 +3009,16 @@ test("production carriers still expose the pinned custom radii and binding seams
 });
 
 test("frozen production sources bind the cleanup topology contract", () => {
+  const scene = fs.readFileSync(
+    path.join(root, "packages/engine/Source/Scene/Scene.js"),
+    "utf8",
+  );
   const moon = fs.readFileSync(
     path.join(root, "packages/engine/Source/Scene/Moon.js"),
+    "utf8",
+  );
+  const widget = fs.readFileSync(
+    path.join(root, "packages/engine/Source/Widget/CesiumWidget.js"),
     "utf8",
   );
   const tileProvider = fs.readFileSync(
@@ -2949,6 +3041,14 @@ test("frozen production sources bind the cleanup topology contract", () => {
   );
   assert.match(moon, /class Moon \{[\s\S]*?this\.show = options\.show/u);
   assert.match(moon, /\n {2}update\(frameState, depthRouteState\) \{/u);
+  assert.match(
+    widget,
+    /if \(Ellipsoid\.WGS84\.equals\(ellipsoid\)\) \{\s*scene\.moon = new Moon\(\);\s*\}/u,
+  );
+  assert.match(
+    scene,
+    /const ownedResources = \[[\s\S]*?"sun",\s*"moon",[\s\S]*?\];/u,
+  );
   assert.match(tileProvider, /\n {2}updateForPick\(frameState\) \{/u);
   assert.match(eclipseManager, /\n {2}prepare\(\s*device: GPUDevice,/u);
   assert.match(

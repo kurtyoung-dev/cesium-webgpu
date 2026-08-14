@@ -300,6 +300,35 @@ function exactKeys(value, keys) {
   );
 }
 
+/**
+ * Validate the fail-closed ownership handoff used by the custom-ellipsoid
+ * browser shard. CesiumWidget deliberately leaves `scene.moon` absent for
+ * this non-default scene topology; the probe must install the served Moon
+ * constructor itself and then leave that resource under Scene ownership.
+ */
+export function validateC1229S5CustomMoonTopology(topology) {
+  return (
+    exactKeys(topology, [
+      "widgetDefaultAbsent",
+      "explicitlyConstructed",
+      "constructor",
+      "servedConstructorIdentity",
+      "sceneIdentity",
+      "lifecycleOwner",
+      "updateIsFunction",
+      "destroyIsFunction",
+    ]) &&
+    topology.widgetDefaultAbsent === true &&
+    topology.explicitlyConstructed === true &&
+    topology.constructor === "Moon" &&
+    topology.servedConstructorIdentity === true &&
+    topology.sceneIdentity === true &&
+    topology.lifecycleOwner === "scene.moon" &&
+    topology.updateIsFunction === true &&
+    topology.destroyIsFunction === true
+  );
+}
+
 function exactOwnPropertyDescriptor(left, right) {
   if (left === undefined || right === undefined) {
     return left === right;
@@ -2830,7 +2859,8 @@ function validateSession(session, runId, structural, failures) {
     construction?.globe?.ellipsoidIdentity !== true ||
     construction?.globe?.sceneIdentity !== true ||
     construction?.imagery?.constructor !== "GridImageryProvider" ||
-    construction?.imagery?.tilingSchemeIdentity !== true
+    construction?.imagery?.tilingSchemeIdentity !== true ||
+    !validateC1229S5CustomMoonTopology(construction?.moon)
   ) {
     structural.push(`${renderer}: custom scene construction is not exact`);
   }

@@ -2213,6 +2213,39 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
         `renderer resolved ${actualRenderer}, expected ${contract.renderer}`,
       );
     }
+    const widgetDefaultMoon = scene.moon;
+    if (widgetDefaultMoon !== undefined) {
+      throw new Error(
+        "custom-ellipsoid widget unexpectedly installed a default Moon",
+      );
+    }
+    if (typeof C.Moon !== "function") {
+      throw new Error("served production bundle Moon export is unavailable");
+    }
+    // The custom scene does not receive CesiumWidget's Earth-default Moon.
+    // Construct the served production consumer explicitly, then publish it on
+    // the Scene ownership edge so normal Scene teardown drains its resources.
+    const moon = new C.Moon();
+    scene.moon = moon;
+    const moonTopology = {
+      widgetDefaultAbsent: widgetDefaultMoon === undefined,
+      explicitlyConstructed: true,
+      constructor: moon.constructor.name,
+      servedConstructorIdentity: moon.constructor === C.Moon,
+      sceneIdentity: scene.moon === moon,
+      lifecycleOwner: "scene.moon",
+      updateIsFunction: typeof moon.update === "function",
+      destroyIsFunction: typeof moon.destroy === "function",
+    };
+    if (
+      moonTopology.constructor !== "Moon" ||
+      moonTopology.servedConstructorIdentity !== true ||
+      moonTopology.sceneIdentity !== true ||
+      moonTopology.updateIsFunction !== true ||
+      moonTopology.destroyIsFunction !== true
+    ) {
+      throw new Error("explicit production Moon topology is unavailable");
+    }
     globalThis.__armWebGPUDevice?.(
       scene.context?._device,
       `custom-${actualRenderer}`,
@@ -2232,10 +2265,6 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
       scene.postProcessStages.bloom.enabled = false;
     }
     if (scene.sun) scene.sun.show = false;
-    const moon = scene.moon;
-    if (!moon) {
-      throw new Error("production Moon consumer is unavailable");
-    }
     const moonUpdateDescriptor = captureInstrumentationDescriptor(
       moon,
       "update",
@@ -2642,6 +2671,7 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
         constructor: grid.constructor.name,
         tilingSchemeIdentity: grid.tilingScheme === tilingScheme,
       },
+      moon: moonTopology,
     };
     complete(contract.phases[0]);
 
