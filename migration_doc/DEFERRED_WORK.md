@@ -10608,14 +10608,24 @@ threshold.
 
 ### NEW-ECLIPSE-CORONA-PROMINENCE-SPACE-WEATHER-VISUALS
 
-**Status: OPEN / SPLIT OWNERSHIP — `CLT-C3` + `CLT-C4` + Campaign 15
-`C15-01`/`C15-06`/`C15-06P`/`C15-07`/`C15-08`.** The corona remains exactly `CLT-C3`:
-an analytic, energy-bounded shape revealed through the last fraction of
-occultation, with C12-18/C12-19 bloom/HDR composition handled by `CLT-C4`.
-Solar prominences and flares are not corona and an eclipse does not create or
-periodically pulse them. Campaign 15 already requires a flare state separate
+**Status: OPEN / SPLIT OWNERSHIP.** The corona remains exactly `CLT-C3`: an
+analytic, energy-bounded shape revealed through the last fraction of
+occultation. The `CLT-C4` coordination rider is **SATISFIED** by the landed
+`C12-18`/`C12-19` halo, HDR, bloom, and exposure composition; this does not
+close `CLT-C3` or the new prominence/flare owners below. `C15-06P` owns only
+attributed located-prominence state and provenance. `CLT-C3P` /
+`NEW-ECLIPSE-LOCATED-PROMINENCE-RENDERER` owns the actual WebGL/WebGPU
+prominence rendering, and
+`NEW-VISIBLE-LIGHT-SOLAR-FLARE-PHOTOMETRIC-TRANSFER` owns any visible-light
+flare response. Campaign 15 `C15-01`/`C15-06`/`C15-07`/`C15-08` continue to own
+the neutral state, ingest, facade, and certification boundaries.
+
+Solar prominences and flares are not corona, and an eclipse does not create or
+periodically pulse any of them. Campaign 15 requires a flare state separate
 from geomagnetic activity and GOES X-ray ingest. GOES flux has no image-plane
-longitude, so it must not be used to invent a limb location.
+longitude and no direct visible-light transfer in the current contract, so it
+must not be used to invent a limb location, prominence, aurora, or visible
+flare brightness.
 
 **Required direction:** expose a deterministic manual/historical prominence
 provider with explicit provenance and optional disc/limb coordinates; use the
@@ -10631,9 +10641,68 @@ only, not event morphology or which backend has the effect.
 and reverse-consistent; corona shape follows `CLT-C3`; a located prominence is
 occluded/revealed at the correct limb; quiet/moderate/severe flare states remain
 independent of the geomagnetic aurora scalar; an unlocated GOES flare changes
-diagnostics/aggregate radiance but cannot fabricate a limb feature. Both
+diagnostics only unless the separately owned calibrated visible-light transfer
+is present, and it can never fabricate a limb feature. Both
 backends pass HDR/bloom/exposure and default-OFF identity lanes, with moving
 CPU/GPU cost and zero steady-state allocation/upload evidence.
+
+### NEW-ECLIPSE-LOCATED-PROMINENCE-RENDERER (`CLT-C3P`)
+
+**Status: OPEN / EXACT PRODUCT OWNER; depends on `C15-06P` state and the landed
+`C12-18`/`C12-19` composition seam.** Build real, coordinate-backed prominence
+geometry on both WebGL and WebGPU. Inputs must name their solar coordinate
+frame, epoch/observation time, and source; the renderer transforms those
+coordinates through the current ephemeris and observer view rather than
+placing a decorative screen-space sprite. Solar-disc self-occlusion and lunar
+disc occultation must reveal/hide the same stable feature continuously through
+partial, contact, totality, and egress. Compose the located emission with the
+`CLT-C3` corona and the already-landed HDR/bloom/exposure chain without
+double-counting radiance.
+
+**Acceptance:** attributed coordinate fixtures reject missing/ambiguous frames,
+wrong epochs, mirrored limbs, and any GOES-derived image-plane location. WebGL
+and WebGPU agree on feature position, silhouette, lunar occultation, depth,
+HDR/bloom/exposure response, and recovery across camera/time motion. Default
+OFF and absent-state frames create no pass or GPU resource; demand/cull occurs
+before realization; quality tiers preserve coordinates, morphology, and
+occultation; moving CPU/GPU cost is reported and steady-state allocation/upload
+is zero.
+
+### NEW-VISIBLE-LIGHT-SOLAR-FLARE-PHOTOMETRIC-TRANSFER
+
+**Status: OPEN / EXPLICIT SCIENCE + RENDER TRANSFER OWNER; depends on the
+`C15-06` GOES unit gate.** A flare may change visible pixels only through an
+attributed, calibrated spectral/photometric model that states its passbands,
+units, conversion to visible radiance/luminance, and exposure/composition
+policy. GOES X-ray class/flux is diagnostic state only until such a model is
+present; it is not a visible-light gain knob. A located white-light flare also
+requires an independently attributed solar-disc position. GOES state alone
+must never infer that position, create a prominence, or mutate aurora.
+
+**Acceptance:** unit/passband and spectral-transfer mutants fail; an unlocated
+GOES flare changes diagnostics only and is pixel-identical; an attributed
+located visible-light fixture changes only its calibrated solar feature and
+composes through the landed HDR/bloom/exposure seam on both backends. Removing
+the spectral model or location removes only the corresponding pixel response,
+never the flare diagnostic, prominence state, geomagnetic packet, or aurora.
+Default OFF/unsupported data is exact identity and zero demand.
+
+### NEW-ZODIACAL-LIGHT-PHOTOMETRIC-NIGHT-SKY
+
+**Status: OPEN / EXPLICIT DEFERRED OWNER; not part of Campaign 15 and not an
+eclipse effect.** Implement an attributed, clean-room photometric zodiacal-light
+model with ecliptic orientation, solar elongation, observer geometry,
+extinction, exposure, and bounded sky-composition ownership. It may become
+easier to see during totality or from space, but an eclipse flag must not create
+or animate it. Stellarium is study-only under AGPL and supplies no copyable
+implementation; any shipping model/data needs its own provenance and licence
+record.
+
+**Acceptance:** ecliptic/anti-solar orientation and elongation response are
+validated against attributed fixtures; eclipse on/off at unchanged physical
+inputs cannot move the field; WebGL/WebGPU agree; default OFF is byte-identical
+and zero-demand; and quality tiers/performance bounds do not change morphology
+or coordinate placement.
 
 ### NEW-ECLIPSE-LUNAR-LIMB-CONTACT-FEATURES
 
@@ -10692,8 +10761,7 @@ lunar shader.
 ### NEW-C15-HISTORICAL-ECLIPSE-SPACE-WEATHER-REPLAY
 
 **Status: OPEN / exact execution owner `C15-07H`; Campaign 15 acceptance
-overlay; implementation remains HELD by R4 with `C15-01..08`.** Add immutable,
-attributed historical providers so a
+overlay; not implemented.** Add immutable, attributed historical providers so a
 scene can replay real space weather at a historical eclipse instant without a
 live network dependency. The first pinned co-event is the 2025-03-14 Fairbanks
 total lunar eclipse with the independently observed aurora substorm. This is a
@@ -10701,15 +10769,58 @@ coincident event, not a causal claim: lunar eclipses do not cause aurora, and a
 solar flare is not automatically an aurora at Earth. Preserve Campaign 15's
 separate flare, solar-wind/geomagnetic, and auroral-oval states.
 
-**Acceptance:** a frozen source/transform/licence manifest drives the same
-`C15-01` packet as the manual and live providers; offline replay is byte-stable;
-event clock, observation/forecast timestamps, freshness semantics, and local
-night gating are exact. Fairbanks shows the lunar event and aurora together
-only when both independent packets request them; removing either packet removes
-only its own phenomenon. Include quiet same-night and wrong-location controls,
+**Immutable intake contract:** each archived payload/asset retains its exact
+bytes, SHA-256, canonical source URL, retrieval/archive timestamp, attribution,
+licence/terms determination, and every deterministic transform needed to build
+the replay packet. A photograph may establish event context and a visual
+validation target, but it is not a sampled intensity field and must never be
+reverse-engineered into OVATION cells, activity scalars, curtain coordinates,
+or flare energy.
+
+**Acceptance:** the frozen source/transform/licence/hash manifest drives the
+same `C15-01` packet as the manual and live providers; offline replay is
+byte-stable and archive loss/hash drift fails closed. Event clock,
+observation/forecast timestamps, freshness semantics, and local-night gating
+are exact. Fairbanks shows the lunar event and aurora together only when both
+independent packets request them; removing either packet removes only its own
+phenomenon. Include quiet same-night and wrong-location controls,
 northern/southern hemispheres, both backends, performance tiers, accessibility,
-and explicit attribution. Never synthesize historical aurora from the eclipse
-flag itself.
+and explicit attribution. Never synthesize historical aurora from an eclipse
+flag, photograph, or flare flag: eclipses do not cause aurora.
+
+### C15-AURORA-SPACE-WEATHER-EXECUTION-OVERLAY (audit 2026-08-14)
+
+**Status: PLANNED / ZERO AURORA IMPLEMENTATION CLOSURES. `C15-01` remains the
+next implementation slice; this overlay does not claim it or any later row has
+landed.** `C15-01` owns the backend-neutral versioned packet and deterministic
+manual quiet/moderate/severe driver. The renderer must consume that packet,
+never a network payload or an eclipse flag.
+
+- **`C15-03` active-ellipsoid geometry gate:** derive the geodetic normal from
+  the Scene's active ellipsoid at every shell sample/footprint, and measure each
+  427.8/557.7/630.0 nm altitude profile along that normal. A radial/geocentric
+  up shortcut, WGS84 literal, camera-local altitude, or one spherical shell for
+  custom ellipsoids is a rejected mutant. Ground, limb, orbit, both hemispheres,
+  poles, and non-WGS84 ellipsoids are required fixtures.
+- **`C15-05` OVATION unit gate:** preserve the raw integer values and exact
+  source metadata until an attributable official statement or immutable
+  calibrated fixture pins the `Aurora` unit/scale and ceiling. No 0–100 percent
+  normalization, emission intensity, or threshold may be hard-coded from the
+  quiet 0–16 sample. Unit/ceiling uncertainty fails closed to diagnostic/raw
+  display or the separately defined synthetic/manual provider.
+- **`C15-06` GOES unit gate:** pin the X-ray flux unit and both passband
+  semantics from an attributable source before flare-class thresholds or any
+  calibrated transfer are enabled. Until then GOES is diagnostic-only. Even
+  after the unit is pinned it cannot, by itself, locate a flare/prominence,
+  drive the visible-light transfer owned above, or alter aurora.
+- **`C15-07H` historical intake:** obey the immutable byte/hash/source/archive/
+  licence/transform contract above. Photography is contextual/validation
+  evidence, never a numeric space-weather field. Eclipse and space-weather
+  packets remain independent; there is no eclipse-causes-aurora path.
+- **UI boundary:** every `C15-07`/`C15-07H` demo, Eclipse Explorer control, and
+  gallery/browser acceptance lane is **Sandcastle2-only** under
+  `packages/sandcastle/`. Legacy `Apps/Sandcastle` has no mirror, port, or
+  certification obligation.
 
 ## C12-29 S5 performance and certification follow-ups (2026-07-26)
 

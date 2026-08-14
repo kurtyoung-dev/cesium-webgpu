@@ -381,7 +381,7 @@ not externally trained scenes.
 | `C15-04` | WebGL + WebGPU shell renderers, visibility demand, and feature-preserving performance tiers | P0 | PENDING — **HELD (R4)** | `C15-03` |
 | `C15-05` | OVATION + planetary-Kp asynchronous ingest and source-authority policy | P1 | PENDING — **HELD (R4)**; schemas now measured, §2a grid ordering is the spec | `C15-01`, `C15-02` |
 | `C15-06` | New RTSW + GOES asynchronous ingest with separate geomagnetic and flare state | P1 | PENDING — **HELD (R4)**; brief corrected for descending RTSW order + `-9999` fill | `C15-01`, `C15-05` authority contract |
-| `C15-06P` | Attributed, located solar-prominence state provider for eclipse composition; never infer image-plane location from GOES flux | P1 overlay | PENDING — **HELD (R4)**; exact owner for the Eclipse Explorer follow-up | `C15-01`, `C15-06`; `CLT-C3/C4` own rendering/composition |
+| `C15-06P` | Attributed, located solar-prominence state provider for eclipse composition; never infer image-plane location from GOES flux | P1 overlay | PENDING — **HELD (R4)**; exact data owner for the Eclipse Explorer follow-up | `C15-01`, `C15-06`; `CLT-C3P` owns prominence geometry/rendering and the satisfied `CLT-C4` seam supplies landed HDR/bloom/exposure composition |
 | `C15-07` | `effects.aurora` facade, demo, diagnostics, accessibility, attribution/licensing closure | P1 | PENDING — **HELD (R4)** | `C15-04`, `C15-05`, `C15-06` |
 | `C15-07H` | Immutable historical eclipse/space-weather replay provider and provenance manifest | P1 overlay | PENDING — **HELD (R4)**; exact owner for the Fairbanks co-event replay | `C15-01`, `C15-05`, `C15-06`, `C15-07` |
 | `C15-08` | Cross-backend visual, RTE, lifecycle, off-contract, and moving-performance certification | R0 | PENDING — **HELD (R4)** | `C15-01..07` |
@@ -530,11 +530,15 @@ alone does not mutate the auroral oval.
 
 Define a deterministic manual/historical prominence state whose source can
 carry an attributed observation time plus explicit solar-disc or limb
-coordinates. This is a state/data owner only: `CLT-C3` owns the corona shape,
-`CLT-C4` owns HDR/bloom/exposure composition, and the eclipse contact geometry
-owns occultation. GOES X-ray flux may identify flare timing or aggregate
-energy but has no image-plane longitude and must never invent a prominence
-location. An unlocated flare remains a separate diagnostic/radiance state.
+coordinates. This is a state/data owner only: `CLT-C3` owns the corona shape;
+`CLT-C3P` owns prominence geometry/rendering and consumes the eclipse contact
+geometry for occultation; and the satisfied `CLT-C4` seam supplies the landed
+HDR/bloom/exposure composition chain. GOES X-ray flux may identify flare timing
+or aggregate energy but has no image-plane longitude and must never invent a
+prominence location or visible radiance. An unlocated flare remains
+diagnostic-only and pixel-identical unless
+`NEW-VISIBLE-LIGHT-SOLAR-FLARE-PHOTOMETRIC-TRANSFER` supplies a separately
+attributed, calibrated spectral transfer and located input.
 
 Exit: quiet, located-prominence, unlocated-flare, and combined fixtures remain
 independent; provenance and coordinate frames are exact; disc occultation can
