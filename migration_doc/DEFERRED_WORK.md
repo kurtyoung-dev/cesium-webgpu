@@ -10487,16 +10487,21 @@ a parallel copy of its presets or gallery entry.
 
 ### ECLIPSE HIGH-PRECISION EPHEMERIS FOUNDATION (LANDED)
 
-**Status: DEPENDENCY + OPT-IN PROVIDER + CORE LOCAL-CIRCUMSTANCES SOLVER
-LANDED; FRAME INTEGRATION IS A SEPARATE OPEN OWNER.** Commit `9def755e43` pins
+**Status: DEPENDENCY + OPT-IN PROVIDER + CORE LOCAL-CIRCUMSTANCES SOLVER +
+ONE-SAMPLE-PER-FRAME RUNTIME INTEGRATION LANDED; HIGH-PRECISION HISTORICAL/
+BROWSER CERTIFICATION OPEN.** Commit `9def755e43` pins
 the exact `astronomy-engine@2.1.19` dependency, licence, and reproducible provenance.
 Commit `15d71de0f3` lands the backend-neutral `CelestialEphemerisProvider`
 contract, its branded caller-owned sample, the unchanged-default
 `Simon1994EphemerisProvider`, the opt-in `AstronomyEngineEphemerisProvider`, and
 the explicit `AstronomyEngineTimeAdapter` policy. Commit `f4408cade7` lands the
 backend-neutral `EclipseDiscGeometry` and `EclipseLocalCircumstances` Core query
-solver with its focused specs after independent GO. These landed layers are not
-yet the one runtime frame sample consumed by the eclipse render stack.
+solver with its focused specs after independent GO. Commit `c06699a535` lands
+the generic successful shared-provider Scene/frame integration: for each such
+logical frame it publishes one retained branded sample and copies its exact
+values into stable consumer-owned storage. The remaining open work is opt-in
+high-precision historical/browser certification, not another generic runtime
+transport.
 
 The opt-in provider is a code dependency, not a bundled JPL kernel or dataset.
 Bundling JPL DE405/DE430 ephemerides remains an explicit non-goal; do not infer
@@ -10504,13 +10509,15 @@ such an asset obligation from the provider landing.
 
 ### NEW-ECLIPSE-HIGH-PRECISION-LOCAL-CIRCUMSTANCES
 
-**Status: CORE OBSERVER-LOCAL SOLVER IMPLEMENTED / LANDED as `f4408cade7`
-AFTER INDEPENDENT GO; RUNTIME FRAME INTEGRATION AND HISTORICAL BROWSER
-CERTIFICATION REMAIN OPEN.** The dependency and provider seam above plus
+**Status: CORE OBSERVER-LOCAL SOLVER LANDED as `f4408cade7` AFTER INDEPENDENT
+GO; GENERIC FRAME TRANSPORT LANDED as `c06699a535`; OPT-IN HIGH-PRECISION
+HISTORICAL/BROWSER CERTIFICATION REMAINS OPEN.** The dependency and provider
+seam above plus
 `Core/EclipseDiscGeometry.js`, `Core/EclipseLocalCircumstances.js`, and their
-focused specs are landed. This discharges the backend-neutral Core query-solver
-implementation, not the separate runtime/render integration or S5 browser
-owners. The default Simon-1994 placement remains useful for ordinary celestial
+focused specs are landed. The generic runtime now carries one selected provider
+sample through the eclipse render consumers, but the Astronomy Engine provider
+has not yet received the historical Sandcastle2 Explorer/S5 browser certification owned by
+this row. The default Simon-1994 placement remains useful for ordinary celestial
 rendering but misses the requested observer-local totality at the authoritative
 city/time pairs: its current live
 obscuration is about 91.455% at Luarca C2, 90.535% at Reykjavik maximum,
@@ -10519,13 +10526,14 @@ lane's empty measured classification is the same precision class. Do not repair
 this with per-event time offsets, enlarged lunar radii, hand-authored shadow
 paths, or Sandcastle-only coordinates.
 
-**Landed core direction:** the backend-neutral observer-local contact solver
+**Landed core/runtime direction:** the backend-neutral observer-local contact solver
 uses the landed provider contract, including deterministic time-scale/EOP,
 provenance, accuracy, fallback, finite/range, root-bracketing, and output-
 identity policies. Keep the lightweight Simon-1994 provider available wherever
-high-precision eclipse certification is not requested. Runtime camera disc,
-surface umbra, and NASA-SVS integration belongs to the separate per-frame owner
-below; this landed query solver does not fork the render geometry.
+high-precision eclipse certification is not requested. The generic per-frame
+owner below transports provider results without forking the render geometry;
+camera-disc, surface-umbra, and NASA-SVS high-precision acceptance remains in
+the browser/evidence work below.
 
 **Remaining runtime/browser acceptance:** independently reproduce
 C1/C2/max/C3/C4 ordering and totality at the four Explorer observers, the
@@ -10538,31 +10546,38 @@ pixel.
 
 ### NEW-ECLIPSE-FRAME-EPHEMERIS-INTEGRATION
 
-**Status: OPEN / P1 RUNTIME INTEGRATION.** The opt-in providers landed at
-`15d71de0f3`, but current runtime consumers still derive or memoize celestial
-positions independently. Add one Scene/frame-owned, branded
-`CelestialEphemerisProvider` sample per simulation frame. Compute it exactly
-once for the selected provider/time/revision and share that same sample and
-Cartesian identities with `EclipseState`, `UniformState`, `Moon`, globe-shadow
-preparation, and the NASA-SVS certification lane. The geocentric sample is
+**Status: LANDED as `c06699a535` / SOURCE-STATIC INDEPENDENT GO; FRESH BUILD,
+PACKAGE JASMINE, SOURCE-MAP, BROWSER, AND S5 CERTIFICATION OPEN.** Scene now
+owns the successful shared-provider path. For each such logical frame, Scene
+performs one provider computation into one retained branded
+`CelestialEphemerisProvider` sample; repeated View/pass preparations reuse it. `EclipseState`,
+`UniformState`, `Moon`, and globe-shadow preparation consume that authoritative
+lineage; consumers copy the exact values into stable consumer-owned storage
+rather than sharing the sample's Cartesian objects. The geocentric sample is
 common across logical Views; observer-local geometry remains View-owned.
 
-**Required direction:** expose explicit provider selection with Simon-1994 as
-the byte-compatible default and Astronomy Engine as opt-in. Invalidate on exact
-time, provider identity, or provider revision; preserve the branded result,
-ECEF/metres contract, transform-branch, time-policy, provenance, and
-allocation-stability declarations. No listed consumer may call a second direct
-Simon-1994 or Astronomy Engine path for the same frame, and no first-frame/XYS
-fallback may be frozen into a pinned clock.
+**Landed compatibility contract:** provider selection is explicit, Simon-1994
+remains the default, and Astronomy Engine remains opt-in. Reuse validates exact
+time; provider object, compute identity, ID, and revision; provenance, time
+policy, and allocation declarations; sample/vector identities and values; ECEF
+reference frame; metre units; and transform branch. Publication is suppressed
+only when the exact implicit Scene-created Simon provider meets the documented
+central-body transform override: `UniformState` uses
+the logical-frame-captured override, while `Moon` and `EclipseState` retain their
+historical Earth-fixed fallback paths. A mid-frame hook change cannot mix
+lineages; a custom ellipsoid alone does not suppress the sample; explicit
+providers, including explicitly reassigning the Scene-created Simon object,
+become authoritative ECEF inputs on the next logical frame.
 
-**Acceptance:** instrument provider calls and object identities across normal,
+**Remaining certification:** instrument provider calls and lineage/value identity across normal,
 pick, offscreen, retained capture, multi-View, pause/resume, clock jump, XYS
-readiness transition, and provider/revision swaps. Each frame has exactly one
-authoritative sample; every listed consumer reads it; the default provider is
-pixel/number compatible with the pre-integration path; opt-in local contacts,
-camera discs, S5 globe footprints, and frozen NASA-SVS rows agree from the same
-vectors on WebGL and WebGPU. Bound moving-frame CPU cost and prove zero steady-
-state sample allocation.
+readiness transition, and provider/revision swaps in the rebuilt browser. Each
+successful shared-provider frame must retain exactly one authoritative sample; every listed consumer must
+carry its exact values; the default provider must remain pixel/number compatible
+with the pre-integration path; opt-in local contacts, camera discs, S5 globe
+footprints, and frozen NASA-SVS rows must agree from the same vectors on WebGL
+and WebGPU. Re-prove the bounded moving-frame CPU cost and zero steady-state
+sample allocation in that served-build lane.
 
 ### NEW-ECLIPSE-IAU-2015-NOMINAL-SOLAR-RADIUS-MIGRATION
 
@@ -13451,6 +13466,40 @@ design contract and is labelled as such.
 **Final landed-source certification (2026-08-12):** run `1f437ee9-37e5-4d17-94a1-a269e81679ab` is independently audited PASS / exit **0**. The immutable report and canonical latest are byte-identical at 586,475 bytes, SHA-256 `921A75ED6624326930D2B9BCC1D191819F709AAB96DC9AFD1B676A729166595E`; both actual backends pass all 10 overlap lanes, the four-frustum proof, and 12 three-repetition continuity comparisons apiece. All 72 run-bound PNGs are independently decoded and hash-exact. The report plus images are certification-eligible in the shared visual-evidence library under manifest `33CEE1FB9E1304234DA8743D952D34204FCFE2621885C0383FBAABA6E9113F17`. Source/build/served/GPU/cleanup provenance is exact and the 15-path packet is commit `6d4a2376fc`; this deferred row is closed.
 
 **Acceptance — discharged by run `1f437ee9-37e5-4d17-94a1-a269e81679ab`:** derive f64 ray intersections for scored overlap pixels and prove both directions: the nearer Moon occludes Earth, while the nearer Earth occludes the Moon. Repeat on WebGL and WebGPU with log depth, multi-frustum, HDR/bloom on/off, and a moving camera that crosses the distance-order boundary; require no one-frame pop, limb seam, or post-process halo leak. Retain the ordinary Earth-near control in which a Moon behind the globe is correctly hidden, plus non-overlap controls proving neither body disappears. Zero console, validation, and device errors. Owner: Campaign 12 `C12-37`; completed 2026-08-12.
+
+## C11-169-WEBGPU-FRAME-COST-ACCOUNTING (source landed 2026-08-14 as `c404c3de04`; remediation open)
+
+**Status: ACCOUNTING SOURCE LANDED as `c404c3de04` + FOCUSED EDGE + DIAGNOSTIC BROWSER GREEN; REMEDIATION OPEN / NOT COMPLETE / NO FPS OR GPU CLAIM.** The landed profiler publishes an immutable exact `lastFrame` plus rolling/lifetime normal-Scene accounting and a fixed 11-phase coarse CPU ledger: `sceneUpdate`, `frameState`, `contextBegin`, `sceneEnvironmentUpdate`, `visibilityCommandPrep`, `primitiveTraversal`, `computeShadows`, `rendererOverhead`, `frameFinalize`, `contextEndSubmit`, and `afterRenderCreditTrace`. Named pass timers suspend/resume the active coarse phase at one timestamp, so the ledgers are mutually exclusive and repeated 2D/VR/multi-frustum visits accumulate into the same logical Scene sample. Both laws remain explicit:
+
+```text
+totalMs + overlapMs = profiledPassMs + unaccountedMs
+totalMs + attributionOverlapMs = profiledPassMs + phaseTotalMs + unattributedMs
+```
+
+The unchanged Scene render body is measured through `postRender` and credit-display completion. Corrupt/open/nested/mismatched/re-entered/exceptional normal-Scene frames fail closed; suppressed requestRender publishes nothing; standalone pick retains its isolated legacy window without overwriting normal accounting. The disabled path does not read the accounting clock or allocate its Map/record ledger, though marker sites retain their cheap disabled branch.
+
+**Focused and build evidence:** the three pure policy/integration suites pass **31/31**; package TypeScript is clean; the integrated build is green in **53 s**. Focused Edge/Karma `WebGPUCpuPassProfiler` passes **26/26** with **18,203 skipped**, and `ViewportExecutor` passes **2/2** with **18,227 skipped**. The combined Karma substring-filter attempt is retained as an honest harness red because it selected **0 tests**. The first separate Viewport run executed two tests and failed one for a real helper-compatibility defect; the helper was repaired without weakening the assertion, and the final separate run is 2/2.
+
+Final artifact `Tools/visual-regression/output/performance/c11-169-whole-frame-phase-attribution.json` is `schemaVersion=4`, `runId=e07afdd3-67b6-41ab-aa09-a62ece40da6e`, generated `2026-08-11T09:28:44.566Z`, SHA-256 `A5A2B43CF606CFF11DF0EDC56C352556633113DEB77B43083CF659A613DA9839`, `status=PASS`, and exit 0. All **14 serialized `.pass` booleans** are true; this artifact has no fixed browser-check array, so it must not be called “31/31.” Top-level failures plus console/page/local-request/GPU errors are empty, with no device loss or fatal error.
+
+- Canonical route: **180/180** unique normal frames, all **8/8** segments, route progress 0→1, all 11 phases positive. Median total/named/coarse time is **4.8/0.3/4.5 ms**; p95 is **13.5/0.7/13.2 ms**. The additive mean is exactly **6.7506 = 0.3144 named + 6.4361 coarse ms**. Every scored record has zero unattributed time, named-pass overlap, attribution overlap, and accounting residual.
+- Phase localization: `primitiveTraversal` contributes **45.72% of total mean** and **47.96% of coarse-phase mean**, with median/p95 **1.5/8.9 ms**. `rendererOverhead` contributes 12.33% of total mean; `afterRenderCreditTrace`, `frameFinalize`, and `sceneEnvironmentUpdate` contribute 8.52%, 8.29%, and 7.88%. These are instrumented diagnostic shares, not causal savings.
+- Four orthogonal controls each run **24 baseline/injected pairs** with the same 8 ms spin. Primitive/PVS/renderer/after-render target medians are **7.8/8.0/8.1/8.0 ms**; named-pass median deltas are all 0, summed off-target phase medians are −0.2/0.0/+0.3/+0.2 ms, every lane has exact seam/spin totals **48/24**, and both arms contain positive named work. Every accounting/discriminator/hit gate passes.
+- Negatives are green: requestRender reaches exact quiescence in 9 drains / 162.2 ms and publishes normal/legacy/Scene deltas **0/0/0**; four frustums publish one normal sample; the wrapped 2D two-execute path publishes one sample; standalone pick publishes legacy `+1`, normal `+0`, and leaves the normal record/window unchanged.
+
+The first-green nested diagnostic now subdivides that dominant coarse phase without changing production code. `Tools/visual-regression/output/performance/c11-169-primitive-traversal-breakdown.json` is `schemaVersion=1`, `runId=e60f18d2-fbc1-48ba-b499-4806481bf20f`, generated `2026-08-11T10:22:11.412Z`, SHA-256 `8C7F14B614C467C5686619731426062C7B435D3F4545BC6B9481D39D1373FDB0`, `status=PASS`, and exit 0. Its first browser invocation was green and the write-once `c11-169-primitive-traversal-breakdown.first-red.json` is physically absent. Offline policy is **17/17**, the combined Node matrix is **48/48**, static gates are green, and independent review is P0=0/P1=0.
+
+- The canonical route publishes **120/120** unique normal frames over **8/8** segments, with named-profiler work in **118/120** frames. Total CPU median/mean/p95 is **9.0/13.5175/55.8 ms**; `primitiveTraversal` is **2.3/4.6358/8.4 ms**.
+- Nested means are `globeRender=4.5692 ms`, `groundPrimitiveUpdate=0.0067 ms`, `ordinaryPrimitiveUpdate=0.0008 ms`, and primitive residual `=0.0592 ms`; globe render therefore accounts for **98.56% of the mean `primitiveTraversal` interval** in this exact run. `dynamicEnvironmentDrain` is **0.0067 ms** mean in its separate `computeShadows` owner.
+- Four 12-pair 8 ms controls have exact **24/12** seam/spin hits per lane. Every target responds, while off-target median movement remains at most **0.3 ms** for coarse phases and **0.1 ms** for nested details; all console/page/local-request/GPU/device/render error lanes are empty.
+
+This result is deliberately narrow. The route ended with `globeTilesLoaded=false` and `pendingForegroundCount=3`, and the viewer used only the default local Natural Earth II globe with no explicit model or tileset asset. It is a streaming-state, globe-only diagnostic and cannot be transferred to the resident San Francisco C11-205 workload, the broader C11-168 deficit, or any optimization/FPS/causal claim. The later resident San Francisco attribution packet landed as `be0683c60d`: `c11-169-resident-sf-owner-attribution.json` is PASS/exit 0, SHA-256 `C755784AEF33AA85DF8C8F0DD72C0E025BFF38AC54F441CF1349DB5E95774C1C`, but remains diagnostic, noncausal, attribution-only, and certification-ineligible. Retain the default globe as a control and use that packet to select evidence-led remediation, not to claim a speedup.
+
+The write-once first red remains preserved at `c11-169-whole-frame-phase-attribution.first-red.json`: `runId=5e013ea8-648c-49f3-8ac2-f3a5a3ee715d`, SHA-256 `2219C3F1EE85BE33802A8084421E32C8DE7C84AB054D94353A5605815741D176`. Its only failures were PVS `43/48 = 0.8958` and after-render `40/48 = 0.8333` positive named-pass frames against a 90% rule copied from the moving-route population. Those repeated paired controls legitimately quantize sub-0.1 ms named work to zero. The fail-closed repair keeps the 90% moving-route gate, removes it only from paired control accounting, and makes the discriminator require named buckets plus positive named work independently in both baseline and injected populations. Mutants cover baseline-only, injected-only, and all-zero vacuity.
+
+`C11-169-P2-THROWING-ISOLATED-PICK-PARTIAL-TIMING` owns one non-certifying P2: a throwing isolated pick can commit partial legacy `passes.pick` timing from its `finally` cleanup. That exceptional record cannot overwrite normal-Scene accounting and cannot certify a throwing run, but a follow-up must explicitly discard it or label it partial rather than leaving its interpretation implicit.
+
+This remains synchronous, instrumented CPU-only `diagnostic-noncausal` evidence; asynchronous GPU execution is explicitly excluded. It closes the broad “where is the unaccounted CPU interval?” instrumentation gap and provides attribution for both the default-globe control and resident San Francisco workload, but does not establish a root cause, remediation, FPS change, or general workload speedup. Evidence-led remediation and a separate post-remediation uninstrumented causal measurement remain mandatory before assigning performance credit or closing C11-169/C11-168.
 
 ## C11-193A-DYNAMIC-IBL-PERSISTENT-OUTPUT-GRAPH (landed 2026-08-12 at `b20234a16b`)
 
