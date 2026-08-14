@@ -96,12 +96,17 @@
 // every function under `node --test` with synthetic ground truth and with the
 // REAL bundled t3/t5/t5-diffuse measurements as fixtures.
 
+import { createHash } from "node:crypto";
+
 import { percentile, rgbToHsv } from "./celestial-metrics.mjs";
+import { replaceOwnedResourceTransaction } from "./owned-resource-transaction.mjs";
 import {
   DR01_LIMITS,
   bandStructure,
   pointSourceCensus,
 } from "../../skybox-bake/starmap-census.mjs";
+
+export { replaceOwnedResourceTransaction } from "./owned-resource-transaction.mjs";
 
 // ---------------------------------------------------------------------------
 // GEOMETRY — angular sampling of a cube face.
@@ -815,6 +820,112 @@ export const G3_MAX_ARCMIN_PER_PIXEL = 2.0;
 export const G3_MIN_FACE_SIZE_PX = 2700;
 
 /**
+ * G3 certification target. The 2048 tier remains the application default; the
+ * gate deliberately opts into the recommended 4096 tier and must refuse to
+ * certify a fallback as though it were the requested asset.
+ */
+export const G3_CERTIFICATION_VARIANT = "TYCHO_T5_DIFFUSE";
+export const G3_CERTIFICATION_RESOLUTION = "4096";
+export const G3_CERTIFICATION_FACE_SIZE_PX = 4096;
+export const G3_CUBE_FACE_COUNT = 6;
+export const G3_EXPECTED_DEFAULT_RESOLUTION = "2048";
+const G3_EXPECTED_DEFAULT_FACE_SIZE_PX = 2048;
+const G3_EXPECTED_DEFAULT_VRAM_BYTES =
+  G3_CUBE_FACE_COUNT *
+  G3_EXPECTED_DEFAULT_FACE_SIZE_PX *
+  G3_EXPECTED_DEFAULT_FACE_SIZE_PX *
+  4;
+export const G3_CERTIFICATION_VRAM_BYTES =
+  G3_CUBE_FACE_COUNT *
+  G3_CERTIFICATION_FACE_SIZE_PX *
+  G3_CERTIFICATION_FACE_SIZE_PX *
+  4;
+export const G3_CUBE_FACE_KEYS = Object.freeze([
+  "px",
+  "mx",
+  "py",
+  "my",
+  "pz",
+  "mz",
+]);
+export const G3_CUBE_SOURCE_KEYS = Object.freeze({
+  px: "positiveX",
+  mx: "negativeX",
+  py: "positiveY",
+  my: "negativeY",
+  pz: "positiveZ",
+  mz: "negativeZ",
+});
+
+/**
+ * Versioned serialization contract for the active-source aggregate. The
+ * aggregate is deliberately narrower than a whole-run fingerprint: it binds
+ * the exact live certification variant, resolution, decoded dimensions, and
+ * the six served URL/byte-digest pairs in canonical cube-face order.
+ */
+export const G3_ACTIVE_SOURCE_FINGERPRINT_SCHEMA = "cesium-g3-active-source-v1";
+
+/**
+ * Serialize one ordered active-source aggregate without hashing it. Keeping
+ * the payload function public lets the producer hash its own ordered fetch
+ * records while the evaluator separately reconstructs and hashes the retained
+ * per-face proof. JSON avoids delimiter ambiguity in URLs.
+ *
+ * @param {{resolvedVariant:unknown,resolvedResolution:unknown,
+ *          resolvedFaceSize:unknown,records:Array<object>}} input
+ * @returns {string}
+ */
+export function canonicalG3ActiveSourceFingerprintPayload(input) {
+  const records = Array.isArray(input?.records) ? input.records : [];
+  return JSON.stringify({
+    schema: G3_ACTIVE_SOURCE_FINGERPRINT_SCHEMA,
+    resolvedVariant: input?.resolvedVariant ?? null,
+    resolvedResolution: input?.resolvedResolution ?? null,
+    resolvedFaceSize: input?.resolvedFaceSize ?? null,
+    faces: records.map((record) => ({
+      faceKey: record?.faceKey ?? null,
+      sourceKey: record?.sourceKey ?? null,
+      url: record?.url ?? null,
+      sha256: record?.sha256 ?? null,
+      decodedWidth: record?.decodedWidth ?? null,
+      decodedHeight: record?.decodedHeight ?? null,
+    })),
+  });
+}
+
+/**
+ * SHA-256 the canonical active-source payload.
+ *
+ * @param {{resolvedVariant:unknown,resolvedResolution:unknown,
+ *          resolvedFaceSize:unknown,records:Array<object>}} input
+ * @returns {string}
+ */
+export function computeG3ActiveSourceFingerprint(input) {
+  return createHash("sha256")
+    .update(canonicalG3ActiveSourceFingerprintPayload(input))
+    .digest("hex");
+}
+
+function activeSourceFingerprintInputFromProof(proof) {
+  return {
+    resolvedVariant: proof?.resolvedVariant ?? null,
+    resolvedResolution: proof?.resolvedResolution ?? null,
+    resolvedFaceSize: proof?.resolvedFaceSize ?? null,
+    records: G3_CUBE_FACE_KEYS.map((faceKey) => {
+      const face = proof?.faces?.[faceKey];
+      return {
+        faceKey,
+        sourceKey: face?.sourceKey ?? null,
+        url: face?.url ?? null,
+        sha256: face?.sha256 ?? null,
+        decodedWidth: face?.decodedWidth ?? null,
+        decodedHeight: face?.decodedHeight ?? null,
+      };
+    }),
+  };
+}
+
+/**
  * RATIFIED — §5 criterion (3). "median chroma >= 0.20".
  * @type {number}
  */
@@ -1003,6 +1114,250 @@ export const EXIT_CODE = Object.freeze({
 // SUB-LANE EVALUATION. Every function returns `{criteria, structural, pass}`,
 // and `pass` is guarded explicitly against the vacuous `{}.every(Boolean)`.
 // ---------------------------------------------------------------------------
+
+// Environment-only invariants shared by the cheap preflight and the complete
+// source sub-lane. Keeping these predicates in one function prevents a target
+// from clearing preflight under weaker resolution/lifecycle/VRAM rules than the
+// final proof applies.
+function sourceEnvironmentStructural(proof) {
+  const structural = [];
+  if (proof?.requestedVariant !== G3_CERTIFICATION_VARIANT) {
+    structural.push(
+      `the probe requested variant ${proof?.requestedVariant ?? "null"}; G3 ` +
+        `certification requires ${G3_CERTIFICATION_VARIANT}`,
+    );
+  }
+  if (proof?.requestedResolution !== G3_CERTIFICATION_RESOLUTION) {
+    structural.push(
+      `the probe requested resolution ${proof?.requestedResolution ?? "null"}; ` +
+        `G3 certification requires ${G3_CERTIFICATION_RESOLUTION}`,
+    );
+  }
+  if (proof?.defaultResolution !== G3_EXPECTED_DEFAULT_RESOLUTION) {
+    structural.push(
+      `the runtime default resolution was ` +
+        `${proof?.defaultResolution ?? "null"}; G3 must opt into 4096 without ` +
+        `changing the ${G3_EXPECTED_DEFAULT_RESOLUTION} application default`,
+    );
+  }
+  if (
+    !Number.isFinite(proof?.maximumCubeMapSize) ||
+    proof.maximumCubeMapSize < G3_CERTIFICATION_FACE_SIZE_PX
+  ) {
+    structural.push(
+      `the device maximumCubeMapSize was ` +
+        `${proof?.maximumCubeMapSize ?? "null"}; it cannot host a ` +
+        `${G3_CERTIFICATION_FACE_SIZE_PX}px face`,
+    );
+  }
+  if (proof?.resolvedVariant !== G3_CERTIFICATION_VARIANT) {
+    structural.push(
+      `the live sky box resolved variant ${proof?.resolvedVariant ?? "null"}; ` +
+        `the requested ${G3_CERTIFICATION_VARIANT} asset was not active`,
+    );
+  }
+  if (
+    proof?.resolvedResolution !== G3_CERTIFICATION_RESOLUTION ||
+    proof?.resolvedFaceSize !== G3_CERTIFICATION_FACE_SIZE_PX
+  ) {
+    structural.push(
+      `the explicit ${G3_CERTIFICATION_RESOLUTION} request resolved to ` +
+        `${proof?.resolvedResolution ?? "null"} / ` +
+        `${proof?.resolvedFaceSize ?? "null"}px; the requested tier was not ` +
+        "available to certify",
+    );
+  }
+  if (
+    proof?.previousSkyBoxPresent !== true ||
+    proof?.previousSkyBoxResident !== true ||
+    proof?.replacementInstalled !== true ||
+    proof?.previousSkyBoxDestroyed !== true ||
+    proof?.candidateSkyBoxDestroyed !== false ||
+    proof?.replacementHadRenderOverlap !== false
+  ) {
+    structural.push(
+      "the resident default sky box was not replaced with a complete " +
+        "single-owner transaction before any render overlap",
+    );
+  }
+  const previousEstimatedBytes = proof?.previousEstimatedVramBytes;
+  const priorResidentBytes = proof?.previousResidentEstimatedVramBytes;
+  const currentBytes = proof?.currentEstimatedVramBytes;
+  const peakBytes = proof?.peakEstimatedVramBytes;
+  const expectedPeak = Math.max(priorResidentBytes ?? NaN, currentBytes ?? NaN);
+  const expectedPriorResident =
+    proof?.previousSkyBoxResident === true ? previousEstimatedBytes : 0;
+  if (
+    !Number.isFinite(previousEstimatedBytes) ||
+    proof?.previousResolution !== G3_EXPECTED_DEFAULT_RESOLUTION ||
+    proof?.previousFaceSize !== G3_EXPECTED_DEFAULT_FACE_SIZE_PX ||
+    previousEstimatedBytes !== G3_EXPECTED_DEFAULT_VRAM_BYTES ||
+    !Number.isFinite(priorResidentBytes) ||
+    priorResidentBytes < 0 ||
+    priorResidentBytes !== expectedPriorResident ||
+    proof?.resolvedEstimatedVramBytes !== currentBytes ||
+    currentBytes !== G3_CERTIFICATION_VRAM_BYTES ||
+    !Number.isFinite(peakBytes) ||
+    peakBytes !== expectedPeak
+  ) {
+    structural.push(
+      `the replacement residency proof was prior/current/peak ` +
+        `${priorResidentBytes ?? "null"}/${currentBytes ?? "null"}/` +
+        `${peakBytes ?? "null"} bytes; an exact 4096 cube requires current ` +
+        `${G3_CERTIFICATION_VRAM_BYTES} and peak max(prior,current)`,
+    );
+  }
+  if (proof?.activeSourceCount !== G3_CUBE_FACE_COUNT) {
+    structural.push(
+      `the live sky box exposed ${proof?.activeSourceCount ?? "null"} face ` +
+        `URLs; all ${G3_CUBE_FACE_COUNT} active sources are required`,
+    );
+  }
+  const activeSourceKeys = Object.values(G3_CUBE_SOURCE_KEYS);
+  const exactFaceKeys =
+    proof?.faces !== null &&
+    typeof proof?.faces === "object" &&
+    Object.keys(proof.faces).length === G3_CUBE_FACE_COUNT &&
+    G3_CUBE_FACE_KEYS.every((faceKey) => Object.hasOwn(proof.faces, faceKey));
+  const exactActiveSourceKeys =
+    proof?.activeSources !== null &&
+    typeof proof?.activeSources === "object" &&
+    Object.keys(proof.activeSources).length === G3_CUBE_FACE_COUNT &&
+    activeSourceKeys.every((sourceKey) =>
+      Object.hasOwn(proof.activeSources, sourceKey),
+    );
+  const exactActiveSources =
+    exactFaceKeys &&
+    exactActiveSourceKeys &&
+    G3_CUBE_FACE_KEYS.every((faceKey) => {
+      const face = proof?.faces?.[faceKey];
+      const sourceKey = G3_CUBE_SOURCE_KEYS[faceKey];
+      return (
+        face?.sourceKey === sourceKey &&
+        typeof face?.url === "string" &&
+        proof?.activeSources?.[sourceKey] === face.url
+      );
+    });
+  if (!exactActiveSources) {
+    structural.push(
+      "the proof requires exactly the six canonical face keys and their six " +
+        "records must bind exactly to environment.activeSources",
+    );
+  }
+
+  return structural;
+}
+
+/**
+ * Cheap source reachability preflight. This deliberately stops before any
+ * capture, fetch, decode, or pixel analysis; the full source sub-lane below
+ * adds those workload-dependent requirements after the requested tier exists.
+ *
+ * @param {object} proof environment-only source proof
+ * @returns {{criteria:Object<string,boolean>,structural:string[],pass:boolean,
+ *            measured:object}}
+ */
+export function evaluateG3SourcePreflight(proof) {
+  const structural = sourceEnvironmentStructural(proof);
+  const criteria =
+    structural.length === 0
+      ? { assetSource_preflightExact4096Reachable: true }
+      : {};
+  return {
+    criteria,
+    structural,
+    measured: proof ? { ...proof } : {},
+    pass: structural.length === 0 && Object.values(criteria).every(Boolean),
+  };
+}
+
+/**
+ * SOURCE sub-lane — prove that the asset metrics came from the exact URLs on
+ * the live sky box produced by an explicit `TYCHO_T5_DIFFUSE` / 4096 request.
+ *
+ * Resolution fallback is STRUCTURAL, not a failed quality bar: when the 4096
+ * tier is not installed the gate did not observe the subject it was asked to
+ * certify. The 2048 application default is intentionally unrelated to this
+ * opt-in probe contract.
+ *
+ * @param {object} proof
+ * @returns {{criteria:Object<string,boolean>,structural:string[],pass:boolean,
+ *            measured:object}}
+ */
+export function evaluateAssetSourceSubLane(proof) {
+  const structural = sourceEnvironmentStructural(proof);
+  if (
+    proof?.fetchedSourceCount !== G3_CUBE_FACE_COUNT ||
+    proof?.decodedFaceCount !== G3_CUBE_FACE_COUNT
+  ) {
+    structural.push(
+      `the fetched/decoded face counts were ` +
+        `${proof?.fetchedSourceCount ?? "null"}/` +
+        `${proof?.decodedFaceCount ?? "null"}; all ${G3_CUBE_FACE_COUNT} live ` +
+        "sources must be fetched and decoded",
+    );
+  }
+  const exactDecodedFaces = G3_CUBE_FACE_KEYS.every((faceKey) => {
+    const face = proof?.faces?.[faceKey];
+    return (
+      /^[0-9a-f]{64}$/u.test(face?.sha256 ?? "") &&
+      Number.isFinite(face?.bytes) &&
+      face.bytes > 0 &&
+      face?.decodedWidth === G3_CERTIFICATION_FACE_SIZE_PX &&
+      face?.decodedHeight === G3_CERTIFICATION_FACE_SIZE_PX &&
+      face.decodedWidth === face.decodedHeight
+    );
+  });
+  if (!exactDecodedFaces) {
+    structural.push(
+      `all ${G3_CUBE_FACE_COUNT} faces require their own served-byte SHA-256 ` +
+        `and must decode square at ${G3_CERTIFICATION_FACE_SIZE_PX}x` +
+        `${G3_CERTIFICATION_FACE_SIZE_PX}`,
+    );
+  }
+  if (
+    proof?.decodedFaceSizeMin !== G3_CERTIFICATION_FACE_SIZE_PX ||
+    proof?.decodedFaceSizeMin !== proof?.resolvedFaceSize
+  ) {
+    structural.push(
+      `the decoded active faces measured ` +
+        `${proof?.decodedFaceSizeMin ?? "null"}px but the live sky box reported ` +
+        `${proof?.resolvedFaceSize ?? "null"}px`,
+    );
+  }
+  if (proof?.fetchedSourcesMatchEnvironmentActiveSources !== true) {
+    structural.push(
+      "the fetched and hashed URLs were not exactly environment.activeSources",
+    );
+  }
+  const recomputedFingerprintSha256 = computeG3ActiveSourceFingerprint(
+    activeSourceFingerprintInputFromProof(proof),
+  );
+  if (
+    !/^[0-9a-f]{64}$/u.test(proof?.fingerprintSha256 ?? "") ||
+    proof.fingerprintSha256 !== recomputedFingerprintSha256
+  ) {
+    structural.push(
+      "the active source-set SHA-256 fingerprint is absent, malformed, or " +
+        "does not match the independently recomputed ordered face URL/SHA " +
+        "aggregate",
+    );
+  }
+
+  const measured = proof
+    ? { ...proof, recomputedFingerprintSha256 }
+    : { recomputedFingerprintSha256 };
+  const criteria =
+    structural.length === 0
+      ? { assetSource_exactActive4096SourceSet_proven: true }
+      : {};
+  return {
+    criteria,
+    structural,
+    measured,
+    pass: structural.length === 0 && Object.values(criteria).every(Boolean),
+  };
+}
 
 /**
  * ASSET sub-lane — criteria (1), (3) and (4), measured on the SERVED cube
@@ -1300,8 +1655,126 @@ export function evaluateMotionSubLane(m) {
         "looking at the star field it thinks it was",
     );
   }
+  const basisSamples = m?.basisEvidence?.samples;
+  const finiteVector = (v) =>
+    Number.isFinite(v?.x) && Number.isFinite(v?.y) && Number.isFinite(v?.z);
+  const observedSamples = Array.isArray(basisSamples) ? basisSamples : [];
+  const magnitude = (v) => Math.hypot(v.x, v.y, v.z);
+  const unitVector = (v) =>
+    finiteVector(v) && Math.abs(magnitude(v) - 1.0) <= 1.0e-6;
+  const normalized = (v) => {
+    const length = magnitude(v);
+    return { x: v.x / length, y: v.y / length, z: v.z / length };
+  };
+  const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+  const angleBetweenDeg = (left, right) => {
+    const a = normalized(left);
+    const b = normalized(right);
+    const cross = {
+      x: a.y * b.z - a.z * b.y,
+      y: a.z * b.x - a.x * b.z,
+      z: a.x * b.y - a.y * b.x,
+    };
+    return (Math.atan2(magnitude(cross), dot(a, b)) * 180.0) / Math.PI;
+  };
+  const close = (a, b, tolerance = 1.0e-10) =>
+    Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= tolerance;
+  const inRange = (value, low, high) =>
+    Number.isFinite(value) && value >= low && value <= high;
+  const recomputeBasisSample = (sample) => {
+    const vectors = [
+      sample?.requestedDirection,
+      sample?.requestedRight,
+      sample?.requestedUp,
+      sample?.appliedDirectionWC,
+      sample?.appliedRightWC,
+      sample?.appliedUpWC,
+    ];
+    if (!vectors.every(unitVector)) {
+      return null;
+    }
+    const directionResidualDeg = angleBetweenDeg(
+      sample.requestedDirection,
+      sample.appliedDirectionWC,
+    );
+    const rightResidualDeg = angleBetweenDeg(
+      sample.requestedRight,
+      sample.appliedRightWC,
+    );
+    const upResidualDeg = angleBetweenDeg(
+      sample.requestedUp,
+      sample.appliedUpWC,
+    );
+    const appliedDirection = normalized(sample.appliedDirectionWC);
+    const appliedRight = normalized(sample.appliedRightWC);
+    const appliedUp = normalized(sample.appliedUpWC);
+    const appliedMaxAbsDot = Math.max(
+      Math.abs(dot(appliedDirection, appliedRight)),
+      Math.abs(dot(appliedDirection, appliedUp)),
+      Math.abs(dot(appliedRight, appliedUp)),
+    );
+    if (
+      !inRange(sample.directionResidualDeg, 0, 180) ||
+      !inRange(sample.rightResidualDeg, 0, 180) ||
+      !inRange(sample.upResidualDeg, 0, 180) ||
+      !inRange(sample.appliedMaxAbsDot, 0, 1) ||
+      !close(sample.directionResidualDeg, directionResidualDeg) ||
+      !close(sample.rightResidualDeg, rightResidualDeg) ||
+      !close(sample.upResidualDeg, upResidualDeg) ||
+      !close(sample.appliedMaxAbsDot, appliedMaxAbsDot) ||
+      appliedMaxAbsDot > 1.0e-6 ||
+      sample.brightProjectionBasis !== "applied-WC" ||
+      sample.faintProjectionBasis !== "applied-WC"
+    ) {
+      return null;
+    }
+    return {
+      directionResidualDeg,
+      rightResidualDeg,
+      upResidualDeg,
+      appliedMaxAbsDot,
+    };
+  };
+  const recomputedSamples = observedSamples.map(recomputeBasisSample);
+  const maxRecomputed = (key) =>
+    recomputedSamples.length > 0 && recomputedSamples.every(Boolean)
+      ? Math.max(...recomputedSamples.map((sample) => sample[key]))
+      : NaN;
+  const recomputedMaxima = {
+    direction: maxRecomputed("directionResidualDeg"),
+    right: maxRecomputed("rightResidualDeg"),
+    up: maxRecomputed("upResidualDeg"),
+  };
+  const recomputedMaxAppliedAbsDot = maxRecomputed("appliedMaxAbsDot");
+  const reportedMax = m?.basisEvidence?.maxRequestedAppliedResidualDeg;
+  const summaryConsistent =
+    close(reportedMax?.direction, recomputedMaxima.direction) &&
+    close(reportedMax?.right, recomputedMaxima.right) &&
+    close(reportedMax?.up, recomputedMaxima.up) &&
+    close(m?.basisEvidence?.maxAppliedAbsDot, recomputedMaxAppliedAbsDot);
+  if (
+    m?.basisEvidence?.coordinateSpace !== "WC" ||
+    m?.basisEvidence?.projectionBasis !== "post-Camera.setView" ||
+    !Array.isArray(basisSamples) ||
+    basisSamples.length !== m?.frames ||
+    !recomputedSamples.every(Boolean) ||
+    !summaryConsistent
+  ) {
+    structural.push(
+      "the motion boxes were not backed by complete finite unit requested/" +
+        "applied direction/up/right bases, independently recomputed angular " +
+        "finite residuals, an orthogonal applied basis, applied-WC bindings " +
+        "for both targets, and exact recomputed, consistent maxima on every frame",
+    );
+  }
   if (structural.length > 0) {
-    return { criteria: {}, structural, pass: false, triggers: {} };
+    return {
+      criteria: {},
+      structural,
+      pass: false,
+      triggers: {},
+      measured: {},
+    };
   }
   const triggers = {
     [REVERSAL_TRIGGER.ALIAS_TWINKLE]: {
@@ -1332,6 +1805,15 @@ export function evaluateMotionSubLane(m) {
     criteria,
     structural,
     triggers,
+    measured: {
+      basisSampleCount: basisSamples.length,
+      coordinateSpace: m.basisEvidence.coordinateSpace,
+      projectionBasis: m.basisEvidence.projectionBasis,
+      maxRequestedAppliedResidualDeg: recomputedMaxima,
+      maxAppliedAbsDot: recomputedMaxAppliedAbsDot,
+      firstBasis: basisSamples[0] ?? null,
+      lastBasis: basisSamples[basisSamples.length - 1] ?? null,
+    },
     pass: Object.values(criteria).every(Boolean),
   };
 }
@@ -1343,12 +1825,45 @@ export function evaluateMotionSubLane(m) {
  * @returns {object}
  */
 export function evaluateG3Backend(backend) {
+  const assetSource = evaluateAssetSourceSubLane(backend.asset?.sourceProof);
+  if (!assetSource.pass) {
+    // REACHABILITY PRECEDES PRODUCT VERDICT. A fallback tier is useful
+    // diagnostic input, but it is not the 4096 product this gate was asked to
+    // judge. Evaluating its quality predicates would manufacture ordinary FAIL
+    // entries that outrank this structural absence in `foldG3Verdict`, turning
+    // "the subject does not exist" into "the subject is defective". Suppress
+    // every product criterion, fingerprint and reversal trigger until the exact
+    // active source proof is valid. The full probe report still retains the raw
+    // fallback measurements under `backends[renderer].measured`.
+    return {
+      renderer: backend.renderer,
+      subLanes: { assetSource },
+      assetFingerprint: null,
+      triggers: {},
+      criteria: {},
+      structural: assetSource.structural.map((s) => `assetSource: ${s}`),
+      pass: false,
+    };
+  }
   const asset = evaluateAssetSubLane(backend.asset);
   const split = evaluateSplitSubLane(backend.split);
   const catalogue = evaluateCatalogueSubLane(backend.catalogue);
   const adversarial = evaluateAdversarialSubLane(backend.adversarial);
   const motion = evaluateMotionSubLane(backend.motion);
+  const assetFingerprint = backend.asset?.fingerprint ?? null;
+  const fingerprintStructural = [];
+  if (
+    !/^[0-9a-f]{64}$/u.test(assetFingerprint ?? "") ||
+    assetFingerprint !== assetSource.measured.recomputedFingerprintSha256
+  ) {
+    fingerprintStructural.push(
+      "assetFingerprint: the producer aggregate is absent, malformed, or " +
+        "does not match the evaluator's independently recomputed active " +
+        "source fingerprint",
+    );
+  }
   const criteria = {
+    ...assetSource.criteria,
     ...asset.criteria,
     ...split.criteria,
     ...catalogue.criteria,
@@ -1356,16 +1871,20 @@ export function evaluateG3Backend(backend) {
     ...motion.criteria,
   };
   const structural = [
+    ...assetSource.structural.map((s) => `assetSource: ${s}`),
     ...asset.structural.map((s) => `asset: ${s}`),
     ...split.structural.map((s) => `split: ${s}`),
     ...catalogue.structural.map((s) => `catalogue: ${s}`),
     ...adversarial.structural.map((s) => `adversarial: ${s}`),
     ...motion.structural.map((s) => `motion: ${s}`),
+    ...fingerprintStructural,
   ];
   return {
     renderer: backend.renderer,
-    subLanes: { asset, split, catalogue, adversarial, motion },
-    assetFingerprint: backend.asset?.fingerprint ?? null,
+    subLanes: { assetSource, asset, split, catalogue, adversarial, motion },
+    // Retain the producer's value for cross-backend reporting only after the
+    // structural arm above has compared it with the independent recomputation.
+    assetFingerprint,
     triggers: {
       ...(backend.triggers ?? {}),
       ...(motion.triggers ?? {}),
@@ -1450,6 +1969,29 @@ export function computeAssetTriggers(m) {
 export function foldG3Verdict(evaluated) {
   const failures = [];
   const structural = [];
+  const requiredTriggerKeys = Object.values(REVERSAL_TRIGGER);
+  const validFingerprint = (value) => /^[0-9a-f]{64}$/u.test(value ?? "");
+  const sourceValid = (backend) =>
+    backend?.subLanes?.assetSource?.pass === true;
+  const fingerprintProofValid = (backend) => {
+    const fingerprint = backend?.assetFingerprint;
+    const measured = backend?.subLanes?.assetSource?.measured;
+    const retainedRecomputation = measured?.recomputedFingerprintSha256;
+    const independentlyRecomputed = computeG3ActiveSourceFingerprint(
+      activeSourceFingerprintInputFromProof(measured),
+    );
+    return (
+      sourceValid(backend) &&
+      validFingerprint(fingerprint) &&
+      validFingerprint(measured?.fingerprintSha256) &&
+      validFingerprint(retainedRecomputation) &&
+      fingerprint === independentlyRecomputed &&
+      measured.fingerprintSha256 === independentlyRecomputed &&
+      retainedRecomputation === independentlyRecomputed
+    );
+  };
+  const validTriggerState = (backend, key) =>
+    typeof backend?.triggers?.[key]?.triggered === "boolean";
 
   for (const renderer of ["webgl", "webgpu"]) {
     const b = evaluated?.[renderer];
@@ -1473,14 +2015,35 @@ export function foldG3Verdict(evaluated) {
           "is not a pass",
       );
     }
+    if (sourceValid(b)) {
+      if (!fingerprintProofValid(b)) {
+        structural.push(
+          `${renderer}:asset fingerprint is missing, malformed, or does not ` +
+            "match that backend's independently recomputed source proof",
+        );
+      }
+      const observedTriggerKeys = Object.keys(b.triggers ?? {});
+      const exactTriggerSet =
+        observedTriggerKeys.length === requiredTriggerKeys.length &&
+        requiredTriggerKeys.every(
+          (key) =>
+            observedTriggerKeys.includes(key) && validTriggerState(b, key),
+        );
+      if (!exactTriggerSet) {
+        structural.push(
+          `${renderer}:required reversal-trigger states are missing, malformed, ` +
+            "or contain unexpected records",
+        );
+      }
+    }
   }
 
   const gl = evaluated?.webgl;
   const gpu = evaluated?.webgpu;
-  if (gl && gpu) {
+  if (sourceValid(gl) && sourceValid(gpu)) {
     if (
-      gl.assetFingerprint !== null &&
-      gpu.assetFingerprint !== null &&
+      fingerprintProofValid(gl) &&
+      fingerprintProofValid(gpu) &&
       gl.assetFingerprint !== gpu.assetFingerprint
     ) {
       failures.push(
@@ -1491,7 +2054,7 @@ export function foldG3Verdict(evaluated) {
     for (const key of Object.values(REVERSAL_TRIGGER)) {
       const a = gl.triggers?.[key];
       const b = gpu.triggers?.[key];
-      if (!a || !b) {
+      if (!validTriggerState(gl, key) || !validTriggerState(gpu, key)) {
         continue;
       }
       if (a.triggered !== b.triggered) {
@@ -1529,8 +2092,10 @@ export function buildG3Summary(result) {
       ? {
           criteria: b.criteria,
           structural: b.structural,
+          assetSource: b.subLanes?.assetSource?.measured ?? null,
           asset: b.subLanes?.asset?.measured ?? null,
           adversarial: b.subLanes?.adversarial?.measured ?? null,
+          motion: b.subLanes?.motion?.measured ?? null,
           triggers: b.triggers ?? null,
         }
       : null;
@@ -1583,6 +2148,15 @@ export default {
   REQUIRED_CHROMA_SUBSAMPLING,
   G3_MAX_ARCMIN_PER_PIXEL,
   G3_MIN_FACE_SIZE_PX,
+  G3_CERTIFICATION_VARIANT,
+  G3_CERTIFICATION_RESOLUTION,
+  G3_CERTIFICATION_FACE_SIZE_PX,
+  G3_CUBE_FACE_COUNT,
+  G3_EXPECTED_DEFAULT_RESOLUTION,
+  G3_CERTIFICATION_VRAM_BYTES,
+  G3_CUBE_FACE_KEYS,
+  G3_CUBE_SOURCE_KEYS,
+  G3_ACTIVE_SOURCE_FINGERPRINT_SCHEMA,
   G3_MIN_MEDIAN_CHROMA,
   G3_MIN_DUST_LANE_IQR_RATIO,
   G3_MIN_SOURCE_DENSITY_RATIO,
@@ -1594,6 +2168,9 @@ export default {
   REVERSAL_TRIGGER,
   BUNDLED_ASSET_DERIVATION,
   EXIT_CODE,
+  replaceOwnedResourceTransaction,
+  canonicalG3ActiveSourceFingerprintPayload,
+  computeG3ActiveSourceFingerprint,
   arcminPerPixel,
   degreesPerPixel,
   luminanceStrided,
@@ -1606,6 +2183,8 @@ export default {
   jpegChromaSubsampling,
   analyzeFace,
   foldVariant,
+  evaluateG3SourcePreflight,
+  evaluateAssetSourceSubLane,
   evaluateAssetSubLane,
   evaluateSplitSubLane,
   evaluateCatalogueSubLane,

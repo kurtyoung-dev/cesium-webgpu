@@ -54,6 +54,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { builtinModules } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -70,6 +71,14 @@ import {
   DUST_LANE_MARGIN_FRACTION,
   DUST_LANE_SIGMA_DEG,
   EXIT_CODE,
+  G3_CERTIFICATION_FACE_SIZE_PX,
+  G3_CERTIFICATION_RESOLUTION,
+  G3_CERTIFICATION_VARIANT,
+  G3_CERTIFICATION_VRAM_BYTES,
+  G3_ACTIVE_SOURCE_FINGERPRINT_SCHEMA,
+  G3_CUBE_FACE_COUNT,
+  G3_CUBE_FACE_KEYS,
+  G3_EXPECTED_DEFAULT_RESOLUTION,
   G3_MAX_ARCMIN_PER_PIXEL,
   G3_MIN_DUST_LANE_IQR_RATIO,
   G3_MIN_FACE_SIZE_PX,
@@ -86,13 +95,17 @@ import {
   bandChroma,
   boxWidthForSigma,
   buildG3Summary,
+  canonicalG3ActiveSourceFingerprintPayload,
   computeAssetTriggers,
+  computeG3ActiveSourceFingerprint,
   degreesPerPixel,
   dustLaneStructure,
   evaluateAdversarialSubLane,
+  evaluateAssetSourceSubLane,
   evaluateAssetSubLane,
   evaluateCatalogueSubLane,
   evaluateG3Backend,
+  evaluateG3SourcePreflight,
   evaluateMotionSubLane,
   evaluateSplitSubLane,
   foldG3Verdict,
@@ -102,6 +115,7 @@ import {
   lowPass,
   luminanceStrided,
 } from "./lib/celestial-g3-gate.mjs";
+import { replaceOwnedResourceTransaction } from "./lib/owned-resource-transaction.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..");
@@ -109,9 +123,60 @@ const readNormalized = (relative) =>
   readFileSync(resolve(ROOT, relative), "utf8").replaceAll("\r\n", "\n");
 const PROBE_REL = "Tools/visual-regression/probe-celestial-gates.mjs";
 const LIB_REL = "Tools/visual-regression/lib/celestial-g3-gate.mjs";
+const OWNED_RESOURCE_HELPER_REL =
+  "Tools/visual-regression/lib/owned-resource-transaction.mjs";
+const OWNED_RESOURCE_HELPER_URL = `/${OWNED_RESOURCE_HELPER_REL}`;
 const PROBE = readNormalized(PROBE_REL);
 const ASSET_DIR = "packages/engine/Source/Assets/Textures/SkyBox";
 const FACES = ["px", "mx", "py", "my", "pz", "mz"];
+const NODE_BUILTIN_SPECIFIERS = new Set(
+  builtinModules.flatMap((specifier) => [
+    specifier,
+    specifier.startsWith("node:") ? specifier : `node:${specifier}`,
+  ]),
+);
+
+function literalModuleSpecifiers(source) {
+  return [
+    ...source.matchAll(
+      /\b(?:from\s*|import\s*\(\s*|import\s*)["']([^"']+)["']/gu,
+    ),
+  ].map((match) => match[1]);
+}
+
+function assertBrowserSafeModuleGraph(
+  entryRelativePath,
+  readSource = readFileSync,
+) {
+  const pending = [resolve(ROOT, entryRelativePath)];
+  const visited = new Set();
+  while (pending.length > 0) {
+    const file = pending.pop();
+    if (visited.has(file)) {
+      continue;
+    }
+    visited.add(file);
+    const source = readSource(file, "utf8").replaceAll("\r\n", "\n");
+    for (const specifier of literalModuleSpecifiers(source)) {
+      const bareRoot = specifier.replace(/^node:/u, "").split("/")[0];
+      assert.equal(
+        specifier.startsWith("node:") ||
+          NODE_BUILTIN_SPECIFIERS.has(specifier) ||
+          NODE_BUILTIN_SPECIFIERS.has(bareRoot),
+        false,
+        `${file} imports the Node built-in ${specifier}`,
+      );
+      if (specifier.startsWith("./") || specifier.startsWith("../")) {
+        pending.push(resolve(dirname(file), specifier));
+      } else if (specifier.startsWith("/")) {
+        pending.push(resolve(ROOT, specifier.slice(1)));
+      } else {
+        assert.fail(`${file} has browser-unsafe bare import ${specifier}`);
+      }
+    }
+  }
+  return visited;
+}
 
 // ---------------------------------------------------------------------------
 // Synthetic image helpers. Everything is RGBA, stride 4, 8-bit.
@@ -198,6 +263,94 @@ const LEGACY_T3 = variantFixture(BUNDLED_ASSET_DERIVATION.t3, {
 });
 const CHROMA_CONTROL_OK = { medianSaturation: 0.5, expected: 0.5 };
 
+const SOURCE_KEYS = Object.freeze({
+  px: "positiveX",
+  mx: "negativeX",
+  py: "positiveY",
+  my: "negativeY",
+  pz: "positiveZ",
+  mz: "negativeZ",
+});
+const ACTIVE_SOURCES = Object.freeze(
+  Object.fromEntries(
+    G3_CUBE_FACE_KEYS.map((faceKey) => [
+      SOURCE_KEYS[faceKey],
+      `/Assets/g3-4096-${faceKey}.jpg`,
+    ]),
+  ),
+);
+const DEFAULT_CUBE_VRAM_BYTES = G3_CUBE_FACE_COUNT * 2048 * 2048 * 4;
+const exactFaceProof = (
+  size = G3_CERTIFICATION_FACE_SIZE_PX,
+  sources = ACTIVE_SOURCES,
+) =>
+  Object.fromEntries(
+    G3_CUBE_FACE_KEYS.map((faceKey) => {
+      const sourceKey = SOURCE_KEYS[faceKey];
+      return [
+        faceKey,
+        {
+          sourceKey,
+          url: sources[sourceKey],
+          sha256: "a".repeat(64),
+          bytes: 1024,
+          decodedWidth: size,
+          decodedHeight: size,
+        },
+      ];
+    }),
+  );
+
+const activeFingerprintInput = (proof, faceOrder = G3_CUBE_FACE_KEYS) => ({
+  resolvedVariant: proof.resolvedVariant,
+  resolvedResolution: proof.resolvedResolution,
+  resolvedFaceSize: proof.resolvedFaceSize,
+  records: faceOrder.map((faceKey) => ({
+    faceKey,
+    sourceKey: proof.faces[faceKey].sourceKey,
+    url: proof.faces[faceKey].url,
+    sha256: proof.faces[faceKey].sha256,
+    decodedWidth: proof.faces[faceKey].decodedWidth,
+    decodedHeight: proof.faces[faceKey].decodedHeight,
+  })),
+});
+
+const ACTIVE_SOURCE_PROOF_BASE = {
+  requestedVariant: G3_CERTIFICATION_VARIANT,
+  requestedResolution: G3_CERTIFICATION_RESOLUTION,
+  defaultResolution: G3_EXPECTED_DEFAULT_RESOLUTION,
+  maximumCubeMapSize: 8192,
+  resolvedVariant: G3_CERTIFICATION_VARIANT,
+  resolvedResolution: G3_CERTIFICATION_RESOLUTION,
+  resolvedFaceSize: G3_CERTIFICATION_FACE_SIZE_PX,
+  resolvedEstimatedVramBytes: G3_CERTIFICATION_VRAM_BYTES,
+  previousSkyBoxPresent: true,
+  previousSkyBoxResident: true,
+  previousResolution: G3_EXPECTED_DEFAULT_RESOLUTION,
+  previousFaceSize: 2048,
+  previousEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES,
+  previousResidentEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES,
+  replacementInstalled: true,
+  previousSkyBoxDestroyed: true,
+  candidateSkyBoxDestroyed: false,
+  replacementHadRenderOverlap: false,
+  currentEstimatedVramBytes: G3_CERTIFICATION_VRAM_BYTES,
+  peakEstimatedVramBytes: G3_CERTIFICATION_VRAM_BYTES,
+  activeSourceCount: G3_CUBE_FACE_COUNT,
+  fetchedSourceCount: G3_CUBE_FACE_COUNT,
+  decodedFaceCount: G3_CUBE_FACE_COUNT,
+  decodedFaceSizeMin: G3_CERTIFICATION_FACE_SIZE_PX,
+  fetchedSourcesMatchEnvironmentActiveSources: true,
+  activeSources: ACTIVE_SOURCES,
+  faces: exactFaceProof(),
+};
+const ACTIVE_SOURCE_PROOF_OK = Object.freeze({
+  ...ACTIVE_SOURCE_PROOF_BASE,
+  fingerprintSha256: computeG3ActiveSourceFingerprint(
+    activeFingerprintInput(ACTIVE_SOURCE_PROOF_BASE),
+  ),
+});
+
 /** A motion record that satisfies every structural guard. */
 const MOTION_OK = Object.freeze({
   changedPixels: 91234,
@@ -207,6 +360,27 @@ const MOTION_OK = Object.freeze({
   faintSumRatio: 1.226,
   brightSumRatio: 1.01,
   frames: 24,
+  basisEvidence: {
+    coordinateSpace: "WC",
+    projectionBasis: "post-Camera.setView",
+    samples: Array.from({ length: 24 }, (_, k) => ({
+      k,
+      requestedDirection: { x: 1, y: 0, z: 0 },
+      requestedRight: { x: 0, y: 1, z: 0 },
+      requestedUp: { x: 0, y: 0, z: 1 },
+      appliedDirectionWC: { x: 1, y: 0, z: 0 },
+      appliedRightWC: { x: 0, y: 1, z: 0 },
+      appliedUpWC: { x: 0, y: 0, z: 1 },
+      directionResidualDeg: 0,
+      rightResidualDeg: 0,
+      upResidualDeg: 0,
+      appliedMaxAbsDot: 0,
+      brightProjectionBasis: "applied-WC",
+      faintProjectionBasis: "applied-WC",
+    })),
+    maxRequestedAppliedResidualDeg: { direction: 0, right: 0, up: 0 },
+    maxAppliedAbsDot: 0,
+  },
 });
 
 /** A split record that satisfies every structural guard and passes. */
@@ -567,6 +741,342 @@ test("foldVariant reports MIXED when the faces disagree on format", () => {
   assert.notEqual(v.subsampling, REQUIRED_CHROMA_SUBSAMPLING);
 });
 
+test("sky-box replacement destroys the old owner once after installation", () => {
+  const events = [];
+  const oldBox = { name: "old" };
+  const newBox = { name: "new" };
+  let owner = oldBox;
+  const destroyed = new Map();
+  const result = replaceOwnedResourceTransaction({
+    current: oldBox,
+    create: () => {
+      events.push("create:new");
+      return newBox;
+    },
+    install: (candidate) => {
+      events.push(`install:${candidate.name}`);
+      owner = candidate;
+    },
+    restore: (previous) => {
+      events.push(`restore:${previous.name}`);
+      owner = previous;
+    },
+    destroy: (resource) => {
+      events.push(`destroy:${resource.name}`);
+      destroyed.set(resource, (destroyed.get(resource) ?? 0) + 1);
+    },
+  });
+  assert.deepEqual(events, ["create:new", "install:new", "destroy:old"]);
+  assert.equal(owner, newBox);
+  assert.equal(destroyed.get(oldBox), 1);
+  assert.equal(destroyed.get(newBox), undefined);
+  assert.deepEqual(result, {
+    resource: newBox,
+    installed: true,
+    previousDestroyed: true,
+    candidateDestroyed: false,
+  });
+});
+
+test("an installation failure restores the old owner and destroys only the candidate", () => {
+  const events = [];
+  const oldBox = { name: "old" };
+  const newBox = { name: "new" };
+  let owner = oldBox;
+  assert.throws(
+    () =>
+      replaceOwnedResourceTransaction({
+        current: oldBox,
+        create: () => {
+          events.push("create:new");
+          return newBox;
+        },
+        install: (candidate) => {
+          events.push(`install:${candidate.name}`);
+          owner = candidate;
+          throw new Error("install failed");
+        },
+        restore: (previous) => {
+          events.push(`restore:${previous.name}`);
+          owner = previous;
+        },
+        destroy: (resource) => events.push(`destroy:${resource.name}`),
+      }),
+    /install failed/,
+  );
+  assert.equal(owner, oldBox);
+  assert.deepEqual(events, [
+    "create:new",
+    "install:new",
+    "restore:old",
+    "destroy:new",
+  ]);
+  assert.doesNotMatch(events.join(" "), /destroy:old/);
+});
+
+test("a rollback failure never destroys the possibly-installed candidate", () => {
+  const oldBox = { name: "old" };
+  const newBox = { name: "new" };
+  let owner = oldBox;
+  let destroyCalls = 0;
+  assert.throws(
+    () =>
+      replaceOwnedResourceTransaction({
+        current: oldBox,
+        create: () => newBox,
+        install: (candidate) => {
+          owner = candidate;
+          throw new Error("install failed");
+        },
+        restore: () => {
+          throw new Error("restore failed");
+        },
+        destroy: () => {
+          destroyCalls++;
+        },
+      }),
+    (error) =>
+      error instanceof AggregateError &&
+      error.errors.length === 2 &&
+      error.cause?.message === "install failed",
+  );
+  assert.equal(owner, newBox);
+  assert.equal(destroyCalls, 0);
+});
+
+test("a factory failure cannot mutate ownership or destroy either resource", () => {
+  const events = [];
+  const oldBox = { name: "old" };
+  assert.throws(
+    () =>
+      replaceOwnedResourceTransaction({
+        current: oldBox,
+        create: () => {
+          events.push("create");
+          throw new Error("create failed");
+        },
+        install: () => events.push("install"),
+        restore: () => events.push("restore"),
+        destroy: () => events.push("destroy"),
+      }),
+    /create failed/,
+  );
+  assert.deepEqual(events, ["create"]);
+});
+
+test("an old-owner destroy failure keeps the installed candidate owned", () => {
+  const oldBox = { name: "old" };
+  const newBox = { name: "new" };
+  let owner = oldBox;
+  let oldDestroyCalls = 0;
+  let candidateDestroyCalls = 0;
+  assert.throws(
+    () =>
+      replaceOwnedResourceTransaction({
+        current: oldBox,
+        create: () => newBox,
+        install: (candidate) => {
+          owner = candidate;
+        },
+        restore: (previous) => {
+          owner = previous;
+        },
+        destroy: (resource) => {
+          if (resource === oldBox) {
+            oldDestroyCalls++;
+            throw new Error("old destroy failed");
+          }
+          candidateDestroyCalls++;
+        },
+      }),
+    /old destroy failed/,
+  );
+  assert.equal(owner, newBox);
+  assert.equal(oldDestroyCalls, 1);
+  assert.equal(candidateDestroyCalls, 0);
+});
+
+test("the cheap G3 preflight proves exact reachability before pixel work", () => {
+  const r = evaluateG3SourcePreflight(ACTIVE_SOURCE_PROOF_OK);
+  assert.equal(r.pass, true);
+  assert.deepEqual(r.criteria, {
+    assetSource_preflightExact4096Reachable: true,
+  });
+});
+
+test("MUTANT: runtime policy, device, lifecycle, and residency lies are STRUCTURAL", () => {
+  const { px: omittedFace, ...fiveFaces } = ACTIVE_SOURCE_PROOF_OK.faces;
+  assert.ok(omittedFace);
+  const mutants = [
+    { defaultResolution: "4096" },
+    { maximumCubeMapSize: 2048 },
+    { previousSkyBoxResident: false },
+    { previousResolution: "1024" },
+    { previousSkyBoxDestroyed: false },
+    { candidateSkyBoxDestroyed: true },
+    { replacementHadRenderOverlap: true },
+    { currentEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES },
+    {
+      peakEstimatedVramBytes:
+        G3_CERTIFICATION_VRAM_BYTES + DEFAULT_CUBE_VRAM_BYTES,
+    },
+    { activeSources: { ...ACTIVE_SOURCES, extra: "/not-a-face.jpg" } },
+    {
+      faces: {
+        ...ACTIVE_SOURCE_PROOF_OK.faces,
+        extra: ACTIVE_SOURCE_PROOF_OK.faces.px,
+      },
+    },
+    {
+      faces: {
+        ...fiveFaces,
+        extra: ACTIVE_SOURCE_PROOF_OK.faces.px,
+      },
+    },
+    {
+      faces: {
+        ...ACTIVE_SOURCE_PROOF_OK.faces,
+        px: {
+          ...ACTIVE_SOURCE_PROOF_OK.faces.px,
+          sourceKey: "negativeX",
+        },
+      },
+    },
+  ];
+  for (const mutant of mutants) {
+    const r = evaluateG3SourcePreflight({
+      ...ACTIVE_SOURCE_PROOF_OK,
+      ...mutant,
+    });
+    assert.equal(r.pass, false, JSON.stringify(mutant));
+    assert.equal(Object.keys(r.criteria).length, 0);
+  }
+});
+
+test("the G3 source proof binds the explicit diffuse 4096 active source set", () => {
+  const r = evaluateAssetSourceSubLane(ACTIVE_SOURCE_PROOF_OK);
+  assert.equal(r.pass, true);
+  assert.deepEqual(r.criteria, {
+    assetSource_exactActive4096SourceSet_proven: true,
+  });
+  assert.equal(
+    r.measured.recomputedFingerprintSha256,
+    ACTIVE_SOURCE_PROOF_OK.fingerprintSha256,
+  );
+});
+
+test("the active-source aggregate has one versioned, ordered canonical payload", () => {
+  const input = activeFingerprintInput(ACTIVE_SOURCE_PROOF_OK);
+  const payload = canonicalG3ActiveSourceFingerprintPayload(input);
+  const parsed = JSON.parse(payload);
+  assert.equal(parsed.schema, G3_ACTIVE_SOURCE_FINGERPRINT_SCHEMA);
+  assert.deepEqual(
+    parsed.faces.map((face) => face.faceKey),
+    G3_CUBE_FACE_KEYS,
+  );
+  assert.equal(
+    computeG3ActiveSourceFingerprint(input),
+    ACTIVE_SOURCE_PROOF_OK.fingerprintSha256,
+  );
+});
+
+test("MUTANT: stale or constant-looking aggregate fingerprints are STRUCTURAL", () => {
+  for (const fingerprintSha256 of ["0".repeat(64), "a".repeat(64)]) {
+    const r = evaluateAssetSourceSubLane({
+      ...ACTIVE_SOURCE_PROOF_OK,
+      fingerprintSha256,
+    });
+    assert.equal(r.pass, false, fingerprintSha256);
+    assert.ok(r.structural.some((s) => s.includes("recomputed ordered")));
+  }
+});
+
+test("MUTANT: face order is part of the active-source aggregate", () => {
+  const wrongOrder = [...G3_CUBE_FACE_KEYS];
+  [wrongOrder[0], wrongOrder[1]] = [wrongOrder[1], wrongOrder[0]];
+  const fingerprintSha256 = computeG3ActiveSourceFingerprint(
+    activeFingerprintInput(ACTIVE_SOURCE_PROOF_OK, wrongOrder),
+  );
+  assert.notEqual(fingerprintSha256, ACTIVE_SOURCE_PROOF_OK.fingerprintSha256);
+  const r = evaluateAssetSourceSubLane({
+    ...ACTIVE_SOURCE_PROOF_OK,
+    fingerprintSha256,
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.structural.some((s) => s.includes("recomputed ordered")));
+});
+
+test("MUTANT: a retained face hash change invalidates a stale aggregate", () => {
+  const faces = {
+    ...ACTIVE_SOURCE_PROOF_OK.faces,
+    px: { ...ACTIVE_SOURCE_PROOF_OK.faces.px, sha256: "b".repeat(64) },
+  };
+  const r = evaluateAssetSourceSubLane({
+    ...ACTIVE_SOURCE_PROOF_OK,
+    faces,
+  });
+  assert.equal(r.pass, false);
+  assert.notEqual(
+    r.measured.recomputedFingerprintSha256,
+    ACTIVE_SOURCE_PROOF_OK.fingerprintSha256,
+  );
+  assert.ok(r.structural.some((s) => s.includes("recomputed ordered")));
+});
+
+test("MUTANT: a 4096 request that falls back to 2048 is STRUCTURAL", () => {
+  const fallback = evaluateAssetSourceSubLane({
+    ...ACTIVE_SOURCE_PROOF_OK,
+    resolvedResolution: "2048",
+    resolvedFaceSize: 2048,
+    decodedFaceSizeMin: 2048,
+  });
+  assert.equal(fallback.pass, false);
+  assert.equal(Object.keys(fallback.criteria).length, 0);
+  assert.ok(fallback.structural.some((s) => s.includes("not available")));
+});
+
+test("MUTANT: decoding a default-variant source set cannot prove the live asset", () => {
+  const wrongSources = evaluateAssetSourceSubLane({
+    ...ACTIVE_SOURCE_PROOF_OK,
+    fetchedSourcesMatchEnvironmentActiveSources: false,
+  });
+  assert.equal(wrongSources.pass, false);
+  assert.ok(
+    wrongSources.structural.some((s) =>
+      s.includes("environment.activeSources"),
+    ),
+  );
+});
+
+test("MUTANT: an incomplete or unhashed active cube cannot certify", () => {
+  const incomplete = evaluateAssetSourceSubLane({
+    ...ACTIVE_SOURCE_PROOF_OK,
+    fetchedSourceCount: 5,
+    fingerprintSha256: "not-a-digest",
+  });
+  assert.equal(incomplete.pass, false);
+  assert.ok(incomplete.structural.some((s) => s.includes("face counts")));
+  assert.ok(incomplete.structural.some((s) => s.includes("SHA-256")));
+});
+
+test("MUTANT: every face must independently decode square at exactly 4096", () => {
+  for (const faceKey of G3_CUBE_FACE_KEYS) {
+    const badFaces = {
+      ...ACTIVE_SOURCE_PROOF_OK.faces,
+      [faceKey]: {
+        ...ACTIVE_SOURCE_PROOF_OK.faces[faceKey],
+        decodedHeight: 2048,
+      },
+    };
+    const r = evaluateAssetSourceSubLane({
+      ...ACTIVE_SOURCE_PROOF_OK,
+      faces: badFaces,
+    });
+    assert.equal(r.pass, false, faceKey);
+    assert.ok(r.structural.some((s) => s.includes("decode square")));
+  }
+});
+
 // ===========================================================================
 // 5. THE ADVERSARIAL ARM — the legacy t3 asset must FAIL.
 // ===========================================================================
@@ -854,8 +1364,9 @@ test("a fired trigger cannot turn the gate red on its own", () => {
       t3: LEGACY_T3,
       unblurred: UNBLURRED,
       activeVariant: "TYCHO_T5_DIFFUSE",
+      sourceProof: ACTIVE_SOURCE_PROOF_OK,
       chromaControl: CHROMA_CONTROL_OK,
-      fingerprint: "abc",
+      fingerprint: ACTIVE_SOURCE_PROOF_OK.fingerprintSha256,
     },
     split: SPLIT_OK,
     catalogue: CATALOGUE_OK,
@@ -892,6 +1403,152 @@ test("a sweep with no faint target is STRUCTURAL, not a clean twinkle sheet", ()
   const noTarget = evaluateMotionSubLane({ ...MOTION_OK, faintFound: false });
   assert.equal(noTarget.pass, false);
   assert.equal(Object.keys(noTarget.triggers).length, 0);
+});
+
+test("MUTANT: requested-basis records cannot stand in for post-setView WC basis", () => {
+  const requestedOnly = MOTION_OK.basisEvidence.samples.map((sample, i) =>
+    i === 0
+      ? {
+          k: sample.k,
+          requestedDirection: sample.appliedDirectionWC,
+          requestedRight: sample.appliedRightWC,
+          requestedUp: sample.appliedUpWC,
+        }
+      : sample,
+  );
+  const r = evaluateMotionSubLane({
+    ...MOTION_OK,
+    basisEvidence: {
+      ...MOTION_OK.basisEvidence,
+      samples: requestedOnly,
+    },
+  });
+  assert.equal(r.pass, false);
+  assert.equal(Object.keys(r.criteria).length, 0);
+  assert.ok(r.structural.some((s) => s.includes("requested/applied")));
+});
+
+test("MUTANT: one missing applied-basis record makes the sweep STRUCTURAL", () => {
+  const r = evaluateMotionSubLane({
+    ...MOTION_OK,
+    basisEvidence: {
+      ...MOTION_OK.basisEvidence,
+      samples: MOTION_OK.basisEvidence.samples.slice(1),
+    },
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.structural.some((s) => s.includes("every frame")));
+});
+
+test("MUTANT: changing only the faint projection binding is STRUCTURAL", () => {
+  const samples = MOTION_OK.basisEvidence.samples.map((sample, i) =>
+    i === 7 ? { ...sample, faintProjectionBasis: "requested" } : sample,
+  );
+  const r = evaluateMotionSubLane({
+    ...MOTION_OK,
+    basisEvidence: { ...MOTION_OK.basisEvidence, samples },
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.structural.some((s) => s.includes("both targets")));
+});
+
+test("MUTANT: deleted or null basis residuals are STRUCTURAL", () => {
+  const deleted = { ...MOTION_OK.basisEvidence.samples[0] };
+  delete deleted.directionResidualDeg;
+  const nulled = {
+    ...MOTION_OK.basisEvidence.samples[0],
+    upResidualDeg: null,
+  };
+  for (const first of [deleted, nulled]) {
+    const r = evaluateMotionSubLane({
+      ...MOTION_OK,
+      basisEvidence: {
+        ...MOTION_OK.basisEvidence,
+        samples: [first, ...MOTION_OK.basisEvidence.samples.slice(1)],
+      },
+    });
+    assert.equal(r.pass, false);
+    assert.ok(r.structural.some((s) => s.includes("finite residuals")));
+  }
+});
+
+test("MUTANT: reported basis maxima must equal the sample maxima", () => {
+  const r = evaluateMotionSubLane({
+    ...MOTION_OK,
+    basisEvidence: {
+      ...MOTION_OK.basisEvidence,
+      maxRequestedAppliedResidualDeg: {
+        ...MOTION_OK.basisEvidence.maxRequestedAppliedResidualDeg,
+        direction: 1,
+      },
+    },
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.structural.some((s) => s.includes("consistent maxima")));
+});
+
+test("MUTANT: a 90-degree requested/applied mismatch labelled zero fails", () => {
+  const first = {
+    ...MOTION_OK.basisEvidence.samples[0],
+    appliedDirectionWC: { x: 0, y: 1, z: 0 },
+    appliedRightWC: { x: -1, y: 0, z: 0 },
+    // The forged record keeps every reported residual at zero even though the
+    // independently recomputed direction/right residuals are both 90 degrees.
+    directionResidualDeg: 0,
+    rightResidualDeg: 0,
+    upResidualDeg: 0,
+    appliedMaxAbsDot: 0,
+  };
+  const r = evaluateMotionSubLane({
+    ...MOTION_OK,
+    basisEvidence: {
+      ...MOTION_OK.basisEvidence,
+      samples: [first, ...MOTION_OK.basisEvidence.samples.slice(1)],
+    },
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.structural.some((s) => s.includes("recomputed")));
+});
+
+test("MUTANT: finite but non-unit applied vectors cannot certify", () => {
+  const first = {
+    ...MOTION_OK.basisEvidence.samples[0],
+    appliedDirectionWC: { x: 2, y: 0, z: 0 },
+  };
+  const r = evaluateMotionSubLane({
+    ...MOTION_OK,
+    basisEvidence: {
+      ...MOTION_OK.basisEvidence,
+      samples: [first, ...MOTION_OK.basisEvidence.samples.slice(1)],
+    },
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.structural.some((s) => s.includes("finite unit")));
+});
+
+test("MUTANT: a unit but non-orthogonal applied basis cannot certify", () => {
+  const diagonal = Math.SQRT1_2;
+  const first = {
+    ...MOTION_OK.basisEvidence.samples[0],
+    appliedRightWC: { x: diagonal, y: diagonal, z: 0 },
+    rightResidualDeg: 45,
+    appliedMaxAbsDot: diagonal,
+  };
+  const r = evaluateMotionSubLane({
+    ...MOTION_OK,
+    basisEvidence: {
+      ...MOTION_OK.basisEvidence,
+      samples: [first, ...MOTION_OK.basisEvidence.samples.slice(1)],
+      maxRequestedAppliedResidualDeg: {
+        direction: 0,
+        right: 45,
+        up: 0,
+      },
+      maxAppliedAbsDot: diagonal,
+    },
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.structural.some((s) => s.includes("orthogonal")));
 });
 
 test("computeAssetTriggers measures the smear and density triggers from the shipped numbers", () => {
@@ -948,29 +1605,133 @@ test("MUTANT: a low-pass that flattened the band FIRES the smear trigger", () =>
 // 9. COMPOSITION — vacuity, precedence, and both-backends.
 // ===========================================================================
 
-function passingBackend(renderer, overrides = {}) {
-  return evaluateG3Backend({
+function backendFixture(renderer, overrides = {}) {
+  const active = {
+    ...SHIPPED,
+    faceSize: 4096,
+    arcminPerPixel: 1.3,
+    arcminPerPixelWorst: 1.3,
+    faceSizeMin: 4096,
+    medianChroma: 0.3,
+    medianDustLaneIQR: 10,
+  };
+  return {
     renderer,
     asset: {
-      active: {
-        ...SHIPPED,
-        arcminPerPixel: 1.3,
-        arcminPerPixelWorst: 1.3,
-        faceSizeMin: 4096,
-        medianChroma: 0.3,
-        medianDustLaneIQR: 10,
-      },
+      active,
       t3: LEGACY_T3,
       unblurred: UNBLURRED,
       activeVariant: "TYCHO_T5_DIFFUSE",
+      sourceProof: ACTIVE_SOURCE_PROOF_OK,
       chromaControl: CHROMA_CONTROL_OK,
-      fingerprint: "fp-identical",
+      fingerprint: ACTIVE_SOURCE_PROOF_OK.fingerprintSha256,
     },
     split: SPLIT_OK,
     catalogue: CATALOGUE_OK,
     adversarial: { t3: LEGACY_T3 },
     motion: MOTION_OK,
+    triggers: computeAssetTriggers({
+      active,
+      unblurred: UNBLURRED,
+      t3: LEGACY_T3,
+      catalogueRecords: CATALOGUE_OK.records,
+    }),
     ...overrides,
+  };
+}
+
+function passingBackend(renderer, overrides = {}) {
+  return evaluateG3Backend(backendFixture(renderer, overrides));
+}
+
+function independentlyValidChangedFingerprintBackend(renderer) {
+  const faces = {
+    ...ACTIVE_SOURCE_PROOF_OK.faces,
+    px: { ...ACTIVE_SOURCE_PROOF_OK.faces.px, sha256: "b".repeat(64) },
+  };
+  const changedBase = { ...ACTIVE_SOURCE_PROOF_OK, faces };
+  const sourceProof = {
+    ...changedBase,
+    fingerprintSha256: computeG3ActiveSourceFingerprint(
+      activeFingerprintInput(changedBase),
+    ),
+  };
+  const input = backendFixture(renderer);
+  return evaluateG3Backend({
+    ...input,
+    asset: {
+      ...input.asset,
+      sourceProof,
+      fingerprint: sourceProof.fingerprintSha256,
+    },
+  });
+}
+
+const FALLBACK_ACTIVE_SOURCES = Object.freeze(
+  Object.fromEntries(
+    Object.entries(ACTIVE_SOURCES).map(([key, url]) => [
+      key,
+      url.replace("4096", "2048"),
+    ]),
+  ),
+);
+const FALLBACK_SOURCE_PROOF = Object.freeze({
+  ...ACTIVE_SOURCE_PROOF_OK,
+  resolvedResolution: "2048",
+  resolvedFaceSize: 2048,
+  resolvedEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES,
+  currentEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES,
+  peakEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES,
+  decodedFaceSizeMin: 2048,
+  activeSources: FALLBACK_ACTIVE_SOURCES,
+  faces: exactFaceProof(2048, FALLBACK_ACTIVE_SOURCES),
+});
+
+function fallbackBackend(renderer) {
+  const input = backendFixture(renderer);
+  const adversarialThatWouldFail = {
+    ...LEGACY_T3,
+    subsampling: "4:4:4",
+    arcminPerPixel: 1.3,
+    arcminPerPixelWorst: 1.3,
+    maxFaceSources: 0,
+  };
+  return evaluateG3Backend({
+    ...input,
+    asset: {
+      ...input.asset,
+      active: SHIPPED,
+      sourceProof: FALLBACK_SOURCE_PROOF,
+      fingerprint: `fallback-${renderer}`,
+    },
+    split: {
+      ...SPLIT_OK,
+      diffuseMaxFaceSources: 99,
+      liveResolvedSources: 99,
+    },
+    catalogue: { ...CATALOGUE_OK, records: 1, liveResolvedSources: 0 },
+    adversarial: { t3: adversarialThatWouldFail },
+    motion: { ...MOTION_OK, faintPeakRatio: 2, faintSumRatio: 2 },
+    triggers: {
+      [REVERSAL_TRIGGER.SMEARED_MILKY_WAY]: {
+        triggered: renderer === "webgl",
+      },
+    },
+  });
+}
+
+function validSourceBadAssetBackend(renderer) {
+  const input = backendFixture(renderer);
+  return evaluateG3Backend({
+    ...input,
+    asset: {
+      ...input.asset,
+      active: {
+        ...input.asset.active,
+        medianChroma: 0,
+        medianDustLaneIQR: 0,
+      },
+    },
   });
 }
 
@@ -988,6 +1749,53 @@ test("an EMPTY criteria set is not a pass", () => {
   const folded = foldG3Verdict({ webgl: allStructural, webgpu: allStructural });
   assert.equal(folded.exitCode, EXIT_CODE.STRUCTURAL);
   assert.notEqual(folded.exitCode, EXIT_CODE.PASS);
+});
+
+test("MUTANT: a full 2048-fallback backend cannot synthesize product failures", () => {
+  const fallback = fallbackBackend("webgl");
+  assert.equal(fallback.pass, false);
+  assert.deepEqual(fallback.criteria, {});
+  assert.deepEqual(Object.keys(fallback.subLanes), ["assetSource"]);
+  assert.equal(fallback.assetFingerprint, null);
+  assert.deepEqual(fallback.triggers, {});
+  assert.ok(
+    fallback.structural.some(
+      (s) => s.includes("assetSource:") && s.includes("2048"),
+    ),
+  );
+});
+
+test("MUTANT: two poisoned 2048-fallback backends fold to STRUCTURAL, not FAIL", () => {
+  const folded = foldG3Verdict({
+    webgl: fallbackBackend("webgl"),
+    webgpu: fallbackBackend("webgpu"),
+  });
+  assert.equal(folded.exitCode, EXIT_CODE.STRUCTURAL);
+  assert.equal(folded.verdict, "STRUCTURAL");
+  assert.deepEqual(folded.failures, []);
+  assert.ok(folded.structural.some((s) => s.startsWith("webgl:")));
+  assert.ok(folded.structural.some((s) => s.startsWith("webgpu:")));
+});
+
+test("a valid 4096 source proof exposes genuine bad-asset backend criteria", () => {
+  const bad = validSourceBadAssetBackend("webgl");
+  assert.equal(bad.subLanes.assetSource.pass, true);
+  assert.equal(bad.structural.length, 0);
+  assert.equal(bad.criteria.format_medianChroma_ge_0_20, false);
+  assert.equal(bad.criteria.fidelity_dustLaneIQR_ratio_ge_3, false);
+  assert.equal(bad.pass, false);
+});
+
+test("two valid-source bad assets fold to FAIL, not STRUCTURAL", () => {
+  const folded = foldG3Verdict({
+    webgl: validSourceBadAssetBackend("webgl"),
+    webgpu: validSourceBadAssetBackend("webgpu"),
+  });
+  assert.equal(folded.exitCode, EXIT_CODE.FAIL);
+  assert.equal(folded.verdict, "FAIL");
+  assert.equal(folded.structural.length, 0);
+  assert.ok(folded.failures.includes("webgl:format_medianChroma_ge_0_20"));
+  assert.ok(folded.failures.includes("webgpu:format_medianChroma_ge_0_20"));
 });
 
 test("a criterion failure OUTRANKS a structural leg", () => {
@@ -1030,15 +1838,95 @@ test("both backends green is a PASS", () => {
   assert.equal(folded.structural.length, 0);
 });
 
-test("a differing ASSET FINGERPRINT is a cross-backend FAIL", () => {
-  const gl = passingBackend("webgl");
-  const gpu = passingBackend("webgpu");
-  gpu.assetFingerprint = "fp-different";
-  const folded = foldG3Verdict({ webgl: gl, webgpu: gpu });
-  assert.equal(folded.exitCode, EXIT_CODE.FAIL);
-  assert.ok(
-    folded.failures.some((f) => f.includes("asset_fingerprint_identical")),
-  );
+test("MUTANT: a valid-looking stale producer aggregate is STRUCTURAL", () => {
+  const input = backendFixture("webgl");
+  const stale = evaluateG3Backend({
+    ...input,
+    asset: { ...input.asset, fingerprint: "0".repeat(64) },
+  });
+  assert.equal(stale.subLanes.assetSource.pass, true);
+  assert.equal(stale.pass, false);
+  assert.ok(stale.structural.some((s) => s.includes("producer aggregate")));
+  const gpuInput = backendFixture("webgpu");
+  const gpuStale = evaluateG3Backend({
+    ...gpuInput,
+    asset: { ...gpuInput.asset, fingerprint: "0".repeat(64) },
+  });
+  const folded = foldG3Verdict({
+    webgl: stale,
+    webgpu: gpuStale,
+  });
+  assert.equal(folded.exitCode, EXIT_CODE.STRUCTURAL);
+  assert.deepEqual(folded.failures, []);
+});
+
+test("MUTANT: a one-sided stale ASSET fingerprint is STRUCTURAL, not a parity FAIL", () => {
+  for (const forgeRetainedRecomputation of [false, true]) {
+    const gl = passingBackend("webgl");
+    const gpu = passingBackend("webgpu");
+    gpu.assetFingerprint = "b".repeat(64);
+    if (forgeRetainedRecomputation) {
+      gpu.subLanes.assetSource.measured.recomputedFingerprintSha256 =
+        gpu.assetFingerprint;
+    }
+    const folded = foldG3Verdict({ webgl: gl, webgpu: gpu });
+    assert.equal(
+      folded.exitCode,
+      EXIT_CODE.STRUCTURAL,
+      String(forgeRetainedRecomputation),
+    );
+    assert.deepEqual(folded.failures, []);
+    assert.ok(
+      folded.structural.some((s) => s.includes("recomputed source proof")),
+    );
+  }
+});
+
+test("MUTANT: missing, null, or malformed source-valid fingerprints are STRUCTURAL", () => {
+  for (const value of [undefined, null, "not-a-digest", "A".repeat(64)]) {
+    const gl = passingBackend("webgl");
+    gl.assetFingerprint = value;
+    const folded = foldG3Verdict({
+      webgl: gl,
+      webgpu: passingBackend("webgpu"),
+    });
+    assert.equal(folded.exitCode, EXIT_CODE.STRUCTURAL, String(value));
+    assert.deepEqual(folded.failures, []);
+    assert.ok(folded.structural.some((s) => s.includes("fingerprint")));
+  }
+});
+
+test("MUTANT: every source-valid backend needs the exact trigger-state set", () => {
+  const triggerMutants = [
+    (backend) => {
+      delete backend.triggers[REVERSAL_TRIGGER.SMEARED_MILKY_WAY];
+    },
+    (backend) => {
+      backend.triggers[REVERSAL_TRIGGER.SPRITE_DENSITY] = null;
+    },
+    (backend) => {
+      backend.triggers[REVERSAL_TRIGGER.ALIAS_TWINKLE] = {
+        triggered: "true",
+      };
+    },
+    (backend) => {
+      backend.triggers.unexpected = { triggered: false };
+    },
+    (backend) => {
+      backend.triggers = null;
+    },
+  ];
+  for (const mutate of triggerMutants) {
+    const gl = passingBackend("webgl");
+    mutate(gl);
+    const folded = foldG3Verdict({
+      webgl: gl,
+      webgpu: passingBackend("webgpu"),
+    });
+    assert.equal(folded.exitCode, EXIT_CODE.STRUCTURAL);
+    assert.deepEqual(folded.failures, []);
+    assert.ok(folded.structural.some((s) => s.includes("trigger")));
+  }
 });
 
 test("a backend-DEPENDENT reversal trigger is a cross-backend FAIL", () => {
@@ -1114,6 +2002,10 @@ test("MUTATION: deleting the cross-backend arms lets a real defect through", asy
           '"../../skybox-bake/starmap-census.mjs"',
           `"${pathToFileURL(resolve(ROOT, "Tools/skybox-bake/starmap-census.mjs")).href}"`,
         )
+        .replaceAll(
+          '"./owned-resource-transaction.mjs"',
+          `"${pathToFileURL(resolve(ROOT, OWNED_RESOURCE_HELPER_REL)).href}"`,
+        )
         .replace(
           '"./celestial-metrics.mjs"',
           `"${pathToFileURL(resolve(ROOT, "Tools/visual-regression/lib/celestial-metrics.mjs")).href}"`,
@@ -1122,8 +2014,7 @@ test("MUTATION: deleting the cross-backend arms lets a real defect through", asy
     );
     const mutant = await import(pathToFileURL(file).href);
     const gl = passingBackend("webgl");
-    const gpu = passingBackend("webgpu");
-    gpu.assetFingerprint = "fp-different";
+    const gpu = independentlyValidChangedFingerprintBackend("webgpu");
     // The REAL module reds this; the mutant must green it, which is the proof
     // the arm is load-bearing rather than decorative.
     assert.equal(
@@ -1142,6 +2033,45 @@ test("MUTATION: deleting the cross-backend arms lets a real defect through", asy
 // ===========================================================================
 // 11. SOURCE-TEXT TRIPWIRES.
 // ===========================================================================
+
+test("the page imports only the browser-safe ownership helper and its graph has no Node built-ins", () => {
+  const environment = PROBE.slice(
+    PROBE.indexOf("async function g3ReadEnvironment"),
+    PROBE.indexOf("async function g3MotionSweep"),
+  );
+  assert.match(
+    environment,
+    new RegExp(
+      `await\\s+import\\(\\s*["']${OWNED_RESOURCE_HELPER_URL.replaceAll("/", "\\/")}["']\\s*\\)`,
+      "u",
+    ),
+  );
+  assert.doesNotMatch(
+    environment,
+    /import\(\s*["']\/Tools\/visual-regression\/lib\/celestial-g3-gate\.mjs["']\s*\)/u,
+  );
+  const visited = assertBrowserSafeModuleGraph(OWNED_RESOURCE_HELPER_REL);
+  assert.deepEqual([...visited], [resolve(ROOT, OWNED_RESOURCE_HELPER_REL)]);
+});
+
+test("MUTANT: the browser import-graph tripwire rejects a transitive Node built-in", () => {
+  const entry = resolve(ROOT, OWNED_RESOURCE_HELPER_REL);
+  const child = resolve(dirname(entry), "__g3_node_builtin_mutant__.mjs");
+  const actual = readFileSync(entry, "utf8");
+  assert.throws(
+    () =>
+      assertBrowserSafeModuleGraph(OWNED_RESOURCE_HELPER_REL, (file) => {
+        if (file === entry) {
+          return `${actual}\nimport "./__g3_node_builtin_mutant__.mjs";\n`;
+        }
+        if (file === child) {
+          return 'import "node:crypto";\n';
+        }
+        return readFileSync(file, "utf8");
+      }),
+    /imports the Node built-in node:crypto/u,
+  );
+});
 
 test("the census floor may not be re-tuned by any G3 caller", () => {
   // Same prohibition the G1 spec carries (Batch 848 /
@@ -1202,11 +2132,317 @@ test("the G3 motion sweep obeys the pinned-clock and same-task rules", () => {
   );
 });
 
-test("the probe's G3 asset arm reads the URLs the ENGINE resolved", () => {
+function assertAppliedBasisWiring(source) {
+  const sweep = source.slice(
+    source.indexOf("async function g3MotionSweep"),
+    source.indexOf("function g3MotionMetrics"),
+  );
+  assert.match(
+    sweep,
+    /scene\.camera\.setView\([\s\S]{0,900}scene\.camera\.directionWC[\s\S]{0,300}scene\.camera\.rightWC[\s\S]{0,300}scene\.camera\.upWC/,
+  );
+  assert.match(
+    sweep,
+    /projectWith\(\s*brightest\.dir,\s*basis\.applied\.directionWC,\s*basis\.applied\.rightWC,\s*basis\.applied\.upWC/,
+  );
+  assert.match(
+    sweep,
+    /projectWith\(\s*faint\.dir,\s*basis\.applied\.directionWC,\s*basis\.applied\.rightWC,\s*basis\.applied\.upWC/,
+  );
+  assert.match(
+    sweep,
+    /appliedDirectionWC:\s*packVector\(basis\.applied\.directionWC\)/,
+  );
+  assert.match(sweep, /brightProjectionBasis:\s*"applied-WC"/);
+  assert.match(sweep, /faintProjectionBasis:\s*fp\s*\?\s*"applied-WC"/);
+}
+
+test("the G3 motion sweep projects and records the post-setView WC basis", () => {
+  assertAppliedBasisWiring(PROBE);
+});
+
+test("MUTANT: projecting with the requested direction fails the basis tripwire", () => {
+  const mutant = PROBE.replace(
+    /basis\.applied\.directionWC,(\s*)basis\.applied\.rightWC,(\s*)basis\.applied\.upWC,/,
+    "basis.requested.direction,$1basis.requested.right,$2basis.requested.up,",
+  );
+  assert.notEqual(mutant, PROBE, "the projection mutation did not apply");
+  assert.throws(() => assertAppliedBasisWiring(mutant));
+});
+
+test("MUTANT: changing only faint projection to requested basis fails", () => {
+  const mutant = PROBE.replace(
+    /(faint\.dir,\s*)basis\.applied\.directionWC,(\s*)basis\.applied\.rightWC,(\s*)basis\.applied\.upWC,/,
+    "$1basis.requested.direction,$2basis.requested.right,$3basis.requested.up,",
+  );
+  assert.notEqual(mutant, PROBE, "the faint projection mutation did not apply");
+  assert.throws(() => assertAppliedBasisWiring(mutant));
+});
+
+function assertActive4096SourceWiring(source) {
+  const environment = source.slice(
+    source.indexOf("async function g3ReadEnvironment"),
+    source.indexOf("async function g3MotionSweep"),
+  );
+  assert.match(environment, /C\.SkyBox\.Variant\.TYCHO_T5_DIFFUSE/);
+  assert.match(environment, /C\.SkyBox\.Resolution\.SIZE_4096/);
+  assert.match(
+    environment,
+    /C\.SkyBox\.createEarthSkyBox\(requestedVariant,\s*\{[\s\S]{0,200}resolution:\s*requestedResolution/,
+  );
+  assert.doesNotMatch(environment, /SkyBox\.defaultResolution\s*=/);
+
+  const run = source.slice(
+    source.indexOf("async function runG3(browser, git)"),
+    source.indexOf(
+      "// ---------------------------------------------------------------------------\n// GATE G4",
+    ),
+  );
+  assert.match(
+    run,
+    /const sources = isActiveCandidate\s*\?\s*run\.environment\.activeSources\s*:\s*run\.environment\.variants\[key\]/,
+  );
+  assert.match(run, /g3BuildActiveSourceProof\(\s*run\.environment,\s*fetched/);
+  assert.match(source, /decodedWidth\s*=\s*analyzed\.width/);
+  assert.match(source, /decodedHeight\s*=\s*analyzed\.height/);
+  const fetcher = source.slice(
+    source.indexOf("async function g3FetchVariant"),
+    source.indexOf("function g3BuildActiveSourceProof"),
+  );
+  assert.match(fetcher, /fingerprintRecords\.push\(\{/);
+  assert.match(fetcher, /faceKey,[\s\S]{0,180}sourceKey,[\s\S]{0,180}url,/);
+
+  const sourceProof = source.slice(
+    source.indexOf("function g3BuildEnvironmentSourceProof"),
+    source.indexOf("function g3PreflightEnvironment"),
+  );
+  for (const field of [
+    "defaultResolution",
+    "maximumCubeMapSize",
+    "requestedResolution",
+    "resolvedResolution",
+    "resolvedEstimatedVramBytes",
+    "currentEstimatedVramBytes",
+    "peakEstimatedVramBytes",
+  ]) {
+    assert.match(sourceProof, new RegExp(`${field}:`));
+  }
+  const finalProof = source.slice(
+    source.indexOf("function g3BuildActiveSourceProof"),
+    source.indexOf("function g3BuildEnvironmentSourceProof"),
+  );
+  assert.match(finalProof, /\.\.\.base/);
+  assert.match(
+    finalProof,
+    /sha256\(\s*canonicalG3ActiveSourceFingerprintPayload\(\{/,
+  );
+  assert.match(finalProof, /records:\s*fetched\.fingerprintRecords/);
+  assert.match(
+    run,
+    /fingerprints\[renderer\]\s*=\s*activeSourceProofs\[renderer\]\?\.fingerprintSha256\s*\?\?\s*null/,
+  );
+  assert.doesNotMatch(run, /parts\.join|sourceRole/);
+}
+
+test("the probe's G3 asset arm reads and hashes the exact active 4096 request", () => {
   // String surgery on a filename prefix would measure whatever the probe
   // believes ships, not what the engine loads.
-  assert.match(PROBE, /C\.SkyBox\.createEarthSkyBox\(v\)\.sources/);
+  assert.match(PROBE, /const descriptor = C\.SkyBox\.createEarthSkyBox\(v\)/);
+  assert.match(PROBE, /variants\[v\] = \{ \.\.\.descriptor\.sources \}/);
+  assert.match(PROBE, /descriptor\.destroy\(\)/);
   assert.match(PROBE, /scene\.skyBox\.variant/);
+  assertActive4096SourceWiring(PROBE);
+});
+
+test("the evaluator independently recomputes the producer's active aggregate", () => {
+  const library = readNormalized(LIB_REL);
+  const evaluator = library.slice(
+    library.indexOf("export function evaluateAssetSourceSubLane"),
+    library.indexOf("export function evaluateAssetSubLane"),
+  );
+  assert.match(
+    evaluator,
+    /computeG3ActiveSourceFingerprint\(\s*activeSourceFingerprintInputFromProof\(proof\)/,
+  );
+  assert.match(
+    evaluator,
+    /proof\.fingerprintSha256\s*!==\s*recomputedFingerprintSha256/,
+  );
+});
+
+test("a recomputed active face-hash change remains a cross-backend FAIL", () => {
+  const gpu = independentlyValidChangedFingerprintBackend("webgpu");
+  assert.equal(gpu.subLanes.assetSource.pass, true);
+  assert.equal(gpu.structural.length, 0);
+  const folded = foldG3Verdict({
+    webgl: passingBackend("webgl"),
+    webgpu: gpu,
+  });
+  assert.equal(folded.exitCode, EXIT_CODE.FAIL);
+  assert.ok(
+    folded.failures.some((failure) =>
+      failure.includes("asset_fingerprint_identical"),
+    ),
+  );
+});
+
+test("MUTANT: decoding the default-resolution variant table fails source proof", () => {
+  const mutant = PROBE.replace(
+    /const sources = isActiveCandidate\s*\?\s*run\.environment\.activeSources\s*:\s*run\.environment\.variants\[key\];/,
+    "const sources = run.environment.variants[key];",
+  );
+  assert.notEqual(mutant, PROBE, "the source-selection mutation did not apply");
+  assert.throws(() => assertActive4096SourceWiring(mutant));
+});
+
+function assertReplacementLifecycleWiring(source) {
+  const environment = source.slice(
+    source.indexOf("async function g3ReadEnvironment"),
+    source.indexOf("async function g3MotionSweep"),
+  );
+  assert.match(environment, /const previousSkyBox = scene\.skyBox/);
+  assert.match(
+    environment,
+    /replaceOwnedResourceTransaction\(\{[\s\S]{0,1400}current:\s*previousSkyBox,[\s\S]{0,1400}install:[\s\S]{0,1400}restore:[\s\S]{0,1400}destroy:/,
+  );
+  assert.match(environment, /previousSkyBox\.isDestroyed\(\)/);
+  assert.match(environment, /activeSkyBox\.isDestroyed\(\)/);
+  assert.match(environment, /previousResidentEstimatedVramBytes/);
+  assert.match(environment, /currentEstimatedVramBytes/);
+  assert.match(environment, /peakEstimatedVramBytes/);
+  assert.match(environment, /replacementHadRenderOverlap:\s*false/);
+}
+
+test("the probe transfers sky-box ownership and reports honest residency", () => {
+  assertReplacementLifecycleWiring(PROBE);
+});
+
+function assertG3GlobalPreflightBarrier(source) {
+  const counters = source.slice(
+    source.indexOf("function g3EmptyProductWorkload"),
+    source.indexOf("async function runG3BackendPreflight"),
+  );
+  for (const field of [
+    "productPhaseAttempts",
+    "setupAttempts",
+    "captureAttempts",
+    "motionAttempts",
+    "fetchAttempts",
+    "decodeAttempts",
+  ]) {
+    assert.match(counters, new RegExp(`${field}:\\s*0`));
+  }
+  const preflightBackend = source.slice(
+    source.indexOf("async function runG3BackendPreflight"),
+    source.indexOf("async function runG3BackendProduct"),
+  );
+  assert.match(preflightBackend, /g3ReadEnvironment\(page\)/);
+  assert.match(preflightBackend, /g3PreflightEnvironment\(environment\)/);
+  assert.doesNotMatch(
+    preflightBackend,
+    /setupScene|captureMode|g3MotionSweep|g3FetchVariant|import\("sharp"\)/,
+  );
+  const productBackend = source.slice(
+    source.indexOf("async function runG3BackendProduct"),
+    source.indexOf("function g3StructuralResult"),
+  );
+  for (const field of [
+    "productPhaseAttempts",
+    "setupAttempts",
+    "captureAttempts",
+    "motionAttempts",
+  ]) {
+    assert.match(productBackend, new RegExp(`${field}\\+\\+`));
+  }
+  const fetcher = source.slice(
+    source.indexOf("async function g3FetchVariant"),
+    source.indexOf("function g3BuildActiveSourceProof"),
+  );
+  assert.match(fetcher, /workload\.fetchAttempts\+\+/);
+  assert.match(fetcher, /workload\.decodeAttempts\+\+/);
+  const run = source.slice(
+    source.indexOf("async function runG3(browser, git)"),
+    source.indexOf(
+      "// ---------------------------------------------------------------------------\n// GATE G4",
+    ),
+  );
+  assert.match(
+    run,
+    /await Promise\.all\(\[\s*runG3BackendPreflight\(browser, "webgl"\),\s*runG3BackendPreflight\(browser, "webgpu"\),\s*\]\)/,
+  );
+  const combinedPreflight = run.indexOf(
+    "if (!glPreflight.preflight.pass || !gpuPreflight.preflight.pass)",
+  );
+  const firstProduct = run.indexOf("runG3BackendProduct(browser");
+  const analysisImport = run.indexOf('await import("sharp")');
+  assert.ok(
+    combinedPreflight >= 0 &&
+      combinedPreflight < firstProduct &&
+      firstProduct < analysisImport,
+  );
+  assert.match(
+    run.slice(combinedPreflight, firstProduct),
+    /return g3StructuralResult\([\s\S]*"global-preflight"/,
+  );
+  const structuralResult = source.slice(
+    source.indexOf("function g3StructuralResult"),
+    source.indexOf("async function runG3(browser, git)"),
+  );
+  assert.match(structuralResult, /sharpImportAttempts:\s*0/);
+  assert.match(run, /orchestration\.sharpImportAttempts\+\+/);
+}
+
+test("both source/device preflights form a barrier before all product work", () => {
+  assertG3GlobalPreflightBarrier(PROBE);
+});
+
+test("MUTANT: any non-zero mixed-capability product counter fails", () => {
+  for (const field of [
+    "productPhaseAttempts",
+    "setupAttempts",
+    "captureAttempts",
+    "motionAttempts",
+    "fetchAttempts",
+    "decodeAttempts",
+  ]) {
+    const mutant = PROBE.replace(`${field}: 0`, `${field}: 1`);
+    assert.notEqual(mutant, PROBE, `${field} mutation did not apply`);
+    assert.throws(() => assertG3GlobalPreflightBarrier(mutant));
+  }
+});
+
+test("MUTANT: deleting any product-work counter increment fails", () => {
+  for (const field of [
+    "productPhaseAttempts",
+    "setupAttempts",
+    "captureAttempts",
+    "motionAttempts",
+    "fetchAttempts",
+    "decodeAttempts",
+    "sharpImportAttempts",
+  ]) {
+    const mutant = PROBE.replace(`${field}++`, `${field} += 0`);
+    assert.notEqual(mutant, PROBE, `${field} increment mutation did not apply`);
+    assert.throws(() => assertG3GlobalPreflightBarrier(mutant));
+  }
+});
+
+test("MUTANT: starting either product backend inside the preflight barrier fails", () => {
+  const mutant = PROBE.replace(
+    'runG3BackendPreflight(browser, "webgpu")',
+    'runG3BackendProduct(browser, "webgpu")',
+  );
+  assert.notEqual(mutant, PROBE, "the product-order mutation did not apply");
+  assert.throws(() => assertG3GlobalPreflightBarrier(mutant));
+});
+
+test("MUTANT: sharp before the all-backend barrier fails", () => {
+  const mutant = PROBE.replace(
+    "  const [glPreflight, gpuPreflight] = await Promise.all([",
+    '  await import("sharp");\n  const [glPreflight, gpuPreflight] = await Promise.all([',
+  );
+  assert.notEqual(mutant, PROBE, "the early-sharp mutation did not apply");
+  assert.throws(() => assertG3GlobalPreflightBarrier(mutant));
 });
 
 test("the recorded derivation matches the ratios it reports", () => {

@@ -296,10 +296,16 @@ import {
 import {
   analyzeFace,
   buildG3Summary,
+  canonicalG3ActiveSourceFingerprintPayload,
   computeAssetTriggers,
   evaluateG3Backend,
+  evaluateG3SourcePreflight,
   foldG3Verdict,
   foldVariant,
+  G3_CERTIFICATION_RESOLUTION,
+  G3_CERTIFICATION_VARIANT,
+  G3_CUBE_FACE_KEYS as G3_FACE_KEYS,
+  G3_CUBE_SOURCE_KEYS as G3_SOURCE_KEYS,
 } from "./lib/celestial-g3-gate.mjs";
 import {
   DISC_BRACKET_EXPOSURES,
@@ -426,18 +432,6 @@ const G3_FAINT_VMAG_MAX = 5.4;
 // A target must have no catalogue neighbour within this angle, so the box
 // measures ONE star. 4x the box's own angular half-size at the default framing.
 const G3_TARGET_ISOLATION_DEG = 0.35;
-// Cube faces, in the order the manifest and the bake list them.
-const G3_FACE_KEYS = ["px", "mx", "py", "my", "pz", "mz"];
-// Source keys on `SkyBox.sources`, paired with the face keys above.
-const G3_SOURCE_KEYS = Object.freeze({
-  px: "positiveX",
-  mx: "negativeX",
-  py: "positiveY",
-  my: "negativeY",
-  pz: "positiveZ",
-  mz: "negativeZ",
-});
-
 // Raised from 300s at the C12-G1F2 repair: the run now has two lanes, and every
 // capture pays a wall-clock settle budget plus a discarded warm-up (see
 // SETTLE_BUDGET_MS). The watchdog must outlast the honest worst case or it
@@ -1409,54 +1403,157 @@ async function runG2(browser, git) {
 // GATE G3 — star-map asset upgrade (§5 criteria 1-4 + DR-01 reversal triggers).
 // ---------------------------------------------------------------------------
 
-// In-page: report the face URLs the ENGINE resolves for every bundled variant,
-// which variant the scene is actually flying, and the shipped catalogue's depth.
+// In-page: install the exact opt-in sky box G3 is meant to certify, report its
+// resolved tier + live face URLs, and report the shipped catalogue's depth.
 //
 // The URLs come from `SkyBox.createEarthSkyBox(variant).sources` rather than
 // from string surgery on a prefix, so the probe measures the faces the engine
 // would load — if a variant descriptor's `url()` ever changes shape, this
 // follows it instead of silently measuring the old path.
 async function g3ReadEnvironment(page) {
-  return page.evaluate(async () => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const mod =
-      await import("/packages/engine/Source/Scene/BrightStarCatalog.js");
-    const cat = mod.default;
-    const scene = window.viewer.scene;
+  return page.evaluate(
+    async ({ certificationVariant, certificationResolution }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const mod =
+        await import("/packages/engine/Source/Scene/BrightStarCatalog.js");
+      const { replaceOwnedResourceTransaction } =
+        await import("/Tools/visual-regression/lib/owned-resource-transaction.mjs");
+      const cat = mod.default;
+      const scene = window.viewer.scene;
 
-    const variants = {};
-    for (const key of Object.keys(C.SkyBox.Variant)) {
-      const v = C.SkyBox.Variant[key];
-      // Constructed but never updated, so no GPU resource is created; this is a
-      // URL lookup through the engine's own descriptor table.
-      variants[v] = { ...C.SkyBox.createEarthSkyBox(v).sources };
-    }
-
-    let minVmag = Infinity;
-    let maxVmag = -Infinity;
-    for (let i = 0; i < cat.count; i++) {
-      const vmag = cat.data[i * cat.STRIDE + 2];
-      if (vmag < minVmag) {
-        minVmag = vmag;
+      // EXPLICIT OPT-IN. This must never change `SkyBox.defaultResolution`: G3 is
+      // asking whether the recommended high-resolution asset exists and clears
+      // the gate, not spending 384 MiB in every application scene. At HEAD the
+      // honest policy falls back to 2048; the source sub-lane records that as
+      // STRUCTURAL until a real 4096 tier is registered and bundled.
+      const requestedVariant = C.SkyBox.Variant.TYCHO_T5_DIFFUSE;
+      const requestedResolution = C.SkyBox.Resolution.SIZE_4096;
+      if (
+        requestedVariant !== certificationVariant ||
+        requestedResolution !== certificationResolution
+      ) {
+        throw new Error("G3 certification constants disagree with the engine");
       }
-      if (vmag > maxVmag) {
-        maxVmag = vmag;
-      }
-    }
+      const previousSkyBox = scene.skyBox;
+      const previousSkyBoxPresent = C.defined(previousSkyBox);
+      const previousSkyBoxResident =
+        previousSkyBox?.starCubeMap?.available === true;
+      const previousEstimatedVramBytes = Number.isFinite(
+        previousSkyBox?.estimatedVramBytes,
+      )
+        ? previousSkyBox.estimatedVramBytes
+        : 0;
+      const previousResolution = previousSkyBox?.resolution ?? null;
+      const previousFaceSize = previousSkyBox?.faceSize ?? null;
 
-    return {
-      variants,
-      defaultVariant: C.SkyBox.defaultVariant,
-      activeVariant: scene.skyBox ? (scene.skyBox.variant ?? null) : null,
-      activeSources: scene.skyBox ? { ...scene.skyBox.sources } : null,
-      catalogue: {
-        records: cat.count,
-        stride: cat.STRIDE,
-        brightestVmag: minVmag,
-        limitingMagnitude: maxVmag,
-      },
-    };
-  });
+      // No render or await is allowed between `install` and destruction of the
+      // previous resource. SkyBox construction itself allocates no GPU cube;
+      // this ordering makes honest peak residency max(previous,current), not
+      // their sum. On installation failure the helper first restores the old
+      // owner, then destroys only the new candidate; an ambiguous failed
+      // rollback leaves the possibly-owned candidate alive and fails the lane.
+      const replacement = replaceOwnedResourceTransaction({
+        current: previousSkyBox,
+        create: () =>
+          C.SkyBox.createEarthSkyBox(requestedVariant, {
+            resolution: requestedResolution,
+            maximumCubeMapSize: scene.maximumCubeMapSize,
+          }),
+        install: (candidate) => {
+          scene.skyBox = candidate;
+          if (scene.skyBox !== candidate) {
+            throw new Error("G3 sky-box installation did not take ownership");
+          }
+        },
+        restore: (resource) => {
+          scene.skyBox = resource;
+          if (scene.skyBox !== resource) {
+            throw new Error("G3 sky-box rollback did not restore ownership");
+          }
+        },
+        destroy: (resource) => resource.destroy(),
+      });
+      const activeSkyBox = replacement.resource;
+      const previousSkyBoxDestroyed = previousSkyBoxPresent
+        ? previousSkyBox.isDestroyed()
+        : false;
+      const candidateSkyBoxDestroyed = activeSkyBox.isDestroyed();
+      const previousResidentEstimatedVramBytes = previousSkyBoxResident
+        ? previousEstimatedVramBytes
+        : 0;
+      const currentEstimatedVramBytes = activeSkyBox.estimatedVramBytes ?? null;
+      const peakEstimatedVramBytes = Number.isFinite(currentEstimatedVramBytes)
+        ? Math.max(
+            previousResidentEstimatedVramBytes,
+            currentEstimatedVramBytes,
+          )
+        : null;
+
+      const variants = {};
+      for (const key of Object.keys(C.SkyBox.Variant)) {
+        const v = C.SkyBox.Variant[key];
+        // Constructed but never updated, so no GPU resource is created; this is a
+        // URL lookup through the engine's own descriptor table.
+        const descriptor = C.SkyBox.createEarthSkyBox(v);
+        variants[v] = { ...descriptor.sources };
+        descriptor.destroy();
+      }
+
+      let minVmag = Infinity;
+      let maxVmag = -Infinity;
+      for (let i = 0; i < cat.count; i++) {
+        const vmag = cat.data[i * cat.STRIDE + 2];
+        if (vmag < minVmag) {
+          minVmag = vmag;
+        }
+        if (vmag > maxVmag) {
+          maxVmag = vmag;
+        }
+      }
+
+      return {
+        variants,
+        defaultVariant: C.SkyBox.defaultVariant,
+        defaultResolution: C.SkyBox.defaultResolution,
+        requestedVariant,
+        requestedResolution,
+        activeVariant: scene.skyBox ? (scene.skyBox.variant ?? null) : null,
+        activeResolution: scene.skyBox
+          ? (scene.skyBox.resolution ?? null)
+          : null,
+        activeFaceSize: scene.skyBox ? (scene.skyBox.faceSize ?? null) : null,
+        activeEstimatedVramBytes: scene.skyBox
+          ? (scene.skyBox.estimatedVramBytes ?? null)
+          : null,
+        previousSkyBoxPresent,
+        previousSkyBoxResident,
+        previousResolution,
+        previousFaceSize,
+        previousEstimatedVramBytes,
+        previousResidentEstimatedVramBytes,
+        replacementInstalled: replacement.installed,
+        previousSkyBoxDestroyed:
+          replacement.previousDestroyed && previousSkyBoxDestroyed,
+        candidateSkyBoxDestroyed:
+          replacement.candidateDestroyed || candidateSkyBoxDestroyed,
+        currentEstimatedVramBytes,
+        peakEstimatedVramBytes,
+        replacementHadRenderOverlap: false,
+        maximumCubeMapSize: scene.maximumCubeMapSize ?? null,
+        activeSources: scene.skyBox ? { ...scene.skyBox.sources } : null,
+        catalogue: {
+          records: cat.count,
+          stride: cat.STRIDE,
+          brightestVmag: minVmag,
+          limitingMagnitude: maxVmag,
+        },
+      };
+    },
+    {
+      certificationVariant: G3_CERTIFICATION_VARIANT,
+      certificationResolution: G3_CERTIFICATION_RESOLUTION,
+    },
+  );
 }
 
 // In-page: the moving-camera leg.
@@ -1591,6 +1688,9 @@ async function g3MotionSweep(page, opts) {
           y: (0.5 - ndcY * 0.5) * canvas.height - oy,
         };
       };
+      const packVector = (v) => ({ x: v.x, y: v.y, z: v.z });
+      const angleBetweenDeg = (a, b) =>
+        C.Math.toDegrees(C.Cartesian3.angleBetween(a, b));
       const margin = boxHalf + 6 + Math.ceil(frames * stepPx);
       let faint = null;
       for (const r of rows) {
@@ -1709,7 +1809,24 @@ async function g3MotionSweep(page, opts) {
           C.Cartesian3.cross(dir, up, new C.Cartesian3()),
           new C.Cartesian3(),
         );
-        return { dir, up, right };
+
+        // `Camera.setView` converts the requested direction/up through local
+        // heading/pitch/roll and can rebuild a different WC basis. The boxes
+        // below must be projected against what the renderer will actually use,
+        // and the report must retain that applied basis for every frame.
+        const directionWC = C.Cartesian3.clone(
+          scene.camera.directionWC,
+          new C.Cartesian3(),
+        );
+        const rightWC = C.Cartesian3.clone(
+          scene.camera.rightWC,
+          new C.Cartesian3(),
+        );
+        const upWC = C.Cartesian3.clone(scene.camera.upWC, new C.Cartesian3());
+        return {
+          requested: { direction: dir, right, up },
+          applied: { directionWC, rightWC, upWC },
+        };
       };
 
       const samples = [];
@@ -1741,10 +1858,29 @@ async function g3MotionSweep(page, opts) {
         }
         lastFrame = img;
 
-        const bp = projectWith(brightest.dir, basis.dir, basis.right, basis.up);
+        const bp = projectWith(
+          brightest.dir,
+          basis.applied.directionWC,
+          basis.applied.rightWC,
+          basis.applied.upWC,
+        );
         const fp = faint
-          ? projectWith(faint.dir, basis.dir, basis.right, basis.up)
+          ? projectWith(
+              faint.dir,
+              basis.applied.directionWC,
+              basis.applied.rightWC,
+              basis.applied.upWC,
+            )
           : null;
+        const appliedMaxAbsDot = Math.max(
+          Math.abs(
+            C.Cartesian3.dot(basis.applied.directionWC, basis.applied.rightWC),
+          ),
+          Math.abs(
+            C.Cartesian3.dot(basis.applied.directionWC, basis.applied.upWC),
+          ),
+          Math.abs(C.Cartesian3.dot(basis.applied.rightWC, basis.applied.upWC)),
+        );
         samples.push({
           k,
           msOn,
@@ -1753,6 +1889,29 @@ async function g3MotionSweep(page, opts) {
           brightXY: bp,
           faint: fp ? boxStats(img, fp.x, fp.y) : null,
           faintXY: fp,
+          basis: {
+            requestedDirection: packVector(basis.requested.direction),
+            requestedRight: packVector(basis.requested.right),
+            requestedUp: packVector(basis.requested.up),
+            appliedDirectionWC: packVector(basis.applied.directionWC),
+            appliedRightWC: packVector(basis.applied.rightWC),
+            appliedUpWC: packVector(basis.applied.upWC),
+            directionResidualDeg: angleBetweenDeg(
+              basis.requested.direction,
+              basis.applied.directionWC,
+            ),
+            rightResidualDeg: angleBetweenDeg(
+              basis.requested.right,
+              basis.applied.rightWC,
+            ),
+            upResidualDeg: angleBetweenDeg(
+              basis.requested.up,
+              basis.applied.upWC,
+            ),
+            appliedMaxAbsDot,
+            brightProjectionBasis: "applied-WC",
+            faintProjectionBasis: fp ? "applied-WC" : null,
+          },
         });
         await new Promise((r) => setTimeout(r, 0));
       }
@@ -1843,6 +2002,15 @@ function g3MotionMetrics(sweep) {
   };
   const msOn = median(series((s) => s.msOn));
   const msOff = median(series((s) => s.msOff));
+  const basisSamples = (sweep.samples ?? [])
+    .filter((s) => s?.basis)
+    .map((s) => ({ k: s.k, ...s.basis }));
+  const maxBasisResidual = (key) => {
+    const values = basisSamples
+      .map((s) => s[key])
+      .filter((v) => Number.isFinite(v));
+    return values.length > 0 ? Math.max(...values) : null;
+  };
   return {
     frames: (sweep.samples ?? []).length,
     changedPixels: sweep.changedPixels ?? 0,
@@ -1865,51 +2033,202 @@ function g3MotionMetrics(sweep) {
     control: sweep.brightest ?? null,
     stepRad: sweep.stepRad ?? null,
     fovXDeg: sweep.fovXDeg ?? null,
+    basisEvidence: {
+      coordinateSpace: "WC",
+      projectionBasis: "post-Camera.setView",
+      samples: basisSamples,
+      maxRequestedAppliedResidualDeg: {
+        direction: maxBasisResidual("directionResidualDeg"),
+        right: maxBasisResidual("rightResidualDeg"),
+        up: maxBasisResidual("upResidualDeg"),
+      },
+      maxAppliedAbsDot: maxBasisResidual("appliedMaxAbsDot"),
+    },
   };
 }
 
 // Fetch + decode the six faces of one variant from the URLs the ENGINE
 // resolved. The bytes are hashed BEFORE decode so the fingerprint covers what
 // the server sent, not what an image library reconstructed.
-// `decode: false` fetches and HASHES without decoding. The second backend needs
-// only the fingerprint — the pixels are the same bytes, and the fingerprint
-// comparison is what proves it — so decoding eighteen 2048-px JPEGs twice would
-// buy nothing.
-async function g3FetchVariant(sharp, sources, { decode }) {
+// The per-face decode cache is keyed by the hash of the served bytes. The second
+// backend still FETCHES + HASHES its exact URLs; identical bytes reuse the pure
+// analysis record, while a differing digest is decoded rather than accidentally
+// inheriting the first backend's measurements.
+async function g3FetchVariant(sharp, sources, { decodeCache, workload }) {
   const faces = {};
-  const fingerprint = [];
+  const fingerprintRecords = [];
+  const sourceProof = {};
   for (const faceKey of G3_FACE_KEYS) {
-    const url = sources?.[G3_SOURCE_KEYS[faceKey]];
+    const sourceKey = G3_SOURCE_KEYS[faceKey];
+    const url = sources?.[sourceKey];
     if (typeof url !== "string") {
-      fingerprint.push(`${faceKey}|MISSING`);
+      sourceProof[faceKey] = { sourceKey, url: null, sha256: null, bytes: 0 };
+      fingerprintRecords.push({
+        faceKey,
+        sourceKey,
+        url: null,
+        sha256: null,
+        decodedWidth: null,
+        decodedHeight: null,
+      });
       continue;
     }
+    workload.fetchAttempts++;
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`G3 asset fetch failed: ${url} -> ${response.status}`);
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
-    fingerprint.push(`${faceKey}|${url}|${sha256(Buffer.from(bytes))}`);
-    if (!decode) {
-      continue;
+    const digest = sha256(Buffer.from(bytes));
+    sourceProof[faceKey] = {
+      sourceKey,
+      url,
+      sha256: digest,
+      bytes: bytes.length,
+    };
+    let analyzed = decodeCache.get(digest);
+    if (!analyzed) {
+      workload.decodeAttempts++;
+      const { data, info } = await sharp(Buffer.from(bytes))
+        .removeAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      analyzed = analyzeFace({
+        data,
+        width: info.width,
+        height: info.height,
+        stride: info.channels,
+        bytes,
+      });
+      decodeCache.set(digest, analyzed);
     }
-    const { data, info } = await sharp(Buffer.from(bytes))
-      .removeAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-    faces[faceKey] = analyzeFace({
-      data,
-      width: info.width,
-      height: info.height,
-      stride: info.channels,
-      bytes,
+    sourceProof[faceKey].decodedWidth = analyzed.width;
+    sourceProof[faceKey].decodedHeight = analyzed.height;
+    fingerprintRecords.push({
+      faceKey,
+      sourceKey,
+      url,
+      sha256: digest,
+      decodedWidth: analyzed.width,
+      decodedHeight: analyzed.height,
     });
-    faces[faceKey].url = url;
-    faces[faceKey].bytes = bytes.length;
+    faces[faceKey] = {
+      ...analyzed,
+      url,
+      bytes: bytes.length,
+      sha256: digest,
+    };
   }
   return {
-    variant: decode ? foldVariant(faces) : null,
-    fingerprint: fingerprint.join("\n"),
+    variant: foldVariant(faces),
+    fingerprintRecords,
+    sourceProof,
+  };
+}
+
+function g3BuildActiveSourceProof(environment, fetched) {
+  const base = g3BuildEnvironmentSourceProof(environment);
+  const activeSources = environment.activeSources ?? {};
+  const faceProof = fetched.sourceProof ?? {};
+  const fetchedSourceCount = G3_FACE_KEYS.filter(
+    (faceKey) => typeof faceProof[faceKey]?.url === "string",
+  ).length;
+  const fetchedSourcesMatchEnvironmentActiveSources = G3_FACE_KEYS.every(
+    (faceKey) => {
+      const sourceKey = G3_SOURCE_KEYS[faceKey];
+      return faceProof[faceKey]?.url === activeSources[sourceKey];
+    },
+  );
+  const proof = {
+    ...base,
+    fetchedSourceCount,
+    decodedFaceCount: fetched.variant?.faceCount ?? 0,
+    decodedFaceSizeMin: fetched.variant?.faceSizeMin ?? null,
+    fetchedSourcesMatchEnvironmentActiveSources,
+    fingerprintSha256: null,
+    faces: Object.fromEntries(
+      G3_FACE_KEYS.map((faceKey) => [
+        faceKey,
+        { ...base.faces[faceKey], ...faceProof[faceKey] },
+      ]),
+    ),
+  };
+  // Producer-side computation uses the fetch loop's retained order. The pure
+  // evaluator reconstructs the records from `proof.faces` in canonical cube
+  // order and hashes the same versioned payload independently.
+  proof.fingerprintSha256 = sha256(
+    canonicalG3ActiveSourceFingerprintPayload({
+      resolvedVariant: proof.resolvedVariant,
+      resolvedResolution: proof.resolvedResolution,
+      resolvedFaceSize: proof.resolvedFaceSize,
+      records: fetched.fingerprintRecords,
+    }),
+  );
+  return proof;
+}
+
+function g3BuildEnvironmentSourceProof(environment) {
+  const activeSources = environment?.activeSources ?? {};
+  const faces = Object.fromEntries(
+    G3_FACE_KEYS.map((faceKey) => {
+      const sourceKey = G3_SOURCE_KEYS[faceKey];
+      const url = activeSources[sourceKey];
+      return [
+        faceKey,
+        {
+          sourceKey,
+          url: typeof url === "string" ? url : null,
+          sha256: null,
+          bytes: 0,
+          decodedWidth: null,
+          decodedHeight: null,
+        },
+      ];
+    }),
+  );
+  return {
+    requestedVariant: environment?.requestedVariant ?? null,
+    requestedResolution: environment?.requestedResolution ?? null,
+    defaultResolution: environment?.defaultResolution ?? null,
+    maximumCubeMapSize: environment?.maximumCubeMapSize ?? null,
+    resolvedVariant: environment?.activeVariant ?? null,
+    resolvedResolution: environment?.activeResolution ?? null,
+    resolvedFaceSize: environment?.activeFaceSize ?? null,
+    resolvedEstimatedVramBytes: environment?.activeEstimatedVramBytes ?? null,
+    previousSkyBoxPresent: environment?.previousSkyBoxPresent ?? null,
+    previousSkyBoxResident: environment?.previousSkyBoxResident ?? null,
+    previousResolution: environment?.previousResolution ?? null,
+    previousFaceSize: environment?.previousFaceSize ?? null,
+    previousEstimatedVramBytes: environment?.previousEstimatedVramBytes ?? null,
+    previousResidentEstimatedVramBytes:
+      environment?.previousResidentEstimatedVramBytes ?? null,
+    replacementInstalled: environment?.replacementInstalled ?? null,
+    previousSkyBoxDestroyed: environment?.previousSkyBoxDestroyed ?? null,
+    candidateSkyBoxDestroyed: environment?.candidateSkyBoxDestroyed ?? null,
+    replacementHadRenderOverlap:
+      environment?.replacementHadRenderOverlap ?? null,
+    currentEstimatedVramBytes: environment?.currentEstimatedVramBytes ?? null,
+    peakEstimatedVramBytes: environment?.peakEstimatedVramBytes ?? null,
+    activeSourceCount: G3_FACE_KEYS.filter(
+      (faceKey) => typeof faces[faceKey].url === "string",
+    ).length,
+    fetchedSourceCount: 0,
+    decodedFaceCount: 0,
+    decodedFaceSizeMin: null,
+    fetchedSourcesMatchEnvironmentActiveSources: false,
+    fingerprintSha256: null,
+    activeSources: { ...activeSources },
+    faces,
+  };
+}
+
+function g3PreflightEnvironment(environment) {
+  const sourceProof = g3BuildEnvironmentSourceProof(environment);
+  const evaluated = evaluateG3SourcePreflight(sourceProof);
+  return {
+    pass: evaluated.pass,
+    reasons: evaluated.structural,
+    sourceProof,
   };
 }
 
@@ -1954,14 +2273,56 @@ const G3_LANE_DEFS = [
   },
 ];
 
-async function runG3Backend(browser, renderer) {
+function g3EmptyProductWorkload() {
+  return {
+    productPhaseAttempts: 0,
+    setupAttempts: 0,
+    captureAttempts: 0,
+    motionAttempts: 0,
+    fetchAttempts: 0,
+    decodeAttempts: 0,
+  };
+}
+
+async function runG3BackendPreflight(browser, renderer) {
   return withPage(browser, renderer, async (page) => {
     const environment = await g3ReadEnvironment(page);
+    const preflight = g3PreflightEnvironment(environment);
+    return {
+      phase: "preflight",
+      environment,
+      preflight,
+      workload: g3EmptyProductWorkload(),
+    };
+  });
+}
+
+async function runG3BackendProduct(browser, renderer) {
+  return withPage(browser, renderer, async (page) => {
+    const workload = g3EmptyProductWorkload();
+    workload.productPhaseAttempts++;
+    const environment = await g3ReadEnvironment(page);
+    const preflight = g3PreflightEnvironment(environment);
+    if (!preflight.pass) {
+      // A second check binds the product page actually captured. The global
+      // orchestration has already proven both backends before entering either
+      // product phase; this catches only a runtime capability/source drift.
+      return {
+        phase: "product",
+        environment,
+        preflight,
+        workload,
+        lanes: null,
+        sweep: null,
+      };
+    }
     const lanes = {};
     for (const def of G3_LANE_DEFS) {
+      workload.setupAttempts++;
       const setup = await setupScene(page, def.setup);
       const captures = {};
       for (const cap of def.captures) {
+        workload.captureAttempts++;
         captures[cap.key] = await captureMode(page, {
           mode: cap.mode,
           crop: setup.crop,
@@ -1970,6 +2331,7 @@ async function runG3Backend(browser, renderer) {
       }
       lanes[def.key] = { setup, captures };
     }
+    workload.motionAttempts++;
     const sweep = await g3MotionSweep(page, {
       frames: G3_MOTION_FRAMES,
       stepPx: G3_MOTION_STEP_PX,
@@ -1979,13 +2341,82 @@ async function runG3Backend(browser, renderer) {
       isolationDeg: G3_TARGET_ISOLATION_DEG,
       crop: lanes.split.setup.crop,
     });
-    return { environment, lanes, sweep };
+    return {
+      phase: "product",
+      environment,
+      preflight,
+      workload,
+      lanes,
+      sweep,
+    };
   });
 }
 
+function g3StructuralResult(gl, gpu, phase) {
+  const backends = {};
+  for (const [renderer, run] of [
+    ["webgl", gl],
+    ["webgpu", gpu],
+  ]) {
+    backends[renderer] = evaluateG3Backend({
+      renderer,
+      asset: { sourceProof: run.preflight.sourceProof },
+    });
+    backends[renderer].measured = {
+      orchestrationPhase: phase,
+      preflight: {
+        pass: run.preflight.pass,
+        reasons: run.preflight.reasons,
+      },
+      workload: run.workload,
+      sourceProof: run.preflight.sourceProof,
+    };
+  }
+  const folded = foldG3Verdict(backends);
+  return {
+    fatal: false,
+    gate: "G3",
+    ...folded,
+    pass: false,
+    backends,
+    manifest: {},
+    orchestration: { phase, sharpImportAttempts: 0 },
+    consoleErrors: {
+      webgl: gl.consoleErrors,
+      webgpu: gpu.consoleErrors,
+    },
+  };
+}
+
 async function runG3(browser, git) {
+  // GLOBAL BARRIER: both backend/device/source preflights must finish before
+  // either product page is even opened. In particular, mixed 4096 capability
+  // cannot spend setup/capture/motion work on the capable backend and then
+  // discover that the two-backend gate was structurally unreachable.
+  const [glPreflight, gpuPreflight] = await Promise.all([
+    runG3BackendPreflight(browser, "webgl"),
+    runG3BackendPreflight(browser, "webgpu"),
+  ]);
+  if (!glPreflight.ok || !gpuPreflight.ok) {
+    return { fatal: true, gl: glPreflight, gpu: gpuPreflight };
+  }
+  if (!glPreflight.preflight.pass || !gpuPreflight.preflight.pass) {
+    return g3StructuralResult(glPreflight, gpuPreflight, "global-preflight");
+  }
+
+  const gl = await runG3BackendProduct(browser, "webgl");
+  const gpu = await runG3BackendProduct(browser, "webgpu");
+  if (!gl.ok || !gpu.ok) {
+    return { fatal: true, gl, gpu };
+  }
+  if (!gl.preflight.pass || !gpu.preflight.pass) {
+    return g3StructuralResult(gl, gpu, "product-revalidation");
+  }
+
+  const orchestration = { phase: "product", sharpImportAttempts: 0 };
   let sharp;
   try {
+    orchestration.sharpImportAttempts++;
     sharp = (await import("sharp")).default;
   } catch (e) {
     console.error(
@@ -1993,36 +2424,47 @@ async function runG3(browser, git) {
         "used by Tools/skybox-bake) to decode the served cube faces off-browser: " +
         String((e && e.message) || e),
     );
-    return { fatal: true, gl: null, gpu: null };
+    return { fatal: true, gl, gpu, orchestration };
   }
 
-  const gl = await runG3Backend(browser, "webgl");
-  const gpu = await runG3Backend(browser, "webgpu");
-  if (!gl.ok || !gpu.ok) {
-    return { fatal: true, gl, gpu };
-  }
-
-  // The faces are backend-neutral bytes. Fetch + hash per backend (cheap, and
-  // it is what makes the cross-backend arm a real measurement), but DECODE only
-  // once unless the fingerprints disagree.
-  const variantKeys = ["TYCHO_T3", "TYCHO_T5", "TYCHO_T5_DIFFUSE"];
+  // The faces are backend-neutral bytes. Fetch + hash the exact resolved source
+  // set per backend; byte-identical faces share decoded analysis through the
+  // digest cache, while a differing digest is decoded independently.
+  const variantKeys = ["TYCHO_T3", "TYCHO_T5", G3_CERTIFICATION_VARIANT];
   const decoded = {};
+  const activeSourceProofs = {};
   const fingerprints = {};
+  const decodeCache = new Map();
   for (const [renderer, run] of [
     ["webgl", gl],
     ["webgpu", gpu],
   ]) {
-    const parts = [];
+    decoded[renderer] = {};
     for (const key of variantKeys) {
-      const sources = run.environment.variants[key];
-      const decode = decoded[key] === undefined;
-      const fetched = await g3FetchVariant(sharp, sources, { decode });
-      parts.push(`${key}\n${fetched.fingerprint}`);
-      if (decode) {
-        decoded[key] = fetched.variant;
+      // The active certification candidate is NEVER reconstructed from the
+      // default-resolution variant table. It is fetched from the live sky box's
+      // exact sources after the explicit 4096 request has resolved.
+      const isActiveCandidate = key === G3_CERTIFICATION_VARIANT;
+      const sources = isActiveCandidate
+        ? run.environment.activeSources
+        : run.environment.variants[key];
+      const fetched = await g3FetchVariant(sharp, sources, {
+        decodeCache,
+        workload: run.workload,
+      });
+      decoded[renderer][key] = fetched.variant;
+      if (isActiveCandidate) {
+        activeSourceProofs[renderer] = g3BuildActiveSourceProof(
+          run.environment,
+          fetched,
+        );
       }
     }
-    fingerprints[renderer] = sha256(parts.join("\n"));
+    // One aggregate identity only: the exact active six-face source proof.
+    // Baseline/reversal assets remain measured, but cannot redefine the
+    // certification subject's cross-backend fingerprint.
+    fingerprints[renderer] =
+      activeSourceProofs[renderer]?.fingerprintSha256 ?? null;
   }
 
   const chromaControl = g3ChromaControl();
@@ -2036,9 +2478,9 @@ async function runG3(browser, git) {
   ]) {
     const activeVariant =
       run.environment.activeVariant ?? run.environment.defaultVariant;
-    const active = decoded[activeVariant] ?? null;
-    const t3 = decoded.TYCHO_T3 ?? null;
-    const unblurred = decoded.TYCHO_T5 ?? null;
+    const active = decoded[renderer][G3_CERTIFICATION_VARIANT] ?? null;
+    const t3 = decoded[renderer].TYCHO_T3 ?? null;
+    const unblurred = decoded[renderer].TYCHO_T5 ?? null;
 
     const cubemapImage = toImage(run.lanes.split.captures["cubemap-only"]);
     const spritesImage = toImage(run.lanes.split.captures["sprites-only"]);
@@ -2055,6 +2497,7 @@ async function runG3(browser, git) {
         t3,
         unblurred,
         activeVariant,
+        sourceProof: activeSourceProofs[renderer],
         chromaControl,
         fingerprint: fingerprints[renderer],
       },
@@ -2085,6 +2528,12 @@ async function runG3(browser, git) {
     };
     backends[renderer] = evaluateG3Backend(measured);
     backends[renderer].measured = {
+      preflight: {
+        pass: run.preflight.pass,
+        reasons: run.preflight.reasons,
+      },
+      workload: run.workload,
+      sourceProof: activeSourceProofs[renderer],
       liveCubemap: {
         resolvedSources: cubemapCensus.count,
         litPixels: cubemapExtent.litPixels,
@@ -2100,17 +2549,17 @@ async function runG3(browser, git) {
       variants: Object.fromEntries(
         variantKeys.map((k) => [
           k,
-          decoded[k]
+          decoded[renderer][k]
             ? {
-                faceSize: decoded[k].faceSize,
-                arcminPerPixel: decoded[k].arcminPerPixel,
-                totalSources: decoded[k].totalSources,
-                sourcesPerSteradian: decoded[k].sourcesPerSteradian,
-                medianDustLaneIQR: decoded[k].medianDustLaneIQR,
-                medianGranularityIQR: decoded[k].medianGranularityIQR,
-                medianBandStdDev: decoded[k].medianBandStdDev,
-                medianChroma: decoded[k].medianChroma,
-                subsampling: decoded[k].subsampling,
+                faceSize: decoded[renderer][k].faceSize,
+                arcminPerPixel: decoded[renderer][k].arcminPerPixel,
+                totalSources: decoded[renderer][k].totalSources,
+                sourcesPerSteradian: decoded[renderer][k].sourcesPerSteradian,
+                medianDustLaneIQR: decoded[renderer][k].medianDustLaneIQR,
+                medianGranularityIQR: decoded[renderer][k].medianGranularityIQR,
+                medianBandStdDev: decoded[renderer][k].medianBandStdDev,
+                medianChroma: decoded[renderer][k].medianChroma,
+                subsampling: decoded[renderer][k].subsampling,
               }
             : null,
         ]),
@@ -2176,6 +2625,7 @@ async function runG3(browser, git) {
     pass: folded.exitCode === EXIT_CODE.PASS,
     backends,
     manifest,
+    orchestration,
     consoleErrors: {
       webgl: gl.consoleErrors,
       webgpu: gpu.consoleErrors,
