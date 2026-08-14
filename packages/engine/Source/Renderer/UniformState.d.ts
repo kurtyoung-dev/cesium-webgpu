@@ -35,13 +35,15 @@ declare class UniformState {
   /** Projection × rotation-only view for camera-relative/RTE reprojection. */
   readonly viewProjectionRelativeToEye: Matrix4;
   /**
-   * Last frame's `viewProjection`, cloned before the current-frame
-   * state is written — see `UniformState.update()`. Consumed by the
-   * TAA / motion-vector path (DP-H41, Batch 27).
+   * Active View's last submitted `viewProjection`, loaded before the current
+   * camera is prepared — see `UniformState.update()`. Consumed by the TAA /
+   * motion-vector path (DP-H41, Batch 27).
    */
   readonly previousViewProjection: Matrix4;
   /** Last frame's model-independent relative-to-eye view-projection. */
   readonly previousViewProjectionRelativeToEye: Matrix4;
+  /** Whether the active View's previous presented camera state is compatible. */
+  readonly temporalHistoryValid: boolean;
   readonly modelView: Matrix4;
   readonly inverseModelView: Matrix4;
   readonly modelViewProjection: Matrix4;

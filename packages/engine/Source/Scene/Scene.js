@@ -102,6 +102,12 @@ import SunLight from "./SunLight.js";
 import computeAtmosphereDerivedLighting from "./AtmosphereDerivedLighting.js";
 import TweenCollection from "./TweenCollection.js";
 import View from "./View.js";
+import {
+  beginViewTemporalHistoryPresentation,
+  commitPresentedViewTemporalHistory,
+  enqueuePresentedViewTemporalHistoryCommit,
+  stagePresentedViewTemporalHistory,
+} from "./ViewTemporalHistory.js";
 import DebugInspector from "./DebugInspector.js";
 import VoxelCell from "./VoxelCell.js";
 import VoxelPrimitive from "./VoxelPrimitive.js";
@@ -1330,18 +1336,6 @@ class Scene {
      * @default false
      */
     this.aerialPerspectiveFroxel = options.aerialPerspectiveFroxel ?? false;
-
-    /**
-     * MORPH-TAA-PREVVP — last frame's projection type (true = orthographic,
-     * false = perspective) as seen by the TAA motion-vector path. Used to
-     * detect the perspective↔orthographic flip that happens mid-morph so the
-     * TAA history can be invalidated for that frame (reprojecting against the
-     * prior-projection `previousViewProjection` would smear/ghost). `undefined`
-     * until the first taaEnabled frame so the flip check is a no-op on frame 1.
-     * @type {boolean|undefined}
-     * @private
-     */
-    this._taaPrevProjectionOrtho = undefined;
 
     /**
      * When true, Cascaded Shadow Maps split the camera frustum into
@@ -6376,6 +6370,27 @@ function render(scene) {
 
   context.beginFrame();
 
+  // Give this View's presentation an identity independent of frameNumber,
+  // which wraps and can repeat while an intermittently scheduled View retains
+  // older history. Explicit-command contexts resolve the retained callback at
+  // queue.submit; immediate-mode contexts commit after endFrame returns.
+  const temporalHistory = view._temporalHistory;
+  const temporalPresentationToken =
+    beginViewTemporalHistoryPresentation(temporalHistory);
+  const temporalPresentationEpoch = temporalHistory.presentationEpoch;
+  stagePresentedViewTemporalHistory(
+    temporalHistory,
+    uniformState,
+    frameState,
+    temporalPresentationToken,
+    temporalPresentationEpoch,
+  );
+  const temporalHistoryHasSubmitBoundary =
+    typeof context.enqueueAfterFrameSubmit === "function";
+  if (temporalHistoryHasSubmitBoundary) {
+    enqueuePresentedViewTemporalHistoryCommit(temporalHistory, context);
+  }
+
   if (defined(scene.globe)) {
     scene.globe.beginFrame(frameState);
   }
@@ -6451,50 +6466,13 @@ function render(scene) {
       const deltaY = currCam.y - prevCam.y;
       const deltaZ = currCam.z - prevCam.z;
 
-      // TAA Slice 2 — history invalidation on large camera deltas
-      // (teleport / `camera.flyTo` landing / viewer reset). The depth
-      // reprojection assumes the NDC-space motion between frames is
-      // bounded; when `|cameraDelta|` jumps by 10s of km in a single
-      // frame, almost every pixel's history sample is disoccluded and
-      // the neighborhood clamp can't recover in time — the user sees
-      // a 2–4 frame smear. Cheaper to invalidate history for one
-      // frame and let the blend restart clean.
-      //
-      // Threshold 50 km chosen to cover:
-      //   - Typical orbit motion: ≤ 10 m/frame  → never triggers
-      //   - Fast mouse-drag pan at 500 km alt: ~200 m/frame → never
-      //   - `flyTo` arrival that snaps 1000+ km: ~Infinity on landing
-      //     frame → triggers as expected
-      // Tunable; if a future animation regularly crosses 50 km/frame
-      // legitimately we'd want to scale by altitude.
-      const deltaLenSq = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
-      const TELEPORT_THRESHOLD = 50000.0; // meters
-      const isTeleport = deltaLenSq > TELEPORT_THRESHOLD * TELEPORT_THRESHOLD;
-
-      // MORPH-TAA-PREVVP — invalidate TAA history across the morph and at the
-      // perspective↔orthographic projection flip. During a 2D/CV/3D morph the
-      // camera frustum type swaps mid-flight (perspective ⇄ orthographic), and
-      // `previousViewProjectionRelativeToEye` is the PRIOR frame's matrix —
-      // built from the prior projection type. Reprojecting the current depth
-      // against a stale/incompatible VP across that flip warps every history
-      // sample, so the TAA blend smears/ghosts through the transition. We gate
-      // history off whenever the scene is MORPHING or the projection type
-      // changed since last frame, and reset the effect's history so the next
-      // execute() passes the source through unblended (prev := current for the
-      // flip frame) instead of reprojecting against the incompatible matrix.
-      const isMorphing = frameState.mode === SceneMode.MORPHING;
-      const camera = frameState.camera;
-      const isOrthographic =
-        camera.frustum instanceof OrthographicFrustum ||
-        camera.frustum instanceof OrthographicOffCenterFrustum;
-      const projectionFlipped =
-        defined(scene._taaPrevProjectionOrtho) &&
-        scene._taaPrevProjectionOrtho !== isOrthographic;
-      scene._taaPrevProjectionOrtho = isOrthographic;
-
+      // UniformState derives one validity result from the active View's last
+      // successfully presented frame. It covers first frame, teleport, morph,
+      // mode/map-projection changes, and perspective/orthographic flips. This
+      // replaces the old Scene-global projection latch, which aliased two
+      // logical Views and could not distinguish auxiliary uniform updates.
       const historyInvalid =
-        isMorphing ||
-        projectionFlipped ||
+        !us.temporalHistoryValid ||
         frameState._moonPhysicalDepthRouteChanged === true;
       if (historyInvalid) {
         // Drop the history buffer for this frame so the upcoming execute()
@@ -6514,7 +6492,7 @@ function render(scene) {
         deltaX,
         deltaY,
         deltaZ,
-        frameState.frameNumber > 1 && !isTeleport && !historyInvalid,
+        !historyInvalid,
       );
     }
   }
@@ -6539,21 +6517,13 @@ function render(scene) {
       const mbDeltaX = currCam.x - prevCam.x;
       const mbDeltaY = currCam.y - prevCam.y;
       const mbDeltaZ = currCam.z - prevCam.z;
-      // Same teleport gate as TAA (flyTo landing / viewer reset): a single-
-      // frame jump of 10s of km makes reprojection meaningless, so mark the
-      // velocity invalid for that frame (the shader then produces no smear).
-      const mbDeltaLenSq =
-        mbDeltaX * mbDeltaX + mbDeltaY * mbDeltaY + mbDeltaZ * mbDeltaZ;
-      const MB_TELEPORT_THRESHOLD = 50000.0; // meters
-      const mbIsTeleport =
-        mbDeltaLenSq > MB_TELEPORT_THRESHOLD * MB_TELEPORT_THRESHOLD;
       mb.updateMotionVectorParams(
         currentVpRte,
         previousVpRte,
         mbDeltaX,
         mbDeltaY,
         mbDeltaZ,
-        frameState.frameNumber > 1 && !mbIsTeleport,
+        us.temporalHistoryValid,
       );
     }
   }
@@ -6573,6 +6543,13 @@ function render(scene) {
   }
 
   context.endFrame();
+  if (!temporalHistoryHasSubmitBoundary) {
+    commitPresentedViewTemporalHistory(
+      temporalHistory,
+      temporalPresentationToken,
+      temporalPresentationEpoch,
+    );
+  }
 }
 
 function tryAndCatchError(scene, functionToExecute) {

@@ -15,6 +15,10 @@ import Transforms from "../Core/Transforms.js";
 import SceneMode from "../Scene/SceneMode.js";
 import SunLight from "../Scene/SunLight.js";
 import {
+  isViewTemporalHistoryValid,
+  readViewTemporalHistory,
+} from "../Scene/ViewTemporalHistory.js";
+import {
   setView,
   setInverseView,
   setProjection,
@@ -156,9 +160,10 @@ class UniformState {
     // and previous frame's view-projection-relative-to-eye. Used by the TAA
     // resolve pass to compute motion vectors via depth reprojection without
     // reconstructing world-space positions at Earth scale (which loses ~1m
-    // to FP32). Snapshotted at the top of `update()` before the current
-    // frame overwrites them. The VP_RTE form is model-independent, so it's
-    // safe to snapshot regardless of what model the last draw command set.
+    // to FP32). Loaded by `update()` from the active logical View's last
+    // submitted presentation before the current camera is prepared. The
+    // VP_RTE form is model-independent, so auxiliary/pass-camera preparation
+    // cannot advance or contaminate the View-owned record.
     //
     // Motion-vector math in the TAA shader:
     //   currentEyeRel = inverse(currentVP_RTE) * vec4(ndc, 1) / w
@@ -173,6 +178,7 @@ class UniformState {
     // so first-frame UBO packs land at a meaningful value if any
     // consumer races the first `UniformState.update()` call.
     this._previousViewProjectionRelativeToEye = Matrix4.clone(Matrix4.IDENTITY);
+    this._temporalHistoryValid = false;
 
     this._inverseViewProjectionDirty = true;
     this._inverseViewProjection = new Matrix4();
@@ -494,6 +500,17 @@ class UniformState {
     return this._previousViewProjectionRelativeToEye;
   }
 
+  /**
+   * Whether the active logical View has compatible previously presented
+   * camera history. False on its first frame and after teleport, morph, mode,
+   * map-projection, or perspective/orthographic transitions.
+   * @type {boolean}
+   * @readonly
+   */
+  get temporalHistoryValid() {
+    return this._temporalHistoryValid;
+  }
+
   get inverseViewProjection() {
     cleanInverseViewProjection(this);
     return this._inverseViewProjection;
@@ -811,35 +828,31 @@ class UniformState {
    * @param {FrameState} frameState The frameState to synchronize with.
    */
   update(frameState) {
-    // TAA: save current view-projection as "previous" for next frame's
-    // reprojection before we overwrite it with the new camera state.
-    // `_viewProjection` is lazily cleaned via its getter, which the WebGL
-    // path exercises every frame during automatic-uniform binding but the
-    // WebGPU model camera pack never touches (it builds mvpRelativeToEye
-    // from `view`/`projection` directly). Without cleaning here, WebGPU
-    // clones the zero-initialized `_viewProjection` into
-    // `_previousViewProjection` forever, so every consumer of the full
-    // (non-RTE) previous VP — the per-model TAA velocity pass's
-    // `camera.previousViewProjection` — sees an all-zero matrix, w<=0, and
-    // emits zero velocity. Mirror the RTE snapshot just below, which
-    // already cleans before cloning. No-op on WebGL (already clean).
-    cleanViewProjection(this);
-    Matrix4.clone(this._viewProjection, this._previousViewProjection);
-
-    // TAA RTE motion vectors: snapshot previous-frame camera position + VP_RTE.
-    // `_cameraPosition` still holds last frame's world-space position (it's
-    // about to be overwritten by updateCamera). `_viewProjectionRelativeToEye`
-    // is the model-independent VP_RTE; resolving it here forces the
-    // last-frame-consistent value regardless of what model the last draw
-    // command set. Capturing BEFORE `updateCamera` runs is the key — after
-    // that call, `_view` / `_projection` / derived fields reflect the new
-    // frame's state, which would pollute the "previous" snapshot.
-    Cartesian3.clone(this._cameraPosition, this._previousCameraPosition);
-    cleanViewProjectionRelativeToEye(this);
-    Matrix4.clone(
-      this._viewProjectionRelativeToEye,
-      this._previousViewProjectionRelativeToEye,
-    );
+    // Previous camera state is owned by the active logical View and advances
+    // only at Scene's successful presented-frame boundary. Re-entrant pick,
+    // ray, viewport, shadow, and capture updates merely reload this immutable
+    // snapshot, so they cannot turn main-view history into current/current or
+    // leak another camera into it. Keep the old context-local snapshot only
+    // for direct/private callers that supply no logical View.
+    const temporalHistory = frameState.view?._temporalHistory;
+    let hasPresentedTemporalHistory = false;
+    if (defined(temporalHistory)) {
+      hasPresentedTemporalHistory = readViewTemporalHistory(
+        temporalHistory,
+        this._previousViewProjection,
+        this._previousViewProjectionRelativeToEye,
+        this._previousCameraPosition,
+      );
+    } else {
+      cleanViewProjection(this);
+      Matrix4.clone(this._viewProjection, this._previousViewProjection);
+      Cartesian3.clone(this._cameraPosition, this._previousCameraPosition);
+      cleanViewProjectionRelativeToEye(this);
+      Matrix4.clone(
+        this._viewProjectionRelativeToEye,
+        this._previousViewProjectionRelativeToEye,
+      );
+    }
 
     this._mode = frameState.mode;
     this._mapProjection = frameState.mapProjection;
@@ -848,6 +861,27 @@ class UniformState {
 
     const camera = frameState.camera;
     this.updateCamera(camera);
+
+    this._temporalHistoryValid =
+      defined(temporalHistory) &&
+      isViewTemporalHistoryValid(temporalHistory, frameState);
+
+    // On an initialized View, incompatible history is reset to the current
+    // camera in the context-local results. The View's committed record remains
+    // untouched until presentation. This gives every previous-VP UBO consumer
+    // zero motion on teleport/morph/projection resets, while the genuinely
+    // first frame retains the historical identity/zero fallback.
+    if (hasPresentedTemporalHistory && !this._temporalHistoryValid) {
+      cleanViewProjection(this);
+      Matrix4.clone(this._viewProjection, this._previousViewProjection);
+      cleanViewProjectionRelativeToEye(this);
+      Matrix4.clone(
+        this._viewProjectionRelativeToEye,
+        this._previousViewProjectionRelativeToEye,
+      );
+      Cartesian3.clone(this._cameraPosition, this._previousCameraPosition);
+    }
+    frameState.temporalHistoryValid = this._temporalHistoryValid;
 
     if (frameState.mode === SceneMode.SCENE2D) {
       this._frustum2DWidth = camera.frustum.right - camera.frustum.left;

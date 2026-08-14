@@ -26,6 +26,7 @@ import SceneFramebuffer from "./SceneFramebuffer.js";
 import SceneMode from "./SceneMode.js";
 import ShadowMap from "./ShadowMap.js";
 import TranslucentTileClassification from "./TranslucentTileClassification.js";
+import { createViewTemporalHistory } from "./ViewTemporalHistory.js";
 
 // C10-10-SHADOW-CAST-SINGLE-SWEEP — the passes whose commands can cast a
 // shadow. Folding cast-candidate collection into the single PVS sweep needs an
@@ -100,6 +101,12 @@ class View {
     this._cameraClone = Camera.clone(camera);
     this._cameraStartFired = false;
     this._cameraMovedTime = undefined;
+
+    // Previous-camera matrices belong to the logical View, not the shared
+    // context's UniformState. Only Scene's successful presented-frame boundary
+    // advances this allocation-stable record; pick/offscreen/pass cameras are
+    // prepare-only readers.
+    this._temporalHistory = createViewTemporalHistory();
 
     // C12-29 — eclipse outputs are observer-camera-dependent, so their
     // lifetime follows the logical View rather than the Scene. The active
