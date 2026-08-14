@@ -5150,7 +5150,13 @@ test("probe keeps RUNNING and lock when watchdog cleanup is unproven", async () 
     }
     assert.ok(thrown);
     assert.equal(thrown.retainCustomRunning, true);
-    assert.match(String(thrown.cause), /browser cleanup unproven/u);
+    const rendered = boundedC1229S5CustomErrorText(thrown);
+    assert.match(rendered, /browser cleanup unproven/u);
+    assert.match(rendered, /context aborted by watchdog/u);
+    assert.match(
+      rendered,
+      /custom-ellipsoid cleanup and late task rejection failed/u,
+    );
     const paths = createC1229S5CustomArtifactPaths(runId, directory);
     assert.equal(
       JSON.parse(fs.readFileSync(paths.latest, "utf8")).status,
