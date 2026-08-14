@@ -181,9 +181,19 @@ const viewer = new Cesium.Viewer("cesiumContainer", {
 const scene = viewer.scene;
 const globe = scene.globe;
 const conditions = globe.atmosphericConditions;
+const FRAME_SAMPLE_TIMEOUT_MILLISECONDS = 5000;
+const SIMON1994_PROVIDER_ID = "cesium-simon1994-ecef";
+const ASTRONOMY_ENGINE_PROVIDER_ID = "astronomy-engine-2.1.19-ecef";
 let selectedPreset = ECLIPSE_PRESETS[0];
 let viewMode = "telescope";
 let performanceMode = "balanced";
+let ephemerisPhase = "loading";
+let ephemerisFailure;
+let highPrecisionProvider;
+let cancelPendingTargeting;
+let targetingRequest = 0;
+let targetingStatus =
+  "Camera targeting: waiting for the first Scene-published frame sample.";
 
 // The Sun changes only through ephemeris geometry, occultation, atmosphere,
 // and exposure. A sinusoidal glow pulse is not a real eclipse phenomenon.
@@ -224,40 +234,19 @@ conditions.weather.airQuality = 1.0;
 conditions.weather.cloudCover = 0.0;
 conditions.clouds.enableVolumetric = false;
 
-const inertialScratch = new Cesium.Cartesian3();
-const fixedScratch = new Cesium.Cartesian3();
-const matrixScratch = new Cesium.Matrix3();
 const directionScratch = new Cesium.Cartesian3();
 const surfaceUpScratch = new Cesium.Cartesian3();
 const rightScratch = new Cesium.Cartesian3();
 const cameraUpScratch = new Cesium.Cartesian3();
 
-function celestialPositionFixed(target, time, result) {
-  if (target === "moon") {
-    Cesium.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
-      time,
-      inertialScratch,
-    );
-  } else {
-    Cesium.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
-      time,
-      inertialScratch,
-    );
-  }
-
-  const rotation =
-    Cesium.Transforms.computeIcrfToFixedMatrix(time, matrixScratch) ??
-    Cesium.Transforms.computeTemeToPseudoFixedMatrix(time, matrixScratch);
-  return Cesium.Matrix3.multiplyByVector(rotation, inertialScratch, result);
-}
-
-function pointCameraAtEvent(preset, time) {
+function pointCameraAtSharedSample(preset, sample) {
   const eye = Cesium.Cartesian3.fromDegrees(
     preset.longitude,
     preset.latitude,
     preset.observerHeight,
   );
-  const target = celestialPositionFixed(preset.target, time, fixedScratch);
+  const target =
+    preset.target === "moon" ? sample.moonPositionWC : sample.sunPositionWC;
   const direction = Cesium.Cartesian3.normalize(
     Cesium.Cartesian3.subtract(target, eye, directionScratch),
     directionScratch,
@@ -289,6 +278,61 @@ function pointCameraAtEvent(preset, time) {
       viewMode === "telescope" ? 6.0 : 55.0,
     );
   }
+}
+
+function requestCameraTargetFromSharedFrame(preset) {
+  cancelPendingTargeting?.();
+  const request = ++targetingRequest;
+  const expectedProvider = scene.celestialEphemerisProvider;
+  const expectedProviderId = expectedProvider.id;
+  let settled = false;
+
+  targetingStatus = `Camera targeting: waiting for a Scene-published ${expectedProviderId} sample.`;
+
+  function finish() {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    removePostRender?.();
+    window.clearTimeout(timeout);
+    if (request === targetingRequest) {
+      cancelPendingTargeting = undefined;
+    }
+  }
+
+  const removePostRender = scene.postRender.addEventListener(
+    (renderedScene, renderedTime) => {
+      const frameState = renderedScene._frameState;
+      const sample = frameState?.celestialEphemerisSample;
+      if (
+        request !== targetingRequest ||
+        selectedPreset !== preset ||
+        renderedScene.celestialEphemerisProvider !== expectedProvider ||
+        !Cesium.JulianDate.equals(frameState?.time, renderedTime) ||
+        sample?.providerId !== expectedProviderId
+      ) {
+        return;
+      }
+
+      finish();
+      pointCameraAtSharedSample(preset, sample);
+      targetingStatus = `Camera targeting: ${preset.target} direction accepted from the shared ${sample.providerId} frame sample.`;
+      renderedScene.requestRender();
+    },
+  );
+
+  const timeout = window.setTimeout(() => {
+    if (request !== targetingRequest) {
+      return;
+    }
+    finish();
+    targetingStatus = `Camera targeting unavailable: no matching shared ${expectedProviderId} frame sample arrived within ${FRAME_SAMPLE_TIMEOUT_MILLISECONDS} ms; camera unchanged.`;
+    scene.requestRender();
+  }, FRAME_SAMPLE_TIMEOUT_MILLISECONDS);
+
+  cancelPendingTargeting = finish;
+  scene.requestRender();
 }
 
 function updateEventPanel(preset) {
@@ -325,9 +369,8 @@ function applyPreset(preset) {
   viewer.clock.multiplier = preset.clockMultiplier;
   viewer.clock.shouldAnimate = false;
   viewer.timeline.zoomTo(start, stop);
-  pointCameraAtEvent(preset, eventTime);
   updateEventPanel(preset);
-  scene.requestRender();
+  requestCameraTargetFromSharedFrame(preset);
 }
 
 function applyPerformanceMode(mode) {
@@ -369,16 +412,14 @@ Sandcastle.addToolbarMenu([
     text: "View: telescope (6°)",
     onselect: () => {
       viewMode = "telescope";
-      pointCameraAtEvent(selectedPreset, viewer.clock.currentTime);
-      scene.requestRender();
+      requestCameraTargetFromSharedFrame(selectedPreset);
     },
   },
   {
     text: "View: landscape (55°)",
     onselect: () => {
       viewMode = "landscape";
-      pointCameraAtEvent(selectedPreset, viewer.clock.currentTime);
-      scene.requestRender();
+      requestCameraTargetFromSharedFrame(selectedPreset);
     },
   },
 ]);
@@ -407,8 +448,7 @@ Sandcastle.addToolbarButton("Play contact window", () => {
 Sandcastle.addToolbarButton("Pause at event", () => {
   viewer.clock.shouldAnimate = false;
   viewer.clock.currentTime = Cesium.JulianDate.fromIso8601(selectedPreset.utc);
-  pointCameraAtEvent(selectedPreset, viewer.clock.currentTime);
-  scene.requestRender();
+  requestCameraTargetFromSharedFrame(selectedPreset);
 });
 
 Sandcastle.addToggleButton("Human-eye adaptation", true, (checked) => {
@@ -422,9 +462,69 @@ Sandcastle.addToggleButton("Volumetric clouds (WebGPU)", false, (checked) => {
   scene.requestRender();
 });
 
+function sampleProviderLabel(sample) {
+  if (sample?.providerId === ASTRONOMY_ENGINE_PROVIDER_ID) {
+    return "Astronomy Engine 2.1.19";
+  }
+  if (sample?.providerId === SIMON1994_PROVIDER_ID) {
+    return "default Simon 1994";
+  }
+  return sample?.providerId ?? "no published sample yet";
+}
+
+function failureSummary(error) {
+  if (typeof error?.message === "string" && error.message.length > 0) {
+    return error.message;
+  }
+  return String(error);
+}
+
+async function enableHighPrecisionEphemeris() {
+  const Provider = Cesium.AstronomyEngineEphemerisProvider;
+  if (typeof Provider?.create !== "function") {
+    ephemerisPhase = "fallback";
+    ephemerisFailure =
+      "the AstronomyEngineEphemerisProvider export is absent from this build";
+    scene.requestRender();
+    return;
+  }
+
+  let provider;
+  try {
+    provider = await Provider.create();
+  } catch (error) {
+    ephemerisPhase = "fallback";
+    ephemerisFailure = failureSummary(error);
+    scene.requestRender();
+    return;
+  }
+
+  highPrecisionProvider = provider;
+  try {
+    // Scene accepts only a ready synchronous provider. The setter promotes it
+    // atomically on the next logical frame; no View can see a mixed provider.
+    scene.celestialEphemerisProvider = provider;
+  } catch (error) {
+    ephemerisPhase =
+      scene.celestialEphemerisProvider === provider
+        ? "configured-error"
+        : "fallback";
+    ephemerisFailure = failureSummary(error);
+    scene.requestRender();
+    return;
+  }
+
+  ephemerisPhase = "switching";
+  requestCameraTargetFromSharedFrame(selectedPreset);
+}
+
 let lastStatus = "";
+let lastEphemerisStatus = "";
+let lastTargetingStatus = "";
 scene.postRender.addEventListener(() => {
-  const state = scene._frameState?.eclipseState;
+  const frameState = scene._frameState;
+  const state = frameState?.eclipseState;
+  const sample = frameState?.celestialEphemerisSample;
   let status;
   if (selectedPreset.kind === "solar" && state?.valid === true) {
     status = `Engine preview: ${(state.moonObscuration * 100).toFixed(3)}% obscuration · magnitude ${state.eclipseMagnitude.toFixed(4)} · ${performanceMode}`;
@@ -437,7 +537,38 @@ scene.postRender.addEventListener(() => {
     document.getElementById("engineStatus").textContent = status;
     lastStatus = status;
   }
+
+  if (
+    ephemerisPhase === "switching" &&
+    scene.celestialEphemerisProvider === highPrecisionProvider &&
+    sample?.providerId === highPrecisionProvider.id
+  ) {
+    ephemerisPhase = "active";
+  }
+
+  const sampleLabel = sampleProviderLabel(sample);
+  let ephemerisStatus;
+  if (ephemerisPhase === "loading") {
+    ephemerisStatus = `Ephemeris: loading opt-in Astronomy Engine 2.1.19 · current shared frame: ${sampleLabel}.`;
+  } else if (ephemerisPhase === "switching") {
+    ephemerisStatus = `Ephemeris: Astronomy Engine is ready and awaiting next-frame promotion · current shared frame: ${sampleLabel}.`;
+  } else if (ephemerisPhase === "active") {
+    ephemerisStatus = `Ephemeris: Astronomy Engine 2.1.19 is active · current shared frame: ${sampleLabel}.`;
+  } else if (ephemerisPhase === "configured-error") {
+    ephemerisStatus = `Ephemeris: high precision was configured but setup reporting failed (${ephemerisFailure}) · current shared frame: ${sampleLabel}.`;
+  } else {
+    ephemerisStatus = `Ephemeris: high precision unavailable (${ephemerisFailure}); default Simon 1994 remains active · current shared frame: ${sampleLabel}.`;
+  }
+  if (ephemerisStatus !== lastEphemerisStatus) {
+    document.getElementById("ephemerisStatus").textContent = ephemerisStatus;
+    lastEphemerisStatus = ephemerisStatus;
+  }
+  if (targetingStatus !== lastTargetingStatus) {
+    document.getElementById("targetingStatus").textContent = targetingStatus;
+    lastTargetingStatus = targetingStatus;
+  }
 });
 
 applyPerformanceMode("balanced");
 applyPreset(ECLIPSE_PRESETS[0]);
+enableHighPrecisionEphemeris();

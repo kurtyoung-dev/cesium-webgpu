@@ -231,6 +231,55 @@ test("eclipse visuals remain physics-driven and expose quality tiers", () => {
   assert.match(mainSource, /cloudCover = checked \? 0\.35 : 0\.0/);
 });
 
+test("the opt-in high-precision provider is awaited before Scene assignment", () => {
+  assert.match(
+    mainSource,
+    /const Provider = Cesium\.AstronomyEngineEphemerisProvider/,
+  );
+  assert.match(mainSource, /provider = await Provider\.create\(\)/);
+  assert.match(mainSource, /scene\.celestialEphemerisProvider = provider/);
+  assert.ok(
+    mainSource.indexOf("provider = await Provider.create()") <
+      mainSource.indexOf("scene.celestialEphemerisProvider = provider"),
+  );
+  assert.match(mainSource, /typeof Provider\?\.create !== "function"/);
+  assert.match(mainSource, /ephemerisPhase = "fallback"/);
+  assert.match(mainSource, /default Simon 1994 remains active/);
+  assert.match(mainSource, /awaiting next-frame promotion/);
+  assert.match(mainSource, /Astronomy Engine 2\.1\.19 is active/);
+});
+
+test("camera targeting accepts only a matching Scene-published frame sample", () => {
+  assert.match(
+    mainSource,
+    /const sample = frameState\?\.celestialEphemerisSample/,
+  );
+  assert.match(
+    mainSource,
+    /Cesium\.JulianDate\.equals\(frameState\?\.time, renderedTime\)/,
+  );
+  assert.match(
+    mainSource,
+    /renderedScene\.celestialEphemerisProvider !== expectedProvider/,
+  );
+  assert.match(mainSource, /sample\?\.providerId !== expectedProviderId/);
+  assert.match(
+    mainSource,
+    /preset\.target === "moon" \? sample\.moonPositionWC : sample\.sunPositionWC/,
+  );
+  assert.match(mainSource, /FRAME_SAMPLE_TIMEOUT_MILLISECONDS = 5000/);
+  assert.match(mainSource, /camera unchanged/);
+  assert.doesNotMatch(
+    mainSource,
+    /Simon1994PlanetaryPositions\.compute(?:Sun|Moon)Position/,
+  );
+  assert.doesNotMatch(
+    mainSource,
+    /Transforms\.compute(?:IcrfToFixed|TemeToPseudoFixed)Matrix/,
+  );
+  assert.doesNotMatch(mainSource, /(?:inflate|inflation|fudge)/i);
+});
+
 test("unsupported contact, lunar-shadow, and aurora visuals are disclosed", () => {
   assert.match(mainSource, /Analytic corona/);
   assert.match(mainSource, /Baily's beads\/diamond ring/);
@@ -238,7 +287,7 @@ test("unsupported contact, lunar-shadow, and aurora visuals are disclosed", () =
   assert.match(mainSource, /lunar Earth-shadow renderer currently unavailable/);
   assert.match(mainSource, /aurora renderer currently unavailable/);
   assert.match(mainSource, /does not override the event time/);
-  assert.match(mainSource, /scene\._frameState\?\.eclipseState/);
+  assert.match(mainSource, /const state = frameState\?\.eclipseState/);
 });
 
 test("the Explorer is Sandcastle2-only and has complete gallery metadata", () => {
@@ -247,7 +296,12 @@ test("the Explorer is Sandcastle2-only and has complete gallery metadata", () =>
   assert.match(metadataSource, / {2}- Showcases/);
   assert.match(htmlSource, /id="cesiumContainer"/);
   assert.match(htmlSource, /id="eventPanel"/);
+  assert.match(htmlSource, /id="ephemerisStatus"/);
+  assert.match(htmlSource, /id="targetingStatus"/);
+  assert.match(metadataSource, /opt-in high-precision ephemeris/);
+  assert.match(metadataSource, /default Simon fallback/);
   assert.doesNotMatch(mainSource, /from\s+["']\.\//);
+  assert.doesNotMatch(mainSource, /Apps[\\/]Sandcastle/);
 });
 
 test("the Sandcastle2 program parses as JavaScript", () => {
