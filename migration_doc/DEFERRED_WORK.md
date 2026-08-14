@@ -10293,30 +10293,24 @@ temporal-history redesign or a multi-view scheduler.
 
 ### VIEW-TEMPORAL-HISTORY-REENTRANT-UNIFORMSTATE
 
-**Status:** OPEN / CORRECTNESS HAZARD. `UniformState.update(frameState)`
-snapshots `_viewProjection`, `_viewProjectionRelativeToEye`, and
-`_cameraPosition` into their previous-frame fields on every invocation.
-However, one presented scene frame can re-enter `update()` through pick,
-offscreen ray, viewport/stereo-shaped, and other auxiliary paths. Those calls
-can turn main-view history into current/current (zero motion) or overwrite it
-with a different camera before TAA and motion-blur consumers use it. The new
-`prepareLogicalViewEclipse()` seam is correctly re-entrant and is not the
-cause; it made the mismatch between logical-view preparation and temporal
-commit visible.
+**Status:** IMPLEMENTED / LANDED as `bc5aa1fda4`. Before that landing,
+`UniformState.update(frameState)` snapshotted `_viewProjection`,
+`_viewProjectionRelativeToEye`, and `_cameraPosition` on every invocation, so
+pick, offscreen, viewport/stereo-shaped, and other auxiliary re-entry could
+turn main-view history into current/current or replace it with a different
+camera. `prepareLogicalViewEclipse()` was not the cause; it exposed the mismatch
+between logical-View preparation and temporal commit.
 
-**Fix when picked up:** split "prepare uniforms for this logical View/pass"
-from "commit this presented View's temporal history." Own prior camera,
-full-VP, and VP_RTE history per `View`; advance it once at an explicit
-presented-frame boundary, not on pick/offscreen/pass-camera calls.
-`UniformState.updateCamera()` for shadow and environment-capture cameras must
-remain pass-local and must not commit history. Preserve first-frame identity,
-teleport/morph invalidation, and the existing RTE camera-delta contract.
-
-**Acceptance:** a moving main camera followed by zero, one, or multiple
-pick/offscreen renders in the same frame produces identical TAA/motion vectors
-and output; two logical Views retain independent histories; 2D/CV/morph and
-projection flips still reset cleanly; motion blur and every previous-VP UBO
-consumer stay green; no per-frame allocation is introduced.
+**Landed resolution:** `ViewTemporalHistory` now owns prior camera, full-VP,
+and VP_RTE history per logical `View`. Scene stages the main-view state once and
+commits it only at the successful presentation/submit boundary; pass-local
+`UniformState.update()` / `updateCamera()` calls read but cannot advance it.
+First-frame identity, teleport/morph/mode/projection invalidation, exact
+submission ownership, and allocation-stable history are covered by the landed
+focused spec. This owner is discharged. It does **not** certify or implement a
+generic secondary-View/stereo scheduler:
+`C12-ECLIPSE-MULTIVIEW-SCHEDULER-STEREO-CERTIFICATION` and
+`NEW-WEBGPU-STEREO-VIEWPORT` remain open below.
 
 ### C12-ECLIPSE-MULTIVIEW-SCHEDULER-STEREO-CERTIFICATION
 
@@ -10347,6 +10341,360 @@ pick/offscreen/capture cameras follow the documented observer rule; split
 screen and stereo show the correct footprint with no duplicate commands,
 stale aliases, or per-tile S5 uploads. Do not advertise multi-view/stereo
 certification merely because state objects are now View-owned.
+
+#### NEW-S5-WEBGL-MULTIVIEW-UNIFORM-CARRIER-ISOLATION
+
+**Status (2026-08-13): IMPLEMENTED / PRODUCT REPAIR LANDED as `0ba2041e0a` /
+MULTIVIEW GATE/PROBE PACKET LANDED as `e28caf04a8` / INDEPENDENT STATIC GO /
+BROWSER CERTIFICATION PENDING.** The C12-29 multiview evidence lane
+observes the real WebGL uniform-map getter/value identity and the real WebGPU
+manager/allocator/bind-group-0 binding-2 slice. That audit confirmed a product
+hazard: preparing logical View B through `updateForPick` rewrote pooled
+`_uniformMaps[i].properties.eclipseGlobeShadow`, so a retained command built
+for View A could resolve B's packed S5 value. The bounded repair now creates an
+ephemeral replay command with its own immutable 16-value S5 snapshot and, for
+translucent globe execution, its own populated derived-command graph. It
+copies pooled uniform descriptors as own properties so
+`GlobeTranslucencyState.combine()` retains every getter while unrelated values
+stay live through delegation, and never mutates the pooled command or uniform
+map. Fresh independent review issued GO after opaque/translucent, A/B
+retention, pooled-identity, WebGPU, and ordinary-path gates passed. This is
+product implementation evidence, not the still-owed rebuilt browser result.
+The two active browser owners are `C12-29-S5-CUSTOM-ELLIPSOID` and
+`C12-29-S5-NASA-SVS`; neither is closed by the landed static gate.
+
+**Implemented direction:** each retained WebGL globe replay command owns an immutable
+or revision-exact eclipse-uniform carrier for the logical View that built it.
+Do not clone the whole uniform map per tile/frame and do not fix the evidence
+probe by copying the expected value. A pooled carrier is acceptable only when
+its key includes the logical View/preparation revision and it cannot be
+mutated while an older command remains executable. Preserve ordinary
+single-View cache reuse and the active/inactive shader-variant contract.
+
+**Remaining acceptance:** first rebuild the served bundle and regenerate
+`Build/CesiumUnminified/index.js.map`, then close exact raw-source,
+generated-bundle, and source-map provenance. Under the active
+`C12-29-S5-CUSTOM-ELLIPSOID` and `C12-29-S5-NASA-SVS` browser owners, build A,
+prepare materially different B, then execute/reread A;
+A's actual WebGL getter returns A's original packed block and object/value
+identity, while B returns B. Reverse B->A, main/pick/offscreen, retained
+capture, split-screen-shaped A->B->A, same-frame command reuse, destruction,
+and multi-context lanes must be exact in the authoritative browser artifact.
+The static product regressions are green; a gate-only result or stale build is
+not completion.
+
+#### NEW-S5-REPLACEMENT-DEVICE-ENGAGED-FAILURE-TAXONOMY
+
+**Status (2026-08-13): OPEN / P2 EVIDENCE TAXONOMY; CANNOT PRODUCE PASS.** The
+replacement-device packet distinguishes ineligible test-facility failures
+from an observed non-`destroyed` D0 loss and proves D0->D1 resource recovery.
+Its remaining red-classification debt is narrower: after product recovery is
+engaged, a page-level product exception, timeout, or rejection can still be
+archived as generic `ERROR` rather than a structured partial `FAIL`. This
+fails red and cannot certify, but loses whether the engine recovery path or the
+evidence facility failed.
+
+**Required direction:** retain a bounded last-valid phase/checkpoint and an
+explicit `productRecoveryEngaged` transition at the raw D0 loss boundary. Once
+engaged, convert bounded engine recovery timeout/rejection/exception outcomes
+into a partial product FAIL with exact observed D0/loss/order/cleanup facts.
+Keep launch, hook absence, provenance, malformed payload, filesystem,
+unrecoverable browser disconnect, and unproven cleanup as STRUCTURAL/ERROR as
+appropriate. Never manufacture a product verdict before the genuine loss.
+
+**Acceptance:** injected pre-loss operational errors remain ERROR/STRUCTURAL;
+the same errors after the authoritative nonterminal loss retain their phase,
+device IDs, raw loss, invalidation/recovery observations, and become FAIL when
+the engine path is the owner. Oversized/hostile errors remain bounded and
+canonical, close/drain failure retains RUNNING authority, and final status,
+exit code, first-red, archive/latest bytes, and immutable receipt agree.
+
+#### NEW-S5-EVIDENCE-TRANSACTION-POWER-LOSS-RECOVERY
+
+**Status (2026-08-13): OPEN / P2 DURABILITY / SHARED EVIDENCE
+INFRASTRUCTURE.** The S5 evidence packets fail closed for caught process-level
+write, rename, close, drain, and foreign-authority races. They do not claim
+that a sudden OS crash, process kill, filesystem cache loss, or power failure
+between the RUNNING marker, immutable artifact, latest, first-red, receipt,
+archive, and lock updates is transactionally recoverable. This is a shared
+infrastructure boundary, not permission to weaken or duplicate each packet's
+exclusive-create protocol.
+
+**Required direction:** define one versioned multi-file evidence transaction
+protocol with file and directory `fsync`, write-ahead intent, immutable content
+hashes, and deterministic startup reconciliation. Recovery must distinguish an
+owned interrupted transaction from foreign authority, never overwrite or
+delete unknown bytes, and converge idempotently after interruption at every
+write/rename/unlink boundary. Archive, latest, first-red, RUNNING, lock, and
+receipt ownership must be covered together.
+
+**Acceptance:** a crash-injection matrix interrupts after every durable step
+and restarts in a fresh process. Each case either reconstructs the exact
+canonical finalized transaction or retains canonical RUNNING/repair-needed
+authority with every foreign byte preserved; it never certifies an incomplete
+artifact, loses first-red, resurrects an older latest, or releases an unproven
+lock. Filesystem/platform support and degraded behavior are explicit, and the
+existing caught-failure mutants remain green.
+
+## Eclipse Explorer and historical-event visual follow-ups (2026-08-13)
+
+This section owns the gaps exposed while adding the historical Eclipse
+Explorer to **Sandcastle2**. Its scope is exclusively `packages/sandcastle/`
+for Explorer UI, gallery discovery, and browser smoke; legacy
+`Apps/Sandcastle` is historical/superseded and creates no port, mirror, or
+certification obligation.
+This section does not reopen or weaken C12-29 certification and it does not add
+rows to the ratified Campaign 15 queue. Historical UTC instants and observer
+coordinates are authoritative inputs; a demo must never shift its clock to
+make an approximate ephemeris appear to reproduce totality.
+
+### NEW-ECLIPSE-SANDCASTLE-HISTORICAL-EXPLORER
+
+**Status: SANDCASTLE2-ONLY LANDED (`3664031397`) / STATIC + PRODUCTION BUILD
+GREEN / ATTACHED-BROWSER VISUAL SMOKE OWED.**
+`packages/sandcastle/gallery/eclipse-explorer/` provides four total-solar path
+presets (Luarca, Reykjavík, Erie, and Torreón) and three independently useful
+total-lunar presets (Fairbanks 2025 with a photographed aurora conjunction,
+Nairobi 2018's long totality, and Tokyo 2022's simultaneous Uranus
+occultation). The three lunar simulation instants are explicitly UTC; NASA
+catalog dynamical-time values remain separately labelled references, and the
+Tokyo row additionally records its published UT1 comparator. Every preset
+displays its authority. The
+demo exposes the current Sun/Moon, atmosphere, eclipse-state, HDR/bloom,
+human-eye/camera exposure, landscape/telescope, and balanced/cinematic/
+performance controls. It reports the live engine obscuration instead of
+claiming the historical path has been reproduced when it has not. Lunar
+Earth-shadow colour and aurora are explicitly labelled unavailable until their
+own renderer rows land.
+
+**Visual/performance rule:** `Sun.glowFactor` remains a fixed manual gain. There
+is no sinusoidal or timer-driven "eclipse pulse"; the evolving read must come
+from ephemeris geometry, continuous disc occultation, atmosphere, and exposure.
+Quality tiers may reduce terrain SSE, resolution scale, and per-fragment
+atmosphere cost, but may not change event time, move the bodies, suppress one
+hemisphere, or replace an unsupported effect with decorative animation.
+
+**Acceptance:** the exact preset module and Sandcastle2 gallery discoverability are mutation
+pinned; all solar observers remain explicitly path-verified; UTC values and
+coordinates remain exact; the no-oscillator and required visual-feature flags
+stay pinned; unsupported lunar/aurora effects remain disclosed. A browser
+smoke pass is still owed: the 2026-08-13 local session had no attached in-app
+browser, so it did not claim a screenshot review. Sandcastle2 TypeScript,
+gallery generation (338 demos), focused static checks, lint/format, and the
+`buildSandcastle --no-embeddings` production build are green.
+Legacy Sandcastle is not a product target for this Explorer and must not carry
+a parallel copy of its presets or gallery entry.
+
+### ECLIPSE HIGH-PRECISION EPHEMERIS FOUNDATION (LANDED)
+
+**Status: DEPENDENCY + OPT-IN PROVIDER + CORE LOCAL-CIRCUMSTANCES SOLVER
+LANDED; FRAME INTEGRATION IS A SEPARATE OPEN OWNER.** Commit `9def755e43` pins
+the exact `astronomy-engine@2.1.19` dependency, licence, and reproducible provenance.
+Commit `15d71de0f3` lands the backend-neutral `CelestialEphemerisProvider`
+contract, its branded caller-owned sample, the unchanged-default
+`Simon1994EphemerisProvider`, the opt-in `AstronomyEngineEphemerisProvider`, and
+the explicit `AstronomyEngineTimeAdapter` policy. Commit `f4408cade7` lands the
+backend-neutral `EclipseDiscGeometry` and `EclipseLocalCircumstances` Core query
+solver with its focused specs after independent GO. These landed layers are not
+yet the one runtime frame sample consumed by the eclipse render stack.
+
+The opt-in provider is a code dependency, not a bundled JPL kernel or dataset.
+Bundling JPL DE405/DE430 ephemerides remains an explicit non-goal; do not infer
+such an asset obligation from the provider landing.
+
+### NEW-ECLIPSE-HIGH-PRECISION-LOCAL-CIRCUMSTANCES
+
+**Status: CORE OBSERVER-LOCAL SOLVER IMPLEMENTED / LANDED as `f4408cade7`
+AFTER INDEPENDENT GO; RUNTIME FRAME INTEGRATION AND HISTORICAL BROWSER
+CERTIFICATION REMAIN OPEN.** The dependency and provider seam above plus
+`Core/EclipseDiscGeometry.js`, `Core/EclipseLocalCircumstances.js`, and their
+focused specs are landed. This discharges the backend-neutral Core query-solver
+implementation, not the separate runtime/render integration or S5 browser
+owners. The default Simon-1994 placement remains useful for ordinary celestial
+rendering but misses the requested observer-local totality at the authoritative
+city/time pairs: its current live
+obscuration is about 91.455% at Luarca C2, 90.535% at Reykjavik maximum,
+98.723% at Erie maximum, and 98.817% at Torreon maximum. The NASA-SVS footprint
+lane's empty measured classification is the same precision class. Do not repair
+this with per-event time offsets, enlarged lunar radii, hand-authored shadow
+paths, or Sandcastle-only coordinates.
+
+**Landed core direction:** the backend-neutral observer-local contact solver
+uses the landed provider contract, including deterministic time-scale/EOP,
+provenance, accuracy, fallback, finite/range, root-bracketing, and output-
+identity policies. Keep the lightweight Simon-1994 provider available wherever
+high-precision eclipse certification is not requested. Runtime camera disc,
+surface umbra, and NASA-SVS integration belongs to the separate per-frame owner
+below; this landed query solver does not fork the render geometry.
+
+**Remaining runtime/browser acceptance:** independently reproduce
+C1/C2/max/C3/C4 ordering and totality at the four Explorer observers, the
+frozen NASA-SVS footprint rows, total-vs-
+annular discrimination, antimeridian/pole/custom-ellipsoid cases, and a 24-hour
+non-eclipse control. Pin UTC/TT/UT1 conversion, finite/range checks, WebGL/
+WebGPU equality, and a no-event-offset mutant. Report angular/time/ground-track
+residuals against the cited authorities rather than merely requiring a dark
+pixel.
+
+### NEW-ECLIPSE-FRAME-EPHEMERIS-INTEGRATION
+
+**Status: OPEN / P1 RUNTIME INTEGRATION.** The opt-in providers landed at
+`15d71de0f3`, but current runtime consumers still derive or memoize celestial
+positions independently. Add one Scene/frame-owned, branded
+`CelestialEphemerisProvider` sample per simulation frame. Compute it exactly
+once for the selected provider/time/revision and share that same sample and
+Cartesian identities with `EclipseState`, `UniformState`, `Moon`, globe-shadow
+preparation, and the NASA-SVS certification lane. The geocentric sample is
+common across logical Views; observer-local geometry remains View-owned.
+
+**Required direction:** expose explicit provider selection with Simon-1994 as
+the byte-compatible default and Astronomy Engine as opt-in. Invalidate on exact
+time, provider identity, or provider revision; preserve the branded result,
+ECEF/metres contract, transform-branch, time-policy, provenance, and
+allocation-stability declarations. No listed consumer may call a second direct
+Simon-1994 or Astronomy Engine path for the same frame, and no first-frame/XYS
+fallback may be frozen into a pinned clock.
+
+**Acceptance:** instrument provider calls and object identities across normal,
+pick, offscreen, retained capture, multi-View, pause/resume, clock jump, XYS
+readiness transition, and provider/revision swaps. Each frame has exactly one
+authoritative sample; every listed consumer reads it; the default provider is
+pixel/number compatible with the pre-integration path; opt-in local contacts,
+camera discs, S5 globe footprints, and frozen NASA-SVS rows agree from the same
+vectors on WebGL and WebGPU. Bound moving-frame CPU cost and prove zero steady-
+state sample allocation.
+
+### NEW-ECLIPSE-IAU-2015-NOMINAL-SOLAR-RADIUS-MIGRATION
+
+**Status (2026-08-13): SOURCE/SPEC/PROBE MIGRATION LANDED as `38308265d3`
+AFTER INDEPENDENT GO / GENERATED OUTPUT, REBUILD, AND BROWSER CERTIFICATION
+OPEN.** The coordinated change replaces the former `695,500,000 m` solar
+radius with the IAU 2015 Resolution B3 nominal conversion
+`1 R☉ᴺ = 695,700,000 m` **exactly** across Core, GLSL, WGSL, specs, and
+visual-probe oracles. The lunar radius remains exactly `1,737,400 m` and is
+outside this migration. Generated shader modules, bundles, and source maps
+still require their authorized regeneration/build before browser evidence.
+
+**Landed direction:** `CesiumMath.SOLAR_RADIUS`, GLSL `czm_solarRadius`, the
+WGSL globe-eclipse constant, renderer fallback, and every identified independent
+spec/probe oracle moved in one reviewed commit. The code records IAU B3 as an
+exact nominal conversion constant rather than a newly measured photospheric
+radius; the bounded source census rejects stale `695,500,000` spellings and an
+accidental lunar-radius change.
+
+**Remaining acceptance:** Core/GLSL/WGSL source lockstep and the focused
+eclipse/disc/terminator/globe-shadow suites are green. Regenerate exact shader
+modules, bundles, and source maps, then review WebGL/WebGPU Sun size,
+partial/total/annular classification, S5 footprint, exposure/bloom, and
+historical-control visuals against attributed references. The source change
+adds no per-frame allocation, layout, or upload and keeps the prior branch
+shape; it earns no broader performance claim and does not widen a visual
+threshold.
+
+### NEW-ECLIPSE-CORONA-PROMINENCE-SPACE-WEATHER-VISUALS
+
+**Status: OPEN / SPLIT OWNERSHIP — `CLT-C3` + `CLT-C4` + Campaign 15
+`C15-01`/`C15-06`/`C15-06P`/`C15-07`/`C15-08`.** The corona remains exactly `CLT-C3`:
+an analytic, energy-bounded shape revealed through the last fraction of
+occultation, with C12-18/C12-19 bloom/HDR composition handled by `CLT-C4`.
+Solar prominences and flares are not corona and an eclipse does not create or
+periodically pulse them. Campaign 15 already requires a flare state separate
+from geomagnetic activity and GOES X-ray ingest. GOES flux has no image-plane
+longitude, so it must not be used to invent a limb location.
+
+**Required direction:** expose a deterministic manual/historical prominence
+provider with explicit provenance and optional disc/limb coordinates; use the
+separate flare state for energy/timing only when its source supports that
+claim. Disc occultation masks each feature geometrically, so totality reveals
+otherwise overwhelmed corona/prominence radiance while the same feature exists
+before and after totality. Couple exposure and bloom continuously to physical
+obscuration; never add a free-running oscillator. Demand/cull before resource
+creation, reuse bounded textures/noise, and let quality tiers change sampling
+only, not event morphology or which backend has the effect.
+
+**Acceptance:** partial/contact/total/egress sequences are temporally continuous
+and reverse-consistent; corona shape follows `CLT-C3`; a located prominence is
+occluded/revealed at the correct limb; quiet/moderate/severe flare states remain
+independent of the geomagnetic aurora scalar; an unlocated GOES flare changes
+diagnostics/aggregate radiance but cannot fabricate a limb feature. Both
+backends pass HDR/bloom/exposure and default-OFF identity lanes, with moving
+CPU/GPU cost and zero steady-state allocation/upload evidence.
+
+### NEW-ECLIPSE-LUNAR-LIMB-CONTACT-FEATURES
+
+**Status: OPEN / NEW HIGH-PRECISION CONTACT-VISUAL OWNER.** The supplied
+totality references add a distinct missing phenomenon: Baily's beads and the
+diamond-ring transition. Screen-space bloom around two smooth analytic discs
+cannot reproduce either one. Beads are sunlight passing through the Moon's
+observer-dependent limb valleys; the diamond ring is the last/first surviving
+photospheric region composed with diffraction, exposure, glare, and the
+emerging corona. Neither effect is periodic, and neither may be synthesized by
+oscillating `Sun.glowFactor`.
+
+**Required direction:** ingest a licensed, immutable lunar-limb elevation
+profile (NASA LRO/LOLA is the public-data candidate), resolve the apparent limb
+for the exact observer, UTC/time-scale policy, lunar libration, and contact
+geometry owned by `NEW-ECLIPSE-HIGH-PRECISION-LOCAL-CIRCUMSTANCES`, then expose
+one backend-neutral contact mask to the Sun/corona composite. Keep the smooth
+disc path as a documented bounded fallback when topography is unavailable.
+Bloom and exposure consume the surviving photospheric energy; they do not
+author bead positions or timing.
+
+**Acceptance:** independently reproduce C2/C3 ordering and the dominant bead
+azimuth/timing at Luarca, Reykjavik, Erie, and Torreon against attributed
+contact references; show a continuous partial -> beads -> diamond ring ->
+corona sequence and its reverse at egress; reject a time oscillator, enlarged
+Moon, per-event offset, or hand-authored bead sprite sheet. WebGL/WebGPU masks
+and HDR composites must agree within registered image bands. The ordinary
+non-contact path stays allocation-free, topography is demand-loaded/cached,
+quality tiers change sampling resolution only, and default/fallback behaviour
+has explicit pixel-identity and moving CPU/GPU cost gates.
+
+### NEW-LUNAR-ECLIPSE-EARTH-SHADOW-APPEARANCE
+
+**Status: OPEN / NEW RENDERING FEATURE.** Current Moon phase, BRDF, normal-map,
+earthshine, and sky-wash work does not render Earth's penumbra/umbra across the
+lunar disc or the copper/red atmospheric transmission seen during totality.
+This is independent of the solar-eclipse ground-umbra renderer and must not be
+faked with one whole-disc tint keyed only to an event name.
+
+**Required direction:** derive Sun/Earth/Moon extended-source shadow geometry
+in the same high-precision circumstances frame as the previous row. Evaluate
+penumbra and umbra over the lunar ellipsoid, including a documented,
+energy-bounded chromatic Earth-atmosphere transmission model and optional
+Danjon-style manual atmospheric override. Compose it with lunar BRDF, relief,
+earthshine, HDR/bloom, depth, and both backends without duplicating Moon
+geometry or textures.
+
+**Acceptance:** contact ordering, shadow direction/curvature, penumbral
+gradient, totality colour, ingress/egress reversibility, and unaffected lunar
+terrain detail are pinned at the Fairbanks 2025, Nairobi 2018, and Tokyo 2022
+presets plus non-eclipse/full-moon controls. Default-OFF is byte-identical;
+default decision is explicit; WebGL/WebGPU visual metrics and moving cost are
+bounded; aurora and Uranus remain separate phenomena rather than baked into the
+lunar shader.
+
+### NEW-C15-HISTORICAL-ECLIPSE-SPACE-WEATHER-REPLAY
+
+**Status: OPEN / exact execution owner `C15-07H`; Campaign 15 acceptance
+overlay; implementation remains HELD by R4 with `C15-01..08`.** Add immutable,
+attributed historical providers so a
+scene can replay real space weather at a historical eclipse instant without a
+live network dependency. The first pinned co-event is the 2025-03-14 Fairbanks
+total lunar eclipse with the independently observed aurora substorm. This is a
+coincident event, not a causal claim: lunar eclipses do not cause aurora, and a
+solar flare is not automatically an aurora at Earth. Preserve Campaign 15's
+separate flare, solar-wind/geomagnetic, and auroral-oval states.
+
+**Acceptance:** a frozen source/transform/licence manifest drives the same
+`C15-01` packet as the manual and live providers; offline replay is byte-stable;
+event clock, observation/forecast timestamps, freshness semantics, and local
+night gating are exact. Fairbanks shows the lunar event and aurora together
+only when both independent packets request them; removing either packet removes
+only its own phenomenon. Include quiet same-night and wrong-location controls,
+northern/southern hemispheres, both backends, performance tiers, accessibility,
+and explicit attribution. Never synthesize historical aurora from the eclipse
+flag itself.
 
 ## C12-29 S5 performance and certification follow-ups (2026-07-26)
 

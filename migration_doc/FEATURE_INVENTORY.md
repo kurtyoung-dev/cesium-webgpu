@@ -77,11 +77,14 @@ replacement-device browser/device-loss certification, which remains open.
 Remaining environment performance/lifecycle findings stay queued in §D and
 `DEFERRED_WORK.md`, not silently treated as shipped.
 
-S5 final certification also remains open for NASA-SVS comparison, real
-terrain/exaggeration/fill/provider transitions, behavioral pick/capture, dense
-timing and isolated S5 cost, custom-ellipsoid runtime, and generic
-multi-View/stereo. Calling `GPUDevice.destroy()` is terminal and cannot certify
-replacement-device recovery.
+S5 final certification also remains open. The active browser owners are
+`C12-29-S5-CUSTOM-ELLIPSOID` and `C12-29-S5-NASA-SVS`; their next authoritative
+runs require a fresh served-bundle rebuild, regenerated
+`Build/CesiumUnminified/index.js.map`, and closed raw/generated/source-map
+provenance. Real terrain/exaggeration/fill/provider transitions, behavioral
+pick/capture, dense timing and isolated S5 cost, generic multi-View/stereo, and
+replacement-device recovery remain open. Calling `GPUDevice.destroy()` is
+terminal and cannot certify replacement-device recovery.
 
 **Purpose:** Exhaustive catalog of every feature in the fork — upstream-inherited, fork-added, work-in-progress, and future/deferred — so that the impact of any change can be scoped against the full feature surface before landing.
 
@@ -503,6 +506,8 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - getFeatureRenderer(key) API on GraphicsContext — replaces `if (context.isWebGPU)` branching in scene code (SHIPPED)
 - WebGPUFeatureRenderers.ts — central registration entry: `registerWebGPUFeatureRenderers(context)` wires all active FRs (SHIPPED)
 - Renderable structural interface — duck-typed `update(frameState)` contract for scene-graph members (SHIPPED)
+- Celestial ephemeris provider layer (`Core/CelestialEphemerisProvider.js`, `Simon1994EphemerisProvider.js`, `AstronomyEngineEphemerisProvider.js`, and `AstronomyEngineTimeAdapter.js`) — synchronous backend-neutral Sun/Moon ECEF-metres sampling into a branded caller-owned result with stable Cartesian identities, provider revision, transform branch, provenance, time policy, and separately declared output-vs-third-party allocation behavior. The exact `astronomy-engine@2.1.19` dependency/licence/provenance landed as `9def755e43`; the provider contract, unchanged-default Simon-1994 implementation, and opt-in Astronomy Engine implementation landed as `15d71de0f3`. The backend-neutral observer-local `EclipseDiscGeometry` / `EclipseLocalCircumstances` Core solver landed as `f4408cade7` after independent GO. Runtime consumers do not yet share one per-frame sample; that remains `NEW-ECLIPSE-FRAME-EPHEMERIS-INTEGRATION`. No JPL DE405/DE430 kernel or dataset is bundled. (SCAFFOLDED — provider layer and Core query solver landed, runtime integration open)
+- View-owned temporal camera history (`Scene/ViewTemporalHistory.js`) — prior camera/full-VP/VP_RTE state is staged for the main logical `View` and advances only at its successful presentation/submit boundary; re-entrant pick, ray, shadow, capture, and pass-camera uniform updates cannot commit or overwrite it. First-frame and teleport/morph/mode/projection resets are explicit and allocation-stable. Landed as `bc5aa1fda4`; this closes `VIEW-TEMPORAL-HISTORY-REENTRANT-UNIFORMSTATE` but does not implement the still-open generic logical-View/stereo scheduler. (SHIPPED)
 - PickTarget / PickKind / PickResult — discriminated union for new non-breaking `getPickResult(color)` API (SHIPPED)
 - RenderCommand (Scene/RenderCommand.js) — backend-agnostic command abstraction retained as a scaffold; the live renderer command lists still use `DrawCommand` / `WebGPUDrawCommand`, so do not describe this as shipped until `C11-24` gives it a real owner/consumer (SCAFFOLDED / UNUSED)
 - WebGPUDrawCommand — TS counterpart of upstream `DrawCommand.js` for WGPU pipelines (SHIPPED)
@@ -687,6 +692,8 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - Moon phase + earthshine — Phase 2 1.2c v2 (SHIPPED) — CPU-side phase fraction from sun/moon dot product; unlit hemisphere soft blue-grey earthshine ambient (`vec3(0.4, 0.5, 0.7) × 0.08 × (1 - rawNdotL)`). **The whole-disc `smoothstep(0, 0.3, phase)` gate was DELETED (C11-176b, Batch 755)** — it double-counted phase over the real N·L terminator and blacked out the daytime moon; `phaseFraction` stays published for the scalar consumers + C12-21. **C12-21 (2026-08-06) made earthshine PHASE-DEPENDENT and gave it its first GLSL implementation** — see the dedicated entry below
 - **2026-07-26 celestial status overlay:** C12-20/23/30 landed in Batch 756 and their targeted Edge gate passes; C12-15/16/17 landed in Batch 766 and their targeted solar gates pass. The long S1/S2 history row below predates the latest executable counts: `eclipse-state.spec.mjs` is 34/34, S6 is landed, and S5 is integrated with targeted pixel/causal-route evidence while final certification remains open. S3 cloud/IBL coupling and the remaining totality phenomena stay deferred; “S3-S6 remain deferred” is no longer true as a group.
 - **2026-07-28 S5 row supersession:** the S5 inventory row below remains the implementation-history record, but its Scene-publishes-S5 wording and its 3/3 / 144/144 counts are superseded by the file-level current-state overlay. Scene now clears S5 for exact capture/main/pick owner preparation; visual is **4/4**, protected is **145/145**, core is **134/134**, recovery is **7/7**, and performance is **23/23**. The selected-terrain transition browser gate is green as described above; the final NASA/real-terrain/behavioral-pick-capture/dense-timing/custom-ellipsoid/multi-View/replacement-device matrix remains open.
+- **2026-08-13 S5 certification finding ownership:** the product repair for `NEW-S5-WEBGL-MULTIVIEW-UNIFORM-CARRIER-ISOLATION` is implemented/landed as `0ba2041e0a`; its multiview certification gate/probe packet landed as `e28caf04a8` with fresh independent static GO. Rebuilt browser certification remains open under `C12-29-S5-CUSTOM-ELLIPSOID` and `C12-29-S5-NASA-SVS`. Those lanes must regenerate `Build/CesiumUnminified/index.js.map` and close raw/generated/source-map provenance before they can certify. `NEW-S5-REPLACEMENT-DEVICE-ENGAGED-FAILURE-TAXONOMY` owns the non-certifying P2 distinction between pre-loss operational ERROR and post-loss product FAIL. `NEW-S5-EVIDENCE-TRANSACTION-POWER-LOSS-RECOVERY` owns crash/power-loss durability across RUNNING, artifact, latest, first-red, receipt, archive, and lock updates. All exact contracts and acceptance matrices are recorded in `DEFERRED_WORK.md`; none is permission to weaken an evidence gate.
+- **2026-08-13 historical Eclipse Explorer overlay:** the Sandcastle2 demo at `packages/sandcastle/gallery/eclipse-explorer/` carries exact UTC/location presets for four total-solar path observers plus three notable total-lunar events, exposes existing eclipse/atmosphere/Sun/Moon quality controls, keeps solar glow fixed rather than faking a periodic pulse, and discloses unsupported lunar Earth-shadow/aurora visuals. Lunar simulation instants are explicitly UTC; NASA catalog dynamical-time values remain separately labelled reference metadata, and the Tokyo row also records its published UT1 comparator. Every event surfaces its authority. The Fairbanks-area photographic aurora context has its own source and is not presented as eclipse causation. Explorer UI, gallery, and browser acceptance are **Sandcastle2-only**; legacy `Apps/Sandcastle` has no parallel Explorer and creates no mirror/port/certification obligation. The sidequest also filed six exact owners in `DEFERRED_WORK.md`: the Explorer's remaining browser smoke pass, high-precision observer-local circumstances (the current Simon-1994 path misses all four supplied totality instants), corona/prominence/flare composition split across `CLT-C3/C4` and Campaign 15, lunar-limb Baily's-beads/diamond-ring contacts, lunar Earth-shadow appearance, and historical eclipse/space-weather replay with no eclipse-to-aurora causal coupling. Campaign 15 now assigns the two previously ambiguous execution riders explicitly: `C15-06P` owns located prominence state/provenance and `C15-07H` owns immutable historical eclipse/space-weather replay; both remain held with the core aurora lane and feed `C15-08` certification when implemented.
 - Moon Lommel-Seeliger reflectance — C12-20 (**SHIPPED Batch 756; targeted Edge gate PASS**, 2026-07-24) — lunar-regolith disc law `2·μ0/(μ0+μ+ε)` replacing Lambert on BOTH backends (`EllipsoidFS.glsl` `LUNAR_BRDF` define / `Moon.wgsl` runtime `lunarBRDF` uniform), so the full moon renders as the real flat bright disc; toggle `atmosphericConditions.lighting.enableLunarBRDF` (default ON)
 - Moon opposition surge — C12-23 (**SHIPPED Batch 756; targeted Edge gate PASS**, 2026-07-24) — Hapke-SHOE `B(α)=1+B0/(1+tan(α/2)/h)` (B0=0.6, h=tan 0.5°; B(0)/B(4°)≈1.43 per Buratti 1996) computed once per frame CPU-side (`Scene/computeLunarOppositionSurge.js`) from the true phase angle, one uniform on both backends; toggle `atmosphericConditions.lighting.enableOppositionSurge` (default ON)
 - Moon atmospheric sky-wash (in-scattering) — C12-30 (**SHIPPED Batch 756; targeted Edge gate PASS**, 2026-07-24) — additive companion of NS-MOON-ATMOSPHERE-EXTINCTION: `disc = disc × extinction + inscatter`, with `inscatter` from the CPU single-scattering integral `computeAtmosphereInscatter` (`Scene/computeAtmosphereExtinction.js`) that mirrors the sky shader's own model (same shell/coefficients/phase functions/lightIntensity + non-HDR tonemap/alpha chain) so the daytime disc reads pale + sky-blended instead of a dark cutout; exactly (0,0,0) from orbit/night/atmosphere-hidden; both backends (`ATMOSPHERE_INSCATTER` define / `inscatter` UB member); toggle `atmosphericConditions.lighting.enableMoonSkyWash` (default ON)
@@ -822,6 +829,13 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 
 ### B.7 Build & Tooling
 
+**Sandcastle scope reconciliation (2026-08-13):** `packages/sandcastle/` is the
+current Sandcastle2 product/gallery/browser surface. Every inventory row below
+that names or targets legacy `Apps/Sandcastle` is **HISTORICAL / SUPERSEDED**:
+its prior result remains provenance, but it creates no restore, mirror, port, or
+current browser-certification obligation. Nested historical `SHIPPED` labels
+describe the old surface at the time; they do not revive it.
+
 - Three build variants — buildCesiumDual / buildCesiumWebGPUOnly / buildCesiumWebGLOnly / buildAllVariants (SHIPPED)
 - bundleVariantPlugin.js — esbuild `onResolve` hook redirecting backend-specific imports to stubs (SHIPPED)
 - WEBGPU_COMPAT_EXEMPTIONS — exemption list for backend-neutral files under Renderer/WebGPU/ (SHIPPED)
@@ -832,14 +846,15 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - Side-effects declaration in root package.json — preserves setGlobalDefaultRenderer() call (SHIPPED)
 - Tools/variant-smoke-test.mjs — Playwright-based smoke test for each variant. Batch 242: pixel gate moved inside `scene.postRender` with a poll-until-non-uniform deadline (the deferred-read version raced the compositor and false-failed webgl-only) (SHIPPED)
 - CI `variants` job (.github/workflows/dev.yml) — `buildAllVariants` + webgl-only runtime smoke on every push/PR; closes the no-CI-runs-variants blind spot (NEW-VARIANT-CI, Batch 242). The dual + webgpu-only SwiftShader-WebGPU smokes are LOCAL-REQUIRED, not hosted: the first hosted run died on SwiftShader Vulkan instance device-lost mid-frame, not no-adapter (Batch 259, FQ-6, NEW-CI-SWIFTSHADER-WEBGPU-DEVICE-LOST) (SHIPPED)
-- Tools/visual-regression/sandcastle-smoke.mjs — LOCAL-REQUIRED Sandcastle WebGPU gate (Batch 242, the DepthPlane lesson): 3 renderer-pinned gallery demos (Orbital Catalog / Clustered Lighting / Point Light Shadows) asserted non-black + non-uniform + WebGPU-device-armed + 0 console/validation errors (SHIPPED)
-- Tools/visual-regression/probe-compute-instance-webgl2-demos.mjs — LOCAL-REQUIRED Phase-5 gate (Batch 283): drives the two compute-instance Sandcastle demos ("WebGPU Orbital Catalog" / "WebGPU SGP4 Satellites") on BOTH `?renderer=webgl` (CPU-kernel fallback) and `?renderer=webgpu` (compute), asserting per (demo, backend) renders + moves (frame-differenced) + correct-backend-armed + 0 errors (SHIPPED)
+- Sandcastle2 Eclipse Explorer (`packages/sandcastle/gallery/eclipse-explorer/`) — exact sourced UTC/location presets for four total-solar path observers and three notable total-lunar events; exposes existing eclipse, atmosphere, Sun/Moon, exposure, quality, landscape, and telescope controls while reporting live obscuration and disclosing unsupported lunar Earth-shadow/aurora effects. Fixed manual Sun glow; no timer-driven eclipse pulse. Landed as `3664031397`; static checks and production gallery build are green, while `NEW-ECLIPSE-SANDCASTLE-HISTORICAL-EXPLORER` still owns the attached-browser visual smoke. UI/gallery/browser scope is Sandcastle2-only and has no legacy parallel-copy obligation. (LANDED / BROWSER SMOKE OWED)
+- Tools/visual-regression/sandcastle-smoke.mjs — **HISTORICAL / SUPERSEDED legacy `Apps/Sandcastle` gate.** Batch-242 evidence asserted three renderer-pinned demos non-black, non-uniform, WebGPU-device-armed, and console/validation clean; it is not a current Sandcastle2 obligation.
+- Tools/visual-regression/probe-compute-instance-webgl2-demos.mjs — **HISTORICAL / SUPERSEDED legacy `Apps/Sandcastle` gate.** Batch-283 evidence drove the two compute-instance demos on WebGL and WebGPU; it is retained as implementation history, not a current gallery/browser owner.
 - Tools/visual-regression/probe-sampled-position-kernel.mjs — gate for the SampledPositionKernel family (Batch 309, NEW-SAMPLED-POSITION-KERNEL): 3 instances × 4 keyframes queried at 4 times (mid-segment, on-keyframe, before-first/after-last HOLD) on both backends; reads each GPU-resident interpolated position back via `getInstanceWorldPosition` and asserts it matches BOTH `family.sample()` AND a CPU `SampledPositionProperty` (linear, HOLD) within 80 m, plus renders + moves + 0 errors (SHIPPED)
 - Tools/visual-regression/capture-and-diff.mjs — pixel-diff harness for WebGL vs WebGPU on split-screen page (SHIPPED)
 - Tools/visual-regression/scenes.json + baseline + output dirs — scene catalogue for regression suite (SHIPPED)
 - ~20 ad-hoc visual-regression diagnostic scripts — probe-imagery, canvas-black-trace, ground-polyline-smoke, etc. (SHIPPED)
-- Tools/visual-regression/cross-backend-sandcastle-runner.mjs — runs every gallery `.html` against both backends. Uses (1) Playwright `addInitScript` Proxy over `window.Cesium` since the module namespace is frozen, (2) wrapper trap on `window.startup` so the proxied namespace forwards into the demo's local `Cesium` parameter, (3) `page.route` HTML rewrite that flips sync `new Cesium.Viewer(` → `await Cesium.Viewer.createAsync(` when forcing WebGPU (sync constructor has no WebGPU code path). Captures per-demo JSON + screenshots + console/page errors (SHIPPED — Session 62)
-- Tools/visual-regression/analyze-cross-backend-report.mjs — categorizes the per-demo JSON into both-fail / one-fail / both-OK + low/medium/high diff buckets, surfaces actual console/page errors (the prior `capture-and-diff` reported "OK" if canvas had non-zero size — even when WebGPU spewed shader compile errors. The new analyzer makes real bugs visible.) (SHIPPED — Session 62)
+- Tools/visual-regression/cross-backend-sandcastle-runner.mjs — **HISTORICAL / SUPERSEDED legacy `Apps/Sandcastle` runner.** It rewrote old single-file gallery HTML and captured cross-backend JSON/screenshots; retain its Session-62 results as provenance, not as a current Sandcastle2 certification lane.
+- Tools/visual-regression/analyze-cross-backend-report.mjs — analyzer for that historical legacy runner's report (HISTORICAL / SUPERSEDED with its producer)
 - Tools/audit-feature-renderers.mjs — verifies every FR registered in WebGPUFeatureRenderers.ts is reachable (SHIPPED)
 - Tools/shader-pipeline/naga-wasm-tools — Naga-wasm spike tooling for WGSL ↔ SPIR-V translation (EXPERIMENTAL)
 - scripts/build.js stripPragmaPlugin — extended to handle both .js and .ts (SHIPPED)
@@ -851,7 +866,7 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - scripts/lebab-batch.js — bulk var → const/let modernization tool (SHIPPED)
 - scripts/run-build-no-tsc.mjs — fast iterative build skipping tsc check (SHIPPED)
 - Apps/WebGPUTest/ — 20+ standalone test harnesses (split-screen-comparison.html, scene-webgpu-init-test.html, etc.) (SHIPPED)
-- Sandcastle gallery WebGPU-prefixed demos (Apps/Sandcastle/gallery/WebGPU *.html) — user-visible showcases for fork-specific features that have no WebGL equivalent OR pin the WebGPU renderer for backend-specific UX:
+- Legacy Sandcastle WebGPU-prefixed demos (`Apps/Sandcastle/gallery/WebGPU *.html`) — **HISTORICAL / SUPERSEDED by the Sandcastle2 port.** The nested rows preserve former feature/demo provenance only; their old `SHIPPED` tags do not require restoration or synchronization with `packages/sandcastle/`:
   - WebGPU Many Imagery Layers (8-layer stack, hue/gamma/alpha verification — Batch 58 globe imagery cap widening) (SHIPPED)
   - WebGPU Edge Visibility / Edge Feature ID — `EXT_mesh_primitive_edge_visibility` glTF extension + per-edge feature picking (SHIPPED — the demo's per-triangle visibility + feature picking work, and the `EdgeDisplayMode` tri-mode + explicit `lineStrings` data path landed in Batch 316 `cf7edec7dc`; per-edge / per-lineString `materialColor` overrides landed in Batch 330 (NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU); authored `silhouetteNormals` path landed 2026-07-02 (EDGE-AUTHORED-SILHOUETTE-NORMALS) — no residuals; see §C.3 NEW-EDGE-DISPLAY-MODE-WEBGPU)
   - WebGPU Translucent Classification — multi-frustum 3-pass technique (SHIPPED)
@@ -1208,6 +1223,9 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
 - FEAT-GAP-05 terrain contact shadows / SSCS (FEAT-GAP-05)
 - Phase 8c env probes with parallax correction (gated on Phase 8a) (Phase-8c)
 - Earthshine Earth-radiosity model (CELESTIAL §4.2) — ⚠ **premise updated 2026-08-06: it is no longer a constant blue tint in PHASE.** C12-21 scales it by Earth's illuminated fraction seen from the Moon, on both backends. What remains deferred is the radiosity itself: the tint is still a fixed blue-grey with no Earth albedo / cloud / ocean model behind it, and its amplitude is still an artistic constant rather than a measured Earth-to-Moon irradiance
+- High-precision observer-local eclipse circumstances (`NEW-ECLIPSE-HIGH-PRECISION-LOCAL-CIRCUMSTANCES`) — **CORE SOLVER LANDED as `f4408cade7` AFTER INDEPENDENT GO; RUNTIME INTEGRATION / BROWSER CERTIFICATION OPEN.** The exact Astronomy Engine dependency (`9def755e43`), opt-in provider layer (`15d71de0f3`), and backend-neutral `EclipseDiscGeometry` / `EclipseLocalCircumstances` query solver are landed. Per-frame sharing into the render stack and attributed browser certification remain owned by `NEW-ECLIPSE-FRAME-EPHEMERIS-INTEGRATION` and the active C12-29 S5 lanes; do not infer event-specific offsets or radius inflation.
+- One-sample-per-frame eclipse ephemeris integration (`NEW-ECLIPSE-FRAME-EPHEMERIS-INTEGRATION`) — **OPEN.** Select the provider explicitly, compute one branded ECEF/metres sample per frame/time/provider revision, and share its exact object/vector identities across `EclipseState`, `UniformState`, `Moon`, globe shadow, and NASA-SVS certification. Preserve Simon-1994 default identity and make the high-precision provider opt-in; no independent consumer recomputation.
+- IAU 2015 nominal solar-radius migration (`NEW-ECLIPSE-IAU-2015-NOMINAL-SOLAR-RADIUS-MIGRATION`) — **SOURCE/SPEC/PROBE MIGRATION LANDED as `38308265d3` AFTER INDEPENDENT GO; GENERATED OUTPUT / REBUILD / BROWSER CERTIFICATION OPEN.** Core/GLSL/WGSL and independent oracles now use the exact nominal `695,700,000 m` with IAU Resolution B3 provenance; lunar radius remains exactly `1,737,400 m`. Regenerate shader modules/bundles/source maps, then close WebGL/WebGPU visual certification without widening thresholds.
 
 ### D.7 Post-process & Effects
 
@@ -1296,6 +1314,12 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
   (`NEW-WEBGPU-STEREO-VIEWPORT`; currently unsupported—the allocation-free
   background-prefix canonicalizer prevents duplicate identities but does not
   add stereo viewport plumbing; see `DEFERRED_WORK.md`)
+- Generic logical-View/eclipse multi-View and stereo scheduling
+  (`C12-ECLIPSE-MULTIVIEW-SCHEDULER-STEREO-CERTIFICATION`) remains **OPEN**.
+  The view-owned temporal-history fix landed as `bc5aa1fda4`, the bounded S5
+  carrier repair as `0ba2041e0a`, and its multiview gate/probe packet as
+  `e28caf04a8`; none schedules/presents arbitrary secondary Views or certifies
+  per-eye eclipse observer semantics.
 - 42 open upstream issues unaddressed — camera (7), entity/datasource (7), rendering (6), memory leaks (6), 2D/CV (4), 3D Tiles (5), terrain/imagery (3), model/glTF (4), legacy (5) (BACKLOG-§13)
 - Console noise reduction (4.8) ~12 `console.warn/error` to route through `context.log` (BACKLOG-§4.8)
 - WORKER-Naga in worker; cross-browser Firefox/Safari worker rAF fallback (WORKER-7/8)
@@ -1311,7 +1335,7 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
 - R-6 MIL-STD-2525D/E military symbology (demand-gated, 2-3 sessions) (R-6)
 - Future Cesium `EXT_texture_ntc` Khronos vendor extension draft (R-1)
 - Multi-planet rendering (Jupiter/Venus visible from Earth surface) — explicit non-goal (CELESTIAL §1)
-- High-precision JPL DE405/DE430 ephemerides — explicit non-goal (CELESTIAL §1)
+- **Bundled** high-precision JPL DE405/DE430 ephemeris kernels/data remain an explicit non-goal; the landed opt-in provider seam does not bundle them (CELESTIAL §1)
 - Lunar libration / topography in moon rendering — explicit non-goal (CELESTIAL §1)
 - Wrenninge-style multi-scattering through froxel grid — out of scope (CELESTIAL §1)
 - Per-froxel shadow queries from every light — too expensive (CELESTIAL §1)
