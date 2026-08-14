@@ -55,6 +55,88 @@ function noticeBody(source) {
   return match[1].replaceAll("\r\n", "\n");
 }
 
+function listRuntimeModuleSources(directory) {
+  const files = [];
+  const visit = (current) => {
+    for (const entry of fs.readdirSync(path.join(root, current), {
+      withFileTypes: true,
+    })) {
+      const relative = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        visit(relative);
+      } else if (
+        /\.(?:[cm]?js|tsx?)$/.test(entry.name) &&
+        !entry.name.endsWith(".d.ts")
+      ) {
+        files.push(relative.replaceAll("\\", "/"));
+      }
+    }
+  };
+  visit(directory);
+  return files.sort();
+}
+
+function astronomyEngineImportEdges(metafile) {
+  return Object.entries(metafile.inputs)
+    .flatMap(([file, input]) =>
+      input.imports
+        .filter(({ path: importPath }) => importPath === provenance.package)
+        .map(({ path: importPath, kind }) => ({
+          file: file.replaceAll("\\", "/"),
+          path: importPath,
+          kind,
+        })),
+    )
+    .sort((left, right) =>
+      `${left.file}\0${left.kind}`.localeCompare(
+        `${right.file}\0${right.kind}`,
+      ),
+    );
+}
+
+async function parseModuleImportEdges(build, files) {
+  const result = await build({
+    absWorkingDir: root,
+    entryPoints: files,
+    outbase: ".",
+    outdir: "parsed-import-policy",
+    bundle: true,
+    external: ["*"],
+    format: "esm",
+    metafile: true,
+    treeShaking: false,
+    write: false,
+    logLevel: "silent",
+  });
+  return astronomyEngineImportEdges(result.metafile);
+}
+
+async function parseSourceImportEdges(build, source, sourcefile) {
+  const result = await build({
+    stdin: {
+      contents: source,
+      sourcefile,
+      loader: "js",
+    },
+    bundle: true,
+    external: ["*"],
+    format: "esm",
+    metafile: true,
+    treeShaking: false,
+    write: false,
+    logLevel: "silent",
+  });
+  return astronomyEngineImportEdges(result.metafile);
+}
+
+function assertNoEagerAstronomyEngineImports(edges, label) {
+  assert.deepEqual(
+    edges.filter(({ kind }) => kind !== "dynamic-import"),
+    [],
+    `${label} must not eagerly import the phase-1 dependency`,
+  );
+}
+
 test("Astronomy Engine is an exact, inert dependency", () => {
   assert.equal(enginePackage.dependencies[provenance.package], "2.1.19");
   assert.equal(dependencyPackage.name, provenance.package);
@@ -138,35 +220,109 @@ test("the dependency is browser-bundle resolvable without executing it by defaul
   assert.equal(result.outputFiles.length, 1);
   assert.ok(result.outputFiles[0].contents.byteLength > 1000);
   assert.match(result.outputFiles[0].text, /GeoVector/);
+});
 
-  for (const directory of [
+test("the lazy-import policy classifies parsed module edges, not source text", async () => {
+  const { build } = await import("esbuild");
+  const cases = [
+    {
+      name: "static eager import",
+      source:
+        'import * as astronomyEngine from "astronomy-engine"; void astronomyEngine;',
+      expectedKinds: ["import-statement"],
+      allowed: false,
+    },
+    {
+      name: "aliased static eager import",
+      source:
+        'import { GeoVector as geoVector } from "astronomy-engine"; void geoVector;',
+      expectedKinds: ["import-statement"],
+      allowed: false,
+    },
+    {
+      name: "CommonJS eager require",
+      source: 'const astronomyEngine = require("astronomy-engine");',
+      expectedKinds: ["require-call"],
+      allowed: false,
+    },
+    {
+      name: "explicit dynamic import",
+      source:
+        'export const loadAstronomyEngine = () => import("astronomy-engine");',
+      expectedKinds: ["dynamic-import"],
+      allowed: true,
+    },
+    {
+      name: "string and comment lookalikes",
+      source:
+        'const example = \'import("astronomy-engine")\'; // import x from "astronomy-engine"',
+      expectedKinds: [],
+      allowed: true,
+    },
+    {
+      name: "unrelated import with a misleading local alias",
+      source:
+        'import { helper as astronomyEngine } from "./helper.js"; void astronomyEngine;',
+      expectedKinds: [],
+      allowed: true,
+    },
+  ];
+
+  for (const mutant of cases) {
+    const edges = await parseSourceImportEdges(
+      build,
+      mutant.source,
+      `${mutant.name.replaceAll(" ", "-")}.js`,
+    );
+    assert.deepEqual(
+      edges.map(({ kind }) => kind),
+      mutant.expectedKinds,
+      mutant.name,
+    );
+    if (mutant.allowed) {
+      assert.doesNotThrow(() =>
+        assertNoEagerAstronomyEngineImports(edges, mutant.name),
+      );
+    } else {
+      assert.throws(
+        () => assertNoEagerAstronomyEngineImports(edges, mutant.name),
+        /must not eagerly import/,
+      );
+    }
+  }
+});
+
+test("the provider keeps the dependency behind an explicit dynamic import", async () => {
+  const { build } = await import("esbuild");
+  const directories = [
     "packages/engine/Source",
     "packages/sandcastle/gallery/eclipse-explorer",
-  ]) {
-    const files = [];
-    const visit = (current) => {
-      for (const entry of fs.readdirSync(path.join(root, current), {
-        withFileTypes: true,
-      })) {
-        const relative = path.join(current, entry.name);
-        if (entry.isDirectory()) {
-          visit(relative);
-        } else if (/\.(?:js|ts)$/.test(entry.name)) {
-          files.push(relative);
-        }
-      }
-    };
-    visit(directory);
-    assert.equal(
-      files.some((file) =>
-        /(?:\bfrom\s+|\bimport\s*(?:\(\s*)?|\brequire\s*\(\s*)["']astronomy-engine["']/.test(
-          fs.readFileSync(path.join(root, file), "utf8"),
-        ),
-      ),
-      false,
-      `${directory} must not eagerly import the phase-1 dependency`,
+  ];
+  const edges = await parseModuleImportEdges(
+    build,
+    directories.flatMap(listRuntimeModuleSources),
+  );
+
+  for (const directory of directories) {
+    assertNoEagerAstronomyEngineImports(
+      edges.filter(({ file }) => file.startsWith(`${directory}/`)),
+      directory,
     );
   }
+
+  const providerPath =
+    "packages/engine/Source/Core/AstronomyEngineEphemerisProvider.js";
+  assert.deepEqual(
+    edges.filter(({ file }) => file === providerPath),
+    [
+      {
+        file: providerPath,
+        path: provenance.package,
+        kind: "dynamic-import",
+      },
+    ],
+    "the opt-in provider must retain its literal dynamic import edge",
+  );
 });
 
 test("third-party manifests and shipped notices are exact and mirrored", () => {
