@@ -19,12 +19,14 @@ import {
   C12_29_S5_SVS_CONTROL,
   C12_29_S5_SVS_DIAGNOSTIC_LIMITS,
   C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
+  C12_29_S5_SVS_EPHEMERIS,
   C12_29_S5_SVS_FIXTURE,
   C12_29_S5_SVS_PHASES,
   C12_29_S5_SVS_RENDERERS,
   C12_29_S5_SVS_ROWS,
   C12_29_S5_SVS_SCENE,
   C12_29_S5_SVS_SCHEMA,
+  C12_29_S5_SVS_LEGACY_ERROR_SCHEMA,
   C12_29_S5_SVS_SIMON1994_BUDGET_KM,
   C12_29_S5_SVS_SOURCE_EDGE,
   C12_29_S5_SVS_SOURCE_FILES,
@@ -38,10 +40,12 @@ import {
   foldC1229S5SvsGate,
   summarizeSvsSpatialMetrics,
   validateSupersededSvsV2FinalArtifactShape,
+  validateSupersededSvsV3FinalArtifactShape,
   validateSvsErrorDiagnosticsShape,
   validateSvsFinalArtifactShape,
   validateSvsRuntimeCheckpointShape,
   validateSvsRunningArtifactShape,
+  validateSvsEphemerisLineage,
   wgs84GeodesicDistanceKm,
 } from "./lib/c12-29-s5-svs-footprint-gate.mjs";
 import {
@@ -101,6 +105,14 @@ const canonicalJsonIdentity = (value) =>
   });
 const ids = (count, start = 0) =>
   Array.from({ length: count }, (_, index) => start + index);
+
+const V4_SOURCE_ADDITIONS = new Set([
+  "packages/engine/Source/Core/CelestialEphemerisProvider.js",
+  "packages/engine/Source/Core/Simon1994EphemerisProvider.js",
+  "packages/engine/Source/Renderer/UniformStateComputations.js",
+  "packages/engine/Source/Scene/Moon.js",
+  "packages/engine/Source/Widget/CesiumWidget.js",
+]);
 
 function spatialPrimitives(row, measurementKind = "event") {
   return {
@@ -396,6 +408,10 @@ function syntheticRow(expected) {
       verticalFovRadians,
     },
     terrainTuple: captureTuples.at(-1),
+    ephemeris: syntheticEphemerisLineage(
+      captureTuples.at(-1).captureFrameNumber,
+      expected.iso,
+    ),
     transitionReadiness: {
       method: C12_29_S5_SVS_SCENE.readinessMethod,
       transitionRole,
@@ -492,6 +508,58 @@ function syntheticRow(expected) {
   return row;
 }
 
+function syntheticEphemerisLineage(frameNumber, clockIso) {
+  const sunPositionWC = { x: 149_000_000_000, y: 1_000_000, z: -2_000_000 };
+  const moonPositionWC = { x: 384_400_000, y: -3_000_000, z: 1_000_000 };
+  return {
+    frameNumber,
+    clockIso,
+    provider: {
+      constructor: C12_29_S5_SVS_EPHEMERIS.providerConstructor,
+      id: C12_29_S5_SVS_EPHEMERIS.providerId,
+      revision: C12_29_S5_SVS_EPHEMERIS.providerRevision,
+      provenance: clone(C12_29_S5_SVS_EPHEMERIS.provenance),
+      timePolicy: clone(C12_29_S5_SVS_EPHEMERIS.timePolicy),
+      provenanceFrozen: true,
+      timePolicyFrozen: true,
+    },
+    sample: {
+      providerId: C12_29_S5_SVS_EPHEMERIS.providerId,
+      providerRevision: C12_29_S5_SVS_EPHEMERIS.providerRevision,
+      provenance: clone(C12_29_S5_SVS_EPHEMERIS.provenance),
+      timePolicy: clone(C12_29_S5_SVS_EPHEMERIS.timePolicy),
+      referenceFrame: C12_29_S5_SVS_EPHEMERIS.referenceFrame,
+      units: C12_29_S5_SVS_EPHEMERIS.units,
+      transformBranch: C12_29_S5_SVS_EPHEMERIS.transformBranch,
+      outputAllocationStable: true,
+      thirdPartyTemporaryFree: true,
+      sunPositionWC: clone(sunPositionWC),
+      moonPositionWC: clone(moonPositionWC),
+    },
+    independent: {
+      method: C12_29_S5_SVS_EPHEMERIS.independentMethod,
+      sunPositionWC: clone(sunPositionWC),
+      moonPositionWC: clone(moonPositionWC),
+      sunDeltaMeters: 0,
+      moonDeltaMeters: 0,
+    },
+    eclipseState: {
+      sunPositionWC: clone(sunPositionWC),
+      moonPositionWC: clone(moonPositionWC),
+      sunDeltaMeters: 0,
+      moonDeltaMeters: 0,
+      sunStorageDistinct: true,
+      moonStorageDistinct: true,
+    },
+    identities: {
+      providerIsSceneProvider: true,
+      sampleIsFrameStateSample: true,
+      sampleProvenanceIsProviderProvenance: true,
+      sampleTimePolicyIsProviderTimePolicy: true,
+    },
+  };
+}
+
 function syntheticSession(renderer, serialIndex) {
   const providerRow = syntheticRow(C12_29_S5_SVS_ROWS[0]);
   const providerReadiness = clone(providerRow.transitionReadiness);
@@ -560,6 +628,7 @@ function syntheticSession(renderer, serialIndex) {
       independentSimon1994: true,
       maximumSunPositionDeltaMeters: 0,
       maximumMoonPositionDeltaMeters: 0,
+      rowLineages: [],
       xysFiles: [
         {
           route:
@@ -660,6 +729,12 @@ function syntheticSession(renderer, serialIndex) {
       deviceLost: false,
     },
   };
+  session.ephemeris.rowLineages = session.rows.map((row) => ({
+    role: row.role,
+    iso: row.iso,
+    captureFrameNumber: row.terrainTuple.captureFrameNumber,
+    lineage: clone(row.ephemeris),
+  }));
   const controlSource = session.rows.find(
     (row) => row.role === C12_29_S5_SVS_CONTROL.cameraSourceRole,
   );
@@ -1031,6 +1106,62 @@ function finalArtifact(status, runId = RUN_ID) {
   return artifact;
 }
 
+function replaceSyntheticSchemaValues(value, from, to) {
+  if (Array.isArray(value)) {
+    value.forEach((entry) => replaceSyntheticSchemaValues(entry, from, to));
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  for (const key of Object.keys(value)) {
+    if (value[key] === from) value[key] = to;
+    else replaceSyntheticSchemaValues(value[key], from, to);
+  }
+}
+
+function supersededV3Artifact(
+  status = "FAIL",
+  runId = "423e4567-e89b-42d3-a456-426614174000",
+) {
+  const artifact = finalArtifact(status, runId);
+  replaceSyntheticSchemaValues(
+    artifact,
+    C12_29_S5_SVS_SCHEMA,
+    C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+  );
+  replaceSyntheticSchemaValues(
+    artifact,
+    C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
+    "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v3",
+  );
+  if (status !== "ERROR") {
+    artifact.report.provenance.buildSourceIdentity.entries =
+      artifact.report.provenance.buildSourceIdentity.entries.filter(
+        (entry) =>
+          ![...V4_SOURCE_ADDITIONS].some(
+            (file) => entry.file === file || entry.file.endsWith(`/${file}`),
+          ),
+      );
+    for (const session of artifact.report.sessions) {
+      delete session.ephemeris.rowLineages;
+      for (const row of session.rows) delete row.ephemeris;
+    }
+  }
+  return artifact;
+}
+
+function legacyV2Artifact() {
+  return {
+    schema: C12_29_S5_SVS_LEGACY_ERROR_SCHEMA,
+    runId: "423e4567-e89b-42d3-a456-426614174000",
+    generatedAt: "2026-08-13T12:00:00.000Z",
+    status: "ERROR",
+    exitCode: 2,
+    incomplete: false,
+    error: "DeveloperError: normalized result is not a number",
+    diagnostics: null,
+  };
+}
+
 test("01 green synthetic report closes every frozen gate", () => {
   assert.deepEqual(foldC1229S5SvsGate(greenReport()), {
     status: "PASS",
@@ -1043,12 +1174,23 @@ test("01 green synthetic report closes every frozen gate", () => {
 test("02 schemas, A-H phases, exact rows, control, and ten labels are frozen", () => {
   assert.equal(
     C12_29_S5_SVS_SCHEMA,
-    "c12-29-s5-svs-5073-footprint-evidence-v3",
+    "c12-29-s5-svs-5073-footprint-evidence-v4",
   );
   assert.equal(
     C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
-    "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v3",
+    "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v4",
   );
+  assert.equal(
+    C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+    "c12-29-s5-svs-5073-footprint-evidence-v3",
+  );
+  assert.equal(
+    C12_29_S5_SVS_LEGACY_ERROR_SCHEMA,
+    "c12-29-s5-svs-5073-footprint-evidence-v2",
+  );
+  assert.equal(Object.isFrozen(C12_29_S5_SVS_EPHEMERIS), true);
+  assert.equal(Object.isFrozen(C12_29_S5_SVS_EPHEMERIS.provenance), true);
+  assert.equal(Object.isFrozen(C12_29_S5_SVS_EPHEMERIS.timePolicy), true);
   assert.equal(C12_29_S5_SVS_PHASES.length, 8);
   assert.equal(C12_29_S5_SVS_ROWS.length, 4);
   assert.equal(C12_29_S5_SVS_CAPTURE_LABELS.length, 10);
@@ -2102,6 +2244,52 @@ test("12 true ICRF, real XYS fingerprints, and independent Simon1994 are mandato
   }
 });
 
+test("12a fused default-Simon row lineage rejects provider, sample, declaration, identity, delta, frame, and ISO mutants", () => {
+  const expected = C12_29_S5_SVS_ROWS[0];
+  const frameNumber = 21;
+  const lineage = syntheticEphemerisLineage(frameNumber, expected.iso);
+  assert.equal(
+    validateSvsEphemerisLineage(lineage, frameNumber, expected.iso),
+    true,
+  );
+  for (const mutate of [
+    (value) => delete value.sample,
+    (value) => (value.provider.constructor = "AlienProvider"),
+    (value) => (value.provider.id = "alien"),
+    (value) => value.provider.revision++,
+    (value) => (value.sample.referenceFrame = "ICRF"),
+    (value) => (value.sample.units = "kilometres"),
+    (value) => (value.sample.transformBranch = "TEME"),
+    (value) => (value.sample.outputAllocationStable = false),
+    (value) => (value.sample.thirdPartyTemporaryFree = false),
+    (value) => (value.identities.sampleProvenanceIsProviderProvenance = false),
+    (value) => (value.independent.sunDeltaMeters = 0.5),
+    (value) => value.independent.moonPositionWC.x++,
+    (value) => value.eclipseState.sunPositionWC.y++,
+    (value) => (value.eclipseState.moonStorageDistinct = false),
+    (value) => value.frameNumber++,
+    (value) => (value.clockIso = C12_29_S5_SVS_ROWS[1].iso),
+  ]) {
+    const mutant = clone(lineage);
+    mutate(mutant);
+    assert.equal(
+      validateSvsEphemerisLineage(mutant, frameNumber, expected.iso),
+      false,
+    );
+  }
+  expectStatus(
+    (report) => report.sessions[0].ephemeris.rowLineages.pop(),
+    "STRUCTURAL",
+    /per-row ephemeris aggregate/u,
+  );
+  expectStatus(
+    (report) =>
+      report.sessions[0].ephemeris.rowLineages[0].lineage.frameNumber++,
+    "STRUCTURAL",
+    /per-row ephemeris aggregate/u,
+  );
+});
+
 test("13 neutral scene, derived framing, and no recentering fail closed", () => {
   for (const mutate of [
     (report) => (report.sessions[0].scene.hdr = true),
@@ -2306,26 +2494,61 @@ test("26 lifecycle writes RUNNING+lock, immutable red, latest, then unlocks", (t
   assert.equal(JSON.parse(fs.readFileSync(paths.latest)).status, "FAIL");
 });
 
-test("26a finalized v2 latest is byte-preserved before v3 RUNNING supersession", (t) => {
+test("26a finalized v3 latest is canonical, byte-preserved, and receipted before v4 RUNNING", (t) => {
+  const temporary = fs.mkdtempSync(
+    path.join(os.tmpdir(), "c1229-svs-v3-supersession-"),
+  );
+  t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+  const paths = createSvsArtifactPaths(RUN_ID, temporary);
+  const v3 = supersededV3Artifact();
+  assert.deepEqual(validateSupersededSvsV3FinalArtifactShape(v3), []);
+  assert.notDeepEqual(validateSvsFinalArtifactShape(v3), []);
+  const v3Bytes = canonicalSvsArtifactBytes(v3);
+  fs.mkdirSync(temporary, { recursive: true });
+  fs.writeFileSync(paths.latest, v3Bytes, { flag: "wx" });
+  fs.writeFileSync(paths.firstRed, v3Bytes, { flag: "wx" });
+
+  const ownership = beginSvsEvidenceRun(paths, RUN_ID);
+  assert.equal(ownership.prior.latestSnapshot.supersededV3, true);
+  assert.equal(ownership.prior.latestSnapshot.supersededV2, false);
+  assert.deepEqual(ownership.supersededV3, {
+    file: ownership.recovery,
+    schema: C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+    runId: v3.runId,
+    status: "FAIL",
+    byteLength: v3Bytes.byteLength,
+    sha256: createHash("sha256").update(v3Bytes).digest("hex"),
+  });
+  assert.equal(fs.readFileSync(ownership.recovery).equals(v3Bytes), true);
+  assert.equal(fs.readFileSync(paths.firstRed).equals(v3Bytes), true);
+  assert.equal(
+    JSON.parse(fs.readFileSync(paths.latest)).schema,
+    C12_29_S5_SVS_SCHEMA,
+  );
+
+  for (const mutate of [
+    (value) => Object.assign(value, { extra: true }),
+    (value) => value.report.provenance.buildSourceIdentity.entries.pop(),
+    (value) =>
+      (value.report.sessions[0].rows[0].clock.currentTimeIso = "alien"),
+  ]) {
+    const mutant = clone(v3);
+    mutate(mutant);
+    assert.notDeepEqual(validateSupersededSvsV3FinalArtifactShape(mutant), []);
+  }
+});
+
+test("26b finalized bounded v2 ERROR is byte-preserved separately before v4 RUNNING", (t) => {
   const temporary = fs.mkdtempSync(
     path.join(os.tmpdir(), "c1229-svs-v2-supersession-"),
   );
   t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
   const paths = createSvsArtifactPaths(RUN_ID, temporary);
-  const v2 = {
-    schema: C12_29_S5_SVS_SUPERSEDED_SCHEMA,
-    runId: "423e4567-e89b-42d3-a456-426614174000",
-    generatedAt: "2026-08-13T12:00:00.000Z",
-    status: "ERROR",
-    exitCode: 2,
-    incomplete: false,
-    error: "DeveloperError: normalized result is not a number",
-    diagnostics: null,
-  };
+  const v2 = legacyV2Artifact();
   assert.deepEqual(validateSupersededSvsV2FinalArtifactShape(v2), []);
   assert.notDeepEqual(validateSvsFinalArtifactShape(v2), []);
-  // Preserve the predecessor's insertion-order serializer byte-for-byte even
-  // though v3 canonicalizes object key order independently.
+  // Preserve the legacy insertion-order serializer byte-for-byte even though
+  // v3 and v4 canonicalize object key order independently.
   const v2Bytes = Buffer.from(`${JSON.stringify(v2, null, 2)}\n`);
   assert.equal(v2Bytes.equals(canonicalSvsArtifactBytes(v2)), false);
   fs.mkdirSync(temporary, { recursive: true });
@@ -2333,10 +2556,11 @@ test("26a finalized v2 latest is byte-preserved before v3 RUNNING supersession",
   fs.writeFileSync(paths.firstRed, v2Bytes, { flag: "wx" });
 
   const ownership = beginSvsEvidenceRun(paths, RUN_ID);
+  assert.equal(ownership.prior.latestSnapshot.supersededV3, false);
   assert.equal(ownership.prior.latestSnapshot.supersededV2, true);
   assert.deepEqual(ownership.supersededV2, {
     file: ownership.recovery,
-    schema: C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+    schema: C12_29_S5_SVS_LEGACY_ERROR_SCHEMA,
     runId: v2.runId,
     status: "ERROR",
     byteLength: v2Bytes.byteLength,
@@ -2351,7 +2575,7 @@ test("26a finalized v2 latest is byte-preserved before v3 RUNNING supersession",
 
   for (const mutate of [
     (value) => Object.assign(value, { extra: true }),
-    (value) => (value.schema = "c12-29-s5-svs-5073-footprint-evidence-v1"),
+    (value) => (value.schema = C12_29_S5_SVS_SUPERSEDED_SCHEMA),
     (value) => (value.status = "FAIL"),
     (value) => (value.exitCode = 1),
     (value) => (value.incomplete = true),
@@ -2360,6 +2584,42 @@ test("26a finalized v2 latest is byte-preserved before v3 RUNNING supersession",
     const mutant = clone(v2);
     mutate(mutant);
     assert.notDeepEqual(validateSupersededSvsV2FinalArtifactShape(mutant), []);
+  }
+});
+
+test("26c v3 and v2 supersession receipts remain authoritative through final publication", (t) => {
+  for (const [name, _prior, bytes] of [
+    [
+      "v3",
+      supersededV3Artifact(),
+      canonicalSvsArtifactBytes(supersededV3Artifact()),
+    ],
+    [
+      "v2",
+      legacyV2Artifact(),
+      Buffer.from(`${JSON.stringify(legacyV2Artifact(), null, 2)}\n`),
+    ],
+  ]) {
+    const temporary = fs.mkdtempSync(
+      path.join(os.tmpdir(), `c1229-svs-${name}-receipt-authority-`),
+    );
+    t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+    const paths = createSvsArtifactPaths(RUN_ID, temporary);
+    fs.writeFileSync(paths.latest, bytes, { flag: "wx" });
+    fs.writeFileSync(paths.firstRed, bytes, { flag: "wx" });
+    const ownership = beginSvsEvidenceRun(paths, RUN_ID);
+    fs.unlinkSync(ownership.recovery);
+    assert.throws(
+      () =>
+        publishSvsFinalArtifact(
+          paths,
+          finalArtifact("PASS"),
+          ownership.running,
+        ),
+      new RegExp(`superseded-${name} receipt`, "u"),
+    );
+    assert.equal(JSON.parse(fs.readFileSync(paths.latest)).status, "RUNNING");
+    assert.equal(fs.existsSync(paths.lock), true);
   }
 });
 
@@ -2453,8 +2713,21 @@ test("30 probe embeds canonical same-task capture and forbids fallback/recenteri
 });
 
 test("31 semantic source boundary is complete and raw shaders are map-excluded", () => {
-  assert.equal(C12_29_S5_SVS_SOURCE_FILES.length, 51);
-  assert.equal(C12_29_S5_SVS_BUILD_SOURCE_FILES.length, 49);
+  assert.equal(C12_29_S5_SVS_SOURCE_FILES.length, 56);
+  assert.equal(C12_29_S5_SVS_BUILD_SOURCE_FILES.length, 54);
+  assert.equal(
+    new Set(C12_29_S5_SVS_SOURCE_FILES).size,
+    C12_29_S5_SVS_SOURCE_FILES.length,
+  );
+  for (const file of C12_29_S5_SVS_SOURCE_FILES) {
+    assert.equal(fs.existsSync(path.join(root, file)), true, file);
+  }
+  assert.deepEqual(
+    C12_29_S5_SVS_BUILD_SOURCE_FILES,
+    C12_29_S5_SVS_SOURCE_FILES.filter(
+      (file) => !file.endsWith(".glsl") && !file.endsWith(".wgsl"),
+    ),
+  );
   for (const required of [
     "packages/engine/Source/Core/Cartesian2.js",
     "packages/engine/Source/Core/Cartesian3.js",
@@ -2465,15 +2738,20 @@ test("31 semantic source boundary is complete and raw shaders are map-excluded",
     "packages/engine/Source/Core/Math.js",
     "packages/engine/Source/Core/Matrix3.js",
     "packages/engine/Source/Core/TimeInterval.js",
+    "packages/engine/Source/Core/CelestialEphemerisProvider.js",
+    "packages/engine/Source/Core/Simon1994EphemerisProvider.js",
     "packages/engine/Source/Core/Transforms.js",
     "packages/engine/Source/Core/Iau2006XysData.js",
     "packages/engine/Source/Core/Simon1994PlanetaryPositions.js",
     "packages/engine/Source/Scene/QuadtreePrimitive.js",
     "packages/engine/Source/Scene/SceneTransforms.js",
     "packages/engine/Source/Renderer/Pass.js",
+    "packages/engine/Source/Renderer/UniformStateComputations.js",
     "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts",
     "packages/engine/Source/Shaders/GlobeFS.glsl",
     "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+    "packages/engine/Source/Scene/Moon.js",
+    "packages/engine/Source/Widget/CesiumWidget.js",
   ]) {
     assert.ok(C12_29_S5_SVS_SOURCE_FILES.includes(required), required);
   }

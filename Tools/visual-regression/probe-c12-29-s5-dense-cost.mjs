@@ -4,7 +4,7 @@
  *
  * The coordinator launches 24 child Node processes in the frozen order. Each
  * child launches exactly one fresh Edge process, runs one 600-frame condition,
- * and exits. The probe requires already-certified terrain-v10 and NASA-SVS-v3
+ * and exits. The probe requires already-certified terrain-v10 and NASA-SVS-v4
  * publication manifests, a current Build/CesiumUnminified bundle, and an
  * already-running loopback server. It does not build or start infrastructure.
  */
@@ -27,6 +27,7 @@ import {
   C12_29_S5_DENSE_SCHEDULE,
   C12_29_S5_DENSE_SCHEMA,
   C12_29_S5_DENSE_SERVED_FILES,
+  C12_29_S5_DENSE_SUPERSEDED_SCHEMA,
   c1229S5DenseLegId,
   exitCodeForC1229S5DenseStatus,
   foldC1229S5DenseCostGate,
@@ -35,14 +36,12 @@ import {
   validateC1229S5DenseLegacyFinalArtifact,
   validateC1229S5DensePrerequisites,
   validateC1229S5DenseRuntimeLeg,
+  validateC1229S5DenseSupersededFinalArtifact,
   validateC1229S5DenseWorkload,
 } from "./lib/c12-29-s5-dense-cost-gate.mjs";
 import {
-  assertEvidenceReadableOrAbsent,
   createImmutableEvidence,
-  fingerprintEvidenceFile,
   inspectBuildSourceIdentity,
-  preserveFirstRedEvidence,
 } from "./lib/build-source-identity.mjs";
 
 const toolDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -63,6 +62,18 @@ const defaultOutputDirectory = path.resolve(
 );
 const artifactPrefix = "campaign12-c12-29-s5-dense-cost";
 const defaultBase = process.env.PROBE_BASE ?? "http://localhost:8080";
+const densePublicationAuthorityState = new WeakMap();
+const denseArtifactPathKeys = Object.freeze([
+  "directory",
+  "immutable",
+  "latest",
+  "recoveryLatest",
+  "firstRed",
+  "lock",
+  "runningReceipt",
+  "finalReceipt",
+  "rawDirectory",
+]);
 
 const sha256 = (bytes) =>
   createHash("sha256").update(bytes).digest("hex").toLowerCase();
@@ -74,7 +85,7 @@ function usage() {
 
 Required coordinator options:
   --terrain-publication FILE  Certified terrain-v10 publication manifest
-  --nasa-publication FILE     Certified NASA-SVS-v3 publication manifest
+  --nasa-publication FILE     Certified NASA-SVS-v4 publication manifest
 
 Options:
   --base URL                  Loopback server (default ${defaultBase})
@@ -393,7 +404,7 @@ function loadPrerequisites(options) {
     nasa: resolvePublicationArtifact(options.nasaPublication, {
       kind: "nasa",
       producer: "c12-29-s5-svs-footprint",
-      schema: "c12-29-s5-svs-5073-footprint-evidence-v3",
+      schema: "c12-29-s5-svs-5073-footprint-evidence-v4",
     }),
   };
   const validation = validateC1229S5DensePrerequisites(prerequisites);
@@ -404,19 +415,243 @@ function loadPrerequisites(options) {
 }
 
 export function createC1229S5DenseArtifactPaths(outputDirectory, runId) {
+  const directory = path.resolve(outputDirectory);
   return {
-    directory: outputDirectory,
-    immutable: path.join(outputDirectory, `${runId}.json`),
-    latest: path.join(outputDirectory, `${artifactPrefix}.latest.json`),
+    directory,
+    immutable: path.join(directory, `${runId}.json`),
+    latest: path.join(directory, `${artifactPrefix}.latest.json`),
     recoveryLatest: path.join(
-      outputDirectory,
+      directory,
       `${runId}.publication-recovery-latest.json`,
     ),
-    firstRed: path.join(outputDirectory, `${artifactPrefix}.first-red.json`),
-    lock: path.join(outputDirectory, `${artifactPrefix}.lock.json`),
-    runningReceipt: path.join(outputDirectory, `${runId}.running-receipt.json`),
-    finalReceipt: path.join(outputDirectory, `${runId}.final-receipt.json`),
-    rawDirectory: path.join(outputDirectory, `${runId}.legs`),
+    firstRed: path.join(directory, `${artifactPrefix}.first-red.json`),
+    lock: path.join(directory, `${artifactPrefix}.lock.json`),
+    runningReceipt: path.join(directory, `${runId}.running-receipt.json`),
+    finalReceipt: path.join(directory, `${runId}.final-receipt.json`),
+    rawDirectory: path.join(directory, `${runId}.legs`),
+  };
+}
+
+function normalizeDenseArtifactPaths(paths, runId) {
+  if (!paths || typeof paths !== "object") {
+    throw new Error("[persistence] dense artifact paths are absent");
+  }
+  const keys = Object.keys(paths).sort();
+  if (keys.join(",") !== [...denseArtifactPathKeys].sort().join(",")) {
+    throw new Error("[persistence] dense artifact path fields differ");
+  }
+  const normalized = {};
+  for (const key of denseArtifactPathKeys) {
+    if (typeof paths[key] !== "string" || paths[key].length === 0) {
+      throw new Error(`[persistence] dense artifact path ${key} is invalid`);
+    }
+    normalized[key] = path.resolve(paths[key]);
+  }
+  const expected = createC1229S5DenseArtifactPaths(normalized.directory, runId);
+  for (const key of denseArtifactPathKeys) {
+    if (normalized[key] !== expected[key]) {
+      throw new Error(
+        `[persistence] dense artifact path topology differs at ${key}`,
+      );
+    }
+  }
+  return Object.freeze(normalized);
+}
+
+function statValue(stat, field) {
+  const value = stat?.[field];
+  return typeof value === "bigint" ? value.toString() : String(value);
+}
+
+function regularFileDescriptor(stat) {
+  return {
+    dev: statValue(stat, "dev"),
+    ino: statValue(stat, "ino"),
+    mode: statValue(stat, "mode"),
+    nlink: statValue(stat, "nlink"),
+    size: statValue(stat, "size"),
+    ctimeNs: statValue(stat, "ctimeNs"),
+    birthtimeNs: statValue(stat, "birthtimeNs"),
+  };
+}
+
+function directoryDescriptor(stat) {
+  return {
+    dev: statValue(stat, "dev"),
+    ino: statValue(stat, "ino"),
+    mode: statValue(stat, "mode"),
+    birthtimeNs: statValue(stat, "birthtimeNs"),
+  };
+}
+
+function sameDescriptor(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sameFileObject(left, right) {
+  return (
+    left?.dev === right?.dev &&
+    left?.ino === right?.ino &&
+    left?.mode === right?.mode &&
+    left?.nlink === right?.nlink &&
+    left?.size === right?.size &&
+    left?.birthtimeNs === right?.birthtimeNs
+  );
+}
+
+function lstatNoFollow(file, label, operations = fs) {
+  try {
+    return operations.lstatSync(file, { bigint: true });
+  } catch (error) {
+    throw new Error(
+      `[persistence] ${label} no-follow lstat failed: ${String(error?.message ?? error)}`,
+      { cause: error },
+    );
+  }
+}
+
+function requireAbsentNoFollow(file, label, operations = fs) {
+  try {
+    operations.lstatSync(file, { bigint: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return { state: "absent" };
+    throw new Error(
+      `[persistence] ${label} absence lstat failed: ${String(error?.message ?? error)}`,
+      { cause: error },
+    );
+  }
+  throw new Error(`[persistence] ${label} is occupied`);
+}
+
+function captureDirectoryAuthority(directory, label, operations = fs) {
+  const stat = lstatNoFollow(directory, label, operations);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(`[persistence] ${label} is not a no-follow directory`);
+  }
+  return Object.freeze({
+    path: path.resolve(directory),
+    descriptor: Object.freeze(directoryDescriptor(stat)),
+  });
+}
+
+function assertDirectoryAuthority(authority, label, operations = fs) {
+  const observed = captureDirectoryAuthority(authority.path, label, operations);
+  if (!sameDescriptor(observed.descriptor, authority.descriptor)) {
+    throw new Error(`[persistence] ${label} directory identity differs`);
+  }
+}
+
+function readRegularFileNoFollow(file, label, operations = fs) {
+  const normalizedPath = path.resolve(file);
+  const before = lstatNoFollow(
+    normalizedPath,
+    `${label} before open`,
+    operations,
+  );
+  if (
+    !before.isFile() ||
+    before.isSymbolicLink() ||
+    statValue(before, "nlink") !== "1"
+  ) {
+    throw new Error(
+      `[persistence] ${label} is not a single-link no-follow regular file`,
+    );
+  }
+  const beforeDescriptor = regularFileDescriptor(before);
+  let descriptor;
+  let bytes;
+  let fileDescriptor;
+  try {
+    descriptor = operations.openSync(
+      normalizedPath,
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+    );
+    const opened = operations.fstatSync(descriptor, { bigint: true });
+    if (
+      !opened.isFile() ||
+      statValue(opened, "nlink") !== "1" ||
+      !sameDescriptor(regularFileDescriptor(opened), beforeDescriptor)
+    ) {
+      throw new Error(`[persistence] ${label} opened descriptor differs`);
+    }
+    const value = operations.readFileSync(descriptor);
+    bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    const afterRead = operations.fstatSync(descriptor, { bigint: true });
+    fileDescriptor = regularFileDescriptor(afterRead);
+    if (!sameDescriptor(fileDescriptor, beforeDescriptor)) {
+      throw new Error(`[persistence] ${label} descriptor changed while read`);
+    }
+    const afterPath = lstatNoFollow(
+      normalizedPath,
+      `${label} after read`,
+      operations,
+    );
+    if (!sameDescriptor(regularFileDescriptor(afterPath), beforeDescriptor)) {
+      throw new Error(
+        `[persistence] ${label} path identity changed while read`,
+      );
+    }
+  } finally {
+    if (descriptor !== undefined) operations.closeSync(descriptor);
+  }
+  return {
+    path: normalizedPath,
+    descriptor: Object.freeze(fileDescriptor),
+    bytes,
+    byteLength: bytes.byteLength,
+    sha256: sha256(bytes),
+  };
+}
+
+function captureExactFileAuthority(
+  file,
+  expectedBytes,
+  label,
+  operations = fs,
+) {
+  const observed = readRegularFileNoFollow(file, label, operations);
+  if (!observed.bytes.equals(Buffer.from(expectedBytes))) {
+    throw new Error(`[persistence] ${label} bytes differ`);
+  }
+  return Object.freeze({
+    path: observed.path,
+    descriptor: observed.descriptor,
+    byteLength: observed.byteLength,
+    sha256: observed.sha256,
+  });
+}
+
+function assertExactFileAuthority(
+  authority,
+  expectedBytes,
+  label,
+  operations = fs,
+) {
+  const observed = captureExactFileAuthority(
+    authority.path,
+    expectedBytes,
+    label,
+    operations,
+  );
+  if (!sameDescriptor(observed.descriptor, authority.descriptor)) {
+    throw new Error(`[persistence] ${label} descriptor authority differs`);
+  }
+  return observed;
+}
+
+function inspectOptionalRegularFile(file, label, operations = fs) {
+  try {
+    operations.lstatSync(file, { bigint: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return { state: "absent" };
+    throw new Error(
+      `[persistence] ${label} no-follow lstat failed: ${String(error?.message ?? error)}`,
+      { cause: error },
+    );
+  }
+  return {
+    state: "present",
+    ...readRegularFileNoFollow(file, label, operations),
   };
 }
 
@@ -433,10 +668,12 @@ function inspectDensePriorFinalBytes(bytes) {
   }
   const schemaVersion =
     value?.schema === C12_29_S5_DENSE_SCHEMA
-      ? 2
-      : value?.schema === C12_29_S5_DENSE_LEGACY_SCHEMA
-        ? 1
-        : null;
+      ? 3
+      : value?.schema === C12_29_S5_DENSE_SUPERSEDED_SCHEMA
+        ? 2
+        : value?.schema === C12_29_S5_DENSE_LEGACY_SCHEMA
+          ? 1
+          : null;
   if (
     schemaVersion === null ||
     value?.schemaVersion !== schemaVersion ||
@@ -449,13 +686,15 @@ function inspectDensePriorFinalBytes(bytes) {
     value?.exitCode !== exitCodeForC1229S5DenseStatus(value.status)
   ) {
     throw new Error(
-      "[persistence] dense prior latest is not a finalized v1/v2 envelope",
+      "[persistence] dense prior latest is not a finalized v1/v2/v3 envelope",
     );
   }
   const validation =
-    schemaVersion === 1
-      ? validateC1229S5DenseLegacyFinalArtifact(value)
-      : validateC1229S5DenseFinalArtifact(value);
+    schemaVersion === 3
+      ? validateC1229S5DenseFinalArtifact(value)
+      : schemaVersion === 2
+        ? validateC1229S5DenseSupersededFinalArtifact(value)
+        : validateC1229S5DenseLegacyFinalArtifact(value);
   if (!validation.valid) {
     throw new Error(
       `[persistence] dense prior latest is not valid finalized v${schemaVersion} evidence: ${validation.reasons.join("; ")}`,
@@ -464,63 +703,440 @@ function inspectDensePriorFinalBytes(bytes) {
   return { value, schemaVersion };
 }
 
-function preserveDenseLegacyV1Latest(paths, bytes, prior, operations = fs) {
+function preserveDenseSupersededLatest(paths, bytes, prior, operations = fs) {
   const receipt = path.join(
     paths.directory,
-    `${artifactPrefix}.superseded-v1-${prior.runId}.json`,
+    `${artifactPrefix}.superseded-v${prior.schemaVersion}-${prior.value.runId}.json`,
   );
+  let authority;
   try {
-    writeExclusive(receipt, bytes, operations);
+    authority = writeExclusive(receipt, bytes, operations);
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
-    assertExactBytes(
+    authority = captureExactFileAuthority(
       receipt,
       bytes,
-      "existing dense v1 supersession receipt",
+      `existing dense v${prior.schemaVersion} supersession receipt`,
       operations,
     );
   }
-  assertExactBytes(receipt, bytes, "dense v1 supersession receipt", operations);
-  return receipt;
+  assertExactFileAuthority(
+    authority,
+    bytes,
+    `dense v${prior.schemaVersion} supersession receipt`,
+    operations,
+  );
+  return { path: receipt, authority };
 }
 
-function assertDensePriorRetained(
+function captureDensePredecessorAuthority(
   paths,
   bytes,
   prior,
-  legacyReceipt,
+  supersessionReceipt,
+  boundReceiptAuthority,
+  label,
+  operations = fs,
+  boundArchiveAuthority = null,
+) {
+  if (!prior) return null;
+  const archivePath = path.join(paths.directory, `${prior.value.runId}.json`);
+  const archive =
+    boundArchiveAuthority ??
+    captureExactFileAuthority(
+      archivePath,
+      bytes,
+      `${label} predecessor archive`,
+      operations,
+    );
+  const receipt =
+    prior.schemaVersion < 3
+      ? (boundReceiptAuthority ??
+        captureExactFileAuthority(
+          supersessionReceipt,
+          bytes,
+          `${label} predecessor supersession receipt`,
+          operations,
+        ))
+      : null;
+  assertExactFileAuthority(
+    archive,
+    bytes,
+    `${label} predecessor archive`,
+    operations,
+  );
+  if (receipt) {
+    assertExactFileAuthority(
+      receipt,
+      bytes,
+      `${label} predecessor supersession receipt`,
+      operations,
+    );
+  }
+  return Object.freeze({ archive, receipt });
+}
+
+function assertDensePredecessorAuthority(
+  authority,
+  bytes,
   label,
   operations = fs,
 ) {
-  if (!prior) return;
-  try {
-    assertExactBytes(
-      path.join(paths.directory, `${prior.value.runId}.json`),
+  if (!authority) return;
+  assertExactFileAuthority(
+    authority.archive,
+    bytes,
+    `${label} predecessor archive`,
+    operations,
+  );
+  if (authority.receipt) {
+    assertExactFileAuthority(
+      authority.receipt,
       bytes,
-      `${label} prior immutable v${prior.schemaVersion} archive`,
+      `${label} predecessor supersession receipt`,
       operations,
     );
-  } catch (error) {
+  }
+}
+
+function captureInitialFirstRedAuthority(paths, label, operations = fs) {
+  const firstRed = inspectOptionalRegularFile(
+    paths.firstRed,
+    label,
+    operations,
+  );
+  if (firstRed.state === "absent") {
+    return Object.freeze({ state: "absent", path: paths.firstRed });
+  }
+  const prior = inspectDensePriorFinalBytes(firstRed.bytes);
+  if (prior.value.status === "PASS") {
+    throw new Error(`[persistence] ${label} is not red final evidence`);
+  }
+  const archivePath = path.join(paths.directory, `${prior.value.runId}.json`);
+  const archive = captureExactFileAuthority(
+    archivePath,
+    firstRed.bytes,
+    `${label} immutable archive`,
+    operations,
+  );
+  return Object.freeze({
+    state: "present",
+    path: paths.firstRed,
+    bytes: Buffer.from(firstRed.bytes),
+    file: Object.freeze({
+      path: firstRed.path,
+      descriptor: firstRed.descriptor,
+      byteLength: firstRed.byteLength,
+      sha256: firstRed.sha256,
+    }),
+    archive,
+    runId: prior.value.runId,
+    schemaVersion: prior.schemaVersion,
+  });
+}
+
+function assertFirstRedAuthority(authority, label, operations = fs) {
+  if (authority.state === "absent") {
+    requireAbsentNoFollow(authority.path, label, operations);
+    return;
+  }
+  assertExactFileAuthority(
+    authority.file,
+    authority.bytes,
+    `${label} first-red`,
+    operations,
+  );
+  assertExactFileAuthority(
+    authority.archive,
+    authority.bytes,
+    `${label} first-red immutable archive`,
+    operations,
+  );
+}
+
+function densePredecessorDescriptor(bytes, prior) {
+  if (!prior) return null;
+  return {
+    schemaVersion: prior.schemaVersion,
+    runId: prior.value.runId,
+    byteLength: bytes.byteLength,
+    sha256: sha256(bytes),
+    immutableArchive: `${prior.value.runId}.json`,
+    supersessionReceipt:
+      prior.schemaVersion < 3
+        ? `${artifactPrefix}.superseded-v${prior.schemaVersion}-${prior.value.runId}.json`
+        : null,
+  };
+}
+
+function createDensePublicationAuthority(
+  runId,
+  lockBytes,
+  runningBytes,
+  predecessorDescriptor,
+  predecessorBytes,
+  predecessorPrior,
+  boundState,
+) {
+  const predecessor = predecessorDescriptor
+    ? Object.freeze({
+        ...predecessorDescriptor,
+        bytesBase64: predecessorBytes.toString("base64"),
+      })
+    : null;
+  const authority = Object.freeze({
+    schema: C12_29_S5_DENSE_SCHEMA,
+    kind: "c12-29-s5-dense-cost-publication-authority",
+    runId,
+    lockBytesBase64: lockBytes.toString("base64"),
+    runningBytesBase64: runningBytes.toString("base64"),
+    predecessor,
+    paths: Object.freeze({ ...boundState.paths }),
+    outputDirectoryDescriptor: boundState.directoryAuthority.descriptor,
+  });
+  densePublicationAuthorityState.set(authority, {
+    ...boundState,
+    lockBytes: Buffer.from(lockBytes),
+    runningBytes: Buffer.from(runningBytes),
+    predecessor:
+      predecessorDescriptor === null
+        ? null
+        : {
+            bytes: Buffer.from(predecessorBytes),
+            prior: {
+              schemaVersion: predecessorPrior.schemaVersion,
+              value: { runId: predecessorPrior.value.runId },
+            },
+          },
+  });
+  return authority;
+}
+
+function decodeCanonicalBase64(value, label) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`[persistence] ${label} is absent`);
+  }
+  const bytes = Buffer.from(value, "base64");
+  if (bytes.toString("base64") !== value) {
+    throw new Error(`[persistence] ${label} is not canonical base64`);
+  }
+  return bytes;
+}
+
+function assertSameCanonicalJson(actual, expected, label) {
+  if (!jsonBytes(actual).equals(jsonBytes(expected))) {
+    throw new Error(`[persistence] ${label} differs`);
+  }
+}
+
+function inspectDensePublicationAuthority(paths, authority, operations = fs) {
+  if (
+    authority?.schema !== C12_29_S5_DENSE_SCHEMA ||
+    authority?.kind !== "c12-29-s5-dense-cost-publication-authority" ||
+    typeof authority?.runId !== "string"
+  ) {
+    throw new Error("[persistence] dense publication authority is invalid");
+  }
+  const retained = densePublicationAuthorityState.get(authority);
+  if (!retained) {
     throw new Error(
-      `[persistence] ${label} prior immutable v${prior.schemaVersion} archive is unavailable or differs: ${String(error?.message ?? error)}`,
-      { cause: error },
+      "[persistence] dense publication authority was not issued by begin",
     );
   }
-  if (prior.schemaVersion === 1 && legacyReceipt !== null) {
-    try {
-      assertExactBytes(
-        legacyReceipt,
-        bytes,
-        `${label} dense v1 supersession receipt`,
-        operations,
-      );
-    } catch (error) {
+  const normalizedPaths = normalizeDenseArtifactPaths(paths, authority.runId);
+  for (const key of denseArtifactPathKeys) {
+    if (
+      normalizedPaths[key] !== retained.paths[key] ||
+      authority.paths?.[key] !== retained.paths[key]
+    ) {
       throw new Error(
-        `[persistence] ${label} dense v1 supersession receipt is unavailable or differs: ${String(error?.message ?? error)}`,
-        { cause: error },
+        `[persistence] dense publication path authority differs at ${key}`,
       );
     }
   }
+  assertSameCanonicalJson(
+    authority.outputDirectoryDescriptor,
+    retained.directoryAuthority.descriptor,
+    "output directory descriptor authority",
+  );
+  assertDirectoryAuthority(
+    retained.directoryAuthority,
+    "dense output directory",
+    operations,
+  );
+  assertDirectoryAuthority(
+    retained.rawDirectoryAuthority,
+    "dense raw directory",
+    operations,
+  );
+  const lockBytes = decodeCanonicalBase64(
+    authority.lockBytesBase64,
+    "dense lock byte authority",
+  );
+  const runningBytes = decodeCanonicalBase64(
+    authority.runningBytesBase64,
+    "dense RUNNING byte authority",
+  );
+  if (
+    !lockBytes.equals(retained.lockBytes) ||
+    !runningBytes.equals(retained.runningBytes)
+  ) {
+    throw new Error(
+      "[persistence] retained publication byte authority differs",
+    );
+  }
+  let lock;
+  let running;
+  try {
+    lock = JSON.parse(lockBytes.toString("utf8"));
+    running = JSON.parse(runningBytes.toString("utf8"));
+  } catch (error) {
+    throw new Error("[persistence] dense publication authority is not JSON", {
+      cause: error,
+    });
+  }
+  if (
+    !jsonBytes(lock).equals(lockBytes) ||
+    !jsonBytes(running).equals(runningBytes)
+  ) {
+    throw new Error(
+      "[persistence] dense publication authority bytes are not canonical JSON",
+    );
+  }
+  if (
+    lock?.runId !== authority.runId ||
+    running?.runId !== authority.runId ||
+    path.basename(paths.immutable) !== `${authority.runId}.json`
+  ) {
+    throw new Error("[persistence] dense publication authority run differs");
+  }
+
+  let predecessor = null;
+  if (running.predecessorAuthority === null) {
+    if (authority.predecessor !== null || retained.predecessor !== null) {
+      throw new Error(
+        "[persistence] unexpected dense predecessor byte authority",
+      );
+    }
+  } else {
+    const predecessorBytes = decodeCanonicalBase64(
+      authority.predecessor?.bytesBase64,
+      "dense predecessor byte authority",
+    );
+    if (
+      retained.predecessor === null ||
+      !predecessorBytes.equals(retained.predecessor.bytes)
+    ) {
+      throw new Error(
+        "[persistence] retained predecessor byte authority differs",
+      );
+    }
+    const prior = retained.predecessor.prior;
+    const descriptor = densePredecessorDescriptor(predecessorBytes, prior);
+    const suppliedDescriptor = { ...authority.predecessor };
+    delete suppliedDescriptor.bytesBase64;
+    assertSameCanonicalJson(
+      running.predecessorAuthority,
+      descriptor,
+      "RUNNING predecessor descriptor authority",
+    );
+    assertSameCanonicalJson(
+      suppliedDescriptor,
+      descriptor,
+      "returned predecessor descriptor authority",
+    );
+    predecessor = {
+      bytes: predecessorBytes,
+      prior,
+      receipt:
+        descriptor.supersessionReceipt === null
+          ? null
+          : path.join(paths.directory, descriptor.supersessionReceipt),
+      descriptor,
+    };
+  }
+
+  assertExactFileAuthority(
+    retained.lockAuthority,
+    lockBytes,
+    "owned RUNNING lock authority",
+    operations,
+  );
+  assertExactFileAuthority(
+    retained.runningReceiptAuthority,
+    runningBytes,
+    "immutable RUNNING receipt authority",
+    operations,
+  );
+  assertExactFileAuthority(
+    retained.runningLatestAuthority,
+    runningBytes,
+    "canonical RUNNING latest authority",
+    operations,
+  );
+  if (predecessor) {
+    assertDensePredecessorAuthority(
+      retained.predecessorFileAuthority,
+      predecessor.bytes,
+      "publication",
+      operations,
+    );
+  }
+  assertFirstRedAuthority(
+    retained.initialFirstRedAuthority,
+    "initial first-red publication authority",
+    operations,
+  );
+  return {
+    lock,
+    lockBytes,
+    running,
+    runningBytes,
+    predecessor,
+    retained,
+    paths: normalizedPaths,
+  };
+}
+
+function assertDensePublicationAuthorityRetained(
+  retained,
+  runningBytes,
+  predecessor,
+  firstRedAuthority,
+  label,
+  operations = fs,
+) {
+  assertDirectoryAuthority(
+    retained.directoryAuthority,
+    `${label} output directory`,
+    operations,
+  );
+  assertDirectoryAuthority(
+    retained.rawDirectoryAuthority,
+    `${label} raw directory`,
+    operations,
+  );
+  assertExactFileAuthority(
+    retained.lockAuthority,
+    retained.lockBytes,
+    `${label} RUNNING lock authority`,
+    operations,
+  );
+  assertExactFileAuthority(
+    retained.runningReceiptAuthority,
+    runningBytes,
+    `${label} immutable RUNNING receipt authority`,
+    operations,
+  );
+  if (predecessor) {
+    assertDensePredecessorAuthority(
+      retained.predecessorFileAuthority,
+      predecessor.bytes,
+      label,
+      operations,
+    );
+  }
+  assertFirstRedAuthority(firstRedAuthority, `${label} first-red`, operations);
 }
 
 function readBytes(file, operations = fs) {
@@ -529,15 +1145,159 @@ function readBytes(file, operations = fs) {
 }
 
 function writeExclusive(file, bytes, operations = fs) {
-  createImmutableEvidence(file, bytes, operations);
-  const observed = readBytes(file, operations);
-  if (!observed.equals(Buffer.from(bytes)))
-    throw new Error(`[persistence] ${file} bytes differ after exclusive write`);
+  const normalizedPath = path.resolve(file);
+  const expected = Buffer.from(bytes);
+  let descriptor;
+  try {
+    descriptor = operations.openSync(
+      normalizedPath,
+      fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_RDWR,
+      0o600,
+    );
+    operations.writeFileSync(descriptor, expected);
+    operations.fsyncSync(descriptor);
+    const created = operations.fstatSync(descriptor, { bigint: true });
+    if (
+      !created.isFile() ||
+      statValue(created, "nlink") !== "1" ||
+      statValue(created, "size") !== String(expected.byteLength)
+    ) {
+      throw new Error(
+        `[persistence] ${normalizedPath} exclusive descriptor shape differs`,
+      );
+    }
+    const createdDescriptor = regularFileDescriptor(created);
+    const observed = readRegularFileNoFollow(
+      normalizedPath,
+      `${normalizedPath} exclusive write`,
+      operations,
+    );
+    if (
+      !observed.bytes.equals(expected) ||
+      !sameDescriptor(observed.descriptor, createdDescriptor)
+    ) {
+      throw new Error(
+        `[persistence] ${normalizedPath} differs from exclusive descriptor authority`,
+      );
+    }
+    return Object.freeze({
+      path: normalizedPath,
+      descriptor: observed.descriptor,
+      byteLength: observed.byteLength,
+      sha256: observed.sha256,
+    });
+  } finally {
+    if (descriptor !== undefined) operations.closeSync(descriptor);
+  }
+}
+
+function deleteExactFileAuthority(
+  authority,
+  expectedBytes,
+  label,
+  operations = fs,
+) {
+  const expected = Buffer.from(expectedBytes);
+  const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+  let descriptor;
+  let unlinkError = null;
+  let deleted = false;
+  let result;
+  let failure = null;
+  try {
+    const before = lstatNoFollow(
+      authority.path,
+      `${label} before descriptor delete`,
+      operations,
+    );
+    const beforeDescriptor = regularFileDescriptor(before);
+    if (
+      !before.isFile() ||
+      before.isSymbolicLink() ||
+      statValue(before, "nlink") !== "1" ||
+      !sameDescriptor(beforeDescriptor, authority.descriptor)
+    ) {
+      throw new Error(`[persistence] ${label} deletion authority differs`);
+    }
+    descriptor = operations.openSync(
+      authority.path,
+      fs.constants.O_RDONLY | noFollow,
+    );
+    const opened = operations.fstatSync(descriptor, { bigint: true });
+    if (
+      !opened.isFile() ||
+      !sameDescriptor(regularFileDescriptor(opened), authority.descriptor)
+    ) {
+      throw new Error(
+        `[persistence] ${label} opened deletion descriptor differs`,
+      );
+    }
+    const value = operations.readFileSync(descriptor);
+    const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    if (!bytes.equals(expected)) {
+      throw new Error(`[persistence] ${label} deletion bytes differ`);
+    }
+    const beforeUnlink = operations.fstatSync(descriptor, { bigint: true });
+    const pathBeforeUnlink = lstatNoFollow(
+      authority.path,
+      `${label} at deletion boundary`,
+      operations,
+    );
+    if (
+      !sameDescriptor(
+        regularFileDescriptor(beforeUnlink),
+        authority.descriptor,
+      ) ||
+      !sameDescriptor(
+        regularFileDescriptor(pathBeforeUnlink),
+        authority.descriptor,
+      )
+    ) {
+      throw new Error(`[persistence] ${label} changed at deletion boundary`);
+    }
+    try {
+      operations.unlinkSync(authority.path);
+    } catch (error) {
+      unlinkError = error;
+    }
+    const afterUnlink = operations.fstatSync(descriptor, { bigint: true });
+    if (
+      statValue(afterUnlink, "dev") !== authority.descriptor.dev ||
+      statValue(afterUnlink, "ino") !== authority.descriptor.ino ||
+      statValue(afterUnlink, "mode") !== authority.descriptor.mode ||
+      statValue(afterUnlink, "size") !== authority.descriptor.size ||
+      statValue(afterUnlink, "birthtimeNs") !==
+        authority.descriptor.birthtimeNs ||
+      statValue(afterUnlink, "nlink") !== "0"
+    ) {
+      throw aggregatePersistence(`${label} descriptor deletion failed`, [
+        unlinkError,
+        new Error(`[persistence] ${label} opened descriptor was not unlinked`),
+      ]);
+    }
+    deleted = true;
+    result = { deleted: true, unlinkError };
+  } catch (error) {
+    failure = error;
+  }
+  if (descriptor !== undefined) {
+    try {
+      operations.closeSync(descriptor);
+    } catch (error) {
+      if (!deleted && failure === null) failure = error;
+    }
+  }
+  if (failure) throw failure;
+  return result;
 }
 
 function requireOwnedLock(paths, lockBytes, operations = fs) {
-  const observed = readBytes(paths.lock, operations);
-  if (!observed.equals(lockBytes))
+  const observed = readRegularFileNoFollow(
+    paths.lock,
+    "dense lock ownership",
+    operations,
+  );
+  if (!observed.bytes.equals(lockBytes))
     throw new Error("[persistence] dense lock ownership differs");
 }
 
@@ -547,24 +1307,6 @@ function assertExactBytes(file, expectedBytes, label, operations = fs) {
     throw new Error(`[persistence] ${label} bytes differ`);
   }
   return observed;
-}
-
-function sameFingerprint(left, right) {
-  return (
-    left?.exists === right?.exists &&
-    left?.byteLength === right?.byteLength &&
-    left?.sha256 === right?.sha256 &&
-    left?.error === right?.error
-  );
-}
-
-function requireAbsent(file, label, operations = fs) {
-  const identity = fingerprintEvidenceFile(file, operations);
-  assertEvidenceReadableOrAbsent(identity, label);
-  if (identity.exists !== false || identity.error !== "ENOENT") {
-    throw new Error(`[persistence] ${label} is occupied`);
-  }
-  return identity;
 }
 
 function restoreClaimedBytes(file, claimedBytes, label, operations = fs) {
@@ -586,53 +1328,6 @@ function aggregatePersistence(label, errors) {
   );
 }
 
-function claimCanonicalBytes(
-  canonical,
-  expectedBytes,
-  receipt,
-  label,
-  operations,
-) {
-  const expected = Buffer.from(expectedBytes);
-  assertExactBytes(canonical, expected, `${label} before claim`, operations);
-  let renameError;
-  try {
-    operations.renameSync(canonical, receipt);
-  } catch (error) {
-    renameError = error;
-  }
-  let claimed;
-  try {
-    claimed = readBytes(receipt, operations);
-  } catch (claimError) {
-    if (renameError && claimError?.code === "ENOENT") throw renameError;
-    throw aggregatePersistence(`${label} claim could not be inspected`, [
-      renameError,
-      claimError,
-    ]);
-  }
-  if (!claimed.equals(expected) || renameError) {
-    const ownershipError = claimed.equals(expected)
-      ? renameError
-      : new Error(`${label} captured foreign canonical bytes`);
-    try {
-      restoreClaimedBytes(
-        canonical,
-        claimed,
-        `${label} exact claimed bytes restored`,
-        operations,
-      );
-    } catch (restoreError) {
-      throw aggregatePersistence(
-        `${label} failed and its claimed bytes could not be restored`,
-        [ownershipError, restoreError],
-      );
-    }
-    throw ownershipError;
-  }
-  return claimed;
-}
-
 export function replaceC1229S5DenseLatestOwned(
   paths,
   bytes,
@@ -640,103 +1335,213 @@ export function replaceC1229S5DenseLatestOwned(
   tag,
   expectedPriorBytes = undefined,
   operations = fs,
+  boundPriorAuthority = null,
+  boundLockAuthority = null,
 ) {
-  requireOwnedLock(paths, lockBytes, operations);
+  const assertOwnedLock = (label) => {
+    if (boundLockAuthority) {
+      assertExactFileAuthority(
+        boundLockAuthority,
+        lockBytes,
+        `dense ${label} lock authority`,
+        operations,
+      );
+    } else {
+      requireOwnedLock(paths, lockBytes, operations);
+    }
+  };
+  assertOwnedLock("latest replacement entry");
   const replacement = Buffer.from(bytes);
   const priorReceipt = `${paths.latest}.${tag}-${randomUUID()}.receipt`;
-  const initial = fingerprintEvidenceFile(paths.latest, operations);
-  assertEvidenceReadableOrAbsent(initial, "dense canonical latest at claim");
-  let expected;
+  requireAbsentNoFollow(
+    priorReceipt,
+    "dense prior latest receipt before claim",
+    operations,
+  );
+  let expected = null;
+  let priorAuthority = null;
   if (expectedPriorBytes === null) {
-    if (initial.exists !== false || initial.error !== "ENOENT") {
-      throw new Error(
-        "[persistence] canonical latest appeared before exclusive creation",
-      );
-    }
+    requireAbsentNoFollow(
+      paths.latest,
+      "canonical latest before exclusive creation",
+      operations,
+    );
   } else if (expectedPriorBytes !== undefined) {
     expected = Buffer.from(expectedPriorBytes);
-    assertExactBytes(
+    priorAuthority = captureExactFileAuthority(
       paths.latest,
       expected,
       "canonical latest before owned claim",
       operations,
     );
-  } else if (initial.exists === true) {
-    expected = readBytes(paths.latest, operations);
-    const afterRead = fingerprintEvidenceFile(paths.latest, operations);
-    assertEvidenceReadableOrAbsent(
-      afterRead,
-      "dense canonical latest after claim snapshot",
+  } else {
+    const observed = inspectOptionalRegularFile(
+      paths.latest,
+      "dense canonical latest at claim",
+      operations,
     );
-    if (!sameFingerprint(initial, afterRead)) {
-      throw new Error(
-        "[persistence] canonical latest changed during claim snapshot",
-      );
+    if (observed.state === "present") {
+      expected = Buffer.from(observed.bytes);
+      priorAuthority = Object.freeze({
+        path: observed.path,
+        descriptor: observed.descriptor,
+        byteLength: observed.byteLength,
+        sha256: observed.sha256,
+      });
     }
   }
+  if (
+    boundPriorAuthority &&
+    (!priorAuthority ||
+      !sameDescriptor(
+        priorAuthority.descriptor,
+        boundPriorAuthority.descriptor,
+      ))
+  ) {
+    throw new Error("[persistence] canonical latest bound authority differs");
+  }
 
-  if (expected === undefined) {
-    requireOwnedLock(paths, lockBytes, operations);
-    writeExclusive(paths.latest, replacement, operations);
-    assertExactBytes(
-      paths.latest,
+  if (expected === null) {
+    assertOwnedLock("latest exclusive creation pre-write");
+    const authority = writeExclusive(paths.latest, replacement, operations);
+    assertOwnedLock("latest exclusive creation post-write");
+    assertExactFileAuthority(
+      authority,
       replacement,
       "exclusive canonical latest",
       operations,
     );
-    requireOwnedLock(paths, lockBytes, operations);
-    return { mode: "exclusive-create", receipt: null };
+    return { mode: "exclusive-create", receipt: null, authority };
   }
 
-  let claimed;
-  let replacementCreated = false;
+  let claimedAuthority = null;
+  let claimedBytes = null;
+  let replacementAuthority = null;
   try {
-    requireOwnedLock(paths, lockBytes, operations);
-    claimed = claimCanonicalBytes(
-      paths.latest,
-      expected,
-      priorReceipt,
-      "dense canonical latest",
-      operations,
-    );
-    requireOwnedLock(paths, lockBytes, operations);
-    requireAbsent(
+    assertOwnedLock("latest claim pre-rename");
+    let renameError = null;
+    try {
+      operations.renameSync(paths.latest, priorReceipt);
+    } catch (error) {
+      renameError = error;
+    }
+    let claimed;
+    try {
+      claimed = readRegularFileNoFollow(
+        priorReceipt,
+        "dense claimed prior latest",
+        operations,
+      );
+    } catch (claimError) {
+      if (renameError) {
+        try {
+          assertExactFileAuthority(
+            priorAuthority,
+            expected,
+            "canonical latest after failed claim rename",
+            operations,
+          );
+        } catch (authorityError) {
+          throw aggregatePersistence(
+            "latest claim rename failed with uncertain authority",
+            [renameError, claimError, authorityError],
+          );
+        }
+        throw renameError;
+      }
+      throw claimError;
+    }
+    claimedBytes = Buffer.from(claimed.bytes);
+    claimedAuthority = Object.freeze({
+      path: claimed.path,
+      descriptor: claimed.descriptor,
+      byteLength: claimed.byteLength,
+      sha256: claimed.sha256,
+    });
+    if (
+      !claimedBytes.equals(expected) ||
+      !sameFileObject(claimedAuthority.descriptor, priorAuthority.descriptor)
+    ) {
+      const ownershipError = new Error(
+        "[persistence] dense claimed prior latest ownership differs",
+      );
+      try {
+        assertExactFileAuthority(
+          priorAuthority,
+          expected,
+          "canonical latest retained after hostile claim",
+          operations,
+        );
+      } catch (authorityError) {
+        throw aggregatePersistence(
+          "latest claim captured foreign or uncertain authority",
+          [renameError, ownershipError, authorityError],
+        );
+      }
+      throw aggregatePersistence("latest claim was not owned", [
+        renameError,
+        ownershipError,
+      ]);
+    }
+    // A throwing rename hook may report failure after the owned rename has
+    // completed. Exact descriptor identity at the unique receipt is the
+    // authoritative outcome; continuing avoids touching a concurrent latest.
+    assertOwnedLock("latest claim post-rename");
+    requireAbsentNoFollow(
       paths.latest,
       "canonical latest after owned claim",
       operations,
     );
-    requireOwnedLock(paths, lockBytes, operations);
-    writeExclusive(paths.latest, replacement, operations);
-    replacementCreated = true;
-    assertExactBytes(
+    assertOwnedLock("latest replacement pre-write");
+    replacementAuthority = writeExclusive(
       paths.latest,
       replacement,
-      "exclusive canonical replacement",
       operations,
     );
-    assertExactBytes(
-      priorReceipt,
+    assertExactFileAuthority(
+      claimedAuthority,
       expected,
       "retained prior latest receipt",
       operations,
     );
-    requireOwnedLock(paths, lockBytes, operations);
-    operations.unlinkSync(priorReceipt);
-    requireAbsent(priorReceipt, "deleted prior latest receipt", operations);
-    assertExactBytes(
-      paths.latest,
+    assertExactFileAuthority(
+      replacementAuthority,
+      replacement,
+      "exclusive canonical replacement",
+      operations,
+    );
+    assertOwnedLock("latest prior receipt pre-delete");
+    deleteExactFileAuthority(
+      claimedAuthority,
+      expected,
+      "retained prior latest receipt",
+      operations,
+    );
+    assertExactFileAuthority(
+      replacementAuthority,
       replacement,
       "canonical replacement after receipt deletion",
       operations,
     );
-    requireOwnedLock(paths, lockBytes, operations);
-    return { mode: "receipt-exclusive-replace", receipt: priorReceipt };
+    assertOwnedLock("latest replacement return");
+    return {
+      mode: "receipt-exclusive-replace",
+      receipt: priorReceipt,
+      authority: replacementAuthority,
+    };
   } catch (error) {
-    if (claimed && !replacementCreated) {
+    if (
+      claimedBytes &&
+      claimedAuthority &&
+      priorAuthority &&
+      claimedBytes.equals(expected) &&
+      sameFileObject(claimedAuthority.descriptor, priorAuthority.descriptor) &&
+      replacementAuthority === null
+    ) {
       try {
         restoreClaimedBytes(
           paths.latest,
-          claimed,
+          claimedBytes,
           "canonical latest restored after failed replacement",
           operations,
         );
@@ -755,47 +1560,103 @@ export function releaseC1229S5DenseOwnedLock(
   paths,
   lockBytes,
   operations = fs,
+  verifyRetainedAuthority = () => {},
+  boundLockAuthority = null,
 ) {
-  requireOwnedLock(paths, lockBytes, operations);
-  const receipt = `${paths.lock}.release-${randomUUID()}.receipt`;
-  const claimed = claimCanonicalBytes(
-    paths.lock,
+  const lockAuthority =
+    boundLockAuthority ??
+    captureExactFileAuthority(
+      paths.lock,
+      lockBytes,
+      "dense RUNNING lock release authority",
+      operations,
+    );
+  assertExactFileAuthority(
+    lockAuthority,
     lockBytes,
-    receipt,
-    "dense RUNNING lock release",
+    "dense RUNNING lock before release linearization",
     operations,
   );
-  const canonical = fingerprintEvidenceFile(paths.lock, operations);
-  assertEvidenceReadableOrAbsent(
-    canonical,
-    "dense canonical lock after release claim",
+  const receipt = `${paths.lock}.release-${randomUUID()}.receipt`;
+  requireAbsentNoFollow(
+    receipt,
+    "dense lock release receipt before linearization",
+    operations,
   );
-  if (canonical.exists !== false || canonical.error !== "ENOENT") {
-    throw new Error(
-      "[persistence] foreign canonical lock appeared during owned release",
+  assertExactFileAuthority(
+    lockAuthority,
+    lockBytes,
+    "dense RUNNING lock at release linearization",
+    operations,
+  );
+  verifyRetainedAuthority("at lock release linearization");
+  let renameError = null;
+  try {
+    operations.renameSync(paths.lock, receipt);
+  } catch (error) {
+    renameError = error;
+  }
+  let observedReceipt;
+  try {
+    observedReceipt = readRegularFileNoFollow(
+      receipt,
+      "dense linearized lock receipt",
+      operations,
     );
+  } catch (receiptError) {
+    const failure = aggregatePersistence(
+      "lock release rename outcome could not be proved from its receipt",
+      [renameError, receiptError],
+    );
+    failure.denseLockLinearized = true;
+    throw failure;
+  }
+  const receiptAuthority = Object.freeze({
+    path: observedReceipt.path,
+    descriptor: observedReceipt.descriptor,
+    byteLength: observedReceipt.byteLength,
+    sha256: observedReceipt.sha256,
+  });
+  if (
+    !observedReceipt.bytes.equals(lockBytes) ||
+    !sameFileObject(receiptAuthority.descriptor, lockAuthority.descriptor)
+  ) {
+    const ownershipError = new Error(
+      "[persistence] linearized lock receipt ownership differs",
+    );
+    try {
+      writeExclusive(paths.lock, observedReceipt.bytes, operations);
+    } catch (restoreError) {
+      const failure = aggregatePersistence(
+        "hostile release rename captured authority that could not be restored exclusively",
+        [renameError, ownershipError, restoreError],
+      );
+      failure.denseLockLinearized = true;
+      throw failure;
+    }
+    const failure = aggregatePersistence("lock release receipt was not owned", [
+      renameError,
+      ownershipError,
+    ]);
+    failure.denseLockLinearized = true;
+    throw failure;
   }
   try {
-    operations.unlinkSync(receipt);
+    deleteExactFileAuthority(
+      receiptAuthority,
+      lockBytes,
+      "dense linearized lock receipt",
+      operations,
+    );
   } catch (error) {
-    try {
-      restoreClaimedBytes(
-        paths.lock,
-        claimed,
-        "owned RUNNING lock restored after release failure",
-        operations,
-      );
-    } catch (restoreError) {
-      throw aggregatePersistence(
-        "lock receipt deletion failed and authority could not be restored",
-        [error, restoreError],
-      );
-    }
+    error.denseLockLinearized = true;
     throw error;
   }
-  requireAbsent(receipt, "deleted lock release receipt", operations);
-  requireAbsent(paths.lock, "released canonical lock", operations);
-  return { receipt, claimedByteLength: claimed.byteLength };
+  return {
+    receipt,
+    claimedByteLength: lockBytes.byteLength,
+    linearization: "owned-lock-to-receipt-rename",
+  };
 }
 
 export function beginC1229S5DenseRun(paths, runId, operations = fs) {
@@ -806,7 +1667,13 @@ export function beginC1229S5DenseRun(paths, runId, operations = fs) {
   ) {
     throw new Error("[persistence] dense runId must be UUID-v4");
   }
+  paths = normalizeDenseArtifactPaths(paths, runId);
   operations.mkdirSync(paths.directory, { recursive: true });
+  const directoryAuthority = captureDirectoryAuthority(
+    paths.directory,
+    "dense output directory at begin",
+    operations,
+  );
   const lock = {
     schema: C12_29_S5_DENSE_SCHEMA,
     kind: "c12-29-s5-dense-cost-running-lock",
@@ -817,119 +1684,286 @@ export function beginC1229S5DenseRun(paths, runId, operations = fs) {
     startedAt: new Date().toISOString(),
   };
   const lockBytes = jsonBytes(lock);
-  writeExclusive(paths.lock, lockBytes, operations);
-  const running = {
-    schema: C12_29_S5_DENSE_SCHEMA,
-    schemaVersion: 2,
-    runId,
-    status: "RUNNING",
-    incomplete: true,
-    pass: null,
-    exitCode: null,
-    startedAt: lock.startedAt,
-    lifecycle: {
-      lockCreatedExclusively: true,
-      runningReceiptCreatedExclusively: true,
-      runningLatestPublishedBeforeLaunch: true,
-    },
-  };
-  const runningBytes = jsonBytes(running);
+  const lockAuthority = writeExclusive(paths.lock, lockBytes, operations);
+  assertDirectoryAuthority(
+    directoryAuthority,
+    "dense output directory after lock creation",
+    operations,
+  );
+  assertExactFileAuthority(
+    lockAuthority,
+    lockBytes,
+    "dense lock at exclusive creation boundary",
+    operations,
+  );
+  let running;
+  let runningBytes = null;
   let runningAuthorityEstablished = false;
   try {
-    const priorBefore = fingerprintEvidenceFile(paths.latest, operations);
-    assertEvidenceReadableOrAbsent(priorBefore, "dense prior latest");
+    const priorLatest = inspectOptionalRegularFile(
+      paths.latest,
+      "dense prior latest",
+      operations,
+    );
     let priorBytes = null;
     let prior = null;
-    let legacyReceipt = null;
-    if (priorBefore.exists === true) {
-      priorBytes = readBytes(paths.latest, operations);
+    let supersessionReceipt = null;
+    let supersessionReceiptAuthority = null;
+    let priorLatestAuthority = null;
+    let predecessorFileAuthority = null;
+    if (priorLatest.state === "present") {
+      priorBytes = Buffer.from(priorLatest.bytes);
+      priorLatestAuthority = Object.freeze({
+        path: priorLatest.path,
+        descriptor: priorLatest.descriptor,
+        byteLength: priorLatest.byteLength,
+        sha256: priorLatest.sha256,
+      });
       prior = inspectDensePriorFinalBytes(priorBytes);
-      assertDensePriorRetained(
-        paths,
-        priorBytes,
-        prior,
-        legacyReceipt,
-        "initial",
+      assertDirectoryAuthority(
+        directoryAuthority,
+        "dense output directory before predecessor archive bind",
         operations,
       );
-      if (prior.schemaVersion === 1) {
-        legacyReceipt = preserveDenseLegacyV1Latest(
+      assertExactFileAuthority(
+        lockAuthority,
+        lockBytes,
+        "dense lock before predecessor archive bind",
+        operations,
+      );
+      const predecessorArchiveAuthority = captureExactFileAuthority(
+        path.join(paths.directory, `${prior.value.runId}.json`),
+        priorBytes,
+        "begin predecessor archive",
+        operations,
+      );
+      if (prior.schemaVersion < 3) {
+        assertDirectoryAuthority(
+          directoryAuthority,
+          "dense output directory before predecessor receipt",
+          operations,
+        );
+        assertExactFileAuthority(
+          lockAuthority,
+          lockBytes,
+          "dense lock before predecessor receipt",
+          operations,
+        );
+        const supersession = preserveDenseSupersededLatest(
           paths,
           priorBytes,
-          prior.value,
+          prior,
+          operations,
+        );
+        supersessionReceipt = supersession.path;
+        supersessionReceiptAuthority = supersession.authority;
+        assertDirectoryAuthority(
+          directoryAuthority,
+          "dense output directory after predecessor receipt",
+          operations,
+        );
+        assertExactFileAuthority(
+          lockAuthority,
+          lockBytes,
+          "dense lock after predecessor receipt",
           operations,
         );
       }
-      assertDensePriorRetained(
+      predecessorFileAuthority = captureDensePredecessorAuthority(
         paths,
         priorBytes,
         prior,
-        legacyReceipt,
-        "post-supersession",
+        supersessionReceipt,
+        supersessionReceiptAuthority,
+        "begin",
+        operations,
+        predecessorArchiveAuthority,
+      );
+    }
+    if (priorLatestAuthority) {
+      assertExactFileAuthority(
+        priorLatestAuthority,
+        priorBytes,
+        "dense prior latest after parse",
+        operations,
+      );
+    } else {
+      requireAbsentNoFollow(
+        paths.latest,
+        "dense prior latest after absence observation",
         operations,
       );
     }
-    const priorAfter = fingerprintEvidenceFile(paths.latest, operations);
-    assertEvidenceReadableOrAbsent(
-      priorAfter,
-      "dense prior latest after parse",
-    );
-    if (!sameFingerprint(priorBefore, priorAfter)) {
-      throw new Error("[persistence] dense prior latest changed while parsing");
-    }
-    requireOwnedLock(paths, lockBytes, operations);
-    writeExclusive(paths.runningReceipt, runningBytes, operations);
-    assertDensePriorRetained(
+    const initialFirstRedAuthority = captureInitialFirstRedAuthority(
       paths,
+      "dense initial first-red",
+      operations,
+    );
+    assertDirectoryAuthority(
+      directoryAuthority,
+      "dense output directory before RUNNING receipt",
+      operations,
+    );
+    assertExactFileAuthority(
+      lockAuthority,
+      lockBytes,
+      "dense lock before RUNNING receipt",
+      operations,
+    );
+    assertDensePredecessorAuthority(
+      predecessorFileAuthority,
       priorBytes,
-      prior,
-      legacyReceipt,
+      "before RUNNING receipt",
+      operations,
+    );
+    assertFirstRedAuthority(
+      initialFirstRedAuthority,
+      "initial first-red before RUNNING receipt",
+      operations,
+    );
+    const predecessorDescriptor = densePredecessorDescriptor(priorBytes, prior);
+    running = {
+      schema: C12_29_S5_DENSE_SCHEMA,
+      schemaVersion: 3,
+      runId,
+      status: "RUNNING",
+      incomplete: true,
+      pass: null,
+      exitCode: null,
+      startedAt: lock.startedAt,
+      predecessorAuthority: predecessorDescriptor,
+      lifecycle: {
+        lockCreatedExclusively: true,
+        runningReceiptCreatedExclusively: true,
+        runningLatestPublishedBeforeLaunch: true,
+      },
+    };
+    runningBytes = jsonBytes(running);
+    const runningReceiptAuthority = writeExclusive(
+      paths.runningReceipt,
+      runningBytes,
+      operations,
+    );
+    assertExactFileAuthority(
+      runningReceiptAuthority,
+      runningBytes,
+      "RUNNING receipt at exclusive creation boundary",
+      operations,
+    );
+    assertExactFileAuthority(
+      lockAuthority,
+      lockBytes,
+      "dense lock post-running-receipt",
+      operations,
+    );
+    assertDensePredecessorAuthority(
+      predecessorFileAuthority,
+      priorBytes,
       "post-running-receipt",
       operations,
     );
-    replaceC1229S5DenseLatestOwned(
+    assertFirstRedAuthority(
+      initialFirstRedAuthority,
+      "initial first-red post-running-receipt",
+      operations,
+    );
+    const runningLatestPublication = replaceC1229S5DenseLatestOwned(
       paths,
       runningBytes,
       lockBytes,
       "running",
       priorBytes,
       operations,
+      priorLatestAuthority,
+      lockAuthority,
     );
     runningAuthorityEstablished = true;
-    assertDensePriorRetained(
-      paths,
+    const runningLatestAuthority = runningLatestPublication.authority;
+    assertExactFileAuthority(
+      lockAuthority,
+      lockBytes,
+      "dense lock post-latest-replacement",
+      operations,
+    );
+    assertExactFileAuthority(
+      runningReceiptAuthority,
+      runningBytes,
+      "RUNNING receipt post-latest-replacement",
+      operations,
+    );
+    assertDensePredecessorAuthority(
+      predecessorFileAuthority,
       priorBytes,
-      prior,
-      legacyReceipt,
       "post-latest-replacement",
       operations,
     );
-    assertExactBytes(
-      paths.latest,
-      runningBytes,
-      "canonical RUNNING latest",
+    assertFirstRedAuthority(
+      initialFirstRedAuthority,
+      "initial first-red post-latest-replacement",
       operations,
     );
-    requireOwnedLock(paths, lockBytes, operations);
     operations.mkdirSync(paths.rawDirectory, { recursive: false });
-    assertDensePriorRetained(
-      paths,
+    const rawDirectoryAuthority = captureDirectoryAuthority(
+      paths.rawDirectory,
+      "dense raw directory",
+      operations,
+    );
+    assertDirectoryAuthority(
+      directoryAuthority,
+      "dense output directory pre-return",
+      operations,
+    );
+    assertExactFileAuthority(
+      lockAuthority,
+      lockBytes,
+      "dense lock pre-return",
+      operations,
+    );
+    assertExactFileAuthority(
+      runningReceiptAuthority,
+      runningBytes,
+      "RUNNING receipt pre-return",
+      operations,
+    );
+    assertExactFileAuthority(
+      runningLatestAuthority,
+      runningBytes,
+      "RUNNING latest pre-return",
+      operations,
+    );
+    assertDensePredecessorAuthority(
+      predecessorFileAuthority,
       priorBytes,
-      prior,
-      legacyReceipt,
       "pre-return",
       operations,
     );
-    assertExactBytes(
-      paths.latest,
-      runningBytes,
-      "canonical RUNNING latest after raw-directory creation",
+    assertFirstRedAuthority(
+      initialFirstRedAuthority,
+      "initial first-red pre-return",
       operations,
     );
-    requireOwnedLock(paths, lockBytes, operations);
-    return { lock, lockBytes, running, runningBytes };
+    const boundState = {
+      paths,
+      directoryAuthority,
+      rawDirectoryAuthority,
+      lockAuthority,
+      runningReceiptAuthority,
+      runningLatestAuthority,
+      predecessorFileAuthority,
+      initialFirstRedAuthority,
+    };
+    const publicationAuthority = createDensePublicationAuthority(
+      runId,
+      lockBytes,
+      runningBytes,
+      predecessorDescriptor,
+      priorBytes,
+      prior,
+      boundState,
+    );
+    return { lock, lockBytes, running, runningBytes, publicationAuthority };
   } catch (error) {
-    if (!runningAuthorityEstablished) {
+    if (!runningAuthorityEstablished && runningBytes !== null) {
       try {
         assertExactBytes(
           paths.latest,
@@ -944,7 +1978,13 @@ export function beginC1229S5DenseRun(paths, runId, operations = fs) {
     }
     if (!runningAuthorityEstablished) {
       try {
-        releaseC1229S5DenseOwnedLock(paths, lockBytes, operations);
+        releaseC1229S5DenseOwnedLock(
+          paths,
+          lockBytes,
+          operations,
+          () => {},
+          lockAuthority,
+        );
       } catch {
         // Preserve the acquisition error and any uncertain/foreign authority.
       }
@@ -953,19 +1993,15 @@ export function beginC1229S5DenseRun(paths, runId, operations = fs) {
   }
 }
 
-function recoverDenseOwnedLock(paths, lockBytes, operations) {
-  const before = fingerprintEvidenceFile(paths.lock, operations);
+function recoverDenseOwnedLock(lockAuthority, lockBytes, operations) {
   try {
-    assertEvidenceReadableOrAbsent(before, "dense lock at recovery");
-    if (before.exists === false && before.error === "ENOENT") {
-      try {
-        createImmutableEvidence(paths.lock, lockBytes, operations);
-      } catch {
-        // Exact verification below decides post-write throws and collisions.
-      }
-    }
-    requireOwnedLock(paths, lockBytes, operations);
-    return { ok: true, method: before.exists ? "retained" : "recreated" };
+    assertExactFileAuthority(
+      lockAuthority,
+      lockBytes,
+      "dense lock descriptor authority at recovery",
+      operations,
+    );
+    return { ok: true, method: "descriptor-retained" };
   } catch (error) {
     return { ok: false, method: "foreign-or-unverifiable", error };
   }
@@ -977,154 +2013,169 @@ function recoverDenseRunningLatest(
   finalBytes,
   lockBytes,
   operations,
-  hasOwnedLock,
-) {
-  const errors = [];
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      assertExactBytes(
-        paths.latest,
-        runningBytes,
-        `canonical RUNNING latest recovery ${attempt}`,
-        operations,
-      );
-      return { ok: true, method: "verified-running" };
-    } catch (error) {
-      errors.push(error);
-    }
-    if (!hasOwnedLock) break;
-    try {
-      requireOwnedLock(paths, lockBytes, operations);
-      const current = fingerprintEvidenceFile(paths.latest, operations);
-      assertEvidenceReadableOrAbsent(
-        current,
-        `dense latest before recovery ${attempt}`,
-      );
-      if (current.exists === false && current.error === "ENOENT") {
-        replaceC1229S5DenseLatestOwned(
-          paths,
-          runningBytes,
-          lockBytes,
-          `running-recovery-${attempt}`,
-          null,
-          operations,
-        );
-      } else {
-        assertExactBytes(
-          paths.latest,
-          finalBytes,
-          `owned final-looking latest recovery ${attempt}`,
-          operations,
-        );
-        replaceC1229S5DenseLatestOwned(
-          paths,
-          runningBytes,
-          lockBytes,
-          `running-recovery-${attempt}`,
-          finalBytes,
-          operations,
-        );
-      }
-      assertExactBytes(
-        paths.latest,
-        runningBytes,
-        `restored canonical RUNNING latest ${attempt}`,
-        operations,
-      );
-      return { ok: true, method: `exclusive-recovery-${attempt}` };
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-  return {
-    ok: false,
-    method: hasOwnedLock ? "exclusive-recovery-failed" : "no-lock-authority",
-    error: aggregatePersistence(
-      "canonical RUNNING latest recovery failed",
-      errors,
-    ),
-  };
-}
-
-function quarantineDenseFinalLatest(
-  paths,
-  finalBytes,
-  runningBytes,
-  lockBytes,
-  operations,
+  lockAuthority,
+  finalLatestAuthority,
+  immutableAuthority,
 ) {
   try {
-    requireOwnedLock(paths, lockBytes, operations);
-    assertExactBytes(
-      paths.immutable,
-      finalBytes,
-      "immutable archive before final quarantine",
+    assertExactFileAuthority(
+      lockAuthority,
+      lockBytes,
+      "dense recovery lock authority",
       operations,
     );
-    const recovery = fingerprintEvidenceFile(paths.recoveryLatest, operations);
-    assertEvidenceReadableOrAbsent(
-      recovery,
-      "dense recovery quarantine identity",
+    assertExactFileAuthority(
+      immutableAuthority,
+      finalBytes,
+      "dense recovery immutable authority",
+      operations,
     );
-    if (recovery.exists === false && recovery.error === "ENOENT") {
-      writeExclusive(paths.recoveryLatest, finalBytes, operations);
-    } else {
-      assertExactBytes(
-        paths.recoveryLatest,
-        finalBytes,
-        "existing dense recovery quarantine",
-        operations,
-      );
-    }
-    replaceC1229S5DenseLatestOwned(
+    assertExactFileAuthority(
+      finalLatestAuthority,
+      finalBytes,
+      "dense recovery final latest authority",
+      operations,
+    );
+    const recovered = replaceC1229S5DenseLatestOwned(
       paths,
       runningBytes,
       lockBytes,
-      "quarantine-recovery",
+      "running-recovery",
       finalBytes,
       operations,
+      finalLatestAuthority,
+      lockAuthority,
     );
-    return { ok: true, method: "immutable-quarantine-and-running-restore" };
+    assertExactFileAuthority(
+      lockAuthority,
+      lockBytes,
+      "dense recovery lock authority after latest restore",
+      operations,
+    );
+    assertExactFileAuthority(
+      immutableAuthority,
+      finalBytes,
+      "dense recovery immutable authority after latest restore",
+      operations,
+    );
+    assertExactFileAuthority(
+      recovered.authority,
+      runningBytes,
+      "restored descriptor-bound RUNNING latest",
+      operations,
+    );
+    return { ok: true, method: "descriptor-exclusive-recovery" };
   } catch (error) {
-    return { ok: false, method: "quarantine-failed", error };
+    return {
+      ok: false,
+      method: "descriptor-exclusive-recovery-failed",
+      error,
+    };
   }
 }
 
 function verifyFirstRedWriteOnce(paths, bytes, operations) {
-  const before = fingerprintEvidenceFile(paths.firstRed, operations);
-  assertEvidenceReadableOrAbsent(before, "dense first-red before preserve");
-  const retained = preserveFirstRedEvidence(paths.firstRed, bytes, operations);
-  const after = fingerprintEvidenceFile(paths.firstRed, operations);
-  assertEvidenceReadableOrAbsent(after, "dense first-red after preserve");
-  if (
-    after.exists !== true ||
-    retained.exists !== true ||
-    after.byteLength !== retained.byteLength ||
-    after.sha256 !== retained.sha256 ||
-    (before.exists === true &&
-      (!sameFingerprint(before, after) || retained.written !== false)) ||
-    (before.exists === false &&
-      (retained.written !== true ||
-        after.byteLength !== Buffer.byteLength(bytes) ||
-        after.sha256 !== sha256(bytes)))
-  ) {
-    throw new Error(
-      "[persistence] first-red write-once fingerprint verification failed",
+  const observed = inspectOptionalRegularFile(
+    paths.firstRed,
+    "dense first-red before preserve",
+    operations,
+  );
+  const before =
+    observed.state === "absent"
+      ? { exists: false, byteLength: null, sha256: null, error: "ENOENT" }
+      : {
+          exists: true,
+          byteLength: observed.byteLength,
+          sha256: observed.sha256,
+          error: null,
+        };
+  const written = observed.state === "absent";
+  const authority = written
+    ? writeExclusive(paths.firstRed, bytes, operations)
+    : Object.freeze({
+        path: observed.path,
+        descriptor: observed.descriptor,
+        byteLength: observed.byteLength,
+        sha256: observed.sha256,
+      });
+  const expected = written ? bytes : observed.bytes;
+  assertExactFileAuthority(
+    authority,
+    expected,
+    "dense first-red after preserve",
+    operations,
+  );
+  const after = {
+    exists: true,
+    byteLength: authority.byteLength,
+    sha256: authority.sha256,
+    error: null,
+  };
+  return { before, after, written, verified: true, authority };
+}
+
+function bindPublishedFirstRedAuthority(
+  paths,
+  bytes,
+  immutableAuthority,
+  initialAuthority,
+  retained,
+  operations = fs,
+) {
+  if (initialAuthority.state === "present") {
+    if (retained.written !== false) {
+      throw new Error("[persistence] existing first-red was not retained");
+    }
+    assertFirstRedAuthority(
+      initialAuthority,
+      "retained initial first-red",
+      operations,
     );
+    return initialAuthority;
   }
-  return { before, after, written: retained.written, verified: true };
+  if (retained.written !== true) {
+    throw new Error("[persistence] new first-red was not created exclusively");
+  }
+  const file = captureExactFileAuthority(
+    retained.authority.path,
+    bytes,
+    "new first-red",
+    operations,
+  );
+  if (!sameDescriptor(file.descriptor, retained.authority.descriptor)) {
+    throw new Error("[persistence] new first-red descriptor authority differs");
+  }
+  assertExactFileAuthority(
+    immutableAuthority,
+    bytes,
+    "new first-red backing immutable archive",
+    operations,
+  );
+  return Object.freeze({
+    state: "present",
+    path: paths.firstRed,
+    bytes: Buffer.from(bytes),
+    file,
+    archive: immutableAuthority,
+    runId: path.basename(paths.immutable, ".json"),
+    schemaVersion: 3,
+  });
 }
 
 export function publishC1229S5DenseFinal(
   paths,
-  lockBytes,
+  publicationAuthority,
   report,
   operations = fs,
 ) {
-  requireOwnedLock(paths, lockBytes, operations);
-  const lock = JSON.parse(Buffer.from(lockBytes).toString("utf8"));
-  const runningBytes = readBytes(paths.runningReceipt, operations);
-  const running = JSON.parse(runningBytes.toString("utf8"));
+  const inspected = inspectDensePublicationAuthority(
+    paths,
+    publicationAuthority,
+    operations,
+  );
+  const { lock, lockBytes, running, runningBytes, predecessor, retained } =
+    inspected;
+  paths = inspected.paths;
   if (
     lock?.schema !== C12_29_S5_DENSE_SCHEMA ||
     lock?.kind !== "c12-29-s5-dense-cost-running-lock" ||
@@ -1143,36 +2194,109 @@ export function publishC1229S5DenseFinal(
       "[persistence] final artifact does not own the exact RUNNING identity",
     );
   }
-  assertExactBytes(
-    paths.latest,
+  let activeFirstRedAuthority = retained.initialFirstRedAuthority;
+  assertDensePublicationAuthorityRetained(
+    retained,
     runningBytes,
-    "canonical latest is not the owned RUNNING marker",
+    predecessor,
+    activeFirstRedAuthority,
+    "pre-publication",
+    operations,
+  );
+  assertExactFileAuthority(
+    retained.runningLatestAuthority,
+    runningBytes,
+    "pre-publication canonical RUNNING latest",
     operations,
   );
   const bytes = jsonBytes(report);
-  writeExclusive(paths.immutable, bytes, operations);
-  assertExactBytes(
-    paths.immutable,
-    bytes,
-    "immutable dense run archive",
+  const immutableAuthority = writeExclusive(paths.immutable, bytes, operations);
+  assertDensePublicationAuthorityRetained(
+    retained,
+    runningBytes,
+    predecessor,
+    activeFirstRedAuthority,
+    "post-immutable",
     operations,
   );
-  const runIdentity = fingerprintEvidenceFile(paths.immutable, operations);
-  assertEvidenceReadableOrAbsent(runIdentity, "dense immutable run archive");
+  assertExactFileAuthority(
+    retained.runningLatestAuthority,
+    runningBytes,
+    "post-immutable canonical RUNNING latest",
+    operations,
+  );
+  assertExactFileAuthority(
+    immutableAuthority,
+    bytes,
+    "post-immutable dense run archive",
+    operations,
+  );
   let firstRed = { applicable: false, verified: true };
   if (report.status !== "PASS") {
     firstRed = {
       applicable: true,
       ...verifyFirstRedWriteOnce(paths, bytes, operations),
     };
+    activeFirstRedAuthority = bindPublishedFirstRedAuthority(
+      paths,
+      bytes,
+      immutableAuthority,
+      activeFirstRedAuthority,
+      firstRed,
+      operations,
+    );
   }
+  assertDensePublicationAuthorityRetained(
+    retained,
+    runningBytes,
+    predecessor,
+    activeFirstRedAuthority,
+    "post-first-red",
+    operations,
+  );
+  assertExactFileAuthority(
+    retained.runningLatestAuthority,
+    runningBytes,
+    "post-first-red canonical RUNNING latest",
+    operations,
+  );
+  assertExactFileAuthority(
+    immutableAuthority,
+    bytes,
+    "post-first-red immutable run",
+    operations,
+  );
+  let finalLatestAuthority = null;
   try {
-    replaceC1229S5DenseLatestOwned(
+    const finalLatestPublication = replaceC1229S5DenseLatestOwned(
       paths,
       bytes,
       lockBytes,
       "final",
       runningBytes,
+      operations,
+      retained.runningLatestAuthority,
+      retained.lockAuthority,
+    );
+    finalLatestAuthority = finalLatestPublication.authority;
+    assertDensePublicationAuthorityRetained(
+      retained,
+      runningBytes,
+      predecessor,
+      activeFirstRedAuthority,
+      "post-final-latest",
+      operations,
+    );
+    assertExactFileAuthority(
+      immutableAuthority,
+      bytes,
+      "post-final-latest immutable run",
+      operations,
+    );
+    assertExactFileAuthority(
+      finalLatestAuthority,
+      bytes,
+      "post-final-latest canonical final latest",
       operations,
     );
     const receipt = {
@@ -1193,83 +2317,138 @@ export function publishC1229S5DenseFinal(
         afterSha256: firstRed.after?.sha256 ?? null,
         writeOnceFingerprintVerified: firstRed.verified === true,
       },
-      latestByteIdentical: readBytes(paths.latest, operations).equals(bytes),
+      latestByteIdentical: true,
+      predecessorAuthority: running.predecessorAuthority,
     };
-    writeExclusive(paths.finalReceipt, jsonBytes(receipt), operations);
-    if (!receipt.latestByteIdentical) {
-      throw new Error("[persistence] final latest differs from immutable run");
-    }
-    assertExactBytes(
-      paths.immutable,
-      bytes,
-      "immutable dense run before unlock",
-      operations,
-    );
-    assertExactBytes(
-      paths.latest,
-      bytes,
-      "canonical final latest before unlock",
-      operations,
-    );
-    assertExactBytes(
+    const receiptBytes = jsonBytes(receipt);
+    const finalReceiptAuthority = writeExclusive(
       paths.finalReceipt,
-      jsonBytes(receipt),
-      "final receipt before unlock",
+      receiptBytes,
       operations,
     );
-    if (firstRed.applicable) {
-      const retainedFirstRed = fingerprintEvidenceFile(
-        paths.firstRed,
+    assertDensePublicationAuthorityRetained(
+      retained,
+      runningBytes,
+      predecessor,
+      activeFirstRedAuthority,
+      "post-final-receipt",
+      operations,
+    );
+    assertExactFileAuthority(
+      immutableAuthority,
+      bytes,
+      "post-final-receipt immutable run",
+      operations,
+    );
+    assertExactFileAuthority(
+      finalLatestAuthority,
+      bytes,
+      "post-final-receipt canonical final latest",
+      operations,
+    );
+    assertExactFileAuthority(
+      finalReceiptAuthority,
+      receiptBytes,
+      "post-final-receipt final receipt",
+      operations,
+    );
+    const verifyFinalAuthority = (label) => {
+      assertDensePublicationAuthorityRetained(
+        retained,
+        runningBytes,
+        predecessor,
+        activeFirstRedAuthority,
+        label,
         operations,
       );
-      assertEvidenceReadableOrAbsent(
-        retainedFirstRed,
-        "dense first-red before unlock",
+      assertExactFileAuthority(
+        immutableAuthority,
+        bytes,
+        `${label} immutable dense run`,
+        operations,
       );
-      if (!sameFingerprint(retainedFirstRed, firstRed.after)) {
-        throw new Error("[persistence] first-red changed before unlock");
-      }
-    }
-    requireOwnedLock(paths, lockBytes, operations);
-    releaseC1229S5DenseOwnedLock(paths, lockBytes, operations);
+      assertExactFileAuthority(
+        finalLatestAuthority,
+        bytes,
+        `${label} canonical final latest`,
+        operations,
+      );
+      assertExactFileAuthority(
+        finalReceiptAuthority,
+        receiptBytes,
+        `${label} final receipt`,
+        operations,
+      );
+    };
+    verifyFinalAuthority("pre-release-linearization");
+    releaseC1229S5DenseOwnedLock(
+      paths,
+      lockBytes,
+      operations,
+      verifyFinalAuthority,
+      retained.lockAuthority,
+    );
     return receipt;
   } catch (error) {
-    const lockRecovery = recoverDenseOwnedLock(paths, lockBytes, operations);
+    if (error?.denseLockLinearized === true) throw error;
+    try {
+      assertExactFileAuthority(
+        retained.lockAuthority,
+        lockBytes,
+        "publication recovery owned lock",
+        operations,
+      );
+      if (finalLatestAuthority === null) {
+        assertExactFileAuthority(
+          retained.runningLatestAuthority,
+          runningBytes,
+          "publication recovery RUNNING latest",
+          operations,
+        );
+        throw error;
+      }
+      assertExactFileAuthority(
+        finalLatestAuthority,
+        bytes,
+        "publication recovery owned final latest",
+        operations,
+      );
+    } catch (authorityError) {
+      if (authorityError === error) throw error;
+      throw aggregatePersistence(
+        "publication recovery refused unowned descriptor authority",
+        [error, authorityError],
+      );
+    }
+    const lockRecovery = recoverDenseOwnedLock(
+      retained.lockAuthority,
+      lockBytes,
+      operations,
+    );
     const latestRecovery = recoverDenseRunningLatest(
       paths,
       runningBytes,
       bytes,
       lockBytes,
       operations,
-      lockRecovery.ok,
+      retained.lockAuthority,
+      finalLatestAuthority,
+      immutableAuthority,
     );
-    const quarantine = latestRecovery.ok
-      ? null
-      : quarantineDenseFinalLatest(
-          paths,
-          bytes,
-          runningBytes,
-          lockBytes,
-          operations,
-        );
     const failures = [
       lockRecovery.ok ? null : lockRecovery.error,
       latestRecovery.ok ? null : latestRecovery.error,
-      quarantine === null || quarantine.ok ? null : quarantine.error,
     ].filter(Boolean);
     if (failures.length === 0) throw error;
     const recoveryError = aggregatePersistence(
-      `final publication failed; recovery lock=${lockRecovery.ok} latest=${latestRecovery.ok} quarantine=${quarantine?.ok ?? null}`,
+      `final publication failed; descriptor recovery lock=${lockRecovery.ok} latest=${latestRecovery.ok}`,
       [error, ...failures],
     );
     recoveryError.code = "C12_29_S5_DENSE_PUBLICATION_RECOVERY";
     recoveryError.denseRecovery = {
       lock: { ok: lockRecovery.ok, method: lockRecovery.method },
       latest: { ok: latestRecovery.ok, method: latestRecovery.method },
-      quarantine:
-        quarantine === null
-          ? { ok: null, method: "not-required" }
-          : { ok: quarantine.ok, method: quarantine.method },
+      quarantine: { ok: null, method: "not-permitted-with-bound-authority" },
     };
     throw recoveryError;
   }
@@ -2327,7 +3506,8 @@ async function runLegChild(options) {
 async function runCoordinator(options) {
   const runId = randomUUID();
   const paths = createC1229S5DenseArtifactPaths(options.outputDirectory, runId);
-  const { lockBytes, running } = beginC1229S5DenseRun(paths, runId);
+  const started = beginC1229S5DenseRun(paths, runId);
+  const { running, publicationAuthority } = started;
   const workloadBytes = fs.readFileSync(workloadPath);
   const workload = JSON.parse(workloadBytes.toString("utf8"));
   const workloadValidation = validateC1229S5DenseWorkload(workload);
@@ -2413,6 +3593,9 @@ async function runCoordinator(options) {
     firstRedFingerprintPolicy: "write-once-exact-sha256-byte-length",
     finalReceiptCreatedExclusively: true,
     latestEqualsImmutableRunBeforeUnlock: true,
+    predecessorAuthorityBoundToRunningReceipt: true,
+    publicationAuthorityReverifiedThroughUnlock: true,
+    runningReceiptReverifiedThroughUnlock: true,
     lockReleasedByOwnedReceipt: true,
     publicationOrder: [
       "lock",
@@ -2445,7 +3628,7 @@ async function runCoordinator(options) {
   };
   const report = {
     schema: C12_29_S5_DENSE_SCHEMA,
-    schemaVersion: 2,
+    schemaVersion: 3,
     runId,
     status: "PASS",
     incomplete: false,
@@ -2487,7 +3670,7 @@ async function runCoordinator(options) {
     );
   }
   try {
-    publishC1229S5DenseFinal(paths, lockBytes, report);
+    publishC1229S5DenseFinal(paths, publicationAuthority, report);
     published = true;
   } finally {
     if (!published) {

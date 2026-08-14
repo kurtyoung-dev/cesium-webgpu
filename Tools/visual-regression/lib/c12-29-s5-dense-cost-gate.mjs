@@ -9,7 +9,9 @@
  */
 
 export const C12_29_S5_DENSE_LEGACY_SCHEMA = "c12-29-s5-dense-cost-evidence-v1";
-export const C12_29_S5_DENSE_SCHEMA = "c12-29-s5-dense-cost-evidence-v2";
+export const C12_29_S5_DENSE_SUPERSEDED_SCHEMA =
+  "c12-29-s5-dense-cost-evidence-v2";
+export const C12_29_S5_DENSE_SCHEMA = "c12-29-s5-dense-cost-evidence-v3";
 export const C12_29_S5_DENSE_RUNTIME_SCHEMA = "c12-29-s5-dense-cost-runtime-v1";
 export const C12_29_S5_DENSE_WORKLOAD_SCHEMA =
   "c12-29-s5-dense-cost-workload-v1";
@@ -113,6 +115,18 @@ export const C12_29_S5_DENSE_PREREQUISITES = Object.freeze({
   }),
   nasa: Object.freeze({
     producer: "c12-29-s5-svs-footprint",
+    schema: "c12-29-s5-svs-5073-footprint-evidence-v4",
+  }),
+  publicationSchema: "cesium-visual-evidence-publication/v2",
+});
+
+export const C12_29_S5_DENSE_SUPERSEDED_PREREQUISITES = Object.freeze({
+  terrain: Object.freeze({
+    producer: "c12-29-s5-terrain-selection",
+    schema: "c12-29-s5-terrain-selection-evidence-v10",
+  }),
+  nasa: Object.freeze({
+    producer: "c12-29-s5-svs-footprint",
     schema: "c12-29-s5-svs-5073-footprint-evidence-v3",
   }),
   publicationSchema: "cesium-visual-evidence-publication/v2",
@@ -188,6 +202,69 @@ const TERRAIN_V8_SEMANTIC_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts",
 ]);
 
+// This list is deliberately duplicated from the exact NASA-SVS v4 contract.
+// The helper is imported by the browser, so importing the Node-only NASA gate
+// module here would break the runtime lane.  The Node spec cross-checks the two
+// arrays byte-for-byte and order-for-order to keep this boundary fail closed.
+export const C12_29_S5_DENSE_NASA_V4_SOURCE_FILES = Object.freeze([
+  "packages/engine/Source/Core/Cartesian2.js",
+  "packages/engine/Source/Core/Cartesian3.js",
+  "packages/engine/Source/Core/Cartographic.js",
+  "packages/engine/Source/Core/Color.js",
+  "packages/engine/Source/Core/EllipsoidGeodesic.js",
+  "packages/engine/Source/Core/JulianDate.js",
+  "packages/engine/Source/Core/Math.js",
+  "packages/engine/Source/Core/Matrix3.js",
+  "packages/engine/Source/Core/TimeInterval.js",
+  "packages/engine/Source/Core/VerticalExaggeration.js",
+  "packages/engine/Source/Core/Visibility.js",
+  "packages/engine/Source/Core/CelestialEphemerisProvider.js",
+  "packages/engine/Source/Core/Simon1994EphemerisProvider.js",
+  "packages/engine/Source/Core/Transforms.js",
+  "packages/engine/Source/Core/Iau2006XysData.js",
+  "packages/engine/Source/Core/Simon1994PlanetaryPositions.js",
+  "packages/engine/Source/Core/CesiumTerrainProvider.js",
+  "packages/engine/Source/Core/QuantizedMeshTerrainData.js",
+  "packages/engine/Source/Scene/GridImageryProvider.js",
+  "packages/engine/Source/Scene/EclipseState.js",
+  "packages/engine/Source/Scene/EclipseGlobeShadow.js",
+  "packages/engine/Source/Scene/Scene.js",
+  "packages/engine/Source/Scene/SceneTransforms.js",
+  "packages/engine/Source/Scene/View.js",
+  "packages/engine/Source/Scene/FrameState.js",
+  "packages/engine/Source/Scene/SceneUtilities.js",
+  "packages/engine/Source/Scene/Globe.js",
+  "packages/engine/Source/Scene/GlobeSurfaceTile.js",
+  "packages/engine/Source/Scene/GlobeSurfaceTileProvider.js",
+  "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js",
+  "packages/engine/Source/Scene/GlobeSurfaceShaderSet.js",
+  "packages/engine/Source/Scene/TerrainFillMesh.js",
+  "packages/engine/Source/Scene/QuadtreePrimitive.js",
+  "packages/engine/Source/Scene/TileSelectionResult.js",
+  "packages/engine/Source/Scene/Picking.js",
+  "packages/engine/Source/Scene/PickFramebuffer.js",
+  "packages/engine/Source/Renderer/Sync.js",
+  "packages/engine/Source/Renderer/Pass.js",
+  "packages/engine/Source/Renderer/UniformStateComputations.js",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceLayouts.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceShaders.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts",
+  "packages/engine/Source/Shaders/GlobeFS.glsl",
+  "packages/engine/Source/Shaders/GlobeFS.js",
+  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.js",
+  "packages/engine/Source/Scene/DynamicEnvironmentMapManager.js",
+  "packages/engine/Source/Scene/Moon.js",
+  "packages/engine/Source/Renderer/FeatureRendererKey.js",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts",
+  "packages/engine/Source/Widget/CesiumWidget.js",
+]);
+
 const DENSE_TIMING_SEMANTIC_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Core/GeographicTilingScheme.js",
   "packages/engine/Source/Core/HeightmapTerrainData.js",
@@ -213,6 +290,13 @@ export const C12_29_S5_DENSE_RAW_GENERATED_PAIRS = Object.freeze([
 
 export const C12_29_S5_DENSE_SOURCE_FILES = Object.freeze([
   ...new Set([
+    ...C12_29_S5_DENSE_NASA_V4_SOURCE_FILES,
+    ...DENSE_TIMING_SEMANTIC_SOURCE_FILES,
+  ]),
+]);
+
+export const C12_29_S5_DENSE_SUPERSEDED_SOURCE_FILES = Object.freeze([
+  ...new Set([
     ...TERRAIN_V8_SEMANTIC_SOURCE_FILES,
     ...DENSE_TIMING_SEMANTIC_SOURCE_FILES,
   ]),
@@ -227,7 +311,13 @@ export const C12_29_S5_DENSE_BUILD_SOURCE_FILES = Object.freeze(
   ),
 );
 
-export const C12_29_S5_DENSE_LOCAL_FILES = Object.freeze([
+export const C12_29_S5_DENSE_SUPERSEDED_BUILD_SOURCE_FILES = Object.freeze(
+  C12_29_S5_DENSE_SUPERSEDED_SOURCE_FILES.filter(
+    (file) => !file.endsWith(".glsl") && !file.endsWith(".wgsl"),
+  ),
+);
+
+const C12_29_S5_DENSE_LOCAL_FILE_PREFIX = Object.freeze([
   "Tools/visual-regression/performance-workloads-s5-dense-cost.json",
   "Tools/visual-regression/lib/c12-29-s5-dense-cost-gate.mjs",
   "Tools/visual-regression/c12-29-s5-dense-cost-gate.spec.mjs",
@@ -242,7 +332,9 @@ export const C12_29_S5_DENSE_LOCAL_FILES = Object.freeze([
   "Apps/CesiumViewer/CesiumViewerLoadingIndicator.js",
   "Apps/CesiumViewer/CesiumViewer.css",
   ...WIDGET_CSS,
-  ...C12_29_S5_DENSE_SOURCE_FILES,
+]);
+
+const C12_29_S5_DENSE_LOCAL_FILE_SUFFIX = Object.freeze([
   "Build/CesiumUnminified/index.js",
   "Build/CesiumUnminified/index.js.map",
   "Build/CesiumUnminified/Assets/IAU2006_XYS/IAU2006_XYS_18.json",
@@ -262,6 +354,20 @@ export const C12_29_S5_DENSE_LOCAL_FILES = Object.freeze([
   "node_modules/playwright-core/package.json",
   "node_modules/playwright-core/index.mjs",
 ]);
+
+const denseLocalFilesForSourceFiles = (sourceFiles) =>
+  Object.freeze([
+    ...C12_29_S5_DENSE_LOCAL_FILE_PREFIX,
+    ...sourceFiles,
+    ...C12_29_S5_DENSE_LOCAL_FILE_SUFFIX,
+  ]);
+
+export const C12_29_S5_DENSE_LOCAL_FILES = denseLocalFilesForSourceFiles(
+  C12_29_S5_DENSE_SOURCE_FILES,
+);
+
+export const C12_29_S5_DENSE_SUPERSEDED_LOCAL_FILES =
+  denseLocalFilesForSourceFiles(C12_29_S5_DENSE_SUPERSEDED_SOURCE_FILES);
 
 export const C12_29_S5_DENSE_SERVED_FILES = Object.freeze([
   "Tools/visual-regression/performance-workloads-s5-dense-cost.json",
@@ -2095,7 +2201,7 @@ function campaignShapeReasons(report, contract) {
   return reasons;
 }
 
-function provenanceSnapshotReasons(snapshot, label) {
+function provenanceSnapshotReasons(snapshot, label, contract) {
   const reasons = [];
   if (
     !isObject(snapshot) ||
@@ -2109,12 +2215,12 @@ function provenanceSnapshotReasons(snapshot, label) {
   reasons.push(
     ...validateIdentityList(
       snapshot.localFiles,
-      C12_29_S5_DENSE_LOCAL_FILES,
+      contract.localFiles,
       `${label} local`,
     ),
     ...validateIdentityList(
       snapshot.servedFiles,
-      C12_29_S5_DENSE_SERVED_FILES,
+      contract.servedFiles,
       `${label} served`,
     ),
   );
@@ -2142,7 +2248,7 @@ function provenanceSnapshotReasons(snapshot, label) {
     !isObject(build) ||
     build.ok !== true ||
     !Array.isArray(build.entries) ||
-    build.entries.length !== C12_29_S5_DENSE_BUILD_SOURCE_FILES.length ||
+    build.entries.length !== contract.buildSourceFiles.length ||
     build.sourceMapPath !== "Build/CesiumUnminified/index.js.map" ||
     !positiveInteger(build.sourceMapByteLength) ||
     !/^[0-9a-f]{64}$/i.test(build.sourceMapSha256 ?? "") ||
@@ -2153,7 +2259,7 @@ function provenanceSnapshotReasons(snapshot, label) {
   ) {
     reasons.push(`${label} build source-map closure differs`);
   } else {
-    const expected = C12_29_S5_DENSE_BUILD_SOURCE_FILES;
+    const expected = contract.buildSourceFiles;
     for (let index = 0; index < expected.length; index++) {
       const entry = build.entries[index];
       if (
@@ -2223,10 +2329,10 @@ function provenanceSnapshotReasons(snapshot, label) {
   return reasons;
 }
 
-function provenanceReasons(provenance) {
+function provenanceReasons(provenance, contract) {
   const reasons = [
-    ...provenanceSnapshotReasons(provenance?.start, "start"),
-    ...provenanceSnapshotReasons(provenance?.end, "end"),
+    ...provenanceSnapshotReasons(provenance?.start, "start", contract),
+    ...provenanceSnapshotReasons(provenance?.end, "end", contract),
   ];
   if (
     provenance?.stable !== true ||
@@ -2249,7 +2355,7 @@ function provenanceReasons(provenance) {
   return reasons;
 }
 
-function lifecycleReasons(report) {
+function lifecycleReasons(report, contract) {
   const lifecycle = report?.lifecycle;
   const final = report?.status !== "RUNNING";
   const reasons = [];
@@ -2272,6 +2378,29 @@ function lifecycleReasons(report) {
         "lock,running-receipt,running-latest,immutable-run,first-red,final-latest,final-receipt,unlock")
   ) {
     reasons.push("final immutable/latest/first-red/receipt lifecycle differs");
+  }
+  if (
+    final &&
+    contract.schemaVersion === 3 &&
+    (lifecycle?.predecessorAuthorityBoundToRunningReceipt !== true ||
+      lifecycle?.publicationAuthorityReverifiedThroughUnlock !== true ||
+      lifecycle?.runningReceiptReverifiedThroughUnlock !== true)
+  ) {
+    reasons.push("v3 predecessor/RUNNING publication authority differs");
+  }
+  if (
+    contract.schemaVersion < 3 &&
+    (Object.hasOwn(
+      lifecycle ?? {},
+      "predecessorAuthorityBoundToRunningReceipt",
+    ) ||
+      Object.hasOwn(
+        lifecycle ?? {},
+        "publicationAuthorityReverifiedThroughUnlock",
+      ) ||
+      Object.hasOwn(lifecycle ?? {}, "runningReceiptReverifiedThroughUnlock"))
+  ) {
+    reasons.push("historical lifecycle contains v3-only authority fields");
   }
   if (
     final &&
@@ -2321,8 +2450,8 @@ function foldDenseCostGate(report, contract) {
   ) {
     structural.push("workload identity differs from provenance closure");
   }
-  structural.push(...provenanceReasons(report?.provenance));
-  structural.push(...lifecycleReasons(report));
+  structural.push(...provenanceReasons(report?.provenance, contract));
+  structural.push(...lifecycleReasons(report, contract));
   if (
     !Array.isArray(report?.legs) ||
     report.legs.length !== C12_29_S5_DENSE_CONFIG.expectedLegs
@@ -2463,18 +2592,37 @@ function foldDenseCostGate(report, contract) {
 
 const CURRENT_DENSE_CONTRACT = Object.freeze({
   schema: C12_29_S5_DENSE_SCHEMA,
-  schemaVersion: 2,
+  schemaVersion: 3,
   prerequisites: C12_29_S5_DENSE_PREREQUISITES,
+  localFiles: C12_29_S5_DENSE_LOCAL_FILES,
+  servedFiles: C12_29_S5_DENSE_SERVED_FILES,
+  buildSourceFiles: C12_29_S5_DENSE_BUILD_SOURCE_FILES,
+});
+
+const SUPERSEDED_DENSE_CONTRACT = Object.freeze({
+  schema: C12_29_S5_DENSE_SUPERSEDED_SCHEMA,
+  schemaVersion: 2,
+  prerequisites: C12_29_S5_DENSE_SUPERSEDED_PREREQUISITES,
+  localFiles: C12_29_S5_DENSE_SUPERSEDED_LOCAL_FILES,
+  servedFiles: C12_29_S5_DENSE_SERVED_FILES,
+  buildSourceFiles: C12_29_S5_DENSE_SUPERSEDED_BUILD_SOURCE_FILES,
 });
 
 const LEGACY_DENSE_CONTRACT = Object.freeze({
   schema: C12_29_S5_DENSE_LEGACY_SCHEMA,
   schemaVersion: 1,
   prerequisites: C12_29_S5_DENSE_LEGACY_PREREQUISITES,
+  localFiles: C12_29_S5_DENSE_SUPERSEDED_LOCAL_FILES,
+  servedFiles: C12_29_S5_DENSE_SERVED_FILES,
+  buildSourceFiles: C12_29_S5_DENSE_SUPERSEDED_BUILD_SOURCE_FILES,
 });
 
 export function foldC1229S5DenseCostGate(report) {
   return foldDenseCostGate(report, CURRENT_DENSE_CONTRACT);
+}
+
+export function foldC1229S5DenseSupersededCostGate(report) {
+  return foldDenseCostGate(report, SUPERSEDED_DENSE_CONTRACT);
 }
 
 export function foldC1229S5DenseLegacyCostGate(report) {
@@ -2520,6 +2668,10 @@ function validateDenseFinalArtifact(report, contract) {
 
 export function validateC1229S5DenseFinalArtifact(report) {
   return validateDenseFinalArtifact(report, CURRENT_DENSE_CONTRACT);
+}
+
+export function validateC1229S5DenseSupersededFinalArtifact(report) {
+  return validateDenseFinalArtifact(report, SUPERSEDED_DENSE_CONTRACT);
 }
 
 export function validateC1229S5DenseLegacyFinalArtifact(report) {

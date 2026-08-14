@@ -26,6 +26,7 @@ import {
   C12_29_S5_SVS_CONTROL,
   C12_29_S5_SVS_DIAGNOSTIC_LIMITS,
   C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
+  C12_29_S5_SVS_EPHEMERIS,
   C12_29_S5_SVS_FIXTURE,
   C12_29_S5_SVS_PHASES,
   C12_29_S5_SVS_RENDERERS,
@@ -37,6 +38,7 @@ import {
   C12_29_S5_SVS_SOURCE_FILES,
   C12_29_S5_SVS_SOURCE_MOTION,
   C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+  C12_29_S5_SVS_LEGACY_ERROR_SCHEMA,
   C12_29_S5_SVS_TERRAIN,
   createSvsDiagnosticOverflowMarker,
   exitCodeForSvsStatus,
@@ -44,6 +46,7 @@ import {
   isUuidV4,
   summarizeSvsSpatialMetrics,
   validateSupersededSvsV2FinalArtifactShape,
+  validateSupersededSvsV3FinalArtifactShape,
   validateSvsErrorDiagnosticsShape,
   validateSvsFinalArtifactShape,
   validateSvsRunningArtifactShape,
@@ -871,17 +874,23 @@ function readExactLatestSnapshot(file, operations = fs) {
   }
   const runningReasons = validateSvsRunningArtifactShape(value);
   const finalReasons = validateSvsFinalArtifactShape(value);
+  const supersededV3Reasons = validateSupersededSvsV3FinalArtifactShape(value);
   const supersededV2Reasons = validateSupersededSvsV2FinalArtifactShape(value);
   if (
     runningReasons.length > 0 &&
     finalReasons.length > 0 &&
+    supersededV3Reasons.length > 0 &&
     supersededV2Reasons.length > 0
   ) {
     throw new Error(
       `SVS canonical latest shape is invalid: RUNNING ${runningReasons.join(
         "; ",
-      )}; final ${finalReasons.join("; ")}; superseded-v2 ${supersededV2Reasons.join("; ")}`,
+      )}; final ${finalReasons.join("; ")}; superseded-v3 ${supersededV3Reasons.join("; ")}; superseded-v2 ${supersededV2Reasons.join("; ")}`,
     );
+  }
+  const supersededV3 = supersededV3Reasons.length === 0;
+  if (supersededV3 && !bytes.equals(canonicalSvsArtifactBytes(value))) {
+    throw new Error("SVS superseded v3 latest is not canonical JSON");
   }
   return {
     file,
@@ -890,6 +899,7 @@ function readExactLatestSnapshot(file, operations = fs) {
     byteLength: bytes.byteLength,
     sha256: sha256(bytes),
     value,
+    supersededV3,
     supersededV2: supersededV2Reasons.length === 0,
   };
 }
@@ -932,14 +942,23 @@ function readExactFirstRedSnapshot(file, operations = fs) {
     });
   }
   const reasons = validateSvsFinalArtifactShape(value);
+  const supersededV3Reasons = validateSupersededSvsV3FinalArtifactShape(value);
   const supersededV2Reasons = validateSupersededSvsV2FinalArtifactShape(value);
   if (
-    (reasons.length > 0 && supersededV2Reasons.length > 0) ||
+    (reasons.length > 0 &&
+      supersededV3Reasons.length > 0 &&
+      supersededV2Reasons.length > 0) ||
     !new Set(["FAIL", "STRUCTURAL", "ERROR"]).has(value.status)
   ) {
     throw new Error(
-      `SVS retained first-red artifact is not exact final red: ${reasons.join("; ")}; superseded-v2 ${supersededV2Reasons.join("; ")}`,
+      `SVS retained first-red artifact is not exact final red: ${reasons.join("; ")}; superseded-v3 ${supersededV3Reasons.join("; ")}; superseded-v2 ${supersededV2Reasons.join("; ")}`,
     );
+  }
+  if (
+    supersededV3Reasons.length === 0 &&
+    !bytes.equals(canonicalSvsArtifactBytes(value))
+  ) {
+    throw new Error("SVS retained v3 first-red is not canonical JSON");
   }
   return {
     file,
@@ -1059,6 +1078,68 @@ function ensureExactRecoveryReceipt(
   );
 }
 
+function requireExactSupersededV3Receipt(
+  file,
+  expectedBytes,
+  expectedArtifact,
+  operations = fs,
+) {
+  let observedBytes;
+  try {
+    observedBytes = Buffer.from(operations.readFileSync(file));
+  } catch (error) {
+    throw new Error("SVS superseded-v3 receipt is unreadable", {
+      cause: error,
+    });
+  }
+  let observed;
+  try {
+    observed = JSON.parse(observedBytes.toString("utf8"));
+  } catch (error) {
+    throw new Error("SVS superseded-v3 receipt is not exact JSON", {
+      cause: error,
+    });
+  }
+  const reasons = validateSupersededSvsV3FinalArtifactShape(observed);
+  if (
+    !observedBytes.equals(Buffer.from(expectedBytes)) ||
+    !observedBytes.equals(canonicalSvsArtifactBytes(observed)) ||
+    reasons.length > 0 ||
+    observed.runId !== expectedArtifact.runId ||
+    observed.generatedAt !== expectedArtifact.generatedAt ||
+    observed.status !== expectedArtifact.status
+  ) {
+    throw new Error(`SVS superseded-v3 receipt differs: ${reasons.join("; ")}`);
+  }
+  return {
+    file,
+    schema: C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+    runId: observed.runId,
+    status: observed.status,
+    byteLength: observedBytes.byteLength,
+    sha256: sha256(observedBytes),
+  };
+}
+
+function ensureExactSupersededV3Receipt(
+  file,
+  expectedBytes,
+  expectedArtifact,
+  operations = fs,
+) {
+  try {
+    writeExclusiveVerified(file, expectedBytes, operations);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+  return requireExactSupersededV3Receipt(
+    file,
+    expectedBytes,
+    expectedArtifact,
+    operations,
+  );
+}
+
 function requireExactSupersededV2Receipt(
   file,
   expectedBytes,
@@ -1093,7 +1174,7 @@ function requireExactSupersededV2Receipt(
   }
   return {
     file,
-    schema: C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+    schema: C12_29_S5_SVS_LEGACY_ERROR_SCHEMA,
     runId: observed.runId,
     status: observed.status,
     byteLength: observedBytes.byteLength,
@@ -1617,8 +1698,18 @@ export function beginSvsEvidenceRun(paths, runId, operations = fs) {
   try {
     writeExclusiveVerified(paths.runningReceipt, runningBytes, operations);
     let recovery = null;
+    let supersededV3 = null;
     let supersededV2 = null;
-    if (prior.latestSnapshot.supersededV2 === true) {
+    if (prior.latestSnapshot.supersededV3 === true) {
+      const supersededBytes = Buffer.from(prior.latestSnapshot.bytes);
+      recovery = `${paths.latest}.superseded-v3-${prior.latest.runId}.json`;
+      supersededV3 = ensureExactSupersededV3Receipt(
+        recovery,
+        supersededBytes,
+        prior.latest,
+        operations,
+      );
+    } else if (prior.latestSnapshot.supersededV2 === true) {
       const supersededBytes = Buffer.from(prior.latestSnapshot.bytes);
       recovery = `${paths.latest}.superseded-v2-${prior.latest.runId}.json`;
       supersededV2 = ensureExactSupersededV2Receipt(
@@ -1649,7 +1740,14 @@ export function beginSvsEvidenceRun(paths, runId, operations = fs) {
       operations,
     );
     if (recovery) {
-      if (supersededV2) {
+      if (supersededV3) {
+        supersededV3 = requireExactSupersededV3Receipt(
+          recovery,
+          prior.latestSnapshot.bytes,
+          prior.latest,
+          operations,
+        );
+      } else if (supersededV2) {
         supersededV2 = requireExactSupersededV2Receipt(
           recovery,
           prior.latestSnapshot.bytes,
@@ -1674,6 +1772,7 @@ export function beginSvsEvidenceRun(paths, runId, operations = fs) {
       lock,
       lockBytes,
       recovery,
+      supersededV3,
       supersededV2,
     };
     svsOwnerships.set(running, ownership);
@@ -1687,6 +1786,26 @@ export function beginSvsEvidenceRun(paths, runId, operations = fs) {
     }
     throw error;
   }
+}
+
+function requireOwnedSupersessionReceipt(ownership, operations = fs) {
+  if (ownership.supersededV3 !== null && ownership.supersededV3 !== undefined) {
+    return requireExactSupersededV3Receipt(
+      ownership.recovery,
+      ownership.prior.latestSnapshot.bytes,
+      ownership.prior.latest,
+      operations,
+    );
+  }
+  if (ownership.supersededV2 !== null && ownership.supersededV2 !== undefined) {
+    return requireExactSupersededV2Receipt(
+      ownership.recovery,
+      ownership.prior.latestSnapshot.bytes,
+      ownership.prior.latest,
+      operations,
+    );
+  }
+  return null;
 }
 
 export function publishSvsFinalArtifact(
@@ -1707,6 +1826,7 @@ export function publishSvsFinalArtifact(
       firstRedBaselineValidated,
     } = ownership;
     requireOwnedLock(paths, lockBytes, operations);
+    requireOwnedSupersessionReceipt(ownership, operations);
     if (!operations.readFileSync(paths.latest).equals(runningBytes)) {
       throw new Error("SVS latest is not the owned RUNNING receipt");
     }
@@ -1744,6 +1864,7 @@ export function publishSvsFinalArtifact(
     ) {
       throw new Error("SVS immutable archive verification failed");
     }
+    requireOwnedSupersessionReceipt(ownership, operations);
     let expectedFirstRed = firstRedBaseline;
     let firstRed = {
       written: false,
@@ -1779,6 +1900,7 @@ export function publishSvsFinalArtifact(
     ) {
       throw new Error("SVS archive/latest identity differs");
     }
+    requireOwnedSupersessionReceipt(ownership, operations);
     const receipt = {
       schema: C12_29_S5_SVS_SCHEMA,
       runId: running.runId,
@@ -1801,6 +1923,7 @@ export function publishSvsFinalArtifact(
     if (!operations.readFileSync(paths.latest).equals(bytes)) {
       throw new Error("SVS canonical final latest changed before unlock");
     }
+    requireOwnedSupersessionReceipt(ownership, operations);
     requireOwnedLock(paths, lockBytes, operations);
     releaseOwnedLock(paths, lockBytes, operations);
     return {
@@ -2500,6 +2623,106 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
 
   let currentTime = times[0];
   const timeFn = () => currentTime;
+  const xyz = (value) => ({ x: value.x, y: value.y, z: value.z });
+  const captureEphemerisLineage = () => {
+    const frameState = scene.frameState;
+    const sample = frameState?.celestialEphemerisSample;
+    const ephemerisProvider = scene.celestialEphemerisProvider;
+    const eclipseState = frameState?.eclipseState;
+    const matrix = C.Transforms.computeIcrfToFixedMatrix(
+      frameState.time,
+      new C.Matrix3(),
+    );
+    const independentSun = C.Matrix3.multiplyByVector(
+      matrix,
+      C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+        frameState.time,
+        new C.Cartesian3(),
+      ),
+      new C.Cartesian3(),
+    );
+    const independentMoon = C.Matrix3.multiplyByVector(
+      matrix,
+      C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
+        frameState.time,
+        new C.Cartesian3(),
+      ),
+      new C.Cartesian3(),
+    );
+    if (
+      !sample ||
+      !ephemerisProvider ||
+      !matrix ||
+      !eclipseState?.sunPositionWC ||
+      !eclipseState?.moonPositionWC
+    ) {
+      throw new Error("default Simon ephemeris lineage is absent");
+    }
+    return {
+      frameNumber: frameState.frameNumber,
+      clockIso: C.JulianDate.toIso8601(frameState.time),
+      provider: {
+        constructor: ephemerisProvider.constructor.name,
+        id: ephemerisProvider.id,
+        revision: ephemerisProvider.revision,
+        provenance: { ...ephemerisProvider.provenance },
+        timePolicy: { ...ephemerisProvider.timePolicy },
+        provenanceFrozen: Object.isFrozen(ephemerisProvider.provenance),
+        timePolicyFrozen: Object.isFrozen(ephemerisProvider.timePolicy),
+      },
+      sample: {
+        providerId: sample.providerId,
+        providerRevision: sample.providerRevision,
+        provenance: { ...sample.provenance },
+        timePolicy: { ...sample.timePolicy },
+        referenceFrame: sample.referenceFrame,
+        units: sample.units,
+        transformBranch: sample.transformBranch,
+        outputAllocationStable: sample.outputAllocationStable,
+        thirdPartyTemporaryFree: sample.thirdPartyTemporaryFree,
+        sunPositionWC: xyz(sample.sunPositionWC),
+        moonPositionWC: xyz(sample.moonPositionWC),
+      },
+      independent: {
+        method: contract.ephemeris.independentMethod,
+        sunPositionWC: xyz(independentSun),
+        moonPositionWC: xyz(independentMoon),
+        sunDeltaMeters: C.Cartesian3.distance(
+          independentSun,
+          sample.sunPositionWC,
+        ),
+        moonDeltaMeters: C.Cartesian3.distance(
+          independentMoon,
+          sample.moonPositionWC,
+        ),
+      },
+      eclipseState: {
+        sunPositionWC: xyz(eclipseState.sunPositionWC),
+        moonPositionWC: xyz(eclipseState.moonPositionWC),
+        sunDeltaMeters: C.Cartesian3.distance(
+          eclipseState.sunPositionWC,
+          sample.sunPositionWC,
+        ),
+        moonDeltaMeters: C.Cartesian3.distance(
+          eclipseState.moonPositionWC,
+          sample.moonPositionWC,
+        ),
+        sunStorageDistinct: eclipseState.sunPositionWC !== sample.sunPositionWC,
+        moonStorageDistinct:
+          eclipseState.moonPositionWC !== sample.moonPositionWC,
+      },
+      identities: {
+        providerIsSceneProvider:
+          ephemerisProvider === scene.celestialEphemerisProvider,
+        sampleIsFrameStateSample:
+          sample === scene.frameState.celestialEphemerisSample,
+        sampleProvenanceIsProviderProvenance:
+          sample.provenance === ephemerisProvider.provenance,
+        sampleTimePolicyIsProviderTimePolicy:
+          sample.timePolicy === ephemerisProvider.timePolicy,
+      },
+    };
+  };
   makeSameTaskCapture(scene, scene.canvas, timeFn);
   const { captureSnapshot } = makeFusedSnapshotCapture(
     scene,
@@ -3005,6 +3228,7 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
   };
   const captureStableSnapshot = async (transition, stableIdentity) => {
     const shot = await captureSnapshot();
+    const ephemeris = captureEphemerisLineage();
     const tuple = preparedTuple(transition);
     if (
       !tupleReady(tuple) ||
@@ -3021,7 +3245,7 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
         `${transition.role} terrain drifted during fused capture`,
       );
     }
-    return { ...shot, tuple };
+    return { ...shot, ephemeris, tuple };
   };
   const buildLattice = (
     row,
@@ -3346,35 +3570,9 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
     );
     const offImageId = crypto.randomUUID();
     const onImageId = crypto.randomUUID();
-    const independentSunIcrf =
-      C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
-        currentTime,
-        new C.Cartesian3(),
-      );
-    const independentMoonIcrf =
-      C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
-        currentTime,
-        new C.Cartesian3(),
-      );
-    const independentSun = C.Matrix3.multiplyByVector(
-      matrices[index],
-      independentSunIcrf,
-      new C.Cartesian3(),
-    );
-    const independentMoon = C.Matrix3.multiplyByVector(
-      matrices[index],
-      independentMoonIcrf,
-      new C.Cartesian3(),
-    );
     independentEphemerisDeltas.push({
-      sunMeters: C.Cartesian3.distance(
-        independentSun,
-        scene.frameState.eclipseState.sunPositionWC,
-      ),
-      moonMeters: C.Cartesian3.distance(
-        independentMoon,
-        scene.frameState.eclipseState.moonPositionWC,
-      ),
+      sunMeters: onShot.ephemeris.independent.sunDeltaMeters,
+      moonMeters: onShot.ephemeris.independent.moonDeltaMeters,
     });
     rows.push({
       phase: row.phase,
@@ -3403,6 +3601,7 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       },
       cameraFrame,
       terrainTuple: tuple,
+      ephemeris: structuredClone(onShot.ephemeris),
       transitionReadiness,
       captureTerrainProofs: [
         { label: "white", tuple: whiteShot.tuple },
@@ -3658,6 +3857,12 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       maximumMoonPositionDeltaMeters: Math.max(
         ...independentEphemerisDeltas.map((entry) => entry.moonMeters),
       ),
+      rowLineages: rows.map((row) => ({
+        role: row.role,
+        iso: row.iso,
+        captureFrameNumber: row.terrainTuple.captureFrameNumber,
+        lineage: structuredClone(row.ephemeris),
+      })),
       xysFiles: [],
     },
     fixtureProof: {
@@ -3821,6 +4026,7 @@ function pageContract(renderer, rows) {
         C12_29_S5_SVS_SOURCE_EDGE.maximumAdjacentDistanceKm,
       simon1994BudgetKm: C12_29_S5_SVS_SIMON1994_BUDGET_KM,
     },
+    ephemeris: C12_29_S5_SVS_EPHEMERIS,
   };
 }
 

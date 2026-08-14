@@ -12,6 +12,7 @@ import {
   C12_29_S5_DENSE_CONFIG,
   C12_29_S5_DENSE_LEGACY_SCHEMA,
   C12_29_S5_DENSE_LOCAL_FILES,
+  C12_29_S5_DENSE_NASA_V4_SOURCE_FILES,
   C12_29_S5_DENSE_RAW_GENERATED_PAIRS,
   C12_29_S5_DENSE_RENDERERS,
   C12_29_S5_DENSE_RUNTIME_SCHEMA,
@@ -19,11 +20,16 @@ import {
   C12_29_S5_DENSE_SCHEMA,
   C12_29_S5_DENSE_SERVED_FILES,
   C12_29_S5_DENSE_SOURCE_FILES,
+  C12_29_S5_DENSE_SUPERSEDED_BUILD_SOURCE_FILES,
+  C12_29_S5_DENSE_SUPERSEDED_LOCAL_FILES,
+  C12_29_S5_DENSE_SUPERSEDED_SCHEMA,
+  C12_29_S5_DENSE_SUPERSEDED_SOURCE_FILES,
   createC1229S5DenseWaterMask,
   deriveC1229S5DenseSentinel,
   exitCodeForC1229S5DenseStatus,
   foldC1229S5DenseCostGate,
   foldC1229S5DenseLegacyCostGate,
+  foldC1229S5DenseSupersededCostGate,
   isC1229S5DenseUuidV4,
   sampleC1229S5DenseRoute,
   selectC1229S5DenseLongTasks,
@@ -33,8 +39,13 @@ import {
   validateC1229S5DenseLegacyFinalArtifact,
   validateC1229S5DensePrerequisites,
   validateC1229S5DenseRuntimeLeg,
+  validateC1229S5DenseSupersededFinalArtifact,
   validateC1229S5DenseWorkload,
 } from "./lib/c12-29-s5-dense-cost-gate.mjs";
+import {
+  C12_29_S5_SVS_SCHEMA,
+  C12_29_S5_SVS_SOURCE_FILES,
+} from "./lib/c12-29-s5-svs-footprint-gate.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const workload = JSON.parse(
@@ -99,7 +110,7 @@ function validPrerequisites() {
     nasa: prerequisite(
       "nasa",
       "c12-29-s5-svs-footprint",
-      "c12-29-s5-svs-5073-footprint-evidence-v3",
+      "c12-29-s5-svs-5073-footprint-evidence-v4",
       NASA_RUN_ID,
       "e",
     ),
@@ -421,8 +432,12 @@ const identityForPath = (path, hash = hashJson(path)) => ({
   sha256: hash,
 });
 
-function validProvenanceSnapshot() {
-  const localFiles = C12_29_S5_DENSE_LOCAL_FILES.map((path) =>
+function validProvenanceSnapshot({
+  localFilePaths = C12_29_S5_DENSE_LOCAL_FILES,
+  servedFilePaths = C12_29_S5_DENSE_SERVED_FILES,
+  buildSourceFiles = C12_29_S5_DENSE_BUILD_SOURCE_FILES,
+} = {}) {
+  const localFiles = localFilePaths.map((path) =>
     path === "Tools/visual-regression/performance-workloads-s5-dense-cost.json"
       ? {
           path,
@@ -434,7 +449,7 @@ function validProvenanceSnapshot() {
   const localByPath = new Map(
     localFiles.map((identity) => [identity.path, identity]),
   );
-  const servedFiles = C12_29_S5_DENSE_SERVED_FILES.map((path) => ({
+  const servedFiles = servedFilePaths.map((path) => ({
     ...localByPath.get(path),
     url: `http://localhost:8080/${path}`,
     ok: true,
@@ -449,7 +464,7 @@ function validProvenanceSnapshot() {
       .byteLength,
     sourceMapSha256: localByPath.get("Build/CesiumUnminified/index.js.map")
       .sha256,
-    entries: C12_29_S5_DENSE_BUILD_SOURCE_FILES.map((file) => ({
+    entries: buildSourceFiles.map((file) => ({
       file,
       sourceMapEntry: `../../${file}`,
       currentByteLength: Buffer.byteLength(file) + 1,
@@ -501,7 +516,7 @@ function validReport() {
   const provenanceStart = validProvenanceSnapshot();
   const report = {
     schema: C12_29_S5_DENSE_SCHEMA,
-    schemaVersion: 2,
+    schemaVersion: 3,
     runId: RUN_ID,
     status: "PASS",
     incomplete: false,
@@ -535,6 +550,9 @@ function validReport() {
       firstRedFingerprintPolicy: "write-once-exact-sha256-byte-length",
       finalReceiptCreatedExclusively: true,
       latestEqualsImmutableRunBeforeUnlock: true,
+      predecessorAuthorityBoundToRunningReceipt: true,
+      publicationAuthorityReverifiedThroughUnlock: true,
+      runningReceiptReverifiedThroughUnlock: true,
       lockReleasedByOwnedReceipt: true,
       publicationOrder: [
         "lock",
@@ -563,22 +581,62 @@ function validReport() {
   return report;
 }
 
-function validLegacyReport(runId = RUN_ID) {
+function validHistoricalReport({
+  schema,
+  schemaVersion,
+  runId,
+  terrainSchema,
+  nasaSchema,
+  fold,
+}) {
   const report = validReport();
-  report.schema = C12_29_S5_DENSE_LEGACY_SCHEMA;
-  report.schemaVersion = 1;
+  report.schema = schema;
+  report.schemaVersion = schemaVersion;
   report.runId = runId;
-  report.prerequisites.terrain.artifact.schema =
-    "c12-29-s5-terrain-selection-evidence-v8";
-  report.prerequisites.nasa.artifact.schema =
-    "c12-29-s5-svs-5073-footprint-evidence-v2";
+  delete report.lifecycle.predecessorAuthorityBoundToRunningReceipt;
+  delete report.lifecycle.publicationAuthorityReverifiedThroughUnlock;
+  delete report.lifecycle.runningReceiptReverifiedThroughUnlock;
+  report.prerequisites.terrain.artifact.schema = terrainSchema;
+  report.prerequisites.nasa.artifact.schema = nasaSchema;
   report.prerequisitesSha256 = hashJson(report.prerequisites);
+  const provenance = validProvenanceSnapshot({
+    localFilePaths: C12_29_S5_DENSE_SUPERSEDED_LOCAL_FILES,
+    buildSourceFiles: C12_29_S5_DENSE_SUPERSEDED_BUILD_SOURCE_FILES,
+  });
+  report.provenance = {
+    stable: true,
+    start: provenance,
+    end: clone(provenance),
+  };
   for (const leg of report.legs) {
     leg.runId = runId;
+    leg.sourceIdentitySha256 = provenance.identitySha256;
     leg.prerequisitesSha256 = report.prerequisitesSha256;
   }
-  report.assessment = foldC1229S5DenseLegacyCostGate(report);
+  report.assessment = fold(report);
   return report;
+}
+
+function validSupersededReport(runId = RUN_ID) {
+  return validHistoricalReport({
+    schema: C12_29_S5_DENSE_SUPERSEDED_SCHEMA,
+    schemaVersion: 2,
+    runId,
+    terrainSchema: "c12-29-s5-terrain-selection-evidence-v10",
+    nasaSchema: "c12-29-s5-svs-5073-footprint-evidence-v3",
+    fold: foldC1229S5DenseSupersededCostGate,
+  });
+}
+
+function validLegacyReport(runId = RUN_ID) {
+  return validHistoricalReport({
+    schema: C12_29_S5_DENSE_LEGACY_SCHEMA,
+    schemaVersion: 1,
+    runId,
+    terrainSchema: "c12-29-s5-terrain-selection-evidence-v8",
+    nasaSchema: "c12-29-s5-svs-5073-footprint-evidence-v2",
+    fold: foldC1229S5DenseLegacyCostGate,
+  });
 }
 
 function validReportForRun(runId, mutation) {
@@ -650,6 +708,9 @@ test("03 schema, UUID-v4, final status, and recomputation fail closed", () => {
     (r) => (r.completedAt = "2026-08-13T11:59:59.999Z"),
     (r) => (r.assessment.characterization.policy = "ceiling"),
     (r) => (r.lifecycle.finalReceiptCreatedExclusively = false),
+    (r) => (r.lifecycle.predecessorAuthorityBoundToRunningReceipt = false),
+    (r) => (r.lifecycle.publicationAuthorityReverifiedThroughUnlock = false),
+    (r) => (r.lifecycle.runningReceiptReverifiedThroughUnlock = false),
     (r) => (r.lifecycle.firstRedFingerprintPolicy = "existence-only"),
     (r) => r.lifecycle.publicationOrder.reverse(),
   ]) {
@@ -1098,6 +1159,14 @@ test("23 cost sign and magnitude never change PASS; raw paired deltas, ratios, m
 });
 
 test("24 static packet pins new namespace, source closure, wrapper finally, fresh processes, and no ceiling", async () => {
+  assert.equal(
+    C12_29_S5_SVS_SCHEMA,
+    "c12-29-s5-svs-5073-footprint-evidence-v4",
+  );
+  assert.deepEqual(
+    C12_29_S5_DENSE_NASA_V4_SOURCE_FILES,
+    C12_29_S5_SVS_SOURCE_FILES,
+  );
   assert.ok(
     C12_29_S5_DENSE_LOCAL_FILES.includes("Build/CesiumUnminified/index.js.map"),
   );
@@ -1112,7 +1181,11 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
     new Set(C12_29_S5_DENSE_SERVED_FILES).size,
     C12_29_S5_DENSE_SERVED_FILES.length,
   );
-  assert.ok(C12_29_S5_DENSE_SOURCE_FILES.length >= 46);
+  assert.equal(C12_29_S5_DENSE_NASA_V4_SOURCE_FILES.length, 56);
+  assert.equal(C12_29_S5_DENSE_SOURCE_FILES.length, 65);
+  assert.equal(C12_29_S5_DENSE_BUILD_SOURCE_FILES.length, 63);
+  assert.equal(C12_29_S5_DENSE_SUPERSEDED_SOURCE_FILES.length, 46);
+  assert.equal(C12_29_S5_DENSE_SUPERSEDED_BUILD_SOURCE_FILES.length, 44);
   assert.ok(
     C12_29_S5_DENSE_RAW_GENERATED_PAIRS.every(
       ({ raw, generated }) =>
@@ -1167,10 +1240,10 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
       () =>
         publication.publishC1229S5DenseFinal(
           foreignPaths,
-          foreignStart.lockBytes,
+          foreignStart.publicationAuthority,
           { runId: foreignRunId, status: "ERROR" },
         ),
-      /lock ownership differs/,
+      /lock.*(ownership|authority).*differ/u,
     );
     assert.deepEqual(await readFile(foreignPaths.lock), foreignLock);
     await assert.rejects(readFile(foreignPaths.immutable), /ENOENT/);
@@ -1190,10 +1263,10 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
       () =>
         publication.publishC1229S5DenseFinal(
           foreignLatestPaths,
-          foreignLatestStart.lockBytes,
+          foreignLatestStart.publicationAuthority,
           { runId: foreignLatestRunId, status: "ERROR" },
         ),
-      /not the owned RUNNING marker/,
+      /RUNNING latest authority.*bytes differ|owned RUNNING marker/,
     );
     assert.deepEqual(await readFile(foreignLatestPaths.latest), foreignLatest);
     await assert.rejects(readFile(foreignLatestPaths.immutable), /ENOENT/);
@@ -1230,7 +1303,7 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
       () =>
         publication.publishC1229S5DenseFinal(
           latePairPaths,
-          latePairStart.lockBytes,
+          latePairStart.publicationAuthority,
           { runId: latePairRunId, status: "PASS" },
           latePairOperations,
         ),
@@ -1271,7 +1344,7 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
       () =>
         publication.publishC1229S5DenseFinal(
           capturePaths,
-          captureStart.lockBytes,
+          captureStart.publicationAuthority,
           { runId: captureRunId, status: "PASS" },
           captureOperations,
         ),
@@ -1312,16 +1385,13 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
         }
       },
     });
-    assert.throws(
-      () =>
-        publication.publishC1229S5DenseFinal(
-          postRenamePaths,
-          postRenameStart.lockBytes,
-          { runId: postRenameRunId, status: "PASS" },
-          postRenameOperations,
-        ),
-      /persistence/,
+    const postRenameReceipt = publication.publishC1229S5DenseFinal(
+      postRenamePaths,
+      postRenameStart.publicationAuthority,
+      { runId: postRenameRunId, status: "PASS" },
+      postRenameOperations,
     );
+    assert.equal(postRenameReceipt.kind, "c12-29-s5-dense-cost-final-receipt");
     assert.equal(postRenameInjected, true);
     assert.deepEqual(
       await readFile(postRenamePaths.lock),
@@ -1342,12 +1412,23 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
       recoveryRunId,
     );
     let finalReceiptFailureInjected = false;
+    const finalReceiptDescriptors = new Set();
     const recoveryOperations = operationProxy({
-      writeFileSync(file, bytes, options) {
-        fs.writeFileSync(file, bytes, options);
+      openSync(file, flags, mode) {
+        const descriptor = fs.openSync(file, flags, mode);
+        if (
+          resolve(file) === resolve(recoveryPaths.finalReceipt) &&
+          (flags & fs.constants.O_EXCL) !== 0
+        ) {
+          finalReceiptDescriptors.add(descriptor);
+        }
+        return descriptor;
+      },
+      closeSync(descriptor) {
+        fs.closeSync(descriptor);
         if (
           !finalReceiptFailureInjected &&
-          file === recoveryPaths.finalReceipt
+          finalReceiptDescriptors.has(descriptor)
         ) {
           finalReceiptFailureInjected = true;
           throw new Error("injected failure after final receipt write");
@@ -1358,7 +1439,7 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
       () =>
         publication.publishC1229S5DenseFinal(
           recoveryPaths,
-          recoveryStart.lockBytes,
+          recoveryStart.publicationAuthority,
           { runId: recoveryRunId, status: "PASS" },
           recoveryOperations,
         ),
@@ -1387,7 +1468,7 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
     const firstStart = publication.beginC1229S5DenseRun(firstPaths, firstRunId);
     const firstReceipt = publication.publishC1229S5DenseFinal(
       firstPaths,
-      firstStart.lockBytes,
+      firstStart.publicationAuthority,
       validReportForRun(firstRunId, (report) => {
         report.legs[0].transport.pageErrors.push("first");
       }),
@@ -1396,6 +1477,7 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
     assert.equal(firstReceipt.firstRed.written, true);
     assert.equal(firstReceipt.firstRed.beforeSha256, null);
     assert.match(firstReceipt.firstRed.afterSha256, /^[0-9a-f]{64}$/u);
+    assert.equal(firstReceipt.predecessorAuthority, null);
     assert.deepEqual(
       await readFile(firstPaths.immutable),
       await readFile(firstPaths.latest),
@@ -1414,7 +1496,7 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
     );
     const secondReceipt = publication.publishC1229S5DenseFinal(
       secondPaths,
-      secondStart.lockBytes,
+      secondStart.publicationAuthority,
       validReportForRun(secondRunId, (report) => {
         report.legs[0].measurement.frames[0].gate = 0;
       }),
@@ -1425,6 +1507,9 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
       secondReceipt.firstRed.beforeSha256,
       secondReceipt.firstRed.afterSha256,
     );
+    assert.equal(secondReceipt.predecessorAuthority.schemaVersion, 3);
+    assert.equal(secondReceipt.predecessorAuthority.runId, firstRunId);
+    assert.equal(secondReceipt.predecessorAuthority.supersessionReceipt, null);
     assert.deepEqual(await readFile(secondPaths.firstRed), firstRed);
     assert.deepEqual(
       await readFile(secondPaths.immutable),
@@ -1436,12 +1521,13 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
   }
 });
 
-test("25 terrain-v10, NASA-v3, and every operational bound are exact prerequisites", () => {
+test("25 terrain-v10, NASA-v4, and every operational bound are exact prerequisites", () => {
   for (const [kind, staleSchema] of [
     ["terrain", "c12-29-s5-terrain-selection-evidence-v8"],
     ["terrain", "c12-29-s5-terrain-selection-evidence-v9"],
     ["nasa", "c12-29-s5-svs-5073-footprint-evidence-v1"],
     ["nasa", "c12-29-s5-svs-5073-footprint-evidence-v2"],
+    ["nasa", "c12-29-s5-svs-5073-footprint-evidence-v3"],
   ]) {
     const stale = validPrerequisites();
     stale[kind].artifact.schema = staleSchema;
@@ -1494,19 +1580,50 @@ test("25a campaign/leg timestamps and leg workload identities are exact and cros
   }
 });
 
-test("25b dense v2 accepts only fully validated archived v1/v2 authority and makes v1 supersession race-safe", async () => {
+test("25b dense v3 accepts only validated archived v1/v2/v3 authority and makes both predecessor receipts race-safe", async () => {
   const publication = await import("./probe-c12-29-s5-dense-cost.mjs");
-  const temporaryRoot = await mkdtemp(join(tmpdir(), "c12-29-s5-dense-v2-"));
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "c12-29-s5-dense-v3-"));
   const legacyRunId = "10101010-2020-4030-8040-505050505050";
   const legacy = validLegacyReport(legacyRunId);
   const legacyBytes = Buffer.from(`${JSON.stringify(legacy, null, 2)}\n`);
-  const receiptName = `campaign12-c12-29-s5-dense-cost.superseded-v1-${legacyRunId}.json`;
+  const supersededRunId = "20202020-3030-4141-8252-606060606060";
+  const superseded = validSupersededReport(supersededRunId);
+  const supersededBytes = Buffer.from(
+    `${JSON.stringify(superseded, null, 2)}\n`,
+  );
   const operationProxy = (overrides) =>
     new Proxy(fs, {
       get(target, property) {
         return overrides[property] ?? Reflect.get(target, property);
       },
     });
+  const injectAfterExclusiveClose = (file, inject) => {
+    const exclusiveDescriptors = new Set();
+    let injected = false;
+    return {
+      operations: operationProxy({
+        openSync(candidate, flags, mode) {
+          const descriptor = fs.openSync(candidate, flags, mode);
+          if (
+            resolve(candidate) === resolve(file) &&
+            typeof flags === "number" &&
+            (flags & fs.constants.O_EXCL) !== 0
+          ) {
+            exclusiveDescriptors.add(descriptor);
+          }
+          return descriptor;
+        },
+        closeSync(descriptor) {
+          fs.closeSync(descriptor);
+          if (!injected && exclusiveDescriptors.delete(descriptor)) {
+            injected = true;
+            inject();
+          }
+        },
+      }),
+      injected: () => injected,
+    };
+  };
   const seedPrior = (paths, prior, bytes, archiveBytes = bytes) => {
     fs.mkdirSync(paths.directory, { recursive: true });
     fs.writeFileSync(paths.latest, bytes);
@@ -1515,10 +1632,50 @@ test("25b dense v2 accepts only fully validated archived v1/v2 authority and mak
       archiveBytes,
     );
   };
-  const legacyReceipt = (paths) => join(paths.directory, receiptName);
+  const predecessorReceipt = (paths, version, runId) =>
+    join(
+      paths.directory,
+      `campaign12-c12-29-s5-dense-cost.superseded-v${version}-${runId}.json`,
+    );
+  const legacyReceipt = (paths) => predecessorReceipt(paths, 1, legacyRunId);
+  const supersededReceipt = (paths) =>
+    predecessorReceipt(paths, 2, supersededRunId);
 
   assert.equal(validateC1229S5DenseFinalArtifact(legacy).valid, false);
+  for (const historical of [legacy, superseded]) {
+    assert.equal(
+      "predecessorAuthorityBoundToRunningReceipt" in historical.lifecycle,
+      false,
+    );
+    assert.equal(
+      "publicationAuthorityReverifiedThroughUnlock" in historical.lifecycle,
+      false,
+    );
+    assert.equal(
+      "runningReceiptReverifiedThroughUnlock" in historical.lifecycle,
+      false,
+    );
+  }
   assert.equal(validateC1229S5DenseLegacyFinalArtifact(legacy).valid, true);
+  assert.equal(validateC1229S5DenseFinalArtifact(superseded).valid, false);
+  assert.equal(
+    validateC1229S5DenseSupersededFinalArtifact(superseded).valid,
+    true,
+  );
+  for (const [historical, validate] of [
+    [legacy, validateC1229S5DenseLegacyFinalArtifact],
+    [superseded, validateC1229S5DenseSupersededFinalArtifact],
+  ]) {
+    for (const field of [
+      "predecessorAuthorityBoundToRunningReceipt",
+      "publicationAuthorityReverifiedThroughUnlock",
+      "runningReceiptReverifiedThroughUnlock",
+    ]) {
+      const mutated = clone(historical);
+      mutated.lifecycle[field] = true;
+      assert.equal(validate(mutated).valid, false, field);
+    }
+  }
   try {
     const output = join(temporaryRoot, "exact-v1-retry");
     const runId = "60606060-7070-4080-8090-a0a0a0a0a0a0";
@@ -1527,7 +1684,7 @@ test("25b dense v2 accepts only fully validated archived v1/v2 authority and mak
     fs.writeFileSync(legacyReceipt(paths), legacyBytes);
     const started = publication.beginC1229S5DenseRun(paths, runId);
     assert.equal(started.running.schema, C12_29_S5_DENSE_SCHEMA);
-    assert.equal(started.running.schemaVersion, 2);
+    assert.equal(started.running.schemaVersion, 3);
     assert.deepEqual(await readFile(legacyReceipt(paths)), legacyBytes);
     assert.deepEqual(await readFile(paths.latest), started.runningBytes);
     assert.deepEqual(
@@ -1535,10 +1692,34 @@ test("25b dense v2 accepts only fully validated archived v1/v2 authority and mak
       legacyBytes,
     );
 
+    const supersededOutput = join(temporaryRoot, "exact-v2-prior");
+    const supersededNextRunId = "71717171-8282-4939-8a4a-b5b5b5b5b5b5";
+    const supersededPaths = publication.createC1229S5DenseArtifactPaths(
+      supersededOutput,
+      supersededNextRunId,
+    );
+    seedPrior(supersededPaths, superseded, supersededBytes);
+    const supersededStarted = publication.beginC1229S5DenseRun(
+      supersededPaths,
+      supersededNextRunId,
+    );
+    assert.deepEqual(
+      await readFile(supersededPaths.latest),
+      supersededStarted.runningBytes,
+    );
+    assert.deepEqual(
+      await readFile(join(supersededOutput, `${superseded.runId}.json`)),
+      supersededBytes,
+    );
+    assert.deepEqual(
+      await readFile(supersededReceipt(supersededPaths)),
+      supersededBytes,
+    );
+
     const current = validReport();
     const currentBytes = Buffer.from(`${JSON.stringify(current, null, 2)}\n`);
-    const currentOutput = join(temporaryRoot, "exact-v2-prior");
-    const currentRunId = "71717171-8282-4939-8a4a-b5b5b5b5b5b5";
+    const currentOutput = join(temporaryRoot, "exact-v3-prior");
+    const currentRunId = "72727272-8383-4a4a-8b5b-c6c6c6c6c6c6";
     const currentPaths = publication.createC1229S5DenseArtifactPaths(
       currentOutput,
       currentRunId,
@@ -1557,18 +1738,170 @@ test("25b dense v2 accepts only fully validated archived v1/v2 authority and mak
       currentBytes,
     );
 
-    for (const [name, prior] of [
+    const lockBoundaryRunId = "25252525-3535-4949-8a0a-727272727272";
+    const lockBoundaryPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "lock-exclusive-boundary"),
+      lockBoundaryRunId,
+    );
+    seedPrior(lockBoundaryPaths, legacy, legacyBytes);
+    const lockBoundary = injectAfterExclusiveClose(
+      lockBoundaryPaths.lock,
+      () => {
+        const bytes = fs.readFileSync(lockBoundaryPaths.lock);
+        fs.unlinkSync(lockBoundaryPaths.lock);
+        fs.writeFileSync(lockBoundaryPaths.lock, bytes);
+      },
+    );
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          lockBoundaryPaths,
+          lockBoundaryRunId,
+          lockBoundary.operations,
+        ),
+      /lock.*descriptor authority differs/u,
+    );
+    assert.equal(lockBoundary.injected(), true);
+    await assert.rejects(readFile(legacyReceipt(lockBoundaryPaths)), /ENOENT/u);
+    assert.deepEqual(await readFile(lockBoundaryPaths.latest), legacyBytes);
+
+    const runningBoundaryRunId = "26262626-3636-4a4a-8b1b-737373737373";
+    const runningBoundaryPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "running-receipt-exclusive-boundary"),
+      runningBoundaryRunId,
+    );
+    seedPrior(runningBoundaryPaths, legacy, legacyBytes);
+    const runningBoundary = injectAfterExclusiveClose(
+      runningBoundaryPaths.runningReceipt,
+      () => {
+        const bytes = fs.readFileSync(runningBoundaryPaths.runningReceipt);
+        fs.unlinkSync(runningBoundaryPaths.runningReceipt);
+        fs.writeFileSync(runningBoundaryPaths.runningReceipt, bytes);
+      },
+    );
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          runningBoundaryPaths,
+          runningBoundaryRunId,
+          runningBoundary.operations,
+        ),
+      /RUNNING receipt at exclusive creation boundary.*descriptor authority differs/u,
+    );
+    assert.equal(runningBoundary.injected(), true);
+    assert.deepEqual(
+      await readFile(legacyReceipt(runningBoundaryPaths)),
+      legacyBytes,
+    );
+    assert.deepEqual(await readFile(runningBoundaryPaths.latest), legacyBytes);
+    await assert.rejects(readFile(runningBoundaryPaths.lock), /ENOENT/u);
+
+    const archiveHardlinkRunId = "27272727-3737-4b4b-8c2c-747474747474";
+    const archiveHardlinkPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "predecessor-archive-hardlink"),
+      archiveHardlinkRunId,
+    );
+    seedPrior(archiveHardlinkPaths, legacy, legacyBytes);
+    fs.linkSync(
+      join(archiveHardlinkPaths.directory, `${legacyRunId}.json`),
+      join(archiveHardlinkPaths.directory, "archive.alias"),
+    );
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          archiveHardlinkPaths,
+          archiveHardlinkRunId,
+        ),
+      /predecessor archive.*single-link/u,
+    );
+    await assert.rejects(
+      readFile(legacyReceipt(archiveHardlinkPaths)),
+      /ENOENT/u,
+    );
+
+    const receiptHardlinkRunId = "28282828-3838-4c4c-8d3d-757575757575";
+    const receiptHardlinkPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "predecessor-receipt-hardlink"),
+      receiptHardlinkRunId,
+    );
+    seedPrior(receiptHardlinkPaths, legacy, legacyBytes);
+    fs.writeFileSync(legacyReceipt(receiptHardlinkPaths), legacyBytes);
+    fs.linkSync(
+      legacyReceipt(receiptHardlinkPaths),
+      join(receiptHardlinkPaths.directory, "receipt.alias"),
+    );
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          receiptHardlinkPaths,
+          receiptHardlinkRunId,
+        ),
+      /supersession receipt.*single-link/u,
+    );
+
+    const archiveShapedRunId = "29292929-3939-4d4d-8e4e-767676767676";
+    const archiveShapedPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "predecessor-archive-symlink-shaped"),
+      archiveShapedRunId,
+    );
+    seedPrior(archiveShapedPaths, legacy, legacyBytes);
+    const shapedArchive = join(
+      archiveShapedPaths.directory,
+      `${legacyRunId}.json`,
+    );
+    const archiveShapedOperations = operationProxy({
+      lstatSync(file, options) {
+        const stat = fs.lstatSync(file, options);
+        if (resolve(file) !== resolve(shapedArchive)) return stat;
+        return new Proxy(stat, {
+          get(target, property) {
+            if (property === "isFile") return () => false;
+            if (property === "isSymbolicLink") return () => true;
+            return Reflect.get(target, property, target);
+          },
+        });
+      },
+    });
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          archiveShapedPaths,
+          archiveShapedRunId,
+          archiveShapedOperations,
+        ),
+      /predecessor archive.*single-link no-follow/u,
+    );
+    await assert.rejects(
+      readFile(legacyReceipt(archiveShapedPaths)),
+      /ENOENT/u,
+    );
+
+    for (const [name, prior, malformedRunId] of [
       [
-        "malformed-v2",
+        "malformed-v3",
         {
           schema: C12_29_S5_DENSE_SCHEMA,
-          schemaVersion: 2,
+          schemaVersion: 3,
           runId: RUN_ID,
           status: "PASS",
           incomplete: false,
           pass: true,
           exitCode: 0,
         },
+        "81818181-9292-4a3a-8b4b-c6c6c6c6c6c6",
+      ],
+      [
+        "malformed-v2",
+        {
+          schema: C12_29_S5_DENSE_SUPERSEDED_SCHEMA,
+          schemaVersion: 2,
+          runId: supersededRunId,
+          status: "PASS",
+          incomplete: false,
+          pass: true,
+          exitCode: 0,
+        },
+        "82828282-9393-4b4b-8c5c-d7d7d7d7d7d7",
       ],
       [
         "malformed-v1",
@@ -1581,13 +1914,10 @@ test("25b dense v2 accepts only fully validated archived v1/v2 authority and mak
           pass: false,
           exitCode: 2,
         },
+        "91919191-a2a2-4b3b-8c4c-d7d7d7d7d7d7",
       ],
     ]) {
       const malformedBytes = Buffer.from(`${JSON.stringify(prior, null, 2)}\n`);
-      const malformedRunId =
-        name === "malformed-v2"
-          ? "81818181-9292-4a3a-8b4b-c6c6c6c6c6c6"
-          : "91919191-a2a2-4b3b-8c4c-d7d7d7d7d7d7";
       const malformedPaths = publication.createC1229S5DenseArtifactPaths(
         join(temporaryRoot, name),
         malformedRunId,
@@ -1595,20 +1925,32 @@ test("25b dense v2 accepts only fully validated archived v1/v2 authority and mak
       seedPrior(malformedPaths, prior, malformedBytes);
       assert.throws(
         () => publication.beginC1229S5DenseRun(malformedPaths, malformedRunId),
-        /not valid finalized v[12] evidence/u,
+        /not valid finalized v[123] evidence/u,
       );
       assert.deepEqual(await readFile(malformedPaths.latest), malformedBytes);
       await assert.rejects(readFile(malformedPaths.lock), /ENOENT/u);
     }
 
-    for (const [name, prior, bytes] of [
-      ["corrupt-v2-archive", current, currentBytes],
-      ["corrupt-v1-archive", legacy, legacyBytes],
+    for (const [name, prior, bytes, corruptRunId] of [
+      [
+        "corrupt-v3-archive",
+        current,
+        currentBytes,
+        "a1a1a1a1-b2b2-4c3c-8d4d-e8e8e8e8e8e8",
+      ],
+      [
+        "corrupt-v2-archive",
+        superseded,
+        supersededBytes,
+        "a2a2a2a2-b3b3-4d4d-8e5e-f9f9f9f9f9f9",
+      ],
+      [
+        "corrupt-v1-archive",
+        legacy,
+        legacyBytes,
+        "b1b1b1b1-c2c2-4d3d-8e4e-f9f9f9f9f9f9",
+      ],
     ]) {
-      const corruptRunId =
-        name === "corrupt-v2-archive"
-          ? "a1a1a1a1-b2b2-4c3c-8d4d-e8e8e8e8e8e8"
-          : "b1b1b1b1-c2c2-4d3d-8e4e-f9f9f9f9f9f9";
       const corruptPaths = publication.createC1229S5DenseArtifactPaths(
         join(temporaryRoot, name),
         corruptRunId,
@@ -1616,42 +1958,72 @@ test("25b dense v2 accepts only fully validated archived v1/v2 authority and mak
       seedPrior(corruptPaths, prior, bytes, Buffer.from("corrupt archive\n"));
       assert.throws(
         () => publication.beginC1229S5DenseRun(corruptPaths, corruptRunId),
-        /prior immutable v[12] archive.*bytes differ/u,
+        /predecessor archive.*bytes differ/u,
+      );
+      assert.deepEqual(await readFile(corruptPaths.latest), bytes);
+      if (prior.schemaVersion < 3) {
+        await assert.rejects(
+          readFile(
+            predecessorReceipt(corruptPaths, prior.schemaVersion, prior.runId),
+          ),
+          /ENOENT/u,
+        );
+      }
+      await assert.rejects(readFile(corruptPaths.lock), /ENOENT/u);
+    }
+
+    for (const [name, prior, bytes, receipt, corruptRunId] of [
+      [
+        "corrupt-v1-receipt",
+        legacy,
+        legacyBytes,
+        legacyReceipt,
+        "b0b0b0b0-c0c0-4d0d-8e0e-f0f0f0f0f0f0",
+      ],
+      [
+        "corrupt-v2-receipt",
+        superseded,
+        supersededBytes,
+        supersededReceipt,
+        "b2b2b2b2-c3c3-4e4e-8f5f-a0a0a0a0a0a0",
+      ],
+    ]) {
+      const corruptPaths = publication.createC1229S5DenseArtifactPaths(
+        join(temporaryRoot, name),
+        corruptRunId,
+      );
+      seedPrior(corruptPaths, prior, bytes);
+      fs.writeFileSync(receipt(corruptPaths), "foreign receipt\n");
+      assert.throws(
+        () => publication.beginC1229S5DenseRun(corruptPaths, corruptRunId),
+        /supersession receipt.*bytes differ/u,
       );
       assert.deepEqual(await readFile(corruptPaths.latest), bytes);
       await assert.rejects(readFile(corruptPaths.lock), /ENOENT/u);
     }
 
-    const corruptOutput = join(temporaryRoot, "corrupt-receipt");
-    const corruptRunId = "b0b0b0b0-c0c0-4d0d-8e0e-f0f0f0f0f0f0";
-    const corruptPaths = publication.createC1229S5DenseArtifactPaths(
-      corruptOutput,
-      corruptRunId,
-    );
-    seedPrior(corruptPaths, legacy, legacyBytes);
-    fs.writeFileSync(legacyReceipt(corruptPaths), "foreign receipt\n");
-    assert.throws(
-      () => publication.beginC1229S5DenseRun(corruptPaths, corruptRunId),
-      /supersession receipt.*bytes differ/u,
-    );
-    assert.deepEqual(await readFile(corruptPaths.latest), legacyBytes);
-    await assert.rejects(readFile(corruptPaths.lock), /ENOENT/u);
-
-    const noncanonicalOutput = join(temporaryRoot, "noncanonical-v1");
-    const noncanonicalRunId = "12121212-3434-4567-89ab-cdef12345678";
-    const noncanonicalPaths = publication.createC1229S5DenseArtifactPaths(
-      noncanonicalOutput,
-      noncanonicalRunId,
-    );
-    const noncanonical = Buffer.from(JSON.stringify(legacy));
-    seedPrior(noncanonicalPaths, legacy, noncanonical, noncanonical);
-    assert.throws(
-      () =>
-        publication.beginC1229S5DenseRun(noncanonicalPaths, noncanonicalRunId),
-      /not canonical JSON/u,
-    );
-    assert.deepEqual(await readFile(noncanonicalPaths.latest), noncanonical);
-    await assert.rejects(readFile(noncanonicalPaths.lock), /ENOENT/u);
+    for (const [name, prior, noncanonicalRunId] of [
+      ["noncanonical-v1", legacy, "12121212-3434-4567-89ab-cdef12345678"],
+      ["noncanonical-v2", superseded, "13131313-3535-4678-8abc-def123456789"],
+      ["noncanonical-v3", current, "14141414-3636-4789-8bcd-ef123456789a"],
+    ]) {
+      const noncanonicalPaths = publication.createC1229S5DenseArtifactPaths(
+        join(temporaryRoot, name),
+        noncanonicalRunId,
+      );
+      const noncanonical = Buffer.from(JSON.stringify(prior));
+      seedPrior(noncanonicalPaths, prior, noncanonical, noncanonical);
+      assert.throws(
+        () =>
+          publication.beginC1229S5DenseRun(
+            noncanonicalPaths,
+            noncanonicalRunId,
+          ),
+        /not canonical JSON/u,
+      );
+      assert.deepEqual(await readFile(noncanonicalPaths.latest), noncanonical);
+      await assert.rejects(readFile(noncanonicalPaths.lock), /ENOENT/u);
+    }
 
     const deletedRunId = "c1c1c1c1-d2d2-4e3e-8f4f-a0a0a0a0a0a0";
     const deletedPaths = publication.createC1229S5DenseArtifactPaths(
@@ -1660,26 +2032,19 @@ test("25b dense v2 accepts only fully validated archived v1/v2 authority and mak
     );
     seedPrior(deletedPaths, legacy, legacyBytes);
     fs.writeFileSync(legacyReceipt(deletedPaths), legacyBytes);
-    let deleted = false;
-    const deleteOperations = operationProxy({
-      writeFileSync(file, bytes, options) {
-        fs.writeFileSync(file, bytes, options);
-        if (!deleted && file === deletedPaths.runningReceipt) {
-          deleted = true;
-          fs.unlinkSync(legacyReceipt(deletedPaths));
-        }
-      },
-    });
+    const deleted = injectAfterExclusiveClose(deletedPaths.runningReceipt, () =>
+      fs.unlinkSync(legacyReceipt(deletedPaths)),
+    );
     assert.throws(
       () =>
         publication.beginC1229S5DenseRun(
           deletedPaths,
           deletedRunId,
-          deleteOperations,
+          deleted.operations,
         ),
-      /post-running-receipt dense v1 supersession receipt/u,
+      /post-running-receipt predecessor supersession receipt/u,
     );
-    assert.equal(deleted, true);
+    assert.equal(deleted.injected(), true);
     assert.deepEqual(await readFile(deletedPaths.latest), legacyBytes);
     assert.deepEqual(
       await readFile(join(deletedPaths.directory, `${legacyRunId}.json`)),
@@ -1714,7 +2079,7 @@ test("25b dense v2 accepts only fully validated archived v1/v2 authority and mak
           changedRunId,
           changeOperations,
         ),
-      /post-latest-replacement dense v1 supersession receipt.*bytes differ/u,
+      /post-latest-replacement predecessor supersession receipt.*bytes differ/u,
     );
     assert.equal(changed, true);
     assert.deepEqual(
@@ -1739,13 +2104,16 @@ test("25b dense v2 accepts only fully validated archived v1/v2 authority and mak
         fs.mkdirSync(file, options);
         if (file === unreadablePaths.rawDirectory) rawCreated = true;
       },
-      readFileSync(file, options) {
-        if (rawCreated && file === legacyReceipt(unreadablePaths)) {
+      openSync(file, flags, mode) {
+        if (
+          rawCreated &&
+          resolve(file) === resolve(legacyReceipt(unreadablePaths))
+        ) {
           const error = new Error("receipt read denied");
           error.code = "EACCES";
           throw error;
         }
-        return fs.readFileSync(file, options);
+        return fs.openSync(file, flags, mode);
       },
     });
     assert.throws(
@@ -1766,6 +2134,1168 @@ test("25b dense v2 accepts only fully validated archived v1/v2 authority and mak
       (await readFile(unreadablePaths.latest)).includes(Buffer.from("RUNNING")),
     );
     assert.ok((await readFile(unreadablePaths.lock)).byteLength > 0);
+
+    const v2DeletedRunId = "e2e2e2e2-f3f3-4141-8252-d3d3d3d3d3d3";
+    const v2DeletedPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "v2-receipt-deleted-post-running"),
+      v2DeletedRunId,
+    );
+    seedPrior(v2DeletedPaths, superseded, supersededBytes);
+    fs.writeFileSync(supersededReceipt(v2DeletedPaths), supersededBytes);
+    const v2Deleted = injectAfterExclusiveClose(
+      v2DeletedPaths.runningReceipt,
+      () => fs.unlinkSync(supersededReceipt(v2DeletedPaths)),
+    );
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          v2DeletedPaths,
+          v2DeletedRunId,
+          v2Deleted.operations,
+        ),
+      /post-running-receipt predecessor supersession receipt/u,
+    );
+    assert.equal(v2Deleted.injected(), true);
+    assert.deepEqual(await readFile(v2DeletedPaths.latest), supersededBytes);
+    assert.deepEqual(
+      await readFile(join(v2DeletedPaths.directory, `${supersededRunId}.json`)),
+      supersededBytes,
+    );
+    await assert.rejects(readFile(v2DeletedPaths.lock), /ENOENT/u);
+
+    const v2ChangedRunId = "e3e3e3e3-f4f4-4252-8363-e4e4e4e4e4e4";
+    const v2ChangedPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "v2-receipt-corrupt-post-latest"),
+      v2ChangedRunId,
+    );
+    seedPrior(v2ChangedPaths, superseded, supersededBytes);
+    fs.writeFileSync(supersededReceipt(v2ChangedPaths), supersededBytes);
+    let v2Changed = false;
+    const v2ChangeOperations = operationProxy({
+      unlinkSync(file) {
+        fs.unlinkSync(file);
+        if (
+          !v2Changed &&
+          String(file).startsWith(`${v2ChangedPaths.latest}.running-`)
+        ) {
+          v2Changed = true;
+          fs.writeFileSync(
+            supersededReceipt(v2ChangedPaths),
+            "foreign receipt\n",
+          );
+        }
+      },
+    });
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          v2ChangedPaths,
+          v2ChangedRunId,
+          v2ChangeOperations,
+        ),
+      /post-latest-replacement predecessor supersession receipt.*bytes differ/u,
+    );
+    assert.equal(v2Changed, true);
+    assert.deepEqual(
+      await readFile(join(v2ChangedPaths.directory, `${supersededRunId}.json`)),
+      supersededBytes,
+    );
+    assert.ok(
+      (await readFile(v2ChangedPaths.latest)).includes(Buffer.from("RUNNING")),
+    );
+    assert.ok((await readFile(v2ChangedPaths.lock)).byteLength > 0);
+
+    const v2UnreadableRunId = "e4e4e4e4-f5f5-4363-8474-f5f5f5f5f5f5";
+    const v2UnreadablePaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "v2-receipt-unreadable-pre-return"),
+      v2UnreadableRunId,
+    );
+    seedPrior(v2UnreadablePaths, superseded, supersededBytes);
+    fs.writeFileSync(supersededReceipt(v2UnreadablePaths), supersededBytes);
+    let v2RawCreated = false;
+    const v2UnreadableOperations = operationProxy({
+      mkdirSync(file, options) {
+        fs.mkdirSync(file, options);
+        if (file === v2UnreadablePaths.rawDirectory) v2RawCreated = true;
+      },
+      openSync(file, flags, mode) {
+        if (
+          v2RawCreated &&
+          resolve(file) === resolve(supersededReceipt(v2UnreadablePaths))
+        ) {
+          const error = new Error("v2 receipt read denied");
+          error.code = "EACCES";
+          throw error;
+        }
+        return fs.openSync(file, flags, mode);
+      },
+    });
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          v2UnreadablePaths,
+          v2UnreadableRunId,
+          v2UnreadableOperations,
+        ),
+      /v2 receipt read denied/u,
+    );
+    assert.equal(v2RawCreated, true);
+    assert.deepEqual(
+      await readFile(
+        join(v2UnreadablePaths.directory, `${supersededRunId}.json`),
+      ),
+      supersededBytes,
+    );
+    assert.ok(
+      (await readFile(v2UnreadablePaths.latest)).includes(
+        Buffer.from("RUNNING"),
+      ),
+    );
+    assert.ok((await readFile(v2UnreadablePaths.lock)).byteLength > 0);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("25c final publication retains predecessor archive and receipt authority after begin", async () => {
+  const publication = await import("./probe-c12-29-s5-dense-cost.mjs");
+  const temporaryRoot = await mkdtemp(
+    join(tmpdir(), "c12-29-s5-dense-predecessor-finality-"),
+  );
+  const operationProxy = (overrides) =>
+    new Proxy(fs, {
+      get(target, property) {
+        return overrides[property] ?? Reflect.get(target, property);
+      },
+    });
+  const injectAfterExclusiveClose = (file, inject) => {
+    const exclusiveDescriptors = new Set();
+    let injected = false;
+    return {
+      operations: operationProxy({
+        openSync(candidate, flags, mode) {
+          const descriptor = fs.openSync(candidate, flags, mode);
+          if (
+            resolve(candidate) === resolve(file) &&
+            typeof flags === "number" &&
+            (flags & fs.constants.O_EXCL) !== 0
+          ) {
+            exclusiveDescriptors.add(descriptor);
+          }
+          return descriptor;
+        },
+        closeSync(descriptor) {
+          fs.closeSync(descriptor);
+          if (!injected && exclusiveDescriptors.delete(descriptor)) {
+            injected = true;
+            inject();
+          }
+        },
+      }),
+      injected: () => injected,
+    };
+  };
+  const legacyRunId = "10101010-2020-4343-8454-565656565656";
+  const supersededRunId = "30303030-4040-4545-8656-787878787878";
+  const legacy = validLegacyReport(legacyRunId);
+  const superseded = validSupersededReport(supersededRunId);
+  const legacyBytes = Buffer.from(`${JSON.stringify(legacy, null, 2)}\n`);
+  const supersededBytes = Buffer.from(
+    `${JSON.stringify(superseded, null, 2)}\n`,
+  );
+  const seed = (name, runId, predecessor, predecessorBytes) => {
+    const output = join(temporaryRoot, name);
+    const paths = publication.createC1229S5DenseArtifactPaths(output, runId);
+    const archive = join(output, `${predecessor.runId}.json`);
+    const receipt = join(
+      output,
+      `campaign12-c12-29-s5-dense-cost.superseded-v${predecessor.schemaVersion}-${predecessor.runId}.json`,
+    );
+    fs.mkdirSync(output, { recursive: true });
+    fs.writeFileSync(paths.latest, predecessorBytes);
+    fs.writeFileSync(archive, predecessorBytes);
+    const started = publication.beginC1229S5DenseRun(paths, runId);
+    return { archive, paths, receipt, runId, started };
+  };
+  const publish = (entry, operations = fs) =>
+    publication.publishC1229S5DenseFinal(
+      entry.paths,
+      entry.started.publicationAuthority,
+      { runId: entry.runId, status: "PASS", incomplete: false },
+      operations,
+    );
+  const assertOwnedRunningRetained = async (entry) => {
+    assert.deepEqual(await readFile(entry.paths.lock), entry.started.lockBytes);
+    assert.deepEqual(
+      await readFile(entry.paths.latest),
+      entry.started.runningBytes,
+    );
+  };
+  try {
+    const deleted = seed(
+      "v1-deleted-post-begin",
+      "20202020-3030-4444-8565-676767676767",
+      legacy,
+      legacyBytes,
+    );
+    const clonedAuthority = structuredClone(
+      deleted.started.publicationAuthority,
+    );
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(deleted.paths, clonedAuthority, {
+          runId: deleted.runId,
+          status: "PASS",
+          incomplete: false,
+        }),
+      /not issued by begin/u,
+    );
+    fs.unlinkSync(deleted.archive);
+    fs.unlinkSync(deleted.receipt);
+    assert.throws(
+      () => publish(deleted),
+      /predecessor|prior immutable|supersession receipt/u,
+    );
+    await assertOwnedRunningRetained(deleted);
+
+    const runningChanged = seed(
+      "v1-running-receipt-substituted",
+      "21212121-3131-4545-8676-686868686868",
+      legacy,
+      legacyBytes,
+    );
+    fs.writeFileSync(runningChanged.paths.runningReceipt, "foreign RUNNING\n");
+    assert.throws(
+      () => publish(runningChanged),
+      /immutable RUNNING receipt authority.*bytes differ/u,
+    );
+    await assertOwnedRunningRetained(runningChanged);
+
+    const postImmutableEntry = seed(
+      "v1-receipt-deleted-post-immutable",
+      "22222222-3232-4646-8787-696969696969",
+      legacy,
+      legacyBytes,
+    );
+    const postImmutable = injectAfterExclusiveClose(
+      postImmutableEntry.paths.immutable,
+      () => fs.unlinkSync(postImmutableEntry.receipt),
+    );
+    assert.throws(
+      () => publish(postImmutableEntry, postImmutable.operations),
+      /post-immutable predecessor.*supersession receipt/u,
+    );
+    assert.equal(postImmutable.injected(), true);
+    await assertOwnedRunningRetained(postImmutableEntry);
+
+    const postReceiptEntry = seed(
+      "v1-receipt-deleted-post-final-receipt",
+      "23232323-3333-4747-8888-707070707070",
+      legacy,
+      legacyBytes,
+    );
+    const postReceipt = injectAfterExclusiveClose(
+      postReceiptEntry.paths.finalReceipt,
+      () => fs.unlinkSync(postReceiptEntry.receipt),
+    );
+    assert.throws(
+      () => publish(postReceiptEntry, postReceipt.operations),
+      /post-final-receipt predecessor.*supersession receipt/u,
+    );
+    assert.equal(postReceipt.injected(), true);
+    await assertOwnedRunningRetained(postReceiptEntry);
+
+    const legacySuccess = seed(
+      "v1-success",
+      "24242424-3434-4848-8999-717171717171",
+      legacy,
+      legacyBytes,
+    );
+    const legacySuccessReceipt = publish(legacySuccess);
+    assert.equal(legacySuccessReceipt.predecessorAuthority.schemaVersion, 1);
+    assert.equal(legacySuccessReceipt.predecessorAuthority.runId, legacyRunId);
+    assert.deepEqual(await readFile(legacySuccess.archive), legacyBytes);
+    assert.deepEqual(await readFile(legacySuccess.receipt), legacyBytes);
+    await assert.rejects(readFile(legacySuccess.paths.lock), /ENOENT/u);
+
+    const receiptChanged = seed(
+      "v2-receipt-substituted-post-begin",
+      "70707070-8080-4949-8a9a-b2b2b2b2b2b2",
+      superseded,
+      supersededBytes,
+    );
+    fs.writeFileSync(receiptChanged.receipt, "foreign v2 receipt\n");
+    assert.throws(() => publish(receiptChanged), /predecessor.*bytes differ/u);
+    await assertOwnedRunningRetained(receiptChanged);
+
+    const postLatest = seed(
+      "v2-substituted-post-final-latest",
+      "71717171-8181-4a5a-8b0b-c3c3c3c3c3c3",
+      superseded,
+      supersededBytes,
+    );
+    let postLatestInjected = false;
+    const postLatestOperations = operationProxy({
+      unlinkSync(file) {
+        fs.unlinkSync(file);
+        if (
+          !postLatestInjected &&
+          String(file).startsWith(`${postLatest.paths.latest}.final-`)
+        ) {
+          postLatestInjected = true;
+          fs.writeFileSync(postLatest.archive, "foreign v2 archive\n");
+        }
+      },
+    });
+    assert.throws(
+      () => publish(postLatest, postLatestOperations),
+      /post-final-latest predecessor.*archive.*bytes differ/u,
+    );
+    assert.equal(postLatestInjected, true);
+    await assertOwnedRunningRetained(postLatest);
+
+    const successor = seed(
+      "v2-successor-after-unlock",
+      "72727272-8282-4b6b-8c1c-d4d4d4d4d4d4",
+      superseded,
+      supersededBytes,
+    );
+    const successorLock = Buffer.from("successor lock authority\n");
+    const successorLatest = Buffer.from("successor latest authority\n");
+    let unlockInjected = false;
+    const unlockOperations = operationProxy({
+      renameSync(from, to) {
+        fs.renameSync(from, to);
+        if (
+          !unlockInjected &&
+          from === successor.paths.lock &&
+          String(to).includes(".release-")
+        ) {
+          unlockInjected = true;
+          fs.writeFileSync(successor.paths.lock, successorLock, {
+            flag: "wx",
+          });
+          fs.writeFileSync(successor.paths.latest, successorLatest);
+          fs.writeFileSync(successor.receipt, "foreign v2 receipt\n");
+        }
+      },
+    });
+    const successorReceipt = publish(successor, unlockOperations);
+    assert.equal(successorReceipt.kind, "c12-29-s5-dense-cost-final-receipt");
+    assert.equal(unlockInjected, true);
+    assert.deepEqual(await readFile(successor.paths.lock), successorLock);
+    assert.deepEqual(await readFile(successor.paths.latest), successorLatest);
+    assert.deepEqual(await readFile(successor.archive), supersededBytes);
+    assert.deepEqual(
+      await readFile(successor.receipt),
+      Buffer.from("foreign v2 receipt\n"),
+    );
+
+    const throwingSuccessor = seed(
+      "v2-successor-after-throwing-unlock",
+      "73737373-8383-4c7c-8d2d-e5e5e5e5e5e5",
+      superseded,
+      supersededBytes,
+    );
+    const throwingSuccessorLock = Buffer.from("throwing successor lock\n");
+    const throwingSuccessorLatest = Buffer.from("throwing successor latest\n");
+    let throwingUnlockInjected = false;
+    const throwingUnlockOperations = operationProxy({
+      renameSync(from, to) {
+        fs.renameSync(from, to);
+        if (
+          !throwingUnlockInjected &&
+          from === throwingSuccessor.paths.lock &&
+          String(to).includes(".release-")
+        ) {
+          throwingUnlockInjected = true;
+          fs.writeFileSync(
+            throwingSuccessor.paths.lock,
+            throwingSuccessorLock,
+            { flag: "wx" },
+          );
+          fs.writeFileSync(
+            throwingSuccessor.paths.latest,
+            throwingSuccessorLatest,
+          );
+          fs.writeFileSync(
+            throwingSuccessor.receipt,
+            "throwing successor predecessor receipt\n",
+          );
+          const error = new Error("rename reported EIO after owned move");
+          error.code = "EIO";
+          throw error;
+        }
+      },
+    });
+    const throwingSuccessorReceipt = publish(
+      throwingSuccessor,
+      throwingUnlockOperations,
+    );
+    assert.equal(
+      throwingSuccessorReceipt.kind,
+      "c12-29-s5-dense-cost-final-receipt",
+    );
+    assert.equal(throwingUnlockInjected, true);
+    assert.deepEqual(
+      await readFile(throwingSuccessor.paths.lock),
+      throwingSuccessorLock,
+    );
+    assert.deepEqual(
+      await readFile(throwingSuccessor.paths.latest),
+      throwingSuccessorLatest,
+    );
+
+    const throwingLatest = seed(
+      "v2-throwing-latest-claim",
+      "76767676-8686-4faf-8050-b8b8b8b8b8b8",
+      superseded,
+      supersededBytes,
+    );
+    let throwingLatestInjected = false;
+    const throwingLatestOperations = operationProxy({
+      renameSync(from, to) {
+        fs.renameSync(from, to);
+        if (
+          !throwingLatestInjected &&
+          from === throwingLatest.paths.latest &&
+          String(to).includes(".final-")
+        ) {
+          throwingLatestInjected = true;
+          const error = new Error("latest rename reported EIO after move");
+          error.code = "EIO";
+          throw error;
+        }
+      },
+    });
+    const throwingLatestFinal = publish(
+      throwingLatest,
+      throwingLatestOperations,
+    );
+    assert.equal(throwingLatestFinal.status, "PASS");
+    assert.equal(throwingLatestInjected, true);
+    await assert.rejects(readFile(throwingLatest.paths.lock), /ENOENT/u);
+
+    const latestDelete = seed(
+      "v2-latest-held-descriptor-delete",
+      "74747474-8484-4d8d-8e3e-f6f6f6f6f6f6",
+      superseded,
+      supersededBytes,
+    );
+    const latestDeleteDescriptors = new Map();
+    const foreignLatestReceipt = Buffer.from("foreign latest receipt\n");
+    let deletedLatestReceipt = null;
+    let latestDeleteInjected = false;
+    const latestDeleteOperations = operationProxy({
+      openSync(file, flags, mode) {
+        const descriptor = fs.openSync(file, flags, mode);
+        latestDeleteDescriptors.set(descriptor, resolve(file));
+        return descriptor;
+      },
+      unlinkSync(file) {
+        fs.unlinkSync(file);
+        if (String(file).startsWith(`${latestDelete.paths.latest}.final-`)) {
+          deletedLatestReceipt = resolve(file);
+        }
+      },
+      closeSync(descriptor) {
+        const file = latestDeleteDescriptors.get(descriptor);
+        fs.closeSync(descriptor);
+        latestDeleteDescriptors.delete(descriptor);
+        if (
+          !latestDeleteInjected &&
+          deletedLatestReceipt !== null &&
+          file === deletedLatestReceipt
+        ) {
+          latestDeleteInjected = true;
+          assert.equal(fs.existsSync(deletedLatestReceipt), false);
+          fs.writeFileSync(deletedLatestReceipt, foreignLatestReceipt, {
+            flag: "wx",
+          });
+        }
+      },
+    });
+    const latestDeleteFinal = publish(latestDelete, latestDeleteOperations);
+    assert.equal(latestDeleteFinal.status, "PASS");
+    assert.equal(latestDeleteInjected, true);
+    assert.deepEqual(
+      await readFile(deletedLatestReceipt),
+      foreignLatestReceipt,
+    );
+
+    const unlockDelete = seed(
+      "v2-unlock-held-descriptor-delete",
+      "75757575-8585-4e9e-8f4f-a7a7a7a7a7a7",
+      superseded,
+      supersededBytes,
+    );
+    const unlockDeleteDescriptors = new Map();
+    const unlockDeleteSuccessorLock = Buffer.from("delete successor lock\n");
+    const unlockDeleteSuccessorLatest = Buffer.from(
+      "delete successor latest\n",
+    );
+    const foreignUnlockReceipt = Buffer.from("foreign unlock receipt\n");
+    let deletedUnlockReceipt = null;
+    let unlockDeleteInjected = false;
+    const unlockDeleteOperations = operationProxy({
+      openSync(file, flags, mode) {
+        const descriptor = fs.openSync(file, flags, mode);
+        unlockDeleteDescriptors.set(descriptor, resolve(file));
+        return descriptor;
+      },
+      unlinkSync(file) {
+        fs.unlinkSync(file);
+        if (String(file).includes(".release-")) {
+          deletedUnlockReceipt = resolve(file);
+        }
+      },
+      closeSync(descriptor) {
+        const file = unlockDeleteDescriptors.get(descriptor);
+        fs.closeSync(descriptor);
+        unlockDeleteDescriptors.delete(descriptor);
+        if (
+          !unlockDeleteInjected &&
+          deletedUnlockReceipt !== null &&
+          file === deletedUnlockReceipt
+        ) {
+          unlockDeleteInjected = true;
+          assert.equal(fs.existsSync(deletedUnlockReceipt), false);
+          fs.writeFileSync(unlockDelete.paths.lock, unlockDeleteSuccessorLock, {
+            flag: "wx",
+          });
+          fs.writeFileSync(
+            unlockDelete.paths.latest,
+            unlockDeleteSuccessorLatest,
+          );
+          fs.writeFileSync(deletedUnlockReceipt, foreignUnlockReceipt, {
+            flag: "wx",
+          });
+          fs.writeFileSync(
+            unlockDelete.receipt,
+            "foreign post-delete predecessor receipt\n",
+          );
+        }
+      },
+    });
+    const unlockDeleteFinal = publish(unlockDelete, unlockDeleteOperations);
+    assert.equal(unlockDeleteFinal.status, "PASS");
+    assert.equal(unlockDeleteInjected, true);
+    assert.deepEqual(
+      await readFile(unlockDelete.paths.lock),
+      unlockDeleteSuccessorLock,
+    );
+    assert.deepEqual(
+      await readFile(unlockDelete.paths.latest),
+      unlockDeleteSuccessorLatest,
+    );
+    assert.deepEqual(
+      await readFile(deletedUnlockReceipt),
+      foreignUnlockReceipt,
+    );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("25d publication authority binds exact path topology and no-follow file identities", async () => {
+  const publication = await import("./probe-c12-29-s5-dense-cost.mjs");
+  const temporaryRoot = await mkdtemp(
+    join(tmpdir(), "c12-29-s5-dense-path-authority-"),
+  );
+  const operationProxy = (overrides) =>
+    new Proxy(fs, {
+      get(target, property) {
+        return overrides[property] ?? Reflect.get(target, property);
+      },
+    });
+  const report = (runId) => ({
+    runId,
+    status: "PASS",
+    incomplete: false,
+  });
+  try {
+    const runId = "a0a0a0a0-b1b1-4c2c-8d3d-e4e4e4e4e4e4";
+    const paths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "bound"),
+      runId,
+    );
+    const started = publication.beginC1229S5DenseRun(paths, runId);
+    const alternateDirectory = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "cross-directory"),
+      runId,
+    );
+    const crossRun = publication.createC1229S5DenseArtifactPaths(
+      paths.directory,
+      "b1b1b1b1-c2c2-4d3d-8e4e-f5f5f5f5f5f5",
+    );
+    for (const mutatedPaths of [
+      alternateDirectory,
+      crossRun,
+      { ...paths, immutable: join(paths.directory, "alternate.json") },
+      { ...paths, finalReceipt: paths.immutable },
+    ]) {
+      assert.throws(
+        () =>
+          publication.publishC1229S5DenseFinal(
+            mutatedPaths,
+            started.publicationAuthority,
+            report(runId),
+          ),
+        /path.*(topology|authority).*differs/u,
+      );
+    }
+
+    const symlinkShapedOperations = operationProxy({
+      lstatSync(file, options) {
+        const stat = fs.lstatSync(file, options);
+        if (resolve(file) !== resolve(paths.runningReceipt)) return stat;
+        return new Proxy(stat, {
+          get(target, property) {
+            if (property === "isFile") return () => false;
+            if (property === "isSymbolicLink") return () => true;
+            return Reflect.get(target, property, target);
+          },
+        });
+      },
+    });
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          paths,
+          started.publicationAuthority,
+          report(runId),
+          symlinkShapedOperations,
+        ),
+      /single-link no-follow regular file/u,
+    );
+
+    const unreadableOperations = operationProxy({
+      openSync(file, flags, mode) {
+        if (resolve(file) === resolve(paths.runningReceipt)) {
+          const error = new Error("RUNNING receipt read denied");
+          error.code = "EACCES";
+          throw error;
+        }
+        return fs.openSync(file, flags, mode);
+      },
+    });
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          paths,
+          started.publicationAuthority,
+          report(runId),
+          unreadableOperations,
+        ),
+      /RUNNING receipt read denied/u,
+    );
+
+    fs.unlinkSync(paths.runningReceipt);
+    fs.writeFileSync(paths.runningReceipt, started.runningBytes);
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          paths,
+          started.publicationAuthority,
+          report(runId),
+        ),
+      /descriptor authority differs/u,
+    );
+    assert.deepEqual(await readFile(paths.lock), started.lockBytes);
+
+    const hardlinkRunId = "c2c2c2c2-d3d3-4e4e-8f5f-a6a6a6a6a6a6";
+    const hardlinkPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "hardlink"),
+      hardlinkRunId,
+    );
+    const hardlinkStarted = publication.beginC1229S5DenseRun(
+      hardlinkPaths,
+      hardlinkRunId,
+    );
+    fs.unlinkSync(hardlinkPaths.runningReceipt);
+    fs.linkSync(hardlinkPaths.latest, hardlinkPaths.runningReceipt);
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          hardlinkPaths,
+          hardlinkStarted.publicationAuthority,
+          report(hardlinkRunId),
+        ),
+      /single-link no-follow regular file/u,
+    );
+    assert.deepEqual(
+      await readFile(hardlinkPaths.lock),
+      hardlinkStarted.lockBytes,
+    );
+
+    const directoryRunId = "d3d3d3d3-e4e4-4f5f-8060-b7b7b7b7b7b7";
+    const directoryPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "directory-identity"),
+      directoryRunId,
+    );
+    const directoryStarted = publication.beginC1229S5DenseRun(
+      directoryPaths,
+      directoryRunId,
+    );
+    const directoryIdentityOperations = operationProxy({
+      lstatSync(file, options) {
+        const stat = fs.lstatSync(file, options);
+        if (resolve(file) !== resolve(directoryPaths.directory)) return stat;
+        return new Proxy(stat, {
+          get(target, property) {
+            if (property === "ino") return target.ino + 1n;
+            return Reflect.get(target, property, target);
+          },
+        });
+      },
+    });
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          directoryPaths,
+          directoryStarted.publicationAuthority,
+          report(directoryRunId),
+          directoryIdentityOperations,
+        ),
+      /output directory.*identity differs/u,
+    );
+
+    const lockRunId = "e4e4e4e4-f5f5-4060-8171-c8c8c8c8c8c8";
+    const lockPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "same-byte-lock-replacement"),
+      lockRunId,
+    );
+    const lockStarted = publication.beginC1229S5DenseRun(lockPaths, lockRunId);
+    fs.unlinkSync(lockPaths.lock);
+    fs.writeFileSync(lockPaths.lock, lockStarted.lockBytes);
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          lockPaths,
+          lockStarted.publicationAuthority,
+          report(lockRunId),
+        ),
+      /lock authority.*descriptor authority differs/u,
+    );
+    assert.deepEqual(
+      await readFile(lockPaths.latest),
+      lockStarted.runningBytes,
+    );
+
+    const latestRunId = "f5f5f5f5-a6a6-4171-8282-d9d9d9d9d9d9";
+    const latestPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "hardlink-latest"),
+      latestRunId,
+    );
+    const latestStarted = publication.beginC1229S5DenseRun(
+      latestPaths,
+      latestRunId,
+    );
+    fs.linkSync(
+      latestPaths.latest,
+      join(latestPaths.directory, "latest.alias"),
+    );
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          latestPaths,
+          latestStarted.publicationAuthority,
+          report(latestRunId),
+        ),
+      /single-link no-follow regular file/u,
+    );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("25e first-red authority is canonical, archive-backed, retained for PASS, and immutable", async () => {
+  const publication = await import("./probe-c12-29-s5-dense-cost.mjs");
+  const temporaryRoot = await mkdtemp(
+    join(tmpdir(), "c12-29-s5-dense-first-red-authority-"),
+  );
+  const operationProxy = (overrides) =>
+    new Proxy(fs, {
+      get(target, property) {
+        return overrides[property] ?? Reflect.get(target, property);
+      },
+    });
+  const minimalPass = (runId) => ({
+    runId,
+    status: "PASS",
+    incomplete: false,
+  });
+  try {
+    const lateRunId = "d3d3d3d3-e4e4-4f5f-8060-b7b7b7b7b7b7";
+    const latePaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "late-appearance"),
+      lateRunId,
+    );
+    const lateStarted = publication.beginC1229S5DenseRun(latePaths, lateRunId);
+    fs.writeFileSync(latePaths.firstRed, "late foreign first-red\n");
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          latePaths,
+          lateStarted.publicationAuthority,
+          minimalPass(lateRunId),
+        ),
+      /first-red.*occupied/u,
+    );
+    assert.deepEqual(await readFile(latePaths.lock), lateStarted.lockBytes);
+
+    const shapedRunId = "e4e4e4e4-f5f5-4060-8171-c8c8c8c8c8c8";
+    const shapedPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "symlink-shaped"),
+      shapedRunId,
+    );
+    fs.mkdirSync(shapedPaths.directory, { recursive: true });
+    fs.writeFileSync(shapedPaths.firstRed, "symlink-shaped first-red\n");
+    const shapedOperations = operationProxy({
+      lstatSync(file, options) {
+        const stat = fs.lstatSync(file, options);
+        if (resolve(file) !== resolve(shapedPaths.firstRed)) return stat;
+        return new Proxy(stat, {
+          get(target, property) {
+            if (property === "isFile") return () => false;
+            if (property === "isSymbolicLink") return () => true;
+            return Reflect.get(target, property, target);
+          },
+        });
+      },
+    });
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          shapedPaths,
+          shapedRunId,
+          shapedOperations,
+        ),
+      /single-link no-follow regular file/u,
+    );
+
+    const hardlinkRunId = "f5f5f5f5-a6a6-4171-8282-d9d9d9d9d9d9";
+    const hardlinkPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "hardlink-shaped"),
+      hardlinkRunId,
+    );
+    fs.mkdirSync(hardlinkPaths.directory, { recursive: true });
+    const backing = join(hardlinkPaths.directory, "first-red-backing.json");
+    fs.writeFileSync(backing, "hardlinked first-red\n");
+    fs.linkSync(backing, hardlinkPaths.firstRed);
+    assert.throws(
+      () => publication.beginC1229S5DenseRun(hardlinkPaths, hardlinkRunId),
+      /single-link no-follow regular file/u,
+    );
+
+    const passEvidenceRunId = "a6a6a6a6-b7b7-4282-8393-e0e0e0e0e0e0";
+    const passEvidence = validReportForRun(passEvidenceRunId);
+    const passEvidenceBytes = Buffer.from(
+      `${JSON.stringify(passEvidence, null, 2)}\n`,
+    );
+    const passPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "pass-is-not-red"),
+      "b7b7b7b7-c8c8-4393-84a4-f1f1f1f1f1f1",
+    );
+    fs.mkdirSync(passPaths.directory, { recursive: true });
+    fs.writeFileSync(passPaths.firstRed, passEvidenceBytes);
+    fs.writeFileSync(
+      join(passPaths.directory, `${passEvidenceRunId}.json`),
+      passEvidenceBytes,
+    );
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          passPaths,
+          "b7b7b7b7-c8c8-4393-84a4-f1f1f1f1f1f1",
+        ),
+      /not red final evidence/u,
+    );
+
+    const redEvidenceRunId = "c8c8c8c8-d9d9-44a4-85b5-a2a2a2a2a2a2";
+    const redEvidence = validReportForRun(redEvidenceRunId, (report) => {
+      report.legs[0].transport.pageErrors.push("first-red authority seed");
+    });
+    const redEvidenceBytes = Buffer.from(
+      `${JSON.stringify(redEvidence, null, 2)}\n`,
+    );
+    const missingArchiveRunId = "d9d9d9d9-e0e0-45b5-86c6-b3b3b3b3b3b3";
+    const missingArchivePaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "missing-first-red-archive"),
+      missingArchiveRunId,
+    );
+    fs.mkdirSync(missingArchivePaths.directory, { recursive: true });
+    fs.writeFileSync(missingArchivePaths.firstRed, redEvidenceBytes);
+    assert.throws(
+      () =>
+        publication.beginC1229S5DenseRun(
+          missingArchivePaths,
+          missingArchiveRunId,
+        ),
+      /first-red immutable archive.*lstat failed/u,
+    );
+
+    const retainedRunId = "e0e0e0e0-f1f1-46c6-87d7-c4c4c4c4c4c4";
+    const retainedPaths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, "retained-first-red"),
+      retainedRunId,
+    );
+    fs.mkdirSync(retainedPaths.directory, { recursive: true });
+    const redArchive = join(
+      retainedPaths.directory,
+      `${redEvidenceRunId}.json`,
+    );
+    fs.writeFileSync(retainedPaths.firstRed, redEvidenceBytes);
+    fs.writeFileSync(redArchive, redEvidenceBytes);
+    const retainedStarted = publication.beginC1229S5DenseRun(
+      retainedPaths,
+      retainedRunId,
+    );
+
+    const unreadableOperations = operationProxy({
+      lstatSync(file, options) {
+        if (resolve(file) === resolve(retainedPaths.firstRed)) {
+          const error = new Error("first-red lstat denied");
+          error.code = "EACCES";
+          throw error;
+        }
+        return fs.lstatSync(file, options);
+      },
+    });
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          retainedPaths,
+          retainedStarted.publicationAuthority,
+          minimalPass(retainedRunId),
+          unreadableOperations,
+        ),
+      /first-red lstat denied/u,
+    );
+
+    const deletedOperations = operationProxy({
+      lstatSync(file, options) {
+        if (resolve(file) === resolve(retainedPaths.firstRed)) {
+          const error = new Error("first-red deleted");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return fs.lstatSync(file, options);
+      },
+    });
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          retainedPaths,
+          retainedStarted.publicationAuthority,
+          minimalPass(retainedRunId),
+          deletedOperations,
+        ),
+      /first-red.*lstat failed/u,
+    );
+
+    const archiveAliasOperations = operationProxy({
+      lstatSync(file, options) {
+        const stat = fs.lstatSync(file, options);
+        if (resolve(file) !== resolve(redArchive)) return stat;
+        return new Proxy(stat, {
+          get(target, property) {
+            if (property === "ino") return target.ino + 1n;
+            return Reflect.get(target, property, target);
+          },
+        });
+      },
+    });
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          retainedPaths,
+          retainedStarted.publicationAuthority,
+          minimalPass(retainedRunId),
+          archiveAliasOperations,
+        ),
+      /descriptor authority differs|opened descriptor differs/u,
+    );
+
+    const retainedReceipt = publication.publishC1229S5DenseFinal(
+      retainedPaths,
+      retainedStarted.publicationAuthority,
+      minimalPass(retainedRunId),
+    );
+    assert.equal(retainedReceipt.status, "PASS");
+    assert.deepEqual(await readFile(retainedPaths.firstRed), redEvidenceBytes);
+    assert.deepEqual(await readFile(redArchive), redEvidenceBytes);
+    await assert.rejects(readFile(retainedPaths.lock), /ENOENT/u);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("25f every newly published file remains descriptor-bound at each boundary", async () => {
+  const publication = await import("./probe-c12-29-s5-dense-cost.mjs");
+  const temporaryRoot = await mkdtemp(
+    join(tmpdir(), "c12-29-s5-dense-current-authority-"),
+  );
+  const operationProxy = (overrides) =>
+    new Proxy(fs, {
+      get(target, property) {
+        return overrides[property] ?? Reflect.get(target, property);
+      },
+    });
+  const report = (runId, status = "PASS") => ({
+    runId,
+    status,
+    incomplete: false,
+  });
+  const start = (name, runId) => {
+    const paths = publication.createC1229S5DenseArtifactPaths(
+      join(temporaryRoot, name),
+      runId,
+    );
+    return {
+      paths,
+      started: publication.beginC1229S5DenseRun(paths, runId),
+      runId,
+    };
+  };
+  const afterExclusiveClose = (target, mutation) => {
+    const createdDescriptors = new Map();
+    let injected = false;
+    return {
+      get injected() {
+        return injected;
+      },
+      operations: operationProxy({
+        openSync(file, flags, mode) {
+          const descriptor = fs.openSync(file, flags, mode);
+          if (
+            resolve(file) === resolve(target) &&
+            (flags & fs.constants.O_EXCL) !== 0
+          ) {
+            createdDescriptors.set(descriptor, resolve(file));
+          }
+          return descriptor;
+        },
+        closeSync(descriptor) {
+          const createdPath = createdDescriptors.get(descriptor);
+          fs.closeSync(descriptor);
+          if (!injected && createdPath === resolve(target)) {
+            injected = true;
+            mutation(createdPath);
+          }
+        },
+      }),
+    };
+  };
+  try {
+    const immutable = start(
+      "immutable-replacement",
+      "f1f1f1f1-a2a2-47d7-88e8-d5d5d5d5d5d5",
+    );
+    const immutableBoundary = afterExclusiveClose(
+      immutable.paths.immutable,
+      (file) => {
+        const bytes = fs.readFileSync(file);
+        fs.unlinkSync(file);
+        fs.writeFileSync(file, bytes);
+      },
+    );
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          immutable.paths,
+          immutable.started.publicationAuthority,
+          report(immutable.runId),
+          immutableBoundary.operations,
+        ),
+      /descriptor authority differs/u,
+    );
+    assert.equal(immutableBoundary.injected, true);
+    assert.deepEqual(
+      await readFile(immutable.paths.lock),
+      immutable.started.lockBytes,
+    );
+
+    const firstRed = start(
+      "first-red-hardlink",
+      "a2a2a2a2-b3b3-48e8-89f9-e6e6e6e6e6e6",
+    );
+    const firstRedAlias = `${firstRed.paths.firstRed}.alias`;
+    const firstRedBoundary = afterExclusiveClose(
+      firstRed.paths.firstRed,
+      (file) => fs.linkSync(file, firstRedAlias),
+    );
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          firstRed.paths,
+          firstRed.started.publicationAuthority,
+          report(firstRed.runId, "ERROR"),
+          firstRedBoundary.operations,
+        ),
+      /single-link no-follow regular file/u,
+    );
+    assert.equal(firstRedBoundary.injected, true);
+    assert.deepEqual(
+      await readFile(firstRed.paths.lock),
+      firstRed.started.lockBytes,
+    );
+
+    const finalLatest = start(
+      "final-latest-replacement",
+      "b3b3b3b3-c4c4-49f9-8a0a-f7f7f7f7f7f7",
+    );
+    const latestBoundary = afterExclusiveClose(
+      finalLatest.paths.latest,
+      (file) => {
+        const bytes = fs.readFileSync(file);
+        fs.unlinkSync(file);
+        fs.writeFileSync(file, bytes);
+      },
+    );
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          finalLatest.paths,
+          finalLatest.started.publicationAuthority,
+          report(finalLatest.runId),
+          latestBoundary.operations,
+        ),
+      /descriptor authority differs|recovery refused/u,
+    );
+    assert.equal(latestBoundary.injected, true);
+    assert.deepEqual(
+      await readFile(finalLatest.paths.lock),
+      finalLatest.started.lockBytes,
+    );
+
+    const finalReceipt = start(
+      "final-receipt-replacement",
+      "c4c4c4c4-d5d5-4a0a-8b1b-a8a8a8a8a8a8",
+    );
+    const receiptBoundary = afterExclusiveClose(
+      finalReceipt.paths.finalReceipt,
+      (file) => {
+        const bytes = fs.readFileSync(file);
+        fs.unlinkSync(file);
+        fs.writeFileSync(file, bytes);
+      },
+    );
+    assert.throws(
+      () =>
+        publication.publishC1229S5DenseFinal(
+          finalReceipt.paths,
+          finalReceipt.started.publicationAuthority,
+          report(finalReceipt.runId),
+          receiptBoundary.operations,
+        ),
+      /descriptor authority differs/u,
+    );
+    assert.equal(receiptBoundary.injected, true);
+    assert.deepEqual(
+      await readFile(finalReceipt.paths.lock),
+      finalReceipt.started.lockBytes,
+    );
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -1919,6 +3449,33 @@ test("31 begin and pre-unlock publication boundaries preserve every late foreign
         return overrides[property] ?? Reflect.get(target, property);
       },
     });
+  const injectAfterExclusiveClose = (file, inject) => {
+    const exclusiveDescriptors = new Set();
+    let injected = false;
+    return {
+      operations: operationProxy({
+        openSync(candidate, flags, mode) {
+          const descriptor = fs.openSync(candidate, flags, mode);
+          if (
+            resolve(candidate) === resolve(file) &&
+            typeof flags === "number" &&
+            (flags & fs.constants.O_EXCL) !== 0
+          ) {
+            exclusiveDescriptors.add(descriptor);
+          }
+          return descriptor;
+        },
+        closeSync(descriptor) {
+          fs.closeSync(descriptor);
+          if (!injected && exclusiveDescriptors.delete(descriptor)) {
+            injected = true;
+            inject();
+          }
+        },
+      }),
+      injected: () => injected,
+    };
+  };
   try {
     const beginRunId = "31313131-4242-4535-8646-575757575757";
     const beginPaths = publication.createC1229S5DenseArtifactPaths(
@@ -1961,27 +3518,21 @@ test("31 begin and pre-unlock publication boundaries preserve every late foreign
       latestRunId,
     );
     const foreignLatest = Buffer.from("foreign latest before unlock\n");
-    let latestInjected = false;
-    const latestOperations = operationProxy({
-      writeFileSync(file, bytes, options) {
-        fs.writeFileSync(file, bytes, options);
-        if (!latestInjected && file === latestPaths.finalReceipt) {
-          latestInjected = true;
-          fs.writeFileSync(latestPaths.latest, foreignLatest);
-        }
-      },
-    });
+    const latestInjection = injectAfterExclusiveClose(
+      latestPaths.finalReceipt,
+      () => fs.writeFileSync(latestPaths.latest, foreignLatest),
+    );
     assert.throws(
       () =>
         publication.publishC1229S5DenseFinal(
           latestPaths,
-          latestStart.lockBytes,
+          latestStart.publicationAuthority,
           { runId: latestRunId, status: "PASS" },
-          latestOperations,
+          latestInjection.operations,
         ),
       /persistence/u,
     );
-    assert.equal(latestInjected, true);
+    assert.equal(latestInjection.injected(), true);
     assert.deepEqual(await readFile(latestPaths.latest), foreignLatest);
     assert.deepEqual(await readFile(latestPaths.lock), latestStart.lockBytes);
     assert.ok((await readFile(latestPaths.immutable)).byteLength > 0);
@@ -1993,27 +3544,20 @@ test("31 begin and pre-unlock publication boundaries preserve every late foreign
     );
     const redStart = publication.beginC1229S5DenseRun(redPaths, redRunId);
     const foreignFirstRed = Buffer.from("foreign first-red before unlock\n");
-    let redInjected = false;
-    const redOperations = operationProxy({
-      writeFileSync(file, bytes, options) {
-        fs.writeFileSync(file, bytes, options);
-        if (!redInjected && file === redPaths.finalReceipt) {
-          redInjected = true;
-          fs.writeFileSync(redPaths.firstRed, foreignFirstRed);
-        }
-      },
-    });
+    const redInjection = injectAfterExclusiveClose(redPaths.finalReceipt, () =>
+      fs.writeFileSync(redPaths.firstRed, foreignFirstRed),
+    );
     assert.throws(
       () =>
         publication.publishC1229S5DenseFinal(
           redPaths,
-          redStart.lockBytes,
+          redStart.publicationAuthority,
           { runId: redRunId, status: "ERROR" },
-          redOperations,
+          redInjection.operations,
         ),
-      /first-red changed before unlock/u,
+      /first-red.*(changed|bytes differ|authority)/u,
     );
-    assert.equal(redInjected, true);
+    assert.equal(redInjection.injected(), true);
     assert.deepEqual(await readFile(redPaths.firstRed), foreignFirstRed);
     assert.deepEqual(await readFile(redPaths.latest), redStart.runningBytes);
     assert.deepEqual(await readFile(redPaths.lock), redStart.lockBytes);

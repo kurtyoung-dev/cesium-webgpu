@@ -15,6 +15,7 @@ import {
   C12_29_S5_CUSTOM_CAPTURE_METHOD,
   C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
   C12_29_S5_CUSTOM_ECLIPSE_FLOATS,
+  C12_29_S5_CUSTOM_EPHEMERIS,
   C12_29_S5_CUSTOM_GEOMETRY_EPSILON_METERS,
   C12_29_S5_CUSTOM_GEOMETRY_OPERATION_BUDGETS,
   C12_29_S5_CUSTOM_PHASES,
@@ -26,6 +27,7 @@ import {
   C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES,
   C12_29_S5_CUSTOM_WEBGPU_ECLIPSE_BINDING,
   c1229S5CustomGeometryTolerance,
+  captureC1229S5CustomPropertyDescriptor,
   computeC1229S5CustomSurfaceRadius,
   customEllipsoidGeodeticToEcef,
   deriveC1229S5CustomAxisIntersection,
@@ -37,7 +39,9 @@ import {
   foldC1229S5CustomEllipsoidGate,
   isC1229S5CustomUuidV4,
   packC1229S5CustomCommonRay,
+  restoreC1229S5CustomPropertyDescriptor,
   stableC1229S5CustomJson,
+  validateC1229S5CustomEphemerisLineage,
   validateC1229S5CustomFinalArtifact,
 } from "./lib/c12-29-s5-custom-ellipsoid-gate.mjs";
 import { inspectBuildSourceIdentity } from "./lib/build-source-identity.mjs";
@@ -55,6 +59,7 @@ import {
   createC1229S5CustomImmutableAuthority,
   finalizeC1229S5CustomEvidence,
   releaseC1229S5CustomLock,
+  runC1229S5CustomBestEffortCleanup,
   runC1229S5CustomEllipsoidProbe,
   validateC1229S5CustomLoopbackBase,
   validateC1229S5CustomPriorFinal,
@@ -73,6 +78,8 @@ const probeSource = fs.readFileSync(probePath, "utf8");
 
 const RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
 const SHA = "a".repeat(64);
+const FIXTURE_SUN = { x: 149_600_000_000, y: 0, z: 0 };
+const FIXTURE_MOON = { x: 350_000_000, y: 0, z: 0 };
 
 function fp() {
   return { exists: true, byteLength: 7, sha256: SHA };
@@ -93,7 +100,66 @@ function alignedBodies() {
   };
 }
 
-function fixtureTemporalState(label, preparedTuple) {
+function fixtureEphemeris(frameNumber, clockIso) {
+  return {
+    frameNumber,
+    clockIso,
+    provider: {
+      constructor: C12_29_S5_CUSTOM_EPHEMERIS.providerConstructor,
+      id: C12_29_S5_CUSTOM_EPHEMERIS.providerId,
+      revision: C12_29_S5_CUSTOM_EPHEMERIS.providerRevision,
+      provenance: structuredClone(C12_29_S5_CUSTOM_EPHEMERIS.provenance),
+      timePolicy: structuredClone(C12_29_S5_CUSTOM_EPHEMERIS.timePolicy),
+      provenanceFrozen: true,
+      timePolicyFrozen: true,
+    },
+    sample: {
+      providerId: C12_29_S5_CUSTOM_EPHEMERIS.providerId,
+      providerRevision: C12_29_S5_CUSTOM_EPHEMERIS.providerRevision,
+      provenance: structuredClone(C12_29_S5_CUSTOM_EPHEMERIS.provenance),
+      timePolicy: structuredClone(C12_29_S5_CUSTOM_EPHEMERIS.timePolicy),
+      referenceFrame: C12_29_S5_CUSTOM_EPHEMERIS.referenceFrame,
+      units: C12_29_S5_CUSTOM_EPHEMERIS.units,
+      transformBranch: C12_29_S5_CUSTOM_EPHEMERIS.transformBranch,
+      outputAllocationStable: true,
+      thirdPartyTemporaryFree: true,
+      sunPositionWC: { ...FIXTURE_SUN },
+      moonPositionWC: { ...FIXTURE_MOON },
+    },
+    independent: {
+      method: C12_29_S5_CUSTOM_EPHEMERIS.independentMethod,
+      sunPositionWC: { ...FIXTURE_SUN },
+      moonPositionWC: { ...FIXTURE_MOON },
+      sunDeltaMeters: 0,
+      moonDeltaMeters: 0,
+    },
+    eclipseState: {
+      sunPositionWC: { ...FIXTURE_SUN },
+      moonPositionWC: { ...FIXTURE_MOON },
+      sunDeltaMeters: 0,
+      moonDeltaMeters: 0,
+      sunStorageDistinct: true,
+      moonStorageDistinct: true,
+    },
+    consumers: {
+      uniformSunPositionWC: { ...FIXTURE_SUN },
+      uniformSunStorageDistinct: true,
+      viewRotation3D: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+      moonDirectionEC: { x: 1, y: 0, z: 0 },
+      moonDirectionStorageDistinct: true,
+      moonModelTranslation: { ...FIXTURE_MOON },
+      moonModelStorageDistinct: true,
+    },
+    identities: {
+      providerIsSceneProvider: true,
+      sampleIsFrameStateSample: true,
+      sampleProvenanceIsProviderProvenance: true,
+      sampleTimePolicyIsProviderTimePolicy: true,
+    },
+  };
+}
+
+function fixtureTemporalState(label, preparedTuple, frameNumber) {
   const antipode = label.startsWith("antipode-");
   const control = label.startsWith("control-");
   const lightingEnabled = label.endsWith("-on");
@@ -125,10 +191,11 @@ function fixtureTemporalState(label, preparedTuple) {
   ];
   const rightWC = normalize(cross(directionWC, north));
   const upWC = normalize(cross(rightWC, directionWC));
+  const clockIso = control
+    ? C12_29_S5_CUSTOM_SCENE.controlIso
+    : C12_29_S5_CUSTOM_SCENE.eventIso;
   return {
-    clockIso: control
-      ? C12_29_S5_CUSTOM_SCENE.controlIso
-      : C12_29_S5_CUSTOM_SCENE.eventIso,
+    clockIso,
     cameraTarget: target,
     camera: {
       positionWC,
@@ -171,6 +238,7 @@ function fixtureTemporalState(label, preparedTuple) {
       params: { x: active ? 1 : 0, y: 1, z: 0, w: 0 },
       params2: { x: 0.00005, y: 1 / 3, z: 0, w: 0 },
     },
+    ephemeris: fixtureEphemeris(frameNumber, clockIso),
   };
 }
 
@@ -195,7 +263,6 @@ function image(renderer, label, index, preparedTuple, firstSelectionRevision) {
     metricImageId: imageId,
     fingerprintVerified: true,
   };
-  const state = fixtureTemporalState(label, preparedTuple);
   const firstFrame = index * 10 + 1;
   result.temporalStability = {
     method: C12_29_S5_CUSTOM_STABILITY_METHOD,
@@ -212,9 +279,13 @@ function image(renderer, label, index, preparedTuple, firstSelectionRevision) {
         width: result.width,
         height: result.height,
         state: {
-          ...structuredClone(state),
+          ...fixtureTemporalState(
+            label,
+            preparedTuple,
+            firstFrame + observationIndex,
+          ),
           preparedTuple: {
-            ...structuredClone(state.preparedTuple),
+            ...structuredClone(preparedTuple),
             selectionRevision: firstSelectionRevision + observationIndex,
           },
         },
@@ -222,9 +293,13 @@ function image(renderer, label, index, preparedTuple, firstSelectionRevision) {
     ),
     captureFrameNumber: firstFrame + C12_29_S5_CUSTOM_SCENE.minimumStableFrames,
     captureState: {
-      ...structuredClone(state),
+      ...fixtureTemporalState(
+        label,
+        preparedTuple,
+        firstFrame + C12_29_S5_CUSTOM_SCENE.minimumStableFrames,
+      ),
       preparedTuple: {
-        ...structuredClone(state.preparedTuple),
+        ...structuredClone(preparedTuple),
         selectionRevision:
           firstSelectionRevision + C12_29_S5_CUSTOM_SCENE.minimumStableFrames,
       },
@@ -376,6 +451,46 @@ function primaryOracleSample({
   };
   sample.id = deriveC1229S5CustomSampleId(sample);
   return sample;
+}
+
+function passingInstrumentationRestorations(renderer) {
+  const labels = [
+    ...(renderer === "webgpu"
+      ? [
+          "captureGlobeRenderer.getOrCreateCaptureTileCommands",
+          "eclipseManager.prepare",
+        ]
+      : []),
+    "moon.show",
+    "moon.update",
+    "pickProvider.updateForPick",
+  ];
+  return labels.map((label) => {
+    const hadOwnBefore = label === "moon.show";
+    const ownerDescriptor = {
+      kind: "data",
+      writable: true,
+      enumerable: hadOwnBefore,
+      configurable: true,
+    };
+    return {
+      label,
+      hadOwnBefore,
+      hasOwnAfter: hadOwnBefore,
+      ownerDepthBefore: hadOwnBefore ? 0 : 1,
+      ownerDepthAfter: hadOwnBefore ? 0 : 1,
+      ownerDescriptorBefore: { ...ownerDescriptor },
+      ownerDescriptorAfter: { ...ownerDescriptor },
+      preResolvedAuthorityExact: true,
+      ownershipExact: true,
+      ownDescriptorExact: true,
+      targetPrototypeExact: true,
+      prototypeChainExact: true,
+      ownerDescriptorExact: true,
+      resolvedIdentityExact: true,
+      restored: true,
+    };
+  });
 }
 
 function passingSession(renderer, imageOffset) {
@@ -712,6 +827,10 @@ function passingSession(renderer, imageOffset) {
         };
   phases["noneclipse-identity-control"] = {
     clockIso: C12_29_S5_CUSTOM_SCENE.controlIso,
+    runtimeBodies: {
+      sun: { ...FIXTURE_SUN },
+      moon: { ...FIXTURE_MOON },
+    },
     inactive: true,
     preparedTupleBefore: {
       ...structuredClone(preparedTuple),
@@ -727,6 +846,9 @@ function passingSession(renderer, imageOffset) {
   };
   phases["session-cleanup"] = {
     complete: true,
+    timersCleared: true,
+    cleanupFailures: [],
+    instrumentationRestorations: passingInstrumentationRestorations(renderer),
     instrumentationRestored: true,
     defaultEllipsoidRestored: true,
   };
@@ -1011,14 +1133,328 @@ function assertOwnedRunning(paths, ownership) {
   assert.deepEqual(fs.readFileSync(paths.lock), ownership.lockBytes);
 }
 
+test("descriptor restoration deletes an inherited instrumentation override", () => {
+  const originalUpdate = () => "original";
+  const prototype = {};
+  Object.defineProperty(prototype, "update", {
+    value: originalUpdate,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  });
+  const target = Object.create(prototype);
+  const receipt = captureC1229S5CustomPropertyDescriptor(target, "update");
+  target.update = () => "instrumented";
+  assert.equal(Object.hasOwn(target, "update"), true);
+
+  const proof = restoreC1229S5CustomPropertyDescriptor(
+    target,
+    "update",
+    receipt,
+  );
+  assert.deepEqual(proof, {
+    hadOwnBefore: false,
+    hasOwnAfter: false,
+    ownerDepthBefore: 1,
+    ownerDepthAfter: 1,
+    ownerDescriptorBefore: {
+      kind: "data",
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    },
+    ownerDescriptorAfter: {
+      kind: "data",
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    },
+    preResolvedAuthorityExact: true,
+    ownershipExact: true,
+    ownDescriptorExact: true,
+    targetPrototypeExact: true,
+    prototypeChainExact: true,
+    ownerDescriptorExact: true,
+    resolvedIdentityExact: true,
+    restored: true,
+  });
+  assert.equal(Object.hasOwn(target, "update"), false);
+  assert.equal(target.update, originalUpdate);
+});
+
+test("descriptor restoration reinstates an exact original own descriptor", () => {
+  const originalUpdate = () => "original";
+  const target = {};
+  const originalDescriptor = {
+    value: originalUpdate,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  };
+  Object.defineProperty(target, "update", originalDescriptor);
+  const receipt = captureC1229S5CustomPropertyDescriptor(target, "update");
+  Object.defineProperty(target, "update", {
+    value: () => "instrumented",
+    writable: false,
+    enumerable: true,
+    configurable: true,
+  });
+
+  const proof = restoreC1229S5CustomPropertyDescriptor(
+    target,
+    "update",
+    receipt,
+  );
+  assert.equal(proof.restored, true);
+  assert.deepEqual(
+    Object.getOwnPropertyDescriptor(target, "update"),
+    originalDescriptor,
+  );
+  assert.equal(target.update, originalUpdate);
+});
+
+test("descriptor restoration exposes adversarial inherited identity drift", () => {
+  const originalUpdate = () => "original";
+  const replacementUpdate = () => "replacement";
+  const prototype = { update: originalUpdate };
+  const target = Object.create(prototype);
+  const receipt = captureC1229S5CustomPropertyDescriptor(target, "update");
+  target.update = () => "instrumented";
+  prototype.update = replacementUpdate;
+
+  const proof = restoreC1229S5CustomPropertyDescriptor(
+    target,
+    "update",
+    receipt,
+  );
+  assert.equal(proof.ownershipExact, true);
+  assert.equal(proof.ownDescriptorExact, true);
+  assert.equal(proof.resolvedIdentityExact, false);
+  assert.equal(proof.restored, false);
+  assert.equal(Object.hasOwn(target, "update"), false);
+  assert.equal(target.update, replacementUpdate);
+});
+
+test("descriptor capture rejects an own accessor without invoking it", () => {
+  let getterCalls = 0;
+  const target = {};
+  Object.defineProperty(target, "update", {
+    get() {
+      getterCalls++;
+      return () => undefined;
+    },
+    enumerable: false,
+    configurable: true,
+  });
+  assert.throws(
+    () => captureC1229S5CustomPropertyDescriptor(target, "update"),
+    /must resolve through data/u,
+  );
+  assert.equal(getterCalls, 0);
+});
+
+test("restore overwrites a hostile own accessor before any resolved read", () => {
+  const originalUpdate = () => "original";
+  const target = {};
+  Object.defineProperty(target, "update", {
+    value: originalUpdate,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  });
+  const receipt = captureC1229S5CustomPropertyDescriptor(target, "update");
+  let getterCalls = 0;
+  Object.defineProperty(target, "update", {
+    get() {
+      getterCalls++;
+      delete target.update;
+      return originalUpdate;
+    },
+    enumerable: true,
+    configurable: true,
+  });
+
+  const proof = restoreC1229S5CustomPropertyDescriptor(
+    target,
+    "update",
+    receipt,
+  );
+  assert.equal(getterCalls, 0);
+  assert.equal(proof.preResolvedAuthorityExact, true);
+  assert.equal(proof.restored, true);
+  assert.equal(target.update, originalUpdate);
+});
+
+test("pre-read authority check skips a hostile inherited getter", () => {
+  const originalUpdate = () => "original";
+  const prototype = {};
+  Object.defineProperty(prototype, "update", {
+    value: originalUpdate,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  });
+  const target = Object.create(prototype);
+  const receipt = captureC1229S5CustomPropertyDescriptor(target, "update");
+  target.update = () => "instrumented";
+  let getterCalls = 0;
+  Object.defineProperty(prototype, "update", {
+    get() {
+      getterCalls++;
+      Object.defineProperty(prototype, "update", {
+        value: originalUpdate,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+      return originalUpdate;
+    },
+    enumerable: false,
+    configurable: true,
+  });
+
+  const proof = restoreC1229S5CustomPropertyDescriptor(
+    target,
+    "update",
+    receipt,
+  );
+  assert.equal(getterCalls, 0);
+  assert.equal(proof.preResolvedAuthorityExact, false);
+  assert.equal(proof.ownerDescriptorExact, false);
+  assert.equal(proof.resolvedIdentityExact, false);
+  assert.equal(proof.restored, false);
+});
+
+test("same resolved function cannot hide target prototype replacement", () => {
+  const originalUpdate = () => "original";
+  const makePrototype = () => {
+    const prototype = {};
+    Object.defineProperty(prototype, "update", {
+      value: originalUpdate,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+    return prototype;
+  };
+  const originalPrototype = makePrototype();
+  const replacementPrototype = makePrototype();
+  const target = Object.create(originalPrototype);
+  const receipt = captureC1229S5CustomPropertyDescriptor(target, "update");
+  target.update = () => "instrumented";
+  Object.setPrototypeOf(target, replacementPrototype);
+
+  const proof = restoreC1229S5CustomPropertyDescriptor(
+    target,
+    "update",
+    receipt,
+  );
+  assert.equal(proof.preResolvedAuthorityExact, false);
+  assert.equal(proof.targetPrototypeExact, false);
+  assert.equal(proof.prototypeChainExact, false);
+  assert.equal(proof.restored, false);
+});
+
+test("descriptor capture fails closed on a Proxy target", () => {
+  const target = new Proxy({ update() {} }, {});
+  assert.throws(
+    () => captureC1229S5CustomPropertyDescriptor(target, "update"),
+    /must not be a Proxy/u,
+  );
+});
+
+test("descriptor capture fails closed on a Proxy prototype authority", () => {
+  const prototype = new Proxy({ update() {} }, {});
+  const target = Object.create(prototype);
+  assert.throws(
+    () => captureC1229S5CustomPropertyDescriptor(target, "update"),
+    /prototype must not be a Proxy/u,
+  );
+});
+
+test("hostile setup throw still runs every registered cleanup", () => {
+  const calls = [];
+  const actions = [];
+  let cleanup;
+  assert.throws(() => {
+    try {
+      actions.push(
+        {
+          label: "Ellipsoid.default",
+          restore() {
+            calls.push("Ellipsoid.default");
+            return true;
+          },
+        },
+        {
+          label: "moon.update",
+          restore() {
+            calls.push("moon.update");
+            return true;
+          },
+        },
+      );
+      throw new Error("hostile setup throw");
+    } finally {
+      cleanup = runC1229S5CustomBestEffortCleanup(actions);
+    }
+  }, /hostile setup throw/u);
+  assert.deepEqual(calls, ["moon.update", "Ellipsoid.default"]);
+  assert.deepEqual(cleanup.attempted, ["moon.update", "Ellipsoid.default"]);
+  assert.deepEqual(cleanup.failures, []);
+});
+
+test("hostile restoration and error hooks cannot skip later cleanup", () => {
+  const calls = [];
+  const cleanup = runC1229S5CustomBestEffortCleanup([
+    {
+      label: "Ellipsoid.default",
+      restore() {
+        calls.push("Ellipsoid.default");
+        return true;
+      },
+    },
+    {
+      label: "moon.update",
+      restore() {
+        calls.push("moon.update");
+        throw new Error("hostile restoration throw");
+      },
+      onError() {
+        calls.push("moon.update:onError");
+        throw new Error("hostile restoration error hook");
+      },
+    },
+    {
+      label: "moon.show",
+      restore() {
+        calls.push("moon.show");
+        return true;
+      },
+    },
+  ]);
+  assert.deepEqual(calls, [
+    "moon.show",
+    "moon.update",
+    "moon.update:onError",
+    "Ellipsoid.default",
+  ]);
+  assert.deepEqual(cleanup.attempted, [
+    "moon.show",
+    "moon.update",
+    "Ellipsoid.default",
+  ]);
+  assert.deepEqual(cleanup.failures, ["moon.update", "moon.update:onError"]);
+});
+
 test("contract freezes schemas, renderer order, nine phases, and six captures", () => {
   assert.equal(
     C12_29_S5_CUSTOM_SCHEMA,
-    "c12-29-s5-custom-ellipsoid-evidence-v4",
+    "c12-29-s5-custom-ellipsoid-evidence-v5",
   );
   assert.equal(
     C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
-    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v4",
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v5",
   );
   assert.deepEqual(C12_29_S5_CUSTOM_RENDERERS, ["webgl", "webgpu"]);
   assert.equal(C12_29_S5_CUSTOM_PHASES.length, 9);
@@ -1051,6 +1487,8 @@ test("contract freezes schemas, renderer order, nine phases, and six captures", 
 });
 
 test("source boundary is complete, ordered, unique, readable, and build-derived", () => {
+  assert.equal(C12_29_S5_CUSTOM_SOURCE_FILES.length, 53);
+  assert.equal(C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.length, 46);
   assert.equal(
     new Set(C12_29_S5_CUSTOM_SOURCE_FILES).size,
     C12_29_S5_CUSTOM_SOURCE_FILES.length,
@@ -1070,14 +1508,18 @@ test("source boundary is complete, ordered, unique, readable, and build-derived"
   );
   for (const required of [
     "packages/engine/Source/Core/CustomHeightmapTerrainProvider.js",
+    "packages/engine/Source/Core/CelestialEphemerisProvider.js",
+    "packages/engine/Source/Core/Simon1994EphemerisProvider.js",
     "packages/engine/Source/Core/GeographicProjection.js",
     "packages/engine/Source/Renderer/AutomaticUniforms.js",
+    "packages/engine/Source/Renderer/UniformStateComputations.js",
     "packages/engine/Source/Renderer/FeatureRendererKey.js",
     "packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts",
     "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
     "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts",
     "packages/engine/Source/Shaders/GlobeFS.glsl",
     "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+    "packages/engine/Source/Scene/Moon.js",
     "packages/widgets/Source/Viewer/Viewer.js",
     "Tools/visual-regression/lib/same-task-capture.mjs",
     "Tools/visual-regression/lib/build-source-identity.mjs",
@@ -1285,6 +1727,7 @@ test("pure fold accepts the exact fully attested report", () => {
   for (const schema of [
     "c12-29-s5-custom-ellipsoid-evidence-v2",
     "c12-29-s5-custom-ellipsoid-evidence-v3",
+    "c12-29-s5-custom-ellipsoid-evidence-v4",
   ]) {
     const legacyReport = passingReport();
     legacyReport.schema = schema;
@@ -1292,6 +1735,73 @@ test("pure fold accepts the exact fully attested report", () => {
       foldC1229S5CustomEllipsoidGate(legacyReport).status,
       "STRUCTURAL",
     );
+  }
+});
+
+test("default-Simon fused lineage rejects declaration, vector, alias, and consumer mutants", () => {
+  const frameNumber = 41;
+  const iso = C12_29_S5_CUSTOM_SCENE.eventIso;
+  const passing = fixtureEphemeris(frameNumber, iso);
+  assert.equal(
+    validateC1229S5CustomEphemerisLineage(passing, frameNumber, iso),
+    true,
+  );
+  const mutants = [
+    (value) => delete value.sample,
+    (value) => (value.provider.constructor = "Object"),
+    (value) => (value.provider.id = "wrong-provider"),
+    (value) => (value.provider.revision = 1),
+    (value) => (value.identities.sampleProvenanceIsProviderProvenance = false),
+    (value) => (value.identities.sampleTimePolicyIsProviderTimePolicy = false),
+    (value) => (value.provider.provenanceFrozen = false),
+    (value) => (value.provider.timePolicyFrozen = false),
+    (value) => delete value.provider.provenance.outputFrame,
+    (value) => (value.provider.provenance.outputFrame = "ICRF"),
+    (value) => delete value.provider.timePolicy.inputTimeScale,
+    (value) => (value.provider.timePolicy.inputTimeScale = "UTC"),
+    (value) => value.frameNumber++,
+    (value) => (value.clockIso = C12_29_S5_CUSTOM_SCENE.controlIso),
+    (value) => (value.sample.referenceFrame = "ICRF"),
+    (value) => (value.sample.units = "kilometres"),
+    (value) => (value.sample.transformBranch = "TEME"),
+    (value) => (value.sample.outputAllocationStable = false),
+    (value) => (value.sample.thirdPartyTemporaryFree = false),
+    (value) => (value.sample.sunPositionWC.x = Number.NaN),
+    (value) => (value.independent.sunPositionWC.x += 0.002),
+    (value) => (value.independent.sunDeltaMeters = 1),
+    (value) => (value.eclipseState.sunPositionWC.x += 1),
+    (value) => (value.eclipseState.sunStorageDistinct = false),
+    (value) => (value.consumers.uniformSunPositionWC.x += 1),
+    (value) => (value.consumers.uniformSunStorageDistinct = false),
+    (value) => (value.consumers.moonDirectionEC.y = 1),
+    (value) => (value.consumers.moonDirectionStorageDistinct = false),
+    (value) => (value.consumers.moonModelTranslation.x += 1),
+    (value) => (value.consumers.moonModelStorageDistinct = false),
+  ];
+  for (const mutate of mutants) {
+    const mutant = structuredClone(passing);
+    mutate(mutant);
+    assert.equal(
+      validateC1229S5CustomEphemerisLineage(mutant, frameNumber, iso),
+      false,
+    );
+  }
+});
+
+test("fused ephemeris frame binding and event sample ownership are load-bearing", () => {
+  for (const mutate of [
+    (report) =>
+      report.sessions[0].images[0].temporalStability.observations[0].state
+        .ephemeris.frameNumber++,
+    (report) =>
+      (report.sessions[0].images[1].temporalStability.captureState.ephemeris.clockIso =
+        C12_29_S5_CUSTOM_SCENE.controlIso),
+    (report) =>
+      (report.sessions[0].phases["event-s5-on"].runtimeBodies.sun.x += 1),
+  ]) {
+    const report = passingReport();
+    mutate(report);
+    assert.notEqual(foldC1229S5CustomEllipsoidGate(report).status, "PASS");
   }
 });
 
@@ -1692,6 +2202,74 @@ for (const [name, mutate, expected] of [
   ],
   ["phase reorder", (r) => r.sessions[0].phaseOrder.reverse(), "STRUCTURAL"],
   [
+    "instrumentation ownership restoration drift",
+    (r) =>
+      (r.sessions[0].phases[
+        "session-cleanup"
+      ].instrumentationRestorations[0].hasOwnAfter = false),
+    "STRUCTURAL",
+  ],
+  [
+    "instrumentation descriptor restoration drift",
+    (r) =>
+      (r.sessions[1].phases[
+        "session-cleanup"
+      ].instrumentationRestorations[0].ownDescriptorExact = false),
+    "STRUCTURAL",
+  ],
+  [
+    "instrumentation resolved identity drift",
+    (r) =>
+      (r.sessions[1].phases[
+        "session-cleanup"
+      ].instrumentationRestorations[1].resolvedIdentityExact = false),
+    "STRUCTURAL",
+  ],
+  [
+    "dual-field inherited ownership forgery",
+    (r) => {
+      const restoration =
+        r.sessions[0].phases["session-cleanup"].instrumentationRestorations[1];
+      restoration.hadOwnBefore = true;
+      restoration.hasOwnAfter = true;
+    },
+    "STRUCTURAL",
+  ],
+  [
+    "dual-field inherited owner-depth forgery",
+    (r) => {
+      const restoration =
+        r.sessions[1].phases["session-cleanup"].instrumentationRestorations[0];
+      restoration.ownerDepthBefore = 2;
+      restoration.ownerDepthAfter = 2;
+    },
+    "STRUCTURAL",
+  ],
+  [
+    "dual-field inherited descriptor-shape forgery",
+    (r) => {
+      const restoration =
+        r.sessions[1].phases["session-cleanup"].instrumentationRestorations[1];
+      restoration.ownerDescriptorBefore.enumerable = true;
+      restoration.ownerDescriptorAfter.enumerable = true;
+    },
+    "STRUCTURAL",
+  ],
+  [
+    "best-effort cleanup failure behind green instrumentation",
+    (r) =>
+      r.sessions[0].phases["session-cleanup"].cleanupFailures.push(
+        "Ellipsoid.default",
+      ),
+    "STRUCTURAL",
+  ],
+  [
+    "instrumentation restoration record omission",
+    (r) =>
+      r.sessions[1].phases["session-cleanup"].instrumentationRestorations.pop(),
+    "STRUCTURAL",
+  ],
+  [
     "pending cleanup request",
     (r) => (r.cleanup.pendingRequests = 1),
     "STRUCTURAL",
@@ -1905,6 +2483,7 @@ test("final artifact must reproduce the pure fold exactly", () => {
   for (const schema of [
     "c12-29-s5-custom-ellipsoid-evidence-v2",
     "c12-29-s5-custom-ellipsoid-evidence-v3",
+    "c12-29-s5-custom-ellipsoid-evidence-v4",
   ]) {
     const legacyArtifact = structuredClone(artifact);
     legacyArtifact.schema = schema;
@@ -1957,6 +2536,7 @@ test("ERROR artifact requires bounded schema/stage/renderer diagnostics", () => 
   for (const schema of [
     "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v2",
     "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v3",
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v4",
   ]) {
     const legacyDiagnostics = structuredClone(artifact);
     legacyDiagnostics.diagnostics.schema = schema;
@@ -2035,7 +2615,7 @@ test("ERROR diagnostics and prior-version finals are exact and fail closed", () 
     mutate(mutant);
     assert.equal(validateC1229S5CustomFinalArtifact(mutant).ok, false);
   }
-  for (const version of ["v2", "v3"]) {
+  for (const version of ["v2", "v3", "v4"]) {
     const legacy = structuredClone(runtime);
     legacy.schema = `c12-29-s5-custom-ellipsoid-evidence-${version}`;
     legacy.diagnostics.schema = `c12-29-s5-custom-ellipsoid-runtime-diagnostics-${version}`;
@@ -2255,6 +2835,36 @@ test("probe uses the served bundle for browser modules, constructs every custom 
   assert.match(probeSource, /new C\.GridImageryProvider\(\{\s*tilingScheme,/u);
   assert.match(probeSource, /computeSunPositionInEarthInertialFrame/u);
   assert.match(probeSource, /computeMoonPositionInEarthInertialFrame/u);
+  assert.match(
+    probeSource,
+    /captureInstrumentationDescriptor\(\s*moon,\s*"update",?\s*\)/u,
+  );
+  assert.match(
+    probeSource,
+    /installInstrumentationValue\(\s*"moon\.update",[\s\S]*?moonUpdateDescriptor/u,
+  );
+  assert.match(probeSource, /Reflect\.deleteProperty\(target, key\)/u);
+  assert.match(
+    probeSource,
+    /Object\.defineProperty\(\s*target,\s*key,\s*receipt\.authority\.ownDescriptor,?\s*\)/u,
+  );
+  assert.match(
+    probeSource,
+    /const authorityBeforeResolvedRead = capturePropertyAuthorityState\([\s\S]*?const resolvedValueAfter = preResolvedAuthorityExact[\s\S]*?const authorityAfter = capturePropertyAuthorityState/u,
+  );
+  assert.match(
+    probeSource,
+    /finally \{[\s\S]*?attemptAllCleanup\(\);[\s\S]*?\}/u,
+  );
+  assert.match(
+    probeSource,
+    /for \(let index = cleanupActions\.length - 1; index >= 0; index--\)[\s\S]*?attemptCleanupAction/u,
+  );
+  assert.doesNotMatch(probeSource, /moon\.update = originalMoonUpdate/u);
+  assert.doesNotMatch(
+    probeSource,
+    /eclipseManager\.prepare = originalEclipsePrepare/u,
+  );
   assert.match(probeSource, /deriveAxisSurface\(eventBodies\)/u);
   assert.doesNotMatch(
     probeSource,
@@ -2314,18 +2924,57 @@ test("production carriers still expose the pinned custom radii and binding seams
   );
 });
 
+test("frozen production sources bind the cleanup topology contract", () => {
+  const moon = fs.readFileSync(
+    path.join(root, "packages/engine/Source/Scene/Moon.js"),
+    "utf8",
+  );
+  const tileProvider = fs.readFileSync(
+    path.join(root, "packages/engine/Source/Scene/GlobeSurfaceTileProvider.js"),
+    "utf8",
+  );
+  const eclipseManager = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts",
+    ),
+    "utf8",
+  );
+  const captureRenderer = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts",
+    ),
+    "utf8",
+  );
+  assert.match(moon, /class Moon \{[\s\S]*?this\.show = options\.show/u);
+  assert.match(moon, /\n {2}update\(frameState, depthRouteState\) \{/u);
+  assert.match(tileProvider, /\n {2}updateForPick\(frameState\) \{/u);
+  assert.match(eclipseManager, /\n {2}prepare\(\s*device: GPUDevice,/u);
+  assert.match(
+    captureRenderer,
+    /\n {2}getOrCreateCaptureTileCommands\(\s*tile: \{/u,
+  );
+});
+
 test("probe uses real pickAsync and observes rather than directly invokes updateForPick", () => {
   assert.match(probeSource, /const operation = scene\.pickAsync\(/u);
-  assert.match(probeSource, /globe\.pickable = true/u);
+  assert.match(
+    probeSource,
+    /Object\.defineProperty\(globe, "pickable", \{[\s\S]*?value: true/u,
+  );
   assert.match(
     probeSource,
     /scene\.context\?\._pickObjects\?\.get\(pickIdKey\)/u,
   );
   assert.match(probeSource, /pickProvider\._webgpuGlobePickColor/u);
-  assert.match(probeSource, /globe\.pickable = pickableBefore/u);
   assert.match(
     probeSource,
-    /pickProvider\.updateForPick = function \(\.\.\.args\)/u,
+    /installInstrumentationValue\(\s*"pickProvider\.updateForPick"/u,
+  );
+  assert.match(
+    probeSource,
+    /finally \{\s*attemptCleanupAction\(updateForPickCleanup\);\s*attemptCleanupAction\(pickableCleanup\);/u,
   );
   assert.match(probeSource, /originalUpdateForPick\.apply\(this, args\)/u);
   assert.doesNotMatch(
@@ -2338,9 +2987,10 @@ test("probe retains the real manager-driven six-face WebGPU path", () => {
   assert.match(probeSource, /model\.environmentMapManager/u);
   assert.match(probeSource, /manager\.enableSceneCapture = true;/u);
   assert.match(probeSource, /manager\.reset\(\);/u);
+  assert.match(probeSource, /const captureCommandsWrapper = function/u);
   assert.match(
     probeSource,
-    /captureGlobeRenderer\.getOrCreateCaptureTileCommands = function/u,
+    /installInstrumentationValue\(\s*"captureGlobeRenderer\.getOrCreateCaptureTileCommands"/u,
   );
   assert.match(probeSource, /const uniqueViews = new Set/u);
   assert.match(probeSource, /lastSceneCaptureResult === 2/u);

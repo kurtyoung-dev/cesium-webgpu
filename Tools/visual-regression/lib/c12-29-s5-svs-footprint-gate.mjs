@@ -11,13 +11,52 @@
 import { createHash } from "node:crypto";
 import { types as utilTypes } from "node:util";
 
-export const C12_29_S5_SVS_SCHEMA = "c12-29-s5-svs-5073-footprint-evidence-v3";
+export const C12_29_S5_SVS_SCHEMA = "c12-29-s5-svs-5073-footprint-evidence-v4";
 
 export const C12_29_S5_SVS_DIAGNOSTICS_SCHEMA =
-  "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v3";
+  "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v4";
 
 export const C12_29_S5_SVS_SUPERSEDED_SCHEMA =
+  "c12-29-s5-svs-5073-footprint-evidence-v3";
+
+export const C12_29_S5_SVS_LEGACY_ERROR_SCHEMA =
   "c12-29-s5-svs-5073-footprint-evidence-v2";
+
+export const C12_29_S5_SVS_EPHEMERIS = Object.freeze({
+  providerConstructor: "Simon1994EphemerisProvider",
+  providerId: "cesium-simon1994-ecef",
+  providerRevision: 2,
+  referenceFrame: "ECEF",
+  units: "metres",
+  transformBranch: "SIMON1994_ICRF_TO_FIXED_IAU2006_XYS",
+  maximumIndependentDeltaMeters: 1e-3,
+  outputAllocationStable: true,
+  thirdPartyTemporaryFree: true,
+  independentMethod:
+    "Simon1994PlanetaryPositions+Transforms.computeIcrfToFixedMatrix",
+  provenance: Object.freeze({
+    id: "cesium-simon1994-planetary-positions/current-engine-series",
+    sunAndMoonSeries: "Simon1994PlanetaryPositions",
+    outputFrame: "ECEF",
+    outputUnits: "metres",
+    eventSpecificCorrections: false,
+    angularRadiusCorrections: false,
+    revisionPolicy:
+      "1=TEME pseudo-fixed fallback; 2=ICRF-to-fixed IAU2006 XYS branch",
+    outputAllocationStable: true,
+    sampleValidationTemporaryFree: true,
+    sampleValidationPolicy:
+      "WeakSet brand with fixed sealed output structure; no per-call descriptor/state records",
+    thirdPartyTemporaryFree: true,
+  }),
+  timePolicy: Object.freeze({
+    id: "cesium-julian-date-tai/simon1994-tdb/icrf-with-teme-fallback",
+    inputTimeScale: "TAI",
+    ephemerisDynamicalScale: "TDB_APPROXIMATION",
+    primaryEarthRotation: "IAU2006_XYS",
+    fallbackEarthRotation: "IAU1982_GMST_TEME_PSEUDO_FIXED",
+  }),
+});
 
 export const C12_29_S5_SVS_DIAGNOSTIC_LIMITS = Object.freeze({
   arrayEntries: 512,
@@ -259,6 +298,8 @@ export const C12_29_S5_SVS_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Core/TimeInterval.js",
   "packages/engine/Source/Core/VerticalExaggeration.js",
   "packages/engine/Source/Core/Visibility.js",
+  "packages/engine/Source/Core/CelestialEphemerisProvider.js",
+  "packages/engine/Source/Core/Simon1994EphemerisProvider.js",
   "packages/engine/Source/Core/Transforms.js",
   "packages/engine/Source/Core/Iau2006XysData.js",
   "packages/engine/Source/Core/Simon1994PlanetaryPositions.js",
@@ -284,6 +325,7 @@ export const C12_29_S5_SVS_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Scene/PickFramebuffer.js",
   "packages/engine/Source/Renderer/Sync.js",
   "packages/engine/Source/Renderer/Pass.js",
+  "packages/engine/Source/Renderer/UniformStateComputations.js",
   "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts",
@@ -297,8 +339,10 @@ export const C12_29_S5_SVS_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
   "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.js",
   "packages/engine/Source/Scene/DynamicEnvironmentMapManager.js",
+  "packages/engine/Source/Scene/Moon.js",
   "packages/engine/Source/Renderer/FeatureRendererKey.js",
   "packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts",
+  "packages/engine/Source/Widget/CesiumWidget.js",
 ]);
 
 export const C12_29_S5_SVS_BUILD_SOURCE_FILES = Object.freeze(
@@ -1409,9 +1453,9 @@ export function validateSvsErrorDiagnosticsShape(
 }
 
 /**
- * Accept only the exact bounded v2 ERROR envelope needed to supersede the
- * previously finalized browser failure. It is preserved byte-for-byte but is
- * never interpreted as v3 certification.
+ * Accept only the exact bounded v2 ERROR envelope needed to retain the
+ * original browser failure. It is preserved byte-for-byte but is never
+ * interpreted as v3 or v4 certification.
  */
 export function validateSupersededSvsV2FinalArtifactShape(artifact) {
   const reasons = [];
@@ -1432,7 +1476,7 @@ export function validateSupersededSvsV2FinalArtifactShape(artifact) {
       return reasons;
     }
     if (
-      artifact?.schema !== C12_29_S5_SVS_SUPERSEDED_SCHEMA ||
+      artifact?.schema !== C12_29_S5_SVS_LEGACY_ERROR_SCHEMA ||
       !isUuidV4(artifact?.runId) ||
       !isCanonicalUtcTimestamp(artifact?.generatedAt) ||
       artifact?.status !== "ERROR" ||
@@ -1446,6 +1490,170 @@ export function validateSupersededSvsV2FinalArtifactShape(artifact) {
     return reasons;
   } catch {
     reasons.push("superseded v2 ERROR artifact could not be safely inspected");
+    return reasons;
+  }
+}
+
+const C12_29_S5_SVS_V4_SOURCE_ADDITIONS = new Set([
+  "packages/engine/Source/Core/CelestialEphemerisProvider.js",
+  "packages/engine/Source/Core/Simon1994EphemerisProvider.js",
+  "packages/engine/Source/Renderer/UniformStateComputations.js",
+  "packages/engine/Source/Scene/Moon.js",
+  "packages/engine/Source/Widget/CesiumWidget.js",
+]);
+
+function createSupersededSvsLineage(frameNumber, clockIso) {
+  const sunPositionWC = { x: 149_000_000_000, y: 1_000_000, z: -2_000_000 };
+  const moonPositionWC = { x: 384_400_000, y: -3_000_000, z: 1_000_000 };
+  return {
+    frameNumber,
+    clockIso,
+    provider: {
+      constructor: C12_29_S5_SVS_EPHEMERIS.providerConstructor,
+      id: C12_29_S5_SVS_EPHEMERIS.providerId,
+      revision: C12_29_S5_SVS_EPHEMERIS.providerRevision,
+      provenance: structuredClone(C12_29_S5_SVS_EPHEMERIS.provenance),
+      timePolicy: structuredClone(C12_29_S5_SVS_EPHEMERIS.timePolicy),
+      provenanceFrozen: true,
+      timePolicyFrozen: true,
+    },
+    sample: {
+      providerId: C12_29_S5_SVS_EPHEMERIS.providerId,
+      providerRevision: C12_29_S5_SVS_EPHEMERIS.providerRevision,
+      provenance: structuredClone(C12_29_S5_SVS_EPHEMERIS.provenance),
+      timePolicy: structuredClone(C12_29_S5_SVS_EPHEMERIS.timePolicy),
+      referenceFrame: C12_29_S5_SVS_EPHEMERIS.referenceFrame,
+      units: C12_29_S5_SVS_EPHEMERIS.units,
+      transformBranch: C12_29_S5_SVS_EPHEMERIS.transformBranch,
+      outputAllocationStable: true,
+      thirdPartyTemporaryFree: true,
+      sunPositionWC: structuredClone(sunPositionWC),
+      moonPositionWC: structuredClone(moonPositionWC),
+    },
+    independent: {
+      method: C12_29_S5_SVS_EPHEMERIS.independentMethod,
+      sunPositionWC: structuredClone(sunPositionWC),
+      moonPositionWC: structuredClone(moonPositionWC),
+      sunDeltaMeters: 0,
+      moonDeltaMeters: 0,
+    },
+    eclipseState: {
+      sunPositionWC: structuredClone(sunPositionWC),
+      moonPositionWC: structuredClone(moonPositionWC),
+      sunDeltaMeters: 0,
+      moonDeltaMeters: 0,
+      sunStorageDistinct: true,
+      moonStorageDistinct: true,
+    },
+    identities: {
+      providerIsSceneProvider: true,
+      sampleIsFrameStateSample: true,
+      sampleProvenanceIsProviderProvenance: true,
+      sampleTimePolicyIsProviderTimePolicy: true,
+    },
+  };
+}
+
+function replaceSupersededSvsSchemas(value) {
+  if (Array.isArray(value)) {
+    for (const entry of value) replaceSupersededSvsSchemas(entry);
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  for (const key of Object.keys(value)) {
+    if (value[key] === C12_29_S5_SVS_SUPERSEDED_SCHEMA) {
+      value[key] = C12_29_S5_SVS_SCHEMA;
+    } else if (
+      value[key] === "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v3"
+    ) {
+      value[key] = C12_29_S5_SVS_DIAGNOSTICS_SCHEMA;
+    } else {
+      replaceSupersededSvsSchemas(value[key]);
+    }
+  }
+}
+
+function upgradeSupersededSvsV3Artifact(artifact) {
+  const upgraded = structuredClone(artifact);
+  replaceSupersededSvsSchemas(upgraded);
+  if (upgraded.status === "ERROR") return upgraded;
+
+  const v3BuildFiles = C12_29_S5_SVS_BUILD_SOURCE_FILES.filter(
+    (file) => !C12_29_S5_SVS_V4_SOURCE_ADDITIONS.has(file),
+  );
+  const identity = upgraded?.report?.provenance?.buildSourceIdentity;
+  if (
+    !Array.isArray(identity?.entries) ||
+    identity.entries.length !== v3BuildFiles.length
+  ) {
+    return null;
+  }
+  const entryByRelative = new Map();
+  for (const entry of identity.entries) {
+    const relative = v3BuildFiles.find(
+      (file) => entry?.file === file || entry?.file?.endsWith(`/${file}`),
+    );
+    if (relative === undefined || entryByRelative.has(relative)) return null;
+    entryByRelative.set(relative, entry);
+  }
+  if (v3BuildFiles.some((file) => !entryByRelative.has(file))) return null;
+  const template = entryByRelative.get(v3BuildFiles[0]);
+  const prefix = template.file.slice(0, -v3BuildFiles[0].length);
+  identity.entries = C12_29_S5_SVS_BUILD_SOURCE_FILES.map((file) =>
+    entryByRelative.has(file)
+      ? entryByRelative.get(file)
+      : {
+          ...structuredClone(template),
+          file: `${prefix}${file}`,
+          sourceMapEntry: `../../${file}`,
+        },
+  );
+
+  for (const session of upgraded.report.sessions ?? []) {
+    for (const row of session.rows ?? []) {
+      if (row.ephemeris !== undefined) return null;
+      row.ephemeris = createSupersededSvsLineage(
+        row?.terrainTuple?.captureFrameNumber,
+        row?.iso,
+      );
+    }
+    if (session?.ephemeris?.rowLineages !== undefined) return null;
+    session.ephemeris.rowLineages = (session.rows ?? []).map((row) => ({
+      role: row.role,
+      iso: row.iso,
+      captureFrameNumber: row.terrainTuple.captureFrameNumber,
+      lineage: structuredClone(row.ephemeris),
+    }));
+  }
+  return upgraded;
+}
+
+/**
+ * Validate a complete v3 final by upgrading only the five newly frozen source
+ * entries and the newly required per-row default-Simon lineage. This does not
+ * make the predecessor a v4 certification; it only proves that the retained
+ * bytes were a complete v3 final before they are superseded.
+ */
+export function validateSupersededSvsV3FinalArtifactShape(artifact) {
+  const reasons = [];
+  try {
+    if (artifact?.schema !== C12_29_S5_SVS_SUPERSEDED_SCHEMA) {
+      reasons.push("superseded v3 artifact schema differs");
+      return reasons;
+    }
+    const upgraded = upgradeSupersededSvsV3Artifact(artifact);
+    if (upgraded === null) {
+      reasons.push("superseded v3 boundary or lineage shape differs");
+      return reasons;
+    }
+    reasons.push(
+      ...validateSvsFinalArtifactShape(upgraded).map(
+        (reason) => `superseded v3 ${reason}`,
+      ),
+    );
+    return reasons;
+  } catch {
+    reasons.push("superseded v3 artifact could not be safely inspected");
     return reasons;
   }
 }
@@ -1697,6 +1905,153 @@ function validateSceneContract(scene, renderer, reasons) {
   ) {
     reasons.push(`${renderer}: derived fixed camera is invalid`);
   }
+}
+
+function svsVec3(value) {
+  return (
+    exactObjectKeys(value, ["x", "y", "z"]) &&
+    finite(value.x) &&
+    finite(value.y) &&
+    finite(value.z)
+  );
+}
+
+function svsDistance3(left, right) {
+  return Math.hypot(left.x - right.x, left.y - right.y, left.z - right.z);
+}
+
+function svsExactVec3(left, right) {
+  return left.x === right.x && left.y === right.y && left.z === right.z;
+}
+
+/**
+ * Validate the complete same-frame default-Simon provider -> sample ->
+ * EclipseState lineage captured by the fused on-shot.
+ */
+export function validateSvsEphemerisLineage(
+  lineage,
+  expectedFrameNumber,
+  expectedIso,
+) {
+  const provider = lineage?.provider;
+  const sample = lineage?.sample;
+  const independent = lineage?.independent;
+  const eclipse = lineage?.eclipseState;
+  const identities = lineage?.identities;
+  if (
+    !exactObjectKeys(lineage, [
+      "frameNumber",
+      "clockIso",
+      "provider",
+      "sample",
+      "independent",
+      "eclipseState",
+      "identities",
+    ]) ||
+    lineage.frameNumber !== expectedFrameNumber ||
+    lineage.clockIso !== expectedIso ||
+    !exactObjectKeys(provider, [
+      "constructor",
+      "id",
+      "revision",
+      "provenance",
+      "timePolicy",
+      "provenanceFrozen",
+      "timePolicyFrozen",
+    ]) ||
+    provider.constructor !== C12_29_S5_SVS_EPHEMERIS.providerConstructor ||
+    provider.id !== C12_29_S5_SVS_EPHEMERIS.providerId ||
+    provider.revision !== C12_29_S5_SVS_EPHEMERIS.providerRevision ||
+    !sameJson(provider.provenance, C12_29_S5_SVS_EPHEMERIS.provenance) ||
+    !sameJson(provider.timePolicy, C12_29_S5_SVS_EPHEMERIS.timePolicy) ||
+    provider.provenanceFrozen !== true ||
+    provider.timePolicyFrozen !== true ||
+    !exactObjectKeys(sample, [
+      "providerId",
+      "providerRevision",
+      "provenance",
+      "timePolicy",
+      "referenceFrame",
+      "units",
+      "transformBranch",
+      "outputAllocationStable",
+      "thirdPartyTemporaryFree",
+      "sunPositionWC",
+      "moonPositionWC",
+    ]) ||
+    sample.providerId !== C12_29_S5_SVS_EPHEMERIS.providerId ||
+    sample.providerRevision !== C12_29_S5_SVS_EPHEMERIS.providerRevision ||
+    !sameJson(sample.provenance, C12_29_S5_SVS_EPHEMERIS.provenance) ||
+    !sameJson(sample.timePolicy, C12_29_S5_SVS_EPHEMERIS.timePolicy) ||
+    sample.referenceFrame !== C12_29_S5_SVS_EPHEMERIS.referenceFrame ||
+    sample.units !== C12_29_S5_SVS_EPHEMERIS.units ||
+    sample.transformBranch !== C12_29_S5_SVS_EPHEMERIS.transformBranch ||
+    sample.outputAllocationStable !== true ||
+    sample.thirdPartyTemporaryFree !== true ||
+    !svsVec3(sample.sunPositionWC) ||
+    !svsVec3(sample.moonPositionWC) ||
+    !exactObjectKeys(independent, [
+      "method",
+      "sunPositionWC",
+      "moonPositionWC",
+      "sunDeltaMeters",
+      "moonDeltaMeters",
+    ]) ||
+    independent.method !== C12_29_S5_SVS_EPHEMERIS.independentMethod ||
+    !svsVec3(independent.sunPositionWC) ||
+    !svsVec3(independent.moonPositionWC) ||
+    !exactObjectKeys(eclipse, [
+      "sunPositionWC",
+      "moonPositionWC",
+      "sunDeltaMeters",
+      "moonDeltaMeters",
+      "sunStorageDistinct",
+      "moonStorageDistinct",
+    ]) ||
+    !svsVec3(eclipse.sunPositionWC) ||
+    !svsVec3(eclipse.moonPositionWC) ||
+    eclipse.sunStorageDistinct !== true ||
+    eclipse.moonStorageDistinct !== true ||
+    !exactObjectKeys(identities, [
+      "providerIsSceneProvider",
+      "sampleIsFrameStateSample",
+      "sampleProvenanceIsProviderProvenance",
+      "sampleTimePolicyIsProviderTimePolicy",
+    ]) ||
+    Object.values(identities).some((value) => value !== true)
+  ) {
+    return false;
+  }
+  const sunDelta = svsDistance3(
+    independent.sunPositionWC,
+    sample.sunPositionWC,
+  );
+  const moonDelta = svsDistance3(
+    independent.moonPositionWC,
+    sample.moonPositionWC,
+  );
+  const eclipseSunDelta = svsDistance3(
+    eclipse.sunPositionWC,
+    sample.sunPositionWC,
+  );
+  const eclipseMoonDelta = svsDistance3(
+    eclipse.moonPositionWC,
+    sample.moonPositionWC,
+  );
+  return (
+    finite(independent.sunDeltaMeters) &&
+    finite(independent.moonDeltaMeters) &&
+    independent.sunDeltaMeters === sunDelta &&
+    independent.moonDeltaMeters === moonDelta &&
+    sunDelta <= C12_29_S5_SVS_EPHEMERIS.maximumIndependentDeltaMeters &&
+    moonDelta <= C12_29_S5_SVS_EPHEMERIS.maximumIndependentDeltaMeters &&
+    svsExactVec3(eclipse.sunPositionWC, sample.sunPositionWC) &&
+    svsExactVec3(eclipse.moonPositionWC, sample.moonPositionWC) &&
+    eclipse.sunDeltaMeters === eclipseSunDelta &&
+    eclipse.moonDeltaMeters === eclipseMoonDelta &&
+    eclipseSunDelta === 0 &&
+    eclipseMoonDelta === 0
+  );
 }
 
 function validateIcrf(ephemeris, renderer, reasons) {
@@ -2713,6 +3068,17 @@ function validateRow(row, expected, renderer, failures, structural) {
     structural.push(`${renderer}/${expected.role}: clock/frame pin differs`);
   }
   if (
+    !validateSvsEphemerisLineage(
+      row?.ephemeris,
+      row?.terrainTuple?.captureFrameNumber,
+      expected.iso,
+    )
+  ) {
+    structural.push(
+      `${renderer}/${expected.role}: fused on-shot ephemeris lineage differs`,
+    );
+  }
+  if (
     !sameMembers(row?.cameraFrame?.centerLonLat, expected.sourceCenter) ||
     row?.cameraFrame?.mode !== C12_29_S5_SVS_SCENE.cameraMode ||
     row?.cameraFrame?.derivedFromGuardedBbox !== true ||
@@ -3169,6 +3535,34 @@ function validateSession(session, renderer, runId, failures, structural) {
   if (rows.length !== C12_29_S5_SVS_ROWS.length) {
     structural.push(`${renderer}: expected four NASA rows`);
   }
+  const rowLineages = session?.ephemeris?.rowLineages;
+  if (
+    !exactArrayData(rowLineages, C12_29_S5_SVS_ROWS.length) ||
+    rowLineages.length !== C12_29_S5_SVS_ROWS.length ||
+    rowLineages.some((entry, index) => {
+      const row = rows[index];
+      const expected = C12_29_S5_SVS_ROWS[index];
+      return (
+        !exactObjectKeys(entry, [
+          "role",
+          "iso",
+          "captureFrameNumber",
+          "lineage",
+        ]) ||
+        entry.role !== expected.role ||
+        entry.iso !== expected.iso ||
+        entry.captureFrameNumber !== row?.terrainTuple?.captureFrameNumber ||
+        !sameJson(entry.lineage, row?.ephemeris) ||
+        !validateSvsEphemerisLineage(
+          entry.lineage,
+          entry.captureFrameNumber,
+          entry.iso,
+        )
+      );
+    })
+  ) {
+    structural.push(`${renderer}: per-row ephemeris aggregate differs`);
+  }
   if (
     session?.terrain?.selectedRealMeshCount !==
       rows.reduce(
@@ -3474,6 +3868,8 @@ export default {
   C12_29_S5_SVS_SCHEMA,
   C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
   C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+  C12_29_S5_SVS_LEGACY_ERROR_SCHEMA,
+  C12_29_S5_SVS_EPHEMERIS,
   C12_29_S5_SVS_RENDERERS,
   C12_29_S5_SVS_PHASES,
   C12_29_S5_SVS_ROWS,
@@ -3497,6 +3893,7 @@ export default {
   validateSvsRuntimeCheckpointShape,
   validateSvsErrorDiagnosticsShape,
   validateSupersededSvsV2FinalArtifactShape,
+  validateSupersededSvsV3FinalArtifactShape,
   wgs84GeodesicDistanceKm,
   foldC1229S5SvsGate,
 };
