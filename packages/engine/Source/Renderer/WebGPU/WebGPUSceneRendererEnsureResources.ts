@@ -169,8 +169,10 @@ export function shouldAllocateWebGPUOIT(
 
 /**
  * Allocate / resize / format-toggle every framebuffer the scene pass
- * chain reads from. Idempotent — fast path is `_initialized && !needsResize
- * && !hdrChanged` (no work).
+ * chain reads from. Idempotent — framebuffer `update()` methods compare their
+ * current resource identity before reallocating. Dependent targets receive the
+ * live state every frame because `prepareFrame()` may already have consumed
+ * the renderer-level HDR/MSAA drift before this later ensure step runs.
  *
  * @param host - The owning SceneRenderer.
  * @param config - Render-frame config from `executeCommands`.
@@ -240,15 +242,15 @@ export function ensureResources(
   // deferral identified as where formats ARE known).
   const firstInit = !host._initialized;
   host._lastHDR = hdr;
+  const numSamples: number = context._msaaSamples ?? 1;
+  const canvasFormat: GPUTextureFormat =
+    context.presentationFormat ?? "bgra8unorm";
 
   // Scene framebuffer (main color + depth + ID targets)
   if (!host._sceneFramebuffer) {
     host._sceneFramebuffer = new WebGPUSceneFramebuffer();
   }
   if (needsRecreate) {
-    const numSamples: number = context._msaaSamples ?? 1;
-    const canvasFormat: GPUTextureFormat =
-      context.presentationFormat ?? "bgra8unorm";
     host._sceneFramebuffer.update(
       device,
       width,
@@ -276,6 +278,8 @@ export function ensureResources(
   const previousSceneColorFormat = context._sceneColorFormat;
   context._sceneColorFormat =
     host._sceneFramebuffer.colorFormat ?? context._sceneColorFormat;
+  const sceneColorFormat: GPUTextureFormat =
+    host._sceneFramebuffer.colorFormat ?? "bgra8unorm";
 
   // Slice 5c-B Batch 127 — wire scene-FB views onto context. Pre-fix:
   // `_sceneColorView` + `_depthStencilView` were declared on
@@ -374,16 +378,16 @@ export function ensureResources(
     host._lastOITRequested,
     host._webgpuOITEnabled,
   );
-  let createdOIT = false;
   if (useContainedWebGPUOIT && !host._oit) {
     host._oit = new WebGPUOIT(context);
-    createdOIT = true;
   }
-  if (useContainedWebGPUOIT && host._oit && (needsRecreate || createdOIT)) {
+  if (useContainedWebGPUOIT && host._oit) {
     // Session 65 Batch 33 — pass MSAA sample count so the OIT
     // composite pipeline matches the scene FB's sample count when
-    // the bridge re-enables.
-    host._oit.update(device, width, height, context._msaaSamples ?? 1);
+    // the bridge re-enables. This intentionally runs every frame: the
+    // renderer-level drift was already consumed by `prepareFrame`, while
+    // WebGPUOIT.update is itself allocation-idempotent for an unchanged tuple.
+    host._oit.update(device, width, height, numSamples);
   }
 
   // C-R8-EDGE-FBO (Batch 44) — edge MRT framebuffer. Allocated only
@@ -397,14 +401,13 @@ export function ensureResources(
   if (enableEdgeVisibility && !host._edgeFramebuffer) {
     host._edgeFramebuffer = new WebGPUEdgeFramebuffer();
   }
-  if (host._edgeFramebuffer && needsRecreate) {
-    const numSamples: number = context._msaaSamples ?? 1;
+  if (host._edgeFramebuffer) {
     host._edgeFramebuffer.update(
       device,
       width,
       height,
       numSamples,
-      host._sceneFramebuffer.colorFormat ?? "bgra8unorm",
+      sceneColorFormat,
     );
   }
 
@@ -417,12 +420,12 @@ export function ensureResources(
     host._translucentTileClassification =
       new WebGPUTranslucentTileClassification();
   }
-  if (host._translucentTileClassification && needsRecreate) {
+  if (host._translucentTileClassification) {
     host._translucentTileClassification.update(
       device,
       width,
       height,
-      host._sceneFramebuffer.colorFormat ?? "bgra8unorm",
+      sceneColorFormat,
     );
   }
 
@@ -430,10 +433,7 @@ export function ensureResources(
   if (config.useGlobeDepthFramebuffer && !host._globeDepth) {
     host._globeDepth = new WebGPUGlobeDepth({ timestampProvider: context });
   }
-  if (host._globeDepth && needsRecreate) {
-    const numSamples: number = context._msaaSamples ?? 1;
-    const canvasFormat: GPUTextureFormat =
-      context.presentationFormat ?? "bgra8unorm";
+  if (host._globeDepth) {
     host._globeDepth.update(
       device,
       width,
