@@ -336,6 +336,7 @@ function configureCameraFrustum(widget) {
  * @param {SkyAtmosphere | false} [options.skyAtmosphere] Blue sky, and the glow around the Earth's limb. Enabled when the default ellipsoid used. Set to <code>false</code> to turn it off.
  * @param {SceneMode} [options.sceneMode=SceneMode.SCENE3D] The initial scene mode.
  * @param {boolean} [options.scene3DOnly=false] When <code>true</code>, each geometry instance will only be rendered in 3D to save GPU memory.
+ * @param {CelestialEphemerisProvider} [options.celestialEphemerisProvider] A ready synchronous Sun/Moon ephemeris provider passed to {@link Scene}. Asynchronous provider creation remains caller-owned.
  * @param {boolean} [options.orderIndependentTranslucency=true] If true and the configuration supports it, use order independent translucency.
  * @param {MapProjection} [options.mapProjection=new GeographicProjection(options.ellipsoid)] The map projection to use in 2D and Columbus View modes.
  * @param {Globe | false} [options.globe=new Globe(options.ellipsoid)] The globe to use in the scene.  If set to <code>false</code>, no globe will be added and the sky atmosphere will be hidden by default.
@@ -555,6 +556,7 @@ function CesiumWidget(container, options) {
         mapProjection: options.mapProjection,
         orderIndependentTranslucency: options.orderIndependentTranslucency,
         scene3DOnly: options.scene3DOnly ?? false,
+        celestialEphemerisProvider: options.celestialEphemerisProvider,
         shadows: options.shadows,
         mapMode2D: options.mapMode2D,
         requestRenderMode: options.requestRenderMode,

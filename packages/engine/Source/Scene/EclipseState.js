@@ -57,24 +57,18 @@
 // term running on mixed frames, with direction errors up to about 1.5 deg —
 // several solar diameters.
 //
-// The Moon's world position is computed here rather than read from
-// `Moon.js`, for two reasons: `UniformState` keeps only the moon's eye-space
-// direction and discards the world-fixed position, and `Moon.update` runs
-// only when `moon.show` is true, while an eclipse must dim the sun whether or
-// not the decorative moon primitive is being drawn. The result is memoised on
-// the frame time so multi-view scenes pay for it once.
+// Scene normally supplies both world positions from FrameState's one shared,
+// branded Earth-fixed sample. Local Simon1994 derivation remains for direct or
+// bare callers, and for Scene's legacy central-body-hook lane where the
+// implicit sample is deliberately suppressed. That fallback mirrors Moon's
+// established Earth-fixed ICRF/TEME path; it does not apply UniformState's
+// documented central-body hook.
 //
-// The sun's world position is derived the same way when the caller does not
-// supply one. `Scene.render` publishes the eclipse state before
-// `uniformState.update(frameState)`, and must: `UniformState` is itself one
-// of the consumers, and `uniformState.update` is re-entered several times per
-// frame — picking, viewport executor, offscreen views — so a factor applied
+// `Scene.render` publishes the eclipse state before
+// `uniformState.update(frameState)`, and must: `UniformState` is itself one of
+// the sample consumers, and its update is re-entered several times per frame
+// — picking, viewport executor, offscreen views — so a factor applied
 // afterwards would be silently dropped by every one of those re-entries.
-// Before that call `uniformState.sunPositionWC` still holds the previous
-// frame's value, which is harmless at 60 Hz but wrong by a whole step under a
-// stepped or pinned clock. The derivation here is `setSunAndMoonDirections`'
-// own pair of calls — Simon1994 in the inertial frame, then ICRF-to-fixed
-// with the TEME fallback — so the two agree to the bit for a given time.
 //
 // Scene dimming (`getEclipseSceneLightFactor`) uses a different combination.
 // Fading the sun billboard by `sunVisibleFraction` correctly folds in the
@@ -150,21 +144,20 @@ const icrfToFixedScratch = new Matrix3();
 const toSunScratch = new Cartesian3();
 const toBodyScratch = new Cartesian3();
 
-// Frame-time memo for the lunar ephemeris. Multi-view scenes call
-// `updateEclipseState` once per view with the same `frameState.time`; the
-// Simon1994 series plus the ICRF rotation is the only non-trivial cost in
-// this module, so it is computed at most once per simulation instant.
+// Frame-time memo for the lunar fallback. Normal Scene views pass the shared
+// FrameState sample and never enter this path. Direct/bare callers and Scene's
+// legacy central-body-hook lane may omit it, so the Simon1994 series plus the
+// ICRF rotation is still computed at most once per simulation instant.
 //
 // `usedIcrf` is part of the key rather than a diagnostic. `Transforms`
 // silently falls back to the TEME pseudo-fixed rotation while the IAU2006 XYS
 // data is still loading asynchronously, and the two rotations disagree by
 // 0.3-0.4 deg in 2026, which is more than the 0.53 deg solar disc. Keyed on
 // time alone, a memo built during the fallback window would be permanently
-// retained under a pinned or paused clock while `Moon.update` and
-// `UniformState` recompute every frame and switch to true ICRF the moment the
-// data lands. The rendered moon and the eclipse fade would then disagree by
-// more than a solar diameter: a moon sitting on the sun with no dimming, or
-// dimming with the moon visibly off-sun.
+// retained under a pinned or paused clock while `Moon.update` switches to true
+// ICRF the moment the data lands. The rendered moon and the fallback eclipse
+// fade would then disagree by more than a solar diameter: a moon sitting on
+// the sun with no dimming, or dimming with the moon visibly off-sun.
 const moonMemo = {
   time: new JulianDate(),
   hasTime: false,
@@ -219,10 +212,11 @@ function computeIcrfToFixedBranch(time, result) {
 
 /**
  * Moon position in the Earth-centred FIXED frame (ECEF metres) for a given
- * time. Mirrors `Moon.update` and `UniformStateComputations` exactly —
- * Simon1994 in the inertial frame, then the ICRF->fixed rotation with the
- * TEME pseudo-fixed fallback applied when earth-orientation data has not
- * loaded yet.
+ * time. Mirrors Moon's fixed fallback and UniformState's default bare
+ * fallback: Simon1994 in the inertial frame, then the ICRF->fixed rotation
+ * with the TEME pseudo-fixed fallback when earth-orientation data has not
+ * loaded. It deliberately does not apply the central-body override that only
+ * UniformState honors.
  *
  * @param {JulianDate} time The simulation time.
  * @param {Cartesian3} result The object onto which to store the result.
@@ -241,10 +235,10 @@ function computeMoonPositionWC(time, result) {
 }
 
 /**
- * Sun position in the Earth-centred FIXED frame (ECEF metres). The engine
- * itself reads `uniformState.sunPositionWC`, which is produced by this same
- * pair of calls; this helper exists so offline tooling and the node specs
- * can drive `updateEclipseState` without standing up a `UniformState`.
+ * Sun position in the Earth-centred FIXED frame (ECEF metres). Normal Scene
+ * rendering supplies FrameState's shared sample; this helper preserves the
+ * independent fixed fallback so offline tooling, direct callers, and the node
+ * specs can drive `updateEclipseState` without standing up a Scene.
  *
  * @param {JulianDate} time The simulation time.
  * @param {Cartesian3} result The object onto which to store the result.
@@ -446,10 +440,9 @@ function angleBetween(a, b) {
  * @param {number} [options.cameraHeight=0.0] Ellipsoidal camera height in
  *   metres, used to fade atmospheric twilight without assuming Earth radius.
  * @param {Cartesian3} [options.sunPositionWC] Sun position, ECEF metres.
- *   Omit it and the solar ephemeris is derived from `options.time` exactly as
- *   `setSunAndMoonDirections` derives `uniformState.sunPositionWC` — which is
- *   what `Scene.render` does, because it publishes the state BEFORE
- *   `uniformState.update` (see the module header).
+ *   Scene normally supplies the shared FrameState sample. Omit it and the
+ *   fixed solar fallback is derived from `options.time` for direct/bare
+ *   callers and the legacy central-body-hook lane (see the module header).
  * @param {JulianDate} [options.time] Simulation time, used to derive the
  *   lunar (and, when absent, the solar) ephemeris.
  * @param {Cartesian3} [options.moonPositionWC] Explicit moon position, ECEF
@@ -477,11 +470,10 @@ function updateEclipseState(state, options) {
     );
   }
 
-  // The sun is either supplied — by a caller that already holds
-  // `uniformState.sunPositionWC` for the current frame — or derived from the
-  // clock, which is what `Scene.render` does, since it publishes the eclipse
-  // state ahead of `uniformState.update`. Resolved after the gates above so
-  // 2D and Columbus-view frames do not pay for an ephemeris they discard.
+  // Normal Scene rendering supplies FrameState's shared sample. Direct/bare
+  // callers and the legacy central-body-hook lane derive the fixed fallback
+  // from the clock. Resolve after the gates above so 2D and Columbus-view
+  // frames do not pay for an ephemeris they discard.
   let sunPositionWC;
   if (defined(options.sunPositionWC)) {
     sunPositionWC = Cartesian3.clone(

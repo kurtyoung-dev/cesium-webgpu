@@ -1,4 +1,53 @@
+import CelestialEphemerisProvider from "../Core/CelestialEphemerisProvider.js";
+import Check from "../Core/Check.js";
+import DeveloperError from "../Core/DeveloperError.js";
+import JulianDate from "../Core/JulianDate.js";
+import RuntimeError from "../Core/RuntimeError.js";
 import SceneMode from "./SceneMode.js";
+
+function validateEphemerisDeclaration(
+  id,
+  revision,
+  provenance,
+  timePolicy,
+  outputAllocationStable,
+  thirdPartyTemporaryFree,
+) {
+  if (typeof id !== "string" || id.length === 0) {
+    throw new RuntimeError("The ephemeris provider has an invalid id.");
+  }
+  if (!Number.isInteger(revision) || revision < 0) {
+    throw new RuntimeError("The ephemeris provider has an invalid revision.");
+  }
+  if (
+    provenance === null ||
+    typeof provenance !== "object" ||
+    timePolicy === null ||
+    typeof timePolicy !== "object" ||
+    !Object.isFrozen(provenance) ||
+    !Object.isFrozen(timePolicy)
+  ) {
+    throw new RuntimeError(
+      "The ephemeris provider must publish frozen provenance and a frozen time policy.",
+    );
+  }
+  if (
+    typeof outputAllocationStable !== "boolean" ||
+    typeof thirdPartyTemporaryFree !== "boolean"
+  ) {
+    throw new RuntimeError(
+      "The ephemeris provider must publish its allocation declarations.",
+    );
+  }
+}
+
+function isFiniteCartesian3(value) {
+  return (
+    Number.isFinite(value.x) &&
+    Number.isFinite(value.y) &&
+    Number.isFinite(value.z)
+  );
+}
 
 /**
  * State information about the current frame.  An instance of this class
@@ -120,6 +169,53 @@ class FrameState {
      * @default undefined
      */
     this.time = undefined;
+
+    // One branded, caller-owned sample is retained for the lifetime of this
+    // FrameState. Scene publishes it only after a complete synchronous
+    // provider evaluation. Consumers copy from its stable Cartesian slots and
+    // never own a second ephemeris cache.
+    this._celestialEphemerisSample = CelestialEphemerisProvider.createSample();
+    this._celestialEphemerisSampleIdentity = this._celestialEphemerisSample;
+    this._celestialEphemerisSunIdentity =
+      this._celestialEphemerisSample.sunPositionWC;
+    this._celestialEphemerisMoonIdentity =
+      this._celestialEphemerisSample.moonPositionWC;
+    this._celestialEphemerisEvaluationTime = new JulianDate();
+    this._celestialEphemerisCacheValid = false;
+    this._celestialEphemerisCacheProvider = undefined;
+    this._celestialEphemerisCacheCompute = undefined;
+    this._celestialEphemerisCacheProviderId = undefined;
+    this._celestialEphemerisCacheProviderRevision = undefined;
+    this._celestialEphemerisCacheProvenance = undefined;
+    this._celestialEphemerisCacheTimePolicy = undefined;
+    this._celestialEphemerisCacheOutputAllocationStable = undefined;
+    this._celestialEphemerisCacheThirdPartyTemporaryFree = undefined;
+    this._celestialEphemerisCacheDayNumber = undefined;
+    this._celestialEphemerisCacheSecondsOfDay = undefined;
+    this._celestialEphemerisCacheTransformBranch = undefined;
+    this._celestialEphemerisCacheSunX = undefined;
+    this._celestialEphemerisCacheSunY = undefined;
+    this._celestialEphemerisCacheSunZ = undefined;
+    this._celestialEphemerisCacheMoonX = undefined;
+    this._celestialEphemerisCacheMoonY = undefined;
+    this._celestialEphemerisCacheMoonZ = undefined;
+    this._celestialEphemerisObservedFrameNumber = this.frameNumber;
+    this._celestialEphemerisLogicalFrameToken = 0;
+    this._celestialEphemerisPublishedFrameToken = undefined;
+    this._celestialEphemerisRejectedFrameToken = undefined;
+    this._celestialEphemerisLegacyFrameToken = undefined;
+    this._celestialEphemerisLegacyTransform = undefined;
+    this._celestialEphemerisGeneration = 0;
+    this._celestialEphemerisComputing = false;
+
+    /**
+     * The authoritative geocentric Sun/Moon sample for this frame time.
+     * Undefined while a provider evaluation is incomplete or failed.
+     *
+     * @type {CelestialEphemerisProvider.Sample|undefined}
+     * @private
+     */
+    this.celestialEphemerisSample = undefined;
 
     /**
      * The job scheduler.
@@ -934,6 +1030,415 @@ class FrameState {
      * @private
      */
     this.debugShowGBufferNormals = false;
+  }
+
+  /**
+   * Publishes the one authoritative Sun/Moon sample for the exact provider,
+   * provider revision, simulation time, and transform branch. Repeated
+   * logical-View, pick, and offscreen preparations hit this same cache.
+   *
+   * @param {CelestialEphemerisProvider} provider Ready synchronous provider.
+   * @param {JulianDate} time Exact simulation time.
+   * @param {boolean} [legacyTransformActive=false] Whether Scene suppressed
+   *   its implicit Earth-fixed sample for a documented central-body override.
+   * @param {Function} [legacyTransform] Captured central-body override used by
+   *   UniformState's legacy fallback for the logical frame. Moon and eclipse
+   *   fallbacks retain their established Earth-fixed ICRF/TEME derivations.
+   * @returns {CelestialEphemerisProvider.Sample|undefined} The retained
+   *   branded sample, or undefined while legacy transformation is active.
+   * @private
+   */
+  _updateCelestialEphemeris(
+    provider,
+    time,
+    legacyTransformActive = false,
+    legacyTransform,
+  ) {
+    if (this._celestialEphemerisComputing) {
+      ++this._celestialEphemerisGeneration;
+      this._celestialEphemerisCacheValid = false;
+      this._celestialEphemerisCacheProvider = undefined;
+      this.celestialEphemerisSample = undefined;
+      throw new DeveloperError(
+        "FrameState celestial ephemeris sampling does not support reentrant calls.",
+      );
+    }
+
+    Check.defined("provider", provider);
+    Check.defined("time", time);
+
+    this._celestialEphemerisComputing = true;
+    const generation = ++this._celestialEphemerisGeneration;
+    const expectedFrameNumber = this.frameNumber;
+    const expectedDayNumber = time.dayNumber;
+    const expectedSecondsOfDay = time.secondsOfDay;
+    const frameTimeIsCallerTime = this.time === time;
+    const sample = this._celestialEphemerisSample;
+
+    if (this._celestialEphemerisObservedFrameNumber !== this.frameNumber) {
+      this._celestialEphemerisObservedFrameNumber = this.frameNumber;
+      ++this._celestialEphemerisLogicalFrameToken;
+    }
+    const logicalFrameToken = this._celestialEphemerisLogicalFrameToken;
+
+    try {
+      if (this._celestialEphemerisRejectedFrameToken === logicalFrameToken) {
+        throw new RuntimeError(
+          "The celestial ephemeris changed after publication for this frame.",
+        );
+      }
+      if (legacyTransformActive) {
+        if (this._celestialEphemerisPublishedFrameToken === logicalFrameToken) {
+          this._celestialEphemerisRejectedFrameToken = logicalFrameToken;
+          throw new RuntimeError(
+            "The celestial ephemeris transform policy changed after publication for this frame.",
+          );
+        }
+        if (
+          this._celestialEphemerisLegacyFrameToken === logicalFrameToken &&
+          this._celestialEphemerisLegacyTransform !== legacyTransform
+        ) {
+          this._celestialEphemerisRejectedFrameToken = logicalFrameToken;
+          throw new RuntimeError(
+            "The celestial ephemeris transform override changed during this frame.",
+          );
+        }
+        this._celestialEphemerisCacheValid = false;
+        this._celestialEphemerisCacheProvider = undefined;
+        this._celestialEphemerisLegacyFrameToken = logicalFrameToken;
+        this._celestialEphemerisLegacyTransform = undefined;
+        this.celestialEphemerisSample = undefined;
+        Check.typeOf.func("legacyTransform", legacyTransform);
+        this._celestialEphemerisLegacyTransform = legacyTransform;
+        return undefined;
+      }
+
+      if (this._celestialEphemerisLegacyFrameToken === logicalFrameToken) {
+        this._celestialEphemerisRejectedFrameToken = logicalFrameToken;
+        throw new RuntimeError(
+          "The celestial ephemeris transform policy changed after legacy consumption for this frame.",
+        );
+      }
+      this._celestialEphemerisLegacyTransform = undefined;
+
+      const computeBefore = provider.compute;
+      Check.typeOf.func("provider.compute", computeBefore);
+      const idBefore = provider.id;
+      const revisionBefore = provider.revision;
+      const provenanceBefore = provider.provenance;
+      const timePolicyBefore = provider.timePolicy;
+      const outputAllocationStableBefore = provider.outputAllocationStable;
+      const thirdPartyTemporaryFreeBefore = provider.thirdPartyTemporaryFree;
+      validateEphemerisDeclaration(
+        idBefore,
+        revisionBefore,
+        provenanceBefore,
+        timePolicyBefore,
+        outputAllocationStableBefore,
+        thirdPartyTemporaryFreeBefore,
+      );
+
+      if (generation !== this._celestialEphemerisGeneration) {
+        throw new DeveloperError(
+          "A reentrant call invalidated the celestial ephemeris sample.",
+        );
+      }
+      if (
+        this.frameNumber !== expectedFrameNumber ||
+        this._celestialEphemerisObservedFrameNumber !== expectedFrameNumber ||
+        this._celestialEphemerisLogicalFrameToken !== logicalFrameToken ||
+        time.dayNumber !== expectedDayNumber ||
+        time.secondsOfDay !== expectedSecondsOfDay ||
+        (frameTimeIsCallerTime && this.time !== time)
+      ) {
+        throw new RuntimeError(
+          "The ephemeris provider mutated the FrameState frame or simulation time.",
+        );
+      }
+
+      CelestialEphemerisProvider.validateResult(sample);
+      const cacheMatches =
+        this._celestialEphemerisCacheValid &&
+        sample === this._celestialEphemerisSampleIdentity &&
+        sample.sunPositionWC === this._celestialEphemerisSunIdentity &&
+        sample.moonPositionWC === this._celestialEphemerisMoonIdentity &&
+        this._celestialEphemerisCacheProvider === provider &&
+        this._celestialEphemerisCacheCompute === computeBefore &&
+        this._celestialEphemerisCacheProviderId === idBefore &&
+        this._celestialEphemerisCacheProviderRevision === revisionBefore &&
+        this._celestialEphemerisCacheProvenance === provenanceBefore &&
+        this._celestialEphemerisCacheTimePolicy === timePolicyBefore &&
+        this._celestialEphemerisCacheOutputAllocationStable ===
+          outputAllocationStableBefore &&
+        this._celestialEphemerisCacheThirdPartyTemporaryFree ===
+          thirdPartyTemporaryFreeBefore &&
+        this._celestialEphemerisCacheDayNumber === expectedDayNumber &&
+        this._celestialEphemerisCacheSecondsOfDay === expectedSecondsOfDay &&
+        this._celestialEphemerisCacheTransformBranch ===
+          sample.transformBranch &&
+        sample.providerId === idBefore &&
+        sample.providerRevision === revisionBefore &&
+        sample.provenance === provenanceBefore &&
+        sample.timePolicy === timePolicyBefore &&
+        sample.referenceFrame === "ECEF" &&
+        sample.units === "metres" &&
+        sample.outputAllocationStable === outputAllocationStableBefore &&
+        sample.thirdPartyTemporaryFree === thirdPartyTemporaryFreeBefore &&
+        typeof sample.transformBranch === "string" &&
+        sample.transformBranch.length > 0 &&
+        isFiniteCartesian3(sample.sunPositionWC) &&
+        isFiniteCartesian3(sample.moonPositionWC) &&
+        this._celestialEphemerisCacheSunX === sample.sunPositionWC.x &&
+        this._celestialEphemerisCacheSunY === sample.sunPositionWC.y &&
+        this._celestialEphemerisCacheSunZ === sample.sunPositionWC.z &&
+        this._celestialEphemerisCacheMoonX === sample.moonPositionWC.x &&
+        this._celestialEphemerisCacheMoonY === sample.moonPositionWC.y &&
+        this._celestialEphemerisCacheMoonZ === sample.moonPositionWC.z;
+
+      if (cacheMatches) {
+        this._celestialEphemerisPublishedFrameToken = logicalFrameToken;
+        this.celestialEphemerisSample = sample;
+        return sample;
+      }
+
+      // Once any View has consumed this frame's sample, an asynchronous
+      // revision/branch transition or provider-object drift is deferred to the
+      // next frame. Recomputing now would mix lineages between the main View
+      // and a later pick/offscreen View.
+      if (this._celestialEphemerisPublishedFrameToken === logicalFrameToken) {
+        this._celestialEphemerisRejectedFrameToken = logicalFrameToken;
+        throw new RuntimeError(
+          "The celestial ephemeris changed after publication for this frame.",
+        );
+      }
+
+      // A miss invalidates the prior publication before caller code runs. If
+      // the provider throws, returns asynchronously, or re-enters, no consumer
+      // can observe a partially overwritten sample as current.
+      this._celestialEphemerisCacheValid = false;
+      this._celestialEphemerisCacheProvider = undefined;
+      this.celestialEphemerisSample = undefined;
+      JulianDate.clone(time, this._celestialEphemerisEvaluationTime);
+
+      const returnedSample = computeBefore.call(
+        provider,
+        this._celestialEphemerisEvaluationTime,
+        sample,
+      );
+      CelestialEphemerisProvider.validateResult(sample);
+
+      // Freeze the complete return boundary into scalar/reference locals
+      // before reading any post-compute provider getter. Those getters are
+      // caller code and may mutate both the provider and the branded sample.
+      // Locals add no successful-path allocation and make the later audit a
+      // true time-of-check/time-of-use boundary.
+      const sampleAtReturn = sample;
+      const sampleSunPositionAtReturn = sample.sunPositionWC;
+      const sampleMoonPositionAtReturn = sample.moonPositionWC;
+      const sampleSunXAtReturn = sampleSunPositionAtReturn.x;
+      const sampleSunYAtReturn = sampleSunPositionAtReturn.y;
+      const sampleSunZAtReturn = sampleSunPositionAtReturn.z;
+      const sampleMoonXAtReturn = sampleMoonPositionAtReturn.x;
+      const sampleMoonYAtReturn = sampleMoonPositionAtReturn.y;
+      const sampleMoonZAtReturn = sampleMoonPositionAtReturn.z;
+      const sampleProviderIdAtReturn = sample.providerId;
+      const sampleProviderRevisionAtReturn = sample.providerRevision;
+      const sampleProvenanceAtReturn = sample.provenance;
+      const sampleTimePolicyAtReturn = sample.timePolicy;
+      const sampleReferenceFrameAtReturn = sample.referenceFrame;
+      const sampleUnitsAtReturn = sample.units;
+      const sampleTransformBranchAtReturn = sample.transformBranch;
+      const sampleOutputAllocationStableAtReturn =
+        sample.outputAllocationStable;
+      const sampleThirdPartyTemporaryFreeAtReturn =
+        sample.thirdPartyTemporaryFree;
+
+      if (generation !== this._celestialEphemerisGeneration) {
+        throw new DeveloperError(
+          "A reentrant call invalidated the celestial ephemeris sample.",
+        );
+      }
+      if (
+        returnedSample !== sampleAtReturn ||
+        sampleAtReturn !== this._celestialEphemerisSampleIdentity ||
+        this._celestialEphemerisSample !==
+          this._celestialEphemerisSampleIdentity ||
+        sampleSunPositionAtReturn !== this._celestialEphemerisSunIdentity ||
+        sampleMoonPositionAtReturn !== this._celestialEphemerisMoonIdentity
+      ) {
+        throw new RuntimeError(
+          "The ephemeris provider replaced caller-owned sample or vector storage.",
+        );
+      }
+      if (
+        this._celestialEphemerisEvaluationTime.dayNumber !==
+          expectedDayNumber ||
+        this._celestialEphemerisEvaluationTime.secondsOfDay !==
+          expectedSecondsOfDay ||
+        this.frameNumber !== expectedFrameNumber ||
+        this._celestialEphemerisObservedFrameNumber !== expectedFrameNumber ||
+        this._celestialEphemerisLogicalFrameToken !== logicalFrameToken ||
+        time.dayNumber !== expectedDayNumber ||
+        time.secondsOfDay !== expectedSecondsOfDay ||
+        (frameTimeIsCallerTime && this.time !== time)
+      ) {
+        throw new RuntimeError(
+          "The ephemeris provider mutated the FrameState frame or simulation time.",
+        );
+      }
+      if (
+        !Number.isFinite(sampleSunXAtReturn) ||
+        !Number.isFinite(sampleSunYAtReturn) ||
+        !Number.isFinite(sampleSunZAtReturn) ||
+        !Number.isFinite(sampleMoonXAtReturn) ||
+        !Number.isFinite(sampleMoonYAtReturn) ||
+        !Number.isFinite(sampleMoonZAtReturn)
+      ) {
+        throw new RuntimeError(
+          "The ephemeris provider produced a non-finite position.",
+        );
+      }
+      // Revision may legitimately transition inside compute (for example when
+      // the Simon provider moves from TEME to ICRF). Every other sample
+      // declaration is invariant and must already match the pre-call tuple.
+      if (
+        sampleProviderIdAtReturn !== idBefore ||
+        !Number.isInteger(sampleProviderRevisionAtReturn) ||
+        sampleProviderRevisionAtReturn < 0 ||
+        sampleProvenanceAtReturn !== provenanceBefore ||
+        sampleTimePolicyAtReturn !== timePolicyBefore ||
+        sampleReferenceFrameAtReturn !== "ECEF" ||
+        sampleUnitsAtReturn !== "metres" ||
+        typeof sampleTransformBranchAtReturn !== "string" ||
+        sampleTransformBranchAtReturn.length === 0 ||
+        sampleOutputAllocationStableAtReturn !== outputAllocationStableBefore ||
+        sampleThirdPartyTemporaryFreeAtReturn !== thirdPartyTemporaryFreeBefore
+      ) {
+        throw new RuntimeError(
+          "The ephemeris sample does not truthfully match its provider declaration.",
+        );
+      }
+
+      const idAfter = provider.id;
+      const revisionAfter = provider.revision;
+      const provenanceAfter = provider.provenance;
+      const timePolicyAfter = provider.timePolicy;
+      const outputAllocationStableAfter = provider.outputAllocationStable;
+      const thirdPartyTemporaryFreeAfter = provider.thirdPartyTemporaryFree;
+      const computeAfter = provider.compute;
+      Check.typeOf.func("provider.compute", computeAfter);
+      validateEphemerisDeclaration(
+        idAfter,
+        revisionAfter,
+        provenanceAfter,
+        timePolicyAfter,
+        outputAllocationStableAfter,
+        thirdPartyTemporaryFreeAfter,
+      );
+      if (
+        idAfter !== idBefore ||
+        provenanceAfter !== provenanceBefore ||
+        timePolicyAfter !== timePolicyBefore ||
+        outputAllocationStableAfter !== outputAllocationStableBefore ||
+        thirdPartyTemporaryFreeAfter !== thirdPartyTemporaryFreeBefore ||
+        computeAfter !== computeBefore
+      ) {
+        throw new RuntimeError(
+          "The ephemeris provider declaration changed during a frame sample.",
+        );
+      }
+      // Provider declaration getters are caller code too. Recheck the entire
+      // payload against the captured return boundary after the last such read
+      // so a getter cannot swallow a reentrant call or forge matching provider
+      // and sample state between the earlier audit and publication.
+      if (generation !== this._celestialEphemerisGeneration) {
+        throw new DeveloperError(
+          "A reentrant call invalidated the celestial ephemeris sample.",
+        );
+      }
+      CelestialEphemerisProvider.validateResult(sample);
+      if (
+        sample !== sampleAtReturn ||
+        sampleAtReturn !== this._celestialEphemerisSampleIdentity ||
+        this._celestialEphemerisSample !==
+          this._celestialEphemerisSampleIdentity ||
+        sample.sunPositionWC !== sampleSunPositionAtReturn ||
+        sample.moonPositionWC !== sampleMoonPositionAtReturn ||
+        !Object.is(sample.sunPositionWC.x, sampleSunXAtReturn) ||
+        !Object.is(sample.sunPositionWC.y, sampleSunYAtReturn) ||
+        !Object.is(sample.sunPositionWC.z, sampleSunZAtReturn) ||
+        !Object.is(sample.moonPositionWC.x, sampleMoonXAtReturn) ||
+        !Object.is(sample.moonPositionWC.y, sampleMoonYAtReturn) ||
+        !Object.is(sample.moonPositionWC.z, sampleMoonZAtReturn) ||
+        sample.providerId !== sampleProviderIdAtReturn ||
+        !Object.is(sample.providerRevision, sampleProviderRevisionAtReturn) ||
+        sample.provenance !== sampleProvenanceAtReturn ||
+        sample.timePolicy !== sampleTimePolicyAtReturn ||
+        sample.referenceFrame !== sampleReferenceFrameAtReturn ||
+        sample.units !== sampleUnitsAtReturn ||
+        sample.transformBranch !== sampleTransformBranchAtReturn ||
+        sample.outputAllocationStable !==
+          sampleOutputAllocationStableAtReturn ||
+        sample.thirdPartyTemporaryFree !== sampleThirdPartyTemporaryFreeAtReturn
+      ) {
+        throw new RuntimeError(
+          "The ephemeris sample changed during post-compute provider validation.",
+        );
+      }
+      if (!Object.is(sampleProviderRevisionAtReturn, revisionAfter)) {
+        throw new RuntimeError(
+          "The ephemeris sample does not truthfully match its provider declaration.",
+        );
+      }
+      if (
+        this._celestialEphemerisEvaluationTime.dayNumber !==
+          expectedDayNumber ||
+        this._celestialEphemerisEvaluationTime.secondsOfDay !==
+          expectedSecondsOfDay ||
+        this.frameNumber !== expectedFrameNumber ||
+        this._celestialEphemerisObservedFrameNumber !== expectedFrameNumber ||
+        this._celestialEphemerisLogicalFrameToken !== logicalFrameToken ||
+        time.dayNumber !== expectedDayNumber ||
+        time.secondsOfDay !== expectedSecondsOfDay ||
+        (frameTimeIsCallerTime && this.time !== time)
+      ) {
+        throw new RuntimeError(
+          "The ephemeris provider mutated the FrameState frame or simulation time.",
+        );
+      }
+      this._celestialEphemerisCacheProvider = provider;
+      this._celestialEphemerisCacheCompute = computeAfter;
+      this._celestialEphemerisCacheProviderId = idAfter;
+      this._celestialEphemerisCacheProviderRevision = revisionAfter;
+      this._celestialEphemerisCacheProvenance = provenanceAfter;
+      this._celestialEphemerisCacheTimePolicy = timePolicyAfter;
+      this._celestialEphemerisCacheOutputAllocationStable =
+        outputAllocationStableAfter;
+      this._celestialEphemerisCacheThirdPartyTemporaryFree =
+        thirdPartyTemporaryFreeAfter;
+      this._celestialEphemerisCacheDayNumber = expectedDayNumber;
+      this._celestialEphemerisCacheSecondsOfDay = expectedSecondsOfDay;
+      this._celestialEphemerisCacheTransformBranch =
+        sampleTransformBranchAtReturn;
+      this._celestialEphemerisCacheSunX = sampleSunXAtReturn;
+      this._celestialEphemerisCacheSunY = sampleSunYAtReturn;
+      this._celestialEphemerisCacheSunZ = sampleSunZAtReturn;
+      this._celestialEphemerisCacheMoonX = sampleMoonXAtReturn;
+      this._celestialEphemerisCacheMoonY = sampleMoonYAtReturn;
+      this._celestialEphemerisCacheMoonZ = sampleMoonZAtReturn;
+      this._celestialEphemerisCacheValid = true;
+      this._celestialEphemerisPublishedFrameToken = logicalFrameToken;
+      this._celestialEphemerisRejectedFrameToken = undefined;
+      this.celestialEphemerisSample = sample;
+      return sample;
+    } catch (error) {
+      this._celestialEphemerisCacheValid = false;
+      this._celestialEphemerisCacheProvider = undefined;
+      this.celestialEphemerisSample = undefined;
+      throw error;
+    } finally {
+      this._celestialEphemerisComputing = false;
+    }
   }
 }
 

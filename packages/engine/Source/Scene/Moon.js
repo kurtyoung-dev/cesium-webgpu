@@ -411,12 +411,25 @@ class Moon {
     Matrix3.transpose(rotation, rotation);
     Matrix3.multiply(icrfToFixed, rotation, rotation);
 
-    const translation =
-      Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
-        date,
+    const celestialEphemerisSample = frameState.celestialEphemerisSample;
+    let translation;
+    if (defined(celestialEphemerisSample)) {
+      translation = Cartesian3.clone(
+        celestialEphemerisSample.moonPositionWC,
         translationScratch,
       );
-    Matrix3.multiplyByVector(icrfToFixed, translation, translation);
+    } else {
+      // Retain Moon's exact historical Earth-fixed path for bare/private
+      // callers and while Scene suppresses its implicit sample for a
+      // central-body hook. Unlike UniformState, Moon never honored that hook:
+      // it uses ICRF-to-fixed with the TEME pseudo-fixed fallback above.
+      translation =
+        Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
+          date,
+          translationScratch,
+        );
+      Matrix3.multiplyByVector(icrfToFixed, translation, translation);
+    }
 
     // C12-37 — decide whether the Moon can physically precede the Earth using
     // only shared binary64 scene state, before either backend is selected.

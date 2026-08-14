@@ -26,7 +26,9 @@ import OrthographicOffCenterFrustum from "../Core/OrthographicOffCenterFrustum.j
 import Ray from "../Core/Ray.js";
 import Rectangle from "../Core/Rectangle.js";
 import RequestScheduler from "../Core/RequestScheduler.js";
+import Simon1994EphemerisProvider from "../Core/Simon1994EphemerisProvider.js";
 import TaskProcessor from "../Core/TaskProcessor.js";
+import Transforms from "../Core/Transforms.js";
 import ClearCommand from "../Renderer/ClearCommand.js";
 import ComputeEngine from "../Renderer/ComputeEngine.js";
 import ControllerHost from "./Controllers/ControllerHost.js";
@@ -193,6 +195,7 @@ class Scene {
    * @param {number} [options.maximumRenderTimeChange=0.0] If requestRenderMode is true, this value defines the maximum change in simulation time allowed before a render is requested. See {@link https://cesium.com/blog/2018/01/24/cesium-scene-rendering-performance/|Improving Performance with Explicit Rendering}.
    * @param {number} [options.depthPlaneEllipsoidOffset=0.0] Adjust the DepthPlane to address rendering artefacts below ellipsoid zero elevation.
    * @param {number} [options.msaaSamples=4] If provided, this value controls the rate of multisample antialiasing. Typical multisampling rates are 2, 4, and sometimes 8 samples per pixel. Higher sampling rates of MSAA may impact performance in exchange for improved visual quality. This value only applies to WebGL2 contexts that support multisample render targets. Set to 1 to disable MSAA.
+   * @param {CelestialEphemerisProvider} [options.celestialEphemerisProvider] A ready synchronous Sun/Moon ephemeris provider. A per-Scene {@link Simon1994EphemerisProvider} is used by default.
    *
    * @exception {DeveloperError} options and options.canvas are required.
    */
@@ -332,6 +335,36 @@ class Scene {
       this._jobScheduler,
     );
     this._frameState.scene3DOnly = options.scene3DOnly ?? false;
+    const usesImplicitCelestialEphemerisProvider = !defined(
+      options.celestialEphemerisProvider,
+    );
+    const celestialEphemerisProvider = usesImplicitCelestialEphemerisProvider
+      ? new Simon1994EphemerisProvider()
+      : options.celestialEphemerisProvider;
+    if (typeof celestialEphemerisProvider?.then === "function") {
+      throw new DeveloperError(
+        "celestialEphemerisProvider must be ready; await asynchronous provider creation before constructing Scene.",
+      );
+    }
+    Check.defined("celestialEphemerisProvider", celestialEphemerisProvider);
+    Check.typeOf.func(
+      "celestialEphemerisProvider.compute",
+      celestialEphemerisProvider.compute,
+    );
+    this._celestialEphemerisProvider = celestialEphemerisProvider;
+    this._activeCelestialEphemerisProvider = celestialEphemerisProvider;
+    this._celestialEphemerisProviderIsImplicit =
+      usesImplicitCelestialEphemerisProvider;
+    this._activeCelestialEphemerisProviderIsImplicit =
+      usesImplicitCelestialEphemerisProvider;
+    this._implicitCelestialEphemerisProvider =
+      usesImplicitCelestialEphemerisProvider
+        ? celestialEphemerisProvider
+        : undefined;
+    this._celestialEphemerisProviderSetFrameNumber = undefined;
+    this._celestialEphemerisTransformFrameNumber = undefined;
+    this._activeCelestialEphemerisLegacyTransformActive = false;
+    this._activeCelestialEphemerisLegacyTransform = undefined;
     this._computeEngine = new ComputeEngine(context);
 
     this._ellipsoid = options.ellipsoid ?? Ellipsoid.default;
@@ -2447,6 +2480,46 @@ class Scene {
   }
 
   /**
+   * Gets or sets the ready synchronous provider used for per-frame Sun and
+   * Moon positions. Assignment is atomic: the configured provider becomes
+   * active on the next logical frame, so main, pick, and offscreen Views can
+   * never mix providers within one frame.
+   *
+   * Astronomy Engine setup remains caller-owned; await
+   * {@link AstronomyEngineEphemerisProvider.create} before assigning it.
+   *
+   * @type {CelestialEphemerisProvider}
+   */
+  get celestialEphemerisProvider() {
+    return this._celestialEphemerisProvider;
+  }
+
+  set celestialEphemerisProvider(provider) {
+    if (typeof provider?.then === "function") {
+      throw new DeveloperError(
+        "celestialEphemerisProvider must be ready; await asynchronous provider creation before assigning it.",
+      );
+    }
+    Check.defined("celestialEphemerisProvider", provider);
+    Check.typeOf.func("celestialEphemerisProvider.compute", provider.compute);
+    if (
+      provider === this._celestialEphemerisProvider &&
+      !this._celestialEphemerisProviderIsImplicit
+    ) {
+      return;
+    }
+
+    this._celestialEphemerisProvider = provider;
+    // Assignment is an explicit ownership boundary even when the caller
+    // writes back the exact Scene-created default object. Keep the active
+    // ownership unchanged until the next logical frame.
+    this._celestialEphemerisProviderIsImplicit = false;
+    this._celestialEphemerisProviderSetFrameNumber =
+      this._frameState.frameNumber;
+    this.requestRender();
+  }
+
+  /**
    * Gets the environment state.
    *
    * @type {EnvironmentState}
@@ -3911,6 +3984,48 @@ class Scene {
     this.clearPasses(frameState.passes);
 
     frameState.tilesetPassState = undefined;
+    if (
+      (this._activeCelestialEphemerisProvider !==
+        this._celestialEphemerisProvider ||
+        this._activeCelestialEphemerisProviderIsImplicit !==
+          this._celestialEphemerisProviderIsImplicit) &&
+      this._celestialEphemerisProviderSetFrameNumber !== frameState.frameNumber
+    ) {
+      this._activeCelestialEphemerisProvider = this._celestialEphemerisProvider;
+      this._activeCelestialEphemerisProviderIsImplicit =
+        this._celestialEphemerisProviderIsImplicit;
+    }
+
+    // The central-body transform is a documented override point. The
+    // Scene-owned Simon provider is Earth-fixed, so an override must retain
+    // the legacy derivation instead of publishing those Earth coordinates as
+    // central-body coordinates. Snapshot the decision and the function once
+    // per logical frame so a mid-frame override/restoration cannot split main,
+    // pick, and offscreen Views across two lineages. User-supplied providers
+    // remain authoritative ECEF inputs regardless of this legacy hook.
+    if (
+      this._celestialEphemerisTransformFrameNumber !== frameState.frameNumber
+    ) {
+      this._celestialEphemerisTransformFrameNumber = frameState.frameNumber;
+      const centralBodyTransform =
+        Transforms.computeIcrfToCentralBodyFixedMatrix;
+      this._activeCelestialEphemerisLegacyTransformActive =
+        this._activeCelestialEphemerisProviderIsImplicit &&
+        this._activeCelestialEphemerisProvider ===
+          this._implicitCelestialEphemerisProvider &&
+        centralBodyTransform !==
+          Transforms._computeIcrfToCentralBodyFixedMatrixDefault;
+      this._activeCelestialEphemerisLegacyTransform = this
+        ._activeCelestialEphemerisLegacyTransformActive
+        ? centralBodyTransform
+        : undefined;
+    }
+    frameState._updateCelestialEphemeris(
+      this._activeCelestialEphemerisProvider,
+      frameState.time,
+      this._activeCelestialEphemerisLegacyTransformActive,
+      this._activeCelestialEphemerisLegacyTransform,
+    );
     prepareLogicalViewEclipse(this);
   }
 
@@ -6226,9 +6341,8 @@ const scratchEclipseOptions = {
   horizonTwilightEnabled: true,
   cameraPositionWC: undefined,
   cameraHeight: 0.0,
-  // C12-29 S2 — deliberately ABSENT (not `undefined`-then-assigned): the sun
-  // position is derived inside EclipseState from `time`, because this block
-  // now runs before `uniformState.update`.
+  sunPositionWC: undefined,
+  moonPositionWC: undefined,
   time: undefined,
   earthOccluderRadius: undefined,
 };
@@ -6260,9 +6374,9 @@ const scratchEclipseOptions = {
  *
  * Publication must precede `UniformState.update(frameState)`, because
  * UniformState consumes the scene-light factor and is re-entered by picking
- * and offscreen views. Sun/moon world positions are derived from
- * `frameState.time` inside EclipseState, avoiding the previous-frame value in
- * UniformState before its update.
+ * and offscreen views. Sun/moon world positions come from FrameState's
+ * authoritative sample, avoiding both a second ephemeris evaluation and the
+ * previous-frame value in UniformState before its update.
  *
  * @param {Scene} scene
  * @private
@@ -6294,6 +6408,10 @@ function prepareLogicalViewEclipse(scene) {
   scratchEclipseOptions.cameraPositionWC = frameState.camera?.positionWC;
   scratchEclipseOptions.cameraHeight =
     frameState.camera?.positionCartographic?.height ?? 0.0;
+  const celestialEphemerisSample = frameState.celestialEphemerisSample;
+  scratchEclipseOptions.sunPositionWC = celestialEphemerisSample?.sunPositionWC;
+  scratchEclipseOptions.moonPositionWC =
+    celestialEphemerisSample?.moonPositionWC;
   scratchEclipseOptions.time = frameState.time;
   scratchEclipseOptions.earthOccluderRadius = defined(occluder)
     ? occluder.radius

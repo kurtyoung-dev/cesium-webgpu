@@ -560,6 +560,18 @@ Transforms.computeIcrfToCentralBodyFixedMatrix = function (date, result) {
   return transformMatrix;
 };
 
+// Scene needs to distinguish the documented, caller-replaceable central-body
+// hook from Cesium's canonical Earth-fixed implementation. Keep that identity
+// immutable and non-enumerable so an override installed before Scene is loaded
+// is still observable without expanding the public barrel surface.
+Object.defineProperty(
+  Transforms,
+  "_computeIcrfToCentralBodyFixedMatrixDefault",
+  {
+    value: Transforms.computeIcrfToCentralBodyFixedMatrix,
+  },
+);
+
 /**
  * Computes a rotation matrix to transform a point or vector from True Equator Mean Equinox (TEME) axes to the
  * pseudo-fixed axes at a given time.  This method treats the UT1 time standard as equivalent to UTC.

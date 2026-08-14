@@ -158,17 +158,29 @@ const transformMatrix = new Matrix3();
 const sunCartographicScratch = new Cartographic();
 
 function setSunAndMoonDirections(uniformState, frameState) {
-  Transforms.computeIcrfToCentralBodyFixedMatrix(
-    frameState.time,
-    transformMatrix,
-  );
-
-  let position =
-    Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
-      frameState.time,
+  const celestialEphemerisSample = frameState.celestialEphemerisSample;
+  let position;
+  if (defined(celestialEphemerisSample)) {
+    position = Cartesian3.clone(
+      celestialEphemerisSample.sunPositionWC,
       uniformState._sunPositionWC,
     );
-  Matrix3.multiplyByVector(transformMatrix, position, position);
+  } else {
+    // Scene normally publishes the shared Earth-fixed sample above. It
+    // deliberately suppresses that sample when its implicit provider meets a
+    // documented central-body override; use Scene's logical-frame snapshot in
+    // that case. Bare/private FrameStates retain the current public hook.
+    const centralBodyTransform =
+      frameState._celestialEphemerisLegacyTransform ??
+      Transforms.computeIcrfToCentralBodyFixedMatrix;
+    centralBodyTransform.call(Transforms, frameState.time, transformMatrix);
+    position =
+      Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+        frameState.time,
+        uniformState._sunPositionWC,
+      );
+    Matrix3.multiplyByVector(transformMatrix, position, position);
+  }
 
   Cartesian3.normalize(position, uniformState._sunDirectionWC);
 
@@ -179,12 +191,19 @@ function setSunAndMoonDirections(uniformState, frameState) {
   );
   Cartesian3.normalize(position, position);
 
-  position =
-    Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
-      frameState.time,
+  if (defined(celestialEphemerisSample)) {
+    position = Cartesian3.clone(
+      celestialEphemerisSample.moonPositionWC,
       uniformState._moonDirectionEC,
     );
-  Matrix3.multiplyByVector(transformMatrix, position, position);
+  } else {
+    position =
+      Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
+        frameState.time,
+        uniformState._moonDirectionEC,
+      );
+    Matrix3.multiplyByVector(transformMatrix, position, position);
+  }
   Matrix3.multiplyByVector(uniformState.viewRotation3D, position, position);
   Cartesian3.normalize(position, position);
 
