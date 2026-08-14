@@ -2511,7 +2511,10 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
       contract.renderer === "webgpu"
         ? await C.Viewer.createAsync(container, {
             ...commonOptions,
-            contextOptions: { renderer: "webgpu" },
+            contextOptions: {
+              renderer: "webgpu",
+              webgpu: { sceneCaptureReflections: true },
+            },
           })
         : new C.Viewer(container, commonOptions);
     registerCleanupAction("viewer", () => {
@@ -3758,8 +3761,6 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
     if (contract.renderer === "webgl") {
       retainedCapture = { applicability: "N/A-WebGPU-only" };
     } else {
-      scene.context._options.webgpu ??= {};
-      scene.context._options.webgpu.sceneCaptureReflections = true;
       const modelPosition = ellipsoid.cartographicToCartesian(
         new C.Cartographic(
           eventCentre.longitude,

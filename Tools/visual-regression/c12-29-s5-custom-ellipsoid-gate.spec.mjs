@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 import {
   C12_29_S5_CUSTOM_AGGREGATION,
@@ -86,6 +87,215 @@ const RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
 const SHA = "a".repeat(64);
 const FIXTURE_SUN = { x: 149_600_000_000, y: 0, z: 0 };
 const FIXTURE_MOON = { x: 350_000_000, y: 0, z: 0 };
+
+function inspectSceneCaptureReflectionOrdering(source) {
+  const sourceFile = ts.createSourceFile(
+    "probe-c12-29-s5-custom-ellipsoid.mjs",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  const staticPropertyName = (name) =>
+    ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : null;
+  const propertyPath = (node) => {
+    if (ts.isIdentifier(node)) return [node.text];
+    if (ts.isParenthesizedExpression(node))
+      return propertyPath(node.expression);
+    if (ts.isPropertyAccessExpression(node)) {
+      const parent = propertyPath(node.expression);
+      return parent ? [...parent, node.name.text] : null;
+    }
+    if (
+      ts.isElementAccessExpression(node) &&
+      ts.isStringLiteral(node.argumentExpression)
+    ) {
+      const parent = propertyPath(node.expression);
+      return parent ? [...parent, node.argumentExpression.text] : null;
+    }
+    return null;
+  };
+  const exactPath = (node, expected) => {
+    const actual = propertyPath(node);
+    return (
+      actual?.length === expected.length &&
+      actual.every((part, index) => part === expected[index])
+    );
+  };
+  const propertiesNamed = (object, name) =>
+    object && ts.isObjectLiteralExpression(object)
+      ? object.properties.filter(
+          (property) =>
+            ts.isPropertyAssignment(property) &&
+            staticPropertyName(property.name) === name,
+        )
+      : [];
+  const literalBoolean = (node) =>
+    node.kind === ts.SyntaxKind.TrueKeyword
+      ? true
+      : node.kind === ts.SyntaxKind.FalseKeyword
+        ? false
+        : null;
+  const startsWithPath = (node, expected) => {
+    const actual = propertyPath(node);
+    return (
+      actual?.length >= expected.length &&
+      expected.every((part, index) => part === actual[index])
+    );
+  };
+
+  const viewerCreateCalls = [];
+  const configurations = [];
+  const terrainSettlingIndices = [];
+  const renderIndices = [];
+  const settleIndices = [];
+  const descriptorReadIndices = [];
+  const captureSourceReadIndices = [];
+  const managerReadIndices = [];
+  const privateOptionsAccessIndices = [];
+  const visit = (node) => {
+    if (ts.isCallExpression(node)) {
+      if (exactPath(node.expression, ["C", "Viewer", "createAsync"])) {
+        viewerCreateCalls.push(node);
+      }
+      if (ts.isIdentifier(node.expression)) {
+        if (node.expression.text === "renderNow") {
+          renderIndices.push(node.getStart(sourceFile));
+        } else if (node.expression.text === "settle") {
+          settleIndices.push(node.getStart(sourceFile));
+        } else if (
+          node.expression.text === "mark" &&
+          node.arguments.length > 1 &&
+          ts.isStringLiteral(node.arguments[1]) &&
+          node.arguments[1].text === "settling-selected-custom-terrain"
+        ) {
+          terrainSettlingIndices.push(node.getStart(sourceFile));
+        }
+      }
+    }
+    if (
+      ts.isPropertyAssignment(node) &&
+      staticPropertyName(node.name) === "sceneCaptureReflections"
+    ) {
+      configurations.push({
+        index: node.getStart(sourceFile),
+        value: literalBoolean(node.initializer),
+      });
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      propertyPath(node.left)?.at(-1) === "sceneCaptureReflections"
+    ) {
+      configurations.push({
+        index: node.getStart(sourceFile),
+        value: literalBoolean(node.right),
+      });
+    }
+    if (
+      ts.isPropertyAccessExpression(node) ||
+      ts.isElementAccessExpression(node)
+    ) {
+      const index = node.getStart(sourceFile);
+      if (exactPath(node, ["scene", "context", "getFeatureRenderer"])) {
+        descriptorReadIndices.push(index);
+      } else if (
+        exactPath(node, ["scene", "context", "_webgpuSceneCaptureSources"])
+      ) {
+        captureSourceReadIndices.push(index);
+      } else if (exactPath(node, ["model", "environmentMapManager"])) {
+        managerReadIndices.push(index);
+      }
+      if (startsWithPath(node, ["scene", "context", "_options", "webgpu"])) {
+        privateOptionsAccessIndices.push(index);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  const viewerCreate =
+    viewerCreateCalls.length === 1 ? viewerCreateCalls[0] : null;
+  const viewerOptions = viewerCreate?.arguments[1];
+  const contextOptionsProperties = propertiesNamed(
+    viewerOptions,
+    "contextOptions",
+  );
+  const contextOptions =
+    contextOptionsProperties.length === 1
+      ? contextOptionsProperties[0].initializer
+      : null;
+  const rendererProperties = propertiesNamed(contextOptions, "renderer");
+  const webgpuProperties = propertiesNamed(contextOptions, "webgpu");
+  const webgpuOptions =
+    webgpuProperties.length === 1 ? webgpuProperties[0].initializer : null;
+  const constructorFlags = propertiesNamed(
+    webgpuOptions,
+    "sceneCaptureReflections",
+  );
+  const firstEnable = configurations
+    .filter((configuration) => configuration.value === true)
+    .sort((left, right) => left.index - right.index)[0];
+  const firstEnableIndex = firstEnable?.index ?? -1;
+  const firstIndex = (indices) =>
+    indices.length > 0 ? Math.min(...indices) : -1;
+  const terrainSettlingIndex = firstIndex(terrainSettlingIndices);
+  const firstRenderIndex = firstIndex(renderIndices);
+  const firstSettleIndex = firstIndex(settleIndices);
+  const firstRenderOrSettleIndex = Math.min(
+    ...[firstRenderIndex, firstSettleIndex].filter((index) => index >= 0),
+  );
+  const sourceOrManagerReadIndices = [
+    firstIndex(descriptorReadIndices),
+    firstIndex(captureSourceReadIndices),
+    firstIndex(managerReadIndices),
+  ];
+  const firstSourceOrManagerReadIndex = Math.min(
+    ...sourceOrManagerReadIndices.filter((index) => index >= 0),
+  );
+  const checks = {
+    parseSucceeded: sourceFile.parseDiagnostics.length === 0,
+    viewerCreateFound: viewerCreate !== null,
+    contextOptionsObjectFound:
+      contextOptions !== null && ts.isObjectLiteralExpression(contextOptions),
+    rendererOptionExact:
+      rendererProperties.length === 1 &&
+      ts.isStringLiteral(rendererProperties[0].initializer) &&
+      rendererProperties[0].initializer.text === "webgpu",
+    webgpuObjectNestedUnderContextOptions:
+      webgpuOptions !== null && ts.isObjectLiteralExpression(webgpuOptions),
+    constructorFlagPresent: constructorFlags.length === 1,
+    constructorFlagTrue:
+      constructorFlags.length === 1 &&
+      literalBoolean(constructorFlags[0].initializer) === true,
+    singleConfiguration: configurations.length === 1,
+    firstEnableExists: firstEnableIndex >= 0,
+    terrainSettlingAnchorFound: terrainSettlingIndex >= 0,
+    renderAndSettleAnchorsFound: firstRenderIndex >= 0 && firstSettleIndex >= 0,
+    sourceAndManagerReadAnchorsFound: sourceOrManagerReadIndices.every(
+      (index) => index >= 0,
+    ),
+    firstEnableBeforeTerrainSettling:
+      firstEnableIndex >= 0 &&
+      terrainSettlingIndex >= 0 &&
+      firstEnableIndex < terrainSettlingIndex,
+    firstEnableBeforeRenderOrSettle:
+      firstEnableIndex >= 0 &&
+      Number.isFinite(firstRenderOrSettleIndex) &&
+      firstEnableIndex < firstRenderOrSettleIndex,
+    firstEnableBeforeSourceOrManagerRead:
+      firstEnableIndex >= 0 &&
+      Number.isFinite(firstSourceOrManagerReadIndex) &&
+      firstEnableIndex < firstSourceOrManagerReadIndex,
+    privateOptionsMutationAbsent: privateOptionsAccessIndices.length === 0,
+  };
+  return {
+    checks,
+    reasons: Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([label]) => label),
+  };
+}
 
 function fp() {
   return { exists: true, byteLength: 7, sha256: SHA };
@@ -3277,7 +3487,16 @@ test("probe uses the served bundle for browser modules, constructs every custom 
     probeSource,
     /globeRenderer instanceof globeRendererDescriptor\.RendererClass/u,
   );
+  assert.match(
+    probeSource,
+    /typeof globeRendererDescriptor\.RendererClass !== "function"/u,
+  );
+  assert.match(
+    probeSource,
+    /typeof globeRendererDescriptor\.getShaderCode !== "function"/u,
+  );
   assert.match(probeSource, /sceneCaptureSources\?\.tileProvider !== tp/u);
+  assert.match(probeSource, /typeof originalEclipsePrepare !== "function"/u);
   assert.match(probeSource, /new C\.Ellipsoid\(\s*contract\.radii\.x,/u);
   assert.match(probeSource, /new C\.GeographicProjection\(ellipsoid\)/u);
   assert.match(probeSource, /new C\.GeographicTilingScheme\(\{\s*ellipsoid,/u);
@@ -3399,6 +3618,112 @@ test("probe uses the served bundle for browser modules, constructs every custom 
   assert.doesNotMatch(
     probeSource,
     /eventCentre\s*=\s*\{[^}]*longitude:\s*[-\d]/u,
+  );
+});
+
+test("probe uses the served bundle scene-capture reflection option before rendering or source reads", () => {
+  const current = inspectSceneCaptureReflectionOrdering(probeSource);
+  assert.deepEqual(current.reasons, []);
+
+  const reflectionOption = "webgpu: { sceneCaptureReflections: true },";
+  assert.ok(probeSource.includes(reflectionOption));
+
+  const wrongParentSource = probeSource.replace(
+    /contextOptions:\s*\{\s*renderer:\s*"webgpu",\s*webgpu:\s*\{\s*sceneCaptureReflections:\s*true\s*\},\s*\}/u,
+    'contextOptions: { renderer: "webgpu" },\n            webgpu: { sceneCaptureReflections: true }',
+  );
+  assert.notEqual(wrongParentSource, probeSource);
+  const wrongParent = inspectSceneCaptureReflectionOrdering(wrongParentSource);
+  assert.equal(wrongParent.checks.parseSucceeded, true);
+  assert.equal(wrongParent.checks.singleConfiguration, true);
+  assert.equal(wrongParent.checks.firstEnableExists, true);
+  assert.equal(wrongParent.checks.webgpuObjectNestedUnderContextOptions, false);
+  assert.equal(wrongParent.checks.constructorFlagPresent, false);
+
+  const commentedLiteralSource = probeSource.replace(
+    reflectionOption,
+    `// ${reflectionOption}`,
+  );
+  assert.notEqual(commentedLiteralSource, probeSource);
+  const commentedLiteral = inspectSceneCaptureReflectionOrdering(
+    commentedLiteralSource,
+  );
+  assert.equal(commentedLiteral.checks.parseSucceeded, true);
+  assert.equal(
+    commentedLiteral.checks.webgpuObjectNestedUnderContextOptions,
+    false,
+  );
+  assert.equal(commentedLiteral.checks.constructorFlagPresent, false);
+  assert.equal(commentedLiteral.checks.firstEnableExists, false);
+  assert.equal(commentedLiteral.checks.singleConfiguration, false);
+
+  const absent = inspectSceneCaptureReflectionOrdering(
+    probeSource.replace(reflectionOption, "webgpu: {},"),
+  );
+  assert.equal(absent.checks.constructorFlagPresent, false);
+  assert.equal(absent.checks.firstEnableExists, false);
+  assert.ok(absent.reasons.includes("constructorFlagPresent"));
+
+  const disabled = inspectSceneCaptureReflectionOrdering(
+    probeSource.replace(
+      reflectionOption,
+      "webgpu: { sceneCaptureReflections: false },",
+    ),
+  );
+  assert.equal(disabled.checks.constructorFlagPresent, true);
+  assert.equal(disabled.checks.constructorFlagTrue, false);
+  assert.equal(disabled.checks.firstEnableExists, false);
+
+  const terrainSettlingMarker =
+    'mark(contract.phases[1], "settling-selected-custom-terrain");';
+  assert.ok(probeSource.includes(terrainSettlingMarker));
+  const firstEnableAfterTerrainSettling = inspectSceneCaptureReflectionOrdering(
+    probeSource
+      .replace(reflectionOption, "webgpu: {},")
+      .replace(
+        terrainSettlingMarker,
+        `${terrainSettlingMarker}\n    scene.context._options.webgpu.sceneCaptureReflections = true;`,
+      ),
+  );
+  assert.equal(
+    firstEnableAfterTerrainSettling.checks.firstEnableBeforeTerrainSettling,
+    false,
+  );
+  assert.equal(
+    firstEnableAfterTerrainSettling.checks.firstEnableBeforeRenderOrSettle,
+    false,
+  );
+  assert.equal(
+    firstEnableAfterTerrainSettling.checks.privateOptionsMutationAbsent,
+    false,
+  );
+
+  const earlySourceRead = inspectSceneCaptureReflectionOrdering(
+    probeSource.replace(
+      "    const viewer =",
+      "    const prematureSources = scene.context._webgpuSceneCaptureSources;\n    const viewer =",
+    ),
+  );
+  assert.equal(
+    earlySourceRead.checks.firstEnableBeforeSourceOrManagerRead,
+    false,
+  );
+  assert.ok(
+    earlySourceRead.reasons.includes("firstEnableBeforeSourceOrManagerRead"),
+  );
+
+  const earlyManagerRead = inspectSceneCaptureReflectionOrdering(
+    probeSource.replace(
+      "    const viewer =",
+      "    const prematureManager = model.environmentMapManager;\n    const viewer =",
+    ),
+  );
+  assert.equal(
+    earlyManagerRead.checks.firstEnableBeforeSourceOrManagerRead,
+    false,
+  );
+  assert.ok(
+    earlyManagerRead.reasons.includes("firstEnableBeforeSourceOrManagerRead"),
   );
 });
 
