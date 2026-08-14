@@ -38,6 +38,7 @@ import {
   evaluateC1229S5CustomFragment,
   exitCodeForC1229S5CustomStatus,
   foldC1229S5CustomEllipsoidGate,
+  foldC1229S5CustomV6EllipsoidGate,
   isC1229S5CustomUuidV4,
   packC1229S5CustomCommonRay,
   restoreC1229S5CustomPropertyDescriptor,
@@ -80,13 +81,45 @@ const helperPath = path.join(
   "lib/c12-29-s5-custom-ellipsoid-gate.mjs",
 );
 const probePath = path.join(__dirname, "probe-c12-29-s5-custom-ellipsoid.mjs");
+const harnessPath = path.join(
+  __dirname,
+  "c12-29-s5-custom-ellipsoid-harness.html",
+);
 const helperSource = fs.readFileSync(helperPath, "utf8");
 const probeSource = fs.readFileSync(probePath, "utf8");
+const harnessSource = fs.readFileSync(harnessPath, "utf8");
 
 const RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
 const SHA = "a".repeat(64);
 const FIXTURE_SUN = { x: 149_600_000_000, y: 0, z: 0 };
 const FIXTURE_MOON = { x: 350_000_000, y: 0, z: 0 };
+
+function inspectOwnedCustomHarness(source) {
+  const checks = {
+    doctypeExact: /^<!doctype html>/u.test(source),
+    commentsAbsent: !/<!--[\s\S]*?-->/u.test(source),
+    scriptsAbsent: !/<script\b|javascript:/iu.test(source),
+    inlineHandlersAbsent: !/\son[a-z]+\s*=/iu.test(source),
+    viewerBootstrapAbsent:
+      !/CesiumViewer|new\s+Cesium\.|Viewer\.createAsync/iu.test(source),
+    markerExact:
+      (source.match(/data-c12-29-s5-custom-harness="owned-no-autostart-v1"/gu)
+        ?.length ?? 0) === 1,
+    idsUnique:
+      (source.match(/id="customEllipsoidHarness"/gu)?.length ?? 0) === 1 &&
+      (source.match(/id="cesiumContainer"/gu)?.length ?? 0) === 1,
+    ownedParentExact:
+      /<body\s+data-c12-29-s5-custom-harness="owned-no-autostart-v1">\s*<main\s+id="customEllipsoidHarness">\s*<div\s+id="cesiumContainer"><\/div>\s*<\/main>\s*<\/body>/u.test(
+        source,
+      ),
+  };
+  return {
+    checks,
+    reasons: Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name),
+  };
+}
 
 function inspectSceneCaptureReflectionOrdering(source) {
   const sourceFile = ts.createSourceFile(
@@ -375,11 +408,12 @@ function fixtureEphemeris(frameNumber, clockIso) {
   };
 }
 
-function fixtureTemporalState(label, preparedTuple, frameNumber) {
+function fixtureTemporalState(renderer, label, preparedTuple, frameNumber) {
   const antipode = label.startsWith("antipode-");
   const control = label.startsWith("control-");
   const lightingEnabled = label.endsWith("-on");
-  const active = lightingEnabled && !control && !antipode;
+  const active =
+    lightingEnabled && !control && (!antipode || renderer === "webgpu");
   const target = {
     longitude: antipode ? -Math.PI : 0,
     latitude: 0,
@@ -410,6 +444,17 @@ function fixtureTemporalState(label, preparedTuple, frameNumber) {
   const clockIso = control
     ? C12_29_S5_CUSTOM_SCENE.controlIso
     : C12_29_S5_CUSTOM_SCENE.eventIso;
+  const content = preparedTuple.selectedTileIds.map((tileId, contentIndex) => ({
+    tileId,
+    meshIdentity: `mesh-${contentIndex + 1}`,
+    renderedMesh: true,
+  }));
+  const expectedCamera = {
+    inverseRadiiX: Math.fround(1 / 8_000_000),
+    inverseRadiiY: Math.fround(1 / 8_000_000),
+    inverseRadiiZ: Math.fround(1 / 5_000_000),
+    maximumRadius: Math.fround(8_000_000),
+  };
   return {
     clockIso,
     cameraTarget: target,
@@ -439,11 +484,26 @@ function fixtureTemporalState(label, preparedTuple, frameNumber) {
       requestCount: 2,
     },
     preparedTuple: structuredClone(preparedTuple),
-    content: preparedTuple.selectedTileIds.map((tileId, contentIndex) => ({
-      tileId,
-      meshIdentity: `mesh-${contentIndex + 1}`,
-      renderedMesh: true,
-    })),
+    content,
+    mainPipeline:
+      renderer === "webgl"
+        ? { applicability: "N/A-WebGL" }
+        : {
+            applicability: "required",
+            method: "globeRenderer.createTileCommands",
+            frameNumber,
+            draws: content.map((entry) => ({
+              tileId: entry.tileId,
+              meshIdentity: entry.meshIdentity,
+              descriptorCount: 1,
+              positiveDrawCount: 1,
+              pipelinesReady: true,
+              cameraUbo: { ...expectedCamera },
+            })),
+            currentFramePositiveDraw: true,
+            cameraUboExact: true,
+            cohortExact: true,
+          },
     eclipse: {
       lightingEnabled,
       blockPresent: true,
@@ -496,6 +556,7 @@ function image(renderer, label, index, preparedTuple, firstSelectionRevision) {
         height: result.height,
         state: {
           ...fixtureTemporalState(
+            renderer,
             label,
             preparedTuple,
             firstFrame + observationIndex,
@@ -510,6 +571,7 @@ function image(renderer, label, index, preparedTuple, firstSelectionRevision) {
     captureFrameNumber: firstFrame + C12_29_S5_CUSTOM_SCENE.minimumStableFrames,
     captureState: {
       ...fixtureTemporalState(
+        renderer,
         label,
         preparedTuple,
         firstFrame + C12_29_S5_CUSTOM_SCENE.minimumStableFrames,
@@ -673,13 +735,13 @@ function passingInstrumentationRestorations(renderer) {
   const labels = [
     ...(renderer === "webgpu"
       ? [
+          "globeRenderer.createTileCommands",
           "captureGlobeRenderer.getOrCreateCaptureTileCommands",
           "eclipseManager.prepare",
         ]
       : []),
     "moon.show",
     "moon.update",
-    "pickProvider.updateForPick",
   ];
   return labels.map((label) => {
     const hadOwnBefore = label === "moon.show";
@@ -795,6 +857,23 @@ function passingSession(renderer, imageOffset) {
             },
             valuesExact: true,
           },
+          mainPipeline: {
+            method: "globeRenderer.createTileCommands",
+            stableFrameNumbers: [
+              ...sessionImages[1].temporalStability.observations.map(
+                (observation) => observation.frameNumber,
+              ),
+              sessionImages[1].temporalStability.captureFrameNumber,
+            ],
+            selectedTileIds: [...selectedTileIds],
+            meshIdentities: selectedTileIds.map(
+              (_, index) => `mesh-${index + 1}`,
+            ),
+            positiveDrawCount: selectedTileIds.length,
+            currentFramePositiveDraw: true,
+            cameraUboExact: true,
+            stableCohortExact: true,
+          },
           eclipseBinding: {
             binding: C12_29_S5_CUSTOM_WEBGPU_ECLIPSE_BINDING,
             offsetAligned: true,
@@ -809,7 +888,7 @@ function passingSession(renderer, imageOffset) {
   );
   phases["custom-scene-construction"] = {
     ellipsoid: {
-      constructor: "Ellipsoid",
+      servedConstructorIdentity: true,
       radii: { ...C12_29_S5_CUSTOM_SCENE.radii },
       sceneIdentity: true,
     },
@@ -991,44 +1070,67 @@ function passingSession(renderer, imageOffset) {
     onPreparedTuple: structuredClone(
       sessionImages[3].temporalStability.captureState.preparedTuple,
     ),
+    activeSemantics: "conservative-frame-active-per-fragment-horizon-v1",
+    offActive: false,
+    onActive: renderer === "webgpu",
+    stableTileMeshCohort: true,
     allCandidatesHorizonRejected: true,
     offOnByteIdentical: true,
     samples: antipodeSamples,
   };
   phases["behavioral-pick"] = {
     method: "scene.pickAsync",
+    warmupMethod: "scene.pickAsync",
+    warmupAttempts: 1,
+    maximumWarmupAttempts: C12_29_S5_CUSTOM_SCENE.maximumPickWarmupAttempts,
+    warmupReady: true,
+    warmupResults: [
+      {
+        settled: true,
+        renderPumpFrames: 1,
+        resultKind: renderer === "webgpu" ? "globe" : "undefined",
+        resultPrimitiveIdentity: renderer === "webgpu",
+      },
+    ],
     invoked: true,
     awaited: true,
     settled: true,
     renderPumpFrames: 1,
     maximumPumpFrames: C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames,
-    directUpdateForPickCall: false,
     pickableBefore: false,
     pickableRequested: true,
     pickIdAllocated: true,
     pickIdKey: 7,
     pickIdRegistryOwnsGlobe: true,
     pickColorMirrorExact: true,
-    updateForPickObserved: true,
-    updateForPickCalls: 1,
     resultKind: renderer === "webgpu" ? "globe" : "undefined",
     resultPrimitiveIdentity: renderer === "webgpu",
     pickableAfterRestore: false,
     pickableRestored: true,
-    postcondition: {
+    freshCohort: {
       before: {
-        prepared: false,
-        selectionRevision: null,
-        surfaceRadius: null,
-        selectedTileIds: [...selectedTileIds],
+        preparedTuple: {
+          ...structuredClone(preparedTuple),
+          selectionRevision: 30,
+        },
+        content: selectedTileIds.map((tileId, index) => ({
+          tileId,
+          meshIdentity: `mesh-${index + 1}`,
+          renderedMesh: true,
+        })),
       },
       after: {
-        ...structuredClone(preparedTuple),
-        selectionRevision: 30,
+        preparedTuple: {
+          ...structuredClone(preparedTuple),
+          selectionRevision: 31,
+        },
+        content: selectedTileIds.map((tileId, index) => ({
+          tileId,
+          meshIdentity: `mesh-${index + 1}`,
+          renderedMesh: true,
+        })),
       },
-      surfaceRadius: radius.radius,
-      selectionRevision: 30,
-      selectedTileIds,
+      stable: true,
     },
   };
   phases["retained-capture"] =
@@ -1090,6 +1192,21 @@ function passingSession(renderer, imageOffset) {
       externalRequests: [],
       failedRequests: [],
       httpErrors: [],
+      measurementEpoch: {
+        id:
+          renderer === "webgl"
+            ? "20000000-0000-4000-8000-000000000001"
+            : "30000000-0000-4000-8000-000000000001",
+        harnessRoute:
+          "/Tools/visual-regression/c12-29-s5-custom-ellipsoid-harness.html",
+        beganAfterHarnessReady: true,
+        harnessViewerAbsent: true,
+        endedBeforePageClose: true,
+        responseTasksDrained: true,
+        firstResponseOrdinal: 1,
+        lastResponseOrdinal: 2,
+        responseCount: 2,
+      },
     },
     runtime: {
       pageErrors: [],
@@ -1213,9 +1330,31 @@ function passingReport() {
         localEnd: fp(),
         stable: true,
       },
+      servedHarnessIdentity: {
+        ok: true,
+        reasons: [],
+        expectedLabels: ["webgl", "webgpu"],
+        observedLabels: ["webgl", "webgpu"],
+        route:
+          "/Tools/visual-regression/c12-29-s5-custom-ellipsoid-harness.html",
+        served: ["webgl", "webgpu"].map((renderer) => ({
+          renderer,
+          route:
+            "/Tools/visual-regression/c12-29-s5-custom-ellipsoid-harness.html",
+          ok: true,
+          status: 200,
+          byteLength: 7,
+          sha256: SHA,
+        })),
+        localStart: fp(),
+        localEnd: fp(),
+        stable: true,
+      },
       xys: [
         {
           renderer: "webgl",
+          epochId: sessions[0].transport.measurementEpoch.id,
+          requestOrdinal: 2,
           file: "IAU2006_XYS_26.json",
           localStart: fp(),
           localEnd: fp(),
@@ -1223,6 +1362,8 @@ function passingReport() {
         },
         {
           renderer: "webgpu",
+          epochId: sessions[1].transport.measurementEpoch.id,
+          requestOrdinal: 2,
           file: "IAU2006_XYS_26.json",
           localStart: fp(),
           localEnd: fp(),
@@ -1278,8 +1419,117 @@ function finalArtifactFromReport(report) {
   };
 }
 
-function legacyV5Final(artifact) {
+function legacyV6Final(artifact) {
   const legacy = structuredClone(artifact);
+  legacy.schema = "c12-29-s5-custom-ellipsoid-evidence-v6";
+  if (legacy.status === "ERROR") {
+    legacy.diagnostics.schema =
+      "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v6";
+    if (legacy.diagnostics.page !== null) {
+      legacy.diagnostics.page.schema =
+        "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v6";
+    }
+  } else {
+    const harness =
+      "Tools/visual-regression/c12-29-s5-custom-ellipsoid-harness.html";
+    legacy.provenance.sourceBoundary.files =
+      legacy.provenance.sourceBoundary.files.filter((file) => file !== harness);
+    legacy.provenance.sourceBoundary.count =
+      legacy.provenance.sourceBoundary.files.length;
+    legacy.provenance.localFiles = legacy.provenance.localFiles.filter(
+      (entry) => entry.file !== harness,
+    );
+    delete legacy.provenance.servedHarnessIdentity;
+    legacy.checks.sourceBoundaryCount =
+      legacy.provenance.sourceBoundary.files.length;
+    for (const entry of legacy.provenance.xys) {
+      delete entry.epochId;
+      delete entry.requestOrdinal;
+    }
+    for (const session of legacy.sessions) {
+      delete session.transport.measurementEpoch;
+      const construction = session.phases["custom-scene-construction"];
+      delete construction.ellipsoid.servedConstructorIdentity;
+      construction.ellipsoid.constructor = "Ellipsoid";
+      for (const image of session.images) {
+        for (const state of temporalStates(image)) {
+          delete state.mainPipeline;
+        }
+      }
+      if (session.renderer === "webgpu") {
+        delete session.phases["selected-terrain-preparation"].backendIdentity
+          .mainPipeline;
+        for (const state of temporalStates(session.images[3])) {
+          state.eclipse.active = false;
+          state.eclipse.params.x = 0;
+        }
+      }
+      const antipode = session.phases["antipode-horizon-control"];
+      delete antipode.activeSemantics;
+      delete antipode.offActive;
+      delete antipode.onActive;
+      delete antipode.stableTileMeshCohort;
+      const fresh = session.phases["behavioral-pick"].freshCohort;
+      session.phases["behavioral-pick"] = {
+        method: "scene.pickAsync",
+        invoked: true,
+        awaited: true,
+        settled: true,
+        renderPumpFrames: 1,
+        maximumPumpFrames: C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames,
+        directUpdateForPickCall: false,
+        pickableBefore: false,
+        pickableRequested: true,
+        pickIdAllocated: true,
+        pickIdKey: 7,
+        pickIdRegistryOwnsGlobe: true,
+        pickColorMirrorExact: true,
+        updateForPickObserved: true,
+        updateForPickCalls: 1,
+        resultKind: session.renderer === "webgpu" ? "globe" : "undefined",
+        resultPrimitiveIdentity: session.renderer === "webgpu",
+        pickableAfterRestore: false,
+        pickableRestored: true,
+        postcondition: {
+          before: {
+            prepared: false,
+            selectionRevision: null,
+            surfaceRadius: null,
+            selectedTileIds: [...fresh.before.preparedTuple.selectedTileIds],
+          },
+          after: structuredClone(fresh.after.preparedTuple),
+          surfaceRadius: fresh.after.preparedTuple.surfaceRadius,
+          selectionRevision: fresh.after.preparedTuple.selectionRevision,
+          selectedTileIds: [...fresh.after.preparedTuple.selectedTileIds],
+        },
+      };
+      const restorations =
+        session.phases["session-cleanup"].instrumentationRestorations;
+      const methodReceipt = structuredClone(
+        restorations.find((entry) => entry.label === "moon.update"),
+      );
+      methodReceipt.label = "pickProvider.updateForPick";
+      session.phases["session-cleanup"].instrumentationRestorations = [
+        ...restorations.filter(
+          (entry) => entry.label !== "globeRenderer.createTileCommands",
+        ),
+        methodReceipt,
+      ];
+    }
+    const verdict = foldC1229S5CustomV6EllipsoidGate(legacy);
+    legacy.status = verdict.status;
+    legacy.exitCode = verdict.exitCode;
+    legacy.reasons = {
+      structural: verdict.structuralReasons,
+      failures: verdict.failureReasons,
+    };
+    legacy.checks = verdict.checks;
+  }
+  return legacy;
+}
+
+function legacyV5Final(artifact) {
+  const legacy = legacyV6Final(artifact);
   legacy.schema = "c12-29-s5-custom-ellipsoid-evidence-v5";
   if (legacy.status === "ERROR") {
     legacy.diagnostics.schema =
@@ -1731,11 +1981,11 @@ test("viewer cleanup is LIFO, fail-closed, and cannot skip baseline restoration"
 test("contract freezes schemas, renderer order, nine phases, and six captures", () => {
   assert.equal(
     C12_29_S5_CUSTOM_SCHEMA,
-    "c12-29-s5-custom-ellipsoid-evidence-v6",
+    "c12-29-s5-custom-ellipsoid-evidence-v7",
   );
   assert.equal(
     C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
-    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v6",
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v7",
   );
   assert.deepEqual(C12_29_S5_CUSTOM_RENDERERS, ["webgl", "webgpu"]);
   assert.equal(C12_29_S5_CUSTOM_PHASES.length, 9);
@@ -1764,11 +2014,12 @@ test("contract freezes schemas, renderer order, nine phases, and six captures", 
   );
   assert.equal(C12_29_S5_CUSTOM_SCENE.minimumStableFrames, 3);
   assert.equal(C12_29_S5_CUSTOM_SCENE.maximumStabilityFrames, 60);
+  assert.equal(C12_29_S5_CUSTOM_SCENE.maximumPickWarmupAttempts, 8);
   assert.equal(C12_29_S5_CUSTOM_SCENE.cameraHeightMeters, 12_000_000);
 });
 
 test("source boundary is complete, ordered, unique, readable, and build-derived", () => {
-  assert.equal(C12_29_S5_CUSTOM_SOURCE_FILES.length, 53);
+  assert.equal(C12_29_S5_CUSTOM_SOURCE_FILES.length, 54);
   assert.equal(C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.length, 46);
   assert.equal(
     new Set(C12_29_S5_CUSTOM_SOURCE_FILES).size,
@@ -1804,9 +2055,34 @@ test("source boundary is complete, ordered, unique, readable, and build-derived"
     "packages/widgets/Source/Viewer/Viewer.js",
     "Tools/visual-regression/lib/same-task-capture.mjs",
     "Tools/visual-regression/lib/build-source-identity.mjs",
+    "Tools/visual-regression/c12-29-s5-custom-ellipsoid-harness.html",
   ]) {
     assert.ok(C12_29_S5_CUSTOM_SOURCE_FILES.includes(required), required);
   }
+});
+
+test("owned harness has one exact parent chain and no hidden bootstrap", () => {
+  assert.deepEqual(inspectOwnedCustomHarness(harnessSource).reasons, []);
+  const wrongParent = harnessSource.replace(
+    '<main id="customEllipsoidHarness">',
+    '<section><main id="customEllipsoidHarness">',
+  );
+  assert.ok(inspectOwnedCustomHarness(wrongParent).reasons.length > 0);
+  const commentedBootstrap = harnessSource.replace(
+    "</body>",
+    "<!-- <script>new Cesium.Viewer('cesiumContainer')</script> --></body>",
+  );
+  assert.ok(inspectOwnedCustomHarness(commentedBootstrap).reasons.length > 0);
+  const secondViewer = harnessSource.replace(
+    "</body>",
+    '<script>globalThis.viewer = new Cesium.Viewer("cesiumContainer")</script></body>',
+  );
+  assert.ok(inspectOwnedCustomHarness(secondViewer).reasons.length > 0);
+  const inlineBootstrap = harnessSource.replace(
+    '<body data-c12-29-s5-custom-harness="owned-no-autostart-v1">',
+    '<body data-c12-29-s5-custom-harness="owned-no-autostart-v1" onload="bootstrapViewer()">',
+  );
+  assert.ok(inspectOwnedCustomHarness(inlineBootstrap).reasons.length > 0);
 });
 
 test("static oracle has no Earth constants or production eclipse oracle import", () => {
@@ -2019,6 +2295,79 @@ test("pure fold accepts the exact fully attested report", () => {
   }
 });
 
+test("coherent conservative antipode activity still proves per-fragment factor one", () => {
+  const report = passingReport();
+  const session = report.sessions[0];
+  for (const state of temporalStates(session.images[3])) {
+    state.eclipse.active = true;
+    state.eclipse.params.x = 1;
+  }
+  session.phases["antipode-horizon-control"].onActive = true;
+  assert.equal(foldC1229S5CustomEllipsoidGate(report).status, "PASS");
+  for (const sample of session.phases["antipode-horizon-control"].samples) {
+    assert.equal(sample.horizonRejectedF64, true);
+    assert.equal(sample.horizonRejectedF32, true);
+    assert.equal(sample.f64, 1);
+    assert.equal(sample.f32, 1);
+    assert.equal(sample.observedFactor, 1);
+  }
+});
+
+test("pick readiness accepts a cold real warmup only when a later real pick is ready", () => {
+  const report = passingReport();
+  const pick = report.sessions[1].phases["behavioral-pick"];
+  pick.warmupAttempts = 2;
+  pick.warmupResults.unshift({
+    settled: true,
+    renderPumpFrames: 1,
+    resultKind: "undefined",
+    resultPrimitiveIdentity: false,
+  });
+  assert.equal(foldC1229S5CustomEllipsoidGate(report).status, "PASS");
+  pick.warmupResults.pop();
+  pick.warmupAttempts = 1;
+  assert.equal(foldC1229S5CustomEllipsoidGate(report).status, "FAIL");
+});
+
+test("current-frame cold WebGPU pipeline and mesh-cohort drift cannot pass", () => {
+  for (const mutate of [
+    (report) => {
+      const state =
+        report.sessions[1].images[1].temporalStability.observations[0].state;
+      state.mainPipeline.draws[0].descriptorCount = 0;
+      state.mainPipeline.draws[0].positiveDrawCount = 0;
+      state.mainPipeline.draws[0].pipelinesReady = false;
+      state.mainPipeline.currentFramePositiveDraw = false;
+    },
+    (report) => {
+      const identity =
+        report.sessions[1].phases["selected-terrain-preparation"]
+          .backendIdentity.mainPipeline;
+      identity.stableCohortExact = false;
+    },
+    (report) => {
+      const state = report.sessions[1].images[1].temporalStability.captureState;
+      state.mainPipeline.draws[0].meshIdentity = "mesh-99";
+    },
+  ]) {
+    const report = passingReport();
+    mutate(report);
+    assert.notEqual(foldC1229S5CustomEllipsoidGate(report).status, "PASS");
+  }
+});
+
+test("owned measurement epoch rejects duplicate and out-of-epoch XYS proof", () => {
+  const duplicate = passingReport();
+  duplicate.provenance.xys.push({
+    ...structuredClone(duplicate.provenance.xys[0]),
+    requestOrdinal: 1,
+  });
+  assert.equal(foldC1229S5CustomEllipsoidGate(duplicate).status, "STRUCTURAL");
+  const outOfEpoch = passingReport();
+  outOfEpoch.provenance.xys[0].epochId = randomUUID();
+  assert.equal(foldC1229S5CustomEllipsoidGate(outOfEpoch).status, "STRUCTURAL");
+});
+
 test("default-Simon fused lineage rejects declaration, vector, alias, and consumer mutants", () => {
   const frameNumber = 41;
   const iso = C12_29_S5_CUSTOM_SCENE.eventIso;
@@ -2098,6 +2447,16 @@ for (const [name, mutate, expected] of [
     (r) =>
       (r.sessions[0].phases["custom-scene-construction"].globe.sceneIdentity =
         false),
+    "STRUCTURAL",
+  ],
+  [
+    "minified Ellipsoid name substituted for served identity",
+    (r) => {
+      const ellipsoid =
+        r.sessions[0].phases["custom-scene-construction"].ellipsoid;
+      delete ellipsoid.servedConstructorIdentity;
+      ellipsoid.constructor = "_Ellipsoid";
+    },
     "STRUCTURAL",
   ],
   [
@@ -2194,15 +2553,14 @@ for (const [name, mutate, expected] of [
     (r) =>
       (r.sessions[1].phases[
         "behavioral-pick"
-      ].postcondition.after.surfaceRadius += 1),
+      ].freshCohort.after.preparedTuple.surfaceRadius += 1),
     "FAIL",
   ],
   [
-    "pick mini-frame begins with stale prepared memo",
+    "measured pick begins with a stale cohort",
     (r) => {
-      const postcondition =
-        r.sessions[1].phases["behavioral-pick"].postcondition;
-      postcondition.before = structuredClone(postcondition.after);
+      const cohort = r.sessions[1].phases["behavioral-pick"].freshCohort;
+      cohort.before.content[0].meshIdentity = "mesh-99";
     },
     "FAIL",
   ],
@@ -2251,13 +2609,17 @@ for (const [name, mutate, expected] of [
     "FAIL",
   ],
   [
-    "fractional updateForPick count",
-    (r) => (r.sessions[1].phases["behavioral-pick"].updateForPickCalls = 1.5),
+    "fractional pick warmup count",
+    (r) => (r.sessions[1].phases["behavioral-pick"].warmupAttempts = 1.5),
     "FAIL",
   ],
   [
-    "updateForPick count exceeds pumped frames",
-    (r) => (r.sessions[1].phases["behavioral-pick"].updateForPickCalls = 2),
+    "pick warmup readiness is self-attested over a cold result",
+    (r) => {
+      const pick = r.sessions[1].phases["behavioral-pick"];
+      pick.warmupResults[0].resultKind = "undefined";
+      pick.warmupResults[0].resultPrimitiveIdentity = false;
+    },
     "FAIL",
   ],
   [
@@ -2503,6 +2865,24 @@ for (const [name, mutate, expected] of [
     "STRUCTURAL",
   ],
   [
+    "served owned harness byte drift",
+    (r) =>
+      (r.provenance.servedHarnessIdentity.served[0].sha256 = "b".repeat(64)),
+    "STRUCTURAL",
+  ],
+  [
+    "measurement epoch ended after page close",
+    (r) =>
+      (r.sessions[0].transport.measurementEpoch.endedBeforePageClose = false),
+    "STRUCTURAL",
+  ],
+  [
+    "measurement epoch response tasks were not drained",
+    (r) =>
+      (r.sessions[1].transport.measurementEpoch.responseTasksDrained = false),
+    "STRUCTURAL",
+  ],
+  [
     "same-task helper identity drift",
     (r) => (r.provenance.sameTaskCapture.helperPinned = false),
     "STRUCTURAL",
@@ -2691,7 +3071,7 @@ for (const [name, mutate, expected] of [
         state.eclipse.params.x = 1;
       }
     },
-    "STRUCTURAL",
+    "FAIL",
   ],
   [
     "wrong provider behind stable output",
@@ -2927,14 +3307,27 @@ test("ERROR diagnostics and prior-version finals are exact and fail closed", () 
     mutate(mutant);
     assert.equal(validateC1229S5CustomFinalArtifact(mutant).ok, false);
   }
-  for (const version of ["v2", "v3", "v4"]) {
+  for (const version of ["v2", "v3", "v4", "v5", "v6"]) {
     const legacy = structuredClone(runtime);
     legacy.schema = `c12-29-s5-custom-ellipsoid-evidence-${version}`;
     legacy.diagnostics.schema = `c12-29-s5-custom-ellipsoid-runtime-diagnostics-${version}`;
     legacy.diagnostics.page.schema = `c12-29-s5-custom-ellipsoid-runtime-diagnostics-${version}`;
     assert.equal(validateC1229S5CustomPriorFinal(legacy), true);
-    legacy.diagnostics.extra = true;
-    assert.equal(validateC1229S5CustomPriorFinal(legacy), false);
+    for (const mutate of [
+      (value) => (value.diagnostics.schema = "bogus"),
+      (value) =>
+        (value.diagnostics.schema = C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA),
+      (value) => (value.diagnostics.page.schema = "bogus"),
+      (value) => (value.diagnostics.extra = true),
+    ]) {
+      const malformed = structuredClone(legacy);
+      mutate(malformed);
+      assert.equal(
+        validateC1229S5CustomPriorFinal(malformed),
+        false,
+        `${version}: malformed incoming diagnostics`,
+      );
+    }
   }
   let toJsonReads = 0;
   const hiddenToJson = structuredClone(artifact);
@@ -2965,9 +3358,28 @@ test("frozen v5 finals migrate to v6 without repairing malformed v5 evidence", (
   );
 
   for (const current of currentFinals) {
+    const frozenV6 = legacyV6Final(current);
+    assert.equal(
+      validateC1229S5CustomPriorFinal(frozenV6),
+      true,
+      `${current.status} v6: ${JSON.stringify(foldC1229S5CustomV6EllipsoidGate(frozenV6))}`,
+    );
+    if (frozenV6.status !== "ERROR") {
+      const foreignXysKey = structuredClone(frozenV6);
+      foreignXysKey.provenance.xys[0].epochId = randomUUID();
+      assert.equal(
+        validateC1229S5CustomPriorFinal(foreignXysKey),
+        false,
+        `${current.status}: v6 XYS schema extension`,
+      );
+    }
     const legacy = legacyV5Final(current);
     assert.equal(validateC1229S5CustomFinalArtifact(legacy).ok, false);
-    assert.equal(validateC1229S5CustomPriorFinal(legacy), true, current.status);
+    assert.equal(
+      validateC1229S5CustomPriorFinal(legacy),
+      true,
+      `${current.status}: ${JSON.stringify(foldC1229S5CustomV6EllipsoidGate(legacy))}`,
+    );
 
     const extraTopologyKey = structuredClone(legacy);
     extraTopologyKey.sessions[0].phases[
@@ -3498,6 +3910,14 @@ test("probe uses the served bundle for browser modules, constructs every custom 
   assert.match(probeSource, /sceneCaptureSources\?\.tileProvider !== tp/u);
   assert.match(probeSource, /typeof originalEclipsePrepare !== "function"/u);
   assert.match(probeSource, /new C\.Ellipsoid\(\s*contract\.radii\.x,/u);
+  assert.match(
+    probeSource,
+    /servedConstructorIdentity: ellipsoid\.constructor === C\.Ellipsoid/u,
+  );
+  assert.doesNotMatch(
+    probeSource,
+    /constructor:\s*ellipsoid\.constructor\.name/u,
+  );
   assert.match(probeSource, /new C\.GeographicProjection\(ellipsoid\)/u);
   assert.match(probeSource, /new C\.GeographicTilingScheme\(\{\s*ellipsoid,/u);
   assert.match(
@@ -3537,24 +3957,29 @@ test("probe uses the served bundle for browser modules, constructs every custom 
   const sessionSource = probeSource.slice(sessionStart, sessionEnd);
   assert.match(
     sessionSource,
-    /const handleResponse = \(response\) => \{\s*if \(!acceptResponseTasks\) return;\s*observeResponseTask\(\s*Promise\.resolve\(\)\.then\(async \(\) => \{/u,
+    /const handleResponse = \(response\) => \{\s*if \(!acceptResponseTasks\) return;\s*const requestOrdinal = \+\+measurementResponseOrdinal;\s*observeResponseTask\(\s*Promise\.resolve\(\)\.then\(async \(\) => \{/u,
   );
+  assert.match(
+    sessionSource,
+    /new URL\(harnessRoute, baseIdentity\.origin\)[\s\S]*?const servedHarnessBytes = await harnessResponse\.body\(\);[\s\S]*?sha256: sha256\(servedHarnessBytes\)[\s\S]*?document\.scripts\.length === 0[\s\S]*?!Object\.hasOwn\(globalThis, "viewer"\)[\s\S]*?acceptResponseTasks = true;/u,
+  );
+  assert.doesNotMatch(sessionSource, /Apps\/CesiumViewer|previousViewer/u);
   const sessionFinally = sessionSource.lastIndexOf("} finally {");
-  const pageClose = sessionSource.indexOf(
-    "pageClose = await closeC1229S5CustomResourceBounded(",
-    sessionFinally,
-  );
-  const contextClose = sessionSource.indexOf(
-    "contextClose = await closeC1229S5CustomResourceBounded(",
-    pageClose,
-  );
   const stopResponses = sessionSource.indexOf(
     "acceptResponseTasks = false;",
-    contextClose,
+    sessionFinally,
   );
   const detachResponse = sessionSource.indexOf(
     "const off = page.off;",
     stopResponses,
+  );
+  const pageClose = sessionSource.indexOf(
+    "pageClose = await closeC1229S5CustomResourceBounded(",
+    detachResponse,
+  );
+  const contextClose = sessionSource.indexOf(
+    "contextClose = await closeC1229S5CustomResourceBounded(",
+    pageClose,
   );
   const freezeResponses = sessionSource.indexOf(
     "const frozenResponseTasks = [...responseTasks];",
@@ -3568,11 +3993,17 @@ test("probe uses the served bundle for browser modules, constructs every custom 
     sessionFinally >= 0 &&
       pageClose > sessionFinally &&
       contextClose > pageClose &&
-      stopResponses > contextClose &&
+      stopResponses > sessionFinally &&
       detachResponse > stopResponses &&
-      freezeResponses > detachResponse &&
+      pageClose > detachResponse &&
+      freezeResponses > contextClose &&
       drainResponses > freezeResponses,
   );
+  const finalizeEpoch = sessionSource.indexOf(
+    "measured.transport.measurementEpoch = {",
+    drainResponses,
+  );
+  assert.ok(finalizeEpoch > drainResponses);
   assert.match(
     probeSource,
     /catch \(publicationError\) \{\s*const combined = combineC1229S5CustomPrimaryAndCleanup\(\s*error,\s*publicationError,[\s\S]*?combined\.retainCustomRunning = true;\s*throw combined;/u,
@@ -3828,7 +4259,7 @@ test("frozen production sources bind the cleanup topology contract", () => {
   );
 });
 
-test("probe uses real pickAsync and observes rather than directly invokes updateForPick", () => {
+test("probe warms and measures real pickAsync without the private updateForPick seam", () => {
   assert.match(probeSource, /const operation = scene\.pickAsync\(/u);
   assert.match(
     probeSource,
@@ -3841,13 +4272,17 @@ test("probe uses real pickAsync and observes rather than directly invokes update
   assert.match(probeSource, /pickProvider\._webgpuGlobePickColor/u);
   assert.match(
     probeSource,
-    /installInstrumentationValue\(\s*"pickProvider\.updateForPick"/u,
+    /while \(warmupResults\.length < contract\.maximumPickWarmupAttempts\)/u,
   );
+  assert.match(probeSource, /measuredPick = await invokeRealPickAsync\(\)/u);
   assert.match(
     probeSource,
-    /finally \{\s*attemptCleanupAction\(updateForPickCleanup\);\s*attemptCleanupAction\(pickableCleanup\);/u,
+    /settleStableSelectedContent\(\s*"post-measured pick cohort",\s*freshBefore\.content/u,
   );
-  assert.match(probeSource, /originalUpdateForPick\.apply\(this, args\)/u);
+  assert.doesNotMatch(
+    probeSource,
+    /installInstrumentationValue\(\s*"pickProvider\.updateForPick"|originalUpdateForPick/u,
+  );
   assert.doesNotMatch(
     probeSource,
     /(?:pickProvider|tileProvider\(\))\.updateForPick\s*\(/u,
@@ -5345,7 +5780,7 @@ test("session setup failures preserve the primary and close every acquired resou
   }
 });
 
-test("close-time responses with hostile listener cleanup preserve primary and retain a pending body", async () => {
+test("close-time responses cannot extend the stopped measurement epoch", async () => {
   const directory = tempEvidenceDirectory();
   const runId = randomUUID();
   let connected = true;
@@ -5354,11 +5789,20 @@ test("close-time responses with hostile listener cleanup preserve primary and re
   let responseHandler;
   let queuedResponseHandler;
   let closeTimeBodyCalls = 0;
+  let evaluateCalls = 0;
   const runtimeResponse = {
     url: () => "http://localhost:8080/Build/CesiumUnminified/index.js",
     status: () => 200,
     ok: () => true,
     body: () => new Promise(() => {}),
+  };
+  const harnessBytes = Buffer.from(harnessSource);
+  const harnessResponse = {
+    url: () =>
+      "http://localhost:8080/Tools/visual-regression/c12-29-s5-custom-ellipsoid-harness.html?renderer=webgl&offline=true",
+    status: () => 200,
+    ok: () => true,
+    body: () => Promise.resolve(harnessBytes),
   };
   const closeTimeResponse = {
     url: () =>
@@ -5378,11 +5822,18 @@ test("close-time responses with hostile listener cleanup preserve primary and re
       throw new Error("hostile response off getter");
     },
     async goto() {
-      queuedResponseHandler = responseHandler;
-      queuedResponseHandler(runtimeResponse);
-      throw new Error("hostile navigation after runtime response");
+      return harnessResponse;
+    },
+    async waitForFunction() {
+      return true;
     },
     async evaluate() {
+      evaluateCalls++;
+      if (evaluateCalls === 2) {
+        queuedResponseHandler = responseHandler;
+        queuedResponseHandler(runtimeResponse);
+        throw new Error("hostile measurement after runtime response");
+      }
       return null;
     },
     async close() {
@@ -5431,10 +5882,10 @@ test("close-time responses with hostile listener cleanup preserve primary and re
     assert.ok(sessionError);
     assert.equal(sessionError.retainCustomRunning, true);
     const rendered = boundedC1229S5CustomErrorText(sessionError);
-    assert.match(rendered, /hostile navigation after runtime response/u);
+    assert.match(rendered, /hostile measurement after runtime response/u);
     assert.match(rendered, /hostile response off getter/u);
     assert.match(rendered, /response tasks settlement expired/u);
-    assert.equal(closeTimeBodyCalls, 1);
+    assert.equal(closeTimeBodyCalls, 0);
     assert.equal(pageClosed, true);
     assert.equal(contextClosed, true);
     assert.equal(connected, true);

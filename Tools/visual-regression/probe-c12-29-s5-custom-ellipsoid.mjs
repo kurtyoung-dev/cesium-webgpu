@@ -49,6 +49,7 @@ import {
   packC1229S5CustomCommonRay,
   stableC1229S5CustomJson,
   validateC1229S5CustomFinalArtifact,
+  validateC1229S5CustomV6FinalArtifact,
 } from "./lib/c12-29-s5-custom-ellipsoid-gate.mjs";
 import {
   assertEvidenceReadableOrAbsent,
@@ -86,7 +87,9 @@ const xysDirectory = path.join(
   "Build/CesiumUnminified/Assets/IAU2006_XYS",
 );
 const runtimePath = "/Build/CesiumUnminified/index.js";
-const viewerPath = "/Apps/CesiumViewer/index.html";
+const harnessFile =
+  "Tools/visual-regression/c12-29-s5-custom-ellipsoid-harness.html";
+const harnessRoute = `/${harnessFile}`;
 const base = process.env.PROBE_BASE ?? "http://localhost:8080";
 const outputDirectory = path.resolve(
   process.env.C12_29_S5_CUSTOM_OUTPUT_DIR ??
@@ -347,9 +350,25 @@ const C1229_S5_CUSTOM_V5_SOURCE_ADDITIONS = new Set([
   "packages/engine/Source/Renderer/UniformStateComputations.js",
   "packages/engine/Source/Scene/Moon.js",
 ]);
+const C1229_S5_CUSTOM_V6_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v6";
+const C1229_S5_CUSTOM_V6_DIAGNOSTICS_SCHEMA =
+  "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v6";
+const C1229_S5_CUSTOM_V6_SOURCE_FILES = C12_29_S5_CUSTOM_SOURCE_FILES.filter(
+  (file) =>
+    file !== "Tools/visual-regression/c12-29-s5-custom-ellipsoid-harness.html",
+);
 const C1229_S5_CUSTOM_V5_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v5";
 const C1229_S5_CUSTOM_V5_DIAGNOSTICS_SCHEMA =
   "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v5";
+const C1229_S5_CUSTOM_PRIOR_DIAGNOSTICS_BY_SCHEMA = Object.freeze({
+  "c12-29-s5-custom-ellipsoid-evidence-v2":
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v2",
+  "c12-29-s5-custom-ellipsoid-evidence-v3":
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v3",
+  "c12-29-s5-custom-ellipsoid-evidence-v4":
+    "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v4",
+  [C1229_S5_CUSTOM_V5_SCHEMA]: C1229_S5_CUSTOM_V5_DIAGNOSTICS_SCHEMA,
+});
 const C1229_S5_CUSTOM_V5_MOON_TOPOLOGY_KEYS = Object.freeze([
   "widgetDefaultAbsent",
   "explicitlyConstructed",
@@ -382,17 +401,16 @@ function upgradeC1229S5CustomPriorMoonTopology(upgraded) {
   return true;
 }
 
-function exactC1229S5CustomV5DiagnosticsSchemas(value) {
+function exactC1229S5CustomPriorDiagnosticsSchemas(value, expectedSchema) {
   const diagnostics = value?.diagnostics;
   return (
-    diagnostics?.schema === C1229_S5_CUSTOM_V5_DIAGNOSTICS_SCHEMA &&
-    (diagnostics.page === null ||
-      diagnostics.page?.schema === C1229_S5_CUSTOM_V5_DIAGNOSTICS_SCHEMA)
+    diagnostics?.schema === expectedSchema &&
+    (diagnostics.page === null || diagnostics.page?.schema === expectedSchema)
   );
 }
 
 function upgradeC1229S5CustomPriorBoundary(upgraded) {
-  const v4SourceFiles = C12_29_S5_CUSTOM_SOURCE_FILES.filter(
+  const v4SourceFiles = C1229_S5_CUSTOM_V6_SOURCE_FILES.filter(
     (file) => !C1229_S5_CUSTOM_V5_SOURCE_ADDITIONS.has(file),
   );
   const v4BuildFiles = C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.filter(
@@ -400,9 +418,9 @@ function upgradeC1229S5CustomPriorBoundary(upgraded) {
   );
   const boundary = upgraded?.provenance?.sourceBoundary;
   if (
-    boundary?.count === C12_29_S5_CUSTOM_SOURCE_FILES.length &&
+    boundary?.count === C1229_S5_CUSTOM_V6_SOURCE_FILES.length &&
     JSON.stringify(boundary?.files) ===
-      JSON.stringify(C12_29_S5_CUSTOM_SOURCE_FILES)
+      JSON.stringify(C1229_S5_CUSTOM_V6_SOURCE_FILES)
   ) {
     return true;
   }
@@ -424,14 +442,15 @@ function upgradeC1229S5CustomPriorBoundary(upgraded) {
     return false;
   }
   const localTemplate = localByFile.get(v4SourceFiles[0]);
-  upgraded.provenance.localFiles = C12_29_S5_CUSTOM_SOURCE_FILES.map((file) =>
-    localByFile.has(file)
-      ? localByFile.get(file)
-      : {
-          file,
-          start: structuredClone(localTemplate.start),
-          end: structuredClone(localTemplate.end),
-        },
+  upgraded.provenance.localFiles = C1229_S5_CUSTOM_V6_SOURCE_FILES.map(
+    (file) =>
+      localByFile.has(file)
+        ? localByFile.get(file)
+        : {
+            file,
+            start: structuredClone(localTemplate.start),
+            end: structuredClone(localTemplate.end),
+          },
   );
   for (const endpoint of ["start", "end"]) {
     const identity = upgraded.provenance.buildSourceIdentity?.[endpoint];
@@ -464,10 +483,10 @@ function upgradeC1229S5CustomPriorBoundary(upgraded) {
   }
   upgraded.provenance.sourceBoundary = {
     ...boundary,
-    count: C12_29_S5_CUSTOM_SOURCE_FILES.length,
-    files: [...C12_29_S5_CUSTOM_SOURCE_FILES],
+    count: C1229_S5_CUSTOM_V6_SOURCE_FILES.length,
+    files: [...C1229_S5_CUSTOM_V6_SOURCE_FILES],
   };
-  upgraded.checks.sourceBoundaryCount = C12_29_S5_CUSTOM_SOURCE_FILES.length;
+  upgraded.checks.sourceBoundaryCount = C1229_S5_CUSTOM_V6_SOURCE_FILES.length;
   upgraded.checks.buildSourceBoundaryCount =
     C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.length;
   return true;
@@ -575,6 +594,9 @@ export function validateC1229S5CustomPriorFinal(value) {
   if (validateC1229S5CustomFinalArtifact(value).ok) return true;
   try {
     const priorSchema = value?.schema;
+    if (priorSchema === C1229_S5_CUSTOM_V6_SCHEMA) {
+      return validateC1229S5CustomV6FinalArtifact(value).ok;
+    }
     const legacyNonErrorSchemas = new Set([
       C1229_S5_CUSTOM_V5_SCHEMA,
       "c12-29-s5-custom-ellipsoid-evidence-v4",
@@ -589,25 +611,29 @@ export function validateC1229S5CustomPriorFinal(value) {
     ) {
       return false;
     }
+    const priorDiagnosticsSchema =
+      C1229_S5_CUSTOM_PRIOR_DIAGNOSTICS_BY_SCHEMA[priorSchema];
     if (
-      priorSchema === C1229_S5_CUSTOM_V5_SCHEMA &&
       value?.status === "ERROR" &&
-      !exactC1229S5CustomV5DiagnosticsSchemas(value)
-    ) {
+      (!priorDiagnosticsSchema ||
+        !exactC1229S5CustomPriorDiagnosticsSchemas(
+          value,
+          priorDiagnosticsSchema,
+        ))
+    )
       return false;
-    }
     const upgraded = structuredClone(value);
-    upgraded.schema = C12_29_S5_CUSTOM_SCHEMA;
+    upgraded.schema = C1229_S5_CUSTOM_V6_SCHEMA;
     if (upgraded.status === "ERROR") {
       upgraded.diagnostics = {
         ...upgraded.diagnostics,
-        schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+        schema: C1229_S5_CUSTOM_V6_DIAGNOSTICS_SCHEMA,
         page:
           upgraded.diagnostics?.page === null
             ? null
             : {
                 ...upgraded.diagnostics?.page,
-                schema: C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
+                schema: C1229_S5_CUSTOM_V6_DIAGNOSTICS_SCHEMA,
               },
       };
     } else {
@@ -620,7 +646,7 @@ export function validateC1229S5CustomPriorFinal(value) {
         return false;
       }
     }
-    return validateC1229S5CustomFinalArtifact(upgraded).ok;
+    return validateC1229S5CustomV6FinalArtifact(upgraded).ok;
   } catch {
     return false;
   }
@@ -2313,13 +2339,13 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
   const expectedInstrumentationLabels = [
     ...(contract.renderer === "webgpu"
       ? [
+          "globeRenderer.createTileCommands",
           "captureGlobeRenderer.getOrCreateCaptureTileCommands",
           "eclipseManager.prepare",
         ]
       : []),
     "moon.show",
     "moon.update",
-    "pickProvider.updateForPick",
   ];
   const sessionCleanup = {
     complete: false,
@@ -2434,14 +2460,23 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
       defaultEllipsoidRestored,
     });
   };
-  const C = await import(contract.runtimePath);
-  const previousViewer = globalThis.viewer;
-  if (previousViewer && !previousViewer.isDestroyed?.()) {
-    previousViewer.useDefaultRenderLoop = false;
-    previousViewer.destroy();
-  }
+  const harness = document.getElementById("customEllipsoidHarness");
   const container = document.getElementById("cesiumContainer");
-  if (!container) throw new Error("CesiumViewer container is unavailable");
+  if (
+    document.body?.getAttribute("data-c12-29-s5-custom-harness") !==
+      "owned-no-autostart-v1" ||
+    !harness ||
+    !container ||
+    container.parentElement !== harness ||
+    harness.parentElement !== document.body ||
+    document.scripts.length !== 0 ||
+    Object.hasOwn(globalThis, "viewer")
+  ) {
+    throw new Error(
+      "owned no-autostart custom-ellipsoid harness is not exclusive",
+    );
+  }
+  const C = await import(contract.runtimePath);
   container.innerHTML = "";
   Object.assign(container.style, {
     position: "fixed",
@@ -2727,6 +2762,27 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
       ...(tileProvider()?._quadtree?._tilesToRender ?? []),
     ];
     const selectedIds = () => selectedTiles().map(tileId).sort();
+    const meshIdentities = new WeakMap();
+    let nextMeshIdentity = 1;
+    const meshIdentity = (mesh) => {
+      if ((typeof mesh !== "object" && typeof mesh !== "function") || !mesh) {
+        throw new Error("stable capture selected content has no rendered mesh");
+      }
+      let identity = meshIdentities.get(mesh);
+      if (identity === undefined) {
+        identity = `mesh-${nextMeshIdentity++}`;
+        meshIdentities.set(mesh, identity);
+      }
+      return identity;
+    };
+    const selectedContent = () =>
+      selectedTiles()
+        .map((tile) => ({
+          tileId: tileId(tile),
+          meshIdentity: meshIdentity(tile.data?.renderedMesh),
+          renderedMesh: true,
+        }))
+        .sort((left, right) => left.tileId.localeCompare(right.tileId));
     const tuple = () => ({
       prepared: scene.frameState?.eclipseGlobeShadowPrepared === true,
       selectionRevision:
@@ -2995,7 +3051,7 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
 
     const construction = {
       ellipsoid: {
-        constructor: ellipsoid.constructor.name,
+        servedConstructorIdentity: ellipsoid.constructor === C.Ellipsoid,
         radii: {
           x: ellipsoid.radii.x,
           y: ellipsoid.radii.y,
@@ -3086,11 +3142,17 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
         : null;
     const globeRenderer = sceneCaptureSources?.globeRenderer ?? null;
     const eclipsePrepareRecords = [];
+    const mainPipelineRecords = [];
     const eclipseManager = globeRenderer?._eclipseUniforms;
     const eclipsePrepareDescriptor = eclipseManager
       ? captureInstrumentationDescriptor(eclipseManager, "prepare")
       : null;
     const originalEclipsePrepare = eclipsePrepareDescriptor?.resolvedValue;
+    const mainTileCommandsDescriptor =
+      contract.renderer === "webgpu" && globeRenderer
+        ? captureInstrumentationDescriptor(globeRenderer, "createTileCommands")
+        : null;
+    const originalMainTileCommands = mainTileCommandsDescriptor?.resolvedValue;
     if (contract.renderer === "webgpu") {
       if (
         !globeRendererDescriptor ||
@@ -3098,10 +3160,54 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
         typeof globeRendererDescriptor.getShaderCode !== "function" ||
         !(globeRenderer instanceof globeRendererDescriptor.RendererClass) ||
         sceneCaptureSources?.tileProvider !== tp ||
-        typeof originalEclipsePrepare !== "function"
+        typeof originalEclipsePrepare !== "function" ||
+        typeof originalMainTileCommands !== "function"
       ) {
         throw new Error("WebGPU globe eclipse manager is unavailable");
       }
+      installInstrumentationValue(
+        "globeRenderer.createTileCommands",
+        globeRenderer,
+        "createTileCommands",
+        function (...args) {
+          const commands = originalMainTileCommands.apply(this, args);
+          const frameState = args[3];
+          const tile = args[0];
+          const descriptors = Array.isArray(commands) ? commands : [];
+          mainPipelineRecords.push({
+            frameNumber: frameState?.frameNumber ?? null,
+            tileId: tileId(tile),
+            meshIdentity: meshIdentity(tile.data?.renderedMesh),
+            descriptorCount: descriptors.length,
+            positiveDrawCount: descriptors.filter(
+              (descriptor) => descriptor?.pipeline && descriptor.indexCount > 0,
+            ).length,
+            pipelinesReady:
+              descriptors.length > 0 &&
+              descriptors.every((descriptor) => !!descriptor?.pipeline),
+            cameraUbo: {
+              inverseRadiiX:
+                this._cameraUniformData[
+                  contract.cameraUboIndices.inverseRadiiX
+                ],
+              inverseRadiiY:
+                this._cameraUniformData[
+                  contract.cameraUboIndices.inverseRadiiY
+                ],
+              inverseRadiiZ:
+                this._cameraUniformData[
+                  contract.cameraUboIndices.inverseRadiiZ
+                ],
+              maximumRadius:
+                this._cameraUniformData[
+                  contract.cameraUboIndices.maximumRadius
+                ],
+            },
+          });
+          return commands;
+        },
+        mainTileCommandsDescriptor,
+      );
       installInstrumentationValue(
         "eclipseManager.prepare",
         eclipseManager,
@@ -3270,31 +3376,62 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
         offRgba: rgbaAt(offImage, candidate.x, candidate.y),
         onRgba: rgbaAt(onImage, candidate.x, candidate.y),
       }));
-    const meshIdentities = new WeakMap();
-    let nextMeshIdentity = 1;
-    const meshIdentity = (mesh) => {
-      if ((typeof mesh !== "object" && typeof mesh !== "function") || !mesh) {
-        throw new Error("stable capture selected content has no rendered mesh");
-      }
-      let identity = meshIdentities.get(mesh);
-      if (identity === undefined) {
-        identity = `mesh-${nextMeshIdentity++}`;
-        meshIdentities.set(mesh, identity);
-      }
-      return identity;
-    };
     const array3 = (value) => [value.x, value.y, value.z];
     const blockVec4 = (value) =>
       value ? { x: value.x, y: value.y, z: value.z, w: value.w } : null;
-    const captureFrameState = () => {
-      const block = scene.frameState?.eclipseGlobeShadow;
-      const content = selectedTiles()
-        .map((tile) => ({
-          tileId: tileId(tile),
-          meshIdentity: meshIdentity(tile.data?.renderedMesh),
-          renderedMesh: true,
+    const expectedMainCameraUbo = {
+      inverseRadiiX: Math.fround(1 / contract.radii.x),
+      inverseRadiiY: Math.fround(1 / contract.radii.y),
+      inverseRadiiZ: Math.fround(1 / contract.radii.z),
+      maximumRadius: Math.fround(
+        Math.max(contract.radii.x, contract.radii.y, contract.radii.z),
+      ),
+    };
+    const mainPipelineProof = (frameNumber, content) => {
+      if (contract.renderer !== "webgpu") {
+        return { applicability: "N/A-WebGL" };
+      }
+      const draws = mainPipelineRecords
+        .filter((record) => record.frameNumber === frameNumber)
+        .map((record) => ({
+          tileId: record.tileId,
+          meshIdentity: record.meshIdentity,
+          descriptorCount: record.descriptorCount,
+          positiveDrawCount: record.positiveDrawCount,
+          pipelinesReady: record.pipelinesReady,
+          cameraUbo: { ...record.cameraUbo },
         }))
         .sort((left, right) => left.tileId.localeCompare(right.tileId));
+      const drawCohort = draws.map(({ tileId: id, meshIdentity: mesh }) => ({
+        tileId: id,
+        meshIdentity: mesh,
+        renderedMesh: true,
+      }));
+      const cameraUboExact = draws.every((draw) =>
+        Object.keys(expectedMainCameraUbo).every((key) =>
+          Object.is(draw.cameraUbo[key], expectedMainCameraUbo[key]),
+        ),
+      );
+      return {
+        applicability: "required",
+        method: "globeRenderer.createTileCommands",
+        frameNumber,
+        draws,
+        currentFramePositiveDraw:
+          draws.length > 0 &&
+          draws.every(
+            (draw) =>
+              draw.descriptorCount > 0 &&
+              draw.positiveDrawCount > 0 &&
+              draw.pipelinesReady,
+          ),
+        cameraUboExact: draws.length > 0 && cameraUboExact,
+        cohortExact: JSON.stringify(drawCohort) === JSON.stringify(content),
+      };
+    };
+    const captureFrameState = () => {
+      const block = scene.frameState?.eclipseGlobeShadow;
+      const content = selectedContent();
       return {
         clockIso: C.JulianDate.toIso8601(pinnedTime),
         cameraTarget: { ...activeCameraTarget },
@@ -3325,6 +3462,7 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
         },
         preparedTuple: tuple(),
         content,
+        mainPipeline: mainPipelineProof(scene.frameState.frameNumber, content),
         eclipse: {
           lightingEnabled: lighting.enableEclipseGlobeShadow,
           blockPresent: !!block,
@@ -3350,6 +3488,10 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
         ...state.ephemeris,
         frameNumber: 0,
       },
+      mainPipeline:
+        state.mainPipeline?.applicability === "required"
+          ? { ...state.mainPipeline, frameNumber: 0 }
+          : state.mainPipeline,
     });
     const sameStableFrame = (left, right) => {
       const leftRevision = left.state.preparedTuple.selectionRevision;
@@ -3387,6 +3529,15 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
           dataUrl: observationSnapshot.dataUrl,
           state: observationFrame.state,
         };
+        if (
+          observation.state.mainPipeline.applicability === "required" &&
+          (!observation.state.mainPipeline.currentFramePositiveDraw ||
+            !observation.state.mainPipeline.cameraUboExact ||
+            !observation.state.mainPipeline.cohortExact)
+        ) {
+          stableWindow = [];
+          continue;
+        }
         stableWindow =
           stableWindow.length > 0 &&
           sameStableFrame(stableWindow.at(-1), observation)
@@ -3413,6 +3564,10 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
           state: evidenceFrameState.state,
         };
         if (
+          (evidenceFrame.state.mainPipeline.applicability !== "required" ||
+            (evidenceFrame.state.mainPipeline.currentFramePositiveDraw &&
+              evidenceFrame.state.mainPipeline.cameraUboExact &&
+              evidenceFrame.state.mainPipeline.cohortExact)) &&
           evidenceFrame.frameNumber === stableWindow.at(-1).frameNumber + 1 &&
           sameStableFrame(stableWindow.at(-1), evidenceFrame)
         ) {
@@ -3444,6 +3599,37 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
       throw new Error(
         `${label} did not produce ${contract.minimumStableFrames} consecutive stable frames plus an immediate fused capture in ${contract.maximumStabilityFrames} frames`,
       );
+    };
+    const settleStableSelectedContent = async (
+      label,
+      expectedContent = null,
+      maximumFrames = 120,
+    ) => {
+      let signature = "";
+      let consecutive = 0;
+      for (let frame = 0; frame < maximumFrames; frame++) {
+        renderNow();
+        const content = selectedContent();
+        const current = JSON.stringify(content);
+        const expectedExact =
+          expectedContent === null ||
+          current === JSON.stringify(expectedContent);
+        if (
+          tuple().prepared &&
+          globe.tilesLoaded === true &&
+          content.length > 0 &&
+          expectedExact &&
+          current === signature
+        ) {
+          consecutive++;
+        } else {
+          consecutive = expectedExact ? 1 : 0;
+          signature = current;
+        }
+        if (consecutive >= 8) return content;
+        await nextFrame();
+      }
+      throw new Error(`${label} tile/mesh cohort did not stabilize`);
     };
 
     const eventCandidates = makeCandidates(eventCentre);
@@ -3557,7 +3743,15 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
         },
       };
     } else {
-      const cameraData = globeRenderer._cameraUniformData;
+      const eventOnStability = captures.at(-1).temporalStability;
+      const stableMainPipelineStates = [
+        ...eventOnStability.observations.map(
+          (observation) => observation.state.mainPipeline,
+        ),
+        eventOnStability.captureState.mainPipeline,
+      ];
+      const mainPipeline = eventOnStability.captureState.mainPipeline;
+      const cameraData = mainPipeline.draws[0]?.cameraUbo ?? {};
       const activePrepare = [...eclipsePrepareRecords]
         .reverse()
         .find((record) => record.block !== null);
@@ -3565,12 +3759,44 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
         cameraUbo: {
           indices: { ...contract.cameraUboIndices },
           values: {
-            inverseRadiiX: cameraData[contract.cameraUboIndices.inverseRadiiX],
-            inverseRadiiY: cameraData[contract.cameraUboIndices.inverseRadiiY],
-            inverseRadiiZ: cameraData[contract.cameraUboIndices.inverseRadiiZ],
-            maximumRadius: cameraData[contract.cameraUboIndices.maximumRadius],
+            inverseRadiiX: cameraData.inverseRadiiX ?? null,
+            inverseRadiiY: cameraData.inverseRadiiY ?? null,
+            inverseRadiiZ: cameraData.inverseRadiiZ ?? null,
+            maximumRadius: cameraData.maximumRadius ?? null,
           },
           valuesExact: false,
+        },
+        mainPipeline: {
+          method: "globeRenderer.createTileCommands",
+          stableFrameNumbers: [
+            ...eventOnStability.observations.map(
+              (observation) => observation.frameNumber,
+            ),
+            eventOnStability.captureFrameNumber,
+          ],
+          selectedTileIds: mainPipeline.draws.map((draw) => draw.tileId),
+          meshIdentities: mainPipeline.draws.map((draw) => draw.meshIdentity),
+          positiveDrawCount: mainPipeline.draws.reduce(
+            (sum, draw) => sum + draw.positiveDrawCount,
+            0,
+          ),
+          currentFramePositiveDraw: mainPipeline.currentFramePositiveDraw,
+          cameraUboExact: mainPipeline.cameraUboExact,
+          stableCohortExact: stableMainPipelineStates.every(
+            (state) =>
+              state.currentFramePositiveDraw &&
+              state.cameraUboExact &&
+              state.cohortExact &&
+              JSON.stringify(
+                state.draws.map((draw) => [draw.tileId, draw.meshIdentity]),
+              ) ===
+                JSON.stringify(
+                  mainPipeline.draws.map((draw) => [
+                    draw.tileId,
+                    draw.meshIdentity,
+                  ]),
+                ),
+          ),
         },
         eclipseBinding: {
           binding: contract.eclipseBinding,
@@ -3599,20 +3825,31 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
       30,
       "antipode camera",
     );
+    await settleStableSelectedContent("antipode warmup");
     const antipodeCandidates = makeCandidates(antipode);
     lighting.enableEclipseGlobeShadow = false;
     renderNow();
     const antipodePreparedTupleBefore = tuple();
     const antipodeOffImage = await capture("antipode-off");
     const antipodeOffPreparedTuple = tuple();
+    const antipodeOffContent = selectedContent();
     lighting.enableEclipseGlobeShadow = true;
+    await settleStableSelectedContent("antipode ON cohort", antipodeOffContent);
     const antipodeOnImage = await capture("antipode-on");
     const antipodeOnPreparedTuple = tuple();
+    const antipodeOnContent = selectedContent();
+    const antipodeOnState = captures.at(-1).temporalStability.captureState;
     const antipodePhase = {
       centre: antipode,
       preparedTupleBefore: antipodePreparedTupleBefore,
       offPreparedTuple: antipodeOffPreparedTuple,
       onPreparedTuple: antipodeOnPreparedTuple,
+      activeSemantics: "conservative-frame-active-per-fragment-horizon-v1",
+      offActive: captures.at(-2).temporalStability.captureState.eclipse.active,
+      onActive: antipodeOnState.eclipse.active,
+      stableTileMeshCohort:
+        JSON.stringify(antipodeOffContent) ===
+        JSON.stringify(antipodeOnContent),
       candidates: compareCandidates(
         antipodeCandidates,
         antipodeOffImage,
@@ -3630,19 +3867,6 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
     lighting.enableEclipseGlobeShadow = true;
     await settle(() => tuple().prepared, 30, "pre-pick event tuple");
     const pickProvider = tileProvider();
-    const updateForPickDescriptor = captureInstrumentationDescriptor(
-      pickProvider,
-      "updateForPick",
-    );
-    const originalUpdateForPick = updateForPickDescriptor.resolvedValue;
-    const pickCalls = [];
-    if (typeof originalUpdateForPick !== "function") {
-      throw new Error("terrain provider updateForPick seam is unavailable");
-    }
-    let picked;
-    let pickFrames = 0;
-    let pickSettled = false;
-    let pickError;
     const pickableDescriptor = captureInstrumentationDescriptor(
       globe,
       "pickable",
@@ -3658,7 +3882,6 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
           pickableDescriptor,
         ).restored,
     );
-    let updateForPickCleanup;
     let globePickId;
     let pickIdKey = null;
     let pickIdAllocated = false;
@@ -3666,20 +3889,43 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
     let mirroredPickColor;
     let allocatedPickColor;
     let pickColorMirrorExact = false;
-    try {
-      updateForPickCleanup = installInstrumentationValue(
-        "pickProvider.updateForPick",
-        pickProvider,
-        "updateForPick",
-        function (...args) {
-          const before = tuple();
-          const result = originalUpdateForPick.apply(this, args);
-          const after = tuple();
-          pickCalls.push({ before, after });
-          return result;
+    const pickPoint = new C.Cartesian2(canvas.width / 2, canvas.height / 2);
+    const invokeRealPickAsync = async () => {
+      let value;
+      let settled = false;
+      let error;
+      let renderPumpFrames = 0;
+      const operation = scene.pickAsync(pickPoint);
+      operation.then(
+        (result) => {
+          value = result;
+          settled = true;
         },
-        updateForPickDescriptor,
-      ).cleanup;
+        (reason) => {
+          error = reason;
+          settled = true;
+        },
+      );
+      while (!settled && renderPumpFrames < contract.maximumPickPumpFrames) {
+        renderNow();
+        renderPumpFrames++;
+        await nextFrame();
+      }
+      if (!settled) throw new Error("scene.pickAsync did not settle");
+      if (error) throw error;
+      return {
+        value,
+        settled,
+        renderPumpFrames,
+        resultKind: value?.primitive === globe ? "globe" : typeof value,
+        resultPrimitiveIdentity: value?.primitive === globe,
+      };
+    };
+    const warmupResults = [];
+    let measuredPick;
+    let freshBefore;
+    let freshAfter;
+    try {
       Object.defineProperty(globe, "pickable", {
         ...pickableDescriptor.authority.ownDescriptor,
         value: true,
@@ -3698,60 +3944,82 @@ const MEASURE_C1229_S5_CUSTOM_SESSION = async (contract) => {
         mirroredPickColor?.green === allocatedPickColor?.green &&
         mirroredPickColor?.blue === allocatedPickColor?.blue &&
         mirroredPickColor?.alpha === allocatedPickColor?.alpha;
-      const operation = scene.pickAsync(
-        new C.Cartesian2(canvas.width / 2, canvas.height / 2),
-      );
-      operation.then(
-        (value) => {
-          picked = value;
-          pickSettled = true;
-        },
-        (error) => {
-          pickError = error;
-          pickSettled = true;
-        },
-      );
-      while (!pickSettled && pickFrames < contract.maximumPickPumpFrames) {
+      while (warmupResults.length < contract.maximumPickWarmupAttempts) {
+        const warmup = await invokeRealPickAsync();
+        warmupResults.push({
+          settled: warmup.settled,
+          renderPumpFrames: warmup.renderPumpFrames,
+          resultKind: warmup.resultKind,
+          resultPrimitiveIdentity: warmup.resultPrimitiveIdentity,
+        });
+        if (
+          contract.renderer === "webgl" ||
+          warmup.resultPrimitiveIdentity === true
+        ) {
+          break;
+        }
         renderNow();
-        pickFrames++;
         await nextFrame();
       }
-      if (!pickSettled) throw new Error("scene.pickAsync did not settle");
-      if (pickError) throw pickError;
+      const warmupReady =
+        contract.renderer === "webgl" ||
+        warmupResults.at(-1)?.resultPrimitiveIdentity === true;
+      if (!warmupReady) {
+        throw new Error("scene.pickAsync pipeline did not become ready");
+      }
+      await settleStableSelectedContent("pre-measured pick cohort");
+      freshBefore = {
+        preparedTuple: tuple(),
+        content: selectedContent(),
+      };
+      measuredPick = await invokeRealPickAsync();
+      await settleStableSelectedContent(
+        "post-measured pick cohort",
+        freshBefore.content,
+      );
+      freshAfter = {
+        preparedTuple: tuple(),
+        content: selectedContent(),
+      };
     } finally {
-      attemptCleanupAction(updateForPickCleanup);
       attemptCleanupAction(pickableCleanup);
       renderNow();
     }
-    const observedPick = pickCalls.at(-1);
+    const warmupReady =
+      contract.renderer === "webgl" ||
+      warmupResults.at(-1)?.resultPrimitiveIdentity === true;
     const behavioralPick = {
       method: "scene.pickAsync",
+      warmupMethod: "scene.pickAsync",
+      warmupAttempts: warmupResults.length,
+      maximumWarmupAttempts: contract.maximumPickWarmupAttempts,
+      warmupReady,
+      warmupResults,
       invoked: true,
       awaited: true,
-      settled: pickSettled,
-      renderPumpFrames: pickFrames,
+      settled: measuredPick?.settled === true,
+      renderPumpFrames: measuredPick?.renderPumpFrames ?? 0,
       maximumPumpFrames: contract.maximumPickPumpFrames,
-      directUpdateForPickCall: false,
       pickableBefore,
       pickableRequested: true,
       pickIdAllocated,
       pickIdKey,
       pickIdRegistryOwnsGlobe,
       pickColorMirrorExact,
-      updateForPickObserved: pickCalls.length > 0,
-      updateForPickCalls: pickCalls.length,
-      resultKind: picked?.primitive === globe ? "globe" : typeof picked,
-      resultPrimitiveIdentity: picked?.primitive === globe,
+      resultKind: measuredPick?.resultKind ?? "undefined",
+      resultPrimitiveIdentity: measuredPick?.resultPrimitiveIdentity === true,
       pickableAfterRestore: globe.pickable,
       pickableRestored:
         globe.pickable === pickableBefore &&
         pickProvider._webgpuGlobePickColor === undefined,
-      postcondition: {
-        before: observedPick?.before ?? null,
-        after: observedPick?.after ?? null,
-        surfaceRadius: observedPick?.after?.surfaceRadius ?? null,
-        selectionRevision: observedPick?.after?.selectionRevision ?? null,
-        selectedTileIds: observedPick?.after?.selectedTileIds ?? [],
+      freshCohort: {
+        before: freshBefore,
+        after: freshAfter,
+        stable:
+          JSON.stringify(freshBefore?.content) ===
+            JSON.stringify(freshAfter?.content) &&
+          JSON.stringify(freshBefore?.preparedTuple?.selectedTileIds) ===
+            JSON.stringify(freshAfter?.preparedTuple?.selectedTileIds),
       },
     };
     complete(contract.phases[5]);
@@ -4538,6 +4806,7 @@ function pageContract(renderer) {
     maximumStabilityFrames: C12_29_S5_CUSTOM_SCENE.maximumStabilityFrames,
     maximumSettleFrames: C12_29_S5_CUSTOM_SCENE.maximumSettleFrames,
     maximumPickPumpFrames: C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames,
+    maximumPickWarmupAttempts: C12_29_S5_CUSTOM_SCENE.maximumPickWarmupAttempts,
     maximumRetainedCaptureFrames:
       C12_29_S5_CUSTOM_SCENE.maximumRetainedCaptureFrames,
     radiusLaw: { ...C12_29_S5_CUSTOM_RADIUS_LAW },
@@ -4808,6 +5077,8 @@ export async function runC1229S5CustomBrowserSession(
   const pending = new Set();
   const xysResponses = [];
   const responseTasks = [];
+  const measurementEpochId = randomUUID();
+  let measurementResponseOrdinal = 0;
   const observeResponseTask = (task) => {
     const observed = observeC1229S5CustomTask(task);
     responseTasks.push(observed);
@@ -4819,12 +5090,14 @@ export async function runC1229S5CustomBrowserSession(
   let sessionError;
   let diagnostics = null;
   let servedEntry;
+  let servedHarness;
   let capturedEntry = false;
   let acceptResponseTasks = false;
   let responseListenerOwned = false;
   let responseListenerCleanupError;
   const handleResponse = (response) => {
     if (!acceptResponseTasks) return;
+    const requestOrdinal = ++measurementResponseOrdinal;
     observeResponseTask(
       Promise.resolve().then(async () => {
         const url = new URL(response.url());
@@ -4849,6 +5122,8 @@ export async function runC1229S5CustomBrowserSession(
         ) {
           const bytes = await response.body();
           xysResponses.push({
+            epochId: measurementEpochId,
+            requestOrdinal,
             file: path.basename(url.pathname),
             route: url.pathname,
             status,
@@ -4904,22 +5179,48 @@ export async function runC1229S5CustomBrowserSession(
     page.on("console", (message) => {
       if (message.type() === "error") consoleErrors.push(message.text());
     });
-    acceptResponseTasks = true;
     responseListenerOwned = true;
     page.on("response", handleResponse);
 
-    const url = new URL(viewerPath, baseIdentity.origin);
+    const url = new URL(harnessRoute, baseIdentity.origin);
     url.searchParams.set("renderer", renderer);
     url.searchParams.set("offline", "true");
-    await page.goto(url.href, {
+    const harnessResponse = await page.goto(url.href, {
       waitUntil: "domcontentloaded",
       timeout: 90_000,
     });
-    await page.waitForFunction(
-      () => Boolean(globalThis.viewer?.scene?.context),
-      undefined,
-      { timeout: 90_000 },
-    );
+    if (!harnessResponse) {
+      throw new Error(`${renderer} owned harness response is absent`);
+    }
+    const servedHarnessUrl = new URL(harnessResponse.url());
+    const servedHarnessBytes = await harnessResponse.body();
+    servedHarness = {
+      sessionLabel: renderer,
+      route: servedHarnessUrl.pathname,
+      ok: harnessResponse.ok(),
+      status: harnessResponse.status(),
+      byteLength: servedHarnessBytes.byteLength,
+      sha256: sha256(servedHarnessBytes),
+    };
+    if (
+      servedHarnessUrl.origin !== baseIdentity.origin ||
+      servedHarness.route !== harnessRoute
+    ) {
+      throw new Error(`${renderer} owned harness response route is not exact`);
+    }
+    await page.waitForFunction(() => {
+      const harness = document.getElementById("customEllipsoidHarness");
+      const container = document.getElementById("cesiumContainer");
+      return (
+        document.body?.getAttribute("data-c12-29-s5-custom-harness") ===
+          "owned-no-autostart-v1" &&
+        harness?.parentElement === document.body &&
+        container?.parentElement === harness &&
+        document.scripts.length === 0 &&
+        !Object.hasOwn(globalThis, "viewer")
+      );
+    });
+    acceptResponseTasks = true;
     await armWebGPUDevices(page);
     let pageTimer;
     try {
@@ -4966,15 +5267,6 @@ export async function runC1229S5CustomBrowserSession(
     diagnostics = await readC1229S5CustomPageProgressBounded(page);
     watchdogState.pageDiagnostic = diagnostics;
   } finally {
-    pageClose = await closeC1229S5CustomResourceBounded(
-      page,
-      `${renderer} page`,
-    );
-    contextClose = await closeC1229S5CustomResourceBounded(
-      context,
-      `${renderer} context`,
-    );
-    if (watchdogState.page === page) watchdogState.page = null;
     acceptResponseTasks = false;
     if (responseListenerOwned && page) {
       try {
@@ -4993,6 +5285,15 @@ export async function runC1229S5CustomBrowserSession(
         );
       }
     }
+    pageClose = await closeC1229S5CustomResourceBounded(
+      page,
+      `${renderer} page`,
+    );
+    contextClose = await closeC1229S5CustomResourceBounded(
+      context,
+      `${renderer} context`,
+    );
+    if (watchdogState.page === page) watchdogState.page = null;
     const frozenResponseTasks = [...responseTasks];
     responseDrain = await settleC1229S5CustomTasksBounded(
       frozenResponseTasks,
@@ -5002,9 +5303,25 @@ export async function runC1229S5CustomBrowserSession(
   }
 
   if (measured) {
+    measured.transport.measurementEpoch = {
+      id: measurementEpochId,
+      harnessRoute,
+      beganAfterHarnessReady: true,
+      harnessViewerAbsent: true,
+      endedBeforePageClose: true,
+      responseTasksDrained:
+        !responseDrain.timedOut && responseDrain.errors.length === 0,
+      firstResponseOrdinal: measurementResponseOrdinal > 0 ? 1 : null,
+      lastResponseOrdinal:
+        measurementResponseOrdinal > 0 ? measurementResponseOrdinal : null,
+      responseCount: measurementResponseOrdinal,
+    };
+    measured.servedHarness = servedHarness;
     measured.servedEntry = servedEntry;
-    measured.xysResponses = xysResponses.sort((left, right) =>
-      left.file.localeCompare(right.file),
+    measured.xysResponses = xysResponses.sort(
+      (left, right) =>
+        left.file.localeCompare(right.file) ||
+        left.requestOrdinal - right.requestOrdinal,
     );
     const pageCleanupComplete = measured.cleanup?.complete === true;
     measured.cleanup = {
@@ -5039,6 +5356,11 @@ export async function runC1229S5CustomBrowserSession(
   if (measured && (!capturedEntry || servedEntry === undefined)) {
     cleanupErrors.push(
       new Error(`${renderer} served entry response was not captured`),
+    );
+  }
+  if (measured && servedHarness === undefined) {
+    cleanupErrors.push(
+      new Error(`${renderer} served owned harness response was not captured`),
     );
   }
   if (sessionError || cleanupErrors.length > 0) {
@@ -5360,9 +5682,43 @@ function composeC1229S5CustomProvenance(start, end, sessions) {
     localEnd: publicFingerprint(end.servedEntry),
     stable: servedStable,
   };
-  const reasons = [...comparison.reasons, ...servedValidation.reasons];
+  const harnessValidation = validateServedEntryIdentities({
+    entries: sessions.map((session) => session.servedHarness),
+    expectedLabels: [...C12_29_S5_CUSTOM_RENDERERS],
+    localEntry: start.local[harnessFile],
+  });
+  const localHarnessStart = start.local[harnessFile];
+  const localHarnessEnd = end.local[harnessFile];
+  const localHarnessStable =
+    localHarnessStart?.exists === true &&
+    localHarnessEnd?.exists === true &&
+    localHarnessStart.byteLength === localHarnessEnd.byteLength &&
+    localHarnessStart.sha256 === localHarnessEnd.sha256;
+  const servedHarnessIdentity = {
+    ...harnessValidation,
+    route: harnessRoute,
+    served: sessions.map((session) => ({
+      renderer: session.renderer,
+      route: session.servedHarness?.route ?? null,
+      ok: session.servedHarness?.ok === true,
+      status: session.servedHarness?.status ?? null,
+      byteLength: session.servedHarness?.byteLength ?? null,
+      sha256: session.servedHarness?.sha256 ?? null,
+    })),
+    localStart: publicFingerprint(localHarnessStart),
+    localEnd: publicFingerprint(localHarnessEnd),
+    stable: localHarnessStable,
+  };
+  const reasons = [
+    ...comparison.reasons,
+    ...servedValidation.reasons,
+    ...harnessValidation.reasons.map((reason) => `owned harness: ${reason}`),
+  ];
   if (!servedStable) {
     reasons.push("local served runtime entry changed during the run");
+  }
+  if (!localHarnessStable) {
+    reasons.push("local owned harness changed during the run");
   }
   if (start.gitHead !== end.gitHead) {
     reasons.push("git HEAD changed during the custom-ellipsoid run");
@@ -5402,7 +5758,26 @@ function composeC1229S5CustomProvenance(start, end, sessions) {
   }
   const xys = [];
   for (const session of sessions) {
+    const seenOwnedXys = new Set();
     for (const served of session.xysResponses ?? []) {
+      const ownedKey = `${session.renderer}/${served.file}`;
+      if (seenOwnedXys.has(ownedKey)) {
+        reasons.push(
+          `${session.renderer}: duplicate ${served.file} response in owned measurement epoch`,
+        );
+      }
+      seenOwnedXys.add(ownedKey);
+      if (
+        served.epochId !== session.transport?.measurementEpoch?.id ||
+        !Number.isInteger(served.requestOrdinal) ||
+        served.requestOrdinal < 1 ||
+        served.requestOrdinal >
+          (session.transport?.measurementEpoch?.lastResponseOrdinal ?? -1)
+      ) {
+        reasons.push(
+          `${session.renderer}: ${served.file} is outside the owned measurement epoch`,
+        );
+      }
       const localStart = start.xys[served.file];
       const localEnd = end.xys[served.file];
       if (!localStart || !localEnd) {
@@ -5412,6 +5787,8 @@ function composeC1229S5CustomProvenance(start, end, sessions) {
       }
       xys.push({
         renderer: session.renderer,
+        epochId: served.epochId,
+        requestOrdinal: served.requestOrdinal,
         file: served.file,
         localStart: publicFingerprint(localStart),
         localEnd: publicFingerprint(localEnd),
@@ -5469,6 +5846,7 @@ function composeC1229S5CustomProvenance(start, end, sessions) {
       stable: buildSourceStable,
     },
     servedEntryIdentity,
+    servedHarnessIdentity,
     xys,
     sameTaskCapture: {
       canonical:
@@ -5654,6 +6032,7 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
     for (const session of sessions) {
       delete session.xysResponses;
       delete session.servedEntry;
+      delete session.servedHarness;
     }
     const crossBackendOracle = deriveC1229S5CustomCrossBackendReport(sessions);
     const report = {

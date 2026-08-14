@@ -10,8 +10,12 @@
 
 import { types as utilTypes } from "node:util";
 
-export const C12_29_S5_CUSTOM_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v6";
+export const C12_29_S5_CUSTOM_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v7";
 export const C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA =
+  "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v7";
+
+const C1229_S5_CUSTOM_V6_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v6";
+const C1229_S5_CUSTOM_V6_DIAGNOSTICS_SCHEMA =
   "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v6";
 
 export const C12_29_S5_CUSTOM_EPHEMERIS = Object.freeze({
@@ -108,6 +112,7 @@ export const C12_29_S5_CUSTOM_SCENE = Object.freeze({
   maximumStabilityFrames: 60,
   maximumSettleFrames: 360,
   maximumPickPumpFrames: 60,
+  maximumPickWarmupAttempts: 8,
   maximumRetainedCaptureFrames: 360,
 });
 
@@ -246,7 +251,16 @@ export const C12_29_S5_CUSTOM_SOURCE_FILES = Object.freeze([
   "Tools/visual-regression/lib/c12-29-s5-custom-ellipsoid-gate.mjs",
   "Tools/visual-regression/c12-29-s5-custom-ellipsoid-gate.spec.mjs",
   "Tools/visual-regression/probe-c12-29-s5-custom-ellipsoid.mjs",
+  "Tools/visual-regression/c12-29-s5-custom-ellipsoid-harness.html",
 ]);
+
+const C1229_S5_CUSTOM_V6_SOURCE_FILES = Object.freeze(
+  C12_29_S5_CUSTOM_SOURCE_FILES.filter(
+    (file) =>
+      file !==
+      "Tools/visual-regression/c12-29-s5-custom-ellipsoid-harness.html",
+  ),
+);
 
 export const C12_29_S5_CUSTOM_BUILD_SOURCE_FILES = Object.freeze(
   C12_29_S5_CUSTOM_SOURCE_FILES.filter(
@@ -1914,7 +1928,66 @@ function cameraMatchesTarget(state) {
   );
 }
 
-function validTemporalFrameState(state) {
+function validMainPipelineProof(proof, content, frameNumber, renderer) {
+  if (renderer === "webgl") {
+    return (
+      exactKeys(proof, ["applicability"]) && proof.applicability === "N/A-WebGL"
+    );
+  }
+  const draws = proof?.draws;
+  const expectedCamera = {
+    inverseRadiiX: Math.fround(1 / C12_29_S5_CUSTOM_SCENE.radii.x),
+    inverseRadiiY: Math.fround(1 / C12_29_S5_CUSTOM_SCENE.radii.y),
+    inverseRadiiZ: Math.fround(1 / C12_29_S5_CUSTOM_SCENE.radii.z),
+    maximumRadius: Math.fround(C12_29_S5_CUSTOM_SCENE.radii.x),
+  };
+  const drawsValid =
+    Array.isArray(draws) &&
+    draws.length === content?.length &&
+    draws.every(
+      (draw, index) =>
+        exactKeys(draw, [
+          "tileId",
+          "meshIdentity",
+          "descriptorCount",
+          "positiveDrawCount",
+          "pipelinesReady",
+          "cameraUbo",
+        ]) &&
+        draw.tileId === content[index]?.tileId &&
+        draw.meshIdentity === content[index]?.meshIdentity &&
+        Number.isInteger(draw.descriptorCount) &&
+        draw.descriptorCount > 0 &&
+        Number.isInteger(draw.positiveDrawCount) &&
+        draw.positiveDrawCount > 0 &&
+        draw.positiveDrawCount <= draw.descriptorCount &&
+        draw.pipelinesReady === true &&
+        exactKeys(draw.cameraUbo, Object.keys(expectedCamera)) &&
+        Object.keys(expectedCamera).every((key) =>
+          Object.is(draw.cameraUbo[key], expectedCamera[key]),
+        ),
+    );
+  return (
+    exactKeys(proof, [
+      "applicability",
+      "method",
+      "frameNumber",
+      "draws",
+      "currentFramePositiveDraw",
+      "cameraUboExact",
+      "cohortExact",
+    ]) &&
+    proof.applicability === "required" &&
+    proof.method === "globeRenderer.createTileCommands" &&
+    proof.frameNumber === frameNumber &&
+    drawsValid &&
+    proof.currentFramePositiveDraw === drawsValid &&
+    proof.cameraUboExact === drawsValid &&
+    proof.cohortExact === drawsValid
+  );
+}
+
+function validTemporalFrameState(state, renderer, legacyV6 = false) {
   const camera = state?.camera;
   const provider = state?.provider;
   const eclipse = state?.eclipse;
@@ -1940,6 +2013,7 @@ function validTemporalFrameState(state) {
       "provider",
       "preparedTuple",
       "content",
+      ...(legacyV6 ? [] : ["mainPipeline"]),
       "eclipse",
       "ephemeris",
     ]) &&
@@ -2005,6 +2079,13 @@ function validTemporalFrameState(state) {
     ) &&
     new Set(content.map((entry) => entry.meshIdentity)).size ===
       content.length &&
+    (legacyV6 ||
+      validMainPipelineProof(
+        state.mainPipeline,
+        content,
+        state.ephemeris?.frameNumber,
+        renderer,
+      )) &&
     exactKeys(eclipse, [
       "lightingEnabled",
       "blockPresent",
@@ -2029,7 +2110,7 @@ function validTemporalFrameState(state) {
   );
 }
 
-function temporalExpectation(label, phases) {
+function temporalExpectation(label, phases, legacyV6 = false) {
   const event = phases?.["event-s5-on"];
   const antipode = phases?.["antipode-horizon-control"];
   const control = phases?.["noneclipse-identity-control"];
@@ -2070,7 +2151,7 @@ function temporalExpectation(label, phases) {
       target: antipodeTarget,
       preparedTuple: antipode?.onPreparedTuple,
       lightingEnabled: true,
-      active: false,
+      active: legacyV6 ? false : null,
     },
     "control-off": {
       clockIso: C12_29_S5_CUSTOM_SCENE.controlIso,
@@ -2090,10 +2171,10 @@ function temporalExpectation(label, phases) {
   return values[label];
 }
 
-function validTemporalStability(image, phases) {
+function validTemporalStability(image, phases, renderer, legacyV6 = false) {
   const stability = image?.temporalStability;
   const observations = stability?.observations;
-  const expectation = temporalExpectation(image?.label, phases);
+  const expectation = temporalExpectation(image?.label, phases, legacyV6);
   if (
     !exactKeys(stability, [
       "method",
@@ -2119,7 +2200,7 @@ function validTemporalStability(image, phases) {
     observations.length !== C12_29_S5_CUSTOM_SCENE.minimumStableFrames ||
     stability.renderFirst !== true ||
     stability.sameTaskFusedCapture !== true ||
-    !validTemporalFrameState(stability.captureState) ||
+    !validTemporalFrameState(stability.captureState, renderer, legacyV6) ||
     !exactKeys(stability.captureOutput, [
       "byteLength",
       "sha256",
@@ -2149,7 +2230,7 @@ function validTemporalStability(image, phases) {
       SHA256.test(observation.sha256 ?? "") &&
       observation.width === C12_29_S5_CUSTOM_SCENE.viewport.width &&
       observation.height === C12_29_S5_CUSTOM_SCENE.viewport.height &&
-      validTemporalFrameState(observation.state),
+      validTemporalFrameState(observation.state, renderer, legacyV6),
   );
   if (!observationShapeValid || !expectation) return false;
   const reference = observations[0];
@@ -2175,11 +2256,27 @@ function validTemporalStability(image, phases) {
         ...left,
         preparedTuple: { ...left.preparedTuple, selectionRevision: 0 },
         ephemeris: { ...left.ephemeris, frameNumber: 0 },
+        ...(legacyV6
+          ? {}
+          : {
+              mainPipeline:
+                left.mainPipeline?.applicability === "required"
+                  ? { ...left.mainPipeline, frameNumber: 0 }
+                  : left.mainPipeline,
+            }),
       },
       {
         ...right,
         preparedTuple: { ...right.preparedTuple, selectionRevision: 0 },
         ephemeris: { ...right.ephemeris, frameNumber: 0 },
+        ...(legacyV6
+          ? {}
+          : {
+              mainPipeline:
+                right.mainPipeline?.applicability === "required"
+                  ? { ...right.mainPipeline, frameNumber: 0 }
+                  : right.mainPipeline,
+            }),
       },
     );
   const statesStable = [
@@ -2206,7 +2303,8 @@ function validTemporalStability(image, phases) {
       expectation.preparedTuple,
     ) &&
     reference.state.eclipse.lightingEnabled === expectation.lightingEnabled &&
-    reference.state.eclipse.active === expectation.active;
+    (expectation.active === null ||
+      reference.state.eclipse.active === expectation.active);
   const ephemerisFramesBound =
     observations.every(
       (observation) =>
@@ -2229,7 +2327,7 @@ function validTemporalStability(image, phases) {
   );
 }
 
-function validImage(image, session, runId, phases) {
+function validImage(image, session, runId, phases, legacyV6 = false) {
   return (
     exactKeys(image, [
       "label",
@@ -2261,7 +2359,7 @@ function validImage(image, session, runId, phases) {
     image.renderTaskToken === image.captureTaskToken &&
     image.metricImageId === image.imageId &&
     image.fingerprintVerified === true &&
-    validTemporalStability(image, phases)
+    validTemporalStability(image, phases, session.renderer, legacyV6)
   );
 }
 
@@ -2659,15 +2757,100 @@ function imageFingerprintEqual(left, right) {
   );
 }
 
+function validC1229S5CustomV6BehavioralPick(
+  pick,
+  renderer,
+  preparationTuple,
+  antipode,
+) {
+  const before = pick?.postcondition?.before;
+  const after = pick?.postcondition?.after;
+  const expectedKind = renderer === "webgpu" ? "globe" : "undefined";
+  return (
+    exactKeys(pick, [
+      "method",
+      "invoked",
+      "awaited",
+      "settled",
+      "renderPumpFrames",
+      "maximumPumpFrames",
+      "directUpdateForPickCall",
+      "pickableBefore",
+      "pickableRequested",
+      "pickIdAllocated",
+      "pickIdKey",
+      "pickIdRegistryOwnsGlobe",
+      "pickColorMirrorExact",
+      "updateForPickObserved",
+      "updateForPickCalls",
+      "resultKind",
+      "resultPrimitiveIdentity",
+      "pickableAfterRestore",
+      "pickableRestored",
+      "postcondition",
+    ]) &&
+    exactKeys(pick?.postcondition, [
+      "before",
+      "after",
+      "surfaceRadius",
+      "selectionRevision",
+      "selectedTileIds",
+    ]) &&
+    pick.method === "scene.pickAsync" &&
+    pick.invoked === true &&
+    pick.awaited === true &&
+    pick.settled === true &&
+    Number.isInteger(pick.renderPumpFrames) &&
+    pick.renderPumpFrames >= 1 &&
+    pick.renderPumpFrames <= C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames &&
+    pick.maximumPumpFrames === C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames &&
+    pick.directUpdateForPickCall === false &&
+    pick.pickableBefore === false &&
+    pick.pickableRequested === true &&
+    pick.pickIdAllocated === true &&
+    Number.isInteger(pick.pickIdKey) &&
+    pick.pickIdKey > 0 &&
+    pick.pickIdRegistryOwnsGlobe === true &&
+    pick.pickColorMirrorExact === true &&
+    pick.updateForPickObserved === true &&
+    Number.isInteger(pick.updateForPickCalls) &&
+    pick.updateForPickCalls >= 1 &&
+    pick.updateForPickCalls <= C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames &&
+    pick.updateForPickCalls <= pick.renderPumpFrames &&
+    pick.resultKind === expectedKind &&
+    pick.resultPrimitiveIdentity === (renderer === "webgpu") &&
+    pick.pickableAfterRestore === false &&
+    pick.pickableRestored === true &&
+    exactFreshUnpreparedTuple(before) &&
+    exactPreparedTuple(after) &&
+    sameOrdered(before.selectedTileIds, after.selectedTileIds) &&
+    samePreparedContent(after, preparationTuple) &&
+    after.selectionRevision > antipode?.onPreparedTuple?.selectionRevision &&
+    pick.postcondition.surfaceRadius === after.surfaceRadius &&
+    pick.postcondition.selectionRevision === after.selectionRevision &&
+    sameOrdered(pick.postcondition.selectedTileIds, after.selectedTileIds)
+  );
+}
+
 const C1229_S5_CUSTOM_COMMON_INSTRUMENTATION = Object.freeze([
+  "moon.show",
+  "moon.update",
+]);
+const C1229_S5_CUSTOM_WEBGPU_INSTRUMENTATION = Object.freeze([
+  "globeRenderer.createTileCommands",
+  "captureGlobeRenderer.getOrCreateCaptureTileCommands",
+  "eclipseManager.prepare",
+  ...C1229_S5_CUSTOM_COMMON_INSTRUMENTATION,
+]);
+const C1229_S5_CUSTOM_V6_COMMON_INSTRUMENTATION = Object.freeze([
   "moon.show",
   "moon.update",
   "pickProvider.updateForPick",
 ]);
-const C1229_S5_CUSTOM_WEBGPU_INSTRUMENTATION = Object.freeze([
+const C1229_S5_CUSTOM_V6_WEBGPU_INSTRUMENTATION = Object.freeze([
   "captureGlobeRenderer.getOrCreateCaptureTileCommands",
   "eclipseManager.prepare",
-  ...C1229_S5_CUSTOM_COMMON_INSTRUMENTATION,
+  ...C1229_S5_CUSTOM_V6_COMMON_INSTRUMENTATION,
 ]);
 const C1229_S5_CUSTOM_OWN_DATA_SHAPE = Object.freeze({
   kind: "data",
@@ -2692,11 +2875,19 @@ function exactDescriptorShape(value, expected) {
   );
 }
 
-function validInstrumentationRestorations(restorations, renderer) {
+function validInstrumentationRestorations(
+  restorations,
+  renderer,
+  legacyV6 = false,
+) {
   const expected =
     renderer === "webgpu"
-      ? C1229_S5_CUSTOM_WEBGPU_INSTRUMENTATION
-      : C1229_S5_CUSTOM_COMMON_INSTRUMENTATION;
+      ? legacyV6
+        ? C1229_S5_CUSTOM_V6_WEBGPU_INSTRUMENTATION
+        : C1229_S5_CUSTOM_WEBGPU_INSTRUMENTATION
+      : legacyV6
+        ? C1229_S5_CUSTOM_V6_COMMON_INSTRUMENTATION
+        : C1229_S5_CUSTOM_COMMON_INSTRUMENTATION;
   return (
     Array.isArray(restorations) &&
     restorations.length === expected.length &&
@@ -2746,7 +2937,13 @@ function validInstrumentationRestorations(restorations, renderer) {
   );
 }
 
-function validateSession(session, runId, structural, failures) {
+function validateSession(
+  session,
+  runId,
+  structural,
+  failures,
+  legacyV6 = false,
+) {
   const renderer = session?.renderer ?? "unknown";
   const phases = session?.phases ?? {};
   if (
@@ -2779,7 +2976,7 @@ function validateSession(session, runId, structural, failures) {
       images.map((image) => image?.label),
       C12_29_S5_CUSTOM_CAPTURE_LABELS,
     ) ||
-    images.some((image) => !validImage(image, session, runId, phases))
+    images.some((image) => !validImage(image, session, runId, phases, legacyV6))
   ) {
     structural.push(
       `${renderer}: six stable, bound same-snapshot PNGs are not exact`,
@@ -2827,6 +3024,14 @@ function validateSession(session, runId, structural, failures) {
     structural.push(`${renderer}: paired OFF/ON prepared content changed`);
   }
   if (
+    !exactKeys(session?.transport, [
+      "loopback",
+      "sameOriginOnly",
+      "externalRequests",
+      "failedRequests",
+      "httpErrors",
+      ...(legacyV6 ? [] : ["measurementEpoch"]),
+    ]) ||
     session?.transport?.loopback !== true ||
     session?.transport?.sameOriginOnly !== true ||
     session?.transport?.externalRequests?.length !== 0 ||
@@ -2834,6 +3039,36 @@ function validateSession(session, runId, structural, failures) {
     session?.transport?.httpErrors?.length !== 0
   ) {
     structural.push(`${renderer}: transport escaped the offline loopback lane`);
+  }
+  if (
+    !legacyV6 &&
+    (!exactKeys(session?.transport?.measurementEpoch, [
+      "id",
+      "harnessRoute",
+      "beganAfterHarnessReady",
+      "harnessViewerAbsent",
+      "endedBeforePageClose",
+      "responseTasksDrained",
+      "firstResponseOrdinal",
+      "lastResponseOrdinal",
+      "responseCount",
+    ]) ||
+      !isC1229S5CustomUuidV4(session.transport.measurementEpoch.id) ||
+      session.transport.measurementEpoch.harnessRoute !==
+        "/Tools/visual-regression/c12-29-s5-custom-ellipsoid-harness.html" ||
+      session.transport.measurementEpoch.beganAfterHarnessReady !== true ||
+      session.transport.measurementEpoch.harnessViewerAbsent !== true ||
+      session.transport.measurementEpoch.endedBeforePageClose !== true ||
+      session.transport.measurementEpoch.responseTasksDrained !== true ||
+      session.transport.measurementEpoch.firstResponseOrdinal !== 1 ||
+      !Number.isInteger(
+        session.transport.measurementEpoch.lastResponseOrdinal,
+      ) ||
+      session.transport.measurementEpoch.lastResponseOrdinal !==
+        session.transport.measurementEpoch.responseCount ||
+      !(session.transport.measurementEpoch.responseCount >= 2))
+  ) {
+    structural.push(`${renderer}: owned measurement epoch receipt is inexact`);
   }
   if (
     session?.runtime?.pageErrors?.length !== 0 ||
@@ -2845,7 +3080,15 @@ function validateSession(session, runId, structural, failures) {
   }
   const construction = phases["custom-scene-construction"];
   if (
-    construction?.ellipsoid?.constructor !== "Ellipsoid" ||
+    !exactKeys(
+      construction?.ellipsoid,
+      legacyV6
+        ? ["constructor", "radii", "sceneIdentity"]
+        : ["servedConstructorIdentity", "radii", "sceneIdentity"],
+    ) ||
+    (legacyV6
+      ? construction?.ellipsoid?.constructor !== "Ellipsoid"
+      : construction?.ellipsoid?.servedConstructorIdentity !== true) ||
     construction?.ellipsoid?.radii?.x !== C12_29_S5_CUSTOM_SCENE.radii.x ||
     construction?.ellipsoid?.radii?.y !== C12_29_S5_CUSTOM_SCENE.radii.y ||
     construction?.ellipsoid?.radii?.z !== C12_29_S5_CUSTOM_SCENE.radii.z ||
@@ -2963,50 +3206,105 @@ function validateSession(session, runId, structural, failures) {
         `${renderer}: served AutomaticUniforms identity/custom radii are not exact`,
       );
     }
-  } else if (
-    identity?.cameraUbo?.indices?.inverseRadiiX !==
-      C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES.inverseRadiiX ||
-    identity?.cameraUbo?.indices?.inverseRadiiY !==
-      C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES.inverseRadiiY ||
-    identity?.cameraUbo?.indices?.inverseRadiiZ !==
-      C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES.inverseRadiiZ ||
-    identity?.cameraUbo?.indices?.maximumRadius !==
-      C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES.maximumRadius ||
-    !exactKeys(identity?.cameraUbo?.values, [
-      "inverseRadiiX",
-      "inverseRadiiY",
-      "inverseRadiiZ",
-      "maximumRadius",
-    ]) ||
-    !Object.is(
-      identity.cameraUbo.values.inverseRadiiX,
-      Math.fround(1 / C12_29_S5_CUSTOM_SCENE.radii.x),
-    ) ||
-    !Object.is(
-      identity.cameraUbo.values.inverseRadiiY,
-      Math.fround(1 / C12_29_S5_CUSTOM_SCENE.radii.y),
-    ) ||
-    !Object.is(
-      identity.cameraUbo.values.inverseRadiiZ,
-      Math.fround(1 / C12_29_S5_CUSTOM_SCENE.radii.z),
-    ) ||
-    !Object.is(
-      identity.cameraUbo.values.maximumRadius,
-      Math.fround(C12_29_S5_CUSTOM_SCENE.radii.x),
-    ) ||
-    identity?.cameraUbo?.valuesExact !== true ||
-    identity?.eclipseBinding?.binding !==
-      C12_29_S5_CUSTOM_WEBGPU_ECLIPSE_BINDING ||
-    identity?.eclipseBinding?.offsetAligned !== true ||
-    identity?.eclipseBinding?.size !== 64 ||
-    !exactNumericArray(identity?.eclipseBinding?.payload, expectedPayload) ||
-    !exactNumericArray(
-      froundedShadowPayload(identity?.eclipseBinding?.block),
-      expectedPayload,
-    ) ||
-    identity?.eclipseBinding?.payloadExact !== true
-  ) {
-    failures.push(`${renderer}: camera/binding-2 custom payload is wrong`);
+  } else {
+    const expectedCamera = {
+      inverseRadiiX: Math.fround(1 / C12_29_S5_CUSTOM_SCENE.radii.x),
+      inverseRadiiY: Math.fround(1 / C12_29_S5_CUSTOM_SCENE.radii.y),
+      inverseRadiiZ: Math.fround(1 / C12_29_S5_CUSTOM_SCENE.radii.z),
+      maximumRadius: Math.fround(C12_29_S5_CUSTOM_SCENE.radii.x),
+    };
+    if (
+      identity?.cameraUbo?.indices?.inverseRadiiX !==
+        C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES.inverseRadiiX ||
+      identity?.cameraUbo?.indices?.inverseRadiiY !==
+        C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES.inverseRadiiY ||
+      identity?.cameraUbo?.indices?.inverseRadiiZ !==
+        C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES.inverseRadiiZ ||
+      identity?.cameraUbo?.indices?.maximumRadius !==
+        C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES.maximumRadius ||
+      !exactKeys(identity?.cameraUbo?.values, Object.keys(expectedCamera)) ||
+      Object.keys(expectedCamera).some(
+        (key) =>
+          !Object.is(identity.cameraUbo.values[key], expectedCamera[key]),
+      ) ||
+      identity?.cameraUbo?.valuesExact !== true
+    ) {
+      failures.push(
+        "webgpu: current-frame custom camera UBO is absent or inexact",
+      );
+    }
+    if (!legacyV6) {
+      const eventOnStability = imageFor("event-on")?.temporalStability;
+      const eventOnStates = [
+        ...(eventOnStability?.observations ?? []).map(
+          (observation) => observation.state,
+        ),
+        eventOnStability?.captureState,
+      ];
+      const captureMain = eventOnStability?.captureState?.mainPipeline;
+      const mainIdentity = identity?.mainPipeline;
+      const expectedFrameNumbers = [
+        ...(eventOnStability?.observations ?? []).map(
+          (observation) => observation.frameNumber,
+        ),
+        eventOnStability?.captureFrameNumber,
+      ];
+      const expectedPositiveDrawCount = captureMain?.draws?.reduce(
+        (sum, draw) => sum + draw.positiveDrawCount,
+        0,
+      );
+      if (
+        !exactKeys(mainIdentity, [
+          "method",
+          "stableFrameNumbers",
+          "selectedTileIds",
+          "meshIdentities",
+          "positiveDrawCount",
+          "currentFramePositiveDraw",
+          "cameraUboExact",
+          "stableCohortExact",
+        ]) ||
+        mainIdentity.method !== "globeRenderer.createTileCommands" ||
+        !sameOrdered(mainIdentity.stableFrameNumbers, expectedFrameNumbers) ||
+        !sameOrdered(
+          mainIdentity.selectedTileIds,
+          captureMain?.draws?.map((draw) => draw.tileId),
+        ) ||
+        !sameOrdered(
+          mainIdentity.meshIdentities,
+          captureMain?.draws?.map((draw) => draw.meshIdentity),
+        ) ||
+        mainIdentity.positiveDrawCount !== expectedPositiveDrawCount ||
+        !(mainIdentity.positiveDrawCount > 0) ||
+        mainIdentity.currentFramePositiveDraw !== true ||
+        mainIdentity.cameraUboExact !== true ||
+        mainIdentity.stableCohortExact !== true ||
+        eventOnStates.some(
+          (state) =>
+            state?.mainPipeline?.currentFramePositiveDraw !== true ||
+            state?.mainPipeline?.cameraUboExact !== true ||
+            state?.mainPipeline?.cohortExact !== true,
+        )
+      ) {
+        failures.push(
+          "webgpu: stable main-pipeline draw/camera cohort is absent or cold",
+        );
+      }
+    }
+    if (
+      identity?.eclipseBinding?.binding !==
+        C12_29_S5_CUSTOM_WEBGPU_ECLIPSE_BINDING ||
+      identity?.eclipseBinding?.offsetAligned !== true ||
+      identity?.eclipseBinding?.size !== 64 ||
+      !exactNumericArray(identity?.eclipseBinding?.payload, expectedPayload) ||
+      !exactNumericArray(
+        froundedShadowPayload(identity?.eclipseBinding?.block),
+        expectedPayload,
+      ) ||
+      identity?.eclipseBinding?.payloadExact !== true
+    ) {
+      failures.push("webgpu: binding-2 custom eclipse payload is wrong");
+    }
   }
   if (
     eventOn?.enabled !== true ||
@@ -3141,9 +3439,40 @@ function validateSession(session, runId, structural, failures) {
         sample.classificationF32 === "horizon" &&
         sample.geometryIdentity.horizonCompared === true &&
         sample.horizonRejectedF64 === true &&
-        sample.horizonRejectedF32 === true,
+        sample.horizonRejectedF32 === true &&
+        Object.is(sample.f64, 1) &&
+        Object.is(sample.f32, 1) &&
+        Object.is(sample.observedFactor, 1) &&
+        Object.is(sample.absoluteError, 0),
     );
+  const antipodeOffStates = [
+    ...(imageFor("antipode-off")?.temporalStability?.observations ?? []).map(
+      (observation) => observation.state,
+    ),
+    imageFor("antipode-off")?.temporalStability?.captureState,
+  ];
+  const antipodeOnStates = [
+    ...(imageFor("antipode-on")?.temporalStability?.observations ?? []).map(
+      (observation) => observation.state,
+    ),
+    imageFor("antipode-on")?.temporalStability?.captureState,
+  ];
+  const offContent =
+    imageFor("antipode-off")?.temporalStability?.captureState?.content;
+  const onContent =
+    imageFor("antipode-on")?.temporalStability?.captureState?.content;
   if (
+    (!legacyV6 &&
+      (antipode?.activeSemantics !==
+        "conservative-frame-active-per-fragment-horizon-v1" ||
+        antipode?.offActive !== false ||
+        typeof antipode?.onActive !== "boolean" ||
+        antipodeOffStates.some((state) => state?.eclipse?.active !== false) ||
+        antipodeOnStates.some(
+          (state) => state?.eclipse?.active !== antipode?.onActive,
+        ) ||
+        antipode?.stableTileMeshCohort !== true ||
+        !exactDeep(offContent, onContent))) ||
     !samePreparedContent(
       antipode?.preparedTupleBefore,
       antipode?.offPreparedTuple,
@@ -3152,12 +3481,22 @@ function validateSession(session, runId, structural, failures) {
       antipode?.offPreparedTuple,
       antipode?.onPreparedTuple,
     ) ||
-    antipode?.offPreparedTuple?.selectionRevision !==
-      antipode?.preparedTupleBefore?.selectionRevision +
-        (imageFor("antipode-off")?.temporalStability?.attemptedFrames ?? NaN) ||
-    antipode?.onPreparedTuple?.selectionRevision !==
-      antipode?.offPreparedTuple?.selectionRevision +
-        (imageFor("antipode-on")?.temporalStability?.attemptedFrames ?? NaN) ||
+    (legacyV6
+      ? antipode?.offPreparedTuple?.selectionRevision !==
+          antipode?.preparedTupleBefore?.selectionRevision +
+            (imageFor("antipode-off")?.temporalStability?.attemptedFrames ??
+              NaN) ||
+        antipode?.onPreparedTuple?.selectionRevision !==
+          antipode?.offPreparedTuple?.selectionRevision +
+            (imageFor("antipode-on")?.temporalStability?.attemptedFrames ?? NaN)
+      : !(
+          antipode?.offPreparedTuple?.selectionRevision >
+          antipode?.preparedTupleBefore?.selectionRevision
+        ) ||
+        !(
+          antipode?.onPreparedTuple?.selectionRevision >
+          antipode?.offPreparedTuple?.selectionRevision
+        )) ||
     antipode?.allCandidatesHorizonRejected !== antipodeSamplesValid ||
     antipode?.offOnByteIdentical !== antipodeImagesEqual ||
     antipodeImagesEqual !== true ||
@@ -3167,78 +3506,130 @@ function validateSession(session, runId, structural, failures) {
   }
 
   const pick = phases["behavioral-pick"];
-  const pickBefore = pick?.postcondition?.before;
-  const pickAfter = pick?.postcondition?.after;
+  const pickBefore = pick?.freshCohort?.before;
+  const pickAfter = pick?.freshCohort?.after;
   const expectedPickKind = renderer === "webgpu" ? "globe" : "undefined";
+  const validPickCohort = (cohort) =>
+    exactKeys(cohort, ["preparedTuple", "content"]) &&
+    exactPreparedTuple(cohort.preparedTuple) &&
+    Array.isArray(cohort.content) &&
+    cohort.content.length === cohort.preparedTuple.selectedTileIds.length &&
+    sameOrdered(
+      cohort.content.map((entry) => entry?.tileId),
+      cohort.preparedTuple.selectedTileIds,
+    ) &&
+    cohort.content.every(
+      (entry) =>
+        exactKeys(entry, ["tileId", "meshIdentity", "renderedMesh"]) &&
+        /^mesh-\d+$/u.test(entry.meshIdentity ?? "") &&
+        entry.renderedMesh === true,
+    );
+  const warmupResults = pick?.warmupResults;
+  const warmupResultsValid =
+    Array.isArray(warmupResults) &&
+    warmupResults.length === pick?.warmupAttempts &&
+    warmupResults.every(
+      (result) =>
+        exactKeys(result, [
+          "settled",
+          "renderPumpFrames",
+          "resultKind",
+          "resultPrimitiveIdentity",
+        ]) &&
+        result.settled === true &&
+        Number.isInteger(result.renderPumpFrames) &&
+        result.renderPumpFrames >= 1 &&
+        result.renderPumpFrames <=
+          C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames &&
+        (renderer === "webgl"
+          ? result.resultKind === "undefined" &&
+            result.resultPrimitiveIdentity === false
+          : (result.resultKind === "undefined" &&
+              result.resultPrimitiveIdentity === false) ||
+            (result.resultKind === "globe" &&
+              result.resultPrimitiveIdentity === true)),
+    );
   if (
-    !exactKeys(pick, [
-      "method",
-      "invoked",
-      "awaited",
-      "settled",
-      "renderPumpFrames",
-      "maximumPumpFrames",
-      "directUpdateForPickCall",
-      "pickableBefore",
-      "pickableRequested",
-      "pickIdAllocated",
-      "pickIdKey",
-      "pickIdRegistryOwnsGlobe",
-      "pickColorMirrorExact",
-      "updateForPickObserved",
-      "updateForPickCalls",
-      "resultKind",
-      "resultPrimitiveIdentity",
-      "pickableAfterRestore",
-      "pickableRestored",
-      "postcondition",
-    ]) ||
-    !exactKeys(pick?.postcondition, [
-      "before",
-      "after",
-      "surfaceRadius",
-      "selectionRevision",
-      "selectedTileIds",
-    ]) ||
-    pick?.method !== "scene.pickAsync" ||
-    pick?.invoked !== true ||
-    pick?.awaited !== true ||
-    pick?.settled !== true ||
-    !Number.isInteger(pick?.renderPumpFrames) ||
-    pick.renderPumpFrames < 1 ||
-    pick.renderPumpFrames > C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames ||
-    pick?.maximumPumpFrames !== C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames ||
-    pick?.directUpdateForPickCall !== false ||
-    pick?.pickableBefore !== false ||
-    pick?.pickableRequested !== true ||
-    pick?.pickIdAllocated !== true ||
-    !Number.isInteger(pick?.pickIdKey) ||
-    !(pick.pickIdKey > 0) ||
-    pick?.pickIdRegistryOwnsGlobe !== true ||
-    pick?.pickColorMirrorExact !== true ||
-    pick?.updateForPickObserved !== true ||
-    !Number.isInteger(pick?.updateForPickCalls) ||
-    pick.updateForPickCalls < 1 ||
-    pick.updateForPickCalls > C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames ||
-    pick.updateForPickCalls > pick.renderPumpFrames ||
-    pick?.resultKind !== expectedPickKind ||
-    pick?.resultPrimitiveIdentity !== (renderer === "webgpu") ||
-    pick?.pickableAfterRestore !== false ||
-    pick?.pickableRestored !== true ||
-    !exactFreshUnpreparedTuple(pickBefore) ||
-    !exactPreparedTuple(pickAfter) ||
-    !sameOrdered(pickBefore?.selectedTileIds, pickAfter?.selectedTileIds) ||
-    !samePreparedContent(pickAfter, preparationTuple) ||
-    !(
-      pickAfter?.selectionRevision >
-      antipode?.onPreparedTuple?.selectionRevision
-    ) ||
-    pick?.postcondition?.surfaceRadius !== pickAfter?.surfaceRadius ||
-    pick?.postcondition?.selectionRevision !== pickAfter?.selectionRevision ||
-    !sameOrdered(
-      pick?.postcondition?.selectedTileIds,
-      pickAfter?.selectedTileIds,
-    )
+    legacyV6
+      ? !validC1229S5CustomV6BehavioralPick(
+          pick,
+          renderer,
+          preparationTuple,
+          antipode,
+        )
+      : !exactKeys(pick, [
+          "method",
+          "warmupMethod",
+          "warmupAttempts",
+          "maximumWarmupAttempts",
+          "warmupReady",
+          "warmupResults",
+          "invoked",
+          "awaited",
+          "settled",
+          "renderPumpFrames",
+          "maximumPumpFrames",
+          "pickableBefore",
+          "pickableRequested",
+          "pickIdAllocated",
+          "pickIdKey",
+          "pickIdRegistryOwnsGlobe",
+          "pickColorMirrorExact",
+          "resultKind",
+          "resultPrimitiveIdentity",
+          "pickableAfterRestore",
+          "pickableRestored",
+          "freshCohort",
+        ]) ||
+        !exactKeys(pick?.freshCohort, ["before", "after", "stable"]) ||
+        pick?.method !== "scene.pickAsync" ||
+        pick?.warmupMethod !== "scene.pickAsync" ||
+        !Number.isInteger(pick?.warmupAttempts) ||
+        pick.warmupAttempts < 1 ||
+        pick.warmupAttempts >
+          C12_29_S5_CUSTOM_SCENE.maximumPickWarmupAttempts ||
+        pick?.maximumWarmupAttempts !==
+          C12_29_S5_CUSTOM_SCENE.maximumPickWarmupAttempts ||
+        pick?.warmupReady !== true ||
+        !warmupResultsValid ||
+        warmupResults.at(-1)?.resultKind !== expectedPickKind ||
+        warmupResults.at(-1)?.resultPrimitiveIdentity !==
+          (renderer === "webgpu") ||
+        pick?.invoked !== true ||
+        pick?.awaited !== true ||
+        pick?.settled !== true ||
+        !Number.isInteger(pick?.renderPumpFrames) ||
+        pick.renderPumpFrames < 1 ||
+        pick.renderPumpFrames > C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames ||
+        pick?.maximumPumpFrames !==
+          C12_29_S5_CUSTOM_SCENE.maximumPickPumpFrames ||
+        pick?.pickableBefore !== false ||
+        pick?.pickableRequested !== true ||
+        pick?.pickIdAllocated !== true ||
+        !Number.isInteger(pick?.pickIdKey) ||
+        !(pick.pickIdKey > 0) ||
+        pick?.pickIdRegistryOwnsGlobe !== true ||
+        pick?.pickColorMirrorExact !== true ||
+        pick?.resultKind !== expectedPickKind ||
+        pick?.resultPrimitiveIdentity !== (renderer === "webgpu") ||
+        pick?.pickableAfterRestore !== false ||
+        pick?.pickableRestored !== true ||
+        !validPickCohort(pickBefore) ||
+        !validPickCohort(pickAfter) ||
+        !exactDeep(pickBefore?.content, pickAfter?.content) ||
+        !samePreparedContent(
+          pickBefore?.preparedTuple,
+          pickAfter?.preparedTuple,
+        ) ||
+        !(
+          pickBefore?.preparedTuple?.selectionRevision >
+          antipode?.onPreparedTuple?.selectionRevision
+        ) ||
+        !(
+          pickAfter?.preparedTuple?.selectionRevision >
+          pickBefore?.preparedTuple?.selectionRevision
+        ) ||
+        pick?.freshCohort?.stable !== true
   ) {
     failures.push(
       `${renderer}: real pickAsync route/postcondition is not exact`,
@@ -3315,6 +3706,7 @@ function validateSession(session, runId, structural, failures) {
     !validInstrumentationRestorations(
       cleanupPhase.instrumentationRestorations,
       renderer,
+      legacyV6,
     ) ||
     cleanupPhase.defaultEllipsoidRestored !== true ||
     session.cleanup?.complete !== true ||
@@ -3329,7 +3721,10 @@ function validateSession(session, runId, structural, failures) {
   }
 }
 
-function validateProvenance(provenance, structural) {
+function validateProvenance(provenance, structural, legacyV6 = false) {
+  const sourceFiles = legacyV6
+    ? C1229_S5_CUSTOM_V6_SOURCE_FILES
+    : C12_29_S5_CUSTOM_SOURCE_FILES;
   if (
     !exactKeys(provenance, [
       "ok",
@@ -3341,6 +3736,7 @@ function validateProvenance(provenance, structural) {
       "generatedShaders",
       "buildSourceIdentity",
       "servedEntryIdentity",
+      ...(legacyV6 ? [] : ["servedHarnessIdentity"]),
       "xys",
       "sameTaskCapture",
       "harnessStable",
@@ -3353,22 +3749,18 @@ function validateProvenance(provenance, structural) {
     !/^[0-9a-f]{40}$/u.test(provenance?.gitHead?.start ?? "") ||
     provenance.gitHead.end !== provenance.gitHead.start ||
     provenance.gitHead.stable !== true ||
-    provenance?.sourceBoundary?.count !==
-      C12_29_S5_CUSTOM_SOURCE_FILES.length ||
-    !sameOrdered(
-      provenance?.sourceBoundary?.files,
-      C12_29_S5_CUSTOM_SOURCE_FILES,
-    ) ||
+    provenance?.sourceBoundary?.count !== sourceFiles.length ||
+    !sameOrdered(provenance?.sourceBoundary?.files, sourceFiles) ||
     provenance?.sourceBoundary?.allReadable !== true
   ) {
     structural.push("exact start/end source provenance is absent");
   }
   if (
     !Array.isArray(provenance?.localFiles) ||
-    provenance.localFiles.length !== C12_29_S5_CUSTOM_LOCAL_FILES.length ||
+    provenance.localFiles.length !== sourceFiles.length ||
     provenance.localFiles.some(
       (entry, index) =>
-        entry.file !== C12_29_S5_CUSTOM_LOCAL_FILES[index] ||
+        entry.file !== sourceFiles[index] ||
         !fingerprint(entry.start) ||
         !fingerprint(entry.end) ||
         entry.start.byteLength !== entry.end.byteLength ||
@@ -3432,6 +3824,67 @@ function validateProvenance(provenance, structural) {
       "served entry identity is not exact against stable start/end bytes",
     );
   }
+  if (!legacyV6) {
+    const harnessFile =
+      "Tools/visual-regression/c12-29-s5-custom-ellipsoid-harness.html";
+    const harnessRoute = `/${harnessFile}`;
+    const identity = provenance?.servedHarnessIdentity;
+    const localHarness = provenance?.localFiles?.find(
+      (entry) => entry?.file === harnessFile,
+    );
+    const served = identity?.served;
+    if (
+      !exactKeys(identity, [
+        "ok",
+        "reasons",
+        "expectedLabels",
+        "observedLabels",
+        "route",
+        "served",
+        "localStart",
+        "localEnd",
+        "stable",
+      ]) ||
+      identity.ok !== true ||
+      !Array.isArray(identity.reasons) ||
+      identity.reasons.length !== 0 ||
+      !sameOrdered(identity.expectedLabels, C12_29_S5_CUSTOM_RENDERERS) ||
+      !sameOrdered(identity.observedLabels, C12_29_S5_CUSTOM_RENDERERS) ||
+      identity.route !== harnessRoute ||
+      !fingerprint(identity.localStart) ||
+      !fingerprint(identity.localEnd) ||
+      identity.localStart.byteLength !== identity.localEnd.byteLength ||
+      identity.localStart.sha256 !== identity.localEnd.sha256 ||
+      identity.localStart.byteLength !== localHarness?.start?.byteLength ||
+      identity.localStart.sha256 !== localHarness?.start?.sha256 ||
+      identity.localEnd.byteLength !== localHarness?.end?.byteLength ||
+      identity.localEnd.sha256 !== localHarness?.end?.sha256 ||
+      !Array.isArray(served) ||
+      served.length !== C12_29_S5_CUSTOM_RENDERERS.length ||
+      served.some(
+        (entry, index) =>
+          !exactKeys(entry, [
+            "renderer",
+            "route",
+            "ok",
+            "status",
+            "byteLength",
+            "sha256",
+          ]) ||
+          entry.renderer !== C12_29_S5_CUSTOM_RENDERERS[index] ||
+          entry.route !== harnessRoute ||
+          entry.ok !== true ||
+          entry.status !== 200 ||
+          entry.byteLength !== identity.localStart.byteLength ||
+          entry.sha256 !== identity.localStart.sha256,
+      ) ||
+      identity.stable !== true
+    ) {
+      structural.push(
+        "served owned harness bytes are not exact against the stable local harness",
+      );
+    }
+  }
   if (
     !Array.isArray(provenance?.xys) ||
     provenance.xys.length < 1 ||
@@ -3441,9 +3894,33 @@ function validateProvenance(provenance, structural) {
     ) ||
     new Set(provenance.xys.map((entry) => `${entry?.renderer}/${entry?.file}`))
       .size !== provenance.xys.length ||
+    (!legacyV6 &&
+      new Set(
+        provenance.xys.map(
+          (entry) => `${entry?.renderer}/${entry?.requestOrdinal}`,
+        ),
+      ).size !== provenance.xys.length) ||
     provenance.xys.some(
       (entry) =>
+        !exactKeys(
+          entry,
+          legacyV6
+            ? ["renderer", "file", "localStart", "localEnd", "served"]
+            : [
+                "renderer",
+                "epochId",
+                "requestOrdinal",
+                "file",
+                "localStart",
+                "localEnd",
+                "served",
+              ],
+        ) ||
         !C12_29_S5_CUSTOM_RENDERERS.includes(entry?.renderer) ||
+        (!legacyV6 &&
+          (!isC1229S5CustomUuidV4(entry?.epochId) ||
+            !Number.isInteger(entry?.requestOrdinal) ||
+            entry.requestOrdinal < 1)) ||
         !/^IAU2006_XYS_\d+\.json$/u.test(entry?.file ?? "") ||
         !fingerprint(entry.localStart) ||
         !fingerprint(entry.localEnd) ||
@@ -3454,7 +3931,9 @@ function validateProvenance(provenance, structural) {
         entry.localStart.byteLength !== entry.served.byteLength,
     )
   ) {
-    structural.push("served XYS bytes are not equal to stable local bytes");
+    structural.push(
+      "owned-epoch XYS responses are duplicate, out of epoch, or not exact local bytes",
+    );
   }
   const helperFile = "Tools/visual-regression/lib/same-task-capture.mjs";
   const localHelper = provenance?.localFiles?.find(
@@ -3483,11 +3962,17 @@ function validateProvenance(provenance, structural) {
   }
 }
 
-export function foldC1229S5CustomEllipsoidGate(report) {
+function foldC1229S5CustomEllipsoidGateVersion(report, legacyV6 = false) {
   const structuralReasons = [];
   const failureReasons = [];
+  const expectedSchema = legacyV6
+    ? C1229_S5_CUSTOM_V6_SCHEMA
+    : C12_29_S5_CUSTOM_SCHEMA;
+  const sourceFiles = legacyV6
+    ? C1229_S5_CUSTOM_V6_SOURCE_FILES
+    : C12_29_S5_CUSTOM_SOURCE_FILES;
   if (
-    report?.schema !== C12_29_S5_CUSTOM_SCHEMA ||
+    report?.schema !== expectedSchema ||
     !isC1229S5CustomUuidV4(report?.runId) ||
     report?.aggregation !== C12_29_S5_CUSTOM_AGGREGATION ||
     report?.incomplete !== false
@@ -3565,7 +4050,7 @@ export function foldC1229S5CustomEllipsoidGate(report) {
   ) {
     structuralReasons.push("frozen custom-ellipsoid contract is missing");
   }
-  validateProvenance(report?.provenance, structuralReasons);
+  validateProvenance(report?.provenance, structuralReasons, legacyV6);
   const sessions = report?.sessions;
   if (
     !Array.isArray(sessions) ||
@@ -3578,7 +4063,35 @@ export function foldC1229S5CustomEllipsoidGate(report) {
     structuralReasons.push("sessions are not exact WebGL then WebGPU order");
   } else {
     for (const session of sessions) {
-      validateSession(session, report.runId, structuralReasons, failureReasons);
+      validateSession(
+        session,
+        report.runId,
+        structuralReasons,
+        failureReasons,
+        legacyV6,
+      );
+    }
+    if (
+      !legacyV6 &&
+      sessions.some((session) => {
+        const epoch = session.transport?.measurementEpoch;
+        const entries = report?.provenance?.xys?.filter(
+          (entry) => entry?.renderer === session.renderer,
+        );
+        return (
+          !Array.isArray(entries) ||
+          entries.length < 1 ||
+          entries.some(
+            (entry) =>
+              entry.epochId !== epoch?.id ||
+              entry.requestOrdinal > (epoch?.lastResponseOrdinal ?? -1),
+          )
+        );
+      })
+    ) {
+      structuralReasons.push(
+        "renderer XYS proof is not bound to its owned measurement epoch",
+      );
     }
   }
   const cross = report?.crossBackendOracle;
@@ -3686,7 +4199,7 @@ export function foldC1229S5CustomEllipsoidGate(report) {
     structuralReasons,
     failureReasons,
     checks: {
-      sourceBoundaryCount: C12_29_S5_CUSTOM_SOURCE_FILES.length,
+      sourceBoundaryCount: sourceFiles.length,
       buildSourceBoundaryCount: C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.length,
       rendererCount: Array.isArray(sessions) ? sessions.length : 0,
       phaseCountPerRenderer: C12_29_S5_CUSTOM_PHASES.length,
@@ -3695,7 +4208,15 @@ export function foldC1229S5CustomEllipsoidGate(report) {
   };
 }
 
-export function validateC1229S5CustomFinalArtifact(artifact) {
+export function foldC1229S5CustomEllipsoidGate(report) {
+  return foldC1229S5CustomEllipsoidGateVersion(report, false);
+}
+
+export function foldC1229S5CustomV6EllipsoidGate(report) {
+  return foldC1229S5CustomEllipsoidGateVersion(report, true);
+}
+
+function validateC1229S5CustomFinalArtifactVersion(artifact, legacyV6 = false) {
   const reasons = [];
   try {
     const canonicalBytes = stableC1229S5CustomJson(artifact, 2);
@@ -3710,7 +4231,10 @@ export function validateC1229S5CustomFinalArtifact(artifact) {
     );
     return { ok: false, reasons };
   }
-  if (artifact?.schema !== C12_29_S5_CUSTOM_SCHEMA) {
+  if (
+    artifact?.schema !==
+    (legacyV6 ? C1229_S5_CUSTOM_V6_SCHEMA : C12_29_S5_CUSTOM_SCHEMA)
+  ) {
     reasons.push("final schema is invalid");
   }
   if (!isC1229S5CustomUuidV4(artifact?.runId)) {
@@ -3750,7 +4274,12 @@ export function validateC1229S5CustomFinalArtifact(artifact) {
       reasons.push("ERROR artifact top-level keys are not exact");
     }
     if (
-      !validCustomErrorDiagnostics(artifact?.diagnostics) ||
+      !(legacyV6
+        ? validCustomErrorDiagnosticsForSchema(
+            artifact?.diagnostics,
+            C1229_S5_CUSTOM_V6_DIAGNOSTICS_SCHEMA,
+          )
+        : validCustomErrorDiagnostics(artifact?.diagnostics)) ||
       typeof artifact?.error !== "string" ||
       artifact.error.length === 0 ||
       artifact.error.length > 65_536
@@ -3778,7 +4307,7 @@ export function validateC1229S5CustomFinalArtifact(artifact) {
     ) {
       reasons.push("final artifact top-level keys are not exact");
     }
-    const folded = foldC1229S5CustomEllipsoidGate(artifact);
+    const folded = foldC1229S5CustomEllipsoidGateVersion(artifact, legacyV6);
     if (
       artifact.status !== folded.status ||
       artifact.exitCode !== folded.exitCode ||
@@ -3791,6 +4320,14 @@ export function validateC1229S5CustomFinalArtifact(artifact) {
     }
   }
   return { ok: reasons.length === 0, reasons };
+}
+
+export function validateC1229S5CustomFinalArtifact(artifact) {
+  return validateC1229S5CustomFinalArtifactVersion(artifact, false);
+}
+
+export function validateC1229S5CustomV6FinalArtifact(artifact) {
+  return validateC1229S5CustomFinalArtifactVersion(artifact, true);
 }
 
 export default {
@@ -3808,4 +4345,5 @@ export default {
   validateC1229S5CustomEphemerisLineage,
   foldC1229S5CustomEllipsoidGate,
   validateC1229S5CustomFinalArtifact,
+  validateC1229S5CustomV6FinalArtifact,
 };
