@@ -19,7 +19,7 @@
 // the scale is exactly 1.0, i.e. the historical constant, bit-for-bit.
 //
 // Soft terminator: the Sun is not a point, and from the Moon it subtends an
-// angular radius of `asin(SOLAR_RADIUS / d)` ≈ 0.2664° ≈ 4.649e-3 rad. Inside
+// angular radius of `asin(SOLAR_RADIUS / d)` ≈ 0.2665° ≈ 4.650e-3 rad. Inside
 // that band around the geometric terminator the solar disc is partially below
 // the local horizon, so the irradiance falls off smoothly instead of being
 // clipped by `max(N·L, 0)`. Off position: softness is exactly 0.0 and both
@@ -60,8 +60,8 @@ const ASTRONOMICAL_UNIT = 1.495978707e11;
  * Mean solar angular RADIUS seen from the Moon, in radians — the width of the
  * terminator penumbra in N·L units.
  *
- * `asin(CesiumMath.SOLAR_RADIUS / ASTRONOMICAL_UNIT)` = 4.6491e-3 rad =
- * 0.26638°, i.e. a 0.5328° angular diameter. Rounding the solar diameter to
+ * `asin(CesiumMath.SOLAR_RADIUS / ASTRONOMICAL_UNIT)` = 4.6505e-3 rad =
+ * 0.26645°, i.e. a 0.5329° angular diameter. Rounding the solar diameter to
  * 0.5° instead gives a half-angle of 4.3633e-3 rad, 6.6% smaller; the
  * difference is far below one pixel at any rendered disc size, but the
  * unrounded figure costs the same.

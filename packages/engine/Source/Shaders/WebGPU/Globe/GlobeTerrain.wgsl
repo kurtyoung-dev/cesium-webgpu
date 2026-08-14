@@ -3226,7 +3226,7 @@ fn czm_fastApproximateAtan2(x: f32, y: f32) -> f32 {
 // only the direct exaggerated ECEF varying scaled by those inverse ranges.
 // Its sub-metre f32 quantization is tiny relative to the eclipse footprint,
 // and no pass-camera reconstruction or near-parallel body subtraction occurs.
-const GLOBE_ECLIPSE_SOLAR_RADIUS: f32 = 695500000.0;
+const GLOBE_ECLIPSE_SOLAR_RADIUS: f32 = 695700000.0;
 const GLOBE_ECLIPSE_LUNAR_RADIUS: f32 = 1737400.0;
 const GLOBE_ECLIPSE_F32_SAFETY_FACTOR: f32 = 0.999996185302734375;
 

@@ -295,7 +295,7 @@ const PROBE_CONSTANTS = {
 // constant set is caught in `node --test` and again before the browser
 // launches — never at step 0 of a browser run.
 function roiFeasibility(k, sunDistanceMeters) {
-  const SOLAR_RADIUS = 6.955e8;
+  const SOLAR_RADIUS = 6.957e8;
   const aspect = k.viewportWidth / k.viewportHeight;
   const fov = (k.fovDeg * Math.PI) / 180.0;
   // Cesium: fovy = 2*atan(tan(fov/2)/aspect) when aspect > 1, else fov.
@@ -862,7 +862,7 @@ const PROFILE = async ({ iso, vantages, k }) => {
         );
         const limbWorld = C.Cartesian3.add(
           sunPos,
-          C.Cartesian3.multiplyByScalar(camUp, 6.955e8, new C.Cartesian3()),
+          C.Cartesian3.multiplyByScalar(camUp, 6.957e8, new C.Cartesian3()),
           new C.Cartesian3(),
         );
         const limb = C.SceneTransforms.worldToWindowCoordinates(

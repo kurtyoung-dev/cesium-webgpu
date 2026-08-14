@@ -717,26 +717,26 @@ test("both toggles are registered in AtmosphericConditions, default ON", () => {
 
 test("PREDICTIONS: the numbers the Edge run is measured against", () => {
   // Solar angular radius from the Moon at 1 AU.
-  assert.ok(Math.abs(W - 0.00464914709173779) < 1e-15);
+  assert.ok(Math.abs(W - 0.004650484023614976) < 1e-15);
   // Peak μ0 excess, at exactly the geometric terminator.
-  assert.ok(Math.abs(W / 4 - 0.0011622867729344476) < 1e-15);
+  assert.ok(Math.abs(W / 4 - 0.001162621005903744) < 1e-15);
   assert.equal(refMu0(0.0, W), W / 4);
 
   // Screen width of the softened band at a face-on terminator: the surface
   // point at angle θ past the sub-observer point has N·L = sin θ and screen
   // x = R·sin θ, so |N·L| < w ⇔ |x| < R·w, i.e. a band of 2·R·w pixels.
   const bandPx = (radiusPx) => 2 * radiusPx * W;
-  assert.ok(Math.abs(bandPx(95) - 0.8833379474) < 1e-9); // ~190 px zoomed disc
-  assert.ok(Math.abs(bandPx(8) - 0.0743863535) < 1e-9); // ~16 px default disc
+  assert.ok(Math.abs(bandPx(95) - 0.8835919644868455) < 1e-9); // ~190 px zoomed disc
+  assert.ok(Math.abs(bandPx(8) - 0.07440774437783962) < 1e-9); // ~16 px default disc
 
   // Radiance change at the terminator pixel, through Lommel-Seeliger with a
   // representative μ ≈ 0.5: ΔLS = 2·(w/4)/((w/4) + μ + 1e-4) − 0.
   const mu = 0.5;
   const mu0 = refMu0(0.0, W);
   const deltaLS = (2 * mu0) / (mu0 + mu + 1e-4);
-  assert.ok(Math.abs(deltaLS - 0.004637) < 1e-6);
+  assert.ok(Math.abs(deltaLS - 0.004639) < 1e-6);
   // Times a mid-grey lunar albedo (~0.35) that is ~1.6e-3 in linear light.
-  assert.ok(Math.abs(deltaLS * 0.35 - 0.001623) < 1e-6);
+  assert.ok(Math.abs(deltaLS * 0.35 - 0.001624) < 1e-6);
 
   // C12-21 at the three canonical phases, with earthshine enabled. The blue
   // channel is the largest: 0.7 × 0.08 = 0.056 linear on the fully unlit limb.

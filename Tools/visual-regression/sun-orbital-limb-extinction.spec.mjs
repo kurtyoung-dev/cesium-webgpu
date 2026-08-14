@@ -36,8 +36,8 @@
 // reddening, the publication to both backends. What IS still missing is
 // recorded on the C12-29 S4 row: the extinction is evaluated on the
 // camera->sun-CENTRE ray only, so the whole billboard gets one uniform tint,
-// while a real setting sun is graded ACROSS its disc. The sun's 0.5327-deg
-// angular diameter maps to a 21.33 km span in tangent height here, and the
+// while a real setting sun is graded ACROSS its disc. The sun's 0.5329-deg
+// angular diameter maps to a 21.34 km span in tangent height here, and the
 // upper-limb / lower-limb ratio measured with THIS integrator is strongly
 // altitude- and channel-dependent — red / green / blue: 1.02 / 1.05 / 1.12
 // at 60 km, 1.18 / 1.47 / 2.33 at 40 km, 2.27 / 6.16 / 4.8e1 at 25 km,
@@ -234,7 +234,7 @@ test("S4 equivalence gate: 16 samples reproduce a 40,000-sample reference", asyn
 
 test("S4 deferred limit: differential extinction across the disc, measured", async () => {
   const { transmittanceAt } = await fixture();
-  const SOLAR_RADIUS = 6.955e8;
+  const SOLAR_RADIUS = 6.957e8;
   const rCam = R_EARTH + ALTITUDE;
   // Angular half-diameter of the sun -> the tangent-height span it subtends
   // at the limb. d(theta)/d(tangent radius) = 1 / (rCam * sqrt(1-(R/rCam)^2)).
@@ -242,8 +242,8 @@ test("S4 deferred limit: differential extinction across the disc, measured", asy
   const dThetaPerMetre = 1.0 / (rCam * Math.sqrt(1.0 - (R_EARTH / rCam) ** 2));
   const spanKm = (2.0 * angRadius) / dThetaPerMetre / 1000.0;
   assert.ok(
-    Math.abs(spanKm - 21.33) < 0.15,
-    `the 0.53-deg disc spans ~21.33 km of tangent height (${spanKm})`,
+    Math.abs(spanKm - 21.34) < 0.15,
+    `the 0.53-deg disc spans ~21.34 km of tangent height (${spanKm})`,
   );
   const halfKm = 0.5 * spanKm;
   const ratio = (h, ch) => {

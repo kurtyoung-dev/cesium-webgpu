@@ -355,7 +355,7 @@ function provenance() {
 const DERIVE_CANDIDATES = async () => {
   const C = await import("/Build/CesiumUnminified/index.js");
 
-  const SOLAR_RADIUS = 6.955e8;
+  const SOLAR_RADIUS = 6.957e8;
   const LUNAR_RADIUS = 1737400.0;
   const m3 = new C.Matrix3();
   const sunScratch = new C.Cartesian3();
@@ -485,7 +485,7 @@ const REFINE_VANTAGES = async ({
 }) => {
   const C = await import("/Build/CesiumUnminified/index.js");
 
-  const SOLAR_RADIUS = 6.955e8;
+  const SOLAR_RADIUS = 6.957e8;
   const LUNAR_RADIUS = 1737400.0;
   const m3 = new C.Matrix3();
   const sunScratch = new C.Cartesian3();

@@ -369,7 +369,7 @@ function provenance() {
 const DERIVE_ECLIPSE_INSTANT = async () => {
   const C = await import("/Build/CesiumUnminified/index.js");
 
-  const SOLAR_RADIUS = 6.955e8;
+  const SOLAR_RADIUS = 6.957e8;
   const LUNAR_RADIUS = 1737400.0;
 
   const m3 = new C.Matrix3();
@@ -797,7 +797,7 @@ const SWEEP = async ({ iso, startElevDeg, endElevDeg, steps }) => {
       );
       const limbWorld = C.Cartesian3.add(
         sunPos,
-        C.Cartesian3.multiplyByScalar(camUp, 6.955e8, new C.Cartesian3()),
+        C.Cartesian3.multiplyByScalar(camUp, 6.957e8, new C.Cartesian3()),
         new C.Cartesian3(),
       );
       const limb = C.SceneTransforms.worldToWindowCoordinates(
@@ -1141,7 +1141,7 @@ const ECLIPSE_INSTANT = async ({ iso, lat, lon }) => {
     );
     const limbWorld = C.Cartesian3.add(
       sunPos,
-      C.Cartesian3.multiplyByScalar(camUp, 6.955e8, new C.Cartesian3()),
+      C.Cartesian3.multiplyByScalar(camUp, 6.957e8, new C.Cartesian3()),
       new C.Cartesian3(),
     );
     const limb = C.SceneTransforms.worldToWindowCoordinates(

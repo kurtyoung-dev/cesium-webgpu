@@ -7,6 +7,7 @@
  * @private
  * @module WebGPUEnvironmentRenderer
  */
+import { ASTRONOMICAL_UNIT_METRES } from "../../Core/AstronomyEngineEphemerisProvider.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import CesiumMath from "../../Core/Math.js";
 import createGuid from "../../Core/createGuid.js";
@@ -59,6 +60,8 @@ import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 // Per-device shader module cache so two Sun / Moon instances on the same
 // `GPUDevice` share one compiled `GPUShaderModule`.
 const _envShaderModuleCaches = new WeakMap();
+const DEFAULT_SUN_ANGULAR_HALF_SIZE =
+  CesiumMath.SOLAR_RADIUS / ASTRONOMICAL_UNIT_METRES;
 
 function getEnvShaderModuleCache(device) {
   let cache = _envShaderModuleCaches.get(device);
@@ -625,9 +628,12 @@ function packSunUniforms(uniformData, frameState, glowFactor, gamma) {
   const sunSizeScale = 1.0 + 2.0 * glowLengthTS;
   const sunPos = uniformState.sunPositionWC ?? defaultSunPosition;
   const sunDist = Cartesian3.distance(sunPos, frameState.camera.positionWC);
-  // Solar angular half-size (radians); fall back to ~0.0046 (the real solar
-  // angular radius at 1 AU) if the distance is unavailable.
-  const angHalf = sunDist > 0.0 ? CesiumMath.SOLAR_RADIUS / sunDist : 0.0046;
+  // Solar angular half-size (radians); fall back to the nominal solar radius
+  // at the exact IAU astronomical unit if the distance is unavailable.
+  const angHalf =
+    sunDist > 0.0
+      ? CesiumMath.SOLAR_RADIUS / sunDist
+      : DEFAULT_SUN_ANGULAR_HALF_SIZE;
   const proj = uniformState.projection;
   uniformData[24] = angHalf * Math.abs(proj[0]) * sunSizeScale; // sunSize.x
   uniformData[25] = angHalf * Math.abs(proj[5]) * sunSizeScale; // sunSize.y

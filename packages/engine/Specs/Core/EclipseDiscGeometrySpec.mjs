@@ -78,7 +78,7 @@ test("disc geometry publishes the exact Cesium radii and preserves caller identi
   assert.equal(result.moonDirectionWC, moonDirectionIdentity);
   assert.equal(result.solarRadius, CesiumMath.SOLAR_RADIUS);
   assert.equal(result.lunarRadius, CesiumMath.LUNAR_RADIUS);
-  assert.equal(result.solarRadius, 695500000.0);
+  assert.equal(result.solarRadius, 695700000.0);
   assert.equal(result.lunarRadius, 1737400.0);
   close(result.solarAngularRadius, 0.01);
   close(result.lunarAngularRadius, 0.009);

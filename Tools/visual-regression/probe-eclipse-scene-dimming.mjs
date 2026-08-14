@@ -500,7 +500,7 @@ function provenance() {
 const DERIVE_ECLIPSE_LADDER = async ({ fixedTargets }) => {
   const C = await import("/Build/CesiumUnminified/index.js");
 
-  const SOLAR_RADIUS = 6.955e8;
+  const SOLAR_RADIUS = 6.957e8;
   const LUNAR_RADIUS = 1737400.0;
 
   const m3 = new C.Matrix3();

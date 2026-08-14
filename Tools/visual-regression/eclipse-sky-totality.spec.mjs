@@ -1781,7 +1781,7 @@ test("FIXTURE SELECTION: a vantage satisfying EVERY lane constraint exists (pure
   //
   // This runs the SAME predicates the probe now uses over the SAME vantage grid
   // with real ephemeris, and asserts a satisfying vantage exists — no browser.
-  const SOLAR_RADIUS = 6.955e8;
+  const SOLAR_RADIUS = 6.957e8;
   const LUNAR_RADIUS = 1737400.0;
   const clampUnit = (x) => (x < -1 ? -1 : x > 1 ? 1 : x);
   const m3 = new Matrix3();

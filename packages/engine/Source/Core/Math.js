@@ -167,11 +167,13 @@ CesiumMath.EPSILON21 = 0.000000000000000000001;
 CesiumMath.GRAVITATIONALPARAMETER = 3.986004418e14;
 
 /**
- * Radius of the sun in meters: 6.955e8
+ * The IAU 2015 Resolution B3 nominal solar-radius conversion constant in
+ * meters, exactly 6.957e8. This is a nominal conversion constant, not a
+ * measured true radius.
  * @type {number}
  * @constant
  */
-CesiumMath.SOLAR_RADIUS = 6.955e8;
+CesiumMath.SOLAR_RADIUS = 6.957e8;
 
 /**
  * The mean radius of the moon, according to the "Report of the IAU/IAG Working Group on

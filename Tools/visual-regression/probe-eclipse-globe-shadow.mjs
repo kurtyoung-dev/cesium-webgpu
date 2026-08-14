@@ -43,7 +43,7 @@ const VIEWPORT = { width: 960, height: 960 };
 // Whole-disc framing leaves sunlit pixels outside the broad penumbra, making
 // "spatial shadow" distinguishable from a uniform scene-light multiplier.
 const CAMERA_HEIGHT = 8_000_000.0;
-const SOLAR_RADIUS = 6.955e8;
+const SOLAR_RADIUS = 6.957e8;
 const LUNAR_RADIUS = 1_737_400.0;
 const WATCHDOG_MS = 300_000;
 

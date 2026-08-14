@@ -19,7 +19,7 @@ There is no bug to fix — there is a missing subsystem. Sun occlusion in this e
 
 **Moon: nothing, confirmed at code level.** `eclipse` has zero hits in `packages/engine/Source`; `umbra`/`penumbra` appear only in an unrelated CSM comment (`WebGPUCSMRenderer.ts:1348-1350`). The only occluder ever constructed is the Earth sphere. No moon reference in `Sun.js`, no occlusion logic in `Moon.js`. A sun-behind-moon frame renders both bodies independently — the moon merely paints over the sun quad by depth/draw order, with zero light coupling.
 
-**Everything an analytic fix needs already exists per frame:** Simon1994 moon position in ECEF meters (`Moon.js:121-175`, publishing `frameState.moonDirectionWC` + `moonPhaseFraction`), `uniformState.sunPositionWC`, `CesiumMath.SOLAR_RADIUS = 6.955e8` and `LUNAR_RADIUS = 1737400` (`Core/Math.js:174,183`). No external data required.
+**Everything an analytic fix needs already exists per frame:** Simon1994 moon position in ECEF meters (`Moon.js:121-175`, publishing `frameState.moonDirectionWC` + `moonPhaseFraction`), `uniformState.sunPositionWC`, `CesiumMath.SOLAR_RADIUS = 6.957e8` and `LUNAR_RADIUS = 1737400` (`Core/Math.js:174,183`). No external data required.
 
 ---
 

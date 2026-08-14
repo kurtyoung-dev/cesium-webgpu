@@ -1052,7 +1052,7 @@ test("canonical-radius point geometry is total at all four requested observation
     );
     provider.compute(JulianDate.fromIso8601(observation.iso8601), sample);
     computeEclipseDiscGeometry(sample, observerPosition, geometry);
-    assert.equal(geometry.solarRadius, 695500000.0, observation.name);
+    assert.equal(geometry.solarRadius, 695700000.0, observation.name);
     assert.equal(geometry.lunarRadius, 1737400.0, observation.name);
     assert.equal(geometry.phase, EclipseDiscPhase.TOTAL, observation.name);
     assert.ok(geometry.totalGap < 0.0, observation.name);
@@ -1099,7 +1099,7 @@ test("high-precision full solves resolve one 2024 and one 2026 total eclipse", a
     assert.ok(result.centralDurationSeconds > 1.0, event.name);
     assert.ok(Math.abs(result.firstContact.externalGap) < 2.0e-7, event.name);
     assert.ok(Math.abs(result.fourthContact.externalGap) < 2.0e-7, event.name);
-    assert.equal(result.solarRadius, 695500000.0, event.name);
+    assert.equal(result.solarRadius, 695700000.0, event.name);
     assert.equal(result.providerId, provider.id, event.name);
     assert.equal(result.providerRevision, provider.revision, event.name);
     assert.equal(result.provenance, provider.provenance, event.name);

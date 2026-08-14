@@ -63,7 +63,7 @@ const { createWebGLViewBoundGlobeCommand, pushWebGLViewBoundGlobeCommand } =
     pathToFileURL(sourcePath("Scene/GlobeSurfaceTileProviderRendering.js")).href
   );
 
-const SOLAR_RADIUS = 695_500_000.0;
+const SOLAR_RADIUS = 695_700_000.0;
 const LUNAR_RADIUS = 1_737_400.0;
 const AU = 149_597_870_700.0;
 const EARTH_RADIUS = 6_378_137.0;
