@@ -698,7 +698,45 @@ landing defect.
 | `C13-GATE-D` | NOT STARTED | Follows `C13-14..20`. |
 | `C13-EXIT` | NOT STARTED | Dead last. |
 
-**C13-41 ACCEPTANCE + LANDING RECONCILIATION (2026-08-12; authoritative over the stale
+**C13-41 STATUS — REOPENED 2026-08-14 by maintainer ruling `R-2026-08-14-1`
+([`MAINTAINER_RULINGS_2026-08-14.md`](MAINTAINER_RULINGS_2026-08-14.md);
+audit findings S2/S3 in [`SOL_WEEK_AUDIT_2026-08-14.md`](SOL_WEEK_AUDIT_2026-08-14.md)).
+This stamp is AUTHORITATIVE over both reconciliation blocks below — they are
+retained verbatim as the record of what was believed on 2026-08-12, not as the
+current status.** The 2026-08-12 `COMPLETE / EDGE VERIFIED` verdict rested on
+two gate demotions that the ruling REVERSES:
+
+- `shadowContrastInvariant` — the criterion measured failing at **1.0496** — had
+  its subject swapped for a newly-authored decrement model and the original
+  reading moved to reported-only. The raw display band **[0.97, 1.03] has not
+  moved** and now gates again; the decrement model is retained beside it as
+  `shadowDecrementMatchesGroundDim` / `shadowDecrementRejectsAlternativeDesign`.
+- `refreshCostMeasured` was demoted on the authority of a **7.749 / 1.607
+  ms/refresh** measurement for which **no artifact is recoverable** (audit S3;
+  recomputation from the only two retained `refreshCost` blocks gives 7.951 and
+  14.06). The protective `ECLIPSE_CLOUD_GATE_PREDICATES.includes(...)` guard
+  deleted in the same commit is restored, and the quarantine assertion that had
+  been inverted — letting an unsettled deck-free CONTROL silence lane B's own
+  red — is un-inverted: the prediction-(ii) checks are back in the `shadow`
+  domain.
+
+**EXIT CRITERIA for the reopened row (both required, ruling rider):**
+
+1. **A fresh, banked refresh-cost measurement** (SOL-4): an Edge run whose
+   interleaved ABBA/warm-up-parity accounting is archived as a retained
+   artifact, so the number is reproducible from evidence rather than cited from
+   memory. Until it is banked, the run's own estimate gates.
+2. **A mechanism investigation of the 1.0496 contrast reading**: the raw
+   post-cloud-composite ratio is a real finding and a red on the critical path
+   is information. The ProceduralClouds over-composite is a known confound and
+   is why the decrement leg exists — naming the confound is not the same as
+   explaining the 1.0496, and the row does not close on the confound alone.
+
+No band moved in either direction as part of this reversal; the change is
+re-scoring only.
+
+**C13-41 ACCEPTANCE + LANDING RECONCILIATION (2026-08-12; HISTORICAL — superseded
+on status by the R-2026-08-14-1 stamp above; authoritative over the stale
 `EDGE ACCEPTANCE OWED`, standing-failure, and next-diagnostic clauses inside the
 long historical row):** the landing-equivalent post-comment Edge run
 `b5e3f63c-94c6-4204-8706-dd30eabd2eaf` is **PASS / exit 0**, with all **30/30**
@@ -719,8 +757,11 @@ complete**. The separate CLT-B3
 terminator-specific WebGL/WebGPU browser acceptance is not discharged by this
 run.
 
-**C13-41 COST-STATUS RECONCILIATION (2026-08-12; authoritative over the
-historical CO-9 “does not discharge” sentence inside the long row):** the
+**C13-41 COST-STATUS RECONCILIATION (2026-08-12; ⚠ SUPERSEDED 2026-08-14 by
+`R-2026-08-14-1` — retained as the record of the reasoning the ruling reversed.
+Its central premise is the 7.749 / 1.607 pair, for which audit S3 found NO
+recoverable artifact; `refreshCostEstimateValidReportedOnly` no longer exists
+and `refreshCostMeasured` gates again):** the
 second Edge run already discharged `C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`
 with banked ABBA/warm-up-parity measurements of **7.749 ms/refresh WebGPU** and
 **1.607 ms/refresh WebGL**. The post-run-6 closure criterion is the later and
