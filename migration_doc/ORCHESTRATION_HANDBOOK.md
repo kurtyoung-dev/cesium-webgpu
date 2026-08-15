@@ -193,8 +193,36 @@ failures in one day were instrument defects.
 
 ### Capture and pixels
 
-- WebGPU canvas pixels: **Playwright element screenshots ONLY.** In-page `drawImage` copies of a
-  WebGPU canvas are transparent black even same-task.
+**Canonical capture doctrine (reconciled 2026-08-14).** Two rules on this page previously
+conflicted: the original doctrine (Batch 939) banned _all_ in-page reads of a WebGPU canvas, while
+the later `Tools/visual-regression/lib/same-task-capture.mjs` documented same-task `toDataURL` as
+valid and named `drawImage` as the actual fault. The ban was correct about the mechanism it had
+measured and over-general about the mechanism it had not. The three-way statement below supersedes
+both; where earlier text in this handbook or in `DEBUGGING_GUIDE.md` states the absolute, this
+paragraph governs.
+
+1. **Playwright element screenshots are the DEFAULT.** They read the compositor, so they are
+   immune to every drawing-buffer and swap-chain lifetime question, and they are what a
+   cross-backend or documentary capture should use unless there is a stated reason not to.
+   _Empirical basis:_ the Batch-939 doctrine, and the 2026-06-25 whole-day misdiagnosis in which
+   `toDataURL` returned Y-flipped and row-stride-skewed WebGPU frames at non-power-of-two canvas
+   sizes and post-present-cleared WebGL frames (`probe-confirm-inspector-sky.mjs`).
+2. **Same-task `toDataURL` through `lib/same-task-capture.mjs` is the SANCTIONED in-page
+   alternative, and only with that module's validators.** Reach for it when a probe must read the
+   exact frame it just rendered at a pinned instant, when it must read many frames per run, or
+   when inserting a screenshot round-trip would perturb the measured state. The read must be fused
+   to its render inside one page task; the PNG is frozen synchronously and only then decoded.
+   _Empirical basis:_ on a WebGPU canvas, same-task `toDataURL()` returned a 1,394,273-byte PNG of
+   a fully correct render on the same canvas, in the same task, in which the `drawImage` path
+   reported 0% non-black over 24,909 samples (`TWO_READ_PATH_DISCRIMINATOR_SOURCE`, C12-29 S5).
+   The validators are not optional — `checkEmbeddedCaptureIsCanonical` holds the embedded copy
+   byte-identical to the shared home, and `checkFusedCaptureUsage` rejects probe-local readers.
+3. **`drawImage(<WebGPU canvas>)` followed by `getImageData` is PROHIBITED.** The swap-chain
+   texture is invalidated after presentation, so this reader can return an empty or stale surface
+   while the engine rendered correctly — the failure presents as "the renderer drew nothing" and
+   points away from its own cause. This is the single reader the ban was always really about.
+   Copying an _already-decoded_ `Image` into a 2D canvas is not this, and is fine.
+
 - **Same-task capture:** a pixel read across a rAF yield is invalid on BOTH backends. Fuse
   render+capture so the unsafe path is unreachable. Yield on the LOADING side only.
 - **Cross-page / cross-build byte-identity is PHYSICALLY UNTESTABLE for temporal renderers**
