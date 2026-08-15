@@ -67,6 +67,7 @@ _2026-08-09 handover-readiness pass: the campaign set was audited for cold-start
 ([`HANDOVER_AUDIT_2026-08-09.md`](HANDOVER_AUDIT_2026-08-09.md)). Two new documents landed out of
 - [SOL_WEEK_AUDIT_2026-08-14.md](SOL_WEEK_AUDIT_2026-08-14.md) - LIVE - six-lane audit of the Codex Sol 5.6 range cff0b76a2f..034c7f74d0 (98 commits): verdict, 22 ranked findings, fix queue SOL-1..13, five maintainer rulings requested. The two untracked Sol ledger files are preserved in the session scratchpad pending SOL-1.
 - [EXECUTOR_LANE_CHARTER_2026-08-14.md](EXECUTOR_LANE_CHARTER_2026-08-14.md) - LIVE - binding rules for self-landing executor lanes (Sol and successors), each rule cited to the audit finding that necessitated it; HARD vs STANDING tiers; pause protocol; escalation paths; enforcement via R-2026-08-14-4 hardening.
+- [PICK_DURING_MOTION_INVESTIGATION_2026-08-14.md](PICK_DURING_MOTION_INVESTIGATION_2026-08-14.md) - LIVE - the R-2026-08-14-3 investigation of record: gate archaeology (the audit-P0 tolerance silently repealed by Batch 1028), reprojection physics (1px = 0.0345 deg; pose bounds open only under ~2 deg/s), the identity-plateau design, the staged fix plan (P0 redundant-clause + widget async adoption + plateau reuse + pre-arm), and the acceptance plan.
 it and they are now the successor's first reads:
 [`ORCHESTRATION_HANDBOOK.md`](ORCHESTRATION_HANDBOOK.md) (operating procedure, previously
 session-memory-only) and [`CAMPAIGN_STATE.md`](CAMPAIGN_STATE.md) (tracked mirror of the gitignored
