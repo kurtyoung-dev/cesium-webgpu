@@ -11,7 +11,9 @@ import ts from "typescript";
 
 import {
   C12_29_S5_CUSTOM_AGGREGATION,
+  C12_29_S5_CUSTOM_BUILD_ABSENT_REASON,
   C12_29_S5_CUSTOM_BUILD_SOURCE_FILES,
+  C12_29_S5_CUSTOM_BUILD_SOURCE_MAP,
   C12_29_S5_CUSTOM_CAPTURE_LABELS,
   C12_29_S5_CUSTOM_CAPTURE_METHOD,
   C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA,
@@ -27,6 +29,7 @@ import {
   C12_29_S5_CUSTOM_STABILITY_METHOD,
   C12_29_S5_CUSTOM_WEBGPU_CAMERA_INDICES,
   C12_29_S5_CUSTOM_WEBGPU_ECLIPSE_BINDING,
+  c1229S5CustomBuildAbsenceReason,
   c1229S5CustomGeometryTolerance,
   captureC1229S5CustomPropertyDescriptor,
   computeC1229S5CustomSurfaceRadius,
@@ -88,6 +91,43 @@ const harnessPath = path.join(
 const helperSource = fs.readFileSync(helperPath, "utf8");
 const probeSource = fs.readFileSync(probePath, "utf8");
 const harnessSource = fs.readFileSync(harnessPath, "utf8");
+
+// Build-absence is STRUCTURAL, not a product FAIL.
+//
+// Four checks below bind to `Build/CesiumUnminified` or to the shader modules
+// gulp generates beside their raw sources. In a tree that has never been built
+// they used to fail as though the product were broken — one of them asserting
+// that an error message names a truncated component, against text that was
+// really `ENOENT: no such file or directory`. That is a lane with no subject,
+// so it reports the named structural reason and skips instead. The predicate is
+// exact (it names the artifacts, not a directory), so a built tree still runs
+// every check.
+const BUILD_ARTIFACTS = Object.freeze([
+  path.join(root, C12_29_S5_CUSTOM_BUILD_SOURCE_MAP),
+  ...C12_29_S5_CUSTOM_SOURCE_FILES.filter(
+    (file) => file.endsWith(".glsl") || file.endsWith(".wgsl"),
+  ).map((file) => path.join(root, file.replace(/\.(?:glsl|wgsl)$/u, ".js"))),
+]);
+
+const missingBuildArtifacts = BUILD_ARTIFACTS.filter(
+  (file) => !fs.existsSync(file),
+);
+
+/**
+ * Skip a build-bound check with the gate's own named structural reason.
+ *
+ * @param {import("node:test").TestContext} t Test context.
+ * @returns {boolean} True when the check cannot see its subject.
+ */
+function skipWithoutBuild(t) {
+  if (missingBuildArtifacts.length === 0) {
+    return false;
+  }
+  t.skip(
+    `${C12_29_S5_CUSTOM_BUILD_ABSENT_REASON}: ${missingBuildArtifacts.length} artifact(s) absent, first ${path.relative(root, missingBuildArtifacts[0]).replaceAll("\\", "/")}`,
+  );
+  return true;
+}
 
 const RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
 const SHA = "a".repeat(64);
@@ -2018,7 +2058,10 @@ test("contract freezes schemas, renderer order, nine phases, and six captures", 
   assert.equal(C12_29_S5_CUSTOM_SCENE.cameraHeightMeters, 12_000_000);
 });
 
-test("source boundary is complete, ordered, unique, readable, and build-derived", () => {
+test("source boundary is complete, ordered, unique, readable, and build-derived", (t) => {
+  if (skipWithoutBuild(t)) {
+    return;
+  }
   assert.equal(C12_29_S5_CUSTOM_SOURCE_FILES.length, 54);
   assert.equal(C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.length, 46);
   assert.equal(
@@ -3494,9 +3537,12 @@ test("frozen v5 finals migrate to v6 without repairing malformed v5 evidence", (
 test("status, UUID, and stable serialization utilities are exact", () => {
   assert.equal(isC1229S5CustomUuidV4(RUN_ID), true);
   assert.equal(isC1229S5CustomUuidV4(RUN_ID.replace("-42d3", "-52d3")), false);
+  // STRUCTURAL is 3, not 2. Sharing 2 with ERROR made a lane that could not see
+  // its subject indistinguishable from a crashed harness to anything that
+  // scores by exit status.
   assert.deepEqual(
     ["PASS", "FAIL", "STRUCTURAL", "ERROR"].map(exitCodeForC1229S5CustomStatus),
-    [0, 1, 2, 2],
+    [0, 1, 3, 2],
   );
   assert.throws(() => exitCodeForC1229S5CustomStatus("RUNNING"));
   assert.equal(
@@ -3672,7 +3718,10 @@ test("cleanup aggregation preserves primary diagnostics and renders recursive ca
   assert.equal(retained.retainCustomRunning, true);
 });
 
-test("oversized launch failure finalizes exact ERROR and releases authority", async () => {
+test("oversized launch failure finalizes exact ERROR and releases authority", async (t) => {
+  if (skipWithoutBuild(t)) {
+    return;
+  }
   const directory = tempEvidenceDirectory();
   try {
     const result = await runC1229S5CustomEllipsoidProbe({
@@ -3752,7 +3801,46 @@ test("ERROR publication aggregation preserves primary and hostile publication fa
   }
 });
 
-test("source map proves every frozen production entry byte-for-byte", () => {
+test("build-absence is classified STRUCTURAL, other read faults are not", () => {
+  // The classifier is what separates "there is no build here" from "the build
+  // is here and cannot be trusted". Widening it would let a permission error or
+  // a malformed source map skip a check that ought to be red.
+  const absent = Object.assign(new Error("no such file"), {
+    code: "ENOENT",
+    path: "Build/CesiumUnminified/index.js.map",
+  });
+  const reason = c1229S5CustomBuildAbsenceReason(absent);
+  assert.ok(reason?.startsWith(C12_29_S5_CUSTOM_BUILD_ABSENT_REASON), reason);
+  assert.match(reason, /index\.js\.map/u);
+  assert.ok(
+    c1229S5CustomBuildAbsenceReason(
+      Object.assign(new Error("missing module"), {
+        code: "ERR_MODULE_NOT_FOUND",
+        url: "file:///repo/packages/engine/Source/Shaders/GlobeFS.js",
+      }),
+    ) !== undefined,
+  );
+  for (const code of ["EACCES", "EISDIR", "EPERM", undefined]) {
+    assert.equal(
+      c1229S5CustomBuildAbsenceReason(
+        Object.assign(new Error("boom"), code ? { code } : {}),
+      ),
+      undefined,
+      `${String(code)} must stay a real failure`,
+    );
+  }
+  assert.equal(c1229S5CustomBuildAbsenceReason(undefined), undefined);
+  // And the skip predicate names artifacts, not a directory, so a half-built
+  // tree cannot silently satisfy it.
+  assert.ok(BUILD_ARTIFACTS.length > 1);
+  assert.ok(BUILD_ARTIFACTS.every((file) => path.isAbsolute(file)));
+  assert.ok(BUILD_ARTIFACTS.some((file) => file.endsWith("index.js.map")));
+});
+
+test("source map proves every frozen production entry byte-for-byte", (t) => {
+  if (skipWithoutBuild(t)) {
+    return;
+  }
   const identity = inspectBuildSourceIdentity({
     sourceMapPath: path.join(root, "Build/CesiumUnminified/index.js.map"),
     sourceFiles: C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.map((file) =>
@@ -5897,7 +5985,10 @@ test("close-time responses cannot extend the stopped measurement epoch", async (
   }
 });
 
-test("probe keeps RUNNING and lock when watchdog cleanup is unproven", async () => {
+test("probe keeps RUNNING and lock when watchdog cleanup is unproven", async (t) => {
+  if (skipWithoutBuild(t)) {
+    return;
+  }
   const directory = tempEvidenceDirectory();
   const runId = randomUUID();
   let rejectContext;

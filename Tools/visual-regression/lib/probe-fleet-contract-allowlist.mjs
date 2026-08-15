@@ -27,6 +27,10 @@
 // its browser; it closes it on the line after the `try`, and only looked
 // close-free because the scanner treated the unpaired quote inside a regex
 // literal above as a string opener and went blind for the rest of the file.
+// The same thing happened again to `browser?.close()`: the close pattern did
+// not admit an optional chain, so three probes that close correctly were
+// recorded as never closing. Two of them had no other defect and left this file
+// entirely; the third kept its watchdog row with the false clause removed.
 // Correcting the reason is not a relaxation — the row still names a real,
 // unrepaired violation, which is what the ratchet asserts.
 
@@ -300,8 +304,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-cloud-stbn-lod.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-10, pre-dates the spec",
-  "probe-cloud-temporal-rte.mjs":
-    "never closes the browser — added 2026-07-24, pre-dates the spec",
   "probe-cloud-temporal.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cloud-tier-resolver.mjs":
@@ -352,8 +354,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cold-optics.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-28, pre-dates the spec",
-  "probe-collection-pick.mjs":
-    "browser.close outside finally — added 2026-08-07, POST-DATES the rule — repair owed",
   "probe-collections-2dcv-morph.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-07, pre-dates the spec",
   "probe-collections-closeup.mjs":
@@ -1121,7 +1121,7 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
   "probe-weather-wcs.mjs":
     "browser.close outside finally — added 2026-06-28, pre-dates the spec",
   "probe-webgpu-allocation-tax.mjs":
-    "no watchdog; never closes the browser — added 2026-07-16, pre-dates the spec",
+    "no watchdog — added 2026-07-16, pre-dates the spec",
   "probe-webgpu-grey.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-07, pre-dates the spec",
   "probe-webgpu-ocean-waves.mjs":

@@ -16,7 +16,6 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -71,6 +70,7 @@ import {
   createImmutableEvidence,
   fingerprintEvidenceFile,
   inspectBuildSourceIdentity,
+  safeGitHead,
   preserveFirstRedEvidence,
   snapshotEvidenceFiles,
   validateServedEntryIdentities,
@@ -109,6 +109,9 @@ const viewerPath = "/Apps/CesiumViewer/index.html";
 const WATCHDOG_MS = 540_000;
 const PAGE_TIMEOUT_MS = 240_000;
 const WATCHDOG_DRAIN_MS = 30_000;
+// The in-run watchdog plus its drain, with a minute of slack, is the longest a
+// healthy run can legitimately take; past that the process itself is stuck.
+const PROCESS_WATCHDOG_MS = WATCHDOG_MS + WATCHDOG_DRAIN_MS + 60_000;
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -2347,18 +2350,6 @@ export function publishS5FinalArtifact(
   return { runIdentity, firstRed };
 }
 
-function safeGitHead() {
-  try {
-    return execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return undefined;
-  }
-}
-
 async function inspectGeneratedShader(rawRelative, generatedRelative) {
   const rawPath = path.join(repositoryRoot, rawRelative);
   const generatedPath = path.join(repositoryRoot, generatedRelative);
@@ -2444,7 +2435,7 @@ async function collectS5ProvenanceSnapshot() {
   }
   return {
     capturedAt: new Date().toISOString(),
-    gitHead: safeGitHead(),
+    gitHead: safeGitHead(repositoryRoot),
     localIdentity,
     buildSourceIdentity,
     generatedShaders,
@@ -5816,22 +5807,55 @@ export async function runC1229S5Probe(options = {}) {
     };
     const publication = publishS5FinalArtifact(paths, artifact, operations);
     return { artifact, publication, paths };
+  } finally {
+    // Last-resort reclamation. Both paths above clear `browser` after closing
+    // it, so this only runs when something left the loop without doing either —
+    // the leak a `finally` is the only construct that can cover.
+    if (browser !== undefined) {
+      try {
+        await browser.close();
+      } catch {
+        // The verdict (or the primary error) is already decided and reported;
+        // a failure here must not replace it.
+      }
+      browser = undefined;
+    }
+  }
+}
+
+async function main() {
+  // Terminating watchdog. `withS5Watchdog` only REJECTS the task it wraps,
+  // which needs the event loop to come back to it; a wedged page loop never
+  // yields, so nothing but `process.exit` ends the run. `unref` keeps the timer
+  // from extending a healthy one.
+  const processWatchdog = setTimeout(() => {
+    console.error(
+      `[probe-c12-29-s5-terrain-selection] process watchdog fired after ` +
+        `${PROCESS_WATCHDOG_MS} ms; the in-run watchdog did not settle`,
+    );
+    process.exit(2);
+  }, PROCESS_WATCHDOG_MS);
+  processWatchdog.unref?.();
+  try {
+    const result = await runC1229S5Probe();
+    console.log(
+      JSON.stringify(
+        {
+          runId: result.artifact.runId,
+          status: result.artifact.status,
+          exitCode: result.artifact.exitCode,
+          artifact: result.paths.run,
+        },
+        null,
+        2,
+      ),
+    );
+    process.exitCode = result.artifact.exitCode;
+  } finally {
+    clearTimeout(processWatchdog);
   }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === probePath) {
-  const result = await runC1229S5Probe();
-  console.log(
-    JSON.stringify(
-      {
-        runId: result.artifact.runId,
-        status: result.artifact.status,
-        exitCode: result.artifact.exitCode,
-        artifact: result.paths.run,
-      },
-      null,
-      2,
-    ),
-  );
-  process.exitCode = result.artifact.exitCode;
+  await main();
 }

@@ -9,6 +9,8 @@
 
 import { createHash } from "node:crypto";
 
+import { exitCodeForS5Status } from "./verdict-exit-gate.mjs";
+
 export const C12_29_S5_SCHEMA = "c12-29-s5-terrain-selection-evidence-v10";
 
 export const C12_29_S5_DIAGNOSTICS_SCHEMA = "c12-29-s5-runtime-diagnostics-v5";
@@ -3712,13 +3714,9 @@ export function isUuidV4(value) {
   );
 }
 
-export function exitCodeForS5Status(status) {
-  if (status === "PASS") return 0;
-  if (status === "FAIL") return 1;
-  if (status === "ERROR") return 2;
-  if (status === "STRUCTURAL") return 3;
-  throw new Error(`unknown S5 evidence status ${String(status)}`);
-}
+// Re-exported rather than redefined: the verdict tiers are one table shared by
+// every S5 gate, so a tier can no longer mean different things in two shards.
+export { exitCodeForS5Status };
 
 /** Derive the exact south level-one neighbour of the live track anchor. */
 export function deriveS5SouthLevelOneTarget(longitude, latitude) {

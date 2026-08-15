@@ -8,6 +8,8 @@
  * failure.
  */
 
+import { exitCodeForS5StatusOrStructural as exitCodeForC1229S5ReplacementStatus } from "./verdict-exit-gate.mjs";
+
 export const C12_29_S5_REPLACEMENT_SCHEMA =
   "c12-29-s5-replacement-device-evidence-v5";
 export const C12_29_S5_REPLACEMENT_NATIVE_LEDGER_SCHEMA =
@@ -428,15 +430,10 @@ export function isC1229S5ReplacementUuidV4(value) {
   return typeof value === "string" && UUID_V4.test(value);
 }
 
-export function exitCodeForC1229S5ReplacementStatus(status) {
-  return status === "PASS"
-    ? 0
-    : status === "FAIL"
-      ? 1
-      : status === "ERROR"
-        ? 2
-        : 3;
-}
+// The tolerant reader over the shared verdict-tier table: this gate resolves
+// statuses read out of untrusted artifact data, where an unreadable tier means
+// the artifact cannot vouch for what it saw.
+export { exitCodeForC1229S5ReplacementStatus };
 
 export function stableC1229S5ReplacementJson(value, space) {
   return JSON.stringify(
@@ -2415,7 +2412,7 @@ export function createC1229S5ReplacementErrorArtifact(runId, diagnostics) {
     runId,
     incomplete: false,
     status: "ERROR",
-    exitCode: 2,
+    exitCode: exitCodeForC1229S5ReplacementStatus("ERROR"),
     reasons: { structural: [], failures: [diagnostics.message] },
     diagnostics,
   };

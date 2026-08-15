@@ -9,7 +9,7 @@
  * already-running loopback server. It does not build or start infrastructure.
  */
 
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -42,6 +42,7 @@ import {
 import {
   createImmutableEvidence,
   inspectBuildSourceIdentity,
+  safeGitHead,
 } from "./lib/build-source-identity.mjs";
 
 const toolDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -184,18 +185,6 @@ async function servedIdentity(origin, relativePath) {
   };
 }
 
-function safeGitHead() {
-  try {
-    return execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return null;
-  }
-}
-
 async function rawGeneratedIdentity(pair) {
   const rawPath = path.join(repositoryRoot, pair.raw);
   const generatedPath = path.join(repositoryRoot, pair.generated);
@@ -282,7 +271,7 @@ async function collectProvenanceSnapshot(baseIdentity) {
     reasons.push("served runtime entry differs from the local build entry");
   }
   const identity = {
-    gitHead: safeGitHead(),
+    gitHead: safeGitHead(repositoryRoot) ?? null,
     localFiles,
     servedFiles,
     buildSourceIdentity,
@@ -3451,9 +3440,6 @@ async function runLegChild(options) {
     writeExclusive(options.legOutput, jsonBytes(leg));
     return exitCodeForC1229S5DenseStatus(leg.status);
   } catch (error) {
-    try {
-      await browser?.close();
-    } catch {}
     const text = String(error?.stack ?? error);
     const structural = text.includes("[structural]");
     const leg = {
@@ -3500,6 +3486,19 @@ async function runLegChild(options) {
     };
     writeExclusive(options.legOutput, jsonBytes(leg));
     return structural ? 3 : 2;
+  } finally {
+    // Last-resort reclamation. The success path closes and nulls `browser`
+    // before assembling the leg, so this only runs when the leg threw with the
+    // handle still live — the leak a `finally` is the only construct that can
+    // cover.
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {
+        // The leg record is already written; a close failure here must not
+        // replace the verdict it carries.
+      }
+    }
   }
 }
 
@@ -3686,15 +3685,52 @@ async function runCoordinator(options) {
   return report.exitCode;
 }
 
+// A leg child owns one browser for at most one leg timeout plus the kill grace
+// the coordinator allows it; the coordinator owns every leg in sequence. Both
+// roles get a deadline of their own, because the coordinator's per-child kill
+// timer cannot end a coordinator that is itself wedged, and a child spawned
+// directly from a shell has no coordinator watching it at all.
+const LEG_PROCESS_WATCHDOG_MS =
+  C12_29_S5_DENSE_CONFIG.legTimeoutMs +
+  C12_29_S5_DENSE_CONFIG.postKillCloseTimeoutMs +
+  60_000;
+const COORDINATOR_PROCESS_WATCHDOG_MS =
+  C12_29_S5_DENSE_CONFIG.expectedLegs *
+    (C12_29_S5_DENSE_CONFIG.legTimeoutMs +
+      C12_29_S5_DENSE_CONFIG.postKillCloseTimeoutMs) +
+  600_000;
+
+async function main() {
+  const options = parseArguments(process.argv.slice(2));
+  const isLegChild = options.legOrdinal !== null;
+  const watchdogMs = isLegChild
+    ? LEG_PROCESS_WATCHDOG_MS
+    : COORDINATOR_PROCESS_WATCHDOG_MS;
+  // Terminating watchdog: `process.exitCode` cannot end a wedged event loop, so
+  // a hung page would otherwise hold Edge and a GPU process alive forever.
+  // `unref` keeps the timer from extending a healthy run.
+  const processWatchdog = setTimeout(() => {
+    console.error(
+      `[probe-c12-29-s5-dense-cost] process watchdog fired after ` +
+        `${watchdogMs} ms (${isLegChild ? "leg child" : "coordinator"})`,
+    );
+    process.exit(2);
+  }, watchdogMs);
+  processWatchdog.unref?.();
+  try {
+    if (isLegChild) {
+      process.exit(await runLegChild(options));
+    }
+    process.exitCode = await runCoordinator(options);
+  } finally {
+    clearTimeout(processWatchdog);
+  }
+}
+
 if (
   process.argv[1] &&
   path.resolve(process.argv[1]).toLowerCase() ===
     path.resolve(probePath).toLowerCase()
 ) {
-  const options = parseArguments(process.argv.slice(2));
-  if (options.legOrdinal !== null) {
-    process.exit(await runLegChild(options));
-  } else {
-    process.exitCode = await runCoordinator(options);
-  }
+  await main();
 }

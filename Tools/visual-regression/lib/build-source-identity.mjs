@@ -1,8 +1,73 @@
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * Commit the evidence boundary was captured at, or `undefined` when git cannot
+ * answer.
+ *
+ * `undefined` rather than `null` is deliberate: it means "this helper produced
+ * no value", which is distinct from the JSON `null` several artifact schemas
+ * record for "the run had no commit". Callers that serialize the result into an
+ * artifact spell that adaptation themselves (`safeGitHead(root) ?? null`), so
+ * the wire format stays a property of the schema instead of leaking into the
+ * helper — the ambiguity that let six copy-pasted versions of this function
+ * drift into two different absent-values.
+ *
+ * @param {string} cwd Repository working directory to interrogate.
+ * @returns {string|undefined} The 40-character commit, or undefined.
+ */
+export function safeGitHead(cwd) {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Named STRUCTURAL reason for a run or a check that had no build to look at.
+ *
+ * Evidence shards bind themselves to `Build/CesiumUnminified` and to the shader
+ * modules the build generates beside their `.glsl`/`.wgsl` sources. A tree
+ * without those is not a tree where the product failed — it is a tree where the
+ * lane could not see its subject, which the 0/1/2/3 contract calls STRUCTURAL.
+ * Reading it any other way is how a bare `ENOENT` on `index.js.map` came to be
+ * counted as a product FAIL, and how a check asserting a truncated-component
+ * diagnostic ended up asserting against filesystem-error text instead.
+ */
+export const BUILD_ABSENT_REASON =
+  "structural: the run has no build to bind to";
+
+/** Read failures that mean an artifact is absent rather than unreadable. */
+const BUILD_ABSENCE_CODES = new Set(["ENOENT", "ERR_MODULE_NOT_FOUND"]);
+
+/**
+ * Named STRUCTURAL reason for a build-absence failure, or `undefined` when the
+ * failure is a genuine integrity fault that must keep failing.
+ *
+ * The distinction is deliberately narrow: only "the file is not there" is
+ * absence. A permission error, a wrong file type, or a malformed source map is
+ * a build that exists and cannot be trusted, which is a real red.
+ *
+ * @param {unknown} error Caught read/import failure.
+ * @returns {string|undefined} The reason, or undefined.
+ */
+export function buildAbsenceReason(error) {
+  const code = error?.code;
+  if (typeof code !== "string" || !BUILD_ABSENCE_CODES.has(code)) {
+    return undefined;
+  }
+  const target = error?.path ?? error?.url ?? error?.message ?? "";
+  return `${BUILD_ABSENT_REASON}: ${String(target)}`;
+}
 
 /**
  * Fingerprint one local file without allowing an absent input to masquerade as

@@ -23,7 +23,6 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -53,6 +52,7 @@ import {
   createImmutableEvidence,
   fingerprintEvidenceFile,
   inspectBuildSourceIdentity,
+  safeGitHead,
   preserveFirstRedEvidence,
   snapshotEvidenceFiles,
   validateServedEntryIdentities,
@@ -227,30 +227,77 @@ function discoverViewerClosure() {
   });
 }
 
-const viewerClosureDefinition = discoverViewerClosure();
-const viewerRoutes = Object.freeze(
-  Object.fromEntries(
-    Object.entries(viewerClosureDefinition.entries).map(([route, entry]) => [
-      route,
-      entry.file,
-    ]),
-  ),
-);
-const viewerRequiredExecutionRoutes =
-  viewerClosureDefinition.requiredExecutionRoutes;
-const viewerRouteRelativeFiles = Object.freeze(
-  Object.keys(viewerRoutes).map((route) => route.slice(1)),
-);
-const viewerRouteEvidenceKeys = Object.freeze(
-  Object.fromEntries(
-    Object.keys(viewerRoutes).map((route, index) => [
-      route,
-      `viewerRoute${String(index).padStart(2, "0")}:${route}`,
-    ]),
-  ),
-);
+// Resolved on first USE, not on import.
+//
+// `discoverViewerClosure` walks the served viewer's reference graph on disk and
+// throws when a link is missing — which every reference into `Build/` and
+// `Source/Widgets/` is in a tree that has not been built. At module scope that
+// throw happened during `import`, so the focused spec could not even load the
+// module to test the pure functions beside it: a whole suite reported as a
+// product failure because a build output was absent. Memoizing the walk behind
+// a call keeps the probe's own behaviour identical while making the module
+// importable without a build.
+let viewerClosureCache;
 
-const packetRelativeFiles = Object.freeze([
+function resolveViewerClosure() {
+  if (viewerClosureCache !== undefined) {
+    return viewerClosureCache;
+  }
+  const definition = discoverViewerClosure();
+  const routes = Object.freeze(
+    Object.fromEntries(
+      Object.entries(definition.entries).map(([route, entry]) => [
+        route,
+        entry.file,
+      ]),
+    ),
+  );
+  const routeRelativeFiles = Object.freeze(
+    Object.keys(routes).map((route) => route.slice(1)),
+  );
+  const routeEvidenceKeys = Object.freeze(
+    Object.fromEntries(
+      Object.keys(routes).map((route, index) => [
+        route,
+        `viewerRoute${String(index).padStart(2, "0")}:${route}`,
+      ]),
+    ),
+  );
+  const packetFiles = Object.freeze([
+    ...PACKET_RELATIVE_FILES_WITHOUT_VIEWER,
+    ...routeRelativeFiles,
+  ]);
+  viewerClosureCache = Object.freeze({
+    routes,
+    requiredExecutionRoutes: definition.requiredExecutionRoutes,
+    routeRelativeFiles,
+    routeEvidenceKeys,
+    packetRelativeFiles: packetFiles,
+    localEvidenceFiles: Object.freeze({
+      ...Object.fromEntries(
+        packetFiles.map((file, index) => [
+          `packet${String(index).padStart(2, "0")}`,
+          path.join(repositoryRoot, file),
+        ]),
+      ),
+      buildEntry: buildEntryPath,
+      buildSourceMap: buildSourceMapPath,
+      identityHelper: identityHelperPath,
+      gateHelper: gateHelperPath,
+      focusedSpec: specPath,
+      probe: probePath,
+      ...Object.fromEntries(
+        Object.keys(routes).map((route) => [
+          routeEvidenceKeys[route],
+          routes[route],
+        ]),
+      ),
+    }),
+  });
+  return viewerClosureCache;
+}
+
+const PACKET_RELATIVE_FILES_WITHOUT_VIEWER = Object.freeze([
   "packages/engine/Source/Scene/Sun.js",
   "packages/engine/Source/Scene/computeAtmosphereExtinction.js",
   "packages/engine/Source/Scene/Scene.js",
@@ -260,7 +307,6 @@ const packetRelativeFiles = Object.freeze([
   "Tools/visual-regression/lib/c12-29-s4-orbital-sunrise-gate.mjs",
   "Tools/visual-regression/c12-29-s4-orbital-sunrise-gate.spec.mjs",
   "Tools/visual-regression/probe-c12-29-s4-orbital-sunrise.mjs",
-  ...viewerRouteRelativeFiles,
 ]);
 
 const buildSourceRelativeFiles = Object.freeze([
@@ -272,27 +318,6 @@ const buildSourceRelativeFiles = Object.freeze([
   // separately, then the generated module is compared with sourcesContent.
   "packages/engine/Source/Shaders/SunFS.js",
 ]);
-
-const localEvidenceFiles = Object.freeze({
-  ...Object.fromEntries(
-    packetRelativeFiles.map((file, index) => [
-      `packet${String(index).padStart(2, "0")}`,
-      path.join(repositoryRoot, file),
-    ]),
-  ),
-  buildEntry: buildEntryPath,
-  buildSourceMap: buildSourceMapPath,
-  identityHelper: identityHelperPath,
-  gateHelper: gateHelperPath,
-  focusedSpec: specPath,
-  probe: probePath,
-  ...Object.fromEntries(
-    Object.entries(viewerRoutes).map(([route, file], index) => [
-      viewerRouteEvidenceKeys[route],
-      file,
-    ]),
-  ),
-});
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 function redactQueriesInString(value) {
@@ -645,18 +670,6 @@ export async function captureS4ServedViewerRoutes({
     });
   }
   return identities;
-}
-
-function safeGitHead() {
-  try {
-    return execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return null;
-  }
 }
 
 async function boundedPromise(promise, milliseconds, label) {
@@ -1217,7 +1230,9 @@ async function inspectGeneratedSunShader() {
 }
 
 async function collectS4Provenance() {
-  const localIdentity = snapshotEvidenceFiles(localEvidenceFiles);
+  const localIdentity = snapshotEvidenceFiles(
+    resolveViewerClosure().localEvidenceFiles,
+  );
   const reasons = Object.entries(localIdentity)
     .filter(([, identity]) => identity.exists !== true)
     .map(
@@ -1259,14 +1274,14 @@ async function collectS4Provenance() {
     reasons.push("generated SunFS identity could not be established");
   }
 
-  const gitHead = safeGitHead();
+  const gitHead = safeGitHead(repositoryRoot) ?? null;
   if (!/^[0-9a-f]{40}$/u.test(gitHead ?? "")) {
     reasons.push("git HEAD identity is unavailable");
   }
   return {
     capturedAt: new Date().toISOString(),
     gitHead,
-    packetRelativeFiles: [...packetRelativeFiles],
+    packetRelativeFiles: [...resolveViewerClosure().packetRelativeFiles],
     localIdentity,
     buildSourceIdentity,
     generatedSunShader,
@@ -1327,8 +1342,10 @@ function assessS4Provenance(options) {
     )
       ? session.runtimeViewerRouteIdentity.fetches
       : [];
-    const expectedRoutes = Object.keys(viewerRoutes).sort();
-    const requiredExecutionRoutes = [...viewerRequiredExecutionRoutes].sort();
+    const expectedRoutes = Object.keys(resolveViewerClosure().routes).sort();
+    const requiredExecutionRoutes = [
+      ...resolveViewerClosure().requiredExecutionRoutes,
+    ].sort();
     const executedRoutes = [
       ...(session.runtimeViewerRouteIdentity?.executedRoutes ?? []),
     ].sort();
@@ -1434,7 +1451,9 @@ function assessS4Provenance(options) {
     }
     for (const route of expectedRoutes) {
       const local =
-        options.start?.localIdentity?.[viewerRouteEvidenceKeys[route]];
+        options.start?.localIdentity?.[
+          resolveViewerClosure().routeEvidenceKeys[route]
+        ];
       const served = servedRoutes.filter((entry) => entry.route === route);
       const runtimeFetch = runtimeRoutes.filter(
         (entry) => entry.route === route,
@@ -1720,8 +1739,10 @@ async function runBackend(
     diagnosticSink.phase = "page-runtime-route-identity";
     const runtimeViewerRouteIdentity = await boundedPromise(
       page.evaluate(captureS4PageRuntimeViewerRoutes, {
-        viewerRoutePaths: Object.keys(viewerRoutes),
-        requiredViewerRoutePaths: [...viewerRequiredExecutionRoutes],
+        viewerRoutePaths: Object.keys(resolveViewerClosure().routes),
+        requiredViewerRoutePaths: [
+          ...resolveViewerClosure().requiredExecutionRoutes,
+        ],
         requestedRenderer,
         routeFetchNonce,
       }),
@@ -2341,7 +2362,7 @@ async function runBackend(
     const servedViewerRoutes = await boundedPromise(
       captureS4ServedViewerRoutes({
         requestContext: context.request,
-        routes: Object.keys(viewerRoutes),
+        routes: Object.keys(resolveViewerClosure().routes),
         baseOrigin,
         sessionLabel: requestedRenderer,
       }),

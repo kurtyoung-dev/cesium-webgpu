@@ -746,8 +746,12 @@ export function analyzeProbeSource(source) {
     /\.launch\s*\(/.test(code) || /from\s*\(?\s*["'`]playwright/.test(source);
   const watchdog = hasWatchdog(code);
   const names = browserIdentifiers(code);
+  // `browser?.close()` is the same construct as `browser.close()`; a pattern
+  // that missed the optional chain reported a probe closing correctly inside a
+  // `finally` as never closing at all, which is the fail-closed detector
+  // manufacturing a violation rather than catching one.
   const closePattern = new RegExp(
-    `(?:${names.map((n) => n.replace(/[$]/g, "\\$")).join("|")})\\s*\\.\\s*close\\s*\\(`,
+    `(?:${names.map((n) => n.replace(/[$]/g, "\\$")).join("|")})\\s*\\??\\s*\\.\\s*close\\s*\\(`,
   );
   const closesBrowser = closePattern.test(code);
   const closeInFinally = finallyBodies(code).some((b) => closePattern.test(b));
@@ -777,6 +781,212 @@ export function analyzeProbeSource(source) {
     declaresStructuralExit,
     structuralRoutedToTwo: badTwo,
     verdictExitViolations: verdictExitViolations(source),
+    violations,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Gate libraries — the other half of the thin-probe/fat-lib architecture
+// ---------------------------------------------------------------------------
+//
+// The rules above read `probe-*.mjs`. That was the whole fleet when they were
+// written, and it stopped being the whole fleet when the S5 shards split into a
+// thin probe that acquires evidence and a fat `lib/*-gate.mjs` that decides the
+// verdict AND the exit code. A probe whose only exit is
+// `process.exitCode = artifact.exitCode` satisfies every rule above while its
+// library maps a verdict tier to whatever number it likes — which is how one
+// gate came to route STRUCTURAL to 2, indistinguishable from a crashed harness,
+// with the contract green.
+//
+// These rules therefore read the LIBRARIES, where the mapping actually lives.
+
+/** The verdict tier meaning "the lane could not see its subject". */
+const STRUCTURAL_STATUS = /\bSTRUCTURAL\b/;
+
+/**
+ * The code view with short identifier-shaped string literals restored.
+ *
+ * A gate library spells its verdict tiers as STRINGS — `status === "STRUCTURAL"`,
+ * `{ STRUCTURAL: 3 }` — and `blankNonCode` erases string interiors precisely so
+ * printed prose cannot be mistaken for code. Both are needed: this view keeps
+ * the offsets and brace structure of the code view (it is length-preserving)
+ * while making the tier names readable, and it restores ONLY literals that look
+ * like a token, so a sentence containing the word STRUCTURAL still cannot
+ * masquerade as a mapping.
+ *
+ * @param {string} source Raw library source text.
+ * @returns {string} Same length as the normalized source.
+ */
+export function codeWithTokenLiterals(source) {
+  const { code, strings } = scanSource(source);
+  const out = code.split("");
+  for (const span of strings) {
+    if (!/^[A-Za-z0-9_$.-]{1,32}$/.test(span.content)) {
+      continue;
+    }
+    for (let i = 0; i < span.content.length; i++) {
+      out[span.start + 1 + i] = span.content[i];
+    }
+  }
+  return out.join("");
+}
+
+/**
+ * Statement or expression text a value flows out of, starting at `index`.
+ *
+ * @param {string} view Token-literal source view.
+ * @param {number} index Offset of the construct being read.
+ * @returns {string} Bounded slice, never past the end of the source.
+ */
+function slice(view, index, length = 120) {
+  return view.slice(index, Math.min(view.length, index + length));
+}
+
+/**
+ * Sites where a gate library binds the STRUCTURAL verdict tier to exit code 2.
+ *
+ * Three forms, one per way the gate libraries actually spell the mapping:
+ *   1. `table` — a property binding, `STRUCTURAL: 2` or `"STRUCTURAL": 2`;
+ *   2. `guard` — an `if` naming the STRUCTURAL tier whose body yields 2, with
+ *      or without braces (`if (status === "STRUCTURAL") return 2;` is the exact
+ *      shape the defect shipped in);
+ *   3. `conditional` — `status === "STRUCTURAL" ? 2 : …`.
+ *
+ * Unlike the probe-side rule there is NO exception-word veto here, and the
+ * absence is load-bearing. The mapping that shipped read
+ * `if (status === "STRUCTURAL" || status === "ERROR") return 2;` — a condition
+ * that names both tiers, so a veto keyed on the word "ERROR" reads the defect
+ * itself as a legitimate exception guard and passes it. In a status mapping the
+ * uppercase tier names are DATA, not evidence of a catch block: a real
+ * exception guard never compares against the string "STRUCTURAL", and
+ * lowercase locals such as `structural.length` do not match this token.
+ *
+ * @param {string} source Raw library source text.
+ * @returns {Array<{index: number, form: string}>} Offending sites.
+ */
+export function gateStructuralExitViolations(source) {
+  const view = codeWithTokenLiterals(source);
+  const offenders = [];
+
+  const table = /["']?\bSTRUCTURAL\b["']?\s*:\s*2\b/g;
+  let m;
+  let guard = 0;
+  while ((m = table.exec(view)) !== null && guard++ < 5000) {
+    offenders.push({ index: m.index, form: "table" });
+  }
+
+  const conditional = /\bSTRUCTURAL\b[^?\n]{0,80}\?\s*2\b/g;
+  guard = 0;
+  while ((m = conditional.exec(view)) !== null && guard++ < 5000) {
+    offenders.push({ index: m.index, form: "conditional" });
+  }
+
+  const ifs = /\bif\s*\(/g;
+  guard = 0;
+  while ((m = ifs.exec(view)) !== null && guard++ < 20000) {
+    let depth = 0;
+    let j = m.index + m[0].length - 1;
+    let inner = 0;
+    while (j < view.length && inner++ < 100000) {
+      if (view[j] === "(") {
+        depth += 1;
+      } else if (view[j] === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          break;
+        }
+      }
+      j += 1;
+    }
+    const condition = view.slice(m.index + m[0].length, j);
+    if (!STRUCTURAL_STATUS.test(condition)) {
+      continue;
+    }
+    const rest = view.slice(j + 1);
+    const braced = rest.trimStart().startsWith("{");
+    let body;
+    if (braced) {
+      const open = j + 1 + (rest.length - rest.trimStart().length);
+      const close = matchBrace(view, open);
+      body = close > open ? view.slice(open, close) : slice(view, open);
+    } else {
+      const semicolon = rest.indexOf(";");
+      body = semicolon < 0 ? slice(view, j + 1) : rest.slice(0, semicolon);
+    }
+    if (/\breturn\s+2\b/.test(body) || /=>\s*2\b/.test(body)) {
+      offenders.push({ index: m.index, form: "guard" });
+    }
+  }
+
+  return offenders.sort((a, b) => a.index - b.index);
+}
+
+/**
+ * Object literals in a gate library that carry a verdict `status` but bind
+ * `exitCode` to a bare number instead of deriving it from the status mapping.
+ *
+ * The exit code is the machine-readable half of a verdict, and a literal is a
+ * copy of the mapping that no longer tracks it. This is the library-side twin
+ * of `verdictExitViolations`: there the defect is a printed verdict no exit can
+ * carry, here it is a recorded verdict whose exit was typed in by hand.
+ *
+ * @param {string} source Raw library source text.
+ * @returns {Array<{index: number, exitCode: string}>} Offending sites.
+ */
+export function gateVerdictExitBindingViolations(source) {
+  const view = codeWithTokenLiterals(source);
+  const offenders = [];
+  const key = /\bexitCode\s*:\s*([^,\n}]+)/g;
+  let m;
+  let guard = 0;
+  while ((m = key.exec(view)) !== null && guard++ < 5000) {
+    const value = m[1].trim();
+    if (!/^\d+$/.test(value)) {
+      continue;
+    }
+    // Only a literal sitting in the same object as a `status` is a verdict; a
+    // bare `exitCode: 0` in an unrelated record is not this rule's business.
+    const open = view.lastIndexOf("{", m.index);
+    if (open < 0) {
+      continue;
+    }
+    const close = matchBrace(view, open);
+    const object = close > open ? view.slice(open, close) : slice(view, open);
+    if (/\bstatus\s*:/.test(object) || /\bverdict\s*:/.test(object)) {
+      offenders.push({ index: m.index, exitCode: value });
+    }
+  }
+  return offenders;
+}
+
+/**
+ * Analyze one gate library's source against the exit-semantics contract.
+ *
+ * @param {string} source Raw library source text.
+ * @returns {{declaresStatusExitMapping: boolean, structuralRoutedToTwo: Array<{index: number, form: string}>, verdictExitBindingViolations: Array<{index: number, exitCode: string}>, violations: string[]}} Analysis.
+ */
+export function analyzeGateLibrarySource(source) {
+  const view = codeWithTokenLiterals(source);
+  const declaresStatusExitMapping =
+    /\bexitCodeFor\w*\s*\(/.test(view) ||
+    /\bexitCodeFor\w*\b/.test(view) ||
+    /\bEXIT_CODE\b/.test(view) ||
+    /\bexitCodes\s*:/.test(view) ||
+    /\bexitCode\s*:/.test(view);
+  const structural = gateStructuralExitViolations(source);
+  const unbound = gateVerdictExitBindingViolations(source);
+
+  const violations = [];
+  if (structural.length > 0) {
+    violations.push("structural routed to exit 2");
+  }
+  if (unbound.length > 0) {
+    violations.push("verdict exit code is a bare literal");
+  }
+  return {
+    declaresStatusExitMapping,
+    structuralRoutedToTwo: structural,
+    verdictExitBindingViolations: unbound,
     violations,
   };
 }

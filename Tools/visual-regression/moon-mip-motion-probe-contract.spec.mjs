@@ -211,7 +211,7 @@ test("raw reports use library-compatible non-certifying states and cannot self-p
     }),
     {
       status: "NON_CERTIFYING",
-      exitCode: 2,
+      exitCode: EXIT_CODES.STRUCTURAL,
       certificationEligible: false,
     },
   );
@@ -234,7 +234,7 @@ test("raw reports use library-compatible non-certifying states and cannot self-p
   assert.match(probeSource, /Object\.assign\(report, classifyRawReport/);
   assert.match(probeSource, /status: "ERROR"/);
   assert.match(probeSource, /emitFatalProbeArtifact\(error, "WATCHDOG"\)/);
-  assert.match(probeSource, /process\.exit\(EXIT_CODES\.FAIL\)/);
+  assert.match(probeSource, /process\.exit\(EXIT_CODES\.HARNESS\)/);
   assert.match(probeSource, /clearTimeout\(watchdog\)/);
   assert.match(probeSource, /error\?\.failureKind \?\? "ERROR"/);
   assert.match(probeSource, /failureKind = "ERROR"/);
@@ -418,7 +418,7 @@ test("manual seam inspection is explicit and blocks calibrated promotion", () =>
   const thresholds = syntheticThresholds();
   const pending = decideVerdict([], [], thresholds);
   assert.equal(pending.verdict, "INCONCLUSIVE");
-  assert.equal(pending.exitCode, EXIT_CODES.INCONCLUSIVE);
+  assert.equal(pending.exitCode, EXIT_CODES.STRUCTURAL);
   assert.equal(
     deriveMeasurementStatus(pending, thresholds),
     "MANUAL_INSPECTION_PENDING",
@@ -607,11 +607,18 @@ test("paired reports prove requested normal versus force-lod0 sensitivity", () =
   );
 });
 
-test("uncalibrated quality is explicitly INCONCLUSIVE with hard 0/1/2 exits", () => {
+test("uncalibrated quality is explicitly INCONCLUSIVE with hard 0/1/2/3 exits", () => {
   assert.equal(CALIBRATED_THRESHOLDS, null);
-  assert.deepEqual(EXIT_CODES, { PASS: 0, FAIL: 1, INCONCLUSIVE: 2 });
+  // The inconclusive verdict leaves with 3 (the lane could not see its
+  // subject), not 2 (the harness broke) — the two tiers are distinct again.
+  assert.deepEqual(EXIT_CODES, {
+    PASS: 0,
+    FAIL: 1,
+    HARNESS: 2,
+    STRUCTURAL: 3,
+  });
   assert.equal(decideVerdict([], [], null).verdict, "INCONCLUSIVE");
-  assert.equal(decideVerdict([], [], null).exitCode, 2);
+  assert.equal(decideVerdict([], [], null).exitCode, 3);
   assert.equal(decideVerdict(["fault"], [], null).verdict, "FAIL");
   assert.equal(decideVerdict(["fault"], [], null).exitCode, 1);
   assert.equal(decideVerdict([], [], {}).verdict, "FAIL");

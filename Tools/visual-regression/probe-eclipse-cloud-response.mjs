@@ -3286,6 +3286,26 @@ export async function runEclipseCloudResponseProbe() {
     );
     console.log(`EXIT: ${exitCode}`);
     process.exitCode = exitCode;
+  } finally {
+    // Last-resort reclamation. Every path above closes through
+    // `closeActiveBrowser`, which memoizes into `browserClosePromise`, so this
+    // launches a close only when something returned or threw before any of
+    // those call sites ran — the leak a `finally` is the only construct that
+    // can cover.
+    if (activeBrowser !== null && browserClosePromise === null) {
+      browserClosePromise = activeBrowser.close().then(
+        () => {
+          browserClosed = true;
+        },
+        (error) => {
+          cleanupErrors.push({
+            reason: "top-level finally",
+            error: error?.message ?? String(error),
+          });
+        },
+      );
+    }
+    await browserClosePromise;
   }
 }
 

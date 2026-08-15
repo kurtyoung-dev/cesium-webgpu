@@ -31,7 +31,6 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -44,6 +43,7 @@ import {
   createImmutableEvidence,
   fingerprintEvidenceFile,
   inspectBuildSourceIdentity,
+  safeGitHead,
   preserveFirstRedEvidence,
   snapshotEvidenceFiles,
   validateServedEntryIdentities,
@@ -474,18 +474,6 @@ export function createC1237OperationTracker() {
       };
     },
   });
-}
-
-function safeGitHead() {
-  try {
-    return execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return null;
-  }
 }
 
 export function sameC1237Fingerprint(left, right) {
@@ -1621,7 +1609,7 @@ export async function collectC1237Provenance() {
     }
   }
 
-  const gitHead = safeGitHead();
+  const gitHead = safeGitHead(repositoryRoot) ?? null;
   if (!/^[0-9a-f]{40}$/u.test(gitHead ?? "")) {
     reasons.push("git HEAD identity is unavailable");
   }

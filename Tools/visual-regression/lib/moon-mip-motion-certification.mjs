@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   link,
   lstat,
@@ -39,6 +39,28 @@ import {
   validateCalibratedThresholds,
   validateStructuralEvidence,
 } from "../probe-moon-mip-motion-edge.mjs";
+import { sha256 } from "./visual-gate-policy.mjs";
+
+/**
+ * Exit codes the NON_CERTIFYING tier has legitimately been recorded under.
+ *
+ * The tier's MEANING never changed — the lane could not see its subject — but
+ * its numeral did. Runs banked before the verdict tiers were named wrote 2, the
+ * code the 0/1/2/3 contract reserves for "the harness broke"; the probe now
+ * writes 3. Accepting both keeps the banked library readable without widening
+ * anything: these are the only two values, both spelled out, and the legacy
+ * member is deletable the moment every published run carries the current one.
+ *
+ * @param {unknown} value Recorded exit code.
+ * @returns {boolean} True when the value is a non-certifying exit.
+ */
+const NON_CERTIFYING_LEGACY_EXIT_CODE = 2;
+
+function isNonCertifyingExitCode(value) {
+  return (
+    value === EXIT_CODES.STRUCTURAL || value === NON_CERTIFYING_LEGACY_EXIT_CODE
+  );
+}
 
 export const C12_33_CERTIFICATION_SCHEMA =
   "cesium-c12-33-moon-mip-motion-certification/v1";
@@ -173,9 +195,9 @@ const PNG_SIGNATURE = Buffer.from([
 const PNG_METRIC_BINDING_SCHEMA =
   "cesium-c12-33-moon-mip-png-metric-binding/v1";
 
-function sha256(bytes) {
-  return createHash("sha256").update(bytes).digest("hex");
-}
+// `sha256` is imported from the shared gate policy rather than redefined: this
+// module compares its digests with ones other tools in the same pipeline
+// produced, so the two must be the same function, not two spellings of it.
 
 function canonicalJson(value) {
   if (Array.isArray(value)) {
@@ -764,16 +786,18 @@ export function validateRawMoonMipReport(report) {
   }
   if (
     report?.status !== "NON_CERTIFYING" ||
-    report?.exitCode !== EXIT_CODES.INCONCLUSIVE ||
+    !isNonCertifyingExitCode(report?.exitCode) ||
     report?.certificationEligible !== false
   ) {
-    failures.push("raw structurally-green report must be NON_CERTIFYING/2");
+    failures.push(
+      "raw structurally-green report must be NON_CERTIFYING with a structural exit",
+    );
   }
   if (
     report?.measurementStatus !== "CALIBRATION_PENDING" ||
     report?.calibratedThresholds !== null ||
     report?.result?.verdict !== "INCONCLUSIVE" ||
-    report?.result?.exitCode !== EXIT_CODES.INCONCLUSIVE
+    !isNonCertifyingExitCode(report?.result?.exitCode)
   ) {
     failures.push("raw report attempted to bypass offline calibration");
   }
@@ -930,10 +954,12 @@ function validateManifestShape(manifest) {
       "certificationEligible",
     ]) ||
     manifest?.result?.status !== "NON_CERTIFYING" ||
-    manifest?.result?.exitCode !== EXIT_CODES.INCONCLUSIVE ||
+    !isNonCertifyingExitCode(manifest?.result?.exitCode) ||
     manifest?.result?.certificationEligible !== false
   ) {
-    failures.push("source publication result is not NON_CERTIFYING/2");
+    failures.push(
+      "source publication result is not NON_CERTIFYING with a structural exit",
+    );
   }
   const command = manifest?.invocation?.command;
   if (

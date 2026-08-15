@@ -74,6 +74,9 @@ const WATCHDOG_MS = 540_000;
 const PAGE_TIMEOUT_MS = 240_000;
 const CLOSE_TIMEOUT_MS = 15_000;
 const WATCHDOG_SETTLEMENT_MS = CLOSE_TIMEOUT_MS + 5_000;
+// The in-run watchdog plus its settlement, with a minute of slack, is the
+// longest a healthy run can legitimately take; past that the process is stuck.
+const PROCESS_WATCHDOG_MS = WATCHDOG_MS + WATCHDOG_SETTLEMENT_MS + 60_000;
 const DIAGNOSTIC_ARRAY_LIMIT = 32;
 const DIAGNOSTIC_STRING_LIMIT = 2_048;
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -4455,10 +4458,44 @@ export async function runC1229S5MultiviewProbe(options = {}) {
       }
     }
     throw error;
+  } finally {
+    // Last-resort reclamation. Both paths above clear `browser` before handing
+    // the handle to `closeBrowserOrThrow`, so this only runs when something
+    // left the loop without doing either — the leak a `finally` is the only
+    // construct that can cover.
+    if (browser !== undefined) {
+      try {
+        await browser.close();
+      } catch {
+        // The verdict (or the primary error) is already decided and reported;
+        // a failure here must not replace it.
+      }
+      browser = undefined;
+    }
   }
 }
 
 async function main() {
+  // Terminating watchdog. `withC1229S5MultiviewWatchdog` only REJECTS the task
+  // it wraps, which needs the event loop to come back to it; a wedged page loop
+  // never yields, so nothing but `process.exit` ends the run. `unref` keeps the
+  // timer from extending a healthy one.
+  const processWatchdog = setTimeout(() => {
+    console.error(
+      `[probe-c12-29-s5-multiview] process watchdog fired after ` +
+        `${PROCESS_WATCHDOG_MS} ms; the in-run watchdog did not settle`,
+    );
+    process.exit(2);
+  }, PROCESS_WATCHDOG_MS);
+  processWatchdog.unref?.();
+  try {
+    await runMain();
+  } finally {
+    clearTimeout(processWatchdog);
+  }
+}
+
+async function runMain() {
   const result = await runC1229S5MultiviewProbe();
   const { artifact, paths } = result;
   console.log(

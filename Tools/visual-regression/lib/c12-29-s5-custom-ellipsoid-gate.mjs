@@ -10,6 +10,12 @@
 
 import { types as utilTypes } from "node:util";
 
+import {
+  BUILD_ABSENT_REASON,
+  buildAbsenceReason,
+} from "./build-source-identity.mjs";
+import { exitCodeForS5Status as exitCodeForC1229S5CustomStatus } from "./verdict-exit-gate.mjs";
+
 export const C12_29_S5_CUSTOM_SCHEMA = "c12-29-s5-custom-ellipsoid-evidence-v7";
 export const C12_29_S5_CUSTOM_DIAGNOSTICS_SCHEMA =
   "c12-29-s5-custom-ellipsoid-runtime-diagnostics-v7";
@@ -277,6 +283,14 @@ export const C12_29_S5_CUSTOM_LOCAL_FILES = Object.freeze(
 
 export const C12_29_S5_CUSTOM_BUILD_SOURCE_MAP =
   "Build/CesiumUnminified/index.js.map";
+
+// Build-absence classification lives in the shared provenance home, because
+// every shard that binds evidence to a build has the same question to answer
+// and must answer it the same way.
+export {
+  BUILD_ABSENT_REASON as C12_29_S5_CUSTOM_BUILD_ABSENT_REASON,
+  buildAbsenceReason as c1229S5CustomBuildAbsenceReason,
+};
 
 const FINAL_STATUSES = new Set(["PASS", "FAIL", "STRUCTURAL", "ERROR"]);
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -938,12 +952,11 @@ export function isC1229S5CustomUuidV4(value) {
   return typeof value === "string" && UUID_V4.test(value);
 }
 
-export function exitCodeForC1229S5CustomStatus(status) {
-  if (status === "PASS") return 0;
-  if (status === "FAIL") return 1;
-  if (status === "STRUCTURAL" || status === "ERROR") return 2;
-  throw new RangeError(`unknown custom-ellipsoid status ${String(status)}`);
-}
+// STRUCTURAL used to share exit 2 with ERROR here, which made a lane that
+// could not see its subject read as a crashed harness to anything scoring by
+// exit status. The tiers live in one place now; this name stays as the gate's
+// published spelling of the shared accessor.
+export { exitCodeForC1229S5CustomStatus };
 
 function cloneC1229S5CustomJsonSafe(
   value,

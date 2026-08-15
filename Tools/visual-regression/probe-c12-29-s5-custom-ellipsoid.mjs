@@ -101,6 +101,9 @@ const PAGE_TIMEOUT_MS = 240_000;
 const CLOSE_TIMEOUT_MS = 15_000;
 const RESPONSE_DRAIN_TIMEOUT_MS = 5_000;
 const WATCHDOG_DRAIN_TIMEOUT_MS = 45_000;
+// The in-run watchdog plus its drain, with a minute of slack, is the longest a
+// healthy run can legitimately take; past that the process itself is stuck.
+const PROCESS_WATCHDOG_MS = WATCHDOG_MS + WATCHDOG_DRAIN_TIMEOUT_MS + 60_000;
 const MAXIMUM_TIMER_TIMEOUT_MS = 2_147_483_647;
 const ERROR_TEXT_MAXIMUM_CHARACTERS = 65_536;
 const ERROR_TEXT_MAXIMUM_COMPONENT_CHARACTERS = 8_192;
@@ -6153,10 +6156,44 @@ export async function runC1229S5CustomEllipsoidProbe(options = {}) {
       }
     }
     throw error;
+  } finally {
+    // Last-resort reclamation. Both paths above hand the handle to
+    // `closeBrowserOrThrow` and clear `browser` first, so this only runs when
+    // something left the loop without doing either — the leak a `finally` is
+    // the only construct that can cover.
+    if (browser !== undefined) {
+      try {
+        await browser.close();
+      } catch {
+        // The verdict (or the primary error) is already decided and reported;
+        // a failure here must not replace it.
+      }
+      browser = undefined;
+    }
   }
 }
 
 async function main() {
+  // Terminating watchdog. `withC1229S5CustomWatchdog` only REJECTS the task it
+  // wraps, which needs the event loop to come back to it; a wedged page loop or
+  // an undrainable browser never yields, so nothing but `process.exit` ends the
+  // run. `unref` keeps the timer from extending a healthy one.
+  const processWatchdog = setTimeout(() => {
+    console.error(
+      `[probe-c12-29-s5-custom-ellipsoid] process watchdog fired after ` +
+        `${PROCESS_WATCHDOG_MS} ms; the in-run watchdog did not settle`,
+    );
+    process.exit(2);
+  }, PROCESS_WATCHDOG_MS);
+  processWatchdog.unref?.();
+  try {
+    await runMain();
+  } finally {
+    clearTimeout(processWatchdog);
+  }
+}
+
+async function runMain() {
   const result = await runC1229S5CustomEllipsoidProbe();
   const { artifact, paths } = result;
   console.log(

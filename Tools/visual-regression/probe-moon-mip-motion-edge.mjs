@@ -64,13 +64,31 @@ const watchdog = setTimeout(() => {
   );
   void emitFatalProbeArtifact(error, "WATCHDOG").finally(() => {
     console.error(error.message);
-    process.exit(EXIT_CODES.FAIL);
+    // A watchdog firing is the harness failing to finish, not the product
+    // failing its bar; leaving with 1 reported an apparatus timeout as a
+    // measured red.
+    process.exit(EXIT_CODES.HARNESS);
   });
 }, WATCHDOG_MS);
 watchdog.unref?.();
 
 export const FIXED_TIME_ISO = "2026-07-02T16:22:00Z";
-export const EXIT_CODES = Object.freeze({ PASS: 0, FAIL: 1, INCONCLUSIVE: 2 });
+
+// The 0/1/2/3 verdict tiers, named.
+//
+// The inconclusive tier used to be 2, the code reserved for "the harness
+// broke". It is not a harness fault: an uncalibrated threshold set or an
+// unattested seam inspection means the lane could not see its subject, which
+// the contract calls STRUCTURAL and gives 3. Sharing 2 with a genuine crash
+// made a run that never measured anything read as a flaky one to every runner
+// that scores by exit status, and left the watchdog — an actual harness fault —
+// leaving with 1, where a product FAIL lives.
+export const EXIT_CODES = Object.freeze({
+  PASS: 0,
+  FAIL: 1,
+  HARNESS: 2,
+  STRUCTURAL: 3,
+});
 export const MOON_MIP_CONTROL_MODES = Object.freeze(["normal", "force-lod0"]);
 export const MOON_MIP_SAMPLE_COUNT = 13;
 
@@ -947,7 +965,7 @@ export function decideVerdict(
   if (calibratedThresholds === null) {
     return {
       verdict: "INCONCLUSIVE",
-      exitCode: EXIT_CODES.INCONCLUSIVE,
+      exitCode: EXIT_CODES.STRUCTURAL,
       failures: [],
       inconclusive: [
         "Moon mip motion thresholds are intentionally uncalibrated; retain raw known-good and deliberately broken mip-0 evidence before promotion.",
@@ -968,7 +986,7 @@ export function decideVerdict(
   ) {
     return {
       verdict: "INCONCLUSIVE",
-      exitCode: EXIT_CODES.INCONCLUSIVE,
+      exitCode: EXIT_CODES.STRUCTURAL,
       failures: [],
       inconclusive: [
         "Moon seam PNG inspection is mandatory and has not been attested PASS.",
@@ -1030,7 +1048,7 @@ export function classifyRawReport(result) {
   }
   return {
     status: "NON_CERTIFYING",
-    exitCode: EXIT_CODES.INCONCLUSIVE,
+    exitCode: EXIT_CODES.STRUCTURAL,
     certificationEligible: false,
   };
 }
@@ -3440,6 +3458,7 @@ async function runProbe() {
   let context;
   let completedReport;
   let executionError;
+  let cleanupResults;
   try {
     context = await browser.newContext({
       viewport: { width: 1600, height: 900 },
@@ -3668,11 +3687,15 @@ async function runProbe() {
     completedReport = report;
   } catch (error) {
     executionError = error;
+  } finally {
+    // Teardown belongs in a `finally`, not after the catch: a throw from inside
+    // the catch clause would otherwise skip it and strand a headless Edge plus
+    // its GPU process for the life of the run.
+    cleanupResults = await Promise.allSettled([
+      context?.close() ?? Promise.resolve(),
+      browser.close(),
+    ]);
   }
-  const cleanupResults = await Promise.allSettled([
-    context?.close() ?? Promise.resolve(),
-    browser.close(),
-  ]);
   const cleanupFailures = cleanupResults
     .filter((result) => result.status === "rejected")
     .map((result) => String(result.reason?.stack ?? result.reason));

@@ -8,7 +8,6 @@
  * reason is "destroyed" is archived as STRUCTURAL, never counted as recovery.
  */
 
-import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -39,7 +38,10 @@ import {
   validateC1229S5ReplacementFinalArtifact,
   validateC1229S5ReplacementPageProgress,
 } from "./lib/c12-29-s5-replacement-device-gate.mjs";
-import { inspectBuildSourceIdentity } from "./lib/build-source-identity.mjs";
+import {
+  inspectBuildSourceIdentity,
+  safeGitHead,
+} from "./lib/build-source-identity.mjs";
 import {
   armWebGPUDevices,
   collectGateErrors,
@@ -67,6 +69,10 @@ const POOL_DEVICE_LOSS_CONSOLE =
   /^\[CesiumJS:WebGPUDevicePool\] Device lost: (\S+) — (.*)$/u;
 const SESSION_CLOSE_TIMEOUT_MS = 15_000;
 const BROWSER_CLOSE_TIMEOUT_MS = 30_000;
+// The in-run watchdog plus a bounded browser close, with a minute of slack, is
+// the longest a healthy run can legitimately take; past that the process is
+// stuck and only `process.exit` ends it.
+const PROCESS_WATCHDOG_MS = WATCHDOG_MS + BROWSER_CLOSE_TIMEOUT_MS + 60_000;
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const jsonBytes = (value) =>
@@ -2184,18 +2190,6 @@ async function servedIdentity(origin, relativePath) {
   };
 }
 
-function safeGitHead() {
-  try {
-    return execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return null;
-  }
-}
-
 function collectLocalFiles() {
   return C12_29_S5_REPLACEMENT_LOCAL_FILES.map(fileIdentity);
 }
@@ -2223,7 +2217,7 @@ async function collectProvenanceStart(baseIdentity, launch) {
   );
   return {
     schema: C12_29_S5_REPLACEMENT_PROVENANCE_SCHEMA,
-    gitHead: safeGitHead(),
+    gitHead: safeGitHead(repositoryRoot) ?? null,
     localStart,
     localEnd: [],
     served,
@@ -2943,6 +2937,20 @@ export async function runC1229S5ReplacementDeviceProbe(options = {}) {
       operations,
     );
     return { artifact, publication, paths, error };
+  } finally {
+    // Last-resort reclamation. Both paths above clear `browser` before handing
+    // the handle to `closeBounded`, so this only runs when something left the
+    // loop without doing either — the leak a `finally` is the only construct
+    // that can cover.
+    if (browser !== undefined) {
+      try {
+        await browser.close();
+      } catch {
+        // The verdict (or the primary error) is already decided and reported;
+        // a failure here must not replace it.
+      }
+      browser = undefined;
+    }
   }
 }
 
@@ -2974,6 +2982,27 @@ function parseArguments(argv) {
 }
 
 async function main() {
+  // Terminating watchdog. `withC1229S5ReplacementWatchdog` only REJECTS the
+  // task it wraps, which needs the event loop to come back to it; a wedged page
+  // loop or an unresponsive GPU process never yields, so nothing but
+  // `process.exit` ends the run. `unref` keeps the timer from extending a
+  // healthy one.
+  const processWatchdog = setTimeout(() => {
+    console.error(
+      `[probe-c12-29-s5-replacement-device] process watchdog fired after ` +
+        `${PROCESS_WATCHDOG_MS} ms; the in-run watchdog did not settle`,
+    );
+    process.exit(2);
+  }, PROCESS_WATCHDOG_MS);
+  processWatchdog.unref?.();
+  try {
+    await runMain();
+  } finally {
+    clearTimeout(processWatchdog);
+  }
+}
+
+async function runMain() {
   const result = await runC1229S5ReplacementDeviceProbe(
     parseArguments(process.argv.slice(2)),
   );

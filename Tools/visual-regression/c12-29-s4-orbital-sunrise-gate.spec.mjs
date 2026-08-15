@@ -23,6 +23,7 @@ import {
   sameEvidenceFingerprint,
   validateS4FinalArtifactShape,
 } from "./lib/c12-29-s4-orbital-sunrise-gate.mjs";
+import { BUILD_ABSENT_REASON } from "./lib/build-source-identity.mjs";
 import {
   captureS4PageRuntimeViewerRoutes,
   captureS4ServedViewerRoutes,
@@ -47,6 +48,41 @@ const gateSource = fs.readFileSync(
   "utf8",
 );
 const RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
+
+// Build-absence is STRUCTURAL, not a product FAIL.
+//
+// Two checks below drive the whole probe, which resolves the served viewer's
+// reference closure and binds itself to `Build/CesiumUnminified`. In a tree
+// that has never been built those references do not exist, so the checks have
+// no subject rather than a broken one and report the shared structural reason
+// instead of failing. The predicate names the artifacts, so a built tree still
+// runs both.
+const root = path.resolve(directory, "../..");
+const BUILD_ARTIFACTS = Object.freeze([
+  path.join(root, "Build/CesiumUnminified/index.js"),
+  path.join(root, "Build/CesiumUnminified/index.js.map"),
+  path.join(root, "Source/Widgets/widgets.css"),
+  path.join(root, "packages/engine/Source/Shaders/SunFS.js"),
+]);
+const missingBuildArtifacts = BUILD_ARTIFACTS.filter(
+  (file) => !fs.existsSync(file),
+);
+
+/**
+ * Skip a build-bound check with the shared named structural reason.
+ *
+ * @param {import("node:test").TestContext} t Test context.
+ * @returns {boolean} True when the check cannot see its subject.
+ */
+function skipWithoutBuild(t) {
+  if (missingBuildArtifacts.length === 0) {
+    return false;
+  }
+  t.skip(
+    `${BUILD_ABSENT_REASON}: ${missingBuildArtifacts.length} artifact(s) absent, first ${path.relative(root, missingBuildArtifacts[0]).replaceAll("\\", "/")}`,
+  );
+  return true;
+}
 
 const EARTH_RADIUS = C12_29_S4_ORBIT.innerRadiusMeters;
 const ORBIT_RADIUS = EARTH_RADIUS + C12_29_S4_ORBIT.altitudeMeters;
@@ -1150,7 +1186,10 @@ test("served route capture gives each response body one sequential API owner", a
   );
 });
 
-test("route07 failure publishes exact pre-session diagnostics and skips served capture", async () => {
+test("route07 failure publishes exact pre-session diagnostics and skips served capture", async (t) => {
+  if (skipWithoutBuild(t)) {
+    return;
+  }
   const directory = fs.mkdtempSync(
     path.join(os.tmpdir(), "c12-29-s4-route07-"),
   );
@@ -1351,7 +1390,10 @@ test("malformed prior latest becomes an owned immutable ERROR without launching"
   }
 });
 
-test("browser close rejection retains authoritative RUNNING and lock", async () => {
+test("browser close rejection retains authoritative RUNNING and lock", async (t) => {
+  if (skipWithoutBuild(t)) {
+    return;
+  }
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "c12-29-s4-close-"));
   const paths = createS4ArtifactPaths(directory, RUN_ID);
   let closeAttempts = 0;
