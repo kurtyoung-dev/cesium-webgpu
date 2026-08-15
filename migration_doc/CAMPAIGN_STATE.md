@@ -72,6 +72,15 @@ Local-only work (builds, probes, workers, edits) is unaffected.
 > **History note (handover audit FIX 37, 2026-08-09):** in-window weekday commits exist
 > prior to the Batch-977 attestation. They are **not precedent** — the rule as written
 > governs. Whether a waiver existed is an open maintainer ask.
+>
+> **Now enforced mechanically (ruling R-2026-08-14-4, `SOL-D4-HARDENING`):** `.husky/pre-push`
+> refuses a push inside the window — Eastern offset resolved from the tz database, never
+> hardcoded — and also enforces the `Batch NNNN:` prefix (monotonic), a non-empty body and
+> the `Co-Authored-By:` trailer; merge / upstream-sync commits skip the three message rules.
+> `npm run verify-landing` is the after-the-fact detector that makes a `--no-verify` bypass
+> visible, and additionally checks each commit's own timestamps against the window. Rules and
+> specs: `Tools/landing-rules.mjs`, `npm run test-landing-rules`;
+> [`EXECUTOR_LANE_CHARTER_2026-08-14.md`](EXECUTOR_LANE_CHARTER_2026-08-14.md) §6.
 
 ## 3. Branch Transparency — CRITICAL
 

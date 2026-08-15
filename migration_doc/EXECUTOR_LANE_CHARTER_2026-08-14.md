@@ -164,10 +164,42 @@ your architecture cannot satisfy; a shared home that needs extending.
 
 ## 6. Enforcement
 
-The R-2026-08-14-4 hardening makes 2.1/2.2/2.3 mechanical: a pre-push hook
-enforcing trailer + batch prefix + quiet-hours, and a bypass-evident verify step
-re-running the marker guard over the pushed range. The fleet contract (extended
-to gate libs) enforces 3.1. Everything else is enforced the way it was enforced
-this week: the work gets audited, omissions are found, and the grade reflects
-them. The cheapest path through this charter is compliance; the second-cheapest
-is a ruling request; there is no third path that survives an audit.
+The R-2026-08-14-4 hardening makes 2.1/2.2/2.3 mechanical, and as of the
+`SOL-D4-HARDENING` landing it is **LANDED, not planned**:
+
+| Rule | Mechanism | Where |
+| --- | --- | --- |
+| 2.2 batch prefix + monotonicity, non-empty body, `Co-Authored-By:` trailer | pre-push hook, per commit being pushed and authored by `cesium-webgpu-agent` | `.husky/pre-push` → `Tools/pre-push-guard.mjs` |
+| 2.1 quiet hours | the same hook, refusing the PUSH on weekdays 07:00–19:00 US Eastern (offset resolved from the tz database via `Intl` + `America/New_York`, never hardcoded) | same |
+| — merge / upstream-sync exemption | commits with two or more parents skip the three message rules; quiet hours still applies | `Tools/landing-rules.mjs` |
+| 2.3 hooks are never bypassed | after-the-fact detector: re-scans the range's own blobs with the C16 marker grammar and re-checks the message rules **and** each commit's timestamps against the window | `npm run verify-landing` → `Tools/verify-landing-compliance.mjs` |
+
+The predicates live in `Tools/landing-rules.mjs` as pure functions so they are
+testable without a repository; `npm run test-landing-rules` runs their contract
+(`Tools/landing-rules.spec.mjs`, mutation-controlled per rule, with the
+quiet-hours window pinned against fixed UTC instants either side of both 2026
+DST transitions), the hook's end-to-end wiring, and the detector driven against
+one known-bad and one known-good range of this repository's own history.
+
+**No bypass flag was added.** `git push --no-verify` still skips the hook — that
+is deliberate, and it is why the detector exists: `npm run verify-landing`
+re-runs both checks over a landed range, so a bypass leaves a red instead of
+leaving nothing. Run it at every pause point. `HOOK_EXPLAIN=1 git push …` prints
+a rule-by-rule verdict for every commit, including the skipped ones and why.
+
+The hook fires on `git push` only — never on fetch, pull, or clone (asserted,
+with a push as the positive control). It is POSIX sh plus node, because Windows
+git ships a minimal `sh`.
+
+**Expected known-red:** the detector run over any range covering 2026-08-13/14
+reports the S9/S10 violations — 8 clean-listed marker errors in the C12-37
+landing, and the un-prefixed / bodiless / trailerless / in-window commits. That
+is the finding reproducing itself, not a new defect, and it stays red because
+OPS-01b closed REJECTED. Day to day the default range is `<upstream>..HEAD`,
+i.e. only what has not been pushed yet.
+
+The fleet contract (extended to gate libs) enforces 3.1. Everything else is
+enforced the way it was enforced this week: the work gets audited, omissions are
+found, and the grade reflects them. The cheapest path through this charter is
+compliance; the second-cheapest is a ruling request; there is no third path that
+survives an audit.

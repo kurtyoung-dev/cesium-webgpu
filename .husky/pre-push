@@ -1,0 +1,32 @@
+#!/usr/bin/env sh
+
+# Landing-compliance guard — ruling R-2026-08-14-4.
+#
+# Enforces EXECUTOR_LANE_CHARTER_2026-08-14.md §2.1/§2.2 mechanically: batch
+# prefix + monotonicity, non-empty body, Co-Authored-By trailer, and the
+# weekday 07:00-19:00 US Eastern quiet-hours window. Rules live in
+# Tools/landing-rules.mjs; Tools/pre-push-guard.mjs is the git-aware driver
+# and reads git's ref lines from this hook's stdin.
+#
+# git runs pre-push for `git push` only — never for fetch, pull, or clone.
+#
+# HOOK_EXPLAIN=1 git push ...   prints a rule-by-rule verdict per commit.
+#
+# There is no bypass flag here on purpose. `git push --no-verify` still skips
+# the hook; `npm run verify-landing` re-checks the same rules afterwards, so
+# skipping it leaves a detectable red rather than nothing at all.
+#
+# POSIX sh only (Windows git ships a minimal sh): no arrays, no [[ ]], no
+# `local`, no process substitution.
+
+guard="Tools/pre-push-guard.mjs"
+
+# Hooks resolve through core.hooksPath, so $0 points into the main checkout's
+# .husky/ even when the push comes from a linked worktree. Prefer the driver
+# that ships beside this hook; fall back to the working directory's copy.
+hook_root=$(dirname "$(dirname "$0")")
+if [ -f "$hook_root/$guard" ]; then
+  guard="$hook_root/$guard"
+fi
+
+node "$guard" "$@"
