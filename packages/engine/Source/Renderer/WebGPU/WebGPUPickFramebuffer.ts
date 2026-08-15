@@ -1615,13 +1615,12 @@ export class WebGPUPickFramebuffer {
   }
 
   private _invalidateCenterPixelReadback(): void {
-    this._centerPixelCache = null;
-    this._centerPendingIdentity = null;
-    this._centerPendingRequestSequence = -1;
-    // Reserve a sequence that no outstanding request captured. Older
-    // completions then fail the latest-request check without touching state
-    // belonging to a replacement attachment.
-    this._latestCenterReadbackSequence = this._nextCenterReadbackSequence++;
+    this._centerPixelCacheEntries.length = 0;
+    this._centerPendingRequests.length = 0;
+    // Advance past every sequence an outstanding completion may have
+    // captured. Older completions then fail the per-identity latest-request
+    // check without touching state belonging to a replacement attachment.
+    this._nextCenterReadbackSequence++;
   }
 
   private _destroyTextures(): void {
