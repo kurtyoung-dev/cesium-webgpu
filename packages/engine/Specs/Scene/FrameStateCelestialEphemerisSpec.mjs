@@ -208,31 +208,51 @@ test("FrameState cache keys exact time, provider identity, revision, and transfo
   assert.strictEqual(frameState.celestialEphemerisSample, sample);
 });
 
-test("FrameState rejects same-frame lineage drift and retries on the next logical frame", () => {
+test("FrameState defers a same-frame revision advance and applies it on the next logical frame", () => {
   const frameState = new FrameState(undefined, undefined, undefined);
   const provider = new InstrumentedProvider();
   const time = createTime(40.0);
   frameState.frameNumber = 7;
-  frameState._updateCelestialEphemeris(provider, time);
+  const sample = frameState._updateCelestialEphemeris(provider, time);
+  const publishedSunX = sample.sunPositionWC.x;
 
+  // The provider's revision advances asynchronously after publication. Pick,
+  // snap, and offscreen preparations reuse this frame number, so the retained
+  // sample is served unchanged rather than the transition being reported as a
+  // caller error.
   ++provider._revision;
   provider.branch = "TEST_BRANCH_B";
-  assert.throws(
-    () => frameState._updateCelestialEphemeris(provider, time),
-    /changed after publication/,
+  const deferred = frameState._updateCelestialEphemeris(provider, time);
+  assert.strictEqual(deferred, sample);
+  assert.strictEqual(frameState.celestialEphemerisSample, sample);
+  assert.equal(sample.providerRevision, 1);
+  assert.equal(sample.transformBranch, "TEST_BRANCH_A");
+  assert.equal(sample.sunPositionWC.x, publishedSunX);
+  assert.equal(provider.calls, 1);
+
+  // Every further preparation in the same frame stays on that one lineage.
+  assert.strictEqual(
+    frameState._updateCelestialEphemeris(provider, time),
+    sample,
   );
   assert.equal(provider.calls, 1);
-  assert.equal(frameState.celestialEphemerisSample, undefined);
-  assert.throws(
-    () => frameState._updateCelestialEphemeris(provider, time),
-    /changed after publication/,
-  );
 
   frameState.frameNumber = 8;
   const recovered = frameState._updateCelestialEphemeris(provider, time);
   assert.equal(provider.calls, 2);
   assert.equal(recovered.providerRevision, 2);
   assert.equal(recovered.transformBranch, "TEST_BRANCH_B");
+
+  // Negative control: the deferral is scoped to the revision alone. A drift the
+  // retained sample cannot absorb — here a different provider object — is still
+  // refused after publication.
+  const other = new InstrumentedProvider("frame-test-other");
+  assert.throws(
+    () => frameState._updateCelestialEphemeris(other, time),
+    /changed after publication/,
+  );
+  assert.equal(other.calls, 0);
+  assert.equal(frameState.celestialEphemerisSample, undefined);
 });
 
 test("FrameState hit audit rejects vector and declaration spoofing", () => {
@@ -568,8 +588,10 @@ test("FrameState logical-frame token cannot retain a rejection across frame-numb
   const time = createTime(80.0);
 
   frameState.frameNumber = 1;
-  frameState._updateCelestialEphemeris(provider, time);
-  ++provider._revision;
+  const sample = frameState._updateCelestialEphemeris(provider, time);
+  // Drift the retained sample away from its cache so the frame is genuinely
+  // rejected; a revision advance alone is deferred, not rejected.
+  sample.sunPositionWC.x += 1.0;
   assert.throws(
     () => frameState._updateCelestialEphemeris(provider, time),
     /changed after publication/,
@@ -839,6 +861,24 @@ test("FrameState snapshots the Uniform legacy hook while Moon retains its fixed 
   );
   assert.equal(frameState.celestialEphemerisSample, undefined);
   assert.equal(provider.calls, 2);
+
+  // The rejected argument is validated before any state is written, so the
+  // frame is not left marked legacy-consumed and a corrected retry inside the
+  // SAME frame is accepted instead of reporting an override change.
+  const retryTransform = function (retryDate, matrixResult) {
+    assert.equal(retryDate, time);
+    return Matrix3.clone(Matrix3.IDENTITY, matrixResult);
+  };
+  assert.equal(
+    frameState._updateCelestialEphemeris(provider, time, true, retryTransform),
+    undefined,
+  );
+  assert.strictEqual(
+    frameState._celestialEphemerisLegacyTransform,
+    retryTransform,
+  );
+  assert.equal(provider.calls, 2);
+
   frameState.frameNumber = 5;
   frameState._updateCelestialEphemeris(provider, time);
   assert.equal(provider.calls, 3);

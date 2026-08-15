@@ -363,10 +363,10 @@ class Moon {
     // Allocated once; never reallocated per frame.
     this._phaseAppearance = createMoonPhaseAppearance();
 
-    // C12-37 — backend-neutral physical-depth demand and exact command
-    // bounding volume.  The demand is intentionally distinct from the route
-    // actually emitted by a backend: WebGPU may keep returning the legacy
-    // ENVIRONMENT command while its lazy physical pipeline compiles.
+    // Backend-neutral physical-depth demand and exact command bounding
+    // volume.  The demand is intentionally distinct from the route actually
+    // emitted by a backend: WebGPU may keep returning the legacy ENVIRONMENT
+    // command while its lazy physical pipeline compiles.
     this._physicalDepthDistanceDemand = false;
     this._physicalDepthPrewarmRequested = false;
     this._physicalDepthRequested = false;
@@ -431,8 +431,8 @@ class Moon {
       Matrix3.multiplyByVector(icrfToFixed, translation, translation);
     }
 
-    // C12-37 — decide whether the Moon can physically precede the Earth using
-    // only shared binary64 scene state, before either backend is selected.
+    // Decide whether the Moon can physically precede the Earth using only
+    // shared binary64 scene state, before either backend is selected.
     // Entry is exact; exit carries a one-lunar-radius hysteresis margin.  A
     // screen-overlap predicate is deliberately not used: projection noise or a
     // one-frame-late view would make route ownership pop at the limb.

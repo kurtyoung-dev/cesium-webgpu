@@ -1480,6 +1480,12 @@ export async function createIndexJs(workspace, options = {}) {
       // C13-08 — the bounds / coordinate-reference / no-data contract surface.
       `export { PROCEDURAL_NO_DATA_FILL, DEFAULT_WEATHER_GRID_REGISTRATION } from './Source/Scene/Weather/WeatherFieldGrid.js';${EOL}` +
       `export { weatherTexelCenterLonLat } from './Source/Scene/Weather/WeatherMapSeam.js';${EOL}` +
+      // Eclipse disc geometry. The file glob above exports only the default
+      // (the compute function), which cannot be called without the result
+      // factory that allocates its caller-owned storage, nor its result read
+      // without the phase enum — so the auto-exported symbol was unusable on
+      // its own. Backend-agnostic Core math.
+      `export { createEclipseDiscGeometry, EclipseDiscPhase } from './Source/Core/EclipseDiscGeometry.js';${EOL}` +
       `export { computeAtmosphericKnobs, computeAtmosphericEffects, applyAtmosphericConditions } from './Source/Scene/AtmosphericEffects.js';${EOL}` +
       // Phase E (Batch 423) — precipitation-type enum + index↔string mapping.
       `export { PrecipitationType, precipitationTypeToString } from './Source/Scene/AtmosphericEffects.js';${EOL}` +

@@ -515,4 +515,109 @@ describe("Renderer/WebGPU/WebGPUPickFramebuffer staging", function () {
     expect(device.copies.length).toBe(2);
     framebuffer.destroy();
   });
+
+  describe("center-pixel readback across concurrent identities", function () {
+    const rectangle = { x: 100, y: 50, width: 3, height: 3 };
+
+    function arm(framebuffer, property) {
+      return framebuffer.readCenterPixel(
+        rectangle,
+        "metadata",
+        "class",
+        property,
+        "schema class property",
+        undefined,
+        "provenance",
+      );
+    }
+
+    async function settle() {
+      for (let i = 0; i < 4; ++i) {
+        await Promise.resolve();
+      }
+    }
+
+    it("converges every distinct identity armed inside one task", async function () {
+      // A multi-property pickMetadata sweep arms one readback per property
+      // before any of them can resolve. A single publishing slot let only the
+      // last-armed identity ever converge; the earlier ones returned undefined
+      // forever, no matter how many picks followed.
+      const { framebuffer, device } = makeFramebuffer();
+
+      expect(arm(framebuffer, "alpha")).toBeUndefined();
+      expect(arm(framebuffer, "beta")).toBeUndefined();
+      expect(device.buffers.length).toBe(2);
+      device.buffers[0].storage[0] = 11;
+      device.buffers[1].storage[0] = 22;
+
+      await settle();
+
+      const alpha = arm(framebuffer, "alpha");
+      const beta = arm(framebuffer, "beta");
+      expect(alpha).toBeDefined();
+      expect(beta).toBeDefined();
+      expect(alpha[0]).toBe(11);
+      expect(beta[0]).toBe(22);
+      framebuffer.destroy();
+    });
+
+    it("arms one readback per identity while requests are in flight", async function () {
+      const { framebuffer, device } = makeFramebuffer({ deferMaps: true });
+
+      arm(framebuffer, "alpha");
+      arm(framebuffer, "alpha");
+      arm(framebuffer, "alpha");
+      expect(device.buffers.length).toBe(1);
+      arm(framebuffer, "beta");
+      expect(device.buffers.length).toBe(2);
+
+      for (const resolveMap of device.mapResolvers.splice(0)) {
+        resolveMap();
+      }
+      await settle();
+      expect(arm(framebuffer, "alpha")).toBeDefined();
+      expect(arm(framebuffer, "beta")).toBeDefined();
+      framebuffer.destroy();
+    });
+
+    it("refreshes an identity's slot from its next resolved readback", async function () {
+      const { framebuffer, device } = makeFramebuffer({ deferMaps: true });
+
+      arm(framebuffer, "alpha");
+      device.buffers[0].storage[0] = 1;
+      device.mapResolvers.splice(0).forEach((resolveMap) => resolveMap());
+      await settle();
+
+      // Reading returns the cached byte AND arms the next readback for the
+      // same identity; that later value replaces the slot rather than adding
+      // a second entry for it.
+      expect(arm(framebuffer, "alpha")[0]).toBe(1);
+      expect(device.buffers.length).toBe(2);
+      device.buffers[1].storage[0] = 2;
+      device.mapResolvers.splice(0).forEach((resolveMap) => resolveMap());
+      await settle();
+      expect(arm(framebuffer, "alpha")[0]).toBe(2);
+      framebuffer.destroy();
+    });
+
+    it("evicts the least recently used identity beyond the cache bound", async function () {
+      const { framebuffer } = makeFramebuffer();
+      const properties = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
+
+      for (const property of properties) {
+        arm(framebuffer, property);
+      }
+      await settle();
+
+      // Eight distinct identities fill the cache exactly. A ninth evicts the
+      // least recently used slot, which is p0 — it published first and nothing
+      // has touched it since.
+      arm(framebuffer, "p8");
+      await settle();
+      expect(arm(framebuffer, "p8")).toBeDefined();
+      expect(arm(framebuffer, "p7")).toBeDefined();
+      expect(arm(framebuffer, "p0")).toBeUndefined();
+      framebuffer.destroy();
+    });
+  });
 });

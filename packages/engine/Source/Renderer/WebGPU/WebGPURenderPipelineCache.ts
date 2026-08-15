@@ -779,11 +779,16 @@ export class WebGPURenderPipelineCache {
       unclippedDepth: descriptor.primitive?.unclippedDepth,
     };
 
-    // Depth stencil state with variant overrides. A false depthTest means
-    // there must be no depth state at all unless stencil operations require
-    // the attachment. In that stencil-only case depth comparison is `always`
-    // and depth writes are disabled: retaining the descriptor's depth compare
-    // or write flag would silently leave depth testing active.
+    // Depth stencil state with variant overrides. A false depthTest disables
+    // depth COMPARISON and depth WRITES — comparison becomes `always` and
+    // writes are off, because retaining the descriptor's compare or write flag
+    // would silently leave depth testing active. It does not remove the
+    // attachment: a descriptor that declares a depthStencil block is rendering
+    // into a pass that has a depth attachment, and a pipeline built without the
+    // block is incompatible with that pass ("Attachment state is not
+    // compatible"), so the depth-disabled pipeline keeps the block with the
+    // descriptor's own format. Only a color-only descriptor — no depthStencil
+    // and no stencil ops — still produces no depth state.
     //
     // When the variant
     // introduces stencil ops and the descriptor's format is
@@ -801,11 +806,10 @@ export class WebGPURenderPipelineCache {
 
     // Write/compare/bias fields modify a selected depth state; they do not
     // independently require a depth attachment on a color-only pipeline.
-    const needsDepthStencil = depthDisabled
-      ? hasStencilOps
-      : descriptor.depthStencil !== undefined ||
-        variant?.depthTest === true ||
-        hasStencilOps;
+    const needsDepthStencil =
+      descriptor.depthStencil !== undefined ||
+      variant?.depthTest === true ||
+      hasStencilOps;
     if (needsDepthStencil) {
       let format = descriptor.depthStencil?.format || "depth24plus";
       if (

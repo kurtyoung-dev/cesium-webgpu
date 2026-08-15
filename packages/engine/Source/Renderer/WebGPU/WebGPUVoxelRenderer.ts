@@ -2597,13 +2597,35 @@ function throwUnreportedVoxelPrimaryPipelineFailure(cache: VoxelCache): void {
   }
 }
 
-function throwUnreportedVoxelRootUploadFailure(cache: VoxelCache): void {
+/**
+ * Surface a failed root voxel-tile upload the way the WebGL traversal surfaces
+ * a failed tile request: the upload state is already marked `failed`, so the
+ * primitive raises `tileFailed` and the frame keeps rendering with whatever
+ * data is bound. Throwing here instead would unwind `Scene.render`, which no
+ * WebGL voxel failure does. `takeVoxelAsyncFailure` reports once per failure,
+ * so a permanently failed root cannot raise the event every frame.
+ */
+function reportVoxelRootUploadFailure(
+  cache: VoxelCache,
+  primitive: CesiumObjectWithWebGPUCache,
+): void {
   const failure = cache.dataUpload
     ? takeVoxelAsyncFailure(cache.dataUpload.rootFailure)
     : null;
-  if (failure) {
-    throw failure;
+  if (!failure) {
+    return;
   }
+  const message = failure instanceof Error ? failure.message : String(failure);
+  // Permanent: a root tile that never uploads leaves the primitive drawing
+  // placeholder data, which is exactly the kind of silent wrong output that has
+  // to reach the console.
+  cache.context.log(
+    "error",
+    `VoxelPrimitive root tile upload failed: ${message}`,
+  );
+  const tileFailed = (primitive as { tileFailed?: { raiseEvent?: () => void } })
+    .tileFailed;
+  tileFailed?.raiseEvent?.();
 }
 
 function createVoxelCache(
@@ -3289,7 +3311,7 @@ function updateWebGPUVoxelPrimitive(
     }
     tryUploadRootVoxelTile(device, primitive, frameState, cache.dataUpload);
   }
-  throwUnreportedVoxelRootUploadFailure(cache);
+  reportVoxelRootUploadFailure(cache, primitive);
   const realDataView = cache.dataUpload?.view ?? null;
   if (
     realDataView &&
@@ -4396,6 +4418,9 @@ export {
   createVoxelProxyIndices,
   computeVoxelProxyFirstIndex,
   updateVoxelProxyCommandFirstIndices,
+  // Root-upload error path, exported so its WebGL-parity contract (raise
+  // tileFailed, log, never throw) is testable without a device.
+  reportVoxelRootUploadFailure,
 };
 export default {
   updateWebGPUVoxelPrimitive,

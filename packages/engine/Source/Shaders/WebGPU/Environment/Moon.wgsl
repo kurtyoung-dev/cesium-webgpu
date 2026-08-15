@@ -143,7 +143,7 @@ struct U {
   specularStrength: f32,                            // 284
 
   farPlane: f32,                                    // 288
-  // C12-37 physical-depth route reuses the three historical pad lanes. The
+  // The physical-depth route reuses the three historical pad lanes. The
   // legacy fs/vs entry points never read them, so their layout and output stay
   // byte-identical. Physical meanings: canonical encode near/factor and packed
   // globe-depth mode (0 = native live depth, 1 = compare packed, -1 = fail
@@ -201,7 +201,7 @@ struct U {
 // sampler — the two maps share the same UV unwrap and the same filtering, so
 // a second sampler would be pure duplication.
 @group(0) @binding(3) var normalTex: texture_2d<f32>;
-// C12-37 physical route only. The legacy `fs` entry point has no call path to
+// Physical route only. The legacy `fs` entry point has no call path to
 // this binding, so the existing environment bind-group layout remains valid.
 @group(0) @binding(4) var packedGlobeDepthTex: texture_2d<f32>;
 
@@ -363,7 +363,7 @@ fn vs(i: VI) -> VO {
   return o;
 }
 
-// C12-37 — true-position vertex route for the ordinary OPAQUE frustum bins.
+// True-position vertex route for the ordinary OPAQUE frustum bins.
 // X/Y/W retain the exact RTE projection. Z is clamped only for raster coverage
 // (the analytic fragment hit writes the authoritative depth), matching the
 // renderer-wide csm_updatePositionDepth contract.
@@ -611,7 +611,7 @@ fn unpackPackedDepth(packed: vec4<f32>) -> f32 {
   );
 }
 
-// C12-37 — the physical Moon shares the normal OPAQUE attachment with tiles,
+// The physical Moon shares the normal OPAQUE attachment with tiles,
 // voxels, and models. When Cesium's default terrain-depth clear is active it
 // also compares the same raw depth against the packed pre-clear globe depth.
 @fragment

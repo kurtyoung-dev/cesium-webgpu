@@ -1,8 +1,10 @@
 import Cartesian3 from "../../../Source/Core/Cartesian3.js";
+import Event from "../../../Source/Core/Event.js";
 import Matrix4 from "../../../Source/Core/Matrix4.js";
 import {
   computeVoxelProxyFirstIndex,
   createVoxelProxyIndices,
+  reportVoxelRootUploadFailure,
   updateVoxelProxyCommandFirstIndices,
 } from "../../../Source/Renderer/WebGPU/WebGPUVoxelRenderer.js";
 
@@ -132,6 +134,89 @@ describe("Renderer/WebGPU/WebGPUVoxelRenderer", function () {
     nonFiniteModel[0] = Number.NaN;
     expect(select(nonFiniteModel, Cartesian3.ZERO, result)).toBe(0);
     expect(result).toEqual(Cartesian3.ZERO);
+  });
+
+  describe("root-tile upload failure parity with the WebGL traversal", function () {
+    // The WebGL traversal marks the keyframe node FAILED and raises
+    // `tileFailed` on the primitive; the frame keeps rendering. These specs pin
+    // the same three-part contract on the WebGPU path: log, raise, do not
+    // unwind the caller.
+    function makeCache(failureState) {
+      const logged = [];
+      return {
+        logged,
+        context: {
+          log: function (level, message) {
+            logged.push([level, message]);
+          },
+        },
+        dataUpload:
+          failureState === undefined ? null : { rootFailure: failureState },
+      };
+    }
+
+    it("raises tileFailed, logs an error, and returns instead of throwing", function () {
+      const cache = makeCache({
+        error: new Error("root upload rejected"),
+        reported: false,
+      });
+      const primitive = { tileFailed: new Event() };
+      let raised = 0;
+      primitive.tileFailed.addEventListener(function () {
+        ++raised;
+      });
+
+      expect(function () {
+        reportVoxelRootUploadFailure(cache, primitive);
+      }).not.toThrow();
+      expect(raised).toBe(1);
+      expect(cache.logged.length).toBe(1);
+      expect(cache.logged[0][0]).toBe("error");
+      expect(cache.logged[0][1]).toContain("root upload rejected");
+    });
+
+    it("reports a permanently failed root exactly once", function () {
+      const cache = makeCache({
+        error: new Error("root upload rejected"),
+        reported: false,
+      });
+      const primitive = { tileFailed: new Event() };
+      let raised = 0;
+      primitive.tileFailed.addEventListener(function () {
+        ++raised;
+      });
+
+      reportVoxelRootUploadFailure(cache, primitive);
+      reportVoxelRootUploadFailure(cache, primitive);
+      reportVoxelRootUploadFailure(cache, primitive);
+      expect(raised).toBe(1);
+      expect(cache.logged.length).toBe(1);
+    });
+
+    it("is inert with no failure recorded and with no upload state at all", function () {
+      const noFailure = makeCache({ error: null, reported: false });
+      const primitive = { tileFailed: new Event() };
+      let raised = 0;
+      primitive.tileFailed.addEventListener(function () {
+        ++raised;
+      });
+
+      reportVoxelRootUploadFailure(noFailure, primitive);
+      reportVoxelRootUploadFailure(makeCache(undefined), primitive);
+      expect(raised).toBe(0);
+      expect(noFailure.logged.length).toBe(0);
+    });
+
+    it("still logs when the owner exposes no tileFailed event", function () {
+      const cache = makeCache({
+        error: new Error("root upload rejected"),
+        reported: false,
+      });
+      expect(function () {
+        reportVoxelRootUploadFailure(cache, {});
+      }).not.toThrow();
+      expect(cache.logged.length).toBe(1);
+    });
   });
 
   it("updates every current and lazily-added command without replacement", function () {

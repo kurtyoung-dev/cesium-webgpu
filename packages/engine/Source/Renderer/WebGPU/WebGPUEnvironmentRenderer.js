@@ -1038,7 +1038,7 @@ function buildMoonPipelineResources(device, format, depthFormat, sampleCount) {
 }
 
 /**
- * C12-37 physical Moon pipeline. Kept separate and lazy so the ordinary
+ * Build the physical Moon pipeline. Kept separate and lazy so the ordinary
  * Earth-near ENVIRONMENT pipeline above retains its exact descriptor, bundle,
  * bind-group layout, and upload behavior.
  *
@@ -1650,10 +1650,10 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   }
   cache.pipeline = moonPipeline;
 
-  // C12-37 — request the physical pipeline only while the shared f64 demand
-  // asks for it. Until this lazy pipeline is genuinely ready, the function
-  // continues through the unchanged ENVIRONMENT path below; the Moon never
-  // disappears and never emits both routes.
+  // Request the physical pipeline only while the shared f64 demand asks for it.
+  // Until this lazy pipeline is genuinely ready, the function continues through
+  // the unchanged ENVIRONMENT path below; the Moon never disappears and never
+  // emits both routes.
   let physicalPipeline;
   if (
     moon._physicalDepthPrewarmRequested === true ||
@@ -1789,10 +1789,18 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache._normalPublicationCallbacks,
   );
 
+  // Registered before the route branch. Both routes upload moon uniforms every
+  // frame, so both have to be freezable — a registration that lived only on the
+  // legacy path left `Scene.snap` unable to freeze a physical-route Moon while
+  // reporting the moon as an unregistered participant.
+  registerMoonSnapshotFreezable(frameState, cache);
+
   if (moon._physicalDepthRequested === true && defined(physicalPipeline)) {
+    cache._executedRoute = "physical";
     pushPhysicalMoonCommand(moon, frameState, commandList, cache);
     return;
   }
+  cache._executedRoute = "legacy";
 
   // Uniform buffer sized by `MOON_UNIFORM_BUFFER_SIZE`, currently 352 bytes /
   // 88 floats, of which floats 0..86 are in use and 87 is tail padding. The
@@ -1825,28 +1833,6 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     });
     // Bind group changed → render bundle (if any) is stale.
     cache._bundleStale = true;
-  }
-
-  // Snapshot mode freezable registration. First-time only. Each Moon
-  // instance gets one freezable registration; the freezable just toggles
-  // a flag the per-frame path consults to skip uniform writes. The
-  // service reference is stashed on the cache so destroy() can
-  // unregister later — without it, the closure would leak after the
-  // moon's GPU resources are destroyed.
-  if (!cache._snapshotRegistered) {
-    // The canonical publication is `frameState.snapshotMode`, written by
-    // `Scene.updateFrameState`. `frameState.scene` is never populated, so a
-    // registration gated on that property never fires, and the moon then keeps
-    // packing and uploading uniforms every frame while the scene is frozen.
-    const snapshotMode = frameState.snapshotMode;
-    if (defined(snapshotMode)) {
-      snapshotMode.registerFreezable(
-        "moon-renderer",
-        createMoonFreezable(cache),
-      );
-      cache._snapshotRegistered = true;
-      cache._snapshotService = snapshotMode;
-    }
   }
 
   // The whole per-frame pack-and-write is skipped while the snapshot service
@@ -1974,6 +1960,11 @@ function getPhysicalMoonUniformSlot(cache, slotIndex) {
       normalView: undefined,
       sampler: undefined,
       globeDepthView: undefined,
+      // Snapshot-freeze bookkeeping: `packed` distinguishes "holds uploaded
+      // bytes" from "all zeros", and `packedGlobeDepthView` is the depth
+      // resource those bytes were written against.
+      packed: false,
+      packedGlobeDepthView: undefined,
     };
   }
   return slot;
@@ -2031,6 +2022,20 @@ function resolvePhysicalMoonBindGroup(moon, frameState, cache) {
     cache,
     cache.physicalExecutionCursor++,
   );
+  const globeDepthView = context._globeDepthView ?? undefined;
+  // Symmetric with the legacy route's freeze skip: a frozen snapshot replays
+  // the bytes the frozen frame uploaded. Two conditions still force a repack
+  // while frozen — a slot that was never packed would publish an all-zero
+  // uniform block, and a changed globe-depth view would leave float 75
+  // asserting a packed depth that the newly bound resource no longer is.
+  if (
+    cache._frozen === true &&
+    slot.packed === true &&
+    slot.packedGlobeDepthView === globeDepthView
+  ) {
+    cache._executedUniformData = slot.uniformData;
+    return getPhysicalMoonBindGroup(cache, slot, globeDepthView);
+  }
   const cameraPositionWC =
     uniformState.cameraPosition ?? frameState.camera.positionWC;
   _packMoonUniforms(
@@ -2070,7 +2075,6 @@ function resolvePhysicalMoonBindGroup(moon, frameState, cache) {
         : 0.0;
 
   const requiresPackedDepth = moon._physicalDepthClearGlobeDepth === true;
-  const globeDepthView = context._globeDepthView ?? undefined;
   // -1 is fail-closed in WGSL. It prevents a first-frame/resize/device-recovery
   // hole from turning into the original Moon-on-top bug.
   slot.uniformData[75] = requiresPackedDepth
@@ -2086,6 +2090,11 @@ function resolvePhysicalMoonBindGroup(moon, frameState, cache) {
     slot.uniformData.byteOffset,
     slot.uniformData.byteLength,
   );
+  slot.packed = true;
+  slot.packedGlobeDepthView = globeDepthView;
+  // The statistics reader has to report the uniforms the EXECUTED draw used,
+  // not the legacy route's buffer, which the physical route never writes.
+  cache._executedUniformData = slot.uniformData;
   return getPhysicalMoonBindGroup(cache, slot, globeDepthView);
 }
 
@@ -2350,6 +2359,34 @@ function createMoonFreezable(cache) {
 }
 
 /**
+ * Register one freezable per Moon cache, first-time only. The freezable just
+ * toggles a flag both uniform-upload routes consult. The service reference is
+ * stashed on the cache so destroy() can unregister later — without it, the
+ * closure would leak after the moon's GPU resources are destroyed.
+ *
+ * The canonical publication is `frameState.snapshotMode`, written by
+ * `Scene.updateFrameState`. `frameState.scene` is never populated, so a
+ * registration gated on that property never fires, and the moon then keeps
+ * packing and uploading uniforms every frame while the scene is frozen.
+ *
+ * @param {object} frameState The current frame state.
+ * @param {object} cache The moon's `_webgpuCache` object.
+ * @private
+ */
+function registerMoonSnapshotFreezable(frameState, cache) {
+  if (cache._snapshotRegistered) {
+    return;
+  }
+  const snapshotMode = frameState.snapshotMode;
+  if (!defined(snapshotMode)) {
+    return;
+  }
+  snapshotMode.registerFreezable("moon-renderer", createMoonFreezable(cache));
+  cache._snapshotRegistered = true;
+  cache._snapshotService = snapshotMode;
+}
+
+/**
  * Returns a diagnostic snapshot of a Moon's WebGPU cache, or `null` when the
  * moon has not yet had its first `update()` call, so the cache is absent, or
  * when called against a non-WebGPU scene. Pure read; safe to call from
@@ -2368,7 +2405,19 @@ function getWebGPUMoonStatistics(moon) {
   // mirror `_packMoonUniforms()` (offsets 64..86 are the moon tail: 64..75 the
   // base block, 76..83 the atmosphere and BRDF terms, 84 the relief strength,
   // and 85/86 the phase pair).
-  const ud = cache.uniformData;
+  //
+  // The two routes own different uniform storage, so the reader follows the
+  // route that actually emitted a command. Reporting `cache.uniformData` while
+  // the physical route ran would publish the legacy route's stale bytes — or
+  // all nulls, since the legacy buffer is never allocated on a physical-only
+  // moon — as though the draw had used them. A physical route whose command was
+  // culled before its bind group resolved has no executed uniforms at all, and
+  // reports null rather than borrowing another route's numbers.
+  const executedRoute = cache._executedRoute ?? null;
+  const ud =
+    executedRoute === "physical"
+      ? cache._executedUniformData
+      : cache.uniformData;
   const moonDirWC =
     defined(ud) && ud.length > 67
       ? Object.freeze({ x: ud[64], y: ud[65], z: ud[66] })
@@ -2439,6 +2488,7 @@ function getWebGPUMoonStatistics(moon) {
     bundleStale: cache._bundleStale === true,
     snapshotRegistered: cache._snapshotRegistered === true,
     frozen: cache._frozen === true,
+    executedRoute,
     moonDirectionWC: moonDirWC,
     phaseFraction,
     earthshineOn,
@@ -2570,6 +2620,9 @@ function destroyWebGPUMoonResources(moon) {
   cache.geometry = undefined;
   cache.uniformBuffer = undefined;
   cache.physicalUniformSlots = undefined;
+  // The statistics reader must not keep reporting a destroyed slot's bytes.
+  cache._executedUniformData = undefined;
+  cache._executedRoute = undefined;
   cache.physicalCommand = undefined;
   cache.physicalBindGroupResolver = undefined;
   cache.physicalMoon = undefined;
@@ -2595,6 +2648,7 @@ export {
   destroyWebGPUMoonResources,
   getWebGPUMoonStatistics,
   createMoonFreezable,
+  registerMoonSnapshotFreezable,
   tryResolvePhysicalMoonPipeline,
 };
 
@@ -2605,5 +2659,6 @@ export default {
   destroyWebGPUMoonResources,
   getWebGPUMoonStatistics,
   createMoonFreezable,
+  registerMoonSnapshotFreezable,
   tryResolvePhysicalMoonPipeline,
 };

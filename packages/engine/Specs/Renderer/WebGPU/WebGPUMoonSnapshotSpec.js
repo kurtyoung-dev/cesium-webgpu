@@ -1,6 +1,7 @@
 import {
   createMoonFreezable,
   getWebGPUMoonStatistics,
+  registerMoonSnapshotFreezable,
 } from "../../../Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js";
 import SnapshotModeService from "../../../Source/Services/SnapshotModeService.js";
 
@@ -104,10 +105,112 @@ describe("Renderer/WebGPU/WebGPUEnvironmentRenderer moon snapshot contract", fun
     });
   });
 
+  describe("registerMoonSnapshotFreezable()", function () {
+    // Registration is route-independent: both the legacy ENVIRONMENT route and
+    // the physical-depth route upload moon uniforms every frame, so a Moon that
+    // takes either route has to be freezable.
+    function makeSnapshotService() {
+      const registrations = [];
+      return {
+        registrations,
+        registerFreezable: function (name, freezable) {
+          registrations.push([name, freezable]);
+        },
+      };
+    }
+
+    it("registers once and records the service on the cache", function () {
+      const cache = makeFakeCache();
+      const service = makeSnapshotService();
+      registerMoonSnapshotFreezable({ snapshotMode: service }, cache);
+      expect(service.registrations.length).toBe(1);
+      expect(service.registrations[0][0]).toBe("moon-renderer");
+      expect(cache._snapshotRegistered).toBe(true);
+      expect(cache._snapshotService).toBe(service);
+
+      registerMoonSnapshotFreezable({ snapshotMode: service }, cache);
+      expect(service.registrations.length).toBe(1);
+    });
+
+    it("registers a freezable bound to the calling cache", function () {
+      const cache = makeFakeCache();
+      const service = makeSnapshotService();
+      registerMoonSnapshotFreezable({ snapshotMode: service }, cache);
+      const freezable = service.registrations[0][1];
+      freezable.freeze();
+      expect(cache._frozen).toBe(true);
+      freezable.thaw();
+      expect(cache._frozen).toBe(false);
+    });
+
+    it("stays unregistered and retryable when no snapshot service is published", function () {
+      const cache = makeFakeCache();
+      registerMoonSnapshotFreezable({}, cache);
+      expect(cache._snapshotRegistered).toBe(false);
+      expect(cache._snapshotService).toBeUndefined();
+
+      const service = makeSnapshotService();
+      registerMoonSnapshotFreezable({ snapshotMode: service }, cache);
+      expect(cache._snapshotRegistered).toBe(true);
+    });
+  });
+
   describe("getWebGPUMoonStatistics()", function () {
     it("returns null for a moon with no WebGPU cache yet", function () {
       const moon = {};
       expect(getWebGPUMoonStatistics(moon)).toBeNull();
+    });
+
+    it("reads the executed route's uniform storage, not the other route's", function () {
+      // The two routes own different uniform buffers. Reporting the legacy
+      // buffer while the physical route drew would publish values the draw
+      // never used.
+      const legacy = new Float32Array(88);
+      legacy[67] = 0.11;
+      legacy[70] = 1.0;
+      const physical = new Float32Array(88);
+      physical[67] = 0.92;
+      physical[70] = 9.0;
+      const cache = {
+        uniformData: legacy,
+        _executedUniformData: physical,
+        _executedRoute: "physical",
+      };
+      const moon = { _webgpuCache: cache };
+
+      let stats = getWebGPUMoonStatistics(moon);
+      expect(stats.executedRoute).toBe("physical");
+      expect(stats.phaseFraction).toBeCloseTo(0.92, 5);
+      expect(stats.shininess).toBe(9.0);
+
+      cache._executedRoute = "legacy";
+      stats = getWebGPUMoonStatistics(moon);
+      expect(stats.executedRoute).toBe("legacy");
+      expect(stats.phaseFraction).toBeCloseTo(0.11, 5);
+      expect(stats.shininess).toBe(1.0);
+    });
+
+    it("reports null uniforms when the physical route drew but resolved no slot", function () {
+      // A physical command culled before its bind group resolved has no
+      // executed uniforms; borrowing the legacy buffer's numbers would be the
+      // exact misreport this reader exists to avoid.
+      const legacy = new Float32Array(88);
+      legacy[67] = 0.11;
+      const moon = {
+        _webgpuCache: {
+          uniformData: legacy,
+          _executedRoute: "physical",
+        },
+      };
+      const stats = getWebGPUMoonStatistics(moon);
+      expect(stats.executedRoute).toBe("physical");
+      expect(stats.phaseFraction).toBeNull();
+      expect(stats.moonDirectionWC).toBeNull();
+    });
+
+    it("reports a null route before any update has run", function () {
+      const stats = getWebGPUMoonStatistics({ _webgpuCache: {} });
+      expect(stats.executedRoute).toBeNull();
     });
 
     it("reports cache readiness flags and unpacks the uniform tail", function () {

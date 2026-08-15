@@ -30,6 +30,10 @@ function isFiniteCartesian3(value) {
   );
 }
 
+function isZeroMagnitude(value) {
+  return value.x === 0.0 && value.y === 0.0 && value.z === 0.0;
+}
+
 /**
  * An interface for a synchronous Sun/Moon ephemeris sampled in Earth-fixed
  * coordinates. Providers write into a sample owned by the caller; they never
@@ -214,6 +218,18 @@ class CelestialEphemerisProvider {
     ) {
       throw new RuntimeError(
         "The celestial ephemeris provider produced a non-finite position.",
+      );
+    }
+    // A geocentric position of exactly zero is finite but has no direction.
+    // Every downstream consumer normalizes these vectors, so a zero would
+    // become a NaN Sun or Moon direction that silently poisons lighting,
+    // eclipse geometry and the sky rather than failing where it originated.
+    if (
+      isZeroMagnitude(result.sunPositionWC) ||
+      isZeroMagnitude(result.moonPositionWC)
+    ) {
+      throw new DeveloperError(
+        "The celestial ephemeris provider must produce non-zero Sun and Moon positions.",
       );
     }
     return result;

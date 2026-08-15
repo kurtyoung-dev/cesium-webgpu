@@ -755,7 +755,7 @@ test("STRUCTURAL — PipelineVariant blend fills bare targets while explicit tar
   );
 });
 
-test("STRUCTURAL — depthTest=false removes depth or retains stencil-only state", async () => {
+test("STRUCTURAL — depthTest=false neutralizes depth but keeps the attachment", async () => {
   const device = makeStubDevice();
   const cache = new WebGPURenderPipelineCache(device, "ctx-depth-disabled");
   const module = { __module: "shared" };
@@ -763,15 +763,41 @@ test("STRUCTURAL — depthTest=false removes depth or retains stencil-only state
   const sourceDepthStencil = structuredClone(descriptor.depthStencil);
 
   const depthOff = await cache.getPipeline(descriptor, { depthTest: false });
+  // A descriptor that declares depthStencil renders into a pass that HAS a
+  // depth attachment. Dropping the block would make the pipeline incompatible
+  // with that pass, so depth is neutralized in place instead: compare `always`,
+  // writes off, the descriptor's own format retained.
   assert.equal(
-    depthOff.__descriptor.depthStencil,
-    undefined,
-    "depthTest=false must not retain the descriptor's active depth state",
+    depthOff.__descriptor.depthStencil.format,
+    sourceDepthStencil.format,
+    "depthTest=false must keep the descriptor's depth attachment format",
+  );
+  assert.equal(
+    depthOff.__descriptor.depthStencil.depthCompare,
+    "always",
+    "depthTest=false must not retain the descriptor's active depth compare",
+  );
+  assert.equal(
+    depthOff.__descriptor.depthStencil.depthWriteEnabled,
+    false,
+    "depthTest=false must not retain the descriptor's depth write flag",
   );
   assert.deepEqual(
     descriptor.depthStencil,
     sourceDepthStencil,
     "depth disabling must not mutate the source descriptor",
+  );
+
+  // A color-only descriptor still gets no depth state at all.
+  const colorOnly = markerlessDescriptor(module);
+  delete colorOnly.depthStencil;
+  const colorOnlyDepthOff = await cache.getPipeline(colorOnly, {
+    depthTest: false,
+  });
+  assert.equal(
+    colorOnlyDepthOff.__descriptor.depthStencil,
+    undefined,
+    "depthTest=false must not synthesize depth state on a color-only pipeline",
   );
 
   const stencilFront = {

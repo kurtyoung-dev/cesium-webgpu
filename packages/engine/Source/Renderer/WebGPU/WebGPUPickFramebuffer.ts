@@ -26,6 +26,16 @@ import {
 // rectangles are exact: a nearby pixel can be a different voxel or metadata
 // value and must arm its own readback rather than borrow its neighbor's bytes.
 const CENTER_PIXEL_MAX_STALE_FRAMES = 4;
+// Distinct typed queries that may converge concurrently. A multi-property
+// `pickMetadata` sweep arms one readback per property inside a single task, so a
+// single-slot cache let only the last-armed identity ever publish and starved
+// every earlier one forever. Small and LRU-evicted: the working set is the
+// number of properties a caller reads per pick, not a pixel history.
+const CENTER_PIXEL_CACHE_CAPACITY = 8;
+// In-flight readbacks. Bounded so a device that stops resolving `mapAsync`
+// cannot grow the list without limit; an evicted request simply declines to
+// publish, which is the same outcome a superseded request already had.
+const CENTER_PIXEL_PENDING_CAPACITY = 16;
 // 256-byte minimum mapping alignment for a 1x1 RGBA8 copy.
 const CENTER_STAGING_BUFFER_SIZE = 256;
 const VOXEL_CENTER_PIXEL_CLEAR_VALUE: GPUColorDict = Object.freeze({
@@ -59,6 +69,11 @@ interface CenterPixelReadbackIdentity {
 interface CenterPixelCacheEntry extends CenterPixelReadbackIdentity {
   value: Uint8Array;
   stamp: number;
+  requestSequence: number;
+}
+
+interface CenterPixelPendingRequest {
+  identity: CenterPixelReadbackIdentity;
   requestSequence: number;
 }
 
@@ -300,11 +315,14 @@ export class WebGPUPickFramebuffer {
   // pixel and returns a one-frame-stale cache only for the exact typed query,
   // rectangle, device/resource tuple, attachment, and owner version. A cold
   // query is invalid (`undefined`), never a fabricated all-zero pixel.
-  private _centerPixelCache: CenterPixelCacheEntry | null = null;
-  private _centerPendingIdentity: CenterPixelReadbackIdentity | null = null;
-  private _centerPendingRequestSequence: number = -1;
+  //
+  // Cache slots and in-flight requests are BOTH keyed by that same structural
+  // identity, so distinct concurrent queries converge independently. The
+  // single-identity caller still costs one comparison: its entry stays at the
+  // head of the MRU list.
+  private _centerPixelCacheEntries: CenterPixelCacheEntry[] = [];
+  private _centerPendingRequests: CenterPixelPendingRequest[] = [];
   private _nextCenterReadbackSequence: number = 0;
-  private _latestCenterReadbackSequence: number = -1;
   // Staleness clock — advanced once per begin() (one metadata/voxel pick is
   // one begin → render → readCenterPixel cycle). Measured in picks, not wall
   // time, so a paused scene keeps a valid cache indefinitely.
@@ -570,18 +588,30 @@ export class WebGPUPickFramebuffer {
   }
 
   /**
-   * Widened sync-pick cache gate. When the current query's center pixel lies
-   * inside the most recent completed readback's logical region and the
-   * attachment generation matches, reproject the cached rows into the current
-   * query's logical rectangle so `end()` can decode a result during cursor
-   * motion instead of returning empty.
+   * Sync-pick cache gate, fail-closed on any view change. A cached readback is
+   * reusable only when it carries the SAME view provenance as the current
+   * query — the caller derives that string from the scene mode, morph time,
+   * drawing-buffer size, near/far, view and projection matrices, and the pick
+   * owner's model matrix and visibility. Any camera movement therefore mints a
+   * fresh provenance and this gate declines, so synchronous `end()` returns
+   * empty for the whole duration of a motion and only warms once the view is
+   * exactly static again.
    *
-   * The cached pixels are tightly packed rows of `cached.logicalWidth`
-   * (unpackPickPixels already stripped the GPU copy's 256-byte bytesPerRow
-   * padding), so both buffers are indexed in absolute top-down attachment
-   * coordinates via their logical origins. Query pixels outside the cached
-   * region stay zero, which decodes as no-hit — conservative for the outer
-   * spiral taps while keeping the center pixel (the actual cursor) exact.
+   * The spatial reprojection below is what remains reachable under that gate:
+   * with provenance equal, a cursor that moved WITHIN the previous readback's
+   * region still decodes. The cached pixels are tightly packed rows of
+   * `cached.logicalWidth` (unpackPickPixels already stripped the GPU copy's
+   * 256-byte bytesPerRow padding), so both buffers are indexed in absolute
+   * top-down attachment coordinates via their logical origins. Query pixels
+   * outside the cached region stay zero, which decodes as no-hit —
+   * conservative for the outer spiral taps while keeping the center pixel (the
+   * actual cursor) exact.
+   *
+   * Whether picking SHOULD stay fail-closed through motion, or should instead
+   * reuse a spatially-overlapping readback taken under a different view, is an
+   * open maintainer decision. Do not relax the provenance comparison without
+   * it: the exact gate is what guarantees a returned hit was rendered from the
+   * view the caller is asking about.
    *
    * Returns null when the gate does not apply (caller falls through to the
    * cold-pick path).
@@ -944,16 +974,57 @@ export class WebGPUPickFramebuffer {
     // overlapping requests and swallows teardown races.
     this._readCenterPixelAsync(identity);
 
-    const cached = this._centerPixelCache;
+    const cached = this._takeCenterPixelCacheEntry(identity);
     if (
       cached &&
-      this._centerPixelIdentitiesEqual(cached, identity) &&
       this._updateCount - cached.stamp >= 0 &&
       this._updateCount - cached.stamp <= CENTER_PIXEL_MAX_STALE_FRAMES
     ) {
       return cached.value.slice(0, 4);
     }
     return undefined;
+  }
+
+  /**
+   * Return this identity's cache entry and promote it to the head of the MRU
+   * list. Lookup is a linear scan of at most CENTER_PIXEL_CACHE_CAPACITY
+   * entries; a caller reading one identity hits on the first comparison.
+   */
+  private _takeCenterPixelCacheEntry(
+    identity: CenterPixelReadbackIdentity,
+  ): CenterPixelCacheEntry | undefined {
+    const entries = this._centerPixelCacheEntries;
+    for (let i = 0; i < entries.length; ++i) {
+      const entry = entries[i];
+      if (!this._centerPixelIdentitiesEqual(entry, identity)) {
+        continue;
+      }
+      if (i > 0) {
+        entries.splice(i, 1);
+        entries.unshift(entry);
+      }
+      return entry;
+    }
+    return undefined;
+  }
+
+  /**
+   * Publish a decoded pixel into this identity's slot, replacing any prior
+   * value for the same identity and evicting the least recently used entry once
+   * the bound is exceeded.
+   */
+  private _publishCenterPixelCacheEntry(entry: CenterPixelCacheEntry): void {
+    const entries = this._centerPixelCacheEntries;
+    for (let i = 0; i < entries.length; ++i) {
+      if (this._centerPixelIdentitiesEqual(entries[i], entry)) {
+        entries.splice(i, 1);
+        break;
+      }
+    }
+    entries.unshift(entry);
+    if (entries.length > CENTER_PIXEL_CACHE_CAPACITY) {
+      entries.length = CENTER_PIXEL_CACHE_CAPACITY;
+    }
   }
 
   private _centerPixelIdentitiesEqual(
@@ -1019,10 +1090,32 @@ export class WebGPUPickFramebuffer {
     );
   }
 
+  /**
+   * True only while `requestSequence` is still the newest armed readback for
+   * its own identity. A newer request for a DIFFERENT identity no longer
+   * cancels this one — that global "latest wins" rule is what starved every
+   * identity but the last-armed one.
+   */
+  private _isLatestCenterPixelRequest(
+    identity: CenterPixelReadbackIdentity,
+    requestSequence: number,
+  ): boolean {
+    const pending = this._centerPendingRequests;
+    for (let i = 0; i < pending.length; ++i) {
+      if (this._centerPixelIdentitiesEqual(pending[i].identity, identity)) {
+        return pending[i].requestSequence === requestSequence;
+      }
+    }
+    return false;
+  }
+
   private _finishCenterPixelRequest(requestSequence: number): void {
-    if (this._centerPendingRequestSequence === requestSequence) {
-      this._centerPendingRequestSequence = -1;
-      this._centerPendingIdentity = null;
+    const pending = this._centerPendingRequests;
+    for (let i = 0; i < pending.length; ++i) {
+      if (pending[i].requestSequence === requestSequence) {
+        pending.splice(i, 1);
+        return;
+      }
     }
   }
 
@@ -1039,11 +1132,13 @@ export class WebGPUPickFramebuffer {
     if (!this._centerPixelIdentityIsCurrent(identity)) {
       return;
     }
-    if (
-      this._centerPendingIdentity &&
-      this._centerPixelIdentitiesEqual(this._centerPendingIdentity, identity)
-    ) {
-      return;
+    // Dedupe per identity, not globally: a readback already in flight for THIS
+    // identity is the one that will publish, while an unrelated identity's
+    // in-flight readback must not suppress this one.
+    for (const pending of this._centerPendingRequests) {
+      if (this._centerPixelIdentitiesEqual(pending.identity, identity)) {
+        return;
+      }
     }
 
     // Stamp with the CURRENT pick count — the pixel decoded below corresponds
@@ -1051,9 +1146,10 @@ export class WebGPUPickFramebuffer {
     const requestStamp = this._updateCount;
     const bgra = this._colorFormat === "bgra8unorm";
     const requestSequence = this._nextCenterReadbackSequence++;
-    this._latestCenterReadbackSequence = requestSequence;
-    this._centerPendingRequestSequence = requestSequence;
-    this._centerPendingIdentity = identity;
+    this._centerPendingRequests.push({ identity, requestSequence });
+    if (this._centerPendingRequests.length > CENTER_PIXEL_PENDING_CAPACITY) {
+      this._centerPendingRequests.shift();
+    }
     const { device, colorTexture } = identity;
 
     let stagingBuffer: GPUBuffer | null = null;
@@ -1087,7 +1183,7 @@ export class WebGPUPickFramebuffer {
         .then(() => {
           try {
             if (
-              requestSequence !== this._latestCenterReadbackSequence ||
+              !this._isLatestCenterPixelRequest(identity, requestSequence) ||
               !this._centerPixelIdentityIsCurrent(identity)
             ) {
               return;
@@ -1098,12 +1194,12 @@ export class WebGPUPickFramebuffer {
             const value = bgra
               ? new Uint8Array([data[2], data[1], data[0], data[3]])
               : new Uint8Array([data[0], data[1], data[2], data[3]]);
-            this._centerPixelCache = {
+            this._publishCenterPixelCacheEntry({
               ...identity,
               value,
               stamp: requestStamp,
               requestSequence,
-            };
+            });
           } finally {
             try {
               buffer.unmap();

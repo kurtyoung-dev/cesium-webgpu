@@ -6,6 +6,7 @@ import {
   Matrix3,
   Matrix4,
   Moon,
+  RuntimeError,
   Transforms,
 } from "../../index.js";
 
@@ -22,6 +23,10 @@ class SceneEphemerisProvider extends CelestialEphemerisProvider {
     this._id = id;
     this._marker = marker;
     this.calls = 0;
+    // Mutable so a spec can model a provider whose result changes without a
+    // time change (an ICRF data arrival, for example) between the render frame
+    // and a pick mini-frame that reuses the same frame number.
+    this.revisionValue = 1;
   }
 
   get id() {
@@ -29,7 +34,7 @@ class SceneEphemerisProvider extends CelestialEphemerisProvider {
   }
 
   get revision() {
-    return 1;
+    return this.revisionValue;
   }
 
   get provenance() {
@@ -310,6 +315,75 @@ describe("Scene celestial ephemeris integration", function () {
       Transforms.computeIcrfToCentralBodyFixedMatrix = canonicalTransform;
       scene.destroyForSpecs();
       explicitScene.destroyForSpecs();
+    }
+  });
+
+  it("defers a mid-frame provider revision advance to the next frame instead of throwing into pick", function () {
+    const scene = createScene();
+    const provider = new SceneEphemerisProvider("REV", 5.0);
+    const time = JulianDate.fromIso8601("2026-08-14T12:00:00Z");
+    try {
+      scene.celestialEphemerisProvider = provider;
+      scene.renderForSpecs(time);
+
+      const frameState = scene.frameState;
+      const sample = frameState.celestialEphemerisSample;
+      const sunIdentity = sample.sunPositionWC;
+      const publishedSunX = sample.sunPositionWC.x;
+      expect(provider.calls).toBe(1);
+      expect(sample.providerRevision).toBe(1);
+
+      // The provider's own revision advances after the render frame published,
+      // with the frame number unchanged. A pick mini-frame re-prepares the same
+      // logical frame and must not surface that as a caller error.
+      provider.revisionValue = 2;
+
+      expect(function () {
+        scene.pickForSpecs();
+      }).not.toThrow();
+      expect(scene.frameState.celestialEphemerisSample).toBe(sample);
+      expect(sample.sunPositionWC).toBe(sunIdentity);
+      expect(sample.sunPositionWC.x).toBe(publishedSunX);
+      expect(sample.providerRevision).toBe(1);
+      expect(provider.calls).toBe(1);
+
+      // Repeated preparations inside the same frame stay on that one lineage.
+      scene.updateFrameState();
+      expect(scene.frameState.celestialEphemerisSample).toBe(sample);
+      expect(provider.calls).toBe(1);
+
+      // The transition lands on the next frame, which recomputes exactly once.
+      scene.renderForSpecs(time);
+      expect(provider.calls).toBe(2);
+      expect(scene.frameState.celestialEphemerisSample).toBe(sample);
+      expect(sample.providerRevision).toBe(2);
+      expect(sample.sunPositionWC).toBe(sunIdentity);
+    } finally {
+      scene.destroyForSpecs();
+    }
+  });
+
+  it("still rejects a mid-frame transform-branch change after publication", function () {
+    const scene = createScene();
+    const provider = new SceneEphemerisProvider("BRANCH", 6.0);
+    const time = JulianDate.fromIso8601("2026-08-14T12:00:00Z");
+    try {
+      scene.celestialEphemerisProvider = provider;
+      scene.renderForSpecs(time);
+      expect(provider.calls).toBe(1);
+
+      // Negative control for the deferral above: a drift the retained sample
+      // cannot absorb must still be refused rather than silently served.
+      const frameState = scene.frameState;
+      frameState._celestialEphemerisCacheTransformBranch = "OTHER_BRANCH";
+      expect(function () {
+        frameState._updateCelestialEphemeris(provider, frameState.time);
+      }).toThrowError(
+        RuntimeError,
+        "The celestial ephemeris changed after publication for this frame.",
+      );
+    } finally {
+      scene.destroyForSpecs();
     }
   });
 

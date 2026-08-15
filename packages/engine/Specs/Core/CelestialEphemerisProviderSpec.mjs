@@ -348,6 +348,10 @@ test("providers reject custom, inherited, and proxy samples before property read
 
 test("brand validation and finalization do not query property descriptors", () => {
   const result = CelestialEphemerisProvider.createSample();
+  // Finalization requires real positions; a freshly created sample is all
+  // zeros, which has no direction and is refused.
+  Cartesian3.fromElements(1.0, 2.0, 3.0, result.sunPositionWC);
+  Cartesian3.fromElements(4.0, 5.0, 6.0, result.moonPositionWC);
   const declaration = Object.freeze({ id: "test" });
   const provider = {
     id: "test-provider",
@@ -447,6 +451,51 @@ test("Simon1994EphemerisProvider rejects non-finite computed vectors", () => {
   } finally {
     Transforms.computeIcrfToFixedMatrix = originalIcrf;
   }
+});
+
+test("finalizeResult rejects a zero-magnitude Sun or Moon position", () => {
+  // A zero geocentric position is finite but has no direction. Every consumer
+  // normalizes these vectors, so letting one through turns into a NaN Sun or
+  // Moon direction far from the provider that produced it.
+  const declaration = {
+    id: "zero-magnitude-test",
+    revision: 0,
+    provenance: Object.freeze({ id: "zero-magnitude-provenance" }),
+    timePolicy: Object.freeze({ id: "zero-magnitude-time-policy" }),
+    outputAllocationStable: true,
+    thirdPartyTemporaryFree: true,
+  };
+
+  const zeroSun = CelestialEphemerisProvider.createSample();
+  Cartesian3.fromElements(0.0, 0.0, 0.0, zeroSun.sunPositionWC);
+  Cartesian3.fromElements(1.0, 2.0, 3.0, zeroSun.moonPositionWC);
+  assert.throws(
+    () =>
+      CelestialEphemerisProvider.finalizeResult(zeroSun, declaration, "BRANCH"),
+    /non-zero Sun and Moon positions/,
+  );
+
+  const zeroMoon = CelestialEphemerisProvider.createSample();
+  Cartesian3.fromElements(1.0, 2.0, 3.0, zeroMoon.sunPositionWC);
+  Cartesian3.fromElements(0.0, 0.0, 0.0, zeroMoon.moonPositionWC);
+  assert.throws(
+    () =>
+      CelestialEphemerisProvider.finalizeResult(
+        zeroMoon,
+        declaration,
+        "BRANCH",
+      ),
+    /non-zero Sun and Moon positions/,
+  );
+
+  // A single non-zero component is enough to define a direction.
+  const minimal = CelestialEphemerisProvider.createSample();
+  Cartesian3.fromElements(0.0, 0.0, Number.MIN_VALUE, minimal.sunPositionWC);
+  Cartesian3.fromElements(0.0, -1.0, 0.0, minimal.moonPositionWC);
+  assert.equal(
+    CelestialEphemerisProvider.finalizeResult(minimal, declaration, "BRANCH"),
+    minimal,
+  );
 });
 
 test("AstronomyEngineEphemerisProvider is lazy-created and pins provenance", async () => {

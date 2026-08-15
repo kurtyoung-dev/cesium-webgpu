@@ -1103,12 +1103,16 @@ class FrameState {
             "The celestial ephemeris transform override changed during this frame.",
           );
         }
+        // Validate before mutating. A rejected legacy transform used to leave
+        // the frame marked as legacy-consumed with no transform attached, so
+        // the caller's retry for the same frame hit the
+        // "transform policy changed after legacy consumption" path instead of
+        // its own argument error.
+        Check.typeOf.func("legacyTransform", legacyTransform);
         this._celestialEphemerisCacheValid = false;
         this._celestialEphemerisCacheProvider = undefined;
         this._celestialEphemerisLegacyFrameToken = logicalFrameToken;
-        this._celestialEphemerisLegacyTransform = undefined;
         this.celestialEphemerisSample = undefined;
-        Check.typeOf.func("legacyTransform", legacyTransform);
         this._celestialEphemerisLegacyTransform = legacyTransform;
         return undefined;
       }
@@ -1157,7 +1161,11 @@ class FrameState {
       }
 
       CelestialEphemerisProvider.validateResult(sample);
-      const cacheMatches =
+      // Every cache dimension except the LIVE provider revision. Splitting the
+      // revision out lets a mid-frame revision transition be deferred below
+      // rather than rejected; the retained sample's own declaration is still
+      // pinned to the cached revision, so only the provider getter is free.
+      const cacheMatchesExceptProviderRevision =
         this._celestialEphemerisCacheValid &&
         sample === this._celestialEphemerisSampleIdentity &&
         sample.sunPositionWC === this._celestialEphemerisSunIdentity &&
@@ -1165,7 +1173,8 @@ class FrameState {
         this._celestialEphemerisCacheProvider === provider &&
         this._celestialEphemerisCacheCompute === computeBefore &&
         this._celestialEphemerisCacheProviderId === idBefore &&
-        this._celestialEphemerisCacheProviderRevision === revisionBefore &&
+        sample.providerRevision ===
+          this._celestialEphemerisCacheProviderRevision &&
         this._celestialEphemerisCacheProvenance === provenanceBefore &&
         this._celestialEphemerisCacheTimePolicy === timePolicyBefore &&
         this._celestialEphemerisCacheOutputAllocationStable ===
@@ -1177,7 +1186,6 @@ class FrameState {
         this._celestialEphemerisCacheTransformBranch ===
           sample.transformBranch &&
         sample.providerId === idBefore &&
-        sample.providerRevision === revisionBefore &&
         sample.provenance === provenanceBefore &&
         sample.timePolicy === timePolicyBefore &&
         sample.referenceFrame === "ECEF" &&
@@ -1194,6 +1202,9 @@ class FrameState {
         this._celestialEphemerisCacheMoonX === sample.moonPositionWC.x &&
         this._celestialEphemerisCacheMoonY === sample.moonPositionWC.y &&
         this._celestialEphemerisCacheMoonZ === sample.moonPositionWC.z;
+      const cacheMatches =
+        cacheMatchesExceptProviderRevision &&
+        this._celestialEphemerisCacheProviderRevision === revisionBefore;
 
       if (cacheMatches) {
         this._celestialEphemerisPublishedFrameToken = logicalFrameToken;
@@ -1201,10 +1212,26 @@ class FrameState {
         return sample;
       }
 
-      // Once any View has consumed this frame's sample, an asynchronous
-      // revision/branch transition or provider-object drift is deferred to the
-      // next frame. Recomputing now would mix lineages between the main View
-      // and a later pick/offscreen View.
+      // A provider whose revision advances asynchronously — an ICRF data
+      // arrival, for example — can transition between the render frame and the
+      // pick, snap, or offscreen preparations that reuse the same frame number.
+      // Serve the already-published sample and let the transition land on the
+      // next frame, matching how Scene defers an asynchronous PROVIDER swap by
+      // frame number. Nothing else about the retained sample or the provider
+      // may have moved, and the next frame's fresh token recomputes because the
+      // cached revision still trails the provider.
+      if (
+        this._celestialEphemerisPublishedFrameToken === logicalFrameToken &&
+        cacheMatchesExceptProviderRevision
+      ) {
+        this.celestialEphemerisSample = sample;
+        return sample;
+      }
+
+      // Once any View has consumed this frame's sample, a branch transition or
+      // provider-object drift is deferred to the next frame. Recomputing now
+      // would mix lineages between the main View and a later pick/offscreen
+      // View.
       if (this._celestialEphemerisPublishedFrameToken === logicalFrameToken) {
         this._celestialEphemerisRejectedFrameToken = logicalFrameToken;
         throw new RuntimeError(
